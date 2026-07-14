@@ -1,292 +1,288 @@
 # LinkDigest 架构基线
 
-> 状态：V0.1 Swift Package、WXT 扩展、Native Host 与自动化进程链路已实现；Chrome/Brave 真实垂直链路已通过，Edge 仍待补齐。V0.2 任务 A–D 的 ProviderProfile/Keychain、OpenAI-compatible adapter、总结/翻译 streaming UI、停止/不完整状态、统一错误恢复与 secret hygiene 已完成本地工程验收；设置页连接测试、SQLite、历史与 Export 仍未接入，签名、公证和发布包也未完成。该状态不表示 P0 或产品发布完成。
+> 状态：2026-07-15，MAS-first 为当前权威路线。V0.2 A–D 工程基线继续复用；App 独立输入、App Sandbox、扩展安全 loopback bridge、SQLite、历史、删除和导出尚未实现。
 
-## 1. 一句话定位
+## 1. 架构目标
 
-LinkDigest 用 SwiftUI 构建 macOS 原生桌面 APP，用 TypeScript/WXT 构建 Chromium 扩展；两端不共享语言源码，而是通过版本化 JSON 与 Native Messaging 交接。P0 的提取、BYOK、历史和导出全部 local-first，不依赖 LinkDigest 云端。
+LinkDigest 首发必须先形成不依赖浏览器扩展的 sandboxed Mac App：粘贴文字或公开 URL 进入统一内容快照，经现有 BYOK 组件总结或简体中文翻译，再由 SQLite 保存并导出 Markdown、纯文本或 JSON。
+
+Chromium 扩展是可选输入 adapter。版本化合同属于可复用的产品边界；Native Messaging、独立 Host 和 Unix socket 属于可替换的运输层。
 
 ## 2. 场景、角色与交接
 
+### 2.1 MAS 首发主路径
+
 ```text
-Chromium Extension（TypeScript/WXT）
-  职责：读取用户主动触发的当前页面 DOM/选区
-  交接：CaptureEnvelopeV1 JSON
-        |
-        v Native Messaging
-macOS Native Host / App Boundary（Swift）
-  职责：framing、版本校验、大小限制、唤起与错误映射
-  交接：已验证的 Swift 领域对象
+SwiftUI Input
+  ├─ 用户粘贴文字
+  └─ 用户粘贴公开 HTTP(S) URL
         |
         v
-macOS Local Core（Swift）
-  职责：任务编排、提取、BYOK、SQLite、Keychain、导出
-  交接：可观察状态和领域结果
+Input Router / Public Web Fetcher（未实现）
+  职责：校验输入、读取公开响应、提取正文、解释受限页面
+  交接：版本化 Content Input / ContentSnapshot candidate
         |
         v
-SwiftUI + 少量 AppKit
-  职责：任务列表、原文、结果、执行记录和系统交互
+Application + Domain Core
+  职责：任务编排、来源证据、RunState、取消、稳定错误
+  交接：Task / ContentSnapshot / Run / Artifact
+        |
+        +--> ProviderProfile + Keychain + OpenAI-compatible Adapter（已实现）
+        |
+        +--> SQLite Repository（未实现）
+        |
+        +--> Markdown / TXT / JSON Exporter（未实现）
+        |
+        v
+SwiftUI Workspace
+  职责：输入、原文核查、结果、历史、删除、导出和恢复
 ```
 
-### 2.1 为什么采用双语言
+### 2.2 条件式扩展路径
 
-- Chromium 扩展的权限、service worker、content script 和商店工具链天然适合 TypeScript。
-- 第一版只做 macOS，原生窗口、菜单、快捷键、材质、焦点和可访问性是产品质量的一部分。
-- Swift 与 TypeScript 通过语言中立协议隔离，避免为了“共享类型”把整个桌面 APP 绑定到 Web Runtime。
-- Windows 若进入后续阶段，复用产品协议与行为规范，不承诺复用 macOS UI 源码。
+```text
+Chromium/WXT current DOM（已实现）
+  → CaptureEnvelopeV1（已实现）
+  → 安全 loopback bridge（未实现、待 sandbox spike）
+  → 同一 Application input port
+```
 
-## 3. P0 组件边界
+如果 bridge gate 失败，删除这条首发路径即可；Core、BYOK、SQLite、导出和独立 App 仍然成立。
 
-### 3.1 Chromium 扩展
+### 2.3 已验证的开发路径
 
-| 组件 | 负责 | 不负责 |
+```text
+Chromium/WXT current DOM
+  → CaptureEnvelopeV1
+  → Native Messaging / LinkDigestNativeHost
+  → /tmp/linkdigest-<uid>.sock
+  → SwiftUI current capture
+```
+
+这条路径证明了当前页 DOM、跨语言合同、framing、大小限制、超时和结构化错误。它不证明 App Sandbox、MAS 审核可行性或发布安装体验。
+
+## 3. 当前状态矩阵
+
+| 组件 | 代码状态 | MAS-first 结论 |
 |---|---|---|
-| Content Script | 读取当前 DOM、选区和页面元数据 | Native Messaging、数据库、模型调用 |
-| Service Worker | 权限、载荷校验、Native Messaging、超时 | 渲染完整历史和复杂设置 |
-| Popup | 捕获范围、动作、字符数和连接状态 | 长期任务状态、导出、Key 管理 |
+| SwiftUI App shell/current content | 已实现 | 复用并扩展为独立工作区 |
+| `CaptureEnvelopeV1` JSON Schema | 已实现、双端执行 | 保留为浏览器输入合同；新合同沿用版本化规则 |
+| WXT DOM capture | 已实现、Chrome/Brave 有证据 | 条件式增强；Edge 不阻塞独立首发 |
+| Native Host/framing/Unix socket | 已实现开发链 | 开发证据或未来 DMG 候选；不是 MAS 主运输层 |
+| ProviderProfile/UserDefaults | 已实现 | 复用非敏感 profile port/adapter |
+| Keychain SecretStore | 已实现 | 复用；sandbox target 中重新跑真实 Keychain 行为测试 |
+| OpenAI-compatible Provider | 已实现 | 复用 URLSession/SSE/重试/取消；自动测试继续 fake server |
+| ModelRunOrchestrator/RunState | 已实现 | 复用并把输入、结果接入持久化 |
+| App Sandbox | 未实现/未验证 | 首个发布 gate；当前无发布级 MAS target/entitlements 证据 |
+| App 内文字与 URL 输入 | 未实现 | 首发主入口 |
+| Public Web Fetcher/extractor | 未实现 | 只处理公开 HTTP(S)；受限页面降级为粘贴文字 |
+| 扩展 loopback bridge | 未实现 | 独立 App 闭环后再 spike |
+| SQLite Repository | 未实现 | 首发必需 |
+| 删除与只读恢复 | 未实现 | 首发必需 |
+| Markdown/TXT/JSON Exporter | 未实现 | 首发必需 |
 
-P0 默认权限：
+测试中的 `FakeOpenAICompatibleServer` 已使用 `127.0.0.1`，但它只验证 Provider adapter。它不能替代扩展 bridge 的身份校验、重放防护、端口生命周期、sandbox 行为和浏览器集成证据。
 
-- `activeTab`
-- `scripting`
-- `storage`
-- `nativeMessaging`
+## 4. 不重写 V0.2 的边界
 
-不申请 Cookie、浏览器历史或全站静默访问。受限页面只显示明确说明，不尝试绕过。
+### 4.1 直接复用
 
-### 3.2 Native Messaging 边界
+- `ProviderProfile`、`SecretReference`、`ProviderProfileStore`、`SecretStore` 与 staged save。
+- `KeychainSecretStore` 和非敏感 `UserDefaultsProviderProfileStore`。
+- `ModelProvider` port、`OpenAICompatibleProvider`、SSE decoder、有界重试和显式取消。
+- `ModelRunOrchestrator`、`RunIntent.summarize/translate`、RunState 与 stale-run 隔离。
+- 22 个 stable code 的中文恢复目录、API Key redaction、sentinel 测试与 `pnpm secret:check`。
+- SwiftUI 当前原文/结果区域及其 MainActor 状态更新模式。
 
-Native Messaging 是首要 release spike，必须单独验证：
+### 4.2 保留合同，替换运输层
 
-- Chrome/Brave/Edge Host manifest 的安装和卸载。
-- APP 已运行、未运行、升级中三种状态。
-- 长度前缀 framing、消息上限和超时。
-- Host 与 APP 的签名、公证和路径稳定性。
-- 扩展/APP 版本不一致时的恢复文案。
+- `CaptureEnvelopeV1`、共同 fixtures 和结构化错误语义继续有效。
+- `browser.runtime.sendNativeMessage`、`LinkDigestNativeHost`、4-byte framing、manifest installer 和 `/tmp` Unix socket 不进入 MAS 主路径。
+- 若未来发布公证 DMG，可重新评估这套运输层；不得让 DMG 安装假设污染 sandboxed App 的独立闭环。
 
-V0.1 已选择独立 `LinkDigestNativeHost` executable：它处理 Chromium 4-byte little-endian framing、4 MiB 上限、10 秒超时和合同校验，再通过用户私有 `/tmp/linkdigest-<uid>.sock` Unix domain socket 交给正在运行的 APP。APP 未运行时返回 `APP_UNAVAILABLE`，不静默拉起；Host 不承载提取、模型或数据库业务。签名、公证与安装包内的最终 Helper 位置仍由 release spike 决定。
+### 4.3 新增而非重写
 
-### 3.3 macOS APP
+- 独立输入 port 与 `text/publicURL` 来源类型。
+- 公开网页 fetch/extract adapter。
+- SQLite repository、forward migration、只读恢复和删除。
+- Markdown/TXT/JSON exporter。
+- 发布级 MAS target、entitlements、container 路径和 sandbox 测试。
+
+## 5. 分层与依赖方向
 
 ```text
 App Shell
-  SwiftUI App lifecycle / Window / Menu / Settings
+  SwiftUI lifecycle / Window / Menu / Settings
 
 Presentation
-  Views / View State / Navigation
+  Input / Workspace / History / Error / Export state
 
 Application
-  Task Orchestrator / Commands / Cancellation
+  Input commands / Task Orchestrator / Run commands / Delete / Export
 
 Domain
   Task / ContentSnapshot / Run / Artifact / AppError
 
 Ports
-  CaptureInbox / ModelProvider / Repository / SecretStore / Exporter
+  ContentInput / PublicPageReader / ModelProvider / Repository / SecretStore / Exporter
 
 Adapters
-  Native Messaging / URLSession / SQLite / Keychain / File Export
+  Paste / URLSession Fetch / OpenAI-compatible / SQLite / Keychain / File Export
+
+Conditional adapters
+  WXT Capture / loopback bridge
 ```
 
 边界规则：
 
-- SwiftUI View 不直接访问 SQLite、Keychain、文件系统或模型端点。
-- Application 层不依赖具体 SwiftUI View。
-- Domain 不依赖浏览器、SQLite binding 或某个模型 Provider。
-- Adapter 将平台错误映射成稳定 `AppError`。
-- AppKit 只通过小型 adapter/representable 局部使用，不创建第二套 UI 架构。
+- SwiftUI View 不直接访问 URLSession、SQLite、Keychain、文件系统或浏览器 bridge。
+- Application 层不依赖具体 SwiftUI View 或数据库表。
+- Domain 不认识浏览器、Provider 品牌、SQLite binding 或运输层。
+- Adapter 把平台错误映射为稳定 `AppError`，Provider 原始 body 不进入 UI。
+- AppKit 只用于明确的 macOS 系统缺口，不创建第二套 UI 架构。
 
-## 4. 状态与并发
+## 6. 输入合同
 
-P0 使用 Swift Concurrency：
+### 6.1 统一来源
 
-- UI 状态在 MainActor 更新。
-- 页面接收、数据库、导出和模型流在受控异步任务中运行。
-- 每个 `Run` 持有可取消任务；停止操作必须向 URLSession/stream 传播取消。
-- 不允许 detached task 绕过任务生命周期写数据库。
-- 流式结果先属于运行中的 `Run`，完成或中断后再形成 `Artifact`。
-
-状态管理优先使用 Observation/`@Observable` 或等价原生机制；只有明确需要 Publisher 组合时才引入 Combine。
-
-## 5. 稳定协议
-
-### 5.1 协议唯一来源
-
-Swift 与 TypeScript 无法直接共享类型。进入 V0.1 实施前必须确定一种语言中立合同来源：
-
-1. 推荐：受版本控制的 JSON Schema，生成或验证两端模型。
-2. 可接受：手写 schema + 同一组跨语言 JSON fixtures。
-3. 不接受：只把 TypeScript interface 当成跨语言真相源。
-
-`contracts/capture-envelope-v1.schema.json` 是当前跨语言唯一合同。扩展构建时由 Ajv 2020 生成静态校验函数，运行时不使用 Manifest V3 CSP 禁止的 `eval` / `new Function`；Swift 运行时加载打包后的同一 Schema 并执行其 `required/const/enum/type/length/pattern/format` 规则。两端再共同执行字符数等 Schema 无法直接表达的语义 invariant，并读取同一组 `contracts/fixtures/`。`scripts/check-contract-sync.sh` 防止 Swift resource 副本漂移，`generate-contract-validator.mjs --check` 防止扩展静态校验器漂移；旧 `packages/shared` 的 Zod 模型只保留兼容参考。
-
-### 5.2 消息头
-
-所有跨浏览器与 APP 边界的消息包含：
-
-```ts
-type MessageMeta = {
-  version: number;
-  requestId: string;
-  createdAt: string;
-  idempotencyKey?: string;
-};
-```
-
-兼容规则：
-
-- 兼容字段只能新增为可选。
-- 破坏性变化发布新 major version。
-- 未知可选字段宽容读取。
-- 不支持的 major version 必须拒绝并给出升级动作。
-- 重复 `requestId/idempotencyKey` 不得重复创建任务。
-
-### 5.3 P0 领域模型
-
-| 模型 | 含义 |
-|---|---|
-| `CaptureEnvelopeV1` | 浏览器交给 APP 的来源、正文和捕获证据 |
-| `Task` | 用户想完成的一次链接理解工作 |
-| `ContentSnapshot` | 某个时间和捕获路径下的正文快照 |
-| `Run` | 一次提取、总结、翻译或导出执行 |
-| `Artifact` | 可保存、复制或导出的结果 |
-| `AppError` | 稳定错误类别、代码与恢复动作 |
-
-云端 `User/Device/Entitlement/SyncManifest/UsageLedger` 不进入 P0 合同实现。
-
-## 6. 本地数据
-
-### 6.1 SQLite
-
-SQLite 保存：
-
-- Task
-- ContentSnapshot
-- Run
-- Artifact
-- 非敏感 ProviderProfile
-- migration history
-
-选择 Swift SQLite binding 前必须验证：
-
-- Swift Package 许可证。
-- Apple Silicon 与发布构建。
-- 签名、公证和升级迁移。
-- 备份、只读恢复和事务行为。
-
-数据库 migration 只向前；升级失败时以只读模式打开并允许导出，不通过删除数据库恢复。
-
-### 6.2 Keychain
-
-API Key 使用 Keychain 保存，SQLite 只记录不可逆推出秘密的引用。Keychain 写入失败时禁止降级为明文文件或 UserDefaults。
-
-### 6.3 文件导出
-
-导出由用户选择位置。Markdown/TXT/JSON 生成器只接收脱敏领域对象，不直接读取 Keychain。
-
-## 7. BYOK 模型路径
+独立输入与可选浏览器输入最终都应生成同一领域含义：
 
 ```text
-SwiftUI Action
-  → Task Orchestrator
-  → ProviderProfile + Keychain secret
-  → URLSession streaming request
-  → Provider Adapter
-  → Run progress
-  → Artifact
-  → SQLite / Export
+sourceType: pasted_text | public_url | browser_current_dom
+sourceURL?: http(s)
+title?: string
+text: string
+characterCount: integer
+captureMethod: user_paste | public_fetch | rendered_dom | selection
+completeness: user_provided | full_article | current_visible | unknown
+createdAt / requestId / contractVersion
 ```
 
-P0 只实现 OpenAI-compatible Chat Completions。Responses、Ollama 和多 Provider 管理在首条本地闭环稳定后评估。
+这不是要求立刻修改 `CaptureEnvelopeV1`。实现任务应先决定新增通用 envelope 还是在 Application port 内映射多个版本化输入合同，并提供向前兼容与共同 fixtures。
 
-协议、Base URL、模型名和秘密分离：
+### 6.2 公开 URL 边界
 
-- Adapter 负责请求路径、Header 和流式事件翻译。
-- 领域层不认识具体 Provider 名。
-- 401 不自动重试；429/5xx 只做有界重试。
-- 流中断保存部分结果并标记不完整，不自动拼接不可信续写。
+- 只接受 `http`/`https`，拒绝 userinfo 与危险 scheme。
+- 首发只读取公开响应，不注入 Cookie、Authorization Header 或浏览器账号状态。
+- 重定向、响应大小、Content-Type、超时和最大正文长度必须有上限。
+- 登录壳、脚本渲染不足、robots/平台限制或正文不足应解释失败，建议用户粘贴已合法可见文字。
+- 不把网页内容当作可信指令；输入只作为待总结/翻译数据。
 
-V0.2 的具体组件、秘密边界、错误矩阵与任务拆分见 `docs/specs/V0.2_BYOK_PLAN.md`，集中验收证据见 `docs/specs/V0.2_BYOK_ACCEPTANCE.md`。当前实现止于“捕获正文 → Orchestrator → Provider adapter → streaming RunState → SwiftUI 结果”；SQLite、历史和 Export 属于后续里程碑。每个 stable code 由 App 层统一映射为中文原因与恢复动作，未知输入不会原样进入 UI；Orchestrator 在 RunState 前对本次短时 API Key 做精确 redaction。
+## 7. App Sandbox 与 loopback gate
 
-## 8. UI 与 AppKit 边界
+### 7.1 App Sandbox 当前状态
 
-SwiftUI 负责：
+当前仓库以 Swift Package 组织 App/Host，没有发布级 MAS target、entitlements、签名或 container 行为证据。因此“Swift build 通过”不能推导出“可在 MAS sandbox 中工作”。
 
-- App/Scene 生命周期。
-- NavigationSplitView、任务列表、详情和设置。
-- 原生 toolbar、commands、focus、keyboard shortcuts。
-- 空状态、错误卡、进度和动画。
+第一个 gate 至少验证：
 
-只有以下情况才评估 AppKit：
+- sandboxed Debug/Release App 能启动并恢复主窗口。
+- 用户主动粘贴文字不需要额外权限。
+- 公开 URL 读取只申请必要的 outgoing network 能力。
+- Keychain、SQLite container、用户选择导出位置和取消路径行为明确。
+- 关闭 Native Host 后独立闭环仍通过。
 
-- SwiftUI TextEditor 无法满足结果编辑与选择行为。
-- 精细 NSWindow、NSMenu 或系统服务接入。
-- 性能 profiling 证明 SwiftUI 控件不达标。
+### 7.2 loopback 安全验收
 
-每个 AppKit bridge 必须拥有单一职责、Coordinator 边界和可测试状态映射。
+扩展 bridge 只有同时满足以下条件才可进入首发：
 
-## 9. P0 安全边界
+- 只绑定 loopback，不监听局域网或公网地址。
+- 端口生命周期与 App 生命周期绑定，不使用无保护的固定开放端口。
+- 使用短时、不可预测的 session capability，验证请求来源、版本、大小、时效和重放。
+- 不把 API Key、Cookie、正文或长期 token 写入日志、扩展 storage 或 fixture。
+- 浏览器不可用、App 未运行、版本不匹配和超时都有稳定恢复动作。
+- sandboxed Release 行为、威胁模型、自动测试和人工攻击性检查均有证据。
+- 评估结果明确说明是否符合当时的 App Store 审核与分发边界；该结论必须在实施时重新核查，不能只依赖本文。
 
-- API Key、Cookie、Token、正文和私人 URL 不进入普通日志。
-- 扩展消息执行大小限制和运行时 schema 校验。
-- URL 只接受 `http`/`https`；文件路径与自定义 scheme 默认拒绝。
-- APP 不加载远程 Web UI，不嵌入任意网页执行环境。
-- 不读取浏览器 Cookie 数据库。
-- 测试 fixture 必须脱敏，不包含真实账号页面。
-- 商业闭源依赖先检查许可证；GPL/AGPL/非商业许可不得直接合入。
+失败策略：首发移除扩展入口，保留独立 Mac App；不退回未验证的 Native Host 安装结构，也不绕过 sandbox。
 
-## 10. 发布路线
+## 8. 状态、并发与取消
 
-P0 优先验证公证 DMG：
+- UI 状态在 MainActor 更新。
+- 输入读取、模型流、数据库和导出使用受控异步任务。
+- 每个 Run 持有可取消任务；停止必须传播到 Provider/URLSession。
+- 不允许 detached task 绕过生命周期写数据库。
+- 流式部分结果属于当前 Run；完成、停止或中断后再持久化 Artifact 状态。
+- 旧 run、旧 URL fetch 或已删除任务的迟到事件不能覆盖当前状态。
 
-1. Xcode Release 构建。
-2. APP、Helper/Host 与扩展版本对齐。
-3. Developer ID 签名与 hardened runtime。
-4. Notarization 与 stapling。
-5. 干净用户环境安装、升级、卸载。
-6. Chrome/Brave/Edge Native Host manifest 检测。
+## 9. 本地数据
 
-是否进入 Mac App Store 必须在 Native Messaging 与 sandbox spike 后决定，不能在 PRD 中提前承诺。
+### 9.1 SQLite
 
-## 11. 未来云端边界
+SQLite 保存 Task、ContentSnapshot、Run、Artifact 与 migration history。Provider profile 是否迁入数据库由 adapter 决定，但完整 API Key 永不进入数据库。
 
-账号、选择性同步和托管模型仍是候选增值能力，但全部在 P0 之后重新验证。若进入云端阶段：
+binding spike 必须验证：
 
-- local-first 与 BYOK 不依赖 Cloud API。
-- 原文默认不上云。
-- 云端框架和部署厂商重新选择，不由旧 Electron 方案自动继承。
-- `docs/CAPACITY_MODEL.md` 只作为远期假设和压测参考，不驱动当前部署。
+- 许可证与商业闭源边界。
+- Apple Silicon、sandboxed Debug/Release 和测试环境。
+- forward migration、事务、备份与 10,000 条历史查询。
+- migration 失败时只读打开和导出逃生口。
+- 删除的事务语义与失败恢复。
 
-## 12. 已知未知项与 spike 顺序
+### 9.2 Keychain
 
-| 顺序 | 未知项 | 证据 |
-|---|---|---|
-| 1 | Native Host 安装/唤起/公证 | V0.1 release spike |
-| 2 | 跨语言 schema 一致性 | 两端 fixture tests |
-| 3 | Swift SQLite binding | 打包、迁移和恢复测试 |
-| 4 | 流式 Provider 兼容 | 固定 fake server + 真实端点抽样 |
-| 5 | SwiftUI 富文本能力 | 可选择、复制、编辑和长文性能测试 |
-| 6 | DMG 与 Mac App Store | sandbox/分发 spike |
+API Key 使用 Keychain；数据库只保存不泄露秘密的引用。Keychain 写入失败不得降级为明文文件、UserDefaults 或 SQLite。当前 staged save 与 orphan 风险继续保留，维护入口另行决策。
 
-未知项按顺序验证；前一项未通过时，不扩大后续平台或云端范围。
+### 9.3 导出
 
-## 13. 可替换与不可变
+Exporter 只接收脱敏领域对象，不访问 Keychain。Markdown/TXT/JSON 写到用户选择的位置；临时文件、失败清理和同名覆盖必须可解释。
+
+## 10. BYOK 模型路径
+
+```text
+ContentSnapshot
+  → ModelRunOrchestrator
+  → ProviderProfile + Keychain secret
+  → OpenAICompatibleProvider / URLSession streaming
+  → RunState
+  → persisted Run + Artifact
+```
+
+V0.2 只支持 OpenAI-compatible Chat Completions；翻译目标固定为简体中文。Responses、Ollama、多 Provider、Q&A 和自动分块不进入首发。
+
+401 不自动重试；429/5xx 只在无输出时做有界重试；流中断保留 partial 并标记 incomplete；用户停止先调用 Provider 取消入口，再停止消费任务。首次真实发送前必须说明正文会直接发送到用户配置的 Provider。
+
+## 11. 安全边界
+
+- API Key、Cookie、Token、Provider 原始 body、私人正文和完整私人 URL 不进入普通日志。
+- 所有跨进程或文件边界执行版本、大小、类型与语义校验。
+- App 不加载远程 Web UI，不执行网页脚本作为本机代码。
+- 不读取浏览器 Cookie 数据库，不保存完整敏感 Header。
+- fixture 必须脱敏，真实账号内容不得进入仓库。
+- 新依赖先核对许可证；GPL、AGPL、非商业或 UNKNOWN 不得未经评估合入。
+
+## 12. 发布路线
+
+当前顺序：
+
+1. 保留 V0.2 基线和 CI。
+2. 建立发布级 MAS target 与 App Sandbox 行为证据。
+3. 完成独立文字/公开 URL 输入。
+4. 完成 SQLite、历史、删除、导出和整合工作区。
+5. 在 fake provider 与 sandboxed Release 中关闭独立首发验收。
+6. 独立首发稳定后，单独验证 extension loopback bridge。
+7. 只有 bridge 通过才把扩展加入 MAS 首发；否则继续 backlog。
+8. 签名、商店提交与发布等待 Syc 单独授权。
+
+Edge、稳定 Native Host、公证 DMG 可作为未来独立路线，不能阻塞步骤 1–5。
+
+## 13. 可替换与不可静默改变
 
 可以替换：
 
-- WXT。
 - Swift SQLite binding。
-- Native Host 的具体进程形式。
+- 公开网页提取实现。
+- WXT 与扩展 bridge 运输方式。
+- Native Host 的具体进程与安装形式。
 - Provider adapter 实现。
-- 公证 DMG 的安装器工具。
 
 不可静默改变：
 
+- MAS-first 与 Mac App 独立闭环。
 - macOS 原生 SwiftUI 主路线。
-- 当前页面优先。
-- local-first 与免登录 P0。
-- Provider-neutral。
-- 秘密不进普通存储。
-- 版本化、可解释的跨端协议。
+- local-first、Provider-neutral 与用户数据可迁移。
+- API Key 只进 Keychain，秘密不进普通状态。
+- 版本化、语言中立、可解释失败的合同。
+- Cookie、平台专用适配、媒体和云端保持 deferred。
 
-需要改变不可变项时，必须先通过 Project Brain 记录 reversal，再同步 PRD、Architecture 和验收。
+改变这些边界前必须通过 Project Brain 记录 reversal，再同步 PRD、Architecture、接续路线与验收文档。

@@ -57,6 +57,8 @@ Multica 是 LinkDigest 的项目总控台；Codex 仍是底层执行引擎。Syc
 ## 当前状态
 
 - V0.1：Chrome、Brave 真实验收完成；Edge 真实验收待 Syc 授权。
-- V0.2：本地单 Provider BYOK 工程链路完成；不代表产品发布完成。
-- 未完成：粘贴链接、SQLite 历史、导出、多平台深度适配、当前网站 Cookie 授权、正式安装、签名、公证和发布。
-
+- V0.2：本地单 Provider BYOK 工程链路完成，并作为 MAS-first 的复用基线；不代表产品发布完成。
+- 当前权威路线：Mac App Store 优先；先完成不依赖扩展的粘贴文字/公开 URL、来源与原文核查、BYOK、SQLite 历史、删除和 Markdown/TXT/JSON 导出。
+- 条件式增强：Chromium 扩展只有 App Sandbox 与安全 loopback bridge 验证通过后才进入首发。当前 Native Messaging/Host 只是开发证据或未来公证 DMG 候选。
+- 未完成：App Sandbox、独立输入、SQLite 历史与删除、三种导出、扩展 bridge、正式数据提示、签名、商店提交和发布。
+- 继续停放：Edge、真实 Provider、平台专用适配、Cookie、媒体、账号、同步和云端。

@@ -1,128 +1,149 @@
 # LinkDigest PRD
 
-> 状态：V0.1 macOS 原生路线与自动化垂直链路已建立；Chrome、Brave 150 真实验收已完成；Edge 仍待授权安装后补齐。正式 Host 稳定目录、Developer ID 签名、公证和发布包属于后续 release spike。
+> 状态：2026-07-15，MAS-first 为当前权威路线。本文描述首发目标与代码差距，不把目标写成已完成能力。
 >
-> 本文是产品范围、优先级和验收标准的唯一真相源。技术组件见 `docs/ARCHITECTURE.md`；第一条链路见 `docs/specs/V0.1_VERTICAL_SLICE.md`；V0.2 工程证据见 `docs/specs/V0.2_BYOK_ACCEPTANCE.md`；远期容量假设见 `docs/CAPACITY_MODEL.md`。
-
-> **范围与当前实现说明**：本文的 P0 是第一版产品目标，不代表当前代码已经实现全部 P0。V0.2 A–D 的本地工程链路已完成：ProviderProfile/Keychain、OpenAI-compatible streaming adapter、总结/翻译 RunState 与 UI、停止/不完整状态、统一恢复文案和 secret hygiene 均有自动证据。设置页连接测试尚未实现，也未调用真实模型 API。SQLite 与本地历史属于 V0.3，导出属于 V0.4；Edge 仍是 V0.1 浏览器矩阵缺口。
+> 产品范围、优先级和验收以本文为准；技术边界见 `docs/ARCHITECTURE.md`；接续 Issue 顺序见 `docs/specs/MAS_FIRST_CONTINUATION.md`；V0.2 证据见 `docs/specs/V0.2_BYOK_ACCEPTANCE.md`。
 
 ## 1. 一句话定位
 
-LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户在 Chromium 浏览器中主动发送当前页面，Mac APP 保存可核查的原文，并使用用户自己的模型连接完成总结、翻译和导出。
+LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户可以在 Mac App 中粘贴文字或公开网页链接，核查来源与原文，使用自己的 OpenAI-compatible 模型完成总结或简体中文翻译，并在本机管理、删除和导出历史。
 
-## 2. 第一版为什么存在
+## 2. 首发原则
 
-### 2.1 首要用户
+### 2.1 MAS-first
 
-第一版只优先服务一类用户：**需要频繁阅读、研究和整理网页内容的个人创作者或研究者**。
+首发优先按 Mac App Store 分发约束设计。MAS-first 的含义是：
 
-典型场景：
+- Mac App 必须脱离浏览器扩展完成独立闭环。
+- App Sandbox、网络访问、用户选择文件位置和本地数据路径必须有发布级证据。
+- Chromium 扩展只有在 sandbox 与安全 loopback bridge 验证通过后才进入首发。
+- 当前没有签名、提交或审核授权；MAS-first 不是“已经可以上架”。
 
-1. 用户在 Chrome、Brave 或 Edge 中打开一篇已经合法可见的文章。
-2. 用户点击 LinkDigest 扩展，选择“总结”或“发送到 APP”。
-3. Mac APP 展示提取到的标题、来源、正文和完整性提示。
-4. 用户使用自己的 OpenAI-compatible 模型生成总结或翻译。
-5. 原文、结果和执行证据保存在本机，并可导出为 Markdown。
+### 2.2 产品承诺
 
-### 2.2 核心问题
+- **先获得价值**：首发不要求注册 LinkDigest 账号或安装浏览器扩展。
+- **来源可核查**：总结或翻译必须能回到本次输入的来源与原文。
+- **数据默认本地**：原文、结果和历史默认保存在本机。
+- **模型可替换**：用户配置自己的 OpenAI-compatible Base URL、API Key 和模型名。
+- **失败可解释**：输入、网页读取、模型、存储和导出失败分别给出原因与恢复动作。
+- **数据可迁移**：用户可以导出 Markdown、纯文本和版本化 JSON。
 
-- 登录后或动态渲染的页面，服务器重新抓 URL 经常只能得到登录壳或空页面。
-- 纯浏览器扩展不适合承担长期历史、模型配置、诊断和导出。
-- 固定模型端点会带来地区、成本、隐私和可用性限制。
-- 多数总结工具无法说明正文从哪里来、是否完整、失败发生在哪一层。
+## 3. 当前代码真相
 
-### 2.3 用户承诺
+V0.2 不是重写起点，而是首发继续使用的工程基线。
 
-- **眼前可见优先**：优先处理用户当前已打开的页面 DOM。
-- **先获得价值**：P0 不要求注册账号。
-- **数据默认本地**：原文、结果、历史和 API Key 默认不经过 LinkDigest 云端。
-- **模型可替换**：用户可以配置自己的 OpenAI-compatible Base URL、API Key 和模型名。
-- **失败可恢复**：提取、连接、模型和存储错误必须给出人话原因和下一步动作。
-
-## 3. 已确认的第一版技术方向
-
-| 区域 | 决定 | 原因 |
+| 区域 | 当前事实 | 首发处理 |
 |---|---|---|
-| macOS APP | Swift + SwiftUI | 第一版只做 Apple 平台，原生 UI 是产品价值的一部分 |
-| 平台补位 | 少量 AppKit | 富文本、窗口、菜单或 SwiftUI 明确不足时局部桥接 |
-| Chromium 扩展 | TypeScript + WXT + Manifest V3 | 浏览器扩展生态仍以 Web 技术为主 |
-| 跨端交接 | Native Messaging + 版本化 JSON | Swift 与 TypeScript 不共享源码，只共享可验证协议 |
-| 本地数据 | SQLite | 单文件、事务可靠、适合 local-first 历史 |
-| 秘密 | macOS Keychain | API Key 不进入 SQLite、日志、导出或 Git |
-| 模型调用 | URLSession + Swift Concurrency | 使用系统原生网络与取消机制 |
+| 版本化 JSON 合同与 fixtures | 已实现并由 Swift/TypeScript 双端验证 | 保留；新输入和持久化合同继续版本化 |
+| WXT 当前页捕获 | 已实现；Chrome/Brave 真实验收通过 | 保留为条件式增强，不阻塞独立 App |
+| Native Messaging/Host/Unix socket | 已形成开发链路，当前使用临时路径 | 不作为 MAS 主路线；保留为开发证据或未来公证 DMG 候选 |
+| SwiftUI 当前内容界面 | 已实现当前 capture 展示和模型结果区 | 复用并扩展为独立输入与任务工作区 |
+| ProviderProfile + Keychain | 已实现单 profile、staged save 与固定 mask | 直接复用；API Key 继续只进 Keychain |
+| Chat Completions streaming | 已实现 URLSession/SSE、有界重试和取消 | 直接复用；继续使用 fake server 自动验收 |
+| RunState 与错误恢复 | 已实现总结、简体中文翻译、停止、完成、不完整和失败 | 直接复用；接入持久化与独立输入 |
+| secret hygiene/redaction | 已实现独立门禁和 sentinel 测试 | 保持为合并与发布门禁 |
+| App 独立输入 | 未实现 | 首发必须新增粘贴文字与公开 HTTP(S) URL |
+| App Sandbox | 未验证 | 首发前必须建立 target、entitlements 与 sandbox 行为证据 |
+| 扩展 loopback bridge | 未实现 | 独立闭环完成后再做安全 spike；失败则首发不带扩展 |
+| SQLite、历史、删除 | 未实现 | 首发必须完成 |
+| Markdown/TXT/JSON 导出 | 未实现 | 首发必须完成 |
 
-技术边界不是永久锁死：如果 release spike 证明 Native Messaging、签名、公证或 SQLite 组合不可接受，再比较替代方案。Windows 不作为 P0 约束。
+现有 Provider fake server 使用 loopback 做自动测试，只证明模型 adapter 可以被本地替身验证；它不证明浏览器扩展可以安全连接 sandboxed App。
 
-## 4. 核心循环
+## 4. 首发用户场景
+
+### 4.1 粘贴文字
+
+1. 用户打开 LinkDigest，不安装扩展。
+2. 用户粘贴一段自己有权处理的文字，可选填写来源标题或 URL。
+3. App 显示输入正文、来源类型与字符数。
+4. 用户选择总结或翻译为简体中文。
+5. App 显示 streaming 结果，允许停止并保留不完整结果。
+6. 任务和结果保存在本机；用户可以重新打开、删除或导出。
+
+### 4.2 公开网页链接
+
+1. 用户粘贴一个公开 `http` 或 `https` URL。
+2. App 在 sandbox 允许的网络边界内读取公开响应并提取正文。
+3. App 显示原 URL、标题、正文、提取方式和完整性提示。
+4. 用户核查原文后运行总结或翻译。
+5. 受限、登录后、脚本渲染或正文不足页面必须解释限制，并建议改为粘贴可见文字；首发不读取 Cookie。
+
+### 4.3 条件式浏览器增强
+
+如果安全 bridge 通过独立验收，用户可从 Chromium 当前页主动发送已经可见的 DOM 到 App。这个入口复用 `CaptureEnvelopeV1` 和 WXT 捕获，但不能成为首发独立闭环的依赖。
+
+## 5. 首发必须完成
+
+### 5.1 输入与核查
+
+- Mac App 可独立启动、退出和恢复主窗口。
+- 支持粘贴文字和公开 HTTP(S) URL。
+- 每个任务保存输入类型、来源、原文快照、字符数、提取方式和完整性。
+- 用户运行模型前可以查看原文；结果完成后仍可回到对应原文。
+- URL 不可访问、需要登录、脚本渲染不足或正文过短时给出不同恢复动作。
+
+### 5.2 BYOK 理解
+
+- 支持一个 OpenAI-compatible Chat Completions 配置。
+- API Key 只进入 Keychain，不进入 SQLite、UserDefaults 明文、日志、导出或 Git。
+- 支持总结、简体中文翻译、停止、重试、完成和不完整结果。
+- 首次向真实 Provider 发送正文前显示数据将直接发往用户所配置 Provider 的提示。
+- LinkDigest Cloud API 不存在或不可用时，本地输入、历史、删除、导出和 BYOK 仍可使用。
+
+### 5.3 本地历史与迁移
+
+- SQLite 保存 Task、ContentSnapshot、Run、Artifact 与 migration history。
+- App 重启后可以打开历史任务、原文和结果。
+- 用户可以删除单项；删除结果与失败状态可观察。
+- migration 只向前；升级失败时优先只读打开并允许导出，不通过删除数据库恢复。
+
+### 5.4 导出
+
+- 支持 Markdown、纯文本和版本化 JSON。
+- 导出包含来源、原文、总结/翻译结果、完整性和必要执行证据。
+- 导出不包含 API Key、Cookie、Authorization Header、Keychain reference 或本机秘密路径。
+- 用户选择保存位置；取消选择不创建半成品文件。
+
+### 5.5 MAS 验收
+
+- 发布形态启用 App Sandbox，并记录所需最小 entitlement 及其原因。
+- 独立闭环在 sandboxed Release 构建中通过，不依赖 Native Host 或 `/tmp` socket。
+- 没有签名凭据时可完成未签名的结构与行为检查；签名、商店提交和发布仍等待 Syc 授权。
+- 如果 extension bridge 未通过安全与审核可行性验证，首发范围自动降级为独立 Mac App，不阻塞产品价值。
+
+## 6. 明确不做
+
+- Edge 首发门禁、稳定 Native Host 安装、Developer ID 公证 DMG。
+- 真实 Provider 自动测试；任何手工抽样都需要 Syc 单独授权。
+- 微信公众号、X、YouTube、B站、小红书、抖音等平台专用适配。
+- Cookie 读取、付费墙或验证码绕过、批量账号采集。
+- 字幕下载、媒体下载、`yt-dlp`、`ffmpeg`、Whisper 或转写。
+- Windows、iPhone、iPad、Safari。
+- LinkDigest 账号、订阅、同步、团队协作、托管模型和服务器。
+- Q&A、自动分块、批量导入、批量总结、PDF/HTML 导出。
+
+这些能力保留在 backlog，不得因为旧 Issue 已存在而自动进入首发。
+
+## 7. 产品工作流
 
 ```text
-浏览器当前页
-  → 用户主动点击扩展
-  → 提取当前 DOM / 选区
-  → 版本化 JSON 交给 Mac APP
-  → 用户检查来源与正文
-  → BYOK 总结或翻译
-  → 本地保存
-  → Markdown 导出
+Mac App 独立输入
+  ├─ 粘贴文字
+  └─ 公开 HTTP(S) URL
+        ↓
+来源与原文快照
+        ↓
+用户核查完整性
+        ↓
+BYOK 总结 / 简体中文翻译
+        ↓
+SQLite 历史
+        ↓
+打开 / 删除 / Markdown-TXT-JSON 导出
 ```
 
-云端、账号和同步不在这条链路中。任何未来云服务都不得成为打开本地数据或运行 BYOK 的前置条件。
-
-## 5. P0 范围
-
-### 5.1 必须完成
-
-- macOS SwiftUI APP 可以启动、退出并恢复主窗口。
-- Chrome、Brave、Edge 扩展可以读取用户主动触发的当前页面。
-- 扩展发送 URL、标题、选区、正文、字符数和捕获证据。
-- Native Messaging 可以完成握手、版本检查、超时和错误返回。
-- APP 创建 `Task` 与 `ContentSnapshot`，展示来源、正文和完整性。
-- 支持一个 OpenAI-compatible Chat Completions 模型连接。
-- API Key 只写入 Keychain，界面、日志和导出不回显完整值。
-- 支持总结、翻译、停止、重试和保存部分结果。
-- SQLite 保存任务、正文快照、运行记录和结果。
-- 支持打开历史、删除单项和导出 Markdown。
-- Cloud API 完全不存在或断网时，以上能力仍可使用。
-
-### 5.2 明确不做
-
-- Windows、iPhone、iPad、Safari 扩展。
-- 账号、登录、设备管理、订阅和托管模型。
-- 云同步、端到端加密同步和团队协作。
-- Cookie 读取、付费墙绕过、验证码绕过或批量账号采集。
-- YouTube/B站字幕、`yt-dlp`、`ffmpeg`、Whisper 和媒体下载。
-- 小红书、抖音、X 等专用适配器。
-- 批量导入、批量总结、PDF/HTML 导出。
-- 远程配置、遥测平台、微服务和百万用户容量部署。
-- 为未来 Windows 提前牺牲 macOS 体验。
-
-问答不属于已确认的 P0 必做项。它可以在 P0 本地闭环稳定后作为候选能力重新评估，但不得反向扩大 V0.1–V0.4 的当前范围。
-
-## 6. v0.1 垂直链路
-
-第一条链路只证明最危险的跨进程交接，不同时解决所有产品能力。
-
-```text
-固定测试文章
-  → Chromium 扩展提取正文
-  → service worker 调用 Native Messaging
-  → macOS APP 接收并校验 CaptureEnvelopeV1
-  → SwiftUI 界面显示标题、URL、正文和字符数
-```
-
-详细验收与失败恢复见 `docs/specs/V0.1_VERTICAL_SLICE.md`。
-
-## 7. 后续里程碑
-
-| 里程碑 | 用户可观察结果 | 本阶段不做 |
-|---|---|---|
-| V0.1 交接 | 当前页正文出现在 Mac APP | 模型、数据库、漂亮 UI |
-| V0.2 BYOK | 用户能配置模型并获得流式总结 | 多 Provider、账号、云端 |
-| V0.3 本地历史 | 重启后仍能打开任务和结果 | 同步、全文搜索优化 |
-| V0.4 导出与打磨 | 可导出 Markdown，完成原生交互打磨 | 媒体、批量处理 |
-| V0.5 发布验证 | 签名、公证、更新和扩展安装链路可复现 | Windows、App Store 承诺 |
-
-只有本地闭环经过真实使用后，才重新评估账号、同步、托管额度和云端容量。
+条件式扩展只增加第三种输入来源，不改变 Core、Provider、SQLite 或 Exporter 的职责。
 
 ## 8. 关键界面
 
@@ -130,129 +151,109 @@ LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户�
 
 ```text
 +----------------------+------------------------------------------+
-| 任务列表              | 当前任务                                  |
-|                      | 来源 / 捕获方式 / 完整性                  |
-| 今天                  | 标题与原网页                              |
-| · 一篇测试文章         |------------------------------------------|
-|                      | 结果 | 原文 | 执行记录                    |
+| 本地任务              | 当前任务                                  |
+|                      | 来源 / 输入方式 / 完整性                  |
+| 今天                  | 标题 / 原链接                             |
+| · 一篇公开文章         |------------------------------------------|
+| · 一段粘贴文字         | 结果 | 原文 | 执行记录                    |
 |                      |                                          |
 |                      | 当前内容                                  |
 +----------------------+------------------------------------------+
 ```
 
-主窗口使用 macOS 原生侧边栏与详情结构。视觉比例可以调整，但必须保留：任务列表、来源证据、原文、结果和执行记录。
+必须保留：新建输入、任务列表、来源证据、原文、结果、执行记录、删除和导出。视觉规格由独立 UI/UX Issue 定义，不能用通用 Web dashboard 代替 macOS-native 交互。
 
-### 8.2 扩展面板
+### 8.2 设置
 
-扩展只承担：
-
-- 显示当前页面是否可捕获。
-- 展示标题、正文字符数和捕获范围。
-- 发送“总结”“翻译”或“仅发送”。
-- 显示 APP 连接、版本和发送结果。
-
-历史、模型设置、导出和详细诊断只存在于 Mac APP。
+- Base URL、模型名、API 模式和 SecureField API Key。
+- 固定 mask 只表示“已保存”，不显示真实末四位。
+- 数据去向提示与配置错误恢复。
+- 测试连接按钮是可选增强，不是独立闭环门禁；若实现必须提示可能产生少量 Provider 用量。
 
 ## 9. 状态与失败语义
 
 | 阶段 | 用户可见状态 | 主要恢复动作 |
 |---|---|---|
-| 页面捕获 | 可捕获、内容过少、受限页面 | 等待加载、选择文字、切换普通页面 |
-| Native Messaging | 未安装、APP 未运行、版本不兼容、超时 | 打开 APP、重新检测、升级对应组件 |
-| 正文 | 完整正文、当前可见、选区、未知 | 查看原文、重新捕获 |
-| 模型 | 401、限流、协议不匹配、网络中断 | 更新 Key、切换模式、重试 |
-| 存储 | 可写、只读恢复、保存失败 | 立即导出、备份、修复目录 |
+| 文字输入 | 空、可用、过长 | 补充或缩短输入 |
+| 公开 URL | 读取中、不可访问、受限、正文不足、成功 | 检查 URL、稍后重试、改粘贴可见文字 |
+| 正文 | 完整、当前响应可见、用户粘贴、未知 | 查看原文、重新输入 |
+| 模型 | 未配置、401、429、5xx、协议不匹配、网络中断 | 打开设置、更新 Key、等待、检查 Base URL、重试 |
+| 运行 | starting、streaming、stopping、stopped、completed、incomplete、failed | 停止、保留部分结果、手动重试 |
+| 存储 | 可写、只读恢复、迁移失败、删除失败 | 导出、备份、修复后重试 |
+| 导出 | 选择位置、写入中、取消、失败、完成 | 换位置、重试、保留本地历史 |
 
-APP 已运行时，Host 把校验通过的消息交给 APP，SwiftUI 更新当前页面状态。APP 未运行时，Host 不负责自动启动 APP，也不保存正文等待稍后处理；它返回 `APP_UNAVAILABLE`，并给出 `open_app` 动作，用户打开 APP 后重新发送。
-
-错误对象至少包含：
-
-```text
-category / code / retryable / action / safeDetail
-```
-
-`safeDetail` 不得包含 API Key、Cookie、Token、完整私人 URL 或正文。
+错误对象至少包含 `category / code / retryable / action / safeDetail`。`safeDetail` 不得包含 API Key、Cookie、Token、Provider 原始 body、完整私人 URL 或正文。
 
 ## 10. 数据边界
 
-| 数据 | P0 默认位置 | 禁止 |
+| 数据 | 首发默认位置 | 禁止 |
 |---|---|---|
-| API Key | macOS Keychain | SQLite、日志、测试夹具、导出、Git |
-| 原文和摘要 | SQLite | 未经用户操作上传 LinkDigest 云端 |
-| 捕获证据 | SQLite | 保存 Cookie 值或完整敏感 Header |
-| 扩展设置 | 浏览器本地 storage | 保存模型秘密 |
-| 导出文件 | 用户选择的位置 | 包含 Key、Cookie、Token 或本机秘密路径 |
+| API Key | macOS Keychain | SQLite、UserDefaults 明文、日志、测试夹具、导出、Git |
+| Provider profile | UserDefaults 或后续非敏感配置表 | 保存完整 Key |
+| 原文、结果、历史 | App Sandbox 容器内 SQLite | 未经用户动作上传 LinkDigest 云端 |
+| 捕获/提取证据 | SQLite | Cookie、完整敏感 Header |
+| 导出文件 | 用户选择的位置 | Key、Cookie、Token、内部 secret reference |
 
-## 11. 第一版验收指标
+调用 BYOK 时，本次输入会直接发送给用户配置的 Provider。LinkDigest 不代理请求，但 UI 必须在首次真实发送前说明这一点。
 
-### 11.1 产品价值
+## 11. 首发验收
 
-| 指标 | 目标 | 验证方法 |
-|---|---:|---|
-| 首次价值时间 | 安装与模型配置完成后，5 分钟内完成第一条总结 | 新用户观察测试 |
-| 固定样本任务完成率 | ≥ 90% | 20 条普通文章测试集 |
-| 当前页正文可用率 | ≥ 80% | 人工核对标题、主体和结尾 |
-| 失败恢复率 | ≥ 70% | 测试用户按提示完成重试 |
-| 7 日复用 | 早期测试用户一周内再次处理链接 | 本地访谈记录，不默认上传遥测 |
+### 11.1 端到端剧本
 
-### 11.2 摘要质量
+1. **纯文字独立闭环**：全新 App、不安装扩展，粘贴固定脱敏文字，使用 fake provider 得到 streaming 总结，重启后仍可打开并导出三种格式。
+2. **公开 URL 独立闭环**：本地固定 HTTP fixture 或公开脱敏测试页进入 App，来源、原文和完整性可核查；不依赖 Cookie。
+3. **停止与不完整结果**：streaming 中停止，500 ms 内不再增长；部分结果持久化并标记不完整。
+4. **历史与删除**：创建多条任务、重启、打开、删除单项；数据库与 UI 状态一致。
+5. **迁移恢复**：从固定旧 schema 升级；失败时只读打开并允许导出。
+6. **秘密门禁**：随机 sentinel 不进入 SQLite、UserDefaults 明文、日志、导出、fixture 或 UI 错误。
+7. **Sandbox Release**：启用 sandbox 的 Release 构建完成 1–6；未启用 Native Host 也不影响。
+8. **可选扩展增强**：仅在 bridge gate 通过时，当前 DOM 作为第三种输入进入同一工作区；失败不破坏独立输入。
 
-每条验收摘要必须满足：
-
-- 核心结论不与原文矛盾。
-- 不把页面导航、评论或推荐区当作正文结论。
-- 不捏造原文不存在的人名、数字、引用或因果关系。
-- 用户能够切换到原文复核。
-- 正文不完整时，结果明确标记信息来源与完整性。
-
-P0 不承诺自动事实核查外部世界，只承诺摘要忠于本次捕获到的正文。
-
-### 11.3 工程指标
+### 11.2 工程指标
 
 | 指标 | 目标 |
 |---|---:|
-| 扩展面板打开 p95 | ≤ 500ms |
-| 固定 20,000 字页面捕获 p95 | ≤ 2s |
-| Native Message 到 APP 展示 p95 | ≤ 1s |
-| 停止模型流响应 | ≤ 500ms |
-| 10,000 条本地历史查询 p95 | ≤ 300ms |
+| 停止模型流响应 | ≤ 500 ms |
+| 10,000 条本地历史查询 p95 | ≤ 300 ms |
+| 固定 20,000 字输入建立快照 p95 | ≤ 2 s |
 | 敏感信息扫描命中 | 0 |
+| 固定迁移 fixture 成功率 | 100% |
 
-指标必须在 Release 构建和固定夹具上测量；未测量时不得宣称达标。
+未测量时不得宣称达标。真实 Provider、真实商店审核和 Edge 不属于这些自动指标。
 
-## 12. 真实样本验证
+## 12. 里程碑与依赖
 
-进入 V0.2 前建立至少 20 条脱敏测试页面：
+| 里程碑 | 用户可观察结果 | 依赖 |
+|---|---|---|
+| V0.2 基线（已完成） | 当前 capture 可总结/翻译/停止，秘密边界可验证 | V0.1 capture 与 fake provider |
+| MAS Gate | sandboxed App 可独立运行，明确最小 entitlements | 本文与架构真相源 |
+| 独立输入 | 粘贴文字/公开 URL 形成可核查快照 | MAS Gate、输入/错误规格 |
+| 本地历史 | 重启后可打开、删除、只读恢复 | SQLite spike、领域合同 |
+| 导出与工作区 | Markdown/TXT/JSON 与完整任务工作区 | 历史模型、UI 规格 |
+| 独立首发验收 | 不装扩展也完成端到端剧本 | 前述全部 |
+| 条件式扩展 | 安全 bridge 通过后增加当前页输入 | 独立首发验收、sandbox + bridge gate |
 
-- 10 条普通静态文章。
-- 5 条客户端渲染文章。
-- 3 条登录后但用户已合法可见的页面。
-- 2 条故意失败的受限或正文不足页面。
-
-每个样本记录：预期标题、正文起止、最低字符数、完整性标签和允许的降级路径。真实账号内容不得进入仓库夹具。
+可执行 Issue 顺序、现有 Issue 的复用/改写建议和停止条件见 `docs/specs/MAS_FIRST_CONTINUATION.md`。本次只记录路线，不创建或提升后续 Issue。
 
 ## 13. 已知未知项
 
-- 正式产品名、商标、域名和图标。
-- Swift SQLite binding 的最终选择与签名兼容性。
-- Native Messaging Host 的安装、升级、卸载和公证体验。
-- 首发使用公证 DMG 还是 Mac App Store；P0 不承诺 App Store。
-- SwiftUI 富文本显示和结果编辑是否需要 AppKit 桥接。
-- OpenAI-compatible 端点之间的流式协议差异。
-- Chrome Web Store 当前审核与隐私披露要求。
+- 发布级 Xcode/MAS target 如何从当前 Swift Package 演进。
+- App Sandbox 最小 entitlements 与公开网页读取的真实行为。
+- SQLite binding 的许可证、打包、迁移与只读恢复证据。
+- loopback bridge 在 sandbox、浏览器与商店审核边界下是否可接受。
+- 正式产品名、商标、图标、隐私政策和商店材料。
 
-以上未知项通过小型 spike 或真实样本验证解决，不通过扩大架构解决。
+未知项通过小型 spike 与固定 fixture 解决，不通过扩大平台或云端范围解决。
 
 ## 14. 文档真相源
 
 | 主题 | 唯一真相源 |
 |---|---|
 | 产品范围、优先级、验收 | `docs/PRD.md` |
-| V0.1 交接实现 | `docs/specs/V0.1_VERTICAL_SLICE.md` |
-| 当前组件边界 | `docs/ARCHITECTURE.md` |
-| 远期容量假设 | `docs/CAPACITY_MODEL.md` |
-| 当前依赖和许可证 | `docs/DEPENDENCIES.md` |
-| 耐久决策与反转原因 | Project Brain，经 `./scripts/brain` 读写 |
+| 当前与目标组件边界 | `docs/ARCHITECTURE.md` |
+| 后续 Issue 顺序与门禁 | `docs/specs/MAS_FIRST_CONTINUATION.md` |
+| V0.1/V0.2 已完成证据 | 对应 specs、代码、测试与 CI |
+| 耐久决策与反转 | Project Brain，经 `./scripts/brain` 读写 |
 | 实际行为 | 代码、测试和构建产物 |
 
-当文档与代码冲突时，已运行的代码描述当前事实，PRD 描述期望；必须显式标记差距，不能静默选择一方。
+当文档与代码冲突时，代码描述当前事实，PRD 描述目标；必须用状态表显式标记差距。路线再次反转时，先更新 Project Brain，再同步本文、Architecture 与接续路线。

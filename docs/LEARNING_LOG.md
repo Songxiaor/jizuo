@@ -306,3 +306,24 @@
 - 验证方式：删除 WXT 生成缓存后运行扩展 typecheck，再运行完整 `pnpm check`；通过 PR 和新的 GitHub Actions 结果确认远程干净环境。
 - 过程讲解：迁移时解释了总控、专业 Agent、Squad Leader 路由、backlog/todo 和 Stage；CI 失败后解释了本机缓存为何会掩盖干净环境缺失步骤。
 - 可选跟做：在 Multica 打开 `SYC-24` 查看八个 Stage，并观察所有未来任务仍在 backlog；不需要启动任务或回答问题。
+
+## 任务 018：按 V0.2 基线对齐 MAS-first 真相源与接续路线
+
+- 日期：2026-07-15
+- 当前状态：工程完成（文档、Project Brain 与本地门禁完成；PR CI 由本任务继续等待）
+- 用户场景：现有 V0.2 已经能处理浏览器传入的当前正文并运行 BYOK，但首发要优先进入 Mac App Store；需要避免把“更换分发/输入运输层”误解成重写已经完成的模型、秘密和状态能力。
+- 本次只解决：README、PRD、Architecture、接续 Issue/验收、V0.2 验收口径、Multica 工作流和 Project Brain 的 MAS-first 对齐；不实现 App Sandbox、loopback、独立输入、SQLite、导出或产品代码。
+- 角色与交接：代码/测试交出 V0.2 当前事实；PRD 交出首发范围；Architecture 区分可复用 Core 与可替换运输层；`MAS_FIRST_CONTINUATION.md` 把依赖、验收和停止条件交给未来 Issue；Project Brain 保存路线反转。
+- 工作流与工具协同：先用 Multica Issue/评论/项目队列确认授权与既有 backlog，再以 `git` 核对远端 `main`，用 `rg` 对照代码、测试和冲突文案，通过 `./scripts/brain` 写入 reversal，最后由本地门禁与 GitHub CI 验证文档没有破坏现有基线。
+- 本次核心名词：MAS-first、App Sandbox、loopback bridge、运输层。
+- 人话解释：MAS-first 是“先按 Mac App Store 规则造首发版本”，不是已经上架；App Sandbox 像给 App 划定可使用的房间和门；loopback bridge 是浏览器只在本机把内容递给 App 的受控窗口；运输层只负责搬运数据，更换它不等于重写合同、模型或业务状态。
+- 可直接复用：版本化 JSON/fixtures、WXT DOM capture、SwiftUI 当前内容区、ProviderProfile、Keychain、OpenAI-compatible streaming、RunState、取消/不完整结果、中文恢复、redaction、secret hygiene 与 CI。
+- 只属当前运输层：Native Messaging manifest、独立 Host、4-byte framing、安装/卸载脚本和 `/tmp` Unix socket。它们保留为开发证据或未来公证 DMG 候选，不进入 MAS 主路线。
+- 真实缺口：发布级 MAS target/entitlements、App 内粘贴文字与公开 URL、SQLite 历史/删除、三种导出，以及条件式扩展安全 bridge。
+- 被队列证据修正的判断：旧 Stage 把 Edge、平台专用适配和 Native Host 发布结构放在产品接续路线中；新路线保留相关 Issue 为 backlog，但不让它们阻塞独立 Mac App。现有 `SYC-27`–`SYC-31` 可以复用，需要按独立输入与 sandbox 依赖重写范围；本任务没有创建或提升 Issue。
+- 失败与恢复：如果 sandbox gate 失败，隔离最小发布壳，不重写 V0.2 Core；公开 URL 不稳定时保留粘贴文字并解释降级，不引入 Cookie；loopback gate 失败时首发移除扩展；SQLite 失败时更换 adapter，并保留只读导出逃生口。
+- 安全边界：没有安装 Edge、调用真实 Provider、读取 Cookie、使用真实 Key、签名、公证、提交或发布；没有启动第二个 Agent 或后续功能 Issue。
+- 验证：`git diff --check` 与 MAS-first 文档断言通过；Brain `lint-links` 为 12 pages / 6 roots / 0 broken；`pnpm check` 全量通过（shared 10、extension 6、Swift 46 项测试，Debug/Release、secret hygiene、Host smoke、stalled client 后 20/20 capture）；doctor 为 `PASS=52 WARN=1 FAIL=0`，唯一 warning 是预期的未提交工作树；`pnpm xcode:build` 的 App/Host Debug/Release 四项通过。远程 PR CI 状态在 Multica 结果评论中记录。
+- 可选跟做：对照 `docs/ARCHITECTURE.md` 的“直接复用”和“替换运输层”，观察为什么改变上架方式不需要重写 Provider/RunState；该动作不阻塞后续。
+- Syc 主动提出的待解释点：无。
+- 下一步：Syc 审查 PR 与 `docs/specs/MAS_FIRST_CONTINUATION.md` 后，再决定是否重写/提升 Gate A 与 `SYC-27`–`SYC-31`；本任务停止在文档和路线交付。
