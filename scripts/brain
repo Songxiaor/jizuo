@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Project-local wrapper for the Open Project Brain CLI.
+# All agents use this entry instead of depending on one machine-specific PATH.
+
+if [ -n "${BRAIN_CLI:-}" ]; then
+  exec node "$BRAIN_CLI" "$@"
+fi
+
+candidates=(
+  "$HOME/.cc-switch/skills/brain-page/bin/brain.mjs"
+  "$HOME/.agents/skills/brain-page/bin/brain.mjs"
+  "$HOME/.codex/skills/brain-page/bin/brain.mjs"
+  "$HOME/.claude/skills/brain-page/bin/brain.mjs"
+  "$HOME/.config/opencode/skills/brain-page/bin/brain.mjs"
+  "$HOME/.gemini/skills/brain-page/bin/brain.mjs"
+  "$HOME/.openclaw/skills/brain-page/bin/brain.mjs"
+)
+
+for cli in "${candidates[@]}"; do
+  if [ -f "$cli" ]; then
+    exec node "$cli" "$@"
+  fi
+done
+
+echo "Unable to find brain.mjs. Expected brain-page under one of:" >&2
+for cli in "${candidates[@]}"; do
+  echo "  $cli" >&2
+done
+exit 127

@@ -1,0 +1,8 @@
+packages:
+  - "apps/*"
+  - "packages/*"
+allowBuilds:
+  # WXT/Vite needs esbuild's platform-binary verification step.
+  esbuild: true
+  # Deprecated transitive fallback; LinkDigest does not need its install script.
+  spawn-sync: false

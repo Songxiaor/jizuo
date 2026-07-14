@@ -1,0 +1,1166 @@
+{
+  "version": 1,
+  "projectName": "link-summary-app",
+  "updatedAt": "2026-07-13T11:12:05.516Z",
+  "activePageId": "page-513436735d",
+  "pages": [
+    {
+      "id": "page-513436735d",
+      "name": "Page 1",
+      "createdAt": "2026-07-13T10:48:57.899Z",
+      "updatedAt": "2026-07-13T11:12:05.516Z",
+      "viewport": {
+        "x": 94.71904443569426,
+        "y": -2065.1753010811867,
+        "zoom": 0.8319287419064663
+      },
+      "nodes": [
+        {
+          "id": "project-goal",
+          "type": "task",
+          "position": {
+            "x": 13,
+            "y": 2676
+          },
+          "measured": {
+            "width": 400,
+            "height": 307
+          },
+          "dragging": false,
+          "data": {
+            "title": "LinkDigest 产品目标",
+            "body": "目标：把任意链接或 Chromium 当前页面送入本地桌面 APP，完成可追溯的提取、总结、翻译与导出。\n\n现状问题：登录受限页面常被云端抓取器读成登录壳；现有工具还可能绑定固定模型端点。\n\n期望改变：用户处理自己已经合法打开并看见的内容，同时保留模型选择权和数据所有权。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "target-users",
+          "type": "task",
+          "position": {
+            "x": 680,
+            "y": 0
+          },
+          "measured": {
+            "width": 400,
+            "height": 373
+          },
+          "data": {
+            "title": "目标用户",
+            "body": "跨平台重度阅读者：在 X、YouTube、公众号、小红书、抖音、B站遇到长内容时触发总结。\n\n内容研究与创作者：需要保存来源、正文、摘要和翻译，触发于素材归档。\n\nBYOK 用户：已有 DeepInfra、OpenRouter、Ollama 等资源，不愿被固定端点锁定。\n\n共同困难：复制正文麻烦、登录页抓不到、失败原因不透明。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "product-value",
+          "type": "task",
+          "position": {
+            "x": 680,
+            "y": 380
+          },
+          "measured": {
+            "width": 400,
+            "height": 307
+          },
+          "data": {
+            "title": "产品与用户价值",
+            "body": "用户价值：在当前登录页面一键获得可核查的正文、总结或翻译，并能本地保存和导出。\n\n产品价值：以“当前页面优先 + Provider-neutral + 可解释失败”建立差异化；后续通过可选同步、远程转写与高级平台适配形成商业能力。\n\n两类价值共同成立才值得继续投入。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "user-journey",
+          "type": "task",
+          "position": {
+            "x": 680,
+            "y": 760
+          },
+          "measured": {
+            "width": 400,
+            "height": 373
+          },
+          "data": {
+            "title": "用户主流程与恢复",
+            "body": "主路径：打开页面或粘贴链接 → 创建任务 → 提取并检查原文 → 总结/翻译 → 本地保存/导出。\n\n入口：Chromium 扩展处理当前页；桌面 APP 接收 URL 和管理历史。\n\n中断恢复：正文过少时等待加载/选择文本；URL 需登录时改用扩展；模型 401 打开连接设置；网络中断保留部分结果后重试。\n\n完成：结果附带来源证据、模型和执行记录。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "information-architecture",
+          "type": "task",
+          "position": {
+            "x": 680,
+            "y": 1140
+          },
+          "measured": {
+            "width": 400,
+            "height": 395
+          },
+          "data": {
+            "title": "界面信息架构",
+            "body": "Chromium 扩展：只负责当前页捕获、动作选择和短进度，不承担完整历史管理。\n\n桌面 APP：顶栏负责导入和全局设置；左侧是任务历史；右侧在“结果/原文/执行记录”之间切换；底部负责重试、换模型、导出和删除。\n\n导航关系：扩展完成后可打开对应桌面任务；桌面任务可返回原网页。\n\n关键状态：首次引导、空历史、提取中、模型生成中、部分结果、可恢复错误。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "experience-design",
+          "type": "task",
+          "position": {
+            "x": 1360,
+            "y": 1140
+          },
+          "measured": {
+            "width": 400,
+            "height": 417
+          },
+          "data": {
+            "title": "交互与状态设计",
+            "body": "层级：先显示用户能执行的主动作，再显示来源证据，技术详情折叠。\n\n反馈：小于 200ms 的本地操作不闪烁；超过 2 秒显示步骤和停止按钮；模型流式输出实时可见。\n\n空/加载/错误：空状态给下一步；加载状态说明当前组件；错误区分提取、权限、模型、网络和存储，并提供恢复动作。\n\n可访问性与适配：键盘可达、焦点可见、错误不只靠颜色；P0 面向 macOS 桌面和 Chromium 侧栏，不承诺移动响应式。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "technical-architecture",
+          "type": "task",
+          "position": {
+            "x": 680,
+            "y": 2280
+          },
+          "measured": {
+            "width": 400,
+            "height": 395
+          },
+          "data": {
+            "title": "技术系统边界",
+            "body": "推荐默认：Electron + React 桌面端；WXT Manifest V3 扩展；Chrome Native Messaging；TypeScript 共享核心；Readability；SQLite；OS Keychain。\n\n模块职责：扩展捕获；桌面编排；提取器生成 ContentSnapshot；模型网关生成 Artifact；本地库保存任务与证据。\n\n二期可插拔：yt-dlp、ffmpeg、Whisper。\n\n不可变：进程隔离、消息版本化、提取/模型/持久化分层、秘密不进普通存储、P0 不强依赖服务器。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "extension-surface",
+          "type": "task",
+          "position": {
+            "x": 1360,
+            "y": 1520
+          },
+          "measured": {
+            "width": 400,
+            "height": 329
+          },
+          "data": {
+            "title": "Chromium 扩展",
+            "body": "责任：捕获用户当前标签页并发送版本化 CaptureEnvelope。\n\n触发：用户点击总结、翻译、发送原文或发送选区。\n输入：当前 Tab、URL、标题、DOM/选区。\n输出：正文候选、来源与完整性信息。\n成功：显示提取字数、方式和“已发送到 APP”。\n状态：未连接、可捕获、捕获中、内容过少、受限页面、已发送。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "capture-engine",
+          "type": "task",
+          "position": {
+            "x": 2040,
+            "y": 1520
+          },
+          "measured": {
+            "width": 400,
+            "height": 307
+          },
+          "data": {
+            "title": "当前页面捕获器",
+            "body": "目的：处理用户已登录且已经渲染的页面，避免服务器重新抓 URL。\n\n处理：Readability → 站点规则 → 可见文本降级，再做字数与完整性检查。\n输入：渲染后 DOM、选区、页面元数据。\n输出：正文、标题、来源证据与完整性标记。\n成功：20,000 字普通文章目标在 1.5 秒内完成捕获。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "desktop-surface",
+          "type": "task",
+          "position": {
+            "x": 1360,
+            "y": 1900
+          },
+          "measured": {
+            "width": 400,
+            "height": 329
+          },
+          "data": {
+            "title": "桌面 APP",
+            "body": "责任：本地任务、模型设置、原文/结果/执行记录、历史与导出。\n\n入口：粘贴 URL 或接收扩展消息。\n输出：可检查的内容快照、流式结果和导出文件。\n成功：扩展发送后 800ms 目标内出现任务；失败时保留输入并显示恢复动作。\n\nP0 macOS-first；Windows 在后续阶段验证。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "extractor-router",
+          "type": "task",
+          "position": {
+            "x": 1360,
+            "y": 2280
+          },
+          "measured": {
+            "width": 400,
+            "height": 351
+          },
+          "data": {
+            "title": "提取路由器",
+            "body": "目的：为不同输入选择最合规、最可靠的内容路径。\n\n顺序：当前 DOM → 公开 URL + Readability → 平台适配器 → 字幕 → 媒体转写。\n输入：CaptureEnvelope 或 URL。\n输出：ContentSnapshot 与 ExtractionAttempt 时间线。\n成功：用户能辨别结果来自完整文章、可见页面、字幕还是转写。\n失败：登录壳请求浏览器打开；适配器变化回退通用 DOM；媒体超时保留已有元数据。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "model-gateway",
+          "type": "task",
+          "position": {
+            "x": 1360,
+            "y": 2660
+          },
+          "measured": {
+            "width": 400,
+            "height": 307
+          },
+          "data": {
+            "title": "模型网关",
+            "body": "目的：让总结和翻译不绑定固定第三方端点。\n\n输入：正文、动作模板、Base URL、模型名、API 模式。\n输出：流式 Markdown、模型和耗时证据。\nP0：自定义 OpenAI-compatible Chat Completions；P1：Responses 与 Ollama。\n错误：分别处理 401 凭据、404/405 协议、429 限流、TLS/网络和响应结构。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "local-library",
+          "type": "task",
+          "position": {
+            "x": 1360,
+            "y": 3040
+          },
+          "measured": {
+            "width": 400,
+            "height": 351
+          },
+          "data": {
+            "title": "本地历史与输出",
+            "body": "责任：保存 Task、ContentSnapshot、ModelRun 和 Artifact。\n\n存储：SQLite；API Key 只保存 OS Keychain 引用，Cookie 不进入普通数据库。\n输出：可搜索历史、Markdown、TXT 和脱敏 JSON。\n成功：10,000 条历史搜索目标 200ms 内；删除支持 30 秒撤销。\n\nP0 local-first，不依赖账号或服务器。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "scope-roadmap",
+          "type": "task",
+          "position": {
+            "x": 680,
+            "y": 3420
+          },
+          "measured": {
+            "width": 400,
+            "height": 395
+          },
+          "data": {
+            "title": "一期、二期与非目标",
+            "body": "P0：macOS-first 桌面端、Chrome/Brave/Edge 扩展、当前页 DOM、公开文章、一个 OpenAI-compatible 连接、本地历史与导出。\n\nP1：Responses/Ollama、YouTube/B站公开字幕、微信公众号和 X 首批适配、结果编辑与签名/商店技术验证。\n\nP2：当前域 Cookie 授权、yt-dlp/ffmpeg/Whisper、小红书/抖音媒体、Windows 验证。\n\n非目标：绕过付费墙/验证码、批量账号采集、P0 强制服务器、Safari 与移动端。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "current-deliverables",
+          "type": "task",
+          "position": {
+            "x": 1360,
+            "y": 3420
+          },
+          "measured": {
+            "width": 400,
+            "height": 329
+          },
+          "data": {
+            "title": "阶段 0 已交付",
+            "body": "已验证：新 Git 仓库与 monorepo 目录；942 行完整 PRD；架构、学习指南、任务模板、名词词典、学习日志；Project Brain 及学习契约决策。\n\n当前状态：阶段 0 工程完成，学习验收仍待 Syc 亲手操作。\n\n尚未发生：没有安装依赖、购买服务器、配置凭据、创建远程仓库、提交或发布。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "next-execution",
+          "type": "task",
+          "position": {
+            "x": 2040,
+            "y": 3420
+          },
+          "measured": {
+            "width": 400,
+            "height": 351
+          },
+          "data": {
+            "title": "下一步技术验证",
+            "body": "目标：跑通第一条真实交接链，而不是先做完整 UI。\n\n顺序：定义 CaptureEnvelope → 最薄 Chromium 扩展读取测试文章 → Native Messaging → 最薄桌面窗口显示正文。\n\n可并行：PRD 样本准备与名词解释可以并行；扩展到桌面端的协议、实现和验收必须按顺序。\n\n完成证据：自动化消息测试、实际页面截图、Syc 亲手加载扩展并看到正文。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "privacy-rules",
+          "type": "task",
+          "position": {
+            "x": 680,
+            "y": 3800
+          },
+          "measured": {
+            "width": 400,
+            "height": 351
+          },
+          "data": {
+            "title": "权限与隐私规则",
+            "body": "默认只读取用户主动触发的当前页面，不读取整个浏览器 Cookie 数据库。\n\nP2 Cookie：只申请当前域名、展示用途、允许拒绝/撤销、单任务默认 10 分钟、完成后 1 秒内清理。\n\nAPI Key 进入 OS Keychain；Cookie、Token、真实账号数据不得进入 Git、普通日志、截图或测试夹具。\n\n禁止绕过付费墙、验证码、封禁和平台访问控制。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "learning-contract",
+          "type": "task",
+          "position": {
+            "x": 680,
+            "y": 4180
+          },
+          "measured": {
+            "width": 400,
+            "height": 307
+          },
+          "data": {
+            "title": "开发与学习双轨",
+            "body": "每个非平凡任务同时是一节小课：开始前解释场景、角色与交接、工作流、工具协同；每次最多 3–5 个新名词。\n\n理解等级：L1 认识、L2 定位、L3 验证、L4 修改。核心概念至少达到 L3。\n\n任务只有“工程验收 + Syc 5–15 分钟亲手验证 + 学习日志”都完成，才能标记完整完成。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "risks-unknowns",
+          "type": "task",
+          "position": {
+            "x": 680,
+            "y": 4560
+          },
+          "measured": {
+            "width": 400,
+            "height": 373
+          },
+          "data": {
+            "title": "风险、假设与未决项",
+            "body": "风险：平台 DOM、字幕接口和反爬规则持续变化，导致成功率波动和维护成本。\n应对：通用 DOM 永远可独立运行；平台适配器独立版本、夹具、开关和降级路径。\n\n假设：macOS-first 能最小化首发变量；真实用户是否需要云同步仍未验证。\n\n未决：正式品牌、DMG 或 Mac App Store、Windows 时机、Chrome 商店权限审核、商业开源策略、优先适配平台。每项未决都会影响发布范围或许可证选择。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "test-release",
+          "type": "task",
+          "position": {
+            "x": 680,
+            "y": 4940
+          },
+          "measured": {
+            "width": 400,
+            "height": 329
+          },
+          "data": {
+            "title": "测试与发布门",
+            "body": "阶段验证必须对应产品规则：\n- 协议：扩展到桌面端端到端和版本不匹配测试。\n- 提取：公开文章、登录页、结构变化夹具。\n- 模型：401、404/405、429、TLS 与断流。\n- 数据：SQLite 迁移、删除撤销、脱敏导出。\n- 权限：Cookie 拒绝、过期和崩溃清理。\n\n发布：开发构建 → 签名/公证候选 → Chrome 商店材料 → 小范围测试 → 正式版；每步保留回滚版本。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "success-acceptance",
+          "type": "task",
+          "position": {
+            "x": 1360,
+            "y": 4940
+          },
+          "measured": {
+            "width": 400,
+            "height": 351
+          },
+          "data": {
+            "title": "成功标准",
+            "body": "P0 验收：macOS Chrome 打开文章，点击扩展后桌面 APP 在 800ms 目标内出现任务；显示正文与“当前页面 DOM”证据；自定义模型可流式总结/翻译并导出 Markdown。\n\n指标：普通文章提取成功率目标 ≥90%；一期目标平台可见正文目标 ≥80%；崩溃自由会话目标 ≥99.5%。\n\n交付证据：测试、日志、截图、导出文件和回滚版本。\n学习证据：Syc 能解释核心组件并亲手验证。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        },
+        {
+          "id": "project-guidance-design-md",
+          "type": "task",
+          "position": {
+            "x": 680,
+            "y": 5320
+          },
+          "measured": {
+            "width": 400,
+            "height": 227
+          },
+          "data": {
+            "projectGuidanceFile": "design.md",
+            "title": "补充 design.md",
+            "body": "当前项目缺少 design.md。请创建该文件，沉淀产品定位、信息架构、布局规则、组件语言、交互状态、视觉约束和后续设计决策。需要基于当前产品目标，而不是复制通用设计系统。",
+            "effort": "xhigh",
+            "runMode": "flow",
+            "attachments": []
+          },
+          "selected": false
+        }
+      ],
+      "edges": [
+        {
+          "id": "edge-goal-users",
+          "source": "project-goal",
+          "target": "target-users",
+          "label": "为谁解决"
+        },
+        {
+          "id": "edge-goal-value",
+          "source": "project-goal",
+          "target": "product-value",
+          "label": "创造价值"
+        },
+        {
+          "id": "edge-goal-journey",
+          "source": "project-goal",
+          "target": "user-journey",
+          "label": "形成主流程"
+        },
+        {
+          "id": "edge-goal-ia",
+          "source": "project-goal",
+          "target": "information-architecture",
+          "label": "组织界面"
+        },
+        {
+          "id": "edge-ia-design",
+          "source": "information-architecture",
+          "target": "experience-design",
+          "label": "约束交互"
+        },
+        {
+          "id": "edge-goal-architecture",
+          "source": "project-goal",
+          "target": "technical-architecture",
+          "label": "落到系统"
+        },
+        {
+          "id": "edge-architecture-extension",
+          "source": "technical-architecture",
+          "target": "extension-surface",
+          "label": "包含浏览器入口"
+        },
+        {
+          "id": "edge-extension-capture",
+          "source": "extension-surface",
+          "target": "capture-engine",
+          "label": "执行页面捕获"
+        },
+        {
+          "id": "edge-architecture-desktop",
+          "source": "technical-architecture",
+          "target": "desktop-surface",
+          "label": "包含桌面工作区"
+        },
+        {
+          "id": "edge-architecture-extractor",
+          "source": "technical-architecture",
+          "target": "extractor-router",
+          "label": "包含提取层"
+        },
+        {
+          "id": "edge-architecture-model",
+          "source": "technical-architecture",
+          "target": "model-gateway",
+          "label": "包含模型层"
+        },
+        {
+          "id": "edge-architecture-library",
+          "source": "technical-architecture",
+          "target": "local-library",
+          "label": "包含本地数据层"
+        },
+        {
+          "id": "edge-goal-scope",
+          "source": "project-goal",
+          "target": "scope-roadmap",
+          "label": "限定分期"
+        },
+        {
+          "id": "edge-scope-deliverables",
+          "source": "scope-roadmap",
+          "target": "current-deliverables",
+          "label": "阶段 0 证据"
+        },
+        {
+          "id": "edge-deliverables-next",
+          "source": "current-deliverables",
+          "target": "next-execution",
+          "label": "解锁技术验证"
+        },
+        {
+          "id": "edge-goal-privacy",
+          "source": "project-goal",
+          "target": "privacy-rules",
+          "label": "守住权限"
+        },
+        {
+          "id": "edge-goal-learning",
+          "source": "project-goal",
+          "target": "learning-contract",
+          "label": "双轨交付"
+        },
+        {
+          "id": "edge-goal-risks",
+          "source": "project-goal",
+          "target": "risks-unknowns",
+          "label": "暴露风险"
+        },
+        {
+          "id": "edge-goal-test",
+          "source": "project-goal",
+          "target": "test-release",
+          "label": "建立发布门"
+        },
+        {
+          "id": "edge-test-success",
+          "source": "test-release",
+          "target": "success-acceptance",
+          "label": "形成验收证据"
+        },
+        {
+          "id": "project-guidance-edge-1",
+          "source": "project-goal",
+          "target": "project-guidance-design-md"
+        }
+      ]
+    }
+  ],
+  "viewport": {
+    "x": 94.71904443569426,
+    "y": -2065.1753010811867,
+    "zoom": 0.8319287419064663
+  },
+  "nodes": [
+    {
+      "id": "project-goal",
+      "type": "task",
+      "position": {
+        "x": 13,
+        "y": 2676
+      },
+      "measured": {
+        "width": 400,
+        "height": 307
+      },
+      "dragging": false,
+      "data": {
+        "title": "LinkDigest 产品目标",
+        "body": "目标：把任意链接或 Chromium 当前页面送入本地桌面 APP，完成可追溯的提取、总结、翻译与导出。\n\n现状问题：登录受限页面常被云端抓取器读成登录壳；现有工具还可能绑定固定模型端点。\n\n期望改变：用户处理自己已经合法打开并看见的内容，同时保留模型选择权和数据所有权。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "target-users",
+      "type": "task",
+      "position": {
+        "x": 680,
+        "y": 0
+      },
+      "measured": {
+        "width": 400,
+        "height": 373
+      },
+      "data": {
+        "title": "目标用户",
+        "body": "跨平台重度阅读者：在 X、YouTube、公众号、小红书、抖音、B站遇到长内容时触发总结。\n\n内容研究与创作者：需要保存来源、正文、摘要和翻译，触发于素材归档。\n\nBYOK 用户：已有 DeepInfra、OpenRouter、Ollama 等资源，不愿被固定端点锁定。\n\n共同困难：复制正文麻烦、登录页抓不到、失败原因不透明。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "product-value",
+      "type": "task",
+      "position": {
+        "x": 680,
+        "y": 380
+      },
+      "measured": {
+        "width": 400,
+        "height": 307
+      },
+      "data": {
+        "title": "产品与用户价值",
+        "body": "用户价值：在当前登录页面一键获得可核查的正文、总结或翻译，并能本地保存和导出。\n\n产品价值：以“当前页面优先 + Provider-neutral + 可解释失败”建立差异化；后续通过可选同步、远程转写与高级平台适配形成商业能力。\n\n两类价值共同成立才值得继续投入。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "user-journey",
+      "type": "task",
+      "position": {
+        "x": 680,
+        "y": 760
+      },
+      "measured": {
+        "width": 400,
+        "height": 373
+      },
+      "data": {
+        "title": "用户主流程与恢复",
+        "body": "主路径：打开页面或粘贴链接 → 创建任务 → 提取并检查原文 → 总结/翻译 → 本地保存/导出。\n\n入口：Chromium 扩展处理当前页；桌面 APP 接收 URL 和管理历史。\n\n中断恢复：正文过少时等待加载/选择文本；URL 需登录时改用扩展；模型 401 打开连接设置；网络中断保留部分结果后重试。\n\n完成：结果附带来源证据、模型和执行记录。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "information-architecture",
+      "type": "task",
+      "position": {
+        "x": 680,
+        "y": 1140
+      },
+      "measured": {
+        "width": 400,
+        "height": 395
+      },
+      "data": {
+        "title": "界面信息架构",
+        "body": "Chromium 扩展：只负责当前页捕获、动作选择和短进度，不承担完整历史管理。\n\n桌面 APP：顶栏负责导入和全局设置；左侧是任务历史；右侧在“结果/原文/执行记录”之间切换；底部负责重试、换模型、导出和删除。\n\n导航关系：扩展完成后可打开对应桌面任务；桌面任务可返回原网页。\n\n关键状态：首次引导、空历史、提取中、模型生成中、部分结果、可恢复错误。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "experience-design",
+      "type": "task",
+      "position": {
+        "x": 1360,
+        "y": 1140
+      },
+      "measured": {
+        "width": 400,
+        "height": 417
+      },
+      "data": {
+        "title": "交互与状态设计",
+        "body": "层级：先显示用户能执行的主动作，再显示来源证据，技术详情折叠。\n\n反馈：小于 200ms 的本地操作不闪烁；超过 2 秒显示步骤和停止按钮；模型流式输出实时可见。\n\n空/加载/错误：空状态给下一步；加载状态说明当前组件；错误区分提取、权限、模型、网络和存储，并提供恢复动作。\n\n可访问性与适配：键盘可达、焦点可见、错误不只靠颜色；P0 面向 macOS 桌面和 Chromium 侧栏，不承诺移动响应式。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "technical-architecture",
+      "type": "task",
+      "position": {
+        "x": 680,
+        "y": 2280
+      },
+      "measured": {
+        "width": 400,
+        "height": 395
+      },
+      "data": {
+        "title": "技术系统边界",
+        "body": "推荐默认：Electron + React 桌面端；WXT Manifest V3 扩展；Chrome Native Messaging；TypeScript 共享核心；Readability；SQLite；OS Keychain。\n\n模块职责：扩展捕获；桌面编排；提取器生成 ContentSnapshot；模型网关生成 Artifact；本地库保存任务与证据。\n\n二期可插拔：yt-dlp、ffmpeg、Whisper。\n\n不可变：进程隔离、消息版本化、提取/模型/持久化分层、秘密不进普通存储、P0 不强依赖服务器。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "extension-surface",
+      "type": "task",
+      "position": {
+        "x": 1360,
+        "y": 1520
+      },
+      "measured": {
+        "width": 400,
+        "height": 329
+      },
+      "data": {
+        "title": "Chromium 扩展",
+        "body": "责任：捕获用户当前标签页并发送版本化 CaptureEnvelope。\n\n触发：用户点击总结、翻译、发送原文或发送选区。\n输入：当前 Tab、URL、标题、DOM/选区。\n输出：正文候选、来源与完整性信息。\n成功：显示提取字数、方式和“已发送到 APP”。\n状态：未连接、可捕获、捕获中、内容过少、受限页面、已发送。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "capture-engine",
+      "type": "task",
+      "position": {
+        "x": 2040,
+        "y": 1520
+      },
+      "measured": {
+        "width": 400,
+        "height": 307
+      },
+      "data": {
+        "title": "当前页面捕获器",
+        "body": "目的：处理用户已登录且已经渲染的页面，避免服务器重新抓 URL。\n\n处理：Readability → 站点规则 → 可见文本降级，再做字数与完整性检查。\n输入：渲染后 DOM、选区、页面元数据。\n输出：正文、标题、来源证据与完整性标记。\n成功：20,000 字普通文章目标在 1.5 秒内完成捕获。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "desktop-surface",
+      "type": "task",
+      "position": {
+        "x": 1360,
+        "y": 1900
+      },
+      "measured": {
+        "width": 400,
+        "height": 329
+      },
+      "data": {
+        "title": "桌面 APP",
+        "body": "责任：本地任务、模型设置、原文/结果/执行记录、历史与导出。\n\n入口：粘贴 URL 或接收扩展消息。\n输出：可检查的内容快照、流式结果和导出文件。\n成功：扩展发送后 800ms 目标内出现任务；失败时保留输入并显示恢复动作。\n\nP0 macOS-first；Windows 在后续阶段验证。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "extractor-router",
+      "type": "task",
+      "position": {
+        "x": 1360,
+        "y": 2280
+      },
+      "measured": {
+        "width": 400,
+        "height": 351
+      },
+      "data": {
+        "title": "提取路由器",
+        "body": "目的：为不同输入选择最合规、最可靠的内容路径。\n\n顺序：当前 DOM → 公开 URL + Readability → 平台适配器 → 字幕 → 媒体转写。\n输入：CaptureEnvelope 或 URL。\n输出：ContentSnapshot 与 ExtractionAttempt 时间线。\n成功：用户能辨别结果来自完整文章、可见页面、字幕还是转写。\n失败：登录壳请求浏览器打开；适配器变化回退通用 DOM；媒体超时保留已有元数据。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "model-gateway",
+      "type": "task",
+      "position": {
+        "x": 1360,
+        "y": 2660
+      },
+      "measured": {
+        "width": 400,
+        "height": 307
+      },
+      "data": {
+        "title": "模型网关",
+        "body": "目的：让总结和翻译不绑定固定第三方端点。\n\n输入：正文、动作模板、Base URL、模型名、API 模式。\n输出：流式 Markdown、模型和耗时证据。\nP0：自定义 OpenAI-compatible Chat Completions；P1：Responses 与 Ollama。\n错误：分别处理 401 凭据、404/405 协议、429 限流、TLS/网络和响应结构。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "local-library",
+      "type": "task",
+      "position": {
+        "x": 1360,
+        "y": 3040
+      },
+      "measured": {
+        "width": 400,
+        "height": 351
+      },
+      "data": {
+        "title": "本地历史与输出",
+        "body": "责任：保存 Task、ContentSnapshot、ModelRun 和 Artifact。\n\n存储：SQLite；API Key 只保存 OS Keychain 引用，Cookie 不进入普通数据库。\n输出：可搜索历史、Markdown、TXT 和脱敏 JSON。\n成功：10,000 条历史搜索目标 200ms 内；删除支持 30 秒撤销。\n\nP0 local-first，不依赖账号或服务器。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "scope-roadmap",
+      "type": "task",
+      "position": {
+        "x": 680,
+        "y": 3420
+      },
+      "measured": {
+        "width": 400,
+        "height": 395
+      },
+      "data": {
+        "title": "一期、二期与非目标",
+        "body": "P0：macOS-first 桌面端、Chrome/Brave/Edge 扩展、当前页 DOM、公开文章、一个 OpenAI-compatible 连接、本地历史与导出。\n\nP1：Responses/Ollama、YouTube/B站公开字幕、微信公众号和 X 首批适配、结果编辑与签名/商店技术验证。\n\nP2：当前域 Cookie 授权、yt-dlp/ffmpeg/Whisper、小红书/抖音媒体、Windows 验证。\n\n非目标：绕过付费墙/验证码、批量账号采集、P0 强制服务器、Safari 与移动端。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "current-deliverables",
+      "type": "task",
+      "position": {
+        "x": 1360,
+        "y": 3420
+      },
+      "measured": {
+        "width": 400,
+        "height": 329
+      },
+      "data": {
+        "title": "阶段 0 已交付",
+        "body": "已验证：新 Git 仓库与 monorepo 目录；942 行完整 PRD；架构、学习指南、任务模板、名词词典、学习日志；Project Brain 及学习契约决策。\n\n当前状态：阶段 0 工程完成，学习验收仍待 Syc 亲手操作。\n\n尚未发生：没有安装依赖、购买服务器、配置凭据、创建远程仓库、提交或发布。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "next-execution",
+      "type": "task",
+      "position": {
+        "x": 2040,
+        "y": 3420
+      },
+      "measured": {
+        "width": 400,
+        "height": 351
+      },
+      "data": {
+        "title": "下一步技术验证",
+        "body": "目标：跑通第一条真实交接链，而不是先做完整 UI。\n\n顺序：定义 CaptureEnvelope → 最薄 Chromium 扩展读取测试文章 → Native Messaging → 最薄桌面窗口显示正文。\n\n可并行：PRD 样本准备与名词解释可以并行；扩展到桌面端的协议、实现和验收必须按顺序。\n\n完成证据：自动化消息测试、实际页面截图、Syc 亲手加载扩展并看到正文。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "privacy-rules",
+      "type": "task",
+      "position": {
+        "x": 680,
+        "y": 3800
+      },
+      "measured": {
+        "width": 400,
+        "height": 351
+      },
+      "data": {
+        "title": "权限与隐私规则",
+        "body": "默认只读取用户主动触发的当前页面，不读取整个浏览器 Cookie 数据库。\n\nP2 Cookie：只申请当前域名、展示用途、允许拒绝/撤销、单任务默认 10 分钟、完成后 1 秒内清理。\n\nAPI Key 进入 OS Keychain；Cookie、Token、真实账号数据不得进入 Git、普通日志、截图或测试夹具。\n\n禁止绕过付费墙、验证码、封禁和平台访问控制。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "learning-contract",
+      "type": "task",
+      "position": {
+        "x": 680,
+        "y": 4180
+      },
+      "measured": {
+        "width": 400,
+        "height": 307
+      },
+      "data": {
+        "title": "开发与学习双轨",
+        "body": "每个非平凡任务同时是一节小课：开始前解释场景、角色与交接、工作流、工具协同；每次最多 3–5 个新名词。\n\n理解等级：L1 认识、L2 定位、L3 验证、L4 修改。核心概念至少达到 L3。\n\n任务只有“工程验收 + Syc 5–15 分钟亲手验证 + 学习日志”都完成，才能标记完整完成。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "risks-unknowns",
+      "type": "task",
+      "position": {
+        "x": 680,
+        "y": 4560
+      },
+      "measured": {
+        "width": 400,
+        "height": 373
+      },
+      "data": {
+        "title": "风险、假设与未决项",
+        "body": "风险：平台 DOM、字幕接口和反爬规则持续变化，导致成功率波动和维护成本。\n应对：通用 DOM 永远可独立运行；平台适配器独立版本、夹具、开关和降级路径。\n\n假设：macOS-first 能最小化首发变量；真实用户是否需要云同步仍未验证。\n\n未决：正式品牌、DMG 或 Mac App Store、Windows 时机、Chrome 商店权限审核、商业开源策略、优先适配平台。每项未决都会影响发布范围或许可证选择。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "test-release",
+      "type": "task",
+      "position": {
+        "x": 680,
+        "y": 4940
+      },
+      "measured": {
+        "width": 400,
+        "height": 329
+      },
+      "data": {
+        "title": "测试与发布门",
+        "body": "阶段验证必须对应产品规则：\n- 协议：扩展到桌面端端到端和版本不匹配测试。\n- 提取：公开文章、登录页、结构变化夹具。\n- 模型：401、404/405、429、TLS 与断流。\n- 数据：SQLite 迁移、删除撤销、脱敏导出。\n- 权限：Cookie 拒绝、过期和崩溃清理。\n\n发布：开发构建 → 签名/公证候选 → Chrome 商店材料 → 小范围测试 → 正式版；每步保留回滚版本。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "success-acceptance",
+      "type": "task",
+      "position": {
+        "x": 1360,
+        "y": 4940
+      },
+      "measured": {
+        "width": 400,
+        "height": 351
+      },
+      "data": {
+        "title": "成功标准",
+        "body": "P0 验收：macOS Chrome 打开文章，点击扩展后桌面 APP 在 800ms 目标内出现任务；显示正文与“当前页面 DOM”证据；自定义模型可流式总结/翻译并导出 Markdown。\n\n指标：普通文章提取成功率目标 ≥90%；一期目标平台可见正文目标 ≥80%；崩溃自由会话目标 ≥99.5%。\n\n交付证据：测试、日志、截图、导出文件和回滚版本。\n学习证据：Syc 能解释核心组件并亲手验证。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    },
+    {
+      "id": "project-guidance-design-md",
+      "type": "task",
+      "position": {
+        "x": 680,
+        "y": 5320
+      },
+      "measured": {
+        "width": 400,
+        "height": 227
+      },
+      "data": {
+        "projectGuidanceFile": "design.md",
+        "title": "补充 design.md",
+        "body": "当前项目缺少 design.md。请创建该文件，沉淀产品定位、信息架构、布局规则、组件语言、交互状态、视觉约束和后续设计决策。需要基于当前产品目标，而不是复制通用设计系统。",
+        "effort": "xhigh",
+        "runMode": "flow",
+        "attachments": []
+      },
+      "selected": false
+    }
+  ],
+  "edges": [
+    {
+      "id": "edge-goal-users",
+      "source": "project-goal",
+      "target": "target-users",
+      "label": "为谁解决"
+    },
+    {
+      "id": "edge-goal-value",
+      "source": "project-goal",
+      "target": "product-value",
+      "label": "创造价值"
+    },
+    {
+      "id": "edge-goal-journey",
+      "source": "project-goal",
+      "target": "user-journey",
+      "label": "形成主流程"
+    },
+    {
+      "id": "edge-goal-ia",
+      "source": "project-goal",
+      "target": "information-architecture",
+      "label": "组织界面"
+    },
+    {
+      "id": "edge-ia-design",
+      "source": "information-architecture",
+      "target": "experience-design",
+      "label": "约束交互"
+    },
+    {
+      "id": "edge-goal-architecture",
+      "source": "project-goal",
+      "target": "technical-architecture",
+      "label": "落到系统"
+    },
+    {
+      "id": "edge-architecture-extension",
+      "source": "technical-architecture",
+      "target": "extension-surface",
+      "label": "包含浏览器入口"
+    },
+    {
+      "id": "edge-extension-capture",
+      "source": "extension-surface",
+      "target": "capture-engine",
+      "label": "执行页面捕获"
+    },
+    {
+      "id": "edge-architecture-desktop",
+      "source": "technical-architecture",
+      "target": "desktop-surface",
+      "label": "包含桌面工作区"
+    },
+    {
+      "id": "edge-architecture-extractor",
+      "source": "technical-architecture",
+      "target": "extractor-router",
+      "label": "包含提取层"
+    },
+    {
+      "id": "edge-architecture-model",
+      "source": "technical-architecture",
+      "target": "model-gateway",
+      "label": "包含模型层"
+    },
+    {
+      "id": "edge-architecture-library",
+      "source": "technical-architecture",
+      "target": "local-library",
+      "label": "包含本地数据层"
+    },
+    {
+      "id": "edge-goal-scope",
+      "source": "project-goal",
+      "target": "scope-roadmap",
+      "label": "限定分期"
+    },
+    {
+      "id": "edge-scope-deliverables",
+      "source": "scope-roadmap",
+      "target": "current-deliverables",
+      "label": "阶段 0 证据"
+    },
+    {
+      "id": "edge-deliverables-next",
+      "source": "current-deliverables",
+      "target": "next-execution",
+      "label": "解锁技术验证"
+    },
+    {
+      "id": "edge-goal-privacy",
+      "source": "project-goal",
+      "target": "privacy-rules",
+      "label": "守住权限"
+    },
+    {
+      "id": "edge-goal-learning",
+      "source": "project-goal",
+      "target": "learning-contract",
+      "label": "双轨交付"
+    },
+    {
+      "id": "edge-goal-risks",
+      "source": "project-goal",
+      "target": "risks-unknowns",
+      "label": "暴露风险"
+    },
+    {
+      "id": "edge-goal-test",
+      "source": "project-goal",
+      "target": "test-release",
+      "label": "建立发布门"
+    },
+    {
+      "id": "edge-test-success",
+      "source": "test-release",
+      "target": "success-acceptance",
+      "label": "形成验收证据"
+    },
+    {
+      "id": "project-guidance-edge-1",
+      "source": "project-goal",
+      "target": "project-guidance-design-md"
+    }
+  ]
+}

@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+EXPECTED="$ROOT/brain"
+
+fail() {
+  echo "FAIL: $*" >&2
+  exit 1
+}
+
+brain_dir_out="$(cd "$ROOT" && ./scripts/brain brain-dir)" || fail "cannot resolve Project Brain"
+resolved="$(printf '%s\n' "$brain_dir_out" | head -n 1)"
+
+[ "$resolved" = "$EXPECTED" ] || fail "brain must resolve to $EXPECTED, got $resolved"
+printf '%s\n' "$brain_dir_out" | grep -Fq 'populated: true' || fail "brain is not populated"
+[ -d "$EXPECTED/pages" ] || fail "brain/pages is missing"
+
+for slug in background architecture flow mindmap stack roadmap; do
+  body="$(cd "$ROOT" && ./scripts/brain read-root "$slug")" || fail "cannot read root page: $slug"
+  if printf '%s\n' "$body" | grep -Eqi 'placeholder|replace with a real|<!--.*(core problem|list stage|main feature|technology choices)'; then
+    fail "root page still contains scaffold placeholders: $slug"
+  fi
+done
+
+echo "OK: canonical Project Brain is populated and root pages are seeded"

@@ -1,0 +1,137 @@
+#!/usr/bin/env bash
+# LinkDigest read-only project health check. It reports problems but never fixes files.
+set -u
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || {
+  echo "FAIL: cannot resolve project root" >&2
+  exit 1
+}
+cd "$ROOT" || exit 1
+
+PASS=0
+WARN=0
+FAIL=0
+
+section() { printf '\n=== %s ===\n' "$*"; }
+ok() { echo "OK: $*"; PASS=$((PASS + 1)); }
+warn() { echo "WARN: $*"; WARN=$((WARN + 1)); }
+fail() { echo "FAIL: $*" >&2; FAIL=$((FAIL + 1)); }
+
+require_file() {
+  if [ -f "$1" ]; then ok "$1 exists"; else fail "missing $1"; fi
+}
+
+run_check() {
+  local label="$1"
+  shift
+  local output
+  if output="$("$@" 2>&1)"; then
+    ok "$label"
+    [ -z "$output" ] || printf '%s\n' "$output"
+  else
+    fail "$label"
+    [ -z "$output" ] || printf '%s\n' "$output" >&2
+  fi
+}
+
+section "1. Entrypoints"
+for command in git node pnpm rg; do
+  if command -v "$command" >/dev/null 2>&1; then ok "$command available"; else fail "missing runtime: $command"; fi
+done
+for file in README.md AGENTS.md BRAIN.md VERIFY.md package.json pnpm-workspace.yaml \
+  pnpm-lock.yaml tsconfig.base.json eslint.config.mjs .github/workflows/ci.yml \
+  docs/PRD.md docs/ARCHITECTURE.md docs/CAPACITY_MODEL.md docs/LEARNING_GUIDE.md \
+  docs/specs/V0.1_VERTICAL_SLICE.md docs/specs/V0.2_BYOK_ACCEPTANCE.md docs/TASK_TEMPLATE.md docs/GLOSSARY.md \
+  docs/LEARNING_LOG.md docs/DEPENDENCIES.md \
+  packages/shared/package.json packages/shared/tsconfig.json; do
+  require_file "$file"
+done
+for file in scripts/brain scripts/check-brain-root scripts/check-licenses scripts/check-contract-sync.sh scripts/check-v02-secret-hygiene.sh scripts/doctor; do
+  if [ ! -f "$file" ]; then
+    fail "missing $file"
+  elif [ ! -x "$file" ]; then
+    fail "$file is not executable"
+  else
+    ok "$file executable"
+  fi
+done
+
+section "2. Project Brain"
+run_check "canonical Brain root" ./scripts/check-brain-root
+run_check "Brain links" ./scripts/brain lint-links
+run_check "Swift and TypeScript contract copies stay synchronized" ./scripts/check-contract-sync.sh
+if page_list="$(./scripts/brain list-pages 2>/dev/null)" && [ -n "$page_list" ]; then
+  ok "Brain contains decision pages"
+  active_count="$(printf '%s\n' "$page_list" | grep -c $'\tactive$' || true)"
+  if [ "$active_count" -le 15 ]; then ok "active Brain pages stay focused ($active_count)"; else warn "active Brain pages exceed 15 ($active_count)"; fi
+else
+  fail "Brain has no decision pages"
+fi
+
+section "3. Documents and learning contract"
+run_check "package.json parses" node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
+for required in \
+  'SwiftUI' 'AppKit' 'Native Messaging' '版本化 JSON' 'cloud-deferred' \
+  '远期参考' '不设置课后作业' '另开小窗口'; do
+  if rg -Fq "$required" AGENTS.md docs/PRD.md docs/ARCHITECTURE.md docs/CAPACITY_MODEL.md docs/LEARNING_GUIDE.md docs/TASK_TEMPLATE.md; then
+    ok "documented: $required"
+  else
+    fail "missing required project concept: $required"
+  fi
+done
+if rg -n '工程完成 / 学习待验收|必须.*亲手验证|交作业.*才能|答题.*才能' \
+  AGENTS.md docs/LEARNING_GUIDE.md docs/TASK_TEMPLATE.md docs/LEARNING_LOG.md \
+  docs/PRD.md docs/specs/V0.1_VERTICAL_SLICE.md docs/ARCHITECTURE.md docs/CAPACITY_MODEL.md; then
+  fail "stale blocking-learning language remains"
+else
+  ok "learning guidance is embedded and non-blocking"
+fi
+
+section "4. Sensitive-data boundary"
+secret_pattern='-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|sk-(proj-)?[A-Za-z0-9_-]{32,}|gh[pousr]_[A-Za-z0-9]{20,}'
+if matches="$(rg -l --hidden \
+  -g '!.git/**' \
+  -g '!.scatter/**' \
+  -g '!node_modules/**' \
+  -g '!**/.build/**' \
+  -g '!**/.output/**' \
+  -g '!**/DerivedData/**' \
+  "$secret_pattern" . 2>/dev/null)" && [ -n "$matches" ]; then
+  fail "possible secret patterns found in paths below"
+  printf '%s\n' "$matches" >&2
+else
+  ok "no high-confidence secret patterns"
+fi
+
+run_check "dependency licenses" ./scripts/check-licenses
+run_check "V0.2 secret hygiene (read-only, blocking)" ./scripts/check-v02-secret-hygiene.sh
+dangerous_files="$(find . -path './.git' -prune -o -path './.scatter' -prune -o -type f -name '.env*' ! -name '.env.example' -print)"
+if [ -n "$dangerous_files" ]; then
+  fail "dangerous credential filenames found"
+  printf '%s\n' "$dangerous_files" >&2
+else
+  ok "no dangerous credential filenames"
+fi
+
+section "5. Git baseline"
+if git rev-parse --verify HEAD >/dev/null 2>&1; then
+  ok "Git baseline exists"
+else
+  warn "repository has no first commit; commit still requires Syc approval"
+fi
+if [ -n "$(git status --porcelain)" ]; then
+  warn "working tree has uncommitted files; doctor remains read-only"
+else
+  ok "working tree clean"
+fi
+
+section "Summary"
+echo "PASS=$PASS WARN=$WARN FAIL=$FAIL"
+if [ "$FAIL" -gt 0 ]; then
+  echo "doctor: FAILED" >&2
+  exit 1
+elif [ "$WARN" -gt 0 ]; then
+  echo "doctor: OK WITH WARNINGS"
+else
+  echo "doctor: OK"
+fi

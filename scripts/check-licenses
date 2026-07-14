@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
+
+pnpm licenses list --json | node -e '
+  const fs = require("node:fs");
+  const licenses = Object.keys(JSON.parse(fs.readFileSync(0, "utf8"))).sort();
+  const prohibitedPattern = /(?:^|\b)(?:AGPL|GPL|UNLICENSED|UNKNOWN|NON-COMMERCIAL)(?:\b|-)/i;
+  const prohibited = licenses.filter((expression) => {
+    // SPDX `OR` grants a choice of licenses. A dual-licensed package such as
+    // `MIT OR GPL-3.0-or-later` can be consumed under MIT, so it is prohibited
+    // only when every available branch is prohibited or unknown.
+    const alternatives = expression
+      .replace(/[()]/g, "")
+      .split(/\s+OR\s+/i)
+      .map((license) => license.trim());
+    return alternatives.every((license) => prohibitedPattern.test(license));
+  });
+  console.log(`licenses: ${licenses.join(", ")}`);
+  if (prohibited.length > 0) {
+    console.error(`FAIL: prohibited or unknown licenses: ${prohibited.join(", ")}`);
+    process.exitCode = 1;
+  } else {
+    console.log("OK: every dependency has a permissive license path; no GPL-only, AGPL-only, non-commercial, unlicensed, or unknown packages");
+  }
+'

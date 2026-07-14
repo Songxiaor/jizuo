@@ -1,0 +1,62 @@
+# LinkDigest 依赖与许可证基线
+
+## 场景
+
+依赖是项目复用的标准零件。商业闭源产品不仅要确认“能运行”，还要确认版本兼容、许可证允许商业使用、构建时与运行时边界清楚，并能通过 lockfile 在另一台机器复现。
+
+## 当前直接依赖
+
+### TypeScript 工具链
+
+| 包 | 版本 | 角色 | 分发边界 | 许可证 |
+|---|---:|---|---|---|
+| TypeScript | 6.0.3 | 类型检查 | 仅开发 | Apache-2.0 |
+| ESLint / `@eslint/js` | 10.7.0 / 10.0.1 | 代码规则检查 | 仅开发 | MIT |
+| typescript-eslint | 8.63.0 | 让 ESLint 理解 TypeScript | 仅开发 | MIT |
+| Vitest | 4.1.10 | 协议自动测试 | 仅开发 | MIT |
+| `@types/node` | 22.20.1 | Node 22 类型 | 仅开发 | MIT |
+| Zod | 4.4.3 | 运行时 Schema 校验 | `@linkdigest/shared` 运行时 | MIT |
+| Ajv / `ajv-formats` | 8.17.1 / 3.0.1 | 执行 JSON Schema Draft 2020-12 与格式校验 | Ajv 用于 shared 运行时和扩展构建期代码生成；静态格式辅助进入扩展产物 | MIT |
+| WXT | 0.20.27 | 构建 Chromium MV3 扩展 | 仅开发；输出不包含 WXT Runtime | MIT |
+
+WXT、TypeScript、ESLint 与 Vitest 只服务于构建和测试。扩展使用 Ajv 的 standalone generator 在构建前生成静态校验函数，background 不携带运行时 Schema 编译器，也不调用 Manifest V3 CSP 禁止的动态代码生成；`ajv-formats` 的静态格式辅助会进入产物。Zod 仍服务于旧 shared 模型，不再是 Swift/TypeScript 合同真相源。
+
+### macOS 工具链
+
+| 工具 | 当前状态 | 角色 | 许可证/分发边界 |
+|---|---|---|---|
+| Xcode | 26.6（Build 17F113） | 构建、测试、签名和公证 macOS APP | Apple 官方工具；不进入产品包 |
+| Swift / SwiftUI / AppKit | Swift 6.3.3；V0.1 Swift Package 已建立 | macOS APP、原生 UI 和平台桥接 | 随 Apple SDK/System Framework |
+| SQLite | 方案已确认，Swift binding 待 spike | 本地任务与历史 | 具体 binding 合入前单独核对 |
+
+当前没有第三方 Swift Package 依赖。V0.2 任务 A 新增本地 `LinkDigestAdapters` target，并使用 Apple Security framework 访问 Keychain；任务 B 使用 Foundation/URLSession 实现 streaming adapter，只在测试 target 使用 Apple Network.framework 建立 loopback fake server；任务 D 的 secret hygiene 门禁仅使用仓库已有 Bash 与 ripgrep。SQLite binding 仍待后续独立 spike。
+
+## 兼容选择
+
+建立本依赖基线时曾核对到 TypeScript 7.0.2；这只是当时的版本快照，不代表持续追踪“最新版本”。typescript-eslint 8.63.0 声明支持范围是 `>=4.8.4 <6.1.0`，因此当前锁定 TypeScript 6.0.3。依赖升级优先选择声明兼容且经过验证的组合，不机械追逐版本号。
+
+## 传递依赖
+
+当前许可证集合还包含双许可表达式，例如 `MIT OR GPL-3.0-or-later` 与 `BSD-3-Clause OR GPL-2.0`。SPDX 的 `OR` 表示项目可以选择其中一个许可分支；LinkDigest 对应依赖选择 MIT/BSD 分支，不采用 GPL 分支。
+
+- 没有 GPL、AGPL、仅限非商业、UNLICENSED 或 UNKNOWN 包。
+- MPL-2.0 来自 Vitest/Vite 开发链的 `lightningcss`，当前只用于测试工具，不进入产品运行时分发。
+- WXT 的开发期传递依赖 `jszip` 与 `node-forge` 分别提供 MIT/BSD 的可选许可路径；`scripts/check-licenses` 只有在所有 `OR` 分支都被禁止时才失败，纯 GPL/AGPL 仍会阻断。
+- 当前 TypeScript 运行时依赖为 Zod、Ajv 与 `ajv-formats`，许可证均为 MIT；它们都不进入 Swift macOS APP。
+
+每次新增依赖后运行：
+
+```bash
+./scripts/check-licenses
+pnpm audit --prod
+pnpm install --frozen-lockfile
+```
+
+`check-licenses` 是许可证最低自动门禁，`pnpm audit --prod` 检查生产依赖的已知漏洞。审计结果不是“绝对安全”证明；发布前仍需生成最终产物的第三方清单，并人工核对实际打包内容与许可证文本。
+
+## 更新规则
+
+1. 先核对新版本的 engine、peer dependency 和许可证。
+2. 使用精确版本更新 `package.json`，由 pnpm 更新 `pnpm-lock.yaml`。
+3. 运行 lint、typecheck、tests、license check 和 doctor。
+4. 只有安全修复或明确功能需要才升级；不为“版本号更新”本身扩大任务范围。

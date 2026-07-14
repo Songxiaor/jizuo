@@ -1,0 +1,1 @@
+{"version":1,"requestId":"fixture-empty-1","createdAt":"2026-07-13T20:00:00Z","source":{"kind":"browser_capture","url":"https://example.test/article","title":"Fixture","platform":"generic"},"capture":{"method":"rendered_dom","text":"","characterCount":0,"completeness":"unknown","capturedAt":"2026-07-13T20:00:00Z"},"evidence":{"sourceLabel":"Current page DOM","usedCookie":false}}

@@ -1,0 +1,19 @@
+{
+  "name": "@linkdigest/browser-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wxt dev",
+    "generate:validator": "node scripts/generate-contract-validator.mjs",
+    "check:validator": "node scripts/generate-contract-validator.mjs --check",
+    "prebuild": "pnpm generate:validator",
+    "pretypecheck": "pnpm generate:validator",
+    "pretest": "pnpm generate:validator",
+    "build": "wxt build",
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "dependencies": {"@linkdigest/shared": "workspace:*", "ajv": "8.17.1", "ajv-formats": "3.0.1"},
+  "devDependencies": {"wxt": "0.20.27", "vitest": "4.1.10", "typescript": "6.0.3"}
+}

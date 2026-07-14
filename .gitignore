@@ -1,0 +1,49 @@
+# Dependencies and build output
+node_modules/
+dist/
+build/
+.output/
+.wxt/
+.swiftpm/
+.build/
+coverage/
+output/playwright/
+
+# Local runtime data
+.data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+downloads/
+transcripts/
+exports/
+
+# Secrets and credentials
+.env
+.env.*
+!.env.example
+*.cookies.txt
+cookies.txt
+*.pem
+*.key
+
+# Logs and caches
+*.log
+.cache/
+.tmp/
+.playwright-cli/
+.mindmux/
+
+# OS and editors
+.DS_Store
+.idea/
+.vscode/
+
+# Packaging and signing
+release/
+artifacts/
+*.dmg
+*.pkg
+*.exe
+*.msi
+*.AppImage

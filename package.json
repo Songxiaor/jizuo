@@ -1,0 +1,38 @@
+{
+  "name": "link-summary-app",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Local-first link summarization and translation desktop app with a Chromium extension",
+  "packageManager": "pnpm@11.11.0",
+  "engines": {
+    "node": ">=22.13.0",
+    "pnpm": ">=11 <12"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "lint": "eslint . --max-warnings=0",
+    "typecheck": "pnpm -r --if-present typecheck",
+    "test": "pnpm -r --if-present test",
+    "browser:build": "pnpm --filter @linkdigest/browser-extension build",
+    "swift:test": "(cd apps/desktop && swift test)",
+    "swift:build:debug": "(cd apps/desktop && swift build -c debug)",
+    "swift:build:release": "(cd apps/desktop && swift build -c release)",
+    "secret:check": "./scripts/check-v02-secret-hygiene.sh",
+    "native-host:check": "./scripts/native-host/check-dev.sh",
+    "xcode:build": "./scripts/xcode-build.sh",
+    "check:web": "pnpm lint && pnpm typecheck && pnpm test && pnpm browser:build && ./scripts/doctor",
+    "check:swift": "./scripts/check-contract-sync.sh && pnpm secret:check && pnpm swift:test && pnpm swift:build:debug && pnpm swift:build:release && pnpm native-host:check && ./scripts/run-host-smoke.sh && ./scripts/run-vertical-smoke.sh",
+    "check": "pnpm check:web && pnpm check:swift"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "22.20.1",
+    "eslint": "10.7.0",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.63.0",
+    "vitest": "4.1.10"
+  }
+}
