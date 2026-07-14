@@ -300,6 +300,7 @@
 - 角色与交接：Multica Project 保存产品上下文与仓库资源；总控 Agent 拆分和分派专业 Issue；GitHub Actions 从全新 checkout 安装依赖；WXT `prepare` 在 typecheck 前生成 `.wxt` 全局类型，再交给 TypeScript 编译器。
 - 本次核心名词：Project Resource、Squad Leader、Stage、clean checkout、WXT prepare。
 - 被远程证据修正的判断：本机 `pnpm check` 通过是因为已有 `.wxt` 缓存；首次 GitHub CI 在干净 checkout 中找不到 `browser` 和 `defineBackground`，证明 typecheck 不能依赖本机生成目录。扩展脚本现显式在 build/typecheck/test 前运行 `wxt prepare`。
+- 第二次远程修正：WXT 类型生成通过后，CI runner 仍因缺少 `rg` 和本机 `brain-page` CLI 使 `doctor` 失败。CI 现在显式安装 ripgrep，并从固定 Git commit 准备零依赖 Brain CLI；feature branch 只走 pull_request 检查，避免 push 与 PR 重复运行同一套任务。
 - 工程产物：私有 GitHub 基线、6 个专业 Agent、LinkDigest 产品小队、16 个历史 Issue、8 阶段未来路线、`docs/MULTICA_WORKFLOW.md` 与干净环境 WXT 类型准备。
 - 安全边界：没有上传 API Key、Cookie、Token 或私人正文；所有未来功能 Issue 保持 backlog；没有安装 Edge、调用真实 Provider、购买服务、签名、公证或发布。
 - 验证方式：删除 WXT 生成缓存后运行扩展 typecheck，再运行完整 `pnpm check`；通过 PR 和新的 GitHub Actions 结果确认远程干净环境。
