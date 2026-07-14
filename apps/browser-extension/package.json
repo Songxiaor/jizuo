@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "wxt dev",
+    "prepare": "wxt prepare",
     "generate:validator": "node scripts/generate-contract-validator.mjs",
     "check:validator": "node scripts/generate-contract-validator.mjs --check",
-    "prebuild": "pnpm generate:validator",
-    "pretypecheck": "pnpm generate:validator",
-    "pretest": "pnpm generate:validator",
+    "prebuild": "wxt prepare && pnpm generate:validator",
+    "pretypecheck": "wxt prepare && pnpm generate:validator",
+    "pretest": "wxt prepare && pnpm generate:validator",
     "build": "wxt build",
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run"
