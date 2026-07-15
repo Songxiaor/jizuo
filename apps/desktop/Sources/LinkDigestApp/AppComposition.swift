@@ -182,6 +182,7 @@ actor AppComposition {
 
 enum AppApplicationSupportRoot {
   static let smokeOverrideEnvironmentKey = "LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT"
+  static let smokeOpenFailureEnvironmentKey = "LINKDIGEST_SMOKE_FORCE_STORAGE_OPEN_FAILURE"
 
   /// Resolves the one root that the composition root may pass to persistence.
   ///
@@ -204,6 +205,19 @@ enum AppApplicationSupportRoot {
     #endif
 
     return try liveRoot()
+  }
+
+  /// Allows the production-composition smoke to take its structured open-failure
+  /// branch without relying on host filesystem permissions. It is deliberately
+  /// absent from Release builds, where neither smoke environment key has effect.
+  static func shouldInjectOpenFailure(
+    environment: [String: String] = ProcessInfo.processInfo.environment
+  ) -> Bool {
+    #if DEBUG
+    environment[smokeOpenFailureEnvironmentKey] == "1"
+    #else
+    false
+    #endif
   }
 }
 

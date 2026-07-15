@@ -2,7 +2,7 @@
 slug: stack
 title: Tech stack
 role: tech-stack choices
-updated: "2026-07-15T12:24:47"
+updated: "2026-07-15T23:36:58"
 ---
 
 # Tech stack
@@ -14,9 +14,9 @@ updated: "2026-07-15T12:24:47"
 | Workspace | pnpm 11 workspace | root package | TypeScript 统一门禁，Swift 由脚本桥接 |
 | Node runtime | Node >= 22.13 | root engines | 扩展构建依赖现代 Node |
 | Browser extension | TypeScript 6.0.3 + WXT 0.20.27 + MV3 | browser package | Chromium 最小权限与 service worker |
-| TS schema runtime | Ajv 8.17.1 + ajv-formats 3.0.1 | extension dependencies | 构建期静态 validator，避免 MV3 CSP 冲突 |
+| TS schema runtime | Ajv 8.18.0 + ajv-formats 3.0.1 | shared / extension dependencies；GHSA-2g4f-4pwh-qvx6 patched | 构建期静态 validator，避免 MV3 CSP 冲突 |
 | macOS app | Swift 6 package, macOS 15 target | desktop package | 原生 App 与 Host；发布仍需稳定路径和 signing spike |
-| UI | SwiftUI | `LinkDigestApp.swift` | 当前捕获与 BYOK 已落地；历史与导出待实现 |
+| UI | SwiftUI | `LinkDigestApp.swift` | 当前捕获与 BYOK 已落地；历史浏览 UI 与导出待实现 |
 | Transport | Native Messaging + Unix domain socket | Host/Transport | Chrome、Brave、Edge V0.1 工程门禁已关闭 |
 | Contract | JSON Schema Draft 2020-12 + fixtures | `contracts/` | Swift/TypeScript 共享语言中立合同 |
 | BYOK | URLSession + Swift Concurrency + Keychain | V0.2 acceptance | 单 OpenAI-compatible streaming、取消、错误与 secret hygiene |
@@ -27,10 +27,10 @@ updated: "2026-07-15T12:24:47"
 
 - `pnpm check:web`：lint、typecheck、test、browser build、doctor。
 - `pnpm check:swift`：contract sync、Swift tests/build、native-host 与进程 smoke。
-- `pnpm sqlite:spike`：GRDB、migration、事务、WAL、备份、恢复与并发专项。
-- `pnpm sqlite:benchmark:release`：隔离 10k Release 查询 benchmark。
+- `pnpm history:test`：正式 History Domain、migration、事务、并发与恢复专项。
+- `pnpm history:benchmark:release`：隔离 10k Release 查询 benchmark。
 - `bash ./scripts/check-swift-licenses`：GRDB exact pin、revision、resolved graph 与 MIT notice。
-- `pnpm xcode:build`：当前在 Hana 外层 nested sandbox 下阻断，clean-room RC 前需补证。
+- `pnpm xcode:build`：LinkDigestApp / NativeHost 的 Debug / Release 四目标。
 
 ## 许可与安全边界
 
@@ -41,14 +41,14 @@ updated: "2026-07-15T12:24:47"
 
 ## 当前实施顺序
 
-1. 冻结 `Task → ContentSnapshot → Run → Artifact`、UUID/UTC、幂等键、删除关系、终态状态与 Export projection。
-2. 实现正式 migration 001、Repository Port/GRDB Adapter 和 Application service。
-3. 重启恢复、历史列表、详情与删除。
-4. Markdown/TXT/JSON 导出与原生 UX。
-5. 稳定 Host、升级/卸载与 clean-room RC。
+1. 冻结可回滚 Git baseline。
+2. History Sidebar、详情、单项删除与重启恢复的用户可见验收。
+3. Markdown/TXT/JSON 导出与只读逃生口。
+4. Sam 对标 Native UX、稳定 Host、升级/卸载与 clean-room RC。
+5. Syc 授权后才处理 Developer ID、签名、公证与发布。
 
 ## 未关闭证据
 
-- 正式四表 10k benchmark、确定性并发 overlap、真实存储失败注入和 checkpoint 推进证明。
-- Host 稳定安装目录、资源共置、Developer ID、签名、公证与发布包。
-- Xcode clean-room Debug/Release 与完整 Swift suite。
+- History Sidebar、详情、删除与 Export 的 Syc 范围/参考图/可观察验收。
+- Host 稳定安装目录、资源共置、升级/卸载、Developer ID、签名、公证与发布包。
+- 同一不可变 artifact 的 clean-room P0 RC。

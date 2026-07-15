@@ -269,10 +269,14 @@ struct ContentView: View {
       path: linkDigestSocketPath,
       statusSink: { value in await model.setConnection(value) }
     )
+    let injectSmokeOpenFailure = AppApplicationSupportRoot.shouldInjectOpenFailure()
     let composition = AppComposition(dependencies: .init(
       applicationSupportRoot: applicationSupportRoot,
       repositoryFactory: { location in
-        try GRDBHistoryRepository.open(at: location)
+        if injectSmokeOpenFailure {
+          throw RepositoryFailure.injectedFailure
+        }
+        return try GRDBHistoryRepository.open(at: location)
       },
       nowMilliseconds: nowMilliseconds,
       serverStarter: serverStarter,

@@ -16,7 +16,7 @@
 | Vitest | 4.1.10 | 协议自动测试 | 仅开发 | MIT |
 | `@types/node` | 22.20.1 | Node 22 类型 | 仅开发 | MIT |
 | Zod | 4.4.3 | 运行时 Schema 校验 | `@linkdigest/shared` 运行时 | MIT |
-| Ajv / `ajv-formats` | 8.17.1 / 3.0.1 | 执行 JSON Schema Draft 2020-12 与格式校验 | Ajv 用于 shared 运行时和扩展构建期代码生成；静态格式辅助进入扩展产物 | MIT |
+| Ajv / `ajv-formats` | 8.18.0 / 3.0.1 | 执行 JSON Schema Draft 2020-12 与格式校验 | Ajv 用于 shared 运行时和扩展构建期代码生成；静态格式辅助进入扩展产物；8.18.0 修复 GHSA-2g4f-4pwh-qvx6 | MIT |
 | WXT | 0.20.27 | 构建 Chromium MV3 扩展 | 仅开发；输出不包含 WXT Runtime | MIT |
 
 WXT、TypeScript、ESLint 与 Vitest 只服务于构建和测试。扩展使用 Ajv 的 standalone generator 在构建前生成静态校验函数，background 不携带运行时 Schema 编译器，也不调用 Manifest V3 CSP 禁止的动态代码生成；`ajv-formats` 的静态格式辅助会进入产物。Zod 仍服务于旧 shared 模型，不再是 Swift/TypeScript 合同真相源。

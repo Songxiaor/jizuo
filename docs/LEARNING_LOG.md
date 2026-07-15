@@ -331,16 +331,16 @@
 ## 任务 019：V0.3 SQLite Binding、迁移与恢复 Spike
 
 - 日期：2026-07-15
-- 当前状态：工程完成，等待独立 Sol 审查；GRDB 候选 ACCEPT，Xcode nested sandbox 证据单独 BLOCKED。
+- 当前状态：历史 Spike 已独立 Sol 审查通过；GRDB 结论已由 02A/02B 后续实现采用。此条中记录的 Xcode nested-sandbox 阻断只是当时环境快照，当前 02B 已通过 Xcode 四目标；不代表 History UI、Export、安装或发布完成。
 - 用户场景：正式本地历史开工前，先证明 SQLite 基础层能安全事务、前向迁移、活跃备份、故障只读和并发读取，避免把用户数据押在未经验证的 binding 上。
 - 本次只解决：GRDB 7.11.1、SQLite.swift 0.16.0、系统 SQLite3 证据比较；隔离 `LinkDigestPersistence` 两表 spike；失败注入、1+8 并发和 10k Release benchmark。不接历史 UI、正式四表 Repository、真实 Application Support 或 Provider。
 - 角色与交接：未来 Application Service 只应交给 Repository Port；本轮 tests/benchmark 调用 `LinkDigestPersistence`，模块内部 GRDB 再交给系统 SQLite。Core、SwiftUI、Capture、Provider 与 Native Host 没有持有 binding 类型。
 - 本次核心名词：Binding、WAL、Migration、Online Backup、Read-only Recovery。
 - 候选选择：GRDB 7.11.1 exact，MIT，本机 resolved graph 无传递 package，SwiftPM Debug/Release 通过；SQLite.swift tag 声明两个条件包且需要更多备份/并发封装；系统 SQLite3 需要自行承担 C 生命周期与 Swift 并发边界。
 - 被证据修正的一点：首轮误在 GRDB `write` 自动事务内再开事务，触发嵌套事务失败；改为单层 `write` 后，注入异常仍自动回滚。第二处是 Online Backup 目标继承 WAL mode 后不能作为无 sidecar 的独立只读文件打开；现只在备份目标连接上切回 DELETE journal，活跃源库保持 WAL，全程不复制主文件。
-- 自动验证：persistence 12/12；SwiftPM Debug/Release；事务、WAL/checkpoint、Online Backup/恢复 integrity、future schema、migration 失败、不可写存储、错误路径脱敏、1 writer + 8 readers 均通过。10k Release 首页 p95 0.048000 ms、详情 p95 0.033750 ms，各 30 个 raw samples，门槛 300 ms。完整 Swift suite 的 58 项中有 10 项既有环境失败：8 个 Network.framework fake server、1 个 Keychain sandbox、1 个占用 socket；persistence仍为12/12，没有修改既有测试制造全绿。
+- 自动验证（历史 Spike 记录）：persistence 12/12；SwiftPM Debug/Release；事务、WAL/checkpoint、Online Backup/恢复 integrity、future schema、migration 失败、不可写存储、错误路径脱敏、1 writer + 8 readers 均通过。10k Release 首页 p95 0.048000 ms、详情 p95 0.033750 ms，各 30 个 raw samples，门槛 300 ms。当时完整 Swift suite 的 58 项中有 10 项环境失败；这不是当前状态，02B 后续已记录完整 Swift 117/117 通过。
 - 许可证：`bash scripts/check-swift-licenses` 独立校验 GRDB exact pin、revision、零传递依赖与 MIT notice；pnpm license check不代替 Swift 检查。MIT notice需进入未来第三方清单。
-- 环境阻断：`pnpm xcode:build` 首个 scheme 在 package resolution 被 Hana 外层 nested sandbox 的 `sandbox_apply: Operation not permitted` 阻断；完整 Swift suite 另有上述既有 Network/Keychain/socket 环境失败。未改 Xcode defaults、全局安全、既有测试或 Package 约束，不能写成 Xcode/GRDB 已通过或库失败。
+- 历史环境快照：当时 `pnpm xcode:build` 首个 scheme 在 package resolution 被 Hana 外层 nested sandbox 的 `sandbox_apply: Operation not permitted` 阻断；完整 Swift suite 另有上述 Network/Keychain/socket 环境失败。未改 Xcode defaults、全局安全、既有测试或 Package 约束。该记录已被后续 02B 的 Xcode 四目标与 Swift 117/117 工程证据取代，不能再写成当前 Xcode BLOCKED。
 - 仓库集成修正：首次 `pnpm check:web` 把新生成的 SwiftPM checkout 当成项目 JavaScript，报告 798 个上游 SQLite WASM lint错误；ESLint现只忽略 `apps/desktop/.build/**`，重跑 check:web全通过，项目源码规则未放宽。
 - 失败与恢复：future schema、migration 失败、文件/目录不可写时拒绝写入，数据可读时保留 projection；不删库。回滚本 spike只移除新增 package pin、target、tests、benchmark、脚本和文档，绝不触碰既有 Brain/V0.1 改动或真实用户数据。
 - 过程讲解：在候选复核、事务失败、WAL 备份恢复和 benchmark 四个节点就地解释了组件职责、交接物、失败表现和恢复方式。
@@ -388,9 +388,21 @@
 - 用户场景：浏览器送来 Capture 时，真实 App composition 必须能把事务提交到本地历史并返回 ACK；工程 smoke 同时不能把这次验证误写到用户已有的历史数据库。
 - 角色与交接：`run-vertical-smoke.sh` 创建专属临时 Application Support root 并把它作为明确交接物传入 Debug App；`AppApplicationSupportRoot` 只在 Debug 读取该 root，`AppComposition` 再把同一 root 交给 `LocalDatabaseLocation`/Repository；Host 与 socket 维持既有 20 次 Capture 交接。
 - 本次核心名词：显式注入（把测试目录直接交给组件，而不是让组件自己猜目录）、live resolver（正常运行时查用户 Application Support 的单一函数）、fail-closed guard（测试模式一旦意外回退到 live resolver 就拒绝而非继续）。
-- 自动证据：`AppCompositionTests` 6/6 PASS，其中注入用例把 live resolver 设为必定失败仍得到临时 root；`./scripts/run-vertical-smoke.sh` PASS，运行中断言 `history.sqlite` 已创建且路径属于专属临时 root，Debug guard 禁止解析真实 `~/Library/Application Support/LinkDigest`，Host → socket → SwiftUI process 为 20/20 accepted；退出清理后断言临时 root 已不存在。
-- 失败与恢复：如果 socket、数据库创建或 20 次 Capture 任一失败，脚本仍停止 App、删除 socket/log、仅删除自己用 `mktemp` 创建的 root；不会删除、reset、降级或清理真实用户数据库。若 future change 意外调用 live resolver，Debug guard 会让 App 落入结构化 storage unavailable，smoke 不能得到 `taskAccepted`，从而失败而不是触碰真实目录。
+- 自动证据：`AppCompositionTests` 7/7 PASS，其中 root 注入用例把 live resolver 设为必定失败仍得到临时 root，failure 注入只接受精确值 `1`。`./scripts/run-vertical-smoke.sh` 在成功与确定性失败两条路径均 PASS：成功 20/20 `taskAccepted`，失败 20/20 `STORAGE_UNAVAILABLE`；每条路径都在运行前后记录并比较真实 `~/Library/Application Support/LinkDigest` 的非内容状态指纹，二者相同。成功路径仅在专属临时 root 创建 `history.sqlite`，失败路径不创建临时数据库目录；退出后断言脚本创建的临时 root 已不存在。
+- 失败与恢复：如果 socket、数据库创建、结构化失败响应或 20 次 Capture 任一断言失败，脚本仍停止 App，并且只删除这次 `mktemp` 创建的临时 root（socket、log 与 Application Support 都在其中）；不会删除、reset、降级或清理真实用户数据库。若 future change 意外调用 live resolver，Debug guard 会让 App 落入结构化 storage unavailable，smoke 不能得到 `taskAccepted`，从而失败而不是触碰真实目录。
 - 安全边界：override 只编译入 Debug，Release 始终使用正常 live root；没有真实 Provider、Key、Cookie、浏览器资料或私人正文，没有改 migration 001，也未创建 Migration002。
 - 可选跟做：运行 `./scripts/run-vertical-smoke.sh`，它会自行创建和删除临时 root；终端的 PASS 说明一次真实进程链路完成，但不等于产品发布验收。
 - Syc 主动提出的待解释点：无。
 - 回滚：撤销本任务的 Debug root resolver、两项 composition tests、smoke 脚本与状态文档即可；绝不对用户的 Application Support 数据执行任何删除或 schema 操作。
+
+## 任务 023：Gate 0 最终阻断修复与 baseline fast-forward
+
+- 日期：2026-07-15
+- 当前状态：工程门禁已通过，等待 Issue 审查；这不表示 History UI、详情/删除、Export、安装、签名、公证、发布或 Syc 产品验收完成。
+- 用户场景：RC smoke 必须同时证明正常交接和存储无法打开时的用户可恢复响应，而且验证本身绝不能影响已有本地历史；依赖审计也不能以忽略告警取代修复。
+- 角色与交接：shell smoke 把唯一新建的临时 Application Support root 交给 Debug composition；composition 在成功时交给 GRDB，在精确的 Debug failure 开关下交给既有 storage-unavailable 分支；Host 只转发 frame 和结构化响应。Ajv 2020 与 `ajv-formats` 继续在构建期生成 MV3 可用 validator，不改变 wire contract。
+- 本次核心名词：状态指纹（不打印正文或文件名的目录状态摘要）、确定性失败注入（不依赖权限偶然性地走同一失败分支）、production audit（只检查实际随产品交付的依赖）。
+- 自动证据：GHSA-2g4f-4pwh-qvx6 的受影响范围 `< 8.18.0` 已以 Ajv 8.18.0 修复；`pnpm audit --prod` 为 0 vulnerability。Web、Swift 120/120、SwiftPM Debug/Release、Xcode 四目标、history Release benchmark、contracts/generated validator、licenses、secret hygiene、doctor、success/failure vertical smoke、migration 001 hash 与无 Migration002 均已重跑通过。
+- 安全边界：failure 开关只在 Debug 对精确值 `1` 生效，Release 不读取它；state comparison 不输出真实目录内容；cleanup 只删除脚本本次创建的临时 root。没有 Provider、API Key、Cookie、真实正文、签名、公证或发布。
+- 可选跟做：运行 `./scripts/run-vertical-smoke.sh`，观察 success 与 failure 各 20 次 Host → socket → App 响应以及相同状态指纹；该动作不写真实 Application Support，也不是关闭 Issue 的前提。
+- 回滚：回退本任务的 smoke failure 开关、其单元测试、Ajv 8.18.0 lock/declarations 和状态文档；绝不触碰 migration 001、真实用户数据库或 Keychain。

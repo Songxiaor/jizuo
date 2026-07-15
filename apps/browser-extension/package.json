@@ -15,6 +15,6 @@
     "typecheck": "tsc -p tsconfig.json",
     "test": "vitest run"
   },
-  "dependencies": {"@linkdigest/shared": "workspace:*", "ajv": "8.17.1", "ajv-formats": "3.0.1"},
+  "dependencies": {"@linkdigest/shared": "workspace:*", "ajv": "8.18.0", "ajv-formats": "3.0.1"},
   "devDependencies": {"wxt": "0.20.27", "vitest": "4.1.10", "typescript": "6.0.3"}
 }

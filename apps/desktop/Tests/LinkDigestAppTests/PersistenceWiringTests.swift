@@ -198,6 +198,16 @@ final class AppCompositionTests: XCTestCase {
     XCTAssertEqual(resolved, expected)
   }
 
+  func testDebugSmokeOpenFailureInjectionRequiresExactOptIn() {
+    XCTAssertTrue(AppApplicationSupportRoot.shouldInjectOpenFailure(
+      environment: [AppApplicationSupportRoot.smokeOpenFailureEnvironmentKey: "1"]
+    ))
+    XCTAssertFalse(AppApplicationSupportRoot.shouldInjectOpenFailure(environment: [:]))
+    XCTAssertFalse(AppApplicationSupportRoot.shouldInjectOpenFailure(
+      environment: [AppApplicationSupportRoot.smokeOpenFailureEnvironmentKey: "true"]
+    ))
+  }
+
   func testWritableBootstrapRecoversBeforeStartingServerAndRunsOnlyOnce() async {
     let log = WiringEventLog()
     let repository = WiringRepository(log: log)
