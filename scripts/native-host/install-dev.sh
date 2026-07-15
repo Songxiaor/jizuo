@@ -5,13 +5,16 @@ EXTENSION_ID=""
 HOST_PATH=""
 APPLY=0
 BROWSER=""
+USER_DATA_DIR=""
+EDGE_PROFILE_SCOPED=0
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --extension-id) EXTENSION_ID="${2:-}"; shift 2;;
     --host-path) HOST_PATH="${2:-}"; shift 2;;
     --browser) BROWSER="${2:-}"; shift 2;;
+    --user-data-dir) USER_DATA_DIR="${2:-}"; shift 2;;
     --apply) APPLY=1; shift;;
-    --help) echo "Usage: $0 --extension-id ID --host-path PATH --browser chrome|brave|edge [--apply]"; exit 0;;
+    --help) echo "Usage: $0 --extension-id ID --host-path PATH --browser chrome|brave|edge [--user-data-dir PATH] [--apply]"; exit 0;;
     *) echo "unknown option: $1" >&2; exit 2;;
   esac
 done
@@ -28,21 +31,35 @@ case "$HOST_PATH" in
     ;;
 esac
 case "$BROWSER" in
-  chrome|brave) TARGETS=("$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts");;
-  edge) TARGETS=("$HOME/Library/Application Support/Microsoft Edge/NativeMessagingHosts");;
+  chrome|brave)
+    [[ -z "$USER_DATA_DIR" ]] || { echo "--user-data-dir is supported only with --browser edge" >&2; exit 2; }
+    TARGET_ROOT="$HOME"
+    TARGETS=("$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts")
+    ;;
+  edge)
+    if [[ -n "$USER_DATA_DIR" ]]; then
+      EDGE_PROFILE_SCOPED=1
+      TARGET_ROOT="$USER_DATA_DIR"
+      TARGETS=("$USER_DATA_DIR/NativeMessagingHosts")
+    else
+      TARGET_ROOT="$HOME"
+      TARGETS=("$HOME/Library/Application Support/Microsoft Edge/NativeMessagingHosts")
+    fi
+    ;;
   *) echo "--browser is required and must be chrome, brave, or edge" >&2; exit 2;;
 esac
 
-assert_no_home_symlink_components() {
-  local target="$1"
-  [[ "$HOME" = /* ]] || { echo "HOME must be an absolute path" >&2; exit 2; }
-  [[ ! -L "$HOME" ]] || { echo "refusing symlink HOME: $HOME" >&2; exit 2; }
+assert_no_target_root_symlink_components() {
+  local root="$1"
+  local target="$2"
+  [[ "$root" = /* ]] || { echo "target root must be an absolute path" >&2; exit 2; }
+  [[ ! -L "$root" ]] || { echo "refusing symlink target root: $root" >&2; exit 2; }
   case "$target" in
-    "$HOME"/*) ;;
-    *) echo "target is outside HOME: $target" >&2; exit 2;;
+    "$root"/*) ;;
+    *) echo "target is outside root: $target" >&2; exit 2;;
   esac
-  local relative="${target#"$HOME"/}"
-  local current="$HOME"
+  local relative="${target#"$root"/}"
+  local current="$root"
   local component
   IFS='/' read -r -a components <<< "$relative"
   for component in "${components[@]}"; do
@@ -52,8 +69,57 @@ assert_no_home_symlink_components() {
   done
 }
 
+assert_canonical_edge_profile_path() {
+  local profile="$1"
+  [[ "$profile" = /* && "$profile" != "/" && "$profile" != */ ]] || {
+    echo "--user-data-dir must be a non-root canonical absolute path" >&2
+    exit 2
+  }
+  case "$profile" in
+    *//*|*/./*|*/../*|*/.|*/..)
+      echo "--user-data-dir must not contain empty, . or .. path components" >&2
+      exit 2
+      ;;
+  esac
+  [[ -d "$profile" ]] || { echo "--user-data-dir must be an existing directory" >&2; exit 2; }
+}
+
+assert_no_symlink_components_from_root() {
+  local path="$1"
+  local current=""
+  local component
+  IFS='/' read -r -a components <<< "$path"
+  for component in "${components[@]}"; do
+    [[ -n "$component" ]] || continue
+    current="$current/$component"
+    [[ ! -L "$current" ]] || { echo "refusing symlink profile path component: $current" >&2; exit 2; }
+    [[ -d "$current" ]] || { echo "profile path component is not a directory: $current" >&2; exit 2; }
+  done
+}
+
+assert_edge_profile_target() {
+  local profile="$1"
+  local target="$2"
+  assert_canonical_edge_profile_path "$profile"
+  assert_no_symlink_components_from_root "$profile"
+  [[ "$target" == "$profile/NativeMessagingHosts" ]] || {
+    echo "Edge profile target must be the direct NativeMessagingHosts child" >&2
+    exit 2
+  }
+  if [[ -e "$target" || -L "$target" ]]; then
+    [[ -d "$target" && ! -L "$target" ]] || {
+      echo "refusing non-directory or symlink Edge profile target: $target" >&2
+      exit 2
+    }
+  fi
+}
+
 for dir in "${TARGETS[@]}"; do
-  assert_no_home_symlink_components "$dir"
+  if [[ $EDGE_PROFILE_SCOPED -eq 1 ]]; then
+    assert_edge_profile_target "$TARGET_ROOT" "$dir"
+  else
+    assert_no_target_root_symlink_components "$TARGET_ROOT" "$dir"
+  fi
   file="$dir/$HOST_NAME"
   [[ ! -L "$file" ]] || { echo "refusing symlink target manifest: $file" >&2; exit 2; }
 done
@@ -73,13 +139,24 @@ if [[ $APPLY -eq 1 ]]; then
   }
   trap report_failed_temp EXIT
   for dir in "${TARGETS[@]}"; do
-    mkdir -p "$dir"
-    assert_no_home_symlink_components "$dir"
+    if [[ $EDGE_PROFILE_SCOPED -eq 1 ]]; then
+      assert_edge_profile_target "$TARGET_ROOT" "$dir"
+      if [[ ! -e "$dir" && ! -L "$dir" ]]; then
+        mkdir "$dir"
+      fi
+      assert_edge_profile_target "$TARGET_ROOT" "$dir"
+    else
+      mkdir -p "$dir"
+      assert_no_target_root_symlink_components "$TARGET_ROOT" "$dir"
+    fi
     file="$dir/$HOST_NAME"
     [[ ! -L "$file" ]] || { echo "refusing symlink target manifest: $file" >&2; exit 2; }
     if [[ -e "$file" && ! -f "$file" ]]; then
       echo "refusing non-regular target manifest: $file" >&2
       exit 2
+    fi
+    if [[ $EDGE_PROFILE_SCOPED -eq 1 ]]; then
+      assert_edge_profile_target "$TARGET_ROOT" "$dir"
     fi
     if [[ -e "$file" ]]; then
       timestamp="$(date +%Y%m%d%H%M%S)"
@@ -93,6 +170,9 @@ if [[ $APPLY -eq 1 ]]; then
       printf 'BACKUP: %s\n' "$backup"
     else
       printf 'BACKUP: (none; target did not exist)\n'
+    fi
+    if [[ $EDGE_PROFILE_SCOPED -eq 1 ]]; then
+      assert_edge_profile_target "$TARGET_ROOT" "$dir"
     fi
     TMP_FILE="$(mktemp "$dir/.${HOST_NAME}.tmp.XXXXXX")"
     chmod 600 "$TMP_FILE"

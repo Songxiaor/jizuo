@@ -1,0 +1,13 @@
+{
+  "cases": [
+    {"name":"ack-match","expected":"accepted","value":{"kind":"taskAccepted","version":1,"requestId":"req-1","characterCount":12}},
+    {"name":"ack-extra-fields","expected":"accepted","value":{"kind":"taskAccepted","version":1,"requestId":"req-1","characterCount":12,"futureField":"ignored"}},
+    {"name":"ack-request-mismatch","expected":"correlation_error","value":{"kind":"taskAccepted","version":1,"requestId":"other","characterCount":12}},
+    {"name":"ack-missing-character-count","expected":"wire_invalid","value":{"kind":"taskAccepted","version":1,"requestId":"req-1"}},
+    {"name":"ack-wrong-version","expected":"wire_invalid","value":{"kind":"taskAccepted","version":2,"requestId":"req-1","characterCount":12}},
+    {"name":"unknown-kind","expected":"wire_invalid","value":{"kind":"futureSuccess","version":1,"requestId":"req-1","characterCount":12}},
+    {"name":"storage-error","expected":"error","value":{"kind":"error","error":{"version":1,"requestId":"req-1","createdAt":"2026-07-15T04:00:00Z","category":"storage","code":"STORAGE_WRITE_FAILED","retryable":true,"action":"retry"}}},
+    {"name":"storage-error-sentinel","expected":"error","forbidden":"sentinel-secret-path","value":{"kind":"error","error":{"version":1,"requestId":"req-1","createdAt":"2026-07-15T04:00:00Z","category":"storage","code":"STORAGE_UNAVAILABLE","retryable":true,"action":"retry","safeDetail":"sentinel-secret-path"}}},
+    {"name":"error-extra-fields","expected":"error","value":{"kind":"error","error":{"version":1,"requestId":"req-1","createdAt":"2026-07-15T04:00:00Z","category":"storage","code":"STORAGE_READ_ONLY","retryable":false,"action":"none","extra":"ignored"},"futureField":true}}
+  ]
+}

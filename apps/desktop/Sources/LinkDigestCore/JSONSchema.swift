@@ -19,6 +19,10 @@ struct JSONSchemaValidator {
     try validate(value, against: root, path: "$")
   }
 
+  func validateDefinition(_ name: String, value: Any) throws {
+    try validate(value, against: try resolve("#/$defs/\(name)"), path: "$.\(name)")
+  }
+
   private func validate(_ value: Any, against schema: [String: Any], path: String) throws {
     if let reference = schema["$ref"] as? String {
       try validate(value, against: try resolve(reference), path: path)
@@ -129,7 +133,9 @@ struct JSONSchemaValidator {
   }
 }
 
-enum CaptureContractSchema {
+// Forward-compatible wire schema: unknown optional fields are accepted.
+// Strict persisted invariants live in Migration/Repository checks.
+enum CaptureWireContractSchema {
   static func validator() throws -> JSONSchemaValidator {
     guard let url = Bundle.module.url(forResource: "capture-envelope-v1.schema", withExtension: "json", subdirectory: "Resources/contracts") else {
       throw JSONSchemaValidationError.invalid("bundled capture schema is missing")

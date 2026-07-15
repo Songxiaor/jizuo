@@ -44,7 +44,16 @@
 | Sentinel / 测试哨兵值 | 测试临时生成的明显假秘密，用来追踪它是否越过安全边界 | 消防演习使用的无害烟雾 | Swift tests 生成 `sentinel-<UUID>` 并断言 RunState、UI 和错误文案不含它 | 很难证明“未泄漏”覆盖了真实数据流，而又不能使用真实 Key | L2 | L2 |
 | Keychain Orphan | 已不再被当前配置引用、但因旧 item 删除失败仍留在 Keychain 的条目 | 换锁后遗留且无人登记的一把旧钥匙 | Provider staged save 成功后的 best-effort 旧引用清理 | 新配置仍可用，但历史秘密会不可见地累积 | L3 | L2 |
 | Bounded Retry / 有界重试 | 只在明确错误下、最多有限次数重发请求 | 客服只回拨约定次数，不无限拨号 | 429/5xx 在尚无输出时最多重试两次 | 无限请求会增加费用、等待和重复结果风险 | L3 | L3 |
-| SQLite | 保存在单个本地数据库文件中的结构化存储 | 本机上的可检索卡片柜 | 保存任务、原文、摘要和执行记录 | 历史只能散落成文件且难以检索 | L3 | 未开始 |
+| SQLite | 保存在单个本地数据库文件中的结构化存储 | 本机上的可检索卡片柜 | 保存任务、原文、摘要和执行记录 | 历史只能散落成文件且难以检索 | L3 | L3 |
+| Binding | 把 Swift 调用翻译成 SQLite C API 的代码层 | 双语柜台 | GRDB 只存在于 `LinkDigestPersistence` 内部 | 每个连接、参数和错误都要自行封装 | L3 | L3 |
+| WAL | 把已提交变更先追加到旁边日志，再择机归并主库 | 仓库的当日流水账 | 让一个 writer 与多个 readers 并行，并生成同目录 `-wal/-shm` | 读写更容易互相阻塞，复制主文件还可能漏数据 | L3 | L3 |
+| Migration | 按版本、只向前改变数据库结构 | 房屋逐期装修记录 | V0.3 spike 验证 v001 → v002 与失败回滚 | 老数据库无法安全升级，失败可能留下半结构 | L3 | L3 |
+| Online Backup | SQLite 对活跃数据库生成一致快照的受控 API | 营业中的档案馆由管理员复印 | 备份包含 WAL 中已提交状态，再受控恢复并做 integrity check | 直接复制活跃主文件可能漏记录或损坏 | L3 | L3 |
+| Read-only Recovery | 写入有风险时禁止修改，但尽量保留读取与导出 | 仓库封存后仍允许盘点取件 | future schema、migration 失败和存储不可写的逃生口 | 用户只能冒险写入或删库重来 | L3 | L3 |
+| Canonical URL | 只做无争议规则后的稳定链接身份 | 把门牌大小写和默认端口统一，但不擅自换街道 | Core v1 小写 scheme/host、去 fragment/default port、补 `/`，保留 path/query 顺序 | 同一链接会重复建档，或过度归一化误合并不同内容 | L3 | L3 |
+| Payload Fingerprint | 对捕获语义做确定性 SHA-256 指纹 | 给包裹内容盖章，运输单号变化不影响内容身份 | 长度前缀 UTF-8 编码 source/capture/evidence/时间，排除 requestId/idempotencyKey | transport 重试可能重复入库，或 hash JSON 字节导致跨实现漂移 | L3 | L3 |
+| Repository Port | Core 声明的稳定数据存取接口 | 统一插座，GRDB 只是可替换插头 | 02A 的 capture/run/history/detail/export/delete 命令与结果边界 | Application/UI 会直接持有 SQL 或 GRDB 类型 | L3 | L3 |
+| Keyset Pagination | 从上一页最后一条排序键继续查下一页 | 用上一张书签继续翻，而非每次从第一页数 | History 以 `(updated_at_ms, task_id)` 排序分页，首页不读正文 | 大历史使用 OFFSET 时越翻越慢且并发插入易错位 | L3 | L3 |
 | local-first | 核心功能和数据默认在用户本机完成与保存 | 先放自己的保险柜，需要时才同步 | P0 不依赖服务器也可总结、翻译和查历史 | 断网不可用，隐私和服务器成本上升 | L3 | L1 |
 | Capacity Model / 容量模型 | 把用户目标换算成请求、任务、连接和数据量的计算基线 | 桥梁开工前的承重表 | 连接注册目标、架构设计、压测和扩容判断 | “100 万用户”无法变成可验证的工程目标 | L3 | 未开始 |
 | Modular Monolith / 模块化单体 | 一个可部署服务内部按业务划出不可随意穿透的模块 | 一栋楼里的独立店铺，共用大楼但各管各的货 | 组织云端 Identity、Sync、Managed AI 等模块 | 普通单体容易互相缠绕，过早微服务又增加运维成本 | L3 | 未开始 |

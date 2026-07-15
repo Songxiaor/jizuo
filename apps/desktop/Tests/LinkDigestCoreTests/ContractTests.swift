@@ -15,6 +15,43 @@ final class ContractTests: XCTestCase {
     let results = try FixtureRunner.run(directory: root); XCTAssertTrue(results.allSatisfy { $0.1 })
   }
 
+  func testSharedNativeResponseFixturesAndStrictDecoder() throws {
+    let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+    let fixtureData = try Data(contentsOf: root.appendingPathComponent("contracts/native-response-fixtures.json"))
+    let fixture = try JSONSerialization.jsonObject(with: fixtureData) as! [String: Any]
+    let cases = fixture["cases"] as! [[String: Any]]
+    let validator = try CaptureWireContractSchema.validator()
+
+    for entry in cases {
+      let name = entry["name"] as! String
+      let expected = entry["expected"] as! String
+      let value = entry["value"]!
+      let data = try JSONSerialization.data(withJSONObject: value)
+      if expected == "wire_invalid" {
+        XCTAssertThrowsError(try validator.validateDefinition("NativeResponse", value: value), name)
+        XCTAssertThrowsError(try JSONDecoder().decode(NativeResponse.self, from: data), name)
+      } else {
+        XCTAssertNoThrow(try validator.validateDefinition("NativeResponse", value: value), name)
+        let decoded = try JSONDecoder().decode(NativeResponse.self, from: data)
+        if expected == "accepted", case let .taskAccepted(version, requestID, count) = decoded {
+          XCTAssertEqual(version, 1); XCTAssertEqual(requestID, "req-1"); XCTAssertEqual(count, 12)
+        }
+        if expected == "correlation_error", case let .taskAccepted(_, requestID, _) = decoded {
+          XCTAssertNotEqual(requestID, "req-1")
+        }
+      }
+    }
+  }
+
+  func testUnicodeScalarSemanticsIncludeEmojiCombiningAndNUL() throws {
+    let cases = [("😀", 1), ("e\u{301}", 2), ("a\0b", 3)]
+    for (text, expected) in cases {
+      XCTAssertEqual(text.unicodeScalars.count, expected)
+      let value = CaptureEnvelopeV1(version: 1, requestId: "unicode-\(expected)", createdAt: "2026-07-15T04:00:00Z", source: .init(kind: "browser_capture", url: "https://example.test/unicode", title: "Unicode fixture", platform: "generic"), capture: .init(method: "rendered_dom", text: text, characterCount: expected, completeness: "full_article", capturedAt: "2026-07-15T04:00:00Z"), evidence: .init(sourceLabel: "fixture", usedCookie: false))
+      XCTAssertNoThrow(try CaptureValidator.validate(value))
+    }
+  }
+
   func testSwiftExecutesSchemaRulesBeyondSemanticInvariants() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("contracts/fixtures/valid.json")
     let valid = try JSONSerialization.jsonObject(with: Data(contentsOf: root)) as! [String: Any]

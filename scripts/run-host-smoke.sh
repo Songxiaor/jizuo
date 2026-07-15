@@ -44,8 +44,8 @@ async function verifyResponseTimeout() {
     if (status !== 0 || output.length < 4) throw new Error("Host timeout probe returned no frame");
     const responseLength = output.readUInt32LE(0);
     const timeoutResponse = JSON.parse(output.subarray(4, 4 + responseLength).toString("utf8"));
-    if (timeoutResponse.error?.code !== "NATIVE_MESSAGE_TIMEOUT") {
-      throw new Error(`Expected NATIVE_MESSAGE_TIMEOUT, received ${timeoutResponse.error?.code ?? "unknown"}`);
+    if (timeoutResponse.error?.code !== "NATIVE_MESSAGE_TIMEOUT" || timeoutResponse.error?.category !== "network") {
+      throw new Error(`Expected network/NATIVE_MESSAGE_TIMEOUT, received ${timeoutResponse.error?.category ?? "unknown"}/${timeoutResponse.error?.code ?? "unknown"}`);
     }
   } finally {
     await new Promise((resolve) => server.close(resolve));

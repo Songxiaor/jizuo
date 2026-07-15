@@ -10,6 +10,7 @@ export default tseslint.config(
       "**/coverage/**",
       "**/.output/**",
       "**/.wxt/**",
+      "apps/desktop/.build/**",
       "output/**",
       ".scatter/**",
     ],

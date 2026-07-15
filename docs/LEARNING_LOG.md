@@ -127,7 +127,7 @@
 ## 任务 008：建立 V0.1 当前页到 SwiftUI 自动化垂直链路
 
 - 日期：2026-07-14
-- 当前状态：工程进行中（自动化链路与 Chrome/Brave 真实验收完成；Edge 真实验收待授权）
+- 当前状态：工程完成（Chrome/Brave/Edge 三浏览器工程证据已收口；正式安装与发布仍未完成）
 - 用户场景：用户在 Chromium 当前文章页点击扩展，标题、URL、正文、捕获方式和字符数进入本机 SwiftUI APP；APP 或 Host 不可用时得到可恢复错误。
 - 本次只解决：语言中立合同、固定文章提取、MV3 background、Native Messaging framing、独立 Host、APP socket inbox 与 SwiftUI 展示；不实现模型、SQLite、账号、云、签名、公证或正式视觉。
 - 角色与交接：Popup 接收用户动作；注入函数读取 DOM；background 交出 `CaptureEnvelopeV1`；Native Host 校验 framing 与合同；Unix domain socket 交给 APP；Application inbox 幂等接收；SwiftUI 只展示状态。
@@ -141,27 +141,28 @@
   5. Node/Vitest 中可运行的 Ajv runtime compiler 在 Chrome MV3 Service Worker 中被 CSP 拒绝；已改为构建期生成静态 validator，并加入同 fixtures 与无动态代码生成测试。
   6. 终端可直接启动的 Host 从 Chrome 启动时会因 `Documents` TCC 等待权限；单独搬 executable 又缺 Swift resource bundle。真实验收改为成对暂存 executable + resource bundle，正式安装边界由“一个二进制”修正为“签名 Host 与合同资源的完整交付单元”。
   7. Brave 150 在 macOS 上把用户级 Native Messaging 查找目录兼容映射到 Chrome 的注册位置；现场进程时间线与对应源码一致。验收因此以“确认实际生效的 manifest”作为交接检查，不把浏览器品牌目录名本身当作真相源，也不把当前版本行为外推为永久规则。
-- 自动验证：shared 10 tests、extension 6 tests、Swift 11 tests；WXT MV3 build；Swift/Xcode App 与 Host Debug/Release；Host 离线/超限 smoke；stalled client + 20/20 vertical smoke；doctor 无 FAIL。Chrome 真实触发另完成 APP 离线 `APP_UNAVAILABLE`、SwiftUI 字段观察和 20/20 Release p95 `49.2 ms`；Brave 隔离 Profile 完成离线错误、在线接收和 20/20 p95 `34.9 ms`。完整命令与剩余步骤见 `docs/V0.1_IMPLEMENTATION.md`。
+  8. Edge 150 使用隔离 `--user-data-dir` 时，用户级 Native Messaging manifest 查找根随之变为 `<user-data-dir>/NativeMessagingHosts/`；旧脚本只写默认 Edge 目录。脚本现保留默认路径，并以仅 Edge 可用的 `--user-data-dir` 显式选择隔离目标。
+- 自动验证：shared 10 tests、extension 9 tests、Swift 既有 46 tests 证据；WXT MV3 build；Swift/Xcode App 与 Host Debug/Release；Host 离线/超限 smoke；stalled client + 20/20 vertical smoke；doctor 无 FAIL。Chrome 真实触发完成 APP 离线 `APP_UNAVAILABLE`、SwiftUI 字段观察和 20/20 Release p95 `49.2 ms`；Brave 隔离 Profile 完成离线错误、在线接收和 20/20 p95 `34.9 ms`；Edge 隔离 Profile 完成人工 Popup 预览，以及修复后 Service Worker → Host → socket → Swift App `taskAccepted 20/20`、p95 `24.5 ms`。完整证据边界见 `docs/V0.1_IMPLEMENTATION.md`。
 - 已确认失败路径：不支持版本、非 Web URL、空正文、字符数不一致、超大正文/Frame、非法 Schema 字段、Host 未安装、APP 未运行、Native timeout 均有稳定错误或测试证据；普通日志不记录正文和秘密。
 - 恢复方式：合同漂移用 `scripts/sync-contracts.sh` + `pnpm check`；APP 离线打开后重试；manifest 使用实际 extension ID dry-run 后再 apply；路线失败保留合同与证据并通过 Brain CLI 记录 reversal。
 - 过程讲解：任务开始与每个实施阶段已按“场景 → 角色与交接 → 工作流 → 工具协同”解释合同、framing、Application boundary、幂等、连接隔离、CSP、TCC 与失败恢复；解释跟随真实断点出现，没有把理解变成 Syc 的关闭任务门槛。
 - 可选跟做：对同一 `contracts/fixtures/valid.json` 把 `version` 改成 2，观察 TypeScript 与 Swift 都拒绝；或运行 `./scripts/run-vertical-smoke.sh` 观察 stalled client 不阻塞后续 20 条。两者都不是继续开发的门槛。
 - Syc 主动提出的待解释点：无。
 - 可选深挖：JSON Schema evaluator、Chromium framing、Unix socket 或 Swift MainActor 可分别另开小窗口。
-- 下一步：Edge 需先获得安装授权并复用当前已验证的测试 Host 交付单元完成同一验收；Edge 通过前不把任务标为完整完成。正式稳定目录、Developer ID 签名与公证留到后续 release spike。
+- 下一步：V0.1 工程矩阵已关闭；正式稳定 Host 目录、Developer ID 签名、公证和发布包留到后续 release spike。Edge 的 Popup 观察与修复后 20/20 传输是两层独立证据，不补写成连续截图。
 
 ## 任务 009：收紧 Native Host 安装与卸载门禁
 
 - 日期：2026-07-14
-- 当前状态：工程完成（脚本边界与隔离回归完成；Edge 真实安装仍待显式授权）
+- 当前状态：工程完成（默认与 Edge 隔离 Profile 目标边界均有回归证据）
 - 用户场景：开发者需要把同一个 Native Host manifest 绑定到指定 Chromium 浏览器，同时能够预览、备份和人工卸载，不误写其它浏览器配置。
 - 角色与交接：安装脚本接收显式浏览器选择和 Host 交付单元；路径校验器确认 executable、resource bundle 与 Schema；同目录 rename 写入步骤交出固定 basename manifest；只读卸载计划交出人工命令，不执行破坏性动作。
 - 本次核心名词：显式授权、目标去重、同目录 rename 设计、只读卸载计划。
 - 被现场证据修正的判断：Brave 150 当前用户级查找映射到 Chrome 目录，因此不能简单把浏览器品牌名当作目录真相；脚本现在将 Brave 与 Chrome 去重，并要求 Edge 单独显式选择。
-- 自动验证：`pnpm native-host:check` 在隔离临时 `HOME` 中通过；验证 `all`/缺 browser/非法 ID/相对路径/缺 bundle/缺 Schema 拒绝、Brave→Chrome 目标、Edge dry-run、目标与路径组件 symlink 拒绝、备份候选 symlink 不跟随、资源/Schema 校验、0600 权限、唯一备份、同目录 rename 设计、失败临时文件保留及 uninstall-plan 无写入。沙盒和失败临时文件保留并打印路径，不清理临时目录。
-- 安全边界：没有读取其它 Native Messaging manifest，没有真实 HOME apply，没有执行 `rm`，没有安装 Edge 或修改外部目录。
+- 自动验证：`pnpm native-host:check` 在物理路径临时 `HOME` 中通过；验证 `all`/缺 browser/非法 ID/相对路径/缺 bundle/缺 Schema 拒绝、Brave→Chrome 目标、Edge 默认 dry-run、Edge 隔离目标实际写入、Chrome 拒绝该参数、缺失 Profile、Profile 本身/父级/中间组件 symlink、`.`、`..`、重复 `/`、尾随 `/` 拒绝，以及这些失败不会在解析位置创建 `NativeMessagingHosts` 或 manifest。默认 HOME 的目标组件检查、备份 symlink、0600 权限、唯一备份、同目录 rename、失败临时文件和只读 uninstall plan 回归继续通过。
+- 安全边界：该脚本任务没有读取其它 Native Messaging manifest，没有真实 HOME apply，也没有执行 `rm`；后续真实 Edge 验收使用隔离、禁同步 Profile 独立完成。
 - 可选跟做：在隔离 `HOME` 下运行 `./scripts/native-host/uninstall-plan.sh --browser brave`，只观察目标存在状态和人工恢复命令；不是继续开发的前置条件。
-- 下一步：验证 Edge 前先获得浏览器安装授权；浏览器存在后，按原始任务已经给出的测试 manifest 授权，先列出精确 Edge 目标、备份同名旧文件，再显式执行单浏览器 `--apply`。正式稳定目录、Developer ID 签名与公证留到后续 release spike。
+- 下一步：正式稳定 Host 目录、Developer ID 签名与公证留到后续 release spike。默认 Edge 回滚可用只读 uninstall plan；隔离 Profile 回滚以安装时打印的 `TARGET` 为准人工核对。
 
 ## 任务 010：统一文档状态与 PRD 范围口径
 
@@ -186,7 +187,7 @@
 - 工程产物：`docs/specs/V0.2_BYOK_PLAN.md`；Architecture 入口；5 个实际进入规划的名词。
 - 本次核心名词：ProviderProfile、SecretStore、ModelProvider、RunState、有界重试。
 - 被当前实现修正的判断：现有 `AppViewModel` 仍直接承接 V0.1 socket 展示，尚无 Application/Provider 边界；V0.2 必须先建立 port/adapter，不能从 View 直接接 Keychain 或 URLSession。
-- 安全与恢复：API Key 只进入 Keychain；写入失败不降级明文；流中断保留 partial 并标记 incomplete；取消传播到 URLSession；V0.1 Edge 未关闭时不宣称浏览器矩阵完成。
+- 安全与恢复：API Key 只进入 Keychain；写入失败不降级明文；流中断保留 partial 并标记 incomplete；取消传播到 URLSession。该任务实施时 V0.1 Edge 仍未关闭，后续已由任务 018 独立补齐证据，未借 V0.2 组件测试代替浏览器验收。
 - 过程讲解：在规划开始、读取当前实现和收敛组件边界三个节点解释了配置、秘密、Provider、streaming 与 UI 的交接关系。
 - 自动验证：规划完成后运行目标 `git diff`、关键词检查与 `./scripts/doctor`；结果记录在本次执行回报。
 - 可选跟做：沿 `V0.2_BYOK_PLAN.md` 第 2 节数据流，从 ContentView 依次指出 Orchestrator、SecretStore、ModelProvider 与 RunState；该动作不阻塞后续开发。
@@ -233,7 +234,7 @@
 - Syc 主动提出的待解释点：无。
 - 可选深挖：SSE line framing、URLSession cancellation、Retry-After 或 loopback fake server 可分别另开小窗口学习。
 - 已知限制：连接测试 intent 已存在，但尚无 Application Orchestrator 从 SecretStore 短时取 Key，因此本轮没有让 SwiftUI ViewModel 直接接触 Keychain 或 API Key；对应 UI 应在保持该边界的后续小任务中接入。
-- 下一步：任务 C 前先由 Syc/MindMux 决定是否补一个独立连接测试 UI 小任务，并继续遵守 V0.1 Edge 未关闭时不得宣称浏览器矩阵完成。
+- 下一步：任务 C 前先由 Syc/MindMux 决定是否补一个独立连接测试 UI 小任务。当时 V0.1 Edge 尚未关闭，后续已由任务 018 独立补齐证据。
 
 ## 任务 014：实现总结/翻译 RunState、streaming UI 与取消传播
 
@@ -254,7 +255,7 @@
 - 可选跟做：运行 `cd apps/desktop && swift test --filter ModelRunOrchestratorTests`，观察停止与旧 run 隔离测试；该动作不访问网络，也不是继续开发的门槛。
 - Syc 主动提出的待解释点：无。
 - 可选深挖：Swift actor reentrancy、AsyncThrowingStream termination 或 MainActor 状态过滤可分别另开小窗口。
-- 已知限制与下一步：设置页连接测试 UI 未接入；真实 Provider 兼容抽样需要单独授权；错误恢复文案与秘密门禁随后已由任务 D 收口；Edge 未完成前不得宣称 V0.1 浏览器矩阵关闭。
+- 已知限制与下一步：设置页连接测试 UI 未接入；真实 Provider 兼容抽样需要单独授权；错误恢复文案与秘密门禁随后已由任务 D 收口；V0.1 Edge 证据后来由任务 018 独立收口。
 
 ## 任务 015：统一错误语义、秘密门禁并完成 V0.2 工程验收
 
@@ -272,7 +273,7 @@
 - 可选跟做：运行 `pnpm secret:check`，观察只读门禁如何检查日志、observable state、fixture 和 UserDefaults adapter；不会读取 Keychain 或访问网络，也不是继续开发的门槛。
 - Syc 主动提出的待解释点：无。
 - 可选深挖：allowlist 错误目录、流式输出 redaction 的边界或发布前 secret incident response 可分别另开小窗口。
-- 已知限制：单独测试连接 UI 留给后续小任务；真实 Provider 抽样需要单独授权；旧 Keychain orphan 清理仍需要后续维护入口；V0.1 Edge 未关闭。
+- 已知限制：单独测试连接 UI 留给后续小任务；真实 Provider 抽样需要单独授权；旧 Keychain orphan 清理仍需要后续维护入口。V0.1 Edge 证据后来由任务 018 独立收口。
 
 ## 任务 016：V0.2 收口后复核修正与下一阶段准备
 
@@ -290,7 +291,7 @@
 - 过程讲解：任务开始时解释复核的场景、角色、工作流和工具协同；实施时就地说明 stable code、sentinel、secret hygiene 与 Keychain orphan 的职责、交接物和失效表现。
 - 可选跟做：运行 `pnpm secret:check`，观察成功时只显示 `secret-hygiene: OK`；该动作不读取 Keychain、不访问网络，也不是下一阶段的前置条件。
 - Syc 主动提出的待解释点：无。
-- 建议下一步：Edge 真实验收 → 可选真实 Provider 手工抽样 → 可选测试连接按钮 → Keychain orphan 清理维护入口 → V0.3 SQLite 本地历史。
+- 建议下一步：V0.1 Edge 证据已由任务 018 收口；后续顺序为可选真实 Provider 手工抽样 → 可选测试连接按钮 → Keychain orphan 清理维护入口 → V0.3 SQLite 本地历史。
 
 ## 任务 017：迁移到 Multica 并修复干净 CI 的 WXT 类型准备
 
@@ -302,7 +303,80 @@
 - 被远程证据修正的判断：本机 `pnpm check` 通过是因为已有 `.wxt` 缓存；首次 GitHub CI 在干净 checkout 中找不到 `browser` 和 `defineBackground`，证明 typecheck 不能依赖本机生成目录。扩展脚本现显式在 build/typecheck/test 前运行 `wxt prepare`。
 - 第二次远程修正：WXT 类型生成通过后，CI runner 仍因缺少 `rg` 和本机 `brain-page` CLI 使 `doctor` 失败。CI 现在显式安装 ripgrep，并从固定 Git commit 准备零依赖 Brain CLI；feature branch 只走 pull_request 检查，避免 push 与 PR 重复运行同一套任务。
 - 工程产物：私有 GitHub 基线、6 个专业 Agent、LinkDigest 产品小队、16 个历史 Issue、8 阶段未来路线、`docs/MULTICA_WORKFLOW.md` 与干净环境 WXT 类型准备。
-- 安全边界：没有上传 API Key、Cookie、Token 或私人正文；所有未来功能 Issue 保持 backlog；没有安装 Edge、调用真实 Provider、购买服务、签名、公证或发布。
+- 安全边界：没有上传 API Key、Cookie、Token 或私人正文；所有未来功能 Issue 保持 backlog；该迁移任务没有操作 Edge、调用真实 Provider、购买服务、签名、公证或发布。
 - 验证方式：删除 WXT 生成缓存后运行扩展 typecheck，再运行完整 `pnpm check`；通过 PR 和新的 GitHub Actions 结果确认远程干净环境。
 - 过程讲解：迁移时解释了总控、专业 Agent、Squad Leader 路由、backlog/todo 和 Stage；CI 失败后解释了本机缓存为何会掩盖干净环境缺失步骤。
 - 可选跟做：在 Multica 打开 `SYC-24` 查看八个 Stage，并观察所有未来任务仍在 backlog；不需要启动任务或回答问题。
+
+## 任务 018：V0.1 Edge 隔离 Profile 工程收口
+
+- 日期：2026-07-15
+- 当前状态：工程完成（V0.1 三浏览器工程证据收口；正式安装与发布仍未完成）
+- 用户场景：Edge 使用隔离、禁同步 Profile 加载 LinkDigest 后，Popup 能预览固定文章，扩展后台也能找到 Native Host，并把固定正文稳定交给运行中的 Swift App。
+- 本次只解决：Edge 隔离 `user-data-dir` 的 Native Messaging manifest 目标、扩展失败分类、真实 Edge 证据与文档状态校准；不新增依赖，不调用真实 Provider，不运行受 Hana 外层沙盒影响的 Swift 网络/Keychain 测试，不修改 Brain、提交或推送。
+- 角色与交接：前一 Luna 实施实例因模型路由变化中止，留下部分 README、V0.1 文档、安装脚本和扩展错误分类 diff；本轮 Sol 实施 Agent 先审查未提交差异，保留主控与前序实例的正确修复，再补齐 PRD、Architecture、规格、证据、学习日志和验证。Popup 交出页面预览；真实 Edge Service Worker 交出 Native Messaging 请求；Host 交给 Unix socket；运行中 Swift App 返回 `taskAccepted`。
+- 本次核心名词：`user-data-dir`、Native Messaging manifest 查找根、Service Worker、Unix socket、证据分层。
+- 根因：Edge 以 `--user-data-dir=/tmp/...` 启动时，用户级 manifest 查找根随隔离数据根变为 `<user-data-dir>/NativeMessagingHosts/`；旧脚本只写默认 `~/Library/Application Support/Microsoft Edge/NativeMessagingHosts/`，因此隔离 Edge 找不到 Host。`install-dev.sh` 现保留默认路径，并提供仅 Edge 可用的 `--user-data-dir /absolute/profile` 显式目标；Chrome 拒绝该参数。后续安全审查又发现仅检查 Profile 最终节点会漏掉父级 symlink，现已增加词法规范、从 `/` 开始逐组件拒绝 symlink、严格直接子目录和创建/写入前后复验。
+- 真实证据：Edge `150.0.4078.65`、隔离禁同步 Profile、扩展 ID `dpjfghbojjgoagocbjdpfpejhgfdojfh`。人工 Popup 观察为 `Fixed Test Article / 68 个字符`；修复后真实 Service Worker 使用固定 68 字符 envelope，经 Host → Unix socket → 运行中 Swift App 连续返回 `taskAccepted 20/20`，失败 0，p95 `24.5 ms`、min `14.4 ms`、max `46.3 ms`。
+- 证据边界：Popup 观察与修复后 20/20 传输属于两层真实证据；没有修复后单次工具栏点击到 APP 的连续截图，也没有伪造连续截图。Syc 无需再做手动测试才能关闭本轮工程任务。
+- 自动验证：扩展测试在安全复核后为 3 files / 9 tests 全通过；`pnpm native-host:check` 覆盖 Profile 本身、父级和中间 symlink、`.`、`..`、重复 `/`、尾随 `/`、直接子目录及失败无越界写入；`pnpm check:web` 通过，其中 shared 10/10、extension 9/9、WXT build 通过，doctor 为 `PASS=52 WARN=1 FAIL=0`，secret hygiene 为 OK；`git diff --check` 通过。
+- Swift 证据处理：正常环境既有 46 项 Swift tests 仍有效。本轮没有运行当前 Hana 外层沙盒中已知会因 Network.framework、Keychain 与已有 socket 权限或占用失败的测试，也没有修改测试绕过安全；这些环境失败不记为产品回归。
+- 失败恢复与回滚：安装前先 dry-run 核对 `TARGET`，`--apply` 覆盖前创建同目录时间戳 `.bak`。默认 Edge 目标可用只读 `uninstall-plan.sh --browser edge` 查看计划；隔离 Profile 以安装时打印的 `TARGET` 为准，在 `<user-data-dir>/NativeMessagingHosts/` 人工核对并恢复对应 `.bak` 或删除测试 manifest。两类路径相互独立，脚本不自动删除或恢复。逐组件预检与创建/写入前后复验缩小竞态窗口，但不宣称完全消除恶意并发换链。
+- 过程讲解：本轮按页面预览、扩展后台、Host、socket、App 的交接顺序解释了 `user-data-dir` 为什么同时是数据隔离边界和 manifest 查找根，以及为什么 Popup 截图与后台 20/20 传输不能合并成一条证据。
+- 可选跟做：只读对比默认 Edge dry-run 与隔离 Profile dry-run 输出中的 `TARGET`；该动作不写浏览器目录，也不是任务关闭门槛。
+- Syc 主动提出的待解释点：无。
+- 可选深挖：Chromium Native Messaging 查找规则、macOS Host 签名/公证、Unix socket framing 或真实浏览器证据设计可分别另开小窗口。
+- 仍未完成：正式稳定 Host 安装目录、Developer ID 签名、公证、发布包，以及一张修复后工具栏点击到 APP 的连续截图；最后一项不影响本轮 V0.1 工程收口。
+
+## 任务 019：V0.3 SQLite Binding、迁移与恢复 Spike
+
+- 日期：2026-07-15
+- 当前状态：工程完成，等待独立 Sol 审查；GRDB 候选 ACCEPT，Xcode nested sandbox 证据单独 BLOCKED。
+- 用户场景：正式本地历史开工前，先证明 SQLite 基础层能安全事务、前向迁移、活跃备份、故障只读和并发读取，避免把用户数据押在未经验证的 binding 上。
+- 本次只解决：GRDB 7.11.1、SQLite.swift 0.16.0、系统 SQLite3 证据比较；隔离 `LinkDigestPersistence` 两表 spike；失败注入、1+8 并发和 10k Release benchmark。不接历史 UI、正式四表 Repository、真实 Application Support 或 Provider。
+- 角色与交接：未来 Application Service 只应交给 Repository Port；本轮 tests/benchmark 调用 `LinkDigestPersistence`，模块内部 GRDB 再交给系统 SQLite。Core、SwiftUI、Capture、Provider 与 Native Host 没有持有 binding 类型。
+- 本次核心名词：Binding、WAL、Migration、Online Backup、Read-only Recovery。
+- 候选选择：GRDB 7.11.1 exact，MIT，本机 resolved graph 无传递 package，SwiftPM Debug/Release 通过；SQLite.swift tag 声明两个条件包且需要更多备份/并发封装；系统 SQLite3 需要自行承担 C 生命周期与 Swift 并发边界。
+- 被证据修正的一点：首轮误在 GRDB `write` 自动事务内再开事务，触发嵌套事务失败；改为单层 `write` 后，注入异常仍自动回滚。第二处是 Online Backup 目标继承 WAL mode 后不能作为无 sidecar 的独立只读文件打开；现只在备份目标连接上切回 DELETE journal，活跃源库保持 WAL，全程不复制主文件。
+- 自动验证：persistence 12/12；SwiftPM Debug/Release；事务、WAL/checkpoint、Online Backup/恢复 integrity、future schema、migration 失败、不可写存储、错误路径脱敏、1 writer + 8 readers 均通过。10k Release 首页 p95 0.048000 ms、详情 p95 0.033750 ms，各 30 个 raw samples，门槛 300 ms。完整 Swift suite 的 58 项中有 10 项既有环境失败：8 个 Network.framework fake server、1 个 Keychain sandbox、1 个占用 socket；persistence仍为12/12，没有修改既有测试制造全绿。
+- 许可证：`bash scripts/check-swift-licenses` 独立校验 GRDB exact pin、revision、零传递依赖与 MIT notice；pnpm license check不代替 Swift 检查。MIT notice需进入未来第三方清单。
+- 环境阻断：`pnpm xcode:build` 首个 scheme 在 package resolution 被 Hana 外层 nested sandbox 的 `sandbox_apply: Operation not permitted` 阻断；完整 Swift suite 另有上述既有 Network/Keychain/socket 环境失败。未改 Xcode defaults、全局安全、既有测试或 Package 约束，不能写成 Xcode/GRDB 已通过或库失败。
+- 仓库集成修正：首次 `pnpm check:web` 把新生成的 SwiftPM checkout 当成项目 JavaScript，报告 798 个上游 SQLite WASM lint错误；ESLint现只忽略 `apps/desktop/.build/**`，重跑 check:web全通过，项目源码规则未放宽。
+- 失败与恢复：future schema、migration 失败、文件/目录不可写时拒绝写入，数据可读时保留 projection；不删库。回滚本 spike只移除新增 package pin、target、tests、benchmark、脚本和文档，绝不触碰既有 Brain/V0.1 改动或真实用户数据。
+- 过程讲解：在候选复核、事务失败、WAL 备份恢复和 benchmark 四个节点就地解释了组件职责、交接物、失败表现和恢复方式。
+- 可选跟做：运行 `pnpm sqlite:spike` 观察 12 项恢复测试，或运行 `pnpm sqlite:benchmark:release` 查看 JSON raw samples；两者都只使用临时库，不是后续开发门槛。
+- Syc 主动提出的待解释点：无。
+- 可选深挖：SQLite WAL checkpoint、Online Backup 生命周期或正式 migration 001 冻结可分别另开小窗口。
+
+## 任务 020：P0-RC-02A 正式 History Domain、migration 001 与 GRDB Repository
+
+- 日期：2026-07-15
+- 当前状态：独立 Sol xhigh 复审通过。旧候选未被接受、未进入用户数据库；修订后的 migration 001 是首个已接受并冻结版本，后续只能追加 002+。
+- 用户场景：浏览器传来的同一链接和正文重试不会重复建档，正文变化会形成新 Snapshot；总结/翻译 Run、partial、usage/cost、删除、详情与导出 projection 可在本机事务化保存并恢复。
+- 角色与交接：CaptureEnvelopeV1 先交给现有 validator；Core 生成 Canonical URL、payload/body fingerprint 和 Repository 命令；GRDB Adapter 在单事务内交给 migration 001 五表；Application/UI 只拿 projection，不持有 SQL 或 GRDB。
+- 本次核心名词：Canonical URL、Payload Fingerprint、Repository Port、Forward Migration、Keyset Pagination。
+- 被证据修正的判断：最初以为读取端显式 `CAST(body_text AS BLOB)` 足以保留 U+0000；专项测试仍只读到 `a`，证明 Swift String SQL binding 在写入端已经截断。Snapshot 与 Artifact 正式路径均改为完整 UTF-8 Data 绑定后在 SQLite 内 cast 为 TEXT，detail/export 再由 BLOB bytes 严格解码；History preview 只取 bounded blob 并生成最长合法前缀。
+- 事务证据：capture ledger/Task/Snapshot 同事务；terminal/Artifact/usage-cost 同事务。事务中点注入失败后 Run 仍 running，Artifact 与 usage/cost 均不存在。
+- 恢复证据：migration 注入失败保持 user_version 0 且零半表；future schema 只读；PASSIVE/TRUNCATE checkpoint、Online Backup、staging restore、integrity/foreign key/五表计数均通过。
+- 并发证据：1 writer + 8 readers 使用统一 start gate 和 writer-start overlap witness，10 秒上限、安全 cancellation flag，最终 120 Task 无丢写；超时收口等待覆盖 2 秒 SQLite busy timeout。两个独立 DatabasePool 的 capture/run 竞态分别验证同 payload 幂等与不同语义稳定 conflict。
+- benchmark：Release 10k Task、12k Snapshot、15k Run、15k Artifact，含计时外验证的 NUL Artifact；首页 p95 0.57275 ms，详情 p95 0.129084 ms，各 30 raw samples，门槛 300 ms。Debug executable 按编译条件以 status 64 拒绝。
+- 过程讲解：在 Core 边界、事务原子性、NUL 失败修正与正式 benchmark 四个节点同步解释了职责、交接物、失败表现和恢复方式。
+- 可选跟做：运行 `pnpm history:test` 看 02A 专项，或读取新 benchmark evidence 的 30+30 raw samples；均只使用隔离临时目录，不是后续开发门槛。
+- Syc 主动提出的待解释点：无。
+- 独立复审修订：补齐 Artifact `a\0b`/`\0a` partial、terminal、reopen、recovery、detail、export、preview；UUID extra-hyphen 反例；latest Run 时间与 Task 排序时间冻结语义；Release 编译条件 benchmark。
+- 回滚：只移除 02A Core/Persistence/Tests/benchmark/fixtures/文档并恢复 Package/scripts；不删库、不触碰 Brain、V0.1/V0.2 或真实用户资料。migration 001 已冻结，后续不得直接修订。
+
+## 任务 021：P0-RC-02B App Capture / Run 持久化接线
+
+- 日期：2026-07-15
+- 当前状态：实施 Agent 自报完成并通过本地工程门禁，独立审查尚未验收；Xcode 因既有 nested sandbox 分层阻断，历史 Sidebar/详情/删除 UI 与导出未启动。
+- 用户场景：浏览器正文只有在本地 archive 事务提交后才出现在当前窗口并返回 ACK；总结/翻译从 queued 到 terminal 的每一步都留下可恢复记录，写入失败不会让 UI 假装成功。
+- 角色与交接：`AppComposition` 打开唯一 Repository/Service并完成 recovery gate；`CaptureReceiver` 把 frame 交给 validator、History service、MainActor UI 与 ACK；现有 `ModelRunOrchestrator` 独占 Run、Provider、partial、terminal、stop 与 stale ownership。
+- 本次核心名词：Composition Root、Recovery Gate、Committed Partial、Stale Run。
+- 过程讲解：开工时解释了三个组件的交接；实现 storage error 时说明 stable code 会丢弃 raw path/SQL；实现流式持久化时用“账本确认后才更新余额”类比 candidate 与 committed partial；专项测试时解释 recovery→server 与 commit→UI→ACK 的可观察顺序。
+- 被证据修正的一点：最初 receiver 测试夹具使用合同不允许的 `platform: test`，所以正确得到 protocol rejection；改为 schema 允许的 `generic` 后，read-only/open/recovery 与 storage request ID 分层全部通过。
+- 自动证据：高风险、设计、安全与并发专项 60/60，包括 Composition 4/4、CaptureReceiver 7/7、temp GRDB Orchestrator 8/8、Persistent Orchestrator 14/14、Orchestrator 并发/回归 13/13、History Domain 4/4、AppViewModel 10/10。Ordered blocker 证明 commit success 前无 ACK/UI/normal server；恶意 Provider 忽略取消仍无迟到污染；temp reopen 证明 usage 五列 NULL 与写失败后 interrupted recovery。安全预审后新增 starting/stopping/streaming callback barrier、producer 注册/取消、Stop/completed 双线性化、RunID mismatch conflict、terminal failure 后新 Run、split-secret holdback/flush failure、hostile late events、MainActor 旧状态矩阵与 24 路并发 Capture 一致性；完整 Swift 103/113，10 项均为既有 Network/Keychain/socket 环境失败；Debug/Release、Web、licenses、secret、doctor 与 diff PASS。vertical smoke 因未证明 temp Application Support 注入而安全跳过。
+- 安全边界：没有启动生产 App，没有访问真实 Application Support、浏览器资料、Keychain 或 Provider；App/Core 不 import GRDB 或持有 SQL；storage `safeDetail` 默认为 nil；migration 001 hash 保持冻结值。
+- 可选跟做：运行 `swift test --disable-sandbox --filter 'AppCompositionTests|CaptureReceiverTests|PersistentModelRunOrchestratorTests'`，观察时序与 rollback 断言；它只使用 fake/temp，不是任务关闭门槛。
+- Syc 主动提出的待解释点：无。
+- 回滚：只撤销 App→Persistence 接线、新 App 文件、Orchestrator 扩展、02B tests/docs；不删库、不降级、不清理真实 Application Support/Keychain，也不触碰 V0.1 Host。

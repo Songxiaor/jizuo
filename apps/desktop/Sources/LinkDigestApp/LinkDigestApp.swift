@@ -2,37 +2,72 @@ import SwiftUI
 import Foundation
 import LinkDigestAdapters
 import LinkDigestCore
+import LinkDigestPersistence
 import LinkDigestTransport
 
 public let linkDigestSocketPath = ProcessInfo.processInfo.environment["LINKDIGEST_SOCKET_PATH"] ?? "/tmp/linkdigest-\(getuid()).sock"
 
 @MainActor final class AppViewModel: ObservableObject {
   @Published var connection = "等待扩展连接"
-  @Published var envelope: CaptureEnvelopeV1?
+  @Published private(set) var currentCapture: CurrentCapture?
   @Published private(set) var runState: RunState = .idle
+  @Published private(set) var storageAvailability: StorageAvailability = .bootstrapping
 
-  private let modelRunOrchestrator: ModelRunOrchestrator
-  private var visibleRunID: UUID?
+  private var modelRunOrchestrator: ModelRunOrchestrator?
+  private let makeRunID: @Sendable () -> RunID
+  private var visibleRunID: RunID?
 
-  init(modelRunOrchestrator: ModelRunOrchestrator) {
+  init(
+    modelRunOrchestrator: ModelRunOrchestrator? = nil,
+    makeRunID: @escaping @Sendable () -> RunID = { RunID() }
+  ) {
     self.modelRunOrchestrator = modelRunOrchestrator
+    self.makeRunID = makeRunID
+  }
+
+  var envelope: CaptureEnvelopeV1? { currentCapture?.envelope }
+
+  func installModelRunOrchestrator(_ value: ModelRunOrchestrator) {
+    guard modelRunOrchestrator == nil else { return }
+    modelRunOrchestrator = value
   }
 
   func setConnection(_ value: String) { connection = value }
-  func receive(_ value: CaptureEnvelopeV1) { connection = "已连接"; envelope = value }
+
+  func setStorageAvailability(_ value: StorageAvailability) {
+    storageAvailability = value
+  }
+
+  func receive(_ value: CurrentCapture) {
+    connection = "已连接"
+    currentCapture = value
+  }
 
   var canStartRun: Bool {
-    guard let envelope else { return false }
-    return !envelope.capture.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    guard
+      storageAvailability.isWriteReady,
+      modelRunOrchestrator != nil,
+      let currentCapture
+    else {
+      return false
+    }
+    return !currentCapture.envelope.capture.text
+      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && !runState.isActive
   }
 
-  var canStopRun: Bool {
-    runState.isActive
-  }
+  var canStopRun: Bool { runState.isActive }
+  var runResultText: String { runState.outputText }
 
-  var runResultText: String {
-    runState.outputText
+  var storageStatusText: String {
+    switch storageAvailability {
+    case .bootstrapping:
+      "正在准备本地历史…"
+    case .writable:
+      "本地历史可用"
+    case let .unavailable(code):
+      StorageErrorCatalog.presentation(for: code).visibleText
+    }
   }
 
   var runStatusText: String {
@@ -53,51 +88,67 @@ public let linkDigestSocketPath = ProcessInfo.processInfo.environment["LINKDIGES
       "结果不完整。\(V02ErrorCatalog.presentation(for: code).visibleText)"
     case let .failed(_, code):
       V02ErrorCatalog.presentation(for: code).visibleText
+    case let .storageError(_, _, code):
+      StorageErrorCatalog.presentation(for: code).visibleText
     }
   }
 
   var runHasFailure: Bool {
     switch runState {
-    case .failed, .incomplete:
+    case .failed, .incomplete, .storageError:
       true
     case .idle, .starting, .streaming, .stopping, .stopped, .completed:
       false
     }
   }
 
-  func summarize() async {
-    await start(intent: .summarize)
-  }
-
-  func translate() async {
-    await start(intent: .translate)
-  }
+  func summarize() async { await start(intent: .summarize) }
+  func translate() async { await start(intent: .translate) }
 
   func stop() async {
-    await modelRunOrchestrator.stop()
+    await modelRunOrchestrator?.stop()
   }
 
   private func start(intent: RunIntentKind) async {
-    guard canStartRun else { return }
-    let capture = envelope
-    await modelRunOrchestrator.start(intent: intent, capture: capture) { [weak self] runID, state in
+    guard
+      canStartRun,
+      let currentCapture,
+      let modelRunOrchestrator
+    else {
+      return
+    }
+
+    let request = PersistentRunRequest(
+      runID: makeRunID(),
+      taskID: currentCapture.taskID,
+      snapshotID: currentCapture.snapshotID,
+      intent: intent,
+      targetLanguage: intent == .translate ? "简体中文" : nil
+    )
+    await modelRunOrchestrator.start(
+      request: request,
+      capture: currentCapture.envelope
+    ) { [weak self] runID, state in
       await self?.receiveRunState(runID: runID, state: state)
     }
   }
 
-  private func receiveRunState(runID: UUID, state: RunState) {
+  func receiveRunState(runID: RunID, state: RunState) {
     if case .starting = state {
       visibleRunID = runID
       runState = state
       return
     }
 
-    guard visibleRunID == runID else {
-      return
+    if visibleRunID == nil, case .storageError = state {
+      visibleRunID = runID
+    }
+    guard visibleRunID == runID else { return }
+    if case let .storageError(_, _, code) = state {
+      storageAvailability = .unavailable(code)
     }
     runState = state
   }
-
 }
 
 struct ContentView: View {
@@ -110,6 +161,10 @@ struct ContentView: View {
         .font(.title)
       Text(model.connection)
         .foregroundStyle(.secondary)
+      Text(model.storageStatusText)
+        .font(.caption)
+        .foregroundStyle(model.storageAvailability.isWriteReady ? Color.secondary : Color.orange)
+        .accessibilityIdentifier("storage-availability")
 
       if let value = model.envelope {
         Text(value.source.title ?? "无标题")
@@ -178,26 +233,13 @@ struct ContentView: View {
   }
 }
 
-private func handleCaptureClient(_ client: FileHandle, model: AppViewModel, inbox: CaptureInbox) async {
-  defer { try? client.close() }
-  do {
-    let data = try ChromiumFramer.readFrame(from: client, timeout: 10)
-    let value = try CaptureValidator.decode(data)
-    if await inbox.accept(value) { await model.receive(value) }
-    let response = NativeResponse.taskAccepted(version: 1, requestId: value.requestId, characterCount: value.capture.characterCount)
-    try ChromiumFramer.writeFrame(try JSONEncoder().encode(response), to: client)
-  } catch let issue as CaptureValidationError {
-    let error = AppError(version: 1, requestId: "app-receiver", createdAt: ISO8601DateFormatter().string(from: Date()), category: "protocol", code: issue.rawValue, retryable: false, action: "retry", safeDetail: nil)
-    try? ChromiumFramer.writeFrame(try JSONEncoder().encode(NativeResponse.error(error)), to: client)
-  } catch {
-    let response = AppError(version: 1, requestId: "app-receiver", createdAt: ISO8601DateFormatter().string(from: Date()), category: "protocol", code: "CAPTURE_SCHEMA_INVALID", retryable: false, action: "retry", safeDetail: nil)
-    try? ChromiumFramer.writeFrame(try JSONEncoder().encode(NativeResponse.error(response)), to: client)
-  }
-}
-
 @main struct LinkDigestApp: App {
   @StateObject private var model: AppViewModel
   @StateObject private var providerSettings: ProviderSettingsViewModel
+
+  private let configurationService: ProviderConfigurationService
+  private let provider: OpenAICompatibleProvider
+  private let composition: AppComposition
 
   init() {
     let configurationService = ProviderConfigurationService(
@@ -207,15 +249,36 @@ private func handleCaptureClient(_ client: FileHandle, model: AppViewModel, inbo
     let sessionConfiguration = URLSessionConfiguration.ephemeral
     sessionConfiguration.httpCookieStorage = nil
     sessionConfiguration.urlCache = nil
-    let modelRunOrchestrator = ModelRunOrchestrator(
-      configurationService: configurationService,
-      provider: OpenAICompatibleProvider(
-        session: URLSession(configuration: sessionConfiguration)
-      )
+    let provider = OpenAICompatibleProvider(
+      session: URLSession(configuration: sessionConfiguration)
     )
-    _model = StateObject(
-      wrappedValue: AppViewModel(modelRunOrchestrator: modelRunOrchestrator)
+    let model = AppViewModel()
+    let nowMilliseconds: @Sendable () -> Int64 = {
+      Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+    }
+    let serverStarter = makeUnixSocketServerStarter(
+      path: linkDigestSocketPath,
+      statusSink: { value in await model.setConnection(value) }
     )
+    let composition = AppComposition(dependencies: .init(
+      applicationSupportRoot: liveApplicationSupportRoot,
+      repositoryFactory: { location in
+        try GRDBHistoryRepository.open(at: location)
+      },
+      nowMilliseconds: nowMilliseconds,
+      serverStarter: serverStarter,
+      availabilitySink: { value in
+        await model.setStorageAvailability(value)
+      },
+      captureSink: { value in
+        await model.receive(value)
+      }
+    ))
+
+    self.configurationService = configurationService
+    self.provider = provider
+    self.composition = composition
+    _model = StateObject(wrappedValue: model)
     _providerSettings = StateObject(
       wrappedValue: ProviderSettingsViewModel(configurationService: configurationService)
     )
@@ -225,37 +288,20 @@ private func handleCaptureClient(_ client: FileHandle, model: AppViewModel, inbo
     WindowGroup {
       ContentView(model: model, providerSettings: providerSettings)
         .task {
-          startServer()
+          let result = await composition.bootstrap()
+          if let history = result.history {
+            let orchestrator = ModelRunOrchestrator(
+              configurationService: configurationService,
+              provider: provider,
+              history: history,
+              storageWriteGate: result.storageWriteGate
+            )
+            model.installModelRunOrchestrator(orchestrator)
+          }
+          if !result.serverStarted {
+            model.setConnection("接收服务启动失败")
+          }
         }
-    }
-  }
-
-  @MainActor private func startServer() {
-    let model = model
-    Task.detached(priority: .userInitiated) {
-      let server = UnixSocketServer(path: linkDigestSocketPath)
-      let inbox = CaptureInbox()
-      do {
-        try server.start()
-        await model.setConnection("本机接收服务已启动")
-      } catch {
-        await model.setConnection("接收服务启动失败")
-        return
-      }
-
-      while !Task.isCancelled {
-        let client: FileHandle
-        do {
-          client = try server.accept(timeout: 1, ioTimeout: 10)
-        } catch let error as POSIXError where error.code == .ETIMEDOUT {
-          continue
-        } catch {
-          await model.setConnection("接收服务错误")
-          return
-        }
-
-        Task.detached { await handleCaptureClient(client, model: model, inbox: inbox) }
-      }
     }
   }
 }

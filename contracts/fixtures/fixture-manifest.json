@@ -2,6 +2,9 @@
   "schema": "../capture-envelope-v1.schema.json",
   "fixtures": [
     {"name": "valid", "file": "valid.json", "expect": "valid"},
+    {"name": "unicode-emoji-one-scalar", "file": "unicode-emoji.json", "expect": "valid"},
+    {"name": "unicode-combining-two-scalars", "file": "unicode-combining.json", "expect": "valid"},
+    {"name": "unicode-nul-three-scalars", "file": "unicode-nul.json", "expect": "valid"},
     {"name": "unsupported-version", "file": "unsupported-version.json", "expect": "invalid", "errorCode": "PROTOCOL_VERSION_UNSUPPORTED"},
     {"name": "non-web-url", "file": "non-web-url.json", "expect": "invalid", "errorCode": "CAPTURE_URL_UNSUPPORTED"},
     {"name": "count-mismatch", "file": "count-mismatch.json", "expect": "invalid", "errorCode": "CAPTURE_COUNT_MISMATCH"},

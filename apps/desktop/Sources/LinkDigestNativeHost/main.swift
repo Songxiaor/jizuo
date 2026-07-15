@@ -6,7 +6,8 @@ let socketPath = ProcessInfo.processInfo.environment["LINKDIGEST_SOCKET_PATH"] ?
 let hostTimeout = Double(ProcessInfo.processInfo.environment["LINKDIGEST_TIMEOUT_SECONDS"] ?? "") ?? 10
 func errorResponse(_ code: String, requestId: String = "native-host") -> NativeResponse {
   let appUnavailable = code == "APP_UNAVAILABLE"
-  return .error(AppError(version: 1, requestId: requestId, createdAt: ISO8601DateFormatter().string(from: Date()), category: appUnavailable ? "network" : "protocol", code: code, retryable: appUnavailable || code == "NATIVE_MESSAGE_TIMEOUT", action: appUnavailable ? "open_app" : "retry", safeDetail: nil))
+  let networkFailure = appUnavailable || code == "NATIVE_MESSAGE_TIMEOUT" || code == "NATIVE_MESSAGE_FAILED"
+  return .error(AppError(version: 1, requestId: requestId, createdAt: ISO8601DateFormatter().string(from: Date()), category: networkFailure ? "network" : "protocol", code: code, retryable: networkFailure, action: appUnavailable ? "open_app" : "retry", safeDetail: nil))
 }
 
 func transportErrorCode(_ error: Error) -> String {
@@ -29,7 +30,7 @@ do {
   let envelope: CaptureEnvelopeV1
   do { envelope = try CaptureValidator.decode(body) } catch let issue as CaptureValidationError { try ChromiumFramer.writeFrame(try JSONEncoder().encode(errorResponse(issue.rawValue)), to: .standardOutput); exit(0) }
   let result: NativeResponse
-  do { let response = try UnixSocketClient.send(body, path: socketPath, timeout: hostTimeout); result = (try? JSONDecoder().decode(NativeResponse.self, from: response)) ?? errorResponse("CAPTURE_SCHEMA_INVALID", requestId: envelope.requestId) } catch { result = errorResponse(transportErrorCode(error), requestId: envelope.requestId) }
+  do { let response = try UnixSocketClient.send(body, path: socketPath, timeout: hostTimeout); result = (try? JSONDecoder().decode(NativeResponse.self, from: response)) ?? errorResponse("NATIVE_RESPONSE_INVALID", requestId: envelope.requestId) } catch { result = errorResponse(transportErrorCode(error), requestId: envelope.requestId) }
   try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
 } catch {
   try? ChromiumFramer.writeFrame(try JSONEncoder().encode(errorResponse(framingErrorCode(error))), to: .standardOutput)

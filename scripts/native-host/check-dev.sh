@@ -5,6 +5,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 SCRIPT="$ROOT/scripts/native-host/install-dev.sh"
 PLAN="$ROOT/scripts/native-host/uninstall-plan.sh"
 SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/linkdigest-native-host-check.XXXXXX")"
+SANDBOX="$(cd "$SANDBOX" && pwd -P)"
 export HOME="$SANDBOX/home"
 HOST_PATH="$SANDBOX/bin/LinkDigestNativeHost"
 HOST_RESOURCE_BUNDLE="$SANDBOX/bin/LinkDigest_LinkDigestCore.bundle"
@@ -21,6 +22,20 @@ expect_failure() {
     echo "expected command to fail: $*" >&2
     exit 1
   fi
+}
+
+expect_failure_with_message() {
+  local expected="$1"
+  shift
+  local output
+  if output="$("$@" 2>&1)"; then
+    echo "expected command to fail: $*" >&2
+    exit 1
+  fi
+  grep -Fq -- "$expected" <<<"$output" || {
+    echo "failure did not contain expected message: $expected" >&2
+    exit 1
+  }
 }
 
 MISSING_BUNDLE_HOST="$SANDBOX/missing-bundle/LinkDigestNativeHost"
@@ -116,4 +131,58 @@ grep -Fq "不读取文件内容、不修改。" <<<"$plan_output"
 edge_output="$($SCRIPT --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser edge)"
 grep -Fq "Microsoft Edge/NativeMessagingHosts/com.syc.linkdigest.v01.json" <<<"$edge_output"
 
+EDGE_PROFILE_SYMLINK_REAL="$SANDBOX/edge-profile-symlink-real"
+EDGE_PROFILE_SYMLINK="$SANDBOX/edge-profile-symlink"
+mkdir -p "$EDGE_PROFILE_SYMLINK_REAL"
+ln -s "$EDGE_PROFILE_SYMLINK_REAL" "$EDGE_PROFILE_SYMLINK"
+expect_failure_with_message "refusing symlink profile path component" "$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser edge --user-data-dir "$EDGE_PROFILE_SYMLINK" --apply
+[[ ! -e "$EDGE_PROFILE_SYMLINK_REAL/NativeMessagingHosts" ]]
+
+EDGE_PARENT_REAL="$SANDBOX/edge-parent-real"
+EDGE_PARENT_LINK="$SANDBOX/edge-parent-link"
+mkdir -p "$EDGE_PARENT_REAL/profile"
+ln -s "$EDGE_PARENT_REAL" "$EDGE_PARENT_LINK"
+expect_failure_with_message "refusing symlink profile path component" "$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser edge --user-data-dir "$EDGE_PARENT_LINK/profile" --apply
+[[ ! -e "$EDGE_PARENT_REAL/profile/NativeMessagingHosts" ]]
+
+EDGE_INTERMEDIATE_ROOT="$SANDBOX/edge-intermediate-root"
+EDGE_INTERMEDIATE_OUTSIDE="$SANDBOX/edge-intermediate-outside"
+mkdir -p "$EDGE_INTERMEDIATE_ROOT" "$EDGE_INTERMEDIATE_OUTSIDE/profile"
+ln -s "$EDGE_INTERMEDIATE_OUTSIDE" "$EDGE_INTERMEDIATE_ROOT/link"
+expect_failure_with_message "refusing symlink profile path component" "$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser edge --user-data-dir "$EDGE_INTERMEDIATE_ROOT/link/profile" --apply
+[[ ! -e "$EDGE_INTERMEDIATE_OUTSIDE/profile/NativeMessagingHosts" ]]
+
+EDGE_DOT_PROFILE="$SANDBOX/edge-dot-profile"
+mkdir -p "$EDGE_DOT_PROFILE"
+expect_failure_with_message "must not contain empty, . or .. path components" "$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser edge --user-data-dir "$SANDBOX/./edge-dot-profile" --apply
+[[ ! -e "$EDGE_DOT_PROFILE/NativeMessagingHosts" ]]
+
+EDGE_DOTDOT_PARENT="$SANDBOX/edge-dotdot-parent"
+EDGE_DOTDOT_PROFILE="$SANDBOX/edge-dotdot-profile"
+mkdir -p "$EDGE_DOTDOT_PARENT" "$EDGE_DOTDOT_PROFILE"
+expect_failure_with_message "must not contain empty, . or .. path components" "$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser edge --user-data-dir "$EDGE_DOTDOT_PARENT/../edge-dotdot-profile" --apply
+[[ ! -e "$EDGE_DOTDOT_PROFILE/NativeMessagingHosts" ]]
+
+EDGE_REPEATED_SLASH_PROFILE="$SANDBOX/edge-repeated-slash-profile"
+mkdir -p "$EDGE_REPEATED_SLASH_PROFILE"
+expect_failure_with_message "must not contain empty, . or .. path components" "$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser edge --user-data-dir "$SANDBOX//edge-repeated-slash-profile" --apply
+[[ ! -e "$EDGE_REPEATED_SLASH_PROFILE/NativeMessagingHosts" ]]
+
+EDGE_TRAILING_SLASH_PROFILE="$SANDBOX/edge-trailing-slash-profile"
+mkdir -p "$EDGE_TRAILING_SLASH_PROFILE"
+expect_failure_with_message "must be a non-root canonical absolute path" "$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser edge --user-data-dir "$EDGE_TRAILING_SLASH_PROFILE/" --apply
+[[ ! -e "$EDGE_TRAILING_SLASH_PROFILE/NativeMessagingHosts" ]]
+
+EDGE_PROFILE="$SANDBOX/edge-user-data"
+mkdir -p "$EDGE_PROFILE"
+edge_profile_output="$($SCRIPT --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser edge --user-data-dir "$EDGE_PROFILE")"
+grep -Fq "TARGET: $EDGE_PROFILE/NativeMessagingHosts/com.syc.linkdigest.v01.json" <<<"$edge_profile_output"
+"$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser edge --user-data-dir "$EDGE_PROFILE" --apply >/dev/null
+EDGE_PROFILE_TARGET="$EDGE_PROFILE/NativeMessagingHosts/com.syc.linkdigest.v01.json"
+[[ -f "$EDGE_PROFILE_TARGET" ]]
+[[ "$(dirname "$(dirname "$EDGE_PROFILE_TARGET")")" == "$EDGE_PROFILE" ]]
+expect_failure "$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser chrome --user-data-dir "$EDGE_PROFILE"
+expect_failure_with_message "must be an existing directory" "$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser edge --user-data-dir "$SANDBOX/missing-profile"
+
+printf 'edge-profile guards passed: profile-symlink parent-symlink intermediate-symlink dot dotdot repeated-slash trailing-slash direct-child no-outside-write\n'
 printf 'native-host check passed; TEST_SANDBOX=%s FAILURE_TEMP_PATH=%s\n' "$SANDBOX" "$FAILURE_TEMP_PATH"

@@ -17,7 +17,29 @@ public struct CaptureEnvelopeV1: Codable, Sendable, Equatable {
 public struct AppError: Codable, Sendable, Equatable { public let version: Int; public let requestId: String; public let createdAt: String; public let category: String; public let code: String; public let retryable: Bool; public let action: String; public let safeDetail: String?; public init(version: Int, requestId: String, createdAt: String, category: String, code: String, retryable: Bool, action: String, safeDetail: String?) { self.version = version; self.requestId = requestId; self.createdAt = createdAt; self.category = category; self.code = code; self.retryable = retryable; self.action = action; self.safeDetail = safeDetail } }
 public enum NativeResponse: Codable, Sendable, Equatable { case taskAccepted(version: Int, requestId: String, characterCount: Int), error(AppError)
   enum CodingKeys: String, CodingKey { case kind, version, requestId, characterCount, error }
-  public init(from decoder: Decoder) throws { let c = try decoder.container(keyedBy: CodingKeys.self); let kind = try c.decode(String.self, forKey: .kind); if kind == "taskAccepted" { self = .taskAccepted(version: try c.decode(Int.self, forKey: .version), requestId: try c.decode(String.self, forKey: .requestId), characterCount: try c.decode(Int.self, forKey: .characterCount)) } else { self = .error(try c.decode(AppError.self, forKey: .error)) } }
+  public init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    switch try c.decode(String.self, forKey: .kind) {
+    case "taskAccepted":
+      let version = try c.decode(Int.self, forKey: .version)
+      guard version == 1 else {
+        throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "Unsupported NativeResponse version")
+      }
+      self = .taskAccepted(
+        version: version,
+        requestId: try c.decode(String.self, forKey: .requestId),
+        characterCount: try c.decode(Int.self, forKey: .characterCount)
+      )
+    case "error":
+      let error = try c.decode(AppError.self, forKey: .error)
+      guard error.version == 1 else {
+        throw DecodingError.dataCorruptedError(forKey: .error, in: c, debugDescription: "Unsupported AppError version")
+      }
+      self = .error(error)
+    default:
+      throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown NativeResponse kind")
+    }
+  }
   public func encode(to encoder: Encoder) throws { var c = encoder.container(keyedBy: CodingKeys.self); switch self { case let .taskAccepted(v, r, n): try c.encode("taskAccepted", forKey: .kind); try c.encode(v, forKey: .version); try c.encode(r, forKey: .requestId); try c.encode(n, forKey: .characterCount); case let .error(e): try c.encode("error", forKey: .kind); try c.encode(e, forKey: .error) } }
 }
 
@@ -33,7 +55,7 @@ public enum CaptureValidator {
       let raw = try JSONSerialization.jsonObject(with: data)
       let value = try JSONDecoder().decode(CaptureEnvelopeV1.self, from: data)
       try validateSemanticRules(value)
-      try CaptureContractSchema.validator().validate(raw)
+      try CaptureWireContractSchema.validator().validate(raw)
       return value
     } catch let error as CaptureValidationError {
       throw error

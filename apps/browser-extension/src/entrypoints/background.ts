@@ -1,5 +1,5 @@
 import { extractPageInIsolatedWorld, type ExtractedPage } from "../content/extract";
-import { validateCapture, type CaptureEnvelopeV1, type NativeResponse } from "../contract";
+import { makeAppError, normalizeNativeResponse, validateCapture, type CaptureEnvelopeV1, type NativeResponse } from "../contract";
 import { mapNativeFailure, withTimeout } from "../native-client";
 
 const HOST_NAME = "com.syc.linkdigest.v01";
@@ -16,13 +16,12 @@ export async function captureFromTab(tabId: number): Promise<CaptureEnvelopeV1> 
 export async function sendCapture(tabId: number): Promise<NativeResponse> {
   const envelope = await captureFromTab(tabId);
   const invalid = validateCapture(envelope);
-  if (invalid) return { kind: "error", error: { code: invalid, action: "retry" } };
+  if (invalid) return { kind: "error", error: makeAppError(envelope.requestId, "protocol", invalid, false, "retry") };
   try {
-    const response = await withTimeout(browser.runtime.sendNativeMessage(HOST_NAME, envelope), 10_000) as NativeResponse;
-    return response;
+    const response: unknown = await withTimeout(browser.runtime.sendNativeMessage(HOST_NAME, envelope), 10_000);
+    return normalizeNativeResponse(response, envelope.requestId);
   } catch (error) {
-    const failure = mapNativeFailure(error);
-    return { kind: "error", error: failure };
+    return { kind: "error", error: mapNativeFailure(error, envelope.requestId) };
   }
 }
 

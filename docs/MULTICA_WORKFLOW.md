@@ -56,7 +56,7 @@ Multica 是 LinkDigest 的项目总控台；Codex 仍是底层执行引擎。Syc
 
 ## 当前状态
 
-- V0.1：Chrome、Brave 真实验收完成；Edge 真实验收待 Syc 授权。
+- V0.1：Chrome、Brave、Edge 三浏览器工程证据已收口；Edge 的 Popup 观察与修复后 Service Worker 20/20 传输分别记录，正式安装与发布仍未完成。
 - V0.2：本地单 Provider BYOK 工程链路完成；不代表产品发布完成。
 - 未完成：粘贴链接、SQLite 历史、导出、多平台深度适配、当前网站 Cookie 授权、正式安装、签名、公证和发布。
 

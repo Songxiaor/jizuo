@@ -1,3 +1,5 @@
+import { makeAppError, type AppError } from "./contract";
+
 export function withTimeout<T>(promise: Promise<T>, milliseconds: number): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error("NATIVE_MESSAGE_TIMEOUT")), milliseconds);
@@ -8,9 +10,12 @@ export function withTimeout<T>(promise: Promise<T>, milliseconds: number): Promi
   });
 }
 
-export function mapNativeFailure(error: unknown): { code: "NATIVE_MESSAGE_TIMEOUT" | "NATIVE_HOST_NOT_FOUND"; action: "retry" | "open_install_guide" } {
-  const timedOut = error instanceof Error && error.message.includes("NATIVE_MESSAGE_TIMEOUT");
-  return timedOut
-    ? { code: "NATIVE_MESSAGE_TIMEOUT", action: "retry" }
-    : { code: "NATIVE_HOST_NOT_FOUND", action: "open_install_guide" };
+export function mapNativeFailure(error: unknown, requestId: string): AppError {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (message.includes("native_message_timeout")) return makeAppError(requestId, "network", "NATIVE_MESSAGE_TIMEOUT", true, "retry");
+  if (message.includes("specified native messaging host not found")) return makeAppError(requestId, "network", "NATIVE_HOST_NOT_FOUND", false, "open_install_guide");
+  if (message.includes("native host has exited") || message.includes("failed to start native messaging host")) {
+    return makeAppError(requestId, "network", "NATIVE_HOST_START_FAILED", false, "open_install_guide");
+  }
+  return makeAppError(requestId, "network", "NATIVE_MESSAGE_FAILED", true, "retry");
 }

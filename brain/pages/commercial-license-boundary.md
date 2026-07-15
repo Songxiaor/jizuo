@@ -5,7 +5,7 @@ category: decision
 status: active
 tags: [commercial, license, supply-chain]
 created: "2026-07-13T19:49:42"
-updated: "2026-07-13T19:49:42"
+updated: "2026-07-15T12:24:07"
 ---
 
 ## compiled_truth
@@ -35,3 +35,9 @@ LinkDigest 按全球优先、商业闭源桌面产品设计。默认只采用许
   summary: "固定商业产品的依赖准入规则"
   source: Syc selected commercial closed-source 2026-07-13
   affects: [commercial-license-boundary]
+
+- time: 2026-07-15T12:24:07
+  kind: decision
+  summary: "GRDB 7.11.1 exact 通过 MIT、revision 和零 resolved 传递包门禁，可进入 Persistence Adapter；正式阶段继续校验。"
+  source: SQLite spike and Sol xhigh review 2026-07-15
+  affects: [commercial-license-boundary, sqlite-grdb-persistence-boundary]

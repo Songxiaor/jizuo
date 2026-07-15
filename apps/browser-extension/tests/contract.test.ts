@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-import { validateCapture } from "../src/contract";
+import { isWireNativeResponse, normalizeNativeResponse, validateCapture } from "../src/contract";
 
 type FixtureEntry = {
   file: string;
@@ -23,6 +23,36 @@ describe("browser capture contract", () => {
       }
 
       expect(validateCapture(value), fixture.file).toBe(fixture.expect === "valid" ? null : fixture.errorCode);
+    }
+  });
+
+  it("keeps Unicode scalar counting language-neutral, including embedded NUL", () => {
+    const fixtures = [
+      ["unicode-emoji.json", 1],
+      ["unicode-combining.json", 2],
+      ["unicode-nul.json", 3],
+    ] as const;
+    for (const [file, expected] of fixtures) {
+      const value = JSON.parse(readFileSync(fixtureUrl(file), "utf8")) as { capture: { text: string; characterCount: number } };
+      expect([...value.capture.text].length).toBe(expected);
+      expect(value.capture.characterCount).toBe(expected);
+      expect(validateCapture(value)).toBeNull();
+    }
+  });
+
+  it("consumes shared NativeResponse fixtures with strict ACK correlation", () => {
+    const fixture = JSON.parse(readFileSync(new URL("../../../contracts/native-response-fixtures.json", import.meta.url), "utf8")) as {
+      cases: Array<{ name: string; expected: string; forbidden?: string; value: unknown }>;
+    };
+    for (const entry of fixture.cases) {
+      const wireValid = isWireNativeResponse(entry.value);
+      if (entry.expected === "wire_invalid") expect(wireValid, entry.name).toBe(false);
+      else expect(wireValid, entry.name).toBe(true);
+      const normalized = normalizeNativeResponse(entry.value, "req-1");
+      if (entry.expected === "accepted") expect(normalized.kind, entry.name).toBe("taskAccepted");
+      if (entry.expected === "correlation_error" || entry.expected === "wire_invalid") {
+        expect(normalized).toMatchObject({ kind: "error", error: { code: "NATIVE_RESPONSE_INVALID", requestId: "req-1" } });
+      }
     }
   });
 

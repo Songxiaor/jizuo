@@ -1,13 +1,22 @@
 // swift-tools-version: 6.0
 import PackageDescription
 
-let package = Package(name: "LinkDigest", platforms: [.macOS(.v15)], products: [
-  .library(name: "LinkDigestCore", targets: ["LinkDigestCore"]),
-  .library(name: "LinkDigestAdapters", targets: ["LinkDigestAdapters"]),
-  .library(name: "LinkDigestTransport", targets: ["LinkDigestTransport"]),
-  .executable(name: "LinkDigestApp", targets: ["LinkDigestApp"]),
-  .executable(name: "LinkDigestNativeHost", targets: ["LinkDigestNativeHost"])
-], targets: [
+let package = Package(
+  name: "LinkDigest",
+  platforms: [.macOS(.v15)],
+  products: [
+    .library(name: "LinkDigestCore", targets: ["LinkDigestCore"]),
+    .library(name: "LinkDigestAdapters", targets: ["LinkDigestAdapters"]),
+    .library(name: "LinkDigestTransport", targets: ["LinkDigestTransport"]),
+    .library(name: "LinkDigestPersistence", targets: ["LinkDigestPersistence"]),
+    .executable(name: "LinkDigestApp", targets: ["LinkDigestApp"]),
+    .executable(name: "LinkDigestNativeHost", targets: ["LinkDigestNativeHost"]),
+    .executable(name: "LinkDigestHistoryBenchmark", targets: ["LinkDigestHistoryBenchmark"])
+  ],
+  dependencies: [
+    .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1")
+  ],
+  targets: [
   .target(name: "LinkDigestCore", resources: [.copy("Resources")]),
   .target(
     name: "LinkDigestAdapters",
@@ -15,14 +24,24 @@ let package = Package(name: "LinkDigest", platforms: [.macOS(.v15)], products: [
     linkerSettings: [.linkedFramework("Security")]
   ),
   .target(name: "LinkDigestTransport", dependencies: ["LinkDigestCore"]),
-  .executableTarget(name: "LinkDigestApp", dependencies: ["LinkDigestCore", "LinkDigestAdapters", "LinkDigestTransport"]),
+  .target(
+    name: "LinkDigestPersistence",
+    dependencies: ["LinkDigestCore", .product(name: "GRDB", package: "GRDB.swift")]
+  ),
+  .executableTarget(name: "LinkDigestApp", dependencies: ["LinkDigestCore", "LinkDigestAdapters", "LinkDigestTransport", "LinkDigestPersistence"]),
   .executableTarget(name: "LinkDigestNativeHost", dependencies: ["LinkDigestCore", "LinkDigestTransport"]),
+  .executableTarget(
+    name: "LinkDigestHistoryBenchmark",
+    dependencies: ["LinkDigestCore", "LinkDigestPersistence"],
+    swiftSettings: [.define("LINKDIGEST_RELEASE_BENCHMARK", .when(configuration: .release))]
+  ),
   .testTarget(name: "LinkDigestCoreTests", dependencies: ["LinkDigestCore"]),
   .testTarget(
     name: "LinkDigestAdaptersTests",
     dependencies: ["LinkDigestAdapters"],
     linkerSettings: [.linkedFramework("Network")]
   ),
-  .testTarget(name: "LinkDigestAppTests", dependencies: ["LinkDigestApp", "LinkDigestCore"]),
-  .testTarget(name: "LinkDigestTransportTests", dependencies: ["LinkDigestTransport"])
+  .testTarget(name: "LinkDigestAppTests", dependencies: ["LinkDigestApp", "LinkDigestCore", "LinkDigestPersistence"]),
+  .testTarget(name: "LinkDigestTransportTests", dependencies: ["LinkDigestTransport"]),
+  .testTarget(name: "LinkDigestPersistenceTests", dependencies: ["LinkDigestCore", "LinkDigestPersistence", .product(name: "GRDB", package: "GRDB.swift")])
 ])

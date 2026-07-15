@@ -47,7 +47,7 @@
     },
     "NativeResponse": {
       "oneOf": [
-        {"type": "object", "required": ["kind", "version", "requestId"], "additionalProperties": true, "properties": {"kind": {"const": "taskAccepted"}, "version": {"const": 1}, "requestId": {"type": "string"}, "characterCount": {"type": "integer"}}},
+        {"type": "object", "required": ["kind", "version", "requestId", "characterCount"], "additionalProperties": true, "properties": {"kind": {"const": "taskAccepted"}, "version": {"const": 1}, "requestId": {"type": "string"}, "characterCount": {"type": "integer"}}},
         {"type": "object", "required": ["kind", "error"], "additionalProperties": true, "properties": {"kind": {"const": "error"}, "error": {"$ref": "#/$defs/AppError"}}}
       ]
     }

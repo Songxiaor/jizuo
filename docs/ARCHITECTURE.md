@@ -1,6 +1,6 @@
 # LinkDigest 架构基线
 
-> 状态：V0.1 Swift Package、WXT 扩展、Native Host 与自动化进程链路已实现；Chrome/Brave 真实垂直链路已通过，Edge 仍待补齐。V0.2 任务 A–D 的 ProviderProfile/Keychain、OpenAI-compatible adapter、总结/翻译 streaming UI、停止/不完整状态、统一错误恢复与 secret hygiene 已完成本地工程验收；设置页连接测试、SQLite、历史与 Export 仍未接入，签名、公证和发布包也未完成。该状态不表示 P0 或产品发布完成。
+> 状态：V0.1 Swift Package、WXT 扩展、Native Host 与自动化进程链路已实现；Chrome、Brave 150 的真实垂直链路已通过，Edge 150 隔离 Profile 的真实 Popup 预览与修复后 Service Worker → Host → Unix socket → Swift App 20/20 传输也已完成。Edge 两层证据分别记录，不等同于一张修复后工具栏点击到 APP 的连续截图。V0.2 任务 A–D 的 ProviderProfile/Keychain、OpenAI-compatible adapter、总结/翻译 streaming UI、停止/不完整状态、统一错误恢复与 secret hygiene 已完成本地工程验收；02A 的正式 History Domain、migration 001 与 GRDB Repository，以及 02B 的 App composition、启动 recovery gate、Capture commit/动态禁写 gate 与 Run 持久化生命周期均已通过独立复审。最终主线程 Swift 117/117、Web、SwiftPM 与 Xcode 四目标通过。历史 Sidebar/详情/删除 UI、设置页连接测试与文件 Export 仍未接入，正式 Host 目录、签名、公证和发布包也未完成。该状态不表示 P0 或产品发布完成。
 
 ## 1. 一句话定位
 
@@ -82,7 +82,7 @@ Domain
   Task / ContentSnapshot / Run / Artifact / AppError
 
 Ports
-  CaptureInbox / ModelProvider / Repository / SecretStore / Exporter
+  HistoryRepository / ModelProvider / SecretStore / Exporter
 
 Adapters
   Native Messaging / URLSession / SQLite / Keychain / File Export
@@ -118,7 +118,7 @@ Swift 与 TypeScript 无法直接共享类型。进入 V0.1 实施前必须确�
 2. 可接受：手写 schema + 同一组跨语言 JSON fixtures。
 3. 不接受：只把 TypeScript interface 当成跨语言真相源。
 
-`contracts/capture-envelope-v1.schema.json` 是当前跨语言唯一合同。扩展构建时由 Ajv 2020 生成静态校验函数，运行时不使用 Manifest V3 CSP 禁止的 `eval` / `new Function`；Swift 运行时加载打包后的同一 Schema 并执行其 `required/const/enum/type/length/pattern/format` 规则。两端再共同执行字符数等 Schema 无法直接表达的语义 invariant，并读取同一组 `contracts/fixtures/`。`scripts/check-contract-sync.sh` 防止 Swift resource 副本漂移，`generate-contract-validator.mjs --check` 防止扩展静态校验器漂移；旧 `packages/shared` 的 Zod 模型只保留兼容参考。
+`contracts/capture-envelope-v1.schema.json` 是当前跨语言唯一合同。它描述 forward-compatible wire schema：未知附加字段允许通过，但已声明字段的 required/const/enum/type/length/pattern/format 仍严格执行；持久化 schema 与数据库 invariant 则由冻结 migration 和 Repository 校验负责，二者不得混称或互相放宽。扩展构建时由 Ajv 2020 生成静态校验函数，运行时不使用 Manifest V3 CSP 禁止的 `eval` / `new Function`；Swift 运行时通过 `CaptureWireContractSchema` 加载同一 Schema。两端共同执行字符数等 Schema 无法直接表达的语义 invariant，并读取 `contracts/fixtures/` 与 `contracts/native-response-fixtures.json`。后者共同覆盖严格 `taskAccepted` v1、ACK request correlation、完整 AppError、未知 kind 与 forward-compatible 附加字段。`scripts/check-contract-sync.sh` 防止 Swift resource 副本漂移，`generate-contract-validator.mjs --check` 防止扩展静态校验器漂移；旧 `packages/shared` 的 Zod 模型只保留兼容参考。
 
 ### 5.2 消息头
 
@@ -158,6 +158,8 @@ type MessageMeta = {
 
 ### 6.1 SQLite
 
+02A 已实现 `HistoryRepository` Port 与 `GRDBHistoryRepository` Adapter；02B 的 `AppComposition` 在生产 Application Support 的 `LinkDigest/history.sqlite` 创建唯一 Repository/Service，完成 access mode 与 interrupted recovery 后才启动 socket server。`CaptureReceiver` 只在 Capture 事务提交后更新当前 UI 并 ACK；read-only/open/recovery failure 仍启动结构化拒绝端。App 生命周期共享的 `StorageWriteGate` 以 exclusive permit queue 线性化并发 Capture 授权、短同步 Repository 事务与失败降级，避免运行期存储失败后旧 socket receiver 继续写入。`LinkDigestCore` 不依赖 GRDB/SQLite/FileManager/SwiftUI，`LinkDigestPersistence` 独占数据库连接、migration、WAL、Online Backup、restore 与故障注入。
+
 SQLite 保存：
 
 - Task
@@ -167,14 +169,7 @@ SQLite 保存：
 - 非敏感 ProviderProfile
 - migration history
 
-选择 Swift SQLite binding 前必须验证：
-
-- Swift Package 许可证。
-- Apple Silicon 与发布构建。
-- 签名、公证和升级迁移。
-- 备份、只读恢复和事务行为。
-
-数据库 migration 只向前；升级失败时以只读模式打开并允许导出，不通过删除数据库恢复。
+GRDB 7.11.1 exact 已通过许可证、SwiftPM Debug/Release、事务、migration、并发、备份与只读恢复门禁。migration 001 的 `Task → ContentSnapshot → Run → Artifact` 与 `capture_deliveries` 已通过独立复审并冻结，02B 未修改其字节；未来 schema 变化只能追加 002+。升级失败时以只读模式打开并保留 projection/export 逃生边界，不通过删除数据库恢复。历史浏览 UI、签名与公证仍属后续门禁。
 
 ### 6.2 Keychain
 
@@ -206,7 +201,7 @@ P0 只实现 OpenAI-compatible Chat Completions。Responses、Ollama 和多 Prov
 - 401 不自动重试；429/5xx 只做有界重试。
 - 流中断保存部分结果并标记不完整，不自动拼接不可信续写。
 
-V0.2 的具体组件、秘密边界、错误矩阵与任务拆分见 `docs/specs/V0.2_BYOK_PLAN.md`，集中验收证据见 `docs/specs/V0.2_BYOK_ACCEPTANCE.md`。当前实现止于“捕获正文 → Orchestrator → Provider adapter → streaming RunState → SwiftUI 结果”；SQLite、历史和 Export 属于后续里程碑。每个 stable code 由 App 层统一映射为中文原因与恢复动作，未知输入不会原样进入 UI；Orchestrator 在 RunState 前对本次短时 API Key 做精确 redaction。
+V0.2 的具体组件、秘密边界、错误矩阵与任务拆分见 `docs/specs/V0.2_BYOK_PLAN.md`，集中验收证据见 `docs/specs/V0.2_BYOK_ACCEPTANCE.md`。02B 已把当前 Capture 与 Run 接入 SQLite：queued commit 早于 starting，running commit 早于 Provider，partial commit 早于 streaming UI，terminal commit 早于 terminal UI；当前 Provider 没有 usage 事件，因此 token/cost 保持 NULL。每个 stable code 由 App 层统一映射为中文原因与恢复动作，storage safeDetail 默认为 nil；Orchestrator 在持久化与 RunState 前对本次短时 API Key 做精确 redaction。历史 Sidebar/详情与 Export 属于后续里程碑。
 
 ## 8. UI 与 AppKit 边界
 

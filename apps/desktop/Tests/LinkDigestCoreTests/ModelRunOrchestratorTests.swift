@@ -2,6 +2,12 @@ import Foundation
 import XCTest
 @testable import LinkDigestCore
 
+private final class CallbackBlocker: @unchecked Sendable {
+  let entered = DispatchSemaphore(value: 0)
+  let release = DispatchSemaphore(value: 0)
+  func block() { entered.signal(); release.wait() }
+}
+
 private actor OrchestratorProfileStore: ProviderProfileStore {
   private let profile: ProviderProfile?
   private let failLoad: Bool
@@ -145,10 +151,80 @@ private final class ScriptedModelProvider: ModelProvider, @unchecked Sendable {
   }
 }
 
-private actor RunStateRecorder {
-  private var updates: [(UUID, RunState)] = []
+private final class AdversarialModelProvider: ModelProvider, @unchecked Sendable {
+  private let lock = NSLock()
+  private var calls = 0
+  private var activeStreams = 0
+  private var yieldedEvents = 0
+  private var explicitCancellations = 0
 
-  func append(runID: UUID, state: RunState) {
+  func stream(profile _: ProviderProfile, apiKey _: String, intent _: RunIntent) -> AsyncThrowingStream<ModelStreamEvent, Error> {
+    let call = lock.withLock { () -> Int in
+      calls += 1
+      activeStreams += 1
+      return calls
+    }
+    return AsyncThrowingStream { continuation in
+      Task.detached {
+        if call == 1 {
+          try? await Task.sleep(for: .milliseconds(200))
+          self.lock.withLock { self.yieldedEvents += 1 }
+          continuation.yield(.delta("malicious-late-old"))
+          self.lock.withLock { self.yieldedEvents += 1 }
+          continuation.yield(.completed)
+        } else {
+          self.lock.withLock { self.yieldedEvents += 1 }
+          continuation.yield(.delta("new"))
+          self.lock.withLock { self.yieldedEvents += 1 }
+          continuation.yield(.completed)
+        }
+        continuation.finish()
+        self.lock.withLock { self.activeStreams -= 1 }
+      }
+      // Deliberately no onTermination cancellation: this provider violates the
+      // cooperative cancellation contract and keeps producing late events.
+    }
+  }
+
+  func cancelActiveStreams() { lock.withLock { explicitCancellations += 1 } }
+  var callCount: Int { lock.withLock { calls } }
+  var activeStreamCount: Int { lock.withLock { activeStreams } }
+  var yieldedEventCount: Int { lock.withLock { yieldedEvents } }
+  var cancellationCount: Int { lock.withLock { explicitCancellations } }
+}
+
+private final class OrchestratorHistoryRepository: HistoryRepository, @unchecked Sendable {
+  let accessMode: HistoryRepositoryAccessMode = .writable
+  private let lock = NSLock()
+  private var events: [String] = []
+
+  func acceptCapture(_: AcceptCaptureCommand) throws -> AcceptCaptureResult { throw RepositoryFailure.invalidInput }
+  func createRun(_ command: CreateRunCommand) throws -> CreateRunResult {
+    lock.withLock { events.append("queued:\(command.runID.rawValue)") }
+    return .init(runID: command.runID, wasCreated: true)
+  }
+  func markRunRunning(_ command: MarkRunRunningCommand) throws {
+    lock.withLock { events.append("running:\(command.runID.rawValue)") }
+  }
+  func savePartialArtifact(_ command: SavePartialArtifactCommand) throws {
+    lock.withLock { events.append("partial:\(command.bodyText)") }
+  }
+  func finishRun(_ command: FinishRunCommand) throws {
+    lock.withLock { events.append("terminal:\(command.status.rawValue)") }
+  }
+  func recoverInterruptedRuns(at _: Int64) throws -> Int { 0 }
+  func historyPage(limit _: Int, after _: HistoryPageCursor?) throws -> HistoryPage { throw RepositoryFailure.notFound }
+  func detail(taskID _: TaskID) throws -> HistoryDetailProjection { throw RepositoryFailure.notFound }
+  func exportProjection(taskID _: TaskID) throws -> HistoryExportProjection { throw RepositoryFailure.notFound }
+  func deleteTask(taskID _: TaskID) throws { throw RepositoryFailure.notFound }
+  var eventCount: Int { lock.withLock { events.count } }
+  var terminalCount: Int { lock.withLock { events.filter { $0.hasPrefix("terminal:") }.count } }
+}
+
+private actor RunStateRecorder {
+  private var updates: [(RunID, RunState)] = []
+
+  func append(runID: RunID, state: RunState) {
     updates.append((runID, state))
   }
 
@@ -220,8 +296,8 @@ final class ModelRunOrchestratorTests: XCTestCase {
 
   func testSummarizeAndTranslateBuildCaptureIntentsWithDefaultLanguage() async throws {
     let provider = ScriptedModelProvider(scripts: [
-      .init(steps: [.event(.completed)]),
-      .init(steps: [.event(.completed)])
+      .init(steps: [.event(.delta("摘要")), .event(.completed)]),
+      .init(steps: [.event(.delta("翻译")), .event(.completed)])
     ])
     let orchestrator = makeOrchestrator(
       provider: provider,
@@ -233,11 +309,11 @@ final class ModelRunOrchestratorTests: XCTestCase {
 
     await start(orchestrator, intent: .summarize, capture: currentCapture, recorder: recorder)
     await waitUntil { provider.callCount == 1 }
-    await waitUntil { await recorder.lastState == .completed(intent: .summarize, text: "") }
+    await waitUntil { await recorder.lastState == .completed(intent: .summarize, text: "摘要") }
 
     await start(orchestrator, intent: .translate, capture: currentCapture, recorder: recorder)
     await waitUntil { provider.callCount == 2 }
-    await waitUntil { await recorder.lastState == .completed(intent: .translate, text: "") }
+    await waitUntil { await recorder.lastState == .completed(intent: .translate, text: "翻译") }
 
     XCTAssertEqual(provider.intents, [
       .summarize(title: "Fixture title", text: "Fixture body"),
@@ -363,7 +439,134 @@ final class ModelRunOrchestratorTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(provider.cancellationCount, 1)
   }
 
-  func testNewRunIsolatesOldDelayedEvents() async throws {
+  func testStartingCallbackSuspensionStopAndSecondStartDoNotMismatchAuthority() async throws {
+    let provider = ScriptedModelProvider(scripts: [
+      .init(steps: [.event(.delta("new")), .event(.completed)])
+    ])
+    let orchestrator = makeOrchestrator(provider: provider, profile: try profile(), secret: "fixture-secret")
+    let blocker = CallbackBlocker()
+    let oldRecorder = RunStateRecorder(), newRecorder = RunStateRecorder()
+    let taskID = TaskID(), snapshotID = ContentSnapshotID()
+    let oldRequest = PersistentRunRequest(runID: RunID(), taskID: taskID, snapshotID: snapshotID, intent: .summarize)
+    let ignoredRequest = PersistentRunRequest(runID: RunID(), taskID: taskID, snapshotID: snapshotID, intent: .translate)
+    let newRequest = PersistentRunRequest(runID: RunID(), taskID: taskID, snapshotID: snapshotID, intent: .translate)
+    let envelope = capture()
+
+    let oldStart = Task {
+      await orchestrator.start(request: oldRequest, capture: envelope) { runID, state in
+        await oldRecorder.append(runID: runID, state: state)
+        if case .starting = state { blocker.block() }
+      }
+    }
+    XCTAssertEqual(blocker.entered.wait(timeout: .now() + 1), .success)
+    await orchestrator.start(request: ignoredRequest, capture: envelope) { runID, state in
+      await newRecorder.append(runID: runID, state: state)
+    }
+    XCTAssertEqual(provider.callCount, 0)
+    await orchestrator.stop()
+    await orchestrator.start(request: newRequest, capture: envelope) { runID, state in
+      await newRecorder.append(runID: runID, state: state)
+    }
+    await waitUntil { await newRecorder.lastState == .completed(intent: .translate, text: "new") }
+    blocker.release.signal()
+    _ = await oldStart.value
+
+    XCTAssertEqual(provider.callCount, 1)
+    let oldLast = await oldRecorder.lastState
+    let newLast = await newRecorder.lastState
+    XCTAssertEqual(oldLast, .stopped(intent: .summarize, partialText: ""))
+    XCTAssertEqual(newLast, .completed(intent: .translate, text: "new"))
+  }
+
+  func testStoppingCallbackSuspensionCannotCancelNewRun() async throws {
+    let provider = ScriptedModelProvider(scripts: [
+      .init(steps: [.event(.delta("old")), .event(.delta("late"), delayMilliseconds: 5_000)]),
+      .init(steps: [.event(.delta("new")), .event(.completed)])
+    ])
+    let orchestrator = makeOrchestrator(provider: provider, profile: try profile(), secret: "fixture-secret")
+    let blocker = CallbackBlocker()
+    let oldRecorder = RunStateRecorder(), newRecorder = RunStateRecorder()
+    let taskID = TaskID(), snapshotID = ContentSnapshotID(), envelope = capture()
+    let oldRequest = PersistentRunRequest(runID: RunID(), taskID: taskID, snapshotID: snapshotID, intent: .summarize)
+    let newRequest = PersistentRunRequest(runID: RunID(), taskID: taskID, snapshotID: snapshotID, intent: .translate)
+    await orchestrator.start(request: oldRequest, capture: envelope) { runID, state in
+      await oldRecorder.append(runID: runID, state: state)
+      if case .stopping = state { blocker.block() }
+    }
+    await waitUntil { await oldRecorder.lastState == .streaming(intent: .summarize, partialText: "old") }
+
+    let stopTask = Task { await orchestrator.stop() }
+    XCTAssertEqual(blocker.entered.wait(timeout: .now() + 1), .success)
+    XCTAssertEqual(provider.explicitCancellationCount, 1)
+    await orchestrator.start(request: newRequest, capture: envelope) { runID, state in
+      await newRecorder.append(runID: runID, state: state)
+    }
+    await waitUntil { await newRecorder.lastState == .completed(intent: .translate, text: "new") }
+    blocker.release.signal()
+    _ = await stopTask.value
+
+    XCTAssertEqual(provider.explicitCancellationCount, 1)
+    let newLast = await newRecorder.lastState
+    XCTAssertEqual(newLast, .completed(intent: .translate, text: "new"))
+  }
+
+  func testStreamingCallbackSuspensionStopWinsWithoutCompletedUI() async throws {
+    let provider = ScriptedModelProvider(scripts: [
+      .init(steps: [.event(.delta("committed")), .event(.completed)])
+    ])
+    let orchestrator = makeOrchestrator(provider: provider, profile: try profile(), secret: "fixture-secret")
+    let blocker = CallbackBlocker(), recorder = RunStateRecorder()
+    let request = PersistentRunRequest(runID: RunID(), taskID: TaskID(), snapshotID: ContentSnapshotID(), intent: .summarize)
+    let envelope = capture()
+    await orchestrator.start(request: request, capture: envelope) { runID, state in
+      await recorder.append(runID: runID, state: state)
+      if case .streaming = state { blocker.block() }
+    }
+    XCTAssertEqual(blocker.entered.wait(timeout: .now() + 1), .success)
+    await orchestrator.stop()
+    blocker.release.signal()
+
+    let states = await recorder.states
+    XCTAssertTrue(states.contains(.stopped(intent: .summarize, partialText: "committed")))
+    XCTAssertFalse(states.contains(.completed(intent: .summarize, text: "committed")))
+  }
+
+  func testAdversarialProviderIgnoringCancellationCannotPublishLateOldDelta() async throws {
+    let provider = AdversarialModelProvider()
+    let service = ProviderConfigurationService(
+      profileStore: OrchestratorProfileStore(profile: try profile()),
+      secretStore: OrchestratorSecretStore(value: "fixture-secret")
+    )
+    let repository = OrchestratorHistoryRepository()
+    let orchestrator = ModelRunOrchestrator(
+      configurationService: service,
+      provider: provider,
+      history: HistoryApplicationService(repository: repository)
+    )
+    let recorder = RunStateRecorder()
+
+    await start(orchestrator, intent: .summarize, capture: capture(), recorder: recorder)
+    await waitUntil { provider.callCount == 1 }
+    await orchestrator.stop()
+    await start(orchestrator, intent: .translate, capture: capture(), recorder: recorder)
+    await waitUntil { await recorder.lastState == .completed(intent: .translate, text: "new") }
+    let statesBeforeGate = await recorder.states
+    let repositoryEventsBeforeGate = repository.eventCount
+    let terminalsBeforeGate = repository.terminalCount
+    try? await Task.sleep(for: .milliseconds(550))
+
+    let states = await recorder.states
+    XCTAssertEqual(states, statesBeforeGate)
+    XCTAssertEqual(repository.eventCount, repositoryEventsBeforeGate)
+    XCTAssertEqual(repository.terminalCount, terminalsBeforeGate)
+    XCTAssertEqual(provider.activeStreamCount, 0)
+    XCTAssertEqual(states.last, .completed(intent: .translate, text: "new"))
+    XCTAssertFalse(states.contains { $0.outputText.contains("malicious-late-old") })
+    XCTAssertGreaterThanOrEqual(provider.cancellationCount, 1)
+    XCTAssertGreaterThanOrEqual(provider.yieldedEventCount, 4)
+  }
+
+  func testSecondStartIsIgnoredUntilActiveRunStopsThenNewRunIsIsolated() async throws {
     let provider = ScriptedModelProvider(scripts: [
       .init(steps: [
         .event(.delta("旧结果"), delayMilliseconds: 250),
@@ -383,6 +586,10 @@ final class ModelRunOrchestratorTests: XCTestCase {
 
     await start(orchestrator, intent: .summarize, capture: capture(), recorder: recorder)
     await waitUntil { provider.callCount == 1 }
+    await start(orchestrator, intent: .translate, capture: capture(), recorder: recorder)
+    try? await Task.sleep(for: .milliseconds(50))
+    XCTAssertEqual(provider.callCount, 1)
+    await orchestrator.stop()
     await start(orchestrator, intent: .translate, capture: capture(), recorder: recorder)
     await waitUntil {
       await recorder.lastState == .completed(intent: .translate, text: "新结果")
@@ -404,7 +611,11 @@ final class ModelRunOrchestratorTests: XCTestCase {
       profileStore: OrchestratorProfileStore(profile: profile),
       secretStore: OrchestratorSecretStore(value: secret, failRead: failSecretRead)
     )
-    return ModelRunOrchestrator(configurationService: service, provider: provider)
+    return ModelRunOrchestrator(
+      configurationService: service,
+      provider: provider,
+      history: HistoryApplicationService(repository: OrchestratorHistoryRepository())
+    )
   }
 
   private func profile() throws -> ProviderProfile {
@@ -446,7 +657,14 @@ final class ModelRunOrchestratorTests: XCTestCase {
     capture: CaptureEnvelopeV1?,
     recorder: RunStateRecorder
   ) async {
-    await orchestrator.start(intent: intent, capture: capture) { runID, state in
+    let request = PersistentRunRequest(
+      runID: RunID(),
+      taskID: TaskID(),
+      snapshotID: ContentSnapshotID(),
+      intent: intent,
+      targetLanguage: intent == .translate ? "简体中文" : nil
+    )
+    await orchestrator.start(request: request, capture: capture) { runID, state in
       await recorder.append(runID: runID, state: state)
     }
   }

@@ -1,96 +1,88 @@
 ---
 slug: flow
-kind: root-page
-title: Key Flows
-updated: "2026-07-14T12:13:32"
+title: Key flows
+role: key flows
+updated: "2026-07-15T16:56:54"
 ---
 
-# Key Flows
+# Key flows
 
-## V0.1 已实现：当前页发送到 SwiftUI
+## 当前页 Capture 持久化流
 
 ```mermaid
 sequenceDiagram
   participant U as User
   participant P as WXT Popup
   participant B as MV3 Background
-  participant C as Injected Capture Function
-  participant V as TS Validator
-  participant H as LinkDigestNativeHost
-  participant S as Unix Socket
-  participant A as LinkDigestApp
+  participant H as Native Host
+  participant R as CaptureReceiver
+  participant G as StorageWriteGate
+  participant D as GRDB Repository
   participant UI as SwiftUI
 
-  U->>P: Open popup on current tab
-  P->>C: executeScript(extractPageInIsolatedWorld)
-  C-->>P: title, url, text, characterCount, method
-  P-->>U: Show title and character count
-  U->>P: Click send
-  P->>B: runtime message send-current-page
-  B->>C: executeScript again
-  C-->>B: ExtractedPage
-  B->>V: Build and validate CaptureEnvelopeV1
-  V-->>B: ok or stable error code
-  B->>H: browser.runtime.sendNativeMessage
-  H->>H: Read Chromium frame, validate schema/invariants
-  H->>S: Send validated JSON to /tmp/linkdigest-uid.sock
-  S->>A: accepted client frame
-  A->>A: CaptureInbox idempotency check
-  A->>UI: MainActor state update
-  A-->>H: taskAccepted
-  H-->>B: NativeResponse frame
-  B-->>P: NativeResponse
-  P-->>U: Show sent or error/action
+  U->>P: Send current page
+  P->>B: CaptureEnvelopeV1
+  B->>H: Native Messaging
+  H->>R: Unix socket frame
+  R->>R: Decode + validate
+  R->>G: Request exclusive Capture permit
+  G->>D: acceptCapture transaction
+  alt commit success
+    D-->>G: TaskID + SnapshotID
+    G-->>R: committed result
+    R->>UI: CurrentCapture update
+    R-->>H: taskAccepted
+    H-->>P: strict correlated ACK
+  else storage failure / gate closed
+    G-->>R: stable storage error
+    R-->>H: AppError, no UI/ACK success
+  end
 ```
 
-当前实现重点在交接可靠性：Popup 与 APP 会展示标题、URL、捕获方式、完整性、字符数和正文；还没有创建持久化 Task、模型 Run 或导出 Artifact。
+关键语义：并发 Capture 只有一个 permit holder。A 事务失败时 gate 先黏性降级，再拒绝已登记 waiter；后续请求不调用 Repository。duplicate 使用原 TaskID/SnapshotID。
 
-## V0.1 错误与恢复流
-
-```mermaid
-flowchart TD
-  Start[User clicks send] --> Capture{Can extract text?}
-  Capture -- no --> ContentError[CAPTURE_CONTENT_EMPTY / retry]
-  Capture -- yes --> Validate{Schema and invariants valid?}
-  Validate -- no --> ProtocolError[Stable protocol error]
-  Validate -- yes --> Host{Native Host installed?}
-  Host -- no --> InstallGuide[NATIVE_HOST_NOT_FOUND / open_install_guide]
-  Host -- yes --> App{App socket reachable?}
-  App -- no --> OpenApp[APP_UNAVAILABLE / open_app]
-  App -- timeout --> Retry[NATIVE_MESSAGE_TIMEOUT / retry]
-  App -- yes --> Accepted[taskAccepted]
-```
-
-恢复边界：Host 不排队正文、不静默拉起 APP、不写业务数据。这个选择让失败更可解释，但会把“用户是否已打开 APP”变成真实工作流的一部分，后续 UI 需要把它讲清楚。
-
-## 后续 P0 本地理解流
+## BYOK Run 持久化流
 
 ```mermaid
 sequenceDiagram
   participant U as User
-  participant A as SwiftUI App
-  participant O as Task Orchestrator
+  participant A as AppViewModel
+  participant O as ModelRunOrchestrator
+  participant D as HistoryRepository
   participant K as Keychain
-  participant M as Provider Adapter
-  participant D as SQLite
-  participant E as Exporter
+  participant M as Provider
 
-  U->>A: Choose summarize / translate
-  A->>O: Create Run for current ContentSnapshot
-  O->>K: Resolve API key by secret reference
-  O->>M: URLSession streaming request
-  M-->>O: Stream tokens or provider error
-  O->>A: Progress and partial result
-  U-->>O: Optional stop / retry
-  O->>D: Save Task, Snapshot, Run, Artifact
-  U->>E: Export Markdown/TXT/JSON
-  E-->>U: User-chosen file
+  U->>A: Summarize / Translate
+  A->>O: one RunID + idempotency key
+  O->>D: queued commit
+  O-->>A: starting
+  O->>K: resolve API key
+  O->>D: running commit
+  O->>M: start stream
+  M-->>O: deltas
+  O->>O: secret holdback/redaction
+  O->>D: partial commit
+  O-->>A: streaming committed partial
+  O->>D: terminal + Artifact commit
+  O-->>A: completed/failed/incomplete/stopped
 ```
 
-## 真实工作流与文档工作流的差异
+Stop 先撤销 authority 并取消 Provider/consumer，再等待 UI callback。每次 await 返回后重验 RunID；旧 Run、迟到 delta 与失败 callback 不能覆盖新 Run。
 
-文档中的 P0 完整循环包括 BYOK、SQLite、Keychain、历史和导出；当前代码中的真实循环停在“当前页正文进入 SwiftUI”。这不是问题，但它影响排期：如果直接开始 UI 打磨，会掩盖更高风险的 Provider streaming、SQLite migration、Keychain failure 和 release install 恢复路径。
+## Storage 失败与恢复
 
-## 系统性影响
+```mermaid
+flowchart TD
+  Open[Open Repository] --> Mode{accessMode}
+  Mode -- writable --> Recover[recoverInterruptedRuns commit]
+  Recover --> Gate[mark write-ready]
+  Gate --> Server[start socket server]
+  Mode -- read-only/error --> Reject[start rejecting receiver]
+  WriteFail[Capture/Run persistence failure] --> Degrade[shared gate unavailable]
+  Degrade --> NoWrite[future Capture rejected before Repository]
+  NoWrite --> Restart[new bootstrap/recovery required]
+```
 
-短期收益是先把最脆弱的跨进程链路变成可测证据。长期成本是用户可见流程跨越浏览器扩展、Host、APP、后续 Provider 和本地存储五个边界；任一边界失败都必须保留稳定错误代码与恢复动作。否则局部优化，例如只让 Popup 显示“失败”，会把系统调试成本转嫁给用户和后续支持。
+## 下一允许阶段
+
+02B 已关闭。下一阶段只能是 History Sidebar、详情、单项删除与重启恢复的浏览交互；当前尚未开始。导出、发布工程和其它扩展能力继续等待各自阶段。
