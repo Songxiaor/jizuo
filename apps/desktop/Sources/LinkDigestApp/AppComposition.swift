@@ -180,7 +180,44 @@ actor AppComposition {
   }
 }
 
+enum AppApplicationSupportRoot {
+  static let smokeOverrideEnvironmentKey = "LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT"
+
+  /// Resolves the one root that the composition root may pass to persistence.
+  ///
+  /// The override exists only in Debug builds so the production vertical smoke can
+  /// exercise the real App composition without ever resolving the user's live
+  /// Application Support directory. Release builds always use `liveRoot`.
+  static func resolve(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    liveRoot: () throws -> URL = liveApplicationSupportRoot
+  ) throws -> URL {
+    #if DEBUG
+    if let rawOverride = environment[smokeOverrideEnvironmentKey] {
+      let root = URL(fileURLWithPath: rawOverride, isDirectory: true)
+        .standardizedFileURL
+      guard root.path.hasPrefix("/"), root.path != "/" else {
+        throw RepositoryFailure.unavailable
+      }
+      return root
+    }
+    #endif
+
+    return try liveRoot()
+  }
+}
+
 func liveApplicationSupportRoot() throws -> URL {
+  #if DEBUG
+  // A successful smoke run with the override proves no future composition path
+  // accidentally falls back to the real user directory.
+  if ProcessInfo.processInfo.environment[
+    AppApplicationSupportRoot.smokeOverrideEnvironmentKey
+  ] != nil {
+    throw RepositoryFailure.unavailable
+  }
+  #endif
+
   guard let root = FileManager.default.urls(
     for: .applicationSupportDirectory,
     in: .userDomainMask

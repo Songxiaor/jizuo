@@ -13,7 +13,7 @@ LinkDigest 的产品目标是成为一个 local-first 的链接理解工具：�
 
 产品路线已收敛为 **macOS 原生优先**：桌面 APP 使用 SwiftUI + 少量 AppKit，Chromium 扩展继续使用 TypeScript/WXT，两端通过 Native Messaging 与版本化 JSON 协议交接。
 
-当前代码已完成到 **P0-RC-02B App capture/run persistence wiring**：V0.1 Chromium capture bridge、V0.2 BYOK 总结/翻译，以及 V0.3 的正式 History Domain、冻结 migration 001、GRDB Repository、启动恢复闸门和当前 Capture/Run 持久化接线已经贯通。Repository commit 是 UI 与浏览器成功 ACK 的共同闸门；生命周期共享的 `StorageWriteGate` 会在线性化的 Capture permit queue 中阻止存储失败后的继续写入；Run 的 queued/running/partial/terminal、取消、迟到数据与跨 delta secret holdback 均有确定性测试。最终独立 Sol 复审 PASS，Hana 主线程最终 Swift 117/117、SwiftPM Debug/Release 与四个 Xcode 目标通过。这个结论只关闭 02B，不表示完整 P0 或发布完成；历史 Sidebar/详情/单项删除、Markdown/TXT/JSON 导出、稳定 Host 安装升级卸载、签名、公证和发布包仍未实现。
+当前代码已完成到 **P0-RC-02B App capture/run persistence wiring**：V0.1 Chromium capture bridge、V0.2 BYOK 总结/翻译，以及 V0.3 的正式 History Domain、冻结 migration 001、GRDB Repository、启动恢复闸门和当前 Capture/Run 持久化接线已经贯通。02A 已独立通过，02B 已独立 PASS。Repository commit 是 UI 与浏览器成功 ACK 的共同闸门；生命周期共享的 `StorageWriteGate` 会在线性化的 Capture permit queue 中阻止存储失败后的继续写入；Run 的 queued/running/partial/terminal、取消、迟到数据与跨 delta secret holdback 均有确定性测试。Gate 0 production vertical smoke 现在用脚本创建的临时 Application Support root 显式注入真实 Debug composition，20/20 通过且禁止回退解析真实用户目录。这个结论只关闭 02B/Gate 0，不表示完整 P0 或发布完成；历史 Sidebar/详情/单项删除、Markdown/TXT/JSON 导出、稳定 Host 安装升级卸载、签名、公证和发布包仍未实现。
 
 - 架构边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 - 当前 P0 产品范围与验收见 [`docs/PRD.md`](docs/PRD.md)。

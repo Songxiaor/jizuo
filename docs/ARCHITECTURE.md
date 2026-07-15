@@ -1,6 +1,6 @@
 # LinkDigest 架构基线
 
-> 状态：V0.1 Swift Package、WXT 扩展、Native Host 与自动化进程链路已实现；Chrome、Brave 150 的真实垂直链路已通过，Edge 150 隔离 Profile 的真实 Popup 预览与修复后 Service Worker → Host → Unix socket → Swift App 20/20 传输也已完成。Edge 两层证据分别记录，不等同于一张修复后工具栏点击到 APP 的连续截图。V0.2 任务 A–D 的 ProviderProfile/Keychain、OpenAI-compatible adapter、总结/翻译 streaming UI、停止/不完整状态、统一错误恢复与 secret hygiene 已完成本地工程验收；02A 的正式 History Domain、migration 001 与 GRDB Repository，以及 02B 的 App composition、启动 recovery gate、Capture commit/动态禁写 gate 与 Run 持久化生命周期均已通过独立复审。最终主线程 Swift 117/117、Web、SwiftPM 与 Xcode 四目标通过。历史 Sidebar/详情/删除 UI、设置页连接测试与文件 Export 仍未接入，正式 Host 目录、签名、公证和发布包也未完成。该状态不表示 P0 或产品发布完成。
+> 状态：V0.1 Swift Package、WXT 扩展、Native Host 与自动化进程链路已实现；Chrome、Brave 150 的真实垂直链路已通过，Edge 150 隔离 Profile 的真实 Popup 预览与修复后 Service Worker → Host → Unix socket → Swift App 20/20 传输也已完成。Edge 两层证据分别记录，不等同于一张修复后工具栏点击到 APP 的连续截图。V0.2 任务 A–D 的 ProviderProfile/Keychain、OpenAI-compatible adapter、总结/翻译 streaming UI、停止/不完整状态、统一错误恢复与 secret hygiene 已完成本地工程验收；02A 的正式 History Domain、migration 001 与 GRDB Repository，以及 02B 的 App composition、启动 recovery gate、Capture commit/动态禁写 gate 与 Run 持久化生命周期均已通过独立复审。Gate 0 的 production vertical smoke 通过 Debug-only 临时 root 注入实际运行，live Application Support resolver 在该模式中被拒绝。历史 Sidebar/详情/删除 UI、设置页连接测试与文件 Export 仍未接入，正式 Host 目录、签名、公证和发布包也未完成。该状态不表示 P0 或产品发布完成。
 
 ## 1. 一句话定位
 

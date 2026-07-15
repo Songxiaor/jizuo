@@ -242,6 +242,15 @@ struct ContentView: View {
   private let composition: AppComposition
 
   init() {
+    let applicationSupportRoot: AppComposition.ApplicationSupportRoot
+    do {
+      let root = try AppApplicationSupportRoot.resolve()
+      applicationSupportRoot = { root }
+    } catch {
+      // Preserve the composition's structured storage-unavailable path rather
+      // than letting an invalid debug smoke override crash the SwiftUI process.
+      applicationSupportRoot = { throw RepositoryFailure.unavailable }
+    }
     let configurationService = ProviderConfigurationService(
       profileStore: UserDefaultsProviderProfileStore(),
       secretStore: KeychainSecretStore()
@@ -261,7 +270,7 @@ struct ContentView: View {
       statusSink: { value in await model.setConnection(value) }
     )
     let composition = AppComposition(dependencies: .init(
-      applicationSupportRoot: liveApplicationSupportRoot,
+      applicationSupportRoot: applicationSupportRoot,
       repositoryFactory: { location in
         try GRDBHistoryRepository.open(at: location)
       },

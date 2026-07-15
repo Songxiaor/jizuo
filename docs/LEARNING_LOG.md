@@ -369,14 +369,28 @@
 ## 任务 021：P0-RC-02B App Capture / Run 持久化接线
 
 - 日期：2026-07-15
-- 当前状态：实施 Agent 自报完成并通过本地工程门禁，独立审查尚未验收；Xcode 因既有 nested sandbox 分层阻断，历史 Sidebar/详情/删除 UI 与导出未启动。
+- 当前状态：02B 已完成并独立 PASS；最终主线程 Swift 117/117、SwiftPM Debug/Release、Web 与 Xcode 四目标通过。历史 Sidebar/详情/删除 UI 与导出仍未启动。
 - 用户场景：浏览器正文只有在本地 archive 事务提交后才出现在当前窗口并返回 ACK；总结/翻译从 queued 到 terminal 的每一步都留下可恢复记录，写入失败不会让 UI 假装成功。
 - 角色与交接：`AppComposition` 打开唯一 Repository/Service并完成 recovery gate；`CaptureReceiver` 把 frame 交给 validator、History service、MainActor UI 与 ACK；现有 `ModelRunOrchestrator` 独占 Run、Provider、partial、terminal、stop 与 stale ownership。
 - 本次核心名词：Composition Root、Recovery Gate、Committed Partial、Stale Run。
 - 过程讲解：开工时解释了三个组件的交接；实现 storage error 时说明 stable code 会丢弃 raw path/SQL；实现流式持久化时用“账本确认后才更新余额”类比 candidate 与 committed partial；专项测试时解释 recovery→server 与 commit→UI→ACK 的可观察顺序。
 - 被证据修正的一点：最初 receiver 测试夹具使用合同不允许的 `platform: test`，所以正确得到 protocol rejection；改为 schema 允许的 `generic` 后，read-only/open/recovery 与 storage request ID 分层全部通过。
-- 自动证据：高风险、设计、安全与并发专项 60/60，包括 Composition 4/4、CaptureReceiver 7/7、temp GRDB Orchestrator 8/8、Persistent Orchestrator 14/14、Orchestrator 并发/回归 13/13、History Domain 4/4、AppViewModel 10/10。Ordered blocker 证明 commit success 前无 ACK/UI/normal server；恶意 Provider 忽略取消仍无迟到污染；temp reopen 证明 usage 五列 NULL 与写失败后 interrupted recovery。安全预审后新增 starting/stopping/streaming callback barrier、producer 注册/取消、Stop/completed 双线性化、RunID mismatch conflict、terminal failure 后新 Run、split-secret holdback/flush failure、hostile late events、MainActor 旧状态矩阵与 24 路并发 Capture 一致性；完整 Swift 103/113，10 项均为既有 Network/Keychain/socket 环境失败；Debug/Release、Web、licenses、secret、doctor 与 diff PASS。vertical smoke 因未证明 temp Application Support 注入而安全跳过。
+- 自动证据：高风险、设计、安全与并发专项 60/60，包括 Composition 4/4、CaptureReceiver 7/7、temp GRDB Orchestrator 8/8、Persistent Orchestrator 14/14、Orchestrator 并发/回归 13/13、History Domain 4/4、AppViewModel 10/10。Ordered blocker 证明 commit success 前无 ACK/UI/normal server；恶意 Provider 忽略取消仍无迟到污染；temp reopen 证明 usage 五列 NULL 与写失败后 interrupted recovery。安全预审后新增 starting/stopping/streaming callback barrier、producer 注册/取消、Stop/completed 双线性化、RunID mismatch conflict、terminal failure 后新 Run、split-secret holdback/flush failure、hostile late events、MainActor 旧状态矩阵与 24 路并发 Capture 一致性；完整 Swift 117/117、Debug/Release、Web、licenses、secret、doctor 与 diff PASS。production vertical smoke 的隔离注入在后续 Gate 0 任务中实际补齐并通过。
 - 安全边界：没有启动生产 App，没有访问真实 Application Support、浏览器资料、Keychain 或 Provider；App/Core 不 import GRDB 或持有 SQL；storage `safeDetail` 默认为 nil；migration 001 hash 保持冻结值。
 - 可选跟做：运行 `swift test --disable-sandbox --filter 'AppCompositionTests|CaptureReceiverTests|PersistentModelRunOrchestratorTests'`，观察时序与 rollback 断言；它只使用 fake/temp，不是任务关闭门槛。
 - Syc 主动提出的待解释点：无。
 - 回滚：只撤销 App→Persistence 接线、新 App 文件、Orchestrator 扩展、02B tests/docs；不删库、不降级、不清理真实 Application Support/Keychain，也不触碰 V0.1 Host。
+
+## 任务 022：Gate 0 安全 production vertical smoke
+
+- 日期：2026-07-15
+- 当前状态：完成本地最小修正与 Gate 0 验证；02A 已独立通过，02B 已独立 PASS。历史 Sidebar/详情/单项删除和 Markdown/TXT/JSON Export 均未开始，也不属于本任务。
+- 用户场景：浏览器送来 Capture 时，真实 App composition 必须能把事务提交到本地历史并返回 ACK；工程 smoke 同时不能把这次验证误写到用户已有的历史数据库。
+- 角色与交接：`run-vertical-smoke.sh` 创建专属临时 Application Support root 并把它作为明确交接物传入 Debug App；`AppApplicationSupportRoot` 只在 Debug 读取该 root，`AppComposition` 再把同一 root 交给 `LocalDatabaseLocation`/Repository；Host 与 socket 维持既有 20 次 Capture 交接。
+- 本次核心名词：显式注入（把测试目录直接交给组件，而不是让组件自己猜目录）、live resolver（正常运行时查用户 Application Support 的单一函数）、fail-closed guard（测试模式一旦意外回退到 live resolver 就拒绝而非继续）。
+- 自动证据：`AppCompositionTests` 6/6 PASS，其中注入用例把 live resolver 设为必定失败仍得到临时 root；`./scripts/run-vertical-smoke.sh` PASS，运行中断言 `history.sqlite` 已创建且路径属于专属临时 root，Debug guard 禁止解析真实 `~/Library/Application Support/LinkDigest`，Host → socket → SwiftUI process 为 20/20 accepted；退出清理后断言临时 root 已不存在。
+- 失败与恢复：如果 socket、数据库创建或 20 次 Capture 任一失败，脚本仍停止 App、删除 socket/log、仅删除自己用 `mktemp` 创建的 root；不会删除、reset、降级或清理真实用户数据库。若 future change 意外调用 live resolver，Debug guard 会让 App 落入结构化 storage unavailable，smoke 不能得到 `taskAccepted`，从而失败而不是触碰真实目录。
+- 安全边界：override 只编译入 Debug，Release 始终使用正常 live root；没有真实 Provider、Key、Cookie、浏览器资料或私人正文，没有改 migration 001，也未创建 Migration002。
+- 可选跟做：运行 `./scripts/run-vertical-smoke.sh`，它会自行创建和删除临时 root；终端的 PASS 说明一次真实进程链路完成，但不等于产品发布验收。
+- Syc 主动提出的待解释点：无。
+- 回滚：撤销本任务的 Debug root resolver、两项 composition tests、smoke 脚本与状态文档即可；绝不对用户的 Application Support 数据执行任何删除或 schema 操作。

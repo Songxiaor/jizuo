@@ -6,24 +6,63 @@ APP="$ROOT/apps/desktop/.build/debug/LinkDigestApp"
 HOST="$ROOT/apps/desktop/.build/debug/LinkDigestNativeHost"
 FIXTURE="$ROOT/contracts/fixtures/valid.json"
 SOCKET="/tmp/linkdigest-vertical-smoke-$$.sock"
-APP_LOG="/tmp/linkdigest-vertical-smoke-$$.log"
 
 "$ROOT/scripts/build-dev.sh" >/dev/null
 
-LINKDIGEST_SOCKET_PATH="$SOCKET" "$APP" >"$APP_LOG" 2>&1 &
-APP_PID=$!
+SMOKE_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/linkdigest-vertical-smoke.XXXXXX")"
+APPLICATION_SUPPORT_ROOT="$SMOKE_ROOT/Application Support"
+APP_LOG="$SMOKE_ROOT/app.log"
+APP_PID=""
+
+assert_smoke_database_is_isolated() {
+  local database="$APPLICATION_SUPPORT_ROOT/LinkDigest/history.sqlite"
+  [[ -f "$database" ]] || {
+    echo "vertical-smoke: injected temporary database was not created" >&2
+    return 1
+  }
+  [[ "$database" == "$SMOKE_ROOT/"* ]] || {
+    echo "vertical-smoke: database escaped the dedicated temporary root" >&2
+    return 1
+  }
+}
+
 cleanup() {
-  kill "$APP_PID" 2>/dev/null || true
-  wait "$APP_PID" 2>/dev/null || true
+  local command_status=$?
+  local cleanup_status=0
+  set +e
+  if [[ -n "$APP_PID" ]]; then
+    kill "$APP_PID" 2>/dev/null || true
+    wait "$APP_PID" 2>/dev/null || true
+  fi
   rm -f "$SOCKET" "$APP_LOG"
+  if [[ -n "$APP_PID" ]]; then
+    assert_smoke_database_is_isolated || cleanup_status=1
+  fi
+  rm -rf "$SMOKE_ROOT"
+  [[ ! -e "$SMOKE_ROOT" ]] || {
+    echo "vertical-smoke: temporary Application Support root was not removed" >&2
+    cleanup_status=1
+  }
+  if [[ "$command_status" -eq 0 && "$cleanup_status" -ne 0 ]]; then
+    exit "$cleanup_status"
+  fi
+  exit "$command_status"
 }
 trap cleanup EXIT
+
+mkdir -p "$APPLICATION_SUPPORT_ROOT"
+
+LINKDIGEST_SOCKET_PATH="$SOCKET" \
+LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT="$APPLICATION_SUPPORT_ROOT" \
+"$APP" >"$APP_LOG" 2>&1 &
+APP_PID=$!
 
 for _ in {1..50}; do
   [[ -S "$SOCKET" ]] && break
   sleep 0.1
 done
 [[ -S "$SOCKET" ]] || { echo "vertical-smoke: APP socket did not start" >&2; exit 1; }
+assert_smoke_database_is_isolated
 
 LINKDIGEST_SOCKET_PATH="$SOCKET" node - "$HOST" "$FIXTURE" <<'NODE'
 const { readFileSync } = require("node:fs");
@@ -52,7 +91,7 @@ for (let index = 0; index < 20; index += 1) {
   }
 }
 stalled.destroy();
-console.log("vertical-smoke: OK (stalled client isolated; 20/20 captures accepted through Host → socket → SwiftUI process)");
+console.log("vertical-smoke: OK (debug smoke root explicitly injected; live Application Support resolution is forbidden; stalled client isolated; 20/20 captures accepted through Host → socket → SwiftUI process)");
 }
 main().catch((error) => { console.error(error); process.exitCode = 1; });
 NODE

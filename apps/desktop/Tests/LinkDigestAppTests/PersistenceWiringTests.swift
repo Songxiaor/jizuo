@@ -176,6 +176,28 @@ private final class ServerRecorder: @unchecked Sendable {
 }
 
 final class AppCompositionTests: XCTestCase {
+  func testDebugSmokeRootInjectionNeverResolvesLiveApplicationSupport() throws {
+    let expected = URL(fileURLWithPath: "/private/tmp/linkdigest-smoke-root", isDirectory: true)
+    let resolved = try AppApplicationSupportRoot.resolve(
+      environment: [
+        AppApplicationSupportRoot.smokeOverrideEnvironmentKey: expected.path
+      ],
+      liveRoot: { throw RepositoryFailure.unavailable }
+    )
+
+    XCTAssertEqual(resolved, expected)
+  }
+
+  func testNormalRootResolutionDelegatesToLiveRoot() throws {
+    let expected = URL(fileURLWithPath: "/private/var/folders/live-root", isDirectory: true)
+    let resolved = try AppApplicationSupportRoot.resolve(
+      environment: [:],
+      liveRoot: { expected }
+    )
+
+    XCTAssertEqual(resolved, expected)
+  }
+
   func testWritableBootstrapRecoversBeforeStartingServerAndRunsOnlyOnce() async {
     let log = WiringEventLog()
     let repository = WiringRepository(log: log)

@@ -4,7 +4,7 @@
 
 ## 已通过专项
 
-- Composition 4 项：bootstrap 一次性；recovery method entry 后仍保持 normal server start=0，commit success 后才启动；read-only/open/recovery failure 只启动结构化拒绝端；临时 GRDB restart 把 running Run 恢复为 interrupted。
+- Composition 6 项：bootstrap 一次性；recovery method entry 后仍保持 normal server start=0，commit success 后才启动；read-only/open/recovery failure 只启动结构化拒绝端；临时 GRDB restart 把 running Run 恢复为 interrupted；Debug production smoke 显式注入临时 Application Support root 时绝不解析 live root，未注入时才委托 live root。
 - CaptureReceiver 9 项：ordered fake 区分 method entry/commit success，UI/ACK 只在 commit 后；success/duplicate 返回正确 IDs；首次 write failure 黏性关闭共享 gate，fake Repository 随后恢复成功也不再被调用；并发 A 在同步 Repository barrier 内失败时，已发起的 B 不能再次调用 Repository，释放 A 后两者均为稳定 storage error、无 UI/ACK；validation 与 storage request ID 分层；每次生成动态 sentinel 绝对路径并扫描 response/UI/snapshot。
 - GRDB Orchestrator integration 8 项：partial/terminal/stop 写失败后 Provider+producer 收口、无伪 terminal、DB 保持 running 并在 temp reopen 后恢复 interrupted；成功 Run 经 detail/reopen 验证 usage/cost 五列实际 NULL。
 - Persistent Orchestrator 14 项：queued/running/partial/terminal 的 method entry 与 commit success 分离；credentials failure；空 completed；partial/terminal rollback；queued/running stop；同一 RunID/key replay 与新点击新 key；storage hygiene。
@@ -46,7 +46,7 @@
 - App/Core binding scan PASS；没有 `import GRDB`、DatabasePool/Queue 或 SQL，也没有生产 `CaptureInbox` 引用。Composition root 仅通过 Persistence Adapter 类型完成装配。
 - `pnpm xcode:build` PASS：LinkDigestApp Debug/Release 与 LinkDigestNativeHost Debug/Release 四个目标均通过。
 - migration hash 保持冻结值，migration diff 为空，未创建 Migration002。
-- 未运行 production vertical smoke：该入口可能解析真实 Application Support，本轮未先证明它具备显式 temp root 注入，因此按安全边界 SKIP。
+- Gate 0 已实际运行 production vertical smoke：脚本以 `mktemp` 创建专属临时 Application Support root，并通过 `LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT` 显式注入真实 App composition；Debug 下该环境变量存在时 `liveApplicationSupportRoot()` 会拒绝，因而成功的 20/20 运行证明没有回退解析真实 `~/Library/Application Support/LinkDigest`。运行中自动断言 `history.sqlite` 只位于该临时 root，清理后自动断言整个临时 root 已移除。该 override 不编译进 Release。
 
 ## migration 与回滚
 

@@ -27,7 +27,7 @@ UI Run action
   → terminal UI
 ```
 
-`AppComposition` 是唯一装配点：生产只创建一个 `GRDBHistoryRepository` 和一个 `HistoryApplicationService`。Application Support root、Repository factory、clock 与 server starter 可注入；02B integration tests 只使用 fake 或临时 root。
+`AppComposition` 是唯一装配点：生产只创建一个 `GRDBHistoryRepository` 和一个 `HistoryApplicationService`。Application Support root、Repository factory、clock 与 server starter 可注入；02B integration tests 只使用 fake 或临时 root。Gate 0 的 production vertical smoke 在 Debug build 通过 `LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT` 把脚本创建的专属临时 root 显式交给 composition；override 存在时 live-root resolver 会拒绝调用，Release 不包含这个测试入口。
 
 ## Capture 接线
 

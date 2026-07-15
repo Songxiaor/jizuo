@@ -4,7 +4,7 @@
 >
 > 本文是产品范围、优先级和验收标准的唯一真相源。技术组件见 `docs/ARCHITECTURE.md`；第一条链路见 `docs/specs/V0.1_VERTICAL_SLICE.md`；V0.2 工程证据见 `docs/specs/V0.2_BYOK_ACCEPTANCE.md`；远期容量假设见 `docs/CAPACITY_MODEL.md`。
 
-> **范围与当前实现说明**：本文的 P0 是第一版产品目标，不代表当前代码已经实现全部 P0。V0.1 三浏览器交接矩阵已有工程证据，但正式安装、签名、公证和发布包仍未完成。V0.2 A–D 的本地工程链路已完成：ProviderProfile/Keychain、OpenAI-compatible streaming adapter、总结/翻译 RunState 与 UI、停止/不完整状态、统一恢复文案和 secret hygiene 均有自动证据。设置页连接测试尚未实现，也未调用真实模型 API。V0.3 的正式 History Domain、冻结 migration 001 与 GRDB Repository 已完成 02A 工程验收；02B 的 App composition、启动恢复闸门、Capture/Run 持久化、storage failure 黏性禁写与并发 Capture 线性化已经通过独立 Sol 终审。最终主线程验证为 Swift 117/117、SwiftPM Debug/Release、Web 与四个 Xcode 目标通过。历史 Sidebar/详情/删除 UI 尚未开始，文件导出属于 V0.4。
+> **范围与当前实现说明**：本文的 P0 是第一版产品目标，不代表当前代码已经实现全部 P0。V0.1 三浏览器交接矩阵已有工程证据，但正式安装、签名、公证和发布包仍未完成。V0.2 A–D 的本地工程链路已完成：ProviderProfile/Keychain、OpenAI-compatible streaming adapter、总结/翻译 RunState 与 UI、停止/不完整状态、统一恢复文案和 secret hygiene 均有自动证据。设置页连接测试尚未实现，也未调用真实模型 API。V0.3 的正式 History Domain、冻结 migration 001 与 GRDB Repository 已完成 02A 独立工程验收；02B 的 App composition、启动恢复闸门、Capture/Run 持久化、storage failure 黏性禁写与并发 Capture 线性化已经独立 PASS。Gate 0 production vertical smoke 已以显式注入的临时 Application Support root 实际通过，不会回退解析真实用户目录。历史 Sidebar/详情/删除 UI 尚未开始，文件导出属于 V0.4。
 
 ## 1. 一句话定位
 

@@ -6,7 +6,7 @@
 ## 专项结果
 
 ```text
-AppCompositionTests                  4/4 PASS
+AppCompositionTests                  4/4 PASS (02B close evidence)
 CaptureReceiverTests                 9/9 PASS
 GRDBOrchestratorIntegrationTests      8/8 PASS
 PersistentModelRunOrchestratorTests 14/14 PASS
@@ -18,7 +18,7 @@ Contract                                 6/6 PASS
 Combined targeted                       69/69 PASS
 ```
 
-临时 GRDB restart 用例只在 `FileManager.default.temporaryDirectory` 下创建隔离 Application Support root；没有启动生产 App，也没有访问真实 Application Support、浏览器资料、Keychain 或 Provider。
+02B close evidence 的临时 GRDB restart 用例只在 `FileManager.default.temporaryDirectory` 下创建隔离 Application Support root。Gate 0 随后新增了 production vertical smoke：脚本创建专属临时 Application Support root，并显式注入真实 App composition；Debug guard 禁止该运行回退到 live resolver。运行中断言 `history.sqlite` 只在临时 root，清理后断言该 root 已删除。两次验证均不访问真实 `~/Library/Application Support/LinkDigest`、浏览器资料、真实 Keychain 或 Provider。
 
 ## 时序证据
 
@@ -59,7 +59,8 @@ Host timeout category source/fixture  PASS; dedicated temp-socket smoke在严格
 High-risk + design + security        63/63 PASS
 Contract                                6/6 PASS
 Combined targeted                      69/69 PASS
-Full Swift                          117/117 PASS
+Full Swift                          117/117 PASS (02B close evidence)
+Gate 0 full Swift                   119/119 PASS
 Known product failures                 0/117
 SwiftPM Debug                         PASS
 SwiftPM Release                       PASS
@@ -79,8 +80,27 @@ Migration001 diff                     empty
 Migration002                          absent
 Xcode LinkDigestApp Debug/Release      PASS
 Xcode LinkDigestNativeHost Debug/Release PASS
-Vertical smoke                        SKIP: no proven temp Application Support injection
+Vertical smoke                        PASS: Debug temp-root injection, live resolver forbidden, 20/20 accepted
 ```
+
+## Gate 0 production smoke 复验
+
+基于远端 `codex/p0-rc-02b-baseline` 的独立 checkout，Gate 0 的最小 diff 新增两个 composition tests，并把 production vertical smoke 改为脚本创建、显式注入的临时 Application Support root。实际结果如下：
+
+```text
+AppCompositionTests                  6/6 PASS
+pnpm check (Web + Swift)             PASS
+Full Swift                          119/119 PASS
+SwiftPM Debug / Release              PASS
+LinkDigestApp Xcode Debug / Release  PASS
+NativeHost Xcode Debug / Release     PASS
+Release history benchmark            PASS (recent p95 0.544583 ms; detail p95 0.133334 ms; threshold 300 ms)
+JS + Swift licenses                  PASS
+contract / secret hygiene / doctor   PASS (doctor 52 PASS, 1 uncommitted-diff WARN, 0 FAIL)
+production vertical smoke            PASS (20/20)
+```
+
+Smoke 在 socket 出现后立即断言临时 root 内的 `LinkDigest/history.sqlite` 已创建；在退出清理中再次断言该文件仍位于同一 root，随后只删除该 `mktemp` root，并断言它已不存在。Debug resolver 在 override 存在时拒绝 live root，因此任何未来误用 `liveApplicationSupportRoot()` 都使流程落入 structured storage failure，无法伪造 `taskAccepted` PASS。Release build 没有该 override 分支。
 
 并发线性化补证使用确定性 semaphore/continuation barrier，不用概率 sleep 触发关键交错：starting/stopping/streaming callback suspension、producer 注册/取消、Stop 与 completed 双线性化、terminal failure 后新 Run、partial failure 后 hostile late event、MainActor 旧 Run 全状态矩阵均通过。`createRun` 返回 RunID 与 request/key ID 不一致时稳定返回 `STORAGE_STATE_CONFLICT`，不启动 Provider、不切换 authority。500ms 分别覆盖 Provider cancel、consumer termination 与 stop return；550ms 同时核对 UI states、Repository write/terminal count 与 Provider active count不再变化。
 
@@ -88,4 +108,4 @@ Vertical smoke                        SKIP: no proven temp Application Support i
 
 设计状态矩阵覆盖 cold start、writable/no capture、capture success/failure、starting/streaming/completed/stop、partial/terminal failure、read-only 与 Provider error。Provider failure 保持 storage writable；storage failure 只使用本地历史/本地存储语义并禁用新 Run。控件级源码扫描未发现 Sidebar、NavigationSplitView、history UI、Rerun/Share/Export/Delete/Ask、token-cost、Banner/Toast/dashboard；首轮宽泛正则仅误命中 `Task/taskID/SECRET_STORE_DELETE_FAILED`，收窄为控件级模式后零命中。
 
-实施子会话曾出现 8 个 Network.framework fake server `startFailed`、1 个隔离 Keychain status 100001、1 个 Unix socket address-in-use，以及 Xcode nested sandbox exit 74；这些都在最终 Hana 主线程 clean post-fix 复验中消失：完整 Swift 117/117 与 Xcode 四目标全部通过。因此最终分类为子会话执行环境差异，不是产品代码失败。高风险专项和所有 GRDB integration 只使用 fake 或 `FileManager.default.temporaryDirectory`；没有运行可能解析真实 Application Support 的 production vertical smoke，也没有修改全局 defaults、降低测试、启动生产 App，或访问真实 Application Support、浏览器资料、真实 Keychain/Provider。
+实施子会话曾出现 8 个 Network.framework fake server `startFailed`、1 个隔离 Keychain status 100001、1 个 Unix socket address-in-use，以及 Xcode nested sandbox exit 74；这些都在最终 Hana 主线程 clean post-fix 复验中消失：完整 Swift 117/117 与 Xcode 四目标全部通过。因此最终分类为子会话执行环境差异，不是产品代码失败。高风险专项和所有 GRDB integration 只使用 fake 或 `FileManager.default.temporaryDirectory`；Gate 0 production vertical smoke 则只使用脚本创建并显式注入的临时 Application Support root，Debug guard 阻止解析 live root。没有修改全局 defaults、读取浏览器资料、使用真实 Keychain/Provider，或删除、reset、降级、清理真实用户数据库。
