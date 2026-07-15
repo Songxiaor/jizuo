@@ -1,6 +1,6 @@
 # P0-RC-02A History Domain 与 GRDB Repository 验收
 
-> 当前工程结论：**实施 ACCEPT，待独立 Sol xhigh 复审**。上一版候选被独立复审判定 MUST FIX，未被接受、未进入用户数据库；本轮直接修订 migration 001，修订后的 001 才是首个候选。历史 UI、App composition、socket ACK 时序和真实 Provider wiring 属于 02B，均未启动。
+> 当前工程结论：**02A 已通过独立 Sol xhigh 复审；02B 已完成并通过独立复审**。当前 Swift 为 **120/120**；LinkDigestApp 与 LinkDigestNativeHost 的 Debug/Release 四个 Xcode 目标均通过。上一版候选曾被独立复审判定 MUST FIX，未被接受、未进入用户数据库；四项阻断直接修订进 migration 001，修订后的 001 是首个已接受并冻结的候选。02B 的 App composition、socket ACK 时序与当前 Capture/Run 持久化接线已经完成并通过复审；历史 Sidebar/详情/删除 UI、文件导出、正式 Host 安装、签名、公证与发布仍未完成。
 
 ## 已通过证据
 
@@ -42,7 +42,11 @@ git diff --check
 pnpm xcode:build
 ```
 
-最终执行结果：History 24/24；Contract 5/5；History Core 4/4；Swift Debug/Release PASS；Debug benchmark 按编译条件以 status 64 拒绝；正式 Release benchmark PASS。`pnpm check:web` PASS（shared 10/10、extension 10/10）。完整 Swift suite 共 71 项，61 通过；8 个 Network fake server `startFailed`、1 个 Keychain status 100001、1 个既有 Unix socket address-in-use，与前序环境基线一致。`pnpm xcode:build` 在首个 scheme 的 package resolution 被外层 nested sandbox `sandbox_apply: Operation not permitted` 阻断。没有削弱既有测试、修改全局 defaults 或把环境缺口写成产品通过。
+## 历史阶段快照（已被后续证据取代）
+
+> 以下是 02A 当时的执行记录，不是当前工程结论或最终执行结果。它保留当时环境失败的事实与恢复语义；后续独立复审、Swift 120/120 与四个 Xcode 目标通过的证据已取代此快照作为当前状态。
+
+该次阶段执行记录：History 24/24；Contract 5/5；History Core 4/4；Swift Debug/Release PASS；Debug benchmark 按编译条件以 status 64 拒绝；正式 Release benchmark PASS。`pnpm check:web` PASS（shared 10/10、extension 10/10）。当时完整 Swift suite 共 71 项，61 通过；8 个 Network fake server `startFailed`、1 个 Keychain status 100001、1 个既有 Unix socket address-in-use，与前序环境基线一致。当时的 `pnpm xcode:build` 在首个 scheme 的 package resolution 被外层 nested sandbox `sandbox_apply: Operation not permitted` 阻断；这不是当前 Xcode 结论。没有削弱既有测试、修改全局 defaults 或把环境缺口写成产品通过。
 
 ## migration 001 状态
 
