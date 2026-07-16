@@ -6,6 +6,11 @@ import LinkDigestTransport
 struct AppBootstrapResult: Sendable {
   let availability: StorageAvailability
   let history: HistoryApplicationService?
+  let historyIsReadOnly: Bool
+  let historyReadOnlyReason: RepositoryRecoveryReason?
+  /// Set only when opening history failed completely. A read-only repository is
+  /// still safe to browse and therefore deliberately has no blocking error.
+  let historyUnavailableCode: StorageErrorCode?
   let storageWriteGate: StorageWriteGate
   let serverStarted: Bool
 }
@@ -114,6 +119,9 @@ actor AppComposition {
         return .init(
           availability: .writable,
           history: history,
+          historyIsReadOnly: false,
+          historyReadOnlyReason: nil,
+          historyUnavailableCode: nil,
           storageWriteGate: storageWriteGate,
           serverStarted: started
         )
@@ -138,10 +146,23 @@ actor AppComposition {
         .readOnly(reason),
         context: .open
       )
-      return await finishUnavailable(
-        .unavailable(mapped.code),
-        dependencies: dependencies,
-        storageWriteGate: storageWriteGate
+      // Recovery-mode storage is a valid read port. Do not hand it to Capture
+      // or Run (both write), but keep it available to the history browser.
+      let availability = await storageWriteGate.degrade(mapped.code)
+      let receiver = CaptureReceiver(
+        history: nil,
+        storageWriteGate: storageWriteGate,
+        nowMilliseconds: dependencies.nowMilliseconds,
+        captureSink: dependencies.captureSink
+      )
+      return .init(
+        availability: availability,
+        history: HistoryApplicationService(repository: repository),
+        historyIsReadOnly: true,
+        historyReadOnlyReason: reason,
+        historyUnavailableCode: nil,
+        storageWriteGate: storageWriteGate,
+        serverStarted: startServer(receiver, using: dependencies.serverStarter)
       )
     }
   }
@@ -162,6 +183,9 @@ actor AppComposition {
     return .init(
       availability: degraded,
       history: nil,
+      historyIsReadOnly: false,
+      historyReadOnlyReason: nil,
+      historyUnavailableCode: code,
       storageWriteGate: storageWriteGate,
       serverStarted: startServer(receiver, using: dependencies.serverStarter)
     )
@@ -183,6 +207,8 @@ actor AppComposition {
 enum AppApplicationSupportRoot {
   static let smokeOverrideEnvironmentKey = "LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT"
   static let smokeOpenFailureEnvironmentKey = "LINKDIGEST_SMOKE_FORCE_STORAGE_OPEN_FAILURE"
+  static let debugHistoryLoadingEnvironmentKey = "LINKDIGEST_DEBUG_HISTORY_LOADING"
+  static let debugHistoryLoadingSentinelName = ".linkdigest-debug-history-loading"
 
   /// Resolves the one root that the composition root may pass to persistence.
   ///
@@ -215,6 +241,45 @@ enum AppApplicationSupportRoot {
   ) -> Bool {
     #if DEBUG
     environment[smokeOpenFailureEnvironmentKey] == "1"
+    #else
+    false
+    #endif
+  }
+
+  /// A deliberately narrow visual-test hook. It cannot turn on for arbitrary
+  /// Application Support roots, and is compiled out of Release builds.
+  static func shouldHoldHistoryLoading(
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+  ) -> Bool {
+    #if DEBUG
+    guard environment[debugHistoryLoadingEnvironmentKey] == "1",
+          let rawRoot = environment[smokeOverrideEnvironmentKey]
+    else { return false }
+
+    let standardized = URL(fileURLWithPath: rawRoot, isDirectory: true).standardizedFileURL
+    // Some Foundation contexts retain Darwin's /private/tmp spelling after
+    // standardization. Collapse only that exact alias before enforcing the
+    // canonical /tmp layout below; all other roots remain fail-closed.
+    let root: URL
+    if standardized.path.hasPrefix("/private/tmp/") {
+      root = URL(fileURLWithPath: "/tmp/" + standardized.path.dropFirst("/private/tmp/".count), isDirectory: true)
+        .standardizedFileURL
+    } else {
+      root = standardized
+    }
+    let components = root.pathComponents
+    // Only /tmp/linkdigest-history-state.<session>/Application Support is
+    // accepted; no arbitrary Application Support root can opt in.
+    guard components.count == 4,
+          components[1] == "tmp",
+          components[2].hasPrefix("linkdigest-history-state."),
+          components[2].count > "linkdigest-history-state.".count,
+          components[3] == "Application Support"
+    else { return false }
+
+    let sessionRoot = root.deletingLastPathComponent()
+    return fileExists(sessionRoot.appendingPathComponent(debugHistoryLoadingSentinelName).path)
     #else
     false
     #endif

@@ -1,6 +1,6 @@
 # LinkDigest 架构基线
 
-> 状态：V0.1 Swift Package、WXT 扩展、Native Host 与自动化进程链路已实现；Chrome、Brave 150 的真实垂直链路已通过，Edge 150 隔离 Profile 的真实 Popup 预览与修复后 Service Worker → Host → Unix socket → Swift App 20/20 传输也已完成。Edge 两层证据分别记录，不等同于一张修复后工具栏点击到 APP 的连续截图。V0.2 任务 A–D 的 ProviderProfile/Keychain、OpenAI-compatible adapter、总结/翻译 streaming UI、停止/不完整状态、统一错误恢复与 secret hygiene 已完成本地工程验收；02A 的正式 History Domain、migration 001 与 GRDB Repository，以及 02B 的 App composition、启动 recovery gate、Capture commit/动态禁写 gate 与 Run 持久化生命周期均已通过独立复审。Gate 0 的 production vertical smoke 通过 Debug-only 临时 root 注入实际运行，live Application Support resolver 在该模式中被拒绝。历史 Sidebar/详情/删除 UI、设置页连接测试与文件 Export 仍未接入，正式 Host 目录、签名、公证和发布包也未完成。该状态不表示 P0 或产品发布完成。
+> 状态：V0.1 Swift Package、WXT 扩展、Native Host 与自动化进程链路已实现；Chrome、Brave 150 的真实垂直链路已通过，Edge 150 隔离 Profile 的真实 Popup 预览与修复后 Service Worker → Host → Unix socket → Swift App 20/20 传输也已完成。Edge 两层证据分别记录，不等同于一张修复后工具栏点击到 APP 的连续截图。V0.2 任务 A–D 的 ProviderProfile/Keychain、OpenAI-compatible adapter、总结/翻译 streaming UI、停止/不完整状态、统一错误恢复与 secret hygiene 已完成本地工程验收；02A 的正式 History Domain、migration 001 与 GRDB Repository，以及 02B 的 App composition、启动 recovery gate、Capture commit/动态禁写 gate 与 Run 持久化生命周期均已通过独立复审。Gate 0 的 production vertical smoke 通过 Debug-only 临时 root 注入实际运行，live Application Support resolver 在该模式中被拒绝。02C 已接入 `NavigationSplitView` History Sidebar、keyset 分页、详情、确认删除、重启读取和 future-schema 只读浏览；View/ViewModel 不持有 GRDB/SQL，同步 Repository 工作在后台串行边界执行。Loop 2 已在既有分享位置接入 Markdown、TXT、JSON：Core 脱敏渲染，后台 worker 读取 projection，原生保存面板处理目录、取消与覆盖。设置页连接测试、正式 Host 目录、签名、公证和发布包仍未完成。该状态不表示 P0 或产品发布完成。
 
 ## 1. 一句话定位
 
@@ -148,7 +148,7 @@ type MessageMeta = {
 | `CaptureEnvelopeV1` | 浏览器交给 APP 的来源、正文和捕获证据 |
 | `Task` | 用户想完成的一次链接理解工作 |
 | `ContentSnapshot` | 某个时间和捕获路径下的正文快照 |
-| `Run` | 一次提取、总结、翻译或导出执行 |
+| `Run` | 一次总结或翻译模型执行；提取由 Capture/Snapshot 表达，导出不创建 Run |
 | `Artifact` | 可保存、复制或导出的结果 |
 | `AppError` | 稳定错误类别、代码与恢复动作 |
 
@@ -158,7 +158,7 @@ type MessageMeta = {
 
 ### 6.1 SQLite
 
-02A 已实现 `HistoryRepository` Port 与 `GRDBHistoryRepository` Adapter；02B 的 `AppComposition` 在生产 Application Support 的 `LinkDigest/history.sqlite` 创建唯一 Repository/Service，完成 access mode 与 interrupted recovery 后才启动 socket server。`CaptureReceiver` 只在 Capture 事务提交后更新当前 UI 并 ACK；read-only/open/recovery failure 仍启动结构化拒绝端。App 生命周期共享的 `StorageWriteGate` 以 exclusive permit queue 线性化并发 Capture 授权、短同步 Repository 事务与失败降级，避免运行期存储失败后旧 socket receiver 继续写入。`LinkDigestCore` 不依赖 GRDB/SQLite/FileManager/SwiftUI，`LinkDigestPersistence` 独占数据库连接、migration、WAL、Online Backup、restore 与故障注入。
+02A 已实现 `HistoryRepository` Port 与 `GRDBHistoryRepository` Adapter；02B 的 `AppComposition` 在生产 Application Support 的 `LinkDigest/history.sqlite` 创建唯一 Repository/Service，完成 access mode 与 interrupted recovery 后才启动 socket server。`CaptureReceiver` 只在 Capture 事务提交后更新当前 UI 并 ACK；read-only/open/recovery failure 仍启动结构化拒绝端。App 生命周期共享的 `StorageWriteGate` 以 exclusive permit queue 线性化并发 Capture 授权、短同步 Repository 事务与失败降级，避免运行期存储失败后旧 socket receiver 继续写入。02C 的 `HistoryViewModel` 只接收 `HistoryApplicationService` projection，在后台读取分页/详情并串行删除；generation/request identity 拒绝旧请求回写，删除确认冻结请求时 Task ID，并用真实 RunID 绑定的 `activeRunTaskID` 保护生成中的任务。future-schema Repository 作为只读浏览 Port 交给 History UI，但 Capture/Run 仍只接收拒写端。`LinkDigestCore` 不依赖 GRDB/SQLite/FileManager/SwiftUI，`LinkDigestPersistence` 独占数据库连接、migration、WAL、Online Backup、restore 与故障注入。
 
 SQLite 保存：
 
@@ -169,7 +169,7 @@ SQLite 保存：
 - 非敏感 ProviderProfile
 - migration history
 
-GRDB 7.11.1 exact 已通过许可证、SwiftPM Debug/Release、事务、migration、并发、备份与只读恢复门禁。migration 001 的 `Task → ContentSnapshot → Run → Artifact` 与 `capture_deliveries` 已通过独立复审并冻结，02B 未修改其字节；未来 schema 变化只能追加 002+。升级失败时以只读模式打开并保留 projection/export 逃生边界，不通过删除数据库恢复。历史浏览 UI、签名与公证仍属后续门禁。
+GRDB 7.11.1 exact 已通过许可证、SwiftPM Debug/Release、事务、migration、并发、备份与只读恢复门禁。migration 001 的 `Task → ContentSnapshot → Run → Artifact` 与 `capture_deliveries` 已通过独立复审并冻结，02B/02C/Loop 2 均未修改其字节；未来 schema 变化只能追加 002+。future schema 以只读模式打开并保留列表、详情与导出，UI 说明原因、数据未修改和升级恢复动作；签名与公证仍属后续门禁。
 
 ### 6.2 Keychain
 
@@ -177,7 +177,7 @@ API Key 使用 Keychain 保存，SQLite 只记录不可逆推出秘密的引用�
 
 ### 6.3 文件导出
 
-导出由用户选择位置。Markdown/TXT/JSON 生成器只接收脱敏领域对象，不直接读取 Keychain。
+导出由用户选择位置。Loop 2 的 Core renderer 只接收脱敏 `HistoryExportProjection(formatVersion: 1)`，生成确定性的 Markdown、UTF-8 `.txt` 与 pretty-printed/sorted-key JSON；JSON 可以 decode 回安全 projection，且不编码 provider 配置、idempotency、cookie-use 标记、secret reference、raw error 或本机路径。renderer 不接触文件系统；SwiftUI 的 FileDocument/fileExporter 留在 UI 层，取消不报错，同名覆盖由 macOS 面板处理，保存失败显示检查目录权限的固定恢复动作。只读/future-schema 历史同样可导出，不改数据库。
 
 ## 7. BYOK 模型路径
 
@@ -201,7 +201,7 @@ P0 只实现 OpenAI-compatible Chat Completions。Responses、Ollama 和多 Prov
 - 401 不自动重试；429/5xx 只做有界重试。
 - 流中断保存部分结果并标记不完整，不自动拼接不可信续写。
 
-V0.2 的具体组件、秘密边界、错误矩阵与任务拆分见 `docs/specs/V0.2_BYOK_PLAN.md`，集中验收证据见 `docs/specs/V0.2_BYOK_ACCEPTANCE.md`。02B 已把当前 Capture 与 Run 接入 SQLite：queued commit 早于 starting，running commit 早于 Provider，partial commit 早于 streaming UI，terminal commit 早于 terminal UI；当前 Provider 没有 usage 事件，因此 token/cost 保持 NULL。每个 stable code 由 App 层统一映射为中文原因与恢复动作，storage safeDetail 默认为 nil；Orchestrator 在持久化与 RunState 前对本次短时 API Key 做精确 redaction。历史 Sidebar/详情与 Export 属于后续里程碑。
+V0.2 的具体组件、秘密边界、错误矩阵与任务拆分见 `docs/specs/V0.2_BYOK_PLAN.md`，集中验收证据见 `docs/specs/V0.2_BYOK_ACCEPTANCE.md`。02B 已把当前 Capture 与 Run 接入 SQLite：queued commit 早于 starting，running commit 早于 Provider，partial commit 早于 streaming UI，terminal commit 早于 terminal UI；当前 Provider 没有 usage 事件，因此 token/cost 保持 NULL。每个 stable code 由 App 层统一映射为中文原因与恢复动作，storage safeDetail 默认为 nil；Orchestrator 在持久化与 RunState 前对本次短时 API Key 做精确 redaction。02C 在 History 详情中保留当前 Capture 的总结、翻译、停止、流式结果和状态入口；Loop 2 export 只消费已持久化且已脱敏的 projection，不触发 Provider、网络或数据库写入。
 
 ## 8. UI 与 AppKit 边界
 

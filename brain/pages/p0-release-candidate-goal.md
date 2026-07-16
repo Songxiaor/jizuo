@@ -5,7 +5,7 @@ category: decision
 status: active
 tags: [p0, release, workflow, quality]
 created: "2026-07-15T11:27:22"
-updated: "2026-07-15T16:56:54"
+updated: "2026-07-16T14:05:07"
 ---
 
 ## compiled_truth
@@ -15,6 +15,15 @@ updated: "2026-07-15T16:56:54"
 LinkDigest 当前总目标是交付一套可由 Syc 在本机完整安装和验收的 macOS P0 Release Candidate，而非零散功能演示。交付版必须贯通 Chromium 当前页捕获、Native Messaging、SwiftUI、BYOK 总结与翻译、SQLite 本地历史、删除与恢复语义、Markdown/TXT/JSON 导出、原生交互、稳定 Host 安装/升级/卸载与完整回归测试。
 
 签名、公证、商店提交、付费和真实 Provider 凭据仍属于重大外部节点；工程必须做到发布前就绪，但执行这些动作前仍需 Syc 明确授权。Q&A、云账号、同步、托管模型、Windows、Safari 和媒体下载不进入本轮 P0 RC。
+
+## 当前 Loop 2 状态
+
+- 单条 History Markdown、TXT、JSON 导出已完成工程实现：详情页保持既有 toolbar 顺序，由分享菜单进入三种格式；只读/future-schema History 继续可导出，作为数据逃生口。
+- 独立复审发现的文件名 UTF-8 byte budget、Run 显示归属、启动待定删除保护、v1 JSON decoder 校验和 partial usage 展示问题已完成本地修复并通过最终独立复审，P0/P1/P2 均为 0。
+- 建议文件名预留版本与扩展名后按 255 UTF-8 bytes 和完整 Character 边界截断；Markdown 使用可靠 UTI，三格式默认名固定保留 .md/.txt/.json。
+- App 以 activeRunTaskID 保护活跃或 launch-pending Run 的真实 Task，以 visibleRunTaskID 约束状态、输出与停止入口的 Task 归属；createRun 前不提前发布 starting，pre-start failure 或无回调返回会清理待定映射。
+- formatVersion 1 JSON decoder 校验 canonical typed UUID、非负且配对的 usage/cost，以及 Task/Snapshot/Run/Artifact 引用关系，同时保留合法 NUL、空字段和 partial/interrupted 内容。
+- 本地门禁为 focused AppViewModel 15/15、完整 Swift 146/146、SwiftPM Debug/Release、Xcode App/Host Debug/Release 四目标、diff、migration 001 冻结 hash与无 Migration002 全部通过；工程仍未暂存、提交、发布。
 
 ## 质量门禁
 
@@ -89,3 +98,51 @@ Syc 不承担日常重复测试。HanaAgent 作为唯一总控，使用 Sub-agen
   summary: "P0-RC-02B App capture/run persistence wiring 经多轮MUST FIX与最终独立Sol复审PASS；共享StorageWriteGate、并发Capture permit queue、Run持久化与协议hardening关闭，主线程Swift 117/117、Web、SwiftPM与Xcode四目标通过。"
   source: P0-RC-02B final review 2026-07-15
   affects: [p0-release-candidate-goal, sqlite-grdb-persistence-boundary, planner-executor-review-loop]
+
+- time: 2026-07-16T12:41:57
+  kind: evidence
+  summary: "Loop 2 完成单条 Markdown、TXT、JSON 本地导出工程：只读 future-schema 历史可作为逃生口导出，139/139 Swift tests 通过；未提交、未发布。"
+  source: Loop 2 implementation and local Swift test 2026-07-16
+  affects: [p0-release-candidate-goal, sqlite-grdb-persistence-boundary, sam-webpage-summarizer-reference]
+
+- time: 2026-07-16T12:42:30
+  kind: decision
+  summary: "将 Loop 2 导出当前状态、脱敏边界与未发布状态写入 P0 RC 真相。"
+  source: Loop 2 implementation and validation 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T13:38:31
+  kind: decision
+  summary: "更新 Loop 2 独立复审修复状态与 143 项本地门禁，保持待复审口径。"
+  source: Loop 2 independent review fixes 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T13:38:31
+  kind: evidence
+  summary: "独立复审发现的文件名字节预算、Run 归属、decoder 与 usage 问题已本地修复；focused 22/22、Swift 143/143、SwiftPM/Xcode/migration/diff 门禁通过，等待复审。"
+  source: Loop 2 local verification 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T13:58:56
+  kind: decision
+  summary: "补齐 launch-pending 删除保护并更新至 Swift 146 项本地门禁，状态保持待最终复审。"
+  source: Loop 2 final local fix 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T13:58:56
+  kind: evidence
+  summary: "launch-pending 在 createRun 前保护真实 Task，starting 接管且失败或无回调会清理；App focused 15/15、Swift 146/146 与完整构建门禁通过，待最终复审。"
+  source: Loop 2 final local verification 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T14:05:07
+  kind: decision
+  summary: Rewrote compiled_truth to the new best understanding
+  source: Loop 2 final independent re-review 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T14:05:07
+  kind: evidence
+  summary: "Loop 2 最终独立复审 PASS：P0/P1/P2 均为 0；Swift 146/146、SwiftPM 与 Xcode 四目标、diff、migration 001 冻结 hash 和无 Migration002 证据通过。"
+  source: Loop 2 final independent re-review 2026-07-16
+  affects: [apps/desktop, docs/LEARNING_LOG.md]

@@ -54,6 +54,9 @@
 | Payload Fingerprint | 对捕获语义做确定性 SHA-256 指纹 | 给包裹内容盖章，运输单号变化不影响内容身份 | 长度前缀 UTF-8 编码 source/capture/evidence/时间，排除 requestId/idempotencyKey | transport 重试可能重复入库，或 hash JSON 字节导致跨实现漂移 | L3 | L3 |
 | Repository Port | Core 声明的稳定数据存取接口 | 统一插座，GRDB 只是可替换插头 | 02A 的 capture/run/history/detail/export/delete 命令与结果边界 | Application/UI 会直接持有 SQL 或 GRDB 类型 | L3 | L3 |
 | Keyset Pagination | 从上一页最后一条排序键继续查下一页 | 用上一张书签继续翻，而非每次从第一页数 | History 以 `(updated_at_ms, task_id)` 排序分页，首页不读正文 | 大历史使用 OFFSET 时越翻越慢且并发插入易错位 | L3 | L3 |
+| NavigationSplitView | SwiftUI 提供的 macOS 原生分栏容器 | 左边目录、右边正文的原生资料柜 | 02C 承载 340pt History Sidebar 与详情区，并沿用系统选中态和 toolbar | 自行拼接分栏容易偏离 macOS 行为、焦点和可访问性 | L3 | L3 |
+| Request Identity Guard / 请求身份闸门 | 只允许当前代际、当前请求的异步结果更新界面 | 换了新取餐号后，旧号码送来的餐不能放进新餐盘 | `HistoryViewModel` 用 generation、list/detail/delete request ID 拒绝分页、快速切换和重新配置后的旧回写 | 慢详情或旧删除结果会覆盖用户刚选择的新记录 | L3 | L3 |
+| Deletion Target Binding / 删除目标绑定 | 打开确认框时就冻结要删除的 Task，而不是确认时重新猜当前选择 | 填好快递单后锁定收件人，不能在按下确认时换成旁边的人 | 02C 的 `pendingDeletionTaskID` 防止新 Capture 改选中项后误删；`activeRunTaskID` 另行保护生成中的 Task | 确认期间的页面切换或新 Capture 可能让用户删错记录，活跃 Run 还会被级联破坏 | L3 | L3 |
 | local-first | 核心功能和数据默认在用户本机完成与保存 | 先放自己的保险柜，需要时才同步 | P0 不依赖服务器也可总结、翻译和查历史 | 断网不可用，隐私和服务器成本上升 | L3 | L1 |
 | Capacity Model / 容量模型 | 把用户目标换算成请求、任务、连接和数据量的计算基线 | 桥梁开工前的承重表 | 连接注册目标、架构设计、压测和扩容判断 | “100 万用户”无法变成可验证的工程目标 | L3 | 未开始 |
 | Modular Monolith / 模块化单体 | 一个可部署服务内部按业务划出不可随意穿透的模块 | 一栋楼里的独立店铺，共用大楼但各管各的货 | 组织云端 Identity、Sync、Managed AI 等模块 | 普通单体容易互相缠绕，过早微服务又增加运维成本 | L3 | 未开始 |
@@ -74,6 +77,10 @@
 | JSON Schema | 与编程语言无关、可在运行时执行的数据合同 | Swift 和 TypeScript 共用的一张海关申报表 | `contracts/capture-envelope-v1.schema.json` 是 V0.1 跨语言唯一真相源 | 两端只能靠复制类型维持，字段和失败语义会漂移 | L3 | L3 |
 | Type Check / 类型检查 | 不运行程序就检查代码和数据形状能否连接 | 开工前审查施工图 | 编译阶段发现 TypeScript 接口错误 | 许多交接错误要运行到特定路径才暴露 | L3 | L3 |
 | Contract Test / 协议测试 | 验证发送方与接收方仍遵守同一版本和失败语义 | 测试插头与插座是否真的匹配 | 覆盖成功、版本不兼容、字段不一致和秘密字段 | 升级一端可能静默破坏另一端 | L3 | L3 |
+| Export Projection / 导出投影 | 为拿走一条历史而准备的、只留下用户需要内容的安全快照 | 档案馆给外借文件准备的脱敏复印件 | Loop 2 的 HistoryExportProjection 是 Core renderer 的唯一输入，排除 provider、idempotency、cookie-use 与 raw error | 导出可能带出 Keychain 引用、内部路径或失败细节 | L3 | L3 |
+| Renderer / 渲染器 | 把同一份安全数据稳定排版成不同文件格式的组件 | 同一份稿件交给 Markdown、纯文本和 JSON 三种印刷机 | HistoryExportRenderer 在 Core 生成确定性 UTF-8 字节，不选择目录也不写文件 | View 或数据库会掺入格式细节，测试与复用都会变难 | L2 | L3 |
+| FileDocument | SwiftUI 交给 macOS 保存面板的文件信封 | 把已经排好版的文件装进可由系统投递的信封 | HistoryExportDocument 只包住 Core 已生成的 Data，FileExporter 决定用户选的保存位置 | Core 会被迫依赖 SwiftUI 或文件系统，取消和权限处理也会混在业务代码里 | L2 | L3 |
+| Export Request Identity / 导出请求身份 | 只让仍属于当前配置、当前选择和当前请求的导出结果打开面板的标记 | 换了取件号后旧包裹不能送到新柜台 | HistoryViewModel 为导出复用 generation/request/task 三重检查 | 快速切换记录时，旧记录可能弹出错误内容或覆盖新选择 | L3 | L3 |
 
 ## 更新规则
 

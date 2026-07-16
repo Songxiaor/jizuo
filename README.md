@@ -2,7 +2,7 @@
 
 > 内部工作名；正式上架名称需在发布前完成商标、域名与应用商店重名检索。
 
-LinkDigest 的产品目标是成为一个 local-first 的链接理解工具：用户可以粘贴网页链接，或从 Chrome、Brave、Edge 的当前页面直接发送内容，在桌面 APP 中完成正文提取、总结、翻译和导出；问答作为 P0 之后的候选能力。当前实现范围以“当前阶段”小节为准，粘贴链接、历史和导出尚未完成。
+LinkDigest 的产品目标是成为一个 local-first 的链接理解工具：用户可以粘贴网页链接，或从 Chrome、Brave、Edge 的当前页面直接发送内容，在桌面 APP 中完成正文提取、总结、翻译和导出；问答作为 P0 之后的候选能力。当前实现范围以“当前阶段”小节为准；History 浏览/详情/单项删除与单条 Markdown、纯文本、JSON 本地导出已完成，粘贴链接尚未完成。
 
 这个仓库同时运行两条轨道：
 
@@ -13,7 +13,7 @@ LinkDigest 的产品目标是成为一个 local-first 的链接理解工具：�
 
 产品路线已收敛为 **macOS 原生优先**：桌面 APP 使用 SwiftUI + 少量 AppKit，Chromium 扩展继续使用 TypeScript/WXT，两端通过 Native Messaging 与版本化 JSON 协议交接。
 
-当前代码已完成到 **P0-RC-02B App capture/run persistence wiring**：V0.1 Chromium capture bridge、V0.2 BYOK 总结/翻译，以及 V0.3 的正式 History Domain、冻结 migration 001、GRDB Repository、启动恢复闸门和当前 Capture/Run 持久化接线已经贯通。02A 已独立通过，02B 已独立 PASS。Repository commit 是 UI 与浏览器成功 ACK 的共同闸门；生命周期共享的 `StorageWriteGate` 会在线性化的 Capture permit queue 中阻止存储失败后的继续写入；Run 的 queued/running/partial/terminal、取消、迟到数据与跨 delta secret holdback 均有确定性测试。Gate 0 production vertical smoke 现在用脚本创建的临时 Application Support root 显式注入真实 Debug composition，20/20 通过且禁止回退解析真实用户目录。这个结论只关闭 02B/Gate 0，不表示完整 P0 或发布完成；历史 Sidebar/详情/单项删除、Markdown/TXT/JSON 导出、稳定 Host 安装升级卸载、签名、公证和发布包仍未实现。
+当前代码已完成到 **P0-RC Loop 2 本地导出**：V0.1 Chromium capture bridge、V0.2 BYOK 总结/翻译，以及 V0.3 的正式 History Domain、冻结 migration 001、GRDB Repository、启动恢复闸门、当前 Capture/Run 持久化接线和原生 History Sidebar/详情/确认删除已经贯通。Loop 2 在原有分享位置接入 Markdown、纯文本（`.txt`）和 JSON 三格式的单条本地导出；只读/future-schema 历史同样可导出，作为数据逃生口。Core 只生成脱敏的确定性字节，ViewModel 在后台读取 Repository 并用 generation/request/task identity 拒绝快速切换后的旧结果，SwiftUI 原生保存面板负责选址、取消和同名覆盖。导出不写数据库、不改 migration 001、不读 Keychain/Cookie/网络。这个结论只表示 Loop 2 工程完成、未暂存提交且未发布；稳定 Host 安装升级卸载、签名、公证和发布包仍未实现。
 
 - 架构边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 - 当前 P0 产品范围与验收见 [`docs/PRD.md`](docs/PRD.md)。

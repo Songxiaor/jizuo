@@ -294,7 +294,17 @@ final class AppCompositionTests: XCTestCase {
       ))
 
       let result = await composition.bootstrap()
-      XCTAssertNil(result.history)
+      if scenario == "read-only" {
+        XCTAssertNotNil(result.history)
+        XCTAssertTrue(result.historyIsReadOnly)
+        XCTAssertEqual(result.historyReadOnlyReason, .futureSchema)
+        XCTAssertNil(result.historyUnavailableCode)
+      } else {
+        XCTAssertNil(result.history)
+        XCTAssertFalse(result.historyIsReadOnly)
+        XCTAssertNil(result.historyReadOnlyReason)
+        XCTAssertNotNil(result.historyUnavailableCode)
+      }
       XCTAssertTrue(result.serverStarted)
       XCTAssertEqual(server.startCount, 1)
       let first = await server.receiver!.process(
@@ -354,6 +364,35 @@ final class AppCompositionTests: XCTestCase {
     let result = await composition.bootstrap()
     XCTAssertEqual(server.startCount, 1)
     XCTAssertEqual(try result.history?.detail(taskID: accepted.taskID).runs.first?.run.status, .interrupted)
+  }
+
+  func testDebugHistoryLoadingHookFailsClosedUnlessEveryGateMatches() {
+    let root = "/private/tmp/linkdigest-history-state.session/Application Support"
+    // URL.standardizedFileURL canonicalizes this /private/tmp input to /tmp.
+    let sentinel = "/tmp/linkdigest-history-state.session/\(AppApplicationSupportRoot.debugHistoryLoadingSentinelName)"
+    let base = [
+      AppApplicationSupportRoot.smokeOverrideEnvironmentKey: root,
+      AppApplicationSupportRoot.debugHistoryLoadingEnvironmentKey: "1",
+    ]
+    XCTAssertTrue(AppApplicationSupportRoot.shouldHoldHistoryLoading(
+      environment: base,
+      fileExists: { $0 == sentinel }
+    ))
+    XCTAssertFalse(AppApplicationSupportRoot.shouldHoldHistoryLoading(
+      environment: base,
+      fileExists: { _ in false }
+    ))
+    var canonicalRoot = base; canonicalRoot[AppApplicationSupportRoot.smokeOverrideEnvironmentKey] = "/tmp/linkdigest-history-state.session/Application Support"
+    XCTAssertTrue(AppApplicationSupportRoot.shouldHoldHistoryLoading(
+      environment: canonicalRoot,
+      fileExists: { $0 == sentinel }
+    ))
+    var wrongValue = base; wrongValue[AppApplicationSupportRoot.debugHistoryLoadingEnvironmentKey] = "true"
+    XCTAssertFalse(AppApplicationSupportRoot.shouldHoldHistoryLoading(environment: wrongValue, fileExists: { _ in true }))
+    var wrongPath = base; wrongPath[AppApplicationSupportRoot.smokeOverrideEnvironmentKey] = "/tmp/not-linkdigest/Application Support"
+    XCTAssertFalse(AppApplicationSupportRoot.shouldHoldHistoryLoading(environment: wrongPath, fileExists: { _ in true }))
+    var wrongParent = base; wrongParent[AppApplicationSupportRoot.smokeOverrideEnvironmentKey] = "/private/var/linkdigest-history-state.session/Application Support"
+    XCTAssertFalse(AppApplicationSupportRoot.shouldHoldHistoryLoading(environment: wrongParent, fileExists: { _ in true }))
   }
 }
 

@@ -406,3 +406,38 @@
 - 安全边界：failure 开关只在 Debug 对精确值 `1` 生效，Release 不读取它；state comparison 不输出真实目录内容；cleanup 只删除脚本本次创建的临时 root。没有 Provider、API Key、Cookie、真实正文、签名、公证或发布。
 - 可选跟做：运行 `./scripts/run-vertical-smoke.sh`，观察 success 与 failure 各 20 次 Host → socket → App 响应以及相同状态指纹；该动作不写真实 Application Support，也不是关闭 Issue 的前提。
 - 回滚：回退本任务的 smoke failure 开关、其单元测试、Ajv 8.18.0 lock/declarations 和状态文档；绝不触碰 migration 001、真实用户数据库或 Keychain。
+
+## 任务 024：P0-RC-02C History Sidebar、详情、删除与只读浏览
+
+- 日期：2026-07-16
+- 当前状态：工程实现、六状态视觉证据与 Design QA 已通过；工作区改动尚未暂存、提交或推送。Markdown/TXT/JSON Export、真实安装包、签名、公证和发布仍未开始。
+- 用户场景：用户从浏览器提交页面并生成结果后，退出重开仍能在原生左栏找回记录、查看详情并安全删除单项；未来版本数据库不能被旧版本误写，但原数据仍应可读。
+- 本次只解决：1100×760 `NavigationSplitView`、340pt History Sidebar、禁用搜索占位、keyset 分页、详情、原生删除确认、重启读取、future-schema 只读浏览，以及 Sam 参考下的像素级壳层/排版对齐。添加链接、剪贴板、分享、Rerun、格式与 Export 只保留参考位置或后续范围，不在本轮接业务。
+- 角色与交接：`AppComposition` 打开唯一 Repository，并把 writable Service 同时交给 Capture/Run/History，把 read-only Service 只交给 History；`HistoryViewModel` 在后台读取 projection、用请求身份闸门拒绝旧回写、串行执行删除；`HistoryContentView` 只展示状态和发起意图；`AppViewModel` 用 RunID→TaskID 绑定保护正在生成的真实 Task，而不是跟随可变化的 current Capture。
+- 本次核心名词：NavigationSplitView、Request Identity Guard、Deletion Target Binding。场景中的分工是“本地档案服务交 projection → ViewModel 管选择/异步身份 → 原生 View 展示”；没有这些边界时，慢请求会覆盖新选择，删除确认可能在新 Capture 到来后误删，生成中的 Task 也可能被级联删除并关闭全局写入闸门。
+- 视觉决策：Syc 最终确认以用户提供的 Sam 空/有内容截图作为像素级布局参考；对齐窗口、分栏、搜索框、空状态、列表密度、标题、URL、两行元数据、toolbar 和正文节奏，但保留 LinkDigest 名称、产品文案与功能边界，不复制 Sam 品牌、Logo、专有美术或内容资产。
+- 被证据修正的判断：Multica 候选曾整体替换旧 `ContentView`，会丢失总结/翻译/停止/流式结果，因此只迁移思路并人工整合。首轮截图又证明列宽 modifier 放错容器后真实只有约 300pt，而不是代码写下的 340pt；真实 loading 截图还证明 Foundation 会把 `/private/tmp` 规范化成 `/tmp`，使旧 Debug gate 失效。独立代码复审进一步发现删除确认目标漂移、活跃 Run 删除，以及 Run A 生成时 Capture B 到来后保护 ID 漂移，最终分别以 `pendingDeletionTaskID`、请求/确认双重保护和 RunID→TaskID 绑定修复。
+- 自动证据：完整 Swift 130/130；SwiftPM Debug/Release；`pnpm --config.verifyDepsBeforeRun=false check` 的 Web、contracts、secret、host/vertical smoke 全通过（首次裸 `pnpm check` 因无 TTY 将尝试清理依赖目录而主动中止，未执行依赖安装或清理）；Xcode App/Host Debug/Release 四目标；10k Release History 首页 p95 2.521208 ms、详情 p95 0.231208 ms，均低于 300 ms；pnpm/Swift licenses、production audit 0 vulnerability、`git diff --check`、migration 001 冻结 hash 与无 Migration002 均通过。
+- 视觉证据：空历史、列表+详情、删除确认、稳定 loading、阻断错误、future-schema 只读六态均由主仓库 Debug App 在隔离 `/private/tmp/linkdigest-history-state.*` 中实拍；空/有内容参考与实现放入同一张 1100×760 对照图。Design QA 迭代修复了列宽、搜索图标、空状态字号、元数据方向、纵向节奏、loading gate 与只读说明/对比度，最终独立视觉复审 PASS。
+- 安全边界：截图数据完全脱敏；没有访问真实 Provider、API Key、Cookie、浏览器账号或真实 Application Support。Debug loading gate 同时要求精确环境值、限定临时路径和 sentinel，Release 编译不启用。future-schema 只读时 Capture/Run/Delete 均拒写，migration 001 字节未变。
+- 过程讲解：开工时用“当前 Capture 与历史 archive 共用同一 Task/Run 交接物”解释两套界面为何必须合并；实现期解释了请求身份闸门与后台 Repository worker；视觉期用真实截图说明“代码标值不等于真实渲染”；复审期解释删除目标、活跃 Run 与 current Capture 是三个不同身份，不能混用。
+- 可选跟做：打开 `docs/evidence/SYC_64_STAGE_2/contact-sheet.png` 查看六种用户状态，或并排查看 `compare-empty-final.png` / `compare-populated-final.png`；这是理解入口，不是关闭任务的考试。
+- Syc 主动提出的待解释点：无。
+- 回滚：只撤销 02C App/ViewModel/View/tests 与状态文档，保留 02A/02B Repository、Capture/Run 持久化和 Provider 能力；绝不删库、降级 migration、清理真实 Application Support 或 Keychain。
+
+## 任务 025：P0-RC Loop 2 单条 History 本地导出
+
+- 日期：2026-07-16
+- 当前状态：独立复审发现的文件名字节预算、Run 显示归属、启动待定删除保护、JSON 解码校验和 usage 展示问题已修复并通过本地门禁；最终独立复审 PASS，P0/P1/P2 均为 0；工作区改动未暂存、未提交、未发布。
+- 用户场景：用户在历史详情中需要把一条记录带走或备份，即使本机数据库因 future schema 只能只读，也不能被困在旧版本里。
+- 本次只解决：详情右上角现有分享入口的 Markdown、纯文本（.txt）、JSON 三格式导出；安全文件名、原生保存/取消/覆盖、固定失败恢复，以及快速切换历史时的旧导出隔离。没有新增数据库写入、Migration002、网络、Provider、Keychain、Cookie 或真实用户目录访问。
+- 角色与交接：用户在分享菜单选择格式 -> HistoryViewModel 冻结当前 Task、generation 和 request identity -> 非 MainActor 的 HistoryRepositoryWorker 向 HistoryApplicationService 读取 HistoryExportProjection -> LinkDigestCore 的 HistoryExportRenderer 生成脱敏 Data -> HistoryExportDocument 把 Data 交给 SwiftUI fileExporter -> macOS 保存面板选择目录并处理同名覆盖。读取/生成失败显示固定安全中文提示；保存失败提示检查目录权限；取消只清理内存状态、不报错。
+- 本次核心名词：Export Projection（给外借档案准备的安全快照）、Renderer（同一份快照的三种排版机）、FileDocument（交给系统保存面板的文件信封）、Export Request Identity（旧请求不能打开新选择的保存面板）。四个名词已同步加入 GLOSSARY，核心边界提供到 L3。
+- 技术选择：Core 只依赖 Foundation，返回 HistoryExportFile 的字节和建议文件名；不让 Core 依赖 SwiftUI、AppKit、GRDB 或文件系统。建议文件名按 macOS `NAME_MAX` 的 255 UTF-8 bytes 限制，并在完整 Swift Character 边界截断，预留 `.1.md` / `.1.txt` / `.1.json` 后缀。JSON 使用 prettyPrinted、sortedKeys、withoutEscapingSlashes；public decoder 除 formatVersion 外还校验 canonical typed UUID、usage/cost 领域约束与 Task/Snapshot/Run/Artifact 引用关系。Markdown/TXT 显示 input/output/total token，total 缺失且 input/output 齐全时安全求和。选择原生 fileExporter，而不是手写 AppKit 面板，因为它保留 macOS 的目录、同名覆盖和取消行为。
+- 被证据修正的一点：首次 renderer 补丁因自动化字符串转义丢失 Swift 插值，focused build 立即在编译期拒绝；修正为保留插值后 Core tests 通过。并发测试最初在 MainActor 上立即等待 semaphore，阻止导出任务开始；先让任务让出执行机会后，真实 blocker 验证快速切换时旧导出不会弹窗。之后独立复审继续发现 Character 数不能代表 UTF-8 文件名字节、synthesized decoder 会绕过领域构造器、current Capture 与 visible Run 共用显示块会把 A 的输出贴到后来 Capture B，以及 `createRun` 返回前存在未保护删除窗口；本轮分别以 byte budget、显式 v1 decoder 校验、`visibleRunTaskID` 和不提前发布 `.starting` 的 launch-pending 保护修复，最终独立复审已确认这些阻断项关闭。
+- 自动证据：最新 focused AppViewModelTests 15/15，完整回归中 HistoryExportRendererTests 10/10、HistoryViewModelTests 10/10；新增阻塞 `createRun`、pre-start storage failure、Orchestrator authority 无回调三条确定性用例，并继续覆盖 Capture B 到来前后 Run A 的停止/状态/输出归属。完整 `swift test --disable-sandbox` 146/146；SwiftPM Debug/Release、Xcode LinkDigestApp/LinkDigestNativeHost Debug/Release 四目标、`git diff --check` 均通过。migration 001 保持冻结 SHA-256 `2402fd0dcb8293010f3c080af583a98c50af661a200915c321e0faaccfb93b57`，未创建 Migration002。最终独立复审 PASS，P0/P1/P2 均为 0。
+- 安全边界：HistoryExportProjection 构造和 JSON 编码均剥离 provider 配置、idempotency、cookie-use 标记与 raw error；导出不暴露 API Key、Token、Cookie、secret reference 或本机秘密路径。原文/结果作为用户选择导出的内容被保留；不将任何真实样本或凭据写入测试。
+- 过程讲解：开工时先说明“档案服务交安全复印件 -> renderer 排版 -> 系统面板投递”的交接；实现 Core 时解释 renderer 为什么不碰文件系统；接 ViewModel 时解释 request identity 防止旧包裹送到新柜台；复审修复时继续解释 UTF-8 byte budget 与 Character 边界、`activeRunTaskID` 和 `visibleRunTaskID` 的不同职责、decoder 如何验收对象引用而不审查用户正文，以及 launch-pending 如何在不伪造 `.starting` 的前提下保护尚在 `createRun` 的真实 Task。
+- 可选跟做（5-15 分钟）：运行 `cd apps/desktop && swift test --filter 'HistoryExportRendererTests|HistoryViewModelTests'`，观察三个安全输出和快速切换隔离断言；它只使用合成 fixture，不会访问 Application Support、Keychain 或网络，也不是任务关闭门槛。
+- Syc 主动提出的待解释点：无。
+- 回滚：只撤销 Loop 2 的 Core renderer/projection 编码、History ViewModel/View、专项测试和本文档；保留 02A/02B/02C 数据库、migration 001、Capture/Run 持久化和 Provider 能力；绝不删库、降级 migration 或清理真实 Application Support/Keychain。

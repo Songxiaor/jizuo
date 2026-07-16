@@ -1,6 +1,6 @@
 # Brain Index
 
-_Auto-generated. Last updated 2026-07-15T08:56:54.267Z._
+_Auto-generated. Last updated 2026-07-16T06:05:07.072Z._
 
 - [byok-managed-ai-split](pages/byok-managed-ai-split.md) — category: decision | status: archived | tags: [llm, byok, billing] | ## 当前结论
 - [commercial-license-boundary](pages/commercial-license-boundary.md) — category: decision | tags: [commercial, license, supply-chain] | ## 当前结论

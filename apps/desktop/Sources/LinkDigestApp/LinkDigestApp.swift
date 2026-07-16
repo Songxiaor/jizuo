@@ -11,11 +11,15 @@ public let linkDigestSocketPath = ProcessInfo.processInfo.environment["LINKDIGES
   @Published var connection = "等待扩展连接"
   @Published private(set) var currentCapture: CurrentCapture?
   @Published private(set) var runState: RunState = .idle
+  @Published private(set) var activeRunTaskID: TaskID?
+  @Published private(set) var visibleRunTaskID: TaskID?
   @Published private(set) var storageAvailability: StorageAvailability = .bootstrapping
 
   private var modelRunOrchestrator: ModelRunOrchestrator?
   private let makeRunID: @Sendable () -> RunID
   private var visibleRunID: RunID?
+  private var launchPendingRunID: RunID?
+  private var taskIDByRunID: [RunID: TaskID] = [:]
 
   init(
     modelRunOrchestrator: ModelRunOrchestrator? = nil,
@@ -54,10 +58,19 @@ public let linkDigestSocketPath = ProcessInfo.processInfo.environment["LINKDIGES
     return !currentCapture.envelope.capture.text
       .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && !runState.isActive
+      && launchPendingRunID == nil
   }
 
   var canStopRun: Bool { runState.isActive }
   var runResultText: String { runState.outputText }
+
+  func showsVisibleRun(for taskID: TaskID) -> Bool {
+    visibleRunTaskID == taskID
+  }
+
+  func canStopVisibleRun(for taskID: TaskID) -> Bool {
+    showsVisibleRun(for: taskID) && canStopRun
+  }
 
   var storageStatusText: String {
     switch storageAvailability {
@@ -125,116 +138,69 @@ public let linkDigestSocketPath = ProcessInfo.processInfo.environment["LINKDIGES
       intent: intent,
       targetLanguage: intent == .translate ? "简体中文" : nil
     )
+    // Protect the real Task before createRun can block. This pending ownership
+    // must not publish `.starting`: that state remains commit-confirmed.
+    taskIDByRunID[request.runID] = request.taskID
+    launchPendingRunID = request.runID
+    activeRunTaskID = request.taskID
     await modelRunOrchestrator.start(
       request: request,
       capture: currentCapture.envelope
     ) { [weak self] runID, state in
       await self?.receiveRunState(runID: runID, state: state)
     }
+    clearLaunchPendingIfNeeded(runID: request.runID)
   }
 
   func receiveRunState(runID: RunID, state: RunState) {
+    let wasLaunchPending = launchPendingRunID == runID
     if case .starting = state {
+      if wasLaunchPending { launchPendingRunID = nil }
       visibleRunID = runID
+      activeRunTaskID = taskIDByRunID[runID]
+      visibleRunTaskID = taskIDByRunID[runID]
       runState = state
       return
     }
 
-    if visibleRunID == nil, case .storageError = state {
+    if case .storageError = state, wasLaunchPending || visibleRunID == nil {
+      if wasLaunchPending { launchPendingRunID = nil }
       visibleRunID = runID
+      visibleRunTaskID = taskIDByRunID[runID]
     }
     guard visibleRunID == runID else { return }
     if case let .storageError(_, _, code) = state {
       storageAvailability = .unavailable(code)
     }
     runState = state
-  }
-}
-
-struct ContentView: View {
-  @ObservedObject var model: AppViewModel
-  @ObservedObject var providerSettings: ProviderSettingsViewModel
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("LinkDigest")
-        .font(.title)
-      Text(model.connection)
-        .foregroundStyle(.secondary)
-      Text(model.storageStatusText)
-        .font(.caption)
-        .foregroundStyle(model.storageAvailability.isWriteReady ? Color.secondary : Color.orange)
-        .accessibilityIdentifier("storage-availability")
-
-      if let value = model.envelope {
-        Text(value.source.title ?? "无标题")
-          .font(.headline)
-        Text(value.source.url)
-          .font(.caption)
-        Text(
-          "捕获方式：\(value.capture.method) · \(value.capture.completeness) · \(value.capture.characterCount) 字符"
-        )
-        ScrollView {
-          Text(value.capture.text)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(minHeight: 140, maxHeight: 260)
-
-        HStack(spacing: 12) {
-          Button("总结") {
-            Task { await model.summarize() }
-          }
-          .disabled(!model.canStartRun)
-          .accessibilityIdentifier("summarize-current-capture")
-
-          Button("翻译") {
-            Task { await model.translate() }
-          }
-          .disabled(!model.canStartRun)
-          .accessibilityIdentifier("translate-current-capture")
-
-          if model.canStopRun {
-            Button("停止", role: .cancel) {
-              Task { await model.stop() }
-            }
-            .disabled(!model.canStopRun)
-            .accessibilityIdentifier("stop-model-run")
-          }
-        }
-
-        GroupBox("生成结果") {
-          VStack(alignment: .leading, spacing: 8) {
-            Text(model.runStatusText)
-              .foregroundStyle(model.runHasFailure ? .red : .secondary)
-              .accessibilityIdentifier("model-run-status")
-
-            if !model.runResultText.isEmpty {
-              ScrollView {
-                Text(model.runResultText)
-                  .textSelection(.enabled)
-                  .frame(maxWidth: .infinity, alignment: .leading)
-              }
-              .frame(minHeight: 120, maxHeight: 260)
-              .accessibilityIdentifier("model-run-output")
-            }
-          }
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.top, 4)
-        }
-      } else {
-        Text("先从 Chrome、Brave 或 Edge 的当前页面发送内容")
-      }
-
-      Divider()
-      ProviderSettingsView(model: providerSettings)
+    if isTerminal(state) {
+      activeRunTaskID = nil
+      taskIDByRunID.removeValue(forKey: runID)
     }
-    .padding(24)
-    .frame(minWidth: 620, minHeight: 620)
+  }
+
+  private func clearLaunchPendingIfNeeded(runID: RunID) {
+    guard launchPendingRunID == runID else { return }
+    launchPendingRunID = nil
+    if activeRunTaskID == taskIDByRunID[runID] {
+      activeRunTaskID = nil
+    }
+    taskIDByRunID.removeValue(forKey: runID)
+  }
+
+  private func isTerminal(_ state: RunState) -> Bool {
+    switch state {
+    case .stopped, .completed, .incomplete, .failed, .storageError:
+      true
+    case .idle, .starting, .streaming, .stopping:
+      false
+    }
   }
 }
 
 @main struct LinkDigestApp: App {
   @StateObject private var model: AppViewModel
+  @StateObject private var historyModel: HistoryViewModel
   @StateObject private var providerSettings: ProviderSettingsViewModel
 
   private let configurationService: ProviderConfigurationService
@@ -262,6 +228,8 @@ struct ContentView: View {
       session: URLSession(configuration: sessionConfiguration)
     )
     let model = AppViewModel()
+    let historyModel = HistoryViewModel()
+    historyModel.beginBootstrapLoading()
     let nowMilliseconds: @Sendable () -> Int64 = {
       Int64((Date().timeIntervalSince1970 * 1_000).rounded())
     }
@@ -285,6 +253,7 @@ struct ContentView: View {
       },
       captureSink: { value in
         await model.receive(value)
+        await historyModel.reveal(taskID: value.taskID)
       }
     ))
 
@@ -292,17 +261,27 @@ struct ContentView: View {
     self.provider = provider
     self.composition = composition
     _model = StateObject(wrappedValue: model)
+    _historyModel = StateObject(wrappedValue: historyModel)
     _providerSettings = StateObject(
       wrappedValue: ProviderSettingsViewModel(configurationService: configurationService)
     )
   }
 
   var body: some Scene {
-    WindowGroup {
-      ContentView(model: model, providerSettings: providerSettings)
+    WindowGroup("LinkDigest") {
+      HistoryContentView(model: historyModel, appModel: model)
         .task {
+          if AppApplicationSupportRoot.shouldHoldHistoryLoading() {
+            try? await Task.sleep(for: .seconds(10))
+          }
           let result = await composition.bootstrap()
-          if let history = result.history {
+          historyModel.configure(
+            history: result.history,
+            isReadOnly: result.historyIsReadOnly,
+            unavailableCode: result.historyUnavailableCode,
+            readOnlyReason: result.historyReadOnlyReason
+          )
+          if result.availability.isWriteReady, let history = result.history {
             let orchestrator = ModelRunOrchestrator(
               configurationService: configurationService,
               provider: provider,
@@ -315,6 +294,15 @@ struct ContentView: View {
             model.setConnection("接收服务启动失败")
           }
         }
+    }
+    .defaultSize(width: 1100, height: 760)
+    .windowResizability(.contentMinSize)
+    .windowToolbarStyle(.unified(showsTitle: true))
+
+    Settings {
+      ProviderSettingsView(model: providerSettings)
+        .padding(24)
+        .frame(minWidth: 480)
     }
   }
 }

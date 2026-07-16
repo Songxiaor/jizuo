@@ -45,6 +45,34 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
     }
   }
 
+  func testFutureSchemaRetainsExistingHistoryForReadOnlyBrowsing() throws {
+    try withTemporaryLocation { location in
+      let writable = try GRDBHistoryRepository.open(at: location)
+      let first = try writable.acceptCapture(.init(
+        envelope: capture(requestID: "future-first", key: "future-first", url: "https://example.test/future-first", body: "first body"),
+        receivedAtMilliseconds: 10
+      ))
+      let second = try writable.acceptCapture(.init(
+        envelope: capture(requestID: "future-second", key: "future-second", url: "https://example.test/future-second", body: "second body"),
+        receivedAtMilliseconds: 20
+      ))
+      try writable.database.close()
+      let upgrader = try DatabaseQueue(path: location.databaseURL.path)
+      try upgrader.write { try $0.execute(sql: "PRAGMA user_version = 2") }
+      try upgrader.close()
+
+      let future = try GRDBHistoryRepository.open(at: location)
+      XCTAssertEqual(future.accessMode, .readOnly(.futureSchema))
+      let history = HistoryApplicationService(repository: future)
+      XCTAssertEqual(try history.historyPage(limit: 50).rows.map(\.taskID), [second.taskID, first.taskID])
+      XCTAssertEqual(try history.detail(taskID: first.taskID).snapshots.first?.bodyText, "first body")
+      XCTAssertThrowsError(try history.deleteTask(taskID: first.taskID)) {
+        XCTAssertEqual($0 as? RepositoryFailure, .readOnly(.futureSchema))
+      }
+      try future.database.close()
+    }
+  }
+
   func testMigrationFailureLeavesNoHalfTablesAndCanRecoverForward() throws {
     try withTemporaryLocation { location in
       let failed = try LocalDatabase.open(at: location, dependencies: .failing(migration: true))

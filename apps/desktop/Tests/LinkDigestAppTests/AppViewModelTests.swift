@@ -32,11 +32,22 @@ private final class AppHistoryRepository: HistoryRepository, @unchecked Sendable
   let accessMode: HistoryRepositoryAccessMode = .writable
   private let failPartial: Bool
   private let failTerminal: Bool
+  private let failCreateRun: Bool
+  private let blockCreateRun: Bool
+  private let createRunRelease = DispatchSemaphore(value: 0)
   private let lock = NSLock()
   private var captureCalls = 0
-  init(failPartial: Bool = false, failTerminal: Bool = false) {
+  private var createRunEntered = false
+  init(
+    failPartial: Bool = false,
+    failTerminal: Bool = false,
+    failCreateRun: Bool = false,
+    blockCreateRun: Bool = false
+  ) {
     self.failPartial = failPartial
     self.failTerminal = failTerminal
+    self.failCreateRun = failCreateRun
+    self.blockCreateRun = blockCreateRun
   }
   func acceptCapture(_: AcceptCaptureCommand) throws -> AcceptCaptureResult {
     lock.withLock { captureCalls += 1 }
@@ -49,7 +60,14 @@ private final class AppHistoryRepository: HistoryRepository, @unchecked Sendable
     )
   }
   var acceptCaptureCallCount: Int { lock.withLock { captureCalls } }
-  func createRun(_ command: CreateRunCommand) throws -> CreateRunResult { .init(runID: command.runID, wasCreated: true) }
+  func createRun(_ command: CreateRunCommand) throws -> CreateRunResult {
+    lock.withLock { createRunEntered = true }
+    if blockCreateRun { createRunRelease.wait() }
+    if failCreateRun { throw RepositoryFailure.injectedFailure }
+    return .init(runID: command.runID, wasCreated: true)
+  }
+  var didEnterCreateRun: Bool { lock.withLock { createRunEntered } }
+  func releaseCreateRun() { createRunRelease.signal() }
   func markRunRunning(_: MarkRunRunningCommand) throws {}
   func savePartialArtifact(_: SavePartialArtifactCommand) throws {
     if failPartial { throw RepositoryFailure.injectedFailure }
@@ -69,6 +87,7 @@ private final class AppTestModelProvider: ModelProvider, @unchecked Sendable {
     case success([ModelStreamEvent])
     case failure(prefix: String?, ModelProviderFailure)
     case pending
+    case pendingWithPrefix(String)
   }
 
   private let lock = NSLock()
@@ -102,6 +121,19 @@ private final class AppTestModelProvider: ModelProvider, @unchecked Sendable {
         }
         continuation.finish(throwing: failure)
       case .pending:
+        let producer = Task {
+          do {
+            try await Task.sleep(for: .seconds(30))
+            continuation.finish()
+          } catch {
+            continuation.finish(throwing: CancellationError())
+          }
+        }
+        continuation.onTermination = { @Sendable _ in
+          producer.cancel()
+        }
+      case let .pendingWithPrefix(prefix):
+        continuation.yield(.delta(prefix))
         let producer = Task {
           do {
             try await Task.sleep(for: .seconds(30))
@@ -433,11 +465,125 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(model.runStatusText, "用户已停止，结果不完整。")
   }
 
+  func testVisibleRunOwnershipStaysWithAWhenCaptureBReplacesCurrentAndAfterTerminal() async throws {
+    let provider = AppTestModelProvider(results: [.pendingWithPrefix("A output")])
+    let model = try makeModel(provider: provider)
+    let captureA = currentCapture()
+    let captureB = currentCapture()
+    model.receive(captureA)
+
+    await model.summarize()
+    await waitUntil { model.runState == .streaming(intent: .summarize, partialText: "A output") }
+    XCTAssertEqual(model.activeRunTaskID, captureA.taskID)
+    XCTAssertEqual(model.visibleRunTaskID, captureA.taskID)
+    XCTAssertTrue(model.showsVisibleRun(for: captureA.taskID))
+    XCTAssertTrue(model.canStopVisibleRun(for: captureA.taskID))
+
+    model.receive(captureB)
+    XCTAssertEqual(model.currentCapture, captureB)
+    XCTAssertEqual(model.activeRunTaskID, captureA.taskID)
+    XCTAssertEqual(model.visibleRunTaskID, captureA.taskID)
+    XCTAssertNotEqual(model.activeRunTaskID, captureB.taskID)
+    XCTAssertTrue(model.showsVisibleRun(for: captureA.taskID))
+    XCTAssertFalse(model.showsVisibleRun(for: captureB.taskID))
+    XCTAssertTrue(model.canStopVisibleRun(for: captureA.taskID))
+    XCTAssertFalse(model.canStopVisibleRun(for: captureB.taskID))
+    XCTAssertEqual(model.runResultText, "A output")
+
+    await model.stop()
+    await waitUntil { model.runState == .stopped(intent: .summarize, partialText: "A output") }
+    XCTAssertNil(model.activeRunTaskID)
+    XCTAssertEqual(model.visibleRunTaskID, captureA.taskID)
+    XCTAssertTrue(model.showsVisibleRun(for: captureA.taskID))
+    XCTAssertFalse(model.showsVisibleRun(for: captureB.taskID))
+    XCTAssertFalse(model.canStopVisibleRun(for: captureA.taskID))
+    XCTAssertEqual(model.runResultText, "A output")
+  }
+
+  func testLaunchPendingProtectsTaskBeforeCreateRunReturnsWithoutPublishingStarting() async throws {
+    let repository = AppHistoryRepository(blockCreateRun: true)
+    let provider = AppTestModelProvider(results: [.pending])
+    let model = try makeModel(provider: provider, repository: repository)
+    let capture = currentCapture()
+    model.receive(capture)
+
+    let startTask = Task { await model.summarize() }
+    await waitUntil { repository.didEnterCreateRun }
+    XCTAssertEqual(model.activeRunTaskID, capture.taskID)
+    XCTAssertFalse(model.canStartRun)
+    XCTAssertEqual(model.runState, .idle)
+
+    repository.releaseCreateRun()
+    await startTask.value
+    await waitUntil { model.runState == .starting(intent: .summarize) }
+    XCTAssertEqual(model.activeRunTaskID, capture.taskID)
+
+    await model.stop()
+    await waitUntil { model.runState == .stopped(intent: .summarize, partialText: "") }
+    XCTAssertNil(model.activeRunTaskID)
+  }
+
+  func testPreStartStorageFailureTakesPendingOwnershipThenClearsDeletionProtection() async throws {
+    let repository = AppHistoryRepository(failCreateRun: true)
+    let provider = AppTestModelProvider(results: [])
+    let model = try makeModel(provider: provider, repository: repository)
+    let capture = currentCapture()
+    model.receive(capture)
+
+    await model.summarize()
+    guard case .storageError = model.runState else {
+      return XCTFail("createRun failure must publish a storageError")
+    }
+    XCTAssertNil(model.activeRunTaskID)
+    XCTAssertEqual(model.visibleRunTaskID, capture.taskID)
+    XCTAssertEqual(model.storageAvailability, .unavailable(.writeFailed))
+
+    model.setStorageAvailability(.writable)
+    XCTAssertTrue(model.canStartRun, "pre-start failure must clear launch-pending state")
+  }
+
+  func testOrchestratorNoCallbackReturnClearsPendingMappingAndDeletionProtection() async throws {
+    let provider = AppTestModelProvider(results: [.pending])
+    let (model, orchestrator) = try makeModelAndOrchestrator(provider: provider)
+    let authorityCapture = currentCapture()
+    await orchestrator.start(
+      request: .init(
+        runID: RunID(),
+        taskID: authorityCapture.taskID,
+        snapshotID: authorityCapture.snapshotID,
+        intent: .summarize
+      ),
+      capture: authorityCapture.envelope
+    ) { _, _ in }
+
+    let capture = currentCapture()
+    model.receive(capture)
+    await model.summarize()
+
+    XCTAssertNil(model.activeRunTaskID)
+    XCTAssertNil(model.visibleRunTaskID)
+    XCTAssertEqual(model.runState, .idle)
+    XCTAssertTrue(model.canStartRun, "authority rejection must not leave a permanent pending launch")
+    await orchestrator.stop()
+  }
+
   private func makeModel(
     provider: AppTestModelProvider,
     secret: String = "not-a-real-key",
     repository: AppHistoryRepository = AppHistoryRepository()
   ) throws -> AppViewModel {
+    try makeModelAndOrchestrator(
+      provider: provider,
+      secret: secret,
+      repository: repository
+    ).0
+  }
+
+  private func makeModelAndOrchestrator(
+    provider: AppTestModelProvider,
+    secret: String = "not-a-real-key",
+    repository: AppHistoryRepository = AppHistoryRepository()
+  ) throws -> (AppViewModel, ModelRunOrchestrator) {
     let profile = try ProviderProfile(
       baseURL: "https://example.test/v1",
       model: "fixture-model",
@@ -454,7 +600,7 @@ final class AppViewModelTests: XCTestCase {
     )
     let model = AppViewModel(modelRunOrchestrator: orchestrator)
     model.setStorageAvailability(.writable)
-    return model
+    return (model, orchestrator)
   }
 
   private func currentCapture() -> CurrentCapture {

@@ -5,7 +5,7 @@ category: decision
 status: active
 tags: [sqlite, grdb, migration, recovery]
 created: "2026-07-15T12:24:07"
-updated: "2026-07-15T13:44:47"
+updated: "2026-07-16T12:41:57"
 ---
 
 ## compiled_truth
@@ -84,3 +84,9 @@ Xcode package resolution 仍被 Hana 外层 nested sandbox 阻断；clean-room R
   summary: "独立复审通过，首次冻结修订后的 migration 001；记录 NUL、UUID、竞态和历史排序门禁。"
   source: "P0-RC-02A implementation + Sol xhigh re-review 2026-07-15"
   affects: [sqlite-grdb-persistence-boundary]
+
+- time: 2026-07-16T12:41:57
+  kind: decision
+  summary: "导出保持 migration 001 不变且不写数据库：HistoryExportProjection 在出口剥离 provider、idempotency、cookie-use 与 raw error，future-schema 只读历史允许 Markdown/TXT/JSON 数据逃生。"
+  source: Loop 2 implementation 2026-07-16
+  affects: [sqlite-grdb-persistence-boundary, p0-release-candidate-goal]
