@@ -13,7 +13,7 @@ LinkDigest 的产品目标是成为一个 local-first 的链接理解工具：�
 
 产品路线已收敛为 **macOS 原生优先**：桌面 APP 使用 SwiftUI + 少量 AppKit，Chromium 扩展继续使用 TypeScript/WXT，两端通过 Native Messaging 与版本化 JSON 协议交接。
 
-当前代码已完成到 **P0-RC Loop 2 本地导出**：V0.1 Chromium capture bridge、V0.2 BYOK 总结/翻译，以及 V0.3 的正式 History Domain、冻结 migration 001、GRDB Repository、启动恢复闸门、当前 Capture/Run 持久化接线和原生 History Sidebar/详情/确认删除已经贯通。Loop 2 在原有分享位置接入 Markdown、纯文本（`.txt`）和 JSON 三格式的单条本地导出；只读/future-schema 历史同样可导出，作为数据逃生口。Core 只生成脱敏的确定性字节，ViewModel 在后台读取 Repository 并用 generation/request/task identity 拒绝快速切换后的旧结果，SwiftUI 原生保存面板负责选址、取消和同名覆盖。导出不写数据库、不改 migration 001、不读 Keychain/Cookie/网络。这个结论只表示 Loop 2 工程完成、未暂存提交且未发布；稳定 Host 安装升级卸载、签名、公证和发布包仍未实现。
+当前代码已有 **P0-RC Loop 4 Stable Host r1**：Loop 3 原生 UX 与数据去向确认已最终独立复审 PASS；在其上新增 canonical Host config、只输出到显式新目录的 Release package builder、严格 verifier、单一 manifest renderer，以及只允许 fixed canonical `/private/tmp` clean-room HOME 的首次安装/noop/receipt。一次性源码副本在删除 `.build` 后，搬迁 package Host 的 offline/oversize/timeout smoke、缺 bundle 负例与 poisoned TMPDIR 门禁已形成 56 项确定性证据。Loop 4 最终独立 re-review **PASS，P0/P1/P2 均为 0**；真实 HOME/浏览器安装、升级、卸载、`.app`/DMG、签名、公证和发布均未发生。
 
 - 架构边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 - 当前 P0 产品范围与验收见 [`docs/PRD.md`](docs/PRD.md)。
@@ -26,10 +26,11 @@ LinkDigest 的产品目标是成为一个 local-first 的链接理解工具：�
 - V0.2 的集中工程证据见 [`docs/specs/V0.2_BYOK_ACCEPTANCE.md`](docs/specs/V0.2_BYOK_ACCEPTANCE.md)。
 - P0-RC-02B 的最终实施、验收与证据见 [`docs/specs/P0_RC_02B_APP_WIRING_IMPLEMENTATION.md`](docs/specs/P0_RC_02B_APP_WIRING_IMPLEMENTATION.md)、[`docs/specs/P0_RC_02B_APP_WIRING_ACCEPTANCE.md`](docs/specs/P0_RC_02B_APP_WIRING_ACCEPTANCE.md) 与 [`docs/evidence/P0_RC_02B_APP_WIRING_ACCEPTANCE_2026-07-15.md`](docs/evidence/P0_RC_02B_APP_WIRING_ACCEPTANCE_2026-07-15.md)。
 - V0.1 自动化垂直链路已建立：语言中立 JSON Schema、共同 fixtures、WXT MV3 扩展、SwiftUI APP、Native Host、Unix socket 与结构化错误均可构建和测试；Chrome、Brave 150 的真实触发、离线错误、在线接收与 20 次 Release p95 已通过。Edge 150 的隔离 Profile 也已完成真实 Popup 预览观察，以及修复后 Service Worker → Native Host → Unix socket → 运行中 Swift App 的 20/20 传输证据。
-- V0.2 任务 A–D 已完成本地工程验收：配置与 Keychain、Chat Completions adapter、总结/翻译 RunState、统一恢复文案和 secret hygiene 均有自动证据。单独“测试连接”按钮留给后续小任务；当前可通过总结/翻译路径验证连接，不影响本轮完成标准。
+- V0.2 已有完整本地工程证据；Loop 3 的发送前数据去向确认和设置页测试连接已经最终独立复审 PASS。真实 Provider 抽样仍需 Syc 单独授权。
+- Stable Host r1 规格、package 格式、clean-room 门禁与候选证据见 [`docs/specs/P0_RC_LOOP_4_STABLE_HOST.md`](docs/specs/P0_RC_LOOP_4_STABLE_HOST.md)。
 - 旧 Electron/百万容量对齐文档保存在 `docs/archive/`，只用于追溯，不再作为当前实现依据。
 
-V0.1 三浏览器交接矩阵的工程证据已经收口；Edge 的 Popup 观察与 Service Worker 传输压测分别记录，不能合并解读为一次连续的工具栏点击截图验收。Native Host 的正式稳定目录、Developer ID 签名与公证属于后续 release spike，不是本任务关闭门槛；当前 `/tmp` 路径也不得当成发布方案。
+V0.1 三浏览器交接矩阵的工程证据已经收口；Edge 的 Popup 观察与 Service Worker 传输压测分别记录，不能合并解读为一次连续的工具栏点击截图验收。Loop 4 r1 只把 Host 收口为可搬迁 package 并在隔离 clean-room 证明初装；真实用户目录、Developer ID 签名、公证、升级/卸载和发布仍属于后续 release 工程，不能把审计 `/private/tmp` 路径当成真实安装方案。
 
 ## 目录
 

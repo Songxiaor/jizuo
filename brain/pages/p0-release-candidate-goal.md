@@ -5,42 +5,26 @@ category: decision
 status: active
 tags: [p0, release, workflow, quality]
 created: "2026-07-15T11:27:22"
-updated: "2026-07-16T14:05:07"
+updated: "2026-07-16T19:00:04"
 ---
 
 ## compiled_truth
 
-# 最终目标
+# 当前结论
 
-LinkDigest 当前总目标是交付一套可由 Syc 在本机完整安装和验收的 macOS P0 Release Candidate，而非零散功能演示。交付版必须贯通 Chromium 当前页捕获、Native Messaging、SwiftUI、BYOK 总结与翻译、SQLite 本地历史、删除与恢复语义、Markdown/TXT/JSON 导出、原生交互、稳定 Host 安装/升级/卸载与完整回归测试。
+Loop 1 History UI、Loop 2 单条 Markdown/TXT/JSON 导出、Loop 3 原生数据去向确认/连接测试与 Loop 4 r1 Stable Host package/clean-room 初装已按各自门禁收口。Loop 4 r1 最终独立 re-review PASS，P0/P1/P2 均为 0。
 
-签名、公证、商店提交、付费和真实 Provider 凭据仍属于重大外部节点；工程必须做到发布前就绪，但执行这些动作前仍需 Syc 明确授权。Q&A、云账号、同步、托管模型、Windows、Safari 和媒体下载不进入本轮 P0 RC。
+# Loop 4 r1 完成状态
 
-## 当前 Loop 2 状态
+config/native-host.json 是 Host 名称、版本、协议、macOS、架构、entrypoint、resource bundle 与 release extension ID 状态的 canonical config；release IDs 当前为空且明确 not-frozen。Release builder 只接受显式绝对且不存在的 output root，组装 arm64 Host、完整 bundle、package.json 与 SHA256SUMS。verifier 拒绝非普通文件、额外顶层项、权限/checksum/schema/metadata/arch 漂移。manifest renderer 对测试 IDs 排序去重，release IDs 未冻结时 fail closed。
 
-- 单条 History Markdown、TXT、JSON 导出已完成工程实现：详情页保持既有 toolbar 顺序，由分享菜单进入三种格式；只读/future-schema History 继续可导出，作为数据逃生口。
-- 独立复审发现的文件名 UTF-8 byte budget、Run 显示归属、启动待定删除保护、v1 JSON decoder 校验和 partial usage 展示问题已完成本地修复并通过最终独立复审，P0/P1/P2 均为 0。
-- 建议文件名预留版本与扩展名后按 255 UTF-8 bytes 和完整 Character 边界截断；Markdown 使用可靠 UTI，三格式默认名固定保留 .md/.txt/.json。
-- App 以 activeRunTaskID 保护活跃或 launch-pending Run 的真实 Task，以 visibleRunTaskID 约束状态、输出与停止入口的 Task 归属；createRun 前不提前发布 starting，pre-start failure 或无回调返回会清理待定映射。
-- formatVersion 1 JSON decoder 校验 canonical typed UUID、非负且配对的 usage/cost，以及 Task/Snapshot/Run/Artifact 引用关系，同时保留合法 NUL、空字段和 partial/interrupted 内容。
-- 本地门禁为 focused AppViewModel 15/15、完整 Swift 146/146、SwiftPM Debug/Release、Xcode App/Host Debug/Release 四目标、diff、migration 001 冻结 hash与无 Migration002 全部通过；工程仍未暂存、提交、发布。
+clean-room installer 只允许 fixed canonical /private/tmp 下的 session/home，不读取 TMPDIR/tempfile.gettempdir，并要求精确 sentinel 与逐级无 symlink 路径。Host smoke 禁止 raw executable、skip-build 与 socket path override；packaged smoke 只接受先通过 verifier 的 package root。vertical/Host smoke 在任何 build 或子进程前固定并导出 TMPDIR=/private/tmp。
 
-## 质量门禁
+# 证据、残余与下一步
 
-- 跨语言 JSON Schema、Domain/Port/Adapter 边界和 local-first 原则不得为赶进度破坏。
-- SQLite binding 先通过许可证、Release 构建、事务、迁移、备份与只读恢复 spike，再承载用户历史。
-- migration 只向前；失败时保留原数据库并进入只读导出逃生口，不以删库恢复。
-- 每个阶段由 Sol 规划、Luna 实施、Sol 审查；实施者拥有单一写入边界，审查不与实施并发写入。
-- 每阶段必须通过自动测试、失败路径、安全检查和文档/Brain 一致性检查；阻断项在内部修复后才进入下一阶段。
-- 最终交付前执行从干净安装到捕获、模型、历史、导出、重启恢复、升级和卸载的完整验收。
+一次性源码副本删除 .build 后，verified package Host 的 offline/oversize/timeout smoke 与缺 bundle 负例通过。Darwin scope 外伪 clean-room 在 TMPDIR=$PWD/$HOME 时均于写入前拒绝；poisoned vertical smoke 不改变 scope 外 root、真实 LinkDigest HOME 或 Git status。实现与独立 re-review 均完整通过 56 项 deterministic check；Swift focused 54/54、显式跳过 Keychain 的完整 Swift 177/177、SwiftPM/Xcode 四目标、secret/diff/Brain/migration 门禁通过。
 
-## 对重构风险的约束
-
-不承诺未来永远不发生局部重构；承诺不把未经验证的核心依赖、不可迁移数据结构、混乱职责或临时测试路径包装成最终架构。产品细节优化可以迭代，基础边界失败必须在进入下游功能前被门禁拦截。
-
-## 协作方式
-
-Syc 不承担日常重复测试。HanaAgent 作为唯一总控，使用 Sub-agent 完成规划、实施和独立审查；普通开发与可逆修复自动推进，只有重大外部动作、产品路线反转或不可逆风险才请求确认。
+r1 只实现 initial install、同内容 noop 与进程正常错误路径的 best-effort 本事务 cleanup，不得称完整 rollback。SIGKILL/crash、同用户并发 TOCTOU、跨进程 lock、dirfd/openat 路径绑定和 transaction recovery 留给 r2。真实 HOME、真实浏览器 profile、升级、卸载、app/DMG、签名、公证和发布未执行，仍需 Syc 明确授权。下一阶段是 r2 Upgrade + uninstall + rollback 的只读规划与 clean-room 工程。
 
 
 ## timeline
@@ -146,3 +130,93 @@ Syc 不承担日常重复测试。HanaAgent 作为唯一总控，使用 Sub-agen
   summary: "Loop 2 最终独立复审 PASS：P0/P1/P2 均为 0；Swift 146/146、SwiftPM 与 Xcode 四目标、diff、migration 001 冻结 hash 和无 Migration002 证据通过。"
   source: Loop 2 final independent re-review 2026-07-16
   affects: [apps/desktop, docs/LEARNING_LOG.md]
+
+- time: 2026-07-16T15:35:22
+  kind: decision
+  summary: Loop 3 native UX and frozen data-destination authorization implementation
+  source: Loop 3 remediation 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T15:35:22
+  kind: evidence
+  summary: "Loop 3 remediation added frozen Core authorization, preparation-token TOCTOU gates, Release-safe visual fixture compilation, and connection-state invalidation; local verification pending final full gate."
+  source: Loop 3 remediation 2026-07-16
+  affects: [p0-release-candidate-goal, sam-webpage-summarizer-reference]
+
+- time: 2026-07-16T15:48:46
+  kind: decision
+  summary: Rewrote compiled_truth to the new best understanding
+  source: Loop 3 second independent review BLOCK 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T15:48:46
+  kind: evidence
+  summary: "Loop 3 第二次独立复审 BLOCK：P0 清零；preparation token 释放、设置 dirty/generation、save/authorize revision 或 permit 三项 P1 未关闭，禁止进入 Loop 4。"
+  source: Loop 3 second independent review 2026-07-16
+  affects: [p0-release-candidate-goal, roadmap, docs/LEARNING_LOG.md]
+
+- time: 2026-07-16T16:28:40
+  kind: decision
+  summary: Loop 3 P1 candidate fixes complete and awaiting independent review
+  source: Loop 3 P1 remediation and deterministic barrier validation 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T16:28:40
+  kind: evidence
+  summary: "Loop 3 candidate remediation passed 14 deterministic barrier cases, Swift 177/177, SwiftPM Debug/Release, Xcode four targets, secret and migration gates; pnpm license inventory remains environment-blocked by missing Ajv store index."
+  source: Loop 3 local verification 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T16:42:26
+  kind: evidence
+  summary: "ProviderAuthorization now has fixed redacted description and debugDescription; sentinel reflection regression and full Swift 178/178 plus Debug/Release builds passed. Loop 3 remains awaiting independent review."
+  source: Loop 3 final security remediation 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T16:52:25
+  kind: decision
+  summary: Loop 3 final independent review PASS and redaction barriers closed
+  source: Loop 3 final independent re-review 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T18:06:19
+  kind: decision
+  summary: Loop 4 r1 stable Host candidate implemented and awaiting independent review
+  source: Loop 4 r1 local implementation and deterministic validation 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T18:07:12
+  kind: evidence
+  summary: "Loop 4 r1 local deterministic check passed 47 assertions: clean-source offline Release build, Unicode move, source build deletion, packaged Host smoke, missing-bundle runtime failure, manifest/install/receipt/path gates and tamper rejection; real HOME metadata digest unchanged. Candidate remains awaiting independent review."
+  source: scripts/native-host/check-stable-package.sh 2026-07-16
+  affects: [p0-release-candidate-goal, roadmap]
+
+- time: 2026-07-16T18:20:02
+  kind: decision
+  summary: Loop 4 r1 stable Host candidate final local gate is 48 assertions and still awaits review
+  source: Loop 4 r1 final local validation 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T18:20:02
+  kind: evidence
+  summary: "Final Loop 4 r1 local gate passed 48 assertions after rejecting installed version trees with unknown empty directories. Swift focused 54/54, Keychain-skipped full 177/177, SwiftPM and Xcode four targets passed; Web Ajv links and pnpm index remain environment-blocked. Candidate awaits independent review."
+  source: Loop 4 r1 final local matrix 2026-07-16
+  affects: [p0-release-candidate-goal, roadmap]
+
+- time: 2026-07-16T18:48:25
+  kind: decision
+  summary: Loop 4 r1 fixed TMP root and verified package smoke candidate awaits re-review
+  source: Loop 4 r1 reviewer BLOCK remediation 2026-07-16
+  affects: [p0-release-candidate-goal]
+
+- time: 2026-07-16T18:48:25
+  kind: evidence
+  summary: "Reviewer BLOCK P1 remediation passed 56 assertions: clean-room trusts only fixed /private/tmp; raw Host/skip-build/socket overrides fail closed; packaged smoke requires verified package root; poisoned TMPDIR installer and vertical smoke make no scope-outside, HOME, or worktree changes. Candidate awaits re-review."
+  source: Loop 4 r1 BLOCK remediation local gate 2026-07-16
+  affects: [p0-release-candidate-goal, roadmap]
+
+- time: 2026-07-16T19:00:04
+  kind: decision
+  summary: Loop 4 r1 final independent re-review PASS
+  source: Loop 4 r1 final independent re-review 2026-07-16
+  affects: [p0-release-candidate-goal]

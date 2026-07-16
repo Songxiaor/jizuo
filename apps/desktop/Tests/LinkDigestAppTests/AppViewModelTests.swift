@@ -3,29 +3,135 @@ import XCTest
 @testable import LinkDigestApp
 import LinkDigestCore
 
-private actor AppProfileStore: ProviderProfileStore {
-  private let profile: ProviderProfile?
+private actor AppAsyncBarrier {
+  private var entered = false
+  private var released = false
+  private var blockedContinuations: [CheckedContinuation<Void, Never>] = []
+  private var entryContinuations: [CheckedContinuation<Void, Never>] = []
 
-  init(profile: ProviderProfile?) {
-    self.profile = profile
+  func suspend() async {
+    entered = true
+    let observers = entryContinuations
+    entryContinuations.removeAll()
+    observers.forEach { $0.resume() }
+    guard !released else { return }
+    await withCheckedContinuation { blockedContinuations.append($0) }
   }
 
-  func load() async throws -> ProviderProfile? { profile }
-  func save(_: ProviderProfile) async throws {}
-  func delete() async throws {}
+  func waitUntilEntered() async {
+    guard !entered else { return }
+    await withCheckedContinuation { entryContinuations.append($0) }
+  }
+
+  func release() {
+    released = true
+    let continuations = blockedContinuations
+    blockedContinuations.removeAll()
+    continuations.forEach { $0.resume() }
+  }
+}
+
+private actor AppProfileStore: ProviderProfileStore {
+  private var profile: ProviderProfile?
+  private let failLoad: Bool
+  private let loadBarrier: AppAsyncBarrier?
+  private let blockedLoadCall: Int?
+  private var loadCount = 0
+
+  init(
+    profile: ProviderProfile?,
+    failLoad: Bool = false,
+    loadBarrier: AppAsyncBarrier? = nil,
+    blockedLoadCall: Int? = nil
+  ) {
+    self.profile = profile
+    self.failLoad = failLoad
+    self.loadBarrier = loadBarrier
+    self.blockedLoadCall = blockedLoadCall
+  }
+
+  func load() async throws -> ProviderProfile? {
+    loadCount += 1
+    if blockedLoadCall == loadCount, let loadBarrier {
+      await loadBarrier.suspend()
+    }
+    if failLoad { throw ProviderProfileStoreFailure.readFailed }
+    return profile
+  }
+  func save(_ profile: ProviderProfile) async throws { self.profile = profile }
+  func delete() async throws { profile = nil }
+  func replace(_ value: ProviderProfile?) { profile = value }
+  func loads() -> Int { loadCount }
+}
+
+private actor AppConsentStore: DataDestinationConsentStore {
+  private var values: Set<DataDestinationIdentity>
+  private let failRead: Bool
+  private let failWrite: Bool
+  private let readBarrier: AppAsyncBarrier?
+  private let writeBarrier: AppAsyncBarrier?
+  private var readCount = 0
+  private var writeCount = 0
+
+  init(
+    values: Set<DataDestinationIdentity> = [],
+    failRead: Bool = false,
+    failWrite: Bool = false,
+    readBarrier: AppAsyncBarrier? = nil,
+    writeBarrier: AppAsyncBarrier? = nil
+  ) {
+    self.values = values
+    self.failRead = failRead
+    self.failWrite = failWrite
+    self.readBarrier = readBarrier
+    self.writeBarrier = writeBarrier
+  }
+
+  func isConfirmed(for identity: DataDestinationIdentity) async throws -> Bool {
+    readCount += 1
+    if let readBarrier { await readBarrier.suspend() }
+    if failRead { throw DataDestinationConsentStoreFailure.readFailed }
+    return values.contains(identity)
+  }
+
+  func rememberConfirmation(for identity: DataDestinationIdentity) async throws {
+    writeCount += 1
+    if let writeBarrier { await writeBarrier.suspend() }
+    if failWrite { throw DataDestinationConsentStoreFailure.writeFailed }
+    values.insert(identity)
+  }
+
+  func reads() -> Int { readCount }
+  func writes() -> Int { writeCount }
 }
 
 private actor AppSecretStore: SecretStore {
-  private let secret: String?
+  private var secret: String?
+  private let readBarrier: AppAsyncBarrier?
+  private let failRead: Bool
+  private var readCount = 0
 
-  init(secret: String?) {
+  init(
+    secret: String?,
+    readBarrier: AppAsyncBarrier? = nil,
+    failRead: Bool = false
+  ) {
     self.secret = secret
+    self.readBarrier = readBarrier
+    self.failRead = failRead
   }
 
-  func save(_: String, for _: SecretReference) async throws {}
-  func read(_: SecretReference) async throws -> String? { secret }
+  func save(_ value: String, for _: SecretReference) async throws { secret = value }
+  func read(_: SecretReference) async throws -> String? {
+    readCount += 1
+    if let readBarrier { await readBarrier.suspend() }
+    if failRead { throw SecretStoreFailure(operation: .read, status: -1) }
+    return secret
+  }
   func contains(_: SecretReference) async throws -> Bool { secret != nil }
-  func delete(_: SecretReference) async throws {}
+  func delete(_: SecretReference) async throws { secret = nil }
+  func replace(_ value: String?) { secret = value }
+  func reads() -> Int { readCount }
 }
 
 private final class AppHistoryRepository: HistoryRepository, @unchecked Sendable {
@@ -204,6 +310,377 @@ final class AppViewModelTests: XCTestCase {
       text: "Fixture body",
       targetLanguage: "简体中文"
     ))
+  }
+
+  func testFirstRunRequiresDisclosureAndCancelNeverCallsProvider() async throws {
+    let provider = AppTestModelProvider(results: [.success([.delta("ignored"), .completed])])
+    let model = try makeModel(provider: provider, consented: false)
+    model.receive(currentCapture())
+
+    await model.summarize()
+
+    XCTAssertNotNil(model.dataDestinationDisclosure)
+    XCTAssertEqual(provider.callCount, 0)
+    model.cancelDataDestinationDisclosure()
+    XCTAssertNil(model.dataDestinationDisclosure)
+    XCTAssertEqual(provider.callCount, 0)
+  }
+
+  func testDisclosureConfirmationRunsOnceAndSameIdentitySkipsLaterPrompt() async throws {
+    let provider = AppTestModelProvider(results: [
+      .success([.delta("first"), .completed]),
+      .success([.delta("second"), .completed])
+    ])
+    let model = try makeModel(provider: provider, consented: false)
+    model.receive(currentCapture())
+
+    await model.summarize()
+    await model.confirmDataDestinationDisclosure()
+    await waitUntil { model.runState == .completed(intent: .summarize, text: "first") }
+    await model.translate()
+    await waitUntil { model.runState == .completed(intent: .translate, text: "second") }
+
+    XCTAssertNil(model.dataDestinationDisclosure)
+    XCTAssertEqual(provider.callCount, 2)
+  }
+
+  func testNewCaptureDuringDisclosureNeverSendsFrozenOldBody() async throws {
+    let provider = AppTestModelProvider(results: [.success([.delta("new"), .completed])])
+    let model = try makeModel(provider: provider, consented: false)
+    let original = currentCapture()
+    model.receive(original)
+    await model.summarize()
+    XCTAssertNotNil(model.dataDestinationDisclosure)
+
+    let replacement = currentCapture()
+    model.receive(replacement)
+    await model.confirmDataDestinationDisclosure()
+
+    XCTAssertEqual(provider.callCount, 0)
+    XCTAssertNil(model.dataDestinationDisclosure)
+    XCTAssertTrue(model.dataDestinationNotice?.contains("新") == true)
+  }
+
+  func testDisclosureReappearsWhenConfigurationIdentityChanges() async throws {
+    let provider = AppTestModelProvider(results: [.success([.delta("not sent"), .completed])])
+    let profile = try ProviderProfile(
+      baseURL: "https://example.test/v1",
+      model: "fixture-model",
+      secretReference: .init(rawValue: "fixture-reference")
+    )
+    let profileStore = AppProfileStore(profile: profile)
+    let service = ProviderConfigurationService(
+      profileStore: profileStore,
+      secretStore: AppSecretStore(secret: "fixture-secret")
+    )
+    let model = AppViewModel(
+      modelRunOrchestrator: ModelRunOrchestrator(
+        configurationService: service,
+        provider: provider,
+        history: HistoryApplicationService(repository: AppHistoryRepository())
+      ),
+      configurationService: service,
+      consentStore: AppConsentStore()
+    )
+    model.setStorageAvailability(.writable)
+    model.receive(currentCapture())
+    await model.summarize()
+    let changed = try ProviderProfile(
+      baseURL: "https://changed.example.test/v1",
+      model: "new-model",
+      secretReference: .init(rawValue: "fixture-reference")
+    )
+    await profileStore.replace(changed)
+
+    await model.confirmDataDestinationDisclosure()
+
+    XCTAssertEqual(provider.callCount, 0)
+    XCTAssertEqual(model.dataDestinationDisclosure?.identity, DataDestinationIdentity(profile: changed))
+  }
+
+  func testConsentStoreReadAndWriteFailuresFailSafeWithoutSecretState() async throws {
+    let provider = AppTestModelProvider(results: [.success([.delta("once"), .completed])])
+    let readFailure = try makeModel(provider: provider, consentStore: AppConsentStore(failRead: true))
+    readFailure.receive(currentCapture())
+    await readFailure.summarize()
+    XCTAssertNotNil(readFailure.dataDestinationDisclosure)
+    XCTAssertEqual(provider.callCount, 0)
+
+    let writeFailure = try makeModel(provider: provider, consentStore: AppConsentStore(failWrite: true))
+    writeFailure.receive(currentCapture())
+    await writeFailure.summarize()
+    await writeFailure.confirmDataDestinationDisclosure()
+    await waitUntil { writeFailure.runState == .completed(intent: .summarize, text: "once") }
+    XCTAssertTrue(writeFailure.dataDestinationNotice?.contains("下次") == true)
+    XCTAssertFalse(String(describing: writeFailure).contains("fixture-secret"))
+
+    await writeFailure.summarize()
+    XCTAssertNotNil(writeFailure.dataDestinationDisclosure)
+    XCTAssertEqual(provider.callCount, 1)
+  }
+
+  func testUnconfiguredAttemptReleasesThenSavedConfigurationCanRetry() async throws {
+    let profileStore = AppProfileStore(profile: nil)
+    let secretStore = AppSecretStore(secret: nil)
+    let provider = AppTestModelProvider(results: [.success([.delta("done"), .completed])])
+    let (model, service) = makeHarness(
+      provider: provider,
+      profileStore: profileStore,
+      secretStore: secretStore,
+      consentStore: AppConsentStore()
+    )
+    model.receive(currentCapture())
+
+    await model.summarize()
+    XCTAssertTrue(model.canStartRun)
+    XCTAssertTrue(model.dataDestinationNotice?.contains("尚未配置") == true)
+
+    _ = try await service.save(
+      baseURL: "https://saved.example.test/v1",
+      model: "saved-model",
+      apiKey: "saved-key"
+    )
+    await model.summarize()
+    XCTAssertNotNil(model.dataDestinationDisclosure)
+    await model.confirmDataDestinationDisclosure()
+    await waitUntil { model.runState == .completed(intent: .summarize, text: "done") }
+    XCTAssertEqual(provider.callCount, 1)
+  }
+
+  func testProfileReadFailureReleasesAttemptForImmediateRetry() async throws {
+    let provider = AppTestModelProvider(results: [])
+    let (model, _) = makeHarness(
+      provider: provider,
+      profileStore: AppProfileStore(profile: nil, failLoad: true),
+      secretStore: AppSecretStore(secret: nil),
+      consentStore: AppConsentStore()
+    )
+    model.receive(currentCapture())
+
+    await model.summarize()
+
+    XCTAssertTrue(model.canStartRun)
+    XCTAssertNil(model.dataDestinationDisclosure)
+    XCTAssertEqual(provider.callCount, 0)
+    XCTAssertTrue(model.dataDestinationNotice?.contains("无法读取") == true)
+  }
+
+  func testIdentityLoadBarrierRejectsDoubleTapAndOldCaptureContinuation() async throws {
+    let profile = try configuredProfile()
+    let barrier = AppAsyncBarrier()
+    let profileStore = AppProfileStore(
+      profile: profile,
+      loadBarrier: barrier,
+      blockedLoadCall: 1
+    )
+    let provider = AppTestModelProvider(results: [])
+    let (model, _) = makeHarness(
+      provider: provider,
+      profileStore: profileStore,
+      secretStore: AppSecretStore(secret: "key"),
+      consentStore: AppConsentStore()
+    )
+    model.receive(currentCapture(title: "A", text: "body A"))
+
+    let first = Task { await model.summarize() }
+    await barrier.waitUntilEntered()
+    await model.translate()
+    model.receive(currentCapture(title: "B", text: "body B"))
+    await barrier.release()
+    await first.value
+
+    let loadCount = await profileStore.loads()
+    XCTAssertEqual(loadCount, 1)
+    XCTAssertEqual(provider.callCount, 0)
+    XCTAssertNil(model.dataDestinationDisclosure)
+    XCTAssertTrue(model.canStartRun)
+    await model.translate()
+    XCTAssertEqual(model.dataDestinationDisclosure?.title, "B")
+  }
+
+  func testCancelledIdentityLoadReleasesAttemptForRetry() async throws {
+    let profile = try configuredProfile()
+    let barrier = AppAsyncBarrier()
+    let provider = AppTestModelProvider(results: [])
+    let (model, _) = makeHarness(
+      provider: provider,
+      profileStore: AppProfileStore(
+        profile: profile,
+        loadBarrier: barrier,
+        blockedLoadCall: 1
+      ),
+      secretStore: AppSecretStore(secret: "key"),
+      consentStore: AppConsentStore()
+    )
+    model.receive(currentCapture())
+
+    let task = Task { await model.summarize() }
+    await barrier.waitUntilEntered()
+    task.cancel()
+    await barrier.release()
+    await task.value
+
+    XCTAssertTrue(model.canStartRun)
+    XCTAssertNil(model.dataDestinationDisclosure)
+    XCTAssertEqual(provider.callCount, 0)
+  }
+
+  func testConsentReadBarrierRejectsDoubleTapAndOldCaptureContinuation() async throws {
+    let profile = try configuredProfile()
+    let barrier = AppAsyncBarrier()
+    let consentStore = AppConsentStore(readBarrier: barrier)
+    let provider = AppTestModelProvider(results: [])
+    let (model, _) = makeHarness(
+      provider: provider,
+      profileStore: AppProfileStore(profile: profile),
+      secretStore: AppSecretStore(secret: "key"),
+      consentStore: consentStore
+    )
+    model.receive(currentCapture(title: "A", text: "body A"))
+
+    let first = Task { await model.summarize() }
+    await barrier.waitUntilEntered()
+    await model.translate()
+    model.receive(currentCapture(title: "B", text: "body B"))
+    await barrier.release()
+    await first.value
+
+    let readCount = await consentStore.reads()
+    XCTAssertEqual(readCount, 1)
+    XCTAssertEqual(provider.callCount, 0)
+    XCTAssertTrue(model.canStartRun)
+    await model.translate()
+    XCTAssertEqual(model.dataDestinationDisclosure?.title, "B")
+  }
+
+  func testConsentWriteBarrierAcceptsOneConfirmationAndNeverSendsOldCapture() async throws {
+    let profile = try configuredProfile()
+    let barrier = AppAsyncBarrier()
+    let consentStore = AppConsentStore(writeBarrier: barrier)
+    let provider = AppTestModelProvider(results: [.success([.delta("B"), .completed])])
+    let (model, _) = makeHarness(
+      provider: provider,
+      profileStore: AppProfileStore(profile: profile),
+      secretStore: AppSecretStore(secret: "key"),
+      consentStore: consentStore
+    )
+    model.receive(currentCapture(title: "A", text: "body A"))
+    await model.summarize()
+
+    let firstConfirmation = Task { await model.confirmDataDestinationDisclosure() }
+    await barrier.waitUntilEntered()
+    await model.confirmDataDestinationDisclosure()
+    model.receive(currentCapture(title: "B", text: "body B"))
+    await barrier.release()
+    await firstConfirmation.value
+
+    let writeCount = await consentStore.writes()
+    XCTAssertEqual(writeCount, 1)
+    XCTAssertEqual(provider.callCount, 0)
+    XCTAssertTrue(model.canStartRun)
+    await model.translate()
+    await waitUntil { model.runState == .completed(intent: .translate, text: "B") }
+    XCTAssertEqual(provider.intents, [.translate(title: "B", text: "body B", targetLanguage: "简体中文")])
+  }
+
+  func testAuthorizeBarrierRejectsDoubleTapAndNeverSendsOldCapture() async throws {
+    let profile = try configuredProfile()
+    let barrier = AppAsyncBarrier()
+    let provider = AppTestModelProvider(results: [.success([.delta("B"), .completed])])
+    let (model, _) = makeHarness(
+      provider: provider,
+      profileStore: AppProfileStore(profile: profile),
+      secretStore: AppSecretStore(secret: "key", readBarrier: barrier),
+      consentStore: AppConsentStore(values: [DataDestinationIdentity(profile: profile)])
+    )
+    model.receive(currentCapture(title: "A", text: "body A"))
+
+    let first = Task { await model.summarize() }
+    await barrier.waitUntilEntered()
+    await model.translate()
+    model.receive(currentCapture(title: "B", text: "body B"))
+    await barrier.release()
+    await first.value
+
+    XCTAssertEqual(provider.callCount, 0)
+    XCTAssertTrue(model.canStartRun)
+    await model.translate()
+    await waitUntil { model.runState == .completed(intent: .translate, text: "B") }
+    XCTAssertEqual(provider.intents, [.translate(title: "B", text: "body B", targetLanguage: "简体中文")])
+  }
+
+  func testLaunchGuardFailureReleasesAttemptAndAllowsRetry() async throws {
+    let profile = try configuredProfile()
+    let barrier = AppAsyncBarrier()
+    let provider = AppTestModelProvider(results: [.success([.delta("retry"), .completed])])
+    let (model, _) = makeHarness(
+      provider: provider,
+      profileStore: AppProfileStore(profile: profile),
+      secretStore: AppSecretStore(secret: "key", readBarrier: barrier),
+      consentStore: AppConsentStore(values: [DataDestinationIdentity(profile: profile)])
+    )
+    model.receive(currentCapture())
+
+    let first = Task { await model.summarize() }
+    await barrier.waitUntilEntered()
+    model.setStorageAvailability(.unavailable(.writeFailed))
+    await barrier.release()
+    await first.value
+
+    XCTAssertEqual(provider.callCount, 0)
+    model.setStorageAvailability(.writable)
+    XCTAssertTrue(model.canStartRun)
+    await model.summarize()
+    await waitUntil { model.runState == .completed(intent: .summarize, text: "retry") }
+  }
+
+  func testConfigurationChangeDuringAuthorizePresentsNewIdentity() async throws {
+    let oldProfile = try configuredProfile()
+    let newProfile = try ProviderProfile(
+      baseURL: "https://new.example.test/v1",
+      model: "new-model",
+      secretReference: oldProfile.secretReference
+    )
+    let barrier = AppAsyncBarrier()
+    let profileStore = AppProfileStore(profile: oldProfile)
+    let provider = AppTestModelProvider(results: [])
+    let (model, _) = makeHarness(
+      provider: provider,
+      profileStore: profileStore,
+      secretStore: AppSecretStore(secret: "key", readBarrier: barrier),
+      consentStore: AppConsentStore(values: [DataDestinationIdentity(profile: oldProfile)])
+    )
+    model.receive(currentCapture())
+
+    let task = Task { await model.summarize() }
+    await barrier.waitUntilEntered()
+    await profileStore.replace(newProfile)
+    await barrier.release()
+    await task.value
+
+    XCTAssertEqual(provider.callCount, 0)
+    XCTAssertEqual(model.dataDestinationDisclosure?.identity, DataDestinationIdentity(profile: newProfile))
+    XCTAssertTrue(model.dataDestinationNotice?.contains("变化") == true)
+  }
+
+  func testAuthorizationFailureReleasesAttemptForRetry() async throws {
+    let profile = try configuredProfile()
+    let secretStore = AppSecretStore(secret: nil)
+    let provider = AppTestModelProvider(results: [.success([.delta("retry"), .completed])])
+    let (model, _) = makeHarness(
+      provider: provider,
+      profileStore: AppProfileStore(profile: profile),
+      secretStore: secretStore,
+      consentStore: AppConsentStore(values: [DataDestinationIdentity(profile: profile)])
+    )
+    model.receive(currentCapture())
+
+    await model.summarize()
+    XCTAssertEqual(provider.callCount, 0)
+    XCTAssertTrue(model.canStartRun)
+    await secretStore.replace("key")
+    await model.summarize()
+    await waitUntil { model.runState == .completed(intent: .summarize, text: "retry") }
   }
 
   func testFailedAndIncompleteMessagesUseRecoveryCopyWithoutExposingSecret() async throws {
@@ -570,19 +1047,25 @@ final class AppViewModelTests: XCTestCase {
   private func makeModel(
     provider: AppTestModelProvider,
     secret: String = "not-a-real-key",
-    repository: AppHistoryRepository = AppHistoryRepository()
+    repository: AppHistoryRepository = AppHistoryRepository(),
+    consented: Bool = true,
+    consentStore: (any DataDestinationConsentStore)? = nil
   ) throws -> AppViewModel {
     try makeModelAndOrchestrator(
       provider: provider,
       secret: secret,
-      repository: repository
+      repository: repository,
+      consented: consented,
+      consentStore: consentStore
     ).0
   }
 
   private func makeModelAndOrchestrator(
     provider: AppTestModelProvider,
     secret: String = "not-a-real-key",
-    repository: AppHistoryRepository = AppHistoryRepository()
+    repository: AppHistoryRepository = AppHistoryRepository(),
+    consented: Bool = true,
+    consentStore: (any DataDestinationConsentStore)? = nil
   ) throws -> (AppViewModel, ModelRunOrchestrator) {
     let profile = try ProviderProfile(
       baseURL: "https://example.test/v1",
@@ -598,16 +1081,65 @@ final class AppViewModelTests: XCTestCase {
       provider: provider,
       history: HistoryApplicationService(repository: repository)
     )
-    let model = AppViewModel(modelRunOrchestrator: orchestrator)
+    let resolvedConsentStore: any DataDestinationConsentStore = consentStore ?? AppConsentStore(
+      values: consented ? [DataDestinationIdentity(profile: profile)] : []
+    )
+    let model = AppViewModel(
+      modelRunOrchestrator: orchestrator,
+      configurationService: service,
+      consentStore: resolvedConsentStore
+    )
     model.setStorageAvailability(.writable)
     return (model, orchestrator)
   }
 
-  private func currentCapture() -> CurrentCapture {
-    .init(envelope: capture(), taskID: TaskID(), snapshotID: ContentSnapshotID())
+  private func makeHarness(
+    provider: AppTestModelProvider,
+    profileStore: AppProfileStore,
+    secretStore: AppSecretStore,
+    consentStore: any DataDestinationConsentStore,
+    repository: AppHistoryRepository = AppHistoryRepository()
+  ) -> (AppViewModel, ProviderConfigurationService) {
+    let service = ProviderConfigurationService(
+      profileStore: profileStore,
+      secretStore: secretStore
+    )
+    let model = AppViewModel(
+      modelRunOrchestrator: ModelRunOrchestrator(
+        configurationService: service,
+        provider: provider,
+        history: HistoryApplicationService(repository: repository)
+      ),
+      configurationService: service,
+      consentStore: consentStore
+    )
+    model.setStorageAvailability(.writable)
+    return (model, service)
   }
 
-  private func capture() -> CaptureEnvelopeV1 {
+  private func configuredProfile() throws -> ProviderProfile {
+    try ProviderProfile(
+      baseURL: "https://example.test/v1",
+      model: "fixture-model",
+      secretReference: .init(rawValue: "fixture-reference")
+    )
+  }
+
+  private func currentCapture(
+    title: String = "Fixture title",
+    text: String = "Fixture body"
+  ) -> CurrentCapture {
+    .init(
+      envelope: capture(title: title, text: text),
+      taskID: TaskID(),
+      snapshotID: ContentSnapshotID()
+    )
+  }
+
+  private func capture(
+    title: String = "Fixture title",
+    text: String = "Fixture body"
+  ) -> CaptureEnvelopeV1 {
     CaptureEnvelopeV1(
       version: 1,
       requestId: UUID().uuidString,
@@ -615,13 +1147,13 @@ final class AppViewModelTests: XCTestCase {
       source: .init(
         kind: "browser_capture",
         url: "https://example.test/article",
-        title: "Fixture title",
+        title: title,
         platform: "generic"
       ),
       capture: .init(
         method: "rendered_dom",
-        text: "Fixture body",
-        characterCount: "Fixture body".unicodeScalars.count,
+        text: text,
+        characterCount: text.unicodeScalars.count,
         completeness: "full_article",
         capturedAt: "2026-07-14T00:00:00Z"
       ),

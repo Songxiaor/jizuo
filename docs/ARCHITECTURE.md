@@ -1,6 +1,6 @@
 # LinkDigest 架构基线
 
-> 状态：V0.1 Swift Package、WXT 扩展、Native Host 与自动化进程链路已实现；Chrome、Brave 150 的真实垂直链路已通过，Edge 150 隔离 Profile 的真实 Popup 预览与修复后 Service Worker → Host → Unix socket → Swift App 20/20 传输也已完成。Edge 两层证据分别记录，不等同于一张修复后工具栏点击到 APP 的连续截图。V0.2 任务 A–D 的 ProviderProfile/Keychain、OpenAI-compatible adapter、总结/翻译 streaming UI、停止/不完整状态、统一错误恢复与 secret hygiene 已完成本地工程验收；02A 的正式 History Domain、migration 001 与 GRDB Repository，以及 02B 的 App composition、启动 recovery gate、Capture commit/动态禁写 gate 与 Run 持久化生命周期均已通过独立复审。Gate 0 的 production vertical smoke 通过 Debug-only 临时 root 注入实际运行，live Application Support resolver 在该模式中被拒绝。02C 已接入 `NavigationSplitView` History Sidebar、keyset 分页、详情、确认删除、重启读取和 future-schema 只读浏览；View/ViewModel 不持有 GRDB/SQL，同步 Repository 工作在后台串行边界执行。Loop 2 已在既有分享位置接入 Markdown、TXT、JSON：Core 脱敏渲染，后台 worker 读取 projection，原生保存面板处理目录、取消与覆盖。设置页连接测试、正式 Host 目录、签名、公证和发布包仍未完成。该状态不表示 P0 或产品发布完成。
+> 状态：V0.1 Swift Package、WXT 扩展、Native Host 与自动化进程链路已实现；Chrome、Brave 150 的真实垂直链路已通过，Edge 150 隔离 Profile 的真实 Popup 预览与修复后 Service Worker → Host → Unix socket → Swift App 20/20 传输也已完成。V0.2、02A、02B、02C 与 Loop 2 已按各自证据收口，Loop 3 数据去向确认/连接测试已最终独立复审 PASS。Loop 4 r1 可搬迁 Release Host package、verifier、manifest renderer 与 clean-room initial installer已最终独立 re-review PASS，56 项门禁通过；真实用户安装、升级/卸载、签名、公证和发布包仍未完成。
 
 ## 1. 一句话定位
 
@@ -64,7 +64,11 @@ Native Messaging 是首要 release spike，必须单独验证：
 - Host 与 APP 的签名、公证和路径稳定性。
 - 扩展/APP 版本不一致时的恢复文案。
 
-V0.1 已选择独立 `LinkDigestNativeHost` executable：它处理 Chromium 4-byte little-endian framing、4 MiB 上限、10 秒超时和合同校验，再通过用户私有 `/tmp/linkdigest-<uid>.sock` Unix domain socket 交给正在运行的 APP。APP 未运行时返回 `APP_UNAVAILABLE`，不静默拉起；Host 不承载提取、模型或数据库业务。签名、公证与安装包内的最终 Helper 位置仍由 release spike 决定。
+V0.1 已选择独立 `LinkDigestNativeHost` executable：它处理 Chromium 4-byte little-endian framing、4 MiB 上限、10 秒超时和合同校验，再通过用户私有 `/tmp/linkdigest-<uid>.sock` Unix domain socket 交给正在运行的 APP。APP 未运行时返回 `APP_UNAVAILABLE`，不静默拉起；Host 不承载提取、模型或数据库业务。
+
+Loop 4 r1 将 `config/native-host.json` 作为 Host 版本/名称/协议/架构/entrypoint/resource bundle 的 canonical config。`scripts/build-release.sh` 只向显式绝对且不存在的输出根组装 `Host + LinkDigest_LinkDigestCore.bundle + package.json + SHA256SUMS`；verifier 拒绝 symlink/FIFO/socket/额外顶层项、权限和 checksum 漂移、缺 bundle/Schema、根合同漂移、metadata 不一致与非 `arm64` Mach-O。manifest renderer 只生成精确、排序去重的 origins；release extension IDs 未冻结时 fail closed。
+
+clean-room initial installer 没有 real-HOME/uninstall 模式：session/home 必须在 fixed canonical `/private/tmp` 内、带 sentinel 的 canonical 专属 root，不读取 `TMPDIR`，并从 `/` 到 version/manifest/receipt 的现存祖先逐级拒绝 symlink。Host smoke 同样固定 `/private/tmp`，packaged smoke 只接受先通过 verifier 的 package root，禁止 raw executable/skip-build/socket override。安装交付物以版本目录、Chrome/Brave 共享或 Edge 默认/隔离 manifest、非敏感 `receipt-v1.json` 交接；同 hash 二次 apply 是不改 mtime 的 noop，未知目标拒绝。r1 cleanup 不是完整 rollback：SIGKILL、同用户并发 TOCTOU、跨进程 lock、dirfd/openat 路径绑定与 crash recovery 留给 r2。签名、公证与 `.app`/DMG 留给后续 release gate。完整规格见 `docs/specs/P0_RC_LOOP_4_STABLE_HOST.md`。
 
 ### 3.3 macOS APP
 
@@ -203,6 +207,21 @@ P0 只实现 OpenAI-compatible Chat Completions。Responses、Ollama 和多 Prov
 
 V0.2 的具体组件、秘密边界、错误矩阵与任务拆分见 `docs/specs/V0.2_BYOK_PLAN.md`，集中验收证据见 `docs/specs/V0.2_BYOK_ACCEPTANCE.md`。02B 已把当前 Capture 与 Run 接入 SQLite：queued commit 早于 starting，running commit 早于 Provider，partial commit 早于 streaming UI，terminal commit 早于 terminal UI；当前 Provider 没有 usage 事件，因此 token/cost 保持 NULL。每个 stable code 由 App 层统一映射为中文原因与恢复动作，storage safeDetail 默认为 nil；Orchestrator 在持久化与 RunState 前对本次短时 API Key 做精确 redaction。02C 在 History 详情中保留当前 Capture 的总结、翻译、停止、流式结果和状态入口；Loop 2 export 只消费已持久化且已脱敏的 projection，不触发 Provider、网络或数据库写入。
 
+### 7.1 数据去向确认与连接测试
+
+```text
+用户点总结/翻译
+  → AppViewModel 读取非敏感 ProviderProfile
+  → DataDestinationIdentity + ConsentStore
+  → 原生确认 sheet（Base URL/host、模型、模式）
+  → 冻结 Capture + intent + identity 后创建 PersistentRunRequest
+  → ModelRunOrchestrator 短时读取 Keychain secret 并调用 Provider
+```
+
+`DataDestinationIdentity` 永不含 API Key 或 `secretReference`，未保存草稿也通过不构造 secret reference 的安全初始化器生成同一规范身份。`UserDefaultsDataDestinationConsentStore` 只写该身份集合；读取失败视为未确认，写入失败只放行用户当次明确确认并提示下次重问。`AppViewModel` 以一个 attempt 同时拥有 token、Capture、intent、identity 与 sheet；非 sheet/非 launch 的每个终点都由 owner-checked 释放，成功则先建立 `launchPendingRunID` 再交接。新 Capture、取消或迟到 continuation 只能清理自己的 attempt，不能清理或发送新 attempt。
+
+`ProviderSettingsViewModel` 保存 `savedIdentity` 和非敏感 `draftGeneration`；只有草稿等于已保存 identity、没有保存/测试在途且 API Key 本地输入为空时才允许测试。测试冻结 request ID、generation 与 saved identity，完成时三者仍一致才更新 UI；编辑期间旧成功会被丢弃。`ProviderConfigurationService` 用 actor-owned `configurationRevision` 和 `inFlightMutation`：save 在首个 await 前占有 mutation 并递增 revision，authorize/read 在每个 store await 后复核，保存中 fail closed。连接测试仍只消费完成事件，不保存 delta/回复，不触及 HistoryApplicationService；API Key 不进入 observable state。
+
 ## 8. UI 与 AppKit 边界
 
 SwiftUI 负责：
@@ -232,7 +251,13 @@ SwiftUI 负责：
 
 ## 10. 发布路线
 
-P0 优先验证公证 DMG：
+P0 发布验证按 r1 → r2 → r3 顺序推进：
+
+1. r1：Stable Host package、verifier、manifest renderer 与 clean-room 初装（最终独立 re-review PASS）。
+2. r2：升级、真实卸载、完整事务 rollback；仍需单独授权后才测试真实用户目录。
+3. r3：clean-room P0 RC acceptance，再进入签名/公证/真实浏览器安装决策。
+
+后续公证 DMG 路径仍需验证：
 
 1. Xcode Release 构建。
 2. APP、Helper/Host 与扩展版本对齐。
@@ -256,7 +281,7 @@ P0 优先验证公证 DMG：
 
 | 顺序 | 未知项 | 证据 |
 |---|---|---|
-| 1 | Native Host 安装/唤起/公证 | V0.1 release spike |
+| 1 | Native Host r1 候选后的升级/卸载/真实安装/公证 | Loop 4 r2/r3 + release spike |
 | 2 | 跨语言 schema 一致性 | 两端 fixture tests |
 | 3 | Swift SQLite binding | 打包、迁移和恢复测试 |
 | 4 | 流式 Provider 兼容 | 固定 fake server + 真实端点抽样 |

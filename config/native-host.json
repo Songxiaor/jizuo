@@ -1,0 +1,14 @@
+{
+  "formatVersion": 1,
+  "productVersion": "0.1.0",
+  "hostName": "com.syc.linkdigest.v01",
+  "protocolMajor": 1,
+  "minimumMacOS": "15.0",
+  "architectures": [
+    "arm64"
+  ],
+  "entrypoint": "LinkDigestNativeHost",
+  "resourceBundle": "LinkDigest_LinkDigestCore.bundle",
+  "releaseExtensionIDs": [],
+  "releaseExtensionIDsStatus": "not-frozen"
+}

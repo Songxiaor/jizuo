@@ -6,7 +6,23 @@ APP="$ROOT/apps/desktop/.build/debug/LinkDigestApp"
 HOST="$ROOT/apps/desktop/.build/debug/LinkDigestNativeHost"
 FIXTURE="$ROOT/contracts/fixtures/valid.json"
 LIVE_LINKDIGEST_ROOT="$HOME/Library/Application Support/LinkDigest"
-TMP_BASE="${TMPDIR:-/tmp}"
+TMP_BASE="/private/tmp"
+
+[[ -d "$TMP_BASE" && ! -L "$TMP_BASE" && "$(cd "$TMP_BASE" && pwd -P)" == "$TMP_BASE" ]] || {
+  echo "vertical-smoke: fixed temporary root /private/tmp is unavailable or unsafe" >&2
+  exit 2
+}
+current=""
+IFS='/' read -r -a tmp_base_components <<< "$TMP_BASE"
+for component in "${tmp_base_components[@]}"; do
+  [[ -n "$component" ]] || continue
+  current="$current/$component"
+  [[ -d "$current" && ! -L "$current" ]] || {
+    echo "vertical-smoke: temporary root contains a symlink or non-directory component" >&2
+    exit 2
+  }
+done
+export TMPDIR="$TMP_BASE"
 
 "$ROOT/scripts/build-dev.sh" >/dev/null
 

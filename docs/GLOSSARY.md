@@ -81,6 +81,19 @@
 | Renderer / 渲染器 | 把同一份安全数据稳定排版成不同文件格式的组件 | 同一份稿件交给 Markdown、纯文本和 JSON 三种印刷机 | HistoryExportRenderer 在 Core 生成确定性 UTF-8 字节，不选择目录也不写文件 | View 或数据库会掺入格式细节，测试与复用都会变难 | L2 | L3 |
 | FileDocument | SwiftUI 交给 macOS 保存面板的文件信封 | 把已经排好版的文件装进可由系统投递的信封 | HistoryExportDocument 只包住 Core 已生成的 Data，FileExporter 决定用户选的保存位置 | Core 会被迫依赖 SwiftUI 或文件系统，取消和权限处理也会混在业务代码里 | L2 | L3 |
 | Export Request Identity / 导出请求身份 | 只让仍属于当前配置、当前选择和当前请求的导出结果打开面板的标记 | 换了取件号后旧包裹不能送到新柜台 | HistoryViewModel 为导出复用 generation/request/task 三重检查 | 快速切换记录时，旧记录可能弹出错误内容或覆盖新选择 | L3 | L3 |
+| Data Destination Identity / 数据去向身份 | 不含 API Key 的“这次正文会发给谁”的稳定标签 | 快递单上的收件公司、地址和服务类型，但没有保险柜密码 | `DataDestinationIdentity` 由规范化 Base URL、host、模型和 API 模式组成，用于确认和本机记忆 | 用户确认 A 后，设置变化可能悄悄把正文发到 B | L3 | L3 |
+| Consent Gate / 发送确认闸门 | 在正文离开本机前先让用户确认去向的门 | 寄件柜台先核对收件地址再放包裹上车 | `AppViewModel` 在创建 `PersistentRunRequest` 前冻结 Capture、intent 和目的地身份；`ConsentStore` 只记忆非敏感身份 | 取消或配置变化时仍可能创建 Run、读取 Keychain 或调用 Provider | L3 | L3 |
+| Connection Test / 连接测试 | 用很短的一句话验证当前模型配置能否完成一次协议往返 | 先按门铃听到回应，再搬整箱资料 | 设置页以 `RunIntent.connectionTest` 发出 `Reply with OK.`，只展示安全成功/失败状态 | 用户只能拿真实正文做试错，还会意外产生历史和保存回复 | L2 | L3 |
+| Preparation Attempt / 准备尝试 | 把一次点击到 sheet 或 launch 的所有身份放在同一个所有权单元里 | 每次寄件只有一张不能混用的受理单 | `AppViewModel` 同时冻结 token、Capture、intent、identity 和 disclosure | 旧异步结果可能替新点击弹窗、发请求或留下永久禁用状态 | L3 | L3 |
+| Owner-checked Defer / 所有者校验释放 | 异步工作结束时只有当前号码牌持有者能清理状态 | 只有领到柜门钥匙的人能归还自己的钥匙 | attempt、connection test 和 configuration mutation 的所有终点 | 迟到 A 可能误清正在工作的 B，或失败后永远不释放 | L3 | L3 |
+| Draft Generation / 草稿代际 | 每次设置草稿真实编辑都会变化的非敏感版本号 | 文档每次修改都换一个修订号 | `ProviderSettingsViewModel` 将测试结果绑定 request ID、generation 和 saved identity | A 的测试成功可能显示在未保存的 B 旁边 | L3 | L3 |
+| Configuration Revision / 配置修订号 | 配置保存一开始就变化、供授权检查是否跨越保存窗口的计数 | 保险柜换锁时立即更新门口编号 | `ProviderConfigurationService` 在每个 profile/secret await 后复核 | authorize 可能把保存前后的 profile 与 Key 拼在一起 | L3 | L3 |
+| Barrier Fake / 闸门测试替身 | 在指定 await 精确暂停并由测试主动放行的假实现 | 在传送带装一道可控闸门观察两批货是否串单 | App、Settings、ProviderConfiguration 和 Consent 并发测试 | 用 sleep 只能猜竞争窗口，绿灯不能证明时序安全 | L2 | L3 |
+| Host Package / Host 交付包 | 把 Native Host executable、运行资源、metadata 和 checksums 放在同一可搬迁目录 | 有箱单和封条的完整搬家箱 | Loop 4 的 `LinkDigestNativeHost-0.1.0-macos-arm64/` | 单独复制 Host 可能缺资源，无法知道包是否被篡改 | L3 | L3 |
+| Resource Bundle / 资源包 | SwiftPM 随 Core 交付、供 executable 运行时读取的 Schema 与 fixtures 目录 | 搬家箱内不能漏掉的说明书包 | Host 同级 `LinkDigest_LinkDigestCore.bundle` | `Bundle.module` 会失败，或测试时偷偷回退开发机 `.build` | L3 | L3 |
+| Package Verifier / 包校验器 | 安装前核对包的树结构、权限、hash、合同、metadata 和机器架构 | 收货时逐件验型号和封条 | `stable_host.py verify-package` | 篡改、缺件、错误 Host 或开发副本可能进入安装 | L3 | L3 |
+| Clean-room Install / 隔离初装 | 只允许在带 sentinel 的系统临时 HOME 演练首次安装 | 在模型屋试装，不装修真实住家 | `clean-room-install.sh` 与 `check-stable-package.sh` | 自动测试可能写真实浏览器 manifest 或用户 Application Support | L3 | L3 |
+| Install Receipt / 安装收据 | 记录本次拥有的版本目录、package digest 与 manifest path/hash 的非敏感 JSON | 未来升级或退货时核对归属的签收单 | `receipt-v1.json` 为 r2 保留 ownership 依据 | 后续无法区分 LinkDigest 自有文件和未知既有目标 | L2 | L2 |
 
 ## 更新规则
 

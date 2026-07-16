@@ -4,7 +4,7 @@ import LinkDigestCore
 
 final class V02ErrorPresentationTests: XCTestCase {
   func testEveryStableCodeHasMessageAndRecoveryAction() {
-    XCTAssertEqual(V02ErrorCatalog.allStableCodes.count, 22)
+    XCTAssertEqual(V02ErrorCatalog.allStableCodes.count, 23)
 
     for code in V02ErrorCatalog.allStableCodes {
       let presentation = V02ErrorCatalog.presentation(for: code)

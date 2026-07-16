@@ -43,10 +43,13 @@ for file in README.md AGENTS.md BRAIN.md VERIFY.md package.json pnpm-workspace.y
   docs/PRD.md docs/ARCHITECTURE.md docs/CAPACITY_MODEL.md docs/LEARNING_GUIDE.md \
   docs/specs/V0.1_VERTICAL_SLICE.md docs/specs/V0.2_BYOK_ACCEPTANCE.md docs/TASK_TEMPLATE.md docs/GLOSSARY.md \
   docs/LEARNING_LOG.md docs/DEPENDENCIES.md \
+  config/native-host.json docs/specs/P0_RC_LOOP_4_STABLE_HOST.md \
   packages/shared/package.json packages/shared/tsconfig.json; do
   require_file "$file"
 done
-for file in scripts/brain scripts/check-brain-root scripts/check-licenses scripts/check-contract-sync.sh scripts/check-v02-secret-hygiene.sh scripts/doctor; do
+for file in scripts/brain scripts/check-brain-root scripts/check-licenses scripts/check-contract-sync.sh scripts/check-v02-secret-hygiene.sh scripts/doctor \
+  scripts/build-release.sh scripts/native-host/check-config-sync.sh scripts/native-host/check-stable-package.sh \
+  scripts/native-host/verify-stable-package.sh scripts/native-host/render-manifest.sh scripts/native-host/clean-room-install.sh; do
   if [ ! -f "$file" ]; then
     fail "missing $file"
   elif [ ! -x "$file" ]; then
@@ -60,6 +63,7 @@ section "2. Project Brain"
 run_check "canonical Brain root" ./scripts/check-brain-root
 run_check "Brain links" ./scripts/brain lint-links
 run_check "Swift and TypeScript contract copies stay synchronized" ./scripts/check-contract-sync.sh
+run_check "stable Native Host canonical config stays synchronized" ./scripts/native-host/check-config-sync.sh
 if page_list="$(./scripts/brain list-pages 2>/dev/null)" && [ -n "$page_list" ]; then
   ok "Brain contains decision pages"
   active_count="$(printf '%s\n' "$page_list" | grep -c $'\tactive$' || true)"

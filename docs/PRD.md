@@ -1,10 +1,10 @@
 # LinkDigest PRD
 
-> 状态：V0.1 macOS 原生路线、自动化垂直链路与 Chrome/Brave/Edge 三浏览器工程证据已经收口。Edge 150 的证据由真实 Popup 预览，以及修复后 Service Worker → Native Host → Unix socket → Swift App 的 20/20 传输组成；修复后没有再次完成工具栏点击到 APP 的连续截图。正式 Host 稳定目录、Developer ID 签名、公证和发布包属于后续 release spike。
+> 状态：V0.1 macOS 原生路线、自动化垂直链路与 Chrome/Brave/Edge 三浏览器工程证据已经收口。Edge 150 的证据由真实 Popup 预览，以及修复后 Service Worker → Native Host → Unix socket → Swift App 的 20/20 传输组成；修复后没有再次完成工具栏点击到 APP 的连续截图。Loop 4 r1 Stable Host package 与 clean-room 初装已最终独立 re-review PASS；真实用户安装、升级/卸载、Developer ID 签名、公证和发布包仍未完成。
 >
 > 本文是产品范围、优先级和验收标准的唯一真相源。技术组件见 `docs/ARCHITECTURE.md`；第一条链路见 `docs/specs/V0.1_VERTICAL_SLICE.md`；V0.2 工程证据见 `docs/specs/V0.2_BYOK_ACCEPTANCE.md`；远期容量假设见 `docs/CAPACITY_MODEL.md`。
 
-> **范围与当前实现说明**：本文的 P0 是第一版产品目标，不代表当前代码已经实现全部 P0。V0.1 三浏览器交接矩阵已有工程证据，但正式安装、签名、公证和发布包仍未完成。V0.2 A–D 的本地工程链路已完成：ProviderProfile/Keychain、OpenAI-compatible streaming adapter、总结/翻译 RunState 与 UI、停止/不完整状态、统一恢复文案和 secret hygiene 均有自动证据。设置页连接测试尚未实现，也未调用真实模型 API。V0.3 的正式 History Domain、冻结 migration 001 与 GRDB Repository 已完成 02A 独立工程验收；02B 的 App composition、启动恢复闸门、Capture/Run 持久化、storage failure 黏性禁写与并发 Capture 线性化已经独立 PASS。Gate 0 production vertical smoke 已以显式注入的临时 Application Support root 实际通过，不会回退解析真实用户目录。02C 已接入原生 History Sidebar、keyset 分页、详情、单项删除确认、重启读取与 future-schema 只读浏览，并保留现有总结、翻译、停止和 Provider 设置能力。Loop 2 已从详情页分享菜单完成单条 Markdown、`.txt`、JSON 本地导出；只读/future-schema 数据可作为逃生口导出，导出不写数据库、无网络/Keychain/Cookie 访问，未发布且未提交。
+> **范围与当前实现说明**：本文的 P0 是第一版产品目标，不代表当前代码已经实现全部 P0。V0.1、V0.2、V0.3/02A–02C 与 Loop 2 的完成状态以各自验收证据为准。Loop 3 的数据去向确认/`connectionTest` 已最终独立复审 PASS。Loop 4 r1 新增 canonical config、Release package、严格 verifier、manifest renderer 和只允许 fixed canonical `/private/tmp` HOME 的 initial install/noop/receipt；56 项 deterministic check 与最终独立 re-review 已 PASS，P0/P1/P2 均为 0。r2 升级/卸载/完整 rollback、真实安装、签名、公证和发布仍需另行授权。
 
 ## 1. 一句话定位
 
@@ -79,6 +79,8 @@ LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户�
 - APP 创建 `Task` 与 `ContentSnapshot`，展示来源、正文和完整性。
 - 支持一个 OpenAI-compatible Chat Completions 模型连接。
 - API Key 只写入 Keychain，界面、日志和导出不回显完整值。
+- 首次向某个模型目的地发送网页标题和正文前，显示 Base URL/host、模型、模式与本地数据边界；取消不得创建 Run 或调用 Provider。
+- 设置页可用极短 `Reply with OK.` 请求测试当前连接，明确可能产生极少模型用量，不创建 History/Run/Artifact 或保存回复。
 - 支持总结、翻译、停止、重试和保存部分结果。
 - SQLite 保存任务、正文快照、运行记录和结果。
 - 支持打开历史、删除单项和导出 Markdown、纯文本（`.txt`）和 JSON。
@@ -119,8 +121,8 @@ LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户�
 | V0.1 交接 | 当前页正文出现在 Mac APP | 模型、数据库、漂亮 UI |
 | V0.2 BYOK | 用户能配置模型并获得流式总结 | 多 Provider、账号、云端 |
 | V0.3 本地历史 | 02A/02B 已通过独立复审；02C 已完成 History Sidebar、分页、详情、删除、重启读取与 future-schema 只读浏览 | 同步、全文搜索优化 |
-| V0.4 导出与打磨 | Loop 2 已完成单条 Markdown、`.txt`、JSON 本地导出与原生保存面板；独立复审问题已本地修复，等待复审 | 媒体、批量处理 |
-| V0.5 发布验证 | 签名、公证、更新和扩展安装链路可复现 | Windows、App Store 承诺 |
+| V0.4 导出与打磨 | Loop 2 已完成单条 Markdown、`.txt`、JSON 本地导出与原生保存面板；Loop 3 数据去向/连接测试与最终独立复审已完成 | 媒体、批量处理 |
+| V0.5 发布验证 | r1 Stable Host package/clean-room 初装已形成待复审候选；后续再完成升级、卸载、签名、公证和真实扩展安装链路 | Windows、App Store 承诺 |
 
 只有本地闭环经过真实使用后，才重新评估账号、同步、托管额度和云端容量。
 
@@ -178,6 +180,7 @@ category / code / retryable / action / safeDetail
 | 数据 | P0 默认位置 | 禁止 |
 |---|---|---|
 | API Key | macOS Keychain | SQLite、日志、测试夹具、导出、Git |
+| 发送确认记录 | 本机 UserDefaults，仅含规范化 Base URL、host、模型、API 模式 | API Key、Keychain reference、正文、标题、运行记录 |
 | 原文和摘要 | SQLite | 未经用户操作上传 LinkDigest 云端 |
 | 捕获证据 | SQLite | 保存 Cookie 值或完整敏感 Header |
 | 扩展设置 | 浏览器本地 storage | 保存模型秘密 |
@@ -235,7 +238,7 @@ P0 不承诺自动事实核查外部世界，只承诺摘要忠于本次捕获�
 
 - 正式产品名、商标、域名和图标。
 - Swift SQLite binding 的最终选择与签名兼容性。
-- Native Messaging Host 的安装、升级、卸载和公证体验。
+- Native Messaging Host r1 候选后的真实安装、升级、卸载、完整 rollback 和公证体验。
 - 首发使用公证 DMG 还是 Mac App Store；P0 不承诺 App Store。
 - SwiftUI 富文本显示和结果编辑是否需要 AppKit 桥接。
 - OpenAI-compatible 端点之间的流式协议差异。

@@ -105,6 +105,7 @@ public actor ModelRunOrchestrator {
   public func start(
     request: PersistentRunRequest,
     capture: CaptureEnvelopeV1?,
+    authorization: ProviderAuthorization? = nil,
     onState: @escaping StateHandler
   ) async {
     // The UI already disables a second action, but the orchestrator is the
@@ -179,7 +180,8 @@ public actor ModelRunOrchestrator {
           runID: runID,
           intentKind: request.intent,
           targetLanguage: request.targetLanguage,
-          capture: capture
+          capture: capture,
+          authorization: authorization
         )
         break
       }
@@ -248,7 +250,8 @@ public actor ModelRunOrchestrator {
     runID: RunID,
     intentKind: RunIntentKind,
     targetLanguage: String?,
-    capture: CaptureEnvelopeV1?
+    capture: CaptureEnvelopeV1?,
+    authorization: ProviderAuthorization?
   ) async {
     guard let capture else {
       await persistFailure(
@@ -272,33 +275,37 @@ public actor ModelRunOrchestrator {
     }
 
     let credentials: (profile: ProviderProfile, apiKey: String)
-    do {
-      guard let loaded = try await configurationService.loadCredentials() else {
+    if let authorization {
+      credentials = (authorization.profile, authorization.apiKey)
+    } else {
+      do {
+        guard let loaded = try await configurationService.loadCredentials() else {
+          await persistFailure(
+            runID: runID,
+            intent: intentKind,
+            code: ModelRunErrorCode.modelNotConfigured.rawValue,
+            retryable: false
+          )
+          return
+        }
+        credentials = loaded
+      } catch let error as ProviderConfigurationError {
         await persistFailure(
           runID: runID,
           intent: intentKind,
-          code: ModelRunErrorCode.modelNotConfigured.rawValue,
+          code: mapConfigurationError(error),
+          retryable: false
+        )
+        return
+      } catch {
+        await persistFailure(
+          runID: runID,
+          intent: intentKind,
+          code: ModelRunErrorCode.runFailed.rawValue,
           retryable: false
         )
         return
       }
-      credentials = loaded
-    } catch let error as ProviderConfigurationError {
-      await persistFailure(
-        runID: runID,
-        intent: intentKind,
-        code: mapConfigurationError(error),
-        retryable: false
-      )
-      return
-    } catch {
-      await persistFailure(
-        runID: runID,
-        intent: intentKind,
-        code: ModelRunErrorCode.runFailed.rawValue,
-        retryable: false
-      )
-      return
     }
 
     guard currentRunID == runID, !Task.isCancelled else { return }

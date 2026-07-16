@@ -394,6 +394,29 @@ final class AppCompositionTests: XCTestCase {
     var wrongParent = base; wrongParent[AppApplicationSupportRoot.smokeOverrideEnvironmentKey] = "/private/var/linkdigest-history-state.session/Application Support"
     XCTAssertFalse(AppApplicationSupportRoot.shouldHoldHistoryLoading(environment: wrongParent, fileExists: { _ in true }))
   }
+
+  func testDebugVisualFixtureGateRequiresExactRootEnvironmentAndSentinel() {
+    let root = "/private/tmp/linkdigest-history-state.session/Application Support"
+    let sentinel = "/tmp/linkdigest-history-state.session/\(AppApplicationSupportRoot.debugVisualFixtureSentinelName)"
+    let environment = [
+      AppApplicationSupportRoot.smokeOverrideEnvironmentKey: root,
+      AppApplicationSupportRoot.debugVisualFixtureEnvironmentKey: "1",
+    ]
+    XCTAssertTrue(AppApplicationSupportRoot.shouldUseVisualFixture(
+      environment: environment,
+      fileExists: { $0 == sentinel }
+    ))
+    XCTAssertFalse(AppApplicationSupportRoot.shouldUseVisualFixture(
+      environment: environment,
+      fileExists: { _ in false }
+    ))
+    var wrongValue = environment
+    wrongValue[AppApplicationSupportRoot.debugVisualFixtureEnvironmentKey] = "true"
+    XCTAssertFalse(AppApplicationSupportRoot.shouldUseVisualFixture(environment: wrongValue, fileExists: { _ in true }))
+    var wrongRoot = environment
+    wrongRoot[AppApplicationSupportRoot.smokeOverrideEnvironmentKey] = "/tmp/not-linkdigest/Application Support"
+    XCTAssertFalse(AppApplicationSupportRoot.shouldUseVisualFixture(environment: wrongRoot, fileExists: { _ in true }))
+  }
 }
 
 final class CaptureReceiverTests: XCTestCase {

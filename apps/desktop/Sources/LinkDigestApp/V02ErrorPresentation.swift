@@ -20,6 +20,7 @@ enum V02ErrorCatalog {
     ProviderConfigurationError.profileStoreWriteFailed.rawValue,
     ProviderConfigurationError.secretStoreReadFailed.rawValue,
     ProviderConfigurationError.secretStoreWriteFailed.rawValue,
+    ProviderConfigurationError.configurationChanged.rawValue,
     "SECRET_STORE_DELETE_FAILED"
   ]
 
@@ -90,6 +91,11 @@ enum V02ErrorCatalog {
       .init(
         message: "无法安全保存 API Key。",
         recoveryAction: "请重新输入后重试；LinkDigest 不会降级为明文保存。"
+      )
+    case ProviderConfigurationError.configurationChanged.rawValue:
+      .init(
+        message: "模型目的地已变化。",
+        recoveryAction: "请确认新的发送目的地后再继续。"
       )
     case "SECRET_STORE_DELETE_FAILED":
       .init(

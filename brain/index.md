@@ -1,12 +1,12 @@
 # Brain Index
 
-_Auto-generated. Last updated 2026-07-16T06:05:07.072Z._
+_Auto-generated. Last updated 2026-07-16T11:00:04.028Z._
 
 - [byok-managed-ai-split](pages/byok-managed-ai-split.md) — category: decision | status: archived | tags: [llm, byok, billing] | ## 当前结论
 - [commercial-license-boundary](pages/commercial-license-boundary.md) — category: decision | tags: [commercial, license, supply-chain] | ## 当前结论
 - [hybrid-local-first-cloud-boundary](pages/hybrid-local-first-cloud-boundary.md) — category: decision | tags: [local-first, cloud, privacy] | ## 当前结论
 - [native-macos-swiftui-hybrid](pages/native-macos-swiftui-hybrid.md) — category: decision | tags: [swiftui, appkit, extension, architecture] | ## 当前结论
-- [p0-release-candidate-goal](pages/p0-release-candidate-goal.md) — category: decision | tags: [p0, release, workflow, quality] | # 最终目标
+- [p0-release-candidate-goal](pages/p0-release-candidate-goal.md) — category: decision | tags: [p0, release, workflow, quality] | # 当前结论
 - [planner-executor-review-loop](pages/planner-executor-review-loop.md) — category: decision | tags: [workflow, codex, governance] | # 决策
 - [sam-webpage-summarizer-reference](pages/sam-webpage-summarizer-reference.md) — category: reference | tags: [competitor, ui, local-first, macos] | ## 参考定位
 - [scale-readiness-envelope](pages/scale-readiness-envelope.md) — category: decision | status: archived | tags: [scale, capacity, reliability] | ## 当前结论

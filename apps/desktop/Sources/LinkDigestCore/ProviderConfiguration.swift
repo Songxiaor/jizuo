@@ -21,6 +21,38 @@ public enum ProviderConfigurationError: String, Error, Codable, Sendable, Equata
   case profileStoreWriteFailed = "PROFILE_STORE_WRITE_FAILED"
   case secretStoreReadFailed = "SECRET_STORE_READ_FAILED"
   case secretStoreWriteFailed = "SECRET_STORE_WRITE_FAILED"
+  case configurationChanged = "PROVIDER_CONFIGURATION_CHANGED"
+}
+
+/// Opaque, short-lived authorization for one already-confirmed destination.
+/// Its fields are internal so App/UI code can pass it to Core but cannot read,
+/// encode, log, or publish its Keychain value.
+public struct ProviderAuthorization: Sendable, CustomStringConvertible, CustomDebugStringConvertible, CustomLeafReflectable {
+  private static let redactedDescription = "ProviderAuthorization([REDACTED])"
+
+  let profile: ProviderProfile
+  let apiKey: String
+
+  init(profile: ProviderProfile, apiKey: String) {
+    self.profile = profile
+    self.apiKey = apiKey
+  }
+
+  /// Prevents Swift's default reflection from printing the short-lived API key,
+  /// Keychain reference, or destination profile through logs/interpolation.
+  public var description: String { Self.redactedDescription }
+  public var debugDescription: String { Self.redactedDescription }
+
+  /// `dump` and `Mirror` bypass string descriptions by default. Expose a
+  /// terminal, synthetic mirror so reflection cannot traverse the profile or
+  /// short-lived API key.
+  public var customMirror: Mirror {
+    Mirror(
+      self,
+      children: ["authorization": "[REDACTED]"],
+      displayStyle: .struct
+    )
+  }
 }
 
 public enum ProviderProfileStoreFailure: String, Error, Sendable, Equatable {
@@ -170,6 +202,8 @@ public actor ProviderConfigurationService {
   private let profileStore: any ProviderProfileStore
   private let secretStore: any SecretStore
   private let makeSecretReference: @Sendable () -> SecretReference
+  private var configurationRevision: UInt64 = 0
+  private var inFlightMutation: UUID?
 
   public init(
     profileStore: any ProviderProfileStore,
@@ -184,12 +218,14 @@ public actor ProviderConfigurationService {
   }
 
   public func load() async throws -> ProviderProfile? {
+    let revision = try beginStableRead()
     let profile: ProviderProfile?
     do {
       profile = try await profileStore.load()
     } catch {
       throw ProviderConfigurationError.profileStoreReadFailed
     }
+    try validateStableRead(revision)
 
     guard let profile else {
       return nil
@@ -204,37 +240,119 @@ public actor ProviderConfigurationService {
     } catch {
       throw ProviderConfigurationError.secretStoreReadFailed
     }
+    try validateStableRead(revision)
     return profile
+  }
+
+  /// Reads only the non-sensitive profile for the data-destination notice.
+  /// Unlike `load()` and `loadCredentials()`, this intentionally does not
+  /// consult Keychain: disclosure must not require reading a secret just to
+  /// tell the user where their captured content would go.
+  public func loadProfileForDisclosure() async throws -> ProviderProfile? {
+    let revision = try beginStableRead()
+    do {
+      let profile = try await profileStore.load()
+      try validateStableRead(revision)
+      return profile
+    } catch let error as ProviderConfigurationError {
+      throw error
+    } catch {
+      throw ProviderConfigurationError.profileStoreReadFailed
+    }
   }
 
   /// Loads the active non-sensitive profile together with its Keychain-backed
   /// secret for one short-lived model request. Callers must not persist the
   /// returned API key or place it in observable state.
   public func loadCredentials() async throws -> (profile: ProviderProfile, apiKey: String)? {
+    let revision = try beginStableRead()
     let profile: ProviderProfile?
     do {
       profile = try await profileStore.load()
     } catch {
       throw ProviderConfigurationError.profileStoreReadFailed
     }
+    try validateStableRead(revision)
 
     guard let profile else {
       return nil
     }
 
+    let apiKey: String
     do {
       guard
-        let apiKey = try await secretStore.read(profile.secretReference),
-        !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        let value = try await secretStore.read(profile.secretReference),
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       else {
         throw ProviderConfigurationError.secretStoreReadFailed
       }
-      return (profile, apiKey)
+      apiKey = value
     } catch let error as ProviderConfigurationError {
       throw error
     } catch {
       throw ProviderConfigurationError.secretStoreReadFailed
     }
+    try validateStableRead(revision)
+
+    let verifiedProfile: ProviderProfile?
+    do {
+      verifiedProfile = try await profileStore.load()
+    } catch {
+      throw ProviderConfigurationError.profileStoreReadFailed
+    }
+    try validateStableRead(revision)
+    guard verifiedProfile == profile else {
+      throw ProviderConfigurationError.configurationChanged
+    }
+    return (profile, apiKey)
+  }
+
+  /// Creates an opaque authorization for the exact non-sensitive identity the
+  /// user approved. Actor reentrancy matters here: profile is read before and
+  /// after Keychain access, and both identity and reference must still match.
+  public func authorize(
+    for expectedIdentity: DataDestinationIdentity
+  ) async throws -> ProviderAuthorization? {
+    let revision = try beginStableRead()
+    let firstProfile: ProviderProfile?
+    do {
+      firstProfile = try await profileStore.load()
+    } catch {
+      throw ProviderConfigurationError.profileStoreReadFailed
+    }
+    try validateStableRead(revision)
+    guard let firstProfile else { return nil }
+    guard DataDestinationIdentity(profile: firstProfile) == expectedIdentity else {
+      throw ProviderConfigurationError.configurationChanged
+    }
+
+    let apiKey: String
+    do {
+      guard let value = try await secretStore.read(firstProfile.secretReference),
+            !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      else { throw ProviderConfigurationError.secretStoreReadFailed }
+      apiKey = value
+    } catch let error as ProviderConfigurationError {
+      throw error
+    } catch {
+      throw ProviderConfigurationError.secretStoreReadFailed
+    }
+    try validateStableRead(revision)
+
+    let secondProfile: ProviderProfile?
+    do {
+      secondProfile = try await profileStore.load()
+    } catch {
+      throw ProviderConfigurationError.profileStoreReadFailed
+    }
+    try validateStableRead(revision)
+    guard let secondProfile,
+          DataDestinationIdentity(profile: secondProfile) == expectedIdentity,
+          secondProfile.secretReference == firstProfile.secretReference
+    else {
+      throw ProviderConfigurationError.configurationChanged
+    }
+    return ProviderAuthorization(profile: firstProfile, apiKey: apiKey)
   }
 
   public func save(
@@ -248,13 +366,6 @@ public actor ProviderConfigurationService {
       throw ProviderConfigurationError.apiKeyRequired
     }
 
-    let previousProfile: ProviderProfile?
-    do {
-      previousProfile = try await profileStore.load()
-    } catch {
-      throw ProviderConfigurationError.profileStoreReadFailed
-    }
-
     let newReference = makeSecretReference()
     let newProfile = try ProviderProfile(
       baseURL: baseURL,
@@ -262,6 +373,15 @@ public actor ProviderConfigurationService {
       secretReference: newReference,
       allowLoopbackHTTP: allowLoopbackHTTP
     )
+    let mutation = try beginMutation()
+    defer { finishMutation(ifOwner: mutation) }
+
+    let previousProfile: ProviderProfile?
+    do {
+      previousProfile = try await profileStore.load()
+    } catch {
+      throw ProviderConfigurationError.profileStoreReadFailed
+    }
 
     do {
       try await secretStore.save(trimmedKey, for: newReference)
@@ -282,5 +402,33 @@ public actor ProviderConfigurationService {
     }
 
     return newProfile
+  }
+
+  private func beginStableRead() throws -> UInt64 {
+    guard inFlightMutation == nil else {
+      throw ProviderConfigurationError.configurationChanged
+    }
+    return configurationRevision
+  }
+
+  private func validateStableRead(_ expectedRevision: UInt64) throws {
+    guard inFlightMutation == nil, configurationRevision == expectedRevision else {
+      throw ProviderConfigurationError.configurationChanged
+    }
+  }
+
+  private func beginMutation() throws -> UUID {
+    guard inFlightMutation == nil else {
+      throw ProviderConfigurationError.configurationChanged
+    }
+    let owner = UUID()
+    inFlightMutation = owner
+    configurationRevision &+= 1
+    return owner
+  }
+
+  private func finishMutation(ifOwner owner: UUID) {
+    guard inFlightMutation == owner else { return }
+    inFlightMutation = nil
   }
 }

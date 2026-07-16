@@ -46,6 +46,19 @@ struct HistoryContentView: View {
           }
       }
     }
+    .sheet(isPresented: Binding(
+      get: { appModel.isDataDestinationDisclosurePresented },
+      set: { if !$0 { appModel.cancelDataDestinationDisclosure() } }
+    )) {
+      if let disclosure = appModel.dataDestinationDisclosure {
+        DataDestinationDisclosureView(
+          disclosure: disclosure,
+          isConfirming: appModel.isConfirmingDataDestinationDisclosure,
+          confirm: { Task { await appModel.confirmDataDestinationDisclosure() } },
+          cancel: appModel.cancelDataDestinationDisclosure
+        )
+      }
+    }
   }
 
   private var activeRunTaskID: TaskID? {
@@ -260,6 +273,13 @@ private struct HistoryDetailView: View {
         Button("总结") { Task { await appModel.summarize() } }.disabled(!appModel.canStartRun).accessibilityIdentifier("summarize-current-capture")
         Button("翻译") { Task { await appModel.translate() } }.disabled(!appModel.canStartRun).accessibilityIdentifier("translate-current-capture")
       }
+      if let notice = appModel.dataDestinationNotice {
+        Label(notice, systemImage: "info.circle")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("data-destination-notice")
+      }
     }
   }
 
@@ -275,6 +295,82 @@ private struct HistoryDetailView: View {
 
   private func disabledAction(_ title: String, image: String) -> some View {
     Button {} label: { Label(title, systemImage: image) }.disabled(true).help("将在后续版本提供")
+  }
+}
+
+private struct DataDestinationDisclosureView: View {
+  let disclosure: DataDestinationDisclosure
+  let isConfirming: Bool
+  let confirm: () -> Void
+  let cancel: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 18) {
+      HStack(alignment: .top, spacing: 12) {
+        Image(systemName: "arrow.up.doc")
+          .font(.system(size: 26))
+          .foregroundStyle(.tint)
+          .accessibilityHidden(true)
+        VStack(alignment: .leading, spacing: 4) {
+          Text("发送前确认")
+            .font(.title3.weight(.semibold))
+          Text(actionText)
+            .font(.subheadline)
+            .foregroundStyle(.secondary)
+        }
+      }
+
+      Text("本次将把网页标题和正文发送到以下模型目的地：")
+        .font(.system(size: 13))
+
+      VStack(alignment: .leading, spacing: 10) {
+        LabeledContent("服务") {
+          Text(disclosure.identity.host)
+            .textSelection(.enabled)
+            .accessibilityLabel("模型服务主机 \(disclosure.identity.host)")
+        }
+        LabeledContent("Base URL") {
+          Text(disclosure.identity.normalizedBaseURL)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .textSelection(.enabled)
+        }
+        LabeledContent("模型", value: disclosure.identity.model)
+        LabeledContent("接口", value: "OpenAI-compatible Chat Completions")
+      }
+      .font(.system(size: 13))
+      .padding(12)
+      .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+
+      VStack(alignment: .leading, spacing: 5) {
+        Label("API Key 仍只保存在本机 Keychain，不会显示在此处。", systemImage: "key.horizontal")
+        Label("历史记录与导出仍只保存在本机。", systemImage: "internaldrive")
+      }
+      .font(.caption)
+      .foregroundStyle(.secondary)
+
+      HStack {
+        Spacer()
+        Button("取消", role: .cancel, action: cancel)
+          .disabled(isConfirming)
+          .accessibilityIdentifier("data-destination-cancel")
+        Button("确认并发送", action: confirm)
+          .keyboardShortcut(.defaultAction)
+          .disabled(isConfirming)
+          .accessibilityIdentifier("data-destination-confirm")
+      }
+      if isConfirming {
+        ProgressView("正在确认发送目的地…")
+          .controlSize(.small)
+      }
+    }
+    .padding(24)
+    .frame(width: 480)
+    .accessibilityIdentifier("data-destination-disclosure")
+  }
+
+  private var actionText: String {
+    disclosure.intent == .translate ? "确认翻译正文的发送目的地。" : "确认总结正文的发送目的地。"
   }
 }
 

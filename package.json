@@ -25,9 +25,11 @@
     "swift:licenses": "bash ./scripts/check-swift-licenses",
     "secret:check": "./scripts/check-v02-secret-hygiene.sh",
     "native-host:check": "./scripts/native-host/check-dev.sh",
+    "native-host:config:check": "./scripts/native-host/check-config-sync.sh",
+    "native-host:stable:check": "./scripts/native-host/check-stable-package.sh",
     "xcode:build": "./scripts/xcode-build.sh",
     "check:web": "pnpm lint && pnpm typecheck && pnpm test && pnpm browser:build && ./scripts/doctor",
-    "check:swift": "./scripts/check-contract-sync.sh && pnpm secret:check && pnpm swift:test && pnpm swift:build:debug && pnpm swift:build:release && pnpm native-host:check && ./scripts/run-host-smoke.sh && ./scripts/run-vertical-smoke.sh",
+    "check:swift": "./scripts/check-contract-sync.sh && pnpm secret:check && pnpm swift:test && pnpm swift:build:debug && pnpm swift:build:release && pnpm native-host:config:check && pnpm native-host:check && ./scripts/run-host-smoke.sh && ./scripts/run-vertical-smoke.sh",
     "check": "pnpm check:web && pnpm check:swift"
   },
   "devDependencies": {
