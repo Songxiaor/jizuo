@@ -7,6 +7,8 @@ import {
   popupMediaStatus,
   popupMessageForResponse,
   popupMessageForSendResult,
+  popupMetaChips,
+  popupPlatformIcon,
   popupPlatformLabel,
   popupScaleLabel,
 } from "../src/popup-presentation";
@@ -176,5 +178,35 @@ describe("popup platform label", () => {
     expect(popupPlatformLabel("wechat", 1)).toBe("微信公众号 · 文章");
     expect(popupPlatformLabel("douyin", 2)).toBe("抖音 · 视频");
     expect(popupPlatformLabel("generic", 1)).toBe("网页 · 文章");
+  });
+  it("gives every platform an icon", () => {
+    expect(popupPlatformIcon("wechat")).toBe("💬");
+    expect(popupPlatformIcon("douyin")).toBe("🎵");
+    expect(popupPlatformIcon("generic")).toBe("🌐");
+  });
+});
+
+describe("popup meta chips", () => {
+  it("splits word count and reading time into separate chips", () => {
+    const chips = popupMetaChips({ characterCount: 3200, completeness: "full_article", version: 1 });
+    expect(chips.map((c) => c.text)).toEqual(["约 3.2k 字", "约 8 分钟"]);
+  });
+  it("uses a single selection chip", () => {
+    const chips = popupMetaChips({ characterCount: 500, completeness: "selection_only", version: 1 });
+    expect(chips).toEqual([{ text: "选中约 500 字" }]);
+  });
+  it("appends a video chip toned as video", () => {
+    const chips = popupMetaChips({
+      characterCount: 100, completeness: "unknown", version: 2,
+      media: { kind: "directFile" },
+    });
+    expect(chips.at(-1)).toEqual({ text: "🎬 可下载视频", tone: "video" });
+  });
+  it("marks a restricted video without claiming it is downloadable", () => {
+    const chips = popupMetaChips({
+      characterCount: 100, completeness: "unknown", version: 2,
+      media: { kind: "browserSessionOnly", failureReason: "browser_session_required" },
+    });
+    expect(chips.at(-1)).toEqual({ text: "🎬 仅浏览器可播", tone: "video" });
   });
 });

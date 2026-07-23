@@ -7,7 +7,10 @@ type FakeElement = {
   disabled: boolean;
   onclick: (() => Promise<void>) | null;
   dataset: Record<string, string>;
+  className: string;
   classList: { add: (c: string) => void; remove: (c: string) => void };
+  replaceChildren: () => void;
+  append: (...nodes: unknown[]) => void;
 };
 
 const diagnostic: DouyinMetadataDiagnostic = {
@@ -25,11 +28,13 @@ const diagnostic: DouyinMetadataDiagnostic = {
 function popupDOM(): Record<string, FakeElement> {
   const element = (): FakeElement => ({
     textContent: "", hidden: false, disabled: false, onclick: null,
-    dataset: {}, classList: { add: () => {}, remove: () => {} },
+    dataset: {}, className: "",
+    classList: { add: () => {}, remove: () => {} },
+    replaceChildren: () => {}, append: () => {},
   });
   return {
-    "#availability": element(), "#platform": element(), "#status": element(), "#scale": element(),
-    "#media-status": element(), "#diag": element(), "#metadata-diagnostic": element(),
+    "#availability": element(), "#platform": element(), "#status": element(), "#meta": element(),
+    "#diag": element(), "#metadata-diagnostic": element(),
     "#error": element(), "#send": element(), "#extension-name": element(), "#build-label": element(),
   };
 }
@@ -51,6 +56,8 @@ describe("popup metadata diagnostic fresh-send lifecycle", () => {
     vi.stubGlobal("document", {
       title: "",
       querySelector: (selector: string) => elements[selector] ?? null,
+      createElement: () => ({ className: "", textContent: "", append: () => {} }),
+      createTextNode: (text: string) => ({ textContent: text }),
     });
     vi.stubGlobal("browser", {
       runtime: {

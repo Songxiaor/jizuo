@@ -10,51 +10,65 @@
     margin: 0;
     width: 328px;
     font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
-    background: #ffffff;
+    background: #f2f2f7;
     color: #1d1d1f;
     -webkit-font-smoothing: antialiased;
   }
-  main { padding: 14px 16px 12px; display: flex; flex-direction: column; gap: 12px; }
+  main { padding: 14px; display: flex; flex-direction: column; gap: 11px; }
 
   /* 顶部：品牌 + 可用性徽章 */
   .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .brand { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: #86868b; }
-  .brand img { width: 18px; height: 18px; border-radius: 4px; }
+  .brand .logo {
+    width: 20px; height: 20px; border-radius: 6px;
+    background: linear-gradient(135deg, #0a84ff, #30d158);
+    display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 800;
+  }
   #availability {
     display: inline-flex; align-items: center; gap: 5px;
-    font-size: 11px; font-weight: 600; padding: 3px 9px; border-radius: 999px;
-    white-space: nowrap;
+    font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 999px; white-space: nowrap;
   }
   #availability::before { content: ""; width: 6px; height: 6px; border-radius: 50%; }
-  #availability[data-tone="ready"] { background: rgba(48,209,88,0.14); color: #248a3d; }
+  #availability[data-tone="ready"]   { background: rgba(48,209,88,0.15); color: #248a3d; }
   #availability[data-tone="ready"]::before { background: #34c759; }
-  #availability[data-tone="video"] { background: rgba(10,132,255,0.14); color: #0060df; }
+  #availability[data-tone="video"]   { background: rgba(10,132,255,0.15); color: #0060df; }
   #availability[data-tone="video"]::before { background: #0a84ff; }
-  #availability[data-tone="warn"] { background: rgba(255,159,10,0.16); color: #b25000; }
+  #availability[data-tone="warn"]    { background: rgba(255,159,10,0.18); color: #b25000; }
   #availability[data-tone="warn"]::before { background: #ff9f0a; }
-  #availability[data-tone="blocked"] { background: rgba(142,142,147,0.16); color: #6e6e73; }
+  #availability[data-tone="blocked"] { background: rgba(142,142,147,0.18); color: #6e6e73; }
   #availability[data-tone="blocked"]::before { background: #8e8e93; }
 
-  /* 内容卡 */
-  .card { display: flex; flex-direction: column; gap: 6px; }
-  #platform { font-size: 11px; font-weight: 600; color: #86868b; letter-spacing: 0.2px; }
+  /* 内容卡：圆角白卡浮在灰底上 */
+  .card {
+    background: #ffffff; border-radius: 13px; padding: 13px 14px;
+    display: flex; flex-direction: column; gap: 7px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  }
+  #platform { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: #86868b; }
+  #platform .dot { font-size: 13px; }
   #status {
     margin: 0; font-size: 15px; line-height: 1.4; font-weight: 700; letter-spacing: -0.1px;
     overflow-wrap: anywhere;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
-  #scale { margin: 0; font-size: 12px; color: #6e6e73; }
-  #media-status { margin: 0; font-size: 12px; color: #6e6e73; }
-  #media-status:empty { display: none; }
+  #meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  #meta:empty { display: none; }
+  #meta .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11.5px; color: #86868b;
+    background: #f2f2f7; padding: 3px 8px; border-radius: 7px;
+  }
+  #meta .chip.video { background: rgba(10,132,255,0.1); color: #0060df; }
 
   #send {
-    appearance: none; border: 0; border-radius: 9px; padding: 11px 12px;
-    font-size: 13px; font-weight: 600; background: #1d1d1f; color: #ffffff;
+    appearance: none; border: 0; border-radius: 11px; padding: 12px;
+    font-size: 13.5px; font-weight: 600; background: #1d1d1f; color: #ffffff;
     cursor: pointer; transition: background 0.15s ease;
+    display: flex; align-items: center; justify-content: center; gap: 6px;
   }
   #send:hover { background: #3a3a3c; }
   #send:active { background: #000000; }
-  #send:disabled { opacity: 0.4; cursor: default; }
+  #send:disabled { background: #d1d1d6; color: #8e8e93; cursor: default; }
   #send.done { background: rgba(48,209,88,0.16); color: #248a3d; }
 
   #error {
@@ -64,33 +78,33 @@
   #error:empty { display: none; }
 
   /* 诊断：默认折叠，仅调试用 */
-  .diag { border-top: 1px solid rgba(0,0,0,0.07); padding-top: 8px; }
   .diag > summary {
     list-style: none; cursor: pointer; font-size: 10.5px; color: #aeaeb2;
-    display: inline-flex; align-items: center; gap: 4px;
+    display: inline-flex; align-items: center; gap: 4px; padding-left: 2px;
   }
   .diag > summary::-webkit-details-marker { display: none; }
   .diag > summary::before { content: "\25B8"; font-size: 8px; }
   .diag[open] > summary::before { content: "\25BE"; }
   #metadata-diagnostic {
-    margin: 8px 0 0; padding: 8px 10px;
+    margin: 8px 0 0; padding: 9px 11px;
     font: 10.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
-    color: #6e6e73; background: rgba(0,0,0,0.04); border-radius: 6px;
+    color: #6e6e73; background: #ffffff; border-radius: 9px;
     max-height: 120px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
   }
   #metadata-diagnostic:empty { display: none; }
-  #build-label { margin: 4px 0 0; font-size: 10px; color: #aeaeb2; }
+  #build-label { margin: 6px 0 0; font-size: 10px; color: #aeaeb2; padding-left: 2px; }
 
   @media (prefers-color-scheme: dark) {
-    body { background: #1f1f21; color: #f2f2f4; }
+    body { background: #1c1c1e; color: #f2f2f4; }
     .brand { color: #98989d; }
+    .card { background: #2c2c2e; box-shadow: none; }
     #platform { color: #98989d; }
-    #scale, #media-status { color: #98989d; }
-    .diag { border-color: rgba(255,255,255,0.09); }
-    #metadata-diagnostic { color: #98989d; background: rgba(255,255,255,0.06); }
+    #meta .chip { background: #3a3a3c; color: #aeaeb2; }
     #send { background: #f5f5f7; color: #111113; }
     #send:hover { background: #ffffff; }
+    #send:disabled { background: #3a3a3c; color: #8e8e93; }
     #send.done { background: rgba(48,209,88,0.2); color: #30d158; }
+    #metadata-diagnostic { color: #98989d; background: #1c1c1e; }
     #build-label { color: #636366; }
   }
 </style>
@@ -99,7 +113,7 @@
 <main>
   <div class="top">
     <header class="brand">
-      <img src="/icon/32.png" alt="">
+      <span class="logo">L</span>
       <span id="extension-name">浏览器扩展</span>
     </header>
     <span id="availability" data-tone="ready" hidden></span>
@@ -107,8 +121,7 @@
   <div class="card">
     <div id="platform"></div>
     <h1 id="status">读取当前页面…</h1>
-    <p id="scale"></p>
-    <p id="media-status"></p>
+    <div id="meta"></div>
   </div>
   <button id="send">发送到桌面 App</button>
   <pre id="error"></pre>

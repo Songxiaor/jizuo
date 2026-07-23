@@ -75,6 +75,15 @@ const platformLabels: Readonly<Record<CapturePlatform, string>> = {
   xiaohongshu: "小红书", douyin: "抖音", bilibili: "B站", github: "GitHub",
 };
 
+const platformIcons: Readonly<Record<CapturePlatform, string>> = {
+  generic: "🌐", x: "𝕏", youtube: "▶️", wechat: "💬",
+  xiaohongshu: "📕", douyin: "🎵", bilibili: "📺", github: "🐙",
+};
+
+export function popupPlatformIcon(platform: CapturePlatform): string {
+  return platformIcons[platform] ?? "🌐";
+}
+
 const unsupportedPlatforms: ReadonlySet<CapturePlatform> = new Set(["xiaohongshu", "bilibili"]);
 
 export type PopupAvailability = { tone: "ready" | "video" | "warn" | "blocked"; label: string };
@@ -118,6 +127,39 @@ export function popupScaleLabel(characterCount: number, completeness: Completene
   }
   const minutes = Math.max(1, Math.round(characterCount / 400));
   return `约 ${roundCount(characterCount)} 字 · 预计 ${minutes} 分钟读完`;
+}
+
+export type PopupMetaChip = { text: string; tone?: "video" };
+
+/** 规模拆成独立 chip：字数 / 时长 / 视频状态，供 popup 并排渲染。 */
+export function popupMetaChips(preview: {
+  characterCount: number;
+  completeness: Completeness;
+  version: 1 | 2;
+  media?: SafeMediaPreview;
+}): PopupMetaChip[] {
+  const chips: PopupMetaChip[] = [];
+  if (preview.completeness === "selection_only") {
+    chips.push({ text: `选中约 ${roundCount(preview.characterCount)} 字` });
+  } else if (preview.characterCount > 0) {
+    chips.push({ text: `约 ${roundCount(preview.characterCount)} 字` });
+    chips.push({ text: `约 ${Math.max(1, Math.round(preview.characterCount / 400))} 分钟` });
+  }
+  const videoChip = popupVideoChip(preview.media);
+  if (videoChip) chips.push(videoChip);
+  return chips;
+}
+
+function popupVideoChip(media: SafeMediaPreview | undefined): PopupMetaChip | null {
+  if (!media) return null;
+  if (media.failureReason) {
+    if (media.failureReason === "browser_session_required") return { text: "🎬 仅浏览器可播", tone: "video" };
+    if (media.failureReason === "drm_or_encrypted") return { text: "🎬 受保护视频", tone: "video" };
+    return { text: "🎬 视频受限", tone: "video" };
+  }
+  if (media.kind === "directFile" || media.kind === "hls") return { text: "🎬 可下载视频", tone: "video" };
+  if (media.kind === "embed") return { text: "🎬 嵌入视频", tone: "video" };
+  return null;
 }
 
 function roundCount(n: number): string {

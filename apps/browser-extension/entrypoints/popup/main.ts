@@ -2,11 +2,11 @@ export {};
 import {
   popupAvailability,
   popupBuildLabel,
-  popupMediaStatus,
+  popupMetaChips,
   popupMessageForSendResult,
   popupMetadataDiagnostic,
+  popupPlatformIcon,
   popupPlatformLabel,
-  popupScaleLabel,
   type SafeExtensionSendResult,
   type SafeMediaPreview,
 } from "../../src/popup-presentation";
@@ -31,8 +31,7 @@ type SafeCapturePreview = {
 const availability = document.querySelector<HTMLSpanElement>("#availability")!;
 const platform = document.querySelector<HTMLDivElement>("#platform")!;
 const status = document.querySelector<HTMLHeadingElement>("#status")!;
-const scale = document.querySelector<HTMLParagraphElement>("#scale")!;
-const mediaStatus = document.querySelector<HTMLParagraphElement>("#media-status")!;
+const meta = document.querySelector<HTMLDivElement>("#meta")!;
 const diag = document.querySelector<HTMLDetailsElement>("#diag")!;
 const metadataDiagnostic = document.querySelector<HTMLPreElement>("#metadata-diagnostic")!;
 const error = document.querySelector<HTMLPreElement>("#error")!;
@@ -48,6 +47,24 @@ function setAvailability(tone: string, label: string): void {
   availability.hidden = false;
   availability.dataset.tone = tone;
   availability.textContent = label;
+}
+
+function renderPlatform(icon: string, label: string): void {
+  platform.replaceChildren();
+  const dot = document.createElement("span");
+  dot.className = "dot";
+  dot.textContent = icon;
+  platform.append(dot, document.createTextNode(label));
+}
+
+function renderMeta(chips: { text: string; tone?: "video" }[]): void {
+  meta.replaceChildren();
+  for (const chip of chips) {
+    const span = document.createElement("span");
+    span.className = chip.tone === "video" ? "chip video" : "chip";
+    span.textContent = chip.text;
+    meta.append(span);
+  }
 }
 
 function renderMetadataDiagnostic(diagnostic: DouyinMetadataDiagnostic | undefined): void {
@@ -70,14 +87,14 @@ if (tabId === undefined) {
     }) as SafeCapturePreview;
     const avail = popupAvailability(preview);
     setAvailability(avail.tone, avail.label);
-    platform.textContent = popupPlatformLabel(preview.platform, preview.version);
+    renderPlatform(popupPlatformIcon(preview.platform), popupPlatformLabel(preview.platform, preview.version));
     status.textContent = preview.title;
-    scale.textContent = popupScaleLabel(preview.characterCount, preview.completeness);
-    mediaStatus.textContent = preview.version === 2
-      ? popupMediaStatus(preview.media, preview.mediaDiagnostic)
-      : "";
+    renderMeta(popupMetaChips(preview));
     renderMetadataDiagnostic(preview.metadataDiagnostic);
-    send.disabled = avail.tone === "blocked";
+    if (avail.tone === "blocked") {
+      send.disabled = true;
+      send.textContent = "暂不支持此平台";
+    }
   } catch {
     status.textContent = "当前页面不可捕获";
     setAvailability("blocked", "不可捕获");
@@ -94,9 +111,6 @@ if (tabId === undefined) {
         type: "send-current-page",
         tabId,
       }) as SafeExtensionSendResult;
-      if (result.mediaDiagnostic) {
-        mediaStatus.textContent = popupMediaStatus(undefined, result.mediaDiagnostic);
-      }
       renderMetadataDiagnostic(result.metadataDiagnostic);
       const message = popupMessageForSendResult(result);
       if (message) {
