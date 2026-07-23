@@ -808,6 +808,38 @@ describe("background douyin item identity lock", () => {
     });
   });
 
+  it("extracts image-post gallery URLs (aweme_type 68) from both hydrated shapes and rejects non-douyinpic hosts", async () => {
+    vi.stubGlobal("defineBackground", (factory: unknown) => factory);
+    const id = "7528389402973818147";
+    const { extractDouyinMetadataWithDiagnosticInMainWorld } = await import("../src/entrypoints/background");
+    // App/API shape: top-level `images` with snake_case `url_list`.
+    vi.stubGlobal("__INITIAL_STATE__", {
+      nested: {
+        aweme_id: id, aweme_type: 68, statistics: { digg_count: 3 },
+        images: [
+          { url_list: ["https://p3-sign.douyinpic.com/a.webp?x=1", "https://p9.douyinpic.com/a-2.webp"] },
+          { url_list: ["https://evil.example.com/track.gif", "https://p6-sign.douyinpic.com/b.webp?y=2"] },
+        ],
+      },
+    });
+    expect(extractDouyinMetadataWithDiagnosticInMainWorld(id).metadata?.imageURLs)
+      .toEqual(["https://p3-sign.douyinpic.com/a.webp?x=1", "https://p6-sign.douyinpic.com/b.webp?y=2"]);
+
+    // Store shape: `imagePostInfo.images` with camelCase `urlList`.
+    vi.stubGlobal("__INITIAL_STATE__", {
+      nested: {
+        awemeId: id, aweme_id: id,
+        imagePostInfo: { images: [{ urlList: ["https://p1.douyinpic.com/c.webp"] }] },
+      },
+    });
+    expect(extractDouyinMetadataWithDiagnosticInMainWorld(id).metadata?.imageURLs)
+      .toEqual(["https://p1.douyinpic.com/c.webp"]);
+
+    // Video posts have no images: the field stays undefined.
+    vi.stubGlobal("__INITIAL_STATE__", { nested: { aweme_id: id, statistics: { digg_count: 1 } } });
+    expect(extractDouyinMetadataWithDiagnosticInMainWorld(id).metadata?.imageURLs).toBeUndefined();
+  });
+
   it("accepts exact-ID SCRIPT roots but rejects same-ID non-script elements and UTF-8 byte overflow", async () => {
     vi.stubGlobal("defineBackground", (factory: unknown) => factory);
     const id = "7655224917603994914";

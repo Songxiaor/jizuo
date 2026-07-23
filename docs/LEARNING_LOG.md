@@ -1831,3 +1831,14 @@
 - **抓取队列**：提交即入队关窗，列表顶部「抓取队列」区展示 排队/抓取/保存 阶段，失败可重试、可取消；串行 worker（微信共用 WKWebView 服务不并发）。契约测试同步改写：关窗提前，发布仍必须等 commit。
 - **复制体验**：全局「已复制」药丸（底部胶囊 1.2s）；所有复制按钮统一走 `CopyFeedbackController`；阅读区光标框选**松手即自动复制**。
 - **重大事故复盘**：python 补丁脚本切片锚点顺序颠倒得到空串，`replace("")` 把补丁插进每个字符之间，把 `ManualLinkViewModel.swift` 写成 109 万行——编译器啃怪物文件永远编不完，被误判为"构建挂起"，反复杀进程留下孤儿 frontend 与 build.db 死锁，最终卡死整机。修复：git checkout 恢复 + Edit 工具重放改动。**教训：禁用字符串切片式补丁；写文件后必查 wc -l；ps 必须 auxww；主进程 0% CPU ≠ 挂起（链接阶段无 frontend 是常态）；构建跑到自然结束，绝不超时杀。**
+
+## 任务：抖音图文帖（图集）抓取（7/24 自主实现）
+
+- 执行：Claude 主控自主完成（用户睡前授权"想办法实现，需要什么自己获取"）。638 桌面测试 + 190 扩展测试全绿（仅余 9 桌面基线）。
+- 现状根因：抖音适配是"视频优先"单一设计，图文帖（aweme_type 68）被强制当视频，只抓到一句 desc、图片全在管线外。
+- 结构获取：浏览器扩展未连，改用 AgentKey（TikHub/fetch_image_search_v3）拿到真实 aweme 结构——图文帖顶层 `images[]`（或 `image_post_info.images`），每图 `url_list`/`urlList`（douyinpic CDN 带签名），文案 `desc`，有 `watermark_free_download_url_list`。
+- 全链路复用：socket browser capture 的 afterCommit 已调 `stageRemoteMarkdownImages`，其下载器**早已支持 douyin Referer**（`GitHubRepositorySourceAdapter` 第 300 行）。所以只需扩展把图片内联进正文 markdown，App 自动下载入库、阅读区本地显示——无需新图片管线。
+- 扩展改动（最小）：`extractDouyinMetadataWithDiagnosticInMainWorld` 在已定位的 aweme 对象上顺读 images（兼容 snake/camel 双水合形态，只收 https douyinpic），正文组装内联 `![](url)` 图库；break 条件不含 imageURLs（视频帖无图不拖累提前退出）。
+- App 改动：`RemoteMarkdownImageStagingPolicy` 放行"抖音图文帖"（platform=douyin + 无 video media + 正文含 douyinpic 图片），视频帖/纯文字帖仍不 stage。
+- 待真机验收：抖音签名 URL 有时效，需发送后 App 及时下载；真机确认图片显示与无水印。
+- 核心名词：**图文帖 vs 视频帖（aweme_type）**：68=图文（images），其余=视频（video）；同一 aweme 对象靠有无 images 区分。

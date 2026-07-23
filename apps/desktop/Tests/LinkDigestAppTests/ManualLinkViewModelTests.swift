@@ -442,6 +442,24 @@ final class ManualLinkViewModelTests: XCTestCase {
     XCTAssertFalse(RemoteMarkdownImageStagingPolicy.allows(capturedDocument(platform: "douyin", text: article.text, hasMedia: true)))
     XCTAssertFalse(RemoteMarkdownImageStagingPolicy.allows(capturedDocument(platform: "generic", text: article.text, hasMedia: true)))
     XCTAssertTrue(RemoteMarkdownImageStagingPolicy.allows(capturedDocument(platform: "generic", text: article.text, hasMedia: false)))
+
+    // 抖音图文帖（无视频 media，正文内联 douyinpic 图片）应放行图片下载；
+    // 抖音视频帖或纯文字帖不放行。
+    let imagePost = capturedDocument(
+      platform: "douyin",
+      text: "# 韩系穿搭合集\n\n今天分享几套 OOTD。\n\n![](https://p3-sign.douyinpic.com/tos-cn-i-0813c001/abc.webp?x=1)\n\n![](https://p6-sign.douyinpic.com/tos-cn-i-0813c001/def.webp?y=2)",
+      hasMedia: false
+    )
+    XCTAssertTrue(RemoteMarkdownImageStagingPolicy.allows(imagePost))
+    XCTAssertTrue(RemoteMarkdownImageStagingPolicy.isDouyinImagePost(imagePost))
+    // 图文帖有视频 media 时不算图文帖。
+    XCTAssertFalse(RemoteMarkdownImageStagingPolicy.allows(capturedDocument(
+      platform: "douyin", text: imagePost.text, hasMedia: true
+    )))
+    // 抖音纯文字帖（无 douyinpic 图片）不放行。
+    XCTAssertFalse(RemoteMarkdownImageStagingPolicy.allows(capturedDocument(
+      platform: "douyin", text: "# 视频标题\n\n一段文案", hasMedia: false
+    )))
   }
 
   func testWeChatImageFailureIsFailOpenAndStillCommitsArticle() async {

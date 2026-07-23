@@ -64,6 +64,8 @@ type DouyinInitialStateMetadata = {
   author?: string;
   publishedAt?: string;
   stats?: DouyinEngagementStats;
+  /** 图文帖（aweme_type 68）的图片 CDN 地址，视频帖为空。 */
+  imageURLs?: string[];
 };
 
 type DouyinInitialStateMetadataAttempt = {
@@ -655,9 +657,29 @@ export function extractDouyinMetadataWithDiagnosticInMainWorld(
         if (parsed.collects === undefined && collects !== undefined) parsed.collects = collects;
         if (Object.keys(parsed).length > 0) result.stats = parsed;
       }
+      // 图文帖（aweme_type 68）的图片：抖音有两种水合形态——顶层 `images`
+      // 或 `image_post_info.images` / `imagePostInfo.images`；每张图的地址是
+      // `url_list` / `urlList`（带签名的 douyinpic CDN）。仅在首次命中时读取。
+      if (result.imageURLs === undefined) {
+        const postInfo = objectAt(["image_post_info", "imagePostInfo"]);
+        const rawImages = firstDefined(candidate, ["images"]) ?? firstDefined(postInfo, ["images"]);
+        if (Array.isArray(rawImages)) {
+          const urls: string[] = [];
+          for (const image of rawImages.slice(0, 30)) {
+            if (!image || typeof image !== "object") continue;
+            const list = firstDefined(image as Record<string, unknown>, ["url_list", "urlList"]);
+            const first = Array.isArray(list)
+              ? list.find((u): u is string => typeof u === "string" && /^https:\/\/[\w.-]*douyinpic\.com\//u.test(u))
+              : undefined;
+            if (first) urls.push(first);
+          }
+          if (urls.length > 0) result.imageURLs = urls;
+        }
+      }
       // A complete exact item is the only useful result from this traversal.
       // Stop before walking unrelated state so the larger safety budget does
-      // not add work on the common successful path.
+      // not add work on the common successful path. Images are read in this same
+      // hit above, so they need not gate the break (video posts never have them).
       if (result.author !== undefined && result.stats !== undefined && result.publishedAt !== undefined) break;
     }
     if (entry.depth >= maxDepth) {
@@ -803,6 +825,7 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
     fixedRootPresent: 0, fixedRootParseable: 0, exactHit: false,
     rejectCode: "main_injection_failed", limitCode: "none",
   };
+  let imageURLs: string[] = [];
   try {
     const statsResults = await browser.scripting.executeScript({
       target: { tabId, frameIds: [0] },
@@ -817,6 +840,12 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
     if (ssr?.author !== undefined) author = ssr.author;
     if (ssr?.publishedAt !== undefined) publishedAt = ssr.publishedAt;
     stats = mergeDefinedDouyinStats(stats, ssr?.stats);
+    // 只保留 https 的 douyinpic 图片；App 侧下载已带 douyin Referer。
+    if (Array.isArray(ssr?.imageURLs)) {
+      imageURLs = ssr.imageURLs.filter(
+        (u): u is string => typeof u === "string" && /^https:\/\/[\w.-]*douyinpic\.com\//u.test(u),
+      ).slice(0, 30);
+    }
   } catch {
     // MAIN world injection may fail on restricted pages — DOM stats are enough.
   }
@@ -830,8 +859,11 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
   if (stats?.shares !== undefined) lines.push(`shares: ${JSON.stringify(stats.shares)}`);
   if (stats?.collects !== undefined) lines.push(`collects: ${JSON.stringify(stats.collects)}`);
   const header = `${lines.join("\n")}\n---\n\n`;
-  // Single-item body only — never site navigation chrome.
-  const body = [`# ${title}`, description].filter(Boolean).join("\n\n");
+  // Single-item body only — never site navigation chrome. Image posts (图文帖)
+  // inline their gallery as Markdown images; the desktop app downloads them
+  // with a Douyin Referer via the existing remote-image staging path.
+  const gallery = imageURLs.map((url) => `![](${url})`).join("\n\n");
+  const body = [`# ${title}`, description, gallery].filter(Boolean).join("\n\n");
   const text = `${header}${body}`.trim() || "抖音公开视频";
 
   const page: ExtractedPage = {

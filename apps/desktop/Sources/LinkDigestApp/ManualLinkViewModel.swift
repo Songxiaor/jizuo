@@ -37,8 +37,15 @@ enum RemoteMarkdownImageStagingPolicy {
     return visibleCount >= minimumProseCharacterCount
   }
 
+  /// 抖音图文帖（无视频 media，正文内联远程图片）需要下载图片；
+  /// 抖音视频帖（有 media）不下载正文图片，避免刮到无关缩略图。
+  static func isDouyinImagePost(_ document: CapturedDocument) -> Bool {
+    guard document.platform == "douyin", document.media == nil else { return false }
+    return document.text.range(of: #"!\[[^\]]*\]\(https?://[^)]*douyinpic\.com/"#, options: .regularExpression) != nil
+  }
+
   static func allows(_ document: CapturedDocument) -> Bool {
-    if document.platform == "douyin" { return false }
+    if document.platform == "douyin" { return isDouyinImagePost(document) }
     guard document.media != nil else { return true }
     return isSubstantiveWeChatArticle(platform: document.platform, markdown: document.text)
   }
