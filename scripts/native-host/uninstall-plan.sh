@@ -13,7 +13,8 @@ while [[ $# -gt 0 ]]; do
 done
 
 case "$BROWSER" in
-  chrome|brave) TARGET_DIR="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts";;
+  chrome) TARGET_DIR="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts";;
+  brave) TARGET_DIR="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts";;
   edge) TARGET_DIR="$HOME/Library/Application Support/Microsoft Edge/NativeMessagingHosts";;
   *) echo "--browser is required and must be chrome, brave, or edge" >&2; exit 2;;
 esac

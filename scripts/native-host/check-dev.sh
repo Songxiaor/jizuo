@@ -59,18 +59,19 @@ fi
 dry_run_output="$($SCRIPT --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser brave)"
 grep -Fq "TARGET: $HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.syc.linkdigest.v01.json" <<<"$dry_run_output"
 if grep -Fq "TARGET: $HOME/Library/Application Support/BraveSoftware" <<<"$dry_run_output"; then
-  echo "brave dry-run must map to the Chrome user-level target" >&2
+  echo "brave dry-run must use Chrome's active user-level target" >&2
   exit 1
 fi
 
 "$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser brave --apply >/dev/null
-CHROME_TARGET="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.syc.linkdigest.v01.json"
-BRAVE_TARGET="$HOME/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.syc.linkdigest.v01.json"
-[[ -f "$CHROME_TARGET" && ! -e "$BRAVE_TARGET" ]]
-[[ "$(stat -f '%Lp' "$CHROME_TARGET")" == "600" ]]
+BRAVE_TARGET="$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.syc.linkdigest.v01.json"
+[[ -f "$BRAVE_TARGET" ]]
+[[ "$(stat -f '%Lp' "$BRAVE_TARGET")" == "600" ]]
+LEGACY_BRAVE_TARGET="$HOME/Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts/com.syc.linkdigest.v01.json"
+[[ ! -e "$LEGACY_BRAVE_TARGET" && ! -L "$LEGACY_BRAVE_TARGET" ]]
 
 "$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser brave --apply >/dev/null
-backup_count="$(find "$(dirname "$CHROME_TARGET")" -maxdepth 1 -name 'com.syc.linkdigest.v01.json.*.bak' -type f | wc -l | tr -d ' ')"
+backup_count="$(find "$(dirname "$BRAVE_TARGET")" -maxdepth 1 -name 'com.syc.linkdigest.v01.json.*.bak' -type f | wc -l | tr -d ' ')"
 [[ "$backup_count" -ge 1 ]]
 
 FAIL_BIN="$SANDBOX/fail-bin"
@@ -82,7 +83,7 @@ if failure_output="$(PATH="$FAIL_BIN:$PATH" "$SCRIPT" --extension-id "$EXTENSION
   exit 1
 fi
 grep -Fq "temporary manifest retained" <<<"$failure_output"
-FAILURE_TEMP_PATH="$(find "$(dirname "$CHROME_TARGET")" -maxdepth 1 -name '.com.syc.linkdigest.v01.json.tmp.*' -type f -print | sort | head -n 1)"
+FAILURE_TEMP_PATH="$(find "$(dirname "$BRAVE_TARGET")" -maxdepth 1 -name '.com.syc.linkdigest.v01.json.tmp.*' -type f -print | sort | head -n 1)"
 [[ -n "$FAILURE_TEMP_PATH" ]]
 
 FIXED_DATE="20990101010101"
@@ -90,13 +91,13 @@ FAKE_BIN="$SANDBOX/fake-bin"
 mkdir -p "$FAKE_BIN"
 printf '#!/bin/sh\nprintf "%s\\n" "%s"\n' "$FIXED_DATE" > "$FAKE_BIN/date"
 chmod 700 "$FAKE_BIN/date"
-BACKUP_SYMLINK="$CHROME_TARGET.$FIXED_DATE.bak"
+BACKUP_SYMLINK="$BRAVE_TARGET.$FIXED_DATE.bak"
 BACKUP_MARKER="$SANDBOX/backup-marker"
 printf 'marker\n' > "$BACKUP_MARKER"
 ln -s "$BACKUP_MARKER" "$BACKUP_SYMLINK"
 PATH="$FAKE_BIN:$PATH" "$SCRIPT" --extension-id "$EXTENSION_ID" --host-path "$HOST_PATH" --browser brave --apply >/dev/null
 [[ -L "$BACKUP_SYMLINK" ]]
-[[ -f "$CHROME_TARGET.$FIXED_DATE.1.bak" ]]
+[[ -f "$BRAVE_TARGET.$FIXED_DATE.1.bak" ]]
 
 SYMLINK_HOME="$SANDBOX/symlink-home"
 SYMLINK_DIR="$SYMLINK_HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts"

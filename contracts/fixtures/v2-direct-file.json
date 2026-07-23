@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "requestId": "fixture-v2-direct-file",
+  "createdAt": "2026-07-20T00:00:00Z",
+  "source": {"kind": "browser_capture", "url": "https://example.test/video", "title": "Direct MOV", "platform": "generic"},
+  "capture": {"method": "rendered_dom", "text": "video body", "characterCount": 10, "completeness": "full_article", "capturedAt": "2026-07-20T00:00:00Z"},
+  "evidence": {"sourceLabel": "Current page DOM", "usedCookie": false},
+  "media": {
+    "kind": "directFile",
+    "pageURL": "https://example.test/video",
+    "canonicalURL": "https://example.test/video",
+    "platform": "generic",
+    "ephemeralPlaybackURL": "https://media.example.test/video.mov?fixture=redacted",
+    "mimeType": "video/quicktime",
+    "posterURL": "https://media.example.test/poster.jpg",
+    "durationSeconds": 42,
+    "author": "Fixture Author",
+    "transcriptionCapability": "supported",
+    "candidateCount": 1,
+    "selectionReason": "singleCandidate",
+    "playbackState": "paused"
+  }
+}

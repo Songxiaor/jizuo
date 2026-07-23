@@ -48,3 +48,9 @@ artifacts/
 *.exe
 *.msi
 *.AppImage
+
+# Agent tool state
+.workbuddy/
+unified_inbox.json
+__pycache__/
+*.pyc

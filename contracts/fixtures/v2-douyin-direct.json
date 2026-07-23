@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "requestId": "fixture-v2-douyin-direct",
+  "createdAt": "2026-07-20T00:00:00Z",
+  "source": {"kind": "browser_capture", "url": "https://douyin.example.test/video/7123456789012345678", "title": "Douyin DOM direct", "platform": "douyin"},
+  "capture": {"method": "rendered_dom", "text": "douyin body", "characterCount": 11, "completeness": "full_article", "capturedAt": "2026-07-20T00:00:00Z"},
+  "evidence": {"sourceLabel": "Current page DOM", "usedCookie": false},
+  "media": {"kind": "directFile", "pageURL": "https://douyin.example.test/video/7123456789012345678", "canonicalURL": "https://douyin.example.test/video/7123456789012345678", "platform": "douyin", "ephemeralPlaybackURL": "https://media.example.test/douyin.mp4?fixture=redacted", "mimeType": "video/mp4", "posterURL": "https://media.example.test/douyin-poster.jpg", "durationSeconds": 15, "author": "Fixture Creator", "transcriptionCapability": "supported", "candidateCount": 1, "selectionReason": "singleCandidate", "playbackState": "paused"}
+}

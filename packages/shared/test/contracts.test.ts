@@ -45,13 +45,35 @@ const validCapture = {
 
 describe("local contracts", () => {
   it("validates the language-neutral fixture manifest and semantic invariants", () => {
-    const manifest = JSON.parse(readFileSync(fixturePath("fixture-manifest.json"), "utf8")) as { fixtures: Array<{ file: string; expect: string; mutation?: { field: string; repeat: number; unit: string }}> };
+    const manifest = JSON.parse(readFileSync(fixturePath("fixture-manifest.json"), "utf8")) as { schema: string; fixtures: Array<{ file: string; schema?: string; expect: string; mutation?: { field: string; repeat: number; unit: string }}> };
     for (const fixture of manifest.fixtures) {
       const value = JSON.parse(readFileSync(fixturePath(fixture.file), "utf8")) as Record<string, unknown>;
       if (fixture.mutation) (value.capture as Record<string, unknown>).text = fixture.mutation.unit.repeat(fixture.mutation.repeat);
-      const result = validateCaptureEnvelope(value);
+      const result = validateCaptureEnvelope(value, fixture.schema ?? manifest.schema);
       expect(result.ok, fixture.file).toBe(fixture.expect === "valid");
     }
+  });
+  it("enforces V2 media selection fields and candidate-count bounds", () => {
+    const value = JSON.parse(readFileSync(fixturePath("v2-direct-file.json"), "utf8")) as Record<string, unknown>;
+    const media = value.media as Record<string, unknown>;
+    Object.assign(media, { candidateCount: 1000, selectionReason: "playing", playbackState: "playing" });
+    expect(validateCaptureEnvelope(value, "../capture-envelope-v2.schema.json").ok).toBe(true);
+    media.candidateCount = 1001;
+    expect(validateCaptureEnvelope(value, "../capture-envelope-v2.schema.json").ok).toBe(false);
+    media.candidateCount = 1;
+    media.selectionReason = "firstInDOM";
+    expect(validateCaptureEnvelope(value, "../capture-envelope-v2.schema.json").ok).toBe(false);
+  });
+  it("keeps V1 cookie evidence false while V2 accepts explicit false and true", () => {
+    expect(validateCaptureEnvelope({
+      ...validCapture,
+      evidence: { ...validCapture.evidence, usedCookie: true },
+    }).ok).toBe(false);
+    const value = JSON.parse(readFileSync(fixturePath("v2-direct-file.json"), "utf8")) as Record<string, unknown>;
+    value.evidence = { sourceLabel: "Current page DOM", usedCookie: false };
+    expect(validateCaptureEnvelope(value, "../capture-envelope-v2.schema.json").ok).toBe(true);
+    value.evidence = { sourceLabel: "Current page DOM + same-origin session detail", usedCookie: true };
+    expect(validateCaptureEnvelope(value, "../capture-envelope-v2.schema.json").ok).toBe(true);
   });
   it("accepts a valid CaptureEnvelopeV1", () => {
     expect(CaptureEnvelopeV1Schema.parse(validCapture)).toEqual(validCapture);

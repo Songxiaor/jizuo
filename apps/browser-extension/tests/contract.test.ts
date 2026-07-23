@@ -5,6 +5,7 @@ import { isWireNativeResponse, normalizeNativeResponse, validateCapture } from "
 
 type FixtureEntry = {
   file: string;
+  schema?: string;
   expect: "valid" | "invalid";
   errorCode?: string;
   mutation?: { field: "capture.text"; repeat: number; unit: string };
@@ -14,7 +15,7 @@ const fixtureUrl = (file: string) => new URL(`../../../contracts/fixtures/${file
 
 describe("browser capture contract", () => {
   it("validates the shared language-neutral fixtures and semantic invariants", () => {
-    const manifest = JSON.parse(readFileSync(fixtureUrl("fixture-manifest.json"), "utf8")) as { fixtures: FixtureEntry[] };
+    const manifest = JSON.parse(readFileSync(fixtureUrl("fixture-manifest.json"), "utf8")) as { schema: string; fixtures: FixtureEntry[] };
 
     for (const fixture of manifest.fixtures) {
       const value = JSON.parse(readFileSync(fixtureUrl(fixture.file), "utf8")) as Record<string, unknown>;
@@ -22,7 +23,7 @@ describe("browser capture contract", () => {
         (value.capture as Record<string, unknown>).text = fixture.mutation.unit.repeat(fixture.mutation.repeat);
       }
 
-      expect(validateCapture(value), fixture.file).toBe(fixture.expect === "valid" ? null : fixture.errorCode);
+      expect(validateCapture(value, fixture.schema ?? manifest.schema), fixture.file).toBe(fixture.expect === "valid" ? null : fixture.errorCode);
     }
   });
 
@@ -59,5 +60,35 @@ describe("browser capture contract", () => {
   it("keeps the generated MV3 validator free of runtime code generation", () => {
     const generated = readFileSync(new URL("../src/generated/capture-validator.mjs", import.meta.url), "utf8");
     expect(generated).not.toMatch(/(?:^|[^\w])eval\(|new\s+Function|require\(/u);
+  });
+
+  it("accepts V1 and V2 independently while rejecting an invalid direct media descriptor", () => {
+    const v1 = JSON.parse(readFileSync(fixtureUrl("valid.json"), "utf8"));
+    const direct = JSON.parse(readFileSync(fixtureUrl("v2-direct-file.json"), "utf8"));
+    const invalid = JSON.parse(readFileSync(fixtureUrl("v2-invalid-direct-without-url.json"), "utf8"));
+    expect(validateCapture(v1)).toBeNull();
+    expect(validateCapture(direct)).toBeNull();
+    expect(validateCapture(invalid)).toBe("CAPTURE_SCHEMA_INVALID");
+    expect(validateCapture({
+      ...direct,
+      media: { ...direct.media, failureReason: "unknown" },
+    })).toBe("CAPTURE_SCHEMA_INVALID");
+    const blob = JSON.parse(readFileSync(fixtureUrl("v2-blob-mse.json"), "utf8"));
+    expect(validateCapture({
+      ...blob,
+      media: { ...blob.media, ephemeralPlaybackURL: "https://media.example.test/forbidden.mp4" },
+    })).toBe("CAPTURE_SCHEMA_INVALID");
+    expect(validateCapture({
+      ...v1,
+      evidence: { ...v1.evidence, usedCookie: true },
+    })).toBe("CAPTURE_SCHEMA_INVALID");
+    expect(validateCapture({
+      ...direct,
+      evidence: { sourceLabel: "Current page DOM", usedCookie: false },
+    })).toBeNull();
+    expect(validateCapture({
+      ...direct,
+      evidence: { sourceLabel: "Current page DOM + same-origin session detail", usedCookie: true },
+    })).toBeNull();
   });
 });

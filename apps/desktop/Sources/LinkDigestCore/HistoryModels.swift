@@ -68,18 +68,52 @@ public struct RunUsageCost: Codable, Sendable, Equatable {
     totalTokens: Int64? = nil,
     costAmountMicros: Int64? = nil,
     costCurrencyCode: String? = nil
-  ) throws {
-    guard [inputTokens, outputTokens, totalTokens].compactMap({ $0 }).allSatisfy({ $0 >= 0 }) else {
-      throw HistoryDomainFailure.invalidUsageCost
+  ) {
+    // Usage is provider-supplied, optional accounting metadata. A malformed
+    // value must not make a completed generation fail; discard the whole
+    // payload instead of retaining an inconsistent partial counter set.
+    guard Self.isValid(
+      inputTokens: inputTokens,
+      outputTokens: outputTokens,
+      totalTokens: totalTokens,
+      costAmountMicros: costAmountMicros,
+      costCurrencyCode: costCurrencyCode
+    ) else {
+      self.init(uncheckedInputTokens: nil, outputTokens: nil, totalTokens: nil, costAmountMicros: nil, costCurrencyCode: nil)
+      return
     }
-    guard (costAmountMicros == nil) == (costCurrencyCode == nil), (costAmountMicros ?? 0) >= 0 else {
-      throw HistoryDomainFailure.invalidUsageCost
-    }
-    if let currency = costCurrencyCode {
-      guard currency.range(of: "^[A-Z]{3}$", options: .regularExpression) != nil else {
-        throw HistoryDomainFailure.invalidUsageCost
-      }
-    }
+    self.init(uncheckedInputTokens: inputTokens, outputTokens: outputTokens, totalTokens: totalTokens, costAmountMicros: costAmountMicros, costCurrencyCode: costCurrencyCode)
+  }
+
+  /// Strict validation remains available at durable data boundaries (SQLite
+  /// reads and imported exports). It is intentionally separate from the
+  /// tolerant constructor used for provider-side optional metadata.
+  public static func validated(
+    inputTokens: Int64? = nil,
+    outputTokens: Int64? = nil,
+    totalTokens: Int64? = nil,
+    costAmountMicros: Int64? = nil,
+    costCurrencyCode: String? = nil
+  ) throws -> Self {
+    guard Self.isValid(
+      inputTokens: inputTokens,
+      outputTokens: outputTokens,
+      totalTokens: totalTokens,
+      costAmountMicros: costAmountMicros,
+      costCurrencyCode: costCurrencyCode
+    ) else { throw HistoryDomainFailure.invalidUsageCost }
+    return Self(uncheckedInputTokens: inputTokens, outputTokens: outputTokens, totalTokens: totalTokens, costAmountMicros: costAmountMicros, costCurrencyCode: costCurrencyCode)
+  }
+
+  public static let unknown = RunUsageCost()
+
+  private init(
+    uncheckedInputTokens inputTokens: Int64?,
+    outputTokens: Int64?,
+    totalTokens: Int64?,
+    costAmountMicros: Int64?,
+    costCurrencyCode: String?
+  ) {
     self.inputTokens = inputTokens
     self.outputTokens = outputTokens
     self.totalTokens = totalTokens
@@ -87,7 +121,17 @@ public struct RunUsageCost: Codable, Sendable, Equatable {
     self.costCurrencyCode = costCurrencyCode
   }
 
-  public static let unknown = try! RunUsageCost()
+  private static func isValid(
+    inputTokens: Int64?,
+    outputTokens: Int64?,
+    totalTokens: Int64?,
+    costAmountMicros: Int64?,
+    costCurrencyCode: String?
+  ) -> Bool {
+    guard [inputTokens, outputTokens, totalTokens].compactMap({ $0 }).allSatisfy({ $0 >= 0 }) else { return false }
+    guard (costAmountMicros == nil) == (costCurrencyCode == nil), (costAmountMicros ?? 0) >= 0 else { return false }
+    return costCurrencyCode.map { $0.range(of: "^[A-Z]{3}$", options: .regularExpression) != nil } ?? true
+  }
 }
 
 public enum HistoryDomainFailure: Error, Sendable, Equatable {

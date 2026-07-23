@@ -9,18 +9,26 @@ import addFormats from "ajv-formats";
 import standaloneCode from "ajv/dist/standalone/index.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const schemaPath = resolve(packageRoot, "../../contracts/capture-envelope-v1.schema.json");
+const schemaV1Path = resolve(packageRoot, "../../contracts/capture-envelope-v1.schema.json");
+const schemaV2Path = resolve(packageRoot, "../../contracts/capture-envelope-v2.schema.json");
 const outputPath = resolve(packageRoot, "src/generated/capture-validator.mjs");
 
-const schema = JSON.parse(await readFile(schemaPath, "utf8"));
+const schemaV1 = JSON.parse(await readFile(schemaV1Path, "utf8"));
+const schemaV2 = JSON.parse(await readFile(schemaV2Path, "utf8"));
 const ajv = new Ajv2020({
   allErrors: true,
   strict: false,
   code: { source: true, esm: true, lines: true },
 });
 addFormats(ajv);
+ajv.addSchema(schemaV1);
+ajv.addSchema(schemaV2);
 
-let generated = standaloneCode(ajv, ajv.compile(schema));
+const unionSchema = {
+  $id: "https://syc.local/linkdigest/capture-envelope-wire.schema.json",
+  oneOf: [{ $ref: schemaV1.$id }, { $ref: schemaV2.$id }],
+};
+let generated = standaloneCode(ajv, ajv.compile(unionSchema));
 generated = generated.replace(
   /const (\w+) = require\("ajv\/dist\/runtime\/ucs2length"\)\.default;/g,
   "const $1 = (value) => [...value].length;",
@@ -36,7 +44,7 @@ if (generated.includes("require(")) {
 
 const output = [
   "/* eslint-disable */",
-  "// Generated from contracts/capture-envelope-v1.schema.json. Do not edit by hand.",
+  "// Generated from capture-envelope-v1.schema.json + capture-envelope-v2.schema.json. Do not edit by hand.",
   'import * as __ajvFormats from "ajv-formats/dist/formats.js";',
   generated,
   "",

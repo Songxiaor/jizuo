@@ -31,7 +31,12 @@ case "$HOST_PATH" in
     ;;
 esac
 case "$BROWSER" in
-  chrome|brave)
+  chrome)
+    [[ -z "$USER_DATA_DIR" ]] || { echo "--user-data-dir is supported only with --browser edge" >&2; exit 2; }
+    TARGET_ROOT="$HOME"
+    TARGETS=("$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts")
+    ;;
+  brave)
     [[ -z "$USER_DATA_DIR" ]] || { echo "--user-data-dir is supported only with --browser edge" >&2; exit 2; }
     TARGET_ROOT="$HOME"
     TARGETS=("$HOME/Library/Application Support/Google/Chrome/NativeMessagingHosts")
@@ -182,5 +187,5 @@ if [[ $APPLY -eq 1 ]]; then
   done
   trap - EXIT
 fi
-echo "Brave 150 当前用户级查找映射到 Chrome 目录；此处不写 BraveSoftware 目录。"
+echo "Chrome 与 Brave 共享 Google/Chrome 的当前用户 NativeMessagingHosts 目录；Edge 使用独立目录。"
 echo "卸载说明：使用 uninstall-plan.sh 查看精确目标，再由人工执行 rm。"

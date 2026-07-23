@@ -8,9 +8,16 @@ final class HistoryExportRendererTests: XCTestCase {
 
     let markdown = String(decoding: try HistoryExportRenderer.render(projection, as: .markdown).data, as: UTF8.self)
     XCTAssertEqual(markdown, """
+    ---
+    title: "示例标题"
+    source: "https://example.test/article"
+    created: "1970-01-01T00:00:01.000Z"
+    ---
+
     # 示例标题
 
     - 来源：https://example.test/article
+    - 标签：—
     - 导出版本：1
     - 创建时间（UTC）：1970-01-01T00:00:01.000Z
     - 最近更新时间（UTC）：1970-01-01T00:00:04.000Z
@@ -46,6 +53,7 @@ final class HistoryExportRendererTests: XCTestCase {
     XCTAssertEqual(plainText, """
     标题: 示例标题
     来源: https://example.test/article
+    标签: —
     导出版本: 1
     创建时间（UTC）: 1970-01-01T00:00:01.000Z
     最近更新时间（UTC）: 1970-01-01T00:00:04.000Z
@@ -86,6 +94,17 @@ final class HistoryExportRendererTests: XCTestCase {
     XCTAssertEqual(decoded.task, projection.task)
     XCTAssertEqual(decoded.snapshots, projection.snapshots)
     XCTAssertEqual(decoded.runs, projection.runs)
+  }
+
+  func testAllExportFormatsIncludeLocalTags() throws {
+    let projection = fixture().withTags(["本地优先", "Swift"])
+    let markdown = String(decoding: try HistoryExportRenderer.render(projection, as: .markdown).data, as: UTF8.self)
+    let plainText = String(decoding: try HistoryExportRenderer.render(projection, as: .plainText).data, as: UTF8.self)
+    let json = try HistoryExportRenderer.render(projection, as: .json).data
+
+    XCTAssertTrue(markdown.contains("- 标签：本地优先, Swift"))
+    XCTAssertTrue(plainText.contains("标签: 本地优先, Swift"))
+    XCTAssertEqual(try JSONDecoder().decode(HistoryExportProjection.self, from: json).tags.map(\.name), ["本地优先", "Swift"])
   }
 
   func testRenderedFilesHaveExactFormatExtensions() throws {
@@ -162,7 +181,7 @@ final class HistoryExportRendererTests: XCTestCase {
   }
 
   func testPartialUsageShowsInputOutputAndSafelyDerivedTotal() throws {
-    let usage = try RunUsageCost(inputTokens: 12, outputTokens: 30)
+    let usage = RunUsageCost(inputTokens: 12, outputTokens: 30)
     let projection = fixture(usageCost: usage)
 
     let markdown = String(decoding: try HistoryExportRenderer.render(projection, as: .markdown).data, as: UTF8.self)
@@ -283,7 +302,7 @@ final class HistoryExportRendererTests: XCTestCase {
     let artifactID = ArtifactID(UUID(uuidString: "dddddddd-dddd-dddd-dddd-dddddddddddd")!)
     let task = HistoryTask(id: taskID, canonicalURL: "https://example.test/article", canonicalizationVersion: 1, createdAtMilliseconds: 1_000, updatedAtMilliseconds: 4_000)
     let snapshot = ContentSnapshot(id: snapshotID, taskID: taskID, sequence: 1, envelopeCreatedAtMilliseconds: 1_500, capturedAtMilliseconds: 2_000, sourceKind: "web", sourceURL: task.canonicalURL, title: title, platform: "fixture", captureMethod: "page", completeness: "complete", bodyText: body, characterCount: body.unicodeScalars.count, bodySHA256: String(repeating: "a", count: 64), sourceLabel: "网页", usedCookie: true)
-    let usage = usageCost ?? (try! RunUsageCost(inputTokens: 12, outputTokens: 30, totalTokens: 42, costAmountMicros: 123, costCurrencyCode: "USD"))
+    let usage = usageCost ?? RunUsageCost(inputTokens: 12, outputTokens: 30, totalTokens: 42, costAmountMicros: 123, costCurrencyCode: "USD")
     let run = HistoryRun(id: runID, taskID: taskID, snapshotID: snapshotID, idempotencyKey: "internal-key", rerunOfRunID: nil, kind: .summarize, targetLanguage: nil, status: status, providerProfileID: "internal-profile", providerKind: "openai-compatible", providerBaseURL: "https://provider.invalid/v1", providerAPIMode: "chat_completions", model: "fixture-model", createdAtMilliseconds: 3_000, startedAtMilliseconds: 3_500, finishedAtMilliseconds: 4_000, failureCode: "INTERNAL", failureRetryable: false, usageCost: usage)
     let artifact = HistoryArtifact(id: artifactID, runID: runID, contentFormat: .markdown, completeness: artifactCompleteness, bodyText: artifactBody, createdAtMilliseconds: 4_000, updatedAtMilliseconds: 4_000)
     return .init(task: task, snapshots: [snapshot], runs: [.init(run: run, artifact: artifact)])
@@ -305,5 +324,11 @@ final class HistoryExportRendererTests: XCTestCase {
         return XCTFail("Expected dataCorrupted, got \(error)", file: file, line: line)
       }
     }
+  }
+}
+
+private extension HistoryExportProjection {
+  func withTags(_ names: [String]) -> HistoryExportProjection {
+    .init(task: task, snapshots: snapshots, runs: runs, tags: names.compactMap(HistoryTag.init(rawValue:)))
   }
 }

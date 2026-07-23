@@ -1,0 +1,122 @@
+[
+  {
+    "id": "static-01", "category": "static", "url": "https://en.wikipedia.org/wiki/HTTP",
+    "expectedTitle": "HTTP", "expectedBodyStart": "HTTP", "expectedBodyEnd": "References", "minimumCharacterCount": 2000,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom", "retry-public-network"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "static-02", "category": "static", "url": "https://en.wikipedia.org/wiki/Transmission_Control_Protocol",
+    "expectedTitle": "Transmission Control Protocol", "expectedBodyStart": "Transmission Control Protocol", "expectedBodyEnd": "References", "minimumCharacterCount": 2000,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom", "retry-public-network"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "static-03", "category": "static", "url": "https://en.wikipedia.org/wiki/SQLite",
+    "expectedTitle": "SQLite", "expectedBodyStart": "SQLite", "expectedBodyEnd": "References", "minimumCharacterCount": 2000,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom", "retry-public-network"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "static-04", "category": "static", "url": "https://en.wikipedia.org/wiki/Markdown",
+    "expectedTitle": "Markdown", "expectedBodyStart": "Markdown", "expectedBodyEnd": "References", "minimumCharacterCount": 1500,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom", "retry-public-network"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "static-05", "category": "static", "url": "https://en.wikipedia.org/wiki/JSON",
+    "expectedTitle": "JSON", "expectedBodyStart": "JSON", "expectedBodyEnd": "References", "minimumCharacterCount": 1500,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom", "retry-public-network"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "static-06", "category": "static", "url": "https://en.wikipedia.org/wiki/Representational_state_transfer",
+    "expectedTitle": "REST", "expectedBodyStart": "Representational State Transfer", "expectedBodyEnd": "References", "minimumCharacterCount": 2000,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom", "retry-public-network"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "static-07", "category": "static", "url": "https://en.wikipedia.org/wiki/Git_(software)",
+    "expectedTitle": "Git", "expectedBodyStart": "Git", "expectedBodyEnd": "References", "minimumCharacterCount": 2000,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom", "retry-public-network"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "static-08", "category": "static", "url": "https://developer.mozilla.org/en-US/docs/Web/HTTP/Overview",
+    "expectedTitle": "HTTP", "expectedBodyStart": "HTTP", "expectedBodyEnd": "See also", "minimumCharacterCount": 1000,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom", "retry-public-network"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "static-09", "category": "static", "url": "https://docs.python.org/3/tutorial/introduction.html",
+    "expectedTitle": "An Informal Introduction to Python", "expectedBodyStart": "An Informal Introduction to Python", "expectedBodyEnd": "First Steps Towards Programming", "minimumCharacterCount": 2000,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom", "retry-public-network"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "static-10", "category": "static", "url": "https://github.com/torvalds/linux",
+    "expectedTitle": "torvalds/linux", "expectedBodyStart": "Linux kernel", "expectedBodyEnd": "Linux kernel", "minimumCharacterCount": 500,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom", "retry-public-network"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "csr-01", "category": "csr", "url": "https://excalidraw.com",
+    "expectedTitle": "Excalidraw", "expectedBodyStart": "Excalidraw", "expectedBodyEnd": "Excalidraw", "minimumCharacterCount": 100,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "csr-02", "category": "csr", "url": "https://bsky.app",
+    "expectedTitle": "Bluesky", "expectedBodyStart": "Bluesky", "expectedBodyEnd": "Bluesky", "minimumCharacterCount": 100,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "csr-03", "category": "csr", "url": "https://app.gitbook.com",
+    "expectedTitle": "GitBook", "expectedBodyStart": "GitBook", "expectedBodyEnd": "GitBook", "minimumCharacterCount": 100,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "csr-04", "category": "csr", "url": "https://airtable.com",
+    "expectedTitle": "Airtable", "expectedBodyStart": "Airtable", "expectedBodyEnd": "Airtable", "minimumCharacterCount": 100,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "csr-05", "category": "csr", "url": "https://app.diagrams.net",
+    "expectedTitle": "draw.io", "expectedBodyStart": "diagrams.net", "expectedBodyEnd": "diagrams.net", "minimumCharacterCount": 100,
+    "completenessLabel": "best_effort", "allowedDegradationPaths": ["browser-extension-current-page-dom"],
+    "expectedOutcome": "capture", "expectedErrorCodes": []
+  },
+  {
+    "id": "login-visible-01", "category": "login-visible", "url": "https://example-internal-wiki.test/spaces/eng/pages/onboarding",
+    "expectedTitle": "Sign in required - Internal Wiki", "expectedBodyStart": "Sign in to continue", "expectedBodyEnd": "authenticated workspace members", "minimumCharacterCount": 20,
+    "completenessLabel": "extension_required", "allowedDegradationPaths": ["browser-extension-current-page-dom"],
+    "expectedOutcome": "browser-extension", "expectedErrorCodes": ["loginRequired"], "htmlFile": "fixtures/login-visible-01.html"
+  },
+  {
+    "id": "login-visible-02", "category": "login-visible", "url": "https://example-private-docs.test/doc/roadmap-2026",
+    "expectedTitle": "私有文档 - 需要登录", "expectedBodyStart": "请登录后继续", "expectedBodyEnd": "已登录的标签页中捕获", "minimumCharacterCount": 20,
+    "completenessLabel": "extension_required", "allowedDegradationPaths": ["browser-extension-current-page-dom"],
+    "expectedOutcome": "browser-extension", "expectedErrorCodes": ["loginRequired"], "htmlFile": "fixtures/login-visible-02.html"
+  },
+  {
+    "id": "login-visible-03", "category": "login-visible", "url": "https://example-membership-pub.test/p/subscriber-only-issue",
+    "expectedTitle": "Members-only post", "expectedBodyStart": "subscribers only", "expectedBodyEnd": "subscriber-only content", "minimumCharacterCount": 20,
+    "completenessLabel": "extension_required", "allowedDegradationPaths": ["browser-extension-current-page-dom"],
+    "expectedOutcome": "browser-extension", "expectedErrorCodes": ["loginRequired"], "htmlFile": "fixtures/login-visible-03.html"
+  },
+  {
+    "id": "intentional-fail-01", "category": "intentional-fail", "url": "https://tability.io",
+    "expectedTitle": "Access Restricted", "expectedBodyStart": "", "expectedBodyEnd": "", "minimumCharacterCount": 0,
+    "completenessLabel": "expected_failure", "allowedDegradationPaths": ["show-restricted-page-error", "browser-extension-current-page-dom"],
+    "expectedOutcome": "intentional-failure", "expectedErrorCodes": ["emptyContent", "responseStatus"], "htmlFile": "fixtures/intentional-fail-01.html"
+  },
+  {
+    "id": "intentional-fail-02", "category": "intentional-fail", "url": "https://www.canva.com/design",
+    "expectedTitle": "Loading", "expectedBodyStart": "", "expectedBodyEnd": "", "minimumCharacterCount": 0,
+    "completenessLabel": "expected_failure", "allowedDegradationPaths": ["show-empty-content-error", "browser-extension-current-page-dom"],
+    "expectedOutcome": "intentional-failure", "expectedErrorCodes": ["emptyContent", "loginRequired"], "htmlFile": "fixtures/intentional-fail-02.html"
+  }
+]

@@ -2,6 +2,58 @@ import XCTest
 @testable import LinkDigestCore
 
 final class HistoryDomainTests: XCTestCase {
+  func testPlatformSynonymNormalizedNamesCoverLegacyAutomaticTags() {
+    let names = HistoryTagNormalizer.platformSynonymNormalizedNames
+    for legacy in ["公众号", "X", "GitHub", "抖音"] {
+      let normalized = HistoryTagNormalizer.normalized(legacy)?.normalizedName
+      XCTAssertNotNil(normalized)
+      XCTAssertTrue(names.contains(normalized ?? ""))
+    }
+    XCTAssertFalse(names.contains("swift"))
+  }
+
+  func testTagNormalizationAndAutomaticFirstLineLimit() {
+    XCTAssertNil(HistoryTag(rawValue: "   "))
+    XCTAssertNil(HistoryTag(rawValue: String(repeating: "长", count: 21)))
+    XCTAssertEqual(HistoryTag(rawValue: "  Swift ")?.normalizedName, "swift")
+    XCTAssertEqual(
+      HistoryTagNormalizer.automaticTags(from: "甲, 乙, 甲, 丙, 丁, 戊\n第 2 行不解析").map(\.name),
+      ["甲", "乙", "丙", "丁", "戊"]
+    )
+    // Chinese comma / bullet formats that models often emit.
+    XCTAssertEqual(
+      HistoryTagNormalizer.automaticTags(from: "微信，验证，本地").map(\.name),
+      ["微信", "验证", "本地"]
+    )
+    XCTAssertEqual(
+      HistoryTagNormalizer.automaticTags(from: "- 产品\n- 设计\n- 工程").map(\.name),
+      ["产品", "设计", "工程"]
+    )
+    XCTAssertEqual(
+      HistoryTagNormalizer.fallbackTags(from: "该页面是微信公众平台的验证页面，提示环境异常。").map(\.name),
+      ["微信", "需验证"]
+    )
+  }
+
+  func testBrowserWireV1FingerprintGoldenHashAndManualNamespaceStaySeparate() {
+    let envelope = fixture(requestID: "golden", idempotencyKey: "delivery-golden")
+    let fingerprinter = SHA256CaptureFingerprinter()
+    XCTAssertEqual(
+      fingerprinter.semanticPayloadSHA256(envelope),
+      "21cdaa40987a1f9cce2b26136a84ddd9583b29d15fd11f6f2ae16a9e497144c0"
+    )
+    let manual = CapturedDocument(
+      requestID: envelope.requestId, createdAt: envelope.createdAt,
+      idempotencyKey: envelope.idempotencyKey, origin: .manualLink,
+      url: envelope.source.url, title: envelope.source.title, platform: "manual",
+      method: "public_html", text: envelope.capture.text,
+      completeness: "best_effort", capturedAt: envelope.capture.capturedAt,
+      sourceLabel: "manual fixture"
+    )
+    XCTAssertTrue(CaptureDeliveryIdentity.key(for: envelope).hasPrefix("capture:v1:"))
+    XCTAssertTrue(CaptureDeliveryIdentity.key(for: manual).hasPrefix("manual:v1:"))
+    XCTAssertNotEqual(fingerprinter.semanticPayloadSHA256(envelope), fingerprinter.semanticPayloadSHA256(manual))
+  }
   func testCanonicalURLV1IsConservativeAndDeterministic() throws {
     XCTAssertEqual(try CanonicalURL("HTTPS://Example.COM:443").value, "https://example.com/")
     XCTAssertEqual(try CanonicalURL("http://EXAMPLE.com:80/path?q=2&q=1#fragment").value, "http://example.com/path?q=2&q=1")
@@ -31,9 +83,10 @@ final class HistoryDomainTests: XCTestCase {
     XCTAssertTrue(RunStatus.queued.canTransition(to: .stopped))
     XCTAssertTrue(RunStatus.running.canTransition(to: .completed))
     XCTAssertFalse(RunStatus.completed.canTransition(to: .running))
-    XCTAssertEqual(try RunUsageCost(inputTokens: nil, outputTokens: 2, totalTokens: nil, costAmountMicros: 1234, costCurrencyCode: "USD").costAmountMicros, 1234)
-    XCTAssertThrowsError(try RunUsageCost(costAmountMicros: 1, costCurrencyCode: nil))
-    XCTAssertThrowsError(try RunUsageCost(costAmountMicros: 1, costCurrencyCode: "usd"))
+    XCTAssertEqual(RunUsageCost(inputTokens: nil, outputTokens: 2, totalTokens: nil, costAmountMicros: 1234, costCurrencyCode: "USD").costAmountMicros, 1234)
+    XCTAssertEqual(RunUsageCost(costAmountMicros: 1, costCurrencyCode: nil), .unknown)
+    XCTAssertEqual(RunUsageCost(costAmountMicros: 1, costCurrencyCode: "usd"), .unknown)
+    XCTAssertThrowsError(try RunUsageCost.validated(inputTokens: nil, outputTokens: 2, totalTokens: nil, costAmountMicros: 1, costCurrencyCode: nil))
   }
 
   func testTypedIDsRequireLowercaseCanonicalUUID() {

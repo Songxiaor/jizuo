@@ -15,19 +15,28 @@ public struct PersistentRunRequest: Sendable, Equatable {
   public let snapshotID: ContentSnapshotID
   public let intent: RunIntentKind
   public let targetLanguage: String?
+  public let summaryPrompt: String?
+  public let translationModel: String?
+  public let modelOverride: String?
 
   public init(
     runID: RunID,
     taskID: TaskID,
     snapshotID: ContentSnapshotID,
     intent: RunIntentKind,
-    targetLanguage: String? = nil
+    targetLanguage: String? = nil,
+    summaryPrompt: String? = nil,
+    translationModel: String? = nil,
+    modelOverride: String? = nil
   ) {
     self.runID = runID
     self.taskID = taskID
     self.snapshotID = snapshotID
     self.intent = intent
     self.targetLanguage = targetLanguage
+    self.summaryPrompt = summaryPrompt
+    self.translationModel = translationModel
+    self.modelOverride = modelOverride
   }
 
   public var idempotencyKey: String { "run:v1:ui:\(runID.rawValue)" }
@@ -71,10 +80,17 @@ public enum RunState: Sendable, Equatable {
 
 public actor ModelRunOrchestrator {
   public typealias StateHandler = @Sendable (RunID, RunState) async -> Void
+  /// Non-RunState notification for local History metadata that is committed
+  /// after a completed run (currently automatic tags). It deliberately has no
+  /// failure payload: metadata remains a fail-open side path.
+  public typealias HistoryMetadataChangedHandler = @Sendable (TaskID) async -> Void
 
   private let configurationService: ProviderConfigurationService
   private let provider: any ModelProvider
+  private let summaryTagGenerator: (any SummaryTagGenerating)?
   private let history: HistoryApplicationService
+  private let onHistoryMetadataChanged: HistoryMetadataChangedHandler?
+  private let onRunMetadataChanged: HistoryMetadataChangedHandler?
   private let storageWriteGate: StorageWriteGate?
   private let nowMilliseconds: @Sendable () -> Int64
 
@@ -84,12 +100,16 @@ public actor ModelRunOrchestrator {
   private var currentArtifactID: ArtifactID?
   private var currentSecretRedactor: StreamingSecretRedactor?
   private var currentTask: Task<Void, Never>?
+  private var currentTaskID: TaskID?
   private var currentStateHandler: StateHandler?
 
   public init(
     configurationService: ProviderConfigurationService,
     provider: any ModelProvider,
+    summaryTagGenerator: (any SummaryTagGenerating)? = nil,
     history: HistoryApplicationService,
+    onHistoryMetadataChanged: HistoryMetadataChangedHandler? = nil,
+    onRunMetadataChanged: HistoryMetadataChangedHandler? = nil,
     storageWriteGate: StorageWriteGate? = nil,
     nowMilliseconds: @escaping @Sendable () -> Int64 = {
       Int64((Date().timeIntervalSince1970 * 1_000).rounded())
@@ -97,7 +117,10 @@ public actor ModelRunOrchestrator {
   ) {
     self.configurationService = configurationService
     self.provider = provider
+    self.summaryTagGenerator = summaryTagGenerator ?? (provider as? any SummaryTagGenerating)
     self.history = history
+    self.onHistoryMetadataChanged = onHistoryMetadataChanged
+    self.onRunMetadataChanged = onRunMetadataChanged
     self.storageWriteGate = storageWriteGate
     self.nowMilliseconds = nowMilliseconds
   }
@@ -105,6 +128,15 @@ public actor ModelRunOrchestrator {
   public func start(
     request: PersistentRunRequest,
     capture: CaptureEnvelopeV1?,
+    authorization: ProviderAuthorization? = nil,
+    onState: @escaping StateHandler
+  ) async {
+    await start(request: request, capture: capture.map(CapturedDocument.init(wire:)), authorization: authorization, onState: onState)
+  }
+
+  public func start(
+    request: PersistentRunRequest,
+    capture: CapturedDocument?,
     authorization: ProviderAuthorization? = nil,
     onState: @escaping StateHandler
   ) async {
@@ -170,6 +202,7 @@ public actor ModelRunOrchestrator {
     currentArtifactID = ArtifactID()
     currentSecretRedactor = nil
     currentStateHandler = onState
+    currentTaskID = request.taskID
 
     // Install a cancellable producer before the reentrant starting callback.
     // The gate preserves queued commit → starting UI → credentials ordering.
@@ -180,6 +213,10 @@ public actor ModelRunOrchestrator {
           runID: runID,
           intentKind: request.intent,
           targetLanguage: request.targetLanguage,
+          summaryPrompt: request.summaryPrompt,
+          translationModel: request.translationModel,
+          modelOverride: request.modelOverride,
+          taskID: request.taskID,
           capture: capture,
           authorization: authorization
         )
@@ -200,6 +237,7 @@ public actor ModelRunOrchestrator {
       let runID = currentRunID,
       let intent = currentIntent,
       let task = currentTask,
+      let taskID = currentTaskID,
       let onState = currentStateHandler
     else {
       return
@@ -230,6 +268,7 @@ public actor ModelRunOrchestrator {
         usageCost: .unknown
       ))
       await onState(runID, .stopped(intent: intent, partialText: partialText))
+      await onRunMetadataChanged?(taskID)
     } catch let failure as RepositoryFailure {
       let mapped = StorageErrorMapper.map(failure, context: .write)
       let gateCode = await degradeStorage(mapped.code)
@@ -250,7 +289,11 @@ public actor ModelRunOrchestrator {
     runID: RunID,
     intentKind: RunIntentKind,
     targetLanguage: String?,
-    capture: CaptureEnvelopeV1?,
+    summaryPrompt: String?,
+    translationModel: String?,
+    modelOverride: String?,
+    taskID: TaskID,
+    capture: CapturedDocument?,
     authorization: ProviderAuthorization?
   ) async {
     guard let capture else {
@@ -263,7 +306,7 @@ public actor ModelRunOrchestrator {
       return
     }
 
-    let text = capture.capture.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let text = capture.text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !text.isEmpty else {
       await persistFailure(
         runID: runID,
@@ -310,16 +353,42 @@ public actor ModelRunOrchestrator {
 
     guard currentRunID == runID, !Task.isCancelled else { return }
 
+    let effectiveProfile: ProviderProfile
+    do {
+      if let alternateModel = (modelOverride ?? (intentKind == .translate ? translationModel : nil))?.trimmingCharacters(in: .whitespacesAndNewlines),
+         !alternateModel.isEmpty {
+        effectiveProfile = try credentials.profile.replacing(model: alternateModel)
+      } else {
+        effectiveProfile = credentials.profile
+      }
+    } catch let error as ProviderConfigurationError {
+      await persistFailure(
+        runID: runID,
+        intent: intentKind,
+        code: mapConfigurationError(error),
+        retryable: false
+      )
+      return
+    } catch {
+      await persistFailure(
+        runID: runID,
+        intent: intentKind,
+        code: ModelRunErrorCode.runFailed.rawValue,
+        retryable: false
+      )
+      return
+    }
+
     do {
       try history.markRunRunning(.init(
         runID: runID,
         startedAtMilliseconds: nowMilliseconds(),
         provider: .init(
-          profileID: credentials.profile.id,
+          profileID: effectiveProfile.id,
           providerKind: "openai-compatible",
-          baseURL: credentials.profile.baseURL.absoluteString,
-          apiMode: credentials.profile.apiMode.rawValue,
-          model: credentials.profile.model
+          baseURL: effectiveProfile.baseURL.absoluteString,
+          apiMode: effectiveProfile.apiMode.rawValue,
+          model: effectiveProfile.model
         )
       ))
       guard currentRunID == runID, !Task.isCancelled else { return }
@@ -329,10 +398,17 @@ public actor ModelRunOrchestrator {
       return
     }
 
-    let title = capture.source.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let title = capture.title?.trimmingCharacters(in: .whitespacesAndNewlines)
     let intent: RunIntent = switch intentKind {
     case .summarize:
-      .summarize(title: title?.isEmpty == true ? nil : title, text: text)
+      .summarize(
+        title: title?.isEmpty == true ? nil : title,
+        text: text,
+        prompt: ModelPreferences.summaryPrompt(
+          configuredPrompt: summaryPrompt ?? ModelPreferences.defaultSummaryPrompt,
+          outputLanguage: targetLanguage ?? ModelPreferences.defaultTargetLanguage
+        )
+      )
     case .translate:
       .translate(
         title: title?.isEmpty == true ? nil : title,
@@ -343,9 +419,10 @@ public actor ModelRunOrchestrator {
       .connectionTest
     }
 
+    var reportedUsage = RunUsageCost.unknown
     do {
       for try await event in provider.stream(
-        profile: credentials.profile,
+        profile: effectiveProfile,
         apiKey: credentials.apiKey,
         intent: intent
       ) {
@@ -358,8 +435,17 @@ public actor ModelRunOrchestrator {
             runID: runID,
             intent: intentKind
           )
+        case let .usage(usage):
+          reportedUsage = usage
         case .completed:
-          await finishCompleted(runID: runID, intent: intentKind)
+          await finishCompleted(
+            runID: runID,
+            intent: intentKind,
+            usageCost: reportedUsage,
+            taskID: taskID,
+            profile: effectiveProfile,
+            apiKey: credentials.apiKey
+          )
           return
         }
       }
@@ -371,12 +457,13 @@ public actor ModelRunOrchestrator {
           hadOutput: !currentCommittedPartialText.isEmpty
         ),
         runID: runID,
-        intent: intentKind
+        intent: intentKind,
+        usageCost: reportedUsage
       )
     } catch is CancellationError {
       // stop(), a storage failure, or a newer run already owns UI closure.
     } catch let failure as ModelProviderFailure {
-      await finishProviderFailure(failure, runID: runID, intent: intentKind)
+      await finishProviderFailure(failure, runID: runID, intent: intentKind, usageCost: reportedUsage)
     } catch {
       await persistFailure(
         runID: runID,
@@ -462,7 +549,14 @@ public actor ModelRunOrchestrator {
     }
   }
 
-  private func finishCompleted(runID: RunID, intent: RunIntentKind) async {
+  private func finishCompleted(
+    runID: RunID,
+    intent: RunIntentKind,
+    usageCost: RunUsageCost,
+    taskID: TaskID,
+    profile: ProviderProfile,
+    apiKey: String
+  ) async {
     guard currentRunID == runID else { return }
     guard await flushSecretHoldback(runID: runID, intent: intent) else { return }
     let text = currentCommittedPartialText
@@ -476,28 +570,41 @@ public actor ModelRunOrchestrator {
       return
     }
 
-    await persistTerminal(
+    let persisted = await persistTerminal(
       runID: runID,
       intent: intent,
       status: .completed,
       artifactCompleteness: .complete,
       failureCode: nil,
       failureRetryable: nil,
+      usageCost: usageCost,
       successState: .completed(intent: intent, text: text)
+    )
+    guard persisted else { return }
+    await applyAutomaticTags(
+      to: taskID,
+      generatedText: text,
+      profile: profile,
+      apiKey: apiKey
     )
   }
 
   private func finishProviderFailure(
     _ failure: ModelProviderFailure,
     runID: RunID,
-    intent: RunIntentKind
+    intent: RunIntentKind,
+    usageCost: RunUsageCost = .unknown
   ) async {
     guard currentRunID == runID else { return }
     guard await flushSecretHoldback(runID: runID, intent: intent) else { return }
     let partialText = currentCommittedPartialText
     let state: RunState = partialText.isEmpty
       ? .failed(intent: intent, code: failure.code.rawValue)
-      : .incomplete(intent: intent, partialText: partialText, code: failure.code.rawValue)
+      : .incomplete(
+        intent: intent,
+        partialText: partialText,
+        code: failure.code.rawValue
+      )
     await persistTerminal(
       runID: runID,
       intent: intent,
@@ -505,6 +612,7 @@ public actor ModelRunOrchestrator {
       artifactCompleteness: partialText.isEmpty ? nil : .partial,
       failureCode: failure.code.rawValue,
       failureRetryable: failure.retryable,
+      usageCost: usageCost,
       successState: state
     )
   }
@@ -529,6 +637,7 @@ public actor ModelRunOrchestrator {
     )
   }
 
+  @discardableResult
   private func persistTerminal(
     runID: RunID,
     intent: RunIntentKind?,
@@ -536,13 +645,14 @@ public actor ModelRunOrchestrator {
     artifactCompleteness: ArtifactCompleteness?,
     failureCode: String?,
     failureRetryable: Bool?,
+    usageCost: RunUsageCost = .unknown,
     successState: RunState
-  ) async {
+  ) async -> Bool {
     guard
       currentRunID == runID,
       let onState = currentStateHandler
     else {
-      return
+      return false
     }
 
     let partialText = currentCommittedPartialText
@@ -562,15 +672,57 @@ public actor ModelRunOrchestrator {
         status: status,
         finishedAtMilliseconds: nowMilliseconds(),
         artifact: artifact,
-        usageCost: .unknown,
+        usageCost: usageCost,
         failureCode: failureCode,
         failureRetryable: failureRetryable
       ))
-      guard currentRunID == runID else { return }
+      guard currentRunID == runID else { return false }
+      let taskID = currentTaskID
       clearCurrentRun()
       await onState(runID, successState)
+      if let taskID { await onRunMetadataChanged?(taskID) }
+      return true
     } catch {
       await persistenceFailed(error, runID: runID, intent: intent)
+      return false
+    }
+  }
+
+  /// Automatic labels are best-effort local metadata. They deliberately run
+  /// after the completed result has been persisted and presented, use the same
+  /// already-authorized profile/model, and never surface a provider failure.
+  /// When the model call fails or returns nothing parseable, a small local
+  /// heuristic may still attach platform / gate chips so the tag row is not
+  /// left empty after a successful summary.
+  private func applyAutomaticTags(
+    to taskID: TaskID,
+    generatedText: String,
+    profile: ProviderProfile,
+    apiKey: String
+  ) async {
+    var tags: [HistoryTag] = []
+    if let summaryTagGenerator {
+      do {
+        let response = try await summaryTagGenerator.generateSummaryTags(
+          profile: profile,
+          apiKey: apiKey,
+          summary: generatedText
+        )
+        tags = HistoryTagNormalizer.automaticTags(from: response)
+      } catch {
+        // Fail-open by design: tagging must not change a completed run, its
+        // visible state, or the data-destination confirmation contract.
+      }
+    }
+    if tags.isEmpty {
+      tags = HistoryTagNormalizer.fallbackTags(from: generatedText)
+    }
+    guard !tags.isEmpty else { return }
+    do {
+      _ = try history.addTags(tags.map(\.name), to: taskID)
+      await onHistoryMetadataChanged?(taskID)
+    } catch {
+      // Still fail-open: completed Run remains the source of truth.
     }
   }
 
@@ -607,6 +759,7 @@ public actor ModelRunOrchestrator {
     currentArtifactID = nil
     currentSecretRedactor = nil
     currentTask = nil
+    currentTaskID = nil
     currentStateHandler = nil
   }
 

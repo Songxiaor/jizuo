@@ -343,27 +343,84 @@ func liveApplicationSupportRoot() throws -> URL {
   return root
 }
 
-func makeUnixSocketServerStarter(
-  path: String,
-  statusSink: @escaping @Sendable (String) async -> Void
-) -> AppComposition.ServerStarter {
-  { receiver in
-    let server = UnixSocketServer(path: path)
-    try server.start()
+final class UnixSocketServerLifecycle: @unchecked Sendable {
+  private let path: String
+  private let statusSink: @Sendable (String) async -> Void
+  private let lock = NSLock()
+  private var server: UnixSocketServer?
+  private var acceptTask: Task<Void, Never>?
+
+  init(
+    path: String,
+    statusSink: @escaping @Sendable (String) async -> Void
+  ) {
+    self.path = path
+    self.statusSink = statusSink
+  }
+
+  func start(_ receiver: CaptureReceiver) throws {
+    let candidate = UnixSocketServer(path: path)
+    let canStart = lock.withLock { () -> Bool in
+      guard server == nil else { return false }
+      server = candidate
+      return true
+    }
+    guard canStart else { throw POSIXError(.EALREADY) }
+    do {
+      try candidate.start()
+    } catch {
+      lock.withLock {
+        if server === candidate { server = nil }
+      }
+      throw error
+    }
+
     Task { await statusSink("本机接收服务已启动") }
-    Task.detached(priority: .userInitiated) {
-      while !Task.isCancelled {
+    let task = Task.detached(priority: .userInitiated) { [weak self] in
+      guard let self else { return }
+      while !Task.isCancelled, self.isRunning(candidate) {
         let client: FileHandle
         do {
-          client = try server.accept(timeout: 1, ioTimeout: 10)
+          client = try candidate.accept(timeout: 1, ioTimeout: 10)
         } catch let error as POSIXError where error.code == .ETIMEDOUT {
           continue
         } catch {
-          await statusSink("接收服务错误")
+          guard self.isRunning(candidate), !Task.isCancelled else { return }
+          await self.statusSink("接收服务错误")
           return
         }
         Task.detached { await receiver.handleClient(client) }
       }
     }
+    lock.withLock {
+      if server === candidate {
+        acceptTask = task
+      } else {
+        task.cancel()
+      }
+    }
   }
+
+  func stop() {
+    let owned = lock.withLock { () -> (UnixSocketServer?, Task<Void, Never>?) in
+      let value = (server, acceptTask)
+      server = nil
+      acceptTask = nil
+      return value
+    }
+    owned.1?.cancel()
+    owned.0?.stop()
+  }
+
+  private func isRunning(_ candidate: UnixSocketServer) -> Bool {
+    lock.withLock { server === candidate }
+  }
+
+  deinit { stop() }
+}
+
+func makeUnixSocketServerStarter(
+  lifecycle: UnixSocketServerLifecycle
+) -> AppComposition.ServerStarter {
+  { receiver in try lifecycle.start(receiver) }
 }

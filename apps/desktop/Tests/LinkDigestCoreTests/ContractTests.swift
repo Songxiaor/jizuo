@@ -2,17 +2,86 @@ import XCTest
 @testable import LinkDigestCore
 
 final class ContractTests: XCTestCase {
+  private func writeSchemaBundle(at root: URL) throws -> URL {
+    let bundle = root.appendingPathComponent(CaptureWireContractSchema.resourceBundleName, isDirectory: true)
+    let contracts = bundle.appendingPathComponent("Resources/contracts", isDirectory: true)
+    try FileManager.default.createDirectory(at: contracts, withIntermediateDirectories: true)
+    let source = try CaptureWireContractSchema.testLocator().schemaURL()
+    try FileManager.default.copyItem(
+      at: source,
+      to: contracts.appendingPathComponent("capture-envelope-v1.schema.json")
+    )
+    return bundle
+  }
+
+  func testApplicationResourceLookupUsesOnlyStandardAppResources() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let resources = root.appendingPathComponent("LinkDigest.app/Contents/Resources", isDirectory: true)
+    try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+    _ = try writeSchemaBundle(at: resources)
+
+    let locator = CaptureWireContractSchema.ResourceLocator(mode: .application(resourceURL: resources))
+    XCTAssertNoThrow(try CaptureWireContractSchema.validator(locator: locator))
+  }
+
+  func testApplicationResourceLookupFailsClosedWithoutEmbeddedBundle() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let resources = root.appendingPathComponent("Missing.app/Contents/Resources", isDirectory: true)
+    try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+
+    let locator = CaptureWireContractSchema.ResourceLocator(mode: .application(resourceURL: resources))
+    XCTAssertThrowsError(try CaptureWireContractSchema.validator(locator: locator))
+  }
+
+  func testExecutableResourceLookupUsesSiblingBundle() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    _ = try writeSchemaBundle(at: root)
+
+    let locator = CaptureWireContractSchema.ResourceLocator(
+      mode: .executable(executableURL: root.appendingPathComponent("LinkDigestNativeHost"))
+    )
+    XCTAssertNoThrow(try CaptureWireContractSchema.validator(locator: locator))
+  }
+
+  func testModuleFallbackRequiresExplicitTestMode() throws {
+    XCTAssertNoThrow(try CaptureWireContractSchema.validator(locator: CaptureWireContractSchema.testLocator()))
+
+    let missingExecutable = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+      .appendingPathComponent("LinkDigestApp")
+    XCTAssertThrowsError(
+      try CaptureWireContractSchema.validator(locator: .init(mode: .executable(executableURL: missingExecutable)))
+    )
+  }
+
   func testSemanticValidator() throws {
     let value = CaptureEnvelopeV1(version: 1, requestId: "fixture", createdAt: "2026-07-13T20:00:00Z", source: .init(kind: "browser_capture", url: "https://example.test", title: "Fixture", platform: "generic"), capture: .init(method: "rendered_dom", text: "😀ok", characterCount: 3, completeness: "full_article", capturedAt: "2026-07-13T20:00:00Z"), evidence: .init(sourceLabel: "test", usedCookie: false))
-    XCTAssertNoThrow(try CaptureValidator.validate(value))
-    XCTAssertThrowsError(try CaptureValidator.validate(.init(version: 1, requestId: "bad", createdAt: value.createdAt, source: .init(kind: "browser_capture", url: "file:///tmp/x", title: nil, platform: "generic"), capture: value.capture, evidence: value.evidence))) { XCTAssertEqual($0 as? CaptureValidationError, .CAPTURE_URL_UNSUPPORTED) }
+    let locator = CaptureWireContractSchema.testLocator()
+    XCTAssertNoThrow(try CaptureValidator.validate(value, schemaLocator: locator))
+    XCTAssertThrowsError(try CaptureValidator.validate(.init(version: 1, requestId: "bad", createdAt: value.createdAt, source: .init(kind: "browser_capture", url: "file:///tmp/x", title: nil, platform: "generic"), capture: value.capture, evidence: value.evidence), schemaLocator: locator)) { XCTAssertEqual($0 as? CaptureValidationError, .CAPTURE_URL_UNSUPPORTED) }
+  }
+
+  func testGitHubPlatformIsAcceptedByTheSharedWireContract() throws {
+    let value = CaptureEnvelopeV1(
+      version: 1,
+      requestId: "github-platform",
+      createdAt: "2026-07-19T00:00:00Z",
+      source: .init(kind: "browser_capture", url: "https://github.com/openai/openai-node", title: "openai-node", platform: "github"),
+      capture: .init(method: "rendered_dom", text: "README", characterCount: 6, completeness: "full_article", capturedAt: "2026-07-19T00:00:00Z"),
+      evidence: .init(sourceLabel: "Current page DOM", usedCookie: false)
+    )
+    XCTAssertNoThrow(try CaptureValidator.validate(value, schemaLocator: CaptureWireContractSchema.testLocator()))
   }
   func testSharedFixtures() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("contracts/fixtures")
     guard FileManager.default.fileExists(atPath: root.appendingPathComponent("fixture-manifest.json").path) else { throw XCTSkip("build-dev.sh copies contracts before test") }
     let schema = try String(contentsOf: root.deletingLastPathComponent().appendingPathComponent("capture-envelope-v1.schema.json"), encoding: .utf8)
     XCTAssertTrue(schema.contains("https://json-schema.org/draft/2020-12/schema"))
-    let results = try FixtureRunner.run(directory: root); XCTAssertTrue(results.allSatisfy { $0.1 })
+    let results = try FixtureRunner.run(directory: root, schemaLocator: CaptureWireContractSchema.testLocator()); XCTAssertTrue(results.allSatisfy { $0.1 })
   }
 
   func testSharedNativeResponseFixturesAndStrictDecoder() throws {
@@ -20,7 +89,7 @@ final class ContractTests: XCTestCase {
     let fixtureData = try Data(contentsOf: root.appendingPathComponent("contracts/native-response-fixtures.json"))
     let fixture = try JSONSerialization.jsonObject(with: fixtureData) as! [String: Any]
     let cases = fixture["cases"] as! [[String: Any]]
-    let validator = try CaptureWireContractSchema.validator()
+    let validator = try CaptureWireContractSchema.validator(locator: CaptureWireContractSchema.testLocator())
 
     for entry in cases {
       let name = entry["name"] as! String
@@ -44,11 +113,12 @@ final class ContractTests: XCTestCase {
   }
 
   func testUnicodeScalarSemanticsIncludeEmojiCombiningAndNUL() throws {
+    let locator = CaptureWireContractSchema.testLocator()
     let cases = [("😀", 1), ("e\u{301}", 2), ("a\0b", 3)]
     for (text, expected) in cases {
       XCTAssertEqual(text.unicodeScalars.count, expected)
       let value = CaptureEnvelopeV1(version: 1, requestId: "unicode-\(expected)", createdAt: "2026-07-15T04:00:00Z", source: .init(kind: "browser_capture", url: "https://example.test/unicode", title: "Unicode fixture", platform: "generic"), capture: .init(method: "rendered_dom", text: text, characterCount: expected, completeness: "full_article", capturedAt: "2026-07-15T04:00:00Z"), evidence: .init(sourceLabel: "fixture", usedCookie: false))
-      XCTAssertNoThrow(try CaptureValidator.validate(value))
+      XCTAssertNoThrow(try CaptureValidator.validate(value, schemaLocator: locator))
     }
   }
 
@@ -79,7 +149,7 @@ final class ContractTests: XCTestCase {
 
     for invalid in invalidValues {
       let data = try JSONSerialization.data(withJSONObject: invalid)
-      XCTAssertThrowsError(try CaptureValidator.decode(data)) { error in
+      XCTAssertThrowsError(try CaptureValidator.decode(data, schemaLocator: CaptureWireContractSchema.testLocator())) { error in
         XCTAssertEqual(error as? CaptureValidationError, .CAPTURE_SCHEMA_INVALID)
       }
     }

@@ -5,14 +5,27 @@ import LinkDigestCore
 @testable import LinkDigestPersistence
 
 final class HistoryMigrationAndFaultTests: XCTestCase {
-  func testEmptyDatabaseMigratesToCandidate001AndRejectsExtraHyphenUUIDs() throws {
+  func testContainsCanonicalURLUsesExactVersionedCanonicalKey() throws {
+    try withRepository { repository, _ in
+      try repository.database.write { db in
+        try db.execute(
+          sql: "INSERT INTO tasks (id, canonical_url, canonicalization_version, created_at_ms, updated_at_ms) VALUES (?, ?, ?, 1, 1)",
+          arguments: ["11111111-1111-1111-1111-111111111111", "https://example.test/article", CanonicalURL.version]
+        )
+      }
+      XCTAssertTrue(try repository.containsCanonicalURL(CanonicalURL("https://EXAMPLE.test/article#fragment")))
+      XCTAssertFalse(try repository.containsCanonicalURL(CanonicalURL("https://example.test/article?different=1")))
+    }
+  }
+
+  func testEmptyDatabaseMigratesDirectlyTo008AndRejectsExtraHyphenUUIDs() throws {
     try withRepository { repository, _ in
       XCTAssertEqual(repository.accessMode, .writable)
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 1)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 8)
       let sql = try repository.database.read { db in
-        try Row.fetchAll(db, sql: "SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name IN ('tasks','content_snapshots','runs','artifacts','capture_deliveries')")
+        try Row.fetchAll(db, sql: "SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name IN ('tasks','content_snapshots','runs','artifacts','capture_deliveries','tags','task_tags','media_assets','media_transcription_evidence','task_transcription_attempts','task_transcription_evidence')")
       }
-      XCTAssertEqual(sql.count, 5)
+      XCTAssertEqual(sql.count, 11)
       for row in sql where ["tasks", "content_snapshots", "runs", "artifacts"].contains(row["name"] as String) {
         let tableSQL: String = row["sql"]
         XCTAssertTrue(tableSQL.contains("WITHOUT ROWID"))
@@ -21,6 +34,14 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
       }
       let snapshotSQL: String = sql.first { ($0["name"] as String) == "content_snapshots" }!["sql"]
       XCTAssertFalse(snapshotSQL.contains("length(body_text)"))
+      let taskTagsSQL: String = sql.first { ($0["name"] as String) == "task_tags" }!["sql"]
+      XCTAssertTrue(taskTagsSQL.contains("REFERENCES tasks(id) ON DELETE CASCADE"))
+      let evidenceSQL: String = sql.first { ($0["name"] as String) == "media_transcription_evidence" }!["sql"]
+      XCTAssertTrue(evidenceSQL.contains("REFERENCES media_assets(id, task_id) ON DELETE CASCADE"))
+      XCTAssertTrue(evidenceSQL.contains("REFERENCES content_snapshots(task_id, id) ON DELETE CASCADE"))
+      XCTAssertFalse(evidenceSQL.contains("body_text"))
+      XCTAssertFalse(evidenceSQL.contains("relative_path"))
+      XCTAssertFalse(evidenceSQL.contains("source_url"))
       for (index, invalidID) in [
         "NOT-A-UUID",
         "-2345678-1234-1234-1234-123456789abc",
@@ -33,10 +54,207 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
     }
   }
 
-  func test001ReopenIsIdempotentAndFutureSchemaIsReadOnly() throws {
+  func testExistingVersionOneDatabaseMigratesForwardWithoutLosingTasks() throws {
+    try withTemporaryLocation { location in
+      let legacy = try DatabaseQueue(path: location.databaseURL.path)
+      try legacy.write { db in
+        try Migration001.apply(to: db, beforeCommit: {})
+        try db.execute(sql: "INSERT INTO tasks (id, canonical_url, canonicalization_version, created_at_ms, updated_at_ms) VALUES (?, ?, 1, 1, 1)", arguments: ["11111111-1111-1111-1111-111111111111", "https://example.test/legacy"])
+      }
+      try legacy.close()
+
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 8)
+      XCTAssertEqual(try repository.historyPage(limit: 10, after: nil).rows.map(\.canonicalURL), ["https://example.test/legacy"])
+      XCTAssertEqual(try repository.allTags(), [])
+    }
+  }
+
+  func testExistingVersionThreeDatabaseMigratesTo004WithoutLosingTasks() throws {
+    try withTemporaryLocation { location in
+      let versionThree = try DatabaseQueue(path: location.databaseURL.path)
+      try versionThree.write { db in
+        try Migration001.apply(to: db, beforeCommit: {})
+        try Migration002.apply(to: db)
+        try Migration003.apply(to: db)
+        try db.execute(
+          sql: "INSERT INTO tasks (id, canonical_url, canonicalization_version, created_at_ms, updated_at_ms) VALUES (?, ?, 1, 1, 1)",
+          arguments: ["33333333-3333-3333-3333-333333333333", "https://example.test/version-three"]
+        )
+        try db.execute(
+          sql: "INSERT INTO media_assets (id, task_id, relative_path, content_sha256, byte_size, platform, transcription_status, created_at_ms) VALUES (?, ?, ?, ?, 1, 'fixture', 'none', 2)",
+          arguments: [
+            "44444444-4444-4444-4444-444444444444",
+            "33333333-3333-3333-3333-333333333333",
+            "\(String(repeating: "4", count: 64)).mp4",
+            String(repeating: "4", count: 64),
+          ]
+        )
+      }
+      try versionThree.close()
+
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 8)
+      XCTAssertEqual(
+        try repository.historyPage(limit: 10, after: nil).rows.map(\.canonicalURL),
+        ["https://example.test/version-three"]
+      )
+      XCTAssertEqual(
+        try repository.database.read {
+          try String.fetchOne($0, sql: "SELECT name FROM sqlite_schema WHERE type = 'table' AND name = 'media_transcription_evidence'")
+        },
+        "media_transcription_evidence"
+      )
+      let migratedMedia = try repository.database.read { db in
+        try Row.fetchOne(db, sql: "SELECT transcription_status, transcription_attempt_generation, file_bookmark FROM media_assets")
+      }
+      XCTAssertEqual(migratedMedia?["transcription_status"] as String?, "none")
+      XCTAssertNil(migratedMedia?["transcription_attempt_generation"] as Int64?)
+      XCTAssertNil(migratedMedia?["file_bookmark"] as Data?)
+    }
+  }
+
+  func test007MigratesTo008WithoutRebuildingForeignKeyGraphOrLosingRows() throws {
+    try withTemporaryLocation { location in
+      let versionSeven = try DatabaseQueue(path: location.databaseURL.path)
+      let taskID = "11111111-1111-1111-1111-111111111111"
+      let snapshotID = "22222222-2222-2222-2222-222222222222"
+      let runID = "33333333-3333-3333-3333-333333333333"
+      let mediaID = "44444444-4444-4444-4444-444444444444"
+      let body = "legacy version seven"
+      try versionSeven.write { db in
+        try Migration001.apply(to: db, beforeCommit: {})
+        try Migration002.apply(to: db)
+        try Migration003.apply(to: db)
+        try Migration004.apply(to: db)
+        try Migration005.apply(to: db)
+        try Migration006.apply(to: db)
+        try Migration007.apply(to: db)
+        try db.execute(
+          sql: "INSERT INTO tasks (id, canonical_url, canonicalization_version, created_at_ms, updated_at_ms) VALUES (?, 'https://example.test/v7', 1, 1, 1)",
+          arguments: [taskID]
+        )
+        try db.execute(
+          sql: "INSERT INTO content_snapshots (id, task_id, sequence, envelope_created_at_ms, captured_at_ms, source_kind, source_url, title, platform, capture_method, completeness, body_text, character_count, body_sha256, source_label, used_cookie) VALUES (?, ?, 1, 1, 1, 'browser_capture', 'https://example.test/v7', 'V7', 'generic', 'rendered_dom', 'full_article', ?, ?, ?, 'Current page DOM', 0)",
+          arguments: [snapshotID, taskID, body, body.unicodeScalars.count, SHA256CaptureFingerprinter().bodySHA256(body)]
+        )
+        try db.execute(
+          sql: "INSERT INTO capture_deliveries (delivery_key, capture_contract_version, request_id, payload_sha256, task_id, snapshot_id, received_at_ms) VALUES ('capture:v1:req:v7', 1, 'v7', ?, ?, ?, 1)",
+          arguments: [String(repeating: "a", count: 64), taskID, snapshotID]
+        )
+        try db.execute(
+          sql: "INSERT INTO runs (id, task_id, snapshot_id, idempotency_key, kind, status, created_at_ms) VALUES (?, ?, ?, 'v7-run', 'summarize', 'completed', 1)",
+          arguments: [runID, taskID, snapshotID]
+        )
+        try db.execute(
+          sql: "INSERT INTO media_assets (id, task_id, snapshot_id, relative_path, content_sha256, byte_size, platform, transcription_status, created_at_ms) VALUES (?, ?, ?, ?, ?, 1, 'fixture', 'none', 1)",
+          arguments: [mediaID, taskID, snapshotID, "\(String(repeating: "b", count: 64)).mp4", String(repeating: "b", count: 64)]
+        )
+      }
+      try versionSeven.close()
+
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 8)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT used_cookie_v2 FROM content_snapshots") }, 0)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM runs") }, 1)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM media_assets") }, 1)
+      XCTAssertTrue(try repository.database.read { try Row.fetchAll($0, sql: "PRAGMA foreign_key_check") }.isEmpty)
+      XCTAssertFalse(try repository.detail(taskID: TaskID(taskID)!).snapshots[0].usedCookie)
+    }
+  }
+
+  func testV2CookieEvidenceRoundTripsTrueAndFalseWithoutChangingLegacyColumn() throws {
+    try withRepository { repository, _ in
+      let falseEnvelope = v2Capture(
+        media: v2Media(), requestID: "cookie-false", key: "cookie-false",
+        url: "https://example.test/cookie-false", body: "false evidence"
+      )
+      let falseAccepted = try repository.acceptCapture(.init(envelope: falseEnvelope, receivedAtMilliseconds: 1))
+      var trueEnvelope = v2Capture(
+        media: v2Media(), requestID: "cookie-true", key: "cookie-true",
+        url: "https://www.douyin.com/video/7655224917603994914", body: "true evidence"
+      )
+      trueEnvelope = CaptureEnvelopeV2(
+        requestId: trueEnvelope.requestId,
+        createdAt: trueEnvelope.createdAt,
+        idempotencyKey: trueEnvelope.idempotencyKey,
+        source: trueEnvelope.source,
+        capture: trueEnvelope.capture,
+        evidence: .init(sourceLabel: "Current page DOM + same-origin session detail", usedCookie: true),
+        media: trueEnvelope.media
+      )
+      let trueAccepted = try repository.acceptCapture(.init(envelope: trueEnvelope, receivedAtMilliseconds: 2))
+
+      XCTAssertFalse(try repository.detail(taskID: falseAccepted.taskID).snapshots[0].usedCookie)
+      let trueSnapshot = try repository.detail(taskID: trueAccepted.taskID).snapshots[0]
+      XCTAssertTrue(trueSnapshot.usedCookie)
+      XCTAssertEqual(trueSnapshot.sourceLabel, "Current page DOM + same-origin session detail")
+      let stored = try repository.database.read { db in
+        try Row.fetchOne(db, sql: "SELECT used_cookie, used_cookie_v2 FROM content_snapshots WHERE task_id = ?", arguments: [trueAccepted.taskID.rawValue])
+      }
+      XCTAssertEqual(stored?["used_cookie"] as Int?, 0)
+      XCTAssertEqual(stored?["used_cookie_v2"] as Int?, 1)
+    }
+  }
+
+  func testSameBodySessionFallbackUpgradesExistingSnapshotEvidenceWithoutDuplicatingBody() throws {
+    try withRepository { repository, _ in
+      let url = "https://www.douyin.com/video/7655224917603994914"
+      let falseEnvelope = v2Capture(
+        media: v2Media(platform: "douyin"), requestID: "same-body-false", key: "same-body-false",
+        url: url, body: "same captured body"
+      )
+      let first = try repository.acceptCapture(.init(envelope: falseEnvelope, receivedAtMilliseconds: 1))
+      let trueEnvelope = CaptureEnvelopeV2(
+        requestId: "same-body-true",
+        createdAt: falseEnvelope.createdAt,
+        idempotencyKey: "same-body-true",
+        source: falseEnvelope.source,
+        capture: falseEnvelope.capture,
+        evidence: .init(sourceLabel: "Current page DOM + same-origin session detail", usedCookie: true),
+        media: falseEnvelope.media
+      )
+      let second = try repository.acceptCapture(.init(envelope: trueEnvelope, receivedAtMilliseconds: 2))
+
+      XCTAssertEqual(second.snapshotID, first.snapshotID)
+      XCTAssertFalse(second.snapshotWasCreated)
+      let snapshots = try repository.detail(taskID: first.taskID).snapshots
+      XCTAssertEqual(snapshots.count, 1)
+      XCTAssertTrue(snapshots[0].usedCookie)
+      XCTAssertEqual(snapshots[0].sourceLabel, "Current page DOM + same-origin session detail")
+    }
+  }
+
+  func test004SchemaIsAppendOnlyProviderNeutralAndAttemptIdempotent() throws {
+    try withRepository { repository, _ in
+      let columns = try repository.database.read { db in
+        try Row.fetchAll(db, sql: "PRAGMA table_info(media_transcription_evidence)")
+          .map { $0["name"] as String }
+      }
+      XCTAssertEqual(Set(columns), Set([
+        "id", "media_id", "task_id", "snapshot_id", "attempt_id", "attempt_generation", "source", "engine",
+        "provider", "model", "locale_identifier", "language", "completed_at_ms",
+      ]))
+      let tableSQL = try repository.database.read { db in
+        try String.fetchOne(
+          db,
+          sql: "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'media_transcription_evidence'"
+        )
+      }
+      XCTAssertTrue(tableSQL?.contains("UNIQUE (media_id, attempt_id)") == true)
+      XCTAssertTrue(tableSQL?.contains("UNIQUE (task_id, attempt_generation)") == true)
+      XCTAssertFalse(tableSQL?.contains("source = 'on_device'") == true)
+      XCTAssertFalse(tableSQL?.contains("engine = 'apple_speech_analyzer'") == true)
+    }
+  }
+
+  func test008ReopenIsIdempotentAndFutureSchemaIsReadOnly() throws {
     try withTemporaryLocation { location in
       let first = try LocalDatabase.open(at: location)
-      try first.write { try $0.execute(sql: "PRAGMA user_version = 2") }
+      try first.write { try $0.execute(sql: "PRAGMA user_version = 9") }
       try first.close()
       let future = try LocalDatabase.open(at: location)
       XCTAssertEqual(future.accessMode, .readOnly(.futureSchema))
@@ -58,7 +276,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
       ))
       try writable.database.close()
       let upgrader = try DatabaseQueue(path: location.databaseURL.path)
-      try upgrader.write { try $0.execute(sql: "PRAGMA user_version = 2") }
+      try upgrader.write { try $0.execute(sql: "PRAGMA user_version = 9") }
       try upgrader.close()
 
       let future = try GRDBHistoryRepository.open(at: location)
@@ -83,8 +301,48 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
       try failed.close()
       let recovered = try LocalDatabase.open(at: location)
       XCTAssertEqual(recovered.accessMode, .writable)
-      XCTAssertEqual(try recovered.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 1)
+      XCTAssertEqual(try recovered.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 8)
       try recovered.close()
+    }
+  }
+
+  func test004MigratesTo005PreservingV1RowsAndAcceptingV2Provenance() throws {
+    try withTemporaryLocation { location in
+      let versionFour = try DatabaseQueue(path: location.databaseURL.path)
+      let v1 = capture(requestID: "migration-v1", key: "migration-v1", body: "legacy body")
+      let legacyTask = "11111111-1111-1111-1111-111111111111"
+      let legacySnapshot = "22222222-2222-2222-2222-222222222222"
+      try versionFour.write { db in
+        try Migration001.apply(to: db, beforeCommit: {})
+        try Migration002.apply(to: db)
+        try Migration003.apply(to: db)
+        try Migration004.apply(to: db)
+        try db.execute(sql: "INSERT INTO tasks (id, canonical_url, canonicalization_version, created_at_ms, updated_at_ms) VALUES (?, 'https://example.test/legacy', 1, 1, 1)", arguments: [legacyTask])
+        try db.execute(sql: "INSERT INTO content_snapshots (id, task_id, sequence, envelope_created_at_ms, captured_at_ms, source_kind, source_url, title, platform, capture_method, completeness, body_text, character_count, body_sha256, source_label, used_cookie) VALUES (?, ?, 1, 1, 1, 'browser_capture', 'https://example.test/legacy', 'Legacy', 'generic', 'rendered_dom', 'full_article', 'legacy body', 11, ?, 'Fixture DOM', 0)", arguments: [legacySnapshot, legacyTask, SHA256CaptureFingerprinter().bodySHA256("legacy body")])
+        try db.execute(sql: "INSERT INTO capture_deliveries (delivery_key, capture_contract_version, request_id, payload_sha256, task_id, snapshot_id, received_at_ms) VALUES ('capture:v1:id:migration-v1', 1, ?, ?, ?, ?, 1)", arguments: [v1.requestId, SHA256CaptureFingerprinter().semanticPayloadSHA256(v1), legacyTask, legacySnapshot])
+      }
+      try versionFour.close()
+
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 8)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT capture_contract_version FROM capture_deliveries WHERE request_id = ?", arguments: [v1.requestId]) }, 1)
+      let legacyReplay = try repository.acceptCapture(.init(envelope: v1, receivedAtMilliseconds: 2))
+      XCTAssertTrue(legacyReplay.deliveryWasReplayed)
+      XCTAssertEqual(legacyReplay.taskID.rawValue, legacyTask)
+
+      let envelopeV2 = v2Capture(
+        media: v2Media(),
+        requestID: "migration-v2",
+        key: "migration-v2",
+        url: "https://example.test/v2",
+        body: "version two"
+      )
+      let acceptedV2 = try repository.acceptCapture(.init(envelope: envelopeV2, receivedAtMilliseconds: 3))
+      let replayedV2 = try repository.acceptCapture(.init(envelope: envelopeV2, receivedAtMilliseconds: 4))
+      XCTAssertEqual(replayedV2.taskID, acceptedV2.taskID)
+      XCTAssertTrue(replayedV2.deliveryWasReplayed)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT capture_contract_version FROM capture_deliveries WHERE request_id = 'migration-v2'") }, 2)
     }
   }
 
@@ -112,7 +370,167 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
   }
 }
 
+final class HistoryTagPersistenceTests: XCTestCase {
+  func testNewCaptureGetsOneDeterministicSourceTagAndReplayDoesNotDuplicateIt() throws {
+    try withRepository { repository, _ in
+      let value = CaptureEnvelopeV1(
+        version: 1, requestId: "wechat-source", createdAt: "2026-07-15T04:00:00Z", idempotencyKey: "wechat-source",
+        source: .init(kind: "browser_capture", url: "https://mp.weixin.qq.com/s/example", title: "Fixture", platform: "wechat"),
+        capture: .init(method: "rendered_dom", text: "fixture body", characterCount: 12, completeness: "full_article", capturedAt: "2026-07-15T04:00:00Z"),
+        evidence: .init(sourceLabel: "Fixture DOM", usedCookie: false)
+      )
+      let accepted = try repository.acceptCapture(.init(envelope: value, receivedAtMilliseconds: 1))
+      let replay = try repository.acceptCapture(.init(envelope: value, receivedAtMilliseconds: 2))
+      // Platform is first-class navigation state; captures no longer attach
+      // automatic platform tags.
+      XCTAssertTrue(try repository.detail(taskID: accepted.taskID).tags.isEmpty)
+      XCTAssertEqual(replay.taskID, accepted.taskID)
+      XCTAssertTrue(try repository.allTags().isEmpty)
+    }
+  }
+
+  func testNormalizationDeduplicationAndPerTaskLimitAreEnforced() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      let tooLong = String(repeating: "长", count: 21)
+      let firstTen = (1 ... 12).map { "标签\($0)" }
+      let assigned = try repository.addTags(["  Swift  ", "swift", "", tooLong] + firstTen, to: accepted.taskID)
+
+      XCTAssertEqual(assigned.map(\.name), ["Swift"] + Array(firstTen.prefix(9)))
+      XCTAssertEqual(assigned.count, HistoryTagNormalizer.maximumTagsPerTask)
+      XCTAssertEqual(assigned.filter { $0.normalizedName == "swift" }.count, 1)
+      XCTAssertEqual(try repository.allTags().count, HistoryTagNormalizer.maximumTagsPerTask)
+    }
+  }
+
+  func testSQLIntersectionFilteringAndTaskDeletionCleanAssociations() throws {
+    try withRepository { repository, _ in
+      let swiftAI = try repository.acceptCapture(.init(envelope: capture(requestID: "tag-one", key: "tag-one", url: "https://example.test/tag-one", body: "one"), receivedAtMilliseconds: 10))
+      let swiftOnly = try repository.acceptCapture(.init(envelope: capture(requestID: "tag-two", key: "tag-two", url: "https://example.test/tag-two", body: "two"), receivedAtMilliseconds: 20))
+      let aiOnly = try repository.acceptCapture(.init(envelope: capture(requestID: "tag-three", key: "tag-three", url: "https://example.test/tag-three", body: "three"), receivedAtMilliseconds: 30))
+      _ = try repository.addTags(["Swift", "AI"], to: swiftAI.taskID)
+      _ = try repository.addTags(["Swift"], to: swiftOnly.taskID)
+      _ = try repository.addTags(["AI"], to: aiOnly.taskID)
+
+      XCTAssertEqual(
+        try repository.historyPage(limit: 20, after: nil, filter: .init(tagNames: ["swift"])).rows.map(\.taskID),
+        [swiftOnly.taskID, swiftAI.taskID]
+      )
+      XCTAssertEqual(
+        try repository.historyPage(limit: 20, after: nil, filter: .init(tagNames: ["AI", "SWIFT"])).rows.map(\.taskID),
+        [swiftAI.taskID],
+        "multiple tags are SQL intersection filters, not in-memory union filters"
+      )
+      XCTAssertEqual(
+        try repository.historyPage(limit: 20, after: nil, filter: .init(tagNames: ["Swift"], searchText: "tag-two")).rows.map(\.taskID),
+        [swiftOnly.taskID],
+        "search remains an independent SQL predicate alongside tag filters"
+      )
+      XCTAssertTrue(try repository.historyPage(limit: 20, after: nil, filter: .init(tagNames: ["missing"])).rows.isEmpty)
+
+      try repository.deleteTask(taskID: swiftAI.taskID)
+      let associations = try repository.database.read { db in
+        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM task_tags WHERE task_id = ?", arguments: [swiftAI.taskID.rawValue])
+      }
+      XCTAssertEqual(associations, 0)
+      XCTAssertEqual(try repository.allTags().map(\.name), ["AI", "Swift"])
+    }
+  }
+
+  func testNavigationCountsAndPlatformTagSearchFiltersStayInsideSQLite() throws {
+    try withRepository { repository, _ in
+      let now = Int64(Date().timeIntervalSince1970 * 1_000)
+      let summarized = try repository.acceptCapture(.init(
+        envelope: capture(
+          requestID: "nav-summarized", key: "nav-summarized",
+          url: "https://www2.douyin.com/video/1", body: "短视频正文", title: "短视频"
+        ),
+        receivedAtMilliseconds: now
+      ))
+      let target = try repository.acceptCapture(.init(
+        envelope: capture(
+          requestID: "nav-target", key: "nav-target",
+          url: "https://m.example.test/article", body: "目标正文", title: "Needle 标题"
+        ),
+        receivedAtMilliseconds: now + 1
+      ))
+      _ = try repository.addTags(["专题"], to: target.taskID)
+      let run = try repository.createRun(.init(
+        taskID: summarized.taskID,
+        snapshotID: summarized.snapshotID,
+        idempotencyKey: "nav-complete",
+        kind: .summarize,
+        createdAtMilliseconds: now + 2
+      ))
+      try repository.markRunRunning(.init(runID: run.runID, startedAtMilliseconds: now + 3, provider: .init()))
+      try repository.finishRun(.init(
+        runID: run.runID,
+        status: .completed,
+        finishedAtMilliseconds: now + 4,
+        artifact: .init(contentFormat: .markdown, completeness: .complete, bodyText: "总结完成")
+      ))
+
+      let counts = try repository.navigationCounts()
+      XCTAssertEqual(counts.all, 2)
+      XCTAssertEqual(counts.recent, 2)
+      XCTAssertEqual(counts.unsummarized, 1, "NOT EXISTS must exclude any task that has a successful artifact")
+      XCTAssertEqual(counts.platforms, [
+        .init(host: "douyin.com", count: 1),
+        .init(host: "example.test", count: 1),
+      ])
+      XCTAssertEqual(counts.tags, [.init(tag: HistoryTag(rawValue: "专题")!, count: 1)])
+
+      let combined = try repository.historyPage(
+        limit: 20,
+        after: nil,
+        filter: .init(
+          tagNames: ["专题"],
+          hosts: ["www.example.test"],
+          scope: .recent,
+          searchText: "Needle"
+        )
+      )
+      XCTAssertEqual(combined.rows.map(\.taskID), [target.taskID], "host + tag + scope + search are SQL AND predicates")
+      XCTAssertEqual(
+        try repository.historyPage(limit: 20, after: nil, filter: .init(scope: .unsummarized)).rows.map(\.taskID),
+        [target.taskID]
+      )
+    }
+  }
+
+  func testManualRemovalAndExportProjectionIncludeTags() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      _ = try repository.addTags(["本地优先", "Swift"], to: accepted.taskID)
+      let detail = try repository.detail(taskID: accepted.taskID)
+      XCTAssertEqual(detail.tags.map(\.name), ["Swift", "本地优先"])
+
+      try repository.removeTag(normalizedName: "SWIFT", from: accepted.taskID)
+      XCTAssertEqual(try repository.detail(taskID: accepted.taskID).tags.map(\.name), ["本地优先"])
+      XCTAssertEqual(try repository.exportProjection(taskID: accepted.taskID).tags.map(\.name), ["本地优先"])
+    }
+  }
+}
+
 final class HistoryRepositoryCaptureTests: XCTestCase {
+  func testPreexistingBrowserWireDeliveryReplaysAfterReopen() throws {
+    try withTemporaryLocation { location in
+      let envelope = capture(requestID: "legacy-request", key: "legacy-delivery", url: "https://example.test/legacy", body: "legacy body")
+      let first = try GRDBHistoryRepository.open(at: location)
+      let accepted = try first.acceptCapture(.init(envelope: envelope, receivedAtMilliseconds: 1))
+      try first.database.close()
+
+      // This row represents a database written before the manual-document
+      // path existed. Reopening must preserve its capture:v1 key and digest.
+      let reopened = try GRDBHistoryRepository.open(at: location)
+      defer { try? reopened.database.close() }
+      let replay = try reopened.acceptCapture(.init(envelope: envelope, receivedAtMilliseconds: 2))
+      XCTAssertTrue(replay.deliveryWasReplayed)
+      XCTAssertEqual(replay.taskID, accepted.taskID)
+      XCTAssertEqual(replay.snapshotID, accepted.snapshotID)
+    }
+  }
+
   func testCaptureLedgerReplayConflictCanonicalAndBodyReuse() throws {
     try withRepository { repository, _ in
       let first = try repository.acceptCapture(.init(envelope: capture(requestID: "r1", key: "same", url: "https://EXAMPLE.test:443/article?b=2&a=1#one", body: "body-one"), receivedAtMilliseconds: 10))
@@ -130,6 +548,134 @@ final class HistoryRepositoryCaptureTests: XCTestCase {
       XCTAssertTrue(detail.runs.isEmpty)
       XCTAssertEqual(try DatabaseMaintenance(database: repository.database).counts(), .init(tasks: 1, snapshots: 2, deliveries: 3, runs: 0, artifacts: 0))
     }
+  }
+
+  func testV2EverySafeMediaFieldConflictsWhileOnlyTransientFieldsReplay() throws {
+    try withRepository { repository, _ in
+      let safeMediaPairs: [(String, MediaDescriptor, MediaDescriptor)] = [
+        ("kind", v2Media(kind: .directFile), v2Media(kind: .hls)),
+        ("pageURL", v2Media(), v2Media(pageURL: "https://example.test/watch?page=safe-change")),
+        ("canonicalURL", v2Media(), v2Media(canonicalURL: "https://example.test/watch/canonical-change")),
+        ("platform", v2Media(), v2Media(platform: "douyin")),
+        ("mimeType", v2Media(), v2Media(mimeType: "video/quicktime")),
+        ("posterURL", v2Media(), v2Media(posterURL: "https://images.example.test/poster-safe-change.jpg")),
+        ("durationSeconds", v2Media(), v2Media(durationSeconds: 99.5)),
+        ("author", v2Media(), v2Media(author: "Safe Author Change")),
+        ("transcriptionCapability", v2Media(), v2Media(transcriptionCapability: .conditional)),
+        (
+          "failureReason",
+          v2Media(kind: .browserSessionOnly, ephemeralPlaybackURL: nil, failureReason: .unknown),
+          v2Media(kind: .browserSessionOnly, ephemeralPlaybackURL: nil, failureReason: .multipleCandidates)
+        ),
+        ("candidateCount", v2Media(), v2Media(candidateCount: 3)),
+        ("selectionReason", v2Media(), v2Media(selectionReason: .nearestViewportCenter)),
+        ("playbackState", v2Media(), v2Media(playbackState: .playing)),
+      ]
+      for (index, pair) in safeMediaPairs.enumerated() {
+        let key = "v2-safe-field-\(index)"
+        let accepted = try repository.acceptCapture(.init(
+          envelope: v2Capture(media: pair.1, requestID: key, key: key),
+          receivedAtMilliseconds: Int64(20 + index * 2)
+        ))
+        XCTAssertThrowsError(try repository.acceptCapture(.init(
+          envelope: v2Capture(media: pair.2, requestID: "transport-retry-\(index)", key: key),
+          receivedAtMilliseconds: Int64(21 + index * 2)
+        )), "safe media field \(pair.0) must conflict") {
+          XCTAssertEqual($0 as? RepositoryFailure, .captureIdempotencyConflict)
+        }
+        XCTAssertFalse(accepted.deliveryWasReplayed)
+      }
+
+      let transientBase = v2Capture(
+        media: v2Media(),
+        requestID: "v2-transient-base",
+        key: "v2-transient-only"
+      )
+      let accepted = try repository.acceptCapture(.init(
+        envelope: transientBase,
+        receivedAtMilliseconds: 60
+      ))
+      let transientOnly = v2Capture(media: v2Media(
+        ephemeralPlaybackURL: "https://media.example.test/changed-signed-url.mp4",
+        expiresAt: "2026-07-20T00:02:00Z"
+      ), requestID: "v2-transient-retry", key: "v2-transient-only")
+      let replay = try repository.acceptCapture(.init(
+        envelope: transientOnly,
+        receivedAtMilliseconds: 61
+      ))
+      XCTAssertTrue(replay.deliveryWasReplayed)
+      XCTAssertEqual(replay.taskID, accepted.taskID)
+    }
+  }
+
+  func testCaptureCommandConstructorsProduceClosedNonMixableProvenance() throws {
+    let v1 = try AcceptCaptureCommand(envelope: capture(), receivedAtMilliseconds: 1)
+    let v2 = try AcceptCaptureCommand(envelope: v2Capture(media: v2Media()), receivedAtMilliseconds: 2)
+    let localDocument = CapturedDocument(
+      requestID: "manual", createdAt: "2026-07-20T00:00:00Z", idempotencyKey: "manual",
+      origin: .manualLink, url: "https://example.test/manual", title: "Manual", platform: "manual",
+      method: "public_html", text: "manual body", completeness: "best_effort",
+      capturedAt: "2026-07-20T00:00:00Z", sourceLabel: "manual fixture"
+    )
+    let local = try AcceptCaptureCommand(document: localDocument, receivedAtMilliseconds: 3)
+
+    XCTAssertEqual(v1.provenance.captureContractVersion, 1)
+    XCTAssertTrue(v1.provenance.deliveryKey.hasPrefix("capture:v1:"))
+    XCTAssertEqual(v2.provenance.captureContractVersion, 2)
+    XCTAssertTrue(v2.provenance.deliveryKey.hasPrefix("capture:v2:"))
+    XCTAssertEqual(local.provenance.captureContractVersion, 1)
+    XCTAssertTrue(local.provenance.deliveryKey.hasPrefix("manual:v1:"))
+    XCTAssertEqual(
+      Set(Mirror(reflecting: v2).children.compactMap(\.label)),
+      Set(["document", "provenance", "receivedAtMilliseconds"])
+    )
+  }
+
+  func testPublicCaptureCommandFactoriesRejectInvalidWireAndBrowserDocumentManualization() throws {
+    let validV1 = capture()
+    let wrongVersionV1 = CaptureEnvelopeV1(
+      version: 2,
+      requestId: validV1.requestId,
+      createdAt: validV1.createdAt,
+      idempotencyKey: validV1.idempotencyKey,
+      source: validV1.source,
+      capture: validV1.capture,
+      evidence: validV1.evidence,
+      media: validV1.media
+    )
+    XCTAssertThrowsError(try AcceptCaptureCommand(
+      envelope: wrongVersionV1,
+      receivedAtMilliseconds: 4
+    ))
+
+    let invalidMediaV2 = v2Capture(media: v2Media(
+      kind: .directFile,
+      ephemeralPlaybackURL: nil
+    ))
+    XCTAssertThrowsError(try AcceptCaptureCommand(
+      envelope: invalidMediaV2,
+      receivedAtMilliseconds: 5
+    ))
+
+    let wrongVersionV2 = CaptureEnvelopeV2(
+      version: 1,
+      requestId: invalidMediaV2.requestId,
+      createdAt: invalidMediaV2.createdAt,
+      idempotencyKey: invalidMediaV2.idempotencyKey,
+      source: invalidMediaV2.source,
+      capture: invalidMediaV2.capture,
+      evidence: invalidMediaV2.evidence,
+      media: invalidMediaV2.media
+    )
+    XCTAssertThrowsError(try AcceptCaptureCommand(
+      envelope: wrongVersionV2,
+      receivedAtMilliseconds: 6
+    ))
+
+    XCTAssertThrowsError(try AcceptCaptureCommand(
+      document: CapturedDocument(wire: validV1),
+      receivedAtMilliseconds: 7
+    ))
   }
 
   func testTwoPoolsPreserveCaptureIdempotencyAndConflictSemanticsUnderRace() throws {
@@ -184,7 +730,7 @@ final class HistoryRepositoryRunTests: XCTestCase {
 
       try repository.markRunRunning(.init(runID: first.runID, startedAtMilliseconds: 3, provider: .init(profileID: "profile-local", providerKind: "openai-compatible", baseURL: "https://provider.example/v1", apiMode: "chat_completions", model: "fixture-model")))
       try repository.savePartialArtifact(.init(runID: first.runID, contentFormat: .markdown, bodyText: "partial", updatedAtMilliseconds: 4))
-      let usage = try RunUsageCost(inputTokens: nil, outputTokens: 7, totalTokens: nil, costAmountMicros: 1200, costCurrencyCode: "USD")
+      let usage = RunUsageCost(inputTokens: nil, outputTokens: 7, totalTokens: nil, costAmountMicros: 1200, costCurrencyCode: "USD")
       try repository.finishRun(.init(runID: first.runID, status: .completed, finishedAtMilliseconds: 5, artifact: .init(contentFormat: .markdown, completeness: .complete, bodyText: "complete"), usageCost: usage))
       XCTAssertThrowsError(try repository.finishRun(.init(runID: first.runID, status: .failed, finishedAtMilliseconds: 6))) { XCTAssertEqual($0 as? RepositoryFailure, .invalidStateTransition) }
 
@@ -259,6 +805,29 @@ final class HistoryRepositoryRunTests: XCTestCase {
     }
   }
 
+  func testHistoryRowReadsMetadataFromLatestSourceSnapshotNotLaterTranscription() throws {
+    try withRepository { repository, _ in
+      let source = "---\nauthor: \"来源作者\"\npublished: \"2026-07-20T00:00:00.000Z\"\n---\n\n" + String(repeating: "😀", count: 3_000)
+      let accepted = try repository.acceptCapture(.init(envelope: capture(body: source), receivedAtMilliseconds: 1))
+      let transcriptionID = ContentSnapshotID()
+      try repository.database.write { db in
+        let body = "转写正文"
+        try db.execute(sql: """
+          INSERT INTO content_snapshots (
+            id, task_id, sequence, envelope_created_at_ms, captured_at_ms, source_kind, source_url, title,
+            platform, capture_method, completeness, body_text, character_count, body_sha256, source_label,
+            used_cookie, used_cookie_v2
+          ) VALUES (?, ?, 2, 2, 2, 'local_transcription', ?, '转写', 'douyin', 'speech_analyzer_local', 'complete', CAST(? AS TEXT), ?, ?, '本机视频转写', 0, 0)
+          """, arguments: [transcriptionID.rawValue, accepted.taskID.rawValue, "https://example.test/article", Data(body.utf8), body.unicodeScalars.count, SHA256CaptureFingerprinter().bodySHA256(body)])
+      }
+
+      let row = try XCTUnwrap(repository.historyPage(limit: 1, after: nil).rows.single)
+      XCTAssertEqual(row.author, "来源作者")
+      XCTAssertEqual(row.published, "2026-07-20T00:00:00.000Z")
+      XCTAssertEqual(row.title, "Fixture")
+    }
+  }
+
   func testTwoPoolsPreserveRunConflictSemanticsUnderRace() throws {
     try withTemporaryLocation { location in
       let first = try GRDBHistoryRepository.open(at: location)
@@ -286,7 +855,7 @@ final class HistoryRepositoryRunTests: XCTestCase {
       var dependencies = PersistenceDependencies.live
       dependencies.beforeTerminalCommit = { throw RepositoryFailure.injectedFailure }
       let injected = try GRDBHistoryRepository.open(at: location, dependencies: dependencies)
-      XCTAssertThrowsError(try injected.finishRun(.init(runID: run.runID, status: .completed, finishedAtMilliseconds: 4, artifact: .init(contentFormat: .markdown, completeness: .complete, bodyText: "must rollback"), usageCost: try RunUsageCost(totalTokens: 9)))) { XCTAssertEqual($0 as? RepositoryFailure, .injectedFailure) }
+      XCTAssertThrowsError(try injected.finishRun(.init(runID: run.runID, status: .completed, finishedAtMilliseconds: 4, artifact: .init(contentFormat: .markdown, completeness: .complete, bodyText: "must rollback"), usageCost: RunUsageCost(totalTokens: 9)))) { XCTAssertEqual($0 as? RepositoryFailure, .injectedFailure) }
       let detail = try injected.detail(taskID: accepted.taskID)
       XCTAssertEqual(detail.runs.single?.run.status, .running)
       XCTAssertNil(detail.runs.single?.artifact)
@@ -375,6 +944,74 @@ final class HistoryProjectionMaintenanceAndConcurrencyTests: XCTestCase {
       XCTAssertEqual(remaining.runs, 0)
       XCTAssertEqual(remaining.artifacts, 0)
       XCTAssertNoThrow(try repository.detail(taskID: taskIDs[1]))
+    }
+  }
+
+  func testBatchDeleteReportsMissingIDsWithoutLeavingOrphans() throws {
+    try withRepository { repository, _ in
+      let first = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "batch-delete-a", key: "batch-delete-a", url: "https://example.test/batch-a"),
+        receivedAtMilliseconds: 1
+      ))
+      let second = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "batch-delete-b", key: "batch-delete-b", url: "https://example.test/batch-b"),
+        receivedAtMilliseconds: 2
+      ))
+      let run = try repository.createRun(.init(
+        taskID: first.taskID,
+        snapshotID: first.snapshotID,
+        idempotencyKey: "batch-delete-run",
+        kind: .summarize,
+        createdAtMilliseconds: 3
+      ))
+      try repository.markRunRunning(.init(runID: run.runID, startedAtMilliseconds: 4, provider: .init()))
+      try repository.finishRun(.init(
+        runID: run.runID,
+        status: .completed,
+        finishedAtMilliseconds: 5,
+        artifact: .init(contentFormat: .plainText, completeness: .complete, bodyText: "done")
+      ))
+      let missing = TaskID()
+
+      let result = try repository.deleteTasks(taskIDs: [first.taskID, missing])
+
+      XCTAssertEqual(result.requestedTaskIDs, [first.taskID, missing].sorted { $0.rawValue < $1.rawValue })
+      XCTAssertEqual(result.deletedTaskIDs, [first.taskID])
+      XCTAssertEqual(result.failedTaskIDs, [missing])
+      XCTAssertThrowsError(try repository.detail(taskID: first.taskID))
+      XCTAssertNoThrow(try repository.detail(taskID: second.taskID))
+      let remaining = try DatabaseMaintenance(database: repository.database).counts()
+      XCTAssertEqual(remaining.tasks, 1)
+      XCTAssertEqual(remaining.runs, 0)
+      XCTAssertEqual(remaining.artifacts, 0)
+    }
+  }
+
+  func testBatchDeleteRollsBackEveryTaskWhenSecondDeleteFails() throws {
+    try withRepository { repository, _ in
+      let first = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "batch-rollback-a", key: "batch-rollback-a", url: "https://example.test/rollback-a"),
+        receivedAtMilliseconds: 1
+      ))
+      let second = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "batch-rollback-b", key: "batch-rollback-b", url: "https://example.test/rollback-b"),
+        receivedAtMilliseconds: 2
+      ))
+      try repository.database.write { db in
+        try db.execute(sql: """
+          CREATE TRIGGER fail_second_batch_delete
+          BEFORE DELETE ON tasks
+          WHEN OLD.id = '\(second.taskID.rawValue)'
+          BEGIN
+            SELECT RAISE(ABORT, 'injected batch delete failure');
+          END
+          """)
+      }
+
+      XCTAssertThrowsError(try repository.deleteTasks(taskIDs: [first.taskID, second.taskID]))
+      XCTAssertNoThrow(try repository.detail(taskID: first.taskID))
+      XCTAssertNoThrow(try repository.detail(taskID: second.taskID))
+      XCTAssertEqual(try DatabaseMaintenance(database: repository.database).counts().tasks, 2)
     }
   }
 
@@ -514,6 +1151,848 @@ final class HistoryProjectionMaintenanceAndConcurrencyTests: XCTestCase {
   }
 }
 
+final class MediaTranscriptionPersistenceTests: XCTestCase {
+  func testSameHashReplayRepairsLocationWithoutReplacingIdentityOrTranscriptionState() throws {
+    try withRepository { repository, _ in
+      let first = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      let sha = String(repeating: "e", count: 64)
+      let original = MediaAsset(
+        taskID: first.taskID,
+        snapshotID: first.snapshotID,
+        relativePath: "\(sha).mov",
+        fileBookmark: Data("stale-bookmark".utf8),
+        contentSHA256: sha,
+        byteSize: 1_024,
+        durationSeconds: 10,
+        platform: "old-platform",
+        author: "old-author",
+        createdAtMilliseconds: 2
+      )
+      try repository.attachMedia(.init(asset: original))
+      try repository.database.write { db in
+        try db.execute(
+          sql: "UPDATE media_assets SET transcription_status = 'completed' WHERE id = ?",
+          arguments: [original.id]
+        )
+      }
+      let second = try repository.acceptCapture(.init(
+        envelope: capture(
+          requestID: "repair-request",
+          key: "repair-delivery",
+          body: "new snapshot body"
+        ),
+        receivedAtMilliseconds: 3
+      ))
+      XCTAssertEqual(second.taskID, first.taskID)
+      XCTAssertNotEqual(second.snapshotID, first.snapshotID)
+
+      let repaired = MediaAsset(
+        taskID: first.taskID,
+        snapshotID: second.snapshotID,
+        relativePath: "\(sha).mp4",
+        fileBookmark: Data("fresh-bookmark".utf8),
+        contentSHA256: sha,
+        byteSize: 4_096,
+        durationSeconds: 25,
+        platform: "douyin",
+        author: "new-author",
+        createdAtMilliseconds: 4
+      )
+      try repository.attachMedia(.init(asset: repaired))
+      try repository.attachMedia(.init(asset: repaired))
+
+      let stored = try XCTUnwrap(try repository.mediaAsset(taskID: first.taskID))
+      XCTAssertEqual(stored.id, original.id, "repair must preserve durable media identity")
+      XCTAssertEqual(stored.snapshotID, second.snapshotID)
+      XCTAssertEqual(stored.relativePath, repaired.relativePath)
+      XCTAssertEqual(stored.fileBookmark, repaired.fileBookmark)
+      XCTAssertEqual(stored.byteSize, repaired.byteSize)
+      XCTAssertEqual(stored.durationSeconds, repaired.durationSeconds)
+      XCTAssertEqual(stored.platform, repaired.platform)
+      XCTAssertEqual(stored.author, repaired.author)
+      XCTAssertEqual(stored.transcriptionStatus, .completed)
+      XCTAssertEqual(stored.createdAtMilliseconds, original.createdAtMilliseconds)
+      XCTAssertEqual(try repository.database.read {
+        try Int.fetchOne(
+          $0,
+          sql: "SELECT COUNT(*) FROM media_assets WHERE task_id = ? AND content_sha256 = ?",
+          arguments: [first.taskID.rawValue, sha]
+        )
+      }, 1)
+    }
+  }
+
+  func testAttachMediaRoundTripsOptionalFileBookmark() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      let bookmark = Data("opaque-security-scope-bookmark".utf8)
+      let asset = MediaAsset(
+        taskID: accepted.taskID,
+        snapshotID: accepted.snapshotID,
+        relativePath: "\(String(repeating: "d", count: 64)).mp4",
+        fileBookmark: bookmark,
+        contentSHA256: String(repeating: "d", count: 64),
+        byteSize: 2_048,
+        platform: "fixture",
+        createdAtMilliseconds: 2
+      )
+
+      try repository.attachMedia(.init(asset: asset))
+
+      XCTAssertEqual(try repository.mediaAsset(taskID: accepted.taskID)?.fileBookmark, bookmark)
+    }
+  }
+
+  func testAttachMediaRejectsCompletedAndLeavesNoRow() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      let completed = MediaAsset(
+        taskID: accepted.taskID,
+        snapshotID: accepted.snapshotID,
+        relativePath: "\(String(repeating: "c", count: 64)).mp4",
+        contentSHA256: String(repeating: "c", count: 64),
+        byteSize: 2_048,
+        platform: "douyin",
+        transcriptionStatus: .completed,
+        createdAtMilliseconds: 2
+      )
+
+      XCTAssertThrowsError(try repository.attachMedia(.init(asset: completed))) {
+        XCTAssertEqual($0 as? RepositoryFailure, .invalidStateTransition)
+      }
+      XCTAssertNil(try repository.mediaAsset(taskID: accepted.taskID))
+    }
+  }
+
+  func testStatusMutationContractCannotExpressPendingOrCompleted() {
+    XCTAssertEqual(
+      TranscriptionStatusMutation.allCases.map(\.rawValue),
+      ["running", "none", "failed"]
+    )
+  }
+
+  func testConsecutiveBeginAllocatesStrictlyIncreasingDatabaseGenerations() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      try repository.attachMedia(.init(asset: media(taskID: accepted.taskID, snapshotID: accepted.snapshotID)))
+      let mediaID = try XCTUnwrap(try repository.mediaAsset(taskID: accepted.taskID)?.id)
+
+      let first = try repository.beginMediaTranscription(taskID: accepted.taskID, mediaID: mediaID)
+      let second = try repository.beginMediaTranscription(taskID: accepted.taskID, mediaID: mediaID)
+
+      XCTAssertEqual(first.mediaID, mediaID)
+      XCTAssertEqual(first.generation, 1)
+      XCTAssertEqual(second.generation, 2)
+      XCTAssertNotEqual(first.id, second.id)
+      XCTAssertEqual(try repository.mediaAsset(taskID: accepted.taskID)?.transcriptionStatus, .pending)
+      XCTAssertEqual(
+        try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: first, status: .running),
+        .stale
+      )
+      XCTAssertEqual(
+        try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: second, status: .running),
+        .applied
+      )
+    }
+  }
+
+  func testGenerationOverflowFailsClosedWithoutReplacingOwner() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      try repository.attachMedia(.init(asset: media(taskID: accepted.taskID, snapshotID: accepted.snapshotID)))
+      let mediaID = try XCTUnwrap(try repository.mediaAsset(taskID: accepted.taskID)?.id)
+      try repository.database.write { db in
+        try db.execute(
+          sql: "UPDATE media_assets SET transcription_attempt_id = ?, transcription_attempt_generation = ?, transcription_status = 'pending' WHERE id = ? AND task_id = ?",
+          arguments: ["ffffffff-ffff-ffff-ffff-ffffffffffff", Int64.max, mediaID, accepted.taskID.rawValue]
+        )
+      }
+
+      XCTAssertThrowsError(try repository.beginMediaTranscription(taskID: accepted.taskID, mediaID: mediaID)) {
+        XCTAssertEqual($0 as? RepositoryFailure, .invalidStateTransition)
+      }
+      let owner = try repository.database.read { db in
+        try Row.fetchOne(db, sql: "SELECT transcription_attempt_id, transcription_attempt_generation, transcription_status FROM media_assets WHERE id = ?", arguments: [mediaID])
+      }
+      XCTAssertEqual(owner?["transcription_attempt_id"] as String?, "ffffffff-ffff-ffff-ffff-ffffffffffff")
+      XCTAssertEqual(owner?["transcription_attempt_generation"] as Int64?, Int64.max)
+      XCTAssertEqual(owner?["transcription_status"] as String?, "pending")
+    }
+  }
+
+  func testTwoRepositoriesConcurrentBeginAllocateUniqueMonotonicGenerations() throws {
+    try withTemporaryLocation { location in
+      let firstRepository = try GRDBHistoryRepository.open(at: location)
+      defer { try? firstRepository.database.close() }
+      let accepted = try firstRepository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      try firstRepository.attachMedia(.init(asset: media(taskID: accepted.taskID, snapshotID: accepted.snapshotID)))
+      let mediaID = try XCTUnwrap(try firstRepository.mediaAsset(taskID: accepted.taskID)?.id)
+      let secondRepository = try GRDBHistoryRepository.open(at: location)
+      defer { try? secondRepository.database.close() }
+      let recorder = TranscriptionAttemptRecorder()
+      let group = DispatchGroup()
+
+      for repository in [firstRepository, secondRepository] {
+        group.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+          defer { group.leave() }
+          do {
+            recorder.record(.success(try repository.beginMediaTranscription(taskID: accepted.taskID, mediaID: mediaID)))
+          } catch let failure as RepositoryFailure {
+            recorder.record(.failure(failure))
+          } catch {
+            recorder.record(.failure(.unavailable))
+          }
+        }
+      }
+
+      XCTAssertEqual(group.wait(timeout: .now() + 3), .success)
+      XCTAssertEqual(recorder.failures, [])
+      XCTAssertEqual(recorder.attempts.map(\.generation).sorted(), [1, 2])
+      XCTAssertEqual(Set(recorder.attempts.map(\.id)).count, 2)
+    }
+  }
+
+  func testReopenAllocatesHigherOwnerAndEveryOldTerminalPathIsStale() throws {
+    try withTemporaryLocation { location in
+      let firstRepository = try GRDBHistoryRepository.open(at: location)
+      let accepted = try firstRepository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      try firstRepository.attachMedia(.init(asset: media(taskID: accepted.taskID, snapshotID: accepted.snapshotID)))
+      let mediaID = try XCTUnwrap(try firstRepository.mediaAsset(taskID: accepted.taskID)?.id)
+      let oldAttempt = try firstRepository.beginMediaTranscription(taskID: accepted.taskID, mediaID: mediaID)
+      XCTAssertEqual(try firstRepository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: oldAttempt, status: .running), .applied)
+      try firstRepository.database.close()
+
+      let reopened = try GRDBHistoryRepository.open(at: location)
+      defer { try? reopened.database.close() }
+      let newAttempt = try reopened.beginMediaTranscription(taskID: accepted.taskID, mediaID: mediaID)
+      XCTAssertEqual(newAttempt.generation, oldAttempt.generation + 1)
+      for status in [TranscriptionStatusMutation.running, .failed, .none] {
+        XCTAssertEqual(
+          try reopened.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: oldAttempt, status: status),
+          .stale
+        )
+      }
+      XCTAssertEqual(
+        try reopened.completeMediaTranscription(.init(
+          taskID: accepted.taskID,
+          attempt: oldAttempt,
+          document: transcription(url: "https://example.test/article", text: "迟到旧正文"),
+          evidence: completionEvidence(completedAtMilliseconds: 4),
+          receivedAtMilliseconds: 4
+        )),
+        .stale
+      )
+      XCTAssertEqual(try reopened.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: newAttempt, status: .running), .applied)
+      _ = try acceptedResult(reopened.completeMediaTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: newAttempt,
+        document: transcription(url: "https://example.test/article", text: "新 owner 正文"),
+        evidence: completionEvidence(completedAtMilliseconds: 5),
+        receivedAtMilliseconds: 5
+      )))
+      XCTAssertEqual(try reopened.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: oldAttempt, status: .failed), .stale)
+      XCTAssertEqual(try reopened.mediaAsset(taskID: accepted.taskID)?.transcriptionStatus, .completed)
+      XCTAssertEqual(try reopened.detail(taskID: accepted.taskID).snapshots.last?.bodyText, "新 owner 正文")
+    }
+  }
+
+  func testEffectiveSnapshotUsesGenerationWhenCompletionWallClockMovesBackward() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      try repository.attachMedia(.init(asset: media(taskID: accepted.taskID, snapshotID: accepted.snapshotID)))
+      let first = try begin(repository, taskID: accepted.taskID)
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: first, status: .running), .applied)
+      _ = try acceptedResult(repository.completeMediaTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: first,
+        document: transcription(url: "https://example.test/article", text: "较早 generation"),
+        evidence: completionEvidence(completedAtMilliseconds: 100),
+        receivedAtMilliseconds: 100
+      )))
+      let second = try begin(repository, taskID: accepted.taskID)
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: second, status: .running), .applied)
+      let secondResult = try acceptedResult(repository.completeMediaTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: second,
+        document: transcription(url: "https://example.test/article", text: "较新 generation"),
+        evidence: completionEvidence(completedAtMilliseconds: 50),
+        receivedAtMilliseconds: 50
+      )))
+
+      XCTAssertEqual(second.generation, first.generation + 1)
+      XCTAssertEqual(try repository.detail(taskID: accepted.taskID).snapshots.last?.id, secondResult.snapshotID)
+      XCTAssertEqual(try repository.exportProjection(taskID: accepted.taskID).snapshots.last?.bodyText, "较新 generation")
+    }
+  }
+
+  func testOlderSnapshotReusedByLatestEvidenceBecomesEffectiveLatestEverywhere() throws {
+    try withRepository { repository, _ in
+      let first = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "snapshot-a", key: "snapshot-a", body: "原子转写正文", title: "A 标题"),
+        receivedAtMilliseconds: 1
+      ))
+      let second = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "snapshot-b", key: "snapshot-b", body: "后来正文 B", title: "B 标题"),
+        receivedAtMilliseconds: 2
+      ))
+      XCTAssertEqual(first.taskID, second.taskID)
+      try repository.attachMedia(.init(asset: media(taskID: first.taskID, snapshotID: first.snapshotID)))
+      let attempt = try begin(repository, taskID: first.taskID)
+      XCTAssertEqual(
+        try repository.updateMediaTranscriptionStatus(taskID: first.taskID, attempt: attempt, status: .running),
+        .applied
+      )
+
+      let completed = try acceptedResult(repository.completeMediaTranscription(.init(
+        taskID: first.taskID,
+        attempt: attempt,
+        document: transcription(url: "https://example.test/article"),
+        evidence: completionEvidence(),
+        receivedAtMilliseconds: 3
+      )))
+
+      XCTAssertEqual(completed.snapshotID, first.snapshotID)
+      XCTAssertFalse(completed.snapshotWasCreated)
+      let detail = try repository.detail(taskID: first.taskID)
+      XCTAssertEqual(detail.snapshots.count, 2)
+      XCTAssertEqual(Set(detail.snapshots.map(\.sequence)), Set([1, 2]))
+      XCTAssertEqual(detail.snapshots.last?.id, first.snapshotID)
+      XCTAssertEqual(detail.snapshots.last?.bodyText, "原子转写正文")
+      let export = try repository.exportProjection(taskID: first.taskID)
+      XCTAssertEqual(export.snapshots.last?.id, first.snapshotID)
+      let markdown = String(decoding: try HistoryExportRenderer.render(export, as: .markdown).data, as: UTF8.self)
+      XCTAssertTrue(markdown.contains("原子转写正文"))
+      XCTAssertFalse(markdown.contains("后来正文 B"))
+      XCTAssertEqual(
+        try repository.historyPage(limit: 10, after: nil, filter: .init(searchText: "A 标题")).rows.map(\.taskID),
+        [first.taskID]
+      )
+      XCTAssertTrue(
+        try repository.historyPage(limit: 10, after: nil, filter: .init(searchText: "B 标题")).rows.isEmpty
+      )
+    }
+  }
+
+  func testCleanupToNoneOnlyClearsInFlightStatusAndMissingMediaStillFails() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      try repository.attachMedia(.init(asset: media(taskID: accepted.taskID, snapshotID: accepted.snapshotID)))
+
+      let pendingAttempt = try begin(repository, taskID: accepted.taskID)
+      XCTAssertEqual(
+        try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: pendingAttempt, status: .none),
+        .applied
+      )
+      XCTAssertEqual(
+        try repository.mediaAsset(taskID: accepted.taskID)?.transcriptionStatus,
+        TranscriptionStatus.none
+      )
+
+      let runningAttempt = try begin(repository, taskID: accepted.taskID)
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: runningAttempt, status: .running), .applied)
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: runningAttempt, status: .none), .applied)
+      XCTAssertEqual(
+        try repository.mediaAsset(taskID: accepted.taskID)?.transcriptionStatus,
+        TranscriptionStatus.none
+      )
+
+      let failedAttempt = try begin(repository, taskID: accepted.taskID)
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: failedAttempt, status: .failed), .applied)
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: failedAttempt, status: .none), .stale)
+      XCTAssertEqual(
+        try repository.mediaAsset(taskID: accepted.taskID)?.transcriptionStatus,
+        .failed,
+        "cleanup treats a failed row as terminal"
+      )
+
+      let completedAttempt = try begin(repository, taskID: accepted.taskID)
+      _ = try repository.completeMediaTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: completedAttempt,
+        document: transcription(url: "https://example.test/article"),
+        evidence: completionEvidence(),
+        receivedAtMilliseconds: 3
+      ))
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: completedAttempt, status: .none), .stale)
+      XCTAssertEqual(
+        try repository.mediaAsset(taskID: accepted.taskID)?.transcriptionStatus,
+        .completed,
+        "selection cleanup must not overwrite a committed terminal status"
+      )
+
+      let taskWithoutMedia = try repository.acceptCapture(.init(
+        envelope: capture(
+          requestID: "without-media",
+          key: "without-media",
+          url: "https://example.test/without-media"
+        ),
+        receivedAtMilliseconds: 2
+      ))
+      XCTAssertThrowsError(
+        try repository.updateMediaTranscriptionStatus(
+          taskID: taskWithoutMedia.taskID,
+          attempt: transcriptionAttempt(5, mediaID: UUID().uuidString.lowercased()),
+          status: .none
+        )
+      ) { XCTAssertEqual($0 as? RepositoryFailure, .notFound) }
+    }
+  }
+
+  func testCompletionReusesOriginalSnapshotWhenTranscriptBodyMatches() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(
+        envelope: capture(body: "原子转写正文"),
+        receivedAtMilliseconds: 1
+      ))
+      try repository.attachMedia(.init(asset: media(taskID: accepted.taskID, snapshotID: accepted.snapshotID)))
+      let attempt = try begin(repository, taskID: accepted.taskID)
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: attempt, status: .running), .applied)
+
+      let completed = try acceptedResult(repository.completeMediaTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: attempt,
+        document: transcription(url: "https://example.test/article"),
+        evidence: completionEvidence(),
+        receivedAtMilliseconds: 3
+      )))
+
+      XCTAssertEqual(completed.snapshotID, accepted.snapshotID)
+      XCTAssertFalse(completed.snapshotWasCreated)
+      XCTAssertEqual(try repository.detail(taskID: accepted.taskID).snapshots.count, 1)
+      XCTAssertEqual(try repository.mediaAsset(taskID: accepted.taskID)?.transcriptionStatus, .completed)
+      let evidence = try repository.database.read { db in
+        try Row.fetchOne(db, sql: "SELECT * FROM media_transcription_evidence WHERE task_id = ?", arguments: [accepted.taskID.rawValue])
+      }
+      XCTAssertEqual(evidence?["snapshot_id"] as String?, accepted.snapshotID.rawValue)
+      XCTAssertEqual(evidence?["source"] as String?, "on_device")
+      XCTAssertEqual(evidence?["engine"] as String?, "apple_speech_analyzer")
+      XCTAssertEqual(evidence?["provider"] as String?, "apple")
+      XCTAssertNil(evidence?["model"] as String?)
+      XCTAssertEqual(evidence?["locale_identifier"] as String?, "zh_CN")
+      XCTAssertEqual(evidence?["language"] as String?, "zh")
+      XCTAssertEqual(evidence?["completed_at_ms"] as Int64?, 3)
+      XCTAssertEqual(evidence?["attempt_generation"] as Int64?, attempt.generation)
+    }
+  }
+
+  func testSecondAttemptWithSameHashAppendsEvidenceAndCurrentAttemptReplayIsIdempotent() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      try repository.attachMedia(.init(asset: media(taskID: accepted.taskID, snapshotID: accepted.snapshotID)))
+
+      let firstAttempt = try begin(repository, taskID: accepted.taskID)
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: firstAttempt, status: .running), .applied)
+      let firstCommand = CompleteMediaTranscriptionCommand(
+        taskID: accepted.taskID,
+        attempt: firstAttempt,
+        document: transcription(url: "https://example.test/article", text: "相同成功转写"),
+        evidence: completionEvidence(completedAtMilliseconds: 3),
+        receivedAtMilliseconds: 3
+      )
+      _ = try acceptedResult(repository.completeMediaTranscription(firstCommand))
+
+      let secondAttempt = try begin(repository, taskID: accepted.taskID)
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: secondAttempt, status: .running), .applied)
+      let secondCommand = CompleteMediaTranscriptionCommand(
+        taskID: accepted.taskID,
+        attempt: secondAttempt,
+        document: transcription(url: "https://example.test/article", text: "相同成功转写"),
+        evidence: completionEvidence(completedAtMilliseconds: 5),
+        receivedAtMilliseconds: 5
+      )
+      _ = try acceptedResult(repository.completeMediaTranscription(secondCommand))
+
+      let replay = try repository.completeMediaTranscription(secondCommand)
+      guard case let .replay(replayed) = replay else { return XCTFail("current completed attempt must replay") }
+      XCTAssertTrue(replayed.deliveryWasReplayed)
+      XCTAssertEqual(try repository.completeMediaTranscription(firstCommand), .stale)
+      let evidenceRows = try repository.database.read { db in
+        try Row.fetchAll(
+          db,
+          sql: "SELECT id, attempt_id, attempt_generation, source, engine, provider, model, locale_identifier, language FROM media_transcription_evidence WHERE task_id = ? ORDER BY attempt_generation, id",
+          arguments: [accepted.taskID.rawValue]
+        )
+      }
+      XCTAssertEqual(evidenceRows.count, 2)
+      XCTAssertEqual(Set(evidenceRows.map { $0["attempt_id"] as String }), Set([firstAttempt.id, secondAttempt.id]))
+      XCTAssertEqual(evidenceRows.map { $0["attempt_generation"] as Int64 }, [1, 2])
+      XCTAssertEqual(Set(evidenceRows.map { $0["id"] as String }).count, 2)
+      XCTAssertTrue(evidenceRows.allSatisfy { ($0["source"] as String) == "on_device" })
+      XCTAssertTrue(evidenceRows.allSatisfy { ($0["engine"] as String) == "apple_speech_analyzer" })
+      XCTAssertTrue(evidenceRows.allSatisfy { ($0["provider"] as String?) == "apple" })
+      XCTAssertTrue(evidenceRows.allSatisfy { ($0["model"] as String?) == nil })
+      XCTAssertTrue(evidenceRows.allSatisfy { ($0["locale_identifier"] as String?) == "zh_CN" })
+      XCTAssertTrue(evidenceRows.allSatisfy { ($0["language"] as String?) == "zh" })
+
+      let other = try repository.acceptCapture(.init(
+        envelope: capture(
+          requestID: "cross-task",
+          key: "cross-task",
+          url: "https://example.test/other-task",
+          body: "other"
+        ),
+        receivedAtMilliseconds: 6
+      ))
+      let mediaID = try XCTUnwrap(try repository.mediaAsset(taskID: accepted.taskID)?.id)
+      XCTAssertThrowsError(try repository.database.write { db in
+        try db.execute(
+          sql: "INSERT INTO media_transcription_evidence (id, media_id, task_id, snapshot_id, attempt_id, attempt_generation, source, engine, completed_at_ms) VALUES (?, ?, ?, ?, ?, 99, 'fixture', 'fixture', 7)",
+          arguments: [
+            UUID().uuidString.lowercased(),
+            mediaID,
+            other.taskID.rawValue,
+            other.snapshotID.rawValue,
+            UUID().uuidString.lowercased(),
+          ]
+        )
+      })
+      XCTAssertEqual(
+        try repository.database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM media_transcription_evidence") },
+        2
+      )
+    }
+  }
+
+  func testBeginAndStatusUpdatesUseExactMediaOwnershipAndMissingRowsFail() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      let asset = MediaAsset(
+        taskID: accepted.taskID,
+        snapshotID: accepted.snapshotID,
+        relativePath: "\(String(repeating: "a", count: 64)).mp4",
+        contentSHA256: String(repeating: "a", count: 64),
+        byteSize: 1_024,
+        platform: "douyin",
+        transcriptionStatus: .none,
+        createdAtMilliseconds: 2
+      )
+      try repository.attachMedia(.init(asset: asset))
+
+      let attempt = try repository.beginMediaTranscription(taskID: accepted.taskID, mediaID: asset.id)
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: attempt, status: .running), .applied)
+      XCTAssertEqual(try repository.mediaAsset(taskID: accepted.taskID)?.transcriptionStatus, .running)
+      XCTAssertEqual(try repository.detail(taskID: accepted.taskID).media?.transcriptionStatus, .running)
+
+      XCTAssertThrowsError(
+        try repository.beginMediaTranscription(taskID: TaskID(), mediaID: asset.id)
+      ) { XCTAssertEqual($0 as? RepositoryFailure, .notFound) }
+      XCTAssertThrowsError(
+        try repository.beginMediaTranscription(taskID: accepted.taskID, mediaID: UUID().uuidString.lowercased())
+      ) { XCTAssertEqual($0 as? RepositoryFailure, .notFound) }
+      XCTAssertThrowsError(
+        try repository.updateMediaTranscriptionStatus(
+          taskID: TaskID(),
+          attempt: attempt,
+          status: .running
+        )
+      ) { XCTAssertEqual($0 as? RepositoryFailure, .notFound) }
+    }
+  }
+
+  func testAtomicCompletionRollsBackSnapshotWhenTerminalHookFails() throws {
+    try withTemporaryLocation { location in
+      var dependencies = PersistenceDependencies.live
+      dependencies.beforeTerminalCommit = { throw RepositoryFailure.injectedFailure }
+      let repository = try GRDBHistoryRepository.open(at: location, dependencies: dependencies)
+      defer { try? repository.database.close() }
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      try repository.attachMedia(.init(asset: media(taskID: accepted.taskID, snapshotID: accepted.snapshotID)))
+      let attempt = try begin(repository, taskID: accepted.taskID)
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: attempt, status: .running), .applied)
+
+      XCTAssertThrowsError(try repository.completeMediaTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: attempt,
+        document: transcription(url: "https://example.test/article"),
+        evidence: completionEvidence(),
+        receivedAtMilliseconds: 3
+      ))) { XCTAssertEqual($0 as? RepositoryFailure, .injectedFailure) }
+      XCTAssertEqual(try repository.detail(taskID: accepted.taskID).snapshots.count, 1)
+      XCTAssertEqual(try repository.mediaAsset(taskID: accepted.taskID)?.transcriptionStatus, TranscriptionStatus.running)
+      XCTAssertEqual(
+        try repository.database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM media_transcription_evidence") },
+        0
+      )
+    }
+  }
+
+  func testAtomicCompletionWithoutMediaCreatesNoSnapshot() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      XCTAssertThrowsError(try repository.completeMediaTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: transcriptionAttempt(1, mediaID: UUID().uuidString.lowercased()),
+        document: transcription(url: "https://example.test/article"),
+        evidence: completionEvidence(),
+        receivedAtMilliseconds: 3
+      ))) { XCTAssertEqual($0 as? RepositoryFailure, .notFound) }
+      XCTAssertEqual(try repository.detail(taskID: accepted.taskID).snapshots.count, 1)
+    }
+  }
+
+  private func media(taskID: TaskID, snapshotID: ContentSnapshotID) -> MediaAsset {
+    MediaAsset(
+      taskID: taskID,
+      snapshotID: snapshotID,
+      relativePath: "\(String(repeating: "b", count: 64)).mp4",
+      contentSHA256: String(repeating: "b", count: 64),
+      byteSize: 2_048,
+      platform: "douyin",
+      createdAtMilliseconds: 2
+    )
+  }
+
+  private func transcription(url: String, text: String = "原子转写正文") -> CapturedDocument {
+    CapturedDocument(
+      createdAt: "2026-07-19T00:00:00Z",
+      origin: .localTranscription,
+      url: url,
+      title: "转写",
+      platform: "douyin",
+      method: "speech_analyzer_local",
+      text: text,
+      completeness: "complete",
+      capturedAt: "2026-07-19T00:00:00Z",
+      sourceLabel: "本机视频转写"
+    )
+  }
+
+  private func completionEvidence(completedAtMilliseconds: Int64 = 3) -> TranscriptionCompletionEvidence {
+    .appleSpeechAnalyzer(
+      localeIdentifier: "zh_CN",
+      language: "zh",
+      completedAtMilliseconds: completedAtMilliseconds
+    )
+  }
+
+  private func begin(_ repository: GRDBHistoryRepository, taskID: TaskID) throws -> TranscriptionAttemptToken {
+    let mediaID = try XCTUnwrap(try repository.mediaAsset(taskID: taskID)?.id)
+    return try repository.beginMediaTranscription(taskID: taskID, mediaID: mediaID)
+  }
+
+  private func acceptedResult(_ result: CompleteMediaTranscriptionResult) throws -> AcceptCaptureResult {
+    guard case let .accepted(accepted) = result else {
+      XCTFail("completion should be accepted, got \(result)")
+      throw RepositoryFailure.invalidStateTransition
+    }
+    return accepted
+  }
+
+  private func transcriptionAttempt(_ index: Int, mediaID: String, generation: Int64? = nil) -> TranscriptionAttemptToken {
+    let suffix = String(format: "%012d", index)
+    return .init(
+      id: "aaaaaaaa-aaaa-aaaa-aaaa-\(suffix)",
+      mediaID: mediaID,
+      generation: generation ?? Int64(index)
+    )
+  }
+}
+
+final class TaskTranscriptionPersistenceTests: XCTestCase {
+  func testGenerationMakesOlderAttemptStaleAndBeginContainsNoRemoteMaterial() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "task-owner", key: "task-owner"),
+        receivedAtMilliseconds: 1
+      ))
+      let first = try repository.beginTaskTranscription(taskID: accepted.taskID, createdAtMilliseconds: 2)
+      let second = try repository.beginTaskTranscription(taskID: accepted.taskID, createdAtMilliseconds: 3)
+      XCTAssertEqual(first.generation, 1)
+      XCTAssertEqual(second.generation, 2)
+      XCTAssertEqual(
+        try repository.updateTaskTranscriptionStatus(
+          taskID: accepted.taskID, attempt: first, status: .running, updatedAtMilliseconds: 4
+        ),
+        .stale
+      )
+      XCTAssertEqual(
+        try repository.updateTaskTranscriptionStatus(
+          taskID: accepted.taskID, attempt: second, status: .running, updatedAtMilliseconds: 5
+        ),
+        .applied
+      )
+      let stored = try repository.database.read { db in
+        try String.fetchAll(db, sql: "SELECT id || ':' || status FROM task_transcription_attempts ORDER BY generation")
+      }.joined(separator: "|")
+      XCTAssertFalse(stored.contains("https://"))
+      XCTAssertFalse(stored.contains("TranscriptionTemp"))
+      XCTAssertEqual(try repository.database.read {
+        try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM media_assets")
+      }, 0)
+    }
+  }
+
+  func testAtomicFinalIsEffectiveLatestAndSameBodyReusesSnapshotWithEvidence() throws {
+    try withRepository { repository, _ in
+      let envelope = capture(
+        requestID: "task-complete", key: "task-complete",
+        url: "https://example.test/article", body: "fixture body"
+      )
+      let accepted = try repository.acceptCapture(.init(envelope: envelope, receivedAtMilliseconds: 1))
+      let attempt = try repository.beginTaskTranscription(taskID: accepted.taskID, createdAtMilliseconds: 2)
+      let result = try repository.completeTaskTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: attempt,
+        document: transcription(text: "最终转写正文"),
+        evidence: .appleSpeechAnalyzer(localeIdentifier: "zh_CN", language: "zh", completedAtMilliseconds: 3),
+        receivedAtMilliseconds: 3
+      ))
+      guard case let .accepted(completed) = result else { return XCTFail("completion should apply") }
+      XCTAssertTrue(completed.snapshotWasCreated)
+      XCTAssertEqual(try repository.detail(taskID: accepted.taskID).snapshots.last?.bodyText, "最终转写正文")
+      XCTAssertEqual(try repository.exportProjection(taskID: accepted.taskID).snapshots.last?.bodyText, "最终转写正文")
+
+      let next = try repository.beginTaskTranscription(taskID: accepted.taskID, createdAtMilliseconds: 4)
+      let same = try repository.completeTaskTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: next,
+        document: transcription(text: "最终转写正文"),
+        evidence: .appleSpeechAnalyzer(localeIdentifier: "zh_CN", language: "zh", completedAtMilliseconds: 5),
+        receivedAtMilliseconds: 5
+      ))
+      guard case let .accepted(reused) = same else { return XCTFail("same-body completion should apply") }
+      XCTAssertFalse(reused.snapshotWasCreated)
+      XCTAssertEqual(reused.snapshotID, completed.snapshotID)
+      XCTAssertEqual(try repository.database.read {
+        try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM task_transcription_evidence")
+      }, 2)
+      XCTAssertEqual(try repository.database.read {
+        try String.fetchOne($0, sql: "SELECT status FROM task_transcription_attempts WHERE id = ?", arguments: [next.id])
+      }, "completed")
+    }
+  }
+
+  func testTerminalFailureRollsBackSnapshotEvidenceAndCompletedState() throws {
+    var dependencies = PersistenceDependencies.live
+    let gate = AtomicFailureGate()
+    dependencies.beforeTerminalCommit = { if gate.shouldFail { throw RepositoryFailure.injectedFailure } }
+    try withRepository(dependencies: dependencies) { repository, _ in
+      let accepted = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "task-rollback", key: "task-rollback"),
+        receivedAtMilliseconds: 1
+      ))
+      let originalCount = try repository.database.read {
+        try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM content_snapshots") ?? 0
+      }
+      let attempt = try repository.beginTaskTranscription(taskID: accepted.taskID, createdAtMilliseconds: 2)
+      gate.shouldFail = true
+      XCTAssertThrowsError(try repository.completeTaskTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: attempt,
+        document: transcription(text: "不得半保存"),
+        evidence: .appleSpeechAnalyzer(localeIdentifier: "zh_CN", language: "zh", completedAtMilliseconds: 3),
+        receivedAtMilliseconds: 3
+      )))
+      XCTAssertEqual(try repository.database.read {
+        try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM content_snapshots")
+      }, originalCount)
+      XCTAssertEqual(try repository.database.read {
+        try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM task_transcription_evidence")
+      }, 0)
+      XCTAssertEqual(try repository.database.read {
+        try String.fetchOne($0, sql: "SELECT status FROM task_transcription_attempts WHERE id = ?", arguments: [attempt.id])
+      }, "pending")
+    }
+  }
+
+  func testMediaAndTransientAttemptsShareOneOwnerSequenceAndEffectiveLatest() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "cross-owner", key: "cross-owner", url: "https://example.test/article"),
+        receivedAtMilliseconds: 1
+      ))
+      let mediaID = UUID().uuidString.lowercased()
+      try repository.attachMedia(.init(asset: .init(
+        id: mediaID,
+        taskID: accepted.taskID,
+        snapshotID: accepted.snapshotID,
+        relativePath: "\(String(repeating: "c", count: 64)).mp4",
+        contentSHA256: String(repeating: "c", count: 64),
+        byteSize: 12,
+        platform: "generic",
+        createdAtMilliseconds: 2
+      )))
+      let transient = try repository.beginTaskTranscription(taskID: accepted.taskID, createdAtMilliseconds: 3)
+      let media = try repository.beginMediaTranscription(taskID: accepted.taskID, mediaID: mediaID)
+      XCTAssertEqual(transient.generation, 1)
+      XCTAssertEqual(media.generation, 2)
+      XCTAssertEqual(try repository.updateTaskTranscriptionStatus(
+        taskID: accepted.taskID, attempt: transient, status: .running, updatedAtMilliseconds: 4
+      ), .stale)
+      _ = try repository.completeMediaTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: media,
+        document: transcription(text: "永久媒体较新正文"),
+        evidence: .appleSpeechAnalyzer(localeIdentifier: "zh_CN", language: "zh", completedAtMilliseconds: 5),
+        receivedAtMilliseconds: 5
+      ))
+      XCTAssertEqual(try repository.detail(taskID: accepted.taskID).snapshots.last?.bodyText, "永久媒体较新正文")
+
+      let newestTransient = try repository.beginTaskTranscription(taskID: accepted.taskID, createdAtMilliseconds: 6)
+      XCTAssertEqual(newestTransient.generation, 3)
+      _ = try repository.completeTaskTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: newestTransient,
+        document: transcription(text: "临时直连最新正文"),
+        evidence: .appleSpeechAnalyzer(localeIdentifier: "zh_CN", language: "zh", completedAtMilliseconds: 4),
+        receivedAtMilliseconds: 4
+      ))
+      XCTAssertEqual(
+        try repository.detail(taskID: accepted.taskID).snapshots.last?.bodyText,
+        "临时直连最新正文",
+        "generation, not wall-clock time, decides effective latest"
+      )
+    }
+  }
+
+  private func transcription(text: String) -> CapturedDocument {
+    .init(
+      createdAt: "2026-07-20T00:00:00Z",
+      origin: .localTranscription,
+      url: "https://example.test/article",
+      title: "转写",
+      platform: "generic",
+      method: "speech_analyzer_local",
+      text: text,
+      completeness: "complete",
+      capturedAt: "2026-07-20T00:00:00Z",
+      sourceLabel: "本机视频转写"
+    )
+  }
+}
+
+private final class AtomicFailureGate: @unchecked Sendable {
+  private let lock = NSLock()
+  private var value = false
+  var shouldFail: Bool {
+    get { lock.withLock { value } }
+    set { lock.withLock { value = newValue } }
+  }
+}
+
+private final class TranscriptionAttemptRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var results: [Result<TranscriptionAttemptToken, RepositoryFailure>] = []
+
+  func record(_ result: Result<TranscriptionAttemptToken, RepositoryFailure>) {
+    lock.withLock { results.append(result) }
+  }
+
+  var attempts: [TranscriptionAttemptToken] {
+    lock.withLock { results.compactMap { try? $0.get() } }
+  }
+
+  var failures: [RepositoryFailure] {
+    lock.withLock {
+      results.compactMap {
+        guard case let .failure(failure) = $0 else { return nil }
+        return failure
+      }
+    }
+  }
+}
+
 private extension Array {
   var single: Element? { count == 1 ? first : nil }
 }
@@ -567,8 +2046,115 @@ private func raceTwo<Value: Sendable>(
   return observations.values
 }
 
+final class SnapshotBodyEditTests: XCTestCase {
+  func testUpdateSnapshotBodyTextRewritesBodyAndDerivedColumnsInPlace() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "edit-a", key: "edit-a", body: "原始转写正文，有错别字。"),
+        receivedAtMilliseconds: 10
+      ))
+      let corrected = "校对后的转写正文。\n\n分段也修好了。"
+      try repository.updateSnapshotBodyText(
+        taskID: accepted.taskID,
+        snapshotID: accepted.snapshotID,
+        bodyText: corrected,
+        updatedAtMilliseconds: 99
+      )
+      let detail = try repository.detail(taskID: accepted.taskID)
+      XCTAssertEqual(detail.snapshots.count, 1)
+      XCTAssertEqual(detail.snapshots[0].bodyText, corrected)
+      XCTAssertEqual(detail.snapshots[0].id, accepted.snapshotID)
+      XCTAssertEqual(detail.task.updatedAtMilliseconds, 99)
+      let stored = try repository.database.read { db in
+        try Row.fetchOne(
+          db,
+          sql: "SELECT character_count, body_sha256 FROM content_snapshots WHERE id = ?",
+          arguments: [accepted.snapshotID.rawValue]
+        )
+      }
+      XCTAssertEqual(stored?["character_count"] as Int?, corrected.unicodeScalars.count)
+      XCTAssertEqual(
+        stored?["body_sha256"] as String?,
+        SHA256CaptureFingerprinter().bodySHA256(corrected)
+      )
+    }
+  }
+
+  func testUpdateSnapshotBodyTextForUnknownSnapshotThrowsNotFoundWithoutTouchingTask() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "edit-b", key: "edit-b"),
+        receivedAtMilliseconds: 10
+      ))
+      XCTAssertThrowsError(try repository.updateSnapshotBodyText(
+        taskID: accepted.taskID,
+        snapshotID: ContentSnapshotID(UUID()),
+        bodyText: "不应写入",
+        updatedAtMilliseconds: 99
+      )) { error in
+        XCTAssertEqual(error as? RepositoryFailure, .notFound)
+      }
+      XCTAssertEqual(try repository.detail(taskID: accepted.taskID).task.updatedAtMilliseconds, 10)
+    }
+  }
+}
+
 private func capture(requestID: String = "request", key: String? = "delivery", url: String = "https://example.test/article", body: String = "fixture body", characterCount: Int? = nil, title: String? = "Fixture") -> CaptureEnvelopeV1 {
   CaptureEnvelopeV1(version: 1, requestId: requestID, createdAt: "2026-07-15T04:00:00Z", idempotencyKey: key, source: .init(kind: "browser_capture", url: url, title: title, platform: "generic"), capture: .init(method: "rendered_dom", text: body, characterCount: characterCount ?? body.unicodeScalars.count, completeness: "full_article", capturedAt: "2026-07-15T04:00:00Z"), evidence: .init(sourceLabel: "Fixture DOM", usedCookie: false))
+}
+
+private func v2Capture(
+  media: MediaDescriptor,
+  requestID: String = "v2-safe-digest",
+  key: String = "v2-safe-digest",
+  url: String = "https://example.test/watch",
+  body: String = "fixture v2 body"
+) -> CaptureEnvelopeV2 {
+  CaptureEnvelopeV2(
+    requestId: requestID,
+    createdAt: "2026-07-20T00:00:00Z",
+    idempotencyKey: key,
+    source: .init(kind: "browser_capture", url: url, title: "Fixture V2", platform: "generic"),
+    capture: .init(method: "rendered_dom", text: body, characterCount: body.unicodeScalars.count, completeness: "full_article", capturedAt: "2026-07-20T00:00:00Z"),
+    evidence: .init(sourceLabel: "Current page DOM", usedCookie: false),
+    media: media
+  )
+}
+
+private func v2Media(
+  kind: MediaKind = .directFile,
+  pageURL: String = "https://example.test/watch?snapshot=base",
+  canonicalURL: String = "https://example.test/watch",
+  platform: String = "generic",
+  ephemeralPlaybackURL: String? = "https://media.example.test/signed-base.mp4",
+  mimeType: String? = "video/mp4",
+  posterURL: String? = "https://images.example.test/poster-base.jpg",
+  durationSeconds: Double? = 12.5,
+  author: String? = "Fixture Author",
+  expiresAt: String? = "2026-07-20T00:01:00Z",
+  transcriptionCapability: TranscriptionCapability = .supported,
+  failureReason: MediaFailureReason? = nil,
+  candidateCount: Int? = 2,
+  selectionReason: MediaSelectionReason? = .singleCandidate,
+  playbackState: MediaPlaybackState? = .paused
+) -> MediaDescriptor {
+  .init(
+    kind: kind,
+    pageURL: pageURL,
+    canonicalURL: canonicalURL,
+    platform: platform,
+    ephemeralPlaybackURL: ephemeralPlaybackURL,
+    mimeType: mimeType,
+    posterURL: posterURL,
+    durationSeconds: durationSeconds,
+    author: author,
+    expiresAt: expiresAt,
+    transcriptionCapability: transcriptionCapability,
+    failureReason: failureReason,
+    candidateCount: candidateCount,
+    selectionReason: selectionReason,
+    playbackState: playbackState
+  )
 }
 
 private func withRepository(dependencies: PersistenceDependencies = .live, _ body: (GRDBHistoryRepository, LocalDatabaseLocation) throws -> Void) throws {
@@ -580,7 +2166,7 @@ private func withRepository(dependencies: PersistenceDependencies = .live, _ bod
 }
 
 private func withTemporaryLocation(createDirectory: Bool = true, _ body: (LocalDatabaseLocation) throws -> Void) throws {
-  let root = FileManager.default.temporaryDirectory.appendingPathComponent("linkdigest-history-tests-\(UUID().uuidString)", isDirectory: true)
+  let root = URL(fileURLWithPath: "/private/tmp/linkdigest-history-tests-\(UUID().uuidString)", isDirectory: true)
   let directory = root.appendingPathComponent("Application Support/LinkDigest", isDirectory: true)
   if createDirectory { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
   defer { try? FileManager.default.removeItem(at: root) }

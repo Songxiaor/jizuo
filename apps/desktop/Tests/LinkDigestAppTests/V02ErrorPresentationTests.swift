@@ -4,7 +4,7 @@ import LinkDigestCore
 
 final class V02ErrorPresentationTests: XCTestCase {
   func testEveryStableCodeHasMessageAndRecoveryAction() {
-    XCTAssertEqual(V02ErrorCatalog.allStableCodes.count, 23)
+    XCTAssertEqual(V02ErrorCatalog.allStableCodes.count, 26)
 
     for code in V02ErrorCatalog.allStableCodes {
       let presentation = V02ErrorCatalog.presentation(for: code)
@@ -35,6 +35,11 @@ final class V02ErrorPresentationTests: XCTestCase {
         "检查 Base URL 是否是 OpenAI-compatible Chat Completions API root"
       )
     )
+
+    let billing = V02ErrorCatalog.presentation(for: ModelProviderErrorCode.providerBillingLimited.rawValue)
+    XCTAssertTrue(billing.message.contains("计费或配额限制"))
+    XCTAssertTrue(billing.recoveryAction.contains("服务商控制台"))
+    XCTAssertFalse(billing.visibleText.contains("quota denied"))
   }
 
   func testUnknownInputNeverEchoesCodeBodyHeaderSecretOrPrivateURL() {

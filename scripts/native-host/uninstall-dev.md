@@ -8,10 +8,12 @@
 ./scripts/native-host/uninstall-plan.sh --browser edge
 ```
 
-Brave 150 的当前 macOS 用户级查找会映射到 Chrome 的
-`~/Library/Application Support/Google/Chrome/NativeMessagingHosts/`，因此
-`--browser brave` 与 `--browser chrome` 打印同一个精确目标；不扫描或删除
-`BraveSoftware` 目录。Edge 只有显式 `--browser edge` 才会显示其目标。
+Chrome 与 Brave 的任一计划都会显示同一个 active leaf：
+`~/Library/Application Support/Google/Chrome/NativeMessagingHosts/com.syc.linkdigest.v01.json`。
+因此人工实际删除这个 leaf 会同时影响 Chrome 和 Brave 两个支持行；先确认计划输出，再决定是否执行。
+Edge 继续使用独立的 `~/Library/Application Support/Microsoft Edge/NativeMessagingHosts/`；只有显式
+`--browser edge` 才会显示它。脚本不扫描未选浏览器目录，也不会自动处理旧
+`BraveSoftware/Brave-Browser` leaf、其 backup 或 legacy receipt entry。
 
 `uninstall-plan.sh` 永远只读：它只打印目标存在状态、同一 basename 的备份和人工
 `rm`/恢复命令，不执行任何删除、覆盖或恢复。请先检查计划输出，再由人工执行命令。

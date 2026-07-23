@@ -1,3 +1,5 @@
+import AppKit
+import Darwin
 import SwiftUI
 import Foundation
 import LinkDigestAdapters
@@ -25,8 +27,18 @@ private struct RunPreparationAttempt {
   let token: UUID
   let capture: CurrentCapture
   let intent: RunIntentKind
+  let preferences: ModelPreferences
+  let modelOverride: String?
+  /// The stored profile identity protects against configuration races while
+  /// `identity` is the model-specific destination the user actually sees.
+  var authorizationIdentity: DataDestinationIdentity?
   var identity: DataDestinationIdentity?
   var disclosure: DataDestinationDisclosure?
+}
+
+private struct DisclosureIdentities {
+  let authorizationIdentity: DataDestinationIdentity
+  let displayIdentity: DataDestinationIdentity
 }
 
 @MainActor final class AppViewModel: ObservableObject {
@@ -61,7 +73,7 @@ private struct RunPreparationAttempt {
     self.makeRunID = makeRunID
   }
 
-  var envelope: CaptureEnvelopeV1? { currentCapture?.envelope }
+  var envelope: CaptureEnvelopeV1? { currentCapture?.wireEnvelope }
 
   func installModelRunOrchestrator(_ value: ModelRunOrchestrator) {
     guard modelRunOrchestrator == nil else { return }
@@ -94,7 +106,7 @@ private struct RunPreparationAttempt {
     else {
       return false
     }
-    return !currentCapture.envelope.capture.text
+    return !currentCapture.document.text
       .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && !runState.isActive
       && launchPendingRunID == nil
@@ -155,8 +167,81 @@ private struct RunPreparationAttempt {
     }
   }
 
-  func summarize() async { await requestRun(intent: .summarize) }
-  func translate() async { await requestRun(intent: .translate) }
+  func summarize(
+    preferences: ModelPreferences = .default,
+    modelOverride: String? = nil
+  ) async {
+    await requestRun(intent: .summarize, preferences: preferences, modelOverride: modelOverride)
+  }
+  func translate(
+    preferences: ModelPreferences = .default,
+    modelOverride: String? = nil
+  ) async {
+    guard !isTranslationLanguageMatch(
+      text: currentCapture?.document.text,
+      outputLanguage: preferences.outputLanguage
+    ) else {
+      dataDestinationNotice = "捕获内容与输出语言相同，无需翻译。"
+      return
+    }
+    await requestRun(intent: .translate, preferences: preferences, modelOverride: modelOverride)
+  }
+
+  func summarize(
+    historyDetail: HistoryDetailProjection,
+    preferences: ModelPreferences,
+    modelOverride: String? = nil
+  ) async {
+    guard prepareHistoryCapture(historyDetail) else { return }
+    await summarize(preferences: preferences, modelOverride: modelOverride)
+  }
+
+  func translate(
+    historyDetail: HistoryDetailProjection,
+    preferences: ModelPreferences,
+    modelOverride: String? = nil
+  ) async {
+    guard prepareHistoryCapture(historyDetail) else { return }
+    await translate(preferences: preferences, modelOverride: modelOverride)
+  }
+
+  func canStartRun(from detail: HistoryDetailProjection) -> Bool {
+    guard !detail.snapshots.isEmpty else { return false }
+    if currentCapture?.taskID == detail.task.id { return canStartRun }
+    guard storageAvailability.isWriteReady,
+          modelRunOrchestrator != nil,
+          configurationService != nil,
+          consentStore != nil,
+          !runState.isActive,
+          launchPendingRunID == nil,
+          preparationAttempt == nil
+    else { return false }
+    return detail.snapshots.last?.bodyText
+      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+  }
+
+  func canTranslate(preferences: ModelPreferences) -> Bool {
+    canStartRun && !isTranslationLanguageMatch(
+      text: currentCapture?.document.text,
+      outputLanguage: preferences.outputLanguage
+    )
+  }
+
+  func canTranslate(from detail: HistoryDetailProjection, preferences: ModelPreferences) -> Bool {
+    canStartRun(from: detail) && !isTranslationLanguageMatch(
+      text: detail.snapshots.last?.bodyText,
+      outputLanguage: preferences.outputLanguage
+    )
+  }
+
+  func translationUnavailableReason(
+    text: String?,
+    outputLanguage: String
+  ) -> String? {
+    isTranslationLanguageMatch(text: text, outputLanguage: outputLanguage)
+      ? "捕获内容与输出语言相同，无需翻译。"
+      : nil
+  }
 
   var isDataDestinationDisclosurePresented: Bool {
     dataDestinationDisclosure != nil
@@ -178,6 +263,7 @@ private struct RunPreparationAttempt {
     guard confirmingAttemptToken == nil,
           let attempt = preparationAttempt,
           let identity = attempt.identity,
+          let authorizationIdentity = attempt.authorizationIdentity,
           let disclosure = attempt.disclosure,
           disclosure.identity == identity,
           let consentStore
@@ -219,7 +305,7 @@ private struct RunPreparationAttempt {
     retainedBySheetOrLaunch = await authorizeAndLaunch(
       capture: attempt.capture,
       intent: attempt.intent,
-      expectedIdentity: identity,
+      expectedIdentity: authorizationIdentity,
       token: attempt.token
     )
   }
@@ -228,7 +314,11 @@ private struct RunPreparationAttempt {
     await modelRunOrchestrator?.stop()
   }
 
-  private func requestRun(intent: RunIntentKind) async {
+  private func requestRun(
+    intent: RunIntentKind,
+    preferences: ModelPreferences,
+    modelOverride: String?
+  ) async {
     guard
       canStartRun,
       let currentCapture,
@@ -236,7 +326,12 @@ private struct RunPreparationAttempt {
     else {
       return
     }
-    let token = beginPreparation(for: currentCapture, intent: intent)
+    let token = beginPreparation(
+      for: currentCapture,
+      intent: intent,
+      preferences: preferences,
+      modelOverride: modelOverride
+    )
     var retainedBySheetOrLaunch = false
     defer {
       if !retainedBySheetOrLaunch {
@@ -245,7 +340,11 @@ private struct RunPreparationAttempt {
     }
 
     do {
-      guard let identity = try await loadDisclosureIdentity() else {
+      guard let identities = try await loadDisclosureIdentities(
+        intent: intent,
+        preferences: preferences,
+        modelOverride: modelOverride
+      ) else {
         guard preparationIsValid(token, capture: currentCapture) else { return }
         dataDestinationNotice = V02ErrorCatalog.presentation(
           for: ModelRunErrorCode.modelNotConfigured.rawValue
@@ -253,17 +352,17 @@ private struct RunPreparationAttempt {
         return
       }
       guard !Task.isCancelled,
-            setPreparationIdentity(identity, ifOwner: token, capture: currentCapture)
+            setPreparationIdentities(identities, ifOwner: token, capture: currentCapture)
       else { return }
 
-      if try await consentStore.isConfirmed(for: identity) {
+      if try await consentStore.isConfirmed(for: identities.displayIdentity) {
         guard !Task.isCancelled,
               preparationIsValid(token, capture: currentCapture)
         else { return }
         retainedBySheetOrLaunch = await authorizeAndLaunch(
           capture: currentCapture,
           intent: intent,
-          expectedIdentity: identity,
+          expectedIdentity: identities.authorizationIdentity,
           token: token
         )
       } else {
@@ -273,7 +372,7 @@ private struct RunPreparationAttempt {
         retainedBySheetOrLaunch = presentDisclosure(
           for: currentCapture,
           intent: intent,
-          identity: identity,
+          identity: identities.displayIdentity,
           token: token
         )
       }
@@ -294,6 +393,41 @@ private struct RunPreparationAttempt {
         token: token
       )
     }
+  }
+
+  private func prepareHistoryCapture(_ detail: HistoryDetailProjection) -> Bool {
+    guard canStartRun(from: detail), let snapshot = detail.snapshots.last else { return false }
+    if currentCapture?.taskID == detail.task.id,
+       currentCapture?.snapshotID == snapshot.id {
+      return true
+    }
+    let formatter = ISO8601DateFormatter()
+    let document = CapturedDocument(
+      createdAt: formatter.string(
+        from: Date(timeIntervalSince1970: Double(snapshot.envelopeCreatedAtMilliseconds) / 1_000)
+      ),
+      origin: snapshot.sourceKind == CapturedDocument.Origin.manualLink.rawValue
+        ? .manualLink
+        : .browserCapture,
+      url: snapshot.sourceURL,
+      title: snapshot.title,
+      platform: snapshot.platform,
+      method: snapshot.captureMethod,
+      text: snapshot.bodyText,
+      characterCount: snapshot.characterCount,
+      completeness: snapshot.completeness,
+      capturedAt: formatter.string(
+        from: Date(timeIntervalSince1970: Double(snapshot.capturedAtMilliseconds) / 1_000)
+      ),
+      sourceLabel: snapshot.sourceLabel
+    )
+    currentCapture = CurrentCapture(
+      document: document,
+      taskID: detail.task.id,
+      snapshotID: snapshot.id
+    )
+    connection = "本地历史"
+    return true
   }
 
   private func authorizeAndLaunch(
@@ -343,7 +477,10 @@ private struct RunPreparationAttempt {
       taskID: capture.taskID,
       snapshotID: capture.snapshotID,
       intent: intent,
-      targetLanguage: intent == .translate ? "简体中文" : nil
+      targetLanguage: attemptPreferences(for: token)?.outputLanguage,
+      summaryPrompt: intent == .summarize ? attemptPreferences(for: token)?.summaryPrompt : nil,
+      translationModel: intent == .translate ? attemptPreferences(for: token)?.translationModel : nil,
+      modelOverride: attemptModelOverride(for: token)
     )
     // Protect the real Task before createRun can block. This pending ownership
     // must not publish `.starting`: that state remains commit-confirmed.
@@ -353,7 +490,7 @@ private struct RunPreparationAttempt {
     releasePreparation(ifOwner: token)
     await modelRunOrchestrator.start(
       request: request,
-      capture: capture.envelope,
+      capture: capture.document,
       authorization: authorization
     ) { [weak self] runID, state in
       await self?.receiveRunState(runID: runID, state: state)
@@ -368,7 +505,11 @@ private struct RunPreparationAttempt {
     token: UUID
   ) async -> Bool {
     do {
-      guard let identity = try await loadDisclosureIdentity() else {
+      guard let identities = try await loadDisclosureIdentities(
+        intent: intent,
+        preferences: attemptPreferences(for: token) ?? .default,
+        modelOverride: attemptModelOverride(for: token)
+      ) else {
         guard preparationIsValid(token, capture: capture) else { return false }
         dataDestinationNotice = V02ErrorCatalog.presentation(
           for: ModelRunErrorCode.modelNotConfigured.rawValue
@@ -376,12 +517,12 @@ private struct RunPreparationAttempt {
         return false
       }
       guard !Task.isCancelled,
-            setPreparationIdentity(identity, ifOwner: token, capture: capture)
+            setPreparationIdentities(identities, ifOwner: token, capture: capture)
       else { return false }
       let presented = presentDisclosure(
         for: capture,
         intent: intent,
-        identity: identity,
+        identity: identities.displayIdentity,
         token: token
       )
       if presented {
@@ -401,11 +542,26 @@ private struct RunPreparationAttempt {
     }
   }
 
-  private func loadDisclosureIdentity() async throws -> DataDestinationIdentity? {
+  private func loadDisclosureIdentities(
+    intent: RunIntentKind,
+    preferences: ModelPreferences,
+    modelOverride: String?
+  ) async throws -> DisclosureIdentities? {
     guard let configurationService else { return nil }
     do {
       guard let profile = try await configurationService.loadProfileForDisclosure() else { return nil }
-      return DataDestinationIdentity(profile: profile)
+      let authorizationIdentity = DataDestinationIdentity(profile: profile)
+      let displayProfile: ProviderProfile
+      if let selectedModel = (modelOverride ?? (intent == .translate ? preferences.translationModel : nil))?.trimmingCharacters(in: .whitespacesAndNewlines),
+         !selectedModel.isEmpty {
+        displayProfile = try profile.replacing(model: selectedModel)
+      } else {
+        displayProfile = profile
+      }
+      return DisclosureIdentities(
+        authorizationIdentity: authorizationIdentity,
+        displayIdentity: DataDestinationIdentity(profile: displayProfile)
+      )
     } catch let error as ProviderConfigurationError {
       throw error
     } catch {
@@ -427,7 +583,7 @@ private struct RunPreparationAttempt {
     let presentation = DataDestinationDisclosure(
       identity: identity,
       intent: intent,
-      title: capture.envelope.source.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+      title: capture.document.title?.trimmingCharacters(in: .whitespacesAndNewlines)
     )
     var updatedAttempt = attempt
     updatedAttempt.disclosure = presentation
@@ -443,16 +599,34 @@ private struct RunPreparationAttempt {
     dataDestinationDisclosure = nil
   }
 
-  private func beginPreparation(for capture: CurrentCapture, intent: RunIntentKind) -> UUID {
+  private func beginPreparation(
+    for capture: CurrentCapture,
+    intent: RunIntentKind,
+    preferences: ModelPreferences,
+    modelOverride: String?
+  ) -> UUID {
     let token = UUID()
     preparationAttempt = .init(
       token: token,
       capture: capture,
       intent: intent,
+      preferences: preferences,
+      modelOverride: modelOverride,
+      authorizationIdentity: nil,
       identity: nil,
       disclosure: nil
     )
     return token
+  }
+
+  private func attemptPreferences(for token: UUID) -> ModelPreferences? {
+    guard let attempt = preparationAttempt, attempt.token == token else { return nil }
+    return attempt.preferences
+  }
+
+  private func attemptModelOverride(for token: UUID) -> String? {
+    guard let attempt = preparationAttempt, attempt.token == token else { return nil }
+    return attempt.modelOverride
   }
 
   private func releasePreparation(ifOwner token: UUID) {
@@ -463,8 +637,8 @@ private struct RunPreparationAttempt {
     }
   }
 
-  private func setPreparationIdentity(
-    _ identity: DataDestinationIdentity,
+  private func setPreparationIdentities(
+    _ identities: DisclosureIdentities,
     ifOwner token: UUID,
     capture: CurrentCapture
   ) -> Bool {
@@ -473,7 +647,8 @@ private struct RunPreparationAttempt {
           matchesCurrentCapture(attempt.capture, capture),
           matchesCurrentCapture(capture, currentCapture)
     else { return false }
-    attempt.identity = identity
+    attempt.authorizationIdentity = identities.authorizationIdentity
+    attempt.identity = identities.displayIdentity
     preparationAttempt = attempt
     return true
   }
@@ -488,6 +663,14 @@ private struct RunPreparationAttempt {
   private func matchesCurrentCapture(_ lhs: CurrentCapture, _ rhs: CurrentCapture?) -> Bool {
     guard let rhs else { return false }
     return lhs.taskID == rhs.taskID && lhs.snapshotID == rhs.snapshotID
+  }
+
+  private func isTranslationLanguageMatch(text: String?, outputLanguage: String) -> Bool {
+    guard let text else { return false }
+    return CapturedContentLanguage.isSameOutputLanguage(
+      content: text,
+      outputLanguage: outputLanguage
+    )
   }
 
   func receiveRunState(runID: RunID, state: RunState) {
@@ -537,37 +720,54 @@ private struct RunPreparationAttempt {
 }
 
 @main struct LinkDigestApp: App {
+  @Environment(\.scenePhase) private var scenePhase
   @StateObject private var model: AppViewModel
   @StateObject private var historyModel: HistoryViewModel
+  @StateObject private var manualLink: ManualLinkViewModel
   @StateObject private var providerSettings: ProviderSettingsViewModel
+  @StateObject private var browserSupport: BrowserSupportViewModel
+  @StateObject private var mediaStorageSettings: MediaStorageSettingsViewModel
+  @State private var didBootstrap = false
 
   private let configurationService: ProviderConfigurationService
   private let provider: any ModelProvider
   private let composition: AppComposition
+  private let socketServerLifecycle: UnixSocketServerLifecycle
+  private let applicationTerminationObserver: NSObjectProtocol
+  private let terminationSignalSource: DispatchSourceSignal
 
   init() {
     let applicationSupportRoot: AppComposition.ApplicationSupportRoot
+    let imageCache: GitHubREADMEImageCache?
+    let cacheRoot: URL?
     do {
       let root = try AppApplicationSupportRoot.resolve()
       applicationSupportRoot = { root }
+      imageCache = .init(applicationSupportRoot: root)
+      cacheRoot = root
     } catch {
       // Preserve the composition's structured storage-unavailable path rather
       // than letting an invalid debug smoke override crash the SwiftUI process.
       applicationSupportRoot = { throw RepositoryFailure.unavailable }
+      imageCache = nil
+      cacheRoot = nil
     }
     let configurationService: ProviderConfigurationService
     let provider: any ModelProvider
     let consentStore: any DataDestinationConsentStore
+    let preferencesStore: any ModelPreferencesStore
     #if DEBUG
     if AppApplicationSupportRoot.shouldUseVisualFixture() {
       let fixture = DebugVisualFixture()
       configurationService = fixture.configurationService
       provider = fixture.provider
       consentStore = fixture.consentStore
+      preferencesStore = fixture.preferencesStore
     } else {
       configurationService = ProviderConfigurationService(
         profileStore: UserDefaultsProviderProfileStore(),
-        secretStore: KeychainSecretStore()
+        secretStore: KeychainSecretStore(),
+        libraryStore: UserDefaultsModelLibraryStore()
       )
       let sessionConfiguration = URLSessionConfiguration.ephemeral
       sessionConfiguration.httpCookieStorage = nil
@@ -576,11 +776,13 @@ private struct RunPreparationAttempt {
         session: URLSession(configuration: sessionConfiguration)
       )
       consentStore = UserDefaultsDataDestinationConsentStore()
+      preferencesStore = UserDefaultsModelPreferencesStore()
     }
     #else
     configurationService = ProviderConfigurationService(
       profileStore: UserDefaultsProviderProfileStore(),
-      secretStore: KeychainSecretStore()
+      secretStore: KeychainSecretStore(),
+      libraryStore: UserDefaultsModelLibraryStore()
     )
     let sessionConfiguration = URLSessionConfiguration.ephemeral
     sessionConfiguration.httpCookieStorage = nil
@@ -589,20 +791,91 @@ private struct RunPreparationAttempt {
       session: URLSession(configuration: sessionConfiguration)
     )
     consentStore = UserDefaultsDataDestinationConsentStore()
+    preferencesStore = UserDefaultsModelPreferencesStore()
     #endif
     let model = AppViewModel(
       configurationService: configurationService,
       consentStore: consentStore
     )
-    let historyModel = HistoryViewModel()
+    let manualResourceFetcher = ProxyAwareWebPageFetcher()
+    let faviconCache = cacheRoot.map { WebsiteFaviconCache(applicationSupportRoot: $0) }
+    let mediaStoragePreference = UserDefaultsMediaStoragePreferenceStore()
+    let mediaStore = cacheRoot.map {
+      LocalMediaStore(
+        applicationSupportRoot: $0,
+        storagePreference: mediaStoragePreference
+      )
+    }
+    // Video downloads need a longer timeout than HTML capture (signed CDN objects).
+    let mediaResourceFetcher = ProxyAwareWebPageFetcher(
+      limits: .init(redirects: 4, responseBytes: LocalMediaStore.maxBytes, timeout: 120)
+    )
+    let mediaDownloader = mediaStore.map {
+      VideoMediaDownloader(resources: mediaResourceFetcher, store: $0)
+    }
+    let transcriptionTempStore = cacheRoot.map {
+      TranscriptionTempStore(
+        applicationSupportRoot: $0,
+        resources: mediaResourceFetcher
+      )
+    }
+    let startupTranscriptionCleanupFailure: String?
+    do {
+      try transcriptionTempStore?.cleanupAll()
+      startupTranscriptionCleanupFailure = nil
+    } catch let error as TranscriptionTempStoreError {
+      startupTranscriptionCleanupFailure = error.userMessage
+    } catch {
+      startupTranscriptionCleanupFailure = TranscriptionTempStoreError.unavailable.userMessage
+    }
+    let githubAdapter = GitHubRepositorySourceAdapter(resources: manualResourceFetcher, imageCache: imageCache)
+    let douyinAdapter = DouyinSourceAdapter(fetcher: manualResourceFetcher)
+    // Douyin is registered first so short links never fall into the generic HTML path.
+    let historyModel = HistoryViewModel(
+      imageCache: imageCache,
+      mediaStore: mediaStore,
+      mediaDownloader: mediaDownloader,
+      faviconCache: faviconCache,
+      faviconResources: manualResourceFetcher,
+      videoTranscriber: AppleSpeechVideoTranscriber(),
+      imageTextRecognizer: AppleVisionTextRecognizer(),
+      onlineAudioTranscriber: OpenAICompatibleAudioTranscriber(
+        configurationService: configurationService
+      ),
+      transcriptTidier: OpenAICompatibleTranscriptTidier(
+        configurationService: configurationService
+      ),
+      transcriptionTempStore: transcriptionTempStore,
+      livePlaybackTranscribe: { locale, stopSignal in
+        AppAudioLiveTranscriber().transcribe(localeIdentifier: locale, stopSignal: stopSignal)
+      },
+      startupTranscriptionCleanupFailure: startupTranscriptionCleanupFailure
+    )
+    let manualLink = ManualLinkViewModel(
+      captureService: .init(
+        fetcher: manualResourceFetcher,
+        sourceAdapters: [douyinAdapter, githubAdapter]
+      ),
+      imageCache: imageCache,
+      imageResources: manualResourceFetcher,
+      onMediaCaptured: { media, taskID, snapshotID, pageURL in
+        await historyModel.ingestCapturedMedia(
+          media,
+          taskID: taskID,
+          snapshotID: snapshotID,
+          pageURL: pageURL
+        )
+      }
+    )
     historyModel.beginBootstrapLoading()
     let nowMilliseconds: @Sendable () -> Int64 = {
       Int64((Date().timeIntervalSince1970 * 1_000).rounded())
     }
-    let serverStarter = makeUnixSocketServerStarter(
+    let socketServerLifecycle = UnixSocketServerLifecycle(
       path: linkDigestSocketPath,
       statusSink: { value in await model.setConnection(value) }
     )
+    let serverStarter = makeUnixSocketServerStarter(lifecycle: socketServerLifecycle)
     let injectSmokeOpenFailure = AppApplicationSupportRoot.shouldInjectOpenFailure()
     let composition = AppComposition(dependencies: .init(
       applicationSupportRoot: applicationSupportRoot,
@@ -610,7 +883,11 @@ private struct RunPreparationAttempt {
         if injectSmokeOpenFailure {
           throw RepositoryFailure.injectedFailure
         }
-        return try GRDBHistoryRepository.open(at: location)
+        let repository = try GRDBHistoryRepository.open(at: location)
+        // 平台已是导航第一维度：清理历史上自动附加的平台同义标签。
+        // 清理失败不阻塞打开历史库（显示层仍会过滤这些标签）。
+        try? repository.removeLegacyPlatformTags()
+        return repository
       },
       nowMilliseconds: nowMilliseconds,
       serverStarter: serverStarter,
@@ -618,28 +895,127 @@ private struct RunPreparationAttempt {
         await model.setStorageAvailability(value)
       },
       captureSink: { value in
+        // Publish + reveal first so CaptureReceiver can ACK the browser within the
+        // extension's 10s native-message budget. Image downloads are fail-open and
+        // must never sit on the socket response path (WeChat/X media often >10s).
         await model.receive(value)
         await historyModel.reveal(taskID: value.taskID)
+        // Video download starts immediately so signed URLs are not kept for later.
+        // It runs off the native-message ACK path (same fail-open pattern as images).
+        if value.shouldAutomaticallyPersistLegacyMedia {
+          if let media = value.document.media {
+            let taskID = value.taskID
+            let snapshotID = value.snapshotID
+            let pageURL = value.document.url
+            Task { @MainActor in
+              await historyModel.ingestCapturedMedia(
+                media,
+                taskID: taskID,
+                snapshotID: snapshotID,
+                pageURL: pageURL
+              )
+            }
+          }
+        } else if mediaStoragePreference.autoSaveCapturedVideo,
+                  let descriptor = value.mediaDescriptor,
+                  let media = CurrentCaptureMediaPreview.favoriteMedia(descriptor) {
+          let taskID = value.taskID
+          let snapshotID = value.snapshotID
+          let pageURL = value.document.url
+          Task { @MainActor in
+            await historyModel.autoSaveCapturedMedia(
+              media,
+              taskID: taskID,
+              snapshotID: snapshotID,
+              pageURL: pageURL
+            )
+          }
+        }
+        // Substantive WeChat articles keep their inline images even when they
+        // also carry an embedded-video descriptor. Pure video captures do not.
+        if let imageCache, RemoteMarkdownImageStagingPolicy.allows(value.document) {
+          let markdown = value.document.text
+          let captureID = value.document.requestID
+          let taskID = value.taskID
+          let snapshotID = value.snapshotID
+          let resources = manualResourceFetcher
+          Task {
+            await imageCache.stageRemoteMarkdownImages(
+              markdown: markdown,
+              captureID: captureID,
+              resources: resources
+            )
+            imageCache.promote(
+              captureID: captureID,
+              taskID: taskID,
+              snapshotID: snapshotID
+            )
+            // Refresh the open detail so local images appear once staging finishes.
+            await historyModel.reveal(taskID: taskID)
+          }
+        }
       }
     ))
 
     self.configurationService = configurationService
     self.provider = provider
     self.composition = composition
+    self.socketServerLifecycle = socketServerLifecycle
+    self.applicationTerminationObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.willTerminateNotification,
+      object: nil,
+      queue: nil
+    ) { _ in
+      socketServerLifecycle.stop()
+      try? transcriptionTempStore?.cleanupAll()
+    }
+    let terminationSignalSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
+    Darwin.signal(SIGTERM, SIG_IGN)
+    terminationSignalSource.setEventHandler {
+      socketServerLifecycle.stop()
+      try? transcriptionTempStore?.cleanupAll()
+      Darwin.signal(SIGTERM, SIG_DFL)
+      _ = Darwin.kill(getpid(), SIGTERM)
+    }
+    terminationSignalSource.resume()
+    self.terminationSignalSource = terminationSignalSource
     _model = StateObject(wrappedValue: model)
     _historyModel = StateObject(wrappedValue: historyModel)
+    _manualLink = StateObject(wrappedValue: manualLink)
     _providerSettings = StateObject(
       wrappedValue: ProviderSettingsViewModel(
         configurationService: configurationService,
-        provider: provider
+        provider: provider,
+        preferencesStore: preferencesStore
       )
+    )
+    _browserSupport = StateObject(
+      wrappedValue: BrowserSupportViewModel(
+        installer: try? BrowserSupportInstaller.appBundled()
+      )
+    )
+    _mediaStorageSettings = StateObject(
+      wrappedValue: MediaStorageSettingsViewModel(store: mediaStoragePreference)
     )
   }
 
   var body: some Scene {
-    WindowGroup("LinkDigest") {
-      HistoryContentView(model: historyModel, appModel: model)
+    WindowGroup(ProductDisplay.name) {
+      HistoryContentView(
+        model: historyModel,
+        appModel: model,
+        manualLink: manualLink,
+        providerSettings: providerSettings
+      )
         .task {
+          manualLink.handleScenePhase(scenePhase)
+          guard !didBootstrap else { return }
+          didBootstrap = true
+          var didConfigureHistory = false
+          defer {
+            if Task.isCancelled && !didConfigureHistory { didBootstrap = false }
+          }
+          await providerSettings.load()
           if AppApplicationSupportRoot.shouldHoldHistoryLoading() {
             try? await Task.sleep(for: .seconds(10))
           }
@@ -650,11 +1026,29 @@ private struct RunPreparationAttempt {
             unavailableCode: result.historyUnavailableCode,
             readOnlyReason: result.historyReadOnlyReason
           )
+          didConfigureHistory = true
+          if result.availability.isWriteReady, let history = result.history {
+            manualLink.configure(
+              history: history,
+              storageWriteGate: result.storageWriteGate,
+              nowMilliseconds: { Int64((Date().timeIntervalSince1970 * 1_000).rounded()) },
+              captureSink: { value in
+                await model.receive(value)
+                await historyModel.reveal(taskID: value.taskID)
+              }
+            )
+          }
           if result.availability.isWriteReady, let history = result.history {
             let orchestrator = ModelRunOrchestrator(
               configurationService: configurationService,
               provider: provider,
               history: history,
+              onHistoryMetadataChanged: { taskID in
+                await historyModel.historyMetadataChanged(taskID: taskID)
+              },
+              onRunMetadataChanged: { taskID in
+                await historyModel.historyMetadataChanged(taskID: taskID)
+              },
               storageWriteGate: result.storageWriteGate
             )
             model.installModelRunOrchestrator(orchestrator)
@@ -663,15 +1057,28 @@ private struct RunPreparationAttempt {
             model.setConnection("接收服务启动失败")
           }
         }
+        .onChange(of: scenePhase) { _, phase in
+          manualLink.handleScenePhase(phase)
+        }
+        // scenePhase does not change when the user switches apps on macOS, so
+        // this is the notification that actually fires on "copy a link
+        // elsewhere, come back to LinkDigest".
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+          manualLink.handleApplicationDidBecomeActive()
+        }
     }
     .defaultSize(width: 1100, height: 760)
     .windowResizability(.contentMinSize)
     .windowToolbarStyle(.unified(showsTitle: true))
+    .commands { LinkDigestCommands(manualLink: manualLink) }
 
     Settings {
-      ProviderSettingsView(model: providerSettings)
-        .padding(24)
-        .frame(minWidth: 480)
+      ProviderSettingsView(
+        model: providerSettings,
+        browserSupport: browserSupport,
+        mediaStorage: mediaStorageSettings
+      )
+        .frame(minWidth: 600, minHeight: 620)
     }
   }
 }
@@ -681,6 +1088,7 @@ private final class DebugVisualFixture: @unchecked Sendable {
   let configurationService: ProviderConfigurationService
   let provider: any ModelProvider
   let consentStore: any DataDestinationConsentStore = DebugVisualConsentStore()
+  let preferencesStore: any ModelPreferencesStore = DebugVisualPreferencesStore()
 
   init() {
     let profile = try! ProviderProfile(
@@ -698,6 +1106,15 @@ private final class DebugVisualFixture: @unchecked Sendable {
         : .success
     )
   }
+}
+
+private actor DebugVisualPreferencesStore: ModelPreferencesStore {
+  private var value = try! ModelPreferences(
+    summaryPrompt: "提炼核心结论、关键证据和可执行下一步。",
+    targetLanguage: "简体中文"
+  )
+  func load() async throws -> ModelPreferences { value }
+  func save(_ preferences: ModelPreferences) async throws { value = preferences }
 }
 
 private actor DebugVisualProfileStore: ProviderProfileStore {
@@ -748,3 +1165,27 @@ private struct DebugVisualProvider: ModelProvider {
   func cancelActiveStreams() {}
 }
 #endif
+
+/// App-level menu commands. ⌘N intentionally repurposes the default New Window
+/// slot: LinkDigest is a single-window utility, and "add a link" is its primary
+/// creation act.
+private struct LinkDigestCommands: Commands {
+  @ObservedObject var manualLink: ManualLinkViewModel
+  @FocusedValue(\.focusHistorySearch) private var focusHistorySearch
+
+  var body: some Commands {
+    CommandGroup(replacing: .newItem) {
+      Button("添加链接…") { manualLink.open() }
+        .keyboardShortcut("n", modifiers: .command)
+        .disabled(!manualLink.canOpen)
+      Button("从剪贴板添加链接") { manualLink.readClipboardAndOpen() }
+        .keyboardShortcut("v", modifiers: [.command, .shift])
+        .disabled(!manualLink.canOpen)
+    }
+    CommandGroup(after: .textEditing) {
+      Button("搜索历史") { focusHistorySearch?.run() }
+        .keyboardShortcut("f", modifiers: .command)
+        .disabled(focusHistorySearch == nil)
+    }
+  }
+}

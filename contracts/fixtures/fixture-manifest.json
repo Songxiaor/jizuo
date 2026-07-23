@@ -2,6 +2,7 @@
   "schema": "../capture-envelope-v1.schema.json",
   "fixtures": [
     {"name": "valid", "file": "valid.json", "expect": "valid"},
+    {"name": "valid-with-media", "file": "valid-with-media.json", "expect": "valid"},
     {"name": "unicode-emoji-one-scalar", "file": "unicode-emoji.json", "expect": "valid"},
     {"name": "unicode-combining-two-scalars", "file": "unicode-combining.json", "expect": "valid"},
     {"name": "unicode-nul-three-scalars", "file": "unicode-nul.json", "expect": "valid"},
@@ -9,6 +10,14 @@
     {"name": "non-web-url", "file": "non-web-url.json", "expect": "invalid", "errorCode": "CAPTURE_URL_UNSUPPORTED"},
     {"name": "count-mismatch", "file": "count-mismatch.json", "expect": "invalid", "errorCode": "CAPTURE_COUNT_MISMATCH"},
     {"name": "empty-text", "file": "empty-text.json", "expect": "invalid", "errorCode": "CAPTURE_CONTENT_EMPTY"},
-    {"name": "oversize", "file": "valid.json", "expect": "invalid", "errorCode": "CAPTURE_PAYLOAD_TOO_LARGE", "mutation": {"field": "capture.text", "repeat": 2000001, "unit": "x"}}
+    {"name": "oversize", "file": "valid.json", "expect": "invalid", "errorCode": "CAPTURE_PAYLOAD_TOO_LARGE", "mutation": {"field": "capture.text", "repeat": 2000001, "unit": "x"}},
+    {"name": "v2-direct-file", "file": "v2-direct-file.json", "schema": "../capture-envelope-v2.schema.json", "expect": "valid"},
+    {"name": "v2-hls", "file": "v2-hls.json", "schema": "../capture-envelope-v2.schema.json", "expect": "valid"},
+    {"name": "v2-blob-mse", "file": "v2-blob-mse.json", "schema": "../capture-envelope-v2.schema.json", "expect": "valid"},
+    {"name": "v2-multi-video-ambiguous", "file": "v2-multi-video-ambiguous.json", "schema": "../capture-envelope-v2.schema.json", "expect": "valid"},
+    {"name": "v2-unsupported", "file": "v2-unsupported.json", "schema": "../capture-envelope-v2.schema.json", "expect": "valid"},
+    {"name": "v2-douyin-direct", "file": "v2-douyin-direct.json", "schema": "../capture-envelope-v2.schema.json", "expect": "valid"},
+    {"name": "v2-douyin-session-detail", "file": "v2-douyin-session-detail.json", "schema": "../capture-envelope-v2.schema.json", "expect": "valid"},
+    {"name": "v2-invalid-direct-without-url", "file": "v2-invalid-direct-without-url.json", "schema": "../capture-envelope-v2.schema.json", "expect": "invalid", "errorCode": "CAPTURE_SCHEMA_INVALID"}
   ]
 }

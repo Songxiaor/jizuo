@@ -1,10 +1,10 @@
 # LinkDigest PRD
 
-> 状态：V0.1 macOS 原生路线、自动化垂直链路与 Chrome/Brave/Edge 三浏览器工程证据已经收口。Edge 150 的证据由真实 Popup 预览，以及修复后 Service Worker → Native Host → Unix socket → Swift App 的 20/20 传输组成；修复后没有再次完成工具栏点击到 APP 的连续截图。Loop 4 r1 Stable Host package 与 clean-room 初装已最终独立 re-review PASS；真实用户安装、升级/卸载、Developer ID 签名、公证和发布包仍未完成。
+> 状态：V0.1–V0.4 工程链已按各自证据收口。浏览器辅助视频路线的 M0 与 M1 已完成本地工程实现和自动验证：M1 新增独立 V2 合同、通用视频能力分类与 V2→History 正文接线，但尚未实现远程播放、收藏、临时转写媒体或云 ASR。Loop 4 r1/r2/r3/r4a 已最终独立工程复审 PASS；r4b local-test ad-hoc DMG 也已独立 PASS 0/0/0 并 finalize，当前为 **READY_FOR_MANUAL_OPEN，等待 Syc 手工启动**。这不代表公开发布；产品仍 BLOCKED，真实 Host 安装、Developer ID、正式签名、公证、stapling、浏览器验收和发布仍未完成。
 >
 > 本文是产品范围、优先级和验收标准的唯一真相源。技术组件见 `docs/ARCHITECTURE.md`；第一条链路见 `docs/specs/V0.1_VERTICAL_SLICE.md`；V0.2 工程证据见 `docs/specs/V0.2_BYOK_ACCEPTANCE.md`；远期容量假设见 `docs/CAPACITY_MODEL.md`。
 
-> **范围与当前实现说明**：本文的 P0 是第一版产品目标，不代表当前代码已经实现全部 P0。V0.1、V0.2、V0.3/02A–02C 与 Loop 2 的完成状态以各自验收证据为准。Loop 3 的数据去向确认/`connectionTest` 已最终独立复审 PASS。Loop 4 r1 新增 canonical config、Release package、严格 verifier、manifest renderer 和只允许 fixed canonical `/private/tmp` HOME 的 initial install/noop/receipt；56 项 deterministic check 与最终独立 re-review 已 PASS，P0/P1/P2 均为 0。r2 升级/卸载/完整 rollback、真实安装、签名、公证和发布仍需另行授权。
+> **范围与当前实现说明**：本文的 P0 是第一版产品目标，不代表当前代码已经实现全部 P0。V0.1、V0.2、V0.3/02A–02C 与 Loop 2 的完成状态以各自验收证据为准。Loop 3 的数据去向确认/`connectionTest` 已最终独立复审 PASS。Loop 4 r1 的 56 项 deterministic check 与最终独立 re-review 已 PASS，P0/P1/P2 均为 0。r2 新增 permanent pre-provisioned clean-room lock、plan digest、receipt v2 ownership/lineage、transaction journal、receipt commit point、initial/v1 migration/upgrade/uninstall/recover。首次 r2 final review 的三项 P1 已通过命名空间双向 overlap 拒绝、r1 canonical 0.1 + transaction 显式 expected version、strict journal plan schema + malformed exit 8 修复；110 项 fast gate、56 项 r1 compatibility gate 与同一 reviewer 唯一 re-review 已 PASS，P0/P1/P2 = 0/0/0。所有 mutation 仅限 `/private/tmp` clean-room。checksum 只证明一致性，不代表签名或发布真实性；真实安装、签名、公证和发布仍需另行授权。
 
 ## 1. 一句话定位
 
@@ -75,6 +75,7 @@ LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户�
 - macOS SwiftUI APP 可以启动、退出并恢复主窗口。
 - Chrome、Brave、Edge 扩展可以读取用户主动触发的当前页面。
 - 扩展发送 URL、标题、选区、正文、字符数和捕获证据。
+- 无目标视频的纯文本页面继续发送 V1；检测到目标视频后发送独立 `CaptureEnvelopeV2` 与 `MediaDescriptor`，支持 direct MP4/MOV、HLS、blob/MSE、未加载、DRM/不支持类型与多视频歧义的真实能力分类。
 - Native Messaging 可以完成握手、版本检查、超时和错误返回。
 - APP 创建 `Task` 与 `ContentSnapshot`，展示来源、正文和完整性。
 - 支持一个 OpenAI-compatible Chat Completions 模型连接。
@@ -84,6 +85,7 @@ LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户�
 - 支持总结、翻译、停止、重试和保存部分结果。
 - SQLite 保存任务、正文快照、运行记录和结果。
 - 支持打开历史、删除单项和导出 Markdown、纯文本（`.txt`）和 JSON。
+- 手动公开链接按三分流生产实现：普通公网且无显式系统代理使用 `PeerBoundNetworkWebPageFetcher` / `Network.framework`，它把 policy 已核验的 numeric IP 绑定为实际 peer，并保留原 hostname 的 HTTPS SNI、`SecPolicyCreateSSL`、HTTP Host、system trust 与禁用 trust 网络补取；显式系统 HTTP(S) 代理或 DNS 全部返回 `198.18.0.0/15` fake-ip 时使用 `SystemProxyWebPageFetcher`。系统代理是**独立信任边界**：Foundation/代理可能重新解析 hostname，本机 URL/DNS admission 不能证明代理实际 peer，因而不宣称与 PeerBound 等价，剩余 proxy-resolution SSRF 风险由系统代理/VPN 所在环境承担。代理路线仅接受 HTTPS，拒绝 HTTP 并提示使用浏览器扩展；两路线均在每次 redirect 重新检查 URL、私网/test-net、凭据 URL、标准端口与 HTTPS→HTTP 降级。`URLSessionWebPageFetcher` 仍为 test-only legacy，不是 production fallback。
 - Cloud API 完全不存在或断网时，以上能力仍可使用。
 
 ### 5.2 明确不做
@@ -92,8 +94,9 @@ LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户�
 - 账号、登录、设备管理、订阅和托管模型。
 - 云同步、端到端加密同步和团队协作。
 - Cookie 读取、付费墙绕过、验证码绕过或批量账号采集。
-- YouTube/B站字幕、`yt-dlp`、`ffmpeg`、Whisper 和媒体下载。
-- 小红书、抖音、X 等专用适配器。
+- 后台剪贴板监听、任意网页 WebView 执行、用户浏览器 Profile/凭据导入或对登录页的手动抓取。
+- YouTube/B站字幕、`yt-dlp`、`ffmpeg`、Whisper、M1 自动媒体下载和远程播放。
+- 小红书、X、YouTube 等新平台专用媒体适配器；M1 的抖音只读取当前 DOM 的公开 `video/source` 与页面 metadata，不请求私有详情端点。
 - 批量导入、批量总结、PDF/HTML 导出。
 - 远程配置、遥测平台、微服务和百万用户容量部署。
 - 为未来 Windows 提前牺牲 macOS 体验。
@@ -122,9 +125,12 @@ LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户�
 | V0.2 BYOK | 用户能配置模型并获得流式总结 | 多 Provider、账号、云端 |
 | V0.3 本地历史 | 02A/02B 已通过独立复审；02C 已完成 History Sidebar、分页、详情、删除、重启读取与 future-schema 只读浏览 | 同步、全文搜索优化 |
 | V0.4 导出与打磨 | Loop 2 已完成单条 Markdown、`.txt`、JSON 本地导出与原生保存面板；Loop 3 数据去向/连接测试与最终独立复审已完成 | 媒体、批量处理 |
-| V0.5 发布验证 | r1 Stable Host package/clean-room 初装已形成待复审候选；后续再完成升级、卸载、签名、公证和真实扩展安装链路 | Windows、App Store 承诺 |
+| V0.5 发布验证 | r1/r2/r3/r4a 已独立工程 PASS；r4a re-review 0/0/0，但 unsigned artifact 与 malformed manifest 使产品继续 BLOCKED | Developer ID、公证、stapling、真实安装/浏览器验收、Windows、App Store 承诺 |
+| 视频 M1 合同与识别 | V1 保持兼容；V2 能把通用媒体能力经 Host 交给 APP，正文进入 History，临时播放地址只留当前进程内存 | 播放、下载、收藏、ASR、PromptPreset、新平台适配与真实样本 |
 
 只有本地闭环经过真实使用后，才重新评估账号、同步、托管额度和云端容量。
+
+历史详情会显示实际保存的操作、模型、时间、状态和服务商在流尾提供的 Token 用量；历史旧 run 没有 usage 时显示“—”。BYOK 模型没有可验证且持续有效的统一价格表，因此“估算费用”从路线图裁剪：产品不估算、不显示费用，避免把不可靠数字伪装成账单事实。
 
 ## 8. 关键界面
 
@@ -238,7 +244,7 @@ P0 不承诺自动事实核查外部世界，只承诺摘要忠于本次捕获�
 
 - 正式产品名、商标、域名和图标。
 - Swift SQLite binding 的最终选择与签名兼容性。
-- Native Messaging Host r1 候选后的真实安装、升级、卸载、完整 rollback 和公证体验。
+- r4a 已在 `/private/tmp` 建立并独立复审通过 unsigned App-DMG release-unit binding；r4b local-test ad-hoc DMG 已独立 PASS 并放入 `release/LinkDigest-0.1.0-local-test/`，等待 Syc 手工打开。Chrome/Edge manifest 当前为 malformed，且 Developer ID、notarization/stapling、真实 Host 安装与浏览器验收未完成，产品和公开发布继续 BLOCKED。
 - 首发使用公证 DMG 还是 Mac App Store；P0 不承诺 App Store。
 - SwiftUI 富文本显示和结果编辑是否需要 AppKit 桥接。
 - OpenAI-compatible 端点之间的流式协议差异。

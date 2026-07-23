@@ -34,6 +34,12 @@ RECEIPT_NAME = "receipt-v1.json"
 EXTENSION_ID_RE = re.compile(r"^[a-p]{32}$")
 HOST_NAME_RE = re.compile(r'^const HOST_NAME = "([^"]+)";$', re.MULTILINE)
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+SEMVER_RE = re.compile(
+    r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+    r"(?:-(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*)"
+    r"(?:\.(?:0|[1-9][0-9]*|[0-9A-Za-z-]*[A-Za-z-][0-9A-Za-z-]*))*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$"
+)
 
 
 class StableHostError(RuntimeError):
@@ -84,8 +90,8 @@ def load_config(root: Path | None = None) -> dict:
             fail(f"native-host config field {key} has the wrong type")
     if config["formatVersion"] != 1:
         fail("native-host config formatVersion must be 1")
-    if config["productVersion"] != "0.1.0":
-        fail("native-host productVersion must be 0.1.0 for Loop 4 r1")
+    if config["productVersion"] != "0.2.0":
+        fail("native-host productVersion must be 0.2.0 for the current integrated candidate")
     if config["protocolMajor"] != 1:
         fail("native-host protocolMajor must be 1")
     if config["minimumMacOS"] != "15.0":
@@ -170,8 +176,12 @@ def walk_package(root: Path) -> tuple[list[Path], list[Path]]:
                 if stat.S_ISLNK(entry_stat.st_mode):
                     fail(f"package contains a symlink: {entry_path.relative_to(root)}")
                 if stat.S_ISDIR(entry_stat.st_mode):
+                    if entry_stat.st_uid != os.geteuid():
+                        fail(f"package directory owner mismatch: {entry_path.relative_to(root)}")
                     walk(entry_path)
                 elif stat.S_ISREG(entry_stat.st_mode):
+                    if entry_stat.st_uid != os.geteuid() or entry_stat.st_nlink != 1:
+                        fail(f"package file owner/link-count is unsafe: {entry_path.relative_to(root)}")
                     files.append(entry_path)
                 else:
                     fail(f"package contains a non-regular entry: {entry_path.relative_to(root)}")
@@ -179,6 +189,8 @@ def walk_package(root: Path) -> tuple[list[Path], list[Path]]:
     root_stat = root.lstat()
     if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
         fail("package root must be a real directory, not a symlink")
+    if root_stat.st_uid != os.geteuid():
+        fail("package root owner mismatch")
     walk(root)
     return directories, files
 
@@ -243,7 +255,12 @@ class VerifiedPackage:
     package_digest: str
 
 
-def verify_package(package_root: Path, root: Path | None = None) -> VerifiedPackage:
+def verify_package(
+    package_root: Path,
+    root: Path | None = None,
+    *,
+    expected_product_version: str | None = None,
+) -> VerifiedPackage:
     root = root or repository_root()
     config = load_config(root)
     check_config_sync(root)
@@ -270,7 +287,12 @@ def verify_package(package_root: Path, root: Path | None = None) -> VerifiedPack
         if path_mode(file_path) != expected_mode:
             fail(f"package file permission mismatch: {file_path.relative_to(package_root)}")
     metadata = load_json(package_root / PACKAGE_METADATA)
-    if metadata != package_metadata(config):
+    product_version = config["productVersion"] if expected_product_version is None else expected_product_version
+    if not isinstance(product_version, str) or not SEMVER_RE.fullmatch(product_version):
+        fail("expected package productVersion must be a safe SemVer")
+    expected_metadata = package_metadata(config)
+    expected_metadata["productVersion"] = product_version
+    if metadata != expected_metadata:
         fail("package metadata does not match canonical native-host config")
     checksums, checksum_bytes = read_checksums(package_root / CHECKSUMS)
     expected_files = expected_checksum_files(package_root, files)
@@ -478,7 +500,13 @@ def manifest_targets(clean_room: CleanRoom, config: dict, browsers: Sequence[str
     if not browser_set or browser_set - {"chrome", "brave", "edge"}:
         fail("--browser must name chrome, brave, or edge")
     targets: set[Path] = set()
-    if browser_set & {"chrome", "brave"}:
+    if "chrome" in browser_set:
+        targets.add(
+            clean_room.home_root
+            / "Library/Application Support/Google/Chrome/NativeMessagingHosts"
+            / f"{config['hostName']}.json"
+        )
+    if "brave" in browser_set:
         targets.add(
             clean_room.home_root
             / "Library/Application Support/Google/Chrome/NativeMessagingHosts"

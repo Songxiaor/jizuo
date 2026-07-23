@@ -159,6 +159,20 @@ public struct ProviderProfile: Codable, Sendable, Equatable {
     return url
   }
 
+  /// Produces a transient profile for a user-selected alternate model while
+  /// preserving the already validated endpoint and Keychain reference. It is
+  /// intentionally not persisted: the selection lives in preferences.
+  public func replacing(model: String) throws -> ProviderProfile {
+    try ProviderProfile(
+      id: id,
+      baseURL: baseURL.absoluteString,
+      model: model,
+      apiMode: apiMode,
+      secretReference: secretReference,
+      allowLoopbackHTTP: baseURL.scheme?.lowercased() == "http" && baseURL.host == "127.0.0.1"
+    )
+  }
+
   private enum CodingKeys: String, CodingKey {
     case id
     case baseURL
@@ -201,6 +215,15 @@ public protocol SecretStore: Sendable {
 public actor ProviderConfigurationService {
   private let profileStore: any ProviderProfileStore
   private let secretStore: any SecretStore
+  /// Optional multi-profile catalog. When absent the service keeps its
+  /// original single-slot behavior so existing compositions and tests are
+  /// unaffected. When present, `profileStore` always holds a copy of the
+  /// summary-assigned profile so run/authorize/disclosure readers stay
+  /// unchanged.
+  private let libraryStore: (any ModelLibraryStore)?
+  /// Lets synchronous UI code know whether multi-profile editing semantics
+  /// (e.g. keeping a stored secret while updating endpoint/model) apply.
+  public nonisolated let supportsModelLibrary: Bool
   private let makeSecretReference: @Sendable () -> SecretReference
   private var configurationRevision: UInt64 = 0
   private var inFlightMutation: UUID?
@@ -208,12 +231,15 @@ public actor ProviderConfigurationService {
   public init(
     profileStore: any ProviderProfileStore,
     secretStore: any SecretStore,
+    libraryStore: (any ModelLibraryStore)? = nil,
     makeSecretReference: @escaping @Sendable () -> SecretReference = {
       SecretReference(rawValue: UUID().uuidString)
     }
   ) {
     self.profileStore = profileStore
     self.secretStore = secretStore
+    self.libraryStore = libraryStore
+    self.supportsModelLibrary = libraryStore != nil
     self.makeSecretReference = makeSecretReference
   }
 
@@ -402,6 +428,344 @@ public actor ProviderConfigurationService {
     }
 
     return newProfile
+  }
+
+  // MARK: - Model library (multi-profile catalog)
+
+  /// Loads the library, adopting the legacy single profile as the first entry
+  /// on first read after the update. Without a library store this synthesizes
+  /// a read-only view over the single slot.
+  public func loadLibrary() async throws -> ModelLibrary {
+    let revision = try beginStableRead()
+    guard let libraryStore else {
+      let active = try await loadLegacyProfile()
+      try validateStableRead(revision)
+      return ModelLibrary(
+        profiles: active.map { [$0] } ?? [],
+        summaryProfileID: active?.id,
+        transcriptionProfileID: nil
+      )
+    }
+    let stored: ModelLibrary?
+    do {
+      stored = try await libraryStore.load()
+    } catch {
+      throw ProviderConfigurationError.profileStoreReadFailed
+    }
+    try validateStableRead(revision)
+    if let stored { return stored }
+
+    let legacy = try await loadLegacyProfile()
+    try validateStableRead(revision)
+    let migrated = ModelLibrary(
+      profiles: legacy.map { [$0] } ?? [],
+      summaryProfileID: legacy?.id,
+      transcriptionProfileID: nil
+    )
+    if legacy != nil {
+      do {
+        try await libraryStore.save(migrated)
+      } catch {
+        throw ProviderConfigurationError.profileStoreWriteFailed
+      }
+    }
+    return migrated
+  }
+
+  /// Adds a new library entry with its own Keychain secret. The first entry
+  /// automatically becomes the summary assignment, mirroring the pre-library
+  /// behavior where saving a configuration made it active.
+  public func addProfile(
+    baseURL: String,
+    model: String,
+    apiKey: String,
+    allowLoopbackHTTP: Bool = false
+  ) async throws -> ProviderProfile {
+    guard libraryStore != nil else {
+      return try await save(
+        baseURL: baseURL,
+        model: model,
+        apiKey: apiKey,
+        allowLoopbackHTTP: allowLoopbackHTTP
+      )
+    }
+    let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedKey.isEmpty else {
+      throw ProviderConfigurationError.apiKeyRequired
+    }
+    let reference = makeSecretReference()
+    let profile = try ProviderProfile(
+      id: UUID().uuidString,
+      baseURL: baseURL,
+      model: model,
+      secretReference: reference,
+      allowLoopbackHTTP: allowLoopbackHTTP
+    )
+    let mutation = try beginMutation()
+    defer { finishMutation(ifOwner: mutation) }
+
+    var library = try await loadLibraryForMutation()
+    let becomesSummary = library.summaryProfileID == nil
+    library.profiles.append(profile)
+    if becomesSummary { library.summaryProfileID = profile.id }
+
+    do {
+      try await secretStore.save(trimmedKey, for: reference)
+    } catch {
+      throw ProviderConfigurationError.secretStoreWriteFailed
+    }
+    if becomesSummary {
+      do {
+        try await profileStore.save(profile)
+      } catch {
+        try? await secretStore.delete(reference)
+        throw ProviderConfigurationError.profileStoreWriteFailed
+      }
+    }
+    do {
+      try await saveLibraryForMutation(library)
+    } catch {
+      if becomesSummary { try? await profileStore.delete() }
+      try? await secretStore.delete(reference)
+      throw error
+    }
+    return profile
+  }
+
+  /// Updates an existing entry in place. Passing `apiKey: nil` keeps the
+  /// stored secret; passing a key rotates it exactly like the single-slot
+  /// replacement flow.
+  public func updateProfile(
+    id: String,
+    baseURL: String,
+    model: String,
+    apiKey: String?,
+    allowLoopbackHTTP: Bool = false
+  ) async throws -> ProviderProfile {
+    guard libraryStore != nil else {
+      if let apiKey {
+        return try await save(
+          baseURL: baseURL,
+          model: model,
+          apiKey: apiKey,
+          allowLoopbackHTTP: allowLoopbackHTTP
+        )
+      }
+      throw ProviderConfigurationError.apiKeyRequired
+    }
+    let trimmedKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let trimmedKey, trimmedKey.isEmpty {
+      throw ProviderConfigurationError.apiKeyRequired
+    }
+    let mutation = try beginMutation()
+    defer { finishMutation(ifOwner: mutation) }
+
+    var library = try await loadLibraryForMutation()
+    guard let index = library.profiles.firstIndex(where: { $0.id == id }) else {
+      throw ProviderConfigurationError.configurationChanged
+    }
+    let existing = library.profiles[index]
+    let reference = trimmedKey == nil ? existing.secretReference : makeSecretReference()
+    let updated = try ProviderProfile(
+      id: existing.id,
+      baseURL: baseURL,
+      model: model,
+      secretReference: reference,
+      allowLoopbackHTTP: allowLoopbackHTTP
+    )
+    library.profiles[index] = updated
+    let isSummary = library.summaryProfileID == existing.id
+
+    if let trimmedKey {
+      do {
+        try await secretStore.save(trimmedKey, for: reference)
+      } catch {
+        throw ProviderConfigurationError.secretStoreWriteFailed
+      }
+    }
+    if isSummary {
+      do {
+        try await profileStore.save(updated)
+      } catch {
+        if trimmedKey != nil { try? await secretStore.delete(reference) }
+        throw ProviderConfigurationError.profileStoreWriteFailed
+      }
+    }
+    do {
+      try await saveLibraryForMutation(library)
+    } catch {
+      if isSummary { try? await profileStore.save(existing) }
+      if trimmedKey != nil { try? await secretStore.delete(reference) }
+      throw error
+    }
+    if trimmedKey != nil, existing.secretReference != reference {
+      try? await secretStore.delete(existing.secretReference)
+    }
+    return updated
+  }
+
+  /// Removes an entry and its secret. A removed summary assignment clears the
+  /// single slot; a removed transcription assignment falls back to local.
+  public func deleteProfile(id: String) async throws -> ModelLibrary {
+    guard libraryStore != nil else {
+      throw ProviderConfigurationError.profileStoreWriteFailed
+    }
+    let mutation = try beginMutation()
+    defer { finishMutation(ifOwner: mutation) }
+
+    var library = try await loadLibraryForMutation()
+    guard let index = library.profiles.firstIndex(where: { $0.id == id }) else {
+      throw ProviderConfigurationError.configurationChanged
+    }
+    let removed = library.profiles.remove(at: index)
+    let wasSummary = library.summaryProfileID == removed.id
+    if wasSummary { library.summaryProfileID = nil }
+    if library.transcriptionProfileID == removed.id { library.transcriptionProfileID = nil }
+
+    try await saveLibraryForMutation(library)
+    if wasSummary { try? await profileStore.delete() }
+    try? await secretStore.delete(removed.secretReference)
+    return library
+  }
+
+  /// Points summary/translation runs at an existing entry (or clears them).
+  /// The single slot is kept in sync so orchestrator readers stay unchanged.
+  public func assignSummaryProfile(id: String?) async throws {
+    guard libraryStore != nil else {
+      throw ProviderConfigurationError.profileStoreWriteFailed
+    }
+    let mutation = try beginMutation()
+    defer { finishMutation(ifOwner: mutation) }
+
+    var library = try await loadLibraryForMutation()
+    guard library.summaryProfileID != id else { return }
+    let previousProfile = library.summaryProfile
+    if let id {
+      guard let profile = library.profile(withID: id) else {
+        throw ProviderConfigurationError.configurationChanged
+      }
+      do {
+        try await profileStore.save(profile)
+      } catch {
+        throw ProviderConfigurationError.profileStoreWriteFailed
+      }
+    } else {
+      do {
+        try await profileStore.delete()
+      } catch {
+        throw ProviderConfigurationError.profileStoreWriteFailed
+      }
+    }
+    library.summaryProfileID = id
+    do {
+      try await saveLibraryForMutation(library)
+    } catch {
+      if let previousProfile {
+        try? await profileStore.save(previousProfile)
+      } else {
+        try? await profileStore.delete()
+      }
+      throw error
+    }
+  }
+
+  /// Points online transcription at an existing entry, or back to the local
+  /// default when `id` is nil.
+  public func assignTranscriptionProfile(id: String?) async throws {
+    guard libraryStore != nil else {
+      throw ProviderConfigurationError.profileStoreWriteFailed
+    }
+    let mutation = try beginMutation()
+    defer { finishMutation(ifOwner: mutation) }
+
+    var library = try await loadLibraryForMutation()
+    guard library.transcriptionProfileID != id else { return }
+    if let id, library.profile(withID: id) == nil {
+      throw ProviderConfigurationError.configurationChanged
+    }
+    library.transcriptionProfileID = id
+    try await saveLibraryForMutation(library)
+  }
+
+  /// Loads credentials for one library entry, e.g. for testing a connection
+  /// that is not the summary assignment. Falls back to the single slot when
+  /// no library store is configured.
+  public func loadCredentials(profileID: String) async throws -> (profile: ProviderProfile, apiKey: String)? {
+    let revision = try beginStableRead()
+    let library = try await loadLibrary()
+    guard let profile = library.profile(withID: profileID) else {
+      return nil
+    }
+    let apiKey = try await readRequiredSecret(for: profile)
+    try validateStableRead(revision)
+    return (profile, apiKey)
+  }
+
+  /// Loads credentials for the transcription assignment; nil means the local
+  /// transcriber should be used.
+  public func loadTranscriptionCredentials() async throws -> (profile: ProviderProfile, apiKey: String)? {
+    let revision = try beginStableRead()
+    let library = try await loadLibrary()
+    guard let profile = library.transcriptionProfile else {
+      return nil
+    }
+    let apiKey = try await readRequiredSecret(for: profile)
+    try validateStableRead(revision)
+    return (profile, apiKey)
+  }
+
+  private func loadLegacyProfile() async throws -> ProviderProfile? {
+    do {
+      return try await profileStore.load()
+    } catch {
+      throw ProviderConfigurationError.profileStoreReadFailed
+    }
+  }
+
+  private func loadLibraryForMutation() async throws -> ModelLibrary {
+    guard let libraryStore else {
+      throw ProviderConfigurationError.profileStoreReadFailed
+    }
+    let stored: ModelLibrary?
+    do {
+      stored = try await libraryStore.load()
+    } catch {
+      throw ProviderConfigurationError.profileStoreReadFailed
+    }
+    if let stored { return stored }
+    let legacy = try await loadLegacyProfile()
+    return ModelLibrary(
+      profiles: legacy.map { [$0] } ?? [],
+      summaryProfileID: legacy?.id,
+      transcriptionProfileID: nil
+    )
+  }
+
+  private func saveLibraryForMutation(_ library: ModelLibrary) async throws {
+    guard let libraryStore else {
+      throw ProviderConfigurationError.profileStoreWriteFailed
+    }
+    do {
+      try await libraryStore.save(library)
+    } catch {
+      throw ProviderConfigurationError.profileStoreWriteFailed
+    }
+  }
+
+  private func readRequiredSecret(for profile: ProviderProfile) async throws -> String {
+    do {
+      guard
+        let value = try await secretStore.read(profile.secretReference),
+        !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      else {
+        throw ProviderConfigurationError.secretStoreReadFailed
+      }
+      return value
+    } catch let error as ProviderConfigurationError {
+      throw error
+    } catch {
+      throw ProviderConfigurationError.secretStoreReadFailed
+    }
   }
 
   private func beginStableRead() throws -> UInt64 {

@@ -1,0 +1,97 @@
+{
+  "acceptanceGuideSource": "docs/ACCEPTANCE_GUIDE.md",
+  "appBundle": "LinkDigest.app",
+  "appIdentifier": "com.syc.linkdigest",
+  "architectures": [
+    "arm64"
+  ],
+  "browserExtension": {
+    "artifactSource": "apps/browser-extension/identity-artifact/LinkDigest-extension-0.2.0-chromium.zip",
+    "extensionID": "fbpjhlcpfheecigibjghhodhhkgjdgma",
+    "handoffDirectory": "extension",
+    "identityConfig": "config/extension-identity.json",
+    "manifestTemplateDirectory": "apps/browser-extension/identity-artifact/native-host-manifests",
+    "version": "0.2.0"
+  },
+  "distributionClass": "local-test-ad-hoc",
+  "dmgName": "LinkDigest-0.2.0-local-test-macos-arm64.dmg",
+  "excludedBasenames": [
+    ".DS_Store",
+    ".build",
+    ".env",
+    ".env.local",
+    ".output",
+    ".wxt",
+    "DerivedData",
+    "__pycache__",
+    "artifacts",
+    "cache",
+    "credentials",
+    "downloads",
+    "exports",
+    "node_modules",
+    "output",
+    "release"
+  ],
+  "excludedSuffixes": [
+    ".db",
+    ".log",
+    ".sqlite",
+    ".sqlite-shm",
+    ".sqlite-wal"
+  ],
+  "excludedTopLevel": [
+    ".claude",
+    ".git",
+    ".mindmux",
+    ".playwright-cli",
+    ".pnpm-store",
+    ".scatter",
+    "node_modules",
+    "output",
+    "release"
+  ],
+  "formatVersion": 1,
+  "grdbArchive": "GRDB.swift-7.11.1-source.tar.gz",
+  "grdbVersion": "7.11.1",
+  "handoffDirectory": "LinkDigest-0.2.0-local-test",
+  "hostIdentifier": "com.syc.linkdigest.native-host",
+  "minimumMacOS": "15.0",
+  "r4aFrozenHashes": {
+    "apps/desktop/Assets/AppIcon.icns": "3537cae0c60ea78992f729f47c2d3ac8b77d7ae880982f172de3fe9f9d298775",
+    "config/app-release.json": "41e51c0e319488d98e42994a5deab3c322e09d164d0153c65da4105177d82a07",
+    "scripts/native-host/check-release-unit.sh": "e60df91e6c914728d39990a4ac1295eaf72ae4396cd970071d1b752d351b5f6d",
+    "scripts/native-host/package-app-dmg.sh": "6dc6b4b776aeb1578510059599392672e65030d2170fd117c555445c747997b2",
+    "scripts/native-host/release_unit.py": "530c0369b58ab274c92ca6d0366cd3a65031a9abd53dcf6160a2436f89fc336b",
+    "scripts/native-host/release_unit_check.py": "779da9badfa4ed7f30a86ea9a932e5d6481ea2a5d9f51b55e7582d9ead6bbd22"
+  },
+  "secretFixtureHashAllowlist": {
+    "scripts/native-host/release_preflight_check.py": "1e8bd8ba29ebfe581e131bdf9094166361e92c7e8044b3cb012d4716bd03bb49"
+  },
+  "sourceArchive": "LinkDigest-0.2.0-live-worktree-source.tar.gz",
+  "sourceTopLevelAllowlist": [
+    ".github",
+    ".gitignore",
+    "AGENTS.md",
+    "BRAIN.md",
+    "README.md",
+    "VERIFY.md",
+    "apps",
+    "brain",
+    "config",
+    "contracts",
+    "design-qa.md",
+    "docs",
+    "eslint.config.mjs",
+    "package.json",
+    "packages",
+    "pnpm-lock.yaml",
+    "pnpm-workspace.yaml",
+    "scripts",
+    "server",
+    "tsconfig.base.json"
+  ],
+  "sourceTreeName": "LinkDigest-0.2.0-live-worktree-source",
+  "unitID": "com.syc.linkdigest.local-test-unit.v1",
+  "version": "0.2.0"
+}

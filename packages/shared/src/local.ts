@@ -20,6 +20,7 @@ export const SourcePlatformSchema = z.enum([
   "xiaohongshu",
   "douyin",
   "bilibili",
+  "github",
 ]);
 
 export const CaptureEnvelopeV1Schema = z
@@ -56,6 +57,16 @@ export const CaptureEnvelopeV1Schema = z
         usedCookie: z.boolean(),
       })
       .strict(),
+    media: z
+      .object({
+        platform: z.literal("douyin"),
+        videoURL: z.string().url().max(8_192).regex(/^https:\/\//u),
+        coverURL: z.string().url().max(8_192).regex(/^https:\/\//u).nullable().optional(),
+        durationSeconds: z.number().min(0).max(86_400).nullable().optional(),
+        author: z.string().max(256).nullable().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((value, context) => {

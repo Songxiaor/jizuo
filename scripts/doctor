@@ -42,14 +42,18 @@ for file in README.md AGENTS.md BRAIN.md VERIFY.md package.json pnpm-workspace.y
   pnpm-lock.yaml tsconfig.base.json eslint.config.mjs .github/workflows/ci.yml \
   docs/PRD.md docs/ARCHITECTURE.md docs/CAPACITY_MODEL.md docs/LEARNING_GUIDE.md \
   docs/specs/V0.1_VERTICAL_SLICE.md docs/specs/V0.2_BYOK_ACCEPTANCE.md docs/TASK_TEMPLATE.md docs/GLOSSARY.md \
-  docs/LEARNING_LOG.md docs/DEPENDENCIES.md \
-  config/native-host.json docs/specs/P0_RC_LOOP_4_STABLE_HOST.md \
+  docs/LEARNING_LOG.md docs/DEPENDENCIES.md docs/ACCEPTANCE_GUIDE.md \
+  config/native-host.json config/native-host-release-policy.json config/app-release.json config/local-test-release.json docs/specs/P0_RC_LOOP_4_STABLE_HOST.md docs/specs/P0_RC_LOOP_4_R2_TRANSACTIONS.md docs/specs/P0_RC_LOOP_4_R3_PREFLIGHT.md docs/specs/P0_RC_LOOP_4_R4A_RELEASE_UNIT.md docs/specs/P0_RC_LOOP_4_R4B_LOCAL_TEST_DMG.md \
   packages/shared/package.json packages/shared/tsconfig.json; do
   require_file "$file"
 done
-for file in scripts/brain scripts/check-brain-root scripts/check-licenses scripts/check-contract-sync.sh scripts/check-v02-secret-hygiene.sh scripts/doctor \
+for file in scripts/brain scripts/check-brain-root scripts/check-licenses scripts/check-contract-sync.sh scripts/check-v02-secret-hygiene.sh scripts/check-release-test-seams.sh scripts/doctor \
   scripts/build-release.sh scripts/native-host/check-config-sync.sh scripts/native-host/check-stable-package.sh \
-  scripts/native-host/verify-stable-package.sh scripts/native-host/render-manifest.sh scripts/native-host/clean-room-install.sh; do
+  scripts/native-host/verify-stable-package.sh scripts/native-host/render-manifest.sh scripts/native-host/clean-room-install.sh \
+  scripts/native-host/clean-room-transaction.sh scripts/native-host/check-transaction-host.sh \
+  scripts/native-host/release_preflight.py scripts/native-host/release_preflight_check.py scripts/native-host/check-release-preflight.sh \
+  scripts/native-host/release_unit.py scripts/native-host/release_unit_check.py scripts/native-host/package-app-dmg.sh scripts/native-host/check-release-unit.sh \
+  scripts/native-host/local_test_release.py scripts/native-host/local_test_release_check.py scripts/native-host/package-local-test-dmg.sh scripts/native-host/check-local-test-release.sh; do
   if [ ! -f "$file" ]; then
     fail "missing $file"
   elif [ ! -x "$file" ]; then
@@ -64,6 +68,10 @@ run_check "canonical Brain root" ./scripts/check-brain-root
 run_check "Brain links" ./scripts/brain lint-links
 run_check "Swift and TypeScript contract copies stay synchronized" ./scripts/check-contract-sync.sh
 run_check "stable Native Host canonical config stays synchronized" ./scripts/native-host/check-config-sync.sh
+run_check "release preflight sources parse without build/install" python3 -c "import ast, pathlib; [ast.parse(pathlib.Path(name).read_text(encoding='utf-8')) for name in ('scripts/native-host/release_preflight.py', 'scripts/native-host/release_preflight_check.py')]"
+run_check "r4a release-unit sources parse without build/mount" python3 -c "import ast, pathlib; [ast.parse(pathlib.Path(name).read_text(encoding='utf-8')) for name in ('scripts/native-host/release_unit.py', 'scripts/native-host/release_unit_check.py')]"
+run_check "r4a app release config is strict" env PYTHONDONTWRITEBYTECODE=1 python3 scripts/native-host/release_unit.py check-config
+run_check "r4b local-test config and r4a compatibility hashes are strict" env PYTHONDONTWRITEBYTECODE=1 python3 scripts/native-host/local_test_release.py check-config
 if page_list="$(./scripts/brain list-pages 2>/dev/null)" && [ -n "$page_list" ]; then
   ok "Brain contains decision pages"
   active_count="$(printf '%s\n' "$page_list" | grep -c $'\tactive$' || true)"
@@ -109,6 +117,7 @@ fi
 
 run_check "dependency licenses" ./scripts/check-licenses
 run_check "V0.2 secret hygiene (read-only, blocking)" ./scripts/check-v02-secret-hygiene.sh
+run_check "Release LinkDigestApp excludes test-only transport seams" ./scripts/check-release-test-seams.sh
 dangerous_files="$(find . -path './.git' -prune -o -path './.scatter' -prune -o -type f -name '.env*' ! -name '.env.example' -print)"
 if [ -n "$dangerous_files" ]; then
   fail "dangerous credential filenames found"

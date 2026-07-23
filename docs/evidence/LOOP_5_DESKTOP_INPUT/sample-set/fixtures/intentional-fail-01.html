@@ -1,0 +1,14 @@
+<!--
+  Synthetic fixture for PRD §12 sample intentional-fail-01
+  ("反爬虫/限流拦截页" - a restricted-access page). Not a scrape of any real
+  site; reproduces the generic shape of a bot-detection interstitial that
+  carries no real article text, only chrome/navigation, which the production
+  extractor strips entirely before checking the 20-scalar minimum.
+-->
+<html>
+<head><title>Access Restricted</title></head>
+<body>
+  <nav>Home About Contact</nav>
+  <header>Site</header>
+</body>
+</html>

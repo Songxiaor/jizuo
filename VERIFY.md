@@ -74,12 +74,12 @@ rg -n '过程中|可选跟做|另开小窗口|不阻塞' AGENTS.md docs/LEARNING
 V0.2 还提供一条独立、只读的秘密边界检查：
 
 ```bash
-pnpm secret:check
+pnpm --config.verifyDepsBeforeRun=false secret:check
 ```
 
 它检查高置信 secret pattern、生产 Swift 日志中 secret/header/body 的可疑形状、`@Published`/`@Observable` 与 RunState 的可疑秘密字段、fixture/snapshot 中的秘密字段或明显 Key、未知 code 的可见 UI sink，以及 UserDefaults adapter 对秘密字段的引用。普通 `sentinel-<UUID>` 与 `not-a-real-key` 测试标记不会被当成真实 Key pattern；若命中，脚本只打印规则名和路径，不打印疑似值。
 
-该检查通过时，doctor 把它计为 `PASS`；命中任一规则时计为 `FAIL` 并阻止宣称 V0.2 工程验收通过。它不会产生 `WARN`、读取 Keychain、自动修复文件、安装依赖、修改 Git 或访问网络。
+该检查通过时，doctor 把它计为 `PASS`；命中任一规则时计为 `FAIL` 并阻止宣称 V0.2 工程验收通过。显式关闭 pnpm 的 pre-run 依赖校验，是为了让已有脚本直接运行，避免本地依赖索引缺失时触发联网修补尝试；secret 脚本本身不会产生 `WARN`、读取 Keychain、自动修复文件、安装依赖、修改 Git 或访问网络。
 
 真实 API Key、Cookie、Token、私钥、账号数据和客户内容不得作为测试材料。
 
@@ -106,6 +106,51 @@ pnpm secret:check
 ```bash
 pnpm native-host:check
 ```
+
+Loop 4 r2 的事务入口同样只允许 fixed canonical `/private/tmp` clean-room：
+
+```bash
+pnpm --config.verifyDepsBeforeRun=false native-host:transaction:check
+./scripts/native-host/clean-room-transaction.sh --help
+```
+
+每个 transaction session 必须由 fixture 预置 r1 sentinel 与 mode `0600`、精确固定内容的 `.transaction.lock`；wrapper 不创建、替换或删除锁。`plan`、`apply`、`recover` 的完整参数、退出码与 commit/recovery 方向见 `docs/specs/P0_RC_LOOP_4_R2_TRANSACTIONS.md`。完整 110 项 gate 会创建并保留 `/private/tmp` 审计根并制造 SIGKILL/Unix socket 场景，不属于日常 doctor；不得把 session/home 换成真实 `$HOME`。r2 同一 reviewer 唯一 re-review 已 PASS，P0/P1/P2 = 0/0/0，但该结论只覆盖 fixed canonical `/private/tmp` clean-room，不代表真实 HOME/browser 安装、profile ownership、Developer ID、签名、公证、stapling 或发布。
+
+### r3 真实安装前只读预检
+
+```bash
+PYTHONDONTWRITEBYTECODE=1 python3 scripts/native-host/release_preflight.py report
+pnpm --config.verifyDepsBeforeRun=false native-host:release:preflight:check
+```
+
+第一条命令目前预期 exit `10` 和 `status: "BLOCKED"`：release extension IDs、Team ID、verified package、Developer ID + hardened runtime、notarized/stapled DMG 均尚未冻结或提供；而且 r3 不能离线验证同一 App-DMG release unit，也不读取真实 install namespace 验证 receipt/hash/target leaves。spctl 只有唯一 exact `source=Notarized Developer ID` + `origin=Developer ID Application: ...` 才算 notarization，并固定带 `--ignore-cache --no-cache`，既不读取旧 assessment cache，也不写入新结果；其它 Apple 查询不继承 caller 环境，固定 DEVNULL、5 秒 timeout、`HOME=/var/empty` 和安全 PATH。它只接受 lexical-canonical `.app`、current-user owned single-link `.dmg`/receipt，固定 `release-unit-binding-unverified` 与 `target-ownership-unverified` blockers，且没有 `apply`、`recover` 或删除命令。r3 保留 0/2/2、0/1/0 历史，当前独立最终审查为 **PASS，P0/P1/P2 = 0/0/0**；这只表示只读工程门禁完成，生产状态仍是 BLOCKED。完整合同见 `docs/specs/P0_RC_LOOP_4_R3_PREFLIGHT.md`。
+
+### r4a unsigned App + DMG release unit
+
+```bash
+./scripts/native-host/package-app-dmg.sh --audit-root /private/tmp/linkdigest-r4a-release.UNIQUE
+./scripts/native-host/check-release-unit.sh \
+  --existing-audit /private/tmp/linkdigest-r4a-release.UNIQUE \
+  --review-root /private/tmp/linkdigest-r4a-review.UNIQUE
+```
+
+第一条在新的 `/private/tmp` audit root 真正离线构建 Swift Release App+Host、创建 DMG、只读挂载后复验。第二条必须把已有 candidate audit 当只读输入，所有 tamper fixture、Swift scratch 与 canonical `gate-result.json` 都写到 caller 明确给出的新 review root；candidate 前后 content/metadata inventory 必须一致。gate 只跑纯 `ContractTests`，不会运行 full Swift suite 或启动 TCP listener。
+
+build 要求 caller 提供 canonical、不存在的 direct-child audit root；review 同样要求不存在的 `/private/tmp/linkdigest-r4a-review.*`。当前 App/DMG unsigned，report 必须为 `engineeringStatus: candidate`、`productStatus: BLOCKED`、`separateAuthorizationRequired: true`。真实 probe 通过 anchored directory fd 只读五个固定对象并隐藏 path/origins/raw；当前 Chrome/Edge manifest 为 noncanonical `malformed`，CLI 预期 exit `10`，不得自动修复。r4a 首次独立 review BLOCK 0/4/2；集中修复后的唯一 re-review PASS 0/0/0，只关闭 unsigned release-unit 工程门禁，产品仍 BLOCKED。
+
+### r4b local-test ad-hoc DMG
+
+```bash
+./scripts/native-host/package-local-test-dmg.sh \
+  --audit-root /private/tmp/linkdigest-r4b-local-test.UNIQUE
+./scripts/native-host/check-local-test-release.sh \
+  --existing-audit /private/tmp/linkdigest-r4b-local-test.UNIQUE \
+  --review-root /private/tmp/linkdigest-r4b-review.UNIQUE
+```
+
+第一条从 live dirty worktree 生成 nofollow source snapshot 和 GRDB 7.11.1 独立 snapshot，两次确定性 tar.gz、roundtrip、isolated offline Swift Release build、Host-first/App-last ad-hoc signing、r1 package reverify、UDZO/HFS+ DMG readonly exact mount/detach，以及包含源码/DMG/清单的 handoff。第二条只读 candidate audit，所有负例、解包、ContractTests 10/10、真实 DMG mount 与 canonical `gate-result.json` 均写入新的 review root；不会运行 full Swift/TCP suite。
+
+两条命令都保留成功/失败根，不覆盖或删除。r4b 自动化不启动 App/Host，不写真实 HOME/profile/Keychain/socket，不安装 Host/manifest/receipt，不调用真实 Provider/网络。candidate-07 的 local gate 为 71 assertions + ContractTests 10/10，独立 reviewer 最终 PASS 0/0/0；主控已按 no-clobber staging → digest/SHA256SUMS 复验 → 同目录改名合同 finalize 到 `release/LinkDigest-0.1.0-local-test/`。最终 DMG SHA-256 为 `51f2a6544c40f4d29bc66a062773f23e997f85cc74a49bd693f8c2759b1fe2a7`，状态为 `READY_FOR_MANUAL_OPEN`，尚未由 Syc 手工启动 App。
 
 ## 常见失败与恢复
 

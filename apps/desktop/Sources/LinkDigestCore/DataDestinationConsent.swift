@@ -8,6 +8,10 @@ public struct DataDestinationIdentity: Codable, Hashable, Sendable {
   public let host: String
   public let model: String
   public let apiMode: APIMode
+  public var isLocalEndpoint: Bool {
+    guard let url = URL(string: normalizedBaseURL) else { return false }
+    return url.scheme?.lowercased() == "http" && url.host == "127.0.0.1"
+  }
 
   public init(profile: ProviderProfile) {
     self.init(validatedBaseURL: profile.baseURL, model: profile.model, apiMode: profile.apiMode)

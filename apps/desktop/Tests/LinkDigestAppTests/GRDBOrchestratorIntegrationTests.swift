@@ -1,7 +1,9 @@
 import Foundation
 import XCTest
+import LinkDigestAdapters
 import LinkDigestCore
 import LinkDigestPersistence
+@testable import LinkDigestApp
 
 private actor GRDBProfileStore: ProviderProfileStore {
   let profile: ProviderProfile
@@ -72,6 +74,61 @@ private final class GRDBTestProvider: ModelProvider, @unchecked Sendable {
   var producerFinishCount: Int { lock.withLock { producerFinishes } }
 }
 
+/// A fixture-only BYOK endpoint that exercises the same persistent
+/// orchestrator path as the App: summary, its fail-open tag side path, then
+/// translation.  It performs no I/O and never receives a real credential.
+private final class IntegratedDeliveryProvider: ModelProvider, SummaryTagGenerating, @unchecked Sendable {
+  private let lock = NSLock()
+  private var recordedIntents: [RunIntentKind] = []
+  private var recordedTagSummaries: [String] = []
+
+  func stream(profile _: ProviderProfile, apiKey _: String, intent: RunIntent) -> AsyncThrowingStream<ModelStreamEvent, Error> {
+    lock.withLock { recordedIntents.append(intent.kind) }
+    let body = intent.kind == .summarize ? "集成总结" : "集成翻译"
+    return AsyncThrowingStream { continuation in
+      continuation.yield(.delta(body))
+      continuation.yield(.usage(.init(inputTokens: 12, outputTokens: 4, totalTokens: 16)))
+      continuation.yield(.completed)
+      continuation.finish()
+    }
+  }
+
+  func generateSummaryTags(profile _: ProviderProfile, apiKey _: String, summary: String) async throws -> String {
+    lock.withLock { recordedTagSummaries.append(summary) }
+    return "集成, 总检"
+  }
+
+  func cancelActiveStreams() {}
+  var intents: [RunIntentKind] { lock.withLock { recordedIntents } }
+  var tagSummaries: [String] { lock.withLock { recordedTagSummaries } }
+}
+
+/// Exercises the real SSE decoder on the way into the persistent orchestrator.
+/// Its raw lines deliberately include malformed optional usage metadata.
+private final class DecodingGRDBTestProvider: ModelProvider, @unchecked Sendable {
+  private let lines: [String]
+  init(lines: [String]) { self.lines = lines }
+
+  func stream(profile _: ProviderProfile, apiKey _: String, intent _: RunIntent) -> AsyncThrowingStream<ModelStreamEvent, Error> {
+    let lines = lines
+    return AsyncThrowingStream { continuation in
+      Task {
+        do {
+          let decoder = ChatCompletionsStreamDecoder()
+          for line in lines {
+            if let event = try decoder.decode(line: line) { continuation.yield(event) }
+          }
+          continuation.finish()
+        } catch {
+          continuation.finish(throwing: error)
+        }
+      }
+    }
+  }
+
+  func cancelActiveStreams() {}
+}
+
 private actor OneShotSignal {
   private var signaled = false
   private var waiters: [CheckedContinuation<Void, Never>] = []
@@ -120,6 +177,12 @@ private actor GRDBStateRecorder {
   private(set) var updates: [(RunID, RunState)] = []
   func receive(_ runID: RunID, _ state: RunState) { updates.append((runID, state)) }
   var last: RunState? { updates.last?.1 }
+  var all: [RunState] { updates.map(\.1) }
+}
+
+private actor GRDBCurrentCaptureSink {
+  private(set) var values: [CurrentCapture] = []
+  func receive(_ value: CurrentCapture) { values.append(value) }
 }
 
 private final class TerminalFailureOnce: @unchecked Sendable {
@@ -147,6 +210,69 @@ private final class WriteFailureCounter: @unchecked Sendable {
 }
 
 final class GRDBOrchestratorIntegrationTests: XCTestCase {
+  func testIntegratedFixtureBYOKSummaryTranslationAndTagsPersistWithoutNetwork() async throws {
+    try await withTemporaryRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: integrationCapture(), receivedAtMilliseconds: 1))
+      let provider = IntegratedDeliveryProvider()
+      let recorder = GRDBStateRecorder()
+      let profile = try ProviderProfile(baseURL: "https://example.test/v1", model: "fixture-model", secretReference: .init(rawValue: "fixture-reference"))
+      let orchestrator = ModelRunOrchestrator(
+        configurationService: .init(profileStore: GRDBProfileStore(profile), secretStore: GRDBSecretStore()),
+        provider: provider,
+        summaryTagGenerator: provider,
+        history: HistoryApplicationService(repository: repository),
+        nowMilliseconds: { 10 }
+      )
+
+      let summary = PersistentRunRequest(runID: RunID(), taskID: accepted.taskID, snapshotID: accepted.snapshotID, intent: .summarize)
+      await orchestrator.start(request: summary, capture: integrationCapture()) { runID, state in await recorder.receive(runID, state) }
+      await waitUntil { await recorder.last == .completed(intent: .summarize, text: "集成总结") }
+      await waitUntil { Set(try! repository.allTags().map(\.name)) == Set(["集成", "总检"]) }
+
+      let translation = PersistentRunRequest(runID: RunID(), taskID: accepted.taskID, snapshotID: accepted.snapshotID, intent: .translate, targetLanguage: "简体中文")
+      await orchestrator.start(request: translation, capture: integrationCapture()) { runID, state in await recorder.receive(runID, state) }
+      await waitUntil { await recorder.last == .completed(intent: .translate, text: "集成翻译") }
+
+      let detail = try repository.detail(taskID: accepted.taskID)
+      let runsByKind = Dictionary(uniqueKeysWithValues: detail.runs.map { ($0.run.kind, $0) })
+      XCTAssertEqual(Set(runsByKind.keys), [.summarize, .translate])
+      XCTAssertEqual(runsByKind[.summarize]?.artifact?.bodyText, "集成总结")
+      XCTAssertEqual(runsByKind[.translate]?.artifact?.bodyText, "集成翻译")
+      XCTAssertEqual(runsByKind.values.map(\.run.usageCost.totalTokens), [16, 16])
+      XCTAssertEqual(provider.intents, [.summarize, .translate])
+      XCTAssertEqual(provider.tagSummaries, ["集成总结", "集成翻译"])
+    }
+  }
+
+  func testManualDocumentPersistsPublishesThenCreatesFakeProviderArtifact() async throws {
+    try await withTemporaryRepository { repository, _ in
+      let document = CapturedDocument(
+        requestID: "manual-integration", createdAt: "2026-07-15T04:00:00Z",
+        idempotencyKey: "manual-integration-key", origin: .manualLink,
+        url: "https://example.test/manual", title: "Manual Fixture", platform: "manual",
+        method: "public_html", text: "manual fixture body", completeness: "best_effort",
+        capturedAt: "2026-07-15T04:00:00Z", sourceLabel: "Manual fixture"
+      )
+      let sink = GRDBCurrentCaptureSink()
+      let ingestor = CaptureIngestService(
+        history: HistoryApplicationService(repository: repository),
+        storageWriteGate: StorageWriteGate(initialAvailability: .writable), nowMilliseconds: { 1 },
+        captureSink: { await sink.receive($0) }
+      )
+      let current = try await ingestor.ingest(document)
+      XCTAssertNil(current.wireEnvelope)
+      let published = await sink.values
+      XCTAssertEqual(published.single?.document.origin, .manualLink)
+
+      let provider = GRDBTestProvider(events: [.delta("summary"), .completed])
+      let orchestrator = try makeOrchestrator(repository: repository, provider: provider)
+      let request = PersistentRunRequest(runID: RunID(), taskID: current.taskID, snapshotID: current.snapshotID, intent: .summarize)
+      let recorder = GRDBStateRecorder()
+      await orchestrator.start(request: request, capture: current.document) { runID, state in await recorder.receive(runID, state) }
+      await waitUntil { (await recorder.updates).contains { $0.1 == .completed(intent: .summarize, text: "summary") } }
+      XCTAssertEqual(try repository.detail(taskID: current.taskID).runs.single?.artifact?.bodyText, "summary")
+    }
+  }
   func testImmediateStopInsideStartingCallbackPersistsQueuedStoppedUnder500ms() async throws {
     try await withTemporaryRepository { repository, _ in
       let accepted = try repository.acceptCapture(.init(envelope: integrationCapture(), receivedAtMilliseconds: 1))
@@ -301,6 +427,64 @@ final class GRDBOrchestratorIntegrationTests: XCTestCase {
     }
   }
 
+  func testSuccessfulRunPersistsUsageTailAcrossReopen() async throws {
+    try await withTemporaryRepository { repository, location in
+      let accepted = try repository.acceptCapture(.init(envelope: integrationCapture(), receivedAtMilliseconds: 1))
+      let usage = RunUsageCost(inputTokens: 120, outputTokens: 45, totalTokens: 165)
+      let provider = GRDBTestProvider(events: [.delta("complete"), .usage(usage), .completed])
+      let recorder = GRDBStateRecorder()
+      let request = PersistentRunRequest(runID: RunID(), taskID: accepted.taskID, snapshotID: accepted.snapshotID, intent: .translate, targetLanguage: "简体中文")
+      let orchestrator = try makeOrchestrator(repository: repository, provider: provider)
+      await orchestrator.start(request: request, capture: integrationCapture()) { await recorder.receive($0, $1) }
+      await waitUntil { await recorder.last == .completed(intent: .translate, text: "complete") }
+      try repository.database.close()
+
+      let reopened = try GRDBHistoryRepository.open(at: location)
+      defer { try? reopened.database.close() }
+      let persisted = try XCTUnwrap(try reopened.detail(taskID: accepted.taskID).runs.single?.run)
+      XCTAssertEqual(persisted.kind, .translate)
+      XCTAssertEqual(persisted.model, "fixture")
+      XCTAssertEqual(persisted.status, .completed)
+      XCTAssertEqual(persisted.usageCost, usage)
+    }
+  }
+
+  func testMalformedUsageTailCannotTurnCompletedRunIntoFailure() async throws {
+    let malformedUsagePayloads = [
+      "{\"choices\":[],\"usage\":{\"total_tokens\":-1}}",
+      "{\"choices\":[],\"usage\":{\"total_tokens\":\"seven\"}}",
+      "{\"choices\":[],\"usage\":{\"total_tokens\":9223372036854775808}}",
+      "{\"choices\":[],\"usage\":{\"prompt_tokens\":1,\"completion_tokens\":\"bad\",\"total_tokens\":2}}"
+    ]
+    for payload in malformedUsagePayloads {
+      try await withTemporaryRepository { repository, _ in
+        let accepted = try repository.acceptCapture(.init(envelope: integrationCapture(), receivedAtMilliseconds: 1))
+        let provider = DecodingGRDBTestProvider(lines: [
+          "data: {\"choices\":[{\"delta\":{\"content\":\"complete\"}}]}",
+          "data: \(payload)",
+          "data: [DONE]"
+        ])
+        let recorder = GRDBStateRecorder()
+        let request = PersistentRunRequest(runID: RunID(), taskID: accepted.taskID, snapshotID: accepted.snapshotID, intent: .summarize)
+        let orchestrator = try makeOrchestrator(repository: repository, provider: provider)
+        await orchestrator.start(request: request, capture: integrationCapture()) { await recorder.receive($0, $1) }
+        await waitUntil { await recorder.last == .completed(intent: .summarize, text: "complete") }
+
+        let run = try XCTUnwrap(try repository.detail(taskID: accepted.taskID).runs.single?.run)
+        XCTAssertEqual(run.status, .completed)
+        XCTAssertNil(run.failureCode)
+        XCTAssertEqual(run.usageCost, .unknown)
+        XCTAssertEqual(try repository.detail(taskID: accepted.taskID).runs.single?.artifact?.bodyText, "complete")
+        let states = await recorder.all
+        XCTAssertFalse(states.contains { state in
+          if case .failed = state { return true }
+          if case .incomplete = state { return true }
+          return false
+        })
+      }
+    }
+  }
+
   func testPartialWriteFailureKeepsCommittedTextRunningThenRestartInterrupts() async throws {
     try await withTemporaryLocation { location in
       let counter = WriteFailureCounter(failingCall: 5)
@@ -411,7 +595,7 @@ final class GRDBOrchestratorIntegrationTests: XCTestCase {
 
   private func makeOrchestrator(
     repository: GRDBHistoryRepository,
-    provider: GRDBTestProvider,
+    provider: any ModelProvider,
     secret: String = "fixture-secret",
     credentialDelay: Duration? = nil,
     storageWriteGate: StorageWriteGate? = nil

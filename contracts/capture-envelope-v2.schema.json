@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://syc.local/linkdigest/capture-envelope-v2.schema.json",
+  "title": "LinkDigest Capture Envelope V2",
+  "description": "Independent V2 browser capture contract. Media playback addresses are process-memory handoff values and must never be persisted, logged, exported, fingerprinted, or committed as real signed fixture URLs.",
+  "type": "object",
+  "required": ["version", "requestId", "createdAt", "source", "capture", "evidence", "media"],
+  "additionalProperties": true,
+  "properties": {
+    "version": {"const": 2},
+    "requestId": {"type": "string", "minLength": 1, "maxLength": 128},
+    "createdAt": {"type": "string", "format": "date-time"},
+    "idempotencyKey": {"type": "string", "minLength": 1, "maxLength": 256},
+    "source": {
+      "type": "object",
+      "required": ["kind", "url", "title", "platform"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {"const": "browser_capture"},
+        "url": {"type": "string", "format": "uri", "maxLength": 8192, "pattern": "^https?://"},
+        "title": {"type": ["string", "null"], "maxLength": 1024},
+        "platform": {"type": "string", "enum": ["generic", "x", "youtube", "wechat", "xiaohongshu", "douyin", "bilibili", "github"]}
+      }
+    },
+    "capture": {
+      "type": "object",
+      "required": ["method", "text", "characterCount", "completeness", "capturedAt"],
+      "additionalProperties": true,
+      "properties": {
+        "method": {"type": "string", "enum": ["rendered_dom", "selection"]},
+        "text": {"type": "string", "minLength": 1, "maxLength": 2000000},
+        "characterCount": {"type": "integer", "minimum": 1, "maximum": 2000000},
+        "completeness": {"type": "string", "enum": ["full_article", "visible_only", "selection_only", "unknown"]},
+        "capturedAt": {"type": "string", "format": "date-time"}
+      }
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["sourceLabel", "usedCookie"],
+      "additionalProperties": true,
+      "properties": {
+        "sourceLabel": {"type": "string", "minLength": 1, "maxLength": 128},
+        "usedCookie": {"type": "boolean"}
+      }
+    },
+    "media": {"$ref": "#/$defs/MediaDescriptor"}
+  },
+  "$defs": {
+    "MediaDescriptor": {
+      "type": "object",
+      "required": ["kind", "pageURL", "canonicalURL", "platform", "transcriptionCapability"],
+      "additionalProperties": true,
+      "properties": {
+        "kind": {"type": "string", "enum": ["directFile", "hls", "embed", "browserSessionOnly", "unsupported"]},
+        "pageURL": {"type": "string", "format": "uri", "maxLength": 8192, "pattern": "^https?://"},
+        "canonicalURL": {"type": "string", "format": "uri", "maxLength": 8192, "pattern": "^https?://"},
+        "platform": {"type": "string", "enum": ["generic", "x", "youtube", "wechat", "xiaohongshu", "douyin", "bilibili", "github"]},
+        "ephemeralPlaybackURL": {"type": "string", "format": "uri", "maxLength": 8192, "pattern": "^https://"},
+        "mimeType": {"type": ["string", "null"], "maxLength": 256},
+        "posterURL": {"type": ["string", "null"], "format": "uri", "maxLength": 8192, "pattern": "^https://"},
+        "durationSeconds": {"type": ["number", "null"], "minimum": 0, "maximum": 86400},
+        "author": {"type": ["string", "null"], "maxLength": 256},
+        "expiresAt": {"type": ["string", "null"], "format": "date-time"},
+        "transcriptionCapability": {"type": "string", "enum": ["supported", "conditional", "unavailable"]},
+        "failureReason": {"type": "string", "enum": ["blob_or_mse", "multiple_candidates", "video_not_loaded", "no_transferable_source", "drm_or_encrypted", "browser_session_required", "unsupported_media_type", "unknown"]},
+        "candidateCount": {"type": "integer", "minimum": 1, "maximum": 1000},
+        "selectionReason": {"type": "string", "enum": ["singleCandidate", "playing", "recentInteraction", "largestVisibleArea", "nearestViewportCenter", "ambiguous"]},
+        "playbackState": {"type": "string", "enum": ["playing", "paused", "ended", "notLoaded", "unknown"]}
+      },
+      "oneOf": [
+        {"required": ["kind", "ephemeralPlaybackURL"], "properties": {"kind": {"const": "directFile"}}, "not": {"required": ["failureReason"]}},
+        {"required": ["kind", "ephemeralPlaybackURL"], "properties": {"kind": {"const": "hls"}}, "not": {"required": ["failureReason"]}},
+        {"required": ["kind"], "properties": {"kind": {"const": "embed"}}, "not": {"required": ["ephemeralPlaybackURL"]}},
+        {"required": ["kind", "failureReason"], "properties": {"kind": {"const": "browserSessionOnly"}}, "not": {"required": ["ephemeralPlaybackURL"]}},
+        {"required": ["kind", "failureReason"], "properties": {"kind": {"const": "unsupported"}}, "not": {"required": ["ephemeralPlaybackURL"]}}
+      ]
+    }
+  },
+  "x-semantic-invariants": [
+    "capture.characterCount equals the Unicode code point count of capture.text",
+    "directFile and hls require an HTTPS ephemeralPlaybackURL and forbid failureReason",
+    "browserSessionOnly and unsupported forbid ephemeralPlaybackURL and require failureReason",
+    "ephemeralPlaybackURL is process-memory-only and excluded from persistence, logs, exports, errors, and persistent fingerprints"
+  ]
+}

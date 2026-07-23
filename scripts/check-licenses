@@ -4,7 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-pnpm licenses list --json | node -e '
+# Keep doctor/read-only gates from invoking pnpm's pre-run dependency repair
+# check when a local store index is incomplete. This command only reads the
+# already-installed dependency metadata and never installs or modifies it.
+pnpm --config.verifyDepsBeforeRun=false licenses list --json | node -e '
   const fs = require("node:fs");
   const licenses = Object.keys(JSON.parse(fs.readFileSync(0, "utf8"))).sort();
   const prohibitedPattern = /(?:^|\b)(?:AGPL|GPL|UNLICENSED|UNKNOWN|NON-COMMERCIAL)(?:\b|-)/i;

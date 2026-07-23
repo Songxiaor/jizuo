@@ -1,0 +1,222 @@
+import AppKit
+import SwiftUI
+
+/// 阅读区连续选择：SwiftUI `Text` 每块都是独立的选择孤岛，跨段拖选做不到；
+/// 把相邻文本块合成一个非编辑 NSTextView，选择即可随光标连续伸展。
+/// 代码块仍由 SwiftUI 卡片渲染（保留复制按钮），图片处自然分段。
+enum ReadingTextComposer {
+  struct Palette {
+    let primary: NSColor
+    let secondary: NSColor
+    let accent: NSColor
+  }
+
+  /// 与 MarkdownPresentation 的阅读排版同一套字号体系。
+  static func attributed(
+    blocks: [MarkdownPresentation.Block],
+    readingFont: ResolvedReadingFont,
+    palette: Palette
+  ) -> NSAttributedString {
+    let result = NSMutableAttributedString()
+    for block in blocks {
+      switch block {
+      case let .heading(level, text):
+        let size: CGFloat = [1: 23, 2: 19.5, 3: 17][level] ?? 16
+        result.append(paragraph(
+          inline(stripMarkers(text), readingFont: readingFont, baseSize: size, bold: true, color: palette.primary),
+          spacingBefore: level == 1 ? 26 : 20, spacingAfter: 10, lineSpacing: 6
+        ))
+      case let .paragraph(text):
+        result.append(paragraph(
+          inline(text, readingFont: readingFont, baseSize: MarkdownPresentation.bodyFontSize, color: palette.primary),
+          spacingAfter: 20, lineSpacing: MarkdownPresentation.bodyLineSpacing
+        ))
+      case let .list(items):
+        for item in items {
+          result.append(paragraph(
+            bulletLine("•  ", item, readingFont: readingFont, color: palette.primary),
+            spacingAfter: 8, lineSpacing: 6, headIndent: 22
+          ))
+        }
+      case let .orderedList(items):
+        for (index, item) in items.enumerated() {
+          result.append(paragraph(
+            bulletLine("\(index + 1).  ", item, readingFont: readingFont, color: palette.primary),
+            spacingAfter: 8, lineSpacing: 6, headIndent: 26
+          ))
+        }
+      case let .quote(text):
+        result.append(paragraph(
+          inline(text, readingFont: readingFont, baseSize: MarkdownPresentation.bodyFontSize, color: palette.secondary),
+          spacingAfter: 20, lineSpacing: 8, headIndent: 18, firstLineIndent: 18
+        ))
+      case .code:
+        // 代码卡由 SwiftUI 独立渲染；不应进入本合成器。
+        continue
+      }
+    }
+    return result
+  }
+
+  static func plain(
+    _ text: String,
+    readingFont: ResolvedReadingFont,
+    color: NSColor
+  ) -> NSAttributedString {
+    paragraph(
+      NSAttributedString(string: text, attributes: [
+        .font: font(readingFont, size: MarkdownPresentation.bodyFontSize),
+        .foregroundColor: color,
+      ]),
+      spacingAfter: 0, lineSpacing: MarkdownPresentation.bodyLineSpacing
+    )
+  }
+
+  // MARK: - helpers
+
+  private static func stripMarkers(_ value: String) -> String {
+    value
+      .replacingOccurrences(of: "**", with: "")
+      .replacingOccurrences(of: "__", with: "")
+      .replacingOccurrences(of: "*", with: "")
+      .replacingOccurrences(of: "`", with: "")
+  }
+
+  private static func font(_ readingFont: ResolvedReadingFont, size: CGFloat, bold: Bool = false) -> NSFont {
+    var descriptor = readingFont.nsFontDescriptor(size: size)
+    if bold { descriptor = descriptor.withSymbolicTraits([descriptor.symbolicTraits, .bold]) }
+    return NSFont(descriptor: descriptor, size: size) ?? NSFont.systemFont(ofSize: size)
+  }
+
+  /// 行内 Markdown（加粗/斜体/行内代码/链接）→ 基底阅读字体；链接保留
+  /// `.link` 属性交 NSTextView 处理，点击仍走安全校验。
+  private static func inline(
+    _ text: String,
+    readingFont: ResolvedReadingFont,
+    baseSize: CGFloat,
+    bold: Bool = false,
+    color: NSColor
+  ) -> NSAttributedString {
+    let parsed = NSMutableAttributedString(attributedString: NSAttributedString(MarkdownPresentation.inlineAttributed(text)))
+    let full = NSRange(location: 0, length: parsed.length)
+    guard full.length > 0 else { return parsed }
+    parsed.enumerateAttribute(.font, in: full) { value, range, _ in
+      let traits = (value as? NSFont)?.fontDescriptor.symbolicTraits ?? []
+      if traits.contains(.monoSpace) {
+        parsed.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: baseSize - 2.5, weight: .regular), range: range)
+        return
+      }
+      var descriptor = readingFont.nsFontDescriptor(size: baseSize)
+      if bold || traits.contains(.bold) {
+        descriptor = descriptor.withSymbolicTraits([descriptor.symbolicTraits, .bold])
+      }
+      if traits.contains(.italic) {
+        descriptor = descriptor.withSymbolicTraits([descriptor.symbolicTraits, .italic])
+      }
+      parsed.addAttribute(.font, value: NSFont(descriptor: descriptor, size: baseSize) ?? NSFont.systemFont(ofSize: baseSize), range: range)
+    }
+    parsed.addAttribute(.foregroundColor, value: color, range: full)
+    return parsed
+  }
+
+  private static func bulletLine(
+    _ prefix: String,
+    _ text: String,
+    readingFont: ResolvedReadingFont,
+    color: NSColor
+  ) -> NSAttributedString {
+    let line = NSMutableAttributedString(string: prefix, attributes: [
+      .font: font(readingFont, size: MarkdownPresentation.bodyFontSize),
+      .foregroundColor: color,
+    ])
+    line.append(inline(text, readingFont: readingFont, baseSize: MarkdownPresentation.bodyFontSize, color: color))
+    return line
+  }
+
+  private static func paragraph(
+    _ content: NSAttributedString,
+    spacingBefore: CGFloat = 0,
+    spacingAfter: CGFloat,
+    lineSpacing: CGFloat,
+    headIndent: CGFloat = 0,
+    firstLineIndent: CGFloat = 0
+  ) -> NSAttributedString {
+    let mutable = NSMutableAttributedString(attributedString: content)
+    mutable.append(NSAttributedString(string: "\n"))
+    let style = NSMutableParagraphStyle()
+    style.paragraphSpacingBefore = spacingBefore
+    style.paragraphSpacing = spacingAfter
+    style.lineSpacing = lineSpacing
+    style.headIndent = headIndent
+    style.firstLineHeadIndent = firstLineIndent
+    mutable.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: mutable.length))
+    return mutable
+  }
+}
+
+/// 自适应高度的非编辑 NSTextView：宽度随 SwiftUI 提供，高度按排版实际
+/// 占用回报；整块文本共享同一个选择上下文，实现跨段连续选择。
+struct SelectableReadingTextView: NSViewRepresentable {
+  let attributed: NSAttributedString
+  let accent: NSColor
+  let onOpenLink: (URL) -> Void
+
+  func makeCoordinator() -> Coordinator { Coordinator(onOpenLink: onOpenLink) }
+
+  func makeNSView(context: Context) -> SelfSizingTextView {
+    let view = SelfSizingTextView(frame: .zero)
+    view.isEditable = false
+    view.isSelectable = true
+    view.drawsBackground = false
+    view.textContainerInset = .zero
+    view.textContainer?.lineFragmentPadding = 0
+    view.textContainer?.widthTracksTextView = true
+    view.isAutomaticLinkDetectionEnabled = false
+    view.delegate = context.coordinator
+    view.linkTextAttributes = [
+      .foregroundColor: accent,
+      .underlineStyle: NSUnderlineStyle.single.rawValue,
+      .cursor: NSCursor.pointingHand,
+    ]
+    view.textStorage?.setAttributedString(attributed)
+    return view
+  }
+
+  func updateNSView(_ view: SelfSizingTextView, context: Context) {
+    context.coordinator.onOpenLink = onOpenLink
+    if view.textStorage?.isEqual(to: attributed) != true {
+      view.textStorage?.setAttributedString(attributed)
+      view.invalidateIntrinsicContentSize()
+    }
+    view.linkTextAttributes?[.foregroundColor] = accent
+  }
+
+  final class Coordinator: NSObject, NSTextViewDelegate {
+    var onOpenLink: (URL) -> Void
+    init(onOpenLink: @escaping (URL) -> Void) { self.onOpenLink = onOpenLink }
+
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+      // 链接不直接放行系统打开；交回 SwiftUI 层走 PublicWebURLPolicy 校验。
+      if let url = link as? URL { onOpenLink(url); return true }
+      if let raw = link as? String, let url = URL(string: raw) { onOpenLink(url); return true }
+      return false
+    }
+  }
+
+  final class SelfSizingTextView: NSTextView {
+    override var intrinsicContentSize: NSSize {
+      guard let container = textContainer, let manager = layoutManager else {
+        return super.intrinsicContentSize
+      }
+      manager.ensureLayout(for: container)
+      let used = manager.usedRect(for: container)
+      return NSSize(width: NSView.noIntrinsicMetric, height: ceil(used.height))
+    }
+
+    override func setFrameSize(_ newSize: NSSize) {
+      super.setFrameSize(newSize)
+      // 宽度变化后重排，高度重新上报，避免留白或截断。
+      invalidateIntrinsicContentSize()
+    }
+  }
+}

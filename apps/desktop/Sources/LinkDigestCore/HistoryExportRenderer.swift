@@ -97,9 +97,42 @@ public enum HistoryExportRenderer {
 
   private static func markdown(_ projection: HistoryExportProjection) -> String {
     let title = displayTitle(projection)
-    var lines = ["# \(title)", "", "- 来源：\(projection.task.canonicalURL)", "- 导出版本：\(projection.formatVersion)", "- 创建时间（UTC）：\(timestamp(projection.task.createdAtMilliseconds))", "- 最近更新时间（UTC）：\(timestamp(projection.task.updatedAtMilliseconds))", "", "## 最近原文", ""]
-    if let snapshot = projection.snapshots.last {
-      lines += ["- 捕获时间（UTC）：\(timestamp(snapshot.capturedAtMilliseconds))", "- 来源标签：\(snapshot.sourceLabel)", "- 完整性：\(snapshot.completeness)", "", snapshot.bodyText.isEmpty ? "（原文为空）" : snapshot.bodyText]
+    let sourceURL = projection.task.canonicalURL
+    let snapshot = projection.snapshots.last
+    let note = MarkdownNoteFrontmatter.parse(snapshot?.bodyText ?? "")
+    // Tolaria/Obsidian-compatible header when exporting .md
+    var lines: [String] = ["---", "title: \(yamlString(title))", "source: \(yamlString(sourceURL))"]
+    if let author = note.author?.nonBlank { lines.append("author: \(yamlString(author))") }
+    if let published = note.published?.nonBlank { lines.append("published: \(yamlString(published))") }
+    let tags = projection.tags.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    if !tags.isEmpty {
+      lines.append("tags:")
+      for tag in tags { lines.append("  - \(yamlString(tag))") }
+    }
+    lines += [
+      "created: \(yamlString(timestamp(projection.task.createdAtMilliseconds)))",
+      "---",
+      "",
+      "# \(title)",
+      "",
+      "- 来源：\(sourceURL)",
+      "- 标签：\(tagLine(projection.tags))",
+      "- 导出版本：\(projection.formatVersion)",
+      "- 创建时间（UTC）：\(timestamp(projection.task.createdAtMilliseconds))",
+      "- 最近更新时间（UTC）：\(timestamp(projection.task.updatedAtMilliseconds))",
+      "",
+      "## 最近原文",
+      "",
+    ]
+    if let snapshot {
+      let body = note.body.isEmpty ? snapshot.bodyText : note.body
+      lines += [
+        "- 捕获时间（UTC）：\(timestamp(snapshot.capturedAtMilliseconds))",
+        "- 来源标签：\(snapshot.sourceLabel)",
+        "- 完整性：\(snapshot.completeness)",
+        "",
+        body.isEmpty ? "（原文为空）" : body,
+      ]
     } else {
       lines.append("（没有保存的原文）")
     }
@@ -109,7 +142,8 @@ public enum HistoryExportRenderer {
       let run = detail.run
       lines += ["", "### \(index + 1). \(action(run.kind)) · \(status(run.status))", "", "- 动作：\(action(run.kind))", "- 状态：\(status(run.status))", "- 时间（UTC）：\(runTime(run))", "- 模型：\(run.model?.nonBlank ?? "—")", "- Token：\(tokens(run.usageCost))", "- 费用：\(cost(run.usageCost))"]
       if let artifact = detail.artifact {
-        lines += ["- 结果完整性：\(artifact.completeness == .complete ? "完整" : "部分结果")", "- 结果格式：\(artifact.contentFormat == .markdown ? "Markdown" : "纯文本")", "", "#### 结果", "", artifact.bodyText.isEmpty ? "（结果为空）" : artifact.bodyText]
+        let resultBody = MarkdownNoteFrontmatter.parse(artifact.bodyText).body
+        lines += ["- 结果完整性：\(artifact.completeness == .complete ? "完整" : "部分结果")", "- 结果格式：\(artifact.contentFormat == .markdown ? "Markdown" : "纯文本")", "", "#### 结果", "", resultBody.isEmpty ? "（结果为空）" : resultBody]
       } else {
         lines += ["- 结果：无可导出的结果"]
       }
@@ -117,8 +151,16 @@ public enum HistoryExportRenderer {
     return lines.joined(separator: "\n") + "\n"
   }
 
+  private static func yamlString(_ value: String) -> String {
+    let escaped = value
+      .replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "\"", with: "\\\"")
+      .replacingOccurrences(of: "\n", with: "\\n")
+    return "\"\(escaped)\""
+  }
+
   private static func plainText(_ projection: HistoryExportProjection) -> String {
-    var lines = ["标题: \(displayTitle(projection))", "来源: \(projection.task.canonicalURL)", "导出版本: \(projection.formatVersion)", "创建时间（UTC）: \(timestamp(projection.task.createdAtMilliseconds))", "最近更新时间（UTC）: \(timestamp(projection.task.updatedAtMilliseconds))", "", "最近原文:"]
+    var lines = ["标题: \(displayTitle(projection))", "来源: \(projection.task.canonicalURL)", "标签: \(tagLine(projection.tags))", "导出版本: \(projection.formatVersion)", "创建时间（UTC）: \(timestamp(projection.task.createdAtMilliseconds))", "最近更新时间（UTC）: \(timestamp(projection.task.updatedAtMilliseconds))", "", "最近原文:"]
     if let snapshot = projection.snapshots.last {
       lines += ["捕获时间（UTC）: \(timestamp(snapshot.capturedAtMilliseconds))", "来源标签: \(snapshot.sourceLabel)", "完整性: \(snapshot.completeness)", snapshot.bodyText.isEmpty ? "（原文为空）" : snapshot.bodyText]
     } else { lines.append("（没有保存的原文）") }
@@ -135,7 +177,14 @@ public enum HistoryExportRenderer {
   }
 
   private static func displayTitle(_ projection: HistoryExportProjection) -> String {
-    projection.snapshots.last?.title?.nonBlank ?? "无标题"
+    CapturedDocumentTitle.display(
+      projection.snapshots.last?.title,
+      for: projection.task.canonicalURL
+    )
+  }
+  private static func tagLine(_ tags: [HistoryTag]) -> String {
+    let value = tags.map(\.name).joined(separator: ", ")
+    return value.isEmpty ? "—" : value
   }
 
   private static func timestamp(_ milliseconds: Int64) -> String {

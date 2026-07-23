@@ -1,0 +1,20 @@
+{
+  "version": 2,
+  "requestId": "fixture-v2-douyin-session-detail",
+  "createdAt": "2026-07-20T00:00:00Z",
+  "source": {"kind": "browser_capture", "url": "https://www.douyin.com/video/7655224917603994914", "title": "Douyin session detail", "platform": "douyin"},
+  "capture": {"method": "rendered_dom", "text": "Session detail fixture", "characterCount": 22, "completeness": "full_article", "capturedAt": "2026-07-20T00:00:00Z"},
+  "evidence": {"sourceLabel": "Current page DOM + same-origin session detail", "usedCookie": true},
+  "media": {
+    "kind": "directFile",
+    "pageURL": "https://www.douyin.com/video/7655224917603994914",
+    "canonicalURL": "https://www.douyin.com/video/7655224917603994914",
+    "platform": "douyin",
+    "ephemeralPlaybackURL": "https://v3.douyinvod.com/aweme/v1/play/?fixture=session-detail",
+    "mimeType": "video/mp4",
+    "transcriptionCapability": "supported",
+    "candidateCount": 1,
+    "selectionReason": "singleCandidate",
+    "playbackState": "paused"
+  }
+}

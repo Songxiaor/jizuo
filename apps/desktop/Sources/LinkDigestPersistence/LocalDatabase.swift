@@ -33,7 +33,7 @@ public final class LocalDatabase: @unchecked Sendable {
         try probe.close()
       } catch let failure as RepositoryFailure { throw failure }
       catch { throw RepositoryFailure.unavailable }
-      if version > Migration001.schemaVersion {
+      if version > Migration008.schemaVersion {
         return try makeReadOnly(at: location, reason: .futureSchema, dependencies: dependencies)
       }
     }
@@ -42,9 +42,32 @@ public final class LocalDatabase: @unchecked Sendable {
       let pool = try dependencies.openWritable(location.databaseURL.path, writableConfiguration())
       do {
         let version = try pool.read { try Int.fetchOne($0, sql: "PRAGMA user_version") ?? 0 }
-        if version < Migration001.schemaVersion {
+        if version < Migration008.schemaVersion {
           try pool.write { db in
-            try Migration001.apply(to: db, beforeCommit: dependencies.beforeMigrationCommit)
+            if version < Migration001.schemaVersion {
+              try Migration001.apply(to: db, beforeCommit: dependencies.beforeMigrationCommit)
+            }
+            if version < Migration002.schemaVersion {
+              try Migration002.apply(to: db)
+            }
+            if version < Migration003.schemaVersion {
+              try Migration003.apply(to: db)
+            }
+            if version < Migration004.schemaVersion {
+              try Migration004.apply(to: db)
+            }
+            if version < Migration005.schemaVersion {
+              try Migration005.apply(to: db)
+            }
+            if version < Migration006.schemaVersion {
+              try Migration006.apply(to: db)
+            }
+            if version < Migration007.schemaVersion {
+              try Migration007.apply(to: db)
+            }
+            if version < Migration008.schemaVersion {
+              try Migration008.apply(to: db)
+            }
           }
         }
         return LocalDatabase(location: location, accessMode: .writable, dependencies: dependencies, backend: .writable(pool))

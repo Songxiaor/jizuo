@@ -16,11 +16,15 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
   public let latestRunStatus: RunStatus?
   public let latestModel: String?
   public let updatedAtMilliseconds: Int64
+  /// 任务首次入库时间；旧序列化数据可能缺失，因此保持可选以兼容解码。
+  public let createdAtMilliseconds: Int64?
   public let latestRunAtMilliseconds: Int64?
   public let usageCost: RunUsageCost
   public let artifactPreview: String?
-  public init(taskID: TaskID, title: String?, canonicalURL: String, host: String, sourceLabel: String, latestRunKind: RunKind?, latestRunStatus: RunStatus?, latestModel: String?, updatedAtMilliseconds: Int64, latestRunAtMilliseconds: Int64?, usageCost: RunUsageCost, artifactPreview: String?) {
-    self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview
+  public let author: String?
+  public let published: String?
+  public init(taskID: TaskID, title: String?, canonicalURL: String, host: String, sourceLabel: String, latestRunKind: RunKind?, latestRunStatus: RunStatus?, latestModel: String?, updatedAtMilliseconds: Int64, createdAtMilliseconds: Int64? = nil, latestRunAtMilliseconds: Int64?, usageCost: RunUsageCost, artifactPreview: String?, author: String? = nil, published: String? = nil) {
+    self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.createdAtMilliseconds = createdAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview; self.author = author; self.published = published
   }
 }
 
@@ -39,7 +43,22 @@ public struct HistoryDetailProjection: Codable, Sendable, Equatable {
   public let task: HistoryTask
   public let snapshots: [ContentSnapshot]
   public let runs: [RunDetail]
-  public init(task: HistoryTask, snapshots: [ContentSnapshot], runs: [RunDetail]) { self.task = task; self.snapshots = snapshots; self.runs = runs }
+  public let tags: [HistoryTag]
+  /// Optional local video asset for Loop V captures. Absent for pure-text history.
+  public let media: MediaAsset?
+  public init(
+    task: HistoryTask,
+    snapshots: [ContentSnapshot],
+    runs: [RunDetail],
+    tags: [HistoryTag] = [],
+    media: MediaAsset? = nil
+  ) {
+    self.task = task
+    self.snapshots = snapshots
+    self.runs = runs
+    self.tags = tags
+    self.media = media
+  }
 }
 
 public struct HistoryExportProjection: Codable, Sendable, Equatable {
@@ -48,8 +67,9 @@ public struct HistoryExportProjection: Codable, Sendable, Equatable {
   public let task: HistoryTask
   public let snapshots: [ContentSnapshot]
   public let runs: [HistoryDetailProjection.RunDetail]
+  public let tags: [HistoryTag]
 
-  public init(task: HistoryTask, snapshots: [ContentSnapshot], runs: [HistoryDetailProjection.RunDetail]) {
+  public init(task: HistoryTask, snapshots: [ContentSnapshot], runs: [HistoryDetailProjection.RunDetail], tags: [HistoryTag] = []) {
     formatVersion = Self.formatVersion
     self.task = task
     // An export projection is an explicit data-escape boundary. Keep user-facing
@@ -99,9 +119,10 @@ public struct HistoryExportProjection: Codable, Sendable, Equatable {
       )
       return .init(run: safeRun, artifact: detail.artifact)
     }
+    self.tags = HistoryTagNormalizer.normalizedTags(tags.map(\.name))
   }
 
-  private enum CodingKeys: String, CodingKey { case formatVersion, task, snapshots, runs }
+  private enum CodingKeys: String, CodingKey { case formatVersion, task, snapshots, runs, tags }
 
   /// The on-disk JSON schema intentionally excludes provider configuration,
   /// idempotency keys, cookie-use markers and raw failure material. Decoding
@@ -178,6 +199,7 @@ public struct HistoryExportProjection: Codable, Sendable, Equatable {
     let decodedTask = try container.decode(HistoryTask.self, forKey: .task)
     let decodedSnapshots = try container.decode([SnapshotValue].self, forKey: .snapshots).map(\.projection)
     let decodedRuns = try container.decode([RunValue].self, forKey: .runs).map(\.projection)
+    let decodedTags = try container.decodeIfPresent([HistoryTag].self, forKey: .tags) ?? []
     try Self.validateV1(
       task: decodedTask,
       snapshots: decodedSnapshots,
@@ -188,6 +210,7 @@ public struct HistoryExportProjection: Codable, Sendable, Equatable {
     task = decodedTask
     snapshots = decodedSnapshots
     runs = decodedRuns
+    tags = HistoryTagNormalizer.normalizedTags(decodedTags.map(\.name))
   }
 
   private static func validateV1(
@@ -233,7 +256,7 @@ public struct HistoryExportProjection: Codable, Sendable, Equatable {
         }
       }
       do {
-        _ = try RunUsageCost(
+        _ = try RunUsageCost.validated(
           inputTokens: run.usageCost.inputTokens,
           outputTokens: run.usageCost.outputTokens,
           totalTokens: run.usageCost.totalTokens,
@@ -263,5 +286,6 @@ public struct HistoryExportProjection: Codable, Sendable, Equatable {
     try container.encode(task, forKey: .task)
     try container.encode(snapshots.map(SnapshotValue.init), forKey: .snapshots)
     try container.encode(runs.map(RunValue.init), forKey: .runs)
+    try container.encode(tags, forKey: .tags)
   }
 }

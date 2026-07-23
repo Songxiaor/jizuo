@@ -223,7 +223,7 @@ def main() -> int:
             cwd=source,
             env=build_env,
         )
-        package = output_root / "LinkDigestNativeHost-0.1.0-macos-arm64"
+        package = output_root / "LinkDigestNativeHost-0.2.0-macos-arm64"
         verifier(package, success=True)
 
         moved_parent = clean_room / "Moved Package 空格 μ"
@@ -345,7 +345,7 @@ def main() -> int:
             "manifest IDs were not sorted and deduplicated",
         )
         check(all("*" not in origin for origin in payload["allowed_origins"]), "manifest contains a wildcard origin")
-        run(
+        release_manifest = run(
             [
                 sys.executable,
                 str(STABLE),
@@ -354,11 +354,15 @@ def main() -> int:
                 "release",
                 "--host-path",
                 str(host),
-            ],
-            expect_success=False,
-            expected_error="release extension IDs are not frozen",
+            ]
         )
-        check(True, "release manifest did not fail closed")
+        release_payload = json.loads(release_manifest.stdout)
+        release_ids = json.loads((ROOT / "config/native-host.json").read_text(encoding="utf-8"))["releaseExtensionIDs"]
+        check(
+            release_payload["allowed_origins"] == [f"chrome-extension://{extension_id}/" for extension_id in release_ids],
+            "release manifest did not bind canonical extension IDs",
+        )
+        check(len(release_payload["allowed_origins"]) == 1 and "*" not in release_payload["allowed_origins"][0], "release manifest origin was not one exact non-wildcard ID")
         run(
             [
                 sys.executable,
@@ -399,10 +403,13 @@ def main() -> int:
         dry_after = metadata_digest(home_default)
         dry_plan = json.loads(dry_result.stdout)
         check(dry_before == dry_after, "clean-room dry-run wrote files")
-        check(len(dry_plan["manifestTargets"]) == 2, "Chrome/Brave were not deduplicated or Edge default is missing")
+        expected_default_targets = {
+            str(home_default / "Library/Application Support/Google/Chrome/NativeMessagingHosts/com.syc.linkdigest.v01.json"),
+            str(home_default / "Library/Application Support/Microsoft Edge/NativeMessagingHosts/com.syc.linkdigest.v01.json"),
+        }
         check(
-            any("Google/Chrome/NativeMessagingHosts" in path for path in dry_plan["manifestTargets"]),
-            "Chrome/Brave shared manifest target is missing",
+            set(dry_plan["manifestTargets"]) == expected_default_targets,
+            "Chrome and Brave did not share their exact active target, or Edge drifted",
         )
         run(base_install + ["--apply"])
         installed_before = metadata_digest(home_default)
@@ -423,7 +430,7 @@ def main() -> int:
             "--apply",
         )
         run(extra_dir_install)
-        extra_version = extra_dir_home / "Library/Application Support/LinkDigest/NativeMessagingHost/versions/0.1.0-macos-arm64"
+        extra_version = extra_dir_home / "Library/Application Support/LinkDigest/NativeMessagingHost/versions/0.2.0-macos-arm64"
         (extra_version / "unknown-empty-directory").mkdir(mode=0o700)
         run(extra_dir_install, expect_success=False, expected_error="version directory differs")
         check(True, "existing version with an extra empty directory was accepted")
@@ -444,6 +451,10 @@ def main() -> int:
             len(receipt["ownedManifests"]) == 2
             and all(len(item["sha256"]) == 64 for item in receipt["ownedManifests"]),
             "receipt manifest ownership hashes are incomplete",
+        )
+        check(
+            {item["path"] for item in receipt["ownedManifests"]} == expected_default_targets,
+            "receipt manifest ownership paths do not use the shared Chrome/Brave target",
         )
 
         edge_home = create_clean_home(clean_room, "home-edge-profile")
@@ -509,7 +520,7 @@ def main() -> int:
 
         failure_home = create_clean_home(clean_room, "home-failure-injection")
         failure_manifest = failure_home / "Library/Application Support/Google/Chrome/NativeMessagingHosts/com.syc.linkdigest.v01.json"
-        failure_version = failure_home / "Library/Application Support/LinkDigest/NativeMessagingHost/versions/0.1.0-macos-arm64"
+        failure_version = failure_home / "Library/Application Support/LinkDigest/NativeMessagingHost/versions/0.2.0-macos-arm64"
         failure_receipt = failure_home / "Library/Application Support/LinkDigest/NativeMessagingHost/receipt-v1.json"
         run(
             installer_command(

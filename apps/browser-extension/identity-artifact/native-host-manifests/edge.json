@@ -1,0 +1,9 @@
+{
+  "allowed_origins": [
+    "chrome-extension://fbpjhlcpfheecigibjghhodhhkgjdgma/"
+  ],
+  "description": "LinkDigest Native Messaging Host",
+  "name": "com.syc.linkdigest.v01",
+  "path": "__LINKDIGEST_NATIVE_HOST_PATH__",
+  "type": "stdio"
+}

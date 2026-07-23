@@ -1,0 +1,31 @@
+import Foundation
+
+/// User-facing naming comes from one bundled resource shared with the browser
+/// extension manifest. Technical browser identity deliberately lives elsewhere.
+public enum ProductDisplay {
+  private struct Values: Decodable {
+    let displayName: String
+    let extensionDescription: String
+    let extensionDisplayName: String
+    let formatVersion: Int
+  }
+
+  private static let values: Values = {
+    guard
+      let url = Bundle.module.url(forResource: "product-display", withExtension: "json"),
+      let data = try? Data(contentsOf: url),
+      let decoded = try? JSONDecoder().decode(Values.self, from: data),
+      decoded.formatVersion == 1,
+      !decoded.displayName.isEmpty,
+      !decoded.extensionDescription.isEmpty,
+      !decoded.extensionDisplayName.isEmpty
+    else {
+      preconditionFailure("Product display resource is missing or invalid")
+    }
+    return decoded
+  }()
+
+  public static let name = values.displayName
+  public static let extensionDescription = values.extensionDescription
+  public static let extensionName = values.extensionDisplayName
+}

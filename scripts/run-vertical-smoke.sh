@@ -5,6 +5,9 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP="$ROOT/apps/desktop/.build/debug/LinkDigestApp"
 HOST="$ROOT/apps/desktop/.build/debug/LinkDigestNativeHost"
 FIXTURE="$ROOT/contracts/fixtures/valid.json"
+V2_FIXTURE="$ROOT/contracts/fixtures/v2-douyin-direct.json"
+V2_EPHEMERAL_SENTINEL="LDV2EPHEMERAL9f3c7a1d"
+V2_POSTER_SENTINEL="LDV2POSTER4b8e2c6f"
 LIVE_LINKDIGEST_ROOT="$HOME/Library/Application Support/LinkDigest"
 TMP_BASE="/private/tmp"
 
@@ -48,13 +51,18 @@ state_digest() {
 
 run_host_case() {
   local expected="$1"
-  LINKDIGEST_SOCKET_PATH="$SOCKET" node - "$HOST" "$FIXTURE" "$expected" <<'NODE'
+  LINKDIGEST_SOCKET_PATH="$SOCKET" node - \
+    "$HOST" "$FIXTURE" "$V2_FIXTURE" "$expected" \
+    "$V2_EPHEMERAL_SENTINEL" "$V2_POSTER_SENTINEL" <<'NODE'
 const { readFileSync } = require("node:fs");
 const { spawnSync } = require("node:child_process");
 const net = require("node:net");
 const host = process.argv[2];
 const base = JSON.parse(readFileSync(process.argv[3], "utf8"));
-const expected = process.argv[4];
+const v2Base = JSON.parse(readFileSync(process.argv[4], "utf8"));
+const expected = process.argv[5];
+const ephemeralSentinel = process.argv[6];
+const posterSentinel = process.argv[7];
 
 function send(host, envelope) {
   const body = Buffer.from(JSON.stringify(envelope));
@@ -107,6 +115,29 @@ async function main() {
     }
   }
 
+  if (expected === "success") {
+    const envelope = {
+      ...v2Base,
+      requestId: "smoke-v2-douyin-direct",
+      idempotencyKey: "smoke-v2-douyin-direct",
+      media: {
+        ...v2Base.media,
+        ephemeralPlaybackURL: `https://media.example.test/video?opaque=${ephemeralSentinel}`,
+        posterURL: `https://media.example.test/poster?opaque=${posterSentinel}`,
+      },
+    };
+    const response = send(host, envelope);
+    if (
+      response.kind !== "taskAccepted" ||
+      response.version !== 1 ||
+      response.requestId !== envelope.requestId ||
+      response.characterCount !== envelope.capture.characterCount
+    ) {
+      throw new Error(`Unexpected V2 response: ${response.kind}/${response.error?.code ?? "unknown"}`);
+    }
+    console.log("vertical-smoke: V2 direct-media capture accepted");
+  }
+
   stalled.destroy();
   const outcome = expected === "success" ? "20/20 captures accepted" : "20/20 captures rejected with STORAGE_UNAVAILABLE";
   console.log(`vertical-smoke: ${expected} path OK (${outcome}; stalled client isolated)`);
@@ -116,6 +147,29 @@ main().catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });
+NODE
+}
+
+assert_v2_ephemeral_url_not_persisted() {
+  local database="$1"
+  node - "$database" "$V2_EPHEMERAL_SENTINEL" "$V2_POSTER_SENTINEL" <<'NODE'
+const { existsSync, readFileSync } = require("node:fs");
+const database = process.argv[2];
+const sentinels = [
+  ["ephemeralPlaybackURL", Buffer.from(process.argv[3], "utf8")],
+  ["posterURL", Buffer.from(process.argv[4], "utf8")],
+];
+const files = [database, `${database}-wal`, `${database}-shm`].filter(existsSync);
+if (files.length === 0) throw new Error("No isolated SQLite files were available for the V2 persistence scan");
+for (const file of files) {
+  const bytes = readFileSync(file);
+  for (const [field, sentinel] of sentinels) {
+    if (bytes.includes(sentinel)) {
+      throw new Error(`V2 ${field} opaque sentinel was persisted in isolated SQLite state`);
+    }
+  }
+}
+console.log(`vertical-smoke: V2 ephemeral/poster opaque sentinels absent from ${files.length} isolated SQLite/WAL/SHM file(s)`);
 NODE
 }
 
@@ -200,6 +254,9 @@ run_case() (
   fi
 
   SOCKET="$socket" run_host_case "$expected"
+  if [[ "$expected" == "success" ]]; then
+    assert_v2_ephemeral_url_not_persisted "$database"
+  fi
   stop_app
   snapshot_live_linkdigest_state "$after_state"
   cmp "$before_state" "$after_state" >/dev/null || {
@@ -212,4 +269,4 @@ run_case() (
 
 run_case success
 run_case failure
-echo "vertical-smoke: OK (success and deterministic storage-open failure both use isolated temporary Application Support roots)"
+echo "vertical-smoke: OK (V1 success/failure plus V2 acceptance and ephemeral-URL non-persistence use isolated temporary Application Support roots)"

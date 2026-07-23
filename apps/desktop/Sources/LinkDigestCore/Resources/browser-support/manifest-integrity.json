@@ -1,0 +1,11 @@
+{
+  "extensionID": "fbpjhlcpfheecigibjghhodhhkgjdgma",
+  "formatVersion": 1,
+  "hostName": "com.syc.linkdigest.v01",
+  "templates": {
+    "brave": "f30f0d136e747cd8f3157a7a17032e10fc01c8589e81ac1b2f79df01f24caae5",
+    "chrome": "f30f0d136e747cd8f3157a7a17032e10fc01c8589e81ac1b2f79df01f24caae5",
+    "edge": "f30f0d136e747cd8f3157a7a17032e10fc01c8589e81ac1b2f79df01f24caae5"
+  },
+  "version": "0.2.0"
+}

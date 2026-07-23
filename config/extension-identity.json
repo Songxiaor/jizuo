@@ -1,0 +1,8 @@
+{
+  "artifactName": "LinkDigest-extension-0.2.0-chromium.zip",
+  "artifactSource": "apps/browser-extension/identity-artifact/LinkDigest-extension-0.2.0-chromium.zip",
+  "extensionID": "fbpjhlcpfheecigibjghhodhhkgjdgma",
+  "formatVersion": 1,
+  "manifestKey": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA8PlpmYWzqEZMqC+vsNw99cP1rIjLrLSvzoZ6wjAFkxVABwi65q55Wlq0X4zspmKxz3y/UhFDeS+t8Kt2l27UfjWb+S4c8Mzq7zUCiJn3hD5woXE339PEkMatybBVW2dyIgV4HEgsp2M5DyoUFFlXzq3ADtjEBEUqKApQKr5KjrwTPtBzGTwNxu6TYxV/NDfrhV78B67ua1jj8lYxEO5I7AR/sKbYwVjiuetgnj8gY88iBCwkL0fUAwB+NWBcsgcw0cwZ/Irr33qMfXyZuMJu36CfpVL+Tnp+5i591ATiE4mSaw/gOOTzjwiejBzP1zOElgJXQZ8EnI/2++1593KX9wIDAQAB",
+  "version": "0.2.0"
+}

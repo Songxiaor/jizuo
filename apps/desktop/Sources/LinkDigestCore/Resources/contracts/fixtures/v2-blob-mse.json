@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "requestId": "fixture-v2-blob-mse",
+  "createdAt": "2026-07-20T00:00:00Z",
+  "source": {"kind": "browser_capture", "url": "https://example.test/blob-video", "title": "Blob video", "platform": "generic"},
+  "capture": {"method": "rendered_dom", "text": "blob body", "characterCount": 9, "completeness": "visible_only", "capturedAt": "2026-07-20T00:00:00Z"},
+  "evidence": {"sourceLabel": "Current page DOM", "usedCookie": false},
+  "media": {"kind": "browserSessionOnly", "pageURL": "https://example.test/blob-video", "canonicalURL": "https://example.test/blob-video", "platform": "generic", "transcriptionCapability": "unavailable", "failureReason": "blob_or_mse", "candidateCount": 1, "selectionReason": "singleCandidate", "playbackState": "playing"}
+}

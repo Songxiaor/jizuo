@@ -1,12 +1,60 @@
 import validateWireSchema, { type SchemaValidationError } from "./generated/capture-validator.mjs";
 
 export const MAX_CAPTURE_TEXT_SCALARS = 2_000_000;
+export type CapturePlatform = "generic" | "x" | "youtube" | "wechat" | "xiaohongshu" | "douyin" | "bilibili" | "github";
+export type CaptureMedia = {
+  platform: "douyin";
+  videoURL: string;
+  coverURL?: string | null;
+  durationSeconds?: number | null;
+  author?: string | null;
+};
+
+export type MediaKind = "directFile" | "hls" | "embed" | "browserSessionOnly" | "unsupported";
+export type TranscriptionCapability = "supported" | "conditional" | "unavailable";
+export type MediaFailureReason =
+  | "blob_or_mse"
+  | "multiple_candidates"
+  | "video_not_loaded"
+  | "no_transferable_source"
+  | "drm_or_encrypted"
+  | "browser_session_required"
+  | "unsupported_media_type"
+  | "unknown";
+export type MediaDescriptor = {
+  kind: MediaKind;
+  pageURL: string;
+  canonicalURL: string;
+  platform: CapturePlatform;
+  ephemeralPlaybackURL?: string;
+  mimeType?: string | null;
+  posterURL?: string | null;
+  durationSeconds?: number | null;
+  author?: string | null;
+  expiresAt?: string | null;
+  transcriptionCapability: TranscriptionCapability;
+  failureReason?: MediaFailureReason;
+  candidateCount?: number;
+  selectionReason?: "singleCandidate" | "playing" | "recentInteraction" | "largestVisibleArea" | "nearestViewportCenter" | "ambiguous";
+  playbackState?: "playing" | "paused" | "ended" | "notLoaded" | "unknown";
+};
+
 export type CaptureEnvelopeV1 = {
   version: 1; requestId: string; createdAt: string; idempotencyKey?: string;
-  source: { kind: "browser_capture"; url: string; title: string | null; platform: "generic" };
+  source: { kind: "browser_capture"; url: string; title: string | null; platform: CapturePlatform };
   capture: { method: "rendered_dom" | "selection"; text: string; characterCount: number; completeness: "full_article" | "visible_only" | "selection_only" | "unknown"; capturedAt: string };
   evidence: { sourceLabel: string; usedCookie: false };
+  /** Optional Loop V media block. Pure-text captures omit this field entirely. */
+  media?: CaptureMedia;
 };
+export type CaptureEnvelopeV2 = {
+  version: 2; requestId: string; createdAt: string; idempotencyKey?: string;
+  source: CaptureEnvelopeV1["source"];
+  capture: CaptureEnvelopeV1["capture"];
+  evidence: { sourceLabel: string; usedCookie: boolean };
+  media: MediaDescriptor;
+};
+export type CaptureEnvelope = CaptureEnvelopeV1 | CaptureEnvelopeV2;
 export type AppError = {
   version: 1;
   requestId: string;
@@ -66,10 +114,21 @@ export function normalizeNativeResponse(value: unknown, expectedRequestId: strin
   return value;
 }
 
-export function validateCapture(value: unknown): string | null {
+export function validateCapture(value: unknown, declaredSchema?: string): string | null {
   if (!value || typeof value !== "object") return "CAPTURE_SCHEMA_INVALID";
-  const candidate = value as Partial<CaptureEnvelopeV1>;
-  if (candidate.version !== 1) return "PROTOCOL_VERSION_UNSUPPORTED";
+  const candidate = value as Partial<CaptureEnvelope>;
+  if (candidate.version !== 1 && candidate.version !== 2) return "PROTOCOL_VERSION_UNSUPPORTED";
+  // Preserve the frozen pre-V2 fixture/error behavior: the historical
+  // `version: 2` probe had no media discriminator and remains unsupported.
+  if (candidate.version === 2 && !("media" in candidate)) return "PROTOCOL_VERSION_UNSUPPORTED";
+  if (declaredSchema) {
+    const declaredVersion = declaredSchema.endsWith("capture-envelope-v1.schema.json")
+      ? 1
+      : declaredSchema.endsWith("capture-envelope-v2.schema.json")
+        ? 2
+        : undefined;
+    if (declaredVersion === undefined || candidate.version !== declaredVersion) return "CAPTURE_SCHEMA_INVALID";
+  }
   if (!candidate.source || typeof candidate.source.url !== "string" || !/^https?:\/\//.test(candidate.source.url)) return "CAPTURE_URL_UNSUPPORTED";
   if (!candidate.capture || typeof candidate.capture.text !== "string") return "CAPTURE_SCHEMA_INVALID";
   if ([...candidate.capture.text].length === 0) return "CAPTURE_CONTENT_EMPTY";

@@ -1,0 +1,32 @@
+{
+  "browserTargets": {
+    "brave": {
+      "browser": "brave",
+      "manifestRelativePath": "Library/Application Support/Google/Chrome/NativeMessagingHosts",
+      "profilePolicy": "default-user-target-only"
+    },
+    "chrome": {
+      "browser": "chrome",
+      "manifestRelativePath": "Library/Application Support/Google/Chrome/NativeMessagingHosts",
+      "profilePolicy": "default-user-target-only"
+    },
+    "edge": {
+      "browser": "edge",
+      "manifestRelativePath": "Library/Application Support/Microsoft Edge/NativeMessagingHosts",
+      "profilePolicy": "default-user-target-only"
+    }
+  },
+  "distribution": {
+    "artifact": "notarized-stapled-dmg",
+    "signingIdentity": "Developer ID Application",
+    "target": "P0-candidate"
+  },
+  "formatVersion": 1,
+  "installAuthorization": {
+    "scope": "current-user",
+    "separateAuthorizationRequired": true,
+    "sudo": "forbidden"
+  },
+  "teamID": null,
+  "teamIDStatus": "not-frozen"
+}

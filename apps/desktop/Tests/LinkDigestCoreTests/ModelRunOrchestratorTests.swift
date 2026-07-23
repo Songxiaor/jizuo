@@ -197,6 +197,7 @@ private final class OrchestratorHistoryRepository: HistoryRepository, @unchecked
   let accessMode: HistoryRepositoryAccessMode = .writable
   private let lock = NSLock()
   private var events: [String] = []
+  private var automaticTagAssignments: [(TaskID, [HistoryTag])] = []
 
   func acceptCapture(_: AcceptCaptureCommand) throws -> AcceptCaptureResult { throw RepositoryFailure.invalidInput }
   func createRun(_ command: CreateRunCommand) throws -> CreateRunResult {
@@ -216,9 +217,41 @@ private final class OrchestratorHistoryRepository: HistoryRepository, @unchecked
   func historyPage(limit _: Int, after _: HistoryPageCursor?) throws -> HistoryPage { throw RepositoryFailure.notFound }
   func detail(taskID _: TaskID) throws -> HistoryDetailProjection { throw RepositoryFailure.notFound }
   func exportProjection(taskID _: TaskID) throws -> HistoryExportProjection { throw RepositoryFailure.notFound }
+  func allTags() throws -> [HistoryTag] { [] }
+  func addTags(_ rawNames: [String], to taskID: TaskID) throws -> [HistoryTag] {
+    let tags = HistoryTagNormalizer.normalizedTags(rawNames)
+    lock.withLock { automaticTagAssignments.append((taskID, tags)) }
+    return tags
+  }
+  func removeTag(normalizedName _: String, from _: TaskID) throws {}
   func deleteTask(taskID _: TaskID) throws { throw RepositoryFailure.notFound }
   var eventCount: Int { lock.withLock { events.count } }
   var terminalCount: Int { lock.withLock { events.filter { $0.hasPrefix("terminal:") }.count } }
+  var tagAssignments: [(TaskID, [HistoryTag])] { lock.withLock { automaticTagAssignments } }
+}
+
+private final class RecordingSummaryTagGenerator: SummaryTagGenerating, @unchecked Sendable {
+  enum Result: Sendable { case value(String), failure }
+  private let lock = NSLock()
+  private var results: [Result]
+  private var requests: [(ProviderProfile, String)] = []
+
+  init(results: [Result]) { self.results = results }
+
+  func generateSummaryTags(profile: ProviderProfile, apiKey _: String, summary: String) async throws -> String {
+    let result = lock.withLock { () -> Result in
+      requests.append((profile, summary))
+      return results.isEmpty ? .value("") : results.removeFirst()
+    }
+    switch result {
+    case let .value(value): return value
+    case .failure: throw ModelProviderFailure(code: .networkInterrupted, retryable: true, hadOutput: false)
+    }
+  }
+
+  var callCount: Int { lock.withLock { requests.count } }
+  var summaries: [String] { lock.withLock { requests.map(\.1) } }
+  var models: [String] { lock.withLock { requests.map { $0.0.model } } }
 }
 
 private actor RunStateRecorder {
@@ -316,7 +349,14 @@ final class ModelRunOrchestratorTests: XCTestCase {
     await waitUntil { await recorder.lastState == .completed(intent: .translate, text: "翻译") }
 
     XCTAssertEqual(provider.intents, [
-      .summarize(title: "Fixture title", text: "Fixture body"),
+      .summarize(
+        title: "Fixture title",
+        text: "Fixture body",
+        prompt: ModelPreferences.summaryPrompt(
+          configuredPrompt: ModelPreferences.defaultSummaryPrompt,
+          outputLanguage: ModelPreferences.defaultTargetLanguage
+        )
+      ),
       .translate(
         title: "Fixture title",
         text: "Fixture body",
@@ -349,6 +389,72 @@ final class ModelRunOrchestratorTests: XCTestCase {
     let states = await recorder.states
     XCTAssertTrue(states.contains(.streaming(intent: .summarize, partialText: "第一段")))
     XCTAssertTrue(states.contains(.streaming(intent: .summarize, partialText: "第一段第二段")))
+  }
+
+  func testCompletedSummaryAddsNormalizedAutomaticTagsFromSummaryOnlyUsingSameModel() async throws {
+    let provider = ScriptedModelProvider(scripts: [.init(steps: [.event(.delta("本地总结文本")), .event(.completed)])])
+    let tags = RecordingSummaryTagGenerator(results: [.value("人工智能, Swift, 人工智能\n这行必须忽略")])
+    let repository = OrchestratorHistoryRepository()
+    let service = ProviderConfigurationService(
+      profileStore: OrchestratorProfileStore(profile: try profile()),
+      secretStore: OrchestratorSecretStore(value: "fixture-secret")
+    )
+    let orchestrator = ModelRunOrchestrator(
+      configurationService: service,
+      provider: provider,
+      summaryTagGenerator: tags,
+      history: HistoryApplicationService(repository: repository)
+    )
+    let recorder = RunStateRecorder()
+    let request = PersistentRunRequest(runID: RunID(), taskID: TaskID(), snapshotID: ContentSnapshotID(), intent: .summarize)
+
+    await orchestrator.start(request: request, capture: capture(text: "原文不能进入标签请求")) { runID, state in
+      await recorder.append(runID: runID, state: state)
+    }
+    await waitUntil { await recorder.lastState == .completed(intent: .summarize, text: "本地总结文本") }
+    await waitUntil { tags.callCount == 1 && repository.tagAssignments.count == 1 }
+
+    XCTAssertEqual(tags.summaries, ["本地总结文本"])
+    let expectedProfile = try profile()
+    XCTAssertEqual(tags.models, [expectedProfile.model])
+    XCTAssertEqual(repository.tagAssignments.first?.0, request.taskID)
+    XCTAssertEqual(repository.tagAssignments.first?.1.map(\.name), ["人工智能", "Swift"])
+  }
+
+  func testAutomaticTaggingFailureOrEmptyParseNeverChangesCompletedRunAndTranslationsUseGeneratedText() async throws {
+    let provider = ScriptedModelProvider(scripts: [
+      .init(steps: [.event(.delta("第一份总结")), .event(.completed)]),
+      .init(steps: [.event(.delta("第二份总结")), .event(.completed)]),
+      .init(steps: [.event(.delta("翻译")), .event(.completed)]),
+    ])
+    let tags = RecordingSummaryTagGenerator(results: [.failure, .value(" , \n"), .value("译文标签")])
+    let repository = OrchestratorHistoryRepository()
+    let service = ProviderConfigurationService(
+      profileStore: OrchestratorProfileStore(profile: try profile()),
+      secretStore: OrchestratorSecretStore(value: "fixture-secret")
+    )
+    let orchestrator = ModelRunOrchestrator(
+      configurationService: service,
+      provider: provider,
+      summaryTagGenerator: tags,
+      history: HistoryApplicationService(repository: repository)
+    )
+    let recorder = RunStateRecorder()
+
+    await start(orchestrator, intent: .summarize, capture: capture(), recorder: recorder)
+    await waitUntil { await recorder.lastState == .completed(intent: .summarize, text: "第一份总结") }
+    await waitUntil { tags.callCount == 1 }
+    await start(orchestrator, intent: .summarize, capture: capture(), recorder: recorder)
+    await waitUntil { await recorder.lastState == .completed(intent: .summarize, text: "第二份总结") }
+    await waitUntil { tags.callCount == 2 }
+    await start(orchestrator, intent: .translate, capture: capture(), recorder: recorder)
+    await waitUntil { await recorder.lastState == .completed(intent: .translate, text: "翻译") }
+
+    await waitUntil { tags.callCount == 3 && repository.tagAssignments.count == 1 }
+    XCTAssertEqual(tags.summaries.last, "翻译")
+    XCTAssertEqual(repository.tagAssignments.first?.1.map(\.name), ["译文标签"])
+    let finalState = await recorder.lastState
+    XCTAssertEqual(finalState, .completed(intent: .translate, text: "翻译"))
   }
 
   func testProviderEchoedSecretIsRedactedBeforeEnteringRunState() async throws {

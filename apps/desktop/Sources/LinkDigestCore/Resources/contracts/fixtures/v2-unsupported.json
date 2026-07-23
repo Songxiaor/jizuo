@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "requestId": "fixture-v2-unsupported",
+  "createdAt": "2026-07-20T00:00:00Z",
+  "source": {"kind": "browser_capture", "url": "https://example.test/drm", "title": "Encrypted media", "platform": "generic"},
+  "capture": {"method": "rendered_dom", "text": "drm body", "characterCount": 8, "completeness": "visible_only", "capturedAt": "2026-07-20T00:00:00Z"},
+  "evidence": {"sourceLabel": "Current page DOM", "usedCookie": false},
+  "media": {"kind": "unsupported", "pageURL": "https://example.test/drm", "canonicalURL": "https://example.test/drm", "platform": "generic", "transcriptionCapability": "unavailable", "failureReason": "drm_or_encrypted", "candidateCount": 1, "selectionReason": "singleCandidate", "playbackState": "paused"}
+}

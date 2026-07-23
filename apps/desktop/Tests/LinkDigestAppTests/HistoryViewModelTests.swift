@@ -1,10 +1,308 @@
 import Foundation
+import GRDB
 import XCTest
+@testable import LinkDigestAdapters
 @testable import LinkDigestApp
 import LinkDigestCore
+@testable import LinkDigestPersistence
 
 @MainActor
 final class HistoryViewModelTests: XCTestCase {
+  func testSameHashRepairMakesHistoryResolveNewUserDirectoryFile() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-media-repair-\(UUID().uuidString)", isDirectory: true)
+    let selectedRoot = root.appendingPathComponent("selected", isDirectory: true)
+    try FileManager.default.createDirectory(at: selectedRoot, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let suite = "linkdigest-media-repair-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let preference = UserDefaultsMediaStoragePreferenceStore(
+      defaults: defaults,
+      createBookmark: { Data($0.path.utf8) },
+      resolveBookmark: { data in
+        guard let path = String(data: data, encoding: .utf8) else {
+          throw MediaStoragePreferenceError.missingResource
+        }
+        return (URL(fileURLWithPath: path), false)
+      }
+    )
+    try preference.saveDirectory(selectedRoot)
+    let store = LocalMediaStore(applicationSupportRoot: root, storagePreference: preference)
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let document = CapturedDocument(
+      createdAt: "2026-07-20T00:00:00Z",
+      origin: .manualLink,
+      url: "https://example.test/repaired-video",
+      title: "修复本地视频",
+      platform: "fixture",
+      method: "fixture",
+      text: "视频正文",
+      completeness: "complete",
+      capturedAt: "2026-07-20T00:00:00Z",
+      sourceLabel: "fixture"
+    )
+    let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
+    let body = Data([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d, 0, 0, 0, 0])
+    let sha = LocalMediaStore.contentSHA256(body)
+    try repository.attachMedia(.init(asset: .init(
+      taskID: accepted.taskID,
+      snapshotID: accepted.snapshotID,
+      relativePath: "\(sha).mov",
+      fileBookmark: Data(root.appendingPathComponent("missing/\(sha).mov").path.utf8),
+      contentSHA256: sha,
+      byteSize: Int64(body.count),
+      platform: "fixture",
+      createdAtMilliseconds: 2
+    )))
+
+    let storedFile = try store.storeDetailed(data: body, preferredExtension: "mp4")
+    try repository.attachMedia(.init(asset: .init(
+      taskID: accepted.taskID,
+      snapshotID: accepted.snapshotID,
+      relativePath: storedFile.relativePath,
+      fileBookmark: storedFile.fileBookmark,
+      contentSHA256: storedFile.sha256,
+      byteSize: Int64(body.count),
+      durationSeconds: 12,
+      platform: "fixture",
+      author: "作者",
+      createdAtMilliseconds: 3
+    )))
+
+    let model = HistoryViewModel(mediaStore: store)
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.localMediaFileURL != nil }
+
+    XCTAssertEqual(model.localMediaFileURL?.standardizedFileURL, storedFile.fileURL.standardizedFileURL)
+    XCTAssertEqual(try repository.mediaAsset(taskID: accepted.taskID)?.fileBookmark, storedFile.fileBookmark)
+    let mediaFiles = try FileManager.default.contentsOfDirectory(
+      at: selectedRoot,
+      includingPropertiesForKeys: [.isRegularFileKey]
+    ).filter { ["mp4", "mov"].contains($0.pathExtension.lowercased()) }
+    XCTAssertEqual(mediaFiles.map(\.standardizedFileURL), [storedFile.fileURL.standardizedFileURL])
+  }
+
+  func testDirectCurrentCaptureFavoriteDownloadsAndAttachesExactlyOnce() async throws {
+    let root = URL(fileURLWithPath: "/private/tmp/linkdigest-m2-favorite-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let document = CapturedDocument(
+      createdAt: "2026-07-20T00:00:00Z",
+      origin: .manualLink,
+      url: "https://example.test/watch",
+      title: "M2 direct",
+      platform: "fixture",
+      method: "dom",
+      text: "视频正文",
+      completeness: "visible_only",
+      capturedAt: "2026-07-20T00:00:00Z",
+      sourceLabel: "fixture"
+    )
+    let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
+    let store = LocalMediaStore(applicationSupportRoot: root)
+    let download = CountingFavoriteMediaDownload(store: store)
+    let model = HistoryViewModel(
+      mediaStore: store,
+      mediaDownloadOperation: { media, taskID, snapshotID, pageURL in
+        try await download.perform(
+          media: media,
+          taskID: taskID,
+          snapshotID: snapshotID,
+          pageURL: pageURL
+        )
+      }
+    )
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+    let descriptor = MediaDescriptor(
+      kind: .directFile,
+      pageURL: document.url,
+      canonicalURL: document.url,
+      platform: "fixture",
+      ephemeralPlaybackURL: "https://media.example.test/video.mp4",
+      mimeType: "video/mp4",
+      durationSeconds: 12,
+      author: "作者",
+      transcriptionCapability: .supported
+    )
+
+    await model.favoriteCurrentCaptureMedia(
+      descriptor,
+      taskID: accepted.taskID,
+      snapshotID: accepted.snapshotID
+    )
+    await model.favoriteCurrentCaptureMedia(
+      descriptor,
+      taskID: accepted.taskID,
+      snapshotID: accepted.snapshotID
+    )
+
+    await waitUntil { model.detailState == .loaded && model.localMediaFileURL != nil }
+    let downloadCount = await download.callCount
+    XCTAssertEqual(downloadCount, 1)
+    XCTAssertEqual(model.remoteMediaFavoriteState, .saved)
+    XCTAssertNotNil(try repository.mediaAsset(taskID: accepted.taskID))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: try XCTUnwrap(model.localMediaFileURL).path))
+  }
+
+  func testCapturedMediaAutoSaveFailureIsOwnedAndPresented() async {
+    let row = makeRow(title: "Auto-save failure", updatedAt: 30)
+    let repository = HistoryScreenRepository(
+      firstPage: .init(rows: [row], nextCursor: nil),
+      details: [row.taskID: makeDetail(for: row)]
+    )
+    let model = HistoryViewModel(mediaDownloadOperation: { _, _, _, _ in
+      throw MediaDownloadError.insufficientDiskSpace
+    })
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded }
+
+    await model.autoSaveCapturedMedia(
+      .init(platform: "fixture", videoURL: "https://media.example.test/video.mp4"),
+      taskID: row.taskID,
+      snapshotID: makeDetail(for: row).snapshots[0].id,
+      pageURL: "https://example.test/video"
+    )
+
+    XCTAssertEqual(
+      model.capturedMediaAutoSaveStates[row.taskID],
+      .failed(MediaDownloadError.insufficientDiskSpace.userMessage)
+    )
+    XCTAssertTrue(model.isCapturedMediaAutoSaveFailurePresented)
+    XCTAssertTrue(model.capturedMediaAutoSaveFailureMessage.contains("磁盘空间不足"))
+    XCTAssertTrue(model.capturedMediaAutoSaveFailureMessage.contains("历史正文仍已保存"))
+  }
+
+  func testCapturedMediaAutoSaveCompletionDoesNotTakeOverCurrentSelection() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-auto-save-owner-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let first = try repository.acceptCapture(.init(
+      document: capturedDocument(title: "First", url: "https://example.test/first"),
+      receivedAtMilliseconds: 1
+    ))
+    let second = try repository.acceptCapture(.init(
+      document: capturedDocument(title: "Second", url: "https://example.test/second"),
+      receivedAtMilliseconds: 2
+    ))
+    let gate = MediaDownloadGate()
+    let mediaHash = String(repeating: "a", count: 64)
+    let asset = MediaAsset(
+      taskID: first.taskID,
+      snapshotID: first.snapshotID,
+      relativePath: "\(mediaHash).mp4",
+      fileBookmark: Data("auto-save-owner".utf8),
+      contentSHA256: mediaHash,
+      byteSize: 16,
+      platform: "fixture",
+      createdAtMilliseconds: 3
+    )
+    let model = HistoryViewModel(mediaDownloadOperation: { _, _, _, _ in
+      await gate.perform(returning: asset)
+    })
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.listState == .loaded }
+    model.selectedTaskID = first.taskID
+    await waitUntil { model.detail?.task.id == first.taskID }
+
+    let saveTask = Task { @MainActor in
+      await model.autoSaveCapturedMedia(
+        .init(platform: "fixture", videoURL: "https://media.example.test/video.mp4"),
+        taskID: first.taskID,
+        snapshotID: first.snapshotID,
+        pageURL: "https://example.test/first"
+      )
+    }
+    await gate.waitUntilEntered()
+    model.selectedTaskID = second.taskID
+    await waitUntil { model.detail?.task.id == second.taskID }
+    await gate.release()
+    await saveTask.value
+
+    XCTAssertEqual(model.selectedTaskID, second.taskID)
+    XCTAssertEqual(model.detail?.task.id, second.taskID)
+    XCTAssertEqual(model.capturedMediaAutoSaveStates[first.taskID], .saved)
+    XCTAssertEqual(try repository.mediaAsset(taskID: first.taskID), asset)
+  }
+
+  func testDatabaseAttachFailureRollsBackOnlyNewlyCreatedSavedFile() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-media-attach-rollback-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let row = makeRow(title: "Attach failure", updatedAt: 30)
+    let repository = HistoryScreenRepository(
+      firstPage: .init(rows: [row], nextCursor: nil),
+      details: [row.taskID: makeDetail(for: row)]
+    )
+    let store = LocalMediaStore(applicationSupportRoot: root)
+    let downloader = VideoMediaDownloader(resources: RemoteTempResourceFetcher(), store: store)
+    let model = HistoryViewModel(mediaStore: store, mediaDownloader: downloader)
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded }
+    let descriptor = MediaDescriptor(
+      kind: .directFile,
+      pageURL: "https://example.test/video",
+      canonicalURL: "https://example.test/video",
+      platform: "generic",
+      ephemeralPlaybackURL: "https://media.example.test/video.mp4",
+      mimeType: "video/mp4",
+      transcriptionCapability: .supported
+    )
+
+    await model.favoriteCurrentCaptureMedia(
+      descriptor,
+      taskID: row.taskID,
+      snapshotID: makeDetail(for: row).snapshots[0].id
+    )
+
+    guard case .failed = model.remoteMediaFavoriteState else {
+      return XCTFail("attach failure should be user-visible")
+    }
+    let files = (try? FileManager.default.contentsOfDirectory(
+      at: store.mediaRoot,
+      includingPropertiesForKeys: nil
+    )) ?? []
+    XCTAssertTrue(files.isEmpty, "new file must be removed when DB attach fails")
+  }
+
+  func testDeletingHistoryRetainsUserDirectoryMediaFile() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-user-media-delete-\(UUID().uuidString)", isDirectory: true)
+    let external = root.appendingPathComponent("user-video.mp4")
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try Data("user-owned-video".utf8).write(to: external)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let row = makeRow(title: "User media", updatedAt: 30)
+    let asset = MediaAsset(
+      taskID: row.taskID,
+      relativePath: "\(String(repeating: "a", count: 64)).mp4",
+      fileBookmark: Data("opaque-bookmark".utf8),
+      contentSHA256: String(repeating: "a", count: 64),
+      byteSize: 16,
+      platform: "generic",
+      createdAtMilliseconds: 1
+    )
+    let repository = HistoryScreenRepository(
+      firstPage: .init(rows: [row], nextCursor: nil),
+      details: [row.taskID: makeDetail(for: row)],
+      mediaAssetValue: asset
+    )
+    let model = HistoryViewModel(mediaStore: LocalMediaStore(applicationSupportRoot: root))
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded }
+
+    model.requestDeletion()
+    model.confirmDeletion()
+    await waitUntil { repository.deletedTaskIDs == [row.taskID] }
+
+    XCTAssertTrue(FileManager.default.fileExists(atPath: external.path))
+  }
+
   func testEmptyAndPagedHistorySelectsFirstItemAndLoadsDetail() async {
     let first = makeRow(title: "第一条", updatedAt: 30), second = makeRow(title: "第二条", updatedAt: 20)
     let repository = HistoryScreenRepository(firstPage: .init(rows: [first], nextCursor: cursor(for: first)), remainingPages: [first.taskID.rawValue: .init(rows: [second], nextCursor: nil)], details: [first.taskID: makeDetail(for: first), second.taskID: makeDetail(for: second)])
@@ -24,11 +322,11 @@ final class HistoryViewModelTests: XCTestCase {
     let model = HistoryViewModel()
     model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: false, unavailableCode: nil)
     await waitUntil { model.listState == .loaded }
-    XCTAssertEqual(blocker.entered.wait(timeout: .now() + 1), .success)
+    await blocker.waitUntilEntered()
     model.selectedTaskID = second.taskID
     await waitUntil { model.detail?.task.id == second.taskID }
-    blocker.release.signal()
-    try? await Task.sleep(for: .milliseconds(30))
+    blocker.release()
+    await waitUntil { model.detail?.task.id == second.taskID }
     XCTAssertEqual(model.selectedTaskID, second.taskID)
     XCTAssertEqual(model.detail?.task.id, second.taskID)
   }
@@ -41,12 +339,11 @@ final class HistoryViewModelTests: XCTestCase {
     model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: false, unavailableCode: nil)
     await waitUntil { model.listState == .loaded }
     model.loadNextPageIfNeeded(after: first)
-    try? await Task.sleep(for: .milliseconds(10))
-    XCTAssertEqual(blocker.entered.wait(timeout: .now() + 1), .success)
+    await blocker.waitUntilEntered()
     XCTAssertTrue(model.isLoadingNextPage)
     model.reload()
     XCTAssertFalse(model.isLoadingNextPage)
-    blocker.release.signal()
+    blocker.release()
     await waitUntil { model.listState == .loaded && model.rows == [first] }
   }
 
@@ -60,10 +357,62 @@ final class HistoryViewModelTests: XCTestCase {
     model.cancelDeletion(); XCTAssertEqual(repository.deletedTaskIDs, [])
     model.requestDeletion(); model.confirmDeletion()
     await waitUntil { repository.deletedTaskIDs == [first.taskID] && model.rows.count == 1 }
-    XCTAssertEqual(model.selectedTaskID, second.taskID)
+    XCTAssertTrue(model.selectedTaskIDs.isEmpty)
+    model.selectedTaskID = second.taskID
     model.requestDeletion(); model.confirmDeletion()
     await waitUntil { repository.deletedTaskIDs == [first.taskID, second.taskID] && model.listState == .empty }
     XCTAssertNil(model.selectedTaskID)
+  }
+
+  func testSuccessfulTaskDeletionAlsoRemovesItsLocalReadmeImageDirectory() async {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("linkdigest-history-images.\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let row = makeRow(title: "README", updatedAt: 30)
+    let cacheDirectory = root.appendingPathComponent("LinkDigest/GitHubREADMEImages/\(row.taskID.rawValue)", isDirectory: true)
+    try! FileManager.default.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+    try! Data("fixture".utf8).write(to: cacheDirectory.appendingPathComponent("image"))
+    let repository = HistoryScreenRepository(firstPage: .init(rows: [row], nextCursor: nil), details: [row.taskID: makeDetail(for: row)])
+    let model = HistoryViewModel(imageCache: .init(applicationSupportRoot: root))
+    model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded }
+    model.requestDeletion(); model.confirmDeletion()
+    await waitUntil { repository.deletedTaskIDs == [row.taskID] && model.listState == .empty }
+    XCTAssertFalse(FileManager.default.fileExists(atPath: cacheDirectory.path))
+  }
+
+  func testDeletionKeepsSharedLocalMediaWhenReferenceQueryFails() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-history-media.\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let row = makeRow(title: "共享视频", updatedAt: 30)
+    let store = LocalMediaStore(applicationSupportRoot: root)
+    try store.ensureRoot()
+    let relativePath = "shared-content.mp4"
+    let fileURL = store.absoluteURL(relativePath: relativePath)
+    try Data("shared-video".utf8).write(to: fileURL)
+    let asset = MediaAsset(
+      taskID: row.taskID,
+      relativePath: relativePath,
+      contentSHA256: "shared-content",
+      byteSize: 12,
+      platform: "douyin",
+      createdAtMilliseconds: 1
+    )
+    let repository = HistoryScreenRepository(
+      firstPage: .init(rows: [row], nextCursor: nil),
+      details: [row.taskID: makeDetail(for: row)],
+      mediaAssetValue: asset,
+      mediaReferenceFailure: .unavailable
+    )
+    let model = HistoryViewModel(mediaStore: store)
+    model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded }
+
+    model.requestDeletion()
+    model.confirmDeletion()
+    await waitUntil { repository.deletedTaskIDs == [row.taskID] && model.listState == .empty }
+
+    XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
   }
 
   func testDeletionFailureKeepsSelectionAndReadOnlyNeverDeletes() async {
@@ -100,7 +449,57 @@ final class HistoryViewModelTests: XCTestCase {
     model.confirmDeletion()
     await waitUntil { repository.deletedTaskIDs == [first.taskID] }
     XCTAssertEqual(model.rows.map(\.taskID), [second.taskID])
-    XCTAssertEqual(model.selectedTaskID, second.taskID)
+    XCTAssertTrue(model.selectedTaskIDs.isEmpty)
+  }
+
+  func testBatchDeletionConfirmationReportsCountAndSkipsRunningTask() async {
+    let first = makeRow(title: "正在生成", updatedAt: 30)
+    let second = makeRow(title: "可删除", updatedAt: 20)
+    let repository = HistoryScreenRepository(
+      firstPage: .init(rows: [first, second], nextCursor: nil),
+      details: [first.taskID: makeDetail(for: first), second.taskID: makeDetail(for: second)]
+    )
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded }
+
+    model.selectedTaskIDs = [first.taskID, second.taskID]
+    XCTAssertNil(model.selectedTaskID)
+    XCTAssertFalse(model.canExport)
+    XCTAssertFalse(model.canEditTags)
+    model.requestDeletion(protectedTaskIDs: [first.taskID])
+
+    XCTAssertEqual(model.deletionConfirmationTitle, "确定删除选中的 2 条记录？")
+    XCTAssertTrue(model.deletionConfirmationMessage.contains("其中 1 条正在生成，将被跳过"))
+    model.confirmDeletion(protectedTaskIDs: [first.taskID])
+    await waitUntil { repository.deletedTaskIDs == [second.taskID] }
+
+    XCTAssertEqual(model.rows.map(\.taskID), [first.taskID])
+    XCTAssertTrue(model.selectedTaskIDs.isEmpty)
+    XCTAssertEqual(model.deleteOutcomeMessage, "已删除 1 条，1 条正在生成，已跳过。")
+  }
+
+  func testBatchDeletionReportsPartialFailureTruthfully() async {
+    let first = makeRow(title: "成功", updatedAt: 30)
+    let second = makeRow(title: "失败", updatedAt: 20)
+    let repository = HistoryScreenRepository(
+      firstPage: .init(rows: [first, second], nextCursor: nil),
+      details: [first.taskID: makeDetail(for: first), second.taskID: makeDetail(for: second)],
+      batchDeleteFailures: [second.taskID]
+    )
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded }
+
+    model.selectedTaskIDs = [first.taskID, second.taskID]
+    model.requestDeletion()
+    model.confirmDeletion()
+    await waitUntil { model.isDeleteOutcomePresented }
+
+    XCTAssertEqual(repository.deletedTaskIDs, [first.taskID])
+    XCTAssertEqual(model.rows.map(\.taskID), [second.taskID])
+    XCTAssertTrue(model.selectedTaskIDs.isEmpty)
+    XCTAssertEqual(model.deleteOutcomeMessage, "已删除 1 条，1 条失败。")
   }
 
   func testWritableAndReadOnlyHistoryCanPrepareAndFinishOrCancelExport() async {
@@ -160,13 +559,11 @@ final class HistoryViewModelTests: XCTestCase {
     await waitUntil { model.detailState == .loaded }
 
     model.requestExport(.markdown)
-    await Task.yield()
-    try? await Task.sleep(for: .milliseconds(10))
-    XCTAssertEqual(blocker.entered.wait(timeout: .now() + 1), .success)
+    await blocker.waitUntilEntered()
     model.selectedTaskID = second.taskID
     await waitUntil { model.detail?.task.id == second.taskID }
     model.requestExport(.json)
-    blocker.release.signal()
+    blocker.release()
     await waitUntil { model.isExportPanelPresented }
     XCTAssertEqual(model.selectedTaskID, second.taskID)
     XCTAssertEqual(model.exportFile?.format, .json)
@@ -196,19 +593,1783 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertTrue(model.canDelete)
   }
 
+  func testManualTagEditingAndBoardFiltersUseRepositoryQueryState() async {
+    let first = makeRow(title: "Swift 和 AI", updatedAt: 30)
+    let second = makeRow(title: "Swift", updatedAt: 20)
+    let third = makeRow(title: "AI", updatedAt: 10)
+    let repository = TagHistoryScreenRepository(
+      rows: [first, second, third],
+      details: [first.taskID: makeDetail(for: first), second.taskID: makeDetail(for: second), third.taskID: makeDetail(for: third)],
+      tags: [first.taskID: [tag("Swift"), tag("AI")], second.taskID: [tag("Swift")], third.taskID: [tag("AI")]]
+    )
+    let model = HistoryViewModel()
+    model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.availableTags.count == 2 }
+
+    model.searchText = "Swift"
+    await waitUntil { repository.filters.last?.searchText == "Swift" }
+    let swift = try! XCTUnwrap(model.availableTags.first { $0.normalizedName == "swift" })
+    let ai = try! XCTUnwrap(model.availableTags.first { $0.normalizedName == "ai" })
+    model.toggleTag(swift, additive: false)
+    await waitUntil { model.rows.map(\.taskID) == [first.taskID, second.taskID] }
+    model.toggleTag(ai, additive: true)
+    await waitUntil { model.rows.map(\.taskID) == [first.taskID] }
+    XCTAssertEqual(repository.filters.last?.tagNormalizedNames, ["ai", "swift"])
+    XCTAssertEqual(repository.filters.last?.searchText, "Swift")
+
+    model.addTag("本地优先")
+    await waitUntil { model.detail?.tags.map(\.name).contains("本地优先") == true }
+    let local = try! XCTUnwrap(model.detail?.tags.first { $0.name == "本地优先" })
+    model.removeTag(local)
+    await waitUntil { model.detail?.tags.map(\.name).contains("本地优先") == false }
+  }
+
+  func testAutomaticTagCommitRefreshesCurrentDetailAndAvailableChipsWithoutNavigation() async throws {
+    try await withAutomaticTagHistory { repository, accepted, document in
+      let history = HistoryApplicationService(repository: repository)
+      let model = HistoryViewModel()
+      model.configure(history: history, isReadOnly: false, unavailableCode: nil)
+      await waitUntil { model.selectedTaskID == accepted.taskID && model.detailState == .loaded }
+      let provider = AutomaticTagMetadataProvider(tagOutcome: .success("本地优先, Swift"))
+      let events = MetadataEventCounter()
+      let orchestrator = try metadataOrchestrator(
+        provider: provider,
+        history: history,
+        onMetadataChanged: { taskID in
+          await events.record(taskID)
+          await model.historyMetadataChanged(taskID: taskID)
+        }
+      )
+      let recorder = MetadataRunRecorder()
+      let request = PersistentRunRequest(runID: RunID(), taskID: accepted.taskID, snapshotID: accepted.snapshotID, intent: .summarize)
+
+      await orchestrator.start(request: request, capture: document) { runID, state in
+        await recorder.record(runID: runID, state: state)
+      }
+      await waitUntilAsync { await recorder.last == .completed(intent: .summarize, text: "已完成的总结") }
+      await waitUntil {
+        provider.tagRequestCount == 1
+          && model.selectedTaskID == accepted.taskID
+          && model.detail?.tags.map(\.name) == ["Swift", "本地优先"]
+          && model.availableTags.map(\.name) == ["Swift", "本地优先"]
+      }
+
+      let recordedEvents = await events.taskIDs
+      XCTAssertEqual(recordedEvents, [accepted.taskID])
+      XCTAssertEqual(model.listState, .loaded)
+      XCTAssertEqual(model.rows.map(\.taskID), [accepted.taskID], "metadata refresh must not require navigation or a list reload")
+    }
+  }
+
+  func testAutomaticTagFailurePublishesNoMetadataEventAndLeavesHistoryUIUnchanged() async throws {
+    try await withAutomaticTagHistory { repository, accepted, document in
+      let history = HistoryApplicationService(repository: repository)
+      let model = HistoryViewModel()
+      model.configure(history: history, isReadOnly: false, unavailableCode: nil)
+      await waitUntil { model.selectedTaskID == accepted.taskID && model.detailState == .loaded }
+      let provider = AutomaticTagMetadataProvider(tagOutcome: .failure)
+      let events = MetadataEventCounter()
+      let orchestrator = try metadataOrchestrator(
+        provider: provider,
+        history: history,
+        onMetadataChanged: { taskID in
+          await events.record(taskID)
+          await model.historyMetadataChanged(taskID: taskID)
+        }
+      )
+      let recorder = MetadataRunRecorder()
+      let request = PersistentRunRequest(runID: RunID(), taskID: accepted.taskID, snapshotID: accepted.snapshotID, intent: .summarize)
+
+      await orchestrator.start(request: request, capture: document) { runID, state in
+        await recorder.record(runID: runID, state: state)
+      }
+      await waitUntilAsync { await recorder.last == .completed(intent: .summarize, text: "已完成的总结") }
+      await waitUntil { provider.tagRequestCount == 1 }
+      try? await Task.sleep(for: .milliseconds(30))
+
+      let recordedEvents = await events.taskIDs
+      XCTAssertEqual(recordedEvents, [])
+      XCTAssertEqual(model.selectedTaskID, accepted.taskID)
+      XCTAssertTrue(model.detail?.tags.isEmpty == true)
+      XCTAssertTrue(model.availableTags.isEmpty)
+      XCTAssertEqual(model.detailState, .loaded)
+      XCTAssertEqual(model.listState, .loaded)
+    }
+  }
+
+  func testNonSelectedMetadataEventOnlyRefreshesChipsAndDoesNotCancelCurrentDetailRefresh() async throws {
+    let a = makeRow(title: "A", updatedAt: 30)
+    let b = makeRow(title: "B", updatedAt: 20)
+    let repository = TagHistoryScreenRepository(
+      rows: [a, b],
+      details: [a.taskID: makeDetail(for: a), b.taskID: makeDetail(for: b)],
+      tags: [:]
+    )
+    let model = HistoryViewModel()
+    model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.selectedTaskID == a.taskID && model.detailState == .loaded }
+
+    _ = try repository.addTags(["A 标签"], to: a.taskID)
+    let aRead = DetailReadBarrier()
+    repository.enqueueDetailBarrier(aRead, for: a.taskID)
+    model.historyMetadataChanged(taskID: a.taskID)
+    await aRead.waitUntilEntered()
+
+    _ = try repository.addTags(["B 标签"], to: b.taskID)
+    model.historyMetadataChanged(taskID: b.taskID)
+    aRead.release()
+
+    await waitUntil {
+      model.selectedTaskID == a.taskID
+        && model.detail?.task.id == a.taskID
+        && model.detail?.tags.map(\.name) == ["A 标签"]
+        && model.availableTags.map(\.name) == ["A 标签", "B 标签"]
+        && model.detailState == .loaded
+    }
+    XCTAssertEqual(model.detailState, .loaded)
+  }
+
+  func testStaleNormalDetailReadCannotOverwriteNewerMetadataDetail() async throws {
+    let a = makeRow(title: "A", updatedAt: 30)
+    let b = makeRow(title: "B", updatedAt: 20)
+    let repository = TagHistoryScreenRepository(
+      rows: [a, b],
+      details: [a.taskID: makeDetail(for: a), b.taskID: makeDetail(for: b)],
+      tags: [:]
+    )
+    let model = HistoryViewModel()
+    model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.selectedTaskID == a.taskID && model.detailState == .loaded }
+    model.selectedTaskID = b.taskID
+    await waitUntil { model.selectedTaskID == b.taskID && model.detail?.task.id == b.taskID }
+
+    let staleNormalRead = DetailReadBarrier()
+    repository.enqueueDetailBarrier(staleNormalRead, for: a.taskID)
+    model.selectedTaskID = a.taskID
+    await staleNormalRead.waitUntilEntered()
+
+    _ = try repository.addTags(["新标签"], to: a.taskID)
+    model.historyMetadataChanged(taskID: a.taskID)
+    await waitUntil {
+      model.detail?.task.id == a.taskID
+        && model.detail?.tags.map(\.name) == ["新标签"]
+        && model.detailState == .loaded
+    }
+
+    staleNormalRead.release()
+    await waitUntil {
+      model.selectedTaskID == a.taskID
+        && model.detail?.task.id == a.taskID
+        && model.detail?.tags.map(\.name) == ["新标签"]
+        && model.detailState == .loaded
+    }
+  }
+
+  func testRapidABAutomaticTagMetadataEventsKeepCurrentSelectionDetailAndTagsConsistent() async throws {
+    let a = makeRow(title: "A", updatedAt: 30)
+    let b = makeRow(title: "B", updatedAt: 20)
+    let repository = TagHistoryScreenRepository(
+      rows: [a, b],
+      details: [a.taskID: makeDetail(for: a), b.taskID: makeDetail(for: b)],
+      tags: [:]
+    )
+    let model = HistoryViewModel()
+    model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.selectedTaskID == a.taskID && model.detailState == .loaded }
+
+    _ = try repository.addTags(["A 标签"], to: a.taskID)
+    _ = try repository.addTags(["B 标签"], to: b.taskID)
+    let aRead = DetailReadBarrier()
+    repository.enqueueDetailBarrier(aRead, for: a.taskID)
+    model.historyMetadataChanged(taskID: a.taskID)
+    await aRead.waitUntilEntered()
+
+    model.selectedTaskID = b.taskID
+    model.historyMetadataChanged(taskID: b.taskID)
+    aRead.release()
+
+    await waitUntil {
+      model.selectedTaskID == b.taskID
+        && model.detail?.task.id == b.taskID
+        && model.detail?.tags.map(\.name) == ["B 标签"]
+        && model.availableTags.map(\.name) == ["A 标签", "B 标签"]
+        && model.detailState == .loaded
+    }
+    XCTAssertFalse(model.detail?.tags.contains(tag("A 标签")) == true)
+    XCTAssertEqual(model.detailState, .loaded)
+  }
+
+  func testMetadataTakeoverOfLoadingDetailFailureLeavesRetryableFailedState() async throws {
+    let a = makeRow(title: "A", updatedAt: 30)
+    let b = makeRow(title: "B", updatedAt: 20)
+    let repository = TagHistoryScreenRepository(
+      rows: [a, b],
+      details: [a.taskID: makeDetail(for: a), b.taskID: makeDetail(for: b)],
+      tags: [:]
+    )
+    let model = HistoryViewModel()
+    model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.selectedTaskID == a.taskID && model.detailState == .loaded }
+    model.selectedTaskID = b.taskID
+    await waitUntil { model.selectedTaskID == b.taskID && model.detailState == .loaded }
+
+    let ordinaryRead = DetailReadBarrier()
+    repository.enqueueDetailBarrier(ordinaryRead, for: a.taskID)
+    repository.enqueueDetailFailure(.unavailable, for: a.taskID)
+    model.selectedTaskID = a.taskID
+    await ordinaryRead.waitUntilEntered()
+    XCTAssertEqual(model.detailState, .loading)
+
+    model.historyMetadataChanged(taskID: a.taskID)
+    await waitUntil { model.detailState == .failed && model.detailErrorCode != nil }
+    XCTAssertNil(model.detail)
+
+    ordinaryRead.release()
+    model.retryDetail()
+    await waitUntil { model.detail?.task.id == a.taskID && model.detailState == .loaded && model.detailErrorCode == nil }
+  }
+
+  func testModelDownloadRequiresExplicitSecondActionBeforeTranscribing() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelState: .requiresDownload,
+      scripts: [.events([.extractingAudio, .transcribing, .partial("实时文字"), .final("最终文字")])]
+    )
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .awaitingModelDownload }
+    XCTAssertTrue(fixture.model.isTranscriptionModelConfirmationPresented)
+    XCTAssertEqual(transcriber.downloadCallCount, 0, "readiness probe must never install assets")
+
+    fixture.model.confirmModelDownloadAndTranscribe()
+    await waitUntil { fixture.model.transcriptionState == .completed }
+    XCTAssertEqual(transcriber.downloadCallCount, 1)
+  }
+
+  func testPartialThenFinalTranscriptionCreatesLatestSnapshotAndCompletesMedia() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelState: .ready,
+      scripts: [.events([.extractingAudio, .transcribing, .partial("实时中文"), .final("完整中文转写")])]
+    )
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .completed }
+    XCTAssertEqual(fixture.model.transcriptionText, "完整中文转写")
+    let detail = try fixture.repository.detail(taskID: fixture.taskID)
+    XCTAssertEqual(detail.snapshots.count, 2)
+    XCTAssertEqual(detail.snapshots.last?.sourceKind, CapturedDocument.Origin.localTranscription.rawValue)
+    XCTAssertEqual(detail.snapshots.last?.captureMethod, "speech_analyzer_local")
+    XCTAssertEqual(detail.snapshots.last?.sourceLabel, "本机视频转写")
+    XCTAssertEqual(detail.snapshots.last?.bodyText, "完整中文转写")
+    XCTAssertEqual(detail.media?.transcriptionStatus, .completed)
+    XCTAssertEqual(try fixture.repository.exportProjection(taskID: fixture.taskID).snapshots.last?.bodyText, "完整中文转写")
+  }
+
+  func testFailureCanRetryAndReadOnlyExplainsWhyTranscriptionIsBlocked() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelState: .ready,
+      scripts: [
+        .failure(.recognitionFailed),
+        .events([.extractingAudio, .transcribing, .final("重试成功")]),
+      ]
+    )
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+
+    fixture.model.requestTranscription()
+    await waitUntil {
+      if case .failed = fixture.model.transcriptionState { return true }
+      return false
+    }
+    XCTAssertEqual(try fixture.repository.mediaAsset(taskID: fixture.taskID)?.transcriptionStatus, .failed)
+    fixture.model.retryTranscription()
+    await waitUntil { fixture.model.transcriptionState == .completed }
+    XCTAssertEqual(fixture.model.transcriptionText, "重试成功")
+
+    fixture.model.configure(
+      history: HistoryApplicationService(repository: fixture.repository),
+      isReadOnly: true,
+      unavailableCode: nil,
+      readOnlyReason: .futureSchema
+    )
+    await waitUntil { fixture.model.detailState == .loaded }
+    fixture.model.requestTranscription()
+    guard case let .failed(message) = fixture.model.transcriptionState else {
+      return XCTFail("read-only transcription should fail with an explanation")
+    }
+    XCTAssertTrue(message.contains("只读"))
+  }
+
+  func testCancellationReturnsMediaToNoneAndCanRetry() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelState: .ready,
+      scripts: [
+        .suspended,
+        .events([.extractingAudio, .transcribing, .final("取消后重试成功")]),
+      ]
+    )
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .extractingAudio }
+    fixture.model.cancelTranscription()
+    await waitUntil { fixture.model.transcriptionState == .cancelled }
+    XCTAssertEqual(
+      try fixture.repository.mediaAsset(taskID: fixture.taskID)?.transcriptionStatus,
+      TranscriptionStatus.none
+    )
+
+    fixture.model.retryTranscription()
+    await waitUntil { fixture.model.transcriptionState == .completed }
+    XCTAssertEqual(fixture.model.transcriptionText, "取消后重试成功")
+  }
+
+  func testSelectingBWhileATranscribesKeepsAAliveAndIsolatesBUI() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelStates: [.ready],
+      scripts: [.suspended]
+    )
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber, includesSecondTask: true)
+    defer { fixture.close() }
+    let b = try XCTUnwrap(fixture.otherTaskID)
+    await waitUntil { fixture.model.detail?.task.id == fixture.taskID && fixture.model.canTranscribeVideo }
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionText == "A partial" }
+
+    fixture.model.selectedTaskID = b
+    await waitUntil { fixture.model.detail?.task.id == b }
+    XCTAssertTrue(fixture.model.transcriptionState(for: fixture.taskID).isActive)
+    XCTAssertEqual(fixture.model.transcriptionText(for: fixture.taskID), "A partial")
+    XCTAssertEqual(fixture.model.transcriptionState(for: b), .idle)
+    XCTAssertEqual(fixture.model.transcriptionText(for: b), "")
+    XCTAssertFalse(fixture.model.canTranscribeVideo, "only one transcription may own the shared worker")
+    XCTAssertEqual(try fixture.repository.mediaAsset(taskID: fixture.taskID)?.transcriptionStatus, .running)
+    fixture.model.cancelTranscription()
+    await waitUntil { fixture.model.transcriptionState == .cancelled }
+  }
+
+  func testRepeatedConfigureWithSameHistoryDoesNotCancelOrClearTranscription() async throws {
+    let transcriber = ScriptedVideoTranscriber(modelState: .ready, scripts: [.suspended])
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detail?.task.id == fixture.taskID && fixture.model.canTranscribeVideo }
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionText == "A partial" }
+    let history = HistoryApplicationService(repository: fixture.repository)
+
+    fixture.model.configure(history: history, isReadOnly: false, unavailableCode: nil)
+    fixture.model.configure(history: history, isReadOnly: false, unavailableCode: nil)
+
+    XCTAssertEqual(fixture.model.transcriptionText, "A partial")
+    XCTAssertTrue(fixture.model.transcriptionState.isActive)
+    XCTAssertEqual(fixture.model.transcriptionTaskID, fixture.taskID)
+    XCTAssertEqual(transcriber.transcribeCallCount, 1)
+    XCTAssertEqual(try fixture.repository.mediaAsset(taskID: fixture.taskID)?.transcriptionStatus, .running)
+    fixture.model.cancelTranscription()
+    await waitUntil { fixture.model.transcriptionState == .cancelled }
+  }
+
+  func testImageRecognitionContinuesAcrossSelectionAndReturnsToOwnerTask() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-ocr-owner-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let first = makeRow(title: "图片正文", updatedAt: 30)
+    let second = makeRow(title: "另一条", updatedAt: 20)
+    let firstDetail = makeDetail(for: first)
+    let secondDetail = makeDetail(for: second)
+    let snapshotID = try XCTUnwrap(firstDetail.snapshots.last?.id)
+    let filename = String(repeating: "a", count: 64)
+    let imageDirectory = root
+      .appendingPathComponent("LinkDigest/GitHubREADMEImages", isDirectory: true)
+      .appendingPathComponent(first.taskID.rawValue, isDirectory: true)
+      .appendingPathComponent(snapshotID.rawValue, isDirectory: true)
+    try FileManager.default.createDirectory(at: imageDirectory, withIntermediateDirectories: true)
+    try Data([0x89, 0x50, 0x4e, 0x47]).write(to: imageDirectory.appendingPathComponent(filename))
+    try Data("{\"entries\":[{\"filename\":\"\(filename)\"}]}".utf8)
+      .write(to: imageDirectory.appendingPathComponent("manifest.json"))
+    let recognizer = GatedImageTextRecognizer()
+    let repository = HistoryScreenRepository(
+      firstPage: .init(rows: [first, second], nextCursor: nil),
+      details: [first.taskID: firstDetail, second.taskID: secondDetail]
+    )
+    let model = HistoryViewModel(
+      imageCache: .init(applicationSupportRoot: root),
+      imageTextRecognizer: recognizer
+    )
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detail?.task.id == first.taskID && model.canRecognizeImageText }
+
+    model.recognizeImageText()
+    await recognizer.waitUntilEntered()
+    model.selectedTaskID = second.taskID
+    await waitUntil { model.detail?.task.id == second.taskID }
+    XCTAssertEqual(model.imageTextRecognitionState(for: first.taskID), .recognizing)
+    XCTAssertEqual(model.imageTextRecognitionState(for: second.taskID), .idle)
+
+    await recognizer.release("图片里的文字")
+    await waitUntil { model.imageTextRecognitionState == .completed }
+    XCTAssertEqual(model.recognizedImageText(for: first.taskID), "图片里的文字")
+    XCTAssertEqual(model.recognizedImageText(for: second.taskID), "")
+  }
+
+  func testSelectionCleanupCannotOverwriteCompletionCommittedAtTerminalBarrier() async throws {
+    let terminalBarrier = TerminalCommitBarrier()
+    let statusObserver = TranscriptionStatusObserver()
+    var dependencies = PersistenceDependencies.live
+    dependencies.beforeTerminalCommit = { terminalBarrier.block() }
+    let transcriber = ScriptedVideoTranscriber(
+      modelStates: [.ready],
+      scripts: [.events([.extractingAudio, .transcribing, .final("视频说明")])]
+    )
+    let fixture = try makeTranscriptionFixture(
+      transcriber: transcriber,
+      includesSecondTask: true,
+      dependencies: dependencies,
+      statusObserver: statusObserver
+    )
+    defer { fixture.close() }
+    let b = try XCTUnwrap(fixture.otherTaskID)
+    await waitUntil { fixture.model.detail?.task.id == fixture.taskID && fixture.model.canTranscribeVideo }
+
+    fixture.model.requestTranscription()
+    await terminalBarrier.waitUntilEntered()
+    fixture.model.selectedTaskID = b
+    terminalBarrier.release()
+
+    await waitUntil {
+      (try? fixture.repository.mediaAsset(taskID: fixture.taskID)?.transcriptionStatus) == .completed
+    }
+    XCTAssertEqual(
+      try fixture.repository.mediaAsset(taskID: fixture.taskID)?.transcriptionStatus,
+      .completed,
+      "selection changes must not enqueue cleanup for an owned transcription"
+    )
+    let detail = try fixture.repository.detail(taskID: fixture.taskID)
+    XCTAssertEqual(detail.snapshots.count, 1, "matching transcript text reuses the original capture snapshot")
+  }
+
+  func testLateFailureFromCancelledReadinessCannotOverwriteNewCompletedAttempt() async throws {
+    let transcriber = LateReadinessVideoTranscriber()
+    let statusObserver = TranscriptionStatusObserver()
+    let discardedObserver = DiscardedTranscriptionAttemptObserver()
+    let fixture = try makeTranscriptionFixture(
+      transcriber: transcriber,
+      statusObserver: statusObserver,
+      onDiscardedTranscriptionAttempt: { discardedObserver.record() }
+    )
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detail?.task.id == fixture.taskID && fixture.model.canTranscribeVideo }
+
+    fixture.model.requestTranscription()
+    await transcriber.waitUntilFirstReadinessEntered()
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .completed }
+    XCTAssertEqual(try fixture.repository.mediaAsset(taskID: fixture.taskID)?.transcriptionStatus, .completed)
+    let attempts = statusObserver.attempts(taskID: fixture.taskID, status: .pending)
+    XCTAssertEqual(attempts.count, 2)
+    let oldAttempt = try XCTUnwrap(attempts.first)
+    let newAttempt = try XCTUnwrap(attempts.last)
+
+    transcriber.releaseFirstReadinessAsFailure()
+    await discardedObserver.waitUntilRecorded()
+    XCTAssertEqual(try fixture.repository.updateMediaTranscriptionStatus(
+      taskID: fixture.taskID,
+      attempt: oldAttempt,
+      status: .failed
+    ), .stale)
+    XCTAssertEqual(
+      try fixture.repository.mediaAsset(taskID: fixture.taskID)?.transcriptionStatus,
+      .completed,
+      "a cancelled attempt's late readiness failure must be a repository no-op"
+    )
+    let evidenceAttempt: String? = try fixture.repository.database.read { db in
+      try String.fetchOne(
+        db,
+        sql: "SELECT attempt_id FROM media_transcription_evidence WHERE task_id = ? ORDER BY completed_at_ms DESC, id DESC LIMIT 1",
+        arguments: [fixture.taskID.rawValue]
+      )
+    }
+    XCTAssertEqual(evidenceAttempt, newAttempt.id)
+  }
+
+  func testSelectingBWhileAWaitsForModelConfirmationKeepsAOwnedAndBlocksB() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelStates: [.requiresDownload],
+      scripts: []
+    )
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber, includesSecondTask: true)
+    defer { fixture.close() }
+    let b = try XCTUnwrap(fixture.otherTaskID)
+    await waitUntil { fixture.model.detail?.task.id == fixture.taskID && fixture.model.canTranscribeVideo }
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .awaitingModelDownload }
+
+    fixture.model.selectedTaskID = b
+    await waitUntil { fixture.model.detail?.task.id == b }
+    XCTAssertEqual(fixture.model.transcriptionState(for: fixture.taskID), .awaitingModelDownload)
+    XCTAssertEqual(fixture.model.transcriptionState(for: b), .idle)
+    XCTAssertTrue(fixture.model.isTranscriptionModelConfirmationPresented)
+    XCTAssertFalse(fixture.model.canTranscribeVideo)
+    fixture.model.selectedTaskID = fixture.taskID
+    await waitUntil { fixture.model.detail?.task.id == fixture.taskID }
+    fixture.model.cancelModelDownloadConfirmation()
+    await waitUntil { fixture.model.transcriptionState == .cancelled }
+  }
+
+  func testCancelDuringSuspendedModelDownloadReturnsNone() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelState: .requiresDownload,
+      scripts: [],
+      downloadSuspends: true
+    )
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .awaitingModelDownload }
+    fixture.model.confirmModelDownloadAndTranscribe()
+    await waitUntil { fixture.model.transcriptionState == .preparingModel }
+    fixture.model.cancelTranscription()
+    await waitUntil { fixture.model.transcriptionState == .cancelled }
+    XCTAssertEqual(try fixture.repository.mediaAsset(taskID: fixture.taskID)?.transcriptionStatus, TranscriptionStatus.none)
+  }
+
+  func testStreamTypedCancelledMapsToNoneNotFailure() async throws {
+    let transcriber = ScriptedVideoTranscriber(modelState: .ready, scripts: [.failure(.cancelled)])
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .cancelled }
+    XCTAssertEqual(try fixture.repository.mediaAsset(taskID: fixture.taskID)?.transcriptionStatus, TranscriptionStatus.none)
+  }
+
+  func testRebuiltViewModelWithSameOrBackwardClockStillCompletesHigherGeneration() async throws {
+    for secondNow in [Int64(100), 50] {
+      let firstTranscriber = ScriptedVideoTranscriber(
+        modelState: .ready,
+        scripts: [.events([.extractingAudio, .transcribing, .final("第一次 ViewModel 正文")])]
+      )
+      let fixture = try makeTranscriptionFixture(transcriber: firstTranscriber, nowMilliseconds: { 100 })
+      defer { fixture.close() }
+      await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+      fixture.model.requestTranscription()
+      await waitUntil { fixture.model.transcriptionState == .completed }
+
+      let rebuiltText = "重建后正文-\(secondNow)"
+      let secondTranscriber = ScriptedVideoTranscriber(
+        modelState: .ready,
+        scripts: [.events([.extractingAudio, .transcribing, .final(rebuiltText)])]
+      )
+      let rebuilt = HistoryViewModel(
+        mediaStore: fixture.store,
+        videoTranscriber: secondTranscriber,
+        nowMilliseconds: { secondNow }
+      )
+      rebuilt.configure(
+        history: HistoryApplicationService(repository: fixture.repository),
+        isReadOnly: false,
+        unavailableCode: nil
+      )
+      await waitUntil { rebuilt.detailState == .loaded && rebuilt.canTranscribeVideo }
+      rebuilt.requestTranscription()
+      await waitUntil { rebuilt.transcriptionState == .completed }
+
+      XCTAssertEqual(try fixture.repository.detail(taskID: fixture.taskID).snapshots.last?.bodyText, rebuiltText)
+      let evidence = try fixture.repository.database.read { db in
+        try Row.fetchAll(
+          db,
+          sql: "SELECT attempt_generation, completed_at_ms FROM media_transcription_evidence WHERE task_id = ? ORDER BY attempt_generation",
+          arguments: [fixture.taskID.rawValue]
+        )
+      }
+      XCTAssertEqual(evidence.map { $0["attempt_generation"] as Int64 }, [1, 2])
+      XCTAssertEqual(evidence.map { $0["completed_at_ms"] as Int64 }, [100, secondNow])
+    }
+  }
+
+  func testBeginFailuresNeverReachModelDownloadOrTranscription() async throws {
+    for failure in [
+      RepositoryFailure.notFound,
+      .readOnly(.futureSchema),
+      .injectedFailure,
+    ] {
+      let transcriber = ScriptedVideoTranscriber(
+        modelState: .requiresDownload,
+        scripts: [.events([.extractingAudio, .transcribing, .final("不应执行")])]
+      )
+      let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+      fixture.model.configure(
+        history: HistoryApplicationService(repository: TranscriptionGateRepository(base: fixture.repository, beginFailure: failure)),
+        isReadOnly: false,
+        unavailableCode: nil
+      )
+      await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+      fixture.model.requestTranscription()
+      await waitUntil {
+        if case .failed = fixture.model.transcriptionState { return true }
+        return false
+      }
+      XCTAssertEqual(transcriber.modelStateCallCount, 0, "begin failure: \(failure)")
+      XCTAssertEqual(transcriber.downloadCallCount, 0, "begin failure: \(failure)")
+      XCTAssertEqual(transcriber.transcribeCallCount, 0, "begin failure: \(failure)")
+      fixture.close()
+    }
+  }
+
+  func testStaleCompletionNeverPublishesCompletedUI() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelState: .ready,
+      scripts: [.events([.extractingAudio, .transcribing, .final("迟到正文")])]
+    )
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    fixture.model.configure(
+      history: HistoryApplicationService(repository: TranscriptionGateRepository(base: fixture.repository, completionOverride: .stale)),
+      isReadOnly: false,
+      unavailableCode: nil
+    )
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+    fixture.model.requestTranscription()
+    await waitUntil {
+      if case .failed = fixture.model.transcriptionState { return true }
+      return false
+    }
+
+    XCTAssertNotEqual(fixture.model.transcriptionState, .completed)
+    XCTAssertEqual(
+      try fixture.repository.database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM media_transcription_evidence") },
+      0
+    )
+  }
+
+  func testSelectionChangeAfterBeginCommitStillRunsOwnedTranscription() async throws {
+    let barrier = BeginReturnBarrier()
+    let transcriber = ScriptedVideoTranscriber(
+      modelState: .ready,
+      scripts: [.events([.extractingAudio, .transcribing, .final("切换后仍完成")])]
+    )
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber, includesSecondTask: true)
+    defer { fixture.close() }
+    fixture.model.configure(
+      history: HistoryApplicationService(repository: TranscriptionGateRepository(base: fixture.repository, beginBarrier: barrier)),
+      isReadOnly: false,
+      unavailableCode: nil
+    )
+    await waitUntil { fixture.model.detail?.task.id == fixture.taskID && fixture.model.canTranscribeVideo }
+    fixture.model.requestTranscription()
+    await barrier.waitUntilEntered()
+
+    fixture.model.selectedTaskID = try XCTUnwrap(fixture.otherTaskID)
+    barrier.release()
+
+    await waitUntil { fixture.model.transcriptionState == .completed }
+    XCTAssertEqual(transcriber.modelStateCallCount, 1)
+    XCTAssertEqual(transcriber.downloadCallCount, 0)
+    XCTAssertEqual(transcriber.transcribeCallCount, 1)
+    XCTAssertEqual(try fixture.repository.mediaAsset(taskID: fixture.taskID)?.transcriptionStatus, .completed)
+  }
+
+  func testRemoteDirectSuccessPersistsOnlyFinalAndCleansTempWithoutMediaAsset() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelState: .ready,
+      scripts: [.events([.extractingAudio, .transcribing, .partial("临时文字"), .final("远程最终转写")])]
+    )
+    let fixture = try makeRemoteTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded }
+    XCTAssertEqual(fixture.fetcher.callCount, 0, "preview/load must not fetch transcription media")
+
+    fixture.model.requestRemoteTranscription(fixture.descriptor, taskID: fixture.taskID)
+    await waitUntil { fixture.model.transcriptionState == .completed }
+    XCTAssertEqual(fixture.fetcher.callCount, 1)
+    XCTAssertEqual(fixture.model.transcriptionText, "远程最终转写")
+    XCTAssertEqual(try fixture.repository.detail(taskID: fixture.taskID).snapshots.last?.bodyText, "远程最终转写")
+    XCTAssertNil(try fixture.repository.mediaAsset(taskID: fixture.taskID))
+    XCTAssertEqual(try fixture.repository.database.read {
+      try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM task_transcription_evidence")
+    }, 1)
+    XCTAssertEqual(try fixture.repository.database.read {
+      try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM content_snapshots WHERE body_text = '临时文字'")
+    }, 0)
+    let databaseURL = fixture.repository.database.location.databaseURL
+    for url in [
+      databaseURL,
+      URL(fileURLWithPath: databaseURL.path + "-wal"),
+      URL(fileURLWithPath: databaseURL.path + "-shm"),
+    ] where FileManager.default.fileExists(atPath: url.path) {
+      let bytes = try Data(contentsOf: url)
+      XCTAssertNil(bytes.range(of: Data("signature=never-persist".utf8)))
+      XCTAssertNil(bytes.range(of: Data("TranscriptionTemp".utf8)))
+    }
+    XCTAssertEqual(fixture.tempEntryCount, 0)
+  }
+
+  func testRemoteModelUnavailableAndCancelBothCleanTempAndRemainRetryable() async throws {
+    let unavailable = try makeRemoteTranscriptionFixture(
+      transcriber: ScriptedVideoTranscriber(modelState: .unavailable(.speechUnavailable), scripts: [])
+    )
+    defer { unavailable.close() }
+    await waitUntil { unavailable.model.detailState == .loaded }
+    unavailable.model.requestRemoteTranscription(unavailable.descriptor, taskID: unavailable.taskID)
+    await waitUntil { if case .failed = unavailable.model.transcriptionState { return true }; return false }
+    XCTAssertEqual(unavailable.tempEntryCount, 0)
+    XCTAssertTrue(unavailable.model.canTranscribeCurrentCapture(unavailable.descriptor, taskID: unavailable.taskID))
+
+    let cancelled = try makeRemoteTranscriptionFixture(
+      transcriber: ScriptedVideoTranscriber(modelState: .ready, scripts: [.suspended])
+    )
+    defer { cancelled.close() }
+    await waitUntil { cancelled.model.detailState == .loaded }
+    cancelled.model.requestRemoteTranscription(cancelled.descriptor, taskID: cancelled.taskID)
+    await waitUntil { cancelled.model.transcriptionState == .extractingAudio }
+    cancelled.model.cancelTranscription()
+    await waitUntil { cancelled.model.transcriptionState == .cancelled }
+    XCTAssertEqual(cancelled.tempEntryCount, 0)
+    XCTAssertEqual(try cancelled.repository.database.read {
+      try String.fetchOne($0, sql: "SELECT status FROM task_transcription_attempts ORDER BY generation DESC LIMIT 1")
+    }, "cancelled")
+  }
+
+  func testRemoteBeginFailurePerformsZeroNetworkModelAndASRWork() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelState: .ready,
+      scripts: [.events([.final("不应执行")])]
+    )
+    let fixture = try makeRemoteTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    fixture.model.configure(
+      history: HistoryApplicationService(repository: TranscriptionGateRepository(
+        base: fixture.repository,
+        beginFailure: .injectedFailure
+      )),
+      isReadOnly: false,
+      unavailableCode: nil
+    )
+    await waitUntil { fixture.model.detailState == .loaded }
+    fixture.model.requestRemoteTranscription(fixture.descriptor, taskID: fixture.taskID)
+    await waitUntil { if case .failed = fixture.model.transcriptionState { return true }; return false }
+    XCTAssertEqual(fixture.fetcher.callCount, 0)
+    XCTAssertEqual(transcriber.modelStateCallCount, 0)
+    XCTAssertEqual(transcriber.downloadCallCount, 0)
+    XCTAssertEqual(transcriber.transcribeCallCount, 0)
+    XCTAssertEqual(fixture.tempEntryCount, 0)
+  }
+
+  func testRemoteSelectionSwitchKeepsPartialStateUntilExplicitCancellation() async throws {
+    let transcriber = ScriptedVideoTranscriber(modelState: .ready, scripts: [.suspended])
+    let fixture = try makeRemoteTranscriptionFixture(
+      transcriber: transcriber,
+      availableDiskBytes: { _ in Int64.max }
+    )
+    defer { fixture.close() }
+    let other = try fixture.repository.acceptCapture(.init(document: .init(
+      createdAt: "2026-07-20T00:01:00Z",
+      origin: .manualLink,
+      url: "https://example.test/other",
+      title: "另一条历史",
+      platform: "generic",
+      method: "fixture",
+      text: "另一条正文",
+      completeness: "complete",
+      capturedAt: "2026-07-20T00:01:00Z",
+      sourceLabel: "fixture"
+    ), receivedAtMilliseconds: 2))
+    fixture.model.reload()
+    await waitUntil { fixture.model.rows.count == 2 }
+    fixture.model.reveal(taskID: fixture.taskID)
+    await waitUntil { fixture.model.detail?.task.id == fixture.taskID }
+
+    fixture.model.requestRemoteTranscription(fixture.descriptor, taskID: fixture.taskID)
+    await waitUntil { fixture.model.transcriptionText == "A partial" }
+    fixture.model.selectedTaskID = other.taskID
+    await waitUntil { fixture.model.detail?.task.id == other.taskID }
+    XCTAssertTrue(fixture.model.transcriptionState(for: fixture.taskID).isActive)
+    XCTAssertEqual(fixture.model.transcriptionText(for: fixture.taskID), "A partial")
+    XCTAssertEqual(fixture.model.transcriptionState(for: other.taskID), .idle)
+    XCTAssertGreaterThan(fixture.tempEntryCount, 0)
+    fixture.model.selectedTaskID = fixture.taskID
+    await waitUntil { fixture.model.detail?.task.id == fixture.taskID }
+    fixture.model.cancelTranscription()
+    await waitUntil { fixture.tempEntryCount == 0 }
+    XCTAssertEqual(try fixture.repository.database.read {
+      try String.fetchOne($0, sql: "SELECT status FROM task_transcription_attempts WHERE task_id = ?", arguments: [fixture.taskID.rawValue])
+    }, "cancelled")
+  }
+
+  func testFaviconLoadingLimitsPeakConcurrencyToSix() async {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-favicon-limit.\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let rows = (0..<7).map { faviconRow(host: "limit\($0).example", updatedAt: Int64(100 - $0)) }
+    let fetcher = DelayedFaviconResourceFetcher(blockedHosts: Set(rows.prefix(6).map(\.host)))
+    let repository = HistoryScreenRepository(
+      firstPage: .init(rows: rows, nextCursor: nil),
+      details: Dictionary(uniqueKeysWithValues: rows.map { ($0.taskID, makeDetail(for: $0)) })
+    )
+    let model = HistoryViewModel(
+      faviconCache: WebsiteFaviconCache(applicationSupportRoot: root),
+      faviconResources: fetcher
+    )
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+
+    await waitUntilAsync { fetcher.blockedEntryCount == 6 }
+    XCTAssertEqual(fetcher.peakConcurrency, 6)
+    fetcher.releaseAll()
+    await waitUntil { rows.allSatisfy { model.faviconImageURL(for: $0) != nil } }
+    XCTAssertLessThanOrEqual(fetcher.peakConcurrency, 6)
+  }
+
+  func testLateFaviconFromPreviousGenerationCannotPolluteReplacementRows() async {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-favicon-generation.\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let stale = faviconRow(host: "stale.example", updatedAt: 100)
+    let fresh = faviconRow(host: "fresh.example", updatedAt: 200)
+    let fetcher = DelayedFaviconResourceFetcher(blockedHosts: [stale.host])
+    let cache = WebsiteFaviconCache(applicationSupportRoot: root)
+    let oldRepository = HistoryScreenRepository(
+      firstPage: .init(rows: [stale], nextCursor: nil),
+      details: [stale.taskID: makeDetail(for: stale)]
+    )
+    let freshRepository = HistoryScreenRepository(
+      firstPage: .init(rows: [fresh], nextCursor: nil),
+      details: [fresh.taskID: makeDetail(for: fresh)]
+    )
+    let model = HistoryViewModel(faviconCache: cache, faviconResources: fetcher)
+    model.configure(history: .init(repository: oldRepository), isReadOnly: false, unavailableCode: nil)
+    await waitUntilAsync { fetcher.blockedEntryCount == 1 }
+
+    model.configure(history: .init(repository: freshRepository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.faviconImageURL(for: fresh) != nil }
+    fetcher.releaseAll()
+    try? await Task.sleep(for: .milliseconds(30))
+
+    XCTAssertNil(model.faviconImageURL(for: stale))
+    XCTAssertNotNil(model.faviconImageURL(for: fresh))
+  }
+
   private func waitUntil(timeout: Duration = .seconds(1), file: StaticString = #filePath, line: UInt = #line, _ condition: @escaping @MainActor () -> Bool) async {
     let clock = ContinuousClock(), deadline = clock.now + timeout
     while !condition() && clock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }
     XCTAssertTrue(condition(), file: file, line: line)
   }
+
+  private func waitUntilAsync(timeout: Duration = .seconds(1), file: StaticString = #filePath, line: UInt = #line, _ condition: @escaping @Sendable () async -> Bool) async {
+    let clock = ContinuousClock(), deadline = clock.now + timeout
+    while !(await condition()) && clock.now < deadline { try? await Task.sleep(for: .milliseconds(5)) }
+    let satisfied = await condition()
+    XCTAssertTrue(satisfied, file: file, line: line)
+  }
+
+  func testLivePlaybackTranscriptionStreamsPartialsAndPersistsFinal() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-live-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let document = CapturedDocument(
+      createdAt: "2026-07-20T00:00:00Z", origin: .manualLink,
+      url: "https://www.youtube.com/watch?v=aWrFppphs6w", title: "无字幕视频",
+      platform: "youtube", method: "fixture", text: "# 无字幕视频\n\n_该视频未提供字幕，无法直接提取口播文字。_",
+      completeness: "complete", capturedAt: "2026-07-20T00:00:00Z", sourceLabel: "fixture"
+    )
+    let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
+
+    let model = HistoryViewModel(
+      livePlaybackTranscribe: { _, _ in
+        AsyncThrowingStream { continuation in
+          continuation.yield(.transcribing)
+          continuation.yield(.partial("大家好"))
+          continuation.yield(.partial("大家好，今天讲"))
+          continuation.yield(.final("大家好，今天讲本地优先。"))
+          continuation.finish()
+        }
+      }
+    )
+    XCTAssertTrue(model.canLiveTranscribePlayback)
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+
+    let detail = try repository.detail(taskID: accepted.taskID)
+    model.startLivePlaybackTranscription(detail: detail, platform: "youtube")
+    await waitUntil { model.transcriptionState == .completed }
+
+    // 转写文本落库为本机转写 snapshot。
+    let after = try repository.detail(taskID: accepted.taskID)
+    XCTAssertTrue(after.snapshots.contains { $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue && $0.bodyText.contains("本地优先") })
+  }
+
+  func testTranscriptTidyPersistsTidiedSnapshotAndKeepsOriginal() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-tidy-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let document = CapturedDocument(
+      createdAt: "2026-07-20T00:00:00Z", origin: .manualLink,
+      url: "https://example.test/video", title: "评测视频",
+      platform: "douyin", method: "fixture", text: "占位正文",
+      completeness: "complete", capturedAt: "2026-07-20T00:00:00Z", sourceLabel: "fixture"
+    )
+    let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
+    // 预置一份本机转写 snapshot 作为整理输入。
+    let attempt = try repository.beginTaskTranscription(taskID: accepted.taskID, createdAtMilliseconds: 2)
+    let rawTranscript = "厚度只有9。7毫米大家可以感受一下这个 Fod8 的手感"
+    _ = try repository.completeTaskTranscription(.init(
+      taskID: accepted.taskID,
+      attempt: attempt,
+      document: CapturedDocument(
+        createdAt: "2026-07-20T00:01:00Z", origin: .localTranscription,
+        url: "https://example.test/video", title: "评测视频",
+        platform: "douyin", method: "speech_analyzer_local", text: rawTranscript,
+        completeness: "complete", capturedAt: "2026-07-20T00:01:00Z", sourceLabel: "本机视频转写"
+      ),
+      evidence: .appleSpeechAnalyzer(localeIdentifier: "zh_CN", language: "zh", completedAtMilliseconds: 3),
+      receivedAtMilliseconds: 3
+    ))
+
+    let tidier = RecordingTranscriptTidier(result: "厚度只有 9.7 毫米，大家可以感受一下这个 Fold8 的手感。")
+    let model = HistoryViewModel(transcriptTidier: tidier)
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+
+    XCTAssertTrue(model.canTidyTranscript(taskID: accepted.taskID))
+    model.requestTranscriptTidy(taskID: accepted.taskID, model: "tidy-model")
+    XCTAssertTrue(model.isTranscriptTidyConfirmationPresented)
+    model.confirmTranscriptTidy()
+    await waitUntil { model.transcriptTidyState(for: accepted.taskID) == .completed }
+
+    let sentText = await tidier.receivedText
+    let sentModel = await tidier.receivedModel
+    XCTAssertEqual(sentText, rawTranscript)
+    XCTAssertEqual(sentModel, "tidy-model")
+    XCTAssertEqual(
+      model.transcriptTidyTokenSummary(for: accepted.taskID),
+      "1200 tokens（输入 1000 / 输出 200）"
+    )
+
+    let after = try repository.detail(taskID: accepted.taskID)
+    let transcripts = after.snapshots.filter {
+      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+    }
+    // 原始转写稿保留，整理稿追加为最新 snapshot。
+    XCTAssertTrue(transcripts.contains { $0.bodyText == rawTranscript })
+    XCTAssertEqual(transcripts.last?.captureMethod, "openai_compatible_chat_tidy")
+    XCTAssertTrue(transcripts.last?.bodyText.contains("Fold8") == true)
+  }
+
+  func testTranscriptTidyFailureKeepsOriginalAndReportsError() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-tidy-fail-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let document = CapturedDocument(
+      createdAt: "2026-07-20T00:00:00Z", origin: .manualLink,
+      url: "https://example.test/video", title: "评测视频",
+      platform: "douyin", method: "fixture", text: "占位正文",
+      completeness: "complete", capturedAt: "2026-07-20T00:00:00Z", sourceLabel: "fixture"
+    )
+    let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
+    let attempt = try repository.beginTaskTranscription(taskID: accepted.taskID, createdAtMilliseconds: 2)
+    _ = try repository.completeTaskTranscription(.init(
+      taskID: accepted.taskID,
+      attempt: attempt,
+      document: CapturedDocument(
+        createdAt: "2026-07-20T00:01:00Z", origin: .localTranscription,
+        url: "https://example.test/video", title: "评测视频",
+        platform: "douyin", method: "speech_analyzer_local", text: "原始转写",
+        completeness: "complete", capturedAt: "2026-07-20T00:01:00Z", sourceLabel: "本机视频转写"
+      ),
+      evidence: .appleSpeechAnalyzer(localeIdentifier: "zh_CN", language: "zh", completedAtMilliseconds: 3),
+      receivedAtMilliseconds: 3
+    ))
+
+    let model = HistoryViewModel(transcriptTidier: FailingTranscriptTidier())
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+
+    model.requestTranscriptTidy(taskID: accepted.taskID, model: nil)
+    model.confirmTranscriptTidy()
+    await waitUntil {
+      if case .failed = model.transcriptTidyState(for: accepted.taskID) { return true }
+      return false
+    }
+    XCTAssertEqual(
+      model.transcriptTidyState(for: accepted.taskID),
+      .failed(TranscriptTidyError.networkInterrupted.userMessage)
+    )
+    // 失败不落任何新 snapshot，原始转写稿完好。
+    let after = try repository.detail(taskID: accepted.taskID)
+    let transcripts = after.snapshots.filter {
+      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+    }
+    XCTAssertEqual(transcripts.map(\.bodyText), ["原始转写"])
+  }
+}
+
+private actor RecordingTranscriptTidier: TranscriptTidying {
+  private let result: String
+  private(set) var receivedText: String?
+  private(set) var receivedModel: String?
+
+  init(result: String) { self.result = result }
+
+  func tidy(text: String, model: String?) async throws -> TranscriptTidyOutcome {
+    receivedText = text
+    receivedModel = model
+    return TranscriptTidyOutcome(text: result, promptTokens: 1_000, completionTokens: 200, totalTokens: 1_200)
+  }
+}
+
+private struct FailingTranscriptTidier: TranscriptTidying {
+  func tidy(text: String, model: String?) async throws -> TranscriptTidyOutcome {
+    throw TranscriptTidyError.networkInterrupted
+  }
+}
+
+private actor CountingFavoriteMediaDownload {
+  private let store: LocalMediaStore
+  private(set) var callCount = 0
+
+  init(store: LocalMediaStore) { self.store = store }
+
+  func perform(
+    media: CaptureMedia,
+    taskID: TaskID,
+    snapshotID: ContentSnapshotID,
+    pageURL: String?
+  ) throws -> MediaAsset {
+    callCount += 1
+    XCTAssertEqual(media.videoURL, "https://media.example.test/video.mp4")
+    XCTAssertEqual(pageURL, "https://example.test/watch")
+    let bytes = Data([0, 0, 0, 20, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6F, 0x6D])
+    let sha = LocalMediaStore.contentSHA256(bytes)
+    let relativePath = "\(sha).mp4"
+    try store.ensureRoot()
+    try bytes.write(to: store.absoluteURL(relativePath: relativePath), options: .atomic)
+    return MediaAsset(
+      taskID: taskID,
+      snapshotID: snapshotID,
+      relativePath: relativePath,
+      contentSHA256: sha,
+      byteSize: Int64(bytes.count),
+      durationSeconds: media.durationSeconds,
+      platform: media.platform,
+      author: media.author,
+      createdAtMilliseconds: 2
+    )
+  }
+}
+
+private actor GatedImageTextRecognizer: LocalImageTextRecognizing {
+  private var didEnter = false
+  private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+  private var resultWaiter: CheckedContinuation<String, Never>?
+
+  func recognizeText(in _: [URL], languages _: [String]) async throws -> String {
+    didEnter = true
+    let waiters = entryWaiters
+    entryWaiters.removeAll()
+    waiters.forEach { $0.resume() }
+    return await withCheckedContinuation { resultWaiter = $0 }
+  }
+
+  func waitUntilEntered() async {
+    if didEnter { return }
+    await withCheckedContinuation { entryWaiters.append($0) }
+  }
+
+  func release(_ text: String) {
+    resultWaiter?.resume(returning: text)
+    resultWaiter = nil
+  }
+}
+
+private enum TranscriptionScript: Sendable {
+  case events([LocalVideoTranscriptionEvent])
+  case failure(LocalVideoTranscriptionError)
+  case suspended
+}
+
+private final class ScriptedVideoTranscriber: LocalVideoTranscribing, @unchecked Sendable {
+  private let lock = NSLock()
+  private var readiness: [LocalSpeechModelState]
+  private var pendingScripts: [TranscriptionScript]
+  private var downloads = 0
+  private var modelChecks = 0
+  private var transcriptions = 0
+  private let downloadSuspends: Bool
+
+  init(modelState: LocalSpeechModelState, scripts: [TranscriptionScript], downloadSuspends: Bool = false) {
+    readiness = [modelState]
+    pendingScripts = scripts
+    self.downloadSuspends = downloadSuspends
+  }
+
+  init(modelStates: [LocalSpeechModelState], scripts: [TranscriptionScript]) {
+    readiness = modelStates
+    pendingScripts = scripts
+    downloadSuspends = false
+  }
+
+  var downloadCallCount: Int { lock.withLock { downloads } }
+  var modelStateCallCount: Int { lock.withLock { modelChecks } }
+  var transcribeCallCount: Int { lock.withLock { transcriptions } }
+  func modelState(localeIdentifier _: String) async -> LocalSpeechModelState {
+    lock.withLock {
+      modelChecks += 1
+      return readiness.count > 1 ? readiness.removeFirst() : readiness.first ?? .unavailable(.speechUnavailable)
+    }
+  }
+  func downloadModel(localeIdentifier _: String) async throws {
+    lock.withLock { downloads += 1 }
+    if downloadSuspends { try await Task.sleep(for: .seconds(60)) }
+  }
+  func transcribe(fileURL _: URL, workspaceURL _: URL, localeIdentifier _: String) -> AsyncThrowingStream<LocalVideoTranscriptionEvent, Error> {
+    let script = lock.withLock { () -> TranscriptionScript in
+      transcriptions += 1
+      return pendingScripts.isEmpty ? .failure(.recognitionFailed) : pendingScripts.removeFirst()
+    }
+    return AsyncThrowingStream { continuation in
+      switch script {
+      case let .events(events):
+        for event in events { continuation.yield(event) }
+        continuation.finish()
+      case let .failure(error):
+        continuation.finish(throwing: error)
+      case .suspended:
+        let worker = Task {
+          continuation.yield(.extractingAudio)
+          continuation.yield(.partial("A partial"))
+          do {
+            try await Task.sleep(for: .seconds(60))
+            continuation.finish()
+          } catch {
+            continuation.finish(throwing: LocalVideoTranscriptionError.cancelled)
+          }
+        }
+        continuation.onTermination = { @Sendable _ in worker.cancel() }
+      }
+    }
+  }
+}
+
+private final class LateReadinessVideoTranscriber: LocalVideoTranscribing, @unchecked Sendable {
+  private let lock = NSLock()
+  private var readinessCalls = 0
+  private var firstContinuation: CheckedContinuation<LocalSpeechModelState, Never>?
+  private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+
+  func modelState(localeIdentifier _: String) async -> LocalSpeechModelState {
+    let call = lock.withLock { () -> Int in
+      readinessCalls += 1
+      return readinessCalls
+    }
+    guard call == 1 else { return .ready }
+    return await withCheckedContinuation { continuation in
+      let waiters = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+        firstContinuation = continuation
+        let values = entryWaiters
+        entryWaiters.removeAll()
+        return values
+      }
+      waiters.forEach { $0.resume() }
+    }
+  }
+
+  func waitUntilFirstReadinessEntered() async {
+    await withCheckedContinuation { continuation in
+      lock.lock()
+      if firstContinuation != nil {
+        lock.unlock()
+        continuation.resume()
+      } else {
+        entryWaiters.append(continuation)
+        lock.unlock()
+      }
+    }
+  }
+
+  func releaseFirstReadinessAsFailure() {
+    let continuation = lock.withLock { () -> CheckedContinuation<LocalSpeechModelState, Never>? in
+      defer { firstContinuation = nil }
+      return firstContinuation
+    }
+    continuation?.resume(returning: .unavailable(.speechUnavailable))
+  }
+
+  func downloadModel(localeIdentifier _: String) async throws {}
+
+  func transcribe(fileURL _: URL, workspaceURL _: URL, localeIdentifier _: String) -> AsyncThrowingStream<LocalVideoTranscriptionEvent, Error> {
+    AsyncThrowingStream { continuation in
+      continuation.yield(.extractingAudio)
+      continuation.yield(.transcribing)
+      continuation.yield(.final("新 attempt 完成正文"))
+      continuation.finish()
+    }
+  }
+}
+
+private final class TranscriptionStatusObserver: @unchecked Sendable {
+  private let lock = NSLock()
+  private var observed: [(TaskID, TranscriptionAttemptToken, TranscriptionStatus)] = []
+  private var waiters: [(TaskID, TranscriptionStatus, CheckedContinuation<Void, Never>)] = []
+
+  func record(taskID: TaskID, attempt: TranscriptionAttemptToken, status: TranscriptionStatus) {
+    let continuations = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+      observed.append((taskID, attempt, status))
+      let matching = waiters.filter { $0.0 == taskID && $0.1 == status }.map(\.2)
+      waiters.removeAll { $0.0 == taskID && $0.1 == status }
+      return matching
+    }
+    continuations.forEach { $0.resume() }
+  }
+
+  func waitUntilObserved(taskID: TaskID, status: TranscriptionStatus) async {
+    await withCheckedContinuation { continuation in
+      lock.lock()
+      if observed.contains(where: { $0.0 == taskID && $0.2 == status }) {
+        lock.unlock()
+        continuation.resume()
+      } else {
+        waiters.append((taskID, status, continuation))
+        lock.unlock()
+      }
+    }
+  }
+
+  func attempts(taskID: TaskID, status: TranscriptionStatus) -> [TranscriptionAttemptToken] {
+    lock.withLock {
+      observed.filter { $0.0 == taskID && $0.2 == status }.map(\.1)
+    }
+  }
+}
+
+private final class DiscardedTranscriptionAttemptObserver: @unchecked Sendable {
+  private let lock = NSLock()
+  private var recorded = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func record() {
+    let continuations = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+      recorded = true
+      defer { waiters.removeAll() }
+      return waiters
+    }
+    continuations.forEach { $0.resume() }
+  }
+
+  func waitUntilRecorded() async {
+    await withCheckedContinuation { continuation in
+      lock.lock()
+      if recorded {
+        lock.unlock()
+        continuation.resume()
+      } else {
+        waiters.append(continuation)
+        lock.unlock()
+      }
+    }
+  }
+}
+
+private final class ObservedTranscriptionRepository: HistoryRepository, @unchecked Sendable {
+  let base: GRDBHistoryRepository
+  let observer: TranscriptionStatusObserver
+  var accessMode: HistoryRepositoryAccessMode { base.accessMode }
+
+  init(base: GRDBHistoryRepository, observer: TranscriptionStatusObserver) {
+    self.base = base
+    self.observer = observer
+  }
+
+  func acceptCapture(_ command: AcceptCaptureCommand) throws -> AcceptCaptureResult { try base.acceptCapture(command) }
+  func createRun(_ command: CreateRunCommand) throws -> CreateRunResult { try base.createRun(command) }
+  func markRunRunning(_ command: MarkRunRunningCommand) throws { try base.markRunRunning(command) }
+  func savePartialArtifact(_ command: SavePartialArtifactCommand) throws { try base.savePartialArtifact(command) }
+  func finishRun(_ command: FinishRunCommand) throws { try base.finishRun(command) }
+  func recoverInterruptedRuns(at milliseconds: Int64) throws -> Int { try base.recoverInterruptedRuns(at: milliseconds) }
+  func historyPage(limit: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage { try base.historyPage(limit: limit, after: cursor) }
+  func historyPage(limit: Int, after cursor: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage {
+    try base.historyPage(limit: limit, after: cursor, filter: filter)
+  }
+  func detail(taskID: TaskID) throws -> HistoryDetailProjection { try base.detail(taskID: taskID) }
+  func exportProjection(taskID: TaskID) throws -> HistoryExportProjection { try base.exportProjection(taskID: taskID) }
+  func allTags() throws -> [HistoryTag] { try base.allTags() }
+  func addTags(_ rawNames: [String], to taskID: TaskID) throws -> [HistoryTag] { try base.addTags(rawNames, to: taskID) }
+  func removeTag(normalizedName: String, from taskID: TaskID) throws { try base.removeTag(normalizedName: normalizedName, from: taskID) }
+  func deleteTask(taskID: TaskID) throws { try base.deleteTask(taskID: taskID) }
+  func attachMedia(_ command: AttachMediaCommand) throws { try base.attachMedia(command) }
+  func mediaAsset(taskID: TaskID) throws -> MediaAsset? { try base.mediaAsset(taskID: taskID) }
+  func beginMediaTranscription(taskID: TaskID, mediaID: String) throws -> TranscriptionAttemptToken {
+    let attempt = try base.beginMediaTranscription(taskID: taskID, mediaID: mediaID)
+    observer.record(taskID: taskID, attempt: attempt, status: .pending)
+    return attempt
+  }
+  func updateMediaTranscriptionStatus(
+    taskID: TaskID,
+    attempt: TranscriptionAttemptToken,
+    status: TranscriptionStatusMutation
+  ) throws -> TranscriptionStatusUpdateResult {
+    let result = try base.updateMediaTranscriptionStatus(taskID: taskID, attempt: attempt, status: status)
+    observer.record(taskID: taskID, attempt: attempt, status: TranscriptionStatus(rawValue: status.rawValue)!)
+    return result
+  }
+  func completeMediaTranscription(_ command: CompleteMediaTranscriptionCommand) throws -> CompleteMediaTranscriptionResult {
+    try base.completeMediaTranscription(command)
+  }
+  func beginTaskTranscription(taskID: TaskID, createdAtMilliseconds: Int64) throws -> TaskTranscriptionAttemptToken {
+    return try base.beginTaskTranscription(taskID: taskID, createdAtMilliseconds: createdAtMilliseconds)
+  }
+  func updateTaskTranscriptionStatus(
+    taskID: TaskID,
+    attempt: TaskTranscriptionAttemptToken,
+    status: TaskTranscriptionStatusMutation,
+    updatedAtMilliseconds: Int64
+  ) throws -> TranscriptionStatusUpdateResult {
+    try base.updateTaskTranscriptionStatus(
+      taskID: taskID, attempt: attempt, status: status, updatedAtMilliseconds: updatedAtMilliseconds
+    )
+  }
+  func completeTaskTranscription(_ command: CompleteTaskTranscriptionCommand) throws -> CompleteTaskTranscriptionResult {
+    try base.completeTaskTranscription(command)
+  }
+  func isMediaContentReferenced(contentSHA256: String) throws -> Bool {
+    try base.isMediaContentReferenced(contentSHA256: contentSHA256)
+  }
+}
+
+private final class TranscriptionGateRepository: HistoryRepository, @unchecked Sendable {
+  let base: GRDBHistoryRepository
+  let beginFailure: RepositoryFailure?
+  let completionOverride: CompleteMediaTranscriptionResult?
+  let beginBarrier: BeginReturnBarrier?
+  var accessMode: HistoryRepositoryAccessMode { base.accessMode }
+
+  init(
+    base: GRDBHistoryRepository,
+    beginFailure: RepositoryFailure? = nil,
+    completionOverride: CompleteMediaTranscriptionResult? = nil,
+    beginBarrier: BeginReturnBarrier? = nil
+  ) {
+    self.base = base
+    self.beginFailure = beginFailure
+    self.completionOverride = completionOverride
+    self.beginBarrier = beginBarrier
+  }
+
+  func acceptCapture(_ command: AcceptCaptureCommand) throws -> AcceptCaptureResult { try base.acceptCapture(command) }
+  func createRun(_ command: CreateRunCommand) throws -> CreateRunResult { try base.createRun(command) }
+  func markRunRunning(_ command: MarkRunRunningCommand) throws { try base.markRunRunning(command) }
+  func savePartialArtifact(_ command: SavePartialArtifactCommand) throws { try base.savePartialArtifact(command) }
+  func finishRun(_ command: FinishRunCommand) throws { try base.finishRun(command) }
+  func recoverInterruptedRuns(at milliseconds: Int64) throws -> Int { try base.recoverInterruptedRuns(at: milliseconds) }
+  func historyPage(limit: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage { try base.historyPage(limit: limit, after: cursor) }
+  func historyPage(limit: Int, after cursor: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage {
+    try base.historyPage(limit: limit, after: cursor, filter: filter)
+  }
+  func detail(taskID: TaskID) throws -> HistoryDetailProjection { try base.detail(taskID: taskID) }
+  func exportProjection(taskID: TaskID) throws -> HistoryExportProjection { try base.exportProjection(taskID: taskID) }
+  func allTags() throws -> [HistoryTag] { try base.allTags() }
+  func addTags(_ rawNames: [String], to taskID: TaskID) throws -> [HistoryTag] { try base.addTags(rawNames, to: taskID) }
+  func removeTag(normalizedName: String, from taskID: TaskID) throws { try base.removeTag(normalizedName: normalizedName, from: taskID) }
+  func deleteTask(taskID: TaskID) throws { try base.deleteTask(taskID: taskID) }
+  func attachMedia(_ command: AttachMediaCommand) throws { try base.attachMedia(command) }
+  func mediaAsset(taskID: TaskID) throws -> MediaAsset? { try base.mediaAsset(taskID: taskID) }
+  func beginMediaTranscription(taskID: TaskID, mediaID: String) throws -> TranscriptionAttemptToken {
+    if let beginFailure { throw beginFailure }
+    let attempt = try base.beginMediaTranscription(taskID: taskID, mediaID: mediaID)
+    beginBarrier?.block()
+    return attempt
+  }
+  func updateMediaTranscriptionStatus(
+    taskID: TaskID,
+    attempt: TranscriptionAttemptToken,
+    status: TranscriptionStatusMutation
+  ) throws -> TranscriptionStatusUpdateResult {
+    try base.updateMediaTranscriptionStatus(taskID: taskID, attempt: attempt, status: status)
+  }
+  func completeMediaTranscription(_ command: CompleteMediaTranscriptionCommand) throws -> CompleteMediaTranscriptionResult {
+    if let completionOverride { return completionOverride }
+    return try base.completeMediaTranscription(command)
+  }
+  func beginTaskTranscription(taskID: TaskID, createdAtMilliseconds: Int64) throws -> TaskTranscriptionAttemptToken {
+    if let beginFailure { throw beginFailure }
+    return try base.beginTaskTranscription(taskID: taskID, createdAtMilliseconds: createdAtMilliseconds)
+  }
+  func updateTaskTranscriptionStatus(
+    taskID: TaskID,
+    attempt: TaskTranscriptionAttemptToken,
+    status: TaskTranscriptionStatusMutation,
+    updatedAtMilliseconds: Int64
+  ) throws -> TranscriptionStatusUpdateResult {
+    try base.updateTaskTranscriptionStatus(
+      taskID: taskID, attempt: attempt, status: status, updatedAtMilliseconds: updatedAtMilliseconds
+    )
+  }
+  func completeTaskTranscription(_ command: CompleteTaskTranscriptionCommand) throws -> CompleteTaskTranscriptionResult {
+    try base.completeTaskTranscription(command)
+  }
+  func isMediaContentReferenced(contentSHA256: String) throws -> Bool {
+    try base.isMediaContentReferenced(contentSHA256: contentSHA256)
+  }
+}
+
+private struct TranscriptionFixture {
+  let root: URL
+  let repository: GRDBHistoryRepository
+  let store: LocalMediaStore
+  let model: HistoryViewModel
+  let taskID: TaskID
+  let otherTaskID: TaskID?
+  func close() {
+    try? repository.database.close()
+    try? FileManager.default.removeItem(at: root)
+  }
+}
+
+@MainActor
+private func makeTranscriptionFixture(
+  transcriber: any LocalVideoTranscribing,
+  includesSecondTask: Bool = false,
+  dependencies: PersistenceDependencies = .live,
+  statusObserver: TranscriptionStatusObserver? = nil,
+  onDiscardedTranscriptionAttempt: @escaping @Sendable () -> Void = {},
+  nowMilliseconds: @escaping @Sendable () -> Int64 = { 1_752_883_200_000 }
+) throws -> TranscriptionFixture {
+  let root = FileManager.default.temporaryDirectory
+    .appendingPathComponent("linkdigest-transcription-ui-\(UUID().uuidString)", isDirectory: true)
+  let repository = try GRDBHistoryRepository.open(
+    at: .init(applicationSupportRoot: root),
+    dependencies: dependencies
+  )
+  let document = CapturedDocument(
+    createdAt: "2026-07-19T00:00:00Z",
+    origin: .manualLink,
+    url: "https://www.douyin.com/video/1234567890123456789",
+    title: "本机视频",
+    platform: "douyin",
+    method: "fixture",
+    text: "视频说明",
+    completeness: "complete",
+    capturedAt: "2026-07-19T00:00:00Z",
+    sourceLabel: "fixture"
+  )
+  let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
+  let store = LocalMediaStore(applicationSupportRoot: root)
+  try store.ensureRoot()
+  let fixtureData = Data("local-video-fixture".utf8)
+  let fixtureSHA = LocalMediaStore.contentSHA256(fixtureData)
+  let fixtureRelativePath = "\(fixtureSHA).mp4"
+  try fixtureData.write(to: store.absoluteURL(relativePath: fixtureRelativePath), options: .atomic)
+  try repository.attachMedia(.init(asset: .init(
+    taskID: accepted.taskID,
+    snapshotID: accepted.snapshotID,
+    relativePath: fixtureRelativePath,
+    contentSHA256: fixtureSHA,
+    byteSize: 19,
+    durationSeconds: 12,
+    platform: "douyin",
+    author: "作者",
+    createdAtMilliseconds: 2
+  )))
+  var otherTaskID: TaskID?
+  if includesSecondTask {
+    let other = CapturedDocument(
+      createdAt: "2026-07-18T00:00:00Z", origin: .manualLink,
+      url: "https://www.douyin.com/video/9876543210987654321", title: "B 视频",
+      platform: "douyin", method: "fixture", text: "B 视频说明", completeness: "complete",
+      capturedAt: "2026-07-18T00:00:00Z", sourceLabel: "fixture"
+    )
+    let acceptedOther = try repository.acceptCapture(.init(document: other, receivedAtMilliseconds: 0))
+    let otherData = Data("other-local-video".utf8)
+    let otherSHA = LocalMediaStore.contentSHA256(otherData)
+    let otherRelativePath = "\(otherSHA).mp4"
+    try otherData.write(to: store.absoluteURL(relativePath: otherRelativePath), options: .atomic)
+    try repository.attachMedia(.init(asset: .init(
+      taskID: acceptedOther.taskID, snapshotID: acceptedOther.snapshotID,
+      relativePath: otherRelativePath, contentSHA256: otherSHA, byteSize: 17,
+      durationSeconds: 8, platform: "douyin", author: "B 作者", createdAtMilliseconds: 1
+    )))
+    otherTaskID = acceptedOther.taskID
+  }
+  let model = HistoryViewModel(
+    mediaStore: store,
+    videoTranscriber: transcriber,
+    onDiscardedTranscriptionAttempt: onDiscardedTranscriptionAttempt,
+    nowMilliseconds: nowMilliseconds
+  )
+  let configuredRepository: any HistoryRepository
+  if let statusObserver {
+    configuredRepository = ObservedTranscriptionRepository(base: repository, observer: statusObserver)
+  } else {
+    configuredRepository = repository
+  }
+  model.configure(
+    history: HistoryApplicationService(repository: configuredRepository),
+    isReadOnly: false,
+    unavailableCode: nil
+  )
+  return .init(root: root, repository: repository, store: store, model: model, taskID: accepted.taskID, otherTaskID: otherTaskID)
+}
+
+private struct RemoteTranscriptionFixture {
+  let root: URL
+  let repository: GRDBHistoryRepository
+  let model: HistoryViewModel
+  let taskID: TaskID
+  let descriptor: MediaDescriptor
+  let fetcher: RemoteTempResourceFetcher
+  let tempStore: TranscriptionTempStore
+
+  var tempEntryCount: Int {
+    (try? FileManager.default.contentsOfDirectory(atPath: tempStore.tempRoot.path).count) ?? 0
+  }
+
+  func close() {
+    try? repository.database.close()
+    try? FileManager.default.removeItem(at: root)
+  }
+}
+
+@MainActor
+private func makeRemoteTranscriptionFixture(
+  transcriber: any LocalVideoTranscribing,
+  availableDiskBytes: (@Sendable (URL) throws -> Int64)? = nil
+) throws -> RemoteTranscriptionFixture {
+  let root = URL(
+    fileURLWithPath: "/private/tmp/linkdigest-remote-transcription-ui-\(UUID().uuidString)",
+    isDirectory: true
+  )
+  let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+  let document = CapturedDocument(
+    createdAt: "2026-07-20T00:00:00Z",
+    origin: .manualLink,
+    url: "https://example.test/video",
+    title: "远程视频",
+    platform: "generic",
+    method: "fixture",
+    text: "页面正文",
+    completeness: "complete",
+    capturedAt: "2026-07-20T00:00:00Z",
+    sourceLabel: "fixture"
+  )
+  let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
+  let fetcher = RemoteTempResourceFetcher()
+  let tempStore = TranscriptionTempStore(
+    applicationSupportRoot: root,
+    resources: fetcher,
+    availableDiskBytes: availableDiskBytes
+  )
+  let model = HistoryViewModel(
+    videoTranscriber: transcriber,
+    transcriptionTempStore: tempStore,
+    nowMilliseconds: { 1_753_017_600_000 }
+  )
+  model.configure(
+    history: HistoryApplicationService(repository: repository),
+    isReadOnly: false,
+    unavailableCode: nil
+  )
+  let descriptor = MediaDescriptor(
+    kind: .directFile,
+    pageURL: "https://example.test/video",
+    canonicalURL: "https://example.test/video",
+    platform: "generic",
+    ephemeralPlaybackURL: "https://media.example.test/video.mp4?signature=never-persist",
+    mimeType: "video/mp4",
+    durationSeconds: nil,
+    transcriptionCapability: .supported
+  )
+  return .init(
+    root: root,
+    repository: repository,
+    model: model,
+    taskID: accepted.taskID,
+    descriptor: descriptor,
+    fetcher: fetcher,
+    tempStore: tempStore
+  )
+}
+
+private final class RemoteTempResourceFetcher: SafeResourceFetching, @unchecked Sendable {
+  private let lock = NSLock()
+  private var calls = 0
+  var callCount: Int { lock.withLock { calls } }
+
+  func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
+    lock.withLock { calls += 1 }
+    var body = Data([0, 0, 0, 24])
+    body.append(contentsOf: Array("ftypisom".utf8))
+    body.append(contentsOf: Array(repeating: 0, count: 12))
+    return .init(url: request.url, statusCode: 200, contentType: "video/mp4", body: body)
+  }
+}
+
+private final class DelayedFaviconResourceFetcher: SafeResourceFetching, @unchecked Sendable {
+  private let lock = NSLock()
+  private let blockedHosts: Set<String>
+  private var active = 0
+  private var peak = 0
+  private var blockedEntries = 0
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  init(blockedHosts: Set<String>) { self.blockedHosts = blockedHosts }
+
+  var peakConcurrency: Int { lock.withLock { peak } }
+  var blockedEntryCount: Int { lock.withLock { blockedEntries } }
+
+  func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
+    let shouldBlock = lock.withLock { () -> Bool in
+      active += 1
+      peak = max(peak, active)
+      return blockedHosts.contains(request.url.host ?? "")
+    }
+    defer { lock.withLock { active -= 1 } }
+    if shouldBlock {
+      await withCheckedContinuation { continuation in
+        lock.withLock {
+          blockedEntries += 1
+          waiters.append(continuation)
+        }
+      }
+    }
+    return .init(
+      url: request.url,
+      statusCode: 200,
+      contentType: "image/x-icon",
+      body: Data([0x00, 0x00, 0x01, 0x00, 0x01])
+    )
+  }
+
+  func releaseAll() {
+    let values = lock.withLock { () -> [CheckedContinuation<Void, Never>] in
+      defer { waiters.removeAll() }
+      return waiters
+    }
+    values.forEach { $0.resume() }
+  }
+}
+
+private enum AutomaticTagOutcome: Sendable { case success(String), failure }
+
+private final class AutomaticTagMetadataProvider: ModelProvider, SummaryTagGenerating, @unchecked Sendable {
+  private let lock = NSLock()
+  private let tagOutcome: AutomaticTagOutcome
+  private var tagRequests = 0
+
+  init(tagOutcome: AutomaticTagOutcome) { self.tagOutcome = tagOutcome }
+
+  func stream(profile _: ProviderProfile, apiKey _: String, intent _: RunIntent) -> AsyncThrowingStream<ModelStreamEvent, Error> {
+    AsyncThrowingStream { continuation in
+      continuation.yield(.delta("已完成的总结"))
+      continuation.yield(.completed)
+      continuation.finish()
+    }
+  }
+
+  func generateSummaryTags(profile _: ProviderProfile, apiKey _: String, summary: String) async throws -> String {
+    XCTAssertEqual(summary, "已完成的总结")
+    let outcome = lock.withLock { () -> AutomaticTagOutcome in
+      tagRequests += 1
+      return tagOutcome
+    }
+    switch outcome {
+    case let .success(value): return value
+    case .failure: throw ModelProviderFailure(code: .networkInterrupted, retryable: true, hadOutput: false)
+    }
+  }
+
+  func cancelActiveStreams() {}
+  var tagRequestCount: Int { lock.withLock { tagRequests } }
+}
+
+private actor MetadataEventCounter {
+  private var values: [TaskID] = []
+  func record(_ taskID: TaskID) { values.append(taskID) }
+  var taskIDs: [TaskID] { values }
+}
+
+private actor MetadataRunRecorder {
+  private var latest: RunState?
+  func record(runID _: RunID, state: RunState) { latest = state }
+  var last: RunState? { latest }
+}
+
+private actor MetadataProfileStore: ProviderProfileStore {
+  let profile: ProviderProfile
+  init(profile: ProviderProfile) { self.profile = profile }
+  func load() async throws -> ProviderProfile? { profile }
+  func save(_: ProviderProfile) async throws {}
+  func delete() async throws {}
+}
+
+private actor MetadataSecretStore: SecretStore {
+  func save(_: String, for _: SecretReference) async throws {}
+  func read(_: SecretReference) async throws -> String? { "fixture-secret" }
+  func contains(_: SecretReference) async throws -> Bool { true }
+  func delete(_: SecretReference) async throws {}
+}
+
+private func metadataOrchestrator(
+  provider: AutomaticTagMetadataProvider,
+  history: HistoryApplicationService,
+  onMetadataChanged: @escaping ModelRunOrchestrator.HistoryMetadataChangedHandler
+) throws -> ModelRunOrchestrator {
+  let profile = try ProviderProfile(baseURL: "https://example.test/v1", model: "fixture-model", secretReference: .init(rawValue: "fixture-reference"))
+  return ModelRunOrchestrator(
+    configurationService: .init(profileStore: MetadataProfileStore(profile: profile), secretStore: MetadataSecretStore()),
+    provider: provider,
+    history: history,
+    onHistoryMetadataChanged: onMetadataChanged
+  )
+}
+
+@MainActor
+private func withAutomaticTagHistory(
+  _ body: (GRDBHistoryRepository, AcceptCaptureResult, CapturedDocument) async throws -> Void
+) async throws {
+  let root = FileManager.default.temporaryDirectory.appendingPathComponent("linkdigest-history-metadata.\(UUID().uuidString)", isDirectory: true)
+  defer { try? FileManager.default.removeItem(at: root) }
+  let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+  defer { try? repository.database.close() }
+  let document = CapturedDocument(
+    createdAt: "2026-07-18T00:00:00Z",
+    origin: .manualLink,
+    url: "https://example.test/history-metadata",
+    title: "自动标签",
+    platform: "test",
+    method: "fixture",
+    text: "供总结的原文",
+    completeness: "complete",
+    capturedAt: "2026-07-18T00:00:00Z",
+    sourceLabel: "fixture"
+  )
+  let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
+  try await body(repository, accepted, document)
 }
 
 private final class HistoryScreenRepository: HistoryRepository, @unchecked Sendable {
   let accessMode: HistoryRepositoryAccessMode = .writable
   private let firstPage: HistoryPage, remainingPages: [String: HistoryPage], details: [TaskID: HistoryDetailProjection]
   private let blocker: DetailBlocker?, pageBlocker: PageBlocker?, exportBlocker: ExportBlocker?, deleteFailure: RepositoryFailure?, exportFailure: RepositoryFailure?
+  private let batchDeleteFailures: Set<TaskID>
+  private let mediaAssetValue: MediaAsset?, mediaReferenceFailure: RepositoryFailure?
   private let lock = NSLock(); private var deletes: [TaskID] = []
-  init(firstPage: HistoryPage, remainingPages: [String: HistoryPage] = [:], details: [TaskID: HistoryDetailProjection], blocker: DetailBlocker? = nil, pageBlocker: PageBlocker? = nil, exportBlocker: ExportBlocker? = nil, deleteFailure: RepositoryFailure? = nil, exportFailure: RepositoryFailure? = nil) { self.firstPage = firstPage; self.remainingPages = remainingPages; self.details = details; self.blocker = blocker; self.pageBlocker = pageBlocker; self.exportBlocker = exportBlocker; self.deleteFailure = deleteFailure; self.exportFailure = exportFailure }
+  init(firstPage: HistoryPage, remainingPages: [String: HistoryPage] = [:], details: [TaskID: HistoryDetailProjection], blocker: DetailBlocker? = nil, pageBlocker: PageBlocker? = nil, exportBlocker: ExportBlocker? = nil, deleteFailure: RepositoryFailure? = nil, exportFailure: RepositoryFailure? = nil, mediaAssetValue: MediaAsset? = nil, mediaReferenceFailure: RepositoryFailure? = nil, batchDeleteFailures: Set<TaskID> = []) { self.firstPage = firstPage; self.remainingPages = remainingPages; self.details = details; self.blocker = blocker; self.pageBlocker = pageBlocker; self.exportBlocker = exportBlocker; self.deleteFailure = deleteFailure; self.exportFailure = exportFailure; self.mediaAssetValue = mediaAssetValue; self.mediaReferenceFailure = mediaReferenceFailure; self.batchDeleteFailures = batchDeleteFailures }
   var deletedTaskIDs: [TaskID] { lock.withLock { deletes } }
   func acceptCapture(_: AcceptCaptureCommand) throws -> AcceptCaptureResult { throw RepositoryFailure.invalidInput }
   func createRun(_: CreateRunCommand) throws -> CreateRunResult { throw RepositoryFailure.invalidInput }
@@ -216,20 +2377,207 @@ private final class HistoryScreenRepository: HistoryRepository, @unchecked Senda
   func savePartialArtifact(_: SavePartialArtifactCommand) throws { throw RepositoryFailure.invalidInput }
   func finishRun(_: FinishRunCommand) throws { throw RepositoryFailure.invalidInput }
   func recoverInterruptedRuns(at _: Int64) throws -> Int { 0 }
-  func historyPage(limit _: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage { guard let cursor else { return firstPage }; if let pageBlocker { pageBlocker.entered.signal(); _ = pageBlocker.release.wait(timeout: .now() + 1) }; return remainingPages[cursor.taskID.rawValue] ?? .init(rows: [], nextCursor: nil) }
-  func detail(taskID: TaskID) throws -> HistoryDetailProjection { if blocker?.taskID == taskID { blocker?.entered.signal(); _ = blocker?.release.wait(timeout: .now() + 1) }; guard let detail = details[taskID] else { throw RepositoryFailure.notFound }; return detail }
+  func historyPage(limit _: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage { guard let cursor else { return firstPage }; pageBlocker?.block(); return remainingPages[cursor.taskID.rawValue] ?? .init(rows: [], nextCursor: nil) }
+  func detail(taskID: TaskID) throws -> HistoryDetailProjection { if blocker?.taskID == taskID { blocker?.block() }; guard let detail = details[taskID] else { throw RepositoryFailure.notFound }; return detail }
   func exportProjection(taskID: TaskID) throws -> HistoryExportProjection {
-    if exportBlocker?.taskID == taskID { exportBlocker?.entered.signal(); _ = exportBlocker?.release.wait(timeout: .now() + 1) }
+    if exportBlocker?.taskID == taskID { exportBlocker?.block() }
     if let exportFailure { throw exportFailure }
     guard let detail = details[taskID] else { throw RepositoryFailure.notFound }
     return .init(task: detail.task, snapshots: detail.snapshots, runs: detail.runs)
   }
   func deleteTask(taskID: TaskID) throws { if let deleteFailure { throw deleteFailure }; lock.withLock { deletes.append(taskID) } }
+  func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult {
+    if let deleteFailure { throw deleteFailure }
+    let requested = taskIDs.sorted { $0.rawValue < $1.rawValue }
+    let failed = requested.filter { batchDeleteFailures.contains($0) }
+    let deleted = requested.filter { !batchDeleteFailures.contains($0) }
+    lock.withLock { deletes.append(contentsOf: deleted) }
+    return .init(requestedTaskIDs: requested, deletedTaskIDs: deleted, failedTaskIDs: failed)
+  }
+  func mediaAsset(taskID _: TaskID) throws -> MediaAsset? { mediaAssetValue }
+  func isMediaContentReferenced(contentSHA256 _: String) throws -> Bool {
+    if let mediaReferenceFailure { throw mediaReferenceFailure }
+    return false
+  }
 }
 
-private final class DetailBlocker: @unchecked Sendable { let taskID: TaskID; let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0); init(taskID: TaskID) { self.taskID = taskID } }
-private final class PageBlocker: @unchecked Sendable { let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0) }
-private final class ExportBlocker: @unchecked Sendable { let taskID: TaskID; let entered = DispatchSemaphore(value: 0), release = DispatchSemaphore(value: 0); init(taskID: TaskID) { self.taskID = taskID } }
+private final class TagHistoryScreenRepository: HistoryRepository, @unchecked Sendable {
+  let accessMode: HistoryRepositoryAccessMode = .writable
+  private let lock = NSLock()
+  private let rows: [HistoryRowProjection]
+  private let details: [TaskID: HistoryDetailProjection]
+  private var taskTags: [TaskID: [HistoryTag]]
+  private var recordedFilters: [HistoryListFilter] = []
+  private var detailReadPlans: [TaskID: [DetailReadPlan]] = [:]
+
+  init(rows: [HistoryRowProjection], details: [TaskID: HistoryDetailProjection], tags: [TaskID: [HistoryTag]]) {
+    self.rows = rows; self.details = details; taskTags = tags
+  }
+
+  var filters: [HistoryListFilter] { lock.withLock { recordedFilters } }
+  func enqueueDetailBarrier(_ barrier: DetailReadBarrier, for taskID: TaskID) {
+    lock.withLock { detailReadPlans[taskID, default: []].append(.barrier(barrier)) }
+  }
+  func enqueueDetailFailure(_ failure: RepositoryFailure, for taskID: TaskID) {
+    lock.withLock { detailReadPlans[taskID, default: []].append(.failure(failure)) }
+  }
+  func acceptCapture(_: AcceptCaptureCommand) throws -> AcceptCaptureResult { throw RepositoryFailure.invalidInput }
+  func createRun(_: CreateRunCommand) throws -> CreateRunResult { throw RepositoryFailure.invalidInput }
+  func markRunRunning(_: MarkRunRunningCommand) throws { throw RepositoryFailure.invalidInput }
+  func savePartialArtifact(_: SavePartialArtifactCommand) throws { throw RepositoryFailure.invalidInput }
+  func finishRun(_: FinishRunCommand) throws { throw RepositoryFailure.invalidInput }
+  func recoverInterruptedRuns(at _: Int64) throws -> Int { 0 }
+  func historyPage(limit: Int, after _: HistoryPageCursor?) throws -> HistoryPage { try historyPage(limit: limit, after: nil, filter: .none) }
+  func historyPage(limit: Int, after _: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage {
+    lock.withLock { recordedFilters.append(filter) }
+    let filtered = lock.withLock { () -> [HistoryRowProjection] in
+      rows.filter { row in
+        let names = Set((taskTags[row.taskID] ?? []).map(\.normalizedName))
+        return Set(filter.tagNormalizedNames).isSubset(of: names)
+      }
+    }
+    return .init(rows: Array(filtered.prefix(limit)), nextCursor: nil)
+  }
+  func detail(taskID: TaskID) throws -> HistoryDetailProjection {
+    guard let value = details[taskID] else { throw RepositoryFailure.notFound }
+    // Take the snapshot before blocking so a delayed ordinary detail read can
+    // deterministically model a stale database response.
+    let (tags, plan) = lock.withLock { () -> ([HistoryTag], DetailReadPlan?) in
+      let plan = detailReadPlans[taskID]?.isEmpty == false ? detailReadPlans[taskID]?.removeFirst() : nil
+      return (taskTags[taskID] ?? [], plan)
+    }
+    if case let .failure(failure) = plan { throw failure }
+    if case let .barrier(barrier) = plan {
+      barrier.block()
+    }
+    return .init(task: value.task, snapshots: value.snapshots, runs: value.runs, tags: tags)
+  }
+  func exportProjection(taskID _: TaskID) throws -> HistoryExportProjection { throw RepositoryFailure.notFound }
+  func allTags() throws -> [HistoryTag] {
+    lock.withLock {
+      var seen = Set<String>()
+      return taskTags.values.flatMap { $0 }
+        .filter { seen.insert($0.normalizedName).inserted }
+        .sorted { $0.normalizedName < $1.normalizedName }
+    }
+  }
+  func addTags(_ rawNames: [String], to taskID: TaskID) throws -> [HistoryTag] {
+    lock.withLock {
+      var values = taskTags[taskID] ?? []
+      for tag in HistoryTagNormalizer.normalizedTags(rawNames) where !values.contains(where: { $0.normalizedName == tag.normalizedName }) {
+        guard values.count < HistoryTagNormalizer.maximumTagsPerTask else { break }
+        values.append(tag)
+      }
+      taskTags[taskID] = values
+      return values
+    }
+  }
+  func removeTag(normalizedName: String, from taskID: TaskID) throws {
+    lock.withLock { taskTags[taskID]?.removeAll { $0.normalizedName == normalizedName } }
+  }
+  func deleteTask(taskID _: TaskID) throws {}
+}
+
+private enum DetailReadPlan { case barrier(DetailReadBarrier), failure(RepositoryFailure) }
+private final class BlockingRendezvous: @unchecked Sendable {
+  private let condition = NSCondition()
+  private var didEnter = false
+  private var didRelease = false
+  private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+
+  func block() {
+    condition.lock()
+    didEnter = true
+    let waiters = entryWaiters
+    entryWaiters.removeAll()
+    condition.unlock()
+    waiters.forEach { $0.resume() }
+
+    condition.lock()
+    while !didRelease { condition.wait() }
+    condition.unlock()
+  }
+
+  func waitUntilEntered() async {
+    await withCheckedContinuation { continuation in
+      condition.lock()
+      if didEnter {
+        condition.unlock()
+        continuation.resume()
+      } else {
+        entryWaiters.append(continuation)
+        condition.unlock()
+      }
+    }
+  }
+
+  func release() {
+    condition.lock()
+    didRelease = true
+    condition.broadcast()
+    condition.unlock()
+  }
+}
+private final class DetailBlocker: @unchecked Sendable { let taskID: TaskID; private let rendezvous = BlockingRendezvous(); init(taskID: TaskID) { self.taskID = taskID }; func block() { rendezvous.block() }; func waitUntilEntered() async { await rendezvous.waitUntilEntered() }; func release() { rendezvous.release() } }
+private final class DetailReadBarrier: @unchecked Sendable { private let rendezvous = BlockingRendezvous(); func block() { rendezvous.block() }; func waitUntilEntered() async { await rendezvous.waitUntilEntered() }; func release() { rendezvous.release() } }
+private final class TerminalCommitBarrier: @unchecked Sendable { private let rendezvous = BlockingRendezvous(); func block() { rendezvous.block() }; func waitUntilEntered() async { await rendezvous.waitUntilEntered() }; func release() { rendezvous.release() } }
+private final class BeginReturnBarrier: @unchecked Sendable { private let rendezvous = BlockingRendezvous(); func block() { rendezvous.block() }; func waitUntilEntered() async { await rendezvous.waitUntilEntered() }; func release() { rendezvous.release() } }
+private final class PageBlocker: @unchecked Sendable { private let rendezvous = BlockingRendezvous(); func block() { rendezvous.block() }; func waitUntilEntered() async { await rendezvous.waitUntilEntered() }; func release() { rendezvous.release() } }
+private final class ExportBlocker: @unchecked Sendable { let taskID: TaskID; private let rendezvous = BlockingRendezvous(); init(taskID: TaskID) { self.taskID = taskID }; func block() { rendezvous.block() }; func waitUntilEntered() async { await rendezvous.waitUntilEntered() }; func release() { rendezvous.release() } }
+private actor MediaDownloadGate {
+  private var entered = false
+  private var released = false
+  private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseContinuation: CheckedContinuation<Void, Never>?
+
+  func perform(returning asset: MediaAsset) async -> MediaAsset {
+    entered = true
+    let waiters = entryWaiters
+    entryWaiters.removeAll()
+    waiters.forEach { $0.resume() }
+    await withCheckedContinuation { continuation in
+      if released {
+        continuation.resume()
+      } else {
+        releaseContinuation = continuation
+      }
+    }
+    return asset
+  }
+
+  func waitUntilEntered() async {
+    if entered { return }
+    await withCheckedContinuation { entryWaiters.append($0) }
+  }
+
+  func release() {
+    released = true
+    releaseContinuation?.resume()
+    releaseContinuation = nil
+  }
+}
+private func faviconRow(host: String, updatedAt: Int64) -> HistoryRowProjection {
+  .init(
+    taskID: TaskID(), title: host, canonicalURL: "https://\(host)/article", host: host,
+    sourceLabel: "网页", latestRunKind: nil, latestRunStatus: nil, latestModel: nil,
+    updatedAtMilliseconds: updatedAt, latestRunAtMilliseconds: nil, usageCost: .unknown, artifactPreview: nil
+  )
+}
 private func makeRow(title: String, updatedAt: Int64) -> HistoryRowProjection { .init(taskID: TaskID(), title: title, canonicalURL: "https://example.test/\(updatedAt)", host: "example.test", sourceLabel: "网页", latestRunKind: .summarize, latestRunStatus: .completed, latestModel: "fixture-model", updatedAtMilliseconds: updatedAt, latestRunAtMilliseconds: updatedAt, usageCost: .unknown, artifactPreview: "fixture") }
+private func capturedDocument(title: String, url: String) -> CapturedDocument {
+  .init(
+    createdAt: "2026-07-21T00:00:00Z",
+    origin: .manualLink,
+    url: url,
+    title: title,
+    platform: "fixture",
+    method: "fixture",
+    text: "正文",
+    completeness: "complete",
+    capturedAt: "2026-07-21T00:00:00Z",
+    sourceLabel: "fixture"
+  )
+}
 private func cursor(for row: HistoryRowProjection) -> HistoryPageCursor { .init(updatedAtMilliseconds: row.updatedAtMilliseconds, taskID: row.taskID) }
 private func makeDetail(for row: HistoryRowProjection) -> HistoryDetailProjection { let snapshot = ContentSnapshot(id: ContentSnapshotID(), taskID: row.taskID, sequence: 1, envelopeCreatedAtMilliseconds: 1, capturedAtMilliseconds: 1, sourceKind: "web", sourceURL: row.canonicalURL, title: row.title, platform: "fixture", captureMethod: "page", completeness: "complete", bodyText: "fixture body", characterCount: 12, bodySHA256: String(repeating: "a", count: 64), sourceLabel: "网页", usedCookie: false); return .init(task: .init(id: row.taskID, canonicalURL: row.canonicalURL, canonicalizationVersion: 1, createdAtMilliseconds: 1, updatedAtMilliseconds: row.updatedAtMilliseconds), snapshots: [snapshot], runs: []) }
+private func tag(_ value: String) -> HistoryTag { HistoryTag(rawValue: value)! }

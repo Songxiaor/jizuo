@@ -5,8 +5,13 @@ struct V02ErrorPresentation: Equatable {
   let message: String
   let recoveryAction: String
 
+  init(message: String, recoveryAction: String) {
+    self.message = message
+    self.recoveryAction = recoveryAction
+  }
+
   var visibleText: String {
-    "\(message) \(recoveryAction)"
+    [message, recoveryAction].joined(separator: " ")
   }
 }
 
@@ -28,6 +33,9 @@ enum V02ErrorCatalog {
     ModelProviderErrorCode.baseURLInvalid.rawValue,
     ModelProviderErrorCode.authInvalid.rawValue,
     ModelProviderErrorCode.endpointNotFound.rawValue,
+    ModelProviderErrorCode.modelNotFound.rawValue,
+    ModelProviderErrorCode.providerBillingLimited.rawValue,
+    ModelProviderErrorCode.providerRequestRejected.rawValue,
     ModelProviderErrorCode.rateLimited.rawValue,
     ModelProviderErrorCode.providerUnavailable.rawValue,
     ModelProviderErrorCode.networkInterrupted.rawValue,
@@ -50,7 +58,7 @@ enum V02ErrorCatalog {
   }
 
   static func presentation(for code: String) -> V02ErrorPresentation {
-    switch code {
+    let presentation: V02ErrorPresentation = switch code {
     case ProviderConfigurationError.baseURLRequired.rawValue:
       .init(
         message: "Base URL 不能为空。",
@@ -117,6 +125,21 @@ enum V02ErrorCatalog {
         message: "模型服务未找到 Chat Completions 接口。",
         recoveryAction: "请检查 Base URL 是否是 OpenAI-compatible Chat Completions API root。"
       )
+    case ModelProviderErrorCode.modelNotFound.rawValue:
+      .init(
+        message: "模型服务未找到所选模型。",
+        recoveryAction: "请检查模型名、访问权限和服务商模型目录后重试。"
+      )
+    case ModelProviderErrorCode.providerBillingLimited.rawValue:
+      .init(
+        message: "模型服务的计费或配额限制阻止了本次请求。",
+        recoveryAction: "请前往服务商控制台检查支付方式、余额或可用额度后重试。"
+      )
+    case ModelProviderErrorCode.providerRequestRejected.rawValue:
+      .init(
+        message: "模型服务拒绝了本次请求。",
+        recoveryAction: "请检查模型配置、服务商限制和请求参数后重试。"
+      )
     case ModelProviderErrorCode.rateLimited.rawValue:
       .init(
         message: "模型服务当前请求过多。",
@@ -168,5 +191,6 @@ enum V02ErrorCatalog {
         recoveryAction: "请检查模型配置和网络后重试。"
       )
     }
+    return presentation
   }
 }

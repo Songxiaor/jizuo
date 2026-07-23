@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "requestId": "fixture-v2-ambiguous",
+  "createdAt": "2026-07-20T00:00:00Z",
+  "source": {"kind": "browser_capture", "url": "https://example.test/gallery", "title": "Ambiguous videos", "platform": "generic"},
+  "capture": {"method": "rendered_dom", "text": "ambiguous body", "characterCount": 14, "completeness": "visible_only", "capturedAt": "2026-07-20T00:00:00Z"},
+  "evidence": {"sourceLabel": "Current page DOM", "usedCookie": false},
+  "media": {"kind": "unsupported", "pageURL": "https://example.test/gallery", "canonicalURL": "https://example.test/gallery", "platform": "generic", "transcriptionCapability": "unavailable", "failureReason": "multiple_candidates", "candidateCount": 2, "selectionReason": "ambiguous", "playbackState": "unknown"}
+}

@@ -1,6 +1,7 @@
 import Foundation
 import XCTest
 @testable import LinkDigestApp
+import LinkDigestAdapters
 import LinkDigestCore
 
 private actor AppAsyncBarrier {
@@ -144,6 +145,7 @@ private final class AppHistoryRepository: HistoryRepository, @unchecked Sendable
   private let lock = NSLock()
   private var captureCalls = 0
   private var createRunEntered = false
+  private var createRunCommands: [CreateRunCommand] = []
   init(
     failPartial: Bool = false,
     failTerminal: Bool = false,
@@ -167,12 +169,16 @@ private final class AppHistoryRepository: HistoryRepository, @unchecked Sendable
   }
   var acceptCaptureCallCount: Int { lock.withLock { captureCalls } }
   func createRun(_ command: CreateRunCommand) throws -> CreateRunResult {
-    lock.withLock { createRunEntered = true }
+    lock.withLock {
+      createRunEntered = true
+      createRunCommands.append(command)
+    }
     if blockCreateRun { createRunRelease.wait() }
     if failCreateRun { throw RepositoryFailure.injectedFailure }
     return .init(runID: command.runID, wasCreated: true)
   }
   var didEnterCreateRun: Bool { lock.withLock { createRunEntered } }
+  var createdRunCommands: [CreateRunCommand] { lock.withLock { createRunCommands } }
   func releaseCreateRun() { createRunRelease.signal() }
   func markRunRunning(_: MarkRunRunningCommand) throws {}
   func savePartialArtifact(_: SavePartialArtifactCommand) throws {
@@ -199,6 +205,7 @@ private final class AppTestModelProvider: ModelProvider, @unchecked Sendable {
   private let lock = NSLock()
   private var results: [Result]
   private var recordedIntents: [RunIntent] = []
+  private var recordedModels: [String] = []
   private var recordedKeyPresence: [Bool] = []
 
   init(results: [Result]) {
@@ -206,12 +213,13 @@ private final class AppTestModelProvider: ModelProvider, @unchecked Sendable {
   }
 
   func stream(
-    profile _: ProviderProfile,
+    profile: ProviderProfile,
     apiKey: String,
     intent: RunIntent
   ) -> AsyncThrowingStream<ModelStreamEvent, Error> {
     let result = lock.withLock { () -> Result in
       recordedIntents.append(intent)
+      recordedModels.append(profile.model)
       recordedKeyPresence.append(!apiKey.isEmpty)
       return results.removeFirst()
     }
@@ -267,6 +275,10 @@ private final class AppTestModelProvider: ModelProvider, @unchecked Sendable {
     lock.withLock { recordedIntents }
   }
 
+  var models: [String] {
+    lock.withLock { recordedModels }
+  }
+
   var keyPresence: [Bool] {
     lock.withLock { recordedKeyPresence }
   }
@@ -310,6 +322,230 @@ final class AppViewModelTests: XCTestCase {
       text: "Fixture body",
       targetLanguage: "简体中文"
     ))
+  }
+
+  func testRestartedPreferencesDriveFirstSummaryAndTranslationWithoutOpeningSettings() async throws {
+    let suite = "com.syc.linkdigest.restart-run-preferences.\(UUID().uuidString)"
+    defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+    let persisted = try ModelPreferences(
+      summaryPrompt: "重启后首次总结使用的自定义 prompt",
+      targetLanguage: "Español"
+    )
+    let preferenceStore = UserDefaultsModelPreferencesStore(suiteName: suite)
+    try await preferenceStore.save(persisted)
+    let settings = ProviderSettingsViewModel(
+      configurationService: ProviderConfigurationService(
+        profileStore: AppProfileStore(profile: nil),
+        secretStore: AppSecretStore(secret: nil, failRead: false)
+      ),
+      provider: AppTestModelProvider(results: []),
+      preferencesStore: preferenceStore
+    )
+
+    await settings.load() // App bootstrap calls this before any Settings scene is opened.
+    let provider = AppTestModelProvider(results: [
+      .success([.delta("摘要"), .completed]),
+      .success([.delta("翻译"), .completed])
+    ])
+    let model = try makeModel(provider: provider)
+    model.receive(currentCapture())
+
+    await model.summarize(preferences: settings.runPreferences)
+    await waitUntil { model.runState == .completed(intent: .summarize, text: "摘要") }
+    await model.translate(preferences: settings.runPreferences)
+    await waitUntil { model.runState == .completed(intent: .translate, text: "翻译") }
+
+    XCTAssertEqual(provider.intents, [
+      .summarize(
+        title: "Fixture title",
+        text: "Fixture body",
+        prompt: ModelPreferences.summaryPrompt(
+          configuredPrompt: persisted.summaryPrompt,
+          outputLanguage: persisted.outputLanguage
+        )
+      ),
+      .translate(title: "Fixture title", text: "Fixture body", targetLanguage: persisted.targetLanguage)
+    ])
+  }
+
+  func testRestartedIndependentTranslationModelIsDisclosedAndUsedWithoutChangingSummaryModel() async throws {
+    let provider = AppTestModelProvider(results: [
+      .success([.delta("摘要"), .completed]),
+      .success([.delta("翻译"), .completed])
+    ])
+    let model = try makeModel(provider: provider)
+    model.receive(currentCapture())
+    let preferences = try ModelPreferences(
+      summaryPrompt: "custom",
+      outputLanguage: "简体中文",
+      translationModel: "translation-model"
+    )
+
+    await model.summarize(preferences: preferences)
+    await waitUntil { model.runState == .completed(intent: .summarize, text: "摘要") }
+    await model.translate(preferences: preferences)
+    XCTAssertEqual(model.dataDestinationDisclosure?.identity.model, "translation-model")
+    await model.confirmDataDestinationDisclosure()
+    await waitUntil { model.runState == .completed(intent: .translate, text: "翻译") }
+
+    XCTAssertEqual(provider.models, ["fixture-model", "translation-model"])
+    XCTAssertEqual(provider.intents.last, .translate(
+      title: "Fixture title", text: "Fixture body", targetLanguage: "简体中文"
+    ))
+  }
+
+  func testSameLanguageTranslationIsDisabledAndDirectActionDoesNotCallProvider() async throws {
+    let provider = AppTestModelProvider(results: [.success([.delta("unexpected"), .completed])])
+    let model = try makeModel(provider: provider)
+    model.receive(currentCapture(text: String(repeating: "这是中文正文。", count: 4)))
+    let preferences = try ModelPreferences(outputLanguage: "简体中文")
+
+    XCTAssertFalse(model.canTranslate(preferences: preferences))
+    await model.translate(preferences: preferences)
+
+    XCTAssertEqual(provider.callCount, 0)
+    XCTAssertEqual(model.dataDestinationNotice, "捕获内容与输出语言相同，无需翻译。")
+  }
+
+  func testAmbiguousScriptCapturesRemainTranslatableThroughActionEntry() async throws {
+    let cases: [(String, String)] = [
+      (String(repeating: "中", count: 24) + String(repeating: "a", count: 20), "简体中文"),
+      (String(repeating: "中", count: 16) + String(repeating: "a", count: 16), "English"),
+      (String(repeating: "a", count: 48) + "かな", "日本語"),
+      (String(repeating: "مرحبا", count: 8), "简体中文")
+    ]
+
+    for (index, fixture) in cases.enumerated() {
+      let provider = AppTestModelProvider(results: [.success([.delta("译文\(index)"), .completed])])
+      let model = try makeModel(provider: provider)
+      model.receive(currentCapture(text: fixture.0))
+      let preferences = try ModelPreferences(outputLanguage: fixture.1)
+
+      XCTAssertTrue(model.canTranslate(preferences: preferences), "fixture \(index) must remain available")
+      await model.translate(preferences: preferences)
+      await waitUntil { model.runState == .completed(intent: .translate, text: "译文\(index)") }
+      XCTAssertEqual(provider.callCount, 1, "fixture \(index) must reach Provider")
+    }
+  }
+
+  func testUnknownDominantCapturesWithLatinMarkersRemainTranslatableThroughActionEntry() async throws {
+    let latinMarker = "OpenAIBrandURL"
+    let fixtures = [
+      String(repeating: "مرحبا", count: 20) + latinMarker,
+      String(repeating: "Привет", count: 20) + latinMarker,
+      String(repeating: "नमस्ते", count: 20) + latinMarker
+    ]
+
+    for (index, fixture) in fixtures.enumerated() {
+      let provider = AppTestModelProvider(results: [.success([.delta("译文-unknown-\(index)"), .completed])])
+      let model = try makeModel(provider: provider)
+      model.receive(currentCapture(text: fixture))
+      let preferences = try ModelPreferences(outputLanguage: "English")
+
+      XCTAssertTrue(model.canTranslate(preferences: preferences), "unknown-dominant fixture \(index) must remain available")
+      await model.translate(preferences: preferences)
+      await waitUntil { model.runState == .completed(intent: .translate, text: "译文-unknown-\(index)") }
+      XCTAssertEqual(provider.callCount, 1, "unknown-dominant fixture \(index) must reach Provider")
+    }
+  }
+
+  func testHistoryRegenerationWithTemporaryModelWaitsForConfirmationAndUsesOnlyLocalSnapshot() async throws {
+    let localBody = "这是一段只存在于本地历史快照的正文。"
+    let detail = historyDetail(body: localBody)
+    let repository = AppHistoryRepository()
+    let provider = AppTestModelProvider(results: [.success([.delta("重新生成结果"), .completed])])
+    let model = try makeModel(provider: provider, repository: repository, consented: false)
+    let preferences = try ModelPreferences(outputLanguage: "English")
+
+    await model.summarize(
+      historyDetail: detail,
+      preferences: preferences,
+      modelOverride: "temporary-model"
+    )
+
+    XCTAssertEqual(provider.callCount, 0, "destination confirmation must precede Provider")
+    XCTAssertEqual(repository.acceptCaptureCallCount, 0, "history regeneration must not re-enter capture/fetch flow")
+    XCTAssertEqual(model.currentCapture?.document.text, localBody)
+    XCTAssertEqual(model.dataDestinationDisclosure?.identity.model, "temporary-model")
+
+    await model.confirmDataDestinationDisclosure()
+    await waitUntil { model.runState == .completed(intent: .summarize, text: "重新生成结果") }
+
+    XCTAssertEqual(provider.models, ["temporary-model"])
+    XCTAssertEqual(provider.intents, [
+      .summarize(
+        title: "历史快照",
+        text: localBody,
+        prompt: ModelPreferences.summaryPrompt(
+          configuredPrompt: preferences.summaryPrompt,
+          outputLanguage: preferences.outputLanguage
+        )
+      )
+    ])
+    let created = repository.createdRunCommands
+    XCTAssertEqual(created.count, 1)
+    XCTAssertEqual(created.first?.taskID, detail.task.id)
+    XCTAssertEqual(created.first?.snapshotID, detail.snapshots.last?.id)
+    XCTAssertEqual(repository.acceptCaptureCallCount, 0)
+  }
+
+  func testHistorySummaryAndTranslateUseEffectiveSnapshotPlacedLastByRepositoryProjection() async throws {
+    let original = historyDetail(body: "最终转写 A")
+    let effective = try XCTUnwrap(original.snapshots.first)
+    let laterHistorical = ContentSnapshot(
+      id: ContentSnapshotID(),
+      taskID: original.task.id,
+      sequence: 2,
+      envelopeCreatedAtMilliseconds: effective.envelopeCreatedAtMilliseconds + 1,
+      capturedAtMilliseconds: effective.capturedAtMilliseconds + 1,
+      sourceKind: effective.sourceKind,
+      sourceURL: effective.sourceURL,
+      title: "后来正文 B",
+      platform: effective.platform,
+      captureMethod: effective.captureMethod,
+      completeness: effective.completeness,
+      bodyText: "后来正文 B",
+      characterCount: 6,
+      bodySHA256: String(repeating: "b", count: 64),
+      sourceLabel: effective.sourceLabel,
+      usedCookie: false
+    )
+    let detail = HistoryDetailProjection(
+      task: original.task,
+      snapshots: [laterHistorical, effective],
+      runs: []
+    )
+    let preferences = try ModelPreferences(outputLanguage: "English")
+
+    let summaryRepository = AppHistoryRepository()
+    let summaryProvider = AppTestModelProvider(results: [.success([.delta("摘要"), .completed])])
+    let summaryModel = try makeModel(provider: summaryProvider, repository: summaryRepository)
+    await summaryModel.summarize(historyDetail: detail, preferences: preferences)
+    await waitUntil { summaryModel.runState == .completed(intent: .summarize, text: "摘要") }
+    XCTAssertEqual(summaryModel.runState, .completed(intent: .summarize, text: "摘要"))
+
+    let translationRepository = AppHistoryRepository()
+    let translationProvider = AppTestModelProvider(results: [.success([.delta("译文"), .completed])])
+    let translationModel = try makeModel(provider: translationProvider, repository: translationRepository)
+    await translationModel.translate(historyDetail: detail, preferences: preferences)
+    await waitUntil { translationModel.runState == .completed(intent: .translate, text: "译文") }
+    XCTAssertEqual(translationModel.runState, .completed(intent: .translate, text: "译文"))
+
+    XCTAssertEqual(summaryRepository.createdRunCommands.map(\.snapshotID), [effective.id])
+    XCTAssertEqual(translationRepository.createdRunCommands.map(\.snapshotID), [effective.id])
+    XCTAssertEqual(summaryProvider.intents, [
+      .summarize(
+        title: "历史快照",
+        text: "最终转写 A",
+        prompt: ModelPreferences.summaryPrompt(
+          configuredPrompt: preferences.summaryPrompt,
+          outputLanguage: preferences.outputLanguage
+        )
+      )
+    ])
+    XCTAssertEqual(translationProvider.intents, [
+      .translate(title: "历史快照", text: "最终转写 A", targetLanguage: "English"),
+    ])
   }
 
   func testFirstRunRequiresDisclosureAndCancelNeverCallsProvider() async throws {
@@ -728,6 +964,121 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertFalse(model.runResultText.contains(submittedSecret))
   }
 
+  func testFormalRunUsesFixedProviderRejectionCopy() async throws {
+    let submittedSecret = "sentinel-\(UUID().uuidString)"
+    let responseBodyMarker = "provider-body-marker-\(UUID().uuidString)"
+    let failure = ModelProviderFailure(
+      code: .providerRequestRejected,
+      retryable: false,
+      hadOutput: false
+    )
+    let provider = AppTestModelProvider(results: [.failure(prefix: nil, failure)])
+    let model = try makeModel(provider: provider, secret: submittedSecret)
+    model.receive(currentCapture())
+
+    await model.summarize()
+    await waitUntil {
+      model.runState == .failed(
+        intent: .summarize,
+        code: ModelProviderErrorCode.providerRequestRejected.rawValue
+      )
+    }
+
+    XCTAssertEqual(
+      model.runStatusText,
+      V02ErrorCatalog.presentation(for: ModelProviderErrorCode.providerRequestRejected.rawValue).visibleText
+    )
+    XCTAssertFalse(model.runStatusText.contains(responseBodyMarker))
+    XCTAssertFalse(model.runStatusText.contains(submittedSecret))
+  }
+
+  func testFormalRunProviderFailureCodesUseFixedLocalCopy() async throws {
+    let responseBodyMarker = "provider-body-marker-\(UUID().uuidString)"
+    for code in [
+      ModelProviderErrorCode.providerBillingLimited,
+      .modelNotFound,
+      .endpointNotFound,
+      .providerRequestRejected,
+      .providerUnavailable,
+      .networkInterrupted
+    ] {
+      let failure = ModelProviderFailure(code: code, retryable: false, hadOutput: false)
+      let model = try makeModel(
+        provider: AppTestModelProvider(results: [.failure(prefix: nil, failure)]),
+        secret: "not-a-real-key"
+      )
+      model.receive(currentCapture())
+
+      await model.summarize()
+      await waitUntil {
+        model.runState == .failed(intent: .summarize, code: code.rawValue)
+      }
+
+      XCTAssertEqual(model.runStatusText, V02ErrorCatalog.presentation(for: code.rawValue).visibleText)
+      XCTAssertFalse(model.runStatusText.contains(responseBodyMarker))
+      XCTAssertFalse(model.runStatusText.contains(code.rawValue))
+    }
+  }
+
+  func testFormalRunNeverRendersProviderBodyFixtures() async throws {
+    let leakedValue = "leak-marker-\(UUID().uuidString)"
+    let fixtures: [(name: String, payload: String)] = [
+      ("newline key", "ordinary text\nKey: \(leakedValue)"),
+      ("key assignment", "key=\(leakedValue)"),
+      ("secret assignment", "secret=\(leakedValue)"),
+      ("token assignment", "token=\(leakedValue)"),
+      ("password assignment", "password=\(leakedValue)"),
+      ("URL userinfo", "https://user:\(leakedValue)@provider.example.test/help"),
+      ("username-only URL userinfo", "https://\(leakedValue)@provider.example.test/help"),
+      ("URL query key", "https://provider.example.test/help?key=\(leakedValue)"),
+      ("access token", "access_token=\(leakedValue)"),
+      ("client secret", "client_secret: \(leakedValue)"),
+      ("private key", "privateKey=\(leakedValue)"),
+      ("access key", "accessKey=\(leakedValue)"),
+      ("refresh token", "refreshToken=\(leakedValue)"),
+      ("JSON client secret", #"{"client_secret":"\#(leakedValue)"}"#),
+      ("folded URL userinfo", "ordinary https://user:\n\(leakedValue)@host.test/help"),
+      ("X API key", "X_API_KEY=\(leakedValue)"),
+      ("API key hyphen", "api-key=\(leakedValue)"),
+      ("session token", "sessionToken=\(leakedValue)"),
+      ("bare bearer", "Bearer \(leakedValue)"),
+      ("pwd assignment", "pwd=\(leakedValue)"),
+      ("base64 prefix", "Base64: \(leakedValue)"),
+      ("normalized sk project", "sk-proj-\(leakedValue)")
+    ]
+
+    for fixture in fixtures {
+      let failure = ModelProviderFailure(
+        code: .providerRequestRejected,
+        retryable: false,
+        hadOutput: false
+      )
+      let model = try makeModel(
+        provider: AppTestModelProvider(results: [.failure(prefix: nil, failure)]),
+        secret: "not-a-real-key"
+      )
+      model.receive(currentCapture())
+
+      await model.summarize()
+      await waitUntil {
+        model.runState == .failed(
+          intent: .summarize,
+          code: ModelProviderErrorCode.providerRequestRejected.rawValue
+        )
+      }
+
+      XCTAssertFalse(String(describing: model.runState).contains(leakedValue), fixture.name)
+      XCTAssertFalse(model.runStatusText.contains(leakedValue), fixture.name)
+      XCTAssertFalse(model.runResultText.contains(leakedValue), fixture.name)
+      XCTAssertFalse(model.runStatusText.contains(fixture.payload), fixture.name)
+      XCTAssertEqual(
+        model.runStatusText,
+        V02ErrorCatalog.presentation(for: ModelProviderErrorCode.providerRequestRejected.rawValue).visibleText,
+        fixture.name
+      )
+    }
+  }
+
   func testProviderEchoedSecretIsRedactedFromVisibleRunState() async throws {
     let submittedSecret = "sentinel-\(UUID().uuidString)"
     let failure = ModelProviderFailure(
@@ -865,7 +1216,7 @@ final class AppViewModelTests: XCTestCase {
         snapshotID: existing.snapshotID,
         intent: .summarize
       )
-      await orchestrator.start(request: request, capture: existing.envelope) { runID, state in
+      await orchestrator.start(request: request, capture: existing.wireEnvelope) { runID, state in
         await model.receiveRunState(runID: runID, state: state)
         if case .storageError = state {
           storageErrorContinuation.yield(state)
@@ -1030,7 +1381,7 @@ final class AppViewModelTests: XCTestCase {
         snapshotID: authorityCapture.snapshotID,
         intent: .summarize
       ),
-      capture: authorityCapture.envelope
+      capture: authorityCapture.wireEnvelope
     ) { _, _ in }
 
     let capture = currentCapture()
@@ -1133,6 +1484,40 @@ final class AppViewModelTests: XCTestCase {
       envelope: capture(title: title, text: text),
       taskID: TaskID(),
       snapshotID: ContentSnapshotID()
+    )
+  }
+
+  private func historyDetail(body: String) -> HistoryDetailProjection {
+    let taskID = TaskID()
+    let snapshotID = ContentSnapshotID()
+    let snapshot = ContentSnapshot(
+      id: snapshotID,
+      taskID: taskID,
+      sequence: 1,
+      envelopeCreatedAtMilliseconds: 1_784_937_600_000,
+      capturedAtMilliseconds: 1_784_937_600_000,
+      sourceKind: CapturedDocument.Origin.browserCapture.rawValue,
+      sourceURL: "https://example.test/local-history",
+      title: "历史快照",
+      platform: "fixture",
+      captureMethod: "rendered_dom",
+      completeness: "full_article",
+      bodyText: body,
+      characterCount: body.unicodeScalars.count,
+      bodySHA256: String(repeating: "a", count: 64),
+      sourceLabel: "本地测试",
+      usedCookie: false
+    )
+    return HistoryDetailProjection(
+      task: .init(
+        id: taskID,
+        canonicalURL: snapshot.sourceURL,
+        canonicalizationVersion: 1,
+        createdAtMilliseconds: snapshot.envelopeCreatedAtMilliseconds,
+        updatedAtMilliseconds: snapshot.capturedAtMilliseconds
+      ),
+      snapshots: [snapshot],
+      runs: []
     )
   }
 

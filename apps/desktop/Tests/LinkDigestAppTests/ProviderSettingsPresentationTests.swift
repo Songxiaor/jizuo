@@ -1,0 +1,125 @@
+import AppKit
+import Foundation
+import XCTest
+import LinkDigestCore
+@testable import LinkDigestApp
+
+final class ProviderSettingsPresentationTests: XCTestCase {
+  private let providerAssets = [
+    "bailian.svg", "deepinfra.svg", "deepseek.svg", "groq.svg", "ollama.svg",
+    "openai.svg", "openrouter.svg", "siliconflow.svg", "zhipu.svg",
+  ]
+
+  func testProviderCatalogMapsEveryCuratedPresetToAnExactBundledAsset() throws {
+    let expected: [ProviderPreset: String] = [
+      .openAI: "openai", .deepSeek: "deepseek", .deepInfra: "deepinfra",
+      .openRouter: "openrouter", .groq: "groq", .siliconFlow: "siliconflow",
+      .dashScope: "bailian", .zhipu: "zhipu", .ollama: "ollama",
+    ]
+    let directory = repositoryRoot().appendingPathComponent("apps/desktop/Assets/ProviderIcons", isDirectory: true)
+
+    XCTAssertEqual(ProviderIconCatalog.assetDirectory, "ProviderIcons")
+    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path).sorted(), providerAssets)
+    for (preset, asset) in expected {
+      XCTAssertEqual(ProviderIconCatalog.assetName(for: preset), asset)
+      XCTAssertTrue(FileManager.default.fileExists(atPath: directory.appendingPathComponent(asset + ".svg").path))
+    }
+    XCTAssertNil(ProviderIconCatalog.assetName(for: .custom))
+  }
+
+  func testProviderCatalogRasterizesEveryOfficialSVGAndHasStableFallbacks() throws {
+    let directory = repositoryRoot().appendingPathComponent("apps/desktop/Assets/ProviderIcons", isDirectory: true)
+    for name in providerAssets {
+      let image = try XCTUnwrap(ProviderIconCatalog.crispenedIcon(from: directory.appendingPathComponent(name)))
+      XCTAssertEqual(image.size.width, ProviderIconCatalog.displayPointSize)
+      XCTAssertEqual(image.size.height, ProviderIconCatalog.displayPointSize)
+    }
+    XCTAssertEqual(ProviderIconCatalog.fallbackInitial(for: .custom), "自")
+    XCTAssertEqual(ProviderIconCatalog.fallbackInitial(for: "example provider"), "E")
+    XCTAssertEqual(
+      ProviderIconCatalog.fallbackColor(for: "example provider"),
+      ProviderIconCatalog.fallbackColor(for: "example provider")
+    )
+  }
+
+  func testProviderCatalogWritesRasterizationComparisonPNG() throws {
+    let orderedNames = ["openai", "deepseek", "deepinfra", "openrouter", "groq", "siliconflow", "bailian", "zhipu", "ollama"]
+    let directory = repositoryRoot().appendingPathComponent("apps/desktop/Assets/ProviderIcons", isDirectory: true)
+    let cell: CGFloat = 64
+    let padding: CGFloat = 8
+    let width = Int((cell + padding) * CGFloat(orderedNames.count) + padding)
+    let height = Int(cell + padding * 2)
+    let rep = try XCTUnwrap(NSBitmapImageRep(
+      bitmapDataPlanes: nil,
+      pixelsWide: width,
+      pixelsHigh: height,
+      bitsPerSample: 8,
+      samplesPerPixel: 4,
+      hasAlpha: true,
+      isPlanar: false,
+      colorSpaceName: .deviceRGB,
+      bytesPerRow: 0,
+      bitsPerPixel: 0
+    ))
+
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: rep)
+    NSColor.white.setFill()
+    NSRect(x: 0, y: 0, width: width, height: height).fill()
+    for (index, name) in orderedNames.enumerated() {
+      let icon = try XCTUnwrap(ProviderIconCatalog.crispenedIcon(from: directory.appendingPathComponent(name + ".svg")))
+      icon.draw(in: NSRect(x: padding + (cell + padding) * CGFloat(index), y: padding, width: cell, height: cell))
+    }
+    NSGraphicsContext.restoreGraphicsState()
+
+    let output = FileManager.default.temporaryDirectory
+      .appendingPathComponent("provider-icons-rendercheck-\(UUID().uuidString).png")
+    defer { try? FileManager.default.removeItem(at: output) }
+    try XCTUnwrap(rep.representation(using: .png, properties: [:])).write(to: output)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: output.path))
+  }
+
+  func testServiceTabUsesGroupedRowsWithOneConnectionLabelPerField() throws {
+    let source = try String(contentsOf: repositoryRoot().appendingPathComponent("apps/desktop/Sources/LinkDigestApp/ProviderSettingsView.swift"), encoding: .utf8)
+    let service = section(in: source, from: "private var serviceTab", to: "// MARK: - 生成与数据")
+
+    XCTAssertTrue(service.contains(".formStyle(.grouped)"))
+    XCTAssertFalse(service.contains("LazyVGrid"))
+    XCTAssertFalse(service.contains("providerTile"))
+    XCTAssertFalse(service.contains("capabilityCard"))
+    XCTAssertEqual(service.components(separatedBy: "LabeledContent(\"Base URL\")").count - 1, 1)
+    XCTAssertEqual(service.components(separatedBy: "LabeledContent(\"API Key\")").count - 1, 1)
+    XCTAssertTrue(service.contains("SecureField(\"输入密钥\""))
+    XCTAssertFalse(service.contains("SecureField(\"输入 API Key\""))
+    XCTAssertTrue(source.contains("ProviderIconCatalog.image(for: preset)"))
+  }
+
+  func testReleasePipelinesFreezeAndBindTheExactProviderIconSet() throws {
+    let root = repositoryRoot()
+    let release = try String(contentsOf: root.appendingPathComponent("scripts/native-host/release_unit.py"), encoding: .utf8)
+    let local = try String(contentsOf: root.appendingPathComponent("scripts/native-host/local_test_release.py"), encoding: .utf8)
+    let expectedTuple = "(\"bailian.svg\", \"deepinfra.svg\", \"deepseek.svg\", \"groq.svg\", \"ollama.svg\", \"openai.svg\", \"openrouter.svg\", \"siliconflow.svg\", \"zhipu.svg\")"
+
+    for source in [release, local] {
+      XCTAssertTrue(source.contains("PROVIDER_ICONS_DIRECTORY = \"ProviderIcons\""))
+      XCTAssertTrue(source.contains("PROVIDER_ICON_FILES = \(expectedTuple)"))
+      XCTAssertTrue(source.contains("verify_provider_icons"))
+      XCTAssertTrue(source.contains("providerIcons"))
+    }
+    XCTAssertTrue(release.contains("resources / PROVIDER_ICONS_DIRECTORY"))
+    XCTAssertTrue(release.contains("PROVIDER_ICONS_DIRECTORY}:") || release.contains("PROVIDER_ICONS_DIRECTORY}"))
+    XCTAssertTrue(local.contains("PROVIDER_ICON_FILES != r4a.PROVIDER_ICON_FILES"))
+  }
+
+  private func repositoryRoot() -> URL {
+    URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .deletingLastPathComponent()
+  }
+
+  private func section(in source: String, from start: String, to end: String) -> String {
+    let afterStart = source.range(of: start).map { source[$0.lowerBound...] } ?? Substring()
+    return afterStart.range(of: end).map { String(afterStart[..<$0.lowerBound]) } ?? String(afterStart)
+  }
+}

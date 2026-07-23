@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "requestId": "fixture-valid-media-1",
+  "createdAt": "2026-07-19T12:00:00Z",
+  "idempotencyKey": "fixture:valid:media:1",
+  "source": {
+    "kind": "browser_capture",
+    "url": "https://www.douyin.com/video/7000000000000000000",
+    "title": "Fixture Douyin Clip",
+    "platform": "douyin"
+  },
+  "capture": {
+    "method": "rendered_dom",
+    "text": "Fixture douyin description",
+    "characterCount": 26,
+    "completeness": "full_article",
+    "capturedAt": "2026-07-19T12:00:00Z"
+  },
+  "evidence": {
+    "sourceLabel": "Current page DOM",
+    "usedCookie": false
+  },
+  "media": {
+    "platform": "douyin",
+    "videoURL": "https://cdn.example.test/fixture-video.mp4",
+    "coverURL": "https://cdn.example.test/fixture-cover.jpg",
+    "durationSeconds": 12.5,
+    "author": "fixture-author"
+  }
+}

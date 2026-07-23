@@ -1,0 +1,14 @@
+<!--
+  Synthetic fixture for PRD §12 sample intentional-fail-02
+  ("正文不足的纯客户端骨架页" - insufficient-body page). Not a scrape of any
+  real site; reproduces a client-side-rendered app shell that ships no
+  server-rendered article text at all (only a mount point and a bootstrap
+  script), which the extractor strips down to nothing.
+-->
+<html>
+<head><title>Loading…</title></head>
+<body>
+  <div id="root"></div>
+  <script>window.__bootstrap && window.__bootstrap();</script>
+</body>
+</html>

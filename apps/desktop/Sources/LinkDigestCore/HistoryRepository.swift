@@ -38,9 +38,46 @@ public enum HistoryRepositoryAccessMode: Sendable, Equatable {
 }
 
 public struct AcceptCaptureCommand: Sendable, Equatable {
-  public let envelope: CaptureEnvelopeV1
+  public let document: CapturedDocument
+  public let provenance: CaptureDeliveryProvenance
   public let receivedAtMilliseconds: Int64
-  public init(envelope: CaptureEnvelopeV1, receivedAtMilliseconds: Int64) { self.envelope = envelope; self.receivedAtMilliseconds = receivedAtMilliseconds }
+  public init(envelope: CaptureEnvelopeV1, receivedAtMilliseconds: Int64) throws {
+    do {
+      document = .init(wire: envelope)
+      provenance = try .browserV1(envelope)
+      self.receivedAtMilliseconds = receivedAtMilliseconds
+    } catch {
+      throw RepositoryFailure.invalidInput
+    }
+  }
+  public init(envelope: CaptureEnvelopeV2, receivedAtMilliseconds: Int64) throws {
+    do {
+      document = .init(wire: envelope)
+      provenance = try .browserV2(envelope)
+      self.receivedAtMilliseconds = receivedAtMilliseconds
+    } catch {
+      throw RepositoryFailure.invalidInput
+    }
+  }
+  public init(document: CapturedDocument, receivedAtMilliseconds: Int64) throws {
+    do {
+      self.document = document
+      provenance = try .localDocument(document)
+      self.receivedAtMilliseconds = receivedAtMilliseconds
+    } catch {
+      throw RepositoryFailure.invalidInput
+    }
+  }
+
+  init(
+    validatedDocument document: CapturedDocument,
+    provenance: CaptureDeliveryProvenance,
+    receivedAtMilliseconds: Int64
+  ) {
+    self.document = document
+    self.provenance = provenance
+    self.receivedAtMilliseconds = receivedAtMilliseconds
+  }
 }
 
 public struct AcceptCaptureResult: Sendable, Equatable {
@@ -51,6 +88,65 @@ public struct AcceptCaptureResult: Sendable, Equatable {
   public let deliveryWasReplayed: Bool
   public init(taskID: TaskID, snapshotID: ContentSnapshotID, taskWasCreated: Bool, snapshotWasCreated: Bool, deliveryWasReplayed: Bool) {
     self.taskID = taskID; self.snapshotID = snapshotID; self.taskWasCreated = taskWasCreated; self.snapshotWasCreated = snapshotWasCreated; self.deliveryWasReplayed = deliveryWasReplayed
+  }
+}
+
+public struct BatchDeleteResult: Sendable, Equatable {
+  public let requestedTaskIDs: [TaskID]
+  public let deletedTaskIDs: [TaskID]
+  public let failedTaskIDs: [TaskID]
+
+  public init(
+    requestedTaskIDs: [TaskID],
+    deletedTaskIDs: [TaskID],
+    failedTaskIDs: [TaskID]
+  ) {
+    self.requestedTaskIDs = requestedTaskIDs
+    self.deletedTaskIDs = deletedTaskIDs
+    self.failedTaskIDs = failedTaskIDs
+  }
+}
+
+public struct CompleteMediaTranscriptionCommand: Sendable, Equatable {
+  public let taskID: TaskID
+  public let attempt: TranscriptionAttemptToken
+  public let document: CapturedDocument
+  public let evidence: TranscriptionCompletionEvidence
+  public let receivedAtMilliseconds: Int64
+  public init(
+    taskID: TaskID,
+    attempt: TranscriptionAttemptToken,
+    document: CapturedDocument,
+    evidence: TranscriptionCompletionEvidence,
+    receivedAtMilliseconds: Int64
+  ) {
+    self.taskID = taskID
+    self.attempt = attempt
+    self.document = document
+    self.evidence = evidence
+    self.receivedAtMilliseconds = receivedAtMilliseconds
+  }
+}
+
+public struct CompleteTaskTranscriptionCommand: Sendable, Equatable {
+  public let taskID: TaskID
+  public let attempt: TaskTranscriptionAttemptToken
+  public let document: CapturedDocument
+  public let evidence: TranscriptionCompletionEvidence
+  public let receivedAtMilliseconds: Int64
+
+  public init(
+    taskID: TaskID,
+    attempt: TaskTranscriptionAttemptToken,
+    document: CapturedDocument,
+    evidence: TranscriptionCompletionEvidence,
+    receivedAtMilliseconds: Int64
+  ) {
+    self.taskID = taskID
+    self.attempt = attempt
+    self.document = document
+    self.evidence = evidence
+    self.receivedAtMilliseconds = receivedAtMilliseconds
   }
 }
 
@@ -122,8 +218,141 @@ public protocol HistoryRepository: Sendable {
   func savePartialArtifact(_ command: SavePartialArtifactCommand) throws
   func finishRun(_ command: FinishRunCommand) throws
   func recoverInterruptedRuns(at milliseconds: Int64) throws -> Int
+  func containsCanonicalURL(_ canonicalURL: CanonicalURL) throws -> Bool
   func historyPage(limit: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage
+  func historyPage(limit: Int, after cursor: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage
+  func navigationCounts() throws -> HistoryNavigationCounts
   func detail(taskID: TaskID) throws -> HistoryDetailProjection
   func exportProjection(taskID: TaskID) throws -> HistoryExportProjection
+  func allTags() throws -> [HistoryTag]
+  func addTags(_ rawNames: [String], to taskID: TaskID) throws -> [HistoryTag]
+  func removeTag(normalizedName: String, from taskID: TaskID) throws
   func deleteTask(taskID: TaskID) throws
+  func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult
+  func attachMedia(_ command: AttachMediaCommand) throws
+  func mediaAsset(taskID: TaskID) throws -> MediaAsset?
+  func beginMediaTranscription(taskID: TaskID, mediaID: String) throws -> TranscriptionAttemptToken
+  func updateMediaTranscriptionStatus(
+    taskID: TaskID,
+    attempt: TranscriptionAttemptToken,
+    status: TranscriptionStatusMutation
+  ) throws -> TranscriptionStatusUpdateResult
+  func completeMediaTranscription(_ command: CompleteMediaTranscriptionCommand) throws -> CompleteMediaTranscriptionResult
+  func beginTaskTranscription(taskID: TaskID, createdAtMilliseconds: Int64) throws -> TaskTranscriptionAttemptToken
+  func updateTaskTranscriptionStatus(
+    taskID: TaskID,
+    attempt: TaskTranscriptionAttemptToken,
+    status: TaskTranscriptionStatusMutation,
+    updatedAtMilliseconds: Int64
+  ) throws -> TranscriptionStatusUpdateResult
+  func completeTaskTranscription(_ command: CompleteTaskTranscriptionCommand) throws -> CompleteTaskTranscriptionResult
+  func isMediaContentReferenced(contentSHA256: String) throws -> Bool
+  /// 用户手动校对后的转写文本原地写回该 snapshot；只允许修改正文，
+  /// 不改 snapshot 身份、序号或来源标记。找不到匹配行时抛 `notFound`。
+  func updateSnapshotBodyText(
+    taskID: TaskID,
+    snapshotID: ContentSnapshotID,
+    bodyText: String,
+    updatedAtMilliseconds: Int64
+  ) throws
+}
+
+public extension HistoryRepository {
+  /// Clipboard suggestions must fail closed when history cannot be queried.
+  /// The production repository overrides this with an indexed exact lookup.
+  func containsCanonicalURL(_: CanonicalURL) throws -> Bool { throw RepositoryFailure.unavailable }
+
+  func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult {
+    _ = taskIDs
+    throw RepositoryFailure.unavailable
+  }
+
+  /// Read-only / unavailable repositories deliberately return an empty rail:
+  /// navigation must never make an otherwise readable list fail to load.
+  func navigationCounts() throws -> HistoryNavigationCounts { .init() }
+
+  /// Default no-op so older test doubles stay source-compatible until they opt in.
+  func attachMedia(_ command: AttachMediaCommand) throws {
+    _ = command
+    throw RepositoryFailure.unavailable
+  }
+
+  func mediaAsset(taskID: TaskID) throws -> MediaAsset? {
+    _ = taskID
+    return nil
+  }
+
+  func beginMediaTranscription(taskID: TaskID, mediaID: String) throws -> TranscriptionAttemptToken {
+    _ = taskID
+    _ = mediaID
+    throw RepositoryFailure.unavailable
+  }
+
+  /// Default failure keeps older test doubles source-compatible while ensuring
+  /// production callers never mistake an ignored status update for persistence.
+  func updateMediaTranscriptionStatus(
+    taskID: TaskID,
+    attempt: TranscriptionAttemptToken,
+    status: TranscriptionStatusMutation
+  ) throws -> TranscriptionStatusUpdateResult {
+    _ = taskID
+    _ = attempt
+    _ = status
+    throw RepositoryFailure.unavailable
+  }
+
+  func completeMediaTranscription(_ command: CompleteMediaTranscriptionCommand) throws -> CompleteMediaTranscriptionResult {
+    _ = command
+    throw RepositoryFailure.unavailable
+  }
+
+  func beginTaskTranscription(taskID: TaskID, createdAtMilliseconds: Int64) throws -> TaskTranscriptionAttemptToken {
+    _ = taskID
+    _ = createdAtMilliseconds
+    throw RepositoryFailure.unavailable
+  }
+
+  func updateTaskTranscriptionStatus(
+    taskID: TaskID,
+    attempt: TaskTranscriptionAttemptToken,
+    status: TaskTranscriptionStatusMutation,
+    updatedAtMilliseconds: Int64
+  ) throws -> TranscriptionStatusUpdateResult {
+    _ = taskID
+    _ = attempt
+    _ = status
+    _ = updatedAtMilliseconds
+    throw RepositoryFailure.unavailable
+  }
+
+  func completeTaskTranscription(_ command: CompleteTaskTranscriptionCommand) throws -> CompleteTaskTranscriptionResult {
+    _ = command
+    throw RepositoryFailure.unavailable
+  }
+
+  func isMediaContentReferenced(contentSHA256: String) throws -> Bool {
+    _ = contentSHA256
+    return false
+  }
+}
+
+public extension HistoryRepository {
+  /// Existing test doubles and alternate repositories can retain their old
+  /// paging implementation until they opt into local SQL filtering.
+  func historyPage(limit: Int, after cursor: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage {
+    guard filter == .none else { throw RepositoryFailure.unavailable }
+    return try historyPage(limit: limit, after: cursor)
+  }
+
+  func allTags() throws -> [HistoryTag] { [] }
+  func addTags(_: [String], to _: TaskID) throws -> [HistoryTag] { throw RepositoryFailure.unavailable }
+  func removeTag(normalizedName _: String, from _: TaskID) throws { throw RepositoryFailure.unavailable }
+
+  /// 转写校对编辑需要真实持久化支持；旧测试替身默认视为不可用。
+  func updateSnapshotBodyText(
+    taskID _: TaskID,
+    snapshotID _: ContentSnapshotID,
+    bodyText _: String,
+    updatedAtMilliseconds _: Int64
+  ) throws { throw RepositoryFailure.unavailable }
 }

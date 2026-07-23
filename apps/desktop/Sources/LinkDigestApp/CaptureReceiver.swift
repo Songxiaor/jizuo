@@ -3,9 +3,60 @@ import LinkDigestCore
 import LinkDigestTransport
 
 struct CurrentCapture: Sendable, Equatable {
-  let envelope: CaptureEnvelopeV1
+  let document: CapturedDocument
+  let wireEnvelope: CaptureEnvelopeV1?
+  let wireEnvelopeV2: CaptureEnvelopeV2?
+  let mediaDescriptor: MediaDescriptor?
   let taskID: TaskID
   let snapshotID: ContentSnapshotID
+
+  init(envelope: CaptureEnvelopeV1, taskID: TaskID, snapshotID: ContentSnapshotID) {
+    document = .init(wire: envelope)
+    wireEnvelope = envelope
+    wireEnvelopeV2 = nil
+    mediaDescriptor = envelope.media.map {
+      MediaDescriptor(
+        kind: .directFile,
+        pageURL: envelope.source.url,
+        canonicalURL: envelope.source.url,
+        platform: $0.platform,
+        ephemeralPlaybackURL: $0.videoURL,
+        posterURL: $0.coverURL,
+        durationSeconds: $0.durationSeconds,
+        author: $0.author,
+        transcriptionCapability: .supported,
+        selectionReason: .singleCandidate,
+        playbackState: .unknown
+      )
+    }
+    self.taskID = taskID
+    self.snapshotID = snapshotID
+  }
+
+  init(envelope: CaptureEnvelopeV2, taskID: TaskID, snapshotID: ContentSnapshotID) {
+    document = .init(wire: envelope)
+    wireEnvelope = nil
+    wireEnvelopeV2 = envelope
+    mediaDescriptor = envelope.media
+    self.taskID = taskID
+    self.snapshotID = snapshotID
+  }
+
+  init(document: CapturedDocument, taskID: TaskID, snapshotID: ContentSnapshotID) {
+    self.document = document
+    wireEnvelope = nil
+    wireEnvelopeV2 = nil
+    mediaDescriptor = nil
+    self.taskID = taskID
+    self.snapshotID = snapshotID
+  }
+
+  /// Browser media stays session-only until the user taps “保存到本地”. Manual
+  /// source adapters keep their established explicit local-ingest callback.
+  var shouldAutomaticallyPersistLegacyMedia: Bool {
+    document.media != nil && document.origin != .browserCapture
+  }
+
 }
 
 struct CaptureReceiver: Sendable {
@@ -28,9 +79,9 @@ struct CaptureReceiver: Sendable {
   }
 
   func process(_ data: Data) async -> NativeResponse {
-    let envelope: CaptureEnvelopeV1
+    let wire: CaptureWireEnvelope
     do {
-      envelope = try CaptureValidator.decode(data)
+      wire = try CaptureWireEnvelope.decode(data)
     } catch let issue as CaptureValidationError {
       return .error(appError(
         requestID: "app-receiver",
@@ -49,58 +100,35 @@ struct CaptureReceiver: Sendable {
       ))
     }
 
-    guard let history else {
-      let availability = await storageWriteGate.currentAvailability()
-      return .error(storageError(
-        requestID: envelope.requestId,
-        code: availability.code ?? .unavailable
-      ))
-    }
-
-    let accepted: AcceptCaptureResult
+    let requestID = wire.requestId
     do {
-      accepted = try await storageWriteGate.performCaptureWrite(
-        operation: {
-          try history.acceptCapture(
-            envelope,
-            receivedAtMilliseconds: nowMilliseconds()
-          )
-        },
-        mapFailure: { error in
-          guard let failure = error as? RepositoryFailure else {
-            return .writeFailed
-          }
-          return StorageErrorMapper.map(failure, context: .write).code
-        }
+      let ingestor = CaptureIngestService(
+        history: history,
+        storageWriteGate: storageWriteGate,
+        nowMilliseconds: nowMilliseconds,
+        captureSink: captureSink
       )
-    } catch let failure as StorageWriteGateFailure {
-      if failure.didDegrade {
-        // The gate state was changed before its actor was released. UI
-        // publication is deliberately outside the synchronous write section.
-        await storageWriteGate.publishCurrentAvailability()
+      switch wire {
+      case let .v1(envelope):
+        _ = try await ingestor.ingest(envelope: envelope)
+      case let .v2(envelope):
+        _ = try await ingestor.ingest(envelope: envelope)
       }
+    } catch let failure as StorageWriteGateFailure {
       return .error(storageError(
-        requestID: envelope.requestId,
+        requestID: requestID,
         code: failure.code
       ))
     } catch {
-      let degraded = await storageWriteGate.degrade(.writeFailed)
-      await storageWriteGate.publishCurrentAvailability()
       return .error(storageError(
-        requestID: envelope.requestId,
-        code: degraded.code ?? .writeFailed
+        requestID: requestID,
+        code: .writeFailed
       ))
     }
-
-    await captureSink(.init(
-      envelope: envelope,
-      taskID: accepted.taskID,
-      snapshotID: accepted.snapshotID
-    ))
     return .taskAccepted(
       version: 1,
-      requestId: envelope.requestId,
-      characterCount: envelope.capture.characterCount
+      requestId: requestID,
+      characterCount: wire.characterCount
     )
   }
 

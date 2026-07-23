@@ -25,6 +25,20 @@ private actor WiringCaptureSink {
   func receive(_ value: CurrentCapture) { captures.append(value) }
 }
 
+private actor V2CaptureObservationSink {
+  private(set) var ephemeralPlaybackURL: String?
+  private(set) var legacyMediaWasPresent = false
+  private(set) var wireVersion: Int?
+  private(set) var taskID: TaskID?
+
+  func receive(_ value: CurrentCapture) {
+    ephemeralPlaybackURL = value.mediaDescriptor?.ephemeralPlaybackURL
+    legacyMediaWasPresent = value.document.media != nil
+    wireVersion = value.wireEnvelopeV2?.version ?? value.wireEnvelope?.version
+    taskID = value.taskID
+  }
+}
+
 private actor WiringAvailabilitySink {
   private(set) var values: [StorageAvailability] = []
   func receive(_ value: StorageAvailability) { values.append(value) }
@@ -40,6 +54,8 @@ private final class WiringRepository: HistoryRepository, @unchecked Sendable {
   private let recoveryBlocker: CommitBlocker?
   private let stateLock = NSLock()
   private var captureCalls = 0
+  private var acceptedCommandDescription = ""
+  private var acceptedProvenance: CaptureDeliveryProvenance?
 
   init(
     accessMode: HistoryRepositoryAccessMode = .writable,
@@ -65,8 +81,12 @@ private final class WiringRepository: HistoryRepository, @unchecked Sendable {
     self.recoveryBlocker = recoveryBlocker
   }
 
-  func acceptCapture(_: AcceptCaptureCommand) throws -> AcceptCaptureResult {
-    stateLock.withLock { captureCalls += 1 }
+  func acceptCapture(_ command: AcceptCaptureCommand) throws -> AcceptCaptureResult {
+    stateLock.withLock {
+      captureCalls += 1
+      acceptedCommandDescription = String(reflecting: command)
+      acceptedProvenance = command.provenance
+    }
     if let captureBlocker {
       log.append("capture-entry")
       captureBlocker.block()
@@ -76,6 +96,8 @@ private final class WiringRepository: HistoryRepository, @unchecked Sendable {
     return captureResult
   }
   var acceptCaptureCallCount: Int { stateLock.withLock { captureCalls } }
+  var lastAcceptedCommandDescription: String { stateLock.withLock { acceptedCommandDescription } }
+  var lastAcceptedProvenance: CaptureDeliveryProvenance? { stateLock.withLock { acceptedProvenance } }
   func createRun(_ command: CreateRunCommand) throws -> CreateRunResult { .init(runID: command.runID, wasCreated: true) }
   func markRunRunning(_: MarkRunRunningCommand) throws {}
   func savePartialArtifact(_: SavePartialArtifactCommand) throws {}
@@ -136,9 +158,9 @@ private final class ConcurrentCaptureRepository: HistoryRepository, @unchecked S
 
   func acceptCapture(_ command: AcceptCaptureCommand) throws -> AcceptCaptureResult {
     let identity = lock.withLock { () -> (TaskID, ContentSnapshotID) in
-      if let existing = identities[command.envelope.requestId] { return existing }
+      if let existing = identities[command.document.requestID] { return existing }
       let created = (TaskID(), ContentSnapshotID())
-      identities[command.envelope.requestId] = created
+      identities[command.document.requestID] = created
       return created
     }
     return .init(taskID: identity.0, snapshotID: identity.1, taskWasCreated: true, snapshotWasCreated: true, deliveryWasReplayed: false)
@@ -176,6 +198,26 @@ private final class ServerRecorder: @unchecked Sendable {
 }
 
 final class AppCompositionTests: XCTestCase {
+  func testSocketLifecycleStopUnlinksOwnedPathAndIsIdempotent() throws {
+    let path = "/tmp/linkdigest-composition-stop-\(UUID().uuidString).sock"
+    let lifecycle = UnixSocketServerLifecycle(path: path, statusSink: { _ in })
+    let gate = StorageWriteGate(availabilitySink: { _ in })
+    let receiver = CaptureReceiver(
+      history: nil,
+      storageWriteGate: gate,
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    defer { lifecycle.stop() }
+
+    try lifecycle.start(receiver)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+    lifecycle.stop()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+    lifecycle.stop()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+  }
+
   func testDebugSmokeRootInjectionNeverResolvesLiveApplicationSupport() throws {
     let expected = URL(fileURLWithPath: "/private/tmp/linkdigest-smoke-root", isDirectory: true)
     let resolved = try AppApplicationSupportRoot.resolve(
@@ -420,6 +462,239 @@ final class AppCompositionTests: XCTestCase {
 }
 
 final class CaptureReceiverTests: XCTestCase {
+  func testV1BrowserMediaRemainsRemoteUntilExplicitSave() throws {
+    let envelope = CaptureEnvelopeV1(
+      version: 1,
+      requestId: "v1-remote-default",
+      createdAt: "2026-07-20T00:00:00Z",
+      source: .init(kind: "browser_capture", url: "https://example.test/video", title: "Video", platform: "generic"),
+      capture: .init(method: "rendered_dom", text: "video body", characterCount: 10, completeness: "full_article", capturedAt: "2026-07-20T00:00:00Z"),
+      evidence: .init(sourceLabel: "Current page DOM", usedCookie: false),
+      media: .init(platform: "generic", videoURL: "https://media.example.test/video.mp4")
+    )
+    let current = CurrentCapture(
+      envelope: envelope,
+      taskID: TaskID(),
+      snapshotID: ContentSnapshotID()
+    )
+
+    XCTAssertEqual(current.mediaDescriptor?.kind, .directFile)
+    XCTAssertEqual(current.mediaDescriptor?.ephemeralPlaybackURL, envelope.media?.videoURL)
+    XCTAssertFalse(current.shouldAutomaticallyPersistLegacyMedia)
+  }
+  func testProgrammaticInvalidV2IsRejectedBeforeRepository() async throws {
+    let repository = WiringRepository()
+    let ingestor = CaptureIngestService(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    let invalid = CaptureEnvelopeV2(
+      requestId: "invalid-programmatic-v2",
+      createdAt: "2026-07-20T00:00:00Z",
+      source: .init(kind: "browser_capture", url: "https://example.test/video", title: "Video", platform: "generic"),
+      capture: .init(method: "rendered_dom", text: "invalid media", characterCount: 13, completeness: "full_article", capturedAt: "2026-07-20T00:00:00Z"),
+      evidence: .init(sourceLabel: "Current page DOM", usedCookie: false),
+      media: .init(
+        kind: .directFile,
+        pageURL: "https://example.test/video",
+        canonicalURL: "https://example.test/video",
+        platform: "generic",
+        transcriptionCapability: .supported
+      )
+    )
+
+    do {
+      _ = try await ingestor.ingest(envelope: invalid)
+      XCTFail("invalid V2 must fail before repository handoff")
+    } catch {}
+    XCTAssertEqual(repository.acceptCaptureCallCount, 0)
+  }
+
+  func testCaptureEntrySurfaceHasNoOptionalWireMixingOrFullWireHistoryServiceOverloads() throws {
+    let sources = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Sources")
+    let ingestSource = try String(contentsOf: sources.appendingPathComponent("LinkDigestApp/CaptureIngestService.swift"), encoding: .utf8)
+    let historySource = try String(contentsOf: sources.appendingPathComponent("LinkDigestCore/HistoryApplicationService.swift"), encoding: .utf8)
+
+    XCTAssertFalse(ingestSource.contains("wireEnvelope: CaptureEnvelopeV1?"))
+    XCTAssertFalse(ingestSource.contains("wireEnvelopeV2: CaptureEnvelopeV2?"))
+    XCTAssertTrue(ingestSource.contains("ingest(envelope: CaptureEnvelopeV1"))
+    XCTAssertTrue(ingestSource.contains("ingest(envelope: CaptureEnvelopeV2"))
+    XCTAssertTrue(historySource.contains("acceptCapture(_ command: AcceptCaptureCommand)"))
+    XCTAssertFalse(historySource.contains("acceptCapture(_ envelope: CaptureEnvelopeV1"))
+    XCTAssertFalse(historySource.contains("acceptCapture(_ envelope: CaptureEnvelopeV2"))
+    XCTAssertFalse(historySource.contains("acceptCapture(_ document: CapturedDocument"))
+  }
+
+  func testGRDBDefensivelyRejectsMismatchedClosedProvenanceBeforeAnyWrite() throws {
+    let root = URL(fileURLWithPath: "/private/tmp/linkdigest-m1-provenance-defense-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(directoryURL: root))
+    defer { try? repository.database.close() }
+    let document = CapturedDocument(
+      requestID: "manual-defense",
+      createdAt: "2026-07-20T00:00:00Z",
+      idempotencyKey: "manual-defense",
+      origin: .manualLink,
+      url: "https://example.test/manual-defense",
+      title: "Manual",
+      platform: "generic",
+      method: "public_html",
+      text: "manual defense body",
+      completeness: "full_article",
+      capturedAt: "2026-07-20T00:00:00Z",
+      sourceLabel: "manual fixture"
+    )
+    let malformed = [
+      CaptureDeliveryProvenance(
+        deliveryKey: "capture:v2:id:manual-defense",
+        captureContractVersion: 2,
+        semanticPayloadSHA256: String(repeating: "a", count: 64)
+      ),
+      CaptureDeliveryProvenance(
+        deliveryKey: "manual:v1:id:wrong-suffix",
+        captureContractVersion: 1,
+        semanticPayloadSHA256: String(repeating: "a", count: 64)
+      ),
+      CaptureDeliveryProvenance(
+        deliveryKey: "manual:v1:id:manual-defense",
+        captureContractVersion: 1,
+        semanticPayloadSHA256: String(repeating: "A", count: 64)
+      ),
+    ]
+
+    for provenance in malformed {
+      let command = AcceptCaptureCommand(
+        validatedDocument: document,
+        provenance: provenance,
+        receivedAtMilliseconds: 1
+      )
+      XCTAssertThrowsError(try repository.acceptCapture(command)) {
+        XCTAssertEqual($0 as? RepositoryFailure, .invalidInput)
+      }
+    }
+    XCTAssertEqual(
+      try DatabaseMaintenance(database: repository.database).counts(),
+      .init(tasks: 0, snapshots: 0, deliveries: 0, runs: 0, artifacts: 0)
+    )
+  }
+
+  func testV2EphemeralPlaybackURLStaysInCurrentCaptureAndOutOfPersistenceInput() async throws {
+    let sentinel = "https://media.example.test/video.mp4?ephemeral-sentinel=only-in-memory"
+    let posterSentinel = "https://images.example.test/poster.jpg?poster-sentinel=only-in-digest"
+    let expiresSentinel = "2099-07-20T00:01:00Z"
+    let mediaPageSentinel = "https://media-page.example.test/watch?descriptor-only=1"
+    let envelope = CaptureEnvelopeV2(
+      requestId: "v2-memory-only",
+      createdAt: "2026-07-20T00:00:00Z",
+      source: .init(kind: "browser_capture", url: "https://example.test/video", title: "Video", platform: "generic"),
+      capture: .init(method: "rendered_dom", text: "video page body", characterCount: 15, completeness: "full_article", capturedAt: "2026-07-20T00:00:00Z"),
+      evidence: .init(sourceLabel: "Current page DOM", usedCookie: false),
+      media: .init(
+        kind: .directFile,
+        pageURL: mediaPageSentinel,
+        canonicalURL: "https://example.test/video",
+        platform: "generic",
+        ephemeralPlaybackURL: sentinel,
+        mimeType: "video/mp4",
+        posterURL: posterSentinel,
+        expiresAt: expiresSentinel,
+        transcriptionCapability: .supported
+      )
+    )
+    let log = WiringEventLog()
+    let sink = V2CaptureObservationSink()
+    let repository = WiringRepository(log: log)
+    let receiver = CaptureReceiver(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { await sink.receive($0) }
+    )
+
+    guard case .taskAccepted = await receiver.process(try JSONEncoder().encode(envelope)) else {
+      return XCTFail("V2 should be accepted with the existing v1 ACK")
+    }
+    let observedURL = await sink.ephemeralPlaybackURL
+    let legacyMediaWasPresent = await sink.legacyMediaWasPresent
+    let wireVersion = await sink.wireVersion
+    XCTAssertEqual(observedURL, sentinel)
+    XCTAssertFalse(repository.lastAcceptedCommandDescription.contains(sentinel), "repository port must not observe the transient descriptor")
+    XCTAssertFalse(repository.lastAcceptedCommandDescription.contains(posterSentinel), "poster URL must be reduced to the irreversible digest before the repository port")
+    XCTAssertFalse(repository.lastAcceptedCommandDescription.contains(expiresSentinel))
+    XCTAssertFalse(repository.lastAcceptedCommandDescription.contains(mediaPageSentinel))
+    XCTAssertFalse(repository.lastAcceptedCommandDescription.contains("MediaDescriptor"))
+    XCTAssertEqual(repository.lastAcceptedProvenance?.captureContractVersion, 2)
+    XCTAssertTrue(repository.lastAcceptedProvenance?.deliveryKey.hasPrefix("capture:v2:") == true)
+    XCTAssertEqual(repository.lastAcceptedProvenance?.semanticPayloadSHA256.count, 64)
+    XCTAssertFalse(legacyMediaWasPresent)
+    XCTAssertEqual(wireVersion, 2)
+  }
+
+  func testV2EphemeralPlaybackURLNeverEntersTemporarySQLiteExportOrLegacyMediaTable() async throws {
+    let sentinel = "https://v3.douyinvod.com/video.mp4?ephemeral-sentinel=sqlite-scan"
+    let posterSentinel = "https://images.example.test/poster.jpg?poster-sentinel=sqlite-scan"
+    let expiresSentinel = "2099-07-20T00:02:00Z"
+    let root = URL(fileURLWithPath: "/private/tmp/linkdigest-m1-v2-persistence-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let location = LocalDatabaseLocation(directoryURL: root)
+    let repository = try GRDBHistoryRepository.open(at: location)
+    let history = HistoryApplicationService(repository: repository)
+    let sink = V2CaptureObservationSink()
+    let envelope = CaptureEnvelopeV2(
+      requestId: "v2-sqlite-only",
+      createdAt: "2026-07-20T00:00:00Z",
+      idempotencyKey: "v2-sqlite-only",
+      source: .init(kind: "browser_capture", url: "https://example.test/video", title: "Video", platform: "generic"),
+      capture: .init(method: "rendered_dom", text: "persistent page body", characterCount: 20, completeness: "full_article", capturedAt: "2026-07-20T00:00:00Z"),
+      evidence: .init(
+        sourceLabel: "Current page DOM + same-origin session detail",
+        usedCookie: true
+      ),
+      media: .init(
+        kind: .directFile,
+        pageURL: "https://example.test/video",
+        canonicalURL: "https://example.test/video",
+        platform: "generic",
+        ephemeralPlaybackURL: sentinel,
+        mimeType: "video/mp4",
+        posterURL: posterSentinel,
+        expiresAt: expiresSentinel,
+        transcriptionCapability: .supported
+      )
+    )
+    let receiver = CaptureReceiver(
+      history: history,
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { await sink.receive($0) }
+    )
+
+    guard case .taskAccepted = await receiver.process(try JSONEncoder().encode(envelope)) else {
+      return XCTFail("V2 should persist its page document")
+    }
+    let observedTaskID = await sink.taskID
+    let taskID = try XCTUnwrap(observedTaskID)
+    XCTAssertTrue(try history.detail(taskID: taskID).snapshots[0].usedCookie)
+    let projection = try history.exportProjection(taskID: taskID)
+    XCTAssertFalse(String(describing: projection).contains(sentinel))
+    XCTAssertFalse(projection.snapshots[0].usedCookie, "exports keep cookie-use evidence private")
+    XCTAssertNil(try history.mediaAsset(taskID: taskID), "M1 V2 must not create a legacy media_assets row")
+    try repository.database.close()
+
+    for forbidden in [sentinel, posterSentinel, expiresSentinel] {
+      let needle = Data(forbidden.utf8)
+      for url in [location.databaseURL, location.walURL, location.sharedMemoryURL]
+        where FileManager.default.fileExists(atPath: url.path) {
+        let bytes = try Data(contentsOf: url)
+        XCTAssertNil(bytes.range(of: needle), "media descriptor value leaked into \(url.lastPathComponent)")
+      }
+    }
+  }
+
   func testCommitPrecedesUISinkAndSuccessACKCarriesOriginalContract() async throws {
     let log = WiringEventLog()
     let taskID = TaskID(), snapshotID = ContentSnapshotID()
@@ -711,7 +986,8 @@ final class CaptureReceiverTests: XCTestCase {
     let captures = await sink.captures
     XCTAssertEqual(captures.count, envelopes.count)
     for current in captures {
-      let expected = try XCTUnwrap(repository.expected(for: current.envelope.requestId))
+      let wireEnvelope = try XCTUnwrap(current.wireEnvelope)
+      let expected = try XCTUnwrap(repository.expected(for: wireEnvelope.requestId))
       XCTAssertEqual(current.taskID, expected.0)
       XCTAssertEqual(current.snapshotID, expected.1)
     }

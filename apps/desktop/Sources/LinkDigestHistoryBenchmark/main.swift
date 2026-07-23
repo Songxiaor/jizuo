@@ -59,9 +59,9 @@ func envelope(index: Int, bodyVersion: Int = 0) -> CaptureEnvelopeV1 {
 func usage(index: Int) throws -> RunUsageCost {
   switch index % 4 {
   case 0: return .unknown
-  case 1: return try RunUsageCost(inputTokens: Int64(index + 10))
-  case 2: return try RunUsageCost(outputTokens: Int64(index + 5), totalTokens: Int64(index + 15))
-  default: return try RunUsageCost(inputTokens: Int64(index + 10), outputTokens: Int64(index + 5), totalTokens: Int64(index + 15), costAmountMicros: Int64(index + 100), costCurrencyCode: "USD")
+  case 1: return RunUsageCost(inputTokens: Int64(index + 10))
+  case 2: return RunUsageCost(outputTokens: Int64(index + 5), totalTokens: Int64(index + 15))
+  default: return RunUsageCost(inputTokens: Int64(index + 10), outputTokens: Int64(index + 5), totalTokens: Int64(index + 15), costAmountMicros: Int64(index + 100), costCurrencyCode: "USD")
   }
 }
 

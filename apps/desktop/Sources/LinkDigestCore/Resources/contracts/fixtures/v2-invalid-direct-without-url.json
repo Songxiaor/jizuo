@@ -1,0 +1,9 @@
+{
+  "version": 2,
+  "requestId": "fixture-v2-invalid-direct",
+  "createdAt": "2026-07-20T00:00:00Z",
+  "source": {"kind": "browser_capture", "url": "https://example.test/invalid", "title": "Invalid direct", "platform": "generic"},
+  "capture": {"method": "rendered_dom", "text": "invalid body", "characterCount": 12, "completeness": "visible_only", "capturedAt": "2026-07-20T00:00:00Z"},
+  "evidence": {"sourceLabel": "Current page DOM", "usedCookie": false},
+  "media": {"kind": "directFile", "pageURL": "https://example.test/invalid", "canonicalURL": "https://example.test/invalid", "platform": "generic", "transcriptionCapability": "supported"}
+}

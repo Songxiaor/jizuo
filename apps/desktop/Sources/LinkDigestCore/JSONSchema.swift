@@ -33,6 +33,9 @@ struct JSONSchemaValidator {
       let matches = alternatives.filter { (try? validate(value, against: $0, path: path)) != nil }
       guard matches.count == 1 else { throw JSONSchemaValidationError.invalid("\(path) does not match exactly one schema") }
     }
+    if let forbidden = schema["not"] as? [String: Any], (try? validate(value, against: forbidden, path: path)) != nil {
+      throw JSONSchemaValidationError.invalid("\(path) matches a forbidden schema")
+    }
 
     if let types = schemaTypes(schema), !types.contains(where: { matchesType($0, value: value) }) {
       throw JSONSchemaValidationError.invalid("\(path) has the wrong type")
@@ -136,10 +139,85 @@ struct JSONSchemaValidator {
 // Forward-compatible wire schema: unknown optional fields are accepted.
 // Strict persisted invariants live in Migration/Repository checks.
 enum CaptureWireContractSchema {
-  static func validator() throws -> JSONSchemaValidator {
-    guard let url = Bundle.module.url(forResource: "capture-envelope-v1.schema", withExtension: "json", subdirectory: "Resources/contracts") else {
+  static let resourceBundleName = "LinkDigest_LinkDigestCore.bundle"
+  static let schemaRelativePath = "Resources/contracts/capture-envelope-v1.schema.json"
+  static let schemaV2RelativePath = "Resources/contracts/capture-envelope-v2.schema.json"
+
+  enum ResourceMode: Equatable {
+    case application(resourceURL: URL?)
+    case executable(executableURL: URL?)
+    case test(moduleResourceURL: URL?)
+  }
+
+  struct ResourceLocator {
+    let mode: ResourceMode
+
+    func schemaURL(version: Int = 1, fileManager: FileManager = .default) throws -> URL {
+      let relativePath = version == 2 ? schemaV2RelativePath : schemaRelativePath
+      let schemaURL: URL?
+      switch mode {
+      case let .application(resourceURL):
+        schemaURL = resourceURL?
+          .appendingPathComponent(resourceBundleName, isDirectory: true)
+          .appendingPathComponent(relativePath, isDirectory: false)
+      case let .executable(executableURL):
+        schemaURL = executableURL?
+          .deletingLastPathComponent()
+          .appendingPathComponent(resourceBundleName, isDirectory: true)
+          .appendingPathComponent(relativePath, isDirectory: false)
+      case let .test(moduleResourceURL):
+        // Bundle.module is intentionally reachable only through this explicit
+        // test mode. Production App/Host lookup can never fall back to a
+        // compile-time SwiftPM .build path. Bundle.resourceURL already points
+        // at the bundle's Resources directory, unlike the two bundle-root
+        // production paths above.
+        schemaURL = moduleResourceURL?
+          .appendingPathComponent(
+            version == 2 ? "contracts/capture-envelope-v2.schema.json" : "contracts/capture-envelope-v1.schema.json",
+            isDirectory: false
+          )
+      }
+
+      guard let schemaURL else {
+        throw JSONSchemaValidationError.invalid("bundled capture schema location is unavailable")
+      }
+      var isDirectory: ObjCBool = false
+      guard fileManager.fileExists(atPath: schemaURL.path, isDirectory: &isDirectory), !isDirectory.boolValue else {
+        throw JSONSchemaValidationError.invalid("bundled capture schema is missing")
+      }
+      return schemaURL
+    }
+  }
+
+  static func runtimeLocator(
+    mainBundle: Bundle = .main,
+    executableURL: URL? = Bundle.main.executableURL
+  ) -> ResourceLocator {
+    if mainBundle.bundleURL.pathExtension == "app" {
+      return ResourceLocator(mode: .application(resourceURL: mainBundle.resourceURL))
+    }
+    if mainBundle.bundleURL.pathExtension == "xctest" || NSClassFromString("XCTestCase") != nil {
+      // XCTest is the only runtime allowed to select the explicit module
+      // fallback. A standard .app never reaches this branch.
+      return testLocator()
+    }
+    return ResourceLocator(mode: .executable(executableURL: executableURL))
+  }
+
+  static func testLocator(moduleResourceURL: URL? = Bundle.module.resourceURL) -> ResourceLocator {
+    ResourceLocator(mode: .test(moduleResourceURL: moduleResourceURL))
+  }
+
+  static func validator(locator: ResourceLocator? = nil) throws -> JSONSchemaValidator {
+    try validator(version: 1, locator: locator)
+  }
+
+  static func validator(version: Int, locator: ResourceLocator? = nil) throws -> JSONSchemaValidator {
+    let locator = locator ?? runtimeLocator()
+    let url = try locator.schemaURL(version: version)
+    guard let data = try? Data(contentsOf: url) else {
       throw JSONSchemaValidationError.invalid("bundled capture schema is missing")
     }
-    return try JSONSchemaValidator(schemaData: Data(contentsOf: url))
+    return try JSONSchemaValidator(schemaData: data)
   }
 }
