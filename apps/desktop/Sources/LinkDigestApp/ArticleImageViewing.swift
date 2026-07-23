@@ -303,8 +303,7 @@ private struct InlineImageLightboxCanvas: View {
         Spacer()
         if case let .done(text) = recognition {
           Button {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(text, forType: .string)
+            CopyFeedbackController.shared.copy(text)
           } label: { Label("拷贝全部", systemImage: "doc.on.doc") }
             .controlSize(.small)
             .accessibilityIdentifier("history-inline-image-lightbox-copy-text")

@@ -102,3 +102,32 @@ public protocol TokenUsageRecording: Sendable {
   /// Ledger-only totals; the caller adds Run usage from the detail projection.
   func ledgerTokenTotals(taskID: TaskID) throws -> TaskTokenTotals
 }
+
+// MARK: - 学习批注（摘录 + 笔记）
+
+/// 用户自己的思考层：与机器产物（总结/脑图）分离存储，永不被自动流程覆盖。
+public struct TaskExcerpt: Sendable, Equatable, Identifiable {
+  public let id: String
+  public let taskID: TaskID
+  public let excerpt: String
+  public let createdAtMilliseconds: Int64
+
+  public init(id: String = UUID().uuidString.lowercased(), taskID: TaskID, excerpt: String, createdAtMilliseconds: Int64) {
+    self.id = id
+    self.taskID = taskID
+    self.excerpt = excerpt
+    self.createdAtMilliseconds = createdAtMilliseconds
+  }
+}
+
+public protocol AnnotationStoring: Sendable {
+  func saveNote(taskID: TaskID, body: String, updatedAtMilliseconds: Int64) throws
+  func loadNote(taskID: TaskID) throws -> String?
+  func addExcerpt(_ excerpt: TaskExcerpt) throws
+  func listExcerpts(taskID: TaskID) throws -> [TaskExcerpt]
+  func deleteExcerpt(id: String, taskID: TaskID) throws
+}
+
+extension HistoryApplicationService {
+  public var annotationStore: (any AnnotationStoring)? { repositoryAsAnnotationStore }
+}

@@ -50,6 +50,22 @@ final class ManualLinkViewModel: ObservableObject {
   @Published private(set) var state: ManualLinkState = .idle
   @Published var isPresented = false
   @Published private(set) var clipboardSuggestion: ClipboardLinkSuggestion?
+  /// 重复链接确认：默认拦截，用户确认「仍要重新抓取」后放行一次。
+  @Published var isDuplicatePromptPresented = false
+  /// 排队抓取：提交即入队关窗，进度在列表顶部展示。
+  @Published private(set) var pendingCaptures: [PendingCapture] = []
+
+  struct PendingCapture: Identifiable, Equatable {
+    enum Phase: Equatable { case queued, fetching, saving, failed(String) }
+    let id: UUID
+    let urlString: String
+    var phase: Phase
+  }
+
+  private var allowsDuplicateSubmit = false
+  private var queueWorker: Task<Void, Never>?
+  private var activeCaptureID: UUID?
+  private var activeCaptureTask: Task<Void, Error>?
 
   private let captureService: ManualLinkCaptureService
   private let weChatCapture: any WeChatWebCapturing
@@ -236,72 +252,127 @@ final class ManualLinkViewModel: ObservableObject {
   }
 
   func submit() {
-    guard canSubmit, let ingestor else { return }
+    guard canSubmit, ingestor != nil else { return }
     let value = input
-    state = .fetching
-    task?.cancel()
-    task = Task { [weak self] in
-      var capturedDocument: CapturedDocument?
-      do {
-        let document: CapturedDocument?
-        if let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
-           WeChatWebCapturePolicy.isCandidate(url) {
-          document = try await self?.weChatCapture.capture(url: url)
-        } else {
-          document = try await self?.captureService.capture(urlString: value)
+    // 重复检测：同一链接已在库中时先提示，避免静默重抓浪费请求与 token；
+    // 用户确认后仍可继续（新抓取会併入原条目成为最新快照）。
+    if !allowsDuplicateSubmit, let history,
+       let canonical = try? CanonicalURL(value.trimmingCharacters(in: .whitespacesAndNewlines)),
+       (try? history.containsCanonicalURL(canonical)) == true {
+      isDuplicatePromptPresented = true
+      return
+    }
+    allowsDuplicateSubmit = false
+    // 入队即关窗：抓取进度移到列表顶部排队区，用户可以继续浏览。
+    pendingCaptures.append(PendingCapture(id: UUID(), urlString: value, phase: .queued))
+    state = .idle
+    isPresented = false
+    input = ""
+    kickCaptureQueue()
+  }
+
+  func confirmDuplicateSubmit() {
+    isDuplicatePromptPresented = false
+    allowsDuplicateSubmit = true
+    submit()
+  }
+
+  func cancelDuplicateSubmit() {
+    isDuplicatePromptPresented = false
+    allowsDuplicateSubmit = false
+  }
+
+  func retryPendingCapture(_ id: UUID) {
+    guard let index = pendingCaptures.firstIndex(where: { $0.id == id }),
+          case .failed = pendingCaptures[index].phase else { return }
+    pendingCaptures[index].phase = .queued
+    kickCaptureQueue()
+  }
+
+  func removePendingCapture(_ id: UUID) {
+    if activeCaptureID == id { activeCaptureTask?.cancel() }
+    pendingCaptures.removeAll { $0.id == id }
+  }
+
+  private func updatePendingPhase(_ id: UUID, _ phase: PendingCapture.Phase) {
+    guard let index = pendingCaptures.firstIndex(where: { $0.id == id }) else { return }
+    pendingCaptures[index].phase = phase
+  }
+
+  /// 串行处理：微信捕获走同一个 WKWebView 服务，不做并发。
+  private func kickCaptureQueue() {
+    guard queueWorker == nil else { return }
+    queueWorker = Task { [weak self] in
+      defer { self?.queueWorker = nil }
+      while let self, let next = self.pendingCaptures.first(where: { $0.phase == .queued }) {
+        self.updatePendingPhase(next.id, .fetching)
+        self.activeCaptureID = next.id
+        let work = Task { try await self.performCapture(value: next.urlString, pendingID: next.id) }
+        self.activeCaptureTask = work
+        do {
+          try await work.value
+          self.pendingCaptures.removeAll { $0.id == next.id }
+        } catch let error as ManualLinkError {
+          self.updatePendingPhase(next.id, .failed(error.userMessage))
+        } catch is CancellationError {
+          self.pendingCaptures.removeAll { $0.id == next.id }
+        } catch {
+          self.updatePendingPhase(next.id, .failed("无法保存这条链接，本地历史未发生变更。"))
         }
-        guard let document else { return }
-        capturedDocument = document
-        guard !Task.isCancelled else {
-          self?.imageCache?.discardStaged(captureID: document.requestID)
-          return
-        }
-        try Task.checkCancellation()
-        // Substantive WeChat articles keep their inline images even when they
-        // also carry an embedded-video descriptor. Pure video captures do not.
-        if RemoteMarkdownImageStagingPolicy.allows(document),
-           let imageCache = self?.imageCache,
-           let resources = self?.imageResources {
-          if document.platform == "wechat", let articleURL = URL(string: document.url) {
-            let note = MarkdownNoteFrontmatter.parse(document.text)
-            await imageCache.stageWeChatImages(
-              bodyImageURLs: MarkdownRemoteImageReferences.absoluteHTTPSURLs(in: note.body).map(\.absoluteString),
-              coverImageURL: nil,
-              articleURL: articleURL,
-              captureID: document.requestID,
-              resources: resources
-            )
-          } else {
-            // Existing generic/GitHub staging keeps its broader policy unchanged.
-            await imageCache.stageRemoteMarkdownImages(
-              markdown: document.text,
-              captureID: document.requestID,
-              resources: resources
-            )
-          }
-        }
-        // A committed SQLite write cannot honestly be reported as cancelled.
-        self?.state = .saving
-        let accepted = try await ingestor.ingest(document)
-        // Signed media URLs must be downloaded in the same flow; never stored for later.
-        if let media = document.media, let onMediaCaptured = self?.onMediaCaptured {
-          // Pass page URL so CDN downloads can set a public Referer (no cookies).
-          await onMediaCaptured(media, accepted.taskID, accepted.snapshotID, document.url)
-        }
-        self?.state = .idle
-        self?.isPresented = false
-        self?.input = ""
-      } catch let error as ManualLinkError {
-        if let capturedDocument { self?.imageCache?.discardStaged(captureID: capturedDocument.requestID) }
-        guard !Task.isCancelled else { return }
-        self?.state = .failed(error.userMessage)
-      } catch is CancellationError {
-        if let capturedDocument { self?.imageCache?.discardStaged(captureID: capturedDocument.requestID) }
-        self?.state = .idle
-      } catch {
-        if let capturedDocument { self?.imageCache?.discardStaged(captureID: capturedDocument.requestID) }
-        self?.state = .failed("无法保存这条链接，本地历史未发生变更。")
+        self.activeCaptureID = nil
+        self.activeCaptureTask = nil
       }
+    }
+  }
+
+  /// 单条链接的完整捕获流程；由队列 worker 串行调用。
+  private func performCapture(value: String, pendingID: UUID) async throws {
+    guard let ingestor else { throw ManualLinkError.network }
+    var capturedDocument: CapturedDocument?
+    do {
+      let document: CapturedDocument?
+      if let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
+         WeChatWebCapturePolicy.isCandidate(url) {
+        document = try await weChatCapture.capture(url: url)
+      } else {
+        document = try await captureService.capture(urlString: value)
+      }
+      guard let document else { return }
+      capturedDocument = document
+      try Task.checkCancellation()
+      // Substantive WeChat articles keep their inline images even when they
+      // also carry an embedded-video descriptor. Pure video captures do not.
+      if RemoteMarkdownImageStagingPolicy.allows(document),
+         let imageCache, let resources = imageResources {
+        if document.platform == "wechat", let articleURL = URL(string: document.url) {
+          let note = MarkdownNoteFrontmatter.parse(document.text)
+          await imageCache.stageWeChatImages(
+            bodyImageURLs: MarkdownRemoteImageReferences.absoluteHTTPSURLs(in: note.body).map(\.absoluteString),
+            coverImageURL: nil,
+            articleURL: articleURL,
+            captureID: document.requestID,
+            resources: resources
+          )
+        } else {
+          // Existing generic/GitHub staging keeps its broader policy unchanged.
+          await imageCache.stageRemoteMarkdownImages(
+            markdown: document.text,
+            captureID: document.requestID,
+            resources: resources
+          )
+        }
+      }
+      // A committed SQLite write cannot honestly be reported as cancelled.
+      updatePendingPhase(pendingID, .saving)
+      let accepted = try await ingestor.ingest(document)
+      // Signed media URLs must be downloaded in the same flow; never stored for later.
+      if let media = document.media, let onMediaCaptured {
+        // Pass page URL so CDN downloads can set a public Referer (no cookies).
+        await onMediaCaptured(media, accepted.taskID, accepted.snapshotID, document.url)
+      }
+    } catch {
+      if let capturedDocument { imageCache?.discardStaged(captureID: capturedDocument.requestID) }
+      throw error
     }
   }
 

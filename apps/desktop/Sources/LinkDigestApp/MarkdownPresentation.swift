@@ -889,8 +889,7 @@ private struct CodeCopyButton: View {
 
   var body: some View {
     Button {
-      NSPasteboard.general.clearContents()
-      NSPasteboard.general.setString(content, forType: .string)
+      CopyFeedbackController.shared.copy(content)
     } label: {
       Label("复制", systemImage: "doc.on.doc")
         .labelStyle(.iconOnly)
@@ -919,6 +918,7 @@ enum MarkdownInlineImageActions {
   static func copyImage(_ image: NSImage) {
     NSPasteboard.general.clearContents()
     NSPasteboard.general.writeObjects([image])
+    Task { @MainActor in CopyFeedbackController.shared.flash() }
   }
 
   static func suggestedFilename(for url: URL, data: Data) -> String {

@@ -204,6 +204,40 @@ struct SelectableReadingTextView: NSViewRepresentable {
   }
 
   final class SelfSizingTextView: NSTextView {
+    /// 右键「添加到摘录」：把选中文字送进当前条目的学习批注。
+    /// handler 由详情视图按当前任务设置；无选择或无 handler 时不加菜单项。
+    override func menu(for event: NSEvent) -> NSMenu? {
+      let menu = super.menu(for: event)
+      guard selectedRange().length > 0,
+            ExcerptCaptureRouter.shared.handler != nil else { return menu }
+      let item = NSMenuItem(
+        title: "添加到摘录",
+        action: #selector(captureSelectionAsExcerpt(_:)),
+        keyEquivalent: ""
+      )
+      item.target = self
+      menu?.insertItem(item, at: 0)
+      menu?.insertItem(NSMenuItem.separator(), at: 1)
+      return menu
+    }
+
+    @objc private func captureSelectionAsExcerpt(_: Any?) {
+      let range = selectedRange()
+      guard range.length > 0,
+            let selected = textStorage?.attributedSubstring(from: range).string else { return }
+      ExcerptCaptureRouter.shared.handler?(selected)
+    }
+
+    /// 光标框选松手即自动复制：省掉右键→复制一步，并弹「已复制」药丸。
+    override func mouseUp(with event: NSEvent) {
+      super.mouseUp(with: event)
+      let range = selectedRange()
+      guard range.length > 0,
+            let selected = textStorage?.attributedSubstring(from: range).string,
+            !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+      Task { @MainActor in CopyFeedbackController.shared.copy(selected) }
+    }
+
     override var intrinsicContentSize: NSSize {
       guard let container = textContainer, let manager = layoutManager else {
         return super.intrinsicContentSize
@@ -219,4 +253,11 @@ struct SelectableReadingTextView: NSViewRepresentable {
       invalidateIntrinsicContentSize()
     }
   }
+}
+
+/// 摘录路由：阅读区 NSTextView 与当前详情条目之间的最小接线。
+/// 详情视图出现时设置 handler、消失时清空；同一时刻只有一个详情在读。
+@MainActor final class ExcerptCaptureRouter {
+  static let shared = ExcerptCaptureRouter()
+  var handler: ((String) -> Void)?
 }

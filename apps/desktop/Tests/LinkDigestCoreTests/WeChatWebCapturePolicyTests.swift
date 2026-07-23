@@ -149,3 +149,23 @@ final class WeChatWebCapturePolicyTests: XCTestCase {
     XCTAssertTrue(messages.allSatisfy { !$0.isEmpty && !$0.contains("抓取失败") })
   }
 }
+
+extension WeChatWebCapturePolicyTests {
+  func testNavigationDecisionSeparatesMainFrameFromSubframes() {
+    let wechat = URL(string: "https://mp.weixin.qq.com/s/xjUh6_4REQk1J4K3uSzzJw")!
+    let offSite = URL(string: "https://v.qq.com/iframe/player.html")!
+    let insecure = URL(string: "http://mp.weixin.qq.com/s/abc")!
+
+    // 主框架：站内放行，离站/降级/缺 URL 终止捕获。
+    XCTAssertEqual(WeChatWebCapturePolicy.navigationDecision(url: wechat, isMainFrame: true), .allow)
+    XCTAssertEqual(WeChatWebCapturePolicy.navigationDecision(url: offSite, isMainFrame: true), .failCapture)
+    XCTAssertEqual(WeChatWebCapturePolicy.navigationDecision(url: insecure, isMainFrame: true), .failCapture)
+    XCTAssertEqual(WeChatWebCapturePolicy.navigationDecision(url: nil, isMainFrame: true), .failCapture)
+
+    // 子框架：文章页内嵌的广告/视频 iframe 是页面自带的，站外只静默拦截，
+    // 绝不把用户提交的整页捕获判死——这正是 7/23 微信抓取失效的回归根因。
+    XCTAssertEqual(WeChatWebCapturePolicy.navigationDecision(url: offSite, isMainFrame: false), .blockSilently)
+    XCTAssertEqual(WeChatWebCapturePolicy.navigationDecision(url: nil, isMainFrame: false), .blockSilently)
+    XCTAssertEqual(WeChatWebCapturePolicy.navigationDecision(url: wechat, isMainFrame: false), .allow)
+  }
+}

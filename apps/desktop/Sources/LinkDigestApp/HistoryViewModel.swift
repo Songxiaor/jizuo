@@ -478,6 +478,11 @@ final class HistoryViewModel: ObservableObject {
   @Published var isMindMapConfirmationPresented = false
   /// 台账（整理/脑图）部分的 token 合计；Run 部分由 detail 投影自带。
   @Published private(set) var ledgerTokenTotals: TaskTokenTotals?
+  /// 学习批注：用户的摘录与笔记，与机器产物分离。
+  @Published private(set) var taskExcerpts: [TaskExcerpt] = []
+  @Published var taskNoteDraft = ""
+  private var noteSaveTask: Task<Void, Never>?
+  private var loadedNoteTaskID: TaskID?
   @Published private(set) var remoteMediaFavoriteState: RemoteMediaFavoriteState = .idle
   @Published private(set) var capturedMediaAutoSaveStates: [TaskID: RemoteMediaFavoriteState] = [:]
   @Published private(set) var capturedMediaAutoSaveFailureMessage = ""
@@ -1148,6 +1153,50 @@ final class HistoryViewModel: ObservableObject {
     }.value
     guard selectedTaskID == taskID, let totals else { return }
     ledgerTokenTotals = totals
+  }
+
+  // MARK: - 学习批注（摘录 + 笔记）
+
+  func addExcerpt(_ text: String, taskID: TaskID) {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, !isReadOnly,
+          let store = history?.annotationStore, selectedTaskID == taskID else { return }
+    let excerpt = TaskExcerpt(
+      taskID: taskID,
+      excerpt: String(trimmed.prefix(4_000)),
+      createdAtMilliseconds: nowMilliseconds()
+    )
+    // 先落库再上屏：摘录是用户思考的载体，不允许只存在于内存。
+    Task.detached(priority: .userInitiated) { [weak self] in
+      guard (try? store.addExcerpt(excerpt)) != nil else { return }
+      await MainActor.run {
+        guard let self, self.selectedTaskID == taskID else { return }
+        self.taskExcerpts.append(excerpt)
+      }
+    }
+  }
+
+  func deleteExcerpt(_ excerpt: TaskExcerpt) {
+    guard !isReadOnly, let store = history?.annotationStore else { return }
+    taskExcerpts.removeAll { $0.id == excerpt.id }
+    Task.detached(priority: .utility) {
+      try? store.deleteExcerpt(id: excerpt.id, taskID: excerpt.taskID)
+    }
+  }
+
+  /// 笔记随输防抖保存：停顿 800ms 落库；空内容即删除记录。
+  func scheduleNoteSave(taskID: TaskID) {
+    guard !isReadOnly, let store = history?.annotationStore else { return }
+    let body = taskNoteDraft
+    let timestamp = nowMilliseconds()
+    noteSaveTask?.cancel()
+    noteSaveTask = Task { [weak self] in
+      try? await Task.sleep(for: .milliseconds(800))
+      guard !Task.isCancelled, self?.selectedTaskID == taskID else { return }
+      await Task.detached(priority: .utility) {
+        try? store.saveNote(taskID: taskID, body: body, updatedAtMilliseconds: timestamp)
+      }.value
+    }
   }
 
   // MARK: - 自动处理管线
@@ -2551,6 +2600,11 @@ final class HistoryViewModel: ObservableObject {
       mindMapRecord = (try? history?.mindMapStore?.loadMindMap(taskID: taskID)) ?? nil
       if mindMapTaskID != taskID { mindMapState = .idle; mindMapTaskID = nil }
       ledgerTokenTotals = (try? history?.tokenUsageStore?.ledgerTokenTotals(taskID: taskID)) ?? nil
+      taskExcerpts = (try? history?.annotationStore?.listExcerpts(taskID: taskID)) ?? []
+      if loadedNoteTaskID != taskID {
+        loadedNoteTaskID = taskID
+        taskNoteDraft = (try? history?.annotationStore?.loadNote(taskID: taskID) ?? nil) ?? ""
+      }
       detailState = .loaded
     case let .failure(code):
       detail = nil

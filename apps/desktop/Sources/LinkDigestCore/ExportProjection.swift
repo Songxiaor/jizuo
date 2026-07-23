@@ -23,8 +23,12 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
   public let artifactPreview: String?
   public let author: String?
   public let published: String?
-  public init(taskID: TaskID, title: String?, canonicalURL: String, host: String, sourceLabel: String, latestRunKind: RunKind?, latestRunStatus: RunStatus?, latestModel: String?, updatedAtMilliseconds: Int64, createdAtMilliseconds: Int64? = nil, latestRunAtMilliseconds: Int64?, usageCost: RunUsageCost, artifactPreview: String?, author: String? = nil, published: String? = nil) {
-    self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.createdAtMilliseconds = createdAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview; self.author = author; self.published = published
+  /// 处理状态徽标：可选以兼容旧序列化数据（缺失=未知，不显示）。
+  public let hasTranscript: Bool?
+  public let hasSummary: Bool?
+  public let hasMindMap: Bool?
+  public init(taskID: TaskID, title: String?, canonicalURL: String, host: String, sourceLabel: String, latestRunKind: RunKind?, latestRunStatus: RunStatus?, latestModel: String?, updatedAtMilliseconds: Int64, createdAtMilliseconds: Int64? = nil, latestRunAtMilliseconds: Int64?, usageCost: RunUsageCost, artifactPreview: String?, author: String? = nil, published: String? = nil, hasTranscript: Bool? = nil, hasSummary: Bool? = nil, hasMindMap: Bool? = nil) {
+    self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.createdAtMilliseconds = createdAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview; self.author = author; self.published = published; self.hasTranscript = hasTranscript; self.hasSummary = hasSummary; self.hasMindMap = hasMindMap
   }
 }
 

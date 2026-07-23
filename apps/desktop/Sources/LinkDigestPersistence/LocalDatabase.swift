@@ -33,7 +33,7 @@ public final class LocalDatabase: @unchecked Sendable {
         try probe.close()
       } catch let failure as RepositoryFailure { throw failure }
       catch { throw RepositoryFailure.unavailable }
-      if version > Migration010.schemaVersion {
+      if version > Migration011.schemaVersion {
         return try makeReadOnly(at: location, reason: .futureSchema, dependencies: dependencies)
       }
     }
@@ -42,7 +42,7 @@ public final class LocalDatabase: @unchecked Sendable {
       let pool = try dependencies.openWritable(location.databaseURL.path, writableConfiguration())
       do {
         let version = try pool.read { try Int.fetchOne($0, sql: "PRAGMA user_version") ?? 0 }
-        if version < Migration010.schemaVersion {
+        if version < Migration011.schemaVersion {
           try pool.write { db in
             if version < Migration001.schemaVersion {
               try Migration001.apply(to: db, beforeCommit: dependencies.beforeMigrationCommit)
@@ -73,6 +73,9 @@ public final class LocalDatabase: @unchecked Sendable {
             }
             if version < Migration010.schemaVersion {
               try Migration010.apply(to: db)
+            }
+            if version < Migration011.schemaVersion {
+              try Migration011.apply(to: db)
             }
           }
         }

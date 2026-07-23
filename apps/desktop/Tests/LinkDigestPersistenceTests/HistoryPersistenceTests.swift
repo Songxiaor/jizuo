@@ -21,7 +21,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
   func testEmptyDatabaseMigratesDirectlyTo008AndRejectsExtraHyphenUUIDs() throws {
     try withRepository { repository, _ in
       XCTAssertEqual(repository.accessMode, .writable)
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 10)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 11)
       let sql = try repository.database.read { db in
         try Row.fetchAll(db, sql: "SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name IN ('tasks','content_snapshots','runs','artifacts','capture_deliveries','tags','task_tags','media_assets','media_transcription_evidence','task_transcription_attempts','task_transcription_evidence')")
       }
@@ -65,7 +65,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 10)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 11)
       XCTAssertEqual(try repository.historyPage(limit: 10, after: nil).rows.map(\.canonicalURL), ["https://example.test/legacy"])
       XCTAssertEqual(try repository.allTags(), [])
     }
@@ -96,7 +96,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 10)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 11)
       XCTAssertEqual(
         try repository.historyPage(limit: 10, after: nil).rows.map(\.canonicalURL),
         ["https://example.test/version-three"]
@@ -157,7 +157,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 10)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 11)
       XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT used_cookie_v2 FROM content_snapshots") }, 0)
       XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM runs") }, 1)
       XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM media_assets") }, 1)
@@ -254,7 +254,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
   func test008ReopenIsIdempotentAndFutureSchemaIsReadOnly() throws {
     try withTemporaryLocation { location in
       let first = try LocalDatabase.open(at: location)
-      try first.write { try $0.execute(sql: "PRAGMA user_version = 11") }
+      try first.write { try $0.execute(sql: "PRAGMA user_version = 12") }
       try first.close()
       let future = try LocalDatabase.open(at: location)
       XCTAssertEqual(future.accessMode, .readOnly(.futureSchema))
@@ -276,7 +276,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
       ))
       try writable.database.close()
       let upgrader = try DatabaseQueue(path: location.databaseURL.path)
-      try upgrader.write { try $0.execute(sql: "PRAGMA user_version = 11") }
+      try upgrader.write { try $0.execute(sql: "PRAGMA user_version = 12") }
       try upgrader.close()
 
       let future = try GRDBHistoryRepository.open(at: location)
@@ -301,7 +301,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
       try failed.close()
       let recovered = try LocalDatabase.open(at: location)
       XCTAssertEqual(recovered.accessMode, .writable)
-      XCTAssertEqual(try recovered.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 10)
+      XCTAssertEqual(try recovered.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 11)
       try recovered.close()
     }
   }
@@ -325,7 +325,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 10)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 11)
       XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT capture_contract_version FROM capture_deliveries WHERE request_id = ?", arguments: [v1.requestId]) }, 1)
       let legacyReplay = try repository.acceptCapture(.init(envelope: v1, receivedAtMilliseconds: 2))
       XCTAssertTrue(legacyReplay.deliveryWasReplayed)
@@ -2271,5 +2271,48 @@ final class TokenLedgerPersistenceTests: XCTestCase {
     )))
     try repository.deleteTask(taskID: taskID)
     XCTAssertEqual(try repository.ledgerTokenTotals(taskID: taskID).totalTokens, 0)
+  }
+}
+
+final class AnnotationPersistenceTests: XCTestCase {
+  func testNoteUpsertClearAndExcerptLifecycleWithCascade() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-annotation-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let document = CapturedDocument(
+      createdAt: "2026-07-23T00:00:00Z", origin: .manualLink,
+      url: "https://example.test/annotation", title: "样例",
+      platform: "web", method: "fixture", text: "正文",
+      completeness: "complete", capturedAt: "2026-07-23T00:00:00Z", sourceLabel: "fixture"
+    )
+    let taskID = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1)).taskID
+
+    // 笔记 upsert；空内容即删除记录。
+    try repository.saveNote(taskID: taskID, body: "第一版想法", updatedAtMilliseconds: 2)
+    try repository.saveNote(taskID: taskID, body: "修订后的想法", updatedAtMilliseconds: 3)
+    XCTAssertEqual(try repository.loadNote(taskID: taskID), "修订后的想法")
+    try repository.saveNote(taskID: taskID, body: "   ", updatedAtMilliseconds: 4)
+    XCTAssertNil(try repository.loadNote(taskID: taskID))
+
+    // 摘录：追加有序、可删除、未知任务拒收。
+    let first = TaskExcerpt(taskID: taskID, excerpt: "值得记住的一句", createdAtMilliseconds: 5)
+    let second = TaskExcerpt(taskID: taskID, excerpt: "另一句", createdAtMilliseconds: 6)
+    try repository.addExcerpt(first)
+    try repository.addExcerpt(second)
+    XCTAssertEqual(try repository.listExcerpts(taskID: taskID).map(\.excerpt), ["值得记住的一句", "另一句"])
+    try repository.deleteExcerpt(id: first.id, taskID: taskID)
+    XCTAssertEqual(try repository.listExcerpts(taskID: taskID).map(\.excerpt), ["另一句"])
+    XCTAssertThrowsError(try repository.addExcerpt(
+      TaskExcerpt(taskID: TaskID(UUID()), excerpt: "孤儿", createdAtMilliseconds: 7)
+    ))
+
+    // 删任务级联清空批注。
+    try repository.saveNote(taskID: taskID, body: "临终笔记", updatedAtMilliseconds: 8)
+    try repository.deleteTask(taskID: taskID)
+    XCTAssertNil(try repository.loadNote(taskID: taskID))
+    XCTAssertTrue(try repository.listExcerpts(taskID: taskID).isEmpty)
   }
 }

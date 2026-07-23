@@ -308,7 +308,10 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           CASE WHEN es.body_text IS NULL THEN NULL ELSE substr(CAST(es.body_text AS BLOB), 1, 8192) END AS source_body_utf8,
           r.kind, r.status, r.model, COALESCE(r.finished_at_ms, r.started_at_ms, r.created_at_ms) AS latest_run_at_ms,
           r.input_tokens, r.output_tokens, r.total_tokens, r.cost_amount_micros, r.cost_currency_code,
-          CASE WHEN a.body_text IS NULL THEN NULL ELSE substr(CAST(a.body_text AS BLOB), 1, 960) END AS artifact_preview_utf8
+          CASE WHEN a.body_text IS NULL THEN NULL ELSE substr(CAST(a.body_text AS BLOB), 1, 960) END AS artifact_preview_utf8,
+          EXISTS(SELECT 1 FROM content_snapshots ts WHERE ts.task_id = t.id AND ts.source_kind = 'local_transcription') AS has_transcript,
+          EXISTS(SELECT 1 FROM runs sr WHERE sr.task_id = t.id AND sr.kind = 'summarize' AND sr.status = 'completed') AS has_summary,
+          EXISTS(SELECT 1 FROM task_mind_maps mm WHERE mm.task_id = t.id) AS has_mind_map
         FROM tasks t
         LEFT JOIN content_snapshots es ON es.task_id = t.id AND es.id = (
           SELECT s.id
@@ -1039,7 +1042,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     let preview = previewData.map { boundedPreview(from: $0, scalarLimit: 240) }
     let sourceBody: Data? = row["source_body_utf8"]
     let frontmatter = sourceBody.map { MarkdownNoteFrontmatter.parse(boundedPreview(from: $0, scalarLimit: 8_192)) }
-    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: URLComponents(string: canonical)?.host ?? "", sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, author: frontmatter?.author, published: frontmatter?.published)
+    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: URLComponents(string: canonical)?.host ?? "", sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: (row["has_transcript"] as Int64? ?? 0) == 1, hasSummary: (row["has_summary"] as Int64? ?? 0) == 1, hasMindMap: (row["has_mind_map"] as Int64? ?? 0) == 1)
   }
 
   private func detail(db: Database, taskID: TaskID) throws -> HistoryDetailProjection {
@@ -1360,6 +1363,73 @@ extension GRDBHistoryRepository: TokenUsageRecording {
         promptTokens: Int(row?["p"] as Int64? ?? 0),
         completionTokens: Int(row?["c"] as Int64? ?? 0),
         totalTokens: Int(row?["t"] as Int64? ?? 0)
+      )
+    }
+  }
+}
+
+// MARK: - Annotations (excerpts + note)
+
+extension GRDBHistoryRepository: AnnotationStoring {
+  public func saveNote(taskID: TaskID, body: String, updatedAtMilliseconds: Int64) throws {
+    try database.write { db in
+      guard let stored: String = try String.fetchOne(
+        db, sql: "SELECT id FROM tasks WHERE id = ?", arguments: [taskID.rawValue]
+      ), stored == taskID.rawValue else { throw RepositoryFailure.invalidInput }
+      if body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        try db.execute(sql: "DELETE FROM task_notes WHERE task_id = ?", arguments: [taskID.rawValue])
+      } else {
+        try db.execute(
+          sql: """
+            INSERT INTO task_notes (task_id, body, updated_at_ms) VALUES (?, ?, ?)
+            ON CONFLICT(task_id) DO UPDATE SET body = excluded.body, updated_at_ms = excluded.updated_at_ms
+            """,
+          arguments: [taskID.rawValue, body, updatedAtMilliseconds]
+        )
+      }
+    }
+  }
+
+  public func loadNote(taskID: TaskID) throws -> String? {
+    try database.read { db in
+      try String.fetchOne(db, sql: "SELECT body FROM task_notes WHERE task_id = ?", arguments: [taskID.rawValue])
+    }
+  }
+
+  public func addExcerpt(_ excerpt: TaskExcerpt) throws {
+    let text = excerpt.excerpt.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty, text.count <= 4_000 else { throw RepositoryFailure.invalidInput }
+    try database.write { db in
+      guard let stored: String = try String.fetchOne(
+        db, sql: "SELECT id FROM tasks WHERE id = ?", arguments: [excerpt.taskID.rawValue]
+      ), stored == excerpt.taskID.rawValue else { throw RepositoryFailure.invalidInput }
+      try db.execute(
+        sql: "INSERT INTO task_excerpts (id, task_id, excerpt, created_at_ms) VALUES (?, ?, ?, ?)",
+        arguments: [excerpt.id, excerpt.taskID.rawValue, text, excerpt.createdAtMilliseconds]
+      )
+    }
+  }
+
+  public func listExcerpts(taskID: TaskID) throws -> [TaskExcerpt] {
+    try database.read { db in
+      try Row.fetchAll(
+        db,
+        sql: "SELECT * FROM task_excerpts WHERE task_id = ? ORDER BY created_at_ms, id",
+        arguments: [taskID.rawValue]
+      ).map { row in
+        TaskExcerpt(
+          id: row["id"], taskID: taskID, excerpt: row["excerpt"],
+          createdAtMilliseconds: row["created_at_ms"]
+        )
+      }
+    }
+  }
+
+  public func deleteExcerpt(id: String, taskID: TaskID) throws {
+    try database.write { db in
+      try db.execute(
+        sql: "DELETE FROM task_excerpts WHERE id = ? AND task_id = ?",
+        arguments: [id, taskID.rawValue]
       )
     }
   }

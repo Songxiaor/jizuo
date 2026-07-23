@@ -72,6 +72,22 @@ public enum WeChatWebCapturePolicy {
     else { throw ManualLinkError.webHostNotAllowed }
   }
 
+  /// 导航裁决：主框架离开 mp.weixin.qq.com 是策略违规，终止捕获；
+  /// 子框架/新窗口的站外内容（广告、视频 iframe）只静默拦截——
+  /// 它们不是用户提交的目标页面，不应把整页捕获判死。
+  public enum NavigationDecision: Sendable, Equatable {
+    case allow
+    case blockSilently
+    case failCapture
+  }
+
+  public static func navigationDecision(url: URL?, isMainFrame: Bool) -> NavigationDecision {
+    guard let url, (try? validateNavigationURL(url)) != nil else {
+      return isMainFrame ? .failCapture : .blockSilently
+    }
+    return .allow
+  }
+
   /// JavaScript values are untrusted. Only the declared scalar fields and image
   /// strings are copied into a new value; additional keys are intentionally ignored.
   public static func validateJavaScriptResult(

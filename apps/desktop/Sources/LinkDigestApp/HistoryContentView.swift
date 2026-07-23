@@ -372,6 +372,8 @@ struct HistoryContentView: View {
       .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
       // 图片灯箱盖在整个窗口内容之上；点击图外区域或 Esc 退出。
       .overlay { InlineImageLightboxOverlay() }
+      // 「已复制」药丸浮层：任何复制动作的统一视觉确认。
+      .overlay { CopyFeedbackOverlay() }
       // 视频影院放大 overlay（任何来源）：自己的框，替代坑多的原生全屏。
       .overlay { VideoCinemaOverlay() }
       .foregroundStyle(theme.primaryText)
@@ -585,6 +587,17 @@ struct HistoryContentView: View {
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
       case .loaded, .loading, .failed, .idle:
         List(selection: $model.selectedTaskIDs) {
+          // 排队抓取区：提交链接后立刻回到列表，这里可见进度/失败重试，
+          // 不再让用户守着弹窗转圈。
+          if !manualLink.pendingCaptures.isEmpty {
+            Section {
+              ForEach(manualLink.pendingCaptures) { pending in
+                PendingCaptureRow(pending: pending, model: manualLink)
+              }
+            } header: {
+              Text("抓取队列").font(.caption).foregroundStyle(.secondary)
+            }
+          }
           ForEach(model.rows, id: \.taskID) { row in
             HistoryRowView(row: row, model: model).tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
               .contextMenu {
@@ -799,8 +812,7 @@ struct HistoryContentView: View {
   }
 
   private func copyHistoryURL(_ raw: String) {
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(raw, forType: .string)
+    CopyFeedbackController.shared.copy(raw)
   }
 
   @ViewBuilder private var detail: some View {
@@ -992,6 +1004,58 @@ private struct ManualLinkSheet: View {
     }
     .padding(24).frame(width: 480)
     .onAppear { focusURL = true }
+    .alert("这个链接已在库中", isPresented: $model.isDuplicatePromptPresented) {
+      Button("取消", role: .cancel) { model.cancelDuplicateSubmit() }
+      Button("仍要重新抓取") { model.confirmDuplicateSubmit() }
+    } message: {
+      Text("重复添加不会产生新条目：重新抓取的内容会併入原条目成为最新快照。若只想查看，请直接在列表中打开。")
+    }
+  }
+}
+
+/// 抓取队列行：URL + 阶段状态；失败可重试/移除，进行中可取消。
+private struct PendingCaptureRow: View {
+  let pending: ManualLinkViewModel.PendingCapture
+  @ObservedObject var model: ManualLinkViewModel
+
+  var body: some View {
+    HStack(spacing: 8) {
+      switch pending.phase {
+      case .queued:
+        Image(systemName: "clock").foregroundStyle(.secondary)
+      case .fetching, .saving:
+        ProgressView().controlSize(.small)
+      case .failed:
+        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+      }
+      VStack(alignment: .leading, spacing: 2) {
+        Text(pending.urlString)
+          .font(.caption)
+          .lineLimit(1)
+          .truncationMode(.middle)
+        switch pending.phase {
+        case .queued: Text("排队中").font(.caption2).foregroundStyle(.tertiary)
+        case .fetching: Text("正在抓取…").font(.caption2).foregroundStyle(.tertiary)
+        case .saving: Text("正在保存…").font(.caption2).foregroundStyle(.tertiary)
+        case let .failed(message):
+          Text(message).font(.caption2).foregroundStyle(.orange).lineLimit(2)
+        }
+      }
+      Spacer(minLength: 4)
+      if case .failed = pending.phase {
+        Button("重试") { model.retryPendingCapture(pending.id) }
+          .controlSize(.mini)
+      }
+      Button {
+        model.removePendingCapture(pending.id)
+      } label: {
+        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+      }
+      .buttonStyle(.plain)
+      .help(pending.phase == .queued ? "移出队列" : "取消并移除")
+    }
+    .padding(.vertical, 4)
+    .accessibilityIdentifier("pending-capture-row")
   }
 }
 
@@ -1026,15 +1090,33 @@ private struct HistoryRowView: View {
             .lineLimit(2)
         }
         // 两排时间：第一排发布、第二排创建；发布时间未抓取到时只留创建一排。
-        VStack(alignment: .leading, spacing: 2) {
-          if row.published?.trimmedNonEmpty != nil {
-            Text("发布 \(historyPublishedDate(row.published))")
+        HStack(alignment: .bottom, spacing: 6) {
+          VStack(alignment: .leading, spacing: 2) {
+            if row.published?.trimmedNonEmpty != nil {
+              Text("发布 \(historyPublishedDate(row.published))")
+            }
+            Text("创建 \(historyCreatedDate(row.createdAtMilliseconds ?? row.updatedAtMilliseconds))")
           }
-          Text("创建 \(historyCreatedDate(row.createdAtMilliseconds ?? row.updatedAtMilliseconds))")
+          .font(.system(size: 10.5))
+          .foregroundStyle(.tertiary)
+          .lineLimit(1)
+          Spacer(minLength: 4)
+          // 处理状态徽标：一眼分清生料和成品，自动管线跑完什么立刻可见。
+          HStack(spacing: 4) {
+            if row.hasTranscript == true {
+              Image(systemName: "waveform").help("已转写")
+            }
+            if row.hasSummary == true {
+              Image(systemName: "text.alignleft").help("已总结")
+            }
+            if row.hasMindMap == true {
+              Image(systemName: "brain").help("已生成脑图")
+            }
+          }
+          .font(.system(size: 9))
+          .foregroundStyle(.tertiary)
+          .accessibilityIdentifier("history-row-status-badges")
         }
-        .font(.system(size: 10.5))
-        .foregroundStyle(.tertiary)
-        .lineLimit(1)
       }
     }
     .padding(.horizontal, 10).padding(.vertical, 9)
@@ -1278,7 +1360,7 @@ private struct HistoryDetailView: View {
             .font(.callout.weight(.medium))
             .linkCursor()
             .accessibilityIdentifier("history-source-url-open")
-          Button("复制链接") { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(sourceURL, forType: .string) }
+          Button("复制链接") { CopyFeedbackController.shared.copy(sourceURL) }
             .buttonStyle(.link)
             .font(.callout.weight(.medium))
             .linkCursor()
@@ -1383,6 +1465,9 @@ private struct HistoryDetailView: View {
             .padding(.top, 16)
         }
 
+        AnnotationSectionView(taskID: detail.task.id, model: model)
+          .padding(.top, 20)
+
         HistoryTagEditor(tags: detail.tags, model: model)
           .padding(.top, 20)
       }
@@ -1472,8 +1557,7 @@ private struct HistoryDetailView: View {
   private func copyFullArticle() {
     guard let composed = model.composeExportMarkdown() else { return }
     let body = MarkdownNoteFrontmatter.parse(composed.markdown).body
-    NSPasteboard.general.clearContents()
-    NSPasteboard.general.setString(body.isEmpty ? composed.markdown : body, forType: .string)
+    CopyFeedbackController.shared.copy(body.isEmpty ? composed.markdown : body)
   }
 
   /// 富格式导出：按 App 阅读排版渲染 PDF / Word，NSSavePanel 落盘。
@@ -2203,8 +2287,7 @@ private struct HistoryDetailView: View {
           Label("识别完成", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
           Spacer()
           Button("复制文字") {
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(recognizedText, forType: .string)
+            CopyFeedbackController.shared.copy(recognizedText)
           }
           .controlSize(.small)
         }

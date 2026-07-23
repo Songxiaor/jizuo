@@ -528,47 +528,40 @@ final class ManualLinkViewModelTests: XCTestCase {
     XCTAssertEqual(published.first?.document.platform, "github")
   }
 
-  func testSavingCannotCancelOrDismissBeforeCommitThenPublishesAndCloses() async {
+  /// 队列化契约（2026-07-24）：提交即入队关窗；保存进行中体现在队列条目的
+  /// saving 阶段，发布仍必须等 commit 返回；成功后条目移出队列。
+  func testQueuedSubmitClosesSheetImmediatelyAndPublishesOnlyAfterCommit() async {
     let commitGate = ManualVMCommitGate()
     let repository = ManualVMRepository(blockingCommit: .init(gate: commitGate))
     let sink = ManualVMSink()
     let model = makeModel(clipboard: ManualVMClipboard(nil), repository: repository, sink: sink)
-    let sheetClosed = expectation(description: "sheet closes only after the committed capture publishes")
-    let presentationObserver = model.$isPresented.dropFirst().sink {
-      if !$0 { sheetClosed.fulfill() }
-    }
 
     model.open(); model.input = "https://example.test/article"; model.submit()
-    await commitGate.waitForEntry()
 
-    XCTAssertEqual(model.state, .saving)
-    XCTAssertTrue(model.isSaving)
-    XCTAssertFalse(model.isFetching)
-    XCTAssertFalse(model.canCancelFetch, "the Stop reading control is unavailable while saving")
-    XCTAssertFalse(model.canOpen)
-    XCTAssertFalse(model.canSubmit)
-    XCTAssertTrue(model.isPresented)
+    // 入队即关窗：用户不再守着弹窗等待。
+    XCTAssertFalse(model.isPresented)
+    XCTAssertEqual(model.input, "")
+    XCTAssertEqual(model.pendingCaptures.count, 1)
+
+    await commitGate.waitForEntry()
+    XCTAssertEqual(model.pendingCaptures.first?.phase, .saving)
     let valuesBeforeCommit = await sink.snapshot()
     XCTAssertTrue(valuesBeforeCommit.isEmpty, "CurrentCapture must not publish before commit returns")
     XCTAssertTrue(repository.acceptedDocuments.isEmpty, "the repository has not committed the document")
 
-    model.cancelFetch()
-    model.dismiss()
-    XCTAssertEqual(model.state, .saving)
-    XCTAssertTrue(model.isPresented, "dismiss must not close a sheet with a commit in flight")
-    let valuesBeforeRelease = await sink.snapshot()
-    XCTAssertTrue(valuesBeforeRelease.isEmpty)
-
     await commitGate.release()
     let published = await sink.waitForValues(count: 1)
-    await fulfillment(of: [sheetClosed], timeout: 1)
-    presentationObserver.cancel()
 
     XCTAssertEqual(repository.acceptedDocuments.count, 1)
     XCTAssertEqual(published.count, 1)
     XCTAssertEqual(published.first?.document.origin, .manualLink)
+    // 成功后条目移出队列。
+    let clock = ContinuousClock(); let deadline = clock.now + .seconds(2)
+    while !model.pendingCaptures.isEmpty, clock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertTrue(model.pendingCaptures.isEmpty)
     XCTAssertEqual(model.state, .idle)
-    XCTAssertFalse(model.isPresented)
   }
 
   func testQueuedCaptureCancellationDoesNotRunWriteOperation() async throws {

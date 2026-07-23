@@ -364,22 +364,18 @@ final class WeChatWKWebViewCaptureSession: NSObject, WKNavigationDelegate, WKUID
     decidePolicyFor navigationAction: WKNavigationAction,
     decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
   ) {
-    guard let url = navigationAction.request.url else {
-      decisionHandler(.cancel)
-      finish(.failure(ManualLinkError.webHostNotAllowed))
-      return
-    }
-    do {
-      try WeChatWebCapturePolicy.validateNavigationURL(url)
-      guard navigationAction.targetFrame != nil else {
-        decisionHandler(.cancel)
-        return
-      }
+    // 新窗口（targetFrame == nil）与站外子框架一律静默拦截；
+    // 只有主框架离开 mp.weixin.qq.com 才终止整页捕获。
+    let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? false
+    switch WeChatWebCapturePolicy.navigationDecision(
+      url: navigationAction.request.url,
+      isMainFrame: isMainFrame
+    ) {
+    case .allow where navigationAction.targetFrame != nil:
       decisionHandler(.allow)
-    } catch let error as ManualLinkError {
+    case .allow, .blockSilently:
       decisionHandler(.cancel)
-      finish(.failure(error))
-    } catch {
+    case .failCapture:
       decisionHandler(.cancel)
       finish(.failure(ManualLinkError.webHostNotAllowed))
     }
@@ -390,18 +386,15 @@ final class WeChatWKWebViewCaptureSession: NSObject, WKNavigationDelegate, WKUID
     decidePolicyFor navigationResponse: WKNavigationResponse,
     decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void
   ) {
-    guard let url = navigationResponse.response.url else {
-      decisionHandler(.cancel)
-      finish(.failure(ManualLinkError.webHostNotAllowed))
-      return
-    }
-    do {
-      try WeChatWebCapturePolicy.validateNavigationURL(url)
+    switch WeChatWebCapturePolicy.navigationDecision(
+      url: navigationResponse.response.url,
+      isMainFrame: navigationResponse.isForMainFrame
+    ) {
+    case .allow:
       decisionHandler(.allow)
-    } catch let error as ManualLinkError {
+    case .blockSilently:
       decisionHandler(.cancel)
-      finish(.failure(error))
-    } catch {
+    case .failCapture:
       decisionHandler(.cancel)
       finish(.failure(ManualLinkError.webHostNotAllowed))
     }
