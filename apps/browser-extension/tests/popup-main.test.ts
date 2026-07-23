@@ -6,6 +6,8 @@ type FakeElement = {
   hidden: boolean;
   disabled: boolean;
   onclick: (() => Promise<void>) | null;
+  dataset: Record<string, string>;
+  classList: { add: (c: string) => void; remove: (c: string) => void };
 };
 
 const diagnostic: DouyinMetadataDiagnostic = {
@@ -21,9 +23,13 @@ const diagnostic: DouyinMetadataDiagnostic = {
 };
 
 function popupDOM(): Record<string, FakeElement> {
-  const element = (): FakeElement => ({ textContent: "", hidden: false, disabled: false, onclick: null });
+  const element = (): FakeElement => ({
+    textContent: "", hidden: false, disabled: false, onclick: null,
+    dataset: {}, classList: { add: () => {}, remove: () => {} },
+  });
   return {
-    "#status": element(), "#count": element(), "#media-status": element(), "#metadata-diagnostic": element(),
+    "#availability": element(), "#platform": element(), "#status": element(), "#scale": element(),
+    "#media-status": element(), "#diag": element(), "#metadata-diagnostic": element(),
     "#error": element(), "#send": element(), "#extension-name": element(), "#build-label": element(),
   };
 }
@@ -33,11 +39,14 @@ afterEach(() => vi.unstubAllGlobals());
 describe("popup metadata diagnostic fresh-send lifecycle", () => {
   it("shows preview diagnostics, clears before the send await, and keeps them hidden after rejection", async () => {
     const elements = popupDOM();
-    elements["#metadata-diagnostic"]!.hidden = true;
+    elements["#diag"]!.hidden = true;
     let rejectSend: ((reason?: unknown) => void) | undefined;
     const pendingSend = new Promise<never>((_resolve, reject) => { rejectSend = reject; });
     const sendMessage = vi.fn()
-      .mockResolvedValueOnce({ title: "预览", characterCount: 2, version: 1, metadataDiagnostic: diagnostic })
+      .mockResolvedValueOnce({
+        title: "预览", characterCount: 2, version: 1,
+        platform: "generic", completeness: "full_article", metadataDiagnostic: diagnostic,
+      })
       .mockReturnValueOnce(pendingSend);
     vi.stubGlobal("document", {
       title: "",
@@ -52,16 +61,18 @@ describe("popup metadata diagnostic fresh-send lifecycle", () => {
     });
 
     await import("../entrypoints/popup/main");
+    // 诊断折叠容器（#diag）随内容出现；文本进 #metadata-diagnostic。
+    const diag = elements["#diag"]!;
     const pre = elements["#metadata-diagnostic"]!;
-    expect(pre.hidden).toBe(false);
+    expect(diag.hidden).toBe(false);
     expect(pre.textContent).toContain("元数据诊断（仅当前弹窗，不发送、不保存）");
 
     const click = elements["#send"]!.onclick!();
-    expect(pre.hidden).toBe(true);
+    expect(diag.hidden).toBe(true);
     expect(pre.textContent).toBe("");
     rejectSend!(new Error("transport sentinel"));
     await click;
-    expect(pre.hidden).toBe(true);
+    expect(diag.hidden).toBe(true);
     expect(pre.textContent).toBe("");
     expect(elements["#error"]!.textContent).toBe("发送失败，请重试。");
   });

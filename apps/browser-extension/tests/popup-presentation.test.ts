@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { makeAppError, type NativeResponse } from "../src/contract";
 import {
+  popupAvailability,
   popupBuildLabel,
   popupDiagnosticStatus,
   popupMediaStatus,
   popupMessageForResponse,
   popupMessageForSendResult,
+  popupPlatformLabel,
+  popupScaleLabel,
 } from "../src/popup-presentation";
 import type { DouyinSessionDiagnosticCode } from "../src/content/douyin-session-detail";
 
@@ -127,5 +130,51 @@ describe("popup build label", () => {
     expect(popupBuildLabel({ version: "0.2.0", version_name: "0.2.0-session-diagnostic-r1" }))
       .toBe("构建 0.2.0-session-diagnostic-r1");
     expect(popupBuildLabel({ version: "0.2.0" })).toBe("构建 0.2.0");
+  });
+});
+
+describe("popup availability", () => {
+  it("blocks unsupported platforms outright", () => {
+    expect(popupAvailability({ platform: "xiaohongshu", completeness: "full_article" }).tone).toBe("blocked");
+    expect(popupAvailability({ platform: "bilibili", completeness: "full_article" }).tone).toBe("blocked");
+  });
+
+  it("marks a downloadable video capture", () => {
+    const a = popupAvailability({
+      platform: "douyin", completeness: "unknown",
+      media: { kind: "directFile" },
+    });
+    expect(a.tone).toBe("video");
+    expect(a.label).toContain("视频");
+  });
+
+  it("warns when the video is present but restricted", () => {
+    expect(popupAvailability({
+      platform: "douyin", completeness: "unknown",
+      media: { kind: "browserSessionOnly", failureReason: "browser_session_required" },
+    }).tone).toBe("warn");
+  });
+
+  it("distinguishes full / visible-only / selection", () => {
+    expect(popupAvailability({ platform: "wechat", completeness: "full_article" }).tone).toBe("ready");
+    expect(popupAvailability({ platform: "generic", completeness: "visible_only" }).tone).toBe("warn");
+    expect(popupAvailability({ platform: "generic", completeness: "selection_only" }).label).toContain("选中");
+  });
+});
+
+describe("popup scale label", () => {
+  it("renders human word counts and reading time", () => {
+    expect(popupScaleLabel(320, "full_article")).toBe("约 320 字 · 预计 1 分钟读完");
+    expect(popupScaleLabel(3200, "full_article")).toBe("约 3.2k 字 · 预计 8 分钟读完");
+    expect(popupScaleLabel(24000, "full_article")).toBe("约 24k 字 · 预计 60 分钟读完");
+    expect(popupScaleLabel(500, "selection_only")).toBe("选中约 500 字");
+  });
+});
+
+describe("popup platform label", () => {
+  it("names the platform and content kind", () => {
+    expect(popupPlatformLabel("wechat", 1)).toBe("微信公众号 · 文章");
+    expect(popupPlatformLabel("douyin", 2)).toBe("抖音 · 视频");
+    expect(popupPlatformLabel("generic", 1)).toBe("网页 · 文章");
   });
 });

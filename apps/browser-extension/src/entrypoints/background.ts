@@ -46,6 +46,7 @@ import {
   normalizeNativeResponse,
   validateCapture,
   type CaptureEnvelope,
+  type CapturePlatform,
   type MediaDescriptor,
   type NativeResponse,
 } from "../contract";
@@ -96,6 +97,8 @@ export type SafeCapturePreview = {
   title: string;
   characterCount: number;
   version: 1 | 2;
+  platform: CapturePlatform;
+  completeness: "full_article" | "visible_only" | "selection_only" | "unknown";
   media?: Pick<
     MediaDescriptor,
     "kind" | "failureReason" | "selectionReason" | "playbackState" | "candidateCount"
@@ -206,6 +209,8 @@ export function safePreviewForCapture(
     title: envelope.source.title || "当前页面",
     characterCount: envelope.capture.characterCount,
     version: envelope.version,
+    platform: envelope.source.platform,
+    completeness: envelope.capture.completeness,
   };
   if (envelope.version === 2) {
     preview.media = {

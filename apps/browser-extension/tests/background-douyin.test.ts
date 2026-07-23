@@ -1096,6 +1096,8 @@ describe("background douyin item identity lock", () => {
       title: "Preview title",
       characterCount: 21,
       version: 2,
+      platform: "generic",
+      completeness: "full_article",
       media: { kind: "directFile", candidateCount: 2, selectionReason: "playing", playbackState: "playing" },
       mediaDiagnostic: { code: "no_allowed_host", blockedHost: "blocked.example" },
     });

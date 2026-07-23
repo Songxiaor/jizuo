@@ -66,6 +66,65 @@ export function popupBuildLabel(manifest: { version: string; version_name?: stri
   return `构建 ${manifest.version_name || manifest.version}`;
 }
 
+type CapturePlatform =
+  | "generic" | "x" | "youtube" | "wechat" | "xiaohongshu" | "douyin" | "bilibili" | "github";
+type Completeness = "full_article" | "visible_only" | "selection_only" | "unknown";
+
+const platformLabels: Readonly<Record<CapturePlatform, string>> = {
+  generic: "网页", x: "X", youtube: "YouTube", wechat: "微信公众号",
+  xiaohongshu: "小红书", douyin: "抖音", bilibili: "B站", github: "GitHub",
+};
+
+const unsupportedPlatforms: ReadonlySet<CapturePlatform> = new Set(["xiaohongshu", "bilibili"]);
+
+export type PopupAvailability = { tone: "ready" | "video" | "warn" | "blocked"; label: string };
+
+/** 顶部一句话可用性：进 popup 立刻知道这页能不能抓、抓到什么。 */
+export function popupAvailability(preview: {
+  platform: CapturePlatform;
+  completeness: Completeness;
+  media?: SafeMediaPreview;
+}): PopupAvailability {
+  if (unsupportedPlatforms.has(preview.platform)) {
+    return { tone: "blocked", label: "暂不支持此平台" };
+  }
+  if (preview.media) {
+    if (!preview.media.failureReason
+        && (preview.media.kind === "directFile" || preview.media.kind === "hls")) {
+      return { tone: "video", label: "可捕获 · 含可下载视频" };
+    }
+    if (preview.media.failureReason) {
+      return { tone: "warn", label: "可捕获正文 · 视频受限" };
+    }
+  }
+  if (preview.completeness === "selection_only") {
+    return { tone: "ready", label: "可捕获选中内容" };
+  }
+  if (preview.completeness === "visible_only") {
+    return { tone: "warn", label: "可捕获 · 仅可见部分" };
+  }
+  return { tone: "ready", label: "可捕获" };
+}
+
+export function popupPlatformLabel(platform: CapturePlatform, version: 1 | 2): string {
+  const kind = version === 2 ? "视频" : "文章";
+  return `${platformLabels[platform] ?? "网页"} · ${kind}`;
+}
+
+/** 字符数 → 人话规模：约 N 字 + 预计阅读时长（中文按 400 字/分钟）。 */
+export function popupScaleLabel(characterCount: number, completeness: Completeness): string {
+  if (completeness === "selection_only") {
+    return `选中约 ${roundCount(characterCount)} 字`;
+  }
+  const minutes = Math.max(1, Math.round(characterCount / 400));
+  return `约 ${roundCount(characterCount)} 字 · 预计 ${minutes} 分钟读完`;
+}
+
+function roundCount(n: number): string {
+  if (n < 1000) return String(n);
+  return `${(n / 1000).toFixed(n < 10000 ? 1 : 0)}k`;
+}
+
 export type SafeMediaPreview = Pick<
   MediaDescriptor,
   "kind" | "failureReason" | "selectionReason" | "playbackState" | "candidateCount"
