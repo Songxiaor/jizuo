@@ -19,3 +19,26 @@ final class ModelPreferencesTests: XCTestCase {
     XCTAssertTrue(customPrompt.contains("Write the final answer in Español."))
   }
 }
+
+extension ModelPreferencesTests {
+  func testAutoPipelineFlagsNormalizeAndStayBackwardCompatible() throws {
+    // 旧 JSON 没有管线键：解码后全部为 nil（= 关）。
+    let legacy = """
+      {"summaryPrompt":"总结","outputLanguage":"简体中文"}
+      """.data(using: .utf8)!
+    let decoded = try JSONDecoder().decode(ModelPreferences.self, from: legacy)
+    XCTAssertNil(decoded.autoTranscribeNewCaptures)
+    XCTAssertNil(decoded.autoSummarizeNewCaptures)
+    XCTAssertNil(decoded.autoMindMapNewCaptures)
+
+    // false 归一化为 nil；true 保留。
+    let preferences = try ModelPreferences(
+      autoTranscribeNewCaptures: true,
+      autoSummarizeNewCaptures: false,
+      autoMindMapNewCaptures: true
+    )
+    XCTAssertEqual(preferences.autoTranscribeNewCaptures, true)
+    XCTAssertNil(preferences.autoSummarizeNewCaptures)
+    XCTAssertEqual(preferences.autoMindMapNewCaptures, true)
+  }
+}

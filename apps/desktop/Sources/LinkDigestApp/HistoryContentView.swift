@@ -378,6 +378,24 @@ struct HistoryContentView: View {
       .tint(theme.accent)
       .accentColor(theme.accent)
       .onAppear { AppearanceTheme.applyApplicationAppearance(appearanceThemeRaw) }
+      // 自动处理管线：新捕获（浏览器/手动链接）到达即按设置勾选步骤串行处理。
+      .onChange(of: appModel.currentCapture?.taskID) { _, newTaskID in
+        guard let taskID = newTaskID else { return }
+        let settings = providerSettings
+        model.startAutoPipeline(
+          taskID: taskID,
+          transcribe: settings.autoTranscribeNewCaptures,
+          tidy: settings.autoTidyTranscription,
+          summarize: settings.autoSummarizeNewCaptures,
+          mindMap: settings.autoMindMapNewCaptures,
+          tidyModel: settings.effectiveTidyModelName,
+          summarizeAction: { [weak model, weak appModel] in
+            guard let model, let appModel,
+                  let detail = model.detail, detail.task.id == taskID else { return }
+            await appModel.summarize(historyDetail: detail, preferences: settings.runPreferences)
+          }
+        )
+      }
       .onChange(of: appearanceThemeRaw) { _, newValue in
         AppearanceTheme.applyApplicationAppearance(newValue)
       }
@@ -682,39 +700,50 @@ struct HistoryContentView: View {
       } else {
         Section {
           DisclosureGroup("标签", isExpanded: $navigationTagsExpanded) {
-            let tags = model.showsAllNavigationTags
-              ? model.navigationCounts.tags
-              : Array(model.navigationCounts.tags.prefix(8))
-            ForEach(tags) { item in
-              Button {
-                // 普通点击即叠加（AND 缩小范围），再点取消；⌘点击=只看这个。
-                model.toggleTag(item.tag, additive: !NSEvent.modifierFlags.contains(.command))
-              } label: {
-                HStack {
-                  Text(item.tag.name).lineLimit(1)
-                  Spacer()
-                  Text("\(item.count)").foregroundStyle(.secondary)
+            // 标签是跨内容的分类关键词：按引用数降序的药丸云，
+            // 大类自然浮到最前。
+            let ordered = model.navigationCounts.tags.sorted { $0.count > $1.count }
+            let tags = model.showsAllNavigationTags ? ordered : Array(ordered.prefix(12))
+            TagPillFlowLayout(spacing: 6) {
+              ForEach(tags) { item in
+                let selected = model.selectedTagNormalizedNames.contains(item.tag.normalizedName)
+                Button {
+                  // 普通点击即叠加（AND 缩小范围），再点取消；⌘点击=只看这个。
+                  model.toggleTag(item.tag, additive: !NSEvent.modifierFlags.contains(.command))
+                } label: {
+                  HStack(spacing: 4) {
+                    Text(item.tag.name).lineLimit(1)
+                    Text("\(item.count)")
+                      .font(.caption2.monospacedDigit())
+                      .foregroundStyle(selected ? theme.selectionText.opacity(0.8) : .secondary)
+                  }
+                  .font(.caption)
+                  .padding(.vertical, 4).padding(.horizontal, 9)
+                  .background(
+                    selected ? AnyShapeStyle(theme.selectionFill) : AnyShapeStyle(theme.primaryText.opacity(0.06)),
+                    in: Capsule()
+                  )
+                  .overlay(
+                    Capsule().strokeBorder(
+                      selected ? Color.clear : theme.primaryText.opacity(0.12),
+                      lineWidth: 1
+                    )
+                  )
+                  .foregroundStyle(selected ? theme.selectionText : theme.primaryText)
+                  .contentShape(Capsule())
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("history-navigation-tag-\(item.tag.normalizedName)")
+                .help("单击叠加筛选（同时命中所有已选标签），再次单击取消；按住 Command 单击只看此标签。")
               }
-              .buttonStyle(.plain)
-              .padding(.vertical, 3).padding(.horizontal, 6)
-              .background(
-                model.selectedTagNormalizedNames.contains(item.tag.normalizedName) ? theme.selectionFill : .clear,
-                in: RoundedRectangle(cornerRadius: 6)
-              )
-              .foregroundStyle(model.selectedTagNormalizedNames.contains(item.tag.normalizedName) ? theme.selectionText : theme.primaryText)
-              .padding(.horizontal, -6)
-              .fontWeight(model.selectedTagNormalizedNames.contains(item.tag.normalizedName) ? .semibold : .regular)
-              .accessibilityIdentifier("history-navigation-tag-\(item.tag.normalizedName)")
-              .help("单击叠加筛选（同时命中所有已选标签），再次单击取消；按住 Command 单击只看此标签。")
             }
-            if !model.showsAllNavigationTags, model.navigationCounts.tags.count > 8 {
+            .padding(.vertical, 2)
+            if !model.showsAllNavigationTags, model.navigationCounts.tags.count > 12 {
               Button("全部标签…") { model.showsAllNavigationTags = true }
                 .accessibilityIdentifier("history-navigation-tags-all")
             }
             if !model.selectedTagNormalizedNames.isEmpty {
-              Button("清空标签筛选") { model.clearTagSelection() }
+              Button("清空标签筛选（\(model.selectedTagNormalizedNames.count)）") { model.clearTagSelection() }
                 .accessibilityIdentifier("history-navigation-tags-clear")
             }
           }
@@ -3304,11 +3333,11 @@ private struct HistoryVideoPlayerCard: View {
         Spacer(minLength: 0)
       }
       .onChange(of: model.transcriptionState) { _, newState in
-        // 自动整理只代替点按钮，不代替同意：仍会先弹发送确认。
+        // 设置勾选即持久授权：自动整理不再逐次弹发送确认。
         guard autoTidyEnabled, newState == .completed,
               model.transcriptionTaskID == taskID,
               model.canTidyTranscript(taskID: taskID) else { return }
-        model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
+        model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)
       }
 
       playerSurface

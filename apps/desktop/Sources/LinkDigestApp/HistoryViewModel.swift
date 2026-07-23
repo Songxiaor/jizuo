@@ -1150,6 +1150,123 @@ final class HistoryViewModel: ObservableObject {
     ledgerTokenTotals = totals
   }
 
+  // MARK: - 自动处理管线
+
+  /// 每个任务只自动处理一次；重启 App 后不追溯旧内容。
+  private var autoPipelineHandledTaskIDs: Set<TaskID> = []
+  private var autoPipelineTask: Task<Void, Never>?
+
+  /// 新内容到达后按顺序执行勾选步骤：本机转写 → 整理 → 总结 → 脑图。
+  /// 勾选即持久授权：整理/脑图跳过逐次确认；总结沿用数据去向 consent
+  /// 存储（首次目的地仍确认一次）。用户切走当前条目时静默停止后续步骤。
+  func startAutoPipeline(
+    taskID: TaskID,
+    transcribe: Bool,
+    tidy: Bool,
+    summarize: Bool,
+    mindMap: Bool,
+    tidyModel: String?,
+    summarizeAction: @escaping @MainActor () async -> Void
+  ) {
+    guard transcribe || tidy || summarize || mindMap else { return }
+    guard !autoPipelineHandledTaskIDs.contains(taskID) else { return }
+    autoPipelineHandledTaskIDs.insert(taskID)
+    autoPipelineTask?.cancel()
+    autoPipelineTask = Task { [weak self] in
+      guard let self else { return }
+      // 详情就绪（含媒体解析）。
+      guard await self.waitFor(timeoutSeconds: 15, condition: {
+        self.selectedTaskID == taskID && self.detailState == .loaded && self.detail?.task.id == taskID
+      }) else { return }
+
+      // 1. 本机转写：只处理已落地的本机视频；模型未就绪不弹下载弹窗，跳过。
+      let hasTranscript = self.detail.map { Self.latestTranscriptText(in: $0) != nil } ?? false
+      if transcribe, !hasTranscript {
+        // 自动保存的视频可能还在下载，短暂等待落地；纯文本条目等不到即跳过。
+        _ = await self.waitFor(timeoutSeconds: 30, condition: {
+          self.selectedTaskID != taskID || self.localMediaFileURL != nil
+        })
+        guard self.selectedTaskID == taskID else { return }
+        if self.localMediaFileURL != nil, self.canTranscribeVideo {
+          self.requestTranscription()
+          _ = await self.waitFor(timeoutSeconds: 1_800, condition: {
+            self.selectedTaskID != taskID || {
+              switch self.transcriptionState(for: taskID) {
+              case .completed, .failed, .cancelled, .awaitingModelDownload: true
+              default: false
+              }
+            }()
+          })
+          // 需要下载模型时不自动下载：收起弹窗，转写留给用户手动。
+          if self.transcriptionState(for: taskID) == .awaitingModelDownload {
+            self.cancelModelDownloadConfirmation()
+          }
+        }
+      }
+      guard self.selectedTaskID == taskID else { return }
+
+      // 2. 整理：勾选即授权，跳过确认弹窗。
+      let tidySourceReady = self.transcriptionState(for: taskID) == .completed
+        || self.detail.map { Self.latestTranscriptText(in: $0) != nil } == true
+      if tidy, tidySourceReady {
+        self.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)
+        _ = await self.waitFor(timeoutSeconds: 600, condition: {
+          self.selectedTaskID != taskID || !self.transcriptTidyState(for: taskID).isActive
+        })
+      }
+      guard self.selectedTaskID == taskID else { return }
+
+      // 3. 总结：已有完成的总结 Run 则跳过。
+      let hasSummary = self.detail?.runs.contains {
+        $0.run.kind == .summarize && $0.run.status == .completed
+      } == true
+      if summarize, !hasSummary {
+        await summarizeAction()
+        // 总结产物要进入 detail 投影，脑图才能优先吃到总结。
+        self.loadDetailForSelection()
+        _ = await self.waitFor(timeoutSeconds: 15, condition: {
+          self.selectedTaskID != taskID || self.detailState == .loaded
+        })
+      }
+      guard self.selectedTaskID == taskID else { return }
+
+      // 4. 脑图：已有脑图则跳过；分支标题会自动写入标签。
+      if mindMap, self.mindMapRecord == nil {
+        self.startMindMapGenerationAuto(taskID: taskID)
+      }
+    }
+  }
+
+  /// 与手动路径同一状态机，只是不弹确认（设置勾选即持久授权）。
+  func startTranscriptTidyAuto(taskID: TaskID, model: String?) {
+    requestTranscriptTidy(taskID: taskID, model: model)
+    if isTranscriptTidyConfirmationPresented {
+      isTranscriptTidyConfirmationPresented = false
+      confirmTranscriptTidy()
+    }
+  }
+
+  func startMindMapGenerationAuto(taskID: TaskID) {
+    requestMindMapGeneration(taskID: taskID)
+    if isMindMapConfirmationPresented {
+      isMindMapConfirmationPresented = false
+      confirmMindMapGeneration()
+    }
+  }
+
+  private func waitFor(
+    timeoutSeconds: Double,
+    condition: @escaping @MainActor () -> Bool
+  ) async -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now + .seconds(timeoutSeconds)
+    while !condition() {
+      if Task.isCancelled || clock.now >= deadline { return condition() }
+      try? await Task.sleep(for: .milliseconds(200))
+    }
+    return true
+  }
+
   // MARK: - 脑图
 
   /// LLM 抽大纲的输入上限；超过时截前段——脑图是压缩，尾部损失可接受。
@@ -1243,10 +1360,11 @@ final class HistoryViewModel: ObservableObject {
           promptTokens: outcome.promptTokens, completionTokens: outcome.completionTokens,
           totalTokens: outcome.totalTokens
         )
-        // 分支标题天然是标签候选：本地写入，零 token；normalizer 去重防撞。
-        let branchTitles = outcome.outline.branches.map(\.title)
+        // 只写模型给出的跨文章主题标签；分支标题是章节结构，永不进标签系统。
+        let topicTags = outcome.outline.tags ?? []
         let tagged = await Task.detached(priority: .utility) { () -> Bool in
-          (try? history.addTags(branchTitles, to: taskID)) != nil
+          guard !topicTags.isEmpty else { return false }
+          return (try? history.addTags(topicTags, to: taskID)) != nil
         }.value
         guard self.selectedTaskID == taskID else { return }
         if tagged {

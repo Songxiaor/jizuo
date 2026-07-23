@@ -58,6 +58,9 @@ final class ProviderSettingsViewModel: ObservableObject {
   @Published var transcriptionModelName = ""
   @Published var tidyModelName = ""
   @Published var autoTidyTranscription = false
+  @Published var autoTranscribeNewCaptures = false
+  @Published var autoSummarizeNewCaptures = false
+  @Published var autoMindMapNewCaptures = false
   @Published private(set) var preferencesState: ModelPreferencesState = .loading
   @Published private(set) var savedPreferences = ModelPreferences.default
   @Published private(set) var isReplacingAPIKey = false
@@ -278,6 +281,9 @@ final class ProviderSettingsViewModel: ObservableObject {
       transcriptionModelName = preferences.transcriptionModel ?? ""
       tidyModelName = preferences.tidyModel ?? ""
       autoTidyTranscription = preferences.autoTidyTranscription == true
+      autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures == true
+      autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
+      autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
       usesSeparateTranslationModel = preferences.translationModel != nil
       savedPreferences = preferences
       preferencesState = .idle
@@ -423,7 +429,10 @@ final class ProviderSettingsViewModel: ObservableObject {
         translationModel: usesSeparateTranslationModel ? translationModelName : nil,
         transcriptionModel: transcriptionModelName,
         tidyModel: tidyModelName,
-        autoTidyTranscription: autoTidyTranscription
+        autoTidyTranscription: autoTidyTranscription,
+        autoTranscribeNewCaptures: autoTranscribeNewCaptures,
+        autoSummarizeNewCaptures: autoSummarizeNewCaptures,
+        autoMindMapNewCaptures: autoMindMapNewCaptures
       )
       try await preferencesStore.save(preferences)
       summaryPrompt = preferences.summaryPrompt
@@ -432,6 +441,9 @@ final class ProviderSettingsViewModel: ObservableObject {
       transcriptionModelName = preferences.transcriptionModel ?? ""
       tidyModelName = preferences.tidyModel ?? ""
       autoTidyTranscription = preferences.autoTidyTranscription == true
+      autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures == true
+      autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
+      autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
       usesSeparateTranslationModel = preferences.translationModel != nil
       savedPreferences = preferences
       preferencesState = .saved

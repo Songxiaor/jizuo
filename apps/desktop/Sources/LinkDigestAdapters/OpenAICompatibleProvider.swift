@@ -338,7 +338,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     request.httpBody = try JSONEncoder().encode(RequestBody(
       model: profile.model,
       messages: [
-        Message(role: "system", content: "为以下摘要输出 1-5 个中文标签，逗号分隔，不要输出其他内容"),
+        Message(role: "system", content: "为以下摘要输出 1-5 个中文主题标签，逗号分隔，不要输出其他内容。标签必须是可用于归类多篇文章的领域名或实体名（如：AI 工具、折叠屏、Claude Code），严禁输出文中章节标题或“概述/建议/要点”这类结构词。"),
         Message(role: "user", content: summary),
       ],
       stream: false,

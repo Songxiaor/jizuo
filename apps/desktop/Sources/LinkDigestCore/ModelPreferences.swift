@@ -29,6 +29,11 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
   public let tidyModel: String?
   /// nil means false: the user never opted in to auto-tidy after transcription.
   public let autoTidyTranscription: Bool?
+  /// 自动处理管线：新内容到达后自动执行勾选的步骤。勾选即持久授权，
+  /// 自动执行不再逐次弹确认。nil = false，旧 JSON 兼容。
+  public let autoTranscribeNewCaptures: Bool?
+  public let autoSummarizeNewCaptures: Bool?
+  public let autoMindMapNewCaptures: Bool?
   public var targetLanguage: String { outputLanguage }
 
   public init(
@@ -37,7 +42,10 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     translationModel: String? = nil,
     transcriptionModel: String? = nil,
     tidyModel: String? = nil,
-    autoTidyTranscription: Bool? = nil
+    autoTidyTranscription: Bool? = nil,
+    autoTranscribeNewCaptures: Bool? = nil,
+    autoSummarizeNewCaptures: Bool? = nil,
+    autoMindMapNewCaptures: Bool? = nil
   ) throws {
     let trimmedPrompt = summaryPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
     let trimmedLanguage = targetLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -68,6 +76,9 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     self.transcriptionModel = trimmedTranscriptionModel?.isEmpty == true ? nil : trimmedTranscriptionModel
     self.tidyModel = trimmedTidyModel?.isEmpty == true ? nil : trimmedTidyModel
     self.autoTidyTranscription = autoTidyTranscription == true ? true : nil
+    self.autoTranscribeNewCaptures = autoTranscribeNewCaptures == true ? true : nil
+    self.autoSummarizeNewCaptures = autoSummarizeNewCaptures == true ? true : nil
+    self.autoMindMapNewCaptures = autoMindMapNewCaptures == true ? true : nil
   }
 
   public init(
@@ -76,7 +87,10 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     translationModel: String? = nil,
     transcriptionModel: String? = nil,
     tidyModel: String? = nil,
-    autoTidyTranscription: Bool? = nil
+    autoTidyTranscription: Bool? = nil,
+    autoTranscribeNewCaptures: Bool? = nil,
+    autoSummarizeNewCaptures: Bool? = nil,
+    autoMindMapNewCaptures: Bool? = nil
   ) throws {
     try self.init(
       summaryPrompt: summaryPrompt,
@@ -84,7 +98,10 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
       translationModel: translationModel,
       transcriptionModel: transcriptionModel,
       tidyModel: tidyModel,
-      autoTidyTranscription: autoTidyTranscription
+      autoTidyTranscription: autoTidyTranscription,
+      autoTranscribeNewCaptures: autoTranscribeNewCaptures,
+      autoSummarizeNewCaptures: autoSummarizeNewCaptures,
+      autoMindMapNewCaptures: autoMindMapNewCaptures
     )
   }
 

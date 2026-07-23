@@ -542,12 +542,25 @@ struct ProviderSettingsView: View {
             .multilineTextAlignment(.trailing)
             .accessibilityIdentifier("tidy-model-name")
         }
-        Toggle("转写后自动整理", isOn: $model.autoTidyTranscription)
-          .accessibilityIdentifier("auto-tidy-transcription")
       } header: {
         Text("转写稿整理")
       } footer: {
-        Text("把转写文字发送给聊天模型修正标点、分段和明显错别字，不改写内容。只发送文字本身；无论手动或自动触发，发送前都会先弹出确认。原始转写稿保留在历史中。")
+        Text("把转写文字发送给聊天模型修正标点、分段和明显错别字，不改写内容。只发送文字本身，原始转写稿保留在历史中。")
+      }
+
+      Section {
+        Toggle("自动转写（本机）", isOn: $model.autoTranscribeNewCaptures)
+          .accessibilityIdentifier("auto-pipeline-transcribe")
+        Toggle("转写后自动整理", isOn: $model.autoTidyTranscription)
+          .accessibilityIdentifier("auto-tidy-transcription")
+        Toggle("自动总结", isOn: $model.autoSummarizeNewCaptures)
+          .accessibilityIdentifier("auto-pipeline-summarize")
+        Toggle("自动生成脑图", isOn: $model.autoMindMapNewCaptures)
+          .accessibilityIdentifier("auto-pipeline-mindmap")
+      } header: {
+        Text("自动处理管线")
+      } footer: {
+        Text("新内容到达后按顺序自动执行勾选的步骤：本机转写 → 整理文稿 → 总结 → 脑图。勾选即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；整理/总结/脑图只发送文字。")
       }
 
       Section("数据去向") {

@@ -74,6 +74,10 @@ def output(command: list[str]) -> str:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", required=True, type=Path)
+    # 日用部署默认写真实 ~/Library/Application Support/LinkDigest。
+    # 隔离数据根（/private/tmp）只给 smoke/工程验证用：重启即清空，
+    # 绝不能作为日用数据位置。
+    parser.add_argument("--isolated-data", action="store_true")
     return parser.parse_args()
 
 
@@ -203,11 +207,16 @@ def main() -> int:
         info["CFBundleIdentifier"] = DEBUG_BUNDLE_IDENTIFIER
         info["CFBundleDisplayName"] = "LinkDigest Debug"
         info["CFBundleName"] = "LinkDigest Debug"
-        info["LSEnvironment"] = {
-            "LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT": str(
-                DEBUG_APPLICATION_SUPPORT_ROOT
-            ),
-        }
+        if args.isolated_data:
+            info["LSEnvironment"] = {
+                "LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT": str(
+                    DEBUG_APPLICATION_SUPPORT_ROOT
+                ),
+            }
+        else:
+            # 日用模式：确保产物不携带任何数据根覆盖，App 使用真实
+            # Application Support 目录。
+            info.pop("LSEnvironment", None)
         with info_plist.open("wb") as stream:
             plistlib.dump(info, stream, sort_keys=True)
         run(
@@ -227,7 +236,10 @@ def main() -> int:
         verify_delivery_directory(destination)
 
     print(destination)
-    print(f"isolated data root: {DEBUG_APPLICATION_SUPPORT_ROOT}")
+    if args.isolated_data:
+        print(f"isolated data root: {DEBUG_APPLICATION_SUPPORT_ROOT}")
+    else:
+        print("data root: real Application Support (daily mode)")
     return 0
 
 

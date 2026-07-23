@@ -1810,3 +1810,13 @@
 - **token 总账**：Migration010 `task_token_usages` 台账表，整理/脑图每次成功记一笔；顶部元数据 Token = Runs（总结/翻译）+ 台账累计，capture-only 条目有花费也显示。分项用量仍在各功能状态行。
 - 核心名词：**结构与皮肤分离（L2）**：模型产结构、本地产几何与样式，编辑/换肤/重渲染永久免费。
 - 教训：部署脚本必须从仓库根目录跑；主控在 `apps/desktop` 里连续两次跑错路径并一度误删日用 App。部署序列待封装成单条脚本。
+
+## 任务：自动处理管线 + P0 数据根修复 + 标签体系修正 + 钥匙串缓存（7/23 收官批次）
+
+- 执行：Claude 主控直接实施。636 测试仅余 9 个已知基线失败。
+- **P0 数据根**：`build-debug-candidate.py` 一直把 `LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT`（指向 `/private/tmp`）烤进日用 App 的 Info.plist，Debug 构建会读取它——日用数据全部写在重启即清空的 tmp。修复：脚本默认**日用模式**不再携带任何数据根覆盖（App 使用真实 `~/Library/Application Support/LinkDigest`），隔离根改为 `--isolated-data` 显式选项。真实库自动迁移 v8→v10。损失：当日 tmp 周期内的测试条目未迁移。**教训：smoke 隔离机制绝不允许泄漏进日用产物；部署后应验证 Info.plist 无环境覆盖。**
+- **自动管线**：设置页「自动处理管线」四开关（默认全关）：新内容到达后串行 本机转写→整理→总结→脑图。勾选=持久授权，自动执行不逐次弹确认（数据去向 consent 首次仍确认）；模型未下载不自动弹、媒体未落地最多等 30s、用户切走即停、已有产物跳过。编排在 `HistoryViewModel.startAutoPipeline`，总结步骤由 App 层闭包注入。
+- **标签体系**：撤销"脑图分支标题→标签"（章节结构≠分类关键词）。改为大纲合同新增 `tags` 字段：同一次调用输出 3-5 个跨文章主题词（领域/实体名），prompt 严禁章节名/结构词；总结标签 prompt 同步收紧。侧栏回归**药丸云**（count 降序、流式换行、选中填充/未选描边、内嵌计数），交互保持叠加 AND。
+- **钥匙串**：`ProviderConfigurationService` 会话级密钥缓存（revision 失效），管线多步只读一次 Keychain；ACL 归属问题指导用户点「始终允许」或重存 Key。
+- 核心名词：**主题标签 vs 章节结构（L2）**：标签回答"这篇关于什么"（跨文章可复用），分支标题回答"这篇分几节"（仅本篇有效），二者永不互换。
+- 排查插曲：全量测试一度 SIGBUS（EXC_ARM_DA_ALIGN），`swift package clean` 后消失，确认为增量构建产物损坏，非代码问题。

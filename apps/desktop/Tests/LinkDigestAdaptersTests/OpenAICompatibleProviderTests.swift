@@ -115,7 +115,8 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     XCTAssertEqual(body["max_tokens"] as? Int, OpenAICompatibleProvider.automaticTagMaximumTokens)
     let messages = try XCTUnwrap(body["messages"] as? [[String: String]])
     XCTAssertEqual(messages, [
-      ["role": "system", "content": "为以下摘要输出 1-5 个中文标签，逗号分隔，不要输出其他内容"],
+      // 标签必须是跨文章可复用的主题词，不是文中章节名；prompt 收紧于 7/23。
+      ["role": "system", "content": "为以下摘要输出 1-5 个中文主题标签，逗号分隔，不要输出其他内容。标签必须是可用于归类多篇文章的领域名或实体名（如：AI 工具、折叠屏、Claude Code），严禁输出文中章节标题或“概述/建议/要点”这类结构词。"],
       ["role": "user", "content": "已经完成的总结文本"],
     ])
     XCTAssertFalse(request.description.contains(key))

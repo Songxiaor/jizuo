@@ -36,6 +36,28 @@ final class MindMapTests: XCTestCase {
     }
   }
 
+  func testTagsParseClampAndDedupe() throws {
+    let raw = """
+    {"title":"主题","branches":[{"title":"分支","leaves":["要点"]}],
+     "tags":["Agent 工程","agent 工程","折叠屏","Claude Code","效率","知识管理","第七个"]}
+    """
+    let outline = try MindMapOutline.fromModelOutput(raw)
+    // 大小写去重 + 上限 5 个。
+    XCTAssertEqual(outline.tags, ["Agent 工程", "折叠屏", "Claude Code", "效率", "知识管理"])
+    // 旧存档没有 tags 键：解码为 nil，不影响渲染。
+    let legacy = try MindMapOutline.fromModelOutput(
+      #"{"title":"主题","branches":[{"title":"分支","leaves":["要点"]}]}"#
+    )
+    XCTAssertNil(legacy.tags)
+  }
+
+  func testMindMapPromptDemandsTopicTagsAndForbidsSectionNames() {
+    let prompt = MindMapPrompt.system
+    XCTAssertTrue(prompt.contains("tags"))
+    XCTAssertTrue(prompt.contains("跨文章"))
+    XCTAssertTrue(prompt.contains("严禁使用分支标题"))
+  }
+
   func testOverlongLeafTruncatesWithEllipsis() throws {
     let long = String(repeating: "长", count: 80)
     let outline = try MindMapOutline.fromModelOutput(

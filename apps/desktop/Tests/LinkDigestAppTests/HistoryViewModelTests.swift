@@ -1638,7 +1638,8 @@ extension HistoryViewModelTests {
 
     let outline = MindMapOutline(
       title: "评测视频", subtitle: nil,
-      branches: [.init(title: "外观", leaves: ["很轻", "很薄"])]
+      branches: [.init(title: "外观", leaves: ["很轻", "很薄"])],
+      tags: ["折叠屏", "三星"]
     )
     let extractor = StubMindMapExtractor(outcome: .init(outline: outline, totalTokens: 640))
     let model = HistoryViewModel(mindMapExtractor: extractor)
@@ -1670,7 +1671,71 @@ extension HistoryViewModelTests {
     XCTAssertEqual(calls, 1)
     XCTAssertNotNil(model.mindMapSVG())
     XCTAssertNotNil(model.mindMapCombinedExportHTML())
+
+    // 标签来自大纲的主题 tags 字段；分支标题（章节结构）绝不入标签。
+    await waitUntilAsync {
+      let names = (try? repository.allTags().map(\.name)) ?? []
+      return names.contains("折叠屏") && names.contains("三星")
+    }
+    let tagNames = try repository.allTags().map(\.name)
+    XCTAssertFalse(tagNames.contains("外观"))
   }
+}
+
+extension HistoryViewModelTests {
+  func testAutoPipelineRunsSummarizeThenMindMapOnceForTextCapture() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-pipeline-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let document = CapturedDocument(
+      createdAt: "2026-07-23T00:00:00Z", origin: .manualLink,
+      url: "https://example.test/pipeline", title: "文章",
+      platform: "web", method: "fixture", text: "一篇讲折叠屏的文章正文。",
+      completeness: "complete", capturedAt: "2026-07-23T00:00:00Z", sourceLabel: "fixture"
+    )
+    let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
+
+    let outline = MindMapOutline(
+      title: "折叠屏", subtitle: nil, branches: [.init(title: "要点", leaves: ["很薄"])]
+    )
+    let extractor = StubMindMapExtractor(outcome: .init(outline: outline, totalTokens: 100))
+    let model = HistoryViewModel(mindMapExtractor: extractor)
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+
+    let summarizeCalls = SummarizeCallCounter()
+    model.startAutoPipeline(
+      taskID: accepted.taskID,
+      transcribe: false, tidy: false, summarize: true, mindMap: true,
+      tidyModel: nil,
+      summarizeAction: { await summarizeCalls.increment() }
+    )
+    await waitUntil(timeout: .seconds(5)) { model.mindMapRecord != nil }
+    let calls = await summarizeCalls.count
+    XCTAssertEqual(calls, 1)
+    XCTAssertEqual(model.mindMapRecord?.outline, outline)
+
+    // 同一任务不重复处理。
+    model.startAutoPipeline(
+      taskID: accepted.taskID,
+      transcribe: false, tidy: false, summarize: true, mindMap: true,
+      tidyModel: nil,
+      summarizeAction: { await summarizeCalls.increment() }
+    )
+    try? await Task.sleep(for: .milliseconds(400))
+    let callsAfter = await summarizeCalls.count
+    XCTAssertEqual(callsAfter, 1)
+    let extractorCalls = await extractor.callCount
+    XCTAssertEqual(extractorCalls, 1)
+  }
+}
+
+private actor SummarizeCallCounter {
+  private(set) var count = 0
+  func increment() { count += 1 }
 }
 
 private actor StubMindMapExtractor: MindMapExtracting {

@@ -17,11 +17,15 @@ public struct MindMapOutline: Codable, Sendable, Equatable {
   public let title: String
   public let subtitle: String?
   public let branches: [Branch]
+  /// 跨文章可复用的主题标签（领域/实体名），与分支标题（章节结构）严格
+  /// 区分：分支标题只对本篇有意义，永远不进标签系统。可选以兼容旧存档。
+  public let tags: [String]?
 
-  public init(title: String, subtitle: String?, branches: [Branch]) {
+  public init(title: String, subtitle: String?, branches: [Branch], tags: [String]? = nil) {
     self.title = title
     self.subtitle = subtitle
     self.branches = branches
+    self.tags = tags
   }
 }
 
@@ -46,6 +50,8 @@ extension MindMapOutline {
   public static let maximumLeavesPerBranch = 6
   public static let maximumTitleCharacters = 40
   public static let maximumLeafCharacters = 42
+  public static let maximumTags = 5
+  public static let maximumTagCharacters = 20
 
   /// Parses model output into a clamped outline. Accepts raw JSON as well as
   /// the ```json fenced form models habitually produce.
@@ -72,10 +78,16 @@ extension MindMapOutline {
       return Branch(title: title, leaves: leaves)
     }
     let subtitleValue = subtitle.map { Self.truncated($0, to: Self.maximumTitleCharacters) }
+    var seenTags = Set<String>()
+    let clampedTags = (tags ?? [])
+      .map { Self.truncated($0, to: Self.maximumTagCharacters) }
+      .filter { !$0.isEmpty && seenTags.insert($0.lowercased()).inserted }
+      .prefix(Self.maximumTags)
     return MindMapOutline(
       title: Self.truncated(title, to: Self.maximumTitleCharacters),
       subtitle: subtitleValue?.isEmpty == true ? nil : subtitleValue,
-      branches: Array(clampedBranches)
+      branches: Array(clampedBranches),
+      tags: clampedTags.isEmpty ? nil : Array(clampedTags)
     )
   }
 
@@ -105,8 +117,10 @@ public enum MindMapPrompt {
   /// code (not user-editable) so parsing and prompting can never drift apart.
   public static let system = """
     你是脑图大纲提取器。把用户给出的内容浓缩成一张脑图的结构，只输出 JSON，不输出任何其它文字。
-    JSON 结构：{"title":"中心主题(≤20字)","subtitle":"来源或副标题(可省略)","branches":[{"title":"分支标题(≤12字)","leaves":["要点(每条≤40字)"]}]}
+    JSON 结构：{"title":"中心主题(≤20字)","subtitle":"来源或副标题(可省略)","branches":[{"title":"分支标题(≤12字)","leaves":["要点(每条≤40字)"]}],"tags":["主题标签 3-5 个"]}
     规则：3-6 个分支；每个分支 2-5 条要点；要点必须来自原文事实，禁止编造；保留关键数字与名称；使用原文语言。
+    tags 是跨文章可复用的主题词（领域名或实体名，如“Agent 工程”“折叠屏”“Claude Code”），\
+    严禁使用分支标题、章节名或“概述/建议/要点”这类结构词。
     """
 }
 

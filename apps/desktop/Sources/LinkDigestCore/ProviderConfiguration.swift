@@ -227,6 +227,22 @@ public actor ProviderConfigurationService {
   private let makeSecretReference: @Sendable () -> SecretReference
   private var configurationRevision: UInt64 = 0
   private var inFlightMutation: UUID?
+  /// 会话级密钥缓存：同一配置修订内每个 secret 只读一次 Keychain，
+  /// 自动管线多步共用同一凭据时不再反复触发钥匙串授权。只存在 actor
+  /// 内存中，任何配置变更（revision 递增）立即失效；不落盘、不进日志。
+  private var sessionSecretCache: [String: (revision: UInt64, value: String)] = [:]
+
+  private func cachedOrReadSecret(_ reference: SecretReference) async throws -> String? {
+    if let cached = sessionSecretCache[reference.rawValue],
+       cached.revision == configurationRevision {
+      return cached.value
+    }
+    let value = try await secretStore.read(reference)
+    if let value, !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      sessionSecretCache[reference.rawValue] = (configurationRevision, value)
+    }
+    return value
+  }
 
   public init(
     profileStore: any ProviderProfileStore,
@@ -307,7 +323,7 @@ public actor ProviderConfigurationService {
     let apiKey: String
     do {
       guard
-        let value = try await secretStore.read(profile.secretReference),
+        let value = try await cachedOrReadSecret(profile.secretReference),
         !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       else {
         throw ProviderConfigurationError.secretStoreReadFailed
@@ -354,7 +370,7 @@ public actor ProviderConfigurationService {
 
     let apiKey: String
     do {
-      guard let value = try await secretStore.read(firstProfile.secretReference),
+      guard let value = try await cachedOrReadSecret(firstProfile.secretReference),
             !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       else { throw ProviderConfigurationError.secretStoreReadFailed }
       apiKey = value
@@ -755,7 +771,7 @@ public actor ProviderConfigurationService {
   private func readRequiredSecret(for profile: ProviderProfile) async throws -> String {
     do {
       guard
-        let value = try await secretStore.read(profile.secretReference),
+        let value = try await cachedOrReadSecret(profile.secretReference),
         !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       else {
         throw ProviderConfigurationError.secretStoreReadFailed
@@ -788,6 +804,7 @@ public actor ProviderConfigurationService {
     let owner = UUID()
     inFlightMutation = owner
     configurationRevision &+= 1
+    sessionSecretCache.removeAll()
     return owner
   }
 
