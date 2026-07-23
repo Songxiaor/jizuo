@@ -1620,6 +1620,71 @@ final class HistoryViewModelTests: XCTestCase {
   }
 }
 
+extension HistoryViewModelTests {
+  func testMindMapGenerationPersistsRecordAndThemeSwitchIsLocal() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-vm-mindmap-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let document = CapturedDocument(
+      createdAt: "2026-07-23T00:00:00Z", origin: .manualLink,
+      url: "https://example.test/mindmap", title: "评测视频",
+      platform: "web", method: "fixture", text: "很长的正文内容，讲了外观和屏幕。",
+      completeness: "complete", capturedAt: "2026-07-23T00:00:00Z", sourceLabel: "fixture"
+    )
+    let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
+
+    let outline = MindMapOutline(
+      title: "评测视频", subtitle: nil,
+      branches: [.init(title: "外观", leaves: ["很轻", "很薄"])]
+    )
+    let extractor = StubMindMapExtractor(outcome: .init(outline: outline, totalTokens: 640))
+    let model = HistoryViewModel(mindMapExtractor: extractor)
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+
+    XCTAssertTrue(model.canGenerateMindMap(taskID: accepted.taskID))
+    model.requestMindMapGeneration(taskID: accepted.taskID)
+    XCTAssertTrue(model.isMindMapConfirmationPresented)
+    model.confirmMindMapGeneration()
+    await waitUntil { model.mindMapState(for: accepted.taskID) == .completed }
+    XCTAssertEqual(model.mindMapRecord?.outline, outline)
+    XCTAssertEqual(model.mindMapTokenSummary, "640 tokens")
+    await waitUntilAsync { (try? repository.loadMindMap(taskID: accepted.taskID)) != nil }
+
+    // 主题切换与编辑均为本地操作：抽取器只被调用一次。
+    model.updateMindMapTheme(taskID: accepted.taskID, themeID: "dark-code")
+    XCTAssertEqual(model.mindMapRecord?.themeID, "dark-code")
+    let edited = MindMapOutline(
+      title: "评测视频（改）", subtitle: nil, branches: outline.branches
+    )
+    model.updateMindMapOutline(taskID: accepted.taskID, outline: edited)
+    XCTAssertEqual(model.mindMapRecord?.outline.title, "评测视频（改）")
+    XCTAssertEqual(model.mindMapRecord?.userEdited, true)
+    await waitUntilAsync {
+      (try? repository.loadMindMap(taskID: accepted.taskID))??.userEdited == true
+    }
+    let calls = await extractor.callCount
+    XCTAssertEqual(calls, 1)
+    XCTAssertNotNil(model.mindMapSVG())
+    XCTAssertNotNil(model.mindMapCombinedExportHTML())
+  }
+}
+
+private actor StubMindMapExtractor: MindMapExtracting {
+  private let outcome: MindMapExtractionOutcome
+  private(set) var callCount = 0
+
+  init(outcome: MindMapExtractionOutcome) { self.outcome = outcome }
+
+  func extractOutline(text: String, model: String?) async throws -> MindMapExtractionOutcome {
+    callCount += 1
+    return outcome
+  }
+}
+
 private actor RecordingTranscriptTidier: TranscriptTidying {
   private let result: String
   private(set) var receivedText: String?

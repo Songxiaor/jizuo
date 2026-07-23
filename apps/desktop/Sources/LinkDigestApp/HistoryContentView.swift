@@ -687,7 +687,8 @@ struct HistoryContentView: View {
               : Array(model.navigationCounts.tags.prefix(8))
             ForEach(tags) { item in
               Button {
-                model.toggleTag(item.tag, additive: NSEvent.modifierFlags.contains(.command))
+                // 普通点击即叠加（AND 缩小范围），再点取消；⌘点击=只看这个。
+                model.toggleTag(item.tag, additive: !NSEvent.modifierFlags.contains(.command))
               } label: {
                 HStack {
                   Text(item.tag.name).lineLimit(1)
@@ -706,11 +707,15 @@ struct HistoryContentView: View {
               .padding(.horizontal, -6)
               .fontWeight(model.selectedTagNormalizedNames.contains(item.tag.normalizedName) ? .semibold : .regular)
               .accessibilityIdentifier("history-navigation-tag-\(item.tag.normalizedName)")
-              .help("单击仅筛选此标签；按住 Command 单击可交集筛选。")
+              .help("单击叠加筛选（同时命中所有已选标签），再次单击取消；按住 Command 单击只看此标签。")
             }
             if !model.showsAllNavigationTags, model.navigationCounts.tags.count > 8 {
               Button("全部标签…") { model.showsAllNavigationTags = true }
                 .accessibilityIdentifier("history-navigation-tags-all")
+            }
+            if !model.selectedTagNormalizedNames.isEmpty {
+              Button("清空标签筛选") { model.clearTagSelection() }
+                .accessibilityIdentifier("history-navigation-tags-clear")
             }
           }
         }
@@ -1333,6 +1338,10 @@ private struct HistoryDetailView: View {
           }
         }
 
+        // 脑图区固定在媒体与原文之间：结构化输出先于全文，读图再读文。
+        MindMapSectionView(taskID: detail.task.id, model: model)
+          .padding(.top, 16)
+
         // Video-first captures keep playback before their short source text.
         // Substantive WeChat articles already rendered the reading surface above.
         if !presentsArticleBeforeMedia, showsReadingSurface {
@@ -1798,11 +1807,15 @@ private struct HistoryDetailView: View {
           MetadataItem(symbol: "calendar", title: "创建时间", value: historyDate(detail.task.createdAtMilliseconds))
         }
         metadataRow {
+          // 全文总账：总结/翻译 Run + 整理/脑图台账的累计花费；
+          // 各功能的单次用量在各自状态行单独显示。
           MetadataItem(
             symbol: "number",
             title: "Token",
-            value: run.run.usageCost.totalTokens.map(String.init) ?? "—",
-            detail: historyTokenBreakdown(run.run.usageCost)
+            value: model.taskTokenGrandTotals.map { String($0.totalTokens) } ?? "—",
+            detail: model.taskTokenGrandTotals.map {
+              "输入 \($0.promptTokens) / 输出 \($0.completionTokens)"
+            }
           )
           MetadataItem(symbol: "checkmark.circle", title: "状态", value: historyStatus(run.run.status))
           if let videoMetadataValue {
@@ -1816,13 +1829,22 @@ private struct HistoryDetailView: View {
       .opacity(0.95)
       .accessibilityIdentifier("history-run-metadata")
     } else {
-      // Capture-only: real creation time, no fake 操作/模型/Token dashes.
+      // Capture-only: real creation time, no fake 操作/模型 dashes；
+      // 但整理/脑图已产生花费时，Token 总账照样显示。
       metadataRow {
         MetadataItem(
           symbol: "calendar",
           title: "创建时间",
           value: historyDate(detail.task.createdAtMilliseconds)
         )
+        if let totals = model.taskTokenGrandTotals {
+          MetadataItem(
+            symbol: "number",
+            title: "Token",
+            value: String(totals.totalTokens),
+            detail: "输入 \(totals.promptTokens) / 输出 \(totals.completionTokens)"
+          )
+        }
         if let videoMetadataValue {
           MetadataItem(symbol: "play.rectangle", title: "视频", value: videoMetadataValue)
             .accessibilityIdentifier("history-video-metadata")

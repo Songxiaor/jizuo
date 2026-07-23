@@ -8,6 +8,9 @@ public struct HistoryApplicationService: Sendable {
     storageIdentity = ObjectIdentifier(repository as AnyObject)
   }
 
+  var repositoryAsMindMapStore: (any MindMapStoring)? { repository as? MindMapStoring }
+  var repositoryAsTokenUsageStore: (any TokenUsageRecording)? { repository as? TokenUsageRecording }
+
   public func acceptCapture(_ command: AcceptCaptureCommand) throws -> AcceptCaptureResult {
     try repository.acceptCapture(command)
   }

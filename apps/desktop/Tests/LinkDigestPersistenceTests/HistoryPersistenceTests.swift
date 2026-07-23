@@ -21,7 +21,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
   func testEmptyDatabaseMigratesDirectlyTo008AndRejectsExtraHyphenUUIDs() throws {
     try withRepository { repository, _ in
       XCTAssertEqual(repository.accessMode, .writable)
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 8)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 10)
       let sql = try repository.database.read { db in
         try Row.fetchAll(db, sql: "SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name IN ('tasks','content_snapshots','runs','artifacts','capture_deliveries','tags','task_tags','media_assets','media_transcription_evidence','task_transcription_attempts','task_transcription_evidence')")
       }
@@ -65,7 +65,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 8)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 10)
       XCTAssertEqual(try repository.historyPage(limit: 10, after: nil).rows.map(\.canonicalURL), ["https://example.test/legacy"])
       XCTAssertEqual(try repository.allTags(), [])
     }
@@ -96,7 +96,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 8)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 10)
       XCTAssertEqual(
         try repository.historyPage(limit: 10, after: nil).rows.map(\.canonicalURL),
         ["https://example.test/version-three"]
@@ -157,7 +157,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 8)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 10)
       XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT used_cookie_v2 FROM content_snapshots") }, 0)
       XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM runs") }, 1)
       XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM media_assets") }, 1)
@@ -254,7 +254,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
   func test008ReopenIsIdempotentAndFutureSchemaIsReadOnly() throws {
     try withTemporaryLocation { location in
       let first = try LocalDatabase.open(at: location)
-      try first.write { try $0.execute(sql: "PRAGMA user_version = 9") }
+      try first.write { try $0.execute(sql: "PRAGMA user_version = 11") }
       try first.close()
       let future = try LocalDatabase.open(at: location)
       XCTAssertEqual(future.accessMode, .readOnly(.futureSchema))
@@ -276,7 +276,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
       ))
       try writable.database.close()
       let upgrader = try DatabaseQueue(path: location.databaseURL.path)
-      try upgrader.write { try $0.execute(sql: "PRAGMA user_version = 9") }
+      try upgrader.write { try $0.execute(sql: "PRAGMA user_version = 11") }
       try upgrader.close()
 
       let future = try GRDBHistoryRepository.open(at: location)
@@ -301,7 +301,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
       try failed.close()
       let recovered = try LocalDatabase.open(at: location)
       XCTAssertEqual(recovered.accessMode, .writable)
-      XCTAssertEqual(try recovered.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 8)
+      XCTAssertEqual(try recovered.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 10)
       try recovered.close()
     }
   }
@@ -325,7 +325,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 8)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, 10)
       XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT capture_contract_version FROM capture_deliveries WHERE request_id = ?", arguments: [v1.requestId]) }, 1)
       let legacyReplay = try repository.acceptCapture(.init(envelope: v1, receivedAtMilliseconds: 2))
       XCTAssertTrue(legacyReplay.deliveryWasReplayed)
@@ -2171,4 +2171,105 @@ private func withTemporaryLocation(createDirectory: Bool = true, _ body: (LocalD
   if createDirectory { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
   defer { try? FileManager.default.removeItem(at: root) }
   try body(LocalDatabaseLocation(directoryURL: directory))
+}
+
+final class MindMapPersistenceTests: XCTestCase {
+  private func openRepository() throws -> (GRDBHistoryRepository, URL) {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-mindmap-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    return (repository, root)
+  }
+
+  private func acceptTask(_ repository: GRDBHistoryRepository) throws -> TaskID {
+    let document = CapturedDocument(
+      createdAt: "2026-07-23T00:00:00Z", origin: .manualLink,
+      url: "https://example.test/mindmap", title: "样例",
+      platform: "web", method: "fixture", text: "正文",
+      completeness: "complete", capturedAt: "2026-07-23T00:00:00Z", sourceLabel: "fixture"
+    )
+    return try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1)).taskID
+  }
+
+  func testSaveLoadUpsertAndCascadeDelete() throws {
+    let (repository, root) = try openRepository()
+    defer { try? repository.database.close(); try? FileManager.default.removeItem(at: root) }
+    let taskID = try acceptTask(repository)
+    let outline = MindMapOutline(
+      title: "主题", subtitle: "来源",
+      branches: [.init(title: "分支", leaves: ["要点一", "要点二"])]
+    )
+    try repository.saveMindMap(.init(
+      taskID: taskID, outline: outline, themeID: "minimal-light",
+      totalTokens: 800, createdAtMilliseconds: 10, updatedAtMilliseconds: 10
+    ))
+    let loaded = try XCTUnwrap(repository.loadMindMap(taskID: taskID))
+    XCTAssertEqual(loaded.outline, outline)
+    XCTAssertEqual(loaded.themeID, "minimal-light")
+    XCTAssertEqual(loaded.totalTokens, 800)
+    XCTAssertFalse(loaded.userEdited)
+
+    // Upsert：编辑后的保存覆盖同任务的旧图。
+    let edited = MindMapOutline(title: "改后主题", subtitle: nil, branches: outline.branches)
+    try repository.saveMindMap(.init(
+      taskID: taskID, outline: edited, themeID: "dark-code", userEdited: true,
+      totalTokens: 800, createdAtMilliseconds: 10, updatedAtMilliseconds: 20
+    ))
+    let reloaded = try XCTUnwrap(repository.loadMindMap(taskID: taskID))
+    XCTAssertEqual(reloaded.outline.title, "改后主题")
+    XCTAssertEqual(reloaded.themeID, "dark-code")
+    XCTAssertTrue(reloaded.userEdited)
+
+    // 删除任务级联清理脑图。
+    try repository.deleteTask(taskID: taskID)
+    XCTAssertNil(try repository.loadMindMap(taskID: taskID))
+  }
+
+  func testSaveRejectsUnknownTask() throws {
+    let (repository, root) = try openRepository()
+    defer { try? repository.database.close(); try? FileManager.default.removeItem(at: root) }
+    let outline = MindMapOutline(title: "主题", subtitle: nil, branches: [.init(title: "b", leaves: [])])
+    XCTAssertThrowsError(try repository.saveMindMap(.init(
+      taskID: TaskID(UUID()), outline: outline, themeID: "minimal-light",
+      createdAtMilliseconds: 1, updatedAtMilliseconds: 1
+    )))
+  }
+}
+
+final class TokenLedgerPersistenceTests: XCTestCase {
+  func testAppendAndTotalsSumAcrossOperationsAndCascadeDelete() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-ledger-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let document = CapturedDocument(
+      createdAt: "2026-07-23T00:00:00Z", origin: .manualLink,
+      url: "https://example.test/ledger", title: "样例",
+      platform: "web", method: "fixture", text: "正文",
+      completeness: "complete", capturedAt: "2026-07-23T00:00:00Z", sourceLabel: "fixture"
+    )
+    let taskID = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1)).taskID
+
+    try repository.appendTokenUsage(.init(
+      taskID: taskID, operation: "transcript_tidy",
+      promptTokens: 3_200, completionTokens: 4_626, totalTokens: 7_826, createdAtMilliseconds: 2
+    ))
+    try repository.appendTokenUsage(.init(
+      taskID: taskID, operation: "mind_map",
+      promptTokens: 891, completionTokens: 755, totalTokens: 1_646, createdAtMilliseconds: 3
+    ))
+    let totals = try repository.ledgerTokenTotals(taskID: taskID)
+    XCTAssertEqual(totals, .init(promptTokens: 4_091, completionTokens: 5_381, totalTokens: 9_472))
+
+    // 未知任务拒收；删任务级联清账。
+    XCTAssertThrowsError(try repository.appendTokenUsage(.init(
+      taskID: TaskID(UUID()), operation: "mind_map",
+      promptTokens: 1, completionTokens: 1, totalTokens: 2, createdAtMilliseconds: 4
+    )))
+    try repository.deleteTask(taskID: taskID)
+    XCTAssertEqual(try repository.ledgerTokenTotals(taskID: taskID).totalTokens, 0)
+  }
 }

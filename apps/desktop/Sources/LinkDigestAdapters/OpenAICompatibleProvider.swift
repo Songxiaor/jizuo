@@ -225,6 +225,47 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     model: String,
     text: String
   ) async throws -> TranscriptTidyOutcome {
+    let completion = try await nonStreamingChatCompletion(
+      profile: profile, apiKey: apiKey, model: model,
+      systemPrompt: TranscriptTidyPrompt.system, userContent: text
+    )
+    return TranscriptTidyOutcome(
+      text: completion.content,
+      promptTokens: completion.promptTokens,
+      completionTokens: completion.completionTokens,
+      totalTokens: completion.totalTokens
+    )
+  }
+
+  /// Extracts a mind-map outline as raw model text (JSON per the fixed
+  /// contract); the Core parser owns validation and clamping.
+  public func extractMindMapOutline(
+    profile: ProviderProfile,
+    apiKey: String,
+    model: String,
+    text: String
+  ) async throws -> (content: String, promptTokens: Int?, completionTokens: Int?, totalTokens: Int?) {
+    let completion = try await nonStreamingChatCompletion(
+      profile: profile, apiKey: apiKey, model: model,
+      systemPrompt: MindMapPrompt.system, userContent: text
+    )
+    return (completion.content, completion.promptTokens, completion.completionTokens, completion.totalTokens)
+  }
+
+  private struct NonStreamingChatResult {
+    let content: String
+    let promptTokens: Int?
+    let completionTokens: Int?
+    let totalTokens: Int?
+  }
+
+  private func nonStreamingChatCompletion(
+    profile: ProviderProfile,
+    apiKey: String,
+    model: String,
+    systemPrompt: String,
+    userContent: String
+  ) async throws -> NonStreamingChatResult {
     guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw ModelProviderFailure(code: .authInvalid, retryable: false, hadOutput: false)
     }
@@ -241,8 +282,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     request.httpBody = try JSONEncoder().encode(RequestBody(
       model: model,
       messages: [
-        Message(role: "system", content: TranscriptTidyPrompt.system),
-        Message(role: "user", content: text),
+        Message(role: "system", content: systemPrompt),
+        Message(role: "user", content: userContent),
       ],
       stream: false,
       maxTokens: nil
@@ -263,8 +304,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
       }
       let decoded = try? JSONDecoder().decode(NonStreamingCompletionResponse.self, from: body)
-      return TranscriptTidyOutcome(
-        text: decoded?.choices.first?.message.content ?? "",
+      return NonStreamingChatResult(
+        content: decoded?.choices.first?.message.content ?? "",
         promptTokens: decoded?.usage?.promptTokens,
         completionTokens: decoded?.usage?.completionTokens,
         totalTokens: decoded?.usage?.totalTokens

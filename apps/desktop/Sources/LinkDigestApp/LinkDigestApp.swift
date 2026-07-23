@@ -845,6 +845,9 @@ private struct DisclosureIdentities {
       transcriptTidier: OpenAICompatibleTranscriptTidier(
         configurationService: configurationService
       ),
+      mindMapExtractor: OpenAICompatibleMindMapExtractor(
+        configurationService: configurationService
+      ),
       transcriptionTempStore: transcriptionTempStore,
       livePlaybackTranscribe: { locale, stopSignal in
         AppAudioLiveTranscriber().transcribe(localeIdentifier: locale, stopSignal: stopSignal)

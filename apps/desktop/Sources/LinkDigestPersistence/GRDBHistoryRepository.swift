@@ -1244,3 +1244,123 @@ private func validFact(_ value: String, minimum: Int = 1, maximum: Int) -> Bool 
 private func validOptionalFact(_ value: String?, minimum: Int = 1, maximum: Int) -> Bool {
   value.map { validFact($0, minimum: minimum, maximum: maximum) } ?? true
 }
+
+// MARK: - Mind maps
+
+extension GRDBHistoryRepository: MindMapStoring {
+  public func saveMindMap(_ record: TaskMindMapRecord) throws {
+    let outlineJSON: String
+    do {
+      outlineJSON = String(decoding: try JSONEncoder().encode(record.outline), as: UTF8.self)
+    } catch { throw RepositoryFailure.invalidInput }
+    guard !record.themeID.isEmpty, record.themeID.count <= 64 else {
+      throw RepositoryFailure.invalidInput
+    }
+    try database.write { db in
+      guard let storedTask: String = try String.fetchOne(
+        db, sql: "SELECT id FROM tasks WHERE id = ?", arguments: [record.taskID.rawValue]
+      ), storedTask == record.taskID.rawValue else { throw RepositoryFailure.invalidInput }
+      try db.execute(
+        sql: """
+          INSERT INTO task_mind_maps
+            (task_id, outline_json, theme_id, user_edited, provider, model,
+             prompt_tokens, completion_tokens, total_tokens, created_at_ms, updated_at_ms)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(task_id) DO UPDATE SET
+            outline_json = excluded.outline_json,
+            theme_id = excluded.theme_id,
+            user_edited = excluded.user_edited,
+            provider = excluded.provider,
+            model = excluded.model,
+            prompt_tokens = excluded.prompt_tokens,
+            completion_tokens = excluded.completion_tokens,
+            total_tokens = excluded.total_tokens,
+            updated_at_ms = excluded.updated_at_ms
+          """,
+        arguments: [
+          record.taskID.rawValue, outlineJSON, record.themeID, record.userEdited ? 1 : 0,
+          record.provider, record.model, record.promptTokens, record.completionTokens,
+          record.totalTokens, record.createdAtMilliseconds, record.updatedAtMilliseconds,
+        ]
+      )
+    }
+  }
+
+  public func loadMindMap(taskID: TaskID) throws -> TaskMindMapRecord? {
+    try database.read { db in
+      guard let row = try Row.fetchOne(
+        db, sql: "SELECT * FROM task_mind_maps WHERE task_id = ?", arguments: [taskID.rawValue]
+      ) else { return nil }
+      let outlineJSON: String = row["outline_json"]
+      guard let outline = try? JSONDecoder().decode(
+        MindMapOutline.self, from: Data(outlineJSON.utf8)
+      ) else { return nil }
+      return TaskMindMapRecord(
+        taskID: taskID,
+        outline: outline,
+        themeID: row["theme_id"],
+        userEdited: (row["user_edited"] as Int64? ?? 0) == 1,
+        provider: row["provider"],
+        model: row["model"],
+        promptTokens: (row["prompt_tokens"] as Int64?).map(Int.init),
+        completionTokens: (row["completion_tokens"] as Int64?).map(Int.init),
+        totalTokens: (row["total_tokens"] as Int64?).map(Int.init),
+        createdAtMilliseconds: row["created_at_ms"],
+        updatedAtMilliseconds: row["updated_at_ms"]
+      )
+    }
+  }
+
+  public func deleteMindMap(taskID: TaskID) throws {
+    try database.write { db in
+      try db.execute(sql: "DELETE FROM task_mind_maps WHERE task_id = ?", arguments: [taskID.rawValue])
+    }
+  }
+}
+
+// MARK: - Token ledger
+
+extension GRDBHistoryRepository: TokenUsageRecording {
+  public func appendTokenUsage(_ usage: TaskTokenUsage) throws {
+    guard !usage.operation.isEmpty, usage.operation.count <= 64 else {
+      throw RepositoryFailure.invalidInput
+    }
+    try database.write { db in
+      guard let storedTask: String = try String.fetchOne(
+        db, sql: "SELECT id FROM tasks WHERE id = ?", arguments: [usage.taskID.rawValue]
+      ), storedTask == usage.taskID.rawValue else { throw RepositoryFailure.invalidInput }
+      try db.execute(
+        sql: """
+          INSERT INTO task_token_usages
+            (id, task_id, operation, prompt_tokens, completion_tokens, total_tokens, created_at_ms)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          """,
+        arguments: [
+          UUID().uuidString.lowercased(), usage.taskID.rawValue, usage.operation,
+          usage.promptTokens, usage.completionTokens, usage.totalTokens,
+          usage.createdAtMilliseconds,
+        ]
+      )
+    }
+  }
+
+  public func ledgerTokenTotals(taskID: TaskID) throws -> TaskTokenTotals {
+    try database.read { db in
+      let row = try Row.fetchOne(
+        db,
+        sql: """
+          SELECT COALESCE(SUM(prompt_tokens), 0) AS p,
+                 COALESCE(SUM(completion_tokens), 0) AS c,
+                 COALESCE(SUM(total_tokens), 0) AS t
+          FROM task_token_usages WHERE task_id = ?
+          """,
+        arguments: [taskID.rawValue]
+      )
+      return TaskTokenTotals(
+        promptTokens: Int(row?["p"] as Int64? ?? 0),
+        completionTokens: Int(row?["c"] as Int64? ?? 0),
+        totalTokens: Int(row?["t"] as Int64? ?? 0)
+      )
+    }
+  }
+}

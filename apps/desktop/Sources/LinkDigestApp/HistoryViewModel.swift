@@ -472,6 +472,12 @@ final class HistoryViewModel: ObservableObject {
   @Published var isTranscriptTidyConfirmationPresented = false
   /// 展示用 token 摘要；evidence 表列固定，本轮不入库。
   @Published private(set) var transcriptTidyTokenSummary: String?
+  @Published private(set) var mindMapRecord: TaskMindMapRecord?
+  @Published private(set) var mindMapState: TranscriptTidyUIState = .idle
+  @Published private(set) var mindMapTaskID: TaskID?
+  @Published var isMindMapConfirmationPresented = false
+  /// 台账（整理/脑图）部分的 token 合计；Run 部分由 detail 投影自带。
+  @Published private(set) var ledgerTokenTotals: TaskTokenTotals?
   @Published private(set) var remoteMediaFavoriteState: RemoteMediaFavoriteState = .idle
   @Published private(set) var capturedMediaAutoSaveStates: [TaskID: RemoteMediaFavoriteState] = [:]
   @Published private(set) var capturedMediaAutoSaveFailureMessage = ""
@@ -493,6 +499,7 @@ final class HistoryViewModel: ObservableObject {
   private let imageTextRecognizer: (any LocalImageTextRecognizing)?
   private let onlineAudioTranscriber: (any OnlineAudioTranscribing)?
   private let transcriptTidier: (any TranscriptTidying)?
+  private let mindMapExtractor: (any MindMapExtracting)?
   private let transcriptionTempStore: TranscriptionTempStore?
   /// 内嵌播放器实时音频转写（YouTube 无字幕视频）；注入以便测试。
   /// 第二参数是优雅停止信号：yield 即关流、保存已转写文本（非硬取消）。
@@ -549,6 +556,7 @@ final class HistoryViewModel: ObservableObject {
     imageTextRecognizer: (any LocalImageTextRecognizing)? = nil,
     onlineAudioTranscriber: (any OnlineAudioTranscribing)? = nil,
     transcriptTidier: (any TranscriptTidying)? = nil,
+    mindMapExtractor: (any MindMapExtracting)? = nil,
     transcriptionTempStore: TranscriptionTempStore? = nil,
     livePlaybackTranscribe: (@Sendable (String, AsyncStream<Void>) -> AsyncThrowingStream<LocalVideoTranscriptionEvent, Error>)? = nil,
     startupTranscriptionCleanupFailure: String? = nil,
@@ -567,6 +575,7 @@ final class HistoryViewModel: ObservableObject {
     self.imageTextRecognizer = imageTextRecognizer
     self.onlineAudioTranscriber = onlineAudioTranscriber
     self.transcriptTidier = transcriptTidier
+    self.mindMapExtractor = mindMapExtractor
     self.transcriptionTempStore = transcriptionTempStore
     self.livePlaybackTranscribe = livePlaybackTranscribe
     transcriptionCleanupFailure = startupTranscriptionCleanupFailure
@@ -1103,6 +1112,235 @@ final class HistoryViewModel: ObservableObject {
     return "\(total) tokens"
   }
 
+  /// 全文 token 总和 = Runs（总结/翻译）+ 台账（整理/脑图）的累计花费。
+  var taskTokenGrandTotals: TaskTokenTotals? {
+    guard let detail else { return nil }
+    var prompt = 0, completion = 0, total = 0
+    for run in detail.runs {
+      prompt += Int(run.run.usageCost.inputTokens ?? 0)
+      completion += Int(run.run.usageCost.outputTokens ?? 0)
+      total += Int(run.run.usageCost.totalTokens ?? 0)
+    }
+    if let ledger = ledgerTokenTotals {
+      prompt += ledger.promptTokens
+      completion += ledger.completionTokens
+      total += ledger.totalTokens
+    }
+    guard prompt > 0 || completion > 0 || total > 0 else { return nil }
+    return TaskTokenTotals(promptTokens: prompt, completionTokens: completion, totalTokens: total)
+  }
+
+  /// 非 Run 操作（整理/脑图）成功后记一笔台账并刷新合计。
+  private func recordTokenUsage(
+    taskID: TaskID, operation: String,
+    promptTokens: Int?, completionTokens: Int?, totalTokens: Int?
+  ) async {
+    guard let store = history?.tokenUsageStore,
+          promptTokens != nil || completionTokens != nil || totalTokens != nil else { return }
+    let usage = TaskTokenUsage(
+      taskID: taskID, operation: operation,
+      promptTokens: promptTokens, completionTokens: completionTokens, totalTokens: totalTokens,
+      createdAtMilliseconds: nowMilliseconds()
+    )
+    let totals = await Task.detached(priority: .utility) { () -> TaskTokenTotals? in
+      try? store.appendTokenUsage(usage)
+      return try? store.ledgerTokenTotals(taskID: taskID)
+    }.value
+    guard selectedTaskID == taskID, let totals else { return }
+    ledgerTokenTotals = totals
+  }
+
+  // MARK: - 脑图
+
+  /// LLM 抽大纲的输入上限；超过时截前段——脑图是压缩，尾部损失可接受。
+  private static let mindMapInputCharacterLimit = 20_000
+
+  func mindMapState(for taskID: TaskID) -> TranscriptTidyUIState {
+    mindMapTaskID == taskID ? mindMapState : .idle
+  }
+
+  var mindMapTokenSummary: String? {
+    guard let record = mindMapRecord, let total = record.totalTokens else { return nil }
+    if let prompt = record.promptTokens, let completion = record.completionTokens {
+      return "\(total) tokens（输入 \(prompt) / 输出 \(completion)）"
+    }
+    return "\(total) tokens"
+  }
+
+  /// 渲染始终从大纲现算，主题切换与编辑都不花 token。
+  func mindMapSVG() -> String? {
+    guard let record = mindMapRecord else { return nil }
+    return MindMapSVGRenderer.render(
+      outline: record.outline,
+      theme: MindMapTheme.named(record.themeID)
+    )
+  }
+
+  /// 优先总结产物（脑图本质是压缩，喂总结质量最好也省 token）；
+  /// 没有总结时用最新正文 snapshot（整理稿保存后就是最新正文）。
+  private func mindMapSourceText() -> String? {
+    guard let detail else { return nil }
+    let summary = detail.runs
+      .filter { $0.run.kind == .summarize && $0.run.status == .completed }
+      .compactMap { $0.artifact?.bodyText.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .last { !$0.isEmpty }
+    let source = summary ?? detail.snapshots.last?.bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let source, !source.isEmpty else { return nil }
+    return String(source.prefix(Self.mindMapInputCharacterLimit))
+  }
+
+  func canGenerateMindMap(taskID: TaskID) -> Bool {
+    guard let detail, history?.mindMapStore != nil, mindMapExtractor != nil, !isReadOnly,
+          detail.task.id == taskID,
+          !mindMapState(for: taskID).isActive else { return false }
+    return mindMapSourceText() != nil
+  }
+
+  func requestMindMapGeneration(taskID: TaskID) {
+    guard canGenerateMindMap(taskID: taskID) else { return }
+    isMindMapConfirmationPresented = true
+  }
+
+  func cancelMindMapConfirmation() { isMindMapConfirmationPresented = false }
+
+  func confirmMindMapGeneration() {
+    isMindMapConfirmationPresented = false
+    guard let history, let mindMapExtractor, let store = history.mindMapStore,
+          let detail, let taskID = selectedTaskID, detail.task.id == taskID,
+          let text = mindMapSourceText() else {
+      mindMapState = .failed(MindMapOutlineError.emptyInput.userMessage)
+      return
+    }
+    mindMapTaskID = taskID
+    mindMapState = .running
+    let existingThemeID = mindMapRecord?.themeID ?? MindMapTheme.minimalLight.id
+    let createdAt = mindMapRecord?.createdAtMilliseconds ?? nowMilliseconds()
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        let outcome = try await mindMapExtractor.extractOutline(text: text, model: nil)
+        try Task.checkCancellation()
+        guard self.selectedTaskID == taskID else { return }
+        let record = TaskMindMapRecord(
+          taskID: taskID,
+          outline: outcome.outline,
+          themeID: existingThemeID,
+          userEdited: false,
+          provider: "configured_provider",
+          model: nil,
+          promptTokens: outcome.promptTokens,
+          completionTokens: outcome.completionTokens,
+          totalTokens: outcome.totalTokens,
+          createdAtMilliseconds: createdAt,
+          updatedAtMilliseconds: self.nowMilliseconds()
+        )
+        try await Task.detached(priority: .userInitiated) { try store.saveMindMap(record) }.value
+        guard self.selectedTaskID == taskID else { return }
+        self.mindMapRecord = record
+        self.mindMapState = .completed
+        await self.recordTokenUsage(
+          taskID: taskID, operation: "mind_map",
+          promptTokens: outcome.promptTokens, completionTokens: outcome.completionTokens,
+          totalTokens: outcome.totalTokens
+        )
+        // 分支标题天然是标签候选：本地写入，零 token；normalizer 去重防撞。
+        let branchTitles = outcome.outline.branches.map(\.title)
+        let tagged = await Task.detached(priority: .utility) { () -> Bool in
+          (try? history.addTags(branchTitles, to: taskID)) != nil
+        }.value
+        guard self.selectedTaskID == taskID else { return }
+        if tagged {
+          self.loadDetailForSelection()
+          self.reloadAvailableTags()
+          self.reloadNavigationCounts()
+        }
+      } catch {
+        guard self.selectedTaskID == taskID else { return }
+        if let failure = error as? TranscriptTidyError {
+          self.mindMapState = .failed(failure.userMessage)
+        } else if let failure = error as? MindMapOutlineError {
+          self.mindMapState = .failed(failure.userMessage)
+        } else {
+          self.mindMapState = .failed(MindMapOutlineError.invalidJSON.userMessage)
+        }
+      }
+    }
+  }
+
+  /// 用户改错别字后的保存：纯本地，不再经过模型。
+  func updateMindMapOutline(taskID: TaskID, outline: MindMapOutline) {
+    guard let store = history?.mindMapStore, let existing = mindMapRecord,
+          existing.taskID == taskID, !isReadOnly else { return }
+    let clamped = outline.clamped()
+    guard !clamped.title.isEmpty, !clamped.branches.isEmpty else { return }
+    let record = TaskMindMapRecord(
+      taskID: taskID,
+      outline: clamped,
+      themeID: existing.themeID,
+      userEdited: true,
+      provider: existing.provider,
+      model: existing.model,
+      promptTokens: existing.promptTokens,
+      completionTokens: existing.completionTokens,
+      totalTokens: existing.totalTokens,
+      createdAtMilliseconds: existing.createdAtMilliseconds,
+      updatedAtMilliseconds: nowMilliseconds()
+    )
+    mindMapRecord = record
+    Task.detached(priority: .userInitiated) { try? store.saveMindMap(record) }
+  }
+
+  func updateMindMapTheme(taskID: TaskID, themeID: String) {
+    guard let store = history?.mindMapStore, let existing = mindMapRecord,
+          existing.taskID == taskID, existing.themeID != themeID else { return }
+    let record = TaskMindMapRecord(
+      taskID: taskID,
+      outline: existing.outline,
+      themeID: MindMapTheme.named(themeID).id,
+      userEdited: existing.userEdited,
+      provider: existing.provider,
+      model: existing.model,
+      promptTokens: existing.promptTokens,
+      completionTokens: existing.completionTokens,
+      totalTokens: existing.totalTokens,
+      createdAtMilliseconds: existing.createdAtMilliseconds,
+      updatedAtMilliseconds: nowMilliseconds()
+    )
+    mindMapRecord = record
+    Task.detached(priority: .userInitiated) { try? store.saveMindMap(record) }
+  }
+
+  /// 脑图 + 原文合并导出的自包含 HTML（SVG 内联，无外部依赖）。
+  func mindMapCombinedExportHTML() -> String? {
+    guard let svg = mindMapSVG(), let detail else { return nil }
+    let title = detail.snapshots.last?.title ?? mindMapRecord?.outline.title ?? "LinkDigest"
+    let body = detail.snapshots.last?.bodyText ?? ""
+    let paragraphs = body
+      .components(separatedBy: "\n\n")
+      .map { "<p>\(Self.htmlEscaped($0))</p>" }
+      .joined(separator: "\n")
+    return """
+    <!DOCTYPE html>
+    <html lang="zh"><head><meta charset="utf-8"><title>\(Self.htmlEscaped(title))</title>
+    <style>
+    body { max-width: 860px; margin: 40px auto; padding: 0 24px; font-family: 'PingFang SC', -apple-system, sans-serif; line-height: 1.8; color: #222; }
+    .map { margin: 24px 0 40px; } .map svg { max-width: 100%; height: auto; }
+    p { margin: 0 0 1em; }
+    </style></head><body>
+    <h1>\(Self.htmlEscaped(title))</h1>
+    <div class="map">\(svg)</div>
+    \(paragraphs)
+    </body></html>
+    """
+  }
+
+  private static func htmlEscaped(_ value: String) -> String {
+    value
+      .replacingOccurrences(of: "&", with: "&amp;")
+      .replacingOccurrences(of: "<", with: "&lt;")
+      .replacingOccurrences(of: ">", with: "&gt;")
+  }
+
   /// The latest persisted transcript snapshot. Tidy re-reads it from the
   /// detail projection instead of the streaming buffer so a tidy after
   /// relaunch works on exactly what history shows.
@@ -1214,6 +1452,11 @@ final class HistoryViewModel: ObservableObject {
         case .applied:
           self.transcriptTidyState = .completed
           self.transcriptTidyTokenSummary = Self.tidyTokenSummary(outcome)
+          await self.recordTokenUsage(
+            taskID: context.taskID, operation: "transcript_tidy",
+            promptTokens: outcome.promptTokens, completionTokens: outcome.completionTokens,
+            totalTokens: outcome.totalTokens
+          )
           self.refreshDetailAfterTranscription(taskID: context.taskID)
         case .replay, .stale:
           self.transcriptTidyState = .failed("这次整理已被更新的请求替代，请重试。")
@@ -1748,6 +1991,12 @@ final class HistoryViewModel: ObservableObject {
     reload()
   }
 
+  func clearTagSelection() {
+    guard !selectedTagNormalizedNames.isEmpty else { return }
+    selectedTagNormalizedNames = []
+    reload()
+  }
+
   func selectScope(_ scope: HistoryListScope) {
     selectedScope = scope
     selectedHosts = []
@@ -2181,6 +2430,9 @@ final class HistoryViewModel: ObservableObject {
         localMediaFileURL = nil
         localMediaResolutionFailure = nil
       }
+      mindMapRecord = (try? history?.mindMapStore?.loadMindMap(taskID: taskID)) ?? nil
+      if mindMapTaskID != taskID { mindMapState = .idle; mindMapTaskID = nil }
+      ledgerTokenTotals = (try? history?.tokenUsageStore?.ledgerTokenTotals(taskID: taskID)) ?? nil
       detailState = .loaded
     case let .failure(code):
       detail = nil
@@ -2188,6 +2440,8 @@ final class HistoryViewModel: ObservableObject {
       localMediaFileURL = nil
       localMediaLease = nil
       localMediaResolutionFailure = nil
+      mindMapRecord = nil
+      ledgerTokenTotals = nil
       detailErrorCode = code
       detailState = .failed
     }

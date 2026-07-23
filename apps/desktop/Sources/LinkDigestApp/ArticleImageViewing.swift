@@ -41,9 +41,19 @@ enum InlineImageMemoryCache {
 @MainActor final class InlineImageLightboxController: ObservableObject {
   static let shared = InlineImageLightboxController()
   @Published var url: URL?
+  /// 已知文本的图（如本地渲染的脑图）：「识别文字」直接秒回这份文本，
+  /// 不对大位图跑 Vision OCR。
+  @Published private(set) var preparedText: String?
 
-  func present(_ url: URL) { self.url = url }
-  func dismiss() { url = nil }
+  func present(_ url: URL, preparedText: String? = nil) {
+    self.preparedText = preparedText
+    self.url = url
+  }
+
+  func dismiss() {
+    url = nil
+    preparedText = nil
+  }
 }
 
 /// 内联图片视图：占位 → 后台解码 → 白色衬卡展示；双击进灯箱。
@@ -327,6 +337,11 @@ private struct InlineImageLightboxCanvas: View {
   }
 
   private func recognizeText() {
+    // 本地渲染图（脑图）自带文本：秒回，不跑几十秒的 Vision 大图 OCR。
+    if let prepared = InlineImageLightboxController.shared.preparedText {
+      recognition = .done(prepared)
+      return
+    }
     recognition = .running
     let target = url
     Task {

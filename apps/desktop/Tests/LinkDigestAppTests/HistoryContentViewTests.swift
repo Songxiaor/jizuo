@@ -346,7 +346,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("history-navigation-recent"))
     XCTAssertTrue(source.contains("history-navigation-unsummarized"))
     XCTAssertTrue(source.contains("history-navigation-tags-all"))
-    XCTAssertTrue(source.contains("model.toggleTag(item.tag, additive: NSEvent.modifierFlags.contains(.command))"))
+    // 普通点击=叠加（AND 缩小范围），⌘点击=只看此标签；Syc 2026-07-23 拍板翻转。
+    XCTAssertTrue(source.contains("model.toggleTag(item.tag, additive: !NSEvent.modifierFlags.contains(.command))"))
     XCTAssertTrue(sidebar.contains(".frame(maxWidth: .infinity)"))
     XCTAssertFalse(sidebar.contains("history-tag-filters"), "The old horizontal tag rail must not coexist with navigation")
   }
@@ -710,7 +711,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("historyAction(run.run.kind)"))
     XCTAssertTrue(detail.contains("run.run.model?.trimmedNonEmpty"))
     XCTAssertTrue(detail.contains("historyStatus(run.run.status)"))
-    XCTAssertTrue(detail.contains("historyTokenBreakdown(run.run.usageCost)"))
+    // Token 行改为全文总账（Run + 整理/脑图台账），分项用量在各功能状态行显示。
+    XCTAssertTrue(detail.contains("model.taskTokenGrandTotals"))
     XCTAssertFalse(detail.contains("title: \"费用\""), "BYOK prices are not reliable enough to display an estimate")
   }
 
