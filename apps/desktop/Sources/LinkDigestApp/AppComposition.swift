@@ -28,6 +28,9 @@ actor AppComposition {
     let serverStarter: ServerStarter
     let availabilitySink: AvailabilitySink
     let captureSink: CaptureReceiver.CaptureSink
+    /// 收藏夹同步的受理入口。缺省为 nil：单元测试与降级路径不需要它，
+    /// 此时扩展会收到「请升级 App」而不是静默丢弃这批 id。
+    let bookmarksSink: CaptureReceiver.BookmarksSink?
 
     init(
       applicationSupportRoot: @escaping ApplicationSupportRoot,
@@ -35,7 +38,8 @@ actor AppComposition {
       nowMilliseconds: @escaping @Sendable () -> Int64,
       serverStarter: @escaping ServerStarter,
       availabilitySink: @escaping AvailabilitySink,
-      captureSink: @escaping CaptureReceiver.CaptureSink
+      captureSink: @escaping CaptureReceiver.CaptureSink,
+      bookmarksSink: CaptureReceiver.BookmarksSink? = nil
     ) {
       self.applicationSupportRoot = applicationSupportRoot
       self.repositoryFactory = repositoryFactory
@@ -43,6 +47,7 @@ actor AppComposition {
       self.serverStarter = serverStarter
       self.availabilitySink = availabilitySink
       self.captureSink = captureSink
+      self.bookmarksSink = bookmarksSink
     }
   }
 
@@ -113,7 +118,8 @@ actor AppComposition {
           history: history,
           storageWriteGate: storageWriteGate,
           nowMilliseconds: dependencies.nowMilliseconds,
-          captureSink: dependencies.captureSink
+          captureSink: dependencies.captureSink,
+          bookmarksSink: dependencies.bookmarksSink
         )
         let started = startServer(receiver, using: dependencies.serverStarter)
         return .init(
@@ -153,7 +159,8 @@ actor AppComposition {
         history: nil,
         storageWriteGate: storageWriteGate,
         nowMilliseconds: dependencies.nowMilliseconds,
-        captureSink: dependencies.captureSink
+        captureSink: dependencies.captureSink,
+        bookmarksSink: dependencies.bookmarksSink
       )
       return .init(
         availability: availability,
@@ -178,7 +185,8 @@ actor AppComposition {
       history: nil,
       storageWriteGate: storageWriteGate,
       nowMilliseconds: dependencies.nowMilliseconds,
-      captureSink: dependencies.captureSink
+      captureSink: dependencies.captureSink,
+      bookmarksSink: dependencies.bookmarksSink
     )
     return .init(
       availability: degraded,

@@ -148,6 +148,28 @@ do {
   let body = try ChromiumFramer.readFrame(from: .standardInput, timeout: hostTimeout)
   writeDebugLog("frame_read_bytes=\(body.count)")
   try? body.write(to: URL(fileURLWithPath: "/tmp/linkdigest-last-envelope.json"))
+
+  // 收藏夹 / 时间线同步走独立消息：它带的是一串推文 id，不是页面捕获，所以
+  // 不能过 capture envelope 的 schema。识别到就直接转发给 App，让它的
+  // CaptureReceiver 路由到 bookmarksSink——否则会被下面的校验挡成 schema 错误。
+  // decode 返回 nil 表示「不是这类消息」，继续走 capture 校验；抛错表示「是这类
+  // 消息但不合法」，如实回错，不再当作页面捕获。
+  do {
+    if let bookmarks = try XBookmarksSyncRequest.decode(body) {
+      writeDebugLog("bookmarks_sync ids=\(bookmarks.tweetIDs.count)")
+      let result = deliverToApp(body, requestId: bookmarks.requestId)
+      try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
+      exit(0)
+    }
+  } catch let issue as CaptureValidationError {
+    writeDebugLog("bookmarks_decode_failed=\(issue.rawValue)")
+    try ChromiumFramer.writeFrame(
+      try JSONEncoder().encode(errorResponse(issue.rawValue)),
+      to: .standardOutput
+    )
+    exit(0)
+  }
+
   let envelope: CaptureWireEnvelope
   do {
     envelope = try CaptureWireEnvelope.decode(body)

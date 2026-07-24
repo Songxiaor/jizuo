@@ -44,8 +44,19 @@ enum RemoteMarkdownImageStagingPolicy {
     return document.text.range(of: #"!\[[^\]]*\]\(https?://[^)]*douyinpic\.com/"#, options: .regularExpression) != nil
   }
 
+  /// X 帖子的正文图片（含引用推文的配图）都来自 pbs.twimg.com。它们是内容，
+  /// 与帖子是否附带视频无关——带视频的推文同样要下载正文图片。
+  static func isXPostWithBodyImages(_ document: CapturedDocument) -> Bool {
+    guard document.platform == "x" else { return false }
+    return document.text.range(
+      of: #"!\[[^\]]*\]\(https?://[^)]*pbs\.twimg\.com/"#,
+      options: .regularExpression
+    ) != nil
+  }
+
   static func allows(_ document: CapturedDocument) -> Bool {
     if document.platform == "douyin" { return isDouyinImagePost(document) }
+    if isXPostWithBodyImages(document) { return true }
     guard document.media != nil else { return true }
     return isSubstantiveWeChatArticle(platform: document.platform, markdown: document.text)
   }
@@ -79,6 +90,9 @@ final class ManualLinkViewModel: ObservableObject {
   private let clipboard: any ClipboardReading
   private let imageCache: GitHubREADMEImageCache?
   private let imageResources: (any SafeResourceFetching)?
+  /// X 用 MSE 播放、正文也是客户端渲染，直接抓 x.com 只会得到 SPA 外壳。
+  /// 有解析器时，X 链接改走公开端点取回完整推文。
+  private let xResolver: XTweetResolver?
   private let onMediaCaptured: ((CaptureMedia, TaskID, ContentSnapshotID, String) async -> Void)?
   private var ingestor: CaptureIngestService?
   private var history: HistoryApplicationService?
@@ -94,6 +108,7 @@ final class ManualLinkViewModel: ObservableObject {
     clipboard: any ClipboardReading = NSPasteboardClipboardReader(),
     imageCache: GitHubREADMEImageCache? = nil,
     imageResources: (any SafeResourceFetching)? = nil,
+    xResolver: XTweetResolver? = nil,
     onMediaCaptured: ((CaptureMedia, TaskID, ContentSnapshotID, String) async -> Void)? = nil
   ) {
     self.captureService = captureService
@@ -101,6 +116,7 @@ final class ManualLinkViewModel: ObservableObject {
     self.clipboard = clipboard
     self.imageCache = imageCache
     self.imageResources = imageResources
+    self.xResolver = xResolver
     self.onMediaCaptured = onMediaCaptured
   }
 
@@ -289,6 +305,38 @@ final class ManualLinkViewModel: ObservableObject {
     allowsDuplicateSubmit = false
   }
 
+  struct BookmarksEnqueueOutcome: Equatable {
+    let queued: Int
+    let skipped: Int
+  }
+
+  /// 收藏夹同步：把一批推文 id 转成 x.com 链接塞进抓取队列，已在库的静默跳过
+  /// （批量场景不能对每条弹重复确认框）。抓取本身复用既有的串行 worker——
+  /// X 链接会在 performCapture 里走公开端点取回完整推文。
+  @discardableResult
+  func enqueueXBookmarks(_ tweetIDs: [String]) -> BookmarksEnqueueOutcome {
+    guard ingestor != nil else { return .init(queued: 0, skipped: 0) }
+    var queued = 0
+    var skipped = 0
+    var queuedURLs = Set(pendingCaptures.map(\.urlString))
+    for id in tweetIDs {
+      guard XBookmarksSyncRequest.isValidTweetID(id) else { skipped += 1; continue }
+      let urlString = "https://x.com/i/status/\(id)"
+      if let history,
+         let canonical = try? CanonicalURL(urlString),
+         (try? history.containsCanonicalURL(canonical)) == true {
+        skipped += 1
+        continue
+      }
+      // 同一条已在本次队列里（滚动重复采到）也跳过。
+      if !queuedURLs.insert(urlString).inserted { skipped += 1; continue }
+      pendingCaptures.append(PendingCapture(id: UUID(), urlString: urlString, phase: .queued))
+      queued += 1
+    }
+    if queued > 0 { kickCaptureQueue() }
+    return .init(queued: queued, skipped: skipped)
+  }
+
   func retryPendingCapture(_ id: UUID) {
     guard let index = pendingCaptures.firstIndex(where: { $0.id == id }),
           case .failed = pendingCaptures[index].phase else { return }
@@ -338,8 +386,15 @@ final class ManualLinkViewModel: ObservableObject {
     var capturedDocument: CapturedDocument?
     do {
       let document: CapturedDocument?
-      if let url = URL(string: value.trimmingCharacters(in: .whitespacesAndNewlines)),
-         WeChatWebCapturePolicy.isCandidate(url) {
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      if let xResolver, let tweetID = XTweetResolver.tweetID(from: trimmed) {
+        // X 直抓只有 SPA 外壳；改用公开端点取回整条推文（正文/图片/视频直链）。
+        guard let tweet = await xResolver.resolveTweet(id: tweetID) else {
+          throw ManualLinkError.network
+        }
+        document = tweet.capturedDocument(createdAt: ISO8601DateFormatter().string(from: Date()))
+      } else if let url = URL(string: trimmed),
+                WeChatWebCapturePolicy.isCandidate(url) {
         document = try await weChatCapture.capture(url: url)
       } else {
         document = try await captureService.capture(urlString: value)

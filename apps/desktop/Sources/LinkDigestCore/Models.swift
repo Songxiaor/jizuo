@@ -280,8 +280,13 @@ public enum CaptureEnvelopeV2Validator {
 }
 
 public struct AppError: Codable, Sendable, Equatable { public let version: Int; public let requestId: String; public let createdAt: String; public let category: String; public let code: String; public let retryable: Bool; public let action: String; public let safeDetail: String?; public init(version: Int, requestId: String, createdAt: String, category: String, code: String, retryable: Bool, action: String, safeDetail: String?) { self.version = version; self.requestId = requestId; self.createdAt = createdAt; self.category = category; self.code = code; self.retryable = retryable; self.action = action; self.safeDetail = safeDetail } }
-public enum NativeResponse: Codable, Sendable, Equatable { case taskAccepted(version: Int, requestId: String, characterCount: Int), error(AppError)
-  enum CodingKeys: String, CodingKey { case kind, version, requestId, characterCount, error }
+public enum NativeResponse: Codable, Sendable, Equatable {
+  case taskAccepted(version: Int, requestId: String, characterCount: Int)
+  /// 收藏夹同步：受理了一批推文 id，逐条抓取在 App 的队列里进行。
+  case bookmarksAccepted(version: Int, requestId: String, queuedCount: Int, skippedCount: Int)
+  case error(AppError)
+
+  enum CodingKeys: String, CodingKey { case kind, version, requestId, characterCount, queuedCount, skippedCount, error }
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     switch try c.decode(String.self, forKey: .kind) {
@@ -295,6 +300,17 @@ public enum NativeResponse: Codable, Sendable, Equatable { case taskAccepted(ver
         requestId: try c.decode(String.self, forKey: .requestId),
         characterCount: try c.decode(Int.self, forKey: .characterCount)
       )
+    case "bookmarksAccepted":
+      let version = try c.decode(Int.self, forKey: .version)
+      guard version == 1 else {
+        throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "Unsupported NativeResponse version")
+      }
+      self = .bookmarksAccepted(
+        version: version,
+        requestId: try c.decode(String.self, forKey: .requestId),
+        queuedCount: try c.decode(Int.self, forKey: .queuedCount),
+        skippedCount: try c.decode(Int.self, forKey: .skippedCount)
+      )
     case "error":
       let error = try c.decode(AppError.self, forKey: .error)
       guard error.version == 1 else {
@@ -305,7 +321,20 @@ public enum NativeResponse: Codable, Sendable, Equatable { case taskAccepted(ver
       throw DecodingError.dataCorruptedError(forKey: .kind, in: c, debugDescription: "Unknown NativeResponse kind")
     }
   }
-  public func encode(to encoder: Encoder) throws { var c = encoder.container(keyedBy: CodingKeys.self); switch self { case let .taskAccepted(v, r, n): try c.encode("taskAccepted", forKey: .kind); try c.encode(v, forKey: .version); try c.encode(r, forKey: .requestId); try c.encode(n, forKey: .characterCount); case let .error(e): try c.encode("error", forKey: .kind); try c.encode(e, forKey: .error) } }
+  public func encode(to encoder: Encoder) throws {
+    var c = encoder.container(keyedBy: CodingKeys.self)
+    switch self {
+    case let .taskAccepted(v, r, n):
+      try c.encode("taskAccepted", forKey: .kind); try c.encode(v, forKey: .version)
+      try c.encode(r, forKey: .requestId); try c.encode(n, forKey: .characterCount)
+    case let .bookmarksAccepted(v, r, queued, skipped):
+      try c.encode("bookmarksAccepted", forKey: .kind); try c.encode(v, forKey: .version)
+      try c.encode(r, forKey: .requestId)
+      try c.encode(queued, forKey: .queuedCount); try c.encode(skipped, forKey: .skippedCount)
+    case let .error(e):
+      try c.encode("error", forKey: .kind); try c.encode(e, forKey: .error)
+    }
+  }
 }
 
 public enum CaptureValidationError: String, Error, Codable, Sendable { case PROTOCOL_VERSION_UNSUPPORTED, CAPTURE_URL_UNSUPPORTED, CAPTURE_COUNT_MISMATCH, CAPTURE_CONTENT_EMPTY, CAPTURE_PAYLOAD_TOO_LARGE, CAPTURE_SCHEMA_INVALID }

@@ -861,6 +861,7 @@ private struct DisclosureIdentities {
       ),
       imageCache: imageCache,
       imageResources: manualResourceFetcher,
+      xResolver: XTweetResolver(resources: manualResourceFetcher),
       onMediaCaptured: { media, taskID, snapshotID, pageURL in
         await historyModel.ingestCapturedMedia(
           media,
@@ -934,6 +935,29 @@ private struct DisclosureIdentities {
             )
           }
         }
+        // X 用 MSE 播放，抓取侧只能拿到 blob: 地址，捕获结果因此停在「只能在原
+        // 浏览器会话观看」。用嵌入式推文的公开端点换回真实直链 MP4，再交给既有
+        // 的媒体管线。全程不带 cookie；解析失败就保持原来的诚实提示。
+        if let descriptor = value.mediaDescriptor,
+           descriptor.platform == "x",
+           descriptor.kind == .browserSessionOnly,
+           descriptor.failureReason == .blobOrMSE,
+           let tweetID = XTweetResolver.tweetID(from: value.document.url) {
+          let resolver = XTweetResolver(resources: manualResourceFetcher)
+          let taskID = value.taskID
+          let snapshotID = value.snapshotID
+          let pageURL = value.document.url
+          let author = descriptor.author
+          Task { @MainActor in
+            guard let media = await resolver.resolveVideo(tweetID: tweetID, author: author) else { return }
+            await historyModel.ingestCapturedMedia(
+              media,
+              taskID: taskID,
+              snapshotID: snapshotID,
+              pageURL: pageURL
+            )
+          }
+        }
         // Substantive WeChat articles keep their inline images even when they
         // also carry an embedded-video descriptor. Pure video captures do not.
         if let imageCache, RemoteMarkdownImageStagingPolicy.allows(value.document) {
@@ -957,6 +981,12 @@ private struct DisclosureIdentities {
             await historyModel.reveal(taskID: taskID)
           }
         }
+      },
+      // 收藏夹同步：扩展只交来一串推文 id，正文由公开端点逐条取回。受理必须
+      // 立刻返回（扩展只有 10s 预算），真正的抓取在 App 的抓取队列里串行进行。
+      bookmarksSink: { request in
+        let outcome = await MainActor.run { manualLink.enqueueXBookmarks(request.tweetIDs) }
+        return .init(queued: outcome.queued, skipped: outcome.skipped)
       }
     ))
 

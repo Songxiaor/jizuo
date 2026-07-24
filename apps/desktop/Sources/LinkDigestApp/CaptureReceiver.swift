@@ -61,24 +61,74 @@ struct CurrentCapture: Sendable, Equatable {
 
 struct CaptureReceiver: Sendable {
   typealias CaptureSink = @Sendable (CurrentCapture) async -> Void
+  /// 受理结果只回「入队多少、跳过多少」——逐条抓取在 App 的队列里慢慢做，
+  /// 不能占住扩展的 native-message 预算（与图片下载同一个 fail-open 模式）。
+  struct BookmarksOutcome: Sendable, Equatable {
+    let queued: Int
+    let skipped: Int
+  }
+  typealias BookmarksSink = @Sendable (XBookmarksSyncRequest) async -> BookmarksOutcome
+
   private let history: HistoryApplicationService?
   private let storageWriteGate: StorageWriteGate
   private let nowMilliseconds: @Sendable () -> Int64
   private let captureSink: CaptureSink
+  private let bookmarksSink: BookmarksSink?
 
   init(
     history: HistoryApplicationService?,
     storageWriteGate: StorageWriteGate,
     nowMilliseconds: @escaping @Sendable () -> Int64,
-    captureSink: @escaping CaptureSink
+    captureSink: @escaping CaptureSink,
+    bookmarksSink: BookmarksSink? = nil
   ) {
     self.history = history
     self.storageWriteGate = storageWriteGate
     self.nowMilliseconds = nowMilliseconds
     self.captureSink = captureSink
+    self.bookmarksSink = bookmarksSink
   }
 
   func process(_ data: Data) async -> NativeResponse {
+    // 收藏夹同步走独立消息：它带的只是一串推文 id，不是一次页面捕获，
+    // 因此不经过 capture envelope 的 schema（那套契约保持冻结）。
+    do {
+      if let request = try XBookmarksSyncRequest.decode(data) {
+        guard let bookmarksSink else {
+          return .error(appError(
+            requestID: request.requestId,
+            category: "protocol",
+            code: CaptureValidationError.CAPTURE_SCHEMA_INVALID.rawValue,
+            retryable: false,
+            action: "upgrade_app"
+          ))
+        }
+        let outcome = await bookmarksSink(request)
+        return .bookmarksAccepted(
+          version: 1,
+          requestId: request.requestId,
+          queuedCount: outcome.queued,
+          skippedCount: outcome.skipped
+        )
+      }
+    } catch let issue as CaptureValidationError {
+      return .error(appError(
+        requestID: "app-receiver",
+        category: "protocol",
+        code: issue.rawValue,
+        retryable: false,
+        action: "retry"
+      ))
+    } catch {
+      return .error(appError(
+        requestID: "app-receiver",
+        category: "protocol",
+        code: CaptureValidationError.CAPTURE_SCHEMA_INVALID.rawValue,
+        retryable: false,
+        action: "retry"
+      ))
+    }
+
     let wire: CaptureWireEnvelope
     do {
       wire = try CaptureWireEnvelope.decode(data)

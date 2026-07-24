@@ -460,6 +460,19 @@ final class ManualLinkViewModelTests: XCTestCase {
     XCTAssertFalse(RemoteMarkdownImageStagingPolicy.allows(capturedDocument(
       platform: "douyin", text: "# 视频标题\n\n一段文案", hasMedia: false
     )))
+
+    // X 帖子的正文图片（含引用配图）来自 pbs.twimg.com，即使帖子带视频也要下载。
+    let xWithVideoAndImage = capturedDocument(
+      platform: "x",
+      text: "正文\n\n![](https://pbs.twimg.com/media/abc.jpg)",
+      hasMedia: true
+    )
+    XCTAssertTrue(RemoteMarkdownImageStagingPolicy.allows(xWithVideoAndImage))
+    XCTAssertTrue(RemoteMarkdownImageStagingPolicy.isXPostWithBodyImages(xWithVideoAndImage))
+    // 纯文字 X 帖子（无图）走原有分支：无 media 时仍放行、有 media 时不放行。
+    XCTAssertFalse(RemoteMarkdownImageStagingPolicy.isXPostWithBodyImages(
+      capturedDocument(platform: "x", text: "只有文字", hasMedia: true)
+    ))
   }
 
   func testWeChatImageFailureIsFailOpenAndStillCommitsArticle() async {
@@ -614,6 +627,42 @@ final class ManualLinkViewModelTests: XCTestCase {
     await commitGate.release()
     try await first.value
     XCTAssertEqual(queuedWrites.count, 0)
+  }
+
+  func testEnqueueXBookmarksSkipsInvalidAndInBatchDuplicatesAndQueuesTheRest() {
+    let repository = ManualVMRepository()
+    let model = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 }, captureSink: { _ in }
+    )
+    let outcome = model.enqueueXBookmarks([
+      "2080312096865271866",
+      "2080312096865271866", // 滚动重复采到，跳过
+      "not-a-number",        // 非法 id，跳过
+      "1234567890123",
+    ])
+    XCTAssertEqual(outcome.queued, 2)
+    XCTAssertEqual(outcome.skipped, 2)
+    XCTAssertEqual(model.pendingCaptures.count, 2)
+    // 队列里是 x.com 状态链接，抓取时会走 X 解析分支。
+    XCTAssertTrue(model.pendingCaptures.allSatisfy { $0.urlString.hasPrefix("https://x.com/i/status/") })
+  }
+
+  func testEnqueueXBookmarksSilentlySkipsWhatIsAlreadyInLibrary() throws {
+    // 已在库的推文全部静默跳过——批量场景不能对每条弹重复确认框。
+    let seeded = try CanonicalURL("https://x.com/i/status/1234567890123").value
+    let repository = ManualVMRepository(existingCanonicalURLs: [seeded])
+    let model = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 }, captureSink: { _ in }
+    )
+    let outcome = model.enqueueXBookmarks(["1234567890123"])
+    XCTAssertEqual(outcome, .init(queued: 0, skipped: 1))
+    XCTAssertTrue(model.pendingCaptures.isEmpty)
   }
 
   private func makeModel(clipboard: ManualVMClipboard, repository: ManualVMRepository = ManualVMRepository(), sink: ManualVMSink = ManualVMSink()) -> ManualLinkViewModel {
