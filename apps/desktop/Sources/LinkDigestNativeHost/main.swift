@@ -124,10 +124,12 @@ func deliverToApp(_ body: Data, requestId: String) -> NativeResponse {
   return errorResponse(lastCode, requestId: requestId)
 }
 
-// Robust diagnostic writer: uses NSData so a write failure shows up in stderr
-// instead of being silently dropped. We use a fixed path under /tmp so the
-// debug log is easy to read from a terminal.
+// 诊断写入默认关闭：host 会经手用户抓取的正文，不能默认往世界可读的 /tmp 落
+// 任何东西。需要排查时设 LINKDIGEST_HOST_DEBUG=1，只写计数/状态码（不含正文）。
+private let hostDebugEnabled = ProcessInfo.processInfo.environment["LINKDIGEST_HOST_DEBUG"] == "1"
+
 private func writeDebugLog(_ line: String) {
+  guard hostDebugEnabled else { return }
   let timestamped = "\(Date().ISO8601Format()) \(line)\n"
   let url = URL(fileURLWithPath: "/tmp/linkdigest-host-debug.log")
   if let data = timestamped.data(using: .utf8) {
@@ -147,7 +149,10 @@ do {
   writeDebugLog("host_started")
   let body = try ChromiumFramer.readFrame(from: .standardInput, timeout: hostTimeout)
   writeDebugLog("frame_read_bytes=\(body.count)")
-  try? body.write(to: URL(fileURLWithPath: "/tmp/linkdigest-last-envelope.json"))
+  // 抓取正文含推文/文章全文，绝不默认落盘。仅在显式开启调试时留一份，供排查。
+  if hostDebugEnabled {
+    try? body.write(to: URL(fileURLWithPath: "/tmp/linkdigest-last-envelope.json"))
+  }
 
   // 收藏夹 / 时间线同步走独立消息：它带的是一串推文 id，不是页面捕获，所以
   // 不能过 capture envelope 的 schema。识别到就直接转发给 App，让它的

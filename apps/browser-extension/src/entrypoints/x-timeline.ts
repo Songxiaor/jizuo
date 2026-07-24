@@ -9,7 +9,6 @@ import { tweetIDFromArticle } from "../content/x-bookmarks";
  * message 交给 App（复用单条同步能力）。
  */
 
-const MARK = "data-linkdigest-injected";
 const BUTTON_CLASS = "linkdigest-sync-button";
 
 function buildButton(): HTMLButtonElement {
@@ -60,10 +59,17 @@ function setTip(button: HTMLButtonElement, state: string, text: string): void {
   if (tip) tip.textContent = text; // 气泡文字必须写进节点，只设属性看不见。
 }
 
-async function onClick(button: HTMLButtonElement, tweetID: string): Promise<void> {
+async function onClick(button: HTMLButtonElement): Promise<void> {
   if (button.getAttribute("data-state") === "busy") return;
-  // eslint-disable-next-line no-console
-  console.log("[LinkDigest] sync click", tweetID);
+  // 实时读 id：X 时间线是虚拟滚动，会把 DOM 节点回收给不同的推文。点击时从按钮
+  // 往上找当前所在的 article，读它此刻的 id，避免同步到一条早已被换掉的旧推文。
+  const article = button.closest("article[data-testid='tweet']");
+  const tweetID = article ? tweetIDFromArticle(article) : null;
+  if (!tweetID) {
+    setTip(button, "error", "读不到帖子ID");
+    window.setTimeout(() => button.setAttribute("data-tip", ""), 2_000);
+    return;
+  }
   setTip(button, "busy", "同步中…");
   try {
     // MV3 service worker 休眠后首个消息可能丢：拿到 undefined 就重试一次。
@@ -72,8 +78,6 @@ async function onClick(button: HTMLButtonElement, tweetID: string): Promise<void
       await new Promise((resolve) => setTimeout(resolve, 300));
       result = await browser.runtime.sendMessage({ type: "sync-single-tweet", tweetID });
     }
-    // eslint-disable-next-line no-console
-    console.log("[LinkDigest] sync result", result);
     const parsed = result as
       | { ok: true; outcome: { queued: number; skipped: number } }
       | { ok: false; code: string }
@@ -86,32 +90,32 @@ async function onClick(button: HTMLButtonElement, tweetID: string): Promise<void
     } else if (parsed.code === "native_error") {
       setTip(button, "error", "App 未连接");
     } else if (parsed.code === "invalid_id") {
-      setTip(button, "error", `读不到帖子ID（${tweetID || "空"}）`);
+      setTip(button, "error", "读不到帖子ID");
     } else {
       setTip(button, "error", `失败：${parsed.code}`);
     }
-  } catch (error) {
-    // eslint-disable-next-line no-console
-    console.log("[LinkDigest] sync error", error);
-    setTip(button, "error", `同步失败：${String(error).slice(0, 40)}`);
+  } catch {
+    setTip(button, "error", "同步失败，请重试");
   }
   // 两秒后收起气泡；done/error 的颜色保留，让用户看到结果。
   window.setTimeout(() => button.setAttribute("data-tip", ""), 2_000);
 }
 
 function injectInto(article: Element): void {
-  if (article.getAttribute(MARK) === "1") return;
   const actionBar = article.querySelector("[role='group']");
   if (!actionBar) return;
+  // 判据用「操作栏里有没有我的按钮」而非标记 article：X 回收节点复用给别的推文
+  // 时会重渲染操作栏、把注入的按钮删掉；靠标记会漏掉重注入。按钮点击时才实时读
+  // 当前推文 id，所以这里不需要在注入时锁定 id。
+  if (actionBar.querySelector(`.${BUTTON_CLASS}`)) return;
   const bookmark = actionBar.querySelector(
     "[data-testid='bookmark'],[data-testid='removeBookmark']",
   );
   // 没有收藏键的行（例如某些推广位）不注入，避免把按钮塞到错误的地方。
   if (!bookmark) return;
-  const tweetID = tweetIDFromArticle(article);
-  if (!tweetID) return;
+  // 注入时只要求这条能读出 id；点击时会再实时读一次。
+  if (!tweetIDFromArticle(article)) return;
 
-  article.setAttribute(MARK, "1");
   const host = document.createElement("div");
   host.style.display = "flex";
   host.style.alignItems = "center";
@@ -126,9 +130,7 @@ function injectInto(article: Element): void {
   button.addEventListener("pointerdown", intercept, true);
   button.addEventListener("click", (event) => {
     intercept(event);
-    // eslint-disable-next-line no-console
-    console.log("[LinkDigest] button clicked");
-    void onClick(button, tweetID);
+    void onClick(button);
   }, true);
   host.appendChild(button);
   // 收藏键左边：插到 bookmark 所在的操作单元之前。
