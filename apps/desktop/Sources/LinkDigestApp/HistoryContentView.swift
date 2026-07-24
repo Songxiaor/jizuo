@@ -542,6 +542,7 @@ struct HistoryContentView: View {
       .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hairline, lineWidth: 1))
       .padding(.horizontal, 10).padding(.vertical, 10)
         .accessibilityIdentifier("history-search")
+        .background(ReleaseInitialSearchFocus().allowsHitTesting(false))
       if model.isReadOnly {
         Label("只读", systemImage: "lock.fill")
           .font(.caption.weight(.semibold))
@@ -1229,6 +1230,16 @@ private struct HistoryDetailView: View {
     }
   }
   private var isDouyinCapture: Bool { latestSourceSnapshot?.platform == "douyin" }
+  /// 抖音图文帖：正文本身就是内容（文案 + 图集），不像视频帖那样只是重复标题的
+  /// caption。原文面板必须给它抓取正文，否则整篇图集会被空的「尚未转写」顶掉。
+  /// 判据与 `RemoteMarkdownImageStagingPolicy.isDouyinImagePost` 保持一致。
+  private var isDouyinImagePostCapture: Bool {
+    guard isDouyinCapture, detail.media == nil, let snapshot = latestSourceSnapshot else { return false }
+    return snapshot.bodyText.range(
+      of: #"!\[[^\]]*\]\(https?://[^)]*douyinpic\.com/"#,
+      options: .regularExpression
+    ) != nil
+  }
   private var isWeChatCapture: Bool { latestSourceSnapshot?.platform == "wechat" }
   /// Picker label follows the latest successful action — 总结 / 翻译, never a vague「结果」.
   private var resultPaneLabel: String {
@@ -1252,6 +1263,9 @@ private struct HistoryDetailView: View {
   private var showsRunControls: Bool { canRunHistory || showsCurrentCapture || showsVisibleRun }
   private var presentsArticleBeforeMedia: Bool {
     guard let latestSnapshot else { return false }
+    // X 帖子的正文就是帖子本身，视频是它的附件——按原帖的顺序读才对：文字在上、
+    // 视频在下。抖音那类视频帖正好相反（正文只是一句 caption），仍旧视频在前。
+    if latestSnapshot.platform == "x" { return true }
     return RemoteMarkdownImageStagingPolicy.isSubstantiveWeChatArticle(
       platform: latestSnapshot.platform,
       markdown: latestSnapshot.bodyText
@@ -2127,7 +2141,9 @@ private struct HistoryDetailView: View {
           }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-      } else if let snapshot = isDouyinCapture ? latestTranscriptionSnapshot : latestSnapshot, !snapshot.bodyText.isEmpty {
+      } else if let snapshot = (isDouyinCapture && !isDouyinImagePostCapture)
+        ? latestTranscriptionSnapshot
+        : latestSnapshot, !snapshot.bodyText.isEmpty {
         if captureWasTruncated(snapshot.completeness) {
           Label("捕获内容已截断，生成结果可能不完整。", systemImage: "exclamationmark.triangle")
             .foregroundStyle(.secondary)
@@ -2231,8 +2247,9 @@ private struct HistoryDetailView: View {
             .foregroundStyle(.tertiary)
         }
       case .source:
-        Text(isDouyinCapture ? "尚未转写" : "本条没有抓取到正文").foregroundStyle(.secondary)
-        if isDouyinCapture,
+        Text(isDouyinCapture && !isDouyinImagePostCapture ? "尚未转写" : "本条没有抓取到正文")
+          .foregroundStyle(.secondary)
+        if isDouyinCapture, !isDouyinImagePostCapture,
            model.canTranscribeVideo || (showsCurrentCapture && appModel.currentCapture?.mediaDescriptor.map {
              model.canTranscribeCurrentCapture($0, taskID: detail.task.id)
            } == true) {
@@ -2880,6 +2897,16 @@ enum CurrentCaptureMediaPreview {
   private static func failurePresentation(for descriptor: MediaDescriptor) -> RemoteMediaDegradationPresentation {
     let message: String
     let nextAction: String
+    // X 的 blob/MSE 不是死路：App 会用嵌入式推文的公开端点换回直链，在后台把
+    // 视频下下来。下载完成前先如实说「正在获取」，别让用户以为抓失败了——
+    // 这段空窗正是「刚抓进来那几秒显示受限、刷新后才正常」的由来。
+    if descriptor.platform == "x", descriptor.failureReason == .blobOrMSE {
+      return .init(
+        kindLabel: "浏览器会话视频",
+        message: "正在为这条帖子获取视频…",
+        nextAction: "获取完成后会自动出现在这里；若稍后仍是这条提示，说明这条视频没能取到。"
+      )
+    }
     switch descriptor.failureReason ?? .unknown {
     case .blobOrMSE:
       message = "这个视频使用 blob/MSE，只能在原浏览器会话观看。"
@@ -3048,10 +3075,15 @@ private struct CurrentCaptureMediaPreviewCard: View {
         videoDisplaySize.map { VideoDisplayGeometry.aspectRatio(displaySize: $0) } ?? (16.0 / 9.0),
         contentMode: .fit
       )
-      .frame(maxWidth: .infinity, maxHeight: 520, alignment: .center)
+      .frame(
+        maxWidth: VideoDisplayGeometry.inlineMaximumWidth(displaySize: videoDisplaySize),
+        maxHeight: VideoDisplayGeometry.inlineMaximumHeight,
+        alignment: .leading
+      )
       .background(Color.black)
       .background(VideoScrollWheelAnchor().allowsHitTesting(false))
       .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+      .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityIdentifier("history-video-remote-player")
 
     // Action bar: playback is streaming by default. Download is a separate,
@@ -3282,6 +3314,37 @@ private struct CurrentCaptureMediaPreviewCard: View {
 /// 响应空格，而阅读区视图切换（转写流式面板出现/消失等）会把窗口焦点清空，
 /// 空格随之失效。此视图不参与命中，只挂本窗口的 keyDown 监视器；焦点在
 /// 输入框或其它控件上时空格原样放行，焦点空置时由本卡播放器接管。
+/// macOS 会把窗口里第一个文本控件设成 `initialFirstResponder`，搜索框因此一开
+/// 窗就叼着光标——空格全打进搜索框，到不了播放器。窗口首次出现时把 first
+/// responder 交还给空；只在搜索框确实空着时才动，不打断已经输入的搜索词。
+/// 用户点搜索框或按 ⌘F 仍能正常聚焦。
+private struct ReleaseInitialSearchFocus: NSViewRepresentable {
+  func makeNSView(context: Context) -> NSView { ReleaseView() }
+  func updateNSView(_ nsView: NSView, context: Context) {}
+
+  final class ReleaseView: NSView {
+    private var released = false
+
+    override var acceptsFirstResponder: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      guard !released, window != nil else { return }
+      released = true
+      // 让 SwiftUI 先把它的初始焦点设完，再交还，否则会被下一帧覆盖回去。
+      DispatchQueue.main.async { [weak self] in
+        guard let window = self?.window,
+              let editor = window.firstResponder as? NSText,
+              editor.isEditable,
+              editor.string.isEmpty
+        else { return }
+        window.makeFirstResponder(nil)
+      }
+    }
+  }
+}
+
 private struct PlayerSpaceKeyToggle: NSViewRepresentable {
   let player: AVPlayer?
 
@@ -3329,10 +3392,22 @@ private struct PlayerSpaceKeyToggle: NSViewRepresentable {
         guard event.keyCode == 49, // Space
               event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
               let player = self.player else { return event }
-        // 正在输入的文本框和获得焦点的控件自己消费空格。
+        // 正在输入的文本框、以及真的把空格当激活键的控件，自己消费空格。
+        //
+        // 这里不能笼统地放行 NSControl：NSTableView 也是 NSControl 子类，而
+        // macOS 上 SwiftUI 的 List 底层正是它。抓取完成后列表刷新、新条目被
+        // 选中，first responder 就落在列表上，空格于是被让给滚动视图当翻页
+        // 用——屏幕一闪一闪就是不播放，必须先点几下视频把 first responder
+        // 抢给 AVPlayerView 才有反应。
         switch window.firstResponder {
-        case let text as NSText where text.isEditable: return event
-        case is NSControl: return event
+        case let text as NSText where text.isEditable:
+          // 搜索框空着只是叼着光标（macOS 会把窗口里第一个文本控件设成
+          // initialFirstResponder），此时空格的意图是播放而不是打字。真在
+          // 输入的搜索词仍旧能正常敲空格。
+          if text.string.isEmpty { break }
+          return event
+        case is NSButton, is NSTextField, is NSComboBox,
+             is NSPopUpButton, is NSSegmentedControl: return event
         default: break
         }
         if player.timeControlStatus == .playing { player.pause() } else { player.play() }
@@ -3440,6 +3515,10 @@ private struct HistoryVideoPlayerCard: View {
             .font(.caption)
             .accessibilityIdentifier("history-video-cinema")
         }
+        // 右对齐要对到视频右边缘，不是阅读区右边缘：竖屏视频收窄后，按整行
+        // 右对齐会把按钮甩到离视频很远的地方。
+        .frame(maxWidth: VideoDisplayGeometry.inlineMaximumWidth(displaySize: videoDisplaySize))
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
     .onAppear {
@@ -3514,7 +3593,11 @@ private struct HistoryVideoPlayerCard: View {
         RoundedRectangle(cornerRadius: 12, style: .continuous)
           .fill(Color.black.opacity(0.85))
           .aspectRatio(VideoDisplayGeometry.aspectRatio(displaySize: videoDisplaySize), contentMode: .fit)
-          .frame(maxWidth: .infinity, maxHeight: 520, alignment: .center)
+          .frame(
+            maxWidth: VideoDisplayGeometry.inlineMaximumWidth(displaySize: videoDisplaySize),
+            maxHeight: VideoDisplayGeometry.inlineMaximumHeight,
+            alignment: .leading
+          )
           .background(PlayerSpaceKeyToggle(player: player).allowsHitTesting(false))
           .overlay {
             VStack(spacing: 6) {
@@ -3525,7 +3608,13 @@ private struct HistoryVideoPlayerCard: View {
       } else {
         VideoPlayer(player: player)
           .aspectRatio(VideoDisplayGeometry.aspectRatio(displaySize: videoDisplaySize), contentMode: .fit)
-          .frame(maxWidth: .infinity, maxHeight: 520, alignment: .center)
+          // 竖屏视频（9:16）的黑底必须收到视频自身宽度，否则两侧就是死黑边。
+          // 横屏仍被阅读区宽度约束，表现与之前一致。
+          .frame(
+            maxWidth: VideoDisplayGeometry.inlineMaximumWidth(displaySize: videoDisplaySize),
+            maxHeight: VideoDisplayGeometry.inlineMaximumHeight,
+            alignment: .leading
+          )
           .background(Color.black)
           .background(VideoScrollWheelAnchor().allowsHitTesting(false))
           .background(PlayerSpaceKeyToggle(player: player).allowsHitTesting(false))
@@ -3534,6 +3623,7 @@ private struct HistoryVideoPlayerCard: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
               .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
           )
+          .frame(maxWidth: .infinity, alignment: .leading)
           .accessibilityIdentifier("history-video-player")
       }
     } else {
@@ -3738,7 +3828,11 @@ private struct HistoryStreamingMediaCard: View {
           RoundedRectangle(cornerRadius: 12, style: .continuous)
             .fill(Color.black.opacity(0.85))
             .aspectRatio(streamingAspectRatio, contentMode: .fit)
-            .frame(maxWidth: .infinity, maxHeight: 520, alignment: .center)
+            .frame(
+              maxWidth: VideoDisplayGeometry.inlineMaximumHeight * streamingAspectRatio,
+              maxHeight: VideoDisplayGeometry.inlineMaximumHeight,
+              alignment: .leading
+            )
             .background(PlayerSpaceKeyToggle(player: playback.player).allowsHitTesting(false))
             .overlay {
               VStack(spacing: 6) {
@@ -3749,11 +3843,16 @@ private struct HistoryStreamingMediaCard: View {
         } else {
           VideoPlayer(player: playback.player)
             .aspectRatio(streamingAspectRatio, contentMode: .fit)
-            .frame(maxWidth: .infinity, maxHeight: 520, alignment: .center)
+            .frame(
+              maxWidth: VideoDisplayGeometry.inlineMaximumHeight * streamingAspectRatio,
+              maxHeight: VideoDisplayGeometry.inlineMaximumHeight,
+              alignment: .leading
+            )
             .background(Color.black)
             .background(VideoScrollWheelAnchor().allowsHitTesting(false))
             .background(PlayerSpaceKeyToggle(player: playback.player).allowsHitTesting(false))
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("history-video-streaming-player")
         }
       }
@@ -3846,6 +3945,16 @@ private struct HistoryStreamingMediaCard: View {
 
 /// Geometry-only helper so rotation and fit behavior can be tested without AVKit.
 struct VideoDisplayGeometry {
+  /// 内联播放器高度上限。竖屏视频按它算出的宽度约 292，横屏先撞阅读区宽度。
+  static let inlineMaximumHeight: CGFloat = 520
+
+  /// 内联播放器的宽度上限：让黑底收到视频自身宽度，竖屏才不会挂着两条死黑边。
+  /// 单给 `maxHeight` 不够——弹性 frame 会把整块可用宽度占满，比例只作用在内部。
+  static func inlineMaximumWidth(displaySize: CGSize?) -> CGFloat {
+    let ratio = displaySize.map(aspectRatio(displaySize:)) ?? (16.0 / 9.0)
+    return inlineMaximumHeight * ratio
+  }
+
   static func displaySize(naturalSize: CGSize, preferredTransform: CGAffineTransform) -> CGSize {
     let transformed = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
     return CGSize(width: abs(transformed.width), height: abs(transformed.height))

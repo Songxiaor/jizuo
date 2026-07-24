@@ -633,6 +633,96 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertEqual(fitted.width / fitted.height, portrait.width / portrait.height, accuracy: 0.0001)
   }
 
+  func testXPostsReadInPostOrderWithTextAboveTheVideo() {
+    let source = historyContentViewSource()
+    let rule = section(
+      in: source,
+      from: "private var presentsArticleBeforeMedia: Bool",
+      to: "private var suppressesEmbeddedMedia"
+    )
+    // X 帖子的正文就是帖子本身，视频是附件；抖音那类视频帖仍旧视频在前。
+    XCTAssertTrue(rule.contains("latestSnapshot.platform == \"x\""))
+    XCTAssertTrue(rule.contains("isSubstantiveWeChatArticle"))
+    XCTAssertFalse(rule.contains("douyin"))
+  }
+
+  func testSpaceKeyFallbackDoesNotSurrenderToTheSelectedList() {
+    let source = historyContentViewSource()
+    // NSTableView 是 NSControl 子类，macOS 上 SwiftUI 的 List 底层正是它。
+    // 笼统放行 NSControl 会让「抓取完成后列表被选中」这一最常见的状态把空格
+    // 让给滚动视图翻页——表现就是闪屏且不播放。
+    XCTAssertFalse(source.contains("case is NSControl: return event"))
+    XCTAssertTrue(source.contains("case is NSButton, is NSTextField, is NSComboBox,"))
+    // 输入中的文本仍旧自己消费空格，否则打字会变成播放/暂停；但空着的搜索框
+    // 只是叼着 initialFirstResponder，不该把空格吃掉。
+    XCTAssertTrue(source.contains("if text.string.isEmpty { break }"))
+    XCTAssertTrue(source.contains("case let text as NSText where text.isEditable:"))
+
+    // 更根上的一道：开窗时就把空搜索框的焦点交还，别让它叼着光标。
+    XCTAssertTrue(source.contains("struct ReleaseInitialSearchFocus"))
+    XCTAssertTrue(source.contains("ReleaseInitialSearchFocus().allowsHitTesting(false)"))
+    let release = section(
+      in: source,
+      from: "struct ReleaseInitialSearchFocus",
+      to: "private struct PlayerSpaceKeyToggle"
+    )
+    // 只在搜索框确实空着时才交还，不能打断已经输入的搜索词。
+    XCTAssertTrue(release.contains("editor.string.isEmpty"))
+  }
+
+  func testCinemaButtonAlignsToTheVideoEdgeNotTheReadingColumnEdge() {
+    let source = historyContentViewSource()
+    // 竖屏视频收窄后，按整行右对齐会把「放大」甩到离视频很远的地方。这个单行
+    // 写法只用在放大按钮那一处——播放器自身的 frame 是多行的，不会误命中。
+    let button = source.range(of: "history-video-cinema")
+    let alignment = source.range(
+      of: ".frame(maxWidth: VideoDisplayGeometry.inlineMaximumWidth(displaySize: videoDisplaySize))"
+    )
+    XCTAssertNotNil(button)
+    XCTAssertNotNil(alignment)
+    // 约束挂在按钮所在的那个 HStack 上，所以出现在按钮之后。
+    XCTAssertLessThan(button!.lowerBound, alignment!.lowerBound)
+  }
+
+  func testInlinePlayerWidthFollowsAspectRatioSoPortraitVideoDropsItsBlackBars() {
+    // 竖屏 9:16：宽度必须收到视频自身宽度，否则黑底铺满整行就是两条死黑边。
+    let portrait = CGSize(width: 1_080, height: 1_920)
+    let portraitWidth = VideoDisplayGeometry.inlineMaximumWidth(displaySize: portrait)
+    XCTAssertEqual(portraitWidth, VideoDisplayGeometry.inlineMaximumHeight * (1_080.0 / 1_920.0), accuracy: 0.001)
+    XCTAssertLessThan(portraitWidth, 400)
+
+    // 横屏算出的宽度远大于阅读区，仍旧先撞阅读区宽度，表现与改动前一致。
+    let landscape = CGSize(width: 1_920, height: 1_080)
+    XCTAssertGreaterThan(VideoDisplayGeometry.inlineMaximumWidth(displaySize: landscape), 680)
+
+    // 尺寸未知时退回 16:9，不能塌成 0 宽。
+    XCTAssertEqual(
+      VideoDisplayGeometry.inlineMaximumWidth(displaySize: nil),
+      VideoDisplayGeometry.inlineMaximumHeight * (16.0 / 9.0),
+      accuracy: 0.001
+    )
+  }
+
+  func testInlineMediaFramesBoundWidthByRatioInsteadOfFillingTheRow() {
+    let source = historyContentViewSource()
+    // 弹性 `maxWidth: .infinity` 会把整行占满，比例只作用在内部——这正是
+    // 竖屏黑边与竖图右侧空白的成因，播放器 frame 不能再用它。
+    XCTAssertFalse(source.contains(".frame(maxWidth: .infinity, maxHeight: 520, alignment: .center)"))
+    XCTAssertTrue(source.contains("VideoDisplayGeometry.inlineMaximumWidth(displaySize: videoDisplaySize)"))
+
+    let image = try? String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/ArticleImageViewing.swift"),
+      encoding: .utf8
+    )
+    let imageSource = try! XCTUnwrap(image)
+    XCTAssertTrue(imageSource.contains(".aspectRatio(ratio, contentMode: .fit)"))
+    XCTAssertFalse(imageSource.contains(".frame(maxHeight: 420, alignment: .leading)"))
+  }
+
   func testTranscriptionConfirmationStatesNoAudioUploadAndUsesSecondExplicitAction() {
     let source = historyContentViewSource()
     XCTAssertTrue(source.contains("需要下载 Apple 中文离线模型"))
