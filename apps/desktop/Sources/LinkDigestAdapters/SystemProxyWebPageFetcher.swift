@@ -44,7 +44,7 @@ public final class SystemProxyWebPageFetcher: WebPageFetcher, SafeResourceFetchi
 
   public func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
     guard request.byteLimit > 0 else { throw ManualLinkError.responseTooLarge }
-    let result = try await performFetch(url: request.url, headers: request.headers, byteLimit: request.byteLimit, mode: .resource, allowsRedirectTarget: request.allowsRedirectTarget)
+    let result = try await performFetch(url: request.url, headers: request.headers, byteLimit: request.byteLimit, mode: .resource, allowsRedirectTarget: request.allowsRedirectTarget, method: request.method, body: request.body)
     guard case let .resource(response) = result else { throw ManualLinkError.network }
     return response
   }
@@ -54,7 +54,9 @@ public final class SystemProxyWebPageFetcher: WebPageFetcher, SafeResourceFetchi
     headers: [String: String],
     byteLimit: Int,
     mode: SystemProxyFetchMode,
-    allowsRedirectTarget: @escaping @Sendable (URL) -> Bool = { _ in true }
+    allowsRedirectTarget: @escaping @Sendable (URL) -> Bool = { _ in true },
+    method: String = "GET",
+    body: Data? = nil
   ) async throws -> SystemProxyFetchOutcome {
     guard url.scheme?.lowercased() == "https" else {
       throw ManualLinkError.proxyHTTPSRequired
@@ -87,6 +89,10 @@ public final class SystemProxyWebPageFetcher: WebPageFetcher, SafeResourceFetchi
     var request = URLRequest(url: url)
     request.timeoutInterval = limits.timeout
     request.httpShouldHandleCookies = false
+    if method.uppercased() == "POST" {
+      request.httpMethod = "POST"
+      request.httpBody = body
+    }
     for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
     do {
       return try await delegate.start(session: session, request: request)

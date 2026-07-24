@@ -10,6 +10,10 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
   private let proxy: any WebPageFetcher
   private let directResource: (any SafeResourceFetching)?
   private let proxyResource: (any SafeResourceFetching)?
+  /// TUN/透明代理模式下没有系统 HTTP 代理可用，fake-IP 只能直连交给虚拟网卡。
+  /// 这条传输独立于默认直连器，且只对 fake-IP 段开口。
+  private let fakeIPDirectResource: (any SafeResourceFetching)?
+  private let fakeIPDirect: (any WebPageFetcher)?
   private let shouldUseSystemProxy: @Sendable (URL) -> Bool
 
   public init(limits: URLSessionWebPageFetcher.Limits = .init()) {
@@ -17,6 +21,9 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
     policy = .init(resolver: resolver.resolve)
     direct = PeerBoundNetworkWebPageFetcher(limits: limits)
     proxy = SystemProxyWebPageFetcher(policy: policy, limits: limits)
+    let fakeIP = PeerBoundNetworkWebPageFetcher(limits: limits, allowsFakeIPPeers: true)
+    fakeIPDirect = fakeIP
+    fakeIPDirectResource = fakeIP
     directResource = direct as? any SafeResourceFetching
     proxyResource = proxy as? any SafeResourceFetching
     shouldUseSystemProxy = { SystemProxyConfiguration.currentHTTPSettings(for: $0) != nil }
@@ -27,6 +34,7 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
     policy: PublicWebURLPolicy,
     direct: any WebPageFetcher,
     proxy: any WebPageFetcher,
+    fakeIPDirect: (any WebPageFetcher)? = nil,
     shouldUseSystemProxy: @escaping @Sendable (URL) -> Bool = { _ in false }
   ) {
     self.policy = policy
@@ -34,6 +42,8 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
     self.proxy = proxy
     directResource = direct as? any SafeResourceFetching
     proxyResource = proxy as? any SafeResourceFetching
+    self.fakeIPDirect = fakeIPDirect
+    fakeIPDirectResource = fakeIPDirect as? any SafeResourceFetching
     self.shouldUseSystemProxy = shouldUseSystemProxy
   }
   #endif
@@ -51,7 +61,13 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
       }
       return try await direct.fetch(url: url)
     case .systemProxyForFakeIP:
-      return try await proxy.fetch(url: url)
+      // 有系统代理就照旧走它；没有则说明是 TUN/透明代理模式——那里系统层根本
+      // 不存在 HTTP 代理设置，硬等它只会静默失败，直连 fake-IP 交给虚拟网卡。
+      if shouldUseSystemProxy(url) {
+        return try await proxy.fetch(url: url)
+      }
+      guard let fakeIPDirect else { throw ManualLinkError.network }
+      return try await fakeIPDirect.fetch(url: url)
     }
   }
 
@@ -66,7 +82,9 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
     case .direct:
       resource = usesProxy ? proxyResource : directResource
     case .systemProxyForFakeIP:
-      resource = proxyResource
+      // 同 fetch(url:)：TUN 模式没有系统代理，fake-IP 直连才走得通。X 的图片
+      // CDN 正是这种情况，此前一直静默下载失败、正文里的图全都不显示。
+      resource = shouldUseSystemProxy(request.url) ? proxyResource : fakeIPDirectResource
     }
     guard let resource else { throw ManualLinkError.network }
     return try await resource.fetchResource(request)

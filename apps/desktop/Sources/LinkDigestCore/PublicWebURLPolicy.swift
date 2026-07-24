@@ -7,12 +7,17 @@ import Foundation
 public struct PublicWebURLPolicy: Sendable {
   public typealias Resolver = @Sendable (String) throws -> [String]
   private let resolver: Resolver
+  /// TUN/透明代理把域名解析成 fake-IP（198.18.0.0/15），流量由虚拟网卡接管，
+  /// 系统层面并不存在可用的 HTTP 代理设置。只有这类传输才开这道口子：直连
+  /// fake-IP 就是交给虚拟网卡。私有、回环、链路本地与文档/测试网段一律照拒。
+  private let allowsFakeIPPeers: Bool
   #if DEBUG
   private let allowLoopbackForTesting: Bool
   #endif
 
-  public init(resolver: @escaping Resolver) {
+  public init(resolver: @escaping Resolver, allowsFakeIPPeers: Bool = false) {
     self.resolver = resolver
+    self.allowsFakeIPPeers = allowsFakeIPPeers
     #if DEBUG
     allowLoopbackForTesting = false
     #endif
@@ -42,15 +47,19 @@ public struct PublicWebURLPolicy: Sendable {
   }
 
   #if DEBUG
-  public init(resolver: @escaping Resolver, allowLoopbackForTesting: Bool) {
+  public init(resolver: @escaping Resolver, allowLoopbackForTesting: Bool, allowsFakeIPPeers: Bool = false) {
     self.resolver = resolver
     self.allowLoopbackForTesting = allowLoopbackForTesting
+    self.allowsFakeIPPeers = allowsFakeIPPeers
   }
   #endif
 
   public func validate(_ url: URL) throws {
-    guard try routingDecision(for: url) == .direct else {
-      throw ManualLinkError.unsafeURL
+    switch try routingDecision(for: url) {
+    case .direct:
+      return
+    case .systemProxyForFakeIP:
+      guard allowsFakeIPPeers else { throw ManualLinkError.unsafeURL }
     }
   }
 
@@ -76,9 +85,11 @@ public struct PublicWebURLPolicy: Sendable {
 
   public func validatePeerAddress(_ raw: String) throws {
     #if DEBUG
-    let isAllowed = isGloballyRoutable(raw) || (allowLoopbackForTesting && isLoopback(raw))
-    #else
     let isAllowed = isGloballyRoutable(raw)
+      || (allowLoopbackForTesting && isLoopback(raw))
+      || (allowsFakeIPPeers && Self.isFakeIPAddress(raw))
+    #else
+    let isAllowed = isGloballyRoutable(raw) || (allowsFakeIPPeers && Self.isFakeIPAddress(raw))
     #endif
     guard isAllowed else {
       throw ManualLinkError.unsafeURL

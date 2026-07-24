@@ -23,10 +23,13 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
   private let eventSinkForTesting: @Sendable (String) -> Void
   #endif
 
-  public init(limits: URLSessionWebPageFetcher.Limits = .init()) {
+  /// `allowsFakeIPPeers` 只给 TUN/透明代理这一种网络用：那里域名解析成
+  /// fake-IP，系统没有 HTTP 代理设置，直连 fake-IP 才是唯一走得通的路径。
+  /// 内网、回环、链路本地地址在任何情况下都仍旧拒绝。
+  public init(limits: URLSessionWebPageFetcher.Limits = .init(), allowsFakeIPPeers: Bool = false) {
     let resolver = SystemHostResolver()
     resolvePeer = resolver.resolve
-    policy = .init(resolver: resolver.resolve)
+    policy = .init(resolver: resolver.resolve, allowsFakeIPPeers: allowsFakeIPPeers)
     self.limits = limits
     #if DEBUG
     portForTesting = nil
@@ -79,6 +82,10 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
   public func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
     guard request.byteLimit > 0 else { throw ManualLinkError.responseTooLarge }
     var current = request.url
+    // 首次请求带上调用方指定的 method/body；一旦发生重定向就退回无 body 的
+    // GET（我们用到的端点都直接 200，不会走到这里，只是保持标准语义）。
+    var method = request.method.uppercased() == "POST" ? "POST" : "GET"
+    var body: Data? = method == "POST" ? request.body : nil
     for redirect in 0...limits.redirects {
       try policy.validate(current)
       guard let rawHost = current.host,
@@ -90,13 +97,16 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
       try policy.validatePeerAddress(peer)
       let result = try await fetchOnce(
         url: current, host: host, peer: peer, scheme: scheme,
-        headers: request.headers, byteLimit: request.byteLimit
+        headers: request.headers, byteLimit: request.byteLimit,
+        method: method, body: body
       )
       if Self.isFollowableRedirectStatus(result.status), let target = redirectTarget(result.headers, relativeTo: current) {
         guard redirect < limits.redirects else { throw ManualLinkError.responseStatus }
         guard request.allowsRedirectTarget(target) else { throw ManualLinkError.unsafeURL }
         try Self.validateRedirect(from: current, to: target)
         current = target
+        method = "GET"
+        body = nil
         continue
       }
       return .init(url: current, statusCode: result.status, contentType: result.headers["content-type"], body: result.body)
@@ -110,10 +120,12 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
     peer: String,
     scheme: String,
     headers: [String: String] = [:],
-    byteLimit: Int? = nil
+    byteLimit: Int? = nil,
+    method: String = "GET",
+    body: Data? = nil
   ) async throws -> Response {
     try await withThrowingTaskGroup(of: Response.self) { group in
-      group.addTask { try await self.fetchOnceBound(url: url, host: host, peer: peer, scheme: scheme, headers: headers, byteLimit: byteLimit ?? self.limits.responseBytes) }
+      group.addTask { try await self.fetchOnceBound(url: url, host: host, peer: peer, scheme: scheme, headers: headers, byteLimit: byteLimit ?? self.limits.responseBytes, method: method, body: body) }
       group.addTask {
         try await Task.sleep(for: .seconds(self.limits.timeout))
         throw ManualLinkError.timedOut
@@ -124,7 +136,7 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
     }
   }
 
-  private func fetchOnceBound(url: URL, host: String, peer: String, scheme: String, headers: [String: String], byteLimit: Int) async throws -> Response {
+  private func fetchOnceBound(url: URL, host: String, peer: String, scheme: String, headers: [String: String], byteLimit: Int, method: String = "GET", body: Data? = nil) async throws -> Response {
     #if DEBUG
     let port = portForTesting ?? (scheme == "https" ? 443 : 80)
     #else
@@ -143,7 +155,7 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
     return try await withTaskCancellationHandler {
       try await ready(connection)
     let path = (url.path.isEmpty ? "/" : url.path) + (url.query.map { "?\($0)" } ?? "")
-    let request = try Self.requestBytes(path: path, host: host, headers: headers)
+    let request = try Self.requestBytes(path: path, host: host, headers: headers, method: method, body: body)
       try await send(request, on: connection)
       var all = Data()
       while true {
@@ -156,18 +168,29 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
     } onCancel: { lifecycle.cancelOnce() }
   }
 
-  private static func requestBytes(path: String, host: String, headers: [String: String]) throws -> Data {
+  private static func requestBytes(
+    path: String,
+    host: String,
+    headers: [String: String],
+    method: String = "GET",
+    body: Data? = nil
+  ) throws -> Data {
     let validName = "^[A-Za-z0-9-]+$"
-    var lines = ["GET \(path) HTTP/1.1", "Host: \(host)", "Connection: close", "User-Agent: LinkDigest/0.1"]
+    let verb = method == "POST" ? "POST" : "GET"
+    var lines = ["\(verb) \(path) HTTP/1.1", "Host: \(host)", "Connection: close", "User-Agent: LinkDigest/0.1"]
     var merged = ["Accept": "text/html,application/xhtml+xml"]
     for (name, value) in headers { merged[name] = value }
+    // POST 必须显式声明长度：guest token 激活端点无请求体，Content-Length 为 0。
+    if verb == "POST" { merged["Content-Length"] = String(body?.count ?? 0) }
     for name in merged.keys.sorted() {
       guard name.range(of: validName, options: .regularExpression) != nil,
             let value = merged[name], !value.contains("\r"), !value.contains("\n")
       else { throw ManualLinkError.network }
       lines.append("\(name): \(value)")
     }
-    return Data((lines.joined(separator: "\r\n") + "\r\n\r\n").utf8)
+    var data = Data((lines.joined(separator: "\r\n") + "\r\n\r\n").utf8)
+    if verb == "POST", let body { data.append(body) }
+    return data
   }
 
   private func configureTLSVerification(_ tls: NWProtocolTLS.Options, expectedHost: String) {

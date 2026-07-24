@@ -41,18 +41,35 @@ final class ProxyAwareWebPageFetcherTests: XCTestCase {
     })
     let direct = RecordingWebPageFetcher(marker: "direct")
     let proxy = RecordingWebPageFetcher(marker: "proxy")
-    let fetcher = ProxyAwareWebPageFetcher(policy: policy, direct: direct, proxy: proxy)
+    let fakeIPDirect = RecordingWebPageFetcher(marker: "fake-ip-direct")
+    // 有系统代理时，fake-IP 仍旧交给它——这是原来的路径，不能丢。
+    let proxied = ProxyAwareWebPageFetcher(
+      policy: policy, direct: direct, proxy: proxy, fakeIPDirect: fakeIPDirect,
+      shouldUseSystemProxy: { _ in true }
+    )
+    // 没有系统代理时说明是 TUN/透明代理模式：那里系统层根本不存在 HTTP 代理
+    // 设置，只有直连 fake-IP 交给虚拟网卡才走得通（X 的图片 CDN 即此情形）。
+    let tunnelled = ProxyAwareWebPageFetcher(
+      policy: policy, direct: direct, proxy: proxy, fakeIPDirect: fakeIPDirect
+    )
 
     let fakeURL = URL(string: "https://fake.example/page")!
     let publicURL = URL(string: "https://public.example/page")!
-    let fakeResult = try await fetcher.fetch(url: fakeURL)
-    let publicResult = try await fetcher.fetch(url: publicURL)
-    XCTAssertEqual(fakeResult.html, "proxy")
-    XCTAssertEqual(publicResult.html, "direct")
-    await XCTAssertThrowsErrorAsync(try await fetcher.fetch(url: URL(string: "https://private.example/page")!)) {
-      XCTAssertEqual($0 as? ManualLinkError, .unsafeURL)
+    let proxiedFake = try await proxied.fetch(url: fakeURL)
+    let tunnelledFake = try await tunnelled.fetch(url: fakeURL)
+    let tunnelledPublic = try await tunnelled.fetch(url: publicURL)
+    XCTAssertEqual(proxiedFake.html, "proxy")
+    XCTAssertEqual(tunnelledFake.html, "fake-ip-direct")
+    XCTAssertEqual(tunnelledPublic.html, "direct")
+
+    // 私有地址在任何一条路径下都必须照旧关死——放开的只有 fake-IP 段。
+    for fetcher in [proxied, tunnelled] {
+      await XCTAssertThrowsErrorAsync(try await fetcher.fetch(url: URL(string: "https://private.example/page")!)) {
+        XCTAssertEqual($0 as? ManualLinkError, .unsafeURL)
+      }
     }
     XCTAssertEqual(proxy.calls, [fakeURL])
+    XCTAssertEqual(fakeIPDirect.calls, [fakeURL])
     XCTAssertEqual(direct.calls, [publicURL])
   }
 
@@ -114,15 +131,31 @@ final class ProxyAwareWebPageFetcherTests: XCTestCase {
       ["public.example": ["8.8.8.8"], "fake.example": ["198.18.1.2"], "private.example": ["10.0.0.2"]][host] ?? []
     })
     let direct = RecordingSafeResourceFetcher(), proxy = RecordingSafeResourceFetcher()
-    let fetcher = ProxyAwareWebPageFetcher(policy: policy, direct: direct, proxy: proxy)
+    let fakeIPDirect = RecordingSafeResourceFetcher()
+    let fetcher = ProxyAwareWebPageFetcher(
+      policy: policy, direct: direct, proxy: proxy, fakeIPDirect: fakeIPDirect
+    )
     let request = SafeResourceRequest(url: URL(string: "https://public.example/readme")!, headers: ["Accept": "application/vnd.github.raw+json"], byteLimit: 1024)
     let response = try await fetcher.fetchResource(request)
     XCTAssertEqual(response.body, Data("fixture".utf8))
     XCTAssertEqual(direct.requests.first?.headers["Accept"], "application/vnd.github.raw+json")
+    // 无系统代理（TUN 模式）：资源下载与页面抓取走同一判断，fake-IP 直连。
     _ = try await fetcher.fetchResource(.init(url: URL(string: "https://fake.example/readme")!, byteLimit: 1024))
+    XCTAssertEqual(fakeIPDirect.requests.count, 1)
+    XCTAssertEqual(proxy.requests.count, 0)
+
+    // 有系统代理时，资源下载同样把 fake-IP 交回代理。
+    let proxied = ProxyAwareWebPageFetcher(
+      policy: policy, direct: direct, proxy: proxy, fakeIPDirect: fakeIPDirect,
+      shouldUseSystemProxy: { _ in true }
+    )
+    _ = try await proxied.fetchResource(.init(url: URL(string: "https://fake.example/readme")!, byteLimit: 1024))
     XCTAssertEqual(proxy.requests.count, 1)
-    await XCTAssertThrowsErrorAsync(try await fetcher.fetchResource(.init(url: URL(string: "https://private.example/readme")!, byteLimit: 1024))) {
-      XCTAssertEqual($0 as? ManualLinkError, .unsafeURL)
+
+    for fetcher in [fetcher, proxied] {
+      await XCTAssertThrowsErrorAsync(try await fetcher.fetchResource(.init(url: URL(string: "https://private.example/readme")!, byteLimit: 1024))) {
+        XCTAssertEqual($0 as? ManualLinkError, .unsafeURL)
+      }
     }
   }
 }

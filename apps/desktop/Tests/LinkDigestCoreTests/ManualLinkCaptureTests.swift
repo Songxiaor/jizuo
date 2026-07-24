@@ -52,6 +52,30 @@ final class ManualLinkCaptureTests: XCTestCase {
     )
   }
 
+  func testFakeIPPeersAreAdmittedOnlyByTheOptInTransportAndNeverWidenPrivateAccess() throws {
+    let url = URL(string: "https://public.example/article")!
+    // TUN/透明代理模式：系统层没有 HTTP 代理，直连 fake-IP 交给虚拟网卡是
+    // 唯一走得通的路径，所以这条传输显式开口。
+    let tunnelled = PublicWebURLPolicy(resolver: { _ in ["198.18.1.229"] }, allowsFakeIPPeers: true)
+    XCTAssertEqual(try tunnelled.routingDecision(for: url), .systemProxyForFakeIP)
+    XCTAssertNoThrow(try tunnelled.validate(url))
+    XCTAssertNoThrow(try tunnelled.validatePeerAddress("198.18.1.229"))
+
+    // 开口只覆盖 fake-IP 段。私有、回环、链路本地一律照拒。
+    for address in ["10.0.0.8", "192.168.1.4", "172.16.0.9", "127.0.0.1", "169.254.1.1"] {
+      XCTAssertThrowsError(try tunnelled.validatePeerAddress(address), address)
+    }
+    let privatePolicy = PublicWebURLPolicy(resolver: { _ in ["10.0.0.8"] }, allowsFakeIPPeers: true)
+    XCTAssertThrowsError(try privatePolicy.routingDecision(for: url))
+    // 混合答案里只要有一个非 fake-IP，仍旧整体拒绝。
+    let mixed = PublicWebURLPolicy(resolver: { _ in ["198.18.1.2", "10.0.0.1"] }, allowsFakeIPPeers: true)
+    XCTAssertThrowsError(try mixed.routingDecision(for: url))
+    // 默认（未开口）的传输行为不变。
+    let strict = PublicWebURLPolicy(resolver: { _ in ["198.18.1.229"] })
+    XCTAssertThrowsError(try strict.validate(url))
+    XCTAssertThrowsError(try strict.validatePeerAddress("198.18.1.229"))
+  }
+
   func testExtractorPrefersArticleRemovesScriptsAndDecodesUnicode() throws {
     let page = try MinimalHTMLExtractor().extract(html: "<html><title>  A &amp; B </title><body>ignore <main>main words</main><article><script>secret()</script><p>Hello &#x4F60;&#22909; &amp; welcome to the article text.</p></article></body></html>")
     XCTAssertEqual(page.title, "A & B")

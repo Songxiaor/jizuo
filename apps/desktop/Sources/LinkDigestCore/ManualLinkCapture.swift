@@ -137,17 +137,25 @@ public struct SafeResourceRequest: Sendable {
   public let url: URL
   public let headers: [String: String]
   public let byteLimit: Int
+  /// 默认 GET。少数只读 API（如 X 的 guest token 激活）要求 POST；body 为空即可，
+  /// 这类端点不接受请求体，只是把「激活」表达为 POST。
+  public let method: String
+  public let body: Data?
   public let allowsRedirectTarget: @Sendable (URL) -> Bool
 
   public init(
     url: URL,
     headers: [String: String] = [:],
     byteLimit: Int,
+    method: String = "GET",
+    body: Data? = nil,
     allowsRedirectTarget: @escaping @Sendable (URL) -> Bool = { _ in true }
   ) {
     self.url = url
     self.headers = headers
     self.byteLimit = byteLimit
+    self.method = method
+    self.body = body
     self.allowsRedirectTarget = allowsRedirectTarget
   }
 }
