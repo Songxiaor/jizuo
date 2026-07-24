@@ -19,7 +19,7 @@ export default defineConfig({
     name: productDisplay.displayName,
     description: productDisplay.extensionDescription,
     version: extensionIdentity.version,
-    version_name: "0.2.0-douyin-metadata-diagnostic-r1",
+    version_name: "0.2.0-x-timeline-diag-r12",
     permissions: ["activeTab", "scripting", "storage", "nativeMessaging"],
     icons: { "16": "icon/16.png", "32": "icon/32.png", "48": "icon/48.png", "96": "icon/96.png", "128": "icon/128.png" },
     action: { default_icon: { "16": "icon/16.png", "32": "icon/32.png" } }

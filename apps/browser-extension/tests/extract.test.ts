@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   attachDetectedMedia,
   captureBodyLacksProse,
@@ -9,6 +10,7 @@ import {
   gitHubRepoSlug,
   formatXPostProse,
   isXProfileChromeImageURL,
+  isXVideoThumbnailURL,
   stripDouyinCaptionPrefix,
   stripBoilerplateLines,
   xMediaDedupeKey,
@@ -530,6 +532,30 @@ describe("page extraction", () => {
   it("detects X profile chrome image URLs", () => {
     expect(isXProfileChromeImageURL("https://pbs.twimg.com/profile_images/1/x_normal.jpg")).toBe(true);
     expect(isXProfileChromeImageURL("https://pbs.twimg.com/media/abc.jpg")).toBe(false);
+  });
+
+  it("keeps the video-thumbnail filter inside the injected function, not only as a module helper", () => {
+    // `browser.scripting.executeScript` 只序列化被注入函数的函数体：写在模块
+    // 级的同名 helper 根本不会进到页面里。这条曾经真的发生过——模块级版本改
+    // 好了、构建产物里却连字符串都没有，封面图照旧进正文。
+    const source = readFileSync(new URL("../src/content/extract.ts", import.meta.url), "utf8");
+    const injected = source.slice(source.indexOf("export function extractPageInIsolatedWorld"));
+    expect(injected).not.toHaveLength(0);
+    expect(injected).toContain("amplify_video_thumb");
+    expect(injected).toContain("isVideoThumbnail(href)");
+  });
+
+  it("detects X video thumbnails so a cover frame never doubles the video in the body", () => {
+    for (const cover of [
+      "https://pbs.twimg.com/amplify_video_thumb/2080486192186109952/img/cover.jpg",
+      "https://pbs.twimg.com/ext_tw_video_thumb/123/pu/img/frame.jpg",
+      "https://pbs.twimg.com/tweet_video_thumb/abc.jpg",
+    ]) {
+      expect(isXVideoThumbnailURL(cover)).toBe(true);
+    }
+    // 帖子里真正的配图仍旧要进正文。
+    expect(isXVideoThumbnailURL("https://pbs.twimg.com/media/HN6_kUyaAAAlH_y?format=jpg")).toBe(false);
+    expect(isXVideoThumbnailURL("not a url")).toBe(false);
   });
 
   it("falls back to cleaned page title when tweetText is missing", () => {

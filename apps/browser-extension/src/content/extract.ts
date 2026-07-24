@@ -22,6 +22,8 @@ export type ExtractedPage = {
   usedCookie?: boolean;
   /** Internal popup-only diagnostic. Never enters a CaptureEnvelope. */
   mediaDiagnostic?: DouyinSessionDiagnostic;
+  /** 图文帖的图片张数，仅用于 popup 文案；正文里的图片本身走 Markdown。 */
+  imageCount?: number;
 };
 
 /**
@@ -304,7 +306,8 @@ export function collectXStatusBlocksInOrder(root: Element, baseHref: string): st
         media.getAttribute("poster") ||
         "";
       const href = absoluteUrl(raw, baseHref);
-      if (!href || isXProfileChromeImageURL(href)) return;
+      // 视频封面不进正文：视频本体由 App 换直链存下来，封面只会重复一遍画面。
+      if (!href || isXProfileChromeImageURL(href) || isXVideoThumbnailURL(href)) return;
       const key = xMediaDedupeKey(href);
       const rank = xMediaSizeRank(href);
       const prev = seenMedia.get(key);
@@ -720,6 +723,20 @@ export function isXProfileChromeImageURL(href: string): boolean {
     if (full.includes("profile_images") || full.includes("default_profile")) return true;
     if (/_(?:normal|bigger|mini|x96|400x400)\./.test(path)) return true;
     return false;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * X 视频的封面帧：`video[poster]` 与 `*_video_thumb/` 路径都是同一段视频的
+ * 静止画面。桌面 App 现在能换回真实直链并把视频本体存下来，正文里再塞一张
+ * 封面就成了重复内容（帖子本身也不显示它）。
+ */
+export function isXVideoThumbnailURL(href: string): boolean {
+  try {
+    const path = new URL(href).pathname.toLowerCase();
+    return /\/(?:amplify_video_thumb|ext_tw_video_thumb|tweet_video_thumb)\//.test(path);
   } catch {
     return false;
   }
@@ -1150,6 +1167,8 @@ export type DouyinSingleItemMeta = {
   pageURL: string;
   mediaDescriptor?: MediaDescriptor;
   stats?: { likes?: string; comments?: string; shares?: string; collects?: string };
+  /** 图文帖（图集）的图片 CDN 地址，按页面渲染顺序；视频帖为空。 */
+  imageURLs?: string[];
   /** Internal injection handoff only; never copied into ExtractedPage. */
   metadataDiagnostic?: DouyinMetadataDOMDiagnostic;
 };
@@ -1298,12 +1317,38 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
   const scopedDesc = scopedText(
     "[data-e2e='video-desc'],[data-e2e='feed-video-desc'],[data-e2e='browse-video-desc'],[data-e2e='video-desc-content'],[data-e2e='video-desc-text']",
   );
+  const stripCaptionChrome = (value: string): string =>
+    value.replace(/\s+-\s+抖音.*$/u, "").replace(/(?:…|\.{3})?\s*展开$/u, "").trim();
+  // 详情页把长文案折叠成「…展开」，scoped 抓到的只是截断版——末尾常留一个孤零零
+  // 的 #（tag 被切掉一半）。og:title 是完整文案，但正如上面所述，信息流里它可能
+  // 仍指向 SSR 首条而不是当前条，直接采用会把别的视频标题安到这条上。所以只在
+  // 确认 og 版本是这段截断文案的扩展时才升级。
+  //
+  // 比较必须先归一化：DOM 里的话题是「#日落🌄」（emoji 是真字符），og 里是
+  // 「#日落」，逐字前缀匹配必然失败。只留字母数字（含汉字）后再比。
+  const captionKey = (value: string): string =>
+    value.replace(/[^\p{L}\p{N}]/gu, "").toLowerCase();
+  const scopedLooksTruncated = /(?:…|\.{3})?\s*展开$|…$/u.test(scopedDesc.trim());
+  const expandedCaption = (() => {
+    if (!scopedLooksTruncated) return "";
+    const scopedKey = captionKey(stripCaptionChrome(scopedDesc));
+    if (!scopedKey) return "";
+    for (const candidate of [ogTitle, ogDesc]) {
+      const cleaned = stripCaptionChrome(candidate ?? "");
+      if (!cleaned) continue;
+      const candidateKey = captionKey(cleaned);
+      // 必须严格更长，否则拿回来的只是同一段截断文案。
+      if (candidateKey.startsWith(scopedKey) && candidateKey.length > scopedKey.length) return cleaned;
+    }
+    return "";
+  })();
   // On the feed the caption is the item's title; only trust og:title when the
   // active container yields no caption of its own.
-  const rawTitle = scopedDesc || ogTitle || document.querySelector("h1")?.textContent?.trim() || document.title || "抖音视频";
-  const unprefixedTitle = rawTitle.replace(/\s+-\s+抖音.*$/u, "").replace(/(?:…|\.{3})?\s*展开$/u, "").trim();
+  const rawTitle = expandedCaption || scopedDesc || ogTitle || document.querySelector("h1")?.textContent?.trim() || document.title || "抖音视频";
+  const unprefixedTitle = stripCaptionChrome(rawTitle);
   const description = cleanLines(
-    scopedDesc
+    expandedCaption
+      || scopedDesc
       || ogDesc
       || document.querySelector("[data-e2e='video-desc']")?.textContent?.trim()
       || document.querySelector("[data-e2e='browse-video-desc']")?.textContent?.trim()
@@ -1459,16 +1504,37 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
     // ("认证徽章" and friends) as real text nodes, so textContent alone yields
     // "王自如AI认证徽章". Prefer the element's own direct text nodes — the
     // nickname itself — and strip badge wording from whatever remains.
-    const cleanNickname = (raw: string): string =>
-      raw
+    const cleanNickname = (raw: string): string => {
+      let value = raw
         .replace(/(?:官方|企业|个人|机构)?认证(?:徽章|信息|标识)?/gu, "")
         .replace(/已认证/gu, "")
         .replace(/\s+/gu, " ")
         .trim();
+      // 作者信息块把昵称与「粉丝 2918 获赞 76.4万 关注」连在一起，textContent
+      // 会拼成「迟遇粉丝2918获赞76.4万关注」。只从尾部逐段剥，避免误伤本身
+      // 带「关注」「喜欢」字样的昵称。
+      let previous = "";
+      while (value && value !== previous) {
+        previous = value;
+        value = value
+          .replace(/(?:粉丝|获赞|关注|作品|喜欢|朋友)\s*[\d.,]*\s*[万千亿]?\s*$/u, "")
+          .trim();
+      }
+      return value;
+    };
+    // 逗号选择器返回的是文档顺序第一个匹配，不是这里的书写顺序——宽泛的
+    // `user-info`（整块作者信息）会因此赢过专用昵称节点。必须逐个按优先级试。
+    const nicknameSelectors = [
+      "[data-e2e='feed-video-nickname']",
+      "[data-e2e='video-author-info-nickname']",
+      "[data-e2e='user-info']",
+    ];
     for (const scope of safeItemScopes) {
-      const node = scope.querySelector(
-        "[data-e2e='feed-video-nickname'],[data-e2e='video-author-info-nickname'],[data-e2e='user-info']",
-      );
+      let node: Element | null = null;
+      for (const selector of nicknameSelectors) {
+        node = scope.querySelector(selector);
+        if (node) break;
+      }
       if (!node) continue;
       const directText = Array.from(node.childNodes ? node.childNodes : [])
         .filter((child) => child.nodeType === 3)
@@ -1880,6 +1946,85 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
         ? "not_uniquely_dominant"
         : "none";
 
+  // 图文帖（图集）的图片只从 DOM 读。SSR 水合数据实测在弹层页和详情页都不
+  // 含这条 aweme（精确命中恒为否），而同源 detail API 需要 session cookie，
+  // V1 信封的契约又把 usedCookie 锁死为 false。页面渲染出来的 <img> 是唯一
+  // 既拿得到、又不动用 cookie 的来源。
+  const imageURLs: string[] = [];
+  try {
+    const galleryURL = (raw: string | null | undefined): string => {
+      const trimmed = (raw ?? "").trim();
+      if (!trimmed || trimmed.length > 2048) return "";
+      try {
+        const url = new URL(trimmed, href);
+        if (url.protocol !== "https:") return "";
+        const host = url.hostname.toLowerCase();
+        if (host !== "douyinpic.com" && !host.endsWith(".douyinpic.com")) return "";
+        // 抖音自己在图片地址上标了用途，这比任何 DOM 位置启发式都准：
+        // 图文帖正片图是 biz_tag=aweme_images（路径同时带 tplv-dy-aweme-images），
+        // 评论区配图是 biz_tag=aweme_comment，头像与推荐位封面没有这个标记。
+        // 实测同一页面上三类混在一起：只收正片图，7 张的帖子才不会收成 19 张。
+        const isGalleryImage = url.searchParams.get("biz_tag") === "aweme_images"
+          || /tplv-dy-aweme-images/u.test(url.pathname);
+        if (!isGalleryImage) return "";
+        return url.href;
+      } catch {
+        return "";
+      }
+    };
+    // 抖音图文帖本身最多 35 张。收得比这还多，说明圈进的不是这条帖子的图集。
+    const maximumGallery = 35;
+    const addImage = (raw: string | null | undefined) => {
+      if (imageURLs.length >= maximumGallery) return;
+      const url = galleryURL(raw);
+      if (url && !imageURLs.includes(url)) imageURLs.push(url);
+    };
+    const collectFrom = (root: ParentNode): string[] => {
+      const found: string[] = [];
+      if (typeof root.querySelectorAll !== "function") return found;
+      const nodes = root.querySelectorAll("img");
+      if (nodes.length > 200) return found;
+      for (const node of nodes) {
+        // 懒加载版式把真实地址放在 srcset 的第一个候选里。
+        const srcset = node.getAttribute("srcset");
+        for (const raw of [
+          node.getAttribute("src"),
+          srcset ? srcset.split(",")[0]?.trim().split(/\s+/u)[0] : null,
+        ]) {
+          const url = galleryURL(raw);
+          if (url && !found.includes(url)) found.push(url);
+        }
+      }
+      return found;
+    };
+    // metadataScopes 是从内到外的祖先链。只认最靠内、第一个出图的那层：再往外
+    // 一层就会把右侧推荐列表的封面圈进来（实测 7 张的帖子一路收到 30 张）。
+    // 某层一次收超过 35 张就是已经越界，更外层只会更宽，直接放弃 scope 路径。
+    for (const scope of metadataScopes) {
+      const found = collectFrom(scope);
+      if (found.length > maximumGallery) break;
+      if (found.length > 0) {
+        for (const url of found) addImage(url);
+        break;
+      }
+    }
+    if (imageURLs.length === 0) {
+      // 搜索页弹层没有任何通过身份校验的 scope（实测 safeCount 0）。biz_tag 已经
+      // 精确到正片图，所以这里按 DOM 顺序全页收即可——不能按可见面积筛，轮播里
+      // 还没滚到的 slide 面积为 0，那正是要保住的几张。
+      const nodes = document.querySelectorAll("img");
+      if (nodes.length <= 1000) {
+        for (const node of nodes) {
+          addImage(node.getAttribute("src"));
+          const srcset = node.getAttribute("srcset");
+          if (srcset) addImage(srcset.split(",")[0]?.trim().split(/\s+/u)[0]);
+        }
+      }
+    }
+  } catch {
+    // 图片是增量信息，读取失败不影响这条抓取的其余部分。
+  }
+
   return {
     awemeId,
     canonicalURL,
@@ -1890,6 +2035,7 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
     pageURL: href,
     ...(mediaDescriptor ? { mediaDescriptor } : {}),
     ...(hasDomStats ? { stats: definedDomStats } : {}),
+    ...(imageURLs.length > 0 ? { imageURLs } : {}),
     metadataDiagnostic: {
       route: { eligible: isDedicatedMetadataRoute, rejectCode: routeRejectCode },
       video: {
@@ -2087,6 +2233,18 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
       if (full.includes("profile_images") || full.includes("default_profile")) return true;
       if (/_(?:normal|bigger|mini|x96|400x400)\./.test(path)) return true;
       return false;
+    } catch {
+      return false;
+    }
+  };
+
+  // 视频封面帧不进正文：视频本体由 App 换回直链存下来，封面只会把同一画面
+  // 重复一遍（原帖也不单独显示它）。必须内联——`executeScript` 只序列化本
+  // 函数体，模块级的同名 helper 不会被注入。
+  const isVideoThumbnail = (href: string): boolean => {
+    try {
+      const path = new URL(href).pathname.toLowerCase();
+      return /\/(?:amplify_video_thumb|ext_tw_video_thumb|tweet_video_thumb)\//.test(path);
     } catch {
       return false;
     }
@@ -2339,7 +2497,7 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
           media.getAttribute("poster") ||
           "";
         const href = absoluteUrl(raw);
-        if (!href || isProfileChrome(href)) return;
+        if (!href || isProfileChrome(href) || isVideoThumbnail(href)) return;
         let key = href;
         try {
           const url = new URL(href);

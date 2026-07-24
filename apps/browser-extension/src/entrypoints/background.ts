@@ -52,6 +52,15 @@ import {
 } from "../contract";
 import { mapNativeFailure, withTimeout } from "../native-client";
 import { detectCapturePlatform, isDouyinVideoURL } from "../platform";
+import {
+  collectXBookmarkIDsInPage,
+  isValidTweetID,
+  isXBookmarksURL,
+  MAX_BOOKMARK_IDS,
+  parseBookmarksAccepted,
+  type BookmarksSyncOutcome,
+  type CollectResult,
+} from "../content/x-bookmarks";
 
 type DouyinEngagementStats = {
   likes?: string;
@@ -107,6 +116,8 @@ export type SafeCapturePreview = {
   >;
   mediaDiagnostic?: DouyinSessionDiagnostic;
   metadataDiagnostic?: DouyinMetadataDiagnostic;
+  /** 抖音图文帖的图片张数；非图文帖不带。 */
+  imageCount?: number;
 };
 
 export type ExtensionSendErrorStage = "extension_validation" | "native_response" | "native_transport";
@@ -206,6 +217,7 @@ export function safePreviewForCapture(
   envelope: CaptureEnvelope,
   mediaDiagnostic?: DouyinSessionDiagnostic,
   metadataDiagnostic?: DouyinMetadataDiagnostic,
+  imageCount?: number,
 ): SafeCapturePreview {
   const preview: SafeCapturePreview = {
     title: envelope.source.title || "当前页面",
@@ -213,6 +225,7 @@ export function safePreviewForCapture(
     version: envelope.version,
     platform: envelope.source.platform,
     completeness: envelope.capture.completeness,
+    ...(typeof imageCount === "number" && imageCount > 0 ? { imageCount } : {}),
   };
   if (envelope.version === 2) {
     preview.media = {
@@ -825,7 +838,11 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
     fixedRootPresent: 0, fixedRootParseable: 0, exactHit: false,
     rejectCode: "main_injection_failed", limitCode: "none",
   };
-  let imageURLs: string[] = [];
+  // DOM 优先：实测 SSR 精确命中在弹层页和详情页都失败，页面渲染出来的 <img>
+  // 才是图集唯一可靠的来源。SSR 若命中则作为补充。
+  const allowedImageURL = (value: unknown): value is string =>
+    typeof value === "string" && /^https:\/\/[\w.-]*douyinpic\.com\//u.test(value);
+  let imageURLs: string[] = (meta?.imageURLs ?? []).filter(allowedImageURL).slice(0, 30);
   try {
     const statsResults = await browser.scripting.executeScript({
       target: { tabId, frameIds: [0] },
@@ -841,10 +858,8 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
     if (ssr?.publishedAt !== undefined) publishedAt = ssr.publishedAt;
     stats = mergeDefinedDouyinStats(stats, ssr?.stats);
     // 只保留 https 的 douyinpic 图片；App 侧下载已带 douyin Referer。
-    if (Array.isArray(ssr?.imageURLs)) {
-      imageURLs = ssr.imageURLs.filter(
-        (u): u is string => typeof u === "string" && /^https:\/\/[\w.-]*douyinpic\.com\//u.test(u),
-      ).slice(0, 30);
+    if (imageURLs.length === 0 && Array.isArray(ssr?.imageURLs)) {
+      imageURLs = ssr.imageURLs.filter(allowedImageURL).slice(0, 30);
     }
   } catch {
     // MAIN world injection may fail on restricted pages — DOM stats are enough.
@@ -863,7 +878,11 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
   // inline their gallery as Markdown images; the desktop app downloads them
   // with a Douyin Referer via the existing remote-image staging path.
   const gallery = imageURLs.map((url) => `![](${url})`).join("\n\n");
-  const body = [`# ${title}`, description, gallery].filter(Boolean).join("\n\n");
+  // 抖音把「展开」按钮的文字渲染在文案节点里，标题已剥掉它，描述也要剥；
+  // 剥完与标题相同时就是同一句文案，不再重复成一段正文。
+  const trimmedDescription = description.replace(/(?:…|\.{3})?\s*展开$/u, "").trim();
+  const bodyDescription = trimmedDescription === title ? "" : trimmedDescription;
+  const body = [`# ${title}`, bodyDescription, gallery].filter(Boolean).join("\n\n");
   const text = `${header}${body}`.trim() || "抖音公开视频";
 
   const page: ExtractedPage = {
@@ -876,7 +895,10 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
     ...(diagnostic ? { mediaDiagnostic: diagnostic } : {}),
   };
 
-  if (mediaHit) {
+  // 图文帖没有正片视频——页面上那个 <video> 只是背景音乐轨。带上它会让扩展
+  // 与 App 都把这条当成"受限视频"，把图集正文挤到视频占位符后面。
+  const isImagePost = imageURLs.length > 0;
+  if (mediaHit && !isImagePost) {
     page.mediaDescriptor = {
       ...mediaHit,
       canonicalURL,
@@ -884,6 +906,7 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
       author: mediaHit.author ?? author,
     };
   }
+  if (isImagePost) page.imageCount = imageURLs.length;
 
   const metadataDiagnostic = makePopupOnlyMetadataDiagnostic(meta?.metadataDiagnostic, ssrDiagnostic, publishedAt, stats);
   return {
@@ -1007,7 +1030,12 @@ export async function captureYouTubeSingleVideo(tabId: number, tabURL: string): 
 
 async function captureAttemptFromTab(
   tabId: number,
-): Promise<{ envelope: CaptureEnvelope; mediaDiagnostic?: DouyinSessionDiagnostic; metadataDiagnostic?: DouyinMetadataDiagnostic }> {
+): Promise<{
+  envelope: CaptureEnvelope;
+  mediaDiagnostic?: DouyinSessionDiagnostic;
+  metadataDiagnostic?: DouyinMetadataDiagnostic;
+  imageCount?: number;
+}> {
   const tab = await browser.tabs.get(tabId).catch(() => undefined);
   const tabURL = tab?.url || "";
 
@@ -1050,6 +1078,7 @@ async function captureAttemptFromTab(
     ),
     ...(douyinAttempt?.mediaDiagnostic ?? page.mediaDiagnostic ? { mediaDiagnostic: douyinAttempt?.mediaDiagnostic ?? page.mediaDiagnostic } : {}),
     ...(douyinAttempt?.metadataDiagnostic ? { metadataDiagnostic: douyinAttempt.metadataDiagnostic } : {}),
+    ...(page.imageCount !== undefined ? { imageCount: page.imageCount } : {}),
   };
 }
 
@@ -1168,14 +1197,100 @@ export async function sendCapture(tabId: number): Promise<ExtensionSendResult> {
 
 export async function previewCurrentPage(tabId: number): Promise<SafeCapturePreview> {
   const attempt = await captureAttemptFromTab(tabId);
-  return safePreviewForCapture(attempt.envelope, attempt.mediaDiagnostic, attempt.metadataDiagnostic);
+  return safePreviewForCapture(
+    attempt.envelope,
+    attempt.mediaDiagnostic,
+    attempt.metadataDiagnostic,
+    attempt.imageCount,
+  );
+}
+
+/** 记住上次同步到的最新收藏 id，供下次增量同步判断「追上了」。 */
+const BOOKMARKS_CURSOR_KEY = "x-bookmarks-last-synced-id";
+
+export type BookmarksSyncResult =
+  | { ok: true; outcome: BookmarksSyncOutcome; collected: number; reachedKnown: boolean }
+  | { ok: false; code: "not_bookmarks" | "empty" | "native_error" | "injection_failed" };
+
+export async function syncXBookmarks(tabId: number): Promise<BookmarksSyncResult> {
+  const tab = await browser.tabs.get(tabId).catch(() => undefined);
+  if (!isXBookmarksURL(tab?.url)) return { ok: false, code: "not_bookmarks" };
+
+  const stored = await browser.storage.local.get(BOOKMARKS_CURSOR_KEY);
+  const lastSynced = stored[BOOKMARKS_CURSOR_KEY];
+  const knownIDs = isValidTweetID(lastSynced) ? [lastSynced] : [];
+
+  let collected: CollectResult;
+  try {
+    const results = await browser.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: collectXBookmarkIDsInPage,
+      // 只把上次游标交给页面；连续遇到 3 条已知即判定追上。
+      args: [knownIDs, MAX_BOOKMARK_IDS, 3],
+    });
+    const raw = results[0]?.result as CollectResult | undefined;
+    collected = raw && Array.isArray(raw.ids)
+      ? { ids: raw.ids.filter(isValidTweetID), reachedKnown: raw.reachedKnown === true }
+      : { ids: [], reachedKnown: false };
+  } catch {
+    return { ok: false, code: "injection_failed" };
+  }
+
+  if (collected.ids.length === 0) {
+    return { ok: false, code: "empty" };
+  }
+
+  const syncRequestId = requestId();
+  const message = { kind: "xBookmarks", version: 1, requestId: syncRequestId, tweetIDs: collected.ids };
+  let response: unknown;
+  try {
+    response = await withTimeout(browser.runtime.sendNativeMessage(HOST_NAME, message), 30_000);
+  } catch {
+    return { ok: false, code: "native_error" };
+  }
+  const outcome = parseBookmarksAccepted(response);
+  if (!outcome) return { ok: false, code: "native_error" };
+
+  // 收藏夹按加入时间倒序，第一条即最新——记为下次增量的游标。
+  const newest = collected.ids[0];
+  if (newest) await browser.storage.local.set({ [BOOKMARKS_CURSOR_KEY]: newest });
+
+  return { ok: true, outcome, collected: collected.ids.length, reachedKnown: collected.reachedKnown };
+}
+
+export type SingleTweetSyncResult =
+  | { ok: true; outcome: BookmarksSyncOutcome }
+  | { ok: false; code: "invalid_id" | "native_error" };
+
+/**
+ * 时间线上就地同步一条推文。它就是「tweetIDs 只含一条的收藏夹同步」——App 侧
+ * enqueueXBookmarks 已处理去重与逐条抓取，这里不需要额外通道。
+ */
+export async function syncSingleTweet(tweetID: unknown): Promise<SingleTweetSyncResult> {
+  if (!isValidTweetID(tweetID)) return { ok: false, code: "invalid_id" };
+  const message = { kind: "xBookmarks", version: 1, requestId: requestId(), tweetIDs: [tweetID] };
+  let response: unknown;
+  try {
+    response = await withTimeout(browser.runtime.sendNativeMessage(HOST_NAME, message), 30_000);
+  } catch {
+    return { ok: false, code: "native_error" };
+  }
+  const outcome = parseBookmarksAccepted(response);
+  if (!outcome) return { ok: false, code: "native_error" };
+  return { ok: true, outcome };
 }
 
 export default defineBackground(() => {
-  browser.runtime.onMessage.addListener(async (message: { type?: string; tabId?: number }) => {
+  browser.runtime.onMessage.addListener(async (
+    message: { type?: string; tabId?: number; tweetID?: string },
+  ) => {
+    // 时间线注入按钮发来的单条同步：只需要 tweetID，不涉及 tabId。
+    if (message.type === "sync-single-tweet") return syncSingleTweet(message.tweetID);
     if (typeof message.tabId !== "number") return undefined;
     if (message.type === "preview-current-page") return previewCurrentPage(message.tabId);
     if (message.type === "send-current-page") return sendCapture(message.tabId);
+    if (message.type === "sync-x-bookmarks") return syncXBookmarks(message.tabId);
     return undefined;
   });
 });

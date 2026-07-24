@@ -89,13 +89,32 @@ const unsupportedPlatforms: ReadonlySet<CapturePlatform> = new Set(["xiaohongshu
 export type PopupAvailability = { tone: "ready" | "video" | "warn" | "blocked"; label: string };
 
 /** 顶部一句话可用性：进 popup 立刻知道这页能不能抓、抓到什么。 */
+/**
+ * X 用 MSE 播放，页面里只有 blob: 地址，扩展侧确实拿不到可下载的源；但桌面
+ * App 会用嵌入式推文的公开端点换回真实直链并存下来。对用户来说这条视频是
+ * 拿得到的，所以不该在这里说「受限」。
+ */
+function resolvesVideoAfterSending(
+  platform: CapturePlatform | undefined,
+  media: SafeMediaPreview | undefined,
+): boolean {
+  return platform === "x" && media?.failureReason === "blob_or_mse";
+}
+
 export function popupAvailability(preview: {
   platform: CapturePlatform;
   completeness: Completeness;
   media?: SafeMediaPreview;
+  imageCount?: number;
 }): PopupAvailability {
   if (unsupportedPlatforms.has(preview.platform)) {
     return { tone: "blocked", label: "暂不支持此平台" };
+  }
+  if (preview.imageCount !== undefined && preview.imageCount > 0) {
+    return { tone: "ready", label: `可捕获 · 图文 ${preview.imageCount} 张` };
+  }
+  if (resolvesVideoAfterSending(preview.platform, preview.media)) {
+    return { tone: "video", label: "可捕获 · 视频由 App 获取" };
   }
   if (preview.media) {
     if (!preview.media.failureReason
@@ -115,8 +134,16 @@ export function popupAvailability(preview: {
   return { tone: "ready", label: "可捕获" };
 }
 
-export function popupPlatformLabel(platform: CapturePlatform, version: 1 | 2): string {
-  const kind = version === 2 ? "视频" : "文章";
+export function popupPlatformLabel(
+  platform: CapturePlatform,
+  version: 1 | 2,
+  imageCount?: number,
+): string {
+  // 图文帖既不是视频也不是文章。它没有正片视频（页面上那个 <video> 只是
+  // 背景音乐轨），落到"文章"上会让人以为抓的是一篇字。
+  const kind = imageCount !== undefined && imageCount > 0
+    ? "图文"
+    : version === 2 ? "视频" : "文章";
   return `${platformLabels[platform] ?? "网页"} · ${kind}`;
 }
 
@@ -136,7 +163,9 @@ export function popupMetaChips(preview: {
   characterCount: number;
   completeness: Completeness;
   version: 1 | 2;
+  platform?: CapturePlatform;
   media?: SafeMediaPreview;
+  imageCount?: number;
 }): PopupMetaChip[] {
   const chips: PopupMetaChip[] = [];
   if (preview.completeness === "selection_only") {
@@ -144,6 +173,14 @@ export function popupMetaChips(preview: {
   } else if (preview.characterCount > 0) {
     chips.push({ text: `约 ${roundCount(preview.characterCount)} 字` });
     chips.push({ text: `约 ${Math.max(1, Math.round(preview.characterCount / 400))} 分钟` });
+  }
+  if (preview.imageCount !== undefined && preview.imageCount > 0) {
+    chips.push({ text: `🖼 ${preview.imageCount} 张图` });
+    return chips;
+  }
+  if (resolvesVideoAfterSending(preview.platform, preview.media)) {
+    chips.push({ text: "🎬 视频由 App 获取", tone: "video" });
+    return chips;
   }
   const videoChip = popupVideoChip(preview.media);
   if (videoChip) chips.push(videoChip);

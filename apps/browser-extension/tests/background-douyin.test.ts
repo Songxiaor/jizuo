@@ -20,10 +20,21 @@ type VideoFixture = {
   publishedAt?: string;
 };
 
+/** 图集分层：inner 是贴着帖子的容器，outer 是把推荐列表也圈进来的祖先。 */
+type ScopeGallery = { inner: string[]; outer: string[] };
+
+function imageNodes(sources: string[]) {
+  return sources.map((src) => ({
+    getAttribute: (name: string) => (name === "src" ? src : null),
+    getBoundingClientRect: () => ({ left: 0, top: 0, right: 600, bottom: 700 }),
+  }));
+}
+
 function modalDocument(
   videoFixtures: VideoFixture[],
   activeElement: object | null = null,
   documentStats: VideoFixture["stats"] = undefined,
+  gallery: ScopeGallery | undefined = undefined,
 ): Document {
   const videos = videoFixtures.map((fixture) => {
     const statSelectors: Record<string, string | undefined> = {
@@ -44,7 +55,8 @@ function modalDocument(
             const value = statSelectors[selector];
             return value ? { textContent: value } : null;
           },
-          querySelectorAll: () => [],
+          querySelectorAll: (selector: string) =>
+            selector === "img" ? imageNodes(gallery?.inner ?? []) : [],
         }
       : null;
     const siblingStats = fixture.siblingStats;
@@ -63,7 +75,8 @@ function modalDocument(
             const value = values[selector];
             return value ? { textContent: value } : null;
           },
-          querySelectorAll: () => [identityContainer],
+          querySelectorAll: (selector: string) =>
+            selector === "img" ? imageNodes(gallery?.outer ?? []) : [identityContainer],
         }
       : null;
     if (identityContainer && itemScope) identityContainer.parentElement = itemScope;
@@ -106,6 +119,34 @@ function modalDocument(
       return null;
     },
     querySelectorAll: (selector: string) => selector === "video" ? videos : [],
+  } as unknown as Document;
+}
+
+/**
+ * 图文帖弹层页：实测没有任何通过身份校验的 scope（诊断 safeCount 0），
+ * 图片只能靠"视口里足够大"这一条回退规则挑出来。
+ */
+function galleryDocument(
+  images: Array<{ src: string; rect: { left: number; top: number; right: number; bottom: number } }>,
+): Document {
+  const nodes = images.map((image) => ({
+    getAttribute: (name: string) => (name === "src" ? image.src : null),
+    getBoundingClientRect: () => image.rect,
+  }));
+  const meta = (content: string) => ({
+    getAttribute: (name: string) => (name === "content" ? content : null),
+  });
+  return {
+    location: { href: "https://www.douyin.com/jingxuan/search/图文?modal_id=7360323126909095219" },
+    title: "抖音图文",
+    defaultView: { innerWidth: 1000, innerHeight: 800 },
+    activeElement: null,
+    querySelector: (selector: string) => {
+      if (selector === "meta[property='og:title']") return meta("倘若遇到那个人");
+      if (selector === "meta[property='og:description']") return meta("倘若遇到那个人");
+      return null;
+    },
+    querySelectorAll: (selector: string) => (selector === "img" ? nodes : []),
   } as unknown as Document;
 }
 
@@ -231,6 +272,33 @@ describe("background douyin item identity lock", () => {
     });
   });
 
+  it("keeps only biz_tag=aweme_images when a modal page proves no safe scope", () => {
+    const visible = { left: 100, top: 0, right: 700, bottom: 800 };
+    // 轮播里还没滚到的 slide 面积为 0，但它同样属于这条帖子的图集。
+    const offscreen = { left: 0, top: 0, right: 0, bottom: 0 };
+    vi.stubGlobal("document", galleryDocument([
+      { src: "https://p3-pc-sign.douyinpic.com/a~tplv-dy-aweme-images:q75.webp?biz_tag=aweme_images", rect: visible },
+      // 评论区配图：抖音标成 aweme_comment，不是帖子内容。
+      { src: "https://p26-sign.douyinpic.com/c.image?biz_tag=aweme_comment", rect: visible },
+      { src: "https://p9.douyinpic.com/b~tplv-dy-aweme-images:q75.webp?biz_tag=aweme_images", rect: offscreen },
+      // 推荐位封面与头像都没有 biz_tag 标记。
+      { src: "https://p3-pc-sign.douyinpic.com/obj/tos-cn-i-tsj2vxp0zn/rail?from=876277922", rect: visible },
+      { src: "https://p6.douyinpic.com/aweme-avatar/user.jpeg", rect: visible },
+      // 非 douyinpic 主机永不进正文。
+      { src: "https://tracker.example.com/pixel.gif?biz_tag=aweme_images", rect: visible },
+    ]));
+
+    expect(extractDouyinSingleItemMetaInPage()?.imageURLs).toEqual([
+      "https://p3-pc-sign.douyinpic.com/a~tplv-dy-aweme-images:q75.webp?biz_tag=aweme_images",
+      "https://p9.douyinpic.com/b~tplv-dy-aweme-images:q75.webp?biz_tag=aweme_images",
+    ]);
+  });
+
+  it("leaves imageURLs unset for a video post with no gallery images", () => {
+    vi.stubGlobal("document", galleryDocument([]));
+    expect(extractDouyinSingleItemMetaInPage()?.imageURLs).toBeUndefined();
+  });
+
   it("extracts engagement stats from the active video's identity container", () => {
     vi.stubGlobal("document", modalDocument([
       {
@@ -266,6 +334,51 @@ describe("background douyin item identity lock", () => {
     });
   });
 
+  it("takes the gallery from the innermost scope so the recommendation rail cannot join it", () => {
+    const galleryTag = "?biz_tag=aweme_images";
+    const post = ["one", "two", "three"].map((name) => `https://p3-sign.douyinpic.com/${name}.webp${galleryTag}`);
+    // 外层祖先把信息流里另一条图文帖也圈了进来——那条同样带 aweme_images 标记，
+    // 只有 scope 的内外之分能把它挡在外面。
+    const feedPolluted = [
+      ...post,
+      ...Array.from({ length: 27 }, (_, index) => `https://p9.douyinpic.com/other-${index}.webp${galleryTag}`),
+    ];
+    vi.stubGlobal("document", modalDocument(
+      [{
+        source: "https://media.example.test/current.mp4",
+        boundAwemeId: "7655224917603994914",
+        rect: { left: 20, top: 20, right: 900, bottom: 700 },
+        siblingStats: { likes: "0", comments: "2", shares: "3", collects: "4" },
+      }],
+      null,
+      undefined,
+      { inner: post, outer: feedPolluted },
+    ));
+
+    expect(extractDouyinSingleItemMetaInPage()?.imageURLs).toEqual(post);
+  });
+
+  it("abandons a scope whose image count exceeds what an image post can hold", () => {
+    const flood = Array.from(
+      { length: 36 },
+      (_, index) => `https://p9.douyinpic.com/flood-${index}.webp?biz_tag=aweme_images`,
+    );
+    vi.stubGlobal("document", modalDocument(
+      [{
+        source: "https://media.example.test/current.mp4",
+        boundAwemeId: "7655224917603994914",
+        rect: { left: 20, top: 20, right: 900, bottom: 700 },
+        siblingStats: { likes: "0", comments: "2", shares: "3", collects: "4" },
+      }],
+      null,
+      undefined,
+      // 最内层就已经越界：抖音图文帖最多 35 张，更外层只会更宽。
+      { inner: flood, outer: flood },
+    ));
+
+    expect(extractDouyinSingleItemMetaInPage()?.imageURLs).toBeUndefined();
+  });
+
   it("keeps the nickname without the screen-reader badge label beside it", () => {
     const id = "7655224917603994914";
     const video = {
@@ -295,6 +408,114 @@ describe("background douyin item identity lock", () => {
     } as unknown as Document);
 
     expect(extractDouyinSingleItemMetaInPage()?.author).toBe("王自如AI");
+  });
+
+  it("restores a caption the detail page folded, but only when og proves it is the same item", () => {
+    const id = "7655224917603994914";
+    const full = "倘若遇到那个人 那就永远不要分开。 #文案 #日落 #宫崎骏 #2024图文伙伴计划";
+    // 折叠版：末尾留下被切一半的 tag 和「展开」；DOM 里 emoji 是真字符。
+    const folded = "倘若遇到那个人 那就永远不要分开。 #文案 #日落🌄 #展开";
+    const build = (ogTitle: string, scoped: string) => {
+      const video = {
+        currentSrc: "https://media.example.test/a.mp4", src: "", paused: true, ended: false, readyState: 4, mediaKeys: null, currentTime: 0,
+        parentElement: null as unknown, tagName: "VIDEO", querySelector: () => null, querySelectorAll: () => [],
+        getAttribute: (name: string) => name === "type" ? "video/mp4" : null, contains: () => false,
+        getBoundingClientRect: () => ({ left: 0, top: 0, right: 900, bottom: 700 }),
+      };
+      const player = {
+        parentElement: null, tagName: "DIV",
+        getAttribute: (name: string) => name === "data-aweme-id" ? id : null,
+        querySelector: (selector: string) => selector.includes("video-desc") ? { textContent: scoped } : null,
+        querySelectorAll: (selector: string) => selector === "video" ? [video] : [],
+      };
+      video.parentElement = player;
+      return {
+        location: { href: `https://www.douyin.com/video/${id}` }, title: "fixture",
+        defaultView: { innerWidth: 1_000, innerHeight: 800 }, activeElement: null,
+        querySelector: (selector: string) => selector.includes("og:title")
+          ? { getAttribute: (name: string) => name === "content" ? `${ogTitle} - 抖音` : null }
+          : null,
+        querySelectorAll: (selector: string) => selector === "video" ? [video] : [],
+      } as unknown as Document;
+    };
+
+    // og 是同一条文案的扩展（归一化后比较，emoji 差异不影响）→ 补全。
+    vi.stubGlobal("document", build(full, folded));
+    expect(extractDouyinSingleItemMetaInPage()?.title).toBe(full);
+
+    // og 指向信息流里的另一条（不是前缀）→ 绝不能安到这条上。
+    vi.stubGlobal("document", build("完全是另一条视频的标题", folded));
+    expect(extractDouyinSingleItemMetaInPage()?.title).toBe("倘若遇到那个人 那就永远不要分开。 #文案 #日落🌄 #");
+
+    // scoped 本来就完整 → 不去碰 og。
+    vi.stubGlobal("document", build(full, "自己的完整文案"));
+    expect(extractDouyinSingleItemMetaInPage()?.title).toBe("自己的完整文案");
+  });
+
+  it("strips follower and like counters glued to the nickname by the author block", () => {
+    const id = "7655224917603994914";
+    const video = {
+      currentSrc: "https://media.example.test/a.mp4", src: "", paused: true, ended: false, readyState: 4, mediaKeys: null, currentTime: 0,
+      parentElement: null as unknown, tagName: "VIDEO", querySelector: () => null, querySelectorAll: () => [],
+      getAttribute: (name: string) => name === "type" ? "video/mp4" : null, contains: () => false,
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 900, bottom: 700 }),
+    };
+    // 作者信息块：没有自己的直接文本节点，textContent 会把统计一起拼进来。
+    const authorBlock = {
+      textContent: "迟遇粉丝2918获赞76.4万关注",
+      childNodes: [
+        { nodeType: 1, textContent: "迟遇" },
+        { nodeType: 1, textContent: "粉丝2918" },
+        { nodeType: 1, textContent: "获赞76.4万" },
+        { nodeType: 1, textContent: "关注" },
+      ],
+    };
+    const player = {
+      parentElement: null, tagName: "DIV",
+      getAttribute: (name: string) => name === "data-aweme-id" ? id : null,
+      // 只有宽泛的 user-info 命中：昵称专用节点不存在。
+      querySelector: (selector: string) => selector.includes("user-info") ? authorBlock : null,
+      querySelectorAll: (selector: string) => selector === "video" ? [video] : [],
+    };
+    video.parentElement = player;
+    vi.stubGlobal("document", {
+      location: { href: `https://www.douyin.com/video/${id}` }, title: "fixture",
+      defaultView: { innerWidth: 1_000, innerHeight: 800 }, activeElement: null,
+      querySelector: () => null, querySelectorAll: (selector: string) => selector === "video" ? [video] : [],
+    } as unknown as Document);
+
+    expect(extractDouyinSingleItemMetaInPage()?.author).toBe("迟遇");
+  });
+
+  it("prefers the dedicated nickname node over the broad author block", () => {
+    const id = "7655224917603994914";
+    const video = {
+      currentSrc: "https://media.example.test/a.mp4", src: "", paused: true, ended: false, readyState: 4, mediaKeys: null, currentTime: 0,
+      parentElement: null as unknown, tagName: "VIDEO", querySelector: () => null, querySelectorAll: () => [],
+      getAttribute: (name: string) => name === "type" ? "video/mp4" : null, contains: () => false,
+      getBoundingClientRect: () => ({ left: 0, top: 0, right: 900, bottom: 700 }),
+    };
+    const nickname = { textContent: "迟遇", childNodes: [{ nodeType: 3, textContent: "迟遇" }] };
+    const authorBlock = { textContent: "迟遇粉丝2918获赞76.4万关注", childNodes: [] };
+    const player = {
+      parentElement: null, tagName: "DIV",
+      getAttribute: (name: string) => name === "data-aweme-id" ? id : null,
+      // 两个都在：逗号选择器会按文档顺序挑，所以实现必须逐个按优先级试。
+      querySelector: (selector: string) => {
+        if (selector.includes("feed-video-nickname")) return nickname;
+        if (selector.includes("user-info")) return authorBlock;
+        return null;
+      },
+      querySelectorAll: (selector: string) => selector === "video" ? [video] : [],
+    };
+    video.parentElement = player;
+    vi.stubGlobal("document", {
+      location: { href: `https://www.douyin.com/video/${id}` }, title: "fixture",
+      defaultView: { innerWidth: 1_000, innerHeight: 800 }, activeElement: null,
+      querySelector: () => null, querySelectorAll: (selector: string) => selector === "video" ? [video] : [],
+    } as unknown as Document);
+
+    expect(extractDouyinSingleItemMetaInPage()?.author).toBe("迟遇");
   });
 
   it("reads canonical identity-less sibling date and stats only from its dominant visible player", () => {
@@ -1201,6 +1422,58 @@ describe("background douyin item identity lock", () => {
     }
     const config = readFileSync(new URL("../wxt.config.ts", import.meta.url), "utf8");
     expect(config).not.toMatch(/host_permissions|cookies|webRequest|declarativeNetRequest/u);
+  });
+
+  it("captures an image post from DOM images, drops its music-track video, and deduplicates the caption", async () => {
+    const id = "7360323126909095219";
+    // 图文帖页面上仍有一个 <video>（背景音乐轨），DOM 提取照样会给出 blob 描述符。
+    const musicTrack = {
+      kind: "browserSessionOnly" as const,
+      platform: "douyin" as const,
+      pageURL: `https://www.douyin.com/video/${id}`,
+      canonicalURL: `https://www.douyin.com/video/${id}`,
+      transcriptionCapability: "unavailable" as const,
+      failureReason: "blob_or_mse" as const,
+    };
+    const caption = "倘若遇到那个人 那就永远不要分开。#文案 #日落";
+    const executeScript = vi.fn()
+      .mockResolvedValueOnce([{ result: {
+        awemeId: id,
+        title: caption,
+        author: "迟遇",
+        // 抖音把「展开」按钮的文字渲染进文案节点。
+        description: `${caption}展开`,
+        mediaDescriptor: musicTrack,
+        imageURLs: [
+          "https://p3-sign.douyinpic.com/one.webp?x=1",
+          "https://p9.douyinpic.com/two.webp",
+          "https://evil.example.com/track.gif",
+        ],
+      } }])
+      .mockResolvedValueOnce([{ result: { ok: false } }])
+      .mockResolvedValueOnce([{ result: { ok: false } }])
+      .mockResolvedValueOnce([{ result: { metadata: null, diagnostic: { exactHit: false } } }]);
+    vi.stubGlobal("browser", { scripting: { executeScript } });
+    vi.stubGlobal("defineBackground", (factory: unknown) => factory);
+    const { captureDouyinSingleItem, captureEnvelopeForPage } = await import("../src/entrypoints/background");
+
+    const page = await captureDouyinSingleItem(1, `https://www.douyin.com/video/${id}`);
+
+    // 没有正片视频：带上音乐轨会让扩展和 App 都把图文帖显示成"受限视频"。
+    expect(page.mediaDescriptor).toBeUndefined();
+    expect(page.imageCount).toBe(2);
+    expect(page.text).toContain("![](https://p3-sign.douyinpic.com/one.webp?x=1)");
+    expect(page.text).toContain("![](https://p9.douyinpic.com/two.webp)");
+    // 非 douyinpic 主机不进正文。
+    expect(page.text).not.toContain("evil.example.com");
+    // 文案与标题同句时不重复成段，且「展开」按钮文字被剥掉。
+    expect(page.text).not.toContain("展开");
+    expect(page.text.match(/倘若遇到那个人/gu)).toHaveLength(1);
+
+    // 无 media 的图文帖走 V1 信封，usedCookie 保持 false。
+    const envelope = captureEnvelopeForPage(page, `https://www.douyin.com/video/${id}`, null, new Date().toISOString(), "req-image-post");
+    expect(envelope.version).toBe(1);
+    expect(envelope.evidence.usedCookie).toBe(false);
   });
 
   it("runs MAIN fallback only for the locked blob/MSE descriptor and double-validates its URL", async () => {

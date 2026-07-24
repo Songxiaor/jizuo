@@ -12,6 +12,18 @@ import {
 } from "../../src/popup-presentation";
 import type { DouyinSessionDiagnostic } from "../../src/content/douyin-session-detail";
 import type { DouyinMetadataDiagnostic } from "../../src/content/douyin-metadata-diagnostic";
+import { bookmarksSyncMessage, isXBookmarksURL, type BookmarksSyncOutcome } from "../../src/content/x-bookmarks";
+
+type BookmarksSyncResult =
+  | { ok: true; outcome: BookmarksSyncOutcome; collected: number; reachedKnown: boolean }
+  | { ok: false; code: "not_bookmarks" | "empty" | "native_error" | "injection_failed" };
+
+const bookmarksErrorCopy: Readonly<Record<string, string>> = {
+  not_bookmarks: "请在 X 的收藏夹页面（x.com/i/bookmarks）打开后再同步。",
+  empty: "没有找到可同步的收藏。请向下滚动确认收藏已加载。",
+  native_error: "无法连接 LinkDigest，或本次同步未被受理，请确认 App 已打开后重试。",
+  injection_failed: "读取收藏夹失败，请刷新页面后重试。",
+};
 
 type CapturePlatform =
   | "generic" | "x" | "youtube" | "wechat" | "xiaohongshu" | "douyin" | "bilibili" | "github";
@@ -26,6 +38,7 @@ type SafeCapturePreview = {
   media?: SafeMediaPreview;
   mediaDiagnostic?: DouyinSessionDiagnostic;
   metadataDiagnostic?: DouyinMetadataDiagnostic;
+  imageCount?: number;
 };
 
 const availability = document.querySelector<HTMLSpanElement>("#availability")!;
@@ -36,6 +49,7 @@ const diag = document.querySelector<HTMLDetailsElement>("#diag")!;
 const metadataDiagnostic = document.querySelector<HTMLPreElement>("#metadata-diagnostic")!;
 const error = document.querySelector<HTMLPreElement>("#error")!;
 const send = document.querySelector<HTMLButtonElement>("#send")!;
+const syncBookmarks = document.querySelector<HTMLButtonElement>("#sync-bookmarks")!;
 
 const manifest = browser.runtime.getManifest();
 const extensionName = manifest.name;
@@ -79,6 +93,39 @@ const tabId = tab?.id;
 if (tabId === undefined) {
   status.textContent = "无法读取当前标签页";
   send.disabled = true;
+} else if (isXBookmarksURL(tab?.url)) {
+  // 收藏夹页面：主操作换成批量同步。普通「发送」在这里只会抓到收藏夹外壳。
+  send.hidden = true;
+  syncBookmarks.hidden = false;
+  setAvailability("ready", "X 收藏夹");
+  renderPlatform(popupPlatformIcon("x"), "X · 收藏夹");
+  status.textContent = "同步收藏夹";
+  renderMeta([{ text: "滚动收集后交给 App 逐条抓取" }]);
+
+  syncBookmarks.onclick = async () => {
+    syncBookmarks.disabled = true;
+    syncBookmarks.classList.remove("done");
+    error.textContent = "";
+    syncBookmarks.textContent = "正在收集收藏…";
+    try {
+      const result = await browser.runtime.sendMessage({
+        type: "sync-x-bookmarks",
+        tabId,
+      }) as BookmarksSyncResult;
+      if (result.ok) {
+        syncBookmarks.textContent = "✓ " + bookmarksSyncMessage(result.outcome, result.collected, result.reachedKnown);
+        syncBookmarks.classList.add("done");
+      } else {
+        error.textContent = bookmarksErrorCopy[result.code] ?? "同步未完成，请重试。";
+        syncBookmarks.textContent = "同步收藏夹到桌面 App";
+        syncBookmarks.disabled = false;
+      }
+    } catch {
+      error.textContent = "同步失败，请重试。";
+      syncBookmarks.textContent = "同步收藏夹到桌面 App";
+      syncBookmarks.disabled = false;
+    }
+  };
 } else {
   try {
     const preview = await browser.runtime.sendMessage({
@@ -87,7 +134,10 @@ if (tabId === undefined) {
     }) as SafeCapturePreview;
     const avail = popupAvailability(preview);
     setAvailability(avail.tone, avail.label);
-    renderPlatform(popupPlatformIcon(preview.platform), popupPlatformLabel(preview.platform, preview.version));
+    renderPlatform(
+      popupPlatformIcon(preview.platform),
+      popupPlatformLabel(preview.platform, preview.version, preview.imageCount),
+    );
     status.textContent = preview.title;
     renderMeta(popupMetaChips(preview));
     renderMetadataDiagnostic(preview.metadataDiagnostic);

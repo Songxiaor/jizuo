@@ -209,4 +209,59 @@ describe("popup meta chips", () => {
     });
     expect(chips.at(-1)).toEqual({ text: "🎬 仅浏览器可播", tone: "video" });
   });
+  it("shows an image-post chip instead of a video chip", () => {
+    const chips = popupMetaChips({
+      characterCount: 100, completeness: "unknown", version: 2,
+      media: { kind: "browserSessionOnly", failureReason: "blob_or_mse" },
+      imageCount: 5,
+    });
+    expect(chips.at(-1)).toEqual({ text: "🖼 5 张图" });
+    expect(chips.some((chip) => chip.text.includes("视频"))).toBe(false);
+  });
+});
+
+describe("X videos resolved by the desktop app", () => {
+  it("does not call a blob/MSE X video restricted, because the app fetches it", () => {
+    const preview = {
+      platform: "x" as const,
+      completeness: "full_article" as const,
+      media: { kind: "browserSessionOnly" as const, failureReason: "blob_or_mse" as const },
+    };
+    expect(popupAvailability(preview)).toEqual({ tone: "video", label: "可捕获 · 视频由 App 获取" });
+    const chips = popupMetaChips({ ...preview, characterCount: 525, version: 2 });
+    expect(chips.at(-1)).toEqual({ text: "🎬 视频由 App 获取", tone: "video" });
+    expect(chips.some((chip) => chip.text.includes("受限"))).toBe(false);
+  });
+
+  it("keeps other platforms and other failure reasons on the restricted wording", () => {
+    // 抖音的 blob/MSE 没有这条补救路径，仍旧如实说受限。
+    expect(popupAvailability({
+      platform: "douyin", completeness: "full_article",
+      media: { kind: "browserSessionOnly", failureReason: "blob_or_mse" },
+    })).toEqual({ tone: "warn", label: "可捕获正文 · 视频受限" });
+    // X 的其它失败原因（如 DRM）不在补救范围内。
+    expect(popupAvailability({
+      platform: "x", completeness: "full_article",
+      media: { kind: "unsupported", failureReason: "drm_or_encrypted" },
+    })).toEqual({ tone: "warn", label: "可捕获正文 · 视频受限" });
+  });
+});
+
+describe("douyin image posts (图文帖)", () => {
+  it("names the post 图文 rather than 视频 or 文章", () => {
+    expect(popupPlatformLabel("douyin", 2, 5)).toBe("抖音 · 图文");
+    expect(popupPlatformLabel("douyin", 1, 3)).toBe("抖音 · 图文");
+    // Zero images is a video post, not an empty gallery.
+    expect(popupPlatformLabel("douyin", 2, 0)).toBe("抖音 · 视频");
+    expect(popupPlatformLabel("douyin", 2)).toBe("抖音 · 视频");
+  });
+  it("reports an image post as ready, never as a restricted video", () => {
+    const availability = popupAvailability({
+      platform: "douyin",
+      completeness: "full_article",
+      media: { kind: "browserSessionOnly", failureReason: "blob_or_mse" },
+      imageCount: 4,
+    });
+    expect(availability).toEqual({ tone: "ready", label: "可捕获 · 图文 4 张" });
+  });
 });
