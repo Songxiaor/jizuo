@@ -84,14 +84,76 @@ enum MarkdownLinkResolver {
 /// Splits README-style markdown so local cached images render at their marker
 /// positions instead of only as a trailing gallery.
 enum LocalMarkdownImageLayout {
+  /// 仿 X 原生引用卡的内容：被引作者、正文、卡内图片、原推链接。
+  struct QuotedTweet: Equatable {
+    let author: String?
+    let url: URL?
+    let text: String
+    let images: [URL]
+  }
+
   enum Segment: Equatable {
     case text(String)
     case image(URL)
+    /// 连续出现的图片，交给自适应网格铺成 1～2 排。
+    case gallery([URL])
+    /// 引用推文卡片。
+    case quotedTweet(QuotedTweet)
+  }
+
+  /// 把连续的图片并成一组。图集（抖音图文帖、README 截图序列）因此能铺满阅读区
+  /// 宽度；微信正文里穿插在段落之间的单张插图仍旧单排，阅读顺序不变。
+  ///
+  /// 只作用于渲染，`segments` 本身的结构保持不变。
+  static func galleryGrouped(_ segments: [Segment], minimumGalleryCount: Int = 2) -> [Segment] {
+    var result: [Segment] = []
+    var run: [URL] = []
+    func flushRun() {
+      if run.count >= minimumGalleryCount {
+        result.append(.gallery(run))
+      } else {
+        result.append(contentsOf: run.map(Segment.image))
+      }
+      run = []
+    }
+    for segment in segments {
+      switch segment {
+      case let .image(url):
+        run.append(url)
+      case let .text(chunk):
+        // markdown 里图片之间必然夹着空行，那不是内容，不算打断图集。
+        if chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
+        flushRun()
+        result.append(segment)
+      case .gallery, .quotedTweet:
+        flushRun()
+        result.append(segment)
+      }
+    }
+    flushRun()
+    return result
   }
 
   static func segments(markdown: String, localImageURLs: [URL], appendsUnusedLocalImages: Bool = true) -> [Segment] {
-    guard !localImageURLs.isEmpty else { return [.text(markdown)] }
     let byHash = Dictionary(uniqueKeysWithValues: localImageURLs.map { ($0.lastPathComponent, $0) })
+    // 引用卡先剥离：它可能没有图片（纯文字引用），所以必须在「无本地图片就整段
+    // 返回」之前处理，否则标记会被当成字面文本渲染出来。
+    if let quoteRange = quotedTweetRange(in: markdown) {
+      var result: [Segment] = []
+      let head = String(markdown[markdown.startIndex..<quoteRange.lowerBound])
+      if !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        result.append(contentsOf: segments(markdown: head, localImageURLs: localImageURLs, appendsUnusedLocalImages: false))
+      }
+      if let card = parseQuotedTweet(String(markdown[quoteRange]), byHash: byHash) {
+        result.append(.quotedTweet(card))
+      }
+      let tail = String(markdown[quoteRange.upperBound...])
+      if !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        result.append(contentsOf: segments(markdown: tail, localImageURLs: localImageURLs, appendsUnusedLocalImages: false))
+      }
+      return result.isEmpty ? [.text(markdown)] : result
+    }
+    guard !localImageURLs.isEmpty else { return [.text(markdown)] }
     guard let expression = try? NSRegularExpression(
       pattern: #"!\[([^\]]*)\]\(([^)\s]+)(?:\s+[^)]*)?\)|<img\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"'][^>]*>"#,
       options: [.caseInsensitive]
@@ -140,6 +202,57 @@ enum LocalMarkdownImageLayout {
       }
     }
     return segments.isEmpty ? [.text(markdown)] : segments
+  }
+
+  /// 定位引用卡标记块 `<!--LDQUOTE ...-->...<!--/LDQUOTE-->` 的完整范围。
+  static func quotedTweetRange(in markdown: String) -> Range<String.Index>? {
+    guard let start = markdown.range(of: "<!--LDQUOTE "),
+          let end = markdown.range(of: "<!--/LDQUOTE-->", range: start.upperBound..<markdown.endIndex)
+    else { return nil }
+    return start.lowerBound..<end.upperBound
+  }
+
+  /// 解析引用卡：从开标记里取 author/url，块内 `![]()` 取图片（解析成本地文件），
+  /// 其余为正文。取不到本地图片的就略过该图，正文与卡片仍然显示。
+  static func parseQuotedTweet(_ block: String, byHash: [String: URL]) -> QuotedTweet? {
+    guard let headerEnd = block.range(of: "-->"),
+          let footerStart = block.range(of: "<!--/LDQUOTE-->")
+    else { return nil }
+    let header = String(block[block.startIndex..<headerEnd.lowerBound])
+    let inner = String(block[headerEnd.upperBound..<footerStart.lowerBound])
+
+    func attribute(_ name: String) -> String? {
+      guard let r = header.range(of: "\(name)=\"") else { return nil }
+      guard let close = header.range(of: "\"", range: r.upperBound..<header.endIndex) else { return nil }
+      let value = String(header[r.upperBound..<close.lowerBound]).trimmingCharacters(in: .whitespaces)
+      return value.isEmpty ? nil : value
+    }
+
+    var images: [URL] = []
+    var textLines: [String] = []
+    if let imageExpr = try? NSRegularExpression(pattern: #"!\[[^\]]*\]\(([^)\s]+)(?:\s+[^)]*)?\)"#) {
+      for line in inner.components(separatedBy: "\n") {
+        let range = NSRange(line.startIndex..., in: line)
+        if let match = imageExpr.firstMatch(in: line, range: range),
+           let r = Range(match.range(at: 1), in: line) {
+          if let local = resolveLocal(rawURL: String(line[r]), byHash: byHash) { images.append(local) }
+        } else {
+          textLines.append(line)
+        }
+      }
+    } else {
+      textLines = inner.components(separatedBy: "\n")
+    }
+    let text = textLines.joined(separator: "\n")
+      .replacingOccurrences(of: "\n{3,}", with: "\n\n", options: .regularExpression)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty || !images.isEmpty else { return nil }
+    return QuotedTweet(
+      author: attribute("author"),
+      url: attribute("url").flatMap(URL.init(string:)),
+      text: text,
+      images: images
+    )
   }
 
   private static func resolveLocal(rawURL: String, byHash: [String: URL]) -> URL? {
@@ -631,11 +744,22 @@ struct MarkdownContentView: View {
           onOpenLink: { url in openValidated(url) }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
-      } else if localImageURLs.isEmpty {
+      } else if localImageURLs.isEmpty && LocalMarkdownImageLayout.quotedTweetRange(in: source) == nil {
         structuredMarkdown(source)
           .accessibilityIdentifier("history-content-markdown")
       } else {
-        ForEach(Array(LocalMarkdownImageLayout.segments(markdown: source, localImageURLs: localImageURLs, appendsUnusedLocalImages: appendsUnusedLocalImages).enumerated()), id: \.offset) { _, segment in
+        ForEach(
+          Array(
+            LocalMarkdownImageLayout.galleryGrouped(
+              LocalMarkdownImageLayout.segments(
+                markdown: source,
+                localImageURLs: localImageURLs,
+                appendsUnusedLocalImages: appendsUnusedLocalImages
+              )
+            ).enumerated()
+          ),
+          id: \.offset
+        ) { _, segment in
           switch segment {
           case let .text(chunk):
             if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -644,6 +768,10 @@ struct MarkdownContentView: View {
           case let .image(url):
             // 白色衬卡 + 后台下采样解码 + 双击进灯箱；见 ArticleImageViewing。
             InlineArticleImageView(url: url)
+          case let .gallery(urls):
+            InlineArticleGalleryView(urls: urls)
+          case let .quotedTweet(quote):
+            QuotedTweetCardView(quote: quote, accentColor: accentColor, onOpenURL: { _ = openValidated($0) })
           }
         }
         .accessibilityIdentifier("history-content-markdown")
@@ -878,6 +1006,69 @@ struct MarkdownContentView: View {
     }
     NSWorkspace.shared.open(resolved)
     return .handled
+  }
+}
+
+/// 仿 X 原生引用卡：带边框圆角框，顶部被引作者（加粗），正文正常颜色，图片在
+/// 卡内，底部「查看原推」。整体作为一个视觉整体，区别于作者本人的正文。
+struct QuotedTweetCardView: View {
+  let quote: LocalMarkdownImageLayout.QuotedTweet
+  var accentColor: Color = .accentColor
+  let onOpenURL: (URL) -> Void
+
+  private var paragraphs: [String] {
+    quote.text
+      .components(separatedBy: "\n\n")
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+  }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      if let author = quote.author, !author.isEmpty {
+        Text(author)
+          .font(.system(size: 14, weight: .semibold))
+          .foregroundStyle(.primary)
+      }
+      ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
+        // Text 的 markdown 解析会把 t.co 等裸链接自动做成可点链接。
+        Text(LocalizedStringKey(paragraph))
+          .font(.system(size: 15))
+          .foregroundStyle(.primary)
+          .tint(accentColor)
+          .lineSpacing(5)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      ForEach(Array(quote.images.enumerated()), id: \.offset) { _, url in
+        InlineArticleImageView(url: url, layout: .gallery)
+      }
+      if let url = quote.url {
+        Button {
+          onOpenURL(url)
+        } label: {
+          HStack(spacing: 4) {
+            Image(systemName: "arrow.up.right.square").font(.system(size: 11))
+            Text("查看原推").font(.system(size: 12))
+          }
+          .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .padding(.top, 2)
+      }
+    }
+    .padding(14)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .fill(Color.primary.opacity(0.03))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .stroke(Color.primary.opacity(0.14), lineWidth: 1)
+    )
+    .padding(.bottom, 20)
+    .accessibilityIdentifier("history-quoted-tweet-card")
   }
 }
 

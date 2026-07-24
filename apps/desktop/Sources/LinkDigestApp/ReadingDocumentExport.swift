@@ -55,6 +55,36 @@ enum ReadingDocumentExport {
           result.append(attachment)
           result.append(NSAttributedString(string: "\n\n"))
         }
+      case let .gallery(urls):
+        // 导出是线性文档：画廊的双排只是屏幕布局，落到 PDF/Word 仍逐张顺排。
+        for url in urls {
+          if let attachment = imageAttachment(url: url) {
+            result.append(attachment)
+            result.append(NSAttributedString(string: "\n\n"))
+          }
+        }
+      case let .quotedTweet(quote):
+        // 导出成线性文档：引用作者一行 + 正文引用块 + 图片顺排 + 原推链接。
+        if let author = quote.author {
+          result.append(attributedTextOnly(markdown: "**引用 \(author)：**", readingFont: readingFont))
+          result.append(NSAttributedString(string: "\n\n"))
+        }
+        let quotedBody = quote.text
+          .components(separatedBy: "\n")
+          .map { $0.isEmpty ? ">" : "> \($0)" }
+          .joined(separator: "\n")
+        result.append(attributedTextOnly(markdown: quotedBody, readingFont: readingFont))
+        result.append(NSAttributedString(string: "\n\n"))
+        for url in quote.images {
+          if let attachment = imageAttachment(url: url) {
+            result.append(attachment)
+            result.append(NSAttributedString(string: "\n\n"))
+          }
+        }
+        if let url = quote.url {
+          result.append(attributedTextOnly(markdown: url.absoluteString, readingFont: readingFont))
+          result.append(NSAttributedString(string: "\n\n"))
+        }
       }
     }
     return result

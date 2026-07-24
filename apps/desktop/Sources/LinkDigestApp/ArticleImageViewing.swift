@@ -57,17 +57,61 @@ enum InlineImageMemoryCache {
 }
 
 /// 内联图片视图：占位 → 后台解码 → 白色衬卡展示；双击进灯箱。
+/// 连续图片的自适应画廊：阅读区宽就排两列，窄就退回一列。每格保持图片自身
+/// 比例、不裁切，所以混排横竖图时两列会参差——那是有意的，宁可参差也不切画面。
+struct InlineArticleGalleryView: View {
+  let urls: [URL]
+
+  /// 单列最小宽度。阅读区满宽（约 600）时排得下两列，窗口收窄即退回一列。
+  private static let minimumColumnWidth: CGFloat = 240
+
+  var body: some View {
+    LazyVGrid(
+      columns: [GridItem(.adaptive(minimum: Self.minimumColumnWidth), spacing: 12, alignment: .top)],
+      alignment: .leading,
+      spacing: 12
+    ) {
+      ForEach(urls, id: \.path) { url in
+        InlineArticleImageView(url: url, layout: .gallery)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.bottom, 18)
+    .accessibilityIdentifier("history-content-inline-gallery")
+  }
+}
+
 struct InlineArticleImageView: View {
+  /// 独立成段的插图按自身比例定尺寸；画廊里的格子改由列宽定宽、高度随比例走。
+  enum Layout { case standalone, gallery }
+
   let url: URL
+  var layout: Layout = .standalone
   @State private var image: NSImage?
+
+  /// 竖图（9:16）按这个高度算出的宽度约 315，在阅读区里看得清又不占满一屏。
+  private static let maximumHeight: CGFloat = 560
+
+  /// 衬卡必须贴合图片本身的比例，所以尺寸不能交给弹性 frame：`maxHeight` 会把
+  /// 整块可用宽度都占住，竖图右边那片空白就是这么来的。`aspectRatio` 让视图自带
+  /// 比例，宽高上限只做封顶，横图仍旧被阅读区宽度约束、表现不变。
+  private static func aspectRatio(of image: NSImage) -> CGFloat {
+    let ratio = image.size.width / max(image.size.height, 1)
+    return ratio.isFinite && ratio > 0 ? ratio : 1
+  }
 
   var body: some View {
     Group {
       if let image {
+        let ratio = Self.aspectRatio(of: image)
         Image(nsImage: image)
           .resizable()
-          .scaledToFit()
-          .frame(maxHeight: 420, alignment: .leading)
+          .aspectRatio(ratio, contentMode: .fit)
+          // 画廊里宽度由列宽决定、高度随比例走；独立插图才用比例算自己的上限。
+          .frame(
+            maxWidth: layout == .gallery ? .infinity : Self.maximumHeight * ratio,
+            maxHeight: layout == .gallery ? nil : Self.maximumHeight
+          )
           .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
           .padding(8)
           .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -97,7 +141,10 @@ struct InlineArticleImageView: View {
           .task { await load() }
       }
     }
-    .padding(.bottom, 18)
+    // 卡片收窄后与正文、标题共用同一条左边界，不在阅读流里飘。
+    .frame(maxWidth: .infinity, alignment: .leading)
+    // 画廊的行距由网格 spacing 统一给，格子自己不再加尾距。
+    .padding(.bottom, layout == .gallery ? 0 : 18)
     .accessibilityIdentifier("history-content-inline-image")
   }
 

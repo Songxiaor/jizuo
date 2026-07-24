@@ -313,6 +313,60 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(segments, [.text("前文\n\n"), .image(body), .text("\n\n中段\n\n"), .image(body), .text("\n\n后文")])
   }
 
+  func testQuotedTweetMarkerBecomesACardSegmentEvenWithoutLocalImages() {
+    let markdown = """
+    主帖正文在这里。
+
+    <!--LDQUOTE author="Emanuele (@emanueledpt)" url="https://x.com/emanueledpt/status/2080282109277520028"-->
+    被引正文第一段
+
+    被引正文第二段
+    <!--/LDQUOTE-->
+    """
+    // 纯文字引用（无本地图片）也要被解析成卡片，而不是把标记当字面文本。
+    let segments = LocalMarkdownImageLayout.segments(markdown: markdown, localImageURLs: [])
+    var quote: LocalMarkdownImageLayout.QuotedTweet?
+    for segment in segments { if case let .quotedTweet(q) = segment { quote = q } }
+    guard let quote else { return XCTFail("引用卡未被解析为 quotedTweet 段") }
+    XCTAssertEqual(quote.author, "Emanuele (@emanueledpt)")
+    XCTAssertEqual(quote.url?.absoluteString, "https://x.com/emanueledpt/status/2080282109277520028")
+    XCTAssertTrue(quote.text.contains("被引正文第一段"))
+    XCTAssertTrue(quote.text.contains("被引正文第二段"))
+    XCTAssertTrue(quote.images.isEmpty)
+    // 主帖正文仍作为独立文本段，且不含标记残留。
+    let head = segments.compactMap { if case let .text(t) = $0 { return t } else { return nil } }.joined()
+    XCTAssertTrue(head.contains("主帖正文在这里"))
+    XCTAssertFalse(head.contains("LDQUOTE"))
+  }
+
+  func testConsecutiveImagesBecomeAGalleryWhileProseKeepsSingleImagesInPlace() {
+    let a = URL(fileURLWithPath: "/tmp/linkdigest-a")
+    let b = URL(fileURLWithPath: "/tmp/linkdigest-b")
+    let c = URL(fileURLWithPath: "/tmp/linkdigest-c")
+
+    // 图集：图片之间只夹着 markdown 的空行，应并成一组走网格。
+    XCTAssertEqual(
+      LocalMarkdownImageLayout.galleryGrouped([
+        .text("# 标题\n\n"), .image(a), .text("\n\n"), .image(b), .text("\n\n"), .image(c),
+      ]),
+      [.text("# 标题\n\n"), .gallery([a, b, c])]
+    )
+
+    // 正文穿插的单张插图：被真实文字打断，必须留在原位单排，阅读顺序不变。
+    XCTAssertEqual(
+      LocalMarkdownImageLayout.galleryGrouped([
+        .text("前文"), .image(a), .text("中段"), .image(b), .text("后文"),
+      ]),
+      [.text("前文"), .image(a), .text("中段"), .image(b), .text("后文")]
+    )
+
+    // 只有一张连续图片不构成画廊。
+    XCTAssertEqual(
+      LocalMarkdownImageLayout.galleryGrouped([.text("前文"), .image(a)]),
+      [.text("前文"), .image(a)]
+    )
+  }
+
   private func assertSafeInBothPresentations(
     _ source: String,
     forbiddenFragments: [String],
