@@ -858,7 +858,19 @@ enum BrowserReceiverState: Sendable, Equatable {
       startupTranscriptionCleanupFailure = TranscriptionTempStoreError.unavailable.userMessage
     }
     let githubAdapter = GitHubRepositorySourceAdapter(resources: manualResourceFetcher, imageCache: imageCache)
-    let douyinAdapter = DouyinSourceAdapter(fetcher: manualResourceFetcher)
+    // 抖音与小红书未登录时拿不到正文：服务端返回登录墙 / 风控页，而通用路径会把
+    // 那个外壳当正文静默入库。用户在设置里登录后，抓取带上 App 自有会话的 Cookie
+    // （隔离 WebKit 分区，不是系统浏览器的），才真去取正文；没登录则给出明确出口。
+    let douyinAdapter = DouyinSourceAdapter(
+      fetcher: manualResourceFetcher,
+      resources: manualResourceFetcher,
+      cookieHeader: { await SiteSessionController.douyin.cookieHeader() }
+    )
+    let xiaohongshuAdapter = XiaohongshuSourceAdapter(
+      fetcher: manualResourceFetcher,
+      resources: manualResourceFetcher,
+      cookieHeader: { await SiteSessionController.xiaohongshu.cookieHeader() }
+    )
     // Douyin is registered first so short links never fall into the generic HTML path.
     let historyModel = HistoryViewModel(
       imageCache: imageCache,
@@ -895,7 +907,7 @@ enum BrowserReceiverState: Sendable, Equatable {
     let manualLink = ManualLinkViewModel(
       captureService: .init(
         fetcher: manualResourceFetcher,
-        sourceAdapters: [douyinAdapter, githubAdapter]
+        sourceAdapters: [douyinAdapter, xiaohongshuAdapter, githubAdapter]
       ),
       imageCache: imageCache,
       imageResources: manualResourceFetcher,

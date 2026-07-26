@@ -17,6 +17,9 @@ final class SiteSessionController: ObservableObject {
   /// 高清播放地址。其余平台的 profile 在有消费者之前不建实例，避免设置页出现
   /// 点了不产生任何效果的登录入口。
   static let bilibili = SiteSessionController(profile: .bilibili)
+  /// 这两个的消费端是手动链接抓取：未登录时服务端只返回登录墙 / 风控页。
+  static let douyin = SiteSessionController(profile: .douyin)
+  static let xiaohongshu = SiteSessionController(profile: .xiaohongshu)
 
   let profile: SiteSessionProfile
 

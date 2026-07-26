@@ -71,15 +71,15 @@ final class DouyinSourceAdapterTests: XCTestCase {
 
   func testParsesSSRPlayAddr() async throws {
     let fetcher = DouyinFixtureFetcher()
-    fetcher.htmlByHostPath["www.douyin.com/video/2"] = """
+    fetcher.htmlByHostPath["www.douyin.com/video/7000000000000000002"] = """
       <html><body>
       <script>
-      window._ROUTER_DATA = {"loaderData":{"video":{"play_addr":{"url_list":["https://cdn.example.test/ssr.mp4"]},"desc":"SSR标题","author":{"nickname":"作者甲"},"duration":15000}}};
+      window._ROUTER_DATA = {"loaderData":{"video":{"awemeId":"7000000000000000002","play_addr":{"url_list":["https://cdn.example.test/ssr.mp4"]},"desc":"SSR标题","author":{"nickname":"作者甲"},"duration":15000}}};
       </script>
       </body></html>
       """
     let adapter = DouyinSourceAdapter(fetcher: fetcher)
-    let document = try await adapter.capture(url: URL(string: "https://www.douyin.com/video/2")!)
+    let document = try await adapter.capture(url: URL(string: "https://www.douyin.com/video/7000000000000000002")!)
     XCTAssertEqual(document.media?.videoURL, "https://cdn.example.test/ssr.mp4")
     XCTAssertEqual(document.media?.author, "作者甲")
     XCTAssertEqual(document.media?.durationSeconds, 15.0)
@@ -146,5 +146,49 @@ final class LocalMediaStoreTests: XCTestCase {
     mov.append(contentsOf: [0x00, 0x00, 0x00, 0x00])
     let ext = try LocalMediaStore.validatedContainer(body: mov, contentType: "video/quicktime")
     XCTAssertEqual(ext, "mov")
+  }
+}
+
+extension DouyinSourceAdapterTests {
+  func testMetadataIsAnchoredToTheRequestedVideoNotThePageShell() async throws {
+    // 登录后的抖音页外壳里到处是 `"desc"` / `"nickname"`：推荐流作者、按钮文案、
+    // 当前登录用户资料。不锚定到 URL 里的视频 id 就会抓到它们——真机实测抓到过
+    // 标题「PC Tab」（按钮文案）和推荐位博主的昵称。两个都长得像真数据，存进库
+    // 看不出错，比抓不到严重得多。
+    let fetcher = DouyinFixtureFetcher()
+    fetcher.htmlByHostPath["www.douyin.com/video/7562143889449585970"] = """
+      <html><body><script>
+      window.__SHELL__ = {"tab":{"desc":"PC Tab"},"feed":[{"author":{"nickname":"推荐位博主"},"desc":"别人的视频"}]};
+      window._ROUTER_DATA = {"loaderData":{"video":{"awemeId":"7562143889449585970","play_addr":{"url_list":["https://cdn.example.test/anchored.mp4"]},"desc":"这条视频真正的标题","author":{"nickname":"真正的作者"},"duration":9000}}};
+      </script></body></html>
+      """
+    let adapter = DouyinSourceAdapter(fetcher: fetcher)
+    let document = try await adapter.capture(
+      url: URL(string: "https://www.douyin.com/video/7562143889449585970")!)
+    XCTAssertTrue(document.text.contains("这条视频真正的标题"), "实际正文：\(document.text)")
+    XCTAssertFalse(document.text.contains("PC Tab"))
+    XCTAssertEqual(document.media?.author, "真正的作者")
+  }
+
+  func testUnanchorableShellDoesNotInventMetadata() async {
+    // 页面里没有这条视频的数据时（客户端渲染的登录页就是这样），绝不能从外壳里
+    // 凑一份看着像真的元数据出来。
+    let fetcher = DouyinFixtureFetcher()
+    fetcher.htmlByHostPath["www.douyin.com/video/7562143889449585970"] = """
+      <html><body><script>
+      window.__SHELL__ = {"tab":{"desc":"PC Tab"},"feed":[{"author":{"nickname":"推荐位博主"}}],"player":{"play_addr":{"url_list":["https://cdn.example.test/unrelated.mp4"]}}};
+      </script></body></html>
+      """
+    let adapter = DouyinSourceAdapter(fetcher: fetcher)
+    do {
+      let document = try await adapter.capture(
+        url: URL(string: "https://www.douyin.com/video/7562143889449585970")!)
+      XCTAssertFalse(document.text.contains("PC Tab"), "外壳文案不该成为标题：\(document.text)")
+      XCTAssertNotEqual(document.media?.author, "推荐位博主", "推荐位博主不该成为作者")
+    } catch let error as ManualLinkError {
+      XCTAssertEqual(error, .extensionCaptureRequired)
+    } catch {
+      XCTFail("应当抛 ManualLinkError，实际是 \(error)")
+    }
   }
 }

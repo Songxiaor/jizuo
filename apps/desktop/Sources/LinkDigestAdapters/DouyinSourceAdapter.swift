@@ -10,10 +10,33 @@ import LinkDigestCore
 /// - On captcha / empty SSR, surfaces a fixed guide to use the browser extension.
 public final class DouyinSourceAdapter: SourceAdapting, @unchecked Sendable {
   private let fetcher: any WebPageFetcher
+  private let sessionFetcher: SessionAwareHTMLFetcher?
   private let now: @Sendable () -> Date
 
   public init(fetcher: any WebPageFetcher, now: @escaping @Sendable () -> Date = Date.init) {
     self.fetcher = fetcher
+    self.sessionFetcher = nil
+    self.now = now
+  }
+
+  /// 带 App 自有会话的构造：用户在设置里登录过抖音时，抓取会带上那份 Cookie，
+  /// 于是能拿到未登录看不到的正文。没登录时 `SessionAwareHTMLFetcher` 原样退回
+  /// 无 Cookie 路径，行为与旧构造完全一致。
+  public init(
+    fetcher: any WebPageFetcher,
+    resources: any SafeResourceFetching,
+    cookieHeader: @escaping @Sendable () async -> String?,
+    now: @escaping @Sendable () -> Date = Date.init
+  ) {
+    self.fetcher = fetcher
+    self.sessionFetcher = SessionAwareHTMLFetcher(
+      plain: fetcher,
+      resources: resources,
+      cookieHeader: cookieHeader,
+      // Cookie 绝不能跟着跳到站外，所以带会话的请求把跳转收窄到抖音自己的域。
+      allowsRedirectTarget: { DouyinURL.matchesSessionHost($0) },
+      referer: "https://www.douyin.com/"
+    )
     self.now = now
   }
 
@@ -25,7 +48,12 @@ public final class DouyinSourceAdapter: SourceAdapting, @unchecked Sendable {
     guard DouyinURL.matches(url) else { throw ManualLinkError.invalidURL }
     let page: WebPageFetchResult
     do {
-      page = try await fetcher.fetch(url: url)
+      // `??` 的右侧是 autoclosure，装不下 async 调用，只能显式分支。
+      if let sessionFetcher {
+        page = try await sessionFetcher.fetch(url: url)
+      } else {
+        page = try await fetcher.fetch(url: url)
+      }
     } catch let error as ManualLinkError {
       throw error
     } catch is CancellationError {
@@ -83,6 +111,19 @@ public enum DouyinURL {
     if host == "douyin.com" || host.hasSuffix(".douyin.com") { return true }
     if host == "iesdouyin.com" || host.hasSuffix(".iesdouyin.com") { return true }
     return false
+  }
+
+  /// 带会话的请求允许跳到哪些 host。
+  ///
+  /// 比 `matches` 严：`matches` 决定「这条链接归抖音适配器管」，可以宽松；
+  /// 这个决定「Cookie 能跟着跳到哪」，宽一格就等于把用户的登录态送去别的域。
+  /// 短链 `v.douyin.com` 会 302 到主站，所以两者都要在内。
+  public static func matchesSessionHost(_ url: URL) -> Bool {
+    guard url.scheme?.lowercased() == "https",
+          let host = PublicWebURLPolicy.normalizedHost(url.host ?? "")
+    else { return false }
+    let allowed = ["douyin.com", "iesdouyin.com"]
+    return allowed.contains { host == $0 || host.hasSuffix(".\($0)") }
   }
 
   /// Concrete video id from path `/video/{id}` or query `modal_id` / `aweme_id`
@@ -182,11 +223,13 @@ public enum DouyinPageParser {
       if !lines.isEmpty { lines.append("") }
       lines.append(description)
     }
-    let joined = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-    if joined.isEmpty {
-      return "抖音公开视频"
-    }
-    return joined
+    // 全空时返回空串，不再兜底成「抖音公开视频」。
+    //
+    // 那个兜底会让调用方的 `guard !text.isEmpty` 永远拦不住：什么都没抓到时照样
+    // 入库一条只有占位文字的记录。2026-07-27 真机实测就是这样——锚定挡住了假
+    // 元数据之后，仍然存下一条无标题无正文的空壳。抓不到就该走「请用扩展」，
+    // 让人知道下一步做什么。
+    return lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   // MARK: - Internals
@@ -298,10 +341,22 @@ public enum DouyinPageParser {
       ?? firstMatch("\"origin_cover\"\\s*:\\s*\\{[^\\}]*\"url_list\"\\s*:\\s*\\[\\s*\"(https:[^\"]+)\"", in: normalized)
       ?? firstMatch("\"coverUrl\"\\s*:\\s*\"(https:[^\"]+)\"", in: normalized)
     let coverURL = coverRaw.flatMap { URL(string: $0) }
-    let title = firstMatch("\"desc\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", in: normalized).map(unescapeJSON)
-      ?? firstMatch("\"title\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", in: normalized).map(unescapeJSON)
-    let author = firstMatch("\"nickname\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", in: normalized).map(unescapeJSON)
-      ?? firstMatch("\"author\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", in: normalized).map(unescapeJSON)
+    // 锚定到这条视频的 id 附近再取。
+    //
+    // 页面外壳里到处都是 `"desc"` / `"nickname"`：推荐流的作者、按钮文案、当前
+    // 登录用户的资料。不锚定就会抓到它们——2026-07-27 真机实测抓到过标题
+    // 「PC Tab」（一个按钮的文案）和推荐位博主的昵称。两个都长得像真数据，
+    // 存进库谁也看不出错，这比抓不到严重得多。
+    //
+    // 先在 id 周围的窗口里找；找不到就返回 nil，让调用方回落到「请用扩展」。
+    // 宁可诚实失败，也不产出一条看不出错的假记录。
+    let scoped = DouyinURL.awemeID(from: pageURL).flatMap { windowAround(id: $0, in: normalized) }
+    let title = scoped.flatMap {
+      firstNonEmptyMatch("\"desc\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", in: $0).map(unescapeJSON)
+    }
+    let author = scoped.flatMap {
+      firstNonEmptyMatch("\"nickname\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", in: $0).map(unescapeJSON)
+    }
     let duration: Double?
     if let ms = firstMatch("\"duration\"\\s*:\\s*(\\d+)", in: normalized), let value = Double(ms) {
       // Douyin duration is often milliseconds when > 1000.
@@ -359,6 +414,38 @@ public enum DouyinPageParser {
           let capture = Range(match.range(at: 1), in: value)
     else { return nil }
     return String(value[capture])
+  }
+
+  /// 首个**非空**捕获。
+  ///
+  /// SSR JSON 是个几百 KB 的大 blob，`"desc"` / `"nickname"` 这种通用键会在很多
+  /// 不相关的对象里出现。`firstMatch` 取到的第一个常常是 `"desc":""`——于是标题
+  /// 变成空串，入库一条「无标题」记录，而抓取本身报成功。2026-07-27 真机实测就是
+  /// 这个现象：作者拿到了（`nickname` 恰好第一个就有值），标题没拿到。
+  /// 视频 id 周围的一段文本。
+  ///
+  /// SSR blob 里同名键遍地都是，只有挨着这条视频 id 的那批才属于它。窗口取
+  /// ±6000 字符：抖音的 aweme 对象实测在几千字量级，太窄会漏掉同一对象里的
+  /// 字段，太宽就退化成全文搜索、又抓到邻居的数据。id 出现多次时取第一次——
+  /// 第一次通常是详情对象，后面的是「相关推荐」里的回指。
+  private static func windowAround(id: String, in value: String, radius: Int = 6_000) -> String? {
+    guard let hit = value.range(of: id) else { return nil }
+    let lower = value.index(hit.lowerBound, offsetBy: -radius, limitedBy: value.startIndex) ?? value.startIndex
+    let upper = value.index(hit.upperBound, offsetBy: radius, limitedBy: value.endIndex) ?? value.endIndex
+    return String(value[lower..<upper])
+  }
+
+  /// 注意不能借用 `allMatches`：那个函数返回的是**整段匹配**（含键名和引号），
+  /// 是它既有调用方依赖的语义。这里要的是捕获组 1。
+  private static func firstNonEmptyMatch(_ pattern: String, in value: String) -> String? {
+    guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { return nil }
+    let range = NSRange(value.startIndex..., in: value)
+    for match in expression.matches(in: value, range: range) {
+      guard match.numberOfRanges > 1, let capture = Range(match.range(at: 1), in: value) else { continue }
+      let text = String(value[capture])
+      if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
+    }
+    return nil
   }
 
   private static func allMatches(_ pattern: String, in value: String) -> [String] {
