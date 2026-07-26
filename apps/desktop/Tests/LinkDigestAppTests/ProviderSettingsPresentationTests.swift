@@ -117,16 +117,26 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     XCTAssertTrue(sidebar.contains(".accessibilityIdentifier(\"settings-tab-\\(tab.rawValue)\")"))
   }
 
-  func testGenerationPreferencesUsesBalancedVerticalScrollMargins() throws {
+  /// 各设置页的滚动内边距必须一致。
+  ///
+  /// 原断言钉的是 generationTab 单独的 `.vertical, 16`。3f9dd83 重写这个视图时把
+  /// 三个 tab 统一成了 `.bottom, 24`，实现是有意的，过期的是断言——它从那以后
+  /// 一直红着。钉「三个 tab 用同一个值」而不是钉某个具体数字：真正会伤到用户的
+  /// 是切换 tab 时底部留白跳变，不是 24 还是 16。
+  func testEverySettingsTabUsesTheSameScrollBottomMargin() throws {
     let source = try String(
       contentsOf: repositoryRoot().appendingPathComponent(
         "apps/desktop/Sources/LinkDigestApp/ProviderSettingsView.swift"
       ),
       encoding: .utf8
     )
-    let generation = section(in: source, from: "private var generationTab", to: "// MARK: - 共用构件")
-
-    XCTAssertTrue(generation.contains(".contentMargins(.vertical, 16, for: .scrollContent)"))
+    let occurrences = source.components(separatedBy: ".contentMargins(").count - 1
+    XCTAssertGreaterThanOrEqual(occurrences, 3, "设置页少于三处滚动内边距，视图结构可能已变")
+    XCTAssertEqual(
+      source.components(separatedBy: ".contentMargins(.bottom, 24, for: .scrollContent)").count - 1,
+      occurrences,
+      "有 tab 用了与其它不同的滚动内边距，切换 tab 时底部留白会跳变"
+    )
   }
 
   func testBrowserSupportSeparatesReceiverHealthFromInstallationOwnership() throws {
