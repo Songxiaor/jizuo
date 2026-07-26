@@ -112,12 +112,18 @@ struct BrowserSupportSettingsView: View {
 
   private var receiverStatusRow: some View {
     HStack(alignment: .top, spacing: 12) {
-      Image(systemName: receiverSymbol)
-        .font(.title3.weight(.semibold))
-        .foregroundStyle(receiverColor)
-        .frame(width: 28, height: 28)
-        .background(receiverColor.opacity(0.12), in: Circle())
-      VStack(alignment: .leading, spacing: 3) {
+      // 与主界面同款「图标瓦片 + 标题 + 副标题」行对齐（HistoryContentView 的
+      // 能力卡片头）：圆角矩形 34×34，不是圆形 28×28。主界面全文没有用圆形做过
+      // 图标底。
+      ZStack {
+        RoundedRectangle(cornerRadius: 8, style: .continuous)
+          .fill(receiverColor.opacity(0.12))
+        Image(systemName: receiverSymbol)
+          .font(.title3.weight(.semibold))
+          .foregroundStyle(receiverColor)
+      }
+      .frame(width: 34, height: 34)
+      VStack(alignment: .leading, spacing: 2) {
         Text(receiverTitle).font(.headline)
         Text(receiverDetail)
           .font(.caption)
@@ -129,7 +135,7 @@ struct BrowserSupportSettingsView: View {
         .foregroundStyle(receiverColor)
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
-        .background(receiverColor.opacity(0.10), in: Capsule())
+        .background(receiverColor.opacity(0.12), in: Capsule())
     }
     .padding(.vertical, 4)
     .accessibilityElement(children: .combine)
@@ -142,7 +148,7 @@ struct BrowserSupportSettingsView: View {
       Image(systemName: "globe")
         .foregroundStyle(.secondary)
         .frame(width: 24)
-      VStack(alignment: .leading, spacing: 3) {
+      VStack(alignment: .leading, spacing: 2) {
         Text(row.title).font(.headline)
         Text(row.detail).font(.caption).foregroundStyle(.secondary)
         Label(statusText(status.state), systemImage: statusSymbol(status.state))

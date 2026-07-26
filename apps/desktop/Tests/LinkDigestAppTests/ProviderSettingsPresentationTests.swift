@@ -191,4 +191,46 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     let afterStart = source.range(of: start).map { source[$0.lowerBound...] } ?? Substring()
     return afterStart.range(of: end).map { String(afterStart[..<$0.lowerBound]) } ?? String(afterStart)
   }
+  /// 设置窗口必须与主界面用同一套主题判据。
+  ///
+  /// 原来设置窗口判的是 `== .paper`（只有浅色主题接管），而主界面判的是
+  /// `theme.isNative`（浅色和深色都接管）。后果：深色主题下设置窗口一半是令牌
+  /// 画布、一半是系统灰——这是「设置页和主界面不像一家」最主要的来源，而且它
+  /// 不报错、不崩溃，只有切到深色主题去看设置页才发现。
+  func testSettingsWindowUsesTheSameThemeGateAsTheMainWindow() throws {
+    let source = try String(
+      contentsOf: repositoryRoot().appendingPathComponent(
+        "apps/desktop/Sources/LinkDigestApp/ProviderSettingsView.swift"),
+      encoding: .utf8)
+
+    // 主题接管相关的判据一律走 isNativeTheme，不能再用 isPaperTheme。
+    for gate in [
+      ".scrollContentBackground(isPaperTheme",
+      ".background(isPaperTheme",
+      ".toolbarBackground(isPaperTheme",
+    ] {
+      XCTAssertFalse(
+        source.contains(gate),
+        "\(gate) 用的是浅色专属判据，深色主题下设置窗口会与主界面脱节")
+    }
+    XCTAssertTrue(
+      source.contains("private var isNativeTheme: Bool { settingsTheme.isNative }"),
+      "设置窗口应当复用主界面的 isNative 判据")
+
+    // 工具栏复用主界面那份 modifier，而不是自己再写一套判据。
+    XCTAssertTrue(
+      source.contains("HistoryWindowToolbarThemeModifier(theme: settingsTheme)"),
+      "工具栏主题应复用主界面的 modifier，两处各写一份必然漂移")
+
+    // 容器描边必须走令牌：`.separator` 与 `.background.opacity` 都不随主题走。
+    let strokeLines = source
+      .components(separatedBy: "\n")
+      .filter { $0.contains(".stroke(") && !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+    for line in strokeLines {
+      XCTAssertFalse(
+        line.contains(".separator"),
+        "描边用了系统色而不是 settingsTheme.hairline：\(line.trimmingCharacters(in: .whitespaces))")
+    }
+  }
+
 }

@@ -954,7 +954,9 @@ struct HistoryContentView: View {
   }
 }
 
-private struct HistoryWindowToolbarThemeModifier: ViewModifier {
+/// 窗口工具栏的主题背景。主窗口与设置窗口共用，避免两处各写一份判据再各自漂移
+/// ——设置窗口原来自己写了一份且判据是 `== .paper`，深色主题下工具栏没跟上。
+struct HistoryWindowToolbarThemeModifier: ViewModifier {
   let theme: HistoryThemeTokens
 
   @ViewBuilder func body(content: Content) -> some View {

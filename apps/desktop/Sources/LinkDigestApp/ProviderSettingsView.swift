@@ -43,7 +43,15 @@ struct ProviderSettingsView: View {
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
   @AppStorage(ReadingFontPreference.storageKey) private var readingFontRaw = ReadingFontPreference.theme.rawValue
 
-  /// 只有浅色纸质主题接管设置窗口的侧栏与工具栏；系统与深色暂不动。
+  /// 设置窗口是否交还系统原生外观。
+  ///
+  /// 与主界面同一判据（`HistoryContentView` 的 `theme.isNative`）：只有「系统」
+  /// 主题用原生 material，浅色与深色都由令牌接管。原来这里判的是 `== .paper`，
+  /// 于是深色主题下设置窗口一半是令牌画布 `#1C1C1E`、一半是系统灰——主界面已经
+  /// 全深色了，设置窗口却没跟上，这正是「设置页和主界面不像一家」的主要来源。
+  private var isNativeTheme: Bool { settingsTheme.isNative }
+
+  /// 仅用于判断是否启用 Claude 风格阅读排版——那确实只属于浅色纸质主题。
   private var isPaperTheme: Bool {
     AppearanceTheme(rawValue: appearanceThemeRaw) == .paper
   }
@@ -51,7 +59,8 @@ struct ProviderSettingsView: View {
   var body: some View {
     NavigationSplitView {
       Group {
-        if isPaperTheme {
+        // 与主界面同判据：只有「系统」主题交还原生 List，浅色和深色都用自绘侧栏。
+        if !isNativeTheme {
           paperSidebar
         } else {
           List(selection: $selectedTab) {
@@ -66,7 +75,7 @@ struct ProviderSettingsView: View {
       }
       .safeAreaInset(edge: .top, spacing: 0) {
         VStack(alignment: .leading, spacing: 4) {
-          Text("LinkDigest").font(.title2.weight(.bold))
+          Text("LinkDigest").font(.title2.weight(.semibold))
           Text("设置").font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -81,23 +90,23 @@ struct ProviderSettingsView: View {
         case .appearance: appearanceTab
         case .mediaStorage:
           MediaStorageSettingsView(model: mediaStorage)
-            .scrollContentBackground(isPaperTheme ? .hidden : .automatic)
-            .background(isPaperTheme ? settingsTheme.canvas : Color.clear)
+            .scrollContentBackground(isNativeTheme ? .automatic : .hidden)
+            .background(isNativeTheme ? Color.clear : settingsTheme.canvas)
         case .siteLogin:
           SiteLoginSettingsView(mediaStorage: mediaStorage)
-            .scrollContentBackground(isPaperTheme ? .hidden : .automatic)
-            .background(isPaperTheme ? settingsTheme.canvas : Color.clear)
+            .scrollContentBackground(isNativeTheme ? .automatic : .hidden)
+            .background(isNativeTheme ? Color.clear : settingsTheme.canvas)
         case .browserSupport:
           BrowserSupportSettingsView(model: browserSupport, appModel: appModel)
-            .scrollContentBackground(isPaperTheme ? .hidden : .automatic)
-            .background(isPaperTheme ? settingsTheme.canvas : Color.clear)
+            .scrollContentBackground(isNativeTheme ? .automatic : .hidden)
+            .background(isNativeTheme ? Color.clear : settingsTheme.canvas)
         }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .navigationTitle(selectedTab.title)
     }
-    .toolbarBackground(isPaperTheme ? settingsTheme.canvas : Color.clear, for: .windowToolbar)
-    .toolbarBackground(isPaperTheme ? .visible : .automatic, for: .windowToolbar)
+    // 复用主界面那套工具栏主题 modifier，避免两处各写一份判据再各自漂移。
+    .modifier(HistoryWindowToolbarThemeModifier(theme: settingsTheme))
     .frame(
       minWidth: 780,
       idealWidth: 900,
@@ -218,7 +227,7 @@ struct ProviderSettingsView: View {
     )
 
     LabeledContent("图片文字") {
-      VStack(alignment: .trailing, spacing: 1) {
+      VStack(alignment: .trailing, spacing: 2) {
         Text("Apple Vision").fontWeight(.medium)
         Text("本机 · 离线").font(.caption).foregroundStyle(.secondary)
       }
@@ -236,7 +245,7 @@ struct ProviderSettingsView: View {
         activeAssignmentPicker = kind
       } label: {
         HStack(spacing: 8) {
-          VStack(alignment: .trailing, spacing: 1) {
+          VStack(alignment: .trailing, spacing: 2) {
             Text(assignmentDisplayName(kind: kind, entry: selectedEntry))
               .fontWeight(.medium)
               .foregroundStyle(.primary)
@@ -371,7 +380,7 @@ struct ProviderSettingsView: View {
       HStack(spacing: 10) {
         VStack(alignment: .leading, spacing: 2) {
           Text(title)
-            .font(.body.weight(.medium))
+            .font(.headline)
             .foregroundStyle(.primary)
           Text(detail)
             .font(.caption.monospaced())
@@ -408,7 +417,7 @@ struct ProviderSettingsView: View {
     HStack(spacing: 10) {
       providerIcon(entry.preset)
       VStack(alignment: .leading, spacing: 2) {
-        Text(entry.displayName).font(.body.weight(.medium))
+        Text(entry.displayName).font(.headline)
         Text("\(entry.title) · \(entry.modelName)").font(.caption).foregroundStyle(.secondary)
       }
       Spacer(minLength: 12)
@@ -552,8 +561,14 @@ struct ProviderSettingsView: View {
             }
           }
           .frame(minHeight: 120, maxHeight: 260)
-          .background(.background.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
-          .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator))
+          // 与主界面的滚动容器同一套令牌（HistoryContentView 的转写编辑器）：
+          // `.background.opacity(0.55)` 在浅色/深色主题下会露出半透明白框，
+          // `.separator` 也是系统色，两者都不随主题走。
+          .background(
+            settingsTheme.isNative ? Color(nsColor: .textBackgroundColor) : settingsTheme.listPane,
+            in: RoundedRectangle(cornerRadius: 8)
+          )
+          .overlay(RoundedRectangle(cornerRadius: 8).stroke(settingsTheme.hairline, lineWidth: 1))
           Text("已选择 \(model.selectedCatalogModelCount) 个模型")
             .font(.caption)
             .foregroundStyle(model.selectedCatalogModelCount == 0 ? .secondary : Color.accentColor)
@@ -640,7 +655,7 @@ struct ProviderSettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
           HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
-              Text("主题").font(.body.weight(.semibold))
+              Text("主题").font(.headline)
               Text("选择 LinkDigest 界面使用的颜色模式。系统跟随 macOS 的原生玻璃质感。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -664,7 +679,7 @@ struct ProviderSettingsView: View {
         VStack(alignment: .leading, spacing: 10) {
           HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 4) {
-              Text("阅读字体").font(.body.weight(.semibold))
+              Text("阅读字体").font(.headline)
               Text("只作用于文章阅读区；界面控件保持系统字体，代码块保持等宽。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -702,8 +717,12 @@ struct ProviderSettingsView: View {
       Section {
         TextEditor(text: $model.summaryPrompt)
           .font(.system(size: 12))
+          .scrollContentBackground(.hidden)
           .frame(minHeight: 120)
-          .overlay(RoundedRectangle(cornerRadius: 6).stroke(.separator))
+          .padding(10)
+          // 圆角 6 在主界面只用于侧栏选中药丸；描边容器一律 8 起。
+          .background(settingsTheme.isNative ? Color(nsColor: .textBackgroundColor) : settingsTheme.listPane)
+          .overlay(RoundedRectangle(cornerRadius: 8).stroke(settingsTheme.hairline, lineWidth: 1))
           .accessibilityIdentifier("summary-prompt")
         HStack {
           Spacer()
@@ -825,7 +844,7 @@ struct ProviderSettingsView: View {
       providerIcon(preset)
       VStack(alignment: .leading, spacing: 2) {
         Text(preset.displayName)
-          .font(.body.weight(.medium))
+          .font(.headline)
           .fixedSize(horizontal: false, vertical: true)
         Text(preset.supportsOnlineTranscription ? "支持在线音频转写" : "OpenAI-compatible")
           .font(.caption).foregroundStyle(.secondary)
@@ -846,11 +865,16 @@ struct ProviderSettingsView: View {
         .interpolation(.high)
         .frame(width: 16, height: 16)
     } else {
+      // 与主界面的平台图标兜底完全同款（HistoryContentView 的 platformIcon）：
+      // 同为 16×16 首字母块，那边用圆角矩形 + 9pt，这里原来是圆形 + 10pt。
       Text(ProviderIconCatalog.fallbackInitial(for: preset))
-        .font(.caption.weight(.bold))
+        .font(.system(size: 9, weight: .bold))
         .foregroundStyle(.white)
         .frame(width: 16, height: 16)
-        .background(ProviderIconCatalog.fallbackColor(for: preset), in: Circle())
+        .background(
+          ProviderIconCatalog.fallbackColor(for: preset),
+          in: RoundedRectangle(cornerRadius: 4, style: .continuous)
+        )
     }
   }
 
