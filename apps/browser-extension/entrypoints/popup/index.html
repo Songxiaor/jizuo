@@ -123,7 +123,12 @@
     <h1 id="status">读取当前页面…</h1>
     <div id="meta"></div>
   </div>
-  <button id="send">发送到桌面 App</button>
+  <!--
+    初始必须 disabled：main.ts 用顶层 await 等预览返回，`send.onclick` 在那之后才
+    挂上。抖音的 session detail 最长 5s、YouTube 还要切字幕轨，这几秒里按钮是可点的
+    但没有任何监听者——用户点下去不变灰、不报错、不发送，只能以为是自己没点中。
+  -->
+  <button id="send" disabled>准备中…</button>
   <button id="sync-bookmarks" hidden>同步收藏夹到桌面 App</button>
   <pre id="error"></pre>
   <details class="diag" id="diag" hidden>

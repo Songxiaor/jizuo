@@ -798,15 +798,15 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
   const fromTab = detectDouyinAwemeIdFromURL(tabURL);
   const awemeId = meta?.awemeId || fromTab?.awemeId || "";
   if (!awemeId) {
-    const text =
-      "未识别到单条抖音视频。请打开具体视频页，或在精选里点开弹层后再发送。";
-    return { page: {
-      title: "抖音",
-      url: tabURL,
-      text,
-      characterCount: [...text].length,
-      method: "rendered_dom",
-    } };
+    // 抛错，不要把这句提示当正文返回。
+    //
+    // 原来返回的是一个 text 为「未识别到单条抖音视频…」的 page：它非空，于是
+    // schema 校验全过、sendCapture 正常送出、popup 显示「✓ 已发送到 App」，
+    // 桌面按 source.url 建一条记录，正文就是这句提示。用户在抖音个人主页、搜索页、
+    // 无 modal_id 的精选页点发送，都会安静地攒出这种记录。
+    // 抓取失败必须走错误通道——popup 已经会把 CAPTURE_DOUYIN_NO_SINGLE_ITEM
+    // 翻成人话显示。
+    throw new Error("CAPTURE_DOUYIN_NO_SINGLE_ITEM");
   }
 
   const canonicalURL = `https://www.douyin.com/video/${awemeId}`;
@@ -1284,9 +1284,17 @@ export async function syncXBookmarks(tabId: number): Promise<BookmarksSyncResult
   const tab = await browser.tabs.get(tabId).catch(() => undefined);
   if (!isXBookmarksURL(tab?.url)) return { ok: false, code: "not_bookmarks" };
 
+  // 游标必须存**一批** id，不能只存一条。
+  //
+  // 采集器要求「连续遇到 stopAfterKnownStreak(=3) 条已知」才判定追上，而它内部用
+  // `seen` 保证同一 id 只计一次——已知集合里只有 1 个 id 时 knownStreak 最大到 1，
+  // 永远够不到 3。后果有两个：早停从不生效，每次同步都滚满 400 轮（约 140s），
+  // 「已同步到上次的位置」这句提示永远不出现；更糟的是收藏超过 300 条待同步时，
+  // 每次都只重复采集最上面同一批 300 条，更早的收藏永远同步不到。
   const stored = await browser.storage.local.get(BOOKMARKS_CURSOR_KEY);
-  const lastSynced = stored[BOOKMARKS_CURSOR_KEY];
-  const knownIDs = isValidTweetID(lastSynced) ? [lastSynced] : [];
+  const rawCursor = stored[BOOKMARKS_CURSOR_KEY];
+  const knownIDs = (Array.isArray(rawCursor) ? rawCursor : [rawCursor])
+    .filter((id): id is string => isValidTweetID(id));
 
   let collected: CollectResult;
   try {
@@ -1320,9 +1328,13 @@ export async function syncXBookmarks(tabId: number): Promise<BookmarksSyncResult
   const outcome = parseBookmarksAccepted(response);
   if (!outcome) return { ok: false, code: "native_error" };
 
-  // 收藏夹按加入时间倒序，第一条即最新——记为下次增量的游标。
-  const newest = collected.ids[0];
-  if (newest) await browser.storage.local.set({ [BOOKMARKS_CURSOR_KEY]: newest });
+  // 收藏夹按加入时间倒序。存最新的一小批而不是一条：连续命中 3 条才算追上，
+  // 只存一条的话那个判据永远不成立（见上面读取处的说明）。存 8 条留出余量——
+  // 用户在两次同步之间取消收藏了其中几条时，剩下的仍足以凑够连续 3 条。
+  const nextCursor = collected.ids.slice(0, 8);
+  if (nextCursor.length > 0) {
+    await browser.storage.local.set({ [BOOKMARKS_CURSOR_KEY]: nextCursor });
+  }
 
   return { ok: true, outcome, collected: collected.ids.length, reachedKnown: collected.reachedKnown };
 }

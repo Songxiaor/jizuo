@@ -1168,11 +1168,19 @@ final class HistoryViewModel: ObservableObject {
   }
 
   private static func tidyTokenSummary(_ outcome: TranscriptTidyOutcome) -> String? {
-    guard let total = outcome.totalTokens else { return nil }
-    if let prompt = outcome.promptTokens, let completion = outcome.completionTokens {
-      return "\(total) tokens（输入 \(prompt) / 输出 \(completion)）"
+    // 部分分片失败必须说出来。长稿切片整理时中间几片撞 429 或超时，那几片会以
+    // **原文**回填——不说的话用户看到的是「整理完成 + N tokens」，而实际可能有
+    // 大半内容根本没整理过，且这条整理稿已经顶替了阅读区的「原文」。
+    let partial = outcome.isPartial
+      ? "；\(outcome.chunkCount) 段中有 \(outcome.failedChunkCount) 段未能整理，已保留原文，可重试"
+      : ""
+    guard let total = outcome.totalTokens else {
+      return partial.isEmpty ? nil : String(partial.dropFirst())
     }
-    return "\(total) tokens"
+    if let prompt = outcome.promptTokens, let completion = outcome.completionTokens {
+      return "\(total) tokens（输入 \(prompt) / 输出 \(completion)）\(partial)"
+    }
+    return "\(total) tokens\(partial)"
   }
 
   /// 全文 token 总和 = Runs（总结/翻译）+ 台账（整理/脑图）的累计花费。
@@ -1545,8 +1553,10 @@ final class HistoryViewModel: ObservableObject {
         // 已落库。即使用户切走了，也必须把 .running 收掉——否则回到这条时状态
         // 仍是「生成中」，而 UI 会因此既不显示结果也不显示入口。
         if self.mindMapTaskID == taskID { self.mindMapState = .completed }
-        guard self.selectedTaskID == taskID else { return }
-        self.mindMapRecord = record
+        // 记账与打标签都属于「这条记录的事实」，与此刻选中谁无关，必须排在选中态
+        // 守卫**之前**。原来排在后面：切走条目时 token 照花、脑图照存，台账却少记
+        // 这一笔——而「全文 token 总和」只累加 runs 和台账，不读 mindMapRecord 上的
+        // token 列，于是那笔开销永久消失。标签同理，会漏掉本该加上的主题标签。
         await self.recordTokenUsage(
           taskID: taskID, operation: "mind_map",
           promptTokens: outcome.promptTokens, completionTokens: outcome.completionTokens,
@@ -1558,6 +1568,8 @@ final class HistoryViewModel: ObservableObject {
           guard !topicTags.isEmpty else { return false }
           return (try? history.addTags(topicTags, to: taskID)) != nil
         }.value
+        guard self.selectedTaskID == taskID else { return }
+        self.mindMapRecord = record
         guard self.selectedTaskID == taskID else { return }
         if tagged {
           self.loadDetailForSelection()
@@ -2589,22 +2601,38 @@ final class HistoryViewModel: ObservableObject {
   /// 版本、UTC 捕获时间等内部元数据。优先原文 snapshot（非转写），回退最新。
   func composeExportMarkdown() -> (baseFilename: String, markdown: String)? {
     guard let detail else { return nil }
+    // 正文取最新快照（含转写与整理稿），frontmatter 取最新的**来源**快照。
+    //
+    // 原来正文也排除转写稿，理由写的是「优先原文 snapshot」。但视频条目的「原文」
+    // 就是几十字的 caption——抓一条视频、转写、整理，然后导出 Markdown/纯文本/
+    // PDF/Word 或「拷贝全文」，拿到的全是那几十字，几千字转写稿一个字都不在。
+    // 而阅读区显示的是 snapshots.last（转写稿）、总结喂给模型的也是 snapshots.last，
+    // 「编辑转写」的说明更是明写「保存后总结、翻译与导出都使用校对后的文本」。
+    // 四条导出路径与 UI 承诺、阅读区、总结输入全都对不上，只有 .json 完整导出
+    // 能拿到转写内容。
+    //
+    // 作者/发布时间这类 frontmatter 仍应来自来源快照——转写稿没有这些字段，
+    // 这正是阅读区 latestSourceSnapshot 已有的区分。
     let transcriptionKind = CapturedDocument.Origin.localTranscription.rawValue
-    let snapshot = detail.snapshots.last(where: { $0.sourceKind != transcriptionKind })
-      ?? detail.snapshots.last
-    guard let snapshot else { return nil }
+    guard let snapshot = detail.snapshots.last else { return nil }
+    let sourceSnapshot = detail.snapshots.last(where: { $0.sourceKind != transcriptionKind })
+      ?? snapshot
     let note = MarkdownNoteFrontmatter.parse(snapshot.bodyText)
+    let sourceNote = MarkdownNoteFrontmatter.parse(sourceSnapshot.bodyText)
     let body = note.body.isEmpty ? snapshot.bodyText : note.body
     func nonEmpty(_ value: String?) -> String? {
       guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
       return trimmed
     }
-    let title = nonEmpty(snapshot.title)
+    // 标题与作者/发布时间取来源快照：转写稿的标题常是空的或「转写」这类占位，
+    // 作者/发布时间它根本没有。
+    let title = nonEmpty(sourceSnapshot.title)
+      ?? nonEmpty(snapshot.title)
       ?? CapturedDocumentTitle.display(nil, for: detail.task.canonicalURL)
 
     var lines: [String] = ["---", "title: \(yamlQuoted(title))", "source: \(yamlQuoted(detail.task.canonicalURL))"]
-    if let author = nonEmpty(note.author) { lines.append("author: \(yamlQuoted(author))") }
-    if let published = nonEmpty(note.published) { lines.append("published: \(yamlQuoted(published))") }
+    if let author = nonEmpty(sourceNote.author) { lines.append("author: \(yamlQuoted(author))") }
+    if let published = nonEmpty(sourceNote.published) { lines.append("published: \(yamlQuoted(published))") }
     lines.append("---")
     lines.append("")
     lines.append("# \(title)")

@@ -48,7 +48,12 @@ export function isDouyinSingleVideoURL(rawURL: string): boolean {
   try {
     const host = new URL(rawURL).hostname.toLowerCase();
     // Share short links always target one item; ID appears after redirect follow.
-    if (host === "v.douyin.com" || (host.startsWith("v.") && host.endsWith("douyin.com"))) {
+    //
+    // 两个约束缺一不可：必须是 `v.` 短链前缀（否则 `www.douyin.com/jingxuan`
+    // 这种信息流外壳也会被当成单条视频），且后缀匹配必须带点（否则
+    // `v.mydouyin.com` 会被判成自己人——仿冒站点跳过通用抓取走进抖音分支，
+    // 而 detectCapturePlatform 又把它标成 generic，平台字段与抓取分支自相矛盾）。
+    if (host === "v.douyin.com" || (host.startsWith("v.") && host.endsWith(".douyin.com"))) {
       return true;
     }
   } catch {

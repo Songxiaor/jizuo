@@ -9,6 +9,72 @@ import LinkDigestCore
 @MainActor
 final class HistoryViewModelTests: XCTestCase {
 
+  /// 导出必须拿到转写稿，而不是几十字的原始 caption。
+  ///
+  /// 视频条目一定先有一条 browser_capture 快照（caption），转写稿是之后追加的。
+  /// 原实现「优先非转写快照」于是永远命中 caption：抓一条视频 → 转写 → 导出
+  /// Markdown/纯文本/PDF/Word 或「拷贝全文」，几千字转写稿一个字都不在。而阅读区
+  /// 显示的是最新快照、总结喂给模型的也是最新快照，「编辑转写」的说明更明写
+  /// 「保存后总结、翻译与导出都使用校对后的文本」——四条导出路径与 UI 承诺、
+  /// 阅读区、总结输入全部对不上。
+  func testExportUsesTheTranscriptNotTheOriginalCaption() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-export-transcript-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+
+    let caption = "短标题党文案"
+    let accepted = try repository.acceptCapture(.init(
+      document: CapturedDocument(
+        createdAt: "2026-07-20T00:00:00Z",
+        origin: .manualLink,
+        url: "https://example.test/video-export",
+        title: "一条视频",
+        platform: "douyin",
+        method: "rendered_dom",
+        text: "---\nauthor: \"某作者\"\n---\n\n\(caption)",
+        completeness: "complete",
+        capturedAt: "2026-07-20T00:00:00Z",
+        sourceLabel: "fixture"
+      ),
+      receivedAtMilliseconds: 1
+    ))
+    let transcript = "这是完整的转写稿，内容远比 caption 长，是用户真正想导出的东西。"
+    // 转写稿走的是 begin/completeTaskTranscription，不是 acceptCapture。
+    let attempt = try repository.beginTaskTranscription(taskID: accepted.taskID, createdAtMilliseconds: 2)
+    let completion = try repository.completeTaskTranscription(.init(
+      taskID: accepted.taskID,
+      attempt: attempt,
+      document: CapturedDocument(
+        createdAt: "2026-07-20T00:01:00Z",
+        origin: .localTranscription,
+        url: "https://example.test/video-export",
+        title: "一条视频",
+        platform: "douyin",
+        method: "speech_analyzer_local",
+        text: transcript,
+        completeness: "complete",
+        capturedAt: "2026-07-20T00:01:00Z",
+        sourceLabel: "本机转写"
+      ),
+      evidence: .appleSpeechAnalyzer(localeIdentifier: "zh_CN", language: "zh", completedAtMilliseconds: 3),
+      receivedAtMilliseconds: 3
+    ))
+    guard case .accepted = completion else { return XCTFail("转写稿应当落库") }
+
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.selectedTaskID == accepted.taskID && model.detailState == .loaded }
+
+    let exported = try XCTUnwrap(model.composeExportMarkdown())
+    XCTAssertTrue(exported.markdown.contains(transcript), "导出里没有转写稿：\(exported.markdown)")
+    XCTAssertFalse(exported.markdown.contains(caption), "导出里仍是原始 caption")
+    // frontmatter 仍应来自来源快照——转写稿没有作者字段。
+    XCTAssertTrue(exported.markdown.contains("某作者"), "作者应取自来源快照")
+  }
+
   /// 在笔记里打字后 800ms 内切换条目，那段编辑不能丢。
   ///
   /// 原实现有两处会静默丢数据：切条目时 `receiveDetail` 给 `taskNoteDraft` 赋新值

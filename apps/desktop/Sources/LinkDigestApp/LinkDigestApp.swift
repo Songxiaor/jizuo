@@ -412,8 +412,17 @@ enum BrowserReceiverState: Sendable, Equatable {
 
   private func prepareHistoryCapture(_ detail: HistoryDetailProjection) -> Bool {
     guard canStartRun(from: detail), let snapshot = detail.snapshots.last else { return false }
+    // 缓存键必须带上**正文内容**，不能只看 snapshot 身份。
+    //
+    // `saveEditedSnapshotText` 走的是原地 UPDATE，snapshot id 不变。于是：对转写稿
+    // 点总结（缓存下正文 T1）→ 发现错别字，用「编辑转写」改好保存（库里变成 T2，
+    // id 不变）→ 再点总结或重新生成 → taskID 与 snapshotID 都相等，直接命中缓存，
+    // 又把 T1 发给模型。用户改的字白改了，而界面上没有任何迹象。
+    // 这直接违背「编辑转写」按钮说明里「保存后总结、翻译与导出都使用校对后的文本」
+    // 那句承诺。
     if currentCapture?.taskID == detail.task.id,
-       currentCapture?.snapshotID == snapshot.id {
+       currentCapture?.snapshotID == snapshot.id,
+       currentCapture?.document.text == snapshot.bodyText {
       return true
     }
     let formatter = ISO8601DateFormatter()

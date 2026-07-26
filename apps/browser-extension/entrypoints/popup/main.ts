@@ -145,6 +145,11 @@ if (tabId === undefined) {
     if (avail.tone === "blocked") {
       send.disabled = true;
       send.textContent = "暂不支持此平台";
+    } else {
+      // 预览成功才启用。按钮初始 disabled（见 index.html 注释）：onclick 在这段
+      // 顶层 await 之后才挂上，提前可点等于点了没反应。
+      send.textContent = "发送到桌面 App";
+      send.disabled = false;
     }
   } catch (cause) {
     status.textContent = "当前页面不可捕获";

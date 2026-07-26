@@ -14,6 +14,7 @@ const knownErrorMessages: Readonly<Record<string, string>> = {
   CAPTURE_SCHEMA_INVALID: "当前页面数据格式无效，请刷新页面后重试。",
   CAPTURE_URL_UNSUPPORTED: "当前页面地址不受支持，请打开 HTTP 或 HTTPS 页面。",
   CAPTURE_CONTENT_EMPTY: "当前页面没有可发送的内容。",
+  CAPTURE_DOUYIN_NO_SINGLE_ITEM: "没有定位到具体的抖音视频。请打开视频详情页，或在精选里点开弹层后再发送。",
   PLATFORM_NOT_SUPPORTED: "暂不支持该平台的智能抓取（小红书 / B站适配开发中）。可先在浏览器打开，或复制链接到桌面 App。",
   CAPTURE_PAYLOAD_TOO_LARGE: "当前页面内容过大，无法发送。",
   CAPTURE_COUNT_MISMATCH: "当前页面内容校验失败，请重新捕获。",

@@ -74,7 +74,9 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
       text: outputs.joined(separator: "\n\n"),
       promptTokens: promptTokens,
       completionTokens: completionTokens,
-      totalTokens: totalTokens
+      totalTokens: totalTokens,
+      failedChunkCount: failedChunkCount,
+      chunkCount: chunks.count
     )
   }
 

@@ -35,6 +35,17 @@ describe("douyin multi-source id detection (StepAudio-aligned)", () => {
     expect(detectDouyinAwemeIdFromURL("https://www.douyin.com/jingxuan")).toBeNull();
   });
 
+  it("short-link rule needs both the v. prefix and a dotted suffix", () => {
+    // 两个约束缺一不可，而且失误方向相反：
+    // 少了 `v.` 前缀 → `www.douyin.com/jingxuan` 这种信息流外壳被当成单条视频；
+    // 少了后缀的点 → `v.mydouyin.com` 被判成自己人，仿冒站点跳过通用抓取走进
+    // 抖音分支（而 detectCapturePlatform 仍标 generic，两者自相矛盾）。
+    expect(isDouyinVideoURL("https://v.douyin.com/AbCdEf/")).toBe(true);
+    expect(isDouyinVideoURL("https://v.mydouyin.com/AbCdEf/")).toBe(false);
+    expect(isDouyinVideoURL("https://v.douyin.com.evil.test/AbCdEf/")).toBe(false);
+    expect(isDouyinVideoURL("https://www.douyin.com/discover")).toBe(false);
+  });
+
   it("collects ids from script-like text with key patterns", () => {
     const text = '{"modal_id":"7635842095491632418","aweme_id":"7635842095491632418"}';
     const ids = collectIdsFromText(text, 50, "script");

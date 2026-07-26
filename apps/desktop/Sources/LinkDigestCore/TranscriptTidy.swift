@@ -17,17 +17,32 @@ public struct TranscriptTidyOutcome: Sendable, Equatable {
   public let promptTokens: Int?
   public let completionTokens: Int?
   public let totalTokens: Int?
+  /// 整理失败、以原文回填的分片数。
+  ///
+  /// 长稿会切片逐片整理，中间几片撞 429 或超时时，那几片以**原文**回填后函数
+  /// 正常返回。原来返回值里没有任何失败信号，调用方于是显示「整理完成 + N tokens」，
+  /// 而新建的整理稿里可能有 3/4 内容根本没整理过——典型的「错误被吞掉后继续，
+  /// 产出看起来正常的坏结果」。数出来交给调用方如实告知。
+  public let failedChunkCount: Int
+  /// 总分片数，用来说清「N 段里有 M 段没整理成」。
+  public let chunkCount: Int
+
+  public var isPartial: Bool { failedChunkCount > 0 }
 
   public init(
     text: String,
     promptTokens: Int? = nil,
     completionTokens: Int? = nil,
-    totalTokens: Int? = nil
+    totalTokens: Int? = nil,
+    failedChunkCount: Int = 0,
+    chunkCount: Int = 1
   ) {
     self.text = text
     self.promptTokens = promptTokens
     self.completionTokens = completionTokens
     self.totalTokens = totalTokens
+    self.failedChunkCount = failedChunkCount
+    self.chunkCount = chunkCount
   }
 }
 
