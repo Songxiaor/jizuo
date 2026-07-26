@@ -181,6 +181,11 @@ public final class OpenAICompatibleAudioTranscriber: OnlineAudioTranscribing, @u
     if host.hasSuffix("qpic.cn") || host.hasSuffix("qlogo.cn") || host.hasSuffix("qq.com") {
       return "https://mp.weixin.qq.com/"
     }
+    // 实测 `*.bilivideo.com` 无 Referer 一律 403，带站点根 Referer 即 206。
+    if host == "bilivideo.com" || host.hasSuffix(".bilivideo.com")
+      || host == "bilibili.com" || host.hasSuffix(".bilibili.com") {
+      return "https://www.bilibili.com/"
+    }
     return nil
   }
 

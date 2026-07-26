@@ -4,23 +4,74 @@ import LinkDigestCore
 
 struct BrowserSupportSettingsView: View {
   @ObservedObject var model: BrowserSupportViewModel
+  @ObservedObject var appModel: AppViewModel
+
+  private struct ConfigurationRow: Identifiable {
+    let id: String
+    let title: String
+    let detail: String
+    let browser: BrowserSupportBrowser
+  }
+
+  private let configurationRows = [
+    ConfigurationRow(
+      id: "chrome",
+      title: "Google Chrome",
+      detail: "在 Chrome 中加载扩展后即可同步",
+      browser: .chrome
+    ),
+    ConfigurationRow(
+      id: "brave",
+      title: "Brave",
+      detail: "在 Brave 中加载扩展后即可同步",
+      browser: .brave
+    ),
+    ConfigurationRow(
+      id: "edge",
+      title: "Microsoft Edge",
+      detail: "先连接到此 App，再在 Edge 加载扩展",
+      browser: .edge
+    ),
+  ]
 
   var body: some View {
     Form {
       Section {
-        ForEach(BrowserSupportBrowser.allCases) { browser in
-          browserRow(browser)
-        }
+        receiverStatusRow
       } header: {
-        Text("浏览器支持")
+        Text("App 接收服务")
       } footer: {
-        Text("LinkDigest 只管理自己的 Native Messaging manifest 与收据；不会扫描或修改其它扩展配置。日用 App Host 与测试版 Host 路径不同，因此测试时可能显示内容漂移；点“修复”会先备份，再临时切换到测试版 Host，之后可用“恢复备份”回到原状态。")
+        Text("扩展只在你点击同步时连接，不会保持在线。这里表示 App 是否已准备接收；下方配置提醒不等于传送失败。")
       }
       Section {
-        Button("在 Finder 中显示测试扩展", action: revealExtensionFiles)
+        ForEach(configurationRows) { row in
+          configurationRow(row)
+        }
+        HStack {
+          Button("重新检查") { Task { await model.load() } }
+            .disabled(model.isLoading || model.activeBrowser != nil)
+          if model.isLoading {
+            ProgressView().controlSize(.small)
+          }
+        }
+      } header: {
+        Text("浏览器配置")
+      } footer: {
+        Text("每个浏览器都需要单独加载扩展并同步一次。看到“配置已就绪”后，首次同步成功会在上方记录送达时间。")
+      }
+      Section {
+        VStack(alignment: .leading, spacing: 8) {
+          Text("首次安装扩展")
+            .font(.headline)
+          Text("1. 打开浏览器的扩展管理页\n2. 开启“开发者模式”\n3. 选择“加载已解压的扩展程序”，再选择下面打开的文件夹")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        Button("打开扩展文件夹", action: revealExtensionFiles)
           .accessibilityIdentifier("reveal-test-browser-extension")
       } footer: {
-        Text("Debug 交付包优先打开 App 相邻的 extension；源码运行时回退到本次 WXT 构建目录。")
+        Text("Chrome、Brave 和 Edge 使用同一份 Chromium 扩展。")
       }
       if let errorText = model.errorText {
         Section {
@@ -30,14 +81,15 @@ struct BrowserSupportSettingsView: View {
       }
     }
     .formStyle(.grouped)
+    .contentMargins(.bottom, 24, for: .scrollContent)
     .task { await model.load() }
     .alert(item: $model.presentation) { presentation in
       switch presentation {
       case let .confirmation(confirmation):
         Alert(
-          title: Text("修复需要先备份当前 manifest"),
-          message: Text("点击“备份并继续”后，LinkDigest 会先在同一浏览器目录创建时间戳备份，再安全接管并写入经过哈希校验的模板。修复成功后仍可恢复该备份。"),
-          primaryButton: .destructive(Text("备份并继续")) { Task { await model.confirmReplacement(confirmation) } },
+          title: Text("连接 \(confirmation.browser.displayName) 到此 App？"),
+          message: Text("LinkDigest 会保留现有连接配置的备份，再把这个浏览器切换到当前 App。不会删除浏览器数据或已加载的扩展。"),
+          primaryButton: .default(Text("连接")) { Task { await model.confirmReplacement(confirmation) } },
           secondaryButton: .cancel(Text("取消")) { model.cancelPendingReplacement() }
         )
       case let .result(result):
@@ -58,54 +110,144 @@ struct BrowserSupportSettingsView: View {
     }
   }
 
-  @ViewBuilder private func browserRow(_ browser: BrowserSupportBrowser) -> some View {
-    let status = model.status(for: browser)
-    VStack(alignment: .leading, spacing: 8) {
-      HStack {
-        Text(browser.displayName).font(.headline)
-        Spacer()
-        Text(statusText(status.state)).foregroundStyle(statusColor(status.state))
-          .accessibilityIdentifier("browser-support-status-\(browser.rawValue)")
+  private var receiverStatusRow: some View {
+    HStack(alignment: .top, spacing: 12) {
+      Image(systemName: receiverSymbol)
+        .font(.title3.weight(.semibold))
+        .foregroundStyle(receiverColor)
+        .frame(width: 28, height: 28)
+        .background(receiverColor.opacity(0.12), in: Circle())
+      VStack(alignment: .leading, spacing: 3) {
+        Text(receiverTitle).font(.headline)
+        Text(receiverDetail)
+          .font(.caption)
+          .foregroundStyle(.secondary)
       }
-      HStack(spacing: 10) {
-        Button("安装") { Task { await model.requestInstall(browser) } }
-          .disabled(!model.canInstall(browser))
-          .accessibilityIdentifier("browser-support-install-\(browser.rawValue)")
-        Button("修复") { Task { await model.requestInstall(browser) } }
-          .disabled(!model.canRepair(browser))
-          .accessibilityIdentifier("browser-support-repair-\(browser.rawValue)")
-        Button("卸载") { Task { await model.uninstall(browser) } }
-          .disabled(!model.canUninstall(browser))
-          .accessibilityIdentifier("browser-support-uninstall-\(browser.rawValue)")
-        if status.hasRecoverableBackup {
-          Button("恢复备份") { Task { await model.restore(browser) } }
-            .disabled(!model.canRestore(browser))
-            .accessibilityIdentifier("browser-support-restore-\(browser.rawValue)")
+      Spacer()
+      Text(receiverBadge)
+        .font(.caption.weight(.medium))
+        .foregroundStyle(receiverColor)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(receiverColor.opacity(0.10), in: Capsule())
+    }
+    .padding(.vertical, 4)
+    .accessibilityElement(children: .combine)
+    .accessibilityIdentifier("browser-receiver-status")
+  }
+
+  @ViewBuilder private func configurationRow(_ row: ConfigurationRow) -> some View {
+    let status = model.status(for: row.browser)
+    HStack(spacing: 12) {
+      Image(systemName: "globe")
+        .foregroundStyle(.secondary)
+        .frame(width: 24)
+      VStack(alignment: .leading, spacing: 3) {
+        Text(row.title).font(.headline)
+        Text(row.detail).font(.caption).foregroundStyle(.secondary)
+        Label(statusText(status.state), systemImage: statusSymbol(status.state))
+          .font(.caption)
+          .foregroundStyle(statusColor(status.state))
+          .accessibilityIdentifier("browser-support-status-\(row.id)")
+      }
+      Spacer(minLength: 16)
+      HStack(spacing: 8) {
+        if model.canInstall(row.browser) {
+          Button("连接到此 App") { Task { await model.requestInstall(row.browser) } }
         }
-        if model.activeBrowser == browser { ProgressView().controlSize(.small) }
+        if model.canRepair(row.browser), needsConnectionAction(status.state) {
+          Button("连接到此 App…") { Task { await model.requestInstall(row.browser) } }
+        }
+        if model.canUninstall(row.browser) {
+          Button("断开连接…") { Task { await model.uninstall(row.browser) } }
+        }
+        if model.activeBrowser == row.browser {
+          ProgressView().controlSize(.small)
+        }
       }
+      .buttonStyle(.bordered)
+      .controlSize(.small)
     }
     .padding(.vertical, 5)
+  }
+
+  private var receiverTitle: String {
+    return switch appModel.browserReceiverState {
+    case .starting: "正在启动接收服务…"
+    case .ready: "App 已准备接收"
+    case .unavailable: "App 接收服务不可用"
+    }
+  }
+
+  private var receiverDetail: String {
+    if let date = appModel.lastBrowserCaptureAt {
+      return "最近一次浏览器送达：\(date.formatted(date: .omitted, time: .standard))"
+    }
+    return switch appModel.browserReceiverState {
+    case .starting: "初始化本地接收通道"
+    case .ready: "尚未验证浏览器传送；首次同步后会显示送达时间"
+    case .unavailable: "请重新启动 App；若仍失败，再检查下方配置"
+    }
+  }
+
+  private var receiverBadge: String {
+    switch appModel.browserReceiverState {
+    case .starting: "启动中"
+    case .ready: "可接收"
+    case .unavailable: "不可用"
+    }
+  }
+
+  private var receiverSymbol: String {
+    switch appModel.browserReceiverState {
+    case .starting: "clock"
+    case .ready: "checkmark"
+    case .unavailable: "exclamationmark"
+    }
+  }
+
+  private var receiverColor: Color {
+    switch appModel.browserReceiverState {
+    case .starting: .secondary
+    case .ready: .green
+    case .unavailable: .red
+    }
+  }
+
+  private func needsConnectionAction(_ state: BrowserSupportInstallState) -> Bool {
+    switch state {
+    case .drifted, .unknownManifest: true
+    default: false
+    }
+  }
+
+  private func statusSymbol(_ state: BrowserSupportInstallState) -> String {
+    switch state {
+    case .installed, .installedAppUpdated, .currentAppUnverified: "checkmark.circle.fill"
+    case .notInstalled, .unavailable: "minus.circle"
+    case .drifted, .unknownManifest: "exclamationmark.triangle.fill"
+    case .invalidReceipt, .unavailableArtifact: "xmark.circle.fill"
+    }
   }
 
   private func statusText(_ state: BrowserSupportInstallState) -> String {
     switch state {
     case .unavailable: "未检测到浏览器"
-    case .notInstalled: "未安装"
-    case .installed: "已安装且一致"
-    case .installedAppUpdated: "已安装（App 已更新）"
-    case .drifted: "日用 Host 与测试版 Host 不同（可备份切换）"
-    case .unknownManifest: "检测到未知同名 manifest"
-    case .invalidReceipt: "LinkDigest 收据无效，未写入"
-    case .unavailableArtifact: "安装工件不可用"
+    case .notInstalled: "尚未连接"
+    case .installed, .installedAppUpdated, .currentAppUnverified: "配置已就绪"
+    case .drifted: "尚未连接到此 App"
+    case .unknownManifest: "需要连接到此 App"
+    case .invalidReceipt: "安装记录无效"
+    case .unavailableArtifact: "当前 App 缺少安装工件"
     }
   }
 
   private func statusColor(_ state: BrowserSupportInstallState) -> Color {
     switch state {
-    case .installed, .installedAppUpdated: .green
+    case .installed, .installedAppUpdated, .currentAppUnverified: .green
     case .notInstalled, .unavailable: .secondary
-    case .drifted, .unknownManifest, .invalidReceipt, .unavailableArtifact: .orange
+    case .drifted, .unknownManifest: .orange
+    case .invalidReceipt, .unavailableArtifact: .red
     }
   }
 

@@ -497,33 +497,68 @@ public actor ProviderConfigurationService {
     apiKey: String,
     allowLoopbackHTTP: Bool = false
   ) async throws -> ProviderProfile {
+    guard let profile = try await addProfiles(
+      baseURL: baseURL,
+      models: [model],
+      apiKey: apiKey,
+      allowLoopbackHTTP: allowLoopbackHTTP
+    ).first else {
+      throw ProviderConfigurationError.modelRequired
+    }
+    return profile
+  }
+
+  /// Adds several models from one verified provider catalog in a single
+  /// library mutation. They intentionally share one Keychain reference because
+  /// the endpoint and API key are the same; deletion keeps that secret until
+  /// the final profile using it is removed.
+  public func addProfiles(
+    baseURL: String,
+    models: [String],
+    apiKey: String,
+    allowLoopbackHTTP: Bool = false
+  ) async throws -> [ProviderProfile] {
+    let normalizedModels = models.reduce(into: [String]()) { result, value in
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !trimmed.isEmpty, !result.contains(trimmed) {
+        result.append(trimmed)
+      }
+    }
+    guard !normalizedModels.isEmpty else {
+      throw ProviderConfigurationError.modelRequired
+    }
     guard libraryStore != nil else {
-      return try await save(
+      guard normalizedModels.count == 1 else {
+        throw ProviderConfigurationError.profileStoreWriteFailed
+      }
+      return [try await save(
         baseURL: baseURL,
-        model: model,
+        model: normalizedModels[0],
         apiKey: apiKey,
         allowLoopbackHTTP: allowLoopbackHTTP
-      )
+      )]
     }
     let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmedKey.isEmpty else {
       throw ProviderConfigurationError.apiKeyRequired
     }
     let reference = makeSecretReference()
-    let profile = try ProviderProfile(
-      id: UUID().uuidString,
-      baseURL: baseURL,
-      model: model,
-      secretReference: reference,
-      allowLoopbackHTTP: allowLoopbackHTTP
-    )
+    let profiles = try normalizedModels.map { model in
+      try ProviderProfile(
+        id: UUID().uuidString,
+        baseURL: baseURL,
+        model: model,
+        secretReference: reference,
+        allowLoopbackHTTP: allowLoopbackHTTP
+      )
+    }
     let mutation = try beginMutation()
     defer { finishMutation(ifOwner: mutation) }
 
     var library = try await loadLibraryForMutation()
     let becomesSummary = library.summaryProfileID == nil
-    library.profiles.append(profile)
-    if becomesSummary { library.summaryProfileID = profile.id }
+    library.profiles.append(contentsOf: profiles)
+    if becomesSummary { library.summaryProfileID = profiles[0].id }
 
     do {
       try await secretStore.save(trimmedKey, for: reference)
@@ -532,7 +567,7 @@ public actor ProviderConfigurationService {
     }
     if becomesSummary {
       do {
-        try await profileStore.save(profile)
+        try await profileStore.save(profiles[0])
       } catch {
         try? await secretStore.delete(reference)
         throw ProviderConfigurationError.profileStoreWriteFailed
@@ -545,7 +580,7 @@ public actor ProviderConfigurationService {
       try? await secretStore.delete(reference)
       throw error
     }
-    return profile
+    return profiles
   }
 
   /// Updates an existing entry in place. Passing `apiKey: nil` keeps the
@@ -614,7 +649,10 @@ public actor ProviderConfigurationService {
       if trimmedKey != nil { try? await secretStore.delete(reference) }
       throw error
     }
-    if trimmedKey != nil, existing.secretReference != reference {
+    let oldReferenceStillUsed = library.profiles.contains {
+      $0.id != updated.id && $0.secretReference == existing.secretReference
+    }
+    if trimmedKey != nil, existing.secretReference != reference, !oldReferenceStillUsed {
       try? await secretStore.delete(existing.secretReference)
     }
     return updated
@@ -640,7 +678,12 @@ public actor ProviderConfigurationService {
 
     try await saveLibraryForMutation(library)
     if wasSummary { try? await profileStore.delete() }
-    try? await secretStore.delete(removed.secretReference)
+    let secretStillUsed = library.profiles.contains {
+      $0.secretReference == removed.secretReference
+    }
+    if !secretStillUsed {
+      try? await secretStore.delete(removed.secretReference)
+    }
     return library
   }
 

@@ -286,6 +286,30 @@ private final class AppTestModelProvider: ModelProvider, @unchecked Sendable {
 
 @MainActor
 final class AppViewModelTests: XCTestCase {
+  func testReceiverHealthAndLastBrowserDeliveryAreIndependentFromLocalHistorySelection() {
+    let model = AppViewModel()
+    XCTAssertEqual(model.browserReceiverState, .starting)
+    XCTAssertNil(model.lastBrowserCaptureAt)
+
+    model.setBrowserReceiverAvailable(true)
+    XCTAssertEqual(model.browserReceiverState, .ready)
+
+    let envelope = capture()
+    model.receive(CurrentCapture(envelope: envelope, taskID: TaskID(), snapshotID: ContentSnapshotID()))
+    let deliveredAt = model.lastBrowserCaptureAt
+    XCTAssertNotNil(deliveredAt)
+
+    model.receive(CurrentCapture(
+      document: CapturedDocument(wire: envelope),
+      taskID: TaskID(),
+      snapshotID: ContentSnapshotID()
+    ))
+    XCTAssertEqual(model.lastBrowserCaptureAt, deliveredAt)
+
+    model.setBrowserReceiverAvailable(false)
+    XCTAssertEqual(model.browserReceiverState, .unavailable)
+  }
+
   func testNoCaptureKeepsActionsDisabledAndDoesNotStartProvider() async throws {
     let provider = AppTestModelProvider(results: [])
     let model = try makeModel(provider: provider)

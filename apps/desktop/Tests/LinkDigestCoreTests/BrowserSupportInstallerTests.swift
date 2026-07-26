@@ -306,7 +306,7 @@ final class BrowserSupportInstallerTests: XCTestCase {
     }
   }
 
-  func testReceiptHashDriftRefusesUninstallWithoutDeletingManifest() async throws {
+  func testCurrentAppManifestWithUnboundReceiptStaysUsableButRefusesUninstall() async throws {
     try await withFixture { fixture in
       try fixture.createBrowserDirectories(sharedChrome: false, edge: true)
       let installer = fixture.installer()
@@ -314,15 +314,43 @@ final class BrowserSupportInstallerTests: XCTestCase {
       try fixture.replaceReceiptManifestHash(with: String(repeating: "0", count: 64))
 
       let statuses = await installer.inspect()
-      XCTAssertEqual(statuses[2].state, .drifted)
+      XCTAssertEqual(statuses[2].state, .currentAppUnverified)
+      XCTAssertNotNil(statuses[2].replacementFingerprint)
       do {
         try await installer.uninstall(.edge)
-        XCTFail("Receipt hash drift must refuse deletion")
+        XCTFail("An unbound receipt must refuse deletion")
       } catch {
         XCTAssertEqual(error as? BrowserSupportInstallerError, .uninstallRefused)
       }
       XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.manifest(.edge).path))
       XCTAssertEqual(try fixture.nonHomeDigest(), fixture.initialNonHomeDigest)
+    }
+  }
+
+  func testSemanticallyIdenticalPrettyManifestStaysUsableWithoutClaimingOwnership() async throws {
+    try await withFixture { fixture in
+      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      let installer = fixture.installer()
+      try await installer.install(.chrome)
+
+      let target = fixture.manifest(.chrome)
+      let object = try JSONSerialization.jsonObject(with: Data(contentsOf: target))
+      let pretty = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+      try pretty.write(to: target)
+      try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
+
+      let statuses = await installer.inspect()
+      XCTAssertEqual(statuses[0].state, .currentAppUnverified)
+      XCTAssertEqual(statuses[1].state, .currentAppUnverified)
+      XCTAssertNotNil(statuses[0].replacementFingerprint)
+
+      do {
+        try await installer.uninstall(.chrome)
+        XCTFail("Formatting-equivalent but unbound bytes must still refuse deletion")
+      } catch {
+        XCTAssertEqual(error as? BrowserSupportInstallerError, .uninstallRefused)
+      }
+      XCTAssertEqual(try Data(contentsOf: target), pretty)
     }
   }
 

@@ -57,6 +57,44 @@ final class MediaStorageSettingsViewModelTests: XCTestCase {
     XCTAssertTrue(message.contains("失效"))
   }
 
+  func testSessionMediaRestoreModeDefaultsToManualAndPersists() throws {
+    let suite = "linkdigest-media-settings-restore-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let store = UserDefaultsMediaStoragePreferenceStore(
+      defaults: defaults,
+      createBookmark: { Data($0.path.utf8) },
+      resolveBookmark: { data in
+        (URL(fileURLWithPath: String(decoding: data, as: UTF8.self)), false)
+      }
+    )
+    let model = MediaStorageSettingsViewModel(store: store)
+    XCTAssertEqual(model.sessionMediaRestoreMode, .manual)
+    model.sessionMediaRestoreMode = .automatic
+    XCTAssertEqual(store.sessionMediaRestoreMode, .automatic)
+    let reloaded = MediaStorageSettingsViewModel(store: store)
+    XCTAssertEqual(reloaded.sessionMediaRestoreMode, .automatic)
+  }
+
+  func testBilibiliStreamQualityDefaultsToHighestAndPersists() throws {
+    let suite = "linkdigest-media-settings-bili-q-\(UUID().uuidString)"
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defer { defaults.removePersistentDomain(forName: suite) }
+    let store = UserDefaultsMediaStoragePreferenceStore(
+      defaults: defaults,
+      createBookmark: { Data($0.path.utf8) },
+      resolveBookmark: { data in
+        (URL(fileURLWithPath: String(decoding: data, as: UTF8.self)), false)
+      }
+    )
+    let model = MediaStorageSettingsViewModel(store: store)
+    XCTAssertEqual(model.bilibiliStreamQuality, .highest)
+    model.bilibiliStreamQuality = .dataSaver
+    XCTAssertEqual(store.bilibiliStreamQuality, .dataSaver)
+    let reloaded = MediaStorageSettingsViewModel(store: store)
+    XCTAssertEqual(reloaded.bilibiliStreamQuality, .dataSaver)
+  }
+
   func testAutoSaveToggleLoadsAndPersistsWithoutChangingDownloadLimit() throws {
     let suite = "linkdigest-media-settings-auto-save-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
@@ -71,12 +109,13 @@ final class MediaStorageSettingsViewModelTests: XCTestCase {
     let originalLimit = store.downloadLimitBytes
     let model = MediaStorageSettingsViewModel(store: store)
 
-    XCTAssertTrue(model.autoSaveCapturedVideo)
-    model.autoSaveCapturedVideo = false
+    // 默认关闭；用户显式打开后应持久化，且不影响下载上限。
+    XCTAssertFalse(model.autoSaveCapturedVideo)
+    model.autoSaveCapturedVideo = true
 
-    XCTAssertFalse(store.autoSaveCapturedVideo)
+    XCTAssertTrue(store.autoSaveCapturedVideo)
     XCTAssertEqual(store.downloadLimitBytes, originalLimit)
     let reloaded = MediaStorageSettingsViewModel(store: store)
-    XCTAssertFalse(reloaded.autoSaveCapturedVideo)
+    XCTAssertTrue(reloaded.autoSaveCapturedVideo)
   }
 }

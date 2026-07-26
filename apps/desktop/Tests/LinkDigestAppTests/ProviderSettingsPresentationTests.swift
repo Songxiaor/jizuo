@@ -87,11 +87,70 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     XCTAssertFalse(service.contains("LazyVGrid"))
     XCTAssertFalse(service.contains("providerTile"))
     XCTAssertFalse(service.contains("capabilityCard"))
-    XCTAssertEqual(service.components(separatedBy: "LabeledContent(\"Base URL\")").count - 1, 1)
-    XCTAssertEqual(service.components(separatedBy: "LabeledContent(\"API Key\")").count - 1, 1)
-    XCTAssertTrue(service.contains("SecureField(\"输入密钥\""))
+    XCTAssertTrue(service.contains("Grid(alignment: .leading"))
+    XCTAssertTrue(service.contains("Text(\"Base URL\")"))
+    XCTAssertTrue(service.contains("Text(\"API Key\")"))
+    XCTAssertTrue(service.contains("SecureField(\"\", text: $apiKeyInput, prompt: Text(\"输入密钥\"))"))
     XCTAssertFalse(service.contains("SecureField(\"输入 API Key\""))
+    XCTAssertTrue(service.contains("model.toggleCatalogModel(name)"))
+    XCTAssertTrue(service.contains("保存 \\(model.selectedCatalogModelCount) 个模型"))
+    XCTAssertTrue(service.contains("assignmentPickerPopover(kind)"))
+    XCTAssertTrue(service.contains("title: entry.displayName"))
+    XCTAssertTrue(service.contains("detail: entry.modelName"))
+    XCTAssertTrue(service.contains("model.transcriptionEntryDisplays"))
+    XCTAssertTrue(service.contains("model.summaryEntryDisplays"))
+    XCTAssertTrue(service.contains("Text(\"\\(entry.title) · \\(entry.modelName)\").font(.caption)"))
+    XCTAssertFalse(service.contains("Text(\"\\(entry.title) · 在线转写\").tag(entry.id)"))
     XCTAssertTrue(source.contains("ProviderIconCatalog.image(for: preset)"))
+  }
+
+  func testPaperThemeSettingsSidebarKeepsNamedAccessibleButtons() throws {
+    let source = try String(
+      contentsOf: repositoryRoot().appendingPathComponent(
+        "apps/desktop/Sources/LinkDigestApp/ProviderSettingsView.swift"
+      ),
+      encoding: .utf8
+    )
+    let sidebar = section(in: source, from: "private var paperSidebar", to: "// MARK: - 外观")
+
+    XCTAssertTrue(sidebar.contains(".accessibilityLabel(tab.title)"))
+    XCTAssertTrue(sidebar.contains(".accessibilityIdentifier(\"settings-tab-\\(tab.rawValue)\")"))
+  }
+
+  func testGenerationPreferencesUsesBalancedVerticalScrollMargins() throws {
+    let source = try String(
+      contentsOf: repositoryRoot().appendingPathComponent(
+        "apps/desktop/Sources/LinkDigestApp/ProviderSettingsView.swift"
+      ),
+      encoding: .utf8
+    )
+    let generation = section(in: source, from: "private var generationTab", to: "// MARK: - 共用构件")
+
+    XCTAssertTrue(generation.contains(".contentMargins(.vertical, 16, for: .scrollContent)"))
+  }
+
+  func testBrowserSupportSeparatesReceiverHealthFromInstallationOwnership() throws {
+    let source = try String(
+      contentsOf: repositoryRoot().appendingPathComponent(
+        "apps/desktop/Sources/LinkDigestApp/BrowserSupportSettingsView.swift"
+      ),
+      encoding: .utf8
+    )
+
+    XCTAssertTrue(source.contains("App 接收服务"))
+    XCTAssertTrue(source.contains("下方配置提醒不等于传送失败"))
+    XCTAssertTrue(source.contains("Google Chrome"))
+    XCTAssertTrue(source.contains("在 Chrome 中加载扩展后即可同步"))
+    XCTAssertTrue(source.contains("在 Brave 中加载扩展后即可同步"))
+    XCTAssertTrue(source.contains("每个浏览器都需要单独加载扩展并同步一次"))
+    XCTAssertFalse(source.contains("Chrome / Brave"))
+    XCTAssertTrue(source.contains("配置已就绪"))
+    XCTAssertTrue(source.contains("连接到此 App"))
+    XCTAssertTrue(source.contains("打开扩展文件夹"))
+    XCTAssertFalse(source.contains("备份并继续"))
+    XCTAssertFalse(source.contains("安装记录待确认"))
+    XCTAssertFalse(source.contains("日用 Host 与测试版 Host 不同"))
+    XCTAssertFalse(source.contains("临时切换到测试版 Host"))
   }
 
   func testReleasePipelinesFreezeAndBindTheExactProviderIconSet() throws {

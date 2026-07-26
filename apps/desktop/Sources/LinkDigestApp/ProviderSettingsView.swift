@@ -3,7 +3,7 @@ import LinkDigestCore
 
 struct ProviderSettingsView: View {
   private enum SettingsTab: String, Hashable, CaseIterable, Identifiable {
-    case service, generation, appearance, mediaStorage, browserSupport
+    case service, generation, appearance, mediaStorage, siteLogin, browserSupport
     var id: String { rawValue }
     var title: String {
       switch self {
@@ -11,6 +11,7 @@ struct ProviderSettingsView: View {
       case .generation: "生成偏好"
       case .appearance: "外观"
       case .mediaStorage: "视频存储"
+      case .siteLogin: "站点登录"
       case .browserSupport: "浏览器支持"
       }
     }
@@ -20,6 +21,7 @@ struct ProviderSettingsView: View {
       case .generation: "text.badge.checkmark"
       case .appearance: "paintpalette"
       case .mediaStorage: "externaldrive"
+      case .siteLogin: "person.crop.circle.badge.checkmark"
       case .browserSupport: "puzzlepiece.extension"
       }
     }
@@ -29,6 +31,7 @@ struct ProviderSettingsView: View {
   private static let customOutputLanguageTag = "__custom__"
 
   @ObservedObject var model: ProviderSettingsViewModel
+  @ObservedObject var appModel: AppViewModel
   @ObservedObject var browserSupport: BrowserSupportViewModel
   @ObservedObject var mediaStorage: MediaStorageSettingsViewModel
   @State private var apiKeyInput = ""
@@ -36,6 +39,7 @@ struct ProviderSettingsView: View {
   @State private var isCustomOutputLanguage = false
   @State private var translationModelSearchQuery = ""
   @State private var pendingDeletionID: String?
+  @State private var activeAssignmentPicker: AssignmentPicker?
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
   @AppStorage(ReadingFontPreference.storageKey) private var readingFontRaw = ReadingFontPreference.theme.rawValue
 
@@ -79,8 +83,12 @@ struct ProviderSettingsView: View {
           MediaStorageSettingsView(model: mediaStorage)
             .scrollContentBackground(isPaperTheme ? .hidden : .automatic)
             .background(isPaperTheme ? settingsTheme.canvas : Color.clear)
+        case .siteLogin:
+          SiteLoginSettingsView(mediaStorage: mediaStorage)
+            .scrollContentBackground(isPaperTheme ? .hidden : .automatic)
+            .background(isPaperTheme ? settingsTheme.canvas : Color.clear)
         case .browserSupport:
-          BrowserSupportSettingsView(model: browserSupport)
+          BrowserSupportSettingsView(model: browserSupport, appModel: appModel)
             .scrollContentBackground(isPaperTheme ? .hidden : .automatic)
             .background(isPaperTheme ? settingsTheme.canvas : Color.clear)
         }
@@ -90,7 +98,14 @@ struct ProviderSettingsView: View {
     }
     .toolbarBackground(isPaperTheme ? settingsTheme.canvas : Color.clear, for: .windowToolbar)
     .toolbarBackground(isPaperTheme ? .visible : .automatic, for: .windowToolbar)
-    .frame(minWidth: 860, minHeight: 680)
+    .frame(
+      minWidth: 780,
+      idealWidth: 900,
+      maxWidth: .infinity,
+      minHeight: 560,
+      idealHeight: 700,
+      maxHeight: .infinity
+    )
     .foregroundStyle(settingsTheme.primaryText)
     .tint(settingsTheme.accent)
     .accentColor(settingsTheme.accent)
@@ -148,6 +163,7 @@ struct ProviderSettingsView: View {
       }
     }
     .formStyle(.grouped)
+    .contentMargins(.bottom, 24, for: .scrollContent)
     .scrollContentBackground(.hidden)
     .background(settingsTheme.isNative ? Color(nsColor: .windowBackgroundColor) : settingsTheme.canvas)
     .controlSize(.regular)
@@ -175,57 +191,215 @@ struct ProviderSettingsView: View {
 
   // MARK: - 功能与模型指派
 
+  private enum AssignmentPicker: String, Identifiable {
+    case summary
+    case transcription
+
+    var id: String { rawValue }
+  }
+
   @ViewBuilder private var capabilityAssignmentRows: some View {
     if model.libraryEntryDisplays.isEmpty {
       LabeledContent("总结与翻译") {
         Text("先在下方添加模型").foregroundStyle(.secondary)
       }
     } else {
-      Picker("总结与翻译", selection: summaryAssignmentSelection) {
-        if model.summaryAssignmentID == nil {
-          Text("未指派").tag("")
-        }
-        ForEach(model.libraryEntryDisplays) { entry in
-          Text("\(entry.title) · \(entry.modelName)").tag(entry.id)
-        }
-      }
-      .accessibilityIdentifier("summary-assignment-picker")
+      assignmentPickerRow(
+        title: "总结与翻译",
+        kind: .summary,
+        selectedEntry: model.summaryEntryDisplays.first(where: { $0.id == model.summaryAssignmentID })
+      )
     }
 
-    Picker("视频转文字", selection: transcriptionAssignmentSelection) {
-      Text("本机（Apple 听写）").tag("")
-      ForEach(model.libraryEntryDisplays) { entry in
-        Text("\(entry.title) · 在线转写").tag(entry.id)
+    assignmentPickerRow(
+      title: "视频转文字",
+      kind: .transcription,
+      selectedEntry: model.transcriptionEntryDisplays.first(where: { $0.id == model.transcriptionAssignmentID })
+    )
+
+    LabeledContent("图片文字") {
+      VStack(alignment: .trailing, spacing: 1) {
+        Text("Apple Vision").fontWeight(.medium)
+        Text("本机 · 离线").font(.caption).foregroundStyle(.secondary)
       }
     }
-    .accessibilityIdentifier("transcription-assignment-picker")
-
-    Picker("图片文字", selection: .constant("local")) {
-      Text("本机（Apple Vision）").tag("local")
-    }
-    .disabled(true)
     .accessibilityIdentifier("image-text-assignment-picker")
   }
 
-  private var summaryAssignmentSelection: Binding<String> {
-    Binding(
-      get: { model.summaryAssignmentID ?? "" },
-      set: { newValue in
-        guard !newValue.isEmpty, newValue != model.summaryAssignmentID else { return }
-        Task { await model.assignSummaryModel(newValue) }
+  private func assignmentPickerRow(
+    title: String,
+    kind: AssignmentPicker,
+    selectedEntry: ProviderSettingsViewModel.LibraryEntryDisplay?
+  ) -> some View {
+    LabeledContent(title) {
+      Button {
+        activeAssignmentPicker = kind
+      } label: {
+        HStack(spacing: 8) {
+          VStack(alignment: .trailing, spacing: 1) {
+            Text(assignmentDisplayName(kind: kind, entry: selectedEntry))
+              .fontWeight(.medium)
+              .foregroundStyle(.primary)
+            Text(assignmentDetail(kind: kind, entry: selectedEntry))
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+          Image(systemName: "chevron.up.chevron.down")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.tertiary)
+        }
+        .contentShape(Rectangle())
       }
-    )
+      .buttonStyle(.plain)
+      .accessibilityIdentifier(kind == .summary ? "summary-assignment-picker" : "transcription-assignment-picker")
+      .popover(
+        isPresented: Binding(
+          get: { activeAssignmentPicker == kind },
+          set: { isPresented in
+            if !isPresented, activeAssignmentPicker == kind {
+              activeAssignmentPicker = nil
+            }
+          }
+        ),
+        arrowEdge: .trailing
+      ) {
+        assignmentPickerPopover(kind)
+      }
+    }
   }
 
-  private var transcriptionAssignmentSelection: Binding<String> {
-    Binding(
-      get: { model.transcriptionAssignmentID ?? "" },
-      set: { newValue in
-        let id = newValue.isEmpty ? nil : newValue
-        guard id != model.transcriptionAssignmentID else { return }
-        Task { await model.assignTranscriptionModel(id) }
+  private func assignmentDisplayName(
+    kind: AssignmentPicker,
+    entry: ProviderSettingsViewModel.LibraryEntryDisplay?
+  ) -> String {
+    if let entry { return entry.displayName }
+    return kind == .transcription ? "Apple 听写" : "未指派"
+  }
+
+  private func assignmentDetail(
+    kind: AssignmentPicker,
+    entry: ProviderSettingsViewModel.LibraryEntryDisplay?
+  ) -> String {
+    if let entry { return entry.title }
+    return kind == .transcription ? "本机 · 离线" : "请选择模型"
+  }
+
+  private func assignmentPickerPopover(_ kind: AssignmentPicker) -> some View {
+    let entries = kind == .transcription ? model.transcriptionEntryDisplays : model.summaryEntryDisplays
+    return VStack(alignment: .leading, spacing: 0) {
+      Text(kind == .transcription ? "选择视频转写模型" : "选择总结与翻译模型")
+        .font(.headline)
+        .padding(.horizontal, 16)
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+
+      Divider()
+
+      ScrollView {
+        VStack(alignment: .leading, spacing: 0) {
+          if kind == .transcription {
+            assignmentSectionTitle("本机")
+            assignmentOptionRow(
+              title: "Apple 听写",
+              detail: "离线处理，不发送音频",
+              isSelected: model.transcriptionAssignmentID == nil
+            ) {
+              activeAssignmentPicker = nil
+              Task { await model.assignTranscriptionModel(nil) }
+            }
+          }
+
+          if !entries.isEmpty {
+            assignmentSectionTitle(kind == .transcription ? "在线模型" : "已添加的模型")
+            ForEach(assignmentProviderTitles(in: entries), id: \.self) { providerTitle in
+              Text(providerTitle)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+                .padding(.bottom, 3)
+
+              ForEach(entries.filter { $0.title == providerTitle }) { entry in
+                assignmentOptionRow(
+                  title: entry.displayName,
+                  detail: entry.modelName,
+                  isSelected: selectedAssignmentID(for: kind) == entry.id
+                ) {
+                  activeAssignmentPicker = nil
+                  Task {
+                    if kind == .summary {
+                      await model.assignSummaryModel(entry.id)
+                    } else {
+                      await model.assignTranscriptionModel(entry.id)
+                    }
+                  }
+                }
+              }
+            }
+          } else if kind == .transcription {
+            Text("还没有添加可用于音频转写的在线模型。")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .padding(16)
+          }
+        }
+        .padding(.bottom, 10)
       }
-    )
+      .frame(maxHeight: 420)
+    }
+    .frame(width: 360)
+    .accessibilityIdentifier(kind == .summary ? "summary-assignment-popover" : "transcription-assignment-popover")
+  }
+
+  private func assignmentSectionTitle(_ title: String) -> some View {
+    Text(title)
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(.secondary)
+      .textCase(.uppercase)
+      .padding(.horizontal, 16)
+      .padding(.top, 12)
+      .padding(.bottom, 4)
+  }
+
+  private func assignmentOptionRow(
+    title: String,
+    detail: String,
+    isSelected: Bool,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      HStack(spacing: 10) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.body.weight(.medium))
+            .foregroundStyle(.primary)
+          Text(detail)
+            .font(.caption.monospaced())
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+        }
+        Spacer(minLength: 12)
+        Image(systemName: "checkmark")
+          .foregroundStyle(.tint)
+          .opacity(isSelected ? 1 : 0)
+      }
+      .padding(.horizontal, 16)
+      .padding(.vertical, 7)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func assignmentProviderTitles(
+    in entries: [ProviderSettingsViewModel.LibraryEntryDisplay]
+  ) -> [String] {
+    entries.reduce(into: [String]()) { titles, entry in
+      if !titles.contains(entry.title) { titles.append(entry.title) }
+    }
+  }
+
+  private func selectedAssignmentID(for kind: AssignmentPicker) -> String? {
+    kind == .summary ? model.summaryAssignmentID : model.transcriptionAssignmentID
   }
 
   // MARK: - 模型库列表
@@ -234,8 +408,8 @@ struct ProviderSettingsView: View {
     HStack(spacing: 10) {
       providerIcon(entry.preset)
       VStack(alignment: .leading, spacing: 2) {
-        Text(entry.title).font(.body.weight(.medium))
-        Text(entry.modelName).font(.caption).foregroundStyle(.secondary)
+        Text(entry.displayName).font(.body.weight(.medium))
+        Text("\(entry.title) · \(entry.modelName)").font(.caption).foregroundStyle(.secondary)
       }
       Spacer(minLength: 12)
       if model.summaryAssignmentID == entry.id {
@@ -291,29 +465,37 @@ struct ProviderSettingsView: View {
       }
 
       Section("连接") {
-        LabeledContent("Base URL") {
-          TextField("https://…", text: $model.baseURL)
-            .multilineTextAlignment(.trailing)
-            .disabled(model.isSaving || model.isConfigurationLoading || model.isLoadingModels)
-            .accessibilityIdentifier("provider-base-url")
-        }
-
-        LabeledContent("API Key") {
-          if model.shouldShowAPIKeyInput {
-            SecureField("输入密钥", text: $apiKeyInput)
-              .multilineTextAlignment(.trailing)
+        Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
+          GridRow(alignment: .firstTextBaseline) {
+            Text("Base URL")
+              .frame(width: 86, alignment: .leading)
+            TextField("", text: $model.baseURL, prompt: Text("https://api.example.com/v1"))
+              .labelsHidden()
               .disabled(model.isSaving || model.isConfigurationLoading || model.isLoadingModels)
-              .accessibilityIdentifier("provider-api-key")
-          } else {
-            HStack(spacing: 10) {
-              Text(model.apiKeyStatusText).foregroundStyle(.green)
-                .accessibilityIdentifier("provider-api-key-configured")
-              Button("更换", action: model.beginAPIKeyReplacement)
-                .disabled(!model.canBeginAPIKeyReplacement)
-                .accessibilityIdentifier("replace-provider-api-key")
+              .accessibilityIdentifier("provider-base-url")
+          }
+
+          GridRow(alignment: .firstTextBaseline) {
+            Text("API Key")
+              .frame(width: 86, alignment: .leading)
+            if model.shouldShowAPIKeyInput {
+              SecureField("", text: $apiKeyInput, prompt: Text("输入密钥"))
+                .labelsHidden()
+                .disabled(model.isSaving || model.isConfigurationLoading || model.isLoadingModels)
+                .accessibilityIdentifier("provider-api-key")
+            } else {
+              HStack(spacing: 10) {
+                Text(model.apiKeyStatusText).foregroundStyle(.green)
+                  .accessibilityIdentifier("provider-api-key-configured")
+                Button("更换", action: model.beginAPIKeyReplacement)
+                  .disabled(!model.canBeginAPIKeyReplacement)
+                  .accessibilityIdentifier("replace-provider-api-key")
+              }
+              .frame(maxWidth: .infinity, alignment: .trailing)
             }
           }
         }
+        .frame(maxWidth: .infinity)
       }
 
       Section {
@@ -336,10 +518,52 @@ struct ProviderSettingsView: View {
           if model.isLoadingModels { ProgressView().controlSize(.small) }
         }
 
-        modelSelector(title: "总结模型", selection: Binding(
-          get: { model.modelName },
-          set: { model.selectModel($0) }
-        ), forTranslation: false)
+        if model.isAddingModelBatch {
+          LabeledContent("搜索模型") {
+            TextField("", text: $model.modelSearchQuery, prompt: Text("输入关键词过滤"))
+              .labelsHidden()
+              .accessibilityIdentifier("provider-model-search")
+          }
+
+          ScrollView {
+            LazyVStack(spacing: 0) {
+              ForEach(model.filteredModels, id: \.self) { name in
+                Button {
+                  model.toggleCatalogModel(name)
+                } label: {
+                  HStack(spacing: 10) {
+                    Image(systemName: model.selectedCatalogModels.contains(name) ? "checkmark.square.fill" : "square")
+                      .foregroundStyle(model.selectedCatalogModels.contains(name) ? Color.accentColor : .secondary)
+                    Text(name)
+                      .foregroundStyle(.primary)
+                      .lineLimit(1)
+                    Spacer()
+                  }
+                  .padding(.horizontal, 10)
+                  .padding(.vertical, 8)
+                  .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityIdentifier("provider-model-option")
+                if name != model.filteredModels.last {
+                  Divider().padding(.leading, 36)
+                }
+              }
+            }
+          }
+          .frame(minHeight: 120, maxHeight: 260)
+          .background(.background.opacity(0.55), in: RoundedRectangle(cornerRadius: 8))
+          .overlay(RoundedRectangle(cornerRadius: 8).stroke(.separator))
+          Text("已选择 \(model.selectedCatalogModelCount) 个模型")
+            .font(.caption)
+            .foregroundStyle(model.selectedCatalogModelCount == 0 ? .secondary : Color.accentColor)
+            .accessibilityIdentifier("provider-model-selection-count")
+        } else {
+          modelSelector(title: "模型", selection: Binding(
+            get: { model.modelName },
+            set: { model.selectModel($0) }
+          ), forTranslation: false)
+        }
 
         if model.shouldOfferManualModelEntry {
           Button("高级：手动填写模型名", action: model.enableManualModelEntry)
@@ -353,7 +577,7 @@ struct ProviderSettingsView: View {
 
       Section {
         actionRow(status: model.statusText, color: statusColor, showsProgress: model.isSaving, statusIdentifier: "provider-settings-status") {
-          Button("保存模型配置") {
+          Button(model.isAddingModelBatch ? "保存 \(model.selectedCatalogModelCount) 个模型" : "保存模型配置") {
             let submittedKey = apiKeyInput
             Task {
               await model.save(apiKey: submittedKey)
@@ -384,6 +608,8 @@ struct ProviderSettingsView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
+        .accessibilityLabel(tab.title)
+        .accessibilityIdentifier("settings-tab-\(tab.rawValue)")
         .buttonStyle(.plain)
         .padding(.vertical, 7).padding(.horizontal, 8)
         .background(
@@ -394,7 +620,6 @@ struct ProviderSettingsView: View {
         .fontWeight(selectedTab == tab ? .semibold : .regular)
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
-        .accessibilityIdentifier("settings-tab-\(tab.rawValue)")
       }
     }
     .listStyle(.sidebar)
@@ -465,6 +690,7 @@ struct ProviderSettingsView: View {
       }
     }
     .formStyle(.grouped)
+    .contentMargins(.bottom, 24, for: .scrollContent)
     .scrollContentBackground(.hidden)
     .background(settingsTheme.isNative ? Color(nsColor: .windowBackgroundColor) : settingsTheme.canvas)
   }
@@ -587,6 +813,7 @@ struct ProviderSettingsView: View {
       }
     }
     .formStyle(.grouped)
+    .contentMargins(.bottom, 24, for: .scrollContent)
     .scrollContentBackground(.hidden)
     .background(settingsTheme.isNative ? Color(nsColor: .windowBackgroundColor) : settingsTheme.canvas)
   }

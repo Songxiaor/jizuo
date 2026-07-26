@@ -11,11 +11,19 @@ final class HistoryContentViewTests: XCTestCase {
 
     XCTAssertEqual(
       CurrentCaptureMediaPreview.resolve(direct, now: now),
-      .playable(url: try XCTUnwrap(URL(string: "https://media.example.test/video.mp4")), kind: .directFile)
+      .playable(
+        url: try XCTUnwrap(URL(string: "https://media.example.test/video.mp4")),
+        kind: .directFile,
+        companionAudioURL: nil
+      )
     )
     XCTAssertEqual(
       CurrentCaptureMediaPreview.resolve(hls, now: now),
-      .playable(url: try XCTUnwrap(URL(string: "https://media.example.test/master.m3u8")), kind: .hls)
+      .playable(
+        url: try XCTUnwrap(URL(string: "https://media.example.test/master.m3u8")),
+        kind: .hls,
+        companionAudioURL: nil
+      )
     )
     XCTAssertTrue(CurrentCaptureMediaPreview.isFavoriteEligible(direct))
     XCTAssertFalse(CurrentCaptureMediaPreview.isFavoriteEligible(hls))
@@ -517,9 +525,14 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("let descriptor = capture.mediaDescriptor"))
     XCTAssertTrue(detail.contains("localMediaFileURL == nil"))
     XCTAssertTrue(detail.contains("CurrentCaptureMediaPreviewCard"))
+    XCTAssertTrue(detail.contains("HistorySessionMediaUnavailableCard"))
+    XCTAssertTrue(detail.contains("HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable"))
     XCTAssertTrue(preview.contains(".onChange(of: descriptor)"))
     XCTAssertTrue(preview.contains(".onDisappear"))
-    XCTAssertTrue(preview.contains("playback.release()"))
+    // 共享 controller：卡片不 release，由列表预热宿主在离开可播上下文时 release。
+    XCTAssertTrue(preview.contains("cancelGeometryAndStatusMonitors()"))
+    XCTAssertTrue(source.contains("synchronizeRemotePreviewPreheat"))
+    XCTAssertTrue(source.contains("remotePreviewPlayback.release()"))
     XCTAssertTrue(preview.contains("VideoPlayer(player: playback.player)"))
     XCTAssertTrue(preview.contains("history-video-preview-card"))
     XCTAssertTrue(preview.contains("history-video-remote-player"))
@@ -527,6 +540,108 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(preview.contains("history-video-preview-favorite"))
     XCTAssertTrue(preview.contains("history-video-preview-favorite-status"))
     XCTAssertTrue(preview.contains("history-video-preview-expired"))
+    XCTAssertTrue(preview.contains("正在连接视频流"))
+    XCTAssertTrue(preview.contains("history-video-preview-preparing"))
+    XCTAssertTrue(preview.contains("history-video-preview-network-unavailable"))
+    XCTAssertTrue(preview.contains("history-video-preview-retry"))
+  }
+
+  func testSessionOnlyUnavailablePresentationIsDesignNotError() {
+    // 抓取事实优先：V2 MediaDescriptor（任意平台，含 x / github / generic）。
+    for platform in ["bilibili", "xiaohongshu", "douyin", "x", "github", "generic"] {
+      XCTAssertTrue(
+        HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable(
+          hadMediaDescriptor: true,
+          hasLocalMediaFile: false,
+          hasLocalMediaRow: false,
+          hasLocalMediaResolutionFailure: false,
+          isCurrentCaptureWithDescriptor: false,
+          isYouTube: false,
+          legacyPlatformHint: platform
+        ),
+        "V2 media fact must show session card for \(platform)"
+      )
+    }
+
+    // 纯文字 X（V1，无 MediaDescriptor）不得冒充视频。
+    XCTAssertFalse(
+      HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable(
+        hadMediaDescriptor: false,
+        hasLocalMediaFile: false,
+        hasLocalMediaRow: false,
+        hasLocalMediaResolutionFailure: false,
+        isCurrentCaptureWithDescriptor: false,
+        isYouTube: false,
+        legacyPlatformHint: "x"
+      )
+    )
+    // wechat 扩展侧丢弃 media，不会有 V2 事实；平台名本身也不应触发。
+    XCTAssertFalse(
+      HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable(
+        hadMediaDescriptor: false,
+        hasLocalMediaFile: false,
+        hasLocalMediaRow: false,
+        hasLocalMediaResolutionFailure: false,
+        isCurrentCaptureWithDescriptor: false,
+        isYouTube: false,
+        legacyPlatformHint: "wechat"
+      )
+    )
+
+    // 当前抓取仍有 descriptor：走播放卡。
+    XCTAssertFalse(
+      HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable(
+        hadMediaDescriptor: true,
+        hasLocalMediaFile: false,
+        hasLocalMediaRow: false,
+        hasLocalMediaResolutionFailure: false,
+        isCurrentCaptureWithDescriptor: true,
+        isYouTube: false
+      )
+    )
+    // 本机已保存：走本地播放卡。
+    XCTAssertFalse(
+      HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable(
+        hadMediaDescriptor: true,
+        hasLocalMediaFile: true,
+        hasLocalMediaRow: true,
+        hasLocalMediaResolutionFailure: false,
+        isCurrentCaptureWithDescriptor: false,
+        isYouTube: false
+      )
+    )
+    // 抖音图文帖即使误带事实也不当视频速览。
+    XCTAssertFalse(
+      HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable(
+        hadMediaDescriptor: true,
+        hasLocalMediaFile: false,
+        hasLocalMediaRow: false,
+        hasLocalMediaResolutionFailure: false,
+        isCurrentCaptureWithDescriptor: false,
+        isYouTube: false,
+        isDouyinImagePost: true,
+        legacyPlatformHint: "douyin"
+      )
+    )
+    // 极老 V1 抖音视频：无 V2 合同行时仍用平台兜底。
+    XCTAssertTrue(
+      HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable(
+        hadMediaDescriptor: false,
+        hasLocalMediaFile: false,
+        hasLocalMediaRow: false,
+        hasLocalMediaResolutionFailure: false,
+        isCurrentCaptureWithDescriptor: false,
+        isYouTube: false,
+        legacyPlatformHint: "douyin"
+      )
+    )
+
+    XCTAssertEqual(HistorySessionMediaPresentation.title, "此记录包含视频")
+    XCTAssertTrue(HistorySessionMediaPresentation.explanation.contains("只在抓取当次有效"))
+    XCTAssertFalse(HistorySessionMediaPresentation.explanation.contains("加载失败"))
+    XCTAssertFalse(HistorySessionMediaPresentation.explanation.contains("地址已失效"))
+    XCTAssertEqual(HistorySessionMediaPresentation.openSourceActionTitle, "回到原页面观看")
+    XCTAssertEqual(HistorySessionMediaPresentation.refreshActionTitle, "重新获取播放")
   }
 
   func testDesktopExecutableExplicitlyLinksAVKitFramework() {
@@ -631,6 +746,42 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertLessThanOrEqual(fitted.width, 680)
     XCTAssertEqual(fitted.height, 520, accuracy: 0.001)
     XCTAssertEqual(fitted.width / fitted.height, portrait.width / portrait.height, accuracy: 0.0001)
+  }
+
+  func testAudioOnlyMediaResolvesToAPlayableSurfaceInsteadOfWaitingForVideoSize() {
+    // B 站的 DASH 把画面与声音拆成两条流，抓取拿到的是声音那条：没有视频轨，
+    // 读不出画面尺寸。旧实现在这种情况下直接 return，界面永远停在"正在读取
+    // 视频尺寸…"。三种输入都必须落到确定状态。
+    XCTAssertEqual(
+      VideoDisplayGeometry.surfaceGeometry(videoTrack: nil, hasAudioTrack: true),
+      .audioOnly
+    )
+    XCTAssertEqual(
+      VideoDisplayGeometry.surfaceGeometry(videoTrack: nil, hasAudioTrack: false),
+      .unavailable
+    )
+    XCTAssertEqual(
+      VideoDisplayGeometry.surfaceGeometry(
+        videoTrack: (CGSize(width: 1_920, height: 1_080), .identity),
+        hasAudioTrack: true
+      ),
+      .video(CGSize(width: 1_920, height: 1_080))
+    )
+    // 尺寸为零的视频轨不是可显示的画面，按有没有声音退化。
+    XCTAssertEqual(
+      VideoDisplayGeometry.surfaceGeometry(videoTrack: (.zero, .identity), hasAudioTrack: true),
+      .audioOnly
+    )
+
+    // 只有 `.loading` 才画转圈；其余状态都要给出可播放的音频条。
+    let source = historyContentViewSource()
+    let surface = section(
+      in: source,
+      from: "@ViewBuilder private var playerSurface: some View",
+      to: "@ViewBuilder private var transcriptionControl"
+    )
+    XCTAssertTrue(surface.contains("else if surfaceGeometry == .loading"))
+    XCTAssertTrue(surface.contains("history-audio-only-player"))
   }
 
   func testXPostsReadInPostOrderWithTextAboveTheVideo() {
@@ -792,6 +943,29 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("CapturedDocumentTitle.display"))
     XCTAssertFalse(source.contains("CapturedDocumentTitle.fallback(for: row.canonicalURL)"))
     XCTAssertFalse(source.contains("CapturedDocumentTitle.fallback(for: sourceURL)"))
+  }
+
+  func testHistorySourceLinkPresentationUsesHumanReadablePlatformLabels() {
+    XCTAssertEqual(
+      HistorySourceLinkPresentation.text("https://x.com/zjp1997720/status/2080660613530038730"),
+      "x.com · @zjp1997720 的帖子"
+    )
+    XCTAssertEqual(
+      HistorySourceLinkPresentation.text("https://www.bilibili.com/video/BV1xx411c7mD?spm_id_from=333"),
+      "bilibili.com · 视频 BV1xx411c7mD"
+    )
+  }
+
+  func testHistorySourceLinkPresentationKeepsACompactGenericPathAndSafeFallback() {
+    XCTAssertEqual(
+      HistorySourceLinkPresentation.text("https://www.example.com/articles/readable-title?utm_source=test"),
+      "example.com · /articles/readable-title"
+    )
+    XCTAssertEqual(
+      HistorySourceLinkPresentation.text("https://example.com/this/is/a/very/long/path/that/needs/truncation"),
+      "example.com · /this/is/a/very/long/path/that/ne…"
+    )
+    XCTAssertEqual(HistorySourceLinkPresentation.text("not a url"), "not a url")
   }
 
   func testDetailBindsLatestRunMetadataAndTokenBreakdownWithoutCostEstimate() {

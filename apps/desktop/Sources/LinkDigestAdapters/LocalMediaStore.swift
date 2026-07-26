@@ -60,9 +60,12 @@ public final class LocalMediaStore: @unchecked Sendable {
       .first?
       .trimmingCharacters(in: .whitespacesAndNewlines)
       .lowercased()
+    // `audio/mp4`：B 站 DASH 的独立音轨（`.m4s`）也是 ISO base media 容器，
+    // 内容就是这条视频的声音，转写要的正是它。
     let isMP4Type = type == nil
       || type == "video/mp4"
       || type == "application/mp4"
+      || type == "audio/mp4"
       || type == "video/quicktime"
       || type == "application/octet-stream"
     guard isMP4Type else { throw MediaDownloadError.unsupportedContainer }
@@ -249,6 +252,13 @@ public final class VideoMediaDownloader: @unchecked Sendable {
   private let store: LocalMediaStore
   private let nowMilliseconds: @Sendable () -> Int64
 
+  /// CDNs (notably Douyin) reject the default `LinkDigest/0.1` client with 403.
+  /// Present the same public browser identity as the audio-download path; still
+  /// never attach cookies or credentials.
+  private static let browserUserAgent =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    + "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+
   public init(
     resources: any SafeResourceFetching,
     store: LocalMediaStore,
@@ -292,7 +302,8 @@ public final class VideoMediaDownloader: @unchecked Sendable {
     // Douyin CDN rejects bare clients without a same-site Referer (403).
     // Use the public page URL when present; never attach cookies or credentials.
     var headers: [String: String] = [
-      "Accept": "video/mp4,video/quicktime,application/octet-stream,*/*",
+      "Accept": "video/mp4,video/quicktime,audio/mp4,application/octet-stream,*/*",
+      "User-Agent": Self.browserUserAgent,
     ]
     if media.platform == "douyin" {
       let referer = pageURL.flatMap { URL(string: $0) }.map { url -> String in
@@ -303,6 +314,11 @@ public final class VideoMediaDownloader: @unchecked Sendable {
       } ?? "https://www.douyin.com/"
       headers["Referer"] = referer
       headers["Origin"] = "https://www.douyin.com"
+    }
+    // 实测 `*.bilivideo.com` 无 Referer 一律 403，带站点根 Referer 即 206。
+    // 只发站点根，不把带查询串的观看页地址泄给 CDN；同样不带 cookie。
+    if media.platform == "bilibili" {
+      headers["Referer"] = "https://www.bilibili.com/"
     }
     // The effective ceiling is the smaller of what the user allowed and what the
     // volume can actually spare, so a large download fails fast with a clear
@@ -327,15 +343,40 @@ public final class VideoMediaDownloader: @unchecked Sendable {
     guard (200...299).contains(response.statusCode) else { throw MediaDownloadError.responseStatus }
     guard response.body.count > 0 else { throw MediaDownloadError.emptyBody }
     guard response.body.count <= effectiveLimit else { throw MediaDownloadError.responseTooLarge }
-    let fileExtension = try LocalMediaStore.validatedContainer(body: response.body, contentType: response.contentType)
-    let stored = try store.storeDetailed(data: response.body, preferredExtension: fileExtension)
+    var body = response.body
+    var fileExtension = try LocalMediaStore.validatedContainer(body: body, contentType: response.contentType)
+
+    // 画面与声音分成两条流的来源（B 站 DASH）：刚下到的只是画面，再取一次音轨，
+    // 在本机合成一个带声音的 mp4 再落库。合成失败就保留画面那条——有画面无声
+    // 也好过整条抓取失败，转写还能另走音轨。
+    if let companion = media.companionAudioURL,
+       let companionURL = URL(string: companion),
+       companionURL.scheme?.lowercased() == "https" {
+      do {
+        let audio = try await resources.fetchResource(
+          .init(url: companionURL, headers: headers, byteLimit: effectiveLimit)
+        )
+        guard (200...299).contains(audio.statusCode), !audio.body.isEmpty else {
+          throw MediaDownloadError.responseStatus
+        }
+        _ = try LocalMediaStore.validatedContainer(body: audio.body, contentType: audio.contentType)
+        body = try await Self.muxedContainer(video: body, audio: audio.body)
+        fileExtension = "mp4"
+      } catch is CancellationError {
+        throw MediaDownloadError.cancelled
+      } catch {
+        // 保留画面那条继续走原路径。
+      }
+    }
+
+    let stored = try store.storeDetailed(data: body, preferredExtension: fileExtension)
     let asset = MediaAsset(
       taskID: taskID,
       snapshotID: snapshotID,
       relativePath: stored.relativePath,
       fileBookmark: stored.fileBookmark,
       contentSHA256: stored.sha256,
-      byteSize: Int64(response.body.count),
+      byteSize: Int64(body.count),
       durationSeconds: media.durationSeconds,
       platform: media.platform,
       author: media.author,
@@ -343,6 +384,26 @@ public final class VideoMediaDownloader: @unchecked Sendable {
       createdAtMilliseconds: nowMilliseconds()
     )
     return .init(asset: asset, storedFile: stored)
+  }
+
+  /// 合成需要文件而不是内存里的字节，所以先落到临时目录，合成完读回来，
+  /// 无论成败都清掉临时文件——这三个中间件都不进媒体库。
+  private static func muxedContainer(video: Data, audio: Data) async throws -> Data {
+    let workspace = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-mux-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: workspace) }
+    let videoURL = workspace.appendingPathComponent("video.mp4", isDirectory: false)
+    let audioURL = workspace.appendingPathComponent("audio.mp4", isDirectory: false)
+    let outputURL = workspace.appendingPathComponent("muxed.mp4", isDirectory: false)
+    try video.write(to: videoURL, options: .atomic)
+    try audio.write(to: audioURL, options: .atomic)
+    try await SeparateTrackMuxer.mux(
+      videoFileURL: videoURL,
+      audioFileURL: audioURL,
+      destinationURL: outputURL
+    )
+    return try Data(contentsOf: outputURL, options: .mappedIfSafe)
   }
 
   private func mapManual(_ error: ManualLinkError) -> MediaDownloadError {

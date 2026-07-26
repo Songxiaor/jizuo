@@ -298,6 +298,11 @@ public final class GitHubREADMEImageCache: @unchecked Sendable {
       || matches(host, domain: "douyincdn.com")
       || matches(host, domain: "douyin.com") {
       headers["Referer"] = "https://www.douyin.com/"
+    } else if matches(host, domain: "miro.medium.com") {
+      // Medium serves article images from Miro. A public site Referer keeps the
+      // request aligned with a normal rendered article without sending cookies
+      // or leaking the captured article's path/query.
+      headers["Referer"] = "https://medium.com/"
     }
     return headers
   }

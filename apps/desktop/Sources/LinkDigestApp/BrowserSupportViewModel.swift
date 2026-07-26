@@ -72,7 +72,8 @@ final class BrowserSupportViewModel: ObservableObject {
   }
 
   func canRepair(_ browser: BrowserSupportBrowser) -> Bool {
-    !isLoading && activeBrowser == nil && isAvailable && [.drifted, .unknownManifest, .installedAppUpdated].contains(status(for: browser).state)
+    !isLoading && activeBrowser == nil && isAvailable
+      && [.currentAppUnverified, .drifted, .unknownManifest, .installedAppUpdated].contains(status(for: browser).state)
   }
 
   func canUninstall(_ browser: BrowserSupportBrowser) -> Bool {
@@ -100,7 +101,7 @@ final class BrowserSupportViewModel: ObservableObject {
     guard canInstall(browser) || canRepair(browser) else { return }
     let state = status(for: browser).state
     let action: BrowserSupportAction = state == .notInstalled ? .install : .repair
-    if [.drifted, .unknownManifest].contains(state) {
+    if [.currentAppUnverified, .drifted, .unknownManifest].contains(state) {
       guard let fingerprint = status(for: browser).replacementFingerprint else { return }
       presentation = .confirmation(.init(action: action, browser: browser, fingerprint: fingerprint))
       return

@@ -97,9 +97,14 @@ public final class TranscriptionTempStore: @unchecked Sendable {
   }
 
   public func prepare(descriptor: MediaDescriptor) async throws -> TranscriptionTempFile {
+    // B 站 DASH 等拆轨源：ephemeralPlaybackURL 只有画面，companionAudioURL 才是
+    // 可导出的音轨。有伴随音轨时只下音频——既修转写失败，也把临时占用从整段
+    // 视频降到音频。合流 mp4（抖音/微信/X）没有独立音轨，仍走主播放地址。
     guard descriptor.kind == .directFile,
-          descriptor.transcriptionCapability != .unavailable,
-          let rawURL = descriptor.ephemeralPlaybackURL,
+          descriptor.transcriptionCapability != .unavailable
+    else { throw MediaDownloadError.invalidURL }
+    let rawURL = Self.preferredTranscriptionSourceURL(descriptor)
+    guard let rawURL,
           let remoteURL = URL(string: rawURL),
           remoteURL.scheme?.lowercased() == "https"
     else { throw MediaDownloadError.invalidURL }
@@ -114,11 +119,15 @@ public final class TranscriptionTempStore: @unchecked Sendable {
     let directory = workspace.directoryURL
     do {
       try Task.checkCancellation()
-      var headers = ["Accept": "video/mp4,video/quicktime,application/octet-stream,*/*"]
+      var headers = ["Accept": "video/mp4,video/quicktime,audio/mp4,application/octet-stream,*/*"]
       if descriptor.platform == "douyin" {
         let referer = Self.publicReferer(descriptor.pageURL) ?? "https://www.douyin.com/"
         headers["Referer"] = referer
         headers["Origin"] = "https://www.douyin.com"
+      }
+      // 实测 `*.bilivideo.com` 无 Referer 一律 403，带站点根 Referer 即 206。
+      if descriptor.platform == "bilibili" {
+        headers["Referer"] = "https://www.bilibili.com/"
       }
       let response = try await resources.fetchResource(.init(
         url: remoteURL,
@@ -156,6 +165,16 @@ public final class TranscriptionTempStore: @unchecked Sendable {
       if let value = error as? ManualLinkError { throw Self.mapManual(value) }
       throw TranscriptionTempStoreError.unavailable
     }
+  }
+
+  /// 转写输入源：优先伴随音轨，否则主播放地址。供测试与调用方断言选轨逻辑。
+  public static func preferredTranscriptionSourceURL(_ descriptor: MediaDescriptor) -> String? {
+    if let companion = descriptor.companionAudioURL,
+       let url = URL(string: companion),
+       url.scheme?.lowercased() == "https" {
+      return companion
+    }
+    return descriptor.ephemeralPlaybackURL
   }
 
   public func cleanup(attemptID: String) throws {

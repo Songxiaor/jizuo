@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import LinkDigestAdapters
+import LinkDigestCore
 
 @MainActor
 final class MediaStorageSettingsViewModel: ObservableObject {
@@ -9,13 +10,31 @@ final class MediaStorageSettingsViewModel: ObservableObject {
   @Published private(set) var directoryPath = "默认（App 本地数据目录）"
   @Published private(set) var usesCustomDirectory = false
   @Published private(set) var state: State = .idle
-  @Published var autoSaveCapturedVideo = true {
+  @Published var autoSaveCapturedVideo = false {
     didSet {
       guard autoSaveCapturedVideo != oldValue else { return }
       store.autoSaveCapturedVideo = autoSaveCapturedVideo
       state = .saved
     }
   }
+  /// History streaming recovery: auto-refresh vs manual “重新获取播放”.
+  @Published var sessionMediaRestoreMode: SessionMediaRestoreMode = .default {
+    didSet {
+      guard sessionMediaRestoreMode != oldValue else { return }
+      store.sessionMediaRestoreMode = sessionMediaRestoreMode
+      state = .saved
+    }
+  }
+  /// B 站重新获取时的清晰度偏好上限。
+  @Published var bilibiliStreamQuality: BilibiliStreamQualityPreference = .default {
+    didSet {
+      guard bilibiliStreamQuality != oldValue else { return }
+      store.bilibiliStreamQuality = bilibiliStreamQuality
+      state = .saved
+    }
+  }
+  @Published var isBilibiliLoginPresented = false
+  let bilibiliSession = BilibiliSiteSessionController.shared
   /// Ceiling for 保存到本地, in whole GB — the unit the user actually reasons in.
   @Published var downloadLimitGigabytes: Int = 16 {
     didSet {
@@ -46,6 +65,15 @@ final class MediaStorageSettingsViewModel: ObservableObject {
     if storedAutoSave != autoSaveCapturedVideo {
       _autoSaveCapturedVideo = Published(initialValue: storedAutoSave)
     }
+    let storedRestore = store.sessionMediaRestoreMode
+    if storedRestore != sessionMediaRestoreMode {
+      _sessionMediaRestoreMode = Published(initialValue: storedRestore)
+    }
+    let storedQuality = store.bilibiliStreamQuality
+    if storedQuality != bilibiliStreamQuality {
+      _bilibiliStreamQuality = Published(initialValue: storedQuality)
+    }
+    Task { await bilibiliSession.refreshStatus() }
     do {
       if let url = try store.resolvedDirectoryURL() {
         directoryPath = url.path
@@ -84,5 +112,16 @@ final class MediaStorageSettingsViewModel: ObservableObject {
     directoryPath = "默认（App 本地数据目录）"
     usesCustomDirectory = false
     state = .saved
+  }
+
+  func presentBilibiliLogin() {
+    isBilibiliLoginPresented = true
+  }
+
+  func clearBilibiliSession() {
+    Task {
+      await bilibiliSession.clear()
+      state = .saved
+    }
   }
 }

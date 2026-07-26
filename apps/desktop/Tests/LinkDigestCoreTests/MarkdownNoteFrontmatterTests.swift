@@ -57,6 +57,20 @@ final class MarkdownNoteFrontmatterTests: XCTestCase {
     XCTAssertEqual(note.collects, "890")
   }
 
+  func testMapsLegacyXRepliesAndRepostsToSharedDisplayFields() {
+    let note = MarkdownNoteFrontmatter.parse("""
+    ---
+    replies: "12"
+    reposts: "34"
+    ---
+
+    帖子正文
+    """)
+    XCTAssertEqual(note.comments, "12")
+    XCTAssertEqual(note.shares, "34")
+    XCTAssertTrue(note.hasEngagementStats)
+  }
+
   func testMissingFrontmatterReturnsOriginalBody() {
     let source = "纯正文没有属性头。"
     let note = MarkdownNoteFrontmatter.parse(source)

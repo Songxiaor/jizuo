@@ -12,6 +12,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
   case siliconFlow
   case dashScope
   case zhipu
+  case stepFun
   case ollama
   case custom
 
@@ -26,6 +27,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .siliconFlow: "SiliconFlow"
     case .dashScope: "阿里云百炼"
     case .zhipu: "智谱 BigModel"
+    case .stepFun: "阶跃星辰"
     case .ollama: "Ollama（本地）"
     case .custom: "自定义"
     }
@@ -40,6 +42,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .siliconFlow: "https://api.siliconflow.cn/v1"
     case .dashScope: "https://dashscope.aliyuncs.com/compatible-mode/v1"
     case .zhipu: "https://open.bigmodel.cn/api/paas/v4"
+    case .stepFun: "https://api.stepfun.com/v1"
     case .ollama: "http://127.0.0.1:11434/v1"
     case .custom: ""
     }
@@ -56,6 +59,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .siliconFlow: "SF"
     case .dashScope: "Q"
     case .zhipu: "Z"
+    case .stepFun: "阶"
     case .ollama: "OL"
     case .custom: "＋"
     }
@@ -70,6 +74,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .siliconFlow: 0x0F766E
     case .dashScope: 0x615CED
     case .zhipu: 0x2563EB
+    case .stepFun: 0x165DFF
     case .ollama: 0x334155
     case .custom: 0x64748B
     }

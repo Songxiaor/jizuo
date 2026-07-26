@@ -88,6 +88,9 @@ public struct MediaDescriptor: Codable, Sendable, Equatable {
   public let canonicalURL: String
   public let platform: String
   public let ephemeralPlaybackURL: String?
+  /// 画面与声音分成两条流的来源（B 站 DASH）：`ephemeralPlaybackURL` 是画面，
+  /// 这一条是配套音轨，下载后在本机合成一个带声音的文件。与主地址同一有效期。
+  public let companionAudioURL: String?
   public let mimeType: String?
   public let posterURL: String?
   public let durationSeconds: Double?
@@ -105,6 +108,7 @@ public struct MediaDescriptor: Codable, Sendable, Equatable {
     canonicalURL: String,
     platform: String,
     ephemeralPlaybackURL: String? = nil,
+    companionAudioURL: String? = nil,
     mimeType: String? = nil,
     posterURL: String? = nil,
     durationSeconds: Double? = nil,
@@ -121,6 +125,7 @@ public struct MediaDescriptor: Codable, Sendable, Equatable {
     self.canonicalURL = canonicalURL
     self.platform = platform
     self.ephemeralPlaybackURL = ephemeralPlaybackURL
+    self.companionAudioURL = companionAudioURL
     self.mimeType = mimeType
     self.posterURL = posterURL
     self.durationSeconds = durationSeconds

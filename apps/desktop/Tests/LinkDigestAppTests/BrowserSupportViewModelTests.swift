@@ -125,6 +125,20 @@ final class BrowserSupportViewModelTests: XCTestCase {
     XCTAssertEqual(calls, [])
   }
 
+  func testCurrentAppUnverifiedIsUsableButStillRequiresOwnershipConfirmation() async {
+    let installer = BrowserSupportMockInstaller(values: statuses(chrome: .currentAppUnverified))
+    let model = BrowserSupportViewModel(installer: installer)
+    await model.load()
+
+    XCTAssertTrue(model.canRepair(.chrome))
+    XCTAssertFalse(model.canUninstall(.chrome))
+    await model.requestInstall(.chrome)
+
+    XCTAssertEqual(model.pendingConfirmation?.browser, .chrome)
+    let calls = await installer.recordedCalls()
+    XCTAssertEqual(calls, [])
+  }
+
   func testDirectActionDuringAnotherInstallDoesNotQueueSecondFilesystemOperation() async {
     let barrier = BrowserSupportBarrier()
     let installer = BrowserSupportMockInstaller(values: statuses(), installBarrier: barrier)
@@ -172,7 +186,9 @@ final class BrowserSupportViewModelTests: XCTestCase {
   }
 
   private func statuses(chrome: BrowserSupportInstallState = .notInstalled) -> [BrowserSupportStatus] {
-    let fingerprint = [.drifted, .unknownManifest].contains(chrome) ? "fixture-confirmation" : nil
+    let fingerprint = [.currentAppUnverified, .drifted, .unknownManifest].contains(chrome)
+      ? "fixture-confirmation"
+      : nil
     return [
       .init(browser: .chrome, state: chrome, hasRecoverableBackup: false, replacementFingerprint: fingerprint),
       .init(browser: .brave, state: chrome, hasRecoverableBackup: false, replacementFingerprint: fingerprint),

@@ -29,6 +29,11 @@ public enum BrowserSupportInstallState: Sendable, Equatable {
   /// hashes went stale because the app itself was updated. Functionally
   /// healthy — repair merely refreshes the receipt.
   case installedAppUpdated
+  /// The manifest already points at this exact App and is therefore usable,
+  /// but its bytes are not bound by the receipt (for example, only JSON
+  /// formatting differs). Repair still requires confirmation before
+  /// LinkDigest may claim ownership.
+  case currentAppUnverified
   case drifted
   case unknownManifest
   case invalidReceipt
@@ -295,7 +300,9 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
       let backup = (try? recoverableBackup(for: key)) != nil
       do {
         let state = try state(for: browser)
-        let fingerprint = [.drifted, .unknownManifest].contains(state) ? try replacementFingerprint(for: browser) : nil
+        let fingerprint = [.currentAppUnverified, .drifted, .unknownManifest].contains(state)
+          ? try replacementFingerprint(for: browser)
+          : nil
         return .init(browser: browser, state: state, hasRecoverableBackup: backup, replacementFingerprint: fingerprint)
       } catch {
         return .init(browser: browser, state: .unavailableArtifact, hasRecoverableBackup: backup)
@@ -465,11 +472,13 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
       && existing == expected {
       return .installed
     }
-    // Distinguish an updated app from a tampered target: when the manifest is
-    // still exactly what this app would install and the receipt binds that
-    // content, only the receipt snapshot is stale — not the install itself.
-    if existing == expected, entry.manifestSHA256 == BrowserSupportFrozenArtifacts.sha256(existing) {
-      return .installedAppUpdated
+    // Distinguish an updated app or formatting-only rewrite from a tampered
+    // target. Ownership stays byte-bound below even when the JSON value is
+    // functionally identical.
+    if manifestsAreFunctionallyEquivalent(existing, expected) {
+      return entry.manifestSHA256 == BrowserSupportFrozenArtifacts.sha256(existing)
+        ? .installedAppUpdated
+        : .currentAppUnverified
     }
     return .drifted
   }
@@ -527,6 +536,21 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
     ]
     guard JSONSerialization.isValidJSONObject(rendered) else { throw BrowserSupportInstallerError.frozenArtifactUnavailable }
     return try JSONSerialization.data(withJSONObject: rendered, options: [.sortedKeys])
+  }
+
+  /// Chromium cares about the JSON value, not whitespace or key order. Keep
+  /// ownership checks byte-exact, but do not report a working, semantically
+  /// identical manifest as a broken connection merely because another
+  /// installer formatted the JSON differently.
+  private func manifestsAreFunctionallyEquivalent(_ lhs: Data, _ rhs: Data) -> Bool {
+    guard
+      let lhsObject = try? JSONSerialization.jsonObject(with: lhs) as? [String: Any],
+      let rhsObject = try? JSONSerialization.jsonObject(with: rhs) as? [String: Any],
+      Set(lhsObject.keys) == Set(rhsObject.keys),
+      let normalizedLHS = try? JSONSerialization.data(withJSONObject: lhsObject, options: [.sortedKeys]),
+      let normalizedRHS = try? JSONSerialization.data(withJSONObject: rhsObject, options: [.sortedKeys])
+    else { return false }
+    return normalizedLHS == normalizedRHS
   }
 
   private func updateReceipt(for key: TargetKey, manifest: Data, backup: Receipt.Backup?) throws {

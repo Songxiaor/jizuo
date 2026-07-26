@@ -108,13 +108,14 @@ final class MediaStoragePreferenceStoreTests: XCTestCase {
     XCTAssertEqual(store.downloadLimitBytes, LocalMediaStore.defaultDownloadLimitBytes)
   }
 
-  func testCapturedVideoAutoSaveDefaultsOnWhenKeyWasNeverSet() throws {
+  func testCapturedVideoAutoSaveDefaultsOffWhenKeyWasNeverSet() throws {
     let suite = "linkdigest-auto-save-video-\(UUID().uuidString)"
     let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
     defer { defaults.removePersistentDomain(forName: suite) }
     let store = fixtureStore(defaults: defaults)
 
-    XCTAssertTrue(store.autoSaveCapturedVideo)
+    // 新装机默认不自动落盘；从未写过 key 时解析为 false。
+    XCTAssertFalse(store.autoSaveCapturedVideo)
   }
 
   func testCapturedVideoAutoSaveKeepsExplicitFalseForExistingUser() throws {

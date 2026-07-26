@@ -346,6 +346,50 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
     }
   }
 
+  func testDetailHadMediaDescriptorTracksV2ContractNotPlatform() throws {
+    try withRepository { repository, _ in
+      let pureText = try repository.acceptCapture(
+        .init(envelope: capture(requestID: "text-x", key: "text-x", url: "https://x.com/user/status/1", body: "text only post"), receivedAtMilliseconds: 1)
+      )
+      XCTAssertFalse(
+        try repository.detail(taskID: pureText.taskID).hadMediaDescriptor,
+        "V1 pure-text must not claim a media descriptor"
+      )
+
+      // X (and any platform) with V2 MediaDescriptor must surface the durable fact.
+      let xVideo = try repository.acceptCapture(
+        .init(
+          envelope: v2Capture(
+            media: v2Media(
+              platform: "x",
+              ephemeralPlaybackURL: "https://video.twimg.com/ext_tw_video/1/pu/vid/720x1280/clip.mp4"
+            ),
+            requestID: "x-video",
+            key: "x-video",
+            url: "https://x.com/user/status/2",
+            body: "post with video"
+          ),
+          receivedAtMilliseconds: 2
+        )
+      )
+      XCTAssertTrue(try repository.detail(taskID: xVideo.taskID).hadMediaDescriptor)
+
+      let genericVideo = try repository.acceptCapture(
+        .init(
+          envelope: v2Capture(
+            media: v2Media(platform: "generic"),
+            requestID: "generic-video",
+            key: "generic-video",
+            url: "https://example.test/watch/3",
+            body: "generic page with video"
+          ),
+          receivedAtMilliseconds: 3
+        )
+      )
+      XCTAssertTrue(try repository.detail(taskID: genericVideo.taskID).hadMediaDescriptor)
+    }
+  }
+
   func testOpenCreateDirectoryWriteBackupAndRestoreFailuresAreInjected() throws {
     try withTemporaryLocation(createDirectory: false) { location in
       XCTAssertThrowsError(try LocalDatabase.open(at: location, dependencies: .failing(createDirectory: true))) { XCTAssertEqual($0 as? RepositoryFailure, .injectedFailure) }

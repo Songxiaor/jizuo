@@ -1,4 +1,5 @@
 import Foundation
+import LinkDigestCore
 
 public enum MediaStoragePreferenceError: Error, Sendable, Equatable {
   case invalidDirectory
@@ -100,16 +101,45 @@ public final class UserDefaultsMediaStoragePreferenceStore: @unchecked Sendable 
 
   private var autoSaveCapturedVideoKey: String { key + ".auto-save-captured-video" }
 
-  /// New installs keep captured videos by default. `object(forKey:)` is the
-  /// important distinction here: `bool(forKey:)` alone cannot tell an unset
-  /// key from an existing user's explicit `false` choice.
+  /// New installs leave auto-save off so captures stream without disk use.
+  /// `object(forKey:)` is the important distinction here: `bool(forKey:)` alone
+  /// cannot tell an unset key from an existing user's explicit `false` choice.
+  /// Unset keys now resolve to `false`. Users who already wrote an explicit
+  /// true/false keep that value — there is no migration that rewrites them.
   public var autoSaveCapturedVideo: Bool {
     get {
       defaults.object(forKey: autoSaveCapturedVideoKey) == nil
-        ? true
+        ? false
         : defaults.bool(forKey: autoSaveCapturedVideoKey)
     }
     set { defaults.set(newValue, forKey: autoSaveCapturedVideoKey) }
+  }
+
+  private var sessionMediaRestoreModeKey: String { key + ".session-media-restore-mode" }
+
+  /// How history recovers streaming playback after the in-memory descriptor is gone.
+  /// Default is manual so relaunch does not immediately hit the network for every video.
+  public var sessionMediaRestoreMode: SessionMediaRestoreMode {
+    get {
+      guard let raw = defaults.string(forKey: sessionMediaRestoreModeKey),
+            let mode = SessionMediaRestoreMode(rawValue: raw)
+      else { return .default }
+      return mode
+    }
+    set { defaults.set(newValue.rawValue, forKey: sessionMediaRestoreModeKey) }
+  }
+
+  private var bilibiliStreamQualityKey: String { key + ".bilibili-stream-quality" }
+
+  /// Ceiling for B 站「重新获取播放」清晰度（公开接口仍可能低于浏览器会话档）。
+  public var bilibiliStreamQuality: BilibiliStreamQualityPreference {
+    get {
+      guard let raw = defaults.string(forKey: bilibiliStreamQualityKey),
+            let value = BilibiliStreamQualityPreference(rawValue: raw)
+      else { return .default }
+      return value
+    }
+    set { defaults.set(newValue.rawValue, forKey: bilibiliStreamQualityKey) }
   }
 
   public func resolvedDirectoryURL() throws -> URL? {

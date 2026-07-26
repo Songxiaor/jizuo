@@ -89,6 +89,54 @@ final class ModelLibraryServiceTests: XCTestCase {
     XCTAssertEqual(storedSecond, "sk-two")
   }
 
+  func testAddProfilesSavesOneCatalogSelectionWithOneSharedSecret() async throws {
+    let profileStore = LibraryMemoryProfileStore()
+    let secretStore = LibraryMemorySecretStore()
+    let service = ProviderConfigurationService(
+      profileStore: profileStore,
+      secretStore: secretStore,
+      libraryStore: LibraryMemoryStore()
+    )
+
+    let profiles = try await service.addProfiles(
+      baseURL: "https://api.deepseek.com/v1",
+      models: ["model-a", "model-b", "model-a", "  model-c  "],
+      apiKey: "sk-shared"
+    )
+
+    XCTAssertEqual(profiles.map(\.model), ["model-a", "model-b", "model-c"])
+    XCTAssertEqual(Set(profiles.map(\.secretReference)).count, 1)
+    let library = try await service.loadLibrary()
+    let activeProfile = await profileStore.profile
+    let storedSecrets = await secretStore.values
+    XCTAssertEqual(library.profiles, profiles)
+    XCTAssertEqual(activeProfile, profiles[0])
+    XCTAssertEqual(storedSecrets.count, 1)
+    XCTAssertEqual(storedSecrets[profiles[0].secretReference], "sk-shared")
+  }
+
+  func testDeletingOneBatchProfileKeepsSharedSecretForRemainingModels() async throws {
+    let secretStore = LibraryMemorySecretStore()
+    let service = ProviderConfigurationService(
+      profileStore: LibraryMemoryProfileStore(),
+      secretStore: secretStore,
+      libraryStore: LibraryMemoryStore()
+    )
+    let profiles = try await service.addProfiles(
+      baseURL: "https://api.deepseek.com/v1",
+      models: ["model-a", "model-b"],
+      apiKey: "sk-shared"
+    )
+
+    _ = try await service.deleteProfile(id: profiles[0].id)
+    let retainedSecret = await secretStore.values[profiles[0].secretReference]
+    XCTAssertEqual(retainedSecret, "sk-shared")
+
+    _ = try await service.deleteProfile(id: profiles[1].id)
+    let removedSecret = await secretStore.values[profiles[0].secretReference]
+    XCTAssertNil(removedSecret)
+  }
+
   func testUpdateProfileWithoutKeyKeepsSecretAndSyncsSummarySlot() async throws {
     let profileStore = LibraryMemoryProfileStore()
     let secretStore = LibraryMemorySecretStore()

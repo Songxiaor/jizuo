@@ -104,6 +104,13 @@ private actor ViewModelSecretStore: SecretStore {
   func readCount() -> Int { reads }
 }
 
+private actor ViewModelLibraryStore: ModelLibraryStore {
+  private var library: ModelLibrary?
+
+  func load() async throws -> ModelLibrary? { library }
+  func save(_ library: ModelLibrary) async throws { self.library = library }
+}
+
 private actor ViewModelPreferencesStore: ModelPreferencesStore {
   private var value: ModelPreferences
   private let loadBarrier: SettingsAsyncBarrier?
@@ -323,6 +330,65 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     model.selectModel("model-a")
     XCTAssertEqual(model.modelCatalogState, .loaded, "selecting a returned model must keep the picker available")
     XCTAssertTrue(model.canSaveConfiguration)
+  }
+
+  func testCatalogAllowsMultiSelectionAndSavesAllModelsTogether() async throws {
+    let secretStore = ViewModelSecretStore()
+    let configuration = ProviderConfigurationService(
+      profileStore: ViewModelProfileStore(),
+      secretStore: secretStore,
+      libraryStore: ViewModelLibraryStore()
+    )
+    let model = ProviderSettingsViewModel(
+      configurationService: configuration,
+      provider: SettingsTestProvider(scripts: []),
+      modelCatalogLoader: SettingsCatalogLoader(result: .models(["model-a", "model-b", "model-c"]))
+    )
+    await model.load()
+    model.baseURL = "https://gateway.example.test/v1"
+
+    await model.loadModels(apiKey: "shared-key")
+    model.toggleCatalogModel("model-a")
+    model.toggleCatalogModel("model-c")
+
+    XCTAssertEqual(model.selectedCatalogModels, ["model-a", "model-c"])
+    XCTAssertEqual(model.selectedCatalogModelCount, 2)
+    XCTAssertTrue(model.canSaveConfiguration)
+
+    await model.save(apiKey: "shared-key")
+
+    XCTAssertEqual(model.libraryEntryDisplays.map(\.modelName), ["model-a", "model-c"])
+    XCTAssertEqual(model.lastSavedProfileCount, 2)
+    XCTAssertFalse(model.isEditorVisible)
+    let secretWrites = await secretStore.writeCount()
+    XCTAssertEqual(secretWrites, 1)
+  }
+
+  func testLibraryPresentationUsesFriendlyNamesAndFiltersTranscriptionModels() async throws {
+    let configuration = ProviderConfigurationService(
+      profileStore: ViewModelProfileStore(),
+      secretStore: ViewModelSecretStore(),
+      libraryStore: ViewModelLibraryStore()
+    )
+    _ = try await configuration.addProfiles(
+      baseURL: "https://api.stepfun.com/v1",
+      models: ["stepaudio-2.5-asr", "step-3.7-flash"],
+      apiKey: "fake-key"
+    )
+    let model = ProviderSettingsViewModel(
+      configurationService: configuration,
+      provider: SettingsTestProvider(scripts: [])
+    )
+
+    await model.load()
+
+    XCTAssertEqual(
+      model.libraryEntryDisplays.map(\.displayName),
+      ["StepAudio 2.5 ASR", "Step 3.7 Flash"]
+    )
+    XCTAssertEqual(model.libraryEntryDisplays.map(\.title), ["阶跃星辰", "阶跃星辰"])
+    XCTAssertEqual(model.transcriptionEntryDisplays.map(\.modelName), ["stepaudio-2.5-asr"])
+    XCTAssertEqual(model.summaryEntryDisplays.map(\.modelName), ["step-3.7-flash"])
   }
 
   func testPresetSelectsRecommendedChatModelOnlyWhenCatalogActuallyContainsIt() async throws {

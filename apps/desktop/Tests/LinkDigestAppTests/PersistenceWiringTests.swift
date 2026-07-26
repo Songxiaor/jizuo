@@ -27,12 +27,14 @@ private actor WiringCaptureSink {
 
 private actor V2CaptureObservationSink {
   private(set) var ephemeralPlaybackURL: String?
+  private(set) var companionAudioURL: String?
   private(set) var legacyMediaWasPresent = false
   private(set) var wireVersion: Int?
   private(set) var taskID: TaskID?
 
   func receive(_ value: CurrentCapture) {
     ephemeralPlaybackURL = value.mediaDescriptor?.ephemeralPlaybackURL
+    companionAudioURL = value.mediaDescriptor?.companionAudioURL
     legacyMediaWasPresent = value.document.media != nil
     wireVersion = value.wireEnvelopeV2?.version ?? value.wireEnvelope?.version
     taskID = value.taskID
@@ -584,6 +586,7 @@ final class CaptureReceiverTests: XCTestCase {
 
   func testV2EphemeralPlaybackURLStaysInCurrentCaptureAndOutOfPersistenceInput() async throws {
     let sentinel = "https://media.example.test/video.mp4?ephemeral-sentinel=only-in-memory"
+    let audioSentinel = "https://media.example.test/audio.m4a?ephemeral-sentinel=only-in-memory"
     let posterSentinel = "https://images.example.test/poster.jpg?poster-sentinel=only-in-digest"
     let expiresSentinel = "2099-07-20T00:01:00Z"
     let mediaPageSentinel = "https://media-page.example.test/watch?descriptor-only=1"
@@ -599,6 +602,7 @@ final class CaptureReceiverTests: XCTestCase {
         canonicalURL: "https://example.test/video",
         platform: "generic",
         ephemeralPlaybackURL: sentinel,
+        companionAudioURL: audioSentinel,
         mimeType: "video/mp4",
         posterURL: posterSentinel,
         expiresAt: expiresSentinel,
@@ -619,10 +623,13 @@ final class CaptureReceiverTests: XCTestCase {
       return XCTFail("V2 should be accepted with the existing v1 ACK")
     }
     let observedURL = await sink.ephemeralPlaybackURL
+    let observedAudioURL = await sink.companionAudioURL
     let legacyMediaWasPresent = await sink.legacyMediaWasPresent
     let wireVersion = await sink.wireVersion
     XCTAssertEqual(observedURL, sentinel)
+    XCTAssertEqual(observedAudioURL, audioSentinel)
     XCTAssertFalse(repository.lastAcceptedCommandDescription.contains(sentinel), "repository port must not observe the transient descriptor")
+    XCTAssertFalse(repository.lastAcceptedCommandDescription.contains(audioSentinel), "repository port must not observe the transient companion audio URL")
     XCTAssertFalse(repository.lastAcceptedCommandDescription.contains(posterSentinel), "poster URL must be reduced to the irreversible digest before the repository port")
     XCTAssertFalse(repository.lastAcceptedCommandDescription.contains(expiresSentinel))
     XCTAssertFalse(repository.lastAcceptedCommandDescription.contains(mediaPageSentinel))

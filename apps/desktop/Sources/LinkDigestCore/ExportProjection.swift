@@ -50,18 +50,25 @@ public struct HistoryDetailProjection: Codable, Sendable, Equatable {
   public let tags: [HistoryTag]
   /// Optional local video asset for Loop V captures. Absent for pure-text history.
   public let media: MediaAsset?
+  /// True when any capture delivery for this task used contract V2.
+  /// V2 envelopes always carry a `MediaDescriptor` (ephemeral URLs are not
+  /// persisted); the flag is derived from existing `capture_deliveries` rows,
+  /// not a schema migration.
+  public let hadMediaDescriptor: Bool
   public init(
     task: HistoryTask,
     snapshots: [ContentSnapshot],
     runs: [RunDetail],
     tags: [HistoryTag] = [],
-    media: MediaAsset? = nil
+    media: MediaAsset? = nil,
+    hadMediaDescriptor: Bool = false
   ) {
     self.task = task
     self.snapshots = snapshots
     self.runs = runs
     self.tags = tags
     self.media = media
+    self.hadMediaDescriptor = hadMediaDescriptor
   }
 }
 

@@ -94,7 +94,13 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
       case "description": description = value
       case "likes": likes = value
       case "comments": comments = value
+      case "replies":
+        // Older X captures used extractor-specific names. Keep them readable
+        // while new captures serialize the shared social field names.
+        if comments == nil { comments = value }
       case "shares": shares = value
+      case "reposts":
+        if shares == nil { shares = value }
       case "collects": collects = value
       case "views": views = value
       default: break

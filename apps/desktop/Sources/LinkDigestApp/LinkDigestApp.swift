@@ -41,8 +41,16 @@ private struct DisclosureIdentities {
   let displayIdentity: DataDestinationIdentity
 }
 
+enum BrowserReceiverState: Sendable, Equatable {
+  case starting
+  case ready
+  case unavailable
+}
+
 @MainActor final class AppViewModel: ObservableObject {
   @Published var connection = "等待扩展连接"
+  @Published private(set) var browserReceiverState: BrowserReceiverState = .starting
+  @Published private(set) var lastBrowserCaptureAt: Date?
   @Published private(set) var currentCapture: CurrentCapture?
   @Published private(set) var runState: RunState = .idle
   @Published private(set) var activeRunTaskID: TaskID?
@@ -82,12 +90,19 @@ private struct DisclosureIdentities {
 
   func setConnection(_ value: String) { connection = value }
 
+  func setBrowserReceiverAvailable(_ available: Bool) {
+    browserReceiverState = available ? .ready : .unavailable
+  }
+
   func setStorageAvailability(_ value: StorageAvailability) {
     storageAvailability = value
   }
 
   func receive(_ value: CurrentCapture) {
     connection = "已连接"
+    if value.wireEnvelope != nil || value.wireEnvelopeV2 != nil {
+      lastBrowserCaptureAt = Date()
+    }
     if let preparationAttempt,
        !matchesCurrentCapture(preparationAttempt.capture, value) {
       releasePreparation(ifOwner: preparationAttempt.token)
@@ -727,6 +742,7 @@ private struct DisclosureIdentities {
   @StateObject private var providerSettings: ProviderSettingsViewModel
   @StateObject private var browserSupport: BrowserSupportViewModel
   @StateObject private var mediaStorageSettings: MediaStorageSettingsViewModel
+  @StateObject private var sessionMediaPlayback: SessionMediaPlaybackController
   @State private var didBootstrap = false
 
   private let configurationService: ProviderConfigurationService
@@ -800,6 +816,16 @@ private struct DisclosureIdentities {
     let manualResourceFetcher = ProxyAwareWebPageFetcher()
     let faviconCache = cacheRoot.map { WebsiteFaviconCache(applicationSupportRoot: $0) }
     let mediaStoragePreference = UserDefaultsMediaStoragePreferenceStore()
+    let sessionMediaPlaybackController = SessionMediaPlaybackController(
+      preferenceStore: mediaStoragePreference,
+      refreshService: SessionMediaRefreshService(
+        resources: manualResourceFetcher,
+        bilibiliQuality: { mediaStoragePreference.bilibiliStreamQuality },
+        bilibiliCookieHeader: {
+          await BilibiliSiteSessionController.shared.cookieHeader()
+        }
+      )
+    )
     let mediaStore = cacheRoot.map {
       LocalMediaStore(
         applicationSupportRoot: $0,
@@ -833,6 +859,7 @@ private struct DisclosureIdentities {
     // Douyin is registered first so short links never fall into the generic HTML path.
     let historyModel = HistoryViewModel(
       imageCache: imageCache,
+      imageResources: manualResourceFetcher,
       mediaStore: mediaStore,
       mediaDownloader: mediaDownloader,
       faviconCache: faviconCache,
@@ -903,6 +930,9 @@ private struct DisclosureIdentities {
         // extension's 10s native-message budget. Image downloads are fail-open and
         // must never sit on the socket response path (WeChat/X media often >10s).
         await model.receive(value)
+        // Keep a process-only playable descriptor in the session LRU so switching
+        // back within the capacity limit does not need a network refresh.
+        await sessionMediaPlaybackController.rememberCurrentCapture(value)
         await historyModel.reveal(taskID: value.taskID)
         // Video download starts immediately so signed URLs are not kept for later.
         // It runs off the native-message ACK path (same fail-open pattern as images).
@@ -1030,6 +1060,7 @@ private struct DisclosureIdentities {
     _mediaStorageSettings = StateObject(
       wrappedValue: MediaStorageSettingsViewModel(store: mediaStoragePreference)
     )
+    _sessionMediaPlayback = StateObject(wrappedValue: sessionMediaPlaybackController)
   }
 
   var body: some Scene {
@@ -1038,7 +1069,8 @@ private struct DisclosureIdentities {
         model: historyModel,
         appModel: model,
         manualLink: manualLink,
-        providerSettings: providerSettings
+        providerSettings: providerSettings,
+        sessionMediaPlayback: sessionMediaPlayback
       )
         .task {
           manualLink.handleScenePhase(scenePhase)
@@ -1089,6 +1121,7 @@ private struct DisclosureIdentities {
           if !result.serverStarted {
             model.setConnection("接收服务启动失败")
           }
+          model.setBrowserReceiverAvailable(result.serverStarted)
         }
         .onChange(of: scenePhase) { _, phase in
           manualLink.handleScenePhase(phase)
@@ -1099,6 +1132,9 @@ private struct DisclosureIdentities {
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
           manualLink.handleApplicationDidBecomeActive()
         }
+        // Without a floor the three-column layout collapses to the two sidebar
+        // minimums plus a detail pane too narrow to read.
+        .frame(minWidth: 900, minHeight: 620)
     }
     .defaultSize(width: 1100, height: 760)
     .windowResizability(.contentMinSize)
@@ -1106,14 +1142,39 @@ private struct DisclosureIdentities {
     .commands { LinkDigestCommands(manualLink: manualLink) }
 
     Settings {
+      // The window's size floor lives on ProviderSettingsView itself; adding a
+      // second, smaller frame here would only be dead weight.
       ProviderSettingsView(
         model: providerSettings,
+        appModel: model,
         browserSupport: browserSupport,
         mediaStorage: mediaStorageSettings
       )
-        .frame(minWidth: 600, minHeight: 620)
+        .background(SettingsWindowResizer())
     }
+    .windowResizability(.contentMinSize)
+    // Hiding the toolbar outright also takes the titlebar (and the traffic
+    // lights) with it, so this is as tight as the top can get.
+    .windowToolbarStyle(.unifiedCompact(showsTitle: true))
   }
+}
+
+/// AppKit hands the Settings scene a window without `.resizable`, and
+/// `windowResizability` does not override that, so the zoom button stays dead
+/// and the window is pinned to its content size. Put the flag back on and lift
+/// the size ceiling; the floor still comes from the SwiftUI content frame.
+private struct SettingsWindowResizer: NSViewRepresentable {
+  func makeNSView(context: Context) -> NSView {
+    let probe = NSView(frame: .zero)
+    DispatchQueue.main.async {
+      guard let window = probe.window else { return }
+      window.styleMask.insert(.resizable)
+      window.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    }
+    return probe
+  }
+
+  func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 #if DEBUG

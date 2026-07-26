@@ -47,6 +47,7 @@ final class ProviderSettingsViewModel: ObservableObject {
   @Published private(set) var selectedPreset: ProviderPreset = .custom
   @Published var modelSearchQuery = ""
   @Published private(set) var availableModels: [String] = []
+  @Published private(set) var selectedCatalogModels: Set<String> = []
   @Published private(set) var modelCatalogState: ModelCatalogState = .idle
   @Published private(set) var state: ProviderSettingsState = .unconfigured
   @Published private(set) var connectionTestState: ConnectionTestState = .idle
@@ -73,6 +74,7 @@ final class ProviderSettingsViewModel: ObservableObject {
   /// nil while adding a new model; otherwise the library entry being edited.
   @Published private(set) var editingProfileID: String?
   @Published private(set) var isEditorVisible = false
+  @Published private(set) var lastSavedProfileCount = 0
 
   private let configurationService: ProviderConfigurationService
   private let provider: any ModelProvider
@@ -126,12 +128,25 @@ final class ProviderSettingsViewModel: ObservableObject {
   }
 
   var canSaveConfiguration: Bool {
-    !isConfigurationLoading
+    let hasModelSelection = isAddingModelBatch
+      ? !selectedCatalogModels.isEmpty
+      : !modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    return !isConfigurationLoading
       && !isSaving
       && !isTestingConnection
       && (!hasConfiguredAPIKey || isReplacingAPIKey || isEditingLibraryEntry)
-      && !modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && hasModelSelection
       && (modelCatalogLoader == nil || hasConfiguredAPIKey || modelCatalogState == .loaded || isManualModelEntryEnabled)
+  }
+
+  var isAddingModelBatch: Bool {
+    editingProfileID == nil && modelCatalogState == .loaded && !availableModels.isEmpty
+  }
+
+  var selectedCatalogModelCount: Int { selectedCatalogModels.count }
+
+  var orderedSelectedCatalogModels: [String] {
+    availableModels.filter { selectedCatalogModels.contains($0) }
   }
 
   /// Multi-profile editing keeps the stored secret, so saving endpoint/model
@@ -202,7 +217,8 @@ final class ProviderSettingsViewModel: ObservableObject {
     switch modelCatalogState {
     case .idle: "先填写 Base URL 和 API Key，再验证模型列表；匹配推荐模型时会自动选择。"
     case .loading: "正在读取模型列表…"
-    case .loaded: "已验证 /models，并读取 \(availableModels.count) 个模型；请选择后保存。"
+    case .loaded:
+      "已读取 \(availableModels.count) 个模型；已选择 \(selectedCatalogModels.count) 个。"
     case let .failed(code): modelCatalogFailureText(code)
     }
   }
@@ -243,7 +259,7 @@ final class ProviderSettingsViewModel: ObservableObject {
     case .saving:
       "正在安全保存…"
     case .configured:
-      "模型配置已保存"
+      lastSavedProfileCount > 1 ? "已保存 \(lastSavedProfileCount) 个模型配置" : "模型配置已保存"
     case let .failed(code):
       V02ErrorCatalog.presentation(for: code).visibleText
     }
@@ -323,15 +339,88 @@ final class ProviderSettingsViewModel: ObservableObject {
     let id: String
     let title: String
     let modelName: String
+    let displayName: String
     let preset: ProviderPreset
+    let supportsOnlineTranscription: Bool
   }
 
   var libraryEntryDisplays: [LibraryEntryDisplay] {
     libraryProfiles.map { profile in
       let preset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
       let title = preset == .custom ? (profile.baseURL.host ?? "自定义") : preset.displayName
-      return LibraryEntryDisplay(id: profile.id, title: title, modelName: profile.model, preset: preset)
+      return LibraryEntryDisplay(
+        id: profile.id,
+        title: title,
+        modelName: profile.model,
+        displayName: Self.friendlyModelName(profile.model),
+        preset: preset,
+        supportsOnlineTranscription: Self.isTranscriptionModel(profile.model)
+      )
     }
+  }
+
+  var transcriptionEntryDisplays: [LibraryEntryDisplay] {
+    libraryEntryDisplays.filter(\.supportsOnlineTranscription)
+  }
+
+  var summaryEntryDisplays: [LibraryEntryDisplay] {
+    libraryEntryDisplays.filter { !$0.supportsOnlineTranscription }
+  }
+
+  static func friendlyModelName(_ modelName: String) -> String {
+    let leaf = modelName
+      .split(separator: "/")
+      .last
+      .map(String.init)?
+      .trimmingCharacters(in: CharacterSet(charactersIn: "~"))
+      ?? modelName
+    let replacements: [String: String] = [
+      "asr": "ASR",
+      "tts": "TTS",
+      "gpt": "GPT",
+      "glm": "GLM",
+      "llm": "LLM",
+      "ocr": "OCR",
+      "api": "API",
+      "deepseek": "DeepSeek",
+      "stepaudio": "StepAudio",
+      "step": "Step",
+      "whisper": "Whisper",
+      "qwen": "Qwen",
+      "llama": "Llama",
+      "gemini": "Gemini",
+      "claude": "Claude",
+      "flash": "Flash",
+      "turbo": "Turbo",
+      "mini": "Mini",
+      "nano": "Nano",
+      "pro": "Pro",
+      "chat": "Chat",
+      "realtime": "Realtime",
+      "latest": "Latest",
+    ]
+    let words = leaf
+      .split(whereSeparator: { $0 == "-" || $0 == "_" })
+      .map(String.init)
+      .map { word -> String in
+        let lowercased = word.lowercased()
+        if let replacement = replacements[lowercased] { return replacement }
+        if lowercased.hasPrefix("v"), lowercased.dropFirst().first?.isNumber == true {
+          return "V" + lowercased.dropFirst()
+        }
+        guard let first = word.first else { return word }
+        return String(first).uppercased() + word.dropFirst()
+      }
+    return words.isEmpty ? modelName : words.joined(separator: " ")
+  }
+
+  static func isTranscriptionModel(_ modelName: String) -> Bool {
+    let normalized = modelName.lowercased()
+    return normalized.contains("whisper")
+      || normalized.contains("transcrib")
+      || normalized.contains("speech-to-text")
+      || normalized.contains("speech_to_text")
+      || normalized.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).contains("asr")
   }
 
   func refreshLibrary() async {
@@ -357,6 +446,8 @@ final class ProviderSettingsViewModel: ObservableObject {
     isReplacingAPIKey = false
     connectionTestState = .idle
     state = .unconfigured
+    selectedCatalogModels = []
+    lastSavedProfileCount = 0
     invalidateModelCatalog()
   }
 
@@ -373,6 +464,8 @@ final class ProviderSettingsViewModel: ObservableObject {
     isReplacingAPIKey = false
     connectionTestState = .idle
     state = .configured
+    selectedCatalogModels = []
+    lastSavedProfileCount = 0
     invalidateModelCatalog()
   }
 
@@ -497,8 +590,21 @@ final class ProviderSettingsViewModel: ObservableObject {
       translationModelName = trimmed
       usesSeparateTranslationModel = true
     } else {
+      if isAddingModelBatch, availableModels.contains(trimmed) {
+        selectedCatalogModels = [trimmed]
+      }
       modelName = trimmed
     }
+  }
+
+  func toggleCatalogModel(_ value: String) {
+    guard isAddingModelBatch, availableModels.contains(value) else { return }
+    if selectedCatalogModels.contains(value) {
+      selectedCatalogModels.remove(value)
+    } else {
+      selectedCatalogModels.insert(value)
+    }
+    modelName = orderedSelectedCatalogModels.first ?? ""
   }
 
   func apiKeyDraftDidChange() {
@@ -517,36 +623,46 @@ final class ProviderSettingsViewModel: ObservableObject {
     connectionTestState = .idle
     state = .saving
     let submittedBaseURL = baseURL
-    let submittedModel = modelName
+    let submittedModels = isAddingModelBatch
+      ? orderedSelectedCatalogModels
+      : [modelName]
 
     do {
-      let profile: ProviderProfile
+      let savedProfiles: [ProviderProfile]
       if let editingProfileID {
         // Replacing the key requires a fresh value; otherwise keep the
         // stored secret and only update endpoint/model.
         let submittedKey: String? = shouldShowAPIKeyInput ? apiKey : nil
-        profile = try await configurationService.updateProfile(
+        savedProfiles = [try await configurationService.updateProfile(
           id: editingProfileID,
           baseURL: submittedBaseURL,
-          model: submittedModel,
+          model: submittedModels[0],
           apiKey: submittedKey,
           allowLoopbackHTTP: Self.isExactLoopbackHTTP(submittedBaseURL)
-        )
+        )]
       } else {
-        profile = try await configurationService.addProfile(
+        savedProfiles = try await configurationService.addProfiles(
           baseURL: submittedBaseURL,
-          model: submittedModel,
+          models: submittedModels,
           apiKey: apiKey,
           allowLoopbackHTTP: Self.isExactLoopbackHTTP(submittedBaseURL)
         )
-        editingProfileID = profile.id
+      }
+      guard let profile = savedProfiles.first else {
+        throw ProviderConfigurationError.modelRequired
       }
       savedIdentity = DataDestinationIdentity(profile: profile)
+      modelName = profile.model
+      lastSavedProfileCount = savedProfiles.count
       connectionTestState = .idle
       isReplacingAPIKey = false
       state = .configured
       selectedPreset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
       await refreshLibrary()
+      if editingProfileID == nil {
+        selectedCatalogModels = []
+        isEditorVisible = false
+      }
     } catch let error as ProviderConfigurationError {
       state = .failed(code: error.rawValue)
     } catch {
@@ -679,6 +795,7 @@ final class ProviderSettingsViewModel: ObservableObject {
           modelName = onlyModel
         }
       }
+      selectedCatalogModels = availableModels.contains(modelName) ? [modelName] : []
       modelCatalogState = .loaded
       isManualModelEntryEnabled = false
     } catch is CancellationError {
@@ -741,6 +858,7 @@ final class ProviderSettingsViewModel: ObservableObject {
     activeModelCatalogRequest = nil
     modelCatalogState = .idle
     availableModels = []
+    selectedCatalogModels = []
     isManualModelEntryEnabled = false
   }
 

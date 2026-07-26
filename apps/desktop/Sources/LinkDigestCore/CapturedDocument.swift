@@ -26,9 +26,10 @@ public struct CapturedDocument: Sendable, Equatable {
   /// True only when an explicit browser capture reused the current page's
   /// same-origin session. It is local evidence, never a cookie value.
   public let usedCookie: Bool
-  /// Optional legacy media metadata carried from the wire or a source adapter.
-  /// Browser URLs stay process-only until an explicit save; persistence stores
-  /// only local file metadata in `media_assets`, never the remote URL.
+  /// Optional legacy media metadata carried from V1 or a local source adapter.
+  /// V2 browser media stays on the application-layer session descriptor; it
+  /// must not enter the repository-facing document. Persistence stores only
+  /// local file metadata in `media_assets`, never the remote URL.
   public let media: CaptureMedia?
 
   public init(
@@ -111,15 +112,7 @@ public struct CapturedDocument: Sendable, Equatable {
       capturedAt: envelope.capture.capturedAt,
       sourceLabel: envelope.evidence.sourceLabel,
       usedCookie: envelope.evidence.usedCookie,
-      media: envelope.media.ephemeralPlaybackURL.map { playbackURL in
-        CaptureMedia(
-          platform: envelope.media.platform,
-          videoURL: playbackURL,
-          coverURL: envelope.media.posterURL,
-          durationSeconds: envelope.media.durationSeconds,
-          author: envelope.media.author
-        )
-      }
+      media: nil
     )
   }
 }
@@ -129,6 +122,8 @@ public struct CapturedDocument: Sendable, Equatable {
 public struct CaptureMedia: Sendable, Equatable {
   public let platform: String
   public let videoURL: String
+  /// 只有画面的流（B 站 DASH）配套的音轨地址。下载时两条一起取，在本机合成。
+  public let companionAudioURL: String?
   public let coverURL: String?
   public let durationSeconds: Double?
   public let author: String?
@@ -136,12 +131,14 @@ public struct CaptureMedia: Sendable, Equatable {
   public init(
     platform: String,
     videoURL: String,
+    companionAudioURL: String? = nil,
     coverURL: String? = nil,
     durationSeconds: Double? = nil,
     author: String? = nil
   ) {
     self.platform = platform
     self.videoURL = videoURL
+    self.companionAudioURL = companionAudioURL
     self.coverURL = coverURL
     self.durationSeconds = durationSeconds
     self.author = author

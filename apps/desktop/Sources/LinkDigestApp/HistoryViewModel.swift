@@ -490,6 +490,7 @@ final class HistoryViewModel: ObservableObject {
 
   private let worker = HistoryRepositoryWorker()
   private let imageCache: GitHubREADMEImageCache?
+  private let imageResources: (any SafeResourceFetching)?
   private let mediaStore: LocalMediaStore?
   private let mediaDownloader: VideoMediaDownloader?
   private let mediaDownloadOperation: (@Sendable (
@@ -525,6 +526,8 @@ final class HistoryViewModel: ObservableObject {
   private(set) var pendingProtectedDeletionTaskIDs: Set<TaskID> = []
   private var pageTask: Task<Void, Never>?
   private var detailTask: Task<Void, Never>?
+  private var imageBackfillTask: Task<Void, Never>?
+  private var imageBackfillAttemptedSnapshotIDs: Set<ContentSnapshotID> = []
   private var deleteTask: Task<Void, Never>?
   private var exportTask: Task<Void, Never>?
   private var faviconTask: Task<Void, Never>?
@@ -547,6 +550,7 @@ final class HistoryViewModel: ObservableObject {
 
   init(
     imageCache: GitHubREADMEImageCache? = nil,
+    imageResources: (any SafeResourceFetching)? = nil,
     mediaStore: LocalMediaStore? = nil,
     mediaDownloader: VideoMediaDownloader? = nil,
     mediaDownloadOperation: (@Sendable (
@@ -571,6 +575,7 @@ final class HistoryViewModel: ObservableObject {
     }
   ) {
     self.imageCache = imageCache
+    self.imageResources = imageResources
     self.mediaStore = mediaStore
     self.mediaDownloader = mediaDownloader
     self.mediaDownloadOperation = mediaDownloadOperation
@@ -588,7 +593,7 @@ final class HistoryViewModel: ObservableObject {
     self.nowMilliseconds = nowMilliseconds
   }
 
-  deinit { pageTask?.cancel(); detailTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); faviconTask?.cancel(); tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel() }
+  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); faviconTask?.cancel(); tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel() }
 
   var canDelete: Bool { history != nil && !isReadOnly && !selectedTaskIDs.isEmpty && !isDeleting }
   var canExport: Bool { history != nil && selectedTaskID != nil && !isPreparingExport }
@@ -756,7 +761,8 @@ final class HistoryViewModel: ObservableObject {
     }
     hasConfiguredHistory = true
     configurationGeneration = UUID()
-    pageTask?.cancel(); detailTask?.cancel(); deleteTask?.cancel(); faviconTask?.cancel(); tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); invalidateExportPreparation()
+    pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); faviconTask?.cancel(); tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); invalidateExportPreparation()
+    imageBackfillAttemptedSnapshotIDs = []
     self.history = history; self.isReadOnly = isReadOnly
     historyReadOnlyReason = isReadOnly ? readOnlyReason : nil
     blockingErrorCode = unavailableCode
@@ -2574,8 +2580,14 @@ final class HistoryViewModel: ObservableObject {
     switch result {
     case let .success(value):
       detail = value
-      if let snapshotID = value.snapshots.last?.id {
+      if let snapshot = value.snapshots.last {
+        let snapshotID = snapshot.id
         localImageURLs = imageCache?.localImageURLs(taskID: taskID, snapshotID: snapshotID) ?? []
+        backfillRemoteImagesIfNeeded(
+          snapshot: snapshot,
+          taskID: taskID,
+          generation: generation
+        )
       } else { localImageURLs = [] }
       if let media = value.media, let mediaStore {
         do {
@@ -2616,6 +2628,51 @@ final class HistoryViewModel: ObservableObject {
       ledgerTokenTotals = nil
       detailErrorCode = code
       detailState = .failed
+    }
+  }
+
+  /// A capture can persist before a transient CDN/network failure leaves its
+  /// image cache empty. Opening that history item retries the already-stored
+  /// remote markdown references once per App session, then refreshes only the
+  /// local image list. History text and database rows remain unchanged.
+  private func backfillRemoteImagesIfNeeded(
+    snapshot: ContentSnapshot,
+    taskID: TaskID,
+    generation: UUID
+  ) {
+    guard localImageURLs.isEmpty,
+          let imageCache,
+          let imageResources,
+          !MarkdownRemoteImageReferences.absoluteHTTPSURLs(in: snapshot.bodyText).isEmpty,
+          imageBackfillAttemptedSnapshotIDs.insert(snapshot.id).inserted
+    else { return }
+
+    imageBackfillTask?.cancel()
+    let captureID = "history-backfill-\(UUID().uuidString.lowercased())"
+    imageBackfillTask = Task { [weak self] in
+      await imageCache.stageRemoteMarkdownImages(
+        markdown: snapshot.bodyText,
+        captureID: captureID,
+        resources: imageResources
+      )
+      guard !Task.isCancelled else {
+        imageCache.discardStaged(captureID: captureID)
+        return
+      }
+      imageCache.promote(
+        captureID: captureID,
+        taskID: taskID,
+        snapshotID: snapshot.id
+      )
+      guard let self,
+            self.configurationGeneration == generation,
+            self.selectedTaskID == taskID,
+            self.detail?.snapshots.last?.id == snapshot.id
+      else { return }
+      self.localImageURLs = imageCache.localImageURLs(
+        taskID: taskID,
+        snapshotID: snapshot.id
+      )
     }
   }
 

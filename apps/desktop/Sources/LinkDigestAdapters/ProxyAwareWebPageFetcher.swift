@@ -1,17 +1,18 @@
 import Foundation
 import LinkDigestCore
 
-/// Keeps the hardened numeric-peer transport as the default. Only a DNS answer
-/// made entirely of fake-ip addresses is routed through the system-managed
-/// HTTP(S) proxy/VPN path, where the original URL hostname remains intact.
+/// Keeps the hardened numeric-peer transport as the default. A DNS answer made
+/// entirely of fake-ip addresses is first routed through the system-managed
+/// hostname transport, where Network Extensions/TUN can preserve the original
+/// URL hostname. Numeric fake-IP direct remains a compatibility fallback.
 public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetching, @unchecked Sendable {
   private let policy: PublicWebURLPolicy
   private let direct: any WebPageFetcher
   private let proxy: any WebPageFetcher
   private let directResource: (any SafeResourceFetching)?
   private let proxyResource: (any SafeResourceFetching)?
-  /// TUN/透明代理模式下没有系统 HTTP 代理可用，fake-IP 只能直连交给虚拟网卡。
-  /// 这条传输独立于默认直连器，且只对 fake-IP 段开口。
+  /// Compatibility fallback for environments whose TUN accepts an explicitly
+  /// bound fake-IP peer. It stays limited to the fake-IP range.
   private let fakeIPDirectResource: (any SafeResourceFetching)?
   private let fakeIPDirect: (any WebPageFetcher)?
   private let shouldUseSystemProxy: @Sendable (URL) -> Bool
@@ -61,13 +62,18 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
       }
       return try await direct.fetch(url: url)
     case .systemProxyForFakeIP:
-      // 有系统代理就照旧走它；没有则说明是 TUN/透明代理模式——那里系统层根本
-      // 不存在 HTTP 代理设置，硬等它只会静默失败，直连 fake-IP 交给虚拟网卡。
       if shouldUseSystemProxy(url) {
         return try await proxy.fetch(url: url)
       }
-      guard let fakeIPDirect else { throw ManualLinkError.network }
-      return try await fakeIPDirect.fetch(url: url)
+      // Some TUN products expose no classic HTTP proxy dictionary but still
+      // require a hostname-based URLSession request. Try that system-managed
+      // route first; only then fall back to an explicitly bound fake-IP peer.
+      do {
+        return try await proxy.fetch(url: url)
+      } catch {
+        guard let fakeIPDirect else { throw error }
+        return try await fakeIPDirect.fetch(url: url)
+      }
     }
   }
 
@@ -82,9 +88,18 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
     case .direct:
       resource = usesProxy ? proxyResource : directResource
     case .systemProxyForFakeIP:
-      // 同 fetch(url:)：TUN 模式没有系统代理，fake-IP 直连才走得通。X 的图片
-      // CDN 正是这种情况，此前一直静默下载失败、正文里的图全都不显示。
-      resource = shouldUseSystemProxy(request.url) ? proxyResource : fakeIPDirectResource
+      if shouldUseSystemProxy(request.url) {
+        resource = proxyResource
+      } else if let proxyResource {
+        do {
+          return try await proxyResource.fetchResource(request)
+        } catch {
+          guard let fakeIPDirectResource else { throw error }
+          return try await fakeIPDirectResource.fetchResource(request)
+        }
+      } else {
+        resource = fakeIPDirectResource
+      }
     }
     guard let resource else { throw ManualLinkError.network }
     return try await resource.fetchResource(request)

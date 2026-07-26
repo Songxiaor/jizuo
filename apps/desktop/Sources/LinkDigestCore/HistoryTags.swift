@@ -73,6 +73,8 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
 public enum HistoryPlatformDisplay {
   public static func name(forHost rawHost: String) -> String {
     let host = HistoryHostNormalizer.normalized(rawHost)
+    // Substack 刊物几乎都在 `<刊物>.substack.com` 子域，用后缀而非精确匹配。
+    if host == "substack.com" || host.hasSuffix(".substack.com") { return "Substack" }
     switch host {
     case "douyin.com", "iesdouyin.com", "v.douyin.com": return "抖音"
     case "mp.weixin.qq.com", "weixin.qq.com": return "微信公众号"
@@ -85,6 +87,7 @@ public enum HistoryPlatformDisplay {
     case "weibo.com": return "微博"
     case "medium.com": return "Medium"
     case "reddit.com": return "Reddit"
+    case "toutiao.com": return "今日头条"
     default: return host.isEmpty ? rawHost : host
     }
   }

@@ -314,11 +314,40 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           EXISTS(SELECT 1 FROM task_mind_maps mm WHERE mm.task_id = t.id) AS has_mind_map
         FROM tasks t
         LEFT JOIN content_snapshots es ON es.task_id = t.id AND es.id = (
-          SELECT s.id
-          FROM content_snapshots s
-          WHERE s.task_id = t.id AND s.source_kind <> 'local_transcription'
-          ORDER BY s.sequence DESC
-          LIMIT 1
+          COALESCE(
+            (
+              -- A completion may reuse an older source snapshot with identical
+              -- text. In that case the evidence, not sequence, makes it the
+              -- effective list/search snapshot. A newly created transcription
+              -- still falls back to source metadata so author/platform do not
+              -- disappear from the sidebar.
+              SELECT CASE
+                WHEN effective_snapshot.source_kind <> 'local_transcription'
+                THEN latest_evidence.snapshot_id
+                ELSE NULL
+              END
+              FROM (
+                SELECT snapshot_id, attempt_generation, id
+                FROM task_transcription_evidence
+                WHERE task_id = t.id
+                UNION ALL
+                SELECT snapshot_id, attempt_generation, id
+                FROM media_transcription_evidence
+                WHERE task_id = t.id
+                ORDER BY attempt_generation DESC, id DESC
+                LIMIT 1
+              ) latest_evidence
+              INNER JOIN content_snapshots effective_snapshot
+                ON effective_snapshot.id = latest_evidence.snapshot_id
+            ),
+            (
+              SELECT s.id
+              FROM content_snapshots s
+              WHERE s.task_id = t.id AND s.source_kind <> 'local_transcription'
+              ORDER BY s.sequence DESC
+              LIMIT 1
+            )
+          )
         )
         LEFT JOIN runs r ON r.id = (SELECT id FROM runs WHERE task_id = t.id ORDER BY created_at_ms DESC, id DESC LIMIT 1)
         LEFT JOIN artifacts a ON a.run_id = r.id
@@ -1065,12 +1094,26 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         """,
       arguments: [taskID.rawValue]
     )
+    // V2 capture_deliveries always ingested a MediaDescriptor. Ephemeral URLs
+    // are never stored; this flag is the durable "this task had session media"
+    // fact used by history UI after the in-memory descriptor is replaced.
+    let hadMediaDescriptor = try Bool.fetchOne(
+      db,
+      sql: """
+        SELECT EXISTS(
+          SELECT 1 FROM capture_deliveries
+          WHERE task_id = ? AND capture_contract_version = 2
+        )
+        """,
+      arguments: [taskID.rawValue]
+    ) ?? false
     return HistoryDetailProjection(
       task: task,
       snapshots: snapshots,
       runs: try rows.map(runDetail),
       tags: try tags(db: db, taskID: taskID),
-      media: try mediaRow.map { try mediaAsset($0) }
+      media: try mediaRow.map { try mediaAsset($0) },
+      hadMediaDescriptor: hadMediaDescriptor
     )
   }
 

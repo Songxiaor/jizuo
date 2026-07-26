@@ -188,6 +188,7 @@ final class GitHubRepositorySourceAdapterTests: XCTestCase {
       "https://v.douyinvod.com/d.png",
       "https://v.douyincdn.com/e.png",
       "https://www.douyin.com/f.png",
+      "https://miro.medium.com/v2/resize:fit:1200/1*article.png",
       "https://images.example.test/g.png",
       "https://notqpic.cn/h.png",
     ]
@@ -215,8 +216,49 @@ final class GitHubRepositorySourceAdapterTests: XCTestCase {
     for host in ["v.douyinvod.com", "v.douyincdn.com", "www.douyin.com"] {
       XCTAssertEqual(requests[host]?["Referer"], "https://www.douyin.com/")
     }
+    XCTAssertEqual(requests["miro.medium.com"]?["Referer"], "https://medium.com/")
     XCTAssertNil(requests["images.example.test"]?["Referer"])
     XCTAssertNil(requests["notqpic.cn"]?["Referer"])
+  }
+
+  func testOptInLiveMediumImageUsesTheAppTransport() async throws {
+    guard let rawURL = ProcessInfo.processInfo.environment["LINKDIGEST_LIVE_MEDIUM_IMAGE_URL"],
+          let url = URL(string: rawURL)
+    else {
+      throw XCTSkip("set LINKDIGEST_LIVE_MEDIUM_IMAGE_URL for an explicit live transport check")
+    }
+    let response = try await ProxyAwareWebPageFetcher().fetchResource(
+      .init(
+        url: url,
+        headers: [
+          "User-Agent": GitHubREADMEImageCache.browserUserAgent,
+          "Referer": "https://medium.com/",
+        ],
+        byteLimit: GitHubREADMEImageCache.perImageByteLimit,
+        allowsRedirectTarget: MarkdownRemoteImageReferences.isAllowedImageURL
+      )
+    )
+    XCTAssertTrue((200...299).contains(response.statusCode))
+    XCTAssertEqual(response.contentType?.split(separator: ";", maxSplits: 1).first, "image/png")
+    XCTAssertTrue(response.body.starts(with: [0x89, 0x50, 0x4e, 0x47]))
+
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "linkdigest-live-medium-cache.\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let cache = GitHubREADMEImageCache(applicationSupportRoot: root)
+    let captureID = "live-medium-\(UUID().uuidString)"
+    await cache.stageRemoteMarkdownImages(
+      markdown: "![Medium article image](\(url.absoluteString))",
+      captureID: captureID,
+      resources: ProxyAwareWebPageFetcher()
+    )
+    let taskID = TaskID(), snapshotID = ContentSnapshotID()
+    cache.promote(captureID: captureID, taskID: taskID, snapshotID: snapshotID)
+    let cached = try XCTUnwrap(cache.localImageURLs(taskID: taskID, snapshotID: snapshotID).first)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: cached.path))
+    XCTAssertTrue(try Data(contentsOf: cached).starts(with: [0x89, 0x50, 0x4e, 0x47]))
   }
 
   func testWebsiteFaviconCacheUsesHostLocalCacheAndRejectsCrossHostRedirect() async throws {

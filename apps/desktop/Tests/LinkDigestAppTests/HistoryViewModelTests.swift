@@ -380,6 +380,50 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: cacheDirectory.path))
   }
 
+  func testOpeningHistoryBackfillsAnEmptyRemoteImageCache() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-history-image-backfill-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let imageURL = URL(string: "https://miro.medium.com/v2/resize:fit:212/article.png")!
+    let document = CapturedDocument(
+      createdAt: "2026-07-24T14:27:00Z",
+      origin: .manualLink,
+      url: "https://medium.com/example",
+      title: "Medium article",
+      platform: "medium",
+      method: "dom",
+      text: "正文\n\n![Medium article image](\(imageURL.absoluteString))",
+      completeness: "complete",
+      capturedAt: "2026-07-24T14:27:00Z",
+      sourceLabel: "Medium"
+    )
+    let accepted = try repository.acceptCapture(
+      .init(document: document, receivedAtMilliseconds: 1_774_363_620_000)
+    )
+    let cache = GitHubREADMEImageCache(applicationSupportRoot: root)
+    let resources = HistoryImageResourceFetcher()
+    let model = HistoryViewModel(
+      imageCache: cache,
+      imageResources: resources
+    )
+
+    model.configure(
+      history: .init(repository: repository),
+      isReadOnly: false,
+      unavailableCode: nil
+    )
+
+    await waitUntil { model.localImageURLs.count == 1 }
+    XCTAssertEqual(resources.requests.map(\.url), [imageURL])
+    XCTAssertEqual(resources.requests.first?.headers["Referer"], "https://medium.com/")
+    XCTAssertEqual(
+      cache.localImageURLs(taskID: accepted.taskID, snapshotID: accepted.snapshotID),
+      model.localImageURLs
+    )
+  }
+
   func testDeletionKeepsSharedLocalMediaWhenReferenceQueryFails() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-history-media.\(UUID().uuidString)", isDirectory: true)
@@ -2346,6 +2390,22 @@ private final class RemoteTempResourceFetcher: SafeResourceFetching, @unchecked 
     body.append(contentsOf: Array("ftypisom".utf8))
     body.append(contentsOf: Array(repeating: 0, count: 12))
     return .init(url: request.url, statusCode: 200, contentType: "video/mp4", body: body)
+  }
+}
+
+private final class HistoryImageResourceFetcher: SafeResourceFetching, @unchecked Sendable {
+  private let lock = NSLock()
+  private var seen: [SafeResourceRequest] = []
+  var requests: [SafeResourceRequest] { lock.withLock { seen } }
+
+  func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
+    lock.withLock { seen.append(request) }
+    return .init(
+      url: request.url,
+      statusCode: 200,
+      contentType: "image/png",
+      body: Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])
+    )
   }
 }
 
