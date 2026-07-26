@@ -54,3 +54,7 @@ artifacts/
 unified_inbox.json
 __pycache__/
 *.pyc
+.playwright-mcp/
+
+# 部署前的 history.sqlite 备份，装的是真实历史数据，只应留在本机
+db-backups/

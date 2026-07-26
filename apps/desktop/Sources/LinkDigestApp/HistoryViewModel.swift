@@ -1854,7 +1854,8 @@ final class HistoryViewModel: ObservableObject {
           startedAt: startedAt,
           downloadFinishedAt: downloadFinishedAt,
           finishedAt: finishedAt,
-          downloadedBytes: downloadedBytes
+          downloadedBytes: downloadedBytes,
+          succeeded: true
         )
         self.transcriptionText = text
         let completedAt = self.nowMilliseconds()
@@ -1895,7 +1896,8 @@ final class HistoryViewModel: ObservableObject {
           startedAt: startedAt,
           downloadFinishedAt: downloadFinishedAt,
           finishedAt: failedAt,
-          downloadedBytes: downloadedBytes
+          downloadedBytes: downloadedBytes,
+          succeeded: false
         )
         if cancelled {
           self.transcriptionState = .cancelled
@@ -1908,6 +1910,12 @@ final class HistoryViewModel: ObservableObject {
     }
   }
 
+  /// 顺利跑完时不显示分段耗时的阈值。
+  ///
+  /// 常驻显示是当初为了定位「三四十秒」加的，现在正常是 5s 上下，天天挂着
+  /// 只是噪音；但整段撤掉又会让日后的退化悄无声息。折中成「快就闭嘴，
+  /// 慢就自己冒出来」——刚好在需要它的时候在。
+  private static let onlineTranscriptionTimingsVisibleAbove: Double = 10
   /// 把在线转写拆成「下载音轨 / 本机切片 / 上传等 ASR」三段写成一行诊断。
   /// 分界点：`downloadFinishedAt` 是临时文件落盘，`onlineUploadStartInstant`
   /// 是首次 `progress(0, total)`（全部分片导出完成、第一片上传之前）。
@@ -1916,8 +1924,15 @@ final class HistoryViewModel: ObservableObject {
     startedAt: ContinuousClock.Instant,
     downloadFinishedAt: ContinuousClock.Instant?,
     finishedAt: ContinuousClock.Instant,
-    downloadedBytes: Int?
+    downloadedBytes: Int?,
+    succeeded: Bool
   ) {
+    let total = Self.seconds(startedAt.duration(to: finishedAt))
+    // 失败一律显示：卡住时最需要知道的就是走到哪一段才断的。
+    guard !succeeded || total > Self.onlineTranscriptionTimingsVisibleAbove else {
+      onlineTranscriptionTimings = nil
+      return
+    }
     var parts: [String] = []
     let chunkStart = downloadFinishedAt ?? startedAt
     if let downloadFinishedAt {
@@ -1936,7 +1951,7 @@ final class HistoryViewModel: ObservableObject {
       // 没走到上传就断了：切片段和上传段无法区分，合并报出来而不是硬拆。
       parts.append(String(format: "本机准备 %.1fs（未开始上传）", Self.seconds(chunkStart.duration(to: finishedAt))))
     }
-    parts.append(String(format: "合计 %.1fs", Self.seconds(startedAt.duration(to: finishedAt))))
+    parts.append(String(format: "合计 %.1fs", total))
     onlineTranscriptionTimings = parts.joined(separator: " · ")
   }
 

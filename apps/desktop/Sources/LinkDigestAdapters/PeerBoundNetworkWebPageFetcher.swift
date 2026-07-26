@@ -168,7 +168,16 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
     } onCancel: { lifecycle.cancelOnce() }
   }
 
-  private static func requestBytes(
+  /// 由这里独占、调用方不得覆盖的头。
+  ///
+  /// `Host` 决定这条连接对端是谁——它已经被 TLS 证书名校验和 SSRF 门禁验证过，
+  /// 让调用方再塞一个进来就等于在一个请求里发两个 Host，对端认哪个不由我们说了算。
+  /// `Connection` 同理，它和这里"读到连接关闭为止"的收包逻辑是绑定的。
+  private static let reservedRequestHeaders: Set<String> = ["host", "connection"]
+
+  /// internal 而非 private：请求行的拼装是这个类里唯一不需要真实连接就能验证的
+  /// 部分，重复头这类缺陷不会崩也不会报错，只能靠直接断言字节。
+  static func requestBytes(
     path: String,
     host: String,
     headers: [String: String],
@@ -177,9 +186,23 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
   ) throws -> Data {
     let validName = "^[A-Za-z0-9-]+$"
     let verb = method == "POST" ? "POST" : "GET"
-    var lines = ["\(verb) \(path) HTTP/1.1", "Host: \(host)", "Connection: close", "User-Agent: LinkDigest/0.1"]
-    var merged = ["Accept": "text/html,application/xhtml+xml"]
-    for (name, value) in headers { merged[name] = value }
+    var lines = ["\(verb) \(path) HTTP/1.1", "Host: \(host)", "Connection: close"]
+    // UA 要放进 merged 当默认值，不能跟在状态行后面直接拼。
+    // 写死在那里时，调用方（比如 GitHubRepositorySourceAdapter）传的浏览器 UA
+    // 会被当成一条普通头再追加一次，同一个请求带着两个 User-Agent 发出去，
+    // 对端取哪个全看它自己的实现——伪装成浏览器的意图就此失效。
+    var merged = [
+      "Accept": "text/html,application/xhtml+xml",
+      "User-Agent": "LinkDigest/0.1",
+    ]
+    for (name, value) in headers where !reservedRequestHeaders.contains(name.lowercased()) {
+      // HTTP 头名不区分大小写，字典的键区分。不先按大小写不敏感清一遍，
+      // 调用方传 "user-agent" 就又变成两条头——正是这次要修的那个毛病。
+      for existing in merged.keys where existing.lowercased() == name.lowercased() {
+        merged.removeValue(forKey: existing)
+      }
+      merged[name] = value
+    }
     // POST 必须显式声明长度：guest token 激活端点无请求体，Content-Length 为 0。
     if verb == "POST" { merged["Content-Length"] = String(body?.count ?? 0) }
     for name in merged.keys.sorted() {
