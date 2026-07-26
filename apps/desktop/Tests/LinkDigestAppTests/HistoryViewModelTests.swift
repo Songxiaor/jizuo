@@ -8,6 +8,64 @@ import LinkDigestCore
 
 @MainActor
 final class HistoryViewModelTests: XCTestCase {
+
+  /// 在笔记里打字后 800ms 内切换条目，那段编辑不能丢。
+  ///
+  /// 原实现有两处会静默丢数据：切条目时 `receiveDetail` 给 `taskNoteDraft` 赋新值
+  /// 会触发编辑器的 onChange → `scheduleNoteSave(新条目)` → `cancel()` 掐掉上一条
+  /// 尚未落库的写入；即使没被 cancel，`selectedTaskID == taskID` 那个守卫也已经
+  /// 不成立。用户看到的是「输入后立刻切走，最后那段编辑消失」，而界面上明明写着
+  /// 「笔记自动保存」。防抖窗口只有 800ms，手快就会中招，且丢了不会有任何提示。
+  func testNoteSurvivesSwitchingItemsInsideTheDebounceWindow() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-note-flush-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+
+    func makeDocument(_ tag: String) -> CapturedDocument {
+      CapturedDocument(
+        createdAt: "2026-07-20T00:00:00Z",
+        origin: .manualLink,
+        url: "https://example.test/note-\(tag)",
+        title: "条目\(tag)",
+        platform: "fixture",
+        method: "fixture",
+        text: "正文 \(tag)",
+        completeness: "visible_only",
+        capturedAt: "2026-07-20T00:00:00Z",
+        sourceLabel: "fixture"
+      )
+    }
+    let a = try repository.acceptCapture(.init(document: makeDocument("A"), receivedAtMilliseconds: 1))
+    let b = try repository.acceptCapture(.init(document: makeDocument("B"), receivedAtMilliseconds: 2))
+
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded }
+
+    // 停在 A 上打字，立刻切到 B——不等 800ms 防抖。
+    model.selectedTaskIDs = [a.taskID]
+    await waitUntil { model.selectedTaskID == a.taskID && model.detailState == .loaded }
+    model.taskNoteDraft = "切换前写的笔记"
+    model.scheduleNoteSave(taskID: a.taskID)
+    model.selectedTaskIDs = [b.taskID]
+    await waitUntil { model.selectedTaskID == b.taskID && model.detailState == .loaded }
+    // 关键：模拟编辑器的 onChange。真实界面上，receiveDetail 把 taskNoteDraft 覆盖成
+    // B 的笔记会触发 onChange → scheduleNoteSave(B)，正是这一步在原实现里 cancel 掉
+    // 了 A 尚未落库的写入。不模拟它，这条测试就永远是绿的，抓不到任何东西。
+    model.scheduleNoteSave(taskID: b.taskID)
+
+    let store = try XCTUnwrap(HistoryApplicationService(repository: repository).annotationStore)
+    var saved: String?
+    for _ in 0..<40 {
+      saved = try store.loadNote(taskID: a.taskID)
+      if saved?.isEmpty == false { break }
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    XCTAssertEqual(saved, "切换前写的笔记", "防抖窗口内切换条目丢掉了笔记")
+  }
   func testSameHashRepairMakesHistoryResolveNewUserDirectoryFile() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-media-repair-\(UUID().uuidString)", isDirectory: true)

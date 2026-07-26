@@ -231,6 +231,10 @@ public protocol HistoryRepository: Sendable {
   func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult
   func attachMedia(_ command: AttachMediaCommand) throws
   func mediaAsset(taskID: TaskID) throws -> MediaAsset?
+  /// 该任务名下**全部**媒体文件的相对路径（mediaAsset 只返回最新一条）。
+  func mediaRelativePaths(taskID: TaskID) throws -> [String]
+  /// 该任务名下**全部**媒体资产（mediaAsset 只返回最新一条）。
+  func mediaAssets(taskID: TaskID) throws -> [MediaAsset]
   func beginMediaTranscription(taskID: TaskID, mediaID: String) throws -> TranscriptionAttemptToken
   func updateMediaTranscriptionStatus(
     taskID: TaskID,
@@ -280,6 +284,16 @@ public extension HistoryRepository {
   func mediaAsset(taskID: TaskID) throws -> MediaAsset? {
     _ = taskID
     return nil
+  }
+
+  func mediaRelativePaths(taskID: TaskID) throws -> [String] {
+    _ = taskID
+    return []
+  }
+
+  func mediaAssets(taskID: TaskID) throws -> [MediaAsset] {
+    // 默认实现退回单条，保证未实现该方法的仓库不会静默漏删。
+    try mediaAsset(taskID: taskID).map { [$0] } ?? []
   }
 
   func beginMediaTranscription(taskID: TaskID, mediaID: String) throws -> TranscriptionAttemptToken {

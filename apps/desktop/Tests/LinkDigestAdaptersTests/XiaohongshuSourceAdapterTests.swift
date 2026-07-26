@@ -67,3 +67,62 @@ final class XiaohongshuSourceAdapterTests: XCTestCase {
   }
 }
 
+
+/// 会话 Cookie 的去向边界。
+final class SessionCookieBoundaryTests: XCTestCase {
+  func testDouyinHostMatchRequiresADotBoundary() {
+    // `hasSuffix("douyin.com")` 少一个点，`v.evil-douyin.com` 就成了自己人。
+    // 认领本身只是路由，但登录抖音后这条路径会带着会话 Cookie 去抓——
+    // 等于把登录态发给攻击者控制的主机。
+    XCTAssertFalse(DouyinURL.matches(URL(string: "https://v.evil-douyin.com/x")!))
+    XCTAssertFalse(DouyinURL.matches(URL(string: "https://evil-douyin.com/x")!))
+    XCTAssertFalse(DouyinURL.matches(URL(string: "https://douyin.com.evil.test/x")!))
+    // 真实的抖音域名仍然认领。
+    XCTAssertTrue(DouyinURL.matches(URL(string: "https://www.douyin.com/video/7000000000000000002")!))
+    XCTAssertTrue(DouyinURL.matches(URL(string: "https://v.douyin.com/AbCdEf/")!))
+    XCTAssertTrue(DouyinURL.matches(URL(string: "https://www.iesdouyin.com/share/video/1")!))
+  }
+
+  func testSessionRedirectAllowListIsStricterThanOwnership() {
+    // 认领可以宽松（短链、历史域名），但「Cookie 发给谁」必须严格。
+    XCTAssertTrue(DouyinURL.matchesSessionHost(URL(string: "https://www.douyin.com/video/1")!))
+    XCTAssertFalse(DouyinURL.matchesSessionHost(URL(string: "https://v.evil-douyin.com/x")!))
+    XCTAssertFalse(DouyinURL.matchesSessionHost(URL(string: "https://douyin.com.evil.test/")!))
+    // 明文 http 不带 Cookie。
+    XCTAssertFalse(DouyinURL.matchesSessionHost(URL(string: "http://www.douyin.com/video/1")!))
+  }
+}
+
+/// 小红书登录墙外壳的识别。
+final class XiaohongshuLoginWallTests: XCTestCase {
+  func testSiteBoilerplateIsRejectedEvenWhenDescriptionIsNonEmpty() {
+    // 会话过期时服务端返回 200 + 外壳 + 站点宣传语。只挡「描述为空」挡不住它，
+    // 会入库一条标题「小红书」、正文是宣传语的记录，看着还挺像回事。
+    let expired = """
+      <html><head>
+      <meta property="og:title" content="小红书 - 你的生活指南">
+      <meta property="og:description" content="小红书是年轻人的生活方式平台，标记我的生活。">
+      </head></html>
+      """
+    XCTAssertNil(XiaohongshuPageParser.parse(html: expired))
+
+    // 标题恰好是裸站名（去尾正则要求前置分隔符，清不掉）也要挡住。
+    let bareTitle = """
+      <html><head>
+      <meta property="og:title" content="小红书">
+      <meta property="og:description" content="这段描述本身没有宣传语特征但标题是站名">
+      </head></html>
+      """
+    XCTAssertNil(XiaohongshuPageParser.parse(html: bareTitle))
+  }
+
+  func testRealNoteStillParses() {
+    let note = """
+      <html><head>
+      <meta property="og:title" content="三天两夜厦门citywalk路线 - 小红书">
+      <meta property="og:description" content="第一天先去鼓浪屿，建议早上八点前上岛。">
+      </head></html>
+      """
+    XCTAssertEqual(XiaohongshuPageParser.parse(html: note)?.title, "三天两夜厦门citywalk路线")
+  }
+}

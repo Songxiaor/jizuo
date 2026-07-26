@@ -107,7 +107,9 @@ public enum DouyinURL {
     guard let host = PublicWebURLPolicy.normalizedHost(url.host ?? ""),
           ["http", "https"].contains(url.scheme?.lowercased())
     else { return false }
-    if host == "v.douyin.com" || host.hasPrefix("v.") && host.hasSuffix("douyin.com") { return true }
+    // 后缀匹配必须带点。`hasSuffix("douyin.com")` 会把 `v.evil-douyin.com` 判成
+    // 自己人——它同时满足 `hasPrefix("v.")`。认领本身只是路由，但登录抖音之后
+    // 这条路径会带着会话 Cookie 去抓，等于把登录态发给攻击者控制的主机。
     if host == "douyin.com" || host.hasSuffix(".douyin.com") { return true }
     if host == "iesdouyin.com" || host.hasSuffix(".iesdouyin.com") { return true }
     return false
@@ -325,40 +327,45 @@ public enum DouyinPageParser {
       "\"playApi\"\\s*:\\s*\"(https:[^\"]+)\"",
       "\"play_addr\"\\s*:\\s*\"(https:[^\"]+)\"",
     ]
+    // 媒体字段与 title/author 一样，必须锚定到这条 aweme。
+    //
+    // `url_list` 是个通用键：作者头像 `avatar_thumb`/`avatar_larger`、封面、
+    // 相关推荐里每一条视频都用它。全 blob 取第一个命中，很可能拿到**作者头像的
+    // JPEG**——而 `parse` 依然"成功"，于是入库一条 media.videoURL 指向头像、
+    // 时长来自另一条视频的记录。这比抓不到严重：它不会回落到「请用扩展」。
+    let scoped = DouyinURL.awemeID(from: pageURL).flatMap { windowAround(id: $0, in: normalized) }
+    guard let anchored = scoped else { return nil }
+
     var videoURL: URL?
     for pattern in listPatterns {
-      guard let raw = firstMatch(pattern, in: normalized),
+      guard let raw = firstMatch(pattern, in: anchored),
             let url = URL(string: raw),
             url.scheme?.lowercased() == "https",
-            !raw.contains(".m3u8")
+            !raw.contains(".m3u8"),
+            // 头像地址同样满足上面所有条件，只能靠路径特征排掉。
+            !raw.contains("avatar"), !raw.contains("/aweme/100x100/")
       else { continue }
       videoURL = url
       break
     }
     guard let videoURL else { return nil }
 
-    let coverRaw = firstMatch("\"cover\"\\s*:\\s*\\{[^\\}]*\"url_list\"\\s*:\\s*\\[\\s*\"(https:[^\"]+)\"", in: normalized)
-      ?? firstMatch("\"origin_cover\"\\s*:\\s*\\{[^\\}]*\"url_list\"\\s*:\\s*\\[\\s*\"(https:[^\"]+)\"", in: normalized)
-      ?? firstMatch("\"coverUrl\"\\s*:\\s*\"(https:[^\"]+)\"", in: normalized)
+    let coverRaw = firstMatch("\"cover\"\\s*:\\s*\\{[^\\}]*\"url_list\"\\s*:\\s*\\[\\s*\"(https:[^\"]+)\"", in: anchored)
+      ?? firstMatch("\"origin_cover\"\\s*:\\s*\\{[^\\}]*\"url_list\"\\s*:\\s*\\[\\s*\"(https:[^\"]+)\"", in: anchored)
+      ?? firstMatch("\"coverUrl\"\\s*:\\s*\"(https:[^\"]+)\"", in: anchored)
     let coverURL = coverRaw.flatMap { URL(string: $0) }
-    // 锚定到这条视频的 id 附近再取。
+    // 文本字段同样只在锚定窗口里找。
     //
     // 页面外壳里到处都是 `"desc"` / `"nickname"`：推荐流的作者、按钮文案、当前
     // 登录用户的资料。不锚定就会抓到它们——2026-07-27 真机实测抓到过标题
     // 「PC Tab」（一个按钮的文案）和推荐位博主的昵称。两个都长得像真数据，
     // 存进库谁也看不出错，这比抓不到严重得多。
-    //
-    // 先在 id 周围的窗口里找；找不到就返回 nil，让调用方回落到「请用扩展」。
-    // 宁可诚实失败，也不产出一条看不出错的假记录。
-    let scoped = DouyinURL.awemeID(from: pageURL).flatMap { windowAround(id: $0, in: normalized) }
-    let title = scoped.flatMap {
-      firstNonEmptyMatch("\"desc\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", in: $0).map(unescapeJSON)
-    }
-    let author = scoped.flatMap {
-      firstNonEmptyMatch("\"nickname\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", in: $0).map(unescapeJSON)
-    }
+    let title = firstNonEmptyMatch(
+      "\"desc\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", in: anchored).map(unescapeJSON)
+    let author = firstNonEmptyMatch(
+      "\"nickname\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", in: anchored).map(unescapeJSON)
     let duration: Double?
-    if let ms = firstMatch("\"duration\"\\s*:\\s*(\\d+)", in: normalized), let value = Double(ms) {
+    if let ms = firstMatch("\"duration\"\\s*:\\s*(\\d+)", in: anchored), let value = Double(ms) {
       // Douyin duration is often milliseconds when > 1000.
       duration = value > 1000 ? value / 1000.0 : value
     } else {

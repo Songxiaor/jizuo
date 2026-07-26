@@ -556,6 +556,22 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  /// 该任务名下**全部**媒体资产。删除任务时必须用它而不是 `mediaAsset(taskID:)`：
+  /// 后者只取最新一条，其余文件会变成没人能发现的孤儿。
+  public func mediaAssets(taskID: TaskID) throws -> [MediaAsset] {
+    try database.read { db in
+      try Row.fetchAll(
+        db,
+        sql: """
+          SELECT * FROM media_assets
+          WHERE task_id = ?
+          ORDER BY created_at_ms DESC, id DESC
+          """,
+        arguments: [taskID.rawValue]
+      ).compactMap { try? mediaAsset($0) }
+    }
+  }
+
   public func mediaAsset(taskID: TaskID) throws -> MediaAsset? {
     try database.read { db in
       guard let row = try Row.fetchOne(

@@ -70,7 +70,16 @@ private enum TranscriptionPersistenceResult: Sendable {
 private actor HistoryRepositoryWorker {
   func delete(_ history: HistoryApplicationService, taskIDs: Set<TaskID>) -> DeleteResult {
     do {
-      let media = taskIDs.compactMap { try? history.mediaAsset(taskID: $0) }
+      // 必须收集每个任务名下的**全部**媒体资产。
+      //
+      // `mediaAsset(taskID:)` 是 `ORDER BY created_at_ms DESC LIMIT 1`，只给最新
+      // 一条。而 media_assets 的唯一键是 (task_id, content_sha256)，同一任务可以
+      // 有多行：重抓后字节不同、B 站合流成功与失败产出不同 sha。只删最新那条，
+      // 其余文件的 DB 行随 CASCADE 消失、磁盘文件却留了下来，成为再也没人能发现
+      // 的孤儿——没有任何清扫器会扫它们。
+      let media = taskIDs.flatMap { taskID in
+        (try? history.mediaAssets(taskID: taskID)) ?? []
+      }
       return .success(try history.deleteTasks(taskIDs: taskIDs), media: media)
     }
     catch { return .failure(HistoryViewModel.storageCode(for: error, context: .write)) }
@@ -510,6 +519,8 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var taskExcerpts: [TaskExcerpt] = []
   @Published var taskNoteDraft = ""
   private var noteSaveTask: Task<Void, Never>?
+  /// 待落库的笔记。存在这里而不是只活在 Task 闭包里，切换条目时才能先冲刷再覆盖草稿。
+  private var pendingNote: (taskID: TaskID, body: String, timestamp: Int64)?
   private var loadedNoteTaskID: TaskID?
   @Published private(set) var remoteMediaFavoriteState: RemoteMediaFavoriteState = .idle
   @Published private(set) var capturedMediaAutoSaveStates: [TaskID: RemoteMediaFavoriteState] = [:]
@@ -1229,18 +1240,53 @@ final class HistoryViewModel: ObservableObject {
   }
 
   /// 笔记随输防抖保存：停顿 800ms 落库；空内容即删除记录。
+  ///
+  /// 待落库内容记成显式状态而不是只活在 Task 闭包里，这样切换条目、关窗、退出前
+  /// 都能先冲刷。原实现有两处会静默丢数据：切到别的条目时 `receiveDetail` 给
+  /// `taskNoteDraft` 赋新值会触发 onChange，进而 `cancel()` 掐掉上一条尚未落库的
+  /// 写入；即使没被 cancel，`selectedTaskID == taskID` 那个守卫也已不成立。
+  /// 用户看到的是「输入后 800ms 内切走，最后那段编辑消失」，而界面上写着「自动保存」。
+  ///
+  /// 守卫去掉是对的：写入目标是**某个具体 taskID**，与此刻选中谁无关。
   func scheduleNoteSave(taskID: TaskID) {
-    guard !isReadOnly, let store = history?.annotationStore else { return }
-    let body = taskNoteDraft
-    let timestamp = nowMilliseconds()
+    guard !isReadOnly, history?.annotationStore != nil else { return }
+    pendingNote = (taskID: taskID, body: taskNoteDraft, timestamp: nowMilliseconds())
     noteSaveTask?.cancel()
     noteSaveTask = Task { [weak self] in
       try? await Task.sleep(for: .milliseconds(800))
-      guard !Task.isCancelled, self?.selectedTaskID == taskID else { return }
-      await Task.detached(priority: .utility) {
-        try? store.saveNote(taskID: taskID, body: body, updatedAtMilliseconds: timestamp)
-      }.value
+      guard !Task.isCancelled else { return }
+      await self?.flushPendingNote()
     }
+  }
+
+  /// 取走待落库的笔记并停掉防抖计时器。同步，不让出执行权。
+  @discardableResult
+  private func takePendingNote() -> (taskID: TaskID, body: String, timestamp: Int64)? {
+    defer {
+      pendingNote = nil
+      noteSaveTask?.cancel()
+      noteSaveTask = nil
+    }
+    return pendingNote
+  }
+
+  /// 落库，不等待。调用方已经把内容从 pendingNote 里取走，不会再被后续编辑覆盖。
+  private func persistNoteDetached(_ pending: (taskID: TaskID, body: String, timestamp: Int64)) {
+    guard let store = history?.annotationStore else { return }
+    Task.detached(priority: .utility) {
+      try? store.saveNote(
+        taskID: pending.taskID, body: pending.body, updatedAtMilliseconds: pending.timestamp)
+    }
+  }
+
+  /// 把待落库的笔记立刻写下去。切换条目、关闭详情、退出前必须调用。
+  /// 幂等：没有待写内容时什么都不做。
+  func flushPendingNote() async {
+    guard let pending = takePendingNote(), let store = history?.annotationStore else { return }
+    await Task.detached(priority: .utility) {
+      try? store.saveNote(
+        taskID: pending.taskID, body: pending.body, updatedAtMilliseconds: pending.timestamp)
+    }.value
   }
 
   // MARK: - 自动处理管线
@@ -1430,7 +1476,17 @@ final class HistoryViewModel: ObservableObject {
       do {
         let outcome = try await mindMapExtractor.extractOutline(text: text, model: nil)
         try Task.checkCancellation()
-        guard self.selectedTaskID == taskID else { return }
+        // 这里**不能**用 `selectedTaskID == taskID` 提前 return。
+        //
+        // 生成要几十秒，期间用户很可能切走。原来在保存之前就 return：token 已经
+        // 花掉、大纲被丢弃、mindMapState 永远停在 .running、mindMapTaskID 仍指向
+        // 这一条。回来后 receiveDetail 的 `if mindMapTaskID != taskID` 不成立，
+        // 状态不会重置；canGenerateMindMap 因 .isActive 为 false，而 mindMapRecord
+        // 为 nil，于是脑图区两个分支都不满足——**整块 UI 消失**，本次进程内再也
+        // 无法为这条生成脑图。
+        //
+        // 正确做法与旁边的整理路径一致：结果照存（它属于 taskID，与此刻选中谁无关），
+        // 只在更新 UI 前判断是否仍停留在这一条。
         let record = TaskMindMapRecord(
           taskID: taskID,
           outline: outcome.outline,
@@ -1445,9 +1501,11 @@ final class HistoryViewModel: ObservableObject {
           updatedAtMilliseconds: self.nowMilliseconds()
         )
         try await Task.detached(priority: .userInitiated) { try store.saveMindMap(record) }.value
+        // 已落库。即使用户切走了，也必须把 .running 收掉——否则回到这条时状态
+        // 仍是「生成中」，而 UI 会因此既不显示结果也不显示入口。
+        if self.mindMapTaskID == taskID { self.mindMapState = .completed }
         guard self.selectedTaskID == taskID else { return }
         self.mindMapRecord = record
-        self.mindMapState = .completed
         await self.recordTokenUsage(
           taskID: taskID, operation: "mind_map",
           promptTokens: outcome.promptTokens, completionTokens: outcome.completionTokens,
@@ -1466,7 +1524,9 @@ final class HistoryViewModel: ObservableObject {
           self.reloadNavigationCounts()
         }
       } catch {
-        guard self.selectedTaskID == taskID else { return }
+        // 失败同样不能提前 return：切走后状态若停在 .running，回来时脑图区会
+        // 整块消失（既没有结果可显示，入口又因 .isActive 被禁用）。
+        guard self.mindMapTaskID == taskID else { return }
         if let failure = error as? TranscriptTidyError {
           self.mindMapState = .failed(failure.userMessage)
         } else if let failure = error as? MindMapOutlineError {
@@ -1960,10 +2020,22 @@ final class HistoryViewModel: ObservableObject {
     return Double(components.seconds) + Double(components.attoseconds) / 1e18
   }
 
+  /// 取走待处理的在线转写上下文，取走即清空。
+  ///
+  /// 这个上下文原来只在**成功**路径被置 nil，取消模型下载、下载失败都不清。
+  /// 于是：对 A 发起在线转写 → 提示下载模型 → 取消（临时文件已删，但 context 还在）
+  /// → 换到 B 点转写 → 确认下载 → 优先取到 A 那份陈旧 context，去转写一个已被删除
+  /// 的临时文件，并把状态写到 **A 的 taskID** 上，而界面显示的是 B。
+  /// 「取走即消费」让它不可能活过一次使用。
+  private func takePendingRemoteTranscriptionContext() -> RemoteTranscriptionContext? {
+    defer { pendingRemoteTranscriptionContext = nil }
+    return pendingRemoteTranscriptionContext
+  }
+
   /// This is the only UI path allowed to call model installation.
   func confirmModelDownloadAndTranscribe() {
     isTranscriptionModelConfirmationPresented = false
-    if let context = pendingRemoteTranscriptionContext {
+    if let context = takePendingRemoteTranscriptionContext() {
       confirmRemoteModelDownloadAndTranscribe(context)
       return
     }
@@ -1998,7 +2070,7 @@ final class HistoryViewModel: ObservableObject {
 
   func cancelModelDownloadConfirmation() {
     isTranscriptionModelConfirmationPresented = false
-    if let context = pendingRemoteTranscriptionContext, let history {
+    if let context = takePendingRemoteTranscriptionContext(), let history {
       let requestID = transcriptionRequestID
       transcriptionTask = Task { [weak self, worker] in
         guard let self, self.transcriptionRequestID == requestID else { return }
@@ -2252,6 +2324,14 @@ final class HistoryViewModel: ObservableObject {
     transcriber: any LocalVideoTranscribing,
     requestID: UUID
   ) async {
+    // 用 defer 而不是把清理写在函数末尾。
+    //
+    // `AppleSpeechVideoTranscriber` 的契约明写「caller owns workspaceURL and removes
+    // it on every terminal outcome」，但原来清理只在最后一行，本函数有六处提前
+    // return 会绕过它。最容易触发的是 requestID 变了（用户发起第二次转写，或
+    // configure() 换了 requestID）——此时目录里已经躺着抽取出来的音频，之后无人
+    // 删除，累积到重启。defer 由语言保证每条退出路径都走到。
+    defer { try? FileManager.default.removeItem(at: context.workspaceURL) }
     guard transcriptionRequestID == requestID else { return }
     let running = await worker.updateTranscriptionStatus(
       history,
@@ -2329,7 +2409,6 @@ final class HistoryViewModel: ObservableObject {
       guard transcriptionRequestID == requestID else { return }
       transcriptionState = .failed("转写文字未能保存到本机历史，请检查存储后重试。")
     }
-    try? FileManager.default.removeItem(at: context.workspaceURL)
   }
 
   /// Refreshes only durable metadata changed outside a direct History UI
@@ -2823,8 +2902,14 @@ final class HistoryViewModel: ObservableObject {
       ledgerTokenTotals = (try? history?.tokenUsageStore?.ledgerTokenTotals(taskID: taskID)) ?? nil
       taskExcerpts = (try? history?.annotationStore?.listExcerpts(taskID: taskID)) ?? []
       if loadedNoteTaskID != taskID {
+        // 覆盖草稿之前先把上一条待落库的笔记冲刷掉。这里必须在同一个同步段里把
+        // pendingNote 取走：赋值 taskNoteDraft 会触发编辑器的 onChange →
+        // scheduleNoteSave(新条目)，那一步会覆盖 pendingNote。await 让出去再冲刷
+        // 就晚了，上一条的最后一段编辑会被静默丢掉。
+        let carriedOver = takePendingNote()
         loadedNoteTaskID = taskID
         taskNoteDraft = (try? history?.annotationStore?.loadNote(taskID: taskID) ?? nil) ?? ""
+        if let carriedOver { persistNoteDetached(carriedOver) }
       }
       detailState = .loaded
     case let .failure(code):

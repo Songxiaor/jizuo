@@ -30,6 +30,13 @@ struct SessionAwareHTMLFetcher: Sendable {
     guard let cookie = await cookieHeader(), !cookie.isEmpty else {
       return try await plain.fetch(url: url)
     }
+    // 初始 URL 也要过白名单，不能只校验跳转目标。
+    //
+    // 调用方的「这条链接归我管」判定服务于路由，可以宽松（短链、历史域名）；
+    // 这里决定的是「Cookie 发给谁」，必须严格。两者写在不同地方，前者放宽一格就会
+    // 变成会话泄漏——实测 `DouyinURL.matches` 的后缀匹配少写一个点，
+    // `v.evil-douyin.com` 就能骗到抖音登录态。这道校验让那类失误止步于此。
+    guard allowsRedirectTarget(url) else { throw ManualLinkError.unsafeURL }
     let response = try await resources.fetchResource(
       .init(
         url: url,

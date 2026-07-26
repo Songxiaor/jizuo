@@ -233,15 +233,25 @@ public enum CaptureWireEnvelope: Sendable, Equatable {
     }
   }
 
-  /// Replaces the top-level `version` field with 1 while preserving byte order
-  /// for everything else. Used only for the V2-without-media → V1 fallback
-  /// path. Returns nil when the payload is not a top-level JSON object or the
-  /// `version` key is missing.
+  /// 把顶层 `version` 改成 1，**并丢掉 media 块**，其余原样保留。
+  ///
+  /// 丢 media 是这条回退路径的全部意义：调用方的注释一直写着「The media block is
+  /// silently dropped — better to lose the video than to fail the entire capture」，
+  /// 但这个函数原来只改 version、把 V2 形状的 media 留在原地。V1 的
+  /// `media.videoURL` 是非可选 String，而 V2 的 media 形状不同，于是 V1 解码必然
+  /// 失败——整条回退是死代码，catch 分支永远只能抛 CAPTURE_SCHEMA_INVALID。
+  ///
+  /// 用户看到的后果：author 超长、时长越界、pageURL scheme 不合法这类**只影响
+  /// 媒体块**的问题，会让整条抓取被拒，连完好的正文一起丢掉。
+  ///
+  /// 注意 V1 仍然要求 `evidence.usedCookie == false`。带 Cookie 的抓取降不到 V1
+  /// 是语义正确的——V1 这个字段的含义就是「没用登录态」，不该被绕过。
   private static func rewriteVersionToV1(_ data: Data) -> Data? {
     guard var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
       return nil
     }
     object["version"] = NSNumber(value: 1)
+    object.removeValue(forKey: "media")
     return try? JSONSerialization.data(withJSONObject: object, options: [])
   }
 }

@@ -126,10 +126,13 @@ public enum XiaohongshuPageParser {
   public static func parse(html: String) -> Parsed? {
     let ogTitle = metaContent(html: html, property: "og:title")
     let ogDescription = metaContent(html: html, property: "og:description")
-    // 未登录时服务端返回登录墙外壳：og:title 是站点名，og:description 是站点简介，
-    // 两者都不含笔记内容。用「描述为空」当判据——登录墙外壳的 og:description
-    // 要么缺失，要么是固定的站点宣传语，都不该被当成正文入库。
+    // 未登录 / 会话过期时服务端返回登录墙外壳：og:title 是站点名，og:description
+    // 是固定的站点简介，两者都不含笔记内容。
     guard let ogDescription, !ogDescription.isEmpty else { return nil }
+    // 只挡「描述为空」不够：会话过期时服务端返回 200 + 外壳 + 站点宣传语，
+    // 那种情况下 parse 会成功，入库一条标题「小红书」、正文是宣传语的记录。
+    // 标题去尾正则要求前置分隔符，裸「小红书」清不掉，于是它看着还挺像回事。
+    guard !isSiteBoilerplate(title: ogTitle, description: ogDescription) else { return nil }
     let rawTitle = ogTitle ?? ""
     // 去掉「 - 小红书」这类站点后缀。
     let title = rawTitle
@@ -140,11 +143,33 @@ public enum XiaohongshuPageParser {
       )
       .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
     guard !title.isEmpty else { return nil }
+    // 去掉站点后缀后如果只剩站名本身，说明这就是外壳，不是笔记。
+    guard !siteNames.contains(title.lowercased()) else { return nil }
     return Parsed(
       title: title,
       author: metaContent(html: html, property: "og:xhs:note_user_nickname"),
       description: ogDescription
     )
+  }
+
+  /// 站点自称。标题去掉分隔符后缀后若正好是其中之一，说明拿到的是外壳。
+  static let siteNames: Set<String> = [
+    "小红书", "小红书 - 你的生活指南", "你的生活指南", "xiaohongshu", "red",
+  ]
+
+  /// 登录墙外壳的固定文案特征。
+  ///
+  /// 这些是小红书给未登录访客和搜索引擎看的站点简介，不随笔记变化。命中即说明
+  /// 会话无效——服务端返回 200，但内容是外壳。
+  private static let boilerplateMarkers = [
+    "你的生活指南", "标记我的生活", "全世界的好东西", "3亿人的生活经验",
+    "更多有趣内容尽在小红书", "下载小红书",
+  ]
+
+  static func isSiteBoilerplate(title: String?, description: String) -> Bool {
+    let normalizedTitle = (title ?? "").trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+    if siteNames.contains(normalizedTitle.lowercased()) { return true }
+    return boilerplateMarkers.contains { description.contains($0) }
   }
 
   public static func documentText(title: String, author: String?, description: String) -> String {

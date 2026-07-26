@@ -33,6 +33,9 @@ final class SessionMediaPlaybackController: ObservableObject {
   /// 两者界面上长得一模一样，但修法完全不同。次数一涨就是后者——
   /// 连超时都活不下来，因为计时器每次跟着任务一起被取消。
   @Published private(set) var refreshAttempts = 0
+  /// `refreshAttempts` 归属哪条视频。不能复用 `activeTaskID`：调用方在发起刷新
+  /// 之前就已经把它设成新值了，用它判断「换没换条目」永远为否。
+  private var attemptsTaskID: TaskID?
 
   init(
     preferenceStore: UserDefaultsMediaStoragePreferenceStore,
@@ -142,7 +145,17 @@ final class SessionMediaPlaybackController: ObservableObject {
     qualityOverride: BilibiliStreamQualityPreference? = nil
   ) {
     cancelRefresh(clearPhase: false)
-    if activeTaskID != taskID { refreshAttempts = 0 }
+    // 用 attemptsTaskID 而不是 activeTaskID 判断「是否换了条目」。
+    //
+    // `detailBecameActive` 在调用本方法**之前**就把 activeTaskID 设成了新值，
+    // 所以原来的 `activeTaskID != taskID` 恒为 false，计数器整个进程单调递增：
+    // 打开第 5 条视频时第一次刷新就显示「第 5 次尝试」。而这个计数器唯一的用途
+    // 就是区分「请求慢」和「被反复重启」——读数跨条目累加会把每条都误判成重启
+    // 循环，仪表本身坏掉会把后续排查带偏。
+    if attemptsTaskID != taskID {
+      refreshAttempts = 0
+      attemptsTaskID = taskID
+    }
     refreshAttempts += 1
     activeTaskID = taskID
     phase = .refreshing
@@ -182,7 +195,16 @@ final class SessionMediaPlaybackController: ObservableObject {
         selectionDiagnostic = refreshService.bilibiliDiagnostics.latest()
         generation &+= 1
       } catch is CancellationError {
-        guard activeTaskID == taskID else { return }
+        // 被取消的旧任务不能改 phase。
+        //
+        // `requestRefresh` 先 cancelRefresh 再同步写 `phase = .refreshing`，旧任务
+        // 随后才在 MainActor 上恢复并抛出 CancellationError。同一条视频时
+        // `activeTaskID == taskID` 成立，于是它把 phase 覆盖回 .idle：转圈消失、
+        // 卡片回到「点重试」，而请求其实还在飞；同时 detailBecameActive 的防重入
+        // 守卫（要求 phase == .refreshing）也失效，任何一次激活都会再发一次刷新
+        // 并取消在飞的那次——正是注释里说已经修掉的那个死循环。
+        // 其余四个 catch 分支都有 !Task.isCancelled，唯独这里漏了。
+        guard !Task.isCancelled, activeTaskID == taskID else { return }
         phase = .idle
       } catch let error as SessionMediaRefreshError {
         guard !Task.isCancelled, activeTaskID == taskID else { return }

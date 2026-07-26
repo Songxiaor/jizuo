@@ -225,3 +225,45 @@ final class CaptureMediaContractTests: XCTestCase {
     )
   }
 }
+
+/// V2 媒体块不合法时的降级回退。
+final class CaptureEnvelopeDowngradeTests: XCTestCase {
+  private func fixtureRoot() -> URL {
+    URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("contracts/fixtures")
+  }
+
+  func testMalformedMediaDegradesToTextInsteadOfRejectingTheWholeCapture() throws {
+    // 只有媒体块坏了，正文完好。原实现的回退是死代码：`rewriteVersionToV1` 只改
+    // version、把 V2 形状的 media 留着，而 V1 的 `media.videoURL` 是非可选 String，
+    // 解码必然失败——于是整条抓取被拒，用户点了「发送」却什么都没存下。
+    var payload = try JSONSerialization.jsonObject(
+      with: Data(contentsOf: fixtureRoot().appendingPathComponent("v2-direct-file.json"))
+    ) as! [String: Any]
+    var media = payload["media"] as! [String: Any]
+    media["durationSeconds"] = 999_999  // 越界，只影响媒体块
+    payload["media"] = media
+
+    let decoded = try CaptureWireEnvelope.decode(
+      JSONSerialization.data(withJSONObject: payload),
+      schemaLocator: CaptureWireContractSchema.testLocator())
+    guard case let .v1(v1) = decoded else {
+      return XCTFail("媒体块不合法时应降级为 V1 保住正文，实际是 \(decoded)")
+    }
+    XCTAssertNil(v1.media, "降级的意义就是丢掉媒体块")
+    XCTAssertFalse(v1.capture.text.isEmpty, "正文必须活下来")
+  }
+
+  func testNullMediaAlsoDegradesRatherThanThrowing() throws {
+    var payload = try JSONSerialization.jsonObject(
+      with: Data(contentsOf: fixtureRoot().appendingPathComponent("v2-direct-file.json"))
+    ) as! [String: Any]
+    payload["media"] = NSNull()
+    let decoded = try CaptureWireEnvelope.decode(
+      JSONSerialization.data(withJSONObject: payload),
+      schemaLocator: CaptureWireContractSchema.testLocator())
+    guard case .v1 = decoded else { return XCTFail("media 为 null 时应降级为 V1") }
+  }
+}

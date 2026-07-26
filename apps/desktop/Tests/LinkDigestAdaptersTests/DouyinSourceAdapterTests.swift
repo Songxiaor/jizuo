@@ -192,3 +192,27 @@ extension DouyinSourceAdapterTests {
     }
   }
 }
+
+extension DouyinSourceAdapterTests {
+  func testAvatarURLIsNotMistakenForTheVideo() async {
+    // `url_list` 是通用键：作者头像 avatar_thumb/avatar_larger、封面、相关推荐
+    // 每条都用它。不锚定 + 不排头像，就会把作者头像的 JPEG 当成 media.videoURL
+    // 存进去，而 parse 依然「成功」，不会回落到「请用扩展」。
+    let fetcher = DouyinFixtureFetcher()
+    fetcher.htmlByHostPath["www.douyin.com/video/7000000000000000009"] = """
+      <html><body><script>
+      window._ROUTER_DATA = {"loaderData":{"video":{"awemeId":"7000000000000000009","author":{"nickname":"某作者","avatar_thumb":{"url_list":["https://p3.douyinpic.test/aweme/100x100/avatar.jpeg"]}},"desc":"标题在这里"}}};
+      </script></body></html>
+      """
+    let adapter = DouyinSourceAdapter(fetcher: fetcher)
+    do {
+      let document = try await adapter.capture(
+        url: URL(string: "https://www.douyin.com/video/7000000000000000009")!)
+      XCTAssertNil(document.media?.videoURL, "头像不该成为视频地址：\(document.media?.videoURL ?? "nil")")
+    } catch let error as ManualLinkError {
+      XCTAssertEqual(error, .extensionCaptureRequired, "没有可播放视频时应引导用扩展")
+    } catch {
+      XCTFail("应当抛 ManualLinkError，实际是 \(error)")
+    }
+  }
+}

@@ -2359,4 +2359,43 @@ final class AnnotationPersistenceTests: XCTestCase {
     XCTAssertNil(try repository.loadNote(taskID: taskID))
     XCTAssertTrue(try repository.listExcerpts(taskID: taskID).isEmpty)
   }
+  func testMediaAssetsReturnsEveryRowNotJustTheNewest() throws {
+    // media_assets 的唯一键是 (task_id, content_sha256)，同一任务可以有多行：
+    // 重抓后字节不同、B 站合流成功与失败产出不同 sha。删除任务时若只查最新一条
+    // （mediaAsset 是 ORDER BY created_at_ms DESC LIMIT 1），其余文件的 DB 行随
+    // CASCADE 消失、磁盘文件却留下来，成为再也没人能发现的孤儿。
+    try withRepository { repository, _ in
+      let first = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "multi-asset", key: "multi-asset-delivery", body: "body"),
+        receivedAtMilliseconds: 1
+      ))
+      let shas = [String(repeating: "a", count: 64), String(repeating: "b", count: 64), String(repeating: "c", count: 64)]
+      for (index, sha) in shas.enumerated() {
+        try repository.attachMedia(.init(asset: MediaAsset(
+          taskID: first.taskID,
+          snapshotID: first.snapshotID,
+          relativePath: "\(sha).mp4",
+          fileBookmark: nil,
+          contentSHA256: sha,
+          byteSize: 1_024,
+          durationSeconds: 10,
+          platform: "douyin",
+          author: nil,
+          createdAtMilliseconds: Int64(10 + index)
+        )))
+      }
+
+      let newestOnly = try XCTUnwrap(try repository.mediaAsset(taskID: first.taskID))
+      XCTAssertEqual(newestOnly.contentSHA256, shas[2], "mediaAsset 按设计只给最新一条")
+
+      let all = try repository.mediaAssets(taskID: first.taskID)
+      XCTAssertEqual(
+        Set(all.map(\.contentSHA256)), Set(shas),
+        "删除清理必须能看到全部资产，否则旧文件永久泄漏")
+      XCTAssertEqual(
+        Set(try repository.mediaRelativePaths(taskID: first.taskID)),
+        Set(shas.map { "\($0).mp4" }))
+    }
+  }
+
 }

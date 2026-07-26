@@ -49,6 +49,21 @@ public struct HistoryApplicationService: Sendable {
     )
   }
   public func mediaAsset(taskID: TaskID) throws -> MediaAsset? { try repository.mediaAsset(taskID: taskID) }
+
+  /// 该任务名下**全部**媒体文件的相对路径。
+  ///
+  /// 删除任务时必须用这个，不能用 `mediaAsset(taskID:)`——后者是
+  /// `ORDER BY created_at_ms DESC LIMIT 1`，只返回最新一条。而 media_assets 的
+  /// 唯一键是 (task_id, content_sha256)，同一任务可以有多行：重抓后字节不同、
+  /// B 站合流成功与失败产出不同 sha。只删最新那条，其余文件的 DB 行被 CASCADE
+  /// 删掉、磁盘文件却没人清，成为永久孤儿——而且没有任何清扫器会再发现它们。
+  public func mediaRelativePaths(taskID: TaskID) throws -> [String] {
+    try repository.mediaRelativePaths(taskID: taskID)
+  }
+
+  public func mediaAssets(taskID: TaskID) throws -> [MediaAsset] {
+    try repository.mediaAssets(taskID: taskID)
+  }
   public func beginMediaTranscription(taskID: TaskID, mediaID: String) throws -> TranscriptionAttemptToken {
     try repository.beginMediaTranscription(taskID: taskID, mediaID: mediaID)
   }
