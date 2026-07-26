@@ -146,6 +146,48 @@ public struct BilibiliPlaybackRefresher: Sendable {
     )
   }
 
+  /// 转写专用取音轨。**不要复用 `refresh()`**：那条路服务的是播放，长片会被
+  /// 「优先 progressive」规则导向整段 mp4，而整段 mp4 没有独立音轨——拿它去转写
+  /// 等于为了声音下载整个视频（实测 13 分钟 720P 是 61.6MB，音轨只要 2~3MB）。
+  ///
+  /// 这里强制走 `fnval=16` 只解析 DASH 音轨，并且**挑最低码率**的那条：ASR 最终
+  /// 只吃 16kHz 单声道，64kbps 与 192kbps 在识别结果上没有差别，流量却差 3 倍。
+  /// 播放要音质，转写要省——两者的最优解不同，所以分开。
+  public func audioOnlyTrackURL(
+    pageURL: String,
+    cookieHeader: String? = nil
+  ) async throws -> String {
+    guard let bvid = Self.videoID(from: pageURL) else { throw RefreshError.unsupportedURL }
+    let view = try await fetchView(bvid: bvid, cookieHeader: cookieHeader)
+    let data = try await requestPlayURLJSON(
+      bvid: bvid,
+      cid: view.cid,
+      quality: .highest,
+      cookieHeader: cookieHeader,
+      html5Progressive: false
+    )
+    guard let dash = data["dash"] as? [String: Any],
+          let url = cheapestDASHAudioURL(in: dash["audio"] as? [[String: Any]])
+    else { throw RefreshError.noPlayableStream }
+    diagnostics?.record("转写取音轨：DASH audio 最低码率候选已选中")
+    return url
+  }
+
+  /// 最低码率的可播音轨。Dolby / DTS 之类 `codecPlayabilityScore` 判不出的一律跳过，
+  /// 避免选到 AVFoundation 打不开的轨——那会退化成「提取不到音频」。
+  private func cheapestDASHAudioURL(in items: [[String: Any]]?) -> String? {
+    guard let items else { return nil }
+    let candidates: [(bandwidth: Int, url: String)] = items.compactMap { item in
+      guard let url = firstAllowedURL(in: item),
+            let playability = Self.codecPlayabilityScore(item["codecs"] as? String),
+            playability >= 100
+      else { return nil }
+      // 缺 bandwidth 字段的排到最后，不让它伪装成「最便宜」。
+      return (intValue(item["bandwidth"]) ?? Int.max, url)
+    }
+    return candidates.min(by: { $0.bandwidth < $1.bandwidth })?.url
+  }
+
   private struct ViewMeta {
     let cid: Int64
     let durationSeconds: Double?

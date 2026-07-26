@@ -15,6 +15,10 @@ public enum OnlineAudioTranscriptionError: Error, Sendable, Equatable {
   /// 「连接中断」，实际请求根本没发出——同一句文案连续三轮掩盖了
   /// 取错轨、缺 MIME 提示两个真实缺陷。
   case audioExtractionFailed(detail: String)
+  /// 服务端明确拒绝了请求，detail 是服务端原话（已截断，不含密钥）。
+  /// 模型名不被该端点接受、额度不足、分片超限这几类只有服务端知道，
+  /// 折叠成 `responseRejected` 会让人无从下手。
+  case providerRejected(detail: String)
   case cancelled
 
   public var userMessage: String {
@@ -28,6 +32,8 @@ public enum OnlineAudioTranscriptionError: Error, Sendable, Equatable {
     case .networkInterrupted: "在线转写连接中断，请稍后重试。"
     case let .audioExtractionFailed(detail):
       "本机提取音频失败（还未发送任何数据）：\(detail)"
+    case let .providerRejected(detail):
+      "在线转写服务拒绝了请求：\(detail)"
     case .cancelled: "已取消在线转写。"
     }
   }
@@ -58,4 +64,22 @@ extension OnlineAudioTranscribing {
       remoteMediaURL: remoteMediaURL, model: model, language: language, progress: nil
     )
   }
+}
+
+/// 边转写边出字的能力。分片进度只能告诉用户「在跑」，SSE 增量能让第一段文字
+/// 在几秒内就出现——长音频的等待感主要由这个决定，而不是总耗时。
+///
+/// 单独立协议而不是加到 `OnlineAudioTranscribing`：批量端点没有增量，
+/// 让它假装支持只会多出一条永远不触发的死路径。
+public protocol StreamingOnlineAudioTranscribing: OnlineAudioTranscribing {
+  /// `partialTranscript` 给的是**当前已确定的完整前缀**，不是增量片段。
+  /// 分片是并发的，调用方无法自己拼接乱序到达的增量；由适配器只在
+  /// 「从第 0 片起连续可用」的部分推进，调用方直接整段替换即可。
+  func transcribe(
+    remoteMediaURL: URL,
+    model: String,
+    language: String?,
+    progress: (@Sendable (Int, Int) -> Void)?,
+    partialTranscript: (@Sendable (String) -> Void)?
+  ) async throws -> String
 }

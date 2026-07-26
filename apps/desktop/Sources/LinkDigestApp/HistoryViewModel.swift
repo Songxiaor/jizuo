@@ -463,7 +463,12 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var tagErrorCode: StorageErrorCode?
   @Published private(set) var transcriptionState: TranscriptionUIState = .idle {
     // 任何终态都必须带走阶段文案，不能让「正在下载音频轨…」陪着失败提示常驻。
-    didSet { if !transcriptionState.isActive { onlineTranscriptionPhase = nil } }
+    didSet {
+      if !transcriptionState.isActive {
+        onlineTranscriptionPhase = nil
+        onlineTranscriptionPreview = nil
+      }
+    }
   }
   @Published private(set) var transcriptionText = ""
   @Published private(set) var transcriptionTaskID: TaskID?
@@ -472,6 +477,18 @@ final class HistoryViewModel: ObservableObject {
   /// 上传的全过程——挂在数据库、挂在下载、挂在导出、挂在上传，界面上
   /// 一模一样。这里按真实阶段更新，卡住时直接读出卡在哪个字。
   @Published private(set) var onlineTranscriptionPhase: String?
+  /// 流式通道下已确定的文稿前缀，边转写边显示。终态时清空，成品由
+  /// `transcriptionText` 接管，避免同一段文字在界面上出现两份。
+  @Published private(set) var onlineTranscriptionPreview: String?
+  /// 上一次在线转写的分段耗时，终态后保留（阶段文案会被清掉，这条不能跟着走）。
+  /// 「慢」必须先拆开看：下载音轨慢、本机切片导出慢、等 ASR 返回慢，
+  /// 三段的修法完全不同（带宽 / 编码 preset / 分片粒度与并发），
+  /// 凭感觉挑一处改是今天已经栽过的坑。
+  @Published private(set) var onlineTranscriptionTimings: String?
+  /// 上传段起点：`progress(0, total)` 恰好发生在全部分片导出完成、
+  /// 第一片上传之前，是切片段与上传段之间唯一可靠的分界。
+  private var onlineUploadStartInstant: ContinuousClock.Instant?
+  private var onlineChunkTotal: Int?
   @Published private(set) var imageTextRecognitionState: ImageTextRecognitionUIState = .idle
   @Published private(set) var recognizedImageText = ""
   @Published private(set) var imageTextRecognitionTaskID: TaskID?
@@ -518,6 +535,9 @@ final class HistoryViewModel: ObservableObject {
   private let transcriptTidier: (any TranscriptTidying)?
   private let mindMapExtractor: (any MindMapExtracting)?
   private let transcriptionTempStore: TranscriptionTempStore?
+  /// 转写专用音轨解析（platform, pageURL) -> 音轨地址。整段 progressive 没有
+  /// 独立音轨时用它单独问一次 playurl，避免为了声音下载整段视频。
+  private let transcriptionAudioTrackURL: (@Sendable (String?, String) async -> String?)?
   /// 内嵌播放器实时音频转写（YouTube 无字幕视频）；注入以便测试。
   /// 第二参数是优雅停止信号：yield 即关流、保存已转写文本（非硬取消）。
   private let livePlaybackTranscribe: (@Sendable (String, AsyncStream<Void>) -> AsyncThrowingStream<LocalVideoTranscriptionEvent, Error>)?
@@ -578,6 +598,7 @@ final class HistoryViewModel: ObservableObject {
     transcriptTidier: (any TranscriptTidying)? = nil,
     mindMapExtractor: (any MindMapExtracting)? = nil,
     transcriptionTempStore: TranscriptionTempStore? = nil,
+    transcriptionAudioTrackURL: (@Sendable (String?, String) async -> String?)? = nil,
     livePlaybackTranscribe: (@Sendable (String, AsyncStream<Void>) -> AsyncThrowingStream<LocalVideoTranscriptionEvent, Error>)? = nil,
     startupTranscriptionCleanupFailure: String? = nil,
     onDiscardedTranscriptionAttempt: @escaping @Sendable () -> Void = {},
@@ -598,6 +619,7 @@ final class HistoryViewModel: ObservableObject {
     self.transcriptTidier = transcriptTidier
     self.mindMapExtractor = mindMapExtractor
     self.transcriptionTempStore = transcriptionTempStore
+    self.transcriptionAudioTrackURL = transcriptionAudioTrackURL
     self.livePlaybackTranscribe = livePlaybackTranscribe
     transcriptionCleanupFailure = startupTranscriptionCleanupFailure
     self.onDiscardedTranscriptionAttempt = onDiscardedTranscriptionAttempt
@@ -1689,6 +1711,14 @@ final class HistoryViewModel: ObservableObject {
     transcriptionUsesOnlineService = true
     transcriptionState = .preparingMedia
     onlineTranscriptionPhase = "正在创建转写任务记录…"
+    onlineTranscriptionTimings = nil
+    onlineTranscriptionPreview = nil
+    onlineUploadStartInstant = nil
+    onlineChunkTotal = nil
+    // 单调时钟：耗时测量不能用注入的 nowMilliseconds（测试里是可控假时钟，
+    // 且系统时间可能回拨）。
+    let clock = ContinuousClock()
+    let startedAt = clock.now
     transcriptionTask = Task { [weak self, worker] in
       guard let self, self.transcriptionRequestID == requestID else { return }
       let began = await worker.beginTaskTranscription(
@@ -1736,15 +1766,30 @@ final class HistoryViewModel: ObservableObject {
           try? store.cleanup(attemptID: tempAttemptID)
         }
       }
+      var downloadFinishedAt: ContinuousClock.Instant?
+      var downloadedBytes: Int?
       let audioSourceURL: URL
       if mediaURL.isFileURL {
         audioSourceURL = mediaURL
       } else if let descriptor = context.descriptor, let store = self.transcriptionTempStore {
         do {
+          // 整段 progressive 的 descriptor 没有 companionAudioURL，直接下它等于
+          // 为了声音拉整段视频（实测 61.6MB）。这里补一次只取音轨的 playurl。
+          var overrideAudioURL: String?
+          if descriptor.companionAudioURL == nil, let resolve = self.transcriptionAudioTrackURL {
+            self.onlineTranscriptionPhase = "正在获取音频轨地址…"
+            overrideAudioURL = await resolve(descriptor.platform, descriptor.pageURL)
+          }
           self.onlineTranscriptionPhase = "正在下载音频轨到本机…"
-          let temp = try await store.prepare(descriptor: descriptor)
+          let temp = try await store.prepare(
+            descriptor: descriptor,
+            overrideAudioURL: overrideAudioURL
+          )
           tempAttemptID = temp.attemptID
           audioSourceURL = temp.fileURL
+          downloadFinishedAt = clock.now
+          downloadedBytes = (try? FileManager.default
+            .attributesOfItem(atPath: temp.fileURL.path)[.size] as? Int) ?? nil
           self.onlineTranscriptionPhase = "音轨已就绪，正在分片上传转写…"
         } catch {
           guard self.transcriptionRequestID == requestID else { return }
@@ -1764,21 +1809,53 @@ final class HistoryViewModel: ObservableObject {
         audioSourceURL = mediaURL
       }
       do {
-        let text = try await onlineAudioTranscriber.transcribe(
-          remoteMediaURL: audioSourceURL,
-          model: context.model,
-          language: "zh",
-          progress: { [weak self] done, total in
-            Task { @MainActor in
-              guard let self, self.transcriptionRequestID == requestID else { return }
-              self.onlineTranscriptionPhase = done == 0
-                ? "正在转写 \(total) 个音频分片…"
-                : "已完成 \(done)/\(total) 片…"
+        let onProgress: @Sendable (Int, Int) -> Void = { [weak self] done, total in
+          // 时刻要在闭包同步段取，跨过 MainActor hop 再取会把调度延迟算进来。
+          let mark = clock.now
+          Task { @MainActor in
+            guard let self, self.transcriptionRequestID == requestID else { return }
+            if done == 0, self.onlineUploadStartInstant == nil {
+              self.onlineUploadStartInstant = mark
+              self.onlineChunkTotal = total
             }
+            self.onlineTranscriptionPhase = done == 0
+              ? "正在转写 \(total) 个音频分片…"
+              : "已完成 \(done)/\(total) 片…"
           }
-        )
+        }
+        let onPartial: @Sendable (String) -> Void = { [weak self] prefix in
+          Task { @MainActor in
+            guard let self, self.transcriptionRequestID == requestID else { return }
+            self.onlineTranscriptionPreview = prefix
+          }
+        }
+        let text: String
+        if let streaming = onlineAudioTranscriber as? any StreamingOnlineAudioTranscribing {
+          // 流式通道下，等待感由「第一句话多久出现」决定，而不是总耗时。
+          text = try await streaming.transcribe(
+            remoteMediaURL: audioSourceURL,
+            model: context.model,
+            language: "zh",
+            progress: onProgress,
+            partialTranscript: onPartial
+          )
+        } else {
+          text = try await onlineAudioTranscriber.transcribe(
+            remoteMediaURL: audioSourceURL,
+            model: context.model,
+            language: "zh",
+            progress: onProgress
+          )
+        }
+        let finishedAt = clock.now
         try Task.checkCancellation()
         guard self.transcriptionRequestID == requestID else { return }
+        self.recordOnlineTranscriptionTimings(
+          startedAt: startedAt,
+          downloadFinishedAt: downloadFinishedAt,
+          finishedAt: finishedAt,
+          downloadedBytes: downloadedBytes
+        )
         self.transcriptionText = text
         let completedAt = self.nowMilliseconds()
         let persisted = await worker.saveOnlineTaskTranscription(
@@ -1803,6 +1880,7 @@ final class HistoryViewModel: ObservableObject {
           self.transcriptionState = .failed("在线转写文字未能保存到本机历史，请重试。")
         }
       } catch {
+        let failedAt = clock.now
         let cancelled = error is CancellationError || (error as? OnlineAudioTranscriptionError) == .cancelled
         _ = await worker.updateTaskTranscriptionStatus(
           history,
@@ -1812,6 +1890,13 @@ final class HistoryViewModel: ObservableObject {
           updatedAtMilliseconds: self.nowMilliseconds()
         )
         guard self.transcriptionRequestID == requestID else { return }
+        // 失败也要留下分段耗时：卡住时最需要知道的就是走到哪一段才断的。
+        self.recordOnlineTranscriptionTimings(
+          startedAt: startedAt,
+          downloadFinishedAt: downloadFinishedAt,
+          finishedAt: failedAt,
+          downloadedBytes: downloadedBytes
+        )
         if cancelled {
           self.transcriptionState = .cancelled
         } else if let online = error as? OnlineAudioTranscriptionError {
@@ -1821,6 +1906,43 @@ final class HistoryViewModel: ObservableObject {
         }
       }
     }
+  }
+
+  /// 把在线转写拆成「下载音轨 / 本机切片 / 上传等 ASR」三段写成一行诊断。
+  /// 分界点：`downloadFinishedAt` 是临时文件落盘，`onlineUploadStartInstant`
+  /// 是首次 `progress(0, total)`（全部分片导出完成、第一片上传之前）。
+  /// 任何一段缺失就省掉那一段，绝不用估算值冒充实测。
+  private func recordOnlineTranscriptionTimings(
+    startedAt: ContinuousClock.Instant,
+    downloadFinishedAt: ContinuousClock.Instant?,
+    finishedAt: ContinuousClock.Instant,
+    downloadedBytes: Int?
+  ) {
+    var parts: [String] = []
+    let chunkStart = downloadFinishedAt ?? startedAt
+    if let downloadFinishedAt {
+      var label = String(format: "下载 %.1fs", Self.seconds(startedAt.duration(to: downloadFinishedAt)))
+      if let downloadedBytes {
+        label += String(format: "/%.1fMB", Double(downloadedBytes) / 1_048_576)
+      }
+      parts.append(label)
+    }
+    if let uploadStart = onlineUploadStartInstant {
+      parts.append(String(format: "切片 %.1fs", Self.seconds(chunkStart.duration(to: uploadStart))))
+      var label = String(format: "转写 %.1fs", Self.seconds(uploadStart.duration(to: finishedAt)))
+      if let total = onlineChunkTotal { label += " · \(total) 片" }
+      parts.append(label)
+    } else {
+      // 没走到上传就断了：切片段和上传段无法区分，合并报出来而不是硬拆。
+      parts.append(String(format: "本机准备 %.1fs（未开始上传）", Self.seconds(chunkStart.duration(to: finishedAt))))
+    }
+    parts.append(String(format: "合计 %.1fs", Self.seconds(startedAt.duration(to: finishedAt))))
+    onlineTranscriptionTimings = parts.joined(separator: " · ")
+  }
+
+  private static func seconds(_ duration: Duration) -> Double {
+    let components = duration.components
+    return Double(components.seconds) + Double(components.attoseconds) / 1e18
   }
 
   /// This is the only UI path allowed to call model installation.

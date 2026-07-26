@@ -4228,6 +4228,22 @@ private struct CurrentCaptureMediaPreviewCard: View {
       case let .failed(message):
         Text(message).foregroundStyle(.red)
       }
+      // 流式通道边转写边出字：先看到文字，等待感就和总耗时脱钩了。
+      if let preview = model.onlineTranscriptionPreview, !preview.isEmpty {
+        ScrollView {
+          Text(preview)
+            .font(.callout)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxHeight: 120)
+        .accessibilityIdentifier("remote-transcribe-preview")
+      }
+      if let timings = model.onlineTranscriptionTimings {
+        Text(timings)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("remote-transcribe-timings")
+      }
       if let cleanupFailure = model.transcriptionCleanupFailure {
         VStack(alignment: .leading, spacing: 6) {
           Text(cleanupFailure).foregroundStyle(.red)

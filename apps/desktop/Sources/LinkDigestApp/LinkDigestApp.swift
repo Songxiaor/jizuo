@@ -816,15 +816,18 @@ enum BrowserReceiverState: Sendable, Equatable {
     let manualResourceFetcher = ProxyAwareWebPageFetcher()
     let faviconCache = cacheRoot.map { WebsiteFaviconCache(applicationSupportRoot: $0) }
     let mediaStoragePreference = UserDefaultsMediaStoragePreferenceStore()
+    // 播放和转写共用同一个刷新服务：转写要单独问一次「只要音轨」的 playurl，
+    // 复用同一份 Cookie 与选流诊断，避免两套并行的 B 站会话状态。
+    let sessionMediaRefreshService = SessionMediaRefreshService(
+      resources: manualResourceFetcher,
+      bilibiliQuality: { mediaStoragePreference.bilibiliStreamQuality },
+      bilibiliCookieHeader: {
+        await BilibiliSiteSessionController.shared.cookieHeader()
+      }
+    )
     let sessionMediaPlaybackController = SessionMediaPlaybackController(
       preferenceStore: mediaStoragePreference,
-      refreshService: SessionMediaRefreshService(
-        resources: manualResourceFetcher,
-        bilibiliQuality: { mediaStoragePreference.bilibiliStreamQuality },
-        bilibiliCookieHeader: {
-          await BilibiliSiteSessionController.shared.cookieHeader()
-        }
-      )
+      refreshService: sessionMediaRefreshService
     )
     let mediaStore = cacheRoot.map {
       LocalMediaStore(
@@ -866,7 +869,9 @@ enum BrowserReceiverState: Sendable, Equatable {
       faviconResources: manualResourceFetcher,
       videoTranscriber: AppleSpeechVideoTranscriber(),
       imageTextRecognizer: AppleVisionTextRecognizer(),
-      onlineAudioTranscriber: OpenAICompatibleAudioTranscriber(
+      // Router 按服务地址在「阶跃流式 SSE」和「通用 /audio/transcriptions」之间选，
+      // 两条路径的接口形态不同（增量 vs 一次性返回），不能只换参数。
+      onlineAudioTranscriber: OnlineAudioTranscriberRouter(
         configurationService: configurationService
       ),
       transcriptTidier: OpenAICompatibleTranscriptTidier(
@@ -876,6 +881,12 @@ enum BrowserReceiverState: Sendable, Equatable {
         configurationService: configurationService
       ),
       transcriptionTempStore: transcriptionTempStore,
+      transcriptionAudioTrackURL: { platform, pageURL in
+        await sessionMediaRefreshService.transcriptionAudioTrackURL(
+          platform: platform,
+          sourceURL: pageURL
+        )
+      },
       livePlaybackTranscribe: { locale, stopSignal in
         AppAudioLiveTranscriber().transcribe(localeIdentifier: locale, stopSignal: stopSignal)
       },

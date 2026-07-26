@@ -89,6 +89,19 @@ public struct SessionMediaRefreshService: Sendable {
     throw SessionMediaRefreshError.unsupportedPlatform
   }
 
+  /// 转写专用音轨地址。拿不到就返回 nil，由调用方回退到原播放地址——
+  /// 取音轨是省流量的优化，不该因为它失败就让整条转写失败。
+  public func transcriptionAudioTrackURL(
+    platform: String?,
+    sourceURL: String
+  ) async -> String? {
+    let normalized = (platform ?? "").lowercased()
+    guard normalized == "bilibili" || BilibiliPlaybackRefresher.videoID(from: sourceURL) != nil
+    else { return nil }
+    let cookie = await bilibiliCookieHeader()
+    return try? await bilibili.audioOnlyTrackURL(pageURL: sourceURL, cookieHeader: cookie)
+  }
+
   private func refreshX(sourceURL: String, author: String?) async throws -> MediaDescriptor {
     guard let tweetID = XTweetResolver.tweetID(from: sourceURL) else {
       throw SessionMediaRefreshError.unsupportedPlatform

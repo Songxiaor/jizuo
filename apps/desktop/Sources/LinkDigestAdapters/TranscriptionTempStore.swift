@@ -96,14 +96,20 @@ public final class TranscriptionTempStore: @unchecked Sendable {
     }
   }
 
-  public func prepare(descriptor: MediaDescriptor) async throws -> TranscriptionTempFile {
+  /// `overrideAudioURL` 是转写专用音轨（见 `BilibiliPlaybackRefresher.audioOnlyTrackURL`）。
+  /// 只在整段 progressive 这种「没有独立音轨」的情况下由调用方补上；给了就优先用它，
+  /// 免得为了声音把整段视频拉下来。
+  public func prepare(
+    descriptor: MediaDescriptor,
+    overrideAudioURL: String? = nil
+  ) async throws -> TranscriptionTempFile {
     // B 站 DASH 等拆轨源：ephemeralPlaybackURL 只有画面，companionAudioURL 才是
     // 可导出的音轨。有伴随音轨时只下音频——既修转写失败，也把临时占用从整段
     // 视频降到音频。合流 mp4（抖音/微信/X）没有独立音轨，仍走主播放地址。
     guard descriptor.kind == .directFile,
           descriptor.transcriptionCapability != .unavailable
     else { throw MediaDownloadError.invalidURL }
-    let rawURL = Self.preferredTranscriptionSourceURL(descriptor)
+    let rawURL = overrideAudioURL ?? Self.preferredTranscriptionSourceURL(descriptor)
     guard let rawURL,
           let remoteURL = URL(string: rawURL),
           remoteURL.scheme?.lowercased() == "https"
