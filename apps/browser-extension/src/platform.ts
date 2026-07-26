@@ -4,6 +4,8 @@ import {
   isDouyinHost,
   isDouyinSingleVideoURL,
 } from "./content/douyin-detect";
+import { isBilibiliHost } from "./content/bilibili";
+import { isXiaohongshuHost } from "./content/xiaohongshu";
 
 /**
  * Keeps browser-only source recognition at the capture boundary. The desktop
@@ -22,6 +24,14 @@ export function detectCapturePlatform(rawURL: string): CapturePlatform {
   if (host === "x.com" || host.endsWith(".x.com") || host === "twitter.com" || host.endsWith(".twitter.com")) return "x";
   if (host === "github.com" || host.endsWith(".github.com")) return "github";
   if (isDouyinHost(rawURL)) return "douyin";
+  if (isBilibiliHost(rawURL)) return "bilibili";
+  if (isXiaohongshuHost(rawURL)) return "xiaohongshu";
+  // A 类文章站：仍走 generic 的 rendered_dom 抽取，这里只贴平台标签，让 popup 与
+  // History 侧栏识别来源，并为后续 Readability 式清洗预留 resolver 挂点。
+  if (host === "zhihu.com" || host.endsWith(".zhihu.com")) return "zhihu";
+  if (host === "medium.com" || host.endsWith(".medium.com")) return "medium";
+  if (host === "substack.com" || host.endsWith(".substack.com")) return "substack";
+  if (host === "toutiao.com" || host.endsWith(".toutiao.com")) return "toutiao";
   return "generic";
 }
 

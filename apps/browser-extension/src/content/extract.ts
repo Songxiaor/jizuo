@@ -9,6 +9,8 @@ import {
   normalizeDouyinTitle,
 } from "./douyin-detect";
 import { isDouyinVideoURL } from "../platform";
+import { bilibiliVideoID, bilibiliCanonicalURL, isBilibiliVideoURL } from "./bilibili";
+import { xiaohongshuCanonicalURL, isXiaohongshuNoteURL } from "./xiaohongshu";
 
 export type ExtractedPage = {
   title: string;
@@ -46,6 +48,17 @@ export function isXStatusURL(rawURL: string): boolean {
       return false;
     }
     return /^\/[^/]+\/status\/\d+(?:\/|$)/u.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+export function isZhihuAnswerURL(rawURL: string): boolean {
+  try {
+    const url = new URL(rawURL);
+    const host = url.hostname.toLowerCase();
+    return (host === "zhihu.com" || host.endsWith(".zhihu.com"))
+      && /^\/question\/\d+\/answer\/\d+(?:\/|$)/u.test(url.pathname);
   } catch {
     return false;
   }
@@ -94,7 +107,8 @@ const NOISE_SELECTOR =
   "[class*='rich_media_tool' i],[class*='rich_media_area_extra' i],[id*='js_tags' i]," +
   "[class*='sns_opr' i],[class*='comment' i],[id*='comment' i]," +
   "[class*='related' i],[class*='recommend' i],[class*='hot-article' i]," +
-  "[class*='ad-' i],[id*='ad-' i],[class*='advert' i],[class*='promo' i]";
+  "[class*='ad-' i],[id*='ad-' i],[class*='advert' i],[class*='promo' i]," +
+  "[class*='subscribe' i],[class*='subscription' i],[class*='newsletter' i]";
 
 /**
  * Testable extraction against a Document-like object.
@@ -113,6 +127,14 @@ export function extractCurrentPage(documentLike: Document = document): Extracted
 
   if (isDouyinVideoURL(documentLike.location.href)) {
     return extractDouyinPage(documentLike);
+  }
+
+  if (isBilibiliVideoURL(documentLike.location.href)) {
+    return extractBilibiliPage(documentLike);
+  }
+
+  if (isXiaohongshuNoteURL(documentLike.location.href)) {
+    return extractXiaohongshuPage(documentLike);
   }
 
   // Bare Douyin feed (no modal_id /video id): do not scrape the site chrome as "article".
@@ -134,7 +156,9 @@ export function extractCurrentPage(documentLike: Document = document): Extracted
   const baseHref = documentLike.location.href;
   const markdown = htmlElementToMarkdown(clone, baseHref);
   const body = stripBoilerplateLines(markdown);
-  const meta = resolvePageMetadata(documentLike);
+  const meta = isZhihuAnswerURL(baseHref)
+    ? { ...resolvePageMetadata(documentLike), ...resolveZhihuAnswerMetadata(documentLike) }
+    : resolvePageMetadata(documentLike);
   const header = buildCaptureFrontmatter(meta);
   const text = `${header}${body}`.trim();
   return page(documentLike, text, "rendered_dom");
@@ -221,6 +245,216 @@ export function extractDouyinPage(documentLike: Document): ExtractedPage {
         ...(author ? { author } : {}),
       },
     } : {}),
+  };
+}
+
+/**
+ * Bilibili single video (v1): a public text record of title / uploader /
+ * description, keyed to the canonical `/video/{BV|av}` page. No DASH download
+ * and no subtitle fetch — those stay a later, opt-in step. Reads only og:meta
+ * and the watching page's own DOM; never a private API or login-walled data.
+ */
+/**
+ * 截掉 B 站 og:description 的 SEO 尾巴。拼接点固定是「, 视频播放量 <数字>」，
+ * 之后全是统计、作者简介和相关视频标题，一个字都不属于这条视频的正文。
+ */
+function stripBilibiliMetaTail(raw: string): string {
+  return raw.split(/[,，]\s*视频播放量\s*\d/u)[0]?.trim() ?? "";
+}
+
+export function extractBilibiliPage(documentLike: Document): ExtractedPage {
+  const pageHref = documentLike.location.href;
+  const videoID = bilibiliVideoID(pageHref);
+  const canonicalURL = videoID ? bilibiliCanonicalURL(videoID) : pageHref;
+
+  const meta = resolvePageMetadata(documentLike);
+  const ogTitle = documentLike.querySelector("meta[property='og:title']")?.getAttribute("content")?.trim();
+  const ogDescription = documentLike
+    .querySelector("meta[property='og:description']")
+    ?.getAttribute("content")
+    ?.trim();
+  const rawTitle =
+    ogTitle
+    || documentLike.querySelector("h1")?.getAttribute("title")?.trim()
+    || documentLike.querySelector("h1")?.textContent?.trim()
+    || resolveTitle(documentLike);
+  // B 站的 og:title 常带「_哔哩哔哩_bilibili」站点后缀，去掉更干净。
+  const title = (rawTitle || "")
+    .replace(/[_\-—|]\s*(哔哩哔哩|bilibili).*$/iu, "")
+    .trim() || "哔哩哔哩视频";
+  const author =
+    meta.author
+    || documentLike.querySelector(".up-name, .up-detail-top a, [class*='up-name' i]")?.textContent?.trim()
+    || undefined;
+  // B 站的 og:description 是给搜索引擎看的：简介后面接着播放量/弹幕/点赞/投币/
+  // 收藏/转发、作者、作者简介，最后还拼上一串"相关视频"标题。实测 351 字里只有
+  // 前 16 字是真简介。所以先读页面上那块简介 DOM，只有它取不到时才退回 og，
+  // 并且从「视频播放量」这个固定拼接点截断，绝不把推荐位标题当成正文。
+  const description = (documentLike
+    .querySelector(".basic-desc-info, [class*='desc-info' i], [class*='video-desc' i]")
+    ?.textContent?.trim()
+    || stripBilibiliMetaTail(ogDescription ?? "")
+    || "")
+    .split(/\n+/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+
+  // Engagement + publish time come from the watch-page toolbar, which renders
+  // the human-facing 万/亿 strings the reader already sees. The SSR
+  // `__INITIAL_STATE__` is a MAIN-world global the isolated content script can
+  // never reach, so the toolbar DOM is the only stable in-page source. `reply`
+  // (评论) lives in the lazy comment component and is intentionally skipped.
+  const published =
+    documentLike.querySelector(".pubdate-text, [class*='pubdate']")?.textContent?.trim()
+    || meta.published
+    || undefined;
+  const header = buildCaptureFrontmatter({
+    author,
+    published,
+    likes: firstDomCount(documentLike, ".video-like-info"),
+    collects: firstDomCount(documentLike, ".video-fav-info"),
+    shares: firstDomCount(documentLike, ".video-share-info"),
+    views: firstDomCount(documentLike, ".view-text"),
+  });
+  // Title is shown by the app's detail header already; drop the body H1 dup.
+  const text = `${header}${description}`.trim() || "哔哩哔哩公开视频";
+  const cleaned = text.trim();
+  return {
+    title,
+    url: canonicalURL,
+    text: cleaned,
+    characterCount: [...cleaned].length,
+    method: "rendered_dom",
+  };
+}
+
+/**
+ * 笔记图集：只收轮播里的正片图。loop 模式的 swiper 会在首尾插克隆 slide（实测
+ * 7 张图渲染成 9 个节点，第一个就是最后一张的克隆），每个 slide 上的
+ * `data-swiper-slide-index` 才是这张图在笔记里的真实序号——按它排序既能去掉
+ * 克隆重复，也能在某个真实 slide 尚未懒加载出 src 时由克隆补位。
+ * 类名判断必须按空格切词：真实的末张 slide 带 `swiper-slide-duplicate-prev`，
+ * 子串匹配会把它误判成克隆。评论配图与头像走别的子域/路径，顺带挡掉。
+ */
+function xiaohongshuNoteImages(scope: ParentNode, baseHref: string): string[] {
+  // 视频笔记的轮播里放的是封面，不是图集；带 <video> 就整体不收。
+  if (scope.querySelector("video")) return [];
+  const galleryURL = (raw: string | null | undefined): string => {
+    const trimmed = (raw ?? "").trim();
+    if (!trimmed || trimmed.length > 2048) return "";
+    try {
+      const url = new URL(trimmed, baseHref);
+      // 部分 <img> 给的是 http，同一资源 https 可取。
+      if (url.protocol === "http:") url.protocol = "https:";
+      if (url.protocol !== "https:") return "";
+      const host = url.hostname.toLowerCase();
+      if (host !== "xhscdn.com" && !host.endsWith(".xhscdn.com")) return "";
+      if (host.startsWith("sns-avatar")) return "";
+      if (url.pathname.includes("/comment/")) return "";
+      return url.href;
+    } catch {
+      return "";
+    }
+  };
+  const byIndex = new Map<number, string>();
+  const inDOMOrder: string[] = [];
+  for (const node of scope.querySelectorAll(".swiper-slide img")) {
+    const slide = node.closest?.(".swiper-slide") ?? null;
+    const srcset = node.getAttribute("srcset");
+    const url = galleryURL(node.getAttribute("src"))
+      || galleryURL(srcset ? srcset.split(",")[0]?.trim().split(/\s+/u)[0] : null);
+    if (!url) continue;
+    const rawIndex = slide?.getAttribute("data-swiper-slide-index");
+    if (rawIndex && /^\d{1,3}$/u.test(rawIndex)) {
+      const index = Number(rawIndex);
+      if (!byIndex.has(index)) byIndex.set(index, url);
+      continue;
+    }
+    // 没有序号属性（未开 loop 的轮播）时退回 DOM 顺序，并跳过克隆。
+    const classes = (slide?.getAttribute("class") ?? "").split(/\s+/u);
+    if (classes.includes("swiper-slide-duplicate")) continue;
+    if (!inDOMOrder.includes(url)) inDOMOrder.push(url);
+  }
+  const ordered = byIndex.size > 0
+    ? [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, url]) => url)
+    : inDOMOrder;
+  // 小红书单篇图文笔记最多 18 张，收得比这多说明圈进了别的笔记。
+  return ordered.slice(0, 18);
+}
+
+/**
+ * Xiaohongshu note (v1): a public text record of the note's title / author /
+ * body from the page the user is viewing in their own session. Reads og:meta
+ * and the note DOM only — never the signed x-s/x-t API, never the feed shell.
+ */
+export function extractXiaohongshuPage(documentLike: Document): ExtractedPage {
+  const pageHref = documentLike.location.href;
+  const canonicalURL = xiaohongshuCanonicalURL(pageHref);
+
+  const meta = resolvePageMetadata(documentLike);
+  // 笔记详情容器。信息流卡片和每一条评论都带 `.like-wrapper .count`，笔记打开成
+  // 弹层时它们还排在 DOM 前面，所有笔记级读取都必须先收敛到这里。
+  const note: ParentNode = documentLike.querySelector("#noteContainer") ?? documentLike;
+  const ogTitle = documentLike.querySelector("meta[property='og:title']")?.getAttribute("content")?.trim();
+  const ogDescription = documentLike
+    .querySelector("meta[property='og:description']")
+    ?.getAttribute("content")
+    ?.trim();
+  const rawTitle =
+    ogTitle
+    || note.querySelector("#detail-title, .title")?.textContent?.trim()
+    || resolveTitle(documentLike);
+  const title = (rawTitle || "")
+    .replace(/[_\-—|]\s*(小红书|xiaohongshu|RED).*$/iu, "")
+    .trim() || "小红书笔记";
+  const author =
+    meta.author
+    || note.querySelector(".author-wrapper .username, .username, [class*='author' i] [class*='name' i]")?.textContent?.trim()
+    || undefined;
+  const description = (ogDescription
+    || note.querySelector("#detail-desc, .note-content .desc, .desc")?.textContent?.trim()
+    || "")
+    .split(/\n+/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+
+  // 笔记自己的互动数只在详情 `.engage-bar` 里。评论用的是同名的 `.like-wrapper
+  // .count`，信息流卡片同样如此，所以这里既要限定在笔记容器内，也要限定在
+  // engage-bar 内——两层缺一层就会读到别人的数字。选择器失配时宁可不写数字，
+  // 也不回退到全文档匹配。发布日期在 `.bottom-container`，剥掉「编辑于」前缀。
+  const published =
+    note.querySelector(".bottom-container .date")?.textContent?.trim()
+      ?.replace(/^(?:编辑于|发布于)\s*/u, "").trim()
+    || meta.published
+    || undefined;
+  const header = buildCaptureFrontmatter({
+    author,
+    published,
+    likes: firstDomCount(note, ".engage-bar .like-wrapper .count"),
+    comments: firstDomCount(note, ".engage-bar .chat-wrapper .count"),
+    collects: firstDomCount(note, ".engage-bar .collect-wrapper .count"),
+  });
+  // Title is shown by the app's detail header already; drop the body H1 dup.
+  // 图集内联成 Markdown 图片，由 App 的远程图片暂存路径下载落地。
+  const images = xiaohongshuNoteImages(note, pageHref);
+  const gallery = images.map((url) => `![](${url})`).join("\n\n");
+  const body = [description, gallery].filter(Boolean).join("\n\n");
+  // 抓不到正文时给人话提示，绝不回退到 document.body 的信息流外壳。
+  const text = body
+    ? `${header}${body}`.trim()
+    : "未能从当前页面提取小红书笔记正文。请在具体笔记详情页打开后再发送。";
+  const cleaned = text.trim();
+  return {
+    title,
+    url: canonicalURL,
+    text: cleaned,
+    characterCount: [...cleaned].length,
+    method: "rendered_dom",
+    ...(images.length > 0 ? { imageCount: images.length } : {}),
   };
 }
 
@@ -880,7 +1114,7 @@ function parseAriaCount(scope: ParentNode, selector: string, verb: RegExp): stri
 
 function pickContentRoot(documentLike: Document): Element {
   // Non-X pages only. X status uses extractXStatusPage.
-  const selectors = ["#js_content", "#img-content", "[itemprop='articleBody']", "article", "main"];
+  const selectors = ["#js_content", "#img-content", "[itemprop='articleBody']", ".Post-RichText", ".RichText.ztext", ".available-content", ".article-content", "article", "main"];
   for (const selector of selectors) {
     const node = documentLike.querySelector(selector);
     if (node && (node.textContent?.trim().length ?? 0) >= 20) return node;
@@ -946,24 +1180,156 @@ function metaContent(
 
 /** Lightweight YAML-like header (Tolaria/Obsidian style). */
 export function buildCaptureFrontmatter(fields: {
-  author?: string;
-  published?: string;
-  likes?: string;
-  replies?: string;
-  reposts?: string;
+  // Values are `| undefined` so DOM-resolved optionals (which are often absent)
+  // can be passed straight through; every field is guarded before it serializes.
+  author?: string | undefined;
+  published?: string | undefined;
+  likes?: string | undefined;
+  comments?: string | undefined;
+  shares?: string | undefined;
+  collects?: string | undefined;
+  views?: string | undefined;
+  /** Legacy internal names from the X extractor; serialized canonically below. */
+  replies?: string | undefined;
+  reposts?: string | undefined;
 }): string {
   const lines: string[] = ["---"];
   if (fields.author) lines.push(`author: ${JSON.stringify(fields.author)}`);
   if (fields.published) lines.push(`published: ${JSON.stringify(fields.published)}`);
   // Engagement is optional structured chrome — only when a stable parse succeeded.
   if (fields.likes) lines.push(`likes: ${JSON.stringify(fields.likes)}`);
-  if (fields.replies) lines.push(`replies: ${JSON.stringify(fields.replies)}`);
-  if (fields.reposts) lines.push(`reposts: ${JSON.stringify(fields.reposts)}`);
+  if (fields.comments ?? fields.replies) {
+    lines.push(`comments: ${JSON.stringify(fields.comments ?? fields.replies)}`);
+  }
+  if (fields.shares ?? fields.reposts) {
+    lines.push(`shares: ${JSON.stringify(fields.shares ?? fields.reposts)}`);
+  }
+  if (fields.collects) lines.push(`collects: ${JSON.stringify(fields.collects)}`);
+  if (fields.views) lines.push(`views: ${JSON.stringify(fields.views)}`);
   // Intentionally omit meta/og:description: WeChat and many sites fill it with
   // promotional SEO blurbs that are not a faithful article abstract.
   if (lines.length === 1) return "";
   lines.push("---", "");
-  return lines.join("\n");
+  return `${lines.join("\n")}\n`;
+}
+
+/**
+ * Reads a single engagement count straight off the page as the site already
+ * renders it (for example B站's "1.0亿" or 小红书's "9670"). Whitespace is
+ * collapsed and a value is kept only when it actually contains a digit, so an
+ * unrendered placeholder button never becomes a bogus `likes: ""`.
+ */
+function firstDomCount(scope: ParentNode, selector: string): string | undefined {
+  const raw = scope.querySelector(selector)?.textContent?.replace(/\s+/gu, "").trim();
+  return raw && /\d/u.test(raw) ? raw : undefined;
+}
+
+type ZhihuAnswerMetadata = {
+  author?: string;
+  published?: string;
+  likes?: string;
+  comments?: string;
+  collects?: string;
+};
+
+function semanticCount(
+  scope: ParentNode,
+  selectors: string[],
+  keyword: RegExp,
+): string | undefined {
+  const candidates: Element[] = [];
+  const seen = new Set<Element>();
+  for (const selector of selectors) {
+    const node = scope.querySelector(selector);
+    if (node && !seen.has(node)) {
+      seen.add(node);
+      candidates.push(node);
+    }
+  }
+  // Class names drift on Zhihu. This bounded, answer-scoped fallback reads only
+  // buttons/labels from the current answer, never question-level header stats.
+  for (const node of Array.from(scope.querySelectorAll("button, [aria-label], [title]")).slice(0, 100)) {
+    if (!seen.has(node)) {
+      seen.add(node);
+      candidates.push(node);
+    }
+  }
+  for (const node of candidates) {
+    const raw = [
+      node.getAttribute("aria-label"),
+      node.getAttribute("title"),
+      node.textContent,
+    ].filter(Boolean).join(" ").replace(/\s+/gu, " ").trim();
+    if (!raw || !keyword.test(raw)) continue;
+    const match =
+      raw.match(new RegExp(`(?:${keyword.source})\\s*([\\d.,]+\\s*[KkMm万亿]?)`, "iu"))
+      || raw.match(new RegExp(`([\\d.,]+\\s*[KkMm万亿]?)\\s*(?:条|个|次)?\\s*(?:${keyword.source})`, "iu"));
+    const value = match?.[1]?.replace(/\s+/gu, "").trim();
+    if (value && /\d/u.test(value)) return value;
+  }
+  return undefined;
+}
+
+/**
+ * Reads metadata only from the answer identified by the current URL. Question
+ * follower/view totals are deliberately excluded because they describe a
+ * different object than the captured answer.
+ */
+export function resolveZhihuAnswerMetadata(documentLike: Document): ZhihuAnswerMetadata {
+  if (!isZhihuAnswerURL(documentLike.location.href)) return {};
+  const answerID = new URL(documentLike.location.href).pathname.match(/\/answer\/(\d+)/u)?.[1];
+  const identified =
+    (answerID
+      ? documentLike.querySelector(
+        `[data-answer-id='${answerID}'], [data-zop*='${answerID}'], [data-za-extra-module*='${answerID}']`,
+      )
+      : null);
+  const scope =
+    identified?.closest(".AnswerItem, [data-answer-id]")
+    || identified
+    || documentLike.querySelector(".AnswerItem")
+    || documentLike.querySelector("main")
+    || documentLike;
+
+  const author =
+    scope.querySelector(".AuthorInfo-name")?.textContent?.trim()
+    || scope.querySelector(".UserLink-link")?.textContent?.trim()
+    || scope.querySelector("[itemprop='name']")?.getAttribute("content")?.trim()
+    || scope.querySelector("[itemprop='name']")?.textContent?.trim()
+    || undefined;
+  const publishedNode =
+    scope.querySelector("time[datetime]")
+    || scope.querySelector(".ContentItem-time")
+    || scope.querySelector("[data-tooltip]");
+  const publishedRaw =
+    publishedNode?.getAttribute("datetime")?.trim()
+    || publishedNode?.getAttribute("data-tooltip")?.trim()
+    || publishedNode?.textContent?.trim()
+    || "";
+  const published = publishedRaw.replace(/^(?:编辑于|发布于)\s*/u, "").trim() || undefined;
+
+  const metadata: ZhihuAnswerMetadata = {};
+  if (author) metadata.author = author;
+  if (published) metadata.published = published;
+  const likes = semanticCount(
+    scope,
+    [".VoteButton--up", "[aria-label*='赞同']", "[title*='赞同']"],
+    /赞同|赞成|upvote/u,
+  );
+  const comments = semanticCount(
+    scope,
+    ["[aria-label*='评论']", "[title*='评论']", ".ContentItem-action"],
+    /评论|comment/iu,
+  );
+  const collects = semanticCount(
+    scope,
+    ["[aria-label*='收藏']", "[title*='收藏']", ".ContentItem-action"],
+    /收藏|collect|favou?rite/iu,
+  );
+  if (likes) metadata.likes = likes;
+  if (comments) metadata.comments = comments;
+  if (collects) metadata.collects = collects;
+  return metadata;
 }
 
 export function resolvePageMetadata(documentLike: Document): {
@@ -1000,6 +1366,63 @@ function absoluteUrl(href: string, baseHref: string): string | null {
     return url.href;
   } catch {
     return null;
+  }
+}
+
+function imageCandidateScore(rawURL: string, descriptor: string | undefined, priority: number): number {
+  const width = descriptor?.match(/^(\d+)w$/u)?.[1];
+  if (width) return Number(width) * 10 + priority;
+  const density = descriptor?.match(/^(\d+(?:\.\d+)?)x$/u)?.[1];
+  if (density) return Number(density) * 10_000 + priority;
+  const embeddedWidth = rawURL.match(/resize:(?:fit|fill):(\d+)(?::\d+)?/iu)?.[1];
+  if (embeddedWidth) return Number(embeddedWidth) * 10 + priority;
+  return priority;
+}
+
+/**
+ * Chooses the highest-quality real URL exposed by lazy/responsive image
+ * markup. Medium commonly puts a small placeholder in `src` and the useful
+ * article image in `srcset` or a surrounding `<picture>`.
+ */
+export function resolveResponsiveImageURL(image: Element, baseHref: string): string | null {
+  const candidates: Array<{ href: string; score: number }> = [];
+  const add = (raw: string | null | undefined, descriptor: string | undefined, priority: number) => {
+    const trimmed = raw?.trim();
+    if (!trimmed) return;
+    const href = absoluteUrl(trimmed, baseHref);
+    if (href) candidates.push({ href, score: imageCandidateScore(trimmed, descriptor, priority) });
+  };
+  const addSrcset = (raw: string | null | undefined, priority: number) => {
+    for (const candidate of raw?.split(",") ?? []) {
+      const [url, descriptor] = candidate.trim().split(/\s+/u);
+      add(url, descriptor, priority);
+    }
+  };
+
+  addSrcset(image.getAttribute("data-srcset"), 60);
+  addSrcset(image.getAttribute("srcset"), 50);
+  const picture = image.closest("picture");
+  picture?.querySelectorAll("source").forEach((source) => {
+    addSrcset(source.getAttribute("data-srcset"), 40);
+    addSrcset(source.getAttribute("srcset"), 30);
+  });
+  add(image.getAttribute("data-src"), undefined, 25);
+  add(image.getAttribute("data-original"), undefined, 20);
+  add(image.getAttribute("data-lazy-src"), undefined, 15);
+  add(image.getAttribute("src"), undefined, 10);
+
+  return candidates.sort((a, b) => b.score - a.score)[0]?.href ?? null;
+}
+
+export function isMediumProfileChromeImageURL(href: string): boolean {
+  try {
+    const url = new URL(href);
+    const host = url.hostname.toLowerCase();
+    if (host !== "miro.medium.com" && !host.endsWith(".miro.medium.com")) return false;
+    const size = url.pathname.match(/resize:fill:(\d+):(\d+)/iu);
+    return Boolean(size && Number(size[1]) <= 128 && Number(size[2]) <= 128);
+  } catch {
+    return false;
   }
 }
 
@@ -1078,14 +1501,9 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
     if (tag === "a") return collapseInline(inner);
     if (tag === "img") {
       const alt = (el.getAttribute("alt") ?? el.getAttribute("data-alt") ?? "图像").trim() || "图像";
-      const raw =
-        el.getAttribute("data-src") ||
-        el.getAttribute("data-original") ||
-        el.getAttribute("src") ||
-        "";
-      const href = absoluteUrl(raw, baseHref);
+      const href = resolveResponsiveImageURL(el, baseHref);
       if (!href) return alt ? `\n\n${alt}\n\n` : "";
-      if (isXProfileChromeImageURL(href)) return "";
+      if (isXProfileChromeImageURL(href) || isMediumProfileChromeImageURL(href)) return "";
       const safeAlt = alt.replace(/[[\]]/g, "");
       return `\n\n![${safeAlt}](${href})\n\n`;
     }
@@ -2166,6 +2584,218 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
     }
   }
 
+  // Bilibili single-video path (self-contained — no module imports).
+  {
+    const href = document.location.href;
+    let host: string;
+    let videoID = "";
+    try {
+      const url = new URL(href);
+      host = url.hostname.toLowerCase().replace(/^www\.|^m\./, "");
+      if (host === "bilibili.com") {
+        const id = url.pathname.match(/^\/video\/(BV[0-9A-Za-z]{10}|av\d+)/u)?.[1];
+        if (id) videoID = id;
+      }
+    } catch {
+      host = "";
+    }
+    if (videoID) {
+      const ogTitle = document.querySelector("meta[property='og:title']")?.getAttribute("content")?.trim();
+      const ogDesc = document.querySelector("meta[property='og:description']")?.getAttribute("content")?.trim();
+      const author =
+        document.querySelector("meta[name='author']")?.getAttribute("content")?.trim()
+        || document.querySelector(".up-name, .up-detail-top a")?.textContent?.trim()
+        || undefined;
+      const rawTitle =
+        ogTitle
+        || document.querySelector("h1")?.getAttribute("title")?.trim()
+        || document.querySelector("h1")?.textContent?.trim()
+        || document.title
+        || "哔哩哔哩视频";
+      const title = rawTitle.replace(/[_\-—|]\s*(哔哩哔哩|bilibili).*$/iu, "").trim() || "哔哩哔哩视频";
+      // Caption cleanup shared by note/video sources: normalize full-width
+      // spacing and lift every #hashtag onto its own line so a run-on caption
+      // stops rendering as one wall of text.
+      const formatCaption = (raw: string): string => raw
+        .replace(/　/gu, " ")
+        .replace(/[ \t]{2,}/gu, " ")
+        .replace(/\s*(#[^#\s]+)/gu, "\n$1")
+        .replace(/\n{3,}/gu, "\n\n")
+        .split("\n").map((line) => line.trim()).join("\n")
+        .trim();
+      const domCount = (sel: string): string | undefined => {
+        const raw = document.querySelector(sel)?.textContent?.replace(/\s+/gu, "").trim();
+        return raw && /\d/u.test(raw) ? raw : undefined;
+      };
+      // B 站的 og:description 是给搜索引擎看的：简介后面接着播放量/弹幕/点赞/
+      // 投币/收藏/转发、作者、作者简介，最后还拼一串"相关视频"标题。实测 351 字
+      // 里只有前 16 字是真简介。先读页面上那块简介 DOM，取不到才退回 og，并从
+      // 「视频播放量」这个固定拼接点截断，绝不把推荐位标题当成正文。
+      const description = formatCaption(
+        document.querySelector(".basic-desc-info, [class*='desc-info' i]")?.textContent?.trim()
+        || (ogDesc ?? "").split(/[,，]\s*视频播放量\s*\d/u)[0]?.trim()
+        || "");
+      // Engagement + publish time come from the watch-page toolbar (the human
+      // 万/亿 strings the reader sees); the SSR __INITIAL_STATE__ is a MAIN-world
+      // global the isolated content script can never reach. 评论 lives in the
+      // lazy comment component and is intentionally skipped.
+      const published =
+        document.querySelector(".pubdate-text, [class*='pubdate']")?.textContent?.trim() || undefined;
+      const likes = domCount(".video-like-info");
+      const collects = domCount(".video-fav-info");
+      const shares = domCount(".video-share-info");
+      const views = domCount(".view-text");
+      const lines = ["---"];
+      if (author) lines.push(`author: ${JSON.stringify(author)}`);
+      if (published) lines.push(`published: ${JSON.stringify(published)}`);
+      if (likes) lines.push(`likes: ${JSON.stringify(likes)}`);
+      if (shares) lines.push(`shares: ${JSON.stringify(shares)}`);
+      if (collects) lines.push(`collects: ${JSON.stringify(collects)}`);
+      if (views) lines.push(`views: ${JSON.stringify(views)}`);
+      const header = lines.length > 1 ? `${lines.join("\n")}\n---\n\n` : "";
+      // Title is shown by the app's detail header already; a body H1 duplicated it.
+      const body = description;
+      const text = `${header}${body}`.trim() || "哔哩哔哩公开视频";
+      return {
+        title,
+        url: `https://www.bilibili.com/video/${videoID}`,
+        text,
+        characterCount: [...text].length,
+        method: "rendered_dom",
+      };
+    }
+  }
+
+  // Xiaohongshu note path (self-contained — no module imports).
+  {
+    const href = document.location.href;
+    let host = "";
+    let noteID = "";
+    try {
+      const url = new URL(href);
+      host = url.hostname.toLowerCase();
+      const id = url.pathname.match(/\/(?:explore|discovery\/item)\/([0-9a-fA-F]{16,32})/u)?.[1];
+      if (id) noteID = id;
+    } catch {
+      host = "";
+    }
+    const isXiaohongshu = host === "xiaohongshu.com" || host.endsWith(".xiaohongshu.com");
+    if (isXiaohongshu && noteID) {
+      // 笔记详情容器。信息流卡片和每一条评论都带 `.like-wrapper .count`，笔记
+      // 打开成弹层时它们还排在 DOM 前面，笔记级读取必须先收敛到这里。
+      const note: ParentNode = document.querySelector("#noteContainer") ?? document;
+      const ogTitle = document.querySelector("meta[property='og:title']")?.getAttribute("content")?.trim();
+      const ogDesc = document.querySelector("meta[property='og:description']")?.getAttribute("content")?.trim();
+      const author =
+        document.querySelector("meta[name='author']")?.getAttribute("content")?.trim()
+        || note.querySelector(".author-wrapper .username, .username")?.textContent?.trim()
+        || undefined;
+      const rawTitle =
+        ogTitle
+        || note.querySelector("#detail-title, .title")?.textContent?.trim()
+        || document.title
+        || "小红书笔记";
+      const title = rawTitle.replace(/[_\-—|]\s*(小红书|xiaohongshu|RED).*$/iu, "").trim() || "小红书笔记";
+      const formatCaption = (raw: string): string => raw
+        .replace(/　/gu, " ")
+        .replace(/[ \t]{2,}/gu, " ")
+        .replace(/\s*(#[^#\s]+)/gu, "\n$1")
+        .replace(/\n{3,}/gu, "\n\n")
+        .split("\n").map((line) => line.trim()).join("\n")
+        .trim();
+      const domCount = (sel: string): string | undefined => {
+        const raw = note.querySelector(sel)?.textContent?.replace(/\s+/gu, "").trim();
+        return raw && /\d/u.test(raw) ? raw : undefined;
+      };
+      const description = formatCaption(ogDesc
+        || note.querySelector("#detail-desc, .note-content .desc, .desc")?.textContent?.trim()
+        || "");
+      // 笔记自己的互动数只在详情 `.engage-bar` 里。评论用的是同名的
+      // `.like-wrapper .count`，信息流卡片同样如此，所以既要限定在笔记容器内，
+      // 也要限定在 engage-bar 内——缺一层就会读到别人的数字。选择器失配时宁可
+      // 不写数字，也不回退到全文档匹配。发布日期在 `.bottom-container`。
+      const published =
+        note.querySelector(".bottom-container .date")?.textContent?.trim()
+          ?.replace(/^(?:编辑于|发布于)\s*/u, "").trim() || undefined;
+      const likes = domCount(".engage-bar .like-wrapper .count");
+      const comments = domCount(".engage-bar .chat-wrapper .count");
+      const collects = domCount(".engage-bar .collect-wrapper .count");
+      // 图集：只收轮播里的正片图。loop 模式的 swiper 在首尾插克隆 slide（实测
+      // 7 张图渲染成 9 个节点，第一个就是最后一张的克隆），slide 上的
+      // `data-swiper-slide-index` 才是真实序号——按它排序既能去重，也能在某个
+      // 真实 slide 还没懒加载出 src 时由克隆补位。类名判断必须按空格切词：真实
+      // 末张带 `swiper-slide-duplicate-prev`，子串匹配会把它误杀。
+      // 视频笔记的轮播放的是封面，带 <video> 就整体不收。
+      let imageURLs: string[] = [];
+      try {
+        if (!note.querySelector("video")) {
+          const galleryURL = (raw: string | null | undefined): string => {
+            const trimmed = (raw ?? "").trim();
+            if (!trimmed || trimmed.length > 2048) return "";
+            try {
+              const url = new URL(trimmed, href);
+              if (url.protocol === "http:") url.protocol = "https:";
+              if (url.protocol !== "https:") return "";
+              const imageHost = url.hostname.toLowerCase();
+              if (imageHost !== "xhscdn.com" && !imageHost.endsWith(".xhscdn.com")) return "";
+              if (imageHost.startsWith("sns-avatar")) return "";
+              if (url.pathname.includes("/comment/")) return "";
+              return url.href;
+            } catch {
+              return "";
+            }
+          };
+          const byIndex = new Map<number, string>();
+          const inDOMOrder: string[] = [];
+          for (const node of note.querySelectorAll(".swiper-slide img")) {
+            const slide = node.closest(".swiper-slide");
+            const srcset = node.getAttribute("srcset");
+            const url = galleryURL(node.getAttribute("src"))
+              || galleryURL(srcset ? srcset.split(",")[0]?.trim().split(/\s+/u)[0] : null);
+            if (!url) continue;
+            const rawIndex = slide?.getAttribute("data-swiper-slide-index");
+            if (rawIndex && /^\d{1,3}$/u.test(rawIndex)) {
+              const index = Number(rawIndex);
+              if (!byIndex.has(index)) byIndex.set(index, url);
+              continue;
+            }
+            const classes = (slide?.getAttribute("class") ?? "").split(/\s+/u);
+            if (classes.includes("swiper-slide-duplicate")) continue;
+            if (!inDOMOrder.includes(url)) inDOMOrder.push(url);
+          }
+          // 小红书单篇图文笔记最多 18 张，收得比这多说明圈进了别的笔记。
+          imageURLs = (byIndex.size > 0
+            ? [...byIndex.entries()].sort((a, b) => a[0] - b[0]).map(([, url]) => url)
+            : inDOMOrder).slice(0, 18);
+        }
+      } catch {
+        // 图片是增量信息，读取失败不影响这条抓取的其余部分。
+      }
+      const lines = ["---"];
+      if (author) lines.push(`author: ${JSON.stringify(author)}`);
+      if (published) lines.push(`published: ${JSON.stringify(published)}`);
+      if (likes) lines.push(`likes: ${JSON.stringify(likes)}`);
+      if (comments) lines.push(`comments: ${JSON.stringify(comments)}`);
+      if (collects) lines.push(`collects: ${JSON.stringify(collects)}`);
+      const header = lines.length > 1 ? `${lines.join("\n")}\n---\n\n` : "";
+      // Title is shown by the app's detail header already; drop the body H1 dup.
+      // 图集内联成 Markdown 图片，由 App 的远程图片暂存路径下载落地。
+      const gallery = imageURLs.map((url) => `![](${url})`).join("\n\n");
+      const body = [description, gallery].filter(Boolean).join("\n\n");
+      const text = body
+        ? `${header}${body}`.trim()
+        : "未能从当前页面提取小红书笔记正文。请在具体笔记详情页打开后再发送。";
+      return {
+        title,
+        url: `https://www.xiaohongshu.com/explore/${noteID}`,
+        text,
+        characterCount: [...text].length,
+        method: "rendered_dom",
+        ...(imageURLs.length > 0 ? { imageCount: imageURLs.length } : {}),
+      };
+    }
+  }
+
   const markers =
     "相关阅读|相关推荐|推荐阅读|热门文章|猜你喜欢|更多精彩|点击关注|扫码关注|分享到|版权声明|免责声明|阅读原文|写留言|精选留言|打开微信|关注公众号|广告".split(
       "|",
@@ -2176,7 +2806,8 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
     "[class*='rich_media_tool' i],[class*='rich_media_area_extra' i],[id*='js_tags' i]," +
     "[class*='sns_opr' i],[class*='comment' i],[id*='comment' i]," +
     "[class*='related' i],[class*='recommend' i],[class*='hot-article' i]," +
-    "[class*='ad-' i],[id*='ad-' i],[class*='advert' i],[class*='promo' i]";
+    "[class*='ad-' i],[id*='ad-' i],[class*='advert' i],[class*='promo' i]," +
+    "[class*='subscribe' i],[class*='subscription' i],[class*='newsletter' i]";
 
   const baseHref = document.location.href;
   const isXStatus = (() => {
@@ -2187,6 +2818,16 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
         (host === "x.com" || host.endsWith(".x.com") || host === "twitter.com" || host.endsWith(".twitter.com")) &&
         /^\/[^/]+\/status\/\d+(?:\/|$)/u.test(url.pathname)
       );
+    } catch {
+      return false;
+    }
+  })();
+  const isZhihuAnswer = (() => {
+    try {
+      const url = new URL(document.location.href);
+      const host = url.hostname.toLowerCase();
+      return (host === "zhihu.com" || host.endsWith(".zhihu.com"))
+        && /^\/question\/\d+\/answer\/\d+(?:\/|$)/u.test(url.pathname);
     } catch {
       return false;
     }
@@ -2236,6 +2877,56 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
     } catch {
       return false;
     }
+  };
+
+  const isMediumProfileChrome = (href: string): boolean => {
+    try {
+      const url = new URL(href);
+      const host = url.hostname.toLowerCase();
+      if (host !== "miro.medium.com" && !host.endsWith(".miro.medium.com")) return false;
+      const size = url.pathname.match(/resize:fill:(\d+):(\d+)/iu);
+      return Boolean(size && Number(size[1]) <= 128 && Number(size[2]) <= 128);
+    } catch {
+      return false;
+    }
+  };
+
+  const responsiveImageURL = (image: Element): string | null => {
+    const candidates: Array<{ href: string; score: number }> = [];
+    const add = (raw: string | null | undefined, descriptor: string | undefined, priority: number) => {
+      const trimmed = raw?.trim();
+      if (!trimmed) return;
+      const href = absoluteUrl(trimmed);
+      if (!href) return;
+      const width = descriptor?.match(/^(\d+)w$/u)?.[1];
+      const density = descriptor?.match(/^(\d+(?:\.\d+)?)x$/u)?.[1];
+      const embeddedWidth = trimmed.match(/resize:(?:fit|fill):(\d+)(?::\d+)?/iu)?.[1];
+      const score = width
+        ? Number(width) * 10 + priority
+        : density
+          ? Number(density) * 10_000 + priority
+          : embeddedWidth
+            ? Number(embeddedWidth) * 10 + priority
+            : priority;
+      candidates.push({ href, score });
+    };
+    const addSrcset = (raw: string | null | undefined, priority: number) => {
+      for (const candidate of raw?.split(",") ?? []) {
+        const [url, descriptor] = candidate.trim().split(/\s+/u);
+        add(url, descriptor, priority);
+      }
+    };
+    addSrcset(image.getAttribute("data-srcset"), 60);
+    addSrcset(image.getAttribute("srcset"), 50);
+    image.closest("picture")?.querySelectorAll("source").forEach((source) => {
+      addSrcset(source.getAttribute("data-srcset"), 40);
+      addSrcset(source.getAttribute("srcset"), 30);
+    });
+    add(image.getAttribute("data-src"), undefined, 25);
+    add(image.getAttribute("data-original"), undefined, 20);
+    add(image.getAttribute("data-lazy-src"), undefined, 15);
+    add(image.getAttribute("src"), undefined, 10);
+    return candidates.sort((a, b) => b.score - a.score)[0]?.href ?? null;
   };
 
   // 视频封面帧不进正文：视频本体由 App 换回直链存下来，封面只会把同一画面
@@ -2333,13 +3024,8 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
     if (tag === "a") return collapseInline(inner);
     if (tag === "img") {
       const alt = (el.getAttribute("alt") ?? el.getAttribute("data-alt") ?? "图像").trim() || "图像";
-      const raw =
-        el.getAttribute("data-src") ||
-        el.getAttribute("data-original") ||
-        el.getAttribute("src") ||
-        "";
-      const href = absoluteUrl(raw);
-      if (!href || isProfileChrome(href)) return "";
+      const href = responsiveImageURL(el);
+      if (!href || isProfileChrome(href) || isMediumProfileChrome(href)) return "";
       return `\n\n![${alt.replace(/[[\]]/g, "")}](${href})\n\n`;
     }
     return inner;
@@ -2430,8 +3116,8 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
     if (author) fm.push(`author: ${JSON.stringify(author)}`);
     if (published) fm.push(`published: ${JSON.stringify(published)}`);
     if (likes) fm.push(`likes: ${JSON.stringify(likes)}`);
-    if (replies) fm.push(`replies: ${JSON.stringify(replies)}`);
-    if (reposts) fm.push(`reposts: ${JSON.stringify(reposts)}`);
+    if (replies) fm.push(`comments: ${JSON.stringify(replies)}`);
+    if (reposts) fm.push(`shares: ${JSON.stringify(reposts)}`);
     const header = fm.length > 1 ? `${fm.join("\n")}\n---\n\n` : "";
 
     // querySelectorAll order — never early-return on wrappers that nest tweetText.
@@ -2731,7 +3417,7 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
 
   // —— Generic page path ——
   const pickRoot = (): Element => {
-    for (const selector of ["#js_content", "#img-content", "[itemprop='articleBody']", "article", "main"]) {
+    for (const selector of ["#js_content", "#img-content", "[itemprop='articleBody']", ".Post-RichText", ".RichText.ztext", ".available-content", ".article-content", "article", "main"]) {
       const node = document.querySelector(selector);
       if (node && (node.textContent?.trim().length ?? 0) >= 20) return node;
     }
@@ -2762,12 +3448,93 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
     const value = document.querySelector(`meta[${attr}='${key}']`)?.getAttribute("content")?.trim();
     return value || undefined;
   };
-  const author =
+  let zhihuScope: ParentNode | null = null;
+  let zhihuAuthor: string | undefined;
+  let zhihuPublished: string | undefined;
+  let zhihuLikes: string | undefined;
+  let zhihuComments: string | undefined;
+  let zhihuCollects: string | undefined;
+  if (isZhihuAnswer) {
+    const answerID = new URL(document.location.href).pathname.match(/\/answer\/(\d+)/u)?.[1];
+    const identified = answerID
+      ? document.querySelector(
+        `[data-answer-id='${answerID}'], [data-zop*='${answerID}'], [data-za-extra-module*='${answerID}']`,
+      )
+      : null;
+    zhihuScope =
+      identified?.closest(".AnswerItem, [data-answer-id]")
+      || identified
+      || document.querySelector(".AnswerItem")
+      || document.querySelector("main")
+      || document;
+    zhihuAuthor =
+      zhihuScope.querySelector(".AuthorInfo-name")?.textContent?.trim()
+      || zhihuScope.querySelector(".UserLink-link")?.textContent?.trim()
+      || zhihuScope.querySelector("[itemprop='name']")?.getAttribute("content")?.trim()
+      || zhihuScope.querySelector("[itemprop='name']")?.textContent?.trim()
+      || undefined;
+    const publishedNode =
+      zhihuScope.querySelector("time[datetime]")
+      || zhihuScope.querySelector(".ContentItem-time")
+      || zhihuScope.querySelector("[data-tooltip]");
+    const publishedRaw =
+      publishedNode?.getAttribute("datetime")?.trim()
+      || publishedNode?.getAttribute("data-tooltip")?.trim()
+      || publishedNode?.textContent?.trim()
+      || "";
+    zhihuPublished = publishedRaw.replace(/^(?:编辑于|发布于)\s*/u, "").trim() || undefined;
+
+    const readZhihuCount = (selectors: string[], keyword: RegExp): string | undefined => {
+      if (!zhihuScope) return undefined;
+      const candidates: Element[] = [];
+      const seen = new Set<Element>();
+      for (const selector of selectors) {
+        const node = zhihuScope.querySelector(selector);
+        if (node && !seen.has(node)) {
+          seen.add(node);
+          candidates.push(node);
+        }
+      }
+      for (const node of Array.from(zhihuScope.querySelectorAll("button, [aria-label], [title]")).slice(0, 100)) {
+        if (!seen.has(node)) {
+          seen.add(node);
+          candidates.push(node);
+        }
+      }
+      for (const node of candidates) {
+        const raw = [
+          node.getAttribute("aria-label"),
+          node.getAttribute("title"),
+          node.textContent,
+        ].filter(Boolean).join(" ").replace(/\s+/gu, " ").trim();
+        if (!raw || !keyword.test(raw)) continue;
+        const match =
+          raw.match(new RegExp(`(?:${keyword.source})\\s*([\\d.,]+\\s*[KkMm万亿]?)`, "iu"))
+          || raw.match(new RegExp(`([\\d.,]+\\s*[KkMm万亿]?)\\s*(?:条|个|次)?\\s*(?:${keyword.source})`, "iu"));
+        const value = match?.[1]?.replace(/\s+/gu, "").trim();
+        if (value && /\d/u.test(value)) return value;
+      }
+      return undefined;
+    };
+    zhihuLikes = readZhihuCount(
+      [".VoteButton--up", "[aria-label*='赞同']", "[title*='赞同']"],
+      /赞同|赞成|upvote/u,
+    );
+    zhihuComments = readZhihuCount(
+      ["[aria-label*='评论']", "[title*='评论']", ".ContentItem-action"],
+      /评论|comment/iu,
+    );
+    zhihuCollects = readZhihuCount(
+      ["[aria-label*='收藏']", "[title*='收藏']", ".ContentItem-action"],
+      /收藏|collect|favou?rite/iu,
+    );
+  }
+  const author = zhihuAuthor ||
     document.querySelector("#js_name")?.textContent?.trim() ||
     document.querySelector("a.rich_media_meta_link")?.textContent?.trim() ||
     metaLine("author") ||
     metaLine("article:author", "property");
-  const published =
+  const published = zhihuPublished ||
     document.querySelector("#publish_time")?.textContent?.trim() ||
     metaLine("article:published_time", "property") ||
     metaLine("og:published_time", "property") ||
@@ -2775,6 +3542,9 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
   const fm: string[] = ["---"];
   if (author) fm.push(`author: ${JSON.stringify(author)}`);
   if (published) fm.push(`published: ${JSON.stringify(published)}`);
+  if (zhihuLikes) fm.push(`likes: ${JSON.stringify(zhihuLikes)}`);
+  if (zhihuComments) fm.push(`comments: ${JSON.stringify(zhihuComments)}`);
+  if (zhihuCollects) fm.push(`collects: ${JSON.stringify(zhihuCollects)}`);
   const header = fm.length > 1 ? `${fm.join("\n")}\n---\n\n` : "";
 
   let title = document.title ?? "";

@@ -5,7 +5,7 @@ import * as __ajvFormats from "ajv-formats/dist/formats.js";
 export const validate = validate20;
 export default validate20;
 const schema31 = {"$id":"https://syc.local/linkdigest/capture-envelope-wire.schema.json","oneOf":[{"$ref":"https://syc.local/linkdigest/capture-envelope-v1.schema.json"},{"$ref":"https://syc.local/linkdigest/capture-envelope-v2.schema.json"}]};
-const schema32 = {"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://syc.local/linkdigest/capture-envelope-v1.schema.json","title":"LinkDigest V0.1 Capture Contract","description":"Language-neutral Native Messaging contract. Objects accept unknown optional fields for forward compatibility; required fields and semantic invariants remain enforced by both runtimes.","type":"object","required":["version","requestId","createdAt","source","capture","evidence"],"additionalProperties":true,"properties":{"version":{"const":1},"requestId":{"type":"string","minLength":1,"maxLength":128},"createdAt":{"type":"string","format":"date-time"},"idempotencyKey":{"type":"string","minLength":1,"maxLength":256},"source":{"type":"object","required":["kind","url","title","platform"],"additionalProperties":true,"properties":{"kind":{"const":"browser_capture"},"url":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https?://"},"title":{"type":["string","null"],"maxLength":1024},"platform":{"type":"string","enum":["generic","x","youtube","wechat","xiaohongshu","douyin","bilibili","github"]}}},"capture":{"type":"object","required":["method","text","characterCount","completeness","capturedAt"],"additionalProperties":true,"properties":{"method":{"type":"string","enum":["rendered_dom","selection"]},"text":{"type":"string","minLength":1,"maxLength":2000000},"characterCount":{"type":"integer","minimum":1,"maximum":2000000},"completeness":{"type":"string","enum":["full_article","visible_only","selection_only","unknown"]},"capturedAt":{"type":"string","format":"date-time"}}},"evidence":{"type":"object","required":["sourceLabel","usedCookie"],"additionalProperties":true,"properties":{"sourceLabel":{"type":"string","minLength":1,"maxLength":128},"usedCookie":{"const":false}}},"media":{"type":"object","required":["platform","videoURL"],"additionalProperties":true,"description":"Optional media block for video-capable captures (Loop V). Omitted envelopes remain pure text. Signed playback URLs must be downloaded immediately and must not be retained for later reuse.","properties":{"platform":{"type":"string","enum":["douyin"]},"videoURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https://"},"coverURL":{"type":["string","null"],"format":"uri","maxLength":8192,"pattern":"^https://"},"durationSeconds":{"type":["number","null"],"minimum":0,"maximum":86400},"author":{"type":["string","null"],"maxLength":256}}}},"$defs":{"AppError":{"type":"object","required":["version","requestId","createdAt","category","code","retryable","action"],"additionalProperties":true,"properties":{"version":{"const":1},"requestId":{"type":"string","minLength":1,"maxLength":128},"createdAt":{"type":"string","format":"date-time"},"category":{"type":"string","enum":["protocol","permission","network","extraction","storage","unknown"]},"code":{"type":"string","pattern":"^[A-Z][A-Z0-9_]{2,63}$"},"retryable":{"type":"boolean"},"action":{"type":"string","enum":["retry","open_app","open_install_guide","open_in_browser","grant_permission","upgrade_app","none"]},"safeDetail":{"type":"string","maxLength":2000}}},"NativeResponse":{"oneOf":[{"type":"object","required":["kind","version","requestId","characterCount"],"additionalProperties":true,"properties":{"kind":{"const":"taskAccepted"},"version":{"const":1},"requestId":{"type":"string"},"characterCount":{"type":"integer"}}},{"type":"object","required":["kind","error"],"additionalProperties":true,"properties":{"kind":{"const":"error"},"error":{"$ref":"#/$defs/AppError"}}}]}},"x-semantic-invariants":["capture.characterCount equals the Unicode code point count of capture.text (Swift scalar count; TypeScript [...text].length)","capture.text and all URL/title fields are never written to ordinary logs","Native Messaging framing limit is 4 MiB bytes; text limit is 2,000,000 Unicode scalars"]};
+const schema32 = {"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://syc.local/linkdigest/capture-envelope-v1.schema.json","title":"LinkDigest V0.1 Capture Contract","description":"Language-neutral Native Messaging contract. Objects accept unknown optional fields for forward compatibility; required fields and semantic invariants remain enforced by both runtimes.","type":"object","required":["version","requestId","createdAt","source","capture","evidence"],"additionalProperties":true,"properties":{"version":{"const":1},"requestId":{"type":"string","minLength":1,"maxLength":128},"createdAt":{"type":"string","format":"date-time"},"idempotencyKey":{"type":"string","minLength":1,"maxLength":256},"source":{"type":"object","required":["kind","url","title","platform"],"additionalProperties":true,"properties":{"kind":{"const":"browser_capture"},"url":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https?://"},"title":{"type":["string","null"],"maxLength":1024},"platform":{"type":"string","enum":["generic","x","youtube","wechat","xiaohongshu","douyin","bilibili","github","zhihu","medium","substack","toutiao"]}}},"capture":{"type":"object","required":["method","text","characterCount","completeness","capturedAt"],"additionalProperties":true,"properties":{"method":{"type":"string","enum":["rendered_dom","selection"]},"text":{"type":"string","minLength":1,"maxLength":2000000},"characterCount":{"type":"integer","minimum":1,"maximum":2000000},"completeness":{"type":"string","enum":["full_article","visible_only","selection_only","unknown"]},"capturedAt":{"type":"string","format":"date-time"}}},"evidence":{"type":"object","required":["sourceLabel","usedCookie"],"additionalProperties":true,"properties":{"sourceLabel":{"type":"string","minLength":1,"maxLength":128},"usedCookie":{"const":false}}},"media":{"type":"object","required":["platform","videoURL"],"additionalProperties":true,"description":"Optional media block for video-capable captures (Loop V). Omitted envelopes remain pure text. Signed playback URLs must be downloaded immediately and must not be retained for later reuse.","properties":{"platform":{"type":"string","enum":["douyin"]},"videoURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https://"},"coverURL":{"type":["string","null"],"format":"uri","maxLength":8192,"pattern":"^https://"},"durationSeconds":{"type":["number","null"],"minimum":0,"maximum":86400},"author":{"type":["string","null"],"maxLength":256}}}},"$defs":{"AppError":{"type":"object","required":["version","requestId","createdAt","category","code","retryable","action"],"additionalProperties":true,"properties":{"version":{"const":1},"requestId":{"type":"string","minLength":1,"maxLength":128},"createdAt":{"type":"string","format":"date-time"},"category":{"type":"string","enum":["protocol","permission","network","extraction","storage","unknown"]},"code":{"type":"string","pattern":"^[A-Z][A-Z0-9_]{2,63}$"},"retryable":{"type":"boolean"},"action":{"type":"string","enum":["retry","open_app","open_install_guide","open_in_browser","grant_permission","upgrade_app","none"]},"safeDetail":{"type":"string","maxLength":2000}}},"NativeResponse":{"oneOf":[{"type":"object","required":["kind","version","requestId","characterCount"],"additionalProperties":true,"properties":{"kind":{"const":"taskAccepted"},"version":{"const":1},"requestId":{"type":"string"},"characterCount":{"type":"integer"}}},{"type":"object","required":["kind","error"],"additionalProperties":true,"properties":{"kind":{"const":"error"},"error":{"$ref":"#/$defs/AppError"}}}]}},"x-semantic-invariants":["capture.characterCount equals the Unicode code point count of capture.text (Swift scalar count; TypeScript [...text].length)","capture.text and all URL/title fields are never written to ordinary logs","Native Messaging framing limit is 4 MiB bytes; text limit is 2,000,000 Unicode scalars"]};
 const func1 = (value) => [...value].length;
 const formats0 = __ajvFormats.fullFormats["date-time"];
 const formats2 = __ajvFormats.fullFormats.uri;
@@ -328,7 +328,7 @@ vErrors.push(err26);
 }
 errors++;
 }
-if(!((((((((data8 === "generic") || (data8 === "x")) || (data8 === "youtube")) || (data8 === "wechat")) || (data8 === "xiaohongshu")) || (data8 === "douyin")) || (data8 === "bilibili")) || (data8 === "github"))){
+if(!((((((((((((data8 === "generic") || (data8 === "x")) || (data8 === "youtube")) || (data8 === "wechat")) || (data8 === "xiaohongshu")) || (data8 === "douyin")) || (data8 === "bilibili")) || (data8 === "github")) || (data8 === "zhihu")) || (data8 === "medium")) || (data8 === "substack")) || (data8 === "toutiao"))){
 const err27 = {instancePath:instancePath+"/source/platform",schemaPath:"#/properties/source/properties/platform/enum",keyword:"enum",params:{allowedValues: schema32.properties.source.properties.platform.enum},message:"must be equal to one of the allowed values"};
 if(vErrors === null){
 vErrors = [err27];
@@ -863,8 +863,8 @@ return errors === 0;
 }
 validate21.evaluated = {"props":true,"dynamicProps":false,"dynamicItems":false};
 
-const schema33 = {"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://syc.local/linkdigest/capture-envelope-v2.schema.json","title":"LinkDigest Capture Envelope V2","description":"Independent V2 browser capture contract. Media playback addresses are process-memory handoff values and must never be persisted, logged, exported, fingerprinted, or committed as real signed fixture URLs.","type":"object","required":["version","requestId","createdAt","source","capture","evidence","media"],"additionalProperties":true,"properties":{"version":{"const":2},"requestId":{"type":"string","minLength":1,"maxLength":128},"createdAt":{"type":"string","format":"date-time"},"idempotencyKey":{"type":"string","minLength":1,"maxLength":256},"source":{"type":"object","required":["kind","url","title","platform"],"additionalProperties":true,"properties":{"kind":{"const":"browser_capture"},"url":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https?://"},"title":{"type":["string","null"],"maxLength":1024},"platform":{"type":"string","enum":["generic","x","youtube","wechat","xiaohongshu","douyin","bilibili","github"]}}},"capture":{"type":"object","required":["method","text","characterCount","completeness","capturedAt"],"additionalProperties":true,"properties":{"method":{"type":"string","enum":["rendered_dom","selection"]},"text":{"type":"string","minLength":1,"maxLength":2000000},"characterCount":{"type":"integer","minimum":1,"maximum":2000000},"completeness":{"type":"string","enum":["full_article","visible_only","selection_only","unknown"]},"capturedAt":{"type":"string","format":"date-time"}}},"evidence":{"type":"object","required":["sourceLabel","usedCookie"],"additionalProperties":true,"properties":{"sourceLabel":{"type":"string","minLength":1,"maxLength":128},"usedCookie":{"type":"boolean"}}},"media":{"$ref":"#/$defs/MediaDescriptor"}},"$defs":{"MediaDescriptor":{"type":"object","required":["kind","pageURL","canonicalURL","platform","transcriptionCapability"],"additionalProperties":true,"properties":{"kind":{"type":"string","enum":["directFile","hls","embed","browserSessionOnly","unsupported"]},"pageURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https?://"},"canonicalURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https?://"},"platform":{"type":"string","enum":["generic","x","youtube","wechat","xiaohongshu","douyin","bilibili","github"]},"ephemeralPlaybackURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https://"},"mimeType":{"type":["string","null"],"maxLength":256},"posterURL":{"type":["string","null"],"format":"uri","maxLength":8192,"pattern":"^https://"},"durationSeconds":{"type":["number","null"],"minimum":0,"maximum":86400},"author":{"type":["string","null"],"maxLength":256},"expiresAt":{"type":["string","null"],"format":"date-time"},"transcriptionCapability":{"type":"string","enum":["supported","conditional","unavailable"]},"failureReason":{"type":"string","enum":["blob_or_mse","multiple_candidates","video_not_loaded","no_transferable_source","drm_or_encrypted","browser_session_required","unsupported_media_type","unknown"]},"candidateCount":{"type":"integer","minimum":1,"maximum":1000},"selectionReason":{"type":"string","enum":["singleCandidate","playing","recentInteraction","largestVisibleArea","nearestViewportCenter","ambiguous"]},"playbackState":{"type":"string","enum":["playing","paused","ended","notLoaded","unknown"]}},"oneOf":[{"required":["kind","ephemeralPlaybackURL"],"properties":{"kind":{"const":"directFile"}},"not":{"required":["failureReason"]}},{"required":["kind","ephemeralPlaybackURL"],"properties":{"kind":{"const":"hls"}},"not":{"required":["failureReason"]}},{"required":["kind"],"properties":{"kind":{"const":"embed"}},"not":{"required":["ephemeralPlaybackURL"]}},{"required":["kind","failureReason"],"properties":{"kind":{"const":"browserSessionOnly"}},"not":{"required":["ephemeralPlaybackURL"]}},{"required":["kind","failureReason"],"properties":{"kind":{"const":"unsupported"}},"not":{"required":["ephemeralPlaybackURL"]}}]}},"x-semantic-invariants":["capture.characterCount equals the Unicode code point count of capture.text","directFile and hls require an HTTPS ephemeralPlaybackURL and forbid failureReason","browserSessionOnly and unsupported forbid ephemeralPlaybackURL and require failureReason","ephemeralPlaybackURL is process-memory-only and excluded from persistence, logs, exports, errors, and persistent fingerprints"]};
-const schema34 = {"type":"object","required":["kind","pageURL","canonicalURL","platform","transcriptionCapability"],"additionalProperties":true,"properties":{"kind":{"type":"string","enum":["directFile","hls","embed","browserSessionOnly","unsupported"]},"pageURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https?://"},"canonicalURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https?://"},"platform":{"type":"string","enum":["generic","x","youtube","wechat","xiaohongshu","douyin","bilibili","github"]},"ephemeralPlaybackURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https://"},"mimeType":{"type":["string","null"],"maxLength":256},"posterURL":{"type":["string","null"],"format":"uri","maxLength":8192,"pattern":"^https://"},"durationSeconds":{"type":["number","null"],"minimum":0,"maximum":86400},"author":{"type":["string","null"],"maxLength":256},"expiresAt":{"type":["string","null"],"format":"date-time"},"transcriptionCapability":{"type":"string","enum":["supported","conditional","unavailable"]},"failureReason":{"type":"string","enum":["blob_or_mse","multiple_candidates","video_not_loaded","no_transferable_source","drm_or_encrypted","browser_session_required","unsupported_media_type","unknown"]},"candidateCount":{"type":"integer","minimum":1,"maximum":1000},"selectionReason":{"type":"string","enum":["singleCandidate","playing","recentInteraction","largestVisibleArea","nearestViewportCenter","ambiguous"]},"playbackState":{"type":"string","enum":["playing","paused","ended","notLoaded","unknown"]}},"oneOf":[{"required":["kind","ephemeralPlaybackURL"],"properties":{"kind":{"const":"directFile"}},"not":{"required":["failureReason"]}},{"required":["kind","ephemeralPlaybackURL"],"properties":{"kind":{"const":"hls"}},"not":{"required":["failureReason"]}},{"required":["kind"],"properties":{"kind":{"const":"embed"}},"not":{"required":["ephemeralPlaybackURL"]}},{"required":["kind","failureReason"],"properties":{"kind":{"const":"browserSessionOnly"}},"not":{"required":["ephemeralPlaybackURL"]}},{"required":["kind","failureReason"],"properties":{"kind":{"const":"unsupported"}},"not":{"required":["ephemeralPlaybackURL"]}}]};
+const schema33 = {"$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://syc.local/linkdigest/capture-envelope-v2.schema.json","title":"LinkDigest Capture Envelope V2","description":"Independent V2 browser capture contract. Media playback addresses are process-memory handoff values and must never be persisted, logged, exported, fingerprinted, or committed as real signed fixture URLs.","type":"object","required":["version","requestId","createdAt","source","capture","evidence","media"],"additionalProperties":true,"properties":{"version":{"const":2},"requestId":{"type":"string","minLength":1,"maxLength":128},"createdAt":{"type":"string","format":"date-time"},"idempotencyKey":{"type":"string","minLength":1,"maxLength":256},"source":{"type":"object","required":["kind","url","title","platform"],"additionalProperties":true,"properties":{"kind":{"const":"browser_capture"},"url":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https?://"},"title":{"type":["string","null"],"maxLength":1024},"platform":{"type":"string","enum":["generic","x","youtube","wechat","xiaohongshu","douyin","bilibili","github","zhihu","medium","substack","toutiao"]}}},"capture":{"type":"object","required":["method","text","characterCount","completeness","capturedAt"],"additionalProperties":true,"properties":{"method":{"type":"string","enum":["rendered_dom","selection"]},"text":{"type":"string","minLength":1,"maxLength":2000000},"characterCount":{"type":"integer","minimum":1,"maximum":2000000},"completeness":{"type":"string","enum":["full_article","visible_only","selection_only","unknown"]},"capturedAt":{"type":"string","format":"date-time"}}},"evidence":{"type":"object","required":["sourceLabel","usedCookie"],"additionalProperties":true,"properties":{"sourceLabel":{"type":"string","minLength":1,"maxLength":128},"usedCookie":{"type":"boolean"}}},"media":{"$ref":"#/$defs/MediaDescriptor"}},"$defs":{"MediaDescriptor":{"type":"object","required":["kind","pageURL","canonicalURL","platform","transcriptionCapability"],"additionalProperties":true,"properties":{"kind":{"type":"string","enum":["directFile","hls","embed","browserSessionOnly","unsupported"]},"pageURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https?://"},"canonicalURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https?://"},"platform":{"type":"string","enum":["generic","x","youtube","wechat","xiaohongshu","douyin","bilibili","github","zhihu","medium","substack","toutiao"]},"ephemeralPlaybackURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https://"},"companionAudioURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https://"},"mimeType":{"type":["string","null"],"maxLength":256},"posterURL":{"type":["string","null"],"format":"uri","maxLength":8192,"pattern":"^https://"},"durationSeconds":{"type":["number","null"],"minimum":0,"maximum":86400},"author":{"type":["string","null"],"maxLength":256},"expiresAt":{"type":["string","null"],"format":"date-time"},"transcriptionCapability":{"type":"string","enum":["supported","conditional","unavailable"]},"failureReason":{"type":"string","enum":["blob_or_mse","multiple_candidates","video_not_loaded","no_transferable_source","drm_or_encrypted","browser_session_required","unsupported_media_type","unknown"]},"candidateCount":{"type":"integer","minimum":1,"maximum":1000},"selectionReason":{"type":"string","enum":["singleCandidate","playing","recentInteraction","largestVisibleArea","nearestViewportCenter","ambiguous"]},"playbackState":{"type":"string","enum":["playing","paused","ended","notLoaded","unknown"]}},"oneOf":[{"required":["kind","ephemeralPlaybackURL"],"properties":{"kind":{"const":"directFile"}},"not":{"required":["failureReason"]}},{"required":["kind","ephemeralPlaybackURL"],"properties":{"kind":{"const":"hls"}},"not":{"required":["failureReason"]}},{"required":["kind"],"properties":{"kind":{"const":"embed"}},"not":{"required":["ephemeralPlaybackURL"]}},{"required":["kind","failureReason"],"properties":{"kind":{"const":"browserSessionOnly"}},"not":{"required":["ephemeralPlaybackURL"]}},{"required":["kind","failureReason"],"properties":{"kind":{"const":"unsupported"}},"not":{"required":["ephemeralPlaybackURL"]}}]}},"x-semantic-invariants":["capture.characterCount equals the Unicode code point count of capture.text","directFile and hls require an HTTPS ephemeralPlaybackURL and forbid failureReason","browserSessionOnly and unsupported forbid ephemeralPlaybackURL and require failureReason","ephemeralPlaybackURL is process-memory-only and excluded from persistence, logs, exports, errors, and persistent fingerprints"]};
+const schema34 = {"type":"object","required":["kind","pageURL","canonicalURL","platform","transcriptionCapability"],"additionalProperties":true,"properties":{"kind":{"type":"string","enum":["directFile","hls","embed","browserSessionOnly","unsupported"]},"pageURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https?://"},"canonicalURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https?://"},"platform":{"type":"string","enum":["generic","x","youtube","wechat","xiaohongshu","douyin","bilibili","github","zhihu","medium","substack","toutiao"]},"ephemeralPlaybackURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https://"},"companionAudioURL":{"type":"string","format":"uri","maxLength":8192,"pattern":"^https://"},"mimeType":{"type":["string","null"],"maxLength":256},"posterURL":{"type":["string","null"],"format":"uri","maxLength":8192,"pattern":"^https://"},"durationSeconds":{"type":["number","null"],"minimum":0,"maximum":86400},"author":{"type":["string","null"],"maxLength":256},"expiresAt":{"type":["string","null"],"format":"date-time"},"transcriptionCapability":{"type":"string","enum":["supported","conditional","unavailable"]},"failureReason":{"type":"string","enum":["blob_or_mse","multiple_candidates","video_not_loaded","no_transferable_source","drm_or_encrypted","browser_session_required","unsupported_media_type","unknown"]},"candidateCount":{"type":"integer","minimum":1,"maximum":1000},"selectionReason":{"type":"string","enum":["singleCandidate","playing","recentInteraction","largestVisibleArea","nearestViewportCenter","ambiguous"]},"playbackState":{"type":"string","enum":["playing","paused","ended","notLoaded","unknown"]}},"oneOf":[{"required":["kind","ephemeralPlaybackURL"],"properties":{"kind":{"const":"directFile"}},"not":{"required":["failureReason"]}},{"required":["kind","ephemeralPlaybackURL"],"properties":{"kind":{"const":"hls"}},"not":{"required":["failureReason"]}},{"required":["kind"],"properties":{"kind":{"const":"embed"}},"not":{"required":["ephemeralPlaybackURL"]}},{"required":["kind","failureReason"],"properties":{"kind":{"const":"browserSessionOnly"}},"not":{"required":["ephemeralPlaybackURL"]}},{"required":["kind","failureReason"],"properties":{"kind":{"const":"unsupported"}},"not":{"required":["ephemeralPlaybackURL"]}}]};
 
 function validate23(data, {instancePath="", parentData, parentDataProperty, rootData=data, dynamicAnchors={}}={}){
 /*# sourceURL="https://syc.local/linkdigest/capture-envelope-v2.schema.json" */;
@@ -1192,7 +1192,7 @@ vErrors.push(err27);
 }
 errors++;
 }
-if(!((((((((data8 === "generic") || (data8 === "x")) || (data8 === "youtube")) || (data8 === "wechat")) || (data8 === "xiaohongshu")) || (data8 === "douyin")) || (data8 === "bilibili")) || (data8 === "github"))){
+if(!((((((((((((data8 === "generic") || (data8 === "x")) || (data8 === "youtube")) || (data8 === "wechat")) || (data8 === "xiaohongshu")) || (data8 === "douyin")) || (data8 === "bilibili")) || (data8 === "github")) || (data8 === "zhihu")) || (data8 === "medium")) || (data8 === "substack")) || (data8 === "toutiao"))){
 const err28 = {instancePath:instancePath+"/source/platform",schemaPath:"#/properties/source/properties/platform/enum",keyword:"enum",params:{allowedValues: schema33.properties.source.properties.platform.enum},message:"must be equal to one of the allowed values"};
 if(vErrors === null){
 vErrors = [err28];
@@ -2122,7 +2122,7 @@ vErrors.push(err95);
 }
 errors++;
 }
-if(!((((((((data27 === "generic") || (data27 === "x")) || (data27 === "youtube")) || (data27 === "wechat")) || (data27 === "xiaohongshu")) || (data27 === "douyin")) || (data27 === "bilibili")) || (data27 === "github"))){
+if(!((((((((((((data27 === "generic") || (data27 === "x")) || (data27 === "youtube")) || (data27 === "wechat")) || (data27 === "xiaohongshu")) || (data27 === "douyin")) || (data27 === "bilibili")) || (data27 === "github")) || (data27 === "zhihu")) || (data27 === "medium")) || (data27 === "substack")) || (data27 === "toutiao"))){
 const err96 = {instancePath:instancePath+"/media/platform",schemaPath:"#/$defs/MediaDescriptor/properties/platform/enum",keyword:"enum",params:{allowedValues: schema34.properties.platform.enum},message:"must be equal to one of the allowed values"};
 if(vErrors === null){
 vErrors = [err96];
@@ -2178,10 +2178,11 @@ vErrors.push(err100);
 errors++;
 }
 }
-if(data18.mimeType !== undefined){
-let data29 = data18.mimeType;
-if((typeof data29 !== "string") && (data29 !== null)){
-const err101 = {instancePath:instancePath+"/media/mimeType",schemaPath:"#/$defs/MediaDescriptor/properties/mimeType/type",keyword:"type",params:{type: schema34.properties.mimeType.type},message:"must be string,null"};
+if(data18.companionAudioURL !== undefined){
+let data29 = data18.companionAudioURL;
+if(typeof data29 === "string"){
+if(func1(data29) > 8192){
+const err101 = {instancePath:instancePath+"/media/companionAudioURL",schemaPath:"#/$defs/MediaDescriptor/properties/companionAudioURL/maxLength",keyword:"maxLength",params:{limit: 8192},message:"must NOT have more than 8192 characters"};
 if(vErrors === null){
 vErrors = [err101];
 }
@@ -2190,9 +2191,8 @@ vErrors.push(err101);
 }
 errors++;
 }
-if(typeof data29 === "string"){
-if(func1(data29) > 256){
-const err102 = {instancePath:instancePath+"/media/mimeType",schemaPath:"#/$defs/MediaDescriptor/properties/mimeType/maxLength",keyword:"maxLength",params:{limit: 256},message:"must NOT have more than 256 characters"};
+if(!pattern5.test(data29)){
+const err102 = {instancePath:instancePath+"/media/companionAudioURL",schemaPath:"#/$defs/MediaDescriptor/properties/companionAudioURL/pattern",keyword:"pattern",params:{pattern: "^https://"},message:"must match pattern \""+"^https://"+"\""};
 if(vErrors === null){
 vErrors = [err102];
 }
@@ -2201,12 +2201,8 @@ vErrors.push(err102);
 }
 errors++;
 }
-}
-}
-if(data18.posterURL !== undefined){
-let data30 = data18.posterURL;
-if((typeof data30 !== "string") && (data30 !== null)){
-const err103 = {instancePath:instancePath+"/media/posterURL",schemaPath:"#/$defs/MediaDescriptor/properties/posterURL/type",keyword:"type",params:{type: schema34.properties.posterURL.type},message:"must be string,null"};
+if(!(formats2(data29))){
+const err103 = {instancePath:instancePath+"/media/companionAudioURL",schemaPath:"#/$defs/MediaDescriptor/properties/companionAudioURL/format",keyword:"format",params:{format: "uri"},message:"must match format \""+"uri"+"\""};
 if(vErrors === null){
 vErrors = [err103];
 }
@@ -2215,9 +2211,9 @@ vErrors.push(err103);
 }
 errors++;
 }
-if(typeof data30 === "string"){
-if(func1(data30) > 8192){
-const err104 = {instancePath:instancePath+"/media/posterURL",schemaPath:"#/$defs/MediaDescriptor/properties/posterURL/maxLength",keyword:"maxLength",params:{limit: 8192},message:"must NOT have more than 8192 characters"};
+}
+else {
+const err104 = {instancePath:instancePath+"/media/companionAudioURL",schemaPath:"#/$defs/MediaDescriptor/properties/companionAudioURL/type",keyword:"type",params:{type: "string"},message:"must be string"};
 if(vErrors === null){
 vErrors = [err104];
 }
@@ -2226,8 +2222,11 @@ vErrors.push(err104);
 }
 errors++;
 }
-if(!pattern5.test(data30)){
-const err105 = {instancePath:instancePath+"/media/posterURL",schemaPath:"#/$defs/MediaDescriptor/properties/posterURL/pattern",keyword:"pattern",params:{pattern: "^https://"},message:"must match pattern \""+"^https://"+"\""};
+}
+if(data18.mimeType !== undefined){
+let data30 = data18.mimeType;
+if((typeof data30 !== "string") && (data30 !== null)){
+const err105 = {instancePath:instancePath+"/media/mimeType",schemaPath:"#/$defs/MediaDescriptor/properties/mimeType/type",keyword:"type",params:{type: schema34.properties.mimeType.type},message:"must be string,null"};
 if(vErrors === null){
 vErrors = [err105];
 }
@@ -2236,8 +2235,9 @@ vErrors.push(err105);
 }
 errors++;
 }
-if(!(formats2(data30))){
-const err106 = {instancePath:instancePath+"/media/posterURL",schemaPath:"#/$defs/MediaDescriptor/properties/posterURL/format",keyword:"format",params:{format: "uri"},message:"must match format \""+"uri"+"\""};
+if(typeof data30 === "string"){
+if(func1(data30) > 256){
+const err106 = {instancePath:instancePath+"/media/mimeType",schemaPath:"#/$defs/MediaDescriptor/properties/mimeType/maxLength",keyword:"maxLength",params:{limit: 256},message:"must NOT have more than 256 characters"};
 if(vErrors === null){
 vErrors = [err106];
 }
@@ -2248,10 +2248,10 @@ errors++;
 }
 }
 }
-if(data18.durationSeconds !== undefined){
-let data31 = data18.durationSeconds;
-if((!(typeof data31 == "number")) && (data31 !== null)){
-const err107 = {instancePath:instancePath+"/media/durationSeconds",schemaPath:"#/$defs/MediaDescriptor/properties/durationSeconds/type",keyword:"type",params:{type: schema34.properties.durationSeconds.type},message:"must be number,null"};
+if(data18.posterURL !== undefined){
+let data31 = data18.posterURL;
+if((typeof data31 !== "string") && (data31 !== null)){
+const err107 = {instancePath:instancePath+"/media/posterURL",schemaPath:"#/$defs/MediaDescriptor/properties/posterURL/type",keyword:"type",params:{type: schema34.properties.posterURL.type},message:"must be string,null"};
 if(vErrors === null){
 vErrors = [err107];
 }
@@ -2260,9 +2260,9 @@ vErrors.push(err107);
 }
 errors++;
 }
-if(typeof data31 == "number"){
-if(data31 > 86400 || isNaN(data31)){
-const err108 = {instancePath:instancePath+"/media/durationSeconds",schemaPath:"#/$defs/MediaDescriptor/properties/durationSeconds/maximum",keyword:"maximum",params:{comparison: "<=", limit: 86400},message:"must be <= 86400"};
+if(typeof data31 === "string"){
+if(func1(data31) > 8192){
+const err108 = {instancePath:instancePath+"/media/posterURL",schemaPath:"#/$defs/MediaDescriptor/properties/posterURL/maxLength",keyword:"maxLength",params:{limit: 8192},message:"must NOT have more than 8192 characters"};
 if(vErrors === null){
 vErrors = [err108];
 }
@@ -2271,8 +2271,8 @@ vErrors.push(err108);
 }
 errors++;
 }
-if(data31 < 0 || isNaN(data31)){
-const err109 = {instancePath:instancePath+"/media/durationSeconds",schemaPath:"#/$defs/MediaDescriptor/properties/durationSeconds/minimum",keyword:"minimum",params:{comparison: ">=", limit: 0},message:"must be >= 0"};
+if(!pattern5.test(data31)){
+const err109 = {instancePath:instancePath+"/media/posterURL",schemaPath:"#/$defs/MediaDescriptor/properties/posterURL/pattern",keyword:"pattern",params:{pattern: "^https://"},message:"must match pattern \""+"^https://"+"\""};
 if(vErrors === null){
 vErrors = [err109];
 }
@@ -2281,12 +2281,8 @@ vErrors.push(err109);
 }
 errors++;
 }
-}
-}
-if(data18.author !== undefined){
-let data32 = data18.author;
-if((typeof data32 !== "string") && (data32 !== null)){
-const err110 = {instancePath:instancePath+"/media/author",schemaPath:"#/$defs/MediaDescriptor/properties/author/type",keyword:"type",params:{type: schema34.properties.author.type},message:"must be string,null"};
+if(!(formats2(data31))){
+const err110 = {instancePath:instancePath+"/media/posterURL",schemaPath:"#/$defs/MediaDescriptor/properties/posterURL/format",keyword:"format",params:{format: "uri"},message:"must match format \""+"uri"+"\""};
 if(vErrors === null){
 vErrors = [err110];
 }
@@ -2295,9 +2291,12 @@ vErrors.push(err110);
 }
 errors++;
 }
-if(typeof data32 === "string"){
-if(func1(data32) > 256){
-const err111 = {instancePath:instancePath+"/media/author",schemaPath:"#/$defs/MediaDescriptor/properties/author/maxLength",keyword:"maxLength",params:{limit: 256},message:"must NOT have more than 256 characters"};
+}
+}
+if(data18.durationSeconds !== undefined){
+let data32 = data18.durationSeconds;
+if((!(typeof data32 == "number")) && (data32 !== null)){
+const err111 = {instancePath:instancePath+"/media/durationSeconds",schemaPath:"#/$defs/MediaDescriptor/properties/durationSeconds/type",keyword:"type",params:{type: schema34.properties.durationSeconds.type},message:"must be number,null"};
 if(vErrors === null){
 vErrors = [err111];
 }
@@ -2306,12 +2305,9 @@ vErrors.push(err111);
 }
 errors++;
 }
-}
-}
-if(data18.expiresAt !== undefined){
-let data33 = data18.expiresAt;
-if((typeof data33 !== "string") && (data33 !== null)){
-const err112 = {instancePath:instancePath+"/media/expiresAt",schemaPath:"#/$defs/MediaDescriptor/properties/expiresAt/type",keyword:"type",params:{type: schema34.properties.expiresAt.type},message:"must be string,null"};
+if(typeof data32 == "number"){
+if(data32 > 86400 || isNaN(data32)){
+const err112 = {instancePath:instancePath+"/media/durationSeconds",schemaPath:"#/$defs/MediaDescriptor/properties/durationSeconds/maximum",keyword:"maximum",params:{comparison: "<=", limit: 86400},message:"must be <= 86400"};
 if(vErrors === null){
 vErrors = [err112];
 }
@@ -2320,9 +2316,8 @@ vErrors.push(err112);
 }
 errors++;
 }
-if(typeof data33 === "string"){
-if(!(formats0.validate(data33))){
-const err113 = {instancePath:instancePath+"/media/expiresAt",schemaPath:"#/$defs/MediaDescriptor/properties/expiresAt/format",keyword:"format",params:{format: "date-time"},message:"must match format \""+"date-time"+"\""};
+if(data32 < 0 || isNaN(data32)){
+const err113 = {instancePath:instancePath+"/media/durationSeconds",schemaPath:"#/$defs/MediaDescriptor/properties/durationSeconds/minimum",keyword:"minimum",params:{comparison: ">=", limit: 0},message:"must be >= 0"};
 if(vErrors === null){
 vErrors = [err113];
 }
@@ -2333,10 +2328,10 @@ errors++;
 }
 }
 }
-if(data18.transcriptionCapability !== undefined){
-let data34 = data18.transcriptionCapability;
-if(typeof data34 !== "string"){
-const err114 = {instancePath:instancePath+"/media/transcriptionCapability",schemaPath:"#/$defs/MediaDescriptor/properties/transcriptionCapability/type",keyword:"type",params:{type: "string"},message:"must be string"};
+if(data18.author !== undefined){
+let data33 = data18.author;
+if((typeof data33 !== "string") && (data33 !== null)){
+const err114 = {instancePath:instancePath+"/media/author",schemaPath:"#/$defs/MediaDescriptor/properties/author/type",keyword:"type",params:{type: schema34.properties.author.type},message:"must be string,null"};
 if(vErrors === null){
 vErrors = [err114];
 }
@@ -2345,8 +2340,9 @@ vErrors.push(err114);
 }
 errors++;
 }
-if(!(((data34 === "supported") || (data34 === "conditional")) || (data34 === "unavailable"))){
-const err115 = {instancePath:instancePath+"/media/transcriptionCapability",schemaPath:"#/$defs/MediaDescriptor/properties/transcriptionCapability/enum",keyword:"enum",params:{allowedValues: schema34.properties.transcriptionCapability.enum},message:"must be equal to one of the allowed values"};
+if(typeof data33 === "string"){
+if(func1(data33) > 256){
+const err115 = {instancePath:instancePath+"/media/author",schemaPath:"#/$defs/MediaDescriptor/properties/author/maxLength",keyword:"maxLength",params:{limit: 256},message:"must NOT have more than 256 characters"};
 if(vErrors === null){
 vErrors = [err115];
 }
@@ -2356,10 +2352,11 @@ vErrors.push(err115);
 errors++;
 }
 }
-if(data18.failureReason !== undefined){
-let data35 = data18.failureReason;
-if(typeof data35 !== "string"){
-const err116 = {instancePath:instancePath+"/media/failureReason",schemaPath:"#/$defs/MediaDescriptor/properties/failureReason/type",keyword:"type",params:{type: "string"},message:"must be string"};
+}
+if(data18.expiresAt !== undefined){
+let data34 = data18.expiresAt;
+if((typeof data34 !== "string") && (data34 !== null)){
+const err116 = {instancePath:instancePath+"/media/expiresAt",schemaPath:"#/$defs/MediaDescriptor/properties/expiresAt/type",keyword:"type",params:{type: schema34.properties.expiresAt.type},message:"must be string,null"};
 if(vErrors === null){
 vErrors = [err116];
 }
@@ -2368,8 +2365,9 @@ vErrors.push(err116);
 }
 errors++;
 }
-if(!((((((((data35 === "blob_or_mse") || (data35 === "multiple_candidates")) || (data35 === "video_not_loaded")) || (data35 === "no_transferable_source")) || (data35 === "drm_or_encrypted")) || (data35 === "browser_session_required")) || (data35 === "unsupported_media_type")) || (data35 === "unknown"))){
-const err117 = {instancePath:instancePath+"/media/failureReason",schemaPath:"#/$defs/MediaDescriptor/properties/failureReason/enum",keyword:"enum",params:{allowedValues: schema34.properties.failureReason.enum},message:"must be equal to one of the allowed values"};
+if(typeof data34 === "string"){
+if(!(formats0.validate(data34))){
+const err117 = {instancePath:instancePath+"/media/expiresAt",schemaPath:"#/$defs/MediaDescriptor/properties/expiresAt/format",keyword:"format",params:{format: "date-time"},message:"must match format \""+"date-time"+"\""};
 if(vErrors === null){
 vErrors = [err117];
 }
@@ -2379,10 +2377,11 @@ vErrors.push(err117);
 errors++;
 }
 }
-if(data18.candidateCount !== undefined){
-let data36 = data18.candidateCount;
-if(!((typeof data36 == "number") && (!(data36 % 1) && !isNaN(data36)))){
-const err118 = {instancePath:instancePath+"/media/candidateCount",schemaPath:"#/$defs/MediaDescriptor/properties/candidateCount/type",keyword:"type",params:{type: "integer"},message:"must be integer"};
+}
+if(data18.transcriptionCapability !== undefined){
+let data35 = data18.transcriptionCapability;
+if(typeof data35 !== "string"){
+const err118 = {instancePath:instancePath+"/media/transcriptionCapability",schemaPath:"#/$defs/MediaDescriptor/properties/transcriptionCapability/type",keyword:"type",params:{type: "string"},message:"must be string"};
 if(vErrors === null){
 vErrors = [err118];
 }
@@ -2391,9 +2390,8 @@ vErrors.push(err118);
 }
 errors++;
 }
-if(typeof data36 == "number"){
-if(data36 > 1000 || isNaN(data36)){
-const err119 = {instancePath:instancePath+"/media/candidateCount",schemaPath:"#/$defs/MediaDescriptor/properties/candidateCount/maximum",keyword:"maximum",params:{comparison: "<=", limit: 1000},message:"must be <= 1000"};
+if(!(((data35 === "supported") || (data35 === "conditional")) || (data35 === "unavailable"))){
+const err119 = {instancePath:instancePath+"/media/transcriptionCapability",schemaPath:"#/$defs/MediaDescriptor/properties/transcriptionCapability/enum",keyword:"enum",params:{allowedValues: schema34.properties.transcriptionCapability.enum},message:"must be equal to one of the allowed values"};
 if(vErrors === null){
 vErrors = [err119];
 }
@@ -2402,8 +2400,11 @@ vErrors.push(err119);
 }
 errors++;
 }
-if(data36 < 1 || isNaN(data36)){
-const err120 = {instancePath:instancePath+"/media/candidateCount",schemaPath:"#/$defs/MediaDescriptor/properties/candidateCount/minimum",keyword:"minimum",params:{comparison: ">=", limit: 1},message:"must be >= 1"};
+}
+if(data18.failureReason !== undefined){
+let data36 = data18.failureReason;
+if(typeof data36 !== "string"){
+const err120 = {instancePath:instancePath+"/media/failureReason",schemaPath:"#/$defs/MediaDescriptor/properties/failureReason/type",keyword:"type",params:{type: "string"},message:"must be string"};
 if(vErrors === null){
 vErrors = [err120];
 }
@@ -2412,12 +2413,8 @@ vErrors.push(err120);
 }
 errors++;
 }
-}
-}
-if(data18.selectionReason !== undefined){
-let data37 = data18.selectionReason;
-if(typeof data37 !== "string"){
-const err121 = {instancePath:instancePath+"/media/selectionReason",schemaPath:"#/$defs/MediaDescriptor/properties/selectionReason/type",keyword:"type",params:{type: "string"},message:"must be string"};
+if(!((((((((data36 === "blob_or_mse") || (data36 === "multiple_candidates")) || (data36 === "video_not_loaded")) || (data36 === "no_transferable_source")) || (data36 === "drm_or_encrypted")) || (data36 === "browser_session_required")) || (data36 === "unsupported_media_type")) || (data36 === "unknown"))){
+const err121 = {instancePath:instancePath+"/media/failureReason",schemaPath:"#/$defs/MediaDescriptor/properties/failureReason/enum",keyword:"enum",params:{allowedValues: schema34.properties.failureReason.enum},message:"must be equal to one of the allowed values"};
 if(vErrors === null){
 vErrors = [err121];
 }
@@ -2426,8 +2423,11 @@ vErrors.push(err121);
 }
 errors++;
 }
-if(!((((((data37 === "singleCandidate") || (data37 === "playing")) || (data37 === "recentInteraction")) || (data37 === "largestVisibleArea")) || (data37 === "nearestViewportCenter")) || (data37 === "ambiguous"))){
-const err122 = {instancePath:instancePath+"/media/selectionReason",schemaPath:"#/$defs/MediaDescriptor/properties/selectionReason/enum",keyword:"enum",params:{allowedValues: schema34.properties.selectionReason.enum},message:"must be equal to one of the allowed values"};
+}
+if(data18.candidateCount !== undefined){
+let data37 = data18.candidateCount;
+if(!((typeof data37 == "number") && (!(data37 % 1) && !isNaN(data37)))){
+const err122 = {instancePath:instancePath+"/media/candidateCount",schemaPath:"#/$defs/MediaDescriptor/properties/candidateCount/type",keyword:"type",params:{type: "integer"},message:"must be integer"};
 if(vErrors === null){
 vErrors = [err122];
 }
@@ -2436,11 +2436,9 @@ vErrors.push(err122);
 }
 errors++;
 }
-}
-if(data18.playbackState !== undefined){
-let data38 = data18.playbackState;
-if(typeof data38 !== "string"){
-const err123 = {instancePath:instancePath+"/media/playbackState",schemaPath:"#/$defs/MediaDescriptor/properties/playbackState/type",keyword:"type",params:{type: "string"},message:"must be string"};
+if(typeof data37 == "number"){
+if(data37 > 1000 || isNaN(data37)){
+const err123 = {instancePath:instancePath+"/media/candidateCount",schemaPath:"#/$defs/MediaDescriptor/properties/candidateCount/maximum",keyword:"maximum",params:{comparison: "<=", limit: 1000},message:"must be <= 1000"};
 if(vErrors === null){
 vErrors = [err123];
 }
@@ -2449,8 +2447,8 @@ vErrors.push(err123);
 }
 errors++;
 }
-if(!(((((data38 === "playing") || (data38 === "paused")) || (data38 === "ended")) || (data38 === "notLoaded")) || (data38 === "unknown"))){
-const err124 = {instancePath:instancePath+"/media/playbackState",schemaPath:"#/$defs/MediaDescriptor/properties/playbackState/enum",keyword:"enum",params:{allowedValues: schema34.properties.playbackState.enum},message:"must be equal to one of the allowed values"};
+if(data37 < 1 || isNaN(data37)){
+const err124 = {instancePath:instancePath+"/media/candidateCount",schemaPath:"#/$defs/MediaDescriptor/properties/candidateCount/minimum",keyword:"minimum",params:{comparison: ">=", limit: 1},message:"must be >= 1"};
 if(vErrors === null){
 vErrors = [err124];
 }
@@ -2461,8 +2459,10 @@ errors++;
 }
 }
 }
-else {
-const err125 = {instancePath:instancePath+"/media",schemaPath:"#/$defs/MediaDescriptor/type",keyword:"type",params:{type: "object"},message:"must be object"};
+if(data18.selectionReason !== undefined){
+let data38 = data18.selectionReason;
+if(typeof data38 !== "string"){
+const err125 = {instancePath:instancePath+"/media/selectionReason",schemaPath:"#/$defs/MediaDescriptor/properties/selectionReason/type",keyword:"type",params:{type: "string"},message:"must be string"};
 if(vErrors === null){
 vErrors = [err125];
 }
@@ -2471,15 +2471,60 @@ vErrors.push(err125);
 }
 errors++;
 }
-}
-}
-else {
-const err126 = {instancePath,schemaPath:"#/type",keyword:"type",params:{type: "object"},message:"must be object"};
+if(!((((((data38 === "singleCandidate") || (data38 === "playing")) || (data38 === "recentInteraction")) || (data38 === "largestVisibleArea")) || (data38 === "nearestViewportCenter")) || (data38 === "ambiguous"))){
+const err126 = {instancePath:instancePath+"/media/selectionReason",schemaPath:"#/$defs/MediaDescriptor/properties/selectionReason/enum",keyword:"enum",params:{allowedValues: schema34.properties.selectionReason.enum},message:"must be equal to one of the allowed values"};
 if(vErrors === null){
 vErrors = [err126];
 }
 else {
 vErrors.push(err126);
+}
+errors++;
+}
+}
+if(data18.playbackState !== undefined){
+let data39 = data18.playbackState;
+if(typeof data39 !== "string"){
+const err127 = {instancePath:instancePath+"/media/playbackState",schemaPath:"#/$defs/MediaDescriptor/properties/playbackState/type",keyword:"type",params:{type: "string"},message:"must be string"};
+if(vErrors === null){
+vErrors = [err127];
+}
+else {
+vErrors.push(err127);
+}
+errors++;
+}
+if(!(((((data39 === "playing") || (data39 === "paused")) || (data39 === "ended")) || (data39 === "notLoaded")) || (data39 === "unknown"))){
+const err128 = {instancePath:instancePath+"/media/playbackState",schemaPath:"#/$defs/MediaDescriptor/properties/playbackState/enum",keyword:"enum",params:{allowedValues: schema34.properties.playbackState.enum},message:"must be equal to one of the allowed values"};
+if(vErrors === null){
+vErrors = [err128];
+}
+else {
+vErrors.push(err128);
+}
+errors++;
+}
+}
+}
+else {
+const err129 = {instancePath:instancePath+"/media",schemaPath:"#/$defs/MediaDescriptor/type",keyword:"type",params:{type: "object"},message:"must be object"};
+if(vErrors === null){
+vErrors = [err129];
+}
+else {
+vErrors.push(err129);
+}
+errors++;
+}
+}
+}
+else {
+const err130 = {instancePath,schemaPath:"#/type",keyword:"type",params:{type: "object"},message:"must be object"};
+if(vErrors === null){
+vErrors = [err130];
+}
+else {
+vErrors.push(err130);
 }
 errors++;
 }

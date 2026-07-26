@@ -136,9 +136,9 @@ describe("popup build label", () => {
 });
 
 describe("popup availability", () => {
-  it("blocks unsupported platforms outright", () => {
-    expect(popupAvailability({ platform: "xiaohongshu", completeness: "full_article" }).tone).toBe("blocked");
-    expect(popupAvailability({ platform: "bilibili", completeness: "full_article" }).tone).toBe("blocked");
+  it("no longer blocks Bilibili / Xiaohongshu now that they capture a text record", () => {
+    expect(popupAvailability({ platform: "bilibili", completeness: "full_article" }).tone).not.toBe("blocked");
+    expect(popupAvailability({ platform: "xiaohongshu", completeness: "full_article" }).tone).not.toBe("blocked");
   });
 
   it("marks a downloadable video capture", () => {

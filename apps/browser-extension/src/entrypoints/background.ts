@@ -42,6 +42,18 @@ import {
   type DouyinMetadataSSRDiagnostic,
 } from "../content/douyin-metadata-diagnostic";
 import {
+  bilibiliCanonicalURL,
+  bilibiliVideoID,
+  isBilibiliVideoURL,
+  readBilibiliStreamInMainWorld,
+} from "../content/bilibili";
+import {
+  isXiaohongshuNoteURL,
+  readXiaohongshuVideoStreamInMainWorld,
+  xiaohongshuCanonicalURL,
+  xiaohongshuNoteID,
+} from "../content/xiaohongshu";
+import {
   makeAppError,
   normalizeNativeResponse,
   validateCapture,
@@ -1028,6 +1040,91 @@ export async function captureYouTubeSingleVideo(tabId: number, tabURL: string): 
   };
 }
 
+/**
+ * 小红书视频笔记与 B 站视频的 `<video>` 都是 MSE，`src` 是 blob，DOM 探测只能
+ * 判成「只能在原浏览器会话观看」。两家都把本次播放的真实地址放在页面自己的 JS
+ * 全局里（`__INITIAL_STATE__` / `__playinfo__`），MAIN world 读一下就能把这条
+ * 抓取从「不可下载」升级成「可下载、可转写」。只读页面已有数据：不带 cookie、
+ * 不调私有接口、不做签名，`usedCookie` 保持 false。
+ *
+ * 只在 DOM 探测确实卡在 blob/MSE 时才走这一步——已经拿到直链的页面不必再注入。
+ */
+async function upgradeBrowserSessionMedia(
+  tabId: number,
+  tabURL: string,
+  page: ExtractedPage,
+): Promise<ExtractedPage> {
+  const detected = page.mediaDescriptor;
+  if (detected && detected.kind !== "browserSessionOnly") return page;
+  const base = {
+    pageURL: tabURL,
+    ...(detected?.posterURL ? { posterURL: detected.posterURL } : {}),
+    candidateCount: detected?.candidateCount ?? 1,
+    selectionReason: detected?.selectionReason ?? "singleCandidate",
+    playbackState: detected?.playbackState ?? "unknown",
+    transcriptionCapability: "supported",
+    kind: "directFile",
+  } as const;
+
+  try {
+    const noteID = xiaohongshuNoteID(tabURL);
+    if (noteID && isXiaohongshuNoteURL(tabURL)) {
+      const results = await browser.scripting.executeScript({
+        target: { tabId, frameIds: [0] },
+        world: "MAIN",
+        func: readXiaohongshuVideoStreamInMainWorld,
+        args: [noteID],
+      });
+      const stream = results[0]?.result as
+        | ReturnType<typeof readXiaohongshuVideoStreamInMainWorld>
+        | undefined;
+      if (!stream?.url) return page;
+      return {
+        ...page,
+        mediaDescriptor: {
+          ...base,
+          canonicalURL: xiaohongshuCanonicalURL(tabURL),
+          platform: "xiaohongshu",
+          ephemeralPlaybackURL: stream.url,
+          mimeType: "video/mp4",
+          ...(stream.durationSeconds ? { durationSeconds: stream.durationSeconds } : {}),
+          ...(stream.expiresAt ? { expiresAt: stream.expiresAt } : {}),
+        },
+      };
+    }
+
+    const videoID = bilibiliVideoID(tabURL);
+    if (videoID && isBilibiliVideoURL(tabURL)) {
+      const results = await browser.scripting.executeScript({
+        target: { tabId, frameIds: [0] },
+        world: "MAIN",
+        func: readBilibiliStreamInMainWorld,
+      });
+      const stream = results[0]?.result as
+        | ReturnType<typeof readBilibiliStreamInMainWorld>
+        | undefined;
+      if (!stream?.url) return page;
+      return {
+        ...page,
+        mediaDescriptor: {
+          ...base,
+          canonicalURL: bilibiliCanonicalURL(videoID),
+          platform: "bilibili",
+          ephemeralPlaybackURL: stream.url,
+          // DASH 的画面与声音是两条流：把音轨一并带上，App 下载后在本机合成。
+          ...(stream.companionAudioURL ? { companionAudioURL: stream.companionAudioURL } : {}),
+          mimeType: stream.mimeType,
+          ...(stream.durationSeconds ? { durationSeconds: stream.durationSeconds } : {}),
+          ...(stream.expiresAt ? { expiresAt: stream.expiresAt } : {}),
+        },
+      };
+    }
+  } catch {
+    // MAIN world 注入在受限页面会失败——保留 DOM 探测的结论即可，不影响正文。
+  }
+  return page;
+}
+
 async function captureAttemptFromTab(
   tabId: number,
 ): Promise<{
@@ -1064,6 +1161,7 @@ async function captureAttemptFromTab(
     });
     const mediaDescriptor = mediaResults[0]?.result as MediaDescriptor | undefined;
     page = attachDetectedMedia(page, mediaDescriptor);
+    page = await upgradeBrowserSessionMedia(tabId, tabURL, page);
   }
 
   if (!page?.text) throw new Error("CAPTURE_CONTENT_EMPTY");
@@ -1086,37 +1184,7 @@ export async function captureFromTab(tabId: number): Promise<CaptureEnvelope> {
   return (await captureAttemptFromTab(tabId)).envelope;
 }
 
-/**
- * 已声明枚举但尚无专属适配器的平台（小红书/B站）。它们是重客户端渲染的
- * SPA，通用抓取只会刮到信息流外壳垃圾（与 YouTube watch 页同类问题）；
- * 因此显式拦截并给人话降级，而不是产出乱码条目。
- */
-function isUnimplementedPlatformHost(rawURL: string): "xiaohongshu" | "bilibili" | undefined {
-  let host: string;
-  try {
-    host = new URL(rawURL).hostname.toLowerCase();
-  } catch {
-    return undefined;
-  }
-  host = host.replace(/^www\.|^m\./, "");
-  if (host === "xiaohongshu.com" || host.endsWith(".xiaohongshu.com") || host === "xhslink.com") {
-    return "xiaohongshu";
-  }
-  if (host === "bilibili.com" || host.endsWith(".bilibili.com") || host === "b23.tv") {
-    return "bilibili";
-  }
-  return undefined;
-}
-
 export async function sendCapture(tabId: number): Promise<ExtensionSendResult> {
-  const preTab = await browser.tabs.get(tabId).catch(() => undefined);
-  if (isUnimplementedPlatformHost(preTab?.url || "")) {
-    // 尚无适配器：明确降级，不落 SPA 外壳垃圾。
-    return {
-      response: { kind: "error", error: makeAppError(requestId(), "protocol", "PLATFORM_NOT_SUPPORTED", false, "open_in_browser") },
-      errorStage: "extension_validation",
-    };
-  }
   const attempt = await captureAttemptFromTab(tabId);
   const { envelope, mediaDiagnostic, metadataDiagnostic } = attempt;
   // V2-first strategy: validate the V2 envelope (which carries the media

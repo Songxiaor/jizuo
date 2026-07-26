@@ -26,7 +26,8 @@ const bookmarksErrorCopy: Readonly<Record<string, string>> = {
 };
 
 type CapturePlatform =
-  | "generic" | "x" | "youtube" | "wechat" | "xiaohongshu" | "douyin" | "bilibili" | "github";
+  | "generic" | "x" | "youtube" | "wechat" | "xiaohongshu" | "douyin" | "bilibili" | "github"
+  | "zhihu" | "medium" | "substack" | "toutiao";
 type Completeness = "full_article" | "visible_only" | "selection_only" | "unknown";
 
 type SafeCapturePreview = {
@@ -145,9 +146,13 @@ if (tabId === undefined) {
       send.disabled = true;
       send.textContent = "暂不支持此平台";
     }
-  } catch {
+  } catch (cause) {
     status.textContent = "当前页面不可捕获";
     setAvailability("blocked", "不可捕获");
+    // 这里原本把原因整个吞掉，界面上只剩一句没有信息量的提示，排查时等于没有线索。
+    // 把真实 message 亮出来：CAPTURE_CONTENT_EMPTY 是抓到了页面但没有正文，
+    // "Cannot access contents of url…" 是注入被拒，两者的修法完全不同。
+    error.textContent = cause instanceof Error ? cause.message : String(cause);
     send.disabled = true;
   }
 

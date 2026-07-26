@@ -71,31 +71,34 @@ async function onClick(button: HTMLButtonElement): Promise<void> {
     return;
   }
   setTip(button, "busy", "同步中…");
-  try {
-    // MV3 service worker 休眠后首个消息可能丢：拿到 undefined 就重试一次。
-    let result = await browser.runtime.sendMessage({ type: "sync-single-tweet", tweetID });
-    if (result === undefined || result === null) {
-      await new Promise((resolve) => setTimeout(resolve, 300));
+  // MV3 service worker 冷启动时，来自内容脚本的首个消息可能返回 undefined，也
+  // 可能直接以「message channel closed」拒绝。两种都当成“唤醒中，需重试一次”，
+  // 而不是把拒绝吞成一个无信息的「同步失败」。
+  let result: unknown = undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
       result = await browser.runtime.sendMessage({ type: "sync-single-tweet", tweetID });
+    } catch {
+      result = undefined;
     }
-    const parsed = result as
-      | { ok: true; outcome: { queued: number; skipped: number } }
-      | { ok: false; code: string }
-      | undefined;
-    if (parsed?.ok) {
-      setTip(button, "done", parsed.outcome.queued > 0 ? "已发送到 App" : "已在库");
-    } else if (parsed === undefined || parsed === null) {
-      // background 没返回——多为 MV3 service worker 休眠后首个消息丢失。
-      setTip(button, "error", "扩展未响应，请重点一次");
-    } else if (parsed.code === "native_error") {
-      setTip(button, "error", "App 未连接");
-    } else if (parsed.code === "invalid_id") {
-      setTip(button, "error", "读不到帖子ID");
-    } else {
-      setTip(button, "error", `失败：${parsed.code}`);
-    }
-  } catch {
-    setTip(button, "error", "同步失败，请重试");
+    if (result !== undefined && result !== null) break;
+    if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 300));
+  }
+  const parsed = result as
+    | { ok: true; outcome: { queued: number; skipped: number } }
+    | { ok: false; code: string }
+    | undefined;
+  if (parsed?.ok) {
+    setTip(button, "done", parsed.outcome.queued > 0 ? "已发送到 App" : "已在库");
+  } else if (parsed === undefined || parsed === null) {
+    // 两次都没拿到响应——多为 service worker 未就绪，再点一次通常即可。
+    setTip(button, "error", "扩展未响应，请重点一次");
+  } else if (parsed.code === "native_error") {
+    setTip(button, "error", "App 未连接");
+  } else if (parsed.code === "invalid_id") {
+    setTip(button, "error", "读不到帖子ID");
+  } else {
+    setTip(button, "error", `失败：${parsed.code}`);
   }
   // 两秒后收起气泡；done/error 的颜色保留，让用户看到结果。
   window.setTimeout(() => button.setAttribute("data-tip", ""), 2_000);

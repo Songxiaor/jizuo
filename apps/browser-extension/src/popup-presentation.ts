@@ -67,24 +67,27 @@ export function popupBuildLabel(manifest: { version: string; version_name?: stri
 }
 
 type CapturePlatform =
-  | "generic" | "x" | "youtube" | "wechat" | "xiaohongshu" | "douyin" | "bilibili" | "github";
+  | "generic" | "x" | "youtube" | "wechat" | "xiaohongshu" | "douyin" | "bilibili" | "github"
+  | "zhihu" | "medium" | "substack" | "toutiao";
 type Completeness = "full_article" | "visible_only" | "selection_only" | "unknown";
 
 const platformLabels: Readonly<Record<CapturePlatform, string>> = {
   generic: "网页", x: "X", youtube: "YouTube", wechat: "微信公众号",
   xiaohongshu: "小红书", douyin: "抖音", bilibili: "B站", github: "GitHub",
+  zhihu: "知乎", medium: "Medium", substack: "Substack", toutiao: "今日头条",
 };
 
 const platformIcons: Readonly<Record<CapturePlatform, string>> = {
   generic: "🌐", x: "𝕏", youtube: "▶️", wechat: "💬",
   xiaohongshu: "📕", douyin: "🎵", bilibili: "📺", github: "🐙",
+  zhihu: "📘", medium: "✍️", substack: "📮", toutiao: "📰",
 };
 
 export function popupPlatformIcon(platform: CapturePlatform): string {
   return platformIcons[platform] ?? "🌐";
 }
 
-const unsupportedPlatforms: ReadonlySet<CapturePlatform> = new Set(["xiaohongshu", "bilibili"]);
+const unsupportedPlatforms: ReadonlySet<CapturePlatform> = new Set<CapturePlatform>();
 
 export type PopupAvailability = { tone: "ready" | "video" | "warn" | "blocked"; label: string };
 

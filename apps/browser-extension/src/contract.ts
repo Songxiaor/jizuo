@@ -1,7 +1,7 @@
 import validateWireSchema, { type SchemaValidationError } from "./generated/capture-validator.mjs";
 
 export const MAX_CAPTURE_TEXT_SCALARS = 2_000_000;
-export type CapturePlatform = "generic" | "x" | "youtube" | "wechat" | "xiaohongshu" | "douyin" | "bilibili" | "github";
+export type CapturePlatform = "generic" | "x" | "youtube" | "wechat" | "xiaohongshu" | "douyin" | "bilibili" | "github" | "zhihu" | "medium" | "substack" | "toutiao";
 export type CaptureMedia = {
   platform: "douyin";
   videoURL: string;
@@ -27,6 +27,12 @@ export type MediaDescriptor = {
   canonicalURL: string;
   platform: CapturePlatform;
   ephemeralPlaybackURL?: string;
+  /**
+   * 画面与声音分成两条流的来源（B 站 DASH）：`ephemeralPlaybackURL` 是画面，
+   * 这里是配套音轨，由 App 下载后在本机合成一个带声音的文件。两条都是限时签名，
+   * 与主地址同一有效期。
+   */
+  companionAudioURL?: string;
   mimeType?: string | null;
   posterURL?: string | null;
   durationSeconds?: number | null;

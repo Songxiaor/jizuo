@@ -4,13 +4,18 @@ import {
   attachDetectedMedia,
   captureBodyLacksProse,
   enrichXCaptureWithTitleFallback,
+  extractBilibiliPage,
   extractCurrentPage,
   extractPageInIsolatedWorld,
+  extractXiaohongshuPage,
   formatXDisplayTitle,
   gitHubRepoSlug,
   formatXPostProse,
   isXProfileChromeImageURL,
   isXVideoThumbnailURL,
+  isMediumProfileChromeImageURL,
+  resolveResponsiveImageURL,
+  resolveZhihuAnswerMetadata,
   stripDouyinCaptionPrefix,
   stripBoilerplateLines,
   xMediaDedupeKey,
@@ -60,7 +65,12 @@ function el(tag: string, children: FakeNode[] = [], attrs: Record<string, string
     querySelector: (selector) => collectMatching(node, selector)[0] ?? null,
     cloneNode: () => structuredCloneNode(node),
     closest: (selector) => {
-      if (matchesSimple(node, selector)) return node;
+      let current: FakeNode | null = node;
+      const groups = selector.split(",").map((value) => value.trim()).filter(Boolean);
+      while (current) {
+        if (groups.some((group) => matchesSimple(current!, group))) return current;
+        current = current.parentNode ?? null;
+      }
       return null;
     },
     remove: () => {
@@ -94,11 +104,22 @@ function collectMatching(root: FakeNode, selector: string): FakeNode[] {
   const groups = selector.split(",").map((s) => s.trim()).filter(Boolean);
   const results: FakeNode[] = [];
   const seen = new Set<FakeNode>();
+  // Support descendant combinators (`.a .b`): match the final simple selector on
+  // the node, then satisfy the preceding parts against any ancestor chain, the
+  // way a real querySelector does. Single-segment selectors stay a plain match.
+  const matchesGroup = (node: FakeNode, group: string): boolean => {
+    const path = group.split(/\s+/).filter(Boolean);
+    if (path.length === 0 || !matchesSimple(node, path[path.length - 1]!)) return false;
+    let index = path.length - 2;
+    let ancestor = node.parentNode ?? null;
+    while (index >= 0 && ancestor) {
+      if (matchesSimple(ancestor, path[index]!)) index -= 1;
+      ancestor = ancestor.parentNode ?? null;
+    }
+    return index < 0;
+  };
   const matchesAny = (node: FakeNode): boolean =>
-    groups.some((group) => {
-      const path = group.split(/\s+/).filter(Boolean);
-      return path.length === 1 && matchesSimple(node, path[0]!);
-    });
+    groups.some((group) => matchesGroup(node, group));
   const walk = (node: FakeNode) => {
     if (node.nodeType === ELEMENT && matchesAny(node) && !seen.has(node)) {
       seen.add(node);
@@ -114,20 +135,36 @@ function matchesSimple(node: FakeNode, selector: string): boolean {
   if (node.nodeType !== ELEMENT) return false;
   const tag = (node.tagName ?? "").toLowerCase();
   const attrs = node.attrs ?? {};
+  const classNames = new Set((attrs.class ?? "").split(/\s+/u).filter(Boolean));
 
-  // tag[attr='value'] or [attr='value'] or tag or a[href]
-  const re = /^([a-z0-9]+)?(?:\[([a-z0-9_-]+)(?:=['"]([^'"]*)['"])?\])?$/i;
+  const idMatch = selector.match(/^([a-z0-9]+)?#([a-z0-9_-]+)$/iu);
+  if (idMatch) {
+    if (idMatch[1] && idMatch[1].toLowerCase() !== tag) return false;
+    return (attrs.id ?? "") === idMatch[2];
+  }
+
+  const classMatch = selector.match(/^([a-z0-9]+)?((?:\.[a-z0-9_-]+)+)$/iu);
+  if (classMatch) {
+    if (classMatch[1] && classMatch[1].toLowerCase() !== tag) return false;
+    return classMatch[2]!.split(".").filter(Boolean).every((name) => classNames.has(name));
+  }
+
+  // tag[attr='value'], [attr*='value'], tag, or a[href]
+  const re = /^([a-z0-9]+)?(?:\[([a-z0-9_-]+)(?:([*^$]?=)['"]([^'"]*)['"])?\])?$/i;
   const m = selector.match(re);
   if (!m) {
     // fallback: plain tag
     return selector.toLowerCase() === tag;
   }
-  const [, tagPart, attrName, attrValue] = m;
+  const [, tagPart, attrName, operator, attrValue] = m;
   if (tagPart && tagPart.toLowerCase() !== tag) return false;
   if (attrName) {
     const actual = attrs[attrName];
     if (actual == null) return false;
-    if (attrValue !== undefined && actual !== attrValue) return false;
+    if (operator === "=" && actual !== attrValue) return false;
+    if (operator === "*=" && !actual.includes(attrValue ?? "")) return false;
+    if (operator === "^=" && !actual.startsWith(attrValue ?? "")) return false;
+    if (operator === "$=" && !actual.endsWith(attrValue ?? "")) return false;
   }
   return true;
 }
@@ -288,6 +325,111 @@ describe("page extraction", () => {
     }
   });
 
+  it("captures item-scoped Zhihu answer metadata without leaking question totals", () => {
+    const answerID = "2035509772494033394";
+    const answer = el("div", [
+      el("span", [text("Echo")], { class: "AuthorInfo-name" }),
+      el("span", [text("发布于 2026-07-24 10:30")], { class: "ContentItem-time" }),
+      el("div", [
+        el("p", [text("AI Agent 落地效果差，不是方向错了，而是把模型当成了操作系统。")]),
+      ], { class: "Post-RichText" }),
+      el("button", [text("赞同 361")], { class: "VoteButton--up" }),
+      el("button", [text("36 条评论")], { class: "ContentItem-action", "aria-label": "36 条评论" }),
+      el("button", [text("收藏 616")], { class: "ContentItem-action", "aria-label": "收藏 616" }),
+    ], { class: "AnswerItem", "data-answer-id": answerID });
+    const root = el("main", [
+      el("div", [text("关注者 4,466 被浏览 2,827,534")]),
+      answer,
+    ]);
+    const documentLike = makeDocument({
+      title: "如何评价当前的 AI Agent 落地效果普遍不佳的问题？",
+      href: `https://www.zhihu.com/question/13476251758/answer/${answerID}`,
+      root,
+    });
+
+    expect(resolveZhihuAnswerMetadata(documentLike)).toEqual({
+      author: "Echo",
+      published: "2026-07-24 10:30",
+      likes: "361",
+      comments: "36",
+      collects: "616",
+    });
+    const testable = extractCurrentPage(documentLike);
+    expect(testable.text).toContain('author: "Echo"');
+    expect(testable.text).toContain('likes: "361"');
+    expect(testable.text).toContain('comments: "36"');
+    expect(testable.text).toContain('collects: "616"');
+    expect(testable.text).not.toContain("2,827,534");
+
+    const previousDocument = globalThis.document;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      writable: true,
+      value: documentLike,
+    });
+    try {
+      expect(extractPageInIsolatedWorld().text).toBe(testable.text);
+    } finally {
+      if (previousDocument) {
+        Object.defineProperty(globalThis, "document", {
+          configurable: true,
+          writable: true,
+          value: previousDocument,
+        });
+      } else {
+        delete (globalThis as { document?: Document }).document;
+      }
+    }
+  });
+
+  it("uses Medium responsive content images and drops the tiny author avatar", () => {
+    const avatar = "https://miro.medium.com/v2/resize:fill:64:64/1*avatar.jpeg";
+    const small = "https://miro.medium.com/v2/resize:fit:212/1*article.png";
+    const large = "https://miro.medium.com/v2/resize:fit:1200/1*article.png";
+    const image = el("img", [], {
+      alt: "文章插图",
+      src: small,
+      srcset: `${small} 212w, ${large} 1200w`,
+    });
+    expect(resolveResponsiveImageURL(image as unknown as Element, "https://humanparts.medium.com/story")).toBe(large);
+    expect(isMediumProfileChromeImageURL(avatar)).toBe(true);
+    expect(isMediumProfileChromeImageURL(large)).toBe(false);
+
+    const article = el("article", [
+      el("img", [], { alt: "Lydia Sohn", src: avatar }),
+      el("p", [text("I asked several people in their nineties what they regretted most.")]),
+      image,
+    ]);
+    const documentLike = makeDocument({
+      title: "What Do 90-Somethings Regret Most?",
+      href: "https://humanparts.medium.com/what-its-like-to-be-90-something-368780082573",
+      root: article,
+    });
+    const testable = extractCurrentPage(documentLike);
+    expect(testable.text).toContain(`![文章插图](${large})`);
+    expect(testable.text).not.toContain(avatar);
+
+    const previousDocument = globalThis.document;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      writable: true,
+      value: documentLike,
+    });
+    try {
+      expect(extractPageInIsolatedWorld().text).toBe(testable.text);
+    } finally {
+      if (previousDocument) {
+        Object.defineProperty(globalThis, "document", {
+          configurable: true,
+          writable: true,
+          value: previousDocument,
+        });
+      } else {
+        delete (globalThis as { document?: Document }).document;
+      }
+    }
+  });
+
   it("preserves WeChat code-snippet blocks as fenced code with one line per <code>", () => {
     const root = el("div", [
       el("p", [text("我把 Prompt 放在这里，有需要的朋友直接复制：")]),
@@ -391,6 +533,8 @@ describe("page extraction", () => {
     expect(bodyOnly.indexOf(post)).toBeLessThan(bodyOnly.indexOf(media));
     expect(result.text).toContain('author: "Rachel (@Zesee)"');
     expect(result.text).toContain('likes: "128"');
+    expect(result.text).toContain('comments: "4"');
+    expect(result.text).not.toContain("replies:");
     expect(result.title).toBe(post);
     expect(result.title.length).toBeLessThanOrEqual(48);
   });
@@ -743,5 +887,219 @@ describe("douyin media extraction", () => {
         media: result.mediaDescriptor,
       }),
     ).toBeNull();
+  });
+
+  it("captures a Bilibili video's author, publish time and toolbar engagement as frontmatter", () => {
+    const root = el("div", [
+      el("h1", [text("测试视频标题")]),
+      el("div", [text("测试UP主")], { class: "up-name" }),
+      el("div", [text("这是视频简介")], { class: "basic-desc-info" }),
+      el("div", [text("2024-03-01 12:00:00")], { class: "pubdate-text" }),
+      el("div", [text("10.5万")], { class: "view-text" }),
+      el("div", [text("8000")], { class: "video-like-info" }),
+      el("div", [text("1200")], { class: "video-fav-info" }),
+      el("div", [text("300")], { class: "video-share-info" }),
+    ]);
+    const doc = makeDocument({
+      title: "测试视频标题_哔哩哔哩_bilibili",
+      href: "https://www.bilibili.com/video/BV1xx411c7mD",
+      root,
+    });
+
+    const result = extractBilibiliPage(doc);
+
+    expect(result.url).toBe("https://www.bilibili.com/video/BV1xx411c7mD");
+    expect(result.title).toBe("测试视频标题");
+    expect(result.text).toContain('author: "测试UP主"');
+    expect(result.text).toContain('published: "2024-03-01 12:00:00"');
+    expect(result.text).toContain('likes: "8000"');
+    expect(result.text).toContain('collects: "1200"');
+    expect(result.text).toContain('shares: "300"');
+    expect(result.text).toContain('views: "10.5万"');
+    // 评论/弹幕 have no faithful in-page toolbar source; never fabricate them.
+    expect(result.text).not.toContain("comments:");
+    // Title is the detail header's job; it must not be duplicated as a body H1.
+    expect(result.text).not.toContain("# 测试视频标题");
+    expect(result.title).toBe("测试视频标题");
+    expect(result.text).toContain("这是视频简介");
+  });
+
+  it("keeps a Bilibili capture's body to the on-page description, never the SEO meta tail", () => {
+    // 实测 og:description 的形状：真简介之后拼上统计、作者简介和一串推荐视频标题。
+    const seoDescription =
+      "爽！！！, 视频播放量 71312、弹幕量 184、点赞数 8962、投硬币枚数 2499、收藏人数 1264、转发人数 241,"
+      + " 视频作者 柳知萧, 作者简介 月声配音社CV，努力配音！，相关视频：【小缘】鸣潮演唱会vlog，【KuroFest】鸣潮歌手的一日Vlog";
+    const doc = makeDocument({
+      title: "美美站上鸣潮演唱会舞台！_哔哩哔哩_bilibili",
+      href: "https://www.bilibili.com/video/BV1p8gy6oEGo",
+      root: el("div", [
+        el("h1", [text("美美站上鸣潮演唱会舞台！")]),
+        el("div", [text("柳知萧")], { class: "up-name" }),
+        el("div", [text("爽！！！")], { class: "basic-desc-info" }),
+        el("meta", [], { property: "og:description", content: seoDescription }),
+      ]),
+    });
+
+    const result = extractBilibiliPage(doc);
+
+    expect(result.text).toContain("爽！！！");
+    // 统计、作者简介、推荐位标题都不属于这条视频的正文。
+    expect(result.text).not.toContain("视频播放量");
+    expect(result.text).not.toContain("作者简介");
+    expect(result.text).not.toContain("相关视频");
+    expect(result.text).not.toContain("鸣潮歌手的一日Vlog");
+  });
+
+  it("falls back to the truncated meta description when the page has no description block", () => {
+    const doc = makeDocument({
+      title: "无简介视频_哔哩哔哩_bilibili",
+      href: "https://www.bilibili.com/video/BV1p8gy6oEGo",
+      root: el("div", [
+        el("h1", [text("无简介视频")]),
+        el("meta", [], {
+          property: "og:description",
+          content: "只有一句简介, 视频播放量 100、弹幕量 2, 视频作者 某人, 作者简介 略，相关视频：别的视频",
+        }),
+      ]),
+    });
+
+    const result = extractBilibiliPage(doc);
+
+    expect(result.text).toContain("只有一句简介");
+    expect(result.text).not.toContain("视频播放量");
+    expect(result.text).not.toContain("别的视频");
+  });
+
+  it("captures a Xiaohongshu note's author, date and engage-bar counts, ignoring feed-card and per-comment likes", () => {
+    // 实测结构：信息流卡片与每条评论用的都是同一套 `.like-wrapper .count`，
+    // 笔记打开成弹层时它们还排在 `#noteContainer` 前面。笔记自己的数字只在
+    // `#noteContainer .engage-bar` 里。
+    const feedCard = el("div", [
+      el("div", [el("span", [text("36000")], { class: "count" })], { class: "like-wrapper" }),
+    ], { class: "note-item" });
+    const noteContainer = el("div", [
+      el("div", [text("笔记标题")], { id: "detail-title" }),
+      el("div", [text("笔记正文内容")], { id: "detail-desc" }),
+      el("div", [el("span", [text("测试作者")], { class: "username" })], { class: "author-wrapper" }),
+      el("div", [el("span", [text("2024-05-20")], { class: "date" })], { class: "bottom-container" }),
+      // 评论自带的点赞数，排在 engage-bar 之前。
+      el("div", [
+        el("div", [el("span", [text("42")], { class: "count" })], { class: "like-wrapper" }),
+      ], { class: "comment-item" }),
+      el("div", [
+        el("div", [el("span", [text("9670")], { class: "count" })], { class: "like-wrapper" }),
+        el("div", [el("span", [text("2709")], { class: "count" })], { class: "collect-wrapper" }),
+        el("div", [el("span", [text("3102")], { class: "count" })], { class: "chat-wrapper" }),
+      ], { class: "engage-bar" }),
+    ], { id: "noteContainer" });
+    const doc = makeDocument({
+      title: "笔记标题 - 小红书",
+      href: "https://www.xiaohongshu.com/explore/64703496000000001203e971",
+      root: el("div", [feedCard, noteContainer]),
+    });
+
+    const result = extractXiaohongshuPage(doc);
+
+    expect(result.title).toBe("笔记标题");
+    expect(result.text).toContain('author: "测试作者"');
+    expect(result.text).toContain('published: "2024-05-20"');
+    expect(result.text).toContain('likes: "9670"');
+    expect(result.text).toContain('collects: "2709"');
+    expect(result.text).toContain('comments: "3102"');
+    // 弹层背后的信息流卡片和评论的点赞数都不得冒充笔记的点赞数。
+    expect(result.text).not.toContain('likes: "36000"');
+    expect(result.text).not.toContain('likes: "42"');
+    expect(result.text).toContain("笔记正文内容");
+  });
+
+  it("inlines a Xiaohongshu note's gallery in slide order, dropping swiper clones and non-note images", () => {
+    const cdn = "https://sns-webpic-qc.xhscdn.com/202607251040";
+    const slide = (src: string, index: string, extraClass = "") =>
+      el("div", [el("img", [], { src })], {
+        class: `swiper-slide${extraClass ? ` ${extraClass}` : ""}`,
+        "data-swiper-slide-index": index,
+      });
+    const noteContainer = el("div", [
+      el("div", [text("笔记标题")], { id: "detail-title" }),
+      el("div", [text("笔记正文内容")], { id: "detail-desc" }),
+      // 实测的 loop 版式：首尾各插一个克隆，第一个是最后一张图的克隆；真实的
+      // 末张 slide 带 `swiper-slide-duplicate-prev`，子串匹配会把它误杀。
+      el("div", [
+        slide(`${cdn}/c/notes_pre_post/third!nd_dft_wlteh_webp_3`, "2", "swiper-slide-duplicate swiper-slide-prev"),
+        slide(`${cdn}/a/notes_pre_post/first!nd_dft_wlteh_webp_3`, "0", "swiper-slide-active"),
+        slide(`${cdn}/b/notes_pre_post/second!nd_dft_wlteh_webp_3`, "1"),
+        slide(`${cdn}/c/notes_pre_post/third!nd_dft_wlteh_webp_3`, "2", "swiper-slide-duplicate-prev"),
+        slide(`${cdn}/a/notes_pre_post/first!nd_dft_wlteh_webp_3`, "0", "swiper-slide-duplicate"),
+      ], { class: "swiper note-slider" }),
+      // 头像与评论配图同域，但既不在轮播里也不该出现在正文。
+      el("img", [], { src: "https://sns-avatar-qc.xhscdn.com/avatar/abc?imageView2/2/w/120" }),
+      el("div", [
+        el("img", [], { src: `${cdn}/d/comment/pic!nc_n_webp_mw_1` }),
+      ], { class: "comment-item" }),
+    ], { id: "noteContainer" });
+    const doc = makeDocument({
+      title: "笔记标题 - 小红书",
+      href: "https://www.xiaohongshu.com/explore/64703496000000001203e971",
+      root: noteContainer,
+    });
+
+    const result = extractXiaohongshuPage(doc);
+
+    expect(result.imageCount).toBe(3);
+    const gallery = result.text.slice(result.text.indexOf("笔记正文内容"));
+    expect(gallery.match(/!\[\]\(([^)]+)\)/gu)).toEqual([
+      `![](${cdn}/a/notes_pre_post/first!nd_dft_wlteh_webp_3)`,
+      `![](${cdn}/b/notes_pre_post/second!nd_dft_wlteh_webp_3)`,
+      `![](${cdn}/c/notes_pre_post/third!nd_dft_wlteh_webp_3)`,
+    ]);
+    expect(result.text).not.toContain("sns-avatar-qc");
+    expect(result.text).not.toContain("/comment/");
+  });
+
+  it("falls back to slide DOM order for a Xiaohongshu slider without swiper index attributes", () => {
+    const cdn = "https://sns-webpic-qc.xhscdn.com/202607251040";
+    const noteContainer = el("div", [
+      el("div", [text("笔记标题")], { id: "detail-title" }),
+      el("div", [text("笔记正文内容")], { id: "detail-desc" }),
+      el("div", [
+        el("div", [el("img", [], { src: `${cdn}/a/notes_pre_post/first` })], { class: "swiper-slide" }),
+        el("div", [el("img", [], { src: `${cdn}/b/notes_pre_post/second` })], { class: "swiper-slide" }),
+        el("div", [el("img", [], { src: `${cdn}/a/notes_pre_post/first` })], { class: "swiper-slide swiper-slide-duplicate" }),
+      ], { class: "swiper note-slider" }),
+    ], { id: "noteContainer" });
+    const doc = makeDocument({
+      title: "笔记标题 - 小红书",
+      href: "https://www.xiaohongshu.com/explore/64703496000000001203e971",
+      root: noteContainer,
+    });
+
+    const result = extractXiaohongshuPage(doc);
+
+    expect(result.imageCount).toBe(2);
+    expect(result.text.match(/!\[\]\(([^)]+)\)/gu)).toEqual([
+      `![](${cdn}/a/notes_pre_post/first)`,
+      `![](${cdn}/b/notes_pre_post/second)`,
+    ]);
+  });
+
+  it("skips the Xiaohongshu gallery for a video note, whose slider only holds the cover", () => {
+    const noteContainer = el("div", [
+      el("div", [text("视频笔记")], { id: "detail-title" }),
+      el("div", [text("视频笔记正文")], { id: "detail-desc" }),
+      el("video", [], { src: "blob:https://www.xiaohongshu.com/abc" }),
+      el("div", [
+        el("div", [el("img", [], { src: "https://sns-webpic-qc.xhscdn.com/x/notes_pre_post/cover" })], { class: "swiper-slide" }),
+      ], { class: "swiper note-slider" }),
+    ], { id: "noteContainer" });
+    const doc = makeDocument({
+      title: "视频笔记 - 小红书",
+      href: "https://www.xiaohongshu.com/explore/64703496000000001203e971",
+      root: noteContainer,
+    });
+
+    const result = extractXiaohongshuPage(doc);
+
+    expect(result.imageCount).toBeUndefined();
+    expect(result.text).not.toContain("![](");
   });
 });
