@@ -7,14 +7,14 @@ import LinkDigestCore
 final class ProviderSettingsPresentationTests: XCTestCase {
   private let providerAssets = [
     "bailian.svg", "deepinfra.svg", "deepseek.svg", "groq.svg", "ollama.svg",
-    "openai.svg", "openrouter.svg", "siliconflow.svg", "zhipu.svg",
+    "openai.svg", "openrouter.svg", "siliconflow.svg", "stepfun.svg", "zhipu.svg",
   ]
 
   func testProviderCatalogMapsEveryCuratedPresetToAnExactBundledAsset() throws {
     let expected: [ProviderPreset: String] = [
       .openAI: "openai", .deepSeek: "deepseek", .deepInfra: "deepinfra",
       .openRouter: "openrouter", .groq: "groq", .siliconFlow: "siliconflow",
-      .dashScope: "bailian", .zhipu: "zhipu", .ollama: "ollama",
+      .dashScope: "bailian", .zhipu: "zhipu", .stepFun: "stepfun", .ollama: "ollama",
     ]
     let directory = repositoryRoot().appendingPathComponent("apps/desktop/Assets/ProviderIcons", isDirectory: true)
 
@@ -43,7 +43,7 @@ final class ProviderSettingsPresentationTests: XCTestCase {
   }
 
   func testProviderCatalogWritesRasterizationComparisonPNG() throws {
-    let orderedNames = ["openai", "deepseek", "deepinfra", "openrouter", "groq", "siliconflow", "bailian", "zhipu", "ollama"]
+    let orderedNames = ["openai", "deepseek", "deepinfra", "openrouter", "groq", "siliconflow", "bailian", "zhipu", "stepfun", "ollama"]
     let directory = repositoryRoot().appendingPathComponent("apps/desktop/Assets/ProviderIcons", isDirectory: true)
     let cell: CGFloat = 64
     let padding: CGFloat = 8
@@ -157,7 +157,7 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     let root = repositoryRoot()
     let release = try String(contentsOf: root.appendingPathComponent("scripts/native-host/release_unit.py"), encoding: .utf8)
     let local = try String(contentsOf: root.appendingPathComponent("scripts/native-host/local_test_release.py"), encoding: .utf8)
-    let expectedTuple = "(\"bailian.svg\", \"deepinfra.svg\", \"deepseek.svg\", \"groq.svg\", \"ollama.svg\", \"openai.svg\", \"openrouter.svg\", \"siliconflow.svg\", \"zhipu.svg\")"
+    let expectedTuple = "(\"bailian.svg\", \"deepinfra.svg\", \"deepseek.svg\", \"groq.svg\", \"ollama.svg\", \"openai.svg\", \"openrouter.svg\", \"siliconflow.svg\", \"stepfun.svg\", \"zhipu.svg\")"
 
     for source in [release, local] {
       XCTAssertTrue(source.contains("PROVIDER_ICONS_DIRECTORY = \"ProviderIcons\""))

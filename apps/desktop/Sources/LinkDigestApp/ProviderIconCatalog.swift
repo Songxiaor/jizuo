@@ -18,6 +18,7 @@ enum ProviderIconCatalog {
     .siliconFlow: "siliconflow",
     .dashScope: "bailian",
     .zhipu: "zhipu",
+    .stepFun: "stepfun",
     .ollama: "ollama",
   ]
 
