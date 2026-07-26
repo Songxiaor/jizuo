@@ -4149,6 +4149,16 @@ private struct CurrentCaptureMediaPreviewCard: View {
     }
   }
 
+  /// 菜单里禁用的「在线转写」必须自己说明为什么灰。
+  /// 「没配模型」和「地址过期」的解法完全不同，只灰不说等于让用户猜。
+  private var onlineTranscribeTitle: String {
+    let trimmed = onlineTranscriptionModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed?.isEmpty != false {
+      return "在线转写（未配置模型，见 设置 → 模型与识别）"
+    }
+    return "在线转写"
+  }
+
   @ViewBuilder private var remoteTranscriptionControl: some View {
     let state = model.transcriptionState(for: taskID)
     switch state {
@@ -4159,7 +4169,7 @@ private struct CurrentCaptureMediaPreviewCard: View {
     case .failed, .cancelled:
       Menu("重试转写") {
         Button("本机转写") { model.retryRemoteTranscription(descriptor, taskID: taskID) }
-        Button("在线转写") {
+        Button(onlineTranscribeTitle) {
           model.requestOnlineTranscription(descriptor, taskID: taskID, model: onlineTranscriptionModel)
         }
         .disabled(!model.canTranscribeCurrentCaptureOnline(descriptor, taskID: taskID, model: onlineTranscriptionModel))
@@ -4170,7 +4180,7 @@ private struct CurrentCaptureMediaPreviewCard: View {
       Menu {
         Button("本机转写") { model.requestRemoteTranscription(descriptor, taskID: taskID) }
           .disabled(!model.canTranscribeCurrentCapture(descriptor, taskID: taskID))
-        Button("在线转写") {
+        Button(onlineTranscribeTitle) {
           model.requestOnlineTranscription(descriptor, taskID: taskID, model: onlineTranscriptionModel)
         }
         .disabled(!model.canTranscribeCurrentCaptureOnline(descriptor, taskID: taskID, model: onlineTranscriptionModel))
@@ -4205,7 +4215,11 @@ private struct CurrentCaptureMediaPreviewCard: View {
       case .transcribing:
         HStack(spacing: 7) {
           ProgressView().controlSize(.small)
-          Text(model.transcriptionUsesOnlineService ? "正在在线转写…" : "正在本机转写，音频不会上传…")
+          Text(
+            model.transcriptionUsesOnlineService
+              ? (model.onlineTranscriptionPhase ?? "正在在线转写…")
+              : "正在本机转写，音频不会上传…"
+          )
         }
       case .completed:
         Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").foregroundStyle(.green)

@@ -107,6 +107,8 @@ private actor ViewModelSecretStore: SecretStore {
 private actor ViewModelLibraryStore: ModelLibraryStore {
   private var library: ModelLibrary?
 
+  init(_ library: ModelLibrary? = nil) { self.library = library }
+
   func load() async throws -> ModelLibrary? { library }
   func save(_ library: ModelLibrary) async throws { self.library = library }
 }
@@ -1091,5 +1093,46 @@ final class ProviderSettingsViewModelTests: XCTestCase {
       model: "fixture-model",
       secretReference: .init(rawValue: "fixture-reference")
     )
+  }
+}
+
+// MARK: - 在线转写模型解析
+
+@MainActor
+final class EffectiveTranscriptionModelNameTests: XCTestCase {
+  /// 回归：设置页「视频转文字」下拉选好了模型（assignment 已设），但旧的
+  /// 手填模型名从未填过。曾因此处只读手填字段而返回 nil，导致设置显示
+  /// 已配置、「在线转写」菜单却永远置灰说未配置。
+  func testAssignmentAloneYieldsProfileModelName() async throws {
+    let profile = try ProviderProfile(
+      id: "step-asr",
+      baseURL: "https://api.stepfun.com/v1",
+      model: "stepaudio-2.5-asr",
+      secretReference: .init(rawValue: "test-step-asr")
+    )
+    let library = ModelLibrary(profiles: [profile], transcriptionProfileID: "step-asr")
+    let model = ProviderSettingsViewModel(
+      configurationService: ProviderConfigurationService(
+        profileStore: ViewModelProfileStore(),
+        secretStore: ViewModelSecretStore(),
+        libraryStore: ViewModelLibraryStore(library)
+      ),
+      provider: SettingsTestProvider(scripts: []),
+      preferencesStore: ViewModelPreferencesStore()
+    )
+
+    await model.refreshLibrary()
+
+    XCTAssertEqual(model.transcriptionAssignmentID, "step-asr")
+    XCTAssertEqual(model.effectiveTranscriptionModelName, "stepaudio-2.5-asr")
+
+    // 手填字段仍然是显式覆盖。
+    model.transcriptionModelName = "whisper-override"
+    XCTAssertEqual(model.effectiveTranscriptionModelName, "whisper-override")
+
+    // 没有 assignment 时保持 nil（本机 Apple Speech 默认，不得误亮在线入口）。
+    await model.assignTranscriptionModel(nil)
+    XCTAssertNil(model.transcriptionAssignmentID)
+    XCTAssertNil(model.effectiveTranscriptionModelName)
   }
 }

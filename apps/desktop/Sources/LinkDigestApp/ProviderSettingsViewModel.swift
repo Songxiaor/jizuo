@@ -185,9 +185,20 @@ final class ProviderSettingsViewModel: ObservableObject {
   /// Online transcription requires both an explicit per-capability assignment
   /// (the default stays local) and a transcription model name.
   var effectiveTranscriptionModelName: String? {
-    guard transcriptionAssignmentID != nil else { return nil }
-    let value = transcriptionModelName.trimmingCharacters(in: .whitespacesAndNewlines)
-    return value.isEmpty ? nil : value
+    guard let assignmentID = transcriptionAssignmentID else { return nil }
+    // 旧的手填模型名只作显式覆盖；正常路径直接取 assignment 指向的 profile。
+    //
+    // 之前这里只读手填字段：用户在「视频转文字」下拉里选好了模型
+    // （transcriptionAssignmentID 已设、转写凭据也能解析），但因为从没在旧
+    // 文本框里填过名字，这里返回 nil，「在线转写」就永远是灰的——设置页
+    // 显示已配置、菜单却说未配置，两套体系在这断开。模型名本来就存在
+    // profile 里，凭据解析（loadTranscriptionCredentials）走的也是同一个
+    // profile，从这取才是同一条链。
+    let manual = transcriptionModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !manual.isEmpty { return manual }
+    let assigned = libraryProfiles.first(where: { $0.id == assignmentID })?.model
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return assigned?.isEmpty == false ? assigned : nil
   }
   /// nil inherits the summary/chat model inside the tidy adapter.
   var effectiveTidyModelName: String? {

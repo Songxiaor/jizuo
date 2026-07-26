@@ -384,6 +384,10 @@ private struct PendingOnlineTranscriptionContext {
   let mediaURL: URL
   let platform: String
   let model: String
+  /// 远程流场景保留 descriptor：AVAssetExportSession 拒绝对远程流式 asset
+  /// 导出分片（实测 -11838 / -12109 瞬时失败，与网络无关），所以上传前必须
+  /// 先经 TranscriptionTempStore 把音轨落到本地临时文件。本机视频场景为 nil。
+  let descriptor: MediaDescriptor?
 }
 
 private struct PendingTranscriptTidyContext {
@@ -457,10 +461,17 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var selectedScope: HistoryListScope = .all
   @Published var showsAllNavigationTags = false
   @Published private(set) var tagErrorCode: StorageErrorCode?
-  @Published private(set) var transcriptionState: TranscriptionUIState = .idle
+  @Published private(set) var transcriptionState: TranscriptionUIState = .idle {
+    // 任何终态都必须带走阶段文案，不能让「正在下载音频轨…」陪着失败提示常驻。
+    didSet { if !transcriptionState.isActive { onlineTranscriptionPhase = nil } }
+  }
   @Published private(set) var transcriptionText = ""
   @Published private(set) var transcriptionTaskID: TaskID?
   @Published private(set) var transcriptionUsesOnlineService = false
+  /// 在线转写进行到哪一步。「正在在线转写…」曾覆盖从建任务记录到最后一片
+  /// 上传的全过程——挂在数据库、挂在下载、挂在导出、挂在上传，界面上
+  /// 一模一样。这里按真实阶段更新，卡住时直接读出卡在哪个字。
+  @Published private(set) var onlineTranscriptionPhase: String?
   @Published private(set) var imageTextRecognitionState: ImageTextRecognitionUIState = .idle
   @Published private(set) var recognizedImageText = ""
   @Published private(set) var imageTextRecognitionTaskID: TaskID?
@@ -1054,10 +1065,13 @@ final class HistoryViewModel: ObservableObject {
   /// Online fallback for a large direct-file capture. Nothing is sent until
   /// the confirmation alert calls `confirmOnlineTranscription`.
   func requestOnlineTranscription(_ descriptor: MediaDescriptor, taskID: TaskID, model: String?) {
+    // 取轨必须与本机转写同一条规则：B 站 DASH 拆轨时 ephemeralPlaybackURL 是
+    // **纯画面轨**，直接拿去提取音频得到零分片，最后被吞成「连接中断」——
+    // 用户看到的是网络错误，实际根本没到网络那一步。companionAudioURL 才有声音。
     guard let detail, detail.task.id == taskID,
           let model = model?.trimmingCharacters(in: .whitespacesAndNewlines),
           canTranscribeCurrentCaptureOnline(descriptor, taskID: taskID, model: model),
-          let rawURL = descriptor.ephemeralPlaybackURL,
+          let rawURL = TranscriptionTempStore.preferredTranscriptionSourceURL(descriptor),
           let mediaURL = URL(string: rawURL) else {
       transcriptionState = .failed(OnlineAudioTranscriptionError.modelNotConfigured.userMessage)
       return
@@ -1067,7 +1081,8 @@ final class HistoryViewModel: ObservableObject {
       detail: detail,
       mediaURL: mediaURL,
       platform: descriptor.platform,
-      model: model
+      model: model,
+      descriptor: descriptor
     )
     isOnlineTranscriptionConfirmationPresented = true
   }
@@ -1097,7 +1112,8 @@ final class HistoryViewModel: ObservableObject {
       detail: detail,
       mediaURL: fileURL,
       platform: detail.media?.platform ?? detail.snapshots.last?.platform ?? "local_video",
-      model: model
+      model: model,
+      descriptor: nil
     )
     isOnlineTranscriptionConfirmationPresented = true
   }
@@ -1672,6 +1688,7 @@ final class HistoryViewModel: ObservableObject {
     transcriptionText = ""
     transcriptionUsesOnlineService = true
     transcriptionState = .preparingMedia
+    onlineTranscriptionPhase = "正在创建转写任务记录…"
     transcriptionTask = Task { [weak self, worker] in
       guard let self, self.transcriptionRequestID == requestID else { return }
       let began = await worker.beginTaskTranscription(
@@ -1691,19 +1708,74 @@ final class HistoryViewModel: ObservableObject {
         status: .running,
         updatedAtMilliseconds: self.nowMilliseconds()
       )
-      guard self.transcriptionRequestID == requestID, case .applied = running else {
+      guard self.transcriptionRequestID == requestID else {
         _ = await worker.updateTaskTranscriptionStatus(
           history, taskID: context.taskID, attempt: attempt, status: .cancelled,
           updatedAtMilliseconds: self.nowMilliseconds()
         )
         return
       }
+      guard case .applied = running else {
+        // 曾在这里静默 return：数据库拒绝置 running（stale/冲突）时 UI 没有
+        // 任何终态，永远停在「正在在线转写…」。任何退出都必须给出可见状态。
+        _ = await worker.updateTaskTranscriptionStatus(
+          history, taskID: context.taskID, attempt: attempt, status: .cancelled,
+          updatedAtMilliseconds: self.nowMilliseconds()
+        )
+        self.onlineTranscriptionPhase = nil
+        self.transcriptionState = .failed("转写任务状态冲突（可能有未结束的旧任务），请再试一次。")
+        return
+      }
       self.transcriptionState = .transcribing
+      // 远程流必须先落地：AVAssetExportSession 对远程流式 asset 一律
+      // -11838 瞬时失败（实测），分片导出只能吃本地文件。TranscriptionTempStore
+      // 会按拆轨规则只下音频轨（B 站 13 分钟约 7.6MB），attempt 结束即清理。
+      var tempAttemptID: String?
+      defer {
+        if let tempAttemptID, let store = self.transcriptionTempStore {
+          try? store.cleanup(attemptID: tempAttemptID)
+        }
+      }
+      let audioSourceURL: URL
+      if mediaURL.isFileURL {
+        audioSourceURL = mediaURL
+      } else if let descriptor = context.descriptor, let store = self.transcriptionTempStore {
+        do {
+          self.onlineTranscriptionPhase = "正在下载音频轨到本机…"
+          let temp = try await store.prepare(descriptor: descriptor)
+          tempAttemptID = temp.attemptID
+          audioSourceURL = temp.fileURL
+          self.onlineTranscriptionPhase = "音轨已就绪，正在分片上传转写…"
+        } catch {
+          guard self.transcriptionRequestID == requestID else { return }
+          _ = await worker.updateTaskTranscriptionStatus(
+            history, taskID: context.taskID, attempt: attempt, status: .failed,
+            updatedAtMilliseconds: self.nowMilliseconds()
+          )
+          let ns = error as NSError
+          self.transcriptionState = .failed(
+            OnlineAudioTranscriptionError
+              .audioExtractionFailed(detail: "下载音轨失败 \(ns.domain) \(ns.code)")
+              .userMessage
+          )
+          return
+        }
+      } else {
+        audioSourceURL = mediaURL
+      }
       do {
         let text = try await onlineAudioTranscriber.transcribe(
-          remoteMediaURL: mediaURL,
+          remoteMediaURL: audioSourceURL,
           model: context.model,
-          language: "zh"
+          language: "zh",
+          progress: { [weak self] done, total in
+            Task { @MainActor in
+              guard let self, self.transcriptionRequestID == requestID else { return }
+              self.onlineTranscriptionPhase = done == 0
+                ? "正在转写 \(total) 个音频分片…"
+                : "已完成 \(done)/\(total) 片…"
+            }
+          }
         )
         try Task.checkCancellation()
         guard self.transcriptionRequestID == requestID else { return }
