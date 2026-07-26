@@ -3589,15 +3589,35 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
       /收藏|collect|favou?rite/iu,
     );
   }
+  // repoSlug 在下方标题分支里也要用，提前算一次。GitHub 仓库页没有 author meta，
+  // owner 就是作者——这条和 og:article:author / publish_date 三个兜底原先只存在于
+  // 可测试版，注入版一直缺，而生产走的是注入版。
+  const repoSlug = (() => {
+    try {
+      const url = new URL(document.location.href);
+      const host = url.hostname.toLowerCase();
+      if (host !== "github.com" && host !== "www.github.com") return null;
+      const [owner, repo, ...rest] = url.pathname.split("/").filter(Boolean);
+      if (!owner || !repo || rest.length > 0) return null;
+      const valid = /^[A-Za-z0-9_.-]+$/;
+      if (!valid.test(owner) || !valid.test(repo)) return null;
+      return `${owner}/${repo}`;
+    } catch {
+      return null;
+    }
+  })();
   const author = zhihuAuthor ||
     document.querySelector("#js_name")?.textContent?.trim() ||
     document.querySelector("a.rich_media_meta_link")?.textContent?.trim() ||
     metaLine("author") ||
-    metaLine("article:author", "property");
+    metaLine("article:author", "property") ||
+    metaLine("og:article:author", "property") ||
+    repoSlug?.split("/")[0];
   const published = zhihuPublished ||
     document.querySelector("#publish_time")?.textContent?.trim() ||
     metaLine("article:published_time", "property") ||
     metaLine("og:published_time", "property") ||
+    metaLine("publish_date") ||
     metaLine("date");
   const fm: string[] = ["---"];
   if (author) fm.push(`author: ${JSON.stringify(author)}`);
@@ -3608,8 +3628,14 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
   const header = fm.length > 1 ? `${fm.join("\n")}\n---\n\n` : "";
 
   let title = document.title ?? "";
+  // GitHub 仓库根页的 h1 是搜索对话框的隐藏无障碍标题（"Search code, repositories…"），
+  // 规范标题是 owner/repo。可测试版的 resolveTitle 里早有这段，注入版一直没有——
+  // 而 background 对 github.com 走的正是注入版，所以生产上抓仓库页拿到的一直是那个
+  // 隐藏标题。逻辑必须内联：注入函数引用不了模块级的 gitHubRepoSlug，引用了会抛
+  // ReferenceError 并被外层 try/catch 吞成「没抓到正文」。
   const activity = document.querySelector("#activity-name")?.textContent?.trim();
-  if (activity) title = activity;
+  if (repoSlug) title = repoSlug;
+  else if (activity) title = activity;
   else {
     const h1 = document.querySelector("h1")?.textContent?.trim();
     if (h1 && h1.length >= 2) title = h1;
