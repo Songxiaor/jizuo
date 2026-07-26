@@ -53,6 +53,23 @@ struct AnnotationSectionView: View {
       Text("阅读时选中文字，右键「添加到摘录」即可收集；笔记自动保存。")
         .font(.caption2)
         .foregroundStyle(.tertiary)
+      // 「自动保存」这句承诺必须有对应的失败出口，否则存储出问题时用户毫无察觉
+      // 地丢掉整段笔记。这条路径原来全是 `try?`。
+      if let failure = model.annotationFailureMessage {
+        HStack(spacing: 6) {
+          Image(systemName: "exclamationmark.triangle.fill")
+            .foregroundStyle(.orange)
+          Text(failure)
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          Spacer()
+          Button("知道了") { model.annotationFailureMessage = nil }
+            .buttonStyle(.link)
+            .font(.caption2)
+        }
+        .accessibilityIdentifier("annotation-failure-banner")
+      }
     }
     // 摘录路由跟随当前详情条目；离开时清空，避免误挂到旧条目。
     .onAppear { ExcerptCaptureRouter.shared.handler = { model.addExcerpt($0, taskID: taskID) } }

@@ -521,6 +521,9 @@ final class HistoryViewModel: ObservableObject {
   private var noteSaveTask: Task<Void, Never>?
   /// 待落库的笔记。存在这里而不是只活在 Task 闭包里，切换条目时才能先冲刷再覆盖草稿。
   private var pendingNote: (taskID: TaskID, body: String, timestamp: Int64)?
+  /// 笔记/摘录落库失败的提示。这条路径原来全是 `try?`，失败完全无声，
+  /// 而界面上写着「笔记自动保存」。
+  @Published var annotationFailureMessage: String?
   private var loadedNoteTaskID: TaskID?
   @Published private(set) var remoteMediaFavoriteState: RemoteMediaFavoriteState = .idle
   @Published private(set) var capturedMediaAutoSaveStates: [TaskID: RemoteMediaFavoriteState] = [:]
@@ -1223,9 +1226,15 @@ final class HistoryViewModel: ObservableObject {
     )
     // 先落库再上屏：摘录是用户思考的载体，不允许只存在于内存。
     Task.detached(priority: .userInitiated) { [weak self] in
-      guard (try? store.addExcerpt(excerpt)) != nil else { return }
+      let saved = (try? store.addExcerpt(excerpt)) != nil
       await MainActor.run {
-        guard let self, self.selectedTaskID == taskID else { return }
+        guard let self else { return }
+        guard saved else {
+          // 静默失败等于「选中文字、点了添加、什么都没发生」，用户会以为自己没点中。
+          self.annotationFailureMessage = "摘录没能保存到本机，请检查存储后重试。"
+          return
+        }
+        guard self.selectedTaskID == taskID else { return }
         self.taskExcerpts.append(excerpt)
       }
     }
@@ -1233,9 +1242,21 @@ final class HistoryViewModel: ObservableObject {
 
   func deleteExcerpt(_ excerpt: TaskExcerpt) {
     guard !isReadOnly, let store = history?.annotationStore else { return }
-    taskExcerpts.removeAll { $0.id == excerpt.id }
-    Task.detached(priority: .utility) {
-      try? store.deleteExcerpt(id: excerpt.id, taskID: excerpt.taskID)
+    // 先落库再从界面移除。
+    //
+    // 原来是反的：先 removeAll 再 `try?` 删库。删库失败时界面上它已经消失，
+    // 下次 reload 又从库里读回来——「删掉的摘录刷新后复活」，而且中间没有任何
+    // 提示，用户只会觉得这个功能时灵时不灵。
+    Task.detached(priority: .utility) { [weak self] in
+      let deleted = (try? store.deleteExcerpt(id: excerpt.id, taskID: excerpt.taskID)) != nil
+      await MainActor.run {
+        guard let self else { return }
+        guard deleted else {
+          self.annotationFailureMessage = "摘录没能从本机删除，请检查存储后重试。"
+          return
+        }
+        self.taskExcerpts.removeAll { $0.id == excerpt.id }
+      }
     }
   }
 
@@ -1273,9 +1294,9 @@ final class HistoryViewModel: ObservableObject {
   /// 落库，不等待。调用方已经把内容从 pendingNote 里取走，不会再被后续编辑覆盖。
   private func persistNoteDetached(_ pending: (taskID: TaskID, body: String, timestamp: Int64)) {
     guard let store = history?.annotationStore else { return }
-    Task.detached(priority: .utility) {
-      try? store.saveNote(
-        taskID: pending.taskID, body: pending.body, updatedAtMilliseconds: pending.timestamp)
+    Task.detached(priority: .utility) { [weak self] in
+      let saved = Self.saveNote(store: store, pending: pending)
+      if !saved { await MainActor.run { self?.reportNoteSaveFailure() } }
     }
   }
 
@@ -1283,10 +1304,30 @@ final class HistoryViewModel: ObservableObject {
   /// 幂等：没有待写内容时什么都不做。
   func flushPendingNote() async {
     guard let pending = takePendingNote(), let store = history?.annotationStore else { return }
-    await Task.detached(priority: .utility) {
-      try? store.saveNote(
-        taskID: pending.taskID, body: pending.body, updatedAtMilliseconds: pending.timestamp)
+    let saved = await Task.detached(priority: .utility) {
+      Self.saveNote(store: store, pending: pending)
     }.value
+    if !saved { reportNoteSaveFailure() }
+  }
+
+  nonisolated private static func saveNote(
+    store: any AnnotationStoring,
+    pending: (taskID: TaskID, body: String, timestamp: Int64)
+  ) -> Bool {
+    do {
+      try store.saveNote(
+        taskID: pending.taskID, body: pending.body, updatedAtMilliseconds: pending.timestamp)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  /// 界面上写着「笔记自动保存」，那就不能让写失败无声无息。
+  /// 存储降级、磁盘满、DB 损坏都发生在 isReadOnly 守卫之后，用户会毫无察觉地
+  /// 丢掉整段笔记。
+  private func reportNoteSaveFailure() {
+    annotationFailureMessage = "笔记没能保存到本机，请检查存储后重试。内容仍在输入框里，可复制备份。"
   }
 
   // MARK: - 自动处理管线
