@@ -1,4 +1,6 @@
-# LinkDigest 学习日志
+# LinkDigest 学习日志（历史归档）
+
+> 自 2026-07-24 起停止作为必填记录和任务完成条件；既有内容仅保留为历史证据。当前批次状态写入最新的 `docs/交接文档-*.md`。
 
 学习日志记录“哪项任务工程上完成了、AI 在过程中解释了什么、哪里可以继续深挖”。它不是开发日报，也不是要求 Syc 课后答题的成绩单。
 
@@ -1842,3 +1844,16 @@
 - App 改动：`RemoteMarkdownImageStagingPolicy` 放行"抖音图文帖"（platform=douyin + 无 video media + 正文含 douyinpic 图片），视频帖/纯文字帖仍不 stage。
 - 待真机验收：抖音签名 URL 有时效，需发送后 App 及时下载；真机确认图片显示与无水印。
 - 核心名词：**图文帖 vs 视频帖（aweme_type）**：68=图文（images），其余=视频（video）；同一 aweme 对象靠有无 images 区分。
+
+## 任务：Medium 图片下载修复与旧记录自愈（7/24 轻流程）
+
+- 日期：2026-07-24
+- 当前状态：**工程完成，真实 Debug App 界面验收通过。**
+- 场景 → 角色与交接：浏览器扩展已经把 Medium 正文中的 `miro.medium.com` 图片 URL 写进 Markdown；桌面 App 的 `ProxyAwareWebPageFetcher` 负责安全下载，`GitHubREADMEImageCache` 按 TaskID/SnapshotID 落成本地附件，`HistoryViewModel` 只把本地 URL 交给阅读区。正文入库与图片下载保持 fail-open：图片暂时失败不丢文章。
+- 根因：本机 DNS 将 `miro.medium.com` 解析为 `198.18.0.0/15` fake-IP。App 在没有传统 HTTP 代理字典时直接绑定这个数字地址，绕开了 macOS Network Extension/TUN 的域名接管，最终报 `ManualLinkError.network`；同一 URL 经系统 hostname transport 能返回 `200 image/png`。
+- 修复：fake-IP 判定仍保持 HTTPS 与公共 URL 安全门，但优先把原始域名请求交给系统网络通道；只有该通道失败才兼容回退到 numeric fake-IP direct。旧 snapshot 若正文已有远程图片而缓存为空，打开详情时每个 App 会话补抓一次，成功后只刷新本地图片列表，不改正文和数据库记录。
+- 本次新名词：**Fake-IP（L2）** 是代理给域名的临时编号；**Hostname Transport（L3）** 是保留原始域名、让系统 TUN 正确接管的请求方式；**图片缓存补抓（L2）** 是用已入库 URL 修复缺失附件。位置分别为 `PublicWebURLPolicy` / `ProxyAwareWebPageFetcher` / `HistoryViewModel.backfillRemoteImagesIfNeeded`。缺少前两者会让浏览器能看而 App 下载失败；缺少补抓则旧记录升级后仍是空白。
+- 自动证据：`ProxyAwareWebPageFetcherTests` 4/4 PASS；真实 Medium PNG 经 App transport 下载并通过图片签名、缓存落盘测试；历史详情空缓存补抓测试 PASS。部署后旧记录 `417460e0-…` / `9f3460ad-…` 自动生成 manifest、`212×158 PNG` 正文图与 `64×64 JPEG` 头像。
+- 人工验收：使用 Orca 只读检查已打开的 `LinkDigest Debug`，确认 22:27 的 “What Do 90-Somethings Regret Most?” 详情正文实际渲染出图片，不再只有 “Press enter or click to view image in full size” 占位文字。
+- 失败与恢复：系统 hostname transport 失败时仍回退到原 fake-IP numeric transport；补抓失败不影响历史正文。当前部署前 App 备份在 `/Users/song/Applications/LinkDigest-debug-backup-before-medium-backfill-20260724T2244`，上一阶段备份在 `/Users/song/Applications/LinkDigest-debug-backup-before-medium-network-20260724T2237`。
+- 可选跟做（5 分钟）：关闭再打开该 Medium 条目，观察图片从 snapshot 本地缓存立即显示；断网后再次打开仍应显示，因为阅读区不需要重新访问 Medium。此观察不是任务关闭条件。

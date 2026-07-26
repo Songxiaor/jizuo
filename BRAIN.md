@@ -11,21 +11,21 @@ This file is the **single source of truth for the full read + write contract**, 
 
 ---
 
-## The brain is the project's persistent memory — use it actively
+## The brain is the project's persistent decision memory — use it when relevant
 
-The brain is not a passive archive you touch only when told. It is **this project's persistent memory**, and using it is part of every task — across **both discussion and code**. Whenever you talk through a requirement or design with the user, or implement, refactor, or debug, the brain is in the loop: you read from it to recall what was already decided, and you write to it the moment something durable emerges. Treat it the way an agent with a built-in memory would — proactively, not on request.
+The brain preserves durable project decisions and their reversals. It is not a mandatory startup gate for every task: simple, self-contained work that can be decided from the current code and tests should proceed without loading broad project history. Read Brain context when a task involves product scope, architecture, technology choices, long-lived constraints, historical reversals, or a likely conflict with an existing decision.
 
 The working rhythm:
 
-- **At the start — load the brain.** When you pick up a task or a requirement lands, first read the brain: `brain list-pages` for the index, then `brain read-page <id>` / `brain read-root <slug>` to pull in the relevant existing decisions, constraints, and context. Don't design or code against a blank slate when the brain already holds the answer.
-- **In flight — capture as it surfaces, immediately.** The moment a decision, requirement, constraint, or durable insight appears — in conversation or in code — write it back through the `brain` CLI right then (a `decision` page, or a root-page update for positioning / architecture / stack / roadmap). Proactively and immediately; don't batch it to "later" and don't wait to be asked.
+- **At the start — load only relevant context.** When one of the triggers above applies, run `brain list-pages`, then read the smallest relevant set with `brain read-page <id>` / `brain read-root <slug>`. Do not preload every page for an ordinary bug fix.
+- **In flight — capture only durable changes.** When a decision, requirement, constraint, or insight will still matter in six months and is hard to reconstruct from code, write it through the `brain` CLI. Ordinary implementation details, temporary diagnostics, commands, and status updates stay in code, tests, Git, or the current handoff.
 - **When you overturn a past conclusion** — append a `kind: reversal` entry to the relevant page's timeline (via `brain append-timeline`, or `brain archive-page --reversal-summary` when retiring the page), so the chain of evidence shows the change of mind.
 
 The test for what is worth keeping: **will this still matter in six months, and is it hard to reconstruct from the code itself?** Yes → write it into the brain; no → leave it in the code and the commit message. Pure implementation details, and anything readable straight from the code and git history, do not belong in the brain.
 
 And the access rule is constant: **read = the `brain` read subcommands, write = the `brain` write subcommands, never hand-edit a brain file.**
 
-> Note: Claude Code and Codex have no per-turn system prompt the way a memory-native runtime does, so "use the brain proactively" is enforced only by always-present instruction files like this one and the wired agent-config block — a prompt-level *soft* constraint, in the same family as "never hand-edit a brain file". A harder, hook-based mechanism is deferred to v0.2.
+> Note: Agent instruction files define the risk-based triggers above. No hook should force Brain loading or writing for every task. The CLI-only read/write boundary remains mandatory whenever Brain is used.
 
 ---
 
@@ -170,7 +170,7 @@ brain wire --agent <claude-code|codex|opencode>      # repeatable, or comma-sepa
 ```
 
 - `claude-code → ./CLAUDE.md`, `codex / opencode → ./AGENTS.md` (written in the project root).
-- It writes one **unified, neutral, self-contained brain block**, wrapped in `<!-- BEGIN brain.md -->` … `<!-- END brain.md -->`: it frames `brain/` as the project's memory layer, tells the agent to read `./BRAIN.md` (this contract), gives the active-memory triggers (load brain context before any task or discussion; capture decisions / requirements / insights through the CLI the moment they surface), states the core rule (all reads/writes go through the `brain` CLI; never hand-edit a brain file), and notes the four brain skills are installed globally.
+- It writes one **unified, neutral, self-contained brain block**, wrapped in `<!-- BEGIN brain.md -->` … `<!-- END brain.md -->`: it frames `brain/` as the project's durable decision-memory layer, tells the agent to read `./BRAIN.md` when the risk-based triggers in the agent instructions apply, limits capture to long-lived decisions / requirements / constraints that are hard to reconstruct, states the core rule (all reads/writes go through the `brain` CLI; never hand-edit a brain file), and notes the four brain skills are installed globally.
 - Both files get the **same** block body. The only difference: `CLAUDE.md` also carries an `@import ./BRAIN.md` line. **`@import` is Claude Code-specific** — Codex and OpenCode (which read `AGENTS.md`) do not understand it, so `AGENTS.md` relies on the plain "read `./BRAIN.md`" instruction instead.
 - **Idempotent** via the markers: no file → created; file without markers → block appended; existing marked block → replaced in place (re-running upgrades, never duplicates).
 

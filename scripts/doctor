@@ -40,9 +40,9 @@ for command in git node pnpm rg; do
 done
 for file in README.md AGENTS.md BRAIN.md VERIFY.md package.json pnpm-workspace.yaml \
   pnpm-lock.yaml tsconfig.base.json eslint.config.mjs .github/workflows/ci.yml \
-  docs/PRD.md docs/ARCHITECTURE.md docs/CAPACITY_MODEL.md docs/LEARNING_GUIDE.md \
-  docs/specs/V0.1_VERTICAL_SLICE.md docs/specs/V0.2_BYOK_ACCEPTANCE.md docs/TASK_TEMPLATE.md docs/GLOSSARY.md \
-  docs/LEARNING_LOG.md docs/DEPENDENCIES.md docs/ACCEPTANCE_GUIDE.md \
+  docs/PRD.md docs/ARCHITECTURE.md docs/CAPACITY_MODEL.md \
+  docs/specs/V0.1_VERTICAL_SLICE.md docs/specs/V0.2_BYOK_ACCEPTANCE.md \
+  docs/DEPENDENCIES.md docs/ACCEPTANCE_GUIDE.md \
   config/native-host.json config/native-host-release-policy.json config/app-release.json config/local-test-release.json docs/specs/P0_RC_LOOP_4_STABLE_HOST.md docs/specs/P0_RC_LOOP_4_R2_TRANSACTIONS.md docs/specs/P0_RC_LOOP_4_R3_PREFLIGHT.md docs/specs/P0_RC_LOOP_4_R4A_RELEASE_UNIT.md docs/specs/P0_RC_LOOP_4_R4B_LOCAL_TEST_DMG.md \
   packages/shared/package.json packages/shared/tsconfig.json; do
   require_file "$file"
@@ -80,24 +80,24 @@ else
   fail "Brain has no decision pages"
 fi
 
-section "3. Documents and learning contract"
+section "3. Documents and project rules"
 run_check "package.json parses" node -e "JSON.parse(require('fs').readFileSync('package.json','utf8'))"
 for required in \
   'SwiftUI' 'AppKit' 'Native Messaging' '版本化 JSON' 'cloud-deferred' \
-  '远期参考' '不设置课后作业' '另开小窗口'; do
-  if rg -Fq "$required" AGENTS.md docs/PRD.md docs/ARCHITECTURE.md docs/CAPACITY_MODEL.md docs/LEARNING_GUIDE.md docs/TASK_TEMPLATE.md; then
+  '远期参考'; do
+  if rg -Fq "$required" AGENTS.md docs/PRD.md docs/ARCHITECTURE.md docs/CAPACITY_MODEL.md; then
     ok "documented: $required"
   else
     fail "missing required project concept: $required"
   fi
 done
-if rg -n '工程完成 / 学习待验收|必须.*亲手验证|交作业.*才能|答题.*才能' \
-  AGENTS.md docs/LEARNING_GUIDE.md docs/TASK_TEMPLATE.md docs/LEARNING_LOG.md \
-  docs/PRD.md docs/specs/V0.1_VERTICAL_SLICE.md docs/ARCHITECTURE.md docs/CAPACITY_MODEL.md; then
-  fail "stale blocking-learning language remains"
-else
-  ok "learning guidance is embedded and non-blocking"
-fi
+for required in '标准开发流程' '简单任务' '普通开发' '高风险任务' '风险相称'; do
+  if rg -Fq "$required" AGENTS.md; then
+    ok "development rule documented: $required"
+  else
+    fail "missing development rule: $required"
+  fi
+done
 
 section "4. Sensitive-data boundary"
 secret_pattern='-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|sk-(proj-)?[A-Za-z0-9_-]{32,}|gh[pousr]_[A-Za-z0-9]{20,}'

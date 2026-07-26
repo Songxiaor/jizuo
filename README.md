@@ -4,10 +4,7 @@
 
 LinkDigest 的产品目标是成为一个 local-first 的链接理解工具：用户可以粘贴网页链接，或从 Chrome、Brave、Edge 的当前页面直接发送内容，在桌面 APP 中完成正文提取、总结、翻译和导出；问答作为 P0 之后的候选能力。History 浏览/详情/单项删除与单条 Markdown/纯文本/JSON 导出已完成。手动公开链接默认使用 `PeerBoundNetworkWebPageFetcher`：`Network.framework` 只连接每跳 DNS/IP policy 已核验的 numeric IP，同时以原 hostname 做 TLS SNI、`SecPolicyCreateSSL` 与 HTTP Host，使用 system trust 并禁用 trust 的网络补取。显式系统 HTTP(S) 代理或 DNS 全部返回 fake-ip 时会进入独立的 `SystemProxyWebPageFetcher` 信任边界：该路径只允许 HTTPS，并保留 hostname 的 CONNECT/TLS 身份校验，但代理或 VPN 会自行重新解析 hostname，故它**不等价于** PeerBound 的“已校验 IP 就是实际 peer”保证，仍有 proxy-resolution SSRF 风险；HTTP 页面应改由浏览器扩展捕获。两条路径均逐跳检查 URL、redirect、凭据和端口，但不能把本机 DNS admission 写成代理实际连接 IP 的证明。`URLSessionWebPageFetcher` 仍只是 test-only legacy。完整用户链路与复审尚未完成，不能宣称产品已验收或发布。
 
-这个仓库同时运行两条轨道：
-
-- **开发轨**：持续交付可运行、可验证、可发布的软件。
-- **学习轨**：记录每个阶段的场景、组件角色、技术决策、命令、验证和踩坑。
+这个仓库以持续交付可运行、可验证、可发布的软件为主。需要解释时结合当前代码和真实问题说明，但不把课程、术语表或学习记录作为开发流程和任务完成门槛。
 
 ## 当前阶段
 
@@ -20,8 +17,6 @@ Loop 8 的浏览器安装事务已独立复审 PASS。当前正在完成 **Loop 
 - Loop 9 候选内将随包交付的总检步骤与 PRD §11.1 指标记录模板见 [`docs/ACCEPTANCE_GUIDE.md`](docs/ACCEPTANCE_GUIDE.md)。
 - 第一条“测试页面 → 扩展 → Native Messaging → SwiftUI”链路见 [`docs/specs/V0.1_VERTICAL_SLICE.md`](docs/specs/V0.1_VERTICAL_SLICE.md)。
 - 10 万/100 万容量口径作为远期参考保留在 [`docs/CAPACITY_MODEL.md`](docs/CAPACITY_MODEL.md)，不驱动 P0 实施。
-- 学习在开发过程中同步解释，不设置课后答题门槛，见 [`docs/LEARNING_GUIDE.md`](docs/LEARNING_GUIDE.md) 与 [`docs/TASK_TEMPLATE.md`](docs/TASK_TEMPLATE.md)。
-- 项目名词见 [`docs/GLOSSARY.md`](docs/GLOSSARY.md)，讲解记录见 [`docs/LEARNING_LOG.md`](docs/LEARNING_LOG.md)。
 - Project Brain 只能通过 `./scripts/brain` 读写；一键只读体检使用 `./scripts/doctor`，说明见 [`VERIFY.md`](VERIFY.md)。
 - 当前依赖版本、兼容理由和许可证边界见 [`docs/DEPENDENCIES.md`](docs/DEPENDENCIES.md)。
 - V0.2 的集中工程证据见 [`docs/specs/V0.2_BYOK_ACCEPTANCE.md`](docs/specs/V0.2_BYOK_ACCEPTANCE.md)。
@@ -61,7 +56,7 @@ packages/
   llm/                后续模型模块预留；当前只有占位 README
   shared/             旧 TypeScript 协议原型与兼容参考；不是当前跨语言真相源
 server/               远期服务端预留，不进入 P0
-docs/                 PRD、架构、学习与发布资料
+docs/                 PRD、架构、验收与发布资料
 ```
 
 ## 第一条产品原则

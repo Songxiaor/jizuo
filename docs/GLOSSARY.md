@@ -1,4 +1,6 @@
-# LinkDigest 名词词典
+# LinkDigest 名词词典（历史归档）
+
+> 自 2026-07-24 起，本文件不再要求维护，也不构成任务完成条件，仅保留为历史参考。
 
 这里只记录项目实际出现过、会影响理解和判断的名词。解释优先使用人话和项目中的真实位置，不追求教科书式定义。
 
@@ -166,6 +168,9 @@
 | Navigation Allowlist / 导航允许清单 | 每次页面跳转前都重新核对协议与目标 host，只允许明确列出的地址 | 每过一道门都重新查一次访客名单 | `WeChatWebCapturePolicy` 同时检查初始 URL、navigation action/response 和最终 URL | 页面可把隐藏 WebView 带到任意网站，扩大远程内容执行边界 | L3 | L3 |
 | Non-persistent Website Data Store / 非持久化网页数据仓 | WebView 会话结束后不保留 Cookie、缓存等站点状态的临时存储 | 访客使用一次性储物柜，离开即清空 | 每次 WebView 配置的 `WKWebsiteDataStore.nonPersistent()` | 多次抓取可能共享登录或追踪状态，触碰其它会话数据 | L2 | L3 |
 | Return Shape Validation / 返回形状校验 | 把页面 JS 返回值当不可信包裹，只复制类型正确的 title/text 并限制总长度 | 收货员只收清单上的两件货，多余物品原样丢弃 | `WeChatWebCapturePolicy.validateJavaScriptResult`，在页面与 `CapturedDocument` 之间 | 异常字段、错误类型或超大正文可能进入入库流程 | L3 | L3 |
+| Fake-IP | 代理软件为域名临时分配的保留网段地址；它不是图片服务器的真实公网地址 | 前台发的取餐号，只有店内叫号系统知道对应哪桌 | `PublicWebURLPolicy` 识别 `198.18.0.0/15`，`ProxyAwareWebPageFetcher` 决定请求交给哪条网络通道 | App 把取餐号当真实门牌直连，网页在浏览器能开，图片下载却报网络失败 | L2 | L3 |
+| Hostname Transport / 保留域名的系统网络通道 | 仍用原始 HTTPS 域名发请求，让 macOS 的系统代理或 Network Extension/TUN 接管解析和连接 | 把写着完整收件地址的包裹交给本地快递网点，而不是自己按临时编号找路 | `ProxyAwareWebPageFetcher` 对 fake-IP 判定优先使用 `SystemProxyWebPageFetcher` | 只绑定数字 fake-IP 会绕开 TUN 的域名接管，Medium CDN 等资源无法落盘 | L3 | L3 |
+| Image Cache Backfill / 图片缓存补抓 | 历史正文已有远程图片引用、但本地文件缺失时，在打开详情时补下载一次并刷新展示 | 书目已经登记，发现插图页漏装后只补装缺页，不重抄整本书 | `HistoryViewModel.backfillRemoteImagesIfNeeded` → `GitHubREADMEImageCache` | 短时网络失败会永久留下空白图片，升级网络修复后旧记录仍无法自愈 | L2 | L3 |
 
 ## 更新规则
 

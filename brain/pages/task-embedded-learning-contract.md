@@ -2,10 +2,10 @@
 id: task-embedded-learning-contract
 title: Task-Embedded Learning Contract
 category: decision
-status: active
+status: archived
 tags: [learning, workflow, governance]
 created: "2026-07-13T18:45:11"
-updated: "2026-07-13T19:43:36"
+updated: "2026-07-24T23:02:59"
 ---
 
 ## compiled_truth
@@ -54,4 +54,10 @@ LinkDigest 的学习轨必须嵌入每个非平凡开发任务，并在对应组
   kind: decision
   summary: "将学习闭环改为开发过程中同步讲解，跟做与深挖不阻塞主流程"
   source: Syc clarified in conversation on 2026-07-13
+  affects: [task-embedded-learning-contract]
+
+- time: 2026-07-24T23:02:59
+  kind: reversal
+  summary: "2026-07-24 Syc 明确取消强制学习闭环、学习日志与术语表；普通开发改为风险相称的最小验证。"
+  source: brain archive-page
   affects: [task-embedded-learning-contract]

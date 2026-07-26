@@ -1,11 +1,11 @@
 ---
 id: planner-executor-review-loop
 category: decision
-status: active
+status: archived
 tags: [workflow, codex, governance]
 title: Planner–Executor–Review Loop
 created: "2026-07-14T12:41:41"
-updated: "2026-07-15T15:00:30"
+updated: "2026-07-24T23:02:59"
 ---
 
 ## compiled_truth
@@ -109,4 +109,10 @@ LinkDigest 采用 HanaAgent 单一总控、阶段循环和持续多 Sub-agent �
   kind: decision
   summary: "固定模型/深度/token/解决问题/ETA/发行百分比的 Sub-agent 报告协议，并双重持久化防上下文压缩。"
   source: Syc reporting requirement 2026-07-15
+  affects: [planner-executor-review-loop]
+
+- time: 2026-07-24T23:02:59
+  kind: reversal
+  summary: "2026-07-24 Syc 明确改为正常开发流程：默认当前 Agent 直接完成，仅在明确需要时使用多 Agent，不再强制规划、持续并行、token/ETA/百分比汇报与独立终审。"
+  source: brain archive-page
   affects: [planner-executor-review-loop]

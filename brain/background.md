@@ -1,20 +1,17 @@
 ---
 slug: background
-kind: root-page
-title: Background
-updated: "2026-07-14T12:13:32"
+title: Project background
+role: project background
+updated: "2026-07-24T23:15:08"
 ---
 
-# Background
+# Project background
 
 ## 定位
 
 LinkDigest 是一款 macOS 原生、local-first 的链接理解工具。用户在 Chrome、Brave 或 Edge 中主动发送当前已打开页面，Mac APP 接收并保留可核查原文，后续使用用户自己的 OpenAI-compatible 模型连接完成总结、翻译、保存和导出。
 
-仓库同时承载两条轨道：
-
-- **开发轨**：持续交付可运行、可验证、可发布的软件。
-- **学习轨**：在每个开发阶段留下初学者可理解的场景、组件角色、交接物、验证和恢复记录。
+仓库以持续交付可运行、可验证、可发布的软件为主。需要解释时结合当前代码和真实问题说明，但课程、术语表和学习记录不构成任务启动或完成门槛。
 
 ## 当前阶段
 

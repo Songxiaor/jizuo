@@ -1,13 +1,13 @@
-# 交接文档（2026-07-24 更新）
+# 交接文档（历史汇总）
 
-> 本文件是新会话的接手入口。7/23 深夜批次与 7/23 白天批次详情见 `docs/LEARNING_LOG.md` 末尾。
+> 当前批次以最新的 `docs/交接文档-*.md` 为接手入口；本文件保留此前批次的汇总信息，不要求额外读取学习日志。
 
-## 7/24 批次（详见 LEARNING_LOG 末条，含 python 补丁事故复盘——必读）
+## 7/24 批次
 
 - 列表处理状态徽标（转写/总结/脑图）、重复链接拦截提示、摘录+我的笔记（Migration011）、微信抓取子框架修复、抓取队列（提交即关窗）、「已复制」药丸+选中即复制。
 - **构建纪律（血泪版）**：SwiftPM 串行、`ps auxww` 查进程、0% CPU 主进程≠挂起、绝不超时杀构建、py 脚本改码禁用切片 replace、写后必查 wc -l。
 
-## 7/23 晚间批次（Claude 主控，已部署未 commit 时段的续篇，详见 LEARNING_LOG 末条）
+## 7/23 晚间批次（Claude 主控，已部署未 commit 时段的续篇）
 
 - **脑图输出**：媒体卡与原文之间新增脑图区；LLM 抽大纲 JSON + 本地布局渲染 SVG，两主题换肤零 token；可编辑/导出 SVG/脑图+原文 HTML；灯箱「识别文字」秒回大纲。Migration009。
 - **标签叠加筛选**：侧栏普通点击=AND 叠加，⌘=只看此标签，可清空；脑图分支标题自动入标签。
@@ -29,7 +29,7 @@
 
 - 路径：`/Users/song/Documents/Codex/link-summary-app`（macOS SwiftUI 桌面 App + WXT 浏览器扩展）
 - 产品：local-first 链接理解工具。当前主线为 macOS 原生优先，扩展 ↔ App 走 Native Messaging。
-- 详细规划见 `brain`（`./scripts/brain read-root roadmap`）；今晚逐条改动记在 `docs/LEARNING_LOG.md` 末尾。
+- 涉及产品范围、架构或长期约束时，通过 `./scripts/brain` 按需读取相关页面；当前批次的改动、验证和待办写入最新的 `docs/交接文档-*.md`。
 
 ## 日用候选与部署方式（务必照做，否则每次改动都要重新授权）
 
@@ -60,7 +60,7 @@ cd apps/desktop && swift test --disable-sandbox --filter <SuiteName>
 cd apps/browser-extension && npx vitest run
 ```
 
-## 7/23 已完成并经 Syc 验收（细节在 LEARNING_LOG 末尾四条）
+## 7/23 已完成并经 Syc 验收
 
 - **视频影院模式**：黑屏/边框 bug 修复后，按 Syc 要求泛化为全视频底层能力——`VideoCinemaController`（`YouTubeEmbedPlayer.swift`）支持 `.youTube(videoID)`（共享 WKWebView 池）与 `.player(AVPlayer, aspectRatio)`；YouTube 嵌入卡、本机视频卡、流媒体卡统一「放大」按钮（视频正下方右对齐）。
 - **本机转写**：标点尝试全部回退（模型原生标点即当前上限，Apple Intelligence 此机不可用）；流式节流修卡顿；重新转写立即清旧文本流式上屏。
@@ -80,7 +80,7 @@ cd apps/browser-extension && npx vitest run
 
 桌面全量测试 609 中 **9 个失败**：`CaptureMediaContractTests`（2 例）+ `CaptureReceiverTests`（1 例）。根因已查明：分支未提交工作让 V2 `ephemeralPlaybackURL` 进入 `CapturedDocument.media`（本机视频下载功能依赖，见 `CapturedDocument.swift` `init(wire: CaptureEnvelopeV2)`），而这些测试仍断言下载功能之前的旧契约「V2 永不进 media seam / 瞬态字段不进持久化输入」。**属于 receipt/manifest 漂移和解的一部分，留 Loop 9 冻结前统一改契约测试**，不要顺手改断言。
 
-## 今晚之前批次、待 Syc 验证（细节在 docs/LEARNING_LOG.md）
+## 今晚之前批次、待 Syc 验证
 
 - **导出干净正文**：md/txt/pdf/docx 去掉 Core 档案元数据，只留标题+最小 frontmatter+正文；PDF/Word 用主题字体（`readingFont`）且嵌入本地图片（PDF 走 NSLayoutManager，CoreText 不画附件）；JSON 单列为「导出完整数据」档案。
   - `HistoryViewModel.composeExportMarkdown`、`HistoryContentView.exportCleanText/exportStyledDocument`、`ReadingDocumentExport`。
