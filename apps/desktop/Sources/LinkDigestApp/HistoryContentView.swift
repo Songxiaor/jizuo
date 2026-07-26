@@ -3461,7 +3461,7 @@ final class RemotePreviewPlayerController: ObservableObject {
     var cookie = providedCookie
     if cookie == nil || cookie?.isEmpty == true,
        RemotePlaybackAsset.isBilibiliPlaybackHost(url.host) {
-      cookie = await BilibiliSiteSessionController.shared.cookieHeader()
+      cookie = await SiteSessionController.bilibili.cookieHeader()
       if !Task.isCancelled, currentURL == url {
         currentCookieHeader = cookie
       }

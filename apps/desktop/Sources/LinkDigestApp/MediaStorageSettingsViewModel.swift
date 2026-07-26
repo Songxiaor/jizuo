@@ -34,7 +34,7 @@ final class MediaStorageSettingsViewModel: ObservableObject {
     }
   }
   @Published var isBilibiliLoginPresented = false
-  let bilibiliSession = BilibiliSiteSessionController.shared
+  let bilibiliSession = SiteSessionController.bilibili
   /// Ceiling for 保存到本地, in whole GB — the unit the user actually reasons in.
   @Published var downloadLimitGigabytes: Int = 16 {
     didSet {

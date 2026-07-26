@@ -822,7 +822,7 @@ enum BrowserReceiverState: Sendable, Equatable {
       resources: manualResourceFetcher,
       bilibiliQuality: { mediaStoragePreference.bilibiliStreamQuality },
       bilibiliCookieHeader: {
-        await BilibiliSiteSessionController.shared.cookieHeader()
+        await SiteSessionController.bilibili.cookieHeader()
       }
     )
     let sessionMediaPlaybackController = SessionMediaPlaybackController(

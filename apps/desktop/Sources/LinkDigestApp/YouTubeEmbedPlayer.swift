@@ -36,6 +36,7 @@ struct YouTubeEmbedPlayerCard: View {
   let videoID: String
   var hasCaptions: Bool = true
   @ObservedObject private var cinema = VideoCinemaController.shared
+  @ObservedObject private var diagnostics = YouTubeEmbedDiagnostics.shared
 
   /// 本卡正被影院 overlay 放大时，卡内不再渲染播放器（避免两份音频）。
   private var isInCinema: Bool { cinema.youTubeVideoID == videoID }
@@ -75,6 +76,27 @@ struct YouTubeEmbedPlayerCard: View {
               RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.primary.opacity(0.12), lineWidth: 1)
             )
+            // 加载没成功时，用可读的一行字盖住那个纯白框——空白本身不携带任何信息。
+            .overlay {
+              if let message = diagnostics.status[videoID] {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                  .fill(Color.black.opacity(0.88))
+                  .overlay {
+                    VStack(spacing: 8) {
+                      Image(systemName: "exclamationmark.triangle")
+                        .font(.title2)
+                        .foregroundStyle(.white.opacity(0.75))
+                      Text(message)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.85))
+                        .multilineTextAlignment(.center)
+                        .textSelection(.enabled)
+                        .padding(.horizontal, 24)
+                    }
+                  }
+                  .accessibilityIdentifier("history-youtube-embed-diagnostic")
+              }
+            }
             .onTapGesture(count: 2) { cinema.present(videoID: videoID) }
         }
       }
@@ -156,6 +178,7 @@ struct YouTubeEmbedPlayerCard: View {
 
 struct VideoCinemaOverlay: View {
   @ObservedObject private var cinema = VideoCinemaController.shared
+  @ObservedObject private var diagnostics = YouTubeEmbedDiagnostics.shared
 
   /// 关闭按钮行占用的高度（22pt 图标 + 8pt 底距），参与可用高度计算。
   private let closeBarHeight: CGFloat = 30
@@ -196,7 +219,28 @@ struct VideoCinemaOverlay: View {
             Group {
               switch content {
               case let .youTube(videoID):
-                YouTubeEmbedWebView(videoID: videoID)
+                YouTubeEmbedWebView(videoID: videoID, role: .cinema)
+                  // 影院这条路径此前没有任何状态显示，所以搬移失败时只剩一个
+                  // 空框——位置和边框都对，内容却是透明的，看不出是哪一环断了。
+                  .overlay {
+                    if let message = diagnostics.status[videoID] {
+                      Color.black.opacity(0.88)
+                        .overlay {
+                          VStack(spacing: 8) {
+                            Image(systemName: "exclamationmark.triangle")
+                              .font(.title2)
+                              .foregroundStyle(.white.opacity(0.75))
+                            Text(message)
+                              .font(.caption)
+                              .foregroundStyle(.white.opacity(0.85))
+                              .multilineTextAlignment(.center)
+                              .textSelection(.enabled)
+                              .padding(.horizontal, 24)
+                          }
+                        }
+                        .accessibilityIdentifier("history-youtube-cinema-diagnostic")
+                    }
+                  }
               case let .player(player, _):
                 VideoPlayer(player: player)
               }
@@ -225,6 +269,24 @@ struct VideoCinemaOverlay: View {
   }
 }
 
+/// 嵌入播放的诊断面。
+///
+/// 这张卡出问题时的表现是「一片空白」——没有报错、没有日志、没有任何可读状态，
+/// 而白色恰恰说明宿主页没渲染（HTML 里 `background` 写死了 `#000`，加载成功至少是黑的）。
+/// 空白的可能来源至少有三种，光看代码分不出来：宿主页没加载、加载失败被静默吞掉、
+/// 或者容器里根本没挂上 webview（池的 release 与 attach 抢顺序）。所以把这三种
+/// 分别记成人能读的一行字，直接显示在卡上。
+@MainActor final class YouTubeEmbedDiagnostics: ObservableObject {
+  static let shared = YouTubeEmbedDiagnostics()
+
+  /// videoID → 当前状态。nil 表示已正常加载完成，卡片不显示任何覆盖层。
+  @Published private(set) var status: [String: String] = [:]
+
+  func record(_ videoID: String, _ message: String) { status[videoID] = message }
+  func clear(_ videoID: String) { status.removeValue(forKey: videoID) }
+
+}
+
 /// 按 videoID 持有唯一的已加载 WKWebView：卡片与影院 overlay 之间搬移复用，
 /// 不重复新建——零尺寸首帧 `loadHTMLString` 会渲染黑屏（影院黑屏 bug 根因），
 /// 且单实例放大/还原时播放进度不丢。只保留当前视频一个实例，切换视频即释放。
@@ -232,14 +294,30 @@ struct VideoCinemaOverlay: View {
   static let shared = YouTubeEmbedWebViewPool()
 
   /// delegate 必须一并强持有：WKWebView 对 navigationDelegate 是弱引用。
-  private var current: (videoID: String, webView: WKWebView, delegate: YouTubeEmbedNavigationDelegate)?
+  private typealias Entry = (webView: WKWebView, delegate: YouTubeEmbedNavigationDelegate)
+
+  /// 按 videoID 存。
+  ///
+  /// 原来是单槽：另一个视频的卡片一渲染就会把当前实例挤掉。挤掉的那个若正被
+  /// 影院持有，它仍在屏幕上播放，但池已经不再跟踪它——之后 `release` 找不到，
+  /// 关掉影院后音频会在后台一直响，而且没有任何入口能停下它。
+  /// 实测轨迹里就有别的 videoID 的卡片在离屏渲染，这条路是真的会走到。
+  private var entries: [String: Entry] = [:]
 
   func webView(for videoID: String) -> WKWebView {
-    if let current, current.videoID == videoID { return current.webView }
+    if let existing = entries[videoID] { return existing.webView }
+    // 新建之前先收掉用不着的：既不是本视频、也不是影院正持有的，一律释放。
+    // 这样常驻上限是 2（影院一个 + 当前卡片一个），不会随浏览无限增长。
+    let cinemaHeld = VideoCinemaController.shared.youTubeVideoID
+    for (id, entry) in entries where id != videoID && id != cinemaHeld {
+      entry.webView.removeFromSuperview()
+      entries.removeValue(forKey: id)
+    }
     let configuration = WKWebViewConfiguration()
     configuration.websiteDataStore = .nonPersistent()
     configuration.mediaTypesRequiringUserActionForPlayback = .all
-    let delegate = YouTubeEmbedNavigationDelegate()
+    let delegate = YouTubeEmbedNavigationDelegate(videoID: videoID)
+    YouTubeEmbedDiagnostics.shared.record(videoID, "正在加载嵌入播放器…")
     // 非零初始 frame：保证首次加载不在零尺寸下渲染。
     let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1280, height: 720), configuration: configuration)
     webView.navigationDelegate = delegate
@@ -256,16 +334,19 @@ struct VideoCinemaOverlay: View {
     </body></html>
     """
     webView.loadHTMLString(html, baseURL: URL(string: "https://www.youtube-nocookie.com"))
-    current = (videoID, webView, delegate)
+    entries[videoID] = (webView, delegate)
     return webView
   }
 
   /// 释放指定视频的实例。卡片离屏且未在影院中时必须调用：池若继续持有，
   /// 正在播放的音频会在后台响个不停。
   func release(videoID: String) {
-    guard current?.videoID == videoID else { return }
-    current?.webView.removeFromSuperview()
-    current = nil
+    // 影院还在放这个视频就不能释放：卡片离屏（切换条目、详情重建）会走到这里，
+    // 释放掉正在放大播放的实例等于把影院画面抽空。
+    guard VideoCinemaController.shared.youTubeVideoID != videoID else { return }
+    guard let entry = entries.removeValue(forKey: videoID) else { return }
+    entry.webView.removeFromSuperview()
+    YouTubeEmbedDiagnostics.shared.clear(videoID)
   }
 }
 
@@ -274,7 +355,11 @@ struct VideoCinemaOverlay: View {
 /// 视图本身只是容器，真正的 webview 由池按 videoID 复用、attach 时搬移进来；
 /// 卡片与影院同一时刻只有一方渲染本视图（影院期间卡片显示占位）。
 struct YouTubeEmbedWebView: NSViewRepresentable {
+  /// 调用方身份。两边的容器长得一样，出问题时画面上分不出是谁抢走了 webview。
+  enum Role: String { case card, cinema }
+
   let videoID: String
+  var role: Role = .card
 
   func makeNSView(context: Context) -> NSView {
     let container = NSView()
@@ -287,18 +372,93 @@ struct YouTubeEmbedWebView: NSViewRepresentable {
   }
 
   private func attachWebView(to container: NSView) {
+    // 影院正在放这个视频时，卡片一律不抢。
+    //
+    // 卡片在影院期间本来就只渲染占位、不该走到这里，但视图重建（card.make）会在
+    // 判定生效前先跑一次 attach。一个 webview 被两棵视图树争用，结果是谁最后
+    // attach 谁拿到——实测轨迹就是 cinema → card → cinema → card 的拉锯，
+    // 最后落在卡片那个 0×0 且尚未入窗的容器上，影院就成了空框。
+    // 这里必须按角色定优先级，不能指望调用方的渲染顺序。
+    if role == .card, VideoCinemaController.shared.youTubeVideoID == videoID { return }
     let webView = YouTubeEmbedWebViewPool.shared.webView(for: videoID)
     guard webView.superview !== container else { return }
     webView.removeFromSuperview()
-    webView.frame = container.bounds
-    webView.autoresizingMask = [.width, .height]
+    // 用约束而不是 frame + autoresizingMask。
+    //
+    // 这个 webview 会在卡片和影院 overlay 之间来回搬，而 SwiftUI 给出的容器
+    // 首帧尺寸经常是 0（GeometryReader 第一帧、overlay 刚插入时都是）。
+    // autoresizingMask 按**差量**调整边距，从 0 尺寸起步搬过去，后续的尺寸变化
+    // 不一定能把它拉回正确大小——表现是一个位置和边框都对、但内容完全空的框，
+    // 而且不报任何错。约束是绝对关系，不受首帧尺寸影响。
+    webView.translatesAutoresizingMaskIntoConstraints = false
     container.addSubview(webView)
+    NSLayoutConstraint.activate([
+      webView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+      webView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+      webView.topAnchor.constraint(equalTo: container.topAnchor),
+      webView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+    ])
+    // 挂载后容器仍是空的，就说明有人在 attach 之后把它摘走了（池的 release 与
+    // attach 抢顺序）。这一路不会报错，只会留下一个空框。
+    if container.subviews.isEmpty {
+      YouTubeEmbedDiagnostics.shared.record(videoID, "播放器已被挂载后立刻移除（容器为空）。")
+    }
+  }
+}
+
+/// 主框架导航判定。抽成纯函数是因为它有两个方向的失败模式，且都不报错：
+/// 收紧一格，宿主页自己被拦，WebKit 静默不发失败回调，只留一个白框；
+/// 放宽一格，这个没有地址栏的卡片就变成了自由浏览器。
+enum YouTubeEmbedNavigationPolicy {
+  private static let allowedHosts: Set<String> = ["www.youtube-nocookie.com", "youtube-nocookie.com"]
+
+  static func allowsMainFrame(url: URL) -> Bool {
+    // WebKit 在初始化阶段会走 about:blank。
+    if url.scheme == "about" { return true }
+    guard allowedHosts.contains((url.host ?? "").lowercased()) else { return false }
+    // 空 path / "/" 是 `loadHTMLString(_:baseURL:)` 的宿主页；`/embed/` 是 iframe。
+    // 其余路径（/watch、登录跳转、推荐位）一律拦掉。
+    return url.path.isEmpty || url.path == "/" || url.path.hasPrefix("/embed/")
   }
 }
 
 /// 导航锁定：主框架仅允许 embed 自身，任何跳出与 window.open 一律拒绝。
 /// 由池强持有（WKWebView 对 delegate 是弱引用）。
 @MainActor final class YouTubeEmbedNavigationDelegate: NSObject, WKNavigationDelegate, WKUIDelegate {
+  private let videoID: String
+
+  init(videoID: String) {
+    self.videoID = videoID
+    super.init()
+  }
+
+  // —— 以下四个回调此前一个都没实现，所以任何加载失败都是静默的。 ——
+
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    // 宿主页加载完成。iframe 内部的播放器错误（比如 153）不会走到这里，
+    // 但至少能把「宿主页都没起来」和「宿主页起来了、播放器有问题」分开。
+    YouTubeEmbedDiagnostics.shared.clear(videoID)
+  }
+
+  func webView(
+    _ webView: WKWebView,
+    didFailProvisionalNavigation navigation: WKNavigation!,
+    withError error: Error
+  ) {
+    let code = (error as NSError).code
+    YouTubeEmbedDiagnostics.shared.record(
+      videoID, "嵌入页未能开始加载（\(code)）：\(error.localizedDescription)")
+  }
+
+  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+    YouTubeEmbedDiagnostics.shared.record(videoID, "嵌入页加载中断：\(error.localizedDescription)")
+  }
+
+  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+    // Web 内容进程崩溃后 webview 会变成永久空白，且不会有任何其它回调。
+    YouTubeEmbedDiagnostics.shared.record(videoID, "网页内容进程已退出，播放器需要重新载入。")
+  }
+
   func webView(
     _ webView: WKWebView,
     decidePolicyFor navigationAction: WKNavigationAction,
@@ -313,13 +473,15 @@ struct YouTubeEmbedWebView: NSViewRepresentable {
       decisionHandler(.cancel)
       return
     }
-    let host = (url.host ?? "").lowercased()
-    let allowedEmbedHosts = ["www.youtube-nocookie.com", "youtube-nocookie.com"]
-    if url.scheme == "about" || (allowedEmbedHosts.contains(host) && url.path.hasPrefix("/embed/")) {
-      decisionHandler(.allow)
+    guard YouTubeEmbedNavigationPolicy.allowsMainFrame(url: url) else {
+      // 拦截也要留痕：白名单收得过紧和收得过松，症状完全不同，但都无声。
+      YouTubeEmbedDiagnostics.shared.record(
+        videoID,
+        "导航被白名单拦下：\(url.host ?? "?")\(url.path.isEmpty ? "（无路径）" : url.path)")
+      decisionHandler(.cancel)
       return
     }
-    decisionHandler(.cancel)
+    decisionHandler(.allow)
   }
 
   func webView(

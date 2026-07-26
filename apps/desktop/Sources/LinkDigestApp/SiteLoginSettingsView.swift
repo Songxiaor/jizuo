@@ -6,7 +6,7 @@ import SwiftUI
 /// preferences do not grow into a multi-site account hub.
 struct SiteLoginSettingsView: View {
   @ObservedObject var mediaStorage: MediaStorageSettingsViewModel
-  @ObservedObject private var bilibiliSession = BilibiliSiteSessionController.shared
+  @ObservedObject private var bilibiliSession = SiteSessionController.bilibili
 
   var body: some View {
     Form {
@@ -70,7 +70,7 @@ struct SiteLoginSettingsView: View {
       Task { await bilibiliSession.refreshStatus() }
     }
     .sheet(isPresented: $mediaStorage.isBilibiliLoginPresented) {
-      BilibiliLoginSheet(session: bilibiliSession)
+      SiteLoginSheet(session: bilibiliSession)
     }
     .accessibilityIdentifier("site-login-settings")
   }
