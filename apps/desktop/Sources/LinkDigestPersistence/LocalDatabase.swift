@@ -155,6 +155,16 @@ public final class LocalDatabase: @unchecked Sendable {
     configuration.maximumReaderCount = 8
     configuration.prepareDatabase { db in
       try db.execute(sql: "PRAGMA foreign_keys = ON")
+      // 自动 checkpoint 被关掉，而 `DatabaseMaintenance.passiveCheckpoint()` /
+      // `truncateCheckpoint()` 在生产代码里**零调用方**（只有测试和 benchmark 用）。
+      // 后果：单次会话内 WAL 只增不减，读性能随之下降；干净退出时 SQLite 会
+      // checkpoint 并删掉 WAL，所以增长有界于一次会话。
+      //
+      // 这个组合是有意取舍还是遗漏，仓库里没有任何记录——它随 P0-RC-02B 基线冻结
+      // 一起进来，提交说明和文档都没提。关闭 autocheckpoint 的常见理由是避免写入
+      // 时被 checkpoint 卡住，但那种做法通常要配一个受控时机的手动 checkpoint，
+      // 这里没有。2026-07-27 审查时保持原样未改：没有可证明的用户可见故障，
+      // 而改动数据库 checkpoint 策略需要先确认原始意图。
       try db.execute(sql: "PRAGMA wal_autocheckpoint = 0")
     }
     return configuration
