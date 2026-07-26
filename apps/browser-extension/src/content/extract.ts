@@ -288,8 +288,19 @@ export function extractBilibiliPage(documentLike: Document): ExtractedPage {
     || undefined;
   // B 站的 og:description 是给搜索引擎看的：简介后面接着播放量/弹幕/点赞/投币/
   // 收藏/转发、作者、作者简介，最后还拼上一串"相关视频"标题。实测 351 字里只有
-  // 前 16 字是真简介。所以先读页面上那块简介 DOM，只有它取不到时才退回 og，
-  // 并且从「视频播放量」这个固定拼接点截断，绝不把推荐位标题当成正文。
+  // 前 16 字是真简介，所以从「视频播放量」这个固定拼接点截断，绝不把推荐位标题
+  // 当成正文。
+  //
+  // 2026-07-26 真机实测更正：下面三个 DOM 候选**当前一个都拿不到简介**。
+  // `.basic-desc-info` 是个空 div，父容器 `#v_desc` 还带着 `style="display:none;"`，
+  // 简介正文根本没进 DOM（推测在 MAIN world 的 `__INITIAL_STATE__` 里，隔离世界
+  // 的 content script 够不着）。也就是说实际走的永远是下面的 og 兜底路径。
+  // 选择器留着当保险——它们只花一次 querySelector，B 站改回服务端渲染就自动生效；
+  // 但别再据此以为「优先读 DOM」是当前的真实行为。
+  //
+  // 已知副作用：视频本身没写简介时，og:description 给的是 B 站站点通用宣传语
+  // （实测 BV1SyKp6AEKk 抓到「更多实用攻略教学…尽在哔哩哔哩bilibili」），
+  // 或者干脆是标题重复。这两种都会原样进正文。
   const description = (documentLike
     .querySelector(".basic-desc-info, [class*='desc-info' i], [class*='video-desc' i]")
     ?.textContent?.trim()
@@ -1112,8 +1123,41 @@ function parseAriaCount(scope: ParentNode, selector: string, verb: RegExp): stri
   return value;
 }
 
+/**
+ * 站点专属正文根。通用候选顺序在这些站点上会命中一个偏大的容器，把标题、时间
+ * 和来源一起卷进正文（App 详情页已单独显示标题，正文里再来一遍是重复）。
+ * 按站点收窄而不是调通用候选的先后：那个顺序同时服务所有未列站点，动它会波及
+ * 没在真机上验过的场景。
+ */
+const HOST_CONTENT_ROOT: ReadonlyArray<readonly [RegExp, string]> = [
+  // 头条 `.article-content` 比 `article` 多出「标题」和「时间·来源」两行。
+  // 2026-07-26 真机实测两篇：1321→1278、205→165 字符，差值正是这两行。
+  [/(?:^|\.)toutiao\.com$/iu, "article"],
+];
+
+function hostContentRoot(documentLike: Document): Element | null {
+  // 从 href 解析而不是读 `location.hostname`：注入版和单测的 document 都保证有
+  // href，hostname 则不一定，读它会让这个分支在测试里静默失效。
+  let host = "";
+  try {
+    host = new URL(documentLike.location?.href ?? "").hostname.toLowerCase();
+  } catch {
+    return null;
+  }
+  if (!host) return null;
+  for (const [pattern, selector] of HOST_CONTENT_ROOT) {
+    if (!pattern.test(host)) continue;
+    const node = documentLike.querySelector(selector);
+    // 收窄后仍要够长才算数，否则宁可退回通用候选，也不产出一个空壳正文。
+    if (node && (node.textContent?.trim().length ?? 0) >= 20) return node;
+  }
+  return null;
+}
+
 function pickContentRoot(documentLike: Document): Element {
   // Non-X pages only. X status uses extractXStatusPage.
+  const scoped = hostContentRoot(documentLike);
+  if (scoped) return scoped;
   const selectors = ["#js_content", "#img-content", "[itemprop='articleBody']", ".Post-RichText", ".RichText.ztext", ".available-content", ".article-content", "article", "main"];
   for (const selector of selectors) {
     const node = documentLike.querySelector(selector);
@@ -2629,8 +2673,14 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
       };
       // B 站的 og:description 是给搜索引擎看的：简介后面接着播放量/弹幕/点赞/
       // 投币/收藏/转发、作者、作者简介，最后还拼一串"相关视频"标题。实测 351 字
-      // 里只有前 16 字是真简介。先读页面上那块简介 DOM，取不到才退回 og，并从
-      // 「视频播放量」这个固定拼接点截断，绝不把推荐位标题当成正文。
+      // 里只有前 16 字是真简介，所以从「视频播放量」这个固定拼接点截断，绝不把
+      // 推荐位标题当成正文。
+      //
+      // 2026-07-26 真机实测更正：下面的 DOM 候选**当前一个都拿不到简介**。
+      // `.basic-desc-info` 是空 div，父容器 `#v_desc` 带 `style="display:none;"`，
+      // 简介正文没进 DOM。实际走的永远是 og 兜底。选择器留着当保险，但别再据此
+      // 以为「优先读 DOM」是当前的真实行为。视频没写简介时，og 给的会是 B 站
+      // 通用宣传语或标题重复，两种都会原样进正文。详见可测试版同名分支的注释。
       const description = formatCaption(
         document.querySelector(".basic-desc-info, [class*='desc-info' i]")?.textContent?.trim()
         || (ogDesc ?? "").split(/[,，]\s*视频播放量\s*\d/u)[0]?.trim()
@@ -3416,7 +3466,17 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
   }
 
   // —— Generic page path ——
+  // 站点专属收窄必须内联在这里：本函数整体被 executeScript 注入，引用任何模块级
+  // 标识符都会在注入后抛 ReferenceError，并被外层 try/catch 吞成「没抓到正文」。
+  // 与可测试版的 HOST_CONTENT_ROOT 保持同步。
   const pickRoot = (): Element => {
+    let host = "";
+    try { host = new URL(document.location?.href ?? "").hostname.toLowerCase(); } catch { host = ""; }
+    // 头条 `.article-content` 会把标题行和「时间·来源」行卷进正文，`article` 才是纯正文。
+    if (host && /(?:^|\.)toutiao\.com$/iu.test(host)) {
+      const scoped = document.querySelector("article");
+      if (scoped && (scoped.textContent?.trim().length ?? 0) >= 20) return scoped;
+    }
     for (const selector of ["#js_content", "#img-content", "[itemprop='articleBody']", ".Post-RichText", ".RichText.ztext", ".available-content", ".article-content", "article", "main"]) {
       const node = document.querySelector(selector);
       if (node && (node.textContent?.trim().length ?? 0) >= 20) return node;

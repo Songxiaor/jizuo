@@ -1103,3 +1103,43 @@ describe("douyin media extraction", () => {
     expect(result.text).not.toContain("![](");
   });
 });
+
+describe("host-scoped content root", () => {
+  // 头条的 `.article-content` 把标题行和「时间·来源」行包在正文容器里，而通用候选
+  // 顺序又让它排在 `article` 前面。2026-07-26 真机实测两篇：1321→1278、205→165
+  // 字符，差值正是那两行。这类"多抓了东西"不会报错也不会崩，只会让每篇头条的正文
+  // 开头重复一遍标题，所以只能靠断言正文首段钉住。
+  const toutiaoRoot = () =>
+    el("div", [
+      el("h1", [text("“义乌发展经验”，习近平这样总结")]),
+      el("div", [text("2026-07-26 14:02·央视新闻")]),
+      el("article", [
+        el("p", [text("浙江义乌，一座生长在市场上的城市，连接中国制造的神经末梢，感知全球贸易的脉动。")]),
+        el("p", [text("总书记十分关心义乌的发展，在浙江工作期间，多次到义乌调研。")]),
+      ]),
+    ], { class: "article-content" });
+
+  it("prefers article over .article-content on toutiao so the title line stays out of the body", () => {
+    const result = extractCurrentPage(
+      makeDocument({
+        title: "“义乌发展经验”，习近平这样总结 - 今日头条",
+        href: "https://www.toutiao.com/article/7666713007799452212/",
+        root: toutiaoRoot(),
+      }),
+    );
+    expect(result.text).toContain("浙江义乌，一座生长在市场上的城市");
+    expect(result.text).not.toContain("2026-07-26 14:02·央视新闻");
+  });
+
+  it("leaves .article-content alone on every other host", () => {
+    // 收窄按站点生效，不动通用候选顺序——那个顺序同时服务所有没在真机验过的站点。
+    const result = extractCurrentPage(
+      makeDocument({
+        title: "Some other site",
+        href: "https://example.test/post",
+        root: toutiaoRoot(),
+      }),
+    );
+    expect(result.text).toContain("2026-07-26 14:02·央视新闻");
+  });
+});
