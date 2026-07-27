@@ -4,27 +4,46 @@ import XCTest
 
 private actor LibraryMemoryProfileStore: ProviderProfileStore {
   private(set) var profile: ProviderProfile?
-  init(profile: ProviderProfile? = nil) { self.profile = profile }
+  private let failDelete: Bool
+  init(profile: ProviderProfile? = nil, failDelete: Bool = false) {
+    self.profile = profile
+    self.failDelete = failDelete
+  }
   func load() async throws -> ProviderProfile? { profile }
   func save(_ profile: ProviderProfile) async throws { self.profile = profile }
-  func delete() async throws { profile = nil }
+  func delete() async throws {
+    if failDelete { throw ProviderProfileStoreFailure.writeFailed }
+    profile = nil
+  }
 }
 
 private actor LibraryMemorySecretStore: SecretStore {
   private(set) var values: [SecretReference: String]
-  init(values: [SecretReference: String] = [:]) { self.values = values }
+  private let failDelete: Bool
+  init(values: [SecretReference: String] = [:], failDelete: Bool = false) {
+    self.values = values
+    self.failDelete = failDelete
+  }
   func save(_ secret: String, for reference: SecretReference) async throws { values[reference] = secret }
   func read(_ reference: SecretReference) async throws -> String? { values[reference] }
   func contains(_ reference: SecretReference) async throws -> Bool { values[reference] != nil }
-  func delete(_ reference: SecretReference) async throws { values.removeValue(forKey: reference) }
+  func delete(_ reference: SecretReference) async throws {
+    if failDelete { throw SecretStoreFailure(operation: .delete, status: -1) }
+    values.removeValue(forKey: reference)
+  }
 }
 
 private actor LibraryMemoryStore: ModelLibraryStore {
   private(set) var library: ModelLibrary?
   private(set) var saveCount = 0
-  init(library: ModelLibrary? = nil) { self.library = library }
+  private let failSave: Bool
+  init(library: ModelLibrary? = nil, failSave: Bool = false) {
+    self.library = library
+    self.failSave = failSave
+  }
   func load() async throws -> ModelLibrary? { library }
   func save(_ library: ModelLibrary) async throws {
+    if failSave { throw ProviderProfileStoreFailure.writeFailed }
     self.library = library
     saveCount += 1
   }
@@ -193,6 +212,49 @@ final class ModelLibraryServiceTests: XCTestCase {
     XCTAssertEqual(newSecret, "sk-new")
   }
 
+  func testUpdateProfileReportsOldSecretCleanupFailureAfterCommittingUpdate() async throws {
+    let oldReference = SecretReference(rawValue: "old-reference")
+    let oldProfile = try ProviderProfile(
+      id: "profile-id",
+      baseURL: "https://api.deepseek.com/v1",
+      model: "old-model",
+      secretReference: oldReference
+    )
+    let libraryStore = LibraryMemoryStore(library: ModelLibrary(
+      profiles: [oldProfile],
+      summaryProfileID: oldProfile.id,
+      transcriptionProfileID: nil
+    ))
+    let profileStore = LibraryMemoryProfileStore(profile: oldProfile)
+    let secretStore = LibraryMemorySecretStore(
+      values: [oldReference: "old-key"],
+      failDelete: true
+    )
+    let service = ProviderConfigurationService(
+      profileStore: profileStore,
+      secretStore: secretStore,
+      libraryStore: libraryStore,
+      makeSecretReference: { .init(rawValue: "new-reference") }
+    )
+
+    await assertProviderConfigurationError(.secretStoreDeleteFailed) {
+      try await service.updateProfile(
+        id: oldProfile.id,
+        baseURL: "https://api.deepseek.com/v1",
+        model: "new-model",
+        apiKey: "new-key"
+      )
+    }
+
+    let persisted = await libraryStore.library
+    let active = await profileStore.profile
+    let secrets = await secretStore.values
+    XCTAssertEqual(persisted?.profiles.first?.model, "new-model")
+    XCTAssertEqual(active?.model, "new-model")
+    XCTAssertEqual(secrets[oldReference], "old-key")
+    XCTAssertEqual(secrets[.init(rawValue: "new-reference")], "new-key")
+  }
+
   func testDeleteSummaryProfileClearsSlotAndSecret() async throws {
     let profileStore = LibraryMemoryProfileStore()
     let secretStore = LibraryMemorySecretStore()
@@ -215,6 +277,90 @@ final class ModelLibraryServiceTests: XCTestCase {
     XCTAssertNil(slot)
     let secret = await secretStore.values[added.secretReference]
     XCTAssertNil(secret)
+  }
+
+  func testDeleteSummaryProfileDoesNotCommitLibraryWhenActiveSlotCannotBeCleared() async throws {
+    let profile = try makeLegacyProfile()
+    let library = ModelLibrary(
+      profiles: [profile],
+      summaryProfileID: profile.id,
+      transcriptionProfileID: nil
+    )
+    let profileStore = LibraryMemoryProfileStore(profile: profile, failDelete: true)
+    let libraryStore = LibraryMemoryStore(library: library)
+    let secretStore = LibraryMemorySecretStore(values: [profile.secretReference: "sk-one"])
+    let service = ProviderConfigurationService(
+      profileStore: profileStore,
+      secretStore: secretStore,
+      libraryStore: libraryStore
+    )
+
+    await assertProviderConfigurationError(.profileStoreWriteFailed) {
+      try await service.deleteProfile(id: profile.id)
+    }
+
+    let persisted = await libraryStore.library
+    let active = await profileStore.profile
+    let secret = await secretStore.values[profile.secretReference]
+    XCTAssertEqual(persisted, library)
+    XCTAssertEqual(active, profile)
+    XCTAssertEqual(secret, "sk-one")
+  }
+
+  func testDeleteProfileDoesNotCommitConfigurationWhenSecretCleanupFails() async throws {
+    let profile = try makeLegacyProfile()
+    let library = ModelLibrary(
+      profiles: [profile],
+      summaryProfileID: nil,
+      transcriptionProfileID: nil
+    )
+    let libraryStore = LibraryMemoryStore(library: library)
+    let secretStore = LibraryMemorySecretStore(
+      values: [profile.secretReference: "sk-one"],
+      failDelete: true
+    )
+    let service = ProviderConfigurationService(
+      profileStore: LibraryMemoryProfileStore(),
+      secretStore: secretStore,
+      libraryStore: libraryStore
+    )
+
+    await assertProviderConfigurationError(.secretStoreDeleteFailed) {
+      try await service.deleteProfile(id: profile.id)
+    }
+
+    let persisted = await libraryStore.library
+    let secret = await secretStore.values[profile.secretReference]
+    XCTAssertEqual(persisted, library)
+    XCTAssertEqual(secret, "sk-one")
+  }
+
+  func testDeleteProfileRestoresSlotAndSecretWhenLibraryCommitFails() async throws {
+    let profile = try makeLegacyProfile()
+    let library = ModelLibrary(
+      profiles: [profile],
+      summaryProfileID: profile.id,
+      transcriptionProfileID: nil
+    )
+    let profileStore = LibraryMemoryProfileStore(profile: profile)
+    let secretStore = LibraryMemorySecretStore(values: [profile.secretReference: "sk-one"])
+    let libraryStore = LibraryMemoryStore(library: library, failSave: true)
+    let service = ProviderConfigurationService(
+      profileStore: profileStore,
+      secretStore: secretStore,
+      libraryStore: libraryStore
+    )
+
+    await assertProviderConfigurationError(.profileStoreWriteFailed) {
+      try await service.deleteProfile(id: profile.id)
+    }
+
+    let persisted = await libraryStore.library
+    let active = await profileStore.profile
+    let secret = await secretStore.values[profile.secretReference]
+    XCTAssertEqual(persisted, library)
+    XCTAssertEqual(active, profile)
+    XCTAssertEqual(secret, "sk-one")
   }
 
   func testAssignSummaryProfileSyncsSlot() async throws {
@@ -336,5 +482,19 @@ final class ModelLibraryServiceTests: XCTestCase {
     XCTAssertFalse(service.supportsModelLibrary)
     let transcription = try await service.loadTranscriptionCredentials()
     XCTAssertNil(transcription)
+  }
+
+  private func assertProviderConfigurationError<T>(
+    _ expected: ProviderConfigurationError,
+    operation: () async throws -> T
+  ) async {
+    do {
+      _ = try await operation()
+      XCTFail("expected \(expected)")
+    } catch let error as ProviderConfigurationError {
+      XCTAssertEqual(error, expected)
+    } catch {
+      XCTFail("unexpected error: \(error)")
+    }
   }
 }

@@ -113,14 +113,17 @@ private actor MemoryProviderProfileStore: ProviderProfileStore {
 private actor MemorySecretStore: SecretStore {
   private var values: [SecretReference: String]
   private let failSave: Bool
+  private let failDelete: Bool
   private var deletedReferences: [SecretReference] = []
 
   init(
     values: [SecretReference: String] = [:],
-    failSave: Bool = false
+    failSave: Bool = false,
+    failDelete: Bool = false
   ) {
     self.values = values
     self.failSave = failSave
+    self.failDelete = failDelete
   }
 
   func save(_ secret: String, for reference: SecretReference) async throws {
@@ -139,6 +142,9 @@ private actor MemorySecretStore: SecretStore {
   }
 
   func delete(_ reference: SecretReference) async throws {
+    if failDelete {
+      throw SecretStoreFailure(operation: .delete, status: -1)
+    }
     values.removeValue(forKey: reference)
     deletedReferences.append(reference)
   }
@@ -330,6 +336,41 @@ final class ProviderConfigurationTests: XCTestCase {
     XCTAssertEqual(savedProfile?.secretReference, newReference)
     XCTAssertEqual(savedSecret, newSecret)
     XCTAssertNil(oldSecret)
+  }
+
+  func testReplacementReportsOldSecretCleanupFailureAfterCommittingNewConfiguration() async throws {
+    let oldReference = SecretReference(rawValue: "old-reference")
+    let newReference = SecretReference(rawValue: "new-reference")
+    let oldProfile = try ProviderProfile(
+      baseURL: "https://old.example.test/v1",
+      model: "old-model",
+      secretReference: oldReference
+    )
+    let profileStore = MemoryProviderProfileStore(profile: oldProfile)
+    let secretStore = MemorySecretStore(
+      values: [oldReference: "old-key"],
+      failDelete: true
+    )
+    let service = ProviderConfigurationService(
+      profileStore: profileStore,
+      secretStore: secretStore,
+      makeSecretReference: { newReference }
+    )
+
+    await assertProviderConfigurationError(.secretStoreDeleteFailed) {
+      try await service.save(
+        baseURL: "https://new.example.test/v1",
+        model: "new-model",
+        apiKey: "new-key"
+      )
+    }
+
+    let savedProfile = await profileStore.snapshot()
+    let oldSecret = await secretStore.value(for: oldReference)
+    let newSecret = await secretStore.value(for: newReference)
+    XCTAssertEqual(savedProfile?.secretReference, newReference)
+    XCTAssertEqual(oldSecret, "old-key")
+    XCTAssertEqual(newSecret, "new-key")
   }
 
   func testSaveMutationBlocksAuthorizationBeforeSecretCommit() async throws {

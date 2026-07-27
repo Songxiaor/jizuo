@@ -21,6 +21,7 @@ public enum ProviderConfigurationError: String, Error, Codable, Sendable, Equata
   case profileStoreWriteFailed = "PROFILE_STORE_WRITE_FAILED"
   case secretStoreReadFailed = "SECRET_STORE_READ_FAILED"
   case secretStoreWriteFailed = "SECRET_STORE_WRITE_FAILED"
+  case secretStoreDeleteFailed = "SECRET_STORE_DELETE_FAILED"
   case configurationChanged = "PROVIDER_CONFIGURATION_CHANGED"
 }
 
@@ -440,7 +441,11 @@ public actor ProviderConfigurationService {
 
     if let previousReference = previousProfile?.secretReference,
        previousReference != newReference {
-      try? await secretStore.delete(previousReference)
+      do {
+        try await secretStore.delete(previousReference)
+      } catch {
+        throw ProviderConfigurationError.secretStoreDeleteFailed
+      }
     }
 
     return newProfile
@@ -653,7 +658,11 @@ public actor ProviderConfigurationService {
       $0.id != updated.id && $0.secretReference == existing.secretReference
     }
     if trimmedKey != nil, existing.secretReference != reference, !oldReferenceStillUsed {
-      try? await secretStore.delete(existing.secretReference)
+      do {
+        try await secretStore.delete(existing.secretReference)
+      } catch {
+        throw ProviderConfigurationError.secretStoreDeleteFailed
+      }
     }
     return updated
   }
@@ -675,14 +684,43 @@ public actor ProviderConfigurationService {
     let wasSummary = library.summaryProfileID == removed.id
     if wasSummary { library.summaryProfileID = nil }
     if library.transcriptionProfileID == removed.id { library.transcriptionProfileID = nil }
-
-    try await saveLibraryForMutation(library)
-    if wasSummary { try? await profileStore.delete() }
     let secretStillUsed = library.profiles.contains {
       $0.secretReference == removed.secretReference
     }
+    let removedSecret: String?
+    if secretStillUsed {
+      removedSecret = nil
+    } else {
+      do {
+        removedSecret = try await secretStore.read(removed.secretReference)
+      } catch {
+        throw ProviderConfigurationError.secretStoreReadFailed
+      }
+    }
+
+    if wasSummary {
+      do {
+        try await profileStore.delete()
+      } catch {
+        throw ProviderConfigurationError.profileStoreWriteFailed
+      }
+    }
     if !secretStillUsed {
-      try? await secretStore.delete(removed.secretReference)
+      do {
+        try await secretStore.delete(removed.secretReference)
+      } catch {
+        if wasSummary { try? await profileStore.save(removed) }
+        throw ProviderConfigurationError.secretStoreDeleteFailed
+      }
+    }
+    do {
+      try await saveLibraryForMutation(library)
+    } catch {
+      if wasSummary { try? await profileStore.save(removed) }
+      if let removedSecret {
+        try? await secretStore.save(removedSecret, for: removed.secretReference)
+      }
+      throw error
     }
     return library
   }

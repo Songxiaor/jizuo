@@ -14,12 +14,50 @@ import XCTest
 /// ```
 /// 2026-07-27 那次扫描：App 层 70 处 `try?`，其中命中写入的 11 处，确认 3 处是用户可见的
 /// 静默失败（本文件三条）。其余为读取回退、一次性迁移清理、AI 附赠标签等可接受的降级。
+///
+/// 2026-07-27 接着审计 Core/Adapters。以下行号固定指向基线 `7c9ef1b`，避免后续编辑让结论
+/// 对不上现场；Core 13 处、Adapters 3 处，一个不少：
+///
+/// - Core `ProviderConfiguration.swift:437`：可接受降级；配置保存已经失败并向上抛错，
+///  这里只是回收未引用的新 Keychain 项。
+/// - Core `ProviderConfiguration.swift:443`：静默失败，已修；新配置成功但旧 Key 未清理，
+///   现在抛 `SECRET_STORE_DELETE_FAILED`，并保留已经提交的新配置。
+/// - Core `ProviderConfiguration.swift:572`：可接受降级；同步首个 profile 失败后的暂存 Key 回收，
+///   主错误已向上抛出。
+/// - Core `ProviderConfiguration.swift:579`：可接受降级；模型库保存失败后的旧单槽回滚，
+///   主错误已向上抛出。
+/// - Core `ProviderConfiguration.swift:580`：可接受降级；同一失败事务的暂存 Key 回收，
+///   主错误已向上抛出。
+/// - Core `ProviderConfiguration.swift:641`：可接受降级；更新活动 profile 失败后的新 Key 回收，
+///   主错误已向上抛出。
+/// - Core `ProviderConfiguration.swift:648`：可接受降级；模型库保存失败后的活动 profile 回滚，
+///   主错误已向上抛出。
+/// - Core `ProviderConfiguration.swift:649`：可接受降级；同一失败事务的新 Key 回收，
+///   主错误已向上抛出。
+/// - Core `ProviderConfiguration.swift:656`：静默失败，已修；更新成功后旧 Key 清理失败会明确报错。
+/// - Core `ProviderConfiguration.swift:680`：静默失败，已修；删除总结模型时旧单槽删不掉，原来仍
+///   返回成功；现在先清单槽，失败就不提交模型库。
+/// - Core `ProviderConfiguration.swift:685`：静默失败，已修；删除最后一个引用后 Key 清理失败
+///   会明确报错，且不会提交模型库删除。
+/// - Core `ProviderConfiguration.swift:723`：可接受降级；总结指派保存失败后的旧单槽回滚，
+///   主错误已向上抛出。
+/// - Core `ProviderConfiguration.swift:725`：可接受降级；同一失败事务的空单槽回滚，
+///   主错误已向上抛出。
+/// - Adapters `WebsiteFaviconCache.swift:89`：可接受降级；favicon 缓存声明为 best-effort，
+///   写失败返回 nil，不影响已捕获正文和历史加载。
+/// - Adapters `GitHubRepositorySourceAdapter.swift:243`：可接受降级；README 图片是附加本地媒体，
+///   单图写失败跳过该图，README 文本仍完整可用。
+/// - Adapters `GitHubRepositorySourceAdapter.swift:254`：可接受降级；图片清单写失败只让本地图片
+///   本轮不可发现，不影响 README 抓取、保存、总结与翻译。
 final class SilentFailureGuardTests: XCTestCase {
-  private func source(_ relativePath: String) throws -> String {
+  private func source(
+    _ relativePath: String,
+    target: String = "LinkDigestApp"
+  ) throws -> String {
     try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
-        .appendingPathComponent("Sources/LinkDigestApp/\(relativePath)"),
+        .appendingPathComponent("Sources/\(target)/\(relativePath)"),
       encoding: .utf8)
   }
 
@@ -85,5 +123,31 @@ final class SilentFailureGuardTests: XCTestCase {
     XCTAssertTrue(
       text.contains("图片没能保存到所选位置"),
       "写入失败要带上系统给的原因")
+  }
+
+  /// 模型配置保存、更新和删除已经提交成功时，旧 Key 或活动单槽没清掉不能仍返回成功。
+  ///
+  /// 四条行为测试分别在 CoreTests 里验证具体错误与提交边界；这里钉住最容易回退的源码写法。
+  func testProviderConfigurationCleanupFailuresAreNotSwallowedOnSuccessPaths() throws {
+    let code = codeLines(try source(
+      "ProviderConfiguration.swift",
+      target: "LinkDigestCore"
+    ))
+
+    XCTAssertFalse(
+      code.contains("try? await secretStore.delete(previousReference)"),
+      "替换配置后旧 API Key 清理失败不能静默")
+    XCTAssertFalse(
+      code.contains("try? await secretStore.delete(existing.secretReference)"),
+      "更新模型后旧 API Key 清理失败不能静默")
+    XCTAssertFalse(
+      code.contains("if wasSummary { try? await profileStore.delete() }"),
+      "删除总结模型时活动单槽清理失败不能静默提交模型库")
+    XCTAssertFalse(
+      code.contains("try? await secretStore.delete(removed.secretReference)"),
+      "删除最后一个 Key 引用时清理失败不能静默")
+    XCTAssertTrue(
+      code.contains("case secretStoreDeleteFailed = \"SECRET_STORE_DELETE_FAILED\""),
+      "Keychain 清理失败必须保留独立错误语义")
   }
 }
