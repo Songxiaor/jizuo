@@ -145,9 +145,12 @@ struct BrowserSupportSettingsView: View {
   @ViewBuilder private func configurationRow(_ row: ConfigurationRow) -> some View {
     let status = model.status(for: row.browser)
     HStack(spacing: 12) {
+      // 图标占位宽度与上方 receiverStatusRow 的 34×34 瓦片一致：同一页里两个 Section
+      // 的行标题必须落在同一条竖线上。原来是 24，于是「Google Chrome」比
+      // 「App 已准备接收」整整左移 10pt（34-24），同屏可见。
       Image(systemName: "globe")
         .foregroundStyle(.secondary)
-        .frame(width: 24)
+        .frame(width: 34)
       VStack(alignment: .leading, spacing: 2) {
         Text(row.title).font(.headline)
         Text(row.detail).font(.caption).foregroundStyle(.secondary)

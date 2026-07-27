@@ -233,4 +233,54 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     }
   }
 
+  /// 设置侧栏的选中药丸必须和主界面侧栏是同一个尺寸。
+  ///
+  /// 两处都是「图标 + 文字 + 圆角 6 药丸」的同构行，但设置侧栏原来用垂直 7、主界面
+  /// 用垂直 3，实测药丸高 34pt vs 23.5pt。颜色令牌已经统一之后，这个 10pt 的高度差
+  /// 就是并排看两个窗口时最先察觉的不一致——它不报错，只是看着不像一家。
+  func testSettingsSidebarRowUsesTheSameVerticalPaddingAsTheMainSidebar() throws {
+    let root = repositoryRoot()
+    let settings = try String(
+      contentsOf: root.appendingPathComponent("apps/desktop/Sources/LinkDigestApp/ProviderSettingsView.swift"),
+      encoding: .utf8)
+    let history = try String(
+      contentsOf: root.appendingPathComponent("apps/desktop/Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8)
+
+    // 主界面 navigationButton 的垂直内边距就是这套侧栏刻度的真相源。
+    let mainRow = section(in: history, from: "private func navigationButton(", to: "private func countBadge(")
+    let mainPadding = mainRow
+      .components(separatedBy: "\n")
+      .first { $0.contains(".padding(.vertical,") && !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+    XCTAssertEqual(
+      mainPadding?.contains(".padding(.vertical, 3)"), true,
+      "主界面侧栏行的垂直刻度变了，设置侧栏的断言需要跟着改：\(mainPadding ?? "<未找到>")")
+
+    let sidebar = section(in: settings, from: "private var paperSidebar: some View {", to: "private var settingsTheme")
+    XCTAssertTrue(
+      sidebar.contains(".padding(.vertical, 3)"),
+      "设置侧栏行的垂直刻度与主界面侧栏不一致，选中药丸会明显更粗")
+  }
+
+  /// 「浏览器支持」页两个 Section 的行标题必须落在同一条竖线上。
+  ///
+  /// 接收状态行是 34×34 的图标瓦片，浏览器配置行原来是 24pt 宽的裸图标，于是
+  /// 「Google Chrome」比「App 已准备接收」左移 10pt，同一屏里直接可见。
+  func testBrowserSupportRowsShareOneIconColumnWidth() throws {
+    let source = try String(
+      contentsOf: repositoryRoot().appendingPathComponent(
+        "apps/desktop/Sources/LinkDigestApp/BrowserSupportSettingsView.swift"),
+      encoding: .utf8)
+
+    let tile = section(in: source, from: "private var receiverStatusRow", to: "private func configurationRow")
+    XCTAssertTrue(
+      tile.contains(".frame(width: 34, height: 34)"),
+      "接收状态行的图标瓦片尺寸变了，浏览器行的占位宽度需要跟着改")
+
+    let row = section(in: source, from: "private func configurationRow", to: "private var receiverTitle")
+    XCTAssertTrue(
+      row.contains(".frame(width: 34)"),
+      "浏览器配置行的图标占位宽度与上方瓦片不一致，两个 Section 的标题不在同一列")
+  }
+
 }

@@ -626,7 +626,11 @@ struct ProviderSettingsView: View {
         .accessibilityLabel(tab.title)
         .accessibilityIdentifier("settings-tab-\(tab.rawValue)")
         .buttonStyle(.plain)
-        .padding(.vertical, 7).padding(.horizontal, 8)
+        // 行高与主界面侧栏 (`HistoryContentView.navigationButton`) 同刻度：垂直 3。
+        // 原来是 7，实测选中药丸高 34pt、主界面同款药丸只有 23.5pt——同一个应用的
+        // 两个侧栏差了整整 10pt，是「设置页和主界面不像一家」里肉眼最先看到的一处。
+        // 水平保持 8：实测图标左缘 28.5pt，已经和主界面的 29.5pt 对齐，动它反而偏。
+        .padding(.vertical, 3).padding(.horizontal, 8)
         .background(
           selectedTab == tab ? settingsTheme.selectionFill : .clear,
           in: RoundedRectangle(cornerRadius: 6)
