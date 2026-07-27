@@ -1611,7 +1611,7 @@ final class HistoryViewModel: ObservableObject {
       updatedAtMilliseconds: nowMilliseconds()
     )
     mindMapRecord = record
-    Task.detached(priority: .userInitiated) { try? store.saveMindMap(record) }
+    persistMindMap(record, store: store, failureMessage: "脑图修改没能保存到本机，请检查存储后重试。重新打开这条记录会回到上一次保存的版本。")
   }
 
   func updateMindMapTheme(taskID: TaskID, themeID: String) {
@@ -1631,7 +1631,29 @@ final class HistoryViewModel: ObservableObject {
       updatedAtMilliseconds: nowMilliseconds()
     )
     mindMapRecord = record
-    Task.detached(priority: .userInitiated) { try? store.saveMindMap(record) }
+    persistMindMap(record, store: store, failureMessage: "脑图配色没能保存到本机，请检查存储后重试。重新打开这条记录会回到上一次保存的版本。")
+  }
+
+  /// 脑图的本地保存：先上屏、后落库，所以**必须**有失败出口。
+  ///
+  /// 原来两处都是 `Task.detached { try? store.saveMindMap(record) }`——改完大纲或换完
+  /// 配色，界面立刻变了，写库失败却完全无声。下次打开这条记录编辑就没了，中间没有任何
+  /// 提示，表现和「删掉的摘录刷新后复活」是同一类：先上屏后落库而落库没有出口。
+  ///
+  /// 这里不改成「先落库再上屏」：脑图编辑是连续操作（改一个字就存一次），同步等写库会
+  /// 让编辑器卡顿。异步保存 + 明确的失败提示是这条路径更合适的取舍。
+  private func persistMindMap(
+    _ record: TaskMindMapRecord,
+    store: any MindMapStoring,
+    failureMessage: String
+  ) {
+    Task.detached(priority: .userInitiated) { [weak self] in
+      do {
+        try store.saveMindMap(record)
+      } catch {
+        await MainActor.run { self?.annotationFailureMessage = failureMessage }
+      }
+    }
   }
 
   /// 脑图 + 原文合并导出的自包含 HTML（SVG 内联，无外部依赖）。

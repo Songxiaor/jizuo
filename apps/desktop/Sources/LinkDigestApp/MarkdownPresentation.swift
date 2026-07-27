@@ -1098,12 +1098,31 @@ private struct CodeCopyButton: View {
 /// bytes to suggest a usable default filename.
 enum MarkdownInlineImageActions {
   static func saveImage(at url: URL) {
-    guard let data = try? Data(contentsOf: url) else { return }
+    guard let data = try? Data(contentsOf: url) else {
+      presentFailure("这张图片的本机缓存已经不在了，重新抓取这条记录后再试。")
+      return
+    }
     let panel = NSSavePanel()
     panel.canCreateDirectories = true
     panel.nameFieldStringValue = suggestedFilename(for: url, data: data)
     guard panel.runModal() == .OK, let destination = panel.url else { return }
-    try? data.write(to: destination)
+    // 用户选完位置、点了保存，写失败必须说话：原来是 `try?`，磁盘满、无权限、
+    // 目标被占用都表现为「什么都没发生」，人会以为存好了，去那个目录才发现没有。
+    // 旁边的 copyImage 尚且有 flash 反馈，保存这种更重的动作反而无声。
+    do {
+      try data.write(to: destination)
+    } catch {
+      presentFailure("图片没能保存到所选位置：\(error.localizedDescription)")
+    }
+  }
+
+  private static func presentFailure(_ message: String) {
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = "保存图片失败"
+    alert.informativeText = message
+    alert.addButton(withTitle: "好")
+    alert.runModal()
   }
 
   static func copyImage(_ image: NSImage) {
