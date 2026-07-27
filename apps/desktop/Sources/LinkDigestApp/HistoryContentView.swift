@@ -474,6 +474,32 @@ struct HistoryContentView: View {
           .alert("删除结果", isPresented: $model.isDeleteOutcomePresented) {
             Button("好") { model.dismissDeleteOutcome() }
           } message: { Text(model.deleteOutcomeMessage) }
+          // 批量总结要花钱，确认弹窗里先给出粗估 token 量级再让用户点。
+          .alert(
+            model.batchSummaryConfirmationTitle,
+            isPresented: $model.isBatchSummaryConfirmationPresented
+          ) {
+            Button("取消", role: .cancel) { model.cancelBatchSummaryRequest() }
+            Button("开始总结") {
+              let preferences = providerSettings.runPreferences
+              model.confirmBatchSummary(
+                summarize: { [weak appModel] detail in
+                  await appModel?.summarize(historyDetail: detail, preferences: preferences)
+                },
+                // 数据去向确认弹窗开着也算「忙」：首条常常要等用户确认一次，
+                // 不把它算进去就会被误判成「没能开始」而中止整批。
+                isBusy: { [weak appModel] in
+                  guard let appModel else { return false }
+                  return appModel.runState.isActive
+                    || appModel.isDataDestinationDisclosurePresented
+                    || appModel.isConfirmingDataDestinationDisclosure
+                }
+              )
+            }
+          } message: { Text(model.batchSummaryConfirmationMessage) }
+          .alert("批量总结结果", isPresented: $model.isBatchSummaryOutcomePresented) {
+            Button("好") { model.dismissBatchSummaryOutcome() }
+          } message: { Text(model.batchSummaryOutcomeMessage) }
           .alert("无法准备导出", isPresented: $model.isExportPreparationFailurePresented) {
             Button("好") { model.dismissExportPreparationFailure() }
           } message: { Text("无法准备导出，请检查历史记录后重试。") }
@@ -517,7 +543,26 @@ struct HistoryContentView: View {
     }
     .toolbar {
       ToolbarItemGroup(placement: .primaryAction) {
+        // 批量总结进行中：进度和停止按钮必须一直可见，否则「跑了十几分钟、
+        // 现在到哪了、能不能停」全靠猜。
+        if model.isBatchSummarizing {
+          Text(model.batchSummaryProgressText)
+            .font(.callout)
+            .foregroundStyle(theme.secondaryText)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: 280, alignment: .trailing)
+            .accessibilityIdentifier("batch-summarize-progress")
+          Button("停止") { model.stopBatchSummary() }
+            .disabled(model.batchSummaryProgress?.isStopping == true)
+            .accessibilityIdentifier("batch-summarize-stop")
+        }
         if model.selectedTaskCount > 1 {
+          Button { model.requestBatchSummary() } label: {
+            Label("总结选中项", systemImage: "text.badge.checkmark")
+          }
+          .disabled(!model.canBatchSummarize)
+          .accessibilityIdentifier("batch-summarize-history")
           Button { model.requestDeletion(protectedTaskIDs: protectedTaskIDs) } label: {
             Label("删除选中项", systemImage: "trash")
           }
@@ -644,6 +689,14 @@ struct HistoryContentView: View {
               .contextMenu {
                 Button { openHistoryURL(row.canonicalURL) } label: { Label("在浏览器中打开", systemImage: "safari") }
                 Button { copyHistoryURL(row.canonicalURL) } label: { Label("复制链接", systemImage: "doc.on.doc") }
+                if model.selectedTaskIDs.contains(row.taskID), model.selectedTaskCount > 1 {
+                  Divider()
+                  Button { model.requestBatchSummary() } label: {
+                    Label("总结选中的 \(model.selectedTaskCount) 条…", systemImage: "text.badge.checkmark")
+                  }
+                  .disabled(!model.canBatchSummarize)
+                  .accessibilityIdentifier("batch-summarize-history-context")
+                }
                 Divider()
                 Button(role: .destructive) {
                   if !model.selectedTaskIDs.contains(row.taskID) {

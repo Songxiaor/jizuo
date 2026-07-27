@@ -65,6 +65,76 @@ private enum TranscriptionPersistenceResult: Sendable {
   case failure(StorageErrorCode)
 }
 
+/// 批量总结的预检结论：哪些真要发给模型，哪些为什么被跳过。
+/// 跳过的三类分开计数，是因为它们在确认弹窗里对用户意味着完全不同的事——
+/// 「已有总结」是正常省钱，「没有正文」说明抓取本身就没成，「读不出来」是存储故障。
+struct BatchSummaryPlan: Sendable, Equatable {
+  struct Item: Sendable, Equatable {
+    let taskID: TaskID
+    let title: String
+    let estimatedInputTokens: Int
+  }
+  var pending: [Item] = []
+  var alreadySummarized = 0
+  var withoutContent = 0
+  var unreadable = 0
+
+  var estimatedInputTokens: Int { pending.reduce(0) { $0 + $1.estimatedInputTokens } }
+  var skippedCount: Int { alreadySummarized + withoutContent + unreadable }
+}
+
+/// 单条在批量里的处理结论。也用作事后复核的权威判据：库里落地了 completed 的
+/// 总结 Run 才算成功，不看内存里的 `runState`——那是「点了没反应」最容易骗过
+/// 自己的地方。
+enum BatchSummaryItemState: Sendable {
+  case needsSummary(HistoryDetailProjection)
+  case alreadySummarized
+  case withoutContent
+  case unreadable
+}
+
+/// 批量总结的实时进度。`skipped` 指执行期间才发现可跳过的条目（预检之后、
+/// 轮到它之前被别的路径总结掉了）。
+struct BatchSummaryProgress: Sendable, Equatable {
+  var total = 0
+  var finished = 0
+  var succeeded = 0
+  var failed = 0
+  var skipped = 0
+  var currentTitle = ""
+  var isStopping = false
+}
+
+/// 库里有没有落地成功的总结。与自动管线第 3 步同一判据。
+private func batchSummaryIsSummarized(_ detail: HistoryDetailProjection) -> Bool {
+  detail.runs.contains { $0.run.kind == .summarize && $0.run.status == .completed }
+}
+
+private func batchSummaryTitle(for detail: HistoryDetailProjection) -> String {
+  let title = detail.snapshots.last?.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+  if let title, !title.isEmpty { return title }
+  return detail.task.canonicalURL
+}
+
+/// 粗估这次要发出去的输入 token：CJK 按 1 字 1 token，其余按 4 字符 1 token。
+///
+/// 只用于在确认之前给出**量级**，不是账单：真实用量以每条详情里的台账为准，
+/// 而且这里不含模型返回部分，也不含 prompt 模板。宁可让弹窗里的数字偏小也
+/// 不假装精确——文案必须写明是粗估。
+private func batchSummaryEstimatedTokens(in text: String) -> Int {
+  var cjk = 0
+  var other = 0
+  for scalar in text.unicodeScalars {
+    switch scalar.value {
+    case 0x3040...0x30FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, 0x20000...0x2FA1F:
+      cjk += 1
+    default:
+      other += 1
+    }
+  }
+  return cjk + other / 4
+}
+
 /// The one serial, non-MainActor boundary for all synchronous repository work.
 /// SwiftUI state remains on MainActor while SQLite never executes there.
 private actor HistoryRepositoryWorker {
@@ -453,6 +523,10 @@ final class HistoryViewModel: ObservableObject {
   @Published var isDeleteOutcomePresented = false
   @Published private(set) var deleteOutcomeMessage = ""
   @Published private(set) var isDeleting = false
+  @Published var isBatchSummaryConfirmationPresented = false
+  @Published private(set) var batchSummaryProgress: BatchSummaryProgress?
+  @Published var isBatchSummaryOutcomePresented = false
+  @Published private(set) var batchSummaryOutcomeMessage = ""
   @Published private(set) var isPreparingExport = false
   @Published private(set) var exportFile: HistoryExportFile?
   @Published var isExportPanelPresented = false
@@ -640,7 +714,7 @@ final class HistoryViewModel: ObservableObject {
     self.nowMilliseconds = nowMilliseconds
   }
 
-  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); faviconTask?.cancel(); tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel() }
+  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); faviconTask?.cancel(); tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel(); batchSummaryTask?.cancel() }
 
   var canDelete: Bool { history != nil && !isReadOnly && !selectedTaskIDs.isEmpty && !isDeleting }
   var canExport: Bool { history != nil && selectedTaskID != nil && !isPreparingExport }
@@ -820,6 +894,10 @@ final class HistoryViewModel: ObservableObject {
     isDeleteConfirmationPresented = false; isDeleteFailurePresented = false; isProtectedDeletionAlertPresented = false
     isDeleteOutcomePresented = false; deleteOutcomeMessage = ""
     isLoadingNextPage = false; isDeleting = false
+    batchSummaryTask?.cancel(); batchSummaryTask = nil; batchSummaryProgress = nil
+    pendingBatchSummaryPlan = nil; isPreparingBatchSummary = false
+    isBatchSummaryConfirmationPresented = false; isBatchSummaryOutcomePresented = false
+    batchSummaryOutcomeMessage = ""
     transcriptionRequestID = UUID()
     transcriptionState = .idle; transcriptionText = ""; transcriptionTaskID = nil; isTranscriptionModelConfirmationPresented = false; pendingTranscriptionContext = nil
     transcriptionUsesOnlineService = false
@@ -1357,6 +1435,10 @@ final class HistoryViewModel: ObservableObject {
     summarizeAction: @escaping @MainActor () async -> Void
   ) {
     guard transcribe || tidy || summarize || mindMap else { return }
+    // 批量总结会逐条改写 `currentCapture`，那不是「新内容到达」。早退必须发生在
+    // 下面「标记已处理」之前——否则批量处理过的条目会被永久排除在自动管线之外，
+    // 以后真的重新捕获也不会再自动处理，而且没有任何迹象。
+    guard batchSummaryProgress == nil else { return }
     guard !autoPipelineHandledTaskIDs.contains(taskID) else { return }
     autoPipelineHandledTaskIDs.insert(taskID)
     autoPipelineTask?.cancel()
@@ -1453,6 +1535,289 @@ final class HistoryViewModel: ObservableObject {
       try? await Task.sleep(for: .milliseconds(200))
     }
     return true
+  }
+
+  // MARK: - 批量总结
+
+  /// 批量总结**必须串行**，这不是取舍而是现有架构决定的：`summarize` 走的是全局
+  /// 单例 `currentCapture` + `runState`，`canStartRun` 里明写 `!runState.isActive`。
+  /// 并发发起只会让第二条起全部被静默丢弃——正是「点了没反应」那类失败。
+  private var pendingBatchSummaryPlan: BatchSummaryPlan?
+  private var batchSummaryTask: Task<Void, Never>?
+  private var isPreparingBatchSummary = false
+
+  /// 发起之后等它占上通道的上限。超时即认定压根没启动。
+  /// 可写只是为了让测试不必每条用例空转 20 秒，产品路径不改这个值。
+  static var batchSummaryStartTimeoutSeconds: Double = 20
+  /// 单条从占上通道到跑完的上限，覆盖「弹窗等用户确认 + 长稿生成」。
+  static var batchSummaryRunTimeoutSeconds: Double = 1_800
+
+  var canBatchSummarize: Bool {
+    history != nil && !isReadOnly && selectedTaskIDs.count > 1
+      && batchSummaryProgress == nil && !isPreparingBatchSummary && !isDeleting
+  }
+
+  var isBatchSummarizing: Bool { batchSummaryProgress != nil }
+
+  /// 选中项按列表可见顺序处理，用户才能预期「从上往下」。
+  /// 不在当前页的选中项排在后面，顺序稳定即可。
+  private func orderedSelectedTaskIDs() -> [TaskID] {
+    let visible = rows.map(\.taskID).filter { selectedTaskIDs.contains($0) }
+    let remaining = selectedTaskIDs.subtracting(visible).sorted { $0.rawValue < $1.rawValue }
+    return visible + remaining
+  }
+
+  /// 预检：读每条 detail，分出要发的和跳过的，算出粗估 token 后才弹确认。
+  /// 花钱的动作不能先斩后奏。
+  func requestBatchSummary() {
+    guard canBatchSummarize, let history else { return }
+    let taskIDs = orderedSelectedTaskIDs()
+    guard !taskIDs.isEmpty else { return }
+    isPreparingBatchSummary = true
+    let generation = configurationGeneration
+    Task { [weak self] in
+      let plan = await Task.detached(priority: .utility) {
+        Self.batchSummaryPlan(history, taskIDs: taskIDs)
+      }.value
+      self?.receiveBatchSummaryPlan(plan, generation: generation)
+    }
+  }
+
+  private func receiveBatchSummaryPlan(_ plan: BatchSummaryPlan, generation: UUID) {
+    guard generation == configurationGeneration else {
+      isPreparingBatchSummary = false
+      return
+    }
+    isPreparingBatchSummary = false
+    guard !plan.pending.isEmpty else {
+      // 一条都不用发也要给出人话原因，不能表现成「点了没反应」。
+      batchSummaryOutcomeMessage = Self.batchSummaryEmptyPlanMessage(plan)
+      isBatchSummaryOutcomePresented = true
+      return
+    }
+    pendingBatchSummaryPlan = plan
+    isBatchSummaryConfirmationPresented = true
+  }
+
+  var batchSummaryConfirmationTitle: String {
+    let count = pendingBatchSummaryPlan?.pending.count ?? 0
+    return "对选中的 \(count) 条生成总结？"
+  }
+
+  var batchSummaryConfirmationMessage: String {
+    guard let plan = pendingBatchSummaryPlan else { return "" }
+    var message = "会按列表顺序逐条发送给模型，一次只发一条。"
+    message += "预计输入约 \(Self.tokenScaleText(plan.estimatedInputTokens)) tokens"
+    message += "（按字符粗估，不含模型返回部分；真实用量以每条详情里的台账为准）。"
+    var skipped: [String] = []
+    if plan.alreadySummarized > 0 { skipped.append("\(plan.alreadySummarized) 条已有总结") }
+    if plan.withoutContent > 0 { skipped.append("\(plan.withoutContent) 条没有正文") }
+    if plan.unreadable > 0 { skipped.append("\(plan.unreadable) 条读不出本机记录") }
+    if !skipped.isEmpty {
+      message += " 另外跳过 " + skipped.joined(separator: "、") + "。"
+    }
+    message += " 过程中可以随时停止，已完成的条目会保留。"
+    return message
+  }
+
+  func cancelBatchSummaryRequest() {
+    pendingBatchSummaryPlan = nil
+    isBatchSummaryConfirmationPresented = false
+  }
+
+  func dismissBatchSummaryOutcome() {
+    isBatchSummaryOutcomePresented = false
+    batchSummaryOutcomeMessage = ""
+  }
+
+  /// 停止只对**尚未开始**的条目生效；正在跑的那条交给它自己的取消入口，
+  /// 这里不半路掐断一次已经花掉的调用。
+  func stopBatchSummary() {
+    guard batchSummaryProgress != nil else { return }
+    batchSummaryProgress?.isStopping = true
+    batchSummaryTask?.cancel()
+  }
+
+  /// 串行执行确认过的批量总结。
+  ///
+  /// - Parameters:
+  ///   - summarize: 对单条发起总结。只负责**发起**——`requestRun` 启动后就返回，
+  ///     所以下面必须自己等到空闲，否则第二条会撞上 `runState.isActive` 被丢掉。
+  ///   - isBusy: 模型侧是否还占着那唯一一条通道（运行中，或数据去向确认弹窗还开着）。
+  ///     确认弹窗必须算「忙」，否则首条等确认时会被误判成失败。
+  func confirmBatchSummary(
+    summarize: @escaping @MainActor (HistoryDetailProjection) async -> Void,
+    isBusy: @escaping @MainActor () -> Bool
+  ) {
+    guard let plan = pendingBatchSummaryPlan, let history, !isReadOnly else {
+      cancelBatchSummaryRequest()
+      return
+    }
+    pendingBatchSummaryPlan = nil
+    isBatchSummaryConfirmationPresented = false
+    let generation = configurationGeneration
+    let items = plan.pending
+    batchSummaryProgress = BatchSummaryProgress(
+      total: items.count,
+      currentTitle: items.first?.title ?? ""
+    )
+    batchSummaryTask?.cancel()
+    batchSummaryTask = Task { [weak self] in
+      var succeeded = 0
+      var failed = 0
+      var skipped = 0
+      var stoppedEarly = false
+      var stoppedWithItemInFlight = false
+      var abortReason: String?
+
+      for (index, item) in items.enumerated() {
+        guard let self, generation == self.configurationGeneration else { return }
+        if Task.isCancelled {
+          stoppedEarly = true
+          break
+        }
+        self.batchSummaryProgress = BatchSummaryProgress(
+          total: items.count,
+          finished: index,
+          succeeded: succeeded,
+          failed: failed,
+          skipped: skipped,
+          currentTitle: item.title,
+          isStopping: false
+        )
+
+        // 预检到轮到它之间可能已被别的路径总结掉，逐条重读而不是复用预检结果。
+        let state = await Task.detached(priority: .utility) {
+          Self.batchSummaryState(history, taskID: item.taskID)
+        }.value
+        guard case let .needsSummary(detail) = state else {
+          switch state {
+          case .unreadable: failed += 1
+          case .alreadySummarized, .withoutContent: skipped += 1
+          case .needsSummary: break
+          }
+          continue
+        }
+
+        await summarize(detail)
+
+        // 先等它真的占上通道。没占上有两种可能：一是压根没启动（模型未配置、
+        // 存储不可写、数据去向确认被取消），二是快到没被 200ms 轮询采到。
+        // 只有库里也没落地总结，才认定是前者。
+        let started = await self.waitFor(
+          timeoutSeconds: Self.batchSummaryStartTimeoutSeconds,
+          condition: { isBusy() }
+        )
+        if Task.isCancelled {
+          // 用户按了停止。这一条**已经发出去了**，模型那边还在跑，落库也会照常
+          // 发生——把它算成失败是在撒谎。既不计成功也不计失败，由文案说明。
+          stoppedEarly = true
+          stoppedWithItemInFlight = started
+          break
+        }
+        if started {
+          // 上限覆盖「弹窗等用户确认 + 长稿生成」。到点仍未空闲不再往下发，
+          // 否则后续每一条都会撞上占用中的通道被静默丢弃。
+          let finished = await self.waitFor(
+            timeoutSeconds: Self.batchSummaryRunTimeoutSeconds,
+            condition: { !isBusy() }
+          )
+          if Task.isCancelled {
+            stoppedEarly = true
+            stoppedWithItemInFlight = !finished
+            break
+          }
+          if !finished {
+            abortReason = "上一条一直没有结束，剩下的没有发送。"
+          }
+        }
+
+        let after = await Task.detached(priority: .utility) {
+          Self.batchSummaryState(history, taskID: item.taskID)
+        }.value
+        if case .alreadySummarized = after {
+          succeeded += 1
+        } else {
+          failed += 1
+          if !started, abortReason == nil {
+            abortReason = "没能开始总结（可能是模型未配置、本机存储不可写，或数据去向确认被取消）。剩下的没有发送。"
+          }
+        }
+        if abortReason != nil { break }
+      }
+
+      guard let self, generation == self.configurationGeneration else { return }
+      self.finishBatchSummary(
+        total: items.count,
+        succeeded: succeeded,
+        failed: failed,
+        skipped: skipped,
+        stoppedEarly: stoppedEarly,
+        stoppedWithItemInFlight: stoppedWithItemInFlight,
+        abortReason: abortReason
+      )
+    }
+  }
+
+  private func finishBatchSummary(
+    total: Int,
+    succeeded: Int,
+    failed: Int,
+    skipped: Int,
+    stoppedEarly: Bool,
+    stoppedWithItemInFlight: Bool,
+    abortReason: String?
+  ) {
+    batchSummaryProgress = nil
+    batchSummaryTask = nil
+    var parts: [String] = []
+    if succeeded > 0 { parts.append("成功 \(succeeded) 条") }
+    if failed > 0 { parts.append("失败 \(failed) 条") }
+    if skipped > 0 { parts.append("跳过 \(skipped) 条") }
+    let inFlight = stoppedWithItemInFlight ? 1 : 0
+    let remaining = total - succeeded - failed - skipped - inFlight
+    if remaining > 0 { parts.append("未处理 \(remaining) 条") }
+    var message = parts.isEmpty ? "没有条目被处理。" : parts.joined(separator: "，") + "。"
+    if stoppedEarly {
+      message += " 已按你的要求停止，剩下的没有发送。"
+      if stoppedWithItemInFlight {
+        // 停止只拦住尚未发出的条目。已经发出去的那次调用照样在跑、照样计费、
+        // 完成后照样落库——说成「已停止」会让用户以为没花钱。
+        message += " 已经发出的那 1 条仍在进行，完成后会自动出现在历史里。"
+      }
+    } else if let abortReason {
+      message += " " + abortReason
+    }
+    if failed > 0 { message += " 失败的条目没有产生总结，可以单独重试。" }
+    batchSummaryOutcomeMessage = message
+    isBatchSummaryOutcomePresented = true
+    // 列表上的「已总结/未总结」状态点、左栏计数和当前详情都要跟着走，
+    // 否则界面还停在旧状态，用户会以为没生效。
+    reload()
+    loadDetailForSelection()
+  }
+
+  private static func batchSummaryEmptyPlanMessage(_ plan: BatchSummaryPlan) -> String {
+    var reasons: [String] = []
+    if plan.alreadySummarized > 0 { reasons.append("\(plan.alreadySummarized) 条已有总结") }
+    if plan.withoutContent > 0 { reasons.append("\(plan.withoutContent) 条没有正文可发送") }
+    if plan.unreadable > 0 { reasons.append("\(plan.unreadable) 条读不出本机记录") }
+    guard !reasons.isEmpty else { return "选中的条目里没有可以总结的内容。" }
+    return "选中的条目都不需要发送：" + reasons.joined(separator: "，") + "。"
+  }
+
+  /// 弹窗里的量级文案。上万之后精确到个位没有意义，反而更难读。
+  static func tokenScaleText(_ tokens: Int) -> String {
+    if tokens < 1_000 { return "\(tokens)" }
+    if tokens < 10_000 { return "\((tokens + 50) / 100 * 100)" }
+    let wan = Double(tokens) / 10_000
+    return String(format: "%.1f 万", wan)
+  }
+
+  var batchSummaryProgressText: String {
+    guard let progress = batchSummaryProgress else { return "" }
+    if progress.isStopping { return "正在停止批量总结…" }
+    return "正在总结 \(min(progress.finished + 1, progress.total))/\(progress.total)：\(progress.currentTitle)"
   }
 
   // MARK: - 脑图
@@ -3375,5 +3740,46 @@ final class HistoryViewModel: ObservableObject {
   nonisolated private static func detailResult(_ history: HistoryApplicationService, taskID: TaskID) -> DetailResult {
     do { return .success(try history.detail(taskID: taskID)) }
     catch { return .failure(storageCode(for: error, context: .open)) }
+  }
+
+  nonisolated static func batchSummaryState(
+    _ history: HistoryApplicationService,
+    taskID: TaskID
+  ) -> BatchSummaryItemState {
+    guard let detail = try? history.detail(taskID: taskID) else { return .unreadable }
+    if batchSummaryIsSummarized(detail) { return .alreadySummarized }
+    let body = detail.snapshots.last?.bodyText ?? ""
+    guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return .withoutContent
+    }
+    return .needsSummary(detail)
+  }
+
+  /// 预检整批。放在非 MainActor 上是因为一次可能要读几十条 detail，
+  /// SQLite 永远不在主线程执行。
+  nonisolated static func batchSummaryPlan(
+    _ history: HistoryApplicationService,
+    taskIDs: [TaskID]
+  ) -> BatchSummaryPlan {
+    var plan = BatchSummaryPlan()
+    for taskID in taskIDs {
+      switch batchSummaryState(history, taskID: taskID) {
+      case let .needsSummary(detail):
+        plan.pending.append(BatchSummaryPlan.Item(
+          taskID: taskID,
+          title: batchSummaryTitle(for: detail),
+          estimatedInputTokens: batchSummaryEstimatedTokens(
+            in: detail.snapshots.last?.bodyText ?? ""
+          )
+        ))
+      case .alreadySummarized:
+        plan.alreadySummarized += 1
+      case .withoutContent:
+        plan.withoutContent += 1
+      case .unreadable:
+        plan.unreadable += 1
+      }
+    }
+    return plan
   }
 }
