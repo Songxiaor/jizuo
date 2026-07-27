@@ -123,7 +123,14 @@ public struct BrowserSupportFrozenArtifacts: Sendable {
   /// Loads the immutable resources copied into `LinkDigestCore` and the Host
   /// already sealed inside the App bundle.  It does not create any directory.
   public static func appBundled(applicationBundle: Bundle = .main) throws -> BrowserSupportFrozenArtifacts {
-    try appBundled(applicationBundle: applicationBundle, resourceBundle: .module)
+    // 这里原来直接传 `.module`，那是「App 只能在打包它的机器上跑」的第二个来源——
+    // 而且它在启动路径上（`LinkDigestApp` 构造 browserSupport 时调用），换机时先于
+    // ProductDisplay 崩。注意调用方写的是 `try?`，但 `Bundle.module` 触发的是
+    // `fatalError`、不是 error，`try?` 拦不住。原因见 `CoreResourceBundle`。
+    guard let resourceBundle = CoreResourceBundle.resolved() else {
+      throw BrowserSupportInstallerError.frozenArtifactUnavailable
+    }
+    return try appBundled(applicationBundle: applicationBundle, resourceBundle: resourceBundle)
   }
 
   static func appBundled(
