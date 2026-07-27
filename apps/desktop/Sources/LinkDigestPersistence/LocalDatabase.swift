@@ -155,17 +155,22 @@ public final class LocalDatabase: @unchecked Sendable {
     configuration.maximumReaderCount = 8
     configuration.prepareDatabase { db in
       try db.execute(sql: "PRAGMA foreign_keys = ON")
-      // 自动 checkpoint 被关掉，而 `DatabaseMaintenance.passiveCheckpoint()` /
-      // `truncateCheckpoint()` 在生产代码里**零调用方**（只有测试和 benchmark 用）。
-      // 后果：单次会话内 WAL 只增不减，读性能随之下降；干净退出时 SQLite 会
-      // checkpoint 并删掉 WAL，所以增长有界于一次会话。
+      // autocheckpoint 保持 SQLite 默认（1000 页，约 4MB 触发一次 PASSIVE
+      // checkpoint）——这里**故意不写 pragma**，写了才是偏离。
       //
-      // 这个组合是有意取舍还是遗漏，仓库里没有任何记录——它随 P0-RC-02B 基线冻结
-      // 一起进来，提交说明和文档都没提。关闭 autocheckpoint 的常见理由是避免写入
-      // 时被 checkpoint 卡住，但那种做法通常要配一个受控时机的手动 checkpoint，
-      // 这里没有。2026-07-27 审查时保持原样未改：没有可证明的用户可见故障，
-      // 而改动数据库 checkpoint 策略需要先确认原始意图。
-      try db.execute(sql: "PRAGMA wal_autocheckpoint = 0")
+      // 2026-07-27 之前这里是 `PRAGMA wal_autocheckpoint = 0`，配上「生产代码零
+      // checkpoint 调用方」，WAL 只增不减。旧注释推断增长「有界于一次会话」，理由
+      // 是干净退出时 SQLite 会 checkpoint 并删掉 WAL——实测推翻了这个前提：
+      // 退出钩子（LinkDigestApp 的 willTerminate / SIGTERM）只 stop socket 和清
+      // 临时文件，`LocalDatabase.close()` 在 App 里零调用方，进程直接终止，
+      // 于是「干净退出」从未发生。实测后果：主库停在 364KB / 7-19，而 WAL 长到
+      // 12.9MB，是主库的 35 倍，跨会话单调累积。
+      //
+      // 关闭 autocheckpoint 的常见理由是怕写入被 checkpoint 卡住，但默认的
+      // autocheckpoint 走 PASSIVE：遇到活跃读者就放弃、不阻塞写入，那份担心本身
+      // 不成立。原始意图无从考证（随 aeb5e2e「freeze P0-RC-02B baseline」96 文件
+      // 一起进来，提交无正文，全仓文档零处提及 autocheckpoint），因此按标准行为
+      // 收敛而不是继续猜。
     }
     return configuration
   }

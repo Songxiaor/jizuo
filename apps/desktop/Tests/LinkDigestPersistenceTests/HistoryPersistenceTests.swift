@@ -1090,6 +1090,47 @@ final class HistoryProjectionMaintenanceAndConcurrencyTests: XCTestCase {
     }
   }
 
+  /// 写连接必须保留 SQLite 默认的 autocheckpoint 阈值。
+  ///
+  /// 2026-07-27 之前这里是 `PRAGMA wal_autocheckpoint = 0`，配上生产代码零
+  /// checkpoint 调用方，WAL 跨会话只增不减：实测 Syc 本机主库停在 364KB（7-19），
+  /// WAL 却长到 12.9MB。旧注释以为「干净退出时 SQLite 会 checkpoint」兜得住，但
+  /// App 的退出钩子从不调用 `LocalDatabase.close()`，那个前提根本没发生过。
+  /// 这条断言钉住阈值不再被改回 0——它不报错、不崩溃，只有去量 WAL 文件才看得见。
+  func testWritableConnectionKeepsSQLiteDefaultAutocheckpointThreshold() throws {
+    try withRepository { repository, location in
+      let threshold = try repository.database.read { db in
+        try Int.fetchOne(db, sql: "PRAGMA wal_autocheckpoint")
+      }
+      XCTAssertEqual(
+        threshold, 1000,
+        "写连接的 autocheckpoint 阈值不是 SQLite 默认的 1000；关掉它会让 WAL 跨会话单调增长")
+
+      // 阈值只是配置，还要确认它真的会触发：写够页数后 WAL 不应无界增长。
+      for index in 0..<400 {
+        _ = try repository.acceptCapture(
+          .init(
+            envelope: capture(
+              requestID: "autockpt-\(index)",
+              key: "autockpt-\(index)",
+              url: "https://autockpt.example/\(index)",
+              body: String(repeating: "y", count: 4096)),
+            receivedAtMilliseconds: Int64(index + 1)))
+      }
+      let mainSize = try FileManager.default
+        .attributesOfItem(atPath: location.databaseURL.path)[.size] as? Int ?? 0
+      // 判据是**主库有没有被写进去**，不是 WAL 文件有没有变小：PASSIVE checkpoint
+      // 把帧合并进主库后会保留 WAL 文件原大小供复用，只有 TRUNCATE 才截断。第一版
+      // 断言写成 `walSize < mainSize`，修复版自己就红了（WAL 3.88MB > 主库 2.19MB）
+      // ——那是 SQLite 的正常行为，不是缺陷。
+      // 实测：默认阈值下主库涨到约 2.19MB；把 autocheckpoint 关回 0 时主库停在初始
+      // 大小，数据全积在 WAL 里，因此 1MB 这条线能干净区分两者。
+      XCTAssertGreaterThan(
+        mainSize, 1_000_000,
+        "写入约 1.6MB 后主库只有 \(mainSize) 字节，说明 checkpoint 从未发生、数据全积在 WAL 里")
+    }
+  }
+
   func testProjectionAndStableFailuresExcludeSecretAndRawStorageMaterial() throws {
     try withRepository { repository, location in
       let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
