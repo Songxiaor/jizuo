@@ -37,41 +37,52 @@ struct BrowserSupportSettingsView: View {
   var body: some View {
     Form {
       Section {
-        receiverStatusRow
-      } header: {
-        Text("App 接收服务")
-      } footer: {
-        Text("扩展只在你点击同步时连接，不会保持在线。这里表示 App 是否已准备接收；下方配置提醒不等于传送失败。")
-      }
-      Section {
-        ForEach(configurationRows) { row in
-          configurationRow(row)
+        SettingsCard(
+          title: "App 接收服务",
+          summary: "这里只表示 App 是否已准备好接收；下方的配置提醒不等于传送失败。",
+          details: "扩展只在你点击同步时连接，不会保持在线。"
+        ) {
+          receiverStatusRow
         }
-        HStack {
-          Button("重新检查") { Task { await model.load() } }
-            .disabled(model.isLoading || model.activeBrowser != nil)
-          if model.isLoading {
-            ProgressView().controlSize(.small)
+      }
+
+      Section {
+        SettingsCard(
+          title: "浏览器配置",
+          summary: "每个浏览器都需要单独加载扩展并同步一次。",
+          details: "看到「配置已就绪」后，首次同步成功会在上方「App 接收服务」记录送达时间。Chrome、Brave 和 Edge 使用同一份 Chromium 扩展。"
+        ) {
+          VStack(alignment: .leading, spacing: 8) {
+            ForEach(configurationRows) { row in
+              configurationRow(row)
+            }
+            HStack {
+              Button("重新检查") { Task { await model.load() } }
+                .disabled(model.isLoading || model.activeBrowser != nil)
+              if model.isLoading {
+                ProgressView().controlSize(.small)
+              }
+            }
           }
         }
-      } header: {
-        Text("浏览器配置")
-      } footer: {
-        Text("每个浏览器都需要单独加载扩展并同步一次。看到“配置已就绪”后，首次同步成功会在上方记录送达时间。")
       }
+
       Section {
-        VStack(alignment: .leading, spacing: 8) {
-          Text("首次安装扩展")
-            .font(.headline)
-          Text("1. 打开浏览器的扩展管理页\n2. 开启“开发者模式”\n3. 选择“加载已解压的扩展程序”，再选择下面打开的文件夹")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
+        // 安装步骤是有序流程，编号本来就在文案里；配上按钮让最后一步可执行。
+        SettingsCard(
+          title: "首次安装扩展",
+          summary: "在浏览器里加载一次解压后的扩展文件夹即可，之后不用重复。"
+        ) {
+          VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 6) {
+              installStep(1, "打开浏览器的扩展管理页")
+              installStep(2, "开启「开发者模式」")
+              installStep(3, "选择「加载已解压的扩展程序」，再选下面打开的文件夹")
+            }
+            Button("打开扩展文件夹", action: revealExtensionFiles)
+              .accessibilityIdentifier("reveal-test-browser-extension")
+          }
         }
-        Button("打开扩展文件夹", action: revealExtensionFiles)
-          .accessibilityIdentifier("reveal-test-browser-extension")
-      } footer: {
-        Text("Chrome、Brave 和 Edge 使用同一份 Chromium 扩展。")
       }
       if let errorText = model.errorText {
         Section {
@@ -268,6 +279,22 @@ struct BrowserSupportSettingsView: View {
     case .edge: path = "/Applications/Microsoft Edge.app"
     }
     NSWorkspace.shared.openApplication(at: URL(fileURLWithPath: path), configuration: .init()) { _, _ in }
+  }
+
+  /// 安装步骤的一行。编号做成结构而不是塞在一段文字里，照着做的时候不会串行。
+  @ViewBuilder
+  private func installStep(_ index: Int, _ text: String) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      Text("\(index)")
+        .font(.caption2.weight(.bold).monospacedDigit())
+        .foregroundStyle(.secondary)
+        .frame(width: 16, height: 16)
+        .background(Circle().fill(Color.secondary.opacity(0.15)))
+      Text(text)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
   }
 
   private func revealExtensionFiles() {

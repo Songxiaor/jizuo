@@ -165,40 +165,51 @@ struct ProviderSettingsView: View {
   private var serviceTab: some View {
     Form {
       Section {
-        capabilityAssignmentRows
-      } header: {
-        Text("功能与模型")
-      } footer: {
-        Text("视频转文字和图片文字默认在本机处理；网页正文先保存在本机。只有总结、翻译和你指派给在线模型的转写会访问所选服务商。")
+        settingCard(
+          title: "功能与模型",
+          summary: "视频转文字和图片文字默认在本机处理，网页正文先保存在本机。",
+          details: "只有总结、翻译，以及你主动指派给在线模型的转写，才会访问所选服务商。"
+        ) {
+          capabilityAssignmentRows
+        }
       }
 
       Section {
-        if model.libraryEntryDisplays.isEmpty {
-          Text("还没有添加模型。添加后即可在上方为每个功能选择模型。")
-            .font(.caption).foregroundStyle(.secondary)
-        } else {
-          ForEach(model.libraryEntryDisplays) { entry in
-            libraryRow(entry)
+        settingCard(
+          title: "已添加的模型",
+          summary: "每个模型配置都有独立的 Base URL、模型名和 API Key。",
+          details: "密钥只保存在本机钥匙串，不写进历史库、导出文件或日志。"
+        ) {
+          VStack(alignment: .leading, spacing: 8) {
+            if model.libraryEntryDisplays.isEmpty {
+              Text("还没有添加模型。添加后即可在上方为每个功能选择模型。")
+                .font(.caption).foregroundStyle(.secondary)
+            } else {
+              ForEach(model.libraryEntryDisplays) { entry in
+                libraryRow(entry)
+              }
+            }
+            // 错误必须留在控件旁边。挪进 footer 就会离「添加模型…」很远，
+            // 而它恰恰是解释这个按钮为什么没成功的那句话。
+            if let errorText = model.libraryErrorText {
+              Label(errorText, systemImage: "exclamationmark.triangle.fill")
+                .font(.caption)
+                .foregroundStyle(.red)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityIdentifier("model-library-error")
+            }
+            HStack {
+              Button("添加模型…") { model.beginAddModel() }
+                .disabled(model.isSaving || model.isConfigurationLoading || model.isTestingConnection || model.isLoadingModels)
+                .accessibilityIdentifier("add-library-model")
+              Spacer()
+              if model.isEditorVisible {
+                Button("收起编辑") { model.closeEditor() }
+                  .disabled(model.isSaving || model.isTestingConnection || model.isLoadingModels)
+                  .accessibilityIdentifier("close-library-editor")
+              }
+            }
           }
-        }
-        HStack {
-          Button("添加模型…") { model.beginAddModel() }
-            .disabled(model.isSaving || model.isConfigurationLoading || model.isTestingConnection || model.isLoadingModels)
-            .accessibilityIdentifier("add-library-model")
-          Spacer()
-          if model.isEditorVisible {
-            Button("收起编辑") { model.closeEditor() }
-              .disabled(model.isSaving || model.isTestingConnection || model.isLoadingModels)
-              .accessibilityIdentifier("close-library-editor")
-          }
-        }
-      } header: {
-        Text("已添加的模型")
-      } footer: {
-        if let errorText = model.libraryErrorText {
-          Text(errorText).foregroundStyle(.red)
-        } else {
-          Text("每个模型配置都有独立的 Base URL、模型名和 API Key；密钥只保存在本机钥匙串。")
         }
       }
 
@@ -690,86 +701,72 @@ struct ProviderSettingsView: View {
 
   private var appearanceTab: some View {
     Form {
+      // 主题和阅读排版是两件事，各占一张卡。原来四项挤在同一个 Section 里，
+      // 「界面配色」和「文章怎么排」混成一块，找起来要逐条读。
       Section {
-        VStack(alignment: .leading, spacing: 10) {
-          HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 4) {
-              Text("主题").font(.headline)
-              Text("选择 LinkDigest 界面使用的颜色模式。系统跟随 macOS 的原生玻璃质感。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+        settingCard(
+          title: "主题",
+          summary: "浅色为纸质米黄质感，深色为石墨灰质感，系统跟随 macOS 原生玻璃质感。切换即时生效，无需重启。"
+        ) {
+          Picker("主题", selection: $appearanceThemeRaw) {
+            ForEach(AppearanceTheme.allCases) { option in
+              Label(option.displayName, systemImage: option.systemImageName)
+                .tag(option.rawValue)
             }
-            Spacer(minLength: 24)
-            Picker("主题", selection: $appearanceThemeRaw) {
-              ForEach(AppearanceTheme.allCases) { option in
-                Label(option.displayName, systemImage: option.systemImageName)
-                  .tag(option.rawValue)
-              }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .frame(width: 280)
-            .accessibilityIdentifier("appearance-theme-picker")
           }
+          .pickerStyle(.segmented)
+          .labelsHidden()
+          .accessibilityIdentifier("appearance-theme-picker")
         }
-        .padding(.vertical, 4)
+      }
 
-        VStack(alignment: .leading, spacing: 10) {
-          HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 4) {
-              Text("阅读字体").font(.headline)
-              Text("只作用于文章阅读区；界面控件保持系统字体，代码块保持等宽。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+      Section {
+        settingCard(
+          title: "阅读字体",
+          // 这句必须跟着 ReadingFontSelection.resolved 一起改。原来写的是
+          // 「浅色使用衬线、其它使用无衬线」——那是 New York 时期的行为，
+          // 字体改成中文家族后就成了错的文案。
+          summary: "只作用于文章阅读区；界面控件保持系统字体，代码块保持等宽。「跟随主题」在纸质主题用宋体，其余用 PingFang。",
+          details: "列表只收录自带中文字形的字体家族。像 New York、Georgia 这类只有拉丁字形的字体，中文要逐字回退且不做标点挤压，每个「，」「。」后面都会裂开一道缝，所以不列出来。"
+        ) {
+          Picker("阅读字体", selection: $readingFontRaw) {
+            Text("跟随主题").tag(ReadingFontSelection.defaultStoredValue)
+            Divider()
+            // 每一项用它自己的字形显示，选之前就能看出长什么样。
+            ForEach(ReadingFontCatalog.cjkCapableFamilies(), id: \.self) { family in
+              Text(family).font(.custom(family, size: 13)).tag(family)
             }
-            Spacer(minLength: 24)
-            Picker("阅读字体", selection: $readingFontRaw) {
-              Text("跟随主题").tag(ReadingFontSelection.defaultStoredValue)
-              Divider()
-              // 每一项用它自己的字形显示，选之前就能看出长什么样。
-              ForEach(ReadingFontCatalog.cjkCapableFamilies(), id: \.self) { family in
-                Text(family).font(.custom(family, size: 13)).tag(family)
-              }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .frame(width: 200)
-            .accessibilityIdentifier("appearance-reading-font-picker")
           }
+          .pickerStyle(.menu)
+          .labelsHidden()
+          .frame(maxWidth: 240, alignment: .leading)
+          .accessibilityIdentifier("appearance-reading-font-picker")
+        }
+      }
 
-          HStack(alignment: .firstTextBaseline) {
-            VStack(alignment: .leading, spacing: 4) {
-              Text("正文字号").font(.headline)
-              Text("标题与引用按同一比例跟着缩放，不会只有正文变大。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer(minLength: 24)
+      Section {
+        settingCard(
+          title: "正文字号",
+          summary: "标题与引用按同一比例跟着缩放，不会只有正文变大。"
+        ) {
+          VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
               Slider(
                 value: $readingFontSizeRaw,
                 in: Double(ReadingFontSize.minimum)...Double(ReadingFontSize.maximum),
                 step: Double(ReadingFontSize.step)
               )
-              .frame(width: 150)
+              .frame(maxWidth: 220)
               .accessibilityIdentifier("appearance-reading-font-size-slider")
               Text(String(format: "%.1f", readingFontSizeRaw))
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .frame(width: 34, alignment: .trailing)
+              Spacer(minLength: 0)
             }
+            readingFontPreview
           }
-
-          readingFontPreview
         }
-        .padding(.vertical, 4)
-      } header: {
-        Text("外观")
-      } footer: {
-        Text("浅色为纸质米黄质感，深色为石墨灰质感；「跟随主题」在浅色使用衬线、其它使用无衬线。切换即时生效，无需重启。")
       }
     }
     .formStyle(.grouped)
@@ -783,25 +780,29 @@ struct ProviderSettingsView: View {
   private var generationTab: some View {
     Form {
       Section {
-        TextEditor(text: $model.summaryPrompt)
-          .font(.system(size: 12))
-          .scrollContentBackground(.hidden)
-          .frame(minHeight: 120)
-          .padding(10)
-          // 圆角 6 在主界面只用于侧栏选中药丸；描边容器一律 8 起。
-          .background(settingsTheme.isNative ? Color(nsColor: .textBackgroundColor) : settingsTheme.listPane)
-          .overlay(RoundedRectangle(cornerRadius: 8).stroke(settingsTheme.hairline, lineWidth: 1))
-          .accessibilityIdentifier("summary-prompt")
-        HStack {
-          Spacer()
-          Button("重置为默认提示词", action: model.resetSummaryPrompt)
-            .disabled(model.preferencesState == .saving)
-            .accessibilityIdentifier("reset-summary-prompt")
+        settingCard(
+          title: "总结提示词",
+          summary: "无论用内置还是自定义提示词，LinkDigest 都会追加输出语言指令。",
+          details: "提示词只保存在本机，不随任何请求以外的途径离开这台机器。"
+        ) {
+          VStack(alignment: .leading, spacing: 8) {
+            TextEditor(text: $model.summaryPrompt)
+              .font(.system(size: 12))
+              .scrollContentBackground(.hidden)
+              .frame(minHeight: 120)
+              .padding(10)
+              // 圆角 6 在主界面只用于侧栏选中药丸；描边容器一律 8 起。
+              .background(settingsTheme.isNative ? Color(nsColor: .textBackgroundColor) : settingsTheme.listPane)
+              .overlay(RoundedRectangle(cornerRadius: 8).stroke(settingsTheme.hairline, lineWidth: 1))
+              .accessibilityIdentifier("summary-prompt")
+            HStack {
+              Spacer()
+              Button("重置为默认提示词", action: model.resetSummaryPrompt)
+                .disabled(model.preferencesState == .saving)
+                .accessibilityIdentifier("reset-summary-prompt")
+            }
+          }
         }
-      } header: {
-        Text("总结提示词")
-      } footer: {
-        Text("无论使用内置或自定义提示词，LinkDigest 都会追加输出语言指令；提示词只保存在本机。")
       }
 
       Section("输出语言") {
@@ -964,39 +965,15 @@ struct ProviderSettingsView: View {
 
   // MARK: - 设置卡片零件
 
-  /// 一个设置项 = 一张卡片：控件 + 一句关键说明 + 收起的详细说明。
-  ///
-  /// 原来每项是「Section header + 控件行 + 卡片外的长 footer」，说明离它控制的
-  /// 控件隔着一整块间距，读的时候对不上号；而且 footer 一律展开，四五行密字把
-  /// 页面撑满，实际控件密度极低。
+  /// 统一卡片见 `SettingsCard`。这里只是保留原调用形式，避免各页各写一份。
   @ViewBuilder
   private func settingCard(
     title: String,
     summary: String,
     details: String? = nil,
-    @ViewBuilder control: () -> some View
+    @ViewBuilder control: @escaping () -> some View
   ) -> some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Text(title).font(.headline)
-      control()
-      Text(summary)
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      if let details {
-        DisclosureGroup("了解更多") {
-          Text(details)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 4)
-        }
-        .font(.caption)
-      }
-    }
-    .padding(.vertical, 4)
+    SettingsCard(title: title, summary: summary, details: details, control: control)
   }
 
   /// 「留空时…」这类提示原来只写在 placeholder 里，右对齐显示时看起来像已经
