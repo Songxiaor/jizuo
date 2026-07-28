@@ -2,7 +2,6 @@ import {
   attachDetectedMedia,
   enrichXCaptureWithTitleFallback,
   extractDouyinSingleItemMetaInPage,
-  extractPageInIsolatedWorld,
   type ExtractedPage,
 } from "../content/extract";
 import { detectMediaInPage } from "../content/media-detection";
@@ -1148,9 +1147,15 @@ async function captureAttemptFromTab(
     // the SPA shell (feed/sidebar) instead of the video.
     page = await captureYouTubeSingleVideo(tabId, tabURL);
   } else {
+    // 注入打包好的文件而不是序列化一个函数。
+    //
+    // `func:` 会把函数体 toString 后注入，够不着模块作用域——那正是过去必须维护
+    // 一份自包含拷贝的原因，也是「改动只落在其中一份、测试全绿、生产没变」这类
+    // 失败的来源。`files:` 注入的是构建产物，模块导入照常工作，于是抽取逻辑
+    // 只剩 `extractCurrentPage` 一份实现。
     const result = await browser.scripting.executeScript({
       target: { tabId },
-      func: extractPageInIsolatedWorld,
+      files: ["extract-page.js"],
     });
     page = result[0]?.result as ExtractedPage;
     if (!page) throw new Error("CAPTURE_CONTENT_EMPTY");

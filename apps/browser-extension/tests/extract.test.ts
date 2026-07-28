@@ -6,7 +6,6 @@ import {
   enrichXCaptureWithTitleFallback,
   extractBilibiliPage,
   extractCurrentPage,
-  extractPageInIsolatedWorld,
   extractXiaohongshuPage,
   formatXDisplayTitle,
   gitHubRepoSlug,
@@ -309,7 +308,7 @@ describe("page extraction", () => {
       value: documentLike,
     });
     try {
-      const injected = extractPageInIsolatedWorld();
+      const injected = extractCurrentPage();
       expect(injected.text).toContain("远程操控可以节省碎片时间");
       expect(injected.text).toContain(`![正文配图](${lazyImage})`);
     } finally {
@@ -368,7 +367,7 @@ describe("page extraction", () => {
       value: documentLike,
     });
     try {
-      expect(extractPageInIsolatedWorld().text).toBe(testable.text);
+      expect(extractCurrentPage().text).toBe(testable.text);
     } finally {
       if (previousDocument) {
         Object.defineProperty(globalThis, "document", {
@@ -416,7 +415,7 @@ describe("page extraction", () => {
       value: documentLike,
     });
     try {
-      expect(extractPageInIsolatedWorld().text).toBe(testable.text);
+      expect(extractCurrentPage().text).toBe(testable.text);
     } finally {
       if (previousDocument) {
         Object.defineProperty(globalThis, "document", {
@@ -638,7 +637,7 @@ describe("page extraction", () => {
       value: documentLike,
     });
     try {
-      const injected = extractPageInIsolatedWorld();
+      const injected = extractCurrentPage();
       expect(injected.text).toBe(testable.text);
       expect(injected.title).toBe(testable.title);
     } finally {
@@ -678,16 +677,6 @@ describe("page extraction", () => {
     expect(isXProfileChromeImageURL("https://pbs.twimg.com/media/abc.jpg")).toBe(false);
   });
 
-  it("keeps the video-thumbnail filter inside the injected function, not only as a module helper", () => {
-    // `browser.scripting.executeScript` 只序列化被注入函数的函数体：写在模块
-    // 级的同名 helper 根本不会进到页面里。这条曾经真的发生过——模块级版本改
-    // 好了、构建产物里却连字符串都没有，封面图照旧进正文。
-    const source = readFileSync(new URL("../src/content/extract.ts", import.meta.url), "utf8");
-    const injected = source.slice(source.indexOf("export function extractPageInIsolatedWorld"));
-    expect(injected).not.toHaveLength(0);
-    expect(injected).toContain("amplify_video_thumb");
-    expect(injected).toContain("isVideoThumbnail(href)");
-  });
 
   it("detects X video thumbnails so a cover frame never doubles the video in the body", () => {
     for (const cover of [
@@ -995,7 +984,7 @@ describe("douyin media extraction", () => {
       value: doc,
     });
     try {
-      expect(extractPageInIsolatedWorld()).toEqual(testable);
+      expect(extractCurrentPage()).toEqual(testable);
     } finally {
       if (previousDocument) {
         Object.defineProperty(globalThis, "document", {
