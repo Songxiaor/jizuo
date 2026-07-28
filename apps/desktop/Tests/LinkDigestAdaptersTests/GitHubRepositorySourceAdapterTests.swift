@@ -317,16 +317,29 @@ final class GitHubRepositorySourceAdapterTests: XCTestCase {
     let clock = FaviconCacheTestClock(Date(timeIntervalSince1970: 1_000))
     let cache = WebsiteFaviconCache(applicationSupportRoot: root, now: { clock.now })
 
+    // 断言「抑制」这个不变量，而不是绝对请求数。
+    //
+    // 一次失败的尝试现在会打不止一个请求：本站 favicon.ico 之后还要回退到页面
+    // 声明（`<link rel="icon">`）。写死数字会让每次给取回链路加一层兜底都连带
+    // 改这条测试，而真正该守住的是「新鲜的 .miss 期间一个请求都不该再发」。
     let first = await cache.localImageURL(fetchingIfNeededFor: source, resources: fixture)
+    let afterFirstAttempt = fixture.requests.count
     let suppressed = await cache.localImageURL(fetchingIfNeededFor: source, resources: fixture)
     XCTAssertNil(first)
     XCTAssertNil(suppressed)
-    XCTAssertEqual(fixture.requests.count, 1, "A fresh .miss marker must prevent the repeated timeout")
+    XCTAssertGreaterThan(afterFirstAttempt, 0, "第一次尝试总该真的发出请求")
+    XCTAssertEqual(
+      fixture.requests.count, afterFirstAttempt,
+      "新鲜的 .miss 标记期间不该再发出任何请求"
+    )
 
     clock.advance(by: WebsiteFaviconCache.negativeCacheTTL + 1)
     let retried = await cache.localImageURL(fetchingIfNeededFor: source, resources: fixture)
     XCTAssertNil(retried)
-    XCTAssertEqual(fixture.requests.count, 2, "Expired negative entries are retryable")
+    XCTAssertGreaterThan(
+      fixture.requests.count, afterFirstAttempt,
+      "负缓存过期后必须重新尝试"
+    )
   }
 }
 

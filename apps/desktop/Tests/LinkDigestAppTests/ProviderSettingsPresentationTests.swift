@@ -148,7 +148,7 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     )
 
     XCTAssertTrue(source.contains("App 接收服务"))
-    XCTAssertTrue(source.contains("下方配置提醒不等于传送失败"))
+    XCTAssertTrue(source.contains("配置提醒不等于传送失败"))
     XCTAssertTrue(source.contains("Google Chrome"))
     XCTAssertTrue(source.contains("在 Chrome 中加载扩展后即可同步"))
     XCTAssertTrue(source.contains("在 Brave 中加载扩展后即可同步"))
