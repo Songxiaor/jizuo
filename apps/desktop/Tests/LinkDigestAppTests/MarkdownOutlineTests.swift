@@ -122,6 +122,34 @@ extension MarkdownOutlineTests {
       "只在标题处切；在别的块切会把段落打散")
   }
 
+  /// 目录入口不能挂在「纯文本」那一行的条件里。
+  ///
+  /// 第一版就是这么写的，结果按钮从没出现过：真实阅读区两个调用点都传
+  /// showsInlinePlainTextToggle: false（纯文本开关在菜单里），那一行永不渲染。
+  /// 这类错不报错、不崩溃，只是功能静默消失。
+  func testOutlineEntryDoesNotDependOnTheInlinePlainTextToggle() throws {
+    let source = try presentationSource()
+    XCTAssertTrue(
+      source.contains("if showsInlinePlainTextToggle || showsOutlineEntry {"),
+      "目录入口要有自己的显示条件，不能被纯文本开关的开关捎带")
+    XCTAssertTrue(
+      source.contains("if showsOutlineEntry { outlineButton }"),
+      "两个控件各自判断，不能共用一个条件")
+  }
+
+  /// 目录解析结果要缓存，不能每次 body 求值现算。
+  ///
+  /// 解析成本随正文长度线性增长，库里最长一条 73432 字，跟着重绘重算会肉眼可见地卡。
+  func testOutlineEntriesAreCachedPerSource() throws {
+    let source = try presentationSource()
+    XCTAssertTrue(
+      source.contains("@State private var outlineEntries"),
+      "目录结果要存进 state")
+    XCTAssertTrue(
+      source.contains(".task(id: source) {"),
+      "按 source 重算一次，同一条正文内的重绘不再解析")
+  }
+
   /// 跳转靠 ScrollViewReader 驱动外层滚动容器。
   func testOutlineJumpUsesScrollAnchors() throws {
     let source = try presentationSource()

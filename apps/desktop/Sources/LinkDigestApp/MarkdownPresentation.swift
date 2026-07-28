@@ -746,28 +746,31 @@ struct MarkdownContentView: View {
   @State private var rejectedLink = false
   @State private var showsOutlinePopover = false
 
-  /// 正文章节。少于 3 条不显示入口——一两个标题直接滚更快，摆个按钮只是噪音。
-  private var outlineEntries: [MarkdownOutline.Entry] {
-    MarkdownOutline.entries(from: MarkdownPresentation.blocks(from: MarkdownPresentation.sanitized(source)))
+  /// 正文章节。
+  ///
+  /// 缓存在 state 里而不是每次 body 求值现算：解析全文的成本随正文长度线性增长，
+  /// 库里最长那条 73432 字，跟着每次重绘重算会肉眼可见地卡。按 source 重算一次。
+  @State private var outlineEntries: [MarkdownOutline.Entry] = []
+
+  /// 少于 3 条不显示入口——一两个标题直接滚更快，摆个按钮只是噪音。
+  private var showsOutlineEntry: Bool {
+    !showsPlainText && MarkdownOutline.shouldPresent(outlineEntries)
   }
 
   /// 目录用弹层而不是常驻侧栏：阅读列宽只有 590pt，再切一栏会一直压缩正文；
   /// 而实测只有约两成条目的标题数够得上目录，常驻等于八成时间白占宽度。
   @ViewBuilder private var outlineButton: some View {
-    let entries = outlineEntries
-    if !showsPlainText, MarkdownOutline.shouldPresent(entries) {
-      Button {
-        showsOutlinePopover = true
-      } label: {
-        Label("章节 \(entries.count)", systemImage: "list.bullet.indent")
-          .font(.system(size: 11, weight: .medium))
-          .foregroundStyle(.tertiary)
-      }
-      .buttonStyle(.plain)
-      .accessibilityIdentifier("history-content-outline-button")
-      .popover(isPresented: $showsOutlinePopover, arrowEdge: .bottom) {
-        outlinePopover(entries)
-      }
+    Button {
+      showsOutlinePopover = true
+    } label: {
+      Label("章节 \(outlineEntries.count)", systemImage: "list.bullet.indent")
+        .font(.system(size: 11, weight: .medium))
+        .foregroundStyle(.secondary)
+    }
+    .buttonStyle(.plain)
+    .accessibilityIdentifier("history-content-outline-button")
+    .popover(isPresented: $showsOutlinePopover, arrowEdge: .bottom) {
+      outlinePopover(outlineEntries)
     }
   }
 
@@ -829,18 +832,22 @@ struct MarkdownContentView: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      if showsInlinePlainTextToggle {
+      // 目录入口不能挂在「纯文本」那一行里：真实阅读区两个调用点都传
+      // showsInlinePlainTextToggle: false（纯文本开关在菜单里），挂上去等于永不显示。
+      if showsInlinePlainTextToggle || showsOutlineEntry {
         HStack(spacing: 12) {
-          outlineButton
+          if showsOutlineEntry { outlineButton }
           Spacer(minLength: 0)
-          Toggle(isOn: $showsPlainText) {
-            Text("纯文本")
-              .font(.system(size: 11, weight: .medium))
-              .foregroundStyle(.tertiary)
+          if showsInlinePlainTextToggle {
+            Toggle(isOn: $showsPlainText) {
+              Text("纯文本")
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.tertiary)
+            }
+            .toggleStyle(.checkbox)
+            .controlSize(.mini)
+            .accessibilityIdentifier("history-content-plain-text-toggle")
           }
-          .toggleStyle(.checkbox)
-          .controlSize(.mini)
-          .accessibilityIdentifier("history-content-plain-text-toggle")
         }
       }
 
@@ -892,6 +899,12 @@ struct MarkdownContentView: View {
       Button("好", role: .cancel) {}
     } message: {
       Text("该链接未通过安全校验。")
+    }
+    // 换条目就重算一次目录；同一条正文内的重绘不再解析。
+    .task(id: source) {
+      outlineEntries = MarkdownOutline.entries(
+        from: MarkdownPresentation.blocks(from: MarkdownPresentation.sanitized(source))
+      )
     }
   }
 
