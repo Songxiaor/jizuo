@@ -191,11 +191,45 @@ extension MarkdownOutlineTests {
       "没有章节但有模块时，入口仍要出现")
   }
 
-  /// 跳转靠 ScrollViewReader 驱动外层滚动容器。
+  /// 正文必须是有界滚动区，否则长文会把下方模块顶到几屏之外。
+  func testArticleGetsItsOwnBoundedScrollArea() throws {
+    let source = try presentationSource()
+    XCTAssertTrue(
+      source.contains("private static let articleViewportHeight"),
+      "正文要有高度上限，无上限等于没有独立滚动")
+    XCTAssertTrue(
+      source.contains(".frame(maxHeight: Self.articleViewportHeight)"),
+      "上限要真的作用到滚动区")
+    // maxHeight 而不是 height：短文不该出现一个半空的滚动框。
+    XCTAssertFalse(
+      source.contains(".frame(height: Self.articleViewportHeight)"),
+      "写死高度会让短文顶着一个半空的框")
+  }
+
+  /// 章节跳内层、模块跳外层——两个滚动容器各管各的。
+  func testSectionJumpsInnerScrollAndModuleJumpsOuterWindow() throws {
+    let presentation = try presentationSource()
+    // 章节：只处理 .block，交给正文自己的 proxy。
+    XCTAssertTrue(presentation.contains("guard case let .block(index) = target else { return }"))
+    // 模块：正文里的 proxy 够不着，必须走回调。
+    XCTAssertTrue(presentation.contains("var onNavigateToModule: ((String) -> Void)?"))
+    XCTAssertTrue(presentation.contains("onNavigateToModule?(name)"))
+
+    let history = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8)
+    XCTAssertTrue(history.contains("ScrollViewReader { pageProxy in"), "主窗口要有自己的滚动代理")
+    XCTAssertTrue(history.contains("moduleScrollProxy.scrollTo(ReadingAnchor.module(name)"))
+    XCTAssertTrue(history.contains("onNavigateToModule: scrollToModule"), "回调要真的接上")
+  }
+
+  /// 章节跳转由正文自己的 ScrollViewReader 驱动。
   func testOutlineJumpUsesScrollAnchors() throws {
     let source = try presentationSource()
     XCTAssertTrue(source.contains("ScrollViewReader { proxy in"))
-    XCTAssertTrue(source.contains("proxy.scrollTo(target, anchor: .top)"))
+    XCTAssertTrue(source.contains("proxy.scrollTo(ReadingAnchor.block(index), anchor: .top)"))
     XCTAssertTrue(
       source.contains(".id(ReadingAnchor.block(entry.anchor))"),
       "每段要挂锚点，且与模块共用一套锚点类型，否则 Int 与 String 会撞车")
