@@ -3,6 +3,46 @@ import XCTest
 @testable import LinkDigestAdapters
 import LinkDigestCore
 
+private final class XTweetFixtureResourceFetcher: SafeResourceFetching, @unchecked Sendable {
+  private let lock = NSLock()
+  private var seen: [SafeResourceRequest] = []
+  private let syndication: Data
+  private let graphQL: Data
+
+  init(syndication: String, graphQL: String) {
+    self.syndication = Data(syndication.utf8)
+    self.graphQL = Data(graphQL.utf8)
+  }
+
+  func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
+    lock.withLock { seen.append(request) }
+    let path = request.url.path
+    let body: Data
+    if request.url.host == "cdn.syndication.twimg.com" {
+      body = syndication
+    } else if path == "/1.1/guest/activate.json" {
+      body = Data(#"{"guest_token":"1234567890123456789"}"#.utf8)
+    } else if path.hasSuffix("/TweetResultByRestId") {
+      body = graphQL
+    } else {
+      return .init(
+        url: request.url,
+        statusCode: 404,
+        contentType: "application/json",
+        body: Data()
+      )
+    }
+    return .init(
+      url: request.url,
+      statusCode: 200,
+      contentType: "application/json",
+      body: body
+    )
+  }
+
+  var requests: [SafeResourceRequest] { lock.withLock { seen } }
+}
+
 final class XTweetResolverTests: XCTestCase {
   func testTweetIDIsReadOnlyFromXStatusPaths() {
     XCTAssertEqual(
@@ -177,6 +217,152 @@ final class XTweetResolverTests: XCTestCase {
   func testNoteTextExtractionReturnsNilWhenAbsent() {
     XCTAssertNil(XTweetResolver.noteTextFromGraphQL(Data(#"{"data":{"tweetResult":{"result":{}}}}"#.utf8)))
     XCTAssertNil(XTweetResolver.noteTextFromGraphQL(Data("not json".utf8)))
+  }
+
+  func testXArticleRichContentIsConvertedToMarkdown() throws {
+    let json = """
+    {
+      "data": {"tweetResult": {"result": {
+        "article": {"article_results": {"result": {
+          "title": "一篇完整文章",
+          "content_state": {
+            "blocks": [
+              {"type": "unstyled", "text": "第一段正文", "entityRanges": []},
+              {"type": "header-two", "text": "关键结论", "entityRanges": []},
+              {"type": "unordered-list-item", "text": "保留列表", "entityRanges": []},
+              {"type": "blockquote", "text": "保留引用", "entityRanges": []},
+              {"type": "atomic", "text": " ", "entityRanges": [{"key": 0, "offset": 0, "length": 1}]},
+              {"type": "atomic", "text": " ", "entityRanges": [{"key": 1, "offset": 0, "length": 1}]}
+            ],
+            "entityMap": [
+              {"key": "0", "value": {"type": "MEDIA", "data": {
+                "caption": "图示说明",
+                "mediaItems": [{"mediaId": "42"}]
+              }}},
+              {"key": "1", "value": {"type": "MEDIA", "data": {
+                "mediaItems": [{"mediaId": "43"}]
+              }}}
+            ]
+          },
+          "media_entities": [
+            {"media_id": "42", "media_info": {
+              "original_img_url": "https://pbs.twimg.com/media/article.png"
+            }},
+            {"media_id": "43", "media_info": {
+              "original_img_url": "https://evil.test/tracker.png"
+            }}
+          ]
+        }}}
+      }}}
+    }
+    """
+
+    let article = try XCTUnwrap(
+      XTweetResolver.articleContentFromGraphQL(Data(json.utf8))
+    )
+    XCTAssertEqual(article.title, "一篇完整文章")
+    XCTAssertTrue(article.isComplete)
+    XCTAssertTrue(article.markdown.contains("第一段正文"))
+    XCTAssertTrue(article.markdown.contains("## 关键结论"))
+    XCTAssertTrue(article.markdown.contains("- 保留列表"))
+    XCTAssertTrue(article.markdown.contains("> 保留引用"))
+    XCTAssertTrue(article.markdown.contains(
+      "![图示说明](https://pbs.twimg.com/media/article.png)"
+    ))
+    XCTAssertFalse(article.markdown.contains("evil.test"))
+  }
+
+  func testXArticleBodyReplacesTheLauncherTweet() throws {
+    let payload = try JSONDecoder().decode(
+      XTweetResolver.Payload.self,
+      from: Data(#"{"text":"文章入口 https://t.co/short","user":{"name":"作者","screen_name":"writer"}}"#.utf8)
+    )
+    let article = XArticleContent(
+      title: "文章自己的标题",
+      markdown: "完整正文第一段\n\n## 第二节",
+      isComplete: true
+    )
+    let tweet = try XCTUnwrap(
+      XTweetResolver.tweet(
+        from: payload,
+        id: "2081645581379031509",
+        articleContent: article
+      )
+    )
+
+    XCTAssertEqual(tweet.title, "文章自己的标题")
+    XCTAssertTrue(tweet.markdownBody.contains("完整正文第一段"))
+    XCTAssertFalse(tweet.markdownBody.contains("文章入口"))
+    let document = tweet.capturedDocument(createdAt: "2026-07-28T08:00:00Z")
+    XCTAssertEqual(document.completeness, "full_article")
+    XCTAssertEqual(document.sourceLabel, "X public article endpoint")
+  }
+
+  func testResolveTweetFetchesArticleRichContentWithoutCookies() async throws {
+    let resources = XTweetFixtureResourceFetcher(
+      syndication: """
+      {
+        "text": "入口短帖 https://t.co/short",
+        "user": {"name": "作者", "screen_name": "writer"},
+        "article": {
+          "rest_id": "2081635007739604992",
+          "title": "接口预览标题",
+          "preview_text": "接口只给的预览"
+        }
+      }
+      """,
+      graphQL: """
+      {"data":{"tweetResult":{"result":{"article":{"article_results":{"result":{
+        "title":"GraphQL 完整标题",
+        "content_state":{
+          "blocks":[{"type":"unstyled","text":"GraphQL 完整正文","entityRanges":[]}],
+          "entityMap":[]
+        },
+        "media_entities":[]
+      }}}}}}}
+      """
+    )
+
+    let resolved = await XTweetResolver(resources: resources)
+      .resolveTweet(id: "2081645581379031509")
+    let tweet = try XCTUnwrap(resolved)
+    XCTAssertEqual(tweet.title, "GraphQL 完整标题")
+    XCTAssertTrue(tweet.markdownBody.contains("GraphQL 完整正文"))
+    XCTAssertFalse(tweet.markdownBody.contains("入口短帖"))
+
+    let requests = resources.requests
+    XCTAssertEqual(requests.count, 3)
+    let graphQLRequest = try XCTUnwrap(
+      requests.first { $0.url.path.hasSuffix("/TweetResultByRestId") }
+    )
+    XCTAssertTrue(
+      graphQLRequest.url.absoluteString.contains("withArticleRichContentState")
+    )
+    XCTAssertNil(graphQLRequest.headers["Cookie"])
+    XCTAssertNil(graphQLRequest.headers["cookie"])
+  }
+
+  func testArticlePreviewIsNotMarkedAsComplete() throws {
+    let payload = try JSONDecoder().decode(
+      XTweetResolver.Payload.self,
+      from: Data(#"{"text":"文章入口"}"#.utf8)
+    )
+    let tweet = try XCTUnwrap(
+      XTweetResolver.tweet(
+        from: payload,
+        id: "2081645581379031509",
+        articleContent: XArticleContent(
+          title: "文章标题",
+          markdown: "这里只是公开预览",
+          isComplete: false
+        )
+      )
+    )
+
+    XCTAssertEqual(
+      tweet.capturedDocument(createdAt: "2026-07-28T08:00:00Z").completeness,
+      "visible_only"
+    )
   }
 
   func testOverrideTextReplacesTheTruncatedSyndicationText() throws {

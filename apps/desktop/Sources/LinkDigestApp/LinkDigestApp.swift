@@ -825,6 +825,10 @@ enum BrowserReceiverState: Sendable, Equatable {
     let manualResourceFetcher = ProxyAwareWebPageFetcher()
     let faviconCache = cacheRoot.map { WebsiteFaviconCache(applicationSupportRoot: $0) }
     let mediaStoragePreference = UserDefaultsMediaStoragePreferenceStore()
+    let douyinWebCaptureService = DouyinWKWebViewCaptureService(
+      dataStore: SiteSessionController.douyin.dataStore,
+      userAgent: SiteSessionProfile.browserUserAgent
+    )
     // 播放和转写共用同一个刷新服务：转写要单独问一次「只要音轨」的 playurl，
     // 复用同一份 Cookie 与选流诊断，避免两套并行的 B 站会话状态。
     let sessionMediaRefreshService = SessionMediaRefreshService(
@@ -832,6 +836,28 @@ enum BrowserReceiverState: Sendable, Equatable {
       bilibiliQuality: { mediaStoragePreference.bilibiliStreamQuality },
       bilibiliCookieHeader: {
         await SiteSessionController.bilibili.cookieHeader()
+      },
+      douyinRefresh: { sourceURL, author in
+        guard let url = URL(string: sourceURL) else {
+          throw SessionMediaRefreshError.unsupportedPlatform
+        }
+        let document = try await douyinWebCaptureService.capture(url: url)
+        guard let media = document.media else {
+          throw SessionMediaRefreshError.noPlayableMedia
+        }
+        return MediaDescriptor(
+          kind: .directFile,
+          pageURL: document.url,
+          canonicalURL: document.url,
+          platform: media.platform,
+          ephemeralPlaybackURL: media.videoURL,
+          posterURL: media.coverURL,
+          durationSeconds: media.durationSeconds,
+          author: media.author ?? author,
+          transcriptionCapability: .supported,
+          selectionReason: .singleCandidate,
+          playbackState: .unknown
+        )
       }
     )
     let sessionMediaPlaybackController = SessionMediaPlaybackController(
@@ -918,6 +944,7 @@ enum BrowserReceiverState: Sendable, Equatable {
         fetcher: manualResourceFetcher,
         sourceAdapters: [douyinAdapter, xiaohongshuAdapter, githubAdapter]
       ),
+      douyinCapture: douyinWebCaptureService,
       imageCache: imageCache,
       imageResources: manualResourceFetcher,
       xResolver: XTweetResolver(resources: manualResourceFetcher),

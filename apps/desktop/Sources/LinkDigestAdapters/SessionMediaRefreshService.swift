@@ -33,6 +33,9 @@ public struct SessionMediaRefreshService: Sendable {
   private let bilibiliQuality: @Sendable () -> BilibiliStreamQualityPreference
   /// Returns a Cookie header for B 站 App-owned WebKit session, or nil.
   private let bilibiliCookieHeader: @Sendable () async -> String?
+  /// Re-renders one Douyin item in the App-owned WebKit partition. The returned
+  /// signed URL remains process-only and is never written into history.
+  private let douyinRefresh: (@Sendable (String, String?) async throws -> MediaDescriptor)?
 
   /// 选流过程的可见记录，供 UI 展示；不含 Cookie 与签名 URL。
   public let bilibiliDiagnostics = BilibiliSelectionDiagnostics()
@@ -40,7 +43,8 @@ public struct SessionMediaRefreshService: Sendable {
   public init(
     resources: any SafeResourceFetching,
     bilibiliQuality: @escaping @Sendable () -> BilibiliStreamQualityPreference = { .default },
-    bilibiliCookieHeader: @escaping @Sendable () async -> String? = { nil }
+    bilibiliCookieHeader: @escaping @Sendable () async -> String? = { nil },
+    douyinRefresh: (@Sendable (String, String?) async throws -> MediaDescriptor)? = nil
   ) {
     self.resources = resources
     self.xResolver = XTweetResolver(resources: resources)
@@ -50,6 +54,7 @@ public struct SessionMediaRefreshService: Sendable {
     )
     self.bilibiliQuality = bilibiliQuality
     self.bilibiliCookieHeader = bilibiliCookieHeader
+    self.douyinRefresh = douyinRefresh
   }
 
   /// `qualityOverride` 来自用户在某条视频上手动选的清晰度，优先于全局偏好，
@@ -66,6 +71,21 @@ public struct SessionMediaRefreshService: Sendable {
     let normalized = (platform ?? "").lowercased()
     if normalized == "x" || XTweetResolver.tweetID(from: sourceURL) != nil {
       return try await refreshX(sourceURL: sourceURL, author: author)
+    }
+    if normalized == "douyin"
+      || URL(string: sourceURL).map(DouyinURL.matches) == true {
+      guard let douyinRefresh else {
+        throw SessionMediaRefreshError.unsupportedPlatform
+      }
+      do {
+        return try await douyinRefresh(sourceURL, author)
+      } catch is CancellationError {
+        throw SessionMediaRefreshError.cancelled
+      } catch let error as SessionMediaRefreshError {
+        throw error
+      } catch {
+        throw SessionMediaRefreshError.networkOrParse
+      }
     }
     if normalized == "bilibili" || BilibiliPlaybackRefresher.videoID(from: sourceURL) != nil {
       do {

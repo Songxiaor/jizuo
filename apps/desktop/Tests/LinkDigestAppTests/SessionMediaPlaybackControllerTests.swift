@@ -98,6 +98,39 @@ final class SessionMediaPlaybackControllerTests: XCTestCase {
     )
     XCTAssertEqual(controller.phase, .refreshing)
   }
+
+  func testDouyinHistoryRefreshUsesRenderedCaptureCallback() async throws {
+    let expected = MediaDescriptor(
+      kind: .directFile,
+      pageURL: "https://www.douyin.com/video/7661288207509769506",
+      canonicalURL: "https://www.douyin.com/video/7661288207509769506",
+      platform: "douyin",
+      ephemeralPlaybackURL: "https://v3.douyinvod.com/video.mp4",
+      posterURL: "https://p3.douyinpic.com/cover.jpeg",
+      durationSeconds: 165,
+      author: "青山言",
+      transcriptionCapability: .supported,
+      selectionReason: .singleCandidate,
+      playbackState: .unknown
+    )
+    let service = SessionMediaRefreshService(
+      resources: BilibiliPlayURLFake(),
+      douyinRefresh: { sourceURL, author in
+        guard sourceURL == expected.pageURL, author == "旧作者" else {
+          throw SessionMediaRefreshError.networkOrParse
+        }
+        return expected
+      }
+    )
+
+    let actual = try await service.refresh(
+      platform: "douyin",
+      sourceURL: expected.pageURL,
+      author: "旧作者"
+    )
+
+    XCTAssertEqual(actual, expected)
+  }
 }
 
 /// 最小 B 站 playurl 桩：view 返回 13 分钟长片，playurl 返回可通过

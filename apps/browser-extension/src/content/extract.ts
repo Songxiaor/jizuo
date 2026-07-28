@@ -262,6 +262,41 @@ function stripBilibiliMetaTail(raw: string): string {
   return raw.split(/[,，]\s*视频播放量\s*\d/u)[0]?.trim() ?? "";
 }
 
+function normalizeBilibiliComparable(raw: string): string {
+  return raw
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/[\p{P}\p{S}\s]+/gu, "");
+}
+
+/**
+ * B 站在视频未填写简介时会拿站点宣传语或视频标题填充 og:description。
+ * 这里只清理两类有明确现场证据的假正文；只要描述比标题多出真实信息就保留。
+ */
+function cleanBilibiliMetaDescription(raw: string, title: string): string {
+  const candidate = stripBilibiliMetaTail(raw);
+  if (!candidate) return "";
+
+  const compact = candidate.replace(/\s+/gu, "");
+  if (/更多实用攻略教学/iu.test(compact) && /尽在哔哩哔哩bilibili/iu.test(compact)) {
+    return "";
+  }
+
+  const normalizedTitle = normalizeBilibiliComparable(title);
+  const normalizedCandidate = normalizeBilibiliComparable(
+    candidate.replace(/[_\-—|]\s*(哔哩哔哩|bilibili).*$/iu, ""),
+  );
+  if (
+    normalizedTitle
+    && normalizedCandidate
+    && normalizedCandidate.length % normalizedTitle.length === 0
+    && normalizedCandidate === normalizedTitle.repeat(normalizedCandidate.length / normalizedTitle.length)
+  ) {
+    return "";
+  }
+  return candidate;
+}
+
 export function extractBilibiliPage(documentLike: Document): ExtractedPage {
   const pageHref = documentLike.location.href;
   const videoID = bilibiliVideoID(pageHref);
@@ -297,14 +332,11 @@ export function extractBilibiliPage(documentLike: Document): ExtractedPage {
   // 的 content script 够不着）。也就是说实际走的永远是下面的 og 兜底路径。
   // 选择器留着当保险——它们只花一次 querySelector，B 站改回服务端渲染就自动生效；
   // 但别再据此以为「优先读 DOM」是当前的真实行为。
-  //
-  // 已知副作用：视频本身没写简介时，og:description 给的是 B 站站点通用宣传语
-  // （实测 BV1SyKp6AEKk 抓到「更多实用攻略教学…尽在哔哩哔哩bilibili」），
-  // 或者干脆是标题重复。这两种都会原样进正文。
+  // 没填简介时的通用宣传语或标题副本由 cleanBilibiliMetaDescription 丢弃。
   const description = (documentLike
     .querySelector(".basic-desc-info, [class*='desc-info' i], [class*='video-desc' i]")
     ?.textContent?.trim()
-    || stripBilibiliMetaTail(ogDescription ?? "")
+    || cleanBilibiliMetaDescription(ogDescription ?? "", title)
     || "")
     .split(/\n+/u)
     .map((line) => line.trim())
@@ -2671,6 +2703,33 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
         const raw = document.querySelector(sel)?.textContent?.replace(/\s+/gu, "").trim();
         return raw && /\d/u.test(raw) ? raw : undefined;
       };
+      const cleanMetaDescription = (raw: string): string => {
+        const candidate = raw.split(/[,，]\s*视频播放量\s*\d/u)[0]?.trim() ?? "";
+        if (!candidate) return "";
+
+        const compact = candidate.replace(/\s+/gu, "");
+        if (/更多实用攻略教学/iu.test(compact) && /尽在哔哩哔哩bilibili/iu.test(compact)) {
+          return "";
+        }
+
+        const comparable = (value: string): string => value
+          .normalize("NFKC")
+          .toLowerCase()
+          .replace(/[\p{P}\p{S}\s]+/gu, "");
+        const normalizedTitle = comparable(title);
+        const normalizedCandidate = comparable(
+          candidate.replace(/[_\-—|]\s*(哔哩哔哩|bilibili).*$/iu, ""),
+        );
+        if (
+          normalizedTitle
+          && normalizedCandidate
+          && normalizedCandidate.length % normalizedTitle.length === 0
+          && normalizedCandidate === normalizedTitle.repeat(normalizedCandidate.length / normalizedTitle.length)
+        ) {
+          return "";
+        }
+        return candidate;
+      };
       // B 站的 og:description 是给搜索引擎看的：简介后面接着播放量/弹幕/点赞/
       // 投币/收藏/转发、作者、作者简介，最后还拼一串"相关视频"标题。实测 351 字
       // 里只有前 16 字是真简介，所以从「视频播放量」这个固定拼接点截断，绝不把
@@ -2679,11 +2738,11 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
       // 2026-07-26 真机实测更正：下面的 DOM 候选**当前一个都拿不到简介**。
       // `.basic-desc-info` 是空 div，父容器 `#v_desc` 带 `style="display:none;"`，
       // 简介正文没进 DOM。实际走的永远是 og 兜底。选择器留着当保险，但别再据此
-      // 以为「优先读 DOM」是当前的真实行为。视频没写简介时，og 给的会是 B 站
-      // 通用宣传语或标题重复，两种都会原样进正文。详见可测试版同名分支的注释。
+      // 以为「优先读 DOM」是当前的真实行为。没填简介时的通用宣传语或标题副本
+      // 由上面的 cleanMetaDescription 丢弃。
       const description = formatCaption(
         document.querySelector(".basic-desc-info, [class*='desc-info' i]")?.textContent?.trim()
-        || (ogDesc ?? "").split(/[,，]\s*视频播放量\s*\d/u)[0]?.trim()
+        || cleanMetaDescription(ogDesc ?? "")
         || "");
       // Engagement + publish time come from the watch-page toolbar (the human
       // 万/亿 strings the reader sees); the SSR __INITIAL_STATE__ is a MAIN-world

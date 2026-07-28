@@ -46,7 +46,21 @@ struct CurrentCapture: Sendable, Equatable {
     self.document = document
     wireEnvelope = nil
     wireEnvelopeV2 = nil
-    mediaDescriptor = nil
+    mediaDescriptor = document.media.map {
+      MediaDescriptor(
+        kind: .directFile,
+        pageURL: document.url,
+        canonicalURL: document.url,
+        platform: $0.platform,
+        ephemeralPlaybackURL: $0.videoURL,
+        posterURL: $0.coverURL,
+        durationSeconds: $0.durationSeconds,
+        author: $0.author,
+        transcriptionCapability: .supported,
+        selectionReason: .singleCandidate,
+        playbackState: .unknown
+      )
+    }
     self.taskID = taskID
     self.snapshotID = snapshotID
   }

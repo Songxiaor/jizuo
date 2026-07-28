@@ -125,6 +125,41 @@ private final class ManualVMTrackingFetcher: WebPageFetcher, @unchecked Sendable
   var fetchedURLs: [URL] { lock.withLock { values } }
 }
 
+private struct ManualVMDouyinShellAdapter: SourceAdapting {
+  func takesOwnership(of url: URL) -> Bool { DouyinURL.matches(url) }
+  func capture(url _: URL) async throws -> CapturedDocument {
+    throw ManualLinkError.extensionCaptureRequired
+  }
+}
+
+@MainActor
+private final class ManualVMDouyinCapture: DouyinWebCapturing {
+  private(set) var capturedURLs: [URL] = []
+
+  func capture(url: URL) async throws -> CapturedDocument {
+    capturedURLs.append(url)
+    return CapturedDocument(
+      createdAt: "2026-07-27T00:00:00Z",
+      origin: .manualLink,
+      url: "https://www.douyin.com/video/7661288207509769506",
+      title: "食伤生财真相：盲派讲透",
+      platform: "douyin",
+      method: "douyin_rendered_webkit",
+      text: """
+        ---
+        author: "青山言"
+        aweme_id: "7661288207509769506"
+        ---
+
+        # 食伤生财真相：盲派讲透
+        """,
+      completeness: "best_effort",
+      capturedAt: "2026-07-27T00:00:00Z",
+      sourceLabel: "fixture"
+    )
+  }
+}
+
 @MainActor
 private final class ManualVMWeChatCapture: WeChatWebCapturing {
   private(set) var capturedURLs: [URL] = []
@@ -516,6 +551,99 @@ final class ManualLinkViewModelTests: XCTestCase {
     XCTAssertEqual(clipboard.reads, 1)
     XCTAssertTrue(model.isPresented)
     XCTAssertEqual(model.errorMessage, "剪贴板里的内容不是有效网页链接。")
+  }
+
+  func testExplicitClipboardReadExtractsTheSingleURLFromDouyinShareText() {
+    let clipboard = ManualVMClipboard(
+      "4.82 复制打开抖音，看看【青山言的作品】食伤生财真相：盲派讲透 https://v.douyin.com/UX1kjPiekmQ/ 01/12 h@o.QK :8pm YMj:/"
+    )
+    let model = makeModel(clipboard: clipboard)
+
+    model.readClipboardAndOpen()
+
+    XCTAssertEqual(clipboard.reads, 1)
+    XCTAssertEqual(model.input, "https://v.douyin.com/UX1kjPiekmQ/")
+    XCTAssertTrue(model.isPresented)
+    XCTAssertNil(model.errorMessage)
+  }
+
+  func testAutomaticClipboardSuggestionDoesNotPublishDouyinShareText() {
+    let clipboard = ManualVMClipboard(
+      "复制打开抖音 https://v.douyin.com/UX1kjPiekmQ/ 这段文字不应自动显示"
+    )
+    let model = makeModel(clipboard: clipboard)
+
+    model.handleApplicationDidBecomeActive()
+
+    XCTAssertNil(model.clipboardSuggestion)
+    XCTAssertEqual(model.input, "")
+  }
+
+  func testManualSubmitQueuesOnlyTheURLExtractedFromShareText() async {
+    let tracker = ManualVMTrackingFetcher()
+    let repository = ManualVMRepository()
+    let sink = ManualVMSink()
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: tracker),
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { await sink.receive($0) }
+    )
+
+    model.open()
+    model.input =
+      "4.82 复制打开抖音，看看【青山言的作品】 https://v.douyin.com/UX1kjPiekmQ/ 01/12 h@o.QK :8pm YMj:/"
+    model.submit()
+    _ = await sink.waitForValues(count: 1)
+
+    XCTAssertEqual(tracker.fetchedURLs.map(\.absoluteString), ["https://v.douyin.com/UX1kjPiekmQ/"])
+    XCTAssertEqual(repository.acceptedDocuments.first?.url, "https://v.douyin.com/UX1kjPiekmQ/")
+  }
+
+  func testDouyinPublicShellFallsBackToRenderedCapture() async {
+    let rendered = ManualVMDouyinCapture()
+    let repository = ManualVMRepository()
+    let sink = ManualVMSink()
+    let model = ManualLinkViewModel(
+      captureService: .init(
+        fetcher: ManualVMFetcher(),
+        sourceAdapters: [ManualVMDouyinShellAdapter()]
+      ),
+      douyinCapture: rendered,
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { await sink.receive($0) }
+    )
+
+    model.open()
+    model.input =
+      "复制打开抖音【青山言的作品】 https://v.douyin.com/UX1kjPiekmQ/ 01/12"
+    model.submit()
+    _ = await sink.waitForValues(count: 1)
+
+    XCTAssertEqual(rendered.capturedURLs.map(\.absoluteString), ["https://v.douyin.com/UX1kjPiekmQ/"])
+    XCTAssertEqual(repository.acceptedDocuments.first?.url, "https://www.douyin.com/video/7661288207509769506")
+    XCTAssertEqual(repository.acceptedDocuments.first?.method, "douyin_rendered_webkit")
+  }
+
+  func testShareTextWithMultipleWebLinksFailsClosed() {
+    let model = makeModel(clipboard: ManualVMClipboard(nil))
+    model.open()
+    model.input = "比较 https://example.test/one 和 https://example.test/two"
+
+    model.submit()
+
+    XCTAssertTrue(model.isPresented)
+    XCTAssertEqual(model.errorMessage, "请输入一条完整网页链接，或只包含一条链接的分享文案。")
+    XCTAssertTrue(model.pendingCaptures.isEmpty)
   }
 
   func testManualSubmitCommitsThenPublishesManualDocument() async {

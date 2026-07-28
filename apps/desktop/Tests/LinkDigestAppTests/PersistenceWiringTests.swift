@@ -464,6 +464,39 @@ final class AppCompositionTests: XCTestCase {
 }
 
 final class CaptureReceiverTests: XCTestCase {
+  func testManualDocumentMediaIsPlayableDuringCurrentCaptureSession() {
+    let document = CapturedDocument(
+      createdAt: "2026-07-27T12:00:00Z",
+      origin: .manualLink,
+      url: "https://www.douyin.com/video/7661288207509769506",
+      title: "抖音视频",
+      platform: "douyin",
+      method: "douyin_rendered_webkit",
+      text: "# 抖音视频",
+      completeness: "best_effort",
+      capturedAt: "2026-07-27T12:00:00Z",
+      sourceLabel: "手动链接（抖音渲染页面）",
+      media: .init(
+        platform: "douyin",
+        videoURL: "https://v3.douyinvod.com/video.mp4",
+        coverURL: "https://p3.douyinpic.com/cover.jpeg",
+        durationSeconds: 165,
+        author: "青山言"
+      )
+    )
+    let current = CurrentCapture(
+      document: document,
+      taskID: TaskID(),
+      snapshotID: ContentSnapshotID()
+    )
+
+    XCTAssertEqual(current.mediaDescriptor?.kind, .directFile)
+    XCTAssertEqual(current.mediaDescriptor?.platform, "douyin")
+    XCTAssertEqual(current.mediaDescriptor?.ephemeralPlaybackURL, document.media?.videoURL)
+    XCTAssertEqual(current.mediaDescriptor?.pageURL, document.url)
+    XCTAssertTrue(current.shouldAutomaticallyPersistLegacyMedia)
+  }
+
   func testV1BrowserMediaRemainsRemoteUntilExplicitSave() throws {
     let envelope = CaptureEnvelopeV1(
       version: 1,

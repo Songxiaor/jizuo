@@ -85,6 +85,29 @@ final class DouyinSourceAdapterTests: XCTestCase {
     XCTAssertEqual(document.media?.durationSeconds, 15.0)
   }
 
+  func testParsesRenderedStateSnippetWhenVideoElementUsesBlob() throws {
+    let pageURL = URL(
+      string: "https://www.douyin.com/video/7661288207509769506"
+    )!
+    let snippet = #"""
+    {"recommendation":{"awemeId":"7000000000000000001",
+      "play_addr":{"url_list":["https://cdn.example.test/wrong.mp4"]}},
+     "current":{"awemeId":"7661288207509769506",
+      "video":{"play_addr":{"url_list":["https://v3.douyinvod.com/current.mp4"]},
+      "cover":{"url_list":["https://p3.douyinpic.com/current.jpeg"]},
+      "duration":165000},
+      "desc":"当前作品","author":{"nickname":"青山言"}}}
+    """#
+
+    let parsed = try XCTUnwrap(
+      DouyinPageParser.parseStateSnippet(snippet, pageURL: pageURL)
+    )
+
+    XCTAssertEqual(parsed.videoURL.absoluteString, "https://v3.douyinvod.com/current.mp4")
+    XCTAssertEqual(parsed.author, "青山言")
+    XCTAssertEqual(parsed.durationSeconds, 165)
+  }
+
   func testRiskControlSurfacesExtensionGuide() async {
     let fetcher = DouyinFixtureFetcher()
     fetcher.htmlByHostPath["www.douyin.com/video/blocked"] = "<html><body>请完成安全验证 滑动验证</body></html>"

@@ -1564,17 +1564,43 @@ private struct HistoryDetailView: View {
           } else if localMediaFileURL == nil,
                     showsCurrentCapture,
                     let capture = appModel.currentCapture,
-                    let descriptor = capture.mediaDescriptor {
+                    let captureDescriptor = capture.mediaDescriptor {
+            // 手选清晰度后，优先播放本次会话刚刷新的地址；刷新前仍可立即播放
+            // 扩展随抓取带回的地址。否则当前抓取分支会一直压在 session cache
+            // 前面，菜单虽然能点，播放器却永远还是旧清晰度。
+            let descriptor = sessionMediaPlayback.cachedDescriptor(for: capture.taskID)
+              ?? captureDescriptor
             CurrentCaptureMediaPreviewCard(
               descriptor: descriptor,
               taskID: capture.taskID,
               snapshotID: capture.snapshotID,
               model: model,
               onlineTranscriptionModel: providerSettings.effectiveTranscriptionModelName,
-              playback: remotePreviewPlayback
+              playback: remotePreviewPlayback,
+              onRefreshStream: {
+                remotePreviewPlayback.release()
+                sessionMediaPlayback.invalidateAndRefresh(
+                  taskID: capture.taskID,
+                  platform: latestSourceSnapshot?.platform ?? capture.document.platform,
+                  sourceURL: sourceURL,
+                  author: sourceFrontmatter.author
+                )
+              },
+              onSelectQuality: { quality in
+                remotePreviewPlayback.release()
+                sessionMediaPlayback.invalidateAndRefresh(
+                  taskID: capture.taskID,
+                  platform: latestSourceSnapshot?.platform ?? capture.document.platform,
+                  sourceURL: sourceURL,
+                  author: sourceFrontmatter.author,
+                  qualityOverride: quality
+                )
+              },
+              selectedQuality: sessionMediaPlayback.chosenQuality(for: capture.taskID)
             )
             .padding(.top, 14)
             .accessibilityIdentifier("history-video-preview-card")
+            .id(sessionMediaPlayback.generation)
           } else if let youTubeVideoID = YouTubeWatchLink.videoID(from: detail.task.canonicalURL) {
             youTubeCard(videoID: youTubeVideoID)
           } else if let failure = model.localMediaResolutionFailure {
@@ -2209,8 +2235,8 @@ private struct HistoryDetailView: View {
 
   private var videoMetadataValue: String? {
     guard !suppressesEmbeddedMedia else { return nil }
-    if showsCurrentCapture,
-       let descriptor = appModel.currentCapture?.mediaDescriptor {
+
+    func descriptorValue(_ descriptor: MediaDescriptor) -> String {
       var parts = [CurrentCaptureMediaPreview.kindLabel(descriptor.kind)]
       if let duration = descriptor.durationSeconds, duration > 0 {
         parts.append(formatMediaDuration(duration))
@@ -2220,6 +2246,17 @@ private struct HistoryDetailView: View {
         parts.append(format.uppercased())
       }
       return parts.joined(separator: " · ")
+    }
+
+    if showsCurrentCapture,
+       let capture = appModel.currentCapture,
+       let descriptor = sessionMediaPlayback.cachedDescriptor(for: capture.taskID)
+         ?? capture.mediaDescriptor {
+      return descriptorValue(descriptor)
+    }
+    if let descriptor = sessionMediaPlayback.cachedDescriptor(for: detail.task.id),
+       case .playable = CurrentCaptureMediaPreview.resolve(descriptor) {
+      return descriptorValue(descriptor)
     }
     if let media = detail.media {
       var parts = ["本机视频"]

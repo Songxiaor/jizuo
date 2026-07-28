@@ -970,6 +970,73 @@ describe("douyin media extraction", () => {
     expect(result.text).not.toContain("别的视频");
   });
 
+  it("drops Bilibili's generic promo when an empty-description video falls back to OG metadata", () => {
+    const genericPromo =
+      "更多实用攻略教学，爆笑沙雕集锦，你所不知道的游戏知识，热门游戏视频7*24小时持续更新，"
+      + "尽在哔哩哔哩bilibili, 视频播放量 100、弹幕量 2, 视频作者 某人";
+    const doc = makeDocument({
+      title: "没有填写简介的视频_哔哩哔哩_bilibili",
+      href: "https://www.bilibili.com/video/BV1SyKp6AEKk",
+      root: el("div", [
+        el("h1", [text("没有填写简介的视频")]),
+        el("meta", [], { property: "og:description", content: genericPromo }),
+      ]),
+    });
+
+    const testable = extractBilibiliPage(doc);
+    expect(testable.text).toBe("哔哩哔哩公开视频");
+    expect(testable.text).not.toContain("更多实用攻略教学");
+    expect(testable.text).not.toContain("尽在哔哩哔哩");
+
+    const previousDocument = globalThis.document;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      writable: true,
+      value: doc,
+    });
+    try {
+      expect(extractPageInIsolatedWorld()).toEqual(testable);
+    } finally {
+      if (previousDocument) {
+        Object.defineProperty(globalThis, "document", {
+          configurable: true,
+          writable: true,
+          value: previousDocument,
+        });
+      } else {
+        delete (globalThis as { document?: Document }).document;
+      }
+    }
+  });
+
+  it("drops a title-only Bilibili OG description but keeps real text that adds information", () => {
+    const duplicate = makeDocument({
+      title: "完美！三星 Fold 8 一小时使用感受！_哔哩哔哩_bilibili",
+      href: "https://www.bilibili.com/video/BV1xx411c7mD",
+      root: el("div", [
+        el("h1", [text("完美！三星 Fold 8 一小时使用感受！")]),
+        el("meta", [], {
+          property: "og:description",
+          content: "完美！三星 Fold 8 一小时使用感受！, 视频播放量 100、弹幕量 2",
+        }),
+      ]),
+    });
+    const genuine = makeDocument({
+      title: "完美！三星 Fold 8 一小时使用感受！_哔哩哔哩_bilibili",
+      href: "https://www.bilibili.com/video/BV1xx411c7mD",
+      root: el("div", [
+        el("h1", [text("完美！三星 Fold 8 一小时使用感受！")]),
+        el("meta", [], {
+          property: "og:description",
+          content: "完美！三星 Fold 8 一小时使用感受！补充了折叠屏比例和续航实测, 视频播放量 100",
+        }),
+      ]),
+    });
+
+    expect(extractBilibiliPage(duplicate).text).toBe("哔哩哔哩公开视频");
+    expect(extractBilibiliPage(genuine).text).toContain("补充了折叠屏比例和续航实测");
+  });
+
   it("captures a Xiaohongshu note's author, date and engage-bar counts, ignoring feed-card and per-comment likes", () => {
     // 实测结构：信息流卡片与每条评论用的都是同一套 `.like-wrapper .count`，
     // 笔记打开成弹层时它们还排在 `#noteContainer` 前面。笔记自己的数字只在

@@ -1,6 +1,12 @@
 import Foundation
 import LinkDigestCore
 
+struct XArticleContent: Sendable, Equatable {
+  let title: String
+  let markdown: String
+  let isComplete: Bool
+}
+
 /// 一条已解析的推文。字段与浏览器扩展抓取 X 帖子时产出的结构保持一致，
 /// 这样两条来源落库后读起来是同一种东西。
 public struct ResolvedTweet: Sendable, Equatable {
@@ -21,6 +27,11 @@ public struct ResolvedTweet: Sendable, Equatable {
   public let quotedPhotoURLs: [String]
   /// 被引用推文的原文链接，供引用卡底部「查看原推」。
   public let quotedURL: String?
+  /// X Article 的标题与正文。文章由一条普通推文承载，syndication 的 `text`
+  /// 只是入口文案；不能把它当作文章正文。
+  public let articleTitle: String?
+  public let articleMarkdown: String?
+  public let isArticleComplete: Bool
 
   public var canonicalURL: String {
     guard let handle = authorHandle, !handle.isEmpty else {
@@ -40,6 +51,10 @@ public struct ResolvedTweet: Sendable, Equatable {
 
   /// 正文首行作为标题——与扩展侧一致：帖子没有独立标题，第一句就是标题。
   public var title: String {
+    if let articleTitle {
+      let value = articleTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !value.isEmpty { return value }
+    }
     let firstLine = text
       .split(separator: "\n", omittingEmptySubsequences: true)
       .first
@@ -59,6 +74,10 @@ public struct ResolvedTweet: Sendable, Equatable {
     lines.append("---")
     let header = lines.joined(separator: "\n")
     let gallery = photoURLs.map { "![](\($0))" }.joined(separator: "\n\n")
+    let primaryText = articleMarkdown.flatMap {
+      let value = $0.trimmingCharacters(in: .whitespacesAndNewlines)
+      return value.isEmpty ? nil : value
+    } ?? text
 
     // 引用推文以一个可解析的标记块输出，阅读区把它渲染成仿 X 原生的引用卡
     // （带边框、被引作者加粗、正文正常颜色、图片在卡内、底部原推链接）。图片以
@@ -75,7 +94,7 @@ public struct ResolvedTweet: Sendable, Equatable {
         + "\n<!--/LDQUOTE-->"
     }
 
-    return ([header, text, gallery, quotedBlock]
+    return ([header, primaryText, gallery, quotedBlock]
       .filter { !$0.isEmpty }).joined(separator: "\n\n")
   }
 
@@ -90,9 +109,9 @@ public struct ResolvedTweet: Sendable, Equatable {
       platform: "x",
       method: "rendered_dom",
       text: markdownBody,
-      completeness: "full_article",
+      completeness: articleTitle == nil || isArticleComplete ? "full_article" : "visible_only",
       capturedAt: createdAt,
-      sourceLabel: "X syndication endpoint",
+      sourceLabel: articleTitle == nil ? "X syndication endpoint" : "X public article endpoint",
       usedCookie: false,
       media: video
     )
@@ -117,6 +136,8 @@ public struct XTweetResolver: Sendable {
   private let resources: any SafeResourceFetching
   /// 推文元数据是小 JSON；给一个宽裕但有界的上限。
   private static let maximumBodyBytes = 512 * 1024
+  /// X Article 的富文本状态会明显大于普通推文，但仍保持明确上限。
+  private static let maximumGraphQLBodyBytes = 2 * 1024 * 1024
 
   public init(resources: any SafeResourceFetching) {
     self.resources = resources
@@ -188,13 +209,21 @@ public struct XTweetResolver: Sendable {
 
     guard let payload = try? JSONDecoder().decode(Payload.self, from: response.body) else { return nil }
 
-    // 原生长推文：syndication 的 text 是截断预览，note_tweet 只给一个 id。
-    // 检测到就走 guest-token GraphQL 取全文；取不到则保留截断版（降级不报错）。
+    // 原生长推文和 X Article 都只在 syndication 留一个入口。用同一个匿名
+    // TweetResultByRestId 请求补齐；取不到时保留可用预览，不伪装成全文。
     var fullText: String?
-    if payload.note_tweet != nil {
-      fullText = await fullNoteText(id: id)
+    var article = payload.article.flatMap(Self.previewArticle)
+    if payload.note_tweet != nil || payload.article != nil,
+       let richContent = await richContent(id: id) {
+      fullText = richContent.noteText
+      article = richContent.article ?? article
     }
-    return Self.tweet(from: payload, id: id, overrideText: fullText)
+    return Self.tweet(
+      from: payload,
+      id: id,
+      overrideText: fullText,
+      articleContent: article
+    )
   }
 
   // MARK: - 长推文全文（逆向 GraphQL，会随 X 改版失效，失效即降级回 syndication）
@@ -204,17 +233,27 @@ public struct XTweetResolver: Sendable {
     "AAAAAAAAAAAAAAAAAAAAANRILgAAAAAAnNwIzUejRCOuH5E6I8xnZz4puTs%3D1Zv7ttfk8LF81IUq16cHjhLTvJu4FA33AGWWjCpTnA"
   /// TweetResultByRestId 的 GraphQL query id。**X 会不定期轮换，失效后长推文
   /// 会降级回截断版；更新此值即可恢复。**
-  private static let tweetResultQueryID = "2ICDjqPd81tulZcYrtpTuQ"
+  private static let tweetResultQueryID = "LkId5Akr61BS6BmOIcffRg"
 
-  private func fullNoteText(id: String) async -> String? {
+  private struct GraphQLRichContent {
+    let noteText: String?
+    let article: XArticleContent?
+  }
+
+  private func richContent(id: String) async -> GraphQLRichContent? {
     guard let token = await activateGuestToken() else { return nil }
     let variables = "{\"tweetId\":\"\(id)\",\"withCommunity\":false,\"includePromotedContent\":false,\"withVoice\":false}"
     let features = Self.graphQLFeatures
+    let fieldToggles =
+      "{\"withArticleRichContentState\":true,\"withArticlePlainText\":false,\"withArticleSummaryText\":true,\"withArticleVoiceOver\":true}"
     // 只保留 URL query 里绝对安全的字符，其余全转义（{ } " : , 都要转）。
     let allowed = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
     guard let vEnc = variables.addingPercentEncoding(withAllowedCharacters: allowed),
           let fEnc = features.addingPercentEncoding(withAllowedCharacters: allowed),
-          let url = URL(string: "https://api.x.com/graphql/\(Self.tweetResultQueryID)/TweetResultByRestId?variables=\(vEnc)&features=\(fEnc)")
+          let tEnc = fieldToggles.addingPercentEncoding(withAllowedCharacters: allowed),
+          let url = URL(
+            string: "https://api.x.com/graphql/\(Self.tweetResultQueryID)/TweetResultByRestId?variables=\(vEnc)&features=\(fEnc)&fieldToggles=\(tEnc)"
+          )
     else { return nil }
 
     guard let response = try? await resources.fetchResource(
@@ -225,12 +264,15 @@ public struct XTweetResolver: Sendable {
           "x-guest-token": token,
           "Accept": "application/json",
         ],
-        byteLimit: Self.maximumBodyBytes,
+        byteLimit: Self.maximumGraphQLBodyBytes,
         allowsRedirectTarget: { $0.host?.lowercased() == "api.x.com" }
       )
     ), (200...299).contains(response.statusCode) else { return nil }
 
-    return Self.noteTextFromGraphQL(response.body)
+    let noteText = Self.noteTextFromGraphQL(response.body)
+    let article = Self.articleContentFromGraphQL(response.body)
+    guard noteText != nil || article != nil else { return nil }
+    return GraphQLRichContent(noteText: noteText, article: article)
   }
 
   private func activateGuestToken() async -> String? {
@@ -270,6 +312,134 @@ public struct XTweetResolver: Sendable {
     return search(root)
   }
 
+  /// X Article 的 `content_state` 是 Draft.js 风格块数组。这里不依赖整份
+  /// GraphQL 类型，只提取文章结果，并把常用块转换成可迁移的 Markdown。
+  static func articleContentFromGraphQL(_ data: Data) -> XArticleContent? {
+    guard let root = try? JSONSerialization.jsonObject(with: data) else { return nil }
+
+    func articleResult(in node: Any) -> [String: Any]? {
+      if let dictionary = node as? [String: Any] {
+        if let results = dictionary["article_results"] as? [String: Any],
+           let result = results["result"] as? [String: Any] {
+          return result
+        }
+        for value in dictionary.values {
+          if let found = articleResult(in: value) { return found }
+        }
+      } else if let array = node as? [Any] {
+        for value in array {
+          if let found = articleResult(in: value) { return found }
+        }
+      }
+      return nil
+    }
+
+    guard let result = articleResult(in: root),
+          let contentState = result["content_state"] as? [String: Any],
+          let blocks = contentState["blocks"] as? [[String: Any]]
+    else { return nil }
+
+    var mediaURLByID: [String: String] = [:]
+    for entity in result["media_entities"] as? [[String: Any]] ?? [] {
+      guard let mediaID = stringValue(entity["media_id"]),
+            let mediaInfo = entity["media_info"] as? [String: Any],
+            let rawURL = mediaInfo["original_img_url"] as? String,
+            isAllowedPhotoURL(rawURL)
+      else { continue }
+      mediaURLByID[mediaID] = rawURL
+    }
+
+    var embeddedMedia: [Int: (url: String, caption: String?)] = [:]
+    for entity in contentState["entityMap"] as? [[String: Any]] ?? [] {
+      guard let key = intValue(entity["key"]),
+            let value = entity["value"] as? [String: Any],
+            (value["type"] as? String)?.uppercased() == "MEDIA",
+            let metadata = value["data"] as? [String: Any],
+            let items = metadata["mediaItems"] as? [[String: Any]],
+            let mediaID = items.compactMap({ stringValue($0["mediaId"]) }).first,
+            let mediaURL = mediaURLByID[mediaID]
+      else { continue }
+      let caption = (metadata["caption"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      embeddedMedia[key] = (mediaURL, caption.flatMap { $0.isEmpty ? nil : $0 })
+    }
+
+    var rendered: [String] = []
+    for block in blocks {
+      let type = (block["type"] as? String)?.lowercased() ?? "unstyled"
+      let text = (block["text"] as? String ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+      if type == "atomic" {
+        let key = (block["entityRanges"] as? [[String: Any]])?
+          .compactMap { intValue($0["key"]) }
+          .first
+        guard let key, let media = embeddedMedia[key] else { continue }
+        let alt = (media.caption ?? "")
+          .replacingOccurrences(of: "\\", with: "\\\\")
+          .replacingOccurrences(of: "]", with: "\\]")
+          .replacingOccurrences(of: "\n", with: " ")
+        rendered.append("![\(alt)](\(media.url))")
+        continue
+      }
+
+      guard !text.isEmpty else { continue }
+      switch type {
+      case "header-one":
+        rendered.append("# \(text)")
+      case "header-two":
+        rendered.append("## \(text)")
+      case "header-three":
+        rendered.append("### \(text)")
+      case "header-four":
+        rendered.append("#### \(text)")
+      case "blockquote":
+        rendered.append(text.split(separator: "\n").map { "> \($0)" }.joined(separator: "\n"))
+      case "unordered-list-item":
+        rendered.append("- \(text)")
+      case "ordered-list-item":
+        rendered.append("1. \(text)")
+      case "code-block":
+        rendered.append("```\n\(text)\n```")
+      default:
+        rendered.append(text)
+      }
+    }
+
+    let markdown = rendered.joined(separator: "\n\n")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !markdown.isEmpty else { return nil }
+    let rawTitle = (result["title"] as? String)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let title = rawTitle.flatMap { $0.isEmpty ? nil : $0 } ?? "X 文章"
+    return XArticleContent(title: title, markdown: markdown, isComplete: true)
+  }
+
+  private static func previewArticle(_ marker: Payload.ArticleMarker) -> XArticleContent? {
+    let preview = marker.preview_text?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let title = marker.title?
+      .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !preview.isEmpty || !title.isEmpty else { return nil }
+    let resolvedTitle = title.isEmpty
+      ? (preview.split(separator: "\n").first.map(String.init) ?? "X 文章")
+      : title
+    return XArticleContent(title: resolvedTitle, markdown: preview, isComplete: false)
+  }
+
+  private static func stringValue(_ value: Any?) -> String? {
+    if let value = value as? String { return value }
+    if let value = value as? NSNumber { return value.stringValue }
+    return nil
+  }
+
+  private static func intValue(_ value: Any?) -> Int? {
+    if let value = value as? Int { return value }
+    if let value = value as? NSNumber { return value.intValue }
+    if let value = value as? String { return Int(value) }
+    return nil
+  }
+
   private static let graphQLFeatures =
     "{\"creator_subscriptions_tweet_preview_api_enabled\":true,\"tweetypie_unmention_optimization_enabled\":true,\"responsive_web_edit_tweet_api_enabled\":true,\"graphql_is_translatable_rweb_tweet_is_translatable_enabled\":true,\"view_counts_everywhere_api_enabled\":true,\"longform_notetweets_consumption_enabled\":true,\"responsive_web_twitter_article_tweet_consumption_enabled\":true,\"tweet_awards_web_tipping_enabled\":false,\"freedom_of_speech_not_reach_fetch_enabled\":true,\"standardized_nudges_misinfo\":true,\"tweet_with_visibility_results_prefer_gql_limited_actions_policy_enabled\":true,\"longform_notetweets_rich_text_read_enabled\":true,\"longform_notetweets_inline_media_enabled\":true,\"responsive_web_graphql_exclude_directive_enabled\":true,\"verified_phone_label_enabled\":false,\"responsive_web_media_download_video_enabled\":false,\"responsive_web_graphql_skip_user_profile_image_extensions_enabled\":false,\"responsive_web_graphql_timeline_navigation_enabled\":true,\"responsive_web_enhance_cards_enabled\":false}"
 
@@ -288,7 +458,12 @@ public struct XTweetResolver: Sendable {
     )
   }
 
-  static func tweet(from payload: Payload, id: String, overrideText: String? = nil) -> ResolvedTweet? {
+  static func tweet(
+    from payload: Payload,
+    id: String,
+    overrideText: String? = nil,
+    articleContent: XArticleContent? = nil
+  ) -> ResolvedTweet? {
     let syndicationText = (payload.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
     // 长推文全文优先（syndication 的 text 只是截断预览）；取不到就用截断版。
     let text = (overrideText?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
@@ -333,7 +508,10 @@ public struct XTweetResolver: Sendable {
       quotedText: (quotedText?.isEmpty ?? true) ? nil : quotedText,
       quotedAuthor: quotedAuthor,
       quotedPhotoURLs: quotedPhotos,
-      quotedURL: quotedURL
+      quotedURL: quotedURL,
+      articleTitle: articleContent?.title,
+      articleMarkdown: articleContent?.markdown,
+      isArticleComplete: articleContent?.isComplete ?? false
     )
   }
 
@@ -410,5 +588,13 @@ public struct XTweetResolver: Sendable {
     /// 前几百字预览，全文得另走 GraphQL 取。
     struct NoteMarker: Decodable { let id: String? }
     let note_tweet: NoteMarker?
+    /// X Article 的公开预览。完整正文位于 TweetResultByRestId 的
+    /// `article_results.result.content_state`。
+    struct ArticleMarker: Decodable {
+      let rest_id: String?
+      let title: String?
+      let preview_text: String?
+    }
+    let article: ArticleMarker?
   }
 }

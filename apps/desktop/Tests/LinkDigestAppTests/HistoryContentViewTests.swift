@@ -522,7 +522,7 @@ final class HistoryContentViewTests: XCTestCase {
     let preview = section(in: source, from: "private struct CurrentCaptureMediaPreviewCard: View", to: "/// Top-of-detail video card")
 
     XCTAssertTrue(detail.contains("showsCurrentCapture"))
-    XCTAssertTrue(detail.contains("let descriptor = capture.mediaDescriptor"))
+    XCTAssertTrue(detail.contains("let captureDescriptor = capture.mediaDescriptor"))
     XCTAssertTrue(detail.contains("localMediaFileURL == nil"))
     XCTAssertTrue(detail.contains("CurrentCaptureMediaPreviewCard"))
     XCTAssertTrue(detail.contains("HistorySessionMediaUnavailableCard"))
@@ -544,6 +544,56 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(preview.contains("history-video-preview-preparing"))
     XCTAssertTrue(preview.contains("history-video-preview-network-unavailable"))
     XCTAssertTrue(preview.contains("history-video-preview-retry"))
+  }
+
+  func testCurrentAndRestoredBilibiliPreviewCardsExposeQualitySelection() {
+    let source = historyContentViewSource()
+    let detail = section(
+      in: source,
+      from: "private struct HistoryDetailView: View",
+      to: "private struct DataDestinationDisclosureView"
+    )
+    let currentCapture = section(
+      in: detail,
+      from: "let captureDescriptor = capture.mediaDescriptor",
+      to: "} else if let youTubeVideoID"
+    )
+    let restoredCapture = section(
+      in: detail,
+      from: "let sessionDescriptor = sessionMediaPlayback.cachedDescriptor",
+      to: "} else if HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable"
+    )
+
+    for branch in [currentCapture, restoredCapture] {
+      XCTAssertTrue(branch.contains("onSelectQuality: { quality in"))
+      XCTAssertTrue(branch.contains("qualityOverride: quality"))
+      XCTAssertTrue(branch.contains("selectedQuality: sessionMediaPlayback.chosenQuality"))
+      XCTAssertTrue(branch.contains(".id(sessionMediaPlayback.generation)"))
+    }
+    XCTAssertTrue(
+      currentCapture.contains(
+        "sessionMediaPlayback.cachedDescriptor(for: capture.taskID)"
+      ),
+      "当前抓取手选清晰度后必须改用刚刷新的会话地址"
+    )
+  }
+
+  func testVideoMetadataUsesRefreshedSessionDescriptorBeforeUnavailableFallback() {
+    let source = historyContentViewSource()
+    let metadata = section(
+      in: source,
+      from: "private var videoMetadataValue: String?",
+      to: "private func formatMediaDuration"
+    )
+
+    XCTAssertTrue(
+      metadata.contains("sessionMediaPlayback.cachedDescriptor(for: detail.task.id)")
+    )
+    XCTAssertTrue(metadata.contains("case .playable = CurrentCaptureMediaPreview.resolve(descriptor)"))
+    XCTAssertLessThan(
+      metadata.range(of: "sessionMediaPlayback.cachedDescriptor(for: detail.task.id)")!.lowerBound,
+      metadata.range(of: "return \"已抓取 · 此处不可播\"")!.lowerBound
+    )
   }
 
   func testSessionOnlyUnavailablePresentationIsDesignNotError() {

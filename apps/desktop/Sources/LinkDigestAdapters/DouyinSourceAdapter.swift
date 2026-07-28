@@ -165,6 +165,8 @@ public struct DouyinParsedPage: Sendable, Equatable {
 }
 
 public enum DouyinPageParser {
+  static let maximumStateSnippetScalars = 240_000
+
   public static let riskControlMarkers = [
     "验证码",
     "请完成安全验证",
@@ -209,6 +211,14 @@ public enum DouyinPageParser {
     if let fromSSR = parseSSR(html: html, pageURL: pageURL) { return fromSSR }
     if let fromVideo = parseVideoTag(html: html, pageURL: pageURL) { return fromVideo }
     return nil
+  }
+
+  /// Parses a bounded window copied from the rendered page's own state when
+  /// the visible `<video>` uses a blob/MSE URL. Field extraction remains
+  /// anchored to the aweme id in `pageURL`.
+  static func parseStateSnippet(_ snippet: String, pageURL: URL) -> DouyinParsedPage? {
+    guard snippet.unicodeScalars.count <= maximumStateSnippetScalars else { return nil }
+    return extractFromJSONBlob(snippet, pageURL: pageURL)
   }
 
   public static func documentText(title: String?, author: String?, description: String?) -> String {
@@ -338,15 +348,21 @@ public enum DouyinPageParser {
 
     var videoURL: URL?
     for pattern in listPatterns {
-      guard let raw = firstMatch(pattern, in: anchored),
-            let url = URL(string: raw),
-            url.scheme?.lowercased() == "https",
-            !raw.contains(".m3u8"),
-            // 头像地址同样满足上面所有条件，只能靠路径特征排掉。
-            !raw.contains("avatar"), !raw.contains("/aweme/100x100/")
-      else { continue }
-      videoURL = url
-      break
+      for raw in capturedMatchesNearest(
+        pattern,
+        in: anchored,
+        anchor: DouyinURL.awemeID(from: pageURL) ?? ""
+      ) {
+        guard let url = URL(string: raw),
+              url.scheme?.lowercased() == "https",
+              !raw.contains(".m3u8"),
+              // 头像地址同样满足上面所有条件，只能靠路径特征排掉。
+              !raw.contains("avatar"), !raw.contains("/aweme/100x100/")
+        else { continue }
+        videoURL = url
+        break
+      }
+      if videoURL != nil { break }
     }
     guard let videoURL else { return nil }
 
@@ -453,6 +469,41 @@ public enum DouyinPageParser {
       if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
     }
     return nil
+  }
+
+  /// Captured values ordered by their distance from the requested aweme id.
+  ///
+  /// A ±6000-character window can still contain the tail of the previous
+  /// recommendation. Taking the first `url_list` therefore selects a valid but
+  /// wrong video. Distance ordering keeps the current object's nearby fields
+  /// first while still allowing both "id before media" and "media before id"
+  /// object layouts.
+  private static func capturedMatchesNearest(
+    _ pattern: String,
+    in value: String,
+    anchor: String
+  ) -> [String] {
+    guard !anchor.isEmpty,
+          let expression = try? NSRegularExpression(
+            pattern: pattern,
+            options: [.caseInsensitive]
+          )
+    else { return [] }
+    let fullRange = NSRange(value.startIndex..., in: value)
+    guard let anchorRange = value.range(of: anchor) else { return [] }
+    let anchorLocation = NSRange(anchorRange, in: value).location
+    return expression.matches(in: value, range: fullRange)
+      .compactMap { match -> (distance: Int, value: String)? in
+        guard match.numberOfRanges > 1,
+              let capture = Range(match.range(at: 1), in: value)
+        else { return nil }
+        return (
+          abs(match.range.location - anchorLocation),
+          String(value[capture])
+        )
+      }
+      .sorted { $0.distance < $1.distance }
+      .map(\.value)
   }
 
   private static func allMatches(_ pattern: String, in value: String) -> [String] {

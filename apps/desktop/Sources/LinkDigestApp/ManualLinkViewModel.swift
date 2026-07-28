@@ -13,6 +13,44 @@ struct NSPasteboardClipboardReader: ClipboardReading {
 
 enum ManualLinkState: Equatable { case idle, fetching, saving, failed(String) }
 
+/// Normalizes text the user explicitly submits into one web URL.
+///
+/// Sharing sheets often copy a sentence plus one link (Douyin is a common
+/// example). Accepting that explicit input is different from automatically
+/// surfacing arbitrary clipboard text: `safeClipboardSuggestion` below remains
+/// deliberately strict and still accepts only a clipboard value that is itself
+/// an HTTPS URL.
+enum ExplicitWebLinkInput {
+  static func singleURL(from rawValue: String) -> URL? {
+    let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    if let direct = validatedWebURL(trimmed) { return direct }
+
+    let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
+    guard let detector = try? NSDataDetector(
+      types: NSTextCheckingResult.CheckingType.link.rawValue
+    ) else { return nil }
+
+    var unique: [String: URL] = [:]
+    detector.enumerateMatches(in: trimmed, options: [], range: range) { match, _, _ in
+      guard let detected = match?.url,
+            let url = validatedWebURL(detected.absoluteString)
+      else { return }
+      unique[url.absoluteString] = url
+    }
+    guard unique.count == 1 else { return nil }
+    return unique.values.first
+  }
+
+  private static func validatedWebURL(_ value: String) -> URL? {
+    guard let url = URL(string: value),
+          ["http", "https"].contains(url.scheme?.lowercased()),
+          let host = url.host, !host.isEmpty
+    else { return nil }
+    return url
+  }
+}
+
 struct ClipboardLinkSuggestion: Equatable {
   let canonicalURL: String
   let host: String
@@ -87,6 +125,7 @@ final class ManualLinkViewModel: ObservableObject {
 
   private let captureService: ManualLinkCaptureService
   private let weChatCapture: any WeChatWebCapturing
+  private let douyinCapture: (any DouyinWebCapturing)?
   private let clipboard: any ClipboardReading
   private let imageCache: GitHubREADMEImageCache?
   private let imageResources: (any SafeResourceFetching)?
@@ -105,6 +144,7 @@ final class ManualLinkViewModel: ObservableObject {
   init(
     captureService: ManualLinkCaptureService = .init(fetcher: ProxyAwareWebPageFetcher()),
     weChatCapture: any WeChatWebCapturing = WeChatWKWebViewCaptureService(),
+    douyinCapture: (any DouyinWebCapturing)? = nil,
     clipboard: any ClipboardReading = NSPasteboardClipboardReader(),
     imageCache: GitHubREADMEImageCache? = nil,
     imageResources: (any SafeResourceFetching)? = nil,
@@ -113,6 +153,7 @@ final class ManualLinkViewModel: ObservableObject {
   ) {
     self.captureService = captureService
     self.weChatCapture = weChatCapture
+    self.douyinCapture = douyinCapture
     self.clipboard = clipboard
     self.imageCache = imageCache
     self.imageResources = imageResources
@@ -130,13 +171,15 @@ final class ManualLinkViewModel: ObservableObject {
   var isBusy: Bool { isFetching || isSaving }
   var errorMessage: String? { if case let .failed(message) = state { message } else { nil } }
   var fetchingMessage: String {
-    guard let url = URL(string: input.trimmingCharacters(in: .whitespacesAndNewlines)),
+    guard let url = ExplicitWebLinkInput.singleURL(from: input),
           WeChatWebCapturePolicy.isCandidate(url)
     else { return "正在安全读取网页…" }
     return "正在抓取…"
   }
   var canOpen: Bool { !isBusy && ingestor != nil }
-  var canSubmit: Bool { !isBusy && ingestor != nil && !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+  var canSubmit: Bool {
+    !isBusy && ingestor != nil && ExplicitWebLinkInput.singleURL(from: input) != nil
+  }
 
   func configure(history: HistoryApplicationService?, storageWriteGate: StorageWriteGate, nowMilliseconds: @escaping @Sendable () -> Int64, captureSink: @escaping CaptureIngestService.CaptureSink) {
     self.history = history
@@ -268,15 +311,20 @@ final class ManualLinkViewModel: ObservableObject {
     guard let value = clipboard.string()?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
       state = .failed("剪贴板里没有可用链接。"); isPresented = true; return
     }
-    guard let url = URL(string: value), ["http", "https"].contains(url.scheme?.lowercased()) else {
+    guard let url = ExplicitWebLinkInput.singleURL(from: value) else {
       state = .failed("剪贴板里的内容不是有效网页链接。"); isPresented = true; return
     }
-    input = value; state = .idle; isPresented = true
+    input = url.absoluteString; state = .idle; isPresented = true
   }
 
   func submit() {
-    guard canSubmit, ingestor != nil else { return }
-    let value = input
+    guard !isBusy, ingestor != nil else { return }
+    guard let submittedURL = ExplicitWebLinkInput.singleURL(from: input) else {
+      state = .failed("请输入一条完整网页链接，或只包含一条链接的分享文案。")
+      isPresented = true
+      return
+    }
+    let value = submittedURL.absoluteString
     // 重复检测：同一链接已在库中时先提示，避免静默重抓浪费请求与 token；
     // 用户确认后仍可继续（新抓取会併入原条目成为最新快照）。
     if !allowsDuplicateSubmit, let history,
@@ -396,6 +444,18 @@ final class ManualLinkViewModel: ObservableObject {
       } else if let url = URL(string: trimmed),
                 WeChatWebCapturePolicy.isCandidate(url) {
         document = try await weChatCapture.capture(url: url)
+      } else if let url = URL(string: trimmed),
+                DouyinURL.matches(url),
+                let douyinCapture {
+        do {
+          document = try await captureService.capture(urlString: value)
+        } catch ManualLinkError.extensionCaptureRequired {
+          // Public Douyin HTML is often only a client-rendered shell. Keep the
+          // public adapter first, then fall back to the App's isolated WebKit
+          // session instead of saving shell chrome or making the user repeat
+          // the same URL through the extension.
+          document = try await douyinCapture.capture(url: url)
+        }
       } else {
         document = try await captureService.capture(urlString: value)
       }
