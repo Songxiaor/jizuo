@@ -44,7 +44,7 @@ enum SettingsControlWidth {
   }
 }
 
-struct SettingsCard<Control: View>: View {
+struct SettingsCard<Control: View, TitleAccessory: View>: View {
   let title: String
   /// 一句话说清这个设置是干什么的。必填——写不出一句话，多半是这张卡装了不止一件事。
   let summary: String
@@ -53,6 +53,16 @@ struct SettingsCard<Control: View>: View {
   var summaryPlacement: SettingsSummaryPlacement = .belowControl
   var controlWidth: SettingsControlWidth = .compact
   @ViewBuilder var control: () -> Control
+  /// 这张卡的**主控件**，画在标题行右端。
+  ///
+  /// 见下面 `SettingsControlWidth` 的注释：`compact` 只能让控件不撑满整行，
+  /// 挡不住 `Toggle`／`LabeledContent` 把自己的控件推到那个上限的右边缘——
+  /// 于是开关停在卡片中间，既不贴标签也不与任何东西对齐。
+  ///
+  /// 一张卡只有一个主控件时，正确答案不是把它往标签边上挪，而是让它和卡片标题
+  /// 同一行、右对齐：整页所有卡片的控件因此排成一列，「输出语言」那行一直是这么画的。
+  /// 顺带消掉一处重复——卡片标题「翻译模型」和控件标签「翻译使用不同模型」讲的是同一件事。
+  @ViewBuilder var titleAccessory: () -> TitleAccessory
 
   @ViewBuilder private var summaryText: some View {
     Text(summary)
@@ -64,7 +74,11 @@ struct SettingsCard<Control: View>: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Text(title).font(.headline)
+      HStack(alignment: .firstTextBaseline, spacing: 16) {
+        Text(title).font(.headline)
+        Spacer(minLength: 12)
+        titleAccessory()
+      }
       if summaryPlacement == .aboveControl { summaryText }
       control()
         .frame(maxWidth: controlWidth.maximum, alignment: .leading)
@@ -82,6 +96,30 @@ struct SettingsCard<Control: View>: View {
       }
     }
     .padding(.vertical, 4)
+  }
+}
+
+/// 没有标题行控件的卡片照旧只写 `control`。
+///
+/// 用受约束的扩展而不是给 `titleAccessory` 一个默认值：默认值推不出泛型参数，
+/// 每个老调用点都得手写 `SettingsCard<_, EmptyView>` 才能编译。
+extension SettingsCard where TitleAccessory == EmptyView {
+  init(
+    title: String,
+    summary: String,
+    details: String? = nil,
+    summaryPlacement: SettingsSummaryPlacement = .belowControl,
+    controlWidth: SettingsControlWidth = .compact,
+    @ViewBuilder control: @escaping () -> Control
+  ) {
+    self.init(
+      title: title,
+      summary: summary,
+      details: details,
+      summaryPlacement: summaryPlacement,
+      controlWidth: controlWidth,
+      control: control,
+      titleAccessory: { EmptyView() })
   }
 }
 

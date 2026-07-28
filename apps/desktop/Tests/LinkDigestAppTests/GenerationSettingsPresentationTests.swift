@@ -97,4 +97,41 @@ final class GenerationSettingsPresentationTests: XCTestCase {
       tab.contains("TextField(\"留空时使用总结模型\""),
       "语义不能只靠 placeholder 承载")
   }
+
+  /// 空值只说一遍。
+  ///
+  /// 下拉里已经显示着「不使用：只用 Apple 本机转写」，卡片里再画一行虚线圆圈重复同一句，
+  /// 读起来像两个不同的状态。是把自由文本改成下拉时漏删的旧行。
+  func testEmptyStateIsNotRepeatedBelowThePicker() throws {
+    let text = try source()
+    XCTAssertFalse(
+      text.contains("Label(emptyOptionTitle, systemImage:"),
+      "下拉已经显示当前值了，下面不必再画一行重复它")
+  }
+
+  /// 卡片标题和控件标签不能讲同一件事。
+  ///
+  /// 主控件搬到标题行之后，「翻译模型」这张卡的标题就是它的标签，
+  /// 底下那行「翻译使用不同模型」纯属重复，还把开关顶得离标题老远。
+  func testPrimaryControlsUseTheCardTitleAsTheirLabel() throws {
+    let tab = try generationTab(in: try source())
+    XCTAssertTrue(
+      tab.contains("Toggle(\"翻译使用不同模型\", isOn: $model.usesSeparateTranslationModel)\n"
+        + "            .labelsHidden()"),
+      "开关搬到标题行后，重复的文字标签要隐藏")
+    XCTAssertTrue(
+      tab.contains("} control: {"),
+      "三张模型卡的主控件要走标题行那个入口")
+  }
+
+  /// 说明文字要跟着承载方式一起改。
+  ///
+  /// 空值从「把输入框留空」变成下拉里的一个选项之后，还写「留空时…」就是在描述
+  /// 一个界面上已经不存在的操作。
+  func testCopyMatchesHowEmptyIsActuallySelected() throws {
+    let tab = try generationTab(in: try source())
+    XCTAssertFalse(
+      tab.contains("留空时只使用 Apple 本机转写"),
+      "已经没有「留空」这个操作了，说明要跟着改")
+  }
 }

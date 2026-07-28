@@ -833,15 +833,15 @@ struct ProviderSettingsView: View {
             ? "翻译走下面这个模型，与总结分开。"
             : "默认与总结共用“\(model.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "当前模型" : model.modelName)”。"
         ) {
-          VStack(alignment: .leading, spacing: 8) {
-            Toggle("翻译使用不同模型", isOn: $model.usesSeparateTranslationModel)
-              .accessibilityIdentifier("use-separate-translation-model")
-            if model.usesSeparateTranslationModel {
-              modelSelector(title: "翻译模型", selection: Binding(
-                get: { model.translationModelName },
-                set: { model.selectModel($0, forTranslation: true) }
-              ), forTranslation: true)
-            }
+          Toggle("翻译使用不同模型", isOn: $model.usesSeparateTranslationModel)
+            .labelsHidden()
+            .accessibilityIdentifier("use-separate-translation-model")
+        } control: {
+          if model.usesSeparateTranslationModel {
+            modelSelector(title: "翻译模型", selection: Binding(
+              get: { model.translationModelName },
+              set: { model.selectModel($0, forTranslation: true) }
+            ), forTranslation: true)
           }
         }
       }
@@ -849,14 +849,20 @@ struct ProviderSettingsView: View {
       Section {
         settingCard(
           title: "在线视频转文字",
-          summary: "给超过 200MB、无法本机导入的视频用。留空时只使用 Apple 本机转写。",
+          summary: "给超过 200MB、无法本机导入的视频用。选「不使用」时只跑 Apple 本机转写。",
           details: "配置后，App 会从直连视频流提取短 M4A 分片并调用 /audio/transcriptions；每次上传前仍会确认。"
         ) {
-          modelChoiceField(
+          modelChoicePicker(
             label: "在线转写模型",
             emptyOptionTitle: "不使用：只用 Apple 本机转写",
-            customPlaceholder: "例如 whisper-large-v3-turbo",
             // 只列声明支持在线转写的服务，选到一个用不了的模型没有意义。
+            options: model.transcriptionEntryDisplays,
+            text: $model.transcriptionModelName,
+            identifier: "transcription-model-name"
+          )
+        } control: {
+          modelChoiceCustomField(
+            placeholder: "例如 whisper-large-v3-turbo",
             options: model.transcriptionEntryDisplays,
             text: $model.transcriptionModelName,
             identifier: "transcription-model-name"
@@ -870,11 +876,17 @@ struct ProviderSettingsView: View {
           summary: "把转写文字发送给聊天模型修正标点、分段和明显错别字，不改写内容。",
           details: "只发送文字本身，原始转写稿保留在历史中。"
         ) {
-          modelChoiceField(
+          modelChoicePicker(
             label: "整理模型",
             emptyOptionTitle: "跟随总结模型",
-            customPlaceholder: "模型名称",
             // 整理是纯文本改写，用的是聊天模型这一侧。
+            options: model.summaryEntryDisplays,
+            text: $model.tidyModelName,
+            identifier: "tidy-model-name"
+          )
+        } control: {
+          modelChoiceCustomField(
+            placeholder: "模型名称",
             options: model.summaryEntryDisplays,
             text: $model.tidyModelName,
             identifier: "tidy-model-name"
@@ -992,6 +1004,25 @@ struct ProviderSettingsView: View {
     )
   }
 
+  /// 主控件画在标题行右端的卡片。见 `SettingsCard.titleAccessory` 的注释。
+  private func settingCard(
+    title: String,
+    summary: String,
+    details: String? = nil,
+    controlWidth: SettingsControlWidth = .compact,
+    @ViewBuilder titleAccessory: @escaping () -> some View,
+    @ViewBuilder control: @escaping () -> some View
+  ) -> some View {
+    SettingsCard(
+      title: title,
+      summary: summary,
+      details: details,
+      controlWidth: controlWidth,
+      control: control,
+      titleAccessory: titleAccessory
+    )
+  }
+
   /// 从已添加的模型里选，而不是让人手打模型名。
   ///
   /// 模型名（`whisper-large-v3-turbo` 这种）拼错不会当场报错，只会在真正调用时
@@ -1003,52 +1034,55 @@ struct ProviderSettingsView: View {
   /// 空值有明确语义（「使用总结模型」「只用本机转写」），所以它是选项之一而不是
   /// 一个需要清空输入框才能达到的状态。
   @ViewBuilder
-  private func modelChoiceField(
+  private func modelChoicePicker(
     label: String,
     emptyOptionTitle: String,
-    customPlaceholder: String,
     options: [ProviderSettingsViewModel.LibraryEntryDisplay],
     text: Binding<String>,
     identifier: String
   ) -> some View {
-    let known = options.map(\.modelName)
-    let isCustom = !text.wrappedValue.isEmpty && !known.contains(text.wrappedValue)
-    VStack(alignment: .leading, spacing: 8) {
-      LabeledContent(label) {
-        Picker(label, selection: Binding(
-          get: { isCustom ? Self.customModelTag : text.wrappedValue },
-          set: { selected in
-            // 选「自定义…」时不清空已有值，否则改一次下拉就丢掉手填的名字。
-            if selected != Self.customModelTag { text.wrappedValue = selected }
-          }
-        )) {
-          Text(emptyOptionTitle).tag("")
-          if !options.isEmpty {
-            Divider()
-            ForEach(options) { option in
-              Text("\(option.modelName)（\(option.title)）").tag(option.modelName)
-            }
-          }
-          Divider()
-          Text("自定义…").tag(Self.customModelTag)
+    Picker(label, selection: Binding(
+      get: { isCustomModelName(text.wrappedValue, in: options) ? Self.customModelTag : text.wrappedValue },
+      set: { selected in
+        // 选「自定义…」时不清空已有值，否则改一次下拉就丢掉手填的名字。
+        if selected != Self.customModelTag { text.wrappedValue = selected }
+      }
+    )) {
+      Text(emptyOptionTitle).tag("")
+      if !options.isEmpty {
+        Divider()
+        ForEach(options) { option in
+          Text("\(option.modelName)（\(option.title)）").tag(option.modelName)
         }
-        .labelsHidden()
-        .frame(maxWidth: 260)
-        .accessibilityIdentifier(identifier)
       }
-      // 选了自定义才显示输入框，且带边框——否则光标落在一片空白里，找不到该点哪。
-      if isCustom {
-        TextField(customPlaceholder, text: text)
-          .textFieldStyle(.roundedBorder)
-          .frame(maxWidth: 260)
-          .accessibilityIdentifier("\(identifier)-custom")
-      }
-      if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        Label(emptyOptionTitle, systemImage: "circle.dashed")
-          .font(.caption)
-          .foregroundStyle(.tertiary)
-      }
+      Divider()
+      Text("自定义…").tag(Self.customModelTag)
     }
+    .labelsHidden()
+    .fixedSize()
+    .accessibilityIdentifier(identifier)
+  }
+
+  /// 只在选了「自定义…」时出现。带边框——否则光标落在一片空白里，找不到该点哪。
+  @ViewBuilder
+  private func modelChoiceCustomField(
+    placeholder: String,
+    options: [ProviderSettingsViewModel.LibraryEntryDisplay],
+    text: Binding<String>,
+    identifier: String
+  ) -> some View {
+    if isCustomModelName(text.wrappedValue, in: options) {
+      TextField(placeholder, text: text)
+        .textFieldStyle(.roundedBorder)
+        .frame(maxWidth: 260)
+        .accessibilityIdentifier("\(identifier)-custom")
+    }
+  }
+
+  private func isCustomModelName(
+    _ name: String, in options: [ProviderSettingsViewModel.LibraryEntryDisplay]
+  ) -> Bool {
+    !name.isEmpty && !options.contains { $0.modelName == name }
   }
 
   /// 下拉里代表「自定义…」的哨兵值。用一个不可能成为模型名的字符串，

@@ -124,6 +124,31 @@ final class SettingsLayoutConventionTests: XCTestCase {
       "收窄档要有具体数值，不能是 .infinity 换个名字")
   }
 
+  /// 上一条只解决了一半：控件不再横跨整行，但还是停在 440pt 的右边缘。
+  ///
+  /// `compact` 管的是控件能占多宽，管不了 `Toggle`／`LabeledContent` 在这个宽度里
+  /// 把自己的开关推向哪边——它们一律推到右边缘。于是开关停在卡片正中偏右，
+  /// 既不贴着标签，也不与任何东西对齐，比横跨整行更难读。
+  ///
+  /// 一张卡只有一个主控件时，答案是让它和卡片标题同一行、右对齐：
+  /// 整页卡片的控件因此排成一列。这也顺带消掉「翻译模型 / 翻译使用不同模型」这类重复标签。
+  func testPrimaryControlCanSitOnTheTitleRow() throws {
+    let shared = try source("SettingsCard")
+    XCTAssertTrue(
+      shared.contains("var titleAccessory: () -> TitleAccessory"),
+      "卡片要能把主控件放到标题行")
+    guard let start = shared.range(of: "var body: some View") else {
+      return XCTFail("SettingsCard 的 body 不见了")
+    }
+    let body = String(shared[start.lowerBound...].prefix(400))
+    XCTAssertTrue(
+      body.contains("Text(title).font(.headline)") && body.contains("titleAccessory()"),
+      "标题和主控件要在同一行，中间靠 Spacer 撑开成右对齐一列")
+    XCTAssertTrue(
+      body.contains("Spacer(minLength:"),
+      "靠 Spacer 右对齐，而不是给控件写死一个偏移量")
+  }
+
   /// 单选各项的解释必须写清「你要多做什么」和「代价落在哪」，不能只堆形容词。
   ///
   /// 原来写的是「更省流量，也更可预期」，用户看完的反馈是「主要是没清楚两个

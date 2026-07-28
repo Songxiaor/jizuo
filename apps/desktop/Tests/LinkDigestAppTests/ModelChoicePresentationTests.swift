@@ -20,7 +20,7 @@ final class ModelChoicePresentationTests: XCTestCase {
   func testModelFieldsOfferChoicesInsteadOfFreeText() throws {
     let settings = try source("ProviderSettingsView.swift")
     XCTAssertTrue(
-      settings.contains("private func modelChoiceField("),
+      settings.contains("private func modelChoicePicker("),
       "模型名要从已添加的模型里选")
     XCTAssertFalse(
       settings.contains("private func modelNameField("),
