@@ -303,7 +303,59 @@ enum MarkdownPresentation {
       interpretedSyntax: .inlineOnlyPreservingWhitespace,
       failurePolicy: .returnPartiallyParsedIfPossible
     )
-    return (try? AttributedString(markdown: source, options: options)) ?? AttributedString(source)
+    let normalized = normalizingCJKEmphasis(source)
+    return (try? AttributedString(markdown: normalized, options: options))
+      ?? AttributedString(normalized)
+  }
+
+  /// 把中文里「标点紧贴闭合标记」的强调改写成 CommonMark 认得的形式。
+  ///
+  /// CommonMark 规定：闭合的 `**` 若**前面是标点、后面又不是空格或标点**，就不算
+  /// 闭合标记。Foundation 严格照做，所以 `**重要提示：**您的礼品…` 会原样显示星号。
+  ///
+  /// 这不是某个页面的毛病，是规则本身为空格分隔语言设计的——中文正文不写空格，
+  /// 「提示：」后面直接接下文是常态，于是所有中文加粗都可能被打断。实测：
+  /// `**重要提示：**您的…` 失败，`**重要提示：** 您的…`（补空格）成功，
+  /// 英文的 `**Important:**your` 同样失败。
+  ///
+  /// 改写方式是把紧贴闭合标记的那个标点**移到强调范围之外**：
+  /// `**重要提示：**您` → `**重要提示**：您`。字符不增不减，只是标点不再加粗，
+  /// 视觉上几乎无差别，但能正常解析。
+  ///
+  /// 只在渲染前做，不动库里的原文：原文要如实保留页面写了什么，而且这样已有记录
+  /// 全部当场生效，不必重抓。
+  static func normalizingCJKEmphasis(_ source: String) -> String {
+    guard source.contains("*") || source.contains("_") else { return source }
+    // 行内代码里的星号是代码，不是强调。按反引号切段，只处理段外的部分。
+    let segments = source.split(separator: "`", omittingEmptySubsequences: false)
+    var rebuilt: [String] = []
+    for (index, segment) in segments.enumerated() {
+      // 偶数段在反引号之外，奇数段在代码跨度之内。
+      rebuilt.append(index % 2 == 0 ? rewritingEmphasis(String(segment)) : String(segment))
+    }
+    return rebuilt.joined(separator: "`")
+  }
+
+  private static func rewritingEmphasis(_ value: String) -> String {
+    var result = value
+    for marker in ["**", "__", "*", "_"] {
+      result = rewritingEmphasis(result, marker: marker)
+    }
+    return result
+  }
+
+  private static func rewritingEmphasis(_ value: String, marker: String) -> String {
+    let escaped = NSRegularExpression.escapedPattern(for: marker)
+    let single = NSRegularExpression.escapedPattern(for: String(marker.first!))
+    // 内容里不含标记字符本身与换行；结尾一个标点；闭合标记后面既不是空白也不是标点。
+    let pattern =
+      "\(escaped)([^\(single)\\n]*?)([\\p{P}\\p{S}])\(escaped)(?![\(single)])(?=[^\\s\\p{P}\\p{S}])"
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return value }
+    return regex.stringByReplacingMatches(
+      in: value,
+      range: NSRange(value.startIndex..., in: value),
+      withTemplate: "\(marker)$1\(marker)$2"
+    )
   }
 
   /// Plain-text mode intentionally shares the same HTML-safe presentation
@@ -692,6 +744,64 @@ struct MarkdownContentView: View {
   @Binding var showsPlainText: Bool
   var showsInlinePlainTextToggle: Bool = true
   @State private var rejectedLink = false
+  @State private var showsOutlinePopover = false
+
+  /// 正文章节。少于 3 条不显示入口——一两个标题直接滚更快，摆个按钮只是噪音。
+  private var outlineEntries: [MarkdownOutline.Entry] {
+    MarkdownOutline.entries(from: MarkdownPresentation.blocks(from: MarkdownPresentation.sanitized(source)))
+  }
+
+  /// 目录用弹层而不是常驻侧栏：阅读列宽只有 590pt，再切一栏会一直压缩正文；
+  /// 而实测只有约两成条目的标题数够得上目录，常驻等于八成时间白占宽度。
+  @ViewBuilder private var outlineButton: some View {
+    let entries = outlineEntries
+    if !showsPlainText, MarkdownOutline.shouldPresent(entries) {
+      Button {
+        showsOutlinePopover = true
+      } label: {
+        Label("章节 \(entries.count)", systemImage: "list.bullet.indent")
+          .font(.system(size: 11, weight: .medium))
+          .foregroundStyle(.tertiary)
+      }
+      .buttonStyle(.plain)
+      .accessibilityIdentifier("history-content-outline-button")
+      .popover(isPresented: $showsOutlinePopover, arrowEdge: .bottom) {
+        outlinePopover(entries)
+      }
+    }
+  }
+
+  @ViewBuilder private func outlinePopover(_ entries: [MarkdownOutline.Entry]) -> some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: 2) {
+        ForEach(entries) { entry in
+          Button {
+            showsOutlinePopover = false
+            scrollTarget = entry.blockIndex
+          } label: {
+            Text(entry.text)
+              .font(.system(size: 12))
+              .foregroundStyle(.primary)
+              .lineLimit(2)
+              .multilineTextAlignment(.leading)
+              .fixedSize(horizontal: false, vertical: true)
+              .padding(.leading, CGFloat(MarkdownOutline.indentDepth(of: entry, in: entries)) * 14)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .contentShape(Rectangle())
+              .padding(.vertical, 3)
+          }
+          .buttonStyle(.plain)
+        }
+      }
+      .padding(12)
+    }
+    .frame(width: 260, height: min(CGFloat(entries.count) * 26 + 24, 380))
+    .accessibilityIdentifier("history-content-outline-popover")
+  }
+
+  /// 点击目录后要滚到的块下标。用 `ScrollViewReader` 驱动**外层**滚动容器——
+  /// 它放在 ScrollView 内部就能生效，不必把 proxy 从详情页一层层传进来。
+  @State private var scrollTarget: Int?
 
   init(
     source: String,
@@ -720,7 +830,8 @@ struct MarkdownContentView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       if showsInlinePlainTextToggle {
-        HStack {
+        HStack(spacing: 12) {
+          outlineButton
           Spacer(minLength: 0)
           Toggle(isOn: $showsPlainText) {
             Text("纯文本")
@@ -790,41 +901,63 @@ struct MarkdownContentView: View {
     // 相邻文本块合成一个 NSTextView 段（跨段连续选择）；代码块保持
     // SwiftUI 卡片独立渲染，复制按钮不丢。
     let blocks = MarkdownPresentation.blocks(from: value)
-    var runs: [StructuredRun] = []
-    for block in blocks {
+    let anchorable = MarkdownOutline.shouldPresent(MarkdownOutline.entries(from: blocks))
+    var runs: [(anchor: Int, run: StructuredRun)] = []
+    for (index, block) in blocks.enumerated() {
+      // 目录可用时在标题处另起一段，这样每个章节都有自己的锚点可以跳。
+      //
+      // 代价是跨章节的连续选择会断在标题上——章节内部的跨段选择不受影响。
+      // 只在目录真的会出现时才切；不够格出目录的文档（约八成）保持原有的
+      // 「相邻文本块合成一个 NSTextView」，一个字都没变。
+      let startsSection: Bool = {
+        guard anchorable, case .heading = block else { return false }
+        return true
+      }()
       if case let .code(language, content) = block {
-        runs.append(.code(language: language, content: content))
-      } else if case var .text(accumulated) = runs.last {
+        runs.append((index, .code(language: language, content: content)))
+      } else if !startsSection, case var .text(accumulated) = runs.last?.run {
         accumulated.append(block)
-        runs[runs.count - 1] = .text(accumulated)
+        runs[runs.count - 1].run = .text(accumulated)
       } else {
-        runs.append(.text([block]))
+        runs.append((index, .text([block])))
       }
     }
-    return VStack(alignment: .leading, spacing: 0) {
-      ForEach(Array(runs.enumerated()), id: \.offset) { _, run in
-        switch run {
-        case let .text(textBlocks):
-          SelectableReadingTextView(
-            attributed: ReadingTextComposer.attributed(
-              blocks: textBlocks,
-              readingFont: readingFont,
-              palette: .init(
-                primary: NSColor(primaryTextColor),
-                secondary: NSColor(secondaryTextColor),
-                accent: NSColor(accentColor)
-              )
-            ),
-            accent: NSColor(accentColor),
-            onOpenLink: { url in openValidated(url) }
-          )
-        case let .code(language, content):
-          codeBlock(language: language, content: content)
-            .padding(.bottom, 20)
+    return ScrollViewReader { proxy in
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(Array(runs.enumerated()), id: \.offset) { _, entry in
+          runView(entry.run)
+            .id(entry.anchor)
         }
       }
+      .onChange(of: scrollTarget) { _, target in
+        guard let target else { return }
+        withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(target, anchor: .top) }
+        scrollTarget = nil
+      }
     }
-    .foregroundStyle(primaryTextColor)
+  }
+
+  @ViewBuilder
+  private func runView(_ run: StructuredRun) -> some View {
+    switch run {
+    case let .text(textBlocks):
+      SelectableReadingTextView(
+        attributed: ReadingTextComposer.attributed(
+          blocks: textBlocks,
+          readingFont: readingFont,
+          palette: .init(
+            primary: NSColor(primaryTextColor),
+            secondary: NSColor(secondaryTextColor),
+            accent: NSColor(accentColor)
+          )
+        ),
+        accent: NSColor(accentColor),
+        onOpenLink: { url in openValidated(url) }
+      )
+    case let .code(language, content):
+      codeBlock(language: language, content: content)
+        .padding(.bottom, 20)
+    }
   }
 
   private enum StructuredRun {
