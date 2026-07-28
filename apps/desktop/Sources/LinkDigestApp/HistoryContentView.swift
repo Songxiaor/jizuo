@@ -1493,9 +1493,6 @@ private struct HistoryDetailView: View {
   }
 
   var body: some View {
-    // 正文卡片自己是一个有界滚动区，里面的 ScrollViewReader 只能驱动它自己。
-    // 模块在正文外面，只能由这一层的 proxy 去滚。
-    ScrollViewReader { pageProxy in
     ScrollView {
       // Title → URL → run/capture metadata (top) → action toolbar → reading → tags.
       VStack(alignment: .leading, spacing: 0) {
@@ -1725,9 +1722,6 @@ private struct HistoryDetailView: View {
       .padding(.horizontal, 40)
       .padding(.top, 32)
       .padding(.bottom, 48)
-      .thinScrollers()
-    }
-    .onAppear { moduleScrollProxy = pageProxy }
     }
     // `initial: true` so the first item rendered also lands on the right pane;
     // previously the @State default won and a summary-less item opened on an
@@ -2096,16 +2090,6 @@ private struct HistoryDetailView: View {
   /// 按真实存在与否构造，不写死一张表：列出点了跳不到的死链接比不列更糟。
   /// 脑图、标注、标签区永远渲染（本身带空状态与添加入口），所以恒列；
   /// 图片区只在有本地图片时才存在。
-  /// 主窗口的滚动代理，供正文卡片里的导航弹层跳到下方模块。
-  @State private var moduleScrollProxy: ScrollViewProxy?
-
-  private func scrollToModule(_ name: String) {
-    guard let moduleScrollProxy else { return }
-    withAnimation(.easeInOut(duration: 0.25)) {
-      moduleScrollProxy.scrollTo(ReadingAnchor.module(name), anchor: .top)
-    }
-  }
-
   private var navigationModules: [ReadingModuleLink] {
     var links: [ReadingModuleLink] = [
       .init(anchor: "mindmap", title: "脑图", systemImage: "circle.hexagongrid")
@@ -2134,10 +2118,7 @@ private struct HistoryDetailView: View {
       content
     }
     .animation(historyUIAnimation(reduceMotion: reduceMotion), value: showsStreamingResultCard)
-    // 正文铺满卡片宽度。原来内容卡在 590pt、卡片却有 680pt，右侧空出近 90pt——
-    // 没有滚动条时只是浪费，正文改成自带滚动后，滚动条就浮在正文和卡片边框中间，
-    // 看着像挂错了地方。行宽由外层 680pt 的卡片上限控制，仍在可读区间。
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(maxWidth: 590, alignment: .leading)
     .padding(.horizontal, 16)
     .padding(.top, showsReadingPanePicker ? 12 : 16)
     .padding(.bottom, 16)
@@ -2434,8 +2415,7 @@ private struct HistoryDetailView: View {
           accentColor: theme.accent,
           showsPlainText: $showsPlainText,
           showsInlinePlainTextToggle: false,
-          navigationModules: navigationModules,
-          onNavigateToModule: scrollToModule
+          navigationModules: navigationModules
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("history-reading-result")
@@ -2521,8 +2501,7 @@ private struct HistoryDetailView: View {
             accentColor: theme.accent,
             showsPlainText: $showsPlainText,
             showsInlinePlainTextToggle: false,
-            navigationModules: navigationModules,
-          onNavigateToModule: scrollToModule
+            navigationModules: navigationModules
           )
           .frame(maxWidth: .infinity, alignment: .leading)
           .accessibilityIdentifier("history-reading-source")

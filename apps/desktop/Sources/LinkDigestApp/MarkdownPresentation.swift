@@ -746,11 +746,6 @@ struct MarkdownContentView: View {
   /// 正文下方的模块（脑图 / 图片 / 标注 / 标签…）。由详情页按实际存在的模块传入——
   /// 这里不知道页面上有什么，硬猜只会列出点了跳不到的死链接。
   var navigationModules: [ReadingModuleLink] = []
-  /// 跳到正文下方的模块。
-  ///
-  /// 正文自己是一个有界滚动区，`ScrollViewReader` 只能驱动最近的那个容器——
-  /// 模块在正文外面，够不着。所以由详情页提供这条回调去滚主窗口。
-  var onNavigateToModule: ((String) -> Void)?
   @State private var rejectedLink = false
   @State private var showsOutlinePopover = false
 
@@ -845,12 +840,7 @@ struct MarkdownContentView: View {
   ) -> some View {
     Button {
       showsOutlinePopover = false
-      switch target {
-      case .block:
-        scrollTarget = target
-      case let .module(name):
-        onNavigateToModule?(name)
-      }
+      scrollTarget = target
     } label: {
       HStack(spacing: 6) {
         if let systemImage {
@@ -890,8 +880,7 @@ struct MarkdownContentView: View {
     accentColor: Color = .accentColor,
     showsPlainText: Binding<Bool> = .constant(false),
     showsInlinePlainTextToggle: Bool = true,
-    navigationModules: [ReadingModuleLink] = [],
-    onNavigateToModule: ((String) -> Void)? = nil
+    navigationModules: [ReadingModuleLink] = []
   ) {
     self.source = source
     self.sourceURL = sourceURL
@@ -904,7 +893,6 @@ struct MarkdownContentView: View {
     self._showsPlainText = showsPlainText
     self.showsInlinePlainTextToggle = showsInlinePlainTextToggle
     self.navigationModules = navigationModules
-    self.onNavigateToModule = onNavigateToModule
   }
 
   var body: some View {
@@ -928,48 +916,6 @@ struct MarkdownContentView: View {
         }
       }
 
-      // 正文自带滚动区：不这样的话，7 万字的正文会把脑图 / 图片 / 标签顶到几屏之外，
-      // 要处理图片得从头滚到底。给正文一个高度上限、让它自己滚，下方模块就一直
-      // 在触手可及的位置。
-      //
-      // 内容不够高时 `maxHeight` 不生效，短文照旧按自然高度铺开，不会出现一个
-      // 半空的滚动框。
-      ScrollViewReader { proxy in
-        ScrollView {
-          articleContent
-            .thinScrollers()
-        }
-        .frame(maxHeight: Self.articleViewportHeight)
-        .scrollBounceBehavior(.basedOnSize)
-        .onChange(of: scrollTarget) { _, target in
-          guard case let .block(index) = target else { return }
-          withAnimation(.easeInOut(duration: 0.25)) {
-            proxy.scrollTo(ReadingAnchor.block(index), anchor: .top)
-          }
-          scrollTarget = nil
-        }
-      }
-    }
-    .alert("无法打开链接", isPresented: $rejectedLink) {
-      Button("好", role: .cancel) {}
-    } message: {
-      Text("该链接未通过安全校验。")
-    }
-    // 换条目就重算一次目录；同一条正文内的重绘不再解析。
-    .task(id: source) {
-      outlineEntries = MarkdownOutline.entries(
-        from: MarkdownPresentation.blocks(from: MarkdownPresentation.sanitized(source))
-      )
-    }
-  }
-
-  /// 正文卡片的高度上限。
-  ///
-  /// 取值要同时满足两件事：一屏能读到足够多的字，以及**下方模块在不滚动主窗口时
-  /// 就能看见**——后者正是加这个滚动区的理由。窗口更矮时由主窗口滚动兜底。
-  private static let articleViewportHeight: CGFloat = 620
-
-  @ViewBuilder private var articleContent: some View {
       if showsPlainText {
         SelectableReadingTextView(
           attributed: ReadingTextComposer.plain(
@@ -1013,6 +959,18 @@ struct MarkdownContentView: View {
         }
         .accessibilityIdentifier("history-content-markdown")
       }
+    }
+    .alert("无法打开链接", isPresented: $rejectedLink) {
+      Button("好", role: .cancel) {}
+    } message: {
+      Text("该链接未通过安全校验。")
+    }
+    // 换条目就重算一次目录；同一条正文内的重绘不再解析。
+    .task(id: source) {
+      outlineEntries = MarkdownOutline.entries(
+        from: MarkdownPresentation.blocks(from: MarkdownPresentation.sanitized(source))
+      )
+    }
   }
 
   /// Block-first reading layout: air before headings, body leading ~1.65, clear lists.
@@ -1042,10 +1000,17 @@ struct MarkdownContentView: View {
         runs.append((index, .text([block])))
       }
     }
-    return VStack(alignment: .leading, spacing: 0) {
-      ForEach(Array(runs.enumerated()), id: \.offset) { _, entry in
-        runView(entry.run)
-          .id(ReadingAnchor.block(entry.anchor))
+    return ScrollViewReader { proxy in
+      VStack(alignment: .leading, spacing: 0) {
+        ForEach(Array(runs.enumerated()), id: \.offset) { _, entry in
+          runView(entry.run)
+            .id(ReadingAnchor.block(entry.anchor))
+        }
+      }
+      .onChange(of: scrollTarget) { _, target in
+        guard let target else { return }
+        withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(target, anchor: .top) }
+        scrollTarget = nil
       }
     }
   }
