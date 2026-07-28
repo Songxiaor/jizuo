@@ -1722,6 +1722,7 @@ private struct HistoryDetailView: View {
       .padding(.horizontal, 40)
       .padding(.top, 32)
       .padding(.bottom, 48)
+      .subtleScrollers()
     }
     // `initial: true` so the first item rendered also lands on the right pane;
     // previously the @State default won and a summary-less item opened on an

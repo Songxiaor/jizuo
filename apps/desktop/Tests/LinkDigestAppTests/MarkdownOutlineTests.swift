@@ -191,6 +191,33 @@ extension MarkdownOutlineTests {
       "没有章节但有模块时，入口仍要出现")
   }
 
+  /// 滚动条要细、浅灰、无轨道底。
+  ///
+  /// 系统默认在浅色背景上是深灰，滚动时更深，在纸质主题的米黄画布上又黑又粗。
+  /// 只改 scrollerStyle 不够——那只管「是否常驻」，颜色和粗细还是系统的。
+  func testScrollersAreSubtleNotSystemDefault() throws {
+    let helper = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/SubtleScroller.swift"),
+      encoding: .utf8)
+    // 不声明这个，AppKit 根本不会把自定义 scroller 用在 overlay 样式上。
+    XCTAssertTrue(helper.contains("isCompatibleWithOverlayScrollers"))
+    XCTAssertTrue(helper.contains("override func drawKnob()"), "颜色只能靠自绘")
+    XCTAssertTrue(
+      helper.contains("override func drawKnobSlot(in slotRect: NSRect, highlight: Bool) {}"),
+      "参考标准没有轨道底色")
+    // makeNSView 返回时探针还没挂进树，enclosingScrollView 恒为 nil。
+    XCTAssertTrue(helper.contains("viewDidMoveToWindow"), "当场设置找不到容器，必须延到挂载之后")
+
+    let history = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8)
+    XCTAssertTrue(history.contains(".subtleScrollers()"), "详情区没接")
+  }
+
   /// 跳转靠 ScrollViewReader 驱动外层滚动容器。
   func testOutlineJumpUsesScrollAnchors() throws {
     let source = try presentationSource()
