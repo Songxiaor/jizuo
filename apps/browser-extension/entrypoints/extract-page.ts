@@ -1,4 +1,4 @@
-import { extractCurrentPage } from "@/src/content/extract";
+import { extractCurrentPage } from "../src/content/extract";
 
 /**
  * 注入到页面里执行抽取的入口。

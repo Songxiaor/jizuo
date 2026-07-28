@@ -1,3 +1,4 @@
+import { GENERIC_CONTENT_ROOTS, siteProfile, type SiteProfile } from "./site-profiles";
 import type { MediaDescriptor } from "../contract";
 import type { DouyinSessionDiagnostic } from "./douyin-session-detail";
 import type { DouyinMetadataDOMDiagnostic } from "./douyin-metadata-diagnostic";
@@ -1162,26 +1163,28 @@ function parseAriaCount(scope: ParentNode, selector: string, verb: RegExp): stri
  * 按站点收窄而不是调通用候选的先后：那个顺序同时服务所有未列站点，动它会波及
  * 没在真机上验过的场景。
  */
-const HOST_CONTENT_ROOT: ReadonlyArray<readonly [RegExp, string]> = [
-  // 头条 `.article-content` 比 `article` 多出「标题」和「时间·来源」两行。
-  // 2026-07-26 真机实测两篇：1321→1278、205→165 字符，差值正是这两行。
-  [/(?:^|\.)toutiao\.com$/iu, "article"],
-];
-
-function hostContentRoot(documentLike: Document): Element | null {
-  // 从 href 解析而不是读 `location.hostname`：注入版和单测的 document 都保证有
-  // href，hostname 则不一定，读它会让这个分支在测试里静默失效。
-  let host = "";
+/**
+ * 当前页面的站点档案。
+ *
+ * 从 href 解析而不是读 `location.hostname`：注入版和单测的 document 都保证有
+ * href，hostname 则不一定，读它会让这个分支在测试里静默失效。
+ */
+function profileFor(documentLike: Document): SiteProfile | undefined {
   try {
-    host = new URL(documentLike.location?.href ?? "").hostname.toLowerCase();
+    const host = new URL(documentLike.location?.href ?? "").hostname;
+    return host ? siteProfile(host) : undefined;
   } catch {
-    return null;
+    return undefined;
   }
-  if (!host) return null;
-  for (const [pattern, selector] of HOST_CONTENT_ROOT) {
-    if (!pattern.test(host)) continue;
+}
+
+/** 命中后仍要求文本够长，否则宁可退回下一候选，也不产出一个空壳正文。 */
+function firstSubstantiveNode(
+  documentLike: Document,
+  selectors: readonly string[],
+): Element | null {
+  for (const selector of selectors) {
     const node = documentLike.querySelector(selector);
-    // 收窄后仍要够长才算数，否则宁可退回通用候选，也不产出一个空壳正文。
     if (node && (node.textContent?.trim().length ?? 0) >= 20) return node;
   }
   return null;
@@ -1189,13 +1192,16 @@ function hostContentRoot(documentLike: Document): Element | null {
 
 function pickContentRoot(documentLike: Document): Element {
   // Non-X pages only. X status uses extractXStatusPage.
-  const scoped = hostContentRoot(documentLike);
+  //
+  // 站点专属选择器先行，然后才是跨站点通用的语义标记。带站点色彩的类名一律
+  // 住在 SITE_PROFILES 里——混进通用清单就等于通用路径认识具体站点。
+  const profile = profileFor(documentLike);
+  const scoped = profile?.contentRoot
+    ? firstSubstantiveNode(documentLike, profile.contentRoot)
+    : null;
   if (scoped) return scoped;
-  const selectors = ["#js_content", "#img-content", "[itemprop='articleBody']", ".Post-RichText", ".RichText.ztext", ".available-content", ".article-content", "article", "main"];
-  for (const selector of selectors) {
-    const node = documentLike.querySelector(selector);
-    if (node && (node.textContent?.trim().length ?? 0) >= 20) return node;
-  }
+  const generic = firstSubstantiveNode(documentLike, GENERIC_CONTENT_ROOTS);
+  if (generic) return generic;
   const legacy = documentLike.querySelector("article, main");
   if (legacy) return legacy;
   return documentLike.body ?? documentLike.documentElement;
@@ -1218,8 +1224,14 @@ function resolveTitle(documentLike: Document): string {
   // "Search code, repositories…"); the canonical owner/repo slug is the title.
   const repoSlug = gitHubRepoSlug(documentLike.location.href);
   if (repoSlug) return repoSlug;
-  const activity = documentLike.querySelector("#activity-name")?.textContent?.trim();
-  if (activity) return activity;
+  // 站点专属标题选择器（如公众号的 #activity-name：页面 h1 常是空的或站点名）。
+  const profile = profileFor(documentLike);
+  if (profile?.title) {
+    for (const selector of profile.title) {
+      const value = documentLike.querySelector(selector)?.textContent?.trim();
+      if (value) return value;
+    }
+  }
   const h1 = documentLike.querySelector("h1")?.textContent?.trim();
   if (h1 && h1.length >= 2) return h1;
   const og = documentLike.querySelector("meta[property='og:title']")?.getAttribute("content")?.trim();
@@ -1413,16 +1425,23 @@ export function resolvePageMetadata(documentLike: Document): {
   author?: string;
   published?: string;
 } {
+  const profile = profileFor(documentLike);
+  const fromProfile = (selectors: readonly string[] | undefined): string | undefined => {
+    for (const selector of selectors ?? []) {
+      const value = documentLike.querySelector(selector)?.textContent?.trim();
+      if (value) return value;
+    }
+    return undefined;
+  };
   const author =
-    documentLike.querySelector("#js_name")?.textContent?.trim() ||
-    documentLike.querySelector("a.rich_media_meta_link")?.textContent?.trim() ||
+    fromProfile(profile?.author) ||
     metaContent(documentLike, "author") ||
     metaContent(documentLike, "article:author", "property") ||
     metaContent(documentLike, "og:article:author", "property") ||
     // GitHub repo pages expose no author meta; the owner is the author.
     gitHubRepoSlug(documentLike.location.href)?.split("/")[0];
   const published =
-    documentLike.querySelector("#publish_time")?.textContent?.trim() ||
+    fromProfile(profile?.published) ||
     metaContent(documentLike, "article:published_time", "property") ||
     metaContent(documentLike, "og:published_time", "property") ||
     metaContent(documentLike, "publish_date") ||
@@ -1659,16 +1678,19 @@ export function rebaseHeadingLevels(markdown: string): string {
     }
     if (inFence) return;
     const match = /^(#{1,6})\s+\S/.exec(line);
-    if (!match) return;
+    const hashes = match?.[1];
+    if (!hashes) return;
     headingAt.push(index);
-    shallowest = Math.min(shallowest, match[1].length);
+    shallowest = Math.min(shallowest, hashes.length);
   });
 
   if (!headingAt.length || shallowest >= 2) return markdown;
   const shift = 2 - shallowest;
 
   for (const index of headingAt) {
-    lines[index] = lines[index].replace(/^(#{1,6})(\s+)/, (_, hashes: string, gap: string) => {
+    const line = lines[index];
+    if (line === undefined) continue;
+    lines[index] = line.replace(/^(#{1,6})(\s+)/, (_, hashes: string, gap: string) => {
       // 上限 6：再深就不是合法 ATX 标题了，宁可让最深的几级挤在一起，
       // 也不能产出 `#######` 这种渲染不出来的东西。
       const level = Math.min(hashes.length + shift, 6);

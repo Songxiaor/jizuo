@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
  * 这个项目上反复出现的失败就是「改动只落在其中一份，测试全绿，生产行为没变」——
  * GitHub 仓库标题、抖音抓取、标题层级重基都踩过。
  *
- * 改用 `executeScript({ files: ["extract-page.js"] })` 之后，注入的是构建产物，
+ * 改用 `executeScript({ files: ["/extract-page.js"] })` 之后，注入的是构建产物，
  * 模块导入照常工作，那份拷贝已删除（-1198 行）。这里的职责随之变成：**防止它
  * 以任何形式回来**。
  */
@@ -28,7 +28,7 @@ describe("extraction must have exactly one implementation", () => {
 
   /// `func:` 一旦回来，自包含拷贝就必然跟着回来——那是它的直接成因。
   it("injects a built file instead of a serialized function", () => {
-    expect(background).toContain('files: ["extract-page.js"]');
+    expect(background).toContain('files: ["/extract-page.js"]');
     expect(background).not.toMatch(/func:\s*extractPageInIsolatedWorld/);
   });
 

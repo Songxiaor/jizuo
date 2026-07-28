@@ -1155,7 +1155,7 @@ async function captureAttemptFromTab(
     // 只剩 `extractCurrentPage` 一份实现。
     const result = await browser.scripting.executeScript({
       target: { tabId },
-      files: ["extract-page.js"],
+      files: ["/extract-page.js"],
     });
     page = result[0]?.result as ExtractedPage;
     if (!page) throw new Error("CAPTURE_CONTENT_EMPTY");
