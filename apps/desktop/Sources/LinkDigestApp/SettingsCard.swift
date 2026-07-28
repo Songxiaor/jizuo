@@ -11,23 +11,47 @@ import SwiftUI
 ///
 /// 抽成共享组件而不是各页各写一份：三处复制迟早各自漂移，而这种漂移不报错、
 /// 不崩溃，只会让设置页慢慢变回原样。
-struct SettingsCard<Control: View>: View {
-  /// 说明放在控件前还是控件后。
-  ///
-  /// 开关和输入框放后面合适：先看到控件，再看补充。但**控件自带逐项解释**时
-  /// （比如一组单选，每项下面都有一句话），说明再放后面就读成倒的——先读到
-  /// 某一项的解释，才读到整张卡在讲什么。这种卡必须前置。
-  enum SummaryPlacement {
-    case belowControl
-    case aboveControl
-  }
+/// 说明放在控件前还是控件后。
+///
+/// 开关和输入框放后面合适：先看到控件，再看补充。但**控件自带逐项解释**时
+/// （比如一组单选，每项下面都有一句话），说明再放后面就读成倒的——先读到
+/// 某一项的解释，才读到整张卡在讲什么。这种卡必须前置。
+enum SettingsSummaryPlacement {
+  case belowControl
+  case aboveControl
+}
 
+/// 控件占多宽。
+///
+/// 设置窗口的详情区有 600pt 以上，而 Form 行会撑满整行——于是 Toggle 的开关、
+/// LabeledContent 的值、Picker 的下拉全被推到最右端，和自己的标题隔着大半个
+/// 窗口，看的时候要来回扫。macOS 系统设置是靠窄内容列避开这件事的，这里同理：
+/// 默认给控件设一个上限宽度，文字仍然可以用满整行保持可读性。
+///
+/// `full` 留给本来就需要整行的控件：多行文本框、成组的列表行、自带布局的链条。
+///
+/// 定义在顶层而不是嵌进 `SettingsCard`：嵌套类型带着外层的泛型参数，
+/// 调用方写类型标注时会被迫绑定一个具体的 Control 类型。
+enum SettingsControlWidth {
+  case compact
+  case full
+
+  var maximum: CGFloat? {
+    switch self {
+    case .compact: 440
+    case .full: nil
+    }
+  }
+}
+
+struct SettingsCard<Control: View>: View {
   let title: String
   /// 一句话说清这个设置是干什么的。必填——写不出一句话，多半是这张卡装了不止一件事。
   let summary: String
   /// 次要信息：边界条件、隐私说明、失败后果。默认收起，但一条都不该删。
   var details: String?
-  var summaryPlacement: SummaryPlacement = .belowControl
+  var summaryPlacement: SettingsSummaryPlacement = .belowControl
+  var controlWidth: SettingsControlWidth = .compact
   @ViewBuilder var control: () -> Control
 
   @ViewBuilder private var summaryText: some View {
@@ -43,6 +67,7 @@ struct SettingsCard<Control: View>: View {
       Text(title).font(.headline)
       if summaryPlacement == .aboveControl { summaryText }
       control()
+        .frame(maxWidth: controlWidth.maximum, alignment: .leading)
       if summaryPlacement == .belowControl { summaryText }
       if let details {
         DisclosureGroup("了解更多") {

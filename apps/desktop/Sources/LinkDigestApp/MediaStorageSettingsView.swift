@@ -16,7 +16,8 @@ struct MediaStorageSettingsView: View {
           // 这两个选项决定的只是「什么时候去换」。
           summary: "历史里的视频要在线播，必须现去平台换一个临时地址。这里决定打开条目时是自动去换，还是等你点。",
           details: "临时播放地址从不写入历史。退出 App 后只在内存中保留最近最多 10 条已恢复的播放结果，更早的条目需要再次获取；打开列表或启动 App 不会批量刷新。\n本地已保存的视频、刚抓取的当前条目和 YouTube 不走这条路，不受此项影响。",
-          summaryPlacement: .aboveControl
+          summaryPlacement: .aboveControl,
+          controlWidth: .full
         ) {
           SettingsChoiceList(
             choices: SessionMediaRestoreMode.allCases.map {

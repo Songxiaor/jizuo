@@ -40,7 +40,8 @@ struct BrowserSupportSettingsView: View {
         SettingsCard(
           title: "App 接收服务",
           summary: "这里只表示 App 是否已准备好接收；下方的配置提醒不等于传送失败。",
-          details: "扩展只在你点击同步时连接，不会保持在线。"
+          details: "扩展只在你点击同步时连接，不会保持在线。",
+          controlWidth: .full
         ) {
           receiverStatusRow
         }
@@ -50,7 +51,8 @@ struct BrowserSupportSettingsView: View {
         SettingsCard(
           title: "浏览器配置",
           summary: "每个浏览器都需要单独加载扩展并同步一次。",
-          details: "看到「配置已就绪」后，首次同步成功会在上方「App 接收服务」记录送达时间。Chrome、Brave 和 Edge 使用同一份 Chromium 扩展。"
+          details: "看到「配置已就绪」后，首次同步成功会在上方「App 接收服务」记录送达时间。Chrome、Brave 和 Edge 使用同一份 Chromium 扩展。",
+          controlWidth: .full
         ) {
           VStack(alignment: .leading, spacing: 8) {
             ForEach(configurationRows) { row in

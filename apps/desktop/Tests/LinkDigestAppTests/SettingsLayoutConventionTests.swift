@@ -105,6 +105,24 @@ final class SettingsLayoutConventionTests: XCTestCase {
       "每一项都要带自己的解释，不能只显示选中的那条")
   }
 
+  /// 控件不能横跨整个详情区。
+  ///
+  /// Form 行会撑满整行，于是 Toggle 的开关、LabeledContent 的值、Picker 的下拉
+  /// 全被推到最右端，和自己的标题隔着大半个窗口，看的时候要来回扫。卡片默认给
+  /// 控件设上限宽度；`full` 只留给本来就需要整行的控件。
+  func testCardsCapControlWidthByDefault() throws {
+    let shared = try source("SettingsCard")
+    XCTAssertTrue(
+      shared.contains("var controlWidth: SettingsControlWidth = .compact"),
+      "默认必须是收窄的；默认放开等于这个问题没修")
+    XCTAssertTrue(
+      shared.contains("frame(maxWidth: controlWidth.maximum, alignment: .leading)"),
+      "上限宽度要真的作用到控件上")
+    XCTAssertTrue(
+      shared.contains("case .compact: 440"),
+      "收窄档要有具体数值，不能是 .infinity 换个名字")
+  }
+
   /// 跨页依赖要给出去处，而不是只说一句「依赖某某」。
   func testCrossPageDependencyPointsSomewhere() throws {
     let media = try source("MediaStorageSettingsView")

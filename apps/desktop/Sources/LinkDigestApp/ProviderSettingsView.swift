@@ -168,7 +168,8 @@ struct ProviderSettingsView: View {
         settingCard(
           title: "功能与模型",
           summary: "视频转文字和图片文字默认在本机处理，网页正文先保存在本机。",
-          details: "只有总结、翻译，以及你主动指派给在线模型的转写，才会访问所选服务商。"
+          details: "只有总结、翻译，以及你主动指派给在线模型的转写，才会访问所选服务商。",
+          controlWidth: .full
         ) {
           capabilityAssignmentRows
         }
@@ -178,7 +179,8 @@ struct ProviderSettingsView: View {
         settingCard(
           title: "已添加的模型",
           summary: "每个模型配置都有独立的 Base URL、模型名和 API Key。",
-          details: "密钥只保存在本机钥匙串，不写进历史库、导出文件或日志。"
+          details: "密钥只保存在本机钥匙串，不写进历史库、导出文件或日志。",
+          controlWidth: .full
         ) {
           VStack(alignment: .leading, spacing: 8) {
             if model.libraryEntryDisplays.isEmpty {
@@ -783,7 +785,8 @@ struct ProviderSettingsView: View {
         settingCard(
           title: "总结提示词",
           summary: "无论用内置还是自定义提示词，LinkDigest 都会追加输出语言指令。",
-          details: "提示词只保存在本机，不随任何请求以外的途径离开这台机器。"
+          details: "提示词只保存在本机，不随任何请求以外的途径离开这台机器。",
+          controlWidth: .full
         ) {
           VStack(alignment: .leading, spacing: 8) {
             TextEditor(text: $model.summaryPrompt)
@@ -971,9 +974,16 @@ struct ProviderSettingsView: View {
     title: String,
     summary: String,
     details: String? = nil,
+    controlWidth: SettingsControlWidth = .compact,
     @ViewBuilder control: @escaping () -> some View
   ) -> some View {
-    SettingsCard(title: title, summary: summary, details: details, control: control)
+    SettingsCard(
+      title: title,
+      summary: summary,
+      details: details,
+      controlWidth: controlWidth,
+      control: control
+    )
   }
 
   /// 「留空时…」这类提示原来只写在 placeholder 里，右对齐显示时看起来像已经
