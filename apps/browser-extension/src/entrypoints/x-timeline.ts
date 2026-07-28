@@ -59,6 +59,52 @@ function setTip(button: HTMLButtonElement, state: string, text: string): void {
   if (tip) tip.textContent = text; // 气泡文字必须写进节点，只设属性看不见。
 }
 
+/**
+ * 扩展上下文是否还活着。
+ *
+ * 扩展被重新加载或更新后，早已注入页面的 content script 会继续运行，但它手上的
+ * `browser.runtime` 句柄已经作废——`runtime.id` 变成 undefined，`sendMessage`
+ * 直接抛 "Extension context invalidated"。访问 `browser.runtime` 本身也可能抛，
+ * 所以整体包在 try 里。
+ */
+function isExtensionContextAlive(): boolean {
+  try {
+    return Boolean(browser.runtime?.id);
+  } catch {
+    return false;
+  }
+}
+
+export type SyncTip = { state: "done" | "error"; text: string };
+
+/**
+ * 把一次同步的结果翻译成气泡文字。
+ *
+ * 单独抽出来是因为「没拿到响应」下面藏着两种解法**相反**的故障：
+ * service worker 冷启动重点一次就好；扩展上下文失效则再点多少次都不会成功，
+ * 必须刷新页面。原来两者共用一句「请重点一次」，后者会让人一直点下去。
+ */
+export function syncResultTip(result: unknown, contextAlive: boolean): SyncTip {
+  const parsed = result as
+    | { ok: true; outcome: { queued: number; skipped: number } }
+    | { ok: false; code: string }
+    | undefined;
+  if (parsed?.ok) {
+    return {
+      state: "done",
+      text: parsed.outcome.queued > 0 ? "已发送到 App" : "已在库",
+    };
+  }
+  if (parsed === undefined || parsed === null) {
+    return contextAlive
+      ? { state: "error", text: "扩展未响应，请重点一次" }
+      : { state: "error", text: "扩展已更新，请刷新页面" };
+  }
+  if (parsed.code === "native_error") return { state: "error", text: "App 未连接" };
+  if (parsed.code === "invalid_id") return { state: "error", text: "读不到帖子ID" };
+  return { state: "error", text: `失败：${parsed.code}` };
+}
+
 async function onClick(button: HTMLButtonElement): Promise<void> {
   if (button.getAttribute("data-state") === "busy") return;
   // 实时读 id：X 时间线是虚拟滚动，会把 DOM 节点回收给不同的推文。点击时从按钮
@@ -75,31 +121,24 @@ async function onClick(button: HTMLButtonElement): Promise<void> {
   // 可能直接以「message channel closed」拒绝。两种都当成“唤醒中，需重试一次”，
   // 而不是把拒绝吞成一个无信息的「同步失败」。
   let result: unknown = undefined;
+  let contextAlive = true;
   for (let attempt = 0; attempt < 2; attempt++) {
+    // 上下文已经作废时重试没有意义：句柄不会自己复活，只会白等 300ms。
+    contextAlive = isExtensionContextAlive();
+    if (!contextAlive) break;
     try {
       result = await browser.runtime.sendMessage({ type: "sync-single-tweet", tweetID });
     } catch {
       result = undefined;
     }
     if (result !== undefined && result !== null) break;
+    // 抛异常也可能是「发消息的瞬间扩展被重载」，重试前再确认一次上下文。
+    contextAlive = isExtensionContextAlive();
+    if (!contextAlive) break;
     if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 300));
   }
-  const parsed = result as
-    | { ok: true; outcome: { queued: number; skipped: number } }
-    | { ok: false; code: string }
-    | undefined;
-  if (parsed?.ok) {
-    setTip(button, "done", parsed.outcome.queued > 0 ? "已发送到 App" : "已在库");
-  } else if (parsed === undefined || parsed === null) {
-    // 两次都没拿到响应——多为 service worker 未就绪，再点一次通常即可。
-    setTip(button, "error", "扩展未响应，请重点一次");
-  } else if (parsed.code === "native_error") {
-    setTip(button, "error", "App 未连接");
-  } else if (parsed.code === "invalid_id") {
-    setTip(button, "error", "读不到帖子ID");
-  } else {
-    setTip(button, "error", `失败：${parsed.code}`);
-  }
+  const tip = syncResultTip(result, contextAlive);
+  setTip(button, tip.state, tip.text);
   // 两秒后收起气泡；done/error 的颜色保留，让用户看到结果。
   window.setTimeout(() => button.setAttribute("data-tip", ""), 2_000);
 }
