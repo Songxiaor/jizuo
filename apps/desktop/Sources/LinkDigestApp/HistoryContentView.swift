@@ -1138,7 +1138,12 @@ private struct PendingCaptureRow: View {
         case .fetching: Text("正在抓取…").font(.caption2).foregroundStyle(.tertiary)
         case .saving: Text("正在保存…").font(.caption2).foregroundStyle(.tertiary)
         case let .failed(message):
-          Text(message).font(.caption2).foregroundStyle(.orange).lineLimit(2)
+          // 失败原因必须完整可读。`lineLimit(2)` 会把「网页暂时无法打开，
+          // 请检查链接后重试」截掉尾巴——而尾巴恰恰是那句可执行的建议。
+          Text(message)
+            .font(.caption2)
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
         }
       }
       Spacer(minLength: 4)
@@ -1155,6 +1160,11 @@ private struct PendingCaptureRow: View {
       .help(pending.phase == .queued ? "移出队列" : "取消并移除")
     }
     .padding(.vertical, 4)
+    // 与 HistoryRowView 同一个坑：macOS List 会沿用估算行高把内容压扁，
+    // 失败提示换行后第三行就被裁掉。固定纵向 intrinsic 高度 + 内容变化换 identity，
+    // 强制按真实内容测量。
+    .fixedSize(horizontal: false, vertical: true)
+    .id("\(pending.id)-\(pending.phase)")
     .accessibilityIdentifier("pending-capture-row")
   }
 }

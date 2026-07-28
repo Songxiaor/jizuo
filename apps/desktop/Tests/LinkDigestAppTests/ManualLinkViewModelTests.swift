@@ -815,3 +815,61 @@ final class ManualLinkViewModelTests: XCTestCase {
     )
   }
 }
+
+/// 从中文正文里复制链接时，末尾常带一个「。」或「，」。
+///
+/// `URL(string:)` 会把它百分号编码后照单全收——`…/claude-code。` 变成
+/// `…/claude-code%E3%80%82`，scheme 和 host 都合法，于是「直接命中」这条路径
+/// 把它当成有效链接放过去，抓取时才报「网页暂时无法打开」，而错在多了一个字符。
+final class ExplicitWebLinkTrailingPunctuationTests: XCTestCase {
+  private func url(_ raw: String) -> String? {
+    ExplicitWebLinkInput.singleURL(from: raw)?.absoluteString
+  }
+
+  func testStripsTrailingCJKSentencePunctuation() {
+    XCTAssertEqual(
+      url("https://github.com/anthropics/claude-code。"),
+      "https://github.com/anthropics/claude-code"
+    )
+    XCTAssertEqual(
+      url("https://github.com/anthropics/claude-code，"),
+      "https://github.com/anthropics/claude-code"
+    )
+    XCTAssertEqual(url("https://example.com/a？"), "https://example.com/a")
+    // 连着几个标点也要剥干净。
+    XCTAssertEqual(url("https://example.com/a。。"), "https://example.com/a")
+  }
+
+  /// 百分号编码的句号绝不该出现在结果里——那正是这个缺陷的指纹。
+  func testResultNeverCarriesEncodedPunctuation() {
+    let result = url("https://github.com/anthropics/claude-code。") ?? ""
+    XCTAssertFalse(result.contains("%E3%80%82"))
+    XCTAssertFalse(result.contains("%EF%BC%8C"))
+  }
+
+  /// 干净的链接不能被动到。
+  func testCleanURLsAreUnchanged() {
+    XCTAssertEqual(
+      url("https://github.com/anthropics/claude-code"),
+      "https://github.com/anthropics/claude-code"
+    )
+    // 路径里合法的点号与斜杠不算句尾标点。
+    XCTAssertEqual(url("https://example.com/a.b/c/"), "https://example.com/a.b/c/")
+  }
+
+  /// 右括号不剥：Wikipedia 这类地址里它是路径的一部分。
+  func testDoesNotStripClosingBracketsThatBelongToThePath() {
+    XCTAssertEqual(
+      url("https://zh.wikipedia.org/wiki/Swift_(编程语言)"),
+      "https://zh.wikipedia.org/wiki/Swift_(%E7%BC%96%E7%A8%8B%E8%AF%AD%E8%A8%80)"
+    )
+  }
+
+  /// 整句话里夹一个链接时仍走 detector，行为不变。
+  func testSentenceContainingOneLinkStillResolves() {
+    XCTAssertEqual(
+      url("看这个 https://example.com/a 很好用"),
+      "https://example.com/a"
+    )
+  }
+}

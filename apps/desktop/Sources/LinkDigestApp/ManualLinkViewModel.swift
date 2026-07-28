@@ -21,8 +21,22 @@ enum ManualLinkState: Equatable { case idle, fetching, saving, failed(String) }
 /// deliberately strict and still accepts only a clipboard value that is itself
 /// an HTTPS URL.
 enum ExplicitWebLinkInput {
+  /// 句尾标点不属于 URL。
+  ///
+  /// 从中文正文里复制链接时，末尾常带一个「。」或「，」。`URL(string:)` 会把它
+  /// 百分号编码后照单全收——`…/claude-code。` 变成 `…/claude-code%E3%80%82`，
+  /// scheme 和 host 都合法，于是「直接命中」这条路径把它当成有效链接放过去，
+  /// 抓取时才报「网页暂时无法打开」，而错在多了一个字符。
+  ///
+  /// 不剥右括号和右方括号：Wikipedia 这类地址里它们是路径的一部分。
+  private static let trailingSentencePunctuation = CharacterSet(charactersIn: "。，、；：！？…·．,;:!?\"'“”‘’「」『』《》〉·")
+
   static func singleURL(from rawValue: String) -> URL? {
-    let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    var trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    while let last = trimmed.unicodeScalars.last,
+          trailingSentencePunctuation.contains(last) {
+      trimmed = String(trimmed.unicodeScalars.dropLast())
+    }
     guard !trimmed.isEmpty else { return nil }
     if let direct = validatedWebURL(trimmed) { return direct }
 
