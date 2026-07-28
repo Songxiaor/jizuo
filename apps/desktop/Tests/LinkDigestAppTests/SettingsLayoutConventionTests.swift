@@ -72,6 +72,39 @@ final class SettingsLayoutConventionTests: XCTestCase {
       "详细说明默认收起是这套约定的一半，删掉它 footer 就会以另一种形式回来")
   }
 
+  /// 控件自带逐项解释时，卡片说明必须前置，否则读成倒的。
+  ///
+  /// 一组单选里每项下面都有一句话；说明再放控件后面，读者会先读到某一项的解释，
+  /// 才读到整张卡在讲什么。
+  func testChoiceCardsPlaceSummaryAboveTheOptions() throws {
+    let media = try source("MediaStorageSettingsView")
+    XCTAssertEqual(
+      occurrences(of: "summaryPlacement: .aboveControl", in: media), 2,
+      "「历史在线播放」和「B 站清晰度」两张卡的控件都自带逐项解释，说明必须前置")
+
+    let shared = try source("SettingsCard")
+    XCTAssertTrue(
+      shared.contains("case aboveControl"),
+      "卡片必须支持说明前置，否则这类卡只能各自绕开构件重写一遍")
+  }
+
+  /// 单选要能在选之前比较，选择钮要贴着文字。
+  func testChoiceListsShowEveryOptionsExplanation() throws {
+    let media = try source("MediaStorageSettingsView")
+    XCTAssertTrue(
+      media.contains("SettingsChoiceList("),
+      "inline Picker 会把单选钮甩到行最右端，且只显示选中项的解释")
+    XCTAssertFalse(
+      media.contains(".pickerStyle(.inline)"),
+      "inline Picker 的写法回来了，就又要点一次才能看到另一项在说什么")
+
+    let shared = try source("SettingsCard")
+    XCTAssertTrue(shared.contains("struct SettingsChoiceList"))
+    XCTAssertTrue(
+      shared.contains("Text(choice.explanation)"),
+      "每一项都要带自己的解释，不能只显示选中的那条")
+  }
+
   /// 跨页依赖要给出去处，而不是只说一句「依赖某某」。
   func testCrossPageDependencyPointsSomewhere() throws {
     let media = try source("MediaStorageSettingsView")

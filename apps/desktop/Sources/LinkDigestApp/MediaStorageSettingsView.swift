@@ -12,33 +12,28 @@ struct MediaStorageSettingsView: View {
       Section {
         SettingsCard(
           title: "历史在线播放",
-          summary: "打开历史条目时是否自动重新获取临时播放地址。",
-          details: "临时播放地址从不写入历史。退出 App 后只在内存中保留最近最多 10 条已恢复的播放结果，更早的条目需要再次获取；打开列表或启动 App 不会批量刷新。"
+          // 签名播放地址会过期、从不入库，所以历史里的视频要在线播就得现去换一个。
+          // 这两个选项决定的只是「什么时候去换」。
+          summary: "历史里的视频要在线播，必须现去平台换一个临时地址。这里决定打开条目时是自动去换，还是等你点。",
+          details: "临时播放地址从不写入历史。退出 App 后只在内存中保留最近最多 10 条已恢复的播放结果，更早的条目需要再次获取；打开列表或启动 App 不会批量刷新。\n本地已保存的视频、刚抓取的当前条目和 YouTube 不走这条路，不受此项影响。",
+          summaryPlacement: .aboveControl
         ) {
-          VStack(alignment: .leading, spacing: 6) {
-            Picker("历史在线播放", selection: $model.sessionMediaRestoreMode) {
-              ForEach(SessionMediaRestoreMode.allCases, id: \.self) { mode in
-                Text(mode.settingsTitle).tag(mode)
-              }
-            }
-            .pickerStyle(.inline)
-            .labelsHidden()
-            .accessibilityIdentifier("media-storage-session-restore-mode")
-
-            Text(model.sessionMediaRestoreMode.settingsExplanation)
-              .font(.caption)
-              .foregroundStyle(.tertiary)
-              .fixedSize(horizontal: false, vertical: true)
-              .accessibilityIdentifier("media-storage-session-restore-explanation")
-          }
+          SettingsChoiceList(
+            choices: SessionMediaRestoreMode.allCases.map {
+              .init(value: $0, title: $0.settingsTitle, explanation: $0.settingsExplanation)
+            },
+            selection: $model.sessionMediaRestoreMode,
+            identifierPrefix: "media-storage-session-restore-mode"
+          )
         }
       }
 
       Section {
         SettingsCard(
           title: "B 站重新获取清晰度",
-          summary: "「重新获取播放」时请求的清晰度上限。",
-          details: "公开接口一般只到 720P；4K 与会员专属档需要你自己的账号权限。实际拿到哪一档，可以看播放器下方那行选流诊断。"
+          summary: "「重新获取播放」时请求的清晰度上限。档位越高，起播越慢。",
+          details: "公开接口一般只到 720P；4K 与会员专属档需要你自己的账号权限。实际拿到哪一档，可以看播放器下方那行选流诊断——它会写明接口返回了哪些档、最后选了哪条。",
+          summaryPlacement: .aboveControl
         ) {
           VStack(alignment: .leading, spacing: 8) {
             Picker("B 站重新获取清晰度", selection: $model.bilibiliStreamQuality) {
