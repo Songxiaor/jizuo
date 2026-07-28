@@ -7,6 +7,49 @@ public protocol DouyinWebCapturing: Sendable {
   func capture(url: URL) async throws -> CapturedDocument
 }
 
+/// 抓取等待循环。从 WebKit 服务里抽出来只为一件事：让「视频地址比标题晚出现」
+/// 这条真实时序能被测试驱动，而不是只能靠碰上一条慢视频才发现。
+///
+/// 原始缺陷是标题就绪后只再轮询 8 × 250ms ≈ 2 秒，超时就把「只有标题作者、
+/// 没有视频地址」的结果当成抓取成功。这里刻意不设尝试次数上限——何时放弃
+/// 只由外部截止时间决定，慢视频和快视频因此走同一条路径。
+@MainActor
+public enum DouyinCaptureWait {
+  public enum PollOutcome: Sendable, Equatable {
+    /// 页面还没渲染出可解析的作品信息。
+    case notReady
+    /// 页面已就绪；`videoURL` 仍可能为空，代表元数据先到、视频地址未到。
+    case ready(DouyinRenderedPage)
+  }
+
+  /// 轮询到出现可播放视频地址为止。
+  ///
+  /// 返回 `nil` 表示外部已取消（含截止时间到达），由调用方决定如何收尾。
+  /// 元数据先到不构成完成条件。
+  public static func waitForPlayableMedia(
+    pollInterval: Duration,
+    isCancelled: () -> Bool,
+    sleep: (Duration) async throws -> Void,
+    poll: () async throws -> PollOutcome
+  ) async throws -> DouyinRenderedPage? {
+    while !isCancelled() {
+      switch try await poll() {
+      case .notReady:
+        try await sleep(pollInterval)
+      case .ready(let page):
+        guard DouyinWebCapturePolicy.completionDecision(for: page)
+          == .completeWithPlayableMedia
+        else {
+          try await sleep(pollInterval)
+          continue
+        }
+        return page
+      }
+    }
+    return nil
+  }
+}
+
 public struct DouyinRenderedPage: Sendable, Equatable {
   public let awemeID: String
   public let canonicalURL: URL

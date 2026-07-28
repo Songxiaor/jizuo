@@ -377,51 +377,20 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
 
   private func poll(generation token: UInt64) async {
     do {
-      while !Task.isCancelled, !isFinished, token == generation {
-        guard let webView, let currentURL = webView.url else {
-          throw ManualLinkError.invalidPageResult
+      let captured = try await DouyinCaptureWait.waitForPlayableMedia(
+        pollInterval: Self.pollInterval,
+        isCancelled: { [weak self] in
+          guard let self else { return true }
+          return Task.isCancelled || self.isFinished || token != self.generation
+        },
+        sleep: { try await Task.sleep(for: $0) },
+        poll: { [weak self] in
+          guard let self else { return .notReady }
+          return try await self.pollOnce()
         }
-        try DouyinWebCapturePolicy.validateNavigationURL(currentURL)
-        guard let raw = try await webView.evaluateJavaScript(Self.extractionJavaScript),
-              let dictionary = raw as? [String: Any],
-              let status = dictionary["status"] as? String
-        else { throw ManualLinkError.invalidPageResult }
-
-        if status == "verification" {
-          throw ManualLinkError.verificationRequired
-        }
-        if status != "ready" {
-          try await Task.sleep(for: Self.pollInterval)
-          continue
-        }
-
-        var page = try DouyinWebCapturePolicy.validateJavaScriptResult(dictionary)
-        if page.videoURL == nil,
-           let stateSnippet = dictionary["stateSnippet"] as? String,
-           let parsed = DouyinPageParser.parseStateSnippet(
-             stateSnippet,
-             pageURL: page.canonicalURL
-           ) {
-          page = DouyinRenderedPage(
-            awemeID: page.awemeID,
-            canonicalURL: page.canonicalURL,
-            title: page.title,
-            description: page.description,
-            author: page.author,
-            publishedAt: page.publishedAt,
-            videoURL: parsed.videoURL,
-            coverURL: page.coverURL ?? parsed.coverURL,
-            durationSeconds: page.durationSeconds ?? parsed.durationSeconds
-          )
-        }
-        latestReadyPage = page
-        if DouyinWebCapturePolicy.completionDecision(for: page) == .waitForPlayableMedia {
-          try await Task.sleep(for: Self.pollInterval)
-          continue
-        }
-        finish(.success(try makeDocument(from: page)))
-        return
-      }
+      )
+      guard let captured, token == generation, !isFinished else { return }
+      finish(.success(try makeDocument(from: captured)))
     } catch let error as ManualLinkError {
       guard token == generation, !isFinished else { return }
       finish(.failure(error))
@@ -431,6 +400,46 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       guard token == generation, !isFinished else { return }
       finish(.failure(ManualLinkError.invalidPageResult))
     }
+  }
+
+  /// 单次读取渲染页。返回 `.ready` 时同步记下 `latestReadyPage`，
+  /// 供截止时间到达后保留标题与作者。
+  private func pollOnce() async throws -> DouyinCaptureWait.PollOutcome {
+    guard let webView, let currentURL = webView.url else {
+      throw ManualLinkError.invalidPageResult
+    }
+    try DouyinWebCapturePolicy.validateNavigationURL(currentURL)
+    guard let raw = try await webView.evaluateJavaScript(Self.extractionJavaScript),
+          let dictionary = raw as? [String: Any],
+          let status = dictionary["status"] as? String
+    else { throw ManualLinkError.invalidPageResult }
+
+    if status == "verification" {
+      throw ManualLinkError.verificationRequired
+    }
+    guard status == "ready" else { return .notReady }
+
+    var page = try DouyinWebCapturePolicy.validateJavaScriptResult(dictionary)
+    if page.videoURL == nil,
+       let stateSnippet = dictionary["stateSnippet"] as? String,
+       let parsed = DouyinPageParser.parseStateSnippet(
+         stateSnippet,
+         pageURL: page.canonicalURL
+       ) {
+      page = DouyinRenderedPage(
+        awemeID: page.awemeID,
+        canonicalURL: page.canonicalURL,
+        title: page.title,
+        description: page.description,
+        author: page.author,
+        publishedAt: page.publishedAt,
+        videoURL: parsed.videoURL,
+        coverURL: page.coverURL ?? parsed.coverURL,
+        durationSeconds: page.durationSeconds ?? parsed.durationSeconds
+      )
+    }
+    latestReadyPage = page
+    return .ready(page)
   }
 
   private func finishAtDeadline() {
