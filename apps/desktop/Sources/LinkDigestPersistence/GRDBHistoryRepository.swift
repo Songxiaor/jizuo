@@ -341,6 +341,13 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           r.input_tokens, r.output_tokens, r.total_tokens, r.cost_amount_micros, r.cost_currency_code,
           CASE WHEN a.body_text IS NULL THEN NULL ELSE substr(CAST(a.body_text AS BLOB), 1, 960) END AS artifact_preview_utf8,
           EXISTS(SELECT 1 FROM content_snapshots ts WHERE ts.task_id = t.id AND ts.source_kind = 'local_transcription') AS has_transcript,
+          -- 这条抓进来时带没带视频。`capture_contract_version = 2` 是持久信号；
+          -- 签名播放地址本身从不入库，所以不能靠「有没有可播地址」判断。
+          -- 已保存到本地的视频走 media_assets，两者取并集。
+          (
+            EXISTS(SELECT 1 FROM capture_deliveries cd WHERE cd.task_id = t.id AND cd.capture_contract_version = 2)
+            OR EXISTS(SELECT 1 FROM media_assets ma WHERE ma.task_id = t.id)
+          ) AS has_media,
           EXISTS(SELECT 1 FROM runs sr WHERE sr.task_id = t.id AND sr.kind = 'summarize' AND sr.status = 'completed') AS has_summary,
           EXISTS(SELECT 1 FROM task_mind_maps mm WHERE mm.task_id = t.id) AS has_mind_map
         FROM tasks t
@@ -1118,7 +1125,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     let preview = previewData.map { boundedPreview(from: $0, scalarLimit: 240) }
     let sourceBody: Data? = row["source_body_utf8"]
     let frontmatter = sourceBody.map { MarkdownNoteFrontmatter.parse(boundedPreview(from: $0, scalarLimit: 8_192)) }
-    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: URLComponents(string: canonical)?.host ?? "", sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: (row["has_transcript"] as Int64? ?? 0) == 1, hasSummary: (row["has_summary"] as Int64? ?? 0) == 1, hasMindMap: (row["has_mind_map"] as Int64? ?? 0) == 1)
+    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: URLComponents(string: canonical)?.host ?? "", sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: (row["has_transcript"] as Int64? ?? 0) == 1, hasMedia: (row["has_media"] as Int64? ?? 0) == 1, hasSummary: (row["has_summary"] as Int64? ?? 0) == 1, hasMindMap: (row["has_mind_map"] as Int64? ?? 0) == 1)
   }
 
   private func detail(db: Database, taskID: TaskID) throws -> HistoryDetailProjection {

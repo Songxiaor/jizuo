@@ -155,3 +155,26 @@ final class HistorySearchScopeTests: XCTestCase {
     }
   }
 }
+
+/// 「有视频但还没转写」要能从列表投影里判定出来。
+///
+/// 这类条目正文往往只有一百来字的站点描述——实测本机 5 条 B 站记录正文都是
+/// 120～131 字，那是 og:description，真内容在视频里。它们在列表里和 8932 字的
+/// 长文长得一模一样，点进去才发现是空的。
+extension HistorySearchScopeTests {
+  func testProjectionKnowsWhichEntriesStillNeedTranscription() throws {
+    try withRepository { repository, _ in
+      // 纯文章：没有视频，不该被标。
+      _ = try repository.acceptCapture(.init(document: capture(
+        url: "https://example.test/article",
+        title: "纯文章",
+        body: "有正文的一篇文章。"
+      ), receivedAtMilliseconds: 1))
+
+      let rows = try repository.historyPage(limit: 20, after: nil).rows
+      let article = try XCTUnwrap(rows.first { $0.title == "纯文章" })
+      XCTAssertEqual(article.hasMedia, false, "没有视频的条目不该被标成待转写")
+      XCTAssertEqual(article.hasTranscript, false)
+    }
+  }
+}

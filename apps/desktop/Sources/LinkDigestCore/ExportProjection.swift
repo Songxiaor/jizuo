@@ -25,10 +25,13 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
   public let published: String?
   /// 处理状态徽标：可选以兼容旧序列化数据（缺失=未知，不显示）。
   public let hasTranscript: Bool?
+  /// 抓进来时带没带视频。用来标出「有视频但还没转写」——那种条目正文往往只有
+  /// 一百来字的站点描述，在列表里和长文长得一模一样。
+  public let hasMedia: Bool?
   public let hasSummary: Bool?
   public let hasMindMap: Bool?
-  public init(taskID: TaskID, title: String?, canonicalURL: String, host: String, sourceLabel: String, latestRunKind: RunKind?, latestRunStatus: RunStatus?, latestModel: String?, updatedAtMilliseconds: Int64, createdAtMilliseconds: Int64? = nil, latestRunAtMilliseconds: Int64?, usageCost: RunUsageCost, artifactPreview: String?, author: String? = nil, published: String? = nil, hasTranscript: Bool? = nil, hasSummary: Bool? = nil, hasMindMap: Bool? = nil) {
-    self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.createdAtMilliseconds = createdAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview; self.author = author; self.published = published; self.hasTranscript = hasTranscript; self.hasSummary = hasSummary; self.hasMindMap = hasMindMap
+  public init(taskID: TaskID, title: String?, canonicalURL: String, host: String, sourceLabel: String, latestRunKind: RunKind?, latestRunStatus: RunStatus?, latestModel: String?, updatedAtMilliseconds: Int64, createdAtMilliseconds: Int64? = nil, latestRunAtMilliseconds: Int64?, usageCost: RunUsageCost, artifactPreview: String?, author: String? = nil, published: String? = nil, hasTranscript: Bool? = nil, hasMedia: Bool? = nil, hasSummary: Bool? = nil, hasMindMap: Bool? = nil) {
+    self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.createdAtMilliseconds = createdAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview; self.author = author; self.published = published; self.hasTranscript = hasTranscript; self.hasMedia = hasMedia; self.hasSummary = hasSummary; self.hasMindMap = hasMindMap
   }
 }
 

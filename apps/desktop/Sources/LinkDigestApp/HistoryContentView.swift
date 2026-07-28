@@ -1205,6 +1205,14 @@ private struct HistoryRowView: View {
           HStack(spacing: 4) {
             if row.hasTranscript == true {
               Image(systemName: "waveform").help("已转写")
+            } else if row.hasMedia == true {
+              // 只标异常，不标常态：有视频却还没转写的条目，正文往往只有一百来字的
+              // 站点描述，在列表里和几千字的长文长得一模一样，点进去才发现是空的。
+              // 不判「字数少」这类阈值——「有视频且无转写稿」是可判定的事实。
+              Image(systemName: "waveform.slash")
+                .foregroundStyle(.orange)
+                .help("有视频，还没转写")
+                .accessibilityIdentifier("history-row-needs-transcript")
             }
             if row.hasSummary == true {
               Image(systemName: "text.alignleft").help("已总结")
