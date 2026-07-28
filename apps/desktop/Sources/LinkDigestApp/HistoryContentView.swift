@@ -1601,6 +1601,7 @@ private struct HistoryDetailView: View {
             .padding(.top, 14)
             .accessibilityIdentifier("history-video-preview-card")
             .id(sessionMediaPlayback.generation)
+            streamSelectionDiagnostic
           } else if let youTubeVideoID = YouTubeWatchLink.videoID(from: detail.task.canonicalURL) {
             youTubeCard(videoID: youTubeVideoID)
           } else if let failure = model.localMediaResolutionFailure {
@@ -1652,17 +1653,7 @@ private struct HistoryDetailView: View {
             .accessibilityIdentifier("history-video-session-restored-card")
             // generation is read so cache/refresh updates re-render this branch.
             .id(sessionMediaPlayback.generation)
-            if let selection = sessionMediaPlayback.selectionDiagnostic {
-              // 「登录了为什么还是 720P」只能由这行回答：API 给了哪些档、
-              // 我们最后选了哪条。读代码查不出来，每一环读起来都是通的。
-              Text(selection)
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.top, 4)
-                .accessibilityIdentifier("history-video-selection-diagnostic")
-            }
+            streamSelectionDiagnostic
           } else if HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable(
             hadMediaDescriptor: detail.hadMediaDescriptor,
             hasLocalMediaFile: localMediaFileURL != nil,
@@ -1875,6 +1866,24 @@ private struct HistoryDetailView: View {
   private static var titleMaximumHeight: CGFloat { titleLineHeight * 3 }
 
   private var titleNeedsScrolling: Bool { measuredTitleHeight > Self.titleMaximumHeight }
+
+  /// 「登录了为什么还是 720P」只能由这行回答：API 给了哪些档、我们最后选了哪条。
+  /// 读代码查不出来，每一环读起来都是通的。
+  ///
+  /// 必须挂在**每一个**带清晰度菜单的播放卡片下面。之前只有「会话恢复」分支有，
+  /// 当前抓取分支没有——于是手选高清后拿不到更高档时，那条分支只是重新加载一遍，
+  /// 不给任何说明，表现就是「点了尽量高清没反应」。
+  @ViewBuilder private var streamSelectionDiagnostic: some View {
+    if let selection = sessionMediaPlayback.selectionDiagnostic {
+      Text(selection)
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.top, 4)
+        .accessibilityIdentifier("history-video-selection-diagnostic")
+    }
+  }
 
   @ViewBuilder private var titleView: some View {
     if titleNeedsScrolling {

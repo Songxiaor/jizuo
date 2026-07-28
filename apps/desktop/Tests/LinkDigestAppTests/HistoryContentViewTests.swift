@@ -569,6 +569,12 @@ final class HistoryContentViewTests: XCTestCase {
       XCTAssertTrue(branch.contains("qualityOverride: quality"))
       XCTAssertTrue(branch.contains("selectedQuality: sessionMediaPlayback.chosenQuality"))
       XCTAssertTrue(branch.contains(".id(sessionMediaPlayback.generation)"))
+      // 能手选清晰度就必须能看到选流诊断。缺了这行，「手选高清后拿不到更高档」
+      // 只表现为重新加载一次、画质不变，用户分不清是登录掉了还是本来就没有更高档。
+      XCTAssertTrue(
+        branch.contains("streamSelectionDiagnostic"),
+        "带清晰度菜单的分支必须同时挂上选流诊断"
+      )
     }
     XCTAssertTrue(
       currentCapture.contains(
