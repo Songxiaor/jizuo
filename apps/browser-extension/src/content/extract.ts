@@ -155,7 +155,8 @@ export function extractCurrentPage(documentLike: Document = document): Extracted
   scrubNoise(clone);
   const baseHref = documentLike.location.href;
   const markdown = htmlElementToMarkdown(clone, baseHref);
-  const body = stripBoilerplateLines(markdown);
+  // 出口归一化：来源怎么写标题都不影响产出的层级结构。
+  const body = rebaseHeadingLevels(stripBoilerplateLines(markdown));
   const meta = isZhihuAnswerURL(baseHref)
     ? { ...resolvePageMetadata(documentLike), ...resolveZhihuAnswerMetadata(documentLike) }
     : resolvePageMetadata(documentLike);
@@ -1629,6 +1630,52 @@ function normalizeMarkdownWhitespace(value: string): string {
     return inFence ? line : line.replace(/[ \t]{2,}/g, " ");
   });
   return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/**
+ * 把正文里的标题层级整体重基到 h2 起。
+ *
+ * 出口归一化的一部分：**不管来源页面怎么写标题，产出的层级结构必须一致**。
+ * 阅读区已经把条目标题按 h1 显示了，正文里再出现 h1 就是第二个「文档标题」——
+ * 实测 support.claude.com 一篇 852 字的帮助页里有 4 个 h1，全部渲染成 23pt，
+ * 一篇小短文被切成四段巨标题。
+ *
+ * 只做平移，不压缩：所有标题同时下移相同的量，原有的相对层级差完整保留。
+ * 已经从 h2 或更深开始的文档一个字都不动。
+ *
+ * 围栏代码块里的 `#` 是代码不是标题，必须跳过——否则 Python / Shell 注释会被
+ * 当成标题改写，那是**破坏内容**，比排版难看严重得多。
+ */
+export function rebaseHeadingLevels(markdown: string): string {
+  const lines = markdown.split("\n");
+  const headingAt: number[] = [];
+  let inFence = false;
+  let shallowest = 7;
+
+  lines.forEach((line, index) => {
+    if (/^\s*(?:```|~~~)/.test(line)) {
+      inFence = !inFence;
+      return;
+    }
+    if (inFence) return;
+    const match = /^(#{1,6})\s+\S/.exec(line);
+    if (!match) return;
+    headingAt.push(index);
+    shallowest = Math.min(shallowest, match[1].length);
+  });
+
+  if (!headingAt.length || shallowest >= 2) return markdown;
+  const shift = 2 - shallowest;
+
+  for (const index of headingAt) {
+    lines[index] = lines[index].replace(/^(#{1,6})(\s+)/, (_, hashes: string, gap: string) => {
+      // 上限 6：再深就不是合法 ATX 标题了，宁可让最深的几级挤在一起，
+      // 也不能产出 `#######` 这种渲染不出来的东西。
+      const level = Math.min(hashes.length + shift, 6);
+      return `${"#".repeat(level)}${gap}`;
+    });
+  }
+  return lines.join("\n");
 }
 
 export function stripBoilerplateLines(markdown: string): string {
@@ -3562,6 +3609,37 @@ export function extractPageInIsolatedWorld(): ExtractedPage {
       })
       .join("\n"),
   );
+
+  // 出口归一化：标题层级整体重基到 h2 起，来源怎么写都不影响产出结构。
+  // 逻辑必须内联——注入函数引用不了模块级的 rebaseHeadingLevels，引用了会抛
+  // ReferenceError 并被外层 try/catch 吞成「没抓到正文」。改这里必须同步改
+  // 模块版，extract-copy-drift 测试盯着两边。
+  markdown = (() => {
+    const lines = markdown.split("\n");
+    const headingAt: number[] = [];
+    let inFence = false;
+    let shallowest = 7;
+    lines.forEach((line, index) => {
+      if (/^\s*(?:```|~~~)/.test(line)) {
+        inFence = !inFence;
+        return;
+      }
+      if (inFence) return;
+      const match = /^(#{1,6})\s+\S/.exec(line);
+      if (!match) return;
+      headingAt.push(index);
+      shallowest = Math.min(shallowest, match[1].length);
+    });
+    if (!headingAt.length || shallowest >= 2) return markdown;
+    const shift = 2 - shallowest;
+    for (const index of headingAt) {
+      lines[index] = lines[index].replace(/^(#{1,6})(\s+)/, (_m, hashes: string, gap: string) => {
+        const level = Math.min(hashes.length + shift, 6);
+        return `${"#".repeat(level)}${gap}`;
+      });
+    }
+    return lines.join("\n");
+  })();
 
   const metaLine = (key: string, attr: "name" | "property" = "name"): string | undefined => {
     const value = document.querySelector(`meta[${attr}='${key}']`)?.getAttribute("content")?.trim();
