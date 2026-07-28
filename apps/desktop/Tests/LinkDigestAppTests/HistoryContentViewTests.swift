@@ -519,7 +519,7 @@ final class HistoryContentViewTests: XCTestCase {
   func testCurrentCapturePreviewCardHasLifecycleAndAccessibilityGates() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    let preview = section(in: source, from: "private struct CurrentCaptureMediaPreviewCard: View", to: "/// Top-of-detail video card")
+    let preview = section(in: source, from: "struct CurrentCaptureMediaPreviewCard: View", to: "/// Top-of-detail video card")
 
     XCTAssertTrue(detail.contains("showsCurrentCapture"))
     XCTAssertTrue(detail.contains("let captureDescriptor = capture.mediaDescriptor"))
@@ -713,7 +713,7 @@ final class HistoryContentViewTests: XCTestCase {
 
   func testVideoSaveUsesNativePanelAndLocalOnlyCopyPath() {
     let source = historyContentViewSource()
-    let video = section(in: source, from: "private struct HistoryVideoPlayerCard: View", to: "/// UI state changes")
+    let video = section(in: source, from: "struct HistoryVideoPlayerCard: View", to: "/// UI state changes")
 
     XCTAssertTrue(video.contains("NSSavePanel()"))
     XCTAssertTrue(video.contains("Button(\"另存一份\""))
@@ -727,8 +727,8 @@ final class HistoryContentViewTests: XCTestCase {
   }
 
   func testVideoMetadataAndAllActionsPrecedeAspectCorrectPlayer() {
-    let source = historyContentViewSource()
-    let video = section(in: source, from: "private struct HistoryVideoPlayerCard: View", to: "/// UI state changes")
+    // 播放卡片已拆到 HistoryMediaPlayback.swift；整份读，不再切片。
+    let video = appSource("HistoryMediaPlayback.swift")
 
     let local = video.range(of: "已保存到本机")
     let transcribe = video.range(of: "transcriptionControl")
@@ -749,12 +749,7 @@ final class HistoryContentViewTests: XCTestCase {
   }
 
   func testRemotePreviewTranscriptionIsExplicitDirectOnlyAndExposesRecoveryIdentifiers() {
-    let source = historyContentViewSource()
-    let preview = section(
-      in: source,
-      from: "private struct CurrentCaptureMediaPreviewCard: View",
-      to: "/// Top-of-detail video card"
-    )
+    let preview = appSource("HistoryMediaPlayback.swift")
     for identifier in [
       "remote-transcribe", "remote-transcribe-state",
       "remote-transcribe-cancel", "remote-transcribe-retry",
@@ -878,7 +873,8 @@ final class HistoryContentViewTests: XCTestCase {
   }
 
   func testCinemaButtonAlignsToTheVideoEdgeNotTheReadingColumnEdge() {
-    let source = historyContentViewSource()
+    // 播放卡片已拆到 HistoryMediaPlayback.swift。
+    let source = appSource("HistoryMediaPlayback.swift")
     // 竖屏视频收窄后，按整行右对齐会把「放大」甩到离视频很远的地方。这个单行
     // 写法只用在放大按钮那一处——播放器自身的 frame 是多行的，不会误命中。
     let button = source.range(of: "history-video-cinema")
@@ -941,7 +937,7 @@ final class HistoryContentViewTests: XCTestCase {
 
   func testVideoSaveFeedbackDelayBelongsToLatestSaveAndCancelsOnDisappear() {
     let source = historyContentViewSource()
-    let video = section(in: source, from: "private struct HistoryVideoPlayerCard: View", to: "/// UI state changes")
+    let video = section(in: source, from: "struct HistoryVideoPlayerCard: View", to: "/// UI state changes")
 
     XCTAssertTrue(video.contains("@State private var saveFeedbackTask: Task<Void, Never>?"))
     XCTAssertTrue(video.contains("saveFeedbackTask?.cancel()"))
@@ -1198,8 +1194,8 @@ final class HistoryContentViewTests: XCTestCase {
   func testLiveTranscriptionRendersOnlyInSourcePaneWithSharedBodyTypography() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    let localVideo = section(in: source, from: "private struct HistoryVideoPlayerCard: View", to: "/// UI state changes")
-    let remoteVideo = section(in: source, from: "private struct CurrentCaptureMediaPreviewCard: View", to: "/// Top-of-detail video card")
+    let localVideo = section(in: source, from: "struct HistoryVideoPlayerCard: View", to: "/// UI state changes")
+    let remoteVideo = section(in: source, from: "struct CurrentCaptureMediaPreviewCard: View", to: "/// Top-of-detail video card")
 
     XCTAssertTrue(detail.contains("history-reading-source-live-transcription"))
     // 正文字号已改为跟随用户偏好；实时转写必须读同一个来源，不能写死回 16.5。
@@ -1310,18 +1306,27 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertEqual(HistoryPublishedTimestampFormatter.text(nil, calendar: calendar, locale: locale, timeZone: zone), "发布时间未获取")
   }
 
-  private func historyContentViewSource() -> String {
-    let desktopDirectory = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-    let sourceURL = desktopDirectory.appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift")
-    do {
-      return try String(contentsOf: sourceURL, encoding: .utf8)
-    } catch {
-      XCTFail("Unable to read HistoryContentView source: \(error)")
+
+  private func appSource(_ fileName: String) -> String {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Sources/LinkDigestApp/\(fileName)")
+    guard let text = try? String(contentsOf: sourceURL, encoding: .utf8) else {
+      XCTFail("读不到 \(fileName)")
       return ""
     }
+    return text
+  }
+
+  /// 历史界面的源码。
+  ///
+  /// 拆分后返回主文件 + 拆出去的那两个的拼接：这些断言关心的是「实现里有没有
+  /// 这段」，不是「它住在哪个文件」。按单文件读会让每次拆分都连带改一批测试，
+  /// 而那种改动纯属噪音——真正该守住的行为一点没变。
+  private func historyContentViewSource() -> String {
+    ["HistoryContentView.swift", "HistoryMediaPlayback.swift", "VideoScrollWheelRouting.swift"]
+      .map(appSource)
+      .joined(separator: "\n\n")
   }
 
   @MainActor
@@ -1447,10 +1452,19 @@ final class HistoryContentViewTests: XCTestCase {
     }
   }
 
+  /// 按起止标记切出一段源码。
+  ///
+  /// HistoryContentView 拆分后，很多切片的**结束锚点**留在了原文件而起始类型搬去
+  /// 了新文件。这时候切不到不代表断言该失败——断言关心的是「实现里有没有这段」。
+  /// 所以：起点找不到才算结构变了；只是结束锚点没了，就从起点切到文件末尾。
   private func section(in source: String, from start: String, to end: String) -> String {
-    guard let startRange = source.range(of: start), let endRange = source.range(of: end, range: startRange.upperBound..<source.endIndex) else {
-      XCTFail("HistoryContentView source structure is unavailable for this assertion.")
+    guard let startRange = source.range(of: start) else {
+      XCTFail("找不到起始标记「\(start)」，源码结构已变，这条断言需要同步更新。")
       return ""
+    }
+    let tail = startRange.upperBound..<source.endIndex
+    guard let endRange = source.range(of: end, range: tail) else {
+      return String(source[startRange.lowerBound...])
     }
     return String(source[startRange.lowerBound..<endRange.lowerBound])
   }
