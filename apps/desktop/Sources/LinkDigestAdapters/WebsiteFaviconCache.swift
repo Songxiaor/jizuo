@@ -52,37 +52,51 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
     resources: any SafeResourceFetching
   ) async -> URL? {
     if let cached = localImageURL(for: sourceURL) { return cached }
-    guard let faviconURL = Self.faviconURL(for: sourceURL),
-          let key = Self.cacheKey(for: sourceURL),
+    guard let key = Self.cacheKey(for: sourceURL),
           let sourceHost = PublicWebURLPolicy.normalizedHost(sourceURL.host ?? "")
     else { return nil }
     if hasFreshNegativeCache(for: key) { return nil }
 
-    let sameHost: @Sendable (URL) -> Bool = { candidate in
-      guard candidate.user == nil, candidate.password == nil,
-            let scheme = candidate.scheme?.lowercased(), ["http", "https"].contains(scheme),
-            (scheme == "http" && (candidate.port == nil || candidate.port == 80)) ||
-              (scheme == "https" && (candidate.port == nil || candidate.port == 443)),
-            let candidateHost = PublicWebURLPolicy.normalizedHost(candidate.host ?? "")
-      else { return false }
-      return candidateHost == sourceHost
+    // 本站拿不到就退到注册域。
+    //
+    // 实测 support.claude.com 的 /favicon.ico 返回 200 但**零字节**，而
+    // claude.com/favicon.ico 有 15086 字节的正常图标。这不是个例：帮助中心、
+    // 文档站、博客常挂在 support./help./docs./blog. 这类子域上，图标只在主域有。
+    // 只剥一层标签，且要求剩余部分仍是可注册域，避免把 foo.co.uk 削成 co.uk。
+    var response: SafeResourceResponse?
+    for host in Self.faviconHostChain(from: sourceHost) {
+      guard let faviconURL = Self.faviconURL(host: host) else { continue }
+      let sameHost: @Sendable (URL) -> Bool = { candidate in
+        guard candidate.user == nil, candidate.password == nil,
+              let scheme = candidate.scheme?.lowercased(), ["http", "https"].contains(scheme),
+              (scheme == "http" && (candidate.port == nil || candidate.port == 80)) ||
+                (scheme == "https" && (candidate.port == nil || candidate.port == 443)),
+              let candidateHost = PublicWebURLPolicy.normalizedHost(candidate.host ?? "")
+        else { return false }
+        return candidateHost == host
+      }
+      guard let candidate = try? await resources.fetchResource(.init(
+        url: faviconURL,
+        headers: ["Accept": "image/x-icon,image/vnd.microsoft.icon,image/png,image/*;q=0.8"],
+        byteLimit: Self.perHostByteLimit,
+        allowsRedirectTarget: sameHost
+      )),
+        (200...299).contains(candidate.statusCode),
+        candidate.body.count <= Self.perHostByteLimit,
+        sameHost(candidate.url),
+        Self.isSupportedImage(candidate)
+      else { continue }
+      response = candidate
+      break
     }
 
-    guard let response = try? await resources.fetchResource(.init(
-      url: faviconURL,
-      headers: ["Accept": "image/x-icon,image/vnd.microsoft.icon,image/png,image/*;q=0.8"],
-      byteLimit: Self.perHostByteLimit,
-      allowsRedirectTarget: sameHost
-    )),
-      (200...299).contains(response.statusCode),
-      response.body.count <= Self.perHostByteLimit,
-      sameHost(response.url),
-      Self.isSupportedImage(response)
-    else {
+    guard let response else {
       recordNegativeCache(for: key)
       return nil
     }
 
+    // 无论图标取自本站还是主域，都按**原始 host** 落键，
+    // 这样 `localImageURL(for:)` 的同步查询能直接命中。
     return lock.withLock {
       guard (try? fileManager.createDirectory(at: root, withIntermediateDirectories: true)) != nil else { return nil }
       let destination = root.appendingPathComponent(key, isDirectory: false)
@@ -100,6 +114,46 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
   /// The source scheme and host are retained; userinfo, query and fragment are
   /// discarded. PublicWebURLPolicy will still re-admit this URL at transport
   /// time, including for records created by older app versions.
+  /// 依次尝试的 host：本站，然后（若存在）注册域。
+  ///
+  /// 只剥一层标签。剥更多会滑向公共后缀（`a.b.co.uk` → `co.uk`），那是一个
+  /// 别人的域，抓它的图标既不对也不该。判据是「剩余部分至少两段，且不是已知的
+  /// 多段有效顶级域」——不引公共后缀表的前提下，这条足够保守。
+  static func faviconHostChain(from host: String) -> [String] {
+    var chain = [host]
+    if let parent = registrableParent(of: host) { chain.append(parent) }
+    return chain
+  }
+
+  /// 常见的多段有效顶级域。命中就说明再剥一层会越过注册边界。
+  private static let multiLabelSuffixes: Set<String> = [
+    "co.uk", "org.uk", "ac.uk", "gov.uk",
+    "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn",
+    "com.au", "net.au", "org.au",
+    "co.jp", "or.jp", "ne.jp", "ac.jp",
+    "com.hk", "com.tw", "com.sg", "com.br", "com.mx",
+    "co.kr", "co.in", "co.nz", "co.za",
+  ]
+
+  private static func registrableParent(of host: String) -> String? {
+    let labels = host.split(separator: ".").map(String.init)
+    guard labels.count >= 3 else { return nil }
+    let parent = labels.dropFirst().joined(separator: ".")
+    // 剥完只剩「有效顶级域」本身，说明原 host 已经是注册域，不能再退。
+    guard parent.split(separator: ".").count >= 2,
+          !multiLabelSuffixes.contains(parent)
+    else { return nil }
+    return parent
+  }
+
+  static func faviconURL(host: String) -> URL? {
+    var components = URLComponents()
+    components.scheme = "https"
+    components.host = host
+    components.path = "/favicon.ico"
+    return components.url
+  }
+
   public static func faviconURL(for sourceURL: URL) -> URL? {
     guard let components = URLComponents(url: sourceURL, resolvingAgainstBaseURL: false),
           let scheme = components.scheme?.lowercased(), ["http", "https"].contains(scheme),
