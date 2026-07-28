@@ -28,7 +28,7 @@ enum ReadingTextComposer {
         ))
       case let .paragraph(text):
         result.append(paragraph(
-          inline(text, readingFont: readingFont, baseSize: MarkdownPresentation.bodyFontSize, color: palette.primary),
+          inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.primary),
           spacingAfter: 20, lineSpacing: MarkdownPresentation.bodyLineSpacing
         ))
       case let .list(items):
@@ -47,7 +47,7 @@ enum ReadingTextComposer {
         }
       case let .quote(text):
         result.append(paragraph(
-          inline(text, readingFont: readingFont, baseSize: MarkdownPresentation.bodyFontSize, color: palette.secondary),
+          inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary),
           spacingAfter: 20, lineSpacing: 8, headIndent: 18, firstLineIndent: 18
         ))
       case .code:
@@ -65,7 +65,7 @@ enum ReadingTextComposer {
   ) -> NSAttributedString {
     paragraph(
       NSAttributedString(string: text, attributes: [
-        .font: font(readingFont, size: MarkdownPresentation.bodyFontSize),
+        .font: font(readingFont, size: readingFont.bodySize),
         .foregroundColor: color,
       ]),
       spacingAfter: 0, lineSpacing: MarkdownPresentation.bodyLineSpacing
@@ -126,10 +126,10 @@ enum ReadingTextComposer {
     color: NSColor
   ) -> NSAttributedString {
     let line = NSMutableAttributedString(string: prefix, attributes: [
-      .font: font(readingFont, size: MarkdownPresentation.bodyFontSize),
+      .font: font(readingFont, size: readingFont.bodySize),
       .foregroundColor: color,
     ])
-    line.append(inline(text, readingFont: readingFont, baseSize: MarkdownPresentation.bodyFontSize, color: color))
+    line.append(inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: color))
     return line
   }
 

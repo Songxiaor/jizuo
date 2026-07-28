@@ -41,7 +41,10 @@ struct ProviderSettingsView: View {
   @State private var pendingDeletionID: String?
   @State private var activeAssignmentPicker: AssignmentPicker?
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
-  @AppStorage(ReadingFontPreference.storageKey) private var readingFontRaw = ReadingFontPreference.theme.rawValue
+  @AppStorage(ReadingFontSelection.storageKey)
+  private var readingFontRaw = ReadingFontSelection.defaultStoredValue
+  @AppStorage(ReadingFontSize.storageKey)
+  private var readingFontSizeRaw = Double(ReadingFontSize.default)
 
   /// 设置窗口是否交还系统原生外观。
   ///
@@ -54,6 +57,38 @@ struct ProviderSettingsView: View {
   /// 仅用于判断是否启用 Claude 风格阅读排版——那确实只属于浅色纸质主题。
   private var isPaperTheme: Bool {
     AppearanceTheme(rawValue: appearanceThemeRaw) == .paper
+  }
+
+  private var resolvedReadingFont: ResolvedReadingFont {
+    ReadingFontSelection(storedValue: readingFontRaw)
+      .resolved(
+        usesEditorialReadingTypography: isPaperTheme,
+        bodySize: CGFloat(readingFontSizeRaw)
+      )
+  }
+
+  /// 带中文标点的预览句。
+  ///
+  /// 「，」「。」后面会不会裂开大缝，只有真渲染出来才看得见——按字体名判断不出来，
+  /// 单字宽度也量不出来（各字体都是 1 em，差别在上下文挤压）。所以预览句必须含
+  /// 中文标点和中英混排。
+  @ViewBuilder private var readingFontPreview: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text("预览")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      Text("众所周知，搜索是 Agent 最基础的能力之一。模型的知识停在训练截止那天。")
+        .font(resolvedReadingFont.body())
+        .lineSpacing(MarkdownPresentation.bodyLineSpacing)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(
+          RoundedRectangle(cornerRadius: 8)
+            .fill(Color.secondary.opacity(0.08))
+        )
+        .accessibilityIdentifier("appearance-reading-font-preview")
+    }
   }
 
   var body: some View {
@@ -691,15 +726,44 @@ struct ProviderSettingsView: View {
             }
             Spacer(minLength: 24)
             Picker("阅读字体", selection: $readingFontRaw) {
-              ForEach(ReadingFontPreference.allCases) { option in
-                Text(option.displayName).tag(option.rawValue)
+              Text("跟随主题").tag(ReadingFontSelection.defaultStoredValue)
+              Divider()
+              // 每一项用它自己的字形显示，选之前就能看出长什么样。
+              ForEach(ReadingFontCatalog.cjkCapableFamilies(), id: \.self) { family in
+                Text(family).font(.custom(family, size: 13)).tag(family)
               }
             }
             .pickerStyle(.menu)
             .labelsHidden()
-            .frame(width: 160)
+            .frame(width: 200)
             .accessibilityIdentifier("appearance-reading-font-picker")
           }
+
+          HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 4) {
+              Text("正文字号").font(.headline)
+              Text("标题与引用按同一比例跟着缩放，不会只有正文变大。")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 24)
+            HStack(spacing: 10) {
+              Slider(
+                value: $readingFontSizeRaw,
+                in: Double(ReadingFontSize.minimum)...Double(ReadingFontSize.maximum),
+                step: Double(ReadingFontSize.step)
+              )
+              .frame(width: 150)
+              .accessibilityIdentifier("appearance-reading-font-size-slider")
+              Text(String(format: "%.1f", readingFontSizeRaw))
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(width: 34, alignment: .trailing)
+            }
+          }
+
+          readingFontPreview
         }
         .padding(.vertical, 4)
       } header: {

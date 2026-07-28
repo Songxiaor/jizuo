@@ -854,7 +854,7 @@ struct MarkdownContentView: View {
         .textSelection(.enabled)
         .accessibilityAddTraits(.isHeader)
     case let .paragraph(text):
-      inlineBody(text, baseSize: MarkdownPresentation.bodyFontSize)
+      inlineBody(text, baseSize: readingFont.bodySize)
         .lineSpacing(MarkdownPresentation.bodyLineSpacing)
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
@@ -974,10 +974,12 @@ struct MarkdownContentView: View {
   /// Size + weight + leading as a set (WWDC typography).
   private func headingFont(_ level: Int) -> Font {
     switch level {
-    case 1: return readingFont.font(size: 23, weight: .bold)
-    case 2: return readingFont.font(size: 19.5, weight: .semibold)
-    case 3: return readingFont.font(size: 17, weight: .semibold)
-    default: return readingFont.font(size: 16, weight: .semibold)
+    // 设计稿字号按用户正文字号等比缩放：调大正文时标题层级跟着走，
+    // 否则 22pt 正文配 23pt 一级标题，层级会塌掉。
+    case 1: return readingFont.scaled(designSize: 23, weight: .bold)
+    case 2: return readingFont.scaled(designSize: 19.5, weight: .semibold)
+    case 3: return readingFont.scaled(designSize: 17, weight: .semibold)
+    default: return readingFont.scaled(designSize: 16, weight: .semibold)
     }
   }
 

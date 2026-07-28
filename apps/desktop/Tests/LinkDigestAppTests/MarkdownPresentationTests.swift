@@ -47,16 +47,26 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertTrue(selectable.contains("intrinsicContentSize"))
   }
 
-  func testReadingFontPreferenceResolvesThemeFallbackAndNamedFamilies() {
-    XCTAssertEqual(ReadingFontPreference.theme.resolved(usesEditorialReadingTypography: true), .serif)
-    XCTAssertEqual(ReadingFontPreference.theme.resolved(usesEditorialReadingTypography: false), .sans)
-    XCTAssertEqual(ReadingFontPreference.serif.resolved(usesEditorialReadingTypography: false), .serif)
-    XCTAssertEqual(ReadingFontPreference.sansSerif.resolved(usesEditorialReadingTypography: true), .sans)
-    XCTAssertEqual(ReadingFontPreference.songti.resolved(usesEditorialReadingTypography: false), .named("Songti SC"))
-    XCTAssertEqual(ReadingFontPreference.kaiti.resolved(usesEditorialReadingTypography: true), .named("Kaiti SC"))
+  func testReadingFontSelectionResolvesThemeAndNamedFamilies() {
+    // 「跟随主题」在纸质主题下要衬线质感，但必须是**中文**衬线：原来解析成
+    // system(design:.serif)（New York，无中文字形），中文逐字回退且不做标点挤压，
+    // 每个「，」「。」后面都会裂开一道缝。
+    XCTAssertEqual(
+      ReadingFontSelection.theme.resolved(usesEditorialReadingTypography: true, bodySize: 16.5),
+      ResolvedReadingFont(face: .named("Songti SC"), bodySize: 16.5)
+    )
+    XCTAssertEqual(
+      ReadingFontSelection.theme.resolved(usesEditorialReadingTypography: false, bodySize: 16.5),
+      ResolvedReadingFont(face: .named("PingFang SC"), bodySize: 16.5)
+    )
+    XCTAssertEqual(
+      ReadingFontSelection.family("Kaiti SC").resolved(usesEditorialReadingTypography: true, bodySize: 18),
+      ResolvedReadingFont(face: .named("Kaiti SC"), bodySize: 18)
+    )
     // 内置命名字体在当前 macOS 上必须真实可解析，否则回退逻辑会吃掉用户选择。
     XCTAssertEqual(ResolvedReadingFont.named("Songti SC").nsFontDescriptor(size: 16).fontAttributes[.family] as? String, "Songti SC")
     XCTAssertEqual(ResolvedReadingFont.named("Kaiti SC").nsFontDescriptor(size: 16).fontAttributes[.family] as? String, "Kaiti SC")
+    XCTAssertEqual(ResolvedReadingFont.named("PingFang SC").nsFontDescriptor(size: 16).fontAttributes[.family] as? String, "PingFang SC")
   }
 
   func testInlineImageSaveSuggestsExtensionFromMagicBytes() {

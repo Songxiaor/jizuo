@@ -1337,12 +1337,18 @@ private struct HistoryDetailView: View {
   /// 转写校对：编辑态与草稿只属于当前详情页，切换条目即复位。
   @State private var isEditingTranscription = false
   @State private var transcriptionDraft = ""
-  @AppStorage(ReadingFontPreference.storageKey) private var readingFontRaw = ReadingFontPreference.theme.rawValue
+  @AppStorage(ReadingFontSelection.storageKey)
+  private var readingFontRaw = ReadingFontSelection.defaultStoredValue
+  @AppStorage(ReadingFontSize.storageKey)
+  private var readingFontSizeRaw = Double(ReadingFontSize.default)
   private var theme: HistoryThemeTokens { appearanceTheme.tokens }
-  /// 用户阅读字体偏好；「跟随主题」回落到主题的编辑排版标记。
+  /// 用户阅读字体与字号偏好；「跟随主题」回落到主题的编辑排版标记。
   private var readingFont: ResolvedReadingFont {
-    (ReadingFontPreference(rawValue: readingFontRaw) ?? .theme)
-      .resolved(usesEditorialReadingTypography: appearanceTheme.usesEditorialReadingTypography)
+    ReadingFontSelection(storedValue: readingFontRaw)
+      .resolved(
+        usesEditorialReadingTypography: appearanceTheme.usesEditorialReadingTypography,
+        bodySize: CGFloat(readingFontSizeRaw)
+      )
   }
   private enum ReadingPane: String, CaseIterable, Identifiable {
     case result
@@ -2402,7 +2408,7 @@ private struct HistoryDetailView: View {
             }
           } else {
             Text(liveTranscriptionText)
-              .font(readingFont.font(size: MarkdownPresentation.bodyFontSize))
+              .font(readingFont.body())
               .foregroundStyle(theme.primaryText)
               .lineSpacing(MarkdownPresentation.bodyLineSpacing)
               .frame(maxWidth: .infinity, alignment: .leading)
@@ -2449,7 +2455,7 @@ private struct HistoryDetailView: View {
         }
         if isEditingTranscription, snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue {
           TextEditor(text: $transcriptionDraft)
-            .font(readingFont.font(size: MarkdownPresentation.bodyFontSize))
+            .font(readingFont.body())
             .lineSpacing(6)
             .scrollContentBackground(.hidden)
             .frame(minHeight: 320, maxHeight: .infinity)
@@ -2588,7 +2594,7 @@ private struct HistoryDetailView: View {
       if !recognizedText.isEmpty {
         ScrollView {
           Text(recognizedText)
-            .font(.system(size: MarkdownPresentation.bodyFontSize))
+            .font(.system(size: readingFont.bodySize))
             .lineSpacing(MarkdownPresentation.bodyLineSpacing)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)

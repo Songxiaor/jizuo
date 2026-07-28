@@ -1187,7 +1187,8 @@ final class HistoryContentViewTests: XCTestCase {
     let remoteVideo = section(in: source, from: "private struct CurrentCaptureMediaPreviewCard: View", to: "/// Top-of-detail video card")
 
     XCTAssertTrue(detail.contains("history-reading-source-live-transcription"))
-    XCTAssertTrue(detail.contains("MarkdownPresentation.bodyFontSize"))
+    // 正文字号已改为跟随用户偏好；实时转写必须读同一个来源，不能写死回 16.5。
+    XCTAssertTrue(detail.contains("readingFont.bodySize"))
     XCTAssertTrue(detail.contains("MarkdownPresentation.bodyLineSpacing"))
     XCTAssertFalse(localVideo.contains("history-video-transcription-text"))
     XCTAssertFalse(remoteVideo.contains("remote-transcribe-partial"))
