@@ -1180,6 +1180,21 @@ final class HistoryContentViewTests: XCTestCase {
     )
   }
 
+  /// 行宽只能有一个控制点。
+  ///
+  /// 原来阅读区卡在 590pt，而它所在的内容列有 680pt 且左对齐——右边固定空出
+  /// 58pt，正文实际只有 558pt。那不是留白设计，是两层上限打架的残留，看着像
+  /// 卡片右边缺了一块。这类问题不报错，只是常年少了 16% 的可读宽度。
+  func testReadingWidthHasASingleConstraint() {
+    let source = historyContentViewSource()
+    XCTAssertFalse(
+      source.contains(".frame(maxWidth: 590, alignment: .leading)"),
+      "阅读区的第二层宽度上限回来了，正文又会缩窄并在右侧留下空白")
+    XCTAssertTrue(
+      source.contains(".frame(maxWidth: 680, alignment: .leading)"),
+      "行宽仍要有上限，只是应当唯一——去掉 680 会让宽屏下的行长到不可读")
+  }
+
   func testLiveTranscriptionRendersOnlyInSourcePaneWithSharedBodyTypography() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")

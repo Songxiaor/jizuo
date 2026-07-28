@@ -2121,7 +2121,15 @@ private struct HistoryDetailView: View {
       content
     }
     .animation(historyUIAnimation(reduceMotion: reduceMotion), value: showsStreamingResultCard)
-    .frame(maxWidth: 590, alignment: .leading)
+    // 正文铺满内容列，不再另设一层更窄的上限。
+    //
+    // 原来阅读区卡在 590pt，而它所在的内容列有 680pt，且左对齐——右边固定空出
+    // 680 - 590 - 32 = 58pt，正文实际只有 558pt。那块空白不是留白设计，是两层
+    // 上限打架的残留：读起来像卡片右边缺了一块。
+    //
+    // 行宽仍由外层 680pt 的内容列封顶（正文 648pt，约 39 个汉字一行，仍在
+    // 舒适区间）。真正的行宽控制点只应有一个，就是那一层。
+    .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)
     .padding(.top, showsReadingPanePicker ? 12 : 16)
     .padding(.bottom, 16)
