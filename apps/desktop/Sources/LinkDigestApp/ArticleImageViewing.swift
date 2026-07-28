@@ -100,6 +100,27 @@ struct InlineArticleImageView: View {
     return ratio.isFinite && ratio > 0 ? ratio : 1
   }
 
+  /// 单张插图的宽度上限：不超过按高度算出的值，也**不超过图片自身的宽度**。
+  ///
+  /// `.resizable()` 会把图片拉伸到给定的 frame，所以没有这条上限时，一张
+  /// 128×128 的微信表情会被放大到 560×560——放大 4.4 倍，糊成一整屏。
+  /// 正文配图普遍 800～1080 宽，不受影响。
+  ///
+  /// 判据是「图片自身有多大」而不是「它是不是表情」：按 URL 或域名识别表情要
+  /// 一个站一个站加，而且换个图床就失效；尺寸是图片自带的事实。
+  private static func standaloneMaximumWidth(of image: NSImage) -> CGFloat {
+    let ratio = aspectRatio(of: image)
+    let byHeight = maximumHeight * ratio
+    let intrinsic = image.size.width
+    guard intrinsic.isFinite, intrinsic > 0 else { return byHeight }
+    return min(byHeight, intrinsic)
+  }
+
+  /// 供测试调用；尺寸规则是纯函数，不必为它启一个视图。
+  static func standaloneMaximumWidthForTesting(of image: NSImage) -> CGFloat {
+    standaloneMaximumWidth(of: image)
+  }
+
   var body: some View {
     Group {
       if let image {
@@ -109,8 +130,8 @@ struct InlineArticleImageView: View {
           .aspectRatio(ratio, contentMode: .fit)
           // 画廊里宽度由列宽决定、高度随比例走；独立插图才用比例算自己的上限。
           .frame(
-            maxWidth: layout == .gallery ? .infinity : Self.maximumHeight * ratio,
-            maxHeight: layout == .gallery ? nil : Self.maximumHeight
+            maxWidth: layout == .gallery ? .infinity : Self.standaloneMaximumWidth(of: image),
+            maxHeight: layout == .gallery ? nil : min(Self.maximumHeight, image.size.height)
           )
           .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
           .padding(8)
