@@ -1725,6 +1725,7 @@ private struct HistoryDetailView: View {
       .padding(.horizontal, 40)
       .padding(.top, 32)
       .padding(.bottom, 48)
+      .thinScrollers()
     }
     .onAppear { moduleScrollProxy = pageProxy }
     }
@@ -2133,7 +2134,10 @@ private struct HistoryDetailView: View {
       content
     }
     .animation(historyUIAnimation(reduceMotion: reduceMotion), value: showsStreamingResultCard)
-    .frame(maxWidth: 590, alignment: .leading)
+    // 正文铺满卡片宽度。原来内容卡在 590pt、卡片却有 680pt，右侧空出近 90pt——
+    // 没有滚动条时只是浪费，正文改成自带滚动后，滚动条就浮在正文和卡片边框中间，
+    // 看着像挂错了地方。行宽由外层 680pt 的卡片上限控制，仍在可读区间。
+    .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)
     .padding(.top, showsReadingPanePicker ? 12 : 16)
     .padding(.bottom, 16)

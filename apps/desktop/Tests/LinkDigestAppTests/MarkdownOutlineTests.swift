@@ -225,6 +225,46 @@ extension MarkdownOutlineTests {
     XCTAssertTrue(history.contains("onNavigateToModule: scrollToModule"), "回调要真的接上")
   }
 
+  /// 正文要铺满卡片宽度。
+  ///
+  /// 原来内容卡在 590pt、卡片却有 680pt，右侧空出近 90pt。没有滚动条时只是浪费；
+  /// 正文改成自带滚动后，滚动条会浮在正文和卡片边框中间，看着像挂错了地方。
+  func testReadingSurfaceFillsTheCardWidth() throws {
+    let history = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8)
+    XCTAssertFalse(
+      history.contains(".frame(maxWidth: 590, alignment: .leading)"),
+      "590pt 的内容上限回来了，滚动条又会浮在半空、正文又会变窄")
+  }
+
+  /// 两个滚动区都要用细的浮层滚动条。
+  func testBothScrollAreasUseThinScrollers() throws {
+    let presentation = try presentationSource()
+    XCTAssertTrue(presentation.contains(".thinScrollers()"), "正文滚动区没接")
+
+    let history = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8)
+    XCTAssertTrue(history.contains(".thinScrollers()"), "主窗口滚动区没接")
+
+    let helper = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/ThinScrollers.swift"),
+      encoding: .utf8)
+    XCTAssertTrue(helper.contains("scrollerStyle = .overlay"))
+    XCTAssertTrue(helper.contains("controlSize = .small"), "宽度跟随 controlSize，不设等于没变细")
+    // makeNSView 返回时视图还没挂进树，enclosingScrollView 恒为 nil。
+    XCTAssertTrue(
+      helper.contains("viewDidMoveToWindow") || helper.contains("DispatchQueue.main.async"),
+      "当场设置找不到滚动容器，必须延到挂载之后")
+  }
+
   /// 章节跳转由正文自己的 ScrollViewReader 驱动。
   func testOutlineJumpUsesScrollAnchors() throws {
     let source = try presentationSource()

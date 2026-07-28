@@ -937,7 +937,7 @@ struct MarkdownContentView: View {
       ScrollViewReader { proxy in
         ScrollView {
           articleContent
-            .padding(.trailing, 2)
+            .thinScrollers()
         }
         .frame(maxHeight: Self.articleViewportHeight)
         .scrollBounceBehavior(.basedOnSize)
