@@ -290,14 +290,34 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       }
       if !filter.searchText.isEmpty {
         let pattern = "%\(escapedLikePattern(filter.searchText))%"
+        // 正文与标签也要能搜到。
+        //
+        // 原来只搜链接、标题、来源标签——「我记得有篇讲盲派格局的」找不回来，
+        // 因为那篇标题里根本没有「盲派」。条目一多，搜不到正文等于搜索废掉。
+        //
+        // 作者不必单独加一列：抓取时写进正文 frontmatter 的 `author:` 行，
+        // 搜正文自然覆盖。多加一个 LIKE 只会多一次全表扫描而不多命中任何东西。
+        //
+        // 用 LIKE 全扫而不是上 FTS：本机全部正文合计 185 KB，扫一遍是毫秒级。
+        // 涨到几十 MB 之前都不必引入虚拟表和它的索引维护。
         predicates.append("""
           (
             t.canonical_url LIKE ? ESCAPE '\\'
             OR COALESCE(es.title, '') LIKE ? ESCAPE '\\'
             OR COALESCE(es.source_label, '') LIKE ? ESCAPE '\\'
+            OR COALESCE(es.body_text, '') LIKE ? ESCAPE '\\'
+            OR EXISTS (
+              SELECT 1 FROM task_tags stt
+              INNER JOIN tags stg ON stg.id = stt.tag_id
+              WHERE stt.task_id = t.id
+                AND (
+                  stg.display_name LIKE ? ESCAPE '\\'
+                  OR stg.normalized_name LIKE ? ESCAPE '\\'
+                )
+            )
           )
           """)
-        arguments += [pattern, pattern, pattern]
+        arguments += [pattern, pattern, pattern, pattern, pattern, pattern]
       }
       let predicate = predicates.isEmpty ? "" : "WHERE \(predicates.joined(separator: " AND "))"
       arguments += [bounded]
