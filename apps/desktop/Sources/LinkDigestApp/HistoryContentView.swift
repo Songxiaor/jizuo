@@ -1528,6 +1528,25 @@ private struct HistoryDetailView: View {
             .accessibilityIdentifier("history-run-completion-banner")
             .transition(historyBannerTransition(reduceMotion: reduceMotion))
         }
+        // 成功有横幅，失败和中断原来什么都不显示——状态只落在详情下方一个被动的
+        // 元数据字段上。关 App 时被打断的那次翻译，表现就是「点了没反应」。
+        if completionBanner == nil, let notice = UnfinishedRunNotice.latest(in: detail.runs) {
+          HStack(spacing: 8) {
+            Label(notice.message, systemImage: "exclamationmark.arrow.circlepath")
+              .font(.callout.weight(.medium))
+              .foregroundStyle(.orange)
+              .fixedSize(horizontal: false, vertical: true)
+            Button("重新\(UnfinishedRunNotice.label(for: notice.kind))") {
+              retryUnfinishedRun(notice.kind)
+            }
+            .controlSize(.small)
+            .disabled(!providerSettings.arePreferencesReady)
+            .accessibilityIdentifier("history-run-unfinished-retry")
+            Spacer(minLength: 0)
+          }
+          .padding(.bottom, 10)
+          .accessibilityIdentifier("history-run-unfinished-banner")
+        }
         titleView
         HStack(spacing: 10) {
           Text(sourceURLDisplay)
@@ -1948,6 +1967,19 @@ private struct HistoryDetailView: View {
         guard height > 0 else { return }
         measuredTitleHeight = height
       }
+  }
+
+  /// 重试没跑完的那一类运行。走的是和工具栏按钮完全相同的入口——
+  /// 重试如果另起一条路径，两边的前置校验迟早会漂移。
+  private func retryUnfinishedRun(_ kind: RunKind) {
+    Task {
+      switch kind {
+      case .summarize:
+        await appModel.summarize(historyDetail: detail, preferences: providerSettings.runPreferences)
+      case .translate:
+        await appModel.translate(historyDetail: detail, preferences: providerSettings.runPreferences)
+      }
+    }
   }
 
   private var actionToolbar: some View {
