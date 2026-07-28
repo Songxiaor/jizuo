@@ -1694,6 +1694,7 @@ private struct HistoryDetailView: View {
         // 脑图区固定在媒体与原文之间：结构化输出先于全文，读图再读文。
         MindMapSectionView(taskID: detail.task.id, model: model)
           .padding(.top, 16)
+          .id(ReadingAnchor.module("mindmap"))
 
         // Video-first captures keep playback before their short source text.
         // Substantive WeChat articles already rendered the reading surface above.
@@ -1705,13 +1706,16 @@ private struct HistoryDetailView: View {
         if !localImageURLs.isEmpty {
           imageTextRecognitionCard
             .padding(.top, 16)
+            .id(ReadingAnchor.module("images"))
         }
 
         AnnotationSectionView(taskID: detail.task.id, model: model)
           .padding(.top, 20)
+          .id(ReadingAnchor.module("annotations"))
 
         HistoryTagEditor(tags: detail.tags, model: model)
           .padding(.top, 20)
+          .id(ReadingAnchor.module("tags"))
       }
       .frame(maxWidth: 680, alignment: .leading)
       .frame(maxWidth: .infinity, alignment: .center)
@@ -2081,6 +2085,27 @@ private struct HistoryDetailView: View {
     }
   }
 
+  /// 正文下方实际存在的模块。
+  ///
+  /// 按真实存在与否构造，不写死一张表：列出点了跳不到的死链接比不列更糟。
+  /// 脑图、标注、标签区永远渲染（本身带空状态与添加入口），所以恒列；
+  /// 图片区只在有本地图片时才存在。
+  private var navigationModules: [ReadingModuleLink] {
+    var links: [ReadingModuleLink] = [
+      .init(anchor: "mindmap", title: "脑图", systemImage: "circle.hexagongrid")
+    ]
+    if !localImageURLs.isEmpty {
+      links.append(.init(
+        anchor: "images",
+        title: "图片 \(localImageURLs.count)",
+        systemImage: "photo.on.rectangle"
+      ))
+    }
+    links.append(.init(anchor: "annotations", title: "标注", systemImage: "highlighter"))
+    links.append(.init(anchor: "tags", title: "标签", systemImage: "tag"))
+    return links
+  }
+
   private var readingSurface: some View {
     VStack(alignment: .leading, spacing: 10) {
       if showsStreamingResultCard {
@@ -2389,7 +2414,8 @@ private struct HistoryDetailView: View {
           secondaryTextColor: theme.secondaryText,
           accentColor: theme.accent,
           showsPlainText: $showsPlainText,
-          showsInlinePlainTextToggle: false
+          showsInlinePlainTextToggle: false,
+          navigationModules: navigationModules
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("history-reading-result")
@@ -2474,7 +2500,8 @@ private struct HistoryDetailView: View {
             secondaryTextColor: theme.secondaryText,
             accentColor: theme.accent,
             showsPlainText: $showsPlainText,
-            showsInlinePlainTextToggle: false
+            showsInlinePlainTextToggle: false,
+            navigationModules: navigationModules
           )
           .frame(maxWidth: .infinity, alignment: .leading)
           .accessibilityIdentifier("history-reading-source")

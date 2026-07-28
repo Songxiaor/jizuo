@@ -12,6 +12,25 @@ import Foundation
 ///
 /// 这个模型能可靠工作的前提是标题层级已经归一化（抽取侧把最浅标题重基到 h2）。
 /// 在那之前，用 h1 分节的页面会产出一份没有层级的平目录。
+/// 详情页里可跳转的位置。
+///
+/// 正文块和正文下方的模块共用一套锚点：`ScrollViewReader` 找的是最近的滚动容器，
+/// 而两者都在详情页那一个 ScrollView 里，所以从正文里的 proxy 也能跳到脑图、
+/// 图片、标签。用一个枚举而不是两套 id，是为了避免 Int 与 String 撞车。
+enum ReadingAnchor: Hashable {
+  case block(Int)
+  case module(String)
+}
+
+/// 正文下方模块在导航里的一条。
+struct ReadingModuleLink: Identifiable, Equatable {
+  let anchor: String
+  let title: String
+  let systemImage: String
+
+  var id: String { anchor }
+}
+
 enum MarkdownOutline {
   struct Entry: Equatable, Identifiable {
     /// 在 `blocks` 数组里的下标。用它定位，而不是用标题文本——同名标题很常见

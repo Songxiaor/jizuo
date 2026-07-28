@@ -150,11 +150,54 @@ extension MarkdownOutlineTests {
       "按 source 重算一次，同一条正文内的重绘不再解析")
   }
 
+  /// 弹层里列出的每个模块，详情页都必须真的挂了同名锚点。
+  ///
+  /// 列出一个点了跳不到的死链接，比不列更糟——用户会以为功能坏了。
+  /// 两处分别在两个文件里，最容易漂移。
+  func testEveryListedModuleHasAMatchingAnchor() throws {
+    let history = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8)
+
+    // 声明侧：navigationModules 里出现的 anchor 名。
+    let declared = matches(#"\.init\(anchor: "([a-z]+)""#, in: history)
+      + matches(#"anchor: "([a-z]+)","#, in: history)
+    // 挂载侧：真正 .id(ReadingAnchor.module("x")) 的名字。
+    let mounted = Set(matches(#"ReadingAnchor\.module\("([a-z]+)"\)"#, in: history))
+
+    XCTAssertFalse(mounted.isEmpty, "详情页一个模块锚点都没挂")
+    for name in Set(declared) {
+      XCTAssertTrue(mounted.contains(name), "模块「\(name)」被列进导航，但详情页没有对应锚点")
+    }
+  }
+
+  private func matches(_ pattern: String, in text: String) -> [String] {
+    guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+    return regex.matches(in: text, range: NSRange(text.startIndex..., in: text)).compactMap {
+      guard let range = Range($0.range(at: 1), in: text) else { return nil }
+      return String(text[range])
+    }
+  }
+
+  /// 有模块时按钮不能只写「章节」。
+  func testButtonTitleReflectsWhatThePopoverActuallyContains() throws {
+    let source = try presentationSource()
+    XCTAssertTrue(source.contains("private var outlineButtonTitle: String"))
+    XCTAssertTrue(source.contains("return \"导航 \\(sections + navigationModules.count)\""))
+    XCTAssertTrue(
+      source.contains("return \"模块 \\(navigationModules.count)\""),
+      "没有章节但有模块时，入口仍要出现")
+  }
+
   /// 跳转靠 ScrollViewReader 驱动外层滚动容器。
   func testOutlineJumpUsesScrollAnchors() throws {
     let source = try presentationSource()
     XCTAssertTrue(source.contains("ScrollViewReader { proxy in"))
     XCTAssertTrue(source.contains("proxy.scrollTo(target, anchor: .top)"))
-    XCTAssertTrue(source.contains(".id(entry.anchor)"), "每段要挂锚点，否则跳转无处可去")
+    XCTAssertTrue(
+      source.contains(".id(ReadingAnchor.block(entry.anchor))"),
+      "每段要挂锚点，且与模块共用一套锚点类型，否则 Int 与 String 会撞车")
   }
 }

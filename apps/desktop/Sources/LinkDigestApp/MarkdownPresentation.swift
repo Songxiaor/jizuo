@@ -743,6 +743,9 @@ struct MarkdownContentView: View {
   var accentColor: Color = .accentColor
   @Binding var showsPlainText: Bool
   var showsInlinePlainTextToggle: Bool = true
+  /// 正文下方的模块（脑图 / 图片 / 标注 / 标签…）。由详情页按实际存在的模块传入——
+  /// 这里不知道页面上有什么，硬猜只会列出点了跳不到的死链接。
+  var navigationModules: [ReadingModuleLink] = []
   @State private var rejectedLink = false
   @State private var showsOutlinePopover = false
 
@@ -754,7 +757,16 @@ struct MarkdownContentView: View {
 
   /// 少于 3 条不显示入口——一两个标题直接滚更快，摆个按钮只是噪音。
   private var showsOutlineEntry: Bool {
-    !showsPlainText && MarkdownOutline.shouldPresent(outlineEntries)
+    guard !showsPlainText else { return false }
+    return MarkdownOutline.shouldPresent(outlineEntries) || !navigationModules.isEmpty
+  }
+
+  /// 有模块时不能只写「章节」——那会让人以为点开只有正文标题，白白错过跳转入口。
+  private var outlineButtonTitle: String {
+    let sections = MarkdownOutline.shouldPresent(outlineEntries) ? outlineEntries.count : 0
+    if sections > 0, !navigationModules.isEmpty { return "导航 \(sections + navigationModules.count)" }
+    if sections > 0 { return "章节 \(sections)" }
+    return "模块 \(navigationModules.count)"
   }
 
   /// 目录用弹层而不是常驻侧栏：阅读列宽只有 590pt，再切一栏会一直压缩正文；
@@ -763,7 +775,7 @@ struct MarkdownContentView: View {
     Button {
       showsOutlinePopover = true
     } label: {
-      Label("章节 \(outlineEntries.count)", systemImage: "list.bullet.indent")
+      Label(outlineButtonTitle, systemImage: "list.bullet.indent")
         .font(.system(size: 11, weight: .medium))
         .foregroundStyle(.secondary)
     }
@@ -775,36 +787,87 @@ struct MarkdownContentView: View {
   }
 
   @ViewBuilder private func outlinePopover(_ entries: [MarkdownOutline.Entry]) -> some View {
+    let showsSections = MarkdownOutline.shouldPresent(entries)
     ScrollView {
       VStack(alignment: .leading, spacing: 2) {
-        ForEach(entries) { entry in
-          Button {
-            showsOutlinePopover = false
-            scrollTarget = entry.blockIndex
-          } label: {
-            Text(entry.text)
-              .font(.system(size: 12))
-              .foregroundStyle(.primary)
-              .lineLimit(2)
-              .multilineTextAlignment(.leading)
-              .fixedSize(horizontal: false, vertical: true)
-              .padding(.leading, CGFloat(MarkdownOutline.indentDepth(of: entry, in: entries)) * 14)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .contentShape(Rectangle())
-              .padding(.vertical, 3)
+        if showsSections {
+          popoverGroupTitle("章节")
+          ForEach(entries) { entry in
+            popoverRow(
+              title: entry.text,
+              indent: CGFloat(MarkdownOutline.indentDepth(of: entry, in: entries)) * 14,
+              target: .block(entry.blockIndex)
+            )
           }
-          .buttonStyle(.plain)
+        }
+        // 正文下方的模块跟章节走同一个入口：读者要去的是「图片那块」，
+        // 不该因为它不在正文里就得改用另一种操作。
+        if !navigationModules.isEmpty {
+          if showsSections {
+            Divider().padding(.vertical, 6)
+          }
+          popoverGroupTitle("模块")
+          ForEach(navigationModules) { link in
+            popoverRow(
+              title: link.title,
+              systemImage: link.systemImage,
+              target: .module(link.anchor)
+            )
+          }
         }
       }
       .padding(12)
     }
-    .frame(width: 260, height: min(CGFloat(entries.count) * 26 + 24, 380))
+    .frame(
+      width: 260,
+      height: min(CGFloat(entries.count + navigationModules.count) * 26 + 72, 400)
+    )
     .accessibilityIdentifier("history-content-outline-popover")
+  }
+
+  @ViewBuilder private func popoverGroupTitle(_ text: String) -> some View {
+    Text(text)
+      .font(.system(size: 10, weight: .semibold))
+      .foregroundStyle(.tertiary)
+      .padding(.bottom, 2)
+  }
+
+  @ViewBuilder private func popoverRow(
+    title: String,
+    systemImage: String? = nil,
+    indent: CGFloat = 0,
+    target: ReadingAnchor
+  ) -> some View {
+    Button {
+      showsOutlinePopover = false
+      scrollTarget = target
+    } label: {
+      HStack(spacing: 6) {
+        if let systemImage {
+          Image(systemName: systemImage)
+            .font(.system(size: 11))
+            .foregroundStyle(.secondary)
+            .frame(width: 14)
+        }
+        Text(title)
+          .font(.system(size: 12))
+          .foregroundStyle(.primary)
+          .lineLimit(2)
+          .multilineTextAlignment(.leading)
+          .fixedSize(horizontal: false, vertical: true)
+        Spacer(minLength: 0)
+      }
+      .padding(.leading, indent)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .contentShape(Rectangle())
+      .padding(.vertical, 3)
+    }
+    .buttonStyle(.plain)
   }
 
   /// 点击目录后要滚到的块下标。用 `ScrollViewReader` 驱动**外层**滚动容器——
   /// 它放在 ScrollView 内部就能生效，不必把 proxy 从详情页一层层传进来。
-  @State private var scrollTarget: Int?
+  @State private var scrollTarget: ReadingAnchor?
 
   init(
     source: String,
@@ -816,7 +879,8 @@ struct MarkdownContentView: View {
     secondaryTextColor: Color = .secondary,
     accentColor: Color = .accentColor,
     showsPlainText: Binding<Bool> = .constant(false),
-    showsInlinePlainTextToggle: Bool = true
+    showsInlinePlainTextToggle: Bool = true,
+    navigationModules: [ReadingModuleLink] = []
   ) {
     self.source = source
     self.sourceURL = sourceURL
@@ -828,6 +892,7 @@ struct MarkdownContentView: View {
     self.accentColor = accentColor
     self._showsPlainText = showsPlainText
     self.showsInlinePlainTextToggle = showsInlinePlainTextToggle
+    self.navigationModules = navigationModules
   }
 
   var body: some View {
@@ -939,7 +1004,7 @@ struct MarkdownContentView: View {
       VStack(alignment: .leading, spacing: 0) {
         ForEach(Array(runs.enumerated()), id: \.offset) { _, entry in
           runView(entry.run)
-            .id(entry.anchor)
+            .id(ReadingAnchor.block(entry.anchor))
         }
       }
       .onChange(of: scrollTarget) { _, target in
