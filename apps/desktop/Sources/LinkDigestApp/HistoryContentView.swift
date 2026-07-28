@@ -617,7 +617,7 @@ struct HistoryContentView: View {
           .foregroundStyle(.secondary)
         // 提示语要说清搜的范围。写「搜索历史」时用户不会想到能搜正文，
         // 于是有了这个能力也用不上。
-        TextField("搜索标题、正文、作者、标签", text: $model.searchText)
+        TextField("搜索标题、正文、总结、作者、标签", text: $model.searchText)
           .textFieldStyle(.plain)
           .focused($isSearchFocused)
       }

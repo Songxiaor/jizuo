@@ -315,9 +315,20 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
                   OR stg.normalized_name LIKE ? ESCAPE '\\'
                 )
             )
+            OR EXISTS (
+              -- 总结、翻译、整理稿也要能搜到：记住的常常是总结里的一句话，
+              -- 而不是原文的措辞。
+              --
+              -- 用 EXISTS 遍历这条目的全部产物，而不是复用外面那个 `a`——
+              -- 那个只 JOIN 最近一次运行，先总结后翻译时搜总结就会漏。
+              SELECT 1 FROM runs sr
+              INNER JOIN artifacts sa ON sa.run_id = sr.id
+              WHERE sr.task_id = t.id
+                AND sa.body_text LIKE ? ESCAPE '\\'
+            )
           )
           """)
-        arguments += [pattern, pattern, pattern, pattern, pattern, pattern]
+        arguments += [pattern, pattern, pattern, pattern, pattern, pattern, pattern]
       }
       let predicate = predicates.isEmpty ? "" : "WHERE \(predicates.joined(separator: " AND "))"
       arguments += [bounded]

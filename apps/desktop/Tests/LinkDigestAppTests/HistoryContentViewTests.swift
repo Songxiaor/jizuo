@@ -365,7 +365,7 @@ final class HistoryContentViewTests: XCTestCase {
     let sidebar = section(in: source, from: "private var sidebar: some View", to: "@ViewBuilder private var detail")
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
 
-    XCTAssertTrue(sidebar.contains("TextField(\"搜索标题、正文、作者、标签\", text: $model.searchText)"))
+    XCTAssertTrue(sidebar.contains("TextField(\"搜索标题、正文、总结、作者、标签\", text: $model.searchText)"))
     XCTAssertTrue(sidebar.contains("history-filter-empty"))
     XCTAssertTrue(detail.contains("HistoryTagEditor(tags: detail.tags, model: model)"))
     // Chips-first: composer is collapsed behind a toggle; no always-on heavy form.

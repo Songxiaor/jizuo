@@ -99,6 +99,50 @@ final class HistorySearchScopeTests: XCTestCase {
     }
   }
 
+  /// 总结/翻译产物也要能搜到——记住的常常是总结里的一句话，不是原文的措辞。
+  func testSearchMatchesSummaryAndTranslationArtifacts() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(document: capture(
+        url: "https://example.test/f",
+        title: "标题里没有关键词",
+        body: "正文里也没有。"
+      ), receivedAtMilliseconds: 1))
+
+      func finish(key: String, kind: RunKind, text: String, at ms: Int64) throws {
+        let run = try repository.createRun(.init(
+          taskID: accepted.taskID,
+          snapshotID: accepted.snapshotID,
+          idempotencyKey: key,
+          kind: kind,
+          targetLanguage: kind == .translate ? "en" : nil,
+          createdAtMilliseconds: ms
+        ))
+        try repository.markRunRunning(.init(
+          runID: run.runID,
+          startedAtMilliseconds: ms + 1,
+          provider: .init(
+            profileID: "p", providerKind: "openai-compatible",
+            baseURL: "https://provider.example/v1", apiMode: "chat_completions", model: "m"
+          )
+        ))
+        try repository.finishRun(.init(
+          runID: run.runID,
+          status: .completed,
+          finishedAtMilliseconds: ms + 2,
+          artifact: .init(contentFormat: .markdown, completeness: .complete, bodyText: text)
+        ))
+      }
+
+      try finish(key: "r:sum", kind: .summarize, text: "要点：盲派格局的判据在于日主有无财官。", at: 10)
+      // 之后又翻译了一次：外层查询只 JOIN 最近一次运行，所以这条之后再搜总结，
+      // 复用 `a` 的写法就会漏。
+      try finish(key: "r:tr", kind: .translate, text: "Key point: whether the day master has wealth.", at: 20)
+
+      XCTAssertEqual(try search(repository, "日主"), [accepted.taskID.rawValue], "总结产物要能搜到")
+      XCTAssertEqual(try search(repository, "day master"), [accepted.taskID.rawValue], "翻译产物要能搜到")
+    }
+  }
+
   /// 搜不中的必须真的搜不中，否则「能搜到」只是因为把所有条目都返回了。
   func testUnrelatedQueryReturnsNothing() throws {
     try withRepository { repository, _ in
