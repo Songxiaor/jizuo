@@ -1,4 +1,5 @@
 import XCTest
+import LinkDigestCore
 
 /// 设置页的跨页排版约定：**一个设置项 = 一个 Section = 一张卡片**，说明跟着控件走。
 ///
@@ -121,6 +122,29 @@ final class SettingsLayoutConventionTests: XCTestCase {
     XCTAssertTrue(
       shared.contains("case .compact: 440"),
       "收窄档要有具体数值，不能是 .infinity 换个名字")
+  }
+
+  /// 单选各项的解释必须写清「你要多做什么」和「代价落在哪」，不能只堆形容词。
+  ///
+  /// 原来写的是「更省流量，也更可预期」，用户看完的反馈是「主要是没清楚两个
+  /// 功能的区别」——那是文案没写好，不是他没读。形容词不构成可比较的信息。
+  func testRestoreModeExplanationsStateBehaviourAndCost() throws {
+    let automatic = SessionMediaRestoreMode.automatic.settingsExplanation
+    let manual = SessionMediaRestoreMode.manual.settingsExplanation
+
+    // 自动：说清代价按「每打开一条」计，并点名最重的那个平台。
+    XCTAssertTrue(automatic.contains("每打开一条"), "自动的代价要写成可计量的频次")
+    XCTAssertTrue(automatic.contains("抖音"), "平台间开销差很多，最重的那个要点名")
+
+    // 手动：说清多做的那个动作，以及不发请求的范围。
+    XCTAssertTrue(manual.contains("重新获取播放"), "手动要写明多点的是哪个按钮")
+    XCTAssertTrue(manual.contains("路过的不发"), "要写明什么情况下不发请求")
+
+    for text in [automatic, manual] {
+      XCTAssertFalse(
+        text.contains("更省流量") || text.contains("更可预期"),
+        "形容词不构成可比较的信息")
+    }
   }
 
   /// 跨页依赖要给出去处，而不是只说一句「依赖某某」。
