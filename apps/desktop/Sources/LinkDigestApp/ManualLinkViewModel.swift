@@ -38,7 +38,21 @@ enum ExplicitWebLinkInput {
       trimmed = String(trimmed.unicodeScalars.dropLast())
     }
     guard !trimmed.isEmpty else { return nil }
-    if let direct = validatedWebURL(trimmed) { return direct }
+    // 「整串就是一个裸链接」才走直接命中。
+    //
+    // 这里原来只做 `validatedWebURL(trimmed)`，而 `URL(string:)` 会把空白和汉字
+    // 百分号编码后照单全收——「链接 + 换行 + 一整句中文」整段都能通过 scheme 与
+    // host 校验，于是根本走不到下面那条按词边界识别的 detector 路径，抓取时才报
+    // 「网页暂时无法打开」。
+    //
+    // 判据只看空白，不看汉字：原样汉字既可能是被吞进来的正文，也可能是路径本身
+    // （中文维基那种）。而「整串没有任何空白」说明这是刻意粘进来的一个地址，
+    // 此时汉字该原样保留；一旦出现空白就说明周围还有别的字，交给 detector 按词
+    // 边界切，那条路径再负责把紧贴的中文正文截掉。
+    let containsWhitespace = trimmed.unicodeScalars.contains {
+      CharacterSet.whitespacesAndNewlines.contains($0)
+    }
+    if !containsWhitespace, let direct = validatedWebURL(trimmed) { return direct }
 
     let range = NSRange(trimmed.startIndex..<trimmed.endIndex, in: trimmed)
     guard let detector = try? NSDataDetector(
@@ -47,13 +61,57 @@ enum ExplicitWebLinkInput {
 
     var unique: [String: URL] = [:]
     detector.enumerateMatches(in: trimmed, options: [], range: range) { match, _, _ in
-      guard let detected = match?.url,
-            let url = validatedWebURL(detected.absoluteString)
-      else { return }
+      guard let match, let detected = match.url else { return }
+      // 中文紧跟在链接后面而中间没有空格时，NSDataDetector 会把正文一起吃进去：
+      // `…/vibe-hub-skill帮我安装` 整串被当成一个链接，百分号编码后 scheme 和
+      // host 仍然合法，于是一路放行到抓取才报「网页暂时无法打开」。
+      //
+      // 换行或空格分隔时它是对的，所以这里只处理「紧贴」这一种。
+      let candidate: URL = {
+        guard let matchRange = Range(match.range, in: trimmed) else { return detected }
+        let raw = String(trimmed[matchRange])
+        let cut = Self.truncatedAtRawCJK(raw)
+        guard cut != raw, let trimmedURL = validatedWebURL(cut) else { return detected }
+        return trimmedURL
+      }()
+      guard let url = validatedWebURL(candidate.absoluteString) else { return }
       unique[url.absoluteString] = url
     }
     guard unique.count == 1 else { return nil }
     return unique.values.first
+  }
+
+  /// 在第一个**未编码**的中日韩字符处截断。
+  ///
+  /// 判据是「原样的汉字」而不是「任何汉字」：从浏览器地址栏复制中文维基这类地址，
+  /// 拿到的是 `%E7%BC%96%E7%A8%8B…` 这种百分号编码形式，不受影响；而中文正文
+  /// 紧跟链接时是原样汉字，那几乎一定是句子而不是路径。
+  ///
+  /// 代价是手打的原样中文 URL 会被截短。这种输入本来就不常见，且真要抓时把地址
+  /// 从浏览器复制一次即可；反过来放过它，则每次中文紧贴链接都会静默抓失败。
+  private static func truncatedAtRawCJK(_ value: String) -> String {
+    var result = String.UnicodeScalarView()
+    for scalar in value.unicodeScalars {
+      if isRawCJK(scalar) { break }
+      result.append(scalar)
+    }
+    return String(result)
+  }
+
+  private static func isRawCJK(_ scalar: Unicode.Scalar) -> Bool {
+    switch scalar.value {
+    case 0x3000...0x303F,   // CJK 标点
+         0x3040...0x30FF,   // 假名
+         0x3400...0x4DBF,   // 扩展 A
+         0x4E00...0x9FFF,   // 基本汉字
+         0xAC00...0xD7AF,   // 谚文
+         0xF900...0xFAFF,   // 兼容汉字
+         0xFF00...0xFFEF,   // 全角形式
+         0x20000...0x2FA1F: // 扩展 B 及以后
+      return true
+    default:
+      return false
+    }
   }
 
   private static func validatedWebURL(_ value: String) -> URL? {

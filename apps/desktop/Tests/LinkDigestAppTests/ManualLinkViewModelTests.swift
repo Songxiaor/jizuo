@@ -873,3 +873,48 @@ final class ExplicitWebLinkTrailingPunctuationTests: XCTestCase {
     )
   }
 }
+
+/// 中文紧跟在链接后面且中间没有空格时，NSDataDetector 会把正文一起吃进链接。
+///
+/// 实测三种粘贴形式只有这一种坏：换行分隔 ✓、空格分隔 ✓、紧贴 ✗。
+/// 坏掉时 scheme 与 host 仍然合法，一路放行到抓取才报「网页暂时无法打开」。
+final class ExplicitWebLinkCJKAdjacencyTests: XCTestCase {
+  private func url(_ raw: String) -> String? {
+    ExplicitWebLinkInput.singleURL(from: raw)?.absoluteString
+  }
+
+  /// 用户实际粘贴的那段文本。
+  func testChineseImmediatelyAfterURLIsNotSwallowed() {
+    XCTAssertEqual(
+      url("https://github.com/oil-oil/vibe-hub-skill帮我安装这个仓库里的 skills/vibehub Skill。"),
+      "https://github.com/oil-oil/vibe-hub-skill"
+    )
+  }
+
+  /// 有分隔时本来就是对的，不能因为这次改动反而变坏。
+  func testSeparatedFormsKeepWorking() {
+    let expected = "https://github.com/oil-oil/vibe-hub-skill"
+    XCTAssertEqual(url("https://github.com/oil-oil/vibe-hub-skill\n帮我安装这个仓库"), expected)
+    XCTAssertEqual(url("https://github.com/oil-oil/vibe-hub-skill 帮我安装这个仓库"), expected)
+    XCTAssertEqual(url("看这个 https://github.com/oil-oil/vibe-hub-skill 很好用"), expected)
+  }
+
+  /// 百分号编码的中文是地址的一部分，必须原样保留——从浏览器复制中文维基就是这种形式。
+  func testPercentEncodedCJKPathIsPreserved() {
+    let encoded = "https://zh.wikipedia.org/wiki/%E7%BC%96%E7%A8%8B%E8%AF%AD%E8%A8%80"
+    XCTAssertEqual(url(encoded), encoded)
+  }
+
+  /// 结果里不该再出现被吞掉的正文。
+  func testResultNeverContainsEncodedProse() {
+    let result = url("https://github.com/a/b帮我安装这个 仓库") ?? ""
+    XCTAssertFalse(result.contains("%E5%B8%AE"), "「帮」被编码进了链接")
+    XCTAssertEqual(result, "https://github.com/a/b")
+  }
+
+  /// 日文与全角字符走同一条规则。
+  func testJapaneseAndFullwidthAlsoTerminateTheURL() {
+    XCTAssertEqual(url("https://example.com/aこれはテスト です"), "https://example.com/a")
+    XCTAssertEqual(url("https://example.com/a（说明） 见此"), "https://example.com/a")
+  }
+}
