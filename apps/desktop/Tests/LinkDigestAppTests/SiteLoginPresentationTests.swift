@@ -46,6 +46,46 @@ final class SiteLoginPresentationTests: XCTestCase {
       "必须给出可执行的替代路径，只说不行等于没说")
   }
 
+  /// 一个站点必须是一整张卡片，不能再被 Form 的分割线切成几段。
+  ///
+  /// 原来每个站点占「状态行 / 说明行 / 按钮行」三个 Form 行，grouped Form 给每行
+  /// 画分隔线，于是同一个站点的三段信息看起来像三条不相干的记录——这是这页显得
+  /// 乱的主因。只要卡片重新被拆成 Section 下的多个兄弟 View，问题就会原样回来。
+  func testEachSiteRendersAsOneCardNotSeparateFormRows() throws {
+    let text = try source()
+    XCTAssertTrue(
+      text.contains("private var bilibiliCard: some View"),
+      "B 站必须是一张整卡")
+    XCTAssertTrue(
+      text.contains("private func captureSessionCard("),
+      "抓取型站点必须是一张整卡")
+    XCTAssertFalse(
+      text.contains("LabeledContent("),
+      "LabeledContent 会各自成为一个 Form 行，正是被切开的那种写法")
+  }
+
+  /// 长说明必须收进卡片内的展开区，不能再堆在卡片外的 footer 里。
+  func testLongExplanationsLiveInsideCardsNotPageFooters() throws {
+    let text = try source()
+    XCTAssertFalse(
+      text.contains("} footer: {"),
+      "说明留在 footer 就离对应站点隔了一段距离，读者不会把两者关联起来")
+    XCTAssertTrue(
+      text.contains("DisclosureGroup(\"了解更多\")"),
+      "详细说明要默认收起，但一条都不能删")
+  }
+
+  /// 「我到底登没登」是打开这页最常见的原因，状态必须能一眼扫到。
+  func testLoginStateIsVisualNotOnlyText() throws {
+    let text = try source()
+    XCTAssertTrue(
+      text.contains("private func statusBadge("),
+      "纯文字「已登录 / 未登录」混在一行里读不出差别")
+    XCTAssertTrue(
+      text.contains("private func siteIcon("),
+      "站点图标是这页的主要视觉锚点")
+  }
+
   /// 扩展与这一页的会话是两条独立入口，不能让人以为用扩展也要先在这里登录。
   func testFooterSeparatesExtensionPathFromAppOwnedSessions() throws {
     let text = try source()

@@ -25,6 +25,9 @@ final class SiteSessionController: ObservableObject {
 
   @Published private(set) var isLoggedIn = false
   @Published private(set) var statusLabel = "未登录"
+  /// 账号标识单独存一份，供状态徽章与主状态分两行显示。
+  /// 不从 `statusLabel` 里切字符串——那等于把展示格式当数据结构用。
+  @Published private(set) var accountDetail: String?
   @Published private(set) var lastError: String?
   /// 服务端是否真的认这个会话。
   ///
@@ -57,6 +60,7 @@ final class SiteSessionController: ObservableObject {
     isLoggedIn = loggedIn
     guard loggedIn else {
       statusLabel = "未登录"
+      accountDetail = nil
       lastError = nil
       return
     }
@@ -65,8 +69,10 @@ final class SiteSessionController: ObservableObject {
     }
     if let account, !account.isEmpty, let label = profile.accountIDLabel {
       statusLabel = "已登录（\(label) \(account)）"
+      accountDetail = "\(label) \(account)"
     } else {
       statusLabel = "已登录"
+      accountDetail = nil
     }
     lastError = nil
   }
@@ -113,6 +119,7 @@ final class SiteSessionController: ObservableObject {
     }
     isLoggedIn = false
     statusLabel = "未登录"
+    accountDetail = nil
     verificationLabel = nil
     lastError = nil
   }
