@@ -89,8 +89,10 @@ final class GenerationSettingsPresentationTests: XCTestCase {
   /// 就被当成了当前设置。
   func testEmptyModelFieldsStateWhatActuallyApplies() throws {
     let tab = try generationTab(in: try source())
-    XCTAssertTrue(tab.contains("emptyStateText: \"未填写：只用 Apple 本机转写\""))
-    XCTAssertTrue(tab.contains("emptyStateText: \"未填写：使用总结模型\""))
+    // 2026-07-29 起空值不再是「输入框留空」，而是下拉里的第一个选项——
+    // 承载方式变了，要守的东西没变：空值必须说清实际生效的是什么。
+    XCTAssertTrue(tab.contains("emptyOptionTitle: \"不使用：只用 Apple 本机转写\""))
+    XCTAssertTrue(tab.contains("emptyOptionTitle: \"跟随总结模型\""))
     XCTAssertFalse(
       tab.contains("TextField(\"留空时使用总结模型\""),
       "语义不能只靠 placeholder 承载")
