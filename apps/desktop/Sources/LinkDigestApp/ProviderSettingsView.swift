@@ -821,59 +821,116 @@ struct ProviderSettingsView: View {
       }
 
       Section {
-        Toggle("翻译使用不同模型", isOn: $model.usesSeparateTranslationModel)
-          .accessibilityIdentifier("use-separate-translation-model")
-        if model.usesSeparateTranslationModel {
-          modelSelector(title: "翻译模型", selection: Binding(
-            get: { model.translationModelName },
-            set: { model.selectModel($0, forTranslation: true) }
-          ), forTranslation: true)
-        }
-      } header: {
-        Text("翻译模型")
-      } footer: {
-        if !model.usesSeparateTranslationModel {
-          Text("默认与总结共用“\(model.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "当前模型" : model.modelName)”。")
+        settingCard(
+          title: "翻译模型",
+          summary: model.usesSeparateTranslationModel
+            ? "翻译走下面这个模型，与总结分开。"
+            : "默认与总结共用“\(model.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "当前模型" : model.modelName)”。"
+        ) {
+          VStack(alignment: .leading, spacing: 8) {
+            Toggle("翻译使用不同模型", isOn: $model.usesSeparateTranslationModel)
+              .accessibilityIdentifier("use-separate-translation-model")
+            if model.usesSeparateTranslationModel {
+              modelSelector(title: "翻译模型", selection: Binding(
+                get: { model.translationModelName },
+                set: { model.selectModel($0, forTranslation: true) }
+              ), forTranslation: true)
+            }
+          }
         }
       }
 
       Section {
-        LabeledContent("在线转写模型") {
-          TextField("例如 whisper-large-v3-turbo", text: $model.transcriptionModelName)
-            .multilineTextAlignment(.trailing)
-            .accessibilityIdentifier("transcription-model-name")
+        settingCard(
+          title: "在线视频转文字",
+          summary: "给超过 200MB、无法本机导入的视频用。留空时只使用 Apple 本机转写。",
+          details: "配置后，App 会从直连视频流提取短 M4A 分片并调用 /audio/transcriptions；每次上传前仍会确认。"
+        ) {
+          modelNameField(
+            label: "在线转写模型",
+            placeholder: "例如 whisper-large-v3-turbo",
+            emptyStateText: "未填写：只用 Apple 本机转写",
+            text: $model.transcriptionModelName,
+            identifier: "transcription-model-name"
+          )
         }
-      } header: {
-        Text("在线视频转文字")
-      } footer: {
-        Text("留空时只使用 Apple 本机转写。配置后，App 会从直连视频流提取短 M4A 分片并调用 /audio/transcriptions，适合超过 200MB、无法本机导入的视频；每次上传前仍会确认。")
       }
 
       Section {
-        LabeledContent("整理模型") {
-          TextField("留空时使用总结模型", text: $model.tidyModelName)
-            .multilineTextAlignment(.trailing)
-            .accessibilityIdentifier("tidy-model-name")
+        settingCard(
+          title: "转写稿整理",
+          summary: "把转写文字发送给聊天模型修正标点、分段和明显错别字，不改写内容。",
+          details: "只发送文字本身，原始转写稿保留在历史中。"
+        ) {
+          modelNameField(
+            label: "整理模型",
+            placeholder: "模型名称",
+            emptyStateText: "未填写：使用总结模型",
+            text: $model.tidyModelName,
+            identifier: "tidy-model-name"
+          )
         }
-      } header: {
-        Text("转写稿整理")
-      } footer: {
-        Text("把转写文字发送给聊天模型修正标点、分段和明显错别字，不改写内容。只发送文字本身，原始转写稿保留在历史中。")
       }
 
       Section {
-        Toggle("自动转写（本机）", isOn: $model.autoTranscribeNewCaptures)
-          .accessibilityIdentifier("auto-pipeline-transcribe")
-        Toggle("转写后自动整理", isOn: $model.autoTidyTranscription)
-          .accessibilityIdentifier("auto-tidy-transcription")
-        Toggle("自动总结", isOn: $model.autoSummarizeNewCaptures)
-          .accessibilityIdentifier("auto-pipeline-summarize")
-        Toggle("自动生成脑图", isOn: $model.autoMindMapNewCaptures)
-          .accessibilityIdentifier("auto-pipeline-mindmap")
-      } header: {
-        Text("自动处理管线")
-      } footer: {
-        Text("新内容到达后按顺序自动执行勾选的步骤：本机转写 → 整理文稿 → 总结 → 脑图。勾选即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；整理/总结/脑图只发送文字。")
+        // 这条链在代码里严格串行且有依赖，所以画成有序链条而不是四个平级开关。
+        VStack(alignment: .leading, spacing: 10) {
+          Text("自动处理管线").font(.headline)
+          Text("新内容到达后按编号顺序串行执行已开启的步骤。")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+
+          VStack(alignment: .leading, spacing: 0) {
+            pipelineStep(
+              index: 1,
+              title: "本机转写",
+              trailingNote: "不出网",
+              isOn: $model.autoTranscribeNewCaptures,
+              identifier: "auto-pipeline-transcribe"
+            )
+            pipelineStep(
+              index: 2,
+              title: "整理文稿",
+              trailingNote: "只发送文字",
+              requirementUnmet: model.autoTranscribeNewCaptures
+                ? nil
+                : "① 未开启：新内容还没有转写稿可整理",
+              isOn: $model.autoTidyTranscription,
+              identifier: "auto-tidy-transcription"
+            )
+            pipelineStep(
+              index: 3,
+              title: "总结",
+              trailingNote: "只发送文字",
+              isOn: $model.autoSummarizeNewCaptures,
+              identifier: "auto-pipeline-summarize"
+            )
+            pipelineStep(
+              index: 4,
+              title: "脑图",
+              trailingNote: "优先用总结产物",
+              isLast: true,
+              requirementUnmet: model.autoSummarizeNewCaptures
+                ? nil
+                : "③ 未开启：将直接读原文生成，质量通常不如先总结",
+              isOn: $model.autoMindMapNewCaptures,
+              identifier: "auto-pipeline-mindmap"
+            )
+          }
+          .padding(.top, 2)
+
+          DisclosureGroup("了解更多") {
+            Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；整理/总结/脑图只发送文字。")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .padding(.top, 4)
+          }
+          .font(.caption)
+        }
+        .padding(.vertical, 4)
       }
 
       Section("数据去向") {
@@ -903,6 +960,125 @@ struct ProviderSettingsView: View {
     .contentMargins(.bottom, 24, for: .scrollContent)
     .scrollContentBackground(.hidden)
     .background(settingsTheme.isNative ? Color(nsColor: .windowBackgroundColor) : settingsTheme.canvas)
+  }
+
+  // MARK: - 设置卡片零件
+
+  /// 一个设置项 = 一张卡片：控件 + 一句关键说明 + 收起的详细说明。
+  ///
+  /// 原来每项是「Section header + 控件行 + 卡片外的长 footer」，说明离它控制的
+  /// 控件隔着一整块间距，读的时候对不上号；而且 footer 一律展开，四五行密字把
+  /// 页面撑满，实际控件密度极低。
+  @ViewBuilder
+  private func settingCard(
+    title: String,
+    summary: String,
+    details: String? = nil,
+    @ViewBuilder control: () -> some View
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+      Text(title).font(.headline)
+      control()
+      Text(summary)
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      if let details {
+        DisclosureGroup("了解更多") {
+          Text(details)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 4)
+        }
+        .font(.caption)
+      }
+    }
+    .padding(.vertical, 4)
+  }
+
+  /// 「留空时…」这类提示原来只写在 placeholder 里，右对齐显示时看起来像已经
+  /// 配好的值。改成输入框左侧标注 + 未填写时显式说明当前生效的是什么。
+  @ViewBuilder
+  private func modelNameField(
+    label: String,
+    placeholder: String,
+    emptyStateText: String,
+    text: Binding<String>,
+    identifier: String
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      LabeledContent(label) {
+        TextField(placeholder, text: text)
+          .multilineTextAlignment(.trailing)
+          .accessibilityIdentifier(identifier)
+      }
+      if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        Label(emptyStateText, systemImage: "circle.dashed")
+          .font(.caption)
+          .foregroundStyle(.tertiary)
+      }
+    }
+  }
+
+  /// 自动处理管线的一步。
+  ///
+  /// 这条链在代码里是**严格串行且有依赖**的：整理要吃转写产物，脑图要吃总结产物。
+  /// 原来 UI 是四个平级、无序、互不相关的开关，顺序只在 footer 用一句话交代——
+  /// 于是「只勾整理、不勾转写」这种基本不会生效的组合，界面完全不拦也不提示。
+  ///
+  /// - Parameter requirementUnmet: 上游没开时的原因。这里**只置灰视觉、不禁用开关**：
+  ///   重新抓取一条早先转写过的条目时，整理确实能独立生效，硬禁用会砍掉这个可用组合。
+  @ViewBuilder
+  private func pipelineStep(
+    index: Int,
+    title: String,
+    trailingNote: String,
+    isLast: Bool = false,
+    requirementUnmet: String? = nil,
+    isOn: Binding<Bool>,
+    identifier: String
+  ) -> some View {
+    HStack(alignment: .top, spacing: 10) {
+      VStack(spacing: 0) {
+        Text("\(index)")
+          .font(.caption2.weight(.bold).monospacedDigit())
+          .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
+          .frame(width: 18, height: 18)
+          .background(
+            Circle().fill(
+              (isOn.wrappedValue ? Color.accentColor : Color.secondary).opacity(0.15)
+            )
+          )
+        // 连线让「这是一条链」成为结构而不是文案。
+        if !isLast {
+          Rectangle()
+            .fill(Color.secondary.opacity(0.25))
+            .frame(width: 1.5)
+            .frame(maxHeight: .infinity)
+        }
+      }
+      .frame(minHeight: isLast ? 18 : 44)
+
+      VStack(alignment: .leading, spacing: 3) {
+        Toggle(title, isOn: isOn)
+          .accessibilityIdentifier(identifier)
+        if let requirementUnmet {
+          Label(requirementUnmet, systemImage: "arrow.turn.left.up")
+            .font(.caption2)
+            .foregroundStyle(.orange)
+            .fixedSize(horizontal: false, vertical: true)
+        } else {
+          Text(trailingNote)
+            .font(.caption2)
+            .foregroundStyle(.tertiary)
+        }
+      }
+      .opacity(requirementUnmet == nil ? 1 : 0.55)
+      .padding(.bottom, isLast ? 0 : 8)
+    }
   }
 
   // MARK: - 共用构件
