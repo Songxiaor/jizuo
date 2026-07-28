@@ -58,3 +58,84 @@ final class FaviconHostChainTests: XCTestCase {
     )
   }
 }
+
+/// 读页面声明的图标。
+///
+/// 猜 `/favicon.ico` 在真实站点上有两种坏法，实测都撞到了：
+/// - support.claude.com 返回 200 但零字节；
+/// - www.residentialvps.com 返回 200 但 content-type 是 text/html（SPA 把未知
+///   路径都回首页），退到注册域也是同一份 HTML。
+///
+/// 两种猜法都救不了，站点自己在 `<link rel="icon">` 里声明的才是权威来源。
+extension FaviconHostChainTests {
+  private var base: URL { URL(string: "https://www.residentialvps.com/plans")! }
+
+  /// 真实站点上抓到的那一行，原样使用。
+  func testReadsIconDeclaredByTheSite() {
+    let html = #"""
+    <head><link rel="icon" href="/Content/img/favicon.png" type="image/png" sizes="16x16" /></head>
+    """#
+    XCTAssertEqual(
+      WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).map(\.absoluteString),
+      ["https://www.residentialvps.com/Content/img/favicon.png"]
+    )
+  }
+
+  /// 相对路径要按页面地址解析，不是按站点根。
+  func testResolvesRelativeHrefAgainstThePageURL() {
+    let html = #"<link rel="shortcut icon" href="../img/f.ico">"#
+    XCTAssertEqual(
+      WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).map(\.absoluteString),
+      ["https://www.residentialvps.com/img/f.ico"]
+    )
+  }
+
+  /// 声明的图标常挂在 CDN 上，跨域必须允许，否则这条路等于没开。
+  func testAcceptsCrossHostCDNIcons() {
+    let html = #"<link rel="icon" href="https://cdn.example.net/brand/icon.png">"#
+    XCTAssertEqual(
+      WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).map(\.absoluteString),
+      ["https://cdn.example.net/brand/icon.png"]
+    )
+  }
+
+  /// 有大的优先：16×16 在列表里也能用，但 180×180 更清楚。
+  func testPrefersLargerDeclaredSizes() {
+    let html = """
+    <link rel="icon" href="/small.png" sizes="16x16">
+    <link rel="apple-touch-icon" href="/big.png" sizes="180x180">
+    """
+    XCTAssertEqual(
+      WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).first?.absoluteString,
+      "https://www.residentialvps.com/big.png"
+    )
+  }
+
+  /// 同一地址被 icon 与 apple-touch-icon 同时声明很常见，不该重复请求。
+  func testDeduplicatesRepeatedDeclarations() {
+    let html = """
+    <link rel="icon" href="/f.png">
+    <link rel="apple-touch-icon" href="/f.png">
+    """
+    XCTAssertEqual(WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).count, 1)
+  }
+
+  /// 非图标的 link 不能混进来——stylesheet 命中就会去下载一个 CSS 当图标。
+  func testIgnoresNonIconLinks() {
+    let html = """
+    <link rel="stylesheet" href="/app.css">
+    <link rel="canonical" href="https://example.com/x">
+    <link rel="preconnect" href="https://cdn.example.net">
+    """
+    XCTAssertTrue(WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).isEmpty)
+  }
+
+  func testIgnoresUnsafeSchemesAndCredentials() {
+    let html = """
+    <link rel="icon" href="javascript:alert(1)">
+    <link rel="icon" href="https://user:pass@example.net/i.png">
+    <link rel="icon" href="data:image/png;base64,AAAA">
+    """
+    XCTAssertTrue(WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).isEmpty)
+  }
+}

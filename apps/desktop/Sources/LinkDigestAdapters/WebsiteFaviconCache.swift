@@ -90,6 +90,15 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
       break
     }
 
+    // 猜路径全失败时，回到页面自己声明的地址。
+    //
+    // 声明的图标常挂在 CDN 上（和页面不同域），所以这一条不能沿用 same-host 守卫。
+    // 安全性由别处兜住：URL 仍走 PublicWebURLPolicy、有字节上限、且必须通过
+    // magic bytes 校验才会落盘——放宽的只是「必须同域」这一条。
+    if response == nil {
+      response = await fetchDeclaredIcon(pageURL: sourceURL, resources: resources)
+    }
+
     guard let response else {
       recordNegativeCache(for: key)
       return nil
@@ -114,6 +123,98 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
   /// The source scheme and host are retained; userinfo, query and fragment are
   /// discarded. PublicWebURLPolicy will still re-admit this URL at transport
   /// time, including for records created by older app versions.
+  /// 抓一次页面 HTML，按它声明的图标地址逐个尝试。
+  ///
+  /// 只在猜路径全失败后才走这里：多一次 HTML 请求，不该让大多数正常站点也付这个钱。
+  private func fetchDeclaredIcon(
+    pageURL: URL,
+    resources: any SafeResourceFetching
+  ) async -> SafeResourceResponse? {
+    guard let page = try? await resources.fetchResource(.init(
+      url: pageURL,
+      headers: ["Accept": "text/html,application/xhtml+xml"],
+      byteLimit: Self.htmlByteLimit,
+      allowsRedirectTarget: { _ in true }
+    )),
+      (200...299).contains(page.statusCode),
+      let html = String(data: Data(page.body), encoding: .utf8)
+        ?? String(data: Data(page.body), encoding: .isoLatin1)
+    else { return nil }
+
+    let candidates = Self.declaredIconURLs(inHTML: html, baseURL: page.url)
+    for candidate in candidates.prefix(Self.maximumDeclaredIconAttempts) {
+      guard let response = try? await resources.fetchResource(.init(
+        url: candidate,
+        headers: ["Accept": "image/png,image/x-icon,image/svg+xml,image/*;q=0.8"],
+        byteLimit: Self.perHostByteLimit,
+        allowsRedirectTarget: { _ in true }
+      )),
+        (200...299).contains(response.statusCode),
+        response.body.count <= Self.perHostByteLimit,
+        Self.isSupportedImage(response)
+      else { continue }
+      return response
+    }
+    return nil
+  }
+
+  /// 只读 head 够用的量；整页可能几 MB，为了一个图标不值得。
+  private static let htmlByteLimit = 256 * 1024
+  /// 一页里声明四五个尺寸很常见，试太多等于为一个图标打一串请求。
+  private static let maximumDeclaredIconAttempts = 3
+
+  /// 从页面 HTML 里读出它自己声明的图标地址。
+  ///
+  /// 猜 `/favicon.ico` 在真实站点上有两种常见坏法，实测都撞到了：
+  /// - `support.claude.com` 返回 200 但**零字节**；
+  /// - `www.residentialvps.com` 返回 200 但 content-type 是 `text/html`——
+  ///   SPA 把所有未知路径都回首页，退到注册域也是同一份 HTML。
+  ///
+  /// 站点自己在 `<link rel="icon">` 里声明的地址才是权威来源。按 sizes 里的
+  /// 像素数降序取，拿不到尺寸的排在后面——16×16 也能用，但有大的优先。
+  static func declaredIconURLs(inHTML html: String, baseURL: URL) -> [URL] {
+    let pattern = #"<link\b[^>]*\brel\s*=\s*["']([^"']*)["'][^>]*>"#
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
+    else { return [] }
+    // 只扫 head 附近：正文里的 <link> 不是图标声明，扫全文既慢又容易误命中。
+    let scope = String(html.prefix(200_000))
+    var found: [(url: URL, weight: Int)] = []
+    for match in regex.matches(in: scope, range: NSRange(scope.startIndex..., in: scope)) {
+      guard let tagRange = Range(match.range, in: scope),
+            let relRange = Range(match.range(at: 1), in: scope)
+      else { continue }
+      let rel = scope[relRange].lowercased()
+      guard rel.split(separator: " ").contains(where: {
+        $0 == "icon" || $0 == "shortcut" || $0 == "apple-touch-icon"
+          || $0 == "apple-touch-icon-precomposed"
+      }) else { continue }
+      let tag = String(scope[tagRange])
+      guard let href = attribute("href", in: tag), !href.isEmpty,
+            let resolved = URL(string: href, relativeTo: baseURL)?.absoluteURL,
+            let scheme = resolved.scheme?.lowercased(), ["http", "https"].contains(scheme),
+            resolved.user == nil, resolved.password == nil
+      else { continue }
+      let side = attribute("sizes", in: tag)
+        .flatMap { $0.lowercased().split(separator: "x").first.flatMap { Int($0) } } ?? 0
+      found.append((resolved, side))
+    }
+    // 去重保序：同一个地址被 icon 和 apple-touch-icon 同时声明很常见。
+    var seen = Set<String>()
+    return found
+      .sorted { $0.weight > $1.weight }
+      .compactMap { seen.insert($0.url.absoluteString).inserted ? $0.url : nil }
+  }
+
+  private static func attribute(_ name: String, in tag: String) -> String? {
+    guard let regex = try? NSRegularExpression(
+      pattern: "\\b\(name)\\s*=\\s*[\"']([^\"']*)[\"']",
+      options: [.caseInsensitive]
+    ), let match = regex.firstMatch(in: tag, range: NSRange(tag.startIndex..., in: tag)),
+      let range = Range(match.range(at: 1), in: tag)
+    else { return nil }
+    return String(tag[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
   /// 依次尝试的 host：本站，然后（若存在）注册域。
   ///
   /// 只剥一层标签。剥更多会滑向公共后缀（`a.b.co.uk` → `co.uk`），那是一个
