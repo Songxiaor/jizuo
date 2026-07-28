@@ -817,8 +817,10 @@ struct ProviderSettingsView: View {
 
         if showsCustomOutputLanguageField {
           LabeledContent("自定义语言") {
+            // 无边框 + 右对齐时，光标落在一片空白里，找不到该点哪。
             TextField("例如：Italiano", text: $model.targetLanguage)
-              .multilineTextAlignment(.trailing)
+              .textFieldStyle(.roundedBorder)
+              .frame(maxWidth: 220)
               .accessibilityIdentifier("output-language-custom")
           }
         }
@@ -850,10 +852,12 @@ struct ProviderSettingsView: View {
           summary: "给超过 200MB、无法本机导入的视频用。留空时只使用 Apple 本机转写。",
           details: "配置后，App 会从直连视频流提取短 M4A 分片并调用 /audio/transcriptions；每次上传前仍会确认。"
         ) {
-          modelNameField(
+          modelChoiceField(
             label: "在线转写模型",
-            placeholder: "例如 whisper-large-v3-turbo",
-            emptyStateText: "未填写：只用 Apple 本机转写",
+            emptyOptionTitle: "不使用：只用 Apple 本机转写",
+            customPlaceholder: "例如 whisper-large-v3-turbo",
+            // 只列声明支持在线转写的服务，选到一个用不了的模型没有意义。
+            options: model.transcriptionEntryDisplays,
             text: $model.transcriptionModelName,
             identifier: "transcription-model-name"
           )
@@ -866,10 +870,12 @@ struct ProviderSettingsView: View {
           summary: "把转写文字发送给聊天模型修正标点、分段和明显错别字，不改写内容。",
           details: "只发送文字本身，原始转写稿保留在历史中。"
         ) {
-          modelNameField(
+          modelChoiceField(
             label: "整理模型",
-            placeholder: "模型名称",
-            emptyStateText: "未填写：使用总结模型",
+            emptyOptionTitle: "跟随总结模型",
+            customPlaceholder: "模型名称",
+            // 整理是纯文本改写，用的是聊天模型这一侧。
+            options: model.summaryEntryDisplays,
             text: $model.tidyModelName,
             identifier: "tidy-model-name"
           )
@@ -986,29 +992,68 @@ struct ProviderSettingsView: View {
     )
   }
 
-  /// 「留空时…」这类提示原来只写在 placeholder 里，右对齐显示时看起来像已经
-  /// 配好的值。改成输入框左侧标注 + 未填写时显式说明当前生效的是什么。
+  /// 从已添加的模型里选，而不是让人手打模型名。
+  ///
+  /// 模型名（`whisper-large-v3-turbo` 这种）拼错不会当场报错，只会在真正调用时
+  /// 失败，而失败信息来自服务端、未必说得清是名字错了。已经添加过的模型是现成的
+  /// 事实来源，让人选比让人背准确得多。
+  ///
+  /// 保留「自定义…」是因为库里未必有想用的那个模型；但那是例外路径，不该是默认。
+  ///
+  /// 空值有明确语义（「使用总结模型」「只用本机转写」），所以它是选项之一而不是
+  /// 一个需要清空输入框才能达到的状态。
   @ViewBuilder
-  private func modelNameField(
+  private func modelChoiceField(
     label: String,
-    placeholder: String,
-    emptyStateText: String,
+    emptyOptionTitle: String,
+    customPlaceholder: String,
+    options: [ProviderSettingsViewModel.LibraryEntryDisplay],
     text: Binding<String>,
     identifier: String
   ) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
+    let known = options.map(\.modelName)
+    let isCustom = !text.wrappedValue.isEmpty && !known.contains(text.wrappedValue)
+    VStack(alignment: .leading, spacing: 8) {
       LabeledContent(label) {
-        TextField(placeholder, text: text)
-          .multilineTextAlignment(.trailing)
-          .accessibilityIdentifier(identifier)
+        Picker(label, selection: Binding(
+          get: { isCustom ? Self.customModelTag : text.wrappedValue },
+          set: { selected in
+            // 选「自定义…」时不清空已有值，否则改一次下拉就丢掉手填的名字。
+            if selected != Self.customModelTag { text.wrappedValue = selected }
+          }
+        )) {
+          Text(emptyOptionTitle).tag("")
+          if !options.isEmpty {
+            Divider()
+            ForEach(options) { option in
+              Text("\(option.modelName)（\(option.title)）").tag(option.modelName)
+            }
+          }
+          Divider()
+          Text("自定义…").tag(Self.customModelTag)
+        }
+        .labelsHidden()
+        .frame(maxWidth: 260)
+        .accessibilityIdentifier(identifier)
+      }
+      // 选了自定义才显示输入框，且带边框——否则光标落在一片空白里，找不到该点哪。
+      if isCustom {
+        TextField(customPlaceholder, text: text)
+          .textFieldStyle(.roundedBorder)
+          .frame(maxWidth: 260)
+          .accessibilityIdentifier("\(identifier)-custom")
       }
       if text.wrappedValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        Label(emptyStateText, systemImage: "circle.dashed")
+        Label(emptyOptionTitle, systemImage: "circle.dashed")
           .font(.caption)
           .foregroundStyle(.tertiary)
       }
     }
   }
+
+  /// 下拉里代表「自定义…」的哨兵值。用一个不可能成为模型名的字符串，
+  /// 避免和真实模型名撞车。
+  private static let customModelTag = "__linkdigest_custom_model__"
 
   /// 自动处理管线的一步。
   ///
@@ -1146,13 +1191,15 @@ struct ProviderSettingsView: View {
       .accessibilityIdentifier(forTranslation ? "translation-model-picker" : "provider-model-picker")
       LabeledContent("搜索模型") {
         TextField("输入关键词过滤", text: forTranslation ? $translationModelSearchQuery : $model.modelSearchQuery)
-          .multilineTextAlignment(.trailing)
+          .textFieldStyle(.roundedBorder)
+          .frame(maxWidth: 220)
           .accessibilityIdentifier(forTranslation ? "translation-model-search" : "provider-model-search")
       }
     } else if model.isManualModelEntryEnabled || forTranslation {
       LabeledContent(title) {
         TextField("手动填写模型名", text: selection)
-          .multilineTextAlignment(.trailing)
+          .textFieldStyle(.roundedBorder)
+          .frame(maxWidth: 220)
           .disabled(model.isSaving || model.isConfigurationLoading)
           .accessibilityIdentifier(forTranslation ? "translation-model-name" : "provider-model-name")
       }

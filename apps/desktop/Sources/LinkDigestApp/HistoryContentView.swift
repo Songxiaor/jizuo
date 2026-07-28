@@ -2367,8 +2367,20 @@ private struct HistoryDetailView: View {
       Text("重新生成").font(.headline)
       Text("直接使用本机保存的正文，不会重新抓取网页。可只为本次运行临时换模型。")
         .font(.caption).foregroundStyle(.secondary)
-      TextField("临时模型（留空使用当前模型）", text: $temporaryModel)
-        .textFieldStyle(.roundedBorder)
+      // 从已添加的模型里选，不让人手打——模型名拼错不会当场报错，
+      // 只会在真正调用时失败，而失败信息未必说得清是名字错了。
+      Picker("临时模型", selection: $temporaryModel) {
+        Text("使用当前模型").tag("")
+        let options = providerSettings.summaryEntryDisplays
+        if !options.isEmpty {
+          Divider()
+          ForEach(options) { option in
+            Text("\(option.modelName)（\(option.title)）").tag(option.modelName)
+          }
+        }
+      }
+      .labelsHidden()
+      .accessibilityIdentifier("regenerate-temporary-model")
       HStack {
         Button("总结") {
           let override = temporaryModel.trimmingCharacters(in: .whitespacesAndNewlines).emptyToNil
