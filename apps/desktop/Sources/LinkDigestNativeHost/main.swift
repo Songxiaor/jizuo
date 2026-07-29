@@ -68,6 +68,26 @@ func decodeResponse(_ data: Data, requestId: String) -> NativeResponse {
     ?? errorResponse("NATIVE_RESPONSE_INVALID", requestId: requestId)
 }
 
+/// 拉起这个 host 的浏览器。
+///
+/// native host 永远由浏览器 spawn，所以父进程就是浏览器。设置页需要知道「哪个浏览器
+/// 真的在用」，而 App 自己看不进浏览器里（macOS 不许读别的 App 的数据目录），父进程
+/// 是唯一不需要任何权限就能拿到的浏览器身份。
+func callingBrowser() -> BrowserSupportBrowser? {
+  var buffer = [UInt8](repeating: 0, count: Int(4 * MAXPATHLEN))
+  let written = buffer.withUnsafeMutableBytes { proc_pidpath(getppid(), $0.baseAddress, UInt32($0.count)) }
+  guard written > 0 else { return nil }
+  let path = String(decoding: buffer.prefix(Int(written)), as: UTF8.self)
+  return BrowserSupportBrowser.identify(executablePath: path)
+}
+
+/// 只在内容真的进了 App 之后才记。记「试过」没有意义——这一行要陈述的是既成事实。
+func recordDeliveryIfSucceeded(_ response: NativeResponse) {
+  if case .error = response { return }
+  guard let browser = callingBrowser() else { return }
+  BrowserDeliveryLog.standard().record(browser)
+}
+
 /// Hot path: one send. Cold path: open co-located App, then retry send until budget ends.
 /// No connect-only probes — they steal the App's accept queue.
 func deliverToApp(_ body: Data, requestId: String) -> NativeResponse {
@@ -163,6 +183,7 @@ do {
     if let bookmarks = try XBookmarksSyncRequest.decode(body) {
       writeDebugLog("bookmarks_sync ids=\(bookmarks.tweetIDs.count)")
       let result = deliverToApp(body, requestId: bookmarks.requestId)
+      recordDeliveryIfSucceeded(result)
       try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
       exit(0)
     }
@@ -195,6 +216,7 @@ do {
   }
   writeDebugLog("decoded_ok chars=\(envelope.characterCount) bytes=\(body.count)")
   let result = deliverToApp(body, requestId: envelope.requestId)
+  recordDeliveryIfSucceeded(result)
   try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
 } catch {
   writeDebugLog("framing_error=\(framingErrorCode(error))")

@@ -185,6 +185,53 @@ final class BrowserSupportViewModelTests: XCTestCase {
     await first.value
   }
 
+  /// 卸载浏览器不会删掉它在 `Application Support` 下的档案目录，而安装器是按目录判断的。
+  /// 不在这一层筛掉的话，设置页会列出已经卸载的浏览器——点开什么都不会发生。
+  func testBrowsersWhoseAppIsGoneAreNotListed() async throws {
+    let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+      .appendingPathComponent("linkdigest-vm-apps-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(
+      at: root.appendingPathComponent("Google Chrome.app"), withIntermediateDirectories: true)
+
+    let installer = BrowserSupportMockInstaller(values: statuses())
+    let model = BrowserSupportViewModel(installer: installer, applicationRoots: [root])
+    await model.load()
+
+    XCTAssertEqual(model.statuses.map(\.browser), [.chrome])
+  }
+
+  /// 动作结束后重读状态时也必须筛。
+  ///
+  /// 这条是补上一个真出现过的 bug：过滤原来只写在 `load()` 里，而每个动作结束后各自
+  /// 又写了一遍 `statuses = await installer.inspect()`，拿的是没筛过的原始结果。于是
+  /// 页面进来是干净的三行，点任何一个按钮，已卸载的浏览器立刻全回来。
+  func testBrowsersWhoseAppIsGoneStayHiddenAfterAnAction() async throws {
+    let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+      .appendingPathComponent("linkdigest-vm-apps-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    try FileManager.default.createDirectory(
+      at: root.appendingPathComponent("Google Chrome.app"), withIntermediateDirectories: true)
+
+    let installer = BrowserSupportMockInstaller(values: statuses(chrome: .installed))
+    let model = BrowserSupportViewModel(installer: installer, applicationRoots: [root])
+    await model.load()
+    XCTAssertEqual(model.statuses.map(\.browser), [.chrome])
+
+    await model.uninstall(.chrome)
+
+    XCTAssertEqual(model.statuses.map(\.browser), [.chrome])
+  }
+
+  /// 不给搜索路径就不筛。安装器返回什么就显示什么，行为跟加这一层之前一样。
+  func testWithoutApplicationRootsEveryInspectedBrowserIsListed() async {
+    let installer = BrowserSupportMockInstaller(values: statuses())
+    let model = BrowserSupportViewModel(installer: installer)
+    await model.load()
+
+    XCTAssertEqual(model.statuses.map(\.browser), [.chrome, .brave, .edge])
+  }
+
   private func statuses(chrome: BrowserSupportInstallState = .notInstalled) -> [BrowserSupportStatus] {
     let fingerprint = [.currentAppUnverified, .drifted, .unknownManifest].contains(chrome)
       ? "fixture-confirmation"

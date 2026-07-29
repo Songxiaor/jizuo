@@ -1113,7 +1113,10 @@ enum BrowserReceiverState: Sendable, Equatable {
     )
     _browserSupport = StateObject(
       wrappedValue: BrowserSupportViewModel(
-        installer: try? BrowserSupportInstaller.appBundled()
+        installer: try? BrowserSupportInstaller.appBundled(),
+        deliveryLog: .standard(),
+        applicationRoots: BrowserSupportBrowser.systemApplicationRoots(
+          homeRoot: FileManager.default.homeDirectoryForCurrentUser)
       )
     )
     _mediaStorageSettings = StateObject(

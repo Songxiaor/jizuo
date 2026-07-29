@@ -4,93 +4,103 @@ import XCTest
 @testable import LinkDigestCore
 
 final class BrowserSupportInstallerTests: XCTestCase {
+  /// 一个浏览器都没装时：什么也不列，更不许顺手把浏览器目录建出来。
+  ///
+  /// 断言从「三条 unavailable」改成「空」是因为 `inspect()` 现在只报本机装了的浏览器
+  /// ——档案表里有十几个，全报出来就是十几行永远灰着的噪音。真正要钉住的那条不变：
+  /// **不许创建任何浏览器目录**。
   func testMissingBrowserDirectoriesAreNeverCreatedAndReportUnavailable() async throws {
     try await withFixture { fixture in
       let installer = fixture.installer()
       let statuses = await installer.inspect()
-      XCTAssertEqual(statuses.map(\.state), [.unavailable, .unavailable, .unavailable])
+      XCTAssertTrue(statuses.isEmpty)
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.home.appendingPathComponent("Library").path))
       XCTAssertEqual(try fixture.nonHomeDigest(), fixture.initialNonHomeDigest)
     }
   }
 
-  func testChromeAndBraveShareOneActiveTargetAndSecondActionIsNoop() async throws {
+  /// Chrome 和 Edge 是两个独立目标，各写各的 manifest。
+  ///
+  /// 曾经有过相反的实现：一个浏览器被映射到另一个的目录，装一个等于同时装了两个，收据里
+  /// 也只有一条。后果是设置页上那一行显示的其实是别人的状态——两行永远一样，而它自己的
+  /// `NativeMessagingHosts` 从没被看过。
+  func testChromeAndEdgeAreIndependentTargets() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: true)
+      try fixture.createBrowserDirectories(chrome: true, edge: true)
       let installer = fixture.installer()
 
       try await installer.install(.chrome)
       var statuses = await installer.inspect()
-      XCTAssertEqual(statuses.map(\.state), [.installed, .installed, .notInstalled])
-      let manifest = fixture.manifest(.chrome)
-      let before = try Data(contentsOf: manifest)
-      let beforeMtime = try FileManager.default.attributesOfItem(atPath: manifest.path)[.modificationDate] as? Date
-      let receipt = try fixture.receipt()
-      XCTAssertEqual(receipt.entries.count, 1)
-      XCTAssertEqual(receipt.entries.first?.target, "chrome")
-
-      try await installer.install(.brave)
-      XCTAssertEqual(try Data(contentsOf: manifest), before)
-      XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: manifest.path)[.modificationDate] as? Date, beforeMtime)
-      statuses = await installer.inspect()
-      XCTAssertEqual(statuses.map(\.state), [.installed, .installed, .notInstalled])
+      XCTAssertEqual(fixture.state(.chrome, in: statuses), .installed)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .notInstalled, "装 Chrome 不该顺带把 Edge 也算上")
+      XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.manifest(.edge).path))
       XCTAssertEqual(try fixture.receipt().entries.map(\.target), ["chrome"])
+
+      try await installer.install(.edge)
+      statuses = await installer.inspect()
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .installed)
+      XCTAssertEqual(try fixture.receipt().entries.map(\.target).sorted(), ["chrome", "edge"])
       XCTAssertEqual(try fixture.nonHomeDigest(), fixture.initialNonHomeDigest)
     }
   }
 
-  func testBraveThenChromeUsesTheSameActiveTargetAndSecondActionIsNoop() async throws {
+  /// 对同一个浏览器装第二次是空操作：内容和 mtime 都不动。
+  func testSecondInstallOnSameBrowserIsNoop() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       let installer = fixture.installer()
 
-      try await installer.install(.brave)
+      try await installer.install(.chrome)
       let manifest = fixture.manifest(.chrome)
       let before = try Data(contentsOf: manifest)
       let beforeMtime = try FileManager.default.attributesOfItem(atPath: manifest.path)[.modificationDate] as? Date
-      try await installer.install(.chrome)
 
+      try await installer.install(.chrome)
       XCTAssertEqual(try Data(contentsOf: manifest), before)
       XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: manifest.path)[.modificationDate] as? Date, beforeMtime)
-      let statuses = await installer.inspect()
-      XCTAssertEqual(statuses.map(\.state), [.installed, .installed, .unavailable])
       XCTAssertEqual(try fixture.receipt().entries.map(\.target), ["chrome"])
     }
   }
 
+  /// 每个浏览器各自独立：接管、漂移、修复、卸载都只影响自己那一个目录。
+  ///
+  /// 曾经有过「两个浏览器共用一个目录」的实现——装一个顺带算另一个装好，改坏一个两行
+  /// 一起变。那个耦合是 bug（设置页上那一行显示的其实是别人的状态），所以这条断言必须
+  /// 反过来：动一个不能影响另一个。
   func testIntegratedIsolatedBrowserMatrixInstallsRepairsAndUninstallsOwnedTargets() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: true)
+      try fixture.createBrowserDirectories(chrome: true, edge: true)
       try fixture.writeUnknownManifest(.chrome, data: Data("{\"chrome\":\"third-party\"}".utf8))
-      try fixture.writeUnknownManifest(.edge, data: Data("{\"edge\":\"third-party\"}".utf8))
       let installer = fixture.installer()
 
+      // Chrome 目录里有别人的 manifest，必须走确认接管；Edge 目录是空的，直接装。
       try await confirmReplacement(installer, browser: .chrome)
-      try await confirmReplacement(installer, browser: .edge)
+      try await installer.install(.edge)
       var states = await installer.inspect()
-      XCTAssertEqual(states.map(\.state), [.installed, .installed, .installed])
+      XCTAssertEqual(states.map(\.state), [.installed, .installed])
 
-      try fixture.writeUnknownManifest(.brave, data: Data("{\"chrome\":\"drifted\"}".utf8))
+      try fixture.writeUnknownManifest(.edge, data: Data("{\"edge\":\"drifted\"}".utf8))
       let drifted = await installer.inspect()
-      XCTAssertEqual(drifted[0].state, .drifted)
-      XCTAssertEqual(drifted[1].state, .drifted)
-      try await confirmReplacement(installer, browser: .brave)
+      XCTAssertEqual(fixture.state(.edge, in: drifted), .drifted)
+      XCTAssertEqual(fixture.state(.chrome, in: drifted), .installed, "Chrome 不该被 Edge 的改动带下水")
+      try await confirmReplacement(installer, browser: .edge)
       states = await installer.inspect()
-      XCTAssertEqual(states.map(\.state), [.installed, .installed, .installed])
+      XCTAssertEqual(states.map(\.state), [.installed, .installed])
 
-      try await installer.uninstall(.brave)
-      states = await installer.inspect()
-      XCTAssertEqual(states.map(\.state), [.notInstalled, .notInstalled, .installed])
       try await installer.uninstall(.edge)
       states = await installer.inspect()
-      XCTAssertEqual(states.map(\.state), [.notInstalled, .notInstalled, .notInstalled])
+      XCTAssertEqual(fixture.state(.edge, in: states), .notInstalled)
+      XCTAssertEqual(fixture.state(.chrome, in: states), .installed, "卸载 Edge 不该动 Chrome")
+      try await installer.uninstall(.chrome)
+      states = await installer.inspect()
+      XCTAssertEqual(states.map(\.state), [.notInstalled, .notInstalled])
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.receiptURL.path))
     }
   }
 
   func testUnknownManifestRequiresConfirmationThenBacksUpAndRestores() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       let original = Data("{\"unknown\":true}".utf8)
       try fixture.writeUnknownManifest(.chrome, data: original)
       let installer = fixture.installer()
@@ -103,25 +113,32 @@ final class BrowserSupportInstallerTests: XCTestCase {
       }
       XCTAssertEqual(try Data(contentsOf: fixture.manifest(.chrome)), original)
 
-      try await confirmReplacement(installer, browser: .brave)
+      try await confirmReplacement(installer, browser: .chrome)
       let installed = await installer.inspect()
-      XCTAssertEqual(installed[0].state, .installed)
-      XCTAssertEqual(installed[1].state, .installed)
-      XCTAssertTrue(installed[0].hasRecoverableBackup)
+      XCTAssertEqual(fixture.state(.chrome, in: installed), .installed)
+      XCTAssertEqual(installed.map(\.browser), [.chrome], "只建了 Chrome 目录，就该只有 Chrome 一行")
+      XCTAssertEqual(fixture.status(.chrome, in: installed)?.hasRecoverableBackup, true)
       XCTAssertEqual(try fixture.backupPayload(.chrome), original)
 
-      try await installer.restoreLatestBackup(.brave)
+      try await installer.restoreLatestBackup(.chrome)
       let restored = await installer.inspect()
-      XCTAssertEqual(restored[0].state, .unknownManifest)
-      XCTAssertEqual(restored[1].state, .unknownManifest)
+      XCTAssertEqual(fixture.state(.chrome, in: restored), .unknownManifest)
       XCTAssertEqual(try Data(contentsOf: fixture.manifest(.chrome)), original)
       XCTAssertEqual(try fixture.nonHomeDigest(), fixture.initialNonHomeDigest)
     }
   }
 
-  func testLegacyBraveReceiptAndJournalPreserveLegacyRecoveryWithoutAuthorizingActiveTakeover() async throws {
+  /// 不再提供的浏览器：不列出来，但也**一个字节都不动**。
+  ///
+  /// Brave 曾在支持面里，所以真人机器上留着两样东西：Brave 目录里一份我们写的 manifest，
+  /// 和收据里的 `brave` 条目。收敛支持面时的诱惑是顺手清理掉它们——不能。收据是我们写过
+  /// 什么的唯一记录，删掉它就等于把「这个文件是我们放的」这件事抹掉，那份 manifest 从此
+  /// 无从解释。留着则完全无害：它只是一个不运行的 JSON。
+  ///
+  /// 同时保留原有的防线：旧的 brave 收据不得授权接管 Chrome 目录里的未知 manifest。
+  func testLegacyBrowserIsNeitherListedNorTouched() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: true, legacyBrave: true)
       let legacy = fixture.legacyBraveManifest
       let legacyData = Data("{\"legacy\":\"brave\"}".utf8)
       try legacyData.write(to: legacy)
@@ -131,40 +148,110 @@ final class BrowserSupportInstallerTests: XCTestCase {
       try fixture.writeUnknownManifest(.chrome, data: chromeUnknown)
       let installer = fixture.installer()
 
+      // 目录在、manifest 在、收据里有条目——依然不出现在任何一行里。
       let statuses = await installer.inspect()
-      XCTAssertEqual(statuses[0].state, .unknownManifest)
-      XCTAssertEqual(statuses[1].state, .unknownManifest)
+      XCTAssertEqual(statuses.map(\.browser), [.chrome, .edge])
+      XCTAssertNil(fixture.status(.brave, in: statuses))
+
+      // 旧的 brave 条目不得授权接管 Chrome 的未知叶子。
       do {
-        try await installer.install(.brave)
-        XCTFail("A legacy Brave receipt must not authorize replacing an unknown active Chrome leaf")
+        try await installer.install(.chrome)
+        XCTFail("A legacy receipt entry must not authorize replacing an unknown active leaf")
       } catch {
         XCTAssertEqual(error as? BrowserSupportInstallerError, .confirmationRequired)
       }
+
+      // 走完一次真正的接管之后，Brave 的叶子和它的收据条目都必须原封不动。
       try await confirmReplacement(installer, browser: .chrome)
-      XCTAssertEqual(try Data(contentsOf: legacy), legacyData)
+      XCTAssertEqual(try Data(contentsOf: legacy), legacyData, "接管 Chrome 不该动 Brave 的 manifest")
       XCTAssertEqual(try fixture.receipt().entries.map(\.target).sorted(), ["brave", "chrome"])
-      let activeChrome = Data("{\"active\":\"chrome\"}".utf8)
+
+      // 卸载也一样：只删自己那一个，旧条目继续留着。
+      try await installer.uninstall(.chrome)
+      XCTAssertEqual(try Data(contentsOf: legacy), legacyData)
+      XCTAssertEqual(try fixture.receipt().entries.map(\.target), ["brave"])
+      XCTAssertEqual(try fixture.nonHomeDigest(), fixture.initialNonHomeDigest)
+    }
+  }
+
+  /// 一次中断过的旧事务仍然要能恢复到**正确的目录**。
+  ///
+  /// 这条钉的是「不再提供 ≠ 认不出来」：恢复靠收据里的 target 反查目录，如果 `brave`
+  /// 解析不出来，回滚会打到 `Application Support/brave/` 这种不存在的路径上，而真正
+  /// 半写完的那个叶子被永远留在中间态。
+  func testInterruptedLegacyTransactionStillRecoversToTheRightDirectory() async throws {
+    try await withFixture { fixture in
+      try fixture.createBrowserDirectories(chrome: true, edge: false, legacyBrave: true)
       let legacyBefore = Data("{\"legacy\":\"before\"}".utf8)
       let legacyAfter = Data("{\"legacy\":\"after\"}".utf8)
+      try legacyAfter.write(to: fixture.legacyBraveManifest)
+      try FileManager.default.setAttributes(
+        [.posixPermissions: 0o600], ofItemAtPath: fixture.legacyBraveManifest.path)
+      try fixture.writeLegacyBraveReceipt()
+      let activeChrome = Data("{\"active\":\"chrome\"}".utf8)
       try fixture.writeUnknownManifest(.chrome, data: activeChrome)
-      try fixture.writeLegacyBraveRecoveryJournal(beforeManifest: legacyBefore, afterManifest: legacyAfter)
+      try fixture.writeLegacyBraveRecoveryJournal(
+        beforeManifest: legacyBefore, afterManifest: legacyAfter)
 
-      let recoveredStatuses = await fixture.installer().inspect()
-      XCTAssertEqual(try Data(contentsOf: fixture.manifest(.chrome)), activeChrome)
-      XCTAssertEqual(try Data(contentsOf: fixture.legacyBraveManifest), legacyBefore)
+      let statuses = await fixture.installer().inspect()
+
+      XCTAssertEqual(
+        try Data(contentsOf: fixture.legacyBraveManifest), legacyBefore, "旧事务必须回滚到自己的目录")
+      XCTAssertEqual(try Data(contentsOf: fixture.manifest(.chrome)), activeChrome, "回滚不该碰 Chrome")
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.operationJournalURL.path))
       XCTAssertEqual(try fixture.receipt().entries.map(\.target), ["brave"])
-      XCTAssertEqual(recoveredStatuses.map(\.state), [.unknownManifest, .unknownManifest, .unavailable])
+      XCTAssertEqual(statuses.map(\.browser), [.chrome], "恢复了旧目标，也不会因此列出它")
+    }
+  }
+
+  /// 打不开目录要分两种：没权限 vs 状态可疑。
+  ///
+  /// macOS 不让 App 打开别的 App 的数据目录，`openat` 直接 EPERM 且不弹授权框。它跟
+  /// 「文件系统状态可疑」共用一个错误码的后果是：用户看到「检测到不安全的文件系统状态」
+  /// 这种既吓人又无从下手的话，而实际上他只要选一次文件夹就好了。
+  ///
+  /// 用 `chmod 111` 真造一个这样的目录，不是打桩：只给执行位时路径能穿过去（所以读得到
+  /// 里面的文件、状态判得出来），但 `open(O_DIRECTORY)` 要读权限、会被拒——正是真机上
+  /// 那个「能读、写不了」的不对称。`chmod 000` 复现不了：它连读都断了，于是提前被
+  /// 「未检测到该浏览器」短路，根本走不到要测的那段。
+  func testUnopenableBrowserDirectoryReportsAccessDeniedNotUnsafeState() async throws {
+    try await withFixture { fixture in
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
+      let installer = fixture.installer()
+      try await installer.install(.chrome)
+
+      let chromeParent = fixture.home
+        .appendingPathComponent("Library/Application Support/Google", isDirectory: true)
+      try FileManager.default.setAttributes([.posixPermissions: 0o111], ofItemAtPath: chromeParent.path)
+      defer {
+        try? FileManager.default.setAttributes(
+          [.posixPermissions: 0o700], ofItemAtPath: chromeParent.path)
+      }
+      // 前提：状态仍然判得出来，也就是说这不是「没检测到浏览器」。
+      let statuses = await fixture.installer().inspect()
+      XCTAssertEqual(fixture.state(.chrome, in: statuses), .installed)
+
+      // 卸载是一次真正的写事务，会走到逐段打开目录那一步。
+      do {
+        try await fixture.installer().uninstall(.chrome)
+        XCTFail("An unopenable browser directory must not silently succeed")
+      } catch let BrowserSupportInstallerError.directoryAccessDenied(path) {
+        // 报的必须是**真正被拒的那一段**，不是最终要写的叶子目录。让用户去授权叶子是
+        // 没用的：父目录照样打不开，重试还会失败，界面就会反复弹同一个授权框。
+        XCTAssertEqual(path, chromeParent.standardizedFileURL.path)
+      } catch {
+        XCTFail("没权限必须和「状态可疑」分开，实际拿到 \(error)")
+      }
     }
   }
 
   func testReplacementConfirmationFingerprintRejectsChangedManifest() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       try fixture.writeUnknownManifest(.chrome, data: Data("{\"before\":true}".utf8))
       let installer = fixture.installer()
       let before = await installer.inspect()
-      let fingerprint = try XCTUnwrap(before[0].replacementFingerprint)
+      let fingerprint = try XCTUnwrap(fixture.status(.chrome, in: before)?.replacementFingerprint)
       let changed = Data("{\"changed\":true}".utf8)
       try fixture.writeUnknownManifest(.chrome, data: changed)
 
@@ -181,12 +268,12 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testDriftRequiresRepairConfirmationAndUninstallRefusesToDeleteIt() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: false, edge: true)
+      try fixture.createBrowserDirectories(chrome: false, edge: true)
       let installer = fixture.installer()
       try await installer.install(.edge)
       try fixture.writeUnknownManifest(.edge, data: Data("{\"drifted\":true}".utf8))
       var statuses = await installer.inspect()
-      XCTAssertEqual(statuses[2].state, .drifted)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .drifted)
 
       do {
         try await installer.uninstall(.edge)
@@ -204,10 +291,10 @@ final class BrowserSupportInstallerTests: XCTestCase {
       }
       try await confirmReplacement(installer, browser: .edge)
       statuses = await installer.inspect()
-      XCTAssertEqual(statuses[2].state, .installed)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .installed)
       try await installer.uninstall(.edge)
       statuses = await installer.inspect()
-      XCTAssertEqual(statuses[2].state, .notInstalled)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .notInstalled)
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.manifest(.edge).path))
       XCTAssertEqual(try fixture.nonHomeDigest(), fixture.initialNonHomeDigest)
     }
@@ -215,7 +302,7 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testInjectedInterruptionRollsBackManifestAndLeavesNoReceipt() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       let installer = fixture.installer(failAfterManifestWrite: true)
       do {
         try await installer.install(.chrome)
@@ -226,14 +313,14 @@ final class BrowserSupportInstallerTests: XCTestCase {
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.manifest(.chrome).path))
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.receiptURL.path))
       let statuses = await installer.inspect()
-      XCTAssertEqual(statuses[0].state, .notInstalled)
+      XCTAssertEqual(fixture.state(.chrome, in: statuses), .notInstalled)
       XCTAssertEqual(try fixture.nonHomeDigest(), fixture.initialNonHomeDigest)
     }
   }
 
   func testTemplateHashMismatchMakesArtifactUnavailableWithoutFilesystemWrites() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       do {
         _ = try fixture.installer(templateHash: String(repeating: "0", count: 64))
         XCTFail("Tampered frozen template must not construct an installer")
@@ -253,8 +340,10 @@ final class BrowserSupportInstallerTests: XCTestCase {
       try FileManager.default.createSymbolicLink(at: link, withDestinationURL: fixture.root)
       let installer = fixture.installer()
 
+      // 符号链接底下没有 NativeMessagingHosts，所以这个浏览器根本不算装了、不会列出来。
+      // 真正要钉的是下面那条：即便硬去装，也必须在写任何东西之前被拒。
       let statuses = await installer.inspect()
-      XCTAssertEqual(statuses[0].state, .unavailable)
+      XCTAssertNil(fixture.state(.chrome, in: statuses))
       do {
         try await installer.install(.chrome)
         XCTFail("Symlinked NativeMessagingHosts parent must be rejected")
@@ -267,7 +356,7 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testFIFOManifestIsRejectedWithoutBlockingOrWriting() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       let fifo = fixture.manifest(.chrome)
       XCTAssertEqual(Darwin.mkfifo(fifo.path, 0o600), 0)
       let installer = fixture.installer()
@@ -285,7 +374,7 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testInvalidReceiptBlocksDirectInstallWithoutReplacingOtherTargetOwnership() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: true)
+      try fixture.createBrowserDirectories(chrome: true, edge: true)
       let normal = fixture.installer()
       try await normal.install(.edge)
       let edgeManifest = try Data(contentsOf: fixture.manifest(.edge))
@@ -293,7 +382,7 @@ final class BrowserSupportInstallerTests: XCTestCase {
       try fixture.writeReceiptRaw(invalid)
 
       let statuses = await normal.inspect()
-      XCTAssertEqual(statuses[0].state, .invalidReceipt)
+      XCTAssertEqual(fixture.state(.chrome, in: statuses), .invalidReceipt)
       do {
         try await normal.install(.chrome)
         XCTFail("Invalid receipt must fail closed before a new target is written")
@@ -308,14 +397,14 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testCurrentAppManifestWithUnboundReceiptStaysUsableButRefusesUninstall() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: false, edge: true)
+      try fixture.createBrowserDirectories(chrome: false, edge: true)
       let installer = fixture.installer()
       try await installer.install(.edge)
       try fixture.replaceReceiptManifestHash(with: String(repeating: "0", count: 64))
 
       let statuses = await installer.inspect()
-      XCTAssertEqual(statuses[2].state, .currentAppUnverified)
-      XCTAssertNotNil(statuses[2].replacementFingerprint)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .currentAppUnverified)
+      XCTAssertNotNil(fixture.status(.edge, in: statuses)?.replacementFingerprint)
       do {
         try await installer.uninstall(.edge)
         XCTFail("An unbound receipt must refuse deletion")
@@ -329,7 +418,7 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testSemanticallyIdenticalPrettyManifestStaysUsableWithoutClaimingOwnership() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       let installer = fixture.installer()
       try await installer.install(.chrome)
 
@@ -340,9 +429,9 @@ final class BrowserSupportInstallerTests: XCTestCase {
       try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: target.path)
 
       let statuses = await installer.inspect()
-      XCTAssertEqual(statuses[0].state, .currentAppUnverified)
-      XCTAssertEqual(statuses[1].state, .currentAppUnverified)
-      XCTAssertNotNil(statuses[0].replacementFingerprint)
+      XCTAssertEqual(fixture.state(.chrome, in: statuses), .currentAppUnverified)
+      XCTAssertEqual(statuses.map(\.browser), [.chrome], "只建了 Chrome 目录，就该只有 Chrome 一行")
+      XCTAssertNotNil(fixture.status(.chrome, in: statuses)?.replacementFingerprint)
 
       do {
         try await installer.uninstall(.chrome)
@@ -356,7 +445,7 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testReceiptCommitFailureDuringUninstallRestoresManifest() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: false, edge: true)
+      try fixture.createBrowserDirectories(chrome: false, edge: true)
       let normal = fixture.installer()
       try await normal.install(.edge)
       let failing = fixture.installer(failurePhase: "receipt")
@@ -368,13 +457,13 @@ final class BrowserSupportInstallerTests: XCTestCase {
       }
       XCTAssertTrue(FileManager.default.fileExists(atPath: fixture.manifest(.edge).path))
       let statuses = await normal.inspect()
-      XCTAssertEqual(statuses[2].state, .installed)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .installed)
     }
   }
 
   func testReceiptCommitFailureDuringRestoreKeepsInstalledManifest() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       try fixture.writeUnknownManifest(.chrome, data: Data("{\"before\":true}".utf8))
       let normal = fixture.installer()
       try await confirmReplacement(normal, browser: .chrome)
@@ -388,13 +477,13 @@ final class BrowserSupportInstallerTests: XCTestCase {
       }
       XCTAssertEqual(try Data(contentsOf: fixture.manifest(.chrome)), installed)
       let statuses = await normal.inspect()
-      XCTAssertEqual(statuses[0].state, .installed)
+      XCTAssertEqual(fixture.state(.chrome, in: statuses), .installed)
     }
   }
 
   func testRestoreRejectsBackupWithMismatchedReceiptFilename() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       try fixture.writeUnknownManifest(.chrome, data: Data("{\"before\":true}".utf8))
       let installer = fixture.installer()
       try await confirmReplacement(installer, browser: .chrome)
@@ -411,13 +500,13 @@ final class BrowserSupportInstallerTests: XCTestCase {
       }
       XCTAssertEqual(try Data(contentsOf: fixture.manifest(.chrome)), installed)
       let statuses = await installer.inspect()
-      XCTAssertFalse(statuses[0].hasRecoverableBackup)
+      XCTAssertEqual(fixture.status(.chrome, in: statuses)?.hasRecoverableBackup, false)
     }
   }
 
   func testRestoreRejectsBackupWithMismatchedReceiptHash() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       try fixture.writeUnknownManifest(.chrome, data: Data("{\"before\":true}".utf8))
       let installer = fixture.installer()
       try await confirmReplacement(installer, browser: .chrome)
@@ -434,38 +523,38 @@ final class BrowserSupportInstallerTests: XCTestCase {
       }
       XCTAssertEqual(try Data(contentsOf: fixture.manifest(.chrome)), installed)
       let statuses = await installer.inspect()
-      XCTAssertFalse(statuses[0].hasRecoverableBackup)
+      XCTAssertEqual(fixture.status(.chrome, in: statuses)?.hasRecoverableBackup, false)
     }
   }
 
   func testHostPackageUpdateReportsInstalledAppUpdatedAndRepairRefreshesReceipt() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: false, edge: true)
+      try fixture.createBrowserDirectories(chrome: false, edge: true)
       let installer = fixture.installer()
       try await installer.install(.edge)
       try fixture.mutateHostResource()
 
       var statuses = await installer.inspect()
-      XCTAssertEqual(statuses[2].state, .installedAppUpdated)
-      XCTAssertNil(statuses[2].replacementFingerprint)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .installedAppUpdated)
+      XCTAssertNil(fixture.status(.edge, in: statuses)?.replacementFingerprint)
 
       // Repairing LinkDigest's own byte-identical manifest refreshes the stale
       // receipt snapshot without demanding a takeover confirmation.
       try await installer.install(.edge)
       statuses = await installer.inspect()
-      XCTAssertEqual(statuses[2].state, .installed)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .installed)
     }
   }
 
   func testHostPackageUpdateStillAllowsVerifiedUninstall() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: false, edge: true)
+      try fixture.createBrowserDirectories(chrome: false, edge: true)
       let installer = fixture.installer()
       try await installer.install(.edge)
       try fixture.mutateHostResource()
 
       let statuses = await installer.inspect()
-      XCTAssertEqual(statuses[2].state, .installedAppUpdated)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .installedAppUpdated)
       try await installer.uninstall(.edge)
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.manifest(.edge).path))
     }
@@ -473,13 +562,13 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testSubprocessTerminatedInstallRecoversBeforeInspect() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       let original = Data("{\"unknown\":true}".utf8)
       try fixture.writeUnknownManifest(.chrome, data: original)
 
       try fixture.runCrashHarness(action: "install", browser: .chrome)
       let statuses = await fixture.installer().inspect()
-      XCTAssertEqual(statuses[0].state, .unknownManifest)
+      XCTAssertEqual(fixture.state(.chrome, in: statuses), .unknownManifest)
       XCTAssertEqual(try Data(contentsOf: fixture.manifest(.chrome)), original)
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.receiptURL.path))
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.operationJournalURL.path))
@@ -488,14 +577,14 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testSubprocessTerminatedUninstallRecoversBeforeInspect() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: false, edge: true)
+      try fixture.createBrowserDirectories(chrome: false, edge: true)
       let installer = fixture.installer()
       try await installer.install(.edge)
       let installed = try Data(contentsOf: fixture.manifest(.edge))
 
       try fixture.runCrashHarness(action: "uninstall", browser: .edge)
       let statuses = await fixture.installer().inspect()
-      XCTAssertEqual(statuses[2].state, .installed)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .installed)
       XCTAssertEqual(try Data(contentsOf: fixture.manifest(.edge)), installed)
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.operationJournalURL.path))
     }
@@ -503,7 +592,7 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testSubprocessTerminatedRestoreRecoversBeforeInspect() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       try fixture.writeUnknownManifest(.chrome, data: Data("{\"unknown\":true}".utf8))
       let installer = fixture.installer()
       try await confirmReplacement(installer, browser: .chrome)
@@ -511,7 +600,7 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
       try fixture.runCrashHarness(action: "restore", browser: .chrome)
       let statuses = await fixture.installer().inspect()
-      XCTAssertEqual(statuses[0].state, .installed)
+      XCTAssertEqual(fixture.state(.chrome, in: statuses), .installed)
       XCTAssertEqual(try Data(contentsOf: fixture.manifest(.chrome)), installed)
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.operationJournalURL.path))
     }
@@ -519,25 +608,29 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testSubprocessTerminatedAfterJournalPublishLeavesAUsableFreshInstallState() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
 
       try fixture.runCrashHarness(action: "install", browser: .chrome, phase: "after-journal-publish")
       let statuses = await fixture.installer().inspect()
-      XCTAssertEqual(statuses.map(\.state), [.notInstalled, .notInstalled, .unavailable])
+      // 只建了 Chrome 一个目录，所以只报一行。按下标断言状态数组会随着支持面变化整片
+      // 假失败，所以这里按浏览器断言。
+      XCTAssertEqual(statuses.map(\.browser), [.chrome])
+      XCTAssertEqual(fixture.state(.chrome, in: statuses), .notInstalled)
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.operationJournalURL.path))
     }
   }
 
   func testSubprocessReceiptDetachDuringExistingReceiptRepairRecoversAllTargets() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: true)
+      try fixture.createBrowserDirectories(chrome: true, edge: true)
       let original = Data("{\"unknown\":true}".utf8)
       try fixture.writeUnknownManifest(.chrome, data: original)
       try await fixture.installer().install(.edge)
 
       try fixture.runCrashHarness(action: "install", browser: .chrome, phase: "after-receipt-detach-before-publish")
       let statuses = await fixture.installer().inspect()
-      XCTAssertEqual(statuses.map(\.state), [.unknownManifest, .unknownManifest, .installed])
+      XCTAssertEqual(fixture.state(.chrome, in: statuses), .unknownManifest)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .installed)
       XCTAssertEqual(try Data(contentsOf: fixture.manifest(.chrome)), original)
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.operationJournalURL.path))
     }
@@ -545,20 +638,21 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testSubprocessReceiptDetachDuringSecondTargetInstallRecoversFirstTarget() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: true)
+      try fixture.createBrowserDirectories(chrome: true, edge: true)
       let installer = fixture.installer()
       try await installer.install(.chrome)
 
       try fixture.runCrashHarness(action: "install", browser: .edge, phase: "after-receipt-detach-before-publish")
       let statuses = await fixture.installer().inspect()
-      XCTAssertEqual(statuses.map(\.state), [.installed, .installed, .notInstalled])
+      XCTAssertEqual(fixture.state(.chrome, in: statuses), .installed)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .notInstalled)
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.operationJournalURL.path))
     }
   }
 
   func testSubprocessReceiptDetachDuringMultiTargetRestoreRecoversAllTargets() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: true)
+      try fixture.createBrowserDirectories(chrome: true, edge: true)
       try fixture.writeUnknownManifest(.chrome, data: Data("{\"unknown\":true}".utf8))
       let installer = fixture.installer()
       try await confirmReplacement(installer, browser: .chrome)
@@ -566,30 +660,31 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
       try fixture.runCrashHarness(action: "restore", browser: .chrome, phase: "after-receipt-detach-before-publish")
       let statuses = await fixture.installer().inspect()
-      XCTAssertEqual(statuses.map(\.state), [.installed, .installed, .installed])
+      XCTAssertEqual(fixture.state(.chrome, in: statuses), .installed)
+      XCTAssertEqual(fixture.state(.edge, in: statuses), .installed)
       XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.operationJournalURL.path))
     }
   }
 
   func testReceiptWithMissingManifestOffersConfirmedRepairInsteadOfDeadEnd() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: false, edge: true)
+      try fixture.createBrowserDirectories(chrome: false, edge: true)
       let installer = fixture.installer()
       try await installer.install(.edge)
       try FileManager.default.removeItem(at: fixture.manifest(.edge))
 
       let drifted = await installer.inspect()
-      XCTAssertEqual(drifted[2].state, .drifted)
-      let fingerprint = try XCTUnwrap(drifted[2].replacementFingerprint)
+      XCTAssertEqual(fixture.state(.edge, in: drifted), .drifted)
+      let fingerprint = try XCTUnwrap(fixture.status(.edge, in: drifted)?.replacementFingerprint)
       try await installer.confirmReplacement(.edge, expectedFingerprint: fingerprint)
       let repaired = await installer.inspect()
-      XCTAssertEqual(repaired[2].state, .installed)
+      XCTAssertEqual(fixture.state(.edge, in: repaired), .installed)
     }
   }
 
   func testInstallDoesNotOverwriteConcurrentLeafAfterVerifiedDetach() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: true, edge: false)
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
       try fixture.writeUnknownManifest(.chrome, data: Data("{\"a\":true}".utf8))
       let target = fixture.manifest(.chrome)
       let concurrent = Data("{\"b\":true}".utf8)
@@ -612,7 +707,7 @@ final class BrowserSupportInstallerTests: XCTestCase {
 
   func testUninstallDoesNotDeleteConcurrentLeafAfterVerifiedDetach() async throws {
     try await withFixture { fixture in
-      try fixture.createBrowserDirectories(sharedChrome: false, edge: true)
+      try fixture.createBrowserDirectories(chrome: false, edge: true)
       try await fixture.installer().install(.edge)
       let target = fixture.manifest(.edge)
       let concurrent = Data("{\"b\":true}".utf8)
@@ -665,8 +760,8 @@ private struct BrowserSupportFixture {
   func installer(templateHash: String, failAfterManifestWrite: Bool = false, failurePhase: String? = nil, mutationBarrier: (@Sendable (String) -> Void)? = nil) throws -> BrowserSupportInstaller {
     let data = Self.template
     let artifacts = try BrowserSupportFrozenArtifacts(
-      templates: Dictionary(uniqueKeysWithValues: BrowserSupportBrowser.allCases.map { ($0, data) }),
-      templateHashes: Dictionary(uniqueKeysWithValues: BrowserSupportBrowser.allCases.map { ($0, templateHash) }),
+      templates: Dictionary(uniqueKeysWithValues: BrowserSupportBrowser.allKnown.map { ($0, data) }),
+      templateHashes: Dictionary(uniqueKeysWithValues: BrowserSupportBrowser.allKnown.map { ($0, templateHash) }),
       extensionID: "fbpjhlcpfheecigibjghhodhhkgjdgma",
       hostName: "com.syc.linkdigest.v01",
       version: "0.2.0",
@@ -675,12 +770,22 @@ private struct BrowserSupportFixture {
     let failAfterManifest: @Sendable (String) -> Bool = { $0 == "after-manifest" }
     let failAtPhase: @Sendable (String) -> Bool = { $0 == failurePhase }
     let injector: (@Sendable (String) -> Bool)? = failAfterManifestWrite ? failAfterManifest : (failurePhase == nil ? nil : failAtPhase)
-    return BrowserSupportInstaller(homeRoot: home, artifacts: artifacts, failureInjection: injector, mutationBarrier: mutationBarrier)
+    // 产品当前只提供 Chrome，但事务机制是多目标的。这里显式注入两个目标，让「动一个不
+    // 影响另一个」「收据里两条互不干扰」「中断后各自回滚」这些覆盖不随产品收敛而消失。
+    return BrowserSupportInstaller(
+      homeRoot: home, browsers: Self.fixtureBrowsers, artifacts: artifacts,
+      failureInjection: injector, mutationBarrier: mutationBarrier)
   }
 
-  func createBrowserDirectories(sharedChrome: Bool, edge: Bool) throws {
-    if sharedChrome {
+  /// `legacyBrave` 建的是一个**不再被支持**的浏览器目录：Brave 曾在档案表里，真人机器上
+  /// 还留着我们写进去的 manifest。它必须存在于测试环境里，才能钉住「不支持了 ≠ 会去动它」。
+  static let fixtureBrowsers: [BrowserSupportBrowser] = [.chrome, .edge]
+
+  func createBrowserDirectories(chrome: Bool, edge: Bool, legacyBrave: Bool = false) throws {
+    if chrome {
       try FileManager.default.createDirectory(at: home.appendingPathComponent("Library/Application Support/Google/Chrome/NativeMessagingHosts"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+    }
+    if legacyBrave {
       try FileManager.default.createDirectory(at: home.appendingPathComponent("Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"), withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
     }
     if edge {
@@ -688,13 +793,20 @@ private struct BrowserSupportFixture {
     }
   }
 
+  /// 每个浏览器读写自己的目录——Brave 以前被映射到 Chrome 的目录，那是个 bug。
   func manifest(_ browser: BrowserSupportBrowser) -> URL {
-    let parent: String = switch browser {
-    case .chrome: "Library/Application Support/Google/Chrome/NativeMessagingHosts"
-    case .brave: "Library/Application Support/Google/Chrome/NativeMessagingHosts"
-    case .edge: "Library/Application Support/Microsoft Edge/NativeMessagingHosts"
-    }
-    return home.appendingPathComponent(parent).appendingPathComponent("com.syc.linkdigest.v01.json")
+    home.appendingPathComponent(browser.nativeMessagingRelativePath)
+      .appendingPathComponent("com.syc.linkdigest.v01.json")
+  }
+
+  /// 按浏览器取状态。`inspect()` 现在覆盖档案表里所有已知浏览器，靠下标位置断言
+  /// 会随着表里加一个浏览器就整片假失败。
+  func state(_ browser: BrowserSupportBrowser, in statuses: [BrowserSupportStatus]) -> BrowserSupportInstallState? {
+    status(browser, in: statuses)?.state
+  }
+
+  func status(_ browser: BrowserSupportBrowser, in statuses: [BrowserSupportStatus]) -> BrowserSupportStatus? {
+    statuses.first { $0.browser == browser }
   }
 
   var receiptURL: URL { home.appendingPathComponent("Library/Application Support/LinkDigest/BrowserSupport/receipt-v1.json") }
@@ -717,7 +829,7 @@ private struct BrowserSupportFixture {
       "--home", home.path,
       "--host", host.path,
       "--action", action,
-      "--browser", browser.rawValue,
+      "--browser", browser.id,
       "--phase", phase,
     ]
     try process.run()
@@ -804,11 +916,7 @@ private struct BrowserSupportFixture {
   }
 
   func boundBackupURL(_ browser: BrowserSupportBrowser) throws -> URL {
-    let target: String = switch browser {
-    case .chrome, .brave: "chrome"
-    case .edge: "edge"
-    }
-    let entry = try XCTUnwrap(receipt().entries.first(where: { $0.target == target }))
+    let entry = try XCTUnwrap(receipt().entries.first(where: { $0.target == browser.id }))
     let backup = try XCTUnwrap(entry.backup)
     XCTAssertEqual(backup.sha256.count, 64)
     return manifest(browser).deletingLastPathComponent().appendingPathComponent(backup.filename)

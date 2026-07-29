@@ -12,7 +12,7 @@ struct LinkDigestBrowserSupportCrashHarness {
       let action = value("--action", in: arguments),
       let phase = value("--phase", in: arguments),
       let browserValue = value("--browser", in: arguments),
-      let browser = BrowserSupportBrowser(rawValue: browserValue)
+      let browser = BrowserSupportBrowser.known(id: browserValue)
     else { Foundation.exit(64) }
 
     do {
@@ -21,8 +21,8 @@ struct LinkDigestBrowserSupportCrashHarness {
       """.utf8)
       let hash = SHA256.hash(data: template).map { String(format: "%02x", $0) }.joined()
       let artifacts = try BrowserSupportFrozenArtifacts(
-        templates: Dictionary(uniqueKeysWithValues: BrowserSupportBrowser.allCases.map { ($0, template) }),
-        templateHashes: Dictionary(uniqueKeysWithValues: BrowserSupportBrowser.allCases.map { ($0, hash) }),
+        templates: Dictionary(uniqueKeysWithValues: BrowserSupportBrowser.allKnown.map { ($0, template) }),
+        templateHashes: Dictionary(uniqueKeysWithValues: BrowserSupportBrowser.allKnown.map { ($0, hash) }),
         extensionID: "fbpjhlcpfheecigibjghhodhhkgjdgma",
         hostName: "com.syc.linkdigest.v01",
         version: "0.2.0",

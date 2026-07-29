@@ -5,21 +5,6 @@ import Foundation
 /// The Browser Support installer owns only LinkDigest's one Native Messaging
 /// manifest basename and its receipt.  Its production root is the current
 /// user's home directory; tests must inject an isolated root instead.
-public enum BrowserSupportBrowser: String, CaseIterable, Codable, Sendable, Equatable, Identifiable {
-  case chrome
-  case brave
-  case edge
-
-  public var id: String { rawValue }
-  public var displayName: String {
-    switch self {
-    case .chrome: "Chrome"
-    case .brave: "Brave"
-    case .edge: "Edge"
-    }
-  }
-}
-
 public enum BrowserSupportInstallState: Sendable, Equatable {
   case unavailable
   case notInstalled
@@ -63,6 +48,18 @@ public enum BrowserSupportInstallerError: Error, Sendable, Equatable {
   case uninstallRefused
   case restoreRefused
   case unsafeFilesystemState
+  /// 目录本身没问题，是**这个 App 没被允许打开它**。
+  ///
+  /// macOS 不让一个 App 打开另一个 App 的数据目录（`~/Library/Application Support/<别人>`），
+  /// 而且是 EPERM 直接失败、不弹任何授权框。这跟「文件系统状态可疑」完全不是一回事：
+  /// 前者用户点一下就能解决，后者必须停下来别动。混在一个错误码里的后果是，用户看到
+  /// 「检测到不安全的文件系统状态」这种既吓人又无从下手的话。
+  ///
+  /// 带上**真正被拒的那一段路径**，而不是最终要写的目录。锚点是从 home 逐段打开的，
+  /// 被拦下的通常是中间那一层（`.../Application Support/Microsoft Edge`），而不是叶子
+  /// （`.../NativeMessagingHosts`）。让用户去授权叶子是没用的——父目录照样打不开，
+  /// 于是授权完再试一次还是失败，界面就会无限重复地要求授权。
+  case directoryAccessDenied(path: String)
   case transactionFailed
 }
 
@@ -86,8 +83,14 @@ public struct BrowserSupportFrozenArtifacts: Sendable {
     let version: String
   }
 
-  fileprivate let templates: [BrowserSupportBrowser: Data]
-  fileprivate let templateHashes: [BrowserSupportBrowser: String]
+  /// 一份模板，所有浏览器共用。
+  ///
+  /// 原来是「每个浏览器一份」，但三份的 SHA-256 完全相同——manifest 里只有 host 名、
+  /// 可执行文件路径和扩展 origin，没有一个字段跟浏览器有关。存三份的直接后果是：支持
+  /// 一个新浏览器要多一份一模一样的模板加一条哈希，于是「支持所有 Chromium 浏览器」
+  /// 变成了改代码。共用一份之后，加浏览器只是往档案表里加一条数据。
+  fileprivate let template: Data
+  fileprivate let templateHash: String
   fileprivate let extensionID: String
   fileprivate let hostName: String
   fileprivate let version: String
@@ -101,19 +104,25 @@ public struct BrowserSupportFrozenArtifacts: Sendable {
     version: String,
     hostExecutableURL: URL
   ) throws {
-    guard Set(templates.keys) == Set(BrowserSupportBrowser.allCases),
-          Set(templateHashes.keys) == Set(BrowserSupportBrowser.allCases),
+    // 仍然按「每个浏览器一份」的形状收参数：冻结工件由发布流水线产出并逐份校验，
+    // 那套契约不因为 App 内部共用一份而改变。这里做的是把它收敛成一份——顺便钉死
+    // 「各份必须完全相同」，一旦哪天真的出现浏览器相关的模板，这里会立刻拦下来，
+    // 而不是让某个浏览器悄悄装上另一份内容。
+    guard let shared = templates.values.first,
+          templates.values.allSatisfy({ $0 == shared }),
+          Set(templates.keys) == Set(templateHashes.keys),
           extensionID.range(of: "^[a-p]{32}$", options: .regularExpression) != nil,
           !hostName.isEmpty,
           !version.isEmpty
     else { throw BrowserSupportInstallerError.frozenArtifactUnavailable }
-    for browser in BrowserSupportBrowser.allCases {
+    let sharedHash = Self.sha256(shared)
+    for browser in templates.keys {
       guard Self.sha256(templates[browser]!) == templateHashes[browser] else {
         throw BrowserSupportInstallerError.frozenArtifactUnavailable
       }
     }
-    self.templates = templates
-    self.templateHashes = templateHashes
+    self.template = shared
+    self.templateHash = sharedHash
     self.extensionID = extensionID
     self.hostName = hostName
     self.version = version
@@ -141,18 +150,22 @@ public struct BrowserSupportFrozenArtifacts: Sendable {
       let integrityURL = resourceBundle.url(forResource: "manifest-integrity", withExtension: "json", subdirectory: "browser-support"),
       let integrity = try? JSONDecoder().decode(Integrity.self, from: Data(contentsOf: integrityURL)),
       integrity.formatVersion == 1,
-      Set(integrity.templates.keys) == Set(BrowserSupportBrowser.allCases.map(\.rawValue)),
+      !integrity.templates.isEmpty,
       let resources = applicationBundle.resourceURL
     else { throw BrowserSupportInstallerError.frozenArtifactUnavailable }
 
+    // 冻结工件里有几份模板就读几份，不再要求「正好是我们支持的那几个浏览器」。
+    // 这两件事本来就无关：工件由发布流水线产出，支持哪些浏览器是档案表的事。绑在
+    // 一起的后果是加一个浏览器就得同时改工件，那正是「只支持三个」的由来。
     var templates: [BrowserSupportBrowser: Data] = [:]
     var hashes: [BrowserSupportBrowser: String] = [:]
-    for browser in BrowserSupportBrowser.allCases {
+    for (name, hash) in integrity.templates {
       guard
-        let url = resourceBundle.url(forResource: browser.rawValue, withExtension: "json", subdirectory: "browser-support/native-host-manifests"),
-        let data = try? Data(contentsOf: url),
-        let hash = integrity.templates[browser.rawValue]
+        let url = resourceBundle.url(forResource: name, withExtension: "json", subdirectory: "browser-support/native-host-manifests"),
+        let data = try? Data(contentsOf: url)
       else { throw BrowserSupportInstallerError.frozenArtifactUnavailable }
+      let browser = BrowserSupportBrowser.known(id: name)
+        ?? .init(id: name, displayName: name, supportDirectoryRelativePath: name, appBundleName: name)
       templates[browser] = data
       hashes[browser] = hash
     }
@@ -182,11 +195,12 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
   private static let transactionLockBasename = ".browser-support.lock"
   private static let operationJournalBasename = "operation-v1.json"
 
-  private enum TargetKey: String, Codable, Sendable, CaseIterable {
-    case chrome
-    case brave
-    case edge
-  }
+  /// 收据与日志里的目标键，就是浏览器的 `id`。
+  ///
+  /// 原来是 `enum { chrome, brave, edge }`——支持的浏览器一旦写进枚举，收据格式就跟着
+  /// 被钉死，加一个浏览器要动持久化格式。用 id 字符串之后，旧收据里的 `chrome` /
+  /// `brave` / `edge` 原样解得开，而认不出的键也不会被丢掉。
+  private typealias TargetKey = String
 
   private struct Receipt: Codable {
     struct Backup: Codable, Equatable {
@@ -263,6 +277,7 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
   }
 
   private let homeRoot: URL
+  private let browsers: [BrowserSupportBrowser]
   private let artifacts: BrowserSupportFrozenArtifacts
   private let failureInjection: (@Sendable (String) -> Bool)?
   /// Test seams are only supplied by isolated `/private/tmp` fixtures.  The
@@ -273,14 +288,20 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
   /// `homeRoot` is intentionally injectable.  The app passes the real current
   /// user home only when Syc invokes a product action; all automated tests pass
   /// a unique `/private/tmp` clean-room home instead.
+  /// `browsers` 可注入，理由和 `homeRoot` 一样：产品当前只提供一个浏览器，但这套事务
+  /// 机制本身是按 target 索引、支持多目标的（收据里可以有多条）。把「支持几个」写死成
+  /// 全局档案表的话，产品收敛到一个的那天，多目标事务的测试覆盖会跟着一起消失——而机制
+  /// 并没有变简单。
   public init(
     homeRoot: URL,
+    browsers: [BrowserSupportBrowser] = BrowserSupportBrowser.allKnown,
     artifacts: BrowserSupportFrozenArtifacts,
     failureInjection: (@Sendable (String) -> Bool)? = nil,
     terminationInjection: (@Sendable (String) -> Bool)? = nil,
     mutationBarrier: (@Sendable (String) -> Void)? = nil
   ) {
     self.homeRoot = homeRoot.standardizedFileURL
+    self.browsers = browsers
     self.artifacts = artifacts
     self.failureInjection = failureInjection
     self.terminationInjection = terminationInjection
@@ -294,15 +315,24 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
     )
   }
 
+  /// 只检查本机真的装了的浏览器。
+  ///
+  /// 档案表里列了十几个 Chromium 浏览器，但一台机器上通常只装两三个。全部返回的话，
+  /// 「已检测到的浏览器」会变成十几行永远灰着的噪音，而安装器本来就拒绝为不存在的
+  /// 浏览器创建目录——那些行即使列出来也连不上。
+  private var inspectedBrowsers: [BrowserSupportBrowser] {
+    BrowserSupportBrowser.installedProfiles(under: homeRoot, among: browsers)
+  }
+
   public func inspect() async -> [BrowserSupportStatus] {
     do {
       try recoverBeforeInspection()
     } catch {
-      return BrowserSupportBrowser.allCases.map {
-        .init(browser: $0, state: .invalidReceipt, hasRecoverableBackup: false)
+      return inspectedBrowsers.map {
+        BrowserSupportStatus(browser: $0, state: .invalidReceipt, hasRecoverableBackup: false)
       }
     }
-    return BrowserSupportBrowser.allCases.map { browser in
+    return inspectedBrowsers.map { browser in
       let key = Self.activeTargetKey(for: browser)
       let backup = (try? recoverableBackup(for: key)) != nil
       do {
@@ -337,7 +367,7 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
     guard case let .valid(receiptValue, receiptData) = try receiptRead(at: receiptURL),
           let entry = receiptValue.entries.first(where: { $0.target == key })
     else { throw BrowserSupportInstallerError.uninstallRefused }
-    let expected = try renderedManifest(for: Self.activeTemplateBrowser(for: browser))
+    let expected = try renderedManifest(for: browser)
     guard entry.manifestSHA256 == BrowserSupportFrozenArtifacts.sha256(expected), try regularFileData(at: target) == expected else {
       throw BrowserSupportInstallerError.uninstallRefused
     }
@@ -406,7 +436,7 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
     if currentState == .installed { return }
     let key = Self.activeTargetKey(for: browser)
     let target = try manifestURL(for: key)
-    let expected = try renderedManifest(for: Self.activeTemplateBrowser(for: browser))
+    let expected = try renderedManifest(for: browser)
     let prior = try existingRegularFileData(at: target)
     // A prior leaf that is byte-identical to our render and already bound by a
     // receipt entry is LinkDigest's own install; refreshing it takes over
@@ -469,7 +499,7 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
     }
     guard let existing else { return entry == nil ? .notInstalled : .drifted }
     guard let entry else { return .unknownManifest }
-    let expected = try renderedManifest(for: Self.activeTemplateBrowser(for: browser))
+    let expected = try renderedManifest(for: browser)
     let hostHash = try hostSHA256()
     let packageHash = try hostPackageSHA256()
     if entry.version == artifacts.version
@@ -516,15 +546,13 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
     guard try isSafeRegularFile(artifacts.hostExecutableURL), FileManager.default.isExecutableFile(atPath: artifacts.hostExecutableURL.path) else {
       throw BrowserSupportInstallerError.frozenArtifactUnavailable
     }
-    for browser in BrowserSupportBrowser.allCases {
-      guard let data = artifacts.templates[browser], let expectedHash = artifacts.templateHashes[browser], BrowserSupportFrozenArtifacts.sha256(data) == expectedHash else {
-        throw BrowserSupportInstallerError.frozenArtifactUnavailable
-      }
+    guard BrowserSupportFrozenArtifacts.sha256(artifacts.template) == artifacts.templateHash else {
+      throw BrowserSupportInstallerError.frozenArtifactUnavailable
     }
   }
 
   private func renderedManifest(for browser: BrowserSupportBrowser) throws -> Data {
-    guard let raw = artifacts.templates[browser] else { throw BrowserSupportInstallerError.frozenArtifactUnavailable }
+    let raw = artifacts.template
     guard
       let object = try? JSONSerialization.jsonObject(with: raw) as? [String: Any],
       Set(object.keys) == ["allowed_origins", "description", "name", "path", "type"],
@@ -584,7 +612,7 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
       backup: backup,
       version: artifacts.version
     ))
-    receipt.entries.sort { $0.target.rawValue < $1.target.rawValue }
+    receipt.entries.sort { $0.target < $1.target }
     if let existingReceipt {
       try replaceAtomically(try canonicalJSON(receipt), at: receiptURL, expectedExisting: existingReceipt)
     } else {
@@ -674,7 +702,7 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
       backup: backup,
       version: artifacts.version
     ))
-    receipt.entries.sort { $0.target.rawValue < $1.target.rawValue }
+    receipt.entries.sort { $0.target < $1.target }
     return try canonicalJSON(receipt)
   }
 
@@ -933,32 +961,21 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
     return directory.appendingPathComponent(Self.manifestBasename, isDirectory: false)
   }
 
+  /// 目录来自档案表。认不出的键（更新的版本写的收据）只能落到一个不存在的路径上，
+  /// 于是被当成「未检测到」——比猜一个目录安全。
   private func targetDirectory(for key: TargetKey) -> URL {
-    let relative: String = switch key {
-    case .chrome: "Library/Application Support/Google/Chrome/NativeMessagingHosts"
-    case .brave: "Library/Application Support/BraveSoftware/Brave-Browser/NativeMessagingHosts"
-    case .edge: "Library/Application Support/Microsoft Edge/NativeMessagingHosts"
-    }
+    let relative = (BrowserSupportBrowser.known(id: key)
+      ?? .init(id: key, displayName: key, supportDirectoryRelativePath: key, appBundleName: key))
+      .nativeMessagingRelativePath
     return homeRoot.appendingPathComponent(relative, isDirectory: true)
   }
 
-  /// Brave currently resolves the macOS user Native Messaging root through
-  /// Chromium's Google/Chrome directory.  Keep `.brave` in `TargetKey` solely
-  /// to decode and recover older receipts/journals; no new UI operation may
-  /// treat that legacy leaf as the active Brave installation.
+  /// 每个浏览器读写自己的目录。
+  ///
+  /// 这里原来把 Brave 映射到 Chrome 的目录，于是设置页上 Brave 那一行显示的其实是
+  /// Chrome 的状态——两行永远一样，而 Brave 自己的 `NativeMessagingHosts` 根本没被看过。
   private static func activeTargetKey(for browser: BrowserSupportBrowser) -> TargetKey {
-    switch browser {
-    case .chrome: .chrome
-    case .brave: .chrome
-    case .edge: .edge
-    }
-  }
-
-  /// The frozen templates are presently byte-identical, but selecting Chrome
-  /// here makes the shared physical target explicit and prevents a future
-  /// Brave-only template drift from making the two UI rows disagree.
-  private static func activeTemplateBrowser(for browser: BrowserSupportBrowser) -> BrowserSupportBrowser {
-    browser == .brave ? .chrome : browser
+    browser.id
   }
 
   /// Finds only the backup named and hashed by the currently valid receipt.
@@ -1138,13 +1155,23 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
     let homeDescriptor = Darwin.open(homeRoot.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
     guard homeDescriptor >= 0 else { throw BrowserSupportInstallerError.unsafeFilesystemState }
     var anchor = DirectoryAnchor(homeDescriptor)
+    var walked = homeRoot
     for component in relative {
       var child = Darwin.openat(anchor.descriptor, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-      if child < 0 && createMissing && errno == ENOENT {
+      // errno 只在失败时有意义，而且下一个系统调用就会把它冲掉，所以当场存下来。
+      var failure = errno
+      if child < 0 && createMissing && failure == ENOENT {
         guard Darwin.mkdirat(anchor.descriptor, component, 0o700) == 0 else { throw BrowserSupportInstallerError.transactionFailed }
         child = Darwin.openat(anchor.descriptor, component, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        failure = errno
       }
-      guard child >= 0 else { throw BrowserSupportInstallerError.unsafeFilesystemState }
+      walked = walked.appendingPathComponent(component, isDirectory: true)
+      guard child >= 0 else {
+        // 「没权限」和「状态可疑」必须分开报：前者用户选一次目录就能解决，后者要停手。
+        throw failure == EPERM || failure == EACCES
+          ? BrowserSupportInstallerError.directoryAccessDenied(path: walked.path)
+          : BrowserSupportInstallerError.unsafeFilesystemState
+      }
       var info = stat()
       guard Darwin.fstat(child, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR, info.st_uid == geteuid() else {
         _ = Darwin.close(child)
