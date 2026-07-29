@@ -1,5 +1,26 @@
 import SwiftUI
 
+/// 设置详情页统一的内容边距标准。**所有设置页共用这一处**，别再各写各的数值——
+/// 原来六个页面各自只设了 `.contentMargins(.bottom, 24)`，上边距和左右全靠 Form 默认，
+/// 于是「上下左右比例」在各页之间没有一致基准。
+///
+/// 水平方向刻意不覆盖：grouped Form 自己负责卡片的水平内缩，那部分本就跨页一致；
+/// 再叠一层 `.contentMargins(.horizontal:)` 只会和它相加，把卡片越推越窄。所以标准
+/// 只钉上下——顶部留一档呼吸，底部留够，让首张/末张卡都不贴着窗口边。
+enum SettingsMetrics {
+  static let contentTop: CGFloat = 18
+  static let contentBottom: CGFloat = 28
+}
+
+extension View {
+  /// 设置详情页统一套这一个，取代散落各页的 `.contentMargins(.bottom, 24)`。
+  func settingsDetailContentMargins() -> some View {
+    self
+      .contentMargins(.top, SettingsMetrics.contentTop, for: .scrollContent)
+      .contentMargins(.bottom, SettingsMetrics.contentBottom, for: .scrollContent)
+  }
+}
+
 /// 设置页的统一卡片：标题 + 控件 + 一句关键说明 + 收起的详细说明。
 ///
 /// 排版约定：**一个设置项 = 一个 Section = 一张卡片**。

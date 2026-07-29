@@ -19,6 +19,9 @@ final class SiteLoginPresentationTests: XCTestCase {
   }
 
   /// B 站不能再被描述成「必须登录」。
+  ///
+  /// 「登录是可选的」这件事现在由分组标题独自承担——卡片里已经不写说明了，所以
+  /// 标题一旦退回「已支持」那种说法，页面上就再没有第二处能纠正它。
   func testBilibiliSectionSaysLoginIsOptional() throws {
     let text = try source()
     XCTAssertFalse(
@@ -27,22 +30,22 @@ final class SiteLoginPresentationTests: XCTestCase {
     XCTAssertTrue(
       text.contains("登录可选"),
       "B 站那组的标题应当说明登录是可选的")
-    XCTAssertTrue(
-      text.contains("B 站不登录也能抓取和转写"),
-      "footer 必须写明不登录也能用，否则读者会以为是前提")
   }
 
   /// 抖音必须在行内带出限制，而不是只躺在 footer 里。
+  ///
+  /// 断言只钉两件不变的事：能力还在（`note:` 这条通路没被删），以及提示指向扩展。
+  /// 不钉整句原文——文案本来就还会再改，钉死会把每次润色都变成假失败。
   func testDouyinRowCarriesItsOwnLimitationNote() throws {
     let text = try source()
     XCTAssertTrue(
       text.contains("site-login-\\(id)-note"),
       "行内提示的能力被删了，抖音的限制就只能写在 footer 里，读者看不到")
     XCTAssertTrue(
-      text.contains("note: \"抖音正文由页面脚本渲染"),
+      text.contains("note: \"抖音"),
       "抖音行必须带限制说明——「已登录」会让人以为手动粘链接就能用")
     XCTAssertTrue(
-      text.contains("抓抖音请优先用浏览器扩展"),
+      text.contains("note: \"抖音建议用扩展"),
       "必须给出可执行的替代路径，只说不行等于没说")
   }
 
@@ -64,15 +67,27 @@ final class SiteLoginPresentationTests: XCTestCase {
       "LabeledContent 会各自成为一个 Form 行，正是被切开的那种写法")
   }
 
-  /// 长说明必须收进卡片内的展开区，不能再堆在卡片外的 footer 里。
-  func testLongExplanationsLiveInsideCardsNotPageFooters() throws {
+  /// 卡片里不许再长回机制解释。
+  ///
+  /// 这页曾经每张卡都是「副标题 + 一段正文 + 了解更多」，讲的全是实现机制：登录墙
+  /// 长什么样、正文由谁渲染、Cookie 存在哪里。同一件事被分组标题、副标题、正文说
+  /// 三遍，而用的人只需要知道「登不登录有什么区别」——分组标题已经答完了。
+  ///
+  /// 机制解释属于官方文档。这条测试钉住那个边界：说明既不许回到 footer，也不许以
+  /// 「了解更多」的形式重新长在卡片里。抖音那条例外走 `note:`，由另一条测试守。
+  func testCardsCarryNoMechanismProse() throws {
     let text = try source()
     XCTAssertFalse(
       text.contains("} footer: {"),
       "说明留在 footer 就离对应站点隔了一段距离，读者不会把两者关联起来")
-    XCTAssertTrue(
-      text.contains("DisclosureGroup(\"了解更多\")"),
-      "详细说明要默认收起，但一条都不能删")
+    XCTAssertFalse(
+      text.contains("DisclosureGroup"),
+      "「了解更多」装的是机制解释，那属于官方文档，不属于设置页")
+    // 只钉「副标题文案」这一种 role 参数：`role: .destructive` 是 Button 的角色，
+    // 两者同名，写成裸 `role:` 会把清除按钮也一起判成违规。
+    XCTAssertFalse(
+      text.contains("role: \""),
+      "站名下的副标题是分组标题的原话，重复一遍不增加任何信息")
   }
 
   /// 「我到底登没登」是打开这页最常见的原因，状态必须能一眼扫到。
@@ -90,10 +105,10 @@ final class SiteLoginPresentationTests: XCTestCase {
   func testFooterSeparatesExtensionPathFromAppOwnedSessions() throws {
     let text = try source()
     XCTAssertTrue(
-      text.contains("这一页只管「手动粘贴链接」这条入口"),
+      text.contains("这一页只管手动粘链接"),
       "必须点明这页的适用范围，否则会被当成所有抓取路径的开关")
     XCTAssertTrue(
-      text.contains("与这里的会话无关"),
+      text.contains("用扩展抓不需要在这里登录"),
       "扩展走浏览器自己的登录态，这一点要说清")
   }
 }

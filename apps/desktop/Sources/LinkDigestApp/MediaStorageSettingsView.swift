@@ -130,7 +130,7 @@ struct MediaStorageSettingsView: View {
       }
     }
     .formStyle(.grouped)
-    .contentMargins(.bottom, 24, for: .scrollContent)
+    .settingsDetailContentMargins()
     .onAppear(perform: model.load)
   }
 

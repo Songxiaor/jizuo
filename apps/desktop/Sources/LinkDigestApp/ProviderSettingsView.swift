@@ -117,6 +117,12 @@ struct ProviderSettingsView: View {
         .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 10)
       }
       .navigationSplitViewColumnWidth(min: 180, ideal: 190, max: 240)
+      // 去掉 NavigationSplitView 自动塞进工具栏的侧栏折叠按钮：设置窗口的分类栏是
+      // 导航主轴，不该被折叠，那个图标只是噪声。
+      //
+      // 必须挂在**侧栏这一栏的内容**上，挂在 NavigationSplitView 整体上不生效——
+      // 那个按钮属于侧栏列的工具栏，外层拿不到它。
+      .toolbar(removing: .sidebarToggle)
     } detail: {
       Group {
         switch selectedTab {
@@ -220,7 +226,7 @@ struct ProviderSettingsView: View {
       }
     }
     .formStyle(.grouped)
-    .contentMargins(.bottom, 24, for: .scrollContent)
+    .settingsDetailContentMargins()
     .scrollContentBackground(.hidden)
     .background(settingsTheme.isNative ? Color(nsColor: .windowBackgroundColor) : settingsTheme.canvas)
     .controlSize(.regular)
@@ -729,20 +735,25 @@ struct ProviderSettingsView: View {
           // 「浅色使用衬线、其它使用无衬线」——那是 New York 时期的行为，
           // 字体改成中文家族后就成了错的文案。
           summary: "只作用于文章阅读区；界面控件保持系统字体，代码块保持等宽。「跟随主题」在纸质主题用宋体，其余用 PingFang。",
-          details: "列表只收录自带中文字形的字体家族。像 New York、Georgia 这类只有拉丁字形的字体，中文要逐字回退且不做标点挤压，每个「，」「。」后面都会裂开一道缝，所以不列出来。"
-        ) {
-          Picker("阅读字体", selection: $readingFontRaw) {
-            Text("跟随主题").tag(ReadingFontSelection.defaultStoredValue)
-            Divider()
-            // 每一项用它自己的字形显示，选之前就能看出长什么样。
-            ForEach(ReadingFontCatalog.cjkCapableFamilies(), id: \.self) { family in
-              Text(family).font(.custom(family, size: 13)).tag(family)
+          details: "列表只收录自带中文字形的字体家族。像 New York、Georgia 这类只有拉丁字形的字体，中文要逐字回退且不做标点挤压，每个「，」「。」后面都会裂开一道缝，所以不列出来。",
+          // 单主控件上标题行，和输出语言、清晰度等单选卡排成一列。菜单 Picker 只显示
+          // 当前字体名，宽度自适应，放标题行不挤。
+          titleAccessory: {
+            Picker("阅读字体", selection: $readingFontRaw) {
+              Text("跟随主题").tag(ReadingFontSelection.defaultStoredValue)
+              Divider()
+              // 每一项用它自己的字形显示，选之前就能看出长什么样。
+              ForEach(ReadingFontCatalog.cjkCapableFamilies(), id: \.self) { family in
+                Text(family).font(.custom(family, size: 13)).tag(family)
+              }
             }
+            .pickerStyle(.menu)
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityIdentifier("appearance-reading-font-picker")
           }
-          .pickerStyle(.menu)
-          .labelsHidden()
-          .frame(maxWidth: 240, alignment: .leading)
-          .accessibilityIdentifier("appearance-reading-font-picker")
+        ) {
+          EmptyView()
         }
       }
 
@@ -772,7 +783,7 @@ struct ProviderSettingsView: View {
       }
     }
     .formStyle(.grouped)
-    .contentMargins(.bottom, 24, for: .scrollContent)
+    .settingsDetailContentMargins()
     .scrollContentBackground(.hidden)
     .background(settingsTheme.isNative ? Color(nsColor: .windowBackgroundColor) : settingsTheme.canvas)
   }
@@ -808,20 +819,30 @@ struct ProviderSettingsView: View {
         }
       }
 
-      Section("输出语言") {
-        Picker("输出语言", selection: outputLanguageSelection) {
-          ForEach(Self.outputLanguagePresets, id: \.self) { Text($0).tag($0) }
-          Text("自定义…").tag(Self.customOutputLanguageTag)
-        }
-        .accessibilityIdentifier("output-language")
-
-        if showsCustomOutputLanguageField {
-          LabeledContent("自定义语言") {
-            // 无边框 + 右对齐时，光标落在一片空白里，找不到该点哪。
-            TextField("例如：Italiano", text: $model.targetLanguage)
-              .textFieldStyle(.roundedBorder)
-              .frame(maxWidth: 220)
-              .accessibilityIdentifier("output-language-custom")
+      Section {
+        // 原来是裸 Section("输出语言") + Picker("输出语言")，section 标题和 picker 标签
+        // 都是「输出语言」，同一句话出现两遍。收敛成标题行控件，和其它单选卡一致。
+        settingCard(
+          title: "输出语言",
+          summary: "总结、翻译等生成结果统一用这个语言输出。",
+          titleAccessory: {
+            Picker("输出语言", selection: outputLanguageSelection) {
+              ForEach(Self.outputLanguagePresets, id: \.self) { Text($0).tag($0) }
+              Text("自定义…").tag(Self.customOutputLanguageTag)
+            }
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityIdentifier("output-language")
+          }
+        ) {
+          if showsCustomOutputLanguageField {
+            LabeledContent("自定义语言") {
+              // 无边框 + 右对齐时，光标落在一片空白里，找不到该点哪。
+              TextField("例如：Italiano", text: $model.targetLanguage)
+                .textFieldStyle(.roundedBorder)
+                .frame(maxWidth: 220)
+                .accessibilityIdentifier("output-language-custom")
+            }
           }
         }
       }
@@ -979,7 +1000,7 @@ struct ProviderSettingsView: View {
       }
     }
     .formStyle(.grouped)
-    .contentMargins(.bottom, 24, for: .scrollContent)
+    .settingsDetailContentMargins()
     .scrollContentBackground(.hidden)
     .background(settingsTheme.isNative ? Color(nsColor: .windowBackgroundColor) : settingsTheme.canvas)
   }

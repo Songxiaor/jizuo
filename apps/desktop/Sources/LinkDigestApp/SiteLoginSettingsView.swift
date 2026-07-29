@@ -11,8 +11,17 @@ import SwiftUI
 /// 会给每一行画分隔线——同一个站点的三段信息被切成三条看似不相干的记录，页面
 /// 因此显得乱。整张卡片必须是 Section 里的**单个** View，内部才不会再被切开。
 ///
-/// 长说明也从卡片外的 footer 收进卡片内：卡片里只留一句最关键的，其余进
-/// 「了解更多」。放在 footer 时它离对应站点隔着一段距离，读者不会把两者关联起来。
+/// 文案约定：**分组标题说清「登录起什么作用」，卡片里默认不写说明。**
+///
+/// 这页曾经每张卡都带副标题 + 一段正文 + 「了解更多」，讲的是机制——登录墙长什么样、
+/// 正文由谁渲染、Cookie 存在哪里。那是写给实现者看的：同一件事被分组标题、副标题、
+/// 正文说了三遍，而用的人只需要知道「登不登录有什么区别」，分组标题已经答完了。
+///
+/// 同类产品的做法一致：Downie 的偏好设置只有站点清单，Readwise 界面里一个字不写，
+/// 登录墙那套解释全在各自的 help 站点。机制解释属于官方文档，不属于设置页。
+///
+/// 因此卡片里只保留**例外**：某个站点的行为和同组其他站点不同，不说会让人踩坑。
+/// 目前只有抖音符合——同在「登录才能抓到正文」，但它登录了手动粘链接也常失败。
 struct SiteLoginSettingsView: View {
   @ObservedObject var mediaStorage: MediaStorageSettingsViewModel
   @ObservedObject private var bilibiliSession = SiteSessionController.bilibili
@@ -40,41 +49,27 @@ struct SiteLoginSettingsView: View {
       }
 
       // 抖音单独一张卡并带自己的限制说明：同在这一组是因为登录机制相同，但它是
-      // 「登录了也常常不够」，不能让人以为登录完粘链接就能用。
+      // 「登录了也常常不够」，不能让人以为登录完粘链接就能用。这是这页唯一还留着
+      // 说明文字的地方——不写就会踩坑，写「为什么」则是文档的事。
       Section {
         captureSessionCard(
           session: douyinSession,
           platform: .douyin,
-          note: "抖音正文由页面脚本渲染，手动链接常取不到；抓抖音请优先用浏览器扩展。",
-          details: "抖音的正文是页面脚本在浏览器里渲染出来的，服务端返回的 HTML 里没有内容，所以即使登录，手动粘链接也常常取不到正文，这时会明确提示改用扩展——抖音走扩展最稳。\n抖音用手机扫码登录。"
+          note: "抖音建议用扩展抓，粘链接常失败。"
         )
       }
 
       Section {
-        noLoginCard(
-          name: "YouTube",
-          host: "youtube.com",
-          summary: "官方嵌入播放，无需登录",
-          details: "YouTube 用官方嵌入播放器，登录不会改变结果。"
-        )
+        noLoginCard
       } header: {
         Text("无需登录")
-      }
-
-      Section {
-        noLoginCard(
-          name: "X",
-          host: "x.com",
-          summary: "走公开嵌入接口，登录不影响结果",
-          details: "X 的视频走公开嵌入接口——那个接口不认账号，登录不会改变结果。"
-        )
       }
 
       Section {
         // 这一页只管「手动粘贴链接」这条入口。扩展是另一条完全独立的路，
         // 不写清楚会被当成所有抓取路径的总开关。
         Label {
-          Text("这一页只管「手动粘贴链接」这条入口。浏览器扩展走的是你自己浏览器里的登录态，与这里的会话无关，任何平台都不需要先在这里登录——需要登录才能看到的页面，在浏览器里登录后用扩展发送即可，那也是最可靠的一条路。")
+          Text("这一页只管手动粘链接；用扩展抓不需要在这里登录。")
             .font(.caption)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -86,7 +81,7 @@ struct SiteLoginSettingsView: View {
       }
     }
     .formStyle(.grouped)
-    .contentMargins(.bottom, 24, for: .scrollContent)
+    .settingsDetailContentMargins()
     .onAppear {
       Task { await bilibiliSession.refreshStatus() }
       Task { await douyinSession.refreshStatus() }
@@ -125,17 +120,13 @@ struct SiteLoginSettingsView: View {
       cardHeader(
         host: "bilibili.com",
         name: SiteSessionPlatform.bilibili.displayName,
-        role: "影响清晰度上限",
         isLoggedIn: bilibiliSession.isLoggedIn,
         detail: bilibiliSession.accountDetail,
         statusIdentifier: "site-login-bilibili-status"
       )
 
-      Text("B 站不登录也能抓取和转写，公开接口通常能拿到 720P；登录只抬高「重新获取播放」的清晰度上限。")
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-
+      // 校验结果是点了按钮之后的真实反馈，不是说明文字——它必须留着，
+      // 否则「校验会话」点完没有任何回音。
       if let verification = bilibiliSession.verificationLabel {
         Label(verification, systemImage: "checkmark.seal")
           .font(.caption)
@@ -143,23 +134,7 @@ struct SiteLoginSettingsView: View {
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("site-login-bilibili-verification")
-      } else if bilibiliSession.isLoggedIn {
-        // 「已登录」只说明本机存着 Cookie。会话过期、或 Cookie 在我们自己的网络层
-        // 被丢掉，这行字都不会变——而症状是清晰度悄悄降档，没有任何报错。
-        // 不自动去打接口（每次进设置页都发一次请求不合适），但要让人知道该点一下。
-        Label(
-          "「已登录」只表示本机存有 Cookie。清晰度上不去时，先点「校验会话」确认服务端是否认可。",
-          systemImage: "exclamationmark.circle"
-        )
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityIdentifier("site-login-bilibili-verify-hint")
       }
-
-      moreDetails(
-        "会员专属档需要你自己的账号权限，登录也不保证一定能拿到 4K。\n登录态仅保存在本机隔离 WebKit 环境，不会上传，也不会读取系统浏览器 Cookie；可随时清除。"
-      )
 
       cardActions(
         primary: {
@@ -190,22 +165,20 @@ struct SiteLoginSettingsView: View {
   /// 没有「校验会话」——这两个站没有稳定的公开登录态接口，硬找就要 replay 私有
   /// 签名接口。会话失效的表现是抓取回落到明确报错，不会静默出坏结果，所以不需要
   /// 一个只能靠猜实现的校验按钮。
-  /// - Parameter note: 只属于这一站的限制说明。抖音需要它——「已登录」这三个字会让人
-  ///   以为手动粘链接就能用了，而实际上多半取不到正文。放在卡片内而不是页尾 footer，
-  ///   是因为状态那块才是人真正会看的地方。
+  /// - Parameter note: 只属于这一站的例外。默认没有——分组标题「登录才能抓到正文」
+  ///   已经把这一组说完了，再在卡里重复一遍只是把同一句话说第三遍。只有行为与同组
+  ///   其他站点不同、不说会踩坑的站点才传（目前只有抖音）。
   @ViewBuilder
   private func captureSessionCard(
     session: SiteSessionController,
     platform: SiteSessionPlatform,
-    note: String? = nil,
-    details: String? = nil
+    note: String? = nil
   ) -> some View {
     let id = platform.rawValue
     VStack(alignment: .leading, spacing: 12) {
       cardHeader(
         host: host(for: platform),
         name: platform.displayName,
-        role: "登录才能抓到正文",
         isLoggedIn: session.isLoggedIn,
         detail: session.accountDetail,
         statusIdentifier: "site-login-\(id)-status"
@@ -217,17 +190,7 @@ struct SiteLoginSettingsView: View {
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("site-login-\(id)-note")
-      } else {
-        Text("未登录时只返回登录墙或验证页，直接抓会把那个外壳当正文存下来。")
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
       }
-
-      moreDetails(
-        (details.map { $0 + "\n" } ?? "")
-          + "登录态与 B 站一样保存在本机隔离 WebKit 环境，不会上传，也不会读取系统浏览器 Cookie；可随时清除。"
-      )
 
       cardActions(
         primary: {
@@ -248,27 +211,38 @@ struct SiteLoginSettingsView: View {
 
   // MARK: - 无需登录
 
-  @ViewBuilder
-  private func noLoginCard(
-    name: String,
-    host: String,
-    summary: String,
-    details: String
-  ) -> some View {
+  /// 无需登录的站点合成一张只读卡片。
+  ///
+  /// 这些站在这一页没有任何可操作项：没有按钮，状态也永远不会变。让它们各占一张
+  /// 带状态胶囊和「了解更多」的整卡，视觉重量和信息量完全不匹配——而分组标题已经
+  /// 写了「无需登录」，胶囊只是把同一句话再说一遍。
+  ///
+  /// 保留的只有图标、名字和一句「为什么不用登录」：前两者是扫视锚点，后者是这张卡
+  /// 存在的唯一理由——不写原因，读者会怀疑是不是漏配了什么。
+  @ViewBuilder private var noLoginCard: some View {
     VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 10) {
-        siteIcon(host: host)
-        Text(name).font(.headline)
-        Spacer(minLength: 12)
-        statusBadge(isLoggedIn: false, text: "无需登录", tone: .neutral)
+      // Grid 而不是逐行 HStack：原因那一列要对齐，否则两行读起来像两条不相干的记录。
+      Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
+        noLoginRow(name: "YouTube", host: "youtube.com", reason: "官方嵌入播放")
+        noLoginRow(name: "X", host: "x.com", reason: "走公开嵌入接口")
       }
-      Text(summary)
+      Text("这两个站不认账号，登录不会改变抓取结果，直接粘链接就行。")
         .font(.callout)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
-      moreDetails(details)
     }
     .padding(.vertical, 4)
+    .accessibilityIdentifier("site-login-no-login-card")
+  }
+
+  private func noLoginRow(name: String, host: String, reason: String) -> some View {
+    GridRow {
+      siteIcon(host: host)
+      Text(name).font(.headline)
+      Text(reason)
+        .font(.callout)
+        .foregroundStyle(.secondary)
+    }
   }
 
   // MARK: - 卡片零件
@@ -277,17 +251,15 @@ struct SiteLoginSettingsView: View {
   private func cardHeader(
     host: String,
     name: String,
-    role: String,
     isLoggedIn: Bool,
     detail: String?,
     statusIdentifier: String
   ) -> some View {
     HStack(alignment: .top, spacing: 10) {
       siteIcon(host: host)
-      VStack(alignment: .leading, spacing: 2) {
-        Text(name).font(.headline)
-        Text(role).font(.caption).foregroundStyle(.secondary)
-      }
+      // 站名下面原来还有一行「影响清晰度上限」「登录才能抓到正文」——那正是分组
+      // 标题的原话。分组标题就在上方几十点的地方，重复一遍不增加任何信息。
+      Text(name).font(.headline)
       Spacer(minLength: 12)
       VStack(alignment: .trailing, spacing: 3) {
         statusBadge(
@@ -343,21 +315,6 @@ struct SiteLoginSettingsView: View {
             .foregroundStyle(.white)
         )
     }
-  }
-
-  /// 详细说明默认收起。信息一条不删，但不再默认占掉半页。
-  @ViewBuilder
-  private func moreDetails(_ text: String) -> some View {
-    DisclosureGroup("了解更多") {
-      Text(text)
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, 4)
-    }
-    .font(.caption)
-    .accessibilityIdentifier("site-login-more-details")
   }
 
   /// 主要动作靠左、破坏性动作靠右——「清除登录」和「登录」并排同色时容易误点。
