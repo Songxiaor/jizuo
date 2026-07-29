@@ -227,6 +227,7 @@ public protocol HistoryRepository: Sendable {
   func allTags() throws -> [HistoryTag]
   func addTags(_ rawNames: [String], to taskID: TaskID) throws -> [HistoryTag]
   func removeTag(normalizedName: String, from taskID: TaskID) throws
+  func setFavorite(_ isFavorite: Bool, for taskID: TaskID) throws
   func deleteTask(taskID: TaskID) throws
   func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult
   func attachMedia(_ command: AttachMediaCommand) throws
@@ -361,6 +362,7 @@ public extension HistoryRepository {
   func allTags() throws -> [HistoryTag] { [] }
   func addTags(_: [String], to _: TaskID) throws -> [HistoryTag] { throw RepositoryFailure.unavailable }
   func removeTag(normalizedName _: String, from _: TaskID) throws { throw RepositoryFailure.unavailable }
+  func setFavorite(_: Bool, for _: TaskID) throws { throw RepositoryFailure.unavailable }
 
   /// 转写校对编辑需要真实持久化支持；旧测试替身默认视为不可用。
   func updateSnapshotBodyText(

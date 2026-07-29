@@ -274,6 +274,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       switch filter.scope {
       case .all:
         break
+      case .favorite:
+        predicates.append("t.is_favorite = 1")
       case .recent:
         predicates.append("t.updated_at_ms >= (unixepoch('now') - 604800) * 1000")
       case .unsummarized:
@@ -333,7 +335,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       let predicate = predicates.isEmpty ? "" : "WHERE \(predicates.joined(separator: " AND "))"
       arguments += [bounded]
       let rows = try Row.fetchAll(db, sql: """
-        SELECT t.id, t.canonical_url, t.updated_at_ms, t.created_at_ms,
+        SELECT t.id, t.canonical_url, t.updated_at_ms, t.created_at_ms, t.is_favorite,
           es.title AS title,
           es.source_label AS source_label,
           CASE WHEN es.body_text IS NULL THEN NULL ELSE substr(CAST(es.body_text AS BLOB), 1, 8192) END AS source_body_utf8,
@@ -417,6 +419,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
             AND length(successful_artifact.body_text) > 0
         )
         """) ?? 0
+      let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE is_favorite = 1") ?? 0
 
       let hostExpression = normalizedTaskHostSQL(tableAlias: "t")
       let platforms = try Row.fetchAll(db, sql: """
@@ -441,7 +444,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           let count: Int = row["count"]
           return .init(tag: tag, count: count)
         }
-      return .init(all: all, recent: recent, unsummarized: unsummarized, platforms: platforms, tags: tags)
+      return .init(all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, platforms: platforms, tags: tags)
     }
   }
 
@@ -485,6 +488,17 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           AND tag_id = (SELECT id FROM tags WHERE normalized_name = ? COLLATE NOCASE)
         """, arguments: [taskID.rawValue, requested.normalizedName])
       try db.execute(sql: "DELETE FROM tags WHERE NOT EXISTS (SELECT 1 FROM task_tags WHERE task_tags.tag_id = tags.id)")
+    }
+  }
+
+  public func setFavorite(_ isFavorite: Bool, for taskID: TaskID) throws {
+    try database.write { db in
+      try db.execute(
+        sql: "UPDATE tasks SET is_favorite = ? WHERE id = ?",
+        arguments: [isFavorite ? 1 : 0, taskID.rawValue])
+      // 收藏是纯用户标记，不动 updated_at_ms——否则收藏一下就把条目顶到「最近」最前，
+      // 打乱按时间的阅读顺序。
+      guard db.changesCount == 1 else { throw RepositoryFailure.notFound }
     }
   }
 
@@ -1125,7 +1139,12 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     let preview = previewData.map { boundedPreview(from: $0, scalarLimit: 240) }
     let sourceBody: Data? = row["source_body_utf8"]
     let frontmatter = sourceBody.map { MarkdownNoteFrontmatter.parse(boundedPreview(from: $0, scalarLimit: 8_192)) }
-    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: URLComponents(string: canonical)?.host ?? "", sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: (row["has_transcript"] as Int64? ?? 0) == 1, hasMedia: (row["has_media"] as Int64? ?? 0) == 1, hasSummary: (row["has_summary"] as Int64? ?? 0) == 1, hasMindMap: (row["has_mind_map"] as Int64? ?? 0) == 1)
+    let hasTranscript = (row["has_transcript"] as Int64? ?? 0) == 1
+    let hasMedia = (row["has_media"] as Int64? ?? 0) == 1
+    let hasSummary = (row["has_summary"] as Int64? ?? 0) == 1
+    let hasMindMap = (row["has_mind_map"] as Int64? ?? 0) == 1
+    let isFavorite = (row["is_favorite"] as Int64? ?? 0) == 1
+    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: URLComponents(string: canonical)?.host ?? "", sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: hasTranscript, hasMedia: hasMedia, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite)
   }
 
   private func detail(db: Database, taskID: TaskID) throws -> HistoryDetailProjection {
@@ -1161,13 +1180,15 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         """,
       arguments: [taskID.rawValue]
     ) ?? false
+    let isFavorite = (taskRow["is_favorite"] as Int64? ?? 0) == 1
     return HistoryDetailProjection(
       task: task,
       snapshots: snapshots,
       runs: try rows.map(runDetail),
       tags: try tags(db: db, taskID: taskID),
       media: try mediaRow.map { try mediaAsset($0) },
-      hadMediaDescriptor: hadMediaDescriptor
+      hadMediaDescriptor: hadMediaDescriptor,
+      isFavorite: isFavorite
     )
   }
 

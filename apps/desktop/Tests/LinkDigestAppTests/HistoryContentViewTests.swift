@@ -1457,6 +1457,33 @@ final class HistoryContentViewTests: XCTestCase {
   /// HistoryContentView 拆分后，很多切片的**结束锚点**留在了原文件而起始类型搬去
   /// 了新文件。这时候切不到不代表断言该失败——断言关心的是「实现里有没有这段」。
   /// 所以：起点找不到才算结构变了；只是结束锚点没了，就从起点切到文件末尾。
+  /// 阅读区工具栏的「小／大」字号快捷键。
+  ///
+  /// 这个功能之所以成立，全靠它和外观设置页改的是**同一个** @AppStorage 键——两处因此
+  /// 自动同步，不需要任何接线。断言守住这个前提，外加：调节走夹取、到边界各自禁用，
+  /// 不会把值顶出 ReadingFontSize 的上下限。
+  func testReadingToolbarFontSizeControlSharesStorageAndClamps() {
+    let history = historyContentViewSource()
+    let settings = appSource("ProviderSettingsView.swift")
+
+    XCTAssertTrue(
+      history.contains("@AppStorage(ReadingFontSize.storageKey)")
+        && settings.contains("@AppStorage(ReadingFontSize.storageKey)"),
+      "工具栏和设置滑块必须共用同一个存储键，否则改一处另一处不动，同步就是假的")
+
+    XCTAssertTrue(
+      history.contains(#"accessibilityIdentifier("reading-font-size-control")"#),
+      "阅读工具栏要有字号快捷控件")
+
+    // 夹取：两端都收在合法区间内，别越过 ReadingFontSize 的上下限。
+    XCTAssertTrue(history.contains("max(next, Double(ReadingFontSize.minimum))"))
+    XCTAssertTrue(history.contains("Double(ReadingFontSize.maximum))"))
+
+    // 到边界各自禁用：值已经顶在边界还响应点击，是无效反馈。
+    XCTAssertTrue(history.contains("readingFontSizeRaw <= Double(ReadingFontSize.minimum)"))
+    XCTAssertTrue(history.contains("readingFontSizeRaw >= Double(ReadingFontSize.maximum)"))
+  }
+
   private func section(in source: String, from start: String, to end: String) -> String {
     guard let startRange = source.range(of: start) else {
       XCTFail("找不到起始标记「\(start)」，源码结构已变，这条断言需要同步更新。")

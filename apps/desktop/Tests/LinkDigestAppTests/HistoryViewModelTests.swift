@@ -132,6 +132,88 @@ final class HistoryViewModelTests: XCTestCase {
     }
     XCTAssertEqual(saved, "切换前写的笔记", "防抖窗口内切换条目丢掉了笔记")
   }
+
+  /// 上一条／下一条在当前列表里移动选中项，到两端停住。
+  ///
+  /// 不假设列表是新→旧还是旧→新：最早创建的那条必在某一端，从它出发只有一个方向可走；
+  /// 朝可走方向连走两步到最新一条，那也是另一端；越过端点选中不变。
+  func testSelectAdjacentMovesWithinListAndClampsAtEnds() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-adjacent-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+
+    func makeDocument(_ tag: String) -> CapturedDocument {
+      CapturedDocument(
+        createdAt: "2026-07-20T00:00:00Z", origin: .manualLink,
+        url: "https://example.test/item-\(tag)", title: "条目\(tag)",
+        platform: "fixture", method: "fixture", text: "正文 \(tag)",
+        completeness: "visible_only", capturedAt: "2026-07-20T00:00:00Z", sourceLabel: "fixture")
+    }
+    let a = try repository.acceptCapture(.init(document: makeDocument("A"), receivedAtMilliseconds: 1))
+    _ = try repository.acceptCapture(.init(document: makeDocument("B"), receivedAtMilliseconds: 2))
+    let c = try repository.acceptCapture(.init(document: makeDocument("C"), receivedAtMilliseconds: 3))
+
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded }
+
+    model.selectedTaskIDs = [a.taskID]
+    await waitUntil { model.selectedTaskID == a.taskID }
+    XCTAssertNotEqual(
+      model.canSelectPrevious, model.canSelectNext,
+      "最早的一条在列表端点：恰好一个方向可走")
+    let toward = model.canSelectNext ? 1 : -1
+
+    model.selectAdjacent(offset: toward)
+    await waitUntil { model.selectedTaskID != a.taskID }
+    model.selectAdjacent(offset: toward)
+    await waitUntil { model.selectedTaskID == c.taskID }
+    XCTAssertNotEqual(
+      model.canSelectPrevious, model.canSelectNext,
+      "最新的一条在另一端点：也恰好一个方向可走")
+
+    model.selectAdjacent(offset: toward)
+    XCTAssertEqual(model.selectedTaskID, c.taskID, "越过端点应当保持不动")
+  }
+
+  /// 收藏切换要真正反映到工具栏星标和侧栏「收藏」计数。
+  ///
+  /// 计数曾经恒为 0：`reloadNavigationCounts` 重建结构体时漏抄了 favorite 字段。
+  /// 这类「重建时丢字段」不报错、不崩溃，只是数字不动，所以在 VM 层钉住。
+  func testTogglingFavoriteUpdatesStarAndSidebarCount() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-fav-vm-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+
+    let doc = CapturedDocument(
+      createdAt: "2026-07-20T00:00:00Z", origin: .manualLink,
+      url: "https://example.test/fav", title: "条目",
+      platform: "fixture", method: "fixture", text: "正文",
+      completeness: "visible_only", capturedAt: "2026-07-20T00:00:00Z", sourceLabel: "fixture")
+    let accepted = try repository.acceptCapture(.init(document: doc, receivedAtMilliseconds: 1))
+
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.selectedTaskID == accepted.taskID && model.detailState == .loaded }
+    XCTAssertFalse(model.isSelectedFavorite)
+
+    model.toggleFavorite()
+    await waitUntil { model.isSelectedFavorite }
+    await waitUntil { model.navigationCounts.favorite == 1 }
+    XCTAssertEqual(model.navigationCounts.favorite, 1, "收藏后侧栏计数必须变 1")
+
+    model.toggleFavorite()
+    await waitUntil { !model.isSelectedFavorite }
+    await waitUntil { model.navigationCounts.favorite == 0 }
+    XCTAssertEqual(model.navigationCounts.favorite, 0, "取消收藏后计数要回到 0")
+  }
+
   func testSameHashRepairMakesHistoryResolveNewUserDirectoryFile() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-media-repair-\(UUID().uuidString)", isDirectory: true)

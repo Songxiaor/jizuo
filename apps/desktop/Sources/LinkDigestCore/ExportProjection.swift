@@ -30,8 +30,10 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
   public let hasMedia: Bool?
   public let hasSummary: Bool?
   public let hasMindMap: Bool?
-  public init(taskID: TaskID, title: String?, canonicalURL: String, host: String, sourceLabel: String, latestRunKind: RunKind?, latestRunStatus: RunStatus?, latestModel: String?, updatedAtMilliseconds: Int64, createdAtMilliseconds: Int64? = nil, latestRunAtMilliseconds: Int64?, usageCost: RunUsageCost, artifactPreview: String?, author: String? = nil, published: String? = nil, hasTranscript: Bool? = nil, hasMedia: Bool? = nil, hasSummary: Bool? = nil, hasMindMap: Bool? = nil) {
-    self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.createdAtMilliseconds = createdAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview; self.author = author; self.published = published; self.hasTranscript = hasTranscript; self.hasMedia = hasMedia; self.hasSummary = hasSummary; self.hasMindMap = hasMindMap
+  /// 用户是否收藏。可选以兼容旧序列化数据（缺失=未收藏，不显示星标）。
+  public let isFavorite: Bool?
+  public init(taskID: TaskID, title: String?, canonicalURL: String, host: String, sourceLabel: String, latestRunKind: RunKind?, latestRunStatus: RunStatus?, latestModel: String?, updatedAtMilliseconds: Int64, createdAtMilliseconds: Int64? = nil, latestRunAtMilliseconds: Int64?, usageCost: RunUsageCost, artifactPreview: String?, author: String? = nil, published: String? = nil, hasTranscript: Bool? = nil, hasMedia: Bool? = nil, hasSummary: Bool? = nil, hasMindMap: Bool? = nil, isFavorite: Bool? = nil) {
+    self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.createdAtMilliseconds = createdAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview; self.author = author; self.published = published; self.hasTranscript = hasTranscript; self.hasMedia = hasMedia; self.hasSummary = hasSummary; self.hasMindMap = hasMindMap; self.isFavorite = isFavorite
   }
 }
 
@@ -58,13 +60,16 @@ public struct HistoryDetailProjection: Codable, Sendable, Equatable {
   /// persisted); the flag is derived from existing `capture_deliveries` rows,
   /// not a schema migration.
   public let hadMediaDescriptor: Bool
+  /// 用户是否收藏。详情每次现取，用非可选默认 false。
+  public let isFavorite: Bool
   public init(
     task: HistoryTask,
     snapshots: [ContentSnapshot],
     runs: [RunDetail],
     tags: [HistoryTag] = [],
     media: MediaAsset? = nil,
-    hadMediaDescriptor: Bool = false
+    hadMediaDescriptor: Bool = false,
+    isFavorite: Bool = false
   ) {
     self.task = task
     self.snapshots = snapshots
@@ -72,6 +77,7 @@ public struct HistoryDetailProjection: Codable, Sendable, Equatable {
     self.tags = tags
     self.media = media
     self.hadMediaDescriptor = hadMediaDescriptor
+    self.isFavorite = isFavorite
   }
 }
 

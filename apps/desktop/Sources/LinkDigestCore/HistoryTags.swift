@@ -28,6 +28,7 @@ public enum HistoryListScope: String, Sendable, Equatable, CaseIterable {
   case all
   case recent
   case unsummarized
+  case favorite
 }
 
 /// The small navigation rail is fed by database aggregation, not by a loaded
@@ -51,18 +52,21 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   public let all: Int
   public let recent: Int
   public let unsummarized: Int
+  public let favorite: Int
   public let platforms: [HistoryNavigationPlatform]
   public let tags: [HistoryNavigationTag]
   public init(
     all: Int = 0,
     recent: Int = 0,
     unsummarized: Int = 0,
+    favorite: Int = 0,
     platforms: [HistoryNavigationPlatform] = [],
     tags: [HistoryNavigationTag] = []
   ) {
     self.all = all
     self.recent = recent
     self.unsummarized = unsummarized
+    self.favorite = favorite
     self.platforms = platforms
     self.tags = tags
   }

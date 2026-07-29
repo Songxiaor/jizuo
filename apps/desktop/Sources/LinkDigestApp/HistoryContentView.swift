@@ -397,6 +397,10 @@ struct HistoryContentView: View {
           model.selectScope(.unsummarized)
         }
         .accessibilityIdentifier("history-navigation-unsummarized")
+        navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite) {
+          model.selectScope(.favorite)
+        }
+        .accessibilityIdentifier("history-navigation-favorite")
       }
 
       if !model.navigationCounts.platforms.isEmpty {
@@ -1016,7 +1020,17 @@ private struct HistoryDetailView: View {
   private var readingFontRaw = ReadingFontSelection.defaultStoredValue
   @AppStorage(ReadingFontSize.storageKey)
   private var readingFontSizeRaw = Double(ReadingFontSize.default)
+  /// 工具栏快捷打标签的浮层。
+  @State private var isTagPopoverPresented = false
   private var theme: HistoryThemeTokens { appearanceTheme.tokens }
+  /// 工具栏「小／大」按步进调字号，夹在合法区间内。改的是与设置页同一个
+  /// @AppStorage，外观页的滑块会立即跟着动。
+  private func adjustReadingFontSize(by delta: CGFloat) {
+    let next = readingFontSizeRaw + Double(delta)
+    readingFontSizeRaw = min(
+      max(next, Double(ReadingFontSize.minimum)),
+      Double(ReadingFontSize.maximum))
+  }
   /// 用户阅读字体与字号偏好；「跟随主题」回落到主题的编辑排版标记。
   private var readingFont: ResolvedReadingFont {
     ReadingFontSelection(storedValue: readingFontRaw)
@@ -1468,6 +1482,78 @@ private struct HistoryDetailView: View {
     }
     .toolbar {
       ToolbarItemGroup(placement: .primaryAction) {
+        // 上一条／下一条：在当前队列里连着读，不用回左栏。到列表两端各自禁用。
+        // 导航和有没有正文无关，所以放在字号/朗读那组之外、最前面。
+        ControlGroup {
+          Button {
+            model.selectAdjacent(offset: -1)
+          } label: {
+            Label("上一条", systemImage: "chevron.up")
+          }
+          .disabled(!model.canSelectPrevious)
+          .keyboardShortcut(.upArrow, modifiers: .command)
+          .accessibilityIdentifier("reading-previous-item")
+          Button {
+            model.selectAdjacent(offset: 1)
+          } label: {
+            Label("下一条", systemImage: "chevron.down")
+          }
+          .disabled(!model.canSelectNext)
+          .keyboardShortcut(.downArrow, modifiers: .command)
+          .accessibilityIdentifier("reading-next-item")
+        }
+        .help("上一条 / 下一条（⌘↑ / ⌘↓）")
+        .accessibilityIdentifier("reading-item-navigation")
+
+        // 阅读区字号的快捷调节，省得为改字号专门开设置。只在有正文可读时出现——
+        // 纯视频、无正文的详情里字号没有意义。两个按钮到边界各自禁用。
+        if hasReadableBody {
+          ControlGroup {
+            Button {
+              adjustReadingFontSize(by: -ReadingFontSize.step)
+            } label: {
+              Text("小").font(.system(size: 11))
+            }
+            .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
+            .accessibilityIdentifier("reading-font-smaller")
+            Button {
+              adjustReadingFontSize(by: ReadingFontSize.step)
+            } label: {
+              Text("大").font(.system(size: 16))
+            }
+            .disabled(readingFontSizeRaw >= Double(ReadingFontSize.maximum))
+            .accessibilityIdentifier("reading-font-larger")
+          }
+          .help("调整正文字号")
+          .accessibilityIdentifier("reading-font-size-control")
+        }
+
+        // 收藏／取消收藏当前条目。左栏「收藏」分类按此筛选。
+        if model.canToggleFavorite {
+          let favorited = model.isSelectedFavorite
+          Button { model.toggleFavorite() } label: {
+            Label(
+              favorited ? "取消收藏" : "收藏",
+              systemImage: favorited ? "star.fill" : "star")
+          }
+          .help(favorited ? "取消收藏" : "收藏")
+          .accessibilityIdentifier("reading-toggle-favorite")
+        }
+
+        // 快速打标签：复用底部那个标签编辑器，省得滚到最下面。打开即展开输入框。
+        if model.canEditTags {
+          Button { isTagPopoverPresented = true } label: {
+            Label("标签", systemImage: "tag")
+          }
+          .help("添加标签")
+          .accessibilityIdentifier("reading-quick-tag")
+          .popover(isPresented: $isTagPopoverPresented, arrowEdge: .bottom) {
+            HistoryTagEditor(tags: detail.tags, model: model, autoExpandComposer: true)
+              .padding(16)
+              .frame(width: 320)
+          }
+        }
+
         Menu {
           Button("拷贝全文") { copyFullArticle() }
             .accessibilityIdentifier("history-copy-full-text")
@@ -2447,6 +2533,8 @@ private struct TitleHeightPreferenceKey: PreferenceKey {
 private struct HistoryTagEditor: View {
   let tags: [HistoryTag]
   @ObservedObject var model: HistoryViewModel
+  /// 从工具栏快捷入口打开时直接展开输入框，点开即可打字；内联在详情里时保持收起。
+  var autoExpandComposer = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var input = ""
   @State private var isComposerExpanded = false
@@ -2538,6 +2626,9 @@ private struct HistoryTagEditor: View {
       }
     }
     .accessibilityIdentifier("history-tag-editor")
+    .onAppear {
+      if autoExpandComposer && canOpenComposer { isComposerExpanded = true }
+    }
   }
 
   @ViewBuilder private var addTagControl: some View {

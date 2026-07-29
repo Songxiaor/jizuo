@@ -30,6 +30,7 @@ public struct HistoryApplicationService: Sendable {
   public func allTags() throws -> [HistoryTag] { try repository.allTags() }
   public func addTags(_ rawNames: [String], to taskID: TaskID) throws -> [HistoryTag] { try repository.addTags(rawNames, to: taskID) }
   public func removeTag(normalizedName: String, from taskID: TaskID) throws { try repository.removeTag(normalizedName: normalizedName, from: taskID) }
+  public func setFavorite(_ isFavorite: Bool, for taskID: TaskID) throws { try repository.setFavorite(isFavorite, for: taskID) }
   public func deleteTask(taskID: TaskID) throws { try repository.deleteTask(taskID: taskID) }
   public func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult {
     try repository.deleteTasks(taskIDs: taskIDs)

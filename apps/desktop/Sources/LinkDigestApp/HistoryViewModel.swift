@@ -180,6 +180,11 @@ private actor HistoryRepositoryWorker {
     catch { return .failure(HistoryViewModel.storageCode(for: error, context: .write)) }
   }
 
+  func setFavorite(_ history: HistoryApplicationService, isFavorite: Bool, taskID: TaskID) -> TagMutationResult {
+    do { try history.setFavorite(isFavorite, for: taskID); return .success }
+    catch { return .failure(HistoryViewModel.storageCode(for: error, context: .write)) }
+  }
+
   func beginTranscription(
     _ history: HistoryApplicationService,
     taskID: TaskID,
@@ -944,6 +949,28 @@ final class HistoryViewModel: ObservableObject {
   func retryList() { guard canRetryList else { return }; reload() }
   func retryDetail() { loadDetailForSelection() }
   func reveal(taskID: TaskID) { selectedTaskID = taskID; reload() }
+
+  /// 在当前可见列表里前后移动选中项，不用回左栏。offset -1 上一条、+1 下一条。
+  /// 设 `selectedTaskID` 会经 didSet 自动加载详情，无需 reload。
+  func selectAdjacent(offset: Int) {
+    guard let index = currentRowIndex else { return }
+    let target = index + offset
+    guard rows.indices.contains(target) else { return }
+    selectedTaskID = rows[target].taskID
+  }
+
+  var canSelectPrevious: Bool { adjacentRowExists(offset: -1) }
+  var canSelectNext: Bool { adjacentRowExists(offset: 1) }
+
+  private var currentRowIndex: Int? {
+    guard let current = selectedTaskID else { return nil }
+    return rows.firstIndex { $0.taskID == current }
+  }
+
+  private func adjacentRowExists(offset: Int) -> Bool {
+    guard let index = currentRowIndex else { return false }
+    return rows.indices.contains(index + offset)
+  }
 
   func requestTranscription() {
     transcriptionUsesOnlineService = false
@@ -2960,6 +2987,47 @@ final class HistoryViewModel: ObservableObject {
     }
   }
 
+  var isSelectedFavorite: Bool { detail?.isFavorite ?? false }
+  var canToggleFavorite: Bool { history != nil && !isReadOnly && selectedTaskID != nil && !isDeleting }
+
+  /// 收藏／取消收藏当前选中条目。复用标签变更那条 Task 通道：两者都是对选中条目的
+  /// 轻量标注写入，且互斥进行没问题。
+  func toggleFavorite() {
+    guard let history, let taskID = selectedTaskID, canToggleFavorite else { return }
+    let target = !isSelectedFavorite
+    let generation = configurationGeneration
+    tagMutationTask?.cancel(); tagErrorCode = nil
+    tagMutationTask = Task { [weak self, worker] in
+      let result = await worker.setFavorite(history, isFavorite: target, taskID: taskID)
+      guard !Task.isCancelled else { return }
+      self?.receiveFavoriteMutation(result, taskID: taskID, isFavorite: target, generation: generation)
+    }
+  }
+
+  private func receiveFavoriteMutation(
+    _ result: TagMutationResult, taskID: TaskID, isFavorite: Bool, generation: UUID
+  ) {
+    guard generation == configurationGeneration, selectedTaskID == taskID else { return }
+    switch result {
+    case .success:
+      // 就地翻转详情里的收藏位，工具栏星标立刻更新——不重载整条详情，避免
+      // 「正在载入详情」闪屏（翻一个 bool 没必要把快照、运行、媒体全拉一遍）。
+      if let d = detail, d.task.id == taskID {
+        detail = HistoryDetailProjection(
+          task: d.task, snapshots: d.snapshots, runs: d.runs,
+          tags: d.tags, media: d.media, hadMediaDescriptor: d.hadMediaDescriptor,
+          isFavorite: isFavorite)
+      }
+      // 侧栏「收藏」计数刷新。
+      reloadNavigationCounts()
+      // 只有正在看「收藏」筛选时，列表才需要整表重载（行要进/出列表）；
+      // 其它筛选下列表不受影响，重载只会平白闪一下。
+      if selectedScope == .favorite { reload() }
+    case let .failure(code):
+      tagErrorCode = code
+    }
+  }
+
   func suggestedTags(matching input: String, excluding assigned: [HistoryTag]) -> [HistoryTag] {
     let needle = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let assignedNames = Set(assigned.map(\.normalizedName))
@@ -3650,6 +3718,7 @@ final class HistoryViewModel: ObservableObject {
           all: counts.all,
           recent: counts.recent,
           unsummarized: counts.unsummarized,
+          favorite: counts.favorite,
           platforms: counts.platforms,
           tags: counts.tags.filter {
             !HistoryTagNormalizer.platformSynonymNormalizedNames.contains($0.tag.normalizedName)
