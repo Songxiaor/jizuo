@@ -304,15 +304,15 @@ final class BrowserSupportViewModel: ObservableObject {
     case .confirmationStale:
       "同名 manifest 已变化，未覆盖；请重新确认最新状态。"
     case .uninstallRefused:
-      "manifest 与 LinkDigest 收据不一致，已停止卸载以保护现有文件。"
+      "manifest 与 \(ProductDisplay.name) 收据不一致，已停止卸载以保护现有文件。"
     case .restoreRefused:
-      "当前文件无法确认属于 LinkDigest，不能覆盖恢复。"
+      "当前文件无法确认属于 \(ProductDisplay.name)，不能覆盖恢复。"
     case .unsafeFilesystemState:
       "检测到不安全的文件系统状态，未写入任何浏览器目录。"
     // 这条不该出现在错误栏里——它有对应的动作（选一次目录授权），走 `.accessRequest`
     // 那条路。留在这里只是兜底，防止哪天新加的入口忘了处理。
     case .directoryAccessDenied:
-      "macOS 未允许 LinkDigest 打开该浏览器的目录。"
+      "macOS 未允许 \(ProductDisplay.name) 打开该浏览器的目录。"
     case .transactionFailed, .none:
       "浏览器支持操作未完成；现有文件已保持或恢复。"
     }

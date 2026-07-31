@@ -62,6 +62,7 @@ final class ProviderSettingsViewModel: ObservableObject {
   @Published var autoTranscribeNewCaptures = false
   @Published var autoSummarizeNewCaptures = false
   @Published var autoMindMapNewCaptures = false
+  @Published var translationConcurrency = ModelPreferences.defaultTranslationConcurrency
   @Published private(set) var preferencesState: ModelPreferencesState = .loading
   @Published private(set) var savedPreferences = ModelPreferences.default
   @Published private(set) var isReplacingAPIKey = false
@@ -230,7 +231,9 @@ final class ProviderSettingsViewModel: ObservableObject {
     case .loading: "正在读取模型列表…"
     case .loaded:
       "已读取 \(availableModels.count) 个模型；已选择 \(selectedCatalogModels.count) 个。"
-    case let .failed(code): modelCatalogFailureText(code)
+    // secret-hygiene:reviewed code 是内部错误码枚举，经 modelCatalogFailureText 映射成
+    // 固定本地文案后才显示——这正是本规则要求的做法，provider 原文不跨边界。
+    case let .failed(code): modelCatalogFailureText(code)  // secret-hygiene:reviewed
     }
   }
 
@@ -266,7 +269,7 @@ final class ProviderSettingsViewModel: ObservableObject {
     }
     return switch state {
     case .unconfigured:
-      "先验证模型列表并选择模型，再保存；LinkDigest 不会回显完整 API Key。"
+      "先验证模型列表并选择模型，再保存；\(ProductDisplay.name) 不会回显完整 API Key。"
     case .saving:
       "正在安全保存…"
     case .configured:
@@ -312,6 +315,7 @@ final class ProviderSettingsViewModel: ObservableObject {
       autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
       autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
       usesSeparateTranslationModel = preferences.translationModel != nil
+      translationConcurrency = preferences.effectiveTranslationConcurrency
       savedPreferences = preferences
       preferencesState = .idle
     } catch {
@@ -536,7 +540,8 @@ final class ProviderSettingsViewModel: ObservableObject {
         autoTidyTranscription: autoTidyTranscription,
         autoTranscribeNewCaptures: autoTranscribeNewCaptures,
         autoSummarizeNewCaptures: autoSummarizeNewCaptures,
-        autoMindMapNewCaptures: autoMindMapNewCaptures
+        autoMindMapNewCaptures: autoMindMapNewCaptures,
+        translationConcurrency: translationConcurrency
       )
       try await preferencesStore.save(preferences)
       summaryPrompt = preferences.summaryPrompt
@@ -549,6 +554,7 @@ final class ProviderSettingsViewModel: ObservableObject {
       autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
       autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
       usesSeparateTranslationModel = preferences.translationModel != nil
+      translationConcurrency = preferences.effectiveTranslationConcurrency
       savedPreferences = preferences
       preferencesState = .saved
     } catch let error as ModelPreferencesError {

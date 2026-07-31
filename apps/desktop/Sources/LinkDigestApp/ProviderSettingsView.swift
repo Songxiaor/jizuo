@@ -110,7 +110,7 @@ struct ProviderSettingsView: View {
       }
       .safeAreaInset(edge: .top, spacing: 0) {
         VStack(alignment: .leading, spacing: 4) {
-          Text("LinkDigest").font(.title2.weight(.semibold))
+          Text(ProductDisplay.name).font(.title2.weight(.semibold))
           Text("设置").font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -795,7 +795,7 @@ struct ProviderSettingsView: View {
       Section {
         settingCard(
           title: "总结提示词",
-          summary: "无论用内置还是自定义提示词，LinkDigest 都会追加输出语言指令。",
+          summary: "无论用内置还是自定义提示词，\(ProductDisplay.name) 都会追加输出语言指令。",
           details: "提示词只保存在本机，不随任何请求以外的途径离开这台机器。",
           controlWidth: .full
         ) {
@@ -864,6 +864,31 @@ struct ProviderSettingsView: View {
               set: { model.selectModel($0, forTranslation: true) }
             ), forTranslation: true)
           }
+        }
+      }
+
+      Section {
+        // 这是个性能旋钮，不是开关：长文翻译会被切成多片同时发，这个数就是同时
+        // 在飞的片数。放在翻译模型下面，因为它只影响翻译。
+        settingCard(
+          title: "翻译并发",
+          summary: "长文翻译会切成多段同时发送，段数越多越快。",
+          details: "只对超过约 8000 字的正文生效，短文仍是单次请求。免费或有速率限制的服务商调高后可能被限流，遇到限流会自动退避重试。",
+          titleAccessory: {
+            Picker("翻译并发", selection: $model.translationConcurrency) {
+              ForEach(
+                Array(ModelPreferences.translationConcurrencyRange),
+                id: \.self
+              ) { value in
+                Text(value == 1 ? "不并发" : "\(value) 段").tag(value)
+              }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityIdentifier("translation-concurrency")
+          }
+        ) {
+          EmptyView()
         }
       }
 

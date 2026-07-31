@@ -117,7 +117,7 @@ struct BrowserSupportSettingsView: View {
       case let .confirmation(confirmation):
         Alert(
           title: Text("连接 \(confirmation.browser.displayName) 到此 App？"),
-          message: Text("LinkDigest 会保留现有连接配置的备份，再把这个浏览器切换到当前 App。不会删除浏览器数据或已加载的扩展。"),
+          message: Text("\(ProductDisplay.name) 会保留现有连接配置的备份，再把这个浏览器切换到当前 App。不会删除浏览器数据或已加载的扩展。"),
           primaryButton: .default(Text("连接")) { Task { await model.confirmReplacement(confirmation) } },
           secondaryButton: .cancel(Text("取消")) { model.cancelPendingReplacement() }
         )
@@ -131,7 +131,7 @@ struct BrowserSupportSettingsView: View {
             secondaryButton: .default(Text("在 Finder 中显示测试扩展")) { revealExtensionFiles() }
           )
         case .uninstalled:
-          Alert(title: Text("浏览器支持已卸载"), message: Text("LinkDigest 已移除自己拥有且校验一致的 Native Messaging manifest。浏览器扩展文件不会被删除。"), dismissButton: .default(Text("好")))
+          Alert(title: Text("浏览器支持已卸载"), message: Text("\(ProductDisplay.name) 已移除自己拥有且校验一致的 Native Messaging manifest。浏览器扩展文件不会被删除。"), dismissButton: .default(Text("好")))
         case .restored:
           Alert(title: Text("备份已恢复"), message: Text("已恢复本次接管前由收据绑定的备份。"), dismissButton: .default(Text("好")))
         }
@@ -139,7 +139,7 @@ struct BrowserSupportSettingsView: View {
       // 什么、以及为什么必须由你来点：文件夹已经定位好，用户不需要知道 TCC 是什么。
       case let .accessRequest(request):
         Alert(
-          title: Text("允许 LinkDigest 访问 \(request.browser.displayName) 的文件夹"),
+          title: Text("允许 \(ProductDisplay.name) 访问 \(request.browser.displayName) 的文件夹"),
           message: Text("macOS 不允许 App 自行打开其它 App 的文件夹，必须由你选一次。点「选择文件夹」，在打开的窗口里直接点右下角的按钮就行——文件夹已经定位好，不用自己找。"),
           primaryButton: .default(Text("选择文件夹")) { chooseAccessDirectory(request) },
           secondaryButton: .cancel(Text("以后再说")) { model.cancelPendingAccessRequest() }
@@ -323,7 +323,7 @@ struct BrowserSupportSettingsView: View {
       panel.canChooseFiles = false
       panel.allowsMultipleSelection = false
       panel.canCreateDirectories = false
-      panel.message = "选中「\(request.directory.lastPathComponent)」这个文件夹，允许 LinkDigest 写入 \(request.browser.displayName) 的连接配置"
+      panel.message = "选中「\(request.directory.lastPathComponent)」这个文件夹，允许 \(ProductDisplay.name) 写入 \(request.browser.displayName) 的连接配置"
       panel.prompt = "允许访问"
       let granted = panel.runModal() == .OK ? panel.url : nil
       Task { await model.completeAccessRequest(request, granted: granted) }

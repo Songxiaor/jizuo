@@ -447,7 +447,9 @@ enum YouTubeEmbedNavigationPolicy {
   ) {
     let code = (error as NSError).code
     YouTubeEmbedDiagnostics.shared.record(
-      videoID, "嵌入页未能开始加载（\(code)）：\(error.localizedDescription)")
+      // secret-hygiene:reviewed code 是 NSError.code 整数（WebKit 载入失败码），
+      // 不是 provider 返回的文本。
+      videoID, "嵌入页未能开始加载（\(code)）：\(error.localizedDescription)")  // secret-hygiene:reviewed
   }
 
   func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {

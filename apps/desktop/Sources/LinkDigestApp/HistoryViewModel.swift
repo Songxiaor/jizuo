@@ -2051,7 +2051,7 @@ final class HistoryViewModel: ObservableObject {
   /// 脑图 + 原文合并导出的自包含 HTML（SVG 内联，无外部依赖）。
   func mindMapCombinedExportHTML() -> String? {
     guard let svg = mindMapSVG(), let detail else { return nil }
-    let title = detail.snapshots.last?.title ?? mindMapRecord?.outline.title ?? "LinkDigest"
+    let title = detail.snapshots.last?.title ?? mindMapRecord?.outline.title ?? ProductDisplay.name
     let body = detail.snapshots.last?.bodyText ?? ""
     let paragraphs = body
       .components(separatedBy: "\n\n")
@@ -3349,7 +3349,7 @@ final class HistoryViewModel: ObservableObject {
           history, taskID: taskID, attempt: attempt, status: .cancelled,
           updatedAtMilliseconds: self.nowMilliseconds()
         )
-        self.transcriptionState = .failed("已弹出「录屏与系统录音」授权。请在系统对话框或“系统设置 → 隐私与安全性 → 录屏与系统录音”中打开 LinkDigest Debug，然后退出并重开 App，再点「实时转写」。")
+        self.transcriptionState = .failed("已弹出「录屏与系统录音」授权。请在系统对话框或“系统设置 → 隐私与安全性 → 录屏与系统录音”中打开 \(ProductDisplay.name) Debug，然后退出并重开 App，再点「实时转写」。")
       } catch {
         guard self.transcriptionRequestID == requestID else { return }
         _ = await worker.updateTaskTranscriptionStatus(

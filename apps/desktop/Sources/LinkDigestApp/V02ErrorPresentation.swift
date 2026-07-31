@@ -78,7 +78,7 @@ enum V02ErrorCatalog {
     case ProviderConfigurationError.apiKeyRequired.rawValue:
       .init(
         message: "API Key 不能为空。",
-        recoveryAction: "请重新输入 API Key 后保存；LinkDigest 不会回显完整值。"
+        recoveryAction: "请重新输入 API Key 后保存；\(ProductDisplay.name) 不会回显完整值。"
       )
     case ProviderConfigurationError.profileStoreReadFailed.rawValue:
       .init(
@@ -98,7 +98,7 @@ enum V02ErrorCatalog {
     case ProviderConfigurationError.secretStoreWriteFailed.rawValue:
       .init(
         message: "无法安全保存 API Key。",
-        recoveryAction: "请重新输入后重试；LinkDigest 不会降级为明文保存。"
+        recoveryAction: "请重新输入后重试；\(ProductDisplay.name) 不会降级为明文保存。"
       )
     case ProviderConfigurationError.configurationChanged.rawValue:
       .init(

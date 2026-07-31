@@ -9,7 +9,26 @@ cd "$ROOT"
 # already-installed dependency metadata and never installs or modifies it.
 pnpm --config.verifyDepsBeforeRun=false licenses list --json | node -e '
   const fs = require("node:fs");
-  const licenses = Object.keys(JSON.parse(fs.readFileSync(0, "utf8"))).sort();
+  const payload = JSON.parse(fs.readFileSync(0, "utf8"));
+
+  // pnpm 失败时也会返回 JSON —— 形如 `{"error":{"code":...}}`。
+  //
+  // 原来这里直接对它取 keys，于是错误对象被当成「一个名叫 error 的许可证」，
+  // 它不匹配任何禁止模式，脚本便打印出 `OK: every dependency has a permissive
+  // license path`。**发布前的合规检查在自己没跑成时报了通过**，这比检查不通过
+  // 危险得多：它会让人以为许可证已经核对过了。
+  if (payload && typeof payload === "object" && payload.error) {
+    const { code, message } = payload.error;
+    console.error(`FAIL: pnpm 未能列出许可证，本次检查没有完成（不是「没有问题」）`);
+    console.error(`  ${code || "ERROR"}: ${message || "(no message)"}`);
+    process.exit(1);
+  }
+
+  const licenses = Object.keys(payload).sort();
+  if (licenses.length === 0) {
+    console.error("FAIL: 许可证列表为空，无法确认依赖合规");
+    process.exit(1);
+  }
   const prohibitedPattern = /(?:^|\b)(?:AGPL|GPL|UNLICENSED|UNKNOWN|NON-COMMERCIAL)(?:\b|-)/i;
   const prohibited = licenses.filter((expression) => {
     // SPDX `OR` grants a choice of licenses. A dual-licensed package such as

@@ -69,7 +69,9 @@ private func verifyBilibiliSession(cookieHeader: String) async -> String {
     guard (data?["isLogin"] as? Bool) ?? false else {
       // code=-101 是「账号未登录」。Cookie 存在但服务端不认：过期，或没送达。
       let code = root["code"] as? Int ?? -1
-      return "服务端不认可这个会话（code \(code)）——高清档不会解锁"
+      // secret-hygiene:reviewed code 是 B 站 API 的业务错误码整数（如 -101 未登录），
+      // 由上一行从 JSON 的 "code" 字段取出并 ?? -1 兜底，不含任何凭据文本。
+      return "服务端不认可这个会话（code \(code)）——高清档不会解锁"  // secret-hygiene:reviewed
     }
     let vipStatus = (data?["vipStatus"] as? Int) ?? 0
     let vipType = ((data?["vip"] as? [String: Any])?["type"] as? Int) ?? 0

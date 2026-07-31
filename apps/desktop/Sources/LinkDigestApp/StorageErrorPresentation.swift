@@ -15,7 +15,7 @@ enum StorageErrorCatalog {
     case .writeFailed:
       .init(message: "本地历史写入失败。", recoveryAction: "已保留最后一次成功保存的结果，请稍后重试。")
     case .futureSchema:
-      .init(message: "本地历史由更新版本创建。", recoveryAction: "请升级 LinkDigest 后再继续。")
+      .init(message: "本地历史由更新版本创建。", recoveryAction: "请升级 \(ProductDisplay.name) 后再继续。")
     case .migrationFailed:
       .init(message: "本地历史升级未完成。", recoveryAction: "原数据库已保留，请重新打开 APP 后重试。")
     case .readOnly:
