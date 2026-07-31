@@ -87,6 +87,71 @@ final class MindMapTests: XCTestCase {
     XCTAssertEqual(layout.centerEdges.count, 2)
   }
 
+  // MARK: - 中心节点随标题长度自适应
+
+  /// 这是修复的核心不变量：**文字必须待在框里**。
+  ///
+  /// 原来中心框宽度写死 250、标题完全不测量也不换行，
+  /// 「Databricks编码基准测试核心结论」在 19pt 下约 317pt，直接印到框外。
+  func testCenterTitleAlwaysFitsInsideItsBox() {
+    for title in [
+      "Databricks编码基准测试核心结论",
+      "短标题",
+      String(repeating: "长", count: MindMapOutline.maximumTitleCharacters),
+      String(repeating: "Benchmark", count: 4),
+    ] {
+      let layout = MindMapLayout.compute(
+        outline: .init(title: title, subtitle: nil, branches: [.init(title: "分支", leaves: ["要点"])])
+      )
+      let widest = layout.center.lines.prefix(layout.centerTitleLineCount)
+        .map { MindMapLayout.textWidth($0, fontSize: 19) }.max() ?? 0
+      XCTAssertLessThanOrEqual(
+        widest + 48, layout.center.width,
+        "标题「\(title)」比它的框还宽，会印到框外"
+      )
+    }
+  }
+
+  /// 换行后框要跟着长高，否则文字改成从框底溢出，问题只是换了个方向。
+  func testCenterBoxGrowsTallerWhenTitleWraps() {
+    let short = MindMapLayout.compute(
+      outline: .init(title: "短", subtitle: nil, branches: [.init(title: "分支", leaves: ["要点"])])
+    )
+    let long = MindMapLayout.compute(
+      outline: .init(
+        title: String(repeating: "长", count: MindMapOutline.maximumTitleCharacters),
+        subtitle: nil,
+        branches: [.init(title: "分支", leaves: ["要点"])]
+      )
+    )
+    XCTAssertEqual(short.centerTitleLineCount, 1)
+    XCTAssertGreaterThan(long.centerTitleLineCount, 1)
+    XCTAssertGreaterThan(long.center.height, short.center.height)
+  }
+
+  /// 短标题不该把框缩成小方块，也不该长到撞上分支列。
+  func testCenterBoxStaysWithinItsWidthBounds() {
+    for title in ["短", String(repeating: "长", count: MindMapOutline.maximumTitleCharacters)] {
+      let layout = MindMapLayout.compute(
+        outline: .init(title: title, subtitle: nil, branches: [.init(title: "分支", leaves: ["要点"])])
+      )
+      XCTAssertGreaterThanOrEqual(layout.center.width, MindMapLayout.centerMinWidth)
+      XCTAssertLessThan(
+        layout.center.x + layout.center.width, MindMapLayout.branchX,
+        "中心框顶到了分支列上"
+      )
+    }
+  }
+
+  /// 换行不设行数上限：硬切两行只是把溢出从第一行搬到第二行。
+  func testWrappingNeverLeavesAnOverlongLine() {
+    let text = String(repeating: "长", count: 60)
+    for line in MindMapLayout.wrapped(text, limit: 100, fontSize: 13) {
+      XCTAssertLessThanOrEqual(MindMapLayout.textWidth(line, fontSize: 13), 100 + 13)
+    }
+    XCTAssertEqual(MindMapLayout.wrapped(text, limit: 100, fontSize: 13).joined(), text)
+  }
+
   // MARK: - 渲染
 
   func testRendererEmitsTextsThemeColorsAndEscapes() {

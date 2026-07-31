@@ -10,7 +10,9 @@ final class TranscriptionTempStoreTests: XCTestCase {
     // one is user-configurable and no longer the old fixed 200 MB.
     XCTAssertEqual(TranscriptionTempStore.maxBytes, 2 * 1024 * 1024 * 1024)
     XCTAssertNotEqual(LocalMediaStore.maxBytes, 200 * 1024 * 1024)
-    XCTAssertEqual(LocalMediaStore.maxBytes, LocalMediaStore.defaultDownloadLimitBytes)
+    // 传输层上限绑的是**用户能配置的最大值**，不是默认值。绑默认值时，配置高于
+    // 默认值的那部分会被传输层先一步卡掉，用户调大等于没调。
+    XCTAssertEqual(LocalMediaStore.maxBytes, LocalMediaStore.maximumDownloadLimitBytes)
     XCTAssertGreaterThanOrEqual(LocalMediaStore.maximumDownloadLimitBytes, LocalMediaStore.defaultDownloadLimitBytes)
     XCTAssertGreaterThan(LocalMediaStore.defaultDownloadLimitBytes, LocalMediaStore.minimumDownloadLimitBytes)
     XCTAssertTrue(TranscriptionTempStoreError.insufficientDiskSpace.userMessage.contains("磁盘空间不足"))

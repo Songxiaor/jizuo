@@ -278,3 +278,55 @@ private func XCTAssertThrowsErrorAsync<T>(
     handler(error)
   }
 }
+
+/// 生成偏好的持久化必须**逐字段完整**。
+///
+/// 这里断言的是整个结构体相等，不是挑几个字段看。原来的 DTO 只有 4 个字段而
+/// `ModelPreferences` 有 10 个，自动转写/自动总结/自动脑图三个开关、自动整理、
+/// 转写整理模型和翻译并发在保存时被静默丢弃——用户打开的开关一重启就回到默认。
+/// 挑字段断言正是它当年溜过去的原因，所以这条只比较整体：以后谁加了字段却忘了
+/// 加进 DTO，这里立刻变红。
+final class ModelPreferencesFullRoundTripTests: XCTestCase {
+  func testEveryFieldSurvivesSaveAndLoad() async throws {
+    let suite = "com.syc.linkdigest.preferences-full.\(UUID().uuidString)"
+    defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+    let store = UserDefaultsModelPreferencesStore(suiteName: suite)
+
+    // 每一项都取**非默认值**，否则「没存下来」和「存了默认值」看起来一样。
+    let saved = try ModelPreferences(
+      summaryPrompt: "只列出核心结论与证据。",
+      outputLanguage: "日本語",
+      translationModel: "translate-model",
+      transcriptionModel: "whisper-large-v3-turbo",
+      tidyModel: "tidy-model",
+      autoTidyTranscription: true,
+      autoTranscribeNewCaptures: true,
+      autoSummarizeNewCaptures: true,
+      autoMindMapNewCaptures: true,
+      translationConcurrency: ModelPreferences.defaultTranslationConcurrency + 2
+    )
+    try await store.save(saved)
+
+    let loaded = try await UserDefaultsModelPreferencesStore(suiteName: suite).load()
+    XCTAssertEqual(loaded, saved, "有字段没能穿过保存/读取——多半是 DTO 漏了它")
+  }
+
+  /// 旧版本存的 JSON 里没有新字段，升级后必须仍能读出来，不能整份偏好读失败。
+  func testOlderPayloadWithoutNewFieldsStillLoads() async throws {
+    let suite = "com.syc.linkdigest.preferences-legacy.\(UUID().uuidString)"
+    let key = "linkdigest.model-preferences.v1"
+    defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    defaults.set(
+      try JSONEncoder().encode(["summaryPrompt": "老提示词", "outputLanguage": "Deutsch"]),
+      forKey: key
+    )
+
+    let loaded = try await UserDefaultsModelPreferencesStore(suiteName: suite, key: key).load()
+    XCTAssertEqual(loaded.summaryPrompt, "老提示词")
+    XCTAssertEqual(loaded.outputLanguage, "Deutsch")
+    // 缺失的新字段回落到默认，而不是让整次读取失败。
+    XCTAssertNil(loaded.autoSummarizeNewCaptures)
+    XCTAssertEqual(loaded.effectiveTranslationConcurrency, ModelPreferences.defaultTranslationConcurrency)
+  }
+}

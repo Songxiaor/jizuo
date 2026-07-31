@@ -1147,6 +1147,34 @@ final class HistoryContentViewTests: XCTestCase {
       .deletingLastPathComponent()
   }
 
+  func testSummaryAndTranslationOccupySeparateReadingPanes() {
+    // 曾经只有 result/source 两格，result 显示哪个由「最近产出文本的运行」决定：
+    // 先翻译再总结，译文就被挤掉，库里有内容却没有入口能点回去。
+    let source = historyContentViewSource()
+    let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct TitleHeightPreferenceKey")
+
+    XCTAssertFalse(
+      detail.contains("case result"),
+      "总结与翻译不能再共用一个结果格，否则后跑的会挤掉先跑的"
+    )
+    XCTAssertTrue(detail.contains("case summary"))
+    XCTAssertTrue(detail.contains("case translation"))
+
+    // 两个格子各自按「自己那类产物存不存在」决定出现与否，而不是共享一个判据。
+    XCTAssertTrue(detail.contains("if summaryArtifact != nil { panes.append(.summary) }"))
+    XCTAssertTrue(detail.contains("if translationArtifact != nil { panes.append(.translation) }"))
+
+    // 取产物必须按运行类型取最新一份，只取全局最新就等于回到老毛病。
+    XCTAssertTrue(detail.contains("artifact(ofKind: .summarize)"))
+    XCTAssertTrue(detail.contains("artifact(ofKind: .translate)"))
+
+    // 选中的格子不可用时要退回默认；这个兜底原来只对抖音生效。
+    XCTAssertTrue(
+      detail.contains("if !availableReadingPanes.contains(readingPane) { return defaultReadingPane }"),
+      "切到只总结过的条目时，选中的翻译格会消失，必须退回默认而不是停在空白面板"
+    )
+  }
+
   func testReadingPanePickerStaysVisibleWhenOneSideIsEmpty() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct TitleHeightPreferenceKey")
@@ -1158,7 +1186,10 @@ final class HistoryContentViewTests: XCTestCase {
       detail.contains("hasResultBody && hasPresentableSourceBody"),
       "isRedundantDouyinBody must no longer be able to hide the picker"
     )
-    XCTAssertTrue(detail.contains("missingPaneNotice(for: .result)"))
+    // 断言「空面板会自我解释」这个不变量，而不是某个具体的实参写法——
+    // 结果面板拆成总结/翻译后实参从 .result 变成了 effectiveReadingPane，
+    // 行为没变，写死字面量只会假失败。
+    XCTAssertTrue(detail.contains("missingPaneNotice(for:"))
     XCTAssertTrue(detail.contains("missingPaneNotice(for: .source)"))
     XCTAssertTrue(detail.contains("latestTranscriptionSnapshot"))
     XCTAssertTrue(detail.contains("availableReadingPanes"))

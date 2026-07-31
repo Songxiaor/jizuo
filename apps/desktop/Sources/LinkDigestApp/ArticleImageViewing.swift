@@ -184,8 +184,9 @@ struct InlineArticleImageView: View {
   }
 }
 
-/// 窗口内灯箱：点击图片外区域或 Esc 退出；触控板捏合与鼠标滚轮缩放；
-/// 放大后可拖拽平移；双击在「适应窗口 ↔ 2x」之间切换。
+/// 窗口内灯箱：点击图片外区域或 Esc 退出；触控板两指滑动平移、捏合缩放
+/// （鼠标滚轮与 ⌘/⌥+滚动仍为缩放）；也可拖拽平移；双击在「适应窗口 ↔ 2x」
+/// 之间切换。
 struct InlineImageLightboxOverlay: View {
   @ObservedObject private var controller = InlineImageLightboxController.shared
 
@@ -240,7 +241,7 @@ private struct InlineImageLightboxCanvas: View {
           }
           Divider()
           HStack {
-            Text("双指捏合 / 滚轮缩放 · 拖拽平移 · 双击复位 · 点框外或 Esc 退出")
+            Text("双指滑动平移 · 双指捏合缩放 · 双击复位 · 点框外或 Esc 退出")
               .font(.caption)
               .foregroundStyle(.secondary)
             Spacer()
@@ -270,20 +271,25 @@ private struct InlineImageLightboxCanvas: View {
   }
 
   @ViewBuilder private func canvas(in size: CGSize) -> some View {
+    // 图片当前的显示尺寸，平移边界由它和画布尺寸共同决定。
+    let fitted = image.map { fittedSize(for: $0.size, in: size) } ?? .zero
+    let content = CGSize(width: fitted.width * scale, height: fitted.height * scale)
     ZStack {
       Color(nsColor: .windowBackgroundColor)
       if let image {
-        let fitted = fittedSize(for: image.size, in: size)
         Image(nsImage: image)
           .resizable()
-          .frame(width: fitted.width * scale, height: fitted.height * scale)
+          .frame(width: content.width, height: content.height)
           .offset(offset)
           .gesture(
             DragGesture()
               .onChanged { value in
-                offset = CGSize(
-                  width: dragBase.width + value.translation.width,
-                  height: dragBase.height + value.translation.height
+                offset = LightboxPanBounds.clamp(
+                  CGSize(
+                    width: dragBase.width + value.translation.width,
+                    height: dragBase.height + value.translation.height
+                  ),
+                  contentSize: content, containerSize: size
                 )
               }
               .onEnded { _ in dragBase = offset }
@@ -293,21 +299,46 @@ private struct InlineImageLightboxCanvas: View {
       } else {
         ProgressView().controlSize(.large)
       }
-      // 滚轮只在框内生效：作为透明 NSView 铺满画布，事件到不了框外。
-      LightboxWheelZoomCatcher { delta in
-        scale = clamped(scale * pow(1.003, delta))
-        pinchBase = scale
+      // 滚动只在框内生效：作为透明 NSView 铺满画布，事件到不了框外。
+      LightboxScrollGestureCatcher { intent in
+        switch intent {
+        case let .pan(delta):
+          offset = LightboxPanBounds.clamp(
+            CGSize(width: offset.width + delta.width, height: offset.height + delta.height),
+            contentSize: content, containerSize: size
+          )
+          // 同步给拖拽的基准，否则下一次按住拖会跳回滑动之前的位置。
+          dragBase = offset
+        case let .zoom(delta):
+          scale = clamped(scale * pow(1.003, delta))
+          pinchBase = scale
+          reclampOffset(fitted: fitted, container: size)
+        }
       }
       .allowsHitTesting(false)
     }
     .contentShape(Rectangle())
     .simultaneousGesture(
       MagnificationGesture()
-        .onChanged { value in scale = clamped(pinchBase * value) }
+        .onChanged { value in
+          scale = clamped(pinchBase * value)
+          reclampOffset(fitted: fitted, container: size)
+        }
         .onEnded { _ in pinchBase = scale }
     )
     .frame(width: size.width, height: size.height)
     .clipped()
+  }
+
+  /// 缩小会让可平移的范围一起缩小，原先合法的位置可能就越界了，所以每次改完
+  /// 缩放都要把位置拉回边界内——否则缩小时图会停在画布外，留下一片空白。
+  private func reclampOffset(fitted: CGSize, container: CGSize) {
+    offset = LightboxPanBounds.clamp(
+      offset,
+      contentSize: CGSize(width: fitted.width * scale, height: fitted.height * scale),
+      containerSize: container
+    )
+    dragBase = offset
   }
 
   private func fittedSize(for imageSize: NSSize, in container: CGSize) -> CGSize {
@@ -426,24 +457,85 @@ private struct InlineImageLightboxCanvas: View {
   }
 }
 
-/// 框内滚轮缩放：视图自身不参与命中（不挡点击/拖拽/双击），但在窗口内
-/// 挂局部滚轮监视器，只有光标落在本视图 frame 内才消费事件并缩放；
-/// 光标在框外时事件原样放行，随视图离窗自动解绑。
-private struct LightboxWheelZoomCatcher: NSViewRepresentable {
-  let onZoom: (CGFloat) -> Void
+/// 一次滚动事件在灯箱里代表什么动作。
+enum LightboxScrollIntent: Equatable {
+  case pan(CGSize)
+  case zoom(CGFloat)
+}
+
+/// 平移的边界。
+///
+/// 平移原来完全不设限，能把图一路滑出画布，只剩一片空白，而且没有任何提示告诉你
+/// 图去哪了——只能靠双击复位找回来。
+///
+/// 规则按轴独立判断，取的是「图的边缘不会离开画布内部」：
+/// - 图比画布**大**：可以拖，但最多拖到图的边缘与画布边缘对齐，范围是
+///   ±(图 − 画布)/2。这样画布里永远填满图，不会露出背景。
+/// - 图比画布**小**（缩小了，或本来就小）：没有可看的多余部分，位置锁定在居中，
+///   免得把一张小图推到角落里。
+enum LightboxPanBounds {
+  static func clamp(_ offset: CGSize, contentSize: CGSize, containerSize: CGSize) -> CGSize {
+    CGSize(
+      width: clampAxis(offset.width, content: contentSize.width, container: containerSize.width),
+      height: clampAxis(offset.height, content: contentSize.height, container: containerSize.height)
+    )
+  }
+
+  static func clampAxis(_ value: CGFloat, content: CGFloat, container: CGFloat) -> CGFloat {
+    let slack = max(0, (content - container) / 2)
+    return min(max(value, -slack), slack)
+  }
+}
+
+/// 把一次滚动事件判成平移还是缩放。
+///
+/// 原来**所有** `scrollWheel` 事件一律当缩放，于是触控板上不管往哪个方向滑，
+/// 图都只会放大缩小，没法看大图的其它部分。macOS 上这两件事本来就由不同的输入
+/// 表达，只是都从 `scrollWheel` 这一个入口进来：
+///
+/// - **触控板两指滑动** → `hasPreciseScrollingDeltas == true`，这是「移动内容」，
+///   系统级语义就是滚动；Preview、Photos 都按平移处理。
+/// - **触控板捏合** → 根本不是滚动事件，走 `magnify`，由 `MagnificationGesture`
+///   单独接，不经过这里。
+/// - **鼠标滚轮** → `hasPreciseScrollingDeltas == false`。鼠标没有捏合，滚轮是它
+///   唯一能表达缩放的方式，所以这一路保持缩放，不能一起改掉。
+/// - **Command / Option + 滚动** → 全平台通用的「强制缩放」，触控板用户也能用。
+///
+/// 抽成纯函数是因为判断本身才是容易错的地方，而构造真实 `NSEvent` 来测不划算。
+func lightboxScrollIntent(
+  hasPreciseScrollingDeltas: Bool,
+  modifiers: NSEvent.ModifierFlags,
+  deltaX: CGFloat,
+  deltaY: CGFloat
+) -> LightboxScrollIntent? {
+  let wantsZoom = modifiers.contains(.command) || modifiers.contains(.option)
+  if wantsZoom || !hasPreciseScrollingDeltas {
+    guard deltaY != 0 else { return nil }
+    return .zoom(deltaY)
+  }
+  guard deltaX != 0 || deltaY != 0 else { return nil }
+  // 方向直接采用系统给的增量：「自然滚动」开关已经体现在里面，图跟着手指走。
+  return .pan(CGSize(width: deltaX, height: deltaY))
+}
+
+/// 框内滚动手势：视图自身不参与命中（不挡点击/拖拽/双击），但在窗口内挂局部
+/// 滚轮监视器，只有光标落在本视图 frame 内才消费事件；光标在框外时事件原样
+/// 放行，随视图离窗自动解绑。
+private struct LightboxScrollGestureCatcher: NSViewRepresentable {
+  let onIntent: (LightboxScrollIntent) -> Void
 
   func makeNSView(context: Context) -> WheelCatcherView {
     let view = WheelCatcherView()
-    view.onZoom = onZoom
+    view.onIntent = onIntent
     return view
   }
 
   func updateNSView(_ nsView: WheelCatcherView, context: Context) {
-    nsView.onZoom = onZoom
+    nsView.onIntent = onIntent
   }
 
   final class WheelCatcherView: NSView {
-    var onZoom: ((CGFloat) -> Void)?
+    var onIntent: ((LightboxScrollIntent) -> Void)?
     private var monitor: Any?
 
     override var acceptsFirstResponder: Bool { false }
@@ -464,8 +556,13 @@ private struct LightboxWheelZoomCatcher: NSViewRepresentable {
         guard let self, let window = self.window, event.window === window else { return event }
         let pointInSelf = self.convert(event.locationInWindow, from: nil)
         guard self.bounds.contains(pointInSelf) else { return event }
-        let delta = event.scrollingDeltaY
-        if delta != 0 { self.onZoom?(delta) }
+        guard let intent = lightboxScrollIntent(
+          hasPreciseScrollingDeltas: event.hasPreciseScrollingDeltas,
+          modifiers: event.modifierFlags,
+          deltaX: event.scrollingDeltaX,
+          deltaY: event.scrollingDeltaY
+        ) else { return nil }
+        self.onIntent?(intent)
         return nil
       }
     }

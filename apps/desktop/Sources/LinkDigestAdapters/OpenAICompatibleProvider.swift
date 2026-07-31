@@ -401,8 +401,15 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     intent: RunIntent,
     continuation: AsyncThrowingStream<ModelStreamEvent, Error>.Continuation
   ) async throws {
-    let request = try makeRequest(profile: profile, apiKey: apiKey, intent: intent)
+    // 先带上 `reasoning_effort`。不认识这个键的服务端会用 400 拒掉，那时去掉它
+    // 重来一次——宁可多一次握手，也不能因为一个提速参数让整个 provider 用不了。
+    var includesReasoningEffort = true
+    var request = try makeRequest(
+      profile: profile, apiKey: apiKey, intent: intent,
+      includesReasoningEffort: includesReasoningEffort
+    )
     var retryCount = 0
+    var didDropReasoningEffort = false
 
     while true {
       try Task.checkCancellation()
@@ -424,6 +431,10 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
             switch event {
             case .delta:
               receivedDelta = true
+              continuation.yield(event)
+            case .reasoning:
+              // 思考不算 `receivedDelta`：它没有产出任何用户内容，此时失败仍然
+              // 是「一个字都没拿到」，重试与降级都还安全。
               continuation.yield(event)
             case .usage:
               continuation.yield(event)
@@ -449,6 +460,18 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       } catch is CancellationError {
         throw CancellationError()
       } catch let failure as ModelProviderFailure {
+        // 服务端在还没吐出任何内容时就拒了请求，且我们确实多发了那个键——先怀疑
+        // 是它不被接受，去掉重来。只降级一次，避免和下面的重试互相叠加。
+        if includesReasoningEffort, !didDropReasoningEffort, !receivedDelta,
+           Self.mayRejectUnknownParameter(failure) {
+          didDropReasoningEffort = true
+          includesReasoningEffort = false
+          request = try makeRequest(
+            profile: profile, apiKey: apiKey, intent: intent,
+            includesReasoningEffort: false
+          )
+          continue
+        }
         if shouldRetry(failure: failure, retryCount: retryCount) {
           retryCount += 1
           let delay = retryDelay(from: currentResponse)
@@ -485,7 +508,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   private func makeRequest(
     profile: ProviderProfile,
     apiKey: String,
-    intent: RunIntent
+    intent: RunIntent,
+    includesReasoningEffort: Bool = false
   ) throws -> URLRequest {
     guard !apiKey.isEmpty else {
       throw ModelProviderFailure(code: .authInvalid, retryable: false, hadOutput: false)
@@ -526,7 +550,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       model: profile.model,
       messages: messages,
       stream: true,
-      maxTokens: nil
+      maxTokens: nil,
+      reasoningEffort: includesReasoningEffort ? Self.lowReasoningEffort : nil
     ))
     return request
   }
@@ -658,12 +683,41 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     let messages: [Message]
     let stream: Bool
     let maxTokens: Int?
+    /// 推理深度。nil 时整个字段不出现在 JSON 里——不认识它的服务端不该因为我们
+    /// 多发了一个键就拒绝请求。
+    var reasoningEffort: String?
 
     enum CodingKeys: String, CodingKey {
       case model, messages, stream
       case maxTokens = "max_tokens"
+      case reasoningEffort = "reasoning_effort"
     }
   }
+
+  /// 总结与翻译要的是**转述**，不是推理。
+  ///
+  /// 实测 `step-3.7-flash`（StepFun 推理模型）一次 13,402 字符的英译中：输出
+  /// 15,249 token，而落到译文里的只有 5,982 字符——约七成 token 是用户看不到的
+  /// 思考过程，却照样占生成时间。同一条链路上非推理模型的字符/token 是 1.24，
+  /// 它只有 0.39。
+  ///
+  /// 所以这两类任务一律请求最低推理档。StepFun 官方文档的取值是 low/medium/high；
+  /// 这也正是 OpenAI 的 `reasoning_effort` 参数名，兼容面足够宽。
+  static let lowReasoningEffort = "low"
+
+  /// 这个失败**可能**是「服务端不认识我们多发的那个参数」。
+  ///
+  /// 只认那些「请求本身被拒」的码：拒绝的原因是模型不存在、鉴权不过、限流或服务端
+  /// 挂了时，去掉一个参数重来毫无意义，只会白白多打一次请求。
+  static func mayRejectUnknownParameter(_ failure: ModelProviderFailure) -> Bool {
+    switch failure.code {
+    case .providerRequestRejected, .protocolIncompatible:
+      true
+    default:
+      false
+    }
+  }
+
 
   private struct NonStreamingCompletionResponse: Decodable {
     struct Choice: Decodable {

@@ -167,6 +167,9 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     let body = try XCTUnwrap(JSONSerialization.jsonObject(with: bodyData) as? [String: Any])
     XCTAssertEqual(body["model"] as? String, "fixture-model")
     XCTAssertEqual(body["stream"] as? Bool, true)
+    // 总结与翻译要的是转述不是推理。不发这个参数时，推理模型会拿七成的输出
+    // token 去想，用户只能干等——这条钉住它确实发出去了。
+    XCTAssertEqual(body["reasoning_effort"] as? String, "low")
     let messages = try XCTUnwrap(body["messages"] as? [[String: String]])
     XCTAssertEqual(messages, [["role": "user", "content": "Reply with OK."]])
     XCTAssertFalse(request.description.contains(key))
@@ -662,5 +665,58 @@ private actor EventRecorder {
 
   func append(_ event: ModelStreamEvent) {
     events.append(event)
+  }
+}
+
+/// 推理模型的思考过程。
+///
+/// 实测 `step-3.7-flash` 一次 13,402 字符的英译中输出 15,249 token，落到译文里的
+/// 只有 5,982 字符——约七成 token 是思考。它必须被识别、被丢弃，且绝不能混进产物。
+final class ReasoningStreamDecodingTests: XCTestCase {
+  func testReasoningContentIsDecodedAsItsOwnEvent() throws {
+    let decoder = ChatCompletionsStreamDecoder()
+    // DeepSeek 起头、StepFun 跟进的兼容字段名。
+    XCTAssertEqual(
+      try decoder.decode(line: "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"让我想想\"}}]}"),
+      .reasoning("让我想想")
+    )
+    // StepFun 默认 reasoning_format=general 时用的字段名。
+    XCTAssertEqual(
+      try decoder.decode(line: "data: {\"choices\":[{\"delta\":{\"reasoning\":\"再想想\"}}]}"),
+      .reasoning("再想想")
+    )
+  }
+
+  /// 正文永远优先：同一个 chunk 里两者都有时，思考不能挤掉真正的输出。
+  func testContentWinsWhenAChunkCarriesBoth() throws {
+    XCTAssertEqual(
+      try ChatCompletionsStreamDecoder().decode(
+        line: "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想\",\"content\":\"译文\"}}]}"
+      ),
+      .delta("译文")
+    )
+  }
+
+  /// 普通模型不发这两个字段，行为必须一个字都不变。
+  func testOrdinaryDeltaIsUnaffected() throws {
+    XCTAssertEqual(
+      try ChatCompletionsStreamDecoder().decode(line: "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}"),
+      .delta("hello")
+    )
+  }
+}
+
+/// 思考过程绝不能被当成生成结果。
+final class ReasoningIsNeverOutputTests: XCTestCase {
+  /// 这是最关键的一条：`.thinking` 状态的 `outputText` 必须是空的。
+  /// 一旦它返回思考内容，那段文字就会被当成译文写进产物。
+  func testThinkingStateCarriesNoOutputText() {
+    XCTAssertEqual(RunState.thinking(intent: .translate).outputText, "")
+    XCTAssertEqual(RunState.thinking(intent: .summarize).outputText, "")
+  }
+
+  /// 思考期间这次运行仍然是「进行中」，停止按钮等一切照常可用。
+  func testThinkingCountsAsActive() {
+    XCTAssertTrue(RunState.thinking(intent: .translate).isActive)
   }
 }

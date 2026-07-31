@@ -156,6 +156,9 @@ enum BrowserReceiverState: Sendable, Equatable {
       "尚未生成结果"
     case let .starting(intent):
       intent == .translate ? "正在开始翻译…" : "正在开始总结…"
+    // 推理模型作答前会先想很久，这段静默必须让用户看见，否则和卡死没区别。
+    case let .thinking(intent):
+      intent == .translate ? "模型思考中…（尚未开始输出译文）" : "模型思考中…（尚未开始输出）"
     case .streaming:
       "正在生成…"
     case .stopping:
@@ -177,7 +180,7 @@ enum BrowserReceiverState: Sendable, Equatable {
     switch runState {
     case .failed, .incomplete, .storageError:
       true
-    case .idle, .starting, .streaming, .stopping, .stopped, .completed:
+    case .idle, .starting, .thinking, .streaming, .stopping, .stopped, .completed:
       false
     }
   }
@@ -504,7 +507,8 @@ enum BrowserReceiverState: Sendable, Equatable {
       targetLanguage: attemptPreferences(for: token)?.outputLanguage,
       summaryPrompt: intent == .summarize ? attemptPreferences(for: token)?.summaryPrompt : nil,
       translationModel: intent == .translate ? attemptPreferences(for: token)?.translationModel : nil,
-      modelOverride: attemptModelOverride(for: token)
+      modelOverride: attemptModelOverride(for: token),
+      translationConcurrency: attemptPreferences(for: token)?.effectiveTranslationConcurrency
     )
     // Protect the real Task before createRun can block. This pending ownership
     // must not publish `.starting`: that state remains commit-confirmed.
@@ -737,7 +741,7 @@ enum BrowserReceiverState: Sendable, Equatable {
     switch state {
     case .stopped, .completed, .incomplete, .failed, .storageError:
       true
-    case .idle, .starting, .streaming, .stopping:
+    case .idle, .starting, .thinking, .streaming, .stopping:
       false
     }
   }

@@ -37,6 +37,16 @@ final class SiteSessionController: ObservableObject {
   @Published private(set) var verificationLabel: String?
   @Published private(set) var isVerifying = false
 
+  /// 每次读取 cookie 的实测记录。只放数量和 cookie **名**，绝不放值。
+  ///
+  /// 加这个是因为「App 一关登录就失效」用读代码查不出来：磁盘上的凭据一直都在、
+  /// 也没过期（B 站 SESSDATA 到 2027），分区 id 也稳定存在 UserDefaults 里，
+  /// 每一环读起来都是通的，但设置页就是显示未登录。既然存储没问题，问题只能在
+  /// 「读的那一刻拿到了什么」——必须让这个数字可见，否则只能继续猜。
+  @Published private(set) var sessionDiagnostic: String?
+
+  private var readCount = 0
+
   let dataStore: WKWebsiteDataStore
   var loginURL: URL { profile.loginURL }
 
@@ -55,8 +65,34 @@ final class SiteSessionController: ObservableObject {
   }
 
   func refreshStatus() async {
-    let cookies = await siteCookies()
+    readCount += 1
+    var all = await allCookies()
+    var cookies = all.filter { profile.ownsCookieDomain($0.domain) }
+    let coldSiteCount = cookies.count
+    let coldAllCount = all.count
+
+    // 第一次读不出本站 cookie 时，再给数据分区一次机会后重读。
+    //
+    // `WKWebsiteDataStore(forIdentifier:)` 的 cookie 由网络进程持有，而这个分区
+    // 在冷启动后未必已经把磁盘上的内容加载进来。`fetchDataRecords` 会让分区落地，
+    // 之后再读才是它真正持有的内容。这一步是只读的，拿不到就照旧报未登录。
+    var warmedSiteCount: Int?
+    if cookies.isEmpty {
+      await warmUpDataStore()
+      all = await allCookies()
+      cookies = all.filter { profile.ownsCookieDomain($0.domain) }
+      warmedSiteCount = cookies.count
+    }
+
     let loggedIn = profile.looksLoggedIn(Set(cookies.map(\.name)))
+    sessionDiagnostic = diagnosticLine(
+      coldSiteCount: coldSiteCount,
+      coldAllCount: coldAllCount,
+      warmedSiteCount: warmedSiteCount,
+      warmedAllCount: all.count,
+      presentNames: Set(cookies.map(\.name)),
+      loggedIn: loggedIn
+    )
     isLoggedIn = loggedIn
     guard loggedIn else {
       statusLabel = "未登录"
@@ -126,6 +162,49 @@ final class SiteSessionController: ObservableObject {
 
   private func siteCookies() async -> [HTTPCookie] {
     await allCookies().filter { profile.ownsCookieDomain($0.domain) }
+  }
+
+  /// 让 identifier 分区把磁盘上的内容落地。只读，不改动任何数据。
+  private func warmUpDataStore() async {
+    _ = await withCheckedContinuation { (continuation: CheckedContinuation<[WKWebsiteDataRecord], Never>) in
+      dataStore.fetchDataRecords(ofTypes: WKWebsiteDataStore.allWebsiteDataTypes()) {
+        continuation.resume(returning: $0)
+      }
+    }
+  }
+
+  /// 组装这次读取的可见记录。
+  ///
+  /// 判据是「缺哪几个名字」而不是「登录失败」：`looksLoggedIn` 是若干组名字的
+  /// 子集判定，只说成功与否等于把唯一有用的信息扔掉——到底是一条都没读到，
+  /// 还是读到了但少一个名字，修法完全不同。
+  private func diagnosticLine(
+    coldSiteCount: Int,
+    coldAllCount: Int,
+    warmedSiteCount: Int?,
+    warmedAllCount: Int,
+    presentNames: Set<String>,
+    loggedIn: Bool
+  ) -> String {
+    var line = "读取 #\(readCount)：本站 \(coldSiteCount) 条（分区共 \(coldAllCount) 条）"
+    if let warmedSiteCount {
+      line += " → 预热后本站 \(warmedSiteCount) 条（分区共 \(warmedAllCount) 条）"
+    }
+    if loggedIn {
+      line += "；判定已登录"
+      return line
+    }
+    // 取「最接近齐全」的那一组来报缺失：报所有组的并集会把 B 站
+    // `SESSDATA` 与 `DedeUserID+bili_jct` 这种本就二选一的关系说成全都缺。
+    let closest = profile.loginCookieGroups
+      .filter { !$0.isEmpty }
+      .min { $0.subtracting(presentNames).count < $1.subtracting(presentNames).count }
+    if let missing = closest?.subtracting(presentNames), !missing.isEmpty {
+      line += "；缺 \(missing.sorted().joined(separator: "、"))"
+    } else {
+      line += "；判定未登录"
+    }
+    return line
   }
 
   private func allCookies() async -> [HTTPCookie] {

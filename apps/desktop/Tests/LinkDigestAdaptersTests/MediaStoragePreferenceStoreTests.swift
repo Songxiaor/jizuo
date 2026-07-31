@@ -94,8 +94,14 @@ final class MediaStoragePreferenceStoreTests: XCTestCase {
     XCTAssertEqual(store.downloadLimitBytes, LocalMediaStore.defaultDownloadLimitBytes)
     XCTAssertGreaterThan(store.downloadLimitBytes, 200 * 1024 * 1024)
 
-    store.downloadLimitBytes = 32 * 1024 * 1024 * 1024
-    XCTAssertEqual(store.downloadLimitBytes, 32 * 1024 * 1024 * 1024)
+    // 区间内的值原样保留。
+    store.downloadLimitBytes = 512 * 1024 * 1024
+    XCTAssertEqual(store.downloadLimitBytes, 512 * 1024 * 1024)
+
+    // 区间收窄到 200 MB – 2 GB 之后，旧安装里存着的 16 GB 会在读取时被收进新
+    // 上界——迁移就是靠这一步完成的，没有单独的迁移代码。
+    store.downloadLimitBytes = 16 * 1024 * 1024 * 1024
+    XCTAssertEqual(store.downloadLimitBytes, LocalMediaStore.maximumDownloadLimitBytes)
 
     // The transport bound must stay finite and inside the supported range even
     // if the defaults entry is edited by hand.

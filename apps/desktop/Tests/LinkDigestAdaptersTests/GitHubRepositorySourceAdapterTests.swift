@@ -261,7 +261,10 @@ final class GitHubRepositorySourceAdapterTests: XCTestCase {
     XCTAssertTrue(try Data(contentsOf: cached).starts(with: [0x89, 0x50, 0x4e, 0x47]))
   }
 
-  func testWebsiteFaviconCacheUsesHostLocalCacheAndRejectsCrossHostRedirect() async throws {
+  /// 图标托管在 CDN 上是主流做法，所以跨域重定向必须跟过去——实测
+  /// `www.douyin.com/favicon.ico` 就是 302 跳到 `lf1-cdn-tos.bytegoofy.com`。
+  /// 这里改成钉住真正的边界：凭据、非标准端口、非 http(s) 协议照旧拒绝。
+  func testWebsiteFaviconCacheUsesHostLocalCacheAndFollowsCDNRedirect() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("linkdigest-favicon-cache.\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let source = URL(string: "https://captured.example/article?tracking=1#section")!
@@ -278,8 +281,10 @@ final class GitHubRepositorySourceAdapterTests: XCTestCase {
     XCTAssertEqual(fixture.requests.count, 1)
     XCTAssertEqual(fixture.requests[0].byteLimit, WebsiteFaviconCache.perHostByteLimit)
     XCTAssertTrue(fixture.requests[0].allowsRedirectTarget(URL(string: "https://captured.example/favicon-v2.ico")!))
-    XCTAssertFalse(fixture.requests[0].allowsRedirectTarget(URL(string: "https://tracker.example/favicon.ico")!))
+    XCTAssertTrue(fixture.requests[0].allowsRedirectTarget(URL(string: "https://cdn.example/favicon.ico")!))
     XCTAssertFalse(fixture.requests[0].allowsRedirectTarget(URL(string: "https://user:pass@captured.example/favicon.ico")!))
+    XCTAssertFalse(fixture.requests[0].allowsRedirectTarget(URL(string: "https://cdn.example:8443/favicon.ico")!))
+    XCTAssertFalse(fixture.requests[0].allowsRedirectTarget(URL(string: "file:///etc/passwd")!))
 
     let second = await cache.localImageURL(fetchingIfNeededFor: source, resources: fixture)
     XCTAssertEqual(second, first)
@@ -290,9 +295,13 @@ final class GitHubRepositorySourceAdapterTests: XCTestCase {
     let source = URL(string: "https://captured.example/article")!
     let favicon = try XCTUnwrap(WebsiteFaviconCache.faviconURL(for: source))
     let tooLarge = Data([0x00, 0x00, 0x01, 0x00]) + Data(repeating: 0, count: WebsiteFaviconCache.perHostByteLimit)
+    // 判据是**字节**，不是 Content-Type：实测 x.com 的 /favicon.ico 声明
+    // `image/x-icon` 却发一张标准 PNG，认头不认字节等于把这类站点全放弃。
+    // 所以这里钉的是「字节确实不是图片就必须拒」——SPA 把未知路径回首页那种
+    // 坏法（标成图标、实为 HTML）照样挡得住。
     for (label, response) in [
       ("large", SafeResourceResponse(url: favicon, statusCode: 200, contentType: "image/x-icon", body: tooLarge)),
-      ("wrong-mime", SafeResourceResponse(url: favicon, statusCode: 200, contentType: "text/plain", body: Data([0x00, 0x00, 0x01, 0x00]))),
+      ("not-an-image", SafeResourceResponse(url: favicon, statusCode: 200, contentType: "image/x-icon", body: Data("<!doctype html><html><body>home</body></html>".utf8))),
       ("failure", SafeResourceResponse(url: favicon, statusCode: 503, contentType: "image/x-icon", body: Data([0x00, 0x00, 0x01, 0x00])))
     ] {
       let root = FileManager.default.temporaryDirectory.appendingPathComponent("linkdigest-favicon-cache-\(label).\(UUID().uuidString)", isDirectory: true)

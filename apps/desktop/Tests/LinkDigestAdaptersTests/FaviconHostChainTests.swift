@@ -59,6 +59,40 @@ final class FaviconHostChainTests: XCTestCase {
   }
 }
 
+/// 猜 `/favicon.ico` 时，重定向能跟到哪里。
+///
+/// 实测 `www.douyin.com/favicon.ico` 返回 302 跳到 `lf1-cdn-tos.bytegoofy.com`
+/// 的一张标准 ICO。要求同域会把这一类站点全判死，而它们的页面 HTML 是 SPA 外壳
+/// （抖音的 `</head>` 在第 36 个字节、零个 `<link rel="icon">`），退到读页面声明
+/// 那条路也救不回来。
+extension FaviconHostChainTests {
+  /// 这条是修复的核心：跨域重定向必须能跟过去。
+  func testFollowsIconRedirectToAnotherHost() {
+    XCTAssertTrue(WebsiteFaviconCache.isSafeIconLocation(
+      URL(string: "https://lf1-cdn-tos.bytegoofy.com/goofy/ies/douyin_web/public/favicon.ico")!
+    ))
+  }
+
+  /// 放宽的只有「同域」一条，凭据照旧拒绝。
+  func testRejectsCredentialsInIconLocation() {
+    XCTAssertFalse(WebsiteFaviconCache.isSafeIconLocation(
+      URL(string: "https://user:pass@cdn.example.net/icon.png")!
+    ))
+  }
+
+  /// 非 http(s) 协议照旧拒绝。
+  func testRejectsNonWebSchemesInIconLocation() {
+    XCTAssertFalse(WebsiteFaviconCache.isSafeIconLocation(URL(string: "file:///etc/passwd")!))
+    XCTAssertFalse(WebsiteFaviconCache.isSafeIconLocation(URL(string: "data:image/png;base64,AA")!))
+  }
+
+  /// 非标准端口照旧拒绝——图标不该把请求引到别的服务上。
+  func testRejectsNonStandardPortsInIconLocation() {
+    XCTAssertFalse(WebsiteFaviconCache.isSafeIconLocation(URL(string: "https://cdn.example.net:8443/icon.png")!))
+    XCTAssertTrue(WebsiteFaviconCache.isSafeIconLocation(URL(string: "https://cdn.example.net:443/icon.png")!))
+  }
+}
+
 /// 读页面声明的图标。
 ///
 /// 猜 `/favicon.ico` 在真实站点上有两种坏法，实测都撞到了：
@@ -137,5 +171,102 @@ extension FaviconHostChainTests {
     <link rel="icon" href="data:image/png;base64,AAAA">
     """
     XCTAssertTrue(WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).isEmpty)
+  }
+
+  /// 真实站点：`www.databricks.com` 的博客页。
+  ///
+  /// 它同时踩中两个坑——图标声明在第 53 万个字符（前面全是内联脚本），而且声明了
+  /// 9 个尺寸，最大的 512×512 有 197 KB，远超 64 KiB 缓存上限。老实现固定只扫前
+  /// 20 万字符、并按尺寸降序取前 3 个，两条都让它必然失败。
+  func testFindsIconsDeclaredDeepInsideAVeryLargeHead() {
+    let filler = String(repeating: "<script>var x=1;</script>", count: 30_000)
+    let html = """
+    <head>\(filler)
+    <link rel="icon" href="/favicon-32x32.png" type="image/png"/>
+    <link rel="apple-touch-icon" sizes="96x96" href="/icons/icon-96x96.png"/>
+    <link rel="apple-touch-icon" sizes="512x512" href="/icons/icon-512x512.png"/>
+    </head>
+    """
+    XCTAssertGreaterThan(html.count, 200_000, "这条测试的前提就是 head 超过老的扫描窗口")
+
+    let urls = WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base)
+    XCTAssertFalse(urls.isEmpty, "声明藏在 head 深处也必须能读到，否则只能回落到首字母方块")
+    XCTAssertEqual(
+      urls.first?.absoluteString,
+      "https://www.residentialvps.com/icons/icon-96x96.png",
+      "该挑够用的最小那张：512×512 实测 197 KB，超缓存上限，拿了也白拿"
+    )
+  }
+
+  /// 正文里的 <link> 不算声明——扫描窗口放大后，这条边界必须仍然守住。
+  func testStopsScanningAtHeadEnd() {
+    let html = """
+    <head><link rel="icon" href="/real.png" sizes="64x64"></head>
+    <body><link rel="icon" href="/fake.png" sizes="128x128"></body>
+    """
+    XCTAssertEqual(
+      WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).map(\.absoluteString),
+      ["https://www.residentialvps.com/real.png"]
+    )
+  }
+
+  /// 一张都不够大时取其中最大的：糊总比没有强。
+  func testFallsBackToTheLargestWhenNoneReachesTheDisplaySize() {
+    let html = """
+    <link rel="icon" href="/tiny.png" sizes="16x16">
+    <link rel="icon" href="/small.png" sizes="32x32">
+    """
+    XCTAssertEqual(
+      WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).first?.absoluteString,
+      "https://www.residentialvps.com/small.png"
+    )
+  }
+
+  /// 矢量图任何尺寸都清晰，应当优先。现在大量站点只提供 SVG。
+  func testPrefersVectorIcons() {
+    let html = """
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
+    <link rel="apple-touch-icon" href="/icon-180.png" sizes="180x180">
+    """
+    XCTAssertEqual(
+      WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).first?.absoluteString,
+      "https://www.residentialvps.com/icon.svg"
+    )
+  }
+
+  func testAcceptsSVGButRejectsHTMLMislabelledAsSVG() {
+    XCTAssertTrue(WebsiteFaviconCache.isSupportedImage(
+      contentType: "image/svg+xml",
+      body: Data(#"<svg xmlns="http://www.w3.org/2000/svg"><circle r="8"/></svg>"#.utf8)
+    ), "只提供 SVG 图标的站点不该永远回落到首字母方块")
+
+    // SPA 把任意路径都回首页，是这条路上实测遇到过的坏法。
+    XCTAssertFalse(WebsiteFaviconCache.isSupportedImage(
+      contentType: "image/svg+xml",
+      body: Data("<!doctype html><html><body>not an icon</body></html>".utf8)
+    ))
+  }
+
+  /// 真实站点：`x.com/favicon.ico` 声明 `image/x-icon`，字节头却是 PNG。
+  ///
+  /// 按声明的类型去校验 magic bytes，就会拿 ICO 的头去比一张 PNG，必然不符——
+  /// X 的图标因此一直取不到。以字节为准才对：服务器怎么标都不影响它是什么。
+  func testAcceptsCorrectImageBytesEvenWhenContentTypeIsWrong() {
+    let png = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a] + Array(repeating: 0, count: 32))
+    XCTAssertTrue(WebsiteFaviconCache.isSupportedImage(contentType: "image/x-icon", body: png))
+    // CDN 不发 Content-Type 或一律发 octet-stream 也很常见，同样不该判死。
+    XCTAssertTrue(WebsiteFaviconCache.isSupportedImage(contentType: nil, body: png))
+    XCTAssertTrue(WebsiteFaviconCache.isSupportedImage(contentType: "application/octet-stream", body: png))
+  }
+
+  func testStillRejectsMislabelledRasterImages() {
+    XCTAssertFalse(WebsiteFaviconCache.isSupportedImage(
+      contentType: "image/png",
+      body: Data("<!doctype html>".utf8)
+    ))
+    XCTAssertTrue(WebsiteFaviconCache.isSupportedImage(
+      contentType: "image/png",
+      body: Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])
+    ))
   }
 }

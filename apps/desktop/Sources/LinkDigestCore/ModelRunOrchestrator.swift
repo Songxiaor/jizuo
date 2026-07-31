@@ -18,6 +18,8 @@ public struct PersistentRunRequest: Sendable, Equatable {
   public let summaryPrompt: String?
   public let translationModel: String?
   public let modelOverride: String?
+  /// 长正文翻译的分片并发度。nil 用 `ModelPreferences` 的默认值。
+  public let translationConcurrency: Int?
 
   public init(
     runID: RunID,
@@ -27,7 +29,8 @@ public struct PersistentRunRequest: Sendable, Equatable {
     targetLanguage: String? = nil,
     summaryPrompt: String? = nil,
     translationModel: String? = nil,
-    modelOverride: String? = nil
+    modelOverride: String? = nil,
+    translationConcurrency: Int? = nil
   ) {
     self.runID = runID
     self.taskID = taskID
@@ -37,6 +40,7 @@ public struct PersistentRunRequest: Sendable, Equatable {
     self.summaryPrompt = summaryPrompt
     self.translationModel = translationModel
     self.modelOverride = modelOverride
+    self.translationConcurrency = translationConcurrency
   }
 
   public var idempotencyKey: String { "run:v1:ui:\(runID.rawValue)" }
@@ -45,6 +49,12 @@ public struct PersistentRunRequest: Sendable, Equatable {
 public enum RunState: Sendable, Equatable {
   case idle
   case starting(intent: RunIntentKind)
+  /// 推理模型已经开始吐思考过程，但正文还没开始。
+  ///
+  /// 单独立一个状态是因为它在界面上的含义完全不同：`.starting` 是「还没连上」，
+  /// 而这个是「连上了、正在想」。推理模型这一段能持续几十秒，没有区分的话，
+  /// 用户看到的是一个和卡死无法分辨的静止界面。
+  case thinking(intent: RunIntentKind)
   case streaming(intent: RunIntentKind, partialText: String)
   case stopping(intent: RunIntentKind, partialText: String)
   case stopped(intent: RunIntentKind, partialText: String)
@@ -55,7 +65,7 @@ public enum RunState: Sendable, Equatable {
 
   public var isActive: Bool {
     switch self {
-    case .starting, .streaming, .stopping:
+    case .starting, .thinking, .streaming, .stopping:
       true
     case .idle, .stopped, .completed, .incomplete, .failed, .storageError:
       false
@@ -72,7 +82,8 @@ public enum RunState: Sendable, Equatable {
       partialText
     case let .completed(_, text):
       text
-    case .idle, .starting, .failed:
+    // 思考过程绝不算输出：它一个字都不该出现在产物里。
+    case .idle, .starting, .thinking, .failed:
       ""
     }
   }
@@ -216,6 +227,7 @@ public actor ModelRunOrchestrator {
           summaryPrompt: request.summaryPrompt,
           translationModel: request.translationModel,
           modelOverride: request.modelOverride,
+          translationConcurrency: request.translationConcurrency,
           taskID: request.taskID,
           capture: capture,
           authorization: authorization
@@ -292,6 +304,7 @@ public actor ModelRunOrchestrator {
     summaryPrompt: String?,
     translationModel: String?,
     modelOverride: String?,
+    translationConcurrency: Int?,
     taskID: TaskID,
     capture: CapturedDocument?,
     authorization: ProviderAuthorization?
@@ -419,13 +432,32 @@ public actor ModelRunOrchestrator {
       .connectionTest
     }
 
-    var reportedUsage = RunUsageCost.unknown
-    do {
-      for try await event in provider.stream(
+    // 长正文翻译改走分片并发：译文长度和原文同量级，单条请求里模型只能串行吐
+    // token，所以整篇一次发时耗时随长度线性增长（实测 3.8 万字 6.5 分钟未完）。
+    // 只有翻译走这条路——总结的输出远短于输入，瓶颈不在这里，拆开反而丢上下文。
+    let events: AsyncThrowingStream<ModelStreamEvent, Error>
+    if intentKind == .translate, ChunkedTranslationStreamer.shouldChunk(text) {
+      events = ChunkedTranslationStreamer(
+        provider: provider,
+        concurrency: translationConcurrency ?? ModelPreferences.defaultTranslationConcurrency
+      ).stream(
+        profile: effectiveProfile,
+        apiKey: credentials.apiKey,
+        title: title?.isEmpty == true ? nil : title,
+        text: text,
+        targetLanguage: targetLanguage ?? "简体中文"
+      )
+    } else {
+      events = provider.stream(
         profile: effectiveProfile,
         apiKey: credentials.apiKey,
         intent: intent
-      ) {
+      )
+    }
+
+    var reportedUsage = RunUsageCost.unknown
+    do {
+      for try await event in events {
         try Task.checkCancellation()
         switch event {
         case let .delta(delta):
@@ -435,6 +467,12 @@ public actor ModelRunOrchestrator {
             runID: runID,
             intent: intentKind
           )
+        case .reasoning:
+          // 内容本身丢弃——它不是生成结果。只把「正在想」这件事报给界面，
+          // 而且仅在正文还没开始时报，免得中途的思考把已有译文顶掉。
+          if currentCommittedPartialText.isEmpty {
+            await publishThinking(intent: intentKind)
+          }
         case let .usage(usage):
           reportedUsage = usage
         case .completed:
@@ -472,6 +510,17 @@ public actor ModelRunOrchestrator {
         retryable: false
       )
     }
+  }
+
+  /// 报告「模型正在思考」。
+  ///
+  /// 刻意不落盘、不动 `currentCommittedPartialText`：思考过程不是产物，这里改变的
+  /// 只有界面上那行字。
+  private func publishThinking(intent: RunIntentKind) async {
+    guard let runID = currentRunID, !Task.isCancelled,
+          let onState = currentStateHandler
+    else { return }
+    await onState(runID, .thinking(intent: intent))
   }
 
   private func receiveDelta(

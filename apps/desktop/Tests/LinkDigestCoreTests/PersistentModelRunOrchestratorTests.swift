@@ -185,6 +185,7 @@ private actor PersistentStateRecorder {
     updates.append((runID, state))
     switch state {
     case .starting: log.append("state:starting")
+    case .thinking: log.append("state:thinking")
     case .streaming: log.append("state:streaming")
     case .completed: log.append("state:completed")
     case .failed: log.append("state:failed")

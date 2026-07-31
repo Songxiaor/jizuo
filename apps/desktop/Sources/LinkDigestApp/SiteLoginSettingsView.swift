@@ -136,6 +136,8 @@ struct SiteLoginSettingsView: View {
           .accessibilityIdentifier("site-login-bilibili-verification")
       }
 
+      diagnosticLabel(session: bilibiliSession, id: "bilibili")
+
       cardActions(
         primary: {
           Button(bilibiliSession.isLoggedIn ? "重新登录…" : "登录…") {
@@ -191,6 +193,8 @@ struct SiteLoginSettingsView: View {
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("site-login-\(id)-note")
       }
+
+      diagnosticLabel(session: session, id: id)
 
       cardActions(
         primary: {
@@ -275,6 +279,22 @@ struct SiteLoginSettingsView: View {
             .textSelection(.enabled)
         }
       }
+    }
+  }
+
+  /// 上一次读取 cookie 的实测结果。
+  ///
+  /// 放在这一页是因为「显示未登录」正是在这里被看到的：判断到底是一条都没读到、
+  /// 还是读到了但少一个名字，必须和状态胶囊在同一屏，否则对不上号。
+  @ViewBuilder
+  private func diagnosticLabel(session: SiteSessionController, id: String) -> some View {
+    if let diagnostic = session.sessionDiagnostic {
+      Label(diagnostic, systemImage: "stethoscope")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("site-login-\(id)-diagnostic")
     }
   }
 

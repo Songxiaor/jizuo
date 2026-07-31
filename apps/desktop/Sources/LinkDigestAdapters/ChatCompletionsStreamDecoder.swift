@@ -54,6 +54,14 @@ public struct ChatCompletionsStreamDecoder: Sendable {
       return .delta(content)
     }
 
+    // 思考过程排在正文之后判断：同一个 chunk 里两者都有时，正文永远优先，
+    // 思考绝不会挤掉真正的输出。
+    // `reasoning_content` 是 DeepSeek 起头、StepFun 等跟进的兼容字段名，
+    // `reasoning` 是 StepFun 的默认字段（reasoning_format=general），两个都收。
+    if let reasoning = response.choices?.first?.delta.reasoningText, !reasoning.isEmpty {
+      return .reasoning(reasoning)
+    }
+
     if response.hasUsage {
       // A malformed usage-only tail is intentionally ignored. The provider can
       // still send [DONE], which completes the user-visible generation.
@@ -93,6 +101,20 @@ public struct ChatCompletionsStreamDecoder: Sendable {
 
   private struct Delta: Decodable {
     let content: String?
+    let reasoningContent: String?
+    let reasoning: String?
+
+    /// 两个字段名指向同一个东西，取先到的那个。
+    var reasoningText: String? {
+      let candidate = reasoningContent ?? reasoning
+      return candidate?.isEmpty == true ? nil : candidate
+    }
+
+    enum CodingKeys: String, CodingKey {
+      case content
+      case reasoningContent = "reasoning_content"
+      case reasoning
+    }
   }
 
   /// OpenAI-compatible providers commonly emit this as a final chunk with an

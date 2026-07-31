@@ -119,3 +119,57 @@ final class MediaStorageSettingsViewModelTests: XCTestCase {
     XCTAssertTrue(reloaded.autoSaveCapturedVideo)
   }
 }
+
+/// 单个视频上限的可选区间与显示。
+///
+/// 原来是 1–128 GB：起点太高（想只留几百兆的短视频做不到），上界又高到等于没有
+/// 上限。现在收成 200 MB – 2 GB。
+@MainActor
+final class MediaStorageDownloadLimitRangeTests: XCTestCase {
+  func testRangeIsTwoHundredMegabytesToTwoGigabytes() {
+    XCTAssertEqual(MediaStorageSettingsViewModel.minimumLimitMegabytes, 200)
+    XCTAssertEqual(MediaStorageSettingsViewModel.maximumLimitMegabytes, 2048)
+    // 默认值必须落在区间内，否则打开设置页看到的就是个非法值。
+    XCTAssertGreaterThanOrEqual(
+      LocalMediaStore.defaultDownloadLimitBytes / (1024 * 1024),
+      MediaStorageSettingsViewModel.minimumLimitMegabytes
+    )
+    XCTAssertLessThanOrEqual(
+      LocalMediaStore.defaultDownloadLimitBytes / (1024 * 1024),
+      MediaStorageSettingsViewModel.maximumLimitMegabytes
+    )
+  }
+
+  /// 步进要能从起点走到终点，不能卡在半路。
+  func testSteppingCoversTheWholeRange() {
+    let step = MediaStorageSettingsViewModel.limitStepMegabytes
+    XCTAssertGreaterThan(step, 0)
+    var value = MediaStorageSettingsViewModel.minimumLimitMegabytes
+    var hops = 0
+    while value < MediaStorageSettingsViewModel.maximumLimitMegabytes, hops < 100 {
+      value += step
+      hops += 1
+    }
+    XCTAssertGreaterThanOrEqual(value, MediaStorageSettingsViewModel.maximumLimitMegabytes)
+    XCTAssertLessThan(hops, 20, "档位太多，用户得一直点")
+  }
+
+  /// 顶档和它下面一档不能显示成同一个字样，否则看起来像点了没反应。
+  func testTopTwoStepsReadDifferently() {
+    let top = MediaStorageSettingsViewModel.maximumLimitMegabytes
+    let below = top - MediaStorageSettingsViewModel.limitStepMegabytes
+    XCTAssertNotEqual(
+      MediaStorageSettingsViewModel.formattedLimit(megabytes: top),
+      MediaStorageSettingsViewModel.formattedLimit(megabytes: below)
+    )
+  }
+
+  func testFormattingSwitchesToGigabytesOnlyAboveOneGigabyte() {
+    XCTAssertEqual(MediaStorageSettingsViewModel.formattedLimit(megabytes: 200), "200 MB")
+    XCTAssertEqual(MediaStorageSettingsViewModel.formattedLimit(megabytes: 1000), "1000 MB")
+    XCTAssertEqual(MediaStorageSettingsViewModel.formattedLimit(megabytes: 1024), "1 GB")
+    XCTAssertEqual(MediaStorageSettingsViewModel.formattedLimit(megabytes: 2048), "2 GB")
+    // 向下取整：2000 MB 是 1.95 GB，不能显示成 2 GB。
+    XCTAssertEqual(MediaStorageSettingsViewModel.formattedLimit(megabytes: 2000), "1.9 GB")
+  }
+}

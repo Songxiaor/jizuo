@@ -34,7 +34,19 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
   public let autoTranscribeNewCaptures: Bool?
   public let autoSummarizeNewCaptures: Bool?
   public let autoMindMapNewCaptures: Bool?
+  /// 长正文翻译时同时在飞的分片数。nil 取 `defaultTranslationConcurrency`，
+  /// 旧 JSON 因此仍能解码。
+  ///
+  /// 有上限是因为这个值直接换成对服务商的并发请求数：免费档端点常有速率限制，
+  /// 调太高只会把提速换成一片 429 重试，反而更慢。
+  public let translationConcurrency: Int?
   public var targetLanguage: String { outputLanguage }
+
+  public static let defaultTranslationConcurrency = 3
+  public static let translationConcurrencyRange = 1...6
+  public var effectiveTranslationConcurrency: Int {
+    translationConcurrency ?? Self.defaultTranslationConcurrency
+  }
 
   public init(
     summaryPrompt: String = ModelPreferences.defaultSummaryPrompt,
@@ -45,7 +57,8 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     autoTidyTranscription: Bool? = nil,
     autoTranscribeNewCaptures: Bool? = nil,
     autoSummarizeNewCaptures: Bool? = nil,
-    autoMindMapNewCaptures: Bool? = nil
+    autoMindMapNewCaptures: Bool? = nil,
+    translationConcurrency: Int? = nil
   ) throws {
     let trimmedPrompt = summaryPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
     let trimmedLanguage = targetLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -79,6 +92,15 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     self.autoTranscribeNewCaptures = autoTranscribeNewCaptures == true ? true : nil
     self.autoSummarizeNewCaptures = autoSummarizeNewCaptures == true ? true : nil
     self.autoMindMapNewCaptures = autoMindMapNewCaptures == true ? true : nil
+    // 越界的值夹回区间而不是抛错：这是个性能旋钮，不是数据契约，
+    // 因为一个手滑的数字让整份偏好存不下去不成比例。
+    //
+    // 等于默认值时存 nil，和本结构体其它可选字段一个约定（nil = 用户没设过）。
+    // 好处是以后调整默认值，没主动改过这项的用户会自动跟上，而不是被一个当年
+    // 顺手写进 JSON 的数字钉死。
+    self.translationConcurrency = translationConcurrency
+      .map { min(max($0, Self.translationConcurrencyRange.lowerBound), Self.translationConcurrencyRange.upperBound) }
+      .flatMap { $0 == Self.defaultTranslationConcurrency ? nil : $0 }
   }
 
   public init(
@@ -90,7 +112,8 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     autoTidyTranscription: Bool? = nil,
     autoTranscribeNewCaptures: Bool? = nil,
     autoSummarizeNewCaptures: Bool? = nil,
-    autoMindMapNewCaptures: Bool? = nil
+    autoMindMapNewCaptures: Bool? = nil,
+    translationConcurrency: Int? = nil
   ) throws {
     try self.init(
       summaryPrompt: summaryPrompt,
@@ -101,7 +124,8 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
       autoTidyTranscription: autoTidyTranscription,
       autoTranscribeNewCaptures: autoTranscribeNewCaptures,
       autoSummarizeNewCaptures: autoSummarizeNewCaptures,
-      autoMindMapNewCaptures: autoMindMapNewCaptures
+      autoMindMapNewCaptures: autoMindMapNewCaptures,
+      translationConcurrency: translationConcurrency
     )
   }
 

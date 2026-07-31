@@ -45,8 +45,9 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
   }
 
   /// Fetches at most one 64 KiB favicon for a previously captured host.
-  /// Redirects stay on that normalized host; the transport separately validates
-  /// every redirect URL and actual network peer.
+  /// Redirects may leave the original host (icons are commonly served from a
+  /// CDN); the transport separately validates every redirect URL and actual
+  /// network peer, and only verified image bytes are ever written to disk.
   public func localImageURL(
     fetchingIfNeededFor sourceURL: URL,
     resources: any SafeResourceFetching
@@ -66,24 +67,15 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
     var response: SafeResourceResponse?
     for host in Self.faviconHostChain(from: sourceHost) {
       guard let faviconURL = Self.faviconURL(host: host) else { continue }
-      let sameHost: @Sendable (URL) -> Bool = { candidate in
-        guard candidate.user == nil, candidate.password == nil,
-              let scheme = candidate.scheme?.lowercased(), ["http", "https"].contains(scheme),
-              (scheme == "http" && (candidate.port == nil || candidate.port == 80)) ||
-                (scheme == "https" && (candidate.port == nil || candidate.port == 443)),
-              let candidateHost = PublicWebURLPolicy.normalizedHost(candidate.host ?? "")
-        else { return false }
-        return candidateHost == host
-      }
       guard let candidate = try? await resources.fetchResource(.init(
         url: faviconURL,
         headers: ["Accept": "image/x-icon,image/vnd.microsoft.icon,image/png,image/*;q=0.8"],
         byteLimit: Self.perHostByteLimit,
-        allowsRedirectTarget: sameHost
+        allowsRedirectTarget: Self.isSafeIconLocation
       )),
         (200...299).contains(candidate.statusCode),
         candidate.body.count <= Self.perHostByteLimit,
-        sameHost(candidate.url),
+        Self.isSafeIconLocation(candidate.url),
         Self.isSupportedImage(candidate)
       else { continue }
       response = candidate
@@ -158,10 +150,28 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
     return nil
   }
 
-  /// 只读 head 够用的量；整页可能几 MB，为了一个图标不值得。
-  private static let htmlByteLimit = 256 * 1024
+  /// 页面 HTML 的抓取上限。
+  ///
+  /// 原来是 256 KB，注释写着「只读 head 够用的量」——这个假设被真实站点推翻了：
+  /// `www.databricks.com` 的博客页整页 722 KB，而 `<link rel="icon">` 出现在第
+  /// 533,361 个字符（前面全是内联脚本与 JSON）。截断在 256 KB 意味着那 9 条图标
+  /// 声明从头到尾没被看见过，图标只能回落到首字母方块。
+  ///
+  /// 一个 host 的图标最多每 30 天取一次（失败也有 24 小时负缓存），为此多读几百 KB
+  /// 是划算的；仍保留硬上限，避免真正失控的页面把内存吃掉。
+  private static let htmlByteLimit = 1024 * 1024
   /// 一页里声明四五个尺寸很常见，试太多等于为一个图标打一串请求。
-  private static let maximumDeclaredIconAttempts = 3
+  private static let maximumDeclaredIconAttempts = 5
+
+  /// 列表里的图标只有 20pt 见方（视网膜屏约 40px）。
+  ///
+  /// 所以「越大越好」是错的：512×512 的 PNG 实测 197 KB，既超 64 KiB 缓存上限，
+  /// 拿到了也只是被缩到 20pt。按与这个尺寸的接近程度排，才会挑中真正合用的那张
+  /// ——databricks 那张 32×32 的只有 914 字节。
+  static let preferredIconPixelSize = 64
+  /// `<link rel="icon">` 不写 sizes 时的惯例尺寸。当作 32 处理，而不是当作 0 排到
+  /// 最后——不写 sizes 的往往正是那张最标准的小图标。
+  private static let assumedIconPixelSize = 32
 
   /// 从页面 HTML 里读出它自己声明的图标地址。
   ///
@@ -170,15 +180,27 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
   /// - `www.residentialvps.com` 返回 200 但 content-type 是 `text/html`——
   ///   SPA 把所有未知路径都回首页，退到注册域也是同一份 HTML。
   ///
-  /// 站点自己在 `<link rel="icon">` 里声明的地址才是权威来源。按 sizes 里的
-  /// 像素数降序取，拿不到尺寸的排在后面——16×16 也能用，但有大的优先。
+  /// 站点自己在 `<link rel="icon">` 里声明的地址才是权威来源。
+  ///
+  /// 按「与列表显示尺寸的接近程度」排序，不是按大小降序。降序排会先试 512×512
+  /// 那种上百 KB 的图，连着几次撞上缓存上限，把有限的尝试次数全耗光，而真正合用
+  /// 的小图标排在最后一个永远轮不到。
   static func declaredIconURLs(inHTML html: String, baseURL: URL) -> [URL] {
     let pattern = #"<link\b[^>]*\brel\s*=\s*["']([^"']*)["'][^>]*>"#
     guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
     else { return [] }
-    // 只扫 head 附近：正文里的 <link> 不是图标声明，扫全文既慢又容易误命中。
-    let scope = String(html.prefix(200_000))
-    var found: [(url: URL, weight: Int)] = []
+    // 扫到 </head> 为止：正文里的 <link> 不是图标声明。
+    //
+    // 原来是固定截前 20 万字符，这在 head 本身就超过 20 万字符的站点上等于什么都
+    // 没扫到（databricks 的图标声明在第 53 万字符）。用真实的 head 边界，既不会
+    // 漏掉靠后的声明，也不会把整篇正文卷进来。
+    let scope: String = {
+      if let headEnd = html.range(of: "</head>", options: [.caseInsensitive]) {
+        return String(html[html.startIndex..<headEnd.lowerBound])
+      }
+      return html
+    }()
+    var found: [(url: URL, side: Int)] = []
     for match in regex.matches(in: scope, range: NSRange(scope.startIndex..., in: scope)) {
       guard let tagRange = Range(match.range, in: scope),
             let relRange = Range(match.range(at: 1), in: scope)
@@ -194,15 +216,37 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
             let scheme = resolved.scheme?.lowercased(), ["http", "https"].contains(scheme),
             resolved.user == nil, resolved.password == nil
       else { continue }
-      let side = attribute("sizes", in: tag)
-        .flatMap { $0.lowercased().split(separator: "x").first.flatMap { Int($0) } } ?? 0
+      let declared = attribute("sizes", in: tag)
+        .flatMap { $0.lowercased().split(separator: "x").first.flatMap { Int($0) } }
+      // 矢量图没有像素尺寸，任何显示尺寸下都清晰，按最合适处理。
+      let isVector = attribute("type", in: tag)?.lowercased().contains("svg") == true
+        || resolved.pathExtension.lowercased() == "svg"
+      let side = isVector ? preferredIconPixelSize : (declared ?? assumedIconPixelSize)
       found.append((resolved, side))
     }
     // 去重保序：同一个地址被 icon 和 apple-touch-icon 同时声明很常见。
     var seen = Set<String>()
     return found
-      .sorted { $0.weight > $1.weight }
+      .sorted(by: isBetterIcon)
       .compactMap { seen.insert($0.url.absoluteString).inserted ? $0.url : nil }
+  }
+
+  /// 取「不小于显示尺寸的最小那张」。
+  ///
+  /// 两个方向都会出问题，所以不能简单地按大小排：
+  /// - 一味求大：512×512 实测 197 KB，超 64 KiB 缓存上限直接被丢，白费一次尝试；
+  /// - 一味求小：16×16 拉到 40px 显示是糊的。
+  ///
+  /// 够用的里面挑最小的，既清晰又省流量。一张都不够大时退而取其中最大的——糊总比
+  /// 没有强。
+  private static func isBetterIcon(
+    _ lhs: (url: URL, side: Int),
+    _ rhs: (url: URL, side: Int)
+  ) -> Bool {
+    let lhsSufficient = lhs.side >= preferredIconPixelSize
+    let rhsSufficient = rhs.side >= preferredIconPixelSize
+    if lhsSufficient != rhsSufficient { return lhsSufficient }
+    return lhsSufficient ? lhs.side < rhs.side : lhs.side > rhs.side
   }
 
   private static func attribute(_ name: String, in tag: String) -> String? {
@@ -247,6 +291,28 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
     return parent
   }
 
+  /// 猜 `/favicon.ico` 这条路上，一个地址是否还值得继续跟下去。
+  ///
+  /// 原来这里额外要求**必须同域**，实测把一整类站点判死了：`www.douyin.com/favicon.ico`
+  /// 返回 302 跳到 `lf1-cdn-tos.bytegoofy.com`，那是一张 4286 字节的标准 ICO，却因为
+  /// 跨域被丢掉。而抖音的页面 HTML 是 SPA 外壳——`</head>` 出现在第 36 个字节、零个
+  /// `<link rel="icon">`，所以退到「读页面声明」那条路同样无路可走。两条路被同一个
+  /// 盲点堵死，结果就是永远回落到首字母方块。
+  ///
+  /// 把图标托管在 CDN 上是主流做法，同域要求会持续误伤。放宽的只是「必须同域」这一
+  /// 条，理由和读页面声明那条路完全一致：URL 仍走 `PublicWebURLPolicy`、有 64 KiB
+  /// 字节上限、且必须通过 magic bytes 校验才会落盘。凭据、非 http(s) 协议和非标准
+  /// 端口照旧拒绝——那几条挡的是别的东西，不能一起放掉。
+  static func isSafeIconLocation(_ candidate: URL) -> Bool {
+    guard candidate.user == nil, candidate.password == nil,
+          let scheme = candidate.scheme?.lowercased(), ["http", "https"].contains(scheme),
+          (scheme == "http" && (candidate.port == nil || candidate.port == 80)) ||
+            (scheme == "https" && (candidate.port == nil || candidate.port == 443)),
+          let host = PublicWebURLPolicy.normalizedHost(candidate.host ?? ""), !host.isEmpty
+    else { return false }
+    return true
+  }
+
   static func faviconURL(host: String) -> URL? {
     var components = URLComponents()
     components.scheme = "https"
@@ -280,25 +346,56 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
   }
 
   private static func isSupportedImage(_ response: SafeResourceResponse) -> Bool {
-    guard let type = response.contentType?.split(separator: ";", maxSplits: 1).first?
-      .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    isSupportedImage(contentType: response.contentType, body: response.body)
+  }
+
+  /// 内容类型 + magic bytes 的纯判断。
+  ///
+  /// 抽出来是为了能直接测：这是「图标为什么没出现」最容易出错的一环，而构造一个
+  /// 完整的 `SafeResourceResponse` 只为断言几个字节头并不划算。
+  /// **以字节为准，Content-Type 只当提示。**
+  ///
+  /// 原来是「按声明的类型选一套 magic bytes 去校验」，于是任何标错类型的站点都被
+  /// 判死。实测 `x.com/favicon.ico` 声明 `image/x-icon`，字节头却是
+  /// `89 50 4E 47`——一张标准 PNG。同类还有不发 Content-Type、或一律发
+  /// `application/octet-stream` 的 CDN。认头不认字节，等于把这些站点全部放弃。
+  ///
+  /// 反过来以字节为准既更宽也更严：只接受确实是已知图片格式的内容，服务器怎么说
+  /// 都不影响判断，把 HTML 错标成图片那种坏法照样挡得住。
+  static func isSupportedImage(contentType: String?, body: Data) -> Bool {
+    if hasRasterImageMagicBytes(body) { return true }
+    return looksLikeSVG(body)
+  }
+
+  private static func hasRasterImageMagicBytes(_ body: Data) -> Bool {
+    if body.starts(with: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) { return true }  // PNG
+    if body.starts(with: [0xff, 0xd8, 0xff]) { return true }                                 // JPEG
+    if body.starts(with: Array("GIF87a".utf8)) || body.starts(with: Array("GIF89a".utf8)) { return true }
+    if body.starts(with: [0x00, 0x00, 0x01, 0x00]) { return true }                           // ICO
+    if body.count >= 12,
+       body.starts(with: Array("RIFF".utf8)),
+       Data(body.dropFirst(8).prefix(4)) == Data("WEBP".utf8) { return true }
+    // AVIF：`....ftypavif`。越来越多站点用它，NSImage 在 macOS 13+ 能解。
+    if body.count >= 12,
+       Data(body.dropFirst(4).prefix(4)) == Data("ftyp".utf8),
+       Data(body.dropFirst(8).prefix(4)) == Data("avif".utf8) { return true }
+    return false
+  }
+
+  /// SVG 是文本，没有 magic bytes，只能按内容判。
+  ///
+  /// 现在大量站点只提供 SVG 图标，不认它等于对这些站点永远回落到首字母方块。
+  /// NSImage 能直接解码 SVG（本机 macOS 26 实测通过）。
+  ///
+  /// 必须同时排除 HTML：猜路径那条路上实测遇到过 SPA 把任意未知路径都回首页，
+  /// 那份 HTML 里也可能内嵌 `<svg>`，只查 `<svg` 会把整张首页当图标存下来。
+  private static func looksLikeSVG(_ body: Data) -> Bool {
+    guard let text = String(data: Data(body.prefix(4096)), encoding: .utf8)?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .lowercased()
     else { return false }
-    switch type {
-    case "image/png":
-      return response.body.starts(with: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
-    case "image/jpeg":
-      return response.body.starts(with: [0xff, 0xd8, 0xff])
-    case "image/gif":
-      return response.body.starts(with: Array("GIF87a".utf8)) || response.body.starts(with: Array("GIF89a".utf8))
-    case "image/webp":
-      return response.body.count >= 12
-        && response.body.starts(with: Array("RIFF".utf8))
-        && Data(response.body[8..<12]) == Data("WEBP".utf8)
-    case "image/x-icon", "image/vnd.microsoft.icon":
-      return response.body.starts(with: [0x00, 0x00, 0x01, 0x00])
-    default:
-      return false
-    }
+    guard !text.hasPrefix("<!doctype html"), !text.hasPrefix("<html") else { return false }
+    return text.hasPrefix("<svg") || (text.hasPrefix("<?xml") && text.contains("<svg"))
   }
 
   private func negativeCacheURL(for key: String) -> URL {

@@ -26,6 +26,12 @@ public enum RunIntentKind: String, Codable, Sendable, Equatable {
 
 public enum ModelStreamEvent: Sendable, Equatable {
   case delta(String)
+  /// 推理模型在正式作答前吐出的思考过程（`reasoning_content`）。
+  ///
+  /// 它**不是**生成结果，绝不能写进产物：那会把思考过程当成译文存下来。但它是
+  /// 「模型还活着、正在想」的唯一信号——没有它，推理模型开头那几十秒的静默在
+  /// 界面上和卡死完全一样。
+  case reasoning(String)
   /// Provider-reported token counters from a terminal SSE chunk. They are
   /// accounting metadata, not model output, and must never be rendered as
   /// generated text.

@@ -105,15 +105,25 @@ final class MarkdownPresentationTests: XCTestCase {
     // 性能：CGImageSource 下采样 + NSCache；解码在后台 Task。
     XCTAssertTrue(imaging.contains("kCGImageSourceThumbnailMaxPixelSize"))
     XCTAssertTrue(imaging.contains("Task.detached(priority: .userInitiated)"))
-    // 灯箱：点击图外暗区退出、Esc 退出、捏合 + 滚轮缩放、拖拽平移、双击切换。
+    // 灯箱：点击图外暗区退出、Esc 退出、捏合缩放、拖拽平移、双击切换。
     XCTAssertTrue(imaging.contains(".onTapGesture { InlineImageLightboxController.shared.dismiss() }"))
     XCTAssertTrue(imaging.contains(".keyboardShortcut(.cancelAction)"))
     XCTAssertTrue(imaging.contains("MagnificationGesture()"))
     XCTAssertTrue(imaging.contains("DragGesture()"))
     XCTAssertTrue(imaging.contains(".onTapGesture(count: 2) { toggleZoom() }"))
-    // 查看框：图片与手势裁剪在框内；滚轮只在框 frame 内消费，随视图离窗解绑。
+    // 滚动分派：触控板两指滑动平移、鼠标滚轮缩放，两种意图都要接上。
+    // 断言写行为而不是类名——类名改一次就假失败一次，行为才是要守的东西。
+    XCTAssertTrue(imaging.contains("hasPreciseScrollingDeltas"))
+    XCTAssertTrue(imaging.contains("case let .pan(delta)"))
+    XCTAssertTrue(imaging.contains("case let .zoom(delta)"))
+    // 平移必须有边界，否则图能被滑出画布只剩空白。三条改变位置的路径
+    // ——拖拽、滚动平移、缩放后回拉——都要钳制，少接一处就漏一个口子。
+    XCTAssertGreaterThanOrEqual(
+      imaging.components(separatedBy: "LightboxPanBounds.clamp(").count - 1, 3,
+      "拖拽、滚动平移、缩放后回拉都必须经过平移边界"
+    )
+    // 查看框：图片与手势裁剪在框内；滚动只在框 frame 内消费，随视图离窗解绑。
     XCTAssertTrue(imaging.contains(".clipped()"))
-    XCTAssertTrue(imaging.contains("LightboxWheelZoomCatcher"))
     XCTAssertTrue(imaging.contains("self.bounds.contains(pointInSelf)"))
     XCTAssertTrue(imaging.contains("viewDidMoveToWindow"))
     XCTAssertTrue(imaging.contains("存储为…"))
@@ -408,5 +418,93 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(converted.redComponent, CGFloat(red) / 255, accuracy: 0.001, file: file, line: line)
     XCTAssertEqual(converted.greenComponent, CGFloat(green) / 255, accuracy: 0.001, file: file, line: line)
     XCTAssertEqual(converted.blueComponent, CGFloat(blue) / 255, accuracy: 0.001, file: file, line: line)
+  }
+}
+
+/// 灯箱里一次滚动事件该被判成平移还是缩放。
+///
+/// 原来所有 `scrollWheel` 一律当缩放，触控板上不管往哪滑都只会放大缩小，
+/// 大图根本没法看到别的部分。
+final class LightboxScrollIntentTests: XCTestCase {
+  /// 触控板两指滑动是「移动内容」，必须平移——这是修复的核心。
+  func testTrackpadTwoFingerScrollPans() {
+    XCTAssertEqual(
+      lightboxScrollIntent(hasPreciseScrollingDeltas: true, modifiers: [], deltaX: 0, deltaY: -30),
+      .pan(CGSize(width: 0, height: -30))
+    )
+    XCTAssertEqual(
+      lightboxScrollIntent(hasPreciseScrollingDeltas: true, modifiers: [], deltaX: 24, deltaY: 0),
+      .pan(CGSize(width: 24, height: 0))
+    )
+  }
+
+  /// 斜向滑动两个轴都要跟手，不能只取一个方向。
+  func testDiagonalTrackpadScrollPansOnBothAxes() {
+    XCTAssertEqual(
+      lightboxScrollIntent(hasPreciseScrollingDeltas: true, modifiers: [], deltaX: 12, deltaY: -8),
+      .pan(CGSize(width: 12, height: -8))
+    )
+  }
+
+  /// 鼠标没有捏合手势，滚轮是它唯一能表达缩放的方式，这一路不能被一起改掉。
+  func testMouseWheelStillZooms() {
+    XCTAssertEqual(
+      lightboxScrollIntent(hasPreciseScrollingDeltas: false, modifiers: [], deltaX: 0, deltaY: 6),
+      .zoom(6)
+    )
+  }
+
+  /// ⌘/⌥ + 滚动是通用的「强制缩放」，触控板用户也该能用。
+  func testModifierForcesZoomEvenOnTrackpad() {
+    XCTAssertEqual(
+      lightboxScrollIntent(hasPreciseScrollingDeltas: true, modifiers: [.command], deltaX: 0, deltaY: 10),
+      .zoom(10)
+    )
+    XCTAssertEqual(
+      lightboxScrollIntent(hasPreciseScrollingDeltas: true, modifiers: [.option], deltaX: 3, deltaY: 10),
+      .zoom(10)
+    )
+  }
+
+  /// 零增量不产生动作，否则惯性尾巴会把图钉住不放。
+  func testZeroDeltaProducesNoIntent() {
+    XCTAssertNil(lightboxScrollIntent(hasPreciseScrollingDeltas: true, modifiers: [], deltaX: 0, deltaY: 0))
+    XCTAssertNil(lightboxScrollIntent(hasPreciseScrollingDeltas: false, modifiers: [], deltaX: 0, deltaY: 0))
+  }
+}
+
+/// 平移的边界。原来完全不设限，能把图一路滑出画布只剩空白。
+final class LightboxPanBoundsTests: XCTestCase {
+  /// 图比画布大时可以拖，但边缘不能离开画布——画布里永远填满图。
+  func testLargeContentPansOnlyUntilItsEdgeMeetsTheCanvas() {
+    // 内容 1000、画布 600 → 两侧各能拖 200。
+    XCTAssertEqual(LightboxPanBounds.clampAxis(0, content: 1000, container: 600), 0)
+    XCTAssertEqual(LightboxPanBounds.clampAxis(150, content: 1000, container: 600), 150)
+    XCTAssertEqual(LightboxPanBounds.clampAxis(9999, content: 1000, container: 600), 200)
+    XCTAssertEqual(LightboxPanBounds.clampAxis(-9999, content: 1000, container: 600), -200)
+  }
+
+  /// 图比画布小就没有多余部分可看，锁定居中，不能被推到角落。
+  func testSmallContentStaysCentered() {
+    XCTAssertEqual(LightboxPanBounds.clampAxis(500, content: 300, container: 600), 0)
+    XCTAssertEqual(LightboxPanBounds.clampAxis(-500, content: 300, container: 600), 0)
+  }
+
+  /// 两个轴各判各的：横向能拖不代表纵向也能拖。
+  func testAxesAreBoundedIndependently() {
+    let clamped = LightboxPanBounds.clamp(
+      CGSize(width: 9999, height: 9999),
+      contentSize: CGSize(width: 1000, height: 300),
+      containerSize: CGSize(width: 600, height: 600)
+    )
+    XCTAssertEqual(clamped, CGSize(width: 200, height: 0))
+  }
+
+  /// 缩小后原先合法的位置会越界，必须被拉回来，否则缩小时会留下空白。
+  func testShrinkingPullsAnOutOfBoundsOffsetBack() {
+    let atEdge = LightboxPanBounds.clampAxis(200, content: 1000, container: 600)
+    XCTAssertEqual(atEdge, 200)
+    // 缩到 700 后只剩 ±50 的余量。
+    XCTAssertEqual(LightboxPanBounds.clampAxis(atEdge, content: 700, container: 600), 50)
   }
 }

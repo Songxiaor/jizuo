@@ -9,16 +9,22 @@ import LinkDigestCore
 /// later from a saved URL. Task deletion removes the DB row (CASCADE) and then
 /// unlinks the file when no other task still references the same content hash.
 public final class LocalMediaStore: @unchecked Sendable {
-  /// User-configurable ceiling for "保存到本地". A fixed 200 MB refused videos the
-  /// user had explicitly asked to keep, which is the wrong default for a
-  /// downloader. The bound stays finite because the whole transport layer is
-  /// built on a finite `byteLimit`: an unbounded value would remove the only
-  /// brake on a malformed or hostile response filling the disk.
-  public static let defaultDownloadLimitBytes = 16 * 1024 * 1024 * 1024
-  public static let minimumDownloadLimitBytes = 1 * 1024 * 1024 * 1024
-  public static let maximumDownloadLimitBytes = 128 * 1024 * 1024 * 1024
-  /// Retained for callers that only need a conservative compile-time bound.
-  public static let maxBytes = defaultDownloadLimitBytes
+  /// User-configurable ceiling for "保存到本地".
+  ///
+  /// 区间取 200 MB – 2 GB。之前是 1–128 GB、默认 16 GB，两头都不合用：最低 1 GB
+  /// 对「只想留个几百兆的短视频」来说起点太高，而 128 GB 实际上等于没有上限——
+  /// 单个视频不该有这个量级，一旦某个响应声称自己有几十 GB，这道闸门就形同虚设。
+  ///
+  /// 上界必须是有限值：整个传输层建立在有限的 `byteLimit` 之上，无上限会拿掉
+  /// 「畸形或恶意响应把磁盘写满」的唯一刹车。
+  public static let defaultDownloadLimitBytes = 1024 * 1024 * 1024
+  public static let minimumDownloadLimitBytes = 200 * 1024 * 1024
+  public static let maximumDownloadLimitBytes = 2 * 1024 * 1024 * 1024
+  /// 传输层的响应上限，必须跟得上用户能配置的最大值。
+  ///
+  /// 原来它等于**默认值**而不是最大值，于是配置高于默认值时，传输层会先一步把
+  /// 下载卡掉，用户调大的那部分根本不生效。绑到上界就不会再有这种错位。
+  public static let maxBytes = maximumDownloadLimitBytes
   /// Keep at least this much free space after the write (safety margin).
   public static let minimumFreeBytesAfterWrite: Int64 = 50 * 1024 * 1024
   /// Never let a configured ceiling commit more than the volume can spare.

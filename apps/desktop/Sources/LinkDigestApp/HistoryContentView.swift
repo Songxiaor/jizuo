@@ -186,7 +186,7 @@ struct HistoryContentView: View {
             isPresented: $model.isExportPanelPresented,
             document: model.exportFile.map(HistoryExportDocument.init),
             contentType: uniformType(for: model.exportFile?.format ?? .plainText),
-            defaultFilename: model.exportFile?.suggestedFilename ?? "LinkDigest 历史.1.txt"
+            defaultFilename: model.exportFile?.suggestedFilename ?? "\(ProductDisplay.name) 历史.1.txt"
           ) { result in
             switch result {
             case .success: model.completeExportSave()
@@ -662,7 +662,7 @@ struct HistoryContentView: View {
     VStack(spacing: 14) {
       Image(systemName: "externaldrive.badge.exclamationmark").font(.largeTitle).foregroundStyle(.secondary)
       Text("无法打开历史记录").font(.title2.weight(.semibold))
-      Text("LinkDigest 未对数据进行写入。请检查本机存储后重新启动 LinkDigest。")
+      Text("\(ProductDisplay.name) 未对数据进行写入。请检查本机存储后重新启动 \(ProductDisplay.name)。")
         .foregroundStyle(.secondary).multilineTextAlignment(.center)
     }.frame(minWidth: 820, minHeight: 560).accessibilityIdentifier("history-blocking-error")
   }
@@ -1011,7 +1011,7 @@ private struct HistoryDetailView: View {
   /// Brief completion feedback after summarize/translate finishes.
   @State private var completionBanner: String?
   /// When both a model artifact and the captured source exist, user can switch.
-  @State private var readingPane: ReadingPane = .result
+  @State private var readingPane: ReadingPane = .summary
   @State private var measuredTitleHeight: CGFloat = HistoryDetailView.titleLineHeight
   /// 转写校对：编辑态与草稿只属于当前详情页，切换条目即复位。
   @State private var isEditingTranscription = false
@@ -1039,8 +1039,14 @@ private struct HistoryDetailView: View {
         bodySize: CGFloat(readingFontSizeRaw)
       )
   }
+  /// 阅读面板。
+  ///
+  /// 总结和翻译各占一格，而不是共用一个「结果」格。原来只有 result/source 两格，
+  /// result 显示哪一个由「最近产出文本的那次运行」决定——于是先翻译再总结，翻译
+  /// 就被挤掉了：那份译文一直在库里，只是没有任何入口能点回去。
   private enum ReadingPane: String, CaseIterable, Identifiable {
-    case result
+    case summary
+    case translation
     case source
     var id: String { rawValue }
   }
@@ -1053,6 +1059,24 @@ private struct HistoryDetailView: View {
     }
   }
   private var latestArtifact: HistoryArtifact? { latestArtifactRun?.artifact }
+  /// 某一类运行最新的、有正文的产物。
+  ///
+  /// 按类取而不是只取最新一份，是这个面板能同时提供总结和翻译的前提。
+  private func artifact(ofKind kind: RunKind) -> HistoryArtifact? {
+    detail.runs.reversed().first { run in
+      guard run.run.kind == kind, let body = run.artifact?.bodyText else { return false }
+      return !body.isEmpty
+    }?.artifact
+  }
+  private var summaryArtifact: HistoryArtifact? { artifact(ofKind: .summarize) }
+  private var translationArtifact: HistoryArtifact? { artifact(ofKind: .translate) }
+  private func artifact(for pane: ReadingPane) -> HistoryArtifact? {
+    switch pane {
+    case .summary: summaryArtifact
+    case .translation: translationArtifact
+    case .source: nil
+    }
+  }
   private var latestSnapshot: ContentSnapshot? { detail.snapshots.last }
   /// Source frontmatter belongs to the newest captured source, not a later
   /// local transcription snapshot that may have become the effective body.
@@ -1076,15 +1100,12 @@ private struct HistoryDetailView: View {
     ) != nil
   }
   private var isWeChatCapture: Bool { latestSourceSnapshot?.platform == "wechat" }
-  /// Picker label follows the latest successful action — 总结 / 翻译, never a vague「结果」.
-  private var resultPaneLabel: String {
-    switch latestArtifactRun?.run.kind {
-    case .translate: return "翻译"
-    case .summarize, .none: return "总结"
-    }
-  }
   private func paneLabel(_ pane: ReadingPane) -> String {
-    pane == .result ? resultPaneLabel : "原文"
+    switch pane {
+    case .summary: "总结"
+    case .translation: "翻译"
+    case .source: "原文"
+    }
   }
   private var title: String { CapturedDocumentTitle.display(detail.snapshots.last?.title, for: sourceURL) }
   private var sourceURL: String { detail.snapshots.last?.sourceURL ?? detail.task.canonicalURL }
@@ -1147,22 +1168,32 @@ private struct HistoryDetailView: View {
       markdown: snapshot.bodyText
     )
   }
+  /// 只列出真正有内容可读的面板，外加必要的空态落脚点。
+  ///
+  /// 总结和翻译各自独立出现：两者都有就是三格，只有一个就仍是两格——所以这次改动
+  /// 不会给「只总结过」的条目凭空多出一个空的翻译页。
   private var availableReadingPanes: [ReadingPane] {
-    if isDouyinCapture {
-      return ReadingPane.allCases.filter { pane in
-        pane == .result ? hasResultBody : (hasSourceBody || hasLiveTranscription)
-      }
-    }
-    return ReadingPane.allCases
+    var panes: [ReadingPane] = []
+    if summaryArtifact != nil { panes.append(.summary) }
+    if translationArtifact != nil { panes.append(.translation) }
+    // 一份结果都没有时保留一个总结格，「尚未生成总结」的空态提示才有地方落。
+    // 抖音例外：它在没有结果时本来就不显示结果格。
+    if panes.isEmpty, !isDouyinCapture { panes.append(.summary) }
+    if !isDouyinCapture || hasSourceBody || hasLiveTranscription { panes.append(.source) }
+    return panes
   }
   /// For Douyin, source means a saved local transcription—not the duplicate
   /// caption. Other platforms retain their existing source-pane behavior.
   private var showsReadingPanePicker: Bool { hasResultBody || hasSourceBody || hasLiveTranscription }
+  /// 默认停在最近一次跑出来的那份结果上——刚点完翻译就该看到翻译。
   private var defaultReadingPane: ReadingPane {
-    if hasResultBody { return .result }
+    if let kind = latestArtifactRun?.run.kind { return pane(for: kind) }
     if hasLiveTranscription { return .source }
     if hasPresentableSourceBody { return .source }
-    return hasSourceBody ? .source : .result
+    return hasSourceBody ? .source : (availableReadingPanes.first ?? .summary)
+  }
+  private func pane(for kind: RunKind) -> ReadingPane {
+    kind == .translate ? .translation : .summary
   }
   /// The preview card exists for the live stream and for failures the reading
   /// pane cannot show. Once a run completed and its result reads in the
@@ -1464,7 +1495,7 @@ private struct HistoryDetailView: View {
     } message: { Text(model.snapshotEditFailure ?? "") }
     .onChange(of: hasResultBody) { _, hasResult in
       // Prefer the fresh result when a run lands, but keep 原文 one tap away.
-      if hasResult { readingPane = .result }
+      if hasResult { readingPane = defaultReadingPane }
     }
     .onChange(of: showsStreamingResultCard) { wasShown, isShown in
       // The card collapses once the completed result reads in the pane below;
@@ -1472,7 +1503,7 @@ private struct HistoryDetailView: View {
       guard wasShown, !isShown, hasResultBody else { return }
       guard case .completed = appModel.runState else { return }
       withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
-        readingPane = .result
+        readingPane = defaultReadingPane
         completionBanner = latestArtifactRun?.run.kind == .translate ? "翻译已完成" : "总结已完成"
       }
       Task { @MainActor in
@@ -2198,10 +2229,10 @@ private struct HistoryDetailView: View {
 
   @ViewBuilder private var content: some View {
     switch effectiveReadingPane {
-    case .result:
-      if let artifact = latestArtifact, !artifact.bodyText.isEmpty {
+    case .summary, .translation:
+      if let artifact = artifact(for: effectiveReadingPane), !artifact.bodyText.isEmpty {
         if artifact.completeness == .partial {
-          Label("\(resultPaneLabel)不完整", systemImage: "exclamationmark.triangle")
+          Label("\(paneLabel(effectiveReadingPane))不完整", systemImage: "exclamationmark.triangle")
             .foregroundStyle(.secondary)
             .padding(.bottom, 6)
         }
@@ -2222,7 +2253,7 @@ private struct HistoryDetailView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("history-reading-result")
       } else {
-        missingPaneNotice(for: .result)
+        missingPaneNotice(for: effectiveReadingPane)
       }
     case .source:
       // 转写进行中时无条件走流式视图：重新转写要立即清掉旧文本并流式
@@ -2333,9 +2364,10 @@ private struct HistoryDetailView: View {
     // With neither summary nor transcription, keep the Douyin empty-state in
     // the reading surface without reintroducing an unavailable 原文 segment.
     if isDouyinCapture && !hasResultBody && !hasSourceBody && !hasLiveTranscription { return .source }
-    if isDouyinCapture && !availableReadingPanes.contains(readingPane) {
-      return defaultReadingPane
-    }
+    // 选中的格子消失了就退回默认，否则会停在一个已经不在分段控件里的面板上。
+    // 这个兜底原来只对抖音生效；拆出翻译格后，任何条目都可能出现选中格不可用
+    // （例如切到另一条只总结过的记录时，选中的还是翻译）。
+    if !availableReadingPanes.contains(readingPane) { return defaultReadingPane }
     return readingPane
   }
 
@@ -2344,10 +2376,10 @@ private struct HistoryDetailView: View {
   @ViewBuilder private func missingPaneNotice(for pane: ReadingPane) -> some View {
     VStack(alignment: .leading, spacing: 6) {
       switch pane {
-      case .result:
-        Text("尚未生成总结").foregroundStyle(.secondary)
+      case .summary, .translation:
+        Text(pane == .translation ? "尚未生成翻译" : "尚未生成总结").foregroundStyle(.secondary)
         if canRunHistory || showsCurrentCapture {
-          Text("点击上方「生成总结」开始")
+          Text(pane == .translation ? "点击上方「翻译」开始" : "点击上方「生成总结」开始")
             .font(.callout)
             .foregroundStyle(.tertiary)
         }
@@ -2366,7 +2398,7 @@ private struct HistoryDetailView: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.vertical, 24)
-    .accessibilityIdentifier(pane == .result ? "history-reading-result-empty" : "history-reading-source-empty")
+    .accessibilityIdentifier(pane == .source ? "history-reading-source-empty" : "history-reading-result-empty")
   }
 
   private var imageTextRecognitionCard: some View {
@@ -2662,49 +2694,34 @@ private struct DataDestinationDisclosureView: View {
   let cancel: () -> Void
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 18) {
-      HStack(alignment: .top, spacing: 12) {
-        Image(systemName: "arrow.up.doc")
-          .font(.largeTitle)
-          .foregroundStyle(.tint)
-          .accessibilityHidden(true)
-        VStack(alignment: .leading, spacing: 4) {
-          Text("发送前确认")
-            .font(.title3.weight(.semibold))
-          Text(actionText)
-            .font(.subheadline)
-            .foregroundStyle(.secondary)
-        }
-      }
+    VStack(alignment: .leading, spacing: 16) {
+      Text("发送前确认")
+        .font(.headline)
 
-      Text("本次将把网页标题和正文发送到以下模型目的地：")
+      // 这一屏只回答一个问题：正文发给谁。答案就是「服务 + 模型」，其余都不是
+      // 决定依据——Base URL 是 host 的展开写法，接口名是实现细节，两者收进默认
+      // 收起的详情；原来那两条脚注（API Key 在 Keychain、历史只在本机）讲的是
+      // 产品的常态边界，和「这一次要不要发」无关，属于文档而不是拦路弹窗。
+      destinationSentence
         .font(.body)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("data-destination-summary")
 
-      VStack(alignment: .leading, spacing: 10) {
-        LabeledContent("服务") {
-          Text(disclosure.identity.host)
-            .textSelection(.enabled)
-            .accessibilityLabel("模型服务主机 \(disclosure.identity.host)")
+      DisclosureGroup("详情") {
+        VStack(alignment: .leading, spacing: 8) {
+          LabeledContent("Base URL") {
+            Text(disclosure.identity.normalizedBaseURL)
+              .lineLimit(1)
+              .truncationMode(.middle)
+              .textSelection(.enabled)
+          }
+          LabeledContent("接口", value: "OpenAI-compatible Chat Completions")
         }
-        LabeledContent("Base URL") {
-          Text(disclosure.identity.normalizedBaseURL)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .textSelection(.enabled)
-        }
-        LabeledContent("模型", value: disclosure.identity.model)
-        LabeledContent("接口", value: "OpenAI-compatible Chat Completions")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .padding(.top, 6)
       }
-      .font(.body)
-      .padding(12)
-      .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-
-      VStack(alignment: .leading, spacing: 5) {
-        Label("API Key 仍只保存在本机 Keychain，不会显示在此处。", systemImage: "key.horizontal")
-        Label("历史记录与导出仍只保存在本机。", systemImage: "internaldrive")
-      }
-      .font(.caption)
-      .foregroundStyle(.secondary)
+      .font(.callout)
 
       HStack {
         Spacer()
@@ -2721,13 +2738,22 @@ private struct DataDestinationDisclosureView: View {
           .controlSize(.small)
       }
     }
-    .padding(24)
-    .frame(width: 480)
+    .padding(20)
+    .frame(width: 420)
     .accessibilityIdentifier("data-destination-disclosure")
   }
 
-  private var actionText: String {
-    disclosure.intent == .translate ? "确认翻译正文的发送目的地。" : "确认总结正文的发送目的地。"
+  /// 服务和模型加粗：这两个词是全部的决定依据，其余是把它们连成一句话的连接词。
+  private var destinationSentence: Text {
+    let verb = disclosure.intent == .translate ? "翻译" : "总结"
+    // 本机端点必须如实标出——`http://127.0.0.1` 发出去的正文没有离开这台机器，
+    // 和发往第三方服务是两件事，不标会让人以为一样。
+    let suffix = disclosure.identity.isLocalEndpoint ? Text("（本机端点）").foregroundStyle(.secondary) : Text("")
+    return Text("\(verb)正文将发送到 ")
+      + Text(disclosure.identity.host).bold()
+      + Text(" 的 ")
+      + Text(disclosure.identity.model).bold()
+      + suffix
   }
 }
 
@@ -2777,13 +2803,13 @@ private struct ReadOnlyHistoryCallout: View {
   private var message: String {
     switch reason {
     case .futureSchema:
-      "这份历史由较新版本创建，当前仅可浏览。原数据未修改；请使用较新版本的 LinkDigest 后再编辑或删除。"
+      "这份历史由较新版本创建，当前仅可浏览。原数据未修改；请使用较新版本的 \(ProductDisplay.name) 后再编辑或删除。"
     case .migrationFailed:
-      "这份历史的迁移未完成，当前仅可浏览。原数据未修改；请在恢复后重新启动 LinkDigest，再编辑或删除。"
+      "这份历史的迁移未完成，当前仅可浏览。原数据未修改；请在恢复后重新启动 \(ProductDisplay.name)，再编辑或删除。"
     case .storageUnavailable:
-      "本地历史暂时无法以可写方式打开，当前仅可浏览。原数据未修改；请检查本机存储后重新启动 LinkDigest，再编辑或删除。"
+      "本地历史暂时无法以可写方式打开，当前仅可浏览。原数据未修改；请检查本机存储后重新启动 \(ProductDisplay.name)，再编辑或删除。"
     case nil:
-      "本地历史当前仅可浏览。原数据未修改；请在恢复后重新启动 LinkDigest，再编辑或删除。"
+      "本地历史当前仅可浏览。原数据未修改；请在恢复后重新启动 \(ProductDisplay.name)，再编辑或删除。"
     }
   }
 }
