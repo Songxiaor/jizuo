@@ -12,8 +12,11 @@ LinkDigest 的产品目标是成为一个 local-first 的链接理解工具：�
 
 Loop 8 的浏览器安装事务已独立复审 PASS。当前正在完成 **Loop 9 / 0.2.0 integrated local-test candidate**：同一精确 handoff 将绑定 ad-hoc DMG 内的 App（含 Host、Browser Support UI 和模板）、确定性 Chromium 扩展 zip、完整源码归档、evidence/manifest/SHA256SUMS 及中文总检指南。该候选尚未冻结；只有主控装箱与独立 gate 全绿后才会标为 `READY_FOR_MANUAL_OPEN`。Syc 的真实三浏览器安装、登录页面捕获、BYOK 和价值指标实测属于总检，不由工程自动化冒充完成。Developer ID、公证、商店和公开发布仍未完成，产品与公开发布固定 `BLOCKED`。
 
+日常 dogfood 会直接产生不在 Loop 序列里的改动（脑图、长文翻译分片并发、推理档位控制等）。这类「已实现但未登记」的功能，连同尚未开工的 Chrome Web Store 上架、Intel（x86_64）支持、WebUI 与下载数据看板，统一登记在 [`brain/roadmap.md`](brain/roadmap.md) 的「未规划项」与「已实现但未登记的功能」两节——**需要知道「还剩什么没做」时先看那里**，本节只描述当前 Loop。
+
 - 架构边界见 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)。
 - 当前 P0 产品范围与验收见 [`docs/PRD.md`](docs/PRD.md)。
+- 里程碑、未规划项与已实现但未登记的功能见 [`brain/roadmap.md`](brain/roadmap.md)。分发路径的现场核实结论（ad-hoc 签名会弹哪种拦截、macOS 15 起「右键打开」已失效）也记在该文件的「当前状态」一节。
 - Loop 9 候选内将随包交付的总检步骤与 PRD §11.1 指标记录模板见 [`docs/ACCEPTANCE_GUIDE.md`](docs/ACCEPTANCE_GUIDE.md)。
 - 第一条“测试页面 → 扩展 → Native Messaging → SwiftUI”链路见 [`docs/specs/V0.1_VERTICAL_SLICE.md`](docs/specs/V0.1_VERTICAL_SLICE.md)。
 - 10 万/100 万容量口径作为远期参考保留在 [`docs/CAPACITY_MODEL.md`](docs/CAPACITY_MODEL.md)，不驱动 P0 实施。

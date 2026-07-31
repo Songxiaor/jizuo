@@ -2,7 +2,7 @@
 slug: roadmap
 title: Roadmap
 role: milestones
-updated: "2026-07-18T12:54:31"
+updated: "2026-08-01T00:15:00"
 ---
 
 # Roadmap
@@ -18,21 +18,28 @@ gantt
   Capture BYOK History Export           :done, base1, 2026-07-14, 3d
   Local-test ad-hoc DMG GUI baseline    :done, base2, after base1, 2d
   section Product completion
-  Loop 5 Manual URL and Clipboard       :active, l5, after base2, 4d
-  Loop 6 BYOK UX Proxy and daily DMG    :l6, after l5, 5d
-  Loop 6.5 GitHub Repo Adapter          :l65, after l6, 3d
-  Loop 6.6 History detail polish        :l66, after l65, 2d
-  Loop 6.8 Settings rework and model UX :l68, after l66, 3d
-  Loop 6.9 Tags and board filter        :l69, after l68, 3d
+  Loop 5 Manual URL and Clipboard       :done, l5, after base2, 4d
+  Loop 6 BYOK UX Proxy and daily DMG    :done, l6, after l5, 5d
+  Loop 6.5 GitHub Repo Adapter          :done, l65, after l6, 3d
+  Loop 6.6 History detail polish        :done, l66, after l65, 2d
+  Loop 6.8 Settings rework and model UX :done, l68, after l66, 3d
+  Loop 6.9 Tags and board filter        :done, l69, after l68, 3d
   Naming and trademark search           :name1, after l69, 1d
-  Loop 7 Extension Identity Artifact    :l7, after name1, 4d
-  Loop 8 Browser Support Installer      :l8, after l7, 5d
-  Loop 9 Full DMG and value metrics     :l9, after l8, 5d
+  Loop 7 Extension Identity Artifact    :done, l7, after name1, 4d
+  Loop 8 Browser Support Installer      :done, l8, after l7, 5d
+  Loop 9 Full DMG and value metrics     :active, l9, after l8, 5d
   section Public distribution
   Loop 10 Developer ID Notarization     :l10, after l9, 5d
+  Chrome Web Store listing              :store, after l10, 5d
+  section Not yet scoped
+  Intel x86_64 support                  :intel, after l9, 2d
+  WebUI                                 :webui, after store, 10d
+  Download and usage dashboard          :dash, after store, 3d
 ```
 
 > 日期只表达依赖顺序，不是交付承诺；真实凭据、HOME/profile 写入、签名、公证、商店与发布继续使用单独授权门禁。
+>
+> 甘特图里的 `done` 只表示**该 Loop 的代码已实现并有提交痕迹**，不表示验收完成。Loop 9 的价值指标未测量、Loop 10 未开始，产品与公开发布仍固定 `BLOCKED`。
 
 ## 已完成的工程基线
 
@@ -45,6 +52,11 @@ gantt
 ## 当前状态
 
 当前精确状态为 **GUI_BASELINE_PASS / PRODUCT_INCOMPLETE**；Loop 5 为 **CODE-COMPLETE / VERIFICATION-PENDING**（15 条公开样本补验依赖 Loop 6 代理兼容，现已具备条件，待补跑）。
+
+**2026-08-01 分发路径现场核实**（影响 Loop 10 的范围，先记在此）：
+
+- 当前 App 为 **ad-hoc 签名**，`spctl` 判定 `rejected`。但 `codesign --verify --deep --strict` 为 `valid on disk` 且满足 Designated Requirement，zip 打包往返后签名仍然有效——因此从网络下载后弹出的是**「无法验证开发者」（存在放行入口）**，而不是**「已损坏，应移到废纸篓」（无放行入口）**。这条区别决定了未签名分发是否可行，必须在每次改动打包流程后重新验证。
+- **「右键打开」绕过入口在 macOS 15 (Sequoia) 已被移除**，而本 App 的 `LSMinimumSystemVersion` 为 15.0，故全部目标用户都无法使用该方式。未签名分发的唯一路径是：双击被拦 → 系统设置 › 隐私与安全性 › 底部「仍要打开」→ 再次确认。任何面向用户的安装说明都必须按这个流程写。
 
 Loop 6：**工程侧已收口（2026-07-18 终审 PASS）**。Syc 用 r3-fix2 完成真实 BYOK 闭环（DeepSeek 连接、真实翻译、历史入库）；此后错误映射与"Provider 摘要透传"经四轮安全收敛，最终采纳 reviewer 架构建议：自由 Provider body 不跨 Adapter 边界，UI 仅用内部错误码固定文案（决策记录在 ARCHITECTURE.md）。最终 dogfood 候选 **r4-fix3**（DMG `b8fd3cee…30fa7c`，Swift 249/249、gate 76/10、SHA 13/13、18 文件绑定），r2→r4-fix2 全部 SUPERSEDED。剩余仅 Syc 换用 r4-fix3 的日常使用确认。验收发现的详情页元数据空壳与标签需求已转入 Loop 6.6 / 6.9。
 
@@ -62,6 +74,117 @@ Loop 6：**工程侧已收口（2026-07-18 终审 PASS）**。Syc 用 r3-fix2 �
 10. Loop 9 — Integrated Full DMG：App、Host、扩展、安装入口、源码和证据统一交付，完成 Syc 三浏览器端到端测试。**产品价值指标（PRD §11.1）在 Loop 9 验收时测量**，未测量不得宣称达标。
 
 Loop 10 仅处理 Developer ID、hardened runtime、公证、stapling 和公开分发，不反向阻塞 Syc 的本机完整可用版。
+
+## 未规划项（2026-08-01 登记）
+
+以下四项**此前不在本文件、README 或 PRD 的任何位置**，只存在于对话中。登记在此是为了让「还剩什么没做」有一个可查的地方，不代表已排期、已批准或已承诺。每一项真正开工前仍需 Syc 单独确认。
+
+| 项目 | 现状（现场核实） | 为什么需要 | 阻塞什么 |
+|---|---|---|---|
+| **Chrome Web Store 上架** | 未开始。扩展目前只能用「开发者模式 → 加载已解压的扩展程序」安装 | 开发者模式安装对普通用户是最高的一道门槛，且 Chrome 每次启动都会弹「请停用以开发者模式运行的扩展程序」 | 非技术用户完成安装 |
+| ~~**Intel（x86_64）支持**~~ | **已完成（2026-08-01）**，见下方「universal 构建」一节 | — | — |
+| **WebUI** | **范围已定为「下载官网」并完成**（2026-08-01，见下方「官网」一节）。「网页版应用」与「远程查看历史」两种理解**未采纳，也未排期** | — | — |
+| **下载与使用数据看板** | 未开始 | 想知道有多少人下载、有多少人真正用起来 | 见下方结论 |
+
+**关于数据看板的结论（不建议现在做）**：GitHub Releases 每个附件自带 `download_count`，永久保留，一条命令即可读取：
+
+```bash
+gh api repos/Songxiaor/linkdigest/releases \
+  --jq '.[] | "\(.tag_name): \(.assets[] | "\(.name) \(.download_count)")"'
+```
+
+该数字在 GitHub 网页界面上不显示，只能经 API 获取，容易被误认为「没有统计」。仓库访问量在 Insights › Traffic，但**只保留 14 天**。
+
+GitHub 无法回答的是「装成功了多少、卡在哪一步、留存如何」，那需要 App 主动回传遥测，涉及隐私声明、服务端与成本。在获得第一批真实用户之前，`download_count` + GitHub Issues 的真人反馈已经够用；等出现「下载量可观但无人反馈」的信号时再评估遥测。
+
+## 发布前优化（2026-08-01）
+
+按 Syc 指定的四个外部 skill（check-code / refactor-code / performance-engineer / optimize-codebase-performance）的方法论做的一轮。**未安装这些 skill**，只读取内容应用其流程。
+
+**性能：测量后判定无需优化。** 用项目自带的 `LinkDigestHistoryBenchmark` 在 1 万条任务 / 1.5 万次运行下实测：历史列表分页 p95 = **1.66 ms**、单条详情 p95 = **0.32 ms**，阈值 300 ms。数据库层没有任何瓶颈，因此**没有做任何查询优化**——没有证据的优化不做。冷启动进程就绪 0.1 s，同样不是瓶颈。
+
+**做了三件事**：
+
+1. **许可证检查会假通过——已修**。`pnpm licenses list --json` 失败时也返回 JSON（`{"error":...}`），脚本直接对它取 keys，于是错误对象被当成「一个名叫 error 的许可证」，不匹配禁止模式，脚本便打印 `OK: every dependency has a permissive license path`。**发布前的合规检查在自己没跑成时报了通过**，比检查不通过危险得多。现在遇到 error 字段或空列表一律明确失败。
+2. **密钥卫生的三处误报——已消除**。`unknown-code-visible-sink` 靠正则匹配 `code` 标识符名，无法区分「provider 原始文本」和「内部错误码」。实测三处命中全是业务错误码（B站 -101、YouTube 播放器码、内部 catalog 错误码经 `modelCatalogFailureText` 映射成固定文案——最后这处正是规则要求的正确做法）。**没有放宽正则**，改为支持逐行 `// secret-hygiene:reviewed` 豁免并要求写明理由。已红绿验证：插入真违规立刻被抓，还原后恢复 OK。
+3. **品牌名收敛——为改名铺路**。见下节。
+
+**评估后决定不做的**：把 `truncateCheckpoint` 接到 App 退出路径（可回收 3.7 MB WAL）。收益是磁盘空间与略快的启动，风险是在退出路径引入磁盘 IO，可能导致「App 退不掉」。收益/风险比不足，留待 Syc 决定。
+
+**自检变化**：`scripts/doctor` 从 PASS=79/FAIL=6 变为 **PASS=80/FAIL=5**。剩余 5 项均为既有问题：Brain 文档系统 4 项、r4b 哈希 1 项，以及许可证检查因本机 pnpm store 索引缺失（`ERR_PNPM_MISSING_PACKAGE_INDEX_FILE`）无法运行——修它需要动跨项目共享的 `~/Library/pnpm/store`，未擅自执行。已用只读方式独立核实：455 个依赖包中 MIT 356、ISC 30、BSD 系列 32、Apache-2.0 23、MPL-2.0 4，**零高风险许可证**，两个双授权包均可选非 GPL 分支。合规本身没有问题。
+
+## 品牌名收敛（2026-08-01，为改名做准备）
+
+产品显示名的唯一来源是 `Sources/LinkDigestCore/Resources/product-display.json` 的三个字段，由 `ProductDisplay` 读取。但界面文案里原本还有 **23 处硬编码** "LinkDigest"，改名时必须逐处手改，极易漏。
+
+现已全部改为引用 `ProductDisplay.name`，**用户可见文案中的硬编码归零**。
+
+**已验证**：把 JSON 里的 `displayName` 临时改成「改名验证」后重新构建，0 错误，编译产物 bundle 内的资源文件同步更新。（注意：验证不能用 `strings` 找中文字面量——那条路不可靠，见既有教训。）
+
+**改名时仍需单独处理的技术标识**（故意不动，因为改动会破坏已安装用户）：
+
+| 标识 | 当前值 | 改动后果 |
+|---|---|---|
+| Bundle ID | `com.syc.linkdigest` | 系统视为另一个 App，权限与偏好全部重来 |
+| Native host 名 | `com.syc.linkdigest.v01` | 浏览器扩展立刻断连 |
+| 扩展 ID | `fbpjhlcpfheecigibjghhodhhkgjdgma`（frozen） | 与 host `allowed_origins` 永久绑定 |
+| 数据目录 | `~/Library/Application Support/LinkDigest` | 历史记录「消失」 |
+| 偏好域 | `com.syc.linkdigest` | 所有设置重置 |
+
+**结论：面向用户的改名只需改那一个 JSON 文件；上表的技术标识建议保持不变**，它们不出现在界面上。
+
+## 官网（2026-08-01 完成，待补截图）
+
+`site/index.html` 单文件自包含，配 `site/assets/icon.png`。用于 GitHub Pages 托管，是发布的必需配套——**没有它，用户下载后不知道怎么绕过 Gatekeeper**。
+
+内容：产品说明、三步安装指南、6 条常见问题。全部基于现场核实的事实，**明确写了「右键打开在 macOS 15 已被移除」**，避免用户照抄过时教程。
+
+视觉规格取自 Syc 指定的参考站 `fish.audio` 主站（红色促销弹窗与横幅不在参考范围）。不是凭印象模仿，是读取其计算样式后逐项对齐：
+
+| | 参考站 | 本站 |
+|---|---|---|
+| 背景 | `rgb(250,248,245)` | 相同 |
+| 字体 | Onest | 相同 |
+| 主标题 | 48px / 字重 400 | 相同 |
+
+其余照搬：纯白卡片 + 极细边框 + 圆角 14px、纯黑按钮（非彩色）、胶囊标签、左右分栏 hero、大留白。文案沿用其短句对比风格。
+
+已验证：390px 宽（iPhone）下**零横向溢出**，布局自动堆叠。
+
+**未完成**：页面留有「应用截图待补」占位。截图不能直接用本机 App——里面是真实浏览记录，公开等于公开个人浏览历史。需要 Syc 提供，或先造测试数据再截。
+
+**发布方式**：仓库 Settings › Pages 选 `main` 分支 `/site` 目录；若 Pages 不支持该目录，改用 GitHub Actions 或把内容放到 `/docs`。
+
+## universal 构建（2026-08-01 完成）
+
+App 与 Native Host 现在都是 `arm64 + x86_64` 双架构，Intel Mac 可运行。构建方式是给 `swift build` 传两个 `--arch`，架构清单集中在 `stable_host.SUPPORTED_ARCHITECTURES`，两份 config（`config/native-host.json`、`config/app-release.json`）与校验脚本都引用它。
+
+**这次改动暴露了三个只在 universal 下才出现的坑，都已修复并留了注释**：
+
+1. **资源包布局会变**。单架构产出扁平包（`<包>/Resources/…`），universal 产出标准 macOS 包（`<包>/Contents/Resources/**Resources**/…`，多一层同名目录）。后果是 `Bundle.url(forResource:)` 在资源根找不到文件，`ProductDisplay.values` 的 `preconditionFailure` 在 SwiftUI 取 `App.body` 时触发——**App 启动即崩，崩在任何窗口出现之前**。`CoreResourceBundle` 与 `CaptureWireContractSchema` 现在都兼容两种布局。
+2. **`main.swift` 不能与 `@main` 共存**。单架构构建能通过（走 WMO），universal 下直接编译失败。两个内部工具 target 的文件已改名。
+3. **`LC_BUILD_VERSION` 会有多条**。universal 每个切片一条，原校验要求「恰好一个」。现在要求全部可解析**且完全一致**——切片间部署目标不一致会造成「一类 Mac 装得上、另一类起不来」这种最难查的故障。
+
+**验证方式（以后改打包流程后照此重跑）**：
+
+```bash
+lipo -archs <App>/Contents/MacOS/LinkDigestApp        # 期望 x86_64 arm64
+vtool -arch x86_64 -show-build-version <可执行文件>     # 每个切片 minos 都应为 15.0
+codesign --verify --strict --all-architectures <App>  # 签名对所有切片有效
+arch -x86_64 <NativeHost>                             # 用 Rosetta 实跑 Intel 切片
+```
+
+最后一条最关键：向 Intel 切片发一条合法 capture fixture，应返回 `taskAccepted`。这同时证明了「x86_64 可执行」与「新布局下资源能被找到」——**单元测试对后者永远是绿的，只有跑打包产物才验得出**。
+
+## 已实现但未登记的功能
+
+同一类问题的另一面：**下列功能代码已存在并在日常使用，但从未出现在本文件的 Loop 序列中**。它们是在 dogfood 过程中直接实现的。
+
+- **脑图生成**（`MindMapSVGRenderer` / `MindMapOutline` / `MindMapStore`）：由总结产出结构化大纲并渲染 SVG，支持双主题、编辑与导出。
+- **长文翻译分片并发**（`ChunkedTranslation`）：超长正文按段落切片并发翻译，片长按并发反算。
+- **推理档位控制**：对总结/翻译请求发送 `reasoning_effort: low`，并在服务端拒绝该参数时自动降级重发。
+
+**这两节的存在本身就是一个信号**：需求与实现都曾绕过本文件。任何新需求，即使当天就动手，也应先在此登记一行，否则「还剩什么没做」将永远只存在于记忆里。
 
 ## 下游硬门禁
 
