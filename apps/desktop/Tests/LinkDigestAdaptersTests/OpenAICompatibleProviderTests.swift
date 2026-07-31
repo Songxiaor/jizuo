@@ -720,3 +720,106 @@ final class ReasoningIsNeverOutputTests: XCTestCase {
     XCTAssertTrue(RunState.thinking(intent: .translate).isActive)
   }
 }
+
+/// `reasoning_effort` 被拒后的记忆。
+///
+/// 降级本身每次请求各自完成，但记忆必须跨请求：长文翻译会把正文切成多片、每片
+/// 各发一次请求。若每片都重新试一遍这个参数，一个不接受它的服务商会让 9 片变成
+/// 9 次「被拒」+ 9 次「重发」——一半请求纯属浪费，每次还要等一个完整往返。
+final class ReasoningEffortRejectionMemoryTests: XCTestCase {
+  /// 同一目的地的第二次请求必须不再带这个参数。
+  func testSecondRequestToSameDestinationSkipsTheRejectedParameter() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    // 第 1 次：400 拒绝（模拟不认识该参数）。第 2 次起：正常返回。
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [
+      .init(statusCode: 400, contentType: "application/json"),
+      .init(chunks: [
+        .init("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"),
+        .init("data: [DONE]\n\n"),
+      ]),
+      .init(chunks: [
+        .init("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"),
+        .init("data: [DONE]\n\n"),
+      ]),
+    ])
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let provider = makeProvider()
+    let profile = try profile(baseURL)
+
+    // 第一轮：带参数 → 被拒 → 去掉重发 → 成功。共 2 个请求。
+    _ = await collect(provider: provider, profile: profile, apiKey: key)
+    XCTAssertEqual(server.requests.count, 2, "首轮应为「带参数被拒」+「去掉重发」")
+    XCTAssertTrue(bodyHasReasoningEffort(server.requests[0]), "第 1 个请求应带参数")
+    XCTAssertFalse(bodyHasReasoningEffort(server.requests[1]), "降级后不应再带")
+
+    // 第二轮（相当于下一个分片）：必须直接不带，且只发一次。
+    _ = await collect(provider: provider, profile: profile, apiKey: key)
+    XCTAssertEqual(server.requests.count, 3, "记住拒绝后，第二轮只应发 1 个请求")
+    XCTAssertFalse(
+      bodyHasReasoningEffort(server.requests[2]),
+      "已知拒绝的目的地不该再试一次——那正是每片浪费一个往返的来源"
+    )
+  }
+
+  /// 记忆按目的地隔离：换了模型要重新试，否则一次偶发拒绝会永久关掉这个提速。
+  func testRejectionMemoryIsScopedToDestination() throws {
+    let a = try ProviderProfile(
+      baseURL: "https://example.com/v1",
+      model: "model-a",
+      secretReference: SecretReference(rawValue: "ref")
+    )
+    let b = try ProviderProfile(
+      baseURL: "https://example.com/v1",
+      model: "model-b",
+      secretReference: SecretReference(rawValue: "ref")
+    )
+    XCTAssertNotEqual(
+      OpenAICompatibleProvider.reasoningEffortDestinationKey(a),
+      OpenAICompatibleProvider.reasoningEffortDestinationKey(b)
+    )
+  }
+
+  private func profile(_ serverURL: URL) throws -> ProviderProfile {
+    try ProviderProfile(
+      baseURL: serverURL.appending(path: "api/v1").absoluteString,
+      model: "fixture-model",
+      secretReference: SecretReference(rawValue: "test-reference"),
+      allowLoopbackHTTP: true
+    )
+  }
+
+  private func makeProvider() -> OpenAICompatibleProvider {
+    let configuration = URLSessionConfiguration.ephemeral
+    configuration.timeoutIntervalForRequest = 2
+    configuration.timeoutIntervalForResource = 3
+    return OpenAICompatibleProvider(
+      session: URLSession(configuration: configuration),
+      sleeper: RecordingRetrySleeper(),
+      maximumRetryCount: 0,
+      defaultBackoff: 0
+    )
+  }
+
+  private func collect(
+    provider: OpenAICompatibleProvider,
+    profile: ProviderProfile,
+    apiKey: String
+  ) async -> ModelProviderFailure? {
+    do {
+      for try await _ in provider.stream(profile: profile, apiKey: apiKey, intent: .connectionTest) {}
+      return nil
+    } catch let failure as ModelProviderFailure {
+      return failure
+    } catch {
+      return nil
+    }
+  }
+
+  private func bodyHasReasoningEffort(_ request: FakeOpenAICompatibleServer.RecordedRequest) -> Bool {
+    guard let data = request.body.data(using: .utf8),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else { return false }
+    return json["reasoning_effort"] != nil
+  }
+}

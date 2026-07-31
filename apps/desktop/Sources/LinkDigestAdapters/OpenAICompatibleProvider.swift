@@ -85,6 +85,17 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   private let activeTaskLock = NSLock()
   private var activeStreamTasks: [UUID: Task<Void, Never>] = [:]
   private var streamsFinishedBeforeRegistration: Set<UUID> = []
+  /// 已经明确拒绝过 `reasoning_effort` 的目的地，按 (baseURL, model) 记。
+  ///
+  /// 降级本身是每次请求各自完成的，但**记忆必须跨请求**：长文翻译会把正文切成
+  /// 多片、每片各发一次请求，如果每片都重新试一遍这个参数，一个不接受它的服务商
+  /// 会让 9 片变成 9 次「被拒」+ 9 次「重发」——一半请求纯属浪费，而且每次浪费
+  /// 都要等一个完整的 HTTP 往返。
+  ///
+  /// 按目的地记而不是全局记：换了服务商或模型就该重新试一次，否则一次偶发的拒绝
+  /// 会让后面所有目的地都永久失去这个提速。
+  private let reasoningEffortLock = NSLock()
+  private var reasoningEffortRejectedDestinations: Set<String> = []
 
   public init(
     session: URLSession = .shared,
@@ -403,7 +414,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   ) async throws {
     // 先带上 `reasoning_effort`。不认识这个键的服务端会用 400 拒掉，那时去掉它
     // 重来一次——宁可多一次握手，也不能因为一个提速参数让整个 provider 用不了。
-    var includesReasoningEffort = true
+    // 这个目的地此前拒绝过的话，直接不带——不必每片重新试一次。
+    var includesReasoningEffort = acceptsReasoningEffort(profile)
     var request = try makeRequest(
       profile: profile, apiKey: apiKey, intent: intent,
       includesReasoningEffort: includesReasoningEffort
@@ -466,6 +478,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
            Self.mayRejectUnknownParameter(failure) {
           didDropReasoningEffort = true
           includesReasoningEffort = false
+          // 记住这个目的地，后续请求（尤其是长文翻译的其余分片）直接不带。
+          rememberReasoningEffortRejected(profile)
           request = try makeRequest(
             profile: profile, apiKey: apiKey, intent: intent,
             includesReasoningEffort: false
@@ -709,6 +723,21 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   ///
   /// 只认那些「请求本身被拒」的码：拒绝的原因是模型不存在、鉴权不过、限流或服务端
   /// 挂了时，去掉一个参数重来毫无意义，只会白白多打一次请求。
+  /// 目的地的标识：同一个 baseURL 上不同模型对参数的支持可能不同。
+  static func reasoningEffortDestinationKey(_ profile: ProviderProfile) -> String {
+    "\(profile.baseURL.absoluteString)|\(profile.model)"
+  }
+
+  private func acceptsReasoningEffort(_ profile: ProviderProfile) -> Bool {
+    let key = Self.reasoningEffortDestinationKey(profile)
+    return reasoningEffortLock.withLock { !reasoningEffortRejectedDestinations.contains(key) }
+  }
+
+  private func rememberReasoningEffortRejected(_ profile: ProviderProfile) {
+    let key = Self.reasoningEffortDestinationKey(profile)
+    reasoningEffortLock.withLock { _ = reasoningEffortRejectedDestinations.insert(key) }
+  }
+
   static func mayRejectUnknownParameter(_ failure: ModelProviderFailure) -> Bool {
     switch failure.code {
     case .providerRequestRejected, .protocolIncompatible:
