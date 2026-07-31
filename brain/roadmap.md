@@ -113,6 +113,44 @@ GitHub 无法回答的是「装成功了多少、卡在哪一步、留存如何�
 
 **自检变化**：`scripts/doctor` 从 PASS=79/FAIL=6 变为 **PASS=80/FAIL=5**。剩余 5 项均为既有问题：Brain 文档系统 4 项、r4b 哈希 1 项，以及许可证检查因本机 pnpm store 索引缺失（`ERR_PNPM_MISSING_PACKAGE_INDEX_FILE`）无法运行——修它需要动跨项目共享的 `~/Library/pnpm/store`，未擅自执行。已用只读方式独立核实：455 个依赖包中 MIT 356、ISC 30、BSD 系列 32、Apache-2.0 23、MPL-2.0 4，**零高风险许可证**，两个双授权包均可选非 GPL 分支。合规本身没有问题。
 
+## 隐性问题排查（2026-08-01 深夜）
+
+针对「还没被发现的问题」做的一轮，重点是新用户路径、升级路径、改动间的相互影响。
+
+**修掉的两个**：
+
+1. **`reasoning_effort` 被拒后每片都重试一次**（自引入的问题）。降级标记原是
+   `perform()` 内的局部变量，而长文翻译每片各发一次请求。对不接受该参数的服务商，
+   9 片会变成 9 次「被拒」+ 9 次「重发」——**一半请求纯属浪费，每次还要等一个完整
+   往返**。改为按 (baseURL, model) 记在 provider 实例上，换服务商或模型会重新试。
+   已红绿验证。
+2. **官网引入 Google Fonts**。两个理由任一条都够：一个主打「数据全部留在本机」的
+   产品，官网却把每个访问者的 IP 交给 Google，与产品承诺自相矛盾；且目标用户以
+   中文用户为主，而 Google Fonts 在中国大陆基本不可用，首屏会白到超时才回落。
+   改用系统字体栈——中文本来就落在 PingFang SC 上，受影响的只有拉丁字形。
+   现在**页面加载时零外部请求**（实测 `performance.getEntriesByType('resource')` 为 0）。
+
+**查过确认没问题的**（记下来避免重复排查）：
+
+- **取消传播**：分片并发下点停止，链路完整——流终止 → `work.cancel()` → 任务组取消
+  → 子任务 `checkCancellation` → provider 取消 URLSession。没有漏网的在飞请求。
+- **400 系列错误码映射**：未知参数导致的 400 落在 `providerRequestRejected`，正在降级
+  白名单内，覆盖正确。
+- **升级路径**：数据库 schema 未改动；旧安装存的 16 GB 上限会被收进新区间；旧的
+  model-preferences JSON 缺新字段仍能解码。三条都有测试覆盖。
+- **universal 下的资源完整性**：三处读 core bundle 的代码全部实测命中；两处读 App
+  自身 bundle 的图标目录（PlatformIcons / ProviderIcons，24 个 SVG）打包正常。
+- **全新用户**：无配置时有明确引导文案（「尚未配置模型」「验证并配置模型」）。
+
+**发现但只能由 Syc 解决**：
+
+- **`github.com/Songxiaor/linkdigest` 匿名访问返回 404**。官网的下载、反馈、仓库
+  三个链接全部指向它，**普通用户点进去都会是 404**。要么仓库仍是私有（发布前需设为
+  公开），要么 remote 里的用户名与实际不符。本机 `gh` token 已失效
+  （`gh auth status` 报 invalid），无法用认证身份查证。
+- 连带：官网下载按钮指向 `releases/latest`，而该仓库目前**没有任何 release**。
+  发布时必须先建 release 并上传 DMG，否则按钮是死的。
+
 ## 品牌名收敛（2026-08-01，为改名做准备）
 
 产品显示名的唯一来源是 `Sources/LinkDigestCore/Resources/product-display.json` 的三个字段，由 `ProductDisplay` 读取。但界面文案里原本还有 **23 处硬编码** "LinkDigest"，改名时必须逐处手改，极易漏。

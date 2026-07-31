@@ -6,9 +6,18 @@
 <title>LinkDigest — 收藏夹里的链接，终于读得完</title>
 <meta name="description" content="macOS 上的链接理解工具：抓取网页正文，用你自己的 AI 服务做总结、翻译和脑图。数据全部留在本机。">
 <link rel="icon" href="assets/icon.png">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600;700&display=swap" rel="stylesheet">
+<!--
+  刻意不引入 Google Fonts。两个理由，任一条都够：
+
+  1. 这是个主打「数据全部留在本机」的产品。官网向 Google 发一次字体请求，
+     就把每个访问者的 IP 交了出去——和产品承诺自相矛盾。
+  2. 目标用户以中文用户为主，而 Google Fonts 在中国大陆基本不可用：不是变慢，
+     是等到超时才回落，首屏会白很久。
+
+  改用系统字体栈。中文本来就落在 PingFang SC 上（引不引 Onest 都一样），
+  受影响的只有拉丁字形，而 SF Pro 的几何感与参考站选的 Onest 足够接近。
+  代价是英文字形略有不同，换来的是零外部请求、零隐私泄露、任何网络下都秒开。
+-->
 <style>
   :root {
     --bg: #faf8f5;
@@ -40,7 +49,8 @@
     margin: 0;
     background: var(--bg);
     color: var(--text);
-    font-family: Onest, ui-sans-serif, system-ui, "PingFang SC", "Helvetica Neue", sans-serif;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif, system-ui,
+                 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", sans-serif;
     font-size: 16px;
     line-height: 1.75;
     -webkit-font-smoothing: antialiased;
