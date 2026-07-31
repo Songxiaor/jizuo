@@ -52,11 +52,30 @@ enum CoreResourceBundle {
       .flatMap(bundle(inDirectory:))
   }
 
-  /// 资源包本身没有 `Info.plist`，只有一个 `Resources/` 目录——`Bundle.module` 也是用
-  /// `Bundle(path:)` 加载同一个结构，所以这里等价可用，`url(forResource:...)` 会正常
-  /// 在 `Resources/` 下查找。
+  /// 资源包有**两种**磁盘布局，取决于是单架构还是 universal 构建：
+  ///
+  /// - 单架构：扁平包，`<包>/Resources/xxx.json`。包里没有 `Info.plist`，
+  ///   `Bundle(url:)` 把包根当资源根，`url(forResource:)` 直接命中。
+  /// - universal（`--arch arm64 --arch x86_64`）：SwiftPM 改用标准 macOS 包，
+  ///   变成 `<包>/Contents/Resources/**Resources**/xxx.json`。资源根是
+  ///   `Contents/Resources`，而文件又被套进里面一层同名的 `Resources/`，
+  ///   于是 `url(forResource:)` 在资源根找不到任何东西。
+  ///
+  /// 后者会让 `ProductDisplay.values` 的 `preconditionFailure` 在 SwiftUI 取
+  /// `App.body` 时立刻触发——**App 启动即崩，且崩在任何窗口出现之前**。
+  ///
+  /// 所以内层目录存在时优先把它当资源包：那一层没有 `Info.plist`，`Bundle(url:)`
+  /// 同样会把它当扁平包，于是两种构建走到同一套查找语义。
   static func bundle(inDirectory directory: URL) -> Bundle? {
-    Bundle(url: directory.appendingPathComponent(bundleName, isDirectory: true))
+    let packageRoot = directory.appendingPathComponent(bundleName, isDirectory: true)
+    let nested = packageRoot.appendingPathComponent("Contents/Resources/Resources", isDirectory: true)
+    var isDirectory: ObjCBool = false
+    if FileManager.default.fileExists(atPath: nested.path, isDirectory: &isDirectory),
+       isDirectory.boolValue,
+       let nestedBundle = Bundle(url: nested) {
+      return nestedBundle
+    }
+    return Bundle(url: packageRoot)
   }
 
   /// 唯一允许触碰 `Bundle.module` 的地方；单独成函数是为了**推迟求值**，见类型注释第 1 条。

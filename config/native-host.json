@@ -5,7 +5,8 @@
   "protocolMajor": 1,
   "minimumMacOS": "15.0",
   "architectures": [
-    "arm64"
+    "arm64",
+    "x86_64"
   ],
   "entrypoint": "LinkDigestNativeHost",
   "resourceBundle": "LinkDigest_LinkDigestCore.bundle",

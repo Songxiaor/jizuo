@@ -1,7 +1,8 @@
 {
   "appName": "LinkDigest",
   "architectures": [
-    "arm64"
+    "arm64",
+    "x86_64"
   ],
   "bundleIdentifier": "com.syc.linkdigest",
   "bundleIdentifierStatus": "engineering-candidate",

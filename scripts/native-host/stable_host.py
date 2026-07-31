@@ -24,6 +24,12 @@ from typing import Iterable, Sequence
 
 
 CONFIG_RELATIVE = Path("config/native-host.json")
+# universal 二进制：Apple Silicon 与 Intel 各一份切片。
+#
+# 只发 arm64 会让 2020 年前的 Intel Mac 完全无法运行，而且弹出的报错和
+# 「无法验证开发者」长得不一样，用户无从判断。顺序是这里的规范写法；与
+# `lipo -archs` 的实际输出比较时必须排序后再比，那条命令不保证顺序。
+SUPPORTED_ARCHITECTURES = ["arm64", "x86_64"]
 BACKGROUND_RELATIVE = Path("apps/browser-extension/src/entrypoints/background.ts")
 PACKAGE_METADATA = "package.json"
 CHECKSUMS = "SHA256SUMS"
@@ -96,8 +102,8 @@ def load_config(root: Path | None = None) -> dict:
         fail("native-host protocolMajor must be 1")
     if config["minimumMacOS"] != "15.0":
         fail("native-host minimumMacOS must be 15.0")
-    if config["architectures"] != ["arm64"]:
-        fail("native-host architectures must be exactly [arm64]")
+    if config["architectures"] != SUPPORTED_ARCHITECTURES:
+        fail(f"native-host architectures must be exactly {SUPPORTED_ARCHITECTURES}")
     for key in ("entrypoint", "resourceBundle"):
         name = config[key]
         if not name or name in (".", "..") or "/" in name or "\\" in name:
@@ -230,6 +236,23 @@ def read_checksums(path: Path) -> tuple[dict[str, str], bytes]:
     return checksums, raw
 
 
+def bundle_resource(bundle: Path, relative: str) -> Path | None:
+    """在资源包里定位一个资源，兼容两种磁盘布局。
+
+    SwiftPM 单架构构建产出扁平包（`<bundle>/Resources/…`），而多架构 universal
+    构建产出标准 macOS 包（`<bundle>/Contents/Resources/Resources/…`）。两者对
+    Foundation 的 `Bundle` API 完全等价——`resourceURL` 会各自解析到正确位置，
+    所以 App 运行时不受影响；受影响的只有像这里一样按磁盘路径硬找的校验代码。
+
+    符号链接一律拒绝：包内资源必须是真实文件，不能指向包外。
+    """
+    for prefix in ("Contents/Resources/Resources", "Resources"):
+        candidate = bundle / prefix / relative
+        if candidate.is_file() and not candidate.is_symlink():
+            return candidate
+    return None
+
+
 def macho_architectures(executable: Path) -> list[str]:
     result = subprocess.run(
         ["/usr/bin/lipo", "-archs", str(executable)],
@@ -273,8 +296,8 @@ def verify_package(
     expected_bundle = package_root / config["resourceBundle"]
     if not expected_bundle.is_dir() or expected_bundle.is_symlink():
         fail("package resource bundle is missing")
-    schema = expected_bundle / "Resources/contracts/capture-envelope-v1.schema.json"
-    if not schema.is_file() or schema.is_symlink():
+    schema = bundle_resource(expected_bundle, "contracts/capture-envelope-v1.schema.json")
+    if schema is None:
         fail("package contract schema is missing")
     root_schema = root / "contracts/capture-envelope-v1.schema.json"
     if sha256_file(schema) != sha256_file(root_schema):
@@ -303,7 +326,9 @@ def verify_package(
         if actual_digest != expected_digest:
             fail(f"checksum drift detected: {relative}")
     architectures = macho_architectures(package_root / config["entrypoint"])
-    if architectures != config["architectures"]:
+    # 排序后比较：`lipo -archs` 的输出顺序由 Mach-O 里 fat header 的排列决定
+    # （实测 universal 产物给出的是 "x86_64 arm64"），与配置里的书写顺序无关。
+    if sorted(architectures) != sorted(config["architectures"]):
         fail(f"native Host architectures {architectures} do not match config {config['architectures']}")
     return VerifiedPackage(
         root=package_root,

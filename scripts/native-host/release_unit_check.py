@@ -125,7 +125,7 @@ def swift_tests(audit: Path, review: Path) -> int:
 
 def config_cases(cases: Path) -> None:
     config = unit.load_app_config(ROOT)
-    check(config["architectures"] == ["arm64"], "canonical app config")
+    check(config["architectures"] == unit.stable_host.SUPPORTED_ARCHITECTURES, "canonical app config")
     check(config["iconFile"] == unit.APP_ICON_FILE, "canonical App icon config")
     base = cases / "config"
     (base / "config").mkdir(parents=True)
@@ -326,7 +326,12 @@ def staging_tamper_cases(audit: Path, cases: Path) -> None:
     original_arch = unit.macho_architectures
     original_minimum = unit.macho_minimum_macos
     try:
-        unit.macho_architectures = lambda path: ["x86_64"] if path.name == "LinkDigestApp" else ["arm64"]
+        # App 只剩单一切片（缺 arm64），Host 仍是完整 universal：必须被拒。
+        # universal 之后这条正好覆盖「漏了一个架构就发出去」这种真实事故。
+        unit.macho_architectures = (
+            lambda path: ["x86_64"] if path.name == "LinkDigestApp"
+            else list(unit.stable_host.SUPPORTED_ARCHITECTURES)
+        )
         expect_error(
             lambda: unit.verify_app(audit / "staging/LinkDigest.app", None, source, config),
             unit.INVALID_UNSAFE,

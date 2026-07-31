@@ -188,8 +188,8 @@ def load_app_config(root: Path | None = None) -> dict[str, Any]:
         reject("bundleVersion must be a positive canonical decimal string")
     if not VERSION_RE.fullmatch(config["minimumMacOS"]):
         reject("minimumMacOS is invalid")
-    if type(config["architectures"]) is not list or config["architectures"] != ["arm64"]:
-        reject("architectures must be exactly [arm64]")
+    if type(config["architectures"]) is not list or config["architectures"] != stable_host.SUPPORTED_ARCHITECTURES:
+        reject(f"architectures must be exactly {stable_host.SUPPORTED_ARCHITECTURES}")
     return config
 
 
@@ -599,6 +599,15 @@ def build_swift_products(source: Path, audit_root: Path) -> tuple[Path, Path, Pa
     return app, host, bundle
 
 
+def app_contract_schema(app: Path) -> Path:
+    """定位 App bundle 里随包的合同 schema，兼容两种资源包布局。"""
+    bundle = app / "Contents/Resources" / RESOURCE_BUNDLE
+    located = stable_host.bundle_resource(bundle, "contracts/capture-envelope-v1.schema.json")
+    if located is None:
+        reject("App bundle is missing the packaged contract schema")
+    return located
+
+
 def macho_architectures(path: Path) -> list[str]:
     result = command_ok([LIPO, "-archs", str(path)], allowed={LIPO})
     values = result.stdout.decode("utf-8").strip().split()
@@ -618,8 +627,13 @@ def macho_minimum_macos(path: Path) -> str:
                 if match:
                     versions.append(match.group(1))
                     break
-    if len(versions) != 1 or not VERSION_RE.fullmatch(versions[0]):
-        reject("Mach-O must contain one parseable LC_BUILD_VERSION minos")
+    # universal 二进制里每个架构各有一条 LC_BUILD_VERSION，所以这里会拿到多个
+    # minos。要求它们**全部可解析且完全一致**：只要有一个切片的部署目标和别人不
+    # 同，就会出现「在某类 Mac 上装得上、在另一类上直接起不来」这种最难查的故障。
+    if not versions or not all(VERSION_RE.fullmatch(value) for value in versions):
+        reject("Mach-O must contain parseable LC_BUILD_VERSION minos")
+    if len(set(versions)) != 1:
+        reject(f"Mach-O slices disagree on minimum macOS: {sorted(set(versions))}")
     components = versions[0].split(".")
     while len(components) > 2 and components[-1] == "0":
         components.pop()
@@ -904,7 +918,9 @@ def verify_app(
     host_executable = host_package / verified_host.config["entrypoint"]
     host_arch = macho_architectures(host_executable)
     host_minimum = macho_minimum_macos(host_executable)
-    if app_arch != app_config["architectures"] or host_arch != app_config["architectures"]:
+    # 排序后比较：`lipo -archs` 不保证输出顺序与配置书写顺序一致。
+    expected_arch = sorted(app_config["architectures"])
+    if sorted(app_arch) != expected_arch or sorted(host_arch) != expected_arch:
         reject("App/Host Mach-O architecture does not match app release config")
     if app_minimum != app_config["minimumMacOS"] or host_minimum != app_config["minimumMacOS"]:
         reject("App/Host Mach-O minimum macOS does not match app release config")
@@ -923,7 +939,9 @@ def verify_app(
         "minimumMacOS": app_minimum,
         "plist": plist,
         "plistHash": plist_hash,
-        "schemaHash": sha256_file(app / f"Contents/Resources/{RESOURCE_BUNDLE}/Resources/contracts/capture-envelope-v1.schema.json"),
+        # 资源包内布局随构建方式而变（universal 是标准 macOS 包，单架构是扁平
+        # 包），所以让 stable_host 去按两种布局定位，不在这里写死路径。
+        "schemaHash": sha256_file(app_contract_schema(app)),
         "signing": signing,
     }
     if release_unit is not None:

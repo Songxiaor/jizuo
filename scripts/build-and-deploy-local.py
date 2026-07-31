@@ -103,10 +103,19 @@ def main() -> int:
 
     run("pnpm", "--config.verifyDepsBeforeRun=false", "browser:build")
     run("/bin/bash", "scripts/sync-contracts.sh")
-    run("swift", "build", "--package-path", str(ROOT / "apps/desktop"), "--configuration", "release", "--disable-sandbox", "--disable-netrc", "--skip-update")
-    binary_root = Path(output([
-        "swift", "build", "--package-path", str(ROOT / "apps/desktop"), "--configuration", "release", "--disable-sandbox", "--disable-netrc", "--skip-update", "--show-bin-path",
-    ]))
+    # universal 构建：每个 `--arch` 出一份切片，SwiftPM 再 lipo 成一个二进制。
+    # 少了 x86_64 的话，2020 年前的 Intel Mac 下载后完全跑不起来。
+    # 注意产物目录会因此变成 `.build/apple/Products/Release`，不再是
+    # `.build/<arch>-apple-macosx/release`，所以路径一律问 `--show-bin-path`。
+    build_flags = [
+        "--package-path", str(ROOT / "apps/desktop"),
+        "--configuration", "release",
+        "--disable-sandbox", "--disable-netrc", "--skip-update",
+    ]
+    for architecture in stable_host.SUPPORTED_ARCHITECTURES:
+        build_flags += ["--arch", architecture]
+    run("swift", "build", *build_flags)
+    binary_root = Path(output(["swift", "build", *build_flags, "--show-bin-path"]))
 
     # /tmp is a macOS symlink to /private/tmp. The Host packager deliberately
     # rejects any symlink ancestor, so select the canonical directory itself.
@@ -114,7 +123,13 @@ def main() -> int:
         work = Path(temporary)
         config = json.loads((ROOT / "config/native-host.json").read_text(encoding="utf-8"))
         app_config = release_unit.load_app_config(ROOT)
-        host_package = work / "host-package" / f"LinkDigestNativeHost-{config['productVersion']}-macos-{config['architectures'][0]}"
+        # 目录名沿用 `-macos-arm64`，尽管二进制已经是 universal。
+        #
+        # 这个名字被浏览器的 Native Messaging manifest 以绝对路径写死，改名会让
+        # 已安装的扩展立刻找不到 Host。架构的真相源是 config 与二进制本身
+        # （`lipo -archs` 可查），不是这个目录名，所以不值得为了名字好看去换取
+        # 一次全体用户重装。release_unit.py 里的固定名也与此保持一致。
+        host_package = work / "host-package" / f"LinkDigestNativeHost-{config['productVersion']}-macos-arm64"
         host_package.parent.mkdir(mode=0o700)
         stable_host.create_package(
             binary_root / config["entrypoint"],

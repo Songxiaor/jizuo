@@ -152,19 +152,41 @@ enum CaptureWireContractSchema {
   struct ResourceLocator {
     let mode: ResourceMode
 
+    /// 资源包内的两种布局。
+    ///
+    /// 单架构构建产出扁平包，schema 在 `<包>/Resources/contracts/…`；universal
+    /// 构建（`--arch arm64 --arch x86_64`）改用标准 macOS 包，同一个文件变成
+    /// `<包>/Contents/Resources/Resources/contracts/…`。这里按磁盘路径直接拼接，
+    /// 不走 `Bundle` API，所以必须自己覆盖两种前缀，否则 universal 产物会在
+    /// 「找不到 schema」上失败——而且失败信息看起来像是抓取内容不合法。
+    private func candidates(in bundleRoot: URL, relativePath: String) -> [URL] {
+      [
+        bundleRoot.appendingPathComponent("Contents/Resources", isDirectory: true)
+          .appendingPathComponent(relativePath, isDirectory: false),
+        bundleRoot.appendingPathComponent(relativePath, isDirectory: false),
+      ]
+    }
+
     func schemaURL(version: Int = 1, fileManager: FileManager = .default) throws -> URL {
       let relativePath = version == 2 ? schemaV2RelativePath : schemaRelativePath
       let schemaURL: URL?
       switch mode {
       case let .application(resourceURL):
-        schemaURL = resourceURL?
-          .appendingPathComponent(resourceBundleName, isDirectory: true)
-          .appendingPathComponent(relativePath, isDirectory: false)
+        schemaURL = resourceURL
+          .map { $0.appendingPathComponent(resourceBundleName, isDirectory: true) }
+          .flatMap { root in
+            candidates(in: root, relativePath: relativePath)
+              .first { fileManager.fileExists(atPath: $0.path) }
+              ?? candidates(in: root, relativePath: relativePath).last
+          }
       case let .executable(executableURL):
-        schemaURL = executableURL?
-          .deletingLastPathComponent()
-          .appendingPathComponent(resourceBundleName, isDirectory: true)
-          .appendingPathComponent(relativePath, isDirectory: false)
+        schemaURL = executableURL
+          .map { $0.deletingLastPathComponent().appendingPathComponent(resourceBundleName, isDirectory: true) }
+          .flatMap { root in
+            candidates(in: root, relativePath: relativePath)
+              .first { fileManager.fileExists(atPath: $0.path) }
+              ?? candidates(in: root, relativePath: relativePath).last
+          }
       case let .test(moduleResourceURL):
         // Bundle.module is intentionally reachable only through this explicit
         // test mode. Production App/Host lookup can never fall back to a
