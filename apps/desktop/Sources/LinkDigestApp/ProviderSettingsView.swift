@@ -961,9 +961,13 @@ struct ProviderSettingsView: View {
               index: 2,
               title: "整理文稿",
               trailingNote: "只发送文字",
+              // 这句只针对**自动管线**这一个场景：新内容自动进来时，① 不开就没有
+              // 转写稿给 ② 用。但它长得像前置条件警告，读起来像「② 依赖 ①」——
+              // 实际上手动点「转写」完成后，只要 ② 开着就会自动整理，与 ① 无关。
+              // 收到过按此误解的反馈，所以把适用范围写进文案本身。
               requirementUnmet: model.autoTranscribeNewCaptures
                 ? nil
-                : "① 未开启：新内容还没有转写稿可整理",
+                : "仅影响自动进来的新内容：① 未开启就没有转写稿可整理。你手动点「转写」时，本步照常生效",
               isOn: $model.autoTidyTranscription,
               identifier: "auto-tidy-transcription"
             )

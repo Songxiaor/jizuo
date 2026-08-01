@@ -1558,3 +1558,37 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
     XCTAssertTrue(source.contains("transcriptTidyUnavailableReason(taskID: taskID) == nil"))
   }
 }
+
+/// 自动管线第 ② 步的前置提示，必须写明它只适用于自动进来的新内容。
+///
+/// 原文案「① 未开启：新内容还没有转写稿可整理」出现在 ② 正下方、长得像前置条件
+/// 警告，读起来就是「② 依赖 ①」。而代码里手动转写完成后的自动整理只检查 ② 的开关
+/// （HistoryMediaPlayback 的 onChange 里 `guard autoTidyEnabled`），与 ① 无关。
+/// 收到过按此误解的反馈。
+final class AutoPipelineTidyHintTests: XCTestCase {
+  func testTidyHintStatesItOnlyAppliesToAutoCapturedContent() throws {
+    let settings = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/ProviderSettingsView.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(settings.contains("仅影响自动进来的新内容"))
+    XCTAssertTrue(settings.contains("你手动点「转写」时，本步照常生效"))
+  }
+
+  /// 钉住真实行为：手动转写后的自动整理只依赖 ② 的开关。
+  func testManualTranscriptionTidyDoesNotDependOnAutoTranscribe() throws {
+    let playback = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryMediaPlayback.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(playback.contains("guard autoTidyEnabled, newState == .completed"))
+    XCTAssertFalse(
+      playback.contains("autoTranscribeNewCaptures"),
+      "手动转写后的整理不得依赖自动转写开关"
+    )
+  }
+}
