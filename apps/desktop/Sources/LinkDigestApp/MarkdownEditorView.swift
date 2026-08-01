@@ -1,4 +1,5 @@
 import AppKit
+import LinkDigestCore
 import SwiftUI
 
 /// 带 Markdown 着色的编辑器。
@@ -18,10 +19,16 @@ struct MarkdownEditorView: View {
   /// 一页里套两层滚动条，写到底部时页面和编辑器会互相抢滚动，最后一行还常被
   /// 裁在框里看不见。写作页面应当只有一条滚动轴。
   var contentHeight: Binding<CGFloat>?
+  /// 点了 `[[某条笔记]]` 时回调，参数是链接目标的标题。
+  var onFollowWikiLink: ((String) -> Void)?
+  /// 可以链接的笔记标题。为空则不启用 `[[` 补全。
+  var linkableTitles: [String] = []
 
   var body: some View {
     MarkdownTextView(
-      text: $text, font: font, palette: palette, lineSpacing: lineSpacing, contentHeight: contentHeight
+      text: $text, font: font, palette: palette, lineSpacing: lineSpacing,
+      contentHeight: contentHeight, onFollowWikiLink: onFollowWikiLink,
+      linkableTitles: linkableTitles
     )
       // 提示画在编辑器之上而不是塞进 `text`：塞进去它就是一段真的内容，会被
       // 保存、被翻译、被搜到，用户还得先删掉它才能开始写。
@@ -80,6 +87,8 @@ private struct MarkdownTextView: NSViewRepresentable {
   let palette: MarkdownSyntaxHighlighter.Palette
   let lineSpacing: CGFloat
   var contentHeight: Binding<CGFloat>?
+  var onFollowWikiLink: ((String) -> Void)?
+  var linkableTitles: [String] = []
 
   static let contentInset = NSSize(width: 18, height: 16)
 
@@ -119,6 +128,8 @@ private struct MarkdownTextView: NSViewRepresentable {
     scroll.hasVerticalScroller = contentHeight == nil
 
     context.coordinator.contentHeight = contentHeight
+    context.coordinator.onFollowWikiLink = onFollowWikiLink
+    context.coordinator.linkableTitles = linkableTitles
     context.coordinator.applyHighlight(to: textView, font: font, palette: palette, lineSpacing: lineSpacing)
     return scroll
   }
@@ -132,6 +143,8 @@ private struct MarkdownTextView: NSViewRepresentable {
       textView.setSelectedRange(NSRange(location: min(selected.location, text.utf16.count), length: 0))
     }
     context.coordinator.contentHeight = contentHeight
+    context.coordinator.onFollowWikiLink = onFollowWikiLink
+    context.coordinator.linkableTitles = linkableTitles
     context.coordinator.applyHighlight(to: textView, font: font, palette: palette, lineSpacing: lineSpacing)
   }
 
@@ -142,13 +155,89 @@ private struct MarkdownTextView: NSViewRepresentable {
     /// 防止把自己写回去的内容再当成用户输入处理。
     private var isApplyingHighlight = false
     var contentHeight: Binding<CGFloat>?
+    var onFollowWikiLink: ((String) -> Void)?
+    var linkableTitles: [String] = []
 
     init(text: Binding<String>) { self.text = text }
+
+    // MARK: - `[[` 补全
+    //
+    // 借 NSTextView 自带的补全机制（`complete(_:)` + 下面两个 delegate），
+    // 而不是自己画一个候选浮层：系统那套的键盘操作、滚动、失焦关闭都是现成的，
+    // 自己实现一遍只会在边角上比它差。
+
+    /// 正在补全的那段 `[[…` 在文本里的范围。
+    ///
+    /// 记下来是因为 `insertCompletion` 拿到的 `charRange` 是系统按「单词」
+    /// 划出来的，中文标题里没有空格，它划出的范围和实际要替换的那段对不上。
+    private var completionRange: NSRange?
+
+    func textView(
+      _ textView: NSTextView,
+      completions words: [String],
+      forPartialWordRange charRange: NSRange,
+      indexOfSelectedItem index: UnsafeMutablePointer<Int>?
+    ) -> [String] {
+      guard !linkableTitles.isEmpty,
+            let pending = pendingLink(in: textView) else { return [] }
+      completionRange = pending.range
+      return WikiLink.completions(for: pending.query, among: linkableTitles)
+    }
+
+    func textView(
+      _ textView: NSTextView,
+      insertCompletion word: String,
+      forPartialWordRange charRange: NSRange,
+      movement: Int,
+      isFinal flag: Bool
+    ) {
+      guard flag, let range = completionRange else { return }
+      completionRange = nil
+      // 连 `[[` 一起替换成完整链接，并把已经在光标后面的 `]]` 吃掉，
+      // 免得补出 `[[标题]]]]`。
+      let storage = textView.string as NSString
+      var replaced = range
+      let tail = range.location + range.length
+      if tail + 2 <= storage.length, storage.substring(with: NSRange(location: tail, length: 2)) == "]]" {
+        replaced = NSRange(location: range.location, length: range.length + 2)
+      }
+      let markup = WikiLink.markup(for: word)
+      guard textView.shouldChangeText(in: replaced, replacementString: markup) else { return }
+      textView.textStorage?.replaceCharacters(in: replaced, with: markup)
+      textView.didChangeText()
+      textView.setSelectedRange(NSRange(location: replaced.location + (markup as NSString).length, length: 0))
+    }
+
+    /// 光标处那个还没写完的 `[[…`，换算成 NSRange。
+    private func pendingLink(in textView: NSTextView) -> (range: NSRange, query: String)? {
+      let full = textView.string
+      let caretUTF16 = textView.selectedRange().location
+      guard let caret = Range(NSRange(location: caretUTF16, length: 0), in: full)?.lowerBound,
+            let pending = WikiLink.pendingLink(in: full, caret: caret) else { return nil }
+      let range = NSRange(pending.openingIndex..<caret, in: full)
+      return (range, pending.query)
+    }
+
+    /// 点了正文里的 `[[某条笔记]]`。
+    ///
+    /// 可编辑的 NSTextView 里点链接需要按住 ⌘，这正合适：写字时光标经常落在
+    /// 链接上，单击就跳走会让人没法编辑自己刚写的那个链接。
+    func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
+      guard let url = link as? URL ?? (link as? String).flatMap(URL.init(string:)),
+            let title = WikiLinkURL.title(from: url) else { return false }
+      onFollowWikiLink?(title)
+      return true
+    }
 
     func textDidChange(_ notification: Notification) {
       guard !isApplyingHighlight, let textView = notification.object as? NSTextView else { return }
       text.wrappedValue = textView.string
       reportHeight(of: textView)
+      // 刚打完 `[[` 就把候选弹出来。只在这一刻触发：弹出之后继续打字由系统
+      // 自己筛，每次输入都调 `complete(_:)` 会让候选框不停地重开。
+      if !linkableTitles.isEmpty, let pending = pendingLink(in: textView), pending.query.isEmpty {
+        textView.complete(nil)
+      }
     }
 
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {

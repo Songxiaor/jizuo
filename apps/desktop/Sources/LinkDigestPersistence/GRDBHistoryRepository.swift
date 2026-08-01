@@ -1086,6 +1086,70 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  /// 笔记的最新 snapshot：标题和正文都挂在它上面。
+  ///
+  /// 复用同一段子查询，避免「跳转按最新那条、反链按第一条」这种各查各的漂移。
+  private static let latestNoteSnapshotJoin = """
+    FROM tasks t
+    INNER JOIN content_snapshots s ON s.task_id = t.id
+      AND s.sequence = (SELECT MAX(sequence) FROM content_snapshots x WHERE x.task_id = t.id)
+    WHERE t.canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'
+    """
+
+  public func noteID(matchingTitle title: String) throws -> TaskID? {
+    let normalized = WikiLink.normalizedTitle(title)
+    guard !normalized.isEmpty else { return nil }
+    return try database.read { db in
+      // 大小写与首尾空白不参与匹配：要求人记住当初标题的大小写会让链接经常断掉。
+      // 同名多条时取最近更新的那条——那是用户刚写过、最可能指的那一条。
+      let row = try Row.fetchOne(db, sql: """
+        SELECT t.id AS id
+        \(Self.latestNoteSnapshotJoin)
+          AND lower(trim(COALESCE(s.title, ''))) = ?
+        ORDER BY t.updated_at_ms DESC
+        LIMIT 1
+        """, arguments: [normalized])
+      guard let row else { return nil }
+      let id: TaskID = requiredID(row["id"])
+      return id
+    }
+  }
+
+  public func noteTitles() throws -> [String] {
+    try database.read { db in
+      try String.fetchAll(db, sql: """
+        SELECT COALESCE(s.title, '') AS title
+        \(Self.latestNoteSnapshotJoin)
+          AND COALESCE(s.title, '') <> ''
+        ORDER BY t.updated_at_ms DESC
+        """)
+    }
+  }
+
+  public func notesLinking(toTitle title: String) throws -> [NoteBacklink] {
+    let normalized = WikiLink.normalizedTitle(title)
+    guard !normalized.isEmpty else { return [] }
+    // SQL 只做粗筛：把正文里出现过 `[[…标题…]]` 的行捞出来，是否真的是一条
+    // 指向本篇的链接，交给 WikiLink 用同一套解析判定。让 SQL 去理解链接语法
+    // 会立刻和编辑器、跳转两处的口径分家。
+    let rows = try database.read { db in
+      try Row.fetchAll(db, sql: """
+        SELECT t.id AS id, COALESCE(s.title, '') AS title, s.body_text AS body_text
+        \(Self.latestNoteSnapshotJoin)
+          AND lower(COALESCE(s.body_text, '')) LIKE ? ESCAPE '\\'
+        ORDER BY t.updated_at_ms DESC
+        """, arguments: ["%[[%\(escapedLikePattern(normalized))%]]%"])
+    }
+    return rows.compactMap { row -> NoteBacklink? in
+      let body: String = row["body_text"] ?? ""
+      let links = WikiLink.targets(in: body).map(WikiLink.normalizedTitle)
+      guard links.contains(normalized) else { return nil }
+      let id: TaskID = requiredID(row["id"])
+      let title: String = row["title"] ?? ""
+      return NoteBacklink(id: id, title: title.isEmpty ? UserNoteDocument.untitledTitle : title)
+    }
+  }
+
   public func updateTaskTitle(
     taskID: TaskID,
     title: String,

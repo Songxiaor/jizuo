@@ -49,6 +49,13 @@ public struct HistoryApplicationService: Sendable {
       updatedAtMilliseconds: updatedAtMilliseconds
     )
   }
+  public func noteID(matchingTitle title: String) throws -> TaskID? {
+    try repository.noteID(matchingTitle: title)
+  }
+  public func notesLinking(toTitle title: String) throws -> [NoteBacklink] {
+    try repository.notesLinking(toTitle: title)
+  }
+  public func noteTitles() throws -> [String] { try repository.noteTitles() }
   public func updateTaskTitle(
     taskID: TaskID,
     title: String,

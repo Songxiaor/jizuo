@@ -45,6 +45,38 @@ final class MarkdownSyntaxHighlighterTests: XCTestCase {
     XCTAssertNotEqual(markerColor, textColor, "标记要淡下去，不能和标题同色")
   }
 
+  /// 双链要一眼看得出是链接，并且带上「跳去哪」这条信息。
+  func testWikiLinkIsColoredAndCarriesItsTarget() {
+    let storage = highlighted("参考 [[知识库构建]] 那条")
+    let index = storage.string.distance(
+      from: storage.string.startIndex,
+      to: storage.string.range(of: "[[知识库构建]]")!.lowerBound
+    )
+    let color = storage.attribute(.foregroundColor, at: index, effectiveRange: nil) as? NSColor
+    XCTAssertEqual(color, palette.accent, "双链要用强调色，不能和正文一个颜色")
+
+    let link = storage.attribute(.link, at: index, effectiveRange: nil) as? URL
+    XCTAssertEqual(WikiLinkURL.title(from: try! XCTUnwrap(link)), "知识库构建")
+  }
+
+  /// 用自定义 scheme 而不是 https：`.link` 一旦是真网址，点下去会被系统交给
+  /// 浏览器，而这里要的是在 App 内跳到另一条笔记。
+  func testWikiLinkURLNeverLooksLikeAWebAddress() {
+    let url = WikiLinkURL.url(forTitle: "AI 时代的创作")
+    XCTAssertEqual(url.scheme, WikiLinkURL.scheme)
+    XCTAssertNotEqual(url.scheme, "https")
+    XCTAssertEqual(WikiLinkURL.title(from: url), "AI 时代的创作")
+    // 普通网址不该被当成双链。
+    XCTAssertNil(WikiLinkURL.title(from: URL(string: "https://example.test/a")!))
+  }
+
+  /// 半截语法不该把后面的正文染成一片蓝。
+  func testUnclosedWikiLinkIsNotHighlighted() {
+    let storage = highlighted("[[还没写完 后面还有很多字")
+    let color = storage.attribute(.foregroundColor, at: 2, effectiveRange: nil) as? NSColor
+    XCTAssertEqual(color, palette.primary)
+  }
+
   func testInlineCodeUsesMonospace() {
     let storage = highlighted("这是 `code` 行内代码")
     let index = storage.string.distance(

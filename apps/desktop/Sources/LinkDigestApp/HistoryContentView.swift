@@ -1133,6 +1133,14 @@ private struct HistoryDetailView: View {
   @State private var noteSaveIndicator = false
   /// 当前正在编辑的笔记身份。切走时要用它把草稿存回**原来**那条。
   @State private var editingNote: (taskID: TaskID, snapshotID: ContentSnapshotID, storedBody: String)?
+  /// 链接到本条的笔记。
+  ///
+  /// 存成状态而不是在 body 里现查：body 每次重绘都会执行，打字时每敲一个字
+  /// 就要扫一遍全部笔记正文。这一份只取决于**别人**的正文，本条怎么编辑都不
+  /// 影响它，所以切换记录或改了标题时重载一次就够。
+  @State private var noteBacklinks: [NoteBacklink] = []
+  /// `[[` 补全的候选标题。和反链一样按需加载，不在 body 里现查。
+  @State private var noteLinkTitles: [String] = []
   /// 详情页里可获得键盘焦点的字段。目前只有笔记标题需要感知失焦。
   private enum DetailField: Hashable { case noteTitle }
   @FocusState private var focusedField: DetailField?
@@ -1255,6 +1263,8 @@ private struct HistoryDetailView: View {
     }
     model.renameNote(taskID: detail.task.id, title: resolved)
     noteTitleDraft = resolved
+    // 改了标题就换了链接目标：原先指向旧名字的那些链接现在指不到这条了。
+    noteBacklinks = model.backlinks(forTitle: resolved)
   }
   /// Source frontmatter belongs to the newest captured source, not a later
   /// local transcription snapshot that may have become the effective body.
@@ -1643,6 +1653,11 @@ private struct HistoryDetailView: View {
             .id(ReadingAnchor.module("images"))
         }
 
+        if isUserNote {
+          backlinksSection
+            .padding(.top, 20)
+        }
+
         // 摘录是「读别人的东西时把话摘出来」。在自己写的笔记下面再挂一个叫
         // 「我的笔记」的框，等于同一页里有两个可写的地方，谁也说不清该写哪个。
         if !isUserNote {
@@ -1690,6 +1705,20 @@ private struct HistoryDetailView: View {
         editingNote = (detail.task.id, snapshot.id, transcriptionDraft)
       }
       noteTitleDraft = title
+      // 清洗规则是后加的，早先存下的标题里还留着 U+FFFC 那类显示成方块的字符。
+      // 打开时顺手修掉：它们不是内容，用户也删不掉（光标跳过去像没东西）。
+      if isUserNote {
+        let cleaned = UserNoteDocument.sanitizedTitle(title)
+        if !cleaned.isEmpty, cleaned != title {
+          model.renameNote(taskID: detail.task.id, title: cleaned)
+          noteTitleDraft = cleaned
+        }
+      }
+      noteBacklinks = isUserNote ? model.backlinks(forTitle: noteTitleDraft) : []
+      // 排除自己：一条笔记链向自己没有意义，出现在候选里只会误选。
+      noteLinkTitles = isUserNote
+        ? model.noteTitlesForLinking().filter { $0 != title }
+        : []
       sessionMediaPlayback.detailBecameActive(
         taskID: detail.task.id,
         platform: latestSourceSnapshot?.platform ?? detail.snapshots.last?.platform,
@@ -1983,6 +2012,51 @@ private struct HistoryDetailView: View {
       case .translate:
         await appModel.translate(historyDetail: detail, preferences: providerSettings.runPreferences)
       }
+    }
+  }
+
+  /// 「链接到这条的笔记」。
+  ///
+  /// 双链的价值一半在反向：正向链接只是省了一次搜索，反向才让关联自己浮现——
+  /// 写第三条笔记时才发现前两条都指向它，那个「它」就是个值得单独想的题目。
+  ///
+  /// 一条都没有时整块不出现。空的「反向链接（0）」每天提醒你还没建立关联，
+  /// 是种没有用处的压力。
+  @ViewBuilder private var backlinksSection: some View {
+    if !noteBacklinks.isEmpty {
+      VStack(alignment: .leading, spacing: 8) {
+        Label("链接到这条的笔记 \(noteBacklinks.count)", systemImage: "arrow.turn.up.left")
+          .font(.callout.weight(.medium))
+          .foregroundStyle(.secondary)
+        ForEach(noteBacklinks) { backlink in
+          Button {
+            if let snapshot = latestSnapshot, noteDraftIsDirty(snapshot) {
+              saveTranscriptionDraft(snapshot)
+            }
+            model.reveal(taskID: backlink.id)
+          } label: {
+            HStack(spacing: 6) {
+              Image(systemName: "square.and.pencil")
+                .font(.system(size: 11))
+                .foregroundStyle(.tertiary)
+              Text(backlink.title)
+                .font(.callout)
+                .lineLimit(1)
+              Spacer(minLength: 0)
+            }
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .linkCursor()
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(14)
+      .background(
+        RoundedRectangle(cornerRadius: 12, style: .continuous)
+          .fill(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+      )
+      .accessibilityIdentifier("note-backlinks")
     }
   }
 
@@ -2613,7 +2687,15 @@ private struct HistoryDetailView: View {
             ),
             lineSpacing: 6,
             placeholder: isUserNote ? UserNoteDocument.placeholderBody : "",
-            contentHeight: isUserNote ? $noteEditorHeight : nil
+            contentHeight: isUserNote ? $noteEditorHeight : nil,
+            onFollowWikiLink: { title in
+              // 先把手上这条存了再跳，否则刚写的内容会随着切换被丢掉。
+              if let snapshot = latestSnapshot, noteDraftIsDirty(snapshot) {
+                saveTranscriptionDraft(snapshot)
+              }
+              model.followWikiLink(toTitle: title)
+            },
+            linkableTitles: isUserNote ? noteLinkTitles : []
           )
           .frame(
             minHeight: isUserNote ? max(noteEditorHeight, 320) : 320,

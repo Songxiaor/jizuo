@@ -260,6 +260,15 @@ public protocol HistoryRepository: Sendable {
     bodyText: String,
     updatedAtMilliseconds: Int64
   ) throws
+  /// 按标题找一条笔记，供 `[[标题]]` 跳转用。找不到返回 nil。
+  ///
+  /// 只在笔记里找：双链是笔记之间的东西，链到一篇抓来的网页上没有意义——
+  /// 那篇网页的标题是抓取时定的，用户并没有给它起过名字。
+  func noteID(matchingTitle title: String) throws -> TaskID?
+  /// 哪些笔记的正文里出现了 `[[title]]`。
+  func notesLinking(toTitle title: String) throws -> [NoteBacklink]
+  /// 全部笔记的标题，供输入 `[[` 时补全。
+  func noteTitles() throws -> [String]
   /// 改标题。
   ///
   /// 只对用户自己写的笔记开放：抓取记录的标题是抓来的事实，改了会让它和来源
@@ -386,4 +395,10 @@ public extension HistoryRepository {
     title _: String,
     updatedAtMilliseconds _: Int64
   ) throws { throw RepositoryFailure.unavailable }
+
+  /// 双链在旧测试替身上一律「找不到」而不是抛错：链接指不到东西是正常状态，
+  /// 不该让整个视图进入错误分支。
+  func noteID(matchingTitle _: String) throws -> TaskID? { nil }
+  func notesLinking(toTitle _: String) throws -> [NoteBacklink] { [] }
+  func noteTitles() throws -> [String] { [] }
 }

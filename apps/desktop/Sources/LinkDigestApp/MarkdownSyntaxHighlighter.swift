@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import LinkDigestCore
 
 /// 编辑 Markdown 时的语法着色。
 ///
@@ -93,6 +94,28 @@ enum MarkdownSyntaxHighlighter {
     },
   ]}
 
+  /// 双链单独一遍，不走 `rules`：它要按每处链接的目标写不同的 `.link` 值，
+  /// 而 `rules` 的样式只认「整段匹配用同一份属性」。
+  private static func highlightWikiLinks(
+    in storage: NSTextStorage,
+    text: String,
+    palette: Palette
+  ) {
+    for reference in WikiLink.references(in: text) {
+      guard let range = NSRange(reference.range, in: text) as NSRange? else { continue }
+      storage.addAttributes(
+        [
+          .foregroundColor: palette.accent,
+          .underlineStyle: NSUnderlineStyle.single.rawValue,
+          .underlineColor: palette.accent.withAlphaComponent(0.4),
+          // 点击要知道跳去哪。用自定义 scheme，避免被当成网址交给浏览器。
+          .link: WikiLinkURL.url(forTitle: reference.target),
+        ],
+        range: range
+      )
+    }
+  }
+
   /// 就地重新着色。只改属性、不动文字，因此不会打断输入法组字。
   static func apply(
     to storage: NSTextStorage,
@@ -123,6 +146,31 @@ enum MarkdownSyntaxHighlighter {
         }
       }
     }
+    // 双链最后上：它要压过前面任何规则给过的颜色。
+    highlightWikiLinks(in: storage, text: text, palette: palette)
     storage.endEditing()
+  }
+}
+
+/// 双链点击用的地址。
+///
+/// 自定义 scheme 而不是 https：NSTextView 的 `.link` 属性一旦是个真网址，
+/// 点下去系统会直接交给浏览器打开。这里要的是「在 App 内跳到另一条笔记」。
+enum WikiLinkURL {
+  static let scheme = "linkdigest-wiki"
+
+  static func url(forTitle title: String) -> URL {
+    var components = URLComponents()
+    components.scheme = scheme
+    // 标题放 path 而不是 host：host 会被规范化成小写并拒绝中文以外的一些字符。
+    components.path = "/" + title
+    return components.url ?? URL(string: "\(scheme):/")!
+  }
+
+  /// 从点击到的地址还原标题；不是双链地址则返回 nil。
+  static func title(from url: URL) -> String? {
+    guard url.scheme == scheme else { return nil }
+    let title = String(url.path.dropFirst()).removingPercentEncoding ?? String(url.path.dropFirst())
+    return title.isEmpty ? nil : title
   }
 }

@@ -2534,6 +2534,115 @@ final class UserNoteIngestTests: XCTestCase {
     }
   }
 
+  /// 双链按标题找到目标笔记。
+  func testWikiLinkResolvesANoteByTitle() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      let target = try repository.acceptCapture(.init(
+        document: try UserNoteDocument.make(title: "知识库构建", body: "正文"),
+        receivedAtMilliseconds: 1
+      ))
+
+      XCTAssertEqual(try repository.noteID(matchingTitle: "知识库构建"), target.taskID)
+      // 大小写与首尾空白不参与匹配：否则链接会因为记错大小写而经常断掉。
+      XCTAssertEqual(try repository.noteID(matchingTitle: "  知识库构建 "), target.taskID)
+      XCTAssertNil(try repository.noteID(matchingTitle: "不存在的标题"))
+      XCTAssertNil(try repository.noteID(matchingTitle: "   "))
+    }
+  }
+
+  /// 双链只在笔记之间成立，不该链到抓来的网页上。
+  func testWikiLinkNeverResolvesToACapturedPage() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      _ = try repository.acceptCapture(.init(
+        document: CapturedDocument(
+          createdAt: "2026-08-01T00:00:00Z", origin: .manualLink,
+          url: "https://example.test/a", title: "一篇网页",
+          platform: "web", method: "fixture", text: "正文",
+          completeness: "complete", capturedAt: "2026-08-01T00:00:00Z", sourceLabel: "网页"
+        ),
+        receivedAtMilliseconds: 1
+      ))
+
+      XCTAssertNil(
+        try repository.noteID(matchingTitle: "一篇网页"),
+        "抓来的网页标题是抓取时定的，用户从没给它起过名字"
+      )
+    }
+  }
+
+  /// 反向链接：哪些笔记链到了这条。
+  func testBacklinksListNotesThatPointHere() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      _ = try repository.acceptCapture(.init(
+        document: try UserNoteDocument.make(title: "知识库构建", body: "被指向的那条"),
+        receivedAtMilliseconds: 1
+      ))
+      _ = try repository.acceptCapture(.init(
+        document: try UserNoteDocument.make(title: "内容生产流程", body: "先看 [[知识库构建]] 再往下"),
+        receivedAtMilliseconds: 2
+      ))
+      _ = try repository.acceptCapture(.init(
+        document: try UserNoteDocument.make(title: "无关的一条", body: "没有链接"),
+        receivedAtMilliseconds: 3
+      ))
+      // 只是正文里提到了这几个字，没写成链接，不算反链。
+      _ = try repository.acceptCapture(.init(
+        document: try UserNoteDocument.make(title: "只是提到", body: "我在做知识库构建这件事"),
+        receivedAtMilliseconds: 4
+      ))
+
+      let backlinks = try repository.notesLinking(toTitle: "知识库构建")
+      XCTAssertEqual(backlinks.map(\.title), ["内容生产流程"])
+    }
+  }
+
+  /// SQL 的 LIKE 只是粗筛，真正判定交给 WikiLink——否则两处口径会分家。
+  func testBacklinkFilteringRejectsCoincidentalBracketText() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      _ = try repository.acceptCapture(.init(
+        document: try UserNoteDocument.make(title: "甲", body: "目标"),
+        receivedAtMilliseconds: 1
+      ))
+      // 粗筛的 `%[[%甲%]]%` 会捞到它，但它链的是「乙」，不是「甲」。
+      _ = try repository.acceptCapture(.init(
+        document: try UserNoteDocument.make(title: "干扰项", body: "[[乙]] 里提到了甲 [[丙]]"),
+        receivedAtMilliseconds: 2
+      ))
+
+      XCTAssertTrue(try repository.notesLinking(toTitle: "甲").isEmpty)
+    }
+  }
+
+  func testNoteTitlesFeedTheLinkCompletion() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      _ = try repository.acceptCapture(.init(
+        document: try UserNoteDocument.make(title: "先写的", body: "a"),
+        receivedAtMilliseconds: 1
+      ))
+      _ = try repository.acceptCapture(.init(
+        document: try UserNoteDocument.make(title: "后写的", body: "b"),
+        receivedAtMilliseconds: 2
+      ))
+      // 最近更新的排前面：补全时先看到的应该是手头正在写的那些。
+      XCTAssertEqual(try repository.noteTitles(), ["后写的", "先写的"])
+    }
+  }
+
   /// 删除笔记走的是和抓取记录同一个通道，但从没验证过。
   func testDeletingANoteRemovesItAndItsCount() throws {
     try withTemporaryLocation { location in

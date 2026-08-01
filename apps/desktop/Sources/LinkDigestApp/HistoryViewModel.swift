@@ -3362,6 +3362,37 @@ final class HistoryViewModel: ObservableObject {
     }
   }
 
+  /// 点了 `[[某条笔记]]`。
+  ///
+  /// 目标不存在时不静默——链接指不到东西是写笔记时的常态（先写下想法，那条
+  /// 笔记还没建），但用户点下去必须知道发生了什么，而不是以为程序卡了。
+  func followWikiLink(toTitle title: String) {
+    guard let history else { return }
+    do {
+      guard let target = try history.noteID(matchingTitle: title) else {
+        snapshotEditFailure = "还没有叫「\(title)」的笔记。"
+        return
+      }
+      // 先切到笔记区再选中：目标不在当前作用域里时，选中会被列表刷新清掉。
+      if !selectedScope.isNotesOnly { selectScope(.notes) }
+      reveal(taskID: target)
+    } catch {
+      snapshotEditFailure = "无法打开链接的笔记，请稍后重试。"
+    }
+  }
+
+  /// 当前这条笔记被哪些笔记链到。
+  func backlinks(forTitle title: String) -> [NoteBacklink] {
+    guard let history else { return [] }
+    return (try? history.notesLinking(toTitle: title)) ?? []
+  }
+
+  /// 供输入 `[[` 时补全的标题表。
+  func noteTitlesForLinking() -> [String] {
+    guard let history else { return [] }
+    return (try? history.noteTitles()) ?? []
+  }
+
   /// 笔记改名。
   ///
   /// 空标题不写回默认值以外的东西：列表里一行没有抓手的空白比「无标题笔记」更难认。
