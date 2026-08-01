@@ -1178,9 +1178,16 @@ final class HistoryContentViewTests: XCTestCase {
   func testReadingPanePickerStaysVisibleWhenOneSideIsEmpty() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct TitleHeightPreferenceKey")
+    // 钉条件本身，不钉整行写法：这一行后来加了笔记分支从单行变成多行，
+    // 行为没变，而写死整行的断言会因此假失败。
     XCTAssertTrue(
-      detail.contains("showsReadingPanePicker: Bool { hasResultBody || hasSourceBody || hasLiveTranscription }"),
+      detail.contains("hasResultBody || hasSourceBody || hasLiveTranscription"),
       "The picker must not disappear just because there is no summary yet"
+    )
+    // 笔记是唯一的例外：它只有一份正文，不该出现只有一个选项的分段控件。
+    XCTAssertTrue(
+      detail.contains("if isUserNote { return availableReadingPanes.count > 1 }"),
+      "笔记应按真实可用面板数决定，而不是跟着抓取记录的规则走"
     )
     XCTAssertFalse(
       detail.contains("hasResultBody && hasPresentableSourceBody"),
