@@ -13,6 +13,7 @@ struct HistoryContentView: View {
   @ObservedObject var providerSettings: ProviderSettingsViewModel
   @ObservedObject var sessionMediaPlayback: SessionMediaPlaybackController
   @Environment(\.openSettings) private var openSettings
+  @Environment(\.openWindow) private var openWindow
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
   @State private var navigationTagsExpanded = true
   @FocusState private var isSearchFocused: Bool
@@ -231,16 +232,23 @@ struct HistoryContentView: View {
         Menu {
           Button("添加链接", action: manualLink.open)
           Button("从剪贴板添加链接", action: manualLink.readClipboardAndOpen)
-          Divider()
-          // 笔记与链接同属「往库里加一条」，所以放同一个入口而不是新开按钮：
-          // 用户想记点什么时，不该先判断这属于哪一类再去找不同的地方。
-          Button("新建笔记", action: manualLink.createNote)
-            .accessibilityIdentifier("create-user-note")
         } label: {
-          Label("添加", systemImage: "plus")
+          Label("添加链接", systemImage: "link.badge.plus")
         }
         .disabled(!manualLink.canOpen)
         .accessibilityIdentifier("manual-link-add-toolbar")
+
+        // 写笔记是一等动作，不是「添加链接」的附属项，所以独立成钮。
+        // 它打开一个独立窗口而不是往列表塞一条记录——写东西和找资料是两种心智。
+        Button {
+          // 必须带 value：WindowGroup 声明了 `for: String.self`，只给 id 的调用
+          // 匹配不上，SwiftUI 会静默忽略——表现为「点了没反应」。
+          // 空串表示新建，非空为要打开的 taskID。
+          openWindow(id: NoteEditorWindowID.value, value: NoteEditorWindowID.newNote)
+        } label: {
+          Label("新建笔记", systemImage: "square.and.pencil")
+        }
+        .accessibilityIdentifier("create-user-note")
       }
     }
     .sheet(isPresented: Binding(
@@ -406,6 +414,22 @@ struct HistoryContentView: View {
           model.selectScope(.favorite)
         }
         .accessibilityIdentifier("history-navigation-favorite")
+      }
+
+      // 笔记自成一区，不混进上面那组，也不进「平台」。
+      //
+      // 上面几项都是在看**抓来的资料**的不同切面；笔记是自己写的东西，是另一种
+      // 材料。放在一起会让「全部」这个词失真，也会让找素材和写东西互相打断。
+      Section {
+        navigationButton(
+          "我的笔记",
+          systemImage: "square.and.pencil",
+          count: model.navigationCounts.notes,
+          selected: model.selectedScope == .notes
+        ) {
+          model.selectScope(.notes)
+        }
+        .accessibilityIdentifier("history-navigation-notes")
       }
 
       if !model.navigationCounts.platforms.isEmpty {

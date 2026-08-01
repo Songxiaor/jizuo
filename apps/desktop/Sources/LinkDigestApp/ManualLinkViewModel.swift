@@ -205,7 +205,9 @@ final class ManualLinkViewModel: ObservableObject {
   /// 有解析器时，X 链接改走公开端点取回完整推文。
   private let xResolver: XTweetResolver?
   private let onMediaCaptured: ((CaptureMedia, TaskID, ContentSnapshotID, String) async -> Void)?
-  private var ingestor: CaptureIngestService?
+  /// 笔记写作窗口复用同一个 ingestor：两条路都是「往库里加一条记录」，
+  /// 没有理由维护两套落库逻辑。
+  private(set) var ingestor: CaptureIngestService?
   private var history: HistoryApplicationService?
   private var task: Task<Void, Never>?
   private var hasCheckedCurrentActivePhase = false

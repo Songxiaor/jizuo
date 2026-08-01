@@ -639,6 +639,8 @@ final class HistoryViewModel: ObservableObject {
   private let nowMilliseconds: @Sendable () -> Int64
   private let onDiscardedTranscriptionAttempt: @Sendable () -> Void
   private var history: HistoryApplicationService?
+  /// 笔记写作窗口要读写同一个历史库，而不是另开一份连接。
+  var historyService: HistoryApplicationService? { history }
   private var hasConfiguredHistory = false
   private var nextCursor: HistoryPageCursor?
   private var configurationGeneration = UUID()

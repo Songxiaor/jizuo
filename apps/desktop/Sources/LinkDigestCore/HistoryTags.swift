@@ -29,6 +29,17 @@ public enum HistoryListScope: String, Sendable, Equatable, CaseIterable {
   case recent
   case unsummarized
   case favorite
+  /// 用户自己写的笔记。
+  ///
+  /// 它是**独立区域**，不是一个筛选条件：除了 `.notes` 自己，其余所有作用域都把笔记
+  /// 排除在外。抓来的资料和自己写的东西混在一张列表里，找素材时会被自己的草稿打断，
+  /// 写东西时又要在一堆网页里翻——两件事的心智完全不同。
+  ///
+  /// 底层仍与抓取记录共用同一张表，所以标签、搜索、导出、翻译一概照常可用。
+  case notes
+
+  /// 该作用域是否只看笔记。
+  public var isNotesOnly: Bool { self == .notes }
 }
 
 /// The small navigation rail is fed by database aggregation, not by a loaded
@@ -53,6 +64,8 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   public let recent: Int
   public let unsummarized: Int
   public let favorite: Int
+  /// 用户自己写的笔记条数。默认 0，让既有构造点无需改动。
+  public let notes: Int
   public let platforms: [HistoryNavigationPlatform]
   public let tags: [HistoryNavigationTag]
   public init(
@@ -60,6 +73,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     recent: Int = 0,
     unsummarized: Int = 0,
     favorite: Int = 0,
+    notes: Int = 0,
     platforms: [HistoryNavigationPlatform] = [],
     tags: [HistoryNavigationTag] = []
   ) {
@@ -67,6 +81,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     self.recent = recent
     self.unsummarized = unsummarized
     self.favorite = favorite
+    self.notes = notes
     self.platforms = platforms
     self.tags = tags
   }

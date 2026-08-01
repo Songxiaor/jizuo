@@ -271,8 +271,19 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         predicates.append("\(normalizedHost) IN (\(placeholders))")
         for host in filter.hosts { arguments += [host] }
       }
+      // 笔记是独立区域：除了 `.notes` 自己，其余作用域一律把它排除。
+      //
+      // 抓来的资料和自己写的东西混在一张列表里，找素材时会被自己的草稿打断，
+      // 写东西时又要在一堆网页里翻。底层仍共用同一张表，所以标签、搜索、导出
+      // 照常可用——分开的只是「看到什么」。
+      let notePredicate = "t.canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'"
+      if filter.scope.isNotesOnly {
+        predicates.append(notePredicate)
+      } else {
+        predicates.append("NOT (\(notePredicate))")
+      }
       switch filter.scope {
-      case .all:
+      case .all, .notes:
         break
       case .favorite:
         predicates.append("t.is_favorite = 1")
@@ -402,15 +413,19 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
 
   public func navigationCounts() throws -> HistoryNavigationCounts {
     try database.read { db in
-      let all = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks") ?? 0
+      // 笔记是独立区域，所有"输入侧"的计数都要把它排除，否则「全部 10」里
+      // 混着自己写的草稿，数字对不上用户在列表里看到的东西。
+      let isNote = "canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'"
+      let notes = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isNote)") ?? 0
+      let all = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE NOT (\(isNote))") ?? 0
       let recent = try Int.fetchOne(
         db,
-        sql: "SELECT COUNT(*) FROM tasks WHERE updated_at_ms >= (unixepoch('now') - 604800) * 1000"
+        sql: "SELECT COUNT(*) FROM tasks WHERE NOT (\(isNote)) AND updated_at_ms >= (unixepoch('now') - 604800) * 1000"
       ) ?? 0
       let unsummarized = try Int.fetchOne(db, sql: """
         SELECT COUNT(*)
         FROM tasks t
-        WHERE NOT EXISTS (
+        WHERE NOT (t.\(isNote)) AND NOT EXISTS (
           SELECT 1
           FROM runs successful_run
           INNER JOIN artifacts successful_artifact ON successful_artifact.run_id = successful_run.id
@@ -419,13 +434,13 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
             AND length(successful_artifact.body_text) > 0
         )
         """) ?? 0
-      let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE is_favorite = 1") ?? 0
+      let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE NOT (\(isNote)) AND is_favorite = 1") ?? 0
 
       let hostExpression = normalizedTaskHostSQL(tableAlias: "t")
       let platforms = try Row.fetchAll(db, sql: """
         SELECT \(hostExpression) AS host, COUNT(*) AS count
         FROM tasks t
-        WHERE \(hostExpression) <> ''
+        WHERE \(hostExpression) <> '' AND NOT (t.\(isNote))
         GROUP BY \(hostExpression)
         ORDER BY count DESC, host COLLATE NOCASE ASC
         """).compactMap { row -> HistoryNavigationPlatform? in
@@ -444,7 +459,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           let count: Int = row["count"]
           return .init(tag: tag, count: count)
         }
-      return .init(all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, platforms: platforms, tags: tags)
+      return .init(all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, notes: notes, platforms: platforms, tags: tags)
     }
   }
 
