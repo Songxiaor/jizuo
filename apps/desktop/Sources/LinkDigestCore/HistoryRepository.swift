@@ -260,6 +260,23 @@ public protocol HistoryRepository: Sendable {
     bodyText: String,
     updatedAtMilliseconds: Int64
   ) throws
+  /// 新建一件创作。正文笔记由调用方先建好并传进来。
+  func createPiece(
+    id: PieceID,
+    spark: String,
+    noteTaskID: TaskID,
+    createdAtMilliseconds: Int64
+  ) throws
+  /// 首页列表：进行中的在前，已发出的沉到后面。
+  func pieces() throws -> [PieceSummary]
+  func piece(id: PieceID) throws -> PieceSummary?
+  /// 手动覆盖阶段。传 nil 表示回到自动推断。
+  func setPieceStage(_ stage: PieceStage?, for id: PieceID, updatedAtMilliseconds: Int64) throws
+  func addMaterial(taskID: TaskID, to pieceID: PieceID, addedAtMilliseconds: Int64) throws
+  func removeMaterial(taskID: TaskID, from pieceID: PieceID) throws
+  func materials(of pieceID: PieceID) throws -> [PieceMaterial]
+  func deletePiece(id: PieceID) throws
+
   /// 按标题找一条笔记，供 `[[标题]]` 跳转用。找不到返回 nil。
   ///
   /// 只在笔记里找：双链是笔记之间的东西，链到一篇抓来的网页上没有意义——
@@ -398,6 +415,23 @@ public extension HistoryRepository {
 
   /// 双链在旧测试替身上一律「找不到」而不是抛错：链接指不到东西是正常状态，
   /// 不该让整个视图进入错误分支。
+  /// 工作台在旧测试替身上一律为空/不可用：它是新增能力，
+  /// 已有的替身没有理由被迫实现它。
+  func createPiece(
+    id _: PieceID, spark _: String, noteTaskID _: TaskID, createdAtMilliseconds _: Int64
+  ) throws { throw RepositoryFailure.unavailable }
+  func pieces() throws -> [PieceSummary] { [] }
+  func piece(id _: PieceID) throws -> PieceSummary? { nil }
+  func setPieceStage(_: PieceStage?, for _: PieceID, updatedAtMilliseconds _: Int64) throws {
+    throw RepositoryFailure.unavailable
+  }
+  func addMaterial(taskID _: TaskID, to _: PieceID, addedAtMilliseconds _: Int64) throws {
+    throw RepositoryFailure.unavailable
+  }
+  func removeMaterial(taskID _: TaskID, from _: PieceID) throws { throw RepositoryFailure.unavailable }
+  func materials(of _: PieceID) throws -> [PieceMaterial] { [] }
+  func deletePiece(id _: PieceID) throws { throw RepositoryFailure.unavailable }
+
   func noteID(matchingTitle _: String) throws -> TaskID? { nil }
   func notesLinking(toTitle _: String) throws -> [NoteBacklink] { [] }
   func noteTitles() throws -> [String] { [] }

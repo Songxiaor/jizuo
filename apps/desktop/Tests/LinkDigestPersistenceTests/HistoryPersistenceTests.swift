@@ -21,7 +21,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
   func testEmptyDatabaseMigratesDirectlyTo008AndRejectsExtraHyphenUUIDs() throws {
     try withRepository { repository, _ in
       XCTAssertEqual(repository.accessMode, .writable)
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, Migration012.schemaVersion)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, LocalDatabase.latestSchemaVersion)
       let sql = try repository.database.read { db in
         try Row.fetchAll(db, sql: "SELECT name, sql FROM sqlite_schema WHERE type = 'table' AND name IN ('tasks','content_snapshots','runs','artifacts','capture_deliveries','tags','task_tags','media_assets','media_transcription_evidence','task_transcription_attempts','task_transcription_evidence')")
       }
@@ -65,7 +65,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, Migration012.schemaVersion)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, LocalDatabase.latestSchemaVersion)
       XCTAssertEqual(try repository.historyPage(limit: 10, after: nil).rows.map(\.canonicalURL), ["https://example.test/legacy"])
       XCTAssertEqual(try repository.allTags(), [])
     }
@@ -96,7 +96,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, Migration012.schemaVersion)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, LocalDatabase.latestSchemaVersion)
       XCTAssertEqual(
         try repository.historyPage(limit: 10, after: nil).rows.map(\.canonicalURL),
         ["https://example.test/version-three"]
@@ -157,7 +157,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, Migration012.schemaVersion)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, LocalDatabase.latestSchemaVersion)
       XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT used_cookie_v2 FROM content_snapshots") }, 0)
       XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM runs") }, 1)
       XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT COUNT(*) FROM media_assets") }, 1)
@@ -254,7 +254,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
   func test008ReopenIsIdempotentAndFutureSchemaIsReadOnly() throws {
     try withTemporaryLocation { location in
       let first = try LocalDatabase.open(at: location)
-      try first.write { try $0.execute(sql: "PRAGMA user_version = \(Migration012.schemaVersion + 1)") }
+      try first.write { try $0.execute(sql: "PRAGMA user_version = \(LocalDatabase.latestSchemaVersion + 1)") }
       try first.close()
       let future = try LocalDatabase.open(at: location)
       XCTAssertEqual(future.accessMode, .readOnly(.futureSchema))
@@ -276,7 +276,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
       ))
       try writable.database.close()
       let upgrader = try DatabaseQueue(path: location.databaseURL.path)
-      try upgrader.write { try $0.execute(sql: "PRAGMA user_version = \(Migration012.schemaVersion + 1)") }
+      try upgrader.write { try $0.execute(sql: "PRAGMA user_version = \(LocalDatabase.latestSchemaVersion + 1)") }
       try upgrader.close()
 
       let future = try GRDBHistoryRepository.open(at: location)
@@ -301,7 +301,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
       try failed.close()
       let recovered = try LocalDatabase.open(at: location)
       XCTAssertEqual(recovered.accessMode, .writable)
-      XCTAssertEqual(try recovered.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, Migration012.schemaVersion)
+      XCTAssertEqual(try recovered.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, LocalDatabase.latestSchemaVersion)
       try recovered.close()
     }
   }
@@ -325,7 +325,7 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
-      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, Migration012.schemaVersion)
+      XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }, LocalDatabase.latestSchemaVersion)
       XCTAssertEqual(try repository.database.read { try Int.fetchOne($0, sql: "SELECT capture_contract_version FROM capture_deliveries WHERE request_id = ?", arguments: [v1.requestId]) }, 1)
       let legacyReplay = try repository.acceptCapture(.init(envelope: v1, receivedAtMilliseconds: 2))
       XCTAssertTrue(legacyReplay.deliveryWasReplayed)
@@ -2250,7 +2250,9 @@ private func withRepository(dependencies: PersistenceDependencies = .live, _ bod
   }
 }
 
-private func withTemporaryLocation(createDirectory: Bool = true, _ body: (LocalDatabaseLocation) throws -> Void) throws {
+/// 建一个用完即弃的库位置。internal 而非 private：工作台那组测试在另一个文件里，
+/// 复制一份一模一样的辅助函数只会让两处慢慢长歪。
+func withTemporaryLocation(createDirectory: Bool = true, _ body: (LocalDatabaseLocation) throws -> Void) throws {
   let root = URL(fileURLWithPath: "/private/tmp/linkdigest-history-tests-\(UUID().uuidString)", isDirectory: true)
   let directory = root.appendingPathComponent("Application Support/LinkDigest", isDirectory: true)
   if createDirectory { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }

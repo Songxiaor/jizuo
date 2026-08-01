@@ -3,6 +3,13 @@ import GRDB
 import LinkDigestCore
 
 public final class LocalDatabase: @unchecked Sendable {
+  /// 当前 schema 版本的**唯一来源**。
+  ///
+  /// 加一次迁移就只改这一行。之前生产代码和测试各自引用「最后那个 Migration0NN」，
+  /// 于是每加一次迁移，迁移测试就整批变红——因为它们钉的是一个具体版本号，
+  /// 而它们真正想表达的是「跟着最新走」。
+  public static let latestSchemaVersion = Migration013.schemaVersion
+
   enum Backend { case writable(DatabasePool), readOnly(DatabaseQueue) }
 
   public let location: LocalDatabaseLocation
@@ -33,7 +40,7 @@ public final class LocalDatabase: @unchecked Sendable {
         try probe.close()
       } catch let failure as RepositoryFailure { throw failure }
       catch { throw RepositoryFailure.unavailable }
-      if version > Migration012.schemaVersion {
+      if version > Self.latestSchemaVersion {
         return try makeReadOnly(at: location, reason: .futureSchema, dependencies: dependencies)
       }
     }
@@ -42,7 +49,7 @@ public final class LocalDatabase: @unchecked Sendable {
       let pool = try dependencies.openWritable(location.databaseURL.path, writableConfiguration())
       do {
         let version = try pool.read { try Int.fetchOne($0, sql: "PRAGMA user_version") ?? 0 }
-        if version < Migration012.schemaVersion {
+        if version < Self.latestSchemaVersion {
           try pool.write { db in
             if version < Migration001.schemaVersion {
               try Migration001.apply(to: db, beforeCommit: dependencies.beforeMigrationCommit)
@@ -79,6 +86,9 @@ public final class LocalDatabase: @unchecked Sendable {
             }
             if version < Migration012.schemaVersion {
               try Migration012.apply(to: db)
+            }
+            if version < Migration013.schemaVersion {
+              try Migration013.apply(to: db)
             }
           }
         }

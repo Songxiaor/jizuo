@@ -1096,6 +1096,160 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     WHERE t.canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'
     """
 
+  // MARK: - 工作台
+
+  /// 一件创作的汇总查询。
+  ///
+  /// 素材数和正文长度直接在 SQL 里算：首页要靠它们推断阶段，
+  /// 逐条回查会让列表变成 N+1。
+  private static let pieceSelect = """
+    SELECT p.id AS id, p.spark AS spark, p.stage AS stage, p.note_task_id AS note_task_id,
+      p.created_at_ms AS created_at_ms, p.updated_at_ms AS updated_at_ms,
+      p.finished_at_ms AS finished_at_ms,
+      COALESCE(s.title, '') AS title,
+      (SELECT COUNT(*) FROM piece_materials m WHERE m.piece_id = p.id) AS material_count,
+      COALESCE(length(s.body_text), 0) AS body_length
+    FROM pieces p
+    LEFT JOIN content_snapshots s ON s.task_id = p.note_task_id
+      AND s.sequence = (SELECT MAX(sequence) FROM content_snapshots x WHERE x.task_id = p.note_task_id)
+    """
+
+  private func pieceSummary(_ row: Row) -> PieceSummary {
+    let id: PieceID = requiredID(row["id"])
+    let noteID: TaskID = requiredID(row["note_task_id"])
+    let spark: String = row["spark"] ?? ""
+    let title: String = row["title"] ?? ""
+    let materialCount: Int = row["material_count"] ?? 0
+    let bodyLength: Int = row["body_length"] ?? 0
+    let finished: Int64? = row["finished_at_ms"]
+    // stage 为 NULL 表示「跟着推断走」——手动覆盖过才会有值。
+    let stored: String? = row["stage"]
+    let stage = stored.flatMap(PieceStage.init(rawValue:)) ?? PieceStage.inferred(
+      materialCount: materialCount, bodyLength: bodyLength, isFinished: finished != nil
+    )
+    return PieceSummary(
+      id: id,
+      spark: spark,
+      // 标题还是灵感原句时不重复显示；标题空着也回退到灵感。
+      title: title.isEmpty ? spark : title,
+      stage: finished != nil ? .done : stage,
+      noteTaskID: noteID,
+      materialCount: materialCount,
+      bodyLength: bodyLength,
+      createdAtMilliseconds: row["created_at_ms"] ?? 0,
+      updatedAtMilliseconds: row["updated_at_ms"] ?? 0,
+      finishedAtMilliseconds: finished
+    )
+  }
+
+  public func createPiece(
+    id: PieceID, spark: String, noteTaskID: TaskID, createdAtMilliseconds: Int64
+  ) throws {
+    let trimmed = spark.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { throw RepositoryFailure.invalidInput }
+    try database.write { db in
+      try db.execute(sql: """
+        INSERT INTO pieces (id, spark, stage, note_task_id, created_at_ms, updated_at_ms, finished_at_ms)
+        VALUES (?, ?, NULL, ?, ?, ?, NULL)
+        """, arguments: [id.rawValue, trimmed, noteTaskID.rawValue, createdAtMilliseconds, createdAtMilliseconds])
+    }
+  }
+
+  public func pieces() throws -> [PieceSummary] {
+    try database.read { db in
+      // 进行中的排前面，各自按最近动过排——搁置几天的那件不会掉到看不见的地方。
+      try Row.fetchAll(db, sql: """
+        \(Self.pieceSelect)
+        ORDER BY (p.finished_at_ms IS NOT NULL), p.updated_at_ms DESC
+        """).map(pieceSummary)
+    }
+  }
+
+  public func piece(id: PieceID) throws -> PieceSummary? {
+    try database.read { db in
+      try Row.fetchOne(db, sql: "\(Self.pieceSelect) WHERE p.id = ?", arguments: [id.rawValue])
+        .map(pieceSummary)
+    }
+  }
+
+  public func setPieceStage(_ stage: PieceStage?, for id: PieceID, updatedAtMilliseconds: Int64) throws {
+    try database.write { db in
+      // NULL 代表「回到自动推断」；`done` 同时落一个完成时间，首页据此把它沉下去。
+      let raw = stage?.rawValue
+      let finished = stage == .done ? updatedAtMilliseconds : nil
+      try db.execute(sql: """
+        UPDATE pieces SET stage = ?, finished_at_ms = ?, updated_at_ms = MAX(updated_at_ms, ?)
+        WHERE id = ?
+        """, arguments: [raw, finished, updatedAtMilliseconds, id.rawValue])
+      guard db.changesCount == 1 else { throw RepositoryFailure.notFound }
+    }
+  }
+
+  public func addMaterial(taskID: TaskID, to pieceID: PieceID, addedAtMilliseconds: Int64) throws {
+    try database.write { db in
+      // 重复加入不报错：用户从两个地方各点了一次是常事，静默保持一份就好。
+      try db.execute(sql: """
+        INSERT OR IGNORE INTO piece_materials (piece_id, task_id, added_at_ms) VALUES (?, ?, ?)
+        """, arguments: [pieceID.rawValue, taskID.rawValue, addedAtMilliseconds])
+      try db.execute(
+        sql: "UPDATE pieces SET updated_at_ms = MAX(updated_at_ms, ?) WHERE id = ?",
+        arguments: [addedAtMilliseconds, pieceID.rawValue]
+      )
+    }
+  }
+
+  public func removeMaterial(taskID: TaskID, from pieceID: PieceID) throws {
+    try database.write { db in
+      try db.execute(
+        sql: "DELETE FROM piece_materials WHERE piece_id = ? AND task_id = ?",
+        arguments: [pieceID.rawValue, taskID.rawValue]
+      )
+    }
+  }
+
+  public func materials(of pieceID: PieceID) throws -> [PieceMaterial] {
+    try database.read { db in
+      try Row.fetchAll(db, sql: """
+        SELECT m.task_id AS task_id, m.added_at_ms AS added_at_ms,
+          t.canonical_url AS canonical_url, COALESCE(s.title, '') AS title
+        FROM piece_materials m
+        LEFT JOIN tasks t ON t.id = m.task_id
+        LEFT JOIN content_snapshots s ON s.task_id = t.id
+          AND s.sequence = (SELECT MAX(sequence) FROM content_snapshots x WHERE x.task_id = t.id)
+        WHERE m.piece_id = ?
+        ORDER BY m.added_at_ms
+        """, arguments: [pieceID.rawValue]).map { row in
+        let id: TaskID = requiredID(row["task_id"])
+        let canonical: String? = row["canonical_url"]
+        let title: String = row["title"] ?? ""
+        // canonical_url 为 null 说明原记录已经不在了——外键是 CASCADE，
+        // 正常删除会连这行一起删；留这个分支是为了万一出现悬挂引用时
+        // 显示「已不在」，而不是画一行空白。
+        let host = canonical.map {
+          $0.hasPrefix(HistoryPlatformDisplay.noteURLPrefix)
+            ? HistoryPlatformDisplay.noteHost
+            : (URLComponents(string: $0)?.host ?? "")
+        } ?? ""
+        return PieceMaterial(
+          id: id,
+          title: title.isEmpty ? (canonical ?? "已不在") : title,
+          host: host,
+          addedAtMilliseconds: row["added_at_ms"] ?? 0,
+          isAvailable: canonical != nil
+        )
+      }
+    }
+  }
+
+  public func deletePiece(id: PieceID) throws {
+    try database.write { db in
+      // 只删这件创作本身。正文那条笔记留着——它是用户写的东西，
+      // 「不做这篇了」不等于「把稿子扔了」。
+      try db.execute(sql: "DELETE FROM pieces WHERE id = ?", arguments: [id.rawValue])
+      guard db.changesCount == 1 else { throw RepositoryFailure.notFound }
+    }
+  }
+
   public func noteID(matchingTitle title: String) throws -> TaskID? {
     let normalized = WikiLink.normalizedTitle(title)
     guard !normalized.isEmpty else { return nil }
