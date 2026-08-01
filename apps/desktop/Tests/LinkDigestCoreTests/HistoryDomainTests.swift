@@ -243,6 +243,23 @@ final class UserNoteDocumentTests: XCTestCase {
     XCTAssertNil(UserNoteDocument.derivedTitle(fromBody: ""))
   }
 
+  /// 粘贴富文本会带进 U+FFFC，它在标题里显示成一个删不掉的方块。
+  func testTitleDropsCharactersThatRenderAsEmptyBoxes() {
+    XCTAssertEqual(UserNoteDocument.sanitizedTitle("\u{FFFC}AI 时代的创作"), "AI 时代的创作")
+    XCTAssertEqual(UserNoteDocument.sanitizedTitle("标题\u{0007}里的响铃"), "标题 里的响铃")
+    // 标题是一行：换行折成空格，多余空白收拢。
+    XCTAssertEqual(UserNoteDocument.sanitizedTitle("上一行\n下一行"), "上一行 下一行")
+    XCTAssertEqual(UserNoteDocument.sanitizedTitle("  前后留白   中间  "), "前后留白 中间")
+    XCTAssertEqual(UserNoteDocument.sanitizedTitle("\u{FFFC}\u{FFFC}"), "")
+    // 正常标题不该被动过。
+    XCTAssertEqual(UserNoteDocument.sanitizedTitle("AI 时代的创作"), "AI 时代的创作")
+  }
+
+  /// 派生标题也要走同一道清洗，否则从粘贴来的正文里取出的标题照样带方块。
+  func testDerivedTitleIsSanitizedToo() {
+    XCTAssertEqual(UserNoteDocument.derivedTitle(fromBody: "# \u{FFFC}带方块的标题"), "带方块的标题")
+  }
+
   /// 超长标题要截断：列表一行放不下，整条记录就没有抓手了。
   func testOverlongDerivedTitleIsTruncated() {
     let long = String(repeating: "长", count: 200)

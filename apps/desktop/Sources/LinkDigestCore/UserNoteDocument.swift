@@ -18,6 +18,24 @@ public enum UserNoteDocument {
   /// 而一条建不出来的笔记比一条带占位文字的笔记糟糕得多。
   public static let placeholderBody = "在这里写下你的想法…"
 
+  /// 清掉标题里显示成方块或空洞的字符。
+  ///
+  /// U+FFFC（对象替换符）会跟着富文本粘贴一起进来——从网页或 Word 复制一段字，
+  /// 里面的图片、附件位置就留下这个码位。它在标题里显示成一个方块，用户看得见
+  /// 却删不掉（光标跳过去像没东西）。控制字符同理。
+  ///
+  /// 换行和制表折成空格：标题是一行，塞进去的换行只会让列表行高突然变高。
+  public static func sanitizedTitle(_ raw: String) -> String {
+    let disallowed = CharacterSet.controlCharacters
+      .union(.illegalCharacters)
+      // U+FFF9…U+FFFC：注释锚点与对象替换符，都不该出现在标题里。
+      .union(CharacterSet(charactersIn: "\u{FFF9}\u{FFFA}\u{FFFB}\u{FFFC}"))
+    let mapped = raw.unicodeScalars.map { disallowed.contains($0) ? " " : Character($0) }
+    return String(mapped)
+      .split(separator: " ", omittingEmptySubsequences: true)
+      .joined(separator: " ")
+  }
+
   /// 从正文首个一级标题派生标题；没有就返回 nil。
   ///
   /// 写笔记的人极少先想标题——先写下来，标题是写着写着才有的。所以正文里出现
@@ -30,7 +48,7 @@ public enum UserNoteDocument {
       let line = rawLine.trimmingCharacters(in: .whitespaces)
       if line.isEmpty { continue }
       guard line.hasPrefix("# ") else { return nil }
-      let title = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+      let title = sanitizedTitle(String(line.dropFirst(2)))
       guard !title.isEmpty else { return nil }
       // 列表一行放不下的长标题截断，省略号让人知道后面还有。
       return title.count > 120 ? String(title.prefix(120)) + "…" : title

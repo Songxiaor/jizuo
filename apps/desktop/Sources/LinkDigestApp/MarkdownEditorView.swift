@@ -40,6 +40,39 @@ struct MarkdownEditorView: View {
   }
 }
 
+/// 把 ⌘B / ⌘I 变成插入 Markdown 记号。
+///
+/// 纯文本模式下这两个键位是没人接的：NSTextView 的默认实现走 `toggleBold:`，
+/// 那是给富文本改字体属性用的，`isRichText = false` 时直接被丢掉。用户按了
+/// 没反应，只能自己敲星号。
+final class MarkdownNSTextView: NSTextView {
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+          let key = event.charactersIgnoringModifiers?.lowercased() else {
+      return super.performKeyEquivalent(with: event)
+    }
+    switch key {
+    case "b": return wrapSelection(with: "**")
+    case "i": return wrapSelection(with: "*")
+    default: return super.performKeyEquivalent(with: event)
+    }
+  }
+
+  private func wrapSelection(with marker: String) -> Bool {
+    let full = string
+    let selected = selectedRange()
+    guard let range = Range(selected, in: full) else { return false }
+
+    let (result, newSelection) = MarkdownListEditing.toggleWrap(full, selection: range, marker: marker)
+    let whole = NSRange(location: 0, length: (full as NSString).length)
+    guard shouldChangeText(in: whole, replacementString: result) else { return true }
+    textStorage?.replaceCharacters(in: whole, with: result)
+    didChangeText()
+    setSelectedRange(NSRange(newSelection, in: result))
+    return true
+  }
+}
+
 /// 承载 NSTextView 的那一层。
 private struct MarkdownTextView: NSViewRepresentable {
   @Binding var text: String
@@ -51,8 +84,23 @@ private struct MarkdownTextView: NSViewRepresentable {
   static let contentInset = NSSize(width: 18, height: 16)
 
   func makeNSView(context: Context) -> NSScrollView {
-    let scroll = NSTextView.scrollableTextView()
-    guard let textView = scroll.documentView as? NSTextView else { return scroll }
+    // 自己搭而不用 `NSTextView.scrollableTextView()`：那个工厂给的是 NSTextView
+    // 本身，换不成需要拦截 ⌘B/⌘I 的子类。
+    let textView = MarkdownNSTextView()
+    textView.autoresizingMask = [.width]
+    textView.isVerticallyResizable = true
+    textView.isHorizontallyResizable = false
+    textView.textContainer?.widthTracksTextView = true
+    textView.textContainer?.containerSize = NSSize(
+      width: 0, height: CGFloat.greatestFiniteMagnitude
+    )
+    textView.minSize = .zero
+    textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+
+    let scroll = NSScrollView()
+    scroll.documentView = textView
+    scroll.hasHorizontalScroller = false
+    scroll.autohidesScrollers = true
 
     textView.delegate = context.coordinator
     textView.isRichText = false
@@ -101,6 +149,76 @@ private struct MarkdownTextView: NSViewRepresentable {
       guard !isApplyingHighlight, let textView = notification.object as? NSTextView else { return }
       text.wrappedValue = textView.string
       reportHeight(of: textView)
+    }
+
+    func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
+      switch selector {
+      case #selector(NSResponder.insertNewline(_:)):
+        return continueList(in: textView)
+      case #selector(NSResponder.insertTab(_:)):
+        return shiftListItem(in: textView, by: Self.indentUnit)
+      case #selector(NSResponder.insertBacktab(_:)):
+        return shiftListItem(in: textView, by: nil)
+      default:
+        return false
+      }
+    }
+
+    /// 一级缩进用两个空格：四个在中文正文里视觉上跳得太远。
+    private static let indentUnit = "  "
+
+    /// 当前光标所在行的范围，以及行尾（不含换行符）的位置。
+    private func currentLine(in textView: NSTextView) -> (range: NSRange, end: Int, text: String) {
+      let storage = textView.string as NSString
+      let caret = textView.selectedRange()
+      let lineRange = storage.lineRange(for: NSRange(location: caret.location, length: 0))
+      var end = lineRange.location + lineRange.length
+      // lineRange 含尾部换行，退回到真正的行尾。
+      if end > lineRange.location, storage.character(at: end - 1) == 10 { end -= 1 }
+      let line = storage.substring(with: NSRange(location: lineRange.location, length: end - lineRange.location))
+      return (lineRange, end, line)
+    }
+
+    /// 在列表行末尾回车时自动续下一项。
+    private func continueList(in textView: NSTextView) -> Bool {
+      let caret = textView.selectedRange()
+      guard caret.length == 0 else { return false }
+      let line = currentLine(in: textView)
+      // 只在行尾续。行中回车是拆行，用户想要的是原本的行为。
+      guard caret.location == line.end,
+            let continuation = MarkdownListEditing.continuation(forLine: line.text) else { return false }
+
+      if continuation.deletingPrefixLength > 0 {
+        let target = NSRange(location: line.range.location, length: continuation.deletingPrefixLength)
+        return replace(in: textView, range: target, with: "")
+      }
+      return replace(in: textView, range: caret, with: continuation.insert)
+    }
+
+    /// Tab / Shift-Tab 在列表行上调整层级；其它地方交回默认行为。
+    ///
+    /// `by` 传 nil 表示反缩进。
+    private func shiftListItem(in textView: NSTextView, by indent: String?) -> Bool {
+      let line = currentLine(in: textView)
+      guard MarkdownListEditing.marker(ofLine: line.text) != nil else { return false }
+
+      guard let indent else {
+        // 反缩进：只吃掉行首已有的一级缩进，没有就什么都不做。
+        let prefix = String(line.text.prefix(Self.indentUnit.count))
+        guard prefix == Self.indentUnit || prefix.first == "\t" else { return true }
+        let width = prefix.first == "\t" ? 1 : Self.indentUnit.count
+        return replace(in: textView, range: NSRange(location: line.range.location, length: width), with: "")
+      }
+      return replace(in: textView, range: NSRange(location: line.range.location, length: 0), with: indent)
+    }
+
+    /// 走 shouldChangeText/didChangeText，撤销栈与绑定才都跟得上。
+    @discardableResult
+    private func replace(in textView: NSTextView, range: NSRange, with string: String) -> Bool {
+      guard textView.shouldChangeText(in: range, replacementString: string) else { return true }
+      textView.textStorage?.replaceCharacters(in: range, with: string)
+      textView.didChangeText()
+      return true
     }
 
     /// 把排版后的实际高度回报给 SwiftUI。

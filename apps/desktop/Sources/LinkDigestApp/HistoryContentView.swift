@@ -1348,7 +1348,10 @@ private struct HistoryDetailView: View {
     if translationArtifact != nil { panes.append(.translation) }
     // 一份结果都没有时保留一个总结格，「尚未生成总结」的空态提示才有地方落。
     // 抖音例外：它在没有结果时本来就不显示结果格。
-    if panes.isEmpty, !isDouyinCapture { panes.append(.summary) }
+    //
+    // 笔记也例外：给一条刚写的笔记留一个空的「总结」页签，等于在写作页面上摆一个
+    // 常驻的待办。没总结时它就只有正文一件东西，那就不该出现分段控件。
+    if panes.isEmpty, !isDouyinCapture, !isUserNote { panes.append(.summary) }
     if !isDouyinCapture || hasSourceBody || hasLiveTranscription { panes.append(.source) }
     return panes
   }

@@ -3367,7 +3367,8 @@ final class HistoryViewModel: ObservableObject {
   /// 空标题不写回默认值以外的东西：列表里一行没有抓手的空白比「无标题笔记」更难认。
   func renameNote(taskID: TaskID, title: String) {
     guard let history else { return }
-    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    // 粘贴进来的富文本会带 U+FFFC 之类的码位，在标题里显示成删不掉的方块。
+    let trimmed = UserNoteDocument.sanitizedTitle(title)
     do {
       try history.updateTaskTitle(
         taskID: taskID,
