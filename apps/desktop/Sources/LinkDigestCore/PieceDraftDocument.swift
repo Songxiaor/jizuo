@@ -50,3 +50,34 @@ public enum PieceDraftDocument {
     )
   }
 }
+
+/// 已完成的作品。
+///
+/// 它从稿件转来:同一份正文,换一个身份。转换而不是复制,是因为
+/// 「这篇成了」说的是同一个东西的状态变化,不是又产生了一份新东西——
+/// 复制会让你在输出里改了字,回头看创作里还是旧的。
+public enum WorkDocument {
+  public static func make(
+    id: UUID = UUID(),
+    title: String,
+    body: String,
+    now: Date = Date()
+  ) throws -> CapturedDocument {
+    let timestamp = ISO8601DateFormatter().string(from: now)
+    let resolved = UserNoteDocument.sanitizedTitle(title)
+    return CapturedDocument(
+      createdAt: timestamp,
+      origin: .work,
+      url: try CanonicalURL.work(id: id).value,
+      title: resolved.isEmpty ? UserNoteDocument.untitledTitle : resolved,
+      platform: HistoryPlatformDisplay.workHost,
+      method: "piece_work",
+      text: body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        ? PieceDraftDocument.placeholderBody
+        : body,
+      completeness: "complete",
+      capturedAt: timestamp,
+      sourceLabel: "我的作品"
+    )
+  }
+}

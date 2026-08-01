@@ -42,10 +42,15 @@ public enum HistoryListScope: String, Sendable, Equatable, CaseIterable {
   /// 稿子是从某件创作里打开的,不是从列表里翻出来的。
   case drafts
 
+  /// 输出:已完成的作品。这是三个模块里的第三个,装的是「我做出来的东西」。
+  case works
+
   /// 该作用域是否只看笔记。
   public var isNotesOnly: Bool { self == .notes }
   /// 该作用域是否只看稿件。
   public var isDraftsOnly: Bool { self == .drafts }
+  /// 该作用域是否只看成品。
+  public var isWorksOnly: Bool { self == .works }
 }
 
 /// The small navigation rail is fed by database aggregation, not by a loaded
@@ -72,6 +77,8 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   public let favorite: Int
   /// 用户自己写的笔记条数。默认 0，让既有构造点无需改动。
   public let notes: Int
+  /// 已完成的作品数。
+  public let works: Int
   public let platforms: [HistoryNavigationPlatform]
   /// 可变，好让调用方就地筛掉不想展示的标签。
   ///
@@ -85,6 +92,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     unsummarized: Int = 0,
     favorite: Int = 0,
     notes: Int = 0,
+    works: Int = 0,
     platforms: [HistoryNavigationPlatform] = [],
     tags: [HistoryNavigationTag] = []
   ) {
@@ -93,6 +101,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     self.unsummarized = unsummarized
     self.favorite = favorite
     self.notes = notes
+    self.works = works
     self.platforms = platforms
     self.tags = tags
   }
@@ -117,9 +126,14 @@ public enum HistoryPlatformDisplay {
   public static let draftHost = "draft"
   public static let draftURLPrefix = "linkdigest-draft:"
 
+  /// 成品所在的输出区。
+  public static let workHost = "work"
+  public static let workURLPrefix = "linkdigest-work:"
+
   public static func name(forHost rawHost: String) -> String {
     if rawHost == noteHost { return "我的笔记" }
     if rawHost == draftHost { return "工作台稿件" }
+    if rawHost == workHost { return "我的作品" }
     let host = HistoryHostNormalizer.normalized(rawHost)
     // Substack 刊物几乎都在 `<刊物>.substack.com` 子域，用后缀而非精确匹配。
     if host == "substack.com" || host.hasSuffix(".substack.com") { return "Substack" }

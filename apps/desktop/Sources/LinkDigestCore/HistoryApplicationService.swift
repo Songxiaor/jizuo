@@ -60,6 +60,9 @@ public struct HistoryApplicationService: Sendable {
   }
   public func pieces() throws -> [PieceSummary] { try repository.pieces() }
   public func piece(id: PieceID) throws -> PieceSummary? { try repository.piece(id: id) }
+  public func finishPiece(id: PieceID, finishedAtMilliseconds: Int64) throws -> TaskID {
+    try repository.finishPiece(id: id, finishedAtMilliseconds: finishedAtMilliseconds)
+  }
   public func setPieceStage(_ stage: PieceStage?, for id: PieceID, updatedAtMilliseconds: Int64) throws {
     try repository.setPieceStage(stage, for: id, updatedAtMilliseconds: updatedAtMilliseconds)
   }

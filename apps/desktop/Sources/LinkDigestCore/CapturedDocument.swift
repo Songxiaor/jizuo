@@ -14,6 +14,8 @@ public struct CapturedDocument: Sendable, Equatable {
     /// 工作台里的稿件。和笔记分开,是因为它们在用户心里是两种东西:
     /// 笔记是随手记的原料,稿件是正在加工的半成品。
     case pieceDraft = "piece_draft"
+    /// 已完成的作品。它离开工作台进入输出,是「我做出来的东西」。
+    case work = "work"
   }
 
   public let requestID: String
@@ -208,6 +210,10 @@ public enum CapturedDocumentValidator {
       // 「本机内容随便用哪个 local scheme」——否则一条笔记可以伪装成稿件,
       // 反过来也一样,两个模块的隔离就成了摆设。
       guard (try? CanonicalURL(document.url))?.isDraft == true else {
+        throw CapturedDocumentValidationError.invalidURL
+      }
+    case .work:
+      guard (try? CanonicalURL(document.url))?.isWork == true else {
         throw CapturedDocumentValidationError.invalidURL
       }
     default:

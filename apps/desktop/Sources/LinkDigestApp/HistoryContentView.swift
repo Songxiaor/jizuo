@@ -483,6 +483,24 @@ struct HistoryContentView: View {
         .accessibilityIdentifier("history-navigation-today-note")
       }
 
+      // 输出:已完成的作品。三个模块里的第三个。
+      //
+      // 它和「我的笔记」并列而不是嵌在工作台里:作品做完就离开车间了,
+      // 你回头找它是因为想看「我做过什么」,不是想回到那件创作的过程。
+      if model.navigationCounts.works > 0 {
+        Section {
+          navigationButton(
+            "我的作品",
+            systemImage: "checkmark.seal",
+            count: model.navigationCounts.works,
+            selected: model.selectedScope == .works
+          ) {
+            model.selectScope(.works)
+          }
+          .accessibilityIdentifier("history-navigation-works")
+        }
+      }
+
       // 工作台是第三种东西:上面是「抓来的资料」,笔记是「随手写的」,
       // 这里是「正在做的作品」。它的单位是一件创作,不是一条记录,
       // 所以自成一节而不是混进上面的筛选项。

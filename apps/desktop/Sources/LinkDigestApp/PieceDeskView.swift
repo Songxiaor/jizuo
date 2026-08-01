@@ -75,7 +75,7 @@ struct PieceDeskView: View {
         Button("重新打开") { model.setStage(nil, for: piece.id) }
           .font(.system(size: 11))
       } else {
-        Button("标记已发出") { model.setStage(.done, for: piece.id) }
+        Button("标记已发出") { model.finishPiece(id: piece.id) }
           .font(.system(size: 11))
           .accessibilityIdentifier("piece-mark-done")
       }

@@ -23,11 +23,14 @@ public struct CanonicalURL: Codable, Sendable, Equatable, Hashable {
   /// 底层仍共用同一张表,所以编辑器、搜索、导出、双链全部零改动可用。
   public static let draftScheme = "linkdigest-draft"
 
+  /// 已完成的作品。
+  public static let workScheme = "linkdigest-work"
+
   /// 不指向网络的本机内容,它们都不该被当成链接处理。
   ///
   /// 抓 favicon、打开链接、导出来源这些按 http(s) 工作的代码,
   /// 只要认这一组就能整体跳过,不必为每加一种内容再补一处判断。
-  static let localSchemes = [noteScheme, draftScheme]
+  static let localSchemes = [noteScheme, draftScheme, workScheme]
 
   public let value: String
 
@@ -41,14 +44,22 @@ public struct CanonicalURL: Codable, Sendable, Equatable, Hashable {
     try CanonicalURL("\(draftScheme):\(id.uuidString.lowercased())")
   }
 
+  /// 为一份成品生成 canonical URL。
+  public static func work(id: UUID = UUID()) throws -> CanonicalURL {
+    try CanonicalURL("\(workScheme):\(id.uuidString.lowercased())")
+  }
+
   /// 是否是用户自建笔记，而非抓取来的网页。
   public var isNote: Bool { value.hasPrefix("\(Self.noteScheme):") }
 
   /// 是否是工作台的稿件。
   public var isDraft: Bool { value.hasPrefix("\(Self.draftScheme):") }
 
+  /// 是否是已完成的作品。
+  public var isWork: Bool { value.hasPrefix("\(Self.workScheme):") }
+
   /// 是否是本机自有内容(笔记或稿件),而不是抓来的网页。
-  public var isLocalContent: Bool { isNote || isDraft }
+  public var isLocalContent: Bool { isNote || isDraft || isWork }
 
   public init(_ rawValue: String) throws {
     // 本机内容（笔记、稿件）：只做最小规范化（scheme 小写 + 非空标识），

@@ -3445,6 +3445,19 @@ final class HistoryViewModel: ObservableObject {
     }
   }
 
+  /// 「这篇成了」——稿件转成作品,离开工作台进入输出。
+  func finishPiece(id: PieceID) {
+    guard let history else { return }
+    do {
+      _ = try history.finishPiece(id: id, finishedAtMilliseconds: nowMilliseconds())
+      reloadPieces()
+      if selectedPieceID == id { reloadSelectedPiece() }
+      reloadNavigationCounts()
+    } catch {
+      workbenchFailure = "无法标记完成，请稍后重试。"
+    }
+  }
+
   /// 手动改阶段。传 nil 回到自动推断。
   func setStage(_ stage: PieceStage?, for id: PieceID) {
     guard let history else { return }

@@ -116,6 +116,72 @@ final class PieceDraftIsolationTests: XCTestCase {
     }
   }
 
+  /// 「这篇成了」:稿件转成作品,进入输出。
+  func testFinishingAPieceTurnsTheDraftIntoAWork() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+      let now = Int64(Date().timeIntervalSince1970 * 1000)
+
+      let draft = try repository.acceptCapture(.init(
+        document: try PieceDraftDocument.make(title: "一件创作", body: "写完的正文"),
+        receivedAtMilliseconds: now
+      ))
+      let pieceID = PieceID()
+      try repository.createPiece(
+        id: pieceID, spark: "一件创作", noteTaskID: draft.taskID, createdAtMilliseconds: now
+      )
+
+      let workTaskID = try repository.finishPiece(id: pieceID, finishedAtMilliseconds: now + 100)
+
+      // 关键:**同一条 task 换了身份**,不是又生出一份。
+      XCTAssertEqual(workTaskID, draft.taskID, "成品应当是原稿件转换而来,不是新建的副本")
+
+      let detail = try repository.detail(taskID: workTaskID)
+      XCTAssertTrue(try XCTUnwrap(CanonicalURL(detail.task.canonicalURL)).isWork)
+      XCTAssertEqual(detail.snapshots.last?.sourceKind, CapturedDocument.Origin.work.rawValue)
+      XCTAssertEqual(detail.snapshots.last?.bodyText, "写完的正文", "正文不该在转换中丢失")
+
+      // 它离开了工作台,进入输出。
+      XCTAssertTrue(ids(try page(repository, .drafts)).isEmpty, "成品不该还留在稿件区")
+      XCTAssertEqual(ids(try page(repository, .works)), [workTaskID])
+      XCTAssertTrue(ids(try page(repository, .all)).isEmpty, "成品不进「全部」——那里是抓来的资料")
+
+      // 创作本身记下了完成时间。
+      let piece = try XCTUnwrap(try repository.piece(id: pieceID))
+      XCTAssertEqual(piece.stage, .done)
+      XCTAssertNotNil(piece.finishedAtMilliseconds)
+    }
+  }
+
+  /// 成品和笔记一样:浏览时归自己那区,搜索时可达。
+  ///
+  /// 这是它和稿件待遇不同的地方——成品正是用户搜索时最想找到的东西。
+  func testSearchReachesFinishedWorks() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+      let now = Int64(Date().timeIntervalSince1970 * 1000)
+
+      let draft = try repository.acceptCapture(.init(
+        document: try PieceDraftDocument.make(title: "成稿", body: "正文里有 signature 这个词"),
+        receivedAtMilliseconds: now
+      ))
+      let pieceID = PieceID()
+      try repository.createPiece(
+        id: pieceID, spark: "成稿", noteTaskID: draft.taskID, createdAtMilliseconds: now
+      )
+
+      // 还是稿件时:搜不到。
+      XCTAssertTrue(ids(try page(repository, .all, search: "signature")).isEmpty)
+
+      _ = try repository.finishPiece(id: pieceID, finishedAtMilliseconds: now + 1)
+
+      // 成了作品之后:搜得到。
+      XCTAssertEqual(ids(try page(repository, .all, search: "signature")), [draft.taskID])
+    }
+  }
+
   /// 一条笔记不能伪装成稿件,反过来也不行。
   ///
   /// 校验放宽是绑定到具体 origin 的,不是放宽 scheme 白名单本身——

@@ -270,6 +270,11 @@ public protocol HistoryRepository: Sendable {
   /// 首页列表：进行中的在前，已发出的沉到后面。
   func pieces() throws -> [PieceSummary]
   func piece(id: PieceID) throws -> PieceSummary?
+  /// 把一件创作标记为完成:稿件转成作品,离开工作台进入输出。
+  ///
+  /// 返回作品所在的 task。原稿件的 task **原地转换**,不新建一条——
+  /// 复制的话你在输出里改了字,回头看创作里还是旧的。
+  func finishPiece(id: PieceID, finishedAtMilliseconds: Int64) throws -> TaskID
   /// 手动覆盖阶段。传 nil 表示回到自动推断。
   func setPieceStage(_ stage: PieceStage?, for id: PieceID, updatedAtMilliseconds: Int64) throws
   func addMaterial(taskID: TaskID, to pieceID: PieceID, addedAtMilliseconds: Int64) throws
@@ -423,6 +428,9 @@ public extension HistoryRepository {
   func pieces() throws -> [PieceSummary] { [] }
   func piece(id _: PieceID) throws -> PieceSummary? { nil }
   func setPieceStage(_: PieceStage?, for _: PieceID, updatedAtMilliseconds _: Int64) throws {
+    throw RepositoryFailure.unavailable
+  }
+  func finishPiece(id _: PieceID, finishedAtMilliseconds _: Int64) throws -> TaskID {
     throw RepositoryFailure.unavailable
   }
   func addMaterial(taskID _: TaskID, to _: PieceID, addedAtMilliseconds _: Int64) throws {

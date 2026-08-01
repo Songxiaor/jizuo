@@ -153,7 +153,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     //
     // 漏掉这一行的后果不是报错信息不好看——是 default 分支直接 return false，
     // 落库以 stateConflict 失败，而 UI 上只表现为「点新建没有任何反应」。
-    case (.manualLink, 1), (.localTranscription, 1), (.userNote, 1), (.pieceDraft, 1):
+    case (.manualLink, 1), (.localTranscription, 1), (.userNote, 1), (.pieceDraft, 1), (.work, 1):
       expectedKey = "manual:v1:\(suffix)"
     default: return false
     }
@@ -287,21 +287,27 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       // **搜索也不例外**。半成品被搜出来会和成品混在一起,而用户搜的是「我写过的
       // 那句话」,他要的是笔记或成品,不是某件创作中途的一版草稿。
       let draftPredicate = "t.canonical_url LIKE '\(HistoryPlatformDisplay.draftURLPrefix)%'"
+      let workPredicate = "t.canonical_url LIKE '\(HistoryPlatformDisplay.workURLPrefix)%'"
       if filter.scope.isDraftsOnly {
         predicates.append(draftPredicate)
+      } else if filter.scope.isWorksOnly {
+        predicates.append(workPredicate)
       } else {
         predicates.append("NOT (\(draftPredicate))")
+        // 成品和笔记同样待遇:浏览时归自己那一区,搜索时可达——
+        // 它是「我做出来的东西」,正是用户搜索时最想找到的。
         if filter.scope.isNotesOnly {
           predicates.append(notePredicate)
         } else if filter.searchText.isEmpty {
           predicates.append("NOT (\(notePredicate))")
+          predicates.append("NOT (\(workPredicate))")
         }
       }
       // 搜索时不排除笔记：分区是为了「浏览时互不打扰」，而搜索恰恰是用户
       // 想不起来东西在哪才用的。要求他先答对「这句话我是写在笔记里还是存的
       // 网页」才肯给结果，等于把搜索最该解决的问题反过来当成前提。
       switch filter.scope {
-      case .all, .notes, .drafts:
+      case .all, .notes, .drafts, .works:
         break
       case .favorite:
         predicates.append("t.is_favorite = 1")
@@ -435,11 +441,13 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       // 混着自己写的草稿，数字对不上用户在列表里看到的东西。
       let isNote = "canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'"
       let isDraft = "canonical_url LIKE '\(HistoryPlatformDisplay.draftURLPrefix)%'"
+      let isWork = "canonical_url LIKE '\(HistoryPlatformDisplay.workURLPrefix)%'"
       // 「抓来的资料」= 既不是笔记也不是稿件。把这个判据合成一处,
       // 而不是在每条计数后面各叠一次 AND NOT——那样加第三种内容时
       // 又要逐条改,漏一条就是一个对不上的数字。
-      let isCaptured = "NOT (\(isNote)) AND NOT (\(isDraft))"
+      let isCaptured = "NOT (\(isNote)) AND NOT (\(isDraft)) AND NOT (\(isWork))"
       let notes = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isNote)") ?? 0
+      let works = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isWork)") ?? 0
       let all = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured)") ?? 0
       let recent = try Int.fetchOne(
         db,
@@ -448,7 +456,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       let unsummarized = try Int.fetchOne(db, sql: """
         SELECT COUNT(*)
         FROM tasks t
-        WHERE NOT (t.\(isNote)) AND NOT (t.\(isDraft)) AND NOT EXISTS (
+        WHERE NOT (t.\(isNote)) AND NOT (t.\(isDraft)) AND NOT (t.\(isWork)) AND NOT EXISTS (
           SELECT 1
           FROM runs successful_run
           INNER JOIN artifacts successful_artifact ON successful_artifact.run_id = successful_run.id
@@ -463,7 +471,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       let platforms = try Row.fetchAll(db, sql: """
         SELECT \(hostExpression) AS host, COUNT(*) AS count
         FROM tasks t
-        WHERE \(hostExpression) <> '' AND NOT (t.\(isNote)) AND NOT (t.\(isDraft))
+        WHERE \(hostExpression) <> '' AND NOT (t.\(isNote)) AND NOT (t.\(isDraft)) AND NOT (t.\(isWork))
         GROUP BY \(hostExpression)
         ORDER BY count DESC, host COLLATE NOCASE ASC
         """).compactMap { row -> HistoryNavigationPlatform? in
@@ -482,7 +490,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           let count: Int = row["count"]
           return .init(tag: tag, count: count)
         }
-      return .init(all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, notes: notes, platforms: platforms, tags: tags)
+      return .init(all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, notes: notes, works: works, platforms: platforms, tags: tags)
     }
   }
 
@@ -1186,6 +1194,47 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  public func finishPiece(id: PieceID, finishedAtMilliseconds: Int64) throws -> TaskID {
+    try database.write { db in
+      let row = try Row.fetchOne(db, sql: """
+        SELECT p.note_task_id AS task_id, COALESCE(s.title, '') AS title
+        FROM pieces p
+        LEFT JOIN content_snapshots s ON s.task_id = p.note_task_id
+          AND s.sequence = (SELECT MAX(sequence) FROM content_snapshots x WHERE x.task_id = p.note_task_id)
+        WHERE p.id = ?
+        """, arguments: [id.rawValue])
+      guard let row else { throw RepositoryFailure.notFound }
+      let taskID: TaskID = requiredID(row["task_id"])
+
+      // 原地换身份,不新建一条。
+      //
+      // 复制成品的话,输出里改了字、创作里还是旧的,两份很快就对不上;
+      // 而「这篇成了」说的本来就是同一个东西的状态变化。
+      let workURL = try CanonicalURL.work().value
+      try db.execute(
+        sql: "UPDATE tasks SET canonical_url = ?, updated_at_ms = MAX(updated_at_ms, ?) WHERE id = ?",
+        arguments: [workURL, finishedAtMilliseconds, taskID.rawValue]
+      )
+      guard db.changesCount == 1 else { throw RepositoryFailure.notFound }
+      // snapshot 的来源标记也要跟着变,否则详情页仍按稿件渲染。
+      try db.execute(sql: """
+        UPDATE content_snapshots
+        SET source_kind = ?, source_url = ?, source_label = ?, platform = ?
+        WHERE task_id = ?
+        """, arguments: [
+          CapturedDocument.Origin.work.rawValue, workURL, "我的作品",
+          HistoryPlatformDisplay.workHost, taskID.rawValue,
+        ])
+      try db.execute(sql: """
+        UPDATE pieces SET stage = ?, finished_at_ms = ?, updated_at_ms = MAX(updated_at_ms, ?)
+        WHERE id = ?
+        """, arguments: [
+          PieceStage.done.rawValue, finishedAtMilliseconds, finishedAtMilliseconds, id.rawValue,
+        ])
+      return taskID
+    }
+  }
+
   public func setPieceStage(_ stage: PieceStage?, for id: PieceID, updatedAtMilliseconds: Int64) throws {
     try database.write { db in
       // NULL 代表「回到自动推断」；`done` 同时落一个完成时间，首页据此把它沉下去。
@@ -1454,6 +1503,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       HistoryPlatformDisplay.noteHost
     } else if canonical.hasPrefix(HistoryPlatformDisplay.draftURLPrefix) {
       HistoryPlatformDisplay.draftHost
+    } else if canonical.hasPrefix(HistoryPlatformDisplay.workURLPrefix) {
+      HistoryPlatformDisplay.workHost
     } else {
       URLComponents(string: canonical)?.host ?? ""
     }
@@ -1660,6 +1711,8 @@ private func normalizedTaskHostSQL(tableAlias: String) -> String {
         THEN '\(HistoryPlatformDisplay.noteHost)'
       WHEN \(tableAlias).canonical_url LIKE '\(HistoryPlatformDisplay.draftURLPrefix)%'
         THEN '\(HistoryPlatformDisplay.draftHost)'
+      WHEN \(tableAlias).canonical_url LIKE '\(HistoryPlatformDisplay.workURLPrefix)%'
+        THEN '\(HistoryPlatformDisplay.workHost)'
       WHEN \(raw) LIKE 'www.%' THEN substr(\(raw), 5)
       WHEN \(raw) LIKE 'www2.%' THEN substr(\(raw), 6)
       WHEN \(raw) LIKE 'm.%' THEN substr(\(raw), 3)
