@@ -3445,6 +3445,14 @@ final class HistoryViewModel: ObservableObject {
     }
   }
 
+  /// 按 id 取一条记录的详情投影。
+  ///
+  /// 工作台要对**素材**跑总结,而素材不是当前选中的那条,拿不到 `detail`。
+  func detailProjection(for taskID: TaskID) -> HistoryDetailProjection? {
+    guard let history else { return nil }
+    return try? history.detail(taskID: taskID)
+  }
+
   /// 「这篇成了」——稿件转成作品,离开工作台进入输出。
   func finishPiece(id: PieceID) {
     guard let history else { return }

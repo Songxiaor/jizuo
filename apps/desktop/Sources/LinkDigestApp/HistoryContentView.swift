@@ -122,19 +122,7 @@ struct HistoryContentView: View {
             }
           }
           .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 260)
-        } detail: {
-          if model.isWorkbenchActive, isWorkbenchEnabled, let piece = model.selectedPiece {
-            PieceDeskView(model: model, piece: piece) { taskID in
-              // 稿子和素材都是记录，打开它们就是回到熟悉的详情页。
-              model.leaveWorkbench()
-              model.reveal(taskID: taskID)
-            }
-          } else if model.isWorkbenchActive, isWorkbenchEnabled {
-            workbenchPlaceholder
-          } else {
-            detail
-          }
-        }
+        } detail: { detailColumn }
           // 窗口级分栏细线：贯通工具栏直达窗口顶；系统玻璃主题走原生外观，
           // 图片灯箱打开时移除，避免细线盖在放大的图片上。
           .background(WindowColumnDividerInstaller(
@@ -694,6 +682,37 @@ struct HistoryContentView: View {
 
   private func copyHistoryURL(_ raw: String) {
     CopyFeedbackController.shared.copy(raw)
+  }
+
+  /// 右侧那一列:工作台激活时是创作台,否则是常规详情页。
+  ///
+  /// 抽出来是编译期的需要——三个分支塞进 `NavigationSplitView` 的尾随闭包后，
+  /// 类型检查会超时。
+  @ViewBuilder private var detailColumn: some View {
+    if model.isWorkbenchActive, isWorkbenchEnabled, let piece = model.selectedPiece {
+      PieceDeskView(
+        model: model,
+        piece: piece,
+        onOpenNote: { taskID in
+          // 稿子和素材都是记录，打开它们就是回到熟悉的详情页。
+          model.leaveWorkbench()
+          model.reveal(taskID: taskID)
+        },
+        onRunSummary: { taskID in
+          Task {
+            guard let target = model.detailProjection(for: taskID) else { return }
+            await appModel.summarize(historyDetail: target, preferences: providerSettings.runPreferences)
+          }
+        },
+        onTidy: { taskID in
+          model.requestNoteTidy(taskID: taskID, model: providerSettings.effectiveTidyModelName)
+        }
+      )
+    } else if model.isWorkbenchActive, isWorkbenchEnabled {
+      workbenchPlaceholder
+    } else {
+      detail
+    }
   }
 
   /// 工作台里没选中任何一件时的右侧。

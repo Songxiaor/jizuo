@@ -9,6 +9,10 @@ struct PieceDeskView: View {
   let piece: PieceSummary
   /// 打开正文那条笔记（复用现有的笔记详情，稿子就是一条笔记）。
   let onOpenNote: (TaskID) -> Void
+  /// 对某份素材跑总结。
+  let onRunSummary: (TaskID) -> Void
+  /// 对稿子跑整理排版。
+  let onTidy: (TaskID) -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -208,10 +212,104 @@ struct PieceDeskView: View {
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
+      stageTools
+
       Spacer(minLength: 0)
     }
     .padding(16)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+  }
+
+  /// 此刻这个阶段该用的工具。
+  ///
+  /// 这些能力本来就有,只是原先散在详情页上——一条记录不管处于什么状态,
+  /// 那几个按钮永远都在。挪进阶段之后,它们变成「现在这一步该做的事」:
+  /// 读长素材时才需要总结,理骨架时才需要脑图,要发出去了才需要整理排版。
+  ///
+  /// 不做的事:不在这里重复实现任何一个能力,全都调既有入口。
+  @ViewBuilder private var stageTools: some View {
+    let tools = toolsForCurrentStage
+    if !tools.isEmpty {
+      VStack(alignment: .leading, spacing: 6) {
+        Text("这一步可以")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(.tertiary)
+          .textCase(.uppercase)
+          .tracking(0.6)
+        ForEach(tools, id: \.title) { tool in
+          Button(action: tool.action) {
+            HStack(spacing: 7) {
+              Image(systemName: tool.icon).font(.system(size: 11)).frame(width: 14)
+              Text(tool.title).font(.system(size: 12.5))
+              Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+              RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+            )
+            .contentShape(Rectangle())
+          }
+          .buttonStyle(.plain)
+          .disabled(tool.isDisabled)
+          .help(tool.hint)
+        }
+      }
+      .padding(.top, 4)
+    }
+  }
+
+  private struct StageTool {
+    let title: String
+    let icon: String
+    let hint: String
+    var isDisabled = false
+    let action: () -> Void
+  }
+
+  private var toolsForCurrentStage: [StageTool] {
+    switch piece.stage {
+    case .spark:
+      // 只有一句话时唯一该做的是去找东西,不该摆一堆用不上的按钮。
+      []
+    case .collect:
+      model.pieceMaterials.isEmpty ? [] : [
+        StageTool(
+          title: "总结这些素材",
+          icon: "text.alignleft",
+          hint: "对每份素材各跑一次总结，长素材不用逐字读",
+          isDisabled: model.pieceMaterials.isEmpty
+        ) {
+          for material in model.pieceMaterials where material.isAvailable {
+            onRunSummary(material.id)
+          }
+        },
+      ]
+    case .draft:
+      [
+        StageTool(
+          title: "生成脑图理骨架",
+          icon: "circle.hexagongrid",
+          hint: "把已写的内容画成结构，看哪一节缺东西"
+        ) { model.requestMindMapGeneration(taskID: piece.noteTaskID) },
+      ]
+    case .polish:
+      [
+        StageTool(
+          title: "整理排版",
+          icon: "wand.and.stars",
+          hint: model.noteTidyUnavailableReason(taskID: piece.noteTaskID)
+            ?? "重排段落、列表与标题层级；不改文字内容",
+          isDisabled: !model.canTidyNote(taskID: piece.noteTaskID)
+        ) {
+          onTidy(piece.noteTaskID)
+        },
+      ]
+    case .done:
+      []
+    }
   }
 
   /// 「今天该干什么」——面板存在的理由就是回答这一句。
