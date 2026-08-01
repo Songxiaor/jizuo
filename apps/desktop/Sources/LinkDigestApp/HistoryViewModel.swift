@@ -3268,6 +3268,9 @@ final class HistoryViewModel: ObservableObject {
     }
   }
 
+  /// 把一条失败摆到用户面前。复用已有的 alert 通道，不新增一套提示机制。
+  func reportFailure(_ message: String) { snapshotEditFailure = message }
+
   /// 用户校对转写文本后的原地保存：成功即刷新详情，失败给人话反馈。
   func saveEditedSnapshotText(taskID: TaskID, snapshotID: ContentSnapshotID, bodyText: String) {
     guard let history else { return }

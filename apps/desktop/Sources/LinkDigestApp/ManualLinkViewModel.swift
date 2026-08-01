@@ -257,21 +257,32 @@ final class ManualLinkViewModel: ObservableObject {
   /// 走的是与手动链接**完全相同**的 `ingest(_:)` 落库路径——笔记只是「正文由用户自己
   /// 写」的一条记录，没有理由为它另开一条写入口。这样标签、搜索、翻译、总结、导出
   /// 全部自动可用，也不会出现两套落库逻辑各自演化的问题。
-  func createNote(onCreated: (@MainActor (TaskID) -> Void)? = nil) {
-    guard !isBusy, let ingestor else { return }
-    // isBusy 是 state 的派生值，所以走 state：saving 期间按钮自动禁用，
-    // 不需要再维护一个独立的忙碌标志。
-    state = .saving
-    Task { [weak self] in
+  /// 新建一条笔记。
+  ///
+  /// **不复用 `isBusy` 做门禁**：它由 `state` 派生，而 `state` 被手动链接的抓取流程
+  /// 共用。抓取一旦把 state 停在 `.fetching`/`.saving`，`guard !isBusy` 就会让新建
+  /// 笔记**完全没有反应**——没有提示、没有日志，用户只会觉得按钮是死的。
+  /// 新建笔记是一次本地写入，和抓取排队没有关系，不该被它挡住。
+  ///
+  /// 失败也必须有声音：错误经 `onFailure` 交给调用方，用主界面确定可见的通道呈现，
+  /// 而不是写进只在抓取弹窗里显示的 `state`。
+  func createNote(
+    onCreated: (@MainActor (TaskID) -> Void)? = nil,
+    onFailure: (@MainActor (String) -> Void)? = nil
+  ) {
+    guard let ingestor else {
+      onFailure?("历史存储尚未就绪，请稍后再试。")
+      return
+    }
+    Task {
       do {
         let document = try UserNoteDocument.make()
         let capture = try await ingestor.ingest(document)
-        await MainActor.run {
-          self?.state = .idle
-          onCreated?(capture.taskID)
-        }
+        await MainActor.run { onCreated?(capture.taskID) }
       } catch {
-        await MainActor.run { self?.state = .failed("新建笔记失败，请稍后再试。") }
+        await MainActor.run {
+          onFailure?("新建笔记失败：\(String(describing: error))")
+        }
       }
     }
   }

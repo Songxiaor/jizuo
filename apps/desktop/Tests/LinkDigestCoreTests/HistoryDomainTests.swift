@@ -229,3 +229,18 @@ final class UserNoteDocumentTests: XCTestCase {
     XCTAssertTrue(HistoryPlatformDisplay.isWellKnown(host: HistoryPlatformDisplay.noteHost))
   }
 }
+
+/// 笔记能否真的走完落库前的命令组装。
+///
+/// 「点新建没反应」时，错误只写进 ManualLinkState 而那个状态不在主界面显示，
+/// 失败是静默的。这条测试把那一段搬到测试里，让失败有声音。
+final class UserNoteAcceptCommandTests: XCTestCase {
+  func testNoteCanBuildAnAcceptCaptureCommand() throws {
+    let doc = try UserNoteDocument.make()
+    // 这一步在 App 里就是 CaptureIngestService.ingest 的第一件事。
+    XCTAssertNoThrow(
+      try AcceptCaptureCommand(document: doc, receivedAtMilliseconds: 1_760_000_000_000),
+      "笔记无法组装成落库命令——这正是「点了没反应」的来源"
+    )
+  }
+}

@@ -389,6 +389,7 @@ struct HistoryContentView: View {
     .frame(maxWidth: .infinity)
     .background(theme.isNative ? Color.clear : theme.listPane)
     .focusedSceneValue(\.focusHistorySearch, FocusHistorySearchAction { isSearchFocused = true })
+    .focusedSceneValue(\.newNote, NewNoteAction { createNote() })
   }
 
   private var navigationRail: some View {
@@ -668,10 +669,16 @@ struct HistoryContentView: View {
   /// 这条动线打断——刚建完还要在两个窗口之间找焦点。需要专注时，主窗口本来就能
   /// 全屏或收起侧栏。
   private func createNote() {
-    manualLink.createNote { taskID in
-      model.selectScope(.notes)
-      model.reveal(taskID: taskID)
-    }
+    manualLink.createNote(
+      onCreated: { taskID in
+        model.selectScope(.notes)
+        model.reveal(taskID: taskID)
+      },
+      onFailure: { message in
+        // 用主界面确定会弹出的通道，别让失败悄无声息。
+        model.reportFailure(message)
+      }
+    )
   }
 
   private var emptyNotesDetail: some View {
@@ -3012,6 +3019,22 @@ extension FocusedValues {
   var focusHistorySearch: FocusHistorySearchAction? {
     get { self[FocusHistorySearchKey.self] }
     set { self[FocusHistorySearchKey.self] = newValue }
+  }
+}
+
+/// 菜单命令句柄：新建笔记（⌘⇧N）。与搜索那个同构——总是相等，避免重渲染时
+/// 反复churn 焦点值注册表。
+struct NewNoteAction: Equatable {
+  static func == (lhs: Self, rhs: Self) -> Bool { true }
+  let run: () -> Void
+}
+
+struct NewNoteKey: FocusedValueKey { typealias Value = NewNoteAction }
+
+extension FocusedValues {
+  var newNote: NewNoteAction? {
+    get { self[NewNoteKey.self] }
+    set { self[NewNoteKey.self] = newValue }
   }
 }
 

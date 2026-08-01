@@ -1331,6 +1331,8 @@ private struct DebugVisualProvider: ModelProvider {
 /// creation act.
 private struct LinkDigestCommands: Commands {
   @ObservedObject var manualLink: ManualLinkViewModel
+  /// 新建笔记的动作由承载列表的视图提供——只有它知道建完要选中哪一条。
+  @FocusedValue(\.newNote) private var newNote
   @FocusedValue(\.focusHistorySearch) private var focusHistorySearch
 
   var body: some Commands {
@@ -1341,6 +1343,11 @@ private struct LinkDigestCommands: Commands {
       Button("从剪贴板添加链接") { manualLink.readClipboardAndOpen() }
         .keyboardShortcut("v", modifiers: [.command, .shift])
         .disabled(!manualLink.canOpen)
+      // 写笔记要能一键起手：想记东西时最不该做的事就是先找按钮。
+      // ⌘N 已给「添加链接」，所以用 ⌘⇧N。
+      Button("新建笔记") { newNote?.run() }
+        .keyboardShortcut("n", modifiers: [.command, .shift])
+        .disabled(newNote == nil)
     }
     CommandGroup(after: .textEditing) {
       Button("搜索历史") { focusHistorySearch?.run() }
