@@ -192,6 +192,22 @@ def main() -> int:
         extension_source = ROOT / "apps/browser-extension/.output/chrome-mv3"
         if extension_source.is_symlink() or not extension_source.is_dir():
             raise RuntimeError("WXT 没有产出真实的扩展目录，先跑一次扩展构建")
+        # 扩展的名字是 WXT 构建时从 product-display.json 生成进 manifest 的,
+        # 而这里用的是**已有的**构建产物。改完产品名不重建扩展,就会打出一个
+        # App 叫「汲作」、扩展还叫旧名的包——实际发生过,所以这里挡一道。
+        manifest = json.loads(
+            (extension_source / "manifest.json").read_text(encoding="utf-8")
+        )
+        display = json.loads(
+            (ROOT / "apps/desktop/Sources/LinkDigestCore/Resources/product-display.json")
+            .read_text(encoding="utf-8")
+        )
+        if manifest.get("name") != display["displayName"]:
+            raise RuntimeError(
+                f"扩展 manifest 的名字是 {manifest.get('name')!r},"
+                f"而产品显示名是 {display['displayName']!r}。\n"
+                f"先重建扩展:cd apps/browser-extension && pnpm build"
+            )
         staged_extension = work / "LinkDigest-extension"
         shutil.copytree(extension_source, staged_extension, symlinks=False)
 

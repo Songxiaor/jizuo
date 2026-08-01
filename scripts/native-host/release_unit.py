@@ -64,6 +64,10 @@ CODESIGN = "/usr/bin/codesign"
 APP_CONFIG_KEYS = {
     "formatVersion",
     "appName",
+    # 界面上显示的名字。和 appName 分开是因为 appName 同时是 `.app` 的**文件名**,
+    # 而 native host manifest 里写死了那条绝对路径——改文件名会让已装的扩展
+    # 立刻找不到 Host。产品改名(包括以后换英文名)只动这一个字段。
+    "appDisplayName",
     "iconFile",
     "executable",
     "bundleIdentifier",
@@ -655,12 +659,12 @@ def unsigned_signature_state(app: Path) -> dict[str, Any]:
 def info_plist(config: dict[str, Any]) -> dict[str, Any]:
     return {
         "CFBundleDevelopmentRegion": "en",
-        "CFBundleDisplayName": config["appName"],
+        "CFBundleDisplayName": config["appDisplayName"],
         "CFBundleExecutable": config["executable"],
         "CFBundleIconFile": Path(config["iconFile"]).stem,
         "CFBundleIdentifier": config["bundleIdentifier"],
         "CFBundleInfoDictionaryVersion": "6.0",
-        "CFBundleName": config["appName"],
+        "CFBundleName": config["appDisplayName"],
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": config["shortVersion"],
         "CFBundleVersion": config["bundleVersion"],

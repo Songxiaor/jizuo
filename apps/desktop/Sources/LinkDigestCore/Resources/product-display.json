@@ -1,6 +1,6 @@
 {
-  "displayName": "LinkDigest",
-  "extensionDescription": "Send the current page to LinkDigest",
-  "extensionDisplayName": "LinkDigest 浏览器扩展",
+  "displayName": "汲作",
+  "extensionDescription": "把当前页面存进汲作",
+  "extensionDisplayName": "汲作 浏览器扩展",
   "formatVersion": 1
 }
