@@ -57,6 +57,29 @@ final class MarkdownListEditingTests: XCTestCase {
     XCTAssertNil(MarkdownListEditing.continuation(forLine: "-没有空格"))
   }
 
+  /// 一个键管三种状态：写清单时这三步本来就是连着发生的。
+  func testTaskTogglesThroughThreeStates() {
+    let plain = "买牛奶"
+    let todo = MarkdownListEditing.toggledTask(plain)
+    XCTAssertEqual(todo, "- [ ] 买牛奶")
+    let done = MarkdownListEditing.toggledTask(todo)
+    XCTAssertEqual(done, "- [x] 买牛奶")
+    // 再按一次退回普通列表项，而不是变回没有符号的纯文字——已经在清单里了。
+    XCTAssertEqual(MarkdownListEditing.toggledTask(done), "- 买牛奶")
+  }
+
+  func testTogglingKeepsIndentAndBulletSymbol() {
+    XCTAssertEqual(MarkdownListEditing.toggledTask("  * 缩进项"), "  * [ ] 缩进项")
+    XCTAssertEqual(MarkdownListEditing.toggledTask("  * [ ] 缩进项"), "  * [x] 缩进项")
+    XCTAssertEqual(MarkdownListEditing.toggledTask("\t+ 制表符"), "\t+ [ ] 制表符")
+  }
+
+  /// 空行上按也要能用：先给出一个空待办，接着直接打字。
+  func testTogglingAnEmptyLineStartsATask() {
+    XCTAssertEqual(MarkdownListEditing.toggledTask(""), "- [ ] ")
+    XCTAssertEqual(MarkdownListEditing.toggledTask("   "), "   - [ ] ")
+  }
+
   func testWrapAddsMarkersAroundTheSelection() {
     let text = "把这段加粗"
     let range = text.range(of: "这段")!

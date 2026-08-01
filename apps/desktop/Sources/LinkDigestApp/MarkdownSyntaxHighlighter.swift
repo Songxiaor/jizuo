@@ -67,6 +67,35 @@ enum MarkdownSyntaxHighlighter {
     Rule(pattern: #"^\s*([-*+]|\d+\.)\s"#, options: [.anchorsMatchLines]) { _, palette in
       [.foregroundColor: palette.accent]
     },
+    // 已完成的任务整行划掉并淡化：一屏待办里，做完的那些应该退到背景去。
+    // 放在列表规则之后，好压过它给项目符号上的强调色。
+    Rule(pattern: #"^\s*[-*+]\s+\[[xX]\].*$"#, options: [.anchorsMatchLines]) { _, palette in
+      [
+        .foregroundColor: palette.secondary,
+        .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+        .strikethroughColor: palette.secondary.withAlphaComponent(0.6),
+      ]
+    },
+    // 复选框本身是控件不是文字，给它等宽字体，勾没勾一列对齐才看得出来。
+    Rule(pattern: #"^\s*[-*+]\s+(\[[ xX]\])"#, options: [.anchorsMatchLines]) { base, palette in
+      [
+        .font: NSFont.monospacedSystemFont(ofSize: base.pointSize * 0.95, weight: .medium),
+        .foregroundColor: palette.accent,
+        // 未完成项的框不该被上一条规则的删除线扫到。
+        .strikethroughStyle: 0,
+      ]
+    },
+    // 删除线。
+    Rule(pattern: #"~~[^~\n]+~~"#, options: []) { _, palette in
+      [
+        .strikethroughStyle: NSUnderlineStyle.single.rawValue,
+        .foregroundColor: palette.secondary,
+      ]
+    },
+    // 分隔线：整行画淡，它是结构不是内容。
+    Rule(pattern: #"^\s*(---+|\*\*\*+|___+)\s*$"#, options: [.anchorsMatchLines]) { _, palette in
+      [.foregroundColor: palette.secondary.withAlphaComponent(0.5)]
+    },
     // 围栏代码块与行内代码用等宽字体，一眼能和正文分开。
     Rule(pattern: #"```[\s\S]*?```"#, options: []) { base, palette in
       [

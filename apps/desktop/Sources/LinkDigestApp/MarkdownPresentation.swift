@@ -372,8 +372,18 @@ enum MarkdownPresentation {
     case paragraph(String)
     case list([String])
     case orderedList([String])
+    /// 任务列表。编辑器已经能续写 `- [ ]`，阅读区却把方括号当普通文字显示，
+    /// 于是同一条清单在「写」和「读」两侧长得不一样。
+    case taskList([TaskItem])
     case quote(String)
     case code(language: String?, content: String)
+    /// `---` 之类的分隔线。不单独成块的话它会掉进段落，显示成一行光秃秃的横杠。
+    case divider
+  }
+
+  struct TaskItem: Equatable {
+    public let isDone: Bool
+    public let text: String
   }
 
   /// Splits sanitized Markdown into block-level units so the view can apply
@@ -448,6 +458,34 @@ enum MarkdownPresentation {
         continue
       }
 
+      if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+        blocks.append(.divider)
+        index += 1
+        continue
+      }
+
+      // 任务列表先于普通列表判断：`- [ ] 做事` 也满足 `isListItem`，顺序反了
+      // 就永远走不到这里。
+      if taskItem(trimmed) != nil {
+        var items: [TaskItem] = []
+        while index < lines.count {
+          let line = lines[index].trimmingCharacters(in: .whitespaces)
+          if line.isEmpty {
+            let next = index + 1 < lines.count ? lines[index + 1].trimmingCharacters(in: .whitespaces) : ""
+            if taskItem(next) != nil {
+              index += 1
+              continue
+            }
+            break
+          }
+          guard let item = taskItem(line) else { break }
+          items.append(item)
+          index += 1
+        }
+        if !items.isEmpty { blocks.append(.taskList(items)) }
+        continue
+      }
+
       if isListItem(trimmed) {
         var items: [String] = []
         while index < lines.count {
@@ -460,7 +498,8 @@ enum MarkdownPresentation {
             }
             break
           }
-          if isListItem(line) {
+          // 撞上任务项就收尾：两种清单混在一起时，让它们各自成块。
+          if isListItem(line), taskItem(line) == nil {
             items.append(listItemText(line))
             index += 1
           } else {
@@ -535,6 +574,23 @@ enum MarkdownPresentation {
 
   private static func isListItem(_ line: String) -> Bool {
     line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ")
+  }
+
+  /// `- [ ] 待办` / `- [x] 已完成`。不是任务项则返回 nil。
+  private static func taskItem(_ line: String) -> TaskItem? {
+    guard isListItem(line) else { return nil }
+    let rest = String(line.dropFirst(2))
+    guard rest.count >= 3, rest.hasPrefix("[") else { return nil }
+    let mark = rest[rest.index(rest.startIndex, offsetBy: 1)]
+    guard rest[rest.index(rest.startIndex, offsetBy: 2)] == "]" else { return nil }
+    let done: Bool
+    switch mark {
+    case " ": done = false
+    case "x", "X": done = true
+    default: return nil
+    }
+    let text = String(rest.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+    return TaskItem(isDone: done, text: text)
   }
 
   private static func listItemText(_ line: String) -> String {
@@ -1089,6 +1145,35 @@ struct MarkdownContentView: View {
       }
       .padding(.leading, 4)
       .padding(.bottom, 18)
+    case let .taskList(items):
+      VStack(alignment: .leading, spacing: 12) {
+        ForEach(0..<items.count, id: \.self) { index in
+          HStack(alignment: .top, spacing: 0) {
+            Image(systemName: items[index].isDone ? "checkmark.square.fill" : "square")
+              .font(.system(size: 14))
+              .foregroundStyle(items[index].isDone ? accentColor : secondaryTextColor.opacity(0.7))
+              .frame(width: 22, alignment: .center)
+              .padding(.top, 3)
+              .accessibilityLabel(items[index].isDone ? "已完成" : "未完成")
+            inlineBody(items[index].text, baseSize: 16.5)
+              .lineSpacing(8)
+              // 划掉已完成的：一屏待办里，做完的那些应该退到背景去。
+              .strikethrough(items[index].isDone, color: secondaryTextColor.opacity(0.6))
+              .foregroundStyle(items[index].isDone ? secondaryTextColor : primaryTextColor)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+      }
+      .padding(.leading, 4)
+      .padding(.bottom, 18)
+    case .divider:
+      Rectangle()
+        .fill(secondaryTextColor.opacity(0.18))
+        .frame(height: 1)
+        .padding(.vertical, 10)
+        .padding(.bottom, 18)
+        .accessibilityHidden(true)
     case let .orderedList(items):
       VStack(alignment: .leading, spacing: 12) {
         ForEach(0..<items.count, id: \.self) { index in

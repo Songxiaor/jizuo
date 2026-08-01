@@ -61,8 +61,33 @@ final class MarkdownNSTextView: NSTextView {
     switch key {
     case "b": return wrapSelection(with: "**")
     case "i": return wrapSelection(with: "*")
+    case "l": return toggleTaskOnSelectedLines()
     default: return super.performKeyEquivalent(with: event)
     }
+  }
+
+  /// ⌘L 把选中的每一行在「普通行 → 待办 → 已完成」之间轮转。
+  ///
+  /// 按行处理而不是按光标：勾一串待办时选中几行一次按掉，比逐行点过去快得多。
+  private func toggleTaskOnSelectedLines() -> Bool {
+    let storage = string as NSString
+    let selection = selectedRange()
+    let lineRange = storage.lineRange(for: selection)
+    let block = storage.substring(with: lineRange)
+    // 末尾换行不参与变换，否则会凭空多出一个空待办。
+    let endsWithNewline = block.hasSuffix("\n")
+    let body = endsWithNewline ? String(block.dropLast()) : block
+    let toggled = body
+      .components(separatedBy: "\n")
+      .map(MarkdownListEditing.toggledTask)
+      .joined(separator: "\n")
+    let replacement = endsWithNewline ? toggled + "\n" : toggled
+
+    guard shouldChangeText(in: lineRange, replacementString: replacement) else { return true }
+    textStorage?.replaceCharacters(in: lineRange, with: replacement)
+    didChangeText()
+    setSelectedRange(NSRange(location: lineRange.location, length: (replacement as NSString).length))
+    return true
   }
 
   private func wrapSelection(with marker: String) -> Bool {
@@ -286,19 +311,44 @@ private struct MarkdownTextView: NSViewRepresentable {
 
     /// Tab / Shift-Tab 在列表行上调整层级；其它地方交回默认行为。
     ///
+    /// 按选区里的每一行处理，不只是光标那一行：整理清单时经常是选中一段
+    /// 一起缩进，只动一行等于这个键在多选时坏掉。
+    ///
     /// `by` 传 nil 表示反缩进。
     private func shiftListItem(in textView: NSTextView, by indent: String?) -> Bool {
-      let line = currentLine(in: textView)
-      guard MarkdownListEditing.marker(ofLine: line.text) != nil else { return false }
+      let storage = textView.string as NSString
+      let selection = textView.selectedRange()
+      let lineRange = storage.lineRange(for: selection)
+      let block = storage.substring(with: lineRange)
+      let endsWithNewline = block.hasSuffix("\n")
+      let body = endsWithNewline ? String(block.dropLast()) : block
+      let lines = body.components(separatedBy: "\n")
+      // 选区里一行列表都没有时交回默认行为——那时 Tab 就该是插入制表符。
+      guard lines.contains(where: { MarkdownListEditing.marker(ofLine: $0) != nil }) else { return false }
 
-      guard let indent else {
-        // 反缩进：只吃掉行首已有的一级缩进，没有就什么都不做。
-        let prefix = String(line.text.prefix(Self.indentUnit.count))
-        guard prefix == Self.indentUnit || prefix.first == "\t" else { return true }
-        let width = prefix.first == "\t" ? 1 : Self.indentUnit.count
-        return replace(in: textView, range: NSRange(location: line.range.location, length: width), with: "")
+      let shifted = lines.map { line -> String in
+        guard MarkdownListEditing.marker(ofLine: line) != nil else { return line }
+        guard let indent else {
+          // 反缩进：只吃掉行首已有的一级缩进，没有就保持原样。
+          if line.hasPrefix(Self.indentUnit) { return String(line.dropFirst(Self.indentUnit.count)) }
+          if line.hasPrefix("\t") { return String(line.dropFirst()) }
+          return line
+        }
+        return indent + line
       }
-      return replace(in: textView, range: NSRange(location: line.range.location, length: 0), with: indent)
+      let replacement = shifted.joined(separator: "\n") + (endsWithNewline ? "\n" : "")
+      guard replacement != block else { return true }
+      guard textView.shouldChangeText(in: lineRange, replacementString: replacement) else { return true }
+      textView.textStorage?.replaceCharacters(in: lineRange, with: replacement)
+      textView.didChangeText()
+      // 多行时保持整段选中，可以连按几次继续缩进。
+      if selection.length > 0 {
+        textView.setSelectedRange(NSRange(location: lineRange.location, length: (replacement as NSString).length))
+      } else {
+        let delta = (replacement as NSString).length - (block as NSString).length
+        textView.setSelectedRange(NSRange(location: max(lineRange.location, selection.location + delta), length: 0))
+      }
+      return true
     }
 
     /// 走 shouldChangeText/didChangeText，撤销栈与绑定才都跟得上。

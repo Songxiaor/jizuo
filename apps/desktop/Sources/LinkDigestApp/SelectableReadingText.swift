@@ -45,6 +45,26 @@ enum ReadingTextComposer {
             spacingAfter: 8, lineSpacing: 6, headIndent: 26
           ))
         }
+      case let .taskList(items):
+        for item in items {
+          // 已完成的用次要色：选中复制走的是文字，颜色只影响这里的阅读。
+          result.append(paragraph(
+            bulletLine(
+              item.isDone ? "☑  " : "☐  ", item.text,
+              readingFont: readingFont,
+              color: item.isDone ? palette.secondary : palette.primary
+            ),
+            spacingAfter: 8, lineSpacing: 6, headIndent: 22
+          ))
+        }
+      case .divider:
+        result.append(paragraph(
+          inline(
+            String(repeating: "─", count: 24),
+            readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary
+          ),
+          spacingBefore: 10, spacingAfter: 14, lineSpacing: 4
+        ))
       case let .quote(text):
         result.append(paragraph(
           inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary),

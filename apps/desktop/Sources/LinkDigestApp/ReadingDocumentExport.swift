@@ -121,6 +121,22 @@ enum ReadingDocumentExport {
             spacingBefore: 0, spacingAfter: 4, headIndent: 14
           ))
         }
+      case let .taskList(items):
+        for item in items {
+          // 导出成字符而不是画复选框：产物要能贴进邮件、文档、聊天窗口，
+          // 那些地方没有我们的图形，字符到哪都还是同一个意思。
+          result.append(styledParagraph(
+            (item.isDone ? "☑ " : "☐ ") + plain(item.text),
+            font: font(readingFont, size: bodySize, weight: .regular),
+            spacingBefore: 0, spacingAfter: 4, headIndent: 14
+          ))
+        }
+      case .divider:
+        result.append(styledParagraph(
+          String(repeating: "─", count: 24),
+          font: font(readingFont, size: bodySize, weight: .regular),
+          spacingBefore: 8, spacingAfter: 8
+        ))
       case let .quote(text):
         result.append(styledParagraph(
           plain(text),

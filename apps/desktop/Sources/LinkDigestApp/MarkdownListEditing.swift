@@ -75,6 +75,33 @@ enum MarkdownListEditing {
     return suffix.isEmpty ? "\(number + 1). " : "\(number + 1). \(suffix) "
   }
 
+  /// 把一行在「普通行 → 待办 → 已完成 → 普通行」之间轮转。
+  ///
+  /// 一个键管三种状态，而不是「插入待办」和「勾选」两个命令：写清单时这三步
+  /// 本来就是连着发生的，分成两个键要记两个。
+  static func toggledTask(_ line: String) -> String {
+    let indent = String(line.prefix { $0 == " " || $0 == "\t" })
+    let rest = String(line.dropFirst(indent.count))
+
+    if let marker = marker(ofLine: line), marker.bullet.contains("[") {
+      // 已经是待办：勾上；已经勾上的还原成普通列表项。
+      let body = String(rest.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+      let content = String(body.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+      let isDone = body.dropFirst(1).first.map { $0 == "x" || $0 == "X" } ?? false
+      let symbol = String(rest.prefix(1))
+      return isDone ? "\(indent)\(symbol) \(content)" : "\(indent)\(symbol) [x] \(content)"
+    }
+    if let marker = marker(ofLine: line) {
+      // 普通列表项：加上复选框，保留原来的符号。
+      let content = String(rest.dropFirst(marker.bullet.count)).trimmingCharacters(in: .whitespaces)
+      let symbol = String(rest.prefix(1))
+      return "\(indent)\(symbol) [ ] \(content)"
+    }
+    let content = rest.trimmingCharacters(in: .whitespaces)
+    guard !content.isEmpty else { return "\(indent)- [ ] " }
+    return "\(indent)- [ ] \(content)"
+  }
+
   /// 用一对记号包住选中的文字，例如加粗。
   ///
   /// 已经被同一对记号包着时反过来去掉——同一个快捷键既开又关，才符合

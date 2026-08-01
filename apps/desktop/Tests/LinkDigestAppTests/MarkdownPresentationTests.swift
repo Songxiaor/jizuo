@@ -249,6 +249,49 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertTrue(q.contains("引用一句结论"))
   }
 
+  /// 任务列表要成为自己的块。
+  ///
+  /// 编辑器早就能续写 `- [ ]` 了，阅读区却把它当普通列表项，于是同一条清单在
+  /// 「写」和「读」两侧长得不一样：读的时候是「• [ ] 买牛奶」，方括号裸露着。
+  func testTaskListIsItsOwnBlockRatherThanBaresBrackets() {
+    let blocks = MarkdownPresentation.blocks(from: "- [ ] 买牛奶\n- [x] 交房租")
+    XCTAssertEqual(blocks.count, 1)
+    guard case let .taskList(items) = blocks[0] else {
+      return XCTFail("任务列表应当独立成块，实际是 \(blocks[0])")
+    }
+    XCTAssertEqual(items.map(\.text), ["买牛奶", "交房租"])
+    XCTAssertEqual(items.map(\.isDone), [false, true])
+  }
+
+  /// 普通列表不该被任务列表规则吃掉，两种混排时各自成块。
+  func testPlainAndTaskListsSplitIntoSeparateBlocks() {
+    let blocks = MarkdownPresentation.blocks(from: "- 普通一项\n- [ ] 待办一项")
+    XCTAssertEqual(blocks.count, 2)
+    guard case let .list(plain) = blocks[0] else { return XCTFail("第一块应是普通列表") }
+    XCTAssertEqual(plain, ["普通一项"])
+    guard case let .taskList(tasks) = blocks[1] else { return XCTFail("第二块应是任务列表") }
+    XCTAssertEqual(tasks.map(\.text), ["待办一项"])
+  }
+
+  /// `[` 开头但不是复选框的仍是普通列表项，别把 Markdown 链接当成待办。
+  func testBracketsThatAreNotCheckboxesStayPlainItems() {
+    for source in ["- [链接](https://example.test)", "- [无效] 标记", "- [] 空框"] {
+      let blocks = MarkdownPresentation.blocks(from: source)
+      guard case .list = blocks.first else {
+        return XCTFail("「\(source)」不该被当成任务项，实际是 \(String(describing: blocks.first))")
+      }
+    }
+  }
+
+  /// 分隔线不单独成块的话会掉进段落，显示成一行光秃秃的横杠。
+  func testThematicBreakBecomesADivider() {
+    let blocks = MarkdownPresentation.blocks(from: "上面\n\n---\n\n下面")
+    XCTAssertEqual(blocks.count, 3)
+    XCTAssertEqual(blocks[1], .divider)
+    XCTAssertEqual(blocks[0], .paragraph("上面"))
+    XCTAssertEqual(blocks[2], .paragraph("下面"))
+  }
+
   func testBlocksPreserveFencedCodeLanguageNewlinesIndentationAndFollowingContent() {
     let source = """
     ## 四、怎么放进 Codex 执行
