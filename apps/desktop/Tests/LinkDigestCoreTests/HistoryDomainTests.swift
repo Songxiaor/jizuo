@@ -223,6 +223,34 @@ final class UserNoteDocumentTests: XCTestCase {
     XCTAssertNotEqual(a.url, b.url)
   }
 
+  /// 正文首行写了 `# 标题` 就拿它当标题，省掉在两个地方写同一句话。
+  func testFirstHeadingBecomesTheTitle() {
+    XCTAssertEqual(
+      UserNoteDocument.derivedTitle(fromBody: "# AI 时代的创作\n\n正文"),
+      "AI 时代的创作"
+    )
+    // 前面的空行不算数，标题仍能被认出来。
+    XCTAssertEqual(UserNoteDocument.derivedTitle(fromBody: "\n\n  # 带缩进的\n"), "带缩进的")
+  }
+
+  /// 只认第一个非空行的一级标题。正文中段的 `#` 是章节，不是这条笔记叫什么；
+  /// `##` 也不是——否则随手写个二级小节就会把标题顶掉。
+  func testOnlyALeadingTopLevelHeadingCounts() {
+    XCTAssertNil(UserNoteDocument.derivedTitle(fromBody: "先写了一句正文\n\n# 后面才有的标题"))
+    XCTAssertNil(UserNoteDocument.derivedTitle(fromBody: "## 二级标题\n正文"))
+    XCTAssertNil(UserNoteDocument.derivedTitle(fromBody: "#没有空格\n正文"))
+    XCTAssertNil(UserNoteDocument.derivedTitle(fromBody: "#   \n正文"), "只有井号没有字，派生不出标题")
+    XCTAssertNil(UserNoteDocument.derivedTitle(fromBody: ""))
+  }
+
+  /// 超长标题要截断：列表一行放不下，整条记录就没有抓手了。
+  func testOverlongDerivedTitleIsTruncated() {
+    let long = String(repeating: "长", count: 200)
+    let derived = UserNoteDocument.derivedTitle(fromBody: "# \(long)")
+    XCTAssertEqual(derived?.count, 121, "120 个字加一个省略号")
+    XCTAssertTrue(derived?.hasSuffix("…") == true)
+  }
+
   /// 侧边栏靠这个 host 把笔记聚成「我的笔记」，而不是掉进「待分类」。
   func testNoteHostMapsToItsOwnSidebarSection() {
     XCTAssertEqual(HistoryPlatformDisplay.name(forHost: HistoryPlatformDisplay.noteHost), "我的笔记")

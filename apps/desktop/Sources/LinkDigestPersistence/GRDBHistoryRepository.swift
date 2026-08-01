@@ -1083,6 +1083,27 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  public func updateTaskTitle(
+    taskID: TaskID,
+    title: String,
+    updatedAtMilliseconds: Int64
+  ) throws {
+    try database.write { db in
+      // 标题挂在 snapshot 上而不是 tasks 上——列表读的也是最新那一条的 title，
+      // 所以改名要落到 MAX(sequence) 这条，否则列表看不到变化。
+      try db.execute(sql: """
+        UPDATE content_snapshots SET title = ?
+        WHERE task_id = ?
+          AND sequence = (SELECT MAX(sequence) FROM content_snapshots WHERE task_id = ?)
+        """, arguments: [title, taskID.rawValue, taskID.rawValue])
+      guard db.changesCount == 1 else { throw RepositoryFailure.notFound }
+      try db.execute(
+        sql: "UPDATE tasks SET updated_at_ms = MAX(updated_at_ms, ?) WHERE id = ?",
+        arguments: [updatedAtMilliseconds, taskID.rawValue]
+      )
+    }
+  }
+
   public func isMediaContentReferenced(contentSHA256: String) throws -> Bool {
     try database.read { db in
       (try Int.fetchOne(

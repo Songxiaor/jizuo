@@ -24,10 +24,25 @@ final class MarkdownSyntaxHighlighterTests: XCTestCase {
 
   func testHeadingIsLargerThanBody() {
     let storage = highlighted("# 标题\n正文")
-    let heading = font(storage, at: 0)
+    // 采样标题的**文字**，跳过 `# ` 标记——标记有自己的样式。
+    let heading = font(storage, at: 2)
     let body = font(storage, at: storage.string.count - 1)
     XCTAssertNotNil(heading)
     XCTAssertGreaterThan(heading!.pointSize, body!.pointSize, "标题必须比正文大，否则结构不可见")
+  }
+
+  /// `#` 要留着（删掉就成了所见即所得，写的和存的对不上），但它是结构标记不是
+  /// 内容：跟标题一样黑、一样大时，一行的视觉重心会落在两个井号上。
+  func testHeadingMarkerRecedesBehindTheHeadingText() {
+    let storage = highlighted("# 标题\n正文")
+    let marker = font(storage, at: 0)
+    let headingText = font(storage, at: 2)
+    XCTAssertNotNil(marker)
+    XCTAssertLessThan(marker!.pointSize, headingText!.pointSize, "标记不该和标题文字一样大")
+
+    let markerColor = storage.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+    let textColor = storage.attribute(.foregroundColor, at: 2, effectiveRange: nil) as? NSColor
+    XCTAssertNotEqual(markerColor, textColor, "标记要淡下去，不能和标题同色")
   }
 
   func testInlineCodeUsesMonospace() {

@@ -13,9 +13,16 @@ struct MarkdownEditorView: View {
   let lineSpacing: CGFloat
   /// 空白时的提示。传空串则不显示。
   var placeholder: String = ""
+  /// 传入后，编辑器不再自己滚动，而是把内容高度回报出去，由外层页面统一滚动。
+  ///
+  /// 一页里套两层滚动条，写到底部时页面和编辑器会互相抢滚动，最后一行还常被
+  /// 裁在框里看不见。写作页面应当只有一条滚动轴。
+  var contentHeight: Binding<CGFloat>?
 
   var body: some View {
-    MarkdownTextView(text: $text, font: font, palette: palette, lineSpacing: lineSpacing)
+    MarkdownTextView(
+      text: $text, font: font, palette: palette, lineSpacing: lineSpacing, contentHeight: contentHeight
+    )
       // 提示画在编辑器之上而不是塞进 `text`：塞进去它就是一段真的内容，会被
       // 保存、被翻译、被搜到，用户还得先删掉它才能开始写。
       .overlay(alignment: .topLeading) {
@@ -39,6 +46,7 @@ private struct MarkdownTextView: NSViewRepresentable {
   let font: NSFont
   let palette: MarkdownSyntaxHighlighter.Palette
   let lineSpacing: CGFloat
+  var contentHeight: Binding<CGFloat>?
 
   static let contentInset = NSSize(width: 18, height: 16)
 
@@ -59,8 +67,10 @@ private struct MarkdownTextView: NSViewRepresentable {
     textView.textContainerInset = Self.contentInset
     textView.string = text
     scroll.drawsBackground = false
-    scroll.hasVerticalScroller = true
+    // 自适应高度时不留自己的滚动条：外层页面负责滚动。
+    scroll.hasVerticalScroller = contentHeight == nil
 
+    context.coordinator.contentHeight = contentHeight
     context.coordinator.applyHighlight(to: textView, font: font, palette: palette, lineSpacing: lineSpacing)
     return scroll
   }
@@ -73,6 +83,7 @@ private struct MarkdownTextView: NSViewRepresentable {
       textView.string = text
       textView.setSelectedRange(NSRange(location: min(selected.location, text.utf16.count), length: 0))
     }
+    context.coordinator.contentHeight = contentHeight
     context.coordinator.applyHighlight(to: textView, font: font, palette: palette, lineSpacing: lineSpacing)
   }
 
@@ -82,12 +93,28 @@ private struct MarkdownTextView: NSViewRepresentable {
     private let text: Binding<String>
     /// 防止把自己写回去的内容再当成用户输入处理。
     private var isApplyingHighlight = false
+    var contentHeight: Binding<CGFloat>?
 
     init(text: Binding<String>) { self.text = text }
 
     func textDidChange(_ notification: Notification) {
       guard !isApplyingHighlight, let textView = notification.object as? NSTextView else { return }
       text.wrappedValue = textView.string
+      reportHeight(of: textView)
+    }
+
+    /// 把排版后的实际高度回报给 SwiftUI。
+    func reportHeight(of textView: NSTextView) {
+      guard let contentHeight,
+            let layoutManager = textView.layoutManager,
+            let container = textView.textContainer else { return }
+      layoutManager.ensureLayout(for: container)
+      let height = layoutManager.usedRect(for: container).height
+        + MarkdownTextView.contentInset.height * 2
+      // 半点以内的抖动不回报：布局与高度互相触发时会来回震荡。
+      guard abs(contentHeight.wrappedValue - height) > 0.5 else { return }
+      // 异步跳出当前这轮 SwiftUI 更新，否则是「在视图更新中改状态」。
+      DispatchQueue.main.async { contentHeight.wrappedValue = height }
     }
 
     func applyHighlight(
@@ -106,6 +133,8 @@ private struct MarkdownTextView: NSViewRepresentable {
         to: storage, baseFont: font, palette: palette, lineSpacing: lineSpacing
       )
       textView.setSelectedRange(selected)
+      // 字号、行距、着色都会改变排版高度，重新量一次。
+      reportHeight(of: textView)
     }
   }
 }

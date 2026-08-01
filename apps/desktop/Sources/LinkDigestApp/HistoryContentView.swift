@@ -1117,6 +1117,12 @@ private struct HistoryDetailView: View {
   /// 转写校对：编辑态与草稿只属于当前详情页，切换条目即复位。
   @State private var isEditingTranscription = false
   @State private var transcriptionDraft = ""
+  @State private var noteTitleDraft = ""
+  /// 笔记编辑器排版后的实际高度，由编辑器回报，用来让它长到内容那么高。
+  @State private var noteEditorHeight: CGFloat = 320
+  /// 详情页里可获得键盘焦点的字段。目前只有笔记标题需要感知失焦。
+  private enum DetailField: Hashable { case noteTitle }
+  @FocusState private var focusedField: DetailField?
   @AppStorage(ReadingFontSelection.storageKey)
   private var readingFontRaw = ReadingFontSelection.defaultStoredValue
   @AppStorage(ReadingFontSize.storageKey)
@@ -1195,6 +1201,18 @@ private struct HistoryDetailView: View {
   private func noteDraftIsDirty(_ snapshot: ContentSnapshot) -> Bool {
     !transcriptionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && transcriptionDraft != storedNoteBody(snapshot)
+  }
+  /// 标题草稿落库。没改动就什么都不做，避免每次失焦都写一次库。
+  private func commitNoteTitle() {
+    guard isUserNote else { return }
+    let trimmed = noteTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    let resolved = trimmed.isEmpty ? UserNoteDocument.untitledTitle : trimmed
+    guard resolved != title else {
+      noteTitleDraft = resolved
+      return
+    }
+    model.renameNote(taskID: detail.task.id, title: resolved)
+    noteTitleDraft = resolved
   }
   /// Source frontmatter belongs to the newest captured source, not a later
   /// local transcription snapshot that may have become the effective body.
@@ -1618,6 +1636,7 @@ private struct HistoryDetailView: View {
         transcriptionDraft = storedNoteBody(snapshot)
         isEditingTranscription = true
       }
+      noteTitleDraft = title
       sessionMediaPlayback.detailBecameActive(
         taskID: detail.task.id,
         platform: latestSourceSnapshot?.platform ?? detail.snapshots.last?.platform,
@@ -1851,7 +1870,24 @@ private struct HistoryDetailView: View {
   }
 
   @ViewBuilder private var titleView: some View {
-    if titleNeedsScrolling {
+    if isUserNote {
+      // 笔记标题就地可改。抓取记录的标题保持只读——那是抓来的事实。
+      TextField(UserNoteDocument.untitledTitle, text: $noteTitleDraft)
+        .textFieldStyle(.plain)
+        .font(readingFont.font(size: Self.titleFontSize, weight: .bold))
+        .foregroundStyle(theme.primaryText)
+        .tracking(-0.4)
+        .lineLimit(1...3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        // 失焦即存，不给标题单独配一个保存按钮：一页里两个保存按钮，
+        // 用户得先判断自己改的算哪一种。
+        .onSubmit { commitNoteTitle() }
+        .onChange(of: focusedField) { previous, _ in
+          if previous == .noteTitle { commitNoteTitle() }
+        }
+        .focused($focusedField, equals: .noteTitle)
+        .accessibilityIdentifier("history-detail-title")
+    } else if titleNeedsScrolling {
       ScrollView(.vertical) {
         measuredTitleText
       }
@@ -2488,9 +2524,13 @@ private struct HistoryDetailView: View {
               code: NSColor(theme.secondaryText)
             ),
             lineSpacing: 6,
-            placeholder: isUserNote ? UserNoteDocument.placeholderBody : ""
+            placeholder: isUserNote ? UserNoteDocument.placeholderBody : "",
+            contentHeight: isUserNote ? $noteEditorHeight : nil
           )
-          .frame(minHeight: 320, maxHeight: .infinity)
+          .frame(
+            minHeight: isUserNote ? max(noteEditorHeight, 320) : 320,
+            maxHeight: isUserNote ? max(noteEditorHeight, 320) : .infinity
+          )
           // 笔记的编辑区就是这一页的正文，不再套一层描边的输入框——那层框是给
           // 「在只读页面上临时改一段」用的，笔记没有那个「临时」。
           .background(
@@ -2536,9 +2576,20 @@ private struct HistoryDetailView: View {
     } else {
       newText = transcriptionDraft
     }
+    let savedDraft = transcriptionDraft
     model.saveEditedSnapshotText(taskID: detail.task.id, snapshotID: snapshot.id, bodyText: newText)
-    isEditingTranscription = false
-    transcriptionDraft = ""
+    guard isUserNote else {
+      isEditingTranscription = false
+      transcriptionDraft = ""
+      return
+    }
+    // 笔记保存后仍停在可写状态——「保存」是存一下，不是「改完了」。
+    // 标题还是默认值时，用正文首个一级标题补上：写笔记的人极少先想标题。
+    if title == UserNoteDocument.untitledTitle,
+       let derived = UserNoteDocument.derivedTitle(fromBody: savedDraft) {
+      model.renameNote(taskID: detail.task.id, title: derived)
+      noteTitleDraft = derived
+    }
   }
 
   private var effectiveReadingPane: ReadingPane {

@@ -49,6 +49,17 @@ public struct HistoryApplicationService: Sendable {
       updatedAtMilliseconds: updatedAtMilliseconds
     )
   }
+  public func updateTaskTitle(
+    taskID: TaskID,
+    title: String,
+    updatedAtMilliseconds: Int64
+  ) throws {
+    try repository.updateTaskTitle(
+      taskID: taskID,
+      title: title,
+      updatedAtMilliseconds: updatedAtMilliseconds
+    )
+  }
   public func mediaAsset(taskID: TaskID) throws -> MediaAsset? { try repository.mediaAsset(taskID: taskID) }
 
   /// 该任务名下**全部**媒体文件的相对路径。

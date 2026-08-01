@@ -2472,6 +2472,50 @@ final class UserNoteIngestTests: XCTestCase {
       XCTAssertEqual(counts.all, 0)
     }
   }
+
+  /// 笔记标题可改，并且列表里立刻是新名字。
+  func testRenamingANoteIsPersistedAndVisibleInTheList() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      let accepted = try repository.acceptCapture(
+        try AcceptCaptureCommand(
+          document: try UserNoteDocument.make(body: "先写一句"),
+          receivedAtMilliseconds: 1_760_000_000_000
+        )
+      )
+      try repository.updateTaskTitle(
+        taskID: accepted.taskID,
+        title: "AI 时代的创作",
+        updatedAtMilliseconds: 1_760_000_100_000
+      )
+
+      let page = try repository.historyPage(
+        limit: 10, after: nil as HistoryPageCursor?, filter: HistoryListFilter(scope: .notes)
+      )
+      XCTAssertEqual(page.rows.first?.title, "AI 时代的创作")
+    }
+  }
+
+  /// 改一条不存在的记录必须报 `notFound`，而不是静默无事发生。
+  ///
+  /// 这里断言具体的错误值而不只是「抛了东西」：SQL 写错时（比如改了一张没有
+  /// title 列的表）抛出的是 `unavailable`，只断言 throws 的话测试照样绿。
+  func testRenamingAMissingTaskFails() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      XCTAssertThrowsError(
+        try repository.updateTaskTitle(
+          taskID: TaskID(), title: "无中生有", updatedAtMilliseconds: 1_760_000_000_000
+        )
+      ) { error in
+        XCTAssertEqual(error as? RepositoryFailure, .notFound)
+      }
+    }
+  }
 }
 
 /// 每日笔记的幂等性。

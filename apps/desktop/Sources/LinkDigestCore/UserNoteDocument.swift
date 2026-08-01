@@ -18,6 +18,26 @@ public enum UserNoteDocument {
   /// 而一条建不出来的笔记比一条带占位文字的笔记糟糕得多。
   public static let placeholderBody = "在这里写下你的想法…"
 
+  /// 从正文首个一级标题派生标题；没有就返回 nil。
+  ///
+  /// 写笔记的人极少先想标题——先写下来，标题是写着写着才有的。所以正文里出现
+  /// `# 某某` 时就拿它当标题，而不是让用户在两个地方各写一遍同一句话。
+  ///
+  /// 只认**第一个非空行**，且只认一级标题：正文中段的 `#` 是章节，不是这条笔记
+  /// 叫什么。派生只在标题仍是默认值时发生，用户手改过就不再覆盖。
+  public static func derivedTitle(fromBody body: String) -> String? {
+    for rawLine in body.split(separator: "\n", omittingEmptySubsequences: false) {
+      let line = rawLine.trimmingCharacters(in: .whitespaces)
+      if line.isEmpty { continue }
+      guard line.hasPrefix("# ") else { return nil }
+      let title = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+      guard !title.isEmpty else { return nil }
+      // 列表一行放不下的长标题截断，省略号让人知道后面还有。
+      return title.count > 120 ? String(title.prefix(120)) + "…" : title
+    }
+    return nil
+  }
+
   /// 「今天」这条笔记的标题。
   ///
   /// 每日笔记不是一个新功能，是**取消一个决定**：随手记东西时最大的摩擦不是打字，

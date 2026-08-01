@@ -3288,6 +3288,26 @@ final class HistoryViewModel: ObservableObject {
     }
   }
 
+  /// 笔记改名。
+  ///
+  /// 空标题不写回默认值以外的东西：列表里一行没有抓手的空白比「无标题笔记」更难认。
+  func renameNote(taskID: TaskID, title: String) {
+    guard let history else { return }
+    let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    do {
+      try history.updateTaskTitle(
+        taskID: taskID,
+        title: trimmed.isEmpty ? UserNoteDocument.untitledTitle : trimmed,
+        updatedAtMilliseconds: nowMilliseconds()
+      )
+      snapshotEditFailure = nil
+      refreshDetailAfterTranscription(taskID: taskID)
+      reload()
+    } catch {
+      snapshotEditFailure = "无法保存标题，请检查历史存储后重试。"
+    }
+  }
+
   func dismissSnapshotEditFailure() { snapshotEditFailure = nil }
 
   var canLiveTranscribePlayback: Bool { livePlaybackTranscribe != nil }

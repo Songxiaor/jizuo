@@ -260,6 +260,15 @@ public protocol HistoryRepository: Sendable {
     bodyText: String,
     updatedAtMilliseconds: Int64
   ) throws
+  /// 改标题。
+  ///
+  /// 只对用户自己写的笔记开放：抓取记录的标题是抓来的事实，改了会让它和来源
+  /// 对不上；笔记的标题从来就是用户给的，不能改反而说不通。
+  func updateTaskTitle(
+    taskID: TaskID,
+    title: String,
+    updatedAtMilliseconds: Int64
+  ) throws
 }
 
 public extension HistoryRepository {
@@ -369,6 +378,12 @@ public extension HistoryRepository {
     taskID _: TaskID,
     snapshotID _: ContentSnapshotID,
     bodyText _: String,
+    updatedAtMilliseconds _: Int64
+  ) throws { throw RepositoryFailure.unavailable }
+
+  func updateTaskTitle(
+    taskID _: TaskID,
+    title _: String,
     updatedAtMilliseconds _: Int64
   ) throws { throw RepositoryFailure.unavailable }
 }

@@ -18,6 +18,11 @@ enum MarkdownSyntaxHighlighter {
     let options: NSRegularExpression.Options
     /// 作用于整个匹配的样式。
     let style: (_ base: NSFont, _ palette: Palette) -> [NSAttributedString.Key: Any]
+    /// 只作用于第 1 个捕获组——那是结构标记本身（`#`、`>`、`-`）。
+    ///
+    /// 标记要留着（删掉就成了所见即所得，写的和存的对不上），但它不该和标题
+    /// 一样黑、一样大。淡下去之后，一行的视觉重心才落在文字上。
+    var markerStyle: ((_ base: NSFont, _ palette: Palette) -> [NSAttributedString.Key: Any])?
   }
 
   struct Palette {
@@ -40,9 +45,19 @@ enum MarkdownSyntaxHighlighter {
   /// 并发检查拦下。着色只在主线程发生，每次重建这几条规则的开销可以忽略。
   private static var rules: [Rule] {[
     // 标题：整行放大加粗，`#` 本身淡出——它是结构标记，不是内容。
-    Rule(pattern: #"^(#{1,6})\s+(.+)$"#, options: [.anchorsMatchLines]) { base, palette in
-      [.font: NSFont.boldSystemFont(ofSize: base.pointSize * 1.25), .foregroundColor: palette.primary]
-    },
+    Rule(
+      pattern: #"^(#{1,6})\s+(.+)$"#,
+      options: [.anchorsMatchLines],
+      style: { base, palette in
+        [.font: NSFont.boldSystemFont(ofSize: base.pointSize * 1.25), .foregroundColor: palette.primary]
+      },
+      markerStyle: { base, palette in
+        [
+          .font: NSFont.monospacedSystemFont(ofSize: base.pointSize * 0.82, weight: .regular),
+          .foregroundColor: palette.secondary.withAlphaComponent(0.35),
+        ]
+      }
+    ),
     // 引用整行淡化：它在视觉上本就该退后一层。
     Rule(pattern: #"^>\s+.*$"#, options: [.anchorsMatchLines]) { _, palette in
       [.foregroundColor: palette.secondary]
@@ -99,6 +114,13 @@ enum MarkdownSyntaxHighlighter {
       guard let regex = try? NSRegularExpression(pattern: rule.pattern, options: rule.options) else { continue }
       for match in regex.matches(in: text, range: full) {
         storage.addAttributes(rule.style(baseFont, palette), range: match.range)
+        // 标记样式后叠：它要压过刚刚铺上去的整行样式。
+        if let markerStyle = rule.markerStyle, match.numberOfRanges > 1 {
+          let marker = match.range(at: 1)
+          if marker.location != NSNotFound {
+            storage.addAttributes(markerStyle(baseFont, palette), range: marker)
+          }
+        }
       }
     }
     storage.endEditing()
