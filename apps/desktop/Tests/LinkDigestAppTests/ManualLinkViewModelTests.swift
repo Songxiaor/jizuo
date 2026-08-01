@@ -821,6 +821,51 @@ final class ManualLinkViewModelTests: XCTestCase {
 /// `URL(string:)` 会把它百分号编码后照单全收——`…/claude-code。` 变成
 /// `…/claude-code%E3%80%82`，scheme 和 host 都合法，于是「直接命中」这条路径
 /// 把它当成有效链接放过去，抓取时才报「网页暂时无法打开」，而错在多了一个字符。
+/// 工作台新建创作时,建的必须是稿件而不是笔记。
+///
+/// 这条接线只有一行调用,但它决定了三模块的边界成不成立——建成笔记的话,
+/// 半成品会立刻混进「我的笔记」,而那正是这次重构要解决的问题。
+final class WorkbenchDraftCreationTests: XCTestCase {
+  @MainActor
+  func testWorkbenchCreatesADraftNotANote() async {
+    let repository = ManualVMRepository()
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFetcher()),
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+
+    let created = expectation(description: "draft created")
+    var taskID: TaskID?
+    model.createPieceDraft(title: "某个灵感") { id in
+      taskID = id
+      created.fulfill()
+    } onFailure: { message in
+      XCTFail("建稿件失败: \(message)")
+      created.fulfill()
+    }
+    await fulfillment(of: [created], timeout: 5)
+
+    XCTAssertNotNil(taskID)
+    // 这个替身只记录收到的文档(不实现 detail),而「收到了什么」正是
+    // 这条接线要验证的东西:工作台交给落库通道的必须是一份稿件。
+    guard let document = repository.acceptedDocuments.last else {
+      return XCTFail("落库通道没有收到任何文档")
+    }
+    XCTAssertEqual(document.origin, .pieceDraft, "工作台建的必须是稿件,不能是笔记")
+    XCTAssertTrue(
+      (try? CanonicalURL(document.url))?.isDraft == true,
+      "地址必须用稿件的 scheme"
+    )
+    XCTAssertEqual(document.title, "某个灵感", "标题应带上灵感原句")
+  }
+}
+
 final class ExplicitWebLinkTrailingPunctuationTests: XCTestCase {
   private func url(_ raw: String) -> String? {
     ExplicitWebLinkInput.singleURL(from: raw)?.absoluteString

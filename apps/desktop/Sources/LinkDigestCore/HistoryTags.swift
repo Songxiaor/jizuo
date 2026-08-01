@@ -38,8 +38,14 @@ public enum HistoryListScope: String, Sendable, Equatable, CaseIterable {
   /// 底层仍与抓取记录共用同一张表，所以标签、搜索、导出、翻译一概照常可用。
   case notes
 
+  /// 工作台里的稿件。它属于「过程」,不该出现在任何浏览列表里——
+  /// 稿子是从某件创作里打开的,不是从列表里翻出来的。
+  case drafts
+
   /// 该作用域是否只看笔记。
   public var isNotesOnly: Bool { self == .notes }
+  /// 该作用域是否只看稿件。
+  public var isDraftsOnly: Bool { self == .drafts }
 }
 
 /// The small navigation rail is fed by database aggregation, not by a loaded
@@ -107,8 +113,13 @@ public enum HistoryPlatformDisplay {
   /// 与 `CanonicalURL.noteScheme` 对应的 URL 前缀，SQL 侧靠它识别笔记。
   public static let noteURLPrefix = "linkdigest-note:"
 
+  /// 工作台稿件的合成 host 与 URL 前缀,理由同上。
+  public static let draftHost = "draft"
+  public static let draftURLPrefix = "linkdigest-draft:"
+
   public static func name(forHost rawHost: String) -> String {
     if rawHost == noteHost { return "我的笔记" }
+    if rawHost == draftHost { return "工作台稿件" }
     let host = HistoryHostNormalizer.normalized(rawHost)
     // Substack 刊物几乎都在 `<刊物>.substack.com` 子域，用后缀而非精确匹配。
     if host == "substack.com" || host.hasSuffix(".substack.com") { return "Substack" }

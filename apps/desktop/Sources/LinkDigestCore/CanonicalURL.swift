@@ -16,6 +16,19 @@ public struct CanonicalURL: Codable, Sendable, Equatable, Hashable {
   /// 代码（抓取、favicon、打开链接）都会自然跳过它，无需逐处加判断。
   public static let noteScheme = "linkdigest-note"
 
+  /// 工作台里的稿件。
+  ///
+  /// 和笔记分开一个 scheme,是为了让三个模块在**列表层面**互不打扰:
+  /// 找素材时不该翻到半成品,写稿时也不该被自己的随手记打断。
+  /// 底层仍共用同一张表,所以编辑器、搜索、导出、双链全部零改动可用。
+  public static let draftScheme = "linkdigest-draft"
+
+  /// 不指向网络的本机内容,它们都不该被当成链接处理。
+  ///
+  /// 抓 favicon、打开链接、导出来源这些按 http(s) 工作的代码,
+  /// 只要认这一组就能整体跳过,不必为每加一种内容再补一处判断。
+  static let localSchemes = [noteScheme, draftScheme]
+
   public let value: String
 
   /// 为一条新笔记生成 canonical URL。唯一性由 UUID 保证。
@@ -23,20 +36,32 @@ public struct CanonicalURL: Codable, Sendable, Equatable, Hashable {
     try CanonicalURL("\(noteScheme):\(id.uuidString.lowercased())")
   }
 
+  /// 为工作台的一份稿件生成 canonical URL。
+  public static func draft(id: UUID = UUID()) throws -> CanonicalURL {
+    try CanonicalURL("\(draftScheme):\(id.uuidString.lowercased())")
+  }
+
   /// 是否是用户自建笔记，而非抓取来的网页。
   public var isNote: Bool { value.hasPrefix("\(Self.noteScheme):") }
 
+  /// 是否是工作台的稿件。
+  public var isDraft: Bool { value.hasPrefix("\(Self.draftScheme):") }
+
+  /// 是否是本机自有内容(笔记或稿件),而不是抓来的网页。
+  public var isLocalContent: Bool { isNote || isDraft }
+
   public init(_ rawValue: String) throws {
-    // 笔记：只做最小规范化（scheme 小写 + 非空标识），不套用 host/path 那套规则——
-    // 它没有 host，硬走下面的分支会直接失败。
+    // 本机内容（笔记、稿件）：只做最小规范化（scheme 小写 + 非空标识），
+    // 不套用 host/path 那套规则——它们没有 host，硬走下面的分支会直接失败。
     if let separator = rawValue.firstIndex(of: ":"),
-       rawValue[rawValue.startIndex..<separator].lowercased() == Self.noteScheme {
+       case let scheme = rawValue[rawValue.startIndex..<separator].lowercased(),
+       Self.localSchemes.contains(scheme) {
       let identifier = String(rawValue[rawValue.index(after: separator)...])
         .trimmingCharacters(in: .whitespacesAndNewlines)
         .lowercased()
       guard !identifier.isEmpty, identifier.rangeOfCharacter(from: .whitespacesAndNewlines) == nil
       else { throw CanonicalURLFailure.unsupported }
-      value = "\(Self.noteScheme):\(identifier)"
+      value = "\(scheme):\(identifier)"
       return
     }
 

@@ -739,7 +739,7 @@ struct HistoryContentView: View {
   private func commitNewSpark() {
     let spark = newSparkText.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !spark.isEmpty else { return }
-    manualLink.createNote(title: PieceDocument.noteTitle(forSpark: spark)) { taskID in
+    manualLink.createPieceDraft(title: PieceDocument.noteTitle(forSpark: spark)) { taskID in
       model.registerPiece(spark: spark, noteTaskID: taskID)
       isNewSparkPresented = false
       newSparkText = ""

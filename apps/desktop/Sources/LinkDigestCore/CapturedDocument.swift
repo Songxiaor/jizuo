@@ -11,6 +11,9 @@ public struct CapturedDocument: Sendable, Equatable {
     /// 用户在 App 内自建的笔记。它没有来源网页，是唯一允许使用
     /// `CanonicalURL.noteScheme` 的来源——见 `CapturedDocumentValidator`。
     case userNote = "user_note"
+    /// 工作台里的稿件。和笔记分开,是因为它们在用户心里是两种东西:
+    /// 笔记是随手记的原料,稿件是正在加工的半成品。
+    case pieceDraft = "piece_draft"
   }
 
   public let requestID: String
@@ -195,11 +198,19 @@ public enum CapturedDocumentValidator {
     // 这道 guard 是抓取内容的安全边界：浏览器扩展或任何其它来源若能用非 http(s)
     // 的 URL 进来，就等于绕过了这里的全部限制。所以放宽必须绑定到具体 origin，
     // 而不是放宽 scheme 白名单本身。
-    if document.origin == .userNote {
+    switch document.origin {
+    case .userNote:
       guard (try? CanonicalURL(document.url))?.isNote == true else {
         throw CapturedDocumentValidationError.invalidURL
       }
-    } else {
+    case .pieceDraft:
+      // 稿件只能用稿件的 scheme。逐个 origin 各配各的,而不是合并成
+      // 「本机内容随便用哪个 local scheme」——否则一条笔记可以伪装成稿件,
+      // 反过来也一样,两个模块的隔离就成了摆设。
+      guard (try? CanonicalURL(document.url))?.isDraft == true else {
+        throw CapturedDocumentValidationError.invalidURL
+      }
+    default:
       guard URL(string: document.url) != nil,
             ["http", "https"].contains(URL(string: document.url)?.scheme?.lowercased())
       else { throw CapturedDocumentValidationError.invalidURL }

@@ -314,6 +314,32 @@ final class ManualLinkViewModel: ObservableObject {
       }
     }
   }
+  /// 为工作台建一份稿件。
+  ///
+  /// 和 `createNote` 走同一条落库通道,区别只在 origin 与 scheme——
+  /// 稿件属于「过程」,不该出现在「我的笔记」里。
+  func createPieceDraft(
+    title: String? = nil,
+    onCreated: (@MainActor (TaskID) -> Void)? = nil,
+    onFailure: (@MainActor (String) -> Void)? = nil
+  ) {
+    guard let ingestor else {
+      onFailure?("历史存储尚未就绪，请稍后再试。")
+      return
+    }
+    Task {
+      do {
+        let document = try PieceDraftDocument.make(title: title)
+        let capture = try await ingestor.ingest(document)
+        await MainActor.run { onCreated?(capture.taskID) }
+      } catch {
+        await MainActor.run {
+          onFailure?("新建稿件失败：\(String(describing: error))")
+        }
+      }
+    }
+  }
+
   var canSubmit: Bool {
     !isBusy && ingestor != nil && ExplicitWebLinkInput.singleURL(from: input) != nil
   }

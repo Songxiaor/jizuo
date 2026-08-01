@@ -153,7 +153,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     //
     // 漏掉这一行的后果不是报错信息不好看——是 default 分支直接 return false，
     // 落库以 stateConflict 失败，而 UI 上只表现为「点新建没有任何反应」。
-    case (.manualLink, 1), (.localTranscription, 1), (.userNote, 1):
+    case (.manualLink, 1), (.localTranscription, 1), (.userNote, 1), (.pieceDraft, 1):
       expectedKey = "manual:v1:\(suffix)"
     default: return false
     }
@@ -283,16 +283,25 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       // 写东西时又要在一堆网页里翻。底层仍共用同一张表，所以标签、搜索、导出
       // 照常可用——分开的只是「看到什么」。
       let notePredicate = "t.canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'"
-      if filter.scope.isNotesOnly {
-        predicates.append(notePredicate)
-      } else if filter.searchText.isEmpty {
-        predicates.append("NOT (\(notePredicate))")
+      // 稿件是「过程」,比笔记藏得更深:除了 `.drafts` 自己,任何作用域都不显示它,
+      // **搜索也不例外**。半成品被搜出来会和成品混在一起,而用户搜的是「我写过的
+      // 那句话」,他要的是笔记或成品,不是某件创作中途的一版草稿。
+      let draftPredicate = "t.canonical_url LIKE '\(HistoryPlatformDisplay.draftURLPrefix)%'"
+      if filter.scope.isDraftsOnly {
+        predicates.append(draftPredicate)
+      } else {
+        predicates.append("NOT (\(draftPredicate))")
+        if filter.scope.isNotesOnly {
+          predicates.append(notePredicate)
+        } else if filter.searchText.isEmpty {
+          predicates.append("NOT (\(notePredicate))")
+        }
       }
       // 搜索时不排除笔记：分区是为了「浏览时互不打扰」，而搜索恰恰是用户
       // 想不起来东西在哪才用的。要求他先答对「这句话我是写在笔记里还是存的
       // 网页」才肯给结果，等于把搜索最该解决的问题反过来当成前提。
       switch filter.scope {
-      case .all, .notes:
+      case .all, .notes, .drafts:
         break
       case .favorite:
         predicates.append("t.is_favorite = 1")
@@ -425,16 +434,21 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       // 笔记是独立区域，所有"输入侧"的计数都要把它排除，否则「全部 10」里
       // 混着自己写的草稿，数字对不上用户在列表里看到的东西。
       let isNote = "canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'"
+      let isDraft = "canonical_url LIKE '\(HistoryPlatformDisplay.draftURLPrefix)%'"
+      // 「抓来的资料」= 既不是笔记也不是稿件。把这个判据合成一处,
+      // 而不是在每条计数后面各叠一次 AND NOT——那样加第三种内容时
+      // 又要逐条改,漏一条就是一个对不上的数字。
+      let isCaptured = "NOT (\(isNote)) AND NOT (\(isDraft))"
       let notes = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isNote)") ?? 0
-      let all = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE NOT (\(isNote))") ?? 0
+      let all = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured)") ?? 0
       let recent = try Int.fetchOne(
         db,
-        sql: "SELECT COUNT(*) FROM tasks WHERE NOT (\(isNote)) AND updated_at_ms >= (unixepoch('now') - 604800) * 1000"
+        sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured) AND updated_at_ms >= (unixepoch('now') - 604800) * 1000"
       ) ?? 0
       let unsummarized = try Int.fetchOne(db, sql: """
         SELECT COUNT(*)
         FROM tasks t
-        WHERE NOT (t.\(isNote)) AND NOT EXISTS (
+        WHERE NOT (t.\(isNote)) AND NOT (t.\(isDraft)) AND NOT EXISTS (
           SELECT 1
           FROM runs successful_run
           INNER JOIN artifacts successful_artifact ON successful_artifact.run_id = successful_run.id
@@ -443,13 +457,13 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
             AND length(successful_artifact.body_text) > 0
         )
         """) ?? 0
-      let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE NOT (\(isNote)) AND is_favorite = 1") ?? 0
+      let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured) AND is_favorite = 1") ?? 0
 
       let hostExpression = normalizedTaskHostSQL(tableAlias: "t")
       let platforms = try Row.fetchAll(db, sql: """
         SELECT \(hostExpression) AS host, COUNT(*) AS count
         FROM tasks t
-        WHERE \(hostExpression) <> '' AND NOT (t.\(isNote))
+        WHERE \(hostExpression) <> '' AND NOT (t.\(isNote)) AND NOT (t.\(isDraft))
         GROUP BY \(hostExpression)
         ORDER BY count DESC, host COLLATE NOCASE ASC
         """).compactMap { row -> HistoryNavigationPlatform? in
@@ -1436,9 +1450,13 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     // 笔记的 URL 是 `linkdigest-note:<uuid>`，没有 host 段，URLComponents 给回
     // 空串——列表行于是拿空串去查图标，落进「用首字母画个徽标」的兜底，画出来
     // 是个看不懂的方块。这里和导航计数用的是同一个 host 口径。
-    let host = canonical.hasPrefix(HistoryPlatformDisplay.noteURLPrefix)
-      ? HistoryPlatformDisplay.noteHost
-      : (URLComponents(string: canonical)?.host ?? "")
+    let host: String = if canonical.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
+      HistoryPlatformDisplay.noteHost
+    } else if canonical.hasPrefix(HistoryPlatformDisplay.draftURLPrefix) {
+      HistoryPlatformDisplay.draftHost
+    } else {
+      URLComponents(string: canonical)?.host ?? ""
+    }
     return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: host, sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: hasTranscript, hasMedia: hasMedia, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite)
   }
 
@@ -1640,6 +1658,8 @@ private func normalizedTaskHostSQL(tableAlias: String) -> String {
     CASE
       WHEN \(tableAlias).canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'
         THEN '\(HistoryPlatformDisplay.noteHost)'
+      WHEN \(tableAlias).canonical_url LIKE '\(HistoryPlatformDisplay.draftURLPrefix)%'
+        THEN '\(HistoryPlatformDisplay.draftHost)'
       WHEN \(raw) LIKE 'www.%' THEN substr(\(raw), 5)
       WHEN \(raw) LIKE 'www2.%' THEN substr(\(raw), 6)
       WHEN \(raw) LIKE 'm.%' THEN substr(\(raw), 3)
