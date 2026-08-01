@@ -2440,3 +2440,36 @@ final class AnnotationPersistenceTests: XCTestCase {
   }
 
 }
+
+/// 笔记必须能真正落库。
+///
+/// 之前的测试只验到「能组装成 AcceptCaptureCommand」，恰好停在故障点之前：
+/// `provenanceIsConsistent` 的 switch 里没有 .userNote 分支，落到 default 直接
+/// return false，落库以 stateConflict 失败——而界面上只表现为「点新建没有任何
+/// 反应」。测试必须穿过整条写入路径才拦得住这类问题。
+final class UserNoteIngestTests: XCTestCase {
+  func testUserNoteIsAcceptedAndAppearsInNotesScope() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      let document = try UserNoteDocument.make(title: "灵感", body: "先写一句")
+      let command = try AcceptCaptureCommand(document: document, receivedAtMilliseconds: 1_760_000_000_000)
+
+      // 这一步就是「点新建」真正做的事。
+      _ = try repository.acceptCapture(command)
+
+      // 笔记只出现在 .notes 里，不污染其它作用域。
+      let notes = try repository.historyPage(limit: 10, after: nil as HistoryPageCursor?, filter: HistoryListFilter(scope: .notes))
+      XCTAssertEqual(notes.rows.count, 1)
+      XCTAssertTrue(notes.rows[0].canonicalURL.hasPrefix("linkdigest-note:"))
+
+      let all = try repository.historyPage(limit: 10, after: nil as HistoryPageCursor?, filter: HistoryListFilter(scope: .all))
+      XCTAssertTrue(all.rows.isEmpty, "笔记不该出现在「全部」里——那是抓取内容的区域")
+
+      let counts = try repository.navigationCounts()
+      XCTAssertEqual(counts.notes, 1)
+      XCTAssertEqual(counts.all, 0)
+    }
+  }
+}

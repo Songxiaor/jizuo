@@ -148,7 +148,13 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     switch (document.origin, provenance.captureContractVersion) {
     case (.browserCapture, 1): expectedKey = "capture:v1:\(suffix)"
     case (.browserCapture, 2): expectedKey = "capture:v2:\(suffix)"
-    case (.manualLink, 1), (.localTranscription, 1): expectedKey = "manual:v1:\(suffix)"
+    // 用户笔记与手动链接、本机转写同属「非浏览器来源」，deliveryKey 由
+    // `CaptureDeliveryIdentity.key(for document:)` 统一生成为 `manual:v1:*`。
+    //
+    // 漏掉这一行的后果不是报错信息不好看——是 default 分支直接 return false，
+    // 落库以 stateConflict 失败，而 UI 上只表现为「点新建没有任何反应」。
+    case (.manualLink, 1), (.localTranscription, 1), (.userNote, 1):
+      expectedKey = "manual:v1:\(suffix)"
     default: return false
     }
     return provenance.deliveryKey == expectedKey
