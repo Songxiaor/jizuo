@@ -2508,6 +2508,32 @@ final class UserNoteIngestTests: XCTestCase {
     }
   }
 
+  /// 列表行要能看出笔记里写了什么，而不只是标题加日期。
+  func testNoteRowCarriesABodyPreviewAndItsOwnHost() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      _ = try repository.acceptCapture(.init(
+        document: try UserNoteDocument.make(
+          title: "AI 时代的创作",
+          body: "# AI 时代的创作\n\n先构建知识库，再让模型基于它产出候选。"
+        ),
+        receivedAtMilliseconds: 1
+      ))
+
+      let page = try repository.historyPage(
+        limit: 10, after: nil as HistoryPageCursor?, filter: HistoryListFilter(scope: .notes)
+      )
+      let row = try XCTUnwrap(page.rows.first)
+      // host 有值，列表行才不会拿空串去查图标、落进首字母兜底画出个方块。
+      XCTAssertEqual(row.host, HistoryPlatformDisplay.noteHost)
+      let preview = try XCTUnwrap(row.artifactPreview)
+      XCTAssertTrue(preview.contains("先构建知识库"))
+      XCTAssertFalse(preview.hasPrefix("#"), "标题就在预览正上方，不该再念一遍")
+    }
+  }
+
   /// 删除笔记走的是和抓取记录同一个通道，但从没验证过。
   func testDeletingANoteRemovesItAndItsCount() throws {
     try withTemporaryLocation { location in

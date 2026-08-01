@@ -1006,7 +1006,15 @@ private struct HistoryRowView: View {
   }
 
   @ViewBuilder private var favicon: some View {
-    if let image = PlatformIconCatalog.image(for: row.host) {
+    if row.host == HistoryPlatformDisplay.noteHost {
+      // 笔记没有站点图标可取。给它侧边栏同一个符号，一眼能和抓来的东西分开。
+      Image(systemName: "square.and.pencil")
+        .font(.system(size: 12, weight: .medium))
+        .foregroundStyle(.tint)
+        .frame(width: 16, height: 16)
+        .padding(.top, 1)
+        .accessibilityLabel("笔记")
+    } else if let image = PlatformIconCatalog.image(for: row.host) {
       Image(nsImage: image).resizable().scaledToFit().frame(width: 16, height: 16).padding(.top, 1)
         .accessibilityLabel("\(row.host) 图标")
     } else if let url = model.faviconImageURL(for: row), let image = HistoryFaviconImageMemoryCache.image(

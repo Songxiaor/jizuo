@@ -1177,19 +1177,51 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     return task == command.taskID.rawValue && snapshot == command.snapshotID.rawValue && kind == command.kind.rawValue && rerun == command.rerunOfRunID?.rawValue && language == command.targetLanguage
   }
 
+  /// 笔记在列表里的预览。
+  ///
+  /// 跳过与标题重复的那个一级标题行：标题就在预览正上方，再念一遍是白占一行。
+  /// 其余 Markdown 记号保留——`- ` 这样的符号本身就说明了「这条是个清单」。
+  static func notePreview(from body: String, title: String?) -> String? {
+    var lines = body.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    while let first = lines.first {
+      let trimmed = first.trimmingCharacters(in: .whitespaces)
+      if trimmed.isEmpty { lines.removeFirst(); continue }
+      guard trimmed.hasPrefix("# ") else { break }
+      let heading = String(trimmed.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+      guard heading == title?.trimmingCharacters(in: .whitespaces) else { break }
+      lines.removeFirst()
+    }
+    let joined = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    return joined.isEmpty ? nil : String(joined.prefix(240))
+  }
+
   private func historyRow(_ row: Row) throws -> HistoryRowProjection {
     let canonical: String = row["canonical_url"]
     let kindRaw: String? = row["kind"], statusRaw: String? = row["status"]
     let previewData: Data? = row["artifact_preview_utf8"]
-    let preview = previewData.map { boundedPreview(from: $0, scalarLimit: 240) }
+    var preview = previewData.map { boundedPreview(from: $0, scalarLimit: 240) }
     let sourceBody: Data? = row["source_body_utf8"]
     let frontmatter = sourceBody.map { MarkdownNoteFrontmatter.parse(boundedPreview(from: $0, scalarLimit: 8_192)) }
+    // 笔记没有总结产物，列表行于是只剩一个标题和一个日期，看不出里面写了什么。
+    // 拿正文开头补上——那正是想在列表里看到的东西。
+    if preview == nil, canonical.hasPrefix(HistoryPlatformDisplay.noteURLPrefix), let sourceBody {
+      preview = Self.notePreview(
+        from: boundedPreview(from: sourceBody, scalarLimit: 1_024),
+        title: row["title"]
+      )
+    }
     let hasTranscript = (row["has_transcript"] as Int64? ?? 0) == 1
     let hasMedia = (row["has_media"] as Int64? ?? 0) == 1
     let hasSummary = (row["has_summary"] as Int64? ?? 0) == 1
     let hasMindMap = (row["has_mind_map"] as Int64? ?? 0) == 1
     let isFavorite = (row["is_favorite"] as Int64? ?? 0) == 1
-    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: URLComponents(string: canonical)?.host ?? "", sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: hasTranscript, hasMedia: hasMedia, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite)
+    // 笔记的 URL 是 `linkdigest-note:<uuid>`，没有 host 段，URLComponents 给回
+    // 空串——列表行于是拿空串去查图标，落进「用首字母画个徽标」的兜底，画出来
+    // 是个看不懂的方块。这里和导航计数用的是同一个 host 口径。
+    let host = canonical.hasPrefix(HistoryPlatformDisplay.noteURLPrefix)
+      ? HistoryPlatformDisplay.noteHost
+      : (URLComponents(string: canonical)?.host ?? "")
+    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: host, sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: hasTranscript, hasMedia: hasMedia, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite)
   }
 
   private func detail(db: Database, taskID: TaskID) throws -> HistoryDetailProjection {
