@@ -2473,6 +2473,65 @@ final class UserNoteIngestTests: XCTestCase {
     }
   }
 
+  /// 搜索要能找到笔记，哪怕当前不在「我的笔记」区。
+  ///
+  /// 分区是为了浏览时互不打扰；搜索是「我想不起来它在哪」，此时还要求用户先
+  /// 答对它是笔记还是网页，等于把搜索本该解决的问题当成了前提。
+  func testSearchReachesNotesFromAnyScope() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      _ = try repository.acceptCapture(.init(
+        document: try UserNoteDocument.make(title: "灵感", body: "盲派格局的判断方法"),
+        receivedAtMilliseconds: 1
+      ))
+
+      let hit = try repository.historyPage(
+        limit: 10, after: nil as HistoryPageCursor?,
+        filter: HistoryListFilter(scope: .all, searchText: "盲派")
+      )
+      XCTAssertEqual(hit.rows.count, 1, "在「全部」里搜正文也该命中笔记")
+
+      // 没有搜索词时仍然分区：浏览「全部」不该被自己的草稿打断。
+      let browsing = try repository.historyPage(
+        limit: 10, after: nil as HistoryPageCursor?, filter: HistoryListFilter(scope: .all)
+      )
+      XCTAssertTrue(browsing.rows.isEmpty)
+
+      // 搜不中的词不该把笔记带出来。
+      let miss = try repository.historyPage(
+        limit: 10, after: nil as HistoryPageCursor?,
+        filter: HistoryListFilter(scope: .all, searchText: "完全无关的词")
+      )
+      XCTAssertTrue(miss.rows.isEmpty)
+    }
+  }
+
+  /// 删除笔记走的是和抓取记录同一个通道，但从没验证过。
+  func testDeletingANoteRemovesItAndItsCount() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      let accepted = try repository.acceptCapture(.init(
+        document: try UserNoteDocument.make(body: "要删掉的笔记"),
+        receivedAtMilliseconds: 1
+      ))
+      _ = try repository.addTags(["灵感"], to: accepted.taskID)
+
+      let result = try repository.deleteTasks(taskIDs: [accepted.taskID])
+      XCTAssertEqual(result.deletedTaskIDs, [accepted.taskID])
+      XCTAssertTrue(result.failedTaskIDs.isEmpty)
+
+      let remaining = try repository.historyPage(
+        limit: 10, after: nil as HistoryPageCursor?, filter: HistoryListFilter(scope: .notes)
+      )
+      XCTAssertTrue(remaining.rows.isEmpty)
+      XCTAssertEqual(try repository.navigationCounts().notes, 0)
+    }
+  }
+
   /// 笔记标题可改，并且列表里立刻是新名字。
   func testRenamingANoteIsPersistedAndVisibleInTheList() throws {
     try withTemporaryLocation { location in

@@ -100,8 +100,12 @@ public enum HistoryExportRenderer {
     let sourceURL = projection.task.canonicalURL
     let snapshot = projection.snapshots.last
     let note = MarkdownNoteFrontmatter.parse(snapshot?.bodyText ?? "")
+    // 用户自己写的笔记没有来源。`linkdigest-note:<uuid>` 是本机的行标识，
+    // 导进 Obsidian 后它既打不开也没有意义，只是一行噪音。
+    let isUserNote = sourceURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix)
     // Tolaria/Obsidian-compatible header when exporting .md
-    var lines: [String] = ["---", "title: \(yamlString(title))", "source: \(yamlString(sourceURL))"]
+    var lines: [String] = ["---", "title: \(yamlString(title))"]
+    if !isUserNote { lines.append("source: \(yamlString(sourceURL))") }
     if let author = note.author?.nonBlank { lines.append("author: \(yamlString(author))") }
     if let published = note.published?.nonBlank { lines.append("published: \(yamlString(published))") }
     let tags = projection.tags.map(\.name).filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -115,26 +119,32 @@ public enum HistoryExportRenderer {
       "",
       "# \(title)",
       "",
-      "- 来源：\(sourceURL)",
+    ]
+    if !isUserNote { lines.append("- 来源：\(sourceURL)") }
+    lines += [
       "- 标签：\(tagLine(projection.tags))",
       "- 导出版本：\(projection.formatVersion)",
       "- 创建时间（UTC）：\(timestamp(projection.task.createdAtMilliseconds))",
       "- 最近更新时间（UTC）：\(timestamp(projection.task.updatedAtMilliseconds))",
       "",
-      "## 最近原文",
+      // 笔记的正文不是「原文」——那个词的意思是「抓回来的那一份」。
+      isUserNote ? "## 正文" : "## 最近原文",
       "",
     ]
     if let snapshot {
       let body = note.body.isEmpty ? snapshot.bodyText : note.body
-      lines += [
-        "- 捕获时间（UTC）：\(timestamp(snapshot.capturedAtMilliseconds))",
-        "- 来源标签：\(snapshot.sourceLabel)",
-        "- 完整性：\(snapshot.completeness)",
-        "",
-        body.isEmpty ? "（原文为空）" : body,
-      ]
+      // 抓取的捕获时间、来源标签、完整性对笔记都不成立：它没有被捕获过。
+      if !isUserNote {
+        lines += [
+          "- 捕获时间（UTC）：\(timestamp(snapshot.capturedAtMilliseconds))",
+          "- 来源标签：\(snapshot.sourceLabel)",
+          "- 完整性：\(snapshot.completeness)",
+          "",
+        ]
+      }
+      lines.append(body.isEmpty ? (isUserNote ? "（笔记为空）" : "（原文为空）") : body)
     } else {
-      lines.append("（没有保存的原文）")
+      lines.append(isUserNote ? "（笔记为空）" : "（没有保存的原文）")
     }
     lines += ["", "## 运行记录"]
     if projection.runs.isEmpty { lines += ["", "（没有运行记录）"] }
@@ -160,10 +170,16 @@ public enum HistoryExportRenderer {
   }
 
   private static func plainText(_ projection: HistoryExportProjection) -> String {
-    var lines = ["标题: \(displayTitle(projection))", "来源: \(projection.task.canonicalURL)", "标签: \(tagLine(projection.tags))", "导出版本: \(projection.formatVersion)", "创建时间（UTC）: \(timestamp(projection.task.createdAtMilliseconds))", "最近更新时间（UTC）: \(timestamp(projection.task.updatedAtMilliseconds))", "", "最近原文:"]
+    let isUserNote = projection.task.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix)
+    var lines = ["标题: \(displayTitle(projection))"]
+    if !isUserNote { lines.append("来源: \(projection.task.canonicalURL)") }
+    lines += ["标签: \(tagLine(projection.tags))", "导出版本: \(projection.formatVersion)", "创建时间（UTC）: \(timestamp(projection.task.createdAtMilliseconds))", "最近更新时间（UTC）: \(timestamp(projection.task.updatedAtMilliseconds))", "", isUserNote ? "正文:" : "最近原文:"]
     if let snapshot = projection.snapshots.last {
-      lines += ["捕获时间（UTC）: \(timestamp(snapshot.capturedAtMilliseconds))", "来源标签: \(snapshot.sourceLabel)", "完整性: \(snapshot.completeness)", snapshot.bodyText.isEmpty ? "（原文为空）" : snapshot.bodyText]
-    } else { lines.append("（没有保存的原文）") }
+      if !isUserNote {
+        lines += ["捕获时间（UTC）: \(timestamp(snapshot.capturedAtMilliseconds))", "来源标签: \(snapshot.sourceLabel)", "完整性: \(snapshot.completeness)"]
+      }
+      lines.append(snapshot.bodyText.isEmpty ? (isUserNote ? "（笔记为空）" : "（原文为空）") : snapshot.bodyText)
+    } else { lines.append(isUserNote ? "（笔记为空）" : "（没有保存的原文）") }
     lines += ["", "运行记录:"]
     if projection.runs.isEmpty { lines.append("（没有运行记录）") }
     for (index, detail) in projection.runs.enumerated() {

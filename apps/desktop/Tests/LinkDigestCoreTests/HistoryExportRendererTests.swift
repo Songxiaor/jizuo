@@ -288,6 +288,58 @@ final class HistoryExportRendererTests: XCTestCase {
     XCTAssertFalse(projection.snapshots[0].usedCookie)
   }
 
+  /// 导出笔记时不该出现 `linkdigest-note:<uuid>`。
+  ///
+  /// 那是本机的行标识，不是地址。跟着 Markdown 导进 Obsidian 后既打不开也没有
+  /// 意义，只是每篇笔记顶上多一行噪音。抓取内容的「来源」照旧保留。
+  func testNoteExportOmitsTheInternalIdentifierAndCaptureFields() throws {
+    let note = noteFixture()
+
+    let markdown = String(decoding: try HistoryExportRenderer.render(note, as: .markdown).data, as: UTF8.self)
+    XCTAssertFalse(markdown.contains("linkdigest-note:"), "内部标识不该出现在导出里")
+    XCTAssertFalse(markdown.contains("source:"))
+    XCTAssertFalse(markdown.contains("- 来源："))
+    // 笔记没有被捕获过，这些字段对它都不成立。
+    XCTAssertFalse(markdown.contains("捕获时间"))
+    XCTAssertFalse(markdown.contains("完整性"))
+    XCTAssertTrue(markdown.contains("## 正文"), "笔记的正文不是「原文」")
+    XCTAssertTrue(markdown.contains("我写的想法"))
+    // 标题、标签、时间这些仍然要在。
+    XCTAssertTrue(markdown.contains("title: \"我的笔记标题\""))
+
+    let plain = String(decoding: try HistoryExportRenderer.render(note, as: .plainText).data, as: UTF8.self)
+    XCTAssertFalse(plain.contains("linkdigest-note:"))
+    XCTAssertTrue(plain.contains("正文:"))
+    XCTAssertTrue(plain.contains("我写的想法"))
+  }
+
+  /// 抓取内容的来源必须照旧导出——上面那条不能顺手把它也删了。
+  func testCapturedExportStillCarriesItsSource() throws {
+    let markdown = String(decoding: try HistoryExportRenderer.render(fixture(), as: .markdown).data, as: UTF8.self)
+    XCTAssertTrue(markdown.contains("source: \"https://example.test/article\""))
+    XCTAssertTrue(markdown.contains("- 来源：https://example.test/article"))
+    XCTAssertTrue(markdown.contains("## 最近原文"))
+  }
+
+  private func noteFixture() -> HistoryExportProjection {
+    let taskID = TaskID(UUID(uuidString: "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")!)
+    let snapshotID = ContentSnapshotID(UUID(uuidString: "ffffffff-ffff-ffff-ffff-ffffffffffff")!)
+    let url = "linkdigest-note:eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"
+    let body = "我写的想法"
+    let task = HistoryTask(
+      id: taskID, canonicalURL: url, canonicalizationVersion: 1,
+      createdAtMilliseconds: 1_000, updatedAtMilliseconds: 4_000
+    )
+    let snapshot = ContentSnapshot(
+      id: snapshotID, taskID: taskID, sequence: 1, envelopeCreatedAtMilliseconds: 1_500,
+      capturedAtMilliseconds: 2_000, sourceKind: "user_note", sourceURL: url,
+      title: "我的笔记标题", platform: "note", captureMethod: "user_note",
+      completeness: "complete", bodyText: body, characterCount: body.unicodeScalars.count,
+      bodySHA256: String(repeating: "b", count: 64), sourceLabel: "我的笔记", usedCookie: false
+    )
+    return .init(task: task, snapshots: [snapshot], runs: [])
+  }
+
   private func fixture(
     title: String = "示例标题",
     body: String = "原文",

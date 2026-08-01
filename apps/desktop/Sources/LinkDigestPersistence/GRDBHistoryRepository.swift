@@ -285,9 +285,12 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       let notePredicate = "t.canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'"
       if filter.scope.isNotesOnly {
         predicates.append(notePredicate)
-      } else {
+      } else if filter.searchText.isEmpty {
         predicates.append("NOT (\(notePredicate))")
       }
+      // 搜索时不排除笔记：分区是为了「浏览时互不打扰」，而搜索恰恰是用户
+      // 想不起来东西在哪才用的。要求他先答对「这句话我是写在笔记里还是存的
+      // 网页」才肯给结果，等于把搜索最该解决的问题反过来当成前提。
       switch filter.scope {
       case .all, .notes:
         break
