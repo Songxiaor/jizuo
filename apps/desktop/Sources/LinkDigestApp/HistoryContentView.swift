@@ -21,6 +21,7 @@ struct HistoryContentView: View {
   @State private var navigationTagsExpanded = true
   @FocusState private var isSearchFocused: Bool
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
+  @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchEnabled = false
   /// 灯箱打开时窗口级分栏细线需要让位，避免画在放大的图片上。
   @ObservedObject private var inlineImageLightbox = InlineImageLightboxController.shared
   @ObservedObject private var videoCinema = VideoCinemaController.shared
@@ -114,7 +115,7 @@ struct HistoryContentView: View {
           // 工作台接管中间列：它列的是「正在做的创作」，和历史条目不是一种东西，
           // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
           Group {
-            if model.isWorkbenchActive {
+            if model.isWorkbenchActive, isWorkbenchEnabled {
               WorkbenchListView(model: model, onNewSpark: { isNewSparkPresented = true })
             } else {
               sidebar
@@ -122,13 +123,13 @@ struct HistoryContentView: View {
           }
           .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 260)
         } detail: {
-          if model.isWorkbenchActive, let piece = model.selectedPiece {
+          if model.isWorkbenchActive, isWorkbenchEnabled, let piece = model.selectedPiece {
             PieceDeskView(model: model, piece: piece) { taskID in
               // 稿子和素材都是记录，打开它们就是回到熟悉的详情页。
               model.leaveWorkbench()
               model.reveal(taskID: taskID)
             }
-          } else if model.isWorkbenchActive {
+          } else if model.isWorkbenchActive, isWorkbenchEnabled {
             workbenchPlaceholder
           } else {
             detail
@@ -485,6 +486,11 @@ struct HistoryContentView: View {
       // 工作台是第三种东西:上面是「抓来的资料」,笔记是「随手写的」,
       // 这里是「正在做的作品」。它的单位是一件创作,不是一条记录,
       // 所以自成一节而不是混进上面的筛选项。
+      //
+      // v1 默认藏起来(设置→实验室里可开):它的正文现在直接存成一条笔记,
+      // 三模块切开后这个模型要改。默认开放等于给自己攒一堆将来必须迁移的
+      // 数据,而当前它还没接 AI,手动建创作的价值抵不上迁移成本。
+      if isWorkbenchEnabled {
       Section {
         Button { model.enterWorkbench() } label: {
           HStack(spacing: 8) {
@@ -502,6 +508,7 @@ struct HistoryContentView: View {
         .buttonStyle(.plain)
         .foregroundStyle(model.isWorkbenchActive ? Color.accentColor : Color.primary)
         .accessibilityIdentifier("history-navigation-workbench")
+      }
       }
 
       if !model.navigationCounts.platforms.isEmpty {

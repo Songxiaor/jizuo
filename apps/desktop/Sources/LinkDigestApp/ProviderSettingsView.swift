@@ -3,7 +3,7 @@ import LinkDigestCore
 
 struct ProviderSettingsView: View {
   private enum SettingsTab: String, Hashable, CaseIterable, Identifiable {
-    case service, generation, appearance, mediaStorage, siteLogin, browserSupport
+    case service, generation, appearance, mediaStorage, siteLogin, browserSupport, labs
     var id: String { rawValue }
     var title: String {
       switch self {
@@ -13,6 +13,7 @@ struct ProviderSettingsView: View {
       case .mediaStorage: "视频存储"
       case .siteLogin: "站点登录"
       case .browserSupport: "浏览器支持"
+      case .labs: "实验室"
       }
     }
     var symbol: String {
@@ -23,6 +24,7 @@ struct ProviderSettingsView: View {
       case .mediaStorage: "externaldrive"
       case .siteLogin: "person.crop.circle.badge.checkmark"
       case .browserSupport: "puzzlepiece.extension"
+      case .labs: "flask"
       }
     }
   }
@@ -41,6 +43,7 @@ struct ProviderSettingsView: View {
   @State private var pendingDeletionID: String?
   @State private var activeAssignmentPicker: AssignmentPicker?
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
+  @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchEnabled = false
   @AppStorage(ReadingFontSelection.storageKey)
   private var readingFontRaw = ReadingFontSelection.defaultStoredValue
   @AppStorage(ReadingFontSize.storageKey)
@@ -129,6 +132,7 @@ struct ProviderSettingsView: View {
         case .service: serviceTab
         case .generation: generationTab
         case .appearance: appearanceTab
+        case .labs: labsTab
         case .mediaStorage:
           MediaStorageSettingsView(model: mediaStorage)
             .scrollContentBackground(isNativeTheme ? .automatic : .hidden)
@@ -705,6 +709,34 @@ struct ProviderSettingsView: View {
   /// 设置窗口与主窗口共用同一套主题令牌，保证外观切换全局一致。
   private var settingsTheme: HistoryThemeTokens {
     (AppearanceTheme(rawValue: appearanceThemeRaw) ?? .glass).tokens
+  }
+
+  /// 还在成型中的功能。默认全关。
+  private var labsTab: some View {
+    Form {
+      Section {
+        settingCard(
+          title: "工作台",
+          summary: "把素材和灵感加工成作品的地方。打开后侧边栏会出现「工作台」。",
+          details: "目前只能手动建创作、加素材、推进阶段——还没有接 AI。数据结构在后续版本会调整，关掉不会删数据，你建过的东西下次打开还在。",
+          titleAccessory: {
+            Toggle("", isOn: $isWorkbenchEnabled)
+              .toggleStyle(.switch)
+              .labelsHidden()
+              .accessibilityIdentifier("labs-workbench-toggle")
+          }
+        ) { EmptyView() }
+      }
+
+      Section {
+        Text("这一页的功能都还在成型，可能在后续版本里变化或调整。")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .formStyle(.grouped)
+    .contentMargins(.bottom, 24, for: .scrollContent)
   }
 
   private var appearanceTab: some View {
