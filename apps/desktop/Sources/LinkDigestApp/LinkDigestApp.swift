@@ -752,8 +752,6 @@ enum BrowserReceiverState: Sendable, Equatable {
   @StateObject private var model: AppViewModel
   @StateObject private var historyModel: HistoryViewModel
   @StateObject private var manualLink: ManualLinkViewModel
-  /// 笔记写作窗口的状态。窗口可能被开关多次，模型留在 App 层以保住未落库的草稿。
-  @StateObject private var noteEditor = NoteEditorModel()
   @StateObject private var providerSettings: ProviderSettingsViewModel
   @StateObject private var browserSupport: BrowserSupportViewModel
   @StateObject private var mediaStorageSettings: MediaStorageSettingsViewModel
@@ -1208,26 +1206,6 @@ enum BrowserReceiverState: Sendable, Equatable {
     .windowResizability(.contentMinSize)
     .windowToolbarStyle(.unified(showsTitle: true))
     .commands { LinkDigestCommands(manualLink: manualLink) }
-
-    // 独立写作窗口：写东西和找资料是两种心智，主窗口那套三栏版式为「快速扫过很多条」
-    // 优化，而写作要的是一整片安静的空白。独立窗口还能与主窗口并排——一边看素材，
-    // 一边写。
-    WindowGroup(id: NoteEditorWindowID.value, for: String.self) { $rawTaskID in
-      NoteEditorWindow(
-        // 空串是「新建」的约定值，不是一个真实 taskID。
-        taskID: (rawTaskID?.isEmpty == false) ? rawTaskID.flatMap(TaskID.init) : nil,
-        model: noteEditor
-      )
-      .task {
-        noteEditor.configure(
-          history: historyModel.historyService,
-          ingestor: manualLink.ingestor,
-          nowMilliseconds: { Int64((Date().timeIntervalSince1970 * 1_000).rounded()) }
-        )
-      }
-    }
-    .defaultSize(width: 720, height: 640)
-    .windowResizability(.contentMinSize)
 
     Settings {
       // The window's size floor lives on ProviderSettingsView itself; adding a

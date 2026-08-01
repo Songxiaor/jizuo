@@ -257,7 +257,7 @@ final class ManualLinkViewModel: ObservableObject {
   /// 走的是与手动链接**完全相同**的 `ingest(_:)` 落库路径——笔记只是「正文由用户自己
   /// 写」的一条记录，没有理由为它另开一条写入口。这样标签、搜索、翻译、总结、导出
   /// 全部自动可用，也不会出现两套落库逻辑各自演化的问题。
-  func createNote() {
+  func createNote(onCreated: (@MainActor (TaskID) -> Void)? = nil) {
     guard !isBusy, let ingestor else { return }
     // isBusy 是 state 的派生值，所以走 state：saving 期间按钮自动禁用，
     // 不需要再维护一个独立的忙碌标志。
@@ -265,8 +265,11 @@ final class ManualLinkViewModel: ObservableObject {
     Task { [weak self] in
       do {
         let document = try UserNoteDocument.make()
-        _ = try await ingestor.ingest(document)
-        await MainActor.run { self?.state = .idle }
+        let capture = try await ingestor.ingest(document)
+        await MainActor.run {
+          self?.state = .idle
+          onCreated?(capture.taskID)
+        }
       } catch {
         await MainActor.run { self?.state = .failed("新建笔记失败，请稍后再试。") }
       }

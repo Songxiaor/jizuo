@@ -240,14 +240,10 @@ struct HistoryContentView: View {
 
         // 写笔记是一等动作，不是「添加链接」的附属项，所以独立成钮。
         // 它打开一个独立窗口而不是往列表塞一条记录——写东西和找资料是两种心智。
-        Button {
-          // 必须带 value：WindowGroup 声明了 `for: String.self`，只给 id 的调用
-          // 匹配不上，SwiftUI 会静默忽略——表现为「点了没反应」。
-          // 空串表示新建，非空为要打开的 taskID。
-          openWindow(id: NoteEditorWindowID.value, value: NoteEditorWindowID.newNote)
-        } label: {
+        Button(action: createNote) {
           Label("新建笔记", systemImage: "square.and.pencil")
         }
+        .disabled(!manualLink.canOpen)
         .accessibilityIdentifier("create-user-note")
       }
     }
@@ -655,6 +651,56 @@ struct HistoryContentView: View {
   }
 
   private var emptyDetail: some View {
+    // 空状态必须跟着当前区域走。
+    //
+    // 「我的笔记」是自己写东西的地方，在那里显示「还没有保存页面 / 添加链接 /
+    // 从剪贴板添加链接」不只是文案不对——它把用户往完全相反的动作上引。
+    if model.selectedScope == .notes {
+      return AnyView(emptyNotesDetail)
+    }
+    return AnyView(emptyCaptureDetail)
+  }
+
+  /// 笔记区的空状态：只讲写，不讲抓。
+  /// 在主窗口内新建一条笔记并选中它。
+  ///
+  /// 不弹独立窗口：写笔记与看资料共用同一套「左侧选、右侧读写」的动线，弹窗会把
+  /// 这条动线打断——刚建完还要在两个窗口之间找焦点。需要专注时，主窗口本来就能
+  /// 全屏或收起侧栏。
+  private func createNote() {
+    manualLink.createNote { taskID in
+      model.selectScope(.notes)
+      model.reveal(taskID: taskID)
+    }
+  }
+
+  private var emptyNotesDetail: some View {
+    VStack(spacing: 0) {
+      Image(systemName: "square.and.pencil")
+        .font(.system(size: 30, weight: .medium))
+        .foregroundStyle(.secondary)
+        .frame(width: 72, height: 72)
+        .background(theme.badge, in: RoundedRectangle(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).stroke(theme.hairline, lineWidth: 1))
+        .padding(.bottom, 18)
+      Text("还没有笔记").font(.title2.weight(.semibold))
+        .padding(.bottom, 6)
+      Text("随手记下想法、灵感或读后感。笔记和抓取的内容一样可以打标签、搜索和导出。")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: 380)
+        .padding(.bottom, 20)
+      Button(action: createNote) { Label("写第一条笔记", systemImage: "square.and.pencil") }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .accessibilityIdentifier("notes-empty-create")
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .accessibilityIdentifier("notes-empty-detail")
+  }
+
+  private var emptyCaptureDetail: some View {
     VStack(spacing: 0) {
       // 图标放进软底圆角瓦片，参考稿里 Browse channels 卡片的图形语言。
       Image(systemName: "doc.text.magnifyingglass")
@@ -1107,6 +1153,10 @@ private struct HistoryDetailView: View {
     }
   }
   private var latestSnapshot: ContentSnapshot? { detail.snapshots.last }
+  /// 这条记录是用户自己写的笔记，而非抓取来的网页。
+  private var isUserNote: Bool {
+    detail.snapshots.last?.sourceKind == CapturedDocument.Origin.userNote.rawValue
+  }
   /// Source frontmatter belongs to the newest captured source, not a later
   /// local transcription snapshot that may have become the effective body.
   private var latestSourceSnapshot: ContentSnapshot? {
@@ -1277,6 +1327,9 @@ private struct HistoryDetailView: View {
           .accessibilityIdentifier("history-run-unfinished-banner")
         }
         titleView
+        // 笔记没有来源网页：显示 `linkdigest-note:<uuid>` 并配「打开/复制链接」
+        // 只会让人困惑——那不是一个能打开的地址，也没有复制的意义。
+        if !isUserNote {
         HStack(spacing: 10) {
           Text(sourceURLDisplay)
             .font(.callout)
@@ -1297,6 +1350,7 @@ private struct HistoryDetailView: View {
             .accessibilityIdentifier("history-source-url-copy")
         }
         .padding(.top, 8)
+        }
 
         if sourceFrontmatter.hasProperties || (!isWeChatCapture && sourceFrontmatter.hasEngagementStats) {
           notePropertiesStrip(sourceFrontmatter)
