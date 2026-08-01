@@ -1184,10 +1184,14 @@ final class HistoryContentViewTests: XCTestCase {
       detail.contains("hasResultBody || hasSourceBody || hasLiveTranscription"),
       "The picker must not disappear just because there is no summary yet"
     )
-    // 笔记是唯一的例外：它只有一份正文，不该出现只有一个选项的分段控件。
+    // 自己写的东西是例外：只有一份正文时，不该出现只有一个选项的分段控件。
+    //
+    // 钉的是「按真实可用面板数决定」这个行为,不是判据叫什么名字——
+    // 三模块切开后这个判据从 isUserNote 扩成了 isOwnWriting(笔记/稿件/作品
+    // 都算),行为完全没变,而钉住变量名的断言会因此假失败。
     XCTAssertTrue(
-      detail.contains("if isUserNote { return availableReadingPanes.count > 1 }"),
-      "笔记应按真实可用面板数决定，而不是跟着抓取记录的规则走"
+      detail.contains("return availableReadingPanes.count > 1"),
+      "自己写的东西应按真实可用面板数决定，而不是跟着抓取记录的规则走"
     )
     XCTAssertFalse(
       detail.contains("hasResultBody && hasPresentableSourceBody"),

@@ -1372,6 +1372,21 @@ private struct HistoryDetailView: View {
   private var isUserNote: Bool {
     detail.snapshots.last?.sourceKind == CapturedDocument.Origin.userNote.rawValue
   }
+  /// 工作台的稿件。
+  private var isPieceDraft: Bool {
+    detail.snapshots.last?.sourceKind == CapturedDocument.Origin.pieceDraft.rawValue
+  }
+  /// 已完成的作品。
+  private var isFinishedWork: Bool {
+    detail.snapshots.last?.sourceKind == CapturedDocument.Origin.work.rawValue
+  }
+  /// **用户自己写的正文**——笔记、稿件、作品都算。
+  ///
+  /// 编辑体验(打开即可写、自动保存、Markdown 着色、去掉抓取页那套外壳)
+  /// 属于「这是我写的东西」,不属于「这是笔记」。切开三模块时如果继续用
+  /// `isUserNote` 判断,稿件会立刻退回只读的抓取详情页——那正是这次重构
+  /// 要避免的倒退。
+  private var isOwnWriting: Bool { isUserNote || isPieceDraft || isFinishedWork }
   /// 库里那份笔记正文，占位文字归一化成空串。
   ///
   /// 占位文字只是为了让新笔记通过「非空正文」校验，语义上等同于「还没写」，
@@ -1390,7 +1405,7 @@ private struct HistoryDetailView: View {
   /// 手动保存对笔记是错的模型：写的人不会记得按保存，而切到另一条笔记会丢掉
   /// 草稿——写了一整篇、切走、回来只剩占位文字。这件事必须由工具兜住。
   private func scheduleNoteAutosave() {
-    guard isUserNote else { return }
+    guard isOwnWriting else { return }
     noteAutosaveTask?.cancel()
     noteAutosaveTask = Task { @MainActor in
       try? await Task.sleep(nanoseconds: 1_000_000_000)
@@ -1416,7 +1431,7 @@ private struct HistoryDetailView: View {
 
   /// 标题草稿落库。没改动就什么都不做，避免每次失焦都写一次库。
   private func commitNoteTitle() {
-    guard isUserNote else { return }
+    guard isOwnWriting else { return }
     let trimmed = noteTitleDraft.trimmingCharacters(in: .whitespacesAndNewlines)
     let resolved = trimmed.isEmpty ? UserNoteDocument.untitledTitle : trimmed
     guard resolved != title else {
@@ -1531,7 +1546,7 @@ private struct HistoryDetailView: View {
     //
     // 笔记也例外：给一条刚写的笔记留一个空的「总结」页签，等于在写作页面上摆一个
     // 常驻的待办。没总结时它就只有正文一件东西，那就不该出现分段控件。
-    if panes.isEmpty, !isDouyinCapture, !isUserNote { panes.append(.summary) }
+    if panes.isEmpty, !isDouyinCapture, !isOwnWriting { panes.append(.summary) }
     if !isDouyinCapture || hasSourceBody || hasLiveTranscription { panes.append(.source) }
     return panes
   }
@@ -1540,7 +1555,7 @@ private struct HistoryDetailView: View {
   private var showsReadingPanePicker: Bool {
     // 笔记只有一份正文，除非真的跑出了翻译或总结，否则「原文」是个只有一个选项的
     // 分段控件——它不提供任何选择，只是看起来像有。
-    if isUserNote { return availableReadingPanes.count > 1 }
+    if isOwnWriting { return availableReadingPanes.count > 1 }
     return hasResultBody || hasSourceBody || hasLiveTranscription
   }
   /// 默认停在最近一次跑出来的那份结果上——刚点完翻译就该看到翻译。
@@ -1606,9 +1621,9 @@ private struct HistoryDetailView: View {
           .accessibilityIdentifier("history-run-unfinished-banner")
         }
         titleView
-        // 笔记没有来源网页：显示 `linkdigest-note:<uuid>` 并配「打开/复制链接」
+        // 自己写的东西没有来源网页：显示 `linkdigest-*:<uuid>` 并配「打开/复制链接」
         // 只会让人困惑——那不是一个能打开的地址，也没有复制的意义。
-        if !isUserNote {
+        if !isOwnWriting {
         HStack(spacing: 10) {
           Text(sourceURLDisplay)
             .font(.callout)
@@ -1794,9 +1809,12 @@ private struct HistoryDetailView: View {
 
         // 脑图区固定在媒体与原文之间：结构化输出先于全文，读图再读文。
         //
-        // 笔记不挂脑图空状态：写东西的页面上，一张「还没有脑图」的空卡片是在
-        // 催促用户对自己刚写的三行字做结构化，属于输出侧的事，不该占据写作视野。
-        if !isUserNote {
+        // 自己写的东西不挂脑图空状态：写作页面上一张「还没有脑图」的空卡片，
+        // 是在催促用户对刚写的三行字做结构化，不该占据写作视野。
+        //
+        // 起草阶段确实要理骨架，但那时的入口在创作台里，是主动去点的动作，
+        // 不是一张常驻的空卡片。
+        if !isOwnWriting {
           MindMapSectionView(taskID: detail.task.id, model: model)
             .padding(.top, 16)
             .id(ReadingAnchor.module("mindmap"))
@@ -1820,9 +1838,9 @@ private struct HistoryDetailView: View {
             .padding(.top, 20)
         }
 
-        // 摘录是「读别人的东西时把话摘出来」。在自己写的笔记下面再挂一个叫
-        // 「我的笔记」的框，等于同一页里有两个可写的地方，谁也说不清该写哪个。
-        if !isUserNote {
+        // 摘录是「读别人的东西时把话摘出来」。在自己写的东西下面再挂一个
+        // 可写的框，等于同一页里两个地方都能写，谁也说不清该写哪个。
+        if !isOwnWriting {
           AnnotationSectionView(taskID: detail.task.id, model: model)
             .padding(.top, 20)
             .id(ReadingAnchor.module("annotations"))
@@ -1861,7 +1879,7 @@ private struct HistoryDetailView: View {
       // 笔记直接落在可写状态。转写稿要先点「编辑」是对的——那是抓回来的事实，
       // 改动应当是一个有意识的动作；笔记正相反，它存在的唯一目的就是被写。
       // 打开自己的笔记还要先找一个「编辑」按钮，是把工具的结构当成了用户的意图。
-      if isUserNote, let snapshot = latestSnapshot {
+      if isOwnWriting, let snapshot = latestSnapshot {
         transcriptionDraft = storedNoteBody(snapshot)
         isEditingTranscription = true
         editingNote = (detail.task.id, snapshot.id, transcriptionDraft)
@@ -1869,7 +1887,7 @@ private struct HistoryDetailView: View {
       noteTitleDraft = title
       // 清洗规则是后加的，早先存下的标题里还留着 U+FFFC 那类显示成方块的字符。
       // 打开时顺手修掉：它们不是内容，用户也删不掉（光标跳过去像没东西）。
-      if isUserNote {
+      if isOwnWriting {
         let cleaned = UserNoteDocument.sanitizedTitle(title)
         if !cleaned.isEmpty, cleaned != title {
           model.renameNote(taskID: detail.task.id, title: cleaned)
@@ -2114,8 +2132,8 @@ private struct HistoryDetailView: View {
   }
 
   @ViewBuilder private var titleView: some View {
-    if isUserNote {
-      // 笔记标题就地可改。抓取记录的标题保持只读——那是抓来的事实。
+    if isOwnWriting {
+      // 自己写的东西标题就地可改。抓取记录的标题保持只读——那是抓来的事实。
       TextField(UserNoteDocument.untitledTitle, text: $noteTitleDraft)
         .textFieldStyle(.plain)
         .font(readingFont.font(size: Self.titleFontSize, weight: .bold))
@@ -2273,7 +2291,7 @@ private struct HistoryDetailView: View {
             }
           }
         }
-        if isUserNote {
+        if isOwnWriting {
           // 想到哪写到哪的东西需要有人重排结构：标题和正文黏成一段、编号挤在
           // 一行、层级看不出来。这跟「修转写错别字」是两件事，用的是另一套提示词。
           actionPill(
@@ -2415,7 +2433,7 @@ private struct HistoryDetailView: View {
   /// 图片区只在有本地图片时才存在。
   private var navigationModules: [ReadingModuleLink] {
     // 笔记只有正文和标签两件东西，一条「模块 3」的导航条指向的是别人页面的结构。
-    if isUserNote { return [] }
+    if isOwnWriting { return [] }
     var links: [ReadingModuleLink] = [
       .init(anchor: "mindmap", title: "脑图", systemImage: "circle.hexagongrid")
     ]
@@ -2460,11 +2478,11 @@ private struct HistoryDetailView: View {
     // 是当场写的——给它描边，写字的地方就变成了一个被展示的对象。
     .background(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(Color(nsColor: .controlBackgroundColor).opacity(isUserNote ? 0 : 0.55))
+        .fill(Color(nsColor: .controlBackgroundColor).opacity(isOwnWriting ? 0 : 0.55))
     )
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(Color.primary.opacity(isUserNote ? 0 : 0.05), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(isOwnWriting ? 0 : 0.05), lineWidth: 1)
     )
   }
 
@@ -2795,8 +2813,8 @@ private struct HistoryDetailView: View {
           || snapshot.sourceKind == CapturedDocument.Origin.userNote.rawValue {
           HStack(spacing: 10) {
             Spacer(minLength: 0)
-            if isUserNote {
-              // 笔记自动存，所以这里不是按钮而是状态：写字的人不该被要求记得
+            if isOwnWriting {
+              // 自己写的东西自动存，所以这里不是按钮而是状态：写字的人不该被要求记得
               // 按保存，但需要知道东西已经安全了。⌘S 仍然可以立刻存一次。
               Text(noteDraftIsDirty(snapshot) ? "正在保存…" : (noteSaveIndicator ? "已保存" : ""))
                 .font(.caption)
@@ -2848,8 +2866,10 @@ private struct HistoryDetailView: View {
               code: NSColor(theme.secondaryText)
             ),
             lineSpacing: 6,
-            placeholder: isUserNote ? UserNoteDocument.placeholderBody : "",
-            contentHeight: isUserNote ? $noteEditorHeight : nil,
+            placeholder: isPieceDraft
+              ? PieceDraftDocument.placeholderBody
+              : (isUserNote ? UserNoteDocument.placeholderBody : ""),
+            contentHeight: isOwnWriting ? $noteEditorHeight : nil,
             onFollowWikiLink: { title in
               // 先把手上这条存了再跳，否则刚写的内容会随着切换被丢掉。
               if let snapshot = latestSnapshot, noteDraftIsDirty(snapshot) {
@@ -2860,20 +2880,20 @@ private struct HistoryDetailView: View {
             linkableTitles: isUserNote ? noteLinkTitles : []
           )
           .frame(
-            minHeight: isUserNote ? max(noteEditorHeight, 320) : 320,
-            maxHeight: isUserNote ? max(noteEditorHeight, 320) : .infinity
+            minHeight: isOwnWriting ? max(noteEditorHeight, 320) : 320,
+            maxHeight: isOwnWriting ? max(noteEditorHeight, 320) : .infinity
           )
           .onChange(of: transcriptionDraft) { _, _ in scheduleNoteAutosave() }
           // 笔记的编辑区就是这一页的正文，不再套一层描边的输入框——那层框是给
           // 「在只读页面上临时改一段」用的，笔记没有那个「临时」。
           .background(
-            isUserNote
+            isOwnWriting
               ? Color.clear
               : (theme.isNative ? Color(nsColor: .textBackgroundColor) : theme.listPane)
           )
           .overlay(
             RoundedRectangle(cornerRadius: 8)
-              .stroke(isUserNote ? Color.clear : theme.hairline, lineWidth: 1)
+              .stroke(isOwnWriting ? Color.clear : theme.hairline, lineWidth: 1)
           )
           .accessibilityIdentifier("history-transcription-editor")
         } else {
@@ -2911,7 +2931,7 @@ private struct HistoryDetailView: View {
     }
     let savedDraft = transcriptionDraft
     model.saveEditedSnapshotText(taskID: detail.task.id, snapshotID: snapshot.id, bodyText: newText)
-    guard isUserNote else {
+    guard isOwnWriting else {
       isEditingTranscription = false
       transcriptionDraft = ""
       return
