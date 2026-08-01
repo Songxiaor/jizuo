@@ -100,3 +100,132 @@ final class HistoryDomainTests: XCTestCase {
     CaptureEnvelopeV1(version: 1, requestId: requestID, createdAt: "2026-07-15T04:00:00Z", idempotencyKey: idempotencyKey, source: .init(kind: "browser_capture", url: "https://example.test/path?b=2&a=1", title: "Fixture", platform: "generic"), capture: .init(method: "rendered_dom", text: "a\0b", characterCount: 3, completeness: "full_article", capturedAt: "2026-07-15T04:00:00Z"), evidence: .init(sourceLabel: "Fixture DOM", usedCookie: false))
   }
 }
+
+/// 用户自建笔记的 canonical URL。
+///
+/// 笔记没有来源链接，但 `tasks.canonical_url` 是 NOT NULL 且唯一。给它编假的 https
+/// 地址会出事：favicon 抓取会拿域名去发真实网络请求，导出和来源显示也会把假地址
+/// 当真链接展示。所以用独立 scheme。
+final class CanonicalURLNoteTests: XCTestCase {
+  func testNoteURLIsStableAndIdentifiable() throws {
+    let id = UUID()
+    let note = try CanonicalURL.note(id: id)
+    XCTAssertTrue(note.isNote)
+    XCTAssertEqual(note.value, "linkdigest-note:\(id.uuidString.lowercased())")
+    // 同一个 id 必须得到同一个值——它要进 UNIQUE 约束。
+    XCTAssertEqual(try CanonicalURL.note(id: id), note)
+    // 不同 id 必须不同，否则第二条笔记会撞唯一约束建不出来。
+    XCTAssertNotEqual(try CanonicalURL.note(), try CanonicalURL.note())
+  }
+
+  func testNoteSchemeIsCaseInsensitiveAndTrimmed() throws {
+    let a = try CanonicalURL("LinkDigest-Note:ABC-123")
+    XCTAssertEqual(a.value, "linkdigest-note:abc-123")
+    XCTAssertTrue(a.isNote)
+  }
+
+  /// 空标识或带空白的标识必须拒绝——它们会破坏唯一性语义。
+  func testMalformedNoteURLsAreRejected() {
+    XCTAssertThrowsError(try CanonicalURL("linkdigest-note:"))
+    XCTAssertThrowsError(try CanonicalURL("linkdigest-note:   "))
+    XCTAssertThrowsError(try CanonicalURL("linkdigest-note:has space"))
+  }
+
+  /// 最重要的一条：网页 URL 的原有校验一个字都不能松。
+  func testWebURLRulesAreUnchanged() throws {
+    XCTAssertFalse(try CanonicalURL("https://example.com/a").isNote)
+    XCTAssertEqual(try CanonicalURL("HTTPS://Example.COM").value, "https://example.com/")
+    XCTAssertEqual(try CanonicalURL("https://example.com:443/x").value, "https://example.com/x")
+    // 非 http(s) 且非笔记 scheme，仍然必须拒绝。
+    XCTAssertThrowsError(try CanonicalURL("ftp://example.com/a"))
+    XCTAssertThrowsError(try CanonicalURL("file:///etc/passwd"))
+    XCTAssertThrowsError(try CanonicalURL("javascript:alert(1)"))
+    XCTAssertThrowsError(try CanonicalURL("https:///nohost"))
+  }
+}
+
+/// 笔记 scheme 的放宽必须**只对 userNote 生效**。
+///
+/// `CapturedDocumentValidator` 的 URL 白名单是抓取内容的安全边界：任何来源若能用
+/// 非 http(s) 的 URL 进来，就等于绕过了这里的全部限制。所以放宽绑定到具体 origin，
+/// 而不是放宽 scheme 白名单本身。这几条就是钉住那个边界。
+final class UserNoteValidationBoundaryTests: XCTestCase {
+  private func document(origin: CapturedDocument.Origin, url: String) -> CapturedDocument {
+    let now = "2026-08-01T00:00:00Z"
+    return CapturedDocument(
+      createdAt: now, origin: origin, url: url, title: "标题",
+      platform: "note", method: "manual", text: "正文",
+      completeness: "complete", capturedAt: now, sourceLabel: "笔记"
+    )
+  }
+
+  func testUserNoteMayUseNoteScheme() throws {
+    let url = try CanonicalURL.note().value
+    XCTAssertNoThrow(try CapturedDocumentValidator.validate(document(origin: .userNote, url: url)))
+  }
+
+  /// 最关键的一条：浏览器抓取绝不能用笔记 scheme 绕过 URL 校验。
+  func testBrowserCaptureCannotUseNoteScheme() throws {
+    let url = try CanonicalURL.note().value
+    XCTAssertThrowsError(try CapturedDocumentValidator.validate(document(origin: .browserCapture, url: url)))
+    XCTAssertThrowsError(try CapturedDocumentValidator.validate(document(origin: .manualLink, url: url)))
+    XCTAssertThrowsError(try CapturedDocumentValidator.validate(document(origin: .localTranscription, url: url)))
+  }
+
+  /// userNote 也不能拿它当后门去用任意 scheme。
+  func testUserNoteStillRejectsOtherSchemes() {
+    for bad in ["file:///etc/passwd", "javascript:alert(1)", "ftp://example.com/a", "https://example.com/a"] {
+      XCTAssertThrowsError(
+        try CapturedDocumentValidator.validate(document(origin: .userNote, url: bad)),
+        "userNote 只允许笔记 scheme，不该接受 \(bad)"
+      )
+    }
+  }
+
+  /// 普通网页抓取的原有行为不变。
+  func testWebCaptureUnchanged() {
+    XCTAssertNoThrow(
+      try CapturedDocumentValidator.validate(document(origin: .browserCapture, url: "https://example.com/a"))
+    )
+  }
+}
+
+/// 新建笔记的组装。
+final class UserNoteDocumentTests: XCTestCase {
+  func testNewNotePassesTheCaptureValidator() throws {
+    let doc = try UserNoteDocument.make()
+    // 最关键的一条：它必须能通过与抓取内容同一个校验器，否则根本落不了库。
+    XCTAssertNoThrow(try CapturedDocumentValidator.validate(doc))
+    XCTAssertEqual(doc.origin, .userNote)
+    XCTAssertTrue((try CanonicalURL(doc.url)).isNote)
+    XCTAssertEqual(doc.platform, HistoryPlatformDisplay.noteHost)
+  }
+
+  /// 空正文会被校验器拒（emptyContent），所以必须有占位文字——
+  /// 一条建不出来的笔记比一条带占位文字的笔记糟糕得多。
+  func testEmptyBodyFallsBackToPlaceholderSoTheNoteCanBeCreated() throws {
+    for empty in [nil, "", "   ", "\n\t"] {
+      let doc = try UserNoteDocument.make(body: empty)
+      XCTAssertEqual(doc.text, UserNoteDocument.placeholderBody)
+      XCTAssertNoThrow(try CapturedDocumentValidator.validate(doc))
+    }
+  }
+
+  func testEmptyTitleFallsBackSoTheListRowIsNeverBlank() throws {
+    XCTAssertEqual(try UserNoteDocument.make(title: "  ").title, UserNoteDocument.untitledTitle)
+    XCTAssertEqual(try UserNoteDocument.make(title: "我的想法").title, "我的想法")
+  }
+
+  /// 两条笔记的 URL 必须不同，否则第二条会撞 tasks 的 UNIQUE 约束建不出来。
+  func testEachNoteGetsADistinctURL() throws {
+    let a = try UserNoteDocument.make()
+    let b = try UserNoteDocument.make()
+    XCTAssertNotEqual(a.url, b.url)
+  }
+
+  /// 侧边栏靠这个 host 把笔记聚成「我的笔记」，而不是掉进「待分类」。
+  func testNoteHostMapsToItsOwnSidebarSection() {
+    XCTAssertEqual(HistoryPlatformDisplay.name(forHost: HistoryPlatformDisplay.noteHost), "我的笔记")
+    XCTAssertTrue(HistoryPlatformDisplay.isWellKnown(host: HistoryPlatformDisplay.noteHost))
+  }
+}

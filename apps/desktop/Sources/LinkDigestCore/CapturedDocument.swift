@@ -8,6 +8,9 @@ public struct CapturedDocument: Sendable, Equatable {
     case browserCapture = "browser_capture"
     case manualLink = "manual_link"
     case localTranscription = "local_transcription"
+    /// 用户在 App 内自建的笔记。它没有来源网页，是唯一允许使用
+    /// `CanonicalURL.noteScheme` 的来源——见 `CapturedDocumentValidator`。
+    case userNote = "user_note"
   }
 
   public let requestID: String
@@ -186,10 +189,21 @@ public enum CapturedDocumentValidationError: Error, Sendable, Equatable {
 
 public enum CapturedDocumentValidator {
   public static func validate(_ document: CapturedDocument) throws {
-    guard !document.requestID.isEmpty,
-          URL(string: document.url) != nil,
-          ["http", "https"].contains(URL(string: document.url)?.scheme?.lowercased())
-    else { throw CapturedDocumentValidationError.invalidURL }
+    guard !document.requestID.isEmpty else { throw CapturedDocumentValidationError.invalidURL }
+    // 笔记没有来源网页，用独立 scheme；**只有 `userNote` 能这么做**。
+    //
+    // 这道 guard 是抓取内容的安全边界：浏览器扩展或任何其它来源若能用非 http(s)
+    // 的 URL 进来，就等于绕过了这里的全部限制。所以放宽必须绑定到具体 origin，
+    // 而不是放宽 scheme 白名单本身。
+    if document.origin == .userNote {
+      guard (try? CanonicalURL(document.url))?.isNote == true else {
+        throw CapturedDocumentValidationError.invalidURL
+      }
+    } else {
+      guard URL(string: document.url) != nil,
+            ["http", "https"].contains(URL(string: document.url)?.scheme?.lowercased())
+      else { throw CapturedDocumentValidationError.invalidURL }
+    }
     let count = document.text.unicodeScalars.count
     guard count > 0 else { throw CapturedDocumentValidationError.emptyContent }
     guard count <= CaptureValidator.maxTextScalars else { throw CapturedDocumentValidationError.contentTooLarge }

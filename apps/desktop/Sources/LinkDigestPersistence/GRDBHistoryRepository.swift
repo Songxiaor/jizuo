@@ -1343,6 +1343,8 @@ private func normalizedTaskHostSQL(tableAlias: String) -> String {
   let raw = "lower(substr(substr(\(tableAlias).canonical_url, instr(\(tableAlias).canonical_url, '://') + 3), 1, instr(substr(\(tableAlias).canonical_url, instr(\(tableAlias).canonical_url, '://') + 3) || '/', '/') - 1))"
   return """
     CASE
+      WHEN \(tableAlias).canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'
+        THEN '\(HistoryPlatformDisplay.noteHost)'
       WHEN \(raw) LIKE 'www.%' THEN substr(\(raw), 5)
       WHEN \(raw) LIKE 'www2.%' THEN substr(\(raw), 6)
       WHEN \(raw) LIKE 'm.%' THEN substr(\(raw), 3)

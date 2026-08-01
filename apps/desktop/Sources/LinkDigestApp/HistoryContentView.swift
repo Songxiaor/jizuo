@@ -231,8 +231,13 @@ struct HistoryContentView: View {
         Menu {
           Button("添加链接", action: manualLink.open)
           Button("从剪贴板添加链接", action: manualLink.readClipboardAndOpen)
+          Divider()
+          // 笔记与链接同属「往库里加一条」，所以放同一个入口而不是新开按钮：
+          // 用户想记点什么时，不该先判断这属于哪一类再去找不同的地方。
+          Button("新建笔记", action: manualLink.createNote)
+            .accessibilityIdentifier("create-user-note")
         } label: {
-          Label("添加链接", systemImage: "link.badge.plus")
+          Label("添加", systemImage: "plus")
         }
         .disabled(!manualLink.canOpen)
         .accessibilityIdentifier("manual-link-add-toolbar")
@@ -2285,9 +2290,12 @@ private struct HistoryDetailView: View {
             .padding(.bottom, 6)
             .accessibilityIdentifier("capture-truncated-notice")
         }
-        // 转写是机器听写结果，错别字与分段需要人工兜底；只有本机转写
-        // snapshot 提供原地编辑，网页捕获正文保持只读。
-        if snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue {
+        // 哪些正文可以原地编辑：
+        // - 本机转写稿：机器听写结果，错别字与分段需要人工兜底
+        // - 用户笔记：正文本来就是用户自己写的，编辑是它的主要用途
+        // 网页捕获正文保持只读——那是抓取事实，改了会让「原文」名不副实。
+        if snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+          || snapshot.sourceKind == CapturedDocument.Origin.userNote.rawValue {
           HStack(spacing: 10) {
             Spacer(minLength: 0)
             if isEditingTranscription {
@@ -2301,7 +2309,10 @@ private struct HistoryDetailView: View {
                 .disabled(transcriptionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 .accessibilityIdentifier("history-transcription-edit-save")
             } else {
-              Button("编辑转写", systemImage: "pencil") {
+              Button(
+                snapshot.sourceKind == CapturedDocument.Origin.userNote.rawValue ? "编辑" : "编辑转写",
+                systemImage: "pencil"
+              ) {
                 transcriptionDraft = MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
                 isEditingTranscription = true
               }
@@ -2312,7 +2323,9 @@ private struct HistoryDetailView: View {
           }
           .padding(.bottom, 8)
         }
-        if isEditingTranscription, snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue {
+        if isEditingTranscription,
+           snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+             || snapshot.sourceKind == CapturedDocument.Origin.userNote.rawValue {
           TextEditor(text: $transcriptionDraft)
             .font(readingFont.body())
             .lineSpacing(6)

@@ -75,7 +75,20 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
 /// 平台是"内容从哪来"的系统维度：侧边栏显示人类可读的中文平台名，
 /// 未收录的 host 回退为去 www 的域名本身。
 public enum HistoryPlatformDisplay {
+  /// 用户自建笔记在侧边栏的归属。
+  ///
+  /// 笔记的 canonical URL 是 `linkdigest-note:<uuid>`，**没有 `://`**，而 host 是靠
+  /// `instr(url, '://')` 从 URL 里切出来的——不特殊处理的话会切出一段乱码，笔记会以
+  /// 一个无意义的"域名"落进侧边栏的「待分类」。
+  ///
+  /// 给它一个稳定的合成 host，既让筛选、计数复用现有那一套（零新增导航代码），也让
+  /// 它以「我的笔记」出现在平台列表里。
+  public static let noteHost = "note"
+  /// 与 `CanonicalURL.noteScheme` 对应的 URL 前缀，SQL 侧靠它识别笔记。
+  public static let noteURLPrefix = "linkdigest-note:"
+
   public static func name(forHost rawHost: String) -> String {
+    if rawHost == noteHost { return "我的笔记" }
     let host = HistoryHostNormalizer.normalized(rawHost)
     // Substack 刊物几乎都在 `<刊物>.substack.com` 子域，用后缀而非精确匹配。
     if host == "substack.com" || host.hasSuffix(".substack.com") { return "Substack" }
