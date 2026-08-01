@@ -1819,6 +1819,73 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertTrue(transcripts.last?.bodyText.contains("Fold8") == true)
   }
 
+  /// 笔记的整理排版走的是另一条路：改自己的正文，不产生转写快照。
+  ///
+  /// 复用转写那条路径会让一条笔记凭空多出一份「本机转写」来源——用户只是想让
+  /// 自己写的东西排得整齐些，不该因此在记录里多出一个不存在的来源。
+  func testNoteTidyRewritesItsOwnSnapshotWithoutCreatingATranscript() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-note-tidy-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+
+    let messy = "# 标题正文黏在一起 1. 第一条 2. 第二条"
+    let accepted = try repository.acceptCapture(.init(
+      document: try UserNoteDocument.make(title: "灵感", body: messy),
+      receivedAtMilliseconds: 1
+    ))
+    let tidied = "# 标题\n\n正文\n\n1. 第一条\n2. 第二条"
+    let tidier = RecordingTranscriptTidier(result: tidied)
+    let model = HistoryViewModel(transcriptTidier: tidier)
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    // 笔记不在默认的「全部」列表里，先切到笔记区，否则选中项会被列表刷新清掉。
+    model.selectScope(.notes)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+
+    XCTAssertTrue(model.canTidyNote(taskID: accepted.taskID))
+    model.requestNoteTidy(taskID: accepted.taskID, model: "tidy-model")
+    await waitUntil { model.transcriptTidyState(for: accepted.taskID) == .completed }
+
+    // 用的是笔记那套提示词，不是修转写错别字那套。
+    let style = await tidier.receivedStyle
+    let sentText = await tidier.receivedText
+    XCTAssertEqual(style, .note)
+    XCTAssertEqual(sentText, messy)
+
+    let after = try repository.detail(taskID: accepted.taskID)
+    XCTAssertEqual(after.snapshots.count, 1, "整理笔记不该新增快照，只改它自己那一份")
+    XCTAssertEqual(after.snapshots.first?.sourceKind, CapturedDocument.Origin.userNote.rawValue)
+    XCTAssertTrue(after.snapshots.first?.bodyText.contains("1. 第一条\n2. 第二条") == true)
+  }
+
+  /// 空笔记不能整理——没内容可整，按钮该是灰的且说得出原因。
+  func testNoteTidyIsUnavailableWithAReasonWhenThereIsNoModel() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-note-tidy-off-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+
+    let accepted = try repository.acceptCapture(.init(
+      document: try UserNoteDocument.make(body: "写了点东西"),
+      receivedAtMilliseconds: 1
+    ))
+    // 没有配置整理模型。
+    let model = HistoryViewModel(transcriptTidier: nil)
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    model.selectScope(.notes)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+
+    XCTAssertFalse(model.canTidyNote(taskID: accepted.taskID))
+    XCTAssertNotNil(
+      model.noteTidyUnavailableReason(taskID: accepted.taskID),
+      "不可用就必须给得出理由，否则又是一个没人看得懂的灰按钮"
+    )
+  }
+
   func testTranscriptTidyFailureKeepsOriginalAndReportsError() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-tidy-fail-\(UUID().uuidString)", isDirectory: true)
@@ -2004,18 +2071,20 @@ private actor RecordingTranscriptTidier: TranscriptTidying {
   private let result: String
   private(set) var receivedText: String?
   private(set) var receivedModel: String?
+  private(set) var receivedStyle: TidyStyle?
 
   init(result: String) { self.result = result }
 
-  func tidy(text: String, model: String?) async throws -> TranscriptTidyOutcome {
+  func tidy(text: String, model: String?, style: TidyStyle) async throws -> TranscriptTidyOutcome {
     receivedText = text
     receivedModel = model
+    receivedStyle = style
     return TranscriptTidyOutcome(text: result, promptTokens: 1_000, completionTokens: 200, totalTokens: 1_200)
   }
 }
 
 private struct FailingTranscriptTidier: TranscriptTidying {
-  func tidy(text: String, model: String?) async throws -> TranscriptTidyOutcome {
+  func tidy(text _: String, model _: String?, style _: TidyStyle) async throws -> TranscriptTidyOutcome {
     throw TranscriptTidyError.networkInterrupted
   }
 }

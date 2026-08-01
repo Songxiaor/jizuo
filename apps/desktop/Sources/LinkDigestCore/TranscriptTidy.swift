@@ -6,7 +6,29 @@ import Foundation
 public protocol TranscriptTidying: Sendable {
   /// `model` overrides the profile's chat model when non-empty; nil falls back
   /// to the configured summary/chat model.
-  func tidy(text: String, model: String?) async throws -> TranscriptTidyOutcome
+  func tidy(text: String, model: String?, style: TidyStyle) async throws -> TranscriptTidyOutcome
+}
+
+public extension TranscriptTidying {
+  /// 不指定风格时按转写稿处理——这个功能原本就是为转写稿建的。
+  func tidy(text: String, model: String?) async throws -> TranscriptTidyOutcome {
+    try await tidy(text: text, model: model, style: .transcript)
+  }
+}
+
+/// 整理哪一种文本。两者的毛病不同，提示词也就不能共用。
+public enum TidyStyle: String, Sendable, CaseIterable {
+  /// 机器听写稿：错别字、缺标点、不分段。
+  case transcript
+  /// 手写笔记：字没错，但结构没成形。
+  case note
+
+  public var systemPrompt: String {
+    switch self {
+    case .transcript: TranscriptTidyPrompt.system
+    case .note: TranscriptTidyPrompt.note
+    }
+  }
 }
 
 /// Tidied text plus the provider-reported token usage summed over chunks.
@@ -77,6 +99,23 @@ public enum TranscriptTidyPrompt {
     严格禁止：增加或删除信息、改写语义、概括压缩、翻译、评论，或添加任何前后缀说明。
     输入是同一份转写稿的一个连续片段，可能从句中开始或结束；保持片段边界原样，不要补全句子。
     只输出整理后的正文纯文本。
+    """
+
+  /// 笔记的整理排版。
+  ///
+  /// 和转写稿是两件事：转写稿的问题是「机器听错了字、没有标点」；手写笔记的字
+  /// 没听错，问题是想到哪写到哪——标题和正文黏成一段、编号列表挤在一行、层级
+  /// 靠缩进看不出来。所以这一版不提错别字，只重排结构，并且明确要求用 Markdown
+  /// 记号，因为编辑器本来就按 Markdown 着色。
+  public static let note = """
+    你是笔记排版整理器。只调整结构与排版，不改内容：
+    把标题行写成 Markdown 标题（`#`、`##`），标题与正文之间空一行；\
+    把「1. 2. 3.」「- 」这类列举各自独占一行，写成 Markdown 列表；\
+    段落之间用一个空行分隔，段落内部不换行；补齐缺失的标点。
+    保留原有的 Markdown 记号与已经正确的层级，不要重新编号或调整章节顺序。
+    严格禁止：增加或删除信息、改写语义、概括压缩、翻译、评论、润色措辞，\
+    或添加任何前后缀说明。
+    只输出整理后的正文。
     """
 }
 

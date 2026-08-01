@@ -2102,6 +2102,80 @@ final class HistoryViewModel: ObservableObject {
     return Self.latestTranscriptText(in: detail)
   }
 
+  /// 「整理排版」为什么现在不能点。可用时返回 nil。
+  func noteTidyUnavailableReason(taskID: TaskID) -> String? {
+    guard let detail, detail.task.id == taskID, history != nil else { return "请先选中这条笔记" }
+    if isReadOnly { return "这份历史当前只能浏览" }
+    if transcriptTidier == nil { return "需先在设置里配置聊天模型" }
+    if transcriptTidyState(for: taskID).isActive { return "正在整理…" }
+    guard let snapshot = detail.snapshots.last,
+          !MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return "先写点东西，才有内容可整理"
+    }
+    return nil
+  }
+
+  func canTidyNote(taskID: TaskID) -> Bool { noteTidyUnavailableReason(taskID: taskID) == nil }
+
+  /// 整理一条笔记的排版。
+  ///
+  /// 不走转写那条路径：那一条会 `beginTaskTranscription` 并把结果写成一份
+  /// **转写快照**，笔记因此会凭空多出一条「本机转写」来源。笔记的整理就是把
+  /// 自己的正文换成整理后的版本，改的是同一份 snapshot。
+  func requestNoteTidy(taskID: TaskID, model: String?) {
+    guard let history, let transcriptTidier, let detail, detail.task.id == taskID,
+          canTidyNote(taskID: taskID), let snapshot = detail.snapshots.last else { return }
+    let original = snapshot.bodyText
+    let body = MarkdownNoteFrontmatter.parse(original).body
+    let requestID = UUID()
+    transcriptTidyRequestID = requestID
+    transcriptTidyTaskID = taskID
+    transcriptTidyState = .running
+    transcriptTidyTokenSummary = nil
+    transcriptTidyTask?.cancel()
+    transcriptTidyTask = Task { [weak self] in
+      do {
+        let outcome = try await transcriptTidier.tidy(
+          text: body,
+          model: model?.trimmingCharacters(in: .whitespacesAndNewlines),
+          style: .note
+        )
+        guard let self, self.transcriptTidyRequestID == requestID else { return }
+        let tidied = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tidied.isEmpty else {
+          self.transcriptTidyState = .failed("模型没有返回内容；原文没有改动。")
+          return
+        }
+        // frontmatter 原样保留：整理的是正文，不是元数据。
+        let newText: String = if !body.isEmpty, let range = original.range(of: body) {
+          original.replacingCharacters(in: range, with: tidied)
+        } else {
+          tidied
+        }
+        do {
+          try history.updateSnapshotBodyText(
+            taskID: taskID,
+            snapshotID: snapshot.id,
+            bodyText: newText,
+            updatedAtMilliseconds: self.nowMilliseconds()
+          )
+        } catch {
+          self.transcriptTidyState = .failed("整理完成但没能保存；原文没有改动。")
+          return
+        }
+        self.transcriptTidyState = .completed
+        self.transcriptTidyTokenSummary = Self.tidyTokenSummary(outcome)
+        self.refreshDetailAfterTranscription(taskID: taskID)
+      } catch {
+        guard let self, self.transcriptTidyRequestID == requestID else { return }
+        let message = (error as? TranscriptTidyError)?.userMessage
+          ?? "整理失败，请稍后重试。原文没有改动。"
+        self.transcriptTidyState = .failed(message)
+      }
+    }
+  }
+
   func canTidyTranscript(taskID: TaskID) -> Bool {
     transcriptTidyUnavailableReason(taskID: taskID) == nil
   }

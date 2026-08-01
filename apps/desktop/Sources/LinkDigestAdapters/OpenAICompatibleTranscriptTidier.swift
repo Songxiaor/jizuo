@@ -17,7 +17,7 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     self.provider = provider
   }
 
-  public func tidy(text: String, model: String?) async throws -> TranscriptTidyOutcome {
+  public func tidy(text: String, model: String?, style: TidyStyle) async throws -> TranscriptTidyOutcome {
     let chunks = TranscriptTidyChunker.chunks(of: text)
     guard !chunks.isEmpty else { throw TranscriptTidyError.emptyTranscript }
 
@@ -48,12 +48,20 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
           profile: credentials.profile,
           apiKey: credentials.apiKey,
           model: effectiveModel,
-          text: chunk
+          text: chunk,
+          systemPrompt: style.systemPrompt
         )
         // 归一化换行方言：Markdown 阅读区把单换行折叠成空格，
         // 不归一化就会出现“句号后一坨空格 + 整篇不分段”。
-        let normalized = TranscriptTidyNormalizer.normalize(outcome.text)
-        outputs.append(normalized.isEmpty ? chunk : normalized)
+        //
+        // 笔记不能走这一步：它的产物是 Markdown，换行本身有语义。归一化会把
+        // 段内单换行拼回一行，`- a\n- b` 这样的列表会被拼成 `- a - b`。
+        let cleaned: String = switch style {
+        case .transcript: TranscriptTidyNormalizer.normalize(outcome.text)
+        case .note: outcome.text.replacingOccurrences(of: "\r\n", with: "\n")
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        outputs.append(cleaned.isEmpty ? chunk : cleaned)
         promptTokens = Self.summed(promptTokens, outcome.promptTokens)
         completionTokens = Self.summed(completionTokens, outcome.completionTokens)
         totalTokens = Self.summed(totalTokens, outcome.totalTokens)

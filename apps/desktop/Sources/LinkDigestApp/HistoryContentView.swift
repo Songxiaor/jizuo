@@ -1120,6 +1120,11 @@ private struct HistoryDetailView: View {
   @State private var noteTitleDraft = ""
   /// 笔记编辑器排版后的实际高度，由编辑器回报，用来让它长到内容那么高。
   @State private var noteEditorHeight: CGFloat = 320
+  @State private var noteAutosaveTask: Task<Void, Never>?
+  /// 刚存过的提示，几秒后自行消失。
+  @State private var noteSaveIndicator = false
+  /// 当前正在编辑的笔记身份。切走时要用它把草稿存回**原来**那条。
+  @State private var editingNote: (taskID: TaskID, snapshotID: ContentSnapshotID, storedBody: String)?
   /// 详情页里可获得键盘焦点的字段。目前只有笔记标题需要感知失焦。
   private enum DetailField: Hashable { case noteTitle }
   @FocusState private var focusedField: DetailField?
@@ -1202,6 +1207,35 @@ private struct HistoryDetailView: View {
     !transcriptionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       && transcriptionDraft != storedNoteBody(snapshot)
   }
+  /// 停笔一秒就自动存。
+  ///
+  /// 手动保存对笔记是错的模型：写的人不会记得按保存，而切到另一条笔记会丢掉
+  /// 草稿——写了一整篇、切走、回来只剩占位文字。这件事必须由工具兜住。
+  private func scheduleNoteAutosave() {
+    guard isUserNote else { return }
+    noteAutosaveTask?.cancel()
+    noteAutosaveTask = Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 1_000_000_000)
+      guard !Task.isCancelled, let snapshot = latestSnapshot, noteDraftIsDirty(snapshot) else { return }
+      saveTranscriptionDraft(snapshot)
+      noteSaveIndicator = true
+      try? await Task.sleep(nanoseconds: 1_800_000_000)
+      guard !Task.isCancelled else { return }
+      noteSaveIndicator = false
+    }
+  }
+
+  /// 离开这条笔记之前立刻存一次——等不到防抖那一秒。
+  ///
+  /// 必须用调用方传进来的 id：切换记录时 `detail` 已经指向新的那条了，
+  /// 此时读 `latestSnapshot` 会把上一条的草稿写进新笔记。
+  private func flushNoteDraft(taskID: TaskID, snapshotID: ContentSnapshotID, storedBody: String) {
+    noteAutosaveTask?.cancel()
+    let draft = transcriptionDraft
+    guard !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, draft != storedBody else { return }
+    model.saveEditedSnapshotText(taskID: taskID, snapshotID: snapshotID, bodyText: draft)
+  }
+
   /// 标题草稿落库。没改动就什么都不做，避免每次失焦都写一次库。
   private func commitNoteTitle() {
     guard isUserNote else { return }
@@ -1621,6 +1655,13 @@ private struct HistoryDetailView: View {
     // previously the @State default won and a summary-less item opened on an
     // empty 总结 pane.
     .onChange(of: detail.task.id, initial: true) { _, _ in
+      // 先把上一条笔记的草稿落库，再重置状态——顺序反了就等于丢掉它。
+      if let leaving = editingNote {
+        flushNoteDraft(
+          taskID: leaving.taskID, snapshotID: leaving.snapshotID, storedBody: leaving.storedBody
+        )
+      }
+      editingNote = nil
       isRunPanelExpanded = false
       showsPlainText = false
       completionBanner = nil
@@ -1635,6 +1676,7 @@ private struct HistoryDetailView: View {
       if isUserNote, let snapshot = latestSnapshot {
         transcriptionDraft = storedNoteBody(snapshot)
         isEditingTranscription = true
+        editingNote = (detail.task.id, snapshot.id, transcriptionDraft)
       }
       noteTitleDraft = title
       sessionMediaPlayback.detailBecameActive(
@@ -1933,6 +1975,22 @@ private struct HistoryDetailView: View {
     }
   }
 
+  /// 整理排版的进行/失败状态。成功不单独报喜——正文当场变了，那就是结果。
+  @ViewBuilder private var noteTidyStatus: some View {
+    switch model.transcriptTidyState(for: detail.task.id) {
+    case .running:
+      ProgressView().controlSize(.small)
+      Text("正在整理…").font(.caption).foregroundStyle(.secondary)
+    case let .failed(message):
+      Label(message, systemImage: "exclamationmark.triangle")
+        .font(.caption)
+        .foregroundStyle(.orange)
+        .accessibilityIdentifier("note-tidy-failed")
+    default:
+      EmptyView()
+    }
+  }
+
   private var actionToolbar: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 8) {
@@ -1967,6 +2025,20 @@ private struct HistoryDetailView: View {
               await appModel.translate(historyDetail: detail, preferences: providerSettings.runPreferences)
             }
           }
+        }
+        if isUserNote {
+          // 想到哪写到哪的东西需要有人重排结构：标题和正文黏成一段、编号挤在
+          // 一行、层级看不出来。这跟「修转写错别字」是两件事，用的是另一套提示词。
+          actionPill(
+            title: "整理排版",
+            systemImage: "text.alignleft",
+            disabled: !model.canTidyNote(taskID: detail.task.id),
+            identifier: "tidy-note"
+          ) {
+            model.requestNoteTidy(taskID: detail.task.id, model: providerSettings.effectiveTidyModelName)
+          }
+          .help(model.noteTidyUnavailableReason(taskID: detail.task.id) ?? "把段落、列表与标题层级重排一遍；不改文字内容")
+          noteTidyStatus
         }
         if !providerSettings.arePreferencesReady {
           Button("设置模型") { openSettings() }
@@ -2477,12 +2549,17 @@ private struct HistoryDetailView: View {
           HStack(spacing: 10) {
             Spacer(minLength: 0)
             if isUserNote {
-              // 笔记常驻编辑态，所以既没有「编辑」也没有「取消」——从来没有进入
-              // 或退出这回事，只有「写了东西，存一下」。
+              // 笔记自动存，所以这里不是按钮而是状态：写字的人不该被要求记得
+              // 按保存，但需要知道东西已经安全了。⌘S 仍然可以立刻存一次。
+              Text(noteDraftIsDirty(snapshot) ? "正在保存…" : (noteSaveIndicator ? "已保存" : ""))
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .animation(historyUIAnimation(reduceMotion: reduceMotion), value: noteSaveIndicator)
+                .accessibilityIdentifier("history-note-save-state")
               Button("保存") { saveTranscriptionDraft(snapshot) }
-                .buttonStyle(.borderedProminent)
-                .disabled(model.isReadOnly || !noteDraftIsDirty(snapshot))
                 .keyboardShortcut("s", modifiers: .command)
+                .hidden()
+                .frame(width: 0)
                 .accessibilityIdentifier("history-transcription-edit-save")
             } else if isEditingTranscription {
               Button("取消") {
@@ -2531,6 +2608,7 @@ private struct HistoryDetailView: View {
             minHeight: isUserNote ? max(noteEditorHeight, 320) : 320,
             maxHeight: isUserNote ? max(noteEditorHeight, 320) : .infinity
           )
+          .onChange(of: transcriptionDraft) { _, _ in scheduleNoteAutosave() }
           // 笔记的编辑区就是这一页的正文，不再套一层描边的输入框——那层框是给
           // 「在只读页面上临时改一段」用的，笔记没有那个「临时」。
           .background(
@@ -2583,6 +2661,8 @@ private struct HistoryDetailView: View {
       transcriptionDraft = ""
       return
     }
+    // 存过之后这条笔记的「库里那份」就是刚写的内容了，切走时不该再存一遍。
+    editingNote = (detail.task.id, snapshot.id, savedDraft)
     // 笔记保存后仍停在可写状态——「保存」是存一下，不是「改完了」。
     // 标题还是默认值时，用正文首个一级标题补上：写笔记的人极少先想标题。
     if title == UserNoteDocument.untitledTitle,

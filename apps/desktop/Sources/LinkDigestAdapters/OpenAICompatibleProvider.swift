@@ -234,11 +234,12 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     profile: ProviderProfile,
     apiKey: String,
     model: String,
-    text: String
+    text: String,
+    systemPrompt: String = TranscriptTidyPrompt.system
   ) async throws -> TranscriptTidyOutcome {
     let completion = try await nonStreamingChatCompletion(
       profile: profile, apiKey: apiKey, model: model,
-      systemPrompt: TranscriptTidyPrompt.system, userContent: text
+      systemPrompt: systemPrompt, userContent: text
     )
     return TranscriptTidyOutcome(
       text: completion.content,
