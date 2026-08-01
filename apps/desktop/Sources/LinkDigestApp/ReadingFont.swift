@@ -164,6 +164,12 @@ struct ResolvedReadingFont: Equatable {
     designSize * bodySize / ReadingFontSize.default
   }
 
+  /// 编辑器用的正文 NSFont。与阅读区同源，保证「写」和「读」是同一套排版。
+  func nsFont() -> NSFont {
+    NSFont(descriptor: nsFontDescriptor(size: bodySize), size: bodySize)
+      ?? NSFont.systemFont(ofSize: bodySize)
+  }
+
   /// AttributedString 基底字体路径使用的 NSFont 描述符；与 `font(size:)` 保持同源。
   func nsFontDescriptor(size: CGFloat) -> NSFontDescriptor {
     switch face {

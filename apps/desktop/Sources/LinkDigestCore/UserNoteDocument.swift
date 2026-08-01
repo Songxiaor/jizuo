@@ -18,6 +18,47 @@ public enum UserNoteDocument {
   /// 而一条建不出来的笔记比一条带占位文字的笔记糟糕得多。
   public static let placeholderBody = "在这里写下你的想法…"
 
+  /// 「今天」这条笔记的标题。
+  ///
+  /// 每日笔记不是一个新功能，是**取消一个决定**：随手记东西时最大的摩擦不是打字，
+  /// 是「这条该记去哪」。给每天一个默认容器，这个决定就不存在了。
+  ///
+  /// 标题用本地日期而不是 UUID，因为它要能被人一眼认出、也能被搜索命中。
+  public static func dailyTitle(for date: Date = Date(), calendar: Calendar = .current) -> String {
+    let components = calendar.dateComponents([.year, .month, .day], from: date)
+    return String(format: "%04d-%02d-%02d", components.year ?? 0, components.month ?? 0, components.day ?? 0)
+  }
+
+  /// 「今天」这条笔记的固定 URL。
+  ///
+  /// 同一天必须解析出同一个值——`tasks` 的 UNIQUE 约束因此成为幂等保证：第二次点
+  /// 「今天」不会再建一条，而是撞上已存在的那条。这比在应用层查一次再决定要可靠，
+  /// 竞态下也不会产生两条。
+  public static func dailyURL(for date: Date = Date(), calendar: Calendar = .current) throws -> CanonicalURL {
+    try CanonicalURL("\(CanonicalURL.noteScheme):daily-\(dailyTitle(for: date, calendar: calendar))")
+  }
+
+  /// 组装「今天」的笔记。
+  public static func makeDaily(
+    date: Date = Date(),
+    calendar: Calendar = .current,
+    body: String? = nil
+  ) throws -> CapturedDocument {
+    let timestamp = ISO8601DateFormatter().string(from: date)
+    return CapturedDocument(
+      createdAt: timestamp,
+      origin: .userNote,
+      url: try dailyURL(for: date, calendar: calendar).value,
+      title: dailyTitle(for: date, calendar: calendar),
+      platform: HistoryPlatformDisplay.noteHost,
+      method: "user_note_daily",
+      text: body?.isEmpty == false ? body! : placeholderBody,
+      completeness: "complete",
+      capturedAt: timestamp,
+      sourceLabel: "每日笔记"
+    )
+  }
+
   /// 组装一条新笔记。落库仍走与手动链接相同的 `ingest(_:)` 路径，不另开写入口。
   public static func make(
     id: UUID = UUID(),

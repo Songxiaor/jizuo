@@ -390,6 +390,7 @@ struct HistoryContentView: View {
     .background(theme.isNative ? Color.clear : theme.listPane)
     .focusedSceneValue(\.focusHistorySearch, FocusHistorySearchAction { isSearchFocused = true })
     .focusedSceneValue(\.newNote, NewNoteAction { createNote() })
+    .focusedSceneValue(\.todayNote, TodayNoteAction { openTodayNote() })
   }
 
   private var navigationRail: some View {
@@ -427,6 +428,13 @@ struct HistoryContentView: View {
           model.selectScope(.notes)
         }
         .accessibilityIdentifier("history-navigation-notes")
+        // 「今天」不是一个筛选项，是一个动作——点它直接进今天那条笔记。
+        // 随手记东西最大的摩擦是「这条该记去哪」，给每天一个默认容器就没这个决定了。
+        Button(action: openTodayNote) {
+          Label("今天", systemImage: "calendar")
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("history-navigation-today-note")
       }
 
       if !model.navigationCounts.platforms.isEmpty {
@@ -678,6 +686,17 @@ struct HistoryContentView: View {
         // 用主界面确定会弹出的通道，别让失败悄无声息。
         model.reportFailure(message)
       }
+    )
+  }
+
+  /// 打开今天的笔记。重复点只会回到同一条。
+  private func openTodayNote() {
+    manualLink.openTodayNote(
+      onOpened: { taskID in
+        model.selectScope(.notes)
+        model.reveal(taskID: taskID)
+      },
+      onFailure: { model.reportFailure($0) }
     )
   }
 
@@ -2411,15 +2430,23 @@ private struct HistoryDetailView: View {
         if isEditingTranscription,
            snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
              || snapshot.sourceKind == CapturedDocument.Origin.userNote.rawValue {
-          TextEditor(text: $transcriptionDraft)
-            .font(readingFont.body())
-            .lineSpacing(6)
-            .scrollContentBackground(.hidden)
-            .frame(minHeight: 320, maxHeight: .infinity)
-            .padding(10)
-            .background(theme.isNative ? Color(nsColor: .textBackgroundColor) : theme.listPane)
-            .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hairline, lineWidth: 1))
-            .accessibilityIdentifier("history-transcription-editor")
+          // 裸 TextEditor 把标题、代码、引用一律画成同一片灰字，写超过几行就看不出
+          // 结构。换成带 Markdown 着色的 NSTextView，排版参数取自阅读区同一套偏好。
+          MarkdownEditorView(
+            text: $transcriptionDraft,
+            font: readingFont.nsFont(),
+            palette: .init(
+              primary: NSColor(theme.primaryText),
+              secondary: NSColor(theme.secondaryText),
+              accent: NSColor(theme.accent),
+              code: NSColor(theme.secondaryText)
+            ),
+            lineSpacing: 6
+          )
+          .frame(minHeight: 320, maxHeight: .infinity)
+          .background(theme.isNative ? Color(nsColor: .textBackgroundColor) : theme.listPane)
+          .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hairline, lineWidth: 1))
+          .accessibilityIdentifier("history-transcription-editor")
         } else {
           MarkdownContentView(
             source: MarkdownNoteFrontmatter.parse(snapshot.bodyText).body,
@@ -3031,10 +3058,22 @@ struct NewNoteAction: Equatable {
 
 struct NewNoteKey: FocusedValueKey { typealias Value = NewNoteAction }
 
+/// 菜单命令句柄：打开今天的笔记（⌘⇧T）。
+struct TodayNoteAction: Equatable {
+  static func == (lhs: Self, rhs: Self) -> Bool { true }
+  let run: () -> Void
+}
+
+struct TodayNoteKey: FocusedValueKey { typealias Value = TodayNoteAction }
+
 extension FocusedValues {
   var newNote: NewNoteAction? {
     get { self[NewNoteKey.self] }
     set { self[NewNoteKey.self] = newValue }
+  }
+  var todayNote: TodayNoteAction? {
+    get { self[TodayNoteKey.self] }
+    set { self[TodayNoteKey.self] = newValue }
   }
 }
 

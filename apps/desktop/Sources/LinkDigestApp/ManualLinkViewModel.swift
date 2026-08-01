@@ -257,6 +257,29 @@ final class ManualLinkViewModel: ObservableObject {
   /// 走的是与手动链接**完全相同**的 `ingest(_:)` 落库路径——笔记只是「正文由用户自己
   /// 写」的一条记录，没有理由为它另开一条写入口。这样标签、搜索、翻译、总结、导出
   /// 全部自动可用，也不会出现两套落库逻辑各自演化的问题。
+  /// 打开「今天」的笔记，没有就建一条。
+  ///
+  /// 幂等由 canonical URL 保证（同一天同一个值 + tasks 的 UNIQUE 约束），所以这里
+  /// 不需要先查一次再决定——那在竞态下会产生两条。重复调用只会回到同一条。
+  func openTodayNote(
+    onOpened: (@MainActor (TaskID) -> Void)? = nil,
+    onFailure: (@MainActor (String) -> Void)? = nil
+  ) {
+    guard let ingestor else {
+      onFailure?("历史存储尚未就绪，请稍后再试。")
+      return
+    }
+    Task {
+      do {
+        let document = try UserNoteDocument.makeDaily()
+        let capture = try await ingestor.ingest(document)
+        await MainActor.run { onOpened?(capture.taskID) }
+      } catch {
+        await MainActor.run { onFailure?("打开今天的笔记失败：\(String(describing: error))") }
+      }
+    }
+  }
+
   /// 新建一条笔记。
   ///
   /// **不复用 `isBusy` 做门禁**：它由 `state` 派生，而 `state` 被手动链接的抓取流程

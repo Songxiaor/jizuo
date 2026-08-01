@@ -1333,6 +1333,7 @@ private struct LinkDigestCommands: Commands {
   @ObservedObject var manualLink: ManualLinkViewModel
   /// 新建笔记的动作由承载列表的视图提供——只有它知道建完要选中哪一条。
   @FocusedValue(\.newNote) private var newNote
+  @FocusedValue(\.todayNote) private var todayNote
   @FocusedValue(\.focusHistorySearch) private var focusHistorySearch
 
   var body: some Commands {
@@ -1348,6 +1349,9 @@ private struct LinkDigestCommands: Commands {
       Button("新建笔记") { newNote?.run() }
         .keyboardShortcut("n", modifiers: [.command, .shift])
         .disabled(newNote == nil)
+      Button("今天的笔记") { todayNote?.run() }
+        .keyboardShortcut("t", modifiers: [.command, .shift])
+        .disabled(todayNote == nil)
     }
     CommandGroup(after: .textEditing) {
       Button("搜索历史") { focusHistorySearch?.run() }

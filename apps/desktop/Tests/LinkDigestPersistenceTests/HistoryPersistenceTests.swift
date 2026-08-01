@@ -2473,3 +2473,67 @@ final class UserNoteIngestTests: XCTestCase {
     }
   }
 }
+
+/// 每日笔记的幂等性。
+///
+/// 「今天」这个入口一天里会被点很多次，每次都必须落到同一条笔记上。这不是靠
+/// 应用层先查一次再决定——那在竞态下会产生两条；而是靠同一天解析出同一个
+/// canonical URL，让 tasks 的 UNIQUE 约束来保证。
+final class DailyNoteIdempotencyTests: XCTestCase {
+  func testSameDayAlwaysResolvesToOneNote() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      let day = Date(timeIntervalSince1970: 1_785_600_000)
+      let first = try repository.acceptCapture(
+        try AcceptCaptureCommand(
+          document: try UserNoteDocument.makeDaily(date: day),
+          receivedAtMilliseconds: 1_785_600_000_000
+        )
+      )
+      // 同一天再点一次——必须回到同一条，而不是新建。
+      let second = try repository.acceptCapture(
+        try AcceptCaptureCommand(
+          document: try UserNoteDocument.makeDaily(date: day),
+          receivedAtMilliseconds: 1_785_600_100_000
+        )
+      )
+      XCTAssertEqual(first.taskID, second.taskID, "同一天必须落到同一条笔记")
+
+      let notes = try repository.historyPage(
+        limit: 10, after: nil as HistoryPageCursor?,
+        filter: HistoryListFilter(scope: .notes)
+      )
+      XCTAssertEqual(notes.rows.count, 1, "重复点「今天」不该堆出多条")
+    }
+  }
+
+  func testDifferentDaysGetTheirOwnNotes() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      let day = Date(timeIntervalSince1970: 1_785_600_000)
+      let nextDay = day.addingTimeInterval(86_400)
+      _ = try repository.acceptCapture(try AcceptCaptureCommand(
+        document: try UserNoteDocument.makeDaily(date: day), receivedAtMilliseconds: 1))
+      _ = try repository.acceptCapture(try AcceptCaptureCommand(
+        document: try UserNoteDocument.makeDaily(date: nextDay), receivedAtMilliseconds: 2))
+
+      let notes = try repository.historyPage(
+        limit: 10, after: nil as HistoryPageCursor?,
+        filter: HistoryListFilter(scope: .notes)
+      )
+      XCTAssertEqual(notes.rows.count, 2)
+    }
+  }
+
+  /// 标题要能被人一眼认出，也要能被搜索命中。
+  func testDailyTitleIsAReadableDate() {
+    let day = Date(timeIntervalSince1970: 1_785_600_000)
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+    XCTAssertEqual(UserNoteDocument.dailyTitle(for: day, calendar: calendar), "2026-08-02")
+  }
+}
