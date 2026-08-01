@@ -49,6 +49,31 @@ public struct HistoryApplicationService: Sendable {
       updatedAtMilliseconds: updatedAtMilliseconds
     )
   }
+  // MARK: - 工作台
+
+  public func createPiece(
+    id: PieceID, spark: String, noteTaskID: TaskID, createdAtMilliseconds: Int64
+  ) throws {
+    try repository.createPiece(
+      id: id, spark: spark, noteTaskID: noteTaskID, createdAtMilliseconds: createdAtMilliseconds
+    )
+  }
+  public func pieces() throws -> [PieceSummary] { try repository.pieces() }
+  public func piece(id: PieceID) throws -> PieceSummary? { try repository.piece(id: id) }
+  public func setPieceStage(_ stage: PieceStage?, for id: PieceID, updatedAtMilliseconds: Int64) throws {
+    try repository.setPieceStage(stage, for: id, updatedAtMilliseconds: updatedAtMilliseconds)
+  }
+  public func addMaterial(taskID: TaskID, to pieceID: PieceID, addedAtMilliseconds: Int64) throws {
+    try repository.addMaterial(taskID: taskID, to: pieceID, addedAtMilliseconds: addedAtMilliseconds)
+  }
+  public func removeMaterial(taskID: TaskID, from pieceID: PieceID) throws {
+    try repository.removeMaterial(taskID: taskID, from: pieceID)
+  }
+  public func materials(of pieceID: PieceID) throws -> [PieceMaterial] {
+    try repository.materials(of: pieceID)
+  }
+  public func deletePiece(id: PieceID) throws { try repository.deletePiece(id: id) }
+
   public func noteID(matchingTitle title: String) throws -> TaskID? {
     try repository.noteID(matchingTitle: title)
   }

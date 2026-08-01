@@ -547,6 +547,23 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var navigationCounts = HistoryNavigationCounts()
   @Published private(set) var selectedHosts: Set<String> = []
   @Published private(set) var selectedScope: HistoryListScope = .all
+
+  // MARK: - 工作台
+  //
+  // 工作台不是 history 列表的一个筛选——它的单位是「一件创作」而不是「一份内容」，
+  // 所以不塞进 `HistoryListScope`（那个枚举会进 SQL where 子句，加一个不参与筛选的
+  // case 只会污染那条查询）。用一个独立开关表示「现在在工作台里」。
+  @Published private(set) var isWorkbenchActive = false
+  @Published private(set) var pieces: [PieceSummary] = []
+  @Published var selectedPieceID: PieceID? {
+    didSet {
+      guard selectedPieceID != oldValue else { return }
+      reloadSelectedPiece()
+    }
+  }
+  @Published private(set) var selectedPiece: PieceSummary?
+  @Published private(set) var pieceMaterials: [PieceMaterial] = []
+  @Published private(set) var workbenchFailure: String?
   @Published var showsAllNavigationTags = false
   @Published private(set) var tagErrorCode: StorageErrorCode?
   @Published private(set) var transcriptionState: TranscriptionUIState = .idle {
@@ -914,8 +931,13 @@ final class HistoryViewModel: ObservableObject {
     capturedMediaAutoSaveStates = [:]
     capturedMediaAutoSaveFailureMessage = ""
     isCapturedMediaAutoSaveFailurePresented = false
+    isWorkbenchActive = false; pieces = []; selectedPieceID = nil
+    selectedPiece = nil; pieceMaterials = []; workbenchFailure = nil
     guard history != nil else { listState = .failed; detailState = .idle; return }
     reload()
+    // 侧栏那个「进行中 N」和列表右键的「加入工作台」都要用到这份列表，
+    // 所以启动时就取一次，而不是等用户点进工作台。
+    reloadPieces()
   }
 
   func reload() {
@@ -3016,6 +3038,8 @@ final class HistoryViewModel: ObservableObject {
   }
 
   func selectScope(_ scope: HistoryListScope) {
+    // 点任何一个筛选项都意味着「回到看资料」，工作台该让位。
+    isWorkbenchActive = false
     selectedScope = scope
     selectedHosts = []
     selectedTagNormalizedNames = []
@@ -3023,6 +3047,7 @@ final class HistoryViewModel: ObservableObject {
   }
 
   func selectHost(_ host: String) {
+    isWorkbenchActive = false
     let normalized = HistoryHostNormalizer.normalized(host)
     guard !normalized.isEmpty else { return }
     if selectedHosts == [normalized] {
@@ -3361,6 +3386,108 @@ final class HistoryViewModel: ObservableObject {
       snapshotEditFailure = "无法保存修改，请检查历史存储后重试。"
     }
   }
+
+  // MARK: - 工作台操作
+
+  func enterWorkbench() {
+    isWorkbenchActive = true
+    reloadPieces()
+  }
+
+  func leaveWorkbench() {
+    isWorkbenchActive = false
+    selectedPieceID = nil
+  }
+
+  func reloadPieces() {
+    guard let history else { return }
+    do {
+      pieces = try history.pieces()
+      workbenchFailure = nil
+      // 选中的那件被删了就退回列表，而不是停在一个空详情上。
+      if let id = selectedPieceID, !pieces.contains(where: { $0.id == id }) {
+        selectedPieceID = nil
+      }
+    } catch {
+      workbenchFailure = "无法读取工作台，请检查历史存储后重试。"
+    }
+  }
+
+  private func reloadSelectedPiece() {
+    guard let history, let id = selectedPieceID else {
+      selectedPiece = nil
+      pieceMaterials = []
+      return
+    }
+    selectedPiece = try? history.piece(id: id)
+    pieceMaterials = (try? history.materials(of: id)) ?? []
+  }
+
+  /// 记一个新灵感。
+  ///
+  /// 正文笔记先建好再登记创作——从第一秒起就有地方可写，
+  /// 而不是「先建个壳，等你进去了才发现还要再点一次新建」。
+  func registerPiece(spark: String, noteTaskID: TaskID) {
+    guard let history else { return }
+    let trimmed = spark.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    let id = PieceID()
+    do {
+      try history.createPiece(
+        id: id, spark: trimmed, noteTaskID: noteTaskID, createdAtMilliseconds: nowMilliseconds()
+      )
+      isWorkbenchActive = true
+      reloadPieces()
+      selectedPieceID = id
+      workbenchFailure = nil
+    } catch {
+      workbenchFailure = "无法新建创作，请稍后重试。"
+    }
+  }
+
+  /// 手动改阶段。传 nil 回到自动推断。
+  func setStage(_ stage: PieceStage?, for id: PieceID) {
+    guard let history else { return }
+    do {
+      try history.setPieceStage(stage, for: id, updatedAtMilliseconds: nowMilliseconds())
+      reloadPieces()
+      if selectedPieceID == id { reloadSelectedPiece() }
+    } catch {
+      workbenchFailure = "无法更新阶段，请稍后重试。"
+    }
+  }
+
+  func addMaterial(taskID: TaskID, to pieceID: PieceID) {
+    guard let history else { return }
+    do {
+      try history.addMaterial(taskID: taskID, to: pieceID, addedAtMilliseconds: nowMilliseconds())
+      reloadPieces()
+      if selectedPieceID == pieceID { reloadSelectedPiece() }
+    } catch {
+      workbenchFailure = "无法加入素材，请稍后重试。"
+    }
+  }
+
+  func removeMaterial(taskID: TaskID, from pieceID: PieceID) {
+    guard let history else { return }
+    try? history.removeMaterial(taskID: taskID, from: pieceID)
+    reloadPieces()
+    if selectedPieceID == pieceID { reloadSelectedPiece() }
+  }
+
+  /// 删掉一件创作。正文笔记留着——「不做这篇了」不等于「把稿子扔了」。
+  func deletePiece(id: PieceID) {
+    guard let history else { return }
+    do {
+      try history.deletePiece(id: id)
+      if selectedPieceID == id { selectedPieceID = nil }
+      reloadPieces()
+    } catch {
+      workbenchFailure = "无法删除，请稍后重试。"
+    }
+  }
+
+  func dismissWorkbenchFailure() { workbenchFailure = nil }
 
   /// 点了 `[[某条笔记]]`。
   ///

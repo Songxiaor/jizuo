@@ -15,6 +15,9 @@ struct HistoryContentView: View {
   @Environment(\.openSettings) private var openSettings
   @Environment(\.openWindow) private var openWindow
   @State private var columnVisibility: NavigationSplitViewVisibility = .all
+  /// 「记一个新灵感」的输入框。
+  @State private var isNewSparkPresented = false
+  @State private var newSparkText = ""
   @State private var navigationTagsExpanded = true
   @FocusState private var isSearchFocused: Bool
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
@@ -108,8 +111,29 @@ struct HistoryContentView: View {
           // 两侧辅助列保持紧凑，剩余宽度全部让给右侧正文详情。
           navigationRail.navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 200)
         } content: {
-          sidebar.navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 260)
-        } detail: { detail }
+          // 工作台接管中间列：它列的是「正在做的创作」，和历史条目不是一种东西，
+          // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
+          Group {
+            if model.isWorkbenchActive {
+              WorkbenchListView(model: model, onNewSpark: { isNewSparkPresented = true })
+            } else {
+              sidebar
+            }
+          }
+          .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 260)
+        } detail: {
+          if model.isWorkbenchActive, let piece = model.selectedPiece {
+            PieceDeskView(model: model, piece: piece) { taskID in
+              // 稿子和素材都是记录，打开它们就是回到熟悉的详情页。
+              model.leaveWorkbench()
+              model.reveal(taskID: taskID)
+            }
+          } else if model.isWorkbenchActive {
+            workbenchPlaceholder
+          } else {
+            detail
+          }
+        }
           // 窗口级分栏细线：贯通工具栏直达窗口顶；系统玻璃主题走原生外观，
           // 图片灯箱打开时移除，避免细线盖在放大的图片上。
           .background(WindowColumnDividerInstaller(
@@ -130,6 +154,13 @@ struct HistoryContentView: View {
           .alert("删除结果", isPresented: $model.isDeleteOutcomePresented) {
             Button("好") { model.dismissDeleteOutcome() }
           } message: { Text(model.deleteOutcomeMessage) }
+          .sheet(isPresented: $isNewSparkPresented) { newSparkSheet }
+          .alert("工作台", isPresented: Binding(
+            get: { model.workbenchFailure != nil },
+            set: { if !$0 { model.dismissWorkbenchFailure() } }
+          )) {
+            Button("好") { model.dismissWorkbenchFailure() }
+          } message: { Text(model.workbenchFailure ?? "") }
           // 批量总结要花钱，确认弹窗里先给出粗估 token 量级再让用户点。
           .alert(
             model.batchSummaryConfirmationTitle,
@@ -363,6 +394,20 @@ struct HistoryContentView: View {
                   .disabled(!model.canBatchSummarize)
                   .accessibilityIdentifier("batch-summarize-history-context")
                 }
+                // 攒素材天然是跨来源的:一篇网页 + 两条笔记 + 一段转写。
+                // 所以入口放在每一行上,而不是只在工作台里面找。
+                let unfinished = model.pieces.filter { !$0.isFinished }
+                if !unfinished.isEmpty {
+                  Divider()
+                  Menu {
+                    ForEach(unfinished) { piece in
+                      Button(piece.title) { model.addMaterial(taskID: row.taskID, to: piece.id) }
+                    }
+                  } label: {
+                    Label("加入工作台", systemImage: "hammer")
+                  }
+                  .accessibilityIdentifier("add-material-to-piece")
+                }
                 Divider()
                 Button(role: .destructive) {
                   if !model.selectedTaskIDs.contains(row.taskID) {
@@ -435,6 +480,28 @@ struct HistoryContentView: View {
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("history-navigation-today-note")
+      }
+
+      // 工作台是第三种东西:上面是「抓来的资料」,笔记是「随手写的」,
+      // 这里是「正在做的作品」。它的单位是一件创作,不是一条记录,
+      // 所以自成一节而不是混进上面的筛选项。
+      Section {
+        Button { model.enterWorkbench() } label: {
+          HStack(spacing: 8) {
+            Image(systemName: "hammer")
+              .frame(width: 18)
+            Text("工作台")
+            Spacer()
+            let active = model.pieces.filter { !$0.isFinished }.count
+            if active > 0 {
+              countBadge(active, selected: model.isWorkbenchActive)
+            }
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(model.isWorkbenchActive ? Color.accentColor : Color.primary)
+        .accessibilityIdentifier("history-navigation-workbench")
       }
 
       if !model.navigationCounts.platforms.isEmpty {
@@ -602,6 +669,76 @@ struct HistoryContentView: View {
 
   private func copyHistoryURL(_ raw: String) {
     CopyFeedbackController.shared.copy(raw)
+  }
+
+  /// 工作台里没选中任何一件时的右侧。
+  private var workbenchPlaceholder: some View {
+    VStack(spacing: 12) {
+      Image(systemName: "hammer")
+        .font(.system(size: 32))
+        .foregroundStyle(.tertiary)
+      Text(model.pieces.isEmpty ? "还没有在做的创作" : "从左边选一件")
+        .font(.title3.weight(.medium))
+      Text(model.pieces.isEmpty
+        ? "一个念头写下来就是一件创作。"
+        : "打开后能看到它攒了哪些素材、稿子写到哪了。")
+        .font(.callout)
+        .foregroundStyle(.secondary)
+      if model.pieces.isEmpty {
+        Button("记一个新灵感") { isNewSparkPresented = true }
+          .buttonStyle(.borderedProminent)
+          .padding(.top, 4)
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+
+  /// 新灵感只要一句话。
+  ///
+  /// 不在这里问标题、不问素材、不问阶段——念头冒出来的那一刻，多问一个字
+  /// 都是在劝人别记。剩下的都可以之后再补。
+  private var newSparkSheet: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      Text("记一个新灵感")
+        .font(.headline)
+      Text("一句话就够，之后可以随时改。")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      TextField("比如：AI 时代的内容创作是可以偷懒的", text: $newSparkText, axis: .vertical)
+        .textFieldStyle(.plain)
+        .lineLimit(2...5)
+        .padding(10)
+        .background(
+          RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor))
+        )
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.hairline))
+        .onSubmit(commitNewSpark)
+      HStack {
+        Spacer()
+        Button("取消") {
+          isNewSparkPresented = false
+          newSparkText = ""
+        }
+        Button("开始") { commitNewSpark() }
+          .buttonStyle(.borderedProminent)
+          .disabled(newSparkText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+      }
+    }
+    .padding(20)
+    .frame(width: 420)
+  }
+
+  /// 建正文笔记 → 登记创作。两步都成了才关掉输入框。
+  private func commitNewSpark() {
+    let spark = newSparkText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !spark.isEmpty else { return }
+    manualLink.createNote(title: PieceDocument.noteTitle(forSpark: spark)) { taskID in
+      model.registerPiece(spark: spark, noteTaskID: taskID)
+      isNewSparkPresented = false
+      newSparkText = ""
+    } onFailure: { message in
+      model.reportFailure(message)
+    }
   }
 
   @ViewBuilder private var detail: some View {

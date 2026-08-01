@@ -289,7 +289,12 @@ final class ManualLinkViewModel: ObservableObject {
   ///
   /// 失败也必须有声音：错误经 `onFailure` 交给调用方，用主界面确定可见的通道呈现，
   /// 而不是写进只在抓取弹窗里显示的 `state`。
+  /// 建一条空白笔记。
+  ///
+  /// `title` 供工作台用：新建一件创作时，正文笔记直接以灵感原句命名，
+  /// 列表里一眼能认出是哪个念头，而不是又一条「无标题笔记」。
   func createNote(
+    title: String? = nil,
     onCreated: (@MainActor (TaskID) -> Void)? = nil,
     onFailure: (@MainActor (String) -> Void)? = nil
   ) {
@@ -299,7 +304,7 @@ final class ManualLinkViewModel: ObservableObject {
     }
     Task {
       do {
-        let document = try UserNoteDocument.make()
+        let document = try UserNoteDocument.make(title: title)
         let capture = try await ingestor.ingest(document)
         await MainActor.run { onCreated?(capture.taskID) }
       } catch {
