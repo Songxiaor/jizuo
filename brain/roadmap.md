@@ -144,12 +144,50 @@ GitHub 无法回答的是「装成功了多少、卡在哪一步、留存如何�
 
 **发现但只能由 Syc 解决**：
 
-- **`github.com/Songxiaor/linkdigest` 匿名访问返回 404**。官网的下载、反馈、仓库
-  三个链接全部指向它，**普通用户点进去都会是 404**。要么仓库仍是私有（发布前需设为
-  公开），要么 remote 里的用户名与实际不符。本机 `gh` token 已失效
-  （`gh auth status` 报 invalid），无法用认证身份查证。
+- **仓库需要设为 Public**（诊断已定论，见下节）。
 - 连带：官网下载按钮指向 `releases/latest`，而该仓库目前**没有任何 release**。
   发布时必须先建 release 并上传 DMG，否则按钮是死的。
+
+## 仓库公开前的核查（2026-08-01）
+
+**诊断结论：仓库存在，是私有的**，不是「不存在」或「用户名写错」。证据链：
+
+| 检查 | 结果 |
+|---|---|
+| 网络通路对照（`torvalds/linux`） | HTTP 200，通路正常 |
+| `github.com/Songxiaor`（用户主页） | HTTP 200，账号存在 |
+| `github.com/Songxiaor/linkdigest` 匿名 | **HTTP 404** |
+| 该账号的公开仓库列表 | 11 个，**不含 linkdigest**，也无相近命名 |
+| 本地 `git branch -r` | 有 5 个 origin 分支引用 |
+| `origin/codex/p0-rc-02b-baseline` 指向 | `9eecd9e`，就在本地历史中 |
+
+最后两行是决定性的：本地保有真实的远程跟踪引用，说明**曾经成功 push 过**——仓库
+必然存在，只是匿名不可见。
+
+**Syc 需要做的**：仓库 Settings › General › 最底部 Danger Zone › Change visibility →
+Public。另需 `gh auth login` 重新登录（当前 token 已 invalid）。
+
+**公开前的安全核查已做完，结论是可以安全公开**：
+
+- **全部 89 个提交的历史内容**扫过高置信度密钥模式（`sk-*`、`gh[pousr]_*`、
+  PRIVATE KEY、AWS AKIA）：**零命中**。
+- 更宽的可疑赋值扫描：命中项全部是测试假值（`not-a-real-key`、
+  `fake-key-for-catalog-only`、`must-not-be-written`）。
+- 历史中的敏感文件名：只有 `KeychainSecretStore.swift` 与检查脚本本身，都是源码。
+
+**公开后会一并可见、但不构成安全问题的**（Syc 知悉即可）：
+
+- **硬编码的个人路径**。`scripts/build-and-deploy-local.py` 里的
+  `/Users/song/Applications` **已改为 `Path.home() / "Applications"`**——它不只暴露
+  用户名，还让任何克隆者直接不可用（脚本会去写他们机器上不存在的目录）。已验证解析
+  结果在本机完全一致且部署实跑通过。`docs/` 下另有若干处（HANDOFF、ARCHITECTURE、
+  LEARNING_LOG），属于历史记录，改动会让证据失真，**未动**。
+- **扩展开发私钥的存放路径**出现在 `docs/ARCHITECTURE.md`。只是路径，私钥本体在仓库
+  外且权限 0600，不构成泄露。
+- **提交作者邮箱**：`107981494+Songxiaor@users.noreply.github.com` 与
+  `synara@users.noreply.github.com` 都是 noreply，安全；另有
+  `song@SongdeMacBook-Pro-2.local` 会暴露本机主机名。改它需要重写历史，风险大于收益，
+  **建议不动**。
 
 ## 品牌名收敛（2026-08-01，为改名做准备）
 

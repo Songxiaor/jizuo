@@ -23,7 +23,12 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_APPLICATIONS = Path("/Users/song/Applications")
+# 用当前用户的家目录，不写死某一台机器的路径。
+#
+# 原来这里是 /Users/song/Applications：仓库一旦公开，它既暴露了本机用户名，
+# 也让任何其他人克隆下来直接不可用——脚本会去写一个在他们机器上不存在的目录。
+# `~/Applications` 是 macOS 的标准用户级应用目录，对每个用户都成立。
+DEFAULT_APPLICATIONS = Path.home() / "Applications"
 DEFAULT_APP = DEFAULT_APPLICATIONS / "LinkDigest.app"
 DEFAULT_EXTENSION = DEFAULT_APPLICATIONS / "LinkDigest-extension-0.2.0"
 NATIVE_HOST_SCRIPTS = ROOT / "scripts/native-host"
