@@ -3733,16 +3733,14 @@ final class HistoryViewModel: ObservableObject {
       if case let .success(counts) = result {
         // Legacy captures carried automatic platform tags; the 平台 section
         // above already covers them, so keep the tag list content-only.
-        self?.navigationCounts = HistoryNavigationCounts(
-          all: counts.all,
-          recent: counts.recent,
-          unsummarized: counts.unsummarized,
-          favorite: counts.favorite,
-          platforms: counts.platforms,
-          tags: counts.tags.filter {
-            !HistoryTagNormalizer.platformSynonymNormalizedNames.contains($0.tag.normalizedName)
-          }
-        )
+        //
+        // 就地改 tags，不重建整个结构体：重建要手抄每一个字段，而 init 的默认值
+        // 会把漏抄变成静默的 0，不是编译错误。
+        var filtered = counts
+        filtered.tags = counts.tags.filter {
+          !HistoryTagNormalizer.platformSynonymNormalizedNames.contains($0.tag.normalizedName)
+        }
+        self?.navigationCounts = filtered
       }
     }
   }

@@ -67,7 +67,12 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   /// 用户自己写的笔记条数。默认 0，让既有构造点无需改动。
   public let notes: Int
   public let platforms: [HistoryNavigationPlatform]
-  public let tags: [HistoryNavigationTag]
+  /// 可变，好让调用方就地筛掉不想展示的标签。
+  ///
+  /// 原先 UI 层要过滤标签只能整个重建一遍这个结构体，而 `init` 的每个参数都有
+  /// 默认值——漏写一个字段不会报错，只会悄悄变成 0。侧边栏「我的笔记」长期显示
+  /// 0 就是这么来的。留一个可变字段，过滤就不再需要重建。
+  public var tags: [HistoryNavigationTag]
   public init(
     all: Int = 0,
     recent: Int = 0,

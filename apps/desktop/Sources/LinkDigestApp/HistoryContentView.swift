@@ -1183,6 +1183,19 @@ private struct HistoryDetailView: View {
   private var isUserNote: Bool {
     detail.snapshots.last?.sourceKind == CapturedDocument.Origin.userNote.rawValue
   }
+  /// 库里那份笔记正文，占位文字归一化成空串。
+  ///
+  /// 占位文字只是为了让新笔记通过「非空正文」校验，语义上等同于「还没写」，
+  /// 所以比对改动和回显草稿都必须先把它折叠掉，否则「没动过」会被判成有改动。
+  private func storedNoteBody(_ snapshot: ContentSnapshot) -> String {
+    let body = MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
+    return body == UserNoteDocument.placeholderBody ? "" : body
+  }
+  /// 草稿相对库里那份是否真的变了。
+  private func noteDraftIsDirty(_ snapshot: ContentSnapshot) -> Bool {
+    !transcriptionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && transcriptionDraft != storedNoteBody(snapshot)
+  }
   /// Source frontmatter belongs to the newest captured source, not a later
   /// local transcription snapshot that may have become the effective body.
   private var latestSourceSnapshot: ContentSnapshot? {
@@ -1289,7 +1302,12 @@ private struct HistoryDetailView: View {
   }
   /// For Douyin, source means a saved local transcription—not the duplicate
   /// caption. Other platforms retain their existing source-pane behavior.
-  private var showsReadingPanePicker: Bool { hasResultBody || hasSourceBody || hasLiveTranscription }
+  private var showsReadingPanePicker: Bool {
+    // 笔记只有一份正文，除非真的跑出了翻译或总结，否则「原文」是个只有一个选项的
+    // 分段控件——它不提供任何选择，只是看起来像有。
+    if isUserNote { return availableReadingPanes.count > 1 }
+    return hasResultBody || hasSourceBody || hasLiveTranscription
+  }
   /// 默认停在最近一次跑出来的那份结果上——刚点完翻译就该看到翻译。
   private var defaultReadingPane: ReadingPane {
     if let kind = latestArtifactRun?.run.kind { return pane(for: kind) }
@@ -1540,9 +1558,14 @@ private struct HistoryDetailView: View {
         }
 
         // 脑图区固定在媒体与原文之间：结构化输出先于全文，读图再读文。
-        MindMapSectionView(taskID: detail.task.id, model: model)
-          .padding(.top, 16)
-          .id(ReadingAnchor.module("mindmap"))
+        //
+        // 笔记不挂脑图空状态：写东西的页面上，一张「还没有脑图」的空卡片是在
+        // 催促用户对自己刚写的三行字做结构化，属于输出侧的事，不该占据写作视野。
+        if !isUserNote {
+          MindMapSectionView(taskID: detail.task.id, model: model)
+            .padding(.top, 16)
+            .id(ReadingAnchor.module("mindmap"))
+        }
 
         // Video-first captures keep playback before their short source text.
         // Substantive WeChat articles already rendered the reading surface above.
@@ -1557,9 +1580,13 @@ private struct HistoryDetailView: View {
             .id(ReadingAnchor.module("images"))
         }
 
-        AnnotationSectionView(taskID: detail.task.id, model: model)
-          .padding(.top, 20)
-          .id(ReadingAnchor.module("annotations"))
+        // 摘录是「读别人的东西时把话摘出来」。在自己写的笔记下面再挂一个叫
+        // 「我的笔记」的框，等于同一页里有两个可写的地方，谁也说不清该写哪个。
+        if !isUserNote {
+          AnnotationSectionView(taskID: detail.task.id, model: model)
+            .padding(.top, 20)
+            .id(ReadingAnchor.module("annotations"))
+        }
 
         HistoryTagEditor(tags: detail.tags, model: model)
           .padding(.top, 20)
@@ -1584,6 +1611,13 @@ private struct HistoryDetailView: View {
       // 切换条目时丢弃未保存的转写草稿，避免草稿串到别的记录。
       isEditingTranscription = false
       transcriptionDraft = ""
+      // 笔记直接落在可写状态。转写稿要先点「编辑」是对的——那是抓回来的事实，
+      // 改动应当是一个有意识的动作；笔记正相反，它存在的唯一目的就是被写。
+      // 打开自己的笔记还要先找一个「编辑」按钮，是把工具的结构当成了用户的意图。
+      if isUserNote, let snapshot = latestSnapshot {
+        transcriptionDraft = storedNoteBody(snapshot)
+        isEditingTranscription = true
+      }
       sessionMediaPlayback.detailBecameActive(
         taskID: detail.task.id,
         platform: latestSourceSnapshot?.platform ?? detail.snapshots.last?.platform,
@@ -2025,6 +2059,8 @@ private struct HistoryDetailView: View {
   /// 脑图、标注、标签区永远渲染（本身带空状态与添加入口），所以恒列；
   /// 图片区只在有本地图片时才存在。
   private var navigationModules: [ReadingModuleLink] {
+    // 笔记只有正文和标签两件东西，一条「模块 3」的导航条指向的是别人页面的结构。
+    if isUserNote { return [] }
     var links: [ReadingModuleLink] = [
       .init(anchor: "mindmap", title: "脑图", systemImage: "circle.hexagongrid")
     ]
@@ -2065,13 +2101,15 @@ private struct HistoryDetailView: View {
     .padding(.top, showsReadingPanePicker ? 12 : 16)
     .padding(.bottom, 16)
     .frame(maxWidth: .infinity, alignment: .leading)
+    // 卡片外壳的意思是「这里装着一份抓回来的东西」。笔记正文不是装进来的，
+    // 是当场写的——给它描边，写字的地方就变成了一个被展示的对象。
     .background(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
+        .fill(Color(nsColor: .controlBackgroundColor).opacity(isUserNote ? 0 : 0.55))
     )
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.05), lineWidth: 1)
+        .strokeBorder(Color.primary.opacity(isUserNote ? 0 : 0.05), lineWidth: 1)
     )
   }
 
@@ -2402,7 +2440,15 @@ private struct HistoryDetailView: View {
           || snapshot.sourceKind == CapturedDocument.Origin.userNote.rawValue {
           HStack(spacing: 10) {
             Spacer(minLength: 0)
-            if isEditingTranscription {
+            if isUserNote {
+              // 笔记常驻编辑态，所以既没有「编辑」也没有「取消」——从来没有进入
+              // 或退出这回事，只有「写了东西，存一下」。
+              Button("保存") { saveTranscriptionDraft(snapshot) }
+                .buttonStyle(.borderedProminent)
+                .disabled(model.isReadOnly || !noteDraftIsDirty(snapshot))
+                .keyboardShortcut("s", modifiers: .command)
+                .accessibilityIdentifier("history-transcription-edit-save")
+            } else if isEditingTranscription {
               Button("取消") {
                 isEditingTranscription = false
                 transcriptionDraft = ""
@@ -2441,11 +2487,21 @@ private struct HistoryDetailView: View {
               accent: NSColor(theme.accent),
               code: NSColor(theme.secondaryText)
             ),
-            lineSpacing: 6
+            lineSpacing: 6,
+            placeholder: isUserNote ? UserNoteDocument.placeholderBody : ""
           )
           .frame(minHeight: 320, maxHeight: .infinity)
-          .background(theme.isNative ? Color(nsColor: .textBackgroundColor) : theme.listPane)
-          .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hairline, lineWidth: 1))
+          // 笔记的编辑区就是这一页的正文，不再套一层描边的输入框——那层框是给
+          // 「在只读页面上临时改一段」用的，笔记没有那个「临时」。
+          .background(
+            isUserNote
+              ? Color.clear
+              : (theme.isNative ? Color(nsColor: .textBackgroundColor) : theme.listPane)
+          )
+          .overlay(
+            RoundedRectangle(cornerRadius: 8)
+              .stroke(isUserNote ? Color.clear : theme.hairline, lineWidth: 1)
+          )
           .accessibilityIdentifier("history-transcription-editor")
         } else {
           MarkdownContentView(

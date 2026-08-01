@@ -6,11 +6,41 @@ import SwiftUI
 /// 替换裸 `TextEditor`：后者把标题、代码、引用一律画成同一片灰字，写超过几行就
 /// 看不出结构。这里用 NSTextView + `MarkdownSyntaxHighlighter`，排版参数取自
 /// 阅读区同一套偏好，所以「写」和「读」是同一个东西的两个状态，不是两种字体。
-struct MarkdownEditorView: NSViewRepresentable {
+struct MarkdownEditorView: View {
   @Binding var text: String
   let font: NSFont
   let palette: MarkdownSyntaxHighlighter.Palette
   let lineSpacing: CGFloat
+  /// 空白时的提示。传空串则不显示。
+  var placeholder: String = ""
+
+  var body: some View {
+    MarkdownTextView(text: $text, font: font, palette: palette, lineSpacing: lineSpacing)
+      // 提示画在编辑器之上而不是塞进 `text`：塞进去它就是一段真的内容，会被
+      // 保存、被翻译、被搜到，用户还得先删掉它才能开始写。
+      .overlay(alignment: .topLeading) {
+        if text.isEmpty && !placeholder.isEmpty {
+          Text(placeholder)
+            .font(Font(font))
+            .foregroundStyle(.tertiary)
+            // 和 NSTextView 的 textContainerInset 对齐，否则提示和光标错开。
+            .padding(.leading, MarkdownTextView.contentInset.width + 5)
+            .padding(.top, MarkdownTextView.contentInset.height)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+      }
+  }
+}
+
+/// 承载 NSTextView 的那一层。
+private struct MarkdownTextView: NSViewRepresentable {
+  @Binding var text: String
+  let font: NSFont
+  let palette: MarkdownSyntaxHighlighter.Palette
+  let lineSpacing: CGFloat
+
+  static let contentInset = NSSize(width: 18, height: 16)
 
   func makeNSView(context: Context) -> NSScrollView {
     let scroll = NSTextView.scrollableTextView()
@@ -26,7 +56,7 @@ struct MarkdownEditorView: NSViewRepresentable {
     textView.isAutomaticTextReplacementEnabled = false
     textView.isAutomaticSpellingCorrectionEnabled = false
     textView.drawsBackground = false
-    textView.textContainerInset = NSSize(width: 18, height: 16)
+    textView.textContainerInset = Self.contentInset
     textView.string = text
     scroll.drawsBackground = false
     scroll.hasVerticalScroller = true
