@@ -2101,11 +2101,25 @@ final class HistoryViewModel: ObservableObject {
   }
 
   func canTidyTranscript(taskID: TaskID) -> Bool {
-    guard let detail, history != nil, transcriptTidier != nil, !isReadOnly,
-          detail.task.id == taskID,
-          !transcriptionState(for: taskID).isActive,
-          !transcriptTidyState(for: taskID).isActive else { return false }
-    return tidySourceText(taskID: taskID) != nil
+    transcriptTidyUnavailableReason(taskID: taskID) == nil
+  }
+
+  /// 「整理文稿」为什么现在不能点。可用时返回 nil。
+  ///
+  /// 这个按钮同时受五个条件约束，任何一条不满足都会让它变灰。而灰按钮在 SwiftUI 里
+  /// 颜色很淡、和旁边的说明文字混在一起，用户扫一眼根本注意不到它的存在——实际发生过
+  /// 「一直没看到这个功能」的反馈，功能其实一直都在。
+  ///
+  /// 所以判断和理由必须写在一起：`canTidyTranscript` 直接由本方法推导，两者不可能各改
+  /// 各的而说法不一致。顺序按「用户最可能撞上」排，先报最需要先解决的那个。
+  func transcriptTidyUnavailableReason(taskID: TaskID) -> String? {
+    guard let detail, detail.task.id == taskID, history != nil else { return "请先选中这条记录" }
+    if isReadOnly { return "这份历史当前只能浏览" }
+    if transcriptTidier == nil { return "需先在设置里配置聊天模型" }
+    if transcriptionState(for: taskID).isActive { return "转写进行中，完成后即可整理" }
+    if transcriptTidyState(for: taskID).isActive { return "正在整理…" }
+    if tidySourceText(taskID: taskID) == nil { return "需先完成转写，才有文稿可整理" }
+    return nil
   }
 
   func requestTranscriptTidy(taskID: TaskID, model: String?) {

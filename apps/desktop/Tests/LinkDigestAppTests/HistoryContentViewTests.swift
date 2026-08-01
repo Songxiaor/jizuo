@@ -1527,3 +1527,34 @@ final class HistoryContentViewTests: XCTestCase {
     return String(source[startRange.lowerBound..<endRange.lowerBound])
   }
 }
+
+/// 「整理文稿」按钮不能点时，必须说明为什么。
+///
+/// 这个按钮受五个条件约束，而灰掉的按钮在 SwiftUI 里颜色很淡，扫一眼注意不到——
+/// 实际收到过「一直没看到这个功能」的反馈，功能却一直都在。
+final class TranscriptTidyBlockedReasonTests: XCTestCase {
+  func testDisabledButtonAlwaysCarriesAReason() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryMediaPlayback.swift"),
+      encoding: .utf8
+    )
+    // 禁用状态与理由必须来自同一个来源，否则两者会各改各的、说法不一致。
+    XCTAssertTrue(source.contains("let tidyBlockedReason = model.transcriptTidyUnavailableReason("))
+    XCTAssertTrue(source.contains(".disabled(tidyBlockedReason != nil)"))
+    // 理由要显示出来，不能只放在悬停提示里——鼠标不停上去就看不到。
+    XCTAssertTrue(source.contains("history-transcript-tidy-blocked-reason"))
+  }
+
+  /// 判断与理由必须由同一个方法推导，不能是两套独立逻辑。
+  func testCanTidyIsDerivedFromTheReason() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryViewModel.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(source.contains("transcriptTidyUnavailableReason(taskID: taskID) == nil"))
+  }
+}

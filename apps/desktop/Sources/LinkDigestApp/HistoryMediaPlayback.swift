@@ -1841,13 +1841,28 @@ struct HistoryVideoPlayerCard: View {
       .help("把本机提取的音频分片发送到你配置的在线转写服务，获得更准的文字和标点。需在设置中配置在线转写模型。")
       .accessibilityIdentifier("history-video-transcription-online")
       // 转写后整理：只发送文字给聊天模型修标点/分段/错别字，不发送媒体。
+      let tidyBlockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
       Button("整理文稿") {
         model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
       }
       .controlSize(.small)
-      .disabled(!model.canTidyTranscript(taskID: taskID))
-      .help("把转写文字发送给你配置的聊天模型，修正标点、分段和明显错别字，不改写内容。原始转写稿保留在历史中。")
+      .disabled(tidyBlockedReason != nil)
+      .help(
+        tidyBlockedReason
+          ?? "把转写文字发送给你配置的聊天模型，修正标点、分段和明显错别字，不改写内容。原始转写稿保留在历史中。"
+      )
       .accessibilityIdentifier("history-transcript-tidy")
+      // 灰按钮必须自己说明为什么不能点。
+      //
+      // 这个按钮受五个条件约束，而灰掉的按钮在 SwiftUI 里颜色很淡、和旁边说明文字
+      // 混在一起，扫一眼注意不到——实际收到过「一直没看到这个功能」的反馈，功能却
+      // 一直都在。把理由摆在旁边，才不会让人以为功能不存在。
+      if let tidyBlockedReason {
+        Text(tidyBlockedReason)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("history-transcript-tidy-blocked-reason")
+      }
     }
   }
 
