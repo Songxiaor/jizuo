@@ -807,7 +807,7 @@ struct ProviderSettingsView: View {
       }
     }
     .formStyle(.grouped)
-    .contentMargins(.bottom, 24, for: .scrollContent)
+    .settingsDetailContentMargins()
   }
 
   private var appearanceTab: some View {

@@ -119,10 +119,13 @@ final class ProviderSettingsPresentationTests: XCTestCase {
 
   /// 各设置页的滚动内边距必须一致。
   ///
-  /// 原断言钉的是 generationTab 单独的 `.vertical, 16`。3f9dd83 重写这个视图时把
-  /// 三个 tab 统一成了 `.bottom, 24`，实现是有意的，过期的是断言——它从那以后
-  /// 一直红着。钉「三个 tab 用同一个值」而不是钉某个具体数字：真正会伤到用户的
-  /// 是切换 tab 时底部留白跳变，不是 24 还是 16。
+  /// 真正会伤到用户的是切换 tab 时底部留白跳变，所以钉的是「每个 tab 都走
+  /// 同一个入口」，不是某个具体数字。
+  ///
+  /// 原断言数的是 `.contentMargins(` 的出现次数。00f707a 把这几处收敛成
+  /// `.settingsDetailContentMargins()` 之后它就一直红着——实现是对的，
+  /// 过期的是断言。而这次实验室页确实漏接了统一入口、自己写了一份边距，
+  /// 说明这条测试盯的东西仍然会坏，只是原来的数法盯不住了。
   func testEverySettingsTabUsesTheSameScrollBottomMargin() throws {
     let source = try String(
       contentsOf: repositoryRoot().appendingPathComponent(
@@ -130,15 +133,28 @@ final class ProviderSettingsPresentationTests: XCTestCase {
       ),
       encoding: .utf8
     )
-    let occurrences = source.components(separatedBy: ".contentMargins(").count - 1
-    XCTAssertGreaterThanOrEqual(occurrences, 3, "设置页少于三处滚动内边距，视图结构可能已变")
+    let tabs = source.components(separatedBy: ".formStyle(.grouped)").count - 1
+    XCTAssertGreaterThanOrEqual(tabs, 4, "设置页少于四个 tab，视图结构可能已变")
     XCTAssertEqual(
-      source.components(separatedBy: ".contentMargins(.bottom, 24, for: .scrollContent)").count - 1,
-      occurrences,
-      "有 tab 用了与其它不同的滚动内边距，切换 tab 时底部留白会跳变"
+      source.components(separatedBy: ".settingsDetailContentMargins()").count - 1,
+      tabs,
+      "有 tab 没走统一的滚动内边距入口，切换 tab 时底部留白会跳变"
+    )
+    XCTAssertFalse(
+      source.contains(".contentMargins("),
+      "边距应当只在 settingsDetailContentMargins() 里定义一次"
     )
   }
 
+  /// 浏览器支持页把「接收服务健康」和「扩展装没装」分开说。
+  ///
+  /// 这两件事经常同时出问题，但原因和修法完全不同：接收服务挂了要重启 App，
+  /// 扩展没装要去浏览器里加载。混在一句话里说，用户只会重复试错误的那一边。
+  ///
+  /// 原断言逐条钉的是浏览器名和安装提示文案。9dbb4a1 把这些挪进档案表
+  /// (`BrowserRegistry`) 之后它就一直红着——实现是对的，过期的是断言。
+  /// 现在钉的是那次重构真正要守住的东西：**视图里不出现任何浏览器名**。
+  /// 加一个浏览器应该是往档案表加一条数据，不是回来改这个视图。
   func testBrowserSupportSeparatesReceiverHealthFromInstallationOwnership() throws {
     let source = try String(
       contentsOf: repositoryRoot().appendingPathComponent(
@@ -147,20 +163,32 @@ final class ProviderSettingsPresentationTests: XCTestCase {
       encoding: .utf8
     )
 
-    XCTAssertTrue(source.contains("App 接收服务"))
-    XCTAssertTrue(source.contains("配置提醒不等于传送失败"))
-    XCTAssertTrue(source.contains("Google Chrome"))
-    XCTAssertTrue(source.contains("在 Chrome 中加载扩展后即可同步"))
-    XCTAssertTrue(source.contains("在 Brave 中加载扩展后即可同步"))
-    XCTAssertTrue(source.contains("每个浏览器都需要单独加载扩展并同步一次"))
-    XCTAssertFalse(source.contains("Chrome / Brave"))
-    XCTAssertTrue(source.contains("配置已就绪"))
-    XCTAssertTrue(source.contains("连接到此 App"))
+    // 接收服务的状态自己占一行，和浏览器列表分开。
+    XCTAssertTrue(source.contains("receiverStatusLine"))
+    XCTAssertTrue(source.contains("接收服务"))
     XCTAssertTrue(source.contains("打开扩展文件夹"))
-    XCTAssertFalse(source.contains("备份并继续"))
-    XCTAssertFalse(source.contains("安装记录待确认"))
-    XCTAssertFalse(source.contains("日用 Host 与测试版 Host 不同"))
-    XCTAssertFalse(source.contains("临时切换到测试版 Host"))
+
+    // 浏览器名一律来自档案表。只看代码行——注释里举例说明「Chrome、Vivaldi、Arc」
+    // 是在解释设计，不是硬编码。
+    let code = source
+      .split(separator: "\n", omittingEmptySubsequences: false)
+      .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+      .joined(separator: "\n")
+    for name in ["Google Chrome", "Brave", "Microsoft Edge", "Chrome / Brave"] {
+      XCTAssertFalse(
+        code.contains(name),
+        "「\(name)」硬编码在视图里了；浏览器名应当来自 BrowserRegistry"
+      )
+    }
+    XCTAssertTrue(
+      source.contains("displayName"),
+      "视图应当读档案表里的 displayName"
+    )
+
+    // 这些是早先版本里会误导用户的说法，删掉之后不该回来。
+    for stale in ["备份并继续", "安装记录待确认", "日用 Host 与测试版 Host 不同", "临时切换到测试版 Host"] {
+      XCTAssertFalse(source.contains(stale), "「\(stale)」应当已经删掉")
+    }
   }
 
   func testReleasePipelinesFreezeAndBindTheExactProviderIconSet() throws {
@@ -262,25 +290,26 @@ final class ProviderSettingsPresentationTests: XCTestCase {
       "设置侧栏行的垂直刻度与主界面侧栏不一致，选中药丸会明显更粗")
   }
 
-  /// 「浏览器支持」页两个 Section 的行标题必须落在同一条竖线上。
+  /// 浏览器列表的每一行必须长得一样。
   ///
-  /// 接收状态行是 34×34 的图标瓦片，浏览器配置行原来是 24pt 宽的裸图标，于是
-  /// 「Google Chrome」比「App 已准备接收」左移 10pt，同一屏里直接可见。
-  func testBrowserSupportRowsShareOneIconColumnWidth() throws {
+  /// 浏览器名长度不同，状态词紧跟在名字后面时，状态列的起点就参差不齐——
+  /// 一屏里直接可见，看上去像几种不同的东西而不是一张列表。
+  ///
+  /// 原断言钉的是「接收状态行 34pt 瓦片 / 浏览器行 34pt 占位」这套对齐方式。
+  /// 9dbb4a1 把接收状态收成了一行 caption 文字、浏览器列表换成 `Grid`，
+  /// 那两个数字整个消失了，断言从此一直红着。关注点没变，承载方式变了：
+  /// 现在钉 Grid 的列对齐。
+  func testBrowserRowsAlignInColumns() throws {
     let source = try String(
       contentsOf: repositoryRoot().appendingPathComponent(
         "apps/desktop/Sources/LinkDigestApp/BrowserSupportSettingsView.swift"),
       encoding: .utf8)
 
-    let tile = section(in: source, from: "private var receiverStatusRow", to: "private func configurationRow")
-    XCTAssertTrue(
-      tile.contains(".frame(width: 34, height: 34)"),
-      "接收状态行的图标瓦片尺寸变了，浏览器行的占位宽度需要跟着改")
-
-    let row = section(in: source, from: "private func configurationRow", to: "private var receiverTitle")
-    XCTAssertTrue(
-      row.contains(".frame(width: 34)"),
-      "浏览器配置行的图标占位宽度与上方瓦片不一致，两个 Section 的标题不在同一列")
+    XCTAssertTrue(source.contains("Grid("), "浏览器列表不再用 Grid，多行时列会参差不齐")
+    let row = section(in: source, from: "private func browserStatusRow", to: "private func browserAction")
+    XCTAssertTrue(row.contains("GridRow {"), "浏览器行不在 Grid 的行结构里，列对齐不会生效")
+    XCTAssertGreaterThanOrEqual(
+      row.components(separatedBy: ".gridColumnAlignment(.leading)").count - 1, 2,
+      "名字列和状态列都要显式左对齐，否则 Grid 会按各自内容居中")
   }
-
 }

@@ -23,6 +23,14 @@ struct BrowserSupportSettingsView: View {
     model.statuses.filter { $0.state != .unavailable }.map(\.browser)
   }
 
+  /// 空态里列的浏览器名同样来自档案表。
+  ///
+  /// 写死一句「没有检测到 Google Chrome」看着没问题，但档案表里加了浏览器之后
+  /// 它不会跟着变——用户装了新支持的浏览器，页面还在让他去装 Chrome。
+  private var supportedBrowserNames: String {
+    BrowserSupportBrowser.allKnown.map(\.displayName).joined(separator: "、")
+  }
+
   var body: some View {
     Form {
       // 「装一次扩展就自动同步」本是一件事，原来拆成 App 接收 / 浏览器配置 /
@@ -70,7 +78,7 @@ struct BrowserSupportSettingsView: View {
             // 一个都没检测到是可能的（没装 Chrome 的机器）。空 Grid 会让上面那行标题
             // 孤零零地悬着，看不出是「还没扫」还是「扫完了没有」。
             if detectedBrowsers.isEmpty && !model.isLoading {
-              Text("没有检测到 Google Chrome。装好之后点「重新检查」。")
+              Text("没有检测到\(supportedBrowserNames)。装好之后点「重新检查」。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("browser-support-empty")
