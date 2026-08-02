@@ -117,7 +117,11 @@ struct HistoryContentView: View {
           // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
           Group {
             if model.isWorkbenchActive, isWorkbenchEnabled {
-              WorkbenchListView(model: model, onNewSpark: { isNewSparkPresented = true })
+              WorkbenchListView(
+                model: model,
+                onNewSpark: { isNewSparkPresented = true },
+                onTakeTopic: takeTopic
+              )
             } else {
               sidebar
             }
@@ -784,6 +788,18 @@ struct HistoryContentView: View {
     }
     .padding(20)
     .frame(width: 420)
+  }
+
+  /// 从一条选题开始写。
+  ///
+  /// 和「记一个新灵感」走同一条路:先建正文笔记，再登记创作。差别只在
+  /// 灵感那句话是用户敲的还是从候选来的——以及候选会把素材一起带过去。
+  private func takeTopic(_ candidate: TopicCandidate) {
+    manualLink.createPieceDraft(
+      title: PieceDocument.noteTitle(forSpark: candidate.title)
+    ) { taskID in
+      model.takeTopic(candidate, noteTaskID: taskID)
+    }
   }
 
   /// 建正文笔记 → 登记创作。两步都成了才关掉输入框。

@@ -577,6 +577,10 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var draftingPieceID: PieceID?
   /// 起草时流式产出的文字,直接往界面上刷。
   @Published private(set) var draftingText = ""
+  /// 选题板上的候选,新的一天在前。
+  @Published private(set) var topicCandidates: [TopicCandidate] = []
+  /// 正在出选题。
+  @Published private(set) var isGeneratingTopics = false
   @Published var showsAllNavigationTags = false
   @Published private(set) var tagErrorCode: StorageErrorCode?
   @Published private(set) var transcriptionState: TranscriptionUIState = .idle {
@@ -950,6 +954,7 @@ final class HistoryViewModel: ObservableObject {
     isCapturedMediaAutoSaveFailurePresented = false
     isWorkbenchActive = false; pieces = []; selectedPieceID = nil
     selectedPiece = nil; pieceMaterials = []; workbenchFailure = nil
+    topicCandidates = []
     guard history != nil else { listState = .failed; detailState = .idle; return }
     reload()
     // 侧栏那个「进行中 N」和列表右键的「加入工作台」都要用到这份列表，
@@ -3410,6 +3415,7 @@ final class HistoryViewModel: ObservableObject {
   func enterWorkbench() {
     isWorkbenchActive = true
     reloadPieces()
+    reloadTopicCandidates()
   }
 
   func leaveWorkbench() {
@@ -3460,6 +3466,168 @@ final class HistoryViewModel: ObservableObject {
       workbenchFailure = nil
     } catch {
       workbenchFailure = "无法新建创作，请稍后重试。"
+    }
+  }
+
+  // MARK: - 每日选题板
+
+  func reloadTopicCandidates() {
+    guard let history else { topicCandidates = []; return }
+    topicCandidates = (try? history.recentTopicCandidates()) ?? []
+  }
+
+  /// 到点了就自动出一次。
+  ///
+  /// 「定时」在这里的含义很有限:App 开着的时候，到点了跑一次。不装后台
+  /// 守护、不注册 launchd——那要处理权限、卸载残留、App 没在跑时结果往哪放，
+  /// 是另一个量级的东西。而这个功能的价值是「早上打开就已经有了」，
+  /// App 开着跑就能做到。
+  ///
+  /// 调用点是「进入工作台」而不是定时器:用户没在看的时候跑完，产出也
+  /// 只是躺在那——他下次进来照样是「打开就有」。
+  func runScheduledTopicsIfDue(
+    schedule: TopicSchedule, lastRun: Date?, voice: String? = nil, now: Date = Date()
+  ) -> Bool {
+    guard schedule.shouldRun(now: now, lastRun: lastRun), canGenerateTopics else { return false }
+    generateTopics(voice: voice)
+    return true
+  }
+
+  func topicUnavailableReason() -> String? {
+    if history == nil { return "历史存储不可用。" }
+    if isReadOnly { return "这份历史当前只能浏览。" }
+    if draftAgent == nil { return "需要先安装 Claude Code。" }
+    if isGeneratingTopics { return "正在出选题…" }
+    if draftingPieceID != nil { return "正在生成，等这一次结束。" }
+    return nil
+  }
+
+  var canGenerateTopics: Bool { topicUnavailableReason() == nil }
+
+  /// 出今天的选题。
+  ///
+  /// 素材由取数层给,提示词只负责加工。生成失败或一条都没解析出来时
+  /// 都要说清楚——用户看到空白选题板时,「没素材」「模型没跑起来」
+  /// 「跑了但格式没对上」是三件要采取不同行动的事。
+  func generateTopics(recall: TopicRecall = .default, voice: String? = nil, count: Int = 5) {
+    guard let history, let agent = draftAgent, canGenerateTopics else { return }
+
+    let now = nowMilliseconds()
+    var materials: [TopicPrompt.Material] = []
+    var taskIDs: [TaskID] = []
+    for lane in recall.lanes {
+      for recalled in (try? history.recallMaterials(lane: lane, now: now)) ?? [] {
+        guard recalled.isAvailable, !taskIDs.contains(recalled.id) else { continue }
+        guard let detail = try? history.detail(taskID: recalled.id),
+              let snapshot = detail.snapshots.last else { continue }
+        taskIDs.append(recalled.id)
+        materials.append(.init(
+          index: materials.count + 1,
+          title: recalled.title,
+          lane: lane.name,
+          excerpt: MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
+        ))
+      }
+    }
+
+    guard materials.count >= 2 else {
+      // 一条选题至少要让两份素材发生关系,一份素材出不了选题。
+      workbenchFailure = "素材还不够。攒够两份以上再来出选题。"
+      return
+    }
+
+    let recent = topicCandidates.prefix(20).map(\.title)
+    let prompt = TopicPrompt.build(
+      materials: materials, count: count, recentTopics: recent, voice: voice
+    )
+    let workingDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("jizuo-agent", isDirectory: true)
+
+    isGeneratingTopics = true
+    workbenchFailure = nil
+
+    Task { [weak self] in
+      do {
+        let text = try await agent.run(
+          .init(prompt: prompt, workingDirectory: workingDirectory)
+        ) { _ in }
+        await MainActor.run {
+          guard let self else { return }
+          self.applyTopics(text, materialTaskIDs: taskIDs, generatedAt: now)
+          self.isGeneratingTopics = false
+        }
+      } catch {
+        await MainActor.run {
+          guard let self else { return }
+          self.isGeneratingTopics = false
+          self.workbenchFailure = Self.draftFailureMessage(error)
+        }
+      }
+    }
+  }
+
+  private func applyTopics(_ text: String, materialTaskIDs: [TaskID], generatedAt: Int64) {
+    guard let history else { return }
+    let parsed = TopicPrompt.parse(text)
+    guard !parsed.isEmpty else {
+      // 跑起来了但一条都没解析出来。这和「没跑起来」是两回事,
+      // 说错了用户会去重装 Claude Code,而真正该做的是再跑一次。
+      workbenchFailure = "这次的产出没对上格式，一条都没收下。再跑一次试试。"
+      return
+    }
+    let day = TopicCandidate.dayStart(of: Date(timeIntervalSince1970: Double(generatedAt) / 1000))
+    let candidates = parsed.enumerated().map { offset, item in
+      TopicCandidate(
+        dayStartMilliseconds: day,
+        title: item.title,
+        summary: item.summary,
+        // 模型给的是素材编号,要换回真正的 id。编号越界就丢掉那一个,
+        // 不丢整条候选——标题和摘要本身仍然有用。
+        materialTaskIDs: item.materialIndexes.compactMap { index in
+          index >= 1 && index <= materialTaskIDs.count ? materialTaskIDs[index - 1] : nil
+        },
+        isOutOfBounds: item.isOutOfBounds,
+        createdAtMilliseconds: generatedAt + Int64(offset)
+      )
+    }
+    do {
+      try history.insertTopicCandidates(candidates)
+      reloadTopicCandidates()
+    } catch {
+      workbenchFailure = "选题没能存下来，请稍后重试。"
+    }
+  }
+
+  func declineTopic(_ id: UUID) {
+    guard let history else { return }
+    // 划掉的不删——「这类角度他从来不选」只能从被否决的东西里得出来。
+    try? history.setTopicVerdict(.declined, for: id)
+    reloadTopicCandidates()
+  }
+
+  /// 选中一条候选,把它开成一件创作。
+  ///
+  /// 候选带来的素材直接挂上去:用户选它就是因为那几份素材的组合,
+  /// 让他进去再手动找一遍,等于把他刚做完的判断扔掉重来。
+  func takeTopic(_ candidate: TopicCandidate, noteTaskID: TaskID) {
+    guard let history else { return }
+    let id = PieceID()
+    let now = nowMilliseconds()
+    do {
+      try history.createPiece(
+        id: id, spark: candidate.title, noteTaskID: noteTaskID, createdAtMilliseconds: now
+      )
+      for taskID in candidate.materialTaskIDs {
+        try? history.addMaterial(taskID: taskID, to: id, addedAtMilliseconds: now)
+      }
+      try? history.setTopicVerdict(.taken, for: candidate.id)
+      reloadTopicCandidates()
+      isWorkbenchActive = true
+      reloadPieces()
+      selectedPieceID = id
+      workbenchFailure = nil
+    } catch {
+      workbenchFailure = "无法从这条选题开始，请稍后重试。"
     }
   }
 

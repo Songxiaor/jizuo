@@ -138,11 +138,15 @@ struct PieceCard: View {
 struct WorkbenchListView: View {
   @ObservedObject var model: HistoryViewModel
   let onNewSpark: () -> Void
+  let onTakeTopic: (TopicCandidate) -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
+      // 第一层:按天滚动的选题板，永远在长。第二层(进行中的创作)在它下面。
+      TopicBoardView(model: model, onTake: onTakeTopic)
+      Divider()
       HStack {
-        Text("工作台")
+        Text("在做的")
           .font(.system(size: 13, weight: .semibold))
           .foregroundStyle(.secondary)
         Spacer()

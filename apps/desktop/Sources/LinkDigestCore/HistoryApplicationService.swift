@@ -82,6 +82,24 @@ public struct HistoryApplicationService: Sendable {
     try repository.draftRevisionPairs(limit: limit)
   }
 
+  // MARK: - 每日选题板
+
+  public func recallMaterials(lane: TopicRecall.Lane, now: Int64) throws -> [PieceMaterial] {
+    try repository.recallMaterials(lane: lane, now: now)
+  }
+  public func insertTopicCandidates(_ candidates: [TopicCandidate]) throws {
+    try repository.insertTopicCandidates(candidates)
+  }
+  public func topicCandidates(dayStartMilliseconds: Int64) throws -> [TopicCandidate] {
+    try repository.topicCandidates(dayStartMilliseconds: dayStartMilliseconds)
+  }
+  public func recentTopicCandidates(limit: Int = 60) throws -> [TopicCandidate] {
+    try repository.recentTopicCandidates(limit: limit)
+  }
+  public func setTopicVerdict(_ verdict: TopicCandidate.Verdict, for id: UUID) throws {
+    try repository.setTopicVerdict(verdict, for: id)
+  }
+
   public func noteID(matchingTitle title: String) throws -> TaskID? {
     try repository.noteID(matchingTitle: title)
   }

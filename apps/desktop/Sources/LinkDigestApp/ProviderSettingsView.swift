@@ -45,6 +45,20 @@ struct ProviderSettingsView: View {
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
   @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchEnabled = false
   @AppStorage(VoiceSettings.storageKey) private var voiceSettingsRaw = ""
+  @AppStorage(TopicSchedule.storageKey) private var topicScheduleRaw = ""
+
+  private func scheduleBinding<Value>(
+    _ keyPath: WritableKeyPath<TopicSchedule, Value>
+  ) -> Binding<Value> {
+    Binding(
+      get: { TopicSchedule.decoded(from: topicScheduleRaw)[keyPath: keyPath] },
+      set: { newValue in
+        var schedule = TopicSchedule.decoded(from: topicScheduleRaw)
+        schedule[keyPath: keyPath] = newValue
+        topicScheduleRaw = schedule.encoded()
+      }
+    )
+  }
 
   /// 把整份表达方式的某一项做成 Binding。
   ///
@@ -744,6 +758,38 @@ struct ProviderSettingsView: View {
               .accessibilityIdentifier("labs-workbench-toggle")
           }
         ) { EmptyView() }
+      }
+
+      Section {
+        settingCard(
+          title: "每天自动出选题",
+          summary: "App 开着的时候，到点跑一次，从素材库里出几条不同角度的选题。",
+          details: "错过那一分钟也没关系：判据是「今天的触发点已经过了、今天还没跑过」，所以十点才开电脑照样会跑。自动跑会花掉订阅额度，所以默认关着。",
+          controlWidth: .full
+        ) {
+          VStack(alignment: .leading, spacing: 10) {
+            Toggle("每天自动出选题", isOn: scheduleBinding(\.isEnabled))
+              .toggleStyle(.switch)
+              .labelsHidden()
+              .accessibilityIdentifier("topic-schedule-enabled")
+            if TopicSchedule.decoded(from: topicScheduleRaw).isEnabled {
+              HStack(spacing: 8) {
+                Text("时间").font(.caption).foregroundStyle(.secondary)
+                Picker("", selection: scheduleBinding(\.hour)) {
+                  ForEach(0..<24, id: \.self) { Text(String(format: "%02d", $0)).tag($0) }
+                }
+                .labelsHidden()
+                .frame(width: 62)
+                Text(":").foregroundStyle(.secondary)
+                Picker("", selection: scheduleBinding(\.minute)) {
+                  ForEach([0, 15, 30, 45], id: \.self) { Text(String(format: "%02d", $0)).tag($0) }
+                }
+                .labelsHidden()
+                .frame(width: 62)
+              }
+            }
+          }
+        }
       }
 
       // 表达方式属于工作台,不属于「输出沉淀」:它是你主动定义的加工参数,
