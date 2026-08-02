@@ -182,7 +182,7 @@ def load_app_config(root: Path | None = None) -> dict[str, Any]:
         "executable": "LinkDigestApp",
         "bundleIdentifier": "com.syc.linkdigest",
         "bundleIdentifierStatus": "engineering-candidate",
-        "shortVersion": "0.2.0",
+        "shortVersion": "0.2.1",
         "bundleVersion": "1",
         "minimumMacOS": "15.0",
         "category": "public.app-category.productivity",
