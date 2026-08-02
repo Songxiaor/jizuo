@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # 也让任何其他人克隆下来直接不可用——脚本会去写一个在他们机器上不存在的目录。
 # `~/Applications` 是 macOS 的标准用户级应用目录，对每个用户都成立。
 DEFAULT_APPLICATIONS = Path.home() / "Applications"
-DEFAULT_APP = DEFAULT_APPLICATIONS / "LinkDigest.app"
+DEFAULT_APP: Path | None = None  # 在 main() 里按 config 的 appName 解析
 DEFAULT_EXTENSION = DEFAULT_APPLICATIONS / "LinkDigest-extension-0.2.0"
 NATIVE_HOST_SCRIPTS = ROOT / "scripts/native-host"
 
@@ -99,7 +99,11 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    app_destination = args.app_destination.resolve(strict=False)
+    # `.app` 的文件名就是 Dock 和 Finder 显示的名字，真相源只有 app-release.json
+    # 的 appName 一处；这里跟着它走，改名时不用再记得同步这个脚本。
+    app_config_for_name = release_unit.load_app_config(ROOT)
+    default_app = DEFAULT_APPLICATIONS / f"{app_config_for_name['appName']}.app"
+    app_destination = (args.app_destination or default_app).resolve(strict=False)
     extension_destination = args.extension_destination.resolve(strict=False)
     if not args.replace:
         raise RuntimeError("refusing to replace daily-use artifacts without --replace")
@@ -144,7 +148,7 @@ def main() -> int:
         )
         stable_host.verify_package(host_package, ROOT)
 
-        staged_app = work / "LinkDigest.app"
+        staged_app = work / f"{app_config['appName']}.app"
         release_unit.build_app_bundle(
             staged_app,
             binary_root / app_config["executable"],

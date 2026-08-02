@@ -1,6 +1,6 @@
 {
-  "appName": "LinkDigest",
   "appDisplayName": "汲作",
+  "appName": "汲作",
   "architectures": [
     "arm64",
     "x86_64"

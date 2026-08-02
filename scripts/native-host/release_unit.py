@@ -40,7 +40,14 @@ INTERNAL_ERROR = 70
 
 AUDIT_PREFIX = "linkdigest-r4a-release."
 APP_CONFIG_RELATIVE = Path("config/app-release.json")
-APP_BUNDLE = "LinkDigest.app"
+# `.app` 的文件名。Dock 和 Finder 显示的就是它——CFBundleDisplayName 管的是
+# 菜单栏,管不到这里,所以产品名要在 Dock 里可见就必须改这一处。
+#
+# 代价写在这里免得下次又被当成"随便改改":native host manifest 里存的是
+# 指向 bundle 内部的**绝对路径**,改名会让已装的扩展立刻找不到 Host
+# (表现为 NATIVE_HOST_NOT_FOUND)。改名后每台机器都要重装一次浏览器支持。
+APP_NAME = "汲作"
+APP_BUNDLE = f"{APP_NAME}.app"
 RESOURCE_BUNDLE = "LinkDigest_LinkDigestCore.bundle"
 APP_ICON_FILE = "AppIcon.icns"
 PLATFORM_ICONS_DIRECTORY = "PlatformIcons"
@@ -170,7 +177,7 @@ def load_app_config(root: Path | None = None) -> dict[str, Any]:
     if type(config["formatVersion"]) is not int or config["formatVersion"] != 1:
         reject("app release formatVersion must be integer 1")
     exact_strings = {
-        "appName": "LinkDigest",
+        "appName": APP_NAME,
         "iconFile": APP_ICON_FILE,
         "executable": "LinkDigestApp",
         "bundleIdentifier": "com.syc.linkdigest",
