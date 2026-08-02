@@ -1386,6 +1386,142 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  // MARK: - 每日选题板
+
+  public func recallMaterials(lane: TopicRecall.Lane, now: Int64) throws -> [PieceMaterial] {
+    let range = TopicRecall.range(for: lane.window, now: now)
+    return try database.read { db in
+      var conditions = ["t.updated_at_ms BETWEEN ? AND ?"]
+      var arguments: [DatabaseValueConvertible] = [range.from, range.through]
+
+      // 草稿不能当素材：它是这套系统自己的产物，喂回去只会让模型
+      // 越来越像它自己写的东西。
+      conditions.append("t.canonical_url NOT LIKE ?")
+      arguments.append("\(CanonicalURL.draftScheme):%")
+
+      if !lane.tags.isEmpty {
+        let placeholders = lane.tags.map { _ in "?" }.joined(separator: ", ")
+        conditions.append("""
+          EXISTS (
+            SELECT 1 FROM task_tags tt
+            JOIN tags g ON g.id = tt.tag_id
+            WHERE tt.task_id = t.id AND g.normalized_name IN (\(placeholders)) COLLATE NOCASE
+          )
+          """)
+        arguments.append(contentsOf: lane.tags.map { $0.lowercased() })
+      }
+      arguments.append(max(0, lane.limit))
+
+      return try Row.fetchAll(db, sql: """
+        SELECT t.id AS task_id, t.updated_at_ms AS added_at_ms,
+          t.canonical_url AS canonical_url, COALESCE(s.title, '') AS title
+        FROM tasks t
+        LEFT JOIN content_snapshots s ON s.task_id = t.id
+          AND s.sequence = (SELECT MAX(sequence) FROM content_snapshots x WHERE x.task_id = t.id)
+        WHERE \(conditions.joined(separator: " AND "))
+        ORDER BY t.updated_at_ms DESC
+        LIMIT ?
+        """, arguments: StatementArguments(arguments)).map { row in
+        let id: TaskID = requiredID(row["task_id"])
+        let canonical: String? = row["canonical_url"]
+        let title: String = row["title"] ?? ""
+        let host = canonical.map {
+          $0.hasPrefix(HistoryPlatformDisplay.noteURLPrefix)
+            ? HistoryPlatformDisplay.noteHost
+            : (URLComponents(string: $0)?.host ?? "")
+        } ?? ""
+        return PieceMaterial(
+          id: id,
+          title: title.isEmpty ? (canonical ?? "已不在") : title,
+          host: host,
+          addedAtMilliseconds: row["added_at_ms"] ?? 0,
+          isAvailable: canonical != nil
+        )
+      }
+    }
+  }
+
+  public func insertTopicCandidates(_ candidates: [TopicCandidate]) throws {
+    guard !candidates.isEmpty else { return }
+    try database.write { db in
+      for candidate in candidates {
+        try db.execute(sql: """
+          INSERT INTO topic_candidates
+            (id, day_start_ms, title, summary, is_out_of_bounds, verdict, created_at_ms)
+          VALUES (?, ?, ?, ?, ?, ?, ?)
+          """, arguments: [
+            candidate.id.uuidString.lowercased(),
+            candidate.dayStartMilliseconds,
+            String(candidate.title.prefix(500)),
+            // 截断而不是拒绝：模型偶尔无视字数要求，那时该被处理的是数据，
+            // 不该让用户看到「今天没出选题」。
+            String(candidate.summary.prefix(400)),
+            candidate.isOutOfBounds ? 1 : 0,
+            candidate.verdict.rawValue,
+            candidate.createdAtMilliseconds,
+          ])
+        for taskID in candidate.materialTaskIDs {
+          // 素材可能在生成过程中被删了。这条关联进不去不该让整批候选失败——
+          // 候选本身还是有用的，只是少了一份出处。
+          try? db.execute(sql: """
+            INSERT OR IGNORE INTO topic_candidate_materials (candidate_id, task_id)
+            VALUES (?, ?)
+            """, arguments: [candidate.id.uuidString.lowercased(), taskID.rawValue])
+        }
+      }
+    }
+  }
+
+  public func topicCandidates(dayStartMilliseconds: Int64) throws -> [TopicCandidate] {
+    try database.read { db in
+      try fetchCandidates(db, sql: """
+        SELECT * FROM topic_candidates WHERE day_start_ms = ? ORDER BY created_at_ms
+        """, arguments: [dayStartMilliseconds])
+    }
+  }
+
+  public func recentTopicCandidates(limit: Int) throws -> [TopicCandidate] {
+    try database.read { db in
+      try fetchCandidates(db, sql: """
+        SELECT * FROM topic_candidates
+        ORDER BY day_start_ms DESC, created_at_ms
+        LIMIT ?
+        """, arguments: [max(0, limit)])
+    }
+  }
+
+  public func setTopicVerdict(_ verdict: TopicCandidate.Verdict, for id: UUID) throws {
+    try database.write { db in
+      try db.execute(sql: "UPDATE topic_candidates SET verdict = ? WHERE id = ?",
+                     arguments: [verdict.rawValue, id.uuidString.lowercased()])
+      guard db.changesCount == 1 else { throw RepositoryFailure.notFound }
+    }
+  }
+
+  private func fetchCandidates(
+    _ db: Database, sql: String, arguments: StatementArguments
+  ) throws -> [TopicCandidate] {
+    let rows = try Row.fetchAll(db, sql: sql, arguments: arguments)
+    return try rows.compactMap { row -> TopicCandidate? in
+      guard let uuid = UUID(uuidString: row["id"]),
+            let verdict = TopicCandidate.Verdict(rawValue: row["verdict"] ?? "")
+      else { return nil }
+      let materials = try String.fetchAll(db, sql: """
+        SELECT task_id FROM topic_candidate_materials WHERE candidate_id = ?
+        """, arguments: [row["id"] as String? ?? ""]).compactMap { TaskID($0) }
+      return TopicCandidate(
+        id: uuid,
+        dayStartMilliseconds: row["day_start_ms"] ?? 0,
+        title: row["title"] ?? "",
+        summary: row["summary"] ?? "",
+        materialTaskIDs: materials,
+        isOutOfBounds: (row["is_out_of_bounds"] as Int? ?? 0) == 1,
+        verdict: verdict,
+        createdAtMilliseconds: row["created_at_ms"] ?? 0
+      )
+    }
+  }
+
   public func noteID(matchingTitle title: String) throws -> TaskID? {
     let normalized = WikiLink.normalizedTitle(title)
     guard !normalized.isEmpty else { return nil }

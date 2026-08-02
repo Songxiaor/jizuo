@@ -290,6 +290,22 @@ public protocol HistoryRepository: Sendable {
   func materials(of pieceID: PieceID) throws -> [PieceMaterial]
   func deletePiece(id: PieceID) throws
 
+  // MARK: - 每日选题板
+
+  /// 按一路召回规格取素材。
+  ///
+  /// 取数是确定性的：时间窗口、条数、标签匹配全在 SQL 里。
+  /// 语义判断（哪些能碰撞）留给模型——把「哪些素材有意思」也交给模型，
+  /// 它就得先读完整个素材库。
+  func recallMaterials(lane: TopicRecall.Lane, now: Int64) throws -> [PieceMaterial]
+  /// 写入一批候选。同一天可以多批，追加不覆盖。
+  func insertTopicCandidates(_ candidates: [TopicCandidate]) throws
+  /// 某一天的候选。
+  func topicCandidates(dayStartMilliseconds: Int64) throws -> [TopicCandidate]
+  /// 最近 N 天里出现过的候选，新的在前。用来翻选题板。
+  func recentTopicCandidates(limit: Int) throws -> [TopicCandidate]
+  func setTopicVerdict(_ verdict: TopicCandidate.Verdict, for id: UUID) throws
+
   /// 按标题找一条笔记，供 `[[标题]]` 跳转用。找不到返回 nil。
   ///
   /// 只在笔记里找：双链是笔记之间的东西，链到一篇抓来的网页上没有意义——
@@ -442,6 +458,13 @@ public extension HistoryRepository {
     throw RepositoryFailure.unavailable
   }
   func recordPieceEvent(_: PieceEvent) throws { throw RepositoryFailure.unavailable }
+  func recallMaterials(lane _: TopicRecall.Lane, now _: Int64) throws -> [PieceMaterial] { [] }
+  func insertTopicCandidates(_: [TopicCandidate]) throws { throw RepositoryFailure.unavailable }
+  func topicCandidates(dayStartMilliseconds _: Int64) throws -> [TopicCandidate] { [] }
+  func recentTopicCandidates(limit _: Int) throws -> [TopicCandidate] { [] }
+  func setTopicVerdict(_: TopicCandidate.Verdict, for _: UUID) throws {
+    throw RepositoryFailure.unavailable
+  }
   func pieceEvents(of _: PieceID) throws -> [PieceEvent] { [] }
   func draftRevisionPairs(limit _: Int) throws -> [DraftRevisionPair] { [] }
   func addMaterial(taskID _: TaskID, to _: PieceID, addedAtMilliseconds _: Int64) throws {
