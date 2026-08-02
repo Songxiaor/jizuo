@@ -73,10 +73,15 @@ def sign_release(app: Path, bundle_identifier: str) -> None:
     run("/usr/bin/codesign", "--verify", "--deep", "--strict", str(app))
 
 
-INSTALL_NOTE = """LinkDigest 安装说明
+# 说明里出现的名字必须是**用户在 Finder 和系统弹窗里真正看到的那个**。
+# App 的 CFBundleDisplayName 是「汲作」,而这份说明原本通篇写 LinkDigest——
+# 于是它让用户去找「已阻止使用 LinkDigest」那一行,而系统显示的是「汲作」。
+# 在一个用户已经被拦下、正在犯嘀咕的时刻,让他找一个不存在的字符串,
+# 是这份说明唯一不能犯的错。名字取自 config/app-release.json,不再手写。
+INSTALL_NOTE_TEMPLATE = """{name} 安装说明
 ====================
 
-1. 把 LinkDigest 拖进「应用程序」文件夹。
+1. 把 {name} 拖进「应用程序」文件夹。
 
 2. 第一次打开会被系统拦下。
 
@@ -88,10 +93,10 @@ INSTALL_NOTE = """LinkDigest 安装说明
 
 3. 怎么打开：
 
-   · 双击 LinkDigest，看到拦截提示后点「完成」或「好」
+   · 双击 {name}，看到拦截提示后点「完成」或「好」
    · 打开「系统设置」→「隐私与安全性」
    · 往下滚到最底部，会看到一行
-     "已阻止使用 LinkDigest，因为来自身份不明的开发者"
+     "已阻止使用 {name}，因为来自身份不明的开发者"
    · 点它右边的「仍要打开」
    · 再确认一次，输入你的开机密码
 
@@ -110,7 +115,7 @@ INSTALL_NOTE = """LinkDigest 安装说明
    · 选择本 DMG 里的 LinkDigest-extension 文件夹
      （建议先把它拷到一个固定位置，别放在 DMG 里，
        否则弹出 DMG 后扩展会失效）
-   · 回到 LinkDigest，打开「设置 →浏览器支持」完成连接
+   · 回到 {name}，打开「设置 → 浏览器支持」完成连接
 
 5. 需要配置模型才能用总结/翻译
 
@@ -121,7 +126,9 @@ INSTALL_NOTE = """LinkDigest 安装说明
 """
 
 
-def build_dmg(app: Path, extension: Path, output: Path, version: str) -> None:
+def build_dmg(
+    app: Path, extension: Path, output: Path, version: str, display_name: str
+) -> None:
     """组装 DMG 内容并生成映像。"""
     with tempfile.TemporaryDirectory(prefix="linkdigest-dmg-stage.", dir="/private/tmp") as tmp:
         stage = Path(tmp) / "LinkDigest"
@@ -130,12 +137,16 @@ def build_dmg(app: Path, extension: Path, output: Path, version: str) -> None:
         shutil.copytree(extension, stage / extension.name, symlinks=False)
         # 「应用程序」的软链:让拖拽安装成为一个不用解释的动作。
         (stage / "Applications").symlink_to("/Applications")
-        (stage / "安装说明.txt").write_text(INSTALL_NOTE, encoding="utf-8")
+        (stage / "安装说明.txt").write_text(
+            INSTALL_NOTE_TEMPLATE.format(name=display_name), encoding="utf-8"
+        )
 
         if output.exists():
             output.unlink()
         run("/usr/bin/hdiutil", "create",
-            "-volname", f"LinkDigest {version}",
+            # 卷名是双击 DMG 后 Finder 边栏里显示的那一行,同样要用显示名。
+            # 文件名保持 ASCII 的 LinkDigest-x.y.z.dmg——它会进下载 URL。
+            "-volname", f"{display_name} {version}",
             "-srcfolder", str(stage),
             "-ov", "-format", "UDZO",
             str(output))
@@ -212,7 +223,10 @@ def main() -> int:
         shutil.copytree(extension_source, staged_extension, symlinks=False)
 
         print("→ 生成 DMG…")
-        build_dmg(staged_app, staged_extension, dmg, args.version)
+        build_dmg(
+            staged_app, staged_extension, dmg, args.version,
+            app_config["appDisplayName"],
+        )
 
     size_mb = dmg.stat().st_size / 1024 / 1024
     print(f"\n完成: {dmg}  ({size_mb:.1f} MB)")
