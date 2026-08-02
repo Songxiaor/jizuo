@@ -22,11 +22,19 @@ struct PieceDeskView: View {
     VStack(alignment: .leading, spacing: 0) {
       header
       Divider()
-      HStack(alignment: .top, spacing: 0) {
-        materialsColumn
-          .frame(width: 240)
+      if model.pieceMaterials.isEmpty {
+        // 一份素材都没有时不给它整条 240 宽的竖栏:里面只有一句提示,
+        // 而那条空栏会把稿子挤成屏幕右边窄窄一条。
+        emptyMaterialsRow
         Divider()
         bodyColumn
+      } else {
+        HStack(alignment: .top, spacing: 0) {
+          materialsColumn
+            .frame(width: 240)
+          Divider()
+          bodyColumn
+        }
       }
     }
   }
@@ -47,55 +55,72 @@ struct PieceDeskView: View {
           .textSelection(.enabled)
       }
 
-      PieceStageTrack(stage: piece.stage)
+      // 阶段可以往回退——写到一半发现素材不够，回收集是正常的，不是失败。
+      // 所以进度条本身就是控件，而不是「进度条 + 另一排一模一样的按钮」:
+      // 同样四个词在同一屏出现两遍，只有一遍能点，看的人得先分辨哪一遍是哪一遍。
+      HStack(alignment: .top, spacing: 12) {
+        PieceStageTrack(stage: piece.stage) { next in
+          model.setStage(next, for: piece.id)
+        }
         .frame(maxWidth: 320)
 
-      stageControls
+        Spacer(minLength: 0)
+
+        finishControl
+      }
     }
     .padding(.horizontal, 20)
     .padding(.vertical, 16)
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  /// 阶段可以往回退——写到一半发现素材不够，回收集是正常的，不是失败。
-  /// 所以这里是一排可点的格子，不是只能前进的「下一步」按钮。
-  private var stageControls: some View {
-    HStack(spacing: 6) {
-      ForEach(PieceStage.track, id: \.self) { stage in
-        Button(stage.displayName) {
-          model.setStage(piece.stage == stage ? nil : stage, for: piece.id)
-        }
-        .buttonStyle(.plain)
-        .font(.system(size: 11, weight: piece.stage == stage ? .semibold : .regular))
-        .foregroundStyle(piece.stage == stage ? Color.accentColor : Color.secondary)
-        .padding(.horizontal, 9)
-        .padding(.vertical, 3)
-        .background(
-          Capsule().fill(piece.stage == stage ? Color.accentColor.opacity(0.12) : Color.clear)
-        )
-        .overlay(Capsule().strokeBorder(Color.primary.opacity(0.08)))
-        .help(piece.stage == stage ? "再点一次回到自动判断" : "把这件创作标到「\(stage.displayName)」")
-      }
-
-      Spacer(minLength: 8)
-
-      if piece.isFinished {
-        Button("重新打开") { model.setStage(nil, for: piece.id) }
-          .font(.system(size: 11))
-      } else {
-        // 一个字都没写就能标记完成,产出的是一份内容为占位符的「作品」。
-        // 置灰而不是藏起来:藏起来会让人以为这个功能不存在。
-        Button("标记已发出") { model.finishPiece(id: piece.id) }
-          .font(.system(size: 11))
-          .disabled(piece.bodyLength == 0)
-          .help(piece.bodyLength == 0 ? "还没写正文" : "把这篇收进「我的作品」")
-          .accessibilityIdentifier("piece-mark-done")
-      }
+  @ViewBuilder private var finishControl: some View {
+    if piece.isFinished {
+      Button("重新打开") { model.setStage(nil, for: piece.id) }
+        .font(.system(size: 11))
+    } else {
+      // 一个字都没写就能标记完成,产出的是一份内容为占位符的「作品」。
+      // 置灰而不是藏起来:藏起来会让人以为这个功能不存在。
+      Button("标记已发出") { model.finishPiece(id: piece.id) }
+        .font(.system(size: 11))
+        .disabled(piece.bodyLength == 0)
+        .help(piece.bodyLength == 0 ? "还没写正文" : "把这篇收进「我的作品」")
+        .accessibilityIdentifier("piece-mark-done")
     }
   }
 
   // MARK: - 左栏：素材
 
+  /// 空态的素材:收成一行,而不是一条空竖栏。
+  ///
+  /// 提示仍然留着——这块地方不说「怎么加」的话，第一次用的人在这里没有出路:
+  /// 灵感阶段本来就不给任何按钮，界面只说「下一步：找几份素材」却不说去哪找。
+  private var emptyMaterialsRow: some View {
+    HStack(spacing: 7) {
+      Text("素材")
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(.tertiary)
+        .textCase(.uppercase)
+        .tracking(0.6)
+      Text("0")
+        .font(.system(size: 10))
+        .foregroundStyle(.tertiary)
+        .monospacedDigit()
+      Text("·")
+        .font(.system(size: 10))
+        .foregroundStyle(.quaternary)
+      Text("在任意列表里右键条目，选「加入工作台」。")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 20)
+    .padding(.vertical, 9)
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// 有素材时才走这条竖栏。空态由 `emptyMaterialsRow` 接管，
+  /// 所以这里不再判断空——两处各判一次，迟早有一处忘了跟上。
   private var materialsColumn: some View {
     VStack(alignment: .leading, spacing: 8) {
       HStack {
@@ -111,23 +136,15 @@ struct PieceDeskView: View {
           .monospacedDigit()
       }
 
-      if model.pieceMaterials.isEmpty {
-        // 说清楚怎么加，否则这块空白不告诉用户任何事。
-        Text("在任意列表里右键条目，\n选「加入工作台」。")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-          .padding(.vertical, 6)
-      } else {
-        ScrollView {
-          LazyVStack(alignment: .leading, spacing: 6) {
-            ForEach(model.pieceMaterials) { material in
-              materialRow(material)
-            }
+      ScrollView {
+        LazyVStack(alignment: .leading, spacing: 6) {
+          ForEach(model.pieceMaterials) { material in
+            materialRow(material)
           }
         }
-        .subtleScrollers()
       }
+      .subtleScrollers()
+
       Spacer(minLength: 0)
     }
     .padding(14)
@@ -172,7 +189,16 @@ struct PieceDeskView: View {
 
   // MARK: - 右栏：稿子
 
+  /// 同样要滚动容器:阶段工具、起草进度、爆款实验室是叠加上去的，
+  /// 走到打磨那一步这一栏最高，没有滚动就会把整个窗口顶出去。
   private var bodyColumn: some View {
+    ScrollView {
+      bodyContent
+    }
+    .subtleScrollers()
+  }
+
+  private var bodyContent: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack {
         Text("稿子")
@@ -233,10 +259,11 @@ struct PieceDeskView: View {
           .padding(.top, 4)
       }
 
-      Spacer(minLength: 0)
     }
     .padding(16)
-    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    // 进了滚动容器就不能再要 maxHeight: .infinity 和撑底的 Spacer——
+    // 那两样都是在跟一个没有固定高度的父视图要「剩下的高度」。
+    .frame(maxWidth: .infinity, alignment: .topLeading)
   }
 
   /// 起草进行中。
