@@ -583,6 +583,11 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var topicCandidates: [TopicCandidate] = []
   /// 正在出选题。
   @Published private(set) var isGeneratingTopics = false
+  /// 正在按配方试跑。和正式出选题分开:试跑不落库，界面上也不该
+  /// 让人以为选题板马上会多出几条。
+  @Published private(set) var isDryRunningTopics = false
+  /// 上一次试跑的结论。改配方时唯一能立刻验证的东西。
+  @Published var topicDryRunResult: String?
   @Published var showsAllNavigationTags = false
   @Published private(set) var tagErrorCode: StorageErrorCode?
   @Published private(set) var transcriptionState: TranscriptionUIState = .idle {
@@ -3676,10 +3681,14 @@ final class HistoryViewModel: ObservableObject {
   /// 调用点是「进入工作台」而不是定时器:用户没在看的时候跑完，产出也
   /// 只是躺在那——他下次进来照样是「打开就有」。
   func runScheduledTopicsIfDue(
-    schedule: TopicSchedule, lastRun: Date?, voice: String? = nil, now: Date = Date()
+    schedule: TopicSchedule,
+    lastRun: Date?,
+    recipe: TopicRecipe = .default,
+    voice: String? = nil,
+    now: Date = Date()
   ) -> Bool {
     guard schedule.shouldRun(now: now, lastRun: lastRun), canGenerateTopics else { return false }
-    generateTopics(voice: voice)
+    generateTopics(recipe: recipe, voice: voice)
     return true
   }
 
@@ -3688,6 +3697,7 @@ final class HistoryViewModel: ObservableObject {
     if isReadOnly { return "这份历史当前只能浏览。" }
     if draftAgent == nil { return "需要先安装 Claude Code。" }
     if isGeneratingTopics { return "正在出选题…" }
+    if isDryRunningTopics { return "正在试跑…" }
     if draftingPieceID != nil { return "正在生成，等这一次结束。" }
     return nil
   }
@@ -3699,13 +3709,89 @@ final class HistoryViewModel: ObservableObject {
   /// 素材由取数层给,提示词只负责加工。生成失败或一条都没解析出来时
   /// 都要说清楚——用户看到空白选题板时,「没素材」「模型没跑起来」
   /// 「跑了但格式没对上」是三件要采取不同行动的事。
-  func generateTopics(recall: TopicRecall = .default, voice: String? = nil, count: Int = 5) {
-    guard let history, let agent = draftAgent, canGenerateTopics else { return }
-
+  func generateTopics(recipe: TopicRecipe = .default, voice: String? = nil) {
+    guard let agent = draftAgent, canGenerateTopics else { return }
     let now = nowMilliseconds()
+    guard let batch = collectTopicMaterials(recipe: recipe, now: now) else { return }
+    let prompt = buildTopicPrompt(recipe: recipe, materials: batch.materials, voice: voice)
+
+    isGeneratingTopics = true
+    workbenchFailure = nil
+
+    Task { [weak self] in
+      do {
+        let text = try await agent.run(
+          .init(prompt: prompt, workingDirectory: Self.agentWorkingDirectory)
+        ) { _ in }
+        await MainActor.run {
+          guard let self else { return }
+          self.applyTopics(text, materialTaskIDs: batch.taskIDs, generatedAt: now)
+          self.isGeneratingTopics = false
+        }
+      } catch {
+        await MainActor.run {
+          guard let self else { return }
+          self.isGeneratingTopics = false
+          self.workbenchFailure = Self.draftFailureMessage(error)
+        }
+      }
+    }
+  }
+
+  /// 按配方跑一次,但**不落库**。
+  ///
+  /// 改提示词最要命的失败方式是格式改坏:表现是「今天没出选题」,
+  /// 而用户不会知道是自己那一行改动导致解析全丢。所以编辑器旁边必须有
+  /// 一个能当场看见「解析出几条」的按钮——它花的额度和真跑一次一样,
+  /// 但那点额度换的是「改坏了立刻知道」。
+  func dryRunTopics(recipe: TopicRecipe, voice: String? = nil) {
+    guard let agent = draftAgent, canGenerateTopics else { return }
+    let now = nowMilliseconds()
+    topicDryRunResult = nil
+    guard let batch = collectTopicMaterials(recipe: recipe, now: now) else { return }
+    let prompt = buildTopicPrompt(recipe: recipe, materials: batch.materials, voice: voice)
+
+    isDryRunningTopics = true
+    workbenchFailure = nil
+
+    Task { [weak self] in
+      do {
+        let text = try await agent.run(
+          .init(prompt: prompt, workingDirectory: Self.agentWorkingDirectory)
+        ) { _ in }
+        await MainActor.run {
+          guard let self else { return }
+          self.isDryRunningTopics = false
+          let parsed = TopicPrompt.parse(text)
+          self.topicDryRunResult = parsed.isEmpty
+            ? "解析出 0 条——产出没对上格式。检查「输出格式」那一段还在不在。"
+            : "解析出 \(parsed.count) 条"
+              + (parsed.contains(where: \.isOutOfBounds) ? "，含越界" : "，没有越界")
+              + "。第一条：\(parsed[0].title)"
+        }
+      } catch {
+        await MainActor.run {
+          guard let self else { return }
+          self.isDryRunningTopics = false
+          self.workbenchFailure = Self.draftFailureMessage(error)
+        }
+      }
+    }
+  }
+
+  private static var agentWorkingDirectory: URL {
+    FileManager.default.temporaryDirectory
+      .appendingPathComponent("jizuo-agent", isDirectory: true)
+  }
+
+  /// 按配方取素材。取不够就把原因写进 `workbenchFailure` 并返回 nil。
+  private func collectTopicMaterials(
+    recipe: TopicRecipe, now: Int64
+  ) -> (materials: [TopicPrompt.Material], taskIDs: [TaskID])? {
+    guard let history else { return nil }
     var materials: [TopicPrompt.Material] = []
     var taskIDs: [TaskID] = []
-    for lane in recall.lanes {
+    for lane in recipe.recall.lanes {
       for recalled in (try? history.recallMaterials(lane: lane, now: now)) ?? [] {
         guard recalled.isAvailable, !taskIDs.contains(recalled.id) else { continue }
         guard let detail = try? history.detail(taskID: recalled.id),
@@ -3722,38 +3808,27 @@ final class HistoryViewModel: ObservableObject {
 
     guard materials.count >= 2 else {
       // 一条选题至少要让两份素材发生关系,一份素材出不了选题。
-      workbenchFailure = "素材还不够。攒够两份以上再来出选题。"
-      return
+      // 配方能把窗口收得很窄,所以这句话要指得出是哪里卡住的。
+      workbenchFailure = recipe == .default
+        ? "素材还不够。攒够两份以上再来出选题。"
+        : "按当前配方只取到 \(materials.count) 份素材。把天数或条数放宽一点。"
+      return nil
     }
+    return (materials, taskIDs)
+  }
 
-    let recent = topicCandidates.prefix(20).map(\.title)
-    let prompt = TopicPrompt.build(
-      materials: materials, count: count, recentTopics: recent, voice: voice
+  private func buildTopicPrompt(
+    recipe: TopicRecipe, materials: [TopicPrompt.Material], voice: String?
+  ) -> String {
+    TopicPrompt.build(
+      materials: materials,
+      count: recipe.count,
+      recentTopics: topicCandidates.prefix(20).map(\.title),
+      voice: voice,
+      boundaryCount: recipe.boundaryCount,
+      excerptLimit: recipe.excerptLimit,
+      template: recipe.effectiveTemplate
     )
-    let workingDirectory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("jizuo-agent", isDirectory: true)
-
-    isGeneratingTopics = true
-    workbenchFailure = nil
-
-    Task { [weak self] in
-      do {
-        let text = try await agent.run(
-          .init(prompt: prompt, workingDirectory: workingDirectory)
-        ) { _ in }
-        await MainActor.run {
-          guard let self else { return }
-          self.applyTopics(text, materialTaskIDs: taskIDs, generatedAt: now)
-          self.isGeneratingTopics = false
-        }
-      } catch {
-        await MainActor.run {
-          guard let self else { return }
-          self.isGeneratingTopics = false
-          self.workbenchFailure = Self.draftFailureMessage(error)
-        }
-      }
-    }
   }
 
   private func applyTopics(_ text: String, materialTaskIDs: [TaskID], generatedAt: Int64) {

@@ -13,8 +13,30 @@ struct TopicBoardView: View {
   let onTake: (TopicCandidate) -> Void
 
   @State private var isExpanded = true
+  @State private var isRecipeOpen = false
   @AppStorage(TopicSchedule.storageKey) private var scheduleRaw = ""
   @AppStorage(TopicSchedule.lastRunKey) private var lastRunAt: Double = 0
+  @AppStorage(TopicRecipe.storageKey) private var recipeRaw = ""
+
+  private var recipe: TopicRecipe { TopicRecipe.decoded(from: recipeRaw) }
+
+  /// 把配方的某一项做成 Binding。
+  ///
+  /// 存的是一整份 JSON,所以每个输入框都要「读出来—改一项—写回去」。
+  /// 抽出来是为了让那三步只有一份实现:漏掉写回的那一项，表现是
+  /// 用户改了数字、界面也变了，下次打开又回到旧值。
+  private func field<Value>(
+    _ keyPath: WritableKeyPath<TopicRecipe, Value>
+  ) -> Binding<Value> {
+    Binding(
+      get: { recipe[keyPath: keyPath] },
+      set: { newValue in
+        var value = recipe
+        value[keyPath: keyPath] = newValue
+        recipeRaw = value.encoded()
+      }
+    )
+  }
 
   /// 按天分组,新的一天在前。
   private var days: [(day: Int64, candidates: [TopicCandidate])] {
@@ -32,6 +54,9 @@ struct TopicBoardView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
       header
+      if isRecipeOpen {
+        recipeDrawer
+      }
       if isExpanded {
         if days.isEmpty {
           emptyState
@@ -57,7 +82,9 @@ struct TopicBoardView: View {
   private func runScheduledIfDue() {
     let schedule = TopicSchedule.decoded(from: scheduleRaw)
     let lastRun = lastRunAt > 0 ? Date(timeIntervalSince1970: lastRunAt) : nil
-    if model.runScheduledTopicsIfDue(schedule: schedule, lastRun: lastRun, voice: voice) {
+    if model.runScheduledTopicsIfDue(
+      schedule: schedule, lastRun: lastRun, recipe: recipe, voice: voice
+    ) {
       lastRunAt = Date().timeIntervalSince1970
     }
   }
@@ -81,23 +108,228 @@ struct TopicBoardView: View {
 
       Spacer()
 
+      // 配方入口长在正在用的这块板上,不进设置页。
+      // 「这五条为什么是这五条」的答案,应该在看见那五条的地方点得开。
+      Button {
+        isRecipeOpen.toggle()
+        if !isRecipeOpen { model.topicDryRunResult = nil }
+      } label: {
+        Image(systemName: "slider.horizontal.3")
+          .font(.system(size: 11))
+          .foregroundStyle(isRecipeOpen ? Color.accentColor : Color.secondary)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help(isRecipeOpen ? "收起配方" : "看看它读了什么、怎么问的")
+      .accessibilityLabel("配方")
+      .accessibilityIdentifier("topic-board-recipe")
+
       if model.isGeneratingTopics {
         ProgressView().controlSize(.small)
       } else {
         Button("出选题") {
-          model.generateTopics(voice: voice)
+          model.generateTopics(recipe: recipe, voice: voice)
           lastRunAt = Date().timeIntervalSince1970
         }
           .font(.system(size: 11))
           .buttonStyle(.plain)
           .foregroundStyle(model.canGenerateTopics ? Color.accentColor : Color.secondary)
           .disabled(!model.canGenerateTopics)
-          .help(model.topicUnavailableReason() ?? "从素材库里出 5 条不同角度的选题")
+          .help(model.topicUnavailableReason() ?? "按当前配方从素材库里出选题")
           .accessibilityIdentifier("topic-board-generate")
       }
     }
     .padding(.horizontal, 14)
     .padding(.vertical, 10)
+  }
+
+  // MARK: - 配方
+
+  private var recipeDrawer: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      recipeSection("① 读哪些素材") {
+        VStack(alignment: .leading, spacing: 6) {
+          HStack(spacing: 5) {
+            Text("最近")
+            numberField(field(\.recentDays), width: 38)
+            Text("天内，取")
+            numberField(field(\.recentLimit), width: 38)
+            Text("条")
+            Spacer(minLength: 0)
+          }
+          HStack(spacing: 5) {
+            numberField(field(\.dormantSinceDays), width: 38)
+            Text("天没碰过的，取")
+            numberField(field(\.dormantLimit), width: 38)
+            Text("条")
+            Spacer(minLength: 0)
+          }
+          // 两路而不是一路,是因为碰撞需要距离。这句话得让用户看得到,
+          // 否则他会先把旧的那一路关掉——它看起来最像多余的。
+          Text("两路分开是为了让远的和近的能撞上。取 0 条就是关掉那一路。")
+            .font(.system(size: 10))
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+          HStack(spacing: 5) {
+            Text("只要标签")
+            TextField("留空 = 全部，多个用逗号分开", text: tagsField)
+              .textFieldStyle(.roundedBorder)
+              .font(.system(size: 11))
+            Spacer(minLength: 0)
+          }
+          HStack(spacing: 5) {
+            Text("每份摘录")
+            numberField(field(\.excerptLimit), width: 48)
+            Text("字")
+            Spacer(minLength: 0)
+          }
+        }
+      }
+
+      recipeSection("② 怎么问") {
+        VStack(alignment: .leading, spacing: 6) {
+          HStack(spacing: 6) {
+            Text(recipe.isTemplateCustomized ? "我的版本" : "预置 · 只读")
+              .font(.system(size: 10, weight: .semibold))
+              .foregroundStyle(recipe.isTemplateCustomized ? Color.accentColor : Color.secondary)
+            Spacer(minLength: 0)
+            if recipe.isTemplateCustomized {
+              Button("恢复预置") { field(\.template).wrappedValue = nil }
+                .font(.system(size: 10))
+            } else {
+              Button("改成我的版本") {
+                field(\.template).wrappedValue = TopicPrompt.presetTemplate
+              }
+              .font(.system(size: 10))
+            }
+          }
+
+          if recipe.isTemplateCustomized {
+            TextEditor(text: templateField)
+              .font(.system(size: 10.5, design: .monospaced))
+              .frame(height: 200)
+              .overlay(
+                RoundedRectangle(cornerRadius: 5)
+                  .strokeBorder(Color.primary.opacity(0.12))
+              )
+              .accessibilityIdentifier("topic-recipe-template")
+          } else {
+            // 只读时也要看得见全文。看不见的默认值和不存在的功能差别不大。
+            ScrollView {
+              Text(TopicPrompt.presetTemplate)
+                .font(.system(size: 10.5, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(6)
+            }
+            .frame(height: 140)
+            .background(
+              RoundedRectangle(cornerRadius: 5)
+                .fill(Color(nsColor: .controlBackgroundColor).opacity(0.5))
+            )
+          }
+
+          Text("可用变量：" + TopicPrompt.Placeholder.all.map(\.0).joined(separator: " "))
+            .font(.system(size: 9.5, design: .monospaced))
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+          Text("变量为空时它那一行会消失；一段只剩标题，整段也消失。")
+            .font(.system(size: 9.5))
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+
+      recipeSection("③ 要什么") {
+        VStack(alignment: .leading, spacing: 6) {
+          HStack(spacing: 5) {
+            Text("出")
+            numberField(field(\.count), width: 38)
+            Text("条，其中越界")
+            numberField(field(\.boundaryCount), width: 38)
+            Text("条")
+            Spacer(minLength: 0)
+          }
+          Text("越界那条不受你的偏好约束。设成 0 就不要了，但回音室也是这么形成的。")
+            .font(.system(size: 10))
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+
+      HStack(spacing: 8) {
+        if model.isDryRunningTopics {
+          ProgressView().controlSize(.small)
+          Text("正在试跑…").font(.system(size: 10.5)).foregroundStyle(.secondary)
+        } else {
+          Button("试跑一次") { model.dryRunTopics(recipe: recipe, voice: voice) }
+            .font(.system(size: 11))
+            .disabled(!model.canGenerateTopics)
+            .help("按当前配方跑一次，只看解析出几条，不写进选题板")
+            .accessibilityIdentifier("topic-recipe-dry-run")
+        }
+        Spacer(minLength: 0)
+        Button("全部恢复默认") { recipeRaw = "" }
+          .font(.system(size: 11))
+          .disabled(recipe == .default)
+      }
+
+      if let result = model.topicDryRunResult {
+        Text(result)
+          .font(.system(size: 10.5))
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("topic-recipe-dry-run-result")
+      }
+    }
+    .font(.system(size: 11))
+    .padding(.horizontal, 14)
+    .padding(.bottom, 12)
+  }
+
+  private func recipeSection(
+    _ title: String, @ViewBuilder content: () -> some View
+  ) -> some View {
+    VStack(alignment: .leading, spacing: 5) {
+      Text(title)
+        .font(.system(size: 10, weight: .semibold))
+        .foregroundStyle(.tertiary)
+      content()
+    }
+  }
+
+  /// 数字输入框。
+  ///
+  /// 不用 Stepper:这些值改动频率低，但每次改都是「从 7 改成 30」这种
+  /// 跨度，点 23 下箭头不合理。夹范围交给 `TopicRecipe.sanitized()`。
+  private func numberField(_ binding: Binding<Int>, width: CGFloat) -> some View {
+    TextField("", value: binding, format: .number)
+      .textFieldStyle(.roundedBorder)
+      .font(.system(size: 11))
+      .frame(width: width)
+      .multilineTextAlignment(.center)
+  }
+
+  private var tagsField: Binding<String> {
+    Binding(
+      get: { recipe.tags.joined(separator: "，") },
+      set: { raw in
+        var value = recipe
+        value.tags = raw
+          .split(whereSeparator: { $0 == "," || $0 == "，" || $0 == " " })
+          .map { $0.trimmingCharacters(in: .whitespaces) }
+          .filter { !$0.isEmpty }
+        recipeRaw = value.encoded()
+      }
+    )
+  }
+
+  private var templateField: Binding<String> {
+    Binding(
+      get: { recipe.template ?? TopicPrompt.presetTemplate },
+      set: { field(\.template).wrappedValue = $0 }
+    )
   }
 
   @AppStorage(VoiceSettings.storageKey) private var voiceSettingsRaw = ""

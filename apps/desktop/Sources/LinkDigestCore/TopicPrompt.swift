@@ -26,68 +26,133 @@ public enum TopicPrompt {
   /// 十几份素材各放 3000 字会把上下文吃满,而模型真正要做的是找关系。
   public static let excerptCharacterLimit = 600
 
+  /// 提示词里能用的变量。
+  ///
+  /// 列在这里是为了界面上能照着显示——用户改模板时最需要知道的
+  /// 就是「有哪些东西可以填进去」,而不是让他从预置文本里反推。
+  public enum Placeholder {
+    public static let materials = "{素材}"
+    public static let materialCount = "{素材份数}"
+    public static let count = "{条数}"
+    public static let boundaryCount = "{越界条数}"
+    public static let recentTopics = "{最近出过的选题}"
+    public static let voice = "{我的表达方式}"
+
+    public static let all = [
+      (materials, "所有素材的正文摘录，按编号排好"),
+      (materialCount, "这次取到几份素材"),
+      (count, "要出几条选题"),
+      (boundaryCount, "其中几条标成「越界」"),
+      (recentTopics, "最近已经出过的选题标题"),
+      (voice, "设置里那份「我的表达方式」"),
+    ]
+  }
+
+  /// 预置的那份提示词。
+  ///
+  /// 它和用户改过的版本走的是同一条渲染路径——预置不享受任何特权,
+  /// 否则「改成我的版本」之后行为会莫名其妙地变。
+  public static let presetTemplate = """
+  你是这个人的选题搭档。从下面这些素材里,给出 {条数} 条**不同角度**的选题。
+
+  ## 素材(共 {素材份数} 份)
+  {素材}
+
+  ## 最近已经出过的选题(不要再出这些角度)
+  {最近出过的选题}
+
+  ## 我的表达方式
+  {我的表达方式}
+
+  ## 要求
+  - **每条选题必须让至少两份素材发生关系**。一份素材的摘要不是选题
+  - {条数} 条要是 {条数} 个不同角度,不是同一件事的 {条数} 种说法
+  - 其中 {越界条数} 条标成「越界」:不必贴合我的偏好,可以是我平时不会写的角度
+  - 只用素材里出现过的事实。素材里没有的不要编
+  - 标题一句话说清主张,不要用「浅谈」「探析」这类词
+  - 摘要控制在 60 字以内:我要扫一眼就能决定要不要,读不完的选题等于没出
+
+  ## 输出格式
+  严格按下面的格式,每条之间空一行,不要写任何别的东西:
+
+  标题: <一句话主张>
+  摘要: <60 字以内>
+  素材: <用到的素材编号,逗号分隔>
+  越界: <是 / 否>
+  """
+
   public static func build(
     materials: [Material],
     count: Int = 5,
     recentTopics: [String] = [],
-    voice: String? = nil
+    voice: String? = nil,
+    boundaryCount: Int = 1,
+    excerptLimit: Int = excerptCharacterLimit,
+    template: String = presetTemplate
   ) -> String {
-    var lines: [String] = []
+    render(
+      template: template,
+      values: [
+        Placeholder.materials: materialsBlock(materials, excerptLimit: excerptLimit),
+        Placeholder.materialCount: "\(materials.count)",
+        Placeholder.count: "\(count)",
+        // 0 条越界时给空串,让那一行整行消失——写成「其中 0 条标成越界」
+        // 是在让模型处理一条自相矛盾的要求。
+        Placeholder.boundaryCount: boundaryCount > 0 ? "\(boundaryCount)" : "",
+        // 重复是这块板第二容易的失败方式,而且用户很难一眼看出——
+        // 他只会觉得「怎么老是这些」,说不清哪条和上周撞了。
+        Placeholder.recentTopics: recentTopics.map { "- \($0)" }.joined(separator: "\n"),
+        Placeholder.voice: voice?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
+      ]
+    )
+  }
 
-    lines.append("""
-    你是这个人的选题搭档。从下面这些素材里,给出 \(count) 条**不同角度**的选题。
-    """)
-
-    lines.append("\n## 素材(共 \(materials.count) 份)")
-    for material in materials {
-      let excerpt = material.excerpt.count > excerptCharacterLimit
-        ? String(material.excerpt.prefix(excerptCharacterLimit)) + "…"
+  private static func materialsBlock(_ materials: [Material], excerptLimit: Int) -> String {
+    materials.map { material in
+      let excerpt = material.excerpt.count > excerptLimit
+        ? String(material.excerpt.prefix(excerptLimit)) + "…"
         : material.excerpt
-      lines.append("""
-
+      return """
       ### \(material.index)｜\(material.title)
       (\(material.lane))
 
       \(excerpt)
-      """)
+      """
+    }.joined(separator: "\n\n")
+  }
+
+  /// 把变量填进模板。
+  ///
+  /// 空值的处理规则只有两条,因为用户要能预测它:
+  ///
+  /// 1. **占位符的值为空,它所在的那一行整行消失。** 不然「最近已经出过的
+  ///    选题」下面会跟着一片空白,模型会当成「一条都没出过」还是「这里
+  ///    本该有东西」全看运气。
+  /// 2. **一段只剩下标题行,整段消失。** 上一条删完之后,`## 我的表达方式`
+  ///    经常会孤零零地留在那里。
+  public static func render(template: String, values: [String: String]) -> String {
+    let lines = template.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    var kept: [String] = []
+    for line in lines {
+      let used = values.filter { line.contains($0.key) }
+      guard !used.contains(where: { $0.value.isEmpty }) else { continue }
+      var rendered = line
+      for (key, value) in used {
+        rendered = rendered.replacingOccurrences(of: key, with: value)
+      }
+      kept.append(rendered)
     }
 
-    if !recentTopics.isEmpty {
-      // 重复是这块板第二容易的失败方式,而且用户很难一眼看出——
-      // 他只会觉得「怎么老是这些」,说不清哪条和上周撞了。
-      lines.append("""
-
-      ## 最近已经出过的选题
-      \(recentTopics.map { "- \($0)" }.joined(separator: "\n"))
-
-      不要再出这些角度。
-      """)
+    let blocks = kept.joined(separator: "\n").components(separatedBy: "\n\n")
+    let surviving = blocks.filter { block in
+      let meaningful = block
+        .split(separator: "\n")
+        .map { $0.trimmingCharacters(in: .whitespaces) }
+        .filter { !$0.isEmpty }
+      guard !meaningful.isEmpty else { return false }
+      return !meaningful.allSatisfy { $0.hasPrefix("#") }
     }
-
-    if let voice, !voice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-      lines.append("\n## 我的表达方式\n\(voice)")
-    }
-
-    lines.append("""
-
-    ## 要求
-    - **每条选题必须让至少两份素材发生关系**。一份素材的摘要不是选题
-    - \(count) 条要是 \(count) 个不同角度,不是同一件事的 \(count) 种说法
-    - 最后一条标成「越界」:不必贴合我的偏好,可以是我平时不会写的角度
-    - 只用素材里出现过的事实。素材里没有的不要编
-    - 标题一句话说清主张,不要用「浅谈」「探析」这类词
-    - 摘要控制在 60 字以内:我要扫一眼就能决定要不要,读不完的选题等于没出
-
-    ## 输出格式
-    严格按下面的格式,每条之间空一行,不要写任何别的东西:
-
-    标题: <一句话主张>
-    摘要: <60 字以内>
-    素材: <用到的素材编号,逗号分隔>
-    越界: <是 / 否>
-    """)
-
-    return lines.joined(separator: "\n")
+    return surviving.joined(separator: "\n\n")
   }
 
   /// 一条解析出来的候选。
