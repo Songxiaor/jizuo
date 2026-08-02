@@ -706,7 +706,8 @@ struct HistoryContentView: View {
         },
         onTidy: { taskID in
           model.requestNoteTidy(taskID: taskID, model: providerSettings.effectiveTidyModelName)
-        }
+        },
+        onDraft: { pieceID in model.draftFromMaterials(pieceID: pieceID) }
       )
     } else if model.isWorkbenchActive, isWorkbenchEnabled {
       workbenchPlaceholder

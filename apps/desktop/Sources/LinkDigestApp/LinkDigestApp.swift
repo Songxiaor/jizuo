@@ -928,6 +928,9 @@ enum BrowserReceiverState: Sendable, Equatable {
       transcriptTidier: OpenAICompatibleTranscriptTidier(
         configurationService: configurationService
       ),
+      // 起草用用户自己装的 Claude Code。没装的话构造出来也无妨——
+      // 它的 locateExecutable() 会返回 nil,那一步的入口说清楚缺什么。
+      draftAgent: ClaudeCLIAgent(),
       mindMapExtractor: OpenAICompatibleMindMapExtractor(
         configurationService: configurationService
       ),

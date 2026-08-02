@@ -13,6 +13,8 @@ struct PieceDeskView: View {
   let onRunSummary: (TaskID) -> Void
   /// 对稿子跑整理排版。
   let onTidy: (TaskID) -> Void
+  /// 让 Agent 把素材写成初稿。
+  let onDraft: (PieceID) -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -211,6 +213,10 @@ struct PieceDeskView: View {
       .buttonStyle(.plain)
       .accessibilityIdentifier("piece-open-note")
 
+      if model.draftingPieceID == piece.id {
+        draftingBanner
+      }
+
       Text(nextStepHint)
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -222,6 +228,35 @@ struct PieceDeskView: View {
     }
     .padding(16)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+  }
+
+  /// 起草进行中。
+  ///
+  /// 流式产出直接往这里刷:一个转圈的图标只说明「在跑」,而看见字一个个
+  /// 出来才知道它在写什么、值不值得等下去。
+  private var draftingBanner: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: 7) {
+        ProgressView().controlSize(.small)
+        Text("正在起草…").font(.system(size: 12, weight: .medium))
+        Spacer(minLength: 0)
+        Button("停止") { model.cancelDrafting() }.font(.system(size: 11))
+      }
+      if !model.draftingText.isEmpty {
+        Text(model.draftingText.suffix(300))
+          .font(.system(size: 11.5))
+          .foregroundStyle(.secondary)
+          .lineLimit(6)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(11)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: 8, style: .continuous)
+        .fill(Color.accentColor.opacity(0.08))
+    )
   }
 
   /// 此刻这个阶段该用的工具。
@@ -279,7 +314,16 @@ struct PieceDeskView: View {
       // 只有一句话时唯一该做的是去找东西,不该摆一堆用不上的按钮。
       []
     case .collect:
-      model.pieceMaterials.isEmpty ? [] : [
+      [
+        // 这一步最值钱的动作:把攒到的素材直接变成一篇初稿。
+        // 零冷启动——不需要历史数据、不需要先攒判断,当天就有价值。
+        StageTool(
+          title: model.pieceMaterials.isEmpty ? "就着灵感起草" : "把素材写成初稿",
+          icon: "sparkles",
+          hint: model.draftUnavailableReason(for: piece.id) ?? "读完素材写一篇,直接写进稿子",
+          isDisabled: !model.canDraft(for: piece.id)
+        ) { onDraft(piece.id) },
+      ] + (model.pieceMaterials.isEmpty ? [] : [
         StageTool(
           title: "总结这些素材",
           icon: "text.alignleft",
@@ -290,7 +334,7 @@ struct PieceDeskView: View {
             onRunSummary(material.id)
           }
         },
-      ]
+      ])
     case .draft:
       [
         StageTool(

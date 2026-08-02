@@ -493,6 +493,15 @@ enum RemoteMediaFavoriteState: Equatable {
   var isSaving: Bool { self == .saving }
 }
 
+/// 起草时的流式缓冲。
+///
+/// 子进程的读取回调不在主线程,而 `@Published` 只能在主线程改。
+/// 中间放一个 actor,两边各自安全。
+private actor DraftStreamBuffer {
+  private(set) var text = ""
+  func append(_ chunk: String) { text += chunk }
+}
+
 @MainActor
 final class HistoryViewModel: ObservableObject {
   @Published private(set) var rows: [HistoryRowProjection] = []
@@ -564,6 +573,10 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var selectedPiece: PieceSummary?
   @Published private(set) var pieceMaterials: [PieceMaterial] = []
   @Published private(set) var workbenchFailure: String?
+  /// 起草进行中的那件创作。
+  @Published private(set) var draftingPieceID: PieceID?
+  /// 起草时流式产出的文字,直接往界面上刷。
+  @Published private(set) var draftingText = ""
   @Published var showsAllNavigationTags = false
   @Published private(set) var tagErrorCode: StorageErrorCode?
   @Published private(set) var transcriptionState: TranscriptionUIState = .idle {
@@ -643,6 +656,8 @@ final class HistoryViewModel: ObservableObject {
   private let imageTextRecognizer: (any LocalImageTextRecognizing)?
   private let onlineAudioTranscriber: (any OnlineAudioTranscribing)?
   private let transcriptTidier: (any TranscriptTidying)?
+  /// 起草用的 Agent。没有就是没装 CLI,那一步的入口会说清楚缺什么。
+  private let draftAgent: ClaudeCLIAgent?
   private let mindMapExtractor: (any MindMapExtracting)?
   private let transcriptionTempStore: TranscriptionTempStore?
   /// 转写专用音轨解析（platform, pageURL) -> 音轨地址。整段 progressive 没有
@@ -708,6 +723,7 @@ final class HistoryViewModel: ObservableObject {
     imageTextRecognizer: (any LocalImageTextRecognizing)? = nil,
     onlineAudioTranscriber: (any OnlineAudioTranscribing)? = nil,
     transcriptTidier: (any TranscriptTidying)? = nil,
+    draftAgent: ClaudeCLIAgent? = nil,
     mindMapExtractor: (any MindMapExtracting)? = nil,
     transcriptionTempStore: TranscriptionTempStore? = nil,
     transcriptionAudioTrackURL: (@Sendable (String?, String) async -> String?)? = nil,
@@ -729,6 +745,7 @@ final class HistoryViewModel: ObservableObject {
     self.imageTextRecognizer = imageTextRecognizer
     self.onlineAudioTranscriber = onlineAudioTranscriber
     self.transcriptTidier = transcriptTidier
+    self.draftAgent = draftAgent
     self.mindMapExtractor = mindMapExtractor
     self.transcriptionTempStore = transcriptionTempStore
     self.transcriptionAudioTrackURL = transcriptionAudioTrackURL
@@ -3451,6 +3468,131 @@ final class HistoryViewModel: ObservableObject {
   func detailProjection(for taskID: TaskID) -> HistoryDetailProjection? {
     guard let history else { return nil }
     return try? history.detail(taskID: taskID)
+  }
+
+  /// 起草可用吗?不可用时返回原因。
+  func draftUnavailableReason(for id: PieceID) -> String? {
+    guard history != nil else { return "请先选中这件创作" }
+    if isReadOnly { return "这份历史当前只能浏览" }
+    guard draftAgent != nil else { return "需要先安装 Claude Code" }
+    if draftingPieceID != nil { return "正在起草…" }
+    return nil
+  }
+
+  func canDraft(for id: PieceID) -> Bool { draftUnavailableReason(for: id) == nil }
+
+  /// 「把这几份素材变成一篇初稿」。
+  ///
+  /// 这是工作台里第一个真正的 Agent 动作。产出直接写进稿件正文——
+  /// 不另存一份「AI 版本」再让人手动搬,那会立刻变成两份要对齐的东西。
+  func draftFromMaterials(pieceID: PieceID, voice: String? = nil) {
+    guard let history, let agent = draftAgent, canDraft(for: pieceID),
+          let piece = try? history.piece(id: pieceID) else { return }
+
+    let materials: [DraftPrompt.Material] = (try? history.materials(of: pieceID))?
+      .filter(\.isAvailable)
+      .compactMap { material in
+        guard let detail = try? history.detail(taskID: material.id),
+              let snapshot = detail.snapshots.last else { return nil }
+        return .init(
+          title: material.title,
+          source: HistoryPlatformDisplay.name(forHost: material.host),
+          body: MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
+        )
+      } ?? []
+
+    let prompt = DraftPrompt.build(spark: piece.spark, materials: materials, voice: voice)
+    // 工作目录锁在专用沙箱里:即便工具已经禁掉,进程的 cwd 仍是它能看到的世界。
+    let workingDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("jizuo-agent", isDirectory: true)
+
+    draftingPieceID = pieceID
+    draftingText = ""
+    workbenchFailure = nil
+
+    Task { [weak self] in
+      do {
+        // 流式片段先落进一个线程安全的收集器,再由主线程定期取——
+        // 直接在回调里碰 self 会踩并发检查,而回调是从子进程读取线程来的。
+        let stream = DraftStreamBuffer()
+        let ticker = Task { @MainActor [weak self] in
+          while !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard let self, self.draftingPieceID != nil else { return }
+            self.draftingText = await stream.text
+          }
+        }
+        defer { ticker.cancel() }
+
+        let text = try await agent.run(
+          .init(prompt: prompt, workingDirectory: workingDirectory)
+        ) { progress in
+          if case let .text(chunk) = progress {
+            Task { await stream.append(chunk) }
+          }
+        }
+        await MainActor.run {
+          guard let self else { return }
+          self.applyDraft(text, to: piece)
+          self.draftingPieceID = nil
+          self.draftingText = ""
+        }
+      } catch {
+        await MainActor.run {
+          guard let self else { return }
+          self.draftingPieceID = nil
+          self.draftingText = ""
+          self.workbenchFailure = Self.draftFailureMessage(error)
+        }
+      }
+    }
+  }
+
+  /// 把产出写进稿件正文。
+  private func applyDraft(_ text: String, to piece: PieceSummary) {
+    guard let history,
+          let detail = try? history.detail(taskID: piece.noteTaskID),
+          let snapshot = detail.snapshots.last else { return }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      workbenchFailure = "没有产出内容,稿子没有改动。"
+      return
+    }
+    try? history.updateSnapshotBodyText(
+      taskID: piece.noteTaskID, snapshotID: snapshot.id,
+      bodyText: trimmed, updatedAtMilliseconds: nowMilliseconds()
+    )
+    reloadPieces()
+    if selectedPieceID == piece.id { reloadSelectedPiece() }
+  }
+
+  private static func draftFailureMessage(_ error: Error) -> String {
+    guard let failure = error as? ClaudeCLIAgent.Failure else {
+      return "起草失败,稿子没有改动。"
+    }
+    switch failure {
+    case .notInstalled:
+      return "没有找到 Claude Code。装好之后再试一次。"
+    case .notLoggedIn:
+      return "Claude Code 还没登录。在终端跑一次 claude 完成登录。"
+    case let .rateLimited(resetsAt):
+      // 这是订阅额度,不是程序坏了——说清楚,否则用户会以为是 bug。
+      let when = resetsAt.map {
+        let f = DateFormatter(); f.dateFormat = "HH:mm"; return ",\($0 > Date() ? f.string(from: $0) + " 后恢复" : "稍后恢复")"
+      } ?? ""
+      return "订阅额度暂时用完了\(when)。这不是程序出错。"
+    case .cancelled:
+      return "已停止。"
+    case let .failed(message):
+      return "起草失败:\(message)"
+    }
+  }
+
+  func cancelDrafting() {
+    guard let agent = draftAgent else { return }
+    Task { await agent.cancel() }
+    draftingPieceID = nil
+    draftingText = ""
   }
 
   /// 「这篇成了」——稿件转成作品,离开工作台进入输出。
