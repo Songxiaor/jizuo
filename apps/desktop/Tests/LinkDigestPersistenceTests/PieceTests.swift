@@ -151,6 +151,30 @@ final class PiecePersistenceTests: XCTestCase {
     }
   }
 
+  /// 占位符不算字数。
+  ///
+  /// 它是「从这里开始写…」这种提示,不是用户写的内容。算进去的话,
+  /// 一个字都没写的稿子会显示「7 字」,而阶段推断也会跟着偏。
+  func testPlaceholderBodyCountsAsZeroWords() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      // 不传 body,PieceDraftDocument 会填占位符。
+      let accepted = try repository.acceptCapture(.init(
+        document: try PieceDraftDocument.make(title: "灵感"), receivedAtMilliseconds: 1
+      ))
+      let id = PieceID()
+      try repository.createPiece(
+        id: id, spark: "灵感", noteTaskID: accepted.taskID, createdAtMilliseconds: 1
+      )
+
+      let piece = try XCTUnwrap(try repository.piece(id: id))
+      XCTAssertEqual(piece.bodyLength, 0, "占位符不该被当成写过的字")
+      XCTAssertEqual(piece.stage, .spark, "只有占位符时仍在灵感阶段")
+    }
+  }
+
   /// 手动覆盖压过推断；传 nil 回到自动。
   func testManualStageOverridesInferenceAndCanBeReleased() throws {
     try withTemporaryLocation { location in

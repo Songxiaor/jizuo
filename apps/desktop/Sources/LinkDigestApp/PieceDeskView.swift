@@ -79,8 +79,12 @@ struct PieceDeskView: View {
         Button("重新打开") { model.setStage(nil, for: piece.id) }
           .font(.system(size: 11))
       } else {
+        // 一个字都没写就能标记完成,产出的是一份内容为占位符的「作品」。
+        // 置灰而不是藏起来:藏起来会让人以为这个功能不存在。
         Button("标记已发出") { model.finishPiece(id: piece.id) }
           .font(.system(size: 11))
+          .disabled(piece.bodyLength == 0)
+          .help(piece.bodyLength == 0 ? "还没写正文" : "把这篇收进「我的作品」")
           .accessibilityIdentifier("piece-mark-done")
       }
     }

@@ -1130,7 +1130,13 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       p.finished_at_ms AS finished_at_ms,
       COALESCE(s.title, '') AS title,
       (SELECT COUNT(*) FROM piece_materials m WHERE m.piece_id = p.id) AS material_count,
-      COALESCE(length(s.body_text), 0) AS body_length
+      -- 占位符不算字数。它是提示不是内容,算进去会让「7 字」这种数字
+      -- 出现在一个字都没写的稿子上,阶段推断也会跟着偏。
+      --
+      -- 用字面量而不是绑定参数:这段 SQL 有两个调用点、参数顺序各不相同,
+      -- 多一个占位符要在两处都对齐,漏一个就是一次运行期错位。
+      CASE WHEN s.body_text = '\(PieceDraftDocument.placeholderBody)' THEN 0
+           ELSE COALESCE(length(s.body_text), 0) END AS body_length
     FROM pieces p
     LEFT JOIN content_snapshots s ON s.task_id = p.note_task_id
       AND s.sequence = (SELECT MAX(sequence) FROM content_snapshots x WHERE x.task_id = p.note_task_id)
