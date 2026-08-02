@@ -27,6 +27,18 @@ struct ProviderSettingsView: View {
       case .labs: "flask"
       }
     }
+
+    /// 这一版实际显示的标签页。
+    ///
+    /// 「实验室」整页四张卡(工作台、爆款实验室、每天自动出选题、我的表达方式)
+    /// 全都属于工作台,所以不提供工作台时这一页会是空的——一个点进去什么
+    /// 都没有的标签页,比没有这个标签页更让人费解。
+    ///
+    /// 两处侧栏都读这里,不各自过滤:漏掉一处的表现是「换个主题实验室又
+    /// 冒出来了」,而那种 bug 没人会想到去换主题才发现。
+    static var visibleCases: [SettingsTab] {
+      allCases.filter { $0 != .labs || ExperimentalFeatures.isOfferedToUsers }
+    }
   }
 
   private static let outputLanguagePresets = ["简体中文", "繁體中文", "English", "日本語", "한국어", "Español", "Français", "Deutsch"]
@@ -135,7 +147,7 @@ struct ProviderSettingsView: View {
           paperSidebar
         } else {
           List(selection: $selectedTab) {
-            ForEach(SettingsTab.allCases) { tab in
+            ForEach(SettingsTab.visibleCases) { tab in
               Label(tab.title, systemImage: tab.symbol)
                 .tag(tab)
                 .padding(.vertical, 4)
@@ -708,7 +720,7 @@ struct ProviderSettingsView: View {
   /// 纸质主题的设置侧栏：画布底色 + 主窗口同款橙色选中样式。
   private var paperSidebar: some View {
     List {
-      ForEach(SettingsTab.allCases) { tab in
+      ForEach(SettingsTab.visibleCases) { tab in
         Button { selectedTab = tab } label: {
           Label(tab.title, systemImage: tab.symbol)
             .frame(maxWidth: .infinity, alignment: .leading)
