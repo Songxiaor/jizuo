@@ -3507,7 +3507,62 @@ final class HistoryViewModel: ObservableObject {
     let workingDirectory = FileManager.default.temporaryDirectory
       .appendingPathComponent("jizuo-agent", isDirectory: true)
 
-    draftingPieceID = pieceID
+    runIntoDraft(prompt: prompt, agent: agent, piece: piece, workingDirectory: workingDirectory)
+  }
+
+  /// 第二块画板:照我的表达方式把这稿子重写一遍。
+  ///
+  /// 和起草共用同一条执行通道,也共用同一份表达方式设置——方案里那句
+  /// 「每块画板都吃这份设置,改一次后面所有产出跟着变」说的就是这个。
+  ///
+  /// 产物同样记成 `drafted`:对判断沉淀来说,「AI 给了一版、我又改了」
+  /// 这件事的性质不因它是起草还是改写而不同。
+  func rewriteDraft(
+    pieceID: PieceID,
+    voice: String? = nil,
+    intensity: RewritePrompt.Intensity = .polish
+  ) {
+    guard let history, let agent = draftAgent, canRewrite(for: pieceID),
+          let piece = try? history.piece(id: pieceID),
+          let detail = try? history.detail(taskID: piece.noteTaskID),
+          let snapshot = detail.snapshots.last else { return }
+
+    let body = MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
+    let prompt = RewritePrompt.build(body: body, voice: voice, intensity: intensity)
+    let workingDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("jizuo-agent", isDirectory: true)
+    runIntoDraft(prompt: prompt, agent: agent, piece: piece, workingDirectory: workingDirectory)
+  }
+
+  /// 稿子空的时候没什么可改写的。
+  func canRewrite(for pieceID: PieceID) -> Bool {
+    guard draftingPieceID == nil, draftAgent != nil,
+          let piece = pieces.first(where: { $0.id == pieceID })
+    else { return false }
+    return piece.bodyLength > 0
+  }
+
+  func rewriteUnavailableReason(for pieceID: PieceID) -> String? {
+    if draftAgent == nil { return "还没接上 Claude Code。" }
+    if draftingPieceID != nil { return "正在生成，等这一次结束。" }
+    if let piece = pieces.first(where: { $0.id == pieceID }), piece.bodyLength == 0 {
+      return "稿子还是空的，先写点东西或者起草一版。"
+    }
+    return nil
+  }
+
+  /// 「跑一次 Agent,把产物写进稿子」——两块画板共用。
+  ///
+  /// 抽出来不是为了少写几行,而是为了让流式缓冲、状态清理和失败归类
+  /// 只有一份实现:这三件事里任何一件在某块画板上漏掉,表现都是
+  /// 「界面卡在正在生成」,而那种 bug 从代码上看不出来。
+  private func runIntoDraft(
+    prompt: String,
+    agent: ClaudeCLIAgent,
+    piece: PieceSummary,
+    workingDirectory: URL
+  ) {
+    draftingPieceID = piece.id
     draftingText = ""
     workbenchFailure = nil
 

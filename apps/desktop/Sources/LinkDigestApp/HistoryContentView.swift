@@ -713,6 +713,13 @@ struct HistoryContentView: View {
             pieceID: pieceID,
             voice: VoiceSettings.decoded(from: voiceSettingsRaw).promptText
           )
+        },
+        onRewrite: { pieceID, intensity in
+          model.rewriteDraft(
+            pieceID: pieceID,
+            voice: VoiceSettings.decoded(from: voiceSettingsRaw).promptText,
+            intensity: intensity
+          )
         }
       )
     } else if model.isWorkbenchActive, isWorkbenchEnabled {

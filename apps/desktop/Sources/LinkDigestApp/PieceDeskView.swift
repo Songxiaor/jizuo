@@ -15,6 +15,7 @@ struct PieceDeskView: View {
   let onTidy: (TaskID) -> Void
   /// 让 Agent 把素材写成初稿。
   let onDraft: (PieceID) -> Void
+  let onRewrite: (PieceID, RewritePrompt.Intensity) -> Void
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -342,9 +343,25 @@ struct PieceDeskView: View {
           icon: "circle.hexagongrid",
           hint: "把已写的内容画成结构，看哪一节缺东西"
         ) { model.requestMindMapGeneration(taskID: piece.noteTaskID) },
+        // 第二块画板。和起草吃同一份表达方式设置。
+        StageTool(
+          title: "按我的表达方式重写",
+          icon: "person.wave.2",
+          hint: model.rewriteUnavailableReason(for: piece.id)
+            ?? "照「我的表达方式」把全文改一遍；事实和数据不动",
+          isDisabled: !model.canRewrite(for: piece.id)
+        ) { onRewrite(piece.id, .rewrite) },
       ]
     case .polish:
       [
+        // 打磨阶段用轻的那一档:这时候结构已经定了，只该顺语感。
+        StageTool(
+          title: "顺一遍语感",
+          icon: "person.wave.2",
+          hint: model.rewriteUnavailableReason(for: piece.id)
+            ?? "保留段落顺序和小标题，只调措辞与断句",
+          isDisabled: !model.canRewrite(for: piece.id)
+        ) { onRewrite(piece.id, .polish) },
         StageTool(
           title: "整理排版",
           icon: "wand.and.stars",
