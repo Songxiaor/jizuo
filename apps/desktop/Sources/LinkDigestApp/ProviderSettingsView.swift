@@ -44,6 +44,24 @@ struct ProviderSettingsView: View {
   @State private var activeAssignmentPicker: AssignmentPicker?
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
   @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchEnabled = false
+  @AppStorage(VoiceSettings.storageKey) private var voiceSettingsRaw = ""
+
+  /// 把整份表达方式的某一项做成 Binding。
+  ///
+  /// 整份编码成一个字符串存,而不是给每个字段各开一个 @AppStorage:
+  /// 加字段时不用再动存储,读的地方也只有一个真相源。
+  private func voiceBinding<Value>(
+    _ keyPath: WritableKeyPath<VoiceSettings, Value>
+  ) -> Binding<Value> {
+    Binding(
+      get: { VoiceSettings.decoded(from: voiceSettingsRaw)[keyPath: keyPath] },
+      set: { newValue in
+        var settings = VoiceSettings.decoded(from: voiceSettingsRaw)
+        settings[keyPath: keyPath] = newValue
+        voiceSettingsRaw = settings.encoded()
+      }
+    )
+  }
   @AppStorage(ReadingFontSelection.storageKey)
   private var readingFontRaw = ReadingFontSelection.defaultStoredValue
   @AppStorage(ReadingFontSize.storageKey)
@@ -726,6 +744,59 @@ struct ProviderSettingsView: View {
               .accessibilityIdentifier("labs-workbench-toggle")
           }
         ) { EmptyView() }
+      }
+
+      // 表达方式属于工作台,不属于「输出沉淀」:它是你主动定义的加工参数,
+      // 不是从你的修改里反推出来的猜测。学错了你没法直接纠正,而旋钮随时能拧。
+      Section {
+        settingCard(
+          title: "我的表达方式",
+          summary: "起草时 AI 照着这些写。改一次，后面所有产出跟着变。",
+          details: "参考段落比前面几个选项有用得多——「短句为主」只是描述，而一段真实的文字直接展示了你怎么断句、怎么起头、怎么收尾。",
+          controlWidth: .full
+        ) {
+          VStack(alignment: .leading, spacing: 12) {
+            Picker("语气", selection: voiceBinding(\.tone)) {
+              ForEach(VoiceSettings.Tone.allCases, id: \.self) {
+                Text($0.displayName).tag($0)
+              }
+            }
+            .pickerStyle(.segmented)
+            Picker("句子", selection: voiceBinding(\.sentenceLength)) {
+              ForEach(VoiceSettings.SentenceLength.allCases, id: \.self) {
+                Text($0.displayName).tag($0)
+              }
+            }
+            .pickerStyle(.segmented)
+            Picker("结构", selection: voiceBinding(\.structure)) {
+              ForEach(VoiceSettings.Structure.allCases, id: \.self) {
+                Text($0.displayName).tag($0)
+              }
+            }
+            .pickerStyle(.segmented)
+
+            VStack(alignment: .leading, spacing: 5) {
+              Text("从不使用的词").font(.caption).foregroundStyle(.secondary)
+              TextField("赋能、抓手、闭环…", text: voiceBinding(\.forbiddenWords))
+                .textFieldStyle(.roundedBorder)
+                .accessibilityIdentifier("voice-forbidden-words")
+            }
+
+            VStack(alignment: .leading, spacing: 5) {
+              Text("参考段落").font(.caption).foregroundStyle(.secondary)
+              TextEditor(text: voiceBinding(\.sample))
+                .font(.system(size: 12))
+                .frame(minHeight: 88)
+                .scrollContentBackground(.hidden)
+                .padding(6)
+                .background(
+                  RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .textBackgroundColor))
+                )
+                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(settingsTheme.hairline))
+                .accessibilityIdentifier("voice-sample")
+            }
+          }
+        }
       }
 
       Section {

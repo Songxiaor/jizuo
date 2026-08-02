@@ -22,6 +22,7 @@ struct HistoryContentView: View {
   @FocusState private var isSearchFocused: Bool
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
   @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchEnabled = false
+  @AppStorage(VoiceSettings.storageKey) private var voiceSettingsRaw = ""
   /// 灯箱打开时窗口级分栏细线需要让位，避免画在放大的图片上。
   @ObservedObject private var inlineImageLightbox = InlineImageLightboxController.shared
   @ObservedObject private var videoCinema = VideoCinemaController.shared
@@ -707,7 +708,12 @@ struct HistoryContentView: View {
         onTidy: { taskID in
           model.requestNoteTidy(taskID: taskID, model: providerSettings.effectiveTidyModelName)
         },
-        onDraft: { pieceID in model.draftFromMaterials(pieceID: pieceID) }
+        onDraft: { pieceID in
+          model.draftFromMaterials(
+            pieceID: pieceID,
+            voice: VoiceSettings.decoded(from: voiceSettingsRaw).promptText
+          )
+        }
       )
     } else if model.isWorkbenchActive, isWorkbenchEnabled {
       workbenchPlaceholder
