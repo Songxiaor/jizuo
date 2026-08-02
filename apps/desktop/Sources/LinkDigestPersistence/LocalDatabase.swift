@@ -8,7 +8,7 @@ public final class LocalDatabase: @unchecked Sendable {
   /// 加一次迁移就只改这一行。之前生产代码和测试各自引用「最后那个 Migration0NN」，
   /// 于是每加一次迁移，迁移测试就整批变红——因为它们钉的是一个具体版本号，
   /// 而它们真正想表达的是「跟着最新走」。
-  public static let latestSchemaVersion = Migration015.schemaVersion
+  public static let latestSchemaVersion = Migration016.schemaVersion
 
   enum Backend { case writable(DatabasePool), readOnly(DatabaseQueue) }
 
@@ -95,6 +95,9 @@ public final class LocalDatabase: @unchecked Sendable {
             }
             if version < Migration015.schemaVersion {
               try Migration015.apply(to: db)
+            }
+            if version < Migration016.schemaVersion {
+              try Migration016.apply(to: db)
             }
           }
         }

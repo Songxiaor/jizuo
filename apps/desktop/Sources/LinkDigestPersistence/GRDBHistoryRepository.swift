@@ -1490,6 +1490,76 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  // MARK: - 爆款实验室
+
+  public func hitPredictions() throws -> [HitPrediction] {
+    try database.read { db in
+      try Row.fetchAll(db, sql: """
+        SELECT * FROM hit_predictions ORDER BY predicted_at_ms DESC
+        """).compactMap(Self.hitPrediction(from:))
+    }
+  }
+
+  public func hitPrediction(of pieceID: PieceID) throws -> HitPrediction? {
+    try database.read { db in
+      try Row.fetchOne(db, sql: "SELECT * FROM hit_predictions WHERE piece_id = ?",
+                       arguments: [pieceID.rawValue]).flatMap(Self.hitPrediction(from:))
+    }
+  }
+
+  public func insertHitPrediction(_ prediction: HitPrediction) throws {
+    try database.write { db in
+      try db.execute(sql: """
+        INSERT INTO hit_predictions
+          (id, piece_id, predicted, reasoning, predicted_at_ms, actual, actual_at_ms, review)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, arguments: [
+          prediction.id.uuidString.lowercased(),
+          prediction.pieceID.rawValue,
+          prediction.predicted.rawValue,
+          String(prediction.reasoning.prefix(2000)),
+          prediction.predictedAtMilliseconds,
+          prediction.actual?.rawValue,
+          prediction.actualAtMilliseconds,
+          String(prediction.review.prefix(2000)),
+        ])
+    }
+  }
+
+  public func settleHitPrediction(
+    id: UUID, actual: HitPrediction.Tier, review: String, settledAtMilliseconds: Int64
+  ) throws {
+    try database.write { db in
+      // 只写实际结果和复盘。predicted 和 reasoning 碰都不碰——
+      // 一旦能改，人会不自觉地往结果的方向修，然后得出「我判断挺准的」
+      // 这个毫无价值的结论。整个校准循环靠的就是这个「不可改」。
+      try db.execute(sql: """
+        UPDATE hit_predictions SET actual = ?, actual_at_ms = ?, review = ? WHERE id = ?
+        """, arguments: [
+          actual.rawValue, settledAtMilliseconds,
+          String(review.prefix(2000)), id.uuidString.lowercased(),
+        ])
+      guard db.changesCount == 1 else { throw RepositoryFailure.notFound }
+    }
+  }
+
+  private static func hitPrediction(from row: Row) -> HitPrediction? {
+    guard let uuid = UUID(uuidString: row["id"]),
+          let pieceID = PieceID(row["piece_id"] as String? ?? ""),
+          let predicted = HitPrediction.Tier(rawValue: row["predicted"] ?? "")
+    else { return nil }
+    return HitPrediction(
+      id: uuid,
+      pieceID: pieceID,
+      predicted: predicted,
+      reasoning: row["reasoning"] ?? "",
+      predictedAtMilliseconds: row["predicted_at_ms"] ?? 0,
+      actual: (row["actual"] as String?).flatMap(HitPrediction.Tier.init(rawValue:)),
+      actualAtMilliseconds: row["actual_at_ms"],
+      review: row["review"] ?? ""
+    )
+  }
+
   // MARK: - 方法库
 
   public func writingMethods() throws -> [WritingMethod] {

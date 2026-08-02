@@ -16,6 +16,7 @@ struct PieceDeskView: View {
   /// 让 Agent 把素材写成初稿。
   let onDraft: (PieceID) -> Void
   let onRewrite: (PieceID, RewritePrompt.Intensity) -> Void
+  @AppStorage(ExperimentalFeatures.hitLabKey) private var isHitLabEnabled = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -224,6 +225,13 @@ struct PieceDeskView: View {
         .fixedSize(horizontal: false, vertical: true)
 
       stageTools
+
+      // 只在打磨和已发出时出现:更早的阶段稿子还没成形，这时候猜
+      // 传播效果，猜的是一个还不存在的东西。
+      if isHitLabEnabled, piece.stage == .polish || piece.stage == .done {
+        HitLabView(model: model, piece: piece)
+          .padding(.top, 4)
+      }
 
       Spacer(minLength: 0)
     }

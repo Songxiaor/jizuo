@@ -46,6 +46,7 @@ struct ProviderSettingsView: View {
   @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchEnabled = false
   @AppStorage(VoiceSettings.storageKey) private var voiceSettingsRaw = ""
   @AppStorage(TopicSchedule.storageKey) private var topicScheduleRaw = ""
+  @AppStorage(ExperimentalFeatures.hitLabKey) private var isHitLabEnabled = false
 
   private func scheduleBinding<Value>(
     _ keyPath: WritableKeyPath<TopicSchedule, Value>
@@ -758,6 +759,20 @@ struct ProviderSettingsView: View {
               .accessibilityIdentifier("labs-workbench-toggle")
           }
         ) { EmptyView() }
+      }
+
+      Section {
+        settingCard(
+          title: "爆款实验室",
+          summary: "发布前先写下预测，几天后拿真实结果对照。",
+          details: "它不是预测模型，是校准循环。盲预测的价值不在于准——准不准很大程度上看平台推荐和运气；而「我以为会爆的那些为什么没爆」是能学的，前提是预测在看到结果之前就已经落定，之后不能改。关掉之后模块从界面消失，但已经记下的预测不会删。",
+          controlWidth: .full
+        ) {
+          Toggle("爆款实验室", isOn: $isHitLabEnabled)
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .accessibilityIdentifier("hit-lab-enabled")
+        }
       }
 
       Section {

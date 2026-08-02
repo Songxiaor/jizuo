@@ -315,6 +315,17 @@ public protocol HistoryRepository: Sendable {
   func setWritingMethodEnabled(_ isEnabled: Bool, for id: UUID) throws
   func deleteWritingMethod(id: UUID) throws
 
+  // MARK: - 爆款实验室
+
+  func hitPredictions() throws -> [HitPrediction]
+  func hitPrediction(of pieceID: PieceID) throws -> HitPrediction?
+  /// 记一次预测。同一件创作只能记一次——允许重来，「盲」就没了。
+  func insertHitPrediction(_ prediction: HitPrediction) throws
+  /// 录入实际结果与复盘。预测本身不可改。
+  func settleHitPrediction(
+    id: UUID, actual: HitPrediction.Tier, review: String, settledAtMilliseconds: Int64
+  ) throws
+
   /// 按标题找一条笔记，供 `[[标题]]` 跳转用。找不到返回 nil。
   ///
   /// 只在笔记里找：双链是笔记之间的东西，链到一篇抓来的网页上没有意义——
@@ -478,6 +489,12 @@ public extension HistoryRepository {
   func insertWritingMethod(_: WritingMethod) throws { throw RepositoryFailure.unavailable }
   func setWritingMethodEnabled(_: Bool, for _: UUID) throws { throw RepositoryFailure.unavailable }
   func deleteWritingMethod(id _: UUID) throws { throw RepositoryFailure.unavailable }
+  func hitPredictions() throws -> [HitPrediction] { [] }
+  func hitPrediction(of _: PieceID) throws -> HitPrediction? { nil }
+  func insertHitPrediction(_: HitPrediction) throws { throw RepositoryFailure.unavailable }
+  func settleHitPrediction(
+    id _: UUID, actual _: HitPrediction.Tier, review _: String, settledAtMilliseconds _: Int64
+  ) throws { throw RepositoryFailure.unavailable }
   func pieceEvents(of _: PieceID) throws -> [PieceEvent] { [] }
   func draftRevisionPairs(limit _: Int) throws -> [DraftRevisionPair] { [] }
   func addMaterial(taskID _: TaskID, to _: PieceID, addedAtMilliseconds _: Int64) throws {

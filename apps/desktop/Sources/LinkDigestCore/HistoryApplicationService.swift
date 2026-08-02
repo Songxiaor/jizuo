@@ -111,6 +111,23 @@ public struct HistoryApplicationService: Sendable {
   }
   public func deleteWritingMethod(id: UUID) throws { try repository.deleteWritingMethod(id: id) }
 
+  // MARK: - 爆款实验室
+
+  public func hitPredictions() throws -> [HitPrediction] { try repository.hitPredictions() }
+  public func hitPrediction(of pieceID: PieceID) throws -> HitPrediction? {
+    try repository.hitPrediction(of: pieceID)
+  }
+  public func insertHitPrediction(_ prediction: HitPrediction) throws {
+    try repository.insertHitPrediction(prediction)
+  }
+  public func settleHitPrediction(
+    id: UUID, actual: HitPrediction.Tier, review: String, settledAtMilliseconds: Int64
+  ) throws {
+    try repository.settleHitPrediction(
+      id: id, actual: actual, review: review, settledAtMilliseconds: settledAtMilliseconds
+    )
+  }
+
   public func noteID(matchingTitle title: String) throws -> TaskID? {
     try repository.noteID(matchingTitle: title)
   }

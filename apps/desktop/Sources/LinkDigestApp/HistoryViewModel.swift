@@ -957,6 +957,7 @@ final class HistoryViewModel: ObservableObject {
     isWorkbenchActive = false; pieces = []; selectedPieceID = nil
     selectedPiece = nil; pieceMaterials = []; workbenchFailure = nil
     topicCandidates = []; writingMethods = []; distilledCandidates = []
+    hitPredictions = []
     guard history != nil else { listState = .failed; detailState = .idle; return }
     reload()
     // 侧栏那个「进行中 N」和列表右键的「加入工作台」都要用到这份列表，
@@ -3419,6 +3420,7 @@ final class HistoryViewModel: ObservableObject {
     reloadPieces()
     reloadTopicCandidates()
     reloadWritingMethods()
+    reloadHitPredictions()
   }
 
   func leaveWorkbench() {
@@ -3469,6 +3471,58 @@ final class HistoryViewModel: ObservableObject {
       workbenchFailure = nil
     } catch {
       workbenchFailure = "无法新建创作，请稍后重试。"
+    }
+  }
+
+  // MARK: - 爆款实验室
+
+  @Published private(set) var hitPredictions: [HitPrediction] = []
+
+  var hitCalibration: HitCalibration { .init(predictions: hitPredictions) }
+
+  func reloadHitPredictions() {
+    guard let history else { hitPredictions = []; return }
+    hitPredictions = (try? history.hitPredictions()) ?? []
+  }
+
+  func hitPrediction(of pieceID: PieceID) -> HitPrediction? {
+    hitPredictions.first { $0.pieceID == pieceID }
+  }
+
+  /// 记一次预测。
+  ///
+  /// 只在发布前记,而且一件创作只能记一次。允许重来就等于允许看到结果
+  /// 再补一条,「盲」就没了——而整个校准循环靠的就是这个「盲」。
+  func recordHitPrediction(
+    pieceID: PieceID, predicted: HitPrediction.Tier, reasoning: String
+  ) {
+    guard let history, hitPrediction(of: pieceID) == nil else { return }
+    do {
+      try history.insertHitPrediction(.init(
+        pieceID: pieceID, predicted: predicted,
+        reasoning: reasoning.trimmingCharacters(in: .whitespacesAndNewlines),
+        predictedAtMilliseconds: nowMilliseconds()
+      ))
+      reloadHitPredictions()
+      workbenchFailure = nil
+    } catch {
+      workbenchFailure = "预测没能存下来，请稍后重试。"
+    }
+  }
+
+  /// 录入真实结果。预测本身不动。
+  func settleHitPrediction(id: UUID, actual: HitPrediction.Tier, review: String) {
+    guard let history else { return }
+    do {
+      try history.settleHitPrediction(
+        id: id, actual: actual,
+        review: review.trimmingCharacters(in: .whitespacesAndNewlines),
+        settledAtMilliseconds: nowMilliseconds()
+      )
+      reloadHitPredictions()
+      workbenchFailure = nil
+    } catch {
+      workbenchFailure = "结果没能存下来，请稍后重试。"
     }
   }
 
