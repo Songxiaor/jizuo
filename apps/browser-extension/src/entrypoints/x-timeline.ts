@@ -11,15 +11,21 @@ import { tweetIDFromArticle } from "../content/x-bookmarks";
 
 const BUTTON_CLASS = "linkdigest-sync-button";
 
+/** 构建期由 wxt.config.ts 从 product-display.json 注入，见那里的说明。 */
+declare const __PRODUCT_DISPLAY_NAME__: string;
+
+/** 鼠标悬停的提示，也是读屏念的内容——两处用户都碰得到，所以只能有一份。 */
+const SYNC_LABEL = `同步到${__PRODUCT_DISPLAY_NAME__}`;
+
 function buildButton(): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
   button.className = BUTTON_CLASS;
-  button.setAttribute("aria-label", "同步到 LinkDigest");
-  button.title = "同步到 LinkDigest";
+  button.setAttribute("aria-label", SYNC_LABEL);
+  button.title = SYNC_LABEL;
   // 与 X 原生操作图标同尺寸的圆形按钮；配色跟随扩展品牌绿。
   button.innerHTML =
-    "<span class='ld-ico' aria-hidden='true'>L</span><span class='ld-tip' aria-hidden='true'></span>";
+    "<span class='ld-ico' aria-hidden='true'>S</span><span class='ld-tip' aria-hidden='true'></span>";
   return button;
 }
 

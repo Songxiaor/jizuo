@@ -14,6 +14,15 @@ if (productDisplay.formatVersion !== 1 || extensionIdentity.formatVersion !== 1)
 }
 
 export default defineConfig({
+  // content script 里也要用产品显示名（X 时间线那个按钮的提示与读屏文案）。
+  // 在那边手写一遍的下场已经发生过：产品改叫「汲作」之后，按钮的
+  // tooltip 还在念旧名。改成构建期从同一份 product-display.json 注入，
+  // 让「改名字只改一处」这句话对扩展也成立。
+  vite: () => ({
+    define: {
+      __PRODUCT_DISPLAY_NAME__: JSON.stringify(productDisplay.displayName)
+    }
+  }),
   manifest: {
     key: extensionIdentity.manifestKey,
     name: productDisplay.displayName,
