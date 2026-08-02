@@ -5,7 +5,6 @@ import {
   popupMetaChips,
   popupMessageForSendResult,
   popupMetadataDiagnostic,
-  popupPlatformIcon,
   popupPlatformLabel,
   type SafeExtensionSendResult,
   type SafeMediaPreview,
@@ -64,12 +63,8 @@ function setAvailability(tone: string, label: string): void {
   availability.textContent = label;
 }
 
-function renderPlatform(icon: string, label: string): void {
-  platform.replaceChildren();
-  const dot = document.createElement("span");
-  dot.className = "dot";
-  dot.textContent = icon;
-  platform.append(dot, document.createTextNode(label));
+function renderPlatform(label: string): void {
+  platform.textContent = label;
 }
 
 function renderMeta(chips: { text: string; tone?: "video" }[]): void {
@@ -98,8 +93,8 @@ if (tabId === undefined) {
   // 收藏夹页面：主操作换成批量同步。普通「发送」在这里只会抓到收藏夹外壳。
   send.hidden = true;
   syncBookmarks.hidden = false;
-  setAvailability("ready", "X 收藏夹");
-  renderPlatform(popupPlatformIcon("x"), "X · 收藏夹");
+  setAvailability("ready", "可同步");
+  renderPlatform("X · 收藏夹");
   status.textContent = "同步收藏夹";
   renderMeta([{ text: "滚动收集后交给 App 逐条抓取" }]);
 
@@ -135,10 +130,7 @@ if (tabId === undefined) {
     }) as SafeCapturePreview;
     const avail = popupAvailability(preview);
     setAvailability(avail.tone, avail.label);
-    renderPlatform(
-      popupPlatformIcon(preview.platform),
-      popupPlatformLabel(preview.platform, preview.version, preview.imageCount),
-    );
+    renderPlatform(popupPlatformLabel(preview.platform, preview.version, preview.imageCount));
     status.textContent = preview.title;
     renderMeta(popupMetaChips(preview));
     renderMetadataDiagnostic(preview.metadataDiagnostic);

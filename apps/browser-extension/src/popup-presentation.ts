@@ -78,15 +78,10 @@ const platformLabels: Readonly<Record<CapturePlatform, string>> = {
   zhihu: "知乎", medium: "Medium", substack: "Substack", toutiao: "今日头条",
 };
 
-const platformIcons: Readonly<Record<CapturePlatform, string>> = {
-  generic: "🌐", x: "𝕏", youtube: "▶️", wechat: "💬",
-  xiaohongshu: "📕", douyin: "🎵", bilibili: "📺", github: "🐙",
-  zhihu: "📘", medium: "✍️", substack: "📮", toutiao: "📰",
-};
-
-export function popupPlatformIcon(platform: CapturePlatform): string {
-  return platformIcons[platform] ?? "🌐";
-}
+// 这里原本还有一套 emoji 平台图标,和 `platformLabels` 并排渲染。删掉了:
+// 它和文字说的是同一件事(X 页面上会显示「𝕏 X · 视频」,两个 X),而在 11px 下
+// 📕/📘/📰/📮 彼此分不出来——一个既重复又认不准的东西,不如没有。
+// 平台身份只留文字这一处。
 
 const unsupportedPlatforms: ReadonlySet<CapturePlatform> = new Set<CapturePlatform>();
 

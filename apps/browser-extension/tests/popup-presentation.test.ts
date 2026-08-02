@@ -8,7 +8,6 @@ import {
   popupMessageForResponse,
   popupMessageForSendResult,
   popupMetaChips,
-  popupPlatformIcon,
   popupPlatformLabel,
   popupScaleLabel,
 } from "../src/popup-presentation";
@@ -178,11 +177,6 @@ describe("popup platform label", () => {
     expect(popupPlatformLabel("wechat", 1)).toBe("微信公众号 · 文章");
     expect(popupPlatformLabel("douyin", 2)).toBe("抖音 · 视频");
     expect(popupPlatformLabel("generic", 1)).toBe("网页 · 文章");
-  });
-  it("gives every platform an icon", () => {
-    expect(popupPlatformIcon("wechat")).toBe("💬");
-    expect(popupPlatformIcon("douyin")).toBe("🎵");
-    expect(popupPlatformIcon("generic")).toBe("🌐");
   });
 });
 
