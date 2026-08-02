@@ -100,6 +100,17 @@ public struct HistoryApplicationService: Sendable {
     try repository.setTopicVerdict(verdict, for: id)
   }
 
+  // MARK: - 方法库
+
+  public func writingMethods() throws -> [WritingMethod] { try repository.writingMethods() }
+  public func insertWritingMethod(_ method: WritingMethod) throws {
+    try repository.insertWritingMethod(method)
+  }
+  public func setWritingMethodEnabled(_ isEnabled: Bool, for id: UUID) throws {
+    try repository.setWritingMethodEnabled(isEnabled, for: id)
+  }
+  public func deleteWritingMethod(id: UUID) throws { try repository.deleteWritingMethod(id: id) }
+
   public func noteID(matchingTitle title: String) throws -> TaskID? {
     try repository.noteID(matchingTitle: title)
   }

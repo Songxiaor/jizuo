@@ -33,6 +33,7 @@ public enum RewritePrompt {
   public static func build(
     body: String,
     voice: String?,
+    methods: [String] = [],
     intensity: Intensity = .polish
   ) -> String {
     var lines: [String] = []
@@ -55,6 +56,14 @@ public enum RewritePrompt {
 
       ## 我的表达方式
       (还没设置。那就保持稿子原有的语感,只处理明显别扭的地方。)
+      """)
+    }
+
+    if !methods.isEmpty {
+      lines.append("""
+
+      ## 我常用的写法
+      \(methods.map { "- \($0)" }.joined(separator: "\n"))
       """)
     }
 

@@ -1490,6 +1490,59 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  // MARK: - 方法库
+
+  public func writingMethods() throws -> [WritingMethod] {
+    try database.read { db in
+      try Row.fetchAll(db, sql: """
+        SELECT id, body, origin, is_enabled, created_at_ms
+        FROM writing_methods ORDER BY created_at_ms
+        """).compactMap { row -> WritingMethod? in
+        guard let uuid = UUID(uuidString: row["id"]),
+              let origin = WritingMethod.Origin(rawValue: row["origin"] ?? "")
+        else { return nil }
+        return WritingMethod(
+          id: uuid,
+          body: row["body"] ?? "",
+          origin: origin,
+          isEnabled: (row["is_enabled"] as Int? ?? 1) == 1,
+          createdAtMilliseconds: row["created_at_ms"] ?? 0
+        )
+      }
+    }
+  }
+
+  public func insertWritingMethod(_ method: WritingMethod) throws {
+    try database.write { db in
+      try db.execute(sql: """
+        INSERT INTO writing_methods (id, body, origin, is_enabled, created_at_ms)
+        VALUES (?, ?, ?, ?, ?)
+        """, arguments: [
+          method.id.uuidString.lowercased(),
+          String(method.body.prefix(1000)),
+          method.origin.rawValue,
+          method.isEnabled ? 1 : 0,
+          method.createdAtMilliseconds,
+        ])
+    }
+  }
+
+  public func setWritingMethodEnabled(_ isEnabled: Bool, for id: UUID) throws {
+    try database.write { db in
+      try db.execute(sql: "UPDATE writing_methods SET is_enabled = ? WHERE id = ?",
+                     arguments: [isEnabled ? 1 : 0, id.uuidString.lowercased()])
+      guard db.changesCount == 1 else { throw RepositoryFailure.notFound }
+    }
+  }
+
+  public func deleteWritingMethod(id: UUID) throws {
+    try database.write { db in
+      try db.execute(sql: "DELETE FROM writing_methods WHERE id = ?",
+                     arguments: [id.uuidString.lowercased()])
+      guard db.changesCount == 1 else { throw RepositoryFailure.notFound }
+    }
+  }
+
   public func setTopicVerdict(_ verdict: TopicCandidate.Verdict, for id: UUID) throws {
     try database.write { db in
       try db.execute(sql: "UPDATE topic_candidates SET verdict = ? WHERE id = ?",

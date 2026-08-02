@@ -180,6 +180,8 @@ struct WorkbenchListView: View {
       }
 
       Divider()
+      MethodLibraryView(model: model)
+      Divider()
       Button(action: onNewSpark) {
         HStack(spacing: 6) {
           Image(systemName: "plus.circle")

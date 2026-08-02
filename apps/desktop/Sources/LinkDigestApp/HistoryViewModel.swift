@@ -577,6 +577,8 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var draftingPieceID: PieceID?
   /// 起草时流式产出的文字,直接往界面上刷。
   @Published private(set) var draftingText = ""
+  /// 方法库。启用与否都在里面——界面要能看到停用的那些。
+  @Published private(set) var writingMethods: [WritingMethod] = []
   /// 选题板上的候选,新的一天在前。
   @Published private(set) var topicCandidates: [TopicCandidate] = []
   /// 正在出选题。
@@ -954,7 +956,7 @@ final class HistoryViewModel: ObservableObject {
     isCapturedMediaAutoSaveFailurePresented = false
     isWorkbenchActive = false; pieces = []; selectedPieceID = nil
     selectedPiece = nil; pieceMaterials = []; workbenchFailure = nil
-    topicCandidates = []
+    topicCandidates = []; writingMethods = []; distilledCandidates = []
     guard history != nil else { listState = .failed; detailState = .idle; return }
     reload()
     // 侧栏那个「进行中 N」和列表右键的「加入工作台」都要用到这份列表，
@@ -3416,6 +3418,7 @@ final class HistoryViewModel: ObservableObject {
     isWorkbenchActive = true
     reloadPieces()
     reloadTopicCandidates()
+    reloadWritingMethods()
   }
 
   func leaveWorkbench() {
@@ -3467,6 +3470,139 @@ final class HistoryViewModel: ObservableObject {
     } catch {
       workbenchFailure = "无法新建创作，请稍后重试。"
     }
+  }
+
+  // MARK: - 方法库
+
+  /// 启用的方法,直接可以塞进提示词。
+  var enabledMethodBodies: [String] {
+    writingMethods.filter(\.isEnabled).map(\.body)
+  }
+
+  func reloadWritingMethods() {
+    guard let history else { writingMethods = []; return }
+    writingMethods = (try? history.writingMethods()) ?? []
+  }
+
+  /// 加一条方法。过不了入库自检就返回拒绝理由,不写库。
+  ///
+  /// 这道门是整个方法库有没有用的分界:放进去一条「要写得有深度」,
+  /// 它会进每一次起草的提示词,而模型对这句话的唯一反应是把形容词加密。
+  @discardableResult
+  func addWritingMethod(
+    _ body: String, origin: WritingMethod.Origin = .handwritten
+  ) -> MethodAdmission.Rejection? {
+    guard let history else { return nil }
+    let trimmed = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    if let rejection = MethodAdmission.check(trimmed, against: writingMethods) {
+      return rejection
+    }
+    do {
+      try history.insertWritingMethod(.init(
+        body: trimmed, origin: origin, createdAtMilliseconds: nowMilliseconds()
+      ))
+      reloadWritingMethods()
+      workbenchFailure = nil
+    } catch {
+      workbenchFailure = "方法没能存下来，请稍后重试。"
+    }
+    return nil
+  }
+
+  /// 正在从修改里提炼方法。
+  @Published private(set) var isDistilling = false
+  /// 提炼出来、等你点头的候选。
+  ///
+  /// 不直接入库:提炼是模型给的,而方法会进每一次起草。让它自己
+  /// 往库里写,等于把「什么算我的写法」这件事也交出去了。
+  @Published var distilledCandidates: [String] = []
+
+  func distillUnavailableReason() -> String? {
+    if history == nil { return "历史存储不可用。" }
+    if isReadOnly { return "这份历史当前只能浏览。" }
+    if draftAgent == nil { return "需要先安装 Claude Code。" }
+    if isDistilling { return "正在提炼…" }
+    let pairs = (try? history?.draftRevisionPairs()) ?? []
+    let usable = pairs.filter { !$0.isNearlyUntouched }.count
+    if usable < DistillPrompt.minimumPairs {
+      // 说清还差多少。「数据不够」这种提示会让用户以为功能坏了。
+      return "还需要 \(DistillPrompt.minimumPairs - usable) 篇改过的稿子。"
+    }
+    return nil
+  }
+
+  var canDistill: Bool { distillUnavailableReason() == nil }
+
+  /// 从「AI 写成这样、我改成了那样」里提炼方法。
+  ///
+  /// 几乎没改的那些排除在外:它们说明 AI 那版就是你要的,
+  /// 里面看不出任何分歧,混进去只会稀释真正有信号的对照。
+  func distillMethods() {
+    guard let history, let agent = draftAgent, canDistill else { return }
+
+    let pairs = ((try? history.draftRevisionPairs()) ?? [])
+      .filter { !$0.isNearlyUntouched }
+      .prefix(8)
+      .map { DistillPrompt.Pair(generated: $0.generated, revised: $0.revised) }
+    guard pairs.count >= DistillPrompt.minimumPairs else { return }
+
+    let prompt = DistillPrompt.build(
+      pairs: Array(pairs), existing: writingMethods.map(\.body)
+    )
+    let workingDirectory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("jizuo-agent", isDirectory: true)
+
+    isDistilling = true
+    workbenchFailure = nil
+
+    Task { [weak self] in
+      do {
+        let text = try await agent.run(
+          .init(prompt: prompt, workingDirectory: workingDirectory)
+        ) { _ in }
+        await MainActor.run {
+          guard let self else { return }
+          self.isDistilling = false
+          // 过一遍入库自检再摆到用户面前。模型很会写「要更简洁」,
+          // 而那种东西连让用户看一眼都是浪费。
+          let candidates = DistillPrompt.parse(text)
+            .filter { MethodAdmission.isAdmissible($0, against: self.writingMethods) }
+          self.distilledCandidates = candidates
+          if candidates.isEmpty {
+            self.workbenchFailure = "这次没看出反复出现的差异。等再改几篇稿子试试。"
+          }
+        }
+      } catch {
+        await MainActor.run {
+          guard let self else { return }
+          self.isDistilling = false
+          self.workbenchFailure = Self.draftFailureMessage(error)
+        }
+      }
+    }
+  }
+
+  /// 收下一条提炼出来的方法。
+  func acceptDistilled(_ body: String) {
+    addWritingMethod(body, origin: .distilled)
+    distilledCandidates.removeAll { $0 == body }
+  }
+
+  func dismissDistilled(_ body: String) {
+    distilledCandidates.removeAll { $0 == body }
+  }
+
+  func setWritingMethodEnabled(_ isEnabled: Bool, for id: UUID) {
+    guard let history else { return }
+    // 停用不是删除——试过、发现不合适的方法本身也是信息。
+    try? history.setWritingMethodEnabled(isEnabled, for: id)
+    reloadWritingMethods()
+  }
+
+  func deleteWritingMethod(id: UUID) {
+    guard let history else { return }
+    try? history.deleteWritingMethod(id: id)
+    reloadWritingMethods()
   }
 
   // MARK: - 每日选题板
@@ -3670,7 +3806,9 @@ final class HistoryViewModel: ObservableObject {
         )
       } ?? []
 
-    let prompt = DraftPrompt.build(spark: piece.spark, materials: materials, voice: voice)
+    let prompt = DraftPrompt.build(
+      spark: piece.spark, materials: materials, voice: voice, methods: enabledMethodBodies
+    )
     // 工作目录锁在专用沙箱里:即便工具已经禁掉,进程的 cwd 仍是它能看到的世界。
     let workingDirectory = FileManager.default.temporaryDirectory
       .appendingPathComponent("jizuo-agent", isDirectory: true)
@@ -3696,7 +3834,9 @@ final class HistoryViewModel: ObservableObject {
           let snapshot = detail.snapshots.last else { return }
 
     let body = MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
-    let prompt = RewritePrompt.build(body: body, voice: voice, intensity: intensity)
+    let prompt = RewritePrompt.build(
+      body: body, voice: voice, methods: enabledMethodBodies, intensity: intensity
+    )
     let workingDirectory = FileManager.default.temporaryDirectory
       .appendingPathComponent("jizuo-agent", isDirectory: true)
     runIntoDraft(prompt: prompt, agent: agent, piece: piece, workingDirectory: workingDirectory)

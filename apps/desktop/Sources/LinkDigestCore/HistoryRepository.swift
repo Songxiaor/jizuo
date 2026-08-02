@@ -306,6 +306,15 @@ public protocol HistoryRepository: Sendable {
   func recentTopicCandidates(limit: Int) throws -> [TopicCandidate]
   func setTopicVerdict(_ verdict: TopicCandidate.Verdict, for id: UUID) throws
 
+  // MARK: - 方法库
+
+  /// 全部方法，启用与否都给——界面要能看到停用的那些。
+  func writingMethods() throws -> [WritingMethod]
+  /// 入库。调用前必须过 `MethodAdmission`。
+  func insertWritingMethod(_ method: WritingMethod) throws
+  func setWritingMethodEnabled(_ isEnabled: Bool, for id: UUID) throws
+  func deleteWritingMethod(id: UUID) throws
+
   /// 按标题找一条笔记，供 `[[标题]]` 跳转用。找不到返回 nil。
   ///
   /// 只在笔记里找：双链是笔记之间的东西，链到一篇抓来的网页上没有意义——
@@ -465,6 +474,10 @@ public extension HistoryRepository {
   func setTopicVerdict(_: TopicCandidate.Verdict, for _: UUID) throws {
     throw RepositoryFailure.unavailable
   }
+  func writingMethods() throws -> [WritingMethod] { [] }
+  func insertWritingMethod(_: WritingMethod) throws { throw RepositoryFailure.unavailable }
+  func setWritingMethodEnabled(_: Bool, for _: UUID) throws { throw RepositoryFailure.unavailable }
+  func deleteWritingMethod(id _: UUID) throws { throw RepositoryFailure.unavailable }
   func pieceEvents(of _: PieceID) throws -> [PieceEvent] { [] }
   func draftRevisionPairs(limit _: Int) throws -> [DraftRevisionPair] { [] }
   func addMaterial(taskID _: TaskID, to _: PieceID, addedAtMilliseconds _: Int64) throws {

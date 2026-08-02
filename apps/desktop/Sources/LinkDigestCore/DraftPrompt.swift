@@ -29,6 +29,7 @@ public enum DraftPrompt {
     spark: String,
     materials: [Material],
     voice: String? = nil,
+    methods: [String] = [],
     targetLength: Int = 1500
   ) -> String {
     var lines: [String] = []
@@ -67,6 +68,16 @@ public enum DraftPrompt {
 
     if let voice, !voice.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
       lines.append("\n## 我的表达方式\n\(voice)")
+    }
+
+    // 方法库反哺画板。只有过了入库自检的才在这里——那道门拦掉的是
+    // 「要写得有深度」这类东西,它进了提示词只会让模型把形容词加密。
+    if !methods.isEmpty {
+      lines.append("""
+
+      ## 我常用的写法
+      \(methods.map { "- \($0)" }.joined(separator: "\n"))
+      """)
     }
 
     lines.append("""
