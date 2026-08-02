@@ -3398,6 +3398,7 @@ final class HistoryViewModel: ObservableObject {
         updatedAtMilliseconds: nowMilliseconds()
       )
       snapshotEditFailure = nil
+      recordRevisionIfThisIsAPieceDraft(taskID: taskID, bodyText: bodyText)
       refreshDetailAfterTranscription(taskID: taskID)
     } catch {
       snapshotEditFailure = "无法保存修改，请检查历史存储后重试。"
@@ -3562,6 +3563,12 @@ final class HistoryViewModel: ObservableObject {
       taskID: piece.noteTaskID, snapshotID: snapshot.id,
       bodyText: trimmed, updatedAtMilliseconds: nowMilliseconds()
     )
+    // 记下 AI 写的这一版。它单独看没什么用,但和你随后改成的那版配对之后,
+    // 差异就是「你和它的分歧」——那是让 skill 变得像你的唯一原料。
+    try? history.recordPieceEvent(.init(
+      pieceID: piece.id, kind: .drafted, detail: trimmed,
+      createdAtMilliseconds: nowMilliseconds()
+    ))
     reloadPieces()
     if selectedPieceID == piece.id { reloadSelectedPiece() }
   }
@@ -3600,6 +3607,9 @@ final class HistoryViewModel: ObservableObject {
     guard let history else { return }
     do {
       _ = try history.finishPiece(id: id, finishedAtMilliseconds: nowMilliseconds())
+      try? history.recordPieceEvent(.init(
+        pieceID: id, kind: .finished, detail: "", createdAtMilliseconds: nowMilliseconds()
+      ))
       reloadPieces()
       if selectedPieceID == id { reloadSelectedPiece() }
       reloadNavigationCounts()
@@ -3613,6 +3623,10 @@ final class HistoryViewModel: ObservableObject {
     guard let history else { return }
     do {
       try history.setPieceStage(stage, for: id, updatedAtMilliseconds: nowMilliseconds())
+      try? history.recordPieceEvent(.init(
+        pieceID: id, kind: .staged, detail: stage?.rawValue ?? "auto",
+        createdAtMilliseconds: nowMilliseconds()
+      ))
       reloadPieces()
       if selectedPieceID == id { reloadSelectedPiece() }
     } catch {
@@ -3624,6 +3638,11 @@ final class HistoryViewModel: ObservableObject {
     guard let history else { return }
     do {
       try history.addMaterial(taskID: taskID, to: pieceID, addedAtMilliseconds: nowMilliseconds())
+      let title = (try? history.detail(taskID: taskID))?.snapshots.last?.title ?? ""
+      try? history.recordPieceEvent(.init(
+        pieceID: pieceID, kind: .materialAdded, detail: title,
+        createdAtMilliseconds: nowMilliseconds()
+      ))
       reloadPieces()
       if selectedPieceID == pieceID { reloadSelectedPiece() }
     } catch {
@@ -3702,6 +3721,32 @@ final class HistoryViewModel: ObservableObject {
     } catch {
       snapshotEditFailure = "无法保存标题，请检查历史存储后重试。"
     }
+  }
+
+  /// 存的是工作台稿件、而且 AI 起草过,就记一版「你改成了什么」。
+  ///
+  /// 挂在保存这条路上,是因为**判断必须是顺带产生的**。让用户专门去点一个
+  /// 「记录我的修改」按钮,他不会点;而他一定会存稿子。
+  ///
+  /// 只在 AI 起草过的创作上记:没起草过的稿子是你从零写的,没有「和谁的分歧」
+  /// 可言,存进去只会稀释真正有信号的那些配对。
+  private func recordRevisionIfThisIsAPieceDraft(taskID: TaskID, bodyText: String) {
+    guard let history,
+          let piece = (try? history.pieces())?.first(where: { $0.noteTaskID == taskID }),
+          let events = try? history.pieceEvents(of: piece.id),
+          let lastDraft = events.last(where: { $0.kind == .drafted })
+    else { return }
+    let trimmed = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+    // 和 AI 那版一字不差就不记:那是「没改」,不是一次修订。
+    guard !trimmed.isEmpty, trimmed != lastDraft.detail else { return }
+    // 同一版反复保存(自动保存每秒都可能触发)只保留最后一条,
+    // 否则一次写作会灌进几十条几乎相同的记录。
+    if let lastRevision = events.last(where: { $0.kind == .revised }),
+       lastRevision.detail == trimmed { return }
+    try? history.recordPieceEvent(.init(
+      pieceID: piece.id, kind: .revised, detail: trimmed,
+      createdAtMilliseconds: nowMilliseconds()
+    ))
   }
 
   func dismissSnapshotEditFailure() { snapshotEditFailure = nil }

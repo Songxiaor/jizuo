@@ -1200,6 +1200,73 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  public func recordPieceEvent(_ event: PieceEvent) throws {
+    try database.write { db in
+      try db.execute(sql: """
+        INSERT INTO piece_events (id, piece_id, kind, detail, created_at_ms)
+        VALUES (?, ?, ?, ?, ?)
+        """, arguments: [
+          event.id.uuidString.lowercased(), event.pieceID.rawValue,
+          event.kind.rawValue, event.detail, event.createdAtMilliseconds,
+        ])
+    }
+  }
+
+  public func pieceEvents(of id: PieceID) throws -> [PieceEvent] {
+    try database.read { db in
+      try Row.fetchAll(db, sql: """
+        SELECT id, piece_id, kind, detail, created_at_ms
+        FROM piece_events WHERE piece_id = ? ORDER BY created_at_ms
+        """, arguments: [id.rawValue]).compactMap { row in
+        guard let uuid = UUID(uuidString: row["id"]),
+              let kind = PieceEvent.Kind(rawValue: row["kind"]) else { return nil }
+        let pieceID: PieceID = requiredID(row["piece_id"])
+        return PieceEvent(
+          id: uuid, pieceID: pieceID, kind: kind,
+          detail: row["detail"] ?? "", createdAtMilliseconds: row["created_at_ms"] ?? 0
+        )
+      }
+    }
+  }
+
+  public func draftRevisionPairs(limit: Int) throws -> [DraftRevisionPair] {
+    try database.read { db in
+      // 每件创作取**最后一次** AI 产出,以及它之后你改成的那一版。
+      //
+      // 取最后一次而不是全部:同一件创作可能重跑好几次起草,中间那些
+      // 你根本没看过就重跑了,拿它们做配对只会引入噪声。
+      let rows = try Row.fetchAll(db, sql: """
+        WITH last_draft AS (
+          SELECT piece_id, MAX(created_at_ms) AS at FROM piece_events
+          WHERE kind = ? GROUP BY piece_id
+        )
+        SELECT d.piece_id AS piece_id,
+               dg.detail AS generated, dg.created_at_ms AS generated_at,
+               (SELECT detail FROM piece_events r
+                 WHERE r.piece_id = d.piece_id AND r.kind = ? AND r.created_at_ms > d.at
+                 ORDER BY r.created_at_ms DESC LIMIT 1) AS revised,
+               (SELECT created_at_ms FROM piece_events r
+                 WHERE r.piece_id = d.piece_id AND r.kind = ? AND r.created_at_ms > d.at
+                 ORDER BY r.created_at_ms DESC LIMIT 1) AS revised_at
+        FROM last_draft d
+        JOIN piece_events dg ON dg.piece_id = d.piece_id AND dg.created_at_ms = d.at AND dg.kind = ?
+        ORDER BY d.at DESC LIMIT ?
+        """, arguments: [
+          PieceEvent.Kind.drafted.rawValue, PieceEvent.Kind.revised.rawValue,
+          PieceEvent.Kind.revised.rawValue, PieceEvent.Kind.drafted.rawValue, limit,
+        ])
+      return rows.compactMap { row in
+        // 没有对应修订的不成对——AI 写完你还没动过,得不出任何偏好。
+        guard let revised: String = row["revised"], !revised.isEmpty else { return nil }
+        return DraftRevisionPair(
+          generated: row["generated"] ?? "", revised: revised,
+          generatedAtMilliseconds: row["generated_at"] ?? 0,
+          revisedAtMilliseconds: row["revised_at"] ?? 0
+        )
+      }
+    }
+  }
+
   public func finishPiece(id: PieceID, finishedAtMilliseconds: Int64) throws -> TaskID {
     try database.write { db in
       let row = try Row.fetchOne(db, sql: """

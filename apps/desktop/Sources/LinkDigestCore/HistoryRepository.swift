@@ -270,6 +270,14 @@ public protocol HistoryRepository: Sendable {
   /// 首页列表：进行中的在前，已发出的沉到后面。
   func pieces() throws -> [PieceSummary]
   func piece(id: PieceID) throws -> PieceSummary?
+  /// 记一件事。
+  func recordPieceEvent(_ event: PieceEvent) throws
+  /// 一件创作身上发生过的事,按时间正序。
+  func pieceEvents(of id: PieceID) throws -> [PieceEvent]
+  /// 「AI 写成这样、我改成了那样」的配对,最近的在前。
+  ///
+  /// 这是判断沉淀真正要用的东西——单看任何一边都得不出偏好。
+  func draftRevisionPairs(limit: Int) throws -> [DraftRevisionPair]
   /// 把一件创作标记为完成:稿件转成作品,离开工作台进入输出。
   ///
   /// 返回作品所在的 task。原稿件的 task **原地转换**,不新建一条——
@@ -433,6 +441,9 @@ public extension HistoryRepository {
   func finishPiece(id _: PieceID, finishedAtMilliseconds _: Int64) throws -> TaskID {
     throw RepositoryFailure.unavailable
   }
+  func recordPieceEvent(_: PieceEvent) throws { throw RepositoryFailure.unavailable }
+  func pieceEvents(of _: PieceID) throws -> [PieceEvent] { [] }
+  func draftRevisionPairs(limit _: Int) throws -> [DraftRevisionPair] { [] }
   func addMaterial(taskID _: TaskID, to _: PieceID, addedAtMilliseconds _: Int64) throws {
     throw RepositoryFailure.unavailable
   }
