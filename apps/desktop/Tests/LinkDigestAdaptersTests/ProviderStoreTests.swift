@@ -25,10 +25,8 @@ private actor ConsentStartBarrier {
 
 final class ProviderStoreTests: XCTestCase {
   func testDataDestinationConsentRoundTripContainsOnlyNonSensitiveIdentity() async throws {
-    let suiteName = "com.syc.linkdigest.tests.\(UUID().uuidString)"
+    let (suiteName, defaults) = try ephemeralDefaults("com.syc.linkdigest.tests.")
     let storageKey = "data-destination-consents"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-    defer { defaults.removePersistentDomain(forName: suiteName) }
     let profile = try ProviderProfile(
       baseURL: "https://EXAMPLE.test/v1///",
       model: "fixture-model",
@@ -51,10 +49,8 @@ final class ProviderStoreTests: XCTestCase {
   }
 
   func testDataDestinationConsentCorruptionFailsClosed() async throws {
-    let suiteName = "com.syc.linkdigest.tests.\(UUID().uuidString)"
+    let (suiteName, defaults) = try ephemeralDefaults("com.syc.linkdigest.tests.")
     let storageKey = "data-destination-consents"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-    defer { defaults.removePersistentDomain(forName: suiteName) }
     defaults.set(Data("not-json".utf8), forKey: storageKey)
     let profile = try ProviderProfile(
       baseURL: "https://example.test/v1",
@@ -69,9 +65,7 @@ final class ProviderStoreTests: XCTestCase {
   }
 
   func testConcurrentConsentWritesOnOneProductionStorePreserveEveryIdentity() async throws {
-    let suiteName = "com.syc.linkdigest.tests.\(UUID().uuidString)"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let (suiteName, defaults) = try ephemeralDefaults("com.syc.linkdigest.tests.")
     let store = UserDefaultsDataDestinationConsentStore(
       suiteName: suiteName,
       key: "concurrent-data-destination-consents"
@@ -101,12 +95,8 @@ final class ProviderStoreTests: XCTestCase {
   }
 
   func testUserDefaultsRoundTripContainsOnlyProviderProfile() async throws {
-    let suiteName = "com.syc.linkdigest.tests.\(UUID().uuidString)"
+    let (suiteName, defaults) = try ephemeralDefaults("com.syc.linkdigest.tests.")
     let storageKey = "provider-profile"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-    defer {
-      defaults.removePersistentDomain(forName: suiteName)
-    }
 
     let store = try UserDefaultsProviderProfileStore(
       suiteName: suiteName,
@@ -169,8 +159,7 @@ final class ProviderStoreTests: XCTestCase {
   }
 
   func testModelPreferencesRoundTripUsesOnlyNonSecretUserDefaultsData() async throws {
-    let suite = "com.syc.linkdigest.preferences-tests.\(UUID().uuidString)"
-    defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+    let suite = ephemeralDefaultsSuiteName("com.syc.linkdigest.preferences-tests.")
     let store = UserDefaultsModelPreferencesStore(suiteName: suite)
     let preferences = try ModelPreferences(
       summaryPrompt: "只列出核心结论与证据。",
@@ -188,9 +177,7 @@ final class ProviderStoreTests: XCTestCase {
   }
 
   func testModelPreferencesMigratesLegacyTargetLanguageAndPersistsTranslationModel() async throws {
-    let suite = "com.syc.linkdigest.preferences-migration-tests.\(UUID().uuidString)"
-    defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    let (suite, defaults) = try ephemeralDefaults("com.syc.linkdigest.preferences-migration-tests.")
     let key = "linkdigest.model-preferences.v1"
     defaults.set(
       try JSONSerialization.data(withJSONObject: [
@@ -244,9 +231,7 @@ final class ProviderStoreTests: XCTestCase {
   }
 
   func testModelPreferencesLoadRejectsInvalidDTOValuesAndCorruption() async throws {
-    let suite = "com.syc.linkdigest.preferences-invalid-tests.\(UUID().uuidString)"
-    defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    let (suite, defaults) = try ephemeralDefaults("com.syc.linkdigest.preferences-invalid-tests.")
     let key = "linkdigest.model-preferences.v1"
     let store = UserDefaultsModelPreferencesStore(suiteName: suite, key: key)
 
@@ -288,8 +273,7 @@ private func XCTAssertThrowsErrorAsync<T>(
 /// 加进 DTO，这里立刻变红。
 final class ModelPreferencesFullRoundTripTests: XCTestCase {
   func testEveryFieldSurvivesSaveAndLoad() async throws {
-    let suite = "com.syc.linkdigest.preferences-full.\(UUID().uuidString)"
-    defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+    let suite = ephemeralDefaultsSuiteName("com.syc.linkdigest.preferences-full.")
     let store = UserDefaultsModelPreferencesStore(suiteName: suite)
 
     // 每一项都取**非默认值**，否则「没存下来」和「存了默认值」看起来一样。
@@ -313,10 +297,8 @@ final class ModelPreferencesFullRoundTripTests: XCTestCase {
 
   /// 旧版本存的 JSON 里没有新字段，升级后必须仍能读出来，不能整份偏好读失败。
   func testOlderPayloadWithoutNewFieldsStillLoads() async throws {
-    let suite = "com.syc.linkdigest.preferences-legacy.\(UUID().uuidString)"
+    let (suite, defaults) = try ephemeralDefaults("com.syc.linkdigest.preferences-legacy.")
     let key = "linkdigest.model-preferences.v1"
-    defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
     defaults.set(
       try JSONEncoder().encode(["summaryPrompt": "老提示词", "outputLanguage": "Deutsch"]),
       forKey: key

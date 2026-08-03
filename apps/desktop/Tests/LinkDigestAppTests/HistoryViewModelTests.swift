@@ -220,9 +220,7 @@ final class HistoryViewModelTests: XCTestCase {
     let selectedRoot = root.appendingPathComponent("selected", isDirectory: true)
     try FileManager.default.createDirectory(at: selectedRoot, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let suite = "linkdigest-media-repair-\(UUID().uuidString)"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-    defer { defaults.removePersistentDomain(forName: suite) }
+    let (suite, defaults) = try ephemeralDefaults("linkdigest-media-repair-")
     let preference = UserDefaultsMediaStoragePreferenceStore(
       defaults: defaults,
       createBookmark: { Data($0.path.utf8) },

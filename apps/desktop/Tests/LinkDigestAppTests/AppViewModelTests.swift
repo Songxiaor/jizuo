@@ -349,8 +349,7 @@ final class AppViewModelTests: XCTestCase {
   }
 
   func testRestartedPreferencesDriveFirstSummaryAndTranslationWithoutOpeningSettings() async throws {
-    let suite = "com.syc.linkdigest.restart-run-preferences.\(UUID().uuidString)"
-    defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+    let suite = ephemeralDefaultsSuiteName("com.syc.linkdigest.restart-run-preferences.")
     let persisted = try ModelPreferences(
       summaryPrompt: "重启后首次总结使用的自定义 prompt",
       targetLanguage: "Español"

@@ -720,8 +720,7 @@ final class ProviderSettingsViewModelTests: XCTestCase {
   }
 
   func testStartupLoadRestoresPersistedPreferencesWithoutOpeningSettings() async throws {
-    let suite = "com.syc.linkdigest.preferences-bootstrap-tests.\(UUID().uuidString)"
-    defer { UserDefaults.standard.removePersistentDomain(forName: suite) }
+    let suite = ephemeralDefaultsSuiteName("com.syc.linkdigest.preferences-bootstrap-tests.")
     let persisted = try ModelPreferences(
       summaryPrompt: "重启后首次总结必须使用这条 prompt",
       targetLanguage: "Español"

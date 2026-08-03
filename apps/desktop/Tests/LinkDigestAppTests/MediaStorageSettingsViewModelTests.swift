@@ -6,9 +6,7 @@ import XCTest
 @MainActor
 final class MediaStorageSettingsViewModelTests: XCTestCase {
   func testCancelKeepsExistingSelectionAndRestoreDefaultClearsIt() throws {
-    let suite = "linkdigest-media-settings-\(UUID().uuidString)"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-    defer { defaults.removePersistentDomain(forName: suite) }
+    let (suite, defaults) = try ephemeralDefaults("linkdigest-media-settings-")
     let selected = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-media-settings-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
@@ -37,9 +35,7 @@ final class MediaStorageSettingsViewModelTests: XCTestCase {
   }
 
   func testStaleDirectoryBookmarkHasExplainableRecoveryState() throws {
-    let suite = "linkdigest-media-settings-stale-\(UUID().uuidString)"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-    defer { defaults.removePersistentDomain(forName: suite) }
+    let (suite, defaults) = try ephemeralDefaults("linkdigest-media-settings-stale-")
     defaults.set(Data("stale".utf8), forKey: "media-storage.directory-bookmark")
     let store = UserDefaultsMediaStoragePreferenceStore(
       defaults: defaults,
@@ -58,9 +54,7 @@ final class MediaStorageSettingsViewModelTests: XCTestCase {
   }
 
   func testSessionMediaRestoreModeDefaultsToManualAndPersists() throws {
-    let suite = "linkdigest-media-settings-restore-\(UUID().uuidString)"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-    defer { defaults.removePersistentDomain(forName: suite) }
+    let (suite, defaults) = try ephemeralDefaults("linkdigest-media-settings-restore-")
     let store = UserDefaultsMediaStoragePreferenceStore(
       defaults: defaults,
       createBookmark: { Data($0.path.utf8) },
@@ -77,9 +71,7 @@ final class MediaStorageSettingsViewModelTests: XCTestCase {
   }
 
   func testBilibiliStreamQualityDefaultsToHighestAndPersists() throws {
-    let suite = "linkdigest-media-settings-bili-q-\(UUID().uuidString)"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-    defer { defaults.removePersistentDomain(forName: suite) }
+    let (suite, defaults) = try ephemeralDefaults("linkdigest-media-settings-bili-q-")
     let store = UserDefaultsMediaStoragePreferenceStore(
       defaults: defaults,
       createBookmark: { Data($0.path.utf8) },
@@ -96,9 +88,7 @@ final class MediaStorageSettingsViewModelTests: XCTestCase {
   }
 
   func testAutoSaveToggleLoadsAndPersistsWithoutChangingDownloadLimit() throws {
-    let suite = "linkdigest-media-settings-auto-save-\(UUID().uuidString)"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-    defer { defaults.removePersistentDomain(forName: suite) }
+    let (suite, defaults) = try ephemeralDefaults("linkdigest-media-settings-auto-save-")
     let store = UserDefaultsMediaStoragePreferenceStore(
       defaults: defaults,
       createBookmark: { Data($0.path.utf8) },

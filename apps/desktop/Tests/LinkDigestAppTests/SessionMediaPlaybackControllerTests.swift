@@ -15,9 +15,7 @@ final class SessionMediaPlaybackControllerTests: XCTestCase {
   private let taskID = TaskID()
 
   private func makeStore() throws -> UserDefaultsMediaStoragePreferenceStore {
-    let suite = "linkdigest-session-playback-\(UUID().uuidString)"
-    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
-    addTeardownBlock { defaults.removePersistentDomain(forName: suite) }
+    let (suite, defaults) = try ephemeralDefaults("linkdigest-session-playback-")
     return UserDefaultsMediaStoragePreferenceStore(defaults: defaults, key: suite)
   }
 
