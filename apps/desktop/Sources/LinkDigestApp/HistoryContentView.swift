@@ -21,7 +21,7 @@ struct HistoryContentView: View {
   @State private var navigationTagsExpanded = true
   @FocusState private var isSearchFocused: Bool
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
-  @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchEnabled = false
+  @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchUserEnabled = false
   @AppStorage(VoiceSettings.storageKey) private var voiceSettingsRaw = ""
   /// 灯箱打开时窗口级分栏细线需要让位，避免画在放大的图片上。
   @ObservedObject private var inlineImageLightbox = InlineImageLightboxController.shared
@@ -31,6 +31,10 @@ struct HistoryContentView: View {
 
   private var appearanceTheme: AppearanceTheme { AppearanceTheme(rawValue: appearanceThemeRaw) ?? .glass }
   private var theme: HistoryThemeTokens { appearanceTheme.tokens }
+  /// 工作台的四处入口都问它，不各自与开关做 `&&`。
+  private var isWorkbenchVisible: Bool {
+    ExperimentalFeatures.isWorkbenchVisible(userEnabled: isWorkbenchUserEnabled)
+  }
 
   private func synchronizeRemotePreviewPreheat() {
     // 1) 当前抓取可播
@@ -116,7 +120,7 @@ struct HistoryContentView: View {
           // 工作台接管中间列：它列的是「正在做的创作」，和历史条目不是一种东西，
           // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
           Group {
-            if model.isWorkbenchActive, isWorkbenchEnabled {
+            if model.isWorkbenchActive, isWorkbenchVisible {
               WorkbenchListView(
                 model: model,
                 onNewSpark: { isNewSparkPresented = true },
@@ -396,7 +400,9 @@ struct HistoryContentView: View {
                 // 攒素材天然是跨来源的:一篇网页 + 两条笔记 + 一段转写。
                 // 所以入口放在每一行上,而不是只在工作台里面找。
                 let unfinished = model.pieces.filter { !$0.isFinished }
-                if !unfinished.isEmpty {
+                // 入口隐藏时这一项也得跟着消失,否则就是「侧边栏没有工作台,
+                // 右键却还能往里加素材」——加进去的东西再也打不开。
+                if isWorkbenchVisible, !unfinished.isEmpty {
                   Divider()
                   Menu {
                     ForEach(unfinished) { piece in
@@ -506,7 +512,7 @@ struct HistoryContentView: View {
       // v1 默认藏起来(设置→实验室里可开):它的正文现在直接存成一条笔记,
       // 三模块切开后这个模型要改。默认开放等于给自己攒一堆将来必须迁移的
       // 数据,而当前它还没接 AI,手动建创作的价值抵不上迁移成本。
-      if isWorkbenchEnabled {
+      if isWorkbenchVisible {
       Section {
         Button { model.enterWorkbench() } label: {
           HStack(spacing: 8) {
@@ -699,7 +705,7 @@ struct HistoryContentView: View {
   /// 抽出来是编译期的需要——三个分支塞进 `NavigationSplitView` 的尾随闭包后，
   /// 类型检查会超时。
   @ViewBuilder private var detailColumn: some View {
-    if model.isWorkbenchActive, isWorkbenchEnabled, let piece = model.selectedPiece {
+    if model.isWorkbenchActive, isWorkbenchVisible, let piece = model.selectedPiece {
       PieceDeskView(
         model: model,
         piece: piece,
@@ -731,7 +737,7 @@ struct HistoryContentView: View {
           )
         }
       )
-    } else if model.isWorkbenchActive, isWorkbenchEnabled {
+    } else if model.isWorkbenchActive, isWorkbenchVisible {
       workbenchPlaceholder
     } else {
       detail

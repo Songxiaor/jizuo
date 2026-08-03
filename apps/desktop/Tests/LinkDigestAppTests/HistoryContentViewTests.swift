@@ -1302,6 +1302,30 @@ final class HistoryContentViewTests: XCTestCase {
     )
   }
 
+  /// 这一版不提供工作台，就是谁都看不到——包括当初自己打开过开关的人。
+  ///
+  /// 0.2.0 时的语义是「只对新用户关」，于是开发机上工作台一直在，
+  /// 连带每天的选题定时也照跑。0.2.1 收紧成版本闸门与用户开关同时成立。
+  func testWorkbenchStaysHiddenForUsersWhoEnabledItWhenTheVersionDoesNotOfferIt() {
+    XCTAssertFalse(
+      ExperimentalFeatures.isWorkbenchVisible(userEnabled: false),
+      "没打开过的人任何时候都不该看到")
+    XCTAssertEqual(
+      ExperimentalFeatures.isWorkbenchVisible(userEnabled: true),
+      ExperimentalFeatures.isOfferedToUsers,
+      "打开过的人能不能看到，完全由这一版提不提供决定")
+
+    // 四处入口（中间列、侧边栏、详情列、右键「加入工作台」）必须都走这道闸门。
+    // 漏掉一处的表现是「侧边栏没有工作台，右键却还能往里加素材」。
+    let source = historyContentViewSource()
+    let rawFlagUses = source.components(separatedBy: "isWorkbenchUserEnabled").count - 1
+    XCTAssertEqual(
+      rawFlagUses, 2,
+      "原始开关只该出现两次：@AppStorage 声明 + isWorkbenchVisible 里那一次；多出来的是绕过闸门的判断")
+    XCTAssertTrue(source.contains("ExperimentalFeatures.isWorkbenchVisible"))
+    XCTAssertTrue(source.contains("if isWorkbenchVisible, !unfinished.isEmpty"))
+  }
+
   /// 主题有令牌不等于行里用了它：状态点必须真的分两条路，
   /// 否则高对比主题下仍旧是那两个彩色圆点。
   func testRowStatusIndicatorBranchesOnThemeShapeEncoding() {
