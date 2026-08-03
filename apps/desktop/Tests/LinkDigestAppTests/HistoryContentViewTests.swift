@@ -1302,6 +1302,17 @@ final class HistoryContentViewTests: XCTestCase {
     )
   }
 
+  /// 主题有令牌不等于行里用了它：状态点必须真的分两条路，
+  /// 否则高对比主题下仍旧是那两个彩色圆点。
+  func testRowStatusIndicatorBranchesOnThemeShapeEncoding() {
+    let source = historyContentViewSource()
+    let row = section(in: source, from: "private struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
+    XCTAssertTrue(row.contains("theme.encodesStatusByShape"))
+    XCTAssertTrue(row.contains("strokeBorder"), "空心圆是高对比主题下「未总结」的唯一标记")
+    // 形状和颜色都要求用户看得见；读屏和悬停还得有话可说。
+    XCTAssertTrue(row.contains("accessibilityLabel(isSummarized"))
+  }
+
   func testSidebarUsesSourceMetadataInsteadOfURLOrImportTime() {
     let source = historyContentViewSource()
     let row = section(in: source, from: "private struct HistoryRowView: View", to: "private struct HistoryDetailView: View")

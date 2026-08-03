@@ -381,7 +381,7 @@ struct HistoryContentView: View {
             }
           }
           ForEach(model.rows, id: \.taskID) { row in
-            HistoryRowView(row: row, model: model).tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
+            HistoryRowView(row: row, model: model, theme: theme).tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
               .contextMenu {
                 Button { openHistoryURL(row.canonicalURL) } label: { Label("在浏览器中打开", systemImage: "safari") }
                 Button { copyHistoryURL(row.canonicalURL) } label: { Label("复制链接", systemImage: "doc.on.doc") }
@@ -1148,18 +1148,34 @@ private struct PendingCaptureRow: View {
 private struct HistoryRowView: View {
   let row: HistoryRowProjection
   @ObservedObject var model: HistoryViewModel
+  let theme: HistoryThemeTokens
 
   /// 图24 式状态点：已有总结产物为绿色，未总结为橙色。
   private var isSummarized: Bool {
     row.artifactPreview?.trimmedNonEmpty != nil
   }
 
+  /// 高对比主题改用形状编码：实心 = 已总结，空心 = 未总结。
+  /// 尺寸和其它主题保持一致，换主题时行内文字不会跟着挪位。
+  @ViewBuilder private var statusIndicator: some View {
+    if theme.encodesStatusByShape {
+      if isSummarized {
+        Circle().fill(theme.primaryText)
+      } else {
+        Circle().strokeBorder(theme.primaryText, lineWidth: 1.5)
+      }
+    } else {
+      Circle().fill(isSummarized ? Color.green : Color.orange)
+    }
+  }
+
   var body: some View {
     HStack(alignment: .top, spacing: 8) {
-      Circle()
-        .fill(isSummarized ? Color.green : Color.orange)
+      statusIndicator
         .frame(width: 7, height: 7)
         .padding(.top, 5)
+        .help(isSummarized ? "已总结" : "未总结")
+        .accessibilityLabel(isSummarized ? "已总结" : "未总结")
       VStack(alignment: .leading, spacing: 4) {
         HStack(alignment: .top, spacing: 8) {
           Text(CapturedDocumentTitle.display(row.title, for: row.canonicalURL))

@@ -16,6 +16,91 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertTrue(AppearanceTheme.paper.usesEditorialReadingTypography)
     XCTAssertFalse(AppearanceTheme.glass.usesEditorialReadingTypography)
     XCTAssertFalse(AppearanceTheme.ink.usesEditorialReadingTypography)
+    // 暖褐和浅色同属「读长文」的纸系主题，跟着用宋体；高对比要的是笔画清晰。
+    XCTAssertTrue(AppearanceTheme.sepia.usesEditorialReadingTypography)
+    XCTAssertFalse(AppearanceTheme.mono.usesEditorialReadingTypography)
+  }
+
+  /// 自绘主题必须真的有底色。
+  ///
+  /// `isNative == false` 的主题会被各视图当成「我来画背景」，一旦某套主题
+  /// 漏填 canvas（或误抄成 `.clear`），表现是窗口透出后面的桌面或系统灰，
+  /// 而不是编译错误。
+  func testNonNativeThemesAllPaintAnOpaqueCanvas() throws {
+    for theme in AppearanceTheme.allCases where !theme.tokens.isNative {
+      let canvas = try XCTUnwrap(
+        NSColor(theme.tokens.canvas).usingColorSpace(.sRGB),
+        "\(theme.rawValue) canvas cannot convert to sRGB")
+      XCTAssertEqual(
+        canvas.alphaComponent, 1, accuracy: 0.001,
+        "\(theme.rawValue) 是自绘主题，canvas 必须不透明")
+    }
+    // glass 反过来：它的意义就是交还系统 material，画布必须是透明的。
+    XCTAssertTrue(AppearanceTheme.glass.tokens.isNative)
+  }
+
+  /// 「高对比」这三个字得当真。
+  ///
+  /// 这套主题唯一的存在理由就是对比度。如果哪天有人顺手把 secondaryText
+  /// 调成和别的浅色主题一样的浅灰（paper 的 #B0AEA5 对白底只有 2 出头），
+  /// 主题名就成了假的，而肉眼扫一眼设置页是看不出来的。
+  func testMonoThemeActuallyMeetsHighContrastRatios() throws {
+    let mono = AppearanceTheme.mono.tokens
+    // WCAG AA：正文 4.5:1。高对比主题对自己要求高些，正文直接钉到 15:1。
+    XCTAssertGreaterThan(try contrastRatio(mono.primaryText, mono.canvas), 15)
+    // 次要文字也必须过 AA，这正是它和其它浅色主题分道扬镳的地方。
+    XCTAssertGreaterThan(try contrastRatio(mono.secondaryText, mono.canvas), 4.5)
+    // 选中态是反白块，块上的字同样要能读。
+    XCTAssertGreaterThan(try contrastRatio(mono.selectionText, mono.selectionFill), 15)
+    // 分隔线要看得见——AA 对非文字元素是 3:1。
+    XCTAssertGreaterThan(try contrastRatio(mono.hairline, mono.canvas), 3)
+  }
+
+  /// 高对比主题不靠色相传状态。
+  ///
+  /// 列表状态点是行里唯一的语义色。绿/橙在有色相的主题里读得出来，但在纯黑白
+  /// 主题里既扎眼又违背前提，所以那一套改用实心/空心。这里钉住的是「只有 mono
+  /// 换编码方式」，避免以后加主题时顺手抄成 true 把语义色一起丢了。
+  func testOnlyMonoThemeEncodesRowStatusByShapeInsteadOfColor() throws {
+    XCTAssertTrue(AppearanceTheme.mono.tokens.encodesStatusByShape)
+    for theme in AppearanceTheme.allCases where theme != .mono {
+      XCTAssertFalse(
+        theme.tokens.encodesStatusByShape,
+        "\(theme.rawValue) 有色相可用，状态点仍该走绿/橙")
+    }
+  }
+
+  /// 暖褐是「低对比护眼」，但低对比不等于读不清。
+  func testSepiaStaysReadableWhileLoweringContrast() throws {
+    let sepia = AppearanceTheme.sepia.tokens
+    let paper = AppearanceTheme.paper.tokens
+    let sepiaBody = try contrastRatio(sepia.primaryText, sepia.canvas)
+    // 正文仍要远超 AA 的 4.5:1。
+    XCTAssertGreaterThan(sepiaBody, 7)
+    // 但要确实比 paper 柔和——否则「护眼」只是换了个色相而已。
+    XCTAssertLessThan(sepiaBody, try contrastRatio(paper.primaryText, paper.canvas))
+  }
+
+  /// WCAG 相对亮度对比度。
+  private func contrastRatio(
+    _ foreground: Color, _ background: Color
+  ) throws -> Double {
+    let first = try relativeLuminance(foreground)
+    let second = try relativeLuminance(background)
+    let lighter = max(first, second)
+    let darker = min(first, second)
+    return (lighter + 0.05) / (darker + 0.05)
+  }
+
+  private func relativeLuminance(_ color: Color) throws -> Double {
+    let resolved = try XCTUnwrap(NSColor(color).usingColorSpace(.sRGB))
+    func linear(_ channel: CGFloat) -> Double {
+      let value = Double(channel)
+      return value <= 0.03928 ? value / 12.92 : pow((value + 0.055) / 1.055, 2.4)
+    }
+    return 0.2126 * linear(resolved.redComponent)
+      + 0.7152 * linear(resolved.greenComponent)
+      + 0.0722 * linear(resolved.blueComponent)
   }
 
   func testMarkdownReadingTypographySupportsSerifWithoutChangingCodeFont() throws {
