@@ -34,12 +34,13 @@ final class ProviderSettingsPresentationTests: XCTestCase {
       XCTAssertEqual(image.size.width, ProviderIconCatalog.displayPointSize)
       XCTAssertEqual(image.size.height, ProviderIconCatalog.displayPointSize)
     }
-    XCTAssertEqual(ProviderIconCatalog.fallbackInitial(for: .custom), "自")
     XCTAssertEqual(ProviderIconCatalog.fallbackInitial(for: "example provider"), "E")
-    XCTAssertEqual(
-      ProviderIconCatalog.fallbackColor(for: "example provider"),
-      ProviderIconCatalog.fallbackColor(for: "example provider")
-    )
+    // 自定义服务商的名字就是 Base URL 的 host，而 host 几乎总是 `api.` 开头——
+    // 不剥掉的话所有自定义服务商的徽标都是同一个「A」。
+    XCTAssertEqual(ProviderIconCatalog.fallbackInitial(for: "api.deepinfra.com"), "D")
+    XCTAssertEqual(ProviderIconCatalog.fallbackInitial(for: "www.opencode.ai"), "O")
+    XCTAssertEqual(ProviderIconCatalog.fallbackInitial(for: "Apidog"), "A")
+    XCTAssertEqual(ProviderIconCatalog.fallbackInitial(for: "-.-"), "#")
   }
 
   func testProviderCatalogWritesRasterizationComparisonPNG() throws {

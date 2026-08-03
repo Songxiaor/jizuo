@@ -102,15 +102,20 @@ struct ProviderSettingsView: View {
   /// 全深色了，设置窗口却没跟上，这正是「设置页和主界面不像一家」的主要来源。
   private var isNativeTheme: Bool { settingsTheme.isNative }
 
-  /// 仅用于判断是否启用 Claude 风格阅读排版——那确实只属于浅色纸质主题。
-  private var isPaperTheme: Bool {
-    AppearanceTheme(rawValue: appearanceThemeRaw) == .paper
+  /// 阅读排版判据一律问主题自己，不在这里重写一份。
+  ///
+  /// 原来这里是 `== .paper` 的本地拷贝，和主界面的
+  /// `appearanceTheme.usesEditorialReadingTypography` 是两处同义判据。加暖褐主题
+  /// 时只改枚举、漏掉这里的话，同一套字体在主界面是宋体、在设置页的预览里是黑体，
+  /// 而这种偏差不报错，只有切到那个主题去比对才会发现。
+  private var usesEditorialTypography: Bool {
+    (AppearanceTheme(rawValue: appearanceThemeRaw) ?? .glass).usesEditorialReadingTypography
   }
 
   private var resolvedReadingFont: ResolvedReadingFont {
     ReadingFontSelection(storedValue: readingFontRaw)
       .resolved(
-        usesEditorialReadingTypography: isPaperTheme,
+        usesEditorialReadingTypography: usesEditorialTypography,
         bodySize: CGFloat(readingFontSizeRaw)
       )
   }
@@ -149,6 +154,9 @@ struct ProviderSettingsView: View {
           List(selection: $selectedTab) {
             ForEach(SettingsTab.visibleCases) { tab in
               Label(tab.title, systemImage: tab.symbol)
+                // 只防换行，不防截断：撑宽是下面 `.frame(minWidth:)` 的职责，
+                // 行内视图的 ideal 宽度传不出 List。
+                .lineLimit(1)
                 .tag(tab)
                 .padding(.vertical, 4)
             }
@@ -158,13 +166,20 @@ struct ProviderSettingsView: View {
       }
       .safeAreaInset(edge: .top, spacing: 0) {
         VStack(alignment: .leading, spacing: 4) {
-          Text(ProductDisplay.name).font(.title2.weight(.semibold))
+          Text(ProductDisplay.name).font(.title3.weight(.semibold))
           Text("设置").font(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 10)
       }
-      .navigationSplitViewColumnWidth(min: 180, ideal: 190, max: 240)
+      // 实测 `navigationSplitViewColumnWidth` 的 min 在这个窗口压不住:设成 205
+      // 之后侧栏仍然只有 148pt(分栏宽度被拖动后持久化了)。所以改成对内容加
+      // 硬性 minWidth——那是布局约束,分栏必须让位。
+      //
+      // 190/205 都装不下「模型与识别」「浏览器支持」,会被截成「模型与…」。
+      // 导航项被截断是最不该省的那种省:用户要靠它认路。
+      .frame(minWidth: 205)
+      .navigationSplitViewColumnWidth(min: 205, ideal: 215, max: 260)
       // 去掉 NavigationSplitView 自动塞进工具栏的侧栏折叠按钮：设置窗口的分类栏是
       // 导航主轴，不该被折叠，那个图标只是噪声。
       //
@@ -518,7 +533,7 @@ struct ProviderSettingsView: View {
 
   private func libraryRow(_ entry: ProviderSettingsViewModel.LibraryEntryDisplay) -> some View {
     HStack(spacing: 10) {
-      providerIcon(entry.preset)
+      providerIcon(entry.preset, fallbackName: entry.title)
       VStack(alignment: .leading, spacing: 2) {
         Text(entry.displayName).font(.headline)
         Text("\(entry.title) · \(entry.modelName)").font(.caption).foregroundStyle(.secondary)
@@ -723,6 +738,7 @@ struct ProviderSettingsView: View {
       ForEach(SettingsTab.visibleCases) { tab in
         Button { selectedTab = tab } label: {
           Label(tab.title, systemImage: tab.symbol)
+            .lineLimit(1)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
@@ -744,6 +760,9 @@ struct ProviderSettingsView: View {
         .listRowBackground(Color.clear)
       }
     }
+    // 别改成 `.plain` 想去掉那圈浮动面板阴影——实测无效（面板 inset 仍是 8pt、
+    // 高光边和投影像素级不变），而且 plain 会把行的左边距缩掉，图标左缘不再和
+    // 主界面的 29.5pt 对齐。浮动面板来自 Settings scene 本身，不是 listStyle。
     .listStyle(.sidebar)
     .scrollContentBackground(.hidden)
     .background(settingsTheme.canvas)
@@ -759,6 +778,21 @@ struct ProviderSettingsView: View {
   /// 还在成型中的功能。默认全关。
   private var labsTab: some View {
     Form {
+      // 「这些还会变」要在人动手开开关之前说，不是翻到页底才说。
+      // 原来它在最后一个 Section，读到的时候开关早就拨完了。
+      Section {
+        Label {
+          Text("这一页的功能都还在成型，可能在后续版本里变化或调整。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+          Image(systemName: "info.circle")
+            .foregroundStyle(.secondary)
+        }
+        .accessibilityIdentifier("labs-scope-note")
+      }
+
       Section {
         settingCard(
           title: "工作台",
@@ -872,12 +906,6 @@ struct ProviderSettingsView: View {
         }
       }
 
-      Section {
-        Text("这一页的功能都还在成型，可能在后续版本里变化或调整。")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
     }
     .formStyle(.grouped)
     .settingsDetailContentMargins()
@@ -890,17 +918,11 @@ struct ProviderSettingsView: View {
       Section {
         settingCard(
           title: "主题",
-          summary: "浅色为纸质米黄质感，深色为石墨灰质感，系统跟随 macOS 原生玻璃质感。切换即时生效，无需重启。"
+          summary: "浅色为纸质米黄，暖褐更黄、对比更低适合久读，深色为石墨灰，高对比是纯黑白，系统跟随 macOS 原生玻璃质感。切换即时生效，无需重启。",
+          details: "暖褐和浅色一样用宋体排文章；高对比走系统黑体，笔画清晰优先。阅读字体选了具体字体后不受主题影响。",
+          controlWidth: .full
         ) {
-          Picker("主题", selection: $appearanceThemeRaw) {
-            ForEach(AppearanceTheme.allCases) { option in
-              Label(option.displayName, systemImage: option.systemImageName)
-                .tag(option.rawValue)
-            }
-          }
-          .pickerStyle(.segmented)
-          .labelsHidden()
-          .accessibilityIdentifier("appearance-theme-picker")
+          ThemeSwatchPicker(selection: $appearanceThemeRaw)
         }
       }
 
@@ -965,6 +987,21 @@ struct ProviderSettingsView: View {
   }
 
   // MARK: - 生成与数据
+
+  /// 自动处理管线卡底部那一行「内容发去哪」。
+  ///
+  /// 只给 host 不给完整 URL：日常要回答的是「发给谁、用哪个模型」，
+  /// `https://opencode.ai/zen/v1` 里真正有信息量的就是 `opencode.ai`。
+  /// 完整 Base URL 在同一张卡的「了解更多」里。
+  private var dataDestinationLine: (message: String, symbol: String) {
+    guard let identity = model.dataDestinationCard else {
+      return ("保存有效模型服务配置后，这里会显示发送目的地。", "arrow.up.doc")
+    }
+    if identity.isLocalEndpoint {
+      return ("内容将发送到本地端点 · \(identity.model)", "desktopcomputer")
+    }
+    return ("内容将发送至 \(identity.host) · \(identity.model)", "arrow.up.doc")
+  }
 
   private var generationTab: some View {
     Form {
@@ -1168,32 +1205,38 @@ struct ProviderSettingsView: View {
           }
           .padding(.top, 2)
 
+          // 数据去向紧贴着造成出网的那几个开关，而不是另起一张卡。
+          //
+          // 必须留在 DisclosureGroup 外面：这些开关一开就是持久授权，之后自动执行
+          // 不再逐次弹确认（就是下面那段文案说的），那之后这一行是「内容发去哪」
+          // 唯一的常驻可见位置。折起来等于自动模式下再也看不到目的地。
+          //
+          // 原来它是页面底部一张独立的「数据去向」卡：只读的东西却和上面可操作的卡
+          // 同等分量，读者会先以为能点；而且把「调开关 → 保存」的动线从中间截断。
+          SettingsCrossReference(
+            message: dataDestinationLine.message,
+            systemImage: dataDestinationLine.symbol
+          )
+          .accessibilityIdentifier("data-destination-card")
+
           DisclosureGroup("了解更多") {
-            Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；整理/总结/脑图只发送文字。")
-              .font(.caption)
-              .foregroundStyle(.secondary)
-              .fixedSize(horizontal: false, vertical: true)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .padding(.top, 4)
+            VStack(alignment: .leading, spacing: 6) {
+              Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；整理/总结/脑图只发送文字。")
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+              // 完整 Base URL 是排障才看的东西，收进来；上面那行只留 host 和模型，
+              // 那两个才是「发给谁、用什么」的日常答案。
+              if let identity = model.dataDestinationCard {
+                LabeledContent("Base URL", value: identity.normalizedBaseURL)
+              }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.top, 4)
           }
           .font(.caption)
         }
         .padding(.vertical, 4)
-      }
-
-      Section("数据去向") {
-        if let identity = model.dataDestinationCard {
-          VStack(alignment: .leading, spacing: 10) {
-            LabeledContent("Base URL", value: identity.normalizedBaseURL)
-            LabeledContent("模型", value: identity.model)
-            Label(identity.isLocalEndpoint ? "内容将发送到本地端点。" : "内容将发送至该服务商。", systemImage: identity.isLocalEndpoint ? "desktopcomputer" : "arrow.up.doc")
-              .font(.caption).foregroundStyle(.secondary)
-          }
-          .accessibilityIdentifier("data-destination-card")
-        } else {
-          Text("保存有效模型服务配置后，这里会显示发送目的地。")
-            .font(.caption).foregroundStyle(.secondary)
-        }
       }
 
       Section {
@@ -1394,22 +1437,36 @@ struct ProviderSettingsView: View {
     .contentShape(Rectangle())
   }
 
-  @ViewBuilder private func providerIcon(_ preset: ProviderPreset) -> some View {
+  /// - Parameter fallbackName: 没有官方图标时,首字母取自这个名字。
+  ///   传服务商真名(如 opencode.ai)而不是预设显示名——自定义预设的显示名是
+  ///   「自定义」,取首字母会得到一个对用户毫无意义的「自」。
+  @ViewBuilder private func providerIcon(
+    _ preset: ProviderPreset, fallbackName: String? = nil
+  ) -> some View {
     if let icon = ProviderIconCatalog.image(for: preset) {
       Image(nsImage: icon)
         .resizable()
         .interpolation(.high)
         .frame(width: 16, height: 16)
     } else {
-      // 与主界面的平台图标兜底完全同款（HistoryContentView 的 platformIcon）：
-      // 同为 16×16 首字母块，那边用圆角矩形 + 9pt，这里原来是圆形 + 10pt。
-      Text(ProviderIconCatalog.fallbackInitial(for: preset))
-        .font(.system(size: 9, weight: .bold))
-        .foregroundStyle(.white)
+      // 没有官方图标时画一个中性徽标,不再用「哈希色 + 预设显示名首字母」。
+      //
+      // 那套兜底有两个问题:自定义服务商的预设显示名是「自定义」,于是方块里
+      // 印着一个「自」字,对用户没有任何意义;而 hue = hash % 360 出来的颜色
+      // 是随机的,和这个应用的米色/橙色调必然不搭——十个模型就是十种杂色。
+      //
+      // 现在统一成描边的中性方块,里面是服务商真名的首字母(opencode.ai → O)。
+      Text(ProviderIconCatalog.fallbackInitial(for: fallbackName ?? preset.displayName))
+        .font(.system(size: 9, weight: .semibold))
+        .foregroundStyle(.secondary)
         .frame(width: 16, height: 16)
         .background(
-          ProviderIconCatalog.fallbackColor(for: preset),
+          Color.secondary.opacity(0.12),
           in: RoundedRectangle(cornerRadius: 4, style: .continuous)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 4, style: .continuous)
+            .strokeBorder(Color.secondary.opacity(0.22))
         )
     }
   }
@@ -1521,5 +1578,77 @@ struct ProviderSettingsView: View {
   private var connectionStatusText: String {
     if model.hasUnsavedIdentityChanges || model.isReplacingAPIKey || !apiKeyInput.isEmpty { return unsavedChangesText }
     return model.connectionTestStatusText
+  }
+}
+
+/// 主题色卡。
+///
+/// 主题从 3 套涨到 5 套之后 segmented 就装不下了：中文名加图标挤在一行，
+/// 每格窄到只剩两个字。但真正的问题不是宽度——是「浅色」「暖褐」「高对比」
+/// 这三个名字并排放着，选之前根本不知道差在哪。主题是纯视觉的东西，
+/// 让人靠名字猜颜色本身就是错的分工。
+///
+/// 所以每格直接把该主题的画布色画出来，右下角压一条强调色：
+/// 画布色分开浅色系和深色系，强调色（品牌橙 / 赭石 / 纯黑）分开同为近白底的
+/// 浅色、暖褐和高对比。
+private struct ThemeSwatchPicker: View {
+  @Binding var selection: String
+
+  // adaptive 而不是固定列数：设置窗口可以拖宽，固定 5 列在窄窗口会溢出，
+  // 固定 3 列在宽窗口又留一大片空白。
+  private let columns = [GridItem(.adaptive(minimum: 74, maximum: 104), spacing: 10, alignment: .leading)]
+
+  var body: some View {
+    LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
+      ForEach(AppearanceTheme.allCases) { theme in
+        Button { selection = theme.rawValue } label: { swatch(theme) }
+          .buttonStyle(.plain)
+          .help(theme.displayName)
+          .accessibilityLabel(theme.displayName)
+          .accessibilityAddTraits(selection == theme.rawValue ? [.isSelected] : [])
+          .accessibilityIdentifier("appearance-theme-\(theme.rawValue)")
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityIdentifier("appearance-theme-picker")
+  }
+
+  private func swatch(_ theme: AppearanceTheme) -> some View {
+    let isSelected = selection == theme.rawValue
+    return VStack(spacing: 5) {
+      RoundedRectangle(cornerRadius: 7, style: .continuous)
+        .fill(theme.swatchBase)
+        .frame(height: 38)
+        .overlay(alignment: .bottomTrailing) {
+          Capsule()
+            .fill(theme.swatchAccent)
+            .frame(width: 16, height: 5)
+            .padding(6)
+        }
+        .overlay {
+          RoundedRectangle(cornerRadius: 7, style: .continuous)
+            .strokeBorder(theme.tokens.hairline)
+        }
+        .overlay(alignment: .topLeading) {
+          // 选中态不只靠外圈描边：描边是颜色差异，色卡本身就是一堆颜色，
+          // 靠颜色区分颜色最不可靠。勾是形状，一眼且不依赖辨色能力。
+          if isSelected {
+            Image(systemName: "checkmark.circle.fill")
+              .font(.caption)
+              .foregroundStyle(theme.swatchAccent, theme.swatchBase)
+              .padding(4)
+          }
+        }
+      Text(theme.displayName)
+        .font(.caption2)
+        .fontWeight(isSelected ? .semibold : .regular)
+        .lineLimit(1)
+    }
+    .padding(3)
+    .background {
+      RoundedRectangle(cornerRadius: 10, style: .continuous)
+        .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2)
+    }
+    .contentShape(Rectangle())
   }
 }

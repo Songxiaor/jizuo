@@ -32,6 +32,25 @@ struct SiteLoginSettingsView: View {
 
   var body: some View {
     Form {
+      // 这一页只管「手动粘贴链接」这条入口。扩展是另一条完全独立的路，
+      // 不写清楚会被当成所有抓取路径的总开关。
+      //
+      // 放在页首而不是页尾：这是「这一页管什么」的前提。原来它在最后一个
+      // Section，用户已经逐个站点读完、甚至白登录了一遍，才看到「用扩展的话
+      // 这页你根本不用来」。
+      Section {
+        Label {
+          Text("这一页只管手动粘链接；用扩展抓不需要在这里登录。")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+          Image(systemName: "info.circle")
+            .foregroundStyle(.secondary)
+        }
+        .accessibilityIdentifier("site-login-scope-note")
+      }
+
       // 原来叫「已支持」——那既没说清 B 站要不要登录，也让人以为另外两组「不支持」。
       // 分组判据统一成「登录对这个站点起什么作用」。
       Section {
@@ -63,21 +82,6 @@ struct SiteLoginSettingsView: View {
         noLoginCard
       } header: {
         Text("无需登录")
-      }
-
-      Section {
-        // 这一页只管「手动粘贴链接」这条入口。扩展是另一条完全独立的路，
-        // 不写清楚会被当成所有抓取路径的总开关。
-        Label {
-          Text("这一页只管手动粘链接；用扩展抓不需要在这里登录。")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-          Image(systemName: "info.circle")
-            .foregroundStyle(.secondary)
-        }
-        .accessibilityIdentifier("site-login-scope-note")
       }
     }
     .formStyle(.grouped)

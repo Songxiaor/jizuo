@@ -365,7 +365,16 @@ final class HistoryContentViewTests: XCTestCase {
     let sidebar = section(in: source, from: "private var sidebar: some View", to: "@ViewBuilder private var detail")
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
 
-    XCTAssertTrue(sidebar.contains("TextField(\"搜索标题、正文、总结、作者、标签\", text: $model.searchText)"))
+    // 钉「侧栏有一个绑到 searchText 的搜索框」，不钉占位文字怎么写——
+    // 原来钉的是完整字面量，于是调整占位文字就假失败。
+    //
+    // 但要求两个片段落在同一行：拆成两个 contains 的话，一个无关的 TextField
+    // 加上另一处对 searchText 的引用就能凑合通过，等于什么都没钉住。
+    XCTAssertTrue(
+      sidebar.split(separator: "\n").contains {
+        $0.contains("TextField(") && $0.contains("text: $model.searchText)")
+      }
+    )
     XCTAssertTrue(sidebar.contains("history-filter-empty"))
     XCTAssertTrue(detail.contains("HistoryTagEditor(tags: detail.tags, model: model)"))
     // Chips-first: composer is collapsed behind a toggle; no always-on heavy form.

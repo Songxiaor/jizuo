@@ -1,5 +1,4 @@
 import AppKit
-import SwiftUI
 import LinkDigestCore
 
 /// Offline provider marks used by the settings list. The release pipelines
@@ -49,22 +48,22 @@ enum ProviderIconCatalog {
   /// Any future or custom endpoint must remain visually identifiable even when
   /// it has no curated brand asset.
   static func fallbackInitial(for providerName: String) -> String {
-    guard let first = providerName.first(where: { $0.isLetter || $0.isNumber }) else { return "#" }
+    let value = normalizedProviderName(providerName)
+    guard let first = value.first(where: { $0.isLetter || $0.isNumber }) else { return "#" }
     return String(first).uppercased()
   }
 
-  static func fallbackInitial(for preset: ProviderPreset) -> String {
-    fallbackInitial(for: preset.displayName)
-  }
-
-  static func fallbackColor(for providerName: String) -> Color {
-    var hash: UInt64 = 5_381
-    for byte in providerName.lowercased().utf8 { hash = (hash &* 33) &+ UInt64(byte) }
-    return Color(hue: Double(hash % 360) / 360.0, saturation: 0.45, brightness: 0.72)
-  }
-
-  static func fallbackColor(for preset: ProviderPreset) -> Color {
-    fallbackColor(for: preset.rawValue)
+  /// 自定义服务商没有品牌资产，名字直接取自 Base URL 的 host，而真实世界的
+  /// Base URL 绝大多数长成 `https://api.foo.com/v1`。直接取首字母的结果是十个
+  /// 互不相干的自定义服务商全都印着一个「A」，跟之前全都印「自」没差多少。
+  ///
+  /// 所以先按站点规则归一化（`www.`/`m.` 之类由 `HistoryHostNormalizer` 负责），
+  /// 再补剥一层 `api.`：`api.deepinfra.com` → D。只剥带点的 `api.`，
+  /// 「Apidog」这类真名开头不受影响。
+  private static func normalizedProviderName(_ providerName: String) -> String {
+    var value = HistoryHostNormalizer.normalized(providerName)
+    if value.hasPrefix("api.") { value.removeFirst("api.".count) }
+    return value
   }
 
   /// Keep provider SVGs on the exact same Retina rasterization path as the
