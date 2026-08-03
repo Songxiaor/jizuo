@@ -439,13 +439,22 @@ describe("background douyin item identity lock", () => {
       } as unknown as Document;
     };
 
+    // 标题只留文案，标签落在正文里，所以「补全没补全」要看正文那一段。
+    const caption = "倘若遇到那个人 那就永远不要分开。";
+
     // og 是同一条文案的扩展（归一化后比较，emoji 差异不影响）→ 补全。
     vi.stubGlobal("document", build(full, folded));
-    expect(extractDouyinSingleItemMetaInPage()?.title).toBe(full);
+    const restored = extractDouyinSingleItemMetaInPage();
+    expect(restored?.title).toBe(caption);
+    expect(restored?.description).toContain("#2024图文伙伴计划");
 
     // og 指向信息流里的另一条（不是前缀）→ 绝不能安到这条上。
     vi.stubGlobal("document", build("完全是另一条视频的标题", folded));
-    expect(extractDouyinSingleItemMetaInPage()?.title).toBe("倘若遇到那个人 那就永远不要分开。 #文案 #日落🌄 #");
+    const kept = extractDouyinSingleItemMetaInPage();
+    expect(kept?.title).toBe(caption);
+    expect(kept?.description).toContain("#日落🌄");
+    expect(kept?.description).not.toContain("#2024图文伙伴计划");
+    expect(kept?.description).not.toContain("另一条视频");
 
     // scoped 本来就完整 → 不去碰 og。
     vi.stubGlobal("document", build(full, "自己的完整文案"));
@@ -1883,5 +1892,51 @@ describe("background douyin item identity lock", () => {
     expect(page.mediaDescriptor?.pageURL).toBe(`https://www.douyin.com/video/${videoB}?snapshot=B`);
     expect(page.mediaDescriptor?.canonicalURL).toBe(`https://www.douyin.com/video/${videoB}`);
     expect(JSON.stringify(page)).not.toContain(videoA);
+  });
+});
+
+/** 只给标题路径用的最小页面：文案来自 og，页面里没有 video 也没有作者行。 */
+function captionDocument(caption: string): Document {
+  const meta = (content: string) => ({
+    getAttribute: (name: string) => (name === "content" ? content : null),
+  });
+  return {
+    location: { href: "https://www.douyin.com/video/7668214069060472090" },
+    title: "抖音",
+    defaultView: { innerWidth: 1000, innerHeight: 800 },
+    activeElement: null,
+    querySelector: (selector: string) => {
+      if (selector === "meta[property='og:title']") return meta(caption);
+      if (selector === "meta[property='og:description']") return meta(caption);
+      return null;
+    },
+    querySelectorAll: () => [],
+  } as unknown as Document;
+}
+
+describe("douyin single-item title keeps only the caption", () => {
+  it("drops the trailing topic tags", () => {
+    vi.stubGlobal("document", captionDocument(
+      "第15集：十年之约《九门》今日开播！背后究竟隐藏着怎样的秘密？ #九门 #陈伟霆 #九门今日开播",
+    ));
+    expect(extractDouyinSingleItemMetaInPage()?.title).toBe(
+      "第15集：十年之约《九门》今日开播！背后究竟隐藏着怎样的秘密？",
+    );
+  });
+
+  it("keeps tags that sit inside the sentence", () => {
+    vi.stubGlobal("document", captionDocument("夏天的 #日落 是这个味道"));
+    expect(extractDouyinSingleItemMetaInPage()?.title).toBe("夏天的 #日落 是这个味道");
+  });
+
+  it("keeps an all-tag caption rather than emptying the title", () => {
+    vi.stubGlobal("document", captionDocument("#九门 #陈伟霆"));
+    expect(extractDouyinSingleItemMetaInPage()?.title).toBe("#九门 #陈伟霆");
+  });
+
+  /** 正文照旧带标签：削掉的只是标题，信息没有丢。 */
+  it("leaves the description untouched", () => {
+    vi.stubGlobal("document", captionDocument("开箱实录 #数码 #开箱"));
+    expect(extractDouyinSingleItemMetaInPage()?.description).toContain("#数码 #开箱");
   });
 });

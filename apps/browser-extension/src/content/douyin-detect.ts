@@ -181,12 +181,29 @@ export function rankCandidates(items: DouyinIdCandidate[]): DouyinIdCandidate[] 
 
 /** Strip the common Douyin browser title suffix. */
 export function normalizeDouyinTitle(title: string): string {
-  return String(title || "")
+  const cleaned = String(title || "")
     .replace(/\s+-\s+抖音.*$/u, "")
     // The caption "expand" button label gets concatenated onto the caption
     // text when read via textContent; it is chrome, not content.
     .replace(/(?:…|\.{3})?\s*展开$/u, "")
     .trim();
+  return stripTrailingDouyinHashtags(cleaned);
+}
+
+/**
+ * 抖音的话题标签是拼在文案末尾的（「文案 #九门 #陈伟霆 …」），标题里只要文案。
+ *
+ * 只削末尾那一串：句子中间的 `#` 是文案的一部分，删了句子就断了。
+ * 标签必须至少有一个字，所以「聊聊 C#」这种以 `#` 收尾的正常文案不受影响；
+ * 折叠文案被截断时末尾那个孤零零的 `#`（标签被切掉一半）先单独削掉。
+ * 整条文案全是标签时保留原样——那时标签就是仅有的信息。
+ */
+export function stripTrailingDouyinHashtags(title: string): string {
+  const stripped = String(title || "")
+    .replace(/\s+#\s*$/u, "")
+    .replace(/(?:\s*#[^\s#]+)+\s*$/u, "")
+    .trim();
+  return stripped || title;
 }
 
 /**

@@ -2112,7 +2112,16 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
   // Caption elements in some feed layouts include the author/time row as a
   // leading text node. The selector above avoids that broad container; this
   // second guard keeps a stored title clean when the DOM shape still joins it.
-  const title = (() => {
+  // 与 douyin-detect.ts 的 stripTrailingDouyinHashtags 同一条规则。这个函数是
+  // 用 `func:` 注入的，够不着模块作用域，只能内联一份。
+  const stripTrailingHashtags = (value: string): string => {
+    const stripped = value
+      .replace(/\s+#\s*$/u, "")
+      .replace(/(?:\s*#[^\s#]+)+\s*$/u, "")
+      .trim();
+    return stripped || value;
+  };
+  const title = stripTrailingHashtags((() => {
     if (!unprefixedTitle) return "抖音视频";
     if (!author) return unprefixedTitle;
     const escapedAuthor = author.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
@@ -2124,7 +2133,7 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
       "",
     ).trim();
     return withoutRelativeTime || unprefixedTitle;
-  })();
+  })());
   let publishedSelectorHit = false;
   // Inline copy of normalizeDouyinPublishedText: the injected function must
   // stay self-contained (browser.scripting serializes only this body).

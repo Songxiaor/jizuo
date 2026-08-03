@@ -61,6 +61,22 @@ describe("douyin multi-source id detection (StepAudio-aligned)", () => {
     ).toBe("当下最稳发财赛道");
   });
 
+  it("drops the topic tags Douyin appends to the caption", () => {
+    expect(
+      normalizeDouyinTitle("十年之约今日开播！ #九门 #陈伟霆 #九门今日开播"),
+    ).toBe("十年之约今日开播！");
+    // 没有空格分隔的连写标签同样是标签。
+    expect(normalizeDouyinTitle("开箱实录#数码#开箱")).toBe("开箱实录");
+    // 折叠文案被截断时末尾会剩半个标签，只留一个孤零零的 #。
+    expect(normalizeDouyinTitle("这条要说的是 #九门 #")).toBe("这条要说的是");
+    // 句子中间的 # 是文案本身，删了句子就断了。
+    expect(normalizeDouyinTitle("夏天的 #日落 是这个味道")).toBe("夏天的 #日落 是这个味道");
+    // 以 # 收尾的正常文案不是标签。
+    expect(normalizeDouyinTitle("聊聊 C#")).toBe("聊聊 C#");
+    // 整条文案全是标签时，标签就是仅有的信息，保留原样。
+    expect(normalizeDouyinTitle("#九门 #陈伟霆")).toBe("#九门 #陈伟霆");
+  });
+
   it("classifies feed chrome lines as shell noise", () => {
     expect(isDouyinShellLine("精选")).toBe(true);
     expect(isDouyinShellLine("朋友 15")).toBe(true);
@@ -149,7 +165,8 @@ describe("background douyin hard-fork contract", () => {
 describe("douyin caption and publish-time normalization", () => {
   it("strips the trailing 展开 expander label from captions", async () => {
     const { normalizeDouyinTitle } = await import("../src/content/douyin-detect");
-    expect(normalizeDouyinTitle("盘点隐藏细节#功夫女足展开")).toBe("盘点隐藏细节#功夫女足");
+    // 削掉「展开」之后末尾的话题标签也一并削掉，标题只留文案。
+    expect(normalizeDouyinTitle("盘点隐藏细节#功夫女足展开")).toBe("盘点隐藏细节");
     expect(normalizeDouyinTitle("正文…展开")).toBe("正文");
     // 展开 mid-sentence is content, not chrome.
     expect(normalizeDouyinTitle("展开讲讲这个话题")).toBe("展开讲讲这个话题");
