@@ -2117,7 +2117,9 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
   const stripTrailingHashtags = (value: string): string => {
     const stripped = value
       .replace(/\s+#\s*$/u, "")
-      .replace(/(?:\s*#[^\s#]+)+\s*$/u, "")
+      // `#` 紧跟 ASCII 字母/数字时不当标签：那是 `C#`、`F#` 这类名字的一部分。
+      // 判据的完整理由见 douyin-detect.ts 的同名函数。
+      .replace(/(?<![0-9A-Za-z])(?:\s*#[^\s#]+)+\s*$/u, "")
       .trim();
     return stripped || value;
   };

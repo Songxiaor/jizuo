@@ -73,6 +73,13 @@ describe("douyin multi-source id detection (StepAudio-aligned)", () => {
     expect(normalizeDouyinTitle("夏天的 #日落 是这个味道")).toBe("夏天的 #日落 是这个味道");
     // 以 # 收尾的正常文案不是标签。
     expect(normalizeDouyinTitle("聊聊 C#")).toBe("聊聊 C#");
+    // 紧跟 ASCII 字母/数字的 # 是名字的一部分（C#、F#），不是标签。
+    expect(normalizeDouyinTitle("我在学C#语言")).toBe("我在学C#语言");
+    expect(normalizeDouyinTitle("聊聊 F#和函数式")).toBe("聊聊 F#和函数式");
+    // 但贴着中文写的仍然是标签——这两种只能靠 # 前面那个字符分辨。
+    expect(normalizeDouyinTitle("盘点隐藏细节#功夫女足")).toBe("盘点隐藏细节");
+    // 前面有空白的单个标签照削。
+    expect(normalizeDouyinTitle("这条要说的是 #九门")).toBe("这条要说的是");
     // 整条文案全是标签时，标签就是仅有的信息，保留原样。
     expect(normalizeDouyinTitle("#九门 #陈伟霆")).toBe("#九门 #陈伟霆");
   });
