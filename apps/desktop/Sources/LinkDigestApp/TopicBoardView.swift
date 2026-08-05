@@ -79,10 +79,13 @@ struct TopicBoardView: View {
   /// 挂在 onAppear 上而不是开一个定时器:用户没在看的时候跑完，产出也
   /// 只是躺在那——他下次进来照样是「打开就有」。而定时器要处理
   /// App 休眠、时区变化、重复触发，换来的只是早那么几分钟。
+  ///
+  /// 记账挂在「候选真的落库」上，不是「发起了」:模型没跑起来也把今天记成
+  /// 跑过，用户白等一天，而他根本不知道今天这一次已经被消耗掉了。
   private func runScheduledIfDue() {
     let schedule = TopicSchedule.decoded(from: scheduleRaw)
     let lastRun = lastRunAt > 0 ? Date(timeIntervalSince1970: lastRunAt) : nil
-    if model.runScheduledTopicsIfDue(
+    model.runScheduledTopicsIfDue(
       schedule: schedule, lastRun: lastRun, recipe: recipe, voice: voice
     ) {
       lastRunAt = Date().timeIntervalSince1970
@@ -128,8 +131,11 @@ struct TopicBoardView: View {
         ProgressView().controlSize(.small)
       } else {
         Button("出选题") {
-          model.generateTopics(recipe: recipe, voice: voice)
-          lastRunAt = Date().timeIntervalSince1970
+          // 手动跑成功同样顶掉今天的定时那一次;失败则不动记账,
+          // 到点了照样会自动补一次。
+          model.generateTopics(recipe: recipe, voice: voice) {
+            lastRunAt = Date().timeIntervalSince1970
+          }
         }
           .font(.system(size: 11))
           .buttonStyle(.plain)

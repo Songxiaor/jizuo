@@ -89,6 +89,35 @@ final class TopicRecallQueryTests: XCTestCase {
     }
   }
 
+  /// 成品也不能当素材。
+  ///
+  /// `finishPiece` 是把稿子那条 task **原地**转成成品。只排除稿件的话，
+  /// 同一条内容「做完」前后换个前缀就从排除变成召回——规则会自相矛盾，
+  /// 而表现是选题板开始拿用户上周写完的东西给他出选题。
+  func testFinishedWorksAreNeverRecalled() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      try capture(repository, title: "真素材", at: now - day)
+      let draft = try repository.acceptCapture(.init(
+        document: try PieceDraftDocument.make(title: "写完的那篇"),
+        receivedAtMilliseconds: now - day
+      ))
+      let piece = PieceID()
+      try repository.createPiece(
+        id: piece, spark: "写完的那篇",
+        noteTaskID: draft.taskID, createdAtMilliseconds: now - day
+      )
+      _ = try repository.finishPiece(id: piece, finishedAtMilliseconds: now - day)
+
+      let titles = try repository.recallMaterials(
+        lane: .init(name: "近期", window: .recent(days: 7), limit: 10), now: now
+      ).map(\.title)
+      XCTAssertEqual(titles, ["真素材"])
+    }
+  }
+
   func testTagFilterNarrowsTheLane() throws {
     try withTemporaryLocation { location in
       let repository = try GRDBHistoryRepository.open(at: location)

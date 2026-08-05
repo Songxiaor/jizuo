@@ -76,8 +76,14 @@ public struct HistoryApplicationService: Sendable {
     try repository.materials(of: pieceID)
   }
   public func deletePiece(id: PieceID) throws { try repository.deletePiece(id: id) }
+  public func piece(noteTaskID: TaskID) throws -> PieceSummary? {
+    try repository.piece(noteTaskID: noteTaskID)
+  }
   public func recordPieceEvent(_ event: PieceEvent) throws { try repository.recordPieceEvent(event) }
   public func pieceEvents(of id: PieceID) throws -> [PieceEvent] { try repository.pieceEvents(of: id) }
+  public func lastPieceEvent(of id: PieceID, kind: PieceEvent.Kind) throws -> PieceEvent? {
+    try repository.lastPieceEvent(of: id, kind: kind)
+  }
   public func draftRevisionPairs(limit: Int = 30) throws -> [DraftRevisionPair] {
     try repository.draftRevisionPairs(limit: limit)
   }

@@ -270,10 +270,18 @@ public protocol HistoryRepository: Sendable {
   /// 首页列表：进行中的在前，已发出的沉到后面。
   func pieces() throws -> [PieceSummary]
   func piece(id: PieceID) throws -> PieceSummary?
+  /// 这条 task 是不是某件创作的稿子。存稿路径上每次保存都要问一遍,
+  /// 所以给一次索引查找,而不是 `pieces()` 回来自己找。
+  func piece(noteTaskID: TaskID) throws -> PieceSummary?
   /// 记一件事。
   func recordPieceEvent(_ event: PieceEvent) throws
   /// 一件创作身上发生过的事,按时间正序。
+  ///
+  /// 注意每条 `detail` 都可能是一整篇稿子。只要最后一条时用
+  /// `lastPieceEvent(of:kind:)`,别把全部版本读进内存再丢掉。
   func pieceEvents(of id: PieceID) throws -> [PieceEvent]
+  /// 某件创作最近一条某类事件,没有则 nil。
+  func lastPieceEvent(of id: PieceID, kind: PieceEvent.Kind) throws -> PieceEvent?
   /// 「AI 写成这样、我改成了那样」的配对,最近的在前。
   ///
   /// 这是判断沉淀真正要用的东西——单看任何一边都得不出偏好。
@@ -478,25 +486,47 @@ public extension HistoryRepository {
     throw RepositoryFailure.unavailable
   }
   func recordPieceEvent(_: PieceEvent) throws { throw RepositoryFailure.unavailable }
-  func recallMaterials(lane _: TopicRecall.Lane, now _: Int64) throws -> [PieceMaterial] { [] }
+  // 工作台这一批的读方法统一 throw,不返回空集合。
+  //
+  // 「没实现」和「真的没数据」返回同一个 `[]`,表现是选题板说「素材还不够」、
+  // 提炼说「还需要 N 篇改过的稿子」——两句都指向用户去攒数据,而实际原因是
+  // 这个替身根本没接上取数层。让它抛出去,调用方要么处理要么当场炸,
+  // 至少不会把一个接线错误伪装成一句用户指令。
+  func piece(noteTaskID _: TaskID) throws -> PieceSummary? {
+    throw RepositoryFailure.unavailable
+  }
+  func recallMaterials(lane _: TopicRecall.Lane, now _: Int64) throws -> [PieceMaterial] {
+    throw RepositoryFailure.unavailable
+  }
   func insertTopicCandidates(_: [TopicCandidate]) throws { throw RepositoryFailure.unavailable }
-  func topicCandidates(dayStartMilliseconds _: Int64) throws -> [TopicCandidate] { [] }
-  func recentTopicCandidates(limit _: Int) throws -> [TopicCandidate] { [] }
+  func topicCandidates(dayStartMilliseconds _: Int64) throws -> [TopicCandidate] {
+    throw RepositoryFailure.unavailable
+  }
+  func recentTopicCandidates(limit _: Int) throws -> [TopicCandidate] {
+    throw RepositoryFailure.unavailable
+  }
   func setTopicVerdict(_: TopicCandidate.Verdict, for _: UUID) throws {
     throw RepositoryFailure.unavailable
   }
-  func writingMethods() throws -> [WritingMethod] { [] }
+  func writingMethods() throws -> [WritingMethod] { throw RepositoryFailure.unavailable }
   func insertWritingMethod(_: WritingMethod) throws { throw RepositoryFailure.unavailable }
   func setWritingMethodEnabled(_: Bool, for _: UUID) throws { throw RepositoryFailure.unavailable }
   func deleteWritingMethod(id _: UUID) throws { throw RepositoryFailure.unavailable }
-  func hitPredictions() throws -> [HitPrediction] { [] }
-  func hitPrediction(of _: PieceID) throws -> HitPrediction? { nil }
+  func hitPredictions() throws -> [HitPrediction] { throw RepositoryFailure.unavailable }
+  func hitPrediction(of _: PieceID) throws -> HitPrediction? {
+    throw RepositoryFailure.unavailable
+  }
   func insertHitPrediction(_: HitPrediction) throws { throw RepositoryFailure.unavailable }
   func settleHitPrediction(
     id _: UUID, actual _: HitPrediction.Tier, review _: String, settledAtMilliseconds _: Int64
   ) throws { throw RepositoryFailure.unavailable }
-  func pieceEvents(of _: PieceID) throws -> [PieceEvent] { [] }
-  func draftRevisionPairs(limit _: Int) throws -> [DraftRevisionPair] { [] }
+  func pieceEvents(of _: PieceID) throws -> [PieceEvent] { throw RepositoryFailure.unavailable }
+  func lastPieceEvent(of _: PieceID, kind _: PieceEvent.Kind) throws -> PieceEvent? {
+    throw RepositoryFailure.unavailable
+  }
+  func draftRevisionPairs(limit _: Int) throws -> [DraftRevisionPair] {
+    throw RepositoryFailure.unavailable
+  }
   func addMaterial(taskID _: TaskID, to _: PieceID, addedAtMilliseconds _: Int64) throws {
     throw RepositoryFailure.unavailable
   }

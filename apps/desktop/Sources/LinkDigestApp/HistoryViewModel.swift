@@ -3680,15 +3680,22 @@ final class HistoryViewModel: ObservableObject {
   ///
   /// 调用点是「进入工作台」而不是定时器:用户没在看的时候跑完，产出也
   /// 只是躺在那——他下次进来照样是「打开就有」。
+  ///
+  /// - Parameter onGenerated: 候选真的落库之后才调用。记账要挂在这里而不是
+  ///   「已发起」上:模型没跑起来也把今天记成跑过，用户白等一天，
+  ///   而他根本不知道今天这次已经被消耗掉了。
+  /// - Returns: 有没有发起这一次。只表示「开始跑了」，不表示出了选题。
+  @discardableResult
   func runScheduledTopicsIfDue(
     schedule: TopicSchedule,
     lastRun: Date?,
     recipe: TopicRecipe = .default,
     voice: String? = nil,
-    now: Date = Date()
+    now: Date = Date(),
+    onGenerated: (() -> Void)? = nil
   ) -> Bool {
     guard schedule.shouldRun(now: now, lastRun: lastRun), canGenerateTopics else { return false }
-    generateTopics(recipe: recipe, voice: voice)
+    generateTopics(recipe: recipe, voice: voice, onGenerated: onGenerated)
     return true
   }
 
@@ -3709,7 +3716,11 @@ final class HistoryViewModel: ObservableObject {
   /// 素材由取数层给,提示词只负责加工。生成失败或一条都没解析出来时
   /// 都要说清楚——用户看到空白选题板时,「没素材」「模型没跑起来」
   /// 「跑了但格式没对上」是三件要采取不同行动的事。
-  func generateTopics(recipe: TopicRecipe = .default, voice: String? = nil) {
+  func generateTopics(
+    recipe: TopicRecipe = .default,
+    voice: String? = nil,
+    onGenerated: (() -> Void)? = nil
+  ) {
     guard let agent = draftAgent, canGenerateTopics else { return }
     let now = nowMilliseconds()
     guard let batch = collectTopicMaterials(recipe: recipe, now: now) else { return }
@@ -3725,7 +3736,9 @@ final class HistoryViewModel: ObservableObject {
         ) { _ in }
         await MainActor.run {
           guard let self else { return }
-          self.applyTopics(text, materialTaskIDs: batch.taskIDs, generatedAt: now)
+          self.applyTopics(
+            text, materialTaskIDs: batch.taskIDs, generatedAt: now, onGenerated: onGenerated
+          )
           self.isGeneratingTopics = false
         }
       } catch {
@@ -3831,7 +3844,12 @@ final class HistoryViewModel: ObservableObject {
     )
   }
 
-  private func applyTopics(_ text: String, materialTaskIDs: [TaskID], generatedAt: Int64) {
+  private func applyTopics(
+    _ text: String,
+    materialTaskIDs: [TaskID],
+    generatedAt: Int64,
+    onGenerated: (() -> Void)? = nil
+  ) {
     guard let history else { return }
     let parsed = TopicPrompt.parse(text)
     guard !parsed.isEmpty else {
@@ -3858,6 +3876,8 @@ final class HistoryViewModel: ObservableObject {
     do {
       try history.insertTopicCandidates(candidates)
       reloadTopicCandidates()
+      // 落库成功才算今天这一次跑过了。
+      onGenerated?()
     } catch {
       workbenchFailure = "选题没能存下来，请稍后重试。"
     }
@@ -4222,18 +4242,22 @@ final class HistoryViewModel: ObservableObject {
   ///
   /// 只在 AI 起草过的创作上记:没起草过的稿子是你从零写的,没有「和谁的分歧」
   /// 可言,存进去只会稀释真正有信号的那些配对。
+  ///
+  /// 这条路每保存一次就走一遍,所以三次查询都必须是定点的:按 note task 找创作、
+  /// 取最后一条起草、取最后一条修订。早先的写法是「取全部创作在内存里找」加
+  /// 「读出这件创作的每一版全文再挑最后一条」——自动保存每隔几秒就把几十份
+  /// 整篇稿子读进内存,只为了比两个字符串。
   private func recordRevisionIfThisIsAPieceDraft(taskID: TaskID, bodyText: String) {
     guard let history,
-          let piece = (try? history.pieces())?.first(where: { $0.noteTaskID == taskID }),
-          let events = try? history.pieceEvents(of: piece.id),
-          let lastDraft = events.last(where: { $0.kind == .drafted })
+          let piece = try? history.piece(noteTaskID: taskID),
+          let lastDraft = try? history.lastPieceEvent(of: piece.id, kind: .drafted)
     else { return }
     let trimmed = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
     // 和 AI 那版一字不差就不记:那是「没改」,不是一次修订。
     guard !trimmed.isEmpty, trimmed != lastDraft.detail else { return }
     // 同一版反复保存(自动保存每秒都可能触发)只保留最后一条,
     // 否则一次写作会灌进几十条几乎相同的记录。
-    if let lastRevision = events.last(where: { $0.kind == .revised }),
+    if let lastRevision = try? history.lastPieceEvent(of: piece.id, kind: .revised),
        lastRevision.detail == trimmed { return }
     try? history.recordPieceEvent(.init(
       pieceID: piece.id, kind: .revised, detail: trimmed,

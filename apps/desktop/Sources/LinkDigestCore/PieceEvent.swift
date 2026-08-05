@@ -25,6 +25,17 @@ public struct PieceEvent: Sendable, Equatable, Identifiable {
     case finished
   }
 
+  /// `detail` 落库时的上限。
+  ///
+  /// `drafted` 和 `revised` 存的是**整篇稿子**,而写一次东西会产生一条起草
+  /// 加若干条修订。不封顶的话,这张表会以「稿子长度 × 保存次数」的速度长,
+  /// 而它是本机数据库里唯一按这个量级增长的表。
+  ///
+  /// 取 20000 而不是更小:提炼只读前 1500 字(`DistillPrompt.versionCharacterLimit`),
+  /// 但这条记录还要供人回看「我当时改成了什么」,截在能装下绝大多数整篇稿子的
+  /// 地方,才不会让回看看到半句话。
+  public static let detailCharacterLimit = 20_000
+
   public let id: UUID
   public let pieceID: PieceID
   public let kind: Kind

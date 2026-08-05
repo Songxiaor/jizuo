@@ -1200,6 +1200,21 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  /// 这条 task 是不是某件创作的稿子。
+  ///
+  /// 存稿这条路上每保存一次就要问一遍,所以不能用「取全部创作再在内存里找」——
+  /// 那是把一次索引查找换成一次全表扫描加一轮 `PieceSummary` 构造,
+  /// 而自动保存每隔几秒就会踩一次。
+  public func piece(noteTaskID: TaskID) throws -> PieceSummary? {
+    try database.read { db in
+      try Row.fetchOne(
+        db,
+        sql: "\(Self.pieceSelect) WHERE p.note_task_id = ? LIMIT 1",
+        arguments: [noteTaskID.rawValue]
+      ).map(pieceSummary)
+    }
+  }
+
   public func recordPieceEvent(_ event: PieceEvent) throws {
     try database.write { db in
       try db.execute(sql: """
@@ -1207,7 +1222,12 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         VALUES (?, ?, ?, ?, ?)
         """, arguments: [
           event.id.uuidString.lowercased(), event.pieceID.rawValue,
-          event.kind.rawValue, event.detail, event.createdAtMilliseconds,
+          event.kind.rawValue,
+          // 截断而不是拒绝:这条记录是顺带产生的,写作路径不该因为稿子太长而失败。
+          // 上限的理由见 `PieceEvent.detailCharacterLimit`——这张表按
+          // 「稿子长度 × 保存次数」增长,是本机库里唯一需要封顶的。
+          String(event.detail.prefix(PieceEvent.detailCharacterLimit)),
+          event.createdAtMilliseconds,
         ])
     }
   }
@@ -1229,37 +1249,76 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  /// 某件创作最近一条某类事件。
+  ///
+  /// 存在的理由是 `pieceEvents(of:)` 会把这件创作的**每一版全文**都读进内存
+  /// （起草和修订的 `detail` 都是整篇稿子），而调用方多数时候只要最后一条。
+  /// 挂在自动保存路径上的那次判断尤其不能用全量读。
+  public func lastPieceEvent(of id: PieceID, kind: PieceEvent.Kind) throws -> PieceEvent? {
+    try database.read { db in
+      guard let row = try Row.fetchOne(db, sql: """
+        SELECT id, piece_id, kind, detail, created_at_ms
+        FROM piece_events
+        WHERE piece_id = ? AND kind = ?
+        ORDER BY created_at_ms DESC, id DESC
+        LIMIT 1
+        """, arguments: [id.rawValue, kind.rawValue])
+      else { return nil }
+      guard let uuid = UUID(uuidString: row["id"]) else { return nil }
+      return PieceEvent(
+        id: uuid, pieceID: requiredID(row["piece_id"]), kind: kind,
+        detail: row["detail"] ?? "", createdAtMilliseconds: row["created_at_ms"] ?? 0
+      )
+    }
+  }
+
   public func draftRevisionPairs(limit: Int) throws -> [DraftRevisionPair] {
     try database.read { db in
       // 每件创作取**最后一次** AI 产出,以及它之后你改成的那一版。
       //
       // 取最后一次而不是全部:同一件创作可能重跑好几次起草,中间那些
       // 你根本没看过就重跑了,拿它们做配对只会引入噪声。
+      //
+      // 「有没有修订」必须在 SQL 里判掉,不能取回来再在 Swift 里丢。
+      // LIMIT 数的是行,一旦让没配对的行占了名额,「最近 30 次起草里有 20 次
+      // 没改过」就会让这个方法只返回 10 对——调用方据此显示「还需要 N 篇改过
+      // 的稿子」,而库里其实早就够了,提炼按钮永远点不亮。
+      //
+      // 两处 JOIN 都按 id 精确定位而不是按时间相等:同一毫秒内落两条 drafted
+      // 会让「时间相等」匹配到多行,一次起草凭空变成两对。
       let rows = try Row.fetchAll(db, sql: """
         WITH last_draft AS (
-          SELECT piece_id, MAX(created_at_ms) AS at FROM piece_events
-          WHERE kind = ? GROUP BY piece_id
+          SELECT dg.piece_id AS piece_id,
+                 dg.detail AS generated,
+                 dg.created_at_ms AS generated_at
+          FROM piece_events dg
+          WHERE dg.kind = ?
+            AND dg.id = (
+              SELECT id FROM piece_events
+              WHERE piece_id = dg.piece_id AND kind = ?
+              ORDER BY created_at_ms DESC, id DESC
+              LIMIT 1
+            )
         )
-        SELECT d.piece_id AS piece_id,
-               dg.detail AS generated, dg.created_at_ms AS generated_at,
-               (SELECT detail FROM piece_events r
-                 WHERE r.piece_id = d.piece_id AND r.kind = ? AND r.created_at_ms > d.at
-                 ORDER BY r.created_at_ms DESC LIMIT 1) AS revised,
-               (SELECT created_at_ms FROM piece_events r
-                 WHERE r.piece_id = d.piece_id AND r.kind = ? AND r.created_at_ms > d.at
-                 ORDER BY r.created_at_ms DESC LIMIT 1) AS revised_at
+        SELECT d.generated AS generated, d.generated_at AS generated_at,
+               r.detail AS revised, r.created_at_ms AS revised_at
         FROM last_draft d
-        JOIN piece_events dg ON dg.piece_id = d.piece_id AND dg.created_at_ms = d.at AND dg.kind = ?
-        ORDER BY d.at DESC LIMIT ?
+        JOIN piece_events r ON r.id = (
+          SELECT id FROM piece_events
+          WHERE piece_id = d.piece_id AND kind = ? AND created_at_ms > d.generated_at
+            AND length(detail) > 0
+          ORDER BY created_at_ms DESC, id DESC
+          LIMIT 1
+        )
+        ORDER BY d.generated_at DESC
+        LIMIT ?
         """, arguments: [
-          PieceEvent.Kind.drafted.rawValue, PieceEvent.Kind.revised.rawValue,
-          PieceEvent.Kind.revised.rawValue, PieceEvent.Kind.drafted.rawValue, limit,
+          PieceEvent.Kind.drafted.rawValue, PieceEvent.Kind.drafted.rawValue,
+          PieceEvent.Kind.revised.rawValue, max(0, limit),
         ])
-      return rows.compactMap { row in
-        // 没有对应修订的不成对——AI 写完你还没动过,得不出任何偏好。
-        guard let revised: String = row["revised"], !revised.isEmpty else { return nil }
-        return DraftRevisionPair(
-          generated: row["generated"] ?? "", revised: revised,
+      return rows.map { row in
+        DraftRevisionPair(
+          generated: row["generated"] ?? "", revised: row["revised"] ?? "",
           generatedAtMilliseconds: row["generated_at"] ?? 0,
           revisedAtMilliseconds: row["revised_at"] ?? 0
         )
@@ -1394,18 +1453,32 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       var conditions = ["t.updated_at_ms BETWEEN ? AND ?"]
       var arguments: [DatabaseValueConvertible] = [range.from, range.through]
 
-      // 草稿不能当素材：它是这套系统自己的产物，喂回去只会让模型
+      // 稿件和成品都不能当素材：它们是这套系统自己的产物，喂回去只会让模型
       // 越来越像它自己写的东西。
+      //
+      // 成品必须和稿件一起排除，否则规则会自相矛盾：`finishPiece` 是把稿子那条
+      // task **原地**转成成品，同一条内容在「做完」前后换个前缀就从排除变成召回。
+      //
+      // 笔记留着——那是用户自己想的东西，正是最该参与碰撞的素材。
+      //
+      // 前缀取自 `HistoryPlatformDisplay`，和历史列表判定笔记/稿件/成品用的是
+      // 同一组常量；这里原来用 `CanonicalURL.draftScheme` 手工拼冒号，值虽相同
+      // 却是第二个来源，改一处漏一处的经典形状。
       conditions.append("t.canonical_url NOT LIKE ?")
-      arguments.append("\(CanonicalURL.draftScheme):%")
+      arguments.append("\(HistoryPlatformDisplay.draftURLPrefix)%")
+      conditions.append("t.canonical_url NOT LIKE ?")
+      arguments.append("\(HistoryPlatformDisplay.workURLPrefix)%")
 
       if !lane.tags.isEmpty {
         let placeholders = lane.tags.map { _ in "?" }.joined(separator: ", ")
+        // 标签的大小写不敏感靠参数侧统一小写达成（`normalized_name` 本就是小写）。
+        // 这里曾经写成 `IN (...) COLLATE NOCASE`——那个 COLLATE 作用在 IN 的布尔
+        // 结果上，一个字都没管到，只是看着像做了。
         conditions.append("""
           EXISTS (
             SELECT 1 FROM task_tags tt
             JOIN tags g ON g.id = tt.tag_id
-            WHERE tt.task_id = t.id AND g.normalized_name IN (\(placeholders)) COLLATE NOCASE
+            WHERE tt.task_id = t.id AND g.normalized_name IN (\(placeholders))
           )
           """)
         arguments.append(contentsOf: lane.tags.map { $0.lowercased() })
@@ -1463,10 +1536,22 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         for taskID in candidate.materialTaskIDs {
           // 素材可能在生成过程中被删了。这条关联进不去不该让整批候选失败——
           // 候选本身还是有用的，只是少了一份出处。
-          try? db.execute(sql: """
-            INSERT OR IGNORE INTO topic_candidate_materials (candidate_id, task_id)
-            VALUES (?, ?)
-            """, arguments: [candidate.id.uuidString.lowercased(), taskID.rawValue])
+          //
+          // 只放行外键失败这一种。`OR IGNORE` 管的是主键重复，管不到外键；
+          // 而早先整句套 `try?` 会把「磁盘满」「表不存在」一并吞掉——那两种
+          // 是这一批候选真的没存进去，却和「少了一份出处」长得一模一样。
+          do {
+            try db.execute(sql: """
+              INSERT OR IGNORE INTO topic_candidate_materials (candidate_id, task_id)
+              VALUES (?, ?)
+              """, arguments: [candidate.id.uuidString.lowercased(), taskID.rawValue])
+          } catch let error as DatabaseError
+            where error.extendedResultCode == .SQLITE_CONSTRAINT_FOREIGNKEY {
+            // 比的是 extendedResultCode:`resultCode` 给的是 primary code
+            // （外键失败时是笼统的 SQLITE_CONSTRAINT），拿它比对永远不成立，
+            // 素材被删就会把整批候选一起带走。
+            continue
+          }
         }
       }
     }
