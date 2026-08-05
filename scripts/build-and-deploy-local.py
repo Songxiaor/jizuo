@@ -29,7 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # 也让任何其他人克隆下来直接不可用——脚本会去写一个在他们机器上不存在的目录。
 # `~/Applications` 是 macOS 的标准用户级应用目录，对每个用户都成立。
 DEFAULT_APPLICATIONS = Path.home() / "Applications"
-DEFAULT_APP: Path | None = None  # 在 main() 里按 config 的 appName 解析
+DEFAULT_APP: Path | None = None  # 在 main() 里按 release_unit.APP_BUNDLE 解析
 DEFAULT_EXTENSION = DEFAULT_APPLICATIONS / "LinkDigest-extension-0.2.0"
 NATIVE_HOST_SCRIPTS = ROOT / "scripts/native-host"
 
@@ -99,10 +99,14 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    # `.app` 的文件名就是 Dock 和 Finder 显示的名字，真相源只有 app-release.json
-    # 的 appName 一处；这里跟着它走，改名时不用再记得同步这个脚本。
-    app_config_for_name = release_unit.load_app_config(ROOT)
-    default_app = DEFAULT_APPLICATIONS / f"{app_config_for_name['appName']}.app"
+    # `.app` 的文件名就是 Dock 和 Finder 显示的名字。它的真相源是 release_unit
+    # 的 `APP_BUNDLE`——那份冻结清单，而不是 app-release.json。
+    #
+    # 两者的值必然相同（`load_app_config` 会拒绝对不上的 config），但方向不能反：
+    # 冻结清单是**闸门**，config 是被它检查的输入。改名要改两处正是这道闸门的用途，
+    # 跟 bundleIdentifier、executable 一样——把它改成「跟着 config 走」，
+    # 校验就退化成拿 config 跟自己比。
+    default_app = DEFAULT_APPLICATIONS / release_unit.APP_BUNDLE
     app_destination = (args.app_destination or default_app).resolve(strict=False)
     extension_destination = args.extension_destination.resolve(strict=False)
     if not args.replace:
@@ -148,7 +152,7 @@ def main() -> int:
         )
         stable_host.verify_package(host_package, ROOT)
 
-        staged_app = work / f"{app_config['appName']}.app"
+        staged_app = work / release_unit.APP_BUNDLE
         release_unit.build_app_bundle(
             staged_app,
             binary_root / app_config["executable"],

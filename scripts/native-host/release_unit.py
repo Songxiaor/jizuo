@@ -176,6 +176,15 @@ def load_app_config(root: Path | None = None) -> dict[str, Any]:
         reject("app release config keys do not match the frozen format")
     if type(config["formatVersion"]) is not int or config["formatVersion"] != 1:
         reject("app release formatVersion must be integer 1")
+    # 冻结清单：config 里这些值必须和这里登记的一字不差。
+    #
+    # 「那不是把同一个值写了两遍吗」——是，而且是故意的。这份清单是闸门，
+    # config 是被它检查的输入。改名、改版本号要动两处，正是这道闸门的全部用途：
+    # 单改 config 改不动产物，只有在代码里也登记一次才算数。
+    # 反过来让它从 config 读，校验就退化成拿 config 跟自己比，等于没有。
+    #
+    # 所以别的脚本要拼 `.app` 文件名时用 `APP_BUNDLE`，不要读 config 的 appName——
+    # 值相同，但方向反了。
     exact_strings = {
         "appName": APP_NAME,
         "iconFile": APP_ICON_FILE,

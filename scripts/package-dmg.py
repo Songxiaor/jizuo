@@ -187,7 +187,7 @@ def main() -> int:
         stable_host.verify_package(host_package, ROOT)
 
         print("→ 组装 App bundle…")
-        staged_app = work / f"{app_config['appName']}.app"
+        staged_app = work / release_unit.APP_BUNDLE
         release_unit.build_app_bundle(
             staged_app,
             binary_root / app_config["executable"],
