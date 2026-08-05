@@ -213,6 +213,26 @@ struct BrowserSupportSettingsView: View {
     }
     .accessibilityElement(children: .combine)
     .accessibilityIdentifier("browser-support-status-\(browser.id)")
+
+    // 通道断了、而且断的原因是这个 App 自己挪了位置，就把原因说出来。
+    //
+    // 「需连接」本身没有指向性:用户上周还好好的，今天扩展报 NATIVE_HOST_NOT_FOUND，
+    // 而设置页只说需连接——他没法从这三个字推出「因为 App 改名了」。
+    // manifest 存的是绝对路径，改名、移动、换个文件夹装都会让它指空，
+    // 而这几种的处理办法是同一个:重新连接一次。
+    if let stale = status.stalePath {
+      GridRow {
+        // 第一列留空，让说明和上面那行的浏览器名对齐。
+        Color.clear.frame(width: 18, height: 0)
+        Text("原来指向的程序已不在原位（\(ProductDisplay.name) 改过名或被移动过）。点「重新连接」即可，浏览器里的扩展不用重装。")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .gridCellColumns(3)
+          .help(stale)
+          .accessibilityIdentifier("browser-support-stale-path-\(browser.id)")
+      }
+    }
   }
 
   @ViewBuilder private func browserAction(

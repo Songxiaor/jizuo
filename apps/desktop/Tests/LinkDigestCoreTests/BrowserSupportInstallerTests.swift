@@ -98,6 +98,44 @@ final class BrowserSupportInstallerTests: XCTestCase {
     }
   }
 
+  /// App 改名之后，通道断的原因要能说出口。
+  ///
+  /// manifest 里存的是绝对路径。`LinkDigest.app` 改成「汲作.app」之后，那条路径
+  /// 指向一个不存在的文件，浏览器报 `NATIVE_HOST_NOT_FOUND`，而设置页只会说
+  /// 「需连接」——用户没法从这三个字推出「因为 App 改过名」。
+  ///
+  /// 所以 `stalePath` 要在这种情况下有值，且只在**指了个空**时有值：指向另一份
+  /// 真实存在的安装是另一回事，不能混为一谈。
+  func testDriftCausedByAMovedAppReportsTheStalePath() async throws {
+    try await withFixture { fixture in
+      try fixture.createBrowserDirectories(chrome: true, edge: false)
+      let installer = fixture.installer()
+      try await installer.install(.chrome)
+      let healthy = await installer.inspect()
+      XCTAssertNil(fixture.status(.chrome, in: healthy)?.stalePath, "装好的通道没有失效路径可言")
+
+      // 改名/移动之后磁盘上会留下的东西：格式合法，只是 path 指向已不存在的旧位置。
+      let goneAppPath = fixture.home
+        .appendingPathComponent("Applications/LinkDigest.app/Contents/MacOS/LinkDigestNativeHost")
+        .path
+      XCTAssertFalse(FileManager.default.fileExists(atPath: goneAppPath))
+      try fixture.writeUnknownManifest(.chrome, data: try JSONSerialization.data(
+        withJSONObject: [
+          "allowed_origins": ["chrome-extension://\(BrowserSupportFixture.extensionID)/"],
+          "description": "LinkDigest",
+          "name": BrowserSupportFixture.hostName,
+          "path": goneAppPath,
+          "type": "stdio",
+        ],
+        options: [.sortedKeys]
+      ))
+
+      let status = fixture.status(.chrome, in: await installer.inspect())
+      XCTAssertEqual(status?.state, .drifted)
+      XCTAssertEqual(status?.stalePath, goneAppPath, "指了个空就要把那条路径报出来")
+    }
+  }
+
   func testUnknownManifestRequiresConfirmationThenBacksUpAndRestores() async throws {
     try await withFixture { fixture in
       try fixture.createBrowserDirectories(chrome: true, edge: false)
@@ -762,8 +800,8 @@ private struct BrowserSupportFixture {
     let artifacts = try BrowserSupportFrozenArtifacts(
       templates: Dictionary(uniqueKeysWithValues: BrowserSupportBrowser.allKnown.map { ($0, data) }),
       templateHashes: Dictionary(uniqueKeysWithValues: BrowserSupportBrowser.allKnown.map { ($0, templateHash) }),
-      extensionID: "fbpjhlcpfheecigibjghhodhhkgjdgma",
-      hostName: "com.syc.linkdigest.v01",
+      extensionID: Self.extensionID,
+      hostName: Self.hostName,
       version: "0.2.0",
       hostExecutableURL: host
     )
@@ -776,6 +814,12 @@ private struct BrowserSupportFixture {
       homeRoot: home, browsers: Self.fixtureBrowsers, artifacts: artifacts,
       failureInjection: injector, mutationBarrier: mutationBarrier)
   }
+
+  /// 装出来的 manifest 里那两个固定字段。提到这里是因为用例也要照着拼一份
+  /// 「格式合法但路径失效」的 manifest——两处各写一遍字面量，改一处就会得到
+  /// 一个假通过的用例。
+  static let extensionID = "fbpjhlcpfheecigibjghhodhhkgjdgma"
+  static let hostName = "com.syc.linkdigest.v01"
 
   /// `legacyBrave` 建的是一个**不再被支持**的浏览器目录：Brave 曾在档案表里，真人机器上
   /// 还留着我们写进去的 manifest。它必须存在于测试环境里，才能钉住「不支持了 ≠ 会去动它」。

@@ -30,13 +30,31 @@ public struct BrowserSupportStatus: Sendable, Equatable, Identifiable {
   public let state: BrowserSupportInstallState
   public let hasRecoverableBackup: Bool
   public let replacementFingerprint: String?
+  /// 磁盘上那份 manifest 指着的可执行文件路径——**且那个路径已经不存在了**。
+  ///
+  /// 有值就说明通道断的原因不是「被别的程序改了」，而是**这个 App 自己不在原位了**：
+  /// 改名（`LinkDigest.app` → `汲作.app`）、被拖进别的文件夹、或者装了一份新的
+  /// 而旧的删了。manifest 里存的是绝对路径，App 一动它就指空。
+  ///
+  /// 之所以要单独把它拎出来，是因为「需连接」这三个字对用户没有任何指向性：
+  /// 他上周还好好的，今天扩展就报 `NATIVE_HOST_NOT_FOUND`，而设置页只说需连接。
+  /// 带上这条，界面才能说清「App 改过名，重新连接一次就行」——一句话就能让他
+  /// 从「是不是坏了」回到「点这个按钮」。
+  public let stalePath: String?
 
   public var id: BrowserSupportBrowser { browser }
-  public init(browser: BrowserSupportBrowser, state: BrowserSupportInstallState, hasRecoverableBackup: Bool, replacementFingerprint: String? = nil) {
+  public init(
+    browser: BrowserSupportBrowser,
+    state: BrowserSupportInstallState,
+    hasRecoverableBackup: Bool,
+    replacementFingerprint: String? = nil,
+    stalePath: String? = nil
+  ) {
     self.browser = browser
     self.state = state
     self.hasRecoverableBackup = hasRecoverableBackup
     self.replacementFingerprint = replacementFingerprint
+    self.stalePath = stalePath
   }
 }
 
@@ -337,10 +355,13 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
       let backup = (try? recoverableBackup(for: key)) != nil
       do {
         let state = try state(for: browser)
-        let fingerprint = [.currentAppUnverified, .drifted, .unknownManifest].contains(state)
-          ? try replacementFingerprint(for: browser)
-          : nil
-        return .init(browser: browser, state: state, hasRecoverableBackup: backup, replacementFingerprint: fingerprint)
+        let needsReconnect = [.currentAppUnverified, .drifted, .unknownManifest].contains(state)
+        let fingerprint = needsReconnect ? try replacementFingerprint(for: browser) : nil
+        return .init(
+          browser: browser, state: state, hasRecoverableBackup: backup,
+          replacementFingerprint: fingerprint,
+          stalePath: needsReconnect ? try? stalePath(for: browser) : nil
+        )
       } catch {
         return .init(browser: browser, state: .unavailableArtifact, hasRecoverableBackup: backup)
       }
@@ -518,6 +539,25 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
         : .currentAppUnverified
     }
     return .drifted
+  }
+
+  /// 磁盘那份 manifest 指着的可执行文件已经不在了的话，把那个路径给出来。
+  ///
+  /// 只读 manifest 自己记的 `path`，不跟当前 App 的路径比对：两者不同却都存在，
+  /// 那是「指向另一份安装」，是另一回事；这里要判的是**指了个空**。
+  ///
+  /// 任何一步不顺（读不到、不是 JSON、没有 path 字段）都返回 nil：这条信息的
+  /// 全部用途是让提示更具体一点，够不着就不说，绝不能因此让检查本身失败。
+  private func stalePath(for browser: BrowserSupportBrowser) throws -> String? {
+    let key = Self.activeTargetKey(for: browser)
+    let target = try manifestURL(for: key)
+    guard let data = try existingRegularFileData(at: target),
+          let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let path = object["path"] as? String,
+          !path.isEmpty,
+          !FileManager.default.fileExists(atPath: path)
+    else { return nil }
+    return path
   }
 
   private func replacementFingerprint(for browser: BrowserSupportBrowser) throws -> String? {
