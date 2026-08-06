@@ -804,6 +804,7 @@ struct MarkdownContentView: View {
   var navigationModules: [ReadingModuleLink] = []
   @State private var rejectedLink = false
   @State private var showsOutlinePopover = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   /// 正文章节。
   ///
@@ -832,7 +833,7 @@ struct MarkdownContentView: View {
       showsOutlinePopover = true
     } label: {
       Label(outlineButtonTitle, systemImage: "list.bullet.indent")
-        .font(.system(size: 11, weight: .medium))
+        .font(.subheadline.weight(.medium))
         .foregroundStyle(.secondary)
     }
     .buttonStyle(.plain)
@@ -883,7 +884,7 @@ struct MarkdownContentView: View {
 
   @ViewBuilder private func popoverGroupTitle(_ text: String) -> some View {
     Text(text)
-      .font(.system(size: 10, weight: .semibold))
+      .font(.footnote.weight(.semibold))
       .foregroundStyle(.tertiary)
       .padding(.bottom, 2)
   }
@@ -906,7 +907,7 @@ struct MarkdownContentView: View {
             .frame(width: 14)
         }
         Text(title)
-          .font(.system(size: 12))
+          .font(.callout)
           .foregroundStyle(.primary)
           .lineLimit(2)
           .multilineTextAlignment(.leading)
@@ -962,7 +963,7 @@ struct MarkdownContentView: View {
           if showsInlinePlainTextToggle {
             Toggle(isOn: $showsPlainText) {
               Text("纯文本")
-                .font(.system(size: 11, weight: .medium))
+                .font(.subheadline.weight(.medium))
                 .foregroundStyle(.tertiary)
             }
             .toggleStyle(.checkbox)
@@ -1065,7 +1066,14 @@ struct MarkdownContentView: View {
       }
       .onChange(of: scrollTarget) { _, target in
         guard let target else { return }
-        withAnimation(.easeInOut(duration: 0.25)) { proxy.scrollTo(target, anchor: .top) }
+        // 开了「减弱动态效果」就直接落位：跳转本身是必要的，滚动过程不是。
+        if reduceMotion {
+          proxy.scrollTo(target, anchor: .top)
+        } else {
+          // 走 token 而不是写死 0.25：全 App 的「展开/切换」都用这一档，
+          // 散落的自定义时长正是当初间距和字号失控的同一个成因。
+          withAnimation(DesignTokens.Motion.standard) { proxy.scrollTo(target, anchor: .top) }
+        }
         scrollTarget = nil
       }
     }
@@ -1179,7 +1187,7 @@ struct MarkdownContentView: View {
         ForEach(0..<items.count, id: \.self) { index in
           HStack(alignment: .top, spacing: 0) {
             Text("\(index + 1).")
-              .font(.system(size: 14, weight: .medium, design: .rounded))
+              .font(.system(.body, design: .rounded).weight(.medium))
               .foregroundStyle(secondaryTextColor)
               .frame(width: 30, alignment: .trailing)
               .padding(.trailing, 9)
@@ -1230,7 +1238,7 @@ struct MarkdownContentView: View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 8) {
         Text(language?.isEmpty == false ? language! : "代码")
-          .font(.system(size: 11, weight: .semibold, design: .monospaced))
+          .font(.system(.subheadline, design: .monospaced).weight(.semibold))
           .foregroundStyle(secondaryTextColor)
         Spacer(minLength: 0)
         CodeCopyButton(content: content)
@@ -1241,7 +1249,7 @@ struct MarkdownContentView: View {
 
       ScrollView(.horizontal, showsIndicators: true) {
         Text(content)
-          .font(.system(size: 13.5, design: .monospaced))
+          .font(.system(.body, design: .monospaced))
           .lineSpacing(4)
           .textSelection(.enabled)
           .fixedSize(horizontal: true, vertical: false)
@@ -1325,13 +1333,13 @@ struct QuotedTweetCardView: View {
     VStack(alignment: .leading, spacing: 10) {
       if let author = quote.author, !author.isEmpty {
         Text(author)
-          .font(.system(size: 14, weight: .semibold))
+          .font(.body.weight(.semibold))
           .foregroundStyle(.primary)
       }
       ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
         // Text 的 markdown 解析会把 t.co 等裸链接自动做成可点链接。
         Text(LocalizedStringKey(paragraph))
-          .font(.system(size: 15))
+          .font(.title3)
           .foregroundStyle(.primary)
           .tint(accentColor)
           .lineSpacing(5)
@@ -1347,7 +1355,7 @@ struct QuotedTweetCardView: View {
         } label: {
           HStack(spacing: 4) {
             Image(systemName: "arrow.up.right.square").font(.system(size: 11))
-            Text("查看原推").font(.system(size: 12))
+            Text("查看原推").font(.callout)
           }
           .foregroundStyle(.secondary)
         }

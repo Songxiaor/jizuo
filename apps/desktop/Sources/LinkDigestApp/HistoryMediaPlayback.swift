@@ -844,6 +844,9 @@ private struct ParkedRemotePlayback {
 
 /// 拆出本文件后不再是 file-private —— 使用方 HistoryContentView 已不同文件。
 struct CurrentCaptureMediaPreviewCard: View {
+  // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
+  // 在高对比主题上又不够黑。
+  @Environment(\.appTheme) private var appTheme
   let descriptor: MediaDescriptor
   let taskID: TaskID
   let snapshotID: ContentSnapshotID
@@ -1181,7 +1184,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       case .cancelled:
         Text(LocalVideoTranscriptionError.cancelled.userMessage).foregroundStyle(.secondary)
       case let .failed(message):
-        Text(message).foregroundStyle(.red)
+        Text(message).foregroundStyle(appTheme.danger)
       }
       // 流式通道边转写边出字：先看到文字，等待感就和总耗时脱钩了。
       if let preview = model.onlineTranscriptionPreview, !preview.isEmpty {
@@ -1201,7 +1204,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       }
       if let cleanupFailure = model.transcriptionCleanupFailure {
         VStack(alignment: .leading, spacing: 6) {
-          Text(cleanupFailure).foregroundStyle(.red)
+          Text(cleanupFailure).foregroundStyle(appTheme.danger)
           Button("重试清理", action: model.retryTranscriptionCleanup)
             .controlSize(.small)
             .accessibilityIdentifier("remote-transcribe-cleanup-retry")
@@ -1231,7 +1234,7 @@ struct CurrentCaptureMediaPreviewCard: View {
     case let .failed(message):
       Text(message)
         .font(.caption)
-        .foregroundStyle(.red)
+        .foregroundStyle(appTheme.danger)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityIdentifier("history-video-preview-favorite-status")
     }
@@ -1565,6 +1568,8 @@ private struct PlayerSpaceKeyToggle: NSViewRepresentable {
 
 /// 拆出本文件后不再是 file-private —— 使用方 HistoryContentView 已不同文件。
 struct HistoryVideoPlayerCard: View {
+  // 错误色走主题，理由同其它视图：写死 .red 在低对比与高对比主题上都不成立。
+  @Environment(\.appTheme) private var appTheme
   let fileURL: URL
   let media: MediaAsset?
   let taskID: TaskID
@@ -1878,7 +1883,7 @@ struct HistoryVideoPlayerCard: View {
       )
       .font(.caption).foregroundStyle(.green)
     case .cancelled: Text(TranscriptTidyError.cancelled.userMessage).font(.caption).foregroundStyle(.secondary)
-    case let .failed(message): Text(message).font(.caption).foregroundStyle(.red).lineLimit(3)
+    case let .failed(message): Text(message).font(.caption).foregroundStyle(appTheme.danger).lineLimit(3)
     }
   }
 
@@ -1896,7 +1901,7 @@ struct HistoryVideoPlayerCard: View {
     case .transcribing: ProgressView().controlSize(.small); Text("正在本机转写，音频不会上传…").font(.caption)
     case .completed: Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
     case .cancelled: Text(LocalVideoTranscriptionError.cancelled.userMessage).font(.caption).foregroundStyle(.secondary)
-    case let .failed(message): Text(message).font(.caption).foregroundStyle(.red).lineLimit(3)
+    case let .failed(message): Text(message).font(.caption).foregroundStyle(appTheme.danger).lineLimit(3)
     }
   }
 

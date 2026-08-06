@@ -3,6 +3,9 @@ import AppKit
 import LinkDigestCore
 
 struct BrowserSupportSettingsView: View {
+  // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
+  // 在高对比主题上又不够黑。
+  @Environment(\.appTheme) private var appTheme
   @ObservedObject var model: BrowserSupportViewModel
   @ObservedObject var appModel: AppViewModel
 
@@ -99,7 +102,7 @@ struct BrowserSupportSettingsView: View {
       }
       if let errorText = model.errorText {
         Section {
-          Text(errorText).foregroundStyle(.red)
+          Text(errorText).foregroundStyle(appTheme.danger)
             .accessibilityIdentifier("browser-support-error")
         }
       }

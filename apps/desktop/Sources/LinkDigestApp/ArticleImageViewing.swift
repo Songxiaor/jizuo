@@ -415,7 +415,7 @@ private struct InlineImageLightboxCanvas: View {
         switch recognition {
         case let .done(text):
           Text(text)
-            .font(.system(size: 12.5))
+            .font(.callout)
             .lineSpacing(4)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -423,7 +423,7 @@ private struct InlineImageLightboxCanvas: View {
             .accessibilityIdentifier("history-inline-image-lightbox-recognized-text")
         case let .failed(message):
           Text(message)
-            .font(.system(size: 12.5))
+            .font(.callout)
             .foregroundStyle(.secondary)
             .padding(12)
         default:

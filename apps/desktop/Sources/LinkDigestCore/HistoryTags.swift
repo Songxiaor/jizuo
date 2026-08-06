@@ -128,9 +128,16 @@ public enum HistoryPlatformDisplay {
 
   /// 成品所在的输出区。
   public static let workHost = "work"
+
+  /// 杂项来源在侧栏网格里的那一格。
+  ///
+  /// 不是真实域名——它代表「所有不常见来源」的聚合，点它等于同时选中一批
+  /// host。用下划线包起来是为了和真实域名区分开：域名不会以下划线开头。
+  public static let miscHost = "__misc__"
   public static let workURLPrefix = "linkdigest-work:"
 
   public static func name(forHost rawHost: String) -> String {
+    if rawHost == miscHost { return "待分类" }
     if rawHost == noteHost { return "我的笔记" }
     if rawHost == draftHost { return "工作台稿件" }
     if rawHost == workHost { return "我的作品" }

@@ -6,6 +6,9 @@ import UniformTypeIdentifiers
 /// 脑图区：位于媒体卡与原文之间。展示、主题切换、节点文本编辑与导出都在
 /// 本地完成；只有「生成/重新生成」会把文字发给已配置的模型，且必经确认。
 struct MindMapSectionView: View {
+  // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
+  // 在高对比主题上又不够黑。
+  @Environment(\.appTheme) private var appTheme
   let taskID: TaskID
   @ObservedObject var model: HistoryViewModel
 
@@ -160,7 +163,7 @@ struct MindMapSectionView: View {
         .font(.caption).foregroundStyle(.green)
     case .cancelled: EmptyView()
     case let .failed(message):
-      Text(message).font(.caption).foregroundStyle(.red).lineLimit(2)
+      Text(message).font(.caption).foregroundStyle(appTheme.danger).lineLimit(2)
     }
   }
 

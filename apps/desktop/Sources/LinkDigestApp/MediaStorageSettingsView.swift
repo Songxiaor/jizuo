@@ -3,6 +3,9 @@ import LinkDigestCore
 import SwiftUI
 
 struct MediaStorageSettingsView: View {
+  // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
+  // 在高对比主题上又不够黑。
+  @Environment(\.appTheme) private var appTheme
   @ObservedObject var model: MediaStorageSettingsViewModel
 
   var body: some View {
@@ -127,7 +130,7 @@ struct MediaStorageSettingsView: View {
       }
 
       if case let .failed(message) = model.state {
-        Section { Text(message).foregroundStyle(.red) }
+        Section { Text(message).foregroundStyle(appTheme.danger) }
       }
     }
     .formStyle(.grouped)

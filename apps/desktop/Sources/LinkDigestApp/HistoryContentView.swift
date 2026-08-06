@@ -349,9 +349,9 @@ struct HistoryContentView: View {
       }
       switch model.listState {
       case .idle where model.rows.isEmpty:
-        ProgressView("正在载入历史记录…").frame(maxWidth: .infinity, maxHeight: .infinity)
+        HistorySkeletonList(theme: theme)
       case .loading where model.rows.isEmpty:
-        ProgressView("正在载入历史记录…").frame(maxWidth: .infinity, maxHeight: .infinity)
+        HistorySkeletonList(theme: theme)
       case .empty:
         if model.hasActiveFilter {
           VStack(spacing: 8) {
@@ -538,52 +538,33 @@ struct HistoryContentView: View {
         let knownPlatforms = model.navigationCounts.platforms.filter { HistoryPlatformDisplay.isWellKnown(host: $0.host) }
         let miscPlatforms = model.navigationCounts.platforms.filter { !HistoryPlatformDisplay.isWellKnown(host: $0.host) }
         Section("平台") {
-          ForEach(knownPlatforms) { platform in
-            Button { model.selectHost(platform.host) } label: {
-              HStack(spacing: 8) {
-                PlatformNavigationIcon(host: platform.host)
-                // 平台是"内容从哪来"：展示中文平台名，未知来源回退为域名。
-                Text(HistoryPlatformDisplay.name(forHost: platform.host)).lineLimit(1)
-                Spacer()
-                countBadge(platform.count, selected: model.selectedHosts.contains(platform.host))
+          // 网格而不是一平台一行：图标本身就是最强的识别符号，名字挪到
+          // 悬停提示里，纵向省下的高度留给下面的标签云。
+          //
+          // 「待分类」并进同一个网格：它在语义上就是一个平台入口（杂项来源
+          // 的聚合），单独拎出来成一行会让网格看起来缺一角。
+          PlatformGridView(
+            items: knownPlatforms.map { .init(host: $0.host, count: $0.count) }
+              + (miscPlatforms.isEmpty ? [] : [
+                .init(
+                  host: HistoryPlatformDisplay.miscHost,
+                  count: miscPlatforms.reduce(0) { $0 + $1.count }
+                )
+              ]),
+            theme: theme,
+            isSelected: { host in
+              host == HistoryPlatformDisplay.miscHost
+                ? model.selectedHosts == Set(miscPlatforms.map(\.host))
+                : model.selectedHosts.contains(host)
+            },
+            onSelect: { host in
+              if host == HistoryPlatformDisplay.miscHost {
+                model.selectHosts(miscPlatforms.map(\.host))
+              } else {
+                model.selectHost(host)
               }
-              .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .padding(.vertical, 3).padding(.horizontal, 6)
-            .background(
-              model.selectedHosts.contains(platform.host) ? theme.selectionFill : .clear,
-              in: RoundedRectangle(cornerRadius: 6)
-            )
-            .foregroundStyle(model.selectedHosts.contains(platform.host) ? theme.selectionText : theme.primaryText)
-            .padding(.horizontal, -6)
-            .fontWeight(model.selectedHosts.contains(platform.host) ? .semibold : .regular)
-            .accessibilityIdentifier("history-navigation-platform-\(platform.host)")
-          }
-          if !miscPlatforms.isEmpty {
-            let miscHosts = miscPlatforms.map(\.host)
-            let miscSelected = model.selectedHosts == Set(miscHosts)
-            Button { model.selectHosts(miscHosts) } label: {
-              HStack(spacing: 8) {
-                Image(systemName: "tray")
-                  .font(.system(size: 11))
-                  .foregroundStyle(miscSelected ? theme.selectionText : .secondary)
-                  .frame(width: 16)
-                Text("待分类").lineLimit(1)
-                Spacer()
-                countBadge(miscPlatforms.reduce(0) { $0 + $1.count }, selected: miscSelected)
-              }
-              .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .padding(.vertical, 3).padding(.horizontal, 6)
-            .background(miscSelected ? theme.selectionFill : .clear, in: RoundedRectangle(cornerRadius: 6))
-            .foregroundStyle(miscSelected ? theme.selectionText : theme.primaryText)
-            .padding(.horizontal, -6)
-            .fontWeight(miscSelected ? .semibold : .regular)
-            .help("不常见来源统一归入待分类；点击筛选全部杂项来源。")
-            .accessibilityIdentifier("history-navigation-platform-misc")
-          }
+          )
         }
       }
 
@@ -679,9 +660,13 @@ struct HistoryContentView: View {
   }
 
   /// 图24 式计数徽章：灰底小胶囊；选中时反白依附在蓝色药丸上。
+  ///
+  /// 等宽数字：侧栏这排计数常驻可见，抓到新内容时会一起变。比例字体下
+  /// 9→10 的宽度跳变会让整列胶囊宽窄不一地抽动一下，等宽把它压成
+  /// 只有需要进位时才变宽。
   private func countBadge(_ count: Int, selected: Bool) -> some View {
     Text("\(count)")
-      .font(.caption.weight(.medium))
+      .font(.caption.weight(.medium).monospacedDigit())
       .foregroundStyle(selected ? theme.selectionText : .secondary)
       .padding(.horizontal, 6).padding(.vertical, 1)
       .background(selected ? Color.white.opacity(0.22) : theme.badge, in: Capsule())
@@ -1035,15 +1020,22 @@ private struct ClipboardSuggestionBanner: View {
   }
 }
 
-private struct PlatformNavigationIcon: View {
+/// 侧栏与网格共用，所以不是 private。
+struct PlatformNavigationIcon: View {
   let host: String
 
   var body: some View {
-    if let image = PlatformIconCatalog.image(for: host) {
+    if host == HistoryPlatformDisplay.miscHost {
+      // 杂项来源没有 logo 可取，用收件盘符号——它表达的正是「还没归类」。
+      Image(systemName: "tray")
+        .font(.system(size: DesignTokens.IconSize.control, weight: .medium))
+        .foregroundStyle(.secondary)
+        .frame(width: 18, height: 18)
+    } else if let image = PlatformIconCatalog.image(for: host) {
       Image(nsImage: image).resizable().scaledToFit().frame(width: 16, height: 16)
     } else {
       Text(PlatformIconCatalog.fallbackInitial(for: host))
-        .font(.system(size: 9, weight: .bold))
+        .font(.system(size: BadgeTypography.size, weight: .bold))
         .foregroundStyle(.white)
         .frame(width: 16, height: 16)
         .background(PlatformIconCatalog.fallbackColor(for: host), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
@@ -1052,6 +1044,8 @@ private struct PlatformNavigationIcon: View {
 }
 
 private struct ManualLinkSheet: View {
+  // 错误色走主题，理由同其它视图：写死 .red 在低对比与高对比主题上都不成立。
+  @Environment(\.appTheme) private var appTheme
   @ObservedObject var model: ManualLinkViewModel
   @FocusState private var focusURL: Bool
 
@@ -1065,7 +1059,7 @@ private struct ManualLinkSheet: View {
         .disabled(model.isBusy).accessibilityIdentifier("manual-link-url-input")
       if let error = model.errorMessage {
         Label(error, systemImage: "exclamationmark.triangle.fill")
-          .font(.callout).foregroundStyle(.red).accessibilityIdentifier("manual-link-error")
+          .font(.callout).foregroundStyle(appTheme.danger).accessibilityIdentifier("manual-link-error")
       }
       if model.isFetching { ProgressView(model.fetchingMessage).accessibilityIdentifier("manual-link-fetching") }
       if model.isSaving { ProgressView("正在保存到本机历史…").accessibilityIdentifier("manual-link-saving") }
@@ -1140,6 +1134,7 @@ private struct PendingCaptureRow: View {
       }
       .buttonStyle(.plain)
       .help(pending.phase == .queued ? "移出队列" : "取消并移除")
+      .accessibilityLabel(pending.phase == .queued ? "移出队列" : "取消并移除")
     }
     .padding(.vertical, 4)
     // 与 HistoryRowView 同一个坑：macOS List 会沿用估算行高把内容压扁，
@@ -1175,44 +1170,77 @@ private struct HistoryRowView: View {
     }
   }
 
+  /// 这一行显示哪个时间。
+  ///
+  /// 发布时间优先——判断"这条素材新不新鲜"看的是它。抓不到发布时间
+  /// （很多网页没有可靠的时间标记）才回落到入库时间，并标明是"存于"，
+  /// 免得让人误以为原文是那天发的。
+  private var rowTimeText: String {
+    if let published = row.published?.trimmedNonEmpty {
+      return historyPublishedDate(published)
+    }
+    return "存于 \(HistoryRelativeTime.text(row.createdAtMilliseconds ?? row.updatedAtMilliseconds))"
+  }
+
   var body: some View {
-    HStack(alignment: .top, spacing: 8) {
-      statusIndicator
-        .frame(width: 7, height: 7)
-        .padding(.top, 5)
-        .help(isSummarized ? "已总结" : "未总结")
-        .accessibilityLabel(isSummarized ? "已总结" : "未总结")
+    HStack(alignment: .top, spacing: 10) {
+      // 左侧锚点：状态点 + 平台标记竖排。
+      //
+      // 平台标记从标题右侧挪过来。放在右边有两个问题：位置和「关闭按钮」
+      // 撞车，语义容易误解；而且列表纯文字堆叠时扫视没有落点——眼睛需要
+      // 一个每行都在同一位置、且颜色各不相同的东西来定位。
+      //
+      // 没有用缩略图：36 条里只有 22 条正文带图（61%），而且那些图是远程
+      // URL——列表里加载等于每次开 App 就朝各平台发几十个请求，既违背
+      // local-first，也把「我在看这条」暴露给了内容平台。平台色块零网络、
+      // 100% 覆盖，扫视效果反而更稳定。
+      VStack(spacing: 6) {
+        statusIndicator
+          .frame(width: 7, height: 7)
+          .help(isSummarized ? "已总结" : "未总结")
+          // label 说「这是什么」，value 说「现在是什么值」。
+          // 把状态塞进 label（原来的写法）时，VoiceOver 只念一句「已总结」，
+          // 听不出这是一个状态指示器；分开之后念的是「总结状态，已总结」。
+          .accessibilityLabel("总结状态")
+          .accessibilityValue(isSummarized ? "已总结" : "未总结")
+        favicon
+      }
+      .padding(.top, 4)
       VStack(alignment: .leading, spacing: 4) {
         HStack(alignment: .top, spacing: 8) {
           Text(CapturedDocumentTitle.display(row.title, for: row.canonicalURL))
-            .font(.system(size: 13, weight: .semibold))
+            .font(.body.weight(.semibold))
             .lineLimit(2)
             .multilineTextAlignment(.leading)
           Spacer(minLength: 4)
-          favicon
         }
         if let preview = row.artifactPreview?.trimmedNonEmpty ?? row.author?.trimmedNonEmpty {
           Text(preview)
-            .font(.system(size: 12))
+            .font(.callout)
             .foregroundStyle(.secondary)
             .lineLimit(2)
         }
-        // 两排时间：第一排发布、第二排创建；发布时间未抓取到时只留创建一排。
+        // 时间合成一排。
+        //
+        // 原本是两排——"发布 2026年8月5日 14:37" 和 "创建 2026年8月5日"，
+        // 吃掉近一半行高，而这是整行最次要的信息。而且"创建"时间对用户
+        // 几乎没有意义（他知道自己什么时候存的），判断素材新不新鲜看的是
+        // 发布时间。所以只留发布时间，没抓到才回落到入库时间。
         HStack(alignment: .bottom, spacing: 6) {
-          VStack(alignment: .leading, spacing: 2) {
-            if row.published?.trimmedNonEmpty != nil {
-              Text("发布 \(historyPublishedDate(row.published))")
-            }
-            Text("创建 \(historyCreatedDate(row.createdAtMilliseconds ?? row.updatedAtMilliseconds))")
-          }
-          .font(.system(size: 10.5))
-          .foregroundStyle(.tertiary)
-          .lineLimit(1)
+          Text(rowTimeText)
+            .font(.footnote)
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
           Spacer(minLength: 4)
           // 处理状态徽标：一眼分清生料和成品，自动管线跑完什么立刻可见。
+          // 这一排是裸 Image，不是 Label——`.help()` 只喂给鼠标悬停的 tooltip，
+          // VoiceOver 读不到，所以每个都要自己声明可访问名称。工具栏那些按钮
+          // 用的是 `Label(文字, systemImage:)`，文字本身就是名称，不用补。
           HStack(spacing: 4) {
             if row.hasTranscript == true {
-              Image(systemName: "waveform").help("已转写")
+              Image(systemName: "waveform")
+                .help("已转写")
+                .accessibilityLabel("已转写")
             } else if row.hasMedia == true {
               // 只标异常，不标常态：有视频却还没转写的条目，正文往往只有一百来字的
               // 站点描述，在列表里和几千字的长文长得一模一样，点进去才发现是空的。
@@ -1220,16 +1248,21 @@ private struct HistoryRowView: View {
               Image(systemName: "waveform.slash")
                 .foregroundStyle(.orange)
                 .help("有视频，还没转写")
+                .accessibilityLabel("有视频，还没转写")
                 .accessibilityIdentifier("history-row-needs-transcript")
             }
             if row.hasSummary == true {
-              Image(systemName: "text.alignleft").help("已总结")
+              Image(systemName: "text.alignleft")
+                .help("已总结")
+                .accessibilityLabel("已总结")
             }
             if row.hasMindMap == true {
-              Image(systemName: "brain").help("已生成脑图")
+              Image(systemName: "brain")
+                .help("已生成脑图")
+                .accessibilityLabel("已生成脑图")
             }
           }
-          .font(.system(size: 9))
+          .font(.system(size: BadgeTypography.size))
           .foregroundStyle(.tertiary)
           .accessibilityIdentifier("history-row-status-badges")
         }
@@ -1249,24 +1282,23 @@ private struct HistoryRowView: View {
       Image(systemName: "square.and.pencil")
         .font(.system(size: 12, weight: .medium))
         .foregroundStyle(.tint)
-        .frame(width: 16, height: 16)
-        .padding(.top, 1)
+        .frame(width: 18, height: 18)
         .accessibilityLabel("笔记")
     } else if let image = PlatformIconCatalog.image(for: row.host) {
-      Image(nsImage: image).resizable().scaledToFit().frame(width: 16, height: 16).padding(.top, 1)
+      Image(nsImage: image).resizable().scaledToFit().frame(width: 18, height: 18)
         .accessibilityLabel("\(row.host) 图标")
     } else if let url = model.faviconImageURL(for: row), let image = HistoryFaviconImageMemoryCache.image(
       at: url,
       host: row.host,
       taskID: row.taskID
     ) {
-      Image(nsImage: image).resizable().scaledToFit().frame(width: 16, height: 16).padding(.top, 1)
+      Image(nsImage: image).resizable().scaledToFit().frame(width: 18, height: 18)
         .accessibilityHidden(true)
     } else {
       // Deterministic initial mark. A source with neither a bundled icon nor a
       // reachable favicon still gets a stable, identifiable badge.
       Text(PlatformIconCatalog.fallbackInitial(for: row.host))
-        .font(.system(size: 9, weight: .bold))
+        .font(.system(size: BadgeTypography.size, weight: .bold))
         .foregroundStyle(.white)
         .frame(width: 16, height: 16)
         .background(PlatformIconCatalog.fallbackColor(for: row.host), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
@@ -2039,18 +2071,21 @@ private struct HistoryDetailView: View {
         // 阅读区字号的快捷调节，省得为改字号专门开设置。只在有正文可读时出现——
         // 纯视频、无正文的详情里字号没有意义。两个按钮到边界各自禁用。
         if hasReadableBody {
+          // 用图标而不是「小」「大」两个字：这一排其余全是 SF Symbol，
+          // 夹两个汉字进去，工具栏就有了两种视觉语言，一眼看过去像没做完。
+          // 图标自带大小语义，也不必再靠字号差别去暗示按钮的作用。
           ControlGroup {
             Button {
               adjustReadingFontSize(by: -ReadingFontSize.step)
             } label: {
-              Text("小").font(.system(size: 11))
+              Label("缩小正文字号", systemImage: "textformat.size.smaller")
             }
             .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
             .accessibilityIdentifier("reading-font-smaller")
             Button {
               adjustReadingFontSize(by: ReadingFontSize.step)
             } label: {
-              Text("大").font(.system(size: 16))
+              Label("放大正文字号", systemImage: "textformat.size.larger")
             }
             .disabled(readingFontSizeRaw >= Double(ReadingFontSize.maximum))
             .accessibilityIdentifier("reading-font-larger")
@@ -2085,6 +2120,14 @@ private struct HistoryDetailView: View {
           }
         }
 
+        // 溢出菜单：分享、重新生成、删除三组低频操作收进这里。
+        //
+        // 原本它们和「设置」「新建笔记」「上一条」并排成一长条，12 个图标
+        // 平铺，用户分不出哪些作用于当前这条、哪些是全局动作。更糟的是
+        // **删除就裸露在最右端**，紧挨着刷新——误点的代价是一条内容没了。
+        //
+        // 导出那一组直接平铺进来，不做二级菜单：它们本来就属于「对这条做点
+        // 什么」，多一层嵌套只是多一次点击。
         Menu {
           Button("拷贝全文") { copyFullArticle() }
             .accessibilityIdentifier("history-copy-full-text")
@@ -2095,22 +2138,29 @@ private struct HistoryDetailView: View {
             .accessibilityIdentifier("history-export-pdf")
           Button("导出 Word (.docx)") { exportStyledDocument(.docx) }
             .accessibilityIdentifier("history-export-docx")
-          Divider()
           Button("导出完整数据 (.json)") { model.requestExport(.json) }
           Divider()
           Toggle("以纯文本查看正文", isOn: $showsPlainText)
             .accessibilityIdentifier("history-content-plain-text-toggle")
+          Divider()
+          Button("重新生成…") { isRegeneratePopoverPresented = true }
+            .disabled(!canRunHistory || !providerSettings.arePreferencesReady)
+            .accessibilityIdentifier("regenerate-history")
+          Divider()
+          // `role: .destructive` 让系统把它标红并排在最后，这是 macOS 菜单里
+          // 「这一项会毁掉东西」的标准表达，比自己涂色可靠。
+          Button("删除", role: .destructive) {
+            model.requestDeletion(protectedTaskIDs: protectedTaskIDs)
+          }
+          .disabled(!model.canDelete(protectedTaskIDs: protectedTaskIDs))
+          .accessibilityIdentifier("delete-history")
         } label: {
-          Label("分享", systemImage: "square.and.arrow.up")
+          Label("更多", systemImage: "ellipsis")
         }
-        .disabled(!model.canExport && !hasReadableBody)
+        // popover 锚在这个按钮上——原来它挂在独立的「重新生成」按钮上，
+        // 那个按钮现在没了，锚点得跟过来。
+        .popover(isPresented: $isRegeneratePopoverPresented) { regeneratePopover }
         .accessibilityIdentifier("export-history")
-        Button { isRegeneratePopoverPresented = true } label: { Label("重新生成", systemImage: "arrow.clockwise") }
-          .disabled(!canRunHistory || !providerSettings.arePreferencesReady)
-          .popover(isPresented: $isRegeneratePopoverPresented) { regeneratePopover }
-          .accessibilityIdentifier("regenerate-history")
-        Button { model.requestDeletion(protectedTaskIDs: protectedTaskIDs) } label: { Label("删除", systemImage: "trash") }
-          .disabled(!model.canDelete(protectedTaskIDs: protectedTaskIDs)).accessibilityIdentifier("delete-history")
       }
     }
     .accessibilityIdentifier("history-detail")
@@ -2469,7 +2519,7 @@ private struct HistoryDetailView: View {
       if showsVisibleRun, appModel.runHasFailure {
         Text(appModel.runStatusText)
           .font(.caption)
-          .foregroundStyle(.red)
+          .foregroundStyle(theme.danger)
           .accessibilityIdentifier("model-run-status-detail")
       }
     }
@@ -2606,7 +2656,7 @@ private struct HistoryDetailView: View {
         ScrollViewReader { proxy in
           ScrollView {
             Text(appModel.runResultText)
-              .font(.system(size: 15))
+              .font(.title3)
               .textSelection(.enabled)
               .frame(maxWidth: .infinity, alignment: .leading)
               .padding(.bottom, 4)
@@ -3113,7 +3163,7 @@ private struct HistoryDetailView: View {
         Text(LocalImageTextRecognitionError.cancelled.userMessage)
           .font(.caption).foregroundStyle(.secondary)
       case let .failed(message):
-        Text(message).font(.caption).foregroundStyle(.red)
+        Text(message).font(.caption).foregroundStyle(theme.danger)
       }
       if !recognizedText.isEmpty {
         ScrollView {
@@ -3487,10 +3537,17 @@ private struct MetadataItem: View {
       HStack(alignment: .firstTextBaseline, spacing: 5) {
         Image(systemName: symbol).frame(width: 14)
         Text(title)
-        Text(value).foregroundStyle(.primary).lineLimit(2).truncationMode(.middle)
+        // 等宽数字：这一行里全是会变的量（Token 累计、时间、视频时长）。
+        // 比例字体下 1 比 0 窄一截，流式产出时数字每跳一次整行就左右晃，
+        // 读起来像界面在抖。等宽让位数变化只往右长，不推挤前面的字。
+        Text(value)
+          .foregroundStyle(.primary)
+          .monospacedDigit()
+          .lineLimit(2)
+          .truncationMode(.middle)
       }
       if let detail {
-        Text(detail).font(.caption).padding(.leading, 19)
+        Text(detail).font(.caption.monospacedDigit()).padding(.leading, 19)
       }
     }
     .font(.callout)
@@ -3508,7 +3565,11 @@ enum HistoryTimestampFormatter {
     _ milliseconds: Int64?,
     now: Date = Date(),
     calendar: Calendar = .autoupdatingCurrent,
-    locale: Locale = .autoupdatingCurrent,
+    // 和 `HistoryPublishedTimestampFormatter` 同一个理由，这里之前漏了：
+    // 界面通篇中文但 App 没有本地化资源，`.autoupdatingCurrent` 会回退成英文，
+    // 于是详情页同一屏里出现「发布 2026年8月5日 14:37」和
+    // 「创建时间 Aug 5, 2026 at 18:13」两种写法。钉住 zh_CN。
+    locale: Locale = Locale(identifier: "zh_CN"),
     timeZone: TimeZone = .autoupdatingCurrent
   ) -> String {
     guard let milliseconds else { return "—" }
@@ -3554,6 +3615,53 @@ enum HistoryPublishedTimestampFormatter {
   }
 }
 private func historyPublishedDate(_ value: String?) -> String { HistoryPublishedTimestampFormatter.text(value) }
+/// 列表行的时间：近的说"多久以前"，远的说日期。
+///
+/// 列表行原本占两排——"发布 2026年8月5日 14:37" 和 "创建 2026年8月5日"，
+/// 加起来吃掉近一半行高，而它们是整行最次要的信息。合成一排的前提是
+/// 把精度降下来：扫列表时"3 天前"就够判断新鲜度了，具体到分钟只有
+/// 打开详情才有意义（详情页仍显示完整时间）。
+///
+/// 七天是分界：一周内人对"几天前"有直觉，超过一周就只剩"很久以前"，
+/// 那时候日期反而更有用。
+enum HistoryRelativeTime {
+  static func text(
+    _ milliseconds: Int64,
+    now: Date = Date(),
+    calendar: Calendar = .autoupdatingCurrent,
+    locale: Locale = Locale(identifier: "zh_CN")
+  ) -> String {
+    let date = Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
+    // 按"日历天"算而不是按 24 小时：昨晚 23:00 和今早 08:00 差 9 小时，
+    // 但人会说"昨天"，不会说"9 小时前"。
+    let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date),
+                                       to: calendar.startOfDay(for: now)).day ?? 0
+    switch days {
+    case ..<0:
+      // 未来时间通常是源站时区解析出的偏差，别显示"-2 天前"这种。
+      return dayText(date, locale: locale, calendar: calendar)
+    case 0:
+      let formatter = DateFormatter()
+      formatter.locale = locale
+      formatter.calendar = calendar
+      formatter.dateFormat = "HH:mm"
+      return "今天 \(formatter.string(from: date))"
+    case 1: return "昨天"
+    case 2...6: return "\(days) 天前"
+    default: return dayText(date, locale: locale, calendar: calendar)
+    }
+  }
+
+  private static func dayText(_ date: Date, locale: Locale, calendar: Calendar) -> String {
+    let formatter = DateFormatter()
+    formatter.locale = locale
+    formatter.calendar = calendar
+    formatter.dateStyle = .medium
+    formatter.timeStyle = .none
+    return formatter.string(from: date)
+  }
+}
+
 private func historyUpdatedDate(_ milliseconds: Int64) -> String {
   let date = Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
   let formatter = DateFormatter()
@@ -3790,7 +3898,10 @@ struct VideoDisplayGeometry {
 /// UI state changes use a critically damped spring; Reduce Motion keeps a
 /// short non-spatial fade so state changes stay visible without movement.
 func historyUIAnimation(reduceMotion: Bool) -> Animation {
-  reduceMotion ? .easeInOut(duration: 0.1) : .snappy(duration: 0.3)
+  // 保留这个函数名——三十多处调用点在用它，而且它的语义（"历史界面的
+  // 默认过渡"）比 token 名更贴调用现场。只把取值交给 token，免得同一条
+  // 曲线在两个地方各写一份然后慢慢漂开。
+  DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)
 }
 
 /// Banner enter/exit slides from its top anchor; Reduce Motion falls back to a
