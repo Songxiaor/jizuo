@@ -1334,7 +1334,9 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(row.contains("theme.encodesStatusByShape"))
     XCTAssertTrue(row.contains("strokeBorder"), "空心圆是高对比主题下「未总结」的唯一标记")
     // 形状和颜色都要求用户看得见；读屏和悬停还得有话可说。
-    XCTAssertTrue(row.contains("accessibilityLabel(isSummarized"))
+    // 状态走 accessibilityValue 而不是塞进 label：塞进 label 时 VoiceOver 只念
+    // 「已总结」，听不出这是一个状态指示器；分开之后念的是「总结状态，已总结」。
+    XCTAssertTrue(row.contains("accessibilityValue(isSummarized"))
   }
 
   func testSidebarUsesSourceMetadataInsteadOfURLOrImportTime() {
@@ -1342,11 +1344,11 @@ final class HistoryContentViewTests: XCTestCase {
     let row = section(in: source, from: "private struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
     // 图24 式排版：摘要优先，回退作者；发布时间仍来自来源元数据。
     XCTAssertTrue(row.contains("row.artifactPreview?.trimmedNonEmpty ?? row.author?.trimmedNonEmpty"))
-    // 两排时间：第一排发布（未抓取到则整排消失），第二排创建。
-    XCTAssertTrue(row.contains("if row.published?.trimmedNonEmpty != nil {"))
-    XCTAssertTrue(row.contains("发布 \\(historyPublishedDate(row.published))"))
-    XCTAssertTrue(row.contains("创建 \\(historyCreatedDate(row.createdAtMilliseconds ?? row.updatedAtMilliseconds))"))
-    XCTAssertFalse(row.contains("更新 \\(historyUpdatedDate"), "The list row shows publish + created, not the updated timestamp")
+    // 一排时间，不是两排：发布时间优先（判断素材新不新鲜看的是它），抓不到
+    // 才回落到入库时间。回落时必须带「存于」字样，否则会被读成原文的发布日期。
+    XCTAssertTrue(row.contains("historyPublishedDate(published)"))
+    XCTAssertTrue(row.contains("存于 \\(HistoryRelativeTime.text("))
+    XCTAssertFalse(row.contains("更新 \\(historyUpdatedDate"), "行里显示发布或入库时间，不显示 updated")
     XCTAssertFalse(row.contains("Text(row.canonicalURL)"))
     XCTAssertFalse(row.contains("latestRunAtMilliseconds ?? row.updatedAtMilliseconds"))
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")

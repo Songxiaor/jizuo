@@ -8,7 +8,9 @@ final class MarkdownPresentationTests: XCTestCase {
   func testPaperThemeUsesOfficialClaudePaletteAndEditorialTypographyOnly() throws {
     let paper = AppearanceTheme.paper.tokens
 
-    assertColor(paper.canvas, red: 0xFA, green: 0xF9, blue: 0xF5)
+    // canvas 是 sunken(#EFEDE5) 而不是最亮的 #FAF9F5：三栏要能分层。首版给
+    // canvas 用亮底时，中栏到详情卡片只差 1.2% 灰阶，实机上根本看不出是两层。
+    assertColor(paper.canvas, red: 0xEF, green: 0xED, blue: 0xE5)
     assertColor(paper.primaryText, red: 0x14, green: 0x14, blue: 0x13)
     assertColor(paper.secondaryText, red: 0xB0, green: 0xAE, blue: 0xA5)
     assertColor(paper.hairline, red: 0xE8, green: 0xE6, blue: 0xDC)
