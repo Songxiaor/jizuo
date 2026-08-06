@@ -812,18 +812,21 @@ struct HistoryContentView: View {
   }
 
   @ViewBuilder private var detail: some View {
-    // 系统主题保持原生平铺；浅色/深色主题让内容浮在画布上的圆角卡片里，
-    // 给大面积留白一个边界。
+    // 系统主题保持原生平铺；其余主题让整个详情列就是正文色，铺满到工具栏下沿。
+    //
+    // 原来这里是一张浮在画布上的圆角卡片，四周留 10/12pt 的画布边。代价是详情列
+    // 顶上多出一条 #EFEDE5 的横带——工具栏那一带是画布色，正文卡片从它下面才开始，
+    // 于是右上角自成一个灰色块，而白色的工具栏按钮正好浮在上面，成了整扇窗对比
+    // 最强的地方；那里装的只是 chrome，不是内容。
+    //
+    // 列与列的分界不靠这圈留白，靠 `WindowColumnDividerInstaller` 那条贯通工具栏的
+    // 细线，它本来就在。
     if theme.isNative {
       detailStateContent
     } else {
       detailStateContent
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(theme.card)
-        .clipShape(RoundedRectangle(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.hairline, lineWidth: 1))
-        .padding(EdgeInsets(top: 10, leading: 10, bottom: 12, trailing: 12))
-        .background(theme.canvas)
     }
   }
 
@@ -1765,6 +1768,15 @@ private struct HistoryDetailView: View {
           .padding(.top, 12)
 
         if showsRunControls {
+          // 上面是「这条是什么」（标题、来源、作者、时间），这一排是「对它做什么」。
+          // 原来两者只隔 14pt，按钮读起来像元数据的第五行。
+          //
+          // 用一条横线而不是给上半块描边：横线只说「这里换段」，描边会说「这是一个
+          // 盒子」。详情列刚从四个色块收成两个，不该再添一个分块。
+          Rectangle()
+            .fill(theme.hairline)
+            .frame(height: 1)
+            .padding(.top, 16)
           actionToolbar
             .padding(.top, 14)
             .accessibilityIdentifier("history-action-toolbar")
@@ -2417,6 +2429,23 @@ private struct HistoryDetailView: View {
             }
           }
         }
+        // 生成脑图和总结、翻译是同一类动作：都是把正文交给模型换回一份新产物，
+        // 前置条件（有正文 + 配好模型）、代价（花 token，必经确认）和结果
+        // （一份可保存、可导出的东西）完全一致。原来它却单独待在媒体和正文之间，
+        // 是一行很容易滚过去的小按钮——同类不同位。
+        //
+        // 已经有脑图就不显示：那时候「重新生成」在脑图卡自己的标题行里，
+        // 挨着主题切换和导出，和它们是一组。
+        if !isOwnWriting, model.mindMapRecord?.taskID != detail.task.id {
+          actionPill(
+            title: "生成脑图",
+            systemImage: "brain",
+            disabled: !model.canGenerateMindMap(taskID: detail.task.id),
+            identifier: "mind-map-generate"
+          ) {
+            model.requestMindMapGeneration(taskID: detail.task.id)
+          }
+        }
         if isOwnWriting {
           // 想到哪写到哪的东西需要有人重排结构：标题和正文黏成一段、编号挤在
           // 一行、层级看不出来。这跟「修转写错别字」是两件事，用的是另一套提示词。
@@ -2602,13 +2631,24 @@ private struct HistoryDetailView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     // 卡片外壳的意思是「这里装着一份抓回来的东西」。笔记正文不是装进来的，
     // 是当场写的——给它描边，写字的地方就变成了一个被展示的对象。
+    //
+    // 填充和描边是两件事，别一起处理。
+    //
+    // 填充在 paper / sepia / ink 下是卡片上再叠一张卡片：量出来底色 #FDFCF9、
+    // 这层 #FEFEFC，差 1/255，看不见，只是白搭一层。所以非系统主题不填。
+    //
+    // 描边不一样——它就是那圈「画框」，是正文和上面那堆元数据之间唯一的分界。
+    // 去掉之后正文只剩 10pt 间距托着，直接散开，所以**所有主题都保留**。
+    // 非系统主题走 `theme.hairline`，跟窗口里其它分隔线同一个值。
     .background(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .fill(Color(nsColor: .controlBackgroundColor).opacity(isOwnWriting ? 0 : 0.55))
+        .fill(Color(nsColor: .controlBackgroundColor).opacity(isOwnWriting || !theme.isNative ? 0 : 0.55))
     )
     .overlay(
       RoundedRectangle(cornerRadius: 14, style: .continuous)
-        .strokeBorder(Color.primary.opacity(isOwnWriting ? 0 : 0.05), lineWidth: 1)
+        .strokeBorder(
+          isOwnWriting ? Color.clear : (theme.isNative ? Color.primary.opacity(0.05) : theme.hairline),
+          lineWidth: 1)
     )
   }
 

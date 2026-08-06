@@ -99,10 +99,16 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
     case .paper:
       HistoryThemeTokens(
         isNative: false,
-        // 三档递进：侧栏 #F2F0E9 → 列表 #FAF9F5 → 详情卡片 #FDFCF9。
-        canvas: ClaudePalette.sunken,         // #F2F0E9  侧栏 / 详情区外层
-        listPane: ClaudePalette.light,        // #FAF9F5  中栏
-        card: ClaudePalette.raised,           // #FDFCF9  详情卡片
+        // 两档，不是三档：辅助区 #EFEDE5（导航列 + 列表列）→ 正文区 #FDFCF9。
+        //
+        // 原来是三档递进，导航列 #EFEDE5、列表列 #FAF9F5、详情卡片 #FDFCF9。
+        // 量出来的问题是分级方向反了：唯一看得见的那一档（差 11/255）落在导航列
+        // 和列表列之间——两个都是辅助列，本来最不需要分界；而真正该分开的
+        // 「辅助 vs 正文」两侧只差 3/255，等于没分。列表列跟着画布走之后，
+        // 整扇窗只剩一条明度边界，正好落在辅助区和正文区中间。
+        canvas: ClaudePalette.sunken,         // #EFEDE5  导航列 / 列表列
+        listPane: ClaudePalette.sunken,       // 同上：列表列不再自成一档
+        card: ClaudePalette.raised,           // #FDFCF9  正文区
         selectionFill: ClaudePalette.orange,  // #D97757
         selectionText: ClaudePalette.light,
         hairline: ClaudePalette.lightGray,    // #E8E6DC
@@ -120,8 +126,9 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
     case .ink:
       HistoryThemeTokens(
         isNative: false,
+        // 和 paper 一样收成两档：辅助区 #1C1C1E → 正文区 #26262A。
         canvas: Color(nsColor: NSColor(srgbRed: 0.110, green: 0.110, blue: 0.118, alpha: 1)),   // #1C1C1E
-        listPane: Color(nsColor: NSColor(srgbRed: 0.129, green: 0.129, blue: 0.141, alpha: 1)), // #212124
+        listPane: Color(nsColor: NSColor(srgbRed: 0.110, green: 0.110, blue: 0.118, alpha: 1)), // 同 canvas
         card: Color(nsColor: NSColor(srgbRed: 0.149, green: 0.149, blue: 0.165, alpha: 1)),     // #26262A
         // 深色以前用 `.accentColor`（系统蓝），于是切到深色时品牌就没了——
         // 同一个 App 在两种模式下两种强调色，看起来像没人管过配色。
@@ -147,8 +154,9 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
       // 亮度差收窄，纯黑配暖底反而比 paper 更刺眼。
       HistoryThemeTokens(
         isNative: false,
-        canvas: SepiaPalette.sunkenPaper,     // #EFE4D0  侧栏 / 详情区外层
-        listPane: SepiaPalette.paper,         // #F4EBDA  中栏
+        // 同 paper 收成两档：辅助区 #EFE4D0 → 正文区 #FBF5E9。
+        canvas: SepiaPalette.sunkenPaper,     // #EFE4D0  导航列 / 列表列
+        listPane: SepiaPalette.sunkenPaper,   // 同上：列表列不再自成一档
         // 唯一和 paper 结构不同的一处：卡片比画布亮一档。
         // 低对比主题里 hairline 也淡，卡片再同色就真的分不出边界了。
         card: SepiaPalette.raisedPaper,       // #FBF5E9

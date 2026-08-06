@@ -509,7 +509,6 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     )
     await first.load()
     first.targetLanguage = "日本語"
-    first.usesSeparateTranslationModel = true
     first.translationModelName = "translation-model"
     await first.savePreferences()
 

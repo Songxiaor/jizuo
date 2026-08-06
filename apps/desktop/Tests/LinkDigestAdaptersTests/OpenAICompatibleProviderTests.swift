@@ -283,8 +283,36 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     XCTAssertFalse(server.requests.description.contains(key))
   }
 
-  func test404And413MapToStableNonRetryableFailures() async throws {
+  /// 状态码不是唯一依据：服务端说是余额问题时以它为准。
+  ///
+  /// 真实案例（2026-08-06）：opencode Zen 余额不足返回的是 **HTTP 401**，正文
+  /// `{"error":{"type":"CreditsError",…}}`。只按状态码归类会显示「请更新 API Key」，
+  /// 于是用户反复换 Key——而真正要做的是充值。这条断言守住「结构化错误类型
+  /// 优先于状态码」。
+  func test401WithCreditsErrorBodyIsBillingNotAuthFailure() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [
+      .init(
+        statusCode: 401,
+        contentType: "application/json",
+        chunks: [.init(#"{"type":"error","error":{"type":"CreditsError","message":"余额不足。"}}"#)]
+      )
+    ])
+    let baseURL = try server.start()
+    defer { server.stop() }
+
+    let result = await collect(provider: makeProvider(), profile: try profile(baseURL), apiKey: key)
+
+    XCTAssertEqual(result.failure?.code, .providerBillingLimited)
+    XCTAssertEqual(result.failure?.retryable, false)
+    // 正文里的原话不该跟着失败对象跑出来。
+    XCTAssertFalse(String(describing: result.failure).contains("余额不足"))
+  }
+
+  func test403And404And413MapToStableNonRetryableFailures() async throws {
     for (statusCode, expectedCode) in [
+      // 403 与 401 分开：Key 有效但没有该模型的权限，换 Key 修不了。
+      (403, ModelProviderErrorCode.authForbidden),
       (404, ModelProviderErrorCode.endpointNotFound),
       (413, ModelProviderErrorCode.inputTooLarge)
     ] {

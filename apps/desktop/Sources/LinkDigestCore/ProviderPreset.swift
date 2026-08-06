@@ -8,6 +8,12 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
   case deepSeek
   case deepInfra
   case openRouter
+  /// opencode.ai 的 Go 订阅通道（区别于按量付费的 Zen）。
+  case openCodeGo
+  /// opencode.ai 的 Zen 按量付费通道。和 Go 是**不同端点**，模型 ID 却大量重合，
+  /// 所以必须各自成为一个预设——只留一个的话，用户只能靠手改 Base URL 区分，
+  /// 而指错的表现是 401 + `CreditsError`，看起来完全像 Key 出了问题。
+  case openCodeZen
   case groq
   case siliconFlow
   case dashScope
@@ -23,6 +29,8 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .deepSeek: "DeepSeek"
     case .deepInfra: "DeepInfra"
     case .openRouter: "OpenRouter"
+    case .openCodeGo: "OpenCode Go"
+    case .openCodeZen: "OpenCode Zen"
     case .groq: "Groq"
     case .siliconFlow: "SiliconFlow"
     case .dashScope: "阿里云百炼"
@@ -38,6 +46,11 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .deepSeek: "https://api.deepseek.com/v1"
     case .deepInfra: "https://api.deepinfra.com/v1/openai"
     case .openRouter: "https://openrouter.ai/api/v1"
+    // Go 是订阅制，走 `/zen/go/v1`；`/zen/v1` 是按量付费的 Zen，两者是不同端点。
+    // 指错时的表现极具误导性：服务端返回 HTTP 401 + `CreditsError`（"余额不足"），
+    // 看起来像 Key 有问题或没充值，实际是订阅额度在另一个地址上。
+    case .openCodeGo: "https://opencode.ai/zen/go/v1"
+    case .openCodeZen: "https://opencode.ai/zen/v1"
     case .groq: "https://api.groq.com/openai/v1"
     case .siliconFlow: "https://api.siliconflow.cn/v1"
     case .dashScope: "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -55,6 +68,8 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .deepSeek: "DS"
     case .deepInfra: "DI"
     case .openRouter: "OR"
+    case .openCodeGo: "OC"
+    case .openCodeZen: "OC"
     case .groq: "G"
     case .siliconFlow: "SF"
     case .dashScope: "Q"
@@ -70,6 +85,8 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .deepSeek: 0x4D6BFE
     case .deepInfra: 0x7C3AED
     case .openRouter: 0x6D28D9
+    case .openCodeGo: 0x1F2937
+    case .openCodeZen: 0x1F2937
     case .groq: 0xF55036
     case .siliconFlow: 0x0F766E
     case .dashScope: 0x615CED
@@ -100,6 +117,19 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
   }
   public var supportsOnlineTranscription: Bool {
     [.openAI, .openRouter, .groq].contains(self)
+  }
+  /// 服务商卡片的副标题：要连的那个域名。
+  ///
+  /// 原来这里写的是「OpenAI-compatible」，12 家里有 9 家一模一样——在一张
+  /// 「选哪家」的界面上，一句人人都有的话等于没有。域名是具体的：能一眼看出
+  /// 是官方端点还是国内直连，也能在配错时对得上。
+  public var endpointHost: String {
+    switch self {
+    case .ollama: "本机 11434 端口"
+    case .custom: "自己填端点"
+    default:
+      URL(string: baseURLTemplate)?.host ?? baseURLTemplate
+    }
   }
   public var documentationHint: String {
     switch self {

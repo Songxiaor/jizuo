@@ -149,6 +149,18 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     }
   }
 
+  /// 拼 `Authorization` 头之前清洗密钥。
+  ///
+  /// 粘贴进来的 Key 很容易尾随一个换行或空格。此前判空用了 `trimmingCharacters`，
+  /// 拼头却直接用原串——两处标准不一致：判空说「这 Key 有效」，发出去的头却是
+  /// `Bearer sk-xxx\n`，服务端只会回 401。更糟的是 `setValue` 遇到带换行的值会
+  /// 直接丢掉整个头，那时请求根本没带鉴权。
+  ///
+  /// 清洗只去首尾空白，不改中间任何字符。
+  private func sanitizedKey(_ apiKey: String) -> String {
+    apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
   public func cancelActiveStreams() {
     let tasks = activeTaskLock.withLock {
       Array(activeStreamTasks.values)
@@ -176,7 +188,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     let url = try OpenAICompatibleEndpoint.modelsURL(baseURL: validatedBaseURL)
     var request = URLRequest(url: url)
     request.httpMethod = "GET"
-    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+    request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Accept")
 
     let redirectGuard = CatalogRedirectGuard(origin: url)
@@ -288,7 +300,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.timeoutInterval = 180
-    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+    request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("application/json", forHTTPHeaderField: "Accept")
     request.httpBody = try JSONEncoder().encode(RequestBody(
@@ -344,7 +356,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.timeoutInterval = 15
-    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+    request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("application/json", forHTTPHeaderField: "Accept")
     request.httpBody = try JSONEncoder().encode(RequestBody(
@@ -526,6 +538,11 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     intent: RunIntent,
     includesReasoningEffort: Bool = false
   ) throws -> URLRequest {
+    // 仪表：只记长度和模型名，绝不记 Key 本身。
+    //
+    // `MODEL_AUTH_INVALID` 有两个来源：服务端返 401，和下面这条「取到的 Key 是
+    // 空串」——后者一个请求都不发。界面上两者显示同一句「请更新 API Key」，
+    // 于是「换了 Key 还是不行」时根本分不清该查哪头。
     guard !apiKey.isEmpty else {
       throw ModelProviderFailure(code: .authInvalid, retryable: false, hadOutput: false)
     }
@@ -536,7 +553,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     let url = try OpenAICompatibleEndpoint.chatCompletionsURL(baseURL: profile.baseURL)
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
-    request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+    request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
 
@@ -606,7 +623,16 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     case 200..<300:
       break
     case 401, 403:
-      throw ModelProviderFailure(code: .authInvalid, retryable: false, hadOutput: hadOutput)
+      // 服务端明说是余额/配额问题时以它为准：opencode Zen 余额不足返回的是 401，
+      // 按状态码归类会把「去充值」说成「去换 Key」。
+      if providerError?.indicatesBillingLimit == true {
+        throw ModelProviderFailure(code: .providerBillingLimited, retryable: false, hadOutput: hadOutput)
+      }
+      throw ModelProviderFailure(
+        code: response.statusCode == 401 ? .authInvalid : .authForbidden,
+        retryable: false,
+        hadOutput: hadOutput
+      )
     case 404:
       throw ModelProviderFailure(
         code: providerError?.indicatesMissingModel == true ? .modelNotFound : .endpointNotFound,
@@ -646,7 +672,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     response: URLResponse
   ) async throws -> ProviderErrorBody? {
     guard let response = response as? HTTPURLResponse,
-          response.statusCode == 404
+          !(200..<300).contains(response.statusCode)
     else {
       return nil
     }
@@ -657,6 +683,9 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       guard data.count < limit else { break }
       data.append(byte)
     }
+
+    // 所有非 2xx 都把正文交给分类器：404 用它区分「模型不存在」和「端点不存在」，
+    // 401/403 用它区分「鉴权失败」和「余额不足」。
     return ProviderErrorBody(data: data)
   }
 
@@ -682,7 +711,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       return .init(code: .protocolIncompatible, retryable: false, hadOutput: false)
     }
     switch http.statusCode {
-    case 401, 403: return .init(code: .authInvalid, retryable: false, hadOutput: false)
+    case 401: return .init(code: .authInvalid, retryable: false, hadOutput: false)
+    case 403: return .init(code: .authForbidden, retryable: false, hadOutput: false)
     case 404: return .init(code: .endpointNotFound, retryable: false, hadOutput: false)
     case 402: return .init(code: .providerBillingLimited, retryable: false, hadOutput: false)
     case 413: return .init(code: .inputTooLarge, retryable: false, hadOutput: false)
@@ -784,6 +814,13 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   private struct ProviderErrorBody {
     let normalizedCode: String?
     let indicatesMissingModel: Bool
+    /// 服务端说这是「余额/配额」问题。
+    ///
+    /// 起因：opencode Zen 在余额不足时返回的是 **HTTP 401**，正文里写着
+    /// `{"error":{"type":"CreditsError","message":"余额不足…"}}`。只看状态码就会
+    /// 归成「鉴权失败」，界面于是让用户去换 API Key——Key 换十次也没用，
+    /// 该做的是充值。状态码在这里是错的，服务端自己给的类型才是对的。
+    let indicatesBillingLimit: Bool
 
     init?(data: Data) {
       guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -800,7 +837,24 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         detail?["code"],
         object["code"]
       )?.lowercased()
+      // `type` 和 `code` 一样是结构化字段，不是自由文本，所以可以用来分类。
+      let normalizedType = Self.firstString(
+        openAIError?["type"],
+        detail?["type"],
+        object["type"]
+      )?.lowercased()
       indicatesMissingModel = Self.indicatesMissingModel(normalizedCode: normalizedCode)
+      indicatesBillingLimit = Self.indicatesBillingLimit(normalizedCode: normalizedCode)
+        || Self.indicatesBillingLimit(normalizedCode: normalizedType)
+    }
+
+    /// 覆盖各家常见写法：`CreditsError`、`insufficient_quota`、`billing_*`。
+    private static func indicatesBillingLimit(normalizedCode: String?) -> Bool {
+      guard let normalizedCode else { return false }
+      return normalizedCode.contains("credit")
+        || normalizedCode.contains("quota")
+        || normalizedCode.contains("billing")
+        || normalizedCode.contains("insufficient")
     }
 
     private static func indicatesMissingModel(normalizedCode: String?) -> Bool {

@@ -265,6 +265,21 @@ enum BrowserReceiverState: Sendable, Equatable {
     dataDestinationDisclosure != nil
   }
 
+  /// 撤销全部已记住的授权：发送目的地和三项能力一起清。
+  ///
+  /// 确认从「每次都问」改成「问一次就记住」之后，这条路是必需的——不然用户
+  /// 点过的那一次就再也收不回来了。清完之后下一次发送会重新告知一遍。
+  func revokeRememberedConsents() async -> Bool {
+    CapabilityConsent.revokeAll()
+    guard let consentStore else { return true }
+    do {
+      try await consentStore.forgetAll()
+      return true
+    } catch {
+      return false
+    }
+  }
+
   var isConfirmingDataDestinationDisclosure: Bool {
     confirmingAttemptToken != nil
   }
@@ -1359,6 +1374,7 @@ private actor DebugVisualConsentStore: DataDestinationConsentStore {
   private var values: Set<DataDestinationIdentity> = []
   func isConfirmed(for identity: DataDestinationIdentity) async throws -> Bool { values.contains(identity) }
   func rememberConfirmation(for identity: DataDestinationIdentity) async throws { values.insert(identity) }
+  func forgetAll() async throws { values.removeAll() }
 }
 
 private struct DebugVisualProvider: ModelProvider {

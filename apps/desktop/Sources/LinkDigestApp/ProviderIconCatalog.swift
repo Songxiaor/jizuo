@@ -13,6 +13,8 @@ enum ProviderIconCatalog {
     .deepSeek: "deepseek",
     .deepInfra: "deepinfra",
     .openRouter: "openrouter",
+    .openCodeGo: "opencode",
+    .openCodeZen: "opencode",
     .groq: "groq",
     .siliconFlow: "siliconflow",
     .dashScope: "bailian",

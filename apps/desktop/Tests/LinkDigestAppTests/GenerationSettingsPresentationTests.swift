@@ -109,16 +109,19 @@ final class GenerationSettingsPresentationTests: XCTestCase {
       "下拉已经显示当前值了，下面不必再画一行重复它")
   }
 
-  /// 卡片标题和控件标签不能讲同一件事。
+  /// 卡片标题和控件标签不能讲同一件事：主控件在标题行上，卡片标题就是它的标签。
   ///
-  /// 主控件搬到标题行之后，「翻译模型」这张卡的标题就是它的标签，
-  /// 底下那行「翻译使用不同模型」纯属重复，还把开关顶得离标题老远。
+  /// 「翻译模型」原来是个开关，2026-08-06 换成了和「转写稿整理」同一个下拉
+  /// （第一项「跟随总结模型」）——这一页每一项都该是一个下拉直接答完，
+  /// 而不是先开一个开关、再长出一个选择器。
   func testPrimaryControlsUseTheCardTitleAsTheirLabel() throws {
     let tab = try generationTab(in: try source())
+    XCTAssertFalse(
+      tab.contains("Toggle(\"翻译使用不同模型\""),
+      "翻译模型不再用开关承载")
     XCTAssertTrue(
-      tab.contains("Toggle(\"翻译使用不同模型\", isOn: $model.usesSeparateTranslationModel)\n"
-        + "            .labelsHidden()"),
-      "开关搬到标题行后，重复的文字标签要隐藏")
+      tab.contains("emptyOptionTitle: \"跟随总结模型\""),
+      "空值要是下拉里的一个选项，而不是一个需要先关掉的开关")
     XCTAssertTrue(
       tab.contains("} control: {"),
       "三张模型卡的主控件要走标题行那个入口")

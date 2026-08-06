@@ -32,6 +32,7 @@ enum V02ErrorCatalog {
   static let modelCodes: [String] = [
     ModelProviderErrorCode.baseURLInvalid.rawValue,
     ModelProviderErrorCode.authInvalid.rawValue,
+    ModelProviderErrorCode.authForbidden.rawValue,
     ModelProviderErrorCode.endpointNotFound.rawValue,
     ModelProviderErrorCode.modelNotFound.rawValue,
     ModelProviderErrorCode.providerBillingLimited.rawValue,
@@ -119,6 +120,11 @@ enum V02ErrorCatalog {
       .init(
         message: "模型服务未通过身份验证。",
         recoveryAction: "请在模型配置中更新 API Key 后重试。"
+      )
+    case ModelProviderErrorCode.authForbidden.rawValue:
+      .init(
+        message: "模型服务拒绝了这次访问。",
+        recoveryAction: "API Key 本身有效，但没有使用这个模型的权限——免费额度通常不含付费模型。请改用一个已开通的模型，或在服务商处为它开通后重试。"
       )
     case ModelProviderErrorCode.endpointNotFound.rawValue:
       .init(

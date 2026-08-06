@@ -8,6 +8,14 @@ import LinkDigestCore
 
 @MainActor
 final class HistoryViewModelTests: XCTestCase {
+  /// 能力授权（在线转写／转写整理／脑图）是持久记录：同意一次就不再弹确认框。
+  /// 用例之间共用同一个域时，前一条点过的「同意」会让后一条该弹的框不弹，
+  /// 断言随执行顺序时绿时红。每条用例开始前清空。
+  override func setUp() {
+    super.setUp()
+    CapabilityConsent.revokeAll()
+  }
+
 
   /// 导出必须拿到转写稿，而不是几十字的原始 caption。
   ///

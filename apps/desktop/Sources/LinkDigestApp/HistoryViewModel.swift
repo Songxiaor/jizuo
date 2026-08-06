@@ -1294,7 +1294,9 @@ final class HistoryViewModel: ObservableObject {
       model: model,
       descriptor: descriptor
     )
-    isOnlineTranscriptionConfirmationPresented = true
+    presentOrSkipConsent(.onlineTranscription, present: {
+      $0.isOnlineTranscriptionConfirmationPresented = true
+    }, proceed: { $0.confirmOnlineTranscription() })
   }
 
   /// 已存任务的本机视频也能走在线转写：音频分片从本地文件提取后上传，
@@ -1325,7 +1327,9 @@ final class HistoryViewModel: ObservableObject {
       model: model,
       descriptor: nil
     )
-    isOnlineTranscriptionConfirmationPresented = true
+    presentOrSkipConsent(.onlineTranscription, present: {
+      $0.isOnlineTranscriptionConfirmationPresented = true
+    }, proceed: { $0.confirmOnlineTranscription() })
   }
 
   func cancelOnlineTranscriptionConfirmation() {
@@ -1964,12 +1968,39 @@ final class HistoryViewModel: ObservableObject {
 
   func requestMindMapGeneration(taskID: TaskID) {
     guard canGenerateMindMap(taskID: taskID) else { return }
-    isMindMapConfirmationPresented = true
+    presentOrSkipConsent(.mindMap, present: {
+      $0.isMindMapConfirmationPresented = true
+    }, proceed: { $0.confirmMindMapGeneration() })
   }
+
+  /// 能力授权记录落在哪。测试里换成独立 suite——授权是持久的，用默认域会让
+  /// 前一条用例的「同意」漏进后一条，确认框该弹的时候不弹。
+  var capabilityConsentDefaults: UserDefaults = .standard
 
   func cancelMindMapConfirmation() { isMindMapConfirmationPresented = false }
 
+  /// 第一次弹确认框，之后直接走。
+  ///
+  /// 三处能力（在线转写、转写整理、脑图）此前每跑一次都弹一次同样的框。留一次
+  /// 说明是必要的，重复到第十次就只剩肌肉记忆——用户学会的是「看到框就点确认」，
+  /// 那时它已经不是知情同意了。授权记录见 `CapabilityConsent`，撤销在设置里。
+  ///
+  /// `proceed` 走的就是「确认」按钮那条路径，不另开一条分支：确认框跳过之后，
+  /// 后面的流程必须和点了确认完全一样，否则跳过就成了另一种执行。
+  private func presentOrSkipConsent(
+    _ capability: CapabilityConsent,
+    present: (HistoryViewModel) -> Void,
+    proceed: (HistoryViewModel) -> Void
+  ) {
+    if CapabilityConsent.isGranted(capability, defaults: capabilityConsentDefaults) {
+      proceed(self)
+    } else {
+      present(self)
+    }
+  }
+
   func confirmMindMapGeneration() {
+    CapabilityConsent.grant(.mindMap, defaults: capabilityConsentDefaults)
     isMindMapConfirmationPresented = false
     guard let history, let mindMapExtractor, let store = history.mindMapStore,
           let detail, let taskID = selectedTaskID, detail.task.id == taskID,
@@ -2279,7 +2310,9 @@ final class HistoryViewModel: ObservableObject {
       platform: detail.media?.platform ?? detail.snapshots.last?.platform ?? "local_video",
       model: model?.trimmingCharacters(in: .whitespacesAndNewlines)
     )
-    isTranscriptTidyConfirmationPresented = true
+    presentOrSkipConsent(.transcriptTidy, present: {
+      $0.isTranscriptTidyConfirmationPresented = true
+    }, proceed: { $0.confirmTranscriptTidy() })
   }
 
   func cancelTranscriptTidyConfirmation() {
@@ -2288,6 +2321,7 @@ final class HistoryViewModel: ObservableObject {
   }
 
   func confirmTranscriptTidy() {
+    CapabilityConsent.grant(.transcriptTidy, defaults: capabilityConsentDefaults)
     isTranscriptTidyConfirmationPresented = false
     guard let history, let transcriptTidier, let context = pendingTranscriptTidyContext,
           selectedTaskID == context.taskID else {
@@ -2378,6 +2412,7 @@ final class HistoryViewModel: ObservableObject {
   }
 
   func confirmOnlineTranscription() {
+    CapabilityConsent.grant(.onlineTranscription, defaults: capabilityConsentDefaults)
     isOnlineTranscriptionConfirmationPresented = false
     guard let history, let onlineAudioTranscriber, let context = pendingOnlineTranscriptionContext,
           selectedTaskID == context.taskID else {

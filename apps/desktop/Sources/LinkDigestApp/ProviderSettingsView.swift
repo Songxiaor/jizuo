@@ -59,6 +59,11 @@ struct ProviderSettingsView: View {
   @State private var isCustomOutputLanguage = false
   @State private var translationModelSearchQuery = ""
   @State private var pendingDeletionID: String?
+  /// 「清除授权记录」按下之后的一行反馈。成功和失败都要说，因为清除本身没有可见效果。
+  @State private var consentRevokeNotice: String?
+  /// 当前展开的服务商。同时只展开一家：模型清单落在网格下面，同时摊开两家就分不清
+  /// 哪一段属于谁。默认全部收起——归拢的意义就是先只看「有哪几家」。
+  @State private var expandedLibraryProvider: String?
   @State private var activeAssignmentPicker: AssignmentPicker?
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
   @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchEnabled = false
@@ -267,8 +272,25 @@ struct ProviderSettingsView: View {
               Text("还没有添加模型。添加后即可在上方为每个功能选择模型。")
                 .font(.caption).foregroundStyle(.secondary)
             } else {
-              ForEach(model.libraryEntryDisplays) { entry in
-                libraryRow(entry)
+              LazyVGrid(
+                columns: [GridItem(.adaptive(minimum: 168), spacing: 8, alignment: .top)],
+                alignment: .leading,
+                spacing: 8
+              ) {
+                ForEach(libraryProviderGroups) { group in
+                  libraryProviderCard(group)
+                }
+              }
+              // 展开的那一家的模型清单落在网格下面，整行宽度都归它——每行要放
+              // 模型 ID、指派徽标和编辑/删除两个按钮，挤在一张 168pt 的卡里放不下。
+              if let expandedID = expandedLibraryProvider,
+                 let group = libraryProviderGroups.first(where: { $0.id == expandedID }) {
+                VStack(alignment: .leading, spacing: 6) {
+                  ForEach(group.entries) { entry in
+                    libraryRow(entry)
+                  }
+                }
+                .padding(.top, 2)
               }
             }
             // 错误必须留在控件旁边。挪进 footer 就会离「添加模型…」很远，
@@ -541,12 +563,84 @@ struct ProviderSettingsView: View {
 
   // MARK: - 模型库列表
 
+  /// 按服务商归拢的模型库。一家一张卡，展开才列它下面的模型。
+  ///
+  /// 平铺时，同一家的几个模型各占一行、每行都重复一遍服务商名和图标——三家十个
+  /// 模型就是十行几乎一样的东西，要找「阶跃星辰下面配了哪几个」得自己用眼睛扫。
+  /// 归拢之后先看到的是「有哪几家」，再决定展开哪一家。
+  ///
+  /// 顺序按第一次出现的先后，不重排：用户添加的次序本身就是一种记忆。
+  private struct LibraryProviderGroup: Identifiable {
+    let id: String
+    let preset: ProviderPreset
+    let entries: [ProviderSettingsViewModel.LibraryEntryDisplay]
+  }
+
+  private var libraryProviderGroups: [LibraryProviderGroup] {
+    var order: [String] = []
+    var buckets: [String: [ProviderSettingsViewModel.LibraryEntryDisplay]] = [:]
+    for entry in model.libraryEntryDisplays {
+      if buckets[entry.title] == nil {
+        order.append(entry.title)
+        buckets[entry.title] = []
+      }
+      buckets[entry.title]?.append(entry)
+    }
+    return order.compactMap { title in
+      guard let entries = buckets[title], let first = entries.first else { return nil }
+      return LibraryProviderGroup(id: title, preset: first.preset, entries: entries)
+    }
+  }
+
+  /// 已添加的服务商卡片。和下面「选择服务商」那张网格用同一个外壳、同一套列宽，
+  /// 因为它们说的是同一件事的两面：这里是「已经有哪几家」，那里是「还能加哪几家」。
+  ///
+  /// 展开的模型清单不塞进卡片里，而是落在整张网格下面。塞进去的话，展开哪一张，
+  /// 那一整行卡片就被撑到同样高——网格立刻参差；模型行还要放编辑和删除两个按钮，
+  /// 168pt 宽的卡片也装不下。
+  private func libraryProviderCard(_ group: LibraryProviderGroup) -> some View {
+    let expanded = expandedLibraryProvider == group.id
+    let hasSummary = group.entries.contains { model.summaryAssignmentID == $0.id }
+    let hasTranscription = group.entries.contains { model.transcriptionAssignmentID == $0.id }
+    return Button {
+      expandedLibraryProvider = expanded ? nil : group.id
+    } label: {
+      VStack(alignment: .leading, spacing: 3) {
+        HStack(spacing: 6) {
+          providerIcon(group.preset, fallbackName: group.id)
+          Text(group.id)
+            .font(.subheadline.weight(.semibold))
+            .lineLimit(1)
+            .truncationMode(.tail)
+          Spacer(minLength: 4)
+          if hasSummary { assignmentBadge("总结") }
+          if hasTranscription { assignmentBadge("转写") }
+        }
+        HStack(spacing: 4) {
+          Text("\(group.entries.count) 个模型")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          Spacer(minLength: 0)
+          Image(systemName: "chevron.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .rotationEffect(.degrees(expanded ? 90 : 0))
+        }
+      }
+      .modifier(SettingsCardChrome(selected: expanded, theme: appTheme))
+    }
+    .buttonStyle(.plain)
+    .accessibilityIdentifier("library-provider-group")
+  }
+
   private func libraryRow(_ entry: ProviderSettingsViewModel.LibraryEntryDisplay) -> some View {
     HStack(spacing: 10) {
       providerIcon(entry.preset, fallbackName: entry.title)
       VStack(alignment: .leading, spacing: 2) {
         Text(entry.displayName).font(.headline)
-        Text("\(entry.title) · \(entry.modelName)").font(.caption).foregroundStyle(.secondary)
+        // 服务商名已经写在这张卡的标题上，行里再写一遍是噪音；模型 ID 留着，
+        // 它是同一家里区分两个模型的唯一凭据。
+        Text(entry.modelName).font(.caption).foregroundStyle(.secondary)
       }
       Spacer(minLength: 12)
       if model.summaryAssignmentID == entry.id {
@@ -593,14 +687,26 @@ struct ProviderSettingsView: View {
 
   @ViewBuilder private var editorSections: some View {
       Section {
-        ForEach(ProviderPreset.allCases) { preset in
-          Button { model.selectPreset(preset) } label: {
-            providerRow(preset)
+        // 12 家服务商排成一列时，每行连着 Form 的行内距和分隔线要占 54pt，
+        // 光这一块就吃掉约 650pt——一屏几乎装不下，选个服务商得先滚半天。
+        //
+        // 换成多列卡片后约 200pt。这里每一项只有图标、名字和一句话，本来就
+        // 不需要整行宽度；一列排下去纯属浪费横向空间。
+        LazyVGrid(
+          columns: [GridItem(.adaptive(minimum: 168), spacing: 8, alignment: .top)],
+          alignment: .leading,
+          spacing: 8
+        ) {
+          ForEach(ProviderPreset.allCases) { preset in
+            Button { model.selectPreset(preset) } label: {
+              providerCard(preset)
+            }
+            .buttonStyle(.plain)
+            .disabled(model.isSaving || model.isConfigurationLoading || model.isTestingConnection || model.isLoadingModels)
           }
-          .buttonStyle(.plain)
-          .disabled(model.isSaving || model.isConfigurationLoading || model.isTestingConnection || model.isLoadingModels)
+          .accessibilityIdentifier("provider-preset")
         }
-        .accessibilityIdentifier("provider-preset")
+        .padding(.vertical, 4)
       } header: {
         Text(model.editingProfileID == nil ? "添加模型：选择服务商" : "编辑模型：服务商")
       } footer: {
@@ -1077,22 +1183,32 @@ struct ProviderSettingsView: View {
       }
 
       Section {
+        // 原来这里是一个开关：关着的时候只说「默认与总结共用 X」，不说打开会怎样；
+        // 打开之后才在下面长出一个模型选择器。于是「用哪个模型」这一个问题被拆成了
+        // 两步，而这一整页其余每一项（输出语言、翻译并发、在线视频转文字、转写稿
+        // 整理）都是一个下拉直接答完。
+        //
+        // 隔着两行的「转写稿整理」早就把同样的问题解对了——下拉的第一项就是
+        // 「跟随总结模型」。翻译改成同一个写法：空值即跟随，选了就是另用一个。
         settingCard(
           title: "翻译模型",
-          summary: model.usesSeparateTranslationModel
-            ? "翻译走下面这个模型，与总结分开。"
-            : "默认与总结共用“\(model.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "当前模型" : model.modelName)”。"
+          summary: "不另选就与总结共用同一个模型。",
+          details: "翻译和总结是两种活：总结要概括，翻译要贴原文。想让翻译走更便宜或更擅长语言的模型时，在这里另选一个。"
         ) {
-          Toggle("翻译使用不同模型", isOn: $model.usesSeparateTranslationModel)
-            .labelsHidden()
-            .accessibilityIdentifier("use-separate-translation-model")
+          modelChoicePicker(
+            label: "翻译模型",
+            emptyOptionTitle: "跟随总结模型",
+            options: model.summaryEntryDisplays,
+            text: $model.translationModelName,
+            identifier: "translation-model-name"
+          )
         } control: {
-          if model.usesSeparateTranslationModel {
-            modelSelector(title: "翻译模型", selection: Binding(
-              get: { model.translationModelName },
-              set: { model.selectModel($0, forTranslation: true) }
-            ), forTranslation: true)
-          }
+          modelChoiceCustomField(
+            placeholder: "模型名称",
+            options: model.summaryEntryDisplays,
+            text: $model.translationModelName,
+            identifier: "translation-model-name"
+          )
         }
       }
 
@@ -1166,6 +1282,30 @@ struct ProviderSettingsView: View {
             text: $model.tidyModelName,
             identifier: "tidy-model-name"
           )
+        }
+      }
+
+      Section {
+        // 发送确认从「每跑一次问一次」改成「问一次就记住」之后，必须有一条把它
+        // 收回来的路，否则那一次点击就是不可逆的。
+        settingCard(
+          title: "已记住的发送授权",
+          summary: "首次把内容发往某个服务商、或首次使用在线转写、转写整理、生成脑图时会各告知一次，之后不再重复询问。",
+          details: "清除后，下一次发送会重新告知一遍。清除只影响本机记录，不改动任何模型配置或密钥。"
+        ) {
+          Button("清除授权记录") {
+            Task {
+              let cleared = await appModel.revokeRememberedConsents()
+              consentRevokeNotice = cleared ? "已清除。下一次发送会重新询问。" : "清除失败：无法写入本机记录。"
+            }
+          }
+          .accessibilityIdentifier("revoke-remembered-consents")
+        } control: {
+          if let consentRevokeNotice {
+            Text(consentRevokeNotice)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
         }
       }
 
@@ -1434,23 +1574,63 @@ struct ProviderSettingsView: View {
 
   // MARK: - 共用构件
 
-  private func providerRow(_ preset: ProviderPreset) -> some View {
-    HStack(spacing: 10) {
-      providerIcon(preset)
-      VStack(alignment: .leading, spacing: 2) {
+  /// 服务商卡片：图标 + 名字 + 一句能力说明，多列排布。
+  ///
+  /// 名字和说明都限一行并截断：卡片一旦因为某一家名字长就换行，整行卡片的高度
+  /// 都会被它拉齐，网格立刻变得参差。说明本来就只有「支持在线音频转写」和
+  /// 「OpenAI-compatible」两种，截断不会丢信息。
+  private func providerCard(_ preset: ProviderPreset) -> some View {
+    let selected = model.selectedPreset == preset
+    return VStack(alignment: .leading, spacing: 3) {
+      HStack(spacing: 6) {
+        providerIcon(preset)
         Text(preset.displayName)
-          .font(.headline)
-          .fixedSize(horizontal: false, vertical: true)
-        Text(preset.supportsOnlineTranscription ? "支持在线音频转写" : "OpenAI-compatible")
-          .font(.caption).foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
+          .font(.subheadline.weight(.semibold))
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Spacer(minLength: 4)
+        // 「能不能在线转写」是这张网格里唯一影响选择的能力差异，其余各家在这一层
+        // 没有区别。它只在少数几家成立，所以用徽标标出来，而不是给每张卡都写一行。
+        if preset.supportsOnlineTranscription {
+          assignmentBadge("转写")
+        }
+        if selected {
+          Image(systemName: "checkmark.circle.fill")
+            .font(.caption)
+            .foregroundStyle(.tint)
+        }
       }
-      Spacer(minLength: 12)
-      if model.selectedPreset == preset {
-        Image(systemName: "checkmark").foregroundStyle(.tint)
-      }
+      Text(preset.endpointHost)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .truncationMode(.middle)
     }
-    .contentShape(Rectangle())
+    .modifier(SettingsCardChrome(selected: selected, theme: appTheme))
+  }
+
+  /// 「已添加的模型」和「选择服务商」两张网格必须长得一模一样：它们相邻、都是
+  /// 「一家服务商一张卡」，只要圆角、边框、内距、选中态有任何一处不同，看上去
+  /// 就是两套东西凑在一起。所以卡片外壳收在这一个 modifier 里，两处共用。
+  private struct SettingsCardChrome: ViewModifier {
+    let selected: Bool
+    let theme: HistoryThemeTokens
+
+    func body(content: Content) -> some View {
+      content
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .fill(selected ? Color.accentColor.opacity(0.12) : theme.card)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: 8, style: .continuous)
+            .strokeBorder(selected ? Color.accentColor : theme.hairline, lineWidth: 1)
+        )
+        .contentShape(Rectangle())
+    }
   }
 
   /// - Parameter fallbackName: 没有官方图标时,首字母取自这个名字。

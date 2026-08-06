@@ -63,4 +63,7 @@ public enum DataDestinationConsentStoreFailure: Error, Sendable, Equatable {
 public protocol DataDestinationConsentStore: Sendable {
   func isConfirmed(for identity: DataDestinationIdentity) async throws -> Bool
   func rememberConfirmation(for identity: DataDestinationIdentity) async throws
+  /// 撤销全部已记住的目的地。同意变成一次性的之后，必须有一条收回的路，
+  /// 否则「记住」就是不可逆的。
+  func forgetAll() async throws
 }

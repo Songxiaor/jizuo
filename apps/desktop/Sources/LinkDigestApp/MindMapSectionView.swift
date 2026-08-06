@@ -20,7 +20,10 @@ struct MindMapSectionView: View {
     Group {
       if let record = model.mindMapRecord, record.taskID == taskID {
         mapCard(record)
-      } else if model.canGenerateMindMap(taskID: taskID) {
+      } else if model.canGenerateMindMap(taskID: taskID) || model.mindMapState(for: taskID).isActive {
+        // 生成中也要留着这一行。`canGenerateMindMap` 在运行期间是 false，
+        // 只按它判断的话，点完「生成脑图」这一块就整个消失，看不到「正在生成…」，
+        // 也看不到失败原因。
         generatePrompt
       }
     }
@@ -68,15 +71,15 @@ struct MindMapSectionView: View {
     return lines.joined(separator: "\n")
   }
 
+  /// 还没有脑图时，这里只剩状态（正在生成／失败原因），没有按钮。
+  ///
+  /// 「生成脑图」挪去了详情页顶部那排动作里，和总结、翻译并列——三者是同一类事：
+  /// 把正文交给模型换回一份新产物，前置条件、花费和确认流程都一样。原来它单独
+  /// 待在媒体和正文之间，是一行很容易滚过去的小按钮。
+  ///
+  /// 状态留在原地不动：它说的是「这一块正在长出来」，就该在这一块的位置上。
   @ViewBuilder private var generatePrompt: some View {
     HStack(spacing: 10) {
-      Button {
-        model.requestMindMapGeneration(taskID: taskID)
-      } label: {
-        Label("生成脑图", systemImage: "brain")
-      }
-      .controlSize(.small)
-      .accessibilityIdentifier("mind-map-generate")
       stateText
       Spacer(minLength: 0)
     }

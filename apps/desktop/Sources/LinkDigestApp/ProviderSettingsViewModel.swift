@@ -54,7 +54,13 @@ final class ProviderSettingsViewModel: ObservableObject {
   @Published private(set) var savedIdentity: DataDestinationIdentity?
   @Published var summaryPrompt = ModelPreferences.defaultSummaryPrompt
   @Published var targetLanguage = ModelPreferences.defaultTargetLanguage
-  @Published var usesSeparateTranslationModel = false
+  /// 「翻译是否另用一个模型」不再是一个独立的开关状态，而是从模型名推出来的：
+  /// 名字为空就是跟随总结。原来它是一个 `@Published` 布尔量，于是同一件事有了
+  /// 两个真相源——开关开着但名字为空、或名字填了开关却是关的，两种矛盾状态都能
+  /// 存在，落盘时还得靠 `usesSeparateTranslationModel ? name : nil` 现场调和。
+  var usesSeparateTranslationModel: Bool {
+    !translationModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
   @Published var translationModelName = ""
   @Published var transcriptionModelName = ""
   @Published var tidyModelName = ""
@@ -179,9 +185,7 @@ final class ProviderSettingsViewModel: ObservableObject {
     set { targetLanguage = newValue }
   }
   var effectiveTranslationModelName: String {
-    usesSeparateTranslationModel && !translationModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      ? translationModelName
-      : modelName
+    usesSeparateTranslationModel ? translationModelName : modelName
   }
   /// Online transcription requires both an explicit per-capability assignment
   /// (the default stays local) and a transcription model name.
@@ -314,7 +318,6 @@ final class ProviderSettingsViewModel: ObservableObject {
       autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures == true
       autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
       autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
-      usesSeparateTranslationModel = preferences.translationModel != nil
       translationConcurrency = preferences.effectiveTranslationConcurrency
       savedPreferences = preferences
       preferencesState = .idle
@@ -553,7 +556,6 @@ final class ProviderSettingsViewModel: ObservableObject {
       autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures == true
       autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
       autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
-      usesSeparateTranslationModel = preferences.translationModel != nil
       translationConcurrency = preferences.effectiveTranslationConcurrency
       savedPreferences = preferences
       preferencesState = .saved
@@ -605,7 +607,6 @@ final class ProviderSettingsViewModel: ObservableObject {
     guard !trimmed.isEmpty else { return }
     if forTranslation {
       translationModelName = trimmed
-      usesSeparateTranslationModel = true
     } else {
       if isAddingModelBatch, availableModels.contains(trimmed) {
         selectedCatalogModels = [trimmed]

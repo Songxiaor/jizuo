@@ -102,6 +102,8 @@ private actor AppConsentStore: DataDestinationConsentStore {
     values.insert(identity)
   }
 
+  func forgetAll() async throws { values.removeAll() }
+
   func reads() -> Int { readCount }
   func writes() -> Int { writeCount }
 }

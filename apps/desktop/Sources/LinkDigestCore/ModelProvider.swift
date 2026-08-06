@@ -57,6 +57,12 @@ public protocol SummaryTagGenerating: Sendable {
 public enum ModelProviderErrorCode: String, Codable, Sendable, Equatable {
   case baseURLInvalid = "MODEL_BASE_URL_INVALID"
   case authInvalid = "MODEL_AUTH_INVALID"
+  /// 403：Key 是真的，但没有使用这个模型的权限。
+  ///
+  /// 和 401 分开，是因为两者的修复动作完全相反：401 要换 Key，403 换 Key 没有用，
+  /// 得换模型或去服务商开通。合并成一个码时，界面只会说「请更新 API Key」——
+  /// 用户照做一遍，问题原样还在。
+  case authForbidden = "MODEL_AUTH_FORBIDDEN"
   case endpointNotFound = "MODEL_ENDPOINT_NOT_FOUND"
   case modelNotFound = "MODEL_NOT_FOUND"
   case providerBillingLimited = "MODEL_PROVIDER_BILLING_LIMITED"

@@ -7,13 +7,14 @@ import LinkDigestCore
 final class ProviderSettingsPresentationTests: XCTestCase {
   private let providerAssets = [
     "bailian.svg", "deepinfra.svg", "deepseek.svg", "groq.svg", "ollama.svg",
-    "openai.svg", "openrouter.svg", "siliconflow.svg", "stepfun.svg", "zhipu.svg",
+    "openai.svg", "opencode.svg", "openrouter.svg", "siliconflow.svg", "stepfun.svg", "zhipu.svg",
   ]
 
   func testProviderCatalogMapsEveryCuratedPresetToAnExactBundledAsset() throws {
     let expected: [ProviderPreset: String] = [
       .openAI: "openai", .deepSeek: "deepseek", .deepInfra: "deepinfra",
-      .openRouter: "openrouter", .groq: "groq", .siliconFlow: "siliconflow",
+      .openRouter: "openrouter", .openCodeGo: "opencode", .openCodeZen: "opencode",
+      .groq: "groq", .siliconFlow: "siliconflow",
       .dashScope: "bailian", .zhipu: "zhipu", .stepFun: "stepfun", .ollama: "ollama",
     ]
     let directory = repositoryRoot().appendingPathComponent("apps/desktop/Assets/ProviderIcons", isDirectory: true)
@@ -84,8 +85,14 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     let source = try String(contentsOf: repositoryRoot().appendingPathComponent("apps/desktop/Sources/LinkDigestApp/ProviderSettingsView.swift"), encoding: .utf8)
     let service = section(in: source, from: "private var serviceTab", to: "// MARK: - 生成与数据")
 
+    // 这一 tab 的骨架仍然是 grouped Form，不是一整片自制瓦片墙——那是 b8251a7
+    // 换掉的东西，`providerTile` / `capabilityCard` 两个禁项守的就是它。
+    //
+    // 但「不要瓦片墙」不等于「任何地方都不许出现网格」。服务商选择是 12 个只有
+    // 图标 + 名字 + 一句话的项，排成一列要占约 650pt；2026-08-06 按 Syc 要求改成
+    // 多列卡片，约 200pt。原来那条 `LazyVGrid` 全局禁令会把这类局部布局一并挡掉，
+    // 所以撤掉它，改由上面两个具体禁项继续守住骨架。
     XCTAssertTrue(service.contains(".formStyle(.grouped)"))
-    XCTAssertFalse(service.contains("LazyVGrid"))
     XCTAssertFalse(service.contains("providerTile"))
     XCTAssertFalse(service.contains("capabilityCard"))
     XCTAssertTrue(service.contains("Grid(alignment: .leading"))
@@ -100,7 +107,10 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     XCTAssertTrue(service.contains("detail: entry.modelName"))
     XCTAssertTrue(service.contains("model.transcriptionEntryDisplays"))
     XCTAssertTrue(service.contains("model.summaryEntryDisplays"))
-    XCTAssertTrue(service.contains("Text(\"\\(entry.title) · \\(entry.modelName)\").font(.caption)"))
+    // 已添加的模型按服务商归拢：服务商名写在分组卡的标题上，行里只留模型 ID。
+    // 2026-08-06 之前是平铺，每行都重复一次「服务商 · 模型」。
+    XCTAssertTrue(service.contains("libraryProviderGroups"))
+    XCTAssertTrue(service.contains("Text(entry.modelName).font(.caption)"))
     XCTAssertFalse(service.contains("Text(\"\\(entry.title) · 在线转写\").tag(entry.id)"))
     XCTAssertTrue(source.contains("ProviderIconCatalog.image(for: preset)"))
   }
@@ -196,7 +206,7 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     let root = repositoryRoot()
     let release = try String(contentsOf: root.appendingPathComponent("scripts/native-host/release_unit.py"), encoding: .utf8)
     let local = try String(contentsOf: root.appendingPathComponent("scripts/native-host/local_test_release.py"), encoding: .utf8)
-    let expectedTuple = "(\"bailian.svg\", \"deepinfra.svg\", \"deepseek.svg\", \"groq.svg\", \"ollama.svg\", \"openai.svg\", \"openrouter.svg\", \"siliconflow.svg\", \"stepfun.svg\", \"zhipu.svg\")"
+    let expectedTuple = "(\"bailian.svg\", \"deepinfra.svg\", \"deepseek.svg\", \"groq.svg\", \"ollama.svg\", \"openai.svg\", \"opencode.svg\", \"openrouter.svg\", \"siliconflow.svg\", \"stepfun.svg\", \"zhipu.svg\")"
 
     for source in [release, local] {
       XCTAssertTrue(source.contains("PROVIDER_ICONS_DIRECTORY = \"ProviderIcons\""))
