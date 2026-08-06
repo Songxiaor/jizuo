@@ -2,8 +2,11 @@ import SwiftUI
 import LinkDigestCore
 
 struct ProviderSettingsView: View {
+  // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
+  // 在高对比主题上又不够黑。
+  @Environment(\.appTheme) private var appTheme
   private enum SettingsTab: String, Hashable, CaseIterable, Identifiable {
-    case service, generation, appearance, mediaStorage, siteLogin, browserSupport, labs
+    case service, generation, appearance, mediaStorage, knowledgeVault, siteLogin, browserSupport, labs
     var id: String { rawValue }
     var title: String {
       switch self {
@@ -11,6 +14,7 @@ struct ProviderSettingsView: View {
       case .generation: "生成偏好"
       case .appearance: "外观"
       case .mediaStorage: "视频存储"
+      case .knowledgeVault: "知识库同步"
       case .siteLogin: "站点登录"
       case .browserSupport: "浏览器支持"
       case .labs: "实验室"
@@ -22,6 +26,7 @@ struct ProviderSettingsView: View {
       case .generation: "text.badge.checkmark"
       case .appearance: "paintpalette"
       case .mediaStorage: "externaldrive"
+      case .knowledgeVault: "folder.badge.gearshape"
       case .siteLogin: "person.crop.circle.badge.checkmark"
       case .browserSupport: "puzzlepiece.extension"
       case .labs: "flask"
@@ -48,6 +53,7 @@ struct ProviderSettingsView: View {
   @ObservedObject var appModel: AppViewModel
   @ObservedObject var browserSupport: BrowserSupportViewModel
   @ObservedObject var mediaStorage: MediaStorageSettingsViewModel
+  @ObservedObject var knowledgeVault: KnowledgeVaultSettingsViewModel
   @State private var apiKeyInput = ""
   @State private var selectedTab: SettingsTab = .service
   @State private var isCustomOutputLanguage = false
@@ -197,6 +203,10 @@ struct ProviderSettingsView: View {
           MediaStorageSettingsView(model: mediaStorage)
             .scrollContentBackground(isNativeTheme ? .automatic : .hidden)
             .background(isNativeTheme ? Color.clear : settingsTheme.canvas)
+        case .knowledgeVault:
+          KnowledgeVaultSettingsView(model: knowledgeVault)
+            .scrollContentBackground(isNativeTheme ? .automatic : .hidden)
+            .background(isNativeTheme ? Color.clear : settingsTheme.canvas)
         case .siteLogin:
           SiteLoginSettingsView(mediaStorage: mediaStorage)
             .scrollContentBackground(isNativeTheme ? .automatic : .hidden)
@@ -266,7 +276,7 @@ struct ProviderSettingsView: View {
             if let errorText = model.libraryErrorText {
               Label(errorText, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
-                .foregroundStyle(.red)
+                .foregroundStyle(appTheme.danger)
                 .fixedSize(horizontal: false, vertical: true)
                 .accessibilityIdentifier("model-library-error")
             }
@@ -550,16 +560,22 @@ struct ProviderSettingsView: View {
       } label: {
         Image(systemName: "pencil")
       }
-      .buttonStyle(.borderless)
+      // 换掉 `.borderless`：那个样式在静止和悬停时长得一模一样，这两个图标
+      // 看起来像图例而不是能点的东西。`.appIcon` 给出 hover 底色和按下缩放。
+      .buttonStyle(.appIcon)
       .help("编辑这个模型配置")
+      // accessibilityIdentifier 是给自动化测试用的，VoiceOver 不读它。
+      // 纯图标按钮必须另外声明 label，否则读出来只有一个符号名。
+      .accessibilityLabel("编辑这个模型配置")
       .accessibilityIdentifier("edit-library-model")
       Button {
         pendingDeletionID = entry.id
       } label: {
         Image(systemName: "trash")
       }
-      .buttonStyle(.borderless)
+      .buttonStyle(.appIcon)
       .help("删除这个模型配置")
+      .accessibilityLabel("删除这个模型配置")
       .accessibilityIdentifier("delete-library-model")
     }
     .contentShape(Rectangle())
@@ -892,7 +908,7 @@ struct ProviderSettingsView: View {
             VStack(alignment: .leading, spacing: 5) {
               Text("参考段落").font(.caption).foregroundStyle(.secondary)
               TextEditor(text: voiceBinding(\.sample))
-                .font(.system(size: 12))
+                .font(.callout)
                 .frame(minHeight: 88)
                 .scrollContentBackground(.hidden)
                 .padding(6)
@@ -1014,7 +1030,7 @@ struct ProviderSettingsView: View {
         ) {
           VStack(alignment: .leading, spacing: 8) {
             TextEditor(text: $model.summaryPrompt)
-              .font(.system(size: 12))
+              .font(.callout)
               .scrollContentBackground(.hidden)
               .frame(minHeight: 120)
               .padding(10)
@@ -1457,7 +1473,7 @@ struct ProviderSettingsView: View {
       //
       // 现在统一成描边的中性方块,里面是服务商真名的首字母(opencode.ai → O)。
       Text(ProviderIconCatalog.fallbackInitial(for: fallbackName ?? preset.displayName))
-        .font(.system(size: 9, weight: .semibold))
+        .font(.system(size: BadgeTypography.size, weight: .semibold))
         .foregroundStyle(.secondary)
         .frame(width: 16, height: 16)
         .background(

@@ -96,11 +96,19 @@ INFO_PLIST_KEYS = {
     "CFBundleName",
     "CFBundlePackageType",
     "CFBundleShortVersionString",
+    "CFBundleURLTypes",
     "CFBundleVersion",
     "LSApplicationCategoryType",
     "LSMinimumSystemVersion",
     "NSHighResolutionCapable",
 }
+
+# `linkdigest://digest/<taskID>` 的注册。导到知识库的那份 Markdown 靠它跳回
+# App 定位到具体条目——没有它,检索命中之后就回不来了。
+#
+# 这个键和下面 `info_plist()` 里的取值必须一起改:`validate_plist` 做的是
+# 精确比对(键集合与取值都要一致),漏掉任何一处都会让整个发布单元被 reject。
+URL_SCHEME = "linkdigest"
 
 RELEASE_UNIT_KEYS = {
     "formatVersion",
@@ -683,6 +691,12 @@ def info_plist(config: dict[str, Any]) -> dict[str, Any]:
         "CFBundleName": config["appDisplayName"],
         "CFBundlePackageType": "APPL",
         "CFBundleShortVersionString": config["shortVersion"],
+        "CFBundleURLTypes": [
+            {
+                "CFBundleURLName": config["bundleIdentifier"],
+                "CFBundleURLSchemes": [URL_SCHEME],
+            }
+        ],
         "CFBundleVersion": config["bundleVersion"],
         "LSApplicationCategoryType": config["category"],
         "LSMinimumSystemVersion": config["minimumMacOS"],

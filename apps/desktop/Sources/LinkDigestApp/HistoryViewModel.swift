@@ -1004,6 +1004,21 @@ final class HistoryViewModel: ObservableObject {
   func retryDetail() { loadDetailForSelection() }
   func reveal(taskID: TaskID) { selectedTaskID = taskID; reload() }
 
+  /// 从 `linkdigest://digest/<id>` 跳进来时的定位。
+  ///
+  /// 比普通 reveal 多做一件事：先把筛选清掉。外部链接指到的那条内容很可能
+  /// 正被当前的标签、平台或搜索词滤在列表外，那样点进来会停在一个空列表上，
+  /// 看着像链接坏了。
+  func revealFromExternalLink(taskID: TaskID) {
+    if hasActiveFilter {
+      searchText = ""
+      selectedTagNormalizedNames = []
+      selectedHosts = []
+      selectedScope = .all
+    }
+    reveal(taskID: taskID)
+  }
+
   /// 在当前可见列表里前后移动选中项，不用回左栏。offset -1 上一条、+1 下一条。
   /// 设 `selectedTaskID` 会经 didSet 自动加载详情，无需 reload。
   func selectAdjacent(offset: Int) {

@@ -747,7 +747,37 @@ enum BrowserReceiverState: Sendable, Equatable {
   }
 }
 
+/// 接住 `linkdigest://` 的应用级入口。
+///
+/// 不用 `View.onOpenURL`：那个 modifier 挂在 `WindowGroup` 的内容里，SwiftUI
+/// 会把每一个进来的 URL 当成「再开一个场景」的请求，于是从知识库点几次回链，
+/// 桌面上就堆起几个汲作窗口。回链要做的事是「定位到已经开着的那个窗口里的
+/// 某一条」，那是应用级事件，不该经过场景。
+@MainActor
+final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
+  private var handler: ((URL) -> Void)?
+  /// App 冷启动时，系统可能在界面接好之前就把 URL 递进来。先存着，
+  /// 等历史就绪再消费——否则那一次点击会静默丢失。
+  private var pending: [URL] = []
+
+  func setHandler(_ handler: @escaping (URL) -> Void) {
+    self.handler = handler
+    let queued = pending
+    pending = []
+    for url in queued { handler(url) }
+  }
+
+  func application(_ application: NSApplication, open urls: [URL]) {
+    guard let handler else {
+      pending.append(contentsOf: urls)
+      return
+    }
+    for url in urls { handler(url) }
+  }
+}
+
 @main struct LinkDigestApp: App {
+  @NSApplicationDelegateAdaptor(LinkDigestAppDelegate.self) private var appDelegate
   @Environment(\.scenePhase) private var scenePhase
   @StateObject private var model: AppViewModel
   @StateObject private var historyModel: HistoryViewModel
@@ -755,8 +785,12 @@ enum BrowserReceiverState: Sendable, Equatable {
   @StateObject private var providerSettings: ProviderSettingsViewModel
   @StateObject private var browserSupport: BrowserSupportViewModel
   @StateObject private var mediaStorageSettings: MediaStorageSettingsViewModel
+  @StateObject private var knowledgeVaultSettings: KnowledgeVaultSettingsViewModel
   @StateObject private var sessionMediaPlayback: SessionMediaPlaybackController
   @State private var didBootstrap = false
+  /// 注入 `\.appTheme` 用。视图各自读 AppStorage 会重复三行样板，
+  /// 而设置页那几个子视图当初就是因为拿不到主题才写死了 `.red`。
+  @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
 
   private let configurationService: ProviderConfigurationService
   private let provider: any ModelProvider
@@ -829,6 +863,11 @@ enum BrowserReceiverState: Sendable, Equatable {
     let manualResourceFetcher = ProxyAwareWebPageFetcher()
     let faviconCache = cacheRoot.map { WebsiteFaviconCache(applicationSupportRoot: $0) }
     let mediaStoragePreference = UserDefaultsMediaStoragePreferenceStore()
+    // 在这里构造而不是等到下面接 StateObject：抓取回调（captureSink）要用它排
+    // 自动同步，而那个闭包在此之后就定型了。
+    let knowledgeVaultSettingsModel = KnowledgeVaultSettingsViewModel(
+      store: UserDefaultsKnowledgeVaultStore()
+    )
     let douyinWebCaptureService = DouyinWKWebViewCaptureService(
       dataStore: SiteSessionController.douyin.dataStore,
       userAgent: SiteSessionProfile.browserUserAgent
@@ -1000,6 +1039,9 @@ enum BrowserReceiverState: Sendable, Equatable {
         // back within the capacity limit does not need a network refresh.
         await sessionMediaPlaybackController.rememberCurrentCapture(value)
         await historyModel.reveal(taskID: value.taskID)
+        // 新素材进库后排一次同步。只是排队（默认 20 秒后跑），不占这条
+        // 必须在 10 秒内 ACK 浏览器的路径。
+        await knowledgeVaultSettingsModel.scheduleAutoSync()
         // Video download starts immediately so signed URLs are not kept for later.
         // It runs off the native-message ACK path (same fail-open pattern as images).
         if value.shouldAutomaticallyPersistLegacyMedia {
@@ -1129,6 +1171,7 @@ enum BrowserReceiverState: Sendable, Equatable {
     _mediaStorageSettings = StateObject(
       wrappedValue: MediaStorageSettingsViewModel(store: mediaStoragePreference)
     )
+    _knowledgeVaultSettings = StateObject(wrappedValue: knowledgeVaultSettingsModel)
     _sessionMediaPlayback = StateObject(wrappedValue: sessionMediaPlaybackController)
   }
 
@@ -1161,6 +1204,16 @@ enum BrowserReceiverState: Sendable, Equatable {
             readOnlyReason: result.historyReadOnlyReason
           )
           didConfigureHistory = true
+          knowledgeVaultSettings.configure(history: result.history)
+          // 历史就绪之后才接回链，冷启动时排队的那一个 URL 也在这里被消费。
+          //
+          // scheme 一注册，任何网页都能构造这样一个链接扔过来，所以这里只做
+          // 「定位到某条历史」这一件没有副作用的事，且 id 必须是规范 UUID——
+          // 解析不出来就当没发生，不提示、不新建、不写任何东西。
+          appDelegate.setHandler { url in
+            guard let taskID = KnowledgeVaultLink.digestID(from: url) else { return }
+            historyModel.revealFromExternalLink(taskID: taskID)
+          }
           if result.availability.isWriteReady, let history = result.history {
             manualLink.configure(
               history: history,
@@ -1204,8 +1257,13 @@ enum BrowserReceiverState: Sendable, Equatable {
         // Without a floor the three-column layout collapses to the two sidebar
         // minimums plus a detail pane too narrow to read.
         .frame(minWidth: 900, minHeight: 620)
+        .appThemeEnvironment(appearanceThemeRaw)
     }
     .defaultSize(width: 1100, height: 760)
+    // 明确声明这个场景不接任何外部事件。不写这一条，SwiftUI 会把每个进来的
+    // `linkdigest://` 当成「再开一个窗口」的请求自己消化掉，URL 根本到不了
+    // AppDelegate——表现就是点一次回链多一个汲作窗口。
+    .handlesExternalEvents(matching: [])
     .windowResizability(.contentMinSize)
     .windowToolbarStyle(.unified(showsTitle: true))
     .commands { LinkDigestCommands(manualLink: manualLink) }
@@ -1217,9 +1275,11 @@ enum BrowserReceiverState: Sendable, Equatable {
         model: providerSettings,
         appModel: model,
         browserSupport: browserSupport,
-        mediaStorage: mediaStorageSettings
+        mediaStorage: mediaStorageSettings,
+        knowledgeVault: knowledgeVaultSettings
       )
         .background(SettingsWindowResizer())
+        .appThemeEnvironment(appearanceThemeRaw)
     }
     .windowResizability(.contentMinSize)
     // Hiding the toolbar outright also takes the titlebar (and the traffic
