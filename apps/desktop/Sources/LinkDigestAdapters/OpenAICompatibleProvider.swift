@@ -436,30 +436,63 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     var retryCount = 0
     var didDropReasoningEffort = false
 
+    // 首字来得太慢时留一行分段耗时。见 `ProviderTimingLog`。
+    let intentLabel: String = switch intent {
+    case .connectionTest: "connectionTest"
+    case .summarize: "summarize"
+    case .translate: "translate"
+    }
+    let inflight = activeStreamCount
+
     while true {
       try Task.checkCancellation()
       var receivedDelta = false
       var currentResponse: HTTPURLResponse?
 
       do {
+        let t0 = Date()
         let (bytes, response) = try await session.bytes(for: request)
+        let headersAt = Date()
         currentResponse = response as? HTTPURLResponse
         let providerError = try await providerError(from: bytes, response: response)
         _ = try validate(response: response, providerError: providerError, hadOutput: false)
 
+        var firstLineAt: Date?
+        var lineCount = 0
+        var reasoningCount = 0
         for try await line in bytes.lines {
           try Task.checkCancellation()
+          lineCount += 1
+          if firstLineAt == nil { firstLineAt = Date() }
           do {
             guard let event = try ChatCompletionsStreamDecoder().decode(line: line) else {
               continue
             }
             switch event {
             case .delta:
+              if !receivedDelta {
+                let elapsed = Date().timeIntervalSince(t0)
+                if elapsed >= ProviderTimingLog.slowFirstDeltaThreshold {
+                  // 分段是为了区分四种长得一样的「慢」：建连慢、服务端接单后
+                  // 不开口、服务端一直在流看不见的思考、App 自己卡住。
+                  let connectMs = Int(headersAt.timeIntervalSince(t0) * 1000)
+                  let openMs = firstLineAt.map { Int($0.timeIntervalSince(headersAt) * 1000) } ?? -1
+                  ProviderTimingLog.write(
+                    "SLOW_FIRST_DELTA intent=\(intentLabel) model=\(profile.model) "
+                      + "host=\(profile.baseURL.host ?? "?") "
+                      + "reasoningEffort=\(includesReasoningEffort ? Self.lowReasoningEffort : "none") "
+                      + "inflightStreams=\(inflight) retry=\(retryCount) "
+                      + "totalMs=\(Int(elapsed * 1000)) connectMs=\(connectMs) openMs=\(openMs) "
+                      + "sseLines=\(lineCount) reasoningEvents=\(reasoningCount)"
+                  )
+                }
+              }
               receivedDelta = true
               continuation.yield(event)
             case .reasoning:
               // 思考不算 `receivedDelta`：它没有产出任何用户内容，此时失败仍然
               // 是「一个字都没拿到」，重试与降级都还安全。
+              reasoningCount += 1
               continuation.yield(event)
             case .usage:
               continuation.yield(event)
@@ -899,6 +932,66 @@ private final class CatalogRedirectGuard: NSObject, URLSessionTaskDelegate {
       && url.scheme?.lowercased() == scheme
       && url.host?.lowercased() == host
       && url.port == port
+  }
+}
+
+/// 一次「出字特别慢」的流式请求留下的分段耗时。
+///
+/// 为什么需要它：慢有四种完全不同的原因——建连慢、服务端接单后不开口、服务端
+/// 一直在流用户看不见的思考、App 自己卡住。四者在界面上长得一模一样（都是转圈），
+/// 靠读代码分不出来。2026-08-06 排查「总结要 30 秒」时，先后猜过通道、VPN、
+/// 模型，三次都错；加上这几个时间戳后一次定位：TTFB 的 99% 是服务端在流思考，
+/// 而抑制它的 `reasoning_effort` 被误删了。
+///
+/// 为什么写文件而不是 NSLog：汲作用 `open` 启动时 stderr 没有去处，NSLog 也不
+/// 落进统一日志——打了等于没打，只会被误判成「代码没走到」。
+///
+/// 只写非敏感值：模型名、host、毫秒数、事件计数。请求体、响应体、API Key
+/// 一概不写。
+enum ProviderTimingLog {
+  /// 低于这个首字延迟不记录。正常请求（实测中位 5 秒）因此完全不写盘，
+  /// 日志里留下的每一行都是真的值得看的一次。
+  static let slowFirstDeltaThreshold: TimeInterval = 15
+
+  /// 文件上限。超了就从头写，避免长期使用堆成一个没人清理的大文件。
+  private static let byteLimit = 256 * 1_024
+
+  private static let lock = NSLock()
+  /// 只在 `lock` 里碰它，所以共享可变状态是被序列化的；`ISO8601DateFormatter`
+  /// 本身不是 Sendable，这里显式标注而不是每次新建一个。
+  private nonisolated(unsafe) static let formatter: ISO8601DateFormatter = {
+    let f = ISO8601DateFormatter()
+    f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return f
+  }()
+
+  private static let fileURL: URL? = {
+    guard let root = try? FileManager.default.url(
+      for: .applicationSupportDirectory, in: .userDomainMask,
+      appropriateFor: nil, create: false
+    ) else { return nil }
+    return root.appendingPathComponent("LinkDigest/slow-run-diagnostic.log")
+  }()
+
+  static func write(_ line: String) {
+    guard let fileURL else { return }
+    let now = Date()
+    lock.withLock {
+      guard let data = "\(formatter.string(from: now)) \(line)\n".data(using: .utf8) else { return }
+      let existing = (try? FileHandle(forWritingTo: fileURL)).flatMap { handle -> UInt64? in
+        defer { try? handle.close() }
+        return try? handle.seekToEnd()
+      }
+      guard let existing, existing < UInt64(byteLimit),
+            let handle = try? FileHandle(forWritingTo: fileURL)
+      else {
+        try? data.write(to: fileURL)
+        return
+      }
+      defer { try? handle.close() }
+      _ = try? handle.seekToEnd()
+      try? handle.write(contentsOf: data)
+    }
   }
 }
 
