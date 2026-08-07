@@ -117,7 +117,18 @@ fi
 
 run_check "dependency licenses" ./scripts/check-licenses
 run_check "V0.2 secret hygiene (read-only, blocking)" ./scripts/check-v02-secret-hygiene.sh
-run_check "Release LinkDigestApp excludes test-only transport seams" ./scripts/check-release-test-seams.sh
+# 这一条要的是 Release 产物，而 doctor 跑在 `check:web` 里、构建在 `check:swift` 里
+# ——干净检出上产物还不存在。硬失败在本机看不出来（`.build` 里通常留着上次的产物），
+# 到了 CI 上就是每次 push 都红，而红的原因跟这次改动毫无关系。
+#
+# 不是降低要求：`check:swift` 里 `swift:build:release && release:test-seams` 是权威
+# 的那一次，顺序正确。doctor 这份只是本地便利，产物在就顺手验，不在就说清楚谁验。
+RELEASE_APP_BINARY="apps/desktop/.build/arm64-apple-macosx/release/LinkDigestApp"
+if [ -x "$RELEASE_APP_BINARY" ]; then
+  run_check "Release LinkDigestApp excludes test-only transport seams" ./scripts/check-release-test-seams.sh
+else
+  warn "Release LinkDigestApp not built yet; seam check runs in \`pnpm release:test-seams\` after \`pnpm swift:build:release\`"
+fi
 dangerous_files="$(find . -path './.git' -prune -o -path './.scatter' -prune -o -type f -name '.env*' ! -name '.env.example' -print)"
 if [ -n "$dangerous_files" ]; then
   fail "dangerous credential filenames found"
