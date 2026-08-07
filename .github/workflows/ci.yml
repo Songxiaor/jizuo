@@ -38,7 +38,15 @@ jobs:
         run: pnpm check:web
 
   verify-macos:
-    runs-on: macos-15
+    # 必须是带 macOS 26 SDK 的镜像。App 用了 SpeechTranscriber（本机视频转写），
+    # 那是 macOS 26 才有的类型。代码本身没问题：部署下限仍是 macOS 15，功能由
+    # `@available(macOS 26.0, *)` 在运行时门控——但 available 只管运行时，
+    # 老 SDK 里这个类型压根不存在，编译期就是 "cannot find type in scope"。
+    #
+    # 用 macos-15 时这个 job 从来没编译成功过，而本机（Xcode 26）一直是绿的。
+    # 也别换成 macos-latest：那个标签会跟着 GitHub 换镜像漂，构建会在没有任何
+    # 代码改动的情况下突然红或绿。
+    runs-on: macos-26
     timeout-minutes: 20
     steps:
       - name: Checkout
