@@ -1088,13 +1088,22 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
     _ = try directoryAnchor(for: directory, createMissing: true)
   }
 
+  /// `body` 直接传给 `withReceiptLock`，不再包一层闭包。
+  ///
+  /// 原来写成 `withReceiptLock(in:) { try recoverLocked(); return try body() }`。
+  /// 语义没问题——两个方法都在同一个 actor 上、`body` 不逃逸——但把 actor 隔离的
+  /// `body` 捕获进一个新闭包，会让部分 Swift 6 编译器的区域分析判成
+  /// 「'self'-isolated 'body' is captured by a actor-isolated closure」并报错。
+  /// 这台开发机的 6.3.3 放行（连 -strict-concurrency=complete 都过），CI 的编译器
+  /// 拒绝：本机绿、CI 红，最难自查的一种。
+  ///
+  /// 隔壁 `withExistingMutationLock` 一直是直接传参的，同一个编译器上没事——照它
+  /// 的形状改，恢复动作挪进 `withReceiptLock` 由参数控制。行为完全一致：拿到锁之后、
+  /// 跑 `body` 之前做一次恢复。
   private func withMutationLock<T>(_ body: () throws -> T) throws -> T {
     let receiptDirectory = homeRoot.appendingPathComponent(Self.receiptDirectoryRelativePath, isDirectory: true)
     try ensureOwnedReceiptDirectory(receiptDirectory)
-    return try withReceiptLock(in: receiptDirectory) {
-      try recoverLocked()
-      return try body()
-    }
+    return try withReceiptLock(in: receiptDirectory, recoveringFirst: true, body)
   }
 
   private func withExistingMutationLock<T>(_ body: () throws -> T) throws -> T {
@@ -1103,7 +1112,14 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
     return try withReceiptLock(in: receiptDirectory, body)
   }
 
-  private func withReceiptLock<T>(in receiptDirectory: URL, _ body: () throws -> T) throws -> T {
+  /// `recoveringFirst` 决定拿到锁之后、跑 `body` 之前要不要先做一次崩溃恢复。
+  /// 它是个参数而不是让调用方自己包一层闭包——包闭包会捕获 actor 隔离的 `body`，
+  /// 部分 Swift 6 编译器会因此报 data race，见 `withMutationLock` 的注释。
+  private func withReceiptLock<T>(
+    in receiptDirectory: URL,
+    recoveringFirst: Bool = false,
+    _ body: () throws -> T
+  ) throws -> T {
     let anchor = try directoryAnchor(for: receiptDirectory)
     let descriptor = Darwin.openat(anchor.descriptor, Self.transactionLockBasename, O_RDWR | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0o600)
     guard descriptor >= 0 else { throw BrowserSupportInstallerError.unsafeFilesystemState }
@@ -1114,6 +1130,7 @@ public actor BrowserSupportInstaller: BrowserSupportInstalling {
     }
     guard Darwin.lockf(descriptor, F_LOCK, 0) == 0 else { throw BrowserSupportInstallerError.transactionFailed }
     defer { _ = Darwin.lockf(descriptor, F_ULOCK, 0) }
+    if recoveringFirst { try recoverLocked() }
     return try body()
   }
 

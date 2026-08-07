@@ -415,6 +415,29 @@ def build_live_artifacts(root: Path) -> dict[str, Any]:
     return {"appInstallerTemplateHashes": app_templates, "artifactHash": artifact_hash, "extensionID": identity["extensionID"], "templateHashes": template_hashes, "version": identity["version"]}
 
 
+def _determinism_scratch_root() -> str:
+    """A scratch root for the build-twice-and-compare check below.
+
+    macOS keeps using `/private/tmp`: the rest of this repo's release tooling
+    pins that exact path on purpose (it is the real directory behind `/tmp`,
+    so a redirected `TMPDIR` cannot move release work somewhere unexpected),
+    and those scripts reject anything else.
+
+    That convention is macOS-only, but this particular script is not: it also
+    runs on the Linux `verify-web` job, where `/private/tmp` simply does not
+    exist and `TemporaryDirectory` fails with FileNotFoundError before the
+    determinism check ever runs. That job had therefore never passed.
+
+    Nothing security-sensitive lives here — the directory only holds two
+    freshly built copies of the extension ZIP that are compared and discarded,
+    and `TemporaryDirectory` still creates it 0700 with a random name.
+    """
+    private_tmp = "/private/tmp"
+    if os.path.isdir(private_tmp):
+        return private_tmp
+    return tempfile.gettempdir()
+
+
 def verify_live_artifacts(root: Path) -> dict[str, Any]:
     identity = load_identity(root)
     display = load_display(root)
@@ -424,7 +447,7 @@ def verify_live_artifacts(root: Path) -> dict[str, Any]:
     validate_built_manifest(output, identity, display)
     artifact = require_exact_configured_artifact(root, identity)
     entries = verify_zip(artifact, identity, display)
-    with tempfile.TemporaryDirectory(prefix="linkdigest-extension-identity.", dir="/private/tmp") as temporary:
+    with tempfile.TemporaryDirectory(prefix="linkdigest-extension-identity.", dir=_determinism_scratch_root()) as temporary:
         first = Path(temporary) / "one.zip"
         second = Path(temporary) / "two.zip"
         first_hash = deterministic_zip(output, first)
