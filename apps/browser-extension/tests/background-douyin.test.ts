@@ -936,10 +936,7 @@ describe("background douyin item identity lock", () => {
       } } },
       wrong: { aweme_id: "7123456789012345678", author: { nickname: "不应串入" }, create_time: "invalid", statistics: { digg_count: 999 } },
     });
-    const {
-      extractDouyinMetadataFromInitialStateInMainWorld,
-      extractDouyinMetadataWithDiagnosticInMainWorld,
-    } = await import("../src/entrypoints/background");
+    const { extractDouyinMetadataFromInitialStateInMainWorld } = await import("../src/entrypoints/background");
 
     expect(extractDouyinMetadataFromInitialStateInMainWorld("7655224917603994914")).toEqual({
       author: "SSR 作者",

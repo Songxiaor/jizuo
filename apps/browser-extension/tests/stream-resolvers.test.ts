@@ -194,7 +194,6 @@ describe("MAIN-world readers stay self-contained", () => {
    * 从源码重建，复现浏览器那边的作用域。
    */
   const rebuild = <T extends (...args: never[]) => unknown>(fn: T): T =>
-    // eslint-disable-next-line no-new-func
     new Function(`return (${String(fn)})`)() as T;
 
   it("runs the Bilibili reader with no access to module scope", () => {

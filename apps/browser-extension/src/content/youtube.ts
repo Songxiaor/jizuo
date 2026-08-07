@@ -102,7 +102,10 @@ export function transcriptFromJSON3(payload: unknown): string {
 function joinCJKAware(left: string, right: string): string {
   if (!left) return right;
   if (!right) return left;
-  const isCJK = (char: string) => /[　-〿一-鿿＀-￯]/u.test(char);
+  // 区间写成转义而不是字面量：起点 U+3000 是全角空格，直接写进源码时既被
+  // no-irregular-whitespace 判为错误，也没人能一眼看出那是个字符而不是缩进。
+  // 区间本身没变：CJK 标点、汉字、全角字符。
+  const isCJK = (char: string) => /[\u3000-\u303F\u4E00-\u9FFF\uFF00-\uFFEF]/u.test(char);
   const needsSpace = !isCJK(left[left.length - 1]!) || !isCJK(right[0]!);
   return left + (needsSpace ? " " : "") + right;
 }
@@ -380,7 +383,10 @@ export function transcriptFromPanelSegments(segments: YouTubePanelSegment[]): st
     if (parts.length === 2) return parts[0]! * 60 + parts[1]!;
     return undefined;
   };
-  const isCJK = (char: string) => /[　-〿一-鿿＀-￯]/u.test(char);
+  // 区间写成转义而不是字面量：起点 U+3000 是全角空格，直接写进源码时既被
+  // no-irregular-whitespace 判为错误，也没人能一眼看出那是个字符而不是缩进。
+  // 区间本身没变：CJK 标点、汉字、全角字符。
+  const isCJK = (char: string) => /[\u3000-\u303F\u4E00-\u9FFF\uFF00-\uFFEF]/u.test(char);
   // 面板里加载失败的段渲染为重试按钮，其文案不是字幕内容。
   const uiNoise = /^(?:\s*(?:点击重试|轻点即可重试|重试|Tap to retry|Click to retry|Retry|Try again)\s*)+$/iu;
   const stripOverlap = (tail: string, incoming: string): string => {
