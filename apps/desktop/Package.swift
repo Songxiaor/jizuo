@@ -65,6 +65,7 @@ let package = Package(
     linkerSettings: [.linkedFramework("Network")]
   ),
   .testTarget(name: "LinkDigestAppTests", dependencies: ["LinkDigestApp", "LinkDigestAdapters", "LinkDigestCore", "LinkDigestPersistence"]),
+  .testTarget(name: "LinkDigestNativeHostTests", dependencies: ["LinkDigestNativeHost"]),
   .testTarget(name: "LinkDigestTransportTests", dependencies: ["LinkDigestTransport"]),
   .testTarget(name: "LinkDigestPersistenceTests", dependencies: ["LinkDigestCore", "LinkDigestPersistence", .product(name: "GRDB", package: "GRDB.swift")])
 ])
