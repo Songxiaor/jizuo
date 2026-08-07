@@ -47,7 +47,11 @@ jobs:
     # 也别换成 macos-latest：那个标签会跟着 GitHub 换镜像漂，构建会在没有任何
     # 代码改动的情况下突然红或绿。
     runs-on: macos-26
-    timeout-minutes: 20
+    # 20 分钟是「swift test 从来没在 CI 上跑起来过」那个年代定的。第一次真跑就
+    # 是 1299 条、17.4 分钟，加上 debug + release 两次构建直接撞上限被掐断。
+    # 那次里有 16.7 分钟耗在一条查不存在字体的测试上，已经修掉；余量留够，
+    # 但不设得太宽——真卡住时应当尽早失败，而不是空转一小时。
+    timeout-minutes: 45
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2

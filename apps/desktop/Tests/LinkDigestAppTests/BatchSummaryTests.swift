@@ -176,14 +176,68 @@ final class BatchSummaryTests: XCTestCase {
       model.batchSummaryOutcomeMessage.contains("失败"),
       "把仍在进行的那条算成了失败：\(model.batchSummaryOutcomeMessage)"
     )
+    // 已经发出去的那条必须被交代，但**交代成哪一种取决于时序**：停止到达时它可能
+    // 还在跑（「仍在进行」），也可能刚好已经跑完（「成功 N 条」）。两种说法都诚实。
+    //
+    // 原来这里只认「仍在进行」，于是在机器快慢不同时会假失败——而它掩盖的恰恰是
+    // 真 bug：两个取消分支都直接 break，跳过了按落库状态计数那一步，已经跑完的
+    // 那条被报成「未处理」。CI 上就是这么红的。
     XCTAssertTrue(
-      model.batchSummaryOutcomeMessage.contains("仍在进行"),
-      "没有说明已发出的那条还会继续：\(model.batchSummaryOutcomeMessage)"
+      model.batchSummaryOutcomeMessage.contains("仍在进行")
+        || model.batchSummaryOutcomeMessage.contains("成功"),
+      "已经发出的那条既没说仍在进行、也没算进成功，等于凭空消失了：\(model.batchSummaryOutcomeMessage)"
     )
     // 停止不等于回滚：已经跑完的产物必须留在库里。
     await waitUntil(timeout: .seconds(5)) { channel.succeededTaskIDs.count >= 1 }
     for taskID in channel.succeededTaskIDs {
       XCTAssertTrue(try fixture.hasCompletedSummary(taskID), "停止把已完成的产物弄丢了")
+    }
+  }
+
+  /// 在某条**刚好跑完**的瞬间按停止，那条必须算进成功，不能报成「未处理」。
+  ///
+  /// 上面那条测试等的是「已发出」就停，那时它通常还在飞；这条等它真的落库再停，
+  /// 于是确定性地命中另一个分支——不靠机器快慢。
+  ///
+  /// 这个分支原本是错的：取消检查里直接 `break`，跳过了按落库状态计数那一步。
+  /// 用户看到「未处理 4 条，已按你的要求停止」，回到列表却发现历史里多了一条。
+  /// 数字和事实对不上比少给信息更糟——它会让人以为总结丢了，然后重跑一遍、
+  /// 再花一次钱。本机跑得快，一直命中「还在飞」那条路，所以从没暴露过；
+  /// CI 上第一次真跑 swift test 就红了。
+  func testStoppingRightAfterAnItemFinishesStillCountsIt() async throws {
+    let fixture = try Fixture()
+    defer { fixture.close() }
+    let taskIDs = try fixture.acceptCaptures(count: 4)
+    let channel = FakeSummaryChannel(fixture: fixture)
+
+    let model = HistoryViewModel()
+    model.configure(history: fixture.service, isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.rows.count == 4 }
+    model.selectedTaskIDs = Set(taskIDs)
+
+    model.requestBatchSummary()
+    await waitUntil { model.isBatchSummaryConfirmationPresented }
+    channel.start(model: model)
+    // 关键差别：等它真的落库了再停。
+    await waitUntil(timeout: .seconds(10)) { channel.succeededTaskIDs.count >= 1 }
+    model.stopBatchSummary()
+    await waitUntil(timeout: .seconds(10)) { model.isBatchSummaryOutcomePresented }
+
+    XCTAssertTrue(
+      model.batchSummaryOutcomeMessage.contains("成功"),
+      "已经跑完并落库的那条被漏计了：\(model.batchSummaryOutcomeMessage)"
+    )
+    XCTAssertTrue(
+      model.batchSummaryOutcomeMessage.contains("已按你的要求停止"),
+      "没有说明是被停止的：\(model.batchSummaryOutcomeMessage)"
+    )
+    // 停止是用户自己的选择，没轮到的那些是「未处理」，不是「失败」。
+    XCTAssertFalse(
+      model.batchSummaryOutcomeMessage.contains("失败"),
+      "把没轮到的条目算成了失败：\(model.batchSummaryOutcomeMessage)"
+    )
+    for taskID in channel.succeededTaskIDs {
+      XCTAssertTrue(try fixture.hasCompletedSummary(taskID), "算进成功的那条其实没落库")
     }
   }
 

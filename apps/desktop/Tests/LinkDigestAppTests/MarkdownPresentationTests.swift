@@ -150,10 +150,35 @@ final class MarkdownPresentationTests: XCTestCase {
       ReadingFontSelection.family("Kaiti SC").resolved(usesEditorialReadingTypography: true, bodySize: 18),
       ResolvedReadingFont(face: .named("Kaiti SC"), bodySize: 18)
     )
-    // 内置命名字体在当前 macOS 上必须真实可解析，否则回退逻辑会吃掉用户选择。
-    XCTAssertEqual(ResolvedReadingFont.named("Songti SC").nsFontDescriptor(size: 16).fontAttributes[.family] as? String, "Songti SC")
-    XCTAssertEqual(ResolvedReadingFont.named("Kaiti SC").nsFontDescriptor(size: 16).fontAttributes[.family] as? String, "Kaiti SC")
-    XCTAssertEqual(ResolvedReadingFont.named("PingFang SC").nsFontDescriptor(size: 16).fontAttributes[.family] as? String, "PingFang SC")
+  }
+
+  /// 内置命名字体在**装了这些字体的机器上**必须真实可解析，否则回退逻辑会悄悄
+  /// 吃掉用户的选择：设置里选了楷体，正文还是黑体，而且不报任何错。
+  ///
+  /// 先查字体家族列表再断言，有两个原因：
+  ///
+  /// 1. 这是平台假设，不是代码逻辑。CI 的无头 runner 没装中文补充字体，在那里
+  ///    断言「Kaiti SC 必须存在」只是在检查 GitHub 的镜像装了什么。
+  /// 2. 直接对不存在的字体建 descriptor 会去问字体服务，而无头环境下那次查询
+  ///    要跑十几分钟才超时——2026-08-07 CI 上实测**单条测试 1000 秒**，整个
+  ///    job 因此撞上 20 分钟上限被掐断。列举家族只要 60 毫秒。
+  ///
+  /// 上面那条测试管「选择 → 解析」的映射，环境无关、任何机器上都跑。
+  func testBundledReadingFontsAreRealFamiliesOnThisMachine() throws {
+    let required = ["Songti SC", "Kaiti SC", "PingFang SC"]
+    let installed = Set(NSFontManager.shared.availableFontFamilies)
+    let missing = required.filter { !installed.contains($0) }
+    try XCTSkipUnless(
+      missing.isEmpty,
+      "这台机器没装 \(missing.joined(separator: "、"))；字体是否随系统安装是平台假设，不由本仓库决定"
+    )
+    for family in required {
+      XCTAssertEqual(
+        ResolvedReadingFont.named(family).nsFontDescriptor(size: 16).fontAttributes[.family] as? String,
+        family,
+        "\(family) 装着却解析不出来，用户的字体选择会被静默回退"
+      )
+    }
   }
 
   func testInlineImageSaveSuggestsExtensionFromMagicBytes() {

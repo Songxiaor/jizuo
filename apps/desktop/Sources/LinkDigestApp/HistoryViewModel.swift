@@ -1808,14 +1808,20 @@ final class HistoryViewModel: ObservableObject {
           timeoutSeconds: Self.batchSummaryStartTimeoutSeconds,
           condition: { isBusy() }
         )
+        // 用户按了停止。这一条**已经发出去了**，模型那边可能还在跑、也可能已经
+        // 跑完，落库都会照常发生——把它算成失败是在撒谎。
+        //
+        // 但也不能就地 break：原来两个取消分支都直接跳出，跳过了下面那段按落库
+        // 状态计数的逻辑。于是「在某条刚跑完时按停止」会把一条已经落库的总结报成
+        // 「未处理」——用户看到「未处理 4 条，已按你的要求停止」，回到列表却发现
+        // 历史里多了一条。数字和事实对不上，比少给信息更糟。
+        var stopRequested = false
         if Task.isCancelled {
-          // 用户按了停止。这一条**已经发出去了**，模型那边还在跑，落库也会照常
-          // 发生——把它算成失败是在撒谎。既不计成功也不计失败，由文案说明。
           stoppedEarly = true
+          stopRequested = true
           stoppedWithItemInFlight = started
-          break
         }
-        if started {
+        if !stopRequested, started {
           // 上限覆盖「弹窗等用户确认 + 长稿生成」。到点仍未空闲不再往下发，
           // 否则后续每一条都会撞上占用中的通道被静默丢弃。
           let finished = await self.waitFor(
@@ -1824,26 +1830,31 @@ final class HistoryViewModel: ObservableObject {
           )
           if Task.isCancelled {
             stoppedEarly = true
+            stopRequested = true
             stoppedWithItemInFlight = !finished
-            break
-          }
-          if !finished {
+          } else if !finished {
             abortReason = "上一条一直没有结束，剩下的没有发送。"
           }
         }
 
-        let after = await Task.detached(priority: .utility) {
-          Self.batchSummaryState(history, taskID: item.taskID)
-        }.value
-        if case .alreadySummarized = after {
-          succeeded += 1
-        } else {
-          failed += 1
-          if !started, abortReason == nil {
-            abortReason = "没能开始总结（可能是模型未配置、本机存储不可写，或数据去向确认被取消）。剩下的没有发送。"
+        // 还在飞的那条结果未定，不计数——由文案说明它仍在进行。其余情况一律以
+        // 落库状态为准，哪怕紧接着就要退出。
+        if !stoppedWithItemInFlight {
+          let after = await Task.detached(priority: .utility) {
+            Self.batchSummaryState(history, taskID: item.taskID)
+          }.value
+          if case .alreadySummarized = after {
+            succeeded += 1
+          } else if !stopRequested {
+            failed += 1
+            if !started, abortReason == nil {
+              abortReason = "没能开始总结（可能是模型未配置、本机存储不可写，或数据去向确认被取消）。剩下的没有发送。"
+            }
           }
+          // 被停止且没跑完：既不算成功也不算失败，它就是「未处理」。停止是用户
+          // 自己的选择，把它记成失败会让人以为出了错。
         }
-        if abortReason != nil { break }
+        if stopRequested || abortReason != nil { break }
       }
 
       guard let self, generation == self.configurationGeneration else { return }
