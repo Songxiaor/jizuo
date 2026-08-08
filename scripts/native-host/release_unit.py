@@ -22,6 +22,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterable, Sequence
@@ -54,9 +55,12 @@ PLATFORM_ICONS_DIRECTORY = "PlatformIcons"
 PLATFORM_ICON_FILES = ("bilibili.svg", "douban.svg", "douyin.svg", "github.svg", "juejin.svg", "medium.svg", "reddit.svg", "toutiao.svg", "wechat.svg", "weibo.svg", "x.com.svg", "xiaohongshu.svg", "youtube.svg", "zhihu.svg")
 PROVIDER_ICONS_DIRECTORY = "ProviderIcons"
 PROVIDER_ICON_FILES = ("bailian.svg", "deepinfra.svg", "deepseek.svg", "groq.svg", "ollama.svg", "openai.svg", "opencode.svg", "openrouter.svg", "siliconflow.svg", "stepfun.svg", "zhipu.svg")
+BROWSER_EXTENSION_DIRECTORY = "BrowserExtension"
+BROWSER_EXTENSION_IDENTITY = Path("config/extension-identity.json")
+PRODUCT_DISPLAY = Path("apps/desktop/Sources/LinkDigestCore/Resources/product-display.json")
 RELEASE_UNIT_NAME = "release-unit.json"
 UNIT_ID = "com.syc.linkdigest.release-unit.v1"
-DMG_NAME = "LinkDigest-0.2.0-macos-arm64.dmg"
+DMG_NAME = "汲作-0.2.3-macOS-Universal.dmg"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*)){0,2}$")
@@ -199,8 +203,8 @@ def load_app_config(root: Path | None = None) -> dict[str, Any]:
         "executable": "LinkDigestApp",
         "bundleIdentifier": "com.syc.linkdigest",
         "bundleIdentifierStatus": "engineering-candidate",
-        "shortVersion": "0.2.2",
-        "bundleVersion": "1",
+        "shortVersion": "0.2.3",
+        "bundleVersion": "2",
         "minimumMacOS": "15.0",
         "category": "public.app-category.productivity",
     }
@@ -720,6 +724,103 @@ def copy_resource_tree(source: Path, destination: Path) -> None:
     )
 
 
+def verified_browser_extension_payloads(source_root: Path) -> tuple[list[tuple[PurePosixPath, bytes]], dict[str, Any]]:
+    """读取并校验冻结的 Chromium 扩展交付包。
+
+    `.output` 是本机临时产物，发布审计的 source copy 里不存在。App 内置的扩展必须来自
+    已冻结、带稳定 ID 的 identity artifact；同时逐项拒绝绝对路径、`..`、目录项和特殊项，
+    避免把 ZIP 当成可信目录直接解压。
+    """
+    identity = load_json(source_root / BROWSER_EXTENSION_IDENTITY, "extension identity config")
+    display = load_json(source_root / PRODUCT_DISPLAY, "product display config")
+    artifact_text = identity.get("artifactSource")
+    if not isinstance(artifact_text, str):
+        reject("extension identity artifactSource must be a relative path")
+    artifact_relative = PurePosixPath(artifact_text)
+    if artifact_relative.is_absolute() or any(part in {"", ".", ".."} for part in artifact_relative.parts):
+        reject("extension identity artifactSource is unsafe")
+    artifact = source_root.joinpath(*artifact_relative.parts)
+    if artifact.is_symlink() or not artifact.is_file():
+        reject("extension identity artifact is missing or unsafe")
+    try:
+        with zipfile.ZipFile(artifact, "r") as archive:
+            infos = archive.infolist()
+            names = [info.filename for info in infos]
+            if names != byte_sorted(names) or len(names) != len(set(names)) or "manifest.json" not in names:
+                reject("extension identity artifact entries are not exact")
+            payloads: list[tuple[PurePosixPath, bytes]] = []
+            for info in infos:
+                relative = PurePosixPath(info.filename)
+                if (
+                    info.is_dir()
+                    or relative.is_absolute()
+                    or any(part in {"", ".", ".."} for part in relative.parts)
+                    or info.file_size > 16 * 1024 * 1024
+                ):
+                    reject("extension identity artifact contains an unsafe entry")
+                payloads.append((relative, archive.read(info)))
+    except (OSError, zipfile.BadZipFile, RuntimeError) as error:
+        if isinstance(error, ReleaseUnitError):
+            raise
+        reject(f"extension identity artifact is invalid: {error}")
+    try:
+        manifest = json.loads(dict((path.as_posix(), data) for path, data in payloads)["manifest.json"].decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError, KeyError) as error:
+        reject(f"extension identity artifact manifest is invalid: {error}")
+    if not isinstance(manifest, dict):
+        reject("extension identity artifact manifest must be one JSON object")
+    for field, expected in {
+        "key": identity.get("manifestKey"),
+        "name": display.get("displayName"),
+        "description": display.get("extensionDescription"),
+        "version": identity.get("version"),
+    }.items():
+        if not isinstance(expected, str) or manifest.get(field) != expected:
+            reject(f"extension identity artifact manifest {field} drifted")
+    return payloads, manifest
+
+
+def embed_browser_extension(source_root: Path, destination: Path) -> None:
+    if os.path.lexists(destination):
+        reject("embedded browser extension destination already exists")
+    payloads, _ = verified_browser_extension_payloads(source_root)
+    destination.mkdir(mode=0o755)
+    for relative, payload in payloads:
+        target = destination.joinpath(*relative.parts)
+        target.parent.mkdir(parents=True, exist_ok=True, mode=0o755)
+        target.write_bytes(payload)
+        os.chmod(target, 0o644)
+
+
+def verify_browser_extension(app: Path, source_root: Path) -> dict[str, Any]:
+    embedded = app / "Contents/Resources" / BROWSER_EXTENSION_DIRECTORY
+    if embedded.is_symlink() or not embedded.is_dir():
+        reject("embedded browser extension directory is missing or unsafe")
+    payloads, manifest = verified_browser_extension_payloads(source_root)
+    expected = {path.as_posix(): sha256_bytes(payload) for path, payload in payloads}
+    actual: dict[str, str] = {}
+    for current, directories, files in os.walk(embedded, topdown=True, followlinks=False):
+        directories.sort(key=os.fsencode)
+        files.sort(key=os.fsencode)
+        for name in directories:
+            path = Path(current) / name
+            if path.is_symlink():
+                reject("embedded browser extension contains a symlink")
+        for name in files:
+            path = Path(current) / name
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                reject("embedded browser extension contains an unsafe file")
+            actual[path.relative_to(embedded).as_posix()] = sha256_file(path)
+    if actual != expected:
+        reject("embedded browser extension drifted from frozen identity artifact")
+    return {
+        "directory": BROWSER_EXTENSION_DIRECTORY,
+        "fileCount": len(actual),
+        "version": manifest["version"],
+    }
+
+
 def build_app_bundle(
     output: Path,
     app_binary: Path,
@@ -744,6 +845,7 @@ def build_app_bundle(
     )
     os.chmod(macos / app_config["executable"], 0o755)
     copy_resource_tree(resource_bundle, resources / RESOURCE_BUNDLE)
+    embed_browser_extension(source_root, resources / BROWSER_EXTENSION_DIRECTORY)
     copy_path_nofollow(
         source_root,
         Path("apps/desktop/Assets") / app_config["iconFile"],
@@ -824,7 +926,14 @@ def exact_app_paths(app: Path, host_name: str, icon_file: str) -> None:
     if macos != {"LinkDigestApp"}:
         reject("App MacOS tree is not exact")
     resources = {path.name for path in (app / "Contents/Resources").iterdir()}
-    if resources != {RESOURCE_BUNDLE, "NativeHost", icon_file, PLATFORM_ICONS_DIRECTORY, PROVIDER_ICONS_DIRECTORY}:
+    if resources != {
+        RESOURCE_BUNDLE,
+        "NativeHost",
+        icon_file,
+        PLATFORM_ICONS_DIRECTORY,
+        PROVIDER_ICONS_DIRECTORY,
+        BROWSER_EXTENSION_DIRECTORY,
+    }:
         reject("App Resources tree is not exact")
     host_root = app / "Contents/Resources/NativeHost"
     if {path.name for path in host_root.iterdir()} != {host_name}:
@@ -944,6 +1053,7 @@ def verify_app(
     icon = verify_app_icon(app, source_root, app_config)
     platform_icons = verify_platform_icons(app, source_root)
     provider_icons = verify_provider_icons(app, source_root)
+    browser_extension = verify_browser_extension(app, source_root)
     app_executable = app / "Contents/MacOS/LinkDigestApp"
     host_package = app / "Contents/Resources/NativeHost" / host_package_name
     verified_host = verify_host_package(host_package, source_root)
@@ -970,6 +1080,7 @@ def verify_app(
         "icon": icon,
         "platformIcons": platform_icons,
         "providerIcons": provider_icons,
+        "browserExtension": browser_extension,
         "minimumMacOS": app_minimum,
         "plist": plist,
         "plistHash": plist_hash,
@@ -1046,7 +1157,7 @@ def validate_staging(staging: Path, source_root: Path, config: dict[str, Any]) -
         reject("DMG staging root is unsafe")
     names = {path.name for path in staging.iterdir()}
     if names != {APP_BUNDLE, RELEASE_UNIT_NAME}:
-        reject("DMG staging root must contain exactly LinkDigest.app and release-unit.json")
+        reject(f"DMG staging root must contain exactly {APP_BUNDLE} and {RELEASE_UNIT_NAME}")
     unit_path = staging / RELEASE_UNIT_NAME
     info = unit_path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or stat.S_IMODE(info.st_mode) != 0o644:

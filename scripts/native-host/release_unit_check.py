@@ -297,24 +297,34 @@ def staging_tamper_cases(audit: Path, cases: Path) -> None:
     expect_error(lambda: unit.validate_staging(extra, source, config), unit.INVALID_UNSAFE, "staging extra entry")
 
     plist_case = clone_staging(audit, cases, "plist-drift")
-    plist_path = plist_case / "LinkDigest.app/Contents/Info.plist"
+    plist_path = plist_case / unit.APP_BUNDLE / "Contents/Info.plist"
     plist_value = plistlib.loads(plist_path.read_bytes())
-    plist_value["CFBundleVersion"] = "2"
+    plist_value["CFBundleVersion"] = "999"
     plist_path.write_bytes(plistlib.dumps(plist_value, fmt=plistlib.FMT_XML, sort_keys=True))
     expect_error(lambda: unit.validate_staging(plist_case, source, config), unit.INVALID_UNSAFE, "plist build drift")
 
     package_case = clone_staging(audit, cases, "package-drift")
-    metadata = package_case / "LinkDigest.app/Contents/Resources/NativeHost/LinkDigestNativeHost-0.2.0-macos-arm64/package.json"
+    metadata = package_case / unit.APP_BUNDLE / "Contents/Resources/NativeHost/LinkDigestNativeHost-0.2.0-macos-arm64/package.json"
     value = json.loads(metadata.read_text(encoding="utf-8"))
     value["minimumMacOS"] = "14.0"
     metadata.write_bytes(unit.canonical_bytes(value))
     expect_error(lambda: unit.validate_staging(package_case, source, config), unit.INVALID_UNSAFE, "Host package drift")
 
     icon_case = clone_staging(audit, cases, "icon-drift")
-    icon = icon_case / "LinkDigest.app/Contents/Resources/AppIcon.icns"
+    icon = icon_case / unit.APP_BUNDLE / "Contents/Resources/AppIcon.icns"
     with icon.open("ab") as handle:
         handle.write(b"drift")
     expect_error(lambda: unit.validate_staging(icon_case, source, config), unit.INVALID_UNSAFE, "App icon hash drift")
+
+    extension_case = clone_staging(audit, cases, "browser-extension-drift")
+    extension_background = extension_case / unit.APP_BUNDLE / "Contents/Resources/BrowserExtension/background.js"
+    with extension_background.open("ab") as handle:
+        handle.write(b"drift")
+    expect_error(
+        lambda: unit.validate_staging(extension_case, source, config),
+        unit.INVALID_UNSAFE,
+        "embedded browser extension drift",
+    )
 
     mixed = clone_staging(audit, cases, "mixed-unit")
     unit_path = mixed / "release-unit.json"
@@ -333,14 +343,14 @@ def staging_tamper_cases(audit: Path, cases: Path) -> None:
             else list(unit.stable_host.SUPPORTED_ARCHITECTURES)
         )
         expect_error(
-            lambda: unit.verify_app(audit / "staging/LinkDigest.app", None, source, config),
+            lambda: unit.verify_app(audit / "staging" / unit.APP_BUNDLE, None, source, config),
             unit.INVALID_UNSAFE,
             "App architecture drift",
         )
         unit.macho_architectures = original_arch
         unit.macho_minimum_macos = lambda path: "14" if path.name == "LinkDigestApp" else "15"
         expect_error(
-            lambda: unit.verify_app(audit / "staging/LinkDigest.app", None, source, config),
+            lambda: unit.verify_app(audit / "staging" / unit.APP_BUNDLE, None, source, config),
             unit.INVALID_UNSAFE,
             "App minimum macOS drift",
         )

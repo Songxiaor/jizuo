@@ -14,6 +14,7 @@ struct BrowserSupportSettingsView: View {
   private struct ExtensionFolderMiss: Identifiable {
     let id = UUID()
     let searched: [URL]
+    let detail: String?
   }
 
   @State private var revealFailure: ExtensionFolderMiss?
@@ -57,8 +58,12 @@ struct BrowserSupportSettingsView: View {
               .accessibilityIdentifier("reveal-test-browser-extension")
               .alert(item: $revealFailure) { miss in
                 Alert(
-                  title: Text("没找到扩展文件夹"),
-                  message: Text("找过这些位置：\n" + miss.searched.map(\.path).joined(separator: "\n")),
+                  title: Text("扩展文件夹没有打开"),
+                  message: Text(
+                    [miss.detail, "找过这些位置：\n" + miss.searched.map(\.path).joined(separator: "\n")]
+                      .compactMap { $0 }
+                      .joined(separator: "\n\n")
+                  ),
                   dismissButton: .default(Text("好"))
                 )
               }
@@ -137,9 +142,9 @@ struct BrowserSupportSettingsView: View {
         case .installed, .repaired:
           Alert(
             title: Text(result.kind == .installed ? "浏览器支持已安装" : "浏览器支持已修复"),
-            message: Text("下一步：1. 打开对应浏览器；2. 在扩展管理页开启开发者模式；3. 选择“加载已解压的扩展程序”，并选择交付包中的 extension 文件夹。"),
+            message: Text("下一步：1. 点“打开扩展文件夹”；2. 在浏览器扩展管理页开启开发者模式；3. 选择“加载已解压的扩展程序”，并选择 Finder 刚刚选中的“汲作浏览器扩展”。"),
             primaryButton: .default(Text("打开 \(result.browser.displayName)")) { openBrowser(result.browser) },
-            secondaryButton: .default(Text("在 Finder 中显示测试扩展")) { revealExtensionFiles() }
+            secondaryButton: .default(Text("打开扩展文件夹")) { revealExtensionFiles() }
           )
         case .uninstalled:
           Alert(title: Text("浏览器支持已卸载"), message: Text("\(ProductDisplay.name) 已移除自己拥有且校验一致的 Native Messaging manifest。浏览器扩展文件不会被删除。"), dismissButton: .default(Text("好")))
@@ -398,6 +403,8 @@ struct BrowserSupportSettingsView: View {
   private func extensionFolderCandidates() -> [URL] {
     let neighborhood = Bundle.main.bundleURL.deletingLastPathComponent()
     var candidates: [URL] = []
+    candidates.append(neighborhood.appendingPathComponent("汲作浏览器扩展", isDirectory: true))
+    candidates.append(neighborhood.appendingPathComponent("LinkDigest-extension", isDirectory: true))
     if let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String {
       candidates.append(neighborhood.appendingPathComponent("LinkDigest-extension-\(version)", isDirectory: true))
     }
@@ -419,12 +426,31 @@ struct BrowserSupportSettingsView: View {
   /// 只认带 `manifest.json` 的目录：没有它浏览器加载不了，指过去只会让人以为是
   /// 浏览器出了问题。一个都找不到就明说，不再静默失败。
   private func revealExtensionFiles() {
-    let candidates = extensionFolderCandidates()
+    let delivery = BrowserExtensionFolderDelivery()
+    var candidates: [URL] = []
+    if let bundled = delivery.bundledSource() {
+      candidates.append(bundled)
+      do {
+        let delivered = try delivery.deliver(
+          source: bundled,
+          destinationParent: delivery.defaultDestinationParent()
+        )
+        NSWorkspace.shared.activateFileViewerSelecting([delivered])
+        return
+      } catch {
+        revealFailure = ExtensionFolderMiss(
+          searched: candidates,
+          detail: "扩展已包含在 App 中，但导出失败：\(error.localizedDescription)"
+        )
+        return
+      }
+    }
+    candidates.append(contentsOf: extensionFolderCandidates())
     let found = candidates.first {
       FileManager.default.fileExists(atPath: $0.appendingPathComponent("manifest.json").path)
     }
     guard let found else {
-      revealFailure = ExtensionFolderMiss(searched: candidates)
+      revealFailure = ExtensionFolderMiss(searched: candidates, detail: nil)
       return
     }
     NSWorkspace.shared.activateFileViewerSelecting([found])
