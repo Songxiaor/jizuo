@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -109,13 +110,12 @@ INSTALL_NOTE_TEMPLATE = """{name} 安装说明
 
    如果你想一键保存正在看的网页/视频，需要装配套扩展：
 
+   · 回到 {name}，打开「设置 → 浏览器支持」
+   · 点「打开扩展文件夹」；{name} 会把内置扩展复制到固定位置并在 Finder 里选中
    · 打开 Chrome，地址栏输入 chrome://extensions
    · 打开右上角「开发者模式」
-   · 点「加载已解压的扩展程序」
-   · 选择本 DMG 里的 LinkDigest-extension 文件夹
-     （建议先把它拷到一个固定位置，别放在 DMG 里，
-       否则弹出 DMG 后扩展会失效）
-   · 回到 {name}，打开「设置 → 浏览器支持」完成连接
+   · 点「加载已解压的扩展程序」，选择 Finder 刚刚选中的「{name}浏览器扩展」
+   · 回到 {name}，在同一页面完成连接
 
 5. 需要配置模型才能用总结/翻译
 
@@ -127,7 +127,7 @@ INSTALL_NOTE_TEMPLATE = """{name} 安装说明
 
 
 def build_dmg(
-    app: Path, extension: Path, output: Path, version: str, display_name: str
+    app: Path, extension: Path, output: Path, version: str, display_name: str, edition: str
 ) -> None:
     """组装 DMG 内容并生成映像。"""
     with tempfile.TemporaryDirectory(prefix="linkdigest-dmg-stage.", dir="/private/tmp") as tmp:
@@ -145,11 +145,30 @@ def build_dmg(
             output.unlink()
         run("/usr/bin/hdiutil", "create",
             # 卷名是双击 DMG 后 Finder 边栏里显示的那一行,同样要用显示名。
-            # 文件名保持 ASCII 的 LinkDigest-x.y.z.dmg——它会进下载 URL。
-            "-volname", f"{display_name} {version}",
+            # 文件名同样使用产品名；用户下载后第一眼不该再看到内部工程名。
+            "-volname", f"{display_name} {version} {edition}",
             "-srcfolder", str(stage),
             "-ov", "-format", "UDZO",
             str(output))
+
+
+def thin_app(universal_app: Path, destination: Path, architecture: str) -> Path:
+    """从已验证的 universal App 生成一个单架构副本，并重新 ad-hoc 签名。"""
+    shutil.copytree(universal_app, destination, symlinks=False)
+    host_name = "LinkDigestNativeHost-0.2.0-macos-arm64"
+    binaries = [
+        destination / "Contents/MacOS/LinkDigestApp",
+        destination / f"Contents/Resources/NativeHost/{host_name}/LinkDigestNativeHost",
+    ]
+    for binary in binaries:
+        thinned = binary.with_name(f".{binary.name}.{architecture}.thin")
+        run("/usr/bin/lipo", str(binary), "-thin", architecture, "-output", str(thinned))
+        os.chmod(thinned, 0o755)
+        os.replace(thinned, binary)
+        actual = subprocess.check_output(["/usr/bin/lipo", "-archs", str(binary)], text=True).strip()
+        if actual != architecture:
+            raise RuntimeError(f"单架构切片校验失败：{binary} 是 {actual!r}，预期 {architecture!r}")
+    return destination
 
 
 def main() -> int:
@@ -157,15 +176,17 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist",
                         help="DMG 的输出目录（默认 dist/，已在 .gitignore 里）")
     parser.add_argument("--version", required=True,
-                        help="版本号，例如 0.1.0。只用于卷名和文件名。")
+                        help="版本号，例如 0.2.3；必须与 config/app-release.json 一致。")
     args = parser.parse_args()
 
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    dmg = output_dir / f"LinkDigest-{args.version}.dmg"
-
     config = json.loads((ROOT / "config/native-host.json").read_text(encoding="utf-8"))
     app_config = release_unit.load_app_config(ROOT)
+    if args.version != app_config["shortVersion"]:
+        raise RuntimeError(
+            f"--version 必须与 App 版本一致：传入 {args.version!r}，当前是 {app_config['shortVersion']!r}"
+        )
 
     with tempfile.TemporaryDirectory(prefix="linkdigest-dmg-build.", dir="/private/tmp") as tmp:
         work = Path(tmp)
@@ -197,39 +218,43 @@ def main() -> int:
             ROOT,
         )
         release_unit.verify_app(staged_app, None, ROOT, app_config)
-        sign_release(staged_app, app_config["bundleIdentifier"])
+        print("→ 准备内置浏览器扩展…")
+        staged_extension = work / "汲作浏览器扩展"
+        shutil.copytree(
+            staged_app / "Contents/Resources" / release_unit.BROWSER_EXTENSION_DIRECTORY,
+            staged_extension,
+            symlinks=False,
+        )
 
-        print("→ 打包浏览器扩展…")
-        extension_source = ROOT / "apps/browser-extension/.output/chrome-mv3"
-        if extension_source.is_symlink() or not extension_source.is_dir():
-            raise RuntimeError("WXT 没有产出真实的扩展目录，先跑一次扩展构建")
-        # 扩展的名字是 WXT 构建时从 product-display.json 生成进 manifest 的,
-        # 而这里用的是**已有的**构建产物。改完产品名不重建扩展,就会打出一个
-        # App 叫「汲作」、扩展还叫旧名的包——实际发生过,所以这里挡一道。
-        manifest = json.loads(
-            (extension_source / "manifest.json").read_text(encoding="utf-8")
-        )
-        display = json.loads(
-            (ROOT / "apps/desktop/Sources/LinkDigestCore/Resources/product-display.json")
-            .read_text(encoding="utf-8")
-        )
-        if manifest.get("name") != display["displayName"]:
-            raise RuntimeError(
-                f"扩展 manifest 的名字是 {manifest.get('name')!r},"
-                f"而产品显示名是 {display['displayName']!r}。\n"
-                f"先重建扩展:cd apps/browser-extension && pnpm build"
+        outputs = []
+        editions = [
+            ("arm64", "Apple Silicon", "Apple-Silicon"),
+            ("x86_64", "Intel", "Intel"),
+        ]
+        for architecture, edition, filename_edition in editions:
+            print(f"→ 生成 {edition} App 与 DMG…")
+            architecture_root = work / architecture
+            architecture_root.mkdir()
+            architecture_app = thin_app(
+                staged_app,
+                architecture_root / release_unit.APP_BUNDLE,
+                architecture,
             )
-        staged_extension = work / "LinkDigest-extension"
-        shutil.copytree(extension_source, staged_extension, symlinks=False)
+            sign_release(architecture_app, app_config["bundleIdentifier"])
+            dmg = output_dir / f"汲作-{args.version}-macOS-{filename_edition}.dmg"
+            build_dmg(
+                architecture_app,
+                staged_extension,
+                dmg,
+                args.version,
+                app_config["appDisplayName"],
+                edition,
+            )
+            outputs.append(dmg)
 
-        print("→ 生成 DMG…")
-        build_dmg(
-            staged_app, staged_extension, dmg, args.version,
-            app_config["appDisplayName"],
-        )
-
-    size_mb = dmg.stat().st_size / 1024 / 1024
-    print(f"\n完成: {dmg}  ({size_mb:.1f} MB)")
+    for dmg in outputs:
+        size_mb = dmg.stat().st_size / 1024 / 1024
+        print(f"\n完成: {dmg}  ({size_mb:.1f} MB)")
     print("提醒: ad-hoc 签名，下载方首次打开需要走「系统设置 → 隐私与安全性」。")
     return 0
 

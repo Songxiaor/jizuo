@@ -215,7 +215,8 @@ final class ProviderSettingsPresentationTests: XCTestCase {
       XCTAssertTrue(source.contains("providerIcons"))
     }
     XCTAssertTrue(release.contains("resources / PROVIDER_ICONS_DIRECTORY"))
-    XCTAssertTrue(release.contains("PROVIDER_ICONS_DIRECTORY}:") || release.contains("PROVIDER_ICONS_DIRECTORY}"))
+    XCTAssertTrue(release.contains("PROVIDER_ICONS_DIRECTORY,"))
+    XCTAssertTrue(release.contains("BROWSER_EXTENSION_DIRECTORY,"))
     XCTAssertTrue(local.contains("PROVIDER_ICON_FILES != r4a.PROVIDER_ICON_FILES"))
   }
 

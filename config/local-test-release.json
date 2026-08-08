@@ -60,11 +60,11 @@
   "minimumMacOS": "15.0",
   "r4aFrozenHashes": {
     "apps/desktop/Assets/AppIcon.icns": "fa33012723d17567fd08e5839af7c86ae2d0fbf9456b74c3714f6d0c9a15215e",
-    "config/app-release.json": "6e0924d7c8848aede9051f506e25c5754155c706a5d71311d66d3379e647cd8f",
+    "config/app-release.json": "588ca211f3f8e35a914cf95a098081370df5f3ab666ac1936683a28a41925437",
     "scripts/native-host/check-release-unit.sh": "e60df91e6c914728d39990a4ac1295eaf72ae4396cd970071d1b752d351b5f6d",
     "scripts/native-host/package-app-dmg.sh": "6dc6b4b776aeb1578510059599392672e65030d2170fd117c555445c747997b2",
-    "scripts/native-host/release_unit.py": "bab02c87b02125c93ea3b0ae682ee4827f37bed01454318b8a3388cc2c91a461",
-    "scripts/native-host/release_unit_check.py": "7dc265a204c5bae8b02d3e377a14d67d4e82e5d27fee7b1956c387482e4190ae"
+    "scripts/native-host/release_unit.py": "3fb3ab309b861562ea36ea35fddf06005f272098cffe2d605ff0793bf21a3761",
+    "scripts/native-host/release_unit_check.py": "cffb0fbc6b35ebe3d00df6d0de7841c23d7169016a79a3f8b7ce93f5259faa6d"
   },
   "secretFixtureHashAllowlist": {
     "scripts/native-host/release_preflight_check.py": "1e8bd8ba29ebfe581e131bdf9094166361e92c7e8044b3cb012d4716bd03bb49"

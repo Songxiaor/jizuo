@@ -72,12 +72,13 @@
 
 ## 当前状态
 
-汲作是一个正在真实使用和持续迭代的个人产品，目前以本地测试与开发构建为主。
+汲作是一个正在真实使用和持续迭代的个人产品。当前 GitHub Release 提供分开的 Apple Silicon 与 Intel 测试安装包。
 
 - 桌面端最低支持 macOS 15。
 - Apple 本机视频转写需要 macOS 26 或更高版本。
 - Chrome 扩展通过 Native Messaging 与 macOS App 交接内容。
-- Developer ID 签名、公证和公开分发流程尚未完成，当前仓库尚未提供面向普通用户的公开安装包。
+- 当前安装包使用 ad-hoc 签名，Developer ID 签名与公证尚未完成；首次打开需按 DMG 内说明在“系统设置 → 隐私与安全性”确认。
+- 最新下载入口：[GitHub Releases](https://github.com/Songxiaor/linkdigest/releases/latest)。新机安装与扩展连接见 [`docs/新机测试指南.md`](docs/新机测试指南.md)。
 
 ## 技术结构
 
