@@ -180,6 +180,7 @@ struct SelectableReadingTextView: NSViewRepresentable {
   let attributed: NSAttributedString
   let accent: NSColor
   let onOpenLink: (URL) -> Void
+  var revealText: String? = nil
 
   func makeCoordinator() -> Coordinator { Coordinator(onOpenLink: onOpenLink) }
 
@@ -209,10 +210,21 @@ struct SelectableReadingTextView: NSViewRepresentable {
       view.invalidateIntrinsicContentSize()
     }
     view.linkTextAttributes?[.foregroundColor] = accent
+    if context.coordinator.lastRevealText != revealText,
+       let revealText,
+       !revealText.isEmpty {
+      context.coordinator.lastRevealText = revealText
+      let range = (view.string as NSString).range(of: revealText)
+      if range.location != NSNotFound {
+        view.setSelectedRange(range)
+        DispatchQueue.main.async { view.scrollRangeToVisible(range) }
+      }
+    }
   }
 
   final class Coordinator: NSObject, NSTextViewDelegate {
     var onOpenLink: (URL) -> Void
+    var lastRevealText: String?
     init(onOpenLink: @escaping (URL) -> Void) { self.onOpenLink = onOpenLink }
 
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
@@ -237,8 +249,23 @@ struct SelectableReadingTextView: NSViewRepresentable {
       )
       item.target = self
       menu?.insertItem(item, at: 0)
-      menu?.insertItem(NSMenuItem.separator(), at: 1)
+      let citationItem = NSMenuItem(
+        title: "复制引用（含来源）",
+        action: #selector(copySelectionAsCitation(_:)),
+        keyEquivalent: ""
+      )
+      citationItem.target = self
+      menu?.insertItem(citationItem, at: 1)
+      menu?.insertItem(NSMenuItem.separator(), at: 2)
       return menu
+    }
+
+    @objc private func copySelectionAsCitation(_: Any?) {
+      let range = selectedRange()
+      guard range.length > 0,
+            let selected = textStorage?.attributedSubstring(from: range).string else { return }
+      let citation = ReadingSelectionRouter.shared.formatter?(selected) ?? selected
+      CopyFeedbackController.shared.copy(citation)
     }
 
     @objc private func captureSelectionAsExcerpt(_: Any?) {
@@ -255,7 +282,10 @@ struct SelectableReadingTextView: NSViewRepresentable {
       guard range.length > 0,
             let selected = textStorage?.attributedSubstring(from: range).string,
             !selected.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-      Task { @MainActor in CopyFeedbackController.shared.copy(selected) }
+      Task { @MainActor in
+        let citation = ReadingSelectionRouter.shared.formatter?(selected) ?? selected
+        CopyFeedbackController.shared.copy(citation)
+      }
     }
 
     override var intrinsicContentSize: NSSize {
@@ -280,4 +310,10 @@ struct SelectableReadingTextView: NSViewRepresentable {
 @MainActor final class ExcerptCaptureRouter {
   static let shared = ExcerptCaptureRouter()
   var handler: ((String) -> Void)?
+}
+
+/// 当前阅读条目的引用格式。只存在于进程内，不把标题或来源写进全局偏好。
+@MainActor final class ReadingSelectionRouter {
+  static let shared = ReadingSelectionRouter()
+  var formatter: ((String) -> String)?
 }

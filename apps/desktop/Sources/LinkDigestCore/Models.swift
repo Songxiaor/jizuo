@@ -1,10 +1,15 @@
 import Foundation
 
+public enum CaptureRequestedAction: String, Codable, Sendable, Equatable {
+  case save, summarize, translate
+}
+
 public struct CaptureEnvelopeV1: Codable, Sendable, Equatable {
   public let version: Int
   public let requestId: String
   public let createdAt: String
   public let idempotencyKey: String?
+  public let requestedAction: CaptureRequestedAction?
   public let source: Source
   public let capture: Capture
   public let evidence: Evidence
@@ -16,6 +21,7 @@ public struct CaptureEnvelopeV1: Codable, Sendable, Equatable {
     requestId: String,
     createdAt: String,
     idempotencyKey: String? = nil,
+    requestedAction: CaptureRequestedAction? = nil,
     source: Source,
     capture: Capture,
     evidence: Evidence,
@@ -25,6 +31,7 @@ public struct CaptureEnvelopeV1: Codable, Sendable, Equatable {
     self.requestId = requestId
     self.createdAt = createdAt
     self.idempotencyKey = idempotencyKey
+    self.requestedAction = requestedAction
     self.source = source
     self.capture = capture
     self.evidence = evidence
@@ -144,6 +151,7 @@ public struct CaptureEnvelopeV2: Codable, Sendable, Equatable {
   public let requestId: String
   public let createdAt: String
   public let idempotencyKey: String?
+  public let requestedAction: CaptureRequestedAction?
   public let source: CaptureEnvelopeV1.Source
   public let capture: CaptureEnvelopeV1.Capture
   public let evidence: CaptureEnvelopeV1.Evidence
@@ -154,6 +162,7 @@ public struct CaptureEnvelopeV2: Codable, Sendable, Equatable {
     requestId: String,
     createdAt: String,
     idempotencyKey: String? = nil,
+    requestedAction: CaptureRequestedAction? = nil,
     source: CaptureEnvelopeV1.Source,
     capture: CaptureEnvelopeV1.Capture,
     evidence: CaptureEnvelopeV1.Evidence,
@@ -163,6 +172,7 @@ public struct CaptureEnvelopeV2: Codable, Sendable, Equatable {
     self.requestId = requestId
     self.createdAt = createdAt
     self.idempotencyKey = idempotencyKey
+    self.requestedAction = requestedAction
     self.source = source
     self.capture = capture
     self.evidence = evidence

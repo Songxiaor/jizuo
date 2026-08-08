@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { makeAppError, type NativeResponse } from "../src/contract";
 import {
   popupAvailability,
+  popupActionPresentation,
   popupBuildLabel,
   popupDiagnosticStatus,
   popupMediaStatus,
   popupMessageForResponse,
   popupMessageForSendResult,
+  popupRecoveryForSendResult,
   popupMetaChips,
   popupPlatformLabel,
   popupScaleLabel,
@@ -24,6 +26,23 @@ const knownCodes = [
 ];
 
 describe("popup error presentation", () => {
+  it("maps every action to explicit outcome copy", () => {
+    expect(popupActionPresentation("save").button).toBe("保存到汲作");
+    expect(popupActionPresentation("summarize").detail).toContain("生成总结");
+    expect(popupActionPresentation("translate").success).toContain("准备翻译");
+  });
+
+  it("reduces native failures to one primary recovery action", () => {
+    const openApp = popupRecoveryForSendResult({
+      response: { kind: "error", error: makeAppError("req", "network", "APP_UNAVAILABLE", true, "open_app") },
+    });
+    expect(openApp).toMatchObject({ action: "open_app", label: "打开汲作" });
+
+    const install = popupRecoveryForSendResult({
+      response: { kind: "error", error: makeAppError("req", "network", "NATIVE_HOST_NOT_FOUND", false, "open_install_guide") },
+    });
+    expect(install).toMatchObject({ action: "open_settings" });
+  });
   it("uses fixed allowlisted layer-specific copy without raw wire fields", () => {
     for (const code of knownCodes) {
       const response: NativeResponse = { kind: "error", error: { ...makeAppError("req", "storage", code, true, "retry"), safeDetail: "sentinel-secret-path" } };

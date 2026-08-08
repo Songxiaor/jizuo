@@ -58,6 +58,7 @@ import {
   validateCapture,
   type CaptureEnvelope,
   type CapturePlatform,
+  type CaptureRequestedAction,
   type MediaDescriptor,
   type NativeResponse,
 } from "../contract";
@@ -269,6 +270,7 @@ function downgradeToV1(value: CaptureEnvelope): CaptureEnvelope {
     requestId: value.requestId,
     createdAt: value.createdAt,
     ...(value.idempotencyKey ? { idempotencyKey: value.idempotencyKey } : {}),
+    ...(value.requestedAction ? { requestedAction: value.requestedAction } : {}),
     source: value.source,
     capture: value.capture,
     evidence: { sourceLabel: "Current page DOM", usedCookie: false },
@@ -1189,13 +1191,16 @@ export async function captureFromTab(tabId: number): Promise<CaptureEnvelope> {
   return (await captureAttemptFromTab(tabId)).envelope;
 }
 
-export async function sendCapture(tabId: number): Promise<ExtensionSendResult> {
+export async function sendCapture(
+  tabId: number,
+  requestedAction: CaptureRequestedAction = "save",
+): Promise<ExtensionSendResult> {
   const attempt = await captureAttemptFromTab(tabId);
   const { envelope, mediaDiagnostic, metadataDiagnostic } = attempt;
   // V2-first strategy: validate the V2 envelope (which carries the media
   // descriptor). Only if V2 validation actually fails do we downgrade to V1.
   // This preserves the video player URL and media metadata for the App.
-  let wireEnvelope: CaptureEnvelope = envelope;
+  let wireEnvelope: CaptureEnvelope = { ...envelope, requestedAction };
   let invalid = validateCapture(wireEnvelope);
   if (invalid && envelope.version === 2) {
     // V2 validation failed — downgrade to V1 (drops media, keeps text).
@@ -1368,13 +1373,16 @@ export async function syncSingleTweet(tweetID: unknown): Promise<SingleTweetSync
 
 export default defineBackground(() => {
   browser.runtime.onMessage.addListener(async (
-    message: { type?: string; tabId?: number; tweetID?: string },
+    message: { type?: string; tabId?: number; tweetID?: string; requestedAction?: CaptureRequestedAction },
   ) => {
     // 时间线注入按钮发来的单条同步：只需要 tweetID，不涉及 tabId。
     if (message.type === "sync-single-tweet") return syncSingleTweet(message.tweetID);
     if (typeof message.tabId !== "number") return undefined;
     if (message.type === "preview-current-page") return previewCurrentPage(message.tabId);
-    if (message.type === "send-current-page") return sendCapture(message.tabId);
+    if (message.type === "send-current-page") {
+      const action = message.requestedAction;
+      return sendCapture(message.tabId, action === "summarize" || action === "translate" ? action : "save");
+    }
     if (message.type === "sync-x-bookmarks") return syncXBookmarks(message.tabId);
     return undefined;
   });

@@ -292,12 +292,12 @@ final class ProviderSettingsPresentationTests: XCTestCase {
       .components(separatedBy: "\n")
       .first { $0.contains(".padding(.vertical,") && !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
     XCTAssertEqual(
-      mainPadding?.contains(".padding(.vertical, 3)"), true,
+      mainPadding?.contains(".padding(.vertical, DesignTokens.Space.xs)"), true,
       "主界面侧栏行的垂直刻度变了，设置侧栏的断言需要跟着改：\(mainPadding ?? "<未找到>")")
 
     let sidebar = section(in: settings, from: "private var paperSidebar: some View {", to: "private var settingsTheme")
     XCTAssertTrue(
-      sidebar.contains(".padding(.vertical, 3)"),
+      sidebar.contains(".padding(.vertical, DesignTokens.Space.xs)"),
       "设置侧栏行的垂直刻度与主界面侧栏不一致，选中药丸会明显更粗")
   }
 

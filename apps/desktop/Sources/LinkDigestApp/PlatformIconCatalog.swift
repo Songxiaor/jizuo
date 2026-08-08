@@ -57,6 +57,13 @@ enum PlatformIconCatalog {
     return nil
   }
 
+  /// These brand marks are intentionally monochrome. Their bundled SVGs use a
+  /// near-black fill, which disappears on the ink theme unless AppKit treats
+  /// the rasterized image as a template and supplies the current text color.
+  static func usesTemplateRendering(forAssetName name: String) -> Bool {
+    name == "x.com" || name == "github"
+  }
+
   /// Rasterizing an SVG is expensive and the history list re-renders every row
   /// on each state change, so the bitmap is produced once per asset.
   /// `NSCache` is thread-safe, which is what `nonisolated(unsafe)` asserts here.
@@ -74,6 +81,7 @@ enum PlatformIconCatalog {
       .appendingPathComponent(assetDirectory, isDirectory: true)
       .appendingPathComponent(name + ".svg")
     guard let image = crispenedIcon(from: url) else { return nil }
+    image.isTemplate = usesTemplateRendering(forAssetName: name)
     rasterCache.setObject(image, forKey: name as NSString)
     return image
   }

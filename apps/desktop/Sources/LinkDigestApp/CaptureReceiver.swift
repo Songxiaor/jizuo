@@ -10,6 +10,10 @@ struct CurrentCapture: Sendable, Equatable {
   let taskID: TaskID
   let snapshotID: ContentSnapshotID
 
+  var requestedAction: CaptureRequestedAction? {
+    wireEnvelope?.requestedAction ?? wireEnvelopeV2?.requestedAction
+  }
+
   init(envelope: CaptureEnvelopeV1, taskID: TaskID, snapshotID: ContentSnapshotID) {
     document = .init(wire: envelope)
     wireEnvelope = envelope

@@ -1,6 +1,7 @@
 import validateWireSchema, { type SchemaValidationError } from "./generated/capture-validator.mjs";
 
 export const MAX_CAPTURE_TEXT_SCALARS = 2_000_000;
+export type CaptureRequestedAction = "save" | "summarize" | "translate";
 export type CapturePlatform = "generic" | "x" | "youtube" | "wechat" | "xiaohongshu" | "douyin" | "bilibili" | "github" | "zhihu" | "medium" | "substack" | "toutiao";
 export type CaptureMedia = {
   platform: "douyin";
@@ -47,6 +48,7 @@ export type MediaDescriptor = {
 
 export type CaptureEnvelopeV1 = {
   version: 1; requestId: string; createdAt: string; idempotencyKey?: string;
+  requestedAction?: CaptureRequestedAction;
   source: { kind: "browser_capture"; url: string; title: string | null; platform: CapturePlatform };
   capture: { method: "rendered_dom" | "selection"; text: string; characterCount: number; completeness: "full_article" | "visible_only" | "selection_only" | "unknown"; capturedAt: string };
   evidence: { sourceLabel: string; usedCookie: false };
@@ -55,6 +57,7 @@ export type CaptureEnvelopeV1 = {
 };
 export type CaptureEnvelopeV2 = {
   version: 2; requestId: string; createdAt: string; idempotencyKey?: string;
+  requestedAction?: CaptureRequestedAction;
   source: CaptureEnvelopeV1["source"];
   capture: CaptureEnvelopeV1["capture"];
   evidence: { sourceLabel: string; usedCookie: boolean };

@@ -802,6 +802,7 @@ struct MarkdownContentView: View {
   /// 正文下方的模块（脑图 / 图片 / 标注 / 标签…）。由详情页按实际存在的模块传入——
   /// 这里不知道页面上有什么，硬猜只会列出点了跳不到的死链接。
   var navigationModules: [ReadingModuleLink] = []
+  var revealText: String?
   @State private var rejectedLink = false
   @State private var showsOutlinePopover = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -937,7 +938,8 @@ struct MarkdownContentView: View {
     accentColor: Color = .accentColor,
     showsPlainText: Binding<Bool> = .constant(false),
     showsInlinePlainTextToggle: Bool = true,
-    navigationModules: [ReadingModuleLink] = []
+    navigationModules: [ReadingModuleLink] = [],
+    revealText: String? = nil
   ) {
     self.source = source
     self.sourceURL = sourceURL
@@ -950,6 +952,7 @@ struct MarkdownContentView: View {
     self._showsPlainText = showsPlainText
     self.showsInlinePlainTextToggle = showsInlinePlainTextToggle
     self.navigationModules = navigationModules
+    self.revealText = revealText
   }
 
   var body: some View {
@@ -981,7 +984,8 @@ struct MarkdownContentView: View {
             color: NSColor(primaryTextColor)
           ),
           accent: NSColor(accentColor),
-          onOpenLink: { url in openValidated(url) }
+          onOpenLink: { url in openValidated(url) },
+          revealText: revealText
         )
         .frame(maxWidth: .infinity, alignment: .leading)
       } else if localImageURLs.isEmpty && LocalMarkdownImageLayout.quotedTweetRange(in: source) == nil {
@@ -1094,7 +1098,8 @@ struct MarkdownContentView: View {
           )
         ),
         accent: NSColor(accentColor),
-        onOpenLink: { url in openValidated(url) }
+        onOpenLink: { url in openValidated(url) },
+        revealText: revealText
       )
     case let .code(language, content):
       codeBlock(language: language, content: content)

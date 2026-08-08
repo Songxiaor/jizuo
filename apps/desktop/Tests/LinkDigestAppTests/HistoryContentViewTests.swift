@@ -336,10 +336,12 @@ final class HistoryContentViewTests: XCTestCase {
 
     XCTAssertTrue(source.contains("NavigationSplitView(columnVisibility: $columnVisibility)"))
     XCTAssertTrue(source.contains("content: {"))
-    // Both side columns open at near-matching widths and keep hard caps so the
-    // detail column receives the surplus width.
-    XCTAssertTrue(source.contains("navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 200)"))
-    XCTAssertTrue(source.contains("navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 260)"))
+    // The split view must consume the shared layout tokens. Hard-coded widths
+    // previously drifted below the token minimums and truncated both sidebars.
+    XCTAssertTrue(source.contains("min: DesignTokens.Layout.sidebarMin"))
+    XCTAssertTrue(source.contains("ideal: DesignTokens.Layout.sidebarIdeal"))
+    XCTAssertTrue(source.contains("min: DesignTokens.Layout.listMin"))
+    XCTAssertTrue(source.contains("ideal: DesignTokens.Layout.listIdeal"))
     XCTAssertTrue(source.contains(".modifier(HistoryWindowToolbarThemeModifier(theme: theme))"))
     XCTAssertTrue(source.contains(".toolbarBackground(theme.canvas, for: .windowToolbar)"))
     XCTAssertTrue(source.contains(".toolbarBackground(.visible, for: .windowToolbar)"))
@@ -354,6 +356,11 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("history-navigation-recent"))
     XCTAssertTrue(source.contains("history-navigation-unsummarized"))
     XCTAssertTrue(source.contains("history-navigation-tags-all"))
+    XCTAssertTrue(source.contains("@State private var navigationTagsExpanded = false"))
+    XCTAssertTrue(source.contains("Array(ordered.prefix(6))"))
+    let platforms = appSource("PlatformGridView.swift")
+    XCTAssertTrue(platforms.contains("Text(name)"), "Platform names must remain visible without hover")
+    XCTAssertTrue(platforms.contains("PlatformNavigationRow"))
     // 普通点击=叠加（AND 缩小范围），⌘点击=只看此标签；Syc 2026-07-23 拍板翻转。
     XCTAssertTrue(source.contains("model.toggleTag(item.tag, additive: !NSEvent.modifierFlags.contains(.command))"))
     XCTAssertTrue(sidebar.contains(".frame(maxWidth: .infinity)"))
@@ -394,6 +401,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("actionToolbar"))
     XCTAssertTrue(detail.contains("readingSurface"))
     XCTAssertTrue(detail.contains("actionPill"))
+    XCTAssertTrue(detail.contains("prominent: !isOwnWriting && summaryArtifact == nil"))
+    XCTAssertTrue(detail.contains(".buttonStyle(.borderedProminent)"))
     // Run/capture metadata sits under the title, not after the reading body.
     XCTAssertTrue(detail.contains("history-run-metadata") || detail.contains("if let run = newestRun"))
     XCTAssertTrue(detail.contains("history-capture-metadata"))
@@ -454,10 +463,12 @@ final class HistoryContentViewTests: XCTestCase {
           let articleReading = detail.range(of: "readingSurface", range: articleBranch.upperBound..<detail.endIndex),
           let media = detail.range(of: "if let localMediaFileURL", range: articleReading.upperBound..<detail.endIndex),
           let videoFirstBranch = detail.range(of: "if !presentsArticleBeforeMedia", range: media.upperBound..<detail.endIndex),
-          let videoFirstReading = detail.range(of: "readingSurface", range: videoFirstBranch.upperBound..<detail.endIndex)
+          let videoFirstReading = detail.range(of: "readingSurface", range: videoFirstBranch.upperBound..<detail.endIndex),
+          let mindMap = detail.range(of: "MindMapSectionView", range: videoFirstReading.upperBound..<detail.endIndex)
     else { return XCTFail("WeChat/article and video-first ordering anchors are unavailable") }
     XCTAssertLessThan(articleReading.lowerBound, media.lowerBound)
     XCTAssertLessThan(media.lowerBound, videoFirstReading.lowerBound)
+    XCTAssertLessThan(videoFirstReading.lowerBound, mindMap.lowerBound, "Derived mind map must not displace reading content")
   }
 
   func testWeChatNeverRendersEmbeddedVideoOrVideoMetadata() {
@@ -1082,6 +1093,13 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertNil(PlatformIconCatalog.assetName(for: "example.test"))
   }
 
+  func testMonochromePlatformMarksFollowTheCurrentThemeTextColor() {
+    XCTAssertTrue(PlatformIconCatalog.usesTemplateRendering(forAssetName: "x.com"))
+    XCTAssertTrue(PlatformIconCatalog.usesTemplateRendering(forAssetName: "github"))
+    XCTAssertFalse(PlatformIconCatalog.usesTemplateRendering(forAssetName: "wechat"))
+    XCTAssertFalse(PlatformIconCatalog.usesTemplateRendering(forAssetName: "youtube"))
+  }
+
   func testUnmappedHostStillGetsAStableNonEmptyMark() {
     XCTAssertEqual(PlatformIconCatalog.fallbackInitial(for: "example.test"), "E")
     XCTAssertEqual(PlatformIconCatalog.fallbackInitial(for: "www.example.test"), "E")
@@ -1333,6 +1351,10 @@ final class HistoryContentViewTests: XCTestCase {
     let row = section(in: source, from: "private struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
     XCTAssertTrue(row.contains("theme.encodesStatusByShape"))
     XCTAssertTrue(row.contains("strokeBorder"), "空心圆是高对比主题下「未总结」的唯一标记")
+    XCTAssertTrue(row.contains("theme.success"), "普通主题的已总结状态应使用主题成功色")
+    XCTAssertTrue(row.contains("theme.warning"), "普通主题的未总结状态应使用主题警示色")
+    XCTAssertFalse(row.contains("Color.green"))
+    XCTAssertFalse(row.contains("Color.orange"))
     // 形状和颜色都要求用户看得见；读屏和悬停还得有话可说。
     // 状态走 accessibilityValue 而不是塞进 label：塞进 label 时 VoiceOver 只念
     // 「已总结」，听不出这是一个状态指示器；分开之后念的是「总结状态，已总结」。
