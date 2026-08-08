@@ -60,10 +60,10 @@
   "minimumMacOS": "15.0",
   "r4aFrozenHashes": {
     "apps/desktop/Assets/AppIcon.icns": "fa33012723d17567fd08e5839af7c86ae2d0fbf9456b74c3714f6d0c9a15215e",
-    "config/app-release.json": "588ca211f3f8e35a914cf95a098081370df5f3ab666ac1936683a28a41925437",
+    "config/app-release.json": "7eb5b90fbbcb7a0a45312021c9675cd42713360287c3a0b4ad40436e1b143e32",
     "scripts/native-host/check-release-unit.sh": "e60df91e6c914728d39990a4ac1295eaf72ae4396cd970071d1b752d351b5f6d",
     "scripts/native-host/package-app-dmg.sh": "6dc6b4b776aeb1578510059599392672e65030d2170fd117c555445c747997b2",
-    "scripts/native-host/release_unit.py": "3fb3ab309b861562ea36ea35fddf06005f272098cffe2d605ff0793bf21a3761",
+    "scripts/native-host/release_unit.py": "246b84b49ea7db855dcf92284b2a69a672e21626b517a044136c6c4a023484d1",
     "scripts/native-host/release_unit_check.py": "cffb0fbc6b35ebe3d00df6d0de7841c23d7169016a79a3f8b7ce93f5259faa6d"
   },
   "secretFixtureHashAllowlist": {
