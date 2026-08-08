@@ -69,8 +69,10 @@ final class SettingsLayoutConventionTests: XCTestCase {
     let shared = try source("SettingsCard")
     XCTAssertTrue(shared.contains("struct SettingsCard"))
     XCTAssertTrue(
-      shared.contains("DisclosureGroup(\"了解更多\")"),
-      "详细说明默认收起是这套约定的一半，删掉它 footer 就会以另一种形式回来")
+      shared.contains(".popover(isPresented: $isDetailsPresented"),
+      "详细说明必须留在按需打开的上下文帮助里，不能重新长成常驻 footer")
+    XCTAssertTrue(shared.contains("Image(systemName: \"info.circle\")"))
+    XCTAssertFalse(shared.contains("DisclosureGroup(\"了解更多\")"))
   }
 
   /// 控件自带逐项解释时，卡片说明必须前置，否则读成倒的。

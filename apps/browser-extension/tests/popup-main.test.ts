@@ -11,6 +11,9 @@ type FakeElement = {
   classList: { add: (c: string) => void; remove: (c: string) => void };
   replaceChildren: () => void;
   append: (...nodes: unknown[]) => void;
+  addEventListener: (type: string, handler: () => void) => void;
+  value: string;
+  checked: boolean;
 };
 
 const diagnostic: DouyinMetadataDiagnostic = {
@@ -31,11 +34,14 @@ function popupDOM(): Record<string, FakeElement> {
     dataset: {}, className: "",
     classList: { add: () => {}, remove: () => {} },
     replaceChildren: () => {}, append: () => {},
+    addEventListener: () => {}, value: "", checked: false,
   });
   return {
     "#availability": element(), "#platform": element(), "#status": element(), "#meta": element(),
     "#diag": element(), "#metadata-diagnostic": element(),
     "#error": element(), "#send": element(), "#extension-name": element(), "#build-label": element(),
+    "#sync-bookmarks": element(), "#action-card": element(), "#action-detail": element(),
+    "#result": element(), "#recovery-action": element(), "#open-app": element(),
   };
 }
 
@@ -56,6 +62,7 @@ describe("popup metadata diagnostic fresh-send lifecycle", () => {
     vi.stubGlobal("document", {
       title: "",
       querySelector: (selector: string) => elements[selector] ?? null,
+      querySelectorAll: () => [],
       createElement: () => ({ className: "", textContent: "", append: () => {} }),
       createTextNode: (text: string) => ({ textContent: text }),
     });

@@ -1197,6 +1197,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         appModel: model,
         manualLink: manualLink,
         providerSettings: providerSettings,
+        browserSupport: browserSupport,
         sessionMediaPlayback: sessionMediaPlayback
       )
         .task {
@@ -1271,10 +1272,13 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         }
         // Without a floor the three-column layout collapses to the two sidebar
         // minimums plus a detail pane too narrow to read.
-        .frame(minWidth: 900, minHeight: 620)
+        .frame(
+          minWidth: DesignTokens.Layout.windowMinWidth,
+          minHeight: DesignTokens.Layout.windowMinHeight
+        )
         .appThemeEnvironment(appearanceThemeRaw)
     }
-    .defaultSize(width: 1100, height: 760)
+    .defaultSize(width: 1200, height: 760)
     // 明确声明这个场景不接任何外部事件。不写这一条，SwiftUI 会把每个进来的
     // `linkdigest://` 当成「再开一个窗口」的请求自己消化掉，URL 根本到不了
     // AppDelegate——表现就是点一次回链多一个汲作窗口。

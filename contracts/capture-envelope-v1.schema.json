@@ -11,6 +11,7 @@
     "requestId": {"type": "string", "minLength": 1, "maxLength": 128},
     "createdAt": {"type": "string", "format": "date-time"},
     "idempotencyKey": {"type": "string", "minLength": 1, "maxLength": 256},
+    "requestedAction": {"type": "string", "enum": ["save", "summarize", "translate"]},
     "source": {
       "type": "object", "required": ["kind", "url", "title", "platform"], "additionalProperties": true,
       "properties": {

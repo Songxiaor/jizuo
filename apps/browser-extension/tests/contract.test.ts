@@ -41,6 +41,14 @@ describe("browser capture contract", () => {
     }
   });
 
+  it("accepts only the three optional requested actions", () => {
+    const value = JSON.parse(readFileSync(fixtureUrl("valid.json"), "utf8"));
+    for (const requestedAction of ["save", "summarize", "translate"]) {
+      expect(validateCapture({ ...value, requestedAction })).toBeNull();
+    }
+    expect(validateCapture({ ...value, requestedAction: "publish" })).toBe("CAPTURE_SCHEMA_INVALID");
+  });
+
   it("consumes shared NativeResponse fixtures with strict ACK correlation", () => {
     const fixture = JSON.parse(readFileSync(new URL("../../../contracts/native-response-fixtures.json", import.meta.url), "utf8")) as {
       cases: Array<{ name: string; expected: string; forbidden?: string; value: unknown }>;

@@ -1521,6 +1521,26 @@ final class HistoryViewModel: ObservableObject {
   /// 每个任务只自动处理一次；重启 App 后不追溯旧内容。
   private var autoPipelineHandledTaskIDs: Set<TaskID> = []
   private var autoPipelineTask: Task<Void, Never>?
+  private var requestedActionHandledTaskIDs: Set<TaskID> = []
+  private var requestedActionTask: Task<Void, Never>?
+
+  /// 扩展弹窗里的「总结 / 翻译」是一次性的明确意图。先等待新条目详情真正可用，
+  /// 再复用 App 内同一条运行链；不让弹窗只改变文案、实际仍旧只是保存。
+  func startRequestedAction(
+    taskID: TaskID,
+    action: @escaping @MainActor (HistoryDetailProjection) async -> Void
+  ) {
+    guard !requestedActionHandledTaskIDs.contains(taskID) else { return }
+    requestedActionHandledTaskIDs.insert(taskID)
+    requestedActionTask?.cancel()
+    requestedActionTask = Task { [weak self] in
+      guard let self else { return }
+      guard await self.waitFor(timeoutSeconds: 15, condition: {
+        self.selectedTaskID == taskID && self.detailState == .loaded && self.detail?.task.id == taskID
+      }), let detail = self.detail else { return }
+      await action(detail)
+    }
+  }
 
   /// 新内容到达后按顺序执行勾选步骤：本机转写 → 整理 → 总结 → 脑图。
   /// 勾选即持久授权：整理/脑图跳过逐次确认；总结沿用数据去向 consent

@@ -104,13 +104,17 @@ struct MindMapSectionView: View {
         .pickerStyle(.segmented)
         .frame(width: 200)
         .labelsHidden()
+        .accessibilityLabel("脑图主题")
         Button("重新生成") { model.requestMindMapGeneration(taskID: taskID) }
           .controlSize(.small)
           .disabled(!model.canGenerateMindMap(taskID: taskID))
           .help("重新把文字发送给模型提取脑图结构；会覆盖当前脑图（含手动编辑）。")
+          .accessibilityLabel("重新生成脑图")
           .accessibilityIdentifier("mind-map-regenerate")
         Button("编辑") { isEditorPresented = true }
           .controlSize(.small)
+          .help("编辑脑图结构")
+          .accessibilityLabel("编辑脑图")
           .accessibilityIdentifier("mind-map-edit")
         Menu {
           Button("导出脑图 SVG") {
@@ -129,6 +133,8 @@ struct MindMapSectionView: View {
         .controlSize(.small)
         .menuStyle(.borderlessButton)
         .frame(width: 84)
+        .help("导出脑图")
+        .accessibilityLabel("导出脑图")
         .accessibilityIdentifier("mind-map-export")
       }
       if let svg = model.mindMapSVG() {

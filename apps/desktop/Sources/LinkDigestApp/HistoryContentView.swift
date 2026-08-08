@@ -11,6 +11,7 @@ struct HistoryContentView: View {
   @ObservedObject var appModel: AppViewModel
   @ObservedObject var manualLink: ManualLinkViewModel
   @ObservedObject var providerSettings: ProviderSettingsViewModel
+  @ObservedObject var browserSupport: BrowserSupportViewModel
   @ObservedObject var sessionMediaPlayback: SessionMediaPlaybackController
   @Environment(\.openSettings) private var openSettings
   @Environment(\.openWindow) private var openWindow
@@ -18,11 +19,14 @@ struct HistoryContentView: View {
   /// 「记一个新灵感」的输入框。
   @State private var isNewSparkPresented = false
   @State private var newSparkText = ""
-  @State private var navigationTagsExpanded = true
+  // 标签是低频筛选，不该在每次启动时抢走半个导航栏。需要时再展开，
+  // 当前已选标签仍由 ViewModel 保留，不会因为折叠而丢失筛选状态。
+  @State private var navigationTagsExpanded = false
   @FocusState private var isSearchFocused: Bool
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
   @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchUserEnabled = false
   @AppStorage(VoiceSettings.storageKey) private var voiceSettingsRaw = ""
+  @AppStorage("onboarding.capture-v1.dismissed") private var isCaptureOnboardingDismissed = false
   /// 灯箱打开时窗口级分栏细线需要让位，避免画在放大的图片上。
   @ObservedObject private var inlineImageLightbox = InlineImageLightboxController.shared
   @ObservedObject private var videoCinema = VideoCinemaController.shared
@@ -81,6 +85,10 @@ struct HistoryContentView: View {
         AppearanceTheme.applyApplicationAppearance(appearanceThemeRaw)
         synchronizeRemotePreviewPreheat()
       }
+      .task { await browserSupport.load() }
+      .onChange(of: firstCaptureIsComplete) { _, completed in
+        if completed { isCaptureOnboardingDismissed = true }
+      }
       .onChange(of: model.selectedTaskID) { _, _ in
         synchronizeRemotePreviewPreheat()
       }
@@ -89,6 +97,20 @@ struct HistoryContentView: View {
         synchronizeRemotePreviewPreheat()
         guard let taskID = newTaskID else { return }
         let settings = providerSettings
+        if let requestedAction = appModel.currentCapture?.requestedAction {
+          if requestedAction == .save { return }
+          if requestedAction == .summarize || requestedAction == .translate {
+            model.startRequestedAction(taskID: taskID) { [weak appModel] detail in
+              guard let appModel else { return }
+              if requestedAction == .translate {
+                await appModel.translate(historyDetail: detail, preferences: settings.runPreferences)
+              } else {
+                await appModel.summarize(historyDetail: detail, preferences: settings.runPreferences)
+              }
+            }
+            return
+          }
+        }
         model.startAutoPipeline(
           taskID: taskID,
           transcribe: settings.autoTranscribeNewCaptures,
@@ -114,8 +136,11 @@ struct HistoryContentView: View {
         blockingError
       } else {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-          // 两侧辅助列保持紧凑，剩余宽度全部让给右侧正文详情。
-          navigationRail.navigationSplitViewColumnWidth(min: 150, ideal: 170, max: 200)
+          navigationRail.navigationSplitViewColumnWidth(
+            min: DesignTokens.Layout.sidebarMin,
+            ideal: DesignTokens.Layout.sidebarIdeal,
+            max: DesignTokens.Layout.sidebarMax
+          )
         } content: {
           // 工作台接管中间列：它列的是「正在做的创作」，和历史条目不是一种东西，
           // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
@@ -130,7 +155,11 @@ struct HistoryContentView: View {
               sidebar
             }
           }
-          .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 260)
+          .navigationSplitViewColumnWidth(
+            min: DesignTokens.Layout.listMin,
+            ideal: DesignTokens.Layout.listIdeal,
+            max: DesignTokens.Layout.listIdeal + DesignTokens.Space.xxl
+          )
         } detail: { detailColumn }
           // 窗口级分栏细线：贯通工具栏直达窗口顶；系统玻璃主题走原生外观，
           // 图片灯箱打开时移除，避免细线盖在放大的图片上。
@@ -231,12 +260,17 @@ struct HistoryContentView: View {
         // 批量总结进行中：进度和停止按钮必须一直可见，否则「跑了十几分钟、
         // 现在到哪了、能不能停」全靠猜。
         if model.isBatchSummarizing {
-          Text(model.batchSummaryProgressText)
-            .font(.callout)
+          HStack(spacing: 7) {
+            ProgressView().controlSize(.small)
+            Text(model.batchSummaryProgressText)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+            .font(.callout.weight(.medium))
             .foregroundStyle(theme.secondaryText)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .frame(maxWidth: 280, alignment: .trailing)
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .background(theme.info.opacity(0.10), in: Capsule())
+            .frame(maxWidth: 300, alignment: .trailing)
             .accessibilityIdentifier("batch-summarize-progress")
           Button("停止") { model.stopBatchSummary() }
             .disabled(model.batchSummaryProgress?.isStopping == true)
@@ -247,16 +281,22 @@ struct HistoryContentView: View {
             Label("总结选中项", systemImage: "text.badge.checkmark")
           }
           .disabled(!model.canBatchSummarize)
+          .help("总结选中的历史条目")
+          .accessibilityLabel("总结选中项")
           .accessibilityIdentifier("batch-summarize-history")
           Button { model.requestDeletion(protectedTaskIDs: protectedTaskIDs) } label: {
             Label("删除选中项", systemImage: "trash")
           }
           .disabled(!model.canDelete(protectedTaskIDs: protectedTaskIDs))
+          .help("删除选中的历史条目")
+          .accessibilityLabel("删除选中项")
           .accessibilityIdentifier("delete-selected-history")
         }
         Button(action: { openSettings() }) {
           Label("模型设置", systemImage: "gearshape")
         }
+        .help("打开设置")
+        .accessibilityLabel("模型设置")
         .accessibilityIdentifier("open-provider-settings")
         Menu {
           Button("添加链接", action: manualLink.open)
@@ -265,6 +305,8 @@ struct HistoryContentView: View {
           Label("添加链接", systemImage: "link.badge.plus")
         }
         .disabled(!manualLink.canOpen)
+        .help("添加一个或多个链接")
+        .accessibilityLabel("添加链接")
         .accessibilityIdentifier("manual-link-add-toolbar")
 
         // 写笔记是一等动作，不是「添加链接」的附属项，所以独立成钮。
@@ -273,6 +315,8 @@ struct HistoryContentView: View {
           Label("新建笔记", systemImage: "square.and.pencil")
         }
         .disabled(!manualLink.canOpen)
+        .help("新建笔记")
+        .accessibilityLabel("新建笔记")
         .accessibilityIdentifier("create-user-note")
       }
     }
@@ -333,7 +377,7 @@ struct HistoryContentView: View {
           .font(.caption.weight(.semibold))
           .foregroundStyle(theme.primaryText)
           .padding(.horizontal, 8).padding(.vertical, 4)
-          .background(Color.orange.opacity(0.16), in: Capsule())
+          .background(theme.warning.opacity(0.14), in: Capsule())
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(.horizontal, 10).padding(.bottom, 8)
           .accessibilityIdentifier("history-read-only-banner")
@@ -354,23 +398,34 @@ struct HistoryContentView: View {
         HistorySkeletonList(theme: theme)
       case .empty:
         if model.hasActiveFilter {
-          VStack(spacing: 8) {
-            Image(systemName: "line.3.horizontal.decrease.circle").font(.title3)
-            Text(model.hasCategoryFilter ? "该分类下暂无内容" : "没有符合当前筛选条件的历史记录")
-              .font(.callout)
-              .foregroundStyle(.secondary)
-          }
+          HistoryInlineState(
+            symbol: "line.3.horizontal.decrease.circle",
+            title: model.hasCategoryFilter ? "该分类下暂无内容" : "没有搜索结果",
+            message: "调整搜索词或筛选条件后再试。"
+          )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-filter-empty")
         } else {
           Spacer()
         }
       case .failed where model.rows.isEmpty:
-        VStack(spacing: 10) {
-          Image(systemName: "exclamationmark.triangle").font(.title2)
-          Text("无法载入历史记录").font(.headline)
-          if model.canRetryList { Button("重试", action: model.retryList) }
-        }.frame(maxWidth: .infinity, maxHeight: .infinity)
+        if model.canRetryList {
+          HistoryInlineState(
+            symbol: "exclamationmark.triangle",
+            title: "无法载入历史记录",
+            message: "本机历史没有显示，当前不会写入新的变更。",
+            actionTitle: "重试",
+            action: { model.retryList() }
+          )
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+          HistoryInlineState(
+            symbol: "exclamationmark.triangle",
+            title: "无法载入历史记录",
+            message: "本机历史没有显示，当前不会写入新的变更。"
+          )
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
       case .loaded, .loading, .failed, .idle:
         List(selection: $model.selectedTaskIDs) {
           // 排队抓取区：提交链接后立刻回到列表，这里可见进度/失败重试，
@@ -386,6 +441,8 @@ struct HistoryContentView: View {
           }
           ForEach(model.rows, id: \.taskID) { row in
             HistoryRowView(row: row, model: model, theme: theme).tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
+              .listRowBackground(Color.clear)
+              .listRowSeparator(.hidden)
               .contextMenu {
                 Button { openHistoryURL(row.canonicalURL) } label: { Label("在浏览器中打开", systemImage: "safari") }
                 Button { copyHistoryURL(row.canonicalURL) } label: { Label("复制链接", systemImage: "doc.on.doc") }
@@ -437,7 +494,7 @@ struct HistoryContentView: View {
       }
     }
     .frame(maxWidth: .infinity)
-    .background(theme.isNative ? Color.clear : theme.listPane)
+    .background(theme.listPane.opacity(theme.isNative ? 0 : 1))
     .focusedSceneValue(\.focusHistorySearch, FocusHistorySearchAction { isSearchFocused = true })
     .focusedSceneValue(\.newNote, NewNoteAction { createNote() })
     .focusedSceneValue(\.todayNote, TodayNoteAction { openTodayNote() })
@@ -538,11 +595,8 @@ struct HistoryContentView: View {
         let knownPlatforms = model.navigationCounts.platforms.filter { HistoryPlatformDisplay.isWellKnown(host: $0.host) }
         let miscPlatforms = model.navigationCounts.platforms.filter { !HistoryPlatformDisplay.isWellKnown(host: $0.host) }
         Section("平台") {
-          // 网格而不是一平台一行：图标本身就是最强的识别符号，名字挪到
-          // 悬停提示里，纵向省下的高度留给下面的标签云。
-          //
-          // 「待分类」并进同一个网格：它在语义上就是一个平台入口（杂项来源
-          // 的聚合），单独拎出来成一行会让网格看起来缺一角。
+          // 平台名称必须常驻可见。只显示图标虽然省高度，但把理解成本转嫁给
+          // tooltip；新的紧凑行仍然只占一行，同时给出图标、名称和数量。
           PlatformGridView(
             items: knownPlatforms.map { .init(host: $0.host, count: $0.count) }
               + (miscPlatforms.isEmpty ? [] : [
@@ -582,7 +636,7 @@ struct HistoryContentView: View {
             // 标签是跨内容的分类关键词：按引用数降序的药丸云，
             // 大类自然浮到最前。
             let ordered = model.navigationCounts.tags.sorted { $0.count > $1.count }
-            let tags = model.showsAllNavigationTags ? ordered : Array(ordered.prefix(12))
+            let tags = model.showsAllNavigationTags ? ordered : Array(ordered.prefix(6))
             TagPillFlowLayout(spacing: 6) {
               ForEach(tags) { item in
                 let selected = model.selectedTagNormalizedNames.contains(item.tag.normalizedName)
@@ -617,7 +671,7 @@ struct HistoryContentView: View {
               }
             }
             .padding(.vertical, 2)
-            if !model.showsAllNavigationTags, model.navigationCounts.tags.count > 12 {
+            if !model.showsAllNavigationTags, model.navigationCounts.tags.count > 6 {
               Button("全部标签…") { model.showsAllNavigationTags = true }
                 .accessibilityIdentifier("history-navigation-tags-all")
             }
@@ -651,10 +705,23 @@ struct HistoryContentView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    // 图24 的选中态：蓝色实心药丸 + 白字。
-    .padding(.vertical, 3).padding(.horizontal, 6)
-    .background(selected ? theme.selectionFill : .clear, in: RoundedRectangle(cornerRadius: 6))
-    .foregroundStyle(selected ? theme.selectionText : theme.primaryText)
+    // 选中态保留品牌色，但不再整行反白。浅色底 + 左侧锚点比实心色块更安静，
+    // 也让平台图标和计数继续保持原本的辨识度。
+    .padding(.vertical, DesignTokens.Space.xs)
+    .padding(.horizontal, DesignTokens.Space.sm)
+    .background(
+      selected ? theme.accent.opacity(0.12) : .clear,
+      in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+    )
+    .overlay(alignment: .leading) {
+      if selected {
+        Capsule()
+          .fill(theme.accent)
+          .frame(width: 3, height: 18)
+          .padding(.leading, DesignTokens.Space.xxs)
+      }
+    }
+    .foregroundStyle(theme.primaryText)
     .padding(.horizontal, -6)
     .fontWeight(selected ? .semibold : .regular)
   }
@@ -667,9 +734,9 @@ struct HistoryContentView: View {
   private func countBadge(_ count: Int, selected: Bool) -> some View {
     Text("\(count)")
       .font(.caption.weight(.medium).monospacedDigit())
-      .foregroundStyle(selected ? theme.selectionText : .secondary)
+      .foregroundStyle(selected ? theme.accent : .secondary)
       .padding(.horizontal, 6).padding(.vertical, 1)
-      .background(selected ? Color.white.opacity(0.22) : theme.badge, in: Capsule())
+      .background(selected ? theme.accent.opacity(0.12) : theme.badge, in: Capsule())
   }
 
   private func openHistoryURL(_ raw: String) {
@@ -850,18 +917,23 @@ struct HistoryContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     case .loaded:
       if let detail = model.detail {
-        HistoryDetailView(
-          detail: detail,
-          model: model,
-          appModel: appModel,
-          providerSettings: providerSettings,
-          appearanceTheme: appearanceTheme,
-          localImageURLs: model.localImageURLs,
-          localMediaFileURL: model.localMediaFileURL,
-          openSettings: { openSettings() },
-          remotePreviewPlayback: remotePreviewPlayback,
-          sessionMediaPlayback: sessionMediaPlayback
-        )
+        VStack(spacing: 0) {
+          if !isCaptureOnboardingDismissed && !firstCaptureIsComplete {
+            firstCaptureNextStepBanner(detail: detail)
+          }
+          HistoryDetailView(
+            detail: detail,
+            model: model,
+            appModel: appModel,
+            providerSettings: providerSettings,
+            appearanceTheme: appearanceTheme,
+            localImageURLs: model.localImageURLs,
+            localMediaFileURL: model.localMediaFileURL,
+            openSettings: { openSettings() },
+            remotePreviewPlayback: remotePreviewPlayback,
+            sessionMediaPlayback: sessionMediaPlayback
+          )
+        }
       }
     case .idle:
       emptyDetail
@@ -938,6 +1010,10 @@ struct HistoryContentView: View {
 
   private var emptyCaptureDetail: some View {
     VStack(spacing: 0) {
+      if !isCaptureOnboardingDismissed {
+        firstCaptureCard
+          .padding(.bottom, 20)
+      }
       // 图标放进软底圆角瓦片，参考稿里 Browse channels 卡片的图形语言。
       Image(systemName: "doc.text.magnifyingglass")
         .font(.system(size: 30, weight: .medium))
@@ -946,7 +1022,8 @@ struct HistoryContentView: View {
         .background(theme.badge, in: RoundedRectangle(cornerRadius: 18))
         .overlay(RoundedRectangle(cornerRadius: 18).stroke(theme.hairline, lineWidth: 1))
         .padding(.bottom, 18)
-      Text("还没有保存页面").font(.title2.weight(.semibold))
+      Text(isCaptureOnboardingDismissed ? "还没有保存页面" : "也可以直接添加公开链接")
+        .font(.title2.weight(.semibold))
         .padding(.bottom, 6)
       Text("粘贴公开网页链接，或从 \(ProductDisplay.extensionName) 接收已打开的页面后，可在这里总结或翻译。")
         .font(.callout)
@@ -969,13 +1046,168 @@ struct HistoryContentView: View {
     }.frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 
+  private var firstCaptureIsComplete: Bool {
+    hasInstalledBrowserSupport
+      && providerSettings.hasConfiguredAPIKey
+      && model.rows.contains { $0.hasSummary == true }
+  }
+
+  private var hasInstalledBrowserSupport: Bool {
+    browserSupport.statuses.contains { $0.state == .installed || $0.state == .installedAppUpdated }
+  }
+
+  private var firstCaptureCard: some View {
+    VStack(alignment: .leading, spacing: 14) {
+      HStack(alignment: .top) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("三步开始使用汲作").font(.headline)
+          Text("完成第一条总结后，这张卡会永久消失。")
+            .font(.caption).foregroundStyle(.secondary)
+        }
+        Spacer()
+        Button {
+          isCaptureOnboardingDismissed = true
+        } label: {
+          Image(systemName: "xmark").font(.caption.weight(.semibold))
+        }
+        .buttonStyle(.plain)
+        .help("不再显示")
+      }
+      onboardingStep(
+        number: 1,
+        title: "安装浏览器支持",
+        completed: hasInstalledBrowserSupport,
+        actionTitle: "去安装"
+      ) {
+        SettingsNavigationRequest.request("browserSupport")
+        openSettings()
+      }
+      onboardingStep(
+        number: 2,
+        title: "配置一个模型",
+        completed: providerSettings.hasConfiguredAPIKey,
+        actionTitle: "去配置"
+      ) {
+        SettingsNavigationRequest.request("service")
+        openSettings()
+      }
+      onboardingStep(
+        number: 3,
+        title: "保存并总结第一条内容",
+        completed: model.rows.contains { $0.hasSummary == true },
+        actionTitle: "打开浏览器扩展"
+      ) {
+        SettingsNavigationRequest.request("browserSupport")
+        openSettings()
+      }
+    }
+    .padding(18)
+    .frame(maxWidth: 470, alignment: .leading)
+    .background(theme.card, in: RoundedRectangle(cornerRadius: 18))
+    .overlay(RoundedRectangle(cornerRadius: 18).stroke(theme.hairline, lineWidth: 1))
+    .accessibilityIdentifier("first-capture-onboarding")
+  }
+
+  private func firstCaptureNextStepBanner(detail: HistoryDetailProjection) -> some View {
+    HStack(spacing: 10) {
+      Image(systemName: "sparkles")
+        .foregroundStyle(theme.accent)
+      VStack(alignment: .leading, spacing: 2) {
+        Text("完成首次设置").font(.callout.weight(.semibold))
+        Text(firstCaptureNextStepMessage).font(.caption).foregroundStyle(.secondary)
+      }
+      Spacer(minLength: 0)
+      Button(firstCaptureNextStepActionTitle) {
+        if !hasInstalledBrowserSupport {
+          SettingsNavigationRequest.request("browserSupport")
+          openSettings()
+        } else if !providerSettings.hasConfiguredAPIKey {
+          SettingsNavigationRequest.request("service")
+          openSettings()
+        } else {
+          Task { await appModel.summarize(historyDetail: detail, preferences: providerSettings.runPreferences) }
+        }
+      }
+      .buttonStyle(.borderedProminent)
+      .controlSize(.small)
+      Button {
+        isCaptureOnboardingDismissed = true
+      } label: { Image(systemName: "xmark") }
+        .buttonStyle(.plain)
+        .help("不再显示")
+    }
+    .padding(.horizontal, 16).padding(.vertical, 10)
+    .background(theme.accent.opacity(0.08))
+    .overlay(alignment: .bottom) { Rectangle().fill(theme.hairline).frame(height: 1) }
+    .accessibilityIdentifier("first-capture-next-step")
+  }
+
+  private var firstCaptureNextStepMessage: String {
+    if !hasInstalledBrowserSupport { return "先安装浏览器支持，之后可从当前页面直接保存。" }
+    if !providerSettings.hasConfiguredAPIKey { return "还差一步：配置模型后即可总结当前内容。" }
+    return "保存已完成，生成第一份总结后引导会自动消失。"
+  }
+
+  private var firstCaptureNextStepActionTitle: String {
+    if !hasInstalledBrowserSupport { return "安装支持" }
+    return providerSettings.hasConfiguredAPIKey ? "生成总结" : "配置模型"
+  }
+
+  private func onboardingStep(
+    number: Int,
+    title: String,
+    completed: Bool,
+    actionTitle: String,
+    action: @escaping () -> Void
+  ) -> some View {
+    HStack(spacing: 12) {
+      Image(systemName: completed ? "checkmark.circle.fill" : "\(number).circle")
+        .foregroundStyle(completed ? theme.success : theme.secondaryText)
+        .font(.title3)
+      Text(title).font(.callout.weight(.medium))
+      Spacer()
+      if !completed {
+        Button(actionTitle, action: action).buttonStyle(.borderless)
+      }
+    }
+  }
+
   private var blockingError: some View {
-    VStack(spacing: 14) {
-      Image(systemName: "externaldrive.badge.exclamationmark").font(.largeTitle).foregroundStyle(.secondary)
-      Text("无法打开历史记录").font(.title2.weight(.semibold))
-      Text("\(ProductDisplay.name) 未对数据进行写入。请检查本机存储后重新启动 \(ProductDisplay.name)。")
-        .foregroundStyle(.secondary).multilineTextAlignment(.center)
-    }.frame(minWidth: 820, minHeight: 560).accessibilityIdentifier("history-blocking-error")
+    HistoryInlineState(
+      symbol: "externaldrive.badge.exclamationmark",
+      title: "无法打开历史记录",
+      message: "\(ProductDisplay.name) 未对数据进行写入。请检查本机存储后重新启动 \(ProductDisplay.name)。"
+    )
+    .frame(minWidth: 820, minHeight: 560)
+    .accessibilityIdentifier("history-blocking-error")
+  }
+}
+
+private struct HistoryInlineState: View {
+  let symbol: String
+  let title: String
+  let message: String
+  var actionTitle: String?
+  var action: (() -> Void)?
+
+  var body: some View {
+    VStack(spacing: 10) {
+      Image(systemName: symbol)
+        .font(.system(size: 26, weight: .medium))
+        .foregroundStyle(.secondary)
+        .frame(width: 58, height: 58)
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 15))
+      Text(title).font(.headline)
+      Text(message)
+        .font(.callout)
+        .foregroundStyle(.secondary)
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: 330)
+      if let actionTitle, let action {
+        Button(actionTitle, action: action).buttonStyle(.borderedProminent)
+      }
+    }
+    .padding(20)
   }
 }
 
@@ -1096,6 +1328,7 @@ private struct ManualLinkSheet: View {
 private struct PendingCaptureRow: View {
   let pending: ManualLinkViewModel.PendingCapture
   @ObservedObject var model: ManualLinkViewModel
+  @Environment(\.appTheme) private var theme
 
   var body: some View {
     HStack(spacing: 8) {
@@ -1105,7 +1338,7 @@ private struct PendingCaptureRow: View {
       case .fetching, .saving:
         ProgressView().controlSize(.small)
       case .failed:
-        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(theme.warning)
       }
       VStack(alignment: .leading, spacing: 2) {
         Text(pending.urlString)
@@ -1121,7 +1354,7 @@ private struct PendingCaptureRow: View {
           // 请检查链接后重试」截掉尾巴——而尾巴恰恰是那句可执行的建议。
           Text(message)
             .font(.caption2)
-            .foregroundStyle(.orange)
+            .foregroundStyle(theme.warning)
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -1153,6 +1386,10 @@ private struct HistoryRowView: View {
   let row: HistoryRowProjection
   @ObservedObject var model: HistoryViewModel
   let theme: HistoryThemeTokens
+  @State private var isHovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  private var isSelected: Bool { model.selectedTaskIDs.contains(row.taskID) }
 
   /// 图24 式状态点：已有总结产物为绿色，未总结为橙色。
   private var isSummarized: Bool {
@@ -1169,7 +1406,7 @@ private struct HistoryRowView: View {
         Circle().strokeBorder(theme.primaryText, lineWidth: 1.5)
       }
     } else {
-      Circle().fill(isSummarized ? Color.green : Color.orange)
+      Circle().fill(isSummarized ? theme.success : theme.warning)
     }
   }
 
@@ -1221,7 +1458,7 @@ private struct HistoryRowView: View {
           Text(preview)
             .font(.callout)
             .foregroundStyle(.secondary)
-            .lineLimit(2)
+            .lineLimit(1)
         }
         // 时间合成一排。
         //
@@ -1249,7 +1486,7 @@ private struct HistoryRowView: View {
               // 站点描述，在列表里和几千字的长文长得一模一样，点进去才发现是空的。
               // 不判「字数少」这类阈值——「有视频且无转写稿」是可判定的事实。
               Image(systemName: "waveform.slash")
-                .foregroundStyle(.orange)
+                .foregroundStyle(theme.warning)
                 .help("有视频，还没转写")
                 .accessibilityLabel("有视频，还没转写")
                 .accessibilityIdentifier("history-row-needs-transcript")
@@ -1271,12 +1508,36 @@ private struct HistoryRowView: View {
         }
       }
     }
-    .padding(.horizontal, 10).padding(.vertical, 9)
+    .padding(.horizontal, DesignTokens.Space.md)
+    .padding(.vertical, DesignTokens.Space.sm)
     .frame(minHeight: 68, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+        .fill(rowBackground)
+    )
+    .overlay(alignment: .leading) {
+      if isSelected {
+        Capsule()
+          .fill(theme.accent)
+          .frame(width: 3, height: 30)
+          .padding(.leading, DesignTokens.Space.xxs)
+      }
+    }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: isHovering
+    )
+    .onHover { isHovering = $0 }
     // 新到行在 macOS List 里可能沿用估算行高并把内容压扁；
     // 固定纵向 intrinsic 高度 + 内容变化换 identity，强制按真实内容测量。
     .fixedSize(horizontal: false, vertical: true)
     .id("\(row.taskID.rawValue)-\(row.updatedAtMilliseconds)")
+  }
+
+  private var rowBackground: Color {
+    if isSelected { return theme.accent.opacity(0.10) }
+    if isHovering { return theme.primaryText.opacity(0.035) }
+    return .clear
   }
 
   @ViewBuilder private var favicon: some View {
@@ -1394,6 +1655,8 @@ private struct HistoryDetailView: View {
   @State private var completionBanner: String?
   /// When both a model artifact and the captured source exist, user can switch.
   @State private var readingPane: ReadingPane = .summary
+  @State private var readingProgress = 0.0
+  @State private var pendingSourceCitation: String?
   @State private var measuredTitleHeight: CGFloat = HistoryDetailView.titleLineHeight
   /// 转写校对：编辑态与草稿只属于当前详情页，切换条目即复位。
   @State private var isEditingTranscription = false
@@ -1707,7 +1970,7 @@ private struct HistoryDetailView: View {
         if let completionBanner {
           Label(completionBanner, systemImage: "checkmark.circle.fill")
             .font(.callout.weight(.medium))
-            .foregroundStyle(.green)
+            .foregroundStyle(theme.success)
             .padding(.bottom, 10)
             .accessibilityIdentifier("history-run-completion-banner")
             .transition(historyBannerTransition(reduceMotion: reduceMotion))
@@ -1718,7 +1981,7 @@ private struct HistoryDetailView: View {
           HStack(spacing: 8) {
             Label(notice.message, systemImage: "exclamationmark.arrow.circlepath")
               .font(.callout.weight(.medium))
-              .foregroundStyle(.orange)
+              .foregroundStyle(theme.warning)
               .fixedSize(horizontal: false, vertical: true)
             Button("重新\(UnfinishedRunNotice.label(for: notice.kind))") {
               retryUnfinishedRun(notice.kind)
@@ -1849,13 +2112,13 @@ private struct HistoryDetailView: View {
           } else if let failure = model.localMediaResolutionFailure {
             VStack(alignment: .leading, spacing: 8) {
               Label(failure, systemImage: "externaldrive.badge.exclamationmark")
-                .foregroundStyle(.orange)
+                .foregroundStyle(theme.warning)
               Text("请在“设置 → 视频存储”重新选择文件夹，或把已保存的视频移回原位置。")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             }
             .padding(14)
-            .background(Color.orange.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            .background(theme.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
             .padding(.top, 14)
             .accessibilityIdentifier("history-video-local-missing")
           } else if localMediaFileURL == nil,
@@ -1927,24 +2190,20 @@ private struct HistoryDetailView: View {
           }
         }
 
-        // 脑图区固定在媒体与原文之间：结构化输出先于全文，读图再读文。
-        //
-        // 自己写的东西不挂脑图空状态：写作页面上一张「还没有脑图」的空卡片，
-        // 是在催促用户对刚写的三行字做结构化，不该占据写作视野。
-        //
-        // 起草阶段确实要理骨架，但那时的入口在创作台里，是主动去点的动作，
-        // 不是一张常驻的空卡片。
-        if !isOwnWriting {
-          MindMapSectionView(taskID: detail.task.id, model: model)
-            .padding(.top, 16)
-            .id(ReadingAnchor.module("mindmap"))
-        }
-
         // Video-first captures keep playback before their short source text.
         // Substantive WeChat articles already rendered the reading surface above.
         if !presentsArticleBeforeMedia, showsReadingSurface {
           readingSurface
             .padding(.top, 18)
+        }
+
+        // 脑图是正文的衍生输出，不再挡在阅读内容前面。先读总结／翻译／原文，
+        // 再按需查看结构；视频条目仍保持「播放器 → 文字 → 脑图」的顺序。
+        // 自己写的东西不挂脑图空状态，避免催促用户对刚写的几行字做结构化。
+        if !isOwnWriting {
+          MindMapSectionView(taskID: detail.task.id, model: model)
+            .padding(.top, DesignTokens.Space.xl)
+            .id(ReadingAnchor.module("mindmap"))
         }
 
         if !localImageURLs.isEmpty {
@@ -1977,6 +2236,13 @@ private struct HistoryDetailView: View {
       .padding(.bottom, 48)
       .subtleScrollers()
     }
+    .background(
+      ReadingScrollContinuity(
+        identity: detail.task.id.rawValue,
+        progress: $readingProgress
+      )
+      .frame(width: 0, height: 0)
+    )
     // `initial: true` so the first item rendered also lands on the right pane;
     // previously the @State default won and a summary-less item opened on an
     // empty 总结 pane.
@@ -1992,6 +2258,10 @@ private struct HistoryDetailView: View {
       showsPlainText = false
       completionBanner = nil
       readingPane = defaultReadingPane
+      pendingSourceCitation = nil
+      ReadingSelectionRouter.shared.formatter = { selected in
+        ReadingCitationFormatter.format(selection: selected, title: title, sourceURL: sourceURL)
+      }
       measuredTitleHeight = HistoryDetailView.titleLineHeight
       // 切换条目时丢弃未保存的转写草稿，避免草稿串到别的记录。
       isEditingTranscription = false
@@ -2041,6 +2311,7 @@ private struct HistoryDetailView: View {
       // Prefer the fresh result when a run lands, but keep 原文 one tap away.
       if hasResult { readingPane = defaultReadingPane }
     }
+    .onDisappear { ReadingSelectionRouter.shared.formatter = nil }
     .onChange(of: showsStreamingResultCard) { wasShown, isShown in
       // The card collapses once the completed result reads in the pane below;
       // flip to 总结/翻译 and flash a banner. Stops and failures keep the card.
@@ -2387,7 +2658,7 @@ private struct HistoryDetailView: View {
     case let .failed(message):
       Label(message, systemImage: "exclamationmark.triangle")
         .font(.caption)
-        .foregroundStyle(.orange)
+        .foregroundStyle(theme.warning)
         .accessibilityIdentifier("note-tidy-failed")
     default:
       EmptyView()
@@ -2400,6 +2671,7 @@ private struct HistoryDetailView: View {
         actionPill(
           title: "总结",
           systemImage: "text.alignleft",
+          prominent: !isOwnWriting && summaryArtifact == nil,
           disabled: !providerSettings.arePreferencesReady || !(showsCurrentCapture ? appModel.canStartRun : appModel.canStartRun(from: detail)),
           identifier: showsCurrentCapture ? "summarize-current-capture" : "summarize-history-detail"
         ) {
@@ -2414,6 +2686,7 @@ private struct HistoryDetailView: View {
         actionPill(
           title: "翻译",
           systemImage: "character.book.closed",
+          prominent: !isOwnWriting && summaryArtifact != nil && translationArtifact == nil,
           disabled: !providerSettings.arePreferencesReady || !(
             showsCurrentCapture
               ? appModel.canTranslate(preferences: providerSettings.runPreferences)
@@ -2440,6 +2713,7 @@ private struct HistoryDetailView: View {
           actionPill(
             title: "生成脑图",
             systemImage: "brain",
+            prominent: false,
             disabled: !model.canGenerateMindMap(taskID: detail.task.id),
             identifier: "mind-map-generate"
           ) {
@@ -2452,6 +2726,7 @@ private struct HistoryDetailView: View {
           actionPill(
             title: "整理排版",
             systemImage: "text.alignleft",
+            prominent: true,
             disabled: !model.canTidyNote(taskID: detail.task.id),
             identifier: "tidy-note"
           ) {
@@ -2459,17 +2734,6 @@ private struct HistoryDetailView: View {
           }
           .help(model.noteTidyUnavailableReason(taskID: detail.task.id) ?? "把段落、列表与标题层级重排一遍；不改文字内容")
           noteTidyStatus
-        }
-        if !providerSettings.arePreferencesReady {
-          Button("设置模型") { openSettings() }
-            .buttonStyle(.link)
-            .font(.callout.weight(.medium))
-            .accessibilityIdentifier("history-open-model-settings")
-        } else {
-          Text(providerSettings.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "模型未命名" : providerSettings.modelName)
-            .font(.subheadline.weight(.medium))
-            .foregroundStyle(.tertiary)
-            .lineLimit(1)
         }
         Spacer(minLength: 0)
         // Live run stays in this row: status + stop. Full stream goes to the
@@ -2490,12 +2754,32 @@ private struct HistoryDetailView: View {
             .lineLimit(1)
             .accessibilityIdentifier("model-run-status")
         }
+      }
+
+      HStack(spacing: DesignTokens.Space.sm) {
+        if !providerSettings.arePreferencesReady {
+          Button("设置模型") { openSettings() }
+            .buttonStyle(.link)
+            .font(.caption.weight(.medium))
+            .accessibilityIdentifier("history-open-model-settings")
+        } else {
+          Label(
+            providerSettings.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+              ? "模型未命名"
+              : providerSettings.modelName,
+            systemImage: "cpu"
+          )
+          .font(.caption.weight(.medium))
+          .foregroundStyle(.tertiary)
+          .lineLimit(1)
+        }
+        Spacer(minLength: 0)
         if canRunHistory || showsCurrentCapture || isRunPanelExpanded {
-          Button(isRunPanelExpanded ? "收起" : "详情") {
+          Button(isRunPanelExpanded ? "收起运行详情" : "运行详情") {
             withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isRunPanelExpanded.toggle() }
           }
           .buttonStyle(.borderless)
-          .font(.subheadline.weight(.medium))
+          .font(.caption.weight(.medium))
           .foregroundStyle(.secondary)
           .accessibilityIdentifier("history-run-panel-toggle")
         }
@@ -2509,23 +2793,31 @@ private struct HistoryDetailView: View {
     }
   }
 
-  private func actionPill(
+  @ViewBuilder private func actionPill(
     title: String,
     systemImage: String,
+    prominent: Bool,
     disabled: Bool,
     identifier: String,
     action: @escaping () -> Void
   ) -> some View {
-    Button(action: action) {
+    let button = Button(action: action) {
       Label(title, systemImage: systemImage)
         .font(.callout.weight(.semibold))
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
     }
-    .buttonStyle(.bordered)
     .controlSize(.small)
     .disabled(disabled)
     .accessibilityIdentifier(identifier)
+
+    if prominent {
+      button
+        .buttonStyle(.borderedProminent)
+        .tint(theme.accent)
+    } else {
+      button.buttonStyle(.bordered)
+    }
   }
 
   /// Optional hints only (model names / storage). Streaming body lives in the reading card.
@@ -2569,7 +2861,7 @@ private struct HistoryDetailView: View {
         Text(appModel.storageStatusText)
       }
       .font(.caption)
-      .foregroundStyle(appModel.storageAvailability.isWriteReady ? Color.secondary : Color.orange)
+      .foregroundStyle(appModel.storageAvailability.isWriteReady ? Color.secondary : theme.warning)
       .accessibilityIdentifier("storage-availability")
       if let notice = appModel.dataDestinationNotice {
         Label(notice, systemImage: "info.circle")
@@ -2657,16 +2949,24 @@ private struct HistoryDetailView: View {
   }
 
   private var readingPanePicker: some View {
-    Picker("阅读内容", selection: $readingPane) {
-      ForEach(availableReadingPanes) { pane in
-        Text(paneLabel(pane)).tag(pane)
+    HStack(spacing: 12) {
+      Picker("阅读内容", selection: $readingPane) {
+        ForEach(availableReadingPanes) { pane in
+          Text(paneLabel(pane)).tag(pane)
+        }
       }
+      .pickerStyle(.segmented)
+      .controlSize(.small)
+      .labelsHidden()
+      .frame(maxWidth: 168)
+      .accessibilityIdentifier("history-reading-pane-picker")
+      Spacer(minLength: 0)
+      Label("阅读 \(Int((readingProgress * 100).rounded()))%", systemImage: "book.pages")
+        .font(.caption)
+        .foregroundStyle(.tertiary)
+        .monospacedDigit()
+        .accessibilityIdentifier("history-reading-progress")
     }
-    .pickerStyle(.segmented)
-    .controlSize(.small)
-    .labelsHidden()
-    .frame(maxWidth: 168)
-    .accessibilityIdentifier("history-reading-pane-picker")
   }
 
   /// Generation lives in the reading surface with a fixed max height so the
@@ -2683,7 +2983,7 @@ private struct HistoryDetailView: View {
         Spacer(minLength: 0)
         Text(appModel.runStatusText)
           .font(.subheadline)
-          .foregroundStyle(appModel.runHasFailure ? Color.red : Color.secondary)
+          .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
           .lineLimit(1)
       }
       if appModel.runResultText.isEmpty {
@@ -2913,6 +3213,37 @@ private struct HistoryDetailView: View {
     return localImageURLs.first { $0.lastPathComponent == digest }
   }
 
+  private var exactSummaryCitations: [String] {
+    guard let summary = summaryArtifact?.bodyText, let source = latestSourceSnapshot?.bodyText else { return [] }
+    return SummaryCitationMatcher.exactQuotes(
+      summary: MarkdownNoteFrontmatter.parse(summary).body,
+      source: MarkdownNoteFrontmatter.parse(source).body
+    )
+  }
+
+  private func openSourceCitation(_ quote: String) {
+    readingPane = .source
+    pendingSourceCitation = nil
+    DispatchQueue.main.async { pendingSourceCitation = quote }
+  }
+
+  @ViewBuilder private var sourceCitationLinks: some View {
+    if !exactSummaryCitations.isEmpty {
+      HStack(spacing: 8) {
+        Label("原文依据", systemImage: "quote.opening")
+          .font(.caption.weight(.medium))
+          .foregroundStyle(.secondary)
+        ForEach(Array(exactSummaryCitations.enumerated()), id: \.offset) { index, quote in
+          Button("依据 \(index + 1)") { openSourceCitation(quote) }
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+        }
+        Spacer(minLength: 0)
+      }
+      .accessibilityIdentifier("history-summary-citations")
+    }
+  }
+
   @ViewBuilder private var content: some View {
     switch effectiveReadingPane {
     case .summary, .translation:
@@ -2922,6 +3253,7 @@ private struct HistoryDetailView: View {
             .foregroundStyle(.secondary)
             .padding(.bottom, 6)
         }
+        if effectiveReadingPane == .summary { sourceCitationLinks }
         // Summaries rarely carry images; still allow local map if present.
         MarkdownContentView(
           source: MarkdownNoteFrontmatter.parse(artifact.bodyText).body,
@@ -3074,7 +3406,8 @@ private struct HistoryDetailView: View {
             accentColor: theme.accent,
             showsPlainText: $showsPlainText,
             showsInlinePlainTextToggle: false,
-            navigationModules: navigationModules
+            navigationModules: navigationModules,
+            revealText: pendingSourceCitation
           )
           .frame(maxWidth: .infinity, alignment: .leading)
           .accessibilityIdentifier("history-reading-source")
@@ -3191,7 +3524,7 @@ private struct HistoryDetailView: View {
           .font(.caption).foregroundStyle(.secondary)
       case .completed:
         HStack {
-          Label("识别完成", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
+          Label("识别完成", systemImage: "checkmark.circle.fill").foregroundStyle(theme.success)
           Spacer()
           Button("复制文字") {
             CopyFeedbackController.shared.copy(recognizedText)
@@ -3538,11 +3871,12 @@ private func isUserCancelledExport(_ error: Error) -> Bool {
 
 private struct ReadOnlyHistoryCallout: View {
   let reason: RepositoryRecoveryReason?
+  @Environment(\.appTheme) private var theme
 
   var body: some View {
     HStack(alignment: .top, spacing: 8) {
       Image(systemName: "lock.fill")
-        .foregroundStyle(.orange)
+        .foregroundStyle(theme.warning)
         .padding(.top, 1)
       Text(message)
         .font(.body)
@@ -3550,7 +3884,7 @@ private struct ReadOnlyHistoryCallout: View {
         .fixedSize(horizontal: false, vertical: true)
     }
     .padding(10)
-    .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    .background(theme.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
   }
 
   private var message: String {

@@ -1,6 +1,22 @@
 import SwiftUI
 import LinkDigestCore
 
+enum SettingsNavigationRequest {
+  static let notification = Notification.Name("LinkDigest.SettingsNavigationRequest")
+  static let defaultsKey = "settings.requested-tab"
+
+  static func request(_ tab: String) {
+    UserDefaults.standard.set(tab, forKey: defaultsKey)
+    NotificationCenter.default.post(name: notification, object: tab)
+  }
+
+  static func consume() -> String? {
+    let tab = UserDefaults.standard.string(forKey: defaultsKey)
+    UserDefaults.standard.removeObject(forKey: defaultsKey)
+    return tab
+  }
+}
+
 struct ProviderSettingsView: View {
   // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
   // 在高对比主题上又不够黑。
@@ -238,7 +254,17 @@ struct ProviderSettingsView: View {
     .foregroundStyle(settingsTheme.primaryText)
     .tint(settingsTheme.accent)
     .accentColor(settingsTheme.accent)
-    .onAppear { AppearanceTheme.applyApplicationAppearance(appearanceThemeRaw) }
+    .onAppear {
+      AppearanceTheme.applyApplicationAppearance(appearanceThemeRaw)
+      if let raw = SettingsNavigationRequest.consume(), let tab = SettingsTab(rawValue: raw) {
+        selectedTab = tab
+      }
+    }
+    .onReceive(NotificationCenter.default.publisher(for: SettingsNavigationRequest.notification)) { note in
+      guard let raw = note.object as? String, let tab = SettingsTab(rawValue: raw) else { return }
+      selectedTab = tab
+      UserDefaults.standard.removeObject(forKey: SettingsNavigationRequest.defaultsKey)
+    }
     .onChange(of: appearanceThemeRaw) { _, newValue in
       AppearanceTheme.applyApplicationAppearance(newValue)
     }
@@ -304,6 +330,8 @@ struct ProviderSettingsView: View {
             }
             HStack {
               Button("添加模型…") { model.beginAddModel() }
+                .buttonStyle(.borderedProminent)
+                .tint(settingsTheme.accent)
                 .disabled(model.isSaving || model.isConfigurationLoading || model.isTestingConnection || model.isLoadingModels)
                 .accessibilityIdentifier("add-library-model")
               Spacer()
@@ -734,7 +762,7 @@ struct ProviderSettingsView: View {
                 .accessibilityIdentifier("provider-api-key")
             } else {
               HStack(spacing: 10) {
-                Text(model.apiKeyStatusText).foregroundStyle(.green)
+                Text(model.apiKeyStatusText).foregroundStyle(appTheme.success)
                   .accessibilityIdentifier("provider-api-key-configured")
                 Button("更换", action: model.beginAPIKeyReplacement)
                   .disabled(!model.canBeginAPIKeyReplacement)
@@ -867,16 +895,22 @@ struct ProviderSettingsView: View {
         .accessibilityLabel(tab.title)
         .accessibilityIdentifier("settings-tab-\(tab.rawValue)")
         .buttonStyle(.plain)
-        // 行高与主界面侧栏 (`HistoryContentView.navigationButton`) 同刻度：垂直 3。
-        // 原来是 7，实测选中药丸高 34pt、主界面同款药丸只有 23.5pt——同一个应用的
-        // 两个侧栏差了整整 10pt，是「设置页和主界面不像一家」里肉眼最先看到的一处。
-        // 水平保持 8：实测图标左缘 28.5pt，已经和主界面的 29.5pt 对齐，动它反而偏。
-        .padding(.vertical, 3).padding(.horizontal, 8)
+        // 与主界面侧栏共用同一档间距和浅色选中态，两个窗口切换时不会像两套组件。
+        .padding(.vertical, DesignTokens.Space.xs)
+        .padding(.horizontal, DesignTokens.Space.sm)
         .background(
-          selectedTab == tab ? settingsTheme.selectionFill : .clear,
-          in: RoundedRectangle(cornerRadius: 6)
+          selectedTab == tab ? settingsTheme.accent.opacity(0.12) : .clear,
+          in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
         )
-        .foregroundStyle(selectedTab == tab ? settingsTheme.selectionText : settingsTheme.primaryText)
+        .overlay(alignment: .leading) {
+          if selectedTab == tab {
+            Capsule()
+              .fill(settingsTheme.accent)
+              .frame(width: 3, height: 18)
+              .padding(.leading, DesignTokens.Space.xxs)
+          }
+        }
+        .foregroundStyle(settingsTheme.primaryText)
         .fontWeight(selectedTab == tab ? .semibold : .regular)
         .listRowSeparator(.hidden)
         .listRowBackground(Color.clear)
@@ -1040,8 +1074,8 @@ struct ProviderSettingsView: View {
       Section {
         settingCard(
           title: "主题",
-          summary: "浅色为纸质米黄，暖褐更黄、对比更低适合久读，深色为石墨灰，高对比是纯黑白，系统跟随 macOS 原生玻璃质感。切换即时生效，无需重启。",
-          details: "暖褐和浅色一样用宋体排文章；高对比走系统黑体，笔画清晰优先。阅读字体选了具体字体后不受主题影响。",
+          summary: "选择界面明暗与阅读纸色；切换即时生效。",
+          details: "浅色为纸质米黄，暖褐更黄、对比更低，深色为石墨灰，高对比为纯黑白，系统跟随 macOS。暖褐和浅色默认用宋体排文章；指定阅读字体后不再随主题变化。",
           controlWidth: .full
         ) {
           ThemeSwatchPicker(selection: $appearanceThemeRaw)
@@ -1054,7 +1088,7 @@ struct ProviderSettingsView: View {
           // 这句必须跟着 ReadingFontSelection.resolved 一起改。原来写的是
           // 「浅色使用衬线、其它使用无衬线」——那是 New York 时期的行为，
           // 字体改成中文家族后就成了错的文案。
-          summary: "只作用于文章阅读区；界面控件保持系统字体，代码块保持等宽。「跟随主题」在纸质主题用宋体，其余用 PingFang。",
+          summary: "只调整文章阅读区；界面控件与代码块保持原字体。",
           details: "列表只收录自带中文字形的字体家族。像 New York、Georgia 这类只有拉丁字形的字体，中文要逐字回退且不做标点挤压，每个「，」「。」后面都会裂开一道缝，所以不列出来。",
           // 单主控件上标题行，和输出语言、清晰度等单选卡排成一列。菜单 Picker 只显示
           // 当前字体名，宽度自适应，放标题行不挤。
@@ -1559,7 +1593,7 @@ struct ProviderSettingsView: View {
         if let requirementUnmet {
           Label(requirementUnmet, systemImage: "arrow.turn.left.up")
             .font(.caption2)
-            .foregroundStyle(.orange)
+            .foregroundStyle(appTheme.warning)
             .fixedSize(horizontal: false, vertical: true)
         } else {
           Text(trailingNote)
@@ -1615,6 +1649,8 @@ struct ProviderSettingsView: View {
   private struct SettingsCardChrome: ViewModifier {
     let selected: Bool
     let theme: HistoryThemeTokens
+    @State private var isHovering = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     func body(content: Content) -> some View {
       content
@@ -1623,13 +1659,22 @@ struct ProviderSettingsView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
           RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(selected ? Color.accentColor.opacity(0.12) : theme.card)
+            .fill(
+              selected
+                ? Color.accentColor.opacity(0.12)
+                : (isHovering ? theme.primaryText.opacity(0.035) : theme.card)
+            )
         )
         .overlay(
           RoundedRectangle(cornerRadius: 8, style: .continuous)
             .strokeBorder(selected ? Color.accentColor : theme.hairline, lineWidth: 1)
         )
         .contentShape(Rectangle())
+        .animation(
+          DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+          value: isHovering
+        )
+        .onHover { isHovering = $0 }
     }
   }
 

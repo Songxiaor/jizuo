@@ -9,6 +9,61 @@ import type {
   DouyinMetadataVideoRejectCode,
 } from "./content/douyin-metadata-diagnostic";
 
+export type PopupCaptureAction = "save" | "summarize" | "translate";
+
+const actionPresentation: Readonly<Record<PopupCaptureAction, {
+  title: string;
+  detail: string;
+  button: string;
+  success: string;
+}>> = {
+  save: {
+    title: "仅保存",
+    detail: "保留原文与来源，稍后再处理",
+    button: "保存到汲作",
+    success: "已保存到汲作",
+  },
+  summarize: {
+    title: "总结",
+    detail: "保存后立即使用当前模型生成总结",
+    button: "保存并总结",
+    success: "已保存，正在汲作中准备总结",
+  },
+  translate: {
+    title: "翻译",
+    detail: "保存后立即翻译为设置中的输出语言",
+    button: "保存并翻译",
+    success: "已保存，正在汲作中准备翻译",
+  },
+};
+
+export function popupActionPresentation(action: PopupCaptureAction) {
+  return actionPresentation[action];
+}
+
+export type PopupRecovery = {
+  message: string;
+  action: "retry" | "open_app" | "open_settings" | "reload" | "none";
+  label: string;
+};
+
+export function popupRecoveryForSendResult(result: SafeExtensionSendResult): PopupRecovery | null {
+  if (result.response.kind !== "error") return null;
+  const message = popupMessageForResponse(result.response) ?? "操作未完成。";
+  const requested = result.response.error.action;
+  if (requested === "open_app") return { message, action: "open_app", label: "打开汲作" };
+  if (requested === "open_install_guide") {
+    return { message, action: "open_settings", label: "打开汲作安装浏览器支持" };
+  }
+  if (result.response.error.code === "CAPTURE_CONTENT_EMPTY") {
+    return { message, action: "reload", label: "重新读取页面" };
+  }
+  if (result.response.error.retryable || requested === "retry") {
+    return { message, action: "retry", label: "重试发送" };
+  }
+  return { message, action: "none", label: "" };
+}
+
 const knownErrorMessages: Readonly<Record<string, string>> = {
   PROTOCOL_VERSION_UNSUPPORTED: "扩展与 LinkDigest 版本不兼容，请升级后重试。",
   CAPTURE_SCHEMA_INVALID: "当前页面数据格式无效，请刷新页面后重试。",

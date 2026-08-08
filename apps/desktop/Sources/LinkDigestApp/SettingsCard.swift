@@ -84,6 +84,7 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
   /// 同一行、右对齐：整页所有卡片的控件因此排成一列，「输出语言」那行一直是这么画的。
   /// 顺带消掉一处重复——卡片标题「翻译模型」和控件标签「翻译使用不同模型」讲的是同一件事。
   @ViewBuilder var titleAccessory: () -> TitleAccessory
+  @State private var isDetailsPresented = false
 
   @ViewBuilder private var summaryText: some View {
     Text(summary)
@@ -99,22 +100,30 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
         Text(title).font(.headline)
         Spacer(minLength: 12)
         titleAccessory()
+        if details != nil {
+          Button {
+            isDetailsPresented.toggle()
+          } label: {
+            Image(systemName: "info.circle")
+          }
+          .buttonStyle(.borderless)
+          .foregroundStyle(.secondary)
+          .help("查看\(title)说明")
+          .accessibilityLabel("\(title)详细说明")
+          .popover(isPresented: $isDetailsPresented, arrowEdge: .bottom) {
+            Text(details ?? "")
+              .font(.callout)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+              .frame(width: 300, alignment: .leading)
+              .padding(DesignTokens.Space.lg)
+          }
+        }
       }
       if summaryPlacement == .aboveControl { summaryText }
       control()
         .frame(maxWidth: controlWidth.maximum, alignment: .leading)
       if summaryPlacement == .belowControl { summaryText }
-      if let details {
-        DisclosureGroup("了解更多") {
-          Text(details)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, 4)
-        }
-        .font(.caption)
-      }
     }
     .padding(.vertical, 4)
   }

@@ -4,8 +4,15 @@
 <meta charset="utf-8">
 <title>浏览器扩展</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: light dark;
+    --radius-card: 12px;
+    --radius-control: 10px;
+    --radius-small: 8px;
+    --radius-pill: 999px;
+  }
   * { box-sizing: border-box; }
+  html { background: transparent; }
 
   /*
     `hidden` 必须真的能藏住东西。
@@ -18,16 +25,24 @@
 
   body {
     margin: 0;
-    width: 328px;
+    width: 340px;
+    padding: 6px;
     font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
-    background: #f2f2f7;
-    color: #1d1d1f;
+    background: transparent;
+    color: #2e2925;
     -webkit-font-smoothing: antialiased;
   }
   /* 表单控件默认不继承字体，漏掉这一行的表现是「按钮和正文不是一套字」。 */
   button, input, select, textarea { font-family: inherit; }
 
-  main { padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+  main {
+    padding: 14px; display: flex; flex-direction: column; gap: 10px;
+    background: #f4f0e8;
+    border: 1px solid rgba(93,77,62,.12);
+    border-radius: 16px;
+    overflow: hidden;
+    box-shadow: 0 6px 22px rgba(46,41,37,.14);
+  }
 
   /* 顶部：品牌 + 可用性徽章 */
   .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -36,7 +51,7 @@
   .brand .logo { width: 18px; height: 18px; display: block; }
   #availability {
     display: inline-flex; align-items: center; gap: 5px;
-    font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 999px; white-space: nowrap;
+    font-size: 10.5px; font-weight: 600; padding: 3px 9px; border-radius: var(--radius-pill); white-space: nowrap;
   }
   #availability::before { content: ""; width: 6px; height: 6px; border-radius: 50%; }
   #availability[data-tone="ready"]   { background: rgba(48,209,88,0.15); color: #248a3d; }
@@ -50,9 +65,9 @@
 
   /* 内容卡：圆角白卡浮在灰底上 */
   .card {
-    background: #ffffff; border-radius: 13px; padding: 13px 14px;
+    background: #fffdf8; border: 1px solid rgba(93,77,62,0.10); border-radius: var(--radius-card); padding: 13px 14px;
     display: flex; flex-direction: column; gap: 7px;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+    box-shadow: 0 1px 1px rgba(46,41,37,0.035);
   }
   #platform { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: #86868b; }
   #status {
@@ -65,7 +80,7 @@
   #meta .chip {
     display: inline-flex; align-items: center; gap: 4px;
     font-size: 11.5px; color: #86868b;
-    background: #f2f2f7; padding: 3px 8px; border-radius: 7px;
+    background: #f2f2f7; padding: 3px 8px; border-radius: var(--radius-small);
   }
   #meta .chip.video { background: rgba(10,132,255,0.1); color: #0060df; }
 
@@ -74,17 +89,37 @@
     所以它们是同一个角色，共用一套样式。原来只给 #send 写了样式，
     #sync-bookmarks 是个裸 button，于是收藏夹页面上主操作反而长得像次要按钮。
   */
-  #send, #sync-bookmarks {
-    appearance: none; border: 0; border-radius: 11px; padding: 12px;
-    font-size: 13.5px; font-weight: 600; background: #1d1d1f; color: #ffffff;
+  #send, #sync-bookmarks, #recovery-action, #open-app {
+    appearance: none; border: 0; border-radius: var(--radius-control); padding: 10px 12px; min-height: 44px;
+    font-size: 13.5px; font-weight: 650; background: #c56f49; color: #ffffff;
     cursor: pointer; transition: background 0.15s ease;
     display: flex; align-items: center; justify-content: center; gap: 6px;
-    text-align: center; line-height: 1.35;
+    text-align: center; line-height: 1.35; text-decoration: none;
   }
-  #send:hover, #sync-bookmarks:hover { background: #3a3a3c; }
-  #send:active, #sync-bookmarks:active { background: #000000; }
+  #send:hover, #sync-bookmarks:hover, #recovery-action:hover, #open-app:hover { background: #ae5d3c; }
+  #send:active, #sync-bookmarks:active, #recovery-action:active, #open-app:active { background: #934a31; }
   #send:disabled, #sync-bookmarks:disabled { background: #d1d1d6; color: #8e8e93; cursor: default; }
   #send.done, #sync-bookmarks.done { background: rgba(48,209,88,0.16); color: #248a3d; }
+
+  .action-card { padding: 5px; gap: 6px; }
+  .action-options {
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px;
+    padding: 3px; border-radius: 11px; background: #f2eee7;
+  }
+  .action-option { position: relative; }
+  .action-option input { position: absolute; opacity: 0; pointer-events: none; }
+  .action-option span {
+    display: flex; align-items: center; justify-content: center;
+    min-height: 36px; padding: 6px 5px; border-radius: var(--radius-small); text-align: center;
+    color: #746b63; font-size: 12px; font-weight: 650; cursor: pointer;
+  }
+  .action-option input:checked + span {
+    color: #934a31; background: #fffdf8;
+    box-shadow: 0 1px 3px rgba(46,41,37,.08), inset 0 0 0 1px rgba(197,111,73,.16);
+  }
+  .action-option input:focus-visible + span { outline: 2px solid rgba(197,111,73,.55); outline-offset: 1px; }
+  #action-detail { margin: 2px 8px 5px; color: #746b63; font-size: 11.5px; line-height: 1.45; }
+  #result { margin: 0; padding: 10px 12px; border-radius: 11px; background: #edf6ed; color: #28713b; font-size: 12px; line-height: 1.45; }
 
   #error {
     margin: 0; font-size: 12px; line-height: 1.45; color: #d70015;
@@ -110,17 +145,26 @@
   #build-label { margin: 6px 0 0; font-size: 10px; color: #aeaeb2; padding-left: 2px; }
 
   @media (prefers-color-scheme: dark) {
-    body { background: #1c1c1e; color: #f2f2f4; }
+    body { background: transparent; color: #f5f0e9; }
+    main { background: #211e1b; border-color: rgba(255,255,255,.08); box-shadow: 0 6px 22px rgba(0,0,0,.34); }
     .brand { color: #98989d; }
-    .card { background: #2c2c2e; box-shadow: none; }
+    .card { background: #2d2925; border-color: rgba(255,255,255,.06); box-shadow: none; }
     #platform { color: #98989d; }
     #meta .chip { background: #3a3a3c; color: #aeaeb2; }
-    #send, #sync-bookmarks { background: #f5f5f7; color: #111113; }
-    #send:hover, #sync-bookmarks:hover { background: #ffffff; }
+    #send, #sync-bookmarks, #recovery-action, #open-app { background: #d77b55; color: #fff; }
+    #send:hover, #sync-bookmarks:hover, #recovery-action:hover, #open-app:hover { background: #e48a63; }
     #send:disabled, #sync-bookmarks:disabled { background: #3a3a3c; color: #8e8e93; }
     #send.done, #sync-bookmarks.done { background: rgba(48,209,88,0.2); color: #30d158; }
     #metadata-diagnostic { color: #98989d; background: #1c1c1e; }
     #build-label { color: #636366; }
+    .action-options { background: #24211e; }
+    .action-option span { color: #aaa19a; }
+    .action-option input:checked + span {
+      color: #f1b196; background: #39332e;
+      box-shadow: 0 1px 3px rgba(0,0,0,.22), inset 0 0 0 1px rgba(215,123,85,.18);
+    }
+    #action-detail { color: #aaa19a; }
+    #result { background: rgba(48,209,88,.13); color: #65d47c; }
   }
 </style>
 </head>
@@ -138,6 +182,14 @@
     <h1 id="status">读取当前页面…</h1>
     <div id="meta"></div>
   </div>
+  <section class="card action-card" id="action-card">
+    <div class="action-options" role="radiogroup" aria-label="发送后操作">
+      <label class="action-option"><input type="radio" name="capture-action" value="save" checked><span>仅保存</span></label>
+      <label class="action-option"><input type="radio" name="capture-action" value="summarize"><span>总结</span></label>
+      <label class="action-option"><input type="radio" name="capture-action" value="translate"><span>翻译</span></label>
+    </div>
+    <p id="action-detail">保留原文与来源，稍后再处理</p>
+  </section>
   <!--
     初始必须 disabled：main.ts 用顶层 await 等预览返回，`send.onclick` 在那之后才
     挂上。抖音的 session detail 最长 5s、YouTube 还要切字幕轨，这几秒里按钮是可点的
@@ -145,6 +197,9 @@
   -->
   <button id="send" disabled>准备中…</button>
   <button id="sync-bookmarks" hidden>同步收藏夹到桌面 App</button>
+  <p id="result" hidden></p>
+  <button id="recovery-action" hidden></button>
+  <a id="open-app" href="linkdigest://open" hidden>打开汲作查看</a>
   <pre id="error"></pre>
   <details class="diag" id="diag" hidden>
     <summary>诊断信息</summary>
