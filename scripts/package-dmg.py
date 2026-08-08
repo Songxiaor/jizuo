@@ -17,10 +17,12 @@ import argparse
 import importlib.util
 import json
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,9 +43,93 @@ def load_module(name: str, path: Path):
 stable_host = load_module("stable_host", NATIVE_HOST_SCRIPTS / "stable_host.py")
 release_unit = load_module("linkdigest_release_unit", NATIVE_HOST_SCRIPTS / "release_unit.py")
 
+DMG_BACKGROUND = ROOT / "apps/desktop/Assets/DMGBackground.png"
+DMG_BACKGROUND_RETINA = ROOT / "apps/desktop/Assets/DMGBackground@2x.png"
+# Finder 的标题栏约 40pt；外框 760×540 对应 760×500 的背景内容区，
+# 不会出现普通文件夹式的滚动条或把底部辅助文件裁掉。
+DMG_WINDOW_BOUNDS = (180, 120, 940, 660)
+DMG_ICON_SIZE = 96
+
 
 def run(*command: str, cwd: Path | None = None) -> None:
     subprocess.run(command, check=True, cwd=cwd)
+
+
+def apple_script_string(value: str) -> str:
+    """把受控文件名安全地放进 AppleScript 字符串。"""
+    return value.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def configure_finder_layout(
+    mountpoint: Path, volume_name: str, app_name: str, extension_name: str
+) -> None:
+    """写入 Finder 的固定窗口、背景和图标位置（最终保存在 `.DS_Store`）。"""
+    background = mountpoint / ".background" / DMG_BACKGROUND.name
+    retina_background = mountpoint / ".background" / DMG_BACKGROUND_RETINA.name
+    for candidate in (background, retina_background):
+        if not candidate.is_file():
+            raise RuntimeError(f"DMG 背景不存在：{candidate}")
+
+    # `.background` 只服务 Finder，不应该作为第五个安装项显示给用户。
+    run("/usr/bin/xcrun", "SetFile", "-a", "V", str(background.parent))
+
+    left, top, right, bottom = DMG_WINDOW_BOUNDS
+    script = f'''
+tell application "Finder"
+  tell disk "{apple_script_string(volume_name)}"
+    open
+    set current view of container window to icon view
+    set toolbar visible of container window to false
+    set statusbar visible of container window to false
+    set pathbar visible of container window to false
+    set bounds of container window to {{{left}, {top}, {right}, {bottom}}}
+    set viewOptions to icon view options of container window
+    set arrangement of viewOptions to not arranged
+    set icon size of viewOptions to {DMG_ICON_SIZE}
+    set text size of viewOptions to 13
+    set label position of viewOptions to bottom
+    set shows item info of viewOptions to false
+    set shows icon preview of viewOptions to false
+    set background picture of viewOptions to file ".background:{DMG_BACKGROUND.name}"
+    set position of item "{apple_script_string(app_name)}" to {{180, 245}}
+    set position of item "Applications" to {{580, 245}}
+    set position of item "安装说明.txt" to {{160, 390}}
+    set position of item "{apple_script_string(extension_name)}" to {{570, 390}}
+    update without registering applications
+    delay 2
+    close
+  end tell
+end tell
+'''
+    run("/usr/bin/osascript", "-e", script)
+
+    # Finder 关闭窗口后才落盘 `.DS_Store`；不要靠固定长等待掩盖写入失败。
+    ds_store = mountpoint / ".DS_Store"
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not ds_store.is_file():
+        time.sleep(0.1)
+    if not ds_store.is_file() or ds_store.stat().st_size == 0:
+        raise RuntimeError("Finder 没有写入 DMG 布局元数据 `.DS_Store`")
+
+
+def attach_read_write_image(image: Path) -> tuple[str, Path]:
+    """挂载读写映像并返回其精确 leaf device 与 `/Volumes` 挂载点。"""
+    result = subprocess.run(
+        [
+            "/usr/bin/hdiutil", "attach", str(image),
+            "-readwrite", "-noverify", "-nobrowse", "-plist",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    payload = plistlib.loads(result.stdout)
+    mounted = [
+        entity for entity in payload.get("system-entities", [])
+        if entity.get("mount-point") and entity.get("dev-entry")
+    ]
+    if len(mounted) != 1:
+        raise RuntimeError(f"DMG 挂载结果不唯一：{mounted!r}")
+    return str(mounted[0]["dev-entry"]), Path(mounted[0]["mount-point"])
 
 
 def build_universal(work: Path) -> Path:
@@ -129,9 +215,10 @@ INSTALL_NOTE_TEMPLATE = """{name} 安装说明
 def build_dmg(
     app: Path, extension: Path, output: Path, version: str, display_name: str, edition: str
 ) -> None:
-    """组装 DMG 内容并生成映像。"""
+    """组装带固定 Finder 安装界面的压缩 DMG。"""
     with tempfile.TemporaryDirectory(prefix="linkdigest-dmg-stage.", dir="/private/tmp") as tmp:
-        stage = Path(tmp) / "LinkDigest"
+        work = Path(tmp)
+        stage = work / "LinkDigest"
         stage.mkdir()
         shutil.copytree(app, stage / app.name, symlinks=False)
         shutil.copytree(extension, stage / extension.name, symlinks=False)
@@ -140,16 +227,55 @@ def build_dmg(
         (stage / "安装说明.txt").write_text(
             INSTALL_NOTE_TEMPLATE.format(name=display_name), encoding="utf-8"
         )
+        background_directory = stage / ".background"
+        background_directory.mkdir()
+        shutil.copy2(DMG_BACKGROUND, background_directory / DMG_BACKGROUND.name)
+        # Finder 以基础文件名记录背景；同目录的 `@2x` 版本供 Retina 屏自动取用。
+        shutil.copy2(
+            DMG_BACKGROUND_RETINA,
+            background_directory / DMG_BACKGROUND_RETINA.name,
+        )
 
         if output.exists():
             output.unlink()
-        run("/usr/bin/hdiutil", "create",
-            # 卷名是双击 DMG 后 Finder 边栏里显示的那一行,同样要用显示名。
-            # 文件名同样使用产品名；用户下载后第一眼不该再看到内部工程名。
-            "-volname", f"{display_name} {version} {edition}",
+        read_write_image = work / "layout.dmg"
+        # 用唯一的临时卷名配置 Finder，避免用户恰好仍挂载着上一个正式 DMG 时，
+        # AppleScript 把布局写进旧的只读卷。布局写完后再改成正式展示名。
+        layout_volume_name = f"JizuoLayout-{os.getpid()}-{edition[:1]}"
+        final_volume_name = f"{display_name} {version} {edition}"
+        run(
+            "/usr/bin/hdiutil", "create",
+            "-volname", layout_volume_name,
             "-srcfolder", str(stage),
-            "-ov", "-format", "UDZO",
-            str(output))
+            "-fs", "HFS+",
+            "-ov", "-format", "UDRW",
+            str(read_write_image),
+        )
+
+        mounted_device: str | None = None
+        try:
+            mounted_device, mountpoint = attach_read_write_image(read_write_image)
+            configure_finder_layout(
+                mountpoint, layout_volume_name, app.name, extension.name
+            )
+            run("/usr/sbin/diskutil", "rename", mounted_device, final_volume_name)
+            run("/usr/bin/hdiutil", "detach", mounted_device)
+            mounted_device = None
+        finally:
+            if mounted_device is not None:
+                # 只做普通精确卸载，不使用 force；失败时保留现场给调用方诊断。
+                subprocess.run(
+                    ["/usr/bin/hdiutil", "detach", mounted_device],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+
+        run(
+            "/usr/bin/hdiutil", "convert", str(read_write_image),
+            "-format", "UDZO", "-imagekey", "zlib-level=9",
+            "-ov", "-o", str(output),
+        )
 
 
 def thin_app(universal_app: Path, destination: Path, architecture: str) -> Path:
@@ -176,7 +302,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist",
                         help="DMG 的输出目录（默认 dist/，已在 .gitignore 里）")
     parser.add_argument("--version", required=True,
-                        help="版本号，例如 0.2.3；必须与 config/app-release.json 一致。")
+                        help="版本号，例如 0.2.4；必须与 config/app-release.json 一致。")
     args = parser.parse_args()
 
     output_dir = args.output_dir.resolve()
