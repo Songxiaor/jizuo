@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import argparse
 import importlib.util
-import json
 import os
 import plistlib
 import shutil
@@ -160,6 +159,57 @@ def sign_release(app: Path, bundle_identifier: str) -> None:
     run("/usr/bin/codesign", "--verify", "--deep", "--strict", str(app))
 
 
+def sign_native_host(source: Path, destination: Path, host_name: str) -> Path:
+    """签名临时副本，让 Host 包的校验和绑定签名后的 universal 二进制。"""
+    destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    shutil.copy2(source, destination, follow_symlinks=False)
+    os.chmod(destination, 0o755)
+    run(
+        "/usr/bin/codesign", "--force", "--sign", "-",
+        "--identifier", host_name, str(destination),
+    )
+    run("/usr/bin/codesign", "--verify", "--strict", str(destination))
+    return destination
+
+
+def native_host_package(app: Path, config: dict) -> Path:
+    return app / "Contents/Resources/NativeHost" / (
+        f"LinkDigestNativeHost-{config['productVersion']}-macos-arm64"
+    )
+
+
+def verify_app_native_host(app: Path, config: dict) -> None:
+    stable_host.verify_package(native_host_package(app, config), ROOT)
+
+
+def sign_and_verify_app(app: Path, bundle_identifier: str, config: dict) -> None:
+    sign_release(app, bundle_identifier)
+    # `codesign --deep` 不会签 Resources/NativeHost；但它仍可能改变 bundle
+    # 内容。最终封装后重验 Host seal，不能把先前检查当作最终事实。
+    verify_app_native_host(app, config)
+
+
+def create_host_package(binary_root: Path, work: Path, config: dict) -> Path:
+    """签名 Host 副本并将其封装成严格校验的 universal Host package。"""
+    signed_host = sign_native_host(
+        binary_root / config["entrypoint"],
+        work / "signed-native-host" / config["entrypoint"],
+        config["hostName"],
+    )
+    host_package = work / "host-package" / (
+        f"LinkDigestNativeHost-{config['productVersion']}-macos-arm64"
+    )
+    host_package.parent.mkdir(mode=0o700)
+    stable_host.create_package(
+        signed_host,
+        binary_root / config["resourceBundle"],
+        host_package,
+        ROOT,
+    )
+    stable_host.verify_package(host_package, ROOT)
+    return host_package
+
+
 # 说明里出现的名字必须是**用户在 Finder 和系统弹窗里真正看到的那个**。
 # App 的 CFBundleDisplayName 是「汲作」,而这份说明原本通篇写 LinkDigest——
 # 于是它让用户去找「已阻止使用 LinkDigest」那一行,而系统显示的是「汲作」。
@@ -292,11 +342,7 @@ def thin_app(universal_app: Path, destination: Path, architecture: str) -> Path:
 
     # Native Host 的 SHA256SUMS 与 metadata 钉住 universal Mach-O；切片会破坏
     # 这个已验证包，故只验证复制后的原包仍完整，绝不重写其任何内容。
-    config = stable_host.load_config(ROOT)
-    host_package = destination / "Contents/Resources/NativeHost" / (
-        f"LinkDigestNativeHost-{config['productVersion']}-macos-arm64"
-    )
-    stable_host.verify_package(host_package, ROOT)
+    verify_app_native_host(destination, stable_host.load_config(ROOT))
     return destination
 
 
@@ -310,7 +356,7 @@ def main() -> int:
 
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    config = json.loads((ROOT / "config/native-host.json").read_text(encoding="utf-8"))
+    config = stable_host.load_config(ROOT)
     app_config = release_unit.load_app_config(ROOT)
     if args.version != app_config["shortVersion"]:
         raise RuntimeError(
@@ -326,15 +372,7 @@ def main() -> int:
         # 目录名沿用 `-macos-arm64`,尽管二进制已是 universal:
         # 这个名字被浏览器的 Native Messaging manifest 以绝对路径写死,
         # 改名会让已安装的扩展立刻找不到 Host。release_unit 里的校验也钉死了它。
-        host_package = work / "host-package" / f"LinkDigestNativeHost-{config['productVersion']}-macos-arm64"
-        host_package.parent.mkdir(mode=0o700)
-        stable_host.create_package(
-            binary_root / config["entrypoint"],
-            binary_root / config["resourceBundle"],
-            host_package,
-            ROOT,
-        )
-        stable_host.verify_package(host_package, ROOT)
+        host_package = create_host_package(binary_root, work, config)
 
         print("→ 组装 App bundle…")
         staged_app = work / release_unit.APP_BUNDLE
@@ -369,7 +407,9 @@ def main() -> int:
                 architecture_root / release_unit.APP_BUNDLE,
                 architecture,
             )
-            sign_release(architecture_app, app_config["bundleIdentifier"])
+            sign_and_verify_app(
+                architecture_app, app_config["bundleIdentifier"], config
+            )
             dmg = output_dir / f"汲作-{args.version}-macOS-{filename_edition}.dmg"
             build_dmg(
                 architecture_app,
