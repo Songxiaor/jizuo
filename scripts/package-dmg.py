@@ -279,21 +279,24 @@ def build_dmg(
 
 
 def thin_app(universal_app: Path, destination: Path, architecture: str) -> Path:
-    """从已验证的 universal App 生成一个单架构副本，并重新 ad-hoc 签名。"""
+    """从已验证的 universal App 生成单架构 App，保留 universal Native Host。"""
     shutil.copytree(universal_app, destination, symlinks=False)
-    host_name = "LinkDigestNativeHost-0.2.0-macos-arm64"
-    binaries = [
-        destination / "Contents/MacOS/LinkDigestApp",
-        destination / f"Contents/Resources/NativeHost/{host_name}/LinkDigestNativeHost",
-    ]
-    for binary in binaries:
-        thinned = binary.with_name(f".{binary.name}.{architecture}.thin")
-        run("/usr/bin/lipo", str(binary), "-thin", architecture, "-output", str(thinned))
-        os.chmod(thinned, 0o755)
-        os.replace(thinned, binary)
-        actual = subprocess.check_output(["/usr/bin/lipo", "-archs", str(binary)], text=True).strip()
-        if actual != architecture:
-            raise RuntimeError(f"单架构切片校验失败：{binary} 是 {actual!r}，预期 {architecture!r}")
+    binary = destination / "Contents/MacOS/LinkDigestApp"
+    thinned = binary.with_name(f".{binary.name}.{architecture}.thin")
+    run("/usr/bin/lipo", str(binary), "-thin", architecture, "-output", str(thinned))
+    os.chmod(thinned, 0o755)
+    os.replace(thinned, binary)
+    actual = subprocess.check_output(["/usr/bin/lipo", "-archs", str(binary)], text=True).strip()
+    if actual != architecture:
+        raise RuntimeError(f"单架构切片校验失败：{binary} 是 {actual!r}，预期 {architecture!r}")
+
+    # Native Host 的 SHA256SUMS 与 metadata 钉住 universal Mach-O；切片会破坏
+    # 这个已验证包，故只验证复制后的原包仍完整，绝不重写其任何内容。
+    config = stable_host.load_config(ROOT)
+    host_package = destination / "Contents/Resources/NativeHost" / (
+        f"LinkDigestNativeHost-{config['productVersion']}-macos-arm64"
+    )
+    stable_host.verify_package(host_package, ROOT)
     return destination
 
 
