@@ -2,9 +2,10 @@
 """Create the LinkDigest r4b local-test ad-hoc DMG candidate.
 
 This is deliberately a local-test pipeline, not a public release pipeline.  It
-freezes the live dirty worktree without Git, builds only from deterministic
-source archives in an isolated environment, signs inside-out with ad-hoc
-identities, verifies a readonly DMG mount, and emits a self-contained handoff.
+uses the Git index only to select tracked source paths, freezes their current
+live-worktree bytes, then builds from deterministic source archives in an
+isolated environment.  It signs inside-out with ad-hoc identities, verifies a
+readonly DMG mount, and emits a self-contained handoff.
 """
 
 from __future__ import annotations
@@ -342,19 +343,43 @@ def excluded_name(name: str, config: dict[str, Any]) -> bool:
     return name in set(config["excludedBasenames"]) or any(name.endswith(suffix) for suffix in config["excludedSuffixes"])
 
 
-def validate_top_level(root: Path, config: dict[str, Any]) -> None:
-    names = set(os.listdir(root))
+def git_tracked_entries(root: Path) -> list[tuple[int, str]]:
+    """Return the strictly parsed live Git index, mapping errors locally."""
+    try:
+        return r4a.git_tracked_entries(root)
+    except r4a.ReleaseUnitError as error:
+        reject(str(error), error.code)
+
+
+def _validate_tracked_top_level(entries: Sequence[tuple[int, str]], config: dict[str, Any]) -> None:
+    tracked_top = {path.split("/", 1)[0] for _mode, path in entries}
     allowed = set(config["sourceTopLevelAllowlist"])
     excluded = set(config["excludedTopLevel"])
-    unknown = names - allowed - excluded
-    missing = allowed - names
     overlap = allowed & excluded
-    if unknown:
-        reject(f"unknown top-level entries STOP: {byte_sorted(unknown)}")
-    if missing:
-        reject(f"allowlisted top-level entries missing: {byte_sorted(missing)}")
+    unknown = tracked_top - allowed - excluded
+    missing = allowed - tracked_top
     if overlap:
         reject(f"top-level policy overlap: {byte_sorted(overlap)}", INTERNAL_ERROR)
+    if unknown:
+        reject(f"unknown tracked top-level entries STOP: {byte_sorted(unknown)}")
+    if missing:
+        reject(f"allowlisted tracked top-level entries missing: {byte_sorted(missing)}")
+
+
+def _tracked_source_entries(root: Path, config: dict[str, Any]) -> list[tuple[int, str]]:
+    entries = git_tracked_entries(root)
+    _validate_tracked_top_level(entries, config)
+    allowed = set(config["sourceTopLevelAllowlist"])
+    selected = [entry for entry in entries if entry[1].split("/", 1)[0] in allowed]
+    if not selected:
+        reject("tracked source allowlist selected no files")
+    return selected
+
+
+def validate_top_level(root: Path, config: dict[str, Any]) -> None:
+    """Validate the tracked top-level truth; untracked names are irrelevant."""
+    entries = git_tracked_entries(root)
+    _validate_tracked_top_level(entries, config)
 
 
 def open_root_fd(root: Path, label: str) -> int:
@@ -463,24 +488,12 @@ def _walk_fd(
 
 
 def live_allowlist_records(root: Path, config: dict[str, Any]) -> list[dict[str, Any]]:
-    validate_top_level(root, config)
-    root_fd = open_root_fd(root, "live workspace")
-    records: list[dict[str, Any]] = []
+    """Inventory only tracked files below sourceTopLevelAllowlist."""
+    entries = _tracked_source_entries(root, config)
     try:
-        for name in config["sourceTopLevelAllowlist"]:
-            relative = Path(name)
-            safe_relative(relative, "top-level allowlist")
-            try:
-                fd = os.open(name, os.O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, dir_fd=root_fd)
-            except OSError as error:
-                reject(f"cannot open allowlisted source {name}: {error}")
-            try:
-                _walk_fd(fd, relative, config, records, None)
-            finally:
-                os.close(fd)
-    finally:
-        os.close(root_fd)
-    return sorted(records, key=lambda item: os.fsencode(item["path"]))
+        return r4a.tracked_worktree_records(root, entries)
+    except r4a.ReleaseUnitError as error:
+        reject(str(error), error.code)
 
 
 def records_digest(records: list[dict[str, Any]]) -> str:
@@ -494,21 +507,15 @@ def copy_live_snapshot(
     *,
     copy_hook: Callable[[Path, int], None] | None = None,
 ) -> list[dict[str, Any]]:
+    """Copy tracked allowlisted files and their current worktree bytes."""
     if os.path.lexists(destination):
         reject("source snapshot destination already exists")
+    entries = _tracked_source_entries(root, config)
     destination.mkdir(mode=0o700)
-    root_fd = open_root_fd(root, "live workspace")
-    records: list[dict[str, Any]] = []
     try:
-        for name in config["sourceTopLevelAllowlist"]:
-            fd = os.open(name, os.O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK, dir_fd=root_fd)
-            try:
-                _walk_fd(fd, Path(name), config, records, destination / name, copy_hook=copy_hook)
-            finally:
-                os.close(fd)
-    finally:
-        os.close(root_fd)
-    return sorted(records, key=lambda item: os.fsencode(item["path"]))
+        return r4a.tracked_worktree_records(root, entries, destination=destination, copy_hook=copy_hook)
+    except r4a.ReleaseUnitError as error:
+        reject(str(error), error.code)
 
 
 def copy_grdb_snapshot(root: Path, destination: Path) -> list[dict[str, Any]]:
@@ -1106,7 +1113,7 @@ def local_test_unit_payload(
             "archiveHash": source_manifest["source"]["archiveHash"],
             "archiveName": config["sourceArchive"],
             "manifestHash": source_manifest_hash,
-            "provenance": "live-worktree-snapshot-including-uncommitted-files",
+            "provenance": "git-index-selected-tracked-live-worktree-bytes",
             "treeDigest": source_manifest["source"]["treeDigest"],
         },
         "toolFactsHash": tools_hash,
@@ -1426,7 +1433,7 @@ def build_candidate(audit_root_text: str) -> dict[str, Any]:
                 "archiveHash": source_archive_hash,
                 "archiveName": config["sourceArchive"],
                 "liveAllowlistInventory": live_before,
-                "provenance": "live-worktree-snapshot-including-uncommitted-files",
+                "provenance": "git-index-selected-tracked-live-worktree-bytes",
                 "records": source_records,
                 "secretScan": source_secret_scan,
                 "treeDigest": source_tree_digest,
@@ -1597,7 +1604,7 @@ def build_candidate(audit_root_text: str) -> dict[str, Any]:
             "dmg": dmg_evidence,
             "browserExtension": extension,
             "formatVersion": 1,
-            "gitUsed": False,
+            "gitUsed": True,
             "host": app_result["host"],
             "localTestUnitHash": sha256_file(unit_path),
             "manualTestStatus": "READY_FOR_MANUAL_OPEN",
@@ -1611,7 +1618,7 @@ def build_candidate(audit_root_text: str) -> dict[str, Any]:
                 "liveInventoryBefore": live_before,
                 "liveInventoryFinalPrebuild": live_final_prebuild,
                 "manifestHash": source_manifest_hash,
-                "provenance": "live-worktree-snapshot-including-uncommitted-files",
+                "provenance": "git-index-selected-tracked-live-worktree-bytes",
                 "sourceArchiveHash": source_archive_hash,
             },
             "targetProbe": probe,
@@ -1627,7 +1634,7 @@ def build_candidate(audit_root_text: str) -> dict[str, Any]:
                 "candidateTreeExact": True,
                 "dmgReadonlyMountedAndDetached": True,
                 "extensionArtifactBound": True,
-                "gitUsed": False,
+                "gitUsed": True,
                 "hostAdHocSignedBeforePackage": True,
                 "liveInventoryStable": True,
                 "noAppLaunch": True,

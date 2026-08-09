@@ -95,7 +95,7 @@ def canonical_checks(
     check(manifest["distributionClass"] == "local-test-ad-hoc", "distribution class")
     check(manifest["manualTestStatus"] == "READY_FOR_MANUAL_OPEN", "manifest manual status")
     check(manifest["productStatus"] == "BLOCKED" and manifest["publicReleaseStatus"] == "BLOCKED", "manifest blocked")
-    check(manifest["gitUsed"] is False and manifest["build"]["gitUsed"] is False, "Git unused")
+    check(manifest["gitUsed"] is True and manifest["build"]["gitUsed"] is False, "Git used only for source selection")
     check(manifest["build"]["networkFallback"] is False, "no build network fallback")
     expected_payload_paths = local.expected_handoff_paths(
         config,
@@ -259,15 +259,79 @@ def acceptance_guide_checks(
     check(required_key(matches[0], "hash", "source manifest acceptance guide record") == expected["sha256"], "source acceptance guide hash")
 
 
+def _git_fixture(root: Path, *args: str) -> None:
+    result = subprocess.run(
+        [r4a.GIT, *args],
+        cwd=root,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise CheckFailure(f"git fixture command failed: {args}: {result.stderr.decode(errors='replace')}")
+
+
+def tracked_source_policy_cases(review: Path, config: dict[str, Any]) -> None:
+    cases = review / "tracked-source-cases"
+    cases.mkdir(mode=0o700)
+    root = cases / "repo"
+    root.mkdir()
+    _git_fixture(root, "init", "-q")
+    tracked = {
+        "apps/desktop/tracked.txt": "index bytes\n",
+        "scripts/native-host/tracked.py": "# tracked\n",
+        "site/index.html": "excluded tracked top\n",
+    }
+    for relative, content in tracked.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    _git_fixture(root, "add", "--", *tracked)
+    (root / ".git/info/exclude").write_text("*.ignored\n", encoding="utf-8")
+    (root / "apps/desktop/tracked.txt").write_text("live tracked modification\n", encoding="utf-8")
+    excluded_paths = (
+        "apps/desktop/.cindy-write-test.txt",
+        "apps/desktop/.dev-suite-analytics/event.json",
+        "apps/desktop/.kb-cache/cache.bin",
+        "apps/desktop/openwork-zh-translation/local.txt",
+        "scripts/native-host/local_test_release.py.backup.2026-08-06T09-13-12Z",
+        "scripts/native-host/release_unit.py.backup.2026-08-06T09-12-20Z",
+        "apps/desktop/local.ignored",
+    )
+    for relative in excluded_paths:
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("local only\n", encoding="utf-8")
+    fixture_config = {
+        **config,
+        "sourceTopLevelAllowlist": ["apps", "scripts"],
+        "excludedTopLevel": ["site"],
+    }
+    destination = cases / "snapshot"
+    records = local.copy_live_snapshot(root, destination, fixture_config)
+    check(
+        (destination / "apps/desktop/tracked.txt").read_text(encoding="utf-8") == "live tracked modification\n",
+        "local snapshot includes tracked live modification",
+    )
+    check({record["path"] for record in records} == {"apps/desktop/tracked.txt", "scripts/native-host/tracked.py"}, "local snapshot records exact tracked allowlist")
+    check(not (destination / "site").exists(), "tracked excluded top-level omitted")
+    for relative in excluded_paths:
+        check(not (destination / relative).exists(), f"local-only path omitted: {relative}")
+
+    unknown = dict(fixture_config)
+    unknown["excludedTopLevel"] = []
+    expect_local(lambda: local.validate_top_level(root, unknown), local.INVALID_UNSAFE, "unknown tracked top-level STOP")
+    drift = dict(fixture_config)
+    drift["sourceTopLevelAllowlist"] = ["apps", "missing", "scripts"]
+    expect_local(lambda: local.validate_top_level(root, drift), local.INVALID_UNSAFE, "allowlist config drift STOP")
+
+
 def policy_negative_cases(review: Path, config: dict[str, Any]) -> None:
     cases = review / "cases"
     cases.mkdir(mode=0o700)
-    unknown = cases / "unknown-top"
-    unknown.mkdir()
-    for name in config["sourceTopLevelAllowlist"]:
-        (unknown / name).touch()
-    (unknown / "SURPRISE").touch()
-    expect_local(lambda: local.validate_top_level(unknown, config), local.INVALID_UNSAFE, "unknown top-level STOP")
 
     symlink = cases / "symlink"
     symlink.mkdir()
@@ -544,6 +608,7 @@ def main() -> int:
         extension = extension_artifact_checks(candidate, source, review, build_manifest, source_manifest, config)
         acceptance_guide_checks(candidate, source, build_manifest, source_manifest, config)
         static_safety_checks(root)
+        tracked_source_policy_cases(review, config)
         policy_negative_cases(review, config)
         dmg_review = verify_real_dmg(audit, candidate, review, source, dependency, config)
         tamper_cases(audit, review, source)

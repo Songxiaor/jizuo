@@ -71,6 +71,8 @@ HDITUTIL = "/usr/bin/hdiutil"
 LIPO = "/usr/bin/lipo"
 OTOOL = "/usr/bin/otool"
 CODESIGN = "/usr/bin/codesign"
+GIT = "/usr/bin/git"
+XCODE_DEVELOPER_DIR = Path("/Applications/Xcode.app/Contents/Developer")
 
 APP_CONFIG_KEYS = {
     "formatVersion",
@@ -153,6 +155,15 @@ def sha256_file(path: Path) -> str:
     with path.open("rb") as handle:
         while chunk := handle.read(1024 * 1024):
             digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_fd(fd: int) -> str:
+    digest = hashlib.sha256()
+    os.lseek(fd, 0, os.SEEK_SET)
+    while chunk := os.read(fd, 1024 * 1024):
+        digest.update(chunk)
+    os.lseek(fd, 0, os.SEEK_SET)
     return digest.hexdigest()
 
 
@@ -517,29 +528,374 @@ def copy_path_nofollow(
         os.close(root_fd)
 
 
-def copy_source(root: Path, destination: Path) -> None:
-    destination.mkdir(mode=0o700)
-    allowlist = [
-        Path("apps/desktop"),
-        Path("apps/browser-extension"),
-        Path("contracts"),
-        Path("config"),
-        Path("scripts/sync-contracts.sh"),
-        Path("scripts/native-host/stable_host.py"),
-    ]
+GIT_REGULAR_MODES = {0o100644, 0o100755}
+R4A_SOURCE_PATHS = (
+    "apps/desktop",
+    "apps/browser-extension",
+    "contracts",
+    "config",
+    "scripts/sync-contracts.sh",
+    "scripts/native-host/stable_host.py",
+)
 
-    blocked = {".git", ".build", "node_modules", ".output", "output", "evidence", "DerivedData", "__pycache__"}
-    for relative in allowlist:
-        target = destination / relative
-        target.parent.mkdir(parents=True, exist_ok=True)
+
+def parse_git_tracked_entries(payload: bytes) -> list[tuple[int, str]]:
+    """Strictly parse NUL-delimited ``git ls-files --stage`` output."""
+    if payload and not payload.endswith(b"\0"):
+        reject("git ls-files output is not NUL terminated", INTERNAL_ERROR)
+    records = payload[:-1].split(b"\0") if payload else []
+    entries: list[tuple[int, str]] = []
+    seen: set[str] = set()
+    pattern = re.compile(rb"([0-7]{6}) ([0-9a-f]{40}|[0-9a-f]{64}) ([0-3])\t(.+)", re.DOTALL)
+    for record in records:
+        match = pattern.fullmatch(record)
+        if match is None:
+            reject("git ls-files produced malformed staged output", INTERNAL_ERROR)
+        mode_text_raw, object_id, stage_raw, path_raw = match.groups()
+        if stage_raw != b"0":
+            reject("git index contains a non-stage-0 entry")
+        if not object_id.strip(b"0"):
+            reject("git index contains an intent-to-add or null object entry")
         try:
-            copy_path_nofollow(root, relative, target, excluded_names=blocked, label=f"source {relative}")
-        except FileNotFoundError:
-            reject(f"allowlisted build source is missing: {relative}", ENVIRONMENT_BLOCKED)
-    forbidden = {".git", ".build", "node_modules", ".output", "output", "evidence", "__pycache__"}
-    for path in destination.rglob("*"):
-        if path.name in forbidden:
-            reject(f"clean source copied forbidden path: {path.name}", INTERNAL_ERROR)
+            path = path_raw.decode("utf-8", errors="strict")
+        except UnicodeDecodeError:
+            reject("git index path is not valid UTF-8")
+        parts = path.split("/")
+        if path.startswith("/") or not path or any(part in {"", ".", ".."} for part in parts):
+            reject(f"git index contains an unsafe path: {path!r}")
+        if path in seen:
+            reject(f"git index contains a duplicate path: {path}")
+        seen.add(path)
+        mode = int(mode_text_raw, 8)
+        if mode == 0o120000:
+            reject(f"tracked symlink is not permitted: {path}")
+        if mode == 0o160000:
+            reject(f"tracked submodule is not permitted: {path}")
+        if mode not in GIT_REGULAR_MODES:
+            reject(f"tracked entry is not a regular file: {path}")
+        entries.append((mode, path))
+    return sorted(entries, key=lambda item: os.fsencode(item[1]))
+
+
+def git_tracked_entries(root: Path) -> list[tuple[int, str]]:
+    """Read the live repository index exactly once and return tracked files."""
+    try:
+        root_before = root.lstat()
+    except OSError as error:
+        reject(f"repository root is unavailable: {error}", ENVIRONMENT_BLOCKED)
+    if not stat.S_ISDIR(root_before.st_mode) or stat.S_ISLNK(root_before.st_mode):
+        reject("repository root must be one real directory")
+    env = {
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "LANG": "C",
+        "LC_ALL": "C",
+        "GIT_OPTIONAL_LOCKS": "0",
+    }
+    try:
+        result = subprocess.run(
+            [GIT, "ls-files", "--cached", "--stage", "-z", "--"],
+            cwd=root,
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+            timeout=30,
+        )
+    except (subprocess.TimeoutExpired, OSError) as error:
+        reject(f"git index enumeration failed: {error}", ENVIRONMENT_BLOCKED)
+    if result.returncode != 0:
+        detail = result.stderr.decode("utf-8", errors="replace")[-1000:]
+        reject(f"git index enumeration failed: {detail}", ENVIRONMENT_BLOCKED)
+    root_after = root.lstat()
+    if (root_before.st_dev, root_before.st_ino, root_before.st_mode) != (
+        root_after.st_dev,
+        root_after.st_ino,
+        root_after.st_mode,
+    ):
+        reject("repository root changed during Git index enumeration", CLEANUP_REQUIRED)
+    entries = parse_git_tracked_entries(result.stdout)
+    if not entries:
+        reject("git index contains no tracked files")
+    return entries
+
+
+def _tracked_entry_matches(relative: str, scopes: Sequence[str]) -> bool:
+    return any(relative == scope or relative.startswith(scope + "/") for scope in scopes)
+
+
+def _open_tracked_destination_parent(destination_root_fd: int, relative: str) -> int:
+    """Create and open destination ancestors relative to one pinned root FD.
+
+    Every component is opened with ``O_DIRECTORY | O_NOFOLLOW`` before the
+    next component is touched.  A concurrent rename therefore leaves us on
+    the already-open directory inode instead of following a replacement
+    symlink through a later full-path open.
+    """
+    parts = relative.split("/")
+    if not parts or any(part in {"", ".", ".."} or "/" in part for part in parts):
+        reject(f"snapshot destination has an unsafe path: {relative}", INTERNAL_ERROR)
+    descriptor = os.dup(destination_root_fd)
+    accumulated: list[str] = []
+    try:
+        for component in parts[:-1]:
+            accumulated.append(component)
+            key = "/".join(accumulated)
+            try:
+                os.mkdir(component, mode=0o755, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            except OSError as error:
+                reject(
+                    f"snapshot destination ancestor could not be created: {key}: {error}",
+                    CLEANUP_REQUIRED,
+                )
+            try:
+                next_descriptor = os.open(
+                    component,
+                    os.O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC,
+                    dir_fd=descriptor,
+                )
+            except OSError as error:
+                reject(
+                    f"snapshot destination ancestor became unsafe: {key}: {error}",
+                    CLEANUP_REQUIRED,
+                )
+            os.close(descriptor)
+            descriptor = next_descriptor
+            info = os.fstat(descriptor)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid():
+                reject(
+                    f"snapshot destination ancestor is not a current-user-owned directory: {key}",
+                    CLEANUP_REQUIRED,
+                )
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _verify_tracked_destination(
+    destination_root_fd: int,
+    relative_path: Path,
+    relative: str,
+    expected_identity: tuple[int, int, int, int, int],
+    expected_digest: str,
+) -> None:
+    """Reopen one copied target from the pinned root and bind path to bytes."""
+    try:
+        verify_fd, verify_info = open_relative_nofollow(
+            destination_root_fd,
+            relative_path,
+            f"snapshot destination {relative}",
+        )
+    except (OSError, ReleaseUnitError) as error:
+        reject(f"snapshot destination changed while copying: {relative}: {error}", CLEANUP_REQUIRED)
+    try:
+        identity = (
+            verify_info.st_dev,
+            verify_info.st_ino,
+            verify_info.st_mode,
+            verify_info.st_nlink,
+            verify_info.st_size,
+        )
+        if (
+            not stat.S_ISREG(verify_info.st_mode)
+            or verify_info.st_nlink != 1
+            or identity != expected_identity
+            or sha256_fd(verify_fd) != expected_digest
+        ):
+            reject(f"snapshot destination changed while copying: {relative}", CLEANUP_REQUIRED)
+    finally:
+        os.close(verify_fd)
+
+
+def tracked_worktree_records(
+    root: Path,
+    entries: Sequence[tuple[int, str]],
+    *,
+    destination: Path | None = None,
+    copy_hook: Callable[[Path, int], None] | None = None,
+) -> list[dict[str, Any]]:
+    """Hash or copy exact tracked files using nofollow descriptors.
+
+    File bytes come from the live worktree, so tracked uncommitted content is
+    retained.  Paths and regular-file modes come from the Git index.  Each
+    source descriptor is statted and hashed before and after use, then its path
+    is reopened nofollow to detect replacement races.
+    """
+    root_fd = open_absolute_directory_nofollow(root, "tracked worktree root")
+    destination_root_fd: int | None = None
+    destination_root_identity: tuple[int, int, int, int] | None = None
+    if destination is not None:
+        try:
+            destination_root_fd = open_absolute_directory_nofollow(
+                destination, "snapshot destination root"
+            )
+        except (OSError, ReleaseUnitError) as error:
+            os.close(root_fd)
+            reject(f"snapshot destination root is unsafe: {error}", CLEANUP_REQUIRED)
+        destination_info = os.fstat(destination_root_fd)
+        destination_root_identity = (
+            destination_info.st_dev,
+            destination_info.st_ino,
+            destination_info.st_mode,
+            destination_info.st_uid,
+        )
+    records: list[dict[str, Any]] = []
+    try:
+        for git_mode, relative in entries:
+            if git_mode not in GIT_REGULAR_MODES:
+                reject(f"tracked entry mode became unsafe: {relative}", INTERNAL_ERROR)
+            relative_path = Path(*relative.split("/"))
+            try:
+                source_fd, before = open_relative_nofollow(root_fd, relative_path, f"tracked source {relative}")
+            except FileNotFoundError:
+                reject(f"tracked source is missing: {relative}", ENVIRONMENT_BLOCKED)
+            try:
+                if not stat.S_ISREG(before.st_mode) or before.st_nlink != 1:
+                    reject(f"tracked source must be a single-link regular file: {relative}")
+                before_identity = (
+                    before.st_dev,
+                    before.st_ino,
+                    before.st_mode,
+                    before.st_nlink,
+                    before.st_size,
+                    before.st_mtime_ns,
+                )
+                digest = sha256_fd(source_fd)
+                if destination_root_fd is not None:
+                    parent_fd = _open_tracked_destination_parent(destination_root_fd, relative)
+                    try:
+                        try:
+                            target_fd = os.open(
+                                relative_path.name,
+                                os.O_WRONLY | os.O_CREAT | os.O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                                stat.S_IMODE(git_mode),
+                                dir_fd=parent_fd,
+                            )
+                        except OSError as error:
+                            reject(
+                                f"snapshot destination file could not be created: {relative}: {error}",
+                                CLEANUP_REQUIRED,
+                            )
+                        try:
+                            os.lseek(source_fd, 0, os.SEEK_SET)
+                            copied = 0
+                            while payload := os.read(source_fd, 1024 * 1024):
+                                view = memoryview(payload)
+                                while view:
+                                    written = os.write(target_fd, view)
+                                    if written <= 0:
+                                        reject(f"snapshot write made no progress: {relative}", CLEANUP_REQUIRED)
+                                    copied += written
+                                    view = view[written:]
+                                if copy_hook is not None:
+                                    copy_hook(relative_path, copied)
+                            os.fchmod(target_fd, stat.S_IMODE(git_mode))
+                            target_info = os.fstat(target_fd)
+                            target_identity = (
+                                target_info.st_dev,
+                                target_info.st_ino,
+                                target_info.st_mode,
+                                target_info.st_nlink,
+                                target_info.st_size,
+                            )
+                        finally:
+                            os.close(target_fd)
+                    finally:
+                        os.close(parent_fd)
+                    _verify_tracked_destination(
+                        destination_root_fd,
+                        relative_path,
+                        relative,
+                        target_identity,
+                        digest,
+                    )
+                after = os.fstat(source_fd)
+                after_identity = (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_mode,
+                    after.st_nlink,
+                    after.st_size,
+                    after.st_mtime_ns,
+                )
+                if after_identity != before_identity or sha256_fd(source_fd) != digest:
+                    reject(f"tracked source changed while snapshotting: {relative}", CLEANUP_REQUIRED)
+            finally:
+                os.close(source_fd)
+            try:
+                verify_fd, verify_info = open_relative_nofollow(root_fd, relative_path, f"tracked source {relative}")
+            except FileNotFoundError:
+                reject(f"tracked source was replaced while snapshotting: {relative}", CLEANUP_REQUIRED)
+            try:
+                verify_identity = (
+                    verify_info.st_dev,
+                    verify_info.st_ino,
+                    verify_info.st_mode,
+                    verify_info.st_nlink,
+                    verify_info.st_size,
+                    verify_info.st_mtime_ns,
+                )
+                if verify_identity != before_identity or sha256_fd(verify_fd) != digest:
+                    reject(f"tracked source was replaced while snapshotting: {relative}", CLEANUP_REQUIRED)
+            finally:
+                os.close(verify_fd)
+            records.append(
+                {
+                    "gid": before.st_gid,
+                    "hash": digest,
+                    "mode": mode_text(git_mode),
+                    "mtimeNs": before.st_mtime_ns,
+                    "nlink": before.st_nlink,
+                    "path": relative,
+                    "size": before.st_size,
+                    "type": "file",
+                    "uid": before.st_uid,
+                }
+            )
+        if destination is not None and destination_root_identity is not None:
+            try:
+                verify_root_fd = open_absolute_directory_nofollow(
+                    destination, "snapshot destination root verification"
+                )
+            except (OSError, ReleaseUnitError) as error:
+                reject(f"snapshot destination root changed while copying: {error}", CLEANUP_REQUIRED)
+            try:
+                verify_root_info = os.fstat(verify_root_fd)
+                verify_root_identity = (
+                    verify_root_info.st_dev,
+                    verify_root_info.st_ino,
+                    verify_root_info.st_mode,
+                    verify_root_info.st_uid,
+                )
+                if verify_root_identity != destination_root_identity:
+                    reject("snapshot destination root changed while copying", CLEANUP_REQUIRED)
+            finally:
+                os.close(verify_root_fd)
+    finally:
+        if destination_root_fd is not None:
+            os.close(destination_root_fd)
+        os.close(root_fd)
+    return records
+
+
+def copy_source(root: Path, destination: Path) -> None:
+    """Copy the original six r4a source scopes from the live Git worktree.
+
+    The r4a entrypoint is a repository-root workflow.  A frozen tree without a
+    Git index is rejected rather than being recursively re-enumerated.
+    """
+    if os.path.lexists(destination):
+        reject("clean source destination already exists")
+    all_entries = git_tracked_entries(root)
+    entries = [entry for entry in all_entries if _tracked_entry_matches(entry[1], R4A_SOURCE_PATHS)]
+    for scope in R4A_SOURCE_PATHS:
+        if not any(_tracked_entry_matches(relative, (scope,)) for _mode, relative in entries):
+            reject(f"required tracked r4a source scope is missing: {scope}", ENVIRONMENT_BLOCKED)
+    destination.mkdir(mode=0o700)
+    tracked_worktree_records(root, entries, destination=destination)
 
 
 def copy_grdb(root: Path, destination: Path) -> None:
@@ -574,7 +930,57 @@ def sync_contracts(source: Path) -> None:
         reject("temporary-source contract synchronization failed", ENVIRONMENT_BLOCKED)
 
 
-def build_swift_products(source: Path, audit_root: Path) -> tuple[Path, Path, Path]:
+def validate_full_xcode_developer_dir(path: Path) -> str:
+    """Validate one complete Xcode developer directory without executing it."""
+    if not path.is_absolute() or path.parts[-3:] != ("Xcode.app", "Contents", "Developer"):
+        reject("release Xcode developer directory has an unsafe fixed shape")
+    if not os.path.lexists(path):
+        reject("fixed full Xcode developer directory is missing", ENVIRONMENT_BLOCKED)
+    assert_real_components(path, "fixed full Xcode developer directory")
+    developer_info = path.lstat()
+    if (
+        not stat.S_ISDIR(developer_info.st_mode)
+        or developer_info.st_uid not in {0, os.geteuid()}
+    ):
+        reject("fixed full Xcode developer directory is unsafe")
+
+    required_executables = (
+        path / "usr/bin/xcodebuild",
+        path / "Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend",
+        path.parent / "SharedFrameworks/XCBuild.framework/Versions/A/XCBuild",
+    )
+    for executable in required_executables:
+        if not os.path.lexists(executable):
+            reject(f"full Xcode component is missing: {executable.name}", ENVIRONMENT_BLOCKED)
+        assert_real_components(executable, f"full Xcode component {executable.name}")
+        try:
+            descriptor = os.open(executable, os.O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        except OSError as error:
+            if error.errno in {errno.ELOOP, errno.ENOTDIR}:
+                reject(f"full Xcode component is unsafe: {executable.name}")
+            reject(f"full Xcode component cannot be opened: {executable.name}: {error}", ENVIRONMENT_BLOCKED)
+        try:
+            info = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        if (
+            not stat.S_ISREG(info.st_mode)
+            or info.st_nlink != 1
+            or info.st_uid not in {0, os.geteuid()}
+            or stat.S_IMODE(info.st_mode) & 0o111 == 0
+        ):
+            reject(f"full Xcode component is not a trusted executable: {executable.name}")
+    return str(path)
+
+
+def build_swift_products(
+    source: Path,
+    audit_root: Path,
+    architectures: Sequence[str],
+) -> tuple[Path, Path, Path]:
+    if list(architectures) != stable_host.SUPPORTED_ARCHITECTURES:
+        reject(f"Swift build architectures must be exactly {stable_host.SUPPORTED_ARCHITECTURES}")
+    developer_dir = validate_full_xcode_developer_dir(XCODE_DEVELOPER_DIR)
     home = audit_root / "build-home"
     tmp = audit_root / "build-tmp"
     scratch = audit_root / "swift-scratch"
@@ -589,6 +995,7 @@ def build_swift_products(source: Path, audit_root: Path) -> tuple[Path, Path, Pa
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "LANG": "C",
         "LC_ALL": "C",
+        "DEVELOPER_DIR": developer_dir,
         "CLANG_MODULE_CACHE_PATH": str(module_cache),
         "SWIFT_MODULECACHE_PATH": str(module_cache),
         "GIT_TERMINAL_PROMPT": "0",
@@ -601,6 +1008,11 @@ def build_swift_products(source: Path, audit_root: Path) -> tuple[Path, Path, Pa
         str(source / "apps/desktop"),
         "--configuration",
         "release",
+        *(
+            argument
+            for architecture in architectures
+            for argument in ("--arch", architecture)
+        ),
         "--disable-sandbox",
         "--disable-netrc",
         "--skip-update",
@@ -1659,7 +2071,11 @@ def build_release_unit(audit_root_text: str, *, prepare_only: bool = False) -> d
         copy_grdb(root, dependencies)
         patch_local_dependency(source, dependencies)
         sync_contracts(source)
-        app_binary, host_binary, resource_bundle = build_swift_products(source, audit_root)
+        app_binary, host_binary, resource_bundle = build_swift_products(
+            source,
+            audit_root,
+            app_config["architectures"],
+        )
 
         host_package_name = "LinkDigestNativeHost-0.2.0-macos-arm64"
         host_package = audit_root / "host-package" / host_package_name

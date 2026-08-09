@@ -145,6 +145,37 @@ def verify_delivery_directory(delivery: Path) -> None:
     validate_extension_output(delivery / "extension")
 
 
+def build_swift_commands(
+    config: dict, package_path: Path
+) -> tuple[list[str], list[str]]:
+    """Debug Swift build and show-bin-path commands, both carrying the
+    canonical universal architectures.
+
+    build 与 show-bin-path 必须携带完全相同的 --arch 集合：否则 SwiftPM 按
+    本机默认架构构建/定位，产物不是 universal，会在 Host verify 阶段与
+    canonical architectures 不一致而失败。
+    """
+    architectures = config["architectures"]
+    if architectures != stable_host.SUPPORTED_ARCHITECTURES:
+        raise RuntimeError(
+            f"native Host architectures must be exactly "
+            f"{stable_host.SUPPORTED_ARCHITECTURES}, got {architectures}"
+        )
+    arch_args = [
+        argument
+        for architecture in architectures
+        for argument in ("--arch", architecture)
+    ]
+    base = [
+        "swift", "build",
+        "--package-path", str(package_path),
+        "--configuration", "debug",
+        "--disable-sandbox", "--disable-netrc", "--skip-update",
+        *arch_args,
+    ]
+    return base, base + ["--show-bin-path"]
+
+
 def main() -> int:
     args = parse_args()
     destination = args.output.resolve(strict=False)
@@ -154,25 +185,18 @@ def main() -> int:
     if destination.exists() or destination.is_symlink():
         raise RuntimeError(f"refusing to overwrite existing candidate: {destination}")
 
+    config = stable_host.load_config(ROOT)
+    app_config = release_unit.load_app_config(ROOT)
+    build_command, show_bin_path_command = build_swift_commands(
+        config, ROOT / "apps/desktop"
+    )
+
     run("pnpm", "--filter", "@linkdigest/browser-extension", "build")
     validate_extension_output(EXTENSION_OUTPUT)
 
-    run(
-        "swift", "build",
-        "--package-path", str(ROOT / "apps/desktop"),
-        "--configuration", "debug",
-        "--disable-sandbox", "--disable-netrc", "--skip-update",
-    )
-    binary_root = Path(output([
-        "swift", "build",
-        "--package-path", str(ROOT / "apps/desktop"),
-        "--configuration", "debug",
-        "--disable-sandbox", "--disable-netrc", "--skip-update",
-        "--show-bin-path",
-    ]))
+    run(*build_command)
+    binary_root = Path(output(show_bin_path_command))
 
-    config = json.loads((ROOT / "config/native-host.json").read_text(encoding="utf-8"))
-    app_config = release_unit.load_app_config(ROOT)
     with tempfile.TemporaryDirectory(prefix="linkdigest-debug-candidate.", dir="/private/tmp") as temporary:
         work = Path(temporary)
         delivery = work / "delivery"

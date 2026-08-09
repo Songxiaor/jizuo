@@ -245,6 +245,10 @@ struct SiteLoginWebView: NSViewRepresentable {
     }
   }
 
+  /// WebKit 的 `WKNavigationDelegate` 整体以 `@MainActor` 暴露（`WK_SWIFT_UI_ACTOR`），
+  /// 且 delegate 回调本来就由 WebKit 保证在主线程派发。标注 `@MainActor` 只是把这一
+  /// 既有事实写进类型（与 `YouTubeEmbedNavigationDelegate` 同款），不改变运行行为。
+  @MainActor
   final class Coordinator: NSObject, WKNavigationDelegate {
     let profile: SiteSessionProfile
     var onNavigationFinished: (() -> Void)?
@@ -257,7 +261,7 @@ struct SiteLoginWebView: NSViewRepresentable {
     func webView(
       _ webView: WKWebView,
       decidePolicyFor navigationAction: WKNavigationAction,
-      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+      decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
       // 这是这个 WebView 唯一的边界：白名单外一律取消，避免它变成自由浏览器。
       decisionHandler(profile.isAllowedHost(navigationAction.request.url?.host) ? .allow : .cancel)

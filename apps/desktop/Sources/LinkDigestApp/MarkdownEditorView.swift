@@ -175,6 +175,7 @@ private struct MarkdownTextView: NSViewRepresentable {
 
   func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
+  @MainActor
   final class Coordinator: NSObject, NSTextViewDelegate {
     private let text: Binding<String>
     /// 防止把自己写回去的内容再当成用户输入处理。

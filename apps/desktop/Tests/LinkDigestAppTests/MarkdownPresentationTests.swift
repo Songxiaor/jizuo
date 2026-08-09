@@ -124,7 +124,7 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertTrue(source.contains("SelectableReadingTextView("))
     XCTAssertTrue(source.contains("ReadingTextComposer.attributed("))
     XCTAssertTrue(source.contains("ReadingTextComposer.plain("))
-    XCTAssertTrue(source.contains("onOpenLink: { url in openValidated(url) }"))
+    XCTAssertTrue(source.contains("onOpenLink: { url in _ = openValidated(url) }"))
     let selectable = try String(
       contentsOf: sourceURL.deletingLastPathComponent().appendingPathComponent("SelectableReadingText.swift"),
       encoding: .utf8

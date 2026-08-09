@@ -29,7 +29,10 @@ public actor AppAudioLiveTranscriber {
   /// 捕获、让引擎处理完剩余音频、给出 `.final` 并保存，而非硬取消丢弃。
   /// 视频播完或用户点停止都经此信号,确保 ScreenCaptureKit 流一定被关闭
   /// （菜单栏录屏图标随之消失）。
-  public func transcribe(
+  /// 本方法不触碰任何 actor 状态（全部工作由静态 `runSession` 和新建 Task 完成），
+  /// 标注 `nonisolated` 只是消除「同步非隔离上下文调用 actor 隔离方法」的编译告警，
+  /// 语义与隔离性均不变。
+  public nonisolated func transcribe(
     localeIdentifier: String,
     stopSignal: AsyncStream<Void>
   ) -> AsyncThrowingStream<LocalVideoTranscriptionEvent, Error> {
@@ -207,7 +210,7 @@ public actor AppAudioLiveTranscriber {
 extension AppAudioLiveTranscriber {
   /// 采样率/格式转换：SCK 源缓冲 → 语音引擎要求的格式。输出容量按采样率
   /// 比例放大，避免降/升采样时截断。
-  fileprivate static func convert(
+  static func convert(
     _ source: AVAudioPCMBuffer,
     using converter: AVAudioConverter,
     to format: AVAudioFormat
@@ -215,19 +218,44 @@ extension AppAudioLiveTranscriber {
     let ratio = format.sampleRate / source.format.sampleRate
     let capacity = AVAudioFrameCount(Double(source.frameLength) * ratio) + 1024
     guard capacity > 0, let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return nil }
-    var supplied = false
     var error: NSError?
+    let input = SingleShotConversionInput(source: source)
     let status = converter.convert(to: output, error: &error) { _, statusPointer in
-      if supplied {
-        statusPointer.pointee = .noDataNow
-        return nil
-      }
-      supplied = true
-      statusPointer.pointee = .haveData
-      return source
+      input.next(status: statusPointer)
     }
     guard error == nil, status != .error, output.frameLength > 0 else { return nil }
     return output
+  }
+}
+
+/// `AVAudioConverter` 的 input block 在 SDK 里被标注为 `@Sendable`，而
+/// `AVAudioPCMBuffer` 不是 Sendable。这个输入盒把「单次转换只喂一个 buffer」
+/// 的语义显式收口。SDK 没有承诺 input block 串行或同线程调用，因此一次性
+/// 交付状态 `hasDelivered` 用 `NSLock` 保护：即使并发/重入调用，也至多一次
+/// 返回 `.haveData`，其余调用一律 `.noDataNow`。`source` 在 init 后只读，
+/// `@unchecked Sendable` 覆盖的共享状态只有这一处受锁保护的交付标记
+/// （与 `AudioSampleOutput` 的说明同款），而非把并发问题藏起来的屏蔽。
+final class SingleShotConversionInput: @unchecked Sendable {
+  private let source: AVAudioPCMBuffer
+  private let lock = NSLock()
+  private var hasDelivered = false
+
+  init(source: AVAudioPCMBuffer) {
+    self.source = source
+  }
+
+  func next(status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+    let delivers = lock.withLock {
+      if hasDelivered { return false }
+      hasDelivered = true
+      return true
+    }
+    if delivers {
+      status.pointee = .haveData
+      return source
+    }
+    status.pointee = .noDataNow
+    return nil
   }
 }
 

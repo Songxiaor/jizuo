@@ -63,8 +63,8 @@
     "config/app-release.json": "7eb5b90fbbcb7a0a45312021c9675cd42713360287c3a0b4ad40436e1b143e32",
     "scripts/native-host/check-release-unit.sh": "e60df91e6c914728d39990a4ac1295eaf72ae4396cd970071d1b752d351b5f6d",
     "scripts/native-host/package-app-dmg.sh": "6dc6b4b776aeb1578510059599392672e65030d2170fd117c555445c747997b2",
-    "scripts/native-host/release_unit.py": "246b84b49ea7db855dcf92284b2a69a672e21626b517a044136c6c4a023484d1",
-    "scripts/native-host/release_unit_check.py": "cffb0fbc6b35ebe3d00df6d0de7841c23d7169016a79a3f8b7ce93f5259faa6d"
+    "scripts/native-host/release_unit.py": "5586d48d4de44339c150f0967f5e6af76dfafe0d0c0ca3000a7886c8dbc96e32",
+    "scripts/native-host/release_unit_check.py": "cf1448150d1eb2ea81b8c56edd77228f6535cddea81c6af17805c268da69d93b"
   },
   "secretFixtureHashAllowlist": {
     "scripts/native-host/release_preflight_check.py": "1e8bd8ba29ebfe581e131bdf9094166361e92c7e8044b3cb012d4716bd03bb49"

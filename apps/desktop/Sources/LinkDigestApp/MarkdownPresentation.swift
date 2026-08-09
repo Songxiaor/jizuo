@@ -984,7 +984,7 @@ struct MarkdownContentView: View {
             color: NSColor(primaryTextColor)
           ),
           accent: NSColor(accentColor),
-          onOpenLink: { url in openValidated(url) },
+          onOpenLink: { url in _ = openValidated(url) },
           revealText: revealText
         )
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1035,7 +1035,6 @@ struct MarkdownContentView: View {
   }
 
   /// Block-first reading layout: air before headings, body leading ~1.65, clear lists.
-  @ViewBuilder
   private func structuredMarkdown(_ value: String) -> some View {
     // 相邻文本块合成一个 NSTextView 段（跨段连续选择）；代码块保持
     // SwiftUI 卡片独立渲染，复制按钮不丢。
@@ -1098,7 +1097,7 @@ struct MarkdownContentView: View {
           )
         ),
         accent: NSColor(accentColor),
-        onOpenLink: { url in openValidated(url) },
+        onOpenLink: { url in _ = openValidated(url) },
         revealText: revealText
       )
     case let .code(language, content):
@@ -1408,6 +1407,7 @@ private struct CodeCopyButton: View {
 /// content hashes without extensions, so the format is sniffed from magic
 /// bytes to suggest a usable default filename.
 enum MarkdownInlineImageActions {
+  @MainActor
   static func saveImage(at url: URL) {
     guard let data = try? Data(contentsOf: url) else {
       presentFailure("这张图片的本机缓存已经不在了，重新抓取这条记录后再试。")
@@ -1427,6 +1427,7 @@ enum MarkdownInlineImageActions {
     }
   }
 
+  @MainActor
   private static func presentFailure(_ message: String) {
     let alert = NSAlert()
     alert.alertStyle = .warning
