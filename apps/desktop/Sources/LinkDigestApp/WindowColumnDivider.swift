@@ -28,12 +28,18 @@ final class ColumnDividerOverlayView: NSView {
     removeObservers()
     guard let splitView = trackedSplitView else { return }
     let center = NotificationCenter.default
+    // `queue: .main` is NotificationCenter's execution guarantee; make that
+    // guarantee explicit before touching AppKit state from its Sendable block.
     observers.append(center.addObserver(
       forName: NSSplitView.didResizeSubviewsNotification, object: splitView, queue: .main
-    ) { [weak self] _ in self?.needsDisplay = true })
+    ) { [weak self] _ in
+      MainActor.assumeIsolated { self?.needsDisplay = true }
+    })
     observers.append(center.addObserver(
       forName: NSView.frameDidChangeNotification, object: splitView, queue: .main
-    ) { [weak self] _ in self?.needsDisplay = true })
+    ) { [weak self] _ in
+      MainActor.assumeIsolated { self?.needsDisplay = true }
+    })
   }
 
   private func removeObservers() {

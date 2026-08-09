@@ -84,6 +84,7 @@ def validate_new_review_root(value: str) -> Path:
 
 def swift_tests(audit: Path, review: Path) -> int:
     source = audit / "source"
+    developer_dir = unit.validate_full_xcode_developer_dir(unit.XCODE_DEVELOPER_DIR)
     common = [
         "/usr/bin/swift",
         "test",
@@ -113,14 +114,15 @@ def swift_tests(audit: Path, review: Path) -> int:
         "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
         "LANG": "C",
         "LC_ALL": "C",
+        "DEVELOPER_DIR": developer_dir,
         "CLANG_MODULE_CACHE_PATH": str(review / "test-module-cache"),
         "SWIFT_MODULECACHE_PATH": str(review / "test-module-cache"),
         "GIT_TERMINAL_PROMPT": "0",
     }
-    result = run(common + ["--filter", "ContractTests"], cwd=source, env=env)
+    result = run(common + ["--filter", "LinkDigestCoreTests.ContractTests"], cwd=source, env=env)
     combined = result.stdout + result.stderr
-    check(b"Executed 10 tests, with 0 failures" in combined, "focused Swift ContractTests 10/10")
-    return 10
+    check(b"Executed 11 tests, with 0 failures" in combined, "focused Swift ContractTests 11/11")
+    return 11
 
 
 def config_cases(cases: Path) -> None:
@@ -145,6 +147,168 @@ def config_cases(cases: Path) -> None:
     value["iconFile"] = "OtherIcon.icns"
     canonical_file(base / "config/app-release.json", value)
     expect_error(lambda: unit.load_app_config(base), unit.INVALID_UNSAFE, "app config icon drift")
+
+
+def fake_full_xcode(cases: Path, name: str) -> Path:
+    developer = cases / name / "Xcode.app/Contents/Developer"
+    required = (
+        developer / "usr/bin/xcodebuild",
+        developer / "Toolchains/XcodeDefault.xctoolchain/usr/bin/swift-frontend",
+        developer.parent / "SharedFrameworks/XCBuild.framework/Versions/A/XCBuild",
+    )
+    for executable in required:
+        executable.parent.mkdir(parents=True, exist_ok=True)
+        executable.write_text("fixture\n", encoding="utf-8")
+        os.chmod(executable, 0o755)
+    return developer
+
+
+def xcode_selection_cases(cases: Path) -> None:
+    valid = fake_full_xcode(cases, "valid-full-xcode")
+    check(unit.validate_full_xcode_developer_dir(valid) == str(valid), "fixed full Xcode structure accepted")
+
+    missing = fake_full_xcode(cases, "missing-xcbuild")
+    (missing.parent / "SharedFrameworks/XCBuild.framework/Versions/A/XCBuild").unlink()
+    expect_error(
+        lambda: unit.validate_full_xcode_developer_dir(missing),
+        unit.ENVIRONMENT_BLOCKED,
+        "incomplete full Xcode",
+    )
+
+    unsafe = fake_full_xcode(cases, "unsafe-xcode")
+    xcodebuild = unsafe / "usr/bin/xcodebuild"
+    xcodebuild.unlink()
+    xcodebuild.symlink_to("/usr/bin/true")
+    expect_error(
+        lambda: unit.validate_full_xcode_developer_dir(unsafe),
+        unit.INVALID_UNSAFE,
+        "symlinked Xcode executable",
+    )
+
+
+def universal_build_argument_cases(cases: Path) -> None:
+    source = cases / "universal-build-source"
+    source.mkdir()
+    audit = cases / "universal-build-audit"
+    audit.mkdir()
+    bin_path = cases / "universal-products"
+    bin_path.mkdir()
+    for name in ("LinkDigestApp", "LinkDigestNativeHost"):
+        executable = bin_path / name
+        executable.write_text("fixture\n", encoding="utf-8")
+        os.chmod(executable, 0o755)
+    (bin_path / unit.RESOURCE_BUNDLE).mkdir()
+
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+    original = unit.command_ok
+    original_developer_dir = unit.XCODE_DEVELOPER_DIR
+    original_caller_developer_dir = os.environ.get("DEVELOPER_DIR")
+    developer_dir = fake_full_xcode(cases, "build-full-xcode")
+
+    def fake_command_ok(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        calls.append((list(argv), kwargs))
+        stdout = (str(bin_path) + "\n").encode("utf-8") if "--show-bin-path" in argv else b""
+        return subprocess.CompletedProcess(argv, 0, stdout, b"")
+
+    try:
+        unit.command_ok = fake_command_ok
+        unit.XCODE_DEVELOPER_DIR = developer_dir
+        os.environ["DEVELOPER_DIR"] = "/caller/controlled/Xcode.app/Contents/Developer"
+        products = unit.build_swift_products(
+            source,
+            audit,
+            list(unit.stable_host.SUPPORTED_ARCHITECTURES),
+        )
+        check(products == (bin_path / "LinkDigestApp", bin_path / "LinkDigestNativeHost", bin_path / unit.RESOURCE_BUNDLE), "universal build products located")
+        check(len(calls) == 2, "universal build runs build and show-bin-path")
+        for argv, kwargs in calls:
+            architecture_pairs = [
+                (argv[index], argv[index + 1])
+                for index in range(len(argv) - 1)
+                if argv[index] == "--arch"
+            ]
+            check(
+                architecture_pairs == [("--arch", "arm64"), ("--arch", "x86_64")],
+                "SwiftPM argv carries exact universal architectures",
+            )
+            check(kwargs.get("allowed") == {unit.SWIFT} and kwargs.get("cwd") == source, "universal build command remains scoped")
+            check(kwargs.get("env", {}).get("DEVELOPER_DIR") == str(developer_dir), "SwiftPM command uses validated fixed Xcode")
+        expect_error(
+            lambda: unit.build_swift_products(source, cases / "single-arch-audit", ["arm64"]),
+            unit.INVALID_UNSAFE,
+            "single-architecture build request",
+        )
+    finally:
+        unit.command_ok = original
+        unit.XCODE_DEVELOPER_DIR = original_developer_dir
+        if original_caller_developer_dir is None:
+            os.environ.pop("DEVELOPER_DIR", None)
+        else:
+            os.environ["DEVELOPER_DIR"] = original_caller_developer_dir
+
+
+def swift_test_xcode_env_cases(cases: Path) -> None:
+    audit = cases / "swift-test-audit"
+    (audit / "source").mkdir(parents=True)
+    review = cases / "swift-test-review"
+    review.mkdir()
+    developer_dir = fake_full_xcode(cases, "swift-test-full-xcode")
+    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    original_run = globals()["run"]
+    original_developer_dir = unit.XCODE_DEVELOPER_DIR
+    original_caller_developer_dir = os.environ.get("DEVELOPER_DIR")
+
+    def fake_run(
+        command: list[str],
+        *,
+        cwd: Path = ROOT,
+        env: dict[str, str] | None = None,
+    ) -> subprocess.CompletedProcess[bytes]:
+        calls.append((list(command), cwd, dict(env or {})))
+        return subprocess.CompletedProcess(command, 0, b"Executed 11 tests, with 0 failures\n", b"")
+
+    try:
+        globals()["run"] = fake_run
+        unit.XCODE_DEVELOPER_DIR = developer_dir
+        os.environ["DEVELOPER_DIR"] = "/caller/controlled/Xcode.app/Contents/Developer"
+        check(swift_tests(audit, review) == 11, "focused Swift test count returned")
+        check(len(calls) == 1, "focused Swift gate invokes one scoped command")
+        command, cwd, env = calls[0]
+        check(
+            command[0:2] == [unit.SWIFT, "test"]
+            and command[-2:] == ["--filter", "LinkDigestCoreTests.ContractTests"],
+            "focused Swift command remains exact",
+        )
+        check(cwd == audit / "source", "focused Swift command source root")
+        check(env.get("DEVELOPER_DIR") == str(developer_dir), "focused Swift gate uses validated fixed Xcode")
+
+        missing = fake_full_xcode(cases, "swift-test-missing-xcode")
+        (missing / "usr/bin/xcodebuild").unlink()
+        unit.XCODE_DEVELOPER_DIR = missing
+        expect_error(
+            lambda: swift_tests(audit, review),
+            unit.ENVIRONMENT_BLOCKED,
+            "focused Swift gate missing full Xcode",
+        )
+
+        unsafe = fake_full_xcode(cases, "swift-test-unsafe-xcode")
+        xcodebuild = unsafe / "usr/bin/xcodebuild"
+        xcodebuild.unlink()
+        xcodebuild.symlink_to("/usr/bin/true")
+        unit.XCODE_DEVELOPER_DIR = unsafe
+        expect_error(
+            lambda: swift_tests(audit, review),
+            unit.INVALID_UNSAFE,
+            "focused Swift gate unsafe full Xcode",
+        )
+        check(len(calls) == 1, "invalid Xcode rejected before invoking Swift")
+    finally:
+        globals()["run"] = original_run
+        unit.XCODE_DEVELOPER_DIR = original_developer_dir
+        if original_caller_developer_dir is None:
+            os.environ.pop("DEVELOPER_DIR", None)
+        else:
+            os.environ["DEVELOPER_DIR"] = original_caller_developer_dir
 
 
 def unsafe_tree_cases(cases: Path) -> None:
@@ -271,6 +435,199 @@ def nofollow_copy_cases(cases: Path) -> None:
         lambda: unit.copy_resource_tree(resource_root, fixtures / "resource-copy"),
         unit.INVALID_UNSAFE,
         "resource symlink copy",
+    )
+
+
+def _git(root: Path, *args: str) -> None:
+    result = subprocess.run(
+        [unit.GIT, *args],
+        cwd=root,
+        env={"PATH": "/usr/bin:/bin:/usr/sbin:/sbin", "LANG": "C", "LC_ALL": "C"},
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+        timeout=30,
+    )
+    if result.returncode != 0:
+        raise CheckFailure(f"git fixture command failed: {args}: {result.stderr.decode(errors='replace')}")
+
+
+def tracked_snapshot_cases(cases: Path) -> None:
+    root = cases / "tracked-snapshot-repo"
+    root.mkdir()
+    _git(root, "init", "-q")
+    tracked_files = {
+        "apps/desktop/tracked.txt": "index bytes\n",
+        "apps/browser-extension/tracked.txt": "extension\n",
+        "contracts/schema.json": "{}\n",
+        "config/app-release.json": "{}\n",
+        "scripts/sync-contracts.sh": "#!/bin/sh\n",
+        "scripts/native-host/stable_host.py": "# stable\n",
+    }
+    for relative, content in tracked_files.items():
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    (root / ".gitignore").write_text("*.ignored\n", encoding="utf-8")
+    _git(root, "add", "--", *tracked_files, ".gitignore")
+    (root / "apps/desktop/tracked.txt").write_text("live tracked modification\n", encoding="utf-8")
+    for relative in (
+        "apps/desktop/.cindy-write-test.txt",
+        "apps/desktop/.dev-suite-analytics/event.json",
+        "apps/desktop/.kb-cache/cache.bin",
+        "apps/desktop/openwork-zh-translation/local.txt",
+        "scripts/native-host/release_unit.py.backup.2026-08-06T09-12-20Z",
+        "scripts/native-host/local.ignored",
+    ):
+        path = root / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("local only\n", encoding="utf-8")
+    destination = cases / "tracked-snapshot-copy"
+    unit.copy_source(root, destination)
+    check(
+        (destination / "apps/desktop/tracked.txt").read_text(encoding="utf-8") == "live tracked modification\n",
+        "tracked live worktree modification copied",
+    )
+    check(not (destination / ".gitignore").exists(), "r4a source stayed within original six scopes")
+    for relative in (
+        "apps/desktop/.cindy-write-test.txt",
+        "apps/desktop/.dev-suite-analytics",
+        "apps/desktop/.kb-cache",
+        "apps/desktop/openwork-zh-translation",
+        "scripts/native-host/release_unit.py.backup.2026-08-06T09-12-20Z",
+        "scripts/native-host/local.ignored",
+    ):
+        check(not (destination / relative).exists(), f"untracked or ignored source excluded: {relative}")
+
+    object_id = b"1" * 40
+    valid = b"100644 " + object_id + b" 0\tapps/desktop/file\0"
+    check(unit.parse_git_tracked_entries(valid) == [(0o100644, "apps/desktop/file")], "strict Git index parser ordinary entry")
+    for payload, label in (
+        (b"120000 " + object_id + b" 0\tlink\0", "tracked symlink mode"),
+        (b"160000 " + object_id + b" 0\tsubmodule\0", "tracked submodule mode"),
+        (b"100644 " + object_id + b" 1\tconflict\0", "non-stage-0 entry"),
+        (valid + valid, "duplicate tracked path"),
+        (b"100644 " + object_id + b" 0\t../escape\0", "unsafe parent path"),
+        (b"100644 " + object_id + b" 0\t/absolute\0", "absolute path"),
+        (b"100644 " + object_id + b" 0\t.\0", "dot path"),
+        (b"100644 " + object_id + b" 0\tbad-\xff\0", "non-UTF-8 path"),
+        (b"100644 " + (b"0" * 40) + b" 0\tintent-to-add\0", "null object entry"),
+    ):
+        expect_error(lambda payload=payload: unit.parse_git_tracked_entries(payload), unit.INVALID_UNSAFE, label)
+    expect_error(
+        lambda: unit.parse_git_tracked_entries(b"100644 " + object_id + b" 0\t\0"),
+        unit.INTERNAL_ERROR,
+        "empty path",
+    )
+
+    hardlink_root = cases / "tracked-hardlink-repo"
+    hardlink_root.mkdir()
+    _git(hardlink_root, "init", "-q")
+    hardlink_file = hardlink_root / "tracked"
+    hardlink_file.write_text("x", encoding="utf-8")
+    _git(hardlink_root, "add", "tracked")
+    os.link(hardlink_file, hardlink_root / "untracked-alias")
+    hardlink_entries = unit.git_tracked_entries(hardlink_root)
+    expect_error(
+        lambda: unit.tracked_worktree_records(hardlink_root, hardlink_entries),
+        unit.INVALID_UNSAFE,
+        "tracked worktree hardlink",
+    )
+
+    ancestor_root = cases / "tracked-ancestor-symlink-repo"
+    ancestor_root.mkdir()
+    _git(ancestor_root, "init", "-q")
+    (ancestor_root / "directory").mkdir()
+    (ancestor_root / "directory/file").write_text("x", encoding="utf-8")
+    _git(ancestor_root, "add", "directory/file")
+    (ancestor_root / "directory").rename(ancestor_root / "directory-real")
+    (ancestor_root / "directory").symlink_to("directory-real")
+    expect_error(
+        lambda: unit.tracked_worktree_records(ancestor_root, unit.git_tracked_entries(ancestor_root)),
+        unit.INVALID_UNSAFE,
+        "tracked source symlink ancestor",
+    )
+
+    concurrent_root = cases / "tracked-concurrent-repo"
+    concurrent_root.mkdir()
+    _git(concurrent_root, "init", "-q")
+    concurrent_file = concurrent_root / "large.bin"
+    concurrent_file.write_bytes(b"a" * (2 * 1024 * 1024))
+    _git(concurrent_root, "add", "large.bin")
+    fired = False
+
+    def mutate(_relative: Path, copied: int) -> None:
+        nonlocal fired
+        if not fired and copied >= 1024 * 1024:
+            fired = True
+            with concurrent_file.open("ab") as handle:
+                handle.write(b"b")
+
+    concurrent_destination = cases / "tracked-concurrent-copy"
+    concurrent_destination.mkdir()
+    expect_error(
+        lambda: unit.tracked_worktree_records(
+            concurrent_root,
+            unit.git_tracked_entries(concurrent_root),
+            destination=concurrent_destination,
+            copy_hook=mutate,
+        ),
+        unit.CLEANUP_REQUIRED,
+        "tracked source concurrent mutation",
+    )
+
+    destination_race_root = cases / "tracked-destination-race-repo"
+    destination_race_root.mkdir()
+    _git(destination_race_root, "init", "-q")
+    destination_race_file = destination_race_root / "nested/file.bin"
+    destination_race_file.parent.mkdir()
+    destination_race_file.write_bytes(b"tracked destination race\n")
+    _git(destination_race_root, "add", "nested/file.bin")
+    destination_race_copy = cases / "tracked-destination-race-copy"
+    destination_race_copy.mkdir()
+    destination_race_outside = cases / "tracked-destination-race-outside"
+    destination_race_outside.mkdir()
+    original_open = unit.os.open
+    destination_swapped = False
+
+    def replace_destination_ancestor(
+        path: str | bytes | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal destination_swapped
+        if (
+            not destination_swapped
+            and os.fspath(path) == "file.bin"
+            and flags & os.O_CREAT
+            and dir_fd is not None
+        ):
+            destination_swapped = True
+            ancestor = destination_race_copy / "nested"
+            ancestor.rename(destination_race_copy / "nested-opened")
+            ancestor.symlink_to(destination_race_outside, target_is_directory=True)
+        return original_open(path, flags, mode, dir_fd=dir_fd)
+
+    unit.os.open = replace_destination_ancestor
+    try:
+        expect_error(
+            lambda: unit.tracked_worktree_records(
+                destination_race_root,
+                unit.git_tracked_entries(destination_race_root),
+                destination=destination_race_copy,
+            ),
+            unit.CLEANUP_REQUIRED,
+            "tracked destination ancestor concurrent replacement",
+        )
+    finally:
+        unit.os.open = original_open
+    check(destination_swapped, "tracked destination race hook fired")
+    check(
+        not (destination_race_outside / "file.bin").exists(),
+        "tracked destination ancestor replacement never writes outside snapshot root",
     )
 
 
@@ -588,6 +945,13 @@ def source_policy_checks() -> None:
     checker = (ROOT / "scripts/native-host/release_unit_check.py").read_text(encoding="utf-8")
     swift_source = checker[checker.index("def swift_tests") : checker.index("def config_cases")]
     check("ProviderStoreTests" not in swift_source and '"--skip"' not in swift_source, "r4a gate has no full Swift suite")
+    check('"--filter", "ContractTests"' not in swift_source, "r4a gate rejects fuzzy ContractTests filter")
+    check(
+        '"--filter", "LinkDigestCoreTests.ContractTests"' in swift_source
+        and "Executed 11 tests, with 0 failures" in swift_source
+        and "return 11" in swift_source,
+        "r4a gate pins exact ContractTests suite and count",
+    )
 
 
 def run_real_target_probe() -> dict[str, Any]:
@@ -665,8 +1029,12 @@ def main() -> int:
         cases = review / "cases"
         cases.mkdir(mode=0o700)
         config_cases(cases)
+        xcode_selection_cases(cases)
+        universal_build_argument_cases(cases)
+        swift_test_xcode_env_cases(cases)
         unsafe_tree_cases(cases)
         nofollow_copy_cases(cases)
+        tracked_snapshot_cases(cases)
         staging_tamper_cases(audit, cases)
         fake_dmg_cases(cases)
         target_cases(cases)
@@ -688,7 +1056,7 @@ def main() -> int:
             "commands": [
                 "hdiutil verify candidate DMG",
                 "release_unit.py probe-targets",
-                "swift test --filter ContractTests",
+                "swift test --filter LinkDigestCoreTests.ContractTests",
                 "release_unit_check.py focused-negative",
             ],
             "engineeringStatus": "remediation-candidate",
