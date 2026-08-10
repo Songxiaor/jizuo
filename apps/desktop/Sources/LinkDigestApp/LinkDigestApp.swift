@@ -1024,7 +1024,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
     }
     let socketServerLifecycle = UnixSocketServerLifecycle(
       path: linkDigestSocketPath,
-      statusSink: { value in await model.setConnection(value) }
+      statusSink: { value in await model.setConnection(value) },
+      availabilitySink: { available in await model.setBrowserReceiverAvailable(available) }
     )
     let serverStarter = makeUnixSocketServerStarter(lifecycle: socketServerLifecycle)
     let injectSmokeOpenFailure = AppApplicationSupportRoot.shouldInjectOpenFailure()

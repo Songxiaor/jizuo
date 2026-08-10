@@ -220,6 +220,29 @@ final class AppCompositionTests: XCTestCase {
     XCTAssertFalse(FileManager.default.fileExists(atPath: path))
   }
 
+  func testSocketLifecycleAutomaticallyRepublishesDeletedNode() async throws {
+    let path = "/tmp/linkdigest-composition-recover-\(UUID().uuidString).sock"
+    defer { try? FileManager.default.removeItem(atPath: path + ".lock") }
+    let lifecycle = UnixSocketServerLifecycle(path: path, statusSink: { _ in })
+    let gate = StorageWriteGate(availabilitySink: { _ in })
+    let receiver = CaptureReceiver(
+      history: nil,
+      storageWriteGate: gate,
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    defer { lifecycle.stop() }
+
+    try lifecycle.start(receiver)
+    XCTAssertEqual(Darwin.unlink(path), 0)
+
+    let deadline = Date().addingTimeInterval(3)
+    while !FileManager.default.fileExists(atPath: path), Date() < deadline {
+      try await Task.sleep(for: .milliseconds(50))
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: path))
+  }
+
   func testDebugSmokeRootInjectionNeverResolvesLiveApplicationSupport() throws {
     let expected = URL(fileURLWithPath: "/private/tmp/linkdigest-smoke-root", isDirectory: true)
     let resolved = try AppApplicationSupportRoot.resolve(

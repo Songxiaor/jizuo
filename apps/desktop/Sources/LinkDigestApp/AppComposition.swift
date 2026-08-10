@@ -354,16 +354,19 @@ func liveApplicationSupportRoot() throws -> URL {
 final class UnixSocketServerLifecycle: @unchecked Sendable {
   private let path: String
   private let statusSink: @Sendable (String) async -> Void
+  private let availabilitySink: @Sendable (Bool) async -> Void
   private let lock = NSLock()
   private var server: UnixSocketServer?
   private var acceptTask: Task<Void, Never>?
 
   init(
     path: String,
-    statusSink: @escaping @Sendable (String) async -> Void
+    statusSink: @escaping @Sendable (String) async -> Void,
+    availabilitySink: @escaping @Sendable (Bool) async -> Void = { _ in }
   ) {
     self.path = path
     self.statusSink = statusSink
+    self.availabilitySink = availabilitySink
   }
 
   func start(_ receiver: CaptureReceiver) throws {
@@ -383,7 +386,10 @@ final class UnixSocketServerLifecycle: @unchecked Sendable {
       throw error
     }
 
-    Task { await statusSink("本机接收服务已启动") }
+    Task {
+      await statusSink("本机接收服务已启动")
+      await availabilitySink(true)
+    }
     let task = Task.detached(priority: .userInitiated) { [weak self] in
       guard let self else { return }
       while !Task.isCancelled, self.isRunning(candidate) {
@@ -391,10 +397,18 @@ final class UnixSocketServerLifecycle: @unchecked Sendable {
         do {
           client = try candidate.accept(timeout: 1, ioTimeout: 10)
         } catch let error as POSIXError where error.code == .ETIMEDOUT {
+          // A pathname socket can disappear while its fd remains open. Detect
+          // that otherwise invisible state and rebuild the public node instead
+          // of waiting for every extension request to fail until App restart.
+          if !candidate.isPublishedAtPath() {
+            await self.recoverMissingPublication(candidate, receiver: receiver)
+            return
+          }
           continue
         } catch {
           guard self.isRunning(candidate), !Task.isCancelled else { return }
           await self.statusSink("接收服务错误")
+          await self.availabilitySink(false)
           return
         }
         Task.detached { await receiver.handleClient(client) }
@@ -422,6 +436,29 @@ final class UnixSocketServerLifecycle: @unchecked Sendable {
 
   private func isRunning(_ candidate: UnixSocketServer) -> Bool {
     lock.withLock { server === candidate }
+  }
+
+  private func recoverMissingPublication(
+    _ candidate: UnixSocketServer,
+    receiver: CaptureReceiver
+  ) async {
+    let shouldRecover = lock.withLock { () -> Bool in
+      guard server === candidate else { return false }
+      server = nil
+      acceptTask = nil
+      return true
+    }
+    guard shouldRecover else { return }
+
+    await statusSink("接收服务连接中断，正在自动恢复")
+    await availabilitySink(false)
+    candidate.stop()
+    do {
+      try start(receiver)
+    } catch {
+      await statusSink("接收服务自动恢复失败")
+      await availabilitySink(false)
+    }
   }
 
   deinit { stop() }

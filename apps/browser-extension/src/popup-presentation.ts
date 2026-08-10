@@ -51,7 +51,7 @@ export function popupRecoveryForSendResult(result: SafeExtensionSendResult): Pop
   if (result.response.kind !== "error") return null;
   const message = popupMessageForResponse(result.response) ?? "操作未完成。";
   const requested = result.response.error.action;
-  if (requested === "open_app") return { message, action: "open_app", label: "打开汲作" };
+  if (requested === "open_app") return { message, action: "open_app", label: "前往汲作处理" };
   if (requested === "open_install_guide") {
     return { message, action: "open_settings", label: "打开汲作安装浏览器支持" };
   }
@@ -83,11 +83,11 @@ const knownErrorMessages: Readonly<Record<string, string>> = {
   STORAGE_STATE_CONFLICT: "本地历史状态已变化，请重新发送。",
   CAPTURE_IDEMPOTENCY_CONFLICT: "本次页面传输与原请求不一致，请重新发送。",
   RUN_IDEMPOTENCY_CONFLICT: "本次运行与原请求不一致，请重新操作。",
-  APP_UNAVAILABLE: "无法连接 LinkDigest。扩展会尝试自动打开应用；若仍失败，请手动打开 App 后再发送。",
+  APP_UNAVAILABLE: "无法连接汲作。如果汲作已经打开，请完全退出后重新打开，再回到这里重试发送。",
   NATIVE_HOST_NOT_FOUND: "未找到浏览器支持组件，请在 LinkDigest 设置里安装浏览器支持。",
   NATIVE_HOST_START_FAILED: "浏览器支持组件启动失败，请重新安装浏览器支持或重启浏览器。",
-  NATIVE_MESSAGE_TIMEOUT: "发送超时。若 App 刚启动，请再试一次。",
-  NATIVE_MESSAGE_FAILED: "与 LinkDigest 通信失败，请确认 App 已安装并重试。",
+  NATIVE_MESSAGE_TIMEOUT: "发送超时。如果汲作已经打开但持续超时，请完全退出后重新打开，再重试发送。",
+  NATIVE_MESSAGE_FAILED: "与汲作通信失败。请先打开汲作；若已经打开，请完全退出后重新打开，再重试发送。",
 };
 
 export function popupMessageForResponse(response: NativeResponse): string | null {
