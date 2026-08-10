@@ -181,13 +181,13 @@ struct BrowserSupportSettingsView: View {
   }
 
   private var receiverLineText: String {
-    if let date = appModel.lastBrowserCaptureAt {
+    if appModel.browserReceiverState == .ready, let date = appModel.lastBrowserCaptureAt {
       return "App 接收就绪 · 最近送达 \(date.formatted(date: .omitted, time: .standard))"
     }
     return switch appModel.browserReceiverState {
     case .starting: "正在启动接收服务…"
     case .ready: "App 接收就绪 · 首次同步后显示送达时间"
-    case .unavailable: "App 接收服务不可用，请重启 App"
+    case .unavailable: "App 正在恢复浏览器连接；若持续不可用，请完全退出并重新打开汲作"
     }
   }
 

@@ -5,21 +5,48 @@ public final class UnixSocketServer: @unchecked Sendable {
   public let path: String
   private let lock = NSLock()
   private var fd: Int32 = -1
+  private var ownershipFD: Int32 = -1
+  private var publishedIdentity: SocketNodeIdentity?
 
   public init(path: String) { self.path = path }
 
   public func start() throws {
-    guard lock.withLock({ fd < 0 }) else { throw POSIXError(.EALREADY) }
+    guard lock.withLock({ fd < 0 && ownershipFD < 0 }) else { throw POSIXError(.EALREADY) }
+
+    // A pathname Unix socket can be unlinked while its original server keeps
+    // listening. Without a separate lifetime lock, a second App instance can
+    // therefore delete the live path, bind its own node, then remove that node
+    // on exit — leaving the first App alive but permanently unreachable.
+    let ownershipPath = path + ".lock"
+    let candidateOwnershipFD = open(
+      ownershipPath,
+      O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
+      S_IRUSR | S_IWUSR
+    )
+    guard candidateOwnershipFD >= 0 else { throw currentPOSIXError() }
+    guard flock(candidateOwnershipFD, LOCK_EX | LOCK_NB) == 0 else {
+      close(candidateOwnershipFD)
+      throw POSIXError(.EADDRINUSE)
+    }
+
     let candidate = socket(AF_UNIX, SOCK_STREAM, 0)
-    guard candidate >= 0 else { throw POSIXError(.EIO) }
+    guard candidate >= 0 else {
+      let failure = currentPOSIXError()
+      flock(candidateOwnershipFD, LOCK_UN)
+      close(candidateOwnershipFD)
+      throw failure
+    }
     var didStart = false
+    var candidateIdentity: SocketNodeIdentity?
     defer {
       if !didStart {
         close(candidate)
-        unlink(path)
+        unlink(path, ifMatching: candidateIdentity)
+        flock(candidateOwnershipFD, LOCK_UN)
+        close(candidateOwnershipFD)
       }
     }
-    unlink(path)
+    if unlink(path) != 0, errno != ENOENT { throw currentPOSIXError() }
     var address = sockaddr_un()
     address.sun_family = sa_family_t(AF_UNIX)
     path.withCString { ptr in
@@ -33,8 +60,23 @@ public final class UnixSocketServer: @unchecked Sendable {
     }
     guard result == 0, listen(candidate, 4) == 0 else { throw POSIXError(.EADDRINUSE) }
     chmod(path, 0o600)
-    lock.withLock { fd = candidate }
+    guard let identity = socketNodeIdentity(at: path) else { throw POSIXError(.EIO) }
+    candidateIdentity = identity
+    lock.withLock {
+      fd = candidate
+      ownershipFD = candidateOwnershipFD
+      publishedIdentity = identity
+    }
     didStart = true
+  }
+
+  /// Whether this server still owns the filesystem node clients connect to.
+  /// The listening file descriptor alone is insufficient: an unlinked server
+  /// continues to appear in `lsof` but new clients receive ENOENT.
+  public func isPublishedAtPath() -> Bool {
+    let owned = lock.withLock { (fd, publishedIdentity) }
+    guard owned.0 >= 0, let identity = owned.1 else { return false }
+    return socketNodeIdentity(at: path) == identity
   }
 
   public func accept(timeout: TimeInterval = 10, ioTimeout: TimeInterval = 10) throws -> FileHandle {
@@ -50,19 +92,45 @@ public final class UnixSocketServer: @unchecked Sendable {
 
   /// Idempotently closes this server and removes only its exact socket node.
   public func stop() {
-    let listeningFD = lock.withLock { () -> Int32 in
-      let current = fd
+    let owned = lock.withLock { () -> (Int32, Int32, SocketNodeIdentity?) in
+      let current = (fd, ownershipFD, publishedIdentity)
       fd = -1
+      ownershipFD = -1
+      publishedIdentity = nil
       return current
     }
-    if listeningFD >= 0 {
-      shutdown(listeningFD, SHUT_RDWR)
-      close(listeningFD)
+    if owned.0 >= 0 {
+      shutdown(owned.0, SHUT_RDWR)
+      close(owned.0)
     }
-    unlink(path)
+    unlink(path, ifMatching: owned.2)
+    if owned.1 >= 0 {
+      flock(owned.1, LOCK_UN)
+      close(owned.1)
+    }
   }
 
   deinit { stop() }
+}
+
+private struct SocketNodeIdentity: Equatable {
+  let device: dev_t
+  let inode: ino_t
+}
+
+private func socketNodeIdentity(at path: String) -> SocketNodeIdentity? {
+  var value = stat()
+  guard lstat(path, &value) == 0, value.st_mode & S_IFMT == S_IFSOCK else { return nil }
+  return .init(device: value.st_dev, inode: value.st_ino)
+}
+
+private func unlink(_ path: String, ifMatching identity: SocketNodeIdentity?) {
+  guard let identity, socketNodeIdentity(at: path) == identity else { return }
+  Darwin.unlink(path)
+}
+
+private func currentPOSIXError() -> POSIXError {
+  POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
 }
 
 public enum UnixSocketClient {

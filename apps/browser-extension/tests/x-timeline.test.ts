@@ -38,7 +38,7 @@ describe("syncResultTip", () => {
   // 没有任何用。
   it("结构化失败码不受上下文状态影响", () => {
     for (const alive of [true, false]) {
-      expect(syncResultTip({ ok: false, code: "native_error" }, alive).text).toBe("App 未连接");
+      expect(syncResultTip({ ok: false, code: "native_error" }, alive).text).toBe("汲作未连接，请打开或重启");
       expect(syncResultTip({ ok: false, code: "invalid_id" }, alive).text).toBe("读不到帖子ID");
       expect(syncResultTip({ ok: false, code: "rate_limited" }, alive).text).toBe("失败：rate_limited");
     }

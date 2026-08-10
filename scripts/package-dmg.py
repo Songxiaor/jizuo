@@ -351,7 +351,7 @@ def main() -> int:
     parser.add_argument("--output-dir", type=Path, default=ROOT / "dist",
                         help="DMG 的输出目录（默认 dist/，已在 .gitignore 里）")
     parser.add_argument("--version", required=True,
-                        help="版本号，例如 0.2.5；必须与 config/app-release.json 一致。")
+                        help="版本号，例如 0.2.6；必须与 config/app-release.json 一致。")
     args = parser.parse_args()
 
     output_dir = args.output_dir.resolve()

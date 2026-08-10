@@ -106,7 +106,7 @@ export function syncResultTip(result: unknown, contextAlive: boolean): SyncTip {
       ? { state: "error", text: "扩展未响应，请重点一次" }
       : { state: "error", text: "扩展已更新，请刷新页面" };
   }
-  if (parsed.code === "native_error") return { state: "error", text: "App 未连接" };
+  if (parsed.code === "native_error") return { state: "error", text: "汲作未连接，请打开或重启" };
   if (parsed.code === "invalid_id") return { state: "error", text: "读不到帖子ID" };
   return { state: "error", text: `失败：${parsed.code}` };
 }

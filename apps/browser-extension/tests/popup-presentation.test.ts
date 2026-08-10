@@ -36,7 +36,8 @@ describe("popup error presentation", () => {
     const openApp = popupRecoveryForSendResult({
       response: { kind: "error", error: makeAppError("req", "network", "APP_UNAVAILABLE", true, "open_app") },
     });
-    expect(openApp).toMatchObject({ action: "open_app", label: "打开汲作" });
+    expect(openApp).toMatchObject({ action: "open_app", label: "前往汲作处理" });
+    expect(openApp?.message).toContain("完全退出后重新打开");
 
     const install = popupRecoveryForSendResult({
       response: { kind: "error", error: makeAppError("req", "network", "NATIVE_HOST_NOT_FOUND", false, "open_install_guide") },

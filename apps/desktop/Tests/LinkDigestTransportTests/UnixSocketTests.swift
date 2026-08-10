@@ -43,6 +43,7 @@ final class UnixSocketTests: XCTestCase {
 
   func testStopIsIdempotentUnlinksExactSocketAndAllowsRestart() throws {
     let path = "/tmp/linkdigest-stop-\(UUID().uuidString).sock"
+    defer { try? FileManager.default.removeItem(atPath: path + ".lock") }
     let server = UnixSocketServer(path: path)
     defer { server.stop() }
 
@@ -57,6 +58,52 @@ final class UnixSocketTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: path))
     server.stop()
     XCTAssertFalse(FileManager.default.fileExists(atPath: path))
+  }
+
+  func testSecondServerCannotOrphanLiveListener() async throws {
+    let path = "/tmp/linkdigest-exclusive-\(UUID().uuidString).sock"
+    defer { try? FileManager.default.removeItem(atPath: path + ".lock") }
+    let first = UnixSocketServer(path: path)
+    let second = UnixSocketServer(path: path)
+    defer {
+      second.stop()
+      first.stop()
+    }
+
+    try first.start()
+    XCTAssertThrowsError(try second.start()) { error in
+      XCTAssertEqual((error as? POSIXError)?.code, .EADDRINUSE)
+    }
+    XCTAssertTrue(first.isPublishedAtPath())
+
+    let response = Data("{\"kind\":\"taskAccepted\"}".utf8)
+    let serverTask = Task.detached {
+      let client = try first.accept(timeout: 2)
+      defer { try? client.close() }
+      _ = try ChromiumFramer.readFrame(from: client)
+      try ChromiumFramer.writeFrame(response, to: client)
+    }
+    let received = try UnixSocketClient.send(Data("{}".utf8), path: path, timeout: 2)
+    try await serverTask.value
+    XCTAssertEqual(received, response)
+  }
+
+  func testStopDoesNotDeleteAReplacementNodeItDoesNotOwn() throws {
+    let path = "/tmp/linkdigest-replaced-\(UUID().uuidString).sock"
+    defer {
+      try? FileManager.default.removeItem(atPath: path)
+      try? FileManager.default.removeItem(atPath: path + ".lock")
+    }
+    let server = UnixSocketServer(path: path)
+    try server.start()
+    XCTAssertTrue(server.isPublishedAtPath())
+
+    XCTAssertEqual(Darwin.unlink(path), 0)
+    XCTAssertFalse(server.isPublishedAtPath())
+    XCTAssertTrue(FileManager.default.createFile(atPath: path, contents: Data("replacement".utf8)))
+
+    server.stop()
+    XCTAssertTrue(FileManager.default.fileExists(atPath: path))
   }
 
   func testAppBundleLocatorWalksUpToCoLocatedApp() throws {

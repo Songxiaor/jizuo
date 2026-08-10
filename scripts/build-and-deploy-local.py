@@ -82,11 +82,30 @@ def atomic_replace(staged: Path, destination: Path) -> None:
     shutil.rmtree(previous)
 
 
-def sign_ad_hoc(app: Path, bundle_identifier: str) -> None:
+def sign_ad_hoc(path: Path, identifier: str, *, bundle: bool) -> None:
     # The local product is a development artifact. This is not Developer ID
     # signing and never performs notarization or public release work.
-    run("/usr/bin/codesign", "--force", "--sign", "-", "--identifier", bundle_identifier, str(app))
-    run("/usr/bin/codesign", "--verify", "--deep", "--strict", str(app))
+    run(
+        "/usr/bin/codesign",
+        "--force",
+        "--sign",
+        "-",
+        "--timestamp=none",
+        "--identifier",
+        identifier,
+        str(path),
+    )
+    verify = [
+        "/usr/bin/codesign",
+        "--verify",
+        "--strict",
+        "--all-architectures",
+        "--verbose=2",
+        str(path),
+    ]
+    run(*verify)
+    if bundle:
+        run(*verify[:-1], "--deep", str(path))
 
 
 def parse_args() -> argparse.Namespace:
@@ -142,10 +161,17 @@ def main() -> int:
         # 已安装的扩展立刻找不到 Host。架构的真相源是 config 与二进制本身
         # （`lipo -archs` 可查），不是这个目录名，所以不值得为了名字好看去换取
         # 一次全体用户重装。release_unit.py 里的固定名也与此保持一致。
+        signed_host = work / "signed-host" / config["entrypoint"]
+        signed_host.parent.mkdir(mode=0o700)
+        shutil.copy2(binary_root / config["entrypoint"], signed_host)
+        # Resources/NativeHost is not nested-code territory to codesign. Sign
+        # before packaging so SHA256SUMS seals the signed bytes.
+        sign_ad_hoc(signed_host, config["hostName"], bundle=False)
+
         host_package = work / "host-package" / f"LinkDigestNativeHost-{config['productVersion']}-macos-arm64"
         host_package.parent.mkdir(mode=0o700)
         stable_host.create_package(
-            binary_root / config["entrypoint"],
+            signed_host,
             binary_root / config["resourceBundle"],
             host_package,
             ROOT,
@@ -165,7 +191,19 @@ def main() -> int:
         # assembly (the public release pipeline signs in a later sealed step).
         # Verify that exact layout first, then ad-hoc sign the local copy.
         release_unit.verify_app(staged_app, None, ROOT, app_config)
-        sign_ad_hoc(staged_app, app_config["bundleIdentifier"])
+        sign_ad_hoc(staged_app, app_config["bundleIdentifier"], bundle=True)
+        embedded_host_package = staged_app / "Contents/Resources/NativeHost" / host_package.name
+        # The outer App signature must not mutate or invalidate the already
+        # sealed Host package.
+        stable_host.verify_package(embedded_host_package, ROOT)
+        run(
+            "/usr/bin/codesign",
+            "--verify",
+            "--strict",
+            "--all-architectures",
+            "--verbose=2",
+            str(embedded_host_package / config["entrypoint"]),
+        )
 
         staged_extension = work / "LinkDigest-extension-0.2.0"
         extension_source = ROOT / "apps/browser-extension/.output/chrome-mv3"

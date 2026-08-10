@@ -22,7 +22,7 @@ type BookmarksSyncResult =
 const bookmarksErrorCopy: Readonly<Record<string, string>> = {
   not_bookmarks: "请在 X 的收藏夹页面（x.com/i/bookmarks）打开后再同步。",
   empty: "没有找到可同步的收藏。请向下滚动确认收藏已加载。",
-  native_error: "无法连接 LinkDigest，或本次同步未被受理，请确认 App 已打开后重试。",
+  native_error: "无法连接汲作，或本次同步未被受理。如果汲作已经打开，请完全退出后重新打开，再重试。",
   injection_failed: "读取收藏夹失败，请刷新页面后重试。",
 };
 
