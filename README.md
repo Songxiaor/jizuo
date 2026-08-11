@@ -3,9 +3,16 @@
   <h1>汲作</h1>
   <p><strong>把网页和视频里的优质内容，变成能回看、能整理、能继续使用的个人资料。</strong></p>
   <p>macOS 原生应用 · 浏览器采集 · 视频转写 · AI 分析 · 本地资料库</p>
+  <p>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
+    <img src="https://img.shields.io/badge/platform-macOS%2015%2B-black.svg" alt="macOS 15+">
+    <img src="https://img.shields.io/badge/local--first-yes-success.svg" alt="local-first">
+  </p>
 </div>
 
 > 代码中的 `LinkDigest` 是早期工程名，当前产品名称为“汲作”。
+>
+> **English:** LinkDigest (product name 汲作) is a local-first macOS app + Chromium extension that captures the page you can already view, stores source text in on-device SQLite, and runs summarize/translate/export with your own OpenAI-compatible models (BYOK).
 
 ## 汲作是什么
 
