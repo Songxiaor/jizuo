@@ -19,11 +19,287 @@ extension View {
       .contentMargins(.top, SettingsMetrics.contentTop, for: .scrollContent)
       .contentMargins(.bottom, SettingsMetrics.contentBottom, for: .scrollContent)
   }
+
+  /// Form Section header 的统一字号：`.footnote.weight(.medium)` + `.secondary`。
+  ///
+  /// 原来各页的 header 各写各的（有的用系统默认、有的自己套了别的字号），
+  /// 于是「已保存的视频」这类组标题在不同页看着不一样重。收进这一个修改点，
+  /// 别再一页一改。
+  func settingsSectionHeaderStyle() -> some View {
+    self
+      .font(.footnote.weight(.medium))
+      .foregroundStyle(.secondary)
+  }
+}
+
+/// 设置分类图标 chip 的底色。只从 `HistoryThemeTokens` 已有语义色里分配，不新造色值。
+///
+/// 高对比主题靠形状而不是色相编码（`encodesStatusByShape`），chip 改用 `primaryText`
+/// 单色，形状还在，颜色不再承担分类信息。
+enum SettingsCategoryChip {
+  static func fill(for category: String, theme: HistoryThemeTokens) -> Color {
+    if theme.encodesStatusByShape {
+      return theme.primaryText
+    }
+    switch category {
+    case "service": return theme.accent
+    case "generation": return theme.info
+    case "appearance": return theme.warning
+    case "labs": return theme.danger
+    case "browserSupport": return theme.info
+    case "siteLogin": return theme.success
+    case "mediaStorage": return theme.warning
+    case "knowledgeVault": return theme.accent
+    default: return theme.accent
+    }
+  }
+}
+
+/// 设置侧栏 / 页头用的彩色小方块：白图标压在语义色底上。
+///
+/// 装饰性图形，VoiceOver 不读——旁边的分类名才是标签。
+struct SettingsSidebarChip: View {
+  let symbol: String
+  let fill: Color
+  var edge: CGFloat = DesignTokens.Layout.settingsSidebarChip
+
+  var body: some View {
+    Image(systemName: symbol)
+      .font(.system(size: symbolPointSize, weight: .medium))
+      .foregroundStyle(.white)
+      .frame(width: edge, height: edge)
+      .background(
+        fill,
+        in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
+      )
+      .accessibilityHidden(true)
+  }
+
+  private var symbolPointSize: CGFloat {
+    edge >= DesignTokens.IconSize.empty
+      ? DesignTokens.IconSize.section
+      : DesignTokens.IconSize.control
+  }
+}
+
+/// 详情页页头：分类 chip + 页名 + 一句话说明。替代「直接怼卡片」的开场。
+///
+/// 直接坐进 `SettingsPlainPage` 内容 `VStack` 的第一个元素，贴画布渲染，
+/// 不进任何卡片容器——原来专门给它准备的 `SettingsPageHeaderSection`（借用
+/// Form Section 的 header 槽位实现同样效果）已经随 Form 一起撤掉。
+struct SettingsPageHeader: View {
+  let title: String
+  let symbol: String
+  let caption: String
+  let fill: Color
+  var captionIdentifier: String? = nil
+
+  var body: some View {
+    HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+      SettingsSidebarChip(
+        symbol: symbol,
+        fill: fill,
+        edge: DesignTokens.IconSize.empty
+      )
+      VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+        Text(title)
+          .font(.title2.weight(.semibold))
+          .foregroundStyle(.primary)
+        captionText
+      }
+      Spacer(minLength: 0)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.vertical, DesignTokens.Space.xs)
+  }
+
+  @ViewBuilder private var captionText: some View {
+    let text = Text(caption)
+      .font(.callout)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+    if let captionIdentifier {
+      text.accessibilityIdentifier(captionIdentifier)
+    } else {
+      text
+    }
+  }
+}
+
+/// 六个「非站点登录」设置详情页共用的页面容器：`ScrollView` 手排 + 自绘卡序列，
+/// 不再进 Form。
+///
+/// macOS 给 grouped Form 的 Section 画的默认容器卡完全不受 `listRowBackground`
+/// 控制（见 `SettingsThemedCardChrome` 的注释），压在暖纸画布上永远是一块和画布
+/// 色不搭的系统冷灰。`SiteLoginSettingsView` 最早验证过这条路线的替代方案：整页
+/// 换成 `ScrollView` 手排，容器卡完全靠自绘。这里把该实现收成共享容器，别再每页
+/// 各写一份「ScrollView + 内边距 + 画布底色」。
+struct SettingsPlainPage<Content: View>: View {
+  @Environment(\.appTheme) private var theme
+  @ViewBuilder var content: () -> Content
+
+  /// 与 `SiteLoginSettingsView` 相同的水平内距：项目里没有专门收拢这个数值的
+  /// 令牌，两处都是手排页，保持同一个数字才不会切换 tab 时观感跳一下。
+  private static var horizontalInset: CGFloat { 20 }
+
+  var body: some View {
+    ScrollView {
+      VStack(alignment: .leading, spacing: DesignTokens.Space.lg) {
+        content()
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, Self.horizontalInset)
+    }
+    .background(theme.isNative ? Color.clear : theme.canvas)
+    .settingsDetailContentMargins()
+  }
+}
+
+/// 原 Section 的 header / footer 文本，改放进卡片外的一小段 `VStack`。
+///
+/// grouped Form 里，Section 的 header 贴在容器卡上方、footer 贴在容器卡下方，
+/// 两者都贴画布渲染、不进容器卡本身。离开 Form 之后没有这两个槽位了，这里用
+/// 一个小 `VStack` 还原同样的相对位置：组标题在上、卡片内容在中、说明在下。
+/// 没有组标题的 Section（这是多数情况）传 `nil` 即可，这时它只是一层透明的
+/// `VStack` 包装，不额外产生视觉差异。
+struct SettingsCardGroup<Content: View>: View {
+  var header: String? = nil
+  var footer: String? = nil
+  @ViewBuilder var content: () -> Content
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      if let header {
+        Text(header).settingsSectionHeaderStyle()
+      }
+      content()
+      if let footer {
+        Text(footer)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+  }
+}
+
+/// 一行设置：左侧标签（+ 可选 caption），右侧控件，垂直居中。
+///
+/// 简单开关、下拉、按钮走这一行，再由 `SettingsRowGroup` 收进一张卡。
+/// 复杂块（模型网格、主题色卡、单选组）继续用 `SettingsCard`。
+struct SettingsRow<Control: View>: View {
+  let title: String
+  var caption: String? = nil
+  var details: String? = nil
+  @ViewBuilder var control: () -> Control
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isDetailsPresented = false
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+      HStack(alignment: .center, spacing: DesignTokens.Space.lg) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+          HStack(alignment: .center, spacing: DesignTokens.Space.sm) {
+            Text(title)
+              .font(.body)
+              .fixedSize(horizontal: false, vertical: true)
+            if details != nil {
+              settingsInfoButton(
+                title: title,
+                isExpanded: $isDetailsPresented,
+                reduceMotion: reduceMotion
+              )
+            }
+            Spacer(minLength: 0)
+          }
+          if let caption {
+            Text(caption)
+              .font(.caption)
+              .foregroundStyle(.tertiary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        control()
+      }
+      if isDetailsPresented, let details {
+        Text(details)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .transition(.opacity.combined(with: .move(edge: .top)))
+      }
+    }
+    .padding(.vertical, DesignTokens.Space.sm)
+    .padding(.horizontal, DesignTokens.Space.lg)
+    .accessibilityElement(children: .contain)
+  }
+}
+
+/// 若干 `SettingsRow` 收成一张圆角卡，行间 hairline。
+///
+/// 不再进 Form：调用方需要组标题时用
+/// `SettingsCardGroup(header: "组标题") { SettingsRowGroup { … } }`，
+/// 把组标题放在卡片外左上；没有组标题就直接用，不用另包一层。
+///
+/// 卡面自带 `SettingsThemedCardChrome`（底色 + hairline 描边 + 浅色主题下的
+/// 轻投影），和 `SiteLoginSettingsView` 里 `sitesCard` 的做法同一个模式。
+struct SettingsRowGroup<Content: View>: View {
+  @ViewBuilder var content: () -> Content
+
+  @Environment(\.appTheme) private var theme
+
+  var body: some View {
+    VStack(spacing: 0) {
+      Group(subviews: content()) { subviews in
+        let lastID = subviews.last?.id
+        ForEach(subviews) { subview in
+          subview
+          if subview.id != lastID {
+            Rectangle()
+              .fill(theme.hairline)
+              .frame(height: 1)
+              .padding(.leading, DesignTokens.Space.lg)
+          }
+        }
+      }
+    }
+    .padding(.vertical, DesignTokens.Space.sm)
+    .modifier(SettingsThemedCardChrome())
+  }
+}
+
+/// 卡片的统一外观：令牌底色、hairline 描边、浅色主题下的轻投影。
+///
+/// `SiteLoginSettingsView` 最早验证过这条路线：整页从 `Form` 换成
+/// `ScrollView` 手排后，容器卡完全靠这一层自绘，不再依赖 Section 的系统
+/// 外壳——那层外壳不受 `listRowBackground` 控制，叠上自绘卡面就是「卡中卡」，
+/// 发灰发闷、和画布色不搭。
+///
+/// 现在设置窗口的六个详情页全部走这条路线，统一直通、不再对原生主题特殊
+/// 处理——原生主题下 `theme.card` 取的是 `.textBackgroundColor`，本身就是
+/// 一个能打的卡面底色，不需要再交给谁兜底。
+struct SettingsThemedCardChrome: ViewModifier {
+  @Environment(\.appTheme) private var theme
+  @AppStorage(AppearanceTheme.storageKey) private var appearanceRaw = AppearanceTheme.glass.rawValue
+
+  func body(content: Content) -> some View {
+    let appearance = AppearanceTheme(rawValue: appearanceRaw) ?? .glass
+    let lifts = (appearance == .paper || appearance == .sepia)
+    let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+    return content
+      .background(theme.card, in: shape)
+      .overlay(shape.strokeBorder(theme.hairline))
+      .designShadow(lifts ? .raised : .flat, tint: theme.canvas)
+  }
 }
 
 /// 设置页的统一卡片：标题 + 控件 + 一句关键说明 + 收起的详细说明。
 ///
-/// 排版约定：**一个设置项 = 一个 Section = 一张卡片**。
+/// 排版约定：复杂设置项仍是 **一个设置项 = 一张卡片**；相关的简单项改由
+/// `SettingsRow` + `SettingsRowGroup` 合并进一张卡。
 ///
 /// 改这套之前，设置项普遍写成「Section header + 控件行 + 卡片外的长 footer」。
 /// 两个后果：
@@ -60,7 +336,10 @@ enum SettingsControlWidth {
   var maximum: CGFloat? {
     switch self {
     case .compact: 440
-    case .full: nil
+    // 显式撑满而不是 nil：grouped Form 时代行会自动撑满整行，nil 无所谓；
+    // 迁到 ScrollView 手排后没有这层兜底，nil 会让 LabeledContent 抱团
+    // 靠左挤在标签旁边，标签和值的两端对齐就没了。
+    case .full: .infinity
     }
   }
 }
@@ -85,10 +364,11 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
   /// 顺带消掉一处重复——卡片标题「翻译模型」和控件标签「翻译使用不同模型」讲的是同一件事。
   @ViewBuilder var titleAccessory: () -> TitleAccessory
   @State private var isDetailsPresented = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   @ViewBuilder private var summaryText: some View {
     Text(summary)
-      .font(.callout)
+      .font(.caption)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -101,31 +381,29 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
         Spacer(minLength: 12)
         titleAccessory()
         if details != nil {
-          Button {
-            isDetailsPresented.toggle()
-          } label: {
-            Image(systemName: "info.circle")
-          }
-          .buttonStyle(.borderless)
-          .foregroundStyle(.secondary)
-          .help("查看\(title)说明")
-          .accessibilityLabel("\(title)详细说明")
-          .popover(isPresented: $isDetailsPresented, arrowEdge: .bottom) {
-            Text(details ?? "")
-              .font(.callout)
-              .foregroundStyle(.secondary)
-              .fixedSize(horizontal: false, vertical: true)
-              .frame(width: 300, alignment: .leading)
-              .padding(DesignTokens.Space.lg)
-          }
+          settingsInfoButton(
+            title: title,
+            isExpanded: $isDetailsPresented,
+            reduceMotion: reduceMotion
+          )
         }
       }
       if summaryPlacement == .aboveControl { summaryText }
       control()
         .frame(maxWidth: controlWidth.maximum, alignment: .leading)
       if summaryPlacement == .belowControl { summaryText }
+      if isDetailsPresented, let details {
+        Text(details)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .transition(.opacity.combined(with: .move(edge: .top)))
+      }
     }
-    .padding(.vertical, 4)
+    .padding(.vertical, DesignTokens.Space.md)
+    .padding(.horizontal, DesignTokens.Space.lg)
+    .modifier(SettingsThemedCardChrome())
   }
 }
 
@@ -151,6 +429,27 @@ extension SettingsCard where TitleAccessory == EmptyView {
       control: control,
       titleAccessory: { EmptyView() })
   }
+}
+
+@MainActor @ViewBuilder
+private func settingsInfoButton(
+  title: String,
+  isExpanded: Binding<Bool>,
+  reduceMotion: Bool
+) -> some View {
+  Button {
+    withAnimation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)
+    ) {
+      isExpanded.wrappedValue.toggle()
+    }
+  } label: {
+    Image(systemName: "info.circle")
+  }
+  .buttonStyle(.borderless)
+  .foregroundStyle(.secondary)
+  .help("查看\(title)说明")
+  .accessibilityLabel("\(title)详细说明")
 }
 
 /// 一组单选，每项自带解释。

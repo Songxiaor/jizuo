@@ -6,6 +6,13 @@ import LinkDigestCore
 /// tidied independently; a failed chunk keeps its original text so a partial
 /// outage can never lose transcript content.
 public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @unchecked Sendable {
+  /// 同时在飞的整理请求数。整理和翻译一样是输出受限的活（产出与原文同量级，
+  /// 模型只能逐 token 吐），分片之间互不依赖，串行等于把耗时按片数线性叠加：
+  /// 半小时视频的转写稿切 6 片、每片几十秒，串行就是三五分钟白等。
+  /// 取 3 而不是翻译那样可调到更高：整理经常在自动管线里与总结/翻译同时跑，
+  /// 再抬高会和它们抢同一个服务商的速率配额。
+  private static let maximumConcurrentChunkRequests = 3
+
   private let configurationService: ProviderConfigurationService
   private let provider: OpenAICompatibleProvider
 
@@ -35,22 +42,59 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     let trimmedOverride = model?.trimmingCharacters(in: .whitespacesAndNewlines)
     let effectiveModel = trimmedOverride?.isEmpty == false ? trimmedOverride! : credentials.profile.model
 
+    // 分片并发执行，结果按分片序号还原——绝不能按完成顺序，那会把文稿打乱。
+    // 单片失败不拖垮整体（该片保留原文），但取消必须立刻贯穿全部在飞请求。
+    let results = try await withThrowingTaskGroup(
+      of: (Int, Result<TranscriptTidyOutcome, Error>).self
+    ) { group -> [Int: Result<TranscriptTidyOutcome, Error>] in
+      var collected: [Int: Result<TranscriptTidyOutcome, Error>] = [:]
+      var next = 0
+      func launch(_ index: Int) {
+        group.addTask { [provider, credentials, effectiveModel, style] in
+          do {
+            let outcome = try await provider.tidyTranscriptChunk(
+              profile: credentials.profile,
+              apiKey: credentials.apiKey,
+              model: effectiveModel,
+              text: chunks[index],
+              systemPrompt: style.systemPrompt
+            )
+            return (index, .success(outcome))
+          } catch is CancellationError {
+            // 让取消走 TaskGroup 的抛出路径，而不是被计成“这片失败了”。
+            throw TranscriptTidyError.cancelled
+          } catch {
+            return (index, .failure(error))
+          }
+        }
+      }
+      while next < min(Self.maximumConcurrentChunkRequests, chunks.count) {
+        launch(next)
+        next += 1
+      }
+      do {
+        while let (index, result) = try await group.next() {
+          collected[index] = result
+          if next < chunks.count {
+            launch(next)
+            next += 1
+          }
+        }
+      } catch is CancellationError {
+        throw TranscriptTidyError.cancelled
+      }
+      return collected
+    }
+
     var outputs: [String] = []
     var failedChunkCount = 0
     var firstFailure: Error?
     var promptTokens: Int?
     var completionTokens: Int?
     var totalTokens: Int?
-    for chunk in chunks {
-      try Task.checkCancellation()
-      do {
-        let outcome = try await provider.tidyTranscriptChunk(
-          profile: credentials.profile,
-          apiKey: credentials.apiKey,
-          model: effectiveModel,
-          text: chunk,
-          systemPrompt: style.systemPrompt
-        )
+    for (index, chunk) in chunks.enumerated() {
+      switch results[index] {
+      case let .success(outcome):
         // 归一化换行方言：Markdown 阅读区把单换行折叠成空格，
         // 不归一化就会出现“句号后一坨空格 + 整篇不分段”。
         //
@@ -65,11 +109,14 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
         promptTokens = Self.summed(promptTokens, outcome.promptTokens)
         completionTokens = Self.summed(completionTokens, outcome.completionTokens)
         totalTokens = Self.summed(totalTokens, outcome.totalTokens)
-      } catch is CancellationError {
-        throw TranscriptTidyError.cancelled
-      } catch {
+      case let .failure(error):
         failedChunkCount += 1
+        // 首个失败按分片序号取（并发下完成顺序不定，报错必须可复现）。
         if firstFailure == nil { firstFailure = error }
+        outputs.append(chunk)
+      case nil:
+        // TaskGroup 正常收尾后每片必有结果；缺席只可能是实现错误。
+        failedChunkCount += 1
         outputs.append(chunk)
       }
     }

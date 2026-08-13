@@ -85,14 +85,16 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     let source = try String(contentsOf: repositoryRoot().appendingPathComponent("apps/desktop/Sources/LinkDigestApp/ProviderSettingsView.swift"), encoding: .utf8)
     let service = section(in: source, from: "private var serviceTab", to: "// MARK: - 生成与数据")
 
-    // 这一 tab 的骨架仍然是 grouped Form，不是一整片自制瓦片墙——那是 b8251a7
-    // 换掉的东西，`providerTile` / `capabilityCard` 两个禁项守的就是它。
+    // 这一 tab 的骨架是共享的 SettingsPlainPage（自绘卡路线），不是一整片自制
+    // 瓦片墙——`providerTile` / `capabilityCard` 两个禁项守的就是它。
+    // 2026-08-13 从 grouped Form 迁到 SettingsPlainPage：macOS 忽略
+    // listRowBackground，Form 容器卡永远是系统冷灰，主题卡面在 Form 路线上无解。
     //
     // 但「不要瓦片墙」不等于「任何地方都不许出现网格」。服务商选择是 12 个只有
     // 图标 + 名字 + 一句话的项，排成一列要占约 650pt；2026-08-06 按 Syc 要求改成
     // 多列卡片，约 200pt。原来那条 `LazyVGrid` 全局禁令会把这类局部布局一并挡掉，
     // 所以撤掉它，改由上面两个具体禁项继续守住骨架。
-    XCTAssertTrue(service.contains(".formStyle(.grouped)"))
+    XCTAssertTrue(service.contains("SettingsPlainPage"))
     XCTAssertFalse(service.contains("providerTile"))
     XCTAssertFalse(service.contains("capabilityCard"))
     XCTAssertTrue(service.contains("Grid(alignment: .leading"))
@@ -133,10 +135,10 @@ final class ProviderSettingsPresentationTests: XCTestCase {
   /// 真正会伤到用户的是切换 tab 时底部留白跳变，所以钉的是「每个 tab 都走
   /// 同一个入口」，不是某个具体数字。
   ///
-  /// 原断言数的是 `.contentMargins(` 的出现次数。00f707a 把这几处收敛成
-  /// `.settingsDetailContentMargins()` 之后它就一直红着——实现是对的，
-  /// 过期的是断言。而这次实验室页确实漏接了统一入口、自己写了一份边距，
-  /// 说明这条测试盯的东西仍然会坏，只是原来的数法盯不住了。
+  /// 2026-08-13 迁移到 SettingsPlainPage 后，统一入口就是这个共享容器本身：
+  /// 边距在容器内部调用一次 settingsDetailContentMargins()，各 tab 不再
+  /// 各自显式声明。所以现在钉两件事：四个 tab 都用 SettingsPlainPage；
+  /// 页面代码里不许再散落自己的边距调用。
   func testEverySettingsTabUsesTheSameScrollBottomMargin() throws {
     let source = try String(
       contentsOf: repositoryRoot().appendingPathComponent(
@@ -144,12 +146,11 @@ final class ProviderSettingsPresentationTests: XCTestCase {
       ),
       encoding: .utf8
     )
-    let tabs = source.components(separatedBy: ".formStyle(.grouped)").count - 1
+    let tabs = source.components(separatedBy: "SettingsPlainPage {").count - 1
     XCTAssertGreaterThanOrEqual(tabs, 4, "设置页少于四个 tab，视图结构可能已变")
-    XCTAssertEqual(
-      source.components(separatedBy: ".settingsDetailContentMargins()").count - 1,
-      tabs,
-      "有 tab 没走统一的滚动内边距入口，切换 tab 时底部留白会跳变"
+    XCTAssertFalse(
+      source.contains(".settingsDetailContentMargins()"),
+      "滚动边距应当只在 SettingsPlainPage 内部调用一次，页面不许自带"
     )
     XCTAssertFalse(
       source.contains(".contentMargins("),

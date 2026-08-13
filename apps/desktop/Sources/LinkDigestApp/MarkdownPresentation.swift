@@ -134,6 +134,13 @@ enum LocalMarkdownImageLayout {
     return result
   }
 
+  /// 图片标记（Markdown 图片与 `<img>`）的匹配式。编译一次复用：这个扫描
+  /// 在每次切段时都要跑，正则编译本身不便宜，不能按调用现编。
+  private static let imageMarkupExpression = try? NSRegularExpression(
+    pattern: #"!\[([^\]]*)\]\(([^)\s]+)(?:\s+[^)]*)?\)|<img\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"'][^>]*>"#,
+    options: [.caseInsensitive]
+  )
+
   static func segments(markdown: String, localImageURLs: [URL], appendsUnusedLocalImages: Bool = true) -> [Segment] {
     let byHash = Dictionary(uniqueKeysWithValues: localImageURLs.map { ($0.lastPathComponent, $0) })
     // 引用卡先剥离：它可能没有图片（纯文字引用），所以必须在「无本地图片就整段
@@ -154,10 +161,7 @@ enum LocalMarkdownImageLayout {
       return result.isEmpty ? [.text(markdown)] : result
     }
     guard !localImageURLs.isEmpty else { return [.text(markdown)] }
-    guard let expression = try? NSRegularExpression(
-      pattern: #"!\[([^\]]*)\]\(([^)\s]+)(?:\s+[^)]*)?\)|<img\b[^>]*\bsrc\s*=\s*[\"']([^\"']+)[\"'][^>]*>"#,
-      options: [.caseInsensitive]
-    ) else { return [.text(markdown)] }
+    guard let expression = imageMarkupExpression else { return [.text(markdown)] }
 
     var segments: [Segment] = []
     var cursor = markdown.startIndex
@@ -367,7 +371,8 @@ enum MarkdownPresentation {
 
   // MARK: - Structural blocks (visible hierarchy)
 
-  enum Block: Equatable {
+  // Hashable：阅读渲染缓存（ReadingRenderCache）按块数组做键。
+  enum Block: Equatable, Hashable {
     case heading(level: Int, text: String)
     case paragraph(String)
     case list([String])
@@ -381,7 +386,7 @@ enum MarkdownPresentation {
     case divider
   }
 
-  struct TaskItem: Equatable {
+  struct TaskItem: Equatable, Hashable {
     public let isDone: Bool
     public let text: String
   }
@@ -903,7 +908,7 @@ struct MarkdownContentView: View {
       HStack(spacing: 6) {
         if let systemImage {
           Image(systemName: systemImage)
-            .font(.system(size: 11))
+            .font(.system(size: DesignTokens.IconSize.inline))
             .foregroundStyle(.secondary)
             .frame(width: 14)
         }
@@ -978,8 +983,8 @@ struct MarkdownContentView: View {
 
       if showsPlainText {
         SelectableReadingTextView(
-          attributed: ReadingTextComposer.plain(
-            MarkdownPresentation.plainTextPresentation(source),
+          attributed: ReadingRenderCache.plainAttributed(
+            source: source,
             readingFont: readingFont,
             color: NSColor(primaryTextColor)
           ),
@@ -992,14 +997,14 @@ struct MarkdownContentView: View {
         structuredMarkdown(source)
           .accessibilityIdentifier("history-content-markdown")
       } else {
+        // 切段走备忘缓存：整篇正则扫描 + 图集合并只随正文与图片清单变化，
+        // 巨型 ViewModel 引发的无关重绘不再重付这一遍。
         ForEach(
           Array(
-            LocalMarkdownImageLayout.galleryGrouped(
-              LocalMarkdownImageLayout.segments(
-                markdown: source,
-                localImageURLs: localImageURLs,
-                appendsUnusedLocalImages: appendsUnusedLocalImages
-              )
+            ReadingRenderCache.gallerySegments(
+              markdown: source,
+              localImageURLs: localImageURLs,
+              appendsUnusedLocalImages: appendsUnusedLocalImages
             ).enumerated()
           ),
           id: \.offset
@@ -1029,7 +1034,7 @@ struct MarkdownContentView: View {
     // 换条目就重算一次目录；同一条正文内的重绘不再解析。
     .task(id: source) {
       outlineEntries = MarkdownOutline.entries(
-        from: MarkdownPresentation.blocks(from: MarkdownPresentation.sanitized(source))
+        from: ReadingRenderCache.blocks(from: MarkdownPresentation.sanitized(source))
       )
     }
   }
@@ -1038,7 +1043,8 @@ struct MarkdownContentView: View {
   private func structuredMarkdown(_ value: String) -> some View {
     // 相邻文本块合成一个 NSTextView 段（跨段连续选择）；代码块保持
     // SwiftUI 卡片独立渲染，复制按钮不丢。
-    let blocks = MarkdownPresentation.blocks(from: value)
+    // 解析走备忘缓存：这个 body 每次重新求值都会路过这里，正文没变就不再重新解析。
+    let blocks = ReadingRenderCache.blocks(from: value)
     let anchorable = MarkdownOutline.shouldPresent(MarkdownOutline.entries(from: blocks))
     var runs: [(anchor: Int, run: StructuredRun)] = []
     for (index, block) in blocks.enumerated() {
@@ -1087,7 +1093,9 @@ struct MarkdownContentView: View {
     switch run {
     case let .text(textBlocks):
       SelectableReadingTextView(
-        attributed: ReadingTextComposer.attributed(
+        // 组装走备忘缓存：内容、字体、配色没变时拿回同一个实例，
+        // NSTextView 侧靠实例同一性直接短路（连深比较都不用做）。
+        attributed: ReadingRenderCache.attributed(
           blocks: textBlocks,
           readingFont: readingFont,
           palette: .init(
@@ -1162,7 +1170,7 @@ struct MarkdownContentView: View {
         ForEach(0..<items.count, id: \.self) { index in
           HStack(alignment: .top, spacing: 0) {
             Image(systemName: items[index].isDone ? "checkmark.square.fill" : "square")
-              .font(.system(size: 14))
+              .font(.system(size: DesignTokens.IconSize.control))
               .foregroundStyle(items[index].isDone ? accentColor : secondaryTextColor.opacity(0.7))
               .frame(width: 22, alignment: .center)
               .padding(.top, 3)
@@ -1211,7 +1219,7 @@ struct MarkdownContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 12)
         .padding(.horizontal, 14)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .overlay(alignment: .leading) {
           UnevenRoundedRectangle(
             topLeadingRadius: 10,
@@ -1262,9 +1270,9 @@ struct MarkdownContentView: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(primaryTextColor.opacity(0.025))
     }
-    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 9, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
         .strokeBorder(primaryTextColor.opacity(0.1), lineWidth: 1)
     )
     .accessibilityIdentifier("history-content-code-block")
@@ -1358,7 +1366,7 @@ struct QuotedTweetCardView: View {
           onOpenURL(url)
         } label: {
           HStack(spacing: 4) {
-            Image(systemName: "arrow.up.right.square").font(.system(size: 11))
+            Image(systemName: "arrow.up.right.square").font(.system(size: DesignTokens.IconSize.inline))
             Text("查看原推").font(.callout)
           }
           .foregroundStyle(.secondary)
@@ -1370,11 +1378,11 @@ struct QuotedTweetCardView: View {
     .padding(14)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
         .fill(Color.primary.opacity(0.03))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
         .stroke(Color.primary.opacity(0.14), lineWidth: 1)
     )
     .padding(.bottom, 20)

@@ -155,7 +155,7 @@ struct MindMapSectionView: View {
     }
     .padding(14)
     .background(
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
         .strokeBorder(Color.secondary.opacity(0.15), lineWidth: 1)
     )
     .accessibilityIdentifier("mind-map-card")
@@ -169,7 +169,7 @@ struct MindMapSectionView: View {
       Text("正在生成脑图…").font(.caption)
     case .completed:
       Label("脑图已保存", systemImage: "checkmark.circle.fill")
-        .font(.caption).foregroundStyle(.green)
+        .font(.caption).foregroundStyle(appTheme.success)
     case .cancelled: EmptyView()
     case let .failed(message):
       Text(message).font(.caption).foregroundStyle(appTheme.danger).lineLimit(2)
@@ -207,15 +207,19 @@ private struct MindMapCanvasView: View {
           }
           .onTapGesture { presentLightbox() }
           .help("点击放大查看")
+          .accessibilityLabel("脑图")
+          .accessibilityValue(outlineText)
+          .accessibilityAddTraits(.isButton)
+          .accessibilityHint("点击放大查看")
         } else {
           ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
         }
       }
     }
     .frame(height: image.map { min(Self.viewportHeight, max(160, $0.size.height)) } ?? 200)
-    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
         .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 1)
     )
     .accessibilityIdentifier("mind-map-canvas")

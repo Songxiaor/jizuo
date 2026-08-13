@@ -64,7 +64,9 @@ final class GenerationSettingsPresentationTests: XCTestCase {
     guard let start = text.range(of: "private func pipelineStep(") else {
       return XCTFail("pipelineStep 不见了")
     }
-    let step = String(text[start.lowerBound...].prefix(1_600))
+    // 2_200：开关行改为「拨杆靠右」的 HStack 后 pipelineStep 变长，1_600 截不到
+    // opacity 修饰符；窗口只是取样范围，不承载断言语义。
+    let step = String(text[start.lowerBound...].prefix(2_200))
     XCTAssertTrue(step.contains("opacity(requirementUnmet == nil"), "未满足依赖时应当降低视觉权重")
     XCTAssertFalse(
       step.contains(".disabled(requirementUnmet"),
@@ -109,11 +111,14 @@ final class GenerationSettingsPresentationTests: XCTestCase {
       "下拉已经显示当前值了，下面不必再画一行重复它")
   }
 
-  /// 卡片标题和控件标签不能讲同一件事：主控件在标题行上，卡片标题就是它的标签。
+  /// 主控件必须和自己的标签同一行：标签是什么、控件就答什么。
   ///
   /// 「翻译模型」原来是个开关，2026-08-06 换成了和「转写稿整理」同一个下拉
   /// （第一项「跟随总结模型」）——这一页每一项都该是一个下拉直接答完，
   /// 而不是先开一个开关、再长出一个选择器。
+  ///
+  /// 2026-08-13 行式重建后，承载方式从「卡片标题行 `} control: {`」换成
+  /// `SettingsRow`（标签左、控件右、同一行）——意图相同，机制换了。
   func testPrimaryControlsUseTheCardTitleAsTheirLabel() throws {
     let tab = try generationTab(in: try source())
     XCTAssertFalse(
@@ -123,8 +128,8 @@ final class GenerationSettingsPresentationTests: XCTestCase {
       tab.contains("emptyOptionTitle: \"跟随总结模型\""),
       "空值要是下拉里的一个选项，而不是一个需要先关掉的开关")
     XCTAssertTrue(
-      tab.contains("} control: {"),
-      "三张模型卡的主控件要走标题行那个入口")
+      tab.contains("SettingsRow("),
+      "模型项的主控件要和标签同一行（行式布局），不能落回孤零零的卡内控件")
   }
 
   /// 说明文字要跟着承载方式一起改。

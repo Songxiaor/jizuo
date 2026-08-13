@@ -17,6 +17,7 @@ struct TopicBoardView: View {
   @AppStorage(TopicSchedule.storageKey) private var scheduleRaw = ""
   @AppStorage(TopicSchedule.lastRunKey) private var lastRunAt: Double = 0
   @AppStorage(TopicRecipe.storageKey) private var recipeRaw = ""
+  @Environment(\.appTheme) private var appTheme
 
   private var recipe: TopicRecipe { TopicRecipe.decoded(from: recipeRaw) }
 
@@ -101,7 +102,7 @@ struct TopicBoardView: View {
           Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
             .font(.system(size: 9, weight: .semibold))
           Text("选题板")
-            .font(.system(size: 13, weight: .semibold))
+            .font(.body.weight(.semibold))
         }
         .foregroundStyle(.secondary)
         .contentShape(Rectangle())
@@ -118,7 +119,7 @@ struct TopicBoardView: View {
         if !isRecipeOpen { model.topicDryRunResult = nil }
       } label: {
         Image(systemName: "slider.horizontal.3")
-          .font(.system(size: 11))
+          .font(.system(size: DesignTokens.IconSize.inline))
           .foregroundStyle(isRecipeOpen ? Color.accentColor : Color.secondary)
           .contentShape(Rectangle())
       }
@@ -137,7 +138,7 @@ struct TopicBoardView: View {
             lastRunAt = Date().timeIntervalSince1970
           }
         }
-          .font(.system(size: 11))
+          .font(.subheadline)
           .buttonStyle(.plain)
           .foregroundStyle(model.canGenerateTopics ? Color.accentColor : Color.secondary)
           .disabled(!model.canGenerateTopics)
@@ -173,14 +174,14 @@ struct TopicBoardView: View {
           // 两路而不是一路,是因为碰撞需要距离。这句话得让用户看得到,
           // 否则他会先把旧的那一路关掉——它看起来最像多余的。
           Text("两路分开是为了让远的和近的能撞上。取 0 条就是关掉那一路。")
-            .font(.system(size: 10))
+            .font(.caption2)
             .foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)
           HStack(spacing: 5) {
             Text("只要标签")
             TextField("留空 = 全部，多个用逗号分开", text: tagsField)
               .textFieldStyle(.roundedBorder)
-              .font(.system(size: 11))
+              .font(.subheadline)
             Spacer(minLength: 0)
           }
           HStack(spacing: 5) {
@@ -196,17 +197,17 @@ struct TopicBoardView: View {
         VStack(alignment: .leading, spacing: 6) {
           HStack(spacing: 6) {
             Text(recipe.isTemplateCustomized ? "我的版本" : "预置 · 只读")
-              .font(.system(size: 10, weight: .semibold))
+              .font(.caption2.weight(.semibold))
               .foregroundStyle(recipe.isTemplateCustomized ? Color.accentColor : Color.secondary)
             Spacer(minLength: 0)
             if recipe.isTemplateCustomized {
               Button("恢复预置") { field(\.template).wrappedValue = nil }
-                .font(.system(size: 10))
+                .font(.caption2)
             } else {
               Button("改成我的版本") {
                 field(\.template).wrappedValue = TopicPrompt.presetTemplate
               }
-              .font(.system(size: 10))
+              .font(.caption2)
             }
           }
 
@@ -215,7 +216,7 @@ struct TopicBoardView: View {
               .font(.system(size: 10.5, design: .monospaced))
               .frame(height: 200)
               .overlay(
-                RoundedRectangle(cornerRadius: 5)
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
                   .strokeBorder(Color.primary.opacity(0.12))
               )
               .accessibilityIdentifier("topic-recipe-template")
@@ -231,7 +232,7 @@ struct TopicBoardView: View {
             }
             .frame(height: 140)
             .background(
-              RoundedRectangle(cornerRadius: 5)
+              RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
                 .fill(Color(nsColor: .controlBackgroundColor).opacity(0.5))
             )
           }
@@ -258,7 +259,7 @@ struct TopicBoardView: View {
             Spacer(minLength: 0)
           }
           Text("越界那条不受你的偏好约束。设成 0 就不要了，但回音室也是这么形成的。")
-            .font(.system(size: 10))
+            .font(.caption2)
             .foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -270,14 +271,14 @@ struct TopicBoardView: View {
           Text("正在试跑…").font(.system(size: 10.5)).foregroundStyle(.secondary)
         } else {
           Button("试跑一次") { model.dryRunTopics(recipe: recipe, voice: voice) }
-            .font(.system(size: 11))
+            .font(.subheadline)
             .disabled(!model.canGenerateTopics)
             .help("按当前配方跑一次，只看解析出几条，不写进选题板")
             .accessibilityIdentifier("topic-recipe-dry-run")
         }
         Spacer(minLength: 0)
         Button("全部恢复默认") { recipeRaw = "" }
-          .font(.system(size: 11))
+          .font(.subheadline)
           .disabled(recipe == .default)
       }
 
@@ -299,7 +300,7 @@ struct TopicBoardView: View {
   ) -> some View {
     VStack(alignment: .leading, spacing: 5) {
       Text(title)
-        .font(.system(size: 10, weight: .semibold))
+        .font(.caption2.weight(.semibold))
         .foregroundStyle(.tertiary)
       content()
     }
@@ -312,7 +313,7 @@ struct TopicBoardView: View {
   private func numberField(_ binding: Binding<Int>, width: CGFloat) -> some View {
     TextField("", value: binding, format: .number)
       .textFieldStyle(.roundedBorder)
-      .font(.system(size: 11))
+      .font(.subheadline)
       .frame(width: width)
       .multilineTextAlignment(.center)
   }
@@ -345,12 +346,12 @@ struct TopicBoardView: View {
     VStack(alignment: .leading, spacing: 5) {
       HStack(spacing: 6) {
         Text(Self.dayLabel(day))
-          .font(.system(size: 10, weight: .semibold))
+          .font(.caption2.weight(.semibold))
           .foregroundStyle(.tertiary)
         // 「一条都没要」本身就是信号，所以那一天也留在板上，不隐藏。
         if candidates.allSatisfy({ $0.verdict == .declined }) {
           Text("一条都没要")
-            .font(.system(size: 10))
+            .font(.caption2)
             .foregroundStyle(.tertiary)
         }
         Spacer(minLength: 0)
@@ -375,9 +376,9 @@ struct TopicBoardView: View {
               .padding(.horizontal, 4)
               .padding(.vertical, 1)
               .background(
-                RoundedRectangle(cornerRadius: 3).fill(Color.orange.opacity(0.16))
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.sm).fill(appTheme.warning.opacity(0.16))
               )
-              .foregroundStyle(.orange)
+              .foregroundStyle(appTheme.warning)
           }
           Text(candidate.title)
             .font(.system(size: 12.5, weight: .medium))
@@ -388,7 +389,7 @@ struct TopicBoardView: View {
         }
         if !candidate.summary.isEmpty, !isDeclined {
           Text(candidate.summary)
-            .font(.system(size: 11))
+            .font(.subheadline)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -429,7 +430,7 @@ struct TopicBoardView: View {
     .padding(.horizontal, 9)
     .padding(.vertical, 6)
     .background(
-      RoundedRectangle(cornerRadius: 6, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
         .fill(Color(nsColor: .controlBackgroundColor).opacity(isDeclined ? 0.25 : 0.5))
     )
     .opacity(isDeclined ? 0.55 : 1)
@@ -441,7 +442,7 @@ struct TopicBoardView: View {
         .font(.system(size: 11.5))
         .foregroundStyle(.secondary)
       Text("从素材库里找能碰撞的组合，写成几条不同角度的选题。")
-        .font(.system(size: 11))
+        .font(.subheadline)
         .foregroundStyle(.tertiary)
         .fixedSize(horizontal: false, vertical: true)
     }

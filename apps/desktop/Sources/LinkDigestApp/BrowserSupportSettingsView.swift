@@ -36,84 +36,92 @@ struct BrowserSupportSettingsView: View {
   }
 
   var body: some View {
-    Form {
+    SettingsPlainPage {
+      SettingsPageHeader(
+        title: "浏览器支持",
+        symbol: "puzzlepiece.extension",
+        caption: "在浏览器里装一次扩展，之后打开的页面就能一键同步到本机。",
+        fill: SettingsCategoryChip.fill(for: "browserSupport", theme: appTheme)
+      )
+
       // 「装一次扩展就自动同步」本是一件事，原来拆成 App 接收 / 浏览器配置 /
       // 安装步骤三张卡，还把真正要动手的步骤压在最底下。合成一张卡、按真实动线
       // 从上往下读：先做什么 → 各浏览器状态 → 接收状态收成一行。
-      Section {
-        SettingsCard(
-          title: "连接浏览器",
-          summary: "在 Chrome 里装一次扩展，之后自动同步。",
-          details: "扩展只在你点击同步时连接，不会保持在线。加载扩展后，首次同步成功会在下方显示送达时间。",
-          controlWidth: .full
-        ) {
-          VStack(alignment: .leading, spacing: 16) {
-            // ① 动手步骤放最前——这才是要做的事，不是先看两屏状态。
-            VStack(alignment: .leading, spacing: 6) {
-              installStep(1, "打开浏览器的扩展管理页")
-              installStep(2, "开启「开发者模式」")
-              installStep(3, "选择「加载已解压的扩展程序」，再选下面打开的文件夹")
-            }
-            Button("打开扩展文件夹", action: revealExtensionFiles)
-              .accessibilityIdentifier("reveal-test-browser-extension")
-              .alert(item: $revealFailure) { miss in
-                Alert(
-                  title: Text("扩展文件夹没有打开"),
-                  message: Text(
-                    [miss.detail, "找过这些位置：\n" + miss.searched.map(\.path).joined(separator: "\n")]
-                      .compactMap { $0 }
-                      .joined(separator: "\n\n")
-                  ),
-                  dismissButton: .default(Text("好"))
-                )
-              }
-
-            Divider()
-
-            // ② 每个浏览器压成一行：状态点 + 名字 + 一个词，只有需要动作的才带按钮。
-            HStack(spacing: 8) {
-              Text("已检测到的浏览器").font(.subheadline.weight(.medium))
-              Spacer()
-              if model.isLoading { ProgressView().controlSize(.small) }
-              Button("重新检查") { Task { await model.load() } }
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .disabled(model.isLoading || model.activeBrowser != nil)
-            }
-            // Grid 而不是 VStack：浏览器名长度不同，用 HStack 排状态词的起点就会参差
-            // 不齐。列对齐是「每一行看起来是同一种东西」的前提，多于一行时才看得出来。
-            //
-            // 一个都没检测到是可能的（没装 Chrome 的机器）。空 Grid 会让上面那行标题
-            // 孤零零地悬着，看不出是「还没扫」还是「扫完了没有」。
-            if detectedBrowsers.isEmpty && !model.isLoading {
-              Text("没有检测到\(supportedBrowserNames)。装好之后点「重新检查」。")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .accessibilityIdentifier("browser-support-empty")
-            } else {
-              Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
-                ForEach(detectedBrowsers) { browser in
-                  browserStatusRow(browser)
-                }
-              }
-            }
-
-            Divider()
-
-            // ③ App 接收状态收成一行——就绪时安静，不可用/报错才突出。
-            receiverStatusLine
+      SettingsCard(
+        title: "连接浏览器",
+        summary: "在 Chrome 里装一次扩展，之后自动同步。",
+        details: "扩展只在你点击同步时连接，不会保持在线。加载扩展后，首次同步成功会在下方显示送达时间。",
+        controlWidth: .full
+      ) {
+        VStack(alignment: .leading, spacing: 16) {
+          // ① 动手步骤放最前——这才是要做的事，不是先看两屏状态。
+          VStack(alignment: .leading, spacing: 6) {
+            installStep(1, "打开浏览器的扩展管理页")
+            installStep(2, "开启「开发者模式」")
+            installStep(3, "选择「加载已解压的扩展程序」，再选下面打开的文件夹")
           }
+          Button("打开扩展文件夹", action: revealExtensionFiles)
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .tint(appTheme.accent)
+            .accessibilityIdentifier("reveal-test-browser-extension")
+            .alert(item: $revealFailure) { miss in
+              Alert(
+                title: Text("扩展文件夹没有打开"),
+                message: Text(
+                  [miss.detail, "找过这些位置：\n" + miss.searched.map(\.path).joined(separator: "\n")]
+                    .compactMap { $0 }
+                    .joined(separator: "\n\n")
+                ),
+                dismissButton: .default(Text("好"))
+              )
+            }
+
+          Divider()
+
+          // ② 每个浏览器压成一行：状态点 + 名字 + 一个词，只有需要动作的才带按钮。
+          HStack(spacing: 8) {
+            Text("已检测到的浏览器").font(.subheadline.weight(.medium))
+            Spacer()
+            if model.isLoading { ProgressView().controlSize(.small) }
+            Button("重新检查") { Task { await model.load() } }
+              .buttonStyle(.bordered)
+              .controlSize(.small)
+              .tint(Color.secondary)
+              .disabled(model.isLoading || model.activeBrowser != nil)
+          }
+          // Grid 而不是 VStack：浏览器名长度不同，用 HStack 排状态词的起点就会参差
+          // 不齐。列对齐是「每一行看起来是同一种东西」的前提，多于一行时才看得出来。
+          //
+          // 一个都没检测到是可能的（没装 Chrome 的机器）。空 Grid 会让上面那行标题
+          // 孤零零地悬着，看不出是「还没扫」还是「扫完了没有」。
+          if detectedBrowsers.isEmpty && !model.isLoading {
+            Text("没有检测到\(supportedBrowserNames)。装好之后点「重新检查」。")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .accessibilityIdentifier("browser-support-empty")
+          } else {
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
+              ForEach(detectedBrowsers) { browser in
+                browserStatusRow(browser)
+              }
+            }
+          }
+
+          Divider()
+
+          // ③ App 接收状态收成一行——就绪时安静，不可用/报错才突出。
+          receiverStatusLine
         }
       }
       if let errorText = model.errorText {
-        Section {
-          Text(errorText).foregroundStyle(appTheme.danger)
-            .accessibilityIdentifier("browser-support-error")
-        }
+        Text(errorText).foregroundStyle(appTheme.danger)
+          .accessibilityIdentifier("browser-support-error")
+          .padding(.vertical, DesignTokens.Space.md)
+          .padding(.horizontal, DesignTokens.Space.lg)
+          .modifier(SettingsThemedCardChrome())
       }
     }
-    .formStyle(.grouped)
-    .settingsDetailContentMargins()
     .task { await model.load() }
     // 送达随时会发生：你在浏览器里点一次同步，这一行就得跟着变。原来只在切进这一页时
     // 读一次，页面开着的时候同步完全看不到，要手动点「重新检查」才出来。
@@ -203,13 +211,13 @@ struct BrowserSupportSettingsView: View {
     let display = rowStatus(status.state, model.lastDelivery(for: browser))
     GridRow {
       Image(systemName: display.symbol)
-        .foregroundStyle(display.needsAction ? Color.orange : Color.secondary)
+        .foregroundStyle(display.needsAction ? appTheme.warning : Color.secondary)
         .frame(width: 18)
       Text(browser.displayName)
         .gridColumnAlignment(.leading)
       Text(display.text)
         .font(.caption)
-        .foregroundStyle(display.needsAction ? Color.orange : Color.secondary)
+        .foregroundStyle(display.needsAction ? appTheme.warning : Color.secondary)
         .gridColumnAlignment(.leading)
       HStack(spacing: 8) {
         Spacer(minLength: 12)
@@ -252,8 +260,9 @@ struct BrowserSupportSettingsView: View {
         .controlSize(.small)
     } else if model.canUninstall(browser) {
       Button("断开") { Task { await model.uninstall(browser) } }
-        .buttonStyle(.borderless)
+        .buttonStyle(.bordered)
         .controlSize(.small)
+        .tint(Color.secondary)
     }
   }
 
@@ -268,8 +277,8 @@ struct BrowserSupportSettingsView: View {
   private var receiverColor: Color {
     switch appModel.browserReceiverState {
     case .starting: .secondary
-    case .ready: .green
-    case .unavailable: .red
+    case .ready: appTheme.success
+    case .unavailable: appTheme.danger
     }
   }
 

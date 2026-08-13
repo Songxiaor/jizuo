@@ -412,6 +412,16 @@ public actor ModelRunOrchestrator {
     }
 
     let title = capture.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    // 翻译只发正文。正文开头的 `---` 元数据块（作者/发布/点赞，阅读页顶部
+    // 属性栏的数据源）是结构化字段，不是待译内容：带上它，模型会把整块
+    // 原样翻一遍再吐回来——短帖里这能占掉近半的输出 token，翻译因此明显
+    // 变慢，流式预览里还会滚出一段 YAML。总结保留元数据，作者和日期对
+    // 摘要是有效上下文，且总结输出远短于输入，几十个 token 无关痛痒。
+    let strippedBody = MarkdownNoteFrontmatter.parse(text).body
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let translationText = strippedBody.isEmpty ? text : strippedBody
+
     let intent: RunIntent = switch intentKind {
     case .summarize:
       .summarize(
@@ -425,7 +435,7 @@ public actor ModelRunOrchestrator {
     case .translate:
       .translate(
         title: title?.isEmpty == true ? nil : title,
-        text: text,
+        text: translationText,
         targetLanguage: targetLanguage ?? "简体中文"
       )
     case .connectionTest:
@@ -436,7 +446,7 @@ public actor ModelRunOrchestrator {
     // token，所以整篇一次发时耗时随长度线性增长（实测 3.8 万字 6.5 分钟未完）。
     // 只有翻译走这条路——总结的输出远短于输入，瓶颈不在这里，拆开反而丢上下文。
     let events: AsyncThrowingStream<ModelStreamEvent, Error>
-    if intentKind == .translate, ChunkedTranslationStreamer.shouldChunk(text) {
+    if intentKind == .translate, ChunkedTranslationStreamer.shouldChunk(translationText) {
       events = ChunkedTranslationStreamer(
         provider: provider,
         concurrency: translationConcurrency ?? ModelPreferences.defaultTranslationConcurrency
@@ -444,7 +454,7 @@ public actor ModelRunOrchestrator {
         profile: effectiveProfile,
         apiKey: credentials.apiKey,
         title: title?.isEmpty == true ? nil : title,
-        text: text,
+        text: translationText,
         targetLanguage: targetLanguage ?? "简体中文"
       )
     } else {

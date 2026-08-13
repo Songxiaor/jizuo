@@ -8,7 +8,7 @@ import {
   rankCandidates,
 } from "../src/content/douyin-detect";
 import { canonicalizeDouyinVideoURL, isDouyinVideoURL } from "../src/platform";
-import { extractDouyinPage } from "../src/content/extract";
+import { cleanDouyinAuthorText, extractDouyinPage } from "../src/content/extract";
 
 describe("douyin multi-source id detection (StepAudio-aligned)", () => {
   it("resolves modal_id from jingxuan feed overlay URLs", () => {
@@ -155,6 +155,12 @@ describe("extractDouyinPage single-item body", () => {
     expect(page.text).not.toContain("\n关注\n");
     expect(page.text).toContain("真正的口播描述");
     expect(page.text).toContain("aweme_id");
+  });
+
+  it("keeps profile counters and clipped follow state out of the author field", () => {
+    expect(cleanDouyinAuthorText("晓得了粉丝10.1万获赞145.2万已")).toBe("晓得了");
+    expect(cleanDouyinAuthorText("迟遇粉丝2918获赞76.4万已关注")).toBe("迟遇");
+    expect(cleanDouyinAuthorText("喜欢研究所")).toBe("喜欢研究所");
   });
 });
 

@@ -24,6 +24,100 @@ final class MarkdownNoteFrontmatterTests: XCTestCase {
     XCTAssertFalse(note.body.hasPrefix("---"))
   }
 
+  /// 旧版翻译回显的元数据块卡在译文中段（前面是翻译后的标题），
+  /// 显示层按白名单键清除，标题和正文保持连续。
+  func testStripsEchoedMetadataBlockAfterTranslatedTitle() {
+    let source = """
+    停止为 Claude Code 和 Codex 付费。
+
+    ---
+    author: "aiko (@aikonect_)"
+    published: "2026-08-12T11:09:50.000Z"
+    likes: "217"
+    replies: "14"
+    ---
+
+    别为 Claude Code 和 Codex 掏钱了。
+    """
+    let cleaned = MarkdownNoteFrontmatter.strippingEchoedMetadataBlock(from: source)
+    XCTAssertFalse(cleaned.contains("likes:"))
+    XCTAssertFalse(cleaned.contains("---"))
+    XCTAssertTrue(cleaned.hasPrefix("停止为 Claude Code 和 Codex 付费。"))
+    XCTAssertTrue(cleaned.contains("别为 Claude Code 和 Codex 掏钱了。"))
+    XCTAssertFalse(cleaned.contains("\n\n\n"), "删除位不应留下连续空行")
+  }
+
+  /// 真实旧译文的样子：模型把冒号翻成全角、author 的值折成两行、
+  /// 收尾的 `---` 黏在最后一个值后面。三种畸形同时在场也要清得掉。
+  func testStripsEchoedBlockWithFullwidthColonsWrappedValueAndGluedClose() {
+    let source = """
+    停止为Claude Code和Codex付费。
+
+    ---
+    author："aiko
+    (@aikonect_)"
+    published："2026-08-12T11:09:50.000Z"
+    likes："217"
+    replies："14"---
+
+    别为Claude Code和Codex掏钱了。
+    """
+    let cleaned = MarkdownNoteFrontmatter.strippingEchoedMetadataBlock(from: source)
+    XCTAssertFalse(cleaned.contains("author"))
+    XCTAssertFalse(cleaned.contains("likes"))
+    XCTAssertFalse(cleaned.contains("---"))
+    XCTAssertTrue(cleaned.hasPrefix("停止为Claude Code和Codex付费。"))
+    XCTAssertTrue(cleaned.contains("别为Claude Code和Codex掏钱了。"))
+  }
+
+  /// 引文里孤零零一行 `author: 某某` 不够格：至少两个已知键才敢删。
+  func testKeepsBlockWithSingleKnownKey() {
+    let source = """
+    题记。
+
+    ---
+    author: 王小波
+    随后是一段引文正文，不是元数据。
+    ---
+
+    正文开始。
+    """
+    XCTAssertEqual(MarkdownNoteFrontmatter.strippingEchoedMetadataBlock(from: source), source)
+  }
+
+  /// 正常的水平分隔线之间是普通正文，不满足白名单条件，必须原样保留。
+  func testKeepsGenuineHorizontalRulesUntouched() {
+    let source = """
+    第一段。
+
+    ---
+
+    第二段：这里有冒号但不是元数据键。
+
+    ---
+
+    第三段。
+    """
+    XCTAssertEqual(MarkdownNoteFrontmatter.strippingEchoedMetadataBlock(from: source), source)
+  }
+
+  /// 块出现在文档后段（前面超过 4 个非空行）时视为正文分隔线，不清除。
+  func testIgnoresMetadataLookalikeDeepInDocument() {
+    let source = """
+    一
+    二
+    三
+    四
+    五
+
+    ---
+    likes: "1"
+    ---
+    尾段。
+    """
+    XCTAssertEqual(MarkdownNoteFrontmatter.strippingEchoedMetadataBlock(from: source), source)
+  }
+
   func testDescriptionAloneDoesNotCountAsProperties() {
     let source = """
     ---

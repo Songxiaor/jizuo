@@ -1,14 +1,15 @@
 import XCTest
 import LinkDigestCore
 
-/// 设置页的跨页排版约定：**一个设置项 = 一个 Section = 一张卡片**，说明跟着控件走。
+/// 设置页的跨页排版约定：相关的简单项合并进 `SettingsRowGroup`，复杂项仍走
+/// `SettingsCard`；说明跟着控件走，不堆回卡片外的 footer。
 ///
 /// 改这套之前，设置项普遍写成「Section header + 控件行 + 卡片外的长 footer」，
 /// 全部设置页加起来 17 处。两个后果：说明离它控制的控件隔着一整块间距，读的时候
 /// 对不上号；footer 一律展开，四五行密字把页面撑满，控件密度极低。
 ///
-/// 这类退化不报错、不崩溃——加一个设置项时顺手写个 footer 是最省事的写法，
-/// 所以必须由测试守住，否则页面会慢慢变回原样。
+/// 行式重建之后，退化路径变成两种：一是又把简单项拆回「一项一张卡」，二是说明
+/// 重新长成常驻 footer。这两种都不报错、不崩溃，所以必须由测试守住。
 final class SettingsLayoutConventionTests: XCTestCase {
   private static let pages = [
     "ProviderSettingsView",
@@ -49,7 +50,11 @@ final class SettingsLayoutConventionTests: XCTestCase {
   func testSettingsPagesDoNotGrowNewFooterExplanations() throws {
     for page in Self.pages {
       let text = try source(page)
-      let footers = occurrences(of: "} footer: {", in: text)
+      // 设置页从 grouped Form 迁移到自绘卡之后，footer 不再是 Section 的
+      // `} footer: { … }` 尾随闭包，而是 `SettingsCardGroup(footer:)` 的
+      // 一个 String 参数——两种写法的语义一致（卡片外的补充说明），这里换成
+      // 匹配新语法，允许上限不变。
+      let footers = occurrences(of: "footer:", in: text)
       let allowed = Self.allowedFooters[page] ?? 0
       XCTAssertLessThanOrEqual(
         footers, allowed,
@@ -58,7 +63,7 @@ final class SettingsLayoutConventionTests: XCTestCase {
     }
   }
 
-  /// 卡片构件必须是同一份。三处各写一份必然漂移，而漂移不报错。
+  /// 卡片 / 行组构件必须是同一份。三处各写一份必然漂移，而漂移不报错。
   func testAllSettingsPagesUseTheSharedCard() throws {
     for page in Self.pages where page != "SiteLoginSettingsView" {
       let text = try source(page)
@@ -66,11 +71,29 @@ final class SettingsLayoutConventionTests: XCTestCase {
         text.contains("SettingsCard(") || text.contains("settingCard("),
         "\(page) 没有使用共享的设置卡片构件")
     }
+    XCTAssertTrue(
+      try source("ProviderSettingsView").contains("SettingsRowGroup"),
+      "生成偏好 / 实验室的简单项要收进共享行组，不能再各写一套")
+    XCTAssertTrue(
+      try source("MediaStorageSettingsView").contains("SettingsRowGroup"),
+      "视频存储的本地保存三项要收进共享行组")
+
     let shared = try source("SettingsCard")
     XCTAssertTrue(shared.contains("struct SettingsCard"))
+    XCTAssertTrue(shared.contains("struct SettingsRow"))
+    XCTAssertTrue(shared.contains("struct SettingsRowGroup"))
+    XCTAssertTrue(shared.contains("struct SettingsPageHeader"))
+    // 详细说明从 popover 改成了卡内可展开可收起的区域——同一张卡里点开就在原地
+    // 长出一段，不用再在悬浮层里读。仍然是「按需展开」，不是常驻 footer。
     XCTAssertTrue(
+      shared.contains("if isDetailsPresented, let details {"),
+      "详细说明必须留在按需展开的卡内区域里，不能重新长成常驻 footer")
+    XCTAssertFalse(
       shared.contains(".popover(isPresented: $isDetailsPresented"),
-      "详细说明必须留在按需打开的上下文帮助里，不能重新长成常驻 footer")
+      "详细说明改成卡内展开之后，popover 不该回来")
+    XCTAssertTrue(
+      shared.contains("DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)"),
+      "展开/收起要走统一的动效令牌，并遵守「减弱动态效果」")
     XCTAssertTrue(shared.contains("Image(systemName: \"info.circle\")"))
     XCTAssertFalse(shared.contains("DisclosureGroup(\"了解更多\")"))
   }
@@ -134,20 +157,23 @@ final class SettingsLayoutConventionTests: XCTestCase {
   ///
   /// 一张卡只有一个主控件时，答案是让它和卡片标题同一行、右对齐：
   /// 整页卡片的控件因此排成一列。这也顺带消掉「翻译模型 / 翻译使用不同模型」这类重复标签。
+  ///
+  /// 文件里现在有多个 `var body`（SettingsRow、页头、行组），不能再取「第一个
+  /// body 的前 400 字」——那会切到 SettingsRow 而不是 SettingsCard。
   func testPrimaryControlCanSitOnTheTitleRow() throws {
     let shared = try source("SettingsCard")
     XCTAssertTrue(
       shared.contains("var titleAccessory: () -> TitleAccessory"),
       "卡片要能把主控件放到标题行")
-    guard let start = shared.range(of: "var body: some View") else {
-      return XCTFail("SettingsCard 的 body 不见了")
+    guard let start = shared.range(of: "struct SettingsCard<Control: View, TitleAccessory: View>: View") else {
+      return XCTFail("SettingsCard 的类型声明不见了")
     }
-    let body = String(shared[start.lowerBound...].prefix(400))
+    let card = String(shared[start.lowerBound...].prefix(6000))
     XCTAssertTrue(
-      body.contains("Text(title).font(.headline)") && body.contains("titleAccessory()"),
+      card.contains("Text(title).font(.headline)") && card.contains("titleAccessory()"),
       "标题和主控件要在同一行，中间靠 Spacer 撑开成右对齐一列")
     XCTAssertTrue(
-      body.contains("Spacer(minLength:"),
+      card.contains("Spacer(minLength:"),
       "靠 Spacer 右对齐，而不是给控件写死一个偏移量")
   }
 

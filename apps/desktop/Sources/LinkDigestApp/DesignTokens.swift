@@ -171,5 +171,9 @@ extension DesignTokens {
     static let detailMin: CGFloat = 420
     /// 阅读列宽上限。约 65 个汉字，超过这个宽度眼睛回行会丢行。
     static let readingMaxWidth: CGFloat = 680
+
+    /// 20 — 设置侧栏分类图标 chip 的边长。比页头同款 chip（`IconSize.empty`）小一档，
+    /// 侧栏一行只有一个行高的空间，放不下页头那种大方块。
+    static let settingsSidebarChip: CGFloat = 20
   }
 }

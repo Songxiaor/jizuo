@@ -242,6 +242,16 @@ public enum DouyinWebCapturePolicy {
       )
       .replacingOccurrences(of: "已认证", with: "")
       .trimmingCharacters(in: .whitespacesAndNewlines)
+    if value.range(
+      of: #"(?:粉丝|获赞)\s*[\d.,]+\s*[万千亿]?"#,
+      options: .regularExpression
+    ) != nil {
+      value = value.replacingOccurrences(
+        of: #"(?:已(?:关注)?|关注)\s*$"#,
+        with: "",
+        options: .regularExpression
+      ).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
     var previous = ""
     while !value.isEmpty, value != previous {
       previous = value

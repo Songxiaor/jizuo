@@ -1,12 +1,16 @@
 import XCTest
 
-/// 「站点登录」这页的分组必须如实反映「登录对这个站点起什么作用」。
+/// 「站点登录」这页每一行必须如实反映「登录对这个站点起什么作用」。
 ///
 /// 改这页之前它按「已支持 / 手动链接抓取 / 无需登录」分组，两处会误导：
 /// - B 站被归进「已支持」，让人以为必须登录。实际上不登录照样抓取和转写，登录只抬高
 ///   「重新获取播放」的清晰度上限。
 /// - 抖音和小红书并列在「手动链接抓取」下，让人以为登录完粘链接就能用。实际上抖音正文
 ///   由页面脚本渲染，服务端 HTML 里没有内容，即使登录也常常取不到，只能走扩展。
+///
+/// 三个站点后来又收进了同一张行组卡（一站一行），原来靠分组标题携带的「登录起
+/// 什么作用」改由每行自己的 caption 携带——信息没有丢，只是挪了地方，测试也要
+/// 跟着看行内 caption，而不是已经不存在的分组标题。
 ///
 /// 这类偏差不报错、不崩溃，只是让人按错误的预期操作，所以用测试钉住。
 final class SiteLoginPresentationTests: XCTestCase {
@@ -16,6 +20,17 @@ final class SiteLoginPresentationTests: XCTestCase {
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Sources/LinkDigestApp/SiteLoginSettingsView.swift"),
       encoding: .utf8)
+  }
+
+  private func occurrences(of needle: String, in text: String) -> Int {
+    guard !needle.isEmpty else { return 0 }
+    var count = 0
+    var index = text.startIndex
+    while let range = text.range(of: needle, range: index..<text.endIndex) {
+      count += 1
+      index = range.upperBound
+    }
+    return count
   }
 
   /// B 站不能再被描述成「必须登录」。
@@ -32,36 +47,37 @@ final class SiteLoginPresentationTests: XCTestCase {
       "B 站那组的标题应当说明登录是可选的")
   }
 
-  /// 抖音必须在行内带出限制，而不是只躺在 footer 里。
+  /// 抖音必须在自己那一行带出限制，而不是只躺在 footer 或另一份文档里。
   ///
-  /// 断言只钉两件不变的事：能力还在（`note:` 这条通路没被删），以及提示指向扩展。
+  /// 三站合并进一张行组卡之后，「限制说明」不再是单独的 `note:` 参数，而是
+  /// 抖音那一行自己的 caption——断言只钉两件不变的事：这一行确实有自己专属的
+  /// caption 标识，以及说明里点名了「建议用扩展」这条可执行的替代路径。
   /// 不钉整句原文——文案本来就还会再改，钉死会把每次润色都变成假失败。
   func testDouyinRowCarriesItsOwnLimitationNote() throws {
     let text = try source()
     XCTAssertTrue(
-      text.contains("site-login-\\(id)-note"),
-      "行内提示的能力被删了，抖音的限制就只能写在 footer 里，读者看不到")
+      text.contains("site-login-\\(id)-caption"),
+      "行内说明的能力被删了，抖音的限制就没地方带出来，读者看不到")
     XCTAssertTrue(
-      text.contains("note: \"抖音"),
-      "抖音行必须带限制说明——「已登录」会让人以为手动粘链接就能用")
-    XCTAssertTrue(
-      text.contains("note: \"抖音建议用扩展"),
+      text.contains("建议用扩展"),
       "必须给出可执行的替代路径，只说不行等于没说")
   }
 
-  /// 一个站点必须是一整张卡片，不能再被 Form 的分割线切成几段。
+  /// 三个站点必须收进同一张行组卡，一站一行，不能各占一张大卡或被拆回
+  /// Form 的分割线切成几段。
   ///
-  /// 原来每个站点占「状态行 / 说明行 / 按钮行」三个 Form 行，grouped Form 给每行
-  /// 画分隔线，于是同一个站点的三段信息看起来像三条不相干的记录——这是这页显得
-  /// 乱的主因。只要卡片重新被拆成 Section 下的多个兄弟 View，问题就会原样回来。
-  func testEachSiteRendersAsOneCardNotSeparateFormRows() throws {
+  /// 原来每个站点独占一张大卡，内容却稀薄（一行状态 + 一行按钮），三张卡叠起来
+  /// 全是空白。改成行组卡之后，三站共用同一个 `siteRow` 构件和同一张
+  /// `SettingsThemedCardChrome`——只要退回「各写一份」或「LabeledContent 逐行」，
+  /// 页面就会变回一堆稀疏的卡片或者被 Form 分割线切碎。
+  func testSitesShareOneRowGroupCardNotSeparateCards() throws {
     let text = try source()
     XCTAssertTrue(
-      text.contains("private var bilibiliCard: some View"),
-      "B 站必须是一张整卡")
-    XCTAssertTrue(
-      text.contains("private func captureSessionCard("),
-      "抓取型站点必须是一张整卡")
+      text.contains("private func siteRow("),
+      "三个站点必须收进同一个行构件，不能各写一份，否则文案和交互迟早各自漂移")
+    XCTAssertEqual(
+      occurrences(of: ".modifier(SettingsThemedCardChrome())", in: text), 1,
+      "三个站点必须收进同一张自绘卡，不能各自套一层卡面")
     XCTAssertFalse(
       text.contains("LabeledContent("),
       "LabeledContent 会各自成为一个 Form 行，正是被切开的那种写法")
@@ -74,7 +90,7 @@ final class SiteLoginPresentationTests: XCTestCase {
   /// 三遍，而用的人只需要知道「登不登录有什么区别」——分组标题已经答完了。
   ///
   /// 机制解释属于官方文档。这条测试钉住那个边界：说明既不许回到 footer，也不许以
-  /// 「了解更多」的形式重新长在卡片里。抖音那条例外走 `note:`，由另一条测试守。
+  /// 「了解更多」的形式重新长在卡片里。抖音那条例外走行内 caption，由另一条测试守。
   func testCardsCarryNoMechanismProse() throws {
     let text = try source()
     XCTAssertFalse(

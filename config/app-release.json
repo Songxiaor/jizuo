@@ -7,11 +7,11 @@
   ],
   "bundleIdentifier": "com.syc.linkdigest",
   "bundleIdentifierStatus": "engineering-candidate",
-  "bundleVersion": "5",
+  "bundleVersion": "16",
   "category": "public.app-category.productivity",
   "executable": "LinkDigestApp",
   "formatVersion": 1,
   "iconFile": "AppIcon.icns",
   "minimumMacOS": "15.0",
-  "shortVersion": "0.2.6"
+  "shortVersion": "0.2.7"
 }

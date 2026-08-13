@@ -366,6 +366,54 @@ final class ModelRunOrchestratorTests: XCTestCase {
     XCTAssertEqual(provider.keyPresence, [true, true])
   }
 
+  /// 翻译前剥掉正文开头的 `---` 元数据块。
+  ///
+  /// 那块 YAML（作者/发布/点赞）是阅读页顶部属性栏的数据源，不是待译内容。
+  /// 带上它的直接后果在短帖上最疼：模型把整块原样翻一遍再吐回来，输出 token
+  /// 几乎翻倍，翻译显著变慢，流式预览里还滚出一段原样 YAML。
+  /// 总结保留全文——作者和日期对摘要是有效上下文，且总结输出远短于输入。
+  func testTranslateStripsLeadingFrontmatterWhileSummarizeKeepsIt() async throws {
+    let provider = ScriptedModelProvider(scripts: [
+      .init(steps: [.event(.delta("摘要")), .event(.completed)]),
+      .init(steps: [.event(.delta("译文")), .event(.completed)])
+    ])
+    let orchestrator = makeOrchestrator(
+      provider: provider,
+      profile: try profile(),
+      secret: "not-a-real-key"
+    )
+    let recorder = RunStateRecorder()
+    let text = """
+    ---
+    author: "aiko (@aikonect_)"
+    published: "2026-08-12T11:09:50.000Z"
+    likes: "217"
+    replies: "14"
+    ---
+
+    Deja de pagar por Claude Code.
+    """
+    let currentCapture = capture(title: "Fixture title", text: text)
+
+    await start(orchestrator, intent: .summarize, capture: currentCapture, recorder: recorder)
+    await waitUntil { provider.callCount == 1 }
+    await waitUntil { await recorder.lastState == .completed(intent: .summarize, text: "摘要") }
+
+    await start(orchestrator, intent: .translate, capture: currentCapture, recorder: recorder)
+    await waitUntil { provider.callCount == 2 }
+    await waitUntil { await recorder.lastState == .completed(intent: .translate, text: "译文") }
+
+    XCTAssertEqual(provider.intents.count, 2)
+    guard case let .summarize(_, summarizeText, _) = provider.intents[0] else {
+      XCTFail("第一次运行应是总结意图"); return
+    }
+    XCTAssertTrue(summarizeText.contains("likes: \"217\""), "总结保留元数据块作为上下文")
+    guard case let .translate(_, translateText, _) = provider.intents[1] else {
+      XCTFail("第二次运行应是翻译意图"); return
+    }
+    XCTAssertEqual(translateText, "Deja de pagar por Claude Code.", "翻译只应收到正文，不含元数据块")
+  }
+
   func testDeltasAccumulateInOrderAndComplete() async throws {
     let provider = ScriptedModelProvider(scripts: [
       .init(steps: [

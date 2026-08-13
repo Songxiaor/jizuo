@@ -11,6 +11,7 @@ import SwiftUI
 struct HitLabView: View {
   @ObservedObject var model: HistoryViewModel
   let piece: PieceSummary
+  @Environment(\.appTheme) private var appTheme
 
   @State private var predicted: HitPrediction.Tier = .modest
   @State private var reasoning = ""
@@ -22,7 +23,7 @@ struct HitLabView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       Text("爆款实验室")
-        .font(.system(size: 10, weight: .semibold))
+        .font(.caption2.weight(.semibold))
         .foregroundStyle(.tertiary)
         .textCase(.uppercase)
         .tracking(0.6)
@@ -44,8 +45,8 @@ struct HitLabView: View {
     .padding(10)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
-        .fill(Color.orange.opacity(0.06))
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+        .fill(appTheme.warning.opacity(0.06))
     )
     .onAppear { model.reloadHitPredictions() }
   }
@@ -73,7 +74,7 @@ struct HitLabView: View {
             pieceID: piece.id, predicted: predicted, reasoning: reasoning
           )
         }
-        .font(.system(size: 11))
+        .font(.subheadline)
         .disabled(reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         .help("记下之后不能改——整个功能靠的就是这个")
         .accessibilityIdentifier("hit-lab-record")
@@ -91,13 +92,13 @@ struct HitLabView: View {
           Image(systemName: "arrow.right").font(.system(size: 9)).foregroundStyle(.tertiary)
           Text("实际：\(actual.displayName)")
             .font(.system(size: 11.5, weight: .medium))
-            .foregroundStyle(prediction.isAccurate ? Color.secondary : Color.orange)
+            .foregroundStyle(prediction.isAccurate ? Color.secondary : appTheme.warning)
         }
         Spacer(minLength: 0)
       }
       if !prediction.reasoning.isEmpty {
         Text(prediction.reasoning)
-          .font(.system(size: 11))
+          .font(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -106,14 +107,14 @@ struct HitLabView: View {
         if !prediction.review.isEmpty {
           Divider()
           Text(prediction.review)
-            .font(.system(size: 11))
+            .font(.subheadline)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
       } else {
         Divider()
         Text("发出去几天之后，回来填真实结果。")
-          .font(.system(size: 11))
+          .font(.subheadline)
           .foregroundStyle(.tertiary)
         tierPicker(selection: $actual)
         TextField("和你想的差在哪？", text: $review)
@@ -125,7 +126,7 @@ struct HitLabView: View {
           Button("填结果") {
             model.settleHitPrediction(id: prediction.id, actual: actual, review: review)
           }
-          .font(.system(size: 11))
+          .font(.subheadline)
           .accessibilityIdentifier("hit-lab-settle")
         }
       }

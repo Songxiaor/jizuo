@@ -170,10 +170,24 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       || ''
     ).replace(/(?:…|\.{3})?\s*展开$/u, '').trim();
 
-    const cleanAuthor = (value) => normalize(value)
-      .replace(/(?:官方|企业|个人|机构)?认证(?:徽章|信息|标识)?/gu, '')
-      .replace(/(?:粉丝|获赞|关注|作品|喜欢|朋友)\s*[\d.,]*\s*[万千亿]?\s*$/u, '')
-      .trim();
+    const cleanAuthor = (raw) => {
+      let value = normalize(raw)
+        .replace(/(?:官方|企业|个人|机构)?认证(?:徽章|信息|标识)?/gu, '')
+        .replace(/已认证/gu, '')
+        .trim();
+      const carriesProfileCounters = /(?:粉丝|获赞)\s*[\d.,]+\s*[万千亿]?/u.test(value);
+      if (carriesProfileCounters) {
+        value = value.replace(/(?:已(?:关注)?|关注)\s*$/u, '').trim();
+      }
+      let previous = '';
+      while (value && value !== previous) {
+        previous = value;
+        value = value
+          .replace(/(?:粉丝|获赞|关注|作品|喜欢|朋友)\s*[\d.,]*\s*[万千亿]?\s*$/u, '')
+          .trim();
+      }
+      return value;
+    };
     let author = '';
     for (const selector of [
       "[data-e2e='feed-video-nickname']",

@@ -2003,6 +2003,61 @@ extension HistoryViewModelTests {
     let tagNames = try repository.allTags().map(\.name)
     XCTAssertFalse(tagNames.contains("外观"))
   }
+
+  /// 校对保存是「worker 写库 + 详情就地补丁」：主线程不写 SQLite，也不再
+  /// 整条详情回读（自动保存每停笔一秒就可能触发，回读曾是打字卡顿的主要
+  /// 来源）。锁定三件事：真的落了库、连续两次保存不乱序、当前详情投影
+  /// （正文/字数/指纹）就地更新到位。
+  func testSaveEditedSnapshotTextPersistsInOrderAndPatchesDetailInPlace() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-save-edit-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+
+    let accepted = try repository.acceptCapture(.init(
+      document: CapturedDocument(
+        createdAt: "2026-07-20T00:00:00Z",
+        origin: .manualLink,
+        url: "https://example.test/save-edit",
+        title: "待校对",
+        platform: "web",
+        method: "rendered_dom",
+        text: "原始正文",
+        completeness: "complete",
+        capturedAt: "2026-07-20T00:00:00Z",
+        sourceLabel: "fixture"
+      ),
+      receivedAtMilliseconds: 1
+    ))
+
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+    guard let snapshot = model.detail?.snapshots.last else { return XCTFail("详情缺 snapshot") }
+
+    // 连续两次保存（自动保存的常态）：以后写的一版为准，不许乱序回退。
+    model.saveEditedSnapshotText(taskID: accepted.taskID, snapshotID: snapshot.id, bodyText: "第一版")
+    model.saveEditedSnapshotText(taskID: accepted.taskID, snapshotID: snapshot.id, bodyText: "第二版校对稿")
+
+    let service = HistoryApplicationService(repository: repository)
+    await waitUntilAsync {
+      (try? service.detail(taskID: accepted.taskID))?.snapshots.last?.bodyText == "第二版校对稿"
+    }
+    XCTAssertEqual(
+      try service.detail(taskID: accepted.taskID).snapshots.last?.bodyText,
+      "第二版校对稿"
+    )
+    XCTAssertNil(model.snapshotEditFailure)
+    // 详情投影就地补丁：不整条回读也能立即看到新正文与派生字段。
+    XCTAssertEqual(model.detail?.snapshots.last?.bodyText, "第二版校对稿")
+    XCTAssertEqual(model.detail?.snapshots.last?.characterCount, "第二版校对稿".unicodeScalars.count)
+    XCTAssertEqual(
+      model.detail?.snapshots.last?.bodySHA256,
+      SHA256CaptureFingerprinter().bodySHA256("第二版校对稿")
+    )
+  }
 }
 
 extension HistoryViewModelTests {

@@ -4,6 +4,7 @@ import SwiftUI
 /// 学习批注卡：摘录清单 + 我的笔记。位于标签编辑器上方——
 /// 用户思考的优先级高于分类整理。
 struct AnnotationSectionView: View {
+  @Environment(\.appTheme) private var appTheme
   let taskID: TaskID
   @ObservedObject var model: HistoryViewModel
 
@@ -29,9 +30,10 @@ struct AnnotationSectionView: View {
             }
             .buttonStyle(.plain)
             .help("删除这条摘录")
+            .accessibilityLabel("删除这条摘录")
           }
           .padding(10)
-          .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+          .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
           .accessibilityIdentifier("annotation-excerpt-row")
         }
       }
@@ -41,9 +43,9 @@ struct AnnotationSectionView: View {
         .frame(minHeight: 72, maxHeight: 180)
         .scrollContentBackground(.hidden)
         .padding(8)
-        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
         .overlay(
-          RoundedRectangle(cornerRadius: 8)
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.md)
             .strokeBorder(Color.secondary.opacity(0.15), lineWidth: 1)
         )
         .onChange(of: model.taskNoteDraft) { _, _ in
@@ -58,7 +60,7 @@ struct AnnotationSectionView: View {
       if let failure = model.annotationFailureMessage {
         HStack(spacing: 6) {
           Image(systemName: "exclamationmark.triangle.fill")
-            .foregroundStyle(.orange)
+            .foregroundStyle(appTheme.warning)
           Text(failure)
             .font(.caption2)
             .foregroundStyle(.secondary)

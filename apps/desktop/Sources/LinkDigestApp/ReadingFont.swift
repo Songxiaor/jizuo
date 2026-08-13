@@ -118,8 +118,9 @@ enum ReadingFontSize {
 ///
 /// 字号放进来而不是单独传：`readingFont` 已经贯穿三十多个调用点，正文和标题
 /// 必须同源缩放，拆成两个参数迟早会有一处忘记跟着变。
-struct ResolvedReadingFont: Equatable {
-  enum Face: Equatable {
+// Hashable：阅读渲染缓存（ReadingRenderCache）把字体作为缓存键的一部分。
+struct ResolvedReadingFont: Equatable, Hashable {
+  enum Face: Equatable, Hashable {
     case sans
     case serif
     case named(String)

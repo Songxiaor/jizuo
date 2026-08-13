@@ -27,6 +27,28 @@ final class YouTubeEmbedPlayerTests: XCTestCase {
     XCTAssertTrue(source.contains("url.path.hasPrefix(\"/embed/\")"))
     XCTAssertTrue(source.contains("decisionHandler(.cancel)"))
     XCTAssertTrue(source.contains("createWebViewWith"))
-    XCTAssertTrue(source.contains("mediaTypesRequiringUserActionForPlayback = .all"))
+  }
+
+  /// 封面优先（lite-embed）：卡片先显示封面，点击才创建 WKWebView。
+  ///
+  /// 播放器创建必须在用户手势之后——这道门由 isPlayerRequested 把守；
+  /// 换来的是 autoplay=1 兑现那次点击（否则用户要点两次播放）。
+  /// 封面只取公开缩略图（i.ytimg.com），不带身份信息。
+  func testCardShowsPosterFirstAndOnlyCreatesPlayerAfterUserGesture() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/YouTubeEmbedPlayer.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(source.contains("isPlayerRequested"))
+    XCTAssertTrue(source.contains("YouTubeEmbedPosterView"))
+    XCTAssertTrue(source.contains("i.ytimg.com/vi/"))
+    XCTAssertTrue(source.contains("autoplay=1"))
+    XCTAssertTrue(source.contains("mediaTypesRequiringUserActionForPlayback = []"))
+    // 封面点击是创建播放器的唯一卡内入口；影院入口同样是显式按钮手势。
+    XCTAssertTrue(source.contains("YouTubeEmbedPosterView(videoID: videoID) { isPlayerRequested = true }"))
   }
 }

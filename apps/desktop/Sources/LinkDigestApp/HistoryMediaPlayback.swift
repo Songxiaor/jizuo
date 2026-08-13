@@ -6,6 +6,7 @@
 
 import AppKit
 import AVKit
+import Combine
 import CryptoKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -115,13 +116,23 @@ enum CurrentCaptureMediaPreview {
     }
   }
 
+  /// 每次界面重求值都会解析一遍过期时间，formatter 不能每次新建。
+  /// `ISO8601DateFormatter` 在当前 SDK 未标 Sendable，但配置在构造闭包里
+  /// 一次完成、之后只读；照 OpenAICompatibleProvider 的先例显式标注。
+  private nonisolated(unsafe) static let expiryFractionalFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
+  private nonisolated(unsafe) static let expiryWholeSecondsFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter
+  }()
+
   private static func parseExpiry(_ raw: String) -> Date? {
-    let fractional = ISO8601DateFormatter()
-    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    if let value = fractional.date(from: raw) { return value }
-    let wholeSeconds = ISO8601DateFormatter()
-    wholeSeconds.formatOptions = [.withInternetDateTime]
-    return wholeSeconds.date(from: raw)
+    if let value = expiryFractionalFormatter.date(from: raw) { return value }
+    return expiryWholeSecondsFormatter.date(from: raw)
   }
 
   private static func failurePresentation(for descriptor: MediaDescriptor) -> RemoteMediaDegradationPresentation {
@@ -661,6 +672,39 @@ final class RemotePreviewPlayerController: ObservableObject {
     }
   }
 
+  /// 状态监视的两种收场：条目失败（走回退/失败呈现），或需要重新锚定
+  /// （播放器被替换、准备阶段变化、观察流结束）。
+  enum PlaybackMonitorOutcome {
+    case failed
+    case reanchor
+  }
+
+  /// 挂起观察一个 currentItem，直到「失败」或「需要重新锚定」。
+  ///
+  /// 取代原先的定时轮询：那个循环在 ready 之后也每 300ms 醒一次主线程，
+  /// 只要播放卡片开着就永不退出。这里改成事件驱动——status 的 KVO 流
+  /// （含订阅时的当前值，因此检查与订阅之间没有竞态窗口）加上播放器
+  /// 替换、准备阶段变化两路合并；readyToPlay 稳态下零唤醒。
+  /// 中途失败仍会因 status → .failed 被叫醒，回退语义与轮询版一致。
+  func observePlaybackOutcome(of item: AVPlayerItem) async -> PlaybackMonitorOutcome {
+    enum Event {
+      case status(AVPlayerItem.Status)
+      case reanchor
+    }
+    let statusEvents = item.publisher(for: \.status).map(Event.status)
+    let playerEvents = $player.dropFirst().map { _ in Event.reanchor }
+    let phaseEvents = $preparePhase.dropFirst().map { _ in Event.reanchor }
+    for await event in Publishers.Merge3(statusEvents, playerEvents, phaseEvents).values {
+      switch event {
+      case .status(.failed): return .failed
+      case .status: continue
+      case .reanchor: return .reanchor
+      }
+    }
+    // 流结束（item 释放或任务取消）：交回外层循环重新判断。
+    return .reanchor
+  }
+
   /// 拼一行可见的失败细节。只用非敏感字段：轨道形态、主机名、错误域与码。
   /// 明确不含签名 URL 的 query（里面有 deadline / 鉴权串）和 Cookie。
   static func diagnosticLine(
@@ -852,6 +896,8 @@ struct CurrentCaptureMediaPreviewCard: View {
   let snapshotID: ContentSnapshotID
   @ObservedObject var model: HistoryViewModel
   let onlineTranscriptionModel: String?
+  let tidyModel: String?
+  let autoTidyEnabled: Bool
   /// 与列表预热共享；卡片不 release，由 HistoryContentView 在离开可播上下文时释放。
   @ObservedObject var playback: RemotePreviewPlayerController
   /// 会话流失败时：清缓存并重新拉取可播档（避开 DV 等不可播编码）。
@@ -907,9 +953,6 @@ struct CurrentCaptureMediaPreviewCard: View {
             .accessibilityIdentifier("history-video-preview-resolution")
         }
         Spacer(minLength: 0)
-        if let author = descriptor.author?.trimmedNonEmpty {
-          Text(author).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-        }
       }
 
       switch previewState {
@@ -930,15 +973,25 @@ struct CurrentCaptureMediaPreviewCard: View {
       }
     }
     .padding(14)
-    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
         .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
     )
     .onAppear { synchronizePlayback() }
     .onChange(of: descriptor) { _, _ in
       cancelGeometryAndStatusMonitors()
       synchronizePlayback()
+    }
+    .onChange(of: model.transcriptionState) { oldState, newState in
+      // 本机与在线转写共用同一完成态；用户开启自动校对后，两条路线都应在
+      // 当前远程视频上继续执行文本模型处理，而不是只有“已保存到本机”的卡片能触发。
+      // 必须确实从本次转写过程进入完成态；打开一条已有转写的历史记录也会恢复为
+      // `.completed`，不能因此重复调用模型、重复计费。
+      guard autoTidyEnabled, oldState.isActive, newState == .completed,
+            model.transcriptionTaskID == taskID,
+            model.canTidyTranscript(taskID: taskID) else { return }
+      model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)
     }
     .onDisappear {
       // 不 release 共享 controller：列表预热与快速切回同一抓取需要保留。
@@ -949,6 +1002,63 @@ struct CurrentCaptureMediaPreviewCard: View {
 
   @ViewBuilder
   private func playableContent(url: URL, kind: MediaKind, companionAudioURL: URL?) -> some View {
+    // 核心操作放在视频上方。竖屏视频很高；放在播放器下方时，转写与校对会被
+    // 推出首屏，功能已经存在却看起来像不存在。
+    HStack(spacing: 10) {
+      if kind == .directFile {
+        Button {
+          Task {
+            await model.favoriteCurrentCaptureMedia(
+              descriptor,
+              taskID: taskID,
+              snapshotID: snapshotID
+            )
+          }
+        } label: {
+          Label("保存到本地", systemImage: "arrow.down.to.line")
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .disabled(!model.canFavoriteCurrentCaptureMedia)
+        .accessibilityIdentifier("history-video-preview-favorite")
+      } else {
+        Text("暂不支持保存 HLS")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("history-video-preview-favorite")
+      }
+      favoriteStatus
+      Spacer(minLength: 0)
+      if kind == .directFile {
+        remoteTranscriptionControl
+      } else {
+        Text("当前 Debug 暂不支持 HLS 转写")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("remote-transcribe")
+      }
+      remoteTranscriptTidyControl
+      qualityMenu
+      if let player = playback.player, !isInCinema {
+        Button {
+          cinema.present(
+            player: player,
+            aspectRatio: videoDisplaySize
+              .map { VideoDisplayGeometry.aspectRatio(displaySize: $0) } ?? (16.0 / 9.0)
+          )
+        } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
+          .buttonStyle(.link)
+          .font(.caption)
+          .accessibilityIdentifier("history-video-preview-cinema")
+      }
+      Button("在浏览器中打开", action: openInBrowser)
+        .buttonStyle(.link)
+        .controlSize(.small)
+    }
+
+    remoteTranscriptionStatus
+    remoteTranscriptTidyStatus
+
     switch playback.preparePhase {
     case let .failed(failure):
       VStack(alignment: .leading, spacing: 8) {
@@ -957,7 +1067,7 @@ struct CurrentCaptureMediaPreviewCard: View {
           systemImage: failure == .networkUnavailable ? "wifi.slash" : "exclamationmark.triangle.fill"
         )
           .font(.caption)
-          .foregroundStyle(.orange)
+          .foregroundStyle(appTheme.warning)
           .fixedSize(horizontal: false, vertical: true)
         // 失败时把走的哪条路、哪个主机、什么错误码摆出来。没有这一行，
         // 排查只能靠猜——之前就是这么反复改了七轮还没定位到根因。
@@ -1017,67 +1127,11 @@ struct CurrentCaptureMediaPreviewCard: View {
         )
         .background(Color.black)
         .background(VideoScrollWheelAnchor().allowsHitTesting(false))
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("history-video-remote-player")
     }
 
-    // Action bar: playback is streaming by default. Download is a separate,
-    // optional action. This separation makes "watch without saving" obvious.
-    HStack(spacing: 10) {
-      if kind == .directFile {
-        Button {
-          Task {
-            await model.favoriteCurrentCaptureMedia(
-              descriptor,
-              taskID: taskID,
-              snapshotID: snapshotID
-            )
-          }
-        } label: {
-          Label("保存到本地", systemImage: "arrow.down.to.line")
-        }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .disabled(!model.canFavoriteCurrentCaptureMedia)
-        .accessibilityIdentifier("history-video-preview-favorite")
-      } else {
-        Text("暂不支持保存 HLS")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .accessibilityIdentifier("history-video-preview-favorite")
-      }
-      favoriteStatus
-      Spacer(minLength: 0)
-      if kind == .directFile {
-        remoteTranscriptionControl
-      } else {
-        Text("当前 Debug 暂不支持 HLS 转写")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .accessibilityIdentifier("remote-transcribe")
-      }
-      qualityMenu
-      // 「放大」是所有视频卡的固定能力，这张卡之前漏了。
-      if let player = playback.player, !isInCinema {
-        Button {
-          cinema.present(
-            player: player,
-            // 尺寸还没读到时用 16:9 兜底，别因为这个挡住放大。
-            aspectRatio: videoDisplaySize
-              .map { VideoDisplayGeometry.aspectRatio(displaySize: $0) } ?? (16.0 / 9.0)
-          )
-        } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
-          .buttonStyle(.link)
-          .font(.caption)
-          .accessibilityIdentifier("history-video-preview-cinema")
-      }
-      Button("在浏览器中打开", action: openInBrowser)
-        .buttonStyle(.link)
-        .controlSize(.small)
-    }
-
-    remoteTranscriptionStatus
   }
 
   /// 清晰度切换。默认走「最快起播」，想细看再手动升档——
@@ -1155,66 +1209,118 @@ struct CurrentCaptureMediaPreviewCard: View {
     }
   }
 
-  @ViewBuilder private var remoteTranscriptionStatus: some View {
-    VStack(alignment: .leading, spacing: 7) {
-      switch model.transcriptionState(for: taskID) {
-      case .idle:
-        EmptyView()
-      case .preparingMedia:
-        HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备临时媒体…") }
-      case .checkingModel:
-        HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在检查中文离线模型…") }
-      case .awaitingModelDownload:
-        Text("等待确认 Apple 中文离线模型下载")
-      case .preparingModel:
-        HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备中文离线模型…") }
-      case .extractingAudio:
-        HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在提取音频…") }
-      case .transcribing:
-        HStack(spacing: 7) {
-          ProgressView().controlSize(.small)
-          Text(
-            model.transcriptionUsesOnlineService
-              ? (model.onlineTranscriptionPhase ?? "正在在线转写…")
-              : "正在本机转写，音频不会上传…"
-          )
-        }
-      case .completed:
-        Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").foregroundStyle(.green)
-      case .cancelled:
-        Text(LocalVideoTranscriptionError.cancelled.userMessage).foregroundStyle(.secondary)
-      case let .failed(message):
-        Text(message).foregroundStyle(appTheme.danger)
-      }
-      // 流式通道边转写边出字：先看到文字，等待感就和总耗时脱钩了。
-      if let preview = model.onlineTranscriptionPreview, !preview.isEmpty {
-        ScrollView {
-          Text(preview)
-            .font(.callout)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .frame(maxHeight: 120)
-        .accessibilityIdentifier("remote-transcribe-preview")
-      }
-      if let timings = model.onlineTranscriptionTimings {
-        Text(timings)
-          .foregroundStyle(.secondary)
-          .accessibilityIdentifier("remote-transcribe-timings")
-      }
-      if let cleanupFailure = model.transcriptionCleanupFailure {
-        VStack(alignment: .leading, spacing: 6) {
-          Text(cleanupFailure).foregroundStyle(appTheme.danger)
-          Button("重试清理", action: model.retryTranscriptionCleanup)
-            .controlSize(.small)
-            .accessibilityIdentifier("remote-transcribe-cleanup-retry")
-        }
-        .accessibilityIdentifier("remote-transcribe-cleanup-failure")
-      }
+  @ViewBuilder private var remoteTranscriptTidyControl: some View {
+    let blockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
+    Button("模型校对") {
+      model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
     }
-    .font(.caption)
-    .fixedSize(horizontal: false, vertical: true)
-    .accessibilityIdentifier("remote-transcribe-state")
+    .controlSize(.small)
+    .disabled(blockedReason != nil)
+    .help(
+      blockedReason
+        ?? "只把转写文字发送给聊天模型，修正标点、分段和明显错别字；不发送视频或音频，原始转写保留。"
+    )
+    .accessibilityIdentifier("remote-transcript-tidy")
+  }
+
+  @ViewBuilder private var remoteTranscriptionStatus: some View {
+    let state = model.transcriptionState(for: taskID)
+    let preview = model.onlineTranscriptionPreview
+    let timings = model.onlineTranscriptionTimings
+    let cleanupFailure = model.transcriptionCleanupFailure
+    // 空闲且没有补充信息时不要创建一个空 VStack。它虽然高度为 0，仍会让外层
+    // VStack 在操作栏、空状态和播放器之间各加一次 spacing，视觉上就变成大空洞。
+    if state != .idle || preview?.isEmpty == false || timings != nil || cleanupFailure != nil {
+      VStack(alignment: .leading, spacing: 7) {
+        switch state {
+        case .idle:
+          EmptyView()
+        case .preparingMedia:
+          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备临时媒体…") }
+        case .checkingModel:
+          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在检查中文离线模型…") }
+        case .awaitingModelDownload:
+          Text("等待确认 Apple 中文离线模型下载")
+        case .preparingModel:
+          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备中文离线模型…") }
+        case .extractingAudio:
+          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在提取音频…") }
+        case .transcribing:
+          HStack(spacing: 7) {
+            ProgressView().controlSize(.small)
+            Text(
+              model.transcriptionUsesOnlineService
+                ? (model.onlineTranscriptionPhase ?? "正在在线转写…")
+                : "正在本机转写，音频不会上传…"
+            )
+          }
+        case .completed:
+          Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").foregroundStyle(appTheme.success)
+        case .cancelled:
+          Text(LocalVideoTranscriptionError.cancelled.userMessage).foregroundStyle(.secondary)
+        case let .failed(message):
+          Text(message).foregroundStyle(appTheme.danger)
+        }
+        // 流式通道边转写边出字：先看到文字，等待感就和总耗时脱钩了。
+        if let preview, !preview.isEmpty {
+          ScrollView {
+            Text(preview)
+              .font(.callout)
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+          .frame(maxHeight: 120)
+          .accessibilityIdentifier("remote-transcribe-preview")
+        }
+        if let timings {
+          Text(timings)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("remote-transcribe-timings")
+        }
+        if let cleanupFailure {
+          VStack(alignment: .leading, spacing: 6) {
+            Text(cleanupFailure).foregroundStyle(appTheme.danger)
+            Button("重试清理", action: model.retryTranscriptionCleanup)
+              .controlSize(.small)
+              .accessibilityIdentifier("remote-transcribe-cleanup-retry")
+          }
+          .accessibilityIdentifier("remote-transcribe-cleanup-failure")
+        }
+      }
+      .font(.caption)
+      .fixedSize(horizontal: false, vertical: true)
+      .accessibilityIdentifier("remote-transcribe-state")
+    }
+  }
+
+  @ViewBuilder private var remoteTranscriptTidyStatus: some View {
+    let state = model.transcriptTidyState(for: taskID)
+    let blockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
+    if state != .idle || blockedReason != nil {
+      VStack(alignment: .leading, spacing: 6) {
+        switch state {
+        case .idle:
+          if let blockedReason {
+            Text(blockedReason)
+              .foregroundStyle(.secondary)
+              .accessibilityIdentifier("remote-transcript-tidy-blocked-reason")
+          }
+        case .running:
+          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在用模型校对转写稿…") }
+        case .completed:
+          let tokens = model.transcriptTidyTokenSummary(for: taskID)
+          Label(tokens.map { "校对稿已保存 · \($0)" } ?? "校对稿已保存为最新原文", systemImage: "checkmark.circle.fill")
+            .foregroundStyle(appTheme.success)
+        case .cancelled:
+          Text(TranscriptTidyError.cancelled.userMessage).foregroundStyle(.secondary)
+        case let .failed(message):
+          Text(message).foregroundStyle(appTheme.danger)
+        }
+      }
+      .font(.caption)
+      .fixedSize(horizontal: false, vertical: true)
+      .accessibilityIdentifier("remote-transcript-tidy-state")
+    }
   }
 
   @ViewBuilder private var favoriteStatus: some View {
@@ -1229,7 +1335,7 @@ struct CurrentCaptureMediaPreviewCard: View {
     case .saved:
       Label("已保存到本地", systemImage: "checkmark.circle.fill")
         .font(.caption.weight(.medium))
-        .foregroundStyle(.green)
+        .foregroundStyle(appTheme.success)
         .accessibilityIdentifier("history-video-preview-favorite-status")
     case let .failed(message):
       Text(message)
@@ -1255,7 +1361,7 @@ struct CurrentCaptureMediaPreviewCard: View {
 
   private func preparingPlaceholder(url: URL, companionAudioURL: URL?) -> some View {
     ZStack {
-      RoundedRectangle(cornerRadius: 12, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
         .fill(Color.black.opacity(0.9))
       VStack(spacing: 10) {
         ProgressView("正在连接视频流…")
@@ -1341,7 +1447,8 @@ struct CurrentCaptureMediaPreviewCard: View {
 
   private func monitorPlayerStatus() {
     playerStatusTask?.cancel()
-    // 双轨异步 prepare 时 currentItem 可能尚未就绪，轮询等待后再观察 status。
+    // 双轨异步 prepare 时 currentItem 可能尚未就绪，短轮询只存在于 prepare
+    // 窗口（有 12–45 秒超时兜底）；item 就位后转为事件驱动挂起，ready 稳态零唤醒。
     playerStatusTask = Task { @MainActor in
       while !Task.isCancelled {
         if case .failed = playback.preparePhase { return }
@@ -1349,15 +1456,17 @@ struct CurrentCaptureMediaPreviewCard: View {
           try? await Task.sleep(for: .milliseconds(50))
           continue
         }
-        if item.status == .failed {
+        switch await playback.observePlaybackOutcome(of: item) {
+        case .failed:
           // MIME / 合成路径失败时退回旧的单 URL 路径；仍失败再暴露给 UI。
           if playback.fallbackToLegacyIfNeeded() {
             continue
           }
           playback.markPlaybackFailed(error: item.error)
           return
+        case .reanchor:
+          continue
         }
-        try? await Task.sleep(for: .milliseconds(300))
       }
     }
   }
@@ -1380,6 +1489,7 @@ struct CurrentCaptureMediaPreviewCard: View {
 /// 历史条目有视频事实，但临时播放地址不在内存时：说明设计边界，并提供恢复动作。
 /// 拆出本文件后不再是 file-private —— 使用方 HistoryContentView 已不同文件。
 struct HistorySessionMediaUnavailableCard: View {
+  @Environment(\.appTheme) private var appTheme
   let sourceURL: String
   let phase: SessionMediaPlaybackController.RefreshPhase
   /// 已发起的刷新次数；大于 1 表示在被反复重启，而不是单次请求慢。
@@ -1408,7 +1518,7 @@ struct HistorySessionMediaUnavailableCard: View {
       case let .failed(message):
         Text(message)
           .font(.caption)
-          .foregroundStyle(.orange)
+          .foregroundStyle(appTheme.warning)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("history-video-session-refresh-failed")
         HStack(spacing: 10) {
@@ -1436,9 +1546,9 @@ struct HistorySessionMediaUnavailableCard: View {
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(14)
-    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
         .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
     )
     .accessibilityIdentifier("history-video-session-unavailable")
@@ -1595,12 +1705,6 @@ struct HistoryVideoPlayerCard: View {
       // All facts and actions precede playback so the player never pushes its
       // ownership/status controls below a tall portrait video.
       HStack(spacing: 12) {
-        if let author = media?.author, !author.isEmpty {
-          Label(author, systemImage: "person.crop.circle")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-        }
         if let durationSeconds = media?.durationSeconds, durationSeconds > 0 {
           Label(Self.formatDuration(durationSeconds), systemImage: "clock")
             .font(.caption.monospacedDigit())
@@ -1616,7 +1720,7 @@ struct HistoryVideoPlayerCard: View {
         if let saveFeedback {
           Label(saveFeedback, systemImage: "checkmark.circle.fill")
             .font(.caption.weight(.medium))
-            .foregroundStyle(.green)
+            .foregroundStyle(appTheme.success)
             .accessibilityIdentifier("history-video-save-feedback")
         }
       }
@@ -1631,7 +1735,7 @@ struct HistoryVideoPlayerCard: View {
         if model.isReadOnly {
           Text("只读模式不能保存转写结果；恢复可写存储后可重试。")
             .font(.caption)
-            .foregroundStyle(.orange)
+            .foregroundStyle(appTheme.warning)
             .accessibilityIdentifier("history-video-transcription-read-only")
         } else {
           transcriptionStatus
@@ -1639,9 +1743,10 @@ struct HistoryVideoPlayerCard: View {
         }
         Spacer(minLength: 0)
       }
-      .onChange(of: model.transcriptionState) { _, newState in
-        // 设置勾选即持久授权：自动整理不再逐次弹发送确认。
-        guard autoTidyEnabled, newState == .completed,
+      .onChange(of: model.transcriptionState) { oldState, newState in
+        // 设置勾选即持久授权：自动校对不再逐次弹发送确认。只有本次转写从运行态
+        // 进入完成态才触发；历史状态恢复成 `.completed` 时不能重复调用模型。
+        guard autoTidyEnabled, oldState.isActive, newState == .completed,
               model.transcriptionTaskID == taskID,
               model.canTidyTranscript(taskID: taskID) else { return }
         model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)
@@ -1739,7 +1844,7 @@ struct HistoryVideoPlayerCard: View {
       if isInCinema {
         // 影院放大期间，卡内显示占位；播放器只存在于 overlay。
         // 空格监视器保留在占位上，影院里空格依旧切换同一个播放器。
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
           .fill(Color.black.opacity(0.85))
           .aspectRatio(VideoDisplayGeometry.aspectRatio(displaySize: videoDisplaySize), contentMode: .fit)
           .frame(
@@ -1767,9 +1872,9 @@ struct HistoryVideoPlayerCard: View {
           .background(Color.black)
           .background(VideoScrollWheelAnchor().allowsHitTesting(false))
           .background(PlayerSpaceKeyToggle(player: player).allowsHitTesting(false))
-          .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+          .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
           .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
               .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
           )
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -1777,7 +1882,7 @@ struct HistoryVideoPlayerCard: View {
       }
     } else if surfaceGeometry == .loading {
       ZStack {
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
           .fill(Color.black.opacity(0.9))
         ProgressView("正在读取视频尺寸…")
           .tint(.white)
@@ -1801,9 +1906,9 @@ struct HistoryVideoPlayerCard: View {
           .frame(height: 64)
           .background(Color.black)
           .background(PlayerSpaceKeyToggle(player: player).allowsHitTesting(false))
-          .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+          .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
           .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
               .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
           )
       }
@@ -1847,7 +1952,7 @@ struct HistoryVideoPlayerCard: View {
       .accessibilityIdentifier("history-video-transcription-online")
       // 转写后整理：只发送文字给聊天模型修标点/分段/错别字，不发送媒体。
       let tidyBlockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
-      Button("整理文稿") {
+      Button("模型校对") {
         model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
       }
       .controlSize(.small)
@@ -1874,14 +1979,14 @@ struct HistoryVideoPlayerCard: View {
   @ViewBuilder private var transcriptTidyStatus: some View {
     switch model.transcriptTidyState(for: taskID) {
     case .idle: EmptyView()
-    case .running: ProgressView().controlSize(.small); Text("正在整理文稿…").font(.caption)
+    case .running: ProgressView().controlSize(.small); Text("正在用模型校对转写稿…").font(.caption)
     case .completed:
       let tokens = model.transcriptTidyTokenSummary(for: taskID)
       Label(
-        tokens.map { "整理稿已保存 · \($0)" } ?? "整理稿已保存为最新原文",
+        tokens.map { "校对稿已保存 · \($0)" } ?? "校对稿已保存为最新原文",
         systemImage: "checkmark.circle.fill"
       )
-      .font(.caption).foregroundStyle(.green)
+      .font(.caption).foregroundStyle(appTheme.success)
     case .cancelled: Text(TranscriptTidyError.cancelled.userMessage).font(.caption).foregroundStyle(.secondary)
     case let .failed(message): Text(message).font(.caption).foregroundStyle(appTheme.danger).lineLimit(3)
     }
@@ -1899,7 +2004,7 @@ struct HistoryVideoPlayerCard: View {
     case .preparingModel: ProgressView().controlSize(.small); Text("正在准备中文离线模型…").font(.caption)
     case .extractingAudio: ProgressView().controlSize(.small); Text("正在从本机视频提取音频…").font(.caption)
     case .transcribing: ProgressView().controlSize(.small); Text("正在本机转写，音频不会上传…").font(.caption)
-    case .completed: Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+    case .completed: Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(appTheme.success)
     case .cancelled: Text(LocalVideoTranscriptionError.cancelled.userMessage).font(.caption).foregroundStyle(.secondary)
     case let .failed(message): Text(message).font(.caption).foregroundStyle(appTheme.danger).lineLimit(3)
     }
@@ -1954,6 +2059,7 @@ struct HistoryVideoPlayerCard: View {
 /// without requiring a local download. If the URL has expired or playback
 /// fails, the user can reopen the source page in the browser.
 private struct HistoryStreamingMediaCard: View {
+  @Environment(\.appTheme) private var appTheme
   let media: CaptureMedia
   let sourceURL: String
   @ObservedObject var model: HistoryViewModel
@@ -2010,7 +2116,7 @@ private struct HistoryStreamingMediaCard: View {
         VStack(alignment: .leading, spacing: 8) {
           Label("远程播放失败。地址可能已失效。", systemImage: "exclamationmark.triangle.fill")
             .font(.callout)
-            .foregroundStyle(.orange)
+            .foregroundStyle(appTheme.warning)
           Text("临时播放地址不会写入历史；APP 重启或地址过期后，请回到浏览器重新同步。")
             .font(.caption)
             .foregroundStyle(.secondary)
@@ -2023,7 +2129,7 @@ private struct HistoryStreamingMediaCard: View {
       } else if videoURL != nil {
         if isInCinema {
           // 影院放大期间，卡内显示占位；播放器只存在于 overlay。
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
             .fill(Color.black.opacity(0.85))
             .aspectRatio(streamingAspectRatio, contentMode: .fit)
             .frame(
@@ -2049,7 +2155,7 @@ private struct HistoryStreamingMediaCard: View {
             .background(Color.black)
             .background(VideoScrollWheelAnchor().allowsHitTesting(false))
             .background(PlayerSpaceKeyToggle(player: playback.player).allowsHitTesting(false))
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("history-video-streaming-player")
         }
@@ -2073,9 +2179,9 @@ private struct HistoryStreamingMediaCard: View {
       }
     }
     .padding(14)
-    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
         .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
     )
     .onAppear {
@@ -2124,20 +2230,24 @@ private struct HistoryStreamingMediaCard: View {
 
   private func monitorPlayerStatus() {
     playerStatusTask?.cancel()
+    // 与详情卡同一策略：prepare 窗口短轮询，item 就位后事件驱动挂起，
+    // 不再在 ready 稳态下每 300ms 唤醒主线程。
     playerStatusTask = Task { @MainActor in
       while !Task.isCancelled {
         guard let item = playback.player?.currentItem else {
           try? await Task.sleep(nanoseconds: 50_000_000)
           continue
         }
-        if item.status == .failed {
+        switch await playback.observePlaybackOutcome(of: item) {
+        case .failed:
           if playback.fallbackToLegacyIfNeeded() {
             continue
           }
           playbackFailed = true
           return
+        case .reanchor:
+          continue
         }
-        try? await Task.sleep(nanoseconds: 300_000_000)
       }
     }
   }

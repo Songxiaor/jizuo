@@ -78,12 +78,12 @@ public enum TranscriptTidyError: Error, Sendable, Equatable {
 
   public var userMessage: String {
     switch self {
-    case .modelNotConfigured: "请先在设置中保存模型服务后再整理文稿。"
+    case .modelNotConfigured: "请先在设置中保存文本模型后再校对转写稿。"
     case .emptyTranscript: "没有可整理的转写文字。"
-    case .authInvalid: "整理文稿的 API Key 无效或没有权限。"
-    case .responseRejected: "模型服务拒绝了整理请求，请检查模型名和账户额度。"
-    case .networkInterrupted: "整理文稿连接中断，请稍后重试。原始转写稿未受影响。"
-    case .cancelled: "已取消整理文稿。"
+    case .authInvalid: "模型校对使用的 API Key 无效或没有权限。"
+    case .responseRejected: "模型服务拒绝了校对请求，请检查模型名和账户额度。"
+    case .networkInterrupted: "模型校对连接中断，请稍后重试。原始转写稿未受影响。"
+    case .cancelled: "已取消模型校对。"
     }
   }
 }

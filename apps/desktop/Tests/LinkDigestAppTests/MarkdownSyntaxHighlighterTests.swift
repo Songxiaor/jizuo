@@ -6,6 +6,10 @@ import XCTest
 ///
 /// 裸 TextEditor 把标题、代码、引用画成同一片灰字，写超过几行就看不出结构。
 /// 这些断言钉的是「结构可见」这个目标，不是具体颜色值。
+///
+/// @MainActor：着色器为了预编译正则钉在主线程（规则闭包非 Sendable），
+/// 测试跟着上主线程即可。
+@MainActor
 final class MarkdownSyntaxHighlighterTests: XCTestCase {
   private let base = NSFont.systemFont(ofSize: 16)
   private let palette = MarkdownSyntaxHighlighter.Palette(

@@ -45,12 +45,12 @@ struct PieceDeskView: View {
     VStack(alignment: .leading, spacing: 12) {
       VStack(alignment: .leading, spacing: 4) {
         Text("灵感")
-          .font(.system(size: 10, weight: .semibold))
+          .font(.caption2.weight(.semibold))
           .foregroundStyle(.tertiary)
           .textCase(.uppercase)
           .tracking(0.6)
         Text(piece.spark)
-          .font(.system(size: 15, weight: .medium))
+          .font(.title3.weight(.medium))
           .fixedSize(horizontal: false, vertical: true)
           .textSelection(.enabled)
       }
@@ -77,12 +77,12 @@ struct PieceDeskView: View {
   @ViewBuilder private var finishControl: some View {
     if piece.isFinished {
       Button("重新打开") { model.setStage(nil, for: piece.id) }
-        .font(.system(size: 11))
+        .font(.subheadline)
     } else {
       // 一个字都没写就能标记完成,产出的是一份内容为占位符的「作品」。
       // 置灰而不是藏起来:藏起来会让人以为这个功能不存在。
       Button("标记已发出") { model.finishPiece(id: piece.id) }
-        .font(.system(size: 11))
+        .font(.subheadline)
         .disabled(piece.bodyLength == 0)
         .help(piece.bodyLength == 0 ? "还没写正文" : "把这篇收进「我的作品」")
         .accessibilityIdentifier("piece-mark-done")
@@ -98,16 +98,16 @@ struct PieceDeskView: View {
   private var emptyMaterialsRow: some View {
     HStack(spacing: 7) {
       Text("素材")
-        .font(.system(size: 10, weight: .semibold))
+        .font(.caption2.weight(.semibold))
         .foregroundStyle(.tertiary)
         .textCase(.uppercase)
         .tracking(0.6)
       Text("0")
-        .font(.system(size: 10))
+        .font(.caption2)
         .foregroundStyle(.tertiary)
         .monospacedDigit()
       Text("·")
-        .font(.system(size: 10))
+        .font(.caption2)
         .foregroundStyle(.quaternary)
       Text("在任意列表里右键条目，选「加入工作台」。")
         .font(.caption)
@@ -125,13 +125,13 @@ struct PieceDeskView: View {
     VStack(alignment: .leading, spacing: 8) {
       HStack {
         Text("素材")
-          .font(.system(size: 10, weight: .semibold))
+          .font(.caption2.weight(.semibold))
           .foregroundStyle(.tertiary)
           .textCase(.uppercase)
           .tracking(0.6)
         Spacer()
         Text("\(piece.materialCount)")
-          .font(.system(size: 10))
+          .font(.caption2)
           .foregroundStyle(.tertiary)
           .monospacedDigit()
       }
@@ -162,7 +162,7 @@ struct PieceDeskView: View {
           .foregroundStyle(.tertiary)
           .padding(.top, 2)
         Text(material.title)
-          .font(.system(size: 12))
+          .font(.callout)
           .lineLimit(2)
           .multilineTextAlignment(.leading)
           .foregroundStyle(material.isAvailable ? Color.primary : Color.secondary)
@@ -173,7 +173,7 @@ struct PieceDeskView: View {
       .padding(.horizontal, 8)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
           .fill(Color(nsColor: .controlBackgroundColor).opacity(0.5))
       )
       .contentShape(Rectangle())
@@ -202,13 +202,13 @@ struct PieceDeskView: View {
     VStack(alignment: .leading, spacing: 10) {
       HStack {
         Text("稿子")
-          .font(.system(size: 10, weight: .semibold))
+          .font(.caption2.weight(.semibold))
           .foregroundStyle(.tertiary)
           .textCase(.uppercase)
           .tracking(0.6)
         Spacer()
         Text("\(piece.bodyLength) 字")
-          .font(.system(size: 10))
+          .font(.caption2)
           .foregroundStyle(.tertiary)
           .monospacedDigit()
       }
@@ -229,11 +229,11 @@ struct PieceDeskView: View {
         .padding(.vertical, 11)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-          RoundedRectangle(cornerRadius: 9, style: .continuous)
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
             .fill(Color.accentColor.opacity(0.10))
         )
         .overlay(
-          RoundedRectangle(cornerRadius: 9, style: .continuous)
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
             .strokeBorder(Color.accentColor.opacity(0.25))
         )
         .contentShape(Rectangle())
@@ -274,9 +274,9 @@ struct PieceDeskView: View {
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 7) {
         ProgressView().controlSize(.small)
-        Text("正在起草…").font(.system(size: 12, weight: .medium))
+        Text("正在起草…").font(.callout.weight(.medium))
         Spacer(minLength: 0)
-        Button("停止") { model.cancelDrafting() }.font(.system(size: 11))
+        Button("停止") { model.cancelDrafting() }.font(.subheadline)
       }
       if !model.draftingText.isEmpty {
         Text(model.draftingText.suffix(300))
@@ -290,7 +290,7 @@ struct PieceDeskView: View {
     .padding(11)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 8, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
         .fill(Color.accentColor.opacity(0.08))
     )
   }
@@ -307,14 +307,14 @@ struct PieceDeskView: View {
     if !tools.isEmpty {
       VStack(alignment: .leading, spacing: 6) {
         Text("这一步可以")
-          .font(.system(size: 10, weight: .semibold))
+          .font(.caption2.weight(.semibold))
           .foregroundStyle(.tertiary)
           .textCase(.uppercase)
           .tracking(0.6)
         ForEach(tools, id: \.title) { tool in
           Button(action: tool.action) {
             HStack(spacing: 7) {
-              Image(systemName: tool.icon).font(.system(size: 11)).frame(width: 14)
+              Image(systemName: tool.icon).font(.system(size: DesignTokens.IconSize.inline)).frame(width: 14)
               Text(tool.title).font(.system(size: 12.5))
               Spacer(minLength: 0)
             }
@@ -322,7 +322,7 @@ struct PieceDeskView: View {
             .padding(.vertical, 7)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-              RoundedRectangle(cornerRadius: 7, style: .continuous)
+              RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor).opacity(0.55))
             )
             .contentShape(Rectangle())

@@ -133,11 +133,11 @@ struct InlineArticleImageView: View {
             maxWidth: layout == .gallery ? .infinity : Self.standaloneMaximumWidth(of: image),
             maxHeight: layout == .gallery ? nil : min(Self.maximumHeight, image.size.height)
           )
-          .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+          .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
           .padding(8)
-          .background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+          .background(Color.white, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
           .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
               .stroke(Color.primary.opacity(0.12), lineWidth: 1)
           )
           .onTapGesture(count: 2) { InlineImageLightboxController.shared.present(url) }
@@ -154,7 +154,7 @@ struct InlineArticleImageView: View {
           }
           .help("双击放大查看")
       } else {
-        RoundedRectangle(cornerRadius: 10, style: .continuous)
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
           .fill(Color.primary.opacity(0.05))
           .frame(maxWidth: 480)
           .frame(height: 180)
@@ -259,9 +259,9 @@ private struct InlineImageLightboxCanvas: View {
           .background(Color(nsColor: .windowBackgroundColor))
         }
         .frame(width: proxy.size.width * 0.86, height: proxy.size.height * 0.84)
-        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
         .overlay(
-          RoundedRectangle(cornerRadius: 12, style: .continuous)
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
             .stroke(Color.primary.opacity(0.25), lineWidth: 1)
         )
         .shadow(color: .black.opacity(0.35), radius: 28, y: 8)

@@ -471,12 +471,12 @@ describe("background douyin item identity lock", () => {
     };
     // 作者信息块：没有自己的直接文本节点，textContent 会把统计一起拼进来。
     const authorBlock = {
-      textContent: "迟遇粉丝2918获赞76.4万关注",
+      textContent: "迟遇粉丝2918获赞76.4万已",
       childNodes: [
         { nodeType: 1, textContent: "迟遇" },
         { nodeType: 1, textContent: "粉丝2918" },
         { nodeType: 1, textContent: "获赞76.4万" },
-        { nodeType: 1, textContent: "关注" },
+        { nodeType: 1, textContent: "已" },
       ],
     };
     const player = {

@@ -12,7 +12,10 @@ final class MarkdownPresentationTests: XCTestCase {
     // canvas 用亮底时，中栏到详情卡片只差 1.2% 灰阶，实机上根本看不出是两层。
     assertColor(paper.canvas, red: 0xEF, green: 0xED, blue: 0xE5)
     assertColor(paper.primaryText, red: 0x14, green: 0x14, blue: 0x13)
-    assertColor(paper.secondaryText, red: 0xB0, green: 0xAE, blue: 0xA5)
+    // 次要文字偏离官方 palette 的 #B0AEA5：那个值在正文卡上对比度只有 2.2:1，
+    // 真实信息（批量进度、引导文字）读不清。#6E6C63 在卡面 5.1:1、画布 4.5:1，
+    // 是同色相里能过 WCAG AA 的最浅一档。
+    assertColor(paper.secondaryText, red: 0x6E, green: 0x6C, blue: 0x63)
     assertColor(paper.hairline, red: 0xE8, green: 0xE6, blue: 0xDC)
     assertColor(paper.accent, red: 0xD9, green: 0x77, blue: 0x57)
     XCTAssertTrue(AppearanceTheme.paper.usesEditorialReadingTypography)
@@ -122,8 +125,16 @@ final class MarkdownPresentationTests: XCTestCase {
     // 连续选择：相邻文本块合成一个 NSTextView 段，代码卡独立；
     // 纯文本模式同样走连续选择视图。
     XCTAssertTrue(source.contains("SelectableReadingTextView("))
-    XCTAssertTrue(source.contains("ReadingTextComposer.attributed("))
-    XCTAssertTrue(source.contains("ReadingTextComposer.plain("))
+    // 组装经渲染缓存进入同一个 composer：内容/字体/配色不变时不重复
+    // 解析（性能），排版与连续选择行为不变。
+    XCTAssertTrue(source.contains("ReadingRenderCache.attributed("))
+    XCTAssertTrue(source.contains("ReadingRenderCache.plainAttributed("))
+    let cache = try String(
+      contentsOf: sourceURL.deletingLastPathComponent().appendingPathComponent("ReadingRenderCache.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(cache.contains("ReadingTextComposer.attributed("))
+    XCTAssertTrue(cache.contains("ReadingTextComposer.plain("))
     XCTAssertTrue(source.contains("onOpenLink: { url in _ = openValidated(url) }"))
     let selectable = try String(
       contentsOf: sourceURL.deletingLastPathComponent().appendingPathComponent("SelectableReadingText.swift"),
@@ -209,7 +220,7 @@ final class MarkdownPresentationTests: XCTestCase {
       encoding: .utf8
     )
     // 白色衬卡 + 细边线 + 右键动作仍在异步组件里。
-    XCTAssertTrue(imaging.contains(".background(Color.white, in: RoundedRectangle(cornerRadius: 10, style: .continuous))"))
+    XCTAssertTrue(imaging.contains(".background(Color.white, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))"))
     XCTAssertTrue(imaging.contains(".stroke(Color.primary.opacity(0.12), lineWidth: 1)"))
     XCTAssertTrue(imaging.contains("MarkdownInlineImageActions.saveImage(at: url)"))
     XCTAssertTrue(imaging.contains("存储图片为…"))

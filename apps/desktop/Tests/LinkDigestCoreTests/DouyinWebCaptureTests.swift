@@ -42,7 +42,7 @@ final class DouyinWebCaptureTests: XCTestCase {
       "canonicalURL": "https://www.douyin.com/video/7661288207509769506",
       "title": "食伤生财真相：盲派讲透",
       "description": "为什么你有这个格局却赚不到收益",
-      "author": "青山言粉丝3.4万获赞11.8万",
+      "author": "青山言粉丝3.4万获赞11.8万已",
       "publishedAt": "发布时间：2026-07-11 23:11",
       "videoURL": "https://v3.douyinvod.com/example",
       "coverURL": "https://p3.douyinpic.com/example.jpeg",

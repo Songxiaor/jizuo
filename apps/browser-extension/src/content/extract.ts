@@ -80,6 +80,31 @@ export function stripDouyinCaptionPrefix(rawTitle: string, author: string | unde
   return cleaned || original;
 }
 
+/**
+ * Douyin sometimes exposes the whole profile block as one text node, for example
+ * `晓得了粉丝10.1万获赞145.2万已`. Only the nickname belongs in `author`;
+ * counters and the clipped follow-button state are neither stable nor structured.
+ */
+export function cleanDouyinAuthorText(raw: string | null | undefined): string | undefined {
+  let value = raw
+    ?.replace(/(?:官方|企业|个人|机构)?认证(?:徽章|信息|标识)?/gu, "")
+    .replace(/已认证/gu, "")
+    .replace(/\s+/gu, " ")
+    .trim() ?? "";
+  const carriesProfileCounters = /(?:粉丝|获赞)\s*[\d.,]+\s*[万千亿]?/u.test(value);
+  if (carriesProfileCounters) {
+    value = value.replace(/(?:已(?:关注)?|关注)\s*$/u, "").trim();
+  }
+  let previous = "";
+  while (value && value !== previous) {
+    previous = value;
+    value = value
+      .replace(/(?:粉丝|获赞|关注|作品|喜欢|朋友)\s*[\d.,]*\s*[万千亿]?\s*$/u, "")
+      .trim();
+  }
+  return value || undefined;
+}
+
 /** Line-level noise aligned with Swift MinimalHTMLExtractor.boilerplateLineMarkers. */
 export const BOILERPLATE_LINE_MARKERS = [
   "相关阅读",
@@ -204,11 +229,13 @@ export function extractDouyinPage(documentLike: Document): ExtractedPage {
     ogTitle
     || documentLike.querySelector("h1")?.textContent?.trim()
     || resolveTitle(documentLike);
-  const author =
+  const rawAuthor =
     meta.author
-    || documentLike.querySelector("[data-e2e='user-info']")?.textContent?.trim()
     || documentLike.querySelector("[data-e2e='feed-video-nickname']")?.textContent?.trim()
+    || documentLike.querySelector("[data-e2e='video-author-info-nickname']")?.textContent?.trim()
+    || documentLike.querySelector("[data-e2e='user-info']")?.textContent?.trim()
     || undefined;
+  const author = cleanDouyinAuthorText(rawAuthor);
   const title = normalizeDouyinTitle(stripDouyinCaptionPrefix(rawTitle, author)) || "抖音视频";
   // Prefer description nodes for the *current* item; never walk the full body chrome.
   const descriptionRaw =
@@ -2073,6 +2100,10 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
         .replace(/已认证/gu, "")
         .replace(/\s+/gu, " ")
         .trim();
+      const carriesProfileCounters = /(?:粉丝|获赞)\s*[\d.,]+\s*[万千亿]?/u.test(value);
+      if (carriesProfileCounters) {
+        value = value.replace(/(?:已(?:关注)?|关注)\s*$/u, "").trim();
+      }
       // 作者信息块把昵称与「粉丝 2918 获赞 76.4万 关注」连在一起，textContent
       // 会拼成「迟遇粉丝2918获赞76.4万关注」。只从尾部逐段剥，避免误伤本身
       // 带「关注」「喜欢」字样的昵称。

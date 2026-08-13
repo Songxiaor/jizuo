@@ -50,6 +50,8 @@ private enum ExportResult: Sendable { case success(HistoryExportFile), failure }
 private enum TagsResult: Sendable { case success([HistoryTag]), failure }
 private enum NavigationCountsResult: Sendable { case success(HistoryNavigationCounts), failure }
 private enum TagMutationResult: Sendable { case success, failure(StorageErrorCode) }
+private enum SnapshotEditResult: Sendable { case success, failure(StorageErrorCode) }
+private enum PiecesResult: Sendable { case success([PieceSummary]), failure }
 private enum BeginTranscriptionPersistenceResult: Sendable {
   case success(TranscriptionAttemptToken)
   case failure(StorageErrorCode)
@@ -183,6 +185,178 @@ private actor HistoryRepositoryWorker {
   func setFavorite(_ history: HistoryApplicationService, isFavorite: Bool, taskID: TaskID) -> TagMutationResult {
     do { try history.setFavorite(isFavorite, for: taskID); return .success }
     catch { return .failure(HistoryViewModel.storageCode(for: error, context: .write)) }
+  }
+
+  func updateSnapshotBodyText(
+    _ history: HistoryApplicationService,
+    taskID: TaskID,
+    snapshotID: ContentSnapshotID,
+    bodyText: String,
+    updatedAtMilliseconds: Int64
+  ) -> SnapshotEditResult {
+    do {
+      try history.updateSnapshotBodyText(
+        taskID: taskID,
+        snapshotID: snapshotID,
+        bodyText: bodyText,
+        updatedAtMilliseconds: updatedAtMilliseconds
+      )
+      return .success
+    } catch {
+      return .failure(HistoryViewModel.storageCode(for: error, context: .write))
+    }
+  }
+
+  /// 保存正文后顺带的「创作修订」记录（工作台）。
+  ///
+  /// 修订不是每次保存都值得记：随手改错字和真正的一版修订之间没有分界
+  /// 可言，存进去只会稀释真正有信号的那些配对。
+  ///
+  /// 这条路每保存一次就走一遍，所以三次查询都必须是定点的：按 note task
+  /// 找创作、取最后一条起草、取最后一条修订。它们跟保存同在这个 worker
+  /// 的串行线上，主线程不再为此碰 SQLite。
+  func recordPieceRevisionIfNeeded(
+    _ history: HistoryApplicationService,
+    noteTaskID: TaskID,
+    bodyText: String,
+    nowMilliseconds: Int64
+  ) {
+    guard let piece = try? history.piece(noteTaskID: noteTaskID),
+          let lastDraft = try? history.lastPieceEvent(of: piece.id, kind: .drafted)
+    else { return }
+    let trimmed = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+    // 和 AI 那版一字不差就不记：那是「没改」，不是一次修订。
+    guard !trimmed.isEmpty, trimmed != lastDraft.detail else { return }
+    // 同一版反复保存（自动保存每秒都可能触发）只保留最后一条，
+    // 否则一次写作会灌进几十条几乎相同的记录。
+    if let lastRevision = try? history.lastPieceEvent(of: piece.id, kind: .revised),
+       lastRevision.detail == trimmed { return }
+    try? history.recordPieceEvent(.init(
+      pieceID: piece.id, kind: .revised, detail: trimmed,
+      createdAtMilliseconds: nowMilliseconds
+    ))
+  }
+
+  // MARK: - 工作台读写
+  //
+  // 下面这批以前都在 @MainActor 上同步进 SQLite。单次都不慢，但它们出现在
+  // 启动、进工作台、每次起草/保存的路上，叠起来就是主线程卡顿的来源。
+
+  func pieces(_ history: HistoryApplicationService) -> PiecesResult {
+    do { return .success(try history.pieces()) }
+    catch { return .failure }
+  }
+
+  func selectedPiece(
+    _ history: HistoryApplicationService,
+    id: PieceID
+  ) -> (piece: PieceSummary?, materials: [PieceMaterial]) {
+    (try? history.piece(id: id), (try? history.materials(of: id)) ?? [])
+  }
+
+  func hitPredictions(_ history: HistoryApplicationService) -> [HitPrediction] {
+    (try? history.hitPredictions()) ?? []
+  }
+
+  func writingMethods(_ history: HistoryApplicationService) -> [WritingMethod] {
+    (try? history.writingMethods()) ?? []
+  }
+
+  func draftRevisionPairs(_ history: HistoryApplicationService) -> [DraftRevisionPair] {
+    (try? history.draftRevisionPairs()) ?? []
+  }
+
+  func recentTopicCandidates(_ history: HistoryApplicationService) -> [TopicCandidate] {
+    (try? history.recentTopicCandidates()) ?? []
+  }
+
+  /// 出选题的素材整批在这里取齐：召回加逐条 detail 正文一次做完，
+  /// 而不是主线程和仓库之间往返 N 次。
+  func collectTopicMaterials(
+    _ history: HistoryApplicationService,
+    lanes: [TopicRecall.Lane],
+    now: Int64
+  ) -> (materials: [TopicPrompt.Material], taskIDs: [TaskID]) {
+    var materials: [TopicPrompt.Material] = []
+    var taskIDs: [TaskID] = []
+    for lane in lanes {
+      for recalled in (try? history.recallMaterials(lane: lane, now: now)) ?? [] {
+        guard recalled.isAvailable, !taskIDs.contains(recalled.id) else { continue }
+        guard let detail = try? history.detail(taskID: recalled.id),
+              let snapshot = detail.snapshots.last else { continue }
+        taskIDs.append(recalled.id)
+        materials.append(.init(
+          index: materials.count + 1,
+          title: recalled.title,
+          lane: lane.name,
+          excerpt: MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
+        ))
+      }
+    }
+    return (materials, taskIDs)
+  }
+
+  /// 起草的输入同理：创作本体加素材循环读全部在这里完成。
+  func draftInputs(
+    _ history: HistoryApplicationService,
+    pieceID: PieceID
+  ) -> (piece: PieceSummary, materials: [DraftPrompt.Material])? {
+    guard let piece = try? history.piece(id: pieceID) else { return nil }
+    let materials: [DraftPrompt.Material] = ((try? history.materials(of: pieceID)) ?? [])
+      .filter(\.isAvailable)
+      .compactMap { material in
+        guard let detail = try? history.detail(taskID: material.id),
+              let snapshot = detail.snapshots.last else { return nil }
+        return .init(
+          title: material.title,
+          source: HistoryPlatformDisplay.name(forHost: material.host),
+          body: MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
+        )
+      }
+    return (piece, materials)
+  }
+
+  /// 删除后的共享媒体引用检查：按 content hash 回答「库里还有没有别的行引用它」。
+  /// 查询失败的哈希不出现在结果里——不确定的引用永远不能换成删除许可。
+  func mediaReferenceStates(
+    _ history: HistoryApplicationService,
+    contentSHA256s: [String]
+  ) -> [String: Bool] {
+    var states: [String: Bool] = [:]
+    for hash in contentSHA256s {
+      if let referenced = try? history.isMediaContentReferenced(contentSHA256: hash) {
+        states[hash] = referenced
+      }
+    }
+    return states
+  }
+
+  /// 「加素材」整套写入：挂素材、取标题、记事件，一次进来做完。
+  func addPieceMaterial(
+    _ history: HistoryApplicationService,
+    taskID: TaskID,
+    pieceID: PieceID,
+    nowMilliseconds: Int64
+  ) -> Bool {
+    do {
+      try history.addMaterial(taskID: taskID, to: pieceID, addedAtMilliseconds: nowMilliseconds)
+      let title = (try? history.detail(taskID: taskID))?.snapshots.last?.title ?? ""
+      try? history.recordPieceEvent(.init(
+        pieceID: pieceID, kind: .materialAdded, detail: title,
+        createdAtMilliseconds: nowMilliseconds
+      ))
+      return true
+    } catch { return false }
+  }
+
+  /// 媒体挂接走这里抛错：调用方的失败分类（回滚已落盘文件、fail-open 保留
+  /// 文字抓取）依赖原始错误类型，不做 result 化。
+  func attachMedia(_ history: HistoryApplicationService, asset: MediaAsset) throws {
+    try history.attachMedia(.init(asset: asset))
+  }
+
+  func latestMediaAsset(_ history: HistoryApplicationService, taskID: TaskID) throws -> MediaAsset? {
+    try history.mediaAsset(taskID: taskID)
   }
 
   func beginTranscription(
@@ -418,7 +592,7 @@ private actor HistoryRepositoryWorker {
       text: text,
       completeness: "complete",
       capturedAt: timestamp,
-      sourceLabel: "转写整理稿"
+      sourceLabel: "模型校对稿"
     )
     do {
       switch try history.completeTaskTranscription(.init(
@@ -639,6 +813,13 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var taskExcerpts: [TaskExcerpt] = []
   @Published var taskNoteDraft = ""
   private var noteSaveTask: Task<Void, Never>?
+  /// 正文保存链的末端。新保存任务先 await 前一个，保证连续两次
+  /// 自动保存不会在 worker 上乱序落库（后写的旧内容盖掉新内容）。
+  private var snapshotSaveTask: Task<Void, Never>?
+  /// 脑图保存链的末端，作用同上：编辑脑图是连续操作（改一个字存一次、
+  /// 换个配色又存一次），独立 detached 任务之间没有先后保证，旧记录
+  /// 后落库就会盖掉新编辑。
+  private var mindMapSaveTask: Task<Void, Never>?
   /// 待落库的笔记。存在这里而不是只活在 Task 闭包里，切换条目时才能先冲刷再覆盖草稿。
   private var pendingNote: (taskID: TaskID, body: String, timestamp: Int64)?
   /// 笔记/摘录落库失败的提示。这条路径原来全是 `try?`，失败完全无声，
@@ -862,6 +1043,20 @@ final class HistoryViewModel: ObservableObject {
     imageTextRecognitionTask = nil
     imageTextRecognitionState = .cancelled
   }
+  /// 过期时间解析在按钮可用性判定里，每次界面重求值都会走到；
+  /// `ISO8601DateFormatter` 构造不便宜，缓存成静态。类是 @MainActor 的，
+  /// 静态成员同为主线程隔离，只会在主线程使用。
+  private static let expiryFractionalFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
+  private static let expiryWholeSecondsFormatter: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime]
+    return formatter
+  }()
+
   func canTranscribeCurrentCapture(_ descriptor: MediaDescriptor, taskID: TaskID) -> Bool {
     guard history != nil,
           videoTranscriber != nil,
@@ -877,11 +1072,8 @@ final class HistoryViewModel: ObservableObject {
           URL(string: rawURL)?.scheme?.lowercased() == "https"
     else { return false }
     guard let expiresAt = descriptor.expiresAt else { return true }
-    let fractional = ISO8601DateFormatter()
-    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let whole = ISO8601DateFormatter()
-    whole.formatOptions = [.withInternetDateTime]
-    guard let expiry = fractional.date(from: expiresAt) ?? whole.date(from: expiresAt) else { return false }
+    guard let expiry = Self.expiryFractionalFormatter.date(from: expiresAt)
+      ?? Self.expiryWholeSecondsFormatter.date(from: expiresAt) else { return false }
     return expiry > Date()
   }
   func canTranscribeCurrentCaptureOnline(_ descriptor: MediaDescriptor, taskID: TaskID, model: String?) -> Bool {
@@ -897,11 +1089,8 @@ final class HistoryViewModel: ObservableObject {
           URL(string: rawURL)?.scheme?.lowercased() == "https"
     else { return false }
     guard let expiresAt = descriptor.expiresAt else { return true }
-    let fractional = ISO8601DateFormatter()
-    fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-    let whole = ISO8601DateFormatter()
-    whole.formatOptions = [.withInternetDateTime]
-    guard let expiry = fractional.date(from: expiresAt) ?? whole.date(from: expiresAt) else { return false }
+    guard let expiry = Self.expiryFractionalFormatter.date(from: expiresAt)
+      ?? Self.expiryWholeSecondsFormatter.date(from: expiresAt) else { return false }
     return expiry > Date()
   }
   var hasActiveFilter: Bool {
@@ -2170,7 +2359,11 @@ final class HistoryViewModel: ObservableObject {
     store: any MindMapStoring,
     failureMessage: String
   ) {
-    Task.detached(priority: .userInitiated) { [weak self] in
+    // 链式排队：连续两次保存（改大纲、紧接着换配色）各自 detached 时
+    // 先后不定，旧记录后落库会把新编辑盖掉。上屏顺序在主线程上本来
+    // 就是对的，落库只要按同样顺序执行，最后一版就一定是最新的。
+    mindMapSaveTask = Task.detached(priority: .userInitiated) { [weak self, previous = mindMapSaveTask] in
+      await previous?.value
       do {
         try store.saveMindMap(record)
       } catch {
@@ -2282,14 +2475,17 @@ final class HistoryViewModel: ObservableObject {
         } else {
           tidied
         }
-        do {
-          try history.updateSnapshotBodyText(
-            taskID: taskID,
-            snapshotID: snapshot.id,
-            bodyText: newText,
-            updatedAtMilliseconds: self.nowMilliseconds()
-          )
-        } catch {
+        // 写库在 worker 串行队列上；await 回来后要再验 requestID，
+        // 这段时间里可能已经发起了新一轮整理。
+        let saved = await self.worker.updateSnapshotBodyText(
+          history,
+          taskID: taskID,
+          snapshotID: snapshot.id,
+          bodyText: newText,
+          updatedAtMilliseconds: self.nowMilliseconds()
+        )
+        guard self.transcriptTidyRequestID == requestID else { return }
+        guard case .success = saved else {
           self.transcriptTidyState = .failed("整理完成但没能保存；原文没有改动。")
           return
         }
@@ -3397,16 +3593,17 @@ final class HistoryViewModel: ObservableObject {
         // Fail closed: if the repository cannot prove the content hash is no
         // longer referenced, retain the shared file for a later safe cleanup.
         var checkedHashes: Set<String> = []
-        for asset in mediaToCleanup
-        where batch.deletedTaskIDs.contains(asset.taskID)
-          && checkedHashes.insert(asset.contentSHA256).inserted {
-          do {
-            let stillReferenced = try history.isMediaContentReferenced(contentSHA256: asset.contentSHA256)
-            store.deleteFileIfUnreferenced(asset: asset, stillReferenced: stillReferenced)
-          } catch {
-            // The task row is already deleted, but an uncertain reference query
-            // must never be converted into permission to unlink shared media.
-          }
+        let candidates = mediaToCleanup.filter {
+          batch.deletedTaskIDs.contains($0.taskID) && checkedHashes.insert($0.contentSHA256).inserted
+        }
+        // 引用检查是 SQL 查询，同样在 worker 上串行执行。查询失败的哈希
+        // 不出现在结果里，也就永远不会被当成「可删」。
+        let referenceStates = await worker.mediaReferenceStates(
+          history, contentSHA256s: candidates.map(\.contentSHA256)
+        )
+        for asset in candidates {
+          guard let stillReferenced = referenceStates[asset.contentSHA256] else { continue }
+          store.deleteFileIfUnreferenced(asset: asset, stillReferenced: stillReferenced)
         }
       }
       guard !Task.isCancelled else { return }
@@ -3481,22 +3678,82 @@ final class HistoryViewModel: ObservableObject {
   /// 把一条失败摆到用户面前。复用已有的 alert 通道，不新增一套提示机制。
   func reportFailure(_ message: String) { snapshotEditFailure = message }
 
-  /// 用户校对转写文本后的原地保存：成功即刷新详情，失败给人话反馈。
+  /// 用户校对转写文本后的原地保存：写库走 worker，成功后就地更新详情投影。
+  ///
+  /// 以前这里在主线程同步写 SQLite，然后把**整条详情**（含全部 snapshot 与
+  /// artifact 正文）从库里回读一遍再全树重渲——自动保存每停笔一秒就可能
+  /// 触发，是「打字/保存卡顿」的主要来源之一。现在：
+  /// - 写库在 worker 串行队列上，主线程不碰 SQLite；
+  /// - 成功后只就地补丁当前详情里的那份 snapshot，不回读、不整树刷新；
+  /// - 保存任务链式排队，保证连续两次保存不会乱序落库。
   func saveEditedSnapshotText(taskID: TaskID, snapshotID: ContentSnapshotID, bodyText: String) {
     guard let history else { return }
-    do {
-      try history.updateSnapshotBodyText(
+    let generation = configurationGeneration
+    let updatedAt = nowMilliseconds()
+    snapshotSaveTask = Task { [weak self, worker, previous = snapshotSaveTask] in
+      await previous?.value
+      let result = await worker.updateSnapshotBodyText(
+        history,
         taskID: taskID,
         snapshotID: snapshotID,
         bodyText: bodyText,
-        updatedAtMilliseconds: nowMilliseconds()
+        updatedAtMilliseconds: updatedAt
       )
-      snapshotEditFailure = nil
-      recordRevisionIfThisIsAPieceDraft(taskID: taskID, bodyText: bodyText)
-      refreshDetailAfterTranscription(taskID: taskID)
-    } catch {
-      snapshotEditFailure = "无法保存修改，请检查历史存储后重试。"
+      guard let self, generation == self.configurationGeneration else { return }
+      switch result {
+      case .success:
+        self.snapshotEditFailure = nil
+        self.applySnapshotBodyTextLocally(taskID: taskID, snapshotID: snapshotID, bodyText: bodyText)
+        // 工作台的修订记录也在 worker 上顺带完成；界面不等它。
+        await worker.recordPieceRevisionIfNeeded(
+          history, noteTaskID: taskID, bodyText: bodyText, nowMilliseconds: updatedAt
+        )
+      case .failure:
+        self.snapshotEditFailure = "无法保存修改，请检查历史存储后重试。"
+      }
     }
+  }
+
+  /// 把刚落库的正文改动同步进当前详情投影，不回读数据库。
+  /// 字数与指纹按仓库同一算法就地重算，保持投影内部一致。
+  private func applySnapshotBodyTextLocally(
+    taskID: TaskID,
+    snapshotID: ContentSnapshotID,
+    bodyText: String
+  ) {
+    guard selectedTaskID == taskID,
+          let current = detail, current.task.id == taskID,
+          let index = current.snapshots.firstIndex(where: { $0.id == snapshotID })
+    else { return }
+    let old = current.snapshots[index]
+    var snapshots = current.snapshots
+    snapshots[index] = ContentSnapshot(
+      id: old.id,
+      taskID: old.taskID,
+      sequence: old.sequence,
+      envelopeCreatedAtMilliseconds: old.envelopeCreatedAtMilliseconds,
+      capturedAtMilliseconds: old.capturedAtMilliseconds,
+      sourceKind: old.sourceKind,
+      sourceURL: old.sourceURL,
+      title: old.title,
+      platform: old.platform,
+      captureMethod: old.captureMethod,
+      completeness: old.completeness,
+      bodyText: bodyText,
+      characterCount: bodyText.unicodeScalars.count,
+      bodySHA256: SHA256CaptureFingerprinter().bodySHA256(bodyText),
+      sourceLabel: old.sourceLabel,
+      usedCookie: old.usedCookie
+    )
+    detail = HistoryDetailProjection(
+      task: current.task,
+      snapshots: snapshots,
+      runs: current.runs,
+      tags: current.tags,
+      media: current.media,
+      hadMediaDescriptor: current.hadMediaDescriptor,
+      isFavorite: current.isFavorite
+    )
   }
 
   // MARK: - 工作台操作
@@ -3516,15 +3773,21 @@ final class HistoryViewModel: ObservableObject {
 
   func reloadPieces() {
     guard let history else { return }
-    do {
-      pieces = try history.pieces()
-      workbenchFailure = nil
-      // 选中的那件被删了就退回列表，而不是停在一个空详情上。
-      if let id = selectedPieceID, !pieces.contains(where: { $0.id == id }) {
-        selectedPieceID = nil
+    let generation = configurationGeneration
+    Task { [weak self, worker] in
+      let result = await worker.pieces(history)
+      guard let self, generation == self.configurationGeneration else { return }
+      switch result {
+      case let .success(pieces):
+        self.pieces = pieces
+        self.workbenchFailure = nil
+        // 选中的那件被删了就退回列表，而不是停在一个空详情上。
+        if let id = self.selectedPieceID, !pieces.contains(where: { $0.id == id }) {
+          self.selectedPieceID = nil
+        }
+      case .failure:
+        self.workbenchFailure = "无法读取工作台，请检查历史存储后重试。"
       }
-    } catch {
-      workbenchFailure = "无法读取工作台，请检查历史存储后重试。"
     }
   }
 
@@ -3534,8 +3797,15 @@ final class HistoryViewModel: ObservableObject {
       pieceMaterials = []
       return
     }
-    selectedPiece = try? history.piece(id: id)
-    pieceMaterials = (try? history.materials(of: id)) ?? []
+    let generation = configurationGeneration
+    Task { [weak self, worker] in
+      let loaded = await worker.selectedPiece(history, id: id)
+      // 读回来时选中项可能已经换了，旧结果直接丢掉。
+      guard let self, generation == self.configurationGeneration,
+            self.selectedPieceID == id else { return }
+      self.selectedPiece = loaded.piece
+      self.pieceMaterials = loaded.materials
+    }
   }
 
   /// 记一个新灵感。
@@ -3568,7 +3838,12 @@ final class HistoryViewModel: ObservableObject {
 
   func reloadHitPredictions() {
     guard let history else { hitPredictions = []; return }
-    hitPredictions = (try? history.hitPredictions()) ?? []
+    let generation = configurationGeneration
+    Task { [weak self, worker] in
+      let predictions = await worker.hitPredictions(history)
+      guard let self, generation == self.configurationGeneration else { return }
+      self.hitPredictions = predictions
+    }
   }
 
   func hitPrediction(of pieceID: PieceID) -> HitPrediction? {
@@ -3621,7 +3896,12 @@ final class HistoryViewModel: ObservableObject {
 
   func reloadWritingMethods() {
     guard let history else { writingMethods = []; return }
-    writingMethods = (try? history.writingMethods()) ?? []
+    let generation = configurationGeneration
+    Task { [weak self, worker] in
+      let methods = await worker.writingMethods(history)
+      guard let self, generation == self.configurationGeneration else { return }
+      self.writingMethods = methods
+    }
   }
 
   /// 加一条方法。过不了入库自检就返回拒绝理由,不写库。
@@ -3680,22 +3960,26 @@ final class HistoryViewModel: ObservableObject {
   func distillMethods() {
     guard let history, let agent = draftAgent, canDistill else { return }
 
-    let pairs = ((try? history.draftRevisionPairs()) ?? [])
-      .filter { !$0.isNearlyUntouched }
-      .prefix(8)
-      .map { DistillPrompt.Pair(generated: $0.generated, revised: $0.revised) }
-    guard pairs.count >= DistillPrompt.minimumPairs else { return }
-
-    let prompt = DistillPrompt.build(
-      pairs: Array(pairs), existing: writingMethods.map(\.body)
-    )
     let workingDirectory = FileManager.default.temporaryDirectory
       .appendingPathComponent("jizuo-agent", isDirectory: true)
 
     isDistilling = true
     workbenchFailure = nil
 
-    Task { [weak self] in
+    Task { [weak self, worker] in
+      // 修订配对从 worker 串行读回，主线程不碰 SQLite。canDistill 刚确认过
+      // 数量够，这里的 guard 只是兜住读取和点击之间的并发变化。
+      let pairs = await worker.draftRevisionPairs(history)
+        .filter { !$0.isNearlyUntouched }
+        .prefix(8)
+        .map { DistillPrompt.Pair(generated: $0.generated, revised: $0.revised) }
+      guard pairs.count >= DistillPrompt.minimumPairs else {
+        self?.isDistilling = false
+        return
+      }
+      let prompt = DistillPrompt.build(
+        pairs: Array(pairs), existing: self?.writingMethods.map(\.body) ?? []
+      )
       do {
         let text = try await agent.run(
           .init(prompt: prompt, workingDirectory: workingDirectory)
@@ -3749,7 +4033,12 @@ final class HistoryViewModel: ObservableObject {
 
   func reloadTopicCandidates() {
     guard let history else { topicCandidates = []; return }
-    topicCandidates = (try? history.recentTopicCandidates()) ?? []
+    let generation = configurationGeneration
+    Task { [weak self, worker] in
+      let candidates = await worker.recentTopicCandidates(history)
+      guard let self, generation == self.configurationGeneration else { return }
+      self.topicCandidates = candidates
+    }
   }
 
   /// 到点了就自动出一次。
@@ -3802,15 +4091,19 @@ final class HistoryViewModel: ObservableObject {
     voice: String? = nil,
     onGenerated: (() -> Void)? = nil
   ) {
-    guard let agent = draftAgent, canGenerateTopics else { return }
+    guard let history, let agent = draftAgent, canGenerateTopics else { return }
     let now = nowMilliseconds()
-    guard let batch = collectTopicMaterials(recipe: recipe, now: now) else { return }
-    let prompt = buildTopicPrompt(recipe: recipe, materials: batch.materials, voice: voice)
 
     isGeneratingTopics = true
     workbenchFailure = nil
 
-    Task { [weak self] in
+    Task { [weak self, worker] in
+      // 召回和逐条正文都在 worker 里一次取齐，主线程不再往返 N 次。
+      let batch = await worker.collectTopicMaterials(history, lanes: recipe.recall.lanes, now: now)
+      guard let prompt = self?.topicPrompt(accepting: batch, recipe: recipe, voice: voice) else {
+        self?.isGeneratingTopics = false
+        return
+      }
       do {
         let text = try await agent.run(
           .init(prompt: prompt, workingDirectory: Self.agentWorkingDirectory)
@@ -3839,16 +4132,19 @@ final class HistoryViewModel: ObservableObject {
   /// 一个能当场看见「解析出几条」的按钮——它花的额度和真跑一次一样,
   /// 但那点额度换的是「改坏了立刻知道」。
   func dryRunTopics(recipe: TopicRecipe, voice: String? = nil) {
-    guard let agent = draftAgent, canGenerateTopics else { return }
+    guard let history, let agent = draftAgent, canGenerateTopics else { return }
     let now = nowMilliseconds()
     topicDryRunResult = nil
-    guard let batch = collectTopicMaterials(recipe: recipe, now: now) else { return }
-    let prompt = buildTopicPrompt(recipe: recipe, materials: batch.materials, voice: voice)
 
     isDryRunningTopics = true
     workbenchFailure = nil
 
-    Task { [weak self] in
+    Task { [weak self, worker] in
+      let batch = await worker.collectTopicMaterials(history, lanes: recipe.recall.lanes, now: now)
+      guard let prompt = self?.topicPrompt(accepting: batch, recipe: recipe, voice: voice) else {
+        self?.isDryRunningTopics = false
+        return
+      }
       do {
         let text = try await agent.run(
           .init(prompt: prompt, workingDirectory: Self.agentWorkingDirectory)
@@ -3878,37 +4174,22 @@ final class HistoryViewModel: ObservableObject {
       .appendingPathComponent("jizuo-agent", isDirectory: true)
   }
 
-  /// 按配方取素材。取不够就把原因写进 `workbenchFailure` 并返回 nil。
-  private func collectTopicMaterials(
-    recipe: TopicRecipe, now: Int64
-  ) -> (materials: [TopicPrompt.Material], taskIDs: [TaskID])? {
-    guard let history else { return nil }
-    var materials: [TopicPrompt.Material] = []
-    var taskIDs: [TaskID] = []
-    for lane in recipe.recall.lanes {
-      for recalled in (try? history.recallMaterials(lane: lane, now: now)) ?? [] {
-        guard recalled.isAvailable, !taskIDs.contains(recalled.id) else { continue }
-        guard let detail = try? history.detail(taskID: recalled.id),
-              let snapshot = detail.snapshots.last else { continue }
-        taskIDs.append(recalled.id)
-        materials.append(.init(
-          index: materials.count + 1,
-          title: recalled.title,
-          lane: lane.name,
-          excerpt: MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
-        ))
-      }
-    }
-
-    guard materials.count >= 2 else {
+  /// 素材够不够、不够时该说什么，留在 MainActor 判断：失败文案要立刻落进
+  /// `workbenchFailure`。素材本体的读取在 worker 的 `collectTopicMaterials`。
+  private func topicPrompt(
+    accepting batch: (materials: [TopicPrompt.Material], taskIDs: [TaskID]),
+    recipe: TopicRecipe,
+    voice: String?
+  ) -> String? {
+    guard batch.materials.count >= 2 else {
       // 一条选题至少要让两份素材发生关系,一份素材出不了选题。
       // 配方能把窗口收得很窄,所以这句话要指得出是哪里卡住的。
       workbenchFailure = recipe == .default
         ? "素材还不够。攒够两份以上再来出选题。"
-        : "按当前配方只取到 \(materials.count) 份素材。把天数或条数放宽一点。"
+        : "按当前配方只取到 \(batch.materials.count) 份素材。把天数或条数放宽一点。"
       return nil
     }
-    return (materials, taskIDs)
+    return buildTopicPrompt(recipe: recipe, materials: batch.materials, voice: voice)
   }
 
   private func buildTopicPrompt(
@@ -4021,29 +4302,34 @@ final class HistoryViewModel: ObservableObject {
   /// 这是工作台里第一个真正的 Agent 动作。产出直接写进稿件正文——
   /// 不另存一份「AI 版本」再让人手动搬,那会立刻变成两份要对齐的东西。
   func draftFromMaterials(pieceID: PieceID, voice: String? = nil) {
-    guard let history, let agent = draftAgent, canDraft(for: pieceID),
-          let piece = try? history.piece(id: pieceID) else { return }
+    guard let history, let agent = draftAgent, canDraft(for: pieceID) else { return }
 
-    let materials: [DraftPrompt.Material] = (try? history.materials(of: pieceID))?
-      .filter(\.isAvailable)
-      .compactMap { material in
-        guard let detail = try? history.detail(taskID: material.id),
-              let snapshot = detail.snapshots.last else { return nil }
-        return .init(
-          title: material.title,
-          source: HistoryPlatformDisplay.name(forHost: material.host),
-          body: MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
-        )
-      } ?? []
+    // 先占住起草位：素材在 worker 上读的这段时间里，不能再放进第二次起草
+    // （canDraft 靠 draftingPieceID 挡重入）。随后 runIntoDraft 会重设同一批状态。
+    draftingPieceID = pieceID
+    draftingText = ""
+    workbenchFailure = nil
 
-    let prompt = DraftPrompt.build(
-      spark: piece.spark, materials: materials, voice: voice, methods: enabledMethodBodies
-    )
-    // 工作目录锁在专用沙箱里:即便工具已经禁掉,进程的 cwd 仍是它能看到的世界。
-    let workingDirectory = FileManager.default.temporaryDirectory
-      .appendingPathComponent("jizuo-agent", isDirectory: true)
+    Task { [weak self, worker] in
+      // 创作本体和素材循环读全部在 worker 内完成，一次往返取齐。
+      guard let inputs = await worker.draftInputs(history, pieceID: pieceID) else {
+        self?.draftingPieceID = nil
+        return
+      }
+      guard let self else { return }
+      // 等素材的这段时间里可能已经点了「停止」（cancelDrafting 清掉占位），
+      // 那就不再启动。
+      guard self.draftingPieceID == pieceID else { return }
+      let prompt = DraftPrompt.build(
+        spark: inputs.piece.spark, materials: inputs.materials,
+        voice: voice, methods: self.enabledMethodBodies
+      )
+      // 工作目录锁在专用沙箱里:即便工具已经禁掉,进程的 cwd 仍是它能看到的世界。
+      let workingDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("jizuo-agent", isDirectory: true)
 
-    runIntoDraft(prompt: prompt, agent: agent, piece: piece, workingDirectory: workingDirectory)
+      self.runIntoDraft(prompt: prompt, agent: agent, piece: inputs.piece, workingDirectory: workingDirectory)
+    }
   }
 
   /// 第二块画板:照我的表达方式把这稿子重写一遍。
@@ -4109,11 +4395,19 @@ final class HistoryViewModel: ObservableObject {
         // 流式片段先落进一个线程安全的收集器,再由主线程定期取——
         // 直接在回调里碰 self 会踩并发检查,而回调是从子进程读取线程来的。
         let stream = DraftStreamBuffer()
+        // 250ms 一拍、内容没变不发布：draftingText 是 @Published，每发一次
+        // 整个窗口树重求值一次。最终全文不依赖 ticker——agent.run 返回后
+        // applyDraft 拿到的是完整产出，末段不会因合批而丢。
         let ticker = Task { @MainActor [weak self] in
+          var lastPublished = ""
           while !Task.isCancelled {
-            try? await Task.sleep(nanoseconds: 120_000_000)
+            try? await Task.sleep(nanoseconds: 250_000_000)
             guard let self, self.draftingPieceID != nil else { return }
-            self.draftingText = await stream.text
+            let text = await stream.text
+            if text != lastPublished {
+              lastPublished = text
+              self.draftingText = text
+            }
           }
         }
         defer { ticker.cancel() }
@@ -4229,17 +4523,20 @@ final class HistoryViewModel: ObservableObject {
 
   func addMaterial(taskID: TaskID, to pieceID: PieceID) {
     guard let history else { return }
-    do {
-      try history.addMaterial(taskID: taskID, to: pieceID, addedAtMilliseconds: nowMilliseconds())
-      let title = (try? history.detail(taskID: taskID))?.snapshots.last?.title ?? ""
-      try? history.recordPieceEvent(.init(
-        pieceID: pieceID, kind: .materialAdded, detail: title,
-        createdAtMilliseconds: nowMilliseconds()
-      ))
-      reloadPieces()
-      if selectedPieceID == pieceID { reloadSelectedPiece() }
-    } catch {
-      workbenchFailure = "无法加入素材，请稍后重试。"
+    let generation = configurationGeneration
+    let now = nowMilliseconds()
+    Task { [weak self, worker] in
+      // 挂素材、取标题、记事件整套在 worker 上做完；主线程只收结果。
+      let succeeded = await worker.addPieceMaterial(
+        history, taskID: taskID, pieceID: pieceID, nowMilliseconds: now
+      )
+      guard let self, generation == self.configurationGeneration else { return }
+      if succeeded {
+        self.reloadPieces()
+        if self.selectedPieceID == pieceID { self.reloadSelectedPiece() }
+      } else {
+        self.workbenchFailure = "无法加入素材，请稍后重试。"
+      }
     }
   }
 
@@ -4316,35 +4613,9 @@ final class HistoryViewModel: ObservableObject {
     }
   }
 
-  /// 存的是工作台稿件、而且 AI 起草过,就记一版「你改成了什么」。
-  ///
-  /// 挂在保存这条路上,是因为**判断必须是顺带产生的**。让用户专门去点一个
-  /// 「记录我的修改」按钮,他不会点;而他一定会存稿子。
-  ///
-  /// 只在 AI 起草过的创作上记:没起草过的稿子是你从零写的,没有「和谁的分歧」
-  /// 可言,存进去只会稀释真正有信号的那些配对。
-  ///
-  /// 这条路每保存一次就走一遍,所以三次查询都必须是定点的:按 note task 找创作、
-  /// 取最后一条起草、取最后一条修订。早先的写法是「取全部创作在内存里找」加
-  /// 「读出这件创作的每一版全文再挑最后一条」——自动保存每隔几秒就把几十份
-  /// 整篇稿子读进内存,只为了比两个字符串。
-  private func recordRevisionIfThisIsAPieceDraft(taskID: TaskID, bodyText: String) {
-    guard let history,
-          let piece = try? history.piece(noteTaskID: taskID),
-          let lastDraft = try? history.lastPieceEvent(of: piece.id, kind: .drafted)
-    else { return }
-    let trimmed = bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
-    // 和 AI 那版一字不差就不记:那是「没改」,不是一次修订。
-    guard !trimmed.isEmpty, trimmed != lastDraft.detail else { return }
-    // 同一版反复保存(自动保存每秒都可能触发)只保留最后一条,
-    // 否则一次写作会灌进几十条几乎相同的记录。
-    if let lastRevision = try? history.lastPieceEvent(of: piece.id, kind: .revised),
-       lastRevision.detail == trimmed { return }
-    try? history.recordPieceEvent(.init(
-      pieceID: piece.id, kind: .revised, detail: trimmed,
-      createdAtMilliseconds: nowMilliseconds()
-    ))
-  }
+  // 「存的是工作台稿件、而且 AI 起草过，就记一版修订」这段逻辑在
+  // HistoryRepositoryWorker.recordPieceRevisionIfNeeded：判断必须是保存时
+  // 顺带产生的（用户不会专门点「记录我的修改」），又不该占主线程。
 
   func dismissSnapshotEditFailure() { snapshotEditFailure = nil }
 
@@ -4376,13 +4647,23 @@ final class HistoryViewModel: ObservableObject {
       }
       do {
         var latest = ""
+        // partial 每个事件都是整篇全文，直接发布会让 @Published 高频整串
+        // 换值、整个窗口树跟着重求值。这里照 favicon 的合批手法：250ms 内
+        // 只留最新值，间隔到了才发布一次；流结束后冲刷最后一段。
+        var pendingPartial: String?
+        var lastPartialFlush = ContinuousClock.now
         for try await event in livePlaybackTranscribe("zh_CN", stopSignal) {
           try Task.checkCancellation()
           guard self.transcriptionRequestID == requestID else { break }
           switch event {
           case .partial(let text):
             latest = text
-            self.transcriptionText = text
+            pendingPartial = text
+            if ContinuousClock.now - lastPartialFlush > .milliseconds(250) {
+              self.transcriptionText = text
+              pendingPartial = nil
+              lastPartialFlush = .now
+            }
           case .final(let text):
             latest = text
           case .transcribing:
@@ -4398,6 +4679,8 @@ final class HistoryViewModel: ObservableObject {
           )
           return
         }
+        // 冲刷：合批期间攒下的最后一段必须落地，不能丢在缓冲里。
+        if let pendingPartial { self.transcriptionText = pendingPartial }
         let trimmed = latest.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
           _ = await worker.updateTaskTranscriptionStatus(
@@ -4686,7 +4969,7 @@ final class HistoryViewModel: ObservableObject {
     let asset: MediaAsset
     if let mediaDownloadOperation {
       asset = try await mediaDownloadOperation(media, taskID, snapshotID, pageURL)
-      try history.attachMedia(.init(asset: asset))
+      try await worker.attachMedia(history, asset: asset)
     } else {
       guard let mediaDownloader else { throw RepositoryFailure.unavailable }
       let result = try await mediaDownloader.downloadAndStoreResult(
@@ -4696,12 +4979,12 @@ final class HistoryViewModel: ObservableObject {
         pageURL: pageURL
       )
       do {
-        try history.attachMedia(.init(asset: result.asset))
+        try await worker.attachMedia(history, asset: result.asset)
       } catch {
         mediaStore?.rollbackCreatedFile(result.storedFile)
         throw error
       }
-      asset = (try history.mediaAsset(taskID: taskID)) ?? result.asset
+      asset = (try await worker.latestMediaAsset(history, taskID: taskID)) ?? result.asset
     }
     return asset
   }
@@ -4836,6 +5119,11 @@ final class HistoryViewModel: ObservableObject {
     guard !candidates.isEmpty else { return }
     faviconTask?.cancel()
     faviconTask = Task { [weak self, faviconCache, faviconResources] in
+      // 攒批发布：faviconImageURLs 是 @Published，逐个到货逐个赋值会让
+      // 整棵界面树每个图标刷一次（首屏 50 行就是 50 次全表重算）。
+      // 这里攒住，间隔到了或全部结束才合并发布一次。
+      var pending: [TaskID: URL] = [:]
+      var lastFlush = ContinuousClock.now
       await withTaskGroup(of: (TaskID, URL?).self) { group in
         var next = candidates.makeIterator()
 
@@ -4855,20 +5143,29 @@ final class HistoryViewModel: ObservableObject {
         while let (taskID, localURL) = await group.next() {
           guard !Task.isCancelled else {
             group.cancelAll()
-            return
+            break
           }
-          if let localURL {
-            self?.receiveFavicon(localURL, for: taskID, generation: generation)
+          if let localURL { pending[taskID] = localURL }
+          if !pending.isEmpty, ContinuousClock.now - lastFlush > .milliseconds(250) {
+            self?.receiveFavicons(pending, generation: generation)
+            pending = [:]
+            lastFlush = .now
           }
           enqueueNext()
         }
       }
+      if !pending.isEmpty {
+        self?.receiveFavicons(pending, generation: generation)
+      }
     }
   }
 
-  private func receiveFavicon(_ url: URL, for taskID: TaskID, generation: UUID) {
-    guard generation == configurationGeneration, rows.contains(where: { $0.taskID == taskID }) else { return }
-    faviconImageURLs[taskID] = url
+  private func receiveFavicons(_ urls: [TaskID: URL], generation: UUID) {
+    guard generation == configurationGeneration else { return }
+    let visible = Set(rows.map(\.taskID))
+    let accepted = urls.filter { visible.contains($0.key) }
+    guard !accepted.isEmpty else { return }
+    faviconImageURLs.merge(accepted) { _, new in new }
   }
 
   nonisolated static func storageCode(for error: Error, context: StorageFailureContext) -> StorageErrorCode {

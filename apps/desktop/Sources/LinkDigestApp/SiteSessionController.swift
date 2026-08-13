@@ -274,6 +274,7 @@ struct SiteLoginWebView: NSViewRepresentable {
 }
 
 struct SiteLoginSheet: View {
+  @Environment(\.appTheme) private var appTheme
   @ObservedObject var session: SiteSessionController
   @Environment(\.dismiss) private var dismiss
   @State private var refreshTask: Task<Void, Never>?
@@ -299,7 +300,7 @@ struct SiteLoginSheet: View {
         Spacer()
         Text(session.statusLabel)
           .font(.caption)
-          .foregroundStyle(session.isLoggedIn ? .green : .secondary)
+          .foregroundStyle(session.isLoggedIn ? appTheme.success : Color.secondary)
           .accessibilityIdentifier("\(idPrefix)-login-status")
         Button("完成") { dismiss() }
           .keyboardShortcut(.defaultAction)

@@ -37,6 +37,15 @@ struct YouTubeEmbedPlayerCard: View {
   var hasCaptions: Bool = true
   @ObservedObject private var cinema = VideoCinemaController.shared
   @ObservedObject private var diagnostics = YouTubeEmbedDiagnostics.shared
+  /// 封面优先：用户点过播放才创建 WKWebView。
+  ///
+  /// 以前卡片一渲染就冷启动一个无缓存的 WKWebView（非持久存储是隐私取舍，
+  /// 不能改），YouTube 播放器整套 JS 每次重新下载，「正在加载嵌入播放器…」
+  /// 一转好几秒；切走条目即释放，切回来又是一遍。封面图只有几十 KB 且有
+  /// 内存 + 系统 URLCache 两层缓存，显示是即时的；播放器的加载成本推迟到
+  /// 用户真的要看的那一刻。条目切换（本卡离屏）后状态归零，回来重新是封面，
+  /// 不会有看不见的播放器在后台出声。
+  @State private var isPlayerRequested = false
 
   /// 本卡正被影院 overlay 放大时，卡内不再渲染播放器（避免两份音频）。
   private var isInCinema: Bool { cinema.youTubeVideoID == videoID }
@@ -61,7 +70,7 @@ struct YouTubeEmbedPlayerCard: View {
       Group {
         if isInCinema {
           // 影院放大期间，卡内显示占位，播放器只存在于 overlay。
-          RoundedRectangle(cornerRadius: 10, style: .continuous)
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
             .fill(Color.black.opacity(0.85))
             .overlay {
               VStack(spacing: 6) {
@@ -69,17 +78,24 @@ struct YouTubeEmbedPlayerCard: View {
                 Text("正在放大播放…").font(.caption).foregroundStyle(.white.opacity(0.7))
               }
             }
+        } else if !isPlayerRequested {
+          YouTubeEmbedPosterView(videoID: videoID) { isPlayerRequested = true }
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+            .overlay(
+              RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+                .stroke(Color.primary.opacity(0.12), lineWidth: 1)
+            )
         } else {
           YouTubeEmbedWebView(videoID: videoID)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
             .overlay(
-              RoundedRectangle(cornerRadius: 10, style: .continuous)
+              RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                 .stroke(Color.primary.opacity(0.12), lineWidth: 1)
             )
             // 加载没成功时，用可读的一行字盖住那个纯白框——空白本身不携带任何信息。
             .overlay {
               if let message = diagnostics.status[videoID] {
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                   .fill(Color.black.opacity(0.88))
                   .overlay {
                     VStack(spacing: 8) {
@@ -131,13 +147,83 @@ struct YouTubeEmbedPlayerCard: View {
       }
     }
     .padding(14)
-    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
     .onDisappear {
       // 卡片离屏（切换条目）：影院同视频先收掉，再释放池实例——
       // 否则池持有的 webview 会让音频在后台继续播放。
       if isInCinema { cinema.dismiss() }
       YouTubeEmbedWebViewPool.shared.release(videoID: videoID)
     }
+  }
+}
+
+/// 视频封面 + 播放按钮（lite-embed 模式的前半张脸）。
+///
+/// 点它才创建真正的播放器。封面即时可见，回答了「这条是什么视频」；
+/// 加载播放器的几秒网络成本只在用户明确要看时才付。
+private struct YouTubeEmbedPosterView: View {
+  let videoID: String
+  let onPlay: () -> Void
+  @State private var thumbnail: NSImage?
+
+  var body: some View {
+    Button(action: onPlay) {
+      Color.black
+        .overlay {
+          if let thumbnail {
+            Image(nsImage: thumbnail)
+              .resizable()
+              // hqdefault 是 4:3（自带上下黑边），fill 进 16:9 框正好裁掉黑边；
+              // maxresdefault 本身 16:9，fill 等于原样铺满。
+              .scaledToFill()
+          }
+        }
+        .overlay {
+          VStack(spacing: 8) {
+            Image(systemName: "play.circle.fill")
+              .font(.system(size: 52))
+              .foregroundStyle(.white.opacity(0.92))
+              .shadow(color: .black.opacity(0.45), radius: 10)
+            Text("点击加载播放器")
+              .font(.caption)
+              .foregroundStyle(.white.opacity(0.85))
+              .shadow(color: .black.opacity(0.5), radius: 4)
+          }
+        }
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityLabel("播放视频")
+    .accessibilityIdentifier("history-youtube-poster")
+    .task(id: videoID) {
+      thumbnail = await YouTubeThumbnailLoader.image(for: videoID)
+    }
+  }
+}
+
+/// 封面图加载：maxresdefault 优先（16:9 高清，部分视频没有），失败落回
+/// hqdefault（一定存在，4:3 带黑边，由视图层 fill 裁掉）。内存缓存之外，
+/// URLSession.shared 自带的 URLCache 还提供磁盘层，重开条目即时显示。
+/// 只取公开封面图，不带任何身份信息。
+@MainActor enum YouTubeThumbnailLoader {
+  private static let images: NSCache<NSString, NSImage> = {
+    let cache = NSCache<NSString, NSImage>()
+    cache.countLimit = 64
+    return cache
+  }()
+
+  static func image(for videoID: String) async -> NSImage? {
+    if let hit = images.object(forKey: videoID as NSString) { return hit }
+    for variant in ["maxresdefault", "hqdefault"] {
+      guard let url = URL(string: "https://i.ytimg.com/vi/\(videoID)/\(variant).jpg"),
+            let (data, response) = try? await URLSession.shared.data(from: url),
+            (response as? HTTPURLResponse)?.statusCode == 200,
+            let decoded = NSImage(data: data)
+      else { continue }
+      images.setObject(decoded, forKey: videoID as NSString)
+      return decoded
+    }
+    return nil
   }
 }
 
@@ -246,9 +332,9 @@ struct VideoCinemaOverlay: View {
               }
             }
             .frame(width: fitted.width, height: fitted.height)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
             .overlay(
-              RoundedRectangle(cornerRadius: 12, style: .continuous)
+              RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                 .stroke(Color.white.opacity(0.15), lineWidth: 1)
             )
             .shadow(color: .black.opacity(0.5), radius: 30, y: 10)
@@ -315,7 +401,11 @@ struct VideoCinemaOverlay: View {
     }
     let configuration = WKWebViewConfiguration()
     configuration.websiteDataStore = .nonPersistent()
-    configuration.mediaTypesRequiringUserActionForPlayback = .all
+    // 空集合 = 允许 autoplay。播放器创建只发生在用户手势之后（封面点击 /
+    // 「放大」按钮），embed URL 里的 autoplay=1 是在兑现那次点击——否则用户
+    // 点完封面还要在 YouTube 控件上再点一次播放。用户手势这道门由封面层
+    // （isPlayerRequested）把守，不再依赖 WebKit 的媒体手势策略。
+    configuration.mediaTypesRequiringUserActionForPlayback = []
     let delegate = YouTubeEmbedNavigationDelegate(videoID: videoID)
     YouTubeEmbedDiagnostics.shared.record(videoID, "正在加载嵌入播放器…")
     // 非零初始 frame：保证首次加载不在零尺寸下渲染。
@@ -329,8 +419,8 @@ struct VideoCinemaOverlay: View {
     <meta name="viewport" content="initial-scale=1">
     <style>html,body{margin:0;background:#000;height:100%;overflow:hidden}iframe{width:100%;height:100%;border:0}</style>
     </head><body>
-    <iframe src="https://www.youtube-nocookie.com/embed/\(videoID)?rel=0&playsinline=1"
-      allow="encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>
+    <iframe src="https://www.youtube-nocookie.com/embed/\(videoID)?rel=0&playsinline=1&autoplay=1"
+      allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen></iframe>
     </body></html>
     """
     webView.loadHTMLString(html, baseURL: URL(string: "https://www.youtube-nocookie.com"))

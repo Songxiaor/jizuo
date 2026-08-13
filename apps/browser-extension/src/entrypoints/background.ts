@@ -1,5 +1,6 @@
 import {
   attachDetectedMedia,
+  cleanDouyinAuthorText,
   enrichXCaptureWithTitleFallback,
   extractDouyinSingleItemMetaInPage,
   type ExtractedPage,
@@ -912,11 +913,12 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
   // 与 App 都把这条当成"受限视频"，把图集正文挤到视频占位符后面。
   const isImagePost = imageURLs.length > 0;
   if (mediaHit && !isImagePost) {
+    const mediaAuthor = cleanDouyinAuthorText(author ?? mediaHit.author);
     page.mediaDescriptor = {
       ...mediaHit,
       canonicalURL,
       platform: "douyin",
-      author: mediaHit.author ?? author,
+      ...(mediaAuthor ? { author: mediaAuthor } : {}),
     };
   }
   if (isImagePost) page.imageCount = imageURLs.length;

@@ -42,8 +42,11 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
   public let translationConcurrency: Int?
   public var targetLanguage: String { outputLanguage }
 
-  public static let defaultTranslationConcurrency = 3
-  public static let translationConcurrencyRange = 1...6
+  /// 默认 6：翻译是输出受限的活，墙钟时间随并发近似线性缩短，而 429 已有
+  /// 自动退避重试兜底。免费档或限流严的服务商可在设置里调低。
+  /// （等于默认值时存 nil，所以没主动改过这项的用户会自动跟上新默认。）
+  public static let defaultTranslationConcurrency = 6
+  public static let translationConcurrencyRange = 1...8
   public var effectiveTranslationConcurrency: Int {
     translationConcurrency ?? Self.defaultTranslationConcurrency
   }

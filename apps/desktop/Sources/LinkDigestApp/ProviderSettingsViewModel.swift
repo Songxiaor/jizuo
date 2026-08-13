@@ -572,7 +572,7 @@ final class ProviderSettingsViewModel: ObservableObject {
       case .transcriptionModelTooLong:
         preferencesState = .failed("在线转写模型名不能超过 256 个字符。")
       case .tidyModelTooLong:
-        preferencesState = .failed("整理模型名不能超过 256 个字符。")
+        preferencesState = .failed("校对模型名不能超过 256 个字符。")
       case .readFailed, .writeFailed:
         preferencesState = .failed("无法保存生成偏好，请稍后重试。")
       }

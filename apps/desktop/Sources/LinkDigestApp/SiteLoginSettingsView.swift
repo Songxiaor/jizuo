@@ -5,86 +5,84 @@ import SwiftUI
 /// high-quality streaming recovery. Kept separate from “视频存储” so disk
 /// preferences do not grow into a multi-site account hub.
 ///
-/// 排版约定：**一个站点 = 一个 Section = 一张卡片**。
+/// 排版约定：**三个站点收进一张自绘行组卡，一站一行。**
 ///
-/// 原来一个站点被拆成「状态行 / 说明行 / 按钮行」三个 Form 行，而 grouped Form
-/// 会给每一行画分隔线——同一个站点的三段信息被切成三条看似不相干的记录，页面
-/// 因此显得乱。整张卡片必须是 Section 里的**单个** View，内部才不会再被切开。
+/// 原来一个站点独占一张大卡，卡内容却稀薄（一行状态 + 一行按钮），三张卡叠起来
+/// 全是空白，真正有用的信息密度很低。现在改成系统设置那种「行组卡」的样子：
+/// 图标 + 站名 + 一句 caption 说明差异，状态徽标和操作贴右边缘；诊断细节
+/// （cookie 读取记录、UID、B 站的校验会话）收进每行自己的 ⓘ 展开区，默认不占地方。
 ///
-/// 文案约定：**分组标题说清「登录起什么作用」，卡片里默认不写说明。**
+/// 这一页仍然整体走 `ScrollView + LazyVStack` 手排，不是 `Form`：行组卡自带主题
+/// 卡面（`SettingsThemedCardChrome`），放进 grouped Form 的 Section 会被 Section
+/// 自己的默认容器卡再包一层，叠成「卡中卡」。
 ///
-/// 这页曾经每张卡都带副标题 + 一段正文 + 「了解更多」，讲的是机制——登录墙长什么样、
-/// 正文由谁渲染、Cookie 存在哪里。那是写给实现者看的：同一件事被分组标题、副标题、
-/// 正文说了三遍，而用的人只需要知道「登不登录有什么区别」，分组标题已经答完了。
+/// 文案约定：**每行一句 caption 说清「登录起什么作用」，技术细节收进 ⓘ。**
 ///
-/// 同类产品的做法一致：Downie 的偏好设置只有站点清单，Readwise 界面里一个字不写，
-/// 登录墙那套解释全在各自的 help 站点。机制解释属于官方文档，不属于设置页。
+/// 原来的分组标题（「登录可选：影响清晰度」「登录才能抓到正文」）说的就是这句话，
+/// 合并成一张卡之后不再有单独的分组标题槎位，这句话改由每行自己的 caption 携带，
+/// 信息没有丢，只是从卡外的组标题挪进了卡内的行标题下面。
 ///
-/// 因此卡片里只保留**例外**：某个站点的行为和同组其他站点不同，不说会让人踩坑。
-/// 目前只有抖音符合——同在「登录才能抓到正文」，但它登录了手动粘链接也常失败。
+/// 抖音是这一组里唯一的例外——同在「登录才能抓到正文」，但它登录了手动粘链接
+/// 也常失败，所以它的 caption 比另外两行多带一句「建议用扩展抓」。
 struct SiteLoginSettingsView: View {
+  @Environment(\.appTheme) private var appTheme
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @ObservedObject var mediaStorage: MediaStorageSettingsViewModel
   @ObservedObject private var bilibiliSession = SiteSessionController.bilibili
   @ObservedObject private var douyinSession = SiteSessionController.douyin
   @ObservedObject private var xiaohongshuSession = SiteSessionController.xiaohongshu
   /// 哪个站点的登录窗口正开着。用 profile 的 platform 当身份，避免再加一堆布尔量。
   @State private var presentedLogin: SiteSessionPlatform?
+  /// 每行自己的 ⓘ 展开区独立收起/展开——点开 B 站的校验会话不该带着关掉
+  /// 小红书那行的诊断细节。
+  @State private var expandedDetailSites: Set<SiteSessionPlatform> = []
+
+  // 这一页的行组卡自带主题卡面（`SettingsThemedCardChrome`：底色 + hairline
+  // 描边 + 浅色主题下的轻投影），原来却又挂在 grouped Form 的 Section 里——
+  // macOS 给 Section 画的默认容器卡不受行内 `.listRowBackground` 控制，两层卡
+  // 叠在一起就发灰发闷。这页每一屏都是自绘卡面，本来就不依赖 Form 的行为
+  // （分组标题、跨 Section 的系统分隔线都没用上），所以整页从 `Form` 换成
+  // `ScrollView + LazyVStack` 手排，卡面只画这一层。
+  //
+  // `ScrollView` 本身没有画布底色：这里显式补上 `theme.canvas`（非原生主题），
+  // 否则卡和窗口背景融成一片，看不出分层。原生（系统）主题交还系统 material，
+  // 不再自己画。
+  //
+  // `.settingsDetailContentMargins()` 是对 `ScrollView` 生效的通用 API，语义
+  // 和其它 Form 页完全一致；水平内距手动钉在 20pt，和 grouped Form 的默认
+  // 水平内缩对齐（项目里没有专门收拢这个数值的令牌，`PieceDeskView` 里非
+  // Form 的手排页也是同一个数）。
+  private static let horizontalInset: CGFloat = 20
 
   var body: some View {
-    Form {
-      // 这一页只管「手动粘贴链接」这条入口。扩展是另一条完全独立的路，
-      // 不写清楚会被当成所有抓取路径的总开关。
-      //
-      // 放在页首而不是页尾：这是「这一页管什么」的前提。原来它在最后一个
-      // Section，用户已经逐个站点读完、甚至白登录了一遍，才看到「用扩展的话
-      // 这页你根本不用来」。
-      Section {
-        Label {
-          Text("这一页只管手动粘链接；用扩展抓不需要在这里登录。")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .fixedSize(horizontal: false, vertical: true)
-        } icon: {
-          Image(systemName: "info.circle")
-            .foregroundStyle(.secondary)
-        }
-        .accessibilityIdentifier("site-login-scope-note")
-      }
-
-      // 原来叫「已支持」——那既没说清 B 站要不要登录，也让人以为另外两组「不支持」。
-      // 分组判据统一成「登录对这个站点起什么作用」。
-      Section {
-        bilibiliCard
-      } header: {
-        Text("登录可选：影响清晰度")
-      }
-
-      // 抖音与小红书的用途和 B 站不同：B 站是「刷新会过期的高清地址」，
-      // 这两个是「未登录看不到正文」。同一套隔离会话机制，两种消费端。
-      Section {
-        captureSessionCard(session: xiaohongshuSession, platform: .xiaohongshu)
-      } header: {
-        Text("登录才能抓到正文")
-      }
-
-      // 抖音单独一张卡并带自己的限制说明：同在这一组是因为登录机制相同，但它是
-      // 「登录了也常常不够」，不能让人以为登录完粘链接就能用。这是这页唯一还留着
-      // 说明文字的地方——不写就会踩坑，写「为什么」则是文档的事。
-      Section {
-        captureSessionCard(
-          session: douyinSession,
-          platform: .douyin,
-          note: "抖音建议用扩展抓，粘链接常失败。"
+    ScrollView {
+      LazyVStack(alignment: .leading, spacing: DesignTokens.Space.xl) {
+        // 这一页只管「手动粘贴链接」这条入口。扩展是另一条完全独立的路，
+        // 不写清楚会被当成所有抓取路径的总开关。
+        //
+        // 放在页首而不是页尾：这是「这一页管什么」的前提。
+        SettingsPageHeader(
+          title: "站点登录",
+          symbol: "person.crop.circle.badge.checkmark",
+          caption: "这一页只管手动粘链接；用扩展抓不需要在这里登录。",
+          fill: SettingsCategoryChip.fill(for: "siteLogin", theme: appTheme),
+          captionIdentifier: "site-login-scope-note"
         )
-      }
 
-      Section {
-        noLoginCard
-      } header: {
-        Text("无需登录")
+        sitesCard
+
+        // 原来「无需登录」单独占一张列着 YouTube/X 的整卡——这两个站在这页没有
+        // 任何可操作项，状态也永远不会变，一整张卡的视觉重量和信息量完全不匹配。
+        // 收成页尾一行说明，原因还在，只是不再占一张卡的地方。
+        Text("YouTube、X 无需登录，直接粘贴链接即可。")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("site-login-no-login-card")
       }
+      .padding(.horizontal, Self.horizontalInset)
     }
-    .formStyle(.grouped)
+    .background(appTheme.isNative ? Color.clear : appTheme.canvas)
     .settingsDetailContentMargins()
     .onAppear {
       Task { await bilibiliSession.refreshStatus() }
@@ -98,6 +96,41 @@ struct SiteLoginSettingsView: View {
       SiteLoginSheet(session: controller(for: platform))
     }
     .accessibilityIdentifier("site-login-settings")
+  }
+
+  // MARK: - 三站合一的行组卡
+
+  /// 三个站点收进一张卡，一站一行、hairline 分隔——排布上是 `SettingsRowGroup`
+  /// 的样子，只是这页不在 Form 里，卡面自己画（见文件头注释）。
+  @ViewBuilder
+  private var sitesCard: some View {
+    VStack(spacing: 0) {
+      siteRow(
+        platform: .bilibili,
+        session: bilibiliSession,
+        caption: "登录可选，影响高清档位"
+      )
+      siteRowDivider
+      siteRow(
+        platform: .xiaohongshu,
+        session: xiaohongshuSession,
+        caption: "登录才能抓到正文"
+      )
+      siteRowDivider
+      siteRow(
+        platform: .douyin,
+        session: douyinSession,
+        caption: "登录才能抓到正文；建议用扩展抓，粘链接常失败"
+      )
+    }
+    .modifier(SettingsThemedCardChrome())
+  }
+
+  private var siteRowDivider: some View {
+    Rectangle()
+      .fill(appTheme.hairline)
+      .frame(height: 1)
+      .padding(.leading, DesignTokens.Space.lg + 20 + DesignTokens.Space.md)
   }
 
   private func controller(for platform: SiteSessionPlatform) -> SiteSessionController {
@@ -116,191 +149,166 @@ struct SiteLoginSettingsView: View {
     }
   }
 
-  // MARK: - B 站
+  // MARK: - 一站一行
 
-  /// B 站独有「校验会话」：只有它有稳定的公开登录态接口。
-  @ViewBuilder private var bilibiliCard: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      cardHeader(
-        host: "bilibili.com",
-        name: SiteSessionPlatform.bilibili.displayName,
-        isLoggedIn: bilibiliSession.isLoggedIn,
-        detail: bilibiliSession.accountDetail,
-        statusIdentifier: "site-login-bilibili-status"
-      )
+  /// 一站一行：图标 + 站名 + caption 说明；右侧状态徽标 + 登录/重新登录 +
+  /// 清除登录；点 ⓘ 展开这一行自己的技术细节（cookie 诊断、UID，B 站还有
+  /// 校验会话）。
+  @ViewBuilder
+  private func siteRow(
+    platform: SiteSessionPlatform,
+    session: SiteSessionController,
+    caption: String
+  ) -> some View {
+    let id = platform.rawValue
+    let isExpanded = expandedDetailSites.contains(platform)
+    let hasDetails = session.accountDetail != nil || session.sessionDiagnostic != nil || platform == .bilibili
 
-      // 校验结果是点了按钮之后的真实反馈，不是说明文字——它必须留着，
-      // 否则「校验会话」点完没有任何回音。
-      if let verification = bilibiliSession.verificationLabel {
-        Label(verification, systemImage: "checkmark.seal")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .textSelection(.enabled)
-          .fixedSize(horizontal: false, vertical: true)
-          .accessibilityIdentifier("site-login-bilibili-verification")
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+      HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+        siteIcon(host: host(for: platform))
+
+        VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+          HStack(alignment: .center, spacing: DesignTokens.Space.sm) {
+            Text(platform.displayName)
+              .font(.body.weight(.semibold))
+            if hasDetails {
+              detailsToggle(platform: platform, isExpanded: isExpanded)
+            }
+          }
+          Text(caption)
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("site-login-\(id)-caption")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+
+        statusBadge(
+          isLoggedIn: session.isLoggedIn,
+          text: session.isLoggedIn ? "已登录" : "未登录",
+          tone: session.isLoggedIn ? .active : .neutral
+        )
+        .accessibilityIdentifier("site-login-\(id)-status")
+
+        Button(session.isLoggedIn ? "重新登录…" : "登录…") {
+          presentLogin(platform)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .tint(Color.secondary)
+        .accessibilityIdentifier("site-login-\(id)-login")
+
+        Button("清除登录") {
+          Task { await clearSession(platform, session: session) }
+        }
+        .buttonStyle(.plain)
+        .controlSize(.small)
+        .foregroundStyle(appTheme.danger)
+        .disabled(!session.isLoggedIn)
+        .accessibilityIdentifier("site-login-\(id)-clear")
       }
 
-      diagnosticLabel(session: bilibiliSession, id: "bilibili")
+      if isExpanded {
+        detailsContent(platform: platform, session: session)
+          .transition(.opacity.combined(with: .move(edge: .top)))
+      }
+    }
+    .padding(.vertical, DesignTokens.Space.sm)
+    .padding(.horizontal, DesignTokens.Space.lg)
+    .accessibilityElement(children: .contain)
+  }
 
-      cardActions(
-        primary: {
-          Button(bilibiliSession.isLoggedIn ? "重新登录…" : "登录…") {
-            mediaStorage.presentBilibiliLogin()
-          }
-          .accessibilityIdentifier("site-login-bilibili-login")
+  /// B 站的登录走 `mediaStorage`（复用「重新获取播放」那条 sheet 呈现路径），
+  /// 其余两站走这页自己的 `presentedLogin`。这一分支原来分别散落在两张卡各自的
+  /// 按钮 action 里，合并成一行后收进一个函数，不用在 `siteRow` 里再重复 switch。
+  private func presentLogin(_ platform: SiteSessionPlatform) {
+    if platform == .bilibili {
+      mediaStorage.presentBilibiliLogin()
+    } else {
+      presentedLogin = platform
+    }
+  }
+
+  private func clearSession(_ platform: SiteSessionPlatform, session: SiteSessionController) async {
+    if platform == .bilibili {
+      mediaStorage.clearBilibiliSession()
+    } else {
+      await session.clear()
+    }
+  }
+
+  /// ⓘ 展开按钮：样式与 `SettingsCard`/`SettingsRow` 的 details 入口一致
+  /// （info.circle + borderless + 统一动效令牌），只是状态按站点分别记，不是
+  /// 单个 `@State Bool`。
+  @ViewBuilder
+  private func detailsToggle(platform: SiteSessionPlatform, isExpanded: Bool) -> some View {
+    Button {
+      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+        if isExpanded {
+          expandedDetailSites.remove(platform)
+        } else {
+          expandedDetailSites.insert(platform)
+        }
+      }
+    } label: {
+      Image(systemName: "info.circle")
+    }
+    .buttonStyle(.borderless)
+    .foregroundStyle(.secondary)
+    .help("查看\(platform.displayName)详细信息")
+    .accessibilityLabel("\(platform.displayName)详细信息")
+  }
+
+  /// ⓘ 展开区：读 cookie 的诊断细节、账号标识（UID），B 站还多一个「校验会话」
+  /// 按钮和它的结果回音——这是交互，不是说明文字，必须留在这里而不是文档。
+  @ViewBuilder
+  private func detailsContent(platform: SiteSessionPlatform, session: SiteSessionController) -> some View {
+    let id = platform.rawValue
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+      if let detail = session.accountDetail {
+        Text(detail)
+          .font(.caption2.monospacedDigit())
+          .foregroundStyle(.tertiary)
+          .textSelection(.enabled)
+      }
+      if let diagnostic = session.sessionDiagnostic {
+        Text(diagnostic)
+          .font(.caption)
+          .foregroundStyle(.tertiary)
+          .textSelection(.enabled)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("site-login-\(id)-diagnostic")
+      }
+      if platform == .bilibili {
+        HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
           Button(bilibiliSession.isVerifying ? "校验中…" : "校验会话") {
             Task { await bilibiliSession.verifySession() }
           }
+          .buttonStyle(.bordered)
+          .controlSize(.small)
+          .tint(Color.secondary)
           .disabled(bilibiliSession.isVerifying)
           .accessibilityIdentifier("site-login-bilibili-verify")
-        },
-        destructive: {
-          Button("清除登录", role: .destructive, action: mediaStorage.clearBilibiliSession)
-            .disabled(!bilibiliSession.isLoggedIn)
-            .accessibilityIdentifier("site-login-bilibili-clear")
-        }
-      )
-    }
-    .padding(.vertical, 4)
-  }
 
-  // MARK: - 抓取型会话
-
-  /// 抓取型会话卡片：状态 + 登录 + 清除。
-  ///
-  /// 没有「校验会话」——这两个站没有稳定的公开登录态接口，硬找就要 replay 私有
-  /// 签名接口。会话失效的表现是抓取回落到明确报错，不会静默出坏结果，所以不需要
-  /// 一个只能靠猜实现的校验按钮。
-  /// - Parameter note: 只属于这一站的例外。默认没有——分组标题「登录才能抓到正文」
-  ///   已经把这一组说完了，再在卡里重复一遍只是把同一句话说第三遍。只有行为与同组
-  ///   其他站点不同、不说会踩坑的站点才传（目前只有抖音）。
-  @ViewBuilder
-  private func captureSessionCard(
-    session: SiteSessionController,
-    platform: SiteSessionPlatform,
-    note: String? = nil
-  ) -> some View {
-    let id = platform.rawValue
-    VStack(alignment: .leading, spacing: 12) {
-      cardHeader(
-        host: host(for: platform),
-        name: platform.displayName,
-        isLoggedIn: session.isLoggedIn,
-        detail: session.accountDetail,
-        statusIdentifier: "site-login-\(id)-status"
-      )
-
-      if let note {
-        Label(note, systemImage: "exclamationmark.triangle")
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-          .accessibilityIdentifier("site-login-\(id)-note")
-      }
-
-      diagnosticLabel(session: session, id: id)
-
-      cardActions(
-        primary: {
-          Button(session.isLoggedIn ? "重新登录…" : "登录…") { presentedLogin = platform }
-            .accessibilityIdentifier("site-login-\(id)-login")
-        },
-        destructive: {
-          Button("清除登录", role: .destructive) {
-            Task { await session.clear() }
+          // 校验结果是点了按钮之后的真实反馈，不是说明文字——它必须留着，
+          // 否则「校验会话」点完没有任何回音。
+          if let verification = bilibiliSession.verificationLabel {
+            Label(verification, systemImage: "checkmark.seal")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .textSelection(.enabled)
+              .fixedSize(horizontal: false, vertical: true)
+              .accessibilityIdentifier("site-login-bilibili-verification")
           }
-          .disabled(!session.isLoggedIn)
-          .accessibilityIdentifier("site-login-\(id)-clear")
         }
-      )
-    }
-    .padding(.vertical, 4)
-  }
-
-  // MARK: - 无需登录
-
-  /// 无需登录的站点合成一张只读卡片。
-  ///
-  /// 这些站在这一页没有任何可操作项：没有按钮，状态也永远不会变。让它们各占一张
-  /// 带状态胶囊和「了解更多」的整卡，视觉重量和信息量完全不匹配——而分组标题已经
-  /// 写了「无需登录」，胶囊只是把同一句话再说一遍。
-  ///
-  /// 保留的只有图标、名字和一句「为什么不用登录」：前两者是扫视锚点，后者是这张卡
-  /// 存在的唯一理由——不写原因，读者会怀疑是不是漏配了什么。
-  @ViewBuilder private var noLoginCard: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      // Grid 而不是逐行 HStack：原因那一列要对齐，否则两行读起来像两条不相干的记录。
-      Grid(alignment: .leading, horizontalSpacing: 12, verticalSpacing: 8) {
-        noLoginRow(name: "YouTube", host: "youtube.com", reason: "官方嵌入播放")
-        noLoginRow(name: "X", host: "x.com", reason: "走公开嵌入接口")
       }
-      Text("这两个站不认账号，登录不会改变抓取结果，直接粘链接就行。")
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(.vertical, 4)
-    .accessibilityIdentifier("site-login-no-login-card")
-  }
-
-  private func noLoginRow(name: String, host: String, reason: String) -> some View {
-    GridRow {
-      siteIcon(host: host)
-      Text(name).font(.headline)
-      Text(reason)
-        .font(.callout)
-        .foregroundStyle(.secondary)
-    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.leading, 20 + DesignTokens.Space.md)
   }
 
   // MARK: - 卡片零件
-
-  @ViewBuilder
-  private func cardHeader(
-    host: String,
-    name: String,
-    isLoggedIn: Bool,
-    detail: String?,
-    statusIdentifier: String
-  ) -> some View {
-    HStack(alignment: .top, spacing: 10) {
-      siteIcon(host: host)
-      // 站名下面原来还有一行「影响清晰度上限」「登录才能抓到正文」——那正是分组
-      // 标题的原话。分组标题就在上方几十点的地方，重复一遍不增加任何信息。
-      Text(name).font(.headline)
-      Spacer(minLength: 12)
-      VStack(alignment: .trailing, spacing: 3) {
-        statusBadge(
-          isLoggedIn: isLoggedIn,
-          text: isLoggedIn ? "已登录" : "未登录",
-          tone: isLoggedIn ? .active : .neutral
-        )
-        .accessibilityIdentifier(statusIdentifier)
-        if let detail {
-          Text(detail)
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(.tertiary)
-            .textSelection(.enabled)
-        }
-      }
-    }
-  }
-
-  /// 上一次读取 cookie 的实测结果。
-  ///
-  /// 放在这一页是因为「显示未登录」正是在这里被看到的：判断到底是一条都没读到、
-  /// 还是读到了但少一个名字，必须和状态胶囊在同一屏，否则对不上号。
-  @ViewBuilder
-  private func diagnosticLabel(session: SiteSessionController, id: String) -> some View {
-    if let diagnostic = session.sessionDiagnostic {
-      Label(diagnostic, systemImage: "stethoscope")
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .textSelection(.enabled)
-        .fixedSize(horizontal: false, vertical: true)
-        .accessibilityIdentifier("site-login-\(id)-diagnostic")
-    }
-  }
 
   private enum BadgeTone { case active, neutral }
 
@@ -308,11 +316,12 @@ struct SiteLoginSettingsView: View {
   /// 而这一页最常被打开的原因就是「我到底登没登」。
   @ViewBuilder
   private func statusBadge(isLoggedIn: Bool, text: String, tone: BadgeTone) -> some View {
-    let color: Color = tone == .active ? .green : .secondary
+    let color: Color = tone == .active ? appTheme.success : .secondary
     HStack(spacing: 5) {
       Circle()
         .fill(color)
         .frame(width: 6, height: 6)
+        .accessibilityHidden(true)
       Text(text)
         .font(.caption.weight(.medium))
         .foregroundStyle(tone == .active ? color : Color.secondary)
@@ -328,9 +337,9 @@ struct SiteLoginSettingsView: View {
       Image(nsImage: image)
         .resizable()
         .frame(width: 20, height: 20)
-        .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
     } else {
-      RoundedRectangle(cornerRadius: 4, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
         .fill(PlatformIconCatalog.fallbackColor(for: host))
         .frame(width: 20, height: 20)
         .overlay(
@@ -338,19 +347,6 @@ struct SiteLoginSettingsView: View {
             .font(.caption2.weight(.semibold))
             .foregroundStyle(.white)
         )
-    }
-  }
-
-  /// 主要动作靠左、破坏性动作靠右——「清除登录」和「登录」并排同色时容易误点。
-  @ViewBuilder
-  private func cardActions(
-    @ViewBuilder primary: () -> some View,
-    @ViewBuilder destructive: () -> some View
-  ) -> some View {
-    HStack(spacing: 8) {
-      primary()
-      Spacer(minLength: 16)
-      destructive()
     }
   }
 }

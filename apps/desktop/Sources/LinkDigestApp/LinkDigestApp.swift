@@ -710,8 +710,11 @@ enum BrowserReceiverState: Sendable, Equatable {
 
   private func isTranslationLanguageMatch(text: String?, outputLanguage: String) -> Bool {
     guard let text else { return false }
+    // 判断语言时先剥掉开头的元数据块：那段 YAML 全是英文键名，
+    // 混进去会稀释中文正文的占比，让「内容已是中文」误判成「可翻译」。
+    let body = MarkdownNoteFrontmatter.parse(text).body
     return CapturedContentLanguage.isSameOutputLanguage(
-      content: text,
+      content: body.isEmpty ? text : body,
       outputLanguage: outputLanguage
     )
   }

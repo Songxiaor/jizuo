@@ -9,6 +9,7 @@ import SwiftUI
 /// 默认收起。它不是每天要看的东西,而侧栏上面那两块是。
 struct MethodLibraryView: View {
   @ObservedObject var model: HistoryViewModel
+  @Environment(\.appTheme) private var appTheme
 
   @State private var isExpanded = false
   @State private var draft = ""
@@ -43,11 +44,11 @@ struct MethodLibraryView: View {
         Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
           .font(.system(size: 9, weight: .semibold))
         Text("方法库")
-          .font(.system(size: 13, weight: .semibold))
+          .font(.body.weight(.semibold))
         Spacer(minLength: 0)
         if !model.writingMethods.isEmpty {
           Text("\(model.enabledMethodBodies.count) 条在用")
-            .font(.system(size: 11))
+            .font(.subheadline)
             .foregroundStyle(.tertiary)
             .monospacedDigit()
         }
@@ -66,11 +67,11 @@ struct MethodLibraryView: View {
       HStack(spacing: 6) {
         TextField("先给一个反直觉的数据，再解释为什么反直觉", text: $draft)
           .textFieldStyle(.roundedBorder)
-          .font(.system(size: 12))
+          .font(.callout)
           .onSubmit(commit)
           .accessibilityIdentifier("method-library-input")
         Button("加入", action: commit)
-          .font(.system(size: 11))
+          .font(.subheadline)
           .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       }
       // 拒绝的理由要能照着改。「不符合规范」等于没说——用户不知道改什么，
@@ -78,7 +79,7 @@ struct MethodLibraryView: View {
       if let rejection {
         Text(rejection.message)
           .font(.system(size: 10.5))
-          .foregroundStyle(.orange)
+          .foregroundStyle(appTheme.warning)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("method-library-rejection")
       }
@@ -98,7 +99,7 @@ struct MethodLibraryView: View {
           .foregroundStyle(.secondary)
       } else {
         Button("从我的修改里提炼") { model.distillMethods() }
-          .font(.system(size: 11))
+          .font(.subheadline)
           .buttonStyle(.plain)
           .foregroundStyle(model.canDistill ? Color.accentColor : Color.secondary)
           .disabled(!model.canDistill)
@@ -106,7 +107,7 @@ struct MethodLibraryView: View {
           .accessibilityIdentifier("method-library-distill")
         if let reason = model.distillUnavailableReason(), !model.canDistill {
           Text(reason)
-            .font(.system(size: 10))
+            .font(.caption2)
             .foregroundStyle(.tertiary)
             .lineLimit(1)
         }
@@ -118,7 +119,7 @@ struct MethodLibraryView: View {
       HStack(alignment: .top, spacing: 6) {
         Image(systemName: "sparkles")
           .font(.system(size: 9))
-          .foregroundStyle(.orange)
+          .foregroundStyle(appTheme.warning)
           .padding(.top, 2)
         Text(candidate)
           .font(.system(size: 11.5))
@@ -148,8 +149,8 @@ struct MethodLibraryView: View {
       .padding(.horizontal, 8)
       .padding(.vertical, 5)
       .background(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(Color.orange.opacity(0.08))
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+          .fill(appTheme.warning.opacity(0.08))
       )
     }
   }
@@ -198,7 +199,7 @@ struct MethodLibraryView: View {
 
   private var emptyState: some View {
     Text("还没有方法。写下一条能照着做的动作，起草时会一起交给 AI。")
-      .font(.system(size: 11))
+      .font(.subheadline)
       .foregroundStyle(.tertiary)
       .fixedSize(horizontal: false, vertical: true)
   }

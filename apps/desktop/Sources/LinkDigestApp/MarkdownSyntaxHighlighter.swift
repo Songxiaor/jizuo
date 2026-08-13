@@ -15,8 +15,9 @@ import LinkDigestCore
 enum MarkdownSyntaxHighlighter {
   /// 一条着色规则：匹配什么、怎么画。
   private struct Rule {
-    let pattern: String
-    let options: NSRegularExpression.Options
+    /// 预编译的正则。以前存 pattern 字符串、每次着色现编译——12 条规则
+    /// 每敲一个字就重新编译 12 次，是编辑热路径上最贵的无用功。
+    let regex: NSRegularExpression
     /// 作用于整个匹配的样式。
     let style: (_ base: NSFont, _ palette: Palette) -> [NSAttributedString.Key: Any]
     /// 只作用于第 1 个捕获组——那是结构标记本身（`#`、`>`、`-`）。
@@ -24,6 +25,18 @@ enum MarkdownSyntaxHighlighter {
     /// 标记要留着（删掉就成了所见即所得，写的和存的对不上），但它不该和标题
     /// 一样黑、一样大。淡下去之后，一行的视觉重心才落在文字上。
     var markerStyle: ((_ base: NSFont, _ palette: Palette) -> [NSAttributedString.Key: Any])?
+
+    init?(
+      pattern: String,
+      options: NSRegularExpression.Options,
+      style: @escaping (_ base: NSFont, _ palette: Palette) -> [NSAttributedString.Key: Any],
+      markerStyle: ((_ base: NSFont, _ palette: Palette) -> [NSAttributedString.Key: Any])? = nil
+    ) {
+      guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else { return nil }
+      self.regex = regex
+      self.style = style
+      self.markerStyle = markerStyle
+    }
   }
 
   struct Palette {
@@ -38,13 +51,25 @@ enum MarkdownSyntaxHighlighter {
       self.accent = accent
       self.code = code
     }
+
+    /// 供「是否需要重新着色」判断用的稳定指纹：四个颜色解析成 sRGB 分量。
+    /// 语义色（如 .primary）解析结果随外观变化，所以调用方还要连同
+    /// 当前外观名一起比较，见 MarkdownTextView.Coordinator。
+    var fingerprint: [CGFloat] {
+      [primary, secondary, accent, code].flatMap { color -> [CGFloat] in
+        guard let srgb = color.usingColorSpace(.sRGB) else { return [-1, -1, -1, -1] }
+        return [srgb.redComponent, srgb.greenComponent, srgb.blueComponent, srgb.alphaComponent]
+      }
+    }
   }
 
   /// 规则按「先粗后细」排：标题整行的字号要先定下来，行内强调再叠加。
   ///
-  /// 用计算属性而非 static let：规则里带闭包，不是 Sendable，作为全局常量会被
-  /// 并发检查拦下。着色只在主线程发生，每次重建这几条规则的开销可以忽略。
-  private static var rules: [Rule] {[
+  /// `@MainActor static let`：规则里带闭包不是 Sendable，钉在主线程上既满足
+  /// 并发检查，又让正则只编译一次（着色本来就只在主线程发生）。
+  @MainActor private static let rules: [Rule] = compileRules()
+
+  private static func compileRules() -> [Rule] {[
     // 标题：整行放大加粗，`#` 本身淡出——它是结构标记，不是内容。
     Rule(
       pattern: #"^(#{1,6})\s+(.+)$"#,
@@ -121,7 +146,7 @@ enum MarkdownSyntaxHighlighter {
     Rule(pattern: #"\[[^\]\n]*\]\([^)\s]+\)"#, options: []) { _, palette in
       [.foregroundColor: palette.accent]
     },
-  ]}
+  ].compactMap { $0 }}
 
   /// 双链单独一遍，不走 `rules`：它要按每处链接的目标写不同的 `.link` 值，
   /// 而 `rules` 的样式只认「整段匹配用同一份属性」。
@@ -146,7 +171,7 @@ enum MarkdownSyntaxHighlighter {
   }
 
   /// 就地重新着色。只改属性、不动文字，因此不会打断输入法组字。
-  static func apply(
+  @MainActor static func apply(
     to storage: NSTextStorage,
     baseFont: NSFont,
     palette: Palette,
@@ -163,8 +188,7 @@ enum MarkdownSyntaxHighlighter {
     )
     let text = storage.string
     for rule in rules {
-      guard let regex = try? NSRegularExpression(pattern: rule.pattern, options: rule.options) else { continue }
-      for match in regex.matches(in: text, range: full) {
+      for match in rule.regex.matches(in: text, range: full) {
         storage.addAttributes(rule.style(baseFont, palette), range: match.range)
         // 标记样式后叠：它要压过刚刚铺上去的整行样式。
         if let markerStyle = rule.markerStyle, match.numberOfRanges > 1 {

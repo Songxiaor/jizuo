@@ -114,7 +114,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
         hairline: ClaudePalette.lightGray,    // #E8E6DC
         badge: ClaudePalette.lightGray,
         primaryText: ClaudePalette.dark,      // #141413
-        secondaryText: ClaudePalette.midGray, // #B0AEA5
+        secondaryText: ClaudePalette.midGray, // #6E6C63
         accent: ClaudePalette.orange,
         // 纸底上的状态色统一降饱和：默认的 .green/.red 在暖白纸上过跳。
         success: themeColor(0x5A, 0x8A, 0x5C),
@@ -178,8 +178,8 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
     case .mono:
       // 可读性优先：纯白底、纯黑字，强调色也是黑。
       //
-      // 次要文字用 #4A4A4A（对白底约 9:1）而不是 paper 那种 #B0AEA5——
-      // 那个在这套主题里只有 2 出头，正好违背「高对比」这三个字。
+      // 次要文字用 #4A4A4A（对白底约 9:1）而不是 paper 那种 #6E6C63——
+      // paper 那档过了 AA 但够不上「高对比」这三个字。
       // 分隔线同理用 #767676，淡到看不见的线在这里是缺陷不是克制。
       HistoryThemeTokens(
         isNative: false,
@@ -230,7 +230,9 @@ private enum ClaudePalette {
   static let sunken = themeColor(0xEF, 0xED, 0xE5)
   /// 详情区那张卡片，最亮的一档。
   static let raised = themeColor(0xFD, 0xFC, 0xF9)
-  static let midGray = themeColor(0xB0, 0xAE, 0xA5)
+  // 次要文字必须在两种底上都过 WCAG AA（4.5:1）：正文卡 #FDFCF9 上 5.1:1，
+  // 辅助列画布 #EFEDE5 上 4.5:1。上一档 #8A887E 只有 3.5:1 / 3.2:1。
+  static let midGray = themeColor(0x6E, 0x6C, 0x63)
   static let lightGray = themeColor(0xE8, 0xE6, 0xDC)
   static let orange = themeColor(0xD9, 0x77, 0x57)
 }
@@ -274,7 +276,8 @@ private enum MonoPalette {
   static let secondary = themeColor(0x4A, 0x4A, 0x4A)
 }
 
-struct HistoryThemeTokens {
+// Equatable：列表行按值输入决定是否重算（HistoryRowView ==），主题令牌是输入之一。
+struct HistoryThemeTokens: Equatable {
   /// 原生模式：不绘制自定义画布/面板背景，交还系统 material。
   let isNative: Bool
   let canvas: Color

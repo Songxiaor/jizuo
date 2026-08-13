@@ -155,7 +155,7 @@ private struct MarkdownTextView: NSViewRepresentable {
     context.coordinator.contentHeight = contentHeight
     context.coordinator.onFollowWikiLink = onFollowWikiLink
     context.coordinator.linkableTitles = linkableTitles
-    context.coordinator.applyHighlight(to: textView, font: font, palette: palette, lineSpacing: lineSpacing)
+    context.coordinator.applyHighlightIfNeeded(to: textView, font: font, palette: palette, lineSpacing: lineSpacing)
     return scroll
   }
 
@@ -166,11 +166,18 @@ private struct MarkdownTextView: NSViewRepresentable {
       let selected = textView.selectedRange()
       textView.string = text
       textView.setSelectedRange(NSRange(location: min(selected.location, text.utf16.count), length: 0))
+      context.coordinator.noteTextReplaced()
     }
     context.coordinator.contentHeight = contentHeight
     context.coordinator.onFollowWikiLink = onFollowWikiLink
     context.coordinator.linkableTitles = linkableTitles
-    context.coordinator.applyHighlight(to: textView, font: font, palette: palette, lineSpacing: lineSpacing)
+    // 详情页任何无关状态变化（转写进度、图标加载……）都会走到这里。
+    // 着色带指纹判断，没变化就跳过；但高度仍要每次回报——窗口宽度变化
+    // 引起的重排不改文字也不改字体，只有排版高度变了。
+    let didHighlight = context.coordinator.applyHighlightIfNeeded(
+      to: textView, font: font, palette: palette, lineSpacing: lineSpacing
+    )
+    if !didHighlight { context.coordinator.reportHeight(of: textView) }
   }
 
   func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
@@ -257,6 +264,7 @@ private struct MarkdownTextView: NSViewRepresentable {
 
     func textDidChange(_ notification: Notification) {
       guard !isApplyingHighlight, let textView = notification.object as? NSTextView else { return }
+      textVersion += 1
       text.wrappedValue = textView.string
       reportHeight(of: textView)
       // 刚打完 `[[` 就把候选弹出来。只在这一刻触发：弹出之后继续打字由系统
@@ -375,13 +383,54 @@ private struct MarkdownTextView: NSViewRepresentable {
       DispatchQueue.main.async { contentHeight.wrappedValue = height }
     }
 
-    func applyHighlight(
+    // MARK: - 着色去重
+
+    /// 文本代数：每次真实的文字变化（键入、撤销、外部替换）加一。
+    /// 它是着色指纹的一部分——SwiftUI 因无关状态重渲染时文字没变，
+    /// 指纹相同，整个全文着色就可以跳过。
+    var textVersion = 0
+
+    /// 外部（绑定另一侧）整体替换了文字时由 updateNSView 调用。
+    func noteTextReplaced() { textVersion += 1 }
+
+    /// 上一次真正执行着色时的输入组合。
+    private struct HighlightFingerprint: Equatable {
+      let textVersion: Int
+      let fontName: String
+      let fontSize: CGFloat
+      let lineSpacing: CGFloat
+      /// 语义色（.primary 等）解析结果随外观翻转，色值指纹抓不到这种变化，
+      /// 所以把全局外观名也纳入指纹。
+      let appearanceName: NSAppearance.Name
+      let paletteKey: [CGFloat]
+    }
+
+    private var lastHighlightFingerprint: HighlightFingerprint?
+
+    /// 需要时才全文着色；输入组合与上次一致则整段跳过。
+    ///
+    /// 详情页观察着一个有几十个发布属性的 ViewModel，任何无关变化都会带着
+    /// 编辑器走一遍 updateNSView。以前这里无条件全文正则着色，是「打开笔记
+    /// 后整个界面都变卡」的直接原因之一。
+    @discardableResult
+    func applyHighlightIfNeeded(
       to textView: NSTextView,
       font: NSFont,
       palette: MarkdownSyntaxHighlighter.Palette,
       lineSpacing: CGFloat
-    ) {
-      guard let storage = textView.textStorage else { return }
+    ) -> Bool {
+      guard let storage = textView.textStorage else { return false }
+      let fingerprint = HighlightFingerprint(
+        textVersion: textVersion,
+        fontName: font.fontName,
+        fontSize: font.pointSize,
+        lineSpacing: lineSpacing,
+        appearanceName: NSApp.effectiveAppearance.name,
+        paletteKey: palette.fingerprint
+      )
+      guard fingerprint != lastHighlightFingerprint else { return false }
+      lastHighlightFingerprint = fingerprint
+
       isApplyingHighlight = true
       defer { isApplyingHighlight = false }
       // 着色只改属性不改文字，所以光标位置不受影响；但仍显式保存恢复，
@@ -393,6 +442,7 @@ private struct MarkdownTextView: NSViewRepresentable {
       textView.setSelectedRange(selected)
       // 字号、行距、着色都会改变排版高度，重新量一次。
       reportHeight(of: textView)
+      return true
     }
   }
 }

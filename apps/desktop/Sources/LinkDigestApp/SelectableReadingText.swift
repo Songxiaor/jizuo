@@ -9,6 +9,12 @@ enum ReadingTextComposer {
     let primary: NSColor
     let secondary: NSColor
     let accent: NSColor
+
+    /// 渲染缓存键用的稳定指纹：三色解析成 sRGB 分量（语义色的外观差异
+    /// 由缓存键里的外观名兜住，见 ReadingRenderCache）。
+    var fingerprint: [CGFloat] {
+      [primary, secondary, accent].flatMap(ReadingRenderCache.colorFingerprint)
+    }
   }
 
   /// 与 MarkdownPresentation 的阅读排版同一套字号体系。
@@ -200,14 +206,21 @@ struct SelectableReadingTextView: NSViewRepresentable {
       .cursor: NSCursor.pointingHand,
     ]
     view.textStorage?.setAttributedString(attributed)
+    context.coordinator.lastApplied = attributed
     return view
   }
 
   func updateNSView(_ view: SelfSizingTextView, context: Context) {
     context.coordinator.onOpenLink = onOpenLink
-    if view.textStorage?.isEqual(to: attributed) != true {
-      view.textStorage?.setAttributedString(attributed)
-      view.invalidateIntrinsicContentSize()
+    // 渲染缓存命中时传进来的是同一个实例，`===` 直接短路；实例不同再退回
+    // 深比较（整篇逐属性比较，长文并不便宜），确实变了才重设存储——
+    // setAttributedString 会引发整篇重排版，是这里最贵的一步。
+    if context.coordinator.lastApplied !== attributed {
+      if view.textStorage?.isEqual(to: attributed) != true {
+        view.textStorage?.setAttributedString(attributed)
+        view.invalidateIntrinsicContentSize()
+      }
+      context.coordinator.lastApplied = attributed
     }
     view.linkTextAttributes?[.foregroundColor] = accent
     if context.coordinator.lastRevealText != revealText,
@@ -225,6 +238,8 @@ struct SelectableReadingTextView: NSViewRepresentable {
   final class Coordinator: NSObject, NSTextViewDelegate {
     var onOpenLink: (URL) -> Void
     var lastRevealText: String?
+    /// 上次应用到 textStorage 的实例，用于 `===` 快速跳过（见 updateNSView）。
+    var lastApplied: NSAttributedString?
     init(onOpenLink: @escaping (URL) -> Void) { self.onOpenLink = onOpenLink }
 
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {

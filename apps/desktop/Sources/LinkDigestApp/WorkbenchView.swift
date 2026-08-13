@@ -90,7 +90,7 @@ struct PieceStageTrack: View {
     let alignment: Alignment =
       index == 0 ? .leading : (index == PieceStage.track.count - 1 ? .trailing : .center)
     let text = Text(item.displayName)
-      .font(.system(size: 10))
+      .font(.caption2)
       .foregroundStyle(index == currentIndex ? Color.accentColor : Color.secondary.opacity(0.6))
       .fontWeight(index == currentIndex ? .semibold : .regular)
 
@@ -110,6 +110,7 @@ struct PieceStageTrack: View {
 
 /// 首页那张卡片:一件创作现在长到哪了。
 struct PieceCard: View {
+  @Environment(\.appTheme) private var appTheme
   let piece: PieceSummary
   let isSelected: Bool
 
@@ -125,12 +126,14 @@ struct PieceCard: View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 8) {
         Text(piece.stage.displayName)
-          .font(.system(size: 11, weight: .semibold))
-          .foregroundStyle(piece.stage == .done ? Color.secondary : Color.white)
+          .font(.subheadline.weight(.semibold))
+          .foregroundStyle(piece.stage == .done ? Color.secondary : appTheme.selectionText)
           .padding(.horizontal, 8)
           .padding(.vertical, 2)
           .background(
-            Capsule().fill(piece.stage == .done ? Color.clear : Color.accentColor)
+            // selectionFill 与 selectionText 是配对令牌：ink 主题的 accent
+            // 是亮橙，压白字对比只有约 1.9:1，selectionFill 才是给填充用的深档。
+            Capsule().fill(piece.stage == .done ? Color.clear : appTheme.selectionFill)
           )
           .overlay(
             Capsule().strokeBorder(
@@ -138,7 +141,8 @@ struct PieceCard: View {
             )
           )
         Text(piece.title)
-          .font(.system(size: 14, weight: .semibold))
+          // 卡片标题原为 14pt；.subheadline（11pt）缩得太狠，.body（13pt）最接近。
+          .font(.body.weight(.semibold))
           .lineLimit(2)
           .multilineTextAlignment(.leading)
         Spacer(minLength: 0)
@@ -162,18 +166,18 @@ struct PieceCard: View {
         }
         Spacer(minLength: 0)
       }
-      .font(.system(size: 11))
+      .font(.subheadline)
       .foregroundStyle(.tertiary)
       .monospacedDigit()
     }
     .padding(12)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
-        .fill(isSelected ? Color.accentColor.opacity(0.12) : Color(nsColor: .controlBackgroundColor).opacity(0.5))
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+        .fill(isSelected ? Color.accentColor.opacity(0.12) : appTheme.card)
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
         .strokeBorder(
           isSelected ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.06),
           lineWidth: 1
@@ -205,11 +209,11 @@ struct WorkbenchListView: View {
           Divider()
           HStack {
             Text("在做的")
-              .font(.system(size: 13, weight: .semibold))
+              .font(.body.weight(.semibold))
               .foregroundStyle(.secondary)
             Spacer()
-            Text(activeCountLabel)
-              .font(.system(size: 11))
+              Text(activeCountLabel)
+              .font(.subheadline)
               .foregroundStyle(.tertiary)
               .monospacedDigit()
           }
@@ -221,13 +225,17 @@ struct WorkbenchListView: View {
           } else {
             LazyVStack(spacing: 8) {
               ForEach(model.pieces) { piece in
-                PieceCard(piece: piece, isSelected: model.selectedPieceID == piece.id)
-                  .onTapGesture { model.selectedPieceID = piece.id }
-                  .contextMenu {
-                    Button("删除这件创作（保留稿子）", role: .destructive) {
-                      model.deletePiece(id: piece.id)
-                    }
+                Button {
+                  model.selectedPieceID = piece.id
+                } label: {
+                  PieceCard(piece: piece, isSelected: model.selectedPieceID == piece.id)
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                  Button("删除这件创作（保留稿子）", role: .destructive) {
+                    model.deletePiece(id: piece.id)
                   }
+                }
               }
             }
             .padding(.horizontal, 12)
@@ -249,7 +257,7 @@ struct WorkbenchListView: View {
           Text("记一个新灵感")
           Spacer(minLength: 0)
         }
-        .font(.system(size: 13))
+        .font(.body)
         .padding(.horizontal, 14)
         .padding(.vertical, 10)
         .contentShape(Rectangle())
@@ -268,7 +276,7 @@ struct WorkbenchListView: View {
   private var emptyState: some View {
     VStack(spacing: 10) {
       Image(systemName: "lightbulb")
-        .font(.system(size: 26))
+        .font(.system(size: DesignTokens.IconSize.empty))
         .foregroundStyle(.tertiary)
       Text("还没有在做的创作")
         .font(.callout.weight(.medium))

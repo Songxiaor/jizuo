@@ -141,6 +141,7 @@ struct HistoryContentView: View {
             ideal: DesignTokens.Layout.sidebarIdeal,
             max: DesignTokens.Layout.sidebarMax
           )
+          .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
         } content: {
           // 工作台接管中间列：它列的是「正在做的创作」，和历史条目不是一种东西，
           // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
@@ -160,7 +161,11 @@ struct HistoryContentView: View {
             ideal: DesignTokens.Layout.listIdeal,
             max: DesignTokens.Layout.listIdeal + DesignTokens.Space.xxl
           )
-        } detail: { detailColumn }
+          .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
+        } detail: {
+          detailColumn
+            .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
+        }
           // 窗口级分栏细线：贯通工具栏直达窗口顶；系统玻璃主题走原生外观，
           // 图片灯箱打开时移除，避免细线盖在放大的图片上。
           .background(WindowColumnDividerInstaller(
@@ -235,11 +240,11 @@ struct HistoryContentView: View {
           } message: {
             Text("App 会在本机从视频流提取短音频分片，再发送到你配置的 /audio/transcriptions 服务。完整视频和带签名的视频 URL 不会交给模型商家；文字会保存到本机历史。")
           }
-          .alert("将转写文字发送给聊天模型整理？", isPresented: $model.isTranscriptTidyConfirmationPresented) {
+          .alert("将转写文字发送给聊天模型校对？", isPresented: $model.isTranscriptTidyConfirmationPresented) {
             Button("取消", role: .cancel) { model.cancelTranscriptTidyConfirmation() }
-            Button("同意并整理") { model.confirmTranscriptTidy() }
+            Button("同意并校对") { model.confirmTranscriptTidy() }
           } message: {
-            Text("App 只发送转写文字本身，用于修正标点、分段和明显错别字，不发送视频、音频或链接。整理稿保存为最新原文，原始转写稿保留在历史中。")
+            Text("App 只发送转写文字本身，用于修正标点、分段和明显错别字，不发送视频、音频或链接。校对稿保存为最新原文，原始转写稿保留在历史中。")
           }
           .fileExporter(
             isPresented: $model.isExportPanelPresented,
@@ -367,8 +372,8 @@ struct HistoryContentView: View {
       .frame(maxWidth: .infinity)
       .frame(height: 30)
       // 白底圆角搜索胶囊浮在暖色列表面板上，与参考稿的搜索框一致。
-      .background(theme.card, in: RoundedRectangle(cornerRadius: 8))
-      .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.hairline, lineWidth: 1))
+      .background(theme.card, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
+      .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(theme.hairline, lineWidth: 1))
       .padding(.horizontal, 10).padding(.vertical, 10)
         .accessibilityIdentifier("history-search")
         .background(ReleaseInitialSearchFocus().allowsHitTesting(false))
@@ -406,7 +411,15 @@ struct HistoryContentView: View {
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-filter-empty")
         } else {
-          Spacer()
+          // 没有任何内容时也要说话：纯空白分不清「扫完了没有」和「还没加载」。
+          // 完整的三步引导在详情列，这里只给一句轻量状态。
+          HistoryInlineState(
+            symbol: "tray",
+            title: "还没有保存的内容",
+            message: "从浏览器扩展保存第一条链接后，会显示在这里。"
+          )
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityIdentifier("history-empty")
         }
       case .failed where model.rows.isEmpty:
         if model.canRetryList {
@@ -440,7 +453,12 @@ struct HistoryContentView: View {
             }
           }
           ForEach(model.rows, id: \.taskID) { row in
-            HistoryRowView(row: row, model: model, theme: theme).tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
+            HistoryRowView(
+              row: row,
+              isSelected: model.selectedTaskIDs.contains(row.taskID),
+              faviconURL: model.faviconImageURL(for: row),
+              theme: theme
+            ).equatable().tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
               .listRowBackground(Color.clear)
               .listRowSeparator(.hidden)
               .contextMenu {
@@ -800,7 +818,7 @@ struct HistoryContentView: View {
   private var workbenchPlaceholder: some View {
     VStack(spacing: 12) {
       Image(systemName: "hammer")
-        .font(.system(size: 32))
+        .font(.system(size: DesignTokens.IconSize.empty))
         .foregroundStyle(.tertiary)
       Text(model.pieces.isEmpty ? "还没有在做的创作" : "从左边选一件")
         .font(.title3.weight(.medium))
@@ -834,9 +852,9 @@ struct HistoryContentView: View {
         .lineLimit(2...5)
         .padding(10)
         .background(
-          RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor))
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.md).fill(Color(nsColor: .textBackgroundColor))
         )
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(theme.hairline))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).strokeBorder(theme.hairline))
         .onSubmit(commitNewSpark)
       HStack {
         Spacer()
@@ -900,7 +918,9 @@ struct HistoryContentView: View {
   @ViewBuilder private var detailStateContent: some View {
     if model.selectedTaskCount > 1 {
       VStack(spacing: 12) {
-        Image(systemName: "checklist.checked").font(.system(size: 40)).foregroundStyle(.secondary)
+        Image(systemName: "checklist.checked")
+          .font(.system(size: DesignTokens.IconSize.empty, weight: .medium))
+          .foregroundStyle(.secondary)
         Text("已选择 \(model.selectedTaskCount) 项").font(.title2.weight(.semibold))
         Text("可从工具栏、右键菜单或 Delete 键批量删除；导出、标签、识别和转写等单条能力暂不可用。")
           .font(.body)
@@ -985,11 +1005,11 @@ struct HistoryContentView: View {
   private var emptyNotesDetail: some View {
     VStack(spacing: 0) {
       Image(systemName: "square.and.pencil")
-        .font(.system(size: 30, weight: .medium))
+        .font(.system(size: DesignTokens.IconSize.empty, weight: .medium))
         .foregroundStyle(.secondary)
         .frame(width: 72, height: 72)
-        .background(theme.badge, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(theme.hairline, lineWidth: 1))
+        .background(theme.badge, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl).stroke(theme.hairline, lineWidth: 1))
         .padding(.bottom, 18)
       Text("还没有笔记").font(.title2.weight(.semibold))
         .padding(.bottom, 6)
@@ -1016,11 +1036,11 @@ struct HistoryContentView: View {
       }
       // 图标放进软底圆角瓦片，参考稿里 Browse channels 卡片的图形语言。
       Image(systemName: "doc.text.magnifyingglass")
-        .font(.system(size: 30, weight: .medium))
+        .font(.system(size: DesignTokens.IconSize.empty, weight: .medium))
         .foregroundStyle(.secondary)
         .frame(width: 72, height: 72)
-        .background(theme.badge, in: RoundedRectangle(cornerRadius: 18))
-        .overlay(RoundedRectangle(cornerRadius: 18).stroke(theme.hairline, lineWidth: 1))
+        .background(theme.badge, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl).stroke(theme.hairline, lineWidth: 1))
         .padding(.bottom, 18)
       Text(isCaptureOnboardingDismissed ? "还没有保存页面" : "也可以直接添加公开链接")
         .font(.title2.weight(.semibold))
@@ -1072,6 +1092,7 @@ struct HistoryContentView: View {
         }
         .buttonStyle(.plain)
         .help("不再显示")
+        .accessibilityLabel("不再显示")
       }
       onboardingStep(
         number: 1,
@@ -1103,8 +1124,8 @@ struct HistoryContentView: View {
     }
     .padding(18)
     .frame(maxWidth: 470, alignment: .leading)
-    .background(theme.card, in: RoundedRectangle(cornerRadius: 18))
-    .overlay(RoundedRectangle(cornerRadius: 18).stroke(theme.hairline, lineWidth: 1))
+    .background(theme.card, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
+    .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl).stroke(theme.hairline, lineWidth: 1))
     .accessibilityIdentifier("first-capture-onboarding")
   }
 
@@ -1135,6 +1156,7 @@ struct HistoryContentView: View {
       } label: { Image(systemName: "xmark") }
         .buttonStyle(.plain)
         .help("不再显示")
+        .accessibilityLabel("不再显示")
     }
     .padding(.horizontal, 16).padding(.vertical, 10)
     .background(theme.accent.opacity(0.08))
@@ -1193,10 +1215,10 @@ private struct HistoryInlineState: View {
   var body: some View {
     VStack(spacing: 10) {
       Image(systemName: symbol)
-        .font(.system(size: 26, weight: .medium))
+        .font(.system(size: DesignTokens.IconSize.empty, weight: .medium))
         .foregroundStyle(.secondary)
         .frame(width: 58, height: 58)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: 15))
+        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
       Text(title).font(.headline)
       Text(message)
         .font(.callout)
@@ -1213,15 +1235,22 @@ private struct HistoryInlineState: View {
 
 /// 窗口工具栏的主题背景。主窗口与设置窗口共用，避免两处各写一份判据再各自漂移
 /// ——设置窗口原来自己写了一份且判据是 `== .paper`，深色主题下工具栏没跟上。
+///
+/// 必须挂在**每一列的内容**上，不能只挂在 NavigationSplitView 外面：macOS 的
+/// 统一工具栏按列分段取背景，根部那一份对分栏窗口不生效。实测的表现就是
+/// 详情列滚动时，22pt 的标题原样从齿轮和模型按钮底下穿过去。
 struct HistoryWindowToolbarThemeModifier: ViewModifier {
   let theme: HistoryThemeTokens
+  /// 这一列头顶那段工具栏条的底色。辅助列用画布色；详情列传正文色——
+  /// 静止时和内容同色无痕，滚动时是一块不透明的挡板。
+  var background: Color? = nil
 
   @ViewBuilder func body(content: Content) -> some View {
     if theme.isNative {
       content
     } else {
       content
-        .toolbarBackground(theme.canvas, for: .windowToolbar)
+        .toolbarBackground(background ?? theme.canvas, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
     }
   }
@@ -1250,7 +1279,7 @@ private struct ClipboardSuggestionBanner: View {
     }
     .padding(10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
     .accessibilityIdentifier("history-clipboard-suggestion")
   }
 }
@@ -1273,7 +1302,7 @@ struct PlatformNavigationIcon: View {
         .font(.system(size: BadgeTypography.size, weight: .bold))
         .foregroundStyle(.white)
         .frame(width: 16, height: 16)
-        .background(PlatformIconCatalog.fallbackColor(for: host), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
+        .background(PlatformIconCatalog.fallbackColor(for: host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
     }
   }
 }
@@ -1383,13 +1412,16 @@ private struct PendingCaptureRow: View {
 }
 
 private struct HistoryRowView: View {
+  // 只收值输入，不再整体观察 ViewModel：以前每行都挂着 @ObservedObject，
+  // 任何无关的 @Published 变化（转写流式输出、图标到货、导航计数……）
+  // 都会让列表逐行整体重算。现在行体只在自己的输入变化时才重算（见文件
+  // 下方的 Equatable 扩展），选中/图标由父层算好传进来。
   let row: HistoryRowProjection
-  @ObservedObject var model: HistoryViewModel
+  let isSelected: Bool
+  let faviconURL: URL?
   let theme: HistoryThemeTokens
   @State private var isHovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  private var isSelected: Bool { model.selectedTaskIDs.contains(row.taskID) }
 
   /// 图24 式状态点：已有总结产物为绿色，未总结为橙色。
   private var isSummarized: Bool {
@@ -1544,30 +1576,67 @@ private struct HistoryRowView: View {
     if row.host == HistoryPlatformDisplay.noteHost {
       // 笔记没有站点图标可取。给它侧边栏同一个符号，一眼能和抓来的东西分开。
       Image(systemName: "square.and.pencil")
-        .font(.system(size: 12, weight: .medium))
+        .font(.system(size: DesignTokens.IconSize.inline, weight: .medium))
         .foregroundStyle(.tint)
         .frame(width: 18, height: 18)
         .accessibilityLabel("笔记")
     } else if let image = PlatformIconCatalog.image(for: row.host) {
       Image(nsImage: image).resizable().scaledToFit().frame(width: 18, height: 18)
         .accessibilityLabel("\(row.host) 图标")
-    } else if let url = model.faviconImageURL(for: row), let image = HistoryFaviconImageMemoryCache.image(
-      at: url,
-      host: row.host,
-      taskID: row.taskID
-    ) {
+    } else if let url = faviconURL {
+      HistoryFaviconDiskImage(url: url, host: row.host, taskID: row.taskID) {
+        fallbackBadge
+      }
+    } else {
+      fallbackBadge
+    }
+  }
+
+  /// Deterministic initial mark. A source with neither a bundled icon nor a
+  /// reachable favicon still gets a stable, identifiable badge.
+  private var fallbackBadge: some View {
+    Text(PlatformIconCatalog.fallbackInitial(for: row.host))
+      .font(.system(size: BadgeTypography.size, weight: .bold))
+      .foregroundStyle(.white)
+      .frame(width: 16, height: 16)
+      .background(PlatformIconCatalog.fallbackColor(for: row.host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+      .padding(.top, 1)
+      .accessibilityLabel("\(row.host) 图标")
+  }
+}
+
+/// 行体只随自己的输入变化重算。theme 参与比较：主题切换时行必须换色，
+/// 而行拿的是传值不是环境，比较里漏掉它会让旧配色滞留到下一次输入变化。
+extension HistoryRowView: Equatable {
+  // nonisolated：Equatable 是非隔离协议，比较的又都是传值的存储属性，
+  // 不碰主线程状态；不标的话 Swift 6 视为跨隔离一致性拒绝编译。
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.row == rhs.row
+      && lhs.isSelected == rhs.isSelected
+      && lhs.faviconURL == rhs.faviconURL
+      && lhs.theme == rhs.theme
+  }
+}
+
+/// 磁盘上的站点图标：内存缓存命中就直接画；未命中先画占位徽标，文件读取
+/// 放到后台，读完入缓存再切换。以前是在行 body 里同步读盘构造图像——
+/// 列表滚动或整表重建时，几十行图标的磁盘读取全部压在主线程上。
+private struct HistoryFaviconDiskImage<Fallback: View>: View {
+  let url: URL
+  let host: String
+  let taskID: TaskID
+  @ViewBuilder var fallback: () -> Fallback
+  @State private var loaded: NSImage?
+
+  var body: some View {
+    if let image = HistoryFaviconImageMemoryCache.cachedImage(host: host, taskID: taskID, url: url) ?? loaded {
       Image(nsImage: image).resizable().scaledToFit().frame(width: 18, height: 18)
         .accessibilityHidden(true)
     } else {
-      // Deterministic initial mark. A source with neither a bundled icon nor a
-      // reachable favicon still gets a stable, identifiable badge.
-      Text(PlatformIconCatalog.fallbackInitial(for: row.host))
-        .font(.system(size: BadgeTypography.size, weight: .bold))
-        .foregroundStyle(.white)
-        .frame(width: 16, height: 16)
-        .background(PlatformIconCatalog.fallbackColor(for: row.host), in: RoundedRectangle(cornerRadius: 4, style: .continuous))
-        .padding(.top, 1)
-        .accessibilityLabel("\(row.host) 图标")
+      fallback()
+        .task(id: url) {
+          loaded = await HistoryFaviconImageMemoryCache.decodeImage(at: url, host: host, taskID: taskID)
+        }
     }
   }
 }
@@ -1576,6 +1645,10 @@ private struct HistoryRowView: View {
 /// or favicon callbacks change. This process-local cache keeps disk image
 /// decoding out of that hot path. `NSCache` is thread-safe and bounded, so it
 /// remains safe when AppKit asks for a view from a different rendering thread.
+///
+/// body 里只允许查内存（`cachedImage`）；磁盘读取一律走 `decodeImage`——
+/// 文件 I/O 在后台完成，只把字节变成 NSImage 这一步留在主线程（小图标
+/// 的解码本身是微秒级，贵的是读盘）。
 private enum HistoryFaviconImageMemoryCache {
   nonisolated(unsafe) private static let images: NSCache<NSString, NSImage> = {
     let cache = NSCache<NSString, NSImage>()
@@ -1583,13 +1656,26 @@ private enum HistoryFaviconImageMemoryCache {
     return cache
   }()
 
-  static func image(at url: URL, host: String, taskID: TaskID) -> NSImage? {
-    let hostKey = "host:\(PlatformIconCatalog.normalizedHost(host))" as NSString
-    let taskKey = "task:\(taskID.rawValue):\(url.absoluteString)" as NSString
-    if let cached = images.object(forKey: taskKey) ?? images.object(forKey: hostKey) { return cached }
-    guard let decoded = NSImage(contentsOf: url) else { return nil }
-    images.setObject(decoded, forKey: hostKey)
-    images.setObject(decoded, forKey: taskKey)
+  private static func keys(url: URL, host: String, taskID: TaskID) -> (host: NSString, task: NSString) {
+    (
+      "host:\(PlatformIconCatalog.normalizedHost(host))" as NSString,
+      "task:\(taskID.rawValue):\(url.absoluteString)" as NSString
+    )
+  }
+
+  static func cachedImage(host: String, taskID: TaskID, url: URL) -> NSImage? {
+    let keys = keys(url: url, host: host, taskID: taskID)
+    return images.object(forKey: keys.task) ?? images.object(forKey: keys.host)
+  }
+
+  @MainActor
+  static func decodeImage(at url: URL, host: String, taskID: TaskID) async -> NSImage? {
+    if let cached = cachedImage(host: host, taskID: taskID, url: url) { return cached }
+    let bytes = await Task.detached(priority: .utility) { try? Data(contentsOf: url) }.value
+    guard let bytes, let decoded = NSImage(data: bytes) else { return nil }
+    let keys = keys(url: url, host: host, taskID: taskID)
+    images.setObject(decoded, forKey: keys.host)
+    images.setObject(decoded, forKey: keys.task)
     return decoded
   }
 }
@@ -2081,6 +2167,8 @@ private struct HistoryDetailView: View {
               snapshotID: capture.snapshotID,
               model: model,
               onlineTranscriptionModel: providerSettings.effectiveTranscriptionModelName,
+              tidyModel: providerSettings.effectiveTidyModelName,
+              autoTidyEnabled: providerSettings.autoTidyTranscription,
               playback: remotePreviewPlayback,
               onRefreshStream: {
                 remotePreviewPlayback.release()
@@ -2118,7 +2206,7 @@ private struct HistoryDetailView: View {
                 .foregroundStyle(.secondary)
             }
             .padding(14)
-            .background(theme.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+            .background(theme.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
             .padding(.top, 14)
             .accessibilityIdentifier("history-video-local-missing")
           } else if localMediaFileURL == nil,
@@ -2131,6 +2219,8 @@ private struct HistoryDetailView: View {
               snapshotID: latestSourceSnapshot?.id ?? detail.snapshots.last?.id ?? ContentSnapshotID(),
               model: model,
               onlineTranscriptionModel: providerSettings.effectiveTranscriptionModelName,
+              tidyModel: providerSettings.effectiveTidyModelName,
+              autoTidyEnabled: providerSettings.autoTidyTranscription,
               playback: remotePreviewPlayback,
               onRefreshStream: {
                 remotePreviewPlayback.release()
@@ -2626,7 +2716,7 @@ private struct HistoryDetailView: View {
           } label: {
             HStack(spacing: 6) {
               Image(systemName: "square.and.pencil")
-                .font(.system(size: 11))
+                .font(.system(size: DesignTokens.IconSize.inline))
                 .foregroundStyle(.tertiary)
               Text(backlink.title)
                 .font(.callout)
@@ -2642,7 +2732,7 @@ private struct HistoryDetailView: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(14)
       .background(
-        RoundedRectangle(cornerRadius: 12, style: .continuous)
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
           .fill(Color(nsColor: .controlBackgroundColor).opacity(0.5))
       )
       .accessibilityIdentifier("note-backlinks")
@@ -2750,7 +2840,7 @@ private struct HistoryDetailView: View {
           }
           Text(appModel.runStatusText)
             .font(.subheadline.weight(.medium))
-            .foregroundStyle(appModel.runHasFailure ? .red : .secondary)
+            .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
             .lineLimit(1)
             .accessibilityIdentifier("model-run-status")
         }
@@ -2811,7 +2901,9 @@ private struct HistoryDetailView: View {
     .disabled(disabled)
     .accessibilityIdentifier(identifier)
 
-    if prominent {
+    // 禁用时一律退回普通描边样式：`.borderedProminent` 的禁用态是一块
+    // 去饱和的橙色死板——它既不像能点，也不像装饰，只像坏了。
+    if prominent, !disabled {
       button
         .buttonStyle(.borderedProminent)
         .tint(theme.accent)
@@ -2846,9 +2938,11 @@ private struct HistoryDetailView: View {
     }
     .padding(12)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+    // 用主题卡面而不是系统材质：材质随「降低透明度」失效且与详情页其余
+    // 卡片语言不一致，这里曾是全库唯一一处材质背景。
+    .background(theme.card, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
         .strokeBorder(Color.primary.opacity(0.06), lineWidth: 1)
     )
   }
@@ -2933,11 +3027,11 @@ private struct HistoryDetailView: View {
     // 去掉之后正文只剩 10pt 间距托着，直接散开，所以**所有主题都保留**。
     // 非系统主题走 `theme.hairline`，跟窗口里其它分隔线同一个值。
     .background(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
         .fill(Color(nsColor: .controlBackgroundColor).opacity(isOwnWriting || !theme.isNative ? 0 : 0.55))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 14, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
         .strokeBorder(
           isOwnWriting ? Color.clear : (theme.isNative ? Color.primary.opacity(0.05) : theme.hairline),
           lineWidth: 1)
@@ -2995,8 +3089,13 @@ private struct HistoryDetailView: View {
       } else {
         ScrollViewReader { proxy in
           ScrollView {
+            // 用和阅读区同一套字体与行距：预览就是正文的毛坯，字大一号
+            // 反而像另一种东西。流式阶段不渲染 Markdown（逐 token 重排太贵），
+            // 完成后正文会在下方按富文本重排。
             Text(appModel.runResultText)
-              .font(.title3)
+              .font(readingFont.body())
+              .foregroundStyle(theme.primaryText)
+              .lineSpacing(MarkdownPresentation.bodyLineSpacing)
               .textSelection(.enabled)
               .frame(maxWidth: .infinity, alignment: .leading)
               .padding(.bottom, 4)
@@ -3014,11 +3113,11 @@ private struct HistoryDetailView: View {
     .padding(12)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
         .fill(Color.accentColor.opacity(0.06))
     )
     .overlay(
-      RoundedRectangle(cornerRadius: 10, style: .continuous)
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
         .strokeBorder(Color.accentColor.opacity(0.12), lineWidth: 1)
     )
     .accessibilityIdentifier("model-run-output")
@@ -3215,10 +3314,9 @@ private struct HistoryDetailView: View {
 
   private var exactSummaryCitations: [String] {
     guard let summary = summaryArtifact?.bodyText, let source = latestSourceSnapshot?.bodyText else { return [] }
-    return SummaryCitationMatcher.exactQuotes(
-      summary: MarkdownNoteFrontmatter.parse(summary).body,
-      source: MarkdownNoteFrontmatter.parse(source).body
-    )
+    // 走备忘缓存：原来每次 body 求值都要把原文整篇重建纯文本再逐条匹配，
+    // 巨型 ViewModel 的任何无关变化都会触发一遍。
+    return ReadingRenderCache.summaryCitations(summary: summary, source: source)
   }
 
   private func openSourceCitation(_ quote: String) {
@@ -3254,9 +3352,16 @@ private struct HistoryDetailView: View {
             .padding(.bottom, 6)
         }
         if effectiveReadingPane == .summary { sourceCitationLinks }
+        // 旧版翻译把元数据块也翻了一遍，块卡在译文中段（前面是翻译后的标题），
+        // 开头剥离对它无效。显示时按白名单再清一次；只清翻译——总结里出现
+        // 同构块的可能性低，且误删的代价是丢正文。
+        // 剥离与清理都是整篇扫描，走备忘缓存，正文没变不重付。
         // Summaries rarely carry images; still allow local map if present.
         MarkdownContentView(
-          source: MarkdownNoteFrontmatter.parse(artifact.bodyText).body,
+          source: ReadingRenderCache.paneBody(
+            source: artifact.bodyText,
+            strippingEchoedMetadata: effectiveReadingPane == .translation
+          ),
           sourceURL: URL(string: sourceURL),
           localImageURLs: localImageURLs,
           appendsUnusedLocalImages: !isWeChatCapture,
@@ -3390,7 +3495,7 @@ private struct HistoryDetailView: View {
               : (theme.isNative ? Color(nsColor: .textBackgroundColor) : theme.listPane)
           )
           .overlay(
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.md)
               .stroke(isOwnWriting ? Color.clear : theme.hairline, lineWidth: 1)
           )
           .accessibilityIdentifier("history-transcription-editor")
@@ -3493,10 +3598,10 @@ private struct HistoryDetailView: View {
     return VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {
         ZStack {
-          RoundedRectangle(cornerRadius: 8, style: .continuous)
-            .fill(Color.indigo.opacity(0.12))
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+            .fill(theme.info.opacity(0.12))
           Image(systemName: "text.viewfinder")
-            .foregroundStyle(.indigo)
+            .foregroundStyle(theme.info)
         }
         .frame(width: 34, height: 34)
         VStack(alignment: .leading, spacing: 2) {
@@ -3541,20 +3646,21 @@ private struct HistoryDetailView: View {
       if !recognizedText.isEmpty {
         ScrollView {
           Text(recognizedText)
-            .font(.system(size: readingFont.bodySize))
+            // 用完整的阅读字体（含字体族），不能只继承字号丢掉家族。
+            .font(readingFont.body())
             .lineSpacing(MarkdownPresentation.bodyLineSpacing)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .frame(maxHeight: 220)
         .padding(10)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
         .accessibilityIdentifier("history-image-ocr-text")
       }
     }
     .padding(14)
-    .background(Color.secondary.opacity(0.055), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
-    .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).strokeBorder(Color.primary.opacity(0.07)))
+    .background(Color.secondary.opacity(0.055), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous))
+    .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous).strokeBorder(Color.primary.opacity(0.07)))
   }
 
   private func settingsModelButton(_ modelName: String) -> some View {
@@ -3613,20 +3719,6 @@ private struct HistoryDetailView: View {
     }
     .padding(16)
     .frame(width: 340)
-  }
-
-  @ViewBuilder private var localImageGallery: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      ForEach(localImageURLs, id: \.path) { url in
-        if let image = NSImage(contentsOf: url) {
-          Image(nsImage: image).resizable().scaledToFit().frame(maxHeight: 420, alignment: .leading)
-        } else {
-          Label("图片缓存不可用", systemImage: "photo").foregroundStyle(.secondary)
-        }
-      }
-    }
-    .padding(.top, 4)
-    .accessibilityIdentifier("github-readme-local-images")
   }
 
   private func captureWasTruncated(_ completeness: String) -> Bool {
@@ -3884,7 +3976,7 @@ private struct ReadOnlyHistoryCallout: View {
         .fixedSize(horizontal: false, vertical: true)
     }
     .padding(10)
-    .background(theme.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    .background(theme.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
   }
 
   private var message: String {
@@ -3935,6 +4027,22 @@ extension String {
   var emptyToNil: String? { trimmedNonEmpty }
 }
 enum HistoryTimestampFormatter {
+  // DateFormatter 的创建是毫秒级开销，而这条路在列表行和详情页反复走。
+  // 配好即只读（只调 string(from:)），只读用法下 DateFormatter 线程安全。
+  // 两档样式各缓存一份；测试注入自定义历法/时区时仍走现建路径。
+  private static let sameDayFormatter = makeDefault(dateStyle: .none)
+  private static let otherDayFormatter = makeDefault(dateStyle: .medium)
+
+  private static func makeDefault(dateStyle: DateFormatter.Style) -> DateFormatter {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.calendar = .autoupdatingCurrent
+    formatter.timeZone = .autoupdatingCurrent
+    formatter.dateStyle = dateStyle
+    formatter.timeStyle = .short
+    return formatter
+  }
+
   static func text(
     _ milliseconds: Int64?,
     now: Date = Date(),
@@ -3950,17 +4058,42 @@ enum HistoryTimestampFormatter {
     let date = Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
     var localCalendar = calendar
     localCalendar.timeZone = timeZone
+    let sameDay = localCalendar.isDate(date, inSameDayAs: now)
+    if calendar == Calendar.autoupdatingCurrent,
+       timeZone == TimeZone.autoupdatingCurrent,
+       locale.identifier == "zh_CN" {
+      return (sameDay ? sameDayFormatter : otherDayFormatter).string(from: date)
+    }
     let formatter = DateFormatter()
     formatter.locale = locale
     formatter.calendar = localCalendar
     formatter.timeZone = timeZone
-    formatter.dateStyle = localCalendar.isDate(date, inSameDayAs: now) ? .none : .medium
+    formatter.dateStyle = sameDay ? .none : .medium
     formatter.timeStyle = .short
     return formatter.string(from: date)
   }
 }
 private func historyDate(_ milliseconds: Int64?) -> String { HistoryTimestampFormatter.text(milliseconds) }
 enum HistoryPublishedTimestampFormatter {
+  // ISO8601 解析器与 zh_CN 展示格式化器都缓存：列表每一行都要走这里，
+  // 原来一次调用现建 2~3 个 formatter。ISO8601DateFormatter 线程安全；
+  // DateFormatter 只读用法（只调 string(from:)）同样安全。
+  private nonisolated(unsafe) static let standardISO = ISO8601DateFormatter()
+  private nonisolated(unsafe) static let fractionalISO: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions.insert(.withFractionalSeconds)
+    return formatter
+  }()
+  private static let defaultLocalized: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.calendar = .autoupdatingCurrent
+    formatter.timeZone = .autoupdatingCurrent
+    formatter.dateStyle = .medium
+    formatter.timeStyle = .short
+    return formatter
+  }()
+
   static func text(
     _ value: String?,
     calendar: Calendar = .autoupdatingCurrent,
@@ -3975,10 +4108,12 @@ enum HistoryPublishedTimestampFormatter {
       .trimmingCharacters(in: .whitespaces)
       .replacingOccurrences(of: "^[·•|｜,，\\s]+|[·•|｜,，\\s]+$", with: "", options: .regularExpression)
     guard let value = cleanedValue?.trimmedNonEmpty else { return "发布时间未获取" }
-    let standard = ISO8601DateFormatter()
-    let fractional = ISO8601DateFormatter()
-    fractional.formatOptions.insert(.withFractionalSeconds)
-    guard let date = standard.date(from: value) ?? fractional.date(from: value) else { return value }
+    guard let date = standardISO.date(from: value) ?? fractionalISO.date(from: value) else { return value }
+    if calendar == Calendar.autoupdatingCurrent,
+       timeZone == TimeZone.autoupdatingCurrent,
+       locale.identifier == "zh_CN" {
+      return defaultLocalized.string(from: date)
+    }
     let localized = DateFormatter()
     localized.locale = locale
     localized.calendar = calendar
@@ -3999,6 +4134,27 @@ private func historyPublishedDate(_ value: String?) -> String { HistoryPublished
 /// 七天是分界：一周内人对"几天前"有直觉，超过一周就只剩"很久以前"，
 /// 那时候日期反而更有用。
 enum HistoryRelativeTime {
+  // 列表滚动路径，formatter 缓存理由同 `HistoryTimestampFormatter`。
+  private static let defaultTimeOfDay: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.calendar = .autoupdatingCurrent
+    formatter.dateFormat = "HH:mm"
+    return formatter
+  }()
+  private static let defaultDay: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.calendar = .autoupdatingCurrent
+    formatter.dateStyle = .medium
+    formatter.timeStyle = .none
+    return formatter
+  }()
+
+  private static func isDefault(_ locale: Locale, _ calendar: Calendar) -> Bool {
+    locale.identifier == "zh_CN" && calendar == Calendar.autoupdatingCurrent
+  }
+
   static func text(
     _ milliseconds: Int64,
     now: Date = Date(),
@@ -4015,6 +4171,7 @@ enum HistoryRelativeTime {
       // 未来时间通常是源站时区解析出的偏差，别显示"-2 天前"这种。
       return dayText(date, locale: locale, calendar: calendar)
     case 0:
+      if isDefault(locale, calendar) { return "今天 \(defaultTimeOfDay.string(from: date))" }
       let formatter = DateFormatter()
       formatter.locale = locale
       formatter.calendar = calendar
@@ -4027,6 +4184,7 @@ enum HistoryRelativeTime {
   }
 
   private static func dayText(_ date: Date, locale: Locale, calendar: Calendar) -> String {
+    if isDefault(locale, calendar) { return defaultDay.string(from: date) }
     let formatter = DateFormatter()
     formatter.locale = locale
     formatter.calendar = calendar
@@ -4036,13 +4194,15 @@ enum HistoryRelativeTime {
   }
 }
 
-private func historyUpdatedDate(_ milliseconds: Int64) -> String {
-  let date = Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
+private let historyDayOnlyFormatter: DateFormatter = {
   let formatter = DateFormatter()
   formatter.locale = Locale(identifier: "zh_CN")
   formatter.dateStyle = .medium
   formatter.timeStyle = .none
-  return formatter.string(from: date)
+  return formatter
+}()
+private func historyUpdatedDate(_ milliseconds: Int64) -> String {
+  historyDayOnlyFormatter.string(from: Date(timeIntervalSince1970: Double(milliseconds) / 1_000))
 }
 /// 列表行的创建时间：与更新时间同一套 zh_CN 日期样式。
 private func historyCreatedDate(_ milliseconds: Int64) -> String { historyUpdatedDate(milliseconds) }

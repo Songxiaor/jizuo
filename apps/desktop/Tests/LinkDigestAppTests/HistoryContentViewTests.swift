@@ -343,8 +343,11 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("min: DesignTokens.Layout.listMin"))
     XCTAssertTrue(source.contains("ideal: DesignTokens.Layout.listIdeal"))
     XCTAssertTrue(source.contains(".modifier(HistoryWindowToolbarThemeModifier(theme: theme))"))
-    XCTAssertTrue(source.contains(".toolbarBackground(theme.canvas, for: .windowToolbar)"))
+    // 工具栏背景必须逐列挂载：根部那一份对 macOS 分栏窗口不生效，表现是
+    // 详情列滚动时标题从工具栏图标底下原样穿过。详情列用正文色当挡板。
+    XCTAssertTrue(source.contains(".toolbarBackground(background ?? theme.canvas, for: .windowToolbar)"))
     XCTAssertTrue(source.contains(".toolbarBackground(.visible, for: .windowToolbar)"))
+    XCTAssertTrue(source.contains("HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card)"))
     // Column dividers are drawn by a window-level AppKit overlay so the 1pt
     // line pierces the toolbar and reaches the window top; the in-content
     // SwiftUI hairline approach must not return (it cannot reach the toolbar).
@@ -522,9 +525,11 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("localImageURLs"))
     XCTAssertTrue(detail.contains("localImageURLs: localImageURLs"))
     XCTAssertTrue(detail.contains("showsInlinePlainTextToggle: false"))
-    XCTAssertTrue(detail.contains("github-readme-local-images") || source.contains("history-content-inline-image"))
     XCTAssertTrue(source.contains("LocalMarkdownImageLayout") || source.contains("localImageURLs: localImageURLs"))
     XCTAssertFalse(detail.contains("AsyncImage"), "History must not load README images from the network at render time")
+    // 旧的 localImageGallery 已删除：它在 body 里同步全分辨率解码（NSImage(contentsOf:)），
+    // 本地图片统一走 InlineArticleImageView 的后台下采样路径。
+    XCTAssertFalse(detail.contains("NSImage(contentsOf:"), "Detail must not decode full-resolution images synchronously in body")
   }
 
   func testDetailHostsLocalAVKitVideoCardForLoopVMedia() {
@@ -759,7 +764,9 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertLessThan(transcribe!.lowerBound, player!.lowerBound)
     XCTAssertLessThan(save!.lowerBound, player!.lowerBound)
     XCTAssertTrue(video.contains("media?.byteSize"))
-    XCTAssertTrue(video.contains("media?.author"))
+    // 作者不再出现在播放卡片的事实行：详情属性区已有「作者」一栏，
+    // 卡片里重复一遍只会挤占时长/体积的空间。
+    XCTAssertFalse(video.contains("media?.author"))
     XCTAssertTrue(video.contains("media?.durationSeconds"))
     XCTAssertTrue(video.contains(".aspectRatio(VideoDisplayGeometry.aspectRatio"))
     XCTAssertTrue(video.contains("naturalSize"))
@@ -1065,8 +1072,13 @@ final class HistoryContentViewTests: XCTestCase {
   func testListIconsUseBuiltInPlatformMapThenLocalFaviconFallbackWithoutRemoteLoading() {
     let source = historyContentViewSource()
     let row = section(in: source, from: "private struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
-    XCTAssertTrue(row.contains("model.faviconImageURL(for: row)"))
-    XCTAssertTrue(row.contains("HistoryFaviconImageMemoryCache.image"))
+    // 行不再整体观察 ViewModel：favicon 地址由父层算好传值进来。
+    XCTAssertTrue(row.contains("let faviconURL: URL?"))
+    XCTAssertTrue(source.contains("faviconURL: model.faviconImageURL(for: row)"))
+    // 内存缓存命中直接画；未命中先占位、后台读盘。body 里不许同步磁盘 I/O。
+    XCTAssertTrue(row.contains("HistoryFaviconImageMemoryCache.cachedImage"))
+    XCTAssertTrue(row.contains("HistoryFaviconImageMemoryCache.decodeImage"))
+    XCTAssertFalse(row.contains("NSImage(contentsOf:"), "行渲染路径不允许同步读盘解码图标")
     XCTAssertTrue(row.contains("PlatformIconCatalog.image(for: row.host)"))
     XCTAssertTrue(row.contains("PlatformIconCatalog.fallbackInitial(for: row.host)"))
     XCTAssertFalse(
@@ -1267,8 +1279,9 @@ final class HistoryContentViewTests: XCTestCase {
     let remoteVideo = section(in: source, from: "struct CurrentCaptureMediaPreviewCard: View", to: "/// Top-of-detail video card")
 
     XCTAssertTrue(detail.contains("history-reading-source-live-transcription"))
-    // 正文字号已改为跟随用户偏好；实时转写必须读同一个来源，不能写死回 16.5。
-    XCTAssertTrue(detail.contains("readingFont.bodySize"))
+    // 正文排版已改为跟随用户偏好；实时转写必须读同一个来源，不能写死回 16.5。
+    // readingFont.body() 连字体族一起带上，而不是只借字号（那会丢掉宋体等家族设置）。
+    XCTAssertTrue(detail.contains("readingFont.body()"))
     XCTAssertTrue(detail.contains("MarkdownPresentation.bodyLineSpacing"))
     XCTAssertFalse(localVideo.contains("history-video-transcription-text"))
     XCTAssertFalse(remoteVideo.contains("remote-transcribe-partial"))
@@ -1607,7 +1620,7 @@ final class HistoryContentViewTests: XCTestCase {
   }
 }
 
-/// 「整理文稿」按钮不能点时，必须说明为什么。
+/// 「模型校对」按钮不能点时，必须说明为什么；已存视频和当前远程视频都要有入口。
 ///
 /// 这个按钮受五个条件约束，而灰掉的按钮在 SwiftUI 里颜色很淡，扫一眼注意不到——
 /// 实际收到过「一直没看到这个功能」的反馈，功能却一直都在。
@@ -1624,6 +1637,89 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
     XCTAssertTrue(source.contains(".disabled(tidyBlockedReason != nil)"))
     // 理由要显示出来，不能只放在悬停提示里——鼠标不停上去就看不到。
     XCTAssertTrue(source.contains("history-transcript-tidy-blocked-reason"))
+
+    let remote = section(
+      in: source,
+      from: "struct CurrentCaptureMediaPreviewCard: View",
+      to: "/// Top-of-detail video card"
+    )
+    XCTAssertTrue(remote.contains("let blockedReason = model.transcriptTidyUnavailableReason("))
+    XCTAssertTrue(remote.contains(".disabled(blockedReason != nil)"))
+    XCTAssertTrue(remote.contains("remote-transcript-tidy-blocked-reason"))
+  }
+
+  func testCurrentRemoteVideoConnectsBothTranscriptionRoutesToManualAndAutomaticTidy() throws {
+    let playbackSource = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryMediaPlayback.swift"),
+      encoding: .utf8
+    )
+    let remote = section(
+      in: playbackSource,
+      from: "struct CurrentCaptureMediaPreviewCard: View",
+      to: "/// Top-of-detail video card"
+    )
+    XCTAssertTrue(remote.contains("let tidyModel: String?"))
+    XCTAssertTrue(remote.contains("let autoTidyEnabled: Bool"))
+    XCTAssertTrue(remote.contains("model.requestTranscriptTidy(taskID: taskID, model: tidyModel)"))
+    XCTAssertTrue(remote.contains(".onChange(of: model.transcriptionState)"))
+    XCTAssertTrue(remote.contains("oldState.isActive, newState == .completed"))
+    XCTAssertTrue(remote.contains("model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)"))
+    XCTAssertFalse(
+      remote.contains("descriptor.author"),
+      "详情头部已有作者行，当前视频卡不能再显示一份可能混入统计的 author"
+    )
+    XCTAssertTrue(
+      remote.contains("if state != .idle || preview?.isEmpty == false || timings != nil || cleanupFailure != nil"),
+      "空闲的转写状态不能留下一个会参与外层 spacing 的空 VStack"
+    )
+    XCTAssertTrue(
+      remote.contains("if state != .idle || blockedReason != nil"),
+      "空闲且可校对时不能留下一个会参与外层 spacing 的空 VStack"
+    )
+
+    let local = section(
+      in: playbackSource,
+      from: "struct HistoryVideoPlayerCard: View",
+      to: "private struct HistoryStreamingMediaCard: View"
+    )
+    XCTAssertTrue(
+      local.contains("oldState.isActive, newState == .completed"),
+      "重新打开已有转写的本机视频时不能重复调用模型校对"
+    )
+    XCTAssertFalse(
+      local.contains("media?.author"),
+      "已存视频卡同样不能重复显示详情头部已经呈现的作者"
+    )
+
+    let playable = section(
+      in: remote,
+      from: "private func playableContent",
+      to: "/// 清晰度切换"
+    )
+    XCTAssertLessThan(
+      try XCTUnwrap(playable.range(of: "remoteTranscriptTidyControl")).lowerBound,
+      try XCTUnwrap(playable.range(of: "switch playback.preparePhase")).lowerBound,
+      "转写与模型校对必须在视频上方，不能再被高视频推出首屏"
+    )
+
+    let contentSource = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8
+    )
+    XCTAssertEqual(
+      contentSource.components(separatedBy: "tidyModel: providerSettings.effectiveTidyModelName").count - 1,
+      3,
+      "本机媒体与两种当前远程媒体入口都必须接入同一校对模型"
+    )
+    XCTAssertEqual(
+      contentSource.components(separatedBy: "autoTidyEnabled: providerSettings.autoTidyTranscription").count - 1,
+      3,
+      "本机媒体与两种当前远程媒体入口都必须接入同一自动校对开关"
+    )
   }
 
   /// 判断与理由必须由同一个方法推导，不能是两套独立逻辑。
@@ -1635,6 +1731,19 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
       encoding: .utf8
     )
     XCTAssertTrue(source.contains("transcriptTidyUnavailableReason(taskID: taskID) == nil"))
+  }
+
+  private func section(in source: String, from start: String, to end: String) -> String {
+    guard let startRange = source.range(of: start) else {
+      XCTFail("找不到起始标记「\(start)」")
+      return ""
+    }
+    let tail = startRange.upperBound..<source.endIndex
+    guard let endRange = source.range(of: end, range: tail) else {
+      XCTFail("找不到结束标记「\(end)」")
+      return ""
+    }
+    return String(source[startRange.lowerBound..<endRange.lowerBound])
   }
 }
 
@@ -1664,7 +1773,9 @@ final class AutoPipelineTidyHintTests: XCTestCase {
         .appendingPathComponent("Sources/LinkDigestApp/HistoryMediaPlayback.swift"),
       encoding: .utf8
     )
-    XCTAssertTrue(playback.contains("guard autoTidyEnabled, newState == .completed"))
+    // oldState.isActive：只有本次转写从运行态进入完成态才触发自动整理；
+    // 打开一条已有转写的历史记录也会恢复成 .completed，不能重复调模型计费。
+    XCTAssertTrue(playback.contains("guard autoTidyEnabled, oldState.isActive, newState == .completed"))
     XCTAssertFalse(
       playback.contains("autoTranscribeNewCaptures"),
       "手动转写后的整理不得依赖自动转写开关"
