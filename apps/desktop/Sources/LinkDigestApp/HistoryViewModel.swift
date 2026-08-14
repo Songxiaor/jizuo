@@ -430,7 +430,9 @@ private actor HistoryRepositoryWorker {
     attempt: TranscriptionAttemptToken,
     detail: HistoryDetailProjection,
     text: String,
-    receivedAtMilliseconds: Int64
+    receivedAtMilliseconds: Int64,
+    localeIdentifier: String = SpeechTranscriptionLocale.default.localeIdentifier,
+    language: String = SpeechTranscriptionLocale.default.languageCode
   ) -> TranscriptionPersistenceResult {
     let timestamp = ISO8601DateFormatter().string(
       from: Date(timeIntervalSince1970: Double(receivedAtMilliseconds) / 1_000)
@@ -451,7 +453,7 @@ private actor HistoryRepositoryWorker {
     do {
       let result = try history.completeMediaTranscription(.init(
         taskID: taskID, attempt: attempt, document: document,
-        evidence: .appleSpeechAnalyzer(localeIdentifier: "zh_CN", language: "zh", completedAtMilliseconds: receivedAtMilliseconds),
+        evidence: .appleSpeechAnalyzer(localeIdentifier: localeIdentifier, language: language, completedAtMilliseconds: receivedAtMilliseconds),
         receivedAtMilliseconds: receivedAtMilliseconds
       ))
       switch result {
@@ -476,7 +478,9 @@ private actor HistoryRepositoryWorker {
     detail: HistoryDetailProjection,
     text: String,
     platform: String,
-    receivedAtMilliseconds: Int64
+    receivedAtMilliseconds: Int64,
+    localeIdentifier: String = SpeechTranscriptionLocale.default.localeIdentifier,
+    language: String = SpeechTranscriptionLocale.default.languageCode
   ) -> TranscriptionPersistenceResult {
     let timestamp = ISO8601DateFormatter().string(
       from: Date(timeIntervalSince1970: Double(receivedAtMilliseconds) / 1_000)
@@ -499,8 +503,8 @@ private actor HistoryRepositoryWorker {
         attempt: attempt,
         document: document,
         evidence: .appleSpeechAnalyzer(
-          localeIdentifier: "zh_CN",
-          language: "zh",
+          localeIdentifier: localeIdentifier,
+          language: language,
           completedAtMilliseconds: receivedAtMilliseconds
         ),
         receivedAtMilliseconds: receivedAtMilliseconds
@@ -807,6 +811,9 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var mindMapState: TranscriptTidyUIState = .idle
   @Published private(set) var mindMapTaskID: TaskID?
   @Published var isMindMapConfirmationPresented = false
+  /// 本机转写与生成提示词共用设置页里那份已保存偏好。界面在出现/保存后同步过来。
+  var speechLocaleIdentifier = SpeechTranscriptionLocale.default.localeIdentifier
+  var outputLanguage = ModelPreferences.defaultTargetLanguage
   /// 台账（整理/脑图）部分的 token 合计；Run 部分由 detail 投影自带。
   @Published private(set) var ledgerTokenTotals: TaskTokenTotals?
   /// 学习批注：用户的摘录与笔记，与机器产物分离。
@@ -945,6 +952,15 @@ final class HistoryViewModel: ObservableObject {
     transcriptionCleanupFailure = startupTranscriptionCleanupFailure
     self.onDiscardedTranscriptionAttempt = onDiscardedTranscriptionAttempt
     self.nowMilliseconds = nowMilliseconds
+  }
+
+  func applyGenerationPreferences(_ preferences: ModelPreferences) {
+    speechLocaleIdentifier = preferences.effectiveTranscriptionLocale.localeIdentifier
+    outputLanguage = preferences.outputLanguage
+  }
+
+  private var speechLocale: SpeechTranscriptionLocale {
+    SpeechTranscriptionLocale.resolved(speechLocaleIdentifier)
   }
 
   deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); faviconTask?.cancel(); tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel(); batchSummaryTask?.cancel() }
@@ -1255,6 +1271,7 @@ final class HistoryViewModel: ObservableObject {
     transcriptionTaskID = detail.task.id
     transcriptionText = ""
     transcriptionState = .checkingModel
+    let localeIdentifier = speechLocale.localeIdentifier
     transcriptionTask = Task { [weak self, worker] in
       guard self?.transcriptionRequestID == requestID else { return }
       let began = await worker.beginTranscription(
@@ -1288,7 +1305,7 @@ final class HistoryViewModel: ObservableObject {
         return
       }
       self?.pendingTranscriptionContext = context
-      let modelState = await videoTranscriber.modelState(localeIdentifier: "zh_CN")
+      let modelState = await videoTranscriber.modelState(localeIdentifier: localeIdentifier)
       guard !Task.isCancelled, self?.transcriptionRequestID == requestID else {
         _ = await worker.updateTranscriptionStatus(
           history,
@@ -1403,7 +1420,7 @@ final class HistoryViewModel: ObservableObject {
         }
         self.pendingRemoteTranscriptionContext = context
         self.transcriptionState = .checkingModel
-        let modelState = await videoTranscriber.modelState(localeIdentifier: "zh_CN")
+        let modelState = await videoTranscriber.modelState(localeIdentifier: speechLocale.localeIdentifier)
         guard !Task.isCancelled, self.transcriptionRequestID == requestID else {
           _ = await worker.updateTaskTranscriptionStatus(
             history, taskID: taskID, attempt: attempt, status: .cancelled,
@@ -2235,7 +2252,11 @@ final class HistoryViewModel: ObservableObject {
     Task { [weak self] in
       guard let self else { return }
       do {
-        let outcome = try await mindMapExtractor.extractOutline(text: text, model: nil)
+        let outcome = try await mindMapExtractor.extractOutline(
+          text: text,
+          model: nil,
+          outputLanguage: self.outputLanguage
+        )
         try Task.checkCancellation()
         // 这里**不能**用 `selectedTaskID == taskID` 提前 return。
         //
@@ -2456,12 +2477,14 @@ final class HistoryViewModel: ObservableObject {
     transcriptTidyState = .running
     transcriptTidyTokenSummary = nil
     transcriptTidyTask?.cancel()
+    let outputLanguage = outputLanguage
     transcriptTidyTask = Task { [weak self] in
       do {
         let outcome = try await transcriptTidier.tidy(
           text: body,
           model: model?.trimmingCharacters(in: .whitespacesAndNewlines),
-          style: .note
+          style: .note,
+          outputLanguage: outputLanguage
         )
         guard let self, self.transcriptTidyRequestID == requestID else { return }
         let tidied = outcome.text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -2590,7 +2613,12 @@ final class HistoryViewModel: ObservableObject {
         return
       }
       do {
-        let outcome = try await transcriptTidier.tidy(text: context.text, model: context.model)
+        let outcome = try await transcriptTidier.tidy(
+          text: context.text,
+          model: context.model,
+          style: .transcript,
+          outputLanguage: self.outputLanguage
+        )
         try Task.checkCancellation()
         guard self.transcriptTidyRequestID == requestID else { return }
         let persisted = await worker.saveTidiedTranscript(
@@ -2927,11 +2955,12 @@ final class HistoryViewModel: ObservableObject {
     }
     guard let history, let videoTranscriber, let context = pendingTranscriptionContext else { return }
     let requestID = transcriptionRequestID
+    let localeIdentifier = speechLocale.localeIdentifier
     transcriptionTask?.cancel()
     transcriptionState = .preparingModel
     transcriptionTask = Task { [weak self, worker] in
       do {
-        try await videoTranscriber.downloadModel(localeIdentifier: "zh_CN")
+        try await videoTranscriber.downloadModel(localeIdentifier: localeIdentifier)
         try Task.checkCancellation()
         await self?.runTranscription(context: context, history: history, transcriber: videoTranscriber, requestID: requestID)
       } catch is CancellationError {
@@ -3061,7 +3090,7 @@ final class HistoryViewModel: ObservableObject {
     transcriptionTask = Task { [weak self, worker] in
       guard let self else { return }
       do {
-        try await videoTranscriber.downloadModel(localeIdentifier: "zh_CN")
+        try await videoTranscriber.downloadModel(localeIdentifier: speechLocale.localeIdentifier)
         try Task.checkCancellation()
         await self.runRemoteTranscription(
           context: context,
@@ -3122,7 +3151,7 @@ final class HistoryViewModel: ObservableObject {
 
     do {
       var finalText = ""
-      for try await event in transcriber.transcribe(fileURL: context.fileURL, workspaceURL: context.workspaceURL, localeIdentifier: "zh_CN") {
+      for try await event in transcriber.transcribe(fileURL: context.fileURL, workspaceURL: context.workspaceURL, localeIdentifier: speechLocale.localeIdentifier) {
         try Task.checkCancellation()
         guard transcriptionRequestID == requestID else { return }
         switch event {
@@ -3144,7 +3173,9 @@ final class HistoryViewModel: ObservableObject {
         detail: context.detail,
         text: trimmed,
         platform: context.descriptor.platform,
-        receivedAtMilliseconds: completedAt
+        receivedAtMilliseconds: completedAt,
+        localeIdentifier: speechLocale.localeIdentifier,
+        language: speechLocale.languageCode
       )
       guard transcriptionRequestID == requestID else { return }
       switch persisted {
@@ -3241,7 +3272,7 @@ final class HistoryViewModel: ObservableObject {
     }
     do {
       var finalText = ""
-      for try await event in transcriber.transcribe(fileURL: context.fileURL, workspaceURL: context.workspaceURL, localeIdentifier: "zh_CN") {
+      for try await event in transcriber.transcribe(fileURL: context.fileURL, workspaceURL: context.workspaceURL, localeIdentifier: speechLocale.localeIdentifier) {
         try Task.checkCancellation()
         guard transcriptionRequestID == requestID else { return }
         switch event {
@@ -3262,7 +3293,9 @@ final class HistoryViewModel: ObservableObject {
         attempt: context.attempt,
         detail: context.detail,
         text: trimmed,
-        receivedAtMilliseconds: completedAtMilliseconds
+        receivedAtMilliseconds: completedAtMilliseconds,
+        localeIdentifier: speechLocale.localeIdentifier,
+        language: speechLocale.languageCode
       )
       guard transcriptionRequestID == requestID else { return }
       switch persisted {
@@ -3978,7 +4011,8 @@ final class HistoryViewModel: ObservableObject {
         return
       }
       let prompt = DistillPrompt.build(
-        pairs: Array(pairs), existing: self?.writingMethods.map(\.body) ?? []
+        pairs: Array(pairs), existing: self?.writingMethods.map(\.body) ?? [],
+        outputLanguage: self?.outputLanguage ?? ModelPreferences.defaultTargetLanguage
       )
       do {
         let text = try await agent.run(
@@ -4202,7 +4236,8 @@ final class HistoryViewModel: ObservableObject {
       voice: voice,
       boundaryCount: recipe.boundaryCount,
       excerptLimit: recipe.excerptLimit,
-      template: recipe.effectiveTemplate
+      template: recipe.effectiveTemplate,
+      outputLanguage: outputLanguage
     )
   }
 
@@ -4322,7 +4357,8 @@ final class HistoryViewModel: ObservableObject {
       guard self.draftingPieceID == pieceID else { return }
       let prompt = DraftPrompt.build(
         spark: inputs.piece.spark, materials: inputs.materials,
-        voice: voice, methods: self.enabledMethodBodies
+        voice: voice, methods: self.enabledMethodBodies,
+        outputLanguage: self.outputLanguage
       )
       // 工作目录锁在专用沙箱里:即便工具已经禁掉,进程的 cwd 仍是它能看到的世界。
       let workingDirectory = FileManager.default.temporaryDirectory
@@ -4351,7 +4387,8 @@ final class HistoryViewModel: ObservableObject {
 
     let body = MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
     let prompt = RewritePrompt.build(
-      body: body, voice: voice, methods: enabledMethodBodies, intensity: intensity
+      body: body, voice: voice, methods: enabledMethodBodies, intensity: intensity,
+      outputLanguage: outputLanguage
     )
     let workingDirectory = FileManager.default.temporaryDirectory
       .appendingPathComponent("jizuo-agent", isDirectory: true)
@@ -4652,7 +4689,7 @@ final class HistoryViewModel: ObservableObject {
         // 只留最新值，间隔到了才发布一次；流结束后冲刷最后一段。
         var pendingPartial: String?
         var lastPartialFlush = ContinuousClock.now
-        for try await event in livePlaybackTranscribe("zh_CN", stopSignal) {
+        for try await event in livePlaybackTranscribe(speechLocale.localeIdentifier, stopSignal) {
           try Task.checkCancellation()
           guard self.transcriptionRequestID == requestID else { break }
           switch event {
@@ -4693,7 +4730,9 @@ final class HistoryViewModel: ObservableObject {
         let received = self.nowMilliseconds()
         _ = await worker.saveTaskTranscription(
           history, taskID: taskID, attempt: attempt, detail: detail,
-          text: trimmed, platform: platform, receivedAtMilliseconds: received
+          text: trimmed, platform: platform, receivedAtMilliseconds: received,
+          localeIdentifier: speechLocale.localeIdentifier,
+          language: speechLocale.languageCode
         )
         self.livePlaybackStopContinuation = nil
         self.transcriptionState = .completed

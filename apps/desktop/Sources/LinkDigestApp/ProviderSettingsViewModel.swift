@@ -69,6 +69,7 @@ final class ProviderSettingsViewModel: ObservableObject {
   @Published var autoSummarizeNewCaptures = false
   @Published var autoMindMapNewCaptures = false
   @Published var translationConcurrency = ModelPreferences.defaultTranslationConcurrency
+  @Published var transcriptionLocaleIdentifier = SpeechTranscriptionLocale.default.rawValue
   @Published private(set) var preferencesState: ModelPreferencesState = .loading
   @Published private(set) var savedPreferences = ModelPreferences.default
   @Published private(set) var isReplacingAPIKey = false
@@ -319,6 +320,7 @@ final class ProviderSettingsViewModel: ObservableObject {
       autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
       autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
       translationConcurrency = preferences.effectiveTranslationConcurrency
+      transcriptionLocaleIdentifier = preferences.effectiveTranscriptionLocale.rawValue
       savedPreferences = preferences
       preferencesState = .idle
     } catch {
@@ -544,7 +546,8 @@ final class ProviderSettingsViewModel: ObservableObject {
         autoTranscribeNewCaptures: autoTranscribeNewCaptures,
         autoSummarizeNewCaptures: autoSummarizeNewCaptures,
         autoMindMapNewCaptures: autoMindMapNewCaptures,
-        translationConcurrency: translationConcurrency
+        translationConcurrency: translationConcurrency,
+        transcriptionLocale: transcriptionLocaleIdentifier
       )
       try await preferencesStore.save(preferences)
       summaryPrompt = preferences.summaryPrompt
@@ -557,6 +560,7 @@ final class ProviderSettingsViewModel: ObservableObject {
       autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
       autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
       translationConcurrency = preferences.effectiveTranslationConcurrency
+      transcriptionLocaleIdentifier = preferences.effectiveTranscriptionLocale.rawValue
       savedPreferences = preferences
       preferencesState = .saved
     } catch let error as ModelPreferencesError {

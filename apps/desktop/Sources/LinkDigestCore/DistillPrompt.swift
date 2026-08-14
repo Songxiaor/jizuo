@@ -30,7 +30,11 @@ public enum DistillPrompt {
   /// 它一定会给出五条听起来很像回事的规则——而那些规则是编的。
   public static let minimumPairs = 3
 
-  public static func build(pairs: [Pair], existing: [String] = []) -> String {
+  public static func build(
+    pairs: [Pair],
+    existing: [String] = [],
+    outputLanguage: String = ModelPreferences.defaultTargetLanguage
+  ) -> String {
     var lines: [String] = []
 
     lines.append("""
@@ -73,7 +77,7 @@ public enum DistillPrompt {
     - 一行一条,不要编号,不要解释,不要写任何别的话
     """)
 
-    return lines.joined(separator: "\n")
+    return PromptOutputLanguage.applying(outputLanguage, to: lines.joined(separator: "\n"))
   }
 
   private static func truncate(_ text: String) -> String {

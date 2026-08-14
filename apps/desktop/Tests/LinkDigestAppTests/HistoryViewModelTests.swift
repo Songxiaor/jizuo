@@ -1126,6 +1126,42 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertEqual(try fixture.repository.exportProjection(taskID: fixture.taskID).snapshots.last?.bodyText, "完整中文转写")
   }
 
+  func testTranscriptionRequestsUseConfiguredSpeechLocale() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelState: .ready,
+      scripts: [.events([.extractingAudio, .transcribing, .final("English transcript")])]
+    )
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+
+    fixture.model.applyGenerationPreferences(
+      try ModelPreferences(transcriptionLocale: SpeechTranscriptionLocale.english.rawValue)
+    )
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .completed }
+
+    XCTAssertEqual(Set(transcriber.recordedLocales), [SpeechTranscriptionLocale.english.localeIdentifier])
+    XCTAssertTrue(transcriber.recordedLocales.contains(SpeechTranscriptionLocale.english.localeIdentifier))
+    XCTAssertEqual(transcriber.modelStateCallCount, 1)
+    XCTAssertEqual(transcriber.transcribeCallCount, 1)
+  }
+
+  func testTranscriptionDefaultsToChineseSpeechLocale() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelState: .ready,
+      scripts: [.events([.extractingAudio, .transcribing, .final("中文转写")])]
+    )
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .completed }
+
+    XCTAssertEqual(Set(transcriber.recordedLocales), [SpeechTranscriptionLocale.default.localeIdentifier])
+  }
+
   func testFailureCanRetryAndReadOnlyExplainsWhyTranscriptionIsBlocked() async throws {
     let transcriber = ScriptedVideoTranscriber(
       modelState: .ready,
@@ -2122,7 +2158,11 @@ private actor StubMindMapExtractor: MindMapExtracting {
 
   init(outcome: MindMapExtractionOutcome) { self.outcome = outcome }
 
-  func extractOutline(text: String, model: String?) async throws -> MindMapExtractionOutcome {
+  func extractOutline(
+    text: String,
+    model: String?,
+    outputLanguage: String
+  ) async throws -> MindMapExtractionOutcome {
     callCount += 1
     return outcome
   }
@@ -2136,7 +2176,12 @@ private actor RecordingTranscriptTidier: TranscriptTidying {
 
   init(result: String) { self.result = result }
 
-  func tidy(text: String, model: String?, style: TidyStyle) async throws -> TranscriptTidyOutcome {
+  func tidy(
+    text: String,
+    model: String?,
+    style: TidyStyle,
+    outputLanguage: String
+  ) async throws -> TranscriptTidyOutcome {
     receivedText = text
     receivedModel = model
     receivedStyle = style
@@ -2145,7 +2190,12 @@ private actor RecordingTranscriptTidier: TranscriptTidying {
 }
 
 private struct FailingTranscriptTidier: TranscriptTidying {
-  func tidy(text _: String, model _: String?, style _: TidyStyle) async throws -> TranscriptTidyOutcome {
+  func tidy(
+    text _: String,
+    model _: String?,
+    style _: TidyStyle,
+    outputLanguage _: String
+  ) async throws -> TranscriptTidyOutcome {
     throw TranscriptTidyError.networkInterrupted
   }
 }
@@ -2221,6 +2271,7 @@ private final class ScriptedVideoTranscriber: LocalVideoTranscribing, @unchecked
   private var downloads = 0
   private var modelChecks = 0
   private var transcriptions = 0
+  private var locales: [String] = []
   private let downloadSuspends: Bool
 
   init(modelState: LocalSpeechModelState, scripts: [TranscriptionScript], downloadSuspends: Bool = false) {
@@ -2238,19 +2289,25 @@ private final class ScriptedVideoTranscriber: LocalVideoTranscribing, @unchecked
   var downloadCallCount: Int { lock.withLock { downloads } }
   var modelStateCallCount: Int { lock.withLock { modelChecks } }
   var transcribeCallCount: Int { lock.withLock { transcriptions } }
-  func modelState(localeIdentifier _: String) async -> LocalSpeechModelState {
+  var recordedLocales: [String] { lock.withLock { locales } }
+  func modelState(localeIdentifier: String) async -> LocalSpeechModelState {
     lock.withLock {
       modelChecks += 1
+      locales.append(localeIdentifier)
       return readiness.count > 1 ? readiness.removeFirst() : readiness.first ?? .unavailable(.speechUnavailable)
     }
   }
-  func downloadModel(localeIdentifier _: String) async throws {
-    lock.withLock { downloads += 1 }
+  func downloadModel(localeIdentifier: String) async throws {
+    lock.withLock {
+      downloads += 1
+      locales.append(localeIdentifier)
+    }
     if downloadSuspends { try await Task.sleep(for: .seconds(60)) }
   }
-  func transcribe(fileURL _: URL, workspaceURL _: URL, localeIdentifier _: String) -> AsyncThrowingStream<LocalVideoTranscriptionEvent, Error> {
+  func transcribe(fileURL _: URL, workspaceURL _: URL, localeIdentifier: String) -> AsyncThrowingStream<LocalVideoTranscriptionEvent, Error> {
     let script = lock.withLock { () -> TranscriptionScript in
       transcriptions += 1
+      locales.append(localeIdentifier)
       return pendingScripts.isEmpty ? .failure(.recognitionFailed) : pendingScripts.removeFirst()
     }
     return AsyncThrowingStream { continuation in

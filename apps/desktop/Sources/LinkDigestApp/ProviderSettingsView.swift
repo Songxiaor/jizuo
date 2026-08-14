@@ -1359,6 +1359,21 @@ struct ProviderSettingsView: View {
           }
 
           SettingsRow(
+            title: "本机转写语言",
+            caption: "Apple 本机语音识别用这个语言听。英文视频请改成英语，否则几乎听不出来。",
+            details: "只影响本机转写和实时听写。在线转写仍由所选模型自己判断语言。"
+          ) {
+            Picker("本机转写语言", selection: $model.transcriptionLocaleIdentifier) {
+              ForEach(SpeechTranscriptionLocale.allCases) { locale in
+                Text(locale.displayName).tag(locale.rawValue)
+              }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityIdentifier("transcription-locale")
+          }
+
+          SettingsRow(
             title: "在线视频转文字",
             caption: "给超过 200MB、无法本机导入的视频用。选「不使用」时只跑 Apple 本机转写。",
             details: "配置后，App 会从直连视频流提取短 M4A 分片并调用 /audio/transcriptions；每次上传前仍会确认。"

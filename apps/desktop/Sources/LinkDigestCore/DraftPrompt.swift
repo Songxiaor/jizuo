@@ -30,7 +30,8 @@ public enum DraftPrompt {
     materials: [Material],
     voice: String? = nil,
     methods: [String] = [],
-    targetLength: Int = 1500
+    targetLength: Int = 1500,
+    outputLanguage: String = ModelPreferences.defaultTargetLanguage
   ) -> String {
     var lines: [String] = []
 
@@ -91,6 +92,6 @@ public enum DraftPrompt {
     - 直接输出正文,不要写「好的」「以下是」这类前后缀,也不要解释你怎么写的
     """)
 
-    return lines.joined(separator: "\n")
+    return PromptOutputLanguage.applying(outputLanguage, to: lines.joined(separator: "\n"))
   }
 }

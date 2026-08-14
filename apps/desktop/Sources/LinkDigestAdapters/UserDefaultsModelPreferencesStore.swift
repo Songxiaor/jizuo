@@ -29,7 +29,8 @@ public actor UserDefaultsModelPreferencesStore: ModelPreferencesStore {
         autoTranscribeNewCaptures: dto.autoTranscribeNewCaptures,
         autoSummarizeNewCaptures: dto.autoSummarizeNewCaptures,
         autoMindMapNewCaptures: dto.autoMindMapNewCaptures,
-        translationConcurrency: dto.translationConcurrency
+        translationConcurrency: dto.translationConcurrency,
+        transcriptionLocale: dto.transcriptionLocale
       )
     } catch {
       throw ModelPreferencesError.readFailed
@@ -70,6 +71,7 @@ private struct ModelPreferencesDTO: Codable {
   let autoSummarizeNewCaptures: Bool?
   let autoMindMapNewCaptures: Bool?
   let translationConcurrency: Int?
+  let transcriptionLocale: String?
 
   init(_ preferences: ModelPreferences) {
     summaryPrompt = preferences.summaryPrompt
@@ -83,5 +85,6 @@ private struct ModelPreferencesDTO: Codable {
     autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures
     autoMindMapNewCaptures = preferences.autoMindMapNewCaptures
     translationConcurrency = preferences.translationConcurrency
+    transcriptionLocale = preferences.transcriptionLocale
   }
 }

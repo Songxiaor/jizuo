@@ -6,13 +6,26 @@ import Foundation
 public protocol TranscriptTidying: Sendable {
   /// `model` overrides the profile's chat model when non-empty; nil falls back
   /// to the configured summary/chat model.
-  func tidy(text: String, model: String?, style: TidyStyle) async throws -> TranscriptTidyOutcome
+  func tidy(
+    text: String,
+    model: String?,
+    style: TidyStyle,
+    outputLanguage: String
+  ) async throws -> TranscriptTidyOutcome
 }
 
 public extension TranscriptTidying {
-  /// 不指定风格时按转写稿处理——这个功能原本就是为转写稿建的。
-  func tidy(text: String, model: String?) async throws -> TranscriptTidyOutcome {
-    try await tidy(text: text, model: model, style: .transcript)
+  func tidy(
+    text: String,
+    model: String?,
+    style: TidyStyle = .transcript
+  ) async throws -> TranscriptTidyOutcome {
+    try await tidy(
+      text: text,
+      model: model,
+      style: style,
+      outputLanguage: ModelPreferences.defaultTargetLanguage
+    )
   }
 }
 
@@ -24,9 +37,13 @@ public enum TidyStyle: String, Sendable, CaseIterable {
   case note
 
   public var systemPrompt: String {
+    systemPrompt(outputLanguage: ModelPreferences.defaultTargetLanguage)
+  }
+
+  public func systemPrompt(outputLanguage: String) -> String {
     switch self {
-    case .transcript: TranscriptTidyPrompt.system
-    case .note: TranscriptTidyPrompt.note
+    case .transcript: TranscriptTidyPrompt.system(outputLanguage: outputLanguage)
+    case .note: TranscriptTidyPrompt.note(outputLanguage: outputLanguage)
     }
   }
 }
@@ -101,6 +118,10 @@ public enum TranscriptTidyPrompt {
     只输出整理后的正文纯文本。
     """
 
+  public static func system(outputLanguage: String) -> String {
+    PromptOutputLanguage.applying(outputLanguage, to: system)
+  }
+
   /// 笔记的整理排版。
   ///
   /// 和转写稿是两件事：转写稿的问题是「机器听错了字、没有标点」；手写笔记的字
@@ -117,6 +138,10 @@ public enum TranscriptTidyPrompt {
     或添加任何前后缀说明。
     只输出整理后的正文。
     """
+
+  public static func note(outputLanguage: String) -> String {
+    PromptOutputLanguage.applying(outputLanguage, to: note)
+  }
 }
 
 /// Model output arrives in two newline dialects: blank-line paragraphs with

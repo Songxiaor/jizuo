@@ -34,7 +34,8 @@ public enum RewritePrompt {
     body: String,
     voice: String?,
     methods: [String] = [],
-    intensity: Intensity = .polish
+    intensity: Intensity = .polish,
+    outputLanguage: String = ModelPreferences.defaultTargetLanguage
   ) -> String {
     var lines: [String] = []
 
@@ -92,6 +93,6 @@ public enum RewritePrompt {
       """)
     }
 
-    return lines.joined(separator: "\n")
+    return PromptOutputLanguage.applying(outputLanguage, to: lines.joined(separator: "\n"))
   }
 }

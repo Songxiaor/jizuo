@@ -24,7 +24,12 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     self.provider = provider
   }
 
-  public func tidy(text: String, model: String?, style: TidyStyle) async throws -> TranscriptTidyOutcome {
+  public func tidy(
+    text: String,
+    model: String?,
+    style: TidyStyle,
+    outputLanguage: String
+  ) async throws -> TranscriptTidyOutcome {
     let chunks = TranscriptTidyChunker.chunks(of: text)
     guard !chunks.isEmpty else { throw TranscriptTidyError.emptyTranscript }
 
@@ -50,14 +55,14 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
       var collected: [Int: Result<TranscriptTidyOutcome, Error>] = [:]
       var next = 0
       func launch(_ index: Int) {
-        group.addTask { [provider, credentials, effectiveModel, style] in
+        group.addTask { [provider, credentials, effectiveModel, style, outputLanguage] in
           do {
             let outcome = try await provider.tidyTranscriptChunk(
               profile: credentials.profile,
               apiKey: credentials.apiKey,
               model: effectiveModel,
               text: chunks[index],
-              systemPrompt: style.systemPrompt
+              systemPrompt: style.systemPrompt(outputLanguage: outputLanguage)
             )
             return (index, .success(outcome))
           } catch is CancellationError {

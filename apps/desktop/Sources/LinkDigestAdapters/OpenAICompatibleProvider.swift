@@ -267,11 +267,12 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     profile: ProviderProfile,
     apiKey: String,
     model: String,
-    text: String
+    text: String,
+    systemPrompt: String = MindMapPrompt.system
   ) async throws -> (content: String, promptTokens: Int?, completionTokens: Int?, totalTokens: Int?) {
     let completion = try await nonStreamingChatCompletion(
       profile: profile, apiKey: apiKey, model: model,
-      systemPrompt: MindMapPrompt.system, userContent: text
+      systemPrompt: systemPrompt, userContent: text
     )
     return (completion.content, completion.promptTokens, completion.completionTokens, completion.totalTokens)
   }

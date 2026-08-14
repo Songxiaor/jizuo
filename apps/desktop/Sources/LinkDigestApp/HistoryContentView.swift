@@ -128,6 +128,10 @@ struct HistoryContentView: View {
       .onAppear {
         AppearanceTheme.applyApplicationAppearance(appearanceThemeRaw)
         synchronizeRemotePreviewPreheat()
+        model.applyGenerationPreferences(providerSettings.runPreferences)
+      }
+      .onChange(of: providerSettings.savedPreferences) { _, preferences in
+        model.applyGenerationPreferences(preferences)
       }
       .task { await browserSupport.load() }
       .onChange(of: firstCaptureIsComplete) { _, completed in

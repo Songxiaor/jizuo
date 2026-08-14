@@ -88,9 +88,10 @@ public enum TopicPrompt {
     voice: String? = nil,
     boundaryCount: Int = 1,
     excerptLimit: Int = excerptCharacterLimit,
-    template: String = presetTemplate
+    template: String = presetTemplate,
+    outputLanguage: String = ModelPreferences.defaultTargetLanguage
   ) -> String {
-    render(
+    let rendered = render(
       template: template,
       values: [
         Placeholder.materials: materialsBlock(materials, excerptLimit: excerptLimit),
@@ -105,6 +106,7 @@ public enum TopicPrompt {
         Placeholder.voice: voice?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
       ]
     )
+    return PromptOutputLanguage.applying(outputLanguage, to: rendered)
   }
 
   private static func materialsBlock(_ materials: [Material], excerptLimit: Int) -> String {

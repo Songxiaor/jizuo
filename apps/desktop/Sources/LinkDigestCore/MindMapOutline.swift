@@ -122,12 +122,30 @@ public enum MindMapPrompt {
     tags 是跨文章可复用的主题词（领域名或实体名，如“Agent 工程”“折叠屏”“Claude Code”），\
     严禁使用分支标题、章节名或“概述/建议/要点”这类结构词。
     """
+
+  public static func system(outputLanguage: String) -> String {
+    PromptOutputLanguage.applying(outputLanguage, to: system)
+  }
 }
 
 /// Provider-agnostic seam so tests can stub extraction without network.
 public protocol MindMapExtracting: Sendable {
   /// `model` overrides the profile's chat model when non-empty.
-  func extractOutline(text: String, model: String?) async throws -> MindMapExtractionOutcome
+  func extractOutline(
+    text: String,
+    model: String?,
+    outputLanguage: String
+  ) async throws -> MindMapExtractionOutcome
+}
+
+public extension MindMapExtracting {
+  func extractOutline(text: String, model: String?) async throws -> MindMapExtractionOutcome {
+    try await extractOutline(
+      text: text,
+      model: model,
+      outputLanguage: ModelPreferences.defaultTargetLanguage
+    )
+  }
 }
 
 public struct MindMapExtractionOutcome: Sendable, Equatable {

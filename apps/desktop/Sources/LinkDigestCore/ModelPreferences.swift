@@ -40,6 +40,9 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
   /// 有上限是因为这个值直接换成对服务商的并发请求数：免费档端点常有速率限制，
   /// 调太高只会把提速换成一片 429 重试，反而更慢。
   public let translationConcurrency: Int?
+  /// Apple Speech 本机转写语言。nil 取 `SpeechTranscriptionLocale.default`
+  ///（zh_CN），旧 JSON 因此仍能解码，中文用户行为不变。
+  public let transcriptionLocale: String?
   public var targetLanguage: String { outputLanguage }
 
   /// 默认 6：翻译是输出受限的活，墙钟时间随并发近似线性缩短，而 429 已有
@@ -49,6 +52,10 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
   public static let translationConcurrencyRange = 1...8
   public var effectiveTranslationConcurrency: Int {
     translationConcurrency ?? Self.defaultTranslationConcurrency
+  }
+
+  public var effectiveTranscriptionLocale: SpeechTranscriptionLocale {
+    SpeechTranscriptionLocale.resolved(transcriptionLocale)
   }
 
   public init(
@@ -61,7 +68,8 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     autoTranscribeNewCaptures: Bool? = nil,
     autoSummarizeNewCaptures: Bool? = nil,
     autoMindMapNewCaptures: Bool? = nil,
-    translationConcurrency: Int? = nil
+    translationConcurrency: Int? = nil,
+    transcriptionLocale: String? = nil
   ) throws {
     let trimmedPrompt = summaryPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
     let trimmedLanguage = targetLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -104,6 +112,9 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     self.translationConcurrency = translationConcurrency
       .map { min(max($0, Self.translationConcurrencyRange.lowerBound), Self.translationConcurrencyRange.upperBound) }
       .flatMap { $0 == Self.defaultTranslationConcurrency ? nil : $0 }
+    // 未知标识回落到默认中文，避免脏值把转写链路打到一个 Apple 不认的 locale。
+    let resolvedLocale = SpeechTranscriptionLocale.resolved(transcriptionLocale)
+    self.transcriptionLocale = resolvedLocale == .default ? nil : resolvedLocale.rawValue
   }
 
   public init(
@@ -116,7 +127,8 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     autoTranscribeNewCaptures: Bool? = nil,
     autoSummarizeNewCaptures: Bool? = nil,
     autoMindMapNewCaptures: Bool? = nil,
-    translationConcurrency: Int? = nil
+    translationConcurrency: Int? = nil,
+    transcriptionLocale: String? = nil
   ) throws {
     try self.init(
       summaryPrompt: summaryPrompt,
@@ -128,7 +140,8 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
       autoTranscribeNewCaptures: autoTranscribeNewCaptures,
       autoSummarizeNewCaptures: autoSummarizeNewCaptures,
       autoMindMapNewCaptures: autoMindMapNewCaptures,
-      translationConcurrency: translationConcurrency
+      translationConcurrency: translationConcurrency,
+      transcriptionLocale: transcriptionLocale
     )
   }
 

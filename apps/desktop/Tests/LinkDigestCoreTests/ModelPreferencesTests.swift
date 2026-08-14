@@ -41,4 +41,24 @@ extension ModelPreferencesTests {
     XCTAssertNil(preferences.autoSummarizeNewCaptures)
     XCTAssertEqual(preferences.autoMindMapNewCaptures, true)
   }
+
+  func testTranscriptionLocaleDefaultsToChineseAndPersistsEnglish() throws {
+    XCTAssertEqual(ModelPreferences.default.effectiveTranscriptionLocale, .simplifiedChinese)
+    XCTAssertNil(ModelPreferences.default.transcriptionLocale)
+
+    let english = try ModelPreferences(transcriptionLocale: "en_US")
+    XCTAssertEqual(english.effectiveTranscriptionLocale, .english)
+    XCTAssertEqual(english.transcriptionLocale, "en_US")
+
+    let unknown = try ModelPreferences(transcriptionLocale: "not-a-locale")
+    XCTAssertEqual(unknown.effectiveTranscriptionLocale, .simplifiedChinese)
+    XCTAssertNil(unknown.transcriptionLocale)
+
+    let legacy = """
+      {"summaryPrompt":"总结","outputLanguage":"简体中文"}
+      """.data(using: .utf8)!
+    let decoded = try JSONDecoder().decode(ModelPreferences.self, from: legacy)
+    XCTAssertNil(decoded.transcriptionLocale)
+    XCTAssertEqual(decoded.effectiveTranscriptionLocale, .simplifiedChinese)
+  }
 }
