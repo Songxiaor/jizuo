@@ -104,10 +104,10 @@ struct TopicBoardView: View {
           Text("选题板")
             .font(.body.weight(.semibold))
         }
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
+      .buttonStyle(.appPlain)
       .accessibilityIdentifier("topic-board-toggle")
 
       Spacer()
@@ -123,7 +123,7 @@ struct TopicBoardView: View {
           .foregroundStyle(isRecipeOpen ? Color.accentColor : Color.secondary)
           .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
+      .buttonStyle(.appPlain)
       .help(isRecipeOpen ? "收起配方" : "看看它读了什么、怎么问的")
       .accessibilityLabel("配方")
       .accessibilityIdentifier("topic-board-recipe")
@@ -137,10 +137,10 @@ struct TopicBoardView: View {
           model.generateTopics(recipe: recipe, voice: voice) {
             lastRunAt = Date().timeIntervalSince1970
           }
-        }
+          }
           .font(.subheadline)
-          .buttonStyle(.plain)
-          .foregroundStyle(model.canGenerateTopics ? Color.accentColor : Color.secondary)
+          .buttonStyle(.appPlain)
+          .foregroundStyle(model.canGenerateTopics ? Color.accentColor : appTheme.secondaryText)
           .disabled(!model.canGenerateTopics)
           .help(model.topicUnavailableReason() ?? "按当前配方从素材库里出选题")
           .accessibilityIdentifier("topic-board-generate")
@@ -175,7 +175,7 @@ struct TopicBoardView: View {
           // 否则他会先把旧的那一路关掉——它看起来最像多余的。
           Text("两路分开是为了让远的和近的能撞上。取 0 条就是关掉那一路。")
             .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
             .fixedSize(horizontal: false, vertical: true)
           HStack(spacing: 5) {
             Text("只要标签")
@@ -198,7 +198,7 @@ struct TopicBoardView: View {
           HStack(spacing: 6) {
             Text(recipe.isTemplateCustomized ? "我的版本" : "预置 · 只读")
               .font(.caption2.weight(.semibold))
-              .foregroundStyle(recipe.isTemplateCustomized ? Color.accentColor : Color.secondary)
+              .foregroundStyle(recipe.isTemplateCustomized ? Color.accentColor : appTheme.secondaryText)
             Spacer(minLength: 0)
             if recipe.isTemplateCustomized {
               Button("恢复预置") { field(\.template).wrappedValue = nil }
@@ -225,7 +225,7 @@ struct TopicBoardView: View {
             ScrollView {
               Text(TopicPrompt.presetTemplate)
                 .font(.system(size: 10.5, design: .monospaced))
-                .foregroundStyle(.secondary)
+                .appSecondaryText()
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(6)
@@ -239,11 +239,11 @@ struct TopicBoardView: View {
 
           Text("可用变量：" + TopicPrompt.Placeholder.all.map(\.0).joined(separator: " "))
             .font(.system(size: 9.5, design: .monospaced))
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
             .fixedSize(horizontal: false, vertical: true)
           Text("变量为空时它那一行会消失；一段只剩标题，整段也消失。")
             .font(.system(size: 9.5))
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -260,7 +260,7 @@ struct TopicBoardView: View {
           }
           Text("越界那条不受你的偏好约束。设成 0 就不要了，但回音室也是这么形成的。")
             .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -268,7 +268,7 @@ struct TopicBoardView: View {
       HStack(spacing: 8) {
         if model.isDryRunningTopics {
           ProgressView().controlSize(.small)
-          Text("正在试跑…").font(.system(size: 10.5)).foregroundStyle(.secondary)
+          Text("正在试跑…").font(.system(size: 10.5)).appSecondaryText()
         } else {
           Button("试跑一次") { model.dryRunTopics(recipe: recipe, voice: voice) }
             .font(.subheadline)
@@ -285,7 +285,7 @@ struct TopicBoardView: View {
       if let result = model.topicDryRunResult {
         Text(result)
           .font(.system(size: 10.5))
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("topic-recipe-dry-run-result")
       }
@@ -301,7 +301,7 @@ struct TopicBoardView: View {
     VStack(alignment: .leading, spacing: 5) {
       Text(title)
         .font(.caption2.weight(.semibold))
-        .foregroundStyle(.tertiary)
+        .appTertiaryText()
       content()
     }
   }
@@ -347,12 +347,12 @@ struct TopicBoardView: View {
       HStack(spacing: 6) {
         Text(Self.dayLabel(day))
           .font(.caption2.weight(.semibold))
-          .foregroundStyle(.tertiary)
+          .appTertiaryText()
         // 「一条都没要」本身就是信号，所以那一天也留在板上，不隐藏。
         if candidates.allSatisfy({ $0.verdict == .declined }) {
           Text("一条都没要")
             .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
         }
         Spacer(minLength: 0)
       }
@@ -383,14 +383,14 @@ struct TopicBoardView: View {
           Text(candidate.title)
             .font(.system(size: 12.5, weight: .medium))
             .strikethrough(isDeclined)
-            .foregroundStyle(isDeclined ? Color.secondary : Color.primary)
+            .foregroundStyle(isDeclined ? appTheme.secondaryText : Color.primary)
             .fixedSize(horizontal: false, vertical: true)
             .multilineTextAlignment(.leading)
         }
         if !candidate.summary.isEmpty, !isDeclined {
           Text(candidate.summary)
             .font(.subheadline)
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
             .fixedSize(horizontal: false, vertical: true)
         }
       }
@@ -408,9 +408,9 @@ struct TopicBoardView: View {
             onTake(candidate)
           } label: {
             Image(systemName: "arrow.right.circle")
-          }
-          .buttonStyle(.plain)
-          .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.appPlain)
+        .foregroundStyle(.secondary)
           .help("从这条开始写")
           .accessibilityLabel("从「\(candidate.title)」开始写")
 
@@ -418,9 +418,9 @@ struct TopicBoardView: View {
             model.declineTopic(candidate.id)
           } label: {
             Image(systemName: "xmark")
-          }
-          .buttonStyle(.plain)
-          .foregroundStyle(.tertiary)
+        }
+        .buttonStyle(.appPlain)
+        .foregroundStyle(.tertiary)
           .help("不要这条")
           .accessibilityLabel("划掉「\(candidate.title)」")
         }
@@ -440,10 +440,10 @@ struct TopicBoardView: View {
     VStack(alignment: .leading, spacing: 4) {
       Text("还没出过选题")
         .font(.system(size: 11.5))
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
       Text("从素材库里找能碰撞的组合，写成几条不同角度的选题。")
         .font(.subheadline)
-        .foregroundStyle(.tertiary)
+        .appTertiaryText()
         .fixedSize(horizontal: false, vertical: true)
     }
     .frame(maxWidth: .infinity, alignment: .leading)

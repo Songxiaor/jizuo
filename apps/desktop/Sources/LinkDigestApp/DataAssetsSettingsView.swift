@@ -77,7 +77,7 @@ struct DataAssetsSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
           Text("导出内容仅限版本、系统、基础运行信息和近期崩溃报告，不含历史内容或密钥。")
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
             .accessibilityIdentifier("diagnostics-scope-notice")
           Button("导出诊断信息") {
             isDiagnosticConfirmationPresented = true
@@ -132,10 +132,10 @@ struct DataAssetsSettingsView: View {
         Text("\(progress.completed)/\(progress.total)")
           .font(.caption)
           .monospacedDigit()
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
       } else {
         ProgressView().controlSize(.small)
-        Text("正在读取历史…").font(.caption).foregroundStyle(.secondary)
+        Text("正在读取历史…").font(.caption).appSecondaryText()
       }
     }
   }
@@ -148,7 +148,7 @@ struct DataAssetsSettingsView: View {
     case let .finished(message):
       Text(message)
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .textSelection(.enabled)
         .accessibilityIdentifier(identifier)
     case let .failed(message):

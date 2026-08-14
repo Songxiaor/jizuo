@@ -28,7 +28,7 @@ extension View {
   func settingsSectionHeaderStyle() -> some View {
     self
       .font(.footnote.weight(.medium))
-      .foregroundStyle(.secondary)
+      .appSecondaryText()
   }
 }
 
@@ -117,7 +117,7 @@ struct SettingsPageHeader: View {
   @ViewBuilder private var captionText: some View {
     let text = Text(caption)
       .font(.callout)
-      .foregroundStyle(.secondary)
+      .appSecondaryText()
       .fixedSize(horizontal: false, vertical: true)
     if let captionIdentifier {
       text.accessibilityIdentifier(captionIdentifier)
@@ -177,7 +177,7 @@ struct SettingsCardGroup<Content: View>: View {
       if let footer {
         Text(footer)
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .fixedSize(horizontal: false, vertical: true)
       }
     }
@@ -217,7 +217,7 @@ struct SettingsRow<Control: View>: View {
           if let caption {
             Text(caption)
               .font(.caption)
-              .foregroundStyle(.tertiary)
+              .appTertiaryText()
               .fixedSize(horizontal: false, vertical: true)
           }
         }
@@ -227,7 +227,7 @@ struct SettingsRow<Control: View>: View {
       if isDetailsPresented, let details {
         Text(details)
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
           .transition(.opacity.combined(with: .move(edge: .top)))
@@ -370,7 +370,7 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
   @ViewBuilder private var summaryText: some View {
     Text(summary)
       .font(.caption)
-      .foregroundStyle(.secondary)
+      .appSecondaryText()
       .fixedSize(horizontal: false, vertical: true)
       .frame(maxWidth: .infinity, alignment: .leading)
   }
@@ -396,7 +396,7 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
       if isDetailsPresented, let details {
         Text(details)
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
           .transition(.opacity.combined(with: .move(edge: .top)))
@@ -446,9 +446,9 @@ private func settingsInfoButton(
     }
   } label: {
     Image(systemName: "info.circle")
-  }
-  .buttonStyle(.borderless)
-  .foregroundStyle(.secondary)
+    }
+    .buttonStyle(.borderless)
+    .foregroundStyle(.secondary)
   .help("查看\(title)说明")
   .accessibilityLabel("\(title)详细说明")
 }
@@ -488,7 +488,7 @@ struct SettingsChoiceList<Value: Hashable>: View {
                 .foregroundStyle(.primary)
               Text(choice.explanation)
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .appSecondaryText()
                 .fixedSize(horizontal: false, vertical: true)
                 .multilineTextAlignment(.leading)
             }
@@ -496,7 +496,7 @@ struct SettingsChoiceList<Value: Hashable>: View {
           }
           .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.appPlain)
         .accessibilityIdentifier("\(identifierPrefix)-\(String(describing: choice.value))")
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
       }
@@ -515,7 +515,7 @@ struct SettingsCrossReference: View {
   var body: some View {
     Label(message, systemImage: systemImage)
       .font(.caption)
-      .foregroundStyle(.secondary)
+      .appSecondaryText()
       .fixedSize(horizontal: false, vertical: true)
       .frame(maxWidth: .infinity, alignment: .leading)
   }

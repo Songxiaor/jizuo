@@ -1441,6 +1441,17 @@ private struct LinkDigestCommands: Commands {
   @FocusedValue(\.newNote) private var newNote
   @FocusedValue(\.todayNote) private var todayNote
   @FocusedValue(\.focusHistorySearch) private var focusHistorySearch
+  @FocusedValue(\.historyDetailCommands) private var historyDetailCommands
+  @FocusedValue(\.batchSummaryCommand) private var batchSummaryCommand
+  @FocusedValue(\.toggleSidebarCommand) private var toggleSidebarCommand
+
+  private var detailAvailability: HistoryDetailCommandAvailability? {
+    historyDetailCommands?.availability
+  }
+
+  private func canRun(_ command: HistoryDetailCommandAvailability.Command) -> Bool {
+    detailAvailability?.isEnabled(command) == true
+  }
 
   var body: some Commands {
     CommandGroup(replacing: .newItem) {
@@ -1459,10 +1470,77 @@ private struct LinkDigestCommands: Commands {
         .keyboardShortcut("t", modifiers: [.command, .shift])
         .disabled(todayNote == nil)
     }
+    CommandGroup(after: .newItem) {
+      Menu("导出") {
+        Button("Markdown (.md)") { historyDetailCommands?.exportMarkdown() }
+          .keyboardShortcut("e", modifiers: [.command, .shift])
+          .disabled(!canRun(.export))
+        Button("纯文本 (.txt)") { historyDetailCommands?.exportPlainText() }
+          .disabled(!canRun(.export))
+        Button("PDF (.pdf)") { historyDetailCommands?.exportPDF() }
+          .disabled(!canRun(.export))
+        Button("Word (.docx)") { historyDetailCommands?.exportWord() }
+          .disabled(!canRun(.export))
+        Button("完整数据 (.json)") { historyDetailCommands?.exportJSON() }
+          .disabled(!canRun(.export))
+      }
+    }
     CommandGroup(after: .textEditing) {
       Button("搜索历史") { focusHistorySearch?.run() }
         .keyboardShortcut("f", modifiers: .command)
         .disabled(focusHistorySearch == nil)
+    }
+    CommandGroup(after: .pasteboard) {
+      Button("拷贝全文") { historyDetailCommands?.copyFullText() }
+        .keyboardShortcut("c", modifiers: [.command, .shift])
+        .disabled(!canRun(.copyFullText))
+      Divider()
+      Button("删除当前条目", role: .destructive) { historyDetailCommands?.delete() }
+        .keyboardShortcut(.delete, modifiers: .command)
+        .disabled(!canRun(.delete))
+    }
+    CommandMenu("生成") {
+      Button("总结") { historyDetailCommands?.summarize() }
+        .keyboardShortcut("r", modifiers: .command)
+        .disabled(!canRun(.summarize))
+      Button("翻译") { historyDetailCommands?.translate() }
+        .keyboardShortcut("t", modifiers: [.command, .option])
+        .disabled(!canRun(.translate))
+      Button("生成脑图") { historyDetailCommands?.generateMindMap() }
+        .keyboardShortcut("m", modifiers: [.command, .option])
+        .disabled(!canRun(.generateMindMap))
+      Divider()
+      Button("总结选中项") { batchSummaryCommand?.run() }
+        .disabled(batchSummaryCommand?.isEnabled != true)
+      Button("停止") { historyDetailCommands?.stop() }
+        .keyboardShortcut(".", modifiers: .command)
+        .disabled(!canRun(.stop))
+    }
+    CommandMenu("显示") {
+      Button(toggleSidebarCommand?.isSidebarVisible == true ? "隐藏边栏" : "显示边栏") {
+        toggleSidebarCommand?.run()
+      }
+      .keyboardShortcut("s", modifiers: [.command, .control])
+      .disabled(toggleSidebarCommand == nil)
+      Divider()
+      Button("放大正文字号") { historyDetailCommands?.increaseFontSize() }
+        .keyboardShortcut("+", modifiers: .command)
+        .disabled(!canRun(.increaseFontSize))
+      Button("缩小正文字号") { historyDetailCommands?.decreaseFontSize() }
+        .keyboardShortcut("-", modifiers: .command)
+        .disabled(!canRun(.decreaseFontSize))
+      Divider()
+      Button("上一条") { historyDetailCommands?.selectPrevious() }
+        .keyboardShortcut(.upArrow, modifiers: .command)
+        .disabled(!canRun(.selectPrevious))
+      Button("下一条") { historyDetailCommands?.selectNext() }
+        .keyboardShortcut(.downArrow, modifiers: .command)
+        .disabled(!canRun(.selectNext))
+      Divider()
+      Button(historyDetailCommands?.showsPlainText == true ? "使用富文本查看正文" : "以纯文本查看正文") {
+        historyDetailCommands?.togglePlainText()
+      }
+      .disabled(!canRun(.togglePlainText))
     }
   }
 }

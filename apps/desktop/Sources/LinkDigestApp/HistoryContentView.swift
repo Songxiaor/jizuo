@@ -35,6 +35,13 @@ struct HistoryContentView: View {
 
   private var appearanceTheme: AppearanceTheme { AppearanceTheme(rawValue: appearanceThemeRaw) ?? .glass }
   private var theme: HistoryThemeTokens { appearanceTheme.tokens }
+  private var isSidebarVisible: Bool {
+    columnVisibility != .doubleColumn && columnVisibility != .detailOnly
+  }
+
+  private func toggleSidebar() {
+    columnVisibility = isSidebarVisible ? .doubleColumn : .all
+  }
   /// 工作台的四处入口都问它，不各自与开关做 `&&`。
   private var isWorkbenchVisible: Bool {
     ExperimentalFeatures.isWorkbenchVisible(userEnabled: isWorkbenchUserEnabled)
@@ -81,6 +88,14 @@ struct HistoryContentView: View {
       .foregroundStyle(theme.primaryText)
       .tint(theme.accent)
       .accentColor(theme.accent)
+      .focusedSceneValue(
+        \.batchSummaryCommand,
+        BatchSummaryCommandAction(isEnabled: model.canBatchSummarize) { model.requestBatchSummary() }
+      )
+      .focusedSceneValue(
+        \.toggleSidebarCommand,
+        ToggleSidebarCommandAction(isSidebarVisible: isSidebarVisible) { toggleSidebar() }
+      )
       .onAppear {
         AppearanceTheme.applyApplicationAppearance(appearanceThemeRaw)
         synchronizeRemotePreviewPreheat()
@@ -449,7 +464,7 @@ struct HistoryContentView: View {
                 PendingCaptureRow(pending: pending, model: manualLink)
               }
             } header: {
-              Text("抓取队列").font(.caption).foregroundStyle(.secondary)
+              Text("抓取队列").font(.caption).appSecondaryText()
             }
           }
           ForEach(model.rows, id: \.taskID) { row in
@@ -500,7 +515,7 @@ struct HistoryContentView: View {
           }
           if model.isLoadingNextPage { HStack { Spacer(); ProgressView().controlSize(.small); Spacer() } }
           else if model.listErrorCode != nil, model.canRetryList {
-            HStack { Text("无法载入更多").foregroundStyle(.secondary); Spacer(); Button("重试", action: model.retryList) }
+            HStack { Text("无法载入更多").appSecondaryText(); Spacer(); Button("重试", action: model.retryList) }
           }
         }.listStyle(.sidebar)
           .scrollContentBackground(.hidden)
@@ -558,7 +573,7 @@ struct HistoryContentView: View {
         Button(action: openTodayNote) {
           Label("今天", systemImage: "calendar")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.appPlain)
         .accessibilityIdentifier("history-navigation-today-note")
       }
 
@@ -589,21 +604,24 @@ struct HistoryContentView: View {
       // 数据,而当前它还没接 AI,手动建创作的价值抵不上迁移成本。
       if isWorkbenchVisible {
       Section {
+        let active = model.pieces.filter { !$0.isFinished }.count
         Button { model.enterWorkbench() } label: {
           HStack(spacing: 8) {
             Image(systemName: "hammer")
               .frame(width: 18)
             Text("工作台")
             Spacer()
-            let active = model.pieces.filter { !$0.isFinished }.count
             if active > 0 {
               countBadge(active, selected: model.isWorkbenchActive)
             }
           }
           .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.appPlain)
         .foregroundStyle(model.isWorkbenchActive ? Color.accentColor : Color.primary)
+        .accessibilityLabel("工作台")
+        .accessibilityValue("\(active) 项")
+        .accessibilityAddTraits(model.isWorkbenchActive ? [.isButton, .isSelected] : .isButton)
         .accessibilityIdentifier("history-navigation-workbench")
       }
       }
@@ -646,7 +664,7 @@ struct HistoryContentView: View {
         Section("标签") {
           Text("总结后自动生成，也可在详情中手动添加")
             .font(.caption)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
         }
       } else {
         Section {
@@ -666,7 +684,7 @@ struct HistoryContentView: View {
                     Text(item.tag.name).lineLimit(1)
                     Text("\(item.count)")
                       .font(.caption2.monospacedDigit())
-                      .foregroundStyle(selected ? theme.selectionText.opacity(0.8) : .secondary)
+                      .foregroundStyle(selected ? theme.selectionText.opacity(0.8) : theme.secondaryText)
                   }
                   .font(.caption)
                   .padding(.vertical, 4).padding(.horizontal, 9)
@@ -683,7 +701,11 @@ struct HistoryContentView: View {
                   .foregroundStyle(selected ? theme.selectionText : theme.primaryText)
                   .contentShape(Capsule())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.appPlain)
+                .fontWeight(selected ? .semibold : .regular)
+                .accessibilityLabel(item.tag.name)
+                .accessibilityValue("\(item.count) 条")
+                .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
                 .accessibilityIdentifier("history-navigation-tag-\(item.tag.normalizedName)")
                 .help("单击叠加筛选（同时命中所有已选标签），再次单击取消；按住 Command 单击只看此标签。")
               }
@@ -722,7 +744,7 @@ struct HistoryContentView: View {
       }
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.appPlain)
     // 选中态保留品牌色，但不再整行反白。浅色底 + 左侧锚点比实心色块更安静，
     // 也让平台图标和计数继续保持原本的辨识度。
     .padding(.vertical, DesignTokens.Space.xs)
@@ -742,6 +764,9 @@ struct HistoryContentView: View {
     .foregroundStyle(theme.primaryText)
     .padding(.horizontal, -6)
     .fontWeight(selected ? .semibold : .regular)
+    .accessibilityLabel(title)
+    .accessibilityValue("\(count) 项")
+    .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
   }
 
   /// 图24 式计数徽章：灰底小胶囊；选中时反白依附在蓝色药丸上。
@@ -752,7 +777,7 @@ struct HistoryContentView: View {
   private func countBadge(_ count: Int, selected: Bool) -> some View {
     Text("\(count)")
       .font(.caption.weight(.medium).monospacedDigit())
-      .foregroundStyle(selected ? theme.accent : .secondary)
+      .foregroundStyle(selected ? theme.accent : theme.secondaryText)
       .padding(.horizontal, 6).padding(.vertical, 1)
       .background(selected ? theme.accent.opacity(0.12) : theme.badge, in: Capsule())
   }
@@ -826,7 +851,7 @@ struct HistoryContentView: View {
         ? "一个念头写下来就是一件创作。"
         : "打开后能看到它攒了哪些素材、稿子写到哪了。")
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
       if model.pieces.isEmpty {
         Button("记一个新灵感") { isNewSparkPresented = true }
           .buttonStyle(.borderedProminent)
@@ -846,7 +871,7 @@ struct HistoryContentView: View {
         .font(.headline)
       Text("一句话就够，之后可以随时改。")
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
       TextField("比如：AI 时代的内容创作是可以偷懒的", text: $newSparkText, axis: .vertical)
         .textFieldStyle(.plain)
         .lineLimit(2...5)
@@ -924,7 +949,7 @@ struct HistoryContentView: View {
         Text("已选择 \(model.selectedTaskCount) 项").font(.title2.weight(.semibold))
         Text("可从工具栏、右键菜单或 Delete 键批量删除；导出、标签、识别和转写等单条能力暂不可用。")
           .font(.body)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .accessibilityIdentifier("history-multi-selection-placeholder")
@@ -1015,7 +1040,7 @@ struct HistoryContentView: View {
         .padding(.bottom, 6)
       Text("随手记下想法、灵感或读后感。笔记和抓取的内容一样可以打标签、搜索和导出。")
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .multilineTextAlignment(.center)
         .frame(maxWidth: 380)
         .padding(.bottom, 20)
@@ -1047,7 +1072,7 @@ struct HistoryContentView: View {
         .padding(.bottom, 6)
       Text("粘贴公开网页链接，或从 \(ProductDisplay.extensionName) 接收已打开的页面后，可在这里总结或翻译。")
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .multilineTextAlignment(.center)
         .frame(maxWidth: 380)
         .padding(.bottom, 20)
@@ -1082,7 +1107,7 @@ struct HistoryContentView: View {
         VStack(alignment: .leading, spacing: 3) {
           Text("三步开始使用汲作").font(.headline)
           Text("完成第一条总结后，这张卡会永久消失。")
-            .font(.caption).foregroundStyle(.secondary)
+            .font(.caption).appSecondaryText()
         }
         Spacer()
         Button {
@@ -1090,7 +1115,7 @@ struct HistoryContentView: View {
         } label: {
           Image(systemName: "xmark").font(.caption.weight(.semibold))
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.appPlain)
         .help("不再显示")
         .accessibilityLabel("不再显示")
       }
@@ -1135,7 +1160,7 @@ struct HistoryContentView: View {
         .foregroundStyle(theme.accent)
       VStack(alignment: .leading, spacing: 2) {
         Text("完成首次设置").font(.callout.weight(.semibold))
-        Text(firstCaptureNextStepMessage).font(.caption).foregroundStyle(.secondary)
+        Text(firstCaptureNextStepMessage).font(.caption).appSecondaryText()
       }
       Spacer(minLength: 0)
       Button(firstCaptureNextStepActionTitle) {
@@ -1154,7 +1179,7 @@ struct HistoryContentView: View {
       Button {
         isCaptureOnboardingDismissed = true
       } label: { Image(systemName: "xmark") }
-        .buttonStyle(.plain)
+        .buttonStyle(.appPlain)
         .help("不再显示")
         .accessibilityLabel("不再显示")
     }
@@ -1222,7 +1247,7 @@ private struct HistoryInlineState: View {
       Text(title).font(.headline)
       Text(message)
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .multilineTextAlignment(.center)
         .frame(maxWidth: 330)
       if let actionTitle, let action {
@@ -1267,7 +1292,7 @@ private struct ClipboardSuggestionBanner: View {
         .font(.callout.weight(.semibold))
       Text(suggestion.displayURL)
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .lineLimit(1)
         .truncationMode(.middle)
       HStack(spacing: 10) {
@@ -1317,7 +1342,7 @@ private struct ManualLinkSheet: View {
     VStack(alignment: .leading, spacing: 16) {
       Text("添加网页链接").font(.title3.weight(.semibold))
       Text("只读取你主动提交的公开 HTML 页面；登录页面请使用 \(ProductDisplay.extensionName)。")
-        .font(.callout).foregroundStyle(.secondary)
+        .font(.callout).appSecondaryText()
       TextField("https://example.com/article", text: $model.input)
         .textFieldStyle(.roundedBorder).focused($focusURL)
         .disabled(model.isBusy).accessibilityIdentifier("manual-link-url-input")
@@ -1334,7 +1359,7 @@ private struct ManualLinkSheet: View {
         if model.isFetching {
           Button("停止读取", action: model.cancelFetch).accessibilityIdentifier("manual-link-cancel")
         } else if model.isSaving {
-          Text("保存中").foregroundStyle(.secondary).accessibilityIdentifier("manual-link-saving-label")
+          Text("保存中").appSecondaryText().accessibilityIdentifier("manual-link-saving-label")
         } else {
           Button("添加") { model.submit() }
             .keyboardShortcut(.defaultAction).disabled(!model.canSubmit)
@@ -1375,9 +1400,9 @@ private struct PendingCaptureRow: View {
           .lineLimit(1)
           .truncationMode(.middle)
         switch pending.phase {
-        case .queued: Text("排队中").font(.caption2).foregroundStyle(.tertiary)
-        case .fetching: Text("正在抓取…").font(.caption2).foregroundStyle(.tertiary)
-        case .saving: Text("正在保存…").font(.caption2).foregroundStyle(.tertiary)
+        case .queued: Text("排队中").font(.caption2).appTertiaryText()
+        case .fetching: Text("正在抓取…").font(.caption2).appTertiaryText()
+        case .saving: Text("正在保存…").font(.caption2).appTertiaryText()
         case let .failed(message):
           // 失败原因必须完整可读。`lineLimit(2)` 会把「网页暂时无法打开，
           // 请检查链接后重试」截掉尾巴——而尾巴恰恰是那句可执行的建议。
@@ -1397,7 +1422,7 @@ private struct PendingCaptureRow: View {
       } label: {
         Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
       }
-      .buttonStyle(.plain)
+      .buttonStyle(.appPlain)
       .help(pending.phase == .queued ? "移出队列" : "取消并移除")
       .accessibilityLabel(pending.phase == .queued ? "移出队列" : "取消并移除")
     }
@@ -1489,7 +1514,7 @@ private struct HistoryRowView: View {
         if let preview = row.artifactPreview?.trimmedNonEmpty ?? row.author?.trimmedNonEmpty {
           Text(preview)
             .font(.callout)
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
             .lineLimit(1)
         }
         // 时间合成一排。
@@ -1501,7 +1526,7 @@ private struct HistoryRowView: View {
         HStack(alignment: .bottom, spacing: 6) {
           Text(rowTimeText)
             .font(.footnote)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
             .lineLimit(1)
           Spacer(minLength: 4)
           // 处理状态徽标：一眼分清生料和成品，自动管线跑完什么立刻可见。
@@ -1535,7 +1560,7 @@ private struct HistoryRowView: View {
             }
           }
           .font(.system(size: BadgeTypography.size))
-          .foregroundStyle(.tertiary)
+          .appTertiaryText()
           .accessibilityIdentifier("history-row-status-badges")
         }
       }
@@ -2045,6 +2070,51 @@ private struct HistoryDetailView: View {
     return result
   }
 
+  private var commandActions: HistoryDetailCommandActions {
+    let canSummarize = providerSettings.arePreferencesReady && (
+      showsCurrentCapture ? appModel.canStartRun : appModel.canStartRun(from: detail)
+    )
+    let canTranslate = providerSettings.arePreferencesReady && (
+      showsCurrentCapture
+        ? appModel.canTranslate(preferences: providerSettings.runPreferences)
+        : appModel.canTranslate(from: detail, preferences: providerSettings.runPreferences)
+    )
+    return HistoryDetailCommandActions(
+      taskID: detail.task.id,
+      availability: HistoryDetailCommandAvailability(
+        canSummarize: canSummarize,
+        canTranslate: canTranslate,
+        canGenerateMindMap: !isOwnWriting && model.canGenerateMindMap(taskID: detail.task.id),
+        canStop: appModel.canStopVisibleRun(for: detail.task.id),
+        canExport: model.canExport,
+        canCopyFullText: model.canExport,
+        canDelete: model.canDelete(protectedTaskIDs: protectedTaskIDs),
+        canDecreaseFontSize: hasReadableBody && readingFontSizeRaw > Double(ReadingFontSize.minimum),
+        canIncreaseFontSize: hasReadableBody && readingFontSizeRaw < Double(ReadingFontSize.maximum),
+        canSelectPrevious: model.canSelectPrevious,
+        canSelectNext: model.canSelectNext,
+        canTogglePlainText: hasReadableBody
+      ),
+      showsPlainText: showsPlainText,
+      summarize: runSummary,
+      translate: runTranslation,
+      generateMindMap: { model.requestMindMapGeneration(taskID: detail.task.id) },
+      stop: { Task { await appModel.stop() } },
+      exportMarkdown: { exportCleanText(.markdown) },
+      exportPlainText: { exportCleanText(.plainText) },
+      exportPDF: { exportStyledDocument(.pdf) },
+      exportWord: { exportStyledDocument(.docx) },
+      exportJSON: { model.requestExport(.json) },
+      copyFullText: copyFullArticle,
+      delete: { model.requestDeletion(protectedTaskIDs: protectedTaskIDs) },
+      decreaseFontSize: { adjustReadingFontSize(by: -ReadingFontSize.step) },
+      increaseFontSize: { adjustReadingFontSize(by: ReadingFontSize.step) },
+      selectPrevious: { model.selectAdjacent(offset: -1) },
+      selectNext: { model.selectAdjacent(offset: 1) },
+      togglePlainText: { showsPlainText.toggle() }
+    )
+  }
+
   var body: some View {
     ScrollView {
       // Title → URL → run/capture metadata (top) → action toolbar → reading → tags.
@@ -2087,7 +2157,7 @@ private struct HistoryDetailView: View {
         HStack(spacing: 10) {
           Text(sourceURLDisplay)
             .font(.callout)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
             .lineLimit(1)
             .textSelection(.enabled)
             .help(sourceURL)
@@ -2203,7 +2273,7 @@ private struct HistoryDetailView: View {
                 .foregroundStyle(theme.warning)
               Text("请在“设置 → 视频存储”重新选择文件夹，或把已保存的视频移回原位置。")
                 .font(.caption)
-                .foregroundStyle(.secondary)
+                .appSecondaryText()
             }
             .padding(14)
             .background(theme.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
@@ -2333,6 +2403,7 @@ private struct HistoryDetailView: View {
       )
       .frame(width: 0, height: 0)
     )
+    .focusedSceneValue(\.historyDetailCommands, commandActions)
     // `initial: true` so the first item rendered also lands on the right pane;
     // previously the @State default won and a summary-less item opened on an
     // empty 总结 pane.
@@ -2427,7 +2498,6 @@ private struct HistoryDetailView: View {
             Label("上一条", systemImage: "chevron.up")
           }
           .disabled(!model.canSelectPrevious)
-          .keyboardShortcut(.upArrow, modifiers: .command)
           .accessibilityIdentifier("reading-previous-item")
           Button {
             model.selectAdjacent(offset: 1)
@@ -2435,7 +2505,6 @@ private struct HistoryDetailView: View {
             Label("下一条", systemImage: "chevron.down")
           }
           .disabled(!model.canSelectNext)
-          .keyboardShortcut(.downArrow, modifiers: .command)
           .accessibilityIdentifier("reading-next-item")
         }
         .help("上一条 / 下一条（⌘↑ / ⌘↓）")
@@ -2622,7 +2691,7 @@ private struct HistoryDetailView: View {
     if let selection = sessionMediaPlayback.selectionDiagnostic {
       Text(selection)
         .font(.caption2)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.top, 4)
@@ -2706,7 +2775,7 @@ private struct HistoryDetailView: View {
       VStack(alignment: .leading, spacing: 8) {
         Label("链接到这条的笔记 \(noteBacklinks.count)", systemImage: "arrow.turn.up.left")
           .font(.callout.weight(.medium))
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
         ForEach(noteBacklinks) { backlink in
           Button {
             if let snapshot = latestSnapshot, noteDraftIsDirty(snapshot) {
@@ -2725,7 +2794,7 @@ private struct HistoryDetailView: View {
             }
             .contentShape(Rectangle())
           }
-          .buttonStyle(.plain)
+          .buttonStyle(.appPlain)
           .linkCursor()
         }
       }
@@ -2744,7 +2813,7 @@ private struct HistoryDetailView: View {
     switch model.transcriptTidyState(for: detail.task.id) {
     case .running:
       ProgressView().controlSize(.small)
-      Text("正在整理…").font(.caption).foregroundStyle(.secondary)
+      Text("正在整理…").font(.caption).appSecondaryText()
     case let .failed(message):
       Label(message, systemImage: "exclamationmark.triangle")
         .font(.caption)
@@ -2752,6 +2821,26 @@ private struct HistoryDetailView: View {
         .accessibilityIdentifier("note-tidy-failed")
     default:
       EmptyView()
+    }
+  }
+
+  private func runSummary() {
+    Task {
+      if showsCurrentCapture {
+        await appModel.summarize(preferences: providerSettings.runPreferences)
+      } else {
+        await appModel.summarize(historyDetail: detail, preferences: providerSettings.runPreferences)
+      }
+    }
+  }
+
+  private func runTranslation() {
+    Task {
+      if showsCurrentCapture {
+        await appModel.translate(preferences: providerSettings.runPreferences)
+      } else {
+        await appModel.translate(historyDetail: detail, preferences: providerSettings.runPreferences)
+      }
     }
   }
 
@@ -2764,15 +2853,7 @@ private struct HistoryDetailView: View {
           prominent: !isOwnWriting && summaryArtifact == nil,
           disabled: !providerSettings.arePreferencesReady || !(showsCurrentCapture ? appModel.canStartRun : appModel.canStartRun(from: detail)),
           identifier: showsCurrentCapture ? "summarize-current-capture" : "summarize-history-detail"
-        ) {
-          Task {
-            if showsCurrentCapture {
-              await appModel.summarize(preferences: providerSettings.runPreferences)
-            } else {
-              await appModel.summarize(historyDetail: detail, preferences: providerSettings.runPreferences)
-            }
-          }
-        }
+        ) { runSummary() }
         actionPill(
           title: "翻译",
           systemImage: "character.book.closed",
@@ -2783,15 +2864,7 @@ private struct HistoryDetailView: View {
               : appModel.canTranslate(from: detail, preferences: providerSettings.runPreferences)
           ),
           identifier: showsCurrentCapture ? "translate-current-capture" : "translate-history-detail"
-        ) {
-          Task {
-            if showsCurrentCapture {
-              await appModel.translate(preferences: providerSettings.runPreferences)
-            } else {
-              await appModel.translate(historyDetail: detail, preferences: providerSettings.runPreferences)
-            }
-          }
-        }
+        ) { runTranslation() }
         // 生成脑图和总结、翻译是同一类动作：都是把正文交给模型换回一份新产物，
         // 前置条件（有正文 + 配好模型）、代价（花 token，必经确认）和结果
         // （一份可保存、可导出的东西）完全一致。原来它却单独待在媒体和正文之间，
@@ -2840,7 +2913,7 @@ private struct HistoryDetailView: View {
           }
           Text(appModel.runStatusText)
             .font(.subheadline.weight(.medium))
-            .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
+            .foregroundStyle(appModel.runHasFailure ? theme.danger : theme.secondaryText)
             .lineLimit(1)
             .accessibilityIdentifier("model-run-status")
         }
@@ -2860,7 +2933,7 @@ private struct HistoryDetailView: View {
             systemImage: "cpu"
           )
           .font(.caption.weight(.medium))
-          .foregroundStyle(.tertiary)
+          .appTertiaryText()
           .lineLimit(1)
         }
         Spacer(minLength: 0)
@@ -2870,7 +2943,7 @@ private struct HistoryDetailView: View {
           }
           .buttonStyle(.borderless)
           .font(.caption.weight(.medium))
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .accessibilityIdentifier("history-run-panel-toggle")
         }
       }
@@ -2920,13 +2993,13 @@ private struct HistoryDetailView: View {
       } else if canRunHistory {
         Text("使用本机已保存正文生成；结果作为新运行保存。")
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
         HStack(spacing: 10) {
           settingsModelButton(providerSettings.modelName)
           settingsModelButton(providerSettings.effectiveTranslationModelName)
           Text("输出：\(providerSettings.runPreferences.outputLanguage)")
             .font(.caption)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
         }
       }
       if showsVisibleRun, appModel.runHasFailure {
@@ -2955,12 +3028,12 @@ private struct HistoryDetailView: View {
         Text(appModel.storageStatusText)
       }
       .font(.caption)
-      .foregroundStyle(appModel.storageAvailability.isWriteReady ? Color.secondary : theme.warning)
+      .foregroundStyle(appModel.storageAvailability.isWriteReady ? theme.secondaryText : theme.warning)
       .accessibilityIdentifier("storage-availability")
       if let notice = appModel.dataDestinationNotice {
         Label(notice, systemImage: "info.circle")
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("data-destination-notice")
       }
@@ -3057,7 +3130,7 @@ private struct HistoryDetailView: View {
       Spacer(minLength: 0)
       Label("阅读 \(Int((readingProgress * 100).rounded()))%", systemImage: "book.pages")
         .font(.caption)
-        .foregroundStyle(.tertiary)
+        .appTertiaryText()
         .monospacedDigit()
         .accessibilityIdentifier("history-reading-progress")
     }
@@ -3073,17 +3146,17 @@ private struct HistoryDetailView: View {
         }
         Text(appModel.runState.isActive ? "生成预览" : "本次结果")
           .font(.callout.weight(.semibold))
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
         Spacer(minLength: 0)
         Text(appModel.runStatusText)
           .font(.subheadline)
-          .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
+          .foregroundStyle(appModel.runHasFailure ? theme.danger : theme.secondaryText)
           .lineLimit(1)
       }
       if appModel.runResultText.isEmpty {
         Text(appModel.runStatusText)
           .font(.body)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .frame(maxWidth: .infinity, alignment: .leading)
           .padding(.vertical, 12)
       } else {
@@ -3152,7 +3225,7 @@ private struct HistoryDetailView: View {
         }
       }
       .font(.caption)
-      .foregroundStyle(.secondary)
+      .appSecondaryText()
       .opacity(0.95)
       .accessibilityIdentifier("history-run-metadata")
     } else {
@@ -3178,7 +3251,7 @@ private struct HistoryDetailView: View {
         }
       }
       .font(.caption)
-      .foregroundStyle(.secondary)
+      .appSecondaryText()
       .opacity(0.95)
       .accessibilityIdentifier("history-capture-metadata")
     }
@@ -3286,13 +3359,13 @@ private struct HistoryDetailView: View {
           }
         }
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .padding(.top, 2)
         .accessibilityIdentifier("history-engagement-stats")
       }
     }
     .font(.callout)
-    .foregroundStyle(.secondary)
+    .appSecondaryText()
     .accessibilityIdentifier("history-note-properties")
   }
 
@@ -3330,7 +3403,7 @@ private struct HistoryDetailView: View {
       HStack(spacing: 8) {
         Label("原文依据", systemImage: "quote.opening")
           .font(.caption.weight(.medium))
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
         ForEach(Array(exactSummaryCitations.enumerated()), id: \.offset) { index, quote in
           Button("依据 \(index + 1)") { openSourceCitation(quote) }
             .buttonStyle(.borderless)
@@ -3348,7 +3421,7 @@ private struct HistoryDetailView: View {
       if let artifact = artifact(for: effectiveReadingPane), !artifact.bodyText.isEmpty {
         if artifact.completeness == .partial {
           Label("\(paneLabel(effectiveReadingPane))不完整", systemImage: "exclamationmark.triangle")
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
             .padding(.bottom, 6)
         }
         if effectiveReadingPane == .summary { sourceCitationLinks }
@@ -3386,7 +3459,7 @@ private struct HistoryDetailView: View {
           if liveTranscriptionText.isEmpty {
             HStack(spacing: 8) {
               ProgressView().controlSize(.small)
-              Text("正在准备转写内容…").foregroundStyle(.secondary)
+              Text("正在准备转写内容…").appSecondaryText()
             }
           } else {
             Text(liveTranscriptionText)
@@ -3404,7 +3477,7 @@ private struct HistoryDetailView: View {
         : latestSnapshot, !snapshot.bodyText.isEmpty {
         if captureWasTruncated(snapshot.completeness) {
           Label("捕获内容已截断，生成结果可能不完整。", systemImage: "exclamationmark.triangle")
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
             .padding(.bottom, 6)
             .accessibilityIdentifier("capture-truncated-notice")
         }
@@ -3421,7 +3494,7 @@ private struct HistoryDetailView: View {
               // 按保存，但需要知道东西已经安全了。⌘S 仍然可以立刻存一次。
               Text(noteDraftIsDirty(snapshot) ? "正在保存…" : (noteSaveIndicator ? "已保存" : ""))
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .appTertiaryText()
                 .animation(historyUIAnimation(reduceMotion: reduceMotion), value: noteSaveIndicator)
                 .accessibilityIdentifier("history-note-save-state")
               Button("保存") { saveTranscriptionDraft(snapshot) }
@@ -3568,22 +3641,22 @@ private struct HistoryDetailView: View {
     VStack(alignment: .leading, spacing: 6) {
       switch pane {
       case .summary, .translation:
-        Text(pane == .translation ? "尚未生成翻译" : "尚未生成总结").foregroundStyle(.secondary)
+        Text(pane == .translation ? "尚未生成翻译" : "尚未生成总结").appSecondaryText()
         if canRunHistory || showsCurrentCapture {
           Text(pane == .translation ? "点击上方「翻译」开始" : "点击上方「生成总结」开始")
             .font(.callout)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
         }
       case .source:
         Text(isDouyinCapture && !isDouyinImagePostCapture ? "尚未转写" : "本条没有抓取到正文")
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
         if isDouyinCapture, !isDouyinImagePostCapture,
            model.canTranscribeVideo || (showsCurrentCapture && appModel.currentCapture?.mediaDescriptor.map {
              model.canTranscribeCurrentCapture($0, taskID: detail.task.id)
            } == true) {
           Text("点击上方的『转写』开始")
             .font(.callout)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
         }
       }
     }
@@ -3607,7 +3680,7 @@ private struct HistoryDetailView: View {
         VStack(alignment: .leading, spacing: 2) {
           Text("图片文字识别").font(.headline)
           Text("Apple Vision 本机处理，图片不会上传。")
-            .font(.caption).foregroundStyle(.secondary)
+            .font(.caption).appSecondaryText()
         }
         Spacer(minLength: 0)
         if recognitionState == .recognizing {
@@ -3623,10 +3696,10 @@ private struct HistoryDetailView: View {
       switch recognitionState {
       case .idle:
         Text("从正文缓存的 \(localImageURLs.count) 张图片提取可复制文字。")
-          .font(.caption).foregroundStyle(.secondary)
+          .font(.caption).appSecondaryText()
       case .recognizing:
         HStack(spacing: 8) { ProgressView().controlSize(.small); Text("正在本机识别…") }
-          .font(.caption).foregroundStyle(.secondary)
+          .font(.caption).appSecondaryText()
       case .completed:
         HStack {
           Label("识别完成", systemImage: "checkmark.circle.fill").foregroundStyle(theme.success)
@@ -3639,7 +3712,7 @@ private struct HistoryDetailView: View {
         .font(.caption)
       case .cancelled:
         Text(LocalImageTextRecognitionError.cancelled.userMessage)
-          .font(.caption).foregroundStyle(.secondary)
+          .font(.caption).appSecondaryText()
       case let .failed(message):
         Text(message).font(.caption).foregroundStyle(theme.danger)
       }
@@ -3676,7 +3749,7 @@ private struct HistoryDetailView: View {
     VStack(alignment: .leading, spacing: 12) {
       Text("重新生成").font(.headline)
       Text("直接使用本机保存的正文，不会重新抓取网页。可只为本次运行临时换模型。")
-        .font(.caption).foregroundStyle(.secondary)
+        .font(.caption).appSecondaryText()
       // 从已添加的模型里选，不让人手打——模型名拼错不会当场报错，
       // 只会在真正调用时失败，而失败信息未必说得清是名字错了。
       Picker("临时模型", selection: $temporaryModel) {
@@ -3772,7 +3845,7 @@ private struct HistoryTagEditor: View {
                   Button { model.removeTag(tag) } label: {
                     Image(systemName: "xmark.circle.fill").imageScale(.small)
                   }
-                  .buttonStyle(.plain)
+                  .buttonStyle(.appPlain)
                   .accessibilityLabel("移除标签 \(tag.name)")
                 }
               }
@@ -3831,7 +3904,7 @@ private struct HistoryTagEditor: View {
 
       if model.tagErrorCode != nil {
         Text("无法更新标签；历史记录未发生更改。")
-          .font(.caption).foregroundStyle(.secondary)
+          .font(.caption).appSecondaryText()
           .accessibilityIdentifier("history-tag-error")
       }
     }
@@ -3853,7 +3926,7 @@ private struct HistoryTagEditor: View {
         .labelStyle(.titleAndIcon)
     }
     .buttonStyle(.borderless)
-    .foregroundStyle(.secondary)
+    .appSecondaryText()
     .accessibilityIdentifier("history-tag-add-toggle")
   }
 
@@ -3866,6 +3939,7 @@ private struct HistoryTagEditor: View {
 }
 
 private struct DataDestinationDisclosureView: View {
+  @Environment(\.appTheme) private var appTheme
   let disclosure: DataDestinationDisclosure
   let isConfirming: Bool
   let confirm: () -> Void
@@ -3896,7 +3970,7 @@ private struct DataDestinationDisclosureView: View {
           LabeledContent("接口", value: "OpenAI-compatible Chat Completions")
         }
         .font(.callout)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .padding(.top, 6)
       }
       .font(.callout)
@@ -3926,7 +4000,9 @@ private struct DataDestinationDisclosureView: View {
     let verb = disclosure.intent == .translate ? "翻译" : "总结"
     // 本机端点必须如实标出——`http://127.0.0.1` 发出去的正文没有离开这台机器，
     // 和发往第三方服务是两件事，不标会让人以为一样。
-    let suffix = disclosure.identity.isLocalEndpoint ? Text("（本机端点）").foregroundStyle(.secondary) : Text("")
+    let suffix = disclosure.identity.isLocalEndpoint
+      ? Text("（本机端点）").foregroundStyle(appTheme.secondaryText)
+      : Text("")
     return Text("\(verb)正文将发送到 ")
       + Text(disclosure.identity.host).bold()
       + Text(" 的 ")
@@ -4017,7 +4093,7 @@ private struct MetadataItem: View {
       }
     }
     .font(.callout)
-    .foregroundStyle(.secondary)
+    .appSecondaryText()
     .fixedSize(horizontal: false, vertical: true)
   }
 }
@@ -4254,6 +4330,117 @@ extension FocusedValues {
   var todayNote: TodayNoteAction? {
     get { self[TodayNoteKey.self] }
     set { self[TodayNoteKey.self] = newValue }
+  }
+}
+
+/// 详情页把命令可用性和动作一起交给菜单层；菜单只负责展示，不持有条目状态。
+struct HistoryDetailCommandAvailability: Equatable {
+  enum Command: CaseIterable, Hashable {
+    case summarize, translate, generateMindMap, stop, export, copyFullText, delete
+    case decreaseFontSize, increaseFontSize, selectPrevious, selectNext, togglePlainText
+  }
+
+  let canSummarize: Bool
+  let canTranslate: Bool
+  let canGenerateMindMap: Bool
+  let canStop: Bool
+  let canExport: Bool
+  let canCopyFullText: Bool
+  let canDelete: Bool
+  let canDecreaseFontSize: Bool
+  let canIncreaseFontSize: Bool
+  let canSelectPrevious: Bool
+  let canSelectNext: Bool
+  let canTogglePlainText: Bool
+
+  func isEnabled(_ command: Command) -> Bool {
+    switch command {
+    case .summarize: canSummarize
+    case .translate: canTranslate
+    case .generateMindMap: canGenerateMindMap
+    case .stop: canStop
+    case .export: canExport
+    case .copyFullText: canCopyFullText
+    case .delete: canDelete
+    case .decreaseFontSize: canDecreaseFontSize
+    case .increaseFontSize: canIncreaseFontSize
+    case .selectPrevious: canSelectPrevious
+    case .selectNext: canSelectNext
+    case .togglePlainText: canTogglePlainText
+    }
+  }
+}
+
+struct HistoryDetailCommandActions: Equatable {
+  let taskID: TaskID
+  let availability: HistoryDetailCommandAvailability
+  let showsPlainText: Bool
+  let summarize: () -> Void
+  let translate: () -> Void
+  let generateMindMap: () -> Void
+  let stop: () -> Void
+  let exportMarkdown: () -> Void
+  let exportPlainText: () -> Void
+  let exportPDF: () -> Void
+  let exportWord: () -> Void
+  let exportJSON: () -> Void
+  let copyFullText: () -> Void
+  let delete: () -> Void
+  let decreaseFontSize: () -> Void
+  let increaseFontSize: () -> Void
+  let selectPrevious: () -> Void
+  let selectNext: () -> Void
+  let togglePlainText: () -> Void
+
+  static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.taskID == rhs.taskID
+      && lhs.availability == rhs.availability
+      && lhs.showsPlainText == rhs.showsPlainText
+  }
+}
+
+struct HistoryDetailCommandsKey: FocusedValueKey {
+  typealias Value = HistoryDetailCommandActions
+}
+
+struct BatchSummaryCommandAction: Equatable {
+  let isEnabled: Bool
+  let run: () -> Void
+
+  static func == (lhs: Self, rhs: Self) -> Bool { lhs.isEnabled == rhs.isEnabled }
+}
+
+struct BatchSummaryCommandKey: FocusedValueKey {
+  typealias Value = BatchSummaryCommandAction
+}
+
+struct ToggleSidebarCommandAction: Equatable {
+  let isSidebarVisible: Bool
+  let run: () -> Void
+
+  static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.isSidebarVisible == rhs.isSidebarVisible
+  }
+}
+
+struct ToggleSidebarCommandKey: FocusedValueKey {
+  typealias Value = ToggleSidebarCommandAction
+}
+
+extension FocusedValues {
+  var historyDetailCommands: HistoryDetailCommandActions? {
+    get { self[HistoryDetailCommandsKey.self] }
+    set { self[HistoryDetailCommandsKey.self] = newValue }
+  }
+
+  var batchSummaryCommand: BatchSummaryCommandAction? {
+    get { self[BatchSummaryCommandKey.self] }
+    set { self[BatchSummaryCommandKey.self] = newValue }
+  }
+
+  var toggleSidebarCommand: ToggleSidebarCommandAction? {
+    get { self[ToggleSidebarCommandKey.self] }
+    set { self[ToggleSidebarCommandKey.self] = newValue }
   }
 }
 

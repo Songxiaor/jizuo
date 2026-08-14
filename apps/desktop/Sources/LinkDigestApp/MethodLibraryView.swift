@@ -49,16 +49,16 @@ struct MethodLibraryView: View {
         if !model.writingMethods.isEmpty {
           Text("\(model.enabledMethodBodies.count) 条在用")
             .font(.subheadline)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
             .monospacedDigit()
         }
       }
-      .foregroundStyle(.secondary)
+      .appSecondaryText()
       .padding(.horizontal, 14)
       .padding(.vertical, 10)
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.appPlain)
     .accessibilityIdentifier("method-library-toggle")
   }
 
@@ -96,19 +96,19 @@ struct MethodLibraryView: View {
         ProgressView().controlSize(.small)
         Text("正在从你的修改里找规律…")
           .font(.system(size: 10.5))
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
       } else {
         Button("从我的修改里提炼") { model.distillMethods() }
           .font(.subheadline)
-          .buttonStyle(.plain)
-          .foregroundStyle(model.canDistill ? Color.accentColor : Color.secondary)
+          .buttonStyle(.appPlain)
+          .foregroundStyle(model.canDistill ? Color.accentColor : appTheme.secondaryText)
           .disabled(!model.canDistill)
           .help(model.distillUnavailableReason() ?? "对照几篇 AI 写的和你改完的，找出反复出现的差异")
           .accessibilityIdentifier("method-library-distill")
         if let reason = model.distillUnavailableReason(), !model.canDistill {
           Text(reason)
             .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
             .lineLimit(1)
         }
       }
@@ -131,7 +131,7 @@ struct MethodLibraryView: View {
         } label: {
           Image(systemName: "checkmark")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.appPlain)
         .foregroundStyle(.secondary)
         .help("收下这条")
         .accessibilityLabel("收下「\(candidate)」")
@@ -140,7 +140,7 @@ struct MethodLibraryView: View {
         } label: {
           Image(systemName: "xmark")
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.appPlain)
         .foregroundStyle(.tertiary)
         .help("不要这条")
         .accessibilityLabel("不要「\(candidate)」")
@@ -180,13 +180,13 @@ struct MethodLibraryView: View {
       VStack(alignment: .leading, spacing: 1) {
         Text(method.body)
           .font(.system(size: 11.5))
-          .foregroundStyle(method.isEnabled ? Color.primary : Color.secondary)
+          .foregroundStyle(method.isEnabled ? Color.primary : appTheme.secondaryText)
           .fixedSize(horizontal: false, vertical: true)
           .multilineTextAlignment(.leading)
         if method.origin == .distilled {
           Text("从你的修改里提炼")
             .font(.system(size: 9.5))
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
         }
       }
       Spacer(minLength: 0)
@@ -200,7 +200,7 @@ struct MethodLibraryView: View {
   private var emptyState: some View {
     Text("还没有方法。写下一条能照着做的动作，起草时会一起交给 AI。")
       .font(.subheadline)
-      .foregroundStyle(.tertiary)
+      .appTertiaryText()
       .fixedSize(horizontal: false, vertical: true)
   }
 }

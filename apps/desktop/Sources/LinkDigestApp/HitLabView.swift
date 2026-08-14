@@ -24,7 +24,7 @@ struct HitLabView: View {
     VStack(alignment: .leading, spacing: 8) {
       Text("爆款实验室")
         .font(.caption2.weight(.semibold))
-        .foregroundStyle(.tertiary)
+        .appTertiaryText()
         .textCase(.uppercase)
         .tracking(0.6)
 
@@ -38,7 +38,7 @@ struct HitLabView: View {
       // 十次里有七次高估，那才是一个关于你自己的稳定事实。
       Text(model.hitCalibration.summary)
         .font(.system(size: 10.5))
-        .foregroundStyle(.tertiary)
+        .appTertiaryText()
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityIdentifier("hit-lab-calibration")
     }
@@ -56,7 +56,7 @@ struct HitLabView: View {
     VStack(alignment: .leading, spacing: 6) {
       Text("发出去之前，先猜一下。")
         .font(.system(size: 11.5))
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
 
       tierPicker(selection: $predicted)
 
@@ -92,14 +92,14 @@ struct HitLabView: View {
           Image(systemName: "arrow.right").font(.system(size: 9)).foregroundStyle(.tertiary)
           Text("实际：\(actual.displayName)")
             .font(.system(size: 11.5, weight: .medium))
-            .foregroundStyle(prediction.isAccurate ? Color.secondary : appTheme.warning)
+            .foregroundStyle(prediction.isAccurate ? appTheme.secondaryText : appTheme.warning)
         }
         Spacer(minLength: 0)
       }
       if !prediction.reasoning.isEmpty {
         Text(prediction.reasoning)
           .font(.subheadline)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .fixedSize(horizontal: false, vertical: true)
       }
 
@@ -108,14 +108,14 @@ struct HitLabView: View {
           Divider()
           Text(prediction.review)
             .font(.subheadline)
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
             .fixedSize(horizontal: false, vertical: true)
         }
       } else {
         Divider()
         Text("发出去几天之后，回来填真实结果。")
           .font(.subheadline)
-          .foregroundStyle(.tertiary)
+          .appTertiaryText()
         tierPicker(selection: $actual)
         TextField("和你想的差在哪？", text: $review)
           .textFieldStyle(.roundedBorder)

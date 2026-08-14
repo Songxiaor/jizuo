@@ -84,7 +84,7 @@ private struct PlatformNavigationRow: View {
       }
       .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.appPlain)
     .animation(
       DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
       value: isHovering

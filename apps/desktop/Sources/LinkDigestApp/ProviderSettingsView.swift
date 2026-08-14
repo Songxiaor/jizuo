@@ -195,7 +195,7 @@ struct ProviderSettingsView: View {
     VStack(alignment: .leading, spacing: 6) {
       Text("预览")
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
       Text("众所周知，搜索是 Agent 最基础的能力之一。模型的知识停在训练截止那天。")
         .font(resolvedReadingFont.body())
         .lineSpacing(MarkdownPresentation.bodyLineSpacing)
@@ -244,7 +244,7 @@ struct ProviderSettingsView: View {
       .safeAreaInset(edge: .top, spacing: 0) {
         VStack(alignment: .leading, spacing: 4) {
           Text(ProductDisplay.name).font(.title3.weight(.semibold))
-          Text("设置").font(.caption).foregroundStyle(.secondary)
+          Text("设置").font(.caption).appSecondaryText()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 10)
@@ -343,7 +343,7 @@ struct ProviderSettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
           if model.libraryEntryDisplays.isEmpty {
             Text("还没有添加模型。添加后即可在上方为每个功能选择模型。")
-              .font(.caption).foregroundStyle(.secondary)
+              .font(.caption).appSecondaryText()
           } else {
             LazyVGrid(
               columns: [GridItem(.adaptive(minimum: 168), spacing: 8, alignment: .top)],
@@ -435,7 +435,7 @@ struct ProviderSettingsView: View {
       HStack(alignment: .firstTextBaseline) {
         Text("总结与翻译")
         Spacer(minLength: 16)
-        Text("先在下方添加模型").foregroundStyle(.secondary)
+        Text("先在下方添加模型").appSecondaryText()
       }
     } else {
       assignmentPickerRow(
@@ -456,7 +456,7 @@ struct ProviderSettingsView: View {
       Spacer(minLength: 16)
       VStack(alignment: .trailing, spacing: 2) {
         Text("Apple Vision").fontWeight(.medium)
-        Text("本机 · 离线").font(.caption).foregroundStyle(.secondary)
+        Text("本机 · 离线").font(.caption).appSecondaryText()
       }
     }
     .accessibilityIdentifier("image-text-assignment-picker")
@@ -480,7 +480,7 @@ struct ProviderSettingsView: View {
               .foregroundStyle(.primary)
             Text(assignmentDetail(kind: kind, entry: selectedEntry))
               .font(.caption)
-              .foregroundStyle(.secondary)
+              .appSecondaryText()
           }
           Image(systemName: "chevron.up.chevron.down")
             .font(.caption2.weight(.semibold))
@@ -488,7 +488,7 @@ struct ProviderSettingsView: View {
         }
         .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
+      .buttonStyle(.appPlain)
       .accessibilityIdentifier(kind == .summary ? "summary-assignment-picker" : "transcription-assignment-picker")
       .popover(
         isPresented: Binding(
@@ -552,7 +552,7 @@ struct ProviderSettingsView: View {
             ForEach(assignmentProviderTitles(in: entries), id: \.self) { providerTitle in
               Text(providerTitle)
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+                .appSecondaryText()
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
                 .padding(.bottom, 3)
@@ -577,7 +577,7 @@ struct ProviderSettingsView: View {
           } else if kind == .transcription {
             Text("还没有添加可用于音频转写的在线模型。")
               .font(.caption)
-              .foregroundStyle(.secondary)
+              .appSecondaryText()
               .padding(16)
           }
         }
@@ -592,7 +592,7 @@ struct ProviderSettingsView: View {
   private func assignmentSectionTitle(_ title: String) -> some View {
     Text(title)
       .font(.caption.weight(.semibold))
-      .foregroundStyle(.secondary)
+      .appSecondaryText()
       .textCase(.uppercase)
       .padding(.horizontal, 16)
       .padding(.top, 12)
@@ -613,7 +613,7 @@ struct ProviderSettingsView: View {
             .foregroundStyle(.primary)
           Text(detail)
             .font(.caption.monospaced())
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
             .lineLimit(1)
         }
         Spacer(minLength: 12)
@@ -625,7 +625,7 @@ struct ProviderSettingsView: View {
       .padding(.vertical, 7)
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.appPlain)
   }
 
   private func assignmentProviderTitles(
@@ -698,7 +698,7 @@ struct ProviderSettingsView: View {
         HStack(spacing: 4) {
           Text("\(group.entries.count) 个模型")
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
           Spacer(minLength: 0)
           Image(systemName: "chevron.right")
             .font(.caption2.weight(.semibold))
@@ -708,7 +708,7 @@ struct ProviderSettingsView: View {
       }
       .modifier(SettingsCardChrome(selected: expanded, theme: appTheme))
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.appPlain)
     .accessibilityIdentifier("library-provider-group")
   }
 
@@ -719,7 +719,7 @@ struct ProviderSettingsView: View {
         Text(entry.displayName).font(.headline)
         // 服务商名已经写在这张卡的标题上，行里再写一遍是噪音；模型 ID 留着，
         // 它是同一家里区分两个模型的唯一凭据。
-        Text(entry.modelName).font(.caption).foregroundStyle(.secondary)
+        Text(entry.modelName).font(.caption).appSecondaryText()
       }
       Spacer(minLength: 12)
       if model.summaryAssignmentID == entry.id {
@@ -783,7 +783,7 @@ struct ProviderSettingsView: View {
             Button { model.selectPreset(preset) } label: {
               providerCard(preset)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.appPlain)
             .disabled(model.isSaving || model.isConfigurationLoading || model.isTestingConnection || model.isLoadingModels)
           }
           .accessibilityIdentifier("provider-preset")
@@ -879,7 +879,7 @@ struct ProviderSettingsView: View {
                   .padding(.vertical, 8)
                   .contentShape(Rectangle())
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.appPlain)
                 .accessibilityIdentifier("provider-model-option")
                 if name != model.filteredModels.last {
                   Divider().padding(.leading, 36)
@@ -898,7 +898,7 @@ struct ProviderSettingsView: View {
           .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(settingsTheme.hairline, lineWidth: 1))
           Text("已选择 \(model.selectedCatalogModelCount) 个模型")
             .font(.caption)
-            .foregroundStyle(model.selectedCatalogModelCount == 0 ? .secondary : Color.accentColor)
+            .foregroundStyle(model.selectedCatalogModelCount == 0 ? appTheme.secondaryText : Color.accentColor)
             .accessibilityIdentifier("provider-model-selection-count")
         } else {
           modelSelector(title: "模型", selection: Binding(
@@ -997,8 +997,9 @@ struct ProviderSettingsView: View {
       .contentShape(Rectangle())
     }
     .accessibilityLabel(tab.title)
+    .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     .accessibilityIdentifier("settings-tab-\(tab.rawValue)")
-    .buttonStyle(.plain)
+    .buttonStyle(.appPlain)
     // 与主界面侧栏共用同一档间距和浅色选中态，两个窗口切换时不会像两套组件。
     .padding(.vertical, DesignTokens.Space.xs)
     .padding(.horizontal, DesignTokens.Space.sm)
@@ -1101,13 +1102,13 @@ struct ProviderSettingsView: View {
               .accessibilityIdentifier("topic-schedule-enabled")
             if TopicSchedule.decoded(from: topicScheduleRaw).isEnabled {
               HStack(spacing: 8) {
-                Text("时间").font(.caption).foregroundStyle(.secondary)
+                Text("时间").font(.caption).appSecondaryText()
                 Picker("", selection: scheduleBinding(\.hour)) {
                   ForEach(0..<24, id: \.self) { Text(String(format: "%02d", $0)).tag($0) }
                 }
                 .labelsHidden()
                 .frame(width: 62)
-                Text(":").foregroundStyle(.secondary)
+                Text(":").appSecondaryText()
                 Picker("", selection: scheduleBinding(\.minute)) {
                   ForEach([0, 15, 30, 45], id: \.self) { Text(String(format: "%02d", $0)).tag($0) }
                 }
@@ -1148,14 +1149,14 @@ struct ProviderSettingsView: View {
           .pickerStyle(.segmented)
 
           VStack(alignment: .leading, spacing: 5) {
-            Text("从不使用的词").font(.caption).foregroundStyle(.secondary)
+            Text("从不使用的词").font(.caption).appSecondaryText()
             TextField("赋能、抓手、闭环…", text: voiceBinding(\.forbiddenWords))
               .textFieldStyle(.roundedBorder)
               .accessibilityIdentifier("voice-forbidden-words")
           }
 
           VStack(alignment: .leading, spacing: 5) {
-            Text("参考段落").font(.caption).foregroundStyle(.secondary)
+            Text("参考段落").font(.caption).appSecondaryText()
             TextEditor(text: voiceBinding(\.sample))
               .font(.callout)
               .frame(minHeight: 88)
@@ -1202,7 +1203,7 @@ struct ProviderSettingsView: View {
           HStack(spacing: DesignTokens.Space.sm) {
             Text("字体")
               .font(.subheadline)
-              .foregroundStyle(.secondary)
+              .appSecondaryText()
             // 每一项用它自己的字形显示，选之前就能看出长什么样。
             Picker("阅读字体", selection: $readingFontRaw) {
               Text("跟随主题").tag(ReadingFontSelection.defaultStoredValue)
@@ -1224,12 +1225,12 @@ struct ProviderSettingsView: View {
             HStack(spacing: DesignTokens.Space.sm) {
               Text("正文字号")
                 .font(.subheadline)
-                .foregroundStyle(.secondary)
+                .appSecondaryText()
               Spacer(minLength: 0)
             }
             Text("标题与引用按同一比例跟着缩放，不会只有正文变大。")
               .font(.caption)
-              .foregroundStyle(.secondary)
+              .appSecondaryText()
               .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
               Slider(
@@ -1241,7 +1242,7 @@ struct ProviderSettingsView: View {
               .accessibilityIdentifier("appearance-reading-font-size-slider")
               Text(String(format: "%.1f", readingFontSizeRaw))
                 .font(.caption.monospacedDigit())
-                .foregroundStyle(.secondary)
+                .appSecondaryText()
                 .frame(width: 34, alignment: .trailing)
               Spacer(minLength: 0)
             }
@@ -1421,7 +1422,7 @@ struct ProviderSettingsView: View {
               if let consentRevokeNotice {
                 Text(consentRevokeNotice)
                   .font(.caption)
-                  .foregroundStyle(.secondary)
+                  .appSecondaryText()
               }
             }
           }
@@ -1464,7 +1465,7 @@ struct ProviderSettingsView: View {
         Text("自动处理管线").font(.headline)
         Text("新内容到达后按编号顺序串行执行已开启的步骤。")
           .font(.callout)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .fixedSize(horizontal: false, vertical: true)
 
         VStack(alignment: .leading, spacing: 0) {
@@ -1536,7 +1537,7 @@ struct ProviderSettingsView: View {
             }
           }
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .padding(.top, 4)
         }
         .font(.caption)
@@ -1683,7 +1684,7 @@ struct ProviderSettingsView: View {
       VStack(spacing: 0) {
         Text("\(index)")
           .font(.caption2.weight(.bold).monospacedDigit())
-          .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
+          .foregroundStyle(isOn.wrappedValue ? Color.accentColor : appTheme.secondaryText)
           .frame(width: 18, height: 18)
           .background(
             Circle().fill(
@@ -1719,7 +1720,7 @@ struct ProviderSettingsView: View {
         } else {
           Text(trailingNote)
             .font(.caption2)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
         }
       }
       .opacity(requirementUnmet == nil ? 1 : 0.55)
@@ -1757,7 +1758,7 @@ struct ProviderSettingsView: View {
       }
       Text(preset.endpointHost)
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .lineLimit(1)
         .truncationMode(.middle)
     }
@@ -1820,7 +1821,7 @@ struct ProviderSettingsView: View {
       // 现在统一成描边的中性方块,里面是服务商真名的首字母(opencode.ai → O)。
       Text(ProviderIconCatalog.fallbackInitial(for: fallbackName ?? preset.displayName))
         .font(.system(size: BadgeTypography.size, weight: .semibold))
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .frame(width: 16, height: 16)
         .background(
           Color.secondary.opacity(0.12),
@@ -1886,7 +1887,7 @@ struct ProviderSettingsView: View {
       LabeledContent(title, value: model.modelName)
     } else {
       LabeledContent(title) {
-        Text("读取列表后选择").foregroundStyle(.secondary)
+        Text("读取列表后选择").appSecondaryText()
       }
     }
   }
@@ -1964,7 +1965,7 @@ private struct ThemeSwatchPicker: View {
     LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
       ForEach(AppearanceTheme.allCases) { theme in
         Button { selection = theme.rawValue } label: { swatch(theme) }
-          .buttonStyle(.plain)
+          .buttonStyle(.appPlain)
           .help(theme.displayName)
           .accessibilityLabel(theme.displayName)
           .accessibilityAddTraits(selection == theme.rawValue ? [.isSelected] : [])

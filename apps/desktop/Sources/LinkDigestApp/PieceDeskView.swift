@@ -5,6 +5,7 @@ import SwiftUI
 ///
 /// 灵感原句钉在最上面——写到第三天很容易偏离，那句话是锚。
 struct PieceDeskView: View {
+  @Environment(\.appTheme) private var appTheme
   @ObservedObject var model: HistoryViewModel
   let piece: PieceSummary
   /// 打开正文那条笔记（复用现有的笔记详情，稿子就是一条笔记）。
@@ -46,7 +47,7 @@ struct PieceDeskView: View {
       VStack(alignment: .leading, spacing: 4) {
         Text("灵感")
           .font(.caption2.weight(.semibold))
-          .foregroundStyle(.tertiary)
+          .appTertiaryText()
           .textCase(.uppercase)
           .tracking(0.6)
         Text(piece.spark)
@@ -99,19 +100,19 @@ struct PieceDeskView: View {
     HStack(spacing: 7) {
       Text("素材")
         .font(.caption2.weight(.semibold))
-        .foregroundStyle(.tertiary)
+        .appTertiaryText()
         .textCase(.uppercase)
         .tracking(0.6)
       Text("0")
         .font(.caption2)
-        .foregroundStyle(.tertiary)
+        .appTertiaryText()
         .monospacedDigit()
       Text("·")
         .font(.caption2)
         .foregroundStyle(.quaternary)
       Text("在任意列表里右键条目，选「加入工作台」。")
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
       Spacer(minLength: 0)
     }
     .padding(.horizontal, 20)
@@ -126,13 +127,13 @@ struct PieceDeskView: View {
       HStack {
         Text("素材")
           .font(.caption2.weight(.semibold))
-          .foregroundStyle(.tertiary)
+          .appTertiaryText()
           .textCase(.uppercase)
           .tracking(0.6)
         Spacer()
         Text("\(piece.materialCount)")
           .font(.caption2)
-          .foregroundStyle(.tertiary)
+          .appTertiaryText()
           .monospacedDigit()
       }
 
@@ -157,15 +158,15 @@ struct PieceDeskView: View {
       onOpenNote(material.id)
     } label: {
       HStack(alignment: .top, spacing: 7) {
-        Image(systemName: material.host == HistoryPlatformDisplay.noteHost ? "square.and.pencil" : "doc.text")
-          .font(.system(size: 10))
-          .foregroundStyle(.tertiary)
+          Image(systemName: material.host == HistoryPlatformDisplay.noteHost ? "square.and.pencil" : "doc.text")
+            .font(.system(size: 10))
+            .foregroundStyle(.tertiary)
           .padding(.top, 2)
         Text(material.title)
           .font(.callout)
           .lineLimit(2)
           .multilineTextAlignment(.leading)
-          .foregroundStyle(material.isAvailable ? Color.primary : Color.secondary)
+          .foregroundStyle(material.isAvailable ? Color.primary : appTheme.secondaryText)
           .strikethrough(!material.isAvailable)
         Spacer(minLength: 0)
       }
@@ -178,7 +179,7 @@ struct PieceDeskView: View {
       )
       .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.appPlain)
     .help(material.isAvailable ? "打开这份素材" : "这份素材已不在")
     .contextMenu {
       Button("移出这件创作", role: .destructive) {
@@ -203,13 +204,13 @@ struct PieceDeskView: View {
       HStack {
         Text("稿子")
           .font(.caption2.weight(.semibold))
-          .foregroundStyle(.tertiary)
+          .appTertiaryText()
           .textCase(.uppercase)
           .tracking(0.6)
         Spacer()
         Text("\(piece.bodyLength) 字")
           .font(.caption2)
-          .foregroundStyle(.tertiary)
+          .appTertiaryText()
           .monospacedDigit()
       }
 
@@ -222,7 +223,7 @@ struct PieceDeskView: View {
           Image(systemName: "square.and.pencil")
           Text(piece.bodyLength > 0 ? "继续写" : "开始写")
           Spacer(minLength: 0)
-          Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(.tertiary)
+        Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(.tertiary)
         }
         .font(.system(size: 13, weight: .medium))
         .padding(.horizontal, 14)
@@ -238,7 +239,7 @@ struct PieceDeskView: View {
         )
         .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
+      .buttonStyle(.appPlain)
       .accessibilityIdentifier("piece-open-note")
 
       if model.draftingPieceID == piece.id {
@@ -247,7 +248,7 @@ struct PieceDeskView: View {
 
       Text(nextStepHint)
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .fixedSize(horizontal: false, vertical: true)
 
       stageTools
@@ -281,7 +282,7 @@ struct PieceDeskView: View {
       if !model.draftingText.isEmpty {
         Text(model.draftingText.suffix(300))
           .font(.system(size: 11.5))
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .lineLimit(6)
           .frame(maxWidth: .infinity, alignment: .leading)
           .fixedSize(horizontal: false, vertical: true)
@@ -308,7 +309,7 @@ struct PieceDeskView: View {
       VStack(alignment: .leading, spacing: 6) {
         Text("这一步可以")
           .font(.caption2.weight(.semibold))
-          .foregroundStyle(.tertiary)
+          .appTertiaryText()
           .textCase(.uppercase)
           .tracking(0.6)
         ForEach(tools, id: \.title) { tool in
@@ -327,7 +328,7 @@ struct PieceDeskView: View {
             )
             .contentShape(Rectangle())
           }
-          .buttonStyle(.plain)
+          .buttonStyle(.appPlain)
           .disabled(tool.isDisabled)
           .help(tool.hint)
         }

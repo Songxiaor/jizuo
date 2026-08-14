@@ -4,6 +4,57 @@ import LinkDigestCore
 @testable import LinkDigestApp
 
 final class HistoryContentViewTests: XCTestCase {
+  func testHistoryDetailCommandAvailabilityMapsEveryMenuCommand() {
+    let availability = HistoryDetailCommandAvailability(
+      canSummarize: true,
+      canTranslate: false,
+      canGenerateMindMap: true,
+      canStop: false,
+      canExport: true,
+      canCopyFullText: false,
+      canDelete: true,
+      canDecreaseFontSize: false,
+      canIncreaseFontSize: true,
+      canSelectPrevious: false,
+      canSelectNext: true,
+      canTogglePlainText: false
+    )
+    let enabled: Set<HistoryDetailCommandAvailability.Command> = [
+      .summarize, .generateMindMap, .export, .delete, .increaseFontSize, .selectNext,
+    ]
+
+    for command in HistoryDetailCommandAvailability.Command.allCases {
+      XCTAssertEqual(availability.isEnabled(command), enabled.contains(command), "命令可用性映射错误：\(command)")
+    }
+  }
+
+  func testCustomButtonsUseFocusAwareStyleAndSemanticTextBypassesRemainIconOnly() throws {
+    let sourceRoot = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Sources/LinkDigestApp")
+    let files = try FileManager.default.contentsOfDirectory(
+      at: sourceRoot,
+      includingPropertiesForKeys: nil
+    ).filter { $0.pathExtension == "swift" }
+
+    for file in files {
+      let source = try String(contentsOf: file, encoding: .utf8)
+      XCTAssertFalse(source.contains(".buttonStyle(.plain)"), "\(file.lastPathComponent) 仍有无焦点环的 plain Button")
+
+      let lines = source.components(separatedBy: .newlines)
+      for (index, line) in lines.enumerated()
+      where line.contains(".foregroundStyle(.secondary)") || line.contains(".foregroundStyle(.tertiary)") {
+        let context = lines[max(0, index - 4)...index].joined(separator: " ")
+        XCTAssertTrue(
+          context.contains("Image("),
+          "\(file.lastPathComponent):\(index + 1) 的用户文字仍绕过主题令牌"
+        )
+      }
+    }
+  }
+
   func testCurrentCapturePreviewResolvesPlayableDirectAndHLSWithoutDownload() throws {
     let now = Date(timeIntervalSince1970: 1_784_500_000)
     let direct = mediaDescriptor(kind: .directFile, playbackURL: "https://media.example.test/video.mp4")

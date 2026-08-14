@@ -91,6 +91,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
         badge: Color.primary.opacity(0.07),
         primaryText: .primary,
         secondaryText: .secondary,
+        tertiaryText: Color(nsColor: .tertiaryLabelColor),
         accent: .accentColor,
         // 跟随系统的主题用系统语义色，它们自己会随明暗翻转。
         success: .green, warning: .orange, danger: .red, info: .blue,
@@ -114,7 +115,8 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
         hairline: ClaudePalette.lightGray,    // #E8E6DC
         badge: ClaudePalette.lightGray,
         primaryText: ClaudePalette.dark,      // #141413
-        secondaryText: ClaudePalette.midGray, // #6E6C63
+        secondaryText: ClaudePalette.midGray, // #6D6B62
+        tertiaryText: ClaudePalette.midGray,
         accent: ClaudePalette.orange,
         // 纸底上的状态色统一降饱和：默认的 .green/.red 在暖白纸上过跳。
         success: themeColor(0x5A, 0x8A, 0x5C),
@@ -138,7 +140,8 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
         hairline: Color.white.opacity(0.10),
         badge: Color.white.opacity(0.10),
         primaryText: .primary,
-        secondaryText: .secondary,
+        secondaryText: InkPalette.secondary,
+        tertiaryText: InkPalette.secondary,
         accent: InkPalette.accent,
         // 深底要把状态色提亮，否则暗绿暗红在 #1C1C1E 上糊成一团。
         success: themeColor(0x7F, 0xB0, 0x81),
@@ -165,7 +168,8 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
         hairline: SepiaPalette.rule,          // #E2D5BC
         badge: SepiaPalette.badge,            // #EADDC4
         primaryText: SepiaPalette.ink,        // #3B3229
-        secondaryText: SepiaPalette.fadedInk, // #8B7B65
+        secondaryText: SepiaPalette.fadedInk, // #70604D
+        tertiaryText: SepiaPalette.fadedInk,
         accent: SepiaPalette.ochre,
         // 跟着这套主题往黄里偏。warning 特意避开 ochre(#A9713F)——
         // 强调色和警告色撞色时，用户分不出「这是重点」还是「这是问题」。
@@ -192,6 +196,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
         badge: MonoPalette.badge,             // #E8E8E8
         primaryText: MonoPalette.black,
         secondaryText: MonoPalette.secondary, // #4A4A4A
+        tertiaryText: MonoPalette.secondary,
         accent: MonoPalette.black,
         // 这套主题不靠色相传信息（状态点走形状），但状态色仍要有——
         // 错误文字、警告横幅这些地方总得有个颜色。取值一律压到对纯白底
@@ -230,9 +235,9 @@ private enum ClaudePalette {
   static let sunken = themeColor(0xEF, 0xED, 0xE5)
   /// 详情区那张卡片，最亮的一档。
   static let raised = themeColor(0xFD, 0xFC, 0xF9)
-  // 次要文字必须在两种底上都过 WCAG AA（4.5:1）：正文卡 #FDFCF9 上 5.1:1，
-  // 辅助列画布 #EFEDE5 上 4.5:1。上一档 #8A887E 只有 3.5:1 / 3.2:1。
-  static let midGray = themeColor(0x6E, 0x6C, 0x63)
+  // 次要文字必须在两种底上都过 WCAG AA（4.5:1）：正文卡 #FDFCF9 上 5.2:1，
+  // 辅助列画布 #EFEDE5 上 4.56:1。上一档 #8A887E 只有 3.5:1 / 3.2:1。
+  static let midGray = themeColor(0x6D, 0x6B, 0x62)
   static let lightGray = themeColor(0xE8, 0xE6, 0xDC)
   static let orange = themeColor(0xD9, 0x77, 0x57)
 }
@@ -251,6 +256,8 @@ private enum ClaudePalette {
 private enum InkPalette {
   static let selection = themeColor(0xC2, 0x70, 0x3F)
   static let accent = themeColor(0xE8, 0x95, 0x6B)
+  /// 对最亮卡面 #26262A 仍有 4.6:1；不能用系统 secondary 压在钉死的深色画布上。
+  static let secondary = themeColor(0x91, 0x8E, 0x85)
 }
 
 /// 暖褐主题。整体比 `ClaudePalette` 往黄里偏，纸墨亮度差收窄。
@@ -263,7 +270,8 @@ private enum SepiaPalette {
   static let rule = themeColor(0xE2, 0xD5, 0xBC)
   static let badge = themeColor(0xEA, 0xDD, 0xC4)
   static let ink = themeColor(0x3B, 0x32, 0x29)
-  static let fadedInk = themeColor(0x8B, 0x7B, 0x65)
+  /// 对最暗的纸面 #EADFC8 为 4.58:1；再浅就会跌出 AA。
+  static let fadedInk = themeColor(0x70, 0x60, 0x4D)
   static let ochre = themeColor(0xA9, 0x71, 0x3F)
 }
 
@@ -289,6 +297,9 @@ struct HistoryThemeTokens: Equatable {
   let badge: Color
   let primaryText: Color
   let secondaryText: Color
+  /// 承载信息的最弱文字层级。自绘主题不能退回系统 tertiary：系统透明度
+  /// 不知道背后是我们钉死的哪张画布，所以这里仍须独立满足 4.5:1。
+  let tertiaryText: Color
   let accent: Color
   /// 状态语义色。
   ///
@@ -348,5 +359,26 @@ extension View {
   /// 在窗口根部注入一次，整棵树都能读到。
   func appThemeEnvironment(_ rawValue: String) -> some View {
     environment(\.appTheme, (AppearanceTheme(rawValue: rawValue) ?? .glass).tokens)
+  }
+
+  /// 视图只声明文字层级；实际颜色始终从当前主题环境取，避免系统语义色压在
+  /// 自绘画布上时失去对比度。图标和分隔线继续使用各自的视觉语义。
+  func appSecondaryText() -> some View {
+    modifier(AppThemeTextStyleModifier(level: .secondary))
+  }
+
+  func appTertiaryText() -> some View {
+    modifier(AppThemeTextStyleModifier(level: .tertiary))
+  }
+}
+
+private struct AppThemeTextStyleModifier: ViewModifier {
+  enum Level { case secondary, tertiary }
+
+  @Environment(\.appTheme) private var theme
+  let level: Level
+
+  func body(content: Content) -> some View {
+    content.foregroundStyle(level == .secondary ? theme.secondaryText : theme.tertiaryText)
   }
 }

@@ -31,7 +31,7 @@ struct KnowledgeVaultSettingsView: View {
       ) {
         VStack(alignment: .leading, spacing: 12) {
           HStack(alignment: .firstTextBaseline, spacing: 8) {
-            Text("当前文件夹").foregroundStyle(.secondary)
+            Text("当前文件夹").appSecondaryText()
             Text(model.directoryPath ?? "尚未选择")
               .lineLimit(1)
               .truncationMode(.middle)
@@ -87,7 +87,7 @@ struct KnowledgeVaultSettingsView: View {
               Text("\(done)/\(total)")
                 .font(.caption)
                 .monospacedDigit()
-                .foregroundStyle(.secondary)
+                .appSecondaryText()
             }
 
             Spacer(minLength: 0)
@@ -95,7 +95,7 @@ struct KnowledgeVaultSettingsView: View {
             if let lastSyncText = model.lastSyncText {
               Text("上次同步：\(lastSyncText)")
                 .font(.caption)
-                .foregroundStyle(.tertiary)
+                .appTertiaryText()
                 .accessibilityIdentifier("knowledge-vault-last-sync")
             }
           }
@@ -115,12 +115,12 @@ struct KnowledgeVaultSettingsView: View {
           }
           Text("在后台安静进行，不打断你；抓一批内容只会同步一次。")
             .font(.caption)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
 
           if !model.hasDirectory {
             Text("请先选择知识库文件夹。")
               .font(.caption)
-              .foregroundStyle(.secondary)
+              .appSecondaryText()
           }
 
           if case let .finished(report) = model.state {
@@ -154,11 +154,11 @@ struct KnowledgeVaultSettingsView: View {
         VStack(alignment: .leading, spacing: 4) {
           Text("以下文件已存在且不归汲作管，已跳过，未做任何修改：")
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
           ForEach(report.conflicts, id: \.filename) { conflict in
             Text("· \(conflict.filename) —— \(conflict.reason)")
               .font(.caption)
-              .foregroundStyle(.secondary)
+              .appSecondaryText()
               .textSelection(.enabled)
           }
         }
@@ -169,7 +169,7 @@ struct KnowledgeVaultSettingsView: View {
         VStack(alignment: .leading, spacing: 4) {
           Text("以下条目没能写入：")
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
           ForEach(report.failures, id: \.filename) { failure in
             Text("· \(failure.filename) —— \(failure.message)")
               .font(.caption)

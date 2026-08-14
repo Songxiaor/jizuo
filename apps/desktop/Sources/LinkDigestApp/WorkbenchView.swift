@@ -6,6 +6,7 @@ import SwiftUI
 /// 它不是装饰——回答的是「今天该在这件事上干什么」，也让搁置了三天的那件
 /// 不至于被忘掉。四格固定，`done` 不占位：完成是终点，不是第五步。
 struct PieceStageTrack: View {
+  @Environment(\.appTheme) private var appTheme
   let stage: PieceStage
   var showsLabels = true
   /// 传了它，这条进度条本身就是切换阶段的控件：点圆点或下面那个词直接跳，
@@ -78,7 +79,7 @@ struct PieceStageTrack: View {
           .frame(width: visualSize, height: visualSize)
           .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
+      .buttonStyle(.appPlain)
       .help(stage == item ? "再点一次回到自动判断" : "把这件创作标到「\(item.displayName)」")
       .accessibilityLabel(item.displayName)
     } else {
@@ -91,7 +92,7 @@ struct PieceStageTrack: View {
       index == 0 ? .leading : (index == PieceStage.track.count - 1 ? .trailing : .center)
     let text = Text(item.displayName)
       .font(.caption2)
-      .foregroundStyle(index == currentIndex ? Color.accentColor : Color.secondary.opacity(0.6))
+      .foregroundStyle(index == currentIndex ? Color.accentColor : appTheme.secondaryText)
       .fontWeight(index == currentIndex ? .semibold : .regular)
 
     if isInteractive {
@@ -100,7 +101,7 @@ struct PieceStageTrack: View {
           .frame(maxWidth: .infinity, alignment: alignment)
           .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
+      .buttonStyle(.appPlain)
       .help(stage == item ? "再点一次回到自动判断" : "把这件创作标到「\(item.displayName)」")
     } else {
       text.frame(maxWidth: .infinity, alignment: alignment)
@@ -127,7 +128,7 @@ struct PieceCard: View {
       HStack(spacing: 8) {
         Text(piece.stage.displayName)
           .font(.subheadline.weight(.semibold))
-          .foregroundStyle(piece.stage == .done ? Color.secondary : appTheme.selectionText)
+          .foregroundStyle(piece.stage == .done ? appTheme.secondaryText : appTheme.selectionText)
           .padding(.horizontal, 8)
           .padding(.vertical, 2)
           .background(
@@ -167,7 +168,7 @@ struct PieceCard: View {
         Spacer(minLength: 0)
       }
       .font(.subheadline)
-      .foregroundStyle(.tertiary)
+      .appTertiaryText()
       .monospacedDigit()
     }
     .padding(12)
@@ -210,11 +211,11 @@ struct WorkbenchListView: View {
           HStack {
             Text("在做的")
               .font(.body.weight(.semibold))
-              .foregroundStyle(.secondary)
+              .appSecondaryText()
             Spacer()
               Text(activeCountLabel)
               .font(.subheadline)
-              .foregroundStyle(.tertiary)
+              .appTertiaryText()
               .monospacedDigit()
           }
           .padding(.horizontal, 14)
@@ -230,7 +231,7 @@ struct WorkbenchListView: View {
                 } label: {
                   PieceCard(piece: piece, isSelected: model.selectedPieceID == piece.id)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(.appPlain)
                 .contextMenu {
                   Button("删除这件创作（保留稿子）", role: .destructive) {
                     model.deletePiece(id: piece.id)
@@ -262,8 +263,8 @@ struct WorkbenchListView: View {
         .padding(.vertical, 10)
         .contentShape(Rectangle())
       }
-      .buttonStyle(.plain)
-      .foregroundStyle(.secondary)
+      .buttonStyle(.appPlain)
+      .appSecondaryText()
       .accessibilityIdentifier("workbench-new-spark")
     }
   }
@@ -283,7 +284,7 @@ struct WorkbenchListView: View {
       // 说清楚这里跟「笔记」的分别，否则用户不知道该往哪写。
       Text("一个念头写下来就是一件创作，\n它会跟着你收集素材、起草、打磨一路长大。")
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .multilineTextAlignment(.center)
         .fixedSize(horizontal: false, vertical: true)
     }

@@ -28,7 +28,7 @@ struct AnnotationSectionView: View {
               Image(systemName: "xmark.circle.fill")
                 .foregroundStyle(.tertiary)
             }
-            .buttonStyle(.plain)
+            .buttonStyle(.appPlain)
             .help("删除这条摘录")
             .accessibilityLabel("删除这条摘录")
           }
@@ -54,7 +54,7 @@ struct AnnotationSectionView: View {
         .accessibilityIdentifier("annotation-note-editor")
       Text("阅读时选中文字，右键「添加到摘录」即可收集；笔记自动保存。")
         .font(.caption2)
-        .foregroundStyle(.tertiary)
+        .appTertiaryText()
       // 「自动保存」这句承诺必须有对应的失败出口，否则存储出问题时用户毫无察觉
       // 地丢掉整段笔记。这条路径原来全是 `try?`。
       if let failure = model.annotationFailureMessage {
@@ -63,7 +63,7 @@ struct AnnotationSectionView: View {
             .foregroundStyle(appTheme.warning)
           Text(failure)
             .font(.caption2)
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
             .fixedSize(horizontal: false, vertical: true)
           Spacer()
           Button("知道了") { model.annotationFailureMessage = nil }

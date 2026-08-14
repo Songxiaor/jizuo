@@ -13,9 +13,9 @@ final class MarkdownPresentationTests: XCTestCase {
     assertColor(paper.canvas, red: 0xEF, green: 0xED, blue: 0xE5)
     assertColor(paper.primaryText, red: 0x14, green: 0x14, blue: 0x13)
     // 次要文字偏离官方 palette 的 #B0AEA5：那个值在正文卡上对比度只有 2.2:1，
-    // 真实信息（批量进度、引导文字）读不清。#6E6C63 在卡面 5.1:1、画布 4.5:1，
+    // 真实信息（批量进度、引导文字）读不清。#6D6B62 在卡面 5.2:1、画布 4.56:1，
     // 是同色相里能过 WCAG AA 的最浅一档。
-    assertColor(paper.secondaryText, red: 0x6E, green: 0x6C, blue: 0x63)
+    assertColor(paper.secondaryText, red: 0x6D, green: 0x6B, blue: 0x62)
     assertColor(paper.hairline, red: 0xE8, green: 0xE6, blue: 0xDC)
     assertColor(paper.accent, red: 0xD9, green: 0x77, blue: 0x57)
     XCTAssertTrue(AppearanceTheme.paper.usesEditorialReadingTypography)
@@ -42,6 +42,28 @@ final class MarkdownPresentationTests: XCTestCase {
     }
     // glass 反过来：它的意义就是交还系统 material，画布必须是透明的。
     XCTAssertTrue(AppearanceTheme.glass.tokens.isNative)
+  }
+
+  func testCustomThemeSecondaryAndTertiaryTextMeetAAOnEverySurface() throws {
+    for appearance in AppearanceTheme.allCases where !appearance.tokens.isNative {
+      let theme = appearance.tokens
+      for (name, textColor) in [
+        ("secondary", theme.secondaryText),
+        ("tertiary", theme.tertiaryText),
+      ] {
+        for (surfaceName, surface) in [
+          ("canvas", theme.canvas),
+          ("listPane", theme.listPane),
+          ("card", theme.card),
+        ] {
+          XCTAssertGreaterThanOrEqual(
+            try contrastRatio(textColor, surface),
+            4.5,
+            "\(appearance.rawValue) \(name)Text 在 \(surfaceName) 上必须满足 WCAG AA"
+          )
+        }
+      }
+    }
   }
 
   /// 「高对比」这三个字得当真。

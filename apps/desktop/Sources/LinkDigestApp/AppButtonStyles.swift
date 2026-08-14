@@ -33,7 +33,9 @@ struct AppIconButtonStyle: ButtonStyle {
 
     @State private var isHovering = false
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
       configuration.label
@@ -41,6 +43,10 @@ struct AppIconButtonStyle: ButtonStyle {
         .background(
           RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
             .fill(Color.primary.opacity(backgroundOpacity))
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+            .strokeBorder(theme.accent, lineWidth: isFocused ? 2 : 0)
         )
         // 命中区域要覆盖整个方块，而不是只有图标那几个像素。
         .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
@@ -98,7 +104,9 @@ struct AppButtonStyle: ButtonStyle {
 
     @State private var isHovering = false
     @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.isFocused) private var isFocused
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.appTheme) private var theme
 
     var body: some View {
       configuration.label
@@ -113,6 +121,10 @@ struct AppButtonStyle: ButtonStyle {
         .overlay(
           RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
             .strokeBorder(border, lineWidth: 1)
+        )
+        .overlay(
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+            .strokeBorder(theme.accent, lineWidth: isFocused ? 2 : 0)
         )
         .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
         .scaleEffect(configuration.isPressed ? 0.97 : 1)
@@ -152,9 +164,35 @@ struct AppButtonStyle: ButtonStyle {
   }
 }
 
+/// 已自行绘制背景或胶囊外观的按钮只需要补键盘焦点环，不应再被统一加 padding
+/// 或底色。它替代 `.plain`，保持原布局，同时恢复 Full Keyboard Access 的位置指示。
+struct AppPlainButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    PlainBody(configuration: configuration)
+  }
+
+  private struct PlainBody: View {
+    let configuration: Configuration
+    @Environment(\.isFocused) private var isFocused
+    @Environment(\.appTheme) private var theme
+
+    var body: some View {
+      configuration.label
+        .overlay(
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+            .strokeBorder(theme.accent, lineWidth: isFocused ? 2 : 0)
+        )
+    }
+  }
+}
+
 extension ButtonStyle where Self == AppIconButtonStyle {
   /// 工具栏与列表行里的纯图标按钮。
   static var appIcon: AppIconButtonStyle { AppIconButtonStyle() }
+}
+
+extension ButtonStyle where Self == AppPlainButtonStyle {
+  static var appPlain: AppPlainButtonStyle { AppPlainButtonStyle() }
 }
 
 extension ButtonStyle where Self == AppButtonStyle {

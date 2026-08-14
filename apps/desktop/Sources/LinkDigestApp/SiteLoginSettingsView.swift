@@ -76,7 +76,7 @@ struct SiteLoginSettingsView: View {
         // 收成页尾一行说明，原因还在，只是不再占一张卡的地方。
         Text("YouTube、X 无需登录，直接粘贴链接即可。")
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("site-login-no-login-card")
       }
@@ -178,7 +178,7 @@ struct SiteLoginSettingsView: View {
           }
           Text(caption)
             .font(.caption)
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("site-login-\(id)-caption")
         }
@@ -202,7 +202,7 @@ struct SiteLoginSettingsView: View {
         Button("清除登录") {
           Task { await clearSession(platform, session: session) }
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.appPlain)
         .controlSize(.small)
         .foregroundStyle(appTheme.danger)
         .disabled(!session.isLoggedIn)
@@ -269,13 +269,13 @@ struct SiteLoginSettingsView: View {
       if let detail = session.accountDetail {
         Text(detail)
           .font(.caption2.monospacedDigit())
-          .foregroundStyle(.tertiary)
+          .appTertiaryText()
           .textSelection(.enabled)
       }
       if let diagnostic = session.sessionDiagnostic {
         Text(diagnostic)
           .font(.caption)
-          .foregroundStyle(.tertiary)
+          .appTertiaryText()
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("site-login-\(id)-diagnostic")
@@ -296,7 +296,7 @@ struct SiteLoginSettingsView: View {
           if let verification = bilibiliSession.verificationLabel {
             Label(verification, systemImage: "checkmark.seal")
               .font(.caption)
-              .foregroundStyle(.secondary)
+              .appSecondaryText()
               .textSelection(.enabled)
               .fixedSize(horizontal: false, vertical: true)
               .accessibilityIdentifier("site-login-bilibili-verification")
@@ -324,7 +324,7 @@ struct SiteLoginSettingsView: View {
         .accessibilityHidden(true)
       Text(text)
         .font(.caption.weight(.medium))
-        .foregroundStyle(tone == .active ? color : Color.secondary)
+        .foregroundStyle(tone == .active ? color : appTheme.secondaryText)
     }
     .padding(.horizontal, 8)
     .padding(.vertical, 3)

@@ -48,7 +48,7 @@ struct MediaStorageSettingsView: View {
           VStack(alignment: .leading, spacing: 8) {
             Text(model.bilibiliStreamQuality.settingsExplanation)
               .font(.caption)
-              .foregroundStyle(.tertiary)
+              .appTertiaryText()
               .fixedSize(horizontal: false, vertical: true)
               .accessibilityIdentifier("media-storage-bilibili-quality-explanation")
 
@@ -98,7 +98,7 @@ struct MediaStorageSettingsView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .textSelection(.enabled)
-                .foregroundStyle(.secondary)
+                .appSecondaryText()
                 .accessibilityIdentifier("media-storage-directory")
               Button(model.usesCustomDirectory ? "更改文件夹" : "选择文件夹", action: chooseDirectory)
                 .buttonStyle(.bordered)

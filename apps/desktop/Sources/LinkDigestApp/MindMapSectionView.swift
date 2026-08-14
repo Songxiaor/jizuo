@@ -90,7 +90,7 @@ struct MindMapSectionView: View {
       HStack(spacing: 10) {
         Text("脑图").font(.headline)
         if record.userEdited {
-          Text("已编辑").font(.caption2).foregroundStyle(.secondary)
+          Text("已编辑").font(.caption2).appSecondaryText()
         }
         Spacer(minLength: 0)
         Picker("主题", selection: Binding(
@@ -148,7 +148,7 @@ struct MindMapSectionView: View {
       HStack(spacing: 12) {
         stateText
         if let tokens = model.mindMapTokenSummary {
-          Text(tokens).font(.caption).foregroundStyle(.secondary)
+          Text(tokens).font(.caption).appSecondaryText()
         }
         Spacer(minLength: 0)
       }

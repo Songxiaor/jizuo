@@ -36,7 +36,7 @@ struct MarkdownEditorView: View {
         if text.isEmpty && !placeholder.isEmpty {
           Text(placeholder)
             .font(Font(font))
-            .foregroundStyle(.tertiary)
+            .appTertiaryText()
             // 和 NSTextView 的 textContainerInset 对齐，否则提示和光标错开。
             .padding(.leading, MarkdownTextView.contentInset.width + 5)
             .padding(.top, MarkdownTextView.contentInset.height)

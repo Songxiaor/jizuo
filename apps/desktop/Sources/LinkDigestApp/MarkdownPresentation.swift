@@ -840,9 +840,9 @@ struct MarkdownContentView: View {
     } label: {
       Label(outlineButtonTitle, systemImage: "list.bullet.indent")
         .font(.subheadline.weight(.medium))
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.appPlain)
     .accessibilityIdentifier("history-content-outline-button")
     .popover(isPresented: $showsOutlinePopover, arrowEdge: .bottom) {
       outlinePopover(outlineEntries)
@@ -891,7 +891,7 @@ struct MarkdownContentView: View {
   @ViewBuilder private func popoverGroupTitle(_ text: String) -> some View {
     Text(text)
       .font(.footnote.weight(.semibold))
-      .foregroundStyle(.tertiary)
+      .appTertiaryText()
       .padding(.bottom, 2)
   }
 
@@ -925,7 +925,7 @@ struct MarkdownContentView: View {
       .contentShape(Rectangle())
       .padding(.vertical, 3)
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.appPlain)
   }
 
   /// 点击目录后要滚到的块下标。用 `ScrollViewReader` 驱动**外层**滚动容器——
@@ -972,7 +972,7 @@ struct MarkdownContentView: View {
             Toggle(isOn: $showsPlainText) {
               Text("纯文本")
                 .font(.subheadline.weight(.medium))
-                .foregroundStyle(.tertiary)
+                .appTertiaryText()
             }
             .toggleStyle(.checkbox)
             .controlSize(.mini)
@@ -1369,9 +1369,9 @@ struct QuotedTweetCardView: View {
             Image(systemName: "arrow.up.right.square").font(.system(size: DesignTokens.IconSize.inline))
             Text("查看原推").font(.callout)
           }
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
         }
-        .buttonStyle(.plain)
+        .buttonStyle(.appPlain)
         .padding(.top, 2)
       }
     }
@@ -1403,7 +1403,7 @@ private struct CodeCopyButton: View {
       Label("复制", systemImage: "doc.on.doc")
         .labelStyle(.iconOnly)
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.appPlain)
     .foregroundStyle(isHovered ? .primary : .secondary)
     .onHover { isHovered = $0 }
     .accessibilityLabel("复制代码")

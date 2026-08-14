@@ -57,7 +57,7 @@ struct YouTubeEmbedPlayerCard: View {
           .font(.callout.weight(.semibold))
         Text("YouTube 官方嵌入 · 联网播放")
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
         Spacer()
         Button("在浏览器打开") {
           if let url = URL(string: "https://www.youtube.com/watch?v=\(videoID)") {
@@ -138,10 +138,10 @@ struct YouTubeEmbedPlayerCard: View {
       // 高质量转写待第三方 API（发 URL + 服务器端 Whisper）的独立 Loop。
       if !hasCaptions {
         HStack(spacing: 8) {
-          Image(systemName: "captions.bubble").foregroundStyle(.secondary)
+        Image(systemName: "captions.bubble").foregroundStyle(.secondary)
           Text("此视频无字幕，暂无法提取文字。可在浏览器中打开观看。")
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
           Spacer()
         }
       }
@@ -192,7 +192,7 @@ private struct YouTubeEmbedPosterView: View {
         }
         .contentShape(Rectangle())
     }
-    .buttonStyle(.plain)
+    .buttonStyle(.appPlain)
     .accessibilityLabel("播放视频")
     .accessibilityIdentifier("history-youtube-poster")
     .task(id: videoID) {
@@ -296,7 +296,7 @@ struct VideoCinemaOverlay: View {
                   .font(.system(size: 22))
                   .foregroundStyle(.white.opacity(0.85))
               }
-              .buttonStyle(.plain)
+              .buttonStyle(.appPlain)
               .keyboardShortcut(.cancelAction)
               .padding(.bottom, 8)
               .accessibilityIdentifier("history-youtube-cinema-close")

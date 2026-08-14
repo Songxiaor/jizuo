@@ -243,7 +243,7 @@ private struct InlineImageLightboxCanvas: View {
           HStack {
             Text("双指滑动平移 · 双指捏合缩放 · 双击复位 · 点框外或 Esc 退出")
               .font(.caption)
-              .foregroundStyle(.secondary)
+              .appSecondaryText()
             Spacer()
             recognizeButton
             Button {
@@ -383,7 +383,7 @@ private struct InlineImageLightboxCanvas: View {
     case .running:
       HStack(spacing: 6) {
         ProgressView().controlSize(.small)
-        Text("识别中…").font(.caption).foregroundStyle(.secondary)
+        Text("识别中…").font(.caption).appSecondaryText()
       }
     case .done, .failed:
       Button {
@@ -398,7 +398,7 @@ private struct InlineImageLightboxCanvas: View {
       HStack {
         Text("识别文字")
           .font(.caption.weight(.semibold))
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
         Spacer()
         if case let .done(text) = recognition {
           Button {
@@ -424,7 +424,7 @@ private struct InlineImageLightboxCanvas: View {
         case let .failed(message):
           Text(message)
             .font(.callout)
-            .foregroundStyle(.secondary)
+            .appSecondaryText()
             .padding(12)
         default:
           EmptyView()

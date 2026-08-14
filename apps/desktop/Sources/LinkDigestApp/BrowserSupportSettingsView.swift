@@ -98,7 +98,7 @@ struct BrowserSupportSettingsView: View {
           if detectedBrowsers.isEmpty && !model.isLoading {
             Text("没有检测到\(supportedBrowserNames)。装好之后点「重新检查」。")
               .font(.caption)
-              .foregroundStyle(.secondary)
+              .appSecondaryText()
               .accessibilityIdentifier("browser-support-empty")
           } else {
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 8) {
@@ -180,7 +180,7 @@ struct BrowserSupportSettingsView: View {
         .foregroundStyle(receiverColor)
       Text(receiverLineText)
         .font(.caption)
-        .foregroundStyle(appModel.browserReceiverState == .ready ? Color.secondary : receiverColor)
+        .foregroundStyle(appModel.browserReceiverState == .ready ? appTheme.secondaryText : receiverColor)
         .fixedSize(horizontal: false, vertical: true)
       Spacer(minLength: 0)
     }
@@ -217,7 +217,7 @@ struct BrowserSupportSettingsView: View {
         .gridColumnAlignment(.leading)
       Text(display.text)
         .font(.caption)
-        .foregroundStyle(display.needsAction ? appTheme.warning : Color.secondary)
+        .foregroundStyle(display.needsAction ? appTheme.warning : appTheme.secondaryText)
         .gridColumnAlignment(.leading)
       HStack(spacing: 8) {
         Spacer(minLength: 12)
@@ -242,7 +242,7 @@ struct BrowserSupportSettingsView: View {
         Color.clear.frame(width: 18, height: 0)
         Text("原来指向的程序已不在原位（\(ProductDisplay.name) 改过名或被移动过）。点「重新连接」即可，浏览器里的扩展不用重装。")
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .appSecondaryText()
           .fixedSize(horizontal: false, vertical: true)
           .gridCellColumns(3)
           .help(stale)
@@ -393,12 +393,12 @@ struct BrowserSupportSettingsView: View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text("\(index)")
         .font(.caption2.weight(.bold).monospacedDigit())
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .frame(width: 16, height: 16)
         .background(Circle().fill(Color.secondary.opacity(0.15)))
       Text(text)
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .appSecondaryText()
         .fixedSize(horizontal: false, vertical: true)
     }
   }
