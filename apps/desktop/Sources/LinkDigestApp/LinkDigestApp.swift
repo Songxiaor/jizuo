@@ -1542,5 +1542,10 @@ private struct LinkDigestCommands: Commands {
       }
       .disabled(!canRun(.togglePlainText))
     }
+    CommandGroup(after: .help) {
+      Button("重新显示引导") {
+        FirstCaptureOnboarding.requestShow()
+      }
+    }
   }
 }

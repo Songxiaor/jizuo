@@ -6,6 +6,34 @@ import UniformTypeIdentifiers
 import LinkDigestAdapters
 import LinkDigestCore
 
+enum FirstCaptureOnboarding {
+  static let dismissedStorageKey = "onboarding.capture-v1.dismissed"
+  static let showRequest = Notification.Name("LinkDigest.FirstCaptureOnboarding.ShowRequest")
+
+  static func hasStarted(
+    hasSavedContent: Bool,
+    hasInstalledBrowserSupport: Bool
+  ) -> Bool {
+    hasSavedContent || hasInstalledBrowserSupport
+  }
+
+  static func isComplete(
+    hasSavedContent: Bool,
+    hasConfiguredModel: Bool,
+    hasSummary: Bool
+  ) -> Bool {
+    hasSavedContent && hasConfiguredModel && hasSummary
+  }
+
+  static func requestShow(
+    defaults: UserDefaults = .standard,
+    notificationCenter: NotificationCenter = .default
+  ) {
+    defaults.set(false, forKey: dismissedStorageKey)
+    notificationCenter.post(name: showRequest, object: nil)
+  }
+}
+
 struct HistoryContentView: View {
   @ObservedObject var model: HistoryViewModel
   @ObservedObject var appModel: AppViewModel
@@ -26,7 +54,8 @@ struct HistoryContentView: View {
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
   @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchUserEnabled = false
   @AppStorage(VoiceSettings.storageKey) private var voiceSettingsRaw = ""
-  @AppStorage("onboarding.capture-v1.dismissed") private var isCaptureOnboardingDismissed = false
+  @AppStorage(FirstCaptureOnboarding.dismissedStorageKey) private var isCaptureOnboardingDismissed = false
+  @State private var isFirstCaptureGuidePresented = false
   /// 灯箱打开时窗口级分栏细线需要让位，避免画在放大的图片上。
   @ObservedObject private var inlineImageLightbox = InlineImageLightboxController.shared
   @ObservedObject private var videoCinema = VideoCinemaController.shared
@@ -142,6 +171,16 @@ struct HistoryContentView: View {
       }
       .onChange(of: appearanceThemeRaw) { _, newValue in
         AppearanceTheme.applyApplicationAppearance(newValue)
+      }
+      .onReceive(NotificationCenter.default.publisher(for: FirstCaptureOnboarding.showRequest)) { _ in
+        isFirstCaptureGuidePresented = true
+      }
+      .sheet(isPresented: $isFirstCaptureGuidePresented) {
+        firstCaptureCard {
+          isFirstCaptureGuidePresented = false
+          isCaptureOnboardingDismissed = true
+        }
+        .padding(24)
       }
   }
 
@@ -1056,7 +1095,9 @@ struct HistoryContentView: View {
   private var emptyCaptureDetail: some View {
     VStack(spacing: 0) {
       if !isCaptureOnboardingDismissed {
-        firstCaptureCard
+        firstCaptureCard {
+          isCaptureOnboardingDismissed = true
+        }
           .padding(.bottom, 20)
       }
       // 图标放进软底圆角瓦片，参考稿里 Browse channels 卡片的图形语言。
@@ -1092,59 +1133,75 @@ struct HistoryContentView: View {
   }
 
   private var firstCaptureIsComplete: Bool {
-    hasInstalledBrowserSupport
-      && providerSettings.hasConfiguredAPIKey
-      && model.rows.contains { $0.hasSummary == true }
+    FirstCaptureOnboarding.isComplete(
+      hasSavedContent: !model.rows.isEmpty,
+      hasConfiguredModel: providerSettings.hasConfiguredAPIKey,
+      hasSummary: model.rows.contains { $0.hasSummary == true }
+    )
+  }
+
+  private var firstCaptureHasStarted: Bool {
+    FirstCaptureOnboarding.hasStarted(
+      hasSavedContent: !model.rows.isEmpty,
+      hasInstalledBrowserSupport: hasInstalledBrowserSupport
+    )
   }
 
   private var hasInstalledBrowserSupport: Bool {
     browserSupport.statuses.contains { $0.state == .installed || $0.state == .installedAppUpdated }
   }
 
-  private var firstCaptureCard: some View {
+  private func firstCaptureCard(close: @escaping () -> Void) -> some View {
     VStack(alignment: .leading, spacing: 14) {
       HStack(alignment: .top) {
         VStack(alignment: .leading, spacing: 3) {
           Text("三步开始使用汲作").font(.headline)
-          Text("完成第一条总结后，这张卡会永久消失。")
+          Text("完成第一条总结后，这张卡会自动收起；也可从“帮助”菜单重新显示。")
             .font(.caption).appSecondaryText()
         }
         Spacer()
-        Button {
-          isCaptureOnboardingDismissed = true
-        } label: {
+        Button(action: close) {
           Image(systemName: "xmark").font(.caption.weight(.semibold))
         }
         .buttonStyle(.appPlain)
-        .help("不再显示")
-        .accessibilityLabel("不再显示")
+        .help("隐藏引导")
+        .accessibilityLabel("隐藏引导")
       }
       onboardingStep(
         number: 1,
-        title: "安装浏览器支持",
-        completed: hasInstalledBrowserSupport,
-        actionTitle: "去安装"
+        title: "选择一种开始方式",
+        detail: "也可以直接粘贴公开网页链接开始，无需先装扩展。安装扩展后，日常可直接保存当前页面。",
+        completed: firstCaptureHasStarted,
+        actionTitle: "添加链接",
+        secondaryActionTitle: "安装扩展",
+        secondaryAction: {
+          isFirstCaptureGuidePresented = false
+          SettingsNavigationRequest.request("browserSupport")
+          openSettings()
+        }
       ) {
-        SettingsNavigationRequest.request("browserSupport")
-        openSettings()
+        isFirstCaptureGuidePresented = false
+        manualLink.open()
       }
       onboardingStep(
         number: 2,
         title: "配置一个模型",
+        detail: "首次向模型发送内容前，会再确认一次发送范围和目的地。",
         completed: providerSettings.hasConfiguredAPIKey,
         actionTitle: "去配置"
       ) {
+        isFirstCaptureGuidePresented = false
         SettingsNavigationRequest.request("service")
         openSettings()
       }
       onboardingStep(
         number: 3,
-        title: "保存并总结第一条内容",
+        title: "总结第一条内容",
         completed: model.rows.contains { $0.hasSummary == true },
-        actionTitle: "打开浏览器扩展"
+        actionTitle: "添加链接"
       ) {
-        SettingsNavigationRequest.request("browserSupport")
-        openSettings()
+        isFirstCaptureGuidePresented = false
+        manualLink.open()
       }
     }
     .padding(18)
@@ -1164,10 +1221,7 @@ struct HistoryContentView: View {
       }
       Spacer(minLength: 0)
       Button(firstCaptureNextStepActionTitle) {
-        if !hasInstalledBrowserSupport {
-          SettingsNavigationRequest.request("browserSupport")
-          openSettings()
-        } else if !providerSettings.hasConfiguredAPIKey {
+        if !providerSettings.hasConfiguredAPIKey {
           SettingsNavigationRequest.request("service")
           openSettings()
         } else {
@@ -1180,8 +1234,8 @@ struct HistoryContentView: View {
         isCaptureOnboardingDismissed = true
       } label: { Image(systemName: "xmark") }
         .buttonStyle(.appPlain)
-        .help("不再显示")
-        .accessibilityLabel("不再显示")
+        .help("隐藏引导")
+        .accessibilityLabel("隐藏引导")
     }
     .padding(.horizontal, 16).padding(.vertical, 10)
     .background(theme.accent.opacity(0.08))
@@ -1190,31 +1244,44 @@ struct HistoryContentView: View {
   }
 
   private var firstCaptureNextStepMessage: String {
-    if !hasInstalledBrowserSupport { return "先安装浏览器支持，之后可从当前页面直接保存。" }
     if !providerSettings.hasConfiguredAPIKey { return "还差一步：配置模型后即可总结当前内容。" }
     return "保存已完成，生成第一份总结后引导会自动消失。"
   }
 
   private var firstCaptureNextStepActionTitle: String {
-    if !hasInstalledBrowserSupport { return "安装支持" }
     return providerSettings.hasConfiguredAPIKey ? "生成总结" : "配置模型"
   }
 
   private func onboardingStep(
     number: Int,
     title: String,
+    detail: String? = nil,
     completed: Bool,
     actionTitle: String,
+    secondaryActionTitle: String? = nil,
+    secondaryAction: (() -> Void)? = nil,
     action: @escaping () -> Void
   ) -> some View {
-    HStack(spacing: 12) {
+    HStack(alignment: .top, spacing: 12) {
       Image(systemName: completed ? "checkmark.circle.fill" : "\(number).circle")
         .foregroundStyle(completed ? theme.success : theme.secondaryText)
         .font(.title3)
-      Text(title).font(.callout.weight(.medium))
-      Spacer()
-      if !completed {
-        Button(actionTitle, action: action).buttonStyle(.borderless)
+      VStack(alignment: .leading, spacing: 5) {
+        Text(title).font(.callout.weight(.medium))
+        if let detail {
+          Text(detail)
+            .font(.caption)
+            .appSecondaryText()
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        if !completed {
+          HStack(spacing: 10) {
+            Button(actionTitle, action: action).buttonStyle(.borderless)
+            if let secondaryActionTitle, let secondaryAction {
+              Button(secondaryActionTitle, action: secondaryAction).buttonStyle(.borderless)
+            }
+          }
+        }
       }
     }
   }

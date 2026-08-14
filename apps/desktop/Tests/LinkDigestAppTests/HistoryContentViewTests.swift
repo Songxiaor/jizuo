@@ -4,6 +4,76 @@ import LinkDigestCore
 @testable import LinkDigestApp
 
 final class HistoryContentViewTests: XCTestCase {
+  func testFirstCaptureOnboardingAcceptsEitherStartPathAndStillRequiresSummarySetup() {
+    XCTAssertTrue(
+      FirstCaptureOnboarding.hasStarted(
+        hasSavedContent: true,
+        hasInstalledBrowserSupport: false
+      )
+    )
+    XCTAssertTrue(
+      FirstCaptureOnboarding.hasStarted(
+        hasSavedContent: false,
+        hasInstalledBrowserSupport: true
+      )
+    )
+    XCTAssertFalse(
+      FirstCaptureOnboarding.hasStarted(
+        hasSavedContent: false,
+        hasInstalledBrowserSupport: false
+      )
+    )
+
+    XCTAssertTrue(
+      FirstCaptureOnboarding.isComplete(
+        hasSavedContent: true,
+        hasConfiguredModel: true,
+        hasSummary: true
+      )
+    )
+    XCTAssertFalse(
+      FirstCaptureOnboarding.isComplete(
+        hasSavedContent: true,
+        hasConfiguredModel: false,
+        hasSummary: true
+      )
+    )
+    XCTAssertFalse(
+      FirstCaptureOnboarding.isComplete(
+        hasSavedContent: true,
+        hasConfiguredModel: true,
+        hasSummary: false
+      )
+    )
+  }
+
+  func testFirstCaptureOnboardingCanBeReopenedAfterDismissal() throws {
+    let (_, defaults) = try ephemeralDefaults("com.syc.linkdigest.onboarding.")
+    let center = NotificationCenter()
+    defaults.set(true, forKey: FirstCaptureOnboarding.dismissedStorageKey)
+    let expectation = expectation(forNotification: FirstCaptureOnboarding.showRequest, object: nil, notificationCenter: center)
+
+    FirstCaptureOnboarding.requestShow(defaults: defaults, notificationCenter: center)
+
+    XCTAssertFalse(defaults.bool(forKey: FirstCaptureOnboarding.dismissedStorageKey))
+    wait(for: [expectation], timeout: 0.1)
+  }
+
+  func testFirstCaptureOnboardingCopyExplainsBothStartPathsAndFirstSendConsent() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8
+    )
+
+    XCTAssertTrue(source.contains("也可以直接粘贴公开网页链接开始，无需先装扩展。"))
+    XCTAssertTrue(source.contains("安装扩展后，日常可直接保存当前页面。"))
+    XCTAssertTrue(source.contains("首次向模型发送内容前，会再确认一次发送范围和目的地。"))
+  }
+
   func testHistoryDetailCommandAvailabilityMapsEveryMenuCommand() {
     let availability = HistoryDetailCommandAvailability(
       canSummarize: true,
