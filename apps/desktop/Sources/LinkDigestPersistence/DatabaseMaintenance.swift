@@ -20,6 +20,16 @@ public struct HistoryTableCounts: Codable, Sendable, Equatable {
   }
 }
 
+public struct DatabaseBackupValidation: Sendable, Equatable {
+  public let schemaVersion: Int
+  public let counts: HistoryTableCounts
+
+  public init(schemaVersion: Int, counts: HistoryTableCounts) {
+    self.schemaVersion = schemaVersion
+    self.counts = counts
+  }
+}
+
 public struct DatabaseMaintenance: Sendable {
   private let database: LocalDatabase
   public init(database: LocalDatabase) { self.database = database }
@@ -57,6 +67,38 @@ public struct DatabaseMaintenance: Sendable {
       }
     } catch let failure as RepositoryFailure { throw failure }
     catch { throw RepositoryFailure.unavailable }
+  }
+
+  /// Validates a standalone SQLite snapshot without migrating or modifying it.
+  /// Backup archives use this before they are accepted for restore.
+  public static func validateBackup(at backupURL: URL) throws -> DatabaseBackupValidation {
+    do {
+      var configuration = Configuration()
+      configuration.readonly = true
+      configuration.busyMode = .timeout(2)
+      configuration.prepareDatabase { db in try db.execute(sql: "PRAGMA foreign_keys = ON") }
+      let database = try DatabaseQueue(path: backupURL.path, configuration: configuration)
+      defer { try? database.close() }
+      let integrity = try database.read {
+        try String.fetchOne($0, sql: "PRAGMA integrity_check") ?? "missing"
+      }
+      let foreignKeyFailures = try database.read {
+        try Row.fetchAll($0, sql: "PRAGMA foreign_key_check").count
+      }
+      let schemaVersion = try database.read {
+        try Int.fetchOne($0, sql: "PRAGMA user_version") ?? 0
+      }
+      guard integrity == "ok",
+            foreignKeyFailures == 0,
+            schemaVersion > 0,
+            schemaVersion <= LocalDatabase.latestSchemaVersion
+      else { throw RepositoryFailure.integrityCheckFailed }
+      return .init(schemaVersion: schemaVersion, counts: try database.read(readTableCounts))
+    } catch let failure as RepositoryFailure {
+      throw failure
+    } catch {
+      throw RepositoryFailure.integrityCheckFailed
+    }
   }
 
   public static func restore(from backupURL: URL, to location: LocalDatabaseLocation, dependencies: PersistenceDependencies = .live) throws -> LocalDatabase {

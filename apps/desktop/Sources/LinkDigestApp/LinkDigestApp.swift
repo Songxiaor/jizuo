@@ -804,6 +804,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   @StateObject private var browserSupport: BrowserSupportViewModel
   @StateObject private var mediaStorageSettings: MediaStorageSettingsViewModel
   @StateObject private var knowledgeVaultSettings: KnowledgeVaultSettingsViewModel
+  @StateObject private var dataAssets: DataAssetsViewModel
   @StateObject private var sessionMediaPlayback: SessionMediaPlaybackController
   @State private var didBootstrap = false
   /// 注入 `\.appTheme` 用。视图各自读 AppStorage 会重复三行样板，
@@ -821,15 +822,25 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
     let applicationSupportRoot: AppComposition.ApplicationSupportRoot
     let imageCache: GitHubREADMEImageCache?
     let cacheRoot: URL?
+    let backupManager: LibraryBackupManager
+    let startupRestoreResult: Result<AppliedLibraryRestore?, Error>?
     do {
       let root = try AppApplicationSupportRoot.resolve()
       applicationSupportRoot = { root }
+      let manager = LibraryBackupManager(applicationSupportRoot: root)
+      backupManager = manager
+      startupRestoreResult = Result { try manager.applyPendingRestoreIfNeeded() }
       imageCache = .init(applicationSupportRoot: root)
       cacheRoot = root
     } catch {
       // Preserve the composition's structured storage-unavailable path rather
       // than letting an invalid debug smoke override crash the SwiftUI process.
       applicationSupportRoot = { throw RepositoryFailure.unavailable }
+      backupManager = LibraryBackupManager(
+        applicationSupportRoot: FileManager.default.temporaryDirectory
+          .appendingPathComponent("linkdigest-unavailable", isDirectory: true)
+      )
+      startupRestoreResult = nil
       imageCache = nil
       cacheRoot = nil
     }
@@ -1191,6 +1202,12 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       wrappedValue: MediaStorageSettingsViewModel(store: mediaStoragePreference)
     )
     _knowledgeVaultSettings = StateObject(wrappedValue: knowledgeVaultSettingsModel)
+    _dataAssets = StateObject(
+      wrappedValue: DataAssetsViewModel(
+        backupManager: backupManager,
+        startupRestoreResult: startupRestoreResult
+      )
+    )
     _sessionMediaPlayback = StateObject(wrappedValue: sessionMediaPlaybackController)
   }
 
@@ -1225,6 +1242,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
           )
           didConfigureHistory = true
           knowledgeVaultSettings.configure(history: result.history)
+          dataAssets.configure(history: result.history)
           // 历史就绪之后才接回链，冷启动时排队的那一个 URL 也在这里被消费。
           //
           // scheme 一注册，任何网页都能构造这样一个链接扔过来，所以这里只做
@@ -1299,7 +1317,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         appModel: model,
         browserSupport: browserSupport,
         mediaStorage: mediaStorageSettings,
-        knowledgeVault: knowledgeVaultSettings
+        knowledgeVault: knowledgeVaultSettings,
+        dataAssets: dataAssets
       )
         .background(SettingsWindowResizer())
         .appThemeEnvironment(appearanceThemeRaw)

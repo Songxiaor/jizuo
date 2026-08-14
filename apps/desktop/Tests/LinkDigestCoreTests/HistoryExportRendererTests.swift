@@ -3,6 +3,43 @@ import XCTest
 @testable import LinkDigestCore
 
 final class HistoryExportRendererTests: XCTestCase {
+  func testBatchFilenameCollisionUsesCaseInsensitiveNumberingWithinNameLimit() {
+    var used: Set<String> = []
+    XCTAssertEqual(
+      HistoryBatchExporter.uniqueFilename(
+        suggestedFilename: "同名标题.md",
+        usedLowercasedNames: &used
+      ),
+      "同名标题.md"
+    )
+    XCTAssertEqual(
+      HistoryBatchExporter.uniqueFilename(
+        suggestedFilename: "同名标题.md",
+        usedLowercasedNames: &used
+      ),
+      "同名标题 (2).md"
+    )
+    XCTAssertEqual(
+      HistoryBatchExporter.uniqueFilename(
+        suggestedFilename: "同名标题.MD",
+        usedLowercasedNames: &used
+      ),
+      "同名标题 (3).MD"
+    )
+
+    let longName = String(repeating: "资料", count: 200) + ".md"
+    let first = HistoryBatchExporter.uniqueFilename(
+      suggestedFilename: longName,
+      usedLowercasedNames: &used
+    )
+    let second = HistoryBatchExporter.uniqueFilename(
+      suggestedFilename: longName,
+      usedLowercasedNames: &used
+    )
+    XCTAssertLessThanOrEqual(second.utf8.count, 255)
+    XCTAssertNotEqual(first.lowercased(), second.lowercased())
+    XCTAssertTrue(second.hasSuffix(" (2).md"))
+  }
   func testMarkdownAndPlainTextGoldenOutput() throws {
     let projection = fixture()
 

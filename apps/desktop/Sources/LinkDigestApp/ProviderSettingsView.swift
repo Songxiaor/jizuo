@@ -22,7 +22,7 @@ struct ProviderSettingsView: View {
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
   private enum SettingsTab: String, Hashable, CaseIterable, Identifiable {
-    case service, generation, appearance, mediaStorage, knowledgeVault, siteLogin, browserSupport, labs
+    case service, generation, appearance, mediaStorage, knowledgeVault, data, siteLogin, browserSupport, labs
     var id: String { rawValue }
     var title: String {
       switch self {
@@ -31,6 +31,7 @@ struct ProviderSettingsView: View {
       case .appearance: "外观"
       case .mediaStorage: "视频存储"
       case .knowledgeVault: "知识库同步"
+      case .data: "数据"
       case .siteLogin: "站点登录"
       case .browserSupport: "浏览器支持"
       case .labs: "实验室"
@@ -43,6 +44,7 @@ struct ProviderSettingsView: View {
       case .appearance: "paintpalette"
       case .mediaStorage: "externaldrive"
       case .knowledgeVault: "folder.badge.gearshape"
+      case .data: "externaldrive.badge.timemachine"
       case .siteLogin: "person.crop.circle.badge.checkmark"
       case .browserSupport: "puzzlepiece.extension"
       case .labs: "flask"
@@ -83,7 +85,7 @@ struct ProviderSettingsView: View {
       switch self {
       case .serviceAndGeneration: [.service, .generation]
       case .readingAndAppearance: [.appearance, .labs]
-      case .connectionAndData: [.browserSupport, .siteLogin, .mediaStorage, .knowledgeVault]
+      case .connectionAndData: [.browserSupport, .siteLogin, .mediaStorage, .knowledgeVault, .data]
       }
     }
 
@@ -103,6 +105,7 @@ struct ProviderSettingsView: View {
   @ObservedObject var browserSupport: BrowserSupportViewModel
   @ObservedObject var mediaStorage: MediaStorageSettingsViewModel
   @ObservedObject var knowledgeVault: KnowledgeVaultSettingsViewModel
+  @ObservedObject var dataAssets: DataAssetsViewModel
   @State private var apiKeyInput = ""
   @State private var selectedTab: SettingsTab = .service
   @State private var isCustomOutputLanguage = false
@@ -271,6 +274,8 @@ struct ProviderSettingsView: View {
           MediaStorageSettingsView(model: mediaStorage)
         case .knowledgeVault:
           KnowledgeVaultSettingsView(model: knowledgeVault)
+        case .data:
+          DataAssetsSettingsView(model: dataAssets)
         case .siteLogin:
           SiteLoginSettingsView(mediaStorage: mediaStorage)
         case .browserSupport:

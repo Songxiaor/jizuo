@@ -191,6 +191,11 @@ category / code / retryable / action / safeDetail
 | 捕获证据 | SQLite | 保存 Cookie 值或完整敏感 Header |
 | 扩展设置 | 浏览器本地 storage | 保存模型秘密 |
 | 导出文件 | 用户选择的位置 | 包含 Key、Cookie、Token 或本机秘密路径 |
+| 批量 Markdown 导出 | 用户选择文件夹内的带时间戳子目录 | 覆盖同名条目、阻塞主线程、夹带 Key/Cookie/Token |
+| 整库备份 | 用户选择位置的单个 `.linkdigestbackup` 文件；仅含一致 SQLite 快照与 App 内部媒体 | Keychain、站点 Cookie、外部用户文件、运行中的 WAL/SHM |
+| 诊断包 | 用户主动选择位置的 zip；仅含版本/build、macOS、基础运行信息和近期本 App 崩溃报告 | 历史正文/摘要、完整 URL 列表、API Key、Cookie、Token、自动上传 |
+
+整库恢复是覆盖性操作：所选备份必须先通过 manifest、SHA-256、SQLite integrity/foreign-key/schema 校验；随后自动把当前资料库另存为独立备份。真正替换只在 App 退出并重新启动、SQLite 尚未打开时执行，安装失败则回滚当前库。
 
 ## 11. 第一版验收指标
 
