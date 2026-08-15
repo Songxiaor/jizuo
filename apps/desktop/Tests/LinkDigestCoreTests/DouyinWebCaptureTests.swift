@@ -53,6 +53,76 @@ final class DouyinWebCaptureTests: XCTestCase {
     XCTAssertEqual(page.author, "青山言")
     XCTAssertEqual(page.publishedAt, "2026-07-11 23:11")
     XCTAssertEqual(page.durationSeconds, 510)
+    XCTAssertTrue(page.imageURLs.isEmpty)
+  }
+
+  func testValidatesNoteCanonicalAndGalleryImages() throws {
+    let page = try DouyinWebCapturePolicy.validateJavaScriptResult([
+      "awemeID": "7673819714897187302",
+      "canonicalURL": "https://www.douyin.com/note/7673819714897187302",
+      "title": "一切皆插件：DSH 的设计哲学",
+      "imageURLs": [
+        "https://p3.douyinpic.com/aweme/tplv-dy-aweme-images/one.jpeg?biz_tag=aweme_images",
+        "https://p3.douyinpic.com/aweme/tplv-dy-aweme-images/two.jpeg?biz_tag=aweme_images",
+      ],
+    ])
+
+    XCTAssertEqual(page.canonicalURL.path, "/note/7673819714897187302")
+    XCTAssertEqual(page.imageURLs.count, 2)
+    XCTAssertNil(page.videoURL)
+    XCTAssertEqual(
+      DouyinWebCapturePolicy.completionDecision(for: page),
+      .completeWithPlayableMedia
+    )
+  }
+
+  func testAllowsByteDanceSessionHopsWithoutOpeningUserSubmittedHosts() {
+    XCTAssertEqual(
+      DouyinWebCapturePolicy.navigationDecision(
+        url: URL(string: "https://passport.snssdk.com/sso/login"),
+        isMainFrame: true
+      ),
+      .allow
+    )
+    XCTAssertEqual(
+      DouyinWebCapturePolicy.navigationDecision(
+        url: URL(string: "https://login.bytedance.com/sso"),
+        isMainFrame: true
+      ),
+      .allow
+    )
+    XCTAssertTrue(
+      DouyinWebCapturePolicy.isSessionNavigationURL(
+        URL(string: "https://passport.snssdk.com/sso/login")!
+      )
+    )
+    XCTAssertThrowsError(
+      try DouyinWebCapturePolicy.validateNavigationURL(
+        URL(string: "https://passport.snssdk.com/sso/login")!
+      )
+    )
+  }
+
+  func testAcceptsGalleryImageURLAndRejectsAvatars() {
+    XCTAssertNotNil(
+      DouyinWebCapturePolicy.galleryImageURL(
+        from: "https://p3.douyinpic.com/aweme/tplv-dy-aweme-images/one.jpeg?biz_tag=aweme_images"
+      )
+    )
+    XCTAssertNil(
+      DouyinWebCapturePolicy.galleryImageURL(
+        from: "https://p3.douyinpic.com/aweme/100x100/avatar.jpeg"
+      )
+    )
+  }
+
+  func testRejectsNonGalleryImagesOnNotePages() {
+    XCTAssertThrowsError(try DouyinWebCapturePolicy.validateJavaScriptResult([
+      "awemeID": "7673819714897187302",
+      "canonicalURL": "https://www.douyin.com/note/7673819714897187302",
+      "title": "图文",
+      "imageURLs": ["https://p3.douyinpic.com/aweme/100x100/avatar.jpeg"],
+    ]))
   }
 
   func testRejectsMismatchedIdentityAndNonHTTPSMedia() {
@@ -88,6 +158,19 @@ final class DouyinWebCaptureTests: XCTestCase {
     )
     XCTAssertEqual(
       DouyinWebCapturePolicy.completionDecision(for: pageWithMedia),
+      .completeWithPlayableMedia
+    )
+
+    let pageWithImages = DouyinRenderedPage(
+      awemeID: pageWithoutMedia.awemeID,
+      canonicalURL: URL(string: "https://www.douyin.com/note/7667204319003834802")!,
+      title: pageWithoutMedia.title,
+      imageURLs: [
+        URL(string: "https://p3.douyinpic.com/aweme/tplv-dy-aweme-images/one.jpeg?biz_tag=aweme_images")!,
+      ]
+    )
+    XCTAssertEqual(
+      DouyinWebCapturePolicy.completionDecision(for: pageWithImages),
       .completeWithPlayableMedia
     )
   }
@@ -153,6 +236,32 @@ final class DouyinCaptureWaitTests: XCTestCase {
     XCTAssertGreaterThanOrEqual(clock.elapsed, appearsAt)
     XCTAssertGreaterThan(clock.sleepCount, 8)
     XCTAssertEqual(polls, clock.sleepCount + 1)
+  }
+
+  /// 图文帖有正片图即可完成，不必再等视频地址。
+  func testImageGalleryCompletesWithoutAVideoURL() async throws {
+    let clock = FakeClock()
+    let captured = try await DouyinCaptureWait.waitForPlayableMedia(
+      pollInterval: Self.pollInterval,
+      isCancelled: { clock.elapsed >= Self.deadline },
+      sleep: { clock.sleep($0) },
+      poll: {
+        .ready(
+          DouyinRenderedPage(
+            awemeID: "7673819714897187302",
+            canonicalURL: URL(string: "https://www.douyin.com/note/7673819714897187302")!,
+            title: "一切皆插件",
+            imageURLs: [
+              URL(string: "https://p3.douyinpic.com/aweme/tplv-dy-aweme-images/one.jpeg?biz_tag=aweme_images")!,
+            ]
+          )
+        )
+      }
+    )
+
+    XCTAssertEqual(captured?.imageURLs.count, 1)
+    XCTAssertNil(captured?.videoURL)
+    XCTAssertEqual(clock.sleepCount, 0)
   }
 
   /// 元数据先到不算完成：一路只有标题作者时必须等满截止时间，

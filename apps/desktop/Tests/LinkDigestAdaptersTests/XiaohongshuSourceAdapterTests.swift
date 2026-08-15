@@ -15,6 +15,7 @@ final class XiaohongshuSourceAdapterTests: XCTestCase {
     XCTAssertTrue(adapter.takesOwnership(of: URL(string: "https://www.xiaohongshu.com/discovery/item/648c70cf")!))
     // 短链 302 到主站，同样要登录才有正文。
     XCTAssertTrue(adapter.takesOwnership(of: URL(string: "https://xhslink.com/a/AbCdEf")!))
+    XCTAssertTrue(adapter.takesOwnership(of: URL(string: "https://xhslink.cn/o/5SGH7HyxwIk")!))
   }
 
   func testDoesNotClaimLookalikeOrForeignHosts() {
@@ -38,7 +39,8 @@ final class XiaohongshuSourceAdapterTests: XCTestCase {
     // 这个判定决定「Cookie 能跟着 302 跳到哪」。宽一格就是把用户登录态送去别的域，
     // 而且不会有任何报错。
     XCTAssertTrue(XiaohongshuURL.matchesSessionHost(URL(string: "https://www.xiaohongshu.com/explore/1")!))
-    XCTAssertTrue(XiaohongshuURL.matchesSessionHost(URL(string: "https://xhslink.com/a/x")!))
+    XCTAssertFalse(XiaohongshuURL.matchesSessionHost(URL(string: "https://xhslink.com/a/x")!))
+    XCTAssertFalse(XiaohongshuURL.matchesSessionHost(URL(string: "https://xhslink.cn/o/5SGH7HyxwIk")!))
     XCTAssertFalse(XiaohongshuURL.matchesSessionHost(URL(string: "https://xiaohongshu.com.evil.test/")!))
     XCTAssertFalse(XiaohongshuURL.matchesSessionHost(URL(string: "https://evil.test/")!))
     // 明文 http 不带 Cookie。
@@ -64,6 +66,70 @@ final class XiaohongshuSourceAdapterTests: XCTestCase {
     XCTAssertEqual(parsed?.title, "三天两夜厦门citywalk路线")
     XCTAssertEqual(parsed?.author, "旅行的小张")
     XCTAssertTrue(parsed?.description.contains("鼓浪屿") == true)
+  }
+
+  func testShortLinkResolvesWithoutSendingCookiesToXhslink() async throws {
+    let shortURL = URL(string: "https://xhslink.cn/o/5SGH7HyxwIk")!
+    let noteURL = URL(string: "https://www.xiaohongshu.com/discovery/item/6a4a0c570000000007023508?xsec_token=redacted")!
+    let noteHTML = """
+      <html><head>
+      <meta property="og:title" content="纯钛Apple Watch表带的质感真的很特别 - 小红书">
+      <meta property="og:description" content="夏天手腕最怕闷热，这条表带确实凉快。">
+      <meta property="og:image" content="https://sns-webpic-qc.xhscdn.com/note/redacted.jpg">
+      </head></html>
+      """
+    let plain = XiaohongshuShortLinkFetcher(resolved: noteURL)
+    let resources = XiaohongshuSessionResourceFetcher(html: noteHTML)
+    let adapter = XiaohongshuSourceAdapter(
+      fetcher: plain,
+      resources: resources,
+      cookieHeader: { "session=1" }
+    )
+
+    let document = try await adapter.capture(url: shortURL)
+
+    XCTAssertEqual(plain.fetched, [shortURL])
+    XCTAssertEqual(resources.requestedHosts, ["www.xiaohongshu.com"])
+    XCTAssertTrue(document.text.contains("夏天手腕最怕闷热"))
+    XCTAssertTrue(document.text.contains("sns-webpic-qc.xhscdn.com"))
+    XCTAssertEqual(document.platform, "xiaohongshu")
+  }
+}
+
+private final class XiaohongshuShortLinkFetcher: WebPageFetcher, @unchecked Sendable {
+  let resolved: URL
+  private let lock = NSLock()
+  private var seen: [URL] = []
+
+  init(resolved: URL) { self.resolved = resolved }
+
+  var fetched: [URL] { lock.withLock { seen } }
+
+  func fetch(url: URL) async throws -> WebPageFetchResult {
+    lock.withLock { seen.append(url) }
+    return .init(url: resolved, html: "<html></html>", contentType: "text/html")
+  }
+}
+
+private final class XiaohongshuSessionResourceFetcher: SafeResourceFetching, @unchecked Sendable {
+  let html: String
+  private let lock = NSLock()
+  private var seen: [URL] = []
+
+  init(html: String) { self.html = html }
+
+  var requestedHosts: [String] {
+    lock.withLock { seen.compactMap(\.host) }
+  }
+
+  func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
+    lock.withLock { seen.append(request.url) }
+    return .init(
+      url: request.url,
+      statusCode: 200,
+      contentType: "text/html; charset=utf-8",
+      body: Data(html.utf8)
+    )
   }
 }
 

@@ -144,6 +144,27 @@ enum ReadingDocumentExport {
           color: .secondaryLabelColor,
           spacingBefore: 6, spacingAfter: 6, headIndent: 18, firstLineIndent: 18
         ))
+      case let .callout(kind, text):
+        let label = MarkdownPresentation.calloutLabel(kind)
+        result.append(styledParagraph(
+          plain(text.isEmpty ? label : "\(label)  \(text)"),
+          font: font(readingFont, size: bodySize, weight: .regular),
+          color: .secondaryLabelColor,
+          spacingBefore: 6, spacingAfter: 6, headIndent: 18, firstLineIndent: 18
+        ))
+      case let .table(headers, rows):
+        result.append(styledParagraph(
+          headers.joined(separator: " · "),
+          font: font(readingFont, size: bodySize, weight: .semibold),
+          spacingBefore: 8, spacingAfter: 4
+        ))
+        for row in rows {
+          result.append(styledParagraph(
+            row.joined(separator: " · "),
+            font: font(readingFont, size: bodySize, weight: .regular),
+            spacingBefore: 0, spacingAfter: 3, headIndent: 12
+          ))
+        }
       case let .code(_, content):
         result.append(styledParagraph(
           content,

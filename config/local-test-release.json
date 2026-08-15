@@ -60,10 +60,10 @@
   "minimumMacOS": "15.0",
   "r4aFrozenHashes": {
     "apps/desktop/Assets/AppIcon.icns": "fa33012723d17567fd08e5839af7c86ae2d0fbf9456b74c3714f6d0c9a15215e",
-    "config/app-release.json": "943a724d7cc2bac361dd3856397c9bf14488239b933ab81b9ad6c78bbbda5659",
+    "config/app-release.json": "9e4b08f004ea919e83829ac82fd9ecaa82a3c9c6aee016345b2dd44e34a20f43",
     "scripts/native-host/check-release-unit.sh": "e60df91e6c914728d39990a4ac1295eaf72ae4396cd970071d1b752d351b5f6d",
     "scripts/native-host/package-app-dmg.sh": "6dc6b4b776aeb1578510059599392672e65030d2170fd117c555445c747997b2",
-    "scripts/native-host/release_unit.py": "e4a97eabcf577f62b4ad781afb0d45a863840f7a562bc5793691175901b75da7",
+    "scripts/native-host/release_unit.py": "49da8a5c47933c1909a3e486db1e12945da842919402e5ed1658a61f8b1e766e",
     "scripts/native-host/release_unit_check.py": "cf1448150d1eb2ea81b8c56edd77228f6535cddea81c6af17805c268da69d93b"
   },
   "secretFixtureHashAllowlist": {
@@ -75,6 +75,7 @@
     ".gitignore",
     "AGENTS.md",
     "BRAIN.md",
+    "LICENSE",
     "README.md",
     "VERIFY.md",
     "apps",

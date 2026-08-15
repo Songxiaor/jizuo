@@ -151,7 +151,7 @@ private final class BilibiliPlayURLFake: SafeResourceFetching, @unchecked Sendab
     let path = request.url.path
     let json: String
     if path.contains("web-interface/view") {
-      json = #"{"code":0,"data":{"cid":123456,"duration":780,"owner":{"name":"大耳朵 TV"}}}"#
+      json = #"{"code":0,"data":{"bvid":"BV1ehge6jE6h","cid":123456,"title":"脱敏测试视频","duration":780,"owner":{"name":"大耳朵 TV"}}}"#
     } else if path.contains("player/playurl") {
       let qn = URLComponents(url: request.url, resolvingAgainstBaseURL: false)?
         .queryItems?.first(where: { $0.name == "qn" })?.value ?? "?"

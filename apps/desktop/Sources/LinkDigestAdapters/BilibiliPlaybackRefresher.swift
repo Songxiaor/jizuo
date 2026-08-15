@@ -1,6 +1,22 @@
 import Foundation
 import LinkDigestCore
 
+public struct BilibiliViewMetadata: Sendable, Equatable {
+  public let bvid: String
+  public let cid: Int64
+  public let title: String
+  public let description: String?
+  public let author: String?
+  public let coverURL: URL?
+  public let durationSeconds: Double?
+  public let publishedAt: String?
+  public let views: String?
+  public let comments: String?
+  public let shares: String?
+  public let collects: String?
+  public let likes: String?
+}
+
 /// App-side B 站播放地址刷新：只用公开 web 接口 + 站点 Referer，不写 Cookie、
 /// 不绕过登录墙。成功率与清晰度上限通常低于「浏览器当前页 __playinfo__」
 /// （浏览器侧带登录会话、用户当时正在播的那一档）。
@@ -33,6 +49,9 @@ public struct BilibiliPlaybackRefresher: Sendable {
   public enum RefreshError: Error, Equatable, Sendable {
     case unsupportedURL
     case networkOrHTTP
+    case accessRestricted
+    case videoUnavailable
+    case invalidResponse
     case missingCID
     case noPlayableStream
   }
@@ -120,15 +139,33 @@ public struct BilibiliPlaybackRefresher: Sendable {
     userChoseQuality: Bool = false
   ) async throws -> MediaDescriptor {
     guard let bvid = Self.videoID(from: pageURL) else { throw RefreshError.unsupportedURL }
-    let view = try await fetchView(bvid: bvid, cookieHeader: cookieHeader)
-    let stream = try await fetchPlayURL(
-      bvid: bvid,
-      cid: view.cid,
+    let view = try await fetchViewMetadata(videoID: bvid, cookieHeader: cookieHeader)
+    return try await refresh(
+      pageURL: pageURL,
+      metadata: view,
+      author: author,
       quality: quality,
       cookieHeader: cookieHeader,
       userChoseQuality: userChoseQuality
     )
-    let canonical = "https://www.bilibili.com/video/\(bvid)"
+  }
+
+  public func refresh(
+    pageURL: String,
+    metadata: BilibiliViewMetadata,
+    author: String? = nil,
+    quality: BilibiliStreamQualityPreference = .default,
+    cookieHeader: String? = nil,
+    userChoseQuality: Bool = false
+  ) async throws -> MediaDescriptor {
+    let stream = try await fetchPlayURL(
+      bvid: metadata.bvid,
+      cid: metadata.cid,
+      quality: quality,
+      cookieHeader: cookieHeader,
+      userChoseQuality: userChoseQuality
+    )
+    let canonical = "https://www.bilibili.com/video/\(metadata.bvid)"
     return MediaDescriptor(
       kind: .directFile,
       pageURL: pageURL,
@@ -137,8 +174,9 @@ public struct BilibiliPlaybackRefresher: Sendable {
       ephemeralPlaybackURL: stream.videoURL,
       companionAudioURL: stream.companionAudioURL,
       mimeType: stream.companionAudioURL == nil ? "video/mp4" : "application/octet-stream",
-      durationSeconds: stream.durationSeconds ?? view.durationSeconds,
-      author: author ?? view.author,
+      posterURL: metadata.coverURL?.absoluteString,
+      durationSeconds: stream.durationSeconds ?? metadata.durationSeconds,
+      author: author ?? metadata.author,
       expiresAt: stream.expiresAt,
       transcriptionCapability: .supported,
       selectionReason: .singleCandidate,
@@ -158,9 +196,9 @@ public struct BilibiliPlaybackRefresher: Sendable {
     cookieHeader: String? = nil
   ) async throws -> String {
     guard let bvid = Self.videoID(from: pageURL) else { throw RefreshError.unsupportedURL }
-    let view = try await fetchView(bvid: bvid, cookieHeader: cookieHeader)
+    let view = try await fetchViewMetadata(videoID: bvid, cookieHeader: cookieHeader)
     let data = try await requestPlayURLJSON(
-      bvid: bvid,
+      bvid: view.bvid,
       cid: view.cid,
       quality: .highest,
       cookieHeader: cookieHeader,
@@ -186,12 +224,6 @@ public struct BilibiliPlaybackRefresher: Sendable {
       return (intValue(item["bandwidth"]) ?? Int.max, url)
     }
     return candidates.min(by: { $0.bandwidth < $1.bandwidth })?.url
-  }
-
-  private struct ViewMeta {
-    let cid: Int64
-    let durationSeconds: Double?
-    let author: String?
   }
 
   private struct StreamURLs {
@@ -238,25 +270,60 @@ public struct BilibiliPlaybackRefresher: Sendable {
     }
   }
 
-  private func fetchView(bvid: String, cookieHeader: String?) async throws -> ViewMeta {
+  public func fetchViewMetadata(
+    videoID: String,
+    cookieHeader: String? = nil
+  ) async throws -> BilibiliViewMetadata {
     guard var components = URLComponents(string: "https://api.bilibili.com/x/web-interface/view") else {
       throw RefreshError.unsupportedURL
     }
-    components.queryItems = [.init(name: "bvid", value: bvid)]
+    if videoID.lowercased().hasPrefix("av"),
+       let aid = Int64(videoID.dropFirst(2)) {
+      components.queryItems = [.init(name: "aid", value: String(aid))]
+    } else {
+      components.queryItems = [.init(name: "bvid", value: videoID)]
+    }
     guard let endpoint = components.url else { throw RefreshError.unsupportedURL }
     let body = try await getJSON(url: endpoint, cookieHeader: cookieHeader)
-    guard let root = body as? [String: Any],
-          let code = root["code"] as? Int, code == 0,
-          let data = root["data"] as? [String: Any],
-          let cid = int64(data["cid"])
-    else { throw RefreshError.missingCID }
+    guard let root = body as? [String: Any], let code = intValue(root["code"])
+    else { throw RefreshError.networkOrHTTP }
+    guard code == 0 else {
+      if [-101, -403, -412, 62002].contains(code) { throw RefreshError.accessRestricted }
+      if [-404, 10003, 62004].contains(code) { throw RefreshError.videoUnavailable }
+      throw RefreshError.networkOrHTTP
+    }
+    guard let data = root["data"] as? [String: Any],
+          let bvid = nonEmptyString(data["bvid"]),
+          bvid.range(of: #"^BV[0-9A-Za-z]{10}$"#, options: .regularExpression) != nil,
+          let title = nonEmptyString(data["title"])
+    else { throw RefreshError.invalidResponse }
+    guard let cid = int64(data["cid"]) else { throw RefreshError.missingCID }
     let duration: Double? = {
       if let d = data["duration"] as? Double, d > 0 { return d }
       if let d = data["duration"] as? Int, d > 0 { return Double(d) }
       return nil
     }()
-    let author = (data["owner"] as? [String: Any])?["name"] as? String
-    return ViewMeta(cid: cid, durationSeconds: duration, author: author)
+    let author = nonEmptyString((data["owner"] as? [String: Any])?["name"])
+    let coverURL = allowedCoverURL(nonEmptyString(data["pic"]))
+    let publishedAt = int64(data["pubdate"]).map {
+      ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: TimeInterval($0)))
+    }
+    let stats = data["stat"] as? [String: Any]
+    return BilibiliViewMetadata(
+      bvid: bvid,
+      cid: cid,
+      title: title,
+      description: nonEmptyString(data["desc"]),
+      author: author,
+      coverURL: coverURL,
+      durationSeconds: duration,
+      publishedAt: publishedAt,
+      views: countString(stats?["view"]),
+      comments: countString(stats?["reply"]),
+      shares: countString(stats?["share"]),
+      collects: countString(stats?["favorite"]),
+      likes: countString(stats?["like"])
+    )
   }
 
   /// 长片（≥10 分钟）优先 progressive mp4，避免双轨合成卡死。
@@ -643,6 +710,28 @@ public struct BilibiliPlaybackRefresher: Sendable {
     guard let value = raw as? String else { return nil }
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? nil : trimmed
+  }
+
+  private func nonEmptyString(_ raw: Any?) -> String? {
+    guard let value = raw as? String else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? nil : trimmed
+  }
+
+  private func allowedCoverURL(_ raw: String?) -> URL? {
+    guard let raw, let url = URL(string: raw),
+          url.scheme?.lowercased() == "https",
+          url.user == nil, url.password == nil,
+          url.port == nil || url.port == 443,
+          let host = url.host?.lowercased(),
+          host == "hdslb.com" || host.hasSuffix(".hdslb.com")
+    else { return nil }
+    return url
+  }
+
+  private func countString(_ raw: Any?) -> String? {
+    guard let value = int64(raw), value >= 0 else { return nil }
+    return String(value)
   }
 
   private func int64(_ raw: Any?) -> Int64? {

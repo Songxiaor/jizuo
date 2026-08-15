@@ -22,6 +22,7 @@ describe("capture platform recognition", () => {
     ["https://b23.tv/AbCdEf", "bilibili"],
     ["https://www.xiaohongshu.com/explore/6512a1b2c3d4e5f6a7b8c9d0", "xiaohongshu"],
     ["https://xhslink.com/AbCdEf", "xiaohongshu"],
+    ["https://xhslink.cn/o/5SGH7HyxwIk", "xiaohongshu"],
     ["https://example.com/article", "generic"],
     ["not a URL", "generic"],
   ] as const)("recognizes %s as %s", (url, platform) => {

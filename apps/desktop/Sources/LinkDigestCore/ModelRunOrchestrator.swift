@@ -72,6 +72,23 @@ public enum RunState: Sendable, Equatable {
     }
   }
 
+  public var intent: RunIntentKind? {
+    switch self {
+    case let .starting(intent),
+         let .thinking(intent),
+         let .streaming(intent, _),
+         let .stopping(intent, _),
+         let .stopped(intent, _),
+         let .completed(intent, _),
+         let .incomplete(intent, _, _):
+      intent
+    case let .failed(intent, _), let .storageError(intent, _, _):
+      intent
+    case .idle:
+      nil
+    }
+  }
+
   public var outputText: String {
     switch self {
     case let .streaming(_, partialText),

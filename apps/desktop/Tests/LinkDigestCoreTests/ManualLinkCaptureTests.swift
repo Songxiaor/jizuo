@@ -82,6 +82,27 @@ final class ManualLinkCaptureTests: XCTestCase {
     XCTAssertEqual(page.text, "Hello 你好 & welcome to the article text.")
   }
 
+  func testExtractorSkipsRoleMainTitleShellAndKeepsSubstackArticle() throws {
+    let html = """
+    <html><head><meta property="og:title" content="How an obscure decision on a preliminary matter could make a huge difference" /></head>
+    <body>
+    <div aria-label="Post" role="main" class="single-post-container"><div class="container">
+    <article class="typography newsletter-post">
+      <h1>How an obscure decision on a preliminary matter could make a huge difference</h1>
+      <div class="available-content"><div class="body markup">
+        <p>TL:DR Last week’s Upper Tribunal decision contains bombshells for social media companies.</p>
+        <p>The second paragraph is here so a title-only capture cannot pass as the article body.</p>
+      </div></div>
+    </article>
+    </div></div>
+    </body></html>
+    """
+    let page = try MinimalHTMLExtractor().extract(html: html)
+    XCTAssertEqual(page.title, "How an obscure decision on a preliminary matter could make a huge difference")
+    XCTAssertTrue(page.text.contains("TL:DR Last week"), page.text)
+    XCTAssertTrue(page.text.contains("title-only capture cannot pass"), page.text)
+  }
+
   func testExtractorFallsBackMainThenBodyAndRejectsLoginShell() throws {
     XCTAssertEqual(try MinimalHTMLExtractor().extract(html: "<main>Enough words are placed in this main area for extraction.</main>").text, "Enough words are placed in this main area for extraction.")
     XCTAssertEqual(try MinimalHTMLExtractor().extract(html: "<body>Enough words are placed in this body area for extraction.</body>").text, "Enough words are placed in this body area for extraction.")

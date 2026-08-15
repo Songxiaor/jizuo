@@ -184,8 +184,21 @@ final class ProviderSettingsViewModel: ObservableObject {
     get { targetLanguage }
     set { targetLanguage = newValue }
   }
+  /// 详情页徽标等「当前生效模型」的只读展示源。`modelName` 是设置编辑器的
+  /// 草稿字段：点开「添加模型」表单会被清空、关闭表单不恢复，切换总结指派
+  /// 也不会同步它，所以不能当真相源。真正决定下次总结用哪个模型的是模型库
+  /// 里被指派为总结的 profile（运行取凭据走的同一条链），这里直接从它读；
+  /// 没有模型库（旧单槽配置）时再回落到草稿字段。
+  var activeSummaryModelName: String {
+    let assigned = libraryProfiles
+      .first(where: { $0.id == summaryAssignmentID })?
+      .model
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    if let assigned, !assigned.isEmpty { return assigned }
+    return modelName.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
   var effectiveTranslationModelName: String {
-    usesSeparateTranslationModel ? translationModelName : modelName
+    usesSeparateTranslationModel ? translationModelName : activeSummaryModelName
   }
   /// Online transcription requires both an explicit per-capability assignment
   /// (the default stays local) and a transcription model name.

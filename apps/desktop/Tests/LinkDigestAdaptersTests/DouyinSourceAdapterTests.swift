@@ -46,6 +46,55 @@ final class DouyinSourceAdapterTests: XCTestCase {
       DouyinURL.canonicalVideoURL(from: URL(string: "https://www.douyin.com/jingxuan?modal_id=7635842095491632418")!)?.absoluteString,
       "https://www.douyin.com/video/7635842095491632418"
     )
+    XCTAssertEqual(
+      DouyinURL.awemeID(from: URL(string: "https://www.iesdouyin.com/share/note/7673819714897187302")!),
+      "7673819714897187302"
+    )
+    XCTAssertTrue(
+      DouyinURL.isNotePath(URL(string: "https://www.iesdouyin.com/share/note/7673819714897187302")!)
+    )
+    XCTAssertEqual(
+      DouyinURL.canonicalItemURL(from: URL(string: "https://www.iesdouyin.com/share/note/7673819714897187302")!)?.absoluteString,
+      "https://www.douyin.com/note/7673819714897187302"
+    )
+    XCTAssertFalse(
+      DouyinURL.isNotePath(URL(string: "https://www.douyin.com/video/7123456789012345678")!)
+    )
+    XCTAssertEqual(
+      DouyinURL.renderedCaptureURL(
+        from: URL(string: "https://www.douyin.com/note/7673819714897187302")!
+      ).absoluteString,
+      "https://www.douyin.com/note/7673819714897187302"
+    )
+    XCTAssertEqual(
+      DouyinURL.renderedCaptureURL(
+        from: URL(string: "https://www.iesdouyin.com/share/note/7673819714897187302/")!
+      ).absoluteString,
+      "https://www.douyin.com/note/7673819714897187302"
+    )
+    XCTAssertEqual(
+      DouyinURL.renderedCaptureURL(
+        from: URL(string: "https://v.douyin.com/Wd-57aiAoAU/")!
+      ).absoluteString,
+      "https://v.douyin.com/Wd-57aiAoAU/"
+    )
+  }
+
+  func testParsesGalleryImagesFromAnchoredStateSnippet() {
+    let pageURL = URL(string: "https://www.douyin.com/note/7673819714897187302")!
+    let snippet = #"""
+    {"recommendation":{"awemeId":"7000000000000000001",
+      "cover":{"url_list":["https://p3.douyinpic.com/aweme/100x100/cover.jpeg"]}},
+     "current":{"awemeId":"7673819714897187302",
+      "images":[
+        {"url_list":["https://p3.douyinpic.com/aweme/tplv-dy-aweme-images/one.jpeg?biz_tag=aweme_images"]},
+        {"url_list":["https://p3.douyinpic.com/aweme/100x100/avatar.jpeg"]}
+      ]}}
+    """#
+    let urls = DouyinPageParser.parseGalleryImageURLs(snippet, pageURL: pageURL)
+    XCTAssertEqual(urls.map(\.absoluteString), [
+      "https://p3.douyinpic.com/aweme/tplv-dy-aweme-images/one.jpeg?biz_tag=aweme_images",
+    ])
   }
 
   func testParsesVideoTagAndBuildsDocument() async throws {

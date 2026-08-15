@@ -51,7 +51,9 @@ public enum HistoryExportRenderer {
 
   public static func suggestedFilename(for projection: HistoryExportProjection, as format: HistoryExportFormat) -> String {
     let rawTitle = projection.snapshots.last?.title?.trimmingCharacters(in: .whitespacesAndNewlines)
-    let suffix = ".\(HistoryExportProjection.formatVersion).\(format.fileExtension)"
+    // 版本号只写在导出内容里（JSON 的 formatVersion 字段、md/txt 的「导出版本」行），
+    // 不进文件名：`<标题>.1.json` 会被误认成系统重名计数或重复文件。
+    let suffix = ".\(format.fileExtension)"
     let maximumBaseUTF8ByteCount = maximumSuggestedFilenameUTF8ByteCount - suffix.utf8.count
     let base = safeFilenameComponent(
       rawTitle?.isEmpty == false ? rawTitle! : "LinkDigest 历史",

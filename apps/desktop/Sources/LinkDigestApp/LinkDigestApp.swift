@@ -525,11 +525,15 @@ enum BrowserReceiverState: Sendable, Equatable {
       modelOverride: attemptModelOverride(for: token),
       translationConcurrency: attemptPreferences(for: token)?.effectiveTranslationConcurrency
     )
-    // Protect the real Task before createRun can block. This pending ownership
-    // must not publish `.starting`: that state remains commit-confirmed.
+    // Protect the real Task before createRun can block. First launch stays `.idle`
+    // until createRun confirms `.starting`; a retry after stop/incomplete clears
+    // the visible card immediately so old partial text does not look stuck.
     taskIDByRunID[request.runID] = request.taskID
     launchPendingRunID = request.runID
     activeRunTaskID = request.taskID
+    if !runState.isActive, !runState.outputText.isEmpty {
+      runState = .starting(intent: intent)
+    }
     releasePreparation(ifOwner: token)
     await modelRunOrchestrator.start(
       request: request,
@@ -753,6 +757,9 @@ enum BrowserReceiverState: Sendable, Equatable {
       activeRunTaskID = nil
     }
     taskIDByRunID.removeValue(forKey: runID)
+    if case .starting = runState, visibleRunID != runID {
+      runState = .idle
+    }
   }
 
   private func isTerminal(_ state: RunState) -> Bool {
@@ -954,6 +961,10 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       startupTranscriptionCleanupFailure = TranscriptionTempStoreError.unavailable.userMessage
     }
     let githubAdapter = GitHubRepositorySourceAdapter(resources: manualResourceFetcher, imageCache: imageCache)
+    let bilibiliAdapter = BilibiliSourceAdapter(
+      fetcher: manualResourceFetcher,
+      resources: manualResourceFetcher
+    )
     // 抖音与小红书未登录时拿不到正文：服务端返回登录墙 / 风控页，而通用路径会把
     // 那个外壳当正文静默入库。用户在设置里登录后，抓取带上 App 自有会话的 Cookie
     // （隔离 WebKit 分区，不是系统浏览器的），才真去取正文；没登录则给出明确出口。
@@ -1006,7 +1017,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
     let manualLink = ManualLinkViewModel(
       captureService: .init(
         fetcher: manualResourceFetcher,
-        sourceAdapters: [douyinAdapter, xiaohongshuAdapter, githubAdapter]
+        sourceAdapters: [douyinAdapter, xiaohongshuAdapter, bilibiliAdapter, githubAdapter]
       ),
       douyinCapture: douyinWebCaptureService,
       imageCache: imageCache,

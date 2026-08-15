@@ -66,6 +66,22 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
   /// 两者都是近白底；强调色（品牌橙 / 赭石 / 纯黑）才是一眼的区别。
   var swatchAccent: Color { tokens.accent }
 
+  /// 脑图这类独立生成产物（有自己整块底色的 SVG/位图）默认走深色还是浅色。
+  ///
+  /// 只决定「用户没显式选过风格时的默认值」，不覆盖任何已保存的选择。
+  /// 深色主题默认深色，三套浅色主题默认浅色；玻璃主题跟随系统当前明暗。
+  @MainActor static func currentPrefersDarkGeneratedArtwork(
+    defaults: UserDefaults = .standard
+  ) -> Bool {
+    let theme = AppearanceTheme(rawValue: defaults.string(forKey: storageKey) ?? "") ?? .glass
+    switch theme {
+    case .ink: return true
+    case .paper, .sepia, .mono: return false
+    case .glass:
+      return NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+    }
+  }
+
   /// SwiftUI 的 preferredColorScheme(nil) 在 macOS 上不会把已设置的外观
   /// 复位，因此统一用 NSApp.appearance 做全局切换：nil 即回到跟随系统。
   @MainActor static func applyApplicationAppearance(_ rawValue: String) {

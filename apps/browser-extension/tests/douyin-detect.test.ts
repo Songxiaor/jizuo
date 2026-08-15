@@ -27,6 +27,17 @@ describe("douyin multi-source id detection (StepAudio-aligned)", () => {
   it("resolves /video/{id} path", () => {
     const raw = "https://www.douyin.com/video/7123456789012345678";
     expect(detectDouyinAwemeIdFromURL(raw)?.awemeId).toBe("7123456789012345678");
+    expect(detectDouyinAwemeIdFromURL(raw)?.canonicalURL).toBe(
+      "https://www.douyin.com/video/7123456789012345678",
+    );
+  });
+
+  it("resolves /share/note/{id} as a note canonical", () => {
+    const raw = "https://www.iesdouyin.com/share/note/7673819714897187302";
+    expect(detectDouyinAwemeIdFromURL(raw)?.awemeId).toBe("7673819714897187302");
+    expect(detectDouyinAwemeIdFromURL(raw)?.canonicalURL).toBe(
+      "https://www.douyin.com/note/7673819714897187302",
+    );
   });
 
   it("does not treat bare feed shell as a single video", () => {

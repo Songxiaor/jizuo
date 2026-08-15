@@ -1776,7 +1776,7 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
       }
     }
     if (!awemeId) {
-      const pathMatch = url.pathname.match(/\/(?:video|note|share\/video)\/(\d{8,25})(?:\/|$)/u);
+      const pathMatch = url.pathname.match(/\/(?:video|note|share\/video|share\/note)\/(\d{8,25})(?:\/|$)/u);
       if (pathMatch?.[1]) awemeId = pathMatch[1];
     }
   } catch {
@@ -1958,7 +1958,7 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
   const identityDescendantSelector = [
     "[data-aweme-id]", "[data-aweme_id]", "[data-item-id]", "[data-item_id]",
     "[data-video-id]", "[data-video_id]", "[data-modal-id]", "[data-group-id]",
-    "a[href*='/video/']", "a[href*='/note/']", "a[href*='/share/video/']",
+    "a[href*='/video/']", "a[href*='/note/']", "a[href*='/share/video/']", "a[href*='/share/note/']",
     "a[href*='modal_id=']", "a[href*='aweme_id=']", "a[href*='item_id=']",
     "a[href*='video_id=']", "a[href*='group_id=']",
   ].join(",");
@@ -2227,7 +2227,12 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
     return undefined;
   })();
 
-  const canonicalURL = `https://www.douyin.com/video/${awemeId}`;
+  const canonicalKind: "video" | "note" = /\/(?:share\/)?note\//u.test(
+    (() => {
+      try { return new URL(href).pathname; } catch { return ""; }
+    })(),
+  ) ? "note" : "video";
+  let canonicalURL = `https://www.douyin.com/${canonicalKind}/${awemeId}`;
   const videoNodes = document.querySelectorAll("video");
   let mediaDescriptor: MediaDescriptor | undefined;
   // Keep this bound inside the injected function: browser.scripting serializes
@@ -2259,7 +2264,7 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
       const trimmed = raw.trim();
       if (/^\d{8,25}$/u.test(trimmed)) ids.add(trimmed);
       for (const pattern of [
-        /\/(?:video|note|share\/video)\/(\d{8,25})(?:\/|$|[?#])/gu,
+        /\/(?:video|note|share\/video|share\/note)\/(\d{8,25})(?:\/|$|[?#])/gu,
         /[?&#](?:modal_id|aweme_id|item_id|video_id|group_id)=(\d{8,25})(?:[&#]|$)/gu,
       ]) {
         let match: RegExpExecArray | null;
@@ -2628,6 +2633,11 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
     }
   } catch {
     // 图片是增量信息，读取失败不影响这条抓取的其余部分。
+  }
+
+  if (imageURLs.length > 0) {
+    canonicalURL = `https://www.douyin.com/note/${awemeId}`;
+    mediaDescriptor = undefined;
   }
 
   return {

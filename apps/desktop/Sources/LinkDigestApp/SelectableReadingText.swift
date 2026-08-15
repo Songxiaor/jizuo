@@ -76,8 +76,15 @@ enum ReadingTextComposer {
           inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary),
           spacingAfter: 20, lineSpacing: 8, headIndent: 18, firstLineIndent: 18
         ))
-      case .code:
-        // 代码卡由 SwiftUI 独立渲染；不应进入本合成器。
+      case let .callout(kind, text):
+        let label = MarkdownPresentation.calloutLabel(kind)
+        let body = text.isEmpty ? label : "\(label)  \(text)"
+        result.append(paragraph(
+          inline(body, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary),
+          spacingAfter: 20, lineSpacing: 8, headIndent: 18, firstLineIndent: 18
+        ))
+      case .code, .table:
+        // 代码卡和表格由 SwiftUI 独立渲染；不应进入本合成器。
         continue
       }
     }
@@ -187,6 +194,8 @@ struct SelectableReadingTextView: NSViewRepresentable {
   let accent: NSColor
   let onOpenLink: (URL) -> Void
   var revealText: String? = nil
+  /// 单击且没有拖出选区时进入编辑。总结、网页原文不传。
+  var onRequestEdit: ((String?) -> Void)? = nil
 
   func makeCoordinator() -> Coordinator { Coordinator(onOpenLink: onOpenLink) }
 
@@ -206,12 +215,14 @@ struct SelectableReadingTextView: NSViewRepresentable {
       .cursor: NSCursor.pointingHand,
     ]
     view.textStorage?.setAttributedString(attributed)
+    view.onRequestEdit = onRequestEdit
     context.coordinator.lastApplied = attributed
     return view
   }
 
   func updateNSView(_ view: SelfSizingTextView, context: Context) {
     context.coordinator.onOpenLink = onOpenLink
+    view.onRequestEdit = onRequestEdit
     // 渲染缓存命中时传进来的是同一个实例，`===` 直接短路；实例不同再退回
     // 深比较（整篇逐属性比较，长文并不便宜），确实变了才重设存储——
     // setAttributedString 会引发整篇重排版，是这里最贵的一步。
@@ -244,6 +255,7 @@ struct SelectableReadingTextView: NSViewRepresentable {
 
     func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
       // 链接不直接放行系统打开；交回 SwiftUI 层走 PublicWebURLPolicy 校验。
+      if let view = textView as? SelfSizingTextView { view.didHandleLink = true }
       if let url = link as? URL { onOpenLink(url); return true }
       if let raw = link as? String, let url = URL(string: raw) { onOpenLink(url); return true }
       return false
@@ -251,6 +263,11 @@ struct SelectableReadingTextView: NSViewRepresentable {
   }
 
   final class SelfSizingTextView: NSTextView {
+    var onRequestEdit: ((String?) -> Void)?
+    /// 这次 mouseUp 已经点过链接，不再当成「点文字开写」。
+    var didHandleLink = false
+    private var mouseDownPoint: NSPoint?
+
     /// 右键「添加到摘录」：把选中文字送进当前条目的学习批注。
     /// handler 由详情视图按当前任务设置；无选择或无 handler 时不加菜单项。
     override func menu(for event: NSEvent) -> NSMenu? {
@@ -290,9 +307,31 @@ struct SelectableReadingTextView: NSViewRepresentable {
       ExcerptCaptureRouter.shared.handler?(selected)
     }
 
-    /// 光标框选松手即自动复制：省掉右键→复制一步，并弹「已复制」药丸。
+    /// NSTextView 的 mouseDown 会自己把鼠标跟踪到松开，子类的 mouseUp 常常根本收不到。
+    /// 可写正文必须在 mouseDown 里进编辑，并且不要再交给 super 去框选。
+    override func mouseDown(with event: NSEvent) {
+      if let onRequestEdit,
+         event.clickCount == 1,
+         event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
+        let point = convert(event.locationInWindow, from: nil)
+        let index = characterIndexForInsertion(at: point)
+        onRequestEdit(ReadingEditLocator.displayedSnippet(in: string, utf16Index: index))
+        return
+      }
+      mouseDownPoint = convert(event.locationInWindow, from: nil)
+      super.mouseDown(with: event)
+    }
+
+    /// 只读页：拖选出字后松手复制。可写正文的单击不会走到这里。
     override func mouseUp(with event: NSEvent) {
       super.mouseUp(with: event)
+      if didHandleLink {
+        didHandleLink = false
+        mouseDownPoint = nil
+        return
+      }
+      defer { mouseDownPoint = nil }
+      guard onRequestEdit == nil else { return }
       let range = selectedRange()
       guard range.length > 0,
             let selected = textStorage?.attributedSubstring(from: range).string,
@@ -317,6 +356,33 @@ struct SelectableReadingTextView: NSViewRepresentable {
       // 宽度变化后重排，高度重新上报，避免留白或截断。
       invalidateIntrinsicContentSize()
     }
+  }
+}
+
+/// 阅读区点到的可见文字，对回 Markdown 源码里的光标位置。
+enum ReadingEditLocator {
+  /// 取点击处前后一小段，用来在源码里定位。太短会误命中。
+  static func displayedSnippet(in text: String, utf16Index: Int, radius: Int = 12) -> String {
+    let ns = text as NSString
+    guard ns.length > 0 else { return "" }
+    let index = min(max(0, utf16Index), ns.length)
+    let start = max(0, index - radius)
+    let end = min(ns.length, index + radius)
+    return ns.substring(with: NSRange(location: start, length: end - start))
+  }
+
+  /// 对不上就落在开头：乱跳到无关段落比停在文首更糟。
+  static func caretUTF16Offset(in source: String, displayedSnippet: String?) -> Int {
+    let snippet = displayedSnippet?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard snippet.count >= 2 else { return 0 }
+    if let range = source.range(of: snippet) {
+      return NSRange(range, in: source).location
+    }
+    let needle = String(snippet.prefix(16))
+    if needle.count >= 4, let range = source.range(of: needle) {
+      return NSRange(range, in: source).location
+    }
+    return 0
   }
 }
 

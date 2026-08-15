@@ -246,14 +246,34 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
 
   public func extract(html: String) throws -> ExtractedWebPage {
     let title = extractTitle(from: html)
-    let selected = firstMatch("id\\s*=\\s*[\"']js_content[\"'][^>]*>([\\s\\S]*?)</div>", in: html)
-      ?? firstMatch("id\\s*=\\s*[\"']js_article[\"'][^>]*>([\\s\\S]*?)</div>", in: html)
-      ?? firstMatch("itemprop\\s*=\\s*[\"']articleBody[\"'][^>]*>([\\s\\S]*?)</[^>]+>", in: html)
-      ?? firstMatch("role\\s*=\\s*[\"']main[\"'][^>]*>([\\s\\S]*?)</[^>]+>", in: html)
-      ?? firstMatch("<article\\b[^>]*>([\\s\\S]*?)</article>", in: html)
-      ?? firstMatch("<main\\b[^>]*>([\\s\\S]*?)</main>", in: html)
-      ?? firstMatch("<body\\b[^>]*>([\\s\\S]*?)</body>", in: html)
-      ?? html
+    // Balanced `<article>` / `<main>` must beat `role="main"` and
+    // `itemprop=articleBody`: those two patterns stop at the first closer,
+    // so a Substack-style wrapper (`<div role="main"><div>…<article>`)
+    // previously kept only the title.
+    let fragments = [
+      firstMatch("id\\s*=\\s*[\"']js_content[\"'][^>]*>([\\s\\S]*?)</div>", in: html),
+      firstMatch("id\\s*=\\s*[\"']js_article[\"'][^>]*>([\\s\\S]*?)</div>", in: html),
+      firstMatch("<article\\b[^>]*>([\\s\\S]*?)</article>", in: html),
+      firstMatch("<main\\b[^>]*>([\\s\\S]*?)</main>", in: html),
+      firstMatch("itemprop\\s*=\\s*[\"']articleBody[\"'][^>]*>([\\s\\S]*?)</[^>]+>", in: html),
+      firstMatch("role\\s*=\\s*[\"']main[\"'][^>]*>([\\s\\S]*?)</[^>]+>", in: html),
+      firstMatch("<body\\b[^>]*>([\\s\\S]*?)</body>", in: html),
+      html,
+    ]
+    var lastContentError: ManualLinkError?
+    for fragment in fragments.compactMap({ $0 }) {
+      do {
+        let text = try renderedText(from: fragment)
+        if isTitleOnly(text, title: title) { continue }
+        return .init(title: title, text: text)
+      } catch let error as ManualLinkError where error == .emptyContent || error == .loginRequired {
+        lastContentError = error
+      }
+    }
+    throw lastContentError ?? ManualLinkError.emptyContent
+  }
+
+  private func renderedText(from selected: String) throws -> String {
     var cleaned = selected
     for tag in ["script", "style", "noscript", "template", "nav", "footer", "header", "aside", "form", "iframe", "svg", "button"] {
       cleaned = replacing("<\(tag)\\b[^>]*>[\\s\\S]*?</\(tag)>", in: cleaned, with: " ")
@@ -269,7 +289,25 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     if lower.contains("enable javascript") || lower.contains("sign in to continue") || lower.contains("登录后") || lower.contains("请登录") {
       throw ManualLinkError.loginRequired
     }
-    return .init(title: title, text: result)
+    return result
+  }
+
+  /// `role="main"` first-closer matches often equal the og:title. Keep looking.
+  private func isTitleOnly(_ text: String, title: String?) -> Bool {
+    guard let title else { return false }
+    let collapsedText = collapsedPlainText(text)
+    let collapsedTitle = collapsedPlainText(title)
+    guard !collapsedTitle.isEmpty else { return false }
+    if collapsedText == collapsedTitle { return true }
+    return collapsedText.hasPrefix(collapsedTitle)
+      && collapsedText.unicodeScalars.count < collapsedTitle.unicodeScalars.count + 40
+  }
+
+  private func collapsedPlainText(_ value: String) -> String {
+    value
+      .replacingOccurrences(of: "#", with: "")
+      .replacingOccurrences(of: "[\\s\\u00A0]+", with: " ", options: .regularExpression)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   /// Prefer Open Graph / Twitter title, then `<title>`, then first `h1`.

@@ -22,7 +22,7 @@ public enum DouyinCaptureWait {
     case ready(DouyinRenderedPage)
   }
 
-  /// 轮询到出现可播放视频地址为止。
+  /// 轮询到出现可播放视频地址或图集为止。
   ///
   /// 返回 `nil` 表示外部已取消（含截止时间到达），由调用方决定如何收尾。
   /// 元数据先到不构成完成条件。
@@ -60,6 +60,7 @@ public struct DouyinRenderedPage: Sendable, Equatable {
   public let videoURL: URL?
   public let coverURL: URL?
   public let durationSeconds: Double?
+  public let imageURLs: [URL]
 
   public init(
     awemeID: String,
@@ -70,7 +71,8 @@ public struct DouyinRenderedPage: Sendable, Equatable {
     publishedAt: String? = nil,
     videoURL: URL? = nil,
     coverURL: URL? = nil,
-    durationSeconds: Double? = nil
+    durationSeconds: Double? = nil,
+    imageURLs: [URL] = []
   ) {
     self.awemeID = awemeID
     self.canonicalURL = canonicalURL
@@ -81,6 +83,7 @@ public struct DouyinRenderedPage: Sendable, Equatable {
     self.videoURL = videoURL
     self.coverURL = coverURL
     self.durationSeconds = durationSeconds
+    self.imageURLs = imageURLs
   }
 }
 
@@ -104,12 +107,45 @@ public enum DouyinWebCapturePolicy {
     case waitForPlayableMedia
   }
 
-  /// 标题、作者等元数据先出现并不代表视频已经可用。抖音播放器会在稍后才把
-  /// 当前作品的签名 HTTPS 地址写入 video/state；在此之前不能把抓取判成成功。
+  public static let maximumGalleryImages = 35
+
+  /// 登录 WebView 会经过这些域完成扫码 / SSO，再回到 douyin.com。
+  /// 抓取主框必须放行，否则已登录会话会被写成「请用扩展」。
+  /// 不放进 `isDouyinHost`：用户提交的起始地址仍然只能是抖音内容域。
+  public static func isSessionNavigationURL(_ url: URL) -> Bool {
+    guard url.scheme?.lowercased() == "https",
+          let host = normalizedHost(url.host),
+          url.user == nil,
+          url.password == nil,
+          url.port == nil || url.port == 443
+    else { return false }
+    return host == "snssdk.com" || host.hasSuffix(".snssdk.com")
+      || host == "bytedance.com" || host.hasSuffix(".bytedance.com")
+  }
+
+  /// Accept a single gallery URL, or `nil` when it is not a Douyin note image.
+  public static func galleryImageURL(from raw: String) -> URL? {
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed.unicodeScalars.count <= 8_192 else { return nil }
+    guard let url = URL(string: trimmed),
+          url.scheme?.lowercased() == "https",
+          url.user == nil,
+          url.password == nil,
+          isDouyinPicHost(url.host),
+          isGalleryImage(url)
+    else { return nil }
+    return url
+  }
+
+  /// 标题、作者等元数据先出现并不代表内容已经可用。视频要等签名地址，
+  /// 图文要等至少一张正片图；在此之前不能把抓取判成成功。
   public static func completionDecision(
     for page: DouyinRenderedPage
   ) -> CompletionDecision {
-    page.videoURL == nil ? .waitForPlayableMedia : .completeWithPlayableMedia
+    if page.videoURL != nil || !page.imageURLs.isEmpty {
+      return .completeWithPlayableMedia
+    }
+    return .waitForPlayableMedia
   }
 
   public static func isCandidate(_ url: URL) -> Bool {
@@ -128,10 +164,12 @@ public enum DouyinWebCapturePolicy {
   }
 
   public static func navigationDecision(url: URL?, isMainFrame: Bool) -> NavigationDecision {
-    guard let url, (try? validateNavigationURL(url)) != nil else {
+    guard let url else {
       return isMainFrame ? .failCapture : .blockSilently
     }
-    return .allow
+    if (try? validateNavigationURL(url)) != nil { return .allow }
+    if isSessionNavigationURL(url) { return .allow }
+    return isMainFrame ? .failCapture : .blockSilently
   }
 
   public static func validateJavaScriptResult(_ value: Any) throws -> DouyinRenderedPage {
@@ -172,6 +210,7 @@ public enum DouyinWebCapturePolicy {
           canonicalURL.scheme?.lowercased() == "https",
           normalizedHost(canonicalURL.host).map(isDouyinHost) == true,
           canonicalURL.path == "/video/\(awemeID)"
+            || canonicalURL.path == "/note/\(awemeID)"
     else { throw ManualLinkError.invalidPageResult }
 
     let title = try requiredString("title", maximum: maximumTitleScalars)
@@ -183,6 +222,7 @@ public enum DouyinWebCapturePolicy {
     let publishedAt = try optionalString("publishedAt").flatMap(cleanPublishedAt)
     let videoURL = try optionalHTTPSURL("videoURL", in: dictionary)
     let coverURL = try optionalHTTPSURL("coverURL", in: dictionary)
+    let imageURLs = try validatedGalleryImageURLs(dictionary["imageURLs"])
 
     let durationSeconds: Double?
     if let raw = dictionary["durationSeconds"] {
@@ -207,8 +247,45 @@ public enum DouyinWebCapturePolicy {
       publishedAt: publishedAt,
       videoURL: videoURL,
       coverURL: coverURL,
-      durationSeconds: durationSeconds
+      durationSeconds: durationSeconds,
+      imageURLs: imageURLs
     )
+  }
+
+  private static func validatedGalleryImageURLs(_ raw: Any?) throws -> [URL] {
+    guard let raw else { return [] }
+    guard let values = raw as? [String] else {
+      throw ManualLinkError.invalidPageResult
+    }
+    guard values.count <= maximumGalleryImages else {
+      throw ManualLinkError.responseTooLarge
+    }
+    var urls: [URL] = []
+    for value in values {
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard trimmed.unicodeScalars.count <= 8_192 else {
+        throw ManualLinkError.responseTooLarge
+      }
+      guard let url = galleryImageURL(from: trimmed) else {
+        throw ManualLinkError.invalidPageResult
+      }
+      if !urls.contains(url) { urls.append(url) }
+    }
+    return urls
+  }
+
+  private static func isDouyinPicHost(_ raw: String?) -> Bool {
+    guard let host = normalizedHost(raw) else { return false }
+    return host == "douyinpic.com" || host.hasSuffix(".douyinpic.com")
+  }
+
+  /// 与扩展同一条规则：只收正片图，不要评论配图和头像。
+  private static func isGalleryImage(_ url: URL) -> Bool {
+    let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems
+    if items?.contains(where: { $0.name == "biz_tag" && $0.value == "aweme_images" }) == true {
+      return true
+    }
+    return url.path.contains("tplv-dy-aweme-images")
   }
 
   private static func optionalHTTPSURL(
