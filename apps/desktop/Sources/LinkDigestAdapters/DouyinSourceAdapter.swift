@@ -76,7 +76,7 @@ public final class DouyinSourceAdapter: SourceAdapting, @unchecked Sendable {
       throw ManualLinkError.extensionCaptureRequired
     }
 
-    let storedURL = DouyinURL.canonicalVideoURL(from: page.url)?.absoluteString
+    let storedURL = DouyinURL.canonicalItemURL(from: page.url)?.absoluteString
       ?? parsed.canonicalURL?.absoluteString
       ?? page.url.absoluteString
     return CapturedDocument(
@@ -132,7 +132,7 @@ public enum DouyinURL {
   /// (Feed overlay). Empty when the URL is only a bare host/feed shell.
   public static func awemeID(from url: URL) -> String? {
     let path = url.path
-    if let match = path.range(of: #"/(?:video|note|share/video)/(\d{8,25})(?:/|$)"#, options: .regularExpression) {
+    if let match = path.range(of: #"/(?:video|note|share/video|share/note)/(\d{8,25})(?:/|$)"#, options: .regularExpression) {
       let slice = path[match]
       if let digits = slice.range(of: #"\d{8,25}"#, options: .regularExpression) {
         return String(slice[digits])
@@ -148,9 +148,32 @@ public enum DouyinURL {
     return nil
   }
 
-  public static func canonicalVideoURL(from url: URL) -> URL? {
+  public static func isNotePath(_ url: URL) -> Bool {
+    let path = url.path.lowercased()
+    return path.contains("/share/note/") || path.contains("/note/")
+  }
+
+  /// WebKit 抓取入口。有 aweme id 时落到桌面 `/note/{id}` 或 `/video/{id}`，
+  /// 让设置里的抖音登录会话去水合正文；短链还没有 id，保持原地址跟着 302 走。
+  ///
+  /// 不要改写成 `iesdouyin.com/share/note`。那条移动分享页不带 App 登录态，
+  /// 公开 HTML 里也没有正片图；再配手机 UA，已登录 Cookie 还会被站点判失效。
+  public static func renderedCaptureURL(from url: URL) -> URL {
+    canonicalItemURL(from: url) ?? url
+  }
+
+  /// 落地路径是图文就收成 `/note/{id}`，否则收成 `/video/{id}`。
+  /// 识别靠路径，不靠分享文案里的「图文作品」——抽 URL 之后那段字就没了。
+  public static func canonicalItemURL(from url: URL) -> URL? {
     guard let id = awemeID(from: url) else { return nil }
+    if isNotePath(url) {
+      return URL(string: "https://www.douyin.com/note/\(id)")
+    }
     return URL(string: "https://www.douyin.com/video/\(id)")
+  }
+
+  public static func canonicalVideoURL(from url: URL) -> URL? {
+    canonicalItemURL(from: url)
   }
 }
 
@@ -219,6 +242,36 @@ public enum DouyinPageParser {
   static func parseStateSnippet(_ snippet: String, pageURL: URL) -> DouyinParsedPage? {
     guard snippet.unicodeScalars.count <= maximumStateSnippetScalars else { return nil }
     return extractFromJSONBlob(snippet, pageURL: pageURL)
+  }
+
+  /// Collect note gallery URLs from the same bounded aweme window.
+  /// Skips avatars and comment images; only `aweme_images` / `tplv-dy-aweme-images`.
+  public static func parseGalleryImageURLs(_ snippet: String, pageURL: URL) -> [URL] {
+    guard snippet.unicodeScalars.count <= maximumStateSnippetScalars else { return [] }
+    let normalized = snippet
+      .replacingOccurrences(of: "\\u002F", with: "/")
+      .replacingOccurrences(of: "\\/", with: "/")
+    let scoped = DouyinURL.awemeID(from: pageURL)
+      .flatMap { windowAround(id: $0, in: normalized, radius: 20_000) }
+      ?? normalized
+    guard let expression = try? NSRegularExpression(
+      pattern: #"https://[^"\\\s<>]+douyinpic\.com[^"\\\s<>]+"#,
+      options: [.caseInsensitive]
+    ) else { return [] }
+    let range = NSRange(scoped.startIndex..., in: scoped)
+    var urls: [URL] = []
+    for match in expression.matches(in: scoped, range: range) {
+      guard let capture = Range(match.range, in: scoped) else { continue }
+      var raw = String(scoped[capture])
+      while let last = raw.last, ["\\", "\"", ",", ")", "]"].contains(String(last)) {
+        raw.removeLast()
+      }
+      if let url = DouyinWebCapturePolicy.galleryImageURL(from: raw), !urls.contains(url) {
+        urls.append(url)
+      }
+      if urls.count >= DouyinWebCapturePolicy.maximumGalleryImages { break }
+    }
+    return urls
   }
 
   public static func documentText(title: String?, author: String?, description: String?) -> String {

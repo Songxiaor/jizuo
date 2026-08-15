@@ -115,7 +115,11 @@ final class SiteSessionController: ObservableObject {
 
   /// 业务请求用的 Cookie 头。绝不打印这个字符串。
   func cookieHeader() async -> String? {
-    let cookies = await siteCookies()
+    var cookies = await siteCookies()
+    if !profile.looksLoggedIn(Set(cookies.map(\.name))) {
+      await warmUpDataStore()
+      cookies = await siteCookies()
+    }
     guard profile.looksLoggedIn(Set(cookies.map(\.name))) else { return nil }
     let header = HTTPCookie.requestHeaderFields(with: cookies)["Cookie"]
     guard let header, !header.isEmpty else { return nil }

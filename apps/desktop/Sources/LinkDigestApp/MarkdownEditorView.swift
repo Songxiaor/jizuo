@@ -23,12 +23,17 @@ struct MarkdownEditorView: View {
   var onFollowWikiLink: ((String) -> Void)?
   /// 可以链接的笔记标题。为空则不启用 `[[` 补全。
   var linkableTitles: [String] = []
+  /// 从阅读区点进来时，尽量把光标落到对应位置。
+  var initialCaretUTF16: Int = 0
+  /// Escape 或编辑器失焦：外层存稿并回到阅读。
+  var onFinishEditing: (() -> Void)?
 
   var body: some View {
     MarkdownTextView(
       text: $text, font: font, palette: palette, lineSpacing: lineSpacing,
       contentHeight: contentHeight, onFollowWikiLink: onFollowWikiLink,
-      linkableTitles: linkableTitles
+      linkableTitles: linkableTitles, initialCaretUTF16: initialCaretUTF16,
+      onFinishEditing: onFinishEditing
     )
       // 提示画在编辑器之上而不是塞进 `text`：塞进去它就是一段真的内容，会被
       // 保存、被翻译、被搜到，用户还得先删掉它才能开始写。
@@ -53,6 +58,42 @@ struct MarkdownEditorView: View {
 /// 那是给富文本改字体属性用的，`isRichText = false` 时直接被丢掉。用户按了
 /// 没反应，只能自己敲星号。
 final class MarkdownNSTextView: NSTextView {
+  /// 只有笔记写 `[[` 时才走系统 complete。其它时候 F5 / 自动补全都吞掉。
+  var allowsWikiComplete = false
+
+  /// 当前光标处尚未闭合的 `[[…`。
+  ///
+  /// 不能只看 `allowsWikiComplete`：它表示「这篇笔记支持双链」，不是「当前正在
+  /// 写双链」。把两者混在一起，输入法或系统在普通正文里发来的 complete:
+  /// 仍会落到 NSTextView，随后拿本文后文当候选。
+  var pendingWikiCompletion: (range: NSRange, query: String)? {
+    guard allowsWikiComplete, selectedRange().length == 0 else { return nil }
+    let full = string
+    let caretUTF16 = selectedRange().location
+    guard let caret = Range(NSRange(location: caretUTF16, length: 0), in: full)?.lowerBound,
+          let pending = WikiLink.pendingLink(in: full, caret: caret) else { return nil }
+    return (NSRange(pending.openingIndex..<caret, in: full), pending.query)
+  }
+
+  override var isAutomaticTextCompletionEnabled: Bool {
+    get { false }
+    set { }
+  }
+
+  override var inlinePredictionType: NSTextInputTraitType {
+    get { .no }
+    set { }
+  }
+
+  override var rangeForUserCompletion: NSRange {
+    pendingWikiCompletion?.range ?? NSRange(location: NSNotFound, length: 0)
+  }
+
+  override func complete(_ sender: Any?) {
+    guard pendingWikiCompletion != nil else { return }
+    super.complete(sender)
+  }
+
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
     guard event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
           let key = event.charactersIgnoringModifiers?.lowercased() else {
@@ -114,6 +155,8 @@ private struct MarkdownTextView: NSViewRepresentable {
   var contentHeight: Binding<CGFloat>?
   var onFollowWikiLink: ((String) -> Void)?
   var linkableTitles: [String] = []
+  var initialCaretUTF16: Int = 0
+  var onFinishEditing: (() -> Void)?
 
   static let contentInset = NSSize(width: 18, height: 16)
 
@@ -145,6 +188,15 @@ private struct MarkdownTextView: NSViewRepresentable {
     // 让写出来的东西和存下去的不一致。
     textView.isAutomaticTextReplacementEnabled = false
     textView.isAutomaticSpellingCorrectionEnabled = false
+    // 系统会用本文后文做补全：打两三个字母就把后面整句填进来，
+    // 人还没选。双链补全走自己的 complete(_:)，不要这条自动通道。
+    textView.isAutomaticTextCompletionEnabled = false
+    textView.isContinuousSpellCheckingEnabled = false
+    textView.isGrammarCheckingEnabled = false
+    textView.enabledTextCheckingTypes = 0
+    if #available(macOS 15.0, *) {
+      textView.writingToolsBehavior = .none
+    }
     textView.drawsBackground = false
     textView.textContainerInset = Self.contentInset
     textView.string = text
@@ -155,12 +207,19 @@ private struct MarkdownTextView: NSViewRepresentable {
     context.coordinator.contentHeight = contentHeight
     context.coordinator.onFollowWikiLink = onFollowWikiLink
     context.coordinator.linkableTitles = linkableTitles
+    context.coordinator.onFinishEditing = onFinishEditing
+    textView.allowsWikiComplete = !linkableTitles.isEmpty
     context.coordinator.applyHighlightIfNeeded(to: textView, font: font, palette: palette, lineSpacing: lineSpacing)
+    context.coordinator.applyInitialCaretIfNeeded(to: textView, offset: initialCaretUTF16)
+    context.coordinator.focusIfNeeded(textView)
     return scroll
   }
 
   func updateNSView(_ scroll: NSScrollView, context: Context) {
-    guard let textView = scroll.documentView as? NSTextView else { return }
+    guard let textView = scroll.documentView as? MarkdownNSTextView else { return }
+    textView.allowsWikiComplete = !linkableTitles.isEmpty
+    // 拼音还在组字：不能改 string，也不能着色，否则输入法会把后文当候选填进来。
+    if textView.hasMarkedText() { return }
     // 只有外部真的换了内容才覆盖，否则会打断正在输入的光标与输入法。
     if textView.string != text {
       let selected = textView.selectedRange()
@@ -171,6 +230,7 @@ private struct MarkdownTextView: NSViewRepresentable {
     context.coordinator.contentHeight = contentHeight
     context.coordinator.onFollowWikiLink = onFollowWikiLink
     context.coordinator.linkableTitles = linkableTitles
+    context.coordinator.onFinishEditing = onFinishEditing
     // 详情页任何无关状态变化（转写进度、图标加载……）都会走到这里。
     // 着色带指纹判断，没变化就跳过；但高度仍要每次回报——窗口宽度变化
     // 引起的重排不改文字也不改字体，只有排版高度变了。
@@ -190,8 +250,32 @@ private struct MarkdownTextView: NSViewRepresentable {
     var contentHeight: Binding<CGFloat>?
     var onFollowWikiLink: ((String) -> Void)?
     var linkableTitles: [String] = []
+    var onFinishEditing: (() -> Void)?
+    private var didApplyInitialCaret = false
+    private var didRequestFocus = false
+    private var hasBegunEditing = false
+    private var didFinish = false
 
     init(text: Binding<String>) { self.text = text }
+
+    func applyInitialCaretIfNeeded(to textView: NSTextView, offset: Int) {
+      guard !didApplyInitialCaret else { return }
+      didApplyInitialCaret = true
+      let length = (textView.string as NSString).length
+      let location = min(max(0, offset), length)
+      textView.setSelectedRange(NSRange(location: location, length: 0))
+      textView.scrollRangeToVisible(NSRange(location: location, length: 0))
+    }
+
+    func focusIfNeeded(_ textView: NSTextView) {
+      guard !didRequestFocus else { return }
+      didRequestFocus = true
+      // 晚一点再抢焦点：打开编辑器的那次点击还没走完，立刻成为第一响应者
+      // 会被同一记 mouseUp 当成点在外面，马上再失焦。
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        textView.window?.makeFirstResponder(textView)
+      }
+    }
 
     // MARK: - `[[` 补全
     //
@@ -211,6 +295,7 @@ private struct MarkdownTextView: NSViewRepresentable {
       forPartialWordRange charRange: NSRange,
       indexOfSelectedItem index: UnsafeMutablePointer<Int>?
     ) -> [String] {
+      // 必须自己返回空数组：不实现或落到 super，系统会拿本文后文当补全。
       guard !linkableTitles.isEmpty,
             let pending = pendingLink(in: textView) else { return [] }
       completionRange = pending.range
@@ -243,6 +328,9 @@ private struct MarkdownTextView: NSViewRepresentable {
 
     /// 光标处那个还没写完的 `[[…`，换算成 NSRange。
     private func pendingLink(in textView: NSTextView) -> (range: NSRange, query: String)? {
+      if let markdownTextView = textView as? MarkdownNSTextView {
+        return markdownTextView.pendingWikiCompletion
+      }
       let full = textView.string
       let caretUTF16 = textView.selectedRange().location
       guard let caret = Range(NSRange(location: caretUTF16, length: 0), in: full)?.lowerBound,
@@ -264,6 +352,8 @@ private struct MarkdownTextView: NSViewRepresentable {
 
     func textDidChange(_ notification: Notification) {
       guard !isApplyingHighlight, let textView = notification.object as? NSTextView else { return }
+      // 组字中的拼音不是正文。写进绑定会让 SwiftUI 回写，输入法就会乱填。
+      guard !textView.hasMarkedText() else { return }
       textVersion += 1
       text.wrappedValue = textView.string
       reportHeight(of: textView)
@@ -274,6 +364,17 @@ private struct MarkdownTextView: NSViewRepresentable {
       }
     }
 
+    func textDidBeginEditing(_ notification: Notification) {
+      hasBegunEditing = true
+    }
+
+    func textDidEndEditing(_ notification: Notification) {
+      // 创建期或还没真正获得焦点时，SwiftUI 重绘会误发 end。
+      guard hasBegunEditing, !didFinish else { return }
+      didFinish = true
+      onFinishEditing?()
+    }
+
     func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
       switch selector {
       case #selector(NSResponder.insertNewline(_:)):
@@ -282,6 +383,11 @@ private struct MarkdownTextView: NSViewRepresentable {
         return shiftListItem(in: textView, by: Self.indentUnit)
       case #selector(NSResponder.insertBacktab(_:)):
         return shiftListItem(in: textView, by: nil)
+      case #selector(NSResponder.cancelOperation(_:)):
+        guard !didFinish else { return true }
+        didFinish = true
+        onFinishEditing?()
+        return true
       default:
         return false
       }
@@ -428,6 +534,7 @@ private struct MarkdownTextView: NSViewRepresentable {
         appearanceName: NSApp.effectiveAppearance.name,
         paletteKey: palette.fingerprint
       )
+      if textView.hasMarkedText() { return false }
       guard fingerprint != lastHighlightFingerprint else { return false }
       lastHighlightFingerprint = fingerprint
 

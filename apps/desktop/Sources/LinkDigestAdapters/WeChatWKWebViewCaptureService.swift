@@ -81,6 +81,16 @@ final class WeChatWKWebViewCaptureSession: NSObject, WKNavigationDelegate, WKUID
     // `textContent` ignores rendering, which is what a scraper wants.
     // Paragraph structure is recovered from the block elements below.
     const imageURL = (image) => String(image.getAttribute('data-src') || image.getAttribute('src') || '').trim();
+    // 章节编号上的装饰 GIF 挂在 aria-hidden 容器里，和数字叠在同一格。
+    // 写进正文会变成一张张小图，再被阅读器并成图集。
+    const isDecorativeImage = (image, root) => {
+      let node = image;
+      while (node && node !== root) {
+        if (node.getAttribute && node.getAttribute('aria-hidden') === 'true') return true;
+        node = node.parentElement;
+      }
+      return false;
+    };
     // A TreeWalker preserves the page's DOM order. Text nodes and image markers
     // are emitted in-place rather than bolting a gallery onto the article end.
     // WeChat code-snippet renders one <code> per line; joining them restores
@@ -118,6 +128,7 @@ final class WeChatWKWebViewCaptureSession: NSObject, WKNavigationDelegate, WKUID
         } else if (current.tagName === 'UL' && /code-snippet__line-index/.test(String(current.className || ''))) {
           skipRoot = current; // WeChat code line numbers are chrome, not content.
         } else if (current.tagName === 'IMG') {
+          if (isDecorativeImage(current, node)) continue;
           const url = imageURL(current);
           if (url) parts.push('\n\n![](' + url + ')\n\n');
         } else if (blockNames.has(current.tagName)) {
@@ -129,6 +140,7 @@ final class WeChatWKWebViewCaptureSession: NSObject, WKNavigationDelegate, WKUID
     const images = [];
     const seenImages = new Set();
     if (content) for (const image of content.querySelectorAll('img')) {
+      if (isDecorativeImage(image, content)) continue;
       const url = imageURL(image);
       if (url && !seenImages.has(url)) { seenImages.add(url); images.push(url); }
     }

@@ -771,6 +771,9 @@ final class HistoryViewModel: ObservableObject {
         onlineTranscriptionPhase = nil
         onlineTranscriptionPreview = nil
       }
+      if case .cancelled = transcriptionState {
+        transcriptionText = ""
+      }
     }
   }
   @Published private(set) var transcriptionText = ""
@@ -2230,7 +2233,12 @@ final class HistoryViewModel: ObservableObject {
     }
     mindMapTaskID = taskID
     mindMapState = .running
-    let existingThemeID = mindMapRecord?.themeID ?? MindMapTheme.minimalLight.id
+    // 新生成的脑图默认跟随 App 主题（深色界面里大片浅色底很突兀）；
+    // 已保存过的记录保留原有风格，用户在卡片上的手动切换不受影响。
+    let existingThemeID = mindMapRecord?.themeID
+      ?? (AppearanceTheme.currentPrefersDarkGeneratedArtwork()
+        ? MindMapTheme.darkCode.id
+        : MindMapTheme.minimalLight.id)
     let createdAt = mindMapRecord?.createdAtMilliseconds ?? nowMilliseconds()
     Task { [weak self] in
       guard let self else { return }

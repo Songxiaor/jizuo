@@ -12,7 +12,10 @@ export function isXiaohongshuHost(rawURL: string): boolean {
     return (
       host === "xiaohongshu.com" ||
       host.endsWith(".xiaohongshu.com") ||
-      host === "xhslink.com"
+      host === "xhslink.com" ||
+      host.endsWith(".xhslink.com") ||
+      host === "xhslink.cn" ||
+      host.endsWith(".xhslink.cn")
     );
   } catch {
     return false;

@@ -115,10 +115,8 @@ public enum KnowledgeVaultRenderer {
 
   /// 同步专用文件名：`<YYYY-MM-DD>_<安全标题>.md`。
   ///
-  /// 刻意不复用 `HistoryExportRenderer.suggestedFilename`：那个把导出格式版本
-  /// 写进了文件名（`<标题>.<formatVersion>.md`）。版本一升，同一条内容会留下
-  /// 两个文件，而下游按 basename 去重，两个 basename 会各占一个结果位。
-  /// 版本信息属于 frontmatter，不属于文件名。
+  /// 不复用 `HistoryExportRenderer.suggestedFilename`：同步文件名需要日期前缀
+  /// 做稳定去重键，与一次性导出的命名职责不同。
   ///
   /// 日期前缀用本地时区：它是给人看的「我哪天存的」，UTC 会让晚上存的东西
   /// 显示成前一天。

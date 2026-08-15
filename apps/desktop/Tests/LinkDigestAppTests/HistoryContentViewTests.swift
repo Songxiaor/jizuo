@@ -424,6 +424,22 @@ final class HistoryContentViewTests: XCTestCase {
     // Plain text lives in the share menu, not as an inline checkbox over body.
     XCTAssertTrue(detail.contains("以纯文本查看正文"))
     XCTAssertTrue(detail.contains("showsInlinePlainTextToggle: false"))
+    XCTAssertTrue(detail.contains("onFollowWikiLink:"), "阅读区双链必须接到 followWikiLink，不能只在编辑器里可点")
+    // 转写 / 笔记默认排版，单击进编辑；空笔记仍一打开就写。
+    XCTAssertTrue(detail.contains("onRequestEdit:"))
+    XCTAssertTrue(detail.contains("beginSourceEditing"))
+    XCTAssertTrue(detail.contains("finishSourceEditing"))
+    XCTAssertTrue(detail.contains("if body.isEmpty"))
+    XCTAssertFalse(
+      detail.contains("\"编辑转写\""),
+      "进入编辑不应再依赖右上角「编辑转写」按钮"
+    )
+    XCTAssertTrue(
+      detail.contains("suppressSourceEditFinishUntil"),
+      "打开编辑器的那次点击不能立刻被当成失焦退出"
+    )
+    XCTAssertTrue(source.contains("SourceEditClickOutsideMonitor"))
+    XCTAssertTrue(detail.contains("sourceEditClickOutside.start()"))
   }
 
   func testDetailUsesCenteredReadingColumnAndShowsStandaloneEngagementStats() {
@@ -453,6 +469,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(strip.contains("like_num"))
     XCTAssertTrue(source.contains("(!isWeChatCapture && sourceFrontmatter.hasEngagementStats)"))
     XCTAssertTrue(source.contains("appendsUnusedLocalImages: !isWeChatCapture"))
+    XCTAssertTrue(source.contains("groupsConsecutiveImages: !isWeChatCapture"))
   }
 
   func testWeChatArticleBodyPrecedesTheGeneralMediaSection() {
@@ -509,7 +526,7 @@ final class HistoryContentViewTests: XCTestCase {
     // frontmatter that exists nowhere else in the UI.
     XCTAssertTrue(detail.contains("hasPresentableSourceBody"))
     XCTAssertTrue(detail.contains("defaultReadingPane"))
-    XCTAssertTrue(detail.contains("showsStreamingResultCard || hasResultBody || hasSourceBody"))
+    XCTAssertTrue(detail.contains("showsLiveRunInReadingPane || hasResultBody || hasSourceBody"))
     XCTAssertTrue(detail.contains("if !presentsArticleBeforeMedia, showsReadingSurface"))
   }
 
@@ -1063,7 +1080,7 @@ final class HistoryContentViewTests: XCTestCase {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
     XCTAssertTrue(detail.contains("openSettings: () -> Void"))
-    XCTAssertTrue(detail.contains("settingsModelButton(providerSettings.modelName)"))
+    XCTAssertTrue(detail.contains("settingsModelButton(providerSettings.activeSummaryModelName)"))
     XCTAssertTrue(detail.contains("history-open-model-settings") || detail.contains("openSettings()"))
     XCTAssertTrue(detail.contains("capture-truncated-notice"))
     XCTAssertTrue(detail.contains("appModel.canTranslate"))
@@ -1200,8 +1217,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("case translation"))
 
     // 两个格子各自按「自己那类产物存不存在」决定出现与否，而不是共享一个判据。
-    XCTAssertTrue(detail.contains("if summaryArtifact != nil { panes.append(.summary) }"))
-    XCTAssertTrue(detail.contains("if translationArtifact != nil { panes.append(.translation) }"))
+    XCTAssertTrue(detail.contains("if summaryArtifact != nil || liveRunReadingPane == .summary { panes.append(.summary) }"))
+    XCTAssertTrue(detail.contains("if translationArtifact != nil || liveRunReadingPane == .translation { panes.append(.translation) }"))
 
     // 取产物必须按运行类型取最新一份，只取全局最新就等于回到老毛病。
     XCTAssertTrue(detail.contains("artifact(ofKind: .summarize)"))
@@ -1255,6 +1272,20 @@ final class HistoryContentViewTests: XCTestCase {
       detail.contains("of: detail.task.id, initial: true"),
       "The first rendered item must also land on a non-empty pane"
     )
+  }
+
+  func testLiveModelRunReadsInTheSummaryOrTranslationPane() {
+    let source = historyContentViewSource()
+    let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct TitleHeightPreferenceKey")
+
+    XCTAssertFalse(detail.contains("生成预览"), "生成中的字不该再单独挂一块预览卡")
+    XCTAssertFalse(detail.contains("streamingResultCard"))
+    XCTAssertTrue(detail.contains("liveRunReadingBody"))
+    XCTAssertTrue(detail.contains("showsLiveRunInReadingPane, liveRunReadingPane == effectiveReadingPane"))
+    XCTAssertTrue(detail.contains("pendingRunPane = .summary"))
+    XCTAssertTrue(detail.contains("readingPane = .summary"))
+    XCTAssertTrue(detail.contains("pendingRunPane = .translation"))
+    XCTAssertTrue(detail.contains("model-run-output"))
   }
 
   /// 行宽只能有一个控制点。

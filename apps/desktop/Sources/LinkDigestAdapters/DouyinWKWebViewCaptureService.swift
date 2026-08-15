@@ -4,9 +4,8 @@ import WebKit
 
 /// Rendered fallback for a manually submitted Douyin URL.
 ///
-/// The ordinary adapter still gets first chance to use public HTML. When that
-/// HTML is only a client-rendered shell, this service loads the same URL in the
-/// App's isolated Douyin WebKit partition and reads only the current item.
+/// 公开 HTML 先走适配器。图文桌面页往往只是空 SPA，这里用设置里同一份
+/// 抖音登录分区去渲染当前作品，再只读这一条的标题、正文和正片图。
 @MainActor
 public final class DouyinWKWebViewCaptureService: DouyinWebCapturing {
   private let dataStore: WKWebsiteDataStore
@@ -41,9 +40,10 @@ public final class DouyinWKWebViewCaptureService: DouyinWebCapturing {
 
 @MainActor
 private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegate, WKUIDelegate {
-  // The playback controller gives refresh 25 seconds. Finish this inner
-  // capture first so it can report a precise no-playable-source result.
-  private static let timeout: Duration = .seconds(20)
+  // Video fallback stays under the playback-refresh budget. Note share
+  // pages need longer for the mobile SPA to hydrate gallery images.
+  private static let videoTimeout: Duration = .seconds(20)
+  private static let noteTimeout: Duration = .seconds(35)
   private static let pollInterval: Duration = .milliseconds(250)
 
   /// Installed before page scripts. It observes only responses already loaded
@@ -62,7 +62,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
           const value = url.searchParams.get(key);
           if (/^\d{8,25}$/.test(value || '')) return value;
         }
-        const match = url.pathname.match(/\/(?:video|note|share\/video)\/(\d{8,25})(?:\/|$)/);
+        const match = url.pathname.match(/\/(?:video|note|share\/video|share\/note)\/(\d{8,25})(?:\/|$)/);
         return match && match[1] ? match[1] : '';
       } catch (_) { return ''; }
     };
@@ -76,7 +76,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
         const lower = Math.max(0, hit - 119000);
         const upper = Math.min(value.length, hit + id.length + 119000);
         const snippet = value.slice(lower, upper);
-        if (/play_addr|playAddr|playApi|url_list|urlList/.test(snippet)) {
+        if (/play_addr|playAddr|playApi|url_list|urlList|aweme_images|image_post|tplv-dy-aweme-images/.test(snippet)) {
           window.__linkdigestCapturedAwemeState = snippet;
         }
       } catch (_) {}
@@ -136,11 +136,13 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
         if (/^\d{8,25}$/.test(value || '')) { awemeID = value; break; }
       }
       if (!awemeID) {
-        const match = url.pathname.match(/\/(?:video|note|share\/video)\/(\d{8,25})(?:\/|$)/);
+        const match = url.pathname.match(/\/(?:video|note|share\/video|share\/note)\/(\d{8,25})(?:\/|$)/);
         awemeID = match && match[1] ? match[1] : '';
       }
     } catch (_) {}
     if (!awemeID) return { status: 'loading' };
+    let pathLooksLikeNote = false;
+    try { pathLooksLikeNote = /\/(?:share\/)?note\//.test(new URL(href).pathname); } catch (_) {}
 
     const bodyText = normalize(document.body && document.body.innerText).slice(0, 20000);
     const titleNode = document.querySelector('h1');
@@ -156,7 +158,8 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
     );
 
     const verification = /请完成安全验证|滑动验证|异常访问|验证码|登录后继续/.test(bodyText);
-    if (!title || title === '抖音') {
+    const placeholderTitle = !title || title === '抖音';
+    if (placeholderTitle && !pathLooksLikeNote) {
       return { status: verification ? 'verification' : 'loading' };
     }
 
@@ -278,7 +281,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       const lower = Math.max(0, hit - 119000);
       const upper = Math.min(value.length, hit + awemeID.length + 119000);
       const snippet = value.slice(lower, upper);
-      return /play_addr|playAddr|playApi|url_list|urlList/.test(snippet) ? snippet : '';
+      return /play_addr|playAddr|playApi|url_list|urlList|aweme_images|image_post|tplv-dy-aweme-images/.test(snippet) ? snippet : '';
     };
     for (const candidate of [
       window.__linkdigestCapturedAwemeState,
@@ -298,18 +301,69 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       }
     }
 
+    const imageURLs = [];
+    const galleryURL = (raw) => {
+      const trimmed = String(raw || '').trim();
+      if (!trimmed || trimmed.length > 2048) return '';
+      try {
+        const parsed = new URL(trimmed, href);
+        if (parsed.protocol !== 'https:') return '';
+        const host = parsed.hostname.toLowerCase();
+        if (host !== 'douyinpic.com' && !host.endsWith('.douyinpic.com')) return '';
+        const isGalleryImage = parsed.searchParams.get('biz_tag') === 'aweme_images'
+          || /tplv-dy-aweme-images/.test(parsed.pathname);
+        return isGalleryImage ? parsed.href : '';
+      } catch (_) {
+        return '';
+      }
+    };
+    const maximumGallery = 35;
+    const add = (raw) => {
+      if (imageURLs.length >= maximumGallery) return;
+      const url = galleryURL(raw);
+      if (url && !imageURLs.includes(url)) imageURLs.push(url);
+    };
+    const nodes = document.querySelectorAll('img');
+    if (nodes.length <= 1000) {
+      for (const node of nodes) {
+        if (imageURLs.length >= maximumGallery) break;
+        add(node.getAttribute('src'));
+        add(node.getAttribute('data-src'));
+        add(node.getAttribute('data-original'));
+        add(node.currentSrc);
+        const srcset = node.getAttribute('srcset') || node.getAttribute('data-srcset');
+        if (srcset) add(srcset.split(',')[0] && srcset.split(',')[0].trim().split(/\s+/)[0]);
+      }
+    }
+    const styled = document.querySelectorAll('[style*="douyinpic.com"]');
+    if (styled.length <= 200) {
+      for (const node of styled) {
+        if (imageURLs.length >= maximumGallery) break;
+        const background = String(node.getAttribute('style') || '');
+        const match = background.match(/url\((['"]?)(https:[^'")]+)\1\)/);
+        if (match) add(match[2]);
+      }
+    }
+    if (placeholderTitle && imageURLs.length === 0) {
+      return { status: verification ? 'verification' : 'loading' };
+    }
+    const resolvedTitle = placeholderTitle ? (imageURLs.length > 0 ? '抖音图文' : title) : title;
+    const isImagePost = imageURLs.length > 0;
+    const canonicalKind = (pathLooksLikeNote || isImagePost) ? 'note' : 'video';
+
     return {
       status: 'ready',
       awemeID,
-      canonicalURL: `https://www.douyin.com/video/${awemeID}`,
-      title,
+      canonicalURL: `https://www.douyin.com/${canonicalKind}/${awemeID}`,
+      title: resolvedTitle,
       description,
       author,
       publishedAt,
-      videoURL,
+      videoURL: isImagePost ? '' : videoURL,
       coverURL,
-      stateSnippet,
-      ...(durationSeconds ? { durationSeconds } : {}),
+      imageURLs,
+      stateSnippet: isImagePost ? '' : stateSnippet,
+      ...(durationSeconds && !isImagePost ? { durationSeconds } : {}),
       videoElementCount: videos.length
     };
   })()
@@ -334,6 +388,8 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
     self.initialURL = initialURL
     self.now = now
     let configuration = WKWebViewConfiguration()
+    // 图文和视频共用设置里的抖音登录分区。隔离成 nonPersistent 等于把已登录
+    // 会话丢掉，桌面 `/note/` 只会剩下空 SPA，最后被误报成「请用扩展」。
     configuration.websiteDataStore = dataStore
     configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
     configuration.defaultWebpagePreferences.allowsContentJavaScript = true
@@ -364,18 +420,25 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       }
       self.continuation = continuation
       timeoutTask = Task { @MainActor [weak self] in
-        try? await Task.sleep(for: Self.timeout)
+        try? await Task.sleep(for: self?.captureTimeout ?? Self.noteTimeout)
         guard let self, !Task.isCancelled else { return }
         self.finishAtDeadline()
       }
       var request = URLRequest(
-        url: initialURL,
+        url: DouyinURL.renderedCaptureURL(from: initialURL),
         cachePolicy: .reloadIgnoringLocalCacheData,
         timeoutInterval: 30
       )
       request.httpShouldHandleCookies = true
       webView.load(request)
     }
+  }
+
+  private var captureTimeout: Duration {
+    if DouyinURL.awemeID(from: initialURL) != nil, !DouyinURL.isNotePath(initialURL) {
+      return Self.videoTimeout
+    }
+    return Self.noteTimeout
   }
 
   func cancel() {
@@ -422,6 +485,9 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
     guard let webView, let currentURL = webView.url else {
       throw ManualLinkError.invalidPageResult
     }
+    if DouyinWebCapturePolicy.isSessionNavigationURL(currentURL) {
+      return .notReady
+    }
     try DouyinWebCapturePolicy.validateNavigationURL(currentURL)
     guard let raw = try await webView.evaluateJavaScript(Self.extractionJavaScript),
           let dictionary = raw as? [String: Any],
@@ -434,23 +500,44 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
     guard status == "ready" else { return .notReady }
 
     var page = try DouyinWebCapturePolicy.validateJavaScriptResult(dictionary)
-    if page.videoURL == nil,
+    if page.imageURLs.isEmpty,
        let stateSnippet = dictionary["stateSnippet"] as? String,
-       let parsed = DouyinPageParser.parseStateSnippet(
-         stateSnippet,
-         pageURL: page.canonicalURL
-       ) {
-      page = DouyinRenderedPage(
-        awemeID: page.awemeID,
-        canonicalURL: page.canonicalURL,
-        title: page.title,
-        description: page.description,
-        author: page.author,
-        publishedAt: page.publishedAt,
-        videoURL: parsed.videoURL,
-        coverURL: page.coverURL ?? parsed.coverURL,
-        durationSeconds: page.durationSeconds ?? parsed.durationSeconds
+       !stateSnippet.isEmpty {
+      let gallery = DouyinPageParser.parseGalleryImageURLs(
+        stateSnippet,
+        pageURL: page.canonicalURL
       )
+      if !gallery.isEmpty {
+        page = DouyinRenderedPage(
+          awemeID: page.awemeID,
+          canonicalURL: page.canonicalURL,
+          title: page.title,
+          description: page.description,
+          author: page.author,
+          publishedAt: page.publishedAt,
+          videoURL: nil,
+          coverURL: page.coverURL,
+          durationSeconds: nil,
+          imageURLs: gallery
+        )
+      } else if page.videoURL == nil,
+                let parsed = DouyinPageParser.parseStateSnippet(
+                  stateSnippet,
+                  pageURL: page.canonicalURL
+                ) {
+        page = DouyinRenderedPage(
+          awemeID: page.awemeID,
+          canonicalURL: page.canonicalURL,
+          title: page.title,
+          description: page.description,
+          author: page.author,
+          publishedAt: page.publishedAt,
+          videoURL: parsed.videoURL,
+          coverURL: page.coverURL ?? parsed.coverURL,
+          durationSeconds: page.durationSeconds ?? parsed.durationSeconds,
+          imageURLs: page.imageURLs
+        )
+      }
     }
     latestReadyPage = page
     return .ready(page)
@@ -463,8 +550,12 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       return
     }
     do {
-      // Manual capture still keeps the useful title/author after the bounded
-      // wait. Playback refresh checks `media` and reports no playable source.
+      // 图文帖如果截止时还没有正片图，不要把「只有标题」的壳存进去。
+      // 视频帖仍保留标题作者，播放刷新会说明没有可播源。
+      if DouyinURL.isNotePath(page.canonicalURL), page.imageURLs.isEmpty {
+        finish(.failure(ManualLinkError.extensionCaptureRequired))
+        return
+      }
       finish(.success(try makeDocument(from: page)))
     } catch let error as ManualLinkError {
       finish(.failure(error))
@@ -480,17 +571,27 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
         .replacingOccurrences(of: "\"", with: "\\\"")
         .replacingOccurrences(of: "\n", with: " ") + "\""
     }
+    let isImagePost = !page.imageURLs.isEmpty
     var metadata = ["aweme_id: \(yaml(page.awemeID))"]
     if let author = page.author { metadata.insert("author: \(yaml(author))", at: 0) }
     if let published = page.publishedAt { metadata.append("published: \(yaml(published))") }
+    if isImagePost { metadata.append("content_kind: images") }
     var body = "# \(page.title)"
     if let description = page.description,
        description.caseInsensitiveCompare(page.title) != .orderedSame {
       body += "\n\n\(description)"
     }
+    if isImagePost {
+      let gallery = page.imageURLs
+        .map { "![](\($0.absoluteString))" }
+        .joined(separator: "\n\n")
+      if !gallery.isEmpty {
+        body += "\n\n\(gallery)"
+      }
+    }
     let text = "---\n\(metadata.joined(separator: "\n"))\n---\n\n\(body)"
     let timestamp = ISO8601DateFormatter().string(from: now())
-    let media = page.videoURL.map {
+    let media = (!isImagePost ? page.videoURL : nil).map {
       CaptureMedia(
         platform: "douyin",
         videoURL: $0.absoluteString,
@@ -510,7 +611,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       text: text,
       completeness: "best_effort",
       capturedAt: timestamp,
-      sourceLabel: "手动链接（抖音渲染页面）",
+      sourceLabel: isImagePost ? "手动链接（抖音图文）" : "手动链接（抖音渲染页面）",
       media: media
     )
     do {
@@ -587,7 +688,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       decisionHandler(.cancel)
     case .failCapture:
       decisionHandler(.cancel)
-      finish(.failure(ManualLinkError.webHostNotAllowed))
+      finish(.failure(ManualLinkError.extensionCaptureRequired))
     }
   }
 
@@ -606,7 +707,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       decisionHandler(.cancel)
     case .failCapture:
       decisionHandler(.cancel)
-      finish(.failure(ManualLinkError.webHostNotAllowed))
+      finish(.failure(ManualLinkError.extensionCaptureRequired))
     }
   }
 

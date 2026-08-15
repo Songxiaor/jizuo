@@ -96,7 +96,7 @@ export function detectDouyinAwemeIdFromURL(rawURL: string): DouyinDetectResult |
         candidates.push({ id: value, score: 110, source: `query:${key}` });
       }
     }
-    const pathMatch = url.pathname.match(/\/(?:video|note|share\/video)\/(\d{8,25})(?:\/|$)/u);
+    const pathMatch = url.pathname.match(/\/(?:share\/)?(?:video|note)\/(\d{8,25})(?:\/|$)/u);
     if (pathMatch?.[1]) {
       candidates.push({ id: pathMatch[1], score: 108, source: "path" });
     }
@@ -108,10 +108,18 @@ export function detectDouyinAwemeIdFromURL(rawURL: string): DouyinDetectResult |
   const best = ranked[0];
   if (!best) return null;
 
+  const isNote = (() => {
+    try {
+      return /\/(?:share\/)?note\//u.test(new URL(rawURL).pathname);
+    } catch {
+      return false;
+    }
+  })();
+
   return {
     awemeId: best.id,
     source: best.source,
-    canonicalURL: `https://www.douyin.com/video/${best.id}`,
+    canonicalURL: `https://www.douyin.com/${isNote ? "note" : "video"}/${best.id}`,
     title: "",
   };
 }
@@ -126,7 +134,7 @@ export function collectIdsFromText(
 
   const byId = new Map<string, DouyinIdCandidate>();
   const patterns: Array<{ re: RegExp; bonus: number }> = [
-    { re: /\/(?:video|note|share\/video)\/(\d{8,25})(?=[/?#&"'\\\s]|$)/gu, bonus: 8 },
+    { re: /\/(?:share\/)?(?:video|note)\/(\d{8,25})(?=[/?#&"'\\\s]|$)/gu, bonus: 8 },
     {
       re: new RegExp(
         `(?:${KEY_RE})(?:\\s*["']?\\s*[:=]\\s*["']?|["'=:%?&/\\\\\\s]+)(\\d{8,25})`,

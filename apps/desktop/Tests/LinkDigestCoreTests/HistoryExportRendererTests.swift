@@ -110,9 +110,9 @@ final class HistoryExportRendererTests: XCTestCase {
   func testRenderedFilesHaveExactFormatExtensions() throws {
     let projection = fixture()
 
-    XCTAssertEqual(try HistoryExportRenderer.render(projection, as: .markdown).suggestedFilename, "示例标题.1.md")
-    XCTAssertEqual(try HistoryExportRenderer.render(projection, as: .plainText).suggestedFilename, "示例标题.1.txt")
-    XCTAssertEqual(try HistoryExportRenderer.render(projection, as: .json).suggestedFilename, "示例标题.1.json")
+    XCTAssertEqual(try HistoryExportRenderer.render(projection, as: .markdown).suggestedFilename, "示例标题.md")
+    XCTAssertEqual(try HistoryExportRenderer.render(projection, as: .plainText).suggestedFilename, "示例标题.txt")
+    XCTAssertEqual(try HistoryExportRenderer.render(projection, as: .json).suggestedFilename, "示例标题.json")
   }
 
   func testUnicodeNULAndEmptyResultsRemainRecognizable() throws {
@@ -165,7 +165,7 @@ final class HistoryExportRendererTests: XCTestCase {
     let emojiProjection = fixture(title: String(repeating: "😀", count: 72))
     for format in HistoryExportFormat.allCases {
       let suggestedFilename = try HistoryExportRenderer.render(emojiProjection, as: format).suggestedFilename
-      let suffix = ".1.\(format.fileExtension)"
+      let suffix = ".\(format.fileExtension)"
       XCTAssertLessThanOrEqual(suggestedFilename.utf8.count, 255)
       XCTAssertTrue(suggestedFilename.hasSuffix(suffix))
       XCTAssertFalse(String(suggestedFilename.dropLast(suffix.count)).hasPrefix("."))
@@ -175,7 +175,7 @@ final class HistoryExportRendererTests: XCTestCase {
     let oversizedProjection = fixture(title: oversizedCharacter)
     let fallbackFilename = try HistoryExportRenderer.render(oversizedProjection, as: .json).suggestedFilename
     XCTAssertLessThanOrEqual(fallbackFilename.utf8.count, 255)
-    XCTAssertTrue(fallbackFilename.hasSuffix(".1.json"))
+    XCTAssertTrue(fallbackFilename.hasSuffix(".json"))
     XCTAssertFalse(fallbackFilename.hasPrefix("."))
     XCTAssertTrue(fallbackFilename.hasPrefix("LinkDigest 历史"))
   }

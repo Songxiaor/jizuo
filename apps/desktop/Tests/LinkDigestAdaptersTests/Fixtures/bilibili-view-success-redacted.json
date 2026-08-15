@@ -1,0 +1,20 @@
+{
+  "code": 0,
+  "data": {
+    "bvid": "BV1xx411c7mD",
+    "cid": 987654321,
+    "title": "脱敏的公开演示视频",
+    "desc": "这是一段不含真实账号数据的公开视频简介。",
+    "pic": "https://i0.hdslb.com/bfs/archive/redacted-cover.jpg",
+    "duration": 125,
+    "pubdate": 1786636800,
+    "owner": { "name": "演示创作者" },
+    "stat": {
+      "view": 1200,
+      "reply": 12,
+      "favorite": 34,
+      "share": 5,
+      "like": 88
+    }
+  }
+}

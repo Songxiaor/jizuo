@@ -250,7 +250,7 @@ struct HistoryContentView: View {
             isPresented: $model.isExportPanelPresented,
             document: model.exportFile.map(HistoryExportDocument.init),
             contentType: uniformType(for: model.exportFile?.format ?? .plainText),
-            defaultFilename: model.exportFile?.suggestedFilename ?? "\(ProductDisplay.name) 历史.1.txt"
+            defaultFilename: model.exportFile?.suggestedFilename ?? "\(ProductDisplay.name) 历史.txt"
           ) { result in
             switch result {
             case .success: model.completeExportSave()
@@ -339,7 +339,7 @@ struct HistoryContentView: View {
       }
     }
     .sheet(isPresented: Binding(get: { manualLink.isPresented }, set: { if !$0 { manualLink.dismiss() } })) {
-      ManualLinkSheet(model: manualLink)
+      ManualLinkSheet(model: manualLink, willAutoSummarize: providerSettings.autoSummarizeNewCaptures)
     }
   }
 
@@ -1248,6 +1248,14 @@ struct HistoryWindowToolbarThemeModifier: ViewModifier {
   @ViewBuilder func body(content: Content) -> some View {
     if theme.isNative {
       content
+    } else if #available(macOS 26.0, *) {
+      // macOS 26 起工具栏是悬浮 Liquid Glass，不再有可着色的整条背景；
+      // 自定义 toolbarBackground 反而会压掉系统的 scroll edge effect，
+      // 表现就是正文文字原样从悬浮图标底下穿过去。改用硬边 scroll edge：
+      // 滚动内容在工具栏下沿被截断遮挡，主题底色由列自身背景提供。
+      content
+        .scrollEdgeEffectStyle(.hard, for: .top)
+        .toolbarBackground(background ?? theme.canvas, for: .windowToolbar)
     } else {
       content
         .toolbarBackground(background ?? theme.canvas, for: .windowToolbar)
@@ -1311,6 +1319,9 @@ private struct ManualLinkSheet: View {
   // 错误色走主题，理由同其它视图：写死 .red 在低对比与高对比主题上都不成立。
   @Environment(\.appTheme) private var appTheme
   @ObservedObject var model: ManualLinkViewModel
+  /// 「新捕获自动总结」开关（设置 → 生成偏好）打开时为 true；
+  /// 提示只在真的会花一次模型调用时出现，开关关着就不吓人。
+  let willAutoSummarize: Bool
   @FocusState private var focusURL: Bool
 
   var body: some View {
@@ -1321,6 +1332,11 @@ private struct ManualLinkSheet: View {
       TextField("https://example.com/article", text: $model.input)
         .textFieldStyle(.roundedBorder).focused($focusURL)
         .disabled(model.isBusy).accessibilityIdentifier("manual-link-url-input")
+      if willAutoSummarize {
+        Text("添加后将自动抓取并生成总结，会产生一次模型调用。可在设置的「生成偏好」里关闭。")
+          .font(.caption).foregroundStyle(.secondary)
+          .accessibilityIdentifier("manual-link-auto-summarize-hint")
+      }
       if let error = model.errorMessage {
         Label(error, systemImage: "exclamationmark.triangle.fill")
           .font(.callout).foregroundStyle(appTheme.danger).accessibilityIdentifier("manual-link-error")
@@ -1741,12 +1757,21 @@ private struct HistoryDetailView: View {
   @State private var completionBanner: String?
   /// When both a model artifact and the captured source exist, user can switch.
   @State private var readingPane: ReadingPane = .summary
+  /// 点了总结/翻译、Run 还没变成可见态时，先把对应页签打开。
+  /// 否则抖音图文只有「原文」，生成过程只能再挂一块预览卡片。
+  @State private var pendingRunPane: ReadingPane?
   @State private var readingProgress = 0.0
   @State private var pendingSourceCitation: String?
   @State private var measuredTitleHeight: CGFloat = HistoryDetailView.titleLineHeight
   /// 转写校对：编辑态与草稿只属于当前详情页，切换条目即复位。
   @State private var isEditingTranscription = false
   @State private var transcriptionDraft = ""
+  /// 从阅读区点进来时对回源码的光标。
+  @State private var sourceEditCaretUTF16 = 0
+  /// 同一记点击打开编辑器后，系统还会把这次 mouseUp 当成失焦，必须先吞掉。
+  @State private var suppressSourceEditFinishUntil: Date?
+  /// SwiftUI 空白处不会抢焦点，所以失焦退编辑靠窗口级点击监视。
+  @State private var sourceEditClickOutside = SourceEditClickOutsideMonitor()
   @State private var noteTitleDraft = ""
   /// 笔记编辑器排版后的实际高度，由编辑器回报，用来让它长到内容那么高。
   @State private var noteEditorHeight: CGFloat = 320
@@ -1842,7 +1867,7 @@ private struct HistoryDetailView: View {
   }
   /// **用户自己写的正文**——笔记、稿件、作品都算。
   ///
-  /// 编辑体验(打开即可写、自动保存、Markdown 着色、去掉抓取页那套外壳)
+  /// 编辑体验(点正文即可写、空笔记仍一打开就写、自动保存、Markdown 着色)
   /// 属于「这是我写的东西」,不属于「这是笔记」。切开三模块时如果继续用
   /// `isUserNote` 判断,稿件会立刻退回只读的抓取详情页——那正是这次重构
   /// 要避免的倒退。
@@ -1864,13 +1889,14 @@ private struct HistoryDetailView: View {
   ///
   /// 手动保存对笔记是错的模型：写的人不会记得按保存，而切到另一条笔记会丢掉
   /// 草稿——写了一整篇、切走、回来只剩占位文字。这件事必须由工具兜住。
+  /// 转写点进去改几个字也走同一条：不必再找「保存」。
   private func scheduleNoteAutosave() {
-    guard isOwnWriting else { return }
+    guard isEditingTranscription else { return }
     noteAutosaveTask?.cancel()
     noteAutosaveTask = Task { @MainActor in
       try? await Task.sleep(nanoseconds: 1_000_000_000)
-      guard !Task.isCancelled, let snapshot = latestSnapshot, noteDraftIsDirty(snapshot) else { return }
-      saveTranscriptionDraft(snapshot)
+      guard !Task.isCancelled, let snapshot = latestSnapshot, sourceDraftIsDirty(snapshot) else { return }
+      saveTranscriptionDraft(snapshot, exiting: false)
       noteSaveIndicator = true
       try? await Task.sleep(nanoseconds: 1_800_000_000)
       guard !Task.isCancelled else { return }
@@ -1999,8 +2025,8 @@ private struct HistoryDetailView: View {
   /// 不会给「只总结过」的条目凭空多出一个空的翻译页。
   private var availableReadingPanes: [ReadingPane] {
     var panes: [ReadingPane] = []
-    if summaryArtifact != nil { panes.append(.summary) }
-    if translationArtifact != nil { panes.append(.translation) }
+    if summaryArtifact != nil || liveRunReadingPane == .summary { panes.append(.summary) }
+    if translationArtifact != nil || liveRunReadingPane == .translation { panes.append(.translation) }
     // 一份结果都没有时保留一个总结格，「尚未生成总结」的空态提示才有地方落。
     // 抖音例外：它在没有结果时本来就不显示结果格。
     //
@@ -2016,7 +2042,7 @@ private struct HistoryDetailView: View {
     // 笔记只有一份正文，除非真的跑出了翻译或总结，否则「原文」是个只有一个选项的
     // 分段控件——它不提供任何选择，只是看起来像有。
     if isOwnWriting { return availableReadingPanes.count > 1 }
-    return hasResultBody || hasSourceBody || hasLiveTranscription
+    return hasResultBody || hasSourceBody || hasLiveTranscription || liveRunReadingPane != nil
   }
   /// 默认停在最近一次跑出来的那份结果上——刚点完翻译就该看到翻译。
   private var defaultReadingPane: ReadingPane {
@@ -2028,13 +2054,24 @@ private struct HistoryDetailView: View {
   private func pane(for kind: RunKind) -> ReadingPane {
     kind == .translate ? .translation : .summary
   }
-  /// The preview card exists for the live stream and for failures the reading
-  /// pane cannot show. Once a run completed and its result reads in the
-  /// 总结/翻译 pane, keeping the card would duplicate the same text on screen.
-  private var showsStreamingResultCard: Bool {
-    guard showsVisibleRun else { return false }
-    if case .completed = appModel.runState, hasResultBody { return false }
-    return !appModel.runResultText.isEmpty || appModel.runState.isActive
+  /// 正在生成、或失败/中断还只有这份草稿时，对应的总结/翻译页就是阅读区。
+  /// 完成后正文进页签，这里关掉，避免同一段字出现两次。
+  private var liveRunReadingPane: ReadingPane? {
+    if let pendingRunPane { return pendingRunPane }
+    guard showsVisibleRun else { return nil }
+    switch appModel.runState.intent {
+    case .summarize: return .summary
+    case .translate: return .translation
+    case .connectionTest, .none: return nil
+    }
+  }
+
+  private var showsLiveRunInReadingPane: Bool {
+    guard let pane = liveRunReadingPane else { return false }
+    if case .completed = appModel.runState, artifact(for: pane) != nil { return false }
+    return appModel.runState.isActive
+      || !appModel.runResultText.isEmpty
+      || appModel.runHasFailure
   }
   private var protectedTaskIDs: Set<TaskID> {
     var result: Set<TaskID> = []
@@ -2336,6 +2373,18 @@ private struct HistoryDetailView: View {
     // `initial: true` so the first item rendered also lands on the right pane;
     // previously the @State default won and a summary-less item opened on an
     // empty 总结 pane.
+    .onChange(of: isEditingTranscription) { _, editing in
+      if editing {
+        sourceEditClickOutside.suppressUntil = suppressSourceEditFinishUntil
+        sourceEditClickOutside.onClickOutside = finishSourceEditing
+        sourceEditClickOutside.start()
+      } else {
+        sourceEditClickOutside.stop()
+      }
+    }
+    .onChange(of: readingPane) { _, pane in
+      if pane != .source { finishSourceEditing() }
+    }
     .onChange(of: detail.task.id, initial: true) { _, _ in
       // 先把上一条笔记的草稿落库，再重置状态——顺序反了就等于丢掉它。
       if let leaving = editingNote {
@@ -2347,6 +2396,7 @@ private struct HistoryDetailView: View {
       isRunPanelExpanded = false
       showsPlainText = false
       completionBanner = nil
+      pendingRunPane = nil
       readingPane = defaultReadingPane
       pendingSourceCitation = nil
       ReadingSelectionRouter.shared.formatter = { selected in
@@ -2356,13 +2406,16 @@ private struct HistoryDetailView: View {
       // 切换条目时丢弃未保存的转写草稿，避免草稿串到别的记录。
       isEditingTranscription = false
       transcriptionDraft = ""
-      // 笔记直接落在可写状态。转写稿要先点「编辑」是对的——那是抓回来的事实，
-      // 改动应当是一个有意识的动作；笔记正相反，它存在的唯一目的就是被写。
-      // 打开自己的笔记还要先找一个「编辑」按钮，是把工具的结构当成了用户的意图。
+      sourceEditCaretUTF16 = 0
+      // 有正文的笔记先看排版，点字再写。空笔记（含刚建的）没有可读的东西，
+      // 仍一打开就进编辑，否则多出来一次空击。
       if isOwnWriting, let snapshot = latestSnapshot {
-        transcriptionDraft = storedNoteBody(snapshot)
-        isEditingTranscription = true
-        editingNote = (detail.task.id, snapshot.id, transcriptionDraft)
+        let body = storedNoteBody(snapshot)
+        transcriptionDraft = body
+        editingNote = (detail.task.id, snapshot.id, body)
+        if body.isEmpty {
+          isEditingTranscription = true
+        }
       }
       noteTitleDraft = title
       // 清洗规则是后加的，早先存下的标题里还留着 U+FFFC 那类显示成方块的字符。
@@ -2402,11 +2455,12 @@ private struct HistoryDetailView: View {
       if hasResult { readingPane = defaultReadingPane }
     }
     .onDisappear { ReadingSelectionRouter.shared.formatter = nil }
-    .onChange(of: showsStreamingResultCard) { wasShown, isShown in
-      // The card collapses once the completed result reads in the pane below;
-      // flip to 总结/翻译 and flash a banner. Stops and failures keep the card.
+    .onChange(of: showsLiveRunInReadingPane) { wasShown, isShown in
+      // 生成过程就在总结/翻译页里。完成后草稿换成落库正文，闪一下横幅。
+      // 停止和失败仍留在这一页，把原因说清楚。
       guard wasShown, !isShown, hasResultBody else { return }
       guard case .completed = appModel.runState else { return }
+      pendingRunPane = nil
       withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
         readingPane = defaultReadingPane
         completionBanner = latestArtifactRun?.run.kind == .translate ? "翻译已完成" : "总结已完成"
@@ -2709,9 +2763,7 @@ private struct HistoryDetailView: View {
           .foregroundStyle(.secondary)
         ForEach(noteBacklinks) { backlink in
           Button {
-            if let snapshot = latestSnapshot, noteDraftIsDirty(snapshot) {
-              saveTranscriptionDraft(snapshot)
-            }
+            finishSourceEditing()
             model.reveal(taskID: backlink.id)
           } label: {
             HStack(spacing: 6) {
@@ -2765,6 +2817,8 @@ private struct HistoryDetailView: View {
           disabled: !providerSettings.arePreferencesReady || !(showsCurrentCapture ? appModel.canStartRun : appModel.canStartRun(from: detail)),
           identifier: showsCurrentCapture ? "summarize-current-capture" : "summarize-history-detail"
         ) {
+          pendingRunPane = .summary
+          readingPane = .summary
           Task {
             if showsCurrentCapture {
               await appModel.summarize(preferences: providerSettings.runPreferences)
@@ -2784,6 +2838,8 @@ private struct HistoryDetailView: View {
           ),
           identifier: showsCurrentCapture ? "translate-current-capture" : "translate-history-detail"
         ) {
+          pendingRunPane = .translation
+          readingPane = .translation
           Task {
             if showsCurrentCapture {
               await appModel.translate(preferences: providerSettings.runPreferences)
@@ -2826,8 +2882,7 @@ private struct HistoryDetailView: View {
           noteTidyStatus
         }
         Spacer(minLength: 0)
-        // Live run stays in this row: status + stop. Full stream goes to the
-        // reading card (capped height), not an ever-growing chrome panel.
+        // 这一行只留状态和停止。生成中的正文在总结/翻译页里长出来。
         if showsVisibleRun {
           if appModel.canStopVisibleRun(for: detail.task.id) {
             Button("停止", role: .cancel) { Task { await appModel.stop() } }
@@ -2854,9 +2909,9 @@ private struct HistoryDetailView: View {
             .accessibilityIdentifier("history-open-model-settings")
         } else {
           Label(
-            providerSettings.modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            providerSettings.activeSummaryModelName.isEmpty
               ? "模型未命名"
-              : providerSettings.modelName,
+              : providerSettings.activeSummaryModelName,
             systemImage: "cpu"
           )
           .font(.caption.weight(.medium))
@@ -2922,7 +2977,7 @@ private struct HistoryDetailView: View {
           .font(.caption)
           .foregroundStyle(.secondary)
         HStack(spacing: 10) {
-          settingsModelButton(providerSettings.modelName)
+          settingsModelButton(providerSettings.activeSummaryModelName)
           settingsModelButton(providerSettings.effectiveTranslationModelName)
           Text("输出：\(providerSettings.runPreferences.outputLanguage)")
             .font(.caption)
@@ -2992,16 +3047,12 @@ private struct HistoryDetailView: View {
 
   private var readingSurface: some View {
     VStack(alignment: .leading, spacing: 10) {
-      if showsStreamingResultCard {
-        streamingResultCard
-          .transition(historyBannerTransition(reduceMotion: reduceMotion))
-      }
       if showsReadingPanePicker {
         readingPanePicker
       }
       content
     }
-    .animation(historyUIAnimation(reduceMotion: reduceMotion), value: showsStreamingResultCard)
+    .animation(historyUIAnimation(reduceMotion: reduceMotion), value: showsLiveRunInReadingPane)
     // 正文铺满内容列，不再另设一层更窄的上限。
     //
     // 原来阅读区卡在 590pt，而它所在的内容列有 680pt，且左对齐——右边固定空出
@@ -3039,7 +3090,7 @@ private struct HistoryDetailView: View {
   }
 
   private var showsReadingSurface: Bool {
-    showsStreamingResultCard || hasResultBody || hasSourceBody || isDouyinCapture
+    showsLiveRunInReadingPane || hasResultBody || hasSourceBody || isDouyinCapture
   }
 
   private var readingPanePicker: some View {
@@ -3063,63 +3114,37 @@ private struct HistoryDetailView: View {
     }
   }
 
-  /// Generation lives in the reading surface with a fixed max height so the
-  /// page does not keep growing as tokens arrive (Apple: status feedback + restraint).
-  private var streamingResultCard: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 8) {
-        if appModel.runState.isActive {
-          ProgressView().controlSize(.small)
-        }
-        Text(appModel.runState.isActive ? "生成预览" : "本次结果")
-          .font(.callout.weight(.semibold))
-          .foregroundStyle(.secondary)
-        Spacer(minLength: 0)
-        Text(appModel.runStatusText)
-          .font(.subheadline)
-          .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
-          .lineLimit(1)
-      }
+  /// 生成中的总结/翻译正文。就是这一页的内容，不再另挂一张预览卡。
+  private var liveRunReadingBody: some View {
+    VStack(alignment: .leading, spacing: 12) {
       if appModel.runResultText.isEmpty {
-        Text(appModel.runStatusText)
-          .font(.body)
-          .foregroundStyle(.secondary)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.vertical, 12)
-      } else {
-        ScrollViewReader { proxy in
-          ScrollView {
-            // 用和阅读区同一套字体与行距：预览就是正文的毛坯，字大一号
-            // 反而像另一种东西。流式阶段不渲染 Markdown（逐 token 重排太贵），
-            // 完成后正文会在下方按富文本重排。
-            Text(appModel.runResultText)
-              .font(readingFont.body())
-              .foregroundStyle(theme.primaryText)
-              .lineSpacing(MarkdownPresentation.bodyLineSpacing)
-              .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .padding(.bottom, 4)
-              .id("stream-tail")
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          if appModel.runState.isActive {
+            ProgressView().controlSize(.small)
           }
-          .frame(maxHeight: 320)
-          .onChange(of: appModel.runResultText) { _, _ in
-            withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
-              proxy.scrollTo("stream-tail", anchor: .bottom)
-            }
-          }
+          Text(appModel.runStatusText)
+            .font(.body)
+            .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 24)
+      } else {
+        if appModel.runHasFailure || !appModel.runState.isActive {
+          Text(appModel.runStatusText)
+            .font(.callout)
+            .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
+        }
+        // 外层详情已经是 ScrollView。这里只长正文，不再套一层限高预览框。
+        // 流式阶段不渲染 Markdown：逐 token 重排太贵；完成后换成富文本。
+        Text(appModel.runResultText)
+          .font(readingFont.body())
+          .foregroundStyle(theme.primaryText)
+          .lineSpacing(MarkdownPresentation.bodyLineSpacing)
+          .textSelection(.enabled)
+          .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
-    .padding(12)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
-        .fill(Color.accentColor.opacity(0.06))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
-        .strokeBorder(Color.accentColor.opacity(0.12), lineWidth: 1)
-    )
     .accessibilityIdentifier("model-run-output")
   }
 
@@ -3345,7 +3370,9 @@ private struct HistoryDetailView: View {
   @ViewBuilder private var content: some View {
     switch effectiveReadingPane {
     case .summary, .translation:
-      if let artifact = artifact(for: effectiveReadingPane), !artifact.bodyText.isEmpty {
+      if showsLiveRunInReadingPane, liveRunReadingPane == effectiveReadingPane {
+        liveRunReadingBody
+      } else if let artifact = artifact(for: effectiveReadingPane), !artifact.bodyText.isEmpty {
         if artifact.completeness == .partial {
           Label("\(paneLabel(effectiveReadingPane))不完整", systemImage: "exclamationmark.triangle")
             .foregroundStyle(.secondary)
@@ -3365,13 +3392,15 @@ private struct HistoryDetailView: View {
           sourceURL: URL(string: sourceURL),
           localImageURLs: localImageURLs,
           appendsUnusedLocalImages: !isWeChatCapture,
+          groupsConsecutiveImages: !isWeChatCapture,
           readingFont: readingFont,
           primaryTextColor: theme.primaryText,
           secondaryTextColor: theme.secondaryText,
           accentColor: theme.accent,
           showsPlainText: $showsPlainText,
           showsInlinePlainTextToggle: false,
-          navigationModules: navigationModules
+          navigationModules: navigationModules,
+          onFollowWikiLink: { title in model.followWikiLink(toTitle: title) }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("history-reading-result")
@@ -3408,55 +3437,25 @@ private struct HistoryDetailView: View {
             .padding(.bottom, 6)
             .accessibilityIdentifier("capture-truncated-notice")
         }
-        // 哪些正文可以原地编辑：
-        // - 本机转写稿：机器听写结果，错别字与分段需要人工兜底
-        // - 用户笔记：正文本来就是用户自己写的，编辑是它的主要用途
-        // 网页捕获正文保持只读——那是抓取事实，改了会让「原文」名不副实。
-        if snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
-          || snapshot.sourceKind == CapturedDocument.Origin.userNote.rawValue {
+        // 可写正文：本机转写、笔记、稿、作品。网页捕获保持只读。
+        // 默认看排版，单击进源码；空笔记仍一打开就写。
+        if canEditSource(snapshot), isEditingTranscription {
           HStack(spacing: 10) {
             Spacer(minLength: 0)
-            if isOwnWriting {
-              // 自己写的东西自动存，所以这里不是按钮而是状态：写字的人不该被要求记得
-              // 按保存，但需要知道东西已经安全了。⌘S 仍然可以立刻存一次。
-              Text(noteDraftIsDirty(snapshot) ? "正在保存…" : (noteSaveIndicator ? "已保存" : ""))
-                .font(.caption)
-                .foregroundStyle(.tertiary)
-                .animation(historyUIAnimation(reduceMotion: reduceMotion), value: noteSaveIndicator)
-                .accessibilityIdentifier("history-note-save-state")
-              Button("保存") { saveTranscriptionDraft(snapshot) }
-                .keyboardShortcut("s", modifiers: .command)
-                .hidden()
-                .frame(width: 0)
-                .accessibilityIdentifier("history-transcription-edit-save")
-            } else if isEditingTranscription {
-              Button("取消") {
-                isEditingTranscription = false
-                transcriptionDraft = ""
-              }
-              .accessibilityIdentifier("history-transcription-edit-cancel")
-              Button("保存") { saveTranscriptionDraft(snapshot) }
-                .buttonStyle(.borderedProminent)
-                .disabled(transcriptionDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                .accessibilityIdentifier("history-transcription-edit-save")
-            } else {
-              Button(
-                snapshot.sourceKind == CapturedDocument.Origin.userNote.rawValue ? "编辑" : "编辑转写",
-                systemImage: "pencil"
-              ) {
-                transcriptionDraft = MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
-                isEditingTranscription = true
-              }
-              .disabled(model.isReadOnly)
-              .help("修正听写错别字或调整分段；保存后总结、翻译与导出都使用校对后的文本。")
-              .accessibilityIdentifier("history-transcription-edit")
-            }
+            Text(sourceDraftIsDirty(snapshot) ? "正在保存…" : (noteSaveIndicator ? "已保存" : ""))
+              .font(.caption)
+              .foregroundStyle(.tertiary)
+              .animation(historyUIAnimation(reduceMotion: reduceMotion), value: noteSaveIndicator)
+              .accessibilityIdentifier("history-note-save-state")
+            Button("保存") { saveTranscriptionDraft(snapshot, exiting: false) }
+              .keyboardShortcut("s", modifiers: .command)
+              .hidden()
+              .frame(width: 0)
+              .accessibilityIdentifier("history-transcription-edit-save")
           }
           .padding(.bottom, 8)
         }
-        if isEditingTranscription,
-           snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
-             || snapshot.sourceKind == CapturedDocument.Origin.userNote.rawValue {
+        if canEditSource(snapshot), isEditingTranscription {
           // 裸 TextEditor 把标题、代码、引用一律画成同一片灰字，写超过几行就看不出
           // 结构。换成带 Markdown 着色的 NSTextView，排版参数取自阅读区同一套偏好。
           MarkdownEditorView(
@@ -3475,12 +3474,12 @@ private struct HistoryDetailView: View {
             contentHeight: isOwnWriting ? $noteEditorHeight : nil,
             onFollowWikiLink: { title in
               // 先把手上这条存了再跳，否则刚写的内容会随着切换被丢掉。
-              if let snapshot = latestSnapshot, noteDraftIsDirty(snapshot) {
-                saveTranscriptionDraft(snapshot)
-              }
+              finishSourceEditing()
               model.followWikiLink(toTitle: title)
             },
-            linkableTitles: isUserNote ? noteLinkTitles : []
+            linkableTitles: isUserNote ? noteLinkTitles : [],
+            initialCaretUTF16: sourceEditCaretUTF16,
+            onFinishEditing: finishSourceEditing
           )
           .frame(
             minHeight: isOwnWriting ? max(noteEditorHeight, 320) : 320,
@@ -3505,6 +3504,7 @@ private struct HistoryDetailView: View {
             sourceURL: URL(string: sourceURL),
             localImageURLs: localImageURLs,
             appendsUnusedLocalImages: !isWeChatCapture,
+            groupsConsecutiveImages: !isWeChatCapture,
             readingFont: readingFont,
             primaryTextColor: theme.primaryText,
             secondaryTextColor: theme.secondaryText,
@@ -3512,7 +3512,22 @@ private struct HistoryDetailView: View {
             showsPlainText: $showsPlainText,
             showsInlinePlainTextToggle: false,
             navigationModules: navigationModules,
-            revealText: pendingSourceCitation
+            revealText: pendingSourceCitation,
+            onFollowWikiLink: { title in
+              if let snapshot = latestSnapshot, sourceDraftIsDirty(snapshot) {
+                saveTranscriptionDraft(snapshot, exiting: false)
+              }
+              model.followWikiLink(toTitle: title)
+            },
+            onRequestEdit: canEditSource(snapshot) && !model.isReadOnly
+              ? { snippet in beginSourceEditing(snapshot, displayedSnippet: snippet) }
+              : nil
+          )
+          .simultaneousGesture(
+            TapGesture().onEnded {
+              guard canEditSource(snapshot), !model.isReadOnly else { return }
+              beginSourceEditing(snapshot, displayedSnippet: nil)
+            }
           )
           .frame(maxWidth: .infinity, alignment: .leading)
           .accessibilityIdentifier("history-reading-source")
@@ -3523,8 +3538,52 @@ private struct HistoryDetailView: View {
     }
   }
 
+  private func canEditSource(_ snapshot: ContentSnapshot) -> Bool {
+    snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+      || snapshot.sourceKind == CapturedDocument.Origin.userNote.rawValue
+      || snapshot.sourceKind == CapturedDocument.Origin.pieceDraft.rawValue
+      || snapshot.sourceKind == CapturedDocument.Origin.work.rawValue
+  }
+
+  private func sourceDraftIsDirty(_ snapshot: ContentSnapshot) -> Bool {
+    if isOwnWriting { return noteDraftIsDirty(snapshot) }
+    return transcriptionDraft != MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
+  }
+
+  private func beginSourceEditing(_ snapshot: ContentSnapshot, displayedSnippet: String?) {
+    guard !model.isReadOnly, !isEditingTranscription else { return }
+    let body = isOwnWriting
+      ? storedNoteBody(snapshot)
+      : MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
+    transcriptionDraft = body
+    sourceEditCaretUTF16 = ReadingEditLocator.caretUTF16Offset(
+      in: body, displayedSnippet: displayedSnippet
+    )
+    // 打开编辑器用的就是这次点击。编辑器成为第一响应者之后，同一次
+    // mouseUp 还会让它立刻失焦，textDidEndEditing 会把编辑态关回去。
+    suppressSourceEditFinishUntil = Date().addingTimeInterval(0.6)
+    sourceEditClickOutside.suppressUntil = suppressSourceEditFinishUntil
+    isEditingTranscription = true
+    if isOwnWriting {
+      editingNote = (detail.task.id, snapshot.id, body)
+    }
+  }
+
+  private func finishSourceEditing() {
+    guard isEditingTranscription else { return }
+    if let until = suppressSourceEditFinishUntil, Date() < until { return }
+    sourceEditClickOutside.stop()
+    noteAutosaveTask?.cancel()
+    if let snapshot = latestSnapshot, sourceDraftIsDirty(snapshot) {
+      saveTranscriptionDraft(snapshot, exiting: true)
+      return
+    }
+    isEditingTranscription = false
+    if !isOwnWriting { transcriptionDraft = "" }
+  }
+
   /// 保留原 frontmatter，只把正文替换为校对稿；无 frontmatter 时整体替换。
-  private func saveTranscriptionDraft(_ snapshot: ContentSnapshot) {
+  private func saveTranscriptionDraft(_ snapshot: ContentSnapshot, exiting: Bool) {
     let original = snapshot.bodyText
     let body = MarkdownNoteFrontmatter.parse(original).body
     let newText: String
@@ -3535,26 +3594,32 @@ private struct HistoryDetailView: View {
     }
     let savedDraft = transcriptionDraft
     model.saveEditedSnapshotText(taskID: detail.task.id, snapshotID: snapshot.id, bodyText: newText)
-    guard isOwnWriting else {
-      isEditingTranscription = false
-      transcriptionDraft = ""
-      return
+    if isOwnWriting {
+      // 存过之后这条笔记的「库里那份」就是刚写的内容了，切走时不该再存一遍。
+      editingNote = (detail.task.id, snapshot.id, savedDraft)
+      // 标题还是默认值时，用正文首个一级标题补上：写笔记的人极少先想标题。
+      if title == UserNoteDocument.untitledTitle,
+         let derived = UserNoteDocument.derivedTitle(fromBody: savedDraft) {
+        model.renameNote(taskID: detail.task.id, title: derived)
+        noteTitleDraft = derived
+      }
     }
-    // 存过之后这条笔记的「库里那份」就是刚写的内容了，切走时不该再存一遍。
-    editingNote = (detail.task.id, snapshot.id, savedDraft)
-    // 笔记保存后仍停在可写状态——「保存」是存一下，不是「改完了」。
-    // 标题还是默认值时，用正文首个一级标题补上：写笔记的人极少先想标题。
-    if title == UserNoteDocument.untitledTitle,
-       let derived = UserNoteDocument.derivedTitle(fromBody: savedDraft) {
-      model.renameNote(taskID: detail.task.id, title: derived)
-      noteTitleDraft = derived
+    if exiting {
+      isEditingTranscription = false
+      if !isOwnWriting { transcriptionDraft = "" }
     }
   }
 
   private var effectiveReadingPane: ReadingPane {
     // With neither summary nor transcription, keep the Douyin empty-state in
     // the reading surface without reintroducing an unavailable 原文 segment.
-    if isDouyinCapture && !hasResultBody && !hasSourceBody && !hasLiveTranscription { return .source }
+    if isDouyinCapture,
+       !hasResultBody,
+       !hasSourceBody,
+       !hasLiveTranscription,
+       liveRunReadingPane == nil {
+      return .source
+    }
     // 选中的格子消失了就退回默认，否则会停在一个已经不在分段控件里的面板上。
     // 这个兜底原来只对抖音生效；拆出翻译格后，任何条目都可能出现选中格不可用
     // （例如切到另一条只总结过的记录时，选中的还是翻译）。
@@ -3730,6 +3795,53 @@ private struct HistoryDetailView: View {
     let policy = PublicWebURLPolicy(resolver: { _ in [] })
     guard (try? policy.validateSyntax(url)) != nil else { return }
     NSWorkspace.shared.open(url)
+  }
+}
+
+/// 点在源码编辑器外面就结束编辑。
+///
+/// SwiftUI 的脑图、工具栏、侧栏大多不会成为第一响应者，NSTextView 的
+/// textDidEndEditing 因此不会来。这里听窗口级 mouseDown，点到编辑器
+/// 自己的 NSScrollView 之外就收工。
+@MainActor
+final class SourceEditClickOutsideMonitor {
+  var suppressUntil: Date?
+  var onClickOutside: (() -> Void)?
+  private var monitor: Any?
+
+  func start() {
+    stop()
+    monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+      self?.handle(event)
+      return event
+    }
+  }
+
+  func stop() {
+    if let monitor {
+      NSEvent.removeMonitor(monitor)
+    }
+    monitor = nil
+  }
+
+  private func handle(_ event: NSEvent) {
+    if let until = suppressUntil, Date() < until { return }
+    guard let window = event.window else { return }
+    guard let hit = window.contentView?.hitTest(event.locationInWindow) else {
+      onClickOutside?()
+      return
+    }
+    if Self.hitIsInsideSourceEditor(hit, window: window) { return }
+    onClickOutside?()
+  }
+
+  private static func hitIsInsideSourceEditor(_ hit: NSView, window: NSWindow) -> Bool {
+    guard let text = window.firstResponder as? NSTextView else {
+      // 编辑器还在抢焦点的那几十毫秒，当成点在里面，避免打开用的那次点击把编辑关掉。
+      return true
+    }
+    let editor: NSView = text.enclosingScrollView ?? text
+    return hit === editor || hit.isDescendant(of: editor)
   }
 }
 

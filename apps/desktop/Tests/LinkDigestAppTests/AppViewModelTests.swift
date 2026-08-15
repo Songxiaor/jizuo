@@ -1376,6 +1376,35 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertNil(model.activeRunTaskID)
   }
 
+  func testRetryAfterStopClearsVisiblePartialBeforeCreateRunConfirmsStarting() async throws {
+    let repository = AppHistoryRepository(blockCreateRun: true)
+    let provider = AppTestModelProvider(results: [
+      .pendingWithPrefix("partial summary"),
+      .pendingWithPrefix("partial summary"),
+    ])
+    let model = try makeModel(provider: provider, repository: repository)
+    let capture = currentCapture()
+    model.receive(capture)
+
+    // The first launch establishes the stopped partial; only the retry is the
+    // createRun call this test needs to hold behind the barrier.
+    repository.releaseCreateRun()
+    await model.summarize()
+    await waitUntil { model.runState == .streaming(intent: .summarize, partialText: "partial summary") }
+    await model.stop()
+    await waitUntil { model.runState == .stopped(intent: .summarize, partialText: "partial summary") }
+    XCTAssertEqual(model.runResultText, "partial summary")
+
+    let retryTask = Task { await model.summarize() }
+    await waitUntil { repository.createdRunCommands.count == 2 }
+    XCTAssertEqual(model.runState, .starting(intent: .summarize))
+    XCTAssertEqual(model.runResultText, "")
+
+    repository.releaseCreateRun()
+    await retryTask.value
+    await waitUntil { model.runState == .streaming(intent: .summarize, partialText: "partial summary") }
+  }
+
   func testPreStartStorageFailureTakesPendingOwnershipThenClearsDeletionProtection() async throws {
     let repository = AppHistoryRepository(failCreateRun: true)
     let provider = AppTestModelProvider(results: [])

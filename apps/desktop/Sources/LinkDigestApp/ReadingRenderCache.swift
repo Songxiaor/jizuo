@@ -153,6 +153,7 @@ enum ReadingRenderCache {
     let markdown: String
     let localImageURLs: [URL]
     let appendsUnusedLocalImages: Bool
+    let groupsConsecutiveImages: Bool
   }
 
   private static var segmentsEntries: [SegmentsKey: [LocalMarkdownImageLayout.Segment]] = [:]
@@ -162,12 +163,14 @@ enum ReadingRenderCache {
   static func gallerySegments(
     markdown: String,
     localImageURLs: [URL],
-    appendsUnusedLocalImages: Bool
+    appendsUnusedLocalImages: Bool,
+    groupsConsecutiveImages: Bool = true
   ) -> [LocalMarkdownImageLayout.Segment] {
     let key = SegmentsKey(
       markdown: markdown,
       localImageURLs: localImageURLs,
-      appendsUnusedLocalImages: appendsUnusedLocalImages
+      appendsUnusedLocalImages: appendsUnusedLocalImages,
+      groupsConsecutiveImages: groupsConsecutiveImages
     )
     if let cached = lookup(key, in: segmentsEntries, order: &segmentsOrder) { return cached }
     let grouped = LocalMarkdownImageLayout.galleryGrouped(
@@ -175,7 +178,8 @@ enum ReadingRenderCache {
         markdown: markdown,
         localImageURLs: localImageURLs,
         appendsUnusedLocalImages: appendsUnusedLocalImages
-      )
+      ),
+      groupsConsecutiveImages: groupsConsecutiveImages
     )
     remember(grouped, forKey: key, in: &segmentsEntries, order: &segmentsOrder)
     return grouped

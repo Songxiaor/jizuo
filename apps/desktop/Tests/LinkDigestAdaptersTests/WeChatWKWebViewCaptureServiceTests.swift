@@ -40,6 +40,8 @@ final class WeChatWKWebViewCaptureServiceTests: XCTestCase {
     XCTAssertTrue(script.contains("document.createTreeWalker"))
     XCTAssertTrue(script.contains("data-src"))
     XCTAssertTrue(script.contains("![]("))
+    XCTAssertTrue(script.contains("isDecorativeImage"))
+    XCTAssertTrue(script.contains("aria-hidden"))
     XCTAssertTrue(script.contains("meta[property=\"og:image\"]"))
     XCTAssertTrue(script.contains("window.nickname"))
     XCTAssertTrue(script.contains("#js_author_name"))

@@ -143,6 +143,9 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertTrue(selectable.contains("isSelectable = true"))
     XCTAssertTrue(selectable.contains("clickedOnLink"))
     XCTAssertTrue(selectable.contains("intrinsicContentSize"))
+    // NSTextView 会在 mouseDown 里吃掉 mouseUp；可写正文必须在 mouseDown 进编辑。
+    XCTAssertTrue(selectable.contains("override func mouseDown(with event: NSEvent)"))
+    XCTAssertTrue(selectable.contains("onRequestEdit(ReadingEditLocator.displayedSnippet"))
   }
 
   func testReadingFontSelectionResolvesThemeAndNamedFamilies() {
@@ -468,6 +471,117 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(blocks, [.orderedList(["第一步", "**第二步**"])])
   }
 
+  /// 代码里的尖括号是字面量。整篇当 HTML 洗会把开发文变成「已省略 HTML 片段」。
+  func testSanitizerKeepsAngleBracketsInsideFencedAndInlineCode() {
+    let source = """
+    正文 `<task>` 是标签名。
+
+    ```xml
+    <task>
+    hello
+    </task>
+    ```
+
+    后面还有 <script>alert(1)</script>。
+    """
+    let plain = MarkdownPresentation.plainTextPresentation(source)
+    XCTAssertTrue(plain.contains("`<task>`"))
+    XCTAssertTrue(plain.contains("<task>"))
+    XCTAssertTrue(plain.contains("</task>"))
+    XCTAssertFalse(plain.contains("<script>"))
+    XCTAssertTrue(plain.contains(MarkdownPresentation.omittedHTML))
+
+    let blocks = MarkdownPresentation.blocks(from: source)
+    XCTAssertEqual(blocks.count, 3)
+    guard case let .paragraph(paragraph) = blocks[0] else { return XCTFail("expected paragraph \(blocks[0])") }
+    XCTAssertTrue(paragraph.contains("`<task>`"))
+    XCTAssertFalse(paragraph.contains(MarkdownPresentation.omittedHTML))
+    guard case let .code(_, content) = blocks[1] else { return XCTFail("expected fenced code \(blocks[1])") }
+    XCTAssertTrue(content.contains("<task>"))
+    XCTAssertTrue(content.contains("</task>"))
+    guard case let .paragraph(after) = blocks[2] else { return XCTFail("expected trailing paragraph") }
+    XCTAssertTrue(after.contains(MarkdownPresentation.omittedHTML))
+    XCTAssertFalse(after.contains("<script>"))
+  }
+
+  /// 没闭合的围栏不能整段当代码，否则截断的 `<script>` 会漏到屏幕上。
+  func testUnclosedFenceStillOmitsHTMLLikeTokens() {
+    let source = "```\n<script>alert(1)</script>\n还在围栏里"
+    let plain = MarkdownPresentation.plainTextPresentation(source)
+    XCTAssertTrue(plain.contains(MarkdownPresentation.omittedHTML))
+    XCTAssertFalse(plain.contains("<script>"))
+  }
+
+  func testGFMTableBecomesItsOwnBlock() {
+    let source = """
+    前面一段。
+
+    | 维度 | 传统SEO | GEO |
+    | --- | --- | --- |
+    | 目标 | 搜索引擎排名 | 成为 AI 引用源 |
+    | 内容 | 关键词优化 | 结构化、可引用 |
+
+    后面一段。
+    """
+    let blocks = MarkdownPresentation.blocks(from: source)
+    XCTAssertEqual(blocks.count, 3)
+    guard case let .paragraph(before) = blocks[0] else { return XCTFail("expected lead paragraph") }
+    XCTAssertTrue(before.contains("前面一段"))
+    guard case let .table(headers, rows) = blocks[1] else { return XCTFail("expected table \(blocks[1])") }
+    XCTAssertEqual(headers, ["维度", "传统SEO", "GEO"])
+    XCTAssertEqual(rows, [
+      ["目标", "搜索引擎排名", "成为 AI 引用源"],
+      ["内容", "关键词优化", "结构化、可引用"],
+    ])
+    guard case let .paragraph(after) = blocks[2] else { return XCTFail("expected trailing paragraph") }
+    XCTAssertTrue(after.contains("后面一段"))
+  }
+
+  func testCalloutIsDistinctFromOrdinaryQuote() {
+    let callout = MarkdownPresentation.blocks(from: """
+    > [!WARNING]
+    > 不要把密钥写进仓库。
+    """)
+    XCTAssertEqual(callout.count, 1)
+    guard case let .callout(kind, text) = callout[0] else { return XCTFail("expected callout \(callout[0])") }
+    XCTAssertEqual(kind, "warning")
+    XCTAssertTrue(text.contains("不要把密钥写进仓库"))
+
+    let quote = MarkdownPresentation.blocks(from: "> 引用一句结论。")
+    XCTAssertEqual(quote, [.quote("引用一句结论。")])
+  }
+
+  func testReadingEditLocatorMapsDisplayedSnippetToSourceOffset() {
+    let source = "申哥的公司已经从项目型转向了未来"
+    let offset = ReadingEditLocator.caretUTF16Offset(in: source, displayedSnippet: "哥的公司已经从项目")
+    XCTAssertGreaterThan(offset, 0)
+    let index = source.utf16.index(source.utf16.startIndex, offsetBy: offset)
+    let tail = String(source[index...])
+    XCTAssertTrue(tail.contains("公司"), "光标应落在点到的那一段，而不是文首")
+
+    XCTAssertEqual(ReadingEditLocator.caretUTF16Offset(in: source, displayedSnippet: nil), 0)
+    XCTAssertEqual(ReadingEditLocator.caretUTF16Offset(in: source, displayedSnippet: "x"), 0)
+
+    let around = ReadingEditLocator.displayedSnippet(in: source, utf16Index: 2, radius: 2)
+    XCTAssertTrue(around.contains("申") || around.contains("哥"))
+  }
+
+  func testWikiLinksBecomeInAppMarkdownLinksAndStayOutOfCode() throws {
+    let rewritten = MarkdownPresentation.rewritingWikiLinksAsMarkdown(
+      "见 [[知识库构建]] 与 `[[字面量]]`"
+    )
+    XCTAssertTrue(rewritten.contains("](\(WikiLinkURL.url(forTitle: "知识库构建").absoluteString))"))
+    XCTAssertTrue(rewritten.contains("`[[字面量]]`"))
+    XCTAssertFalse(rewritten.contains("[[知识库构建]]"))
+
+    let attributed = MarkdownPresentation.inlineAttributed("见 [[知识库构建]]")
+    var found: URL?
+    for run in attributed.runs {
+      if let link = run.link { found = link }
+    }
+    XCTAssertEqual(WikiLinkURL.title(from: try XCTUnwrap(found)), "知识库构建")
+  }
+
   func testMarkdownContentViewOwnsSelectableMonospacedCodeCard() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
@@ -550,6 +664,15 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(
       LocalMarkdownImageLayout.galleryGrouped([.text("前文"), .image(a)]),
       [.text("前文"), .image(a)]
+    )
+
+    // 公众号相邻图中间只有空行，不能并成两列。
+    XCTAssertEqual(
+      LocalMarkdownImageLayout.galleryGrouped(
+        [.text("# 标题\n\n"), .image(a), .text("\n\n"), .image(b), .text("\n\n"), .image(c)],
+        groupsConsecutiveImages: false
+      ),
+      [.text("# 标题\n\n"), .image(a), .text("\n\n"), .image(b), .text("\n\n"), .image(c)]
     )
   }
 

@@ -811,8 +811,15 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
     throw new Error("CAPTURE_DOUYIN_NO_SINGLE_ITEM");
   }
 
-  const canonicalURL = `https://www.douyin.com/video/${awemeId}`;
-  const title = meta?.title || "抖音视频";
+  const notePath = (() => {
+    try {
+      return /\/(?:share\/)?note\//u.test(new URL(tabURL).pathname);
+    } catch {
+      return false;
+    }
+  })();
+  let canonicalURL = `https://www.douyin.com/${notePath ? "note" : "video"}/${awemeId}`;
+  const title = meta?.title || (notePath ? "抖音图文" : "抖音视频");
   let author = meta?.author || null;
   let publishedAt = meta?.publishedAt;
   const description = meta?.description || "";
@@ -891,6 +898,9 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
   // Single-item body only — never site navigation chrome. Image posts (图文帖)
   // inline their gallery as Markdown images; the desktop app downloads them
   // with a Douyin Referer via the existing remote-image staging path.
+  if (imageURLs.length > 0) {
+    canonicalURL = `https://www.douyin.com/note/${awemeId}`;
+  }
   const gallery = imageURLs.map((url) => `![](${url})`).join("\n\n");
   // 抖音把「展开」按钮的文字渲染在文案节点里，标题已剥掉它，描述也要剥；
   // 剥完与标题相同时就是同一句文案，不再重复成一段正文。

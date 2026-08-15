@@ -102,10 +102,16 @@ enum LocalMarkdownImageLayout {
   }
 
   /// 把连续的图片并成一组。图集（抖音图文帖、README 截图序列）因此能铺满阅读区
-  /// 宽度；微信正文里穿插在段落之间的单张插图仍旧单排，阅读顺序不变。
+  /// 宽度。公众号不要走这条：抽取只留下「图 + 空行 + 图」，一合并就把横幅和
+  /// 正文卡并成两列，作者的上下阅读顺序就没了。
   ///
   /// 只作用于渲染，`segments` 本身的结构保持不变。
-  static func galleryGrouped(_ segments: [Segment], minimumGalleryCount: Int = 2) -> [Segment] {
+  static func galleryGrouped(
+    _ segments: [Segment],
+    minimumGalleryCount: Int = 2,
+    groupsConsecutiveImages: Bool = true
+  ) -> [Segment] {
+    guard groupsConsecutiveImages else { return segments }
     var result: [Segment] = []
     var run: [URL] = []
     func flushRun() {
@@ -290,7 +296,7 @@ enum MarkdownPresentation {
   static let bodyLineSpacing: CGFloat = 11
 
   static func sanitized(_ source: String) -> String {
-    var value = replacingHTMLLikeTokens(in: source)
+    var value = replacingHTMLLikeTokensPreservingCode(in: source)
     value = replacing(#"(?:\[已省略 HTML 片段\]\s*){2,}"#, in: value, with: omittedHTML + "\n")
     return value
   }
@@ -307,9 +313,28 @@ enum MarkdownPresentation {
       interpretedSyntax: .inlineOnlyPreservingWhitespace,
       failurePolicy: .returnPartiallyParsedIfPossible
     )
-    let normalized = normalizingCJKEmphasis(source)
+    let withWiki = rewritingWikiLinksAsMarkdown(source)
+    let normalized = normalizingCJKEmphasis(withWiki)
     return (try? AttributedString(markdown: normalized, options: options))
       ?? AttributedString(normalized)
+  }
+
+  /// 阅读区要把 `[[笔记]]` 变成可点的链接。Foundation 的 Markdown 不认双链，
+  /// 先改写成 `[显示](linkdigest-wiki:/标题)`，点击仍走 `WikiLinkURL`，不会进浏览器。
+  static func rewritingWikiLinksAsMarkdown(_ source: String) -> String {
+    let refs = WikiLink.references(in: source)
+    guard !refs.isEmpty else { return source }
+    let protected = preservedCodeRanges(in: source)
+    var result = source
+    for ref in refs.reversed() {
+      if protected.contains(where: { $0.overlaps(ref.range) }) { continue }
+      let destination = WikiLinkURL.url(forTitle: ref.target).absoluteString
+      let label = ref.label
+        .replacingOccurrences(of: "[", with: "\\[")
+        .replacingOccurrences(of: "]", with: "\\]")
+      result.replaceSubrange(ref.range, with: "[\(label)](\(destination))")
+    }
+    return result
   }
 
   /// 把中文里「标点紧贴闭合标记」的强调改写成 CommonMark 认得的形式。
@@ -369,6 +394,26 @@ enum MarkdownPresentation {
     sanitized(source)
   }
 
+  static func calloutLabel(_ kind: String) -> String {
+    switch kind {
+    case "warning", "caution": return "注意"
+    case "danger": return "危险"
+    case "tip", "hint": return "提示"
+    case "important": return "重要"
+    case "success": return "完成"
+    default: return "说明"
+    }
+  }
+
+  static func calloutColor(_ kind: String, accent: Color) -> Color {
+    switch kind {
+    case "warning", "caution": return Color.orange
+    case "danger": return Color.red
+    case "success": return Color.green
+    default: return accent
+    }
+  }
+
   // MARK: - Structural blocks (visible hierarchy)
 
   // Hashable：阅读渲染缓存（ReadingRenderCache）按块数组做键。
@@ -381,7 +426,10 @@ enum MarkdownPresentation {
     /// 于是同一条清单在「写」和「读」两侧长得不一样。
     case taskList([TaskItem])
     case quote(String)
+    /// Obsidian 风格 `> [!WARNING]`。没有独立告示组件时，至少不要把标记当正文。
+    case callout(kind: String, text: String)
     case code(language: String?, content: String)
+    case table(headers: [String], rows: [[String]])
     /// `---` 之类的分隔线。不单独成块的话它会掉进段落，显示成一行光秃秃的横杠。
     case divider
   }
@@ -459,7 +507,27 @@ enum MarkdownPresentation {
           }
         }
         let text = quoteLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !text.isEmpty { blocks.append(.quote(text)) }
+        if !text.isEmpty {
+          blocks.append(calloutBlock(from: text) ?? .quote(text))
+        }
+        continue
+      }
+
+      if index + 1 < lines.count,
+         let headers = tableCells(trimmed),
+         isTableSeparator(lines[index + 1].trimmingCharacters(in: .whitespaces)) {
+        let width = headers.count
+        var rows: [[String]] = []
+        index += 2
+        while index < lines.count {
+          let line = lines[index].trimmingCharacters(in: .whitespaces)
+          if line.isEmpty { break }
+          if headingMatch(line) != nil || openingFence(line) != nil { break }
+          guard let cells = tableCells(line), !isTableSeparator(line) else { break }
+          rows.append(alignedTableRow(cells, width: width))
+          index += 1
+        }
+        blocks.append(.table(headers: headers, rows: rows))
         continue
       }
 
@@ -551,7 +619,10 @@ enum MarkdownPresentation {
           || isListItem(line)
           || orderedListItem(line) != nil
           || line.hasPrefix("> ")
-          || line == ">" {
+          || line == ">"
+          || (index + 1 < lines.count
+              && tableCells(line) != nil
+              && isTableSeparator(lines[index + 1].trimmingCharacters(in: .whitespaces))) {
           break
         }
         paragraphLines.append(line)
@@ -669,6 +740,167 @@ enum MarkdownPresentation {
   private static func needsASCIISpace(before next: String, after previous: String) -> Bool {
     guard let last = previous.last, let first = next.first else { return false }
     return last.isASCII && last.isLetter && first.isASCII && first.isLetter
+  }
+
+  /// 代码里的 `<task>` 是字面量。整篇扫描会把开发文洗成「已省略 HTML 片段」。
+  private static func replacingHTMLLikeTokensPreservingCode(in source: String) -> String {
+    var result = ""
+    var index = source.startIndex
+    while index < source.endIndex {
+      if let fence = fenceRange(startingAt: index, in: source) {
+        result.append(contentsOf: source[fence])
+        index = fence.upperBound
+        continue
+      }
+      if let code = inlineCodeRange(startingAt: index, in: source) {
+        result.append(contentsOf: source[code])
+        index = code.upperBound
+        continue
+      }
+      let next = nextPreservedCodeStart(from: index, in: source)
+      result.append(replacingHTMLLikeTokens(in: String(source[index..<next])))
+      index = next
+    }
+    return result
+  }
+
+  private static func preservedCodeRanges(in source: String) -> [Range<String.Index>] {
+    var ranges: [Range<String.Index>] = []
+    var index = source.startIndex
+    while index < source.endIndex {
+      if let fence = fenceRange(startingAt: index, in: source) {
+        ranges.append(fence)
+        index = fence.upperBound
+        continue
+      }
+      if let code = inlineCodeRange(startingAt: index, in: source) {
+        ranges.append(code)
+        index = code.upperBound
+        continue
+      }
+      index = source.index(after: index)
+    }
+    return ranges
+  }
+
+  private static func nextPreservedCodeStart(from index: String.Index, in source: String) -> String.Index {
+    var cursor = index
+    while cursor < source.endIndex {
+      let character = source[cursor]
+      if character == "`" || character == "~",
+         fenceRange(startingAt: cursor, in: source) != nil
+          || inlineCodeRange(startingAt: cursor, in: source) != nil {
+        return cursor
+      }
+      cursor = source.index(after: cursor)
+    }
+    return source.endIndex
+  }
+
+  private static func isLineStart(_ index: String.Index, in source: String) -> Bool {
+    index == source.startIndex || source[source.index(before: index)] == "\n"
+  }
+
+  private static func fenceRange(startingAt index: String.Index, in source: String) -> Range<String.Index>? {
+    guard isLineStart(index, in: source) else { return nil }
+    let lineEnd = source[index...].firstIndex(of: "\n") ?? source.endIndex
+    let line = String(source[index..<lineEnd])
+    guard let fence = openingFence(line.trimmingCharacters(in: .whitespaces)) else { return nil }
+    var cursor = lineEnd == source.endIndex ? source.endIndex : source.index(after: lineEnd)
+    while cursor < source.endIndex {
+      let nextEnd = source[cursor...].firstIndex(of: "\n") ?? source.endIndex
+      if isClosingFence(String(source[cursor..<nextEnd]), opening: fence) {
+        let closeEnd = nextEnd == source.endIndex ? source.endIndex : source.index(after: nextEnd)
+        return index..<closeEnd
+      }
+      cursor = nextEnd == source.endIndex ? source.endIndex : source.index(after: nextEnd)
+    }
+    return nil
+  }
+
+  private static func inlineCodeRange(startingAt index: String.Index, in source: String) -> Range<String.Index>? {
+    guard source[index] == "`" else { return nil }
+    if isLineStart(index, in: source) {
+      let lineEnd = source[index...].firstIndex(of: "\n") ?? source.endIndex
+      if openingFence(String(source[index..<lineEnd]).trimmingCharacters(in: .whitespaces)) != nil {
+        return nil
+      }
+    }
+    var ticks = 0
+    var cursor = index
+    while cursor < source.endIndex, source[cursor] == "`" {
+      ticks += 1
+      cursor = source.index(after: cursor)
+    }
+    guard ticks >= 1 else { return nil }
+    var search = cursor
+    while search < source.endIndex {
+      if source[search] == "`" {
+        var count = 0
+        var close = search
+        while close < source.endIndex, source[close] == "`" {
+          count += 1
+          close = source.index(after: close)
+        }
+        if count == ticks { return index..<close }
+        search = close
+      } else if source[search] == "\n", ticks == 1 {
+        return nil
+      } else {
+        search = source.index(after: search)
+      }
+    }
+    return nil
+  }
+
+  private static func tableCells(_ line: String) -> [String]? {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    guard trimmed.contains("|") else { return nil }
+    var body = trimmed
+    if body.hasPrefix("|") { body.removeFirst() }
+    if body.hasSuffix("|") { body.removeLast() }
+    let cells = body.split(separator: "|", omittingEmptySubsequences: false).map {
+      $0.trimmingCharacters(in: .whitespaces)
+    }
+    guard cells.count >= 2 else { return nil }
+    return cells
+  }
+
+  private static func isTableSeparator(_ line: String) -> Bool {
+    guard let cells = tableCells(line) else { return false }
+    return cells.allSatisfy { cell in
+      cell.allSatisfy { $0 == "-" || $0 == ":" || $0 == " " }
+        && cell.filter { $0 == "-" }.count >= 3
+    }
+  }
+
+  private static func alignedTableRow(_ cells: [String], width: Int) -> [String] {
+    if cells.count == width { return cells }
+    if cells.count > width { return Array(cells.prefix(width)) }
+    return cells + Array(repeating: "", count: width - cells.count)
+  }
+
+  private static func calloutBlock(from text: String) -> Block? {
+    let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
+    guard let first = lines.first else { return nil }
+    let firstLine = String(first)
+    guard let expression = try? NSRegularExpression(pattern: #"^\[!([A-Za-z]{2,16})\](?:\s+(.*))?$"#),
+          let match = expression.firstMatch(
+            in: firstLine,
+            range: NSRange(firstLine.startIndex..., in: firstLine)
+          ),
+          match.numberOfRanges > 1,
+          let kindRange = Range(match.range(at: 1), in: firstLine)
+    else { return nil }
+    let kind = String(firstLine[kindRange]).lowercased()
+    var body: [String] = []
+    if match.numberOfRanges > 2, let rest = Range(match.range(at: 2), in: firstLine) {
+      let trailing = String(firstLine[rest]).trimmingCharacters(in: .whitespaces)
+      if !trailing.isEmpty { body.append(trailing) }
+    }
+    body.append(contentsOf: lines.dropFirst().map(String.init))
+    let joined = body.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    return .callout(kind: kind, text: joined)
   }
 
   /// Splits HTML-like input in one pass rather than treating the first `>` as
@@ -798,6 +1030,8 @@ struct MarkdownContentView: View {
   var sourceURL: URL?
   var localImageURLs: [URL] = []
   var appendsUnusedLocalImages = true
+  /// 公众号相邻图中间只有空行，不能并成图集；抖音图文 / README 截图序列才并。
+  var groupsConsecutiveImages = true
   var readingFont: ResolvedReadingFont = .sans
   var primaryTextColor: Color = .primary
   var secondaryTextColor: Color = .secondary
@@ -808,6 +1042,9 @@ struct MarkdownContentView: View {
   /// 这里不知道页面上有什么，硬猜只会列出点了跳不到的死链接。
   var navigationModules: [ReadingModuleLink] = []
   var revealText: String?
+  var onFollowWikiLink: ((String) -> Void)?
+  /// 单击正文进入编辑。只给转写 / 笔记 / 稿这些可写正文。
+  var onRequestEdit: ((String?) -> Void)?
   @State private var rejectedLink = false
   @State private var showsOutlinePopover = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -937,6 +1174,7 @@ struct MarkdownContentView: View {
     sourceURL: URL? = nil,
     localImageURLs: [URL] = [],
     appendsUnusedLocalImages: Bool = true,
+    groupsConsecutiveImages: Bool = true,
     readingFont: ResolvedReadingFont = .sans,
     primaryTextColor: Color = .primary,
     secondaryTextColor: Color = .secondary,
@@ -944,12 +1182,15 @@ struct MarkdownContentView: View {
     showsPlainText: Binding<Bool> = .constant(false),
     showsInlinePlainTextToggle: Bool = true,
     navigationModules: [ReadingModuleLink] = [],
-    revealText: String? = nil
+    revealText: String? = nil,
+    onFollowWikiLink: ((String) -> Void)? = nil,
+    onRequestEdit: ((String?) -> Void)? = nil
   ) {
     self.source = source
     self.sourceURL = sourceURL
     self.localImageURLs = localImageURLs
     self.appendsUnusedLocalImages = appendsUnusedLocalImages
+    self.groupsConsecutiveImages = groupsConsecutiveImages
     self.readingFont = readingFont
     self.primaryTextColor = primaryTextColor
     self.secondaryTextColor = secondaryTextColor
@@ -958,6 +1199,8 @@ struct MarkdownContentView: View {
     self.showsInlinePlainTextToggle = showsInlinePlainTextToggle
     self.navigationModules = navigationModules
     self.revealText = revealText
+    self.onFollowWikiLink = onFollowWikiLink
+    self.onRequestEdit = onRequestEdit
   }
 
   var body: some View {
@@ -990,7 +1233,8 @@ struct MarkdownContentView: View {
           ),
           accent: NSColor(accentColor),
           onOpenLink: { url in _ = openValidated(url) },
-          revealText: revealText
+          revealText: revealText,
+          onRequestEdit: onRequestEdit
         )
         .frame(maxWidth: .infinity, alignment: .leading)
       } else if localImageURLs.isEmpty && LocalMarkdownImageLayout.quotedTweetRange(in: source) == nil {
@@ -1004,7 +1248,8 @@ struct MarkdownContentView: View {
             ReadingRenderCache.gallerySegments(
               markdown: source,
               localImageURLs: localImageURLs,
-              appendsUnusedLocalImages: appendsUnusedLocalImages
+              appendsUnusedLocalImages: appendsUnusedLocalImages,
+              groupsConsecutiveImages: groupsConsecutiveImages
             ).enumerated()
           ),
           id: \.offset
@@ -1026,6 +1271,9 @@ struct MarkdownContentView: View {
         .accessibilityIdentifier("history-content-markdown")
       }
     }
+    .environment(\.openURL, OpenURLAction { url in
+      openValidated(url)
+    })
     .alert("无法打开链接", isPresented: $rejectedLink) {
       Button("好", role: .cancel) {}
     } message: {
@@ -1059,6 +1307,8 @@ struct MarkdownContentView: View {
       }()
       if case let .code(language, content) = block {
         runs.append((index, .code(language: language, content: content)))
+      } else if case let .table(headers, rows) = block {
+        runs.append((index, .table(headers: headers, rows: rows)))
       } else if !startsSection, case var .text(accumulated) = runs.last?.run {
         accumulated.append(block)
         runs[runs.count - 1].run = .text(accumulated)
@@ -1106,10 +1356,14 @@ struct MarkdownContentView: View {
         ),
         accent: NSColor(accentColor),
         onOpenLink: { url in _ = openValidated(url) },
-        revealText: revealText
+        revealText: revealText,
+        onRequestEdit: onRequestEdit
       )
     case let .code(language, content):
       codeBlock(language: language, content: content)
+        .padding(.bottom, 20)
+    case let .table(headers, rows):
+      markdownTable(headers: headers, rows: rows)
         .padding(.bottom, 20)
     }
   }
@@ -1117,6 +1371,7 @@ struct MarkdownContentView: View {
   private enum StructuredRun {
     case text([MarkdownPresentation.Block])
     case code(language: String?, content: String)
+    case table(headers: [String], rows: [[String]])
   }
 
   @ViewBuilder
@@ -1232,8 +1487,39 @@ struct MarkdownContentView: View {
           .frame(width: 3)
         }
         .padding(.bottom, 20)
+    case let .callout(kind, text):
+      VStack(alignment: .leading, spacing: 6) {
+        Text(MarkdownPresentation.calloutLabel(kind))
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(MarkdownPresentation.calloutColor(kind, accent: accentColor))
+        if !text.isEmpty {
+          inlineBody(text, baseSize: 15.5)
+            .foregroundStyle(secondaryTextColor)
+            .lineSpacing(9)
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.vertical, 12)
+      .padding(.horizontal, 14)
+      .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+      .overlay(alignment: .leading) {
+        UnevenRoundedRectangle(
+          topLeadingRadius: 10,
+          bottomLeadingRadius: 10,
+          bottomTrailingRadius: 0,
+          topTrailingRadius: 0,
+          style: .continuous
+        )
+        .fill(MarkdownPresentation.calloutColor(kind, accent: accentColor).opacity(0.85))
+        .frame(width: 3)
+      }
+      .padding(.bottom, 20)
+      .accessibilityIdentifier("history-content-markdown-callout")
     case let .code(language, content):
       codeBlock(language: language, content: content)
+        .padding(.bottom, 20)
+    case let .table(headers, rows):
+      markdownTable(headers: headers, rows: rows)
         .padding(.bottom, 20)
     }
   }
@@ -1318,12 +1604,56 @@ struct MarkdownContentView: View {
   }
 
   private func openValidated(_ url: URL) -> OpenURLAction.Result {
+    if let title = WikiLinkURL.title(from: url) {
+      onFollowWikiLink?(title)
+      return .handled
+    }
     guard let resolved = try? MarkdownLinkResolver.resolve(url, sourceURL: sourceURL) else {
       rejectedLink = true
       return .handled
     }
     NSWorkspace.shared.open(resolved)
     return .handled
+  }
+
+  private func markdownTable(headers: [String], rows: [[String]]) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      tableRow(headers, isHeader: true)
+      Rectangle().fill(primaryTextColor.opacity(0.12)).frame(height: 1)
+      ForEach(rows.indices, id: \.self) { index in
+        tableRow(rows[index], isHeader: false)
+        if index < rows.count - 1 {
+          Rectangle().fill(primaryTextColor.opacity(0.06)).frame(height: 1)
+        }
+      }
+    }
+    .overlay(
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+        .strokeBorder(primaryTextColor.opacity(0.1), lineWidth: 1)
+    )
+    .accessibilityIdentifier("history-content-markdown-table")
+  }
+
+  private func tableRow(_ cells: [String], isHeader: Bool) -> some View {
+    HStack(alignment: .top, spacing: 0) {
+      ForEach(cells.indices, id: \.self) { index in
+        Group {
+          if isHeader {
+            Text(stripInlineMarkers(cells[index]))
+              .font(readingFont.scaled(designSize: 14.5, weight: .semibold))
+              .foregroundStyle(primaryTextColor)
+          } else {
+            inlineBody(cells[index], baseSize: 14.5)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+        if index < cells.count - 1 {
+          Rectangle().fill(primaryTextColor.opacity(0.08)).frame(width: 1)
+        }
+      }
+    }
   }
 }
 

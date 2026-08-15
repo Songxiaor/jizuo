@@ -62,6 +62,7 @@ let package = Package(
   .testTarget(
     name: "LinkDigestAdaptersTests",
     dependencies: ["LinkDigestAdapters"],
+    resources: [.copy("Fixtures")],
     linkerSettings: [.linkedFramework("Network")]
   ),
   .testTarget(name: "LinkDigestAppTests", dependencies: ["LinkDigestApp", "LinkDigestAdapters", "LinkDigestCore", "LinkDigestPersistence"]),

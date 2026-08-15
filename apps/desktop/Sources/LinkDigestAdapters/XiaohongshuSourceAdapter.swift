@@ -11,11 +11,13 @@ import LinkDigestCore
 /// 用户在设置里登录小红书后，抓取会带上那份 App 自有会话（隔离 WebKit 分区里的
 /// Cookie，不是系统浏览器的），此时才真去取正文。
 public struct XiaohongshuSourceAdapter: SourceAdapting, Sendable {
+  private let plainFetcher: (any WebPageFetcher)?
   private let sessionFetcher: SessionAwareHTMLFetcher?
   private let hasSession: @Sendable () async -> Bool
   private let now: @Sendable () -> Date
 
   public init() {
+    self.plainFetcher = nil
     self.sessionFetcher = nil
     self.hasSession = { false }
     self.now = Date.init
@@ -27,11 +29,12 @@ public struct XiaohongshuSourceAdapter: SourceAdapting, Sendable {
     cookieHeader: @escaping @Sendable () async -> String?,
     now: @escaping @Sendable () -> Date = Date.init
   ) {
+    self.plainFetcher = fetcher
     self.sessionFetcher = SessionAwareHTMLFetcher(
       plain: fetcher,
       resources: resources,
       cookieHeader: cookieHeader,
-      // Cookie 绝不能跟着跳到站外。
+      // Cookie 只发给笔记主站，绝不跟着短链域走。
       allowsRedirectTarget: { XiaohongshuURL.matchesSessionHost($0) },
       referer: "https://www.xiaohongshu.com/"
     )
@@ -46,12 +49,31 @@ public struct XiaohongshuSourceAdapter: SourceAdapting, Sendable {
   public func capture(url: URL) async throws -> CapturedDocument {
     guard XiaohongshuURL.matches(url) else { throw ManualLinkError.invalidURL }
     // 没有会话就不抓。抓了也只会拿到登录墙，然后把它当正文入库。
-    guard let sessionFetcher, await hasSession() else {
+    guard let sessionFetcher, let plainFetcher, await hasSession() else {
       throw ManualLinkError.loginRequired
+    }
+    let targetURL: URL
+    if XiaohongshuURL.isShortLink(url) {
+      let resolved: WebPageFetchResult
+      do {
+        resolved = try await plainFetcher.fetch(url: url)
+      } catch let error as ManualLinkError {
+        throw error
+      } catch is CancellationError {
+        throw ManualLinkError.cancelled
+      } catch {
+        throw ManualLinkError.network
+      }
+      guard XiaohongshuURL.matchesSessionHost(resolved.url) else {
+        throw ManualLinkError.loginRequired
+      }
+      targetURL = resolved.url
+    } else {
+      targetURL = url
     }
     let page: WebPageFetchResult
     do {
-      page = try await sessionFetcher.fetch(url: url)
+      page = try await sessionFetcher.fetch(url: targetURL)
     } catch let error as ManualLinkError {
       throw error
     } catch is CancellationError {
@@ -66,7 +88,11 @@ public struct XiaohongshuSourceAdapter: SourceAdapting, Sendable {
       throw ManualLinkError.loginRequired
     }
     let text = XiaohongshuPageParser.documentText(
-      title: parsed.title, author: parsed.author, description: parsed.description)
+      title: parsed.title,
+      author: parsed.author,
+      description: parsed.description,
+      imageURL: parsed.imageURL
+    )
     guard !text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty else {
       throw ManualLinkError.loginRequired
     }
@@ -88,26 +114,39 @@ public struct XiaohongshuSourceAdapter: SourceAdapting, Sendable {
 }
 
 public enum XiaohongshuURL {
-  /// 短链 `xhslink.com` 也算：它 302 到 `xiaohongshu.com`，同样需要登录才有正文，
-  /// 放过去只会让通用路径多跳一次再撞同一堵墙。
-  private static let hosts = ["xiaohongshu.com", "xhslink.com"]
+  /// 短链 `xhslink.com` / `xhslink.cn` 也算：手机分享现在常用 `.cn`。
+  /// 它们 302 到 `xiaohongshu.com`，同样需要登录才有正文。
+  private static let claimHosts = ["xiaohongshu.com", "xhslink.com", "xhslink.cn"]
+  private static let sessionHosts = ["xiaohongshu.com"]
+  private static let shortLinkHosts = ["xhslink.com", "xhslink.cn"]
 
   public static func matches(_ url: URL) -> Bool {
     guard ["http", "https"].contains(url.scheme?.lowercased()),
-          var host = url.host?.lowercased(), !host.isEmpty
+          let host = normalizedHost(url.host)
     else { return false }
-    if host.hasPrefix("www.") { host = String(host.dropFirst(4)) }
-    // 后缀匹配必须带点，否则 `xiaohongshu.com.evil.test` 会被认成自己人。
-    return hosts.contains { host == $0 || host.hasSuffix(".\($0)") }
+    return claimHosts.contains { host == $0 || host.hasSuffix(".\($0)") }
   }
 
   /// 带会话的请求允许跳到哪些 host——决定 Cookie 能跟到哪，比 `matches` 严。
+  /// 短链域只用来展开，不接收登录态。
   public static func matchesSessionHost(_ url: URL) -> Bool {
     guard url.scheme?.lowercased() == "https",
-          var host = url.host?.lowercased(), !host.isEmpty
+          let host = normalizedHost(url.host)
     else { return false }
+    return sessionHosts.contains { host == $0 || host.hasSuffix(".\($0)") }
+  }
+
+  public static func isShortLink(_ url: URL) -> Bool {
+    guard ["http", "https"].contains(url.scheme?.lowercased()),
+          let host = normalizedHost(url.host)
+    else { return false }
+    return shortLinkHosts.contains { host == $0 || host.hasSuffix(".\($0)") }
+  }
+
+  private static func normalizedHost(_ raw: String?) -> String? {
+    guard var host = raw?.lowercased(), !host.isEmpty else { return nil }
     if host.hasPrefix("www.") { host = String(host.dropFirst(4)) }
-    return hosts.contains { host == $0 || host.hasSuffix(".\($0)") }
+    return host
   }
 }
 
@@ -121,6 +160,7 @@ public enum XiaohongshuPageParser {
     public let title: String
     public let author: String?
     public let description: String
+    public let imageURL: URL?
   }
 
   public static func parse(html: String) -> Parsed? {
@@ -148,7 +188,8 @@ public enum XiaohongshuPageParser {
     return Parsed(
       title: title,
       author: metaContent(html: html, property: "og:xhs:note_user_nickname"),
-      description: ogDescription
+      description: ogDescription,
+      imageURL: noteImageURL(html: html)
     )
   }
 
@@ -172,12 +213,34 @@ public enum XiaohongshuPageParser {
     return boilerplateMarkers.contains { description.contains($0) }
   }
 
-  public static func documentText(title: String, author: String?, description: String) -> String {
+  public static func documentText(
+    title: String,
+    author: String?,
+    description: String,
+    imageURL: URL? = nil
+  ) -> String {
     var lines: [String] = []
     if let author, !author.isEmpty { lines.append("作者：\(author)") }
     if !lines.isEmpty { lines.append("") }
     lines.append(description)
+    if let imageURL {
+      lines.append("")
+      lines.append("![](\(imageURL.absoluteString))")
+    }
     return lines.joined(separator: "\n").trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+  }
+
+  /// 笔记封面。登录墙站点 logo 不在 xhscdn 上，parse 已经挡过外壳。
+  static func noteImageURL(html: String) -> URL? {
+    guard let raw = metaContent(html: html, property: "og:image"),
+          let url = URL(string: raw),
+          url.scheme?.lowercased() == "https",
+          url.user == nil,
+          url.password == nil,
+          let host = url.host?.lowercased(),
+          host == "xhscdn.com" || host.hasSuffix(".xhscdn.com")
+    else { return nil }
+    return url
   }
 
   /// property 和 name 两种写法都要认：小红书两种都下发过。
