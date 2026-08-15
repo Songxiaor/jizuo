@@ -49,7 +49,7 @@ export type MediaDescriptor = {
 export type CaptureEnvelopeV1 = {
   version: 1; requestId: string; createdAt: string; idempotencyKey?: string;
   requestedAction?: CaptureRequestedAction;
-  source: { kind: "browser_capture"; url: string; title: string | null; platform: CapturePlatform };
+  source: { kind: "browser_capture"; url: string; title: string | null; platform: CapturePlatform; faviconURL?: string };
   capture: { method: "rendered_dom" | "selection"; text: string; characterCount: number; completeness: "full_article" | "visible_only" | "selection_only" | "unknown"; capturedAt: string };
   evidence: { sourceLabel: string; usedCookie: false };
   /** Optional Loop V media block. Pure-text captures omit this field entirely. */

@@ -555,16 +555,28 @@ final class ManualLinkViewModelTests: XCTestCase {
 
   func testExplicitClipboardReadExtractsTheSingleURLFromDouyinShareText() {
     let clipboard = ManualVMClipboard(
-      "4.82 复制打开抖音，看看【青山言的作品】食伤生财真相：盲派讲透 https://v.douyin.com/UX1kjPiekmQ/ 01/12 h@o.QK :8pm YMj:/"
+      "1.53 复制打开抖音，看看【呜呼bomb的图文作品】非常推荐git上这个讲Harness的课程《lea... https://v.douyin.com/ez9W9I65x-U/ QxF:/ Q@k.Ch 04/17 :7pm"
     )
     let model = makeModel(clipboard: clipboard)
 
     model.readClipboardAndOpen()
 
     XCTAssertEqual(clipboard.reads, 1)
-    XCTAssertEqual(model.input, "https://v.douyin.com/UX1kjPiekmQ/")
+    XCTAssertEqual(model.input, "https://v.douyin.com/ez9W9I65x-U/")
     XCTAssertTrue(model.isPresented)
     XCTAssertNil(model.errorMessage)
+  }
+
+  func testHistoricalRecapturePrefillsExistingCaptureSheetWithoutReadingClipboard() {
+    let clipboard = ManualVMClipboard("https://private.example.test/clipboard")
+    let model = makeModel(clipboard: clipboard)
+
+    model.openForRecapture("https://www.douyin.com/note/7673819714897187302")
+
+    XCTAssertTrue(model.isPresented)
+    XCTAssertEqual(model.input, "https://www.douyin.com/note/7673819714897187302")
+    XCTAssertEqual(model.state, .idle)
+    XCTAssertEqual(clipboard.reads, 0)
   }
 
   func testAutomaticClipboardSuggestionDoesNotPublishDouyinShareText() {
@@ -791,6 +803,45 @@ final class ManualLinkViewModelTests: XCTestCase {
     let outcome = model.enqueueXBookmarks(["1234567890123"])
     XCTAssertEqual(outcome, .init(queued: 0, skipped: 1))
     XCTAssertTrue(model.pendingCaptures.isEmpty)
+  }
+
+  func testInvalidNonemptyInputExplainsWhySubmitIsDisabled() {
+    let model = makeModel(clipboard: ManualVMClipboard(nil))
+    model.input = "这不是网页链接"
+    XCTAssertFalse(model.canSubmit)
+    XCTAssertEqual(
+      model.inputValidationMessage,
+      "请输入一条完整网页链接，或只包含一条链接的分享文案。"
+    )
+
+    model.input = "https://example.test/article"
+    XCTAssertTrue(model.canSubmit)
+    XCTAssertNil(model.inputValidationMessage)
+  }
+
+  func testAutomaticModelCallDisclosureCountsIndependentRemoteSteps() {
+    XCTAssertEqual(
+      AutomaticModelCallDisclosure(
+        autoSummarize: true,
+        autoMindMap: true,
+        mayAutoTidyVideoTranscript: false
+      ).message,
+      "添加后将自动抓取并执行总结、脑图，预计产生 2 次模型调用。可在设置的「生成偏好」里关闭。"
+    )
+    XCTAssertNil(
+      AutomaticModelCallDisclosure(
+        autoSummarize: false,
+        autoMindMap: false,
+        mayAutoTidyVideoTranscript: false
+      ).message
+    )
+    XCTAssertTrue(
+      AutomaticModelCallDisclosure(
+        autoSummarize: false,
+        autoMindMap: false,
+        mayAutoTidyVideoTranscript: true
+      ).message?.contains("额外产生 1 次模型调用") == true
+    )
   }
 
   private func makeModel(clipboard: ManualVMClipboard, repository: ManualVMRepository = ManualVMRepository(), sink: ManualVMSink = ManualVMSink()) -> ManualLinkViewModel {

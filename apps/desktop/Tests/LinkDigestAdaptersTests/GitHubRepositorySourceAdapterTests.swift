@@ -350,6 +350,43 @@ final class GitHubRepositorySourceAdapterTests: XCTestCase {
       "负缓存过期后必须重新尝试"
     )
   }
+
+  /// ScienceDirect 这类受保护页面在浏览器里声明了跨域图标，但 App 单独抓 HTML
+  /// 只能拿到机器人外壳。浏览器观察到的精确地址必须能越过旧 `.miss`，同时仍然
+  /// 走 SafeResourceFetching 与图片字节校验。
+  func testBrowserDeclaredFaviconSupersedesNegativeCacheAndStaysKeyedBySourceHost() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-browser-favicon.\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let source = URL(string: "https://www.sciencedirect.com/science/article/pii/S0148296323008524")!
+    let declared = URL(string: "https://sciencedirect.elseviercdn.cn/shared-assets/103/images/favSD.ico")!
+    let fixture = GitHubFixtureResourceFetcher([
+      declared.absoluteString: .init(
+        url: declared,
+        statusCode: 200,
+        contentType: "image/vnd.microsoft.icon",
+        body: Data([0x00, 0x00, 0x01, 0x00, 0x02, 0x00])
+      )
+    ])
+    let cache = WebsiteFaviconCache(applicationSupportRoot: root)
+
+    let initial = await cache.localImageURL(fetchingIfNeededFor: source, resources: fixture)
+    XCTAssertNil(initial)
+    let requestsAfterMiss = fixture.requests.count
+    XCTAssertGreaterThan(requestsAfterMiss, 0)
+
+    let local = await cache.localImageURL(
+      fetchingBrowserDeclaredURL: declared,
+      for: source,
+      resources: fixture
+    )
+    XCTAssertNotNil(local)
+    XCTAssertEqual(cache.localImageURL(for: source), local)
+    XCTAssertEqual(fixture.requests.dropFirst(requestsAfterMiss).map(\.url), [declared])
+    XCTAssertTrue(fixture.requests.last?.allowsRedirectTarget(
+      URL(string: "https://another-safe-cdn.example/icon.ico")!
+    ) ?? false)
+  }
 }
 
 private final class FaviconCacheTestClock: @unchecked Sendable {

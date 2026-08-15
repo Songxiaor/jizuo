@@ -257,9 +257,11 @@ final class BatchSummaryTests: XCTestCase {
       // 模拟批量改写 currentCapture 触发的 onChange。
       model.startAutoPipeline(
         taskID: taskID,
+        expectsMedia: false,
         transcribe: false, tidy: false, summarize: true, mindMap: false,
         tidyModel: nil,
-        summarizeAction: { channel?.autoPipelineSummarizeCalls += 1 }
+        summarizeAction: { _ in channel?.autoPipelineSummarizeCalls += 1; return false },
+        isSummaryBusy: { false }
       )
     }
 
@@ -283,9 +285,11 @@ final class BatchSummaryTests: XCTestCase {
     var claimed = false
     model.startAutoPipeline(
       taskID: touched,
+      expectsMedia: false,
       transcribe: false, tidy: false, summarize: true, mindMap: false,
       tidyModel: nil,
-      summarizeAction: { claimed = true }
+      summarizeAction: { _ in claimed = true; return false },
+      isSummaryBusy: { false }
     )
     await waitUntil(timeout: .seconds(3)) { claimed }
     XCTAssertTrue(claimed, "批量处理过的条目被永久排除在自动管线之外了")

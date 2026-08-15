@@ -95,6 +95,22 @@ enum BatchSummaryItemState: Sendable {
   case unreadable
 }
 
+/// 一条新捕获的自动处理配方。队列只活在当前进程；真正产物仍逐步写回本机历史。
+/// 闭包显式接收 detail，不能再偷读「此刻选中的那一条」。
+private struct AutoPipelineRequest {
+  let taskID: TaskID
+  let expectsMedia: Bool
+  let transcribe: Bool
+  let tidy: Bool
+  let summarize: Bool
+  let mindMap: Bool
+  let tidyModel: String?
+  let configurationGeneration: UUID
+  let summarizeAction: @MainActor (HistoryDetailProjection) async -> Bool
+  let isSummaryBusy: @MainActor () -> Bool
+  var readAttempts = 0
+}
+
 /// 批量总结的实时进度。`skipped` 指执行期间才发现可跳过的条目（预检之后、
 /// 轮到它之前被别的路径总结掉了）。
 struct BatchSummaryProgress: Sendable, Equatable {
@@ -884,6 +900,7 @@ final class HistoryViewModel: ObservableObject {
   private var deleteTask: Task<Void, Never>?
   private var exportTask: Task<Void, Never>?
   private var faviconTask: Task<Void, Never>?
+  private var browserDeclaredFaviconTasks: [TaskID: Task<Void, Never>] = [:]
   private var tagsTask: Task<Void, Never>?
   private var navigationCountsTask: Task<Void, Never>?
   private var tagMutationTask: Task<Void, Never>?
@@ -950,7 +967,7 @@ final class HistoryViewModel: ObservableObject {
     self.nowMilliseconds = nowMilliseconds
   }
 
-  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); faviconTask?.cancel(); tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel(); batchSummaryTask?.cancel() }
+  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel(); batchSummaryTask?.cancel(); autoPipelineTask?.cancel(); requestedActionTask?.cancel() }
 
   var canDelete: Bool { history != nil && !isReadOnly && !selectedTaskIDs.isEmpty && !isDeleting }
   var canExport: Bool { history != nil && selectedTaskID != nil && !isPreparingExport }
@@ -1126,7 +1143,7 @@ final class HistoryViewModel: ObservableObject {
     }
     hasConfiguredHistory = true
     configurationGeneration = UUID()
-    pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); faviconTask?.cancel(); tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); invalidateExportPreparation()
+    pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; browserDeclaredFaviconTasks = [:]; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); invalidateExportPreparation()
     imageBackfillAttemptedSnapshotIDs = []
     self.history = history; self.isReadOnly = isReadOnly
     historyReadOnlyReason = isReadOnly ? readOnlyReason : nil
@@ -1139,6 +1156,8 @@ final class HistoryViewModel: ObservableObject {
     isDeleteOutcomePresented = false; deleteOutcomeMessage = ""
     isLoadingNextPage = false; isDeleting = false
     batchSummaryTask?.cancel(); batchSummaryTask = nil; batchSummaryProgress = nil
+    autoPipelineTask?.cancel(); autoPipelineTask = nil
+    autoPipelineQueue = []; autoPipelineQueuedTaskIDs = []; autoPipelineHandledTaskIDs = []
     pendingBatchSummaryPlan = nil; isPreparingBatchSummary = false
     isBatchSummaryConfirmationPresented = false; isBatchSummaryOutcomePresented = false
     batchSummaryOutcomeMessage = ""
@@ -1235,17 +1254,32 @@ final class HistoryViewModel: ObservableObject {
 
   func requestTranscription() {
     transcriptionUsesOnlineService = false
-    guard let history, let videoTranscriber, let detail, let fileURL = localMediaFileURL else {
+    guard let detail, let fileURL = localMediaFileURL else {
       transcriptionState = .failed("找不到可转写的本机视频。")
       return
     }
+    _ = beginLocalTranscription(detail: detail, fileURL: fileURL)
+  }
+
+  /// 手动按钮和自动队列共用同一条本机转写状态机。输入显式带 detail/fileURL，
+  /// 后台处理另一条任务时不需要篡改用户当前选中的详情。
+  @discardableResult
+  private func beginLocalTranscription(
+    detail: HistoryDetailProjection,
+    fileURL: URL
+  ) -> Bool {
+    transcriptionUsesOnlineService = false
+    guard let history, let videoTranscriber else {
+      transcriptionState = .failed("找不到可转写的本机视频。")
+      return false
+    }
     guard !isReadOnly else {
       transcriptionState = .failed("历史记录当前为只读模式，不能保存转写结果。请恢复可写存储后重试。")
-      return
+      return false
     }
     guard fileURL.isFileURL else {
       transcriptionState = .failed(LocalVideoTranscriptionError.invalidLocalFile.userMessage)
-      return
+      return false
     }
 
     transcriptionTask?.cancel()
@@ -1253,7 +1287,7 @@ final class HistoryViewModel: ObservableObject {
     transcriptionRequestID = requestID
     guard let mediaID = detail.media?.id else {
       transcriptionState = .failed("找不到可转写的本机视频。")
-      return
+      return false
     }
     transcriptionTaskID = detail.task.id
     transcriptionText = ""
@@ -1321,6 +1355,7 @@ final class HistoryViewModel: ObservableObject {
         self?.transcriptionState = .failed(error.userMessage)
       }
     }
+    return true
   }
 
   func requestRemoteTranscription(_ descriptor: MediaDescriptor, taskID: TaskID) {
@@ -1712,6 +1747,8 @@ final class HistoryViewModel: ObservableObject {
 
   /// 每个任务只自动处理一次；重启 App 后不追溯旧内容。
   private var autoPipelineHandledTaskIDs: Set<TaskID> = []
+  private var autoPipelineQueuedTaskIDs: Set<TaskID> = []
+  private var autoPipelineQueue: [AutoPipelineRequest] = []
   private var autoPipelineTask: Task<Void, Never>?
   private var requestedActionHandledTaskIDs: Set<TaskID> = []
   private var requestedActionTask: Task<Void, Never>?
@@ -1739,101 +1776,190 @@ final class HistoryViewModel: ObservableObject {
   /// 存储（首次目的地仍确认一次）。用户切走当前条目时静默停止后续步骤。
   func startAutoPipeline(
     taskID: TaskID,
+    expectsMedia: Bool,
     transcribe: Bool,
     tidy: Bool,
     summarize: Bool,
     mindMap: Bool,
     tidyModel: String?,
-    summarizeAction: @escaping @MainActor () async -> Void
+    summarizeAction: @escaping @MainActor (HistoryDetailProjection) async -> Bool,
+    isSummaryBusy: @escaping @MainActor () -> Bool
   ) {
     guard transcribe || tidy || summarize || mindMap else { return }
     // 批量总结会逐条改写 `currentCapture`，那不是「新内容到达」。早退必须发生在
     // 下面「标记已处理」之前——否则批量处理过的条目会被永久排除在自动管线之外，
     // 以后真的重新捕获也不会再自动处理，而且没有任何迹象。
     guard batchSummaryProgress == nil else { return }
-    guard !autoPipelineHandledTaskIDs.contains(taskID) else { return }
-    autoPipelineHandledTaskIDs.insert(taskID)
-    autoPipelineTask?.cancel()
+    guard !autoPipelineHandledTaskIDs.contains(taskID),
+          !autoPipelineQueuedTaskIDs.contains(taskID) else { return }
+    autoPipelineQueuedTaskIDs.insert(taskID)
+    autoPipelineQueue.append(.init(
+      taskID: taskID,
+      expectsMedia: expectsMedia,
+      transcribe: transcribe,
+      tidy: tidy,
+      summarize: summarize,
+      mindMap: mindMap,
+      tidyModel: tidyModel,
+      configurationGeneration: configurationGeneration,
+      summarizeAction: summarizeAction,
+      isSummaryBusy: isSummaryBusy
+    ))
+    runAutoPipelineQueueIfNeeded()
+  }
+
+  private func runAutoPipelineQueueIfNeeded() {
+    guard autoPipelineTask == nil, !autoPipelineQueue.isEmpty else { return }
     autoPipelineTask = Task { [weak self] in
       guard let self else { return }
-      // 详情就绪（含媒体解析）。
-      guard await self.waitFor(timeoutSeconds: 15, condition: {
-        self.selectedTaskID == taskID && self.detailState == .loaded && self.detail?.task.id == taskID
-      }) else { return }
-
-      // 1. 本机转写：只处理已落地的本机视频；模型未就绪不弹下载弹窗，跳过。
-      let hasTranscript = self.detail.map { Self.latestTranscriptText(in: $0) != nil } ?? false
-      if transcribe, !hasTranscript {
-        // 自动保存的视频可能还在下载，短暂等待落地；纯文本条目等不到即跳过。
-        _ = await self.waitFor(timeoutSeconds: 30, condition: {
-          self.selectedTaskID != taskID || self.localMediaFileURL != nil
-        })
-        guard self.selectedTaskID == taskID else { return }
-        if self.localMediaFileURL != nil, self.canTranscribeVideo {
-          self.requestTranscription()
-          _ = await self.waitFor(timeoutSeconds: 1_800, condition: {
-            self.selectedTaskID != taskID || {
-              switch self.transcriptionState(for: taskID) {
-              case .completed, .failed, .cancelled, .awaitingModelDownload: true
-              default: false
-              }
-            }()
-          })
-          // 需要下载模型时不自动下载：收起弹窗，转写留给用户手动。
-          if self.transcriptionState(for: taskID) == .awaitingModelDownload {
-            self.cancelModelDownloadConfirmation()
-          }
+      // 连续抓一批时先让接收端安静下来，避免 AppModel 正在准备首条模型调用时
+      // 又被下一条 currentCapture 覆盖。队列仍是权威，不靠这段延迟保证正确性。
+      try? await Task.sleep(for: .milliseconds(500))
+      while !Task.isCancelled, !self.autoPipelineQueue.isEmpty {
+        var request = self.autoPipelineQueue.removeFirst()
+        let detailWasReadable = await self.runAutoPipeline(request)
+        guard !Task.isCancelled else { return }
+        if !detailWasReadable,
+           request.configurationGeneration == self.configurationGeneration,
+           request.readAttempts < 2 {
+          request.readAttempts += 1
+          self.autoPipelineQueue.append(request)
+          try? await Task.sleep(for: .seconds(1))
+        } else {
+          self.autoPipelineQueuedTaskIDs.remove(request.taskID)
+          self.autoPipelineHandledTaskIDs.insert(request.taskID)
         }
       }
-      guard self.selectedTaskID == taskID else { return }
-
-      // 2. 整理：勾选即授权，跳过确认弹窗。
-      let tidySourceReady = self.transcriptionState(for: taskID) == .completed
-        || self.detail.map { Self.latestTranscriptText(in: $0) != nil } == true
-      if tidy, tidySourceReady {
-        self.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)
-        _ = await self.waitFor(timeoutSeconds: 600, condition: {
-          self.selectedTaskID != taskID || !self.transcriptTidyState(for: taskID).isActive
-        })
-      }
-      guard self.selectedTaskID == taskID else { return }
-
-      // 3. 总结：已有完成的总结 Run 则跳过。
-      let hasSummary = self.detail?.runs.contains {
-        $0.run.kind == .summarize && $0.run.status == .completed
-      } == true
-      if summarize, !hasSummary {
-        await summarizeAction()
-        // 总结产物要进入 detail 投影，脑图才能优先吃到总结。
-        self.loadDetailForSelection()
-        _ = await self.waitFor(timeoutSeconds: 15, condition: {
-          self.selectedTaskID != taskID || self.detailState == .loaded
-        })
-      }
-      guard self.selectedTaskID == taskID else { return }
-
-      // 4. 脑图：已有脑图则跳过；分支标题会自动写入标签。
-      if mindMap, self.mindMapRecord == nil {
-        self.startMindMapGenerationAuto(taskID: taskID)
-      }
+      self.autoPipelineTask = nil
+      if !self.autoPipelineQueue.isEmpty { self.runAutoPipelineQueueIfNeeded() }
     }
   }
 
-  /// 与手动路径同一状态机，只是不弹确认（设置勾选即持久授权）。
-  func startTranscriptTidyAuto(taskID: TaskID, model: String?) {
-    requestTranscriptTidy(taskID: taskID, model: model)
-    if isTranscriptTidyConfirmationPresented {
-      isTranscriptTidyConfirmationPresented = false
-      confirmTranscriptTidy()
+  /// 返回 false 只表示刚落库的 detail 暂时读不到，队列会有限重试；某个可选步骤
+  /// 因模型/媒体未就绪而跳过不应让整条队列永久打转。
+  private func runAutoPipeline(_ request: AutoPipelineRequest) async -> Bool {
+    guard request.configurationGeneration == configurationGeneration,
+          var storedDetail = await waitForStoredDetail(taskID: request.taskID, timeoutSeconds: 15)
+    else { return false }
+
+    // 1. 本机转写。只有捕获本身声明了媒体才等待下载落地；纯文本不会白等 30 秒。
+    if request.transcribe,
+       request.expectsMedia,
+       Self.latestTranscriptText(in: storedDetail) == nil {
+      if storedDetail.media == nil {
+        storedDetail = await waitForStoredDetail(
+          taskID: request.taskID,
+          timeoutSeconds: 30,
+          where: { $0.media != nil || Self.latestTranscriptText(in: $0) != nil }
+        ) ?? storedDetail
+      }
+      if Self.latestTranscriptText(in: storedDetail) == nil,
+         let media = storedDetail.media,
+         let mediaStore,
+         let lease = try? mediaStore.resolve(media) {
+        var channelAvailable = !transcriptionState.isActive
+        if !channelAvailable {
+          channelAvailable = await waitFor(timeoutSeconds: 1_800) {
+            !self.transcriptionState.isActive
+          }
+        }
+        if channelAvailable,
+           beginLocalTranscription(detail: storedDetail, fileURL: lease.url) {
+          _ = await waitFor(timeoutSeconds: 1_800) {
+            switch self.transcriptionState(for: request.taskID) {
+            case .completed, .failed, .cancelled, .awaitingModelDownload: true
+            default: false
+            }
+          }
+          if transcriptionState(for: request.taskID) == .awaitingModelDownload {
+            cancelModelDownloadConfirmation()
+          }
+          withExtendedLifetime(lease) {}
+          storedDetail = await loadStoredDetail(taskID: request.taskID) ?? storedDetail
+        }
+      }
     }
+
+    // 2. 整理。使用这条任务自己的持久化 detail，不读取当前 UI 选择。
+    if request.tidy, Self.latestTranscriptText(in: storedDetail) != nil {
+      var channelAvailable = !transcriptTidyState.isActive
+      if !channelAvailable {
+        channelAvailable = await waitFor(timeoutSeconds: 600) {
+          !self.transcriptTidyState.isActive
+        }
+      }
+      if channelAvailable,
+         startTranscriptTidyAuto(detail: storedDetail, model: request.tidyModel) {
+        _ = await waitFor(timeoutSeconds: 600) {
+          !self.transcriptTidyState(for: request.taskID).isActive
+        }
+        storedDetail = await loadStoredDetail(taskID: request.taskID) ?? storedDetail
+      }
+    }
+
+    // 3. 总结。AppModel 的模型通道是全局单例；先等已有运行释放，再等待本次
+    // 真正终止并回读产物，脑图才会优先使用总结而不是原文。
+    if request.summarize, !batchSummaryIsSummarized(storedDetail) {
+      var channelAvailable = !request.isSummaryBusy()
+      if !channelAvailable {
+        channelAvailable = await waitFor(timeoutSeconds: 1_800) {
+          !request.isSummaryBusy()
+        }
+      }
+      if channelAvailable {
+        let started = await request.summarizeAction(storedDetail)
+        if started {
+          _ = await waitFor(timeoutSeconds: 1_800) { !request.isSummaryBusy() }
+          storedDetail = await loadStoredDetail(taskID: request.taskID) ?? storedDetail
+        }
+      }
+    }
+
+    // 4. 脑图。存储判据按 taskID 查询，不能用只代表当前详情的 mindMapRecord。
+    if request.mindMap {
+      var channelAvailable = !mindMapState.isActive
+      if !channelAvailable {
+        channelAvailable = await waitFor(timeoutSeconds: 600) { !self.mindMapState.isActive }
+      }
+      let existing = await storedMindMap(taskID: request.taskID)
+      if channelAvailable,
+         existing == nil,
+         startMindMapGenerationAuto(detail: storedDetail, existingRecord: nil) {
+        _ = await waitFor(timeoutSeconds: 600) {
+          !self.mindMapState(for: request.taskID).isActive
+        }
+      }
+    }
+    return true
   }
 
-  func startMindMapGenerationAuto(taskID: TaskID) {
-    requestMindMapGeneration(taskID: taskID)
-    if isMindMapConfirmationPresented {
-      isMindMapConfirmationPresented = false
-      confirmMindMapGeneration()
+  private func loadStoredDetail(taskID: TaskID) async -> HistoryDetailProjection? {
+    guard let history else { return nil }
+    return await Task.detached(priority: .utility) {
+      try? history.detail(taskID: taskID)
+    }.value
+  }
+
+  private func waitForStoredDetail(
+    taskID: TaskID,
+    timeoutSeconds: Double,
+    where predicate: (HistoryDetailProjection) -> Bool = { _ in true }
+  ) async -> HistoryDetailProjection? {
+    let clock = ContinuousClock()
+    let deadline = clock.now + .seconds(timeoutSeconds)
+    while !Task.isCancelled {
+      if let detail = await loadStoredDetail(taskID: taskID), predicate(detail) { return detail }
+      if clock.now >= deadline { return nil }
+      try? await Task.sleep(for: .milliseconds(200))
     }
+    return nil
+  }
+
+  private func storedMindMap(taskID: TaskID) async -> TaskMindMapRecord? {
+    guard let store = history?.mindMapStore else { return nil }
+    return await Task.detached(priority: .utility) {
+      try? store.loadMindMap(taskID: taskID)
+    }.value
   }
 
   private func waitFor(
@@ -2173,6 +2299,10 @@ final class HistoryViewModel: ObservableObject {
   /// 没有总结时用最新正文 snapshot（整理稿保存后就是最新正文）。
   private func mindMapSourceText() -> String? {
     guard let detail else { return nil }
+    return Self.mindMapSourceText(in: detail)
+  }
+
+  private static func mindMapSourceText(in detail: HistoryDetailProjection) -> String? {
     let summary = detail.runs
       .filter { $0.run.kind == .summarize && $0.run.status == .completed }
       .compactMap { $0.artifact?.bodyText.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -2225,9 +2355,42 @@ final class HistoryViewModel: ObservableObject {
   func confirmMindMapGeneration() {
     CapabilityConsent.grant(.mindMap, defaults: capabilityConsentDefaults)
     isMindMapConfirmationPresented = false
-    guard let history, let mindMapExtractor, let store = history.mindMapStore,
-          let detail, let taskID = selectedTaskID, detail.task.id == taskID,
+    guard let detail, let taskID = selectedTaskID, detail.task.id == taskID,
           let text = mindMapSourceText() else {
+      mindMapState = .failed(MindMapOutlineError.emptyInput.userMessage)
+      return
+    }
+    beginMindMapGeneration(
+      taskID: taskID,
+      text: text,
+      existingRecord: mindMapRecord
+    )
+  }
+
+  /// 自动队列按任务自己的 detail 生成；不读取或替换当前 UI 的 mindMapRecord。
+  @discardableResult
+  private func startMindMapGenerationAuto(
+    detail: HistoryDetailProjection,
+    existingRecord: TaskMindMapRecord?
+  ) -> Bool {
+    guard history?.mindMapStore != nil, mindMapExtractor != nil, !isReadOnly,
+          !mindMapState.isActive,
+          let text = Self.mindMapSourceText(in: detail) else { return false }
+    CapabilityConsent.grant(.mindMap, defaults: capabilityConsentDefaults)
+    beginMindMapGeneration(
+      taskID: detail.task.id,
+      text: text,
+      existingRecord: existingRecord
+    )
+    return true
+  }
+
+  private func beginMindMapGeneration(
+    taskID: TaskID,
+    text: String,
+    existingRecord: TaskMindMapRecord?
+  ) {
+    guard let history, let mindMapExtractor, let store = history.mindMapStore else {
       mindMapState = .failed(MindMapOutlineError.emptyInput.userMessage)
       return
     }
@@ -2235,11 +2398,11 @@ final class HistoryViewModel: ObservableObject {
     mindMapState = .running
     // 新生成的脑图默认跟随 App 主题（深色界面里大片浅色底很突兀）；
     // 已保存过的记录保留原有风格，用户在卡片上的手动切换不受影响。
-    let existingThemeID = mindMapRecord?.themeID
+    let existingThemeID = existingRecord?.themeID
       ?? (AppearanceTheme.currentPrefersDarkGeneratedArtwork()
         ? MindMapTheme.darkCode.id
         : MindMapTheme.minimalLight.id)
-    let createdAt = mindMapRecord?.createdAtMilliseconds ?? nowMilliseconds()
+    let createdAt = existingRecord?.createdAtMilliseconds ?? nowMilliseconds()
     Task { [weak self] in
       guard let self else { return }
       do {
@@ -2550,6 +2713,38 @@ final class HistoryViewModel: ObservableObject {
     }, proceed: { $0.confirmTranscriptTidy() })
   }
 
+  /// 手动转写完成后的自动整理仍然作用于当前详情；保留这条 UI 入口，并与
+  /// 后台队列的显式 detail 重载汇入同一执行状态机。
+  func startTranscriptTidyAuto(taskID: TaskID, model: String?) {
+    requestTranscriptTidy(taskID: taskID, model: model)
+    if isTranscriptTidyConfirmationPresented {
+      isTranscriptTidyConfirmationPresented = false
+      confirmTranscriptTidy()
+    }
+  }
+
+  /// 自动队列版本：设置里的开关已经是持久授权，因此直接构造这条任务自己的
+  /// context；不要求它仍然是列表当前项。
+  @discardableResult
+  private func startTranscriptTidyAuto(
+    detail: HistoryDetailProjection,
+    model: String?
+  ) -> Bool {
+    guard history != nil, transcriptTidier != nil, !isReadOnly,
+          !transcriptTidyState.isActive,
+          let text = Self.latestTranscriptText(in: detail) else { return false }
+    let context = PendingTranscriptTidyContext(
+      taskID: detail.task.id,
+      detail: detail,
+      text: text,
+      platform: detail.media?.platform ?? detail.snapshots.last?.platform ?? "local_video",
+      model: model?.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+    CapabilityConsent.grant(.transcriptTidy, defaults: capabilityConsentDefaults)
+    beginTranscriptTidy(context)
+    return true
+  }
+
   func cancelTranscriptTidyConfirmation() {
     isTranscriptTidyConfirmationPresented = false
     pendingTranscriptTidyContext = nil
@@ -2558,13 +2753,21 @@ final class HistoryViewModel: ObservableObject {
   func confirmTranscriptTidy() {
     CapabilityConsent.grant(.transcriptTidy, defaults: capabilityConsentDefaults)
     isTranscriptTidyConfirmationPresented = false
-    guard let history, let transcriptTidier, let context = pendingTranscriptTidyContext,
+    guard let context = pendingTranscriptTidyContext,
           selectedTaskID == context.taskID else {
       pendingTranscriptTidyContext = nil
       transcriptTidyState = .failed(TranscriptTidyError.emptyTranscript.userMessage)
       return
     }
     pendingTranscriptTidyContext = nil
+    beginTranscriptTidy(context)
+  }
+
+  private func beginTranscriptTidy(_ context: PendingTranscriptTidyContext) {
+    guard let history, let transcriptTidier else {
+      transcriptTidyState = .failed(TranscriptTidyError.emptyTranscript.userMessage)
+      return
+    }
     transcriptTidyTask?.cancel()
     let requestID = UUID()
     transcriptTidyRequestID = requestID
@@ -3640,8 +3843,17 @@ final class HistoryViewModel: ObservableObject {
       } else {
         let visible = Set(rows.map(\.taskID))
         selectedTaskIDs.formIntersection(visible)
-        if selectedTaskID != nil { loadDetailForSelection() }
-        else { detail = nil; detailState = .idle }
+        // 搜索或筛选把原选中项排除后，交集会变空。列表明明有结果却把详情清成
+        // 空白，会让用户误以为「没有搜索结果」。自动接住第一条可见结果。
+        if selectedTaskIDs.isEmpty {
+          selectedTaskID = rows.first?.taskID
+        } else if selectedTaskID != nil {
+          loadDetailForSelection()
+        } else {
+          // 多选仍保留批量语义，不擅自收窄成第一条。
+          detail = nil
+          detailState = .idle
+        }
       }
     case let .failure(code):
       listState = .failed; listErrorCode = code; rows = []; selectedTaskIDs = []; detail = nil; detailState = .idle
@@ -4790,7 +5002,12 @@ final class HistoryViewModel: ObservableObject {
         localMediaResolutionFailure = nil
       }
       mindMapRecord = (try? history?.mindMapStore?.loadMindMap(taskID: taskID)) ?? nil
-      if mindMapTaskID != taskID { mindMapState = .idle; mindMapTaskID = nil }
+      // 后台自动管线可能正在给另一条生成脑图。切换详情只应让当前条目看到
+      // 自己的 idle 状态，不能把那条仍在运行的全局任务清掉并放开并发闸门。
+      if !mindMapState.isActive, mindMapTaskID != taskID {
+        mindMapState = .idle
+        mindMapTaskID = nil
+      }
       ledgerTokenTotals = (try? history?.tokenUsageStore?.ledgerTokenTotals(taskID: taskID)) ?? nil
       taskExcerpts = (try? history?.annotationStore?.listExcerpts(taskID: taskID)) ?? []
       if loadedNoteTaskID != taskID {
@@ -5164,6 +5381,31 @@ final class HistoryViewModel: ObservableObject {
       }
       if !pending.isEmpty {
         self?.receiveFavicons(pending, generation: generation)
+      }
+    }
+  }
+
+  /// Uses the exact `<link rel="icon">` that the browser saw on the captured
+  /// page. This path is especially important for protected sites whose HTML
+  /// cannot be fetched a second time without the browser session.
+  func loadBrowserDeclaredFavicon(
+    taskID: TaskID,
+    sourceURL: URL,
+    faviconURL: URL
+  ) {
+    guard let faviconCache, let faviconResources else { return }
+    browserDeclaredFaviconTasks[taskID]?.cancel()
+    let generation = configurationGeneration
+    browserDeclaredFaviconTasks[taskID] = Task { [weak self, faviconCache, faviconResources] in
+      let localURL = await faviconCache.localImageURL(
+        fetchingBrowserDeclaredURL: faviconURL,
+        for: sourceURL,
+        resources: faviconResources
+      )
+      guard !Task.isCancelled else { return }
+      self?.browserDeclaredFaviconTasks[taskID] = nil
+      if let localURL {
+        self?.receiveFavicons([taskID: localURL], generation: generation)
       }
     }
   }

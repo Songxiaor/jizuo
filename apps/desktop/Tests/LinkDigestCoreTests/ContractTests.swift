@@ -76,6 +76,35 @@ final class ContractTests: XCTestCase {
     )
     XCTAssertNoThrow(try CaptureValidator.validate(value, schemaLocator: CaptureWireContractSchema.testLocator()))
   }
+
+  func testBrowserDeclaredFaviconRoundTripsThroughTheSharedWireContract() throws {
+    let faviconURL = "https://sciencedirect.elseviercdn.cn/shared-assets/103/images/favSD.ico"
+    let value = CaptureEnvelopeV1(
+      version: 1,
+      requestId: "browser-favicon",
+      createdAt: "2026-08-15T12:00:00Z",
+      source: .init(
+        kind: "browser_capture",
+        url: "https://www.sciencedirect.com/science/article/pii/S0148296323008524",
+        title: "Article",
+        platform: "generic",
+        faviconURL: faviconURL
+      ),
+      capture: .init(
+        method: "rendered_dom",
+        text: "Article body",
+        characterCount: 12,
+        completeness: "full_article",
+        capturedAt: "2026-08-15T12:00:00Z"
+      ),
+      evidence: .init(sourceLabel: "Current page DOM", usedCookie: false)
+    )
+
+    XCTAssertNoThrow(try CaptureValidator.validate(value, schemaLocator: CaptureWireContractSchema.testLocator()))
+    let decoded = try JSONDecoder().decode(CaptureEnvelopeV1.self, from: JSONEncoder().encode(value))
+    XCTAssertEqual(decoded.source.faviconURL, faviconURL)
+  }
+
   func testSharedFixtures() throws {
     let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("contracts/fixtures")
     guard FileManager.default.fileExists(atPath: root.appendingPathComponent("fixture-manifest.json").path) else { throw XCTSkip("build-dev.sh copies contracts before test") }

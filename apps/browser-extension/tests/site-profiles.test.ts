@@ -14,6 +14,7 @@ describe("site profiles", () => {
     expect(siteProfile("mp.weixin.qq.com")?.id).toBe("wechat");
     expect(siteProfile("www.toutiao.com")?.id).toBe("toutiao");
     expect(siteProfile("zhuanlan.zhihu.com")?.id).toBe("zhihu");
+    expect(siteProfile("linux.do")?.id).toBe("linux-do");
     // 末尾点是合法 FQDN 写法，不该因此匹配失败。
     expect(siteProfile("mp.weixin.qq.com.")?.id).toBe("wechat");
   });
@@ -27,7 +28,7 @@ describe("site profiles", () => {
   /// 带站点色彩的类名混进通用清单，就等于通用路径又认识具体站点了。
   it("keeps site-specific selectors out of the generic candidates", () => {
     for (const selector of GENERIC_CONTENT_ROOTS) {
-      expect(selector).not.toMatch(/js_content|ztext|Post-RichText|available-content|activity-name/);
+      expect(selector).not.toMatch(/js_content|ztext|Post-RichText|available-content|activity-name|post_1|topic-post|cooked/);
     }
     // 通用候选只该是跨站点的语义标记。
     expect(GENERIC_CONTENT_ROOTS).toEqual([
@@ -66,7 +67,7 @@ describe("extractor holds no hardcoded site selectors", () => {
   });
 
   it("reads article-page site selectors from the profile registry", () => {
-    for (const selector of ["#js_content", "#img-content", "#activity-name", "#js_name", "#publish_time", ".RichText.ztext", ".available-content"]) {
+    for (const selector of ["#js_content", "#img-content", "#activity-name", "#js_name", "#publish_time", ".RichText.ztext", ".available-content", "#post_1 .cooked", ".topic-post:first-of-type .cooked"]) {
       expect(source).not.toContain(selector);
     }
   });

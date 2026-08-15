@@ -48,6 +48,14 @@ const hostSuffix =
  */
 export const SITE_PROFILES: readonly SiteProfile[] = [
   {
+    // linux.do 是 Discourse：`article`/`main` 会把作者卡、阅读时间、回复头像与
+    // 互动区一起卷进正文。首帖正文只有 `#post_1 .cooked`；2026-08-15 用
+    // /t/topic/2756623 的真实 DOM 校准。
+    id: "linux-do",
+    matches: hostSuffix("linux.do"),
+    contentRoot: ["#post_1 .cooked", ".topic-post:first-of-type .cooked"],
+  },
+  {
     // 头条的 `.article-content` 比 `article` 多出「标题」和「时间·来源」两行。
     // 2026-07-26 真机实测两篇：1321→1278、205→165 字符，差值正是这两行。
     id: "toutiao",

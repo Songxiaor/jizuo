@@ -8,6 +8,7 @@ import {
   popupMediaStatus,
   popupMessageForResponse,
   popupMessageForSendResult,
+  popupPreviewFailure,
   popupRecoveryForSendResult,
   popupMetaChips,
   popupPlatformLabel,
@@ -26,6 +27,19 @@ const knownCodes = [
 ];
 
 describe("popup error presentation", () => {
+  it("explains pre-envelope quality failures without exposing page text", () => {
+    expect(popupPreviewFailure("Error: CAPTURE_APP_SHELL")).toEqual({
+      message: "当前页面是已登录的网页应用界面，不是独立文章。请选中需要保存的正文后再打开扩展。",
+      canReload: false,
+    });
+    expect(popupPreviewFailure("CAPTURE_PAGE_LOAD_FAILED")).toMatchObject({ canReload: true });
+    expect(popupPreviewFailure("CAPTURE_LOGIN_WALL").message).toContain("登录页");
+    expect(popupPreviewFailure("CAPTURE_NAVIGATION_ONLY").message).toContain("导航内容");
+    expect(popupPreviewFailure("CAPTURE_CONTENT_EMPTY").canReload).toBe(true);
+    expect(popupPreviewFailure("sentinel-private-page-text").message)
+      .not.toContain("sentinel-private-page-text");
+  });
+
   it("maps every action to explicit outcome copy", () => {
     expect(popupActionPresentation("save").button).toBe("保存到汲作");
     expect(popupActionPresentation("summarize").detail).toContain("生成总结");

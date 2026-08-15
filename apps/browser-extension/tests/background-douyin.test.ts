@@ -150,6 +150,36 @@ function galleryDocument(
   } as unknown as Document;
 }
 
+/** 2026-08 note detail: hashed caption classes, stable publish-time sibling. */
+function canonicalNoteDetailDocument(caption: string, url = "https://www.douyin.com/note/7673837443736548603"): Document {
+  const captionNode = { textContent: `${caption}展开` };
+  const authorLink = {
+    textContent: "呜呼bomb",
+    getAttribute: (name: string) => name === "href" ? "//www.douyin.com/user/fixture" : null,
+  };
+  const authorBlock = {
+    querySelectorAll: (selector: string) => selector === "a[href*='/user/']" ? [authorLink] : [],
+  };
+  const content = { previousElementSibling: authorBlock };
+  const captionAndTime = { parentElement: content };
+  const publishWrapper = { previousElementSibling: captionNode, parentElement: captionAndTime };
+  const publishNode = {
+    textContent: "发布时间：2026-08-14 18:48:32",
+    parentElement: publishWrapper,
+  };
+  const detail = {
+    querySelectorAll: (selector: string) => selector === "span,time" ? [publishNode] : [],
+  };
+  return {
+    location: { href: url },
+    title: "抖音",
+    defaultView: { innerWidth: 1_000, innerHeight: 800 },
+    activeElement: null,
+    querySelector: (selector: string) => selector === "[data-e2e='note-detail']" ? detail : null,
+    querySelectorAll: () => [],
+  } as unknown as Document;
+}
+
 function canonicalDedicatedDocument(options: {
   id?: string;
   url?: string;
@@ -247,6 +277,29 @@ function scriptDocument(scripts: Record<string, { textContent: string; tagName?:
 }
 
 describe("background douyin item identity lock", () => {
+  it("captures the full caption from the canonical note detail beside its publish time", () => {
+    const caption = "非常推荐git上这个讲Harness的课程《learn Harness Engineering》除了表面上是在讲什么是Harness，更多的是在讲世界上最聪明的一群人是如何教一个最聪明的大脑变得靠谱的#Codex #Deepseek #Harness #Claude #个人成长";
+    vi.stubGlobal("document", canonicalNoteDetailDocument(caption));
+
+    expect(extractDouyinSingleItemMetaInPage()).toMatchObject({
+      awemeId: "7673837443736548603",
+      title: "非常推荐git上这个讲Harness的课程《learn Harness Engineering》除了表面上是在讲什么是Harness，更多的是在讲世界上最聪明的一群人是如何教一个最聪明的大脑变得靠谱的",
+      description: caption,
+      author: "呜呼bomb",
+      publishedAt: "2026-08-14 18:48:32",
+    });
+  });
+
+  it("does not use note-detail text when the canonical route conflicts with another item id", () => {
+    const caption = "不应串入的图文配文#错误";
+    vi.stubGlobal("document", canonicalNoteDetailDocument(
+      caption,
+      "https://www.douyin.com/note/7673837443736548603?modal_id=7123456789012345678",
+    ));
+
+    expect(extractDouyinSingleItemMetaInPage()?.description).not.toContain(caption);
+  });
+
   it("locks modal A before ranking, even when explicitly identified feed B is playing", () => {
     vi.stubGlobal("document", modalDocument([
       {
@@ -1309,11 +1362,20 @@ describe("background douyin item identity lock", () => {
     const page = {
       title: "Article",
       url: "https://example.test/article",
+      faviconURL: "https://cdn.example.test/favicon.ico",
       text: "article body",
       characterCount: 12,
       method: "rendered_dom" as const,
     };
-    expect(captureEnvelopeForPage(page, page.url, page.title, "2026-07-20T00:00:00Z", "v1").version).toBe(1);
+    const v1 = captureEnvelopeForPage(page, page.url, page.title, "2026-07-20T00:00:00Z", "v1");
+    expect(v1.version).toBe(1);
+    expect(v1.source.faviconURL).toBe(page.faviconURL);
+    expect(v1.capture.completeness).toBe("full_article");
+    const visibleOnly = captureEnvelopeForPage({
+      ...page,
+      completeness: "visible_only" as const,
+    }, page.url, page.title, "2026-07-20T00:00:00Z", "visible-only");
+    expect(visibleOnly.capture.completeness).toBe("visible_only");
     expect(captureEnvelopeForPage({
       ...page,
       mediaDescriptor: {
@@ -1441,11 +1503,12 @@ describe("background douyin item identity lock", () => {
       transcriptionCapability: "unavailable" as const,
       failureReason: "blob_or_mse" as const,
     };
-    const caption = "倘若遇到那个人 那就永远不要分开。#文案 #日落";
+    const title = "倘若遇到那个人 那就永远不要分开。";
+    const caption = `${title}#文案 #日落`;
     const executeScript = vi.fn()
       .mockResolvedValueOnce([{ result: {
         awemeId: id,
-        title: caption,
+        title,
         author: "迟遇",
         // 抖音把「展开」按钮的文字渲染进文案节点。
         description: `${caption}展开`,
@@ -1475,6 +1538,7 @@ describe("background douyin item identity lock", () => {
     // 文案与标题同句时不重复成段，且「展开」按钮文字被剥掉。
     expect(page.text).not.toContain("展开");
     expect(page.text.match(/倘若遇到那个人/gu)).toHaveLength(1);
+    expect(page.text).toContain("#文案 #日落");
 
     // 无 media 的图文帖走 V1 信封，usedCookie 保持 false。
     const envelope = captureEnvelopeForPage(page, `https://www.douyin.com/video/${id}`, null, new Date().toISOString(), "req-image-post");

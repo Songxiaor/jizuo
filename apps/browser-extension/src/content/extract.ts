@@ -16,9 +16,15 @@ import { xiaohongshuCanonicalURL, isXiaohongshuNoteURL } from "./xiaohongshu";
 export type ExtractedPage = {
   title: string;
   url: string;
+  /** Page-declared site icon observed inside the current browser DOM. */
+  faviconURL?: string;
   text: string;
   characterCount: number;
   method: "selection" | "rendered_dom";
+  /** Generic whole-document fallbacks are visible-only, never a proven full article. */
+  completeness?: "full_article" | "visible_only" | "selection_only" | "unknown";
+  /** Internal extraction verdict. Background rejects it before Native Messaging. */
+  captureIssue?: CaptureQualityIssueCode;
   /** V2 media capability handoff. The playback URL is process-memory-only. */
   mediaDescriptor?: MediaDescriptor;
   /** True only after an explicit same-origin session-detail fallback succeeds. */
@@ -28,6 +34,12 @@ export type ExtractedPage = {
   /** 图文帖的图片张数，仅用于 popup 文案；正文里的图片本身走 Markdown。 */
   imageCount?: number;
 };
+
+export type CaptureQualityIssueCode =
+  | "CAPTURE_APP_SHELL"
+  | "CAPTURE_PAGE_LOAD_FAILED"
+  | "CAPTURE_LOGIN_WALL"
+  | "CAPTURE_NAVIGATION_ONLY";
 
 /**
  * WeChat captures are article/image records. Embedded <video> elements remain
@@ -188,7 +200,16 @@ export function extractCurrentPage(documentLike: Document = document): Extracted
     : resolvePageMetadata(documentLike);
   const header = buildCaptureFrontmatter(meta);
   const text = `${header}${body}`.trim();
-  return page(documentLike, text, "rendered_dom");
+  const captureIssue = captureQualityIssue(documentLike, root);
+  const usedWholeDocument = root === documentLike.body || root === documentLike.documentElement;
+  return page(
+    documentLike,
+    text,
+    "rendered_dom",
+    undefined,
+    usedWholeDocument ? "visible_only" : undefined,
+    captureIssue,
+  );
 }
 
 function page(
@@ -196,14 +217,20 @@ function page(
   text: string,
   method: ExtractedPage["method"],
   mediaDescriptor?: MediaDescriptor,
+  completeness?: ExtractedPage["completeness"],
+  captureIssue?: CaptureQualityIssueCode,
 ): ExtractedPage {
   const cleaned = text.trim();
+  const faviconURL = resolveDocumentFaviconURL(documentLike);
   return {
     title: resolveTitle(documentLike),
     url: documentLike.location.href,
+    ...(faviconURL ? { faviconURL } : {}),
     text: cleaned,
     characterCount: [...cleaned].length,
     method,
+    ...(completeness ? { completeness } : {}),
+    ...(captureIssue ? { captureIssue } : {}),
     ...(mediaDescriptor ? { mediaDescriptor } : {}),
   };
 }
@@ -1238,6 +1265,100 @@ function scrubNoise(root: Element): void {
   root.querySelectorAll(NOISE_SELECTOR).forEach((node) => node.remove());
 }
 
+/**
+ * Reject a rendered page when the browser has exposed chrome or an error state,
+ * not the content the user intended to save. A text selection bypasses this
+ * gate earlier in `extractCurrentPage`, so users can still explicitly capture
+ * a useful fragment from a web app without persisting the entire private UI.
+ */
+export function captureQualityIssue(
+  documentLike: Document,
+  root: Element,
+): CaptureQualityIssueCode | undefined {
+  let url: URL;
+  try {
+    url = new URL(documentLike.location.href);
+  } catch {
+    return undefined;
+  }
+  const host = url.hostname.toLowerCase();
+  const rawText = (root.textContent ?? "").replace(/\s+/gu, " ").trim();
+
+  // Gmail is an authenticated application shell, not a document. Full-page
+  // capture previously stored the inbox chrome (and potentially private mail)
+  // as a 51k-character "full article". Explicit selection remains available.
+  if (host === "mail.google.com") return "CAPTURE_APP_SHELL";
+
+  // GitHub blob viewers can render a sizeable navigation/file shell while the
+  // actual file failed to load. Length alone is therefore not evidence of a
+  // successful capture.
+  if ((host === "github.com" || host === "www.github.com")
+    && url.pathname.includes("/blob/")
+    && /(?:Uh oh!\s*)?There was an error while loading\.\s*Please reload this page\.|加载(?:此页面|内容)时出错|请重新加载(?:此页面)?/iu.test(rawText)) {
+    return "CAPTURE_PAGE_LOAD_FAILED";
+  }
+
+  // A password field plus login copy is a strong state signal. Do not archive
+  // the form as article text; after login, reopening the concrete content is
+  // the recovery path.
+  if (documentLike.querySelector("input[type='password']")
+    && /(?:登录|登入|sign\s*in|log\s*in|password|密码)/iu.test(rawText)) {
+    return "CAPTURE_LOGIN_WALL";
+  }
+
+  // Only apply the link-density heuristic when no semantic article/main root
+  // existed and extraction fell back to the whole document. Article pages with
+  // many citations never enter this branch.
+  const usedWholeDocument = root === documentLike.body || root === documentLike.documentElement;
+  if (usedWholeDocument) {
+    const links = Array.from(root.querySelectorAll("a"));
+    const linkCharacters = links.reduce(
+      (sum, link) => sum + (link.textContent ?? "").replace(/\s+/gu, " ").trim().length,
+      0,
+    );
+    const visibleCharacters = rawText.length;
+    if (links.length >= 12
+      && visibleCharacters > 0
+      && visibleCharacters <= 1_200
+      && linkCharacters / visibleCharacters >= 0.8) {
+      return "CAPTURE_NAVIGATION_ONLY";
+    }
+  }
+  return undefined;
+}
+
+/** Resolve a GitHub blob title without trusting the global search-dialog h1. */
+export function gitHubBlobTitle(documentLike: Document): string | null {
+  let url: URL;
+  try {
+    url = new URL(documentLike.location.href);
+  } catch {
+    return null;
+  }
+  const host = url.hostname.toLowerCase();
+  const segments = url.pathname.split("/").filter(Boolean);
+  if ((host !== "github.com" && host !== "www.github.com")
+    || segments.length < 5
+    || segments[2] !== "blob") return null;
+
+  for (const selector of [
+    "article.markdown-body h1",
+    ".markdown-body h1",
+    "[data-testid='blob-viewer'] h1",
+  ]) {
+    const value = documentLike.querySelector(selector)?.textContent?.replace(/\s+/gu, " ").trim();
+    if (value && !/^Search code, repositories/iu.test(value)) return value;
+  }
+
+  const filename = segments.at(-1);
+  if (!filename) return null;
+  try {
+    return decodeURIComponent(filename);
+  } catch {
+    return filename;
+  }
+}
+
 function resolveTitle(documentLike: Document): string {
   if (isXStatusURL(documentLike.location.href)) {
     const article =
@@ -1247,6 +1368,8 @@ function resolveTitle(documentLike: Document): string {
     const short = formatXDisplayTitle(firstProseFromMarkdown(body), documentLike.title ?? "");
     if (short) return short;
   }
+  const blobTitle = gitHubBlobTitle(documentLike);
+  if (blobTitle) return blobTitle;
   // GitHub repo roots keep hidden a11y headings (e.g. the search dialog's
   // "Search code, repositories…"); the canonical owner/repo slug is the title.
   const repoSlug = gitHubRepoSlug(documentLike.location.href);
@@ -1492,6 +1615,39 @@ function absoluteUrl(href: string, baseHref: string): string | null {
   }
 }
 
+/**
+ * Keep the browser-observed declaration because some protected article pages
+ * return a bot shell to the App's standalone HTTP fetcher. The App treats this
+ * only as an untrusted candidate and re-applies URL, redirect, peer/TLS, byte
+ * limit and image-magic validation before caching anything.
+ */
+export function resolveDocumentFaviconURL(documentLike: Document): string | undefined {
+  const links = Array.from(documentLike.querySelectorAll("link[rel]"));
+  const ordered = links.sort((left, right) => {
+    const leftApple = /apple-touch-icon/iu.test(left.getAttribute("rel") ?? "") ? 1 : 0;
+    const rightApple = /apple-touch-icon/iu.test(right.getAttribute("rel") ?? "") ? 1 : 0;
+    return leftApple - rightApple;
+  });
+  for (const link of ordered) {
+    const rel = (link.getAttribute("rel") ?? "").toLowerCase().split(/\s+/u);
+    if (!rel.some((value) => value === "icon" || value === "shortcut" || value.startsWith("apple-touch-icon"))) {
+      continue;
+    }
+    const raw = link.getAttribute("href")?.trim();
+    if (!raw) continue;
+    try {
+      const url = new URL(raw, documentLike.location.href);
+      if ((url.protocol !== "http:" && url.protocol !== "https:") || url.username || url.password) continue;
+      if ((url.protocol === "http:" && url.port && url.port !== "80")
+        || (url.protocol === "https:" && url.port && url.port !== "443")) continue;
+      return url.href;
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
 function imageCandidateScore(rawURL: string, descriptor: string | undefined, priority: number): number {
   const width = descriptor?.match(/^(\d+)w$/u)?.[1];
   if (width) return Number(width) * 10 + priority;
@@ -1624,6 +1780,8 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
     if (tag === "a") return collapseInline(inner);
     if (tag === "img") {
       const alt = (el.getAttribute("alt") ?? el.getAttribute("data-alt") ?? "图像").trim() || "图像";
+      const inlineText = inlineImageText(el, alt);
+      if (inlineText != null) return inlineText;
       const href = resolveResponsiveImageURL(el, baseHref);
       if (!href) return alt ? `\n\n${alt}\n\n` : "";
       if (isXProfileChromeImageURL(href) || isMediumProfileChromeImageURL(href)) return "";
@@ -1634,6 +1792,20 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
   };
 
   return normalizeMarkdownWhitespace(walk(root));
+}
+
+/**
+ * Emoji sprites are typography, not article media. Discourse renders them as
+ * 20x20 `img.emoji` nodes with shortcode alt text; serializing those as
+ * `![...](...)` turns a single facial expression into a full-width lightbox.
+ */
+function inlineImageText(image: Element, alt: string): string | null {
+  const classes = (image.getAttribute("class") ?? "").split(/\s+/u);
+  const source = image.getAttribute("src") ?? "";
+  const isEmoji = classes.includes("emoji") || /\/(?:emoji|twemoji)\//iu.test(source);
+  if (!isEmoji) return null;
+  const semantic = (alt || image.getAttribute("title") || "").trim();
+  return semantic || "";
 }
 
 function hasBlockChild(el: Element): boolean {
@@ -1650,7 +1822,7 @@ function hasBlockChild(el: Element): boolean {
       tag === "li" ||
       tag === "blockquote" ||
       tag === "pre" ||
-      tag === "img" ||
+      (tag === "img" && inlineImageText(child as Element, (child as Element).getAttribute("alt") ?? "") == null) ||
       /^h[1-6]$/.test(tag)
     );
   });
@@ -1902,9 +2074,62 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
     const scoped = activeVideoContainer?.querySelector(selectors)?.textContent?.trim();
     return scoped || "";
   };
+  // Canonical image-post pages use a separate note detail panel rather than
+  // the video's old data-e2e caption nodes. Its classes are hashed, but the
+  // publish-time row is stable text and sits immediately after the caption.
+  // Only use this structural fallback on the exact canonical /note/{id} route:
+  // the same panel also contains recommendations, so a broader page-level text
+  // search could silently attach another post's caption.
+  const dedicatedNoteMetadata = (() => {
+    try {
+      const url = new URL(href);
+      const host = url.hostname.toLowerCase();
+      if (host !== "douyin.com" && !host.endsWith(".douyin.com")) return null;
+      if (url.pathname !== `/note/${awemeId}`) return null;
+      const recognizedItemValues = ["modal_id", "aweme_id", "item_id", "video_id", "group_id"]
+        .flatMap((key) => url.searchParams.getAll(key));
+      if (recognizedItemValues.some((value) => value !== awemeId)) return null;
+
+      const detail = document.querySelector("[data-e2e='note-detail']");
+      if (!detail) return null;
+      const timeCandidates = detail.querySelectorAll("span,time");
+      // A canonical detail panel normally has only dozens of spans. Refuse an
+      // unexpectedly huge tree rather than scanning an unbounded recommendation
+      // feed and calling a prefix match proof of identity.
+      if (timeCandidates.length > 1_000) return null;
+      for (const node of timeCandidates) {
+        const value = node.textContent?.trim() ?? "";
+        if (!/^发布时间[:：]\s*\d/u.test(value)) continue;
+        const captionNode = node.parentElement?.previousElementSibling;
+        if (!captionNode) continue;
+        const caption = (captionNode.textContent ?? "")
+          .replace(/(?:…|\.{3})?\s*展开\s*$/u, "")
+          .trim();
+        if (caption.length >= 2 && caption.length <= 5_000 && !/发布时间[:：]/u.test(caption)) {
+          const authorBlock = node.parentElement?.parentElement?.parentElement?.previousElementSibling;
+          const authorLinks = authorBlock?.querySelectorAll("a[href*='/user/']") ?? [];
+          let author = "";
+          if (authorLinks.length <= 20) {
+            for (const link of authorLinks) {
+              const candidate = link.textContent?.replace(/\s+/gu, " ").trim() ?? "";
+              if (candidate) { author = candidate; break; }
+            }
+          }
+          return {
+            caption,
+            ...(author ? { author } : {}),
+            publishedRaw: value.replace(/^发布时间[:：]\s*/u, "").trim(),
+          };
+        }
+      }
+    } catch {
+      // Keep the established active-player and metadata fallbacks below.
+    }
+    return null;
+  })();
   const ogTitle = document.querySelector("meta[property='og:title']")?.getAttribute("content")?.trim();
   const ogDesc = document.querySelector("meta[property='og:description']")?.getAttribute("content")?.trim();
-  const scopedDesc = scopedText(
+  const scopedDesc = dedicatedNoteMetadata?.caption || scopedText(
     "[data-e2e='video-desc'],[data-e2e='feed-video-desc'],[data-e2e='browse-video-desc'],[data-e2e='video-desc-content'],[data-e2e='video-desc-text']",
   );
   const stripCaptionChrome = (value: string): string =>
@@ -2089,7 +2314,7 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
     }
   }
   const metadataScopes: ParentNode[] = [...safeItemScopes, ...dedicatedMetadataScopes];
-  const author = (() => {
+  const author = dedicatedNoteMetadata?.author || (() => {
     // The nickname element also carries screen-reader-only badge labels
     // ("认证徽章" and friends) as real text nodes, so textContent alone yields
     // "王自如AI认证徽章". Prefer the element's own direct text nodes — the
@@ -2214,6 +2439,7 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
     return cleaned;
   };
   const publishedAt = (() => {
+    if (dedicatedNoteMetadata?.publishedRaw) return normalizePublished(dedicatedNoteMetadata.publishedRaw);
     for (const scope of metadataScopes) {
       const datetimeNode = scope.querySelector("time[datetime]");
       if (datetimeNode) publishedSelectorHit = true;

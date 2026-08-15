@@ -96,9 +96,43 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
       return nil
     }
 
-    // 无论图标取自本站还是主域，都按**原始 host** 落键，
-    // 这样 `localImageURL(for:)` 的同步查询能直接命中。
-    return lock.withLock {
+    return store(response, for: key)
+  }
+
+  /// Fetches the icon URL observed by the browser on the captured page.
+  ///
+  /// Protected sites can return a challenge/robot shell to the App's separate
+  /// HTTP request even though the user-visible page contains a valid
+  /// `<link rel="icon">`. This candidate crosses the wire only as a URL; it
+  /// never bypasses the normal public-URL, redirect, peer/TLS, byte-limit or
+  /// image-magic checks. A successful browser declaration intentionally
+  /// supersedes a previous `.miss` marker for the same source host.
+  public func localImageURL(
+    fetchingBrowserDeclaredURL declaredURL: URL,
+    for sourceURL: URL,
+    resources: any SafeResourceFetching
+  ) async -> URL? {
+    if let cached = localImageURL(for: sourceURL) { return cached }
+    guard let key = Self.cacheKey(for: sourceURL),
+          Self.isSafeIconLocation(declaredURL),
+          let response = try? await resources.fetchResource(.init(
+            url: declaredURL,
+            headers: ["Accept": "image/png,image/x-icon,image/svg+xml,image/*;q=0.8"],
+            byteLimit: Self.perHostByteLimit,
+            allowsRedirectTarget: Self.isSafeIconLocation
+          )),
+          (200...299).contains(response.statusCode),
+          response.body.count <= Self.perHostByteLimit,
+          Self.isSafeIconLocation(response.url),
+          Self.isSupportedImage(response)
+    else { return nil }
+    return store(response, for: key)
+  }
+
+  /// All sources for one host share the same on-disk icon. The URL that won
+  /// may live on a CDN, but the key remains the captured page's original host.
+  private func store(_ response: SafeResourceResponse, for key: String) -> URL? {
+    lock.withLock {
       guard (try? fileManager.createDirectory(at: root, withIntermediateDirectories: true)) != nil else { return nil }
       let destination = root.appendingPathComponent(key, isDirectory: false)
       guard (try? response.body.write(to: destination, options: .atomic)) != nil else {

@@ -28,8 +28,11 @@ WXT、TypeScript、ESLint 与 Vitest 只服务于构建和测试。扩展使用 
 | Xcode | 26.6（Build 17F113） | 构建、测试、签名和公证 macOS APP | Apple 官方工具；不进入产品包 |
 | Swift / SwiftUI / AppKit | Swift 6.3.3；V0.1 Swift Package 已建立 | macOS APP、原生 UI 和平台桥接 | 随 Apple SDK/System Framework |
 | SQLite / GRDB | 系统 SQLite + GRDB 7.11.1 exact | 正式 `LinkDigestPersistence` migration 001、Repository、WAL 与 Online Backup；不进入 Core/View | SQLite public domain；GRDB MIT，分发时保留 notice |
+| Sparkle | 2.9.5 exact | v0.2.9 起提供应用内检查更新、Ed25519 更新包验签与用户确认后的安装 | MIT，`Sparkle.framework` 与 notice 进入 App；发布私钥只在本机 Keychain |
 
-V0.3 新增唯一第三方 Swift Package：GRDB 7.11.1。`Package.resolved` 精确锁定 revision `b83108d10f42680d78f23fe4d4d80fc88dab3212`；本机 resolved graph 中 GRDB 没有传递 package。GRDB tag 的默认 `Package.swift` 依赖数组为空，只有设置上游文档构建环境变量 `SPI_BUILDER=1` 才加入 Swift DocC plugin，本项目未设置该变量。`bash scripts/check-swift-licenses` 独立检查 Swift pin、revision、依赖图与 MIT notice，不能用 pnpm license check 替代。
+当前第三方 Swift Package 为 GRDB 7.11.1 与 Sparkle 2.9.5，均使用 exact pin；`Package.resolved` 分别锁定 revision `b83108d10f42680d78f23fe4d4d80fc88dab3212` 与 `79bc9e872948e47877e76f194cb0c8e0412b0b90`。本机 resolved graph 没有其它传递 package。`bash scripts/check-swift-licenses` 独立检查两项 pin、revision、零传递 package 与 MIT notice，不能用 pnpm license check 替代。
+
+Sparkle 的 `SUFeedURL`、Ed25519 公钥和是否静默安装由 `config/app-release.json` 冻结；当前 `SUAutomaticallyUpdate=false`，因此后台检查发现新版本后仍由用户确认，不会静默替换 App。私钥不进入源码、产物、日志或许可证目录，只由官方 Sparkle 发布工具从 macOS Keychain 读取并签名 Universal ZIP；App 内仅分发用于验证的公钥。
 
 V0.2 的本地 `LinkDigestAdapters` target 使用 Apple Security framework 访问 Keychain；Foundation/URLSession 实现 streaming adapter，只在测试 target 使用 Apple Network.framework 建立 loopback fake server。V0.3 的 `LinkDigestPersistence` target 单独依赖 GRDB，并通过 `HistoryRepository` Port 依赖 `LinkDigestCore`；Core、SwiftUI、Capture、Provider 与 Native Host 均不依赖 GRDB。正式 benchmark executable 为 `LinkDigestHistoryBenchmark`，旧 spike 源码/API 已移除，历史规格与旧 benchmark JSON 保留。
 

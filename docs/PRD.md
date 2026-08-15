@@ -1,10 +1,14 @@
 # LinkDigest PRD
 
-> 状态：V0.1–V0.4 工程链已按各自证据收口。浏览器辅助视频路线的 M0 与 M1 已完成本地工程实现和自动验证：M1 新增独立 V2 合同、通用视频能力分类与 V2→History 正文接线，但尚未实现远程播放、收藏、临时转写媒体或云 ASR。Loop 4 r1/r2/r3/r4a 已最终独立工程复审 PASS；r4b local-test ad-hoc DMG 也已独立 PASS 0/0/0 并 finalize，当前为 **READY_FOR_MANUAL_OPEN，等待 Syc 手工启动**。这不代表公开发布；产品仍 BLOCKED，真实 Host 安装、Developer ID、正式签名、公证、stapling、浏览器验收和发布仍未完成。
+> **2026-08-14 依据真机体验检查刷新**（证据：`docs/体验报告-2026-08-14.md`）。
+>
+> 状态：当前实际运行版本为 v0.2.7 (build 16)，App 已投入日常真实使用。真机检查时本机历史共 132 条，覆盖 X、抖音、GitHub、微信公众号、哔哩哔哩、YouTube 等来源分类；浏览器扩展已连接 Chrome 并有真实同步记录（最近同步 2026-07-30）。实际产品能力已超出本文原 P0 记录：PDF/Word 导出、脑图、笔记摘录、本机 OCR、知识库同步、视频存储管理、多主题外观与站点登录会话等已在真机确认，见 §5.3。Developer ID 签名、公证、stapling 与公开发布的当前状态本次检查未核实，仍列为待确认（见 §13）。
+>
+> 历史状态（保留备查）：V0.1–V0.4 工程链曾按各自证据收口；V0.5 发布验证的 Loop 4 r1/r2/r3/r4a/r4b 曾以 unsigned local-test DMG 收口于 READY_FOR_MANUAL_OPEN，当时判定"产品仍 BLOCKED"。该判定针对的是当时的公开发布门禁，不再描述当前日常运行状态；各 Loop 的 clean-room、receipt、gate 明细见对应 `docs/specs/P0_RC_LOOP_4_*` spec，本文不再复制。
 >
 > 本文是产品范围、优先级和验收标准的唯一真相源。技术组件见 `docs/ARCHITECTURE.md`；第一条链路见 `docs/specs/V0.1_VERTICAL_SLICE.md`；V0.2 工程证据见 `docs/specs/V0.2_BYOK_ACCEPTANCE.md`；远期容量假设见 `docs/CAPACITY_MODEL.md`。
 
-> **范围与当前实现说明**：本文的 P0 是第一版产品目标，不代表当前代码已经实现全部 P0。V0.1、V0.2、V0.3/02A–02C 与 Loop 2 的完成状态以各自验收证据为准。Loop 3 的数据去向确认/`connectionTest` 已最终独立复审 PASS。Loop 4 r1 的 56 项 deterministic check 与最终独立 re-review 已 PASS，P0/P1/P2 均为 0。r2 新增 permanent pre-provisioned clean-room lock、plan digest、receipt v2 ownership/lineage、transaction journal、receipt commit point、initial/v1 migration/upgrade/uninstall/recover。首次 r2 final review 的三项 P1 已通过命名空间双向 overlap 拒绝、r1 canonical 0.1 + transaction 显式 expected version、strict journal plan schema + malformed exit 8 修复；110 项 fast gate、56 项 r1 compatibility gate 与同一 reviewer 唯一 re-review 已 PASS，P0/P1/P2 = 0/0/0。所有 mutation 仅限 `/private/tmp` clean-room。checksum 只证明一致性，不代表签名或发布真实性；真实安装、签名、公证和发布仍需另行授权。
+> **范围与当前实现说明**：本文的 P0 章节描述第一版目标与验收基线，不逐条追平当前代码。V0.1–V0.4 及各 Loop 的完成状态以各自验收证据为准；checksum 只证明一致性，不代表签名或发布真实性；真实签名、公证和公开发布仍需另行授权。当前实际产品与本文 P0 的差异统一收在 §5.3 与 §13。
 
 ## 1. 一句话定位
 
@@ -84,24 +88,47 @@ LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户�
 - 设置页可用极短 `Reply with OK.` 请求测试当前连接，明确可能产生极少模型用量，不创建 History/Run/Artifact 或保存回复。
 - 支持总结、翻译、停止、重试和保存部分结果。
 - SQLite 保存任务、正文快照、运行记录和结果。
-- 支持打开历史、删除单项和导出 Markdown、纯文本（`.txt`）和 JSON。
+- 支持打开历史、删除单项和导出 Markdown、纯文本（`.txt`）和 JSON。（2026-08-14 真机确认：实际产品已在此基线上扩展 PDF 与 Word(.docx) 导出，见 §5.3。）
 - 手动公开链接按三分流生产实现：普通公网且无显式系统代理使用 `PeerBoundNetworkWebPageFetcher` / `Network.framework`，它把 policy 已核验的 numeric IP 绑定为实际 peer，并保留原 hostname 的 HTTPS SNI、`SecPolicyCreateSSL`、HTTP Host、system trust 与禁用 trust 网络补取；显式系统 HTTP(S) 代理或 DNS 全部返回 `198.18.0.0/15` fake-ip 时使用 `SystemProxyWebPageFetcher`。系统代理是**独立信任边界**：Foundation/代理可能重新解析 hostname，本机 URL/DNS admission 不能证明代理实际 peer，因而不宣称与 PeerBound 等价，剩余 proxy-resolution SSRF 风险由系统代理/VPN 所在环境承担。代理路线仅接受 HTTPS，拒绝 HTTP 并提示使用浏览器扩展；两路线均在每次 redirect 重新检查 URL、私网/test-net、凭据 URL、标准端口与 HTTPS→HTTP 降级。`URLSessionWebPageFetcher` 仍为 test-only legacy，不是 production fallback。
 - Cloud API 完全不存在或断网时，以上能力仍可使用。
 
 ### 5.2 明确不做
 
-- Windows、iPhone、iPad、Safari 扩展。
-- 账号、登录、设备管理、订阅和托管模型。
-- 云同步、端到端加密同步和团队协作。
-- Cookie 读取、付费墙绕过、验证码绕过或批量账号采集。
-- 后台剪贴板监听、任意网页 WebView 执行、用户浏览器 Profile/凭据导入或对登录页的手动抓取。
-- YouTube/B站字幕、`yt-dlp`、`ffmpeg`、Whisper、M1 自动媒体下载和远程播放。
-- 小红书、X、YouTube 等新平台专用媒体适配器；M1 的抖音只读取当前 DOM 的公开 `video/source` 与页面 metadata，不请求私有详情端点。
-- 批量导入、批量总结、PDF/HTML 导出。
-- 远程配置、遥测平台、微服务和百万用户容量部署。
-- 为未来 Windows 提前牺牲 macOS 体验。
+本节是 P0 当时的范围裁剪记录。后续版本已推翻其中部分条目；被推翻的条目不删除，就地标注推翻时间与现状，证据为 2026-08-14 体验报告与对应 spec。
+
+- Windows、iPhone、iPad、Safari 扩展。（仍然有效。）
+- 账号、登录、设备管理、订阅和托管模型。（仍然有效。§5.3 的"站点登录"是内容平台侧的会话，不是 LinkDigest 自身账号体系。）
+- 云同步、端到端加密同步和团队协作。（仍然有效。§5.3 的"知识库同步"是同步到本机 Markdown 文件夹，不涉及云端。）
+- Cookie 读取、付费墙绕过、验证码绕过或批量账号采集。（仍然有效。§5.3 的站点登录会话是用户在 App 自身 WebView 中手动登录，不读取浏览器 Cookie 数据库，不属于此条禁止范围。）
+- 后台剪贴板监听、任意网页 WebView 执行、用户浏览器 Profile/凭据导入或对登录页的手动抓取。（部分已被推翻：2026-08-14 真机确认 App 为小红书/抖音/B站提供站点登录会话管理，用于登录后抓取对应平台内容——这是用户主动在 App 自身 WebView 中手动登录的会话，不是浏览器 Profile/凭据导入；登录态下的实际抓取质量抽查未完成，见 §13。后台剪贴板监听与浏览器 Profile/凭据导入仍不做。）
+- YouTube/B站字幕、`yt-dlp`、`ffmpeg`、Whisper、M1 自动媒体下载和远程播放。（部分已被后续决策推翻：视频捕获、落库、播放与转写已实现，本机离线转写与在线流式转写并存，B站支持取音轨转写，见 `docs/specs/P0_RC_LOOP_V_VIDEO_TRANSCRIPTION.md`；`yt-dlp`/`ffmpeg` 仍不引入。）
+- 小红书、X、YouTube 等新平台专用媒体适配器；M1 的抖音只读取当前 DOM 的公开 `video/source` 与页面 metadata，不请求私有详情端点。（已被推翻：2026-08-14 真机历史已含 X、抖音、GitHub、微信公众号、B站、YouTube 分类，小红书/抖音/B站有独立站点登录管理。新增来源须遵循 `docs/SOURCE_ADAPTER_STANDARD.md`。）
+- 批量导入、批量总结、PDF/HTML 导出。（部分已被推翻：2026-08-14 真机确认导出菜单已含 PDF 与 Word(.docx)。HTML 导出未在真机菜单中出现；批量导入/批量总结未见，现状见 §13 待确认项。）
+- 远程配置、遥测平台、微服务和百万用户容量部署。（仍然有效。）
+- 为未来 Windows 提前牺牲 macOS 体验。（仍然有效。）
 
 问答不属于已确认的 P0 必做项。它可以在 P0 本地闭环稳定后作为候选能力重新评估，但不得反向扩大 V0.1–V0.4 的当前范围。
+
+### 5.3 已实施且超出原 P0 记录的能力（2026-08-14 真机确认）
+
+以下能力已在 v0.2.7 (build 16) 真机检查中确认存在，证据为 `docs/体验报告-2026-08-14.md`（§2、§5）。本表只记录"存在"，各项的产出质量与交互细节若未逐项验证，仍列在 §13。
+
+| 能力 | 真机确认内容 |
+|---|---|
+| PDF / Word 导出 | 导出菜单含 PDF、Word(.docx)，另有拷贝全文、以纯文本查看正文、重新生成 |
+| 脑图（mindmap） | 详情页脑图区块渲染正常，含脑图生成与导出入口 |
+| 笔记摘录 | 侧边栏"我的笔记"入口可见（检查时 5 条），另有"收藏"入口（1 条） |
+| 本机 OCR | Apple Vision 本机 OCR 识图，归属设置"模型与识别"子页 |
+| 知识库同步 | 同步到本机 Markdown 文件夹，设置有独立"知识库同步"子页 |
+| 视频存储管理 | 设置有"视频存储"子页，管理视频清晰度与本地存储占用 |
+| 外观主题 | 系统/浅色/深色/暖褐/高对比五种主题（App 自身切换，不只跟随 macOS） |
+| 站点登录会话 | 小红书/抖音/B站各自独立管理，检查时均"已登录"；实现为用户在 App 自身 WebView 中手动登录的会话，非浏览器 Cookie 导入；设置页逐平台给出诚实的能力与失败预期说明 |
+| 手动添加链接 | 工具栏"添加链接"粘贴 URL 即完成抓取，并按已记住的发送授权自动触发总结（该默认行为是否为最终产品意图见 §13） |
+| 预置服务商 | 模型设置预置 12+ 家 OpenAI-compatible 服务商及"自定义"选项，保持 Provider-neutral |
+| 来源分类 | 历史按平台自动分类并计数（X、抖音、GitHub、微信公众号、B站、YouTube、待分类），新增后计数即时同步 |
+| 视频转写 | 本机离线转写与在线流式转写并存（spec 状态"工程实现完成并已在日用 App 中运行"，见 `docs/specs/P0_RC_LOOP_V_VIDEO_TRANSCRIPTION.md`；真机视频可播放性抽查未完成，见 §13） |
+
+这些能力仍受本文硬约束（local-first、Keychain 秘密边界、Provider-neutral、可解释失败、导出不含秘密）管辖；体验报告已抽查 Markdown/JSON 导出无密钥泄露。
 
 ## 6. v0.1 垂直链路
 
@@ -121,14 +148,15 @@ LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户�
 
 | 里程碑 | 用户可观察结果 | 本阶段不做 |
 |---|---|---|
-| V0.1 交接 | 当前页正文出现在 Mac APP | 模型、数据库、漂亮 UI |
-| V0.2 BYOK | 用户能配置模型并获得流式总结 | 多 Provider、账号、云端 |
+| V0.1 交接 | 当前页正文出现在 Mac APP（已完成） | 模型、数据库、漂亮 UI |
+| V0.2 BYOK | 用户能配置模型并获得流式总结（已完成） | 多 Provider、账号、云端 |
 | V0.3 本地历史 | 02A/02B 已通过独立复审；02C 已完成 History Sidebar、分页、详情、删除、重启读取与 future-schema 只读浏览 | 同步、全文搜索优化 |
 | V0.4 导出与打磨 | Loop 2 已完成单条 Markdown、`.txt`、JSON 本地导出与原生保存面板；Loop 3 数据去向/连接测试与最终独立复审已完成 | 媒体、批量处理 |
-| V0.5 发布验证 | r1/r2/r3/r4a 已独立工程 PASS；r4a re-review 0/0/0，但 unsigned artifact 与 malformed manifest 使产品继续 BLOCKED | Developer ID、公证、stapling、真实安装/浏览器验收、Windows、App Store 承诺 |
-| 视频 M1 合同与识别 | V1 保持兼容；V2 能把通用媒体能力经 Host 交给 APP，正文进入 History，临时播放地址只留当前进程内存 | 播放、下载、收藏、ASR、PromptPreset、新平台适配与真实样本 |
+| V0.5 发布验证 | 历史记录：r1/r2/r3/r4a 曾独立工程 PASS，当时因 unsigned artifact 与 malformed manifest 判定 BLOCKED。该状态已过期——2026-08-14 真机确认 App v0.2.7 (build 16) 日常运行、扩展已连接 Chrome 并有真实同步记录；Developer ID、公证、公开发布的当前状态待确认（见 §13） | Windows、App Store 承诺 |
+| 视频 M1 合同与识别 | V1 保持兼容；V2 能把通用媒体能力经 Host 交给 APP，正文进入 History。后续 Loop V 已实现视频落库、播放与本机/在线转写（见 §5.3 与对应 spec） | PromptPreset、真实样本扩容 |
+| V0.5 之后（Loop 5 起，至 v0.2.7） | 手动添加链接、PDF/Word 导出、脑图、笔记摘录、本机 OCR、知识库同步、视频存储管理、多主题外观、站点登录会话、多平台来源分类（2026-08-14 真机确认，明细见 §5.3） | 账号体系、云同步、批量采集 |
 
-只有本地闭环经过真实使用后，才重新评估账号、同步、托管额度和云端容量。
+只有本地闭环经过真实使用后，才重新评估账号、同步、托管额度和云端容量。本地闭环已进入真实日常使用（2026-08-14 真机确认）；账号、同步与云端容量尚未重新评估，维持 cloud-deferred。
 
 历史详情会显示实际保存的操作、模型、时间、状态和服务商在流尾提供的 Token 用量；历史旧 run 没有 usage 时显示“—”。BYOK 模型没有可验证且持续有效的统一价格表，因此“估算费用”从路线图裁剪：产品不估算、不显示费用，避免把不可靠数字伪装成账单事实。
 
@@ -149,6 +177,20 @@ LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户�
 ```
 
 主窗口使用 macOS 原生侧边栏与详情结构。视觉比例可以调整，但必须保留：任务列表、来源证据、原文、结果和执行记录。
+
+2026-08-14 真机确认的实际主窗口在此结构上扩展：侧边栏含"全部/最近/待分类"与按平台的来源分类计数，以及"收藏"和"我的笔记"入口；详情页含脑图区块与"总结/翻译"操作；工具栏提供"添加链接"手动入口；导出菜单见 §5.3。
+
+### 8.1.1 设置窗口（2026-08-14 真机确认）
+
+设置子页按"服务与生成 / 阅读与外观 / 连接与数据"三组归类，含：
+
+- 模型与识别（预置服务商、自定义 Base URL/API Key、连接测试、OCR）
+- 生成偏好（含"已记住的发送授权"管理）
+- 外观（五种主题）
+- 浏览器支持（扩展连接与同步状态）
+- 站点登录（小红书/抖音/B站会话管理，逐平台给出能力与失败预期说明）
+- 视频存储（清晰度与本地占用管理）
+- 知识库同步（同步到本机 Markdown 文件夹）
 
 ### 8.2 扩展面板
 
@@ -242,13 +284,25 @@ P0 不承诺自动事实核查外部世界，只承诺摘要忠于本次捕获�
 
 ## 13. 已知未知项
 
-- 正式产品名、商标、域名和图标。
+- 正式产品名、商标、域名和图标（真机界面已使用中文名「汲作」，正式商标/域名状态未确认）。
 - Swift SQLite binding 的最终选择与签名兼容性。
-- r4a 已在 `/private/tmp` 建立并独立复审通过 unsigned App-DMG release-unit binding；r4b local-test ad-hoc DMG 已独立 PASS 并放入 `release/LinkDigest-0.1.0-local-test/`，等待 Syc 手工打开。Chrome/Edge manifest 当前为 malformed，且 Developer ID、notarization/stapling、真实 Host 安装与浏览器验收未完成，产品和公开发布继续 BLOCKED。
+- Developer ID 签名、notarization/stapling 与公开发布的**当前**状态：Loop 4 时代的 r4a/r4b unsigned DMG 与 "Chrome/Edge manifest malformed" 记录已过期（真机确认扩展已连接 Chrome 并有真实同步），但本次检查未核实签名与发布现状，待确认。
 - 首发使用公证 DMG 还是 Mac App Store；P0 不承诺 App Store。
 - SwiftUI 富文本显示和结果编辑是否需要 AppKit 桥接。
 - OpenAI-compatible 端点之间的流式协议差异。
 - Chrome Web Store 当前审核与隐私披露要求。
+
+2026-08-14 体验报告遗留的待确认项（因检查中断或未逐项验证）：
+
+- HTML 导出是否存在（真机导出菜单未见，也未确认已裁剪）。
+- 批量导入/批量总结是否仍在"不做"范围。
+- "添加链接后自动触发总结（消耗真实模型调用）"是否为最终产品意图，是否需要在弹窗内提示。
+- 知乎、Medium、Substack、今日头条是否已接入（当前 132 条历史中无对应分类）。
+- 五种外观主题与 macOS 明暗模式切换下的实际渲染效果；窗口极端尺寸下的自适应。
+- 收藏、标签、笔记、脑图导出的实际产出质量与交互细节。
+- 抖音/B站/小红书登录会话下的抓取质量是否达到 `docs/SOURCE_ADAPTER_STANDARD.md` 基线；视频可播放性抽查。
+- 浏览器扩展网页侧的实际操作验收（仅确认了桌面端"浏览器支持"页显示 Chrome 已连接）。
+- App 内"关于"页版本号的独立核实（v0.2.7 build 16 以题面为准，界面内未找到入口）。
 
 以上未知项通过小型 spike 或真实样本验证解决，不通过扩大架构解决。
 

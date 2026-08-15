@@ -4,23 +4,32 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DESKTOP="$ROOT/apps/desktop"
 RESOLVED="$DESKTOP/Package.resolved"
-LICENSE_FILE="$DESKTOP/.build/checkouts/GRDB.swift/LICENSE"
-EXPECTED_LICENSE_SHA256="9853f9dce81365fcc1d9b46004633354450164b8d17904e92e80c444545f7e87"
+GRDB_LICENSE_FILE="$DESKTOP/.build/checkouts/GRDB.swift/LICENSE"
+SPARKLE_LICENSE_FILE="$DESKTOP/.build/artifacts/sparkle/Sparkle/LICENSE"
+EXPECTED_GRDB_LICENSE_SHA256="9853f9dce81365fcc1d9b46004633354450164b8d17904e92e80c444545f7e87"
+EXPECTED_SPARKLE_LICENSE_SHA256="389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe"
 
 [[ -f "$RESOLVED" ]] || { echo "FAIL: Swift Package.resolved is missing" >&2; exit 1; }
-[[ -f "$LICENSE_FILE" ]] || { echo "FAIL: GRDB checkout license is missing; resolve the package first" >&2; exit 1; }
+[[ -f "$GRDB_LICENSE_FILE" ]] || { echo "FAIL: GRDB checkout license is missing; resolve the package first" >&2; exit 1; }
+[[ -f "$SPARKLE_LICENSE_FILE" ]] || { echo "FAIL: Sparkle artifact license is missing; resolve the package first" >&2; exit 1; }
 
 node - "$RESOLVED" <<'NODE'
 const fs = require("node:fs");
 const resolved = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const pins = resolved.pins ?? [];
-if (pins.length !== 1) throw new Error(`expected one Swift pin, found ${pins.length}`);
-const pin = pins[0];
-if (pin.identity !== "grdb.swift" || pin.state?.version !== "7.11.1") {
+if (pins.length !== 2) throw new Error(`expected two Swift pins, found ${pins.length}`);
+const byIdentity = new Map(pins.map(pin => [pin.identity, pin]));
+const grdb = byIdentity.get("grdb.swift");
+const sparkle = byIdentity.get("sparkle");
+if (grdb?.state?.version !== "7.11.1") {
   throw new Error("GRDB must be resolved exactly at 7.11.1");
 }
-if (pin.state?.revision !== "b83108d10f42680d78f23fe4d4d80fc88dab3212") {
+if (grdb.state?.revision !== "b83108d10f42680d78f23fe4d4d80fc88dab3212") {
   throw new Error("GRDB 7.11.1 revision does not match reviewed evidence");
+}
+if (sparkle?.state?.version !== "2.9.5") throw new Error("Sparkle must be resolved exactly at 2.9.5");
+if (sparkle.state?.revision !== "79bc9e872948e47877e76f194cb0c8e0412b0b90") {
+  throw new Error("Sparkle 2.9.5 revision does not match reviewed evidence");
 }
 NODE
 
@@ -28,26 +37,41 @@ GRAPH="$(cd "$DESKTOP" && swift package --disable-sandbox show-dependencies --fo
 printf '%s' "$GRAPH" | node -e '
 const fs = require("node:fs");
 const root = JSON.parse(fs.readFileSync(0, "utf8"));
-if (root.dependencies.length !== 1) throw new Error("unexpected Swift dependency count");
-const grdb = root.dependencies[0];
+if (root.dependencies.length !== 2) throw new Error("unexpected Swift dependency count");
+const byIdentity = new Map(root.dependencies.map(dependency => [dependency.identity, dependency]));
+const grdb = byIdentity.get("grdb.swift");
+const sparkle = byIdentity.get("sparkle");
 if (grdb.identity !== "grdb.swift" || grdb.version !== "7.11.1") {
   throw new Error("unexpected Swift dependency identity or version");
 }
 if ((grdb.dependencies ?? []).length !== 0) {
   throw new Error("GRDB default product unexpectedly resolved transitive packages");
 }
+if (sparkle?.identity !== "sparkle" || sparkle.version !== "2.9.5") {
+  throw new Error("unexpected Sparkle dependency identity or version");
+}
+if ((sparkle.dependencies ?? []).length !== 0) {
+  throw new Error("Sparkle binary product unexpectedly resolved transitive packages");
+}
 '
 
-ACTUAL_LICENSE_SHA256="$(shasum -a 256 "$LICENSE_FILE" | awk '{print $1}')"
-[[ "$ACTUAL_LICENSE_SHA256" == "$EXPECTED_LICENSE_SHA256" ]] || {
+ACTUAL_GRDB_LICENSE_SHA256="$(shasum -a 256 "$GRDB_LICENSE_FILE" | awk '{print $1}')"
+[[ "$ACTUAL_GRDB_LICENSE_SHA256" == "$EXPECTED_GRDB_LICENSE_SHA256" ]] || {
   echo "FAIL: GRDB MIT notice hash changed" >&2
   exit 1
 }
-grep -Fq "Permission is hereby granted, free of charge" "$LICENSE_FILE"
-grep -Fq "Copyright (C) 2015-2025 Gwendal Roué" "$LICENSE_FILE"
-if grep -Eiq 'AGPL|GNU GENERAL PUBLIC LICENSE|non-commercial|UNKNOWN' "$LICENSE_FILE"; then
+ACTUAL_SPARKLE_LICENSE_SHA256="$(shasum -a 256 "$SPARKLE_LICENSE_FILE" | awk '{print $1}')"
+[[ "$ACTUAL_SPARKLE_LICENSE_SHA256" == "$EXPECTED_SPARKLE_LICENSE_SHA256" ]] || {
+  echo "FAIL: Sparkle license notice hash changed" >&2
+  exit 1
+}
+grep -Fq "Permission is hereby granted, free of charge" "$GRDB_LICENSE_FILE"
+grep -Fq "Copyright (C) 2015-2025 Gwendal Roué" "$GRDB_LICENSE_FILE"
+grep -Fq "Copyright (c) 2006-2013 Andy Matuschak" "$SPARKLE_LICENSE_FILE"
+grep -Fq "Portable C implementation of Ed25519" "$SPARKLE_LICENSE_FILE"
+if grep -Eiq 'AGPL|GNU GENERAL PUBLIC LICENSE|non-commercial|UNKNOWN' "$GRDB_LICENSE_FILE" "$SPARKLE_LICENSE_FILE"; then
   echo "FAIL: prohibited or unknown Swift license marker" >&2
   exit 1
 fi
 
-printf '%s\n' "swift-licenses: OK — GRDB 7.11.1 exact, MIT notice verified, zero resolved transitive packages"
+printf '%s\n' "swift-licenses: OK — GRDB 7.11.1 + Sparkle 2.9.5 exact, notices verified, zero resolved transitive packages"

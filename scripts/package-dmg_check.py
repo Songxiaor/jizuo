@@ -122,10 +122,16 @@ def check_thinned_app_and_final_seal(module) -> None:
         source_executable = source_app / "Contents/MacOS/LinkDigestApp"
         source_host_root = source_app / "Contents/Resources/NativeHost" / host_name
         source_host = source_host_root / config["entrypoint"]
+        source_framework = source_app / "Contents/Frameworks/Sparkle.framework"
+        source_framework_binary = source_framework / "Versions/B/Sparkle"
         source_executable.parent.mkdir(parents=True)
         source_host_root.mkdir(parents=True)
+        source_framework_binary.parent.mkdir(parents=True)
         source_executable.write_bytes(b"universal app binary")
         source_host.write_bytes(b"universal signed host binary")
+        source_framework_binary.write_bytes(b"universal sparkle binary")
+        (source_framework / "Versions/Current").symlink_to("B")
+        (source_framework / "Sparkle").symlink_to("Versions/Current/Sparkle")
         (source_host_root / "SHA256SUMS").write_text("host-digest\n", encoding="utf-8")
         (source_host_root / "package.json").write_text(
             '{"architectures":["arm64","x86_64"]}\n', encoding="utf-8"
@@ -136,6 +142,7 @@ def check_thinned_app_and_final_seal(module) -> None:
         destination = work / "arm64/汲作.app"
         destination_executable = destination / "Contents/MacOS/LinkDigestApp"
         destination_host_root = destination / "Contents/Resources/NativeHost" / host_name
+        destination_framework = destination / "Contents/Frameworks/Sparkle.framework"
 
         original_run = module.run
         original_check_output = module.subprocess.check_output
@@ -185,13 +192,115 @@ def check_thinned_app_and_final_seal(module) -> None:
         check(result == destination, "thin_app must return the copied app destination")
         check(destination_executable.read_bytes() == b"universal app binary", "main app executable must be replaced by its requested architecture slice")
         check(destination_host_root.joinpath(config["entrypoint"]).read_bytes() == original_host_bytes, "NativeHost must not be lipo-thinned or replaced")
+        check(
+            destination_framework.joinpath("Versions/Current").is_symlink()
+            and destination_framework.joinpath("Versions/Current").readlink() == Path("B")
+            and destination_framework.joinpath("Sparkle").is_symlink()
+            and destination_framework.joinpath("Sparkle").readlink() == Path("Versions/Current/Sparkle"),
+            "Sparkle.framework versioned symlinks must survive architecture thinning",
+        )
         check(events == ["lipo", "archs", "verify-package", "sign-release", "verify-package"], "Host must be verified after thinning and again after final app signing")
+
+
+def check_dmg_signing_metadata_cleanup(module) -> None:
+    """DMG layout cleanup must stay narrow and end in a deep strict verification."""
+    with tempfile.TemporaryDirectory(prefix="package-dmg-xattr-check.") as temporary:
+        app = Path(temporary) / "汲作.app"
+        framework = app / "Contents/Frameworks/Sparkle.framework"
+        framework.mkdir(parents=True)
+        subprocess_run = module.subprocess.run
+        subprocess_run(
+            ["/usr/bin/xattr", "-w", "-x", "com.apple.FinderInfo", "00" * 32, str(framework)],
+            check=True,
+        )
+        subprocess_run(
+            ["/usr/bin/xattr", "-w", "com.linkdigest.keep", "keep", str(framework)],
+            check=True,
+        )
+        module.remove_forbidden_signing_metadata(app)
+        attributes = subprocess_run(
+            ["/usr/bin/xattr", "-l", str(framework)],
+            check=True,
+            stdout=module.subprocess.PIPE,
+        ).stdout
+        check(b"com.apple.FinderInfo" not in attributes, "FinderInfo must be removed")
+        check(b"com.linkdigest.keep" in attributes, "unrelated metadata must remain")
+
+        calls: list[tuple[str, ...]] = []
+        original_run = module.run
+
+        def fake_run(*command: str, cwd: Path | None = None) -> None:
+            check(cwd is None, "DMG metadata cleanup must not depend on a caller cwd")
+            calls.append(command)
+
+        module.run = fake_run
+        try:
+            module.remove_forbidden_signing_metadata_and_verify(app)
+        finally:
+            module.run = original_run
+
+        check(
+            calls == [
+                ("/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)),
+            ],
+            "DMG cleanup must end in one deep strict signature verification",
+        )
+
+
+def check_chinese_bundle_localization(module) -> None:
+    """The shipped Chinese app must not make AppKit panels fall back to English."""
+    config = module.release_unit.load_app_config(ROOT)
+    plist = module.release_unit.info_plist(config)
+    check(plist["CFBundleDevelopmentRegion"] == "zh-Hans", "development region must be Simplified Chinese")
+    check(plist["CFBundleLocalizations"] == ["zh-Hans"], "bundle must explicitly advertise Simplified Chinese")
+
+
+def check_sparkle_runtime_link_contract(module) -> None:
+    """A signed App must still teach dyld where the embedded framework lives."""
+    unit = module.release_unit
+    executable = Path("/private/tmp/fixture/汲作.app/Contents/MacOS/LinkDigestApp")
+    rpaths = ["/usr/lib/swift", "@executable_path/../lib"] * 2
+    calls: list[tuple[list[str], set[str] | None]] = []
+    original_architectures = unit.macho_architectures
+    original_rpaths = unit.macho_rpaths
+    original_libraries = unit.macho_linked_libraries
+    original_command_ok = unit.command_ok
+
+    unit.macho_architectures = lambda _path: ["x86_64", "arm64"]
+    unit.macho_rpaths = lambda _path: list(rpaths)
+    unit.macho_linked_libraries = lambda _path: [unit.SPARKLE_INSTALL_NAME] * 2
+
+    def fake_command_ok(argv, **kwargs):
+        calls.append((list(argv), kwargs.get("allowed")))
+        rpaths.extend([unit.SPARKLE_RUNTIME_RPATH] * 2)
+        return object()
+
+    unit.command_ok = fake_command_ok
+    try:
+        unit.ensure_sparkle_runtime_rpath(executable)
+        unit.verify_sparkle_runtime_link(executable)
+        unit.ensure_sparkle_runtime_rpath(executable)
+    finally:
+        unit.macho_architectures = original_architectures
+        unit.macho_rpaths = original_rpaths
+        unit.macho_linked_libraries = original_libraries
+        unit.command_ok = original_command_ok
+
+    check(
+        calls == [
+            ([unit.INSTALL_NAME_TOOL, "-add_rpath", unit.SPARKLE_RUNTIME_RPATH, str(executable)], {unit.INSTALL_NAME_TOOL})
+        ],
+        "Sparkle runtime rpath must be added once with the fixed install_name_tool argv",
+    )
 
 
 def main() -> int:
     module = load_module("package_dmg", TARGET)
     check_signed_host_package(module)
     check_thinned_app_and_final_seal(module)
+    check_dmg_signing_metadata_cleanup(module)
+    check_chinese_bundle_localization(module)
+    check_sparkle_runtime_link_contract(module)
     print(f"package-dmg-check: PASS ({TESTS} assertions)")
     return 0
 

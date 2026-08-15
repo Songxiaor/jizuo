@@ -880,6 +880,32 @@ final class HistoryViewModelTests: XCTestCase {
     await waitUntil { model.detail?.tags.map(\.name).contains("本地优先") == false }
   }
 
+  func testSearchThatHidesSelectionSelectsFirstVisibleResult() async {
+    let first = makeRow(title: "Alpha", updatedAt: 30)
+    let second = makeRow(title: "Beta", updatedAt: 20)
+    let repository = TagHistoryScreenRepository(
+      rows: [first, second],
+      details: [first.taskID: makeDetail(for: first), second.taskID: makeDetail(for: second)],
+      tags: [:]
+    )
+    let model = HistoryViewModel()
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      isReadOnly: false,
+      unavailableCode: nil
+    )
+    await waitUntil { model.selectedTaskID == first.taskID && model.detail?.task.id == first.taskID }
+
+    model.searchText = "Beta"
+
+    await waitUntil {
+      model.rows.map(\.taskID) == [second.taskID]
+        && model.selectedTaskID == second.taskID
+        && model.detail?.task.id == second.taskID
+    }
+    XCTAssertEqual(model.listState, .loaded)
+  }
+
   func testAutomaticTagCommitRefreshesCurrentDetailAndAvailableChipsWithoutNavigation() async throws {
     try await withAutomaticTagHistory { repository, accepted, document in
       let history = HistoryApplicationService(repository: repository)
@@ -2087,9 +2113,11 @@ extension HistoryViewModelTests {
     let summarizeCalls = SummarizeCallCounter()
     model.startAutoPipeline(
       taskID: accepted.taskID,
+      expectsMedia: false,
       transcribe: false, tidy: false, summarize: true, mindMap: true,
       tidyModel: nil,
-      summarizeAction: { await summarizeCalls.increment() }
+      summarizeAction: { _ in await summarizeCalls.increment(); return false },
+      isSummaryBusy: { false }
     )
     await waitUntil(timeout: .seconds(5)) { model.mindMapRecord != nil }
     let calls = await summarizeCalls.count
@@ -2099,9 +2127,11 @@ extension HistoryViewModelTests {
     // 同一任务不重复处理。
     model.startAutoPipeline(
       taskID: accepted.taskID,
+      expectsMedia: false,
       transcribe: false, tidy: false, summarize: true, mindMap: true,
       tidyModel: nil,
-      summarizeAction: { await summarizeCalls.increment() }
+      summarizeAction: { _ in await summarizeCalls.increment(); return false },
+      isSummaryBusy: { false }
     )
     try? await Task.sleep(for: .milliseconds(400))
     let callsAfter = await summarizeCalls.count
@@ -2109,11 +2139,75 @@ extension HistoryViewModelTests {
     let extractorCalls = await extractor.callCount
     XCTAssertEqual(extractorCalls, 1)
   }
+
+  func testAutoPipelineQueuesRapidCapturesWithoutChangingUserSelection() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-pipeline-queue-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let first = try repository.acceptCapture(.init(
+      document: CapturedDocument(
+        createdAt: "2026-08-15T00:00:00Z", origin: .manualLink,
+        url: "https://example.test/pipeline/first", title: "第一条",
+        platform: "web", method: "fixture", text: "第一条正文",
+        completeness: "complete", capturedAt: "2026-08-15T00:00:00Z", sourceLabel: "fixture"
+      ),
+      receivedAtMilliseconds: 1
+    ))
+    let second = try repository.acceptCapture(.init(
+      document: CapturedDocument(
+        createdAt: "2026-08-15T00:00:01Z", origin: .manualLink,
+        url: "https://example.test/pipeline/second", title: "第二条",
+        platform: "web", method: "fixture", text: "第二条正文",
+        completeness: "complete", capturedAt: "2026-08-15T00:00:01Z", sourceLabel: "fixture"
+      ),
+      receivedAtMilliseconds: 2
+    ))
+    let outline = MindMapOutline(
+      title: "队列", subtitle: nil, branches: [.init(title: "要点", leaves: ["完成"])]
+    )
+    let extractor = StubMindMapExtractor(outcome: .init(outline: outline, totalTokens: 10))
+    let recorder = AutoPipelineSummaryRecorder()
+    let service = HistoryApplicationService(repository: repository)
+    let model = HistoryViewModel(mindMapExtractor: extractor)
+    model.configure(history: service, isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.rows.count == 2 }
+    model.selectedTaskID = second.taskID
+    await waitUntil { model.detail?.task.id == second.taskID }
+
+    for taskID in [first.taskID, second.taskID] {
+      model.startAutoPipeline(
+        taskID: taskID,
+        expectsMedia: false,
+        transcribe: false, tidy: false, summarize: true, mindMap: true,
+        tidyModel: nil,
+        summarizeAction: { detail in
+          await recorder.record(detail.task.id)
+          return false
+        },
+        isSummaryBusy: { false }
+      )
+    }
+
+    await waitUntilAsync(timeout: .seconds(8)) { await extractor.callCount == 2 }
+    let summarizedTaskIDs = await recorder.taskIDs
+    XCTAssertEqual(summarizedTaskIDs, [first.taskID, second.taskID])
+    XCTAssertNotNil(try service.mindMapStore?.loadMindMap(taskID: first.taskID))
+    XCTAssertNotNil(try service.mindMapStore?.loadMindMap(taskID: second.taskID))
+    XCTAssertEqual(model.selectedTaskID, second.taskID, "后台队列不得替用户切换当前详情")
+  }
 }
 
 private actor SummarizeCallCounter {
   private(set) var count = 0
   func increment() { count += 1 }
+}
+
+private actor AutoPipelineSummaryRecorder {
+  private(set) var taskIDs: [TaskID] = []
+  func record(_ taskID: TaskID) { taskIDs.append(taskID) }
 }
 
 private actor StubMindMapExtractor: MindMapExtracting {
@@ -2959,7 +3053,11 @@ private final class TagHistoryScreenRepository: HistoryRepository, @unchecked Se
     let filtered = lock.withLock { () -> [HistoryRowProjection] in
       rows.filter { row in
         let names = Set((taskTags[row.taskID] ?? []).map(\.normalizedName))
-        return Set(filter.tagNormalizedNames).isSubset(of: names)
+        let query = filter.searchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let matchesSearch = query.isEmpty
+          || (row.title ?? "").lowercased().contains(query)
+          || row.canonicalURL.lowercased().contains(query)
+        return Set(filter.tagNormalizedNames).isSubset(of: names) && matchesSearch
       }
     }
     return .init(rows: Array(filtered.prefix(limit)), nextCursor: nil)

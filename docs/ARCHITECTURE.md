@@ -326,6 +326,12 @@ Loop 9 把 `0.2.0` 的 App、内嵌 Native Host/浏览器模板、确定性扩�
 
 隔离 gate 不启动 GUI、不写真实 HOME 或调用真实 Provider：它只读挂载 DMG，复验 App tree、Host package、icon、浏览器模板与 extension ID/hash；运行 `ContractTests`、隔离 HOME 的 Browser Support install/repair/uninstall matrix、以及 fixture BYOK 的 summary → automatic tags → translate → GRDB persistence 路径。真实 Chrome/Brave/Edge profile 安装、登录页面捕获、真实 BYOK 和 PRD §11.1 的价值测量由 Syc 按候选内 `ACCEPTANCE_GUIDE.md` 主动执行并记录，不能被这些 fixture 证据替代。
 
+### 7.8 v0.2.9 应用更新链路
+
+v0.2.9 起，`LinkDigestApp` 通过 Sparkle 2.9.5 提供“检查更新…”入口。App 从发布 `Info.plist` 读取固定 HTTPS `SUFeedURL`、Ed25519 公钥和 `SUAutomaticallyUpdate=false`；开发运行与测试 bundle 没有这组发布配置时不启动 updater，避免把未打包环境误报成更新故障。Sparkle 默认只负责周期检查、展示版本说明、下载和验签，安装替换仍需用户确认；SQLite、Application Support、UserDefaults 与 Keychain 都在 App bundle 外，不进入更新 ZIP，也不随更新被覆盖。
+
+发布面新增一个 ad-hoc 签名的 Universal App ZIP 与 `appcast.xml`。打包器先验证 App、Universal Native Host、Sparkle.framework 的 arm64/x86_64 架构、framework 版本化 symlink、第三方许可证和 deep code signature，再用官方 `generate_appcast`/`sign_update` 从本机 Keychain 读取私钥生成 Ed25519 签名；随后重新解包并复验。GitHub Release 必须同时上传 ZIP 与 `appcast.xml`，且 appcast enclosure 的 URL、长度、build、short version 和签名都绑定同一版本。v0.2.8 及更早版本没有 updater，因此现有用户仍需手动安装一次 v0.2.9；后续版本才可走应用内升级。
+
 ## 8. UI 与 AppKit 边界
 
 SwiftUI 负责：

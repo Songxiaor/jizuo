@@ -18,7 +18,8 @@
         "kind": {"const": "browser_capture"},
         "url": {"type": "string", "format": "uri", "maxLength": 8192, "pattern": "^https?://"},
         "title": {"type": ["string", "null"], "maxLength": 1024},
-        "platform": {"type": "string", "enum": ["generic", "x", "youtube", "wechat", "xiaohongshu", "douyin", "bilibili", "github", "zhihu", "medium", "substack", "toutiao"]}
+        "platform": {"type": "string", "enum": ["generic", "x", "youtube", "wechat", "xiaohongshu", "douyin", "bilibili", "github", "zhihu", "medium", "substack", "toutiao"]},
+        "faviconURL": {"type": "string", "format": "uri", "maxLength": 8192, "pattern": "^https?://"}
       }
     },
     "capture": {

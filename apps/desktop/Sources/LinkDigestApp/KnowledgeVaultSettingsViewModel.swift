@@ -15,17 +15,23 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
   @Published private(set) var directoryPath: String?
   @Published private(set) var state: State = .idle
   @Published private(set) var lastSyncText: String?
+  @Published private(set) var lastAutoSyncFailureMessage: String?
 
   @Published var isAutoSyncEnabled: Bool = true {
     didSet {
       guard isAutoSyncEnabled != oldValue else { return }
       store.isAutoSyncEnabled = isAutoSyncEnabled
+      if !isAutoSyncEnabled {
+        autoSyncTask?.cancel()
+        autoSyncTask = nil
+      }
     }
   }
 
   private let store: UserDefaultsKnowledgeVaultStore
   private var history: HistoryApplicationService?
   private var autoSyncTask: Task<Void, Never>?
+  static var autoSyncDelaySeconds: Double = 20
 
   init(store: UserDefaultsKnowledgeVaultStore) {
     self.store = store
@@ -69,6 +75,7 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
     do {
       try store.saveDirectory(url)
       directoryPath = url.path
+      lastAutoSyncFailureMessage = nil
       state = .idle
     } catch let error as KnowledgeVaultError {
       state = .failed(error.userMessage)
@@ -81,6 +88,7 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
     store.clearDirectory()
     directoryPath = nil
     lastSyncText = nil
+    lastAutoSyncFailureMessage = nil
     state = .idle
   }
 
@@ -101,39 +109,38 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
     guard isAutoSyncEnabled, store.hasDirectory else { return }
     autoSyncTask?.cancel()
     autoSyncTask = Task { [weak self] in
-      try? await Task.sleep(for: .seconds(20))
+      try? await Task.sleep(for: .seconds(Self.autoSyncDelaySeconds))
       guard !Task.isCancelled else { return }
       await self?.performSync(reportingToUI: false)
     }
   }
 
   /// - Parameter reportingToUI: 手动同步要把进度和结果画出来；自动同步是背景
-  ///   行为，不该在用户正看着设置页时突然改写上面的数字，所以只更新
-  ///   「上次同步」时间，失败也只是安静地留在日志里。
+  ///   行为，不改写手动同步的进度卡，但失败必须留下可见、可重试的状态。
   private func performSync(reportingToUI: Bool) async {
     // 手动同步进行中就让开：两个同步同时写一个目录，冲突判定会互相打架。
     if !reportingToUI, isRunning { return }
     guard let history else {
-      if reportingToUI { state = .failed("历史还没准备好，请稍后重试。") }
+      reportFailure("历史还没准备好，请稍后重试。", reportingToUI: reportingToUI)
       return
     }
     guard store.hasDirectory else {
-      if reportingToUI { state = .failed("请先选择知识库文件夹。") }
+      reportFailure("请先选择知识库文件夹。", reportingToUI: reportingToUI)
       return
     }
 
     let lease: SecurityScopedURLLease
     do {
       guard let resolved = try store.directoryLease() else {
-        if reportingToUI { state = .failed("请先选择知识库文件夹。") }
+        reportFailure("请先选择知识库文件夹。", reportingToUI: reportingToUI)
         return
       }
       lease = resolved
     } catch let error as KnowledgeVaultError {
-      if reportingToUI { state = .failed(error.userMessage) }
+      reportFailure(error.userMessage, reportingToUI: reportingToUI)
       return
     } catch {
-      if reportingToUI { state = .failed("无法访问知识库文件夹，请重新选择。") }
+      reportFailure("无法访问知识库文件夹，请重新选择。", reportingToUI: reportingToUI)
       return
     }
     // 租约要活到写完最后一个文件为止。
@@ -143,7 +150,7 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
 
     let taskIDs: [TaskID]
     do { taskIDs = try allTaskIDs(history) } catch {
-      if reportingToUI { state = .failed("读取历史失败：\(error.localizedDescription)") }
+      reportFailure("读取历史失败：\(error.localizedDescription)", reportingToUI: reportingToUI)
       return
     }
 
@@ -168,9 +175,10 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
 
     let existing: [KnowledgeVaultExistingFile]
     do { existing = try KnowledgeVaultWriter.scan(directory: lease.url) } catch {
-      if reportingToUI {
-        state = .failed("无法读取知识库文件夹的现有文件：\(error.localizedDescription)")
-      }
+      reportFailure(
+        "无法读取知识库文件夹的现有文件：\(error.localizedDescription)",
+        reportingToUI: reportingToUI
+      )
       return
     }
 
@@ -185,7 +193,22 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
       store.lastSyncMilliseconds = now
       lastSyncText = Self.formatted(milliseconds: now)
     }
-    if reportingToUI { state = .finished(report) }
+    if reportingToUI {
+      state = .finished(report)
+      lastAutoSyncFailureMessage = nil
+    } else if report.failures.isEmpty {
+      lastAutoSyncFailureMessage = nil
+    } else {
+      lastAutoSyncFailureMessage = "自动同步有 \(report.failures.count) 条内容未能写入；请点“同步到知识库”查看详情并重试。"
+    }
+  }
+
+  private func reportFailure(_ message: String, reportingToUI: Bool) {
+    if reportingToUI {
+      state = .failed(message)
+    } else {
+      lastAutoSyncFailureMessage = "自动同步失败：\(message)"
+    }
   }
 
   private func allTaskIDs(_ history: HistoryApplicationService) throws -> [TaskID] {
