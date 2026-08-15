@@ -111,17 +111,27 @@ struct HistoryContentView: View {
             return
           }
         }
+        let preferences = settings.runPreferences
         model.startAutoPipeline(
           taskID: taskID,
+          expectsMedia: appModel.currentCapture?.shouldAutomaticallyPersistLegacyMedia == true,
           transcribe: settings.autoTranscribeNewCaptures,
           tidy: settings.autoTidyTranscription,
           summarize: settings.autoSummarizeNewCaptures,
           mindMap: settings.autoMindMapNewCaptures,
           tidyModel: settings.effectiveTidyModelName,
-          summarizeAction: { [weak model, weak appModel] in
-            guard let model, let appModel,
-                  let detail = model.detail, detail.task.id == taskID else { return }
-            await appModel.summarize(historyDetail: detail, preferences: settings.runPreferences)
+          summarizeAction: { [weak appModel] detail in
+            guard let appModel else { return false }
+            return await appModel.startAutomaticSummary(
+              historyDetail: detail,
+              preferences: preferences
+            )
+          },
+          isSummaryBusy: { [weak appModel] in
+            guard let appModel else { return false }
+            return appModel.runState.isActive
+              || appModel.isDataDestinationDisclosurePresented
+              || appModel.isConfirmingDataDestinationDisclosure
           }
         )
       }
@@ -339,7 +349,15 @@ struct HistoryContentView: View {
       }
     }
     .sheet(isPresented: Binding(get: { manualLink.isPresented }, set: { if !$0 { manualLink.dismiss() } })) {
-      ManualLinkSheet(model: manualLink, willAutoSummarize: providerSettings.autoSummarizeNewCaptures)
+      ManualLinkSheet(
+        model: manualLink,
+        modelCallDisclosure: AutomaticModelCallDisclosure(
+          autoSummarize: providerSettings.autoSummarizeNewCaptures,
+          autoMindMap: providerSettings.autoMindMapNewCaptures,
+          mayAutoTidyVideoTranscript: providerSettings.autoTranscribeNewCaptures
+            && providerSettings.autoTidyTranscription
+        )
+      )
     }
   }
 
@@ -950,6 +968,7 @@ struct HistoryContentView: View {
             localImageURLs: model.localImageURLs,
             localMediaFileURL: model.localMediaFileURL,
             openSettings: { openSettings() },
+            openRecapture: { manualLink.openForRecapture($0) },
             remotePreviewPlayback: remotePreviewPlayback,
             sessionMediaPlayback: sessionMediaPlayback
           )
@@ -1319,9 +1338,7 @@ private struct ManualLinkSheet: View {
   // 错误色走主题，理由同其它视图：写死 .red 在低对比与高对比主题上都不成立。
   @Environment(\.appTheme) private var appTheme
   @ObservedObject var model: ManualLinkViewModel
-  /// 「新捕获自动总结」开关（设置 → 生成偏好）打开时为 true；
-  /// 提示只在真的会花一次模型调用时出现，开关关着就不吓人。
-  let willAutoSummarize: Bool
+  let modelCallDisclosure: AutomaticModelCallDisclosure
   @FocusState private var focusURL: Bool
 
   var body: some View {
@@ -1332,10 +1349,16 @@ private struct ManualLinkSheet: View {
       TextField("https://example.com/article", text: $model.input)
         .textFieldStyle(.roundedBorder).focused($focusURL)
         .disabled(model.isBusy).accessibilityIdentifier("manual-link-url-input")
-      if willAutoSummarize {
-        Text("添加后将自动抓取并生成总结，会产生一次模型调用。可在设置的「生成偏好」里关闭。")
+      if let validation = model.inputValidationMessage {
+        Label(validation, systemImage: "exclamationmark.triangle.fill")
+          .font(.caption)
+          .foregroundStyle(appTheme.danger)
+          .accessibilityIdentifier("manual-link-validation")
+      }
+      if let disclosure = modelCallDisclosure.message {
+        Text(disclosure)
           .font(.caption).foregroundStyle(.secondary)
-          .accessibilityIdentifier("manual-link-auto-summarize-hint")
+          .accessibilityIdentifier("manual-link-model-call-hint")
       }
       if let error = model.errorMessage {
         Label(error, systemImage: "exclamationmark.triangle.fill")
@@ -1470,6 +1493,27 @@ private struct HistoryRowView: View {
     return "存于 \(HistoryRelativeTime.text(row.createdAtMilliseconds ?? row.updatedAtMilliseconds))"
   }
 
+  /// 整行作为一个可访问元素，读屏只报标题、来源、时间和处理状态；正文预览
+  /// 留在视觉层，不再把几百字摘要当作列表项 value 一口气念完。
+  private var rowAccessibilityLabel: String {
+    CapturedDocumentTitle.display(row.title, for: row.canonicalURL)
+  }
+
+  private var rowAccessibilityValue: String {
+    var values = [
+      "来源：\(HistoryPlatformDisplay.name(forHost: row.host))",
+      rowTimeText,
+      isSummarized ? "已总结" : "未总结",
+    ]
+    if row.hasTranscript == true {
+      values.append("已转写")
+    } else if row.hasMedia == true {
+      values.append("有视频，还没转写")
+    }
+    if row.hasMindMap == true { values.append("已生成脑图") }
+    return values.joined(separator: "，")
+  }
+
   var body: some View {
     HStack(alignment: .top, spacing: 10) {
       // 左侧锚点：状态点 + 平台标记竖排。
@@ -1580,6 +1624,9 @@ private struct HistoryRowView: View {
     // 固定纵向 intrinsic 高度 + 内容变化换 identity，强制按真实内容测量。
     .fixedSize(horizontal: false, vertical: true)
     .id("\(row.taskID.rawValue)-\(row.updatedAtMilliseconds)")
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(rowAccessibilityLabel)
+    .accessibilityValue(rowAccessibilityValue)
   }
 
   private var rowBackground: Color {
@@ -1745,6 +1792,7 @@ private struct HistoryDetailView: View {
   let localImageURLs: [URL]
   let localMediaFileURL: URL?
   let openSettings: () -> Void
+  let openRecapture: (String) -> Void
   /// 与列表预热共享：选中当前抓取时已开始 prepare，详情卡复用同一 controller。
   @ObservedObject var remotePreviewPlayback: RemotePreviewPlayerController
   @ObservedObject var sessionMediaPlayback: SessionMediaPlaybackController
@@ -2570,6 +2618,11 @@ private struct HistoryDetailView: View {
           Toggle("以纯文本查看正文", isOn: $showsPlainText)
             .accessibilityIdentifier("history-content-plain-text-toggle")
           Divider()
+          if canRecaptureSource {
+            Button("重新抓取原文…") { openRecapture(sourceURL) }
+              .accessibilityIdentifier("history-recapture-source")
+            Divider()
+          }
           Button("重新生成…") { isRegeneratePopoverPresented = true }
             .disabled(!canRunHistory || !providerSettings.arePreferencesReady)
             .accessibilityIdentifier("regenerate-history")
@@ -2597,6 +2650,19 @@ private struct HistoryDetailView: View {
     if let artifact = latestArtifact, !artifact.bodyText.isEmpty { return true }
     if let snapshot = detail.snapshots.last, !snapshot.bodyText.isEmpty { return true }
     return false
+  }
+
+  /// User-authored local records have no remote source to refresh. Web sources
+  /// reuse ManualLinkViewModel so platform adapters and duplicate confirmation
+  /// stay identical to the existing "添加链接" path.
+  private var canRecaptureSource: Bool {
+    guard !isOwnWriting,
+          let components = URLComponents(string: sourceURL),
+          let scheme = components.scheme?.lowercased(),
+          scheme == "http" || scheme == "https",
+          components.host?.isEmpty == false
+    else { return false }
+    return true
   }
 
   /// 拷贝全文：与阅读区同源的正文 Markdown（不含导出 YAML 头）。

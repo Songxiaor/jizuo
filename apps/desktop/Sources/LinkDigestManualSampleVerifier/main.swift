@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import LinkDigestCore
 import LinkDigestAdapters
+import WebKit
 
 // Loop 5 / PRD section 12 acceptance tool. The manifest is the durable test
 // contract; results are observations from either the exact production network
@@ -183,6 +184,7 @@ guard CommandLine.arguments.count >= 3 else {
     LinkDigestManualSampleVerifier verify-fixtures <manifest.json> <output.json>
     LinkDigestManualSampleVerifier verify-github <output.json>
     LinkDigestManualSampleVerifier verify-wechat-wkwebview <mp.weixin.qq.com URL>
+    LinkDigestManualSampleVerifier verify-douyin-wkwebview <douyin URL> [data-store UUID]
 
   verify-network uses PeerBoundNetworkWebPageFetcher + ManualLinkCaptureService.
   verify-fixtures only checks entries with htmlFile using MinimalHTMLExtractor;
@@ -193,7 +195,47 @@ guard CommandLine.arguments.count >= 3 else {
 }
 
 let mode = CommandLine.arguments[1]
-guard ["validate-manifest", "verify-network", "verify-fixtures", "verify-github", "verify-wechat-wkwebview"].contains(mode) else { exit(64) }
+guard ["validate-manifest", "verify-network", "verify-fixtures", "verify-github", "verify-wechat-wkwebview", "verify-douyin-wkwebview"].contains(mode) else { exit(64) }
+
+if mode == "verify-douyin-wkwebview" {
+  guard (3...4).contains(CommandLine.arguments.count),
+        let url = URL(string: CommandLine.arguments[2])
+  else { exit(64) }
+  let dataStore: WKWebsiteDataStore
+  if CommandLine.arguments.count == 4 {
+    guard let identifier = UUID(uuidString: CommandLine.arguments[3]) else { exit(64) }
+    dataStore = WKWebsiteDataStore(forIdentifier: identifier)
+  } else {
+    dataStore = .nonPersistent()
+  }
+  let userAgent =
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    + "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+  let started = ContinuousClock.now
+  do {
+    let service = DouyinWKWebViewCaptureService(dataStore: dataStore, userAgent: userAgent)
+    let document = try await service.capture(url: url)
+    let note = MarkdownNoteFrontmatter.parse(document.text)
+    let bodyImageURLs = MarkdownRemoteImageReferences.absoluteHTTPSURLs(in: note.body)
+    let plainBody = note.body
+      .replacingOccurrences(of: #"!\[[^\]]*\]\([^)]*\)"#, with: "", options: .regularExpression)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let elapsed = started.duration(to: .now)
+    func reportValue(_ value: String?) -> String {
+      (value ?? "")
+        .replacingOccurrences(of: "\n", with: " ")
+        .replacingOccurrences(of: "\t", with: " ")
+    }
+    print("status=success canonicalURL=\(document.url) title=\(reportValue(document.title)) author=\(reportValue(note.author)) publishedAt=\(reportValue(note.published)) characters=\(plainBody.unicodeScalars.count) images=\(bodyImageURLs.count) elapsed=\(elapsed) verificationPage=false")
+    exit(0)
+  } catch {
+    let elapsed = started.duration(to: .now)
+    let code = stableErrorCode(error)
+    let verificationPage = code == "verificationRequired"
+    print("status=failure errorCode=\(code) elapsed=\(elapsed) verificationPage=\(verificationPage)")
+    exit(1)
+  }
+}
 
 if mode == "verify-wechat-wkwebview" {
   guard CommandLine.arguments.count == 3,

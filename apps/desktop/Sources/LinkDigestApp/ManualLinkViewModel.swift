@@ -13,6 +13,36 @@ struct NSPasteboardClipboardReader: ClipboardReading {
 
 enum ManualLinkState: Equatable { case idle, fetching, saving, failed(String) }
 
+/// 「添加网页链接」里对自动模型调用的事前说明。
+///
+/// 这里按真正会发出的远程步骤计数，不能再把「自动总结」当成整条自动管线的
+/// 同义词：总结和脑图同时打开时就是两次独立调用。视频转写后的文稿整理取决于
+/// 页面有没有媒体，因此单独写成条件项，不拿一个看似精确的数字误导用户。
+struct AutomaticModelCallDisclosure: Equatable {
+  let autoSummarize: Bool
+  let autoMindMap: Bool
+  let mayAutoTidyVideoTranscript: Bool
+
+  var message: String? {
+    var steps: [String] = []
+    if autoSummarize { steps.append("总结") }
+    if autoMindMap { steps.append("脑图") }
+
+    var parts: [String] = []
+    if !steps.isEmpty {
+      parts.append(
+        "添加后将自动抓取并执行\(steps.joined(separator: "、"))，预计产生 \(steps.count) 次模型调用。"
+      )
+    }
+    if mayAutoTidyVideoTranscript {
+      parts.append("如果链接包含视频并完成自动转写，文稿整理还会额外产生 1 次模型调用。")
+    }
+    guard !parts.isEmpty else { return nil }
+    parts.append("可在设置的「生成偏好」里关闭。")
+    return parts.joined()
+  }
+}
+
 /// Normalizes text the user explicitly submits into one web URL.
 ///
 /// Sharing sheets often copy a sentence plus one link (Douyin is a common
@@ -344,6 +374,15 @@ final class ManualLinkViewModel: ObservableObject {
     !isBusy && ingestor != nil && ExplicitWebLinkInput.singleURL(from: input) != nil
   }
 
+  /// 按钮变灰时同时说明原因，避免用户只能靠反复点击猜输入格式。
+  var inputValidationMessage: String? {
+    guard !isBusy else { return nil }
+    let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    guard ExplicitWebLinkInput.singleURL(from: input) == nil else { return nil }
+    return "请输入一条完整网页链接，或只包含一条链接的分享文案。"
+  }
+
   func configure(history: HistoryApplicationService?, storageWriteGate: StorageWriteGate, nowMilliseconds: @escaping @Sendable () -> Int64, captureSink: @escaping CaptureIngestService.CaptureSink) {
     self.history = history
     ingestor = .init(
@@ -468,6 +507,18 @@ final class ManualLinkViewModel: ObservableObject {
   }
 
   func open() { guard !isBusy, ingestor != nil else { return }; state = .idle; isPresented = true }
+
+  /// Opens the existing capture sheet with one historical source prefilled.
+  /// Submission still goes through the duplicate confirmation and the same
+  /// adapter/ingest queue, so recapture cannot silently overwrite a snapshot.
+  func openForRecapture(_ rawURL: String) {
+    guard !isBusy, ingestor != nil,
+          let url = ExplicitWebLinkInput.singleURL(from: rawURL)
+    else { return }
+    input = url.absoluteString
+    state = .idle
+    isPresented = true
+  }
 
   func readClipboardAndOpen() {
     guard !isBusy, ingestor != nil else { return }
@@ -667,5 +718,3 @@ final class ManualLinkViewModel: ObservableObject {
     else if !isSaving { isPresented = false }
   }
 }
-
-

@@ -47,6 +47,49 @@ export type PopupRecovery = {
   label: string;
 };
 
+export type PopupPreviewFailure = {
+  message: string;
+  canReload: boolean;
+};
+
+/** Safe user copy for errors thrown before a capture envelope exists. */
+export function popupPreviewFailure(rawMessage: string): PopupPreviewFailure {
+  if (rawMessage.includes("CAPTURE_APP_SHELL")) {
+    return {
+      message: "当前页面是已登录的网页应用界面，不是独立文章。请选中需要保存的正文后再打开扩展。",
+      canReload: false,
+    };
+  }
+  if (rawMessage.includes("CAPTURE_PAGE_LOAD_FAILED")) {
+    return {
+      message: "正文尚未加载成功。请刷新页面，等待文件内容出现后重新读取。",
+      canReload: true,
+    };
+  }
+  if (rawMessage.includes("CAPTURE_LOGIN_WALL")) {
+    return {
+      message: "当前只读取到了登录页。请先完成登录，再打开具体内容。",
+      canReload: false,
+    };
+  }
+  if (rawMessage.includes("CAPTURE_NAVIGATION_ONLY")) {
+    return {
+      message: "当前只读取到了导航内容。请打开具体文章，或选中需要保存的文字。",
+      canReload: false,
+    };
+  }
+  if (rawMessage.includes("CAPTURE_CONTENT_EMPTY")) {
+    return {
+      message: "当前页面没有读到可保存的正文。请等待页面加载完成后重新读取。",
+      canReload: true,
+    };
+  }
+  return {
+    message: "当前页面暂时不可读取。请刷新页面后再试。",
+    canReload: true,
+  };
+}
+
 export function popupRecoveryForSendResult(result: SafeExtensionSendResult): PopupRecovery | null {
   if (result.response.kind !== "error") return null;
   const message = popupMessageForResponse(result.response) ?? "操作未完成。";

@@ -321,6 +321,17 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains(".accessibilityIdentifier(\"delete-history\")"))
   }
 
+  func testDetailMoreMenuOffersAccessibleSourceRecaptureThroughExistingFlow() {
+    let source = historyContentViewSource()
+    let root = section(in: source, from: "struct HistoryContentView: View", to: "private struct ManualLinkSheet")
+    let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
+
+    XCTAssertTrue(root.contains("openRecapture: { manualLink.openForRecapture($0) }"))
+    XCTAssertTrue(detail.contains("Button(\"重新抓取原文…\") { openRecapture(sourceURL) }"))
+    XCTAssertTrue(detail.contains(".accessibilityIdentifier(\"history-recapture-source\")"))
+    XCTAssertTrue(detail.contains("guard !isOwnWriting"))
+  }
+
   func testRunActionsWaitForStartupPreferencesBeforeGenerating() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
@@ -1403,6 +1414,17 @@ final class HistoryContentViewTests: XCTestCase {
     // 状态走 accessibilityValue 而不是塞进 label：塞进 label 时 VoiceOver 只念
     // 「已总结」，听不出这是一个状态指示器；分开之后念的是「总结状态，已总结」。
     XCTAssertTrue(row.contains("accessibilityValue(isSummarized"))
+  }
+
+  func testHistoryRowExposesOneConciseVoiceOverElement() {
+    let source = historyContentViewSource()
+    let row = section(in: source, from: "private struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
+    XCTAssertTrue(row.contains(".accessibilityElement(children: .ignore)"))
+    XCTAssertTrue(row.contains(".accessibilityLabel(rowAccessibilityLabel)"))
+    XCTAssertTrue(row.contains(".accessibilityValue(rowAccessibilityValue)"))
+    XCTAssertTrue(row.contains("HistoryPlatformDisplay.name(forHost: row.host)"))
+    let value = section(in: row, from: "private var rowAccessibilityValue", to: "var body: some View")
+    XCTAssertFalse(value.contains("artifactPreview"), "读屏 value 不应复用可能很长的正文预览")
   }
 
   func testSidebarUsesSourceMetadataInsteadOfURLOrImportTime() {

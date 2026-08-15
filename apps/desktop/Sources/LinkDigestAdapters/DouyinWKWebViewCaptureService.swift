@@ -144,6 +144,53 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
     let pathLooksLikeNote = false;
     try { pathLooksLikeNote = /\/(?:share\/)?note\//.test(new URL(href).pathname); } catch (_) {}
 
+    // Canonical note pages moved their caption out of the legacy video-desc
+    // nodes. The classes are hashed, but the exact /note/{id} route plus the
+    // caption row immediately before “发布时间” gives us an identity-locked
+    // structure. Keep the scan bounded because this panel also owns a related
+    // feed below the current item.
+    let dedicatedNoteMetadata = null;
+    try {
+      const url = new URL(href);
+      const host = url.hostname.toLowerCase();
+      const itemValues = ['modal_id', 'aweme_id', 'item_id', 'video_id', 'group_id']
+        .flatMap((key) => url.searchParams.getAll(key));
+      const exactRoute = (host === 'douyin.com' || host.endsWith('.douyin.com'))
+        && url.pathname === `/note/${awemeID}`
+        && itemValues.every((value) => value === awemeID);
+      const detail = exactRoute && document.querySelector("[data-e2e='note-detail']");
+      const timeCandidates = detail && detail.querySelectorAll('span,time');
+      if (timeCandidates && timeCandidates.length <= 1000) {
+        for (const node of timeCandidates) {
+          const publishedText = normalize(node.textContent);
+          if (!/^发布时间[:：]\s*\d/u.test(publishedText)) continue;
+          const captionNode = node.parentElement && node.parentElement.previousElementSibling;
+          const caption = normalize(captionNode && captionNode.textContent)
+            .replace(/(?:…|\.{3})?\s*展开\s*$/u, '')
+            .trim();
+          if (caption.length < 2 || caption.length > 5000 || /发布时间[:：]/u.test(caption)) continue;
+          const authorBlock = node.parentElement
+            && node.parentElement.parentElement
+            && node.parentElement.parentElement.parentElement
+            && node.parentElement.parentElement.parentElement.previousElementSibling;
+          const authorLinks = authorBlock ? authorBlock.querySelectorAll("a[href*='/user/']") : [];
+          let noteAuthor = '';
+          if (authorLinks.length <= 20) {
+            for (const link of authorLinks) {
+              const candidate = normalize(link.textContent);
+              if (candidate) { noteAuthor = candidate; break; }
+            }
+          }
+          dedicatedNoteMetadata = {
+            caption,
+            author: noteAuthor,
+            publishedAt: publishedText.replace(/^发布时间[:：]\s*/u, '').trim()
+          };
+          break;
+        }
+      }
+    } catch (_) {}
+
     const bodyText = normalize(document.body && document.body.innerText).slice(0, 20000);
     const titleNode = document.querySelector('h1');
     const ogTitle = document.querySelector("meta[property='og:title']");
@@ -151,11 +198,19 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       .replace(/\s*[-_|｜]\s*抖音\s*$/u, '')
       .replace(/\s+-\s+抖音.*$/u, '')
       .trim();
-    const title = cleanTitle(
-      (titleNode && titleNode.textContent)
+    const stripTrailingHashtags = (value) => {
+      const stripped = normalize(value)
+        .replace(/\s+#\s*$/u, '')
+        .replace(/(?<![0-9A-Za-z])(?:\s*#[^\s#]+)+\s*$/u, '')
+        .trim();
+      return stripped || normalize(value);
+    };
+    const title = stripTrailingHashtags(cleanTitle(
+      (dedicatedNoteMetadata && dedicatedNoteMetadata.caption)
+      || (titleNode && titleNode.textContent)
       || (ogTitle && ogTitle.getAttribute('content'))
       || document.title
-    );
+    ));
 
     const verification = /请完成安全验证|滑动验证|异常访问|验证码|登录后继续/.test(bodyText);
     const placeholderTitle = !title || title === '抖音';
@@ -168,7 +223,8 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
     );
     const ogDescription = document.querySelector("meta[property='og:description']");
     const description = normalize(
-      (descriptionNode && descriptionNode.textContent)
+      (dedicatedNoteMetadata && dedicatedNoteMetadata.caption)
+      || (descriptionNode && descriptionNode.textContent)
       || (ogDescription && ogDescription.getAttribute('content'))
       || ''
     ).replace(/(?:…|\.{3})?\s*展开$/u, '').trim();
@@ -191,7 +247,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       }
       return value;
     };
-    let author = '';
+    let author = cleanAuthor(dedicatedNoteMetadata && dedicatedNoteMetadata.author);
     for (const selector of [
       "[data-e2e='feed-video-nickname']",
       "[data-e2e='video-author-info-nickname']",
@@ -211,7 +267,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       author = cleanAuthor(link && link.textContent);
     }
 
-    let publishedAt = '';
+    let publishedAt = normalize(dedicatedNoteMetadata && dedicatedNoteMetadata.publishedAt);
     const publishedNode = document.querySelector(
       "[data-e2e*='publish'],[data-e2e*='create-time'],[class*='publish-time'],[class*='create-time'],time[datetime]"
     );
@@ -540,6 +596,13 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       }
     }
     latestReadyPage = page
+    // `/note/` 在首轮渲染时可能先挂一个用于轮播控制的 video 元素，正片图稍后才
+    // 进入 DOM。不能因为这个占位播放器已有 URL 就提前把图文当视频保存，否则
+    // 移动端分享短链会只留下配文、丢掉全部图片。继续轮询到图集出现；截止时仍无图
+    // 则沿用下面的明确降级，不写入半成品。
+    if DouyinURL.isNotePath(page.canonicalURL), page.imageURLs.isEmpty {
+      return .notReady
+    }
     return .ready(page)
   }
 
@@ -579,7 +642,14 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
     var body = "# \(page.title)"
     if let description = page.description,
        description.caseInsensitiveCompare(page.title) != .orderedSame {
-      body += "\n\n\(description)"
+      let suffix: String? = description.hasPrefix(page.title)
+        ? String(description.dropFirst(page.title.count)).trimmingCharacters(in: .whitespacesAndNewlines)
+        : nil
+      let suffixIsOnlyTopics = suffix.map { value in
+        let parts = value.split(whereSeparator: \.isWhitespace)
+        return !parts.isEmpty && parts.allSatisfy { $0.hasPrefix("#") && $0.count > 1 }
+      } ?? false
+      body += "\n\n\(suffixIsOnlyTopics ? suffix! : description)"
     }
     if isImagePost {
       let gallery = page.imageURLs

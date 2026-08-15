@@ -52,12 +52,24 @@ stable_host = load_module("stable_host", NATIVE_HOST_SCRIPTS / "stable_host.py")
 release_unit = load_module("linkdigest_release_unit", NATIVE_HOST_SCRIPTS / "release_unit.py")
 
 
-def run(*command: str, cwd: Path = ROOT) -> None:
-    subprocess.run(command, cwd=cwd, check=True)
+def run(*command: str, cwd: Path = ROOT, env: dict[str, str] | None = None) -> None:
+    subprocess.run(command, cwd=cwd, check=True, env=env)
 
 
-def output(command: list[str], cwd: Path = ROOT) -> str:
-    return subprocess.check_output(command, cwd=cwd, text=True).strip()
+def output(
+    command: list[str], cwd: Path = ROOT, env: dict[str, str] | None = None
+) -> str:
+    return subprocess.check_output(command, cwd=cwd, text=True, env=env).strip()
+
+
+def swift_build_environment() -> dict[str, str]:
+    """Use the caller's Xcode, or the validated full Xcode used by release builds."""
+    environment = os.environ.copy()
+    if not environment.get("DEVELOPER_DIR"):
+        environment["DEVELOPER_DIR"] = release_unit.validate_full_xcode_developer_dir(
+            release_unit.XCODE_DEVELOPER_DIR
+        )
+    return environment
 
 
 def require_real_existing_directory(path: Path, label: str) -> None:
@@ -146,8 +158,12 @@ def main() -> int:
     ]
     for architecture in stable_host.SUPPORTED_ARCHITECTURES:
         build_flags += ["--arch", architecture]
-    run("swift", "build", *build_flags)
-    binary_root = Path(output(["swift", "build", *build_flags, "--show-bin-path"]))
+    swift_environment = swift_build_environment()
+    run("swift", "build", *build_flags, env=swift_environment)
+    binary_root = Path(output(
+        ["swift", "build", *build_flags, "--show-bin-path"],
+        env=swift_environment,
+    ))
 
     # /tmp is a macOS symlink to /private/tmp. The Host packager deliberately
     # rejects any symlink ancestor, so select the canonical directory itself.
@@ -216,8 +232,22 @@ def main() -> int:
 
         app_staging = app_destination.parent / f".{app_destination.name}.staging-{uuid.uuid4().hex}"
         extension_staging = extension_destination.parent / f".{extension_destination.name}.staging-{uuid.uuid4().hex}"
-        shutil.copytree(staged_app, app_staging, symlinks=False)
+        # Sparkle.framework is a versioned framework whose top-level entries
+        # are symlinks into Versions/Current. Dereferencing them here changes
+        # the signed bundle after verification and makes the installed App
+        # fail `codesign --verify --deep --strict` even though `staged_app`
+        # was valid. Preserve the already-verified framework layout exactly.
+        shutil.copytree(staged_app, app_staging, symlinks=True)
         shutil.copytree(staged_extension, extension_staging, symlinks=False)
+        run(
+            "/usr/bin/codesign",
+            "--verify",
+            "--deep",
+            "--strict",
+            "--all-architectures",
+            "--verbose=2",
+            str(app_staging),
+        )
         try:
             atomic_replace(app_staging, app_destination)
             atomic_replace(extension_staging, extension_destination)

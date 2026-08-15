@@ -117,6 +117,13 @@ struct KnowledgeVaultSettingsView: View {
             .font(.caption)
             .foregroundStyle(.tertiary)
 
+          if let failure = model.lastAutoSyncFailureMessage {
+            Label(failure, systemImage: "exclamationmark.triangle.fill")
+              .font(.caption)
+              .foregroundStyle(appTheme.danger)
+              .accessibilityIdentifier("knowledge-vault-auto-sync-error")
+          }
+
           if !model.hasDirectory {
             Text("请先选择知识库文件夹。")
               .font(.caption)

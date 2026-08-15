@@ -82,7 +82,39 @@ done
 
 [ -d "$APP/Contents/Resources/NativeHost" ] || fail "missing Contents/Resources/NativeHost"
 
-# --- 3. 两种芯片都能跑 ------------------------------------------------------
+# --- 3. Sparkle 更新框架、Feed 与许可证完整 ---------------------------------
+
+FRAMEWORK="$APP/Contents/Frameworks/Sparkle.framework"
+[ -d "$FRAMEWORK" ] || fail "missing Sparkle.framework"
+[ -x "$FRAMEWORK/Versions/B/Sparkle" ] || fail "missing Sparkle executable"
+
+sparkle_version="$(/usr/bin/plutil -extract CFBundleShortVersionString raw -o - \
+  "$FRAMEWORK/Versions/B/Resources/Info.plist" 2>/dev/null)" \
+  || fail "cannot read Sparkle.framework version"
+[ "$sparkle_version" = "2.9.5" ] || fail "unexpected Sparkle version: $sparkle_version"
+
+feed_url="$(/usr/bin/plutil -extract SUFeedURL raw -o - "$APP/Contents/Info.plist" 2>/dev/null)" \
+  || fail "missing SUFeedURL"
+public_key="$(/usr/bin/plutil -extract SUPublicEDKey raw -o - "$APP/Contents/Info.plist" 2>/dev/null)" \
+  || fail "missing SUPublicEDKey"
+automatic_updates="$(/usr/bin/plutil -extract SUAutomaticallyUpdate raw -o - "$APP/Contents/Info.plist" 2>/dev/null)" \
+  || fail "missing SUAutomaticallyUpdate"
+expected_feed="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["sparkleFeedURL"])' "$ROOT/config/app-release.json")" \
+  || fail "cannot read sparkleFeedURL from config/app-release.json"
+expected_key="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["sparklePublicEDKey"])' "$ROOT/config/app-release.json")" \
+  || fail "cannot read sparklePublicEDKey from config/app-release.json"
+[ "$feed_url" = "$expected_feed" ] || fail "SUFeedURL drifted from app-release config"
+[ "$public_key" = "$expected_key" ] || fail "SUPublicEDKey drifted from app-release config"
+[ "$automatic_updates" = "false" ] || fail "SUAutomaticallyUpdate must remain false"
+
+LICENSES="$APP/Contents/Resources/ThirdPartyLicenses"
+for license in GRDB-LICENSE.txt Sparkle-LICENSE.txt; do
+  [ -f "$LICENSES/$license" ] || fail "missing third-party license: $license"
+  /usr/bin/cmp -s "$LICENSES/$license" "$ROOT/licenses/$license" \
+    || fail "embedded third-party license drifted: $license"
+done
+
+# --- 4. 两种芯片都能跑 ------------------------------------------------------
 
 # 对外承诺支持 Intel Mac。缺一个架构时，本机（Apple silicon）完全正常，
 # 只有 Intel 用户打不开——是最难自查的一类回归。
@@ -94,7 +126,31 @@ for arch in arm64 x86_64; do
   esac
 done
 
-# --- 4. 签名完整 ------------------------------------------------------------
+sparkle_arches="$(/usr/bin/lipo -archs "$FRAMEWORK/Versions/B/Sparkle" 2>/dev/null)" \
+  || fail "lipo could not read Sparkle.framework"
+for arch in arm64 x86_64; do
+  case " $sparkle_arches " in
+    *" $arch "*) ;;
+    *) fail "Sparkle.framework is not universal; missing $arch (has: $sparkle_arches)" ;;
+  esac
+done
+
+# SwiftPM's executable defaults to ../lib, while a standard macOS App embeds
+# dynamic frameworks in Contents/Frameworks. Signing can still pass when this
+# rpath is absent, but dyld then aborts before the first window appears.
+framework_rpath_count="$(/usr/bin/otool -l "$BINARY" | /usr/bin/awk \
+  '$1 == "path" && $2 == "@executable_path/../Frameworks" { count += 1 } END { print count + 0 }')" \
+  || fail "otool could not inspect App runtime search paths"
+[ "$framework_rpath_count" -eq 2 ] \
+  || fail "App executable does not resolve Contents/Frameworks in both architectures"
+
+sparkle_link_count="$(/usr/bin/otool -L "$BINARY" | /usr/bin/awk \
+  '$1 == "@rpath/Sparkle.framework/Versions/B/Sparkle" { count += 1 } END { print count + 0 }')" \
+  || fail "otool could not inspect App linked frameworks"
+[ "$sparkle_link_count" -eq 2 ] \
+  || fail "App executable Sparkle install name is missing or inconsistent"
+
+# --- 5. 签名完整 ------------------------------------------------------------
 
 # --deep --strict 才会走进嵌套的资源包。少了它，资源包被改动过也照样报 valid。
 /usr/bin/codesign --verify --deep --strict "$APP" 2>/dev/null \

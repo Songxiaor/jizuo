@@ -294,12 +294,14 @@ export function captureEnvelopeForPage(
       url: sourceURL,
       title: page.title || tabTitle || null,
       platform: detectCapturePlatform(sourceURL),
+      ...(page.faviconURL ? { faviconURL: page.faviconURL } : {}),
     },
     capture: {
       method: page.method,
       text: page.text,
       characterCount: page.characterCount,
-      completeness: page.method === "selection" ? "selection_only" as const : "full_article" as const,
+      completeness: page.completeness
+        ?? (page.method === "selection" ? "selection_only" as const : "full_article" as const),
       capturedAt: now,
     },
   };
@@ -903,9 +905,17 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
   }
   const gallery = imageURLs.map((url) => `![](${url})`).join("\n\n");
   // 抖音把「展开」按钮的文字渲染在文案节点里，标题已剥掉它，描述也要剥；
-  // 剥完与标题相同时就是同一句文案，不再重复成一段正文。
+  // 剥完与标题相同时就是同一句文案，不再重复成一段正文。标题会去掉末尾话题，
+  // 此时正文只补回话题，不把整句配文重复展示两遍。
   const trimmedDescription = description.replace(/(?:…|\.{3})?\s*展开$/u, "").trim();
-  const bodyDescription = trimmedDescription === title ? "" : trimmedDescription;
+  const descriptionSuffix = trimmedDescription.startsWith(title)
+    ? trimmedDescription.slice(title.length).trim()
+    : "";
+  const bodyDescription = trimmedDescription === title
+    ? ""
+    : descriptionSuffix && /^(?:#[^\s#]+\s*)+$/u.test(descriptionSuffix)
+      ? descriptionSuffix
+      : trimmedDescription;
   const body = [`# ${title}`, bodyDescription, gallery].filter(Boolean).join("\n\n");
   const text = `${header}${body}`.trim() || "抖音公开视频";
 
@@ -1173,6 +1183,10 @@ async function captureAttemptFromTab(
     });
     page = result[0]?.result as ExtractedPage;
     if (!page) throw new Error("CAPTURE_CONTENT_EMPTY");
+    // Quality failures never cross Native Messaging or enter local History.
+    // The page script returns a stable code so popup can explain the recovery
+    // without exposing any captured private text.
+    if (page.captureIssue) throw new Error(page.captureIssue);
     page = enrichXCaptureWithTitleFallback(page, tab?.title ?? null);
     const mediaResults = await browser.scripting.executeScript({
       target: { tabId },

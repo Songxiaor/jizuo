@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import importlib.util
 import os
 import plistlib
@@ -22,6 +23,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -44,14 +46,30 @@ release_unit = load_module("linkdigest_release_unit", NATIVE_HOST_SCRIPTS / "rel
 
 DMG_BACKGROUND = ROOT / "apps/desktop/Assets/DMGBackground.png"
 DMG_BACKGROUND_RETINA = ROOT / "apps/desktop/Assets/DMGBackground@2x.png"
+SPARKLE_TOOLS = ROOT / "apps/desktop/.build/artifacts/sparkle/Sparkle/bin"
+SPARKLE_NAMESPACE = "http://www.andymatuschak.org/xml-namespaces/sparkle"
 # Finder 的标题栏约 40pt；外框 760×540 对应 760×500 的背景内容区，
 # 不会出现普通文件夹式的滚动条或把底部辅助文件裁掉。
 DMG_WINDOW_BOUNDS = (180, 120, 940, 660)
 DMG_ICON_SIZE = 96
 
 
-def run(*command: str, cwd: Path | None = None) -> None:
-    subprocess.run(command, check=True, cwd=cwd)
+def run(
+    *command: str,
+    cwd: Path | None = None,
+    env: dict[str, str] | None = None,
+) -> None:
+    subprocess.run(command, check=True, cwd=cwd, env=env)
+
+
+def swift_build_environment() -> dict[str, str]:
+    """Use the caller's Xcode, or the validated full Xcode used by release builds."""
+    environment = os.environ.copy()
+    if not environment.get("DEVELOPER_DIR"):
+        environment["DEVELOPER_DIR"] = release_unit.validate_full_xcode_developer_dir(
+            release_unit.XCODE_DEVELOPER_DIR
+        )
+    return environment
 
 
 def apple_script_string(value: str) -> str:
@@ -111,6 +129,58 @@ end tell
         raise RuntimeError("Finder 没有写入 DMG 布局元数据 `.DS_Store`")
 
 
+def remove_forbidden_signing_metadata(app: Path) -> None:
+    """移除 Finder 在可写 DMG 上附加的两类 codesign 禁止元数据。
+
+    Finder 读取 versioned framework 时可能给 `Sparkle.framework` 写入
+    `com.apple.FinderInfo`。它不改变文件 bytes，却会让用户把 App 拖出 DMG
+    后执行 `codesign --strict` 失败。只清理这两种 Apple 明确禁止附着在已签名
+    bundle 上的 xattr；不碰 quarantine、provenance 或用户文件。
+    """
+    forbidden = ("com.apple.FinderInfo", "com.apple.ResourceFork")
+    bundle_roots = {app}
+    for root, directories, files in os.walk(app, followlinks=False):
+        del files
+        directory = Path(root)
+        for name in directories:
+            candidate = directory / name
+            if not candidate.is_symlink() and candidate.suffix in {".app", ".bundle", ".framework", ".xpc"}:
+                bundle_roots.add(candidate)
+    for bundle in sorted(bundle_roots, key=lambda path: os.fsencode(str(path))):
+        listing = subprocess.run(
+            ["/usr/bin/xattr", "-l", str(bundle)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        if listing.returncode != 0:
+            raise RuntimeError(
+                f"无法检查签名 App 的 Finder 元数据：{bundle}: "
+                f"{listing.stderr.decode(errors='replace').strip()}"
+            )
+        for attribute in forbidden:
+            if attribute.encode("utf-8") + b":" in listing.stdout:
+                run("/usr/bin/xattr", "-d", attribute, str(bundle))
+    inventory = subprocess.run(
+        ["/usr/bin/xattr", "-l", "-r", str(app)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if inventory.returncode != 0:
+        raise RuntimeError(
+            "无法复核签名 App 的扩展属性："
+            + inventory.stderr.decode(errors="replace").strip()
+        )
+    if any(attribute.encode("utf-8") in inventory.stdout for attribute in forbidden):
+        raise RuntimeError("签名 App 仍含 codesign 禁止的 Finder 元数据")
+
+
+def remove_forbidden_signing_metadata_and_verify(app: Path) -> None:
+    remove_forbidden_signing_metadata(app)
+    run("/usr/bin/codesign", "--verify", "--deep", "--strict", str(app))
+
+
 def attach_read_write_image(image: Path) -> tuple[str, Path]:
     """挂载读写映像并返回其精确 leaf device 与 `/Volumes` 挂载点。"""
     result = subprocess.run(
@@ -140,10 +210,11 @@ def build_universal(work: Path) -> Path:
     for architecture in stable_host.SUPPORTED_ARCHITECTURES:
         flags += ["--arch", architecture]
     package = ROOT / "apps/desktop"
-    run(*flags, cwd=package)
+    environment = swift_build_environment()
+    run(*flags, cwd=package, env=environment)
     shown = subprocess.run(
         [*flags[:2], "--show-bin-path", *flags[2:]],
-        check=True, cwd=package, capture_output=True, text=True,
+        check=True, cwd=package, capture_output=True, text=True, env=environment,
     )
     return Path(shown.stdout.strip())
 
@@ -270,7 +341,7 @@ def build_dmg(
         work = Path(tmp)
         stage = work / "LinkDigest"
         stage.mkdir()
-        shutil.copytree(app, stage / app.name, symlinks=False)
+        shutil.copytree(app, stage / app.name, symlinks=True)
         shutil.copytree(extension, stage / extension.name, symlinks=False)
         # 「应用程序」的软链:让拖拽安装成为一个不用解释的动作。
         (stage / "Applications").symlink_to("/Applications")
@@ -308,6 +379,7 @@ def build_dmg(
             configure_finder_layout(
                 mountpoint, layout_volume_name, app.name, extension.name
             )
+            remove_forbidden_signing_metadata_and_verify(mountpoint / app.name)
             run("/usr/sbin/diskutil", "rename", mounted_device, final_volume_name)
             run("/usr/bin/hdiutil", "detach", mounted_device)
             mounted_device = None
@@ -330,7 +402,9 @@ def build_dmg(
 
 def thin_app(universal_app: Path, destination: Path, architecture: str) -> Path:
     """从已验证的 universal App 生成单架构 App，保留 universal Native Host。"""
-    shutil.copytree(universal_app, destination, symlinks=False)
+    # Sparkle.framework 是标准的版本化 framework，顶层入口都是受签名保护的
+    # symlink。跟随它们复制会把 framework 拍平，破坏 Sparkle 自身 bundle 结构。
+    shutil.copytree(universal_app, destination, symlinks=True)
     binary = destination / "Contents/MacOS/LinkDigestApp"
     thinned = binary.with_name(f".{binary.name}.{architecture}.thin")
     run("/usr/bin/lipo", str(binary), "-thin", architecture, "-output", str(thinned))
@@ -344,6 +418,113 @@ def thin_app(universal_app: Path, destination: Path, architecture: str) -> Path:
     # 这个已验证包，故只验证复制后的原包仍完整，绝不重写其任何内容。
     verify_app_native_host(destination, stable_host.load_config(ROOT))
     return destination
+
+
+def verify_signed_update_app(app: Path, app_config: dict, host_config: dict) -> None:
+    host_name = f"LinkDigestNativeHost-{host_config['productVersion']}-macos-arm64"
+    release_unit.exact_app_paths(
+        app, host_name, app_config["iconFile"], signed=True
+    )
+    release_unit.validate_plist(app, app_config)
+    release_unit.verify_sparkle_framework(app)
+    release_unit.verify_third_party_licenses(app, ROOT)
+    verify_app_native_host(app, host_config)
+    app_architectures = subprocess.check_output(
+        ["/usr/bin/lipo", "-archs", str(app / "Contents/MacOS/LinkDigestApp")],
+        text=True,
+    ).strip().split()
+    if sorted(app_architectures) != sorted(stable_host.SUPPORTED_ARCHITECTURES):
+        raise RuntimeError(f"Universal 更新 App 架构错误：{app_architectures!r}")
+    run("/usr/bin/codesign", "--verify", "--deep", "--strict", str(app))
+
+
+def build_universal_update_archive(
+    staged_app: Path,
+    output: Path,
+    work: Path,
+    app_config: dict,
+    host_config: dict,
+) -> Path:
+    update_root = work / "universal-update"
+    update_root.mkdir()
+    update_app = update_root / release_unit.APP_BUNDLE
+    shutil.copytree(staged_app, update_app, symlinks=True)
+    sign_and_verify_app(update_app, app_config["bundleIdentifier"], host_config)
+    verify_signed_update_app(update_app, app_config, host_config)
+    if output.exists():
+        output.unlink()
+    run(
+        "/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent",
+        str(update_app), str(output),
+    )
+    extraction = work / "update-archive-verification"
+    extraction.mkdir()
+    run("/usr/bin/ditto", "-x", "-k", str(output), str(extraction))
+    verify_signed_update_app(extraction / release_unit.APP_BUNDLE, app_config, host_config)
+    return output
+
+
+def generate_signed_appcast(
+    update_archive: Path,
+    output: Path,
+    work: Path,
+    version: str,
+    app_config: dict,
+) -> Path:
+    generate_appcast = SPARKLE_TOOLS / "generate_appcast"
+    sign_update = SPARKLE_TOOLS / "sign_update"
+    for tool in (generate_appcast, sign_update):
+        if not tool.is_file() or not os.access(tool, os.X_OK):
+            raise RuntimeError(f"Sparkle 发布工具不存在或不可执行：{tool}")
+    release_notes = ROOT / "updates" / f"v{version}.md"
+    if not release_notes.is_file():
+        raise RuntimeError(f"更新说明不存在：{release_notes}")
+
+    appcast_root = work / "appcast"
+    appcast_root.mkdir()
+    archive_copy = appcast_root / update_archive.name
+    shutil.copy2(update_archive, archive_copy)
+    shutil.copy2(release_notes, archive_copy.with_suffix(".md"))
+    generated = appcast_root / "appcast.xml"
+    release_base = f"https://github.com/Songxiaor/linkdigest/releases/download/v{version}/"
+    run(
+        str(generate_appcast),
+        "--download-url-prefix", release_base,
+        "--link", f"https://github.com/Songxiaor/linkdigest/releases/tag/v{version}",
+        "--embed-release-notes",
+        "--maximum-deltas", "0",
+        "--versions", app_config["bundleVersion"],
+        "-o", str(generated),
+        str(appcast_root),
+    )
+
+    tree = ET.parse(generated)
+    item = tree.find("./channel/item")
+    if item is None:
+        raise RuntimeError("appcast.xml 缺少更新条目")
+    sparkle = f"{{{SPARKLE_NAMESPACE}}}"
+    if item.findtext(f"{sparkle}version") != app_config["bundleVersion"]:
+        raise RuntimeError("appcast.xml build 号不匹配")
+    if item.findtext(f"{sparkle}shortVersionString") != version:
+        raise RuntimeError("appcast.xml 短版本号不匹配")
+    enclosure = item.find("enclosure")
+    if enclosure is None:
+        raise RuntimeError("appcast.xml 缺少下载 enclosure")
+    expected_url = release_base + update_archive.name
+    signature = enclosure.attrib.get(f"{sparkle}edSignature", "")
+    if enclosure.attrib.get("url") != expected_url:
+        raise RuntimeError("appcast.xml 下载 URL 不匹配")
+    if enclosure.attrib.get("length") != str(update_archive.stat().st_size):
+        raise RuntimeError("appcast.xml 更新包长度不匹配")
+    try:
+        decoded_signature = base64.b64decode(signature, validate=True)
+    except ValueError as error:
+        raise RuntimeError("appcast.xml Ed25519 签名不是规范 Base64") from error
+    if len(decoded_signature) != 64:
+        raise RuntimeError("appcast.xml Ed25519 签名长度错误")
+    run(str(sign_update), "--verify", str(update_archive), signature)
+    shutil.copy2(generated, output)
+    return output
 
 
 def main() -> int:
@@ -393,7 +574,16 @@ def main() -> int:
             symlinks=False,
         )
 
-        outputs = []
+        print("→ 生成 Sparkle Universal 更新归档与签名 appcast…")
+        update_archive = output_dir / f"Jizuo-{args.version}-macOS-Universal.zip"
+        build_universal_update_archive(
+            staged_app, update_archive, work, app_config, config
+        )
+        appcast = output_dir / "appcast.xml"
+        generate_signed_appcast(
+            update_archive, appcast, work, args.version, app_config
+        )
+        outputs = [update_archive, appcast]
         editions = [
             ("arm64", "Apple Silicon", "Apple-Silicon"),
             ("x86_64", "Intel", "Intel"),
@@ -421,9 +611,9 @@ def main() -> int:
             )
             outputs.append(dmg)
 
-    for dmg in outputs:
-        size_mb = dmg.stat().st_size / 1024 / 1024
-        print(f"\n完成: {dmg}  ({size_mb:.1f} MB)")
+    for artifact in outputs:
+        size_mb = artifact.stat().st_size / 1024 / 1024
+        print(f"\n完成: {artifact}  ({size_mb:.1f} MB)")
     print("提醒: ad-hoc 签名，下载方首次打开需要走「系统设置 → 隐私与安全性」。")
     return 0
 

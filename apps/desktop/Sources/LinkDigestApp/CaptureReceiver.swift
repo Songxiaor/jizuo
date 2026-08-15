@@ -14,6 +14,11 @@ struct CurrentCapture: Sendable, Equatable {
     wireEnvelope?.requestedAction ?? wireEnvelopeV2?.requestedAction
   }
 
+  var browserDeclaredFaviconURL: URL? {
+    let raw = wireEnvelope?.source.faviconURL ?? wireEnvelopeV2?.source.faviconURL
+    return raw.flatMap(URL.init(string:))
+  }
+
   init(envelope: CaptureEnvelopeV1, taskID: TaskID, snapshotID: ContentSnapshotID) {
     document = .init(wire: envelope)
     wireEnvelope = envelope

@@ -7,6 +7,7 @@ import {
   popupRecoveryForSendResult,
   popupMetadataDiagnostic,
   popupPlatformLabel,
+  popupPreviewFailure,
   type SafeExtensionSendResult,
   type SafeMediaPreview,
   type PopupCaptureAction,
@@ -175,13 +176,17 @@ if (tabId === undefined) {
     // 把真实 message 亮出来：CAPTURE_CONTENT_EMPTY 是抓到了页面但没有正文，
     // "Cannot access contents of url…" 是注入被拒，两者的修法完全不同。
     const message = cause instanceof Error ? cause.message : String(cause);
-    error.textContent = message.includes("CAPTURE_CONTENT_EMPTY")
-      ? "当前页面没有读到可保存的正文。请等待页面加载完成后重新读取。"
-      : "当前页面暂时不可读取。请刷新页面后再试。";
+    const failure = popupPreviewFailure(message);
+    error.textContent = failure.message;
     send.hidden = true;
-    recoveryMode = "reload";
-    recoveryAction.textContent = "重新读取页面";
-    recoveryAction.hidden = false;
+    if (failure.canReload) {
+      recoveryMode = "reload";
+      recoveryAction.textContent = "重新读取页面";
+      recoveryAction.hidden = false;
+    } else {
+      recoveryMode = null;
+      recoveryAction.hidden = true;
+    }
   }
 
   const submit = async () => {

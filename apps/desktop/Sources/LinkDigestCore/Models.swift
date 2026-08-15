@@ -37,7 +37,29 @@ public struct CaptureEnvelopeV1: Codable, Sendable, Equatable {
     self.evidence = evidence
     self.media = media
   }
-  public struct Source: Codable, Sendable, Equatable { public let kind: String; public let url: String; public let title: String?; public let platform: String; public init(kind: String, url: String, title: String?, platform: String) { self.kind = kind; self.url = url; self.title = title; self.platform = platform } }
+  public struct Source: Codable, Sendable, Equatable {
+    public let kind: String
+    public let url: String
+    public let title: String?
+    public let platform: String
+    /// Browser-observed page declaration. The App still validates the URL,
+    /// redirect chain and image bytes before it enters the local favicon cache.
+    public let faviconURL: String?
+
+    public init(
+      kind: String,
+      url: String,
+      title: String?,
+      platform: String,
+      faviconURL: String? = nil
+    ) {
+      self.kind = kind
+      self.url = url
+      self.title = title
+      self.platform = platform
+      self.faviconURL = faviconURL
+    }
+  }
   public struct Capture: Codable, Sendable, Equatable { public let method: String; public let text: String; public let characterCount: Int; public let completeness: String; public let capturedAt: String; public init(method: String, text: String, characterCount: Int, completeness: String, capturedAt: String) { self.method = method; self.text = text; self.characterCount = characterCount; self.completeness = completeness; self.capturedAt = capturedAt } }
   public struct Evidence: Codable, Sendable, Equatable { public let sourceLabel: String; public let usedCookie: Bool; public init(sourceLabel: String, usedCookie: Bool) { self.sourceLabel = sourceLabel; self.usedCookie = usedCookie } }
   public struct Media: Codable, Sendable, Equatable {

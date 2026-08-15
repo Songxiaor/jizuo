@@ -7,6 +7,7 @@ import {
   extractCurrentPage,
   extractXiaohongshuPage,
   formatXDisplayTitle,
+  gitHubBlobTitle,
   gitHubRepoSlug,
   formatXPostProse,
   isXProfileChromeImageURL,
@@ -271,6 +272,142 @@ describe("page extraction", () => {
     expect(result.text.indexOf("当前页面捕获链路")).toBeLessThan(result.text.indexOf("它不包含账号"));
     expect(result.text.split("\n\n").length).toBeGreaterThan(1);
     expect(result.characterCount).toBe([...result.text].length);
+    expect(result.completeness).toBeUndefined();
+  });
+
+  it("marks a legitimate whole-document fallback as visible-only", () => {
+    const result = extractCurrentPage(makeDocument({
+      title: "Simple page",
+      href: "https://example.test/simple",
+      root: el("div", [
+        el("p", [text("这是没有 article 或 main 标记、但仍有可读正文的简单页面。")]),
+      ]),
+    }));
+
+    expect(result.text).toContain("仍有可读正文");
+    expect(result.completeness).toBe("visible_only");
+    expect(result.captureIssue).toBeUndefined();
+  });
+
+  it("rejects a Gmail application shell unless the user selected text", () => {
+    const shell = el("main", [
+      el("h1", [text("Gmail")]),
+      el("p", [text("收件箱 2465 已加星标 已发邮件 正在提取邮件")]),
+    ]);
+    const blocked = extractCurrentPage(makeDocument({
+      title: "Gmail",
+      href: "https://mail.google.com/mail/u/0/#inbox/fixture",
+      root: shell,
+    }));
+    expect(blocked.captureIssue).toBe("CAPTURE_APP_SHELL");
+
+    const selected = extractCurrentPage(makeDocument({
+      title: "Gmail",
+      href: "https://mail.google.com/mail/u/0/#inbox/fixture",
+      root: shell,
+      selection: "用户明确选中的一小段文字",
+    }));
+    expect(selected.captureIssue).toBeUndefined();
+    expect(selected.method).toBe("selection");
+  });
+
+  it("rejects GitHub blob load errors instead of saving the file chrome", () => {
+    const result = extractCurrentPage(makeDocument({
+      title: "08_Dynamic_workflows.ipynb",
+      href: "https://github.com/example/repo/blob/main/08_Dynamic_workflows.ipynb",
+      root: el("main", [
+        el("p", [text("Uh oh! There was an error while loading. Please reload this page.")]),
+        el("p", [text("Open in github.dev Collapse file tree Files Latest commit")]),
+      ]),
+    }));
+
+    expect(result.captureIssue).toBe("CAPTURE_PAGE_LOAD_FAILED");
+  });
+
+  it("rejects login walls and navigation-only whole pages", () => {
+    const login = extractCurrentPage(makeDocument({
+      title: "Sign in",
+      href: "https://example.test/login",
+      root: el("main", [
+        el("h1", [text("登录")]),
+        el("input", [], { type: "password" }),
+        el("p", [text("请输入密码后继续访问具体内容")]),
+      ]),
+    }));
+    expect(login.captureIssue).toBe("CAPTURE_LOGIN_WALL");
+
+    const links = Array.from({ length: 12 }, (_, index) =>
+      el("a", [text(`导航${index}`)], { href: `/nav/${index}` }));
+    const navigation = extractCurrentPage(makeDocument({
+      title: "Directory",
+      href: "https://example.test/directory",
+      root: el("div", links),
+    }));
+    expect(navigation.captureIssue).toBe("CAPTURE_NAVIGATION_ONLY");
+  });
+
+  it("uses a GitHub blob document heading and falls back to its filename", () => {
+    const markdown = el("article", [
+      el("h1", [text("第 1 章 FDE 的崛起")]),
+      el("p", [text("这是文件正文，不是全站搜索对话框。")]),
+    ], { class: "markdown-body" });
+    const root = el("main", [
+      el("h1", [text("Search code, repositories, users, issues, pull requests...")]),
+      markdown,
+    ]);
+    const documentLike = makeDocument({
+      title: "Search code, repositories, users, issues, pull requests...",
+      href: "https://github.com/xdash/book/blob/main/01-%E7%AC%AC1%E7%AB%A0.md",
+      root,
+    });
+    const result = extractCurrentPage(documentLike);
+    expect(gitHubBlobTitle(documentLike)).toBe("第 1 章 FDE 的崛起");
+    expect(result.title).toBe("第 1 章 FDE 的崛起");
+
+    const fallback = makeDocument({
+      title: "GitHub",
+      href: "https://github.com/example/repo/blob/main/notebooks/08_Dynamic_workflows.ipynb",
+      root: el("main", [el("p", [text("Notebook content rendered successfully.")])]),
+    });
+    expect(gitHubBlobTitle(fallback)).toBe("08_Dynamic_workflows.ipynb");
+  });
+
+  it("captures only the linux.do first post and keeps emoji images inline", () => {
+    const emoji = "https://cdn.ldstatic.com/images/emoji/twemoji/joy.png?v=15";
+    const articleImage = "https://cdn3.ldstatic.com/optimized/article.png";
+    const favicon = "https://cdn.example.net/favSD.ico";
+    const cooked = el("div", [
+      el("p", [text("正文开头，作者在这里说明申请软著的完整流程。")]),
+      el("p", [
+        text("不行就改一下 "),
+        el("img", [], { class: "emoji", alt: ":joy:", title: ":joy:", src: emoji, width: "20", height: "20" }),
+        text(" 然后继续。"),
+      ]),
+      el("img", [], { alt: "正文配图", src: articleImage, width: "690", height: "485" }),
+    ], { class: "cooked" });
+    const firstPost = el("div", [
+      el("img", [], { alt: "作者头像", src: "https://cdn.example.net/avatar.png" }),
+      el("div", [text("作者卡片和阅读时间")], { class: "topic-meta-data" }),
+      cooked,
+    ], { id: "post_1", class: "topic-post" });
+    const root = el("main", [
+      el("link", [], { rel: "shortcut icon", href: favicon, type: "image/x-icon" }),
+      firstPost,
+      el("div", [text("回复头像与互动区不属于首帖正文")], { class: "topic-post" }),
+    ]);
+
+    const result = extractCurrentPage(makeDocument({
+      title: "全网最详细的软著申请指北",
+      href: "https://linux.do/t/topic/2756623",
+      root,
+    }));
+
+    expect(result.text).toContain("不行就改一下 :joy: 然后继续。");
+    expect(result.text).toContain(`![正文配图](${articleImage})`);
+    expect(result.text).not.toContain(emoji);
+    expect(result.text).not.toContain("作者卡片和阅读时间");
+    expect(result.text).not.toContain("回复头像与互动区");
+    expect(result.faviconURL).toBe(favicon);
   });
 
   it("drops wechat-style chrome lines and related-reading tails", () => {
@@ -832,6 +969,14 @@ describe("page extraction", () => {
     };
     expect(validateCapture({ ...base, source: { ...base.source, url: "file:///tmp/x" } })).toBe("CAPTURE_URL_UNSUPPORTED");
     expect(validateCapture({ ...base, capture: { ...base.capture, characterCount: 2 } })).toBe("CAPTURE_COUNT_MISMATCH");
+    expect(validateCapture({
+      ...base,
+      source: { ...base.source, faviconURL: "https://cdn.example.net/favicon.ico" },
+    })).toBeNull();
+    expect(validateCapture({
+      ...base,
+      source: { ...base.source, faviconURL: "file:///tmp/favicon.ico" },
+    })).toBe("CAPTURE_SCHEMA_INVALID");
   });
 });
 

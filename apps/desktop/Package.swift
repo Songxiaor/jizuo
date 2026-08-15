@@ -17,7 +17,8 @@ let package = Package(
     .executable(name: "LinkDigestLoopV1Verifier", targets: ["LinkDigestLoopV1Verifier"])
   ],
   dependencies: [
-    .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1")
+    .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1"),
+    .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.5")
   ],
   targets: [
   .target(name: "LinkDigestCore", resources: [.copy("Resources")]),
@@ -40,7 +41,13 @@ let package = Package(
   ),
   .executableTarget(
     name: "LinkDigestApp",
-    dependencies: ["LinkDigestCore", "LinkDigestAdapters", "LinkDigestTransport", "LinkDigestPersistence"],
+    dependencies: [
+      "LinkDigestCore",
+      "LinkDigestAdapters",
+      "LinkDigestTransport",
+      "LinkDigestPersistence",
+      .product(name: "Sparkle", package: "Sparkle"),
+    ],
     linkerSettings: [.linkedFramework("AVKit")]
   ),
   .executableTarget(name: "LinkDigestNativeHost", dependencies: ["LinkDigestCore", "LinkDigestTransport"]),

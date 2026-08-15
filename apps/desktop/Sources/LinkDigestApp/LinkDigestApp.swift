@@ -214,6 +214,24 @@ enum BrowserReceiverState: Sendable, Equatable {
     await summarize(preferences: preferences, modelOverride: modelOverride)
   }
 
+  /// 自动队列需要知道这次是否真的占上模型通道。普通 summarize 保持原来的
+  /// fire-and-observe API；这里返回 false 时，队列可以继续处理不依赖总结的步骤。
+  func startAutomaticSummary(
+    historyDetail: HistoryDetailProjection,
+    preferences: ModelPreferences,
+    modelOverride: String? = nil
+  ) async -> Bool {
+    guard prepareHistoryCapture(historyDetail) else { return false }
+    await requestRun(
+      intent: .summarize,
+      preferences: preferences,
+      modelOverride: modelOverride
+    )
+    return runState.isActive
+      || isDataDestinationDisclosurePresented
+      || isConfirmingDataDestinationDisclosure
+  }
+
   func translate(
     historyDetail: HistoryDetailProjection,
     preferences: ModelPreferences,
@@ -820,11 +838,13 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   private let configurationService: ProviderConfigurationService
   private let provider: any ModelProvider
   private let composition: AppComposition
+  private let appUpdateController: AppUpdateController
   private let socketServerLifecycle: UnixSocketServerLifecycle
   private let applicationTerminationObserver: NSObjectProtocol
   private let terminationSignalSource: DispatchSourceSignal
 
   init() {
+    let appUpdateController = AppUpdateController()
     let applicationSupportRoot: AppComposition.ApplicationSupportRoot
     let imageCache: GitHubREADMEImageCache?
     let cacheRoot: URL?
@@ -1069,6 +1089,16 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         // back within the capacity limit does not need a network refresh.
         await sessionMediaPlaybackController.rememberCurrentCapture(value)
         await historyModel.reveal(taskID: value.taskID)
+        if let sourceURL = URL(string: value.document.url),
+           let faviconURL = value.browserDeclaredFaviconURL {
+          // 只排后台抓取，不占扩展 10 秒 ACK。URL 仍会在 App 侧重新走安全
+          // 网络与图片字节校验；浏览器提供的只是页面声明候选。
+          await historyModel.loadBrowserDeclaredFavicon(
+            taskID: value.taskID,
+            sourceURL: sourceURL,
+            faviconURL: faviconURL
+          )
+        }
         // 新素材进库后排一次同步。只是排队（默认 20 秒后跑），不占这条
         // 必须在 10 秒内 ACK 浏览器的路径。
         await knowledgeVaultSettingsModel.scheduleAutoSync()
@@ -1180,6 +1210,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
     }
     terminationSignalSource.resume()
     self.terminationSignalSource = terminationSignalSource
+    self.appUpdateController = appUpdateController
     _model = StateObject(wrappedValue: model)
     _historyModel = StateObject(wrappedValue: historyModel)
     _manualLink = StateObject(wrappedValue: manualLink)
@@ -1253,6 +1284,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
               captureSink: { value in
                 await model.receive(value)
                 await historyModel.reveal(taskID: value.taskID)
+                await knowledgeVaultSettings.scheduleAutoSync()
               }
             )
           }
@@ -1300,7 +1332,10 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
     .handlesExternalEvents(matching: [])
     .windowResizability(.contentMinSize)
     .windowToolbarStyle(.unified(showsTitle: true))
-    .commands { LinkDigestCommands(manualLink: manualLink) }
+    .commands {
+      LinkDigestCommands(manualLink: manualLink)
+      AppUpdateCommands(updater: appUpdateController.updaterController.updater)
+    }
 
     Settings {
       // The window's size floor lives on ProviderSettingsView itself; adding a

@@ -2,8 +2,9 @@
 """Build and verify the unsigned LinkDigest r4a App + DMG release unit.
 
 The production build is deliberately confined to a caller-created name under
-canonical /private/tmp.  The path itself must not exist yet.  Source and the
-already-resolved GRDB checkout are copied read-only into that audit root; no
+canonical /private/tmp.  The path itself must not exist yet.  Source, the
+resolved GRDB checkout, and the checksum-verified Sparkle artifact are copied
+read-only into that audit root; no
 workspace build directory, real HOME target, signature, notarization, or
 browser process is touched.
 """
@@ -56,23 +57,48 @@ PLATFORM_ICON_FILES = ("bilibili.svg", "douban.svg", "douyin.svg", "github.svg",
 PROVIDER_ICONS_DIRECTORY = "ProviderIcons"
 PROVIDER_ICON_FILES = ("bailian.svg", "deepinfra.svg", "deepseek.svg", "groq.svg", "ollama.svg", "openai.svg", "opencode.svg", "openrouter.svg", "siliconflow.svg", "stepfun.svg", "zhipu.svg")
 BROWSER_EXTENSION_DIRECTORY = "BrowserExtension"
+SPARKLE_VERSION = "2.9.5"
+SPARKLE_FRAMEWORK = "Sparkle.framework"
+SPARKLE_ARTIFACT_RELATIVE = Path("apps/desktop/.build/artifacts/sparkle/Sparkle")
+SPARKLE_LICENSE_SHA256 = "389a4e4e9a32f059775b13a06e25a591445ba229d2838d26dd3e7c0c45127cfe"
+THIRD_PARTY_LICENSES_DIRECTORY = "ThirdPartyLicenses"
+THIRD_PARTY_LICENSE_HASHES = {
+    "GRDB-LICENSE.txt": "9853f9dce81365fcc1d9b46004633354450164b8d17904e92e80c444545f7e87",
+    "Sparkle-LICENSE.txt": SPARKLE_LICENSE_SHA256,
+}
+SPARKLE_FRAMEWORK_SYMLINKS = {
+    "Autoupdate": "Versions/Current/Autoupdate",
+    "Headers": "Versions/Current/Headers",
+    "Modules": "Versions/Current/Modules",
+    "PrivateHeaders": "Versions/Current/PrivateHeaders",
+    "Resources": "Versions/Current/Resources",
+    "Sparkle": "Versions/Current/Sparkle",
+    "Updater.app": "Versions/Current/Updater.app",
+    "Versions/Current": "B",
+    "XPCServices": "Versions/Current/XPCServices",
+}
 BROWSER_EXTENSION_IDENTITY = Path("config/extension-identity.json")
 PRODUCT_DISPLAY = Path("apps/desktop/Sources/LinkDigestCore/Resources/product-display.json")
 RELEASE_UNIT_NAME = "release-unit.json"
 UNIT_ID = "com.syc.linkdigest.release-unit.v1"
-DMG_NAME = "汲作-0.2.7-macOS-Universal.dmg"
+DMG_NAME = "汲作-0.2.9-macOS-Universal.dmg"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*)){0,2}$")
 EXTENSION_ID_RE = re.compile(r"^[a-p]{32}$")
+SPARKLE_ED_KEY_RE = re.compile(r"^[A-Za-z0-9+/]{43}=$")
 
 SWIFT = "/usr/bin/swift"
 HDITUTIL = "/usr/bin/hdiutil"
 LIPO = "/usr/bin/lipo"
 OTOOL = "/usr/bin/otool"
 CODESIGN = "/usr/bin/codesign"
+INSTALL_NAME_TOOL = "/usr/bin/install_name_tool"
 GIT = "/usr/bin/git"
 XCODE_DEVELOPER_DIR = Path("/Applications/Xcode.app/Contents/Developer")
+
+SPARKLE_RUNTIME_RPATH = "@executable_path/../Frameworks"
+SPARKLE_INSTALL_NAME = "@rpath/Sparkle.framework/Versions/B/Sparkle"
 
 APP_CONFIG_KEYS = {
     "formatVersion",
@@ -90,10 +116,14 @@ APP_CONFIG_KEYS = {
     "minimumMacOS",
     "architectures",
     "category",
+    "sparkleAutomaticallyUpdates",
+    "sparkleFeedURL",
+    "sparklePublicEDKey",
 }
 
 INFO_PLIST_KEYS = {
     "CFBundleDevelopmentRegion",
+    "CFBundleLocalizations",
     "CFBundleDisplayName",
     "CFBundleExecutable",
     "CFBundleIconFile",
@@ -107,6 +137,9 @@ INFO_PLIST_KEYS = {
     "LSApplicationCategoryType",
     "LSMinimumSystemVersion",
     "NSHighResolutionCapable",
+    "SUAutomaticallyUpdate",
+    "SUFeedURL",
+    "SUPublicEDKey",
 }
 
 # `linkdigest://digest/<taskID>` 的注册。导到知识库的那份 Markdown 靠它跳回
@@ -214,10 +247,12 @@ def load_app_config(root: Path | None = None) -> dict[str, Any]:
         "executable": "LinkDigestApp",
         "bundleIdentifier": "com.syc.linkdigest",
         "bundleIdentifierStatus": "engineering-candidate",
-        "shortVersion": "0.2.8",
-        "bundleVersion": "17",
+        "shortVersion": "0.2.9",
+        "bundleVersion": "18",
         "minimumMacOS": "15.0",
         "category": "public.app-category.productivity",
+        "sparkleFeedURL": "https://github.com/Songxiaor/linkdigest/releases/latest/download/appcast.xml",
+        "sparklePublicEDKey": "s0iZUen0dQ8irIs2kGI4ulzWvrqOn18atSGPguAIWHY=",
     }
     for key, expected in exact_strings.items():
         if type(config[key]) is not str or config[key] != expected:
@@ -233,6 +268,10 @@ def load_app_config(root: Path | None = None) -> dict[str, Any]:
         reject("minimumMacOS is invalid")
     if type(config["architectures"]) is not list or config["architectures"] != stable_host.SUPPORTED_ARCHITECTURES:
         reject(f"architectures must be exactly {stable_host.SUPPORTED_ARCHITECTURES}")
+    if type(config["sparkleAutomaticallyUpdates"]) is not bool or config["sparkleAutomaticallyUpdates"]:
+        reject("sparkleAutomaticallyUpdates must be false for the bootstrap release")
+    if not SPARKLE_ED_KEY_RE.fullmatch(config["sparklePublicEDKey"]):
+        reject("sparklePublicEDKey must be one canonical Ed25519 public key")
     return config
 
 
@@ -534,6 +573,7 @@ R4A_SOURCE_PATHS = (
     "apps/browser-extension",
     "contracts",
     "config",
+    "licenses",
     "scripts/sync-contracts.sh",
     "scripts/native-host/stable_host.py",
 )
@@ -910,13 +950,49 @@ def copy_grdb(root: Path, destination: Path) -> None:
         reject("audit-local GRDB copy is incomplete", ENVIRONMENT_BLOCKED)
 
 
-def patch_local_dependency(source: Path, dependency: Path) -> None:
+def copy_sparkle(root: Path, destination: Path) -> None:
+    source = root / SPARKLE_ARTIFACT_RELATIVE
+    prefix = "Sparkle.xcframework/macos-arm64_x86_64/Sparkle.framework/"
+    allowed_symlinks = {
+        prefix + relative: target
+        for relative, target in SPARKLE_FRAMEWORK_SYMLINKS.items()
+    }
+    before = strict_tree_records(source, allowed_symlinks, "offline Sparkle artifact")
+    destination.parent.mkdir(mode=0o700, exist_ok=True)
+    shutil.copytree(source, destination, symlinks=True, copy_function=shutil.copy2)
+    after_source = strict_tree_records(source, allowed_symlinks, "offline Sparkle artifact")
+    after_destination = strict_tree_records(destination, allowed_symlinks, "audit-local Sparkle artifact")
+    if before != after_source or before != after_destination:
+        reject("offline Sparkle artifact changed while being copied", CLEANUP_REQUIRED)
+    license_path = destination / "LICENSE"
+    if sha256_file(license_path) != SPARKLE_LICENSE_SHA256:
+        reject("Sparkle license hash drifted", ENVIRONMENT_BLOCKED)
+    package_manifest = """// swift-tools-version: 5.9
+import PackageDescription
+
+let package = Package(
+  name: "Sparkle",
+  platforms: [.macOS(.v10_13)],
+  products: [.library(name: "Sparkle", targets: ["Sparkle"])],
+  targets: [.binaryTarget(name: "Sparkle", path: "Sparkle.xcframework")]
+)
+"""
+    (destination / "Package.swift").write_text(package_manifest, encoding="utf-8")
+    os.chmod(destination / "Package.swift", 0o644)
+
+
+def patch_local_dependencies(source: Path, grdb: Path, sparkle: Path) -> None:
     manifest = source / "apps/desktop/Package.swift"
     text = manifest.read_text(encoding="utf-8")
-    remote = '.package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1")'
-    if text.count(remote) != 1:
+    grdb_remote = '.package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1")'
+    sparkle_remote = '.package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.5")'
+    if text.count(grdb_remote) != 1:
         reject("Swift package GRDB declaration drifted", INVALID_UNSAFE)
-    manifest.write_text(text.replace(remote, f'.package(path: "{dependency}")'), encoding="utf-8")
+    if text.count(sparkle_remote) != 1:
+        reject("Swift package Sparkle declaration drifted", INVALID_UNSAFE)
+    text = text.replace(grdb_remote, f'.package(path: "{grdb}")')
+    text = text.replace(sparkle_remote, f'.package(path: "{sparkle}")')
+    manifest.write_text(text, encoding="utf-8")
 
 
 def sync_contracts(source: Path) -> None:
@@ -1084,6 +1160,57 @@ def macho_minimum_macos(path: Path) -> str:
     return ".".join(components)
 
 
+def macho_rpaths(path: Path) -> list[str]:
+    result = command_ok([OTOOL, "-l", str(path)], allowed={OTOOL})
+    lines = result.stdout.decode("utf-8", errors="strict").splitlines()
+    values: list[str] = []
+    reading_rpath = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "cmd LC_RPATH":
+            reading_rpath = True
+            continue
+        if reading_rpath:
+            match = re.match(r"^path\s+(\S+)\s+\(offset\s+\d+\)$", stripped)
+            if match:
+                values.append(match.group(1))
+                reading_rpath = False
+    return values
+
+
+def macho_linked_libraries(path: Path) -> list[str]:
+    result = command_ok([OTOOL, "-L", str(path)], allowed={OTOOL})
+    values: list[str] = []
+    for line in result.stdout.decode("utf-8", errors="strict").splitlines():
+        match = re.match(r"^\s+(\S+)\s+\(compatibility version ", line)
+        if match:
+            values.append(match.group(1))
+    return values
+
+
+def ensure_sparkle_runtime_rpath(path: Path) -> None:
+    """Make the SwiftPM executable resolve the embedded standard framework."""
+    slice_count = len(macho_architectures(path))
+    current_count = macho_rpaths(path).count(SPARKLE_RUNTIME_RPATH)
+    if current_count == 0:
+        command_ok(
+            [INSTALL_NAME_TOOL, "-add_rpath", SPARKLE_RUNTIME_RPATH, str(path)],
+            allowed={INSTALL_NAME_TOOL},
+        )
+    elif current_count != slice_count:
+        reject("App Mach-O slices disagree on the Sparkle runtime search path")
+    if macho_rpaths(path).count(SPARKLE_RUNTIME_RPATH) != slice_count:
+        reject("App executable is missing the embedded Sparkle runtime search path")
+
+
+def verify_sparkle_runtime_link(path: Path) -> None:
+    slice_count = len(macho_architectures(path))
+    if macho_rpaths(path).count(SPARKLE_RUNTIME_RPATH) != slice_count:
+        reject("App executable cannot resolve Contents/Frameworks at runtime")
+    if macho_linked_libraries(path).count(SPARKLE_INSTALL_NAME) != slice_count:
+        reject("App executable Sparkle install name drifted")
+
+
 def unsigned_signature_state(app: Path) -> dict[str, Any]:
     result = run_command([CODESIGN, "-dv", "--verbose=4", str(app)], allowed={CODESIGN})
     text = (result.stdout + result.stderr).decode("utf-8", errors="replace")
@@ -1098,7 +1225,10 @@ def unsigned_signature_state(app: Path) -> dict[str, Any]:
 
 def info_plist(config: dict[str, Any]) -> dict[str, Any]:
     return {
-        "CFBundleDevelopmentRegion": "en",
+        # App 的界面和文案以简体中文交付。显式声明支持语言，AppKit 的保存/打开
+        # 面板和日期等系统组件才不会在中文系统上回退成英文。
+        "CFBundleDevelopmentRegion": "zh-Hans",
+        "CFBundleLocalizations": ["zh-Hans"],
         "CFBundleDisplayName": config["appDisplayName"],
         "CFBundleExecutable": config["executable"],
         "CFBundleIconFile": Path(config["iconFile"]).stem,
@@ -1117,6 +1247,9 @@ def info_plist(config: dict[str, Any]) -> dict[str, Any]:
         "LSApplicationCategoryType": config["category"],
         "LSMinimumSystemVersion": config["minimumMacOS"],
         "NSHighResolutionCapable": True,
+        "SUAutomaticallyUpdate": config["sparkleAutomaticallyUpdates"],
+        "SUFeedURL": config["sparkleFeedURL"],
+        "SUPublicEDKey": config["sparklePublicEDKey"],
     }
 
 
@@ -1134,6 +1267,69 @@ def copy_resource_tree(source: Path, destination: Path) -> None:
         excluded_names=set(),
         label="runtime resource bundle",
     )
+
+
+def strict_tree_records(
+    root: Path,
+    allowed_symlinks: dict[str, str],
+    label: str,
+) -> list[dict[str, Any]]:
+    if root.is_symlink() or not root.is_dir():
+        reject(f"{label} root must be a real directory")
+    records: list[dict[str, Any]] = []
+    seen_symlinks: set[str] = set()
+    paths: list[Path] = []
+    for current, directories, files in os.walk(root, topdown=True, followlinks=False):
+        directories.sort(key=os.fsencode)
+        files.sort(key=os.fsencode)
+        paths.extend(Path(current) / name for name in directories + files)
+    for path in sorted(paths, key=lambda item: os.fsencode(item.relative_to(root).as_posix())):
+        relative = path.relative_to(root).as_posix()
+        if not relative or relative.startswith("/") or any(part in {"", ".", ".."} for part in PurePosixPath(relative).parts):
+            reject(f"{label} contains an unsafe relative path")
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            target = os.readlink(path)
+            if allowed_symlinks.get(relative) != target:
+                reject(f"{label} contains an unexpected symlink: {relative}")
+            seen_symlinks.add(relative)
+            records.append({
+                "hash": sha256_bytes(target.encode("utf-8")),
+                "mode": mode_text(info.st_mode),
+                "path": relative,
+                "size": len(target.encode("utf-8")),
+                "type": "symlink",
+            })
+        elif stat.S_ISDIR(info.st_mode):
+            records.append({"hash": None, "mode": mode_text(info.st_mode), "path": relative, "size": 0, "type": "directory"})
+        elif stat.S_ISREG(info.st_mode):
+            if info.st_nlink != 1:
+                reject(f"{label} contains a hardlinked file: {relative}")
+            records.append({
+                "hash": sha256_file(path),
+                "mode": mode_text(info.st_mode),
+                "path": relative,
+                "size": info.st_size,
+                "type": "file",
+            })
+        else:
+            reject(f"{label} contains an unsupported entry: {relative}")
+    if seen_symlinks != set(allowed_symlinks):
+        reject(f"{label} symlink set does not match the frozen Sparkle layout")
+    return records
+
+
+def sparkle_framework_records(framework: Path) -> list[dict[str, Any]]:
+    return strict_tree_records(framework, SPARKLE_FRAMEWORK_SYMLINKS, SPARKLE_FRAMEWORK)
+
+
+def copy_sparkle_framework(source: Path, destination: Path) -> None:
+    before = sparkle_framework_records(source)
+    shutil.copytree(source, destination, symlinks=True, copy_function=shutil.copy2)
+    after_source = sparkle_framework_records(source)
+    after_destination = sparkle_framework_records(destination)
+    if before != after_source or before != after_destination:
+        reject("Sparkle.framework changed while being embedded", CLEANUP_REQUIRED)
 
 
 def verified_browser_extension_payloads(source_root: Path) -> tuple[list[tuple[PurePosixPath, bytes]], dict[str, Any]]:
@@ -1244,9 +1440,11 @@ def build_app_bundle(
     if os.path.lexists(output):
         reject("App bundle output already exists")
     macos = output / "Contents/MacOS"
+    frameworks = output / "Contents/Frameworks"
     resources = output / "Contents/Resources"
     native_host = resources / "NativeHost"
     macos.mkdir(parents=True, mode=0o755)
+    frameworks.mkdir(parents=True, mode=0o755)
     native_host.mkdir(parents=True, mode=0o755)
     copy_path_nofollow(
         app_binary.parent,
@@ -1255,7 +1453,13 @@ def build_app_bundle(
         excluded_names=set(),
         label="Release App executable",
     )
-    os.chmod(macos / app_config["executable"], 0o755)
+    app_executable = macos / app_config["executable"]
+    os.chmod(app_executable, 0o755)
+    ensure_sparkle_runtime_rpath(app_executable)
+    sparkle_framework = app_binary.parent / SPARKLE_FRAMEWORK
+    if not sparkle_framework.is_dir() or sparkle_framework.is_symlink():
+        reject("Release Sparkle.framework is missing", ENVIRONMENT_BLOCKED)
+    copy_sparkle_framework(sparkle_framework, frameworks / SPARKLE_FRAMEWORK)
     copy_resource_tree(resource_bundle, resources / RESOURCE_BUNDLE)
     embed_browser_extension(source_root, resources / BROWSER_EXTENSION_DIRECTORY)
     copy_path_nofollow(
@@ -1280,6 +1484,13 @@ def build_app_bundle(
         label="built-in provider icon assets",
     )
     copy_path_nofollow(
+        source_root,
+        Path("licenses"),
+        resources / THIRD_PARTY_LICENSES_DIRECTORY,
+        excluded_names=set(),
+        label="third-party license notices",
+    )
+    copy_path_nofollow(
         host_package.parent,
         Path(host_package.name),
         native_host / host_package.name,
@@ -1287,56 +1498,48 @@ def build_app_bundle(
         label="verified Host package",
     )
     write_plist(output / "Contents/Info.plist", info_plist(app_config))
-    for directory in (output, output / "Contents", macos, resources, native_host):
+    for directory in (output, output / "Contents", macos, frameworks, resources, native_host):
         os.chmod(directory, 0o755)
     return output
 
 
 def release_tree_records(root: Path) -> tuple[list[dict[str, Any]], str]:
-    if root.is_symlink() or not root.is_dir():
-        reject("release tree root must be a real directory")
-    records: list[dict[str, Any]] = []
-    paths: list[Path] = []
-    for current, directories, files in os.walk(root, topdown=True, followlinks=False):
-        directories.sort(key=os.fsencode)
-        files.sort(key=os.fsencode)
-        paths.extend(Path(current) / name for name in directories + files)
-    for path in sorted(paths, key=lambda item: os.fsencode(item.relative_to(root).as_posix())):
-        relative = path.relative_to(root).as_posix()
-        if not relative or relative.startswith("/") or any(part in {"", ".", ".."} for part in PurePosixPath(relative).parts):
-            reject("release tree contains an unsafe relative path")
-        info = path.lstat()
-        if stat.S_ISLNK(info.st_mode):
-            reject(f"release tree contains symlink: {relative}")
-        if stat.S_ISDIR(info.st_mode):
-            record = {"hash": None, "mode": mode_text(info.st_mode), "path": relative, "size": 0, "type": "directory"}
-        elif stat.S_ISREG(info.st_mode):
-            if info.st_nlink != 1:
-                reject(f"release tree contains hardlinked file: {relative}")
-            record = {
-                "hash": sha256_file(path),
-                "mode": mode_text(info.st_mode),
-                "path": relative,
-                "size": info.st_size,
-                "type": "file",
-            }
-        else:
-            reject(f"release tree contains unsupported entry: {relative}")
-        records.append(record)
+    prefix = f"Contents/Frameworks/{SPARKLE_FRAMEWORK}/"
+    allowed_symlinks = {
+        prefix + relative: target
+        for relative, target in SPARKLE_FRAMEWORK_SYMLINKS.items()
+    }
+    records = strict_tree_records(root, allowed_symlinks, "release App tree")
     digest = sha256_bytes(canonical_bytes(records))
     return records, digest
 
 
-def exact_app_paths(app: Path, host_name: str, icon_file: str) -> None:
+def exact_app_paths(
+    app: Path,
+    host_name: str,
+    icon_file: str,
+    *,
+    signed: bool = False,
+) -> None:
     top = {path.name for path in app.iterdir()}
     if top != {"Contents"}:
         reject("App bundle top-level tree is not exact")
+    expected_contents = {"Frameworks", "Info.plist", "MacOS", "Resources"}
+    if signed:
+        expected_contents.add("_CodeSignature")
     contents = {path.name for path in (app / "Contents").iterdir()}
-    if contents != {"Info.plist", "MacOS", "Resources"}:
+    if contents != expected_contents:
         reject("App Contents tree is not exact")
+    if signed:
+        code_signature = app / "Contents/_CodeSignature"
+        if {path.name for path in code_signature.iterdir()} != {"CodeResources"}:
+            reject("signed App code-signature tree is not exact")
     macos = {path.name for path in (app / "Contents/MacOS").iterdir()}
     if macos != {"LinkDigestApp"}:
         reject("App MacOS tree is not exact")
+    frameworks = {path.name for path in (app / "Contents/Frameworks").iterdir()}
+    if frameworks != {SPARKLE_FRAMEWORK}:
+        reject("App Frameworks tree is not exact")
     resources = {path.name for path in (app / "Contents/Resources").iterdir()}
     if resources != {
         RESOURCE_BUNDLE,
@@ -1344,6 +1547,7 @@ def exact_app_paths(app: Path, host_name: str, icon_file: str) -> None:
         icon_file,
         PLATFORM_ICONS_DIRECTORY,
         PROVIDER_ICONS_DIRECTORY,
+        THIRD_PARTY_LICENSES_DIRECTORY,
         BROWSER_EXTENSION_DIRECTORY,
     }:
         reject("App Resources tree is not exact")
@@ -1453,6 +1657,52 @@ def verify_provider_icons(app: Path, source_root: Path) -> dict[str, str]:
     return hashes
 
 
+def verify_sparkle_framework(app: Path) -> dict[str, Any]:
+    framework = app / "Contents/Frameworks" / SPARKLE_FRAMEWORK
+    records = sparkle_framework_records(framework)
+    info_path = framework / "Versions/B/Resources/Info.plist"
+    try:
+        info = plistlib.loads(info_path.read_bytes())
+    except (OSError, plistlib.InvalidFileException) as error:
+        reject(f"Sparkle.framework Info.plist is invalid: {error}")
+    if (
+        not isinstance(info, dict)
+        or info.get("CFBundleIdentifier") != "org.sparkle-project.Sparkle"
+        or info.get("CFBundleShortVersionString") != SPARKLE_VERSION
+    ):
+        reject("Sparkle.framework identity or version drifted")
+    executable = framework / "Versions/B/Sparkle"
+    architectures = macho_architectures(executable)
+    if sorted(architectures) != sorted(stable_host.SUPPORTED_ARCHITECTURES):
+        reject("Sparkle.framework must remain universal")
+    command_ok([CODESIGN, "--verify", "--deep", "--strict", str(framework)], allowed={CODESIGN})
+    return {
+        "architectures": architectures,
+        "treeDigest": sha256_bytes(canonical_bytes(records)),
+        "version": SPARKLE_VERSION,
+    }
+
+
+def verify_third_party_licenses(app: Path, source_root: Path) -> dict[str, str]:
+    embedded_root = app / "Contents/Resources" / THIRD_PARTY_LICENSES_DIRECTORY
+    source_licenses = source_root / "licenses"
+    if {path.name for path in embedded_root.iterdir()} != set(THIRD_PARTY_LICENSE_HASHES):
+        reject("embedded third-party license set is not exact")
+    hashes: dict[str, str] = {}
+    for name, expected_hash in THIRD_PARTY_LICENSE_HASHES.items():
+        embedded = embedded_root / name
+        source = source_licenses / name
+        for path, label in ((embedded, "embedded license"), (source, "source license")):
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                reject(f"{label} must be a single-link regular file")
+        digest = sha256_file(embedded)
+        if digest != expected_hash or sha256_file(source) != expected_hash:
+            reject(f"third-party license hash drifted: {name}")
+        hashes[name] = digest
+    return hashes
+
+
 def verify_app(
     app: Path,
     release_unit: dict[str, Any] | None,
@@ -1466,7 +1716,10 @@ def verify_app(
     platform_icons = verify_platform_icons(app, source_root)
     provider_icons = verify_provider_icons(app, source_root)
     browser_extension = verify_browser_extension(app, source_root)
+    sparkle = verify_sparkle_framework(app)
+    third_party_licenses = verify_third_party_licenses(app, source_root)
     app_executable = app / "Contents/MacOS/LinkDigestApp"
+    verify_sparkle_runtime_link(app_executable)
     host_package = app / "Contents/Resources/NativeHost" / host_package_name
     verified_host = verify_host_package(host_package, source_root)
     app_arch = macho_architectures(app_executable)
@@ -1493,6 +1746,8 @@ def verify_app(
         "platformIcons": platform_icons,
         "providerIcons": provider_icons,
         "browserExtension": browser_extension,
+        "sparkle": sparkle,
+        "thirdPartyLicenses": third_party_licenses,
         "minimumMacOS": app_minimum,
         "plist": plist,
         "plistHash": plist_hash,
@@ -1524,6 +1779,8 @@ def release_unit_payload(app_result: dict[str, Any], app_config: dict[str, Any])
             "plistHash": app_result["plistHash"],
             "schemaHash": app_result["schemaHash"],
             "shortVersion": app_config["shortVersion"],
+            "sparkle": app_result["sparkle"],
+            "thirdPartyLicenses": app_result["thirdPartyLicenses"],
             "treeDigest": app_result["appTreeDigest"],
         },
         "blockers": [
@@ -2060,7 +2317,8 @@ def build_release_unit(audit_root_text: str, *, prepare_only: bool = False) -> d
     (audit_root / ".workspace-inventory-before").write_text(workspace_before + "\n", encoding="ascii")
     os.chmod(audit_root / ".workspace-inventory-before", 0o600)
     source = audit_root / "source"
-    dependencies = audit_root / "dependencies/GRDB.swift"
+    grdb_dependency = audit_root / "dependencies/GRDB.swift"
+    sparkle_dependency = audit_root / "dependencies/Sparkle"
     output = audit_root / "output"
     staging = audit_root / "staging"
     output.mkdir(mode=0o700)
@@ -2068,8 +2326,9 @@ def build_release_unit(audit_root_text: str, *, prepare_only: bool = False) -> d
     try:
         app_config = load_app_config(root)
         copy_source(root, source)
-        copy_grdb(root, dependencies)
-        patch_local_dependency(source, dependencies)
+        copy_grdb(root, grdb_dependency)
+        copy_sparkle(root, sparkle_dependency)
+        patch_local_dependencies(source, grdb_dependency, sparkle_dependency)
         sync_contracts(source)
         app_binary, host_binary, resource_bundle = build_swift_products(
             source,
