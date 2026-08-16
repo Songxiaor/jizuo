@@ -149,6 +149,28 @@ enum LocalMarkdownImageLayout {
 
   static func segments(markdown: String, localImageURLs: [URL], appendsUnusedLocalImages: Bool = true) -> [Segment] {
     let byHash = Dictionary(uniqueKeysWithValues: localImageURLs.map { ($0.lastPathComponent, $0) })
+    // 评论区必须作为一个整体交给 MarkdownPresentation：评论正文里也可能带图，
+    // 如果先按图片切段，图片后的回复会失去 `## 评论（…）` 上下文，退回成普通
+    // Markdown 列表。评论组件会在每条评论内部再次切图，因此这里保留整个尾段。
+    if let commentStart = commentSectionStart(in: markdown) {
+      var result: [Segment] = []
+      let head = String(markdown[..<commentStart])
+      if !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        result.append(contentsOf: segments(
+          markdown: head,
+          localImageURLs: localImageURLs,
+          appendsUnusedLocalImages: false
+        ))
+      }
+      result.append(.text(String(markdown[commentStart...])))
+      if appendsUnusedLocalImages {
+        let referenced = referencedLocalImagePaths(in: markdown, byHash: byHash)
+        result.append(contentsOf: localImageURLs
+          .filter { !referenced.contains($0.path) }
+          .map(Segment.image))
+      }
+      return result
+    }
     // 引用卡先剥离：它可能没有图片（纯文字引用），所以必须在「无本地图片就整段
     // 返回」之前处理，否则标记会被当成字面文本渲染出来。
     if let quoteRange = quotedTweetRange(in: markdown) {
@@ -212,6 +234,68 @@ enum LocalMarkdownImageLayout {
       }
     }
     return segments.isEmpty ? [.text(markdown)] : segments
+  }
+
+  private static func commentSectionStart(in markdown: String) -> String.Index? {
+    var lineStart = markdown.startIndex
+    while lineStart < markdown.endIndex {
+      let lineEnd = markdown[lineStart...].firstIndex(of: "\n") ?? markdown.endIndex
+      let line = markdown[lineStart..<lineEnd].trimmingCharacters(in: .whitespaces)
+      if (line.hasPrefix("## 评论（") || line.hasPrefix("## 评论与回复（")), line.hasSuffix("）") {
+        var nextStart = lineEnd < markdown.endIndex ? markdown.index(after: lineEnd) : markdown.endIndex
+        while nextStart < markdown.endIndex {
+          let nextEnd = markdown[nextStart...].firstIndex(of: "\n") ?? markdown.endIndex
+          let candidate = markdown[nextStart..<nextEnd].trimmingCharacters(in: .whitespaces)
+          if !candidate.isEmpty {
+            guard candidate.hasPrefix("- **"),
+                  let authorEnd = candidate.dropFirst(4).range(of: "**")
+            else { break }
+            let remainder = candidate.dropFirst(4)
+            let author = String(remainder[..<authorEnd.lowerBound])
+            let isGenericCommunity = line.hasPrefix("## 评论与回复（")
+            if isGenericCommunity
+              || author.hasPrefix("u/")
+              || candidate.contains("score ")
+              || candidate.contains("[原评论](")
+              || candidate.contains("回复层级 ") {
+              return lineStart
+            }
+            break
+          }
+          guard nextEnd < markdown.endIndex else { break }
+          nextStart = markdown.index(after: nextEnd)
+        }
+      }
+      guard lineEnd < markdown.endIndex else { break }
+      lineStart = markdown.index(after: lineEnd)
+    }
+    return nil
+  }
+
+  private static func referencedLocalImagePaths(
+    in markdown: String,
+    byHash: [String: URL]
+  ) -> Set<String> {
+    guard let expression = imageMarkupExpression else { return [] }
+    let matches = expression.matches(
+      in: markdown,
+      range: NSRange(markdown.startIndex..., in: markdown)
+    )
+    return Set(matches.compactMap { match in
+      let rawURL: String? = {
+        if match.numberOfRanges > 2,
+           let range = Range(match.range(at: 2), in: markdown), !range.isEmpty {
+          return String(markdown[range])
+        }
+        if match.numberOfRanges > 3,
+           let range = Range(match.range(at: 3), in: markdown), !range.isEmpty {
+          return String(markdown[range])
+        }
+        return nil
+      }()
+      guard let rawURL, let local = resolveLocal(rawURL: rawURL, byHash: byHash) else { return nil }
+      return local.path
+    })
   }
 
   /// 定位引用卡标记块 `<!--LDQUOTE ...-->...<!--/LDQUOTE-->` 的完整范围。
@@ -422,6 +506,10 @@ enum MarkdownPresentation {
     case paragraph(String)
     case list([String])
     case orderedList([String])
+    /// 社区评论不能降级成普通 Markdown 列表：列表会丢掉作者、回复对象和层级，
+    /// 也无法提供局部展开。原始 Markdown / 导出文本保持不变，只在阅读呈现层
+    /// 把扩展已经写出的缩进和元数据恢复成结构化评论。
+    case comments(CommentSection)
     /// 任务列表。编辑器已经能续写 `- [ ]`，阅读区却把方括号当普通文字显示，
     /// 于是同一条清单在「写」和「读」两侧长得不一样。
     case taskList([TaskItem])
@@ -437,6 +525,51 @@ enum MarkdownPresentation {
   struct TaskItem: Equatable, Hashable {
     public let isDone: Bool
     public let text: String
+  }
+
+  struct CommentSection: Equatable, Hashable {
+    let title: String
+    let loadedCount: Int?
+    let expectedCount: Int?
+    let isCapped: Bool
+    let items: [CommentItem]
+
+    var countTitle: String {
+      if let loadedCount, let expectedCount { return "\(title) \(loadedCount)/\(expectedCount)" }
+      if let loadedCount { return "\(title) \(loadedCount)" }
+      return title
+    }
+
+    var progressLabel: String? {
+      guard let loadedCount else { return nil }
+      guard let expectedCount, expectedCount > 0 else { return "已加载 \(loadedCount) 条" }
+      if loadedCount >= expectedCount { return "已加载全部" }
+      return "已加载 \(Int((Double(loadedCount) / Double(expectedCount) * 100).rounded()))%"
+    }
+  }
+
+  struct CommentItem: Equatable, Hashable, Identifiable {
+    let sequence: Int
+    let depth: Int
+    let author: String
+    let parentAuthor: String?
+    let score: String?
+    let published: String?
+    let permalink: URL?
+    let body: String
+    let isDeleted: Bool
+
+    var id: Int { sequence }
+
+    var displayAuthor: String {
+      guard !isDeleted else { return "已删除用户" }
+      return author.hasPrefix("u/") ? String(author.dropFirst(2)) : author
+    }
+
+    var replyHandle: String {
+      let value = author.hasPrefix("u/") ? String(author.dropFirst(2)) : author
+      return value.replacingOccurrences(of: "[deleted]", with: "已删除用户")
+    }
   }
 
   /// Splits sanitized Markdown into block-level units so the view can apply
@@ -469,6 +602,14 @@ enum MarkdownPresentation {
           index += 1
         }
         blocks.append(.code(language: fence.language, content: codeLines.joined(separator: "\n")))
+        continue
+      }
+
+      // 抓取器把 Reddit / 社区评论附在严格格式的评论标题后。必须在普通标题
+      // 和普通列表之前识别，否则 `trimmingCharacters` 会把层级永久抹掉。
+      if let parsed = commentSection(in: lines, startingAt: index) {
+        blocks.append(.comments(parsed.section))
+        index = parsed.nextIndex
         continue
       }
 
@@ -632,6 +773,186 @@ enum MarkdownPresentation {
       if !text.isEmpty { blocks.append(.paragraph(text)) }
     }
     return blocks
+  }
+
+  private static func commentSection(
+    in lines: [String],
+    startingAt start: Int
+  ) -> (section: CommentSection, nextIndex: Int)? {
+    let headingLine = lines[start].trimmingCharacters(in: .whitespaces)
+    guard let heading = headingMatch(headingLine), heading.level == 2 else { return nil }
+    let isComments = heading.text.hasPrefix("评论（") || heading.text.hasPrefix("评论与回复（")
+    guard isComments, heading.text.hasSuffix("）") else { return nil }
+
+    let title = heading.text.hasPrefix("评论与回复") ? "评论与回复" : "评论"
+    guard let opening = heading.text.firstIndex(of: "（") else { return nil }
+    let metadata = String(heading.text[heading.text.index(after: opening)..<heading.text.index(before: heading.text.endIndex)])
+    let counts = integers(in: metadata)
+    let loadedCount = counts.first
+    let expectedCount = metadata.contains("页面显示") && counts.count > 1 ? counts[1] : nil
+
+    var cursor = start + 1
+    while cursor < lines.count, lines[cursor].trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      cursor += 1
+    }
+    guard cursor < lines.count,
+          let firstHeader = commentHeader(from: lines[cursor]),
+          isCommentHeader(firstHeader, sectionTitle: title)
+    else { return nil }
+
+    var items: [CommentItem] = []
+    var latestAuthorByDepth: [Int: String] = [:]
+    while cursor < lines.count {
+      guard let header = commentHeader(from: lines[cursor]),
+            isCommentHeader(header, sectionTitle: title)
+      else { break }
+      let nextHeader = nextCommentHeader(in: lines, after: cursor, sectionTitle: title)
+      let bodyLines = Array(lines[(cursor + 1)..<nextHeader])
+      let body = normalizedCommentBody(bodyLines, removingIndent: header.indent + 2)
+      let details = commentDetails(from: header.details)
+      let depth = max(details.explicitDepth ?? header.indent / 2, 0)
+      let parentAuthor: String? = {
+        guard depth > 0 else { return nil }
+        for candidateDepth in stride(from: depth - 1, through: 0, by: -1) {
+          if let author = latestAuthorByDepth[candidateDepth] { return author }
+        }
+        return nil
+      }()
+
+      let isDeleted = header.author.localizedCaseInsensitiveContains("[deleted]")
+      let author = isDeleted ? "已删除用户" : header.author
+      let replyHandle = author.hasPrefix("u/") ? String(author.dropFirst(2)) : author
+      latestAuthorByDepth = latestAuthorByDepth.filter { $0.key < depth }
+      latestAuthorByDepth[depth] = replyHandle
+
+      items.append(CommentItem(
+        sequence: items.count,
+        depth: depth,
+        author: author,
+        parentAuthor: parentAuthor,
+        score: details.score,
+        published: details.published,
+        permalink: details.permalink,
+        body: body,
+        isDeleted: isDeleted
+      ))
+      cursor = nextHeader
+    }
+
+    guard !items.isEmpty else { return nil }
+    return (
+      CommentSection(
+        title: title,
+        loadedCount: loadedCount,
+        expectedCount: expectedCount,
+        isCapped: metadata.contains("仅保留前"),
+        items: items
+      ),
+      cursor
+    )
+  }
+
+  private static func commentHeader(
+    from line: String
+  ) -> (indent: Int, author: String, details: String)? {
+    let prefix = line.prefix { $0 == " " || $0 == "\t" }
+    let indent = prefix.reduce(into: 0) { count, character in
+      count += character == "\t" ? 2 : 1
+    }
+    let trimmed = line.dropFirst(prefix.count)
+    guard trimmed.hasPrefix("- **") else { return nil }
+    let afterMarker = trimmed.dropFirst(4)
+    guard let closing = afterMarker.range(of: "**") else { return nil }
+    let author = String(afterMarker[..<closing.lowerBound]).trimmingCharacters(in: .whitespaces)
+    guard !author.isEmpty else { return nil }
+    var details = String(afterMarker[closing.upperBound...]).trimmingCharacters(in: .whitespaces)
+    if details.hasPrefix("·") {
+      details = String(details.dropFirst()).trimmingCharacters(in: .whitespaces)
+    }
+    return (indent, author, details)
+  }
+
+  private static func isCommentHeader(
+    _ header: (indent: Int, author: String, details: String),
+    sectionTitle: String
+  ) -> Bool {
+    if sectionTitle == "评论与回复" {
+      // 通用社区适配器当前只输出平铺回复；正文里的加粗子列表仍属于该条评论。
+      return header.indent == 0
+    }
+    // Reddit 用户名固定带 `u/`。元数据判据是对旧夹具/删除用户的兼容保护，
+    // 避免评论正文里的 `- **重点**` 被误认成新用户。
+    return header.author.hasPrefix("u/")
+      || header.details.contains("score ")
+      || header.details.contains("[原评论](")
+      || header.details.contains("回复层级 ")
+  }
+
+  private static func nextCommentHeader(
+    in lines: [String],
+    after index: Int,
+    sectionTitle: String
+  ) -> Int {
+    var cursor = index + 1
+    while cursor < lines.count {
+      if let header = commentHeader(from: lines[cursor]),
+         isCommentHeader(header, sectionTitle: sectionTitle) {
+        return cursor
+      }
+      cursor += 1
+    }
+    return lines.count
+  }
+
+  private static func normalizedCommentBody(_ lines: [String], removingIndent count: Int) -> String {
+    var normalized = lines.map { line -> String in
+      var remainder = line[...]
+      var removed = 0
+      while removed < count, let first = remainder.first, first == " " || first == "\t" {
+        remainder = remainder.dropFirst()
+        removed += first == "\t" ? 2 : 1
+      }
+      return String(remainder).trimmingCharacters(in: .whitespaces)
+    }
+    while normalized.first?.isEmpty == true { normalized.removeFirst() }
+    while normalized.last?.isEmpty == true { normalized.removeLast() }
+    return normalized.joined(separator: "\n")
+  }
+
+  private static func commentDetails(
+    from raw: String
+  ) -> (score: String?, published: String?, permalink: URL?, explicitDepth: Int?) {
+    var score: String?
+    var published: [String] = []
+    var permalink: URL?
+    var explicitDepth: Int?
+    for part in raw.components(separatedBy: " · ") {
+      let value = part.trimmingCharacters(in: .whitespaces)
+      if value.hasPrefix("score ") {
+        score = String(value.dropFirst("score ".count)).trimmingCharacters(in: .whitespaces)
+      } else if value.hasPrefix("[原评论]("), value.hasSuffix(")") {
+        permalink = URL(string: String(value.dropFirst("[原评论](".count).dropLast()))
+      } else if value.hasPrefix("回复层级 ") {
+        explicitDepth = Int(value.dropFirst("回复层级 ".count).trimmingCharacters(in: .whitespaces))
+      } else if !value.isEmpty {
+        published.append(value)
+      }
+    }
+    return (score, published.isEmpty ? nil : published.joined(separator: " · "), permalink, explicitDepth)
+  }
+
+  private static func integers(in text: String) -> [Int] {
+    var result: [Int] = []
+    var digits = ""
+    func flush() {
+      if let value = Int(digits) { result.append(value) }
+      digits = ""
+    }
+    for character in text {
+      if character.isNumber { digits.append(character) } else { flush() }
+    }
+    flush()
+    return result
   }
 
   private static func headingMatch(_ line: String) -> (level: Int, text: String)? {
@@ -990,7 +1311,7 @@ enum MarkdownPresentation {
   }
 }
 
-private extension AttributedString {
+extension AttributedString {
   /// Sets a base reading font while keeping bold/italic traits from inline Markdown.
   /// The reading font is user-selectable (serif / sans / named built-in family);
   /// code is rendered by a separate monospaced view and never passes through this path.
@@ -1025,6 +1346,13 @@ private extension AttributedString {
   }
 }
 
+/// 章节锚点的面板命名空间包装：阅读面板保活后多个面板同时挂载，
+/// `.block(n)` 必须按面板隔离（见 MarkdownContentView.anchorScope）。
+struct ScopedReadingAnchor: Hashable {
+  let scope: String
+  let block: Int
+}
+
 struct MarkdownContentView: View {
   let source: String
   var sourceURL: URL?
@@ -1041,6 +1369,10 @@ struct MarkdownContentView: View {
   /// 正文下方的模块（脑图 / 图片 / 标注 / 标签…）。由详情页按实际存在的模块传入——
   /// 这里不知道页面上有什么，硬猜只会列出点了跳不到的死链接。
   var navigationModules: [ReadingModuleLink] = []
+  /// 章节锚点的命名空间。阅读面板保活后多个面板同时挂载，各自的
+  /// `.block(n)` 锚点必须按面板隔离，否则目录跳转会撞到隐藏面板的同名
+  /// 锚点；空串等于原来的全局命名（单面板场景，测试里也这么用）。
+  var anchorScope: String = ""
   var revealText: String?
   var onFollowWikiLink: ((String) -> Void)?
   /// 单击正文进入编辑。只给转写 / 笔记 / 稿这些可写正文。
@@ -1182,6 +1514,7 @@ struct MarkdownContentView: View {
     showsPlainText: Binding<Bool> = .constant(false),
     showsInlinePlainTextToggle: Bool = true,
     navigationModules: [ReadingModuleLink] = [],
+    anchorScope: String = "",
     revealText: String? = nil,
     onFollowWikiLink: ((String) -> Void)? = nil,
     onRequestEdit: ((String?) -> Void)? = nil
@@ -1198,6 +1531,7 @@ struct MarkdownContentView: View {
     self._showsPlainText = showsPlainText
     self.showsInlinePlainTextToggle = showsInlinePlainTextToggle
     self.navigationModules = navigationModules
+    self.anchorScope = anchorScope
     self.revealText = revealText
     self.onFollowWikiLink = onFollowWikiLink
     self.onRequestEdit = onRequestEdit
@@ -1309,6 +1643,8 @@ struct MarkdownContentView: View {
         runs.append((index, .code(language: language, content: content)))
       } else if case let .table(headers, rows) = block {
         runs.append((index, .table(headers: headers, rows: rows)))
+      } else if case let .comments(section) = block {
+        runs.append((index, .comments(section)))
       } else if !startsSection, case var .text(accumulated) = runs.last?.run {
         accumulated.append(block)
         runs[runs.count - 1].run = .text(accumulated)
@@ -1320,18 +1656,24 @@ struct MarkdownContentView: View {
       VStack(alignment: .leading, spacing: 0) {
         ForEach(Array(runs.enumerated()), id: \.offset) { _, entry in
           runView(entry.run)
-            .id(ReadingAnchor.block(entry.anchor))
+            .id(ScopedReadingAnchor(scope: anchorScope, block: entry.anchor))
         }
       }
       .onChange(of: scrollTarget) { _, target in
         guard let target else { return }
+        // 命名空间后的落点：模块锚点（tags 等）只在详情页注册一份，保持原值；
+        // 章节锚点按面板隔离，避免撞到保活的隐藏面板。
+        let resolved: AnyHashable = switch target {
+        case let .block(index): ScopedReadingAnchor(scope: anchorScope, block: index)
+        case let .module(anchor): ReadingAnchor.module(anchor)
+        }
         // 开了「减弱动态效果」就直接落位：跳转本身是必要的，滚动过程不是。
         if reduceMotion {
-          proxy.scrollTo(target, anchor: .top)
+          proxy.scrollTo(resolved, anchor: .top)
         } else {
           // 走 token 而不是写死 0.25：全 App 的「展开/切换」都用这一档，
           // 散落的自定义时长正是当初间距和字号失控的同一个成因。
-          withAnimation(DesignTokens.Motion.standard) { proxy.scrollTo(target, anchor: .top) }
+          withAnimation(DesignTokens.Motion.standard) { proxy.scrollTo(resolved, anchor: .top) }
         }
         scrollTarget = nil
       }
@@ -1365,6 +1707,16 @@ struct MarkdownContentView: View {
     case let .table(headers, rows):
       markdownTable(headers: headers, rows: rows)
         .padding(.bottom, 20)
+    case let .comments(section):
+      CommentThreadSectionView(
+        section: section,
+        localImageURLs: localImageURLs,
+        readingFont: readingFont,
+        primaryTextColor: primaryTextColor,
+        secondaryTextColor: secondaryTextColor,
+        accentColor: accentColor,
+        onOpenURL: { _ = openValidated($0) }
+      )
     }
   }
 
@@ -1372,6 +1724,7 @@ struct MarkdownContentView: View {
     case text([MarkdownPresentation.Block])
     case code(language: String?, content: String)
     case table(headers: [String], rows: [[String]])
+    case comments(MarkdownPresentation.CommentSection)
   }
 
   @ViewBuilder
@@ -1521,6 +1874,16 @@ struct MarkdownContentView: View {
     case let .table(headers, rows):
       markdownTable(headers: headers, rows: rows)
         .padding(.bottom, 20)
+    case let .comments(section):
+      CommentThreadSectionView(
+        section: section,
+        localImageURLs: localImageURLs,
+        readingFont: readingFont,
+        primaryTextColor: primaryTextColor,
+        secondaryTextColor: secondaryTextColor,
+        accentColor: accentColor,
+        onOpenURL: { _ = openValidated($0) }
+      )
     }
   }
 

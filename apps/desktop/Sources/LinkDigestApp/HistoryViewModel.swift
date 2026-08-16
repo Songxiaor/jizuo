@@ -785,14 +785,19 @@ final class HistoryViewModel: ObservableObject {
     didSet {
       if !transcriptionState.isActive {
         onlineTranscriptionPhase = nil
-        onlineTranscriptionPreview = nil
+        setOnlineTranscriptionPreview(nil)
       }
       if case .cancelled = transcriptionState {
-        transcriptionText = ""
+        setTranscriptionText("")
       }
     }
   }
-  @Published private(set) var transcriptionText = ""
+  /// 非 @Published：写入统一走 `setTranscriptionText`。转写 partial 每
+  /// 250ms 一个增长拍点，只更新 `liveTranscriptionText` 收窄重绘；
+  /// 空↔非空边界与终态清空仍整体通知。
+  private(set) var transcriptionText = ""
+  /// 转写流式正文的热路径发布通道，与 transcriptionText 同步更新。
+  let liveTranscriptionText = LiveRunTextModel()
   @Published private(set) var transcriptionTaskID: TaskID?
   @Published private(set) var transcriptionUsesOnlineService = false
   /// 在线转写进行到哪一步。「正在在线转写…」曾覆盖从建任务记录到最后一片
@@ -801,7 +806,11 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var onlineTranscriptionPhase: String?
   /// 流式通道下已确定的文稿前缀，边转写边显示。终态时清空，成品由
   /// `transcriptionText` 接管，避免同一段文字在界面上出现两份。
-  @Published private(set) var onlineTranscriptionPreview: String?
+  /// 非 @Published：partial 增长拍点只写 `liveOnlineTranscriptionPreview`
+  /// 收窄重绘（见 setOnlineTranscriptionPreview）。
+  private(set) var onlineTranscriptionPreview: String?
+  /// 在线转写预览的热路径发布通道，与 onlineTranscriptionPreview 同步。
+  let liveOnlineTranscriptionPreview = LiveRunTextModel()
   /// 上一次在线转写的分段耗时，终态后保留（阶段文案会被清掉，这条不能跟着走）。
   /// 「慢」必须先拆开看：下载音轨慢、本机切片导出慢、等 ASR 返回慢，
   /// 三段的修法完全不同（带宽 / 编码 preset / 分片粒度与并发），
@@ -1012,6 +1021,26 @@ final class HistoryViewModel: ObservableObject {
     transcriptionTaskID == taskID ? transcriptionText : ""
   }
 
+  /// `transcriptionText` 唯一的写入口。两侧都非空的纯增长拍点只更新
+  /// `liveTranscriptionText`（订阅它的是转写流式叶子视图）；首段文字、
+  /// 清空和 final 整体替换会改变「空/非空」或全文内容，照常整体通知。
+  /// 存储属性本身每次都更新，读取方（如转写后整理）拿到的始终是最新值。
+  private func setTranscriptionText(_ value: String) {
+    let isPureGrowth = !value.isEmpty && !transcriptionText.isEmpty
+    if !isPureGrowth { objectWillChange.send() }
+    transcriptionText = value
+    liveTranscriptionText.setText(value)
+  }
+
+  /// `onlineTranscriptionPreview` 唯一的写入口，规则同 setTranscriptionText：
+  /// 有→有的更新只走叶子模型；nil↔非 nil 的边界（首段出现、终态清空）整体通知。
+  private func setOnlineTranscriptionPreview(_ value: String?) {
+    let isPureGrowth = value != nil && onlineTranscriptionPreview != nil
+    if !isPureGrowth { objectWillChange.send() }
+    onlineTranscriptionPreview = value
+    liveOnlineTranscriptionPreview.setText(value ?? "")
+  }
+
   func imageTextRecognitionState(for taskID: TaskID) -> ImageTextRecognitionUIState {
     imageTextRecognitionTaskID == taskID ? imageTextRecognitionState : .idle
   }
@@ -1121,6 +1150,13 @@ final class HistoryViewModel: ObservableObject {
   }
   var hasCategoryFilter: Bool { !selectedHosts.isEmpty || !selectedTagNormalizedNames.isEmpty }
   func faviconImageURL(for row: HistoryRowProjection) -> URL? { faviconImageURLs[row.taskID] }
+  func platformFavicon(forHost host: String) -> (url: URL, taskID: TaskID)? {
+    let canonical = HistoryPlatformRegistry.canonicalHost(for: host)
+    for row in rows where HistoryPlatformRegistry.canonicalHost(for: row.host) == canonical {
+      if let url = faviconImageURLs[row.taskID] { return (url, row.taskID) }
+    }
+    return nil
+  }
 
   func beginBootstrapLoading() {
     guard history == nil, blockingErrorCode == nil else { return }
@@ -1162,7 +1198,7 @@ final class HistoryViewModel: ObservableObject {
     isBatchSummaryConfirmationPresented = false; isBatchSummaryOutcomePresented = false
     batchSummaryOutcomeMessage = ""
     transcriptionRequestID = UUID()
-    transcriptionState = .idle; transcriptionText = ""; transcriptionTaskID = nil; isTranscriptionModelConfirmationPresented = false; pendingTranscriptionContext = nil
+    transcriptionState = .idle; setTranscriptionText(""); transcriptionTaskID = nil; isTranscriptionModelConfirmationPresented = false; pendingTranscriptionContext = nil
     transcriptionUsesOnlineService = false
     isOnlineTranscriptionConfirmationPresented = false; pendingOnlineTranscriptionContext = nil
     imageTextRecognitionRequestID = UUID(); imageTextRecognitionState = .idle; recognizedImageText = ""; imageTextRecognitionTaskID = nil
@@ -1290,7 +1326,7 @@ final class HistoryViewModel: ObservableObject {
       return false
     }
     transcriptionTaskID = detail.task.id
-    transcriptionText = ""
+    setTranscriptionText("")
     transcriptionState = .checkingModel
     transcriptionTask = Task { [weak self, worker] in
       guard self?.transcriptionRequestID == requestID else { return }
@@ -1384,7 +1420,7 @@ final class HistoryViewModel: ObservableObject {
     let requestID = UUID()
     transcriptionRequestID = requestID
     transcriptionTaskID = taskID
-    transcriptionText = ""
+    setTranscriptionText("")
     transcriptionUsesOnlineService = false
     transcriptionState = .preparingMedia
     transcriptionTask = Task { [weak self, worker] in
@@ -2864,12 +2900,12 @@ final class HistoryViewModel: ObservableObject {
     let requestID = UUID()
     transcriptionRequestID = requestID
     transcriptionTaskID = context.taskID
-    transcriptionText = ""
+    setTranscriptionText("")
     transcriptionUsesOnlineService = true
     transcriptionState = .preparingMedia
     onlineTranscriptionPhase = "正在创建转写任务记录…"
     onlineTranscriptionTimings = nil
-    onlineTranscriptionPreview = nil
+    setOnlineTranscriptionPreview(nil)
     onlineUploadStartInstant = nil
     onlineChunkTotal = nil
     // 单调时钟：耗时测量不能用注入的 nowMilliseconds（测试里是可控假时钟，
@@ -2983,7 +3019,7 @@ final class HistoryViewModel: ObservableObject {
         let onPartial: @Sendable (String) -> Void = { [weak self] prefix in
           Task { @MainActor in
             guard let self, self.transcriptionRequestID == requestID else { return }
-            self.onlineTranscriptionPreview = prefix
+            self.setOnlineTranscriptionPreview(prefix)
           }
         }
         let text: String
@@ -3014,7 +3050,7 @@ final class HistoryViewModel: ObservableObject {
           downloadedBytes: downloadedBytes,
           succeeded: true
         )
-        self.transcriptionText = text
+        self.setTranscriptionText(text)
         let completedAt = self.nowMilliseconds()
         let persisted = await worker.saveOnlineTaskTranscription(
           history,
@@ -3339,8 +3375,8 @@ final class HistoryViewModel: ObservableObject {
         switch event {
         case .extractingAudio: transcriptionState = .extractingAudio
         case .transcribing: transcriptionState = .transcribing
-        case let .partial(text): transcriptionText = text
-        case let .final(text): finalText = text; transcriptionText = text
+        case let .partial(text): setTranscriptionText(text)
+        case let .final(text): finalText = text; setTranscriptionText(text)
         }
       }
       try Task.checkCancellation()
@@ -3458,8 +3494,8 @@ final class HistoryViewModel: ObservableObject {
         switch event {
         case .extractingAudio: transcriptionState = .extractingAudio
         case .transcribing: transcriptionState = .transcribing
-        case let .partial(text): transcriptionText = text
-        case let .final(text): finalText = text; transcriptionText = text
+        case let .partial(text): setTranscriptionText(text)
+        case let .final(text): finalText = text; setTranscriptionText(text)
         }
       }
       try Task.checkCancellation()
@@ -4851,7 +4887,7 @@ final class HistoryViewModel: ObservableObject {
     let requestID = UUID()
     transcriptionRequestID = requestID
     transcriptionTaskID = taskID
-    transcriptionText = ""
+    setTranscriptionText("")
     transcriptionUsesOnlineService = false
     transcriptionState = .transcribing
     let (stopSignal, stopContinuation) = AsyncStream.makeStream(of: Void.self)
@@ -4880,7 +4916,7 @@ final class HistoryViewModel: ObservableObject {
             latest = text
             pendingPartial = text
             if ContinuousClock.now - lastPartialFlush > .milliseconds(250) {
-              self.transcriptionText = text
+              self.setTranscriptionText(text)
               pendingPartial = nil
               lastPartialFlush = .now
             }
@@ -4900,7 +4936,7 @@ final class HistoryViewModel: ObservableObject {
           return
         }
         // 冲刷：合批期间攒下的最后一段必须落地，不能丢在缓冲里。
-        if let pendingPartial { self.transcriptionText = pendingPartial }
+        if let pendingPartial { self.setTranscriptionText(pendingPartial) }
         let trimmed = latest.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
           _ = await worker.updateTaskTranscriptionStatus(
@@ -5340,7 +5376,9 @@ final class HistoryViewModel: ObservableObject {
 
   private func loadFavicons(for rows: [HistoryRowProjection], generation: UUID) {
     guard let faviconCache, let faviconResources else { return }
-    let candidates = rows.filter { $0.host.lowercased() != "github.com" && faviconImageURLs[$0.taskID] == nil }
+    let candidates = rows.filter {
+      PlatformIconCatalog.assetName(for: $0.host) == nil && faviconImageURLs[$0.taskID] == nil
+    }
     guard !candidates.isEmpty else { return }
     faviconTask?.cancel()
     faviconTask = Task { [weak self, faviconCache, faviconResources] in

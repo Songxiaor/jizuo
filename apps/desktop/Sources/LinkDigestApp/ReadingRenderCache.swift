@@ -21,6 +21,9 @@ enum ReadingRenderCache {
   /// 与富文本两路各占一条。24 会被这种文章整体打穿——每次重绘全部 miss，
   /// 缓存等于不存在。96 能容下这种极端条目再留出上一条的余量。
   private static let capacity = 96
+  /// 一条社区长帖可能有数百条评论。评论正文通常很短，但每次重绘逐条重新走
+  /// Apple Markdown 解析仍会形成明显尖峰；单独给行内正文更大的有界缓存。
+  private static let inlineCapacity = 512
 
   // MARK: - 块解析
 
@@ -31,6 +34,24 @@ enum ReadingRenderCache {
     if let cached = lookup(source, in: blockEntries, order: &blockOrder) { return cached }
     let parsed = MarkdownPresentation.blocks(from: source)
     remember(parsed, forKey: source, in: &blockEntries, order: &blockOrder)
+    return parsed
+  }
+
+  // MARK: - 评论行内 Markdown
+
+  private static var inlineEntries: [String: AttributedString] = [:]
+  private static var inlineOrder: [String] = []
+
+  static func inlineAttributed(from source: String) -> AttributedString {
+    if let cached = lookup(source, in: inlineEntries, order: &inlineOrder) { return cached }
+    let parsed = MarkdownPresentation.inlineAttributed(source)
+    remember(
+      parsed,
+      forKey: source,
+      in: &inlineEntries,
+      order: &inlineOrder,
+      capacity: inlineCapacity
+    )
     return parsed
   }
 
@@ -211,7 +232,8 @@ enum ReadingRenderCache {
     _ value: Value,
     forKey key: Key,
     in entries: inout [Key: Value],
-    order: inout [Key]
+    order: inout [Key],
+    capacity: Int = capacity
   ) {
     entries[key] = value
     order.append(key)

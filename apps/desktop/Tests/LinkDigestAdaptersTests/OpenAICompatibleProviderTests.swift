@@ -267,6 +267,43 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     XCTAssertFalse(server.requests.description.contains(key))
   }
 
+  func testTranslationPromptProtectsCommentTreeMetadata() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [
+      .init(chunks: [.init("data: [DONE]\n\n")])
+    ])
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let source = """
+    ## 评论（当前页面已加载 2 / 页面显示 2）
+
+    - **u/root** · score 5 · 2026-08-13T00:00:00Z · [原评论](https://www.reddit.com/comments/root/)
+      Root comment.
+      - **u/reply** · score 2 · 回复层级 1
+        Reply body.
+    """
+
+    _ = await collect(
+      provider: makeProvider(),
+      profile: try profile(baseURL),
+      apiKey: key,
+      intent: .translate(title: "Reddit fixture", text: source, targetLanguage: "简体中文")
+    )
+
+    let request = try XCTUnwrap(server.requests.first)
+    let translationMessages = try messages(from: request.body)
+    let systemPrompt = try XCTUnwrap(translationMessages.first?["content"])
+    XCTAssertTrue(systemPrompt.contains("Preserve Markdown syntax and indentation exactly"))
+    XCTAssertTrue(systemPrompt.contains("Copy unchanged every section heading beginning with `## 评论（`"))
+    XCTAssertTrue(systemPrompt.contains("Copy unchanged every comment metadata line beginning with `- **`"))
+    XCTAssertTrue(systemPrompt.contains("Translate only the prose body of each comment"))
+    XCTAssertTrue(systemPrompt.contains("Never translate usernames or change comment nesting"))
+    let userPrompt = try XCTUnwrap(translationMessages.last?["content"])
+    XCTAssertTrue(userPrompt.contains("## 评论（当前页面已加载 2 / 页面显示 2）"))
+    XCTAssertTrue(userPrompt.contains("  - **u/reply** · score 2 · 回复层级 1"))
+    XCTAssertFalse(server.requests.description.contains(key))
+  }
+
   func test401IsNotRetriedAndFailureDoesNotExposeSecret() async throws {
     let key = "sentinel-\(UUID().uuidString)"
     let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [

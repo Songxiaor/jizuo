@@ -231,6 +231,10 @@ def main() -> int:
         info["CFBundleIdentifier"] = DEBUG_BUNDLE_IDENTIFIER
         info["CFBundleDisplayName"] = "LinkDigest Debug"
         info["CFBundleName"] = "LinkDigest Debug"
+        # Debug candidates are short-lived local verification artifacts. They
+        # must not ask the tester to make a persistent update-policy choice or
+        # contact the public release feed before the UI under test is visible.
+        info["SUEnableAutomaticChecks"] = False
         if args.isolated_data:
             info["LSEnvironment"] = {
                 "LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT": str(

@@ -52,7 +52,11 @@ enum BrowserReceiverState: Sendable, Equatable {
   @Published private(set) var browserReceiverState: BrowserReceiverState = .starting
   @Published private(set) var lastBrowserCaptureAt: Date?
   @Published private(set) var currentCapture: CurrentCapture?
-  @Published private(set) var runState: RunState = .idle
+  /// 非 @Published：写入统一走 `setRunState`（见其注释）。读取方始终拿到
+  /// 最新值；只有状态真正切换时才发 objectWillChange，流式纯增长拍点不发。
+  private(set) var runState: RunState = .idle
+  /// 流式正文的热路径发布通道；与 runState 同步更新（见 setRunState）。
+  let liveRunText = LiveRunTextModel()
   @Published private(set) var activeRunTaskID: TaskID?
   @Published private(set) var visibleRunTaskID: TaskID?
   @Published private(set) var storageAvailability: StorageAvailability = .bootstrapping
@@ -550,7 +554,7 @@ enum BrowserReceiverState: Sendable, Equatable {
     launchPendingRunID = request.runID
     activeRunTaskID = request.taskID
     if !runState.isActive, !runState.outputText.isEmpty {
-      runState = .starting(intent: intent)
+      setRunState(.starting(intent: intent))
     }
     releasePreparation(ifOwner: token)
     await modelRunOrchestrator.start(
@@ -731,14 +735,26 @@ enum BrowserReceiverState: Sendable, Equatable {
   }
 
   private func isTranslationLanguageMatch(text: String?, outputLanguage: String) -> Bool {
-    guard let text else { return false }
-    // 判断语言时先剥掉开头的元数据块：那段 YAML 全是英文键名，
-    // 混进去会稀释中文正文的占比，让「内容已是中文」误判成「可翻译」。
-    let body = MarkdownNoteFrontmatter.parse(text).body
-    return CapturedContentLanguage.isSameOutputLanguage(
-      content: body.isEmpty ? text : body,
-      outputLanguage: outputLanguage
-    )
+    TranslationMatchCache.isMatch(text: text, outputLanguage: outputLanguage)
+  }
+
+  /// `runState` 唯一的写入口。流式生成每 250ms 就有一个「同 intent、正文
+  /// 纯增长」的拍点——这种拍点不触发 objectWillChange，正文只写进
+  /// `liveRunText`，重绘收窄到显示它的叶子视图；其余任何变化（开始/思考/
+  /// 停止/终态、intent 切换、清空）照常通知整树。`runState` 本身每个拍点
+  /// 都会更新，读取方语义与 @Published 时代一致。
+  private func setRunState(_ state: RunState) {
+    if case let .streaming(intent, partialText) = state,
+       case .streaming(let previousIntent, _) = runState,
+       previousIntent == intent,
+       !partialText.isEmpty {
+      runState = state
+      liveRunText.setText(partialText)
+      return
+    }
+    objectWillChange.send()
+    runState = state
+    liveRunText.setText(state.outputText)
   }
 
   func receiveRunState(runID: RunID, state: RunState) {
@@ -748,7 +764,7 @@ enum BrowserReceiverState: Sendable, Equatable {
       visibleRunID = runID
       activeRunTaskID = taskIDByRunID[runID]
       visibleRunTaskID = taskIDByRunID[runID]
-      runState = state
+      setRunState(state)
       return
     }
 
@@ -761,7 +777,7 @@ enum BrowserReceiverState: Sendable, Equatable {
     if case let .storageError(_, _, code) = state {
       storageAvailability = .unavailable(code)
     }
-    runState = state
+    setRunState(state)
     if isTerminal(state) {
       activeRunTaskID = nil
       taskIDByRunID.removeValue(forKey: runID)
@@ -776,7 +792,7 @@ enum BrowserReceiverState: Sendable, Equatable {
     }
     taskIDByRunID.removeValue(forKey: runID)
     if case .starting = runState, visibleRunID != runID {
-      runState = .idle
+      setRunState(.idle)
     }
   }
 

@@ -172,4 +172,34 @@ final class MarkdownNoteFrontmatterTests: XCTestCase {
     XCTAssertEqual(note.body, source)
     XCTAssertFalse(note.hasProperties)
   }
+
+  func testMissingFrontmatterPreservesCRLFBodyByteForByte() {
+    let source = "第一行\r\n第二行\r\n"
+    let note = MarkdownNoteFrontmatter.parse(source)
+
+    XCTAssertEqual(note.body, source)
+    XCTAssertEqual(Array(note.body.utf8), Array(source.utf8))
+  }
+
+  func testParsesCRLFFrontmatter() {
+    let source = "---\r\nauthor: x\r\n---\r\n正文"
+    let note = MarkdownNoteFrontmatter.parse(source)
+
+    XCTAssertEqual(note.author, "x")
+    XCTAssertEqual(note.body, "正文")
+  }
+
+  func testSeparatorOnlyReturnsOriginalBody() {
+    let source = "---"
+    let note = MarkdownNoteFrontmatter.parse(source)
+
+    XCTAssertEqual(note.body, source)
+    XCTAssertFalse(note.hasProperties)
+  }
+
+  func testIncompleteFrontmatterReturnsOriginalBody() {
+    for source in ["---xyz", "---\n没有结束"] {
+      XCTAssertEqual(MarkdownNoteFrontmatter.parse(source).body, source)
+    }
+  }
 }

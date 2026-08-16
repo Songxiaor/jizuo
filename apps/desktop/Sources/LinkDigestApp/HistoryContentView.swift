@@ -634,11 +634,21 @@ struct HistoryContentView: View {
           // 平台名称必须常驻可见。只显示图标虽然省高度，但把理解成本转嫁给
           // tooltip；新的紧凑行仍然只占一行，同时给出图标、名称和数量。
           PlatformGridView(
-            items: knownPlatforms.map { .init(host: $0.host, count: $0.count) }
+            items: knownPlatforms.map { platform in
+              let favicon = model.platformFavicon(forHost: platform.host)
+              return .init(
+                host: platform.host,
+                count: platform.count,
+                faviconURL: favicon?.url,
+                faviconTaskID: favicon?.taskID
+              )
+            }
               + (miscPlatforms.isEmpty ? [] : [
                 .init(
                   host: HistoryPlatformDisplay.miscHost,
-                  count: miscPlatforms.reduce(0) { $0 + $1.count }
+                  count: miscPlatforms.reduce(0) { $0 + $1.count },
+                  faviconURL: nil,
+                  faviconTaskID: nil
                 )
               ]),
             theme: theme,
@@ -1314,6 +1324,8 @@ private struct ClipboardSuggestionBanner: View {
 /// 侧栏与网格共用，所以不是 private。
 struct PlatformNavigationIcon: View {
   let host: String
+  var faviconURL: URL? = nil
+  var faviconTaskID: TaskID? = nil
 
   var body: some View {
     if host == HistoryPlatformDisplay.miscHost {
@@ -1324,13 +1336,21 @@ struct PlatformNavigationIcon: View {
         .frame(width: 18, height: 18)
     } else if let image = PlatformIconCatalog.image(for: host) {
       Image(nsImage: image).resizable().scaledToFit().frame(width: 16, height: 16)
+    } else if let faviconURL, let faviconTaskID {
+      HistoryFaviconDiskImage(url: faviconURL, host: host, taskID: faviconTaskID) {
+        fallbackBadge
+      }
     } else {
-      Text(PlatformIconCatalog.fallbackInitial(for: host))
-        .font(.system(size: BadgeTypography.size, weight: .bold))
-        .foregroundStyle(.white)
-        .frame(width: 16, height: 16)
-        .background(PlatformIconCatalog.fallbackColor(for: host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+      fallbackBadge
     }
+  }
+
+  private var fallbackBadge: some View {
+    Text(PlatformIconCatalog.fallbackInitial(for: host))
+      .font(.system(size: BadgeTypography.size, weight: .bold))
+      .foregroundStyle(.white)
+      .frame(width: 16, height: 16)
+      .background(PlatformIconCatalog.fallbackColor(for: host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
   }
 }
 
@@ -1808,7 +1828,14 @@ private struct HistoryDetailView: View {
   /// 点了总结/翻译、Run 还没变成可见态时，先把对应页签打开。
   /// 否则抖音图文只有「原文」，生成过程只能再挂一块预览卡片。
   @State private var pendingRunPane: ReadingPane?
-  @State private var readingProgress = 0.0
+  /// 阅读进度独立小模型：进度若放进本视图的 @State，每个滚动事件都会
+  /// 重求值整个详情页——那是长文滚动掉帧的来源（见 ReadingProgressModel）。
+  @StateObject private var readingProgressModel = ReadingProgressModel()
+  /// 已访问过的阅读面板（见 content 的注释）：保活的折叠集合。
+  @State private var visitedReadingPanes: Set<ReadingPane> = []
+  /// 各阅读面板的实测高度：ZStack 容器按「当前活动面板的高度」定高，
+  /// 隐藏面板保持自然尺寸不被折叠——切换因此不触发任何几何重算。
+  @State private var paneHeights: [ReadingPane: CGFloat] = [:]
   @State private var pendingSourceCitation: String?
   @State private var measuredTitleHeight: CGFloat = HistoryDetailView.titleLineHeight
   /// 转写校对：编辑态与草稿只属于当前详情页，切换条目即复位。
@@ -1872,6 +1899,16 @@ private struct HistoryDetailView: View {
     case translation
     case source
     var id: String { rawValue }
+  }
+
+  /// 各阅读面板向上上报实测高度：ZStack 容器据此按活动面板定高，
+  /// 切换面板不动任何子视图几何（见 content 的注释）。
+  private struct ReadingPaneHeightPreferenceKey: PreferenceKey {
+    static let defaultValue: [ReadingPane: CGFloat] = [:]
+
+    static func reduce(value: inout [ReadingPane: CGFloat], nextValue: () -> [ReadingPane: CGFloat]) {
+      value.merge(nextValue()) { current, _ in current }
+    }
   }
   private var newestRun: HistoryDetailProjection.RunDetail? { detail.runs.last }
   /// Newest run that actually produced readable artifact text.
@@ -2414,7 +2451,7 @@ private struct HistoryDetailView: View {
     .background(
       ReadingScrollContinuity(
         identity: detail.task.id.rawValue,
-        progress: $readingProgress
+        progress: readingProgressModel
       )
       .frame(width: 0, height: 0)
     )
@@ -2446,6 +2483,10 @@ private struct HistoryDetailView: View {
       completionBanner = nil
       pendingRunPane = nil
       readingPane = defaultReadingPane
+      // 保活集合不跨条目：上一条访问过哪些面板不该让这一条多付隐藏布局。
+      visitedReadingPanes = []
+      // 临时诊断：验证完整体撤除
+      reportMountedReadingPaneCount()
       pendingSourceCitation = nil
       ReadingSelectionRouter.shared.formatter = { selected in
         ReadingCitationFormatter.format(selection: selected, title: title, sourceURL: sourceURL)
@@ -3172,46 +3213,27 @@ private struct HistoryDetailView: View {
       .frame(maxWidth: 168)
       .accessibilityIdentifier("history-reading-pane-picker")
       Spacer(minLength: 0)
-      Label("阅读 \(Int((readingProgress * 100).rounded()))%", systemImage: "book.pages")
-        .font(.caption)
-        .foregroundStyle(.tertiary)
-        .monospacedDigit()
-        .accessibilityIdentifier("history-reading-progress")
+      ReadingProgressBadge(progress: readingProgressModel)
     }
   }
 
   /// 生成中的总结/翻译正文。就是这一页的内容，不再另挂一张预览卡。
+  ///
+  /// 单独成叶子视图并观察 `LiveRunTextModel`：流式拍点（正文纯增长）只
+  /// 重绘这一小块，外层详情的元数据、工具栏、评论区不再每 250ms 跟着
+  /// 重求值——那是生成期间滚动持续卡顿的来源。状态行等低频输入以值
+  /// 传入，切换时由父视图整体刷新带过来。
   private var liveRunReadingBody: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      if appModel.runResultText.isEmpty {
-        HStack(alignment: .firstTextBaseline, spacing: 8) {
-          if appModel.runState.isActive {
-            ProgressView().controlSize(.small)
-          }
-          Text(appModel.runStatusText)
-            .font(.body)
-            .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 24)
-      } else {
-        if appModel.runHasFailure || !appModel.runState.isActive {
-          Text(appModel.runStatusText)
-            .font(.callout)
-            .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
-        }
-        // 外层详情已经是 ScrollView。这里只长正文，不再套一层限高预览框。
-        // 流式阶段不渲染 Markdown：逐 token 重排太贵；完成后换成富文本。
-        Text(appModel.runResultText)
-          .font(readingFont.body())
-          .foregroundStyle(theme.primaryText)
-          .lineSpacing(MarkdownPresentation.bodyLineSpacing)
-          .textSelection(.enabled)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
-    }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .accessibilityIdentifier("model-run-output")
+    LiveRunReadingBody(
+      live: appModel.liveRunText,
+      statusText: appModel.runStatusText,
+      isActive: appModel.runState.isActive,
+      hasFailure: appModel.runHasFailure,
+      dangerColor: theme.danger,
+      font: readingFont.nsFont(),
+      color: NSColor(theme.primaryText),
+      lineSpacing: MarkdownPresentation.bodyLineSpacing
+    )
   }
 
   @ViewBuilder
@@ -3433,18 +3455,89 @@ private struct HistoryDetailView: View {
     }
   }
 
+  /// 阅读面板：首次访问后保活，切换页签只翻透明度，不动几何。
+  ///
+  /// 原来的 `switch effectiveReadingPane` 每切一次页签就把整棵面板视图树
+  /// 销毁重建：7 万字长文的一次冷渲染实测约 220ms（块解析 41ms + 富文本
+  /// 组装 75ms + TextKit 全文排版 103ms），全部发生在主线程。保活的第一版
+  /// 用「高度归零」折叠隐藏面板，真机采样又证明高度 0↔自然高度的切换本身
+  /// 会驱动整个巨型文档的 SwiftUI 布局重算（每切一次约 320ms，2/3 走动画
+  /// 上下文、1/3 走尺寸协商）。
+  ///
+  /// 所以这里改成：面板全部保持自然尺寸（布局零扰动），ZStack 容器高度
+  /// 锁定为「当前活动面板的实测高度」——切换只是换一个已测好的数字加
+  /// 两次透明度翻转。未访问过的面板不挂载（惰性）。各面板高度由
+  /// GeometryReader 上报，只随内容变化，与切换无关。
   @ViewBuilder private var content: some View {
-    switch effectiveReadingPane {
+    ZStack(alignment: .top) {
+      mountedReadingPane(.summary)
+      mountedReadingPane(.translation)
+      mountedReadingPane(.source)
+    }
+    .frame(height: paneHeights[effectiveReadingPane], alignment: .top)
+    .clipped()
+    // 初始面板由 `pane == effectiveReadingPane` 条件挂载（visited 起始为空，
+    // 惰性成立）；这里只负责把后续切换过的面板记入保活集合。
+    .onChange(of: effectiveReadingPane) { _, pane in
+      visitedReadingPanes.insert(pane)
+      // 临时诊断：验证完整体撤除
+      reportMountedReadingPaneCount()
+    }
+    // 临时诊断：验证完整体撤除。初始挂载不走 onChange，这里补一次。
+    .onAppear { reportMountedReadingPaneCount() }
+  }
+
+  /// 临时诊断：验证完整体撤除。
+  /// 实际挂载数 = visitedReadingPanes ∪ {effectiveReadingPane}。
+  private func reportMountedReadingPaneCount() {
+    var mounted = visitedReadingPanes
+    mounted.insert(effectiveReadingPane)
+    ReadingLayoutProbe.setMountedPaneCount(mounted.count)
+  }
+
+  @ViewBuilder
+  private func mountedReadingPane(_ pane: ReadingPane) -> some View {
+    if pane == effectiveReadingPane || visitedReadingPanes.contains(pane) {
+      let isActive = pane == effectiveReadingPane
+      readingPaneBody(pane)
+        // 面板始终取理想高度，无视容器按「当前活动面板」定高的提议：
+        // 否则切到矮面板时隐藏的高面板会被压缩重排，高度反馈环就此成形。
+        .fixedSize(horizontal: false, vertical: true)
+        .background(
+          GeometryReader { proxy in
+            Color.clear.preference(
+              key: ReadingPaneHeightPreferenceKey.self,
+              value: [pane: proxy.size.height]
+            )
+          }
+        )
+        .onPreferenceChange(ReadingPaneHeightPreferenceKey.self) { reported in
+          for (reportedPane, height) in reported {
+            // 高度只在内容变化时更新；同值重复写 @State 也会触发无效重求值。
+            if paneHeights[reportedPane] != height {
+              paneHeights[reportedPane] = height
+            }
+          }
+        }
+        .opacity(isActive ? 1 : 0)
+        .allowsHitTesting(isActive)
+        .accessibilityHidden(!isActive)
+    }
+  }
+
+  @ViewBuilder
+  private func readingPaneBody(_ pane: ReadingPane) -> some View {
+    switch pane {
     case .summary, .translation:
-      if showsLiveRunInReadingPane, liveRunReadingPane == effectiveReadingPane {
+      if showsLiveRunInReadingPane, liveRunReadingPane == pane {
         liveRunReadingBody
-      } else if let artifact = artifact(for: effectiveReadingPane), !artifact.bodyText.isEmpty {
+      } else if let artifact = artifact(for: pane), !artifact.bodyText.isEmpty {
         if artifact.completeness == .partial {
-          Label("\(paneLabel(effectiveReadingPane))不完整", systemImage: "exclamationmark.triangle")
+          Label("\(paneLabel(pane))不完整", systemImage: "exclamationmark.triangle")
             .foregroundStyle(.secondary)
             .padding(.bottom, 6)
         }
-        if effectiveReadingPane == .summary { sourceCitationLinks }
+        if pane == .summary { sourceCitationLinks }
         // 旧版翻译把元数据块也翻了一遍，块卡在译文中段（前面是翻译后的标题），
         // 开头剥离对它无效。显示时按白名单再清一次；只清翻译——总结里出现
         // 同构块的可能性低，且误删的代价是丢正文。
@@ -3453,7 +3546,7 @@ private struct HistoryDetailView: View {
         MarkdownContentView(
           source: ReadingRenderCache.paneBody(
             source: artifact.bodyText,
-            strippingEchoedMetadata: effectiveReadingPane == .translation
+            strippingEchoedMetadata: pane == .translation
           ),
           sourceURL: URL(string: sourceURL),
           localImageURLs: localImageURLs,
@@ -3466,34 +3559,25 @@ private struct HistoryDetailView: View {
           showsPlainText: $showsPlainText,
           showsInlinePlainTextToggle: false,
           navigationModules: navigationModules,
+          anchorScope: anchorScope(for: pane),
           onFollowWikiLink: { title in model.followWikiLink(toTitle: title) }
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("history-reading-result")
       } else {
-        missingPaneNotice(for: effectiveReadingPane)
+        missingPaneNotice(for: pane)
       }
     case .source:
       // 转写进行中时无条件走流式视图：重新转写要立即清掉旧文本并流式
       // 上屏，而不是等落库后整体替换（旧条件只在首次无 snapshot 时流式）。
+      // 叶子视图观察 LiveRunTextModel：partial 拍点只重绘这一块。
       if isDouyinCapture, hasLiveTranscription {
-        VStack(alignment: .leading, spacing: 12) {
-          if liveTranscriptionText.isEmpty {
-            HStack(spacing: 8) {
-              ProgressView().controlSize(.small)
-              Text("正在准备转写内容…").foregroundStyle(.secondary)
-            }
-          } else {
-            Text(liveTranscriptionText)
-              .font(readingFont.body())
-              .foregroundStyle(theme.primaryText)
-              .lineSpacing(MarkdownPresentation.bodyLineSpacing)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .textSelection(.enabled)
-              .accessibilityIdentifier("history-reading-source-live-transcription")
-          }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        LiveTranscriptionReadingBody(
+          live: model.liveTranscriptionText,
+          font: readingFont.nsFont(),
+          color: NSColor(theme.primaryText),
+          lineSpacing: MarkdownPresentation.bodyLineSpacing
+        )
       } else if let snapshot = (isDouyinCapture && !isDouyinImagePostCapture)
         ? latestTranscriptionSnapshot
         : latestSnapshot, !snapshot.bodyText.isEmpty {
@@ -3578,6 +3662,7 @@ private struct HistoryDetailView: View {
             showsPlainText: $showsPlainText,
             showsInlinePlainTextToggle: false,
             navigationModules: navigationModules,
+            anchorScope: anchorScope(for: .source),
             revealText: pendingSourceCitation,
             onFollowWikiLink: { title in
               if let snapshot = latestSnapshot, sourceDraftIsDirty(snapshot) {
@@ -3691,6 +3776,13 @@ private struct HistoryDetailView: View {
     // （例如切到另一条只总结过的记录时，选中的还是翻译）。
     if !availableReadingPanes.contains(readingPane) { return defaultReadingPane }
     return readingPane
+  }
+
+  /// 面板保活后总结/翻译/原文会同时挂载，各自 MarkdownContentView 的
+  /// 章节锚点（block 序号）必须按面板隔离，否则目录跳转会撞到隐藏面板
+  /// 的同名锚点上。模块锚点（tags 等）只在详情页注册一份，不受影响。
+  private func anchorScope(for pane: ReadingPane) -> String {
+    "\(detail.task.id.rawValue)#\(pane.rawValue)"
   }
 
   /// Selecting an empty pane explains itself instead of showing a bare
@@ -4627,6 +4719,97 @@ private struct PointingHandOnHover: ViewModifier {
     content.onHover { inside in
       (inside ? NSCursor.pointingHand : NSCursor.arrow).set()
     }
+  }
+}
+
+/// 生成中总结/翻译的叶子视图：观察 `LiveRunTextModel`，流式增长拍点只
+/// 重绘这里（见 HistoryDetailView.liveRunReadingBody）。
+private struct LiveRunReadingBody: View {
+  @ObservedObject var live: LiveRunTextModel
+  let statusText: String
+  let isActive: Bool
+  let hasFailure: Bool
+  let dangerColor: Color
+  let font: NSFont
+  let color: NSColor
+  let lineSpacing: CGFloat
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      if live.text.isEmpty {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          if isActive {
+            ProgressView().controlSize(.small)
+          }
+          Text(statusText)
+            .font(.body)
+            .foregroundStyle(hasFailure ? dangerColor : Color.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 24)
+      } else {
+        if hasFailure || !isActive {
+          Text(statusText)
+            .font(.callout)
+            .foregroundStyle(hasFailure ? dangerColor : Color.secondary)
+        }
+        // 外层详情已经是 ScrollView。这里只长正文，不再套一层限高预览框。
+        // 流式阶段不渲染 Markdown：逐 token 重排太贵；完成后换成富文本。
+        StreamingReadingTextView(
+          text: live.text,
+          font: font,
+          color: color,
+          lineSpacing: lineSpacing
+        )
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityIdentifier("model-run-output")
+  }
+}
+
+/// 转写进行中的叶子视图：观察 `LiveRunTextModel`，partial 增长拍点只
+/// 重绘这里，其余详情内容不受影响。
+private struct LiveTranscriptionReadingBody: View {
+  @ObservedObject var live: LiveRunTextModel
+  let font: NSFont
+  let color: NSColor
+  let lineSpacing: CGFloat
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 12) {
+      if live.text.isEmpty {
+        HStack(spacing: 8) {
+          ProgressView().controlSize(.small)
+          Text("正在准备转写内容…").foregroundStyle(.secondary)
+        }
+      } else {
+        StreamingReadingTextView(
+          text: live.text,
+          font: font,
+          color: color,
+          lineSpacing: lineSpacing
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("history-reading-source-live-transcription")
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+/// 阅读进度标签的叶子视图：观察 ReadingProgressModel，滚动事件只重绘
+/// 这一小块（见 ReadingProgressModel 的注释）。
+private struct ReadingProgressBadge: View {
+  @ObservedObject var progress: ReadingProgressModel
+
+  var body: some View {
+    Label("阅读 \(progress.percent)%", systemImage: "book.pages")
+      .font(.caption)
+      .foregroundStyle(.tertiary)
+      .monospacedDigit()
+      .accessibilityIdentifier("history-reading-progress")
   }
 }
 

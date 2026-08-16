@@ -38,11 +38,28 @@ enum SummaryCitationMatcher {
   }
 }
 
+/// 阅读进度的独立发布通道。
+///
+/// 详情页只用它显示一个小百分比标签，但进度曾写进详情视图的 @State：
+/// 每个滚动事件（惯性滚动时每秒可达 60-120 次）都会重求值整个详情页，
+/// 评论区几百行跟着 diff——长文滚动因此持续掉帧。标签单独成叶子观察
+/// 这里，滚动就只剩一次小文本重绘。
+@MainActor
+final class ReadingProgressModel: ObservableObject {
+  @Published private(set) var percent: Int = 0
+
+  func setPercent(_ value: Int) {
+    if percent != value {
+      percent = value
+    }
+  }
+}
+
 /// 观察 SwiftUI 外层 NSScrollView：离开时持续保存，重新打开同一条时恢复。
 @MainActor
 struct ReadingScrollContinuity: NSViewRepresentable {
   let identity: String
-  @Binding var progress: Double
+  let progress: ReadingProgressModel
 
   func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -73,6 +90,9 @@ struct ReadingScrollContinuity: NSViewRepresentable {
     private weak var scrollView: NSScrollView?
     private var activeIdentity: String?
     private var isRestoring = false
+    /// 上次持久化的整数百分比：写入按显示粒度量化，一整页滚动最多百来次，
+    /// 而不是每个滚动事件都写一次 UserDefaults。
+    private var lastPersistedPercent: Int?
 
     init(parent: ReadingScrollContinuity) { self.parent = parent }
 
@@ -95,12 +115,15 @@ struct ReadingScrollContinuity: NSViewRepresentable {
       }
       guard activeIdentity != parent.identity else { return }
       activeIdentity = parent.identity
+      lastPersistedPercent = nil
       restore(in: scroll)
     }
 
     private func restore(in scroll: NSScrollView) {
       let stored = ReadingPositionStore.progress(for: parent.identity)
-      parent.progress = stored
+      let percent = Int((stored * 100).rounded())
+      parent.progress.setPercent(percent)
+      lastPersistedPercent = percent
       isRestoring = true
       DispatchQueue.main.async { [weak self, weak scroll] in
         guard let self, let scroll, let document = scroll.documentView else { return }
@@ -117,7 +140,11 @@ struct ReadingScrollContinuity: NSViewRepresentable {
       guard !isRestoring, let scroll = scrollView, let document = scroll.documentView else { return }
       let maximum = max(0, document.bounds.height - scroll.contentView.bounds.height)
       let value = maximum > 0 ? min(max(scroll.contentView.bounds.minY / maximum, 0), 1) : 0
-      parent.progress = value
+      // 标签只显示整数百分比：更新叶子模型（小重绘），持久化按同一粒度量化。
+      let percent = Int((value * 100).rounded())
+      parent.progress.setPercent(percent)
+      guard percent != lastPersistedPercent else { return }
+      lastPersistedPercent = percent
       ReadingPositionStore.save(value, for: parent.identity)
     }
   }

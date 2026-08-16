@@ -1130,7 +1130,18 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertEqual(PlatformIconCatalog.assetName(for: "zhuanlan.zhihu.com"), "zhihu")
     XCTAssertEqual(PlatformIconCatalog.assetName(for: "mp.weixin.qq.com"), "wechat")
     XCTAssertEqual(PlatformIconCatalog.assetName(for: "WWW.X.COM"), "x.com")
+    XCTAssertNil(PlatformIconCatalog.assetName(for: "news.ycombinator.com"))
     XCTAssertNil(PlatformIconCatalog.assetName(for: "example.test"))
+  }
+
+  func testPlatformNavigationCanUseLocalFaviconBeforeInitialFallback() {
+    let source = historyContentViewSource()
+    let grid = appSource("PlatformGridView.swift")
+    let icon = section(in: source, from: "struct PlatformNavigationIcon: View", to: "private struct ManualLinkSheet: View")
+    XCTAssertTrue(grid.contains("faviconURL: item.faviconURL"))
+    XCTAssertTrue(grid.contains(".accessibilityHidden(true)"))
+    XCTAssertTrue(icon.contains("HistoryFaviconDiskImage"))
+    XCTAssertTrue(icon.contains("fallbackBadge"))
   }
 
   func testMonochromePlatformMarksFollowTheCurrentThemeTextColor() {
@@ -1292,11 +1303,18 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(detail.contains("生成预览"), "生成中的字不该再单独挂一块预览卡")
     XCTAssertFalse(detail.contains("streamingResultCard"))
     XCTAssertTrue(detail.contains("liveRunReadingBody"))
-    XCTAssertTrue(detail.contains("showsLiveRunInReadingPane, liveRunReadingPane == effectiveReadingPane"))
+    // 面板保活：content 不再用 switch 销毁重建，各面板按传入的 pane 参数
+    // 渲染并折叠（见 mountedReadingPane）。
+    XCTAssertTrue(detail.contains("liveRunReadingPane == pane"))
+    XCTAssertTrue(detail.contains("mountedReadingPane(.translation)"))
+    XCTAssertTrue(detail.contains("visitedReadingPanes"))
     XCTAssertTrue(detail.contains("pendingRunPane = .summary"))
     XCTAssertTrue(detail.contains("readingPane = .summary"))
     XCTAssertTrue(detail.contains("pendingRunPane = .translation"))
-    XCTAssertTrue(detail.contains("model-run-output"))
+    // 流式正文挪进了文件尾部的 LiveRunReadingBody 叶子视图（观察
+    // LiveRunTextModel，拍点只重绘那一块）；标识符与接线改为钉全文。
+    XCTAssertTrue(source.contains("model-run-output"))
+    XCTAssertTrue(detail.contains("live: appModel.liveRunText"))
   }
 
   /// 行宽只能有一个控制点。
@@ -1320,7 +1338,11 @@ final class HistoryContentViewTests: XCTestCase {
     let localVideo = section(in: source, from: "struct HistoryVideoPlayerCard: View", to: "/// UI state changes")
     let remoteVideo = section(in: source, from: "struct CurrentCaptureMediaPreviewCard: View", to: "/// Top-of-detail video card")
 
-    XCTAssertTrue(detail.contains("history-reading-source-live-transcription"))
+    // 转写流式正文挪进了文件尾部的 LiveTranscriptionReadingBody 叶子视图
+    // （观察 LiveRunTextModel）；标识符改为钉全文，接线与排版仍钉详情区。
+    XCTAssertTrue(source.contains("history-reading-source-live-transcription"))
+    XCTAssertTrue(detail.contains("LiveTranscriptionReadingBody("))
+    XCTAssertTrue(detail.contains("live: model.liveTranscriptionText"))
     // 正文排版已改为跟随用户偏好；实时转写必须读同一个来源，不能写死回 16.5。
     // readingFont.body() 连字体族一起带上，而不是只借字号（那会丢掉宋体等家族设置）。
     XCTAssertTrue(detail.contains("readingFont.body()"))

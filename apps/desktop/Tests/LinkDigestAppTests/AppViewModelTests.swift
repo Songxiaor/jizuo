@@ -1293,6 +1293,45 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(model.runState, .completed(intent: .translate, text: "new"))
   }
 
+  /// 流式纯增长拍点不得触发整个 ObservableObject 的通知（那会让观察
+  /// AppViewModel 的整棵历史窗口每 250ms 重求值，是生成期间滚动卡顿的
+  /// 来源）；状态切换照常通知，且 runState 读取方始终拿到最新正文。
+  func testStreamingGrowthTicksUpdateLeafOnlyAndKeepRunStateFresh() {
+    let model = AppViewModel()
+    let runID = RunID()
+    model.receiveRunState(runID: runID, state: .starting(intent: .summarize))
+
+    var wholeObjectNotifications = 0
+    let notificationCounter = model.objectWillChange.sink { _ in wholeObjectNotifications += 1 }
+
+    model.receiveRunState(runID: runID, state: .thinking(intent: .summarize))
+    XCTAssertEqual(wholeObjectNotifications, 1)
+    XCTAssertTrue(model.liveRunText.text.isEmpty)
+
+    // 第一段正文是 thinking → streaming 的边界切换：整体通知 + 叶子更新。
+    model.receiveRunState(runID: runID, state: .streaming(intent: .summarize, partialText: "第一"))
+    XCTAssertEqual(wholeObjectNotifications, 2)
+    XCTAssertEqual(model.liveRunText.text, "第一")
+    XCTAssertEqual(model.runResultText, "第一")
+
+    // 同 intent 的纯增长拍点：叶子更新，整体不通知，存储值保持最新。
+    model.receiveRunState(runID: runID, state: .streaming(intent: .summarize, partialText: "第一段"))
+    model.receiveRunState(runID: runID, state: .streaming(intent: .summarize, partialText: "第一段落"))
+    XCTAssertEqual(wholeObjectNotifications, 2)
+    XCTAssertEqual(model.liveRunText.text, "第一段落")
+    XCTAssertEqual(model.runResultText, "第一段落")
+
+    // 终态切换回到整体通知，叶子同步全文。计数是 4 而非 3：receiveRunState
+    // 在终态还会清空 @Published 的 activeRunTaskID，那是真正的状态切换，
+    // 本就该通知（SwiftUI 会在同一 runloop 合并这两次 objectWillChange）。
+    model.receiveRunState(runID: runID, state: .completed(intent: .summarize, text: "第一段落。"))
+    XCTAssertEqual(wholeObjectNotifications, 4)
+    XCTAssertEqual(model.liveRunText.text, "第一段落。")
+    XCTAssertEqual(model.runResultText, "第一段落。")
+
+    notificationCounter.cancel()
+  }
+
   func testStorageCopyNeverSuggestsProviderAPIKeyBaseURLOrNetwork() {
     for code in StorageErrorCode.allCases {
       let text = StorageErrorCatalog.presentation(for: code).visibleText.lowercased()

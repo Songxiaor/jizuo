@@ -12,6 +12,12 @@ import {
 import { isDouyinVideoURL } from "../platform";
 import { bilibiliVideoID, bilibiliCanonicalURL, isBilibiliVideoURL } from "./bilibili";
 import { xiaohongshuCanonicalURL, isXiaohongshuNoteURL } from "./xiaohongshu";
+import {
+  COMMUNITY_PROFILES,
+  communityPlatformForURL,
+  type CommunityProfile,
+} from "./community-profiles";
+export { communityPlatformForURL } from "./community-profiles";
 
 export type ExtractedPage = {
   title: string;
@@ -39,7 +45,8 @@ export type CaptureQualityIssueCode =
   | "CAPTURE_APP_SHELL"
   | "CAPTURE_PAGE_LOAD_FAILED"
   | "CAPTURE_LOGIN_WALL"
-  | "CAPTURE_NAVIGATION_ONLY";
+  | "CAPTURE_NAVIGATION_ONLY"
+  | "CAPTURE_SECURITY_CHALLENGE";
 
 /**
  * WeChat captures are article/image records. Embedded <video> elements remain
@@ -74,6 +81,26 @@ export function isZhihuAnswerURL(rawURL: string): boolean {
       && /^\/question\/\d+\/answer\/\d+(?:\/|$)/u.test(url.pathname);
   } catch {
     return false;
+  }
+}
+
+export function isRedditPostURL(rawURL: string): boolean {
+  try {
+    const url = new URL(rawURL);
+    const host = url.hostname.toLowerCase();
+    if (!(host === "reddit.com" || host.endsWith(".reddit.com"))) return false;
+    return /^\/(?:r\/[^/]+\/)?comments\/[a-z0-9]+(?:\/|$)/iu.test(url.pathname);
+  } catch {
+    return false;
+  }
+}
+
+function redditPostID(rawURL: string): string | undefined {
+  try {
+    const url = new URL(rawURL);
+    return url.pathname.match(/^\/(?:r\/[^/]+\/)?comments\/([a-z0-9]+)(?:\/|$)/iu)?.[1]?.toLowerCase();
+  } catch {
+    return undefined;
   }
 }
 
@@ -163,6 +190,14 @@ export function extractCurrentPage(documentLike: Document = document): Extracted
     return extractXStatusPage(documentLike);
   }
 
+  if (isRedditPostURL(documentLike.location.href)) {
+    return extractRedditPostPage(documentLike);
+  }
+
+  if (communityPlatformForURL(documentLike.location.href)) {
+    return extractCommunityPostPage(documentLike);
+  }
+
   if (isDouyinVideoURL(documentLike.location.href)) {
     return extractDouyinPage(documentLike);
   }
@@ -233,6 +268,376 @@ function page(
     ...(captureIssue ? { captureIssue } : {}),
     ...(mediaDescriptor ? { mediaDescriptor } : {}),
   };
+}
+
+const MAX_RENDERED_REDDIT_COMMENTS = 250;
+const MAX_RENDERED_COMMUNITY_COMMENTS = 250;
+
+/**
+ * Community posts are not generic articles: replies/answers are part of the
+ * useful record, while sidebars and recommendation feeds are not. Capture only
+ * the concrete post plus replies already rendered in this tab. No hidden API,
+ * cookie export or automatic whole-page scrolling is performed.
+ */
+export function extractCommunityPostPage(documentLike: Document): ExtractedPage {
+  const platform = communityPlatformForURL(documentLike.location.href);
+  if (!platform) return page(documentLike, "", "rendered_dom", undefined, "unknown", "CAPTURE_PAGE_LOAD_FAILED");
+  const profile = COMMUNITY_PROFILES[platform];
+  const bodyNode = firstNode(documentLike, profile.body);
+  const hackerNewsLink = platform === "hacker-news" ? firstNode(documentLike, profile.title) : null;
+  if ((!bodyNode || (bodyNode.textContent?.trim().length ?? 0) < 2) && !hackerNewsLink) {
+    const root = documentLike.body ?? documentLike.documentElement;
+    const issue = captureQualityIssue(documentLike, root) ?? "CAPTURE_PAGE_LOAD_FAILED";
+    return page(
+      documentLike,
+      `${profile.label} 正文尚未加载。请确认已打开具体帖子并等待内容显示后重试。`,
+      "rendered_dom",
+      undefined,
+      "unknown",
+      issue,
+    );
+  }
+
+  const title = firstText(documentLike, profile.title) || resolveTitle(documentLike);
+  let bodyMarkdown = "";
+  if (bodyNode) {
+    const bodyClone = bodyNode.cloneNode(true) as Element;
+    scrubNoise(bodyClone);
+    bodyMarkdown = rebaseHeadingLevels(
+      stripBoilerplateLines(htmlElementToMarkdown(bodyClone, documentLike.location.href)),
+    ).trim();
+  }
+
+  // Link-only Hacker News submissions legitimately have no `.toptext`.
+  if (!bodyMarkdown && platform === "hacker-news") {
+    const link = firstNode(documentLike, profile.title)?.getAttribute("href") ?? "";
+    const absolute = absoluteUrl(link, documentLike.location.href);
+    if (absolute) bodyMarkdown = `[打开原始链接](${absolute})`;
+  }
+  if (!bodyMarkdown) {
+    return page(
+      documentLike,
+      `${profile.label} 正文为空或尚未完成渲染。请等待页面加载后重试。`,
+      "rendered_dom",
+      undefined,
+      "unknown",
+      "CAPTURE_PAGE_LOAD_FAILED",
+    );
+  }
+
+  const comments = extractRenderedCommunityComments(documentLike, profile, bodyNode);
+  const frontmatter = buildCaptureFrontmatter({
+    author: firstText(documentLike, profile.author) || undefined,
+    published: firstText(documentLike, profile.published) || undefined,
+  });
+  const text = `${frontmatter}# ${title}\n\n${bodyMarkdown}${comments ? `\n\n${comments}` : ""}`.trim();
+  const faviconURL = resolveDocumentFaviconURL(documentLike);
+  return {
+    title,
+    url: canonicalCommunityURL(documentLike.location.href),
+    ...(faviconURL ? { faviconURL } : {}),
+    text,
+    characterCount: [...text].length,
+    method: "rendered_dom",
+    completeness: "full_article",
+  };
+}
+
+function firstNode(root: ParentNode, selectors: readonly string[]): Element | null {
+  for (const selector of selectors) {
+    const node = root.querySelector(selector);
+    if (node) return node;
+  }
+  return null;
+}
+
+function firstText(root: ParentNode, selectors: readonly string[]): string {
+  return firstNode(root, selectors)?.textContent?.replace(/\s+/gu, " ").trim() ?? "";
+}
+
+function allNodes(root: ParentNode, selectors: readonly string[]): Element[] {
+  const result: Element[] = [];
+  const seen = new Set<Element>();
+  for (const selector of selectors) {
+    for (const node of Array.from(root.querySelectorAll(selector))) {
+      if (seen.has(node)) continue;
+      seen.add(node);
+      result.push(node);
+    }
+  }
+  return result;
+}
+
+function extractRenderedCommunityComments(
+  documentLike: Document,
+  profile: CommunityProfile,
+  bodyNode: Element | null,
+): string {
+  const candidates = allNodes(documentLike, profile.comments);
+  const accepted: Array<{ author: string; published: string; body: string }> = [];
+  const seen = new Set<string>();
+
+  for (const comment of candidates) {
+    if (accepted.length >= MAX_RENDERED_COMMUNITY_COMMENTS) break;
+    const commentBody = firstNode(comment, profile.commentBody);
+    if (!commentBody || (bodyNode && (commentBody === bodyNode || commentBody.contains(bodyNode)))) continue;
+    const clone = commentBody.cloneNode(true) as Element;
+    scrubNoise(clone);
+    const markdown = stripBoilerplateLines(htmlElementToMarkdown(clone, documentLike.location.href)).trim();
+    if (!markdown || seen.has(markdown)) continue;
+    seen.add(markdown);
+    accepted.push({
+      author: firstText(comment, profile.commentAuthor) || "未知用户",
+      published: firstText(comment, profile.commentPublished),
+      body: markdown,
+    });
+  }
+
+  if (!accepted.length) return "";
+  const capped = candidates.length > MAX_RENDERED_COMMUNITY_COMMENTS
+    ? `；为保证单次抓取稳定，仅保留前 ${MAX_RENDERED_COMMUNITY_COMMENTS} 条`
+    : "";
+  const lines = [`## 评论与回复（当前页面已加载 ${accepted.length}${capped}）`, ""];
+  for (const comment of accepted) {
+    lines.push(`- **${comment.author}**${comment.published ? ` · ${comment.published}` : ""}`);
+    for (const line of comment.body.split("\n")) lines.push(`  ${line}`.trimEnd());
+  }
+  return lines.join("\n").trim();
+}
+
+function canonicalCommunityURL(rawURL: string): string {
+  try {
+    const url = new URL(rawURL);
+    url.hash = "";
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(?:utm_.+|ref|source)$/iu.test(key)) url.searchParams.delete(key);
+    }
+    return url.href;
+  } catch {
+    return rawURL;
+  }
+}
+
+/**
+ * Reddit's comments page contains many unrelated `<article>` cards. In the
+ * current Shreddit UI the first one may be a right-rail recommendation or an
+ * embedded promoted card, so the generic article picker can save that card
+ * instead of the post. A Reddit capture must stay inside the current
+ * `shreddit-post`, then append only comments already rendered in this tab.
+ */
+export function extractRedditPostPage(documentLike: Document): ExtractedPage {
+  const baseHref = documentLike.location.href;
+  const postID = redditPostID(baseHref);
+  const post = postID
+    ? documentLike.querySelector(`shreddit-post[id='t3_${postID}']`)
+      ?? documentLike.querySelector(`shreddit-post[permalink*='/comments/${postID}/']`)
+    : documentLike.querySelector("shreddit-post[id^='t3_']")
+      ?? documentLike.querySelector("shreddit-post[permalink*='/comments/']");
+
+  if (!post) {
+    const root = documentLike.body ?? documentLike.documentElement;
+    const issue = captureQualityIssue(documentLike, root) ?? "CAPTURE_PAGE_LOAD_FAILED";
+    return page(
+      documentLike,
+      "Reddit 帖子正文尚未加载。请确认页面已打开到具体帖子并完成加载后重试。",
+      "rendered_dom",
+      undefined,
+      "unknown",
+      issue,
+    );
+  }
+
+  const body =
+    post.querySelector("[slot='text-body'] [id$='-post-rtjson-content']")
+    ?? post.querySelector("[slot='text-body']");
+  const canonicalURL = redditCanonicalURL(post.getAttribute("permalink"), baseHref);
+  const title = post.getAttribute("post-title")?.trim() || resolveTitle(documentLike);
+  let bodyMarkdown = "";
+  if (body && (body.textContent?.trim().length ?? 0) >= 2) {
+    const bodyClone = body.cloneNode(true) as Element;
+    bodyClone.querySelectorAll("shreddit-comment").forEach((node) => node.remove());
+    scrubNoise(bodyClone);
+    bodyMarkdown = rebaseHeadingLevels(
+      stripBoilerplateLines(htmlElementToMarkdown(bodyClone, canonicalURL)),
+    );
+  } else {
+    bodyMarkdown = redditMediaPostMarkdown(post, canonicalURL, title);
+  }
+  if (!bodyMarkdown.trim()) {
+    return page(
+      documentLike,
+      "Reddit 帖子正文为空或尚未完成渲染。请等待页面加载后重试。",
+      "rendered_dom",
+      undefined,
+      "unknown",
+      "CAPTURE_PAGE_LOAD_FAILED",
+    );
+  }
+
+  const metadata = {
+    author: cleanRedditAttribute(post.getAttribute("author")),
+    published: normalizeRedditTimestamp(post.getAttribute("created-timestamp")),
+    comments: redditNumericAttribute(post.getAttribute("comment-count")),
+  };
+  const frontmatter = buildCaptureFrontmatter(metadata);
+  const subreddit = cleanRedditAttribute(post.getAttribute("subreddit-prefixed-name"));
+  const score = redditNumericAttribute(post.getAttribute("score"));
+  const context = [subreddit, score ? `Reddit score ${score}` : undefined].filter(Boolean).join(" · ");
+  if (context) bodyMarkdown = `> ${context}\n\n${bodyMarkdown}`;
+  const comments = extractRenderedRedditComments(
+    documentLike,
+    canonicalURL,
+    metadata.comments ? Number(metadata.comments) : undefined,
+  );
+  const text = `${frontmatter}${bodyMarkdown}${comments.markdown ? `\n\n${comments.markdown}` : ""}`.trim();
+  const faviconURL = resolveDocumentFaviconURL(documentLike);
+  const expectedComments = metadata.comments ? Number(metadata.comments) : undefined;
+  const commentsArePartial = expectedComments !== undefined
+    && expectedComments > comments.capturedCount;
+  return {
+    title,
+    url: canonicalURL,
+    ...(faviconURL ? { faviconURL } : {}),
+    text,
+    characterCount: [...text].length,
+    method: "rendered_dom",
+    completeness: commentsArePartial ? "visible_only" : "full_article",
+  };
+}
+
+function redditMediaPostMarkdown(post: Element, baseHref: string, title: string): string {
+  const postType = cleanRedditAttribute(post.getAttribute("post-type"))?.toLowerCase();
+  const contentHref = absoluteUrl(post.getAttribute("content-href") ?? "", baseHref);
+  const safeTitle = title.replace(/[[\]]/gu, "").trim() || "Reddit media";
+
+  if (postType === "image" && contentHref) {
+    return `![${safeTitle}](${contentHref})`;
+  }
+
+  const media = post.querySelector("[slot='post-media-container']");
+  const image = media
+    ? Array.from(media.querySelectorAll("img")).find((candidate) => {
+      const className = candidate.getAttribute("class") ?? "";
+      const source = candidate.getAttribute("src") ?? candidate.getAttribute("data-src") ?? "";
+      return !className.includes("post-background-image-filter")
+        && /(?:^|\.)i\.redd\.it$|(?:^|\.)preview\.redd\.it$/iu.test(urlHost(source, baseHref));
+    })
+    : undefined;
+  const imageURL = image ? resolveResponsiveImageURL(image, baseHref) : null;
+  if (image && imageURL) {
+    const alt = (image.getAttribute("alt")?.trim() || safeTitle).replace(/[[\]]/gu, "");
+    return `![${alt}](${imageURL})`;
+  }
+
+  if (contentHref) {
+    const label = postType === "video" ? "打开 Reddit 视频" : "打开原始链接";
+    return `[${label}](${contentHref})`;
+  }
+  return "";
+}
+
+function urlHost(raw: string, baseHref: string): string {
+  try {
+    return new URL(raw, baseHref).hostname.toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function redditCanonicalURL(permalink: string | null, fallback: string): string {
+  const candidate = permalink?.trim();
+  if (candidate) {
+    try {
+      const url = new URL(candidate, fallback);
+      if (url.protocol === "https:" && /(^|\.)reddit\.com$/iu.test(url.hostname)) {
+        url.search = "";
+        url.hash = "";
+        return url.href;
+      }
+    } catch {
+      // Fall through to the current page URL, normalized below.
+    }
+  }
+  try {
+    const url = new URL(fallback);
+    url.search = "";
+    url.hash = "";
+    return url.href;
+  } catch {
+    return fallback;
+  }
+}
+
+function cleanRedditAttribute(raw: string | null): string | undefined {
+  const value = raw?.replace(/\s+/gu, " ").trim();
+  return value || undefined;
+}
+
+function redditNumericAttribute(raw: string | null): string | undefined {
+  const value = raw?.replace(/[,\s]/gu, "").trim();
+  return value && /^-?\d+(?:\.\d+)?$/u.test(value) ? value : undefined;
+}
+
+function normalizeRedditTimestamp(raw: string | null): string | undefined {
+  const value = cleanRedditAttribute(raw);
+  if (!value) return undefined;
+  return value.replace(/([+-]\d{2})(\d{2})$/u, "$1:$2");
+}
+
+function extractRenderedRedditComments(
+  documentLike: Document,
+  baseHref: string,
+  expectedCount: number | undefined,
+): { markdown: string; capturedCount: number } {
+  const rendered = Array.from(documentLike.querySelectorAll("shreddit-comment[thingid]"))
+    .filter((comment) => comment.getAttribute("aria-hidden") !== "true");
+  const accepted: Array<{ depth: number; line: string; body: string }> = [];
+
+  for (const comment of rendered.slice(0, MAX_RENDERED_REDDIT_COMMENTS)) {
+    const body = comment.querySelector("[slot='comment']");
+    if (!body || body.closest("shreddit-comment") !== comment) continue;
+    const clone = body.cloneNode(true) as Element;
+    clone.querySelectorAll("shreddit-comment").forEach((node) => node.remove());
+    const markdown = htmlElementToMarkdown(clone, baseHref).trim();
+    if (!markdown) continue;
+
+    const author = cleanRedditAttribute(comment.getAttribute("author")) ?? "[deleted]";
+    const depthRaw = Number(comment.getAttribute("depth") ?? "0");
+    const depth = Number.isFinite(depthRaw) && depthRaw > 0 ? Math.floor(depthRaw) : 0;
+    const score = redditNumericAttribute(comment.getAttribute("score"));
+    const published = normalizeRedditTimestamp(comment.getAttribute("created"));
+    const permalink = absoluteUrl(comment.getAttribute("permalink") ?? "", baseHref);
+    const details = [
+      score ? `score ${score}` : undefined,
+      published,
+      permalink ? `[原评论](${permalink})` : undefined,
+    ].filter(Boolean).join(" · ");
+    accepted.push({
+      depth,
+      line: `**u/${author}**${details ? ` · ${details}` : ""}`,
+      body: markdown,
+    });
+  }
+
+  if (!accepted.length) return { markdown: "", capturedCount: 0 };
+  const capturedCount = accepted.length;
+  const availableCount = rendered.length;
+  const coverage = expectedCount && expectedCount > capturedCount
+    ? `当前页面已加载 ${capturedCount} / 页面显示 ${expectedCount}`
+    : `当前页面已加载 ${capturedCount}`;
+  const capped = availableCount > MAX_RENDERED_REDDIT_COMMENTS
+    ? `；为保证单次抓取稳定，仅保留前 ${MAX_RENDERED_REDDIT_COMMENTS} 条`
+    : "";
+  const lines = [`## 评论（${coverage}${capped}）`, ""];
+  for (const comment of accepted) {
+    const indent = "  ".repeat(Math.min(comment.depth, 6));
+    const depthLabel = comment.depth > 6 ? ` · 回复层级 ${comment.depth}` : "";
+    lines.push(`${indent}- ${comment.line}${depthLabel}`);
+    for (const line of comment.body.split("\n")) {
+      lines.push(`${indent}  ${line}`.trimEnd());
+    }
+  }
+  return { markdown: lines.join("\n").trim(), capturedCount };
 }
 
 /**
@@ -1283,11 +1688,22 @@ export function captureQualityIssue(
   }
   const host = url.hostname.toLowerCase();
   const rawText = (root.textContent ?? "").replace(/\s+/gu, " ").trim();
+  const pageTitle = (documentLike.title ?? "").replace(/\s+/gu, " ").trim();
 
   // Gmail is an authenticated application shell, not a document. Full-page
   // capture previously stored the inbox chrome (and potentially private mail)
   // as a 51k-character "full article". Explicit selection remains available.
   if (host === "mail.google.com") return "CAPTURE_APP_SHELL";
+
+  // Community sites commonly return a Cloudflare/Akamai/EdgeOne challenge or
+  // throttle notice with HTTP 200. Status alone is not proof that a post was
+  // rendered, and the generic picker must never archive that shell as content.
+  const challengeTitle = /^(?:Just a moment(?:\.\.\.)?|Access Denied|安全验证|请求(?:已)?被拦截|提示信息)$/iu.test(pageTitle);
+  const challengeBody = /(?:Enable JavaScript and cookies to continue|Sorry, you have been blocked|请求已被(?:站点的)?安全策略拦截|The requested URL was rejected|Reference\s*#\d+|Checking your browser before accessing)/iu.test(rawText);
+  const knownThrottle = host === "hostloc.com" && /休息下[，,]?\s*一会见/iu.test(rawText);
+  if ((challengeTitle && rawText.length <= 5_000 && challengeBody) || knownThrottle) {
+    return "CAPTURE_SECURITY_CHALLENGE";
+  }
 
   // GitHub blob viewers can render a sizeable navigation/file shell while the
   // actual file failed to load. Length alone is therefore not evidence of a

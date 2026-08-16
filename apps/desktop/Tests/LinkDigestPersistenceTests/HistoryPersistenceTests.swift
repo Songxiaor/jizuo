@@ -542,6 +542,35 @@ final class HistoryTagPersistenceTests: XCTestCase {
     }
   }
 
+  func testNavigationCountsAndFilteringAggregatePlatformAliases() throws {
+    try withRepository { repository, _ in
+      let x = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "alias-x", key: "alias-x", url: "https://x.com/user/status/1", body: "x body"),
+        receivedAtMilliseconds: 1
+      ))
+      let twitter = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "alias-twitter", key: "alias-twitter", url: "https://mobile.twitter.com/user/status/2", body: "twitter body"),
+        receivedAtMilliseconds: 2
+      ))
+      _ = try repository.acceptCapture(.init(
+        envelope: capture(requestID: "alias-substack", key: "alias-substack", url: "https://publication.substack.com/p/test", body: "substack body"),
+        receivedAtMilliseconds: 3
+      ))
+
+      XCTAssertEqual(try repository.navigationCounts().platforms, [
+        .init(host: "x.com", count: 2),
+        .init(host: "substack.com", count: 1),
+      ])
+
+      let rows = try repository.historyPage(
+        limit: 20,
+        after: nil,
+        filter: .init(hosts: ["twitter.com"])
+      ).rows
+      XCTAssertEqual(Set(rows.map(\.taskID)), Set([x.taskID, twitter.taskID]))
+    }
+  }
+
   func testManualRemovalAndExportProjectionIncludeTags() throws {
     try withRepository { repository, _ in
       let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))

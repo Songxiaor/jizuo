@@ -1238,6 +1238,24 @@ final class HistoryViewModelTests: XCTestCase {
     await waitUntil { fixture.model.transcriptionState == .cancelled }
   }
 
+  /// 转写 partial 拍点写进叶子模型（liveTranscriptionText），存储属性
+  /// 保持最新；取消等清空路径要把叶子一并清掉，不留残影。
+  func testTranscriptionPartialsSyncLeafModelAndCancellationClearsIt() async throws {
+    let transcriber = ScriptedVideoTranscriber(modelState: .ready, scripts: [.suspended])
+    let fixture = try makeTranscriptionFixture(transcriber: transcriber)
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detail?.task.id == fixture.taskID && fixture.model.canTranscribeVideo }
+
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionText == "A partial" }
+    XCTAssertEqual(fixture.model.liveTranscriptionText.text, "A partial")
+
+    fixture.model.cancelTranscription()
+    await waitUntil { fixture.model.transcriptionState == .cancelled }
+    XCTAssertTrue(fixture.model.transcriptionText.isEmpty)
+    XCTAssertTrue(fixture.model.liveTranscriptionText.text.isEmpty)
+  }
+
   func testRepeatedConfigureWithSameHistoryDoesNotCancelOrClearTranscription() async throws {
     let transcriber = ScriptedVideoTranscriber(modelState: .ready, scripts: [.suspended])
     let fixture = try makeTranscriptionFixture(transcriber: transcriber)
@@ -1708,6 +1726,29 @@ final class HistoryViewModelTests: XCTestCase {
     fetcher.releaseAll()
     await waitUntil { rows.allSatisfy { model.faviconImageURL(for: $0) != nil } }
     XCTAssertLessThanOrEqual(fetcher.peakConcurrency, 6)
+  }
+
+  func testBundledPlatformsSkipNetworkWhileCommunityPlatformFeedsSidebarFavicon() async {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-platform-favicon.\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let bundled = faviconRow(host: "github.com", updatedAt: 2)
+    let community = faviconRow(host: "news.ycombinator.com", updatedAt: 1)
+    let fetcher = DelayedFaviconResourceFetcher(blockedHosts: [])
+    let repository = HistoryScreenRepository(
+      firstPage: .init(rows: [bundled, community], nextCursor: nil),
+      details: [bundled.taskID: makeDetail(for: bundled), community.taskID: makeDetail(for: community)]
+    )
+    let model = HistoryViewModel(
+      faviconCache: WebsiteFaviconCache(applicationSupportRoot: root),
+      faviconResources: fetcher
+    )
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+
+    await waitUntil { model.faviconImageURL(for: community) != nil }
+    XCTAssertNil(model.faviconImageURL(for: bundled))
+    XCTAssertNotNil(model.platformFavicon(forHost: "news.ycombinator.com"))
+    XCTAssertFalse(fetcher.requestedHosts.contains("github.com"))
   }
 
   func testLateFaviconFromPreviousGenerationCannotPolluteReplacementRows() async {
@@ -2846,16 +2887,19 @@ private final class DelayedFaviconResourceFetcher: SafeResourceFetching, @unchec
   private var peak = 0
   private var blockedEntries = 0
   private var waiters: [CheckedContinuation<Void, Never>] = []
+  private var hosts: [String] = []
 
   init(blockedHosts: Set<String>) { self.blockedHosts = blockedHosts }
 
   var peakConcurrency: Int { lock.withLock { peak } }
   var blockedEntryCount: Int { lock.withLock { blockedEntries } }
+  var requestedHosts: [String] { lock.withLock { hosts } }
 
   func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
     let shouldBlock = lock.withLock { () -> Bool in
       active += 1
       peak = max(peak, active)
+      if let host = request.url.host { hosts.append(host) }
       return blockedHosts.contains(request.url.host ?? "")
     }
     defer { lock.withLock { active -= 1 } }

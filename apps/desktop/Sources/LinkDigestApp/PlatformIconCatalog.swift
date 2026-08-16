@@ -15,46 +15,17 @@ enum PlatformIconCatalog {
   /// Raster pixel size (2× Retina). Larger than display to keep edges crisp.
   static let rasterPixelSize: CGFloat = 32
 
-  /// Strips the subdomain noise that would otherwise force one table row per
-  /// spelling. Adding a platform must stay a one-line change to `assetTable`.
+  /// Strips subdomain noise and resolves known aliases to the same stable key.
   static func normalizedHost(_ host: String) -> String {
-    HistoryHostNormalizer.normalized(host)
+    HistoryPlatformRegistry.canonicalHost(for: host)
   }
 
   /// Registered domain → bundled asset. Every entry must have a matching file
   /// in `apps/desktop/Assets/PlatformIcons` **and** an entry in the frozen
   /// `PLATFORM_ICON_FILES` tuple of the release/local-test packaging scripts,
   /// or release verification rejects the candidate for icon-set drift.
-  private static let assetTable: [String: String] = [
-    "x.com": "x.com", "twitter.com": "x.com",
-    "weixin.qq.com": "wechat", "mp.weixin.qq.com": "wechat",
-    "github.com": "github",
-    "zhihu.com": "zhihu", "zhuanlan.zhihu.com": "zhihu",
-    "bilibili.com": "bilibili", "b23.tv": "bilibili",
-    "youtube.com": "youtube", "youtu.be": "youtube",
-    "reddit.com": "reddit",
-    "medium.com": "medium",
-    // Sources that previously fell through to the network favicon path and
-    // therefore never resolved an icon at all.
-    "douyin.com": "douyin", "iesdouyin.com": "douyin",
-    "xiaohongshu.com": "xiaohongshu", "xhslink.com": "xiaohongshu",
-    "weibo.com": "weibo", "weibo.cn": "weibo",
-    "toutiao.com": "toutiao",
-    "douban.com": "douban",
-    "juejin.cn": "juejin",
-  ]
-
   static func assetName(for host: String) -> String? {
-    let value = normalizedHost(host)
-    if let direct = assetTable[value] { return direct }
-    // `zhuanlan.zhihu.com` style subdomains resolve through their parent.
-    var remainder = Substring(value)
-    while let dot = remainder.firstIndex(of: ".") {
-      remainder = remainder[remainder.index(after: dot)...]
-      guard remainder.contains(".") else { break }
-      if let parent = assetTable[String(remainder)] { return parent }
-    }
-    return nil
+    HistoryPlatformRegistry.bundledAssetName(forHost: host)
   }
 
   /// These brand marks are intentionally monochrome. Their bundled SVGs use a

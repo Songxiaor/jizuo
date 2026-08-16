@@ -886,6 +886,23 @@ private struct ParkedRemotePlayback {
   let usedLegacyPath: Bool
 }
 
+/// 在线转写流式预览的叶子视图：partial 拍点只重绘这一小块
+/// （见 HistoryViewModel.setOnlineTranscriptionPreview）。
+private struct OnlineTranscriptionPreviewText: View {
+  @ObservedObject var live: LiveRunTextModel
+
+  var body: some View {
+    ScrollView {
+      Text(live.text)
+        .font(.callout)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .frame(maxHeight: 120)
+    .accessibilityIdentifier("remote-transcribe-preview")
+  }
+}
+
 /// 拆出本文件后不再是 file-private —— 使用方 HistoryContentView 已不同文件。
 struct CurrentCaptureMediaPreviewCard: View {
   // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
@@ -1262,15 +1279,10 @@ struct CurrentCaptureMediaPreviewCard: View {
           Text(message).foregroundStyle(appTheme.danger)
         }
         // 流式通道边转写边出字：先看到文字，等待感就和总耗时脱钩了。
+        // 预览文本单独成叶子视图观察 LiveRunTextModel：partial 拍点只重绘
+        // 这一小块，视频卡与详情其余部分不受影响。
         if let preview, !preview.isEmpty {
-          ScrollView {
-            Text(preview)
-              .font(.callout)
-              .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-          .frame(maxHeight: 120)
-          .accessibilityIdentifier("remote-transcribe-preview")
+          OnlineTranscriptionPreviewText(live: model.liveOnlineTranscriptionPreview)
         }
         if let timings {
           Text(timings)

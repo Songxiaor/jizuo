@@ -34,6 +34,7 @@ describe("popup error presentation", () => {
     });
     expect(popupPreviewFailure("CAPTURE_PAGE_LOAD_FAILED")).toMatchObject({ canReload: true });
     expect(popupPreviewFailure("CAPTURE_LOGIN_WALL").message).toContain("登录页");
+    expect(popupPreviewFailure("CAPTURE_SECURITY_CHALLENGE").message).toContain("安全验证");
     expect(popupPreviewFailure("CAPTURE_NAVIGATION_ONLY").message).toContain("导航内容");
     expect(popupPreviewFailure("CAPTURE_CONTENT_EMPTY").canReload).toBe(true);
     expect(popupPreviewFailure("sentinel-private-page-text").message)

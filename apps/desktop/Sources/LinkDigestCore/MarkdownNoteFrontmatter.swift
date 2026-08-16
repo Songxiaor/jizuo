@@ -55,7 +55,15 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
 
   /// Parses a leading `---` … `---` block. Invalid/incomplete frontmatter returns the original text as body.
   public static func parse(_ markdown: String) -> MarkdownNoteFrontmatter {
-    let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
+    // 详情页会反复读取没有属性头的正文，先避开整篇 Unicode 归一化，
+    // 才不会让这个冷门格式的兼容成本落在每一次正文渲染上。
+    guard markdown.hasPrefix("---") else {
+      return .init(body: markdown)
+    }
+    // CRLF 只存在于少数旧记录；没有 CR 时复用原串，避免为解析分隔符复制整篇正文。
+    let normalized = markdown.utf8.contains(13)
+      ? markdown.replacingOccurrences(of: "\r\n", with: "\n")
+      : markdown
     guard normalized.hasPrefix("---\n") || normalized == "---" else {
       return .init(body: markdown)
     }

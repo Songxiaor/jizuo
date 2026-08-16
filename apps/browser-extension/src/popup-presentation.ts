@@ -72,6 +72,12 @@ export function popupPreviewFailure(rawMessage: string): PopupPreviewFailure {
       canReload: false,
     };
   }
+  if (rawMessage.includes("CAPTURE_SECURITY_CHALLENGE")) {
+    return {
+      message: "当前只读取到了网站的安全验证或限流页面。请在浏览器中完成验证，确认具体内容已显示后再读取。",
+      canReload: true,
+    };
+  }
   if (rawMessage.includes("CAPTURE_NAVIGATION_ONLY")) {
     return {
       message: "当前只读取到了导航内容。请打开具体文章，或选中需要保存的文字。",
