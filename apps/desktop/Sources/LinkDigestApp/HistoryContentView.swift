@@ -956,6 +956,8 @@ struct HistoryContentView: View {
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .accessibilityIdentifier("history-multi-selection-placeholder")
+    } else if let detail = model.detail {
+      articleDetail(detail: detail)
     } else {
       switch model.detailState {
     case .loading:
@@ -964,29 +966,36 @@ struct HistoryContentView: View {
       VStack(spacing: 12) { Image(systemName: "exclamationmark.triangle").font(.title2); Text("无法载入这条记录").font(.headline); Button("重试", action: model.retryDetail) }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     case .loaded:
-      if let detail = model.detail {
-        VStack(spacing: 0) {
-          if !isCaptureOnboardingDismissed && !firstCaptureIsComplete {
-            firstCaptureNextStepBanner(detail: detail)
-          }
-          HistoryDetailView(
-            detail: detail,
-            model: model,
-            appModel: appModel,
-            providerSettings: providerSettings,
-            appearanceTheme: appearanceTheme,
-            localImageURLs: model.localImageURLs,
-            localMediaFileURL: model.localMediaFileURL,
-            openSettings: { openSettings() },
-            openRecapture: { manualLink.openForRecapture($0) },
-            remotePreviewPlayback: remotePreviewPlayback,
-            sessionMediaPlayback: sessionMediaPlayback
-          )
-        }
-      }
+      // 成功路径总是先写 detail 再翻 .loaded，走不到这里；只为 switch 穷尽。
+      EmptyView()
     case .idle:
       emptyDetail
       }
+    }
+  }
+
+  /// 有正文时的详情列内容。载入下一条时这里仍然走同一个分支，SwiftUI 就能
+  /// 原地更新这棵详情树；中间插一屏转圈会让它先整棵拆掉、再整棵重建，
+  /// 每次切换白白多跑一轮 AppKit 布局递归——那正是切换文章要卡半秒的地方。
+  private func articleDetail(detail: HistoryDetailProjection) -> some View {
+    VStack(spacing: 0) {
+      if !isCaptureOnboardingDismissed && !firstCaptureIsComplete {
+        firstCaptureNextStepBanner(detail: detail)
+      }
+      HistoryDetailView(
+        detail: detail,
+        model: model,
+        appModel: appModel,
+        providerSettings: providerSettings,
+        appearanceTheme: appearanceTheme,
+        localImageURLs: model.localImageURLs,
+        localMediaFileURL: model.localMediaFileURL,
+        openSettings: { openSettings() },
+        openRecapture: { manualLink.openForRecapture($0) },
+        remotePreviewPlayback: remotePreviewPlayback,
+        sessionMediaPlayback: sessionMediaPlayback
+      )
+      .equatable()
     }
   }
 
@@ -1803,7 +1812,21 @@ enum HistorySourceLinkPresentation {
   }
 }
 
-private struct HistoryDetailView: View {
+private struct HistoryDetailView: View, Equatable {
+  /// 父视图重求值一次，就会新造一个 `HistoryDetailView` 结构体。里面带着两个闭包，
+  /// SwiftUI 因此永远判定「变了」，于是整棵详情树连同 `MarkdownContentView` 重画一遍。
+  /// 这里只比较真正决定画面的值输入，闭包按「行为不随实例变化」处理，不参与比较。
+  ///
+  /// 五个 @ObservedObject 不进比较：它们是窗口级单例，实例从不更换，各自的
+  /// 订阅仍会在其内容变化时直接触发本视图 body，Equatable 挡不掉也不该挡。
+  /// （nonisolated == 也只允许读 Sendable 的存储属性，这四个值输入正好都是。）
+  nonisolated static func == (lhs: HistoryDetailView, rhs: HistoryDetailView) -> Bool {
+    lhs.detail == rhs.detail
+      && lhs.appearanceTheme == rhs.appearanceTheme
+      && lhs.localImageURLs == rhs.localImageURLs
+      && lhs.localMediaFileURL == rhs.localMediaFileURL
+  }
+
   let detail: HistoryDetailProjection
   @ObservedObject var model: HistoryViewModel
   @ObservedObject var appModel: AppViewModel

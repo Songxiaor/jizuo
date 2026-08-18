@@ -744,6 +744,11 @@ enum BrowserReceiverState: Sendable, Equatable {
   /// 停止/终态、intent 切换、清空）照常通知整树。`runState` 本身每个拍点
   /// 都会更新，读取方语义与 @Published 时代一致。
   private func setRunState(_ state: RunState) {
+    // 同值拍点直接丢弃。推理模型的思考阶段每收到一个 delta 就报一次
+    // `.thinking(intent:)`，而这个状态不带任何随 delta 变化的负载；照发
+    // objectWillChange 等于让整棵历史窗口按 delta 速率重求值。实测一次
+    // 翻译的思考阶段主线程 100% CPU、连续 23 秒几乎不出帧。
+    guard state != runState else { return }
     if case let .streaming(intent, partialText) = state,
        case .streaming(let previousIntent, _) = runState,
        previousIntent == intent,

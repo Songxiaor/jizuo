@@ -27,31 +27,23 @@ enum ReadingRenderCache {
 
   // MARK: - 块解析
 
-  private static var blockEntries: [String: [MarkdownPresentation.Block]] = [:]
-  private static var blockOrder: [String] = []
+  private static var blockStore = LRUStore<String, [MarkdownPresentation.Block]>()
 
   static func blocks(from source: String) -> [MarkdownPresentation.Block] {
-    if let cached = lookup(source, in: blockEntries, order: &blockOrder) { return cached }
+    if let cached = blockStore.lookup(source) { return cached }
     let parsed = MarkdownPresentation.blocks(from: source)
-    remember(parsed, forKey: source, in: &blockEntries, order: &blockOrder)
+    blockStore.remember(parsed, forKey: source, capacity: capacity)
     return parsed
   }
 
   // MARK: - 评论行内 Markdown
 
-  private static var inlineEntries: [String: AttributedString] = [:]
-  private static var inlineOrder: [String] = []
+  private static var inlineStore = LRUStore<String, AttributedString>()
 
   static func inlineAttributed(from source: String) -> AttributedString {
-    if let cached = lookup(source, in: inlineEntries, order: &inlineOrder) { return cached }
+    if let cached = inlineStore.lookup(source) { return cached }
     let parsed = MarkdownPresentation.inlineAttributed(source)
-    remember(
-      parsed,
-      forKey: source,
-      in: &inlineEntries,
-      order: &inlineOrder,
-      capacity: inlineCapacity
-    )
+    inlineStore.remember(parsed, forKey: source, capacity: inlineCapacity)
     return parsed
   }
 
@@ -66,8 +58,7 @@ enum ReadingRenderCache {
     let appearance: String
   }
 
-  private static var attributedEntries: [AttributedKey: NSAttributedString] = [:]
-  private static var attributedOrder: [AttributedKey] = []
+  private static var attributedStore = LRUStore<AttributedKey, NSAttributedString>()
 
   static func attributed(
     blocks: [MarkdownPresentation.Block],
@@ -80,11 +71,11 @@ enum ReadingRenderCache {
       paletteKey: palette.fingerprint,
       appearance: NSApp.effectiveAppearance.name.rawValue
     )
-    if let cached = lookup(key, in: attributedEntries, order: &attributedOrder) { return cached }
+    if let cached = attributedStore.lookup(key) { return cached }
     let composed = ReadingTextComposer.attributed(
       blocks: blocks, readingFont: readingFont, palette: palette
     )
-    remember(composed, forKey: key, in: &attributedEntries, order: &attributedOrder)
+    attributedStore.remember(composed, forKey: key, capacity: capacity)
     return composed
   }
 
@@ -97,8 +88,7 @@ enum ReadingRenderCache {
     let appearance: String
   }
 
-  private static var plainEntries: [PlainKey: NSAttributedString] = [:]
-  private static var plainOrder: [PlainKey] = []
+  private static var plainStore = LRUStore<PlainKey, NSAttributedString>()
 
   /// 「纯文本」开关那条路：plainTextPresentation 本身也是整篇字符串处理，
   /// 一并备忘，开关切换或主题变化才重算。
@@ -113,13 +103,13 @@ enum ReadingRenderCache {
       colorKey: Self.colorFingerprint(color),
       appearance: NSApp.effectiveAppearance.name.rawValue
     )
-    if let cached = lookup(key, in: plainEntries, order: &plainOrder) { return cached }
+    if let cached = plainStore.lookup(key) { return cached }
     let composed = ReadingTextComposer.plain(
       MarkdownPresentation.plainTextPresentation(source),
       readingFont: readingFont,
       color: color
     )
-    remember(composed, forKey: key, in: &plainEntries, order: &plainOrder)
+    plainStore.remember(composed, forKey: key, capacity: capacity)
     return composed
   }
 
@@ -135,18 +125,17 @@ enum ReadingRenderCache {
     let stripsEchoedMetadata: Bool
   }
 
-  private static var paneBodyEntries: [PaneBodyKey: String] = [:]
-  private static var paneBodyOrder: [PaneBodyKey] = []
+  private static var paneBodyStore = LRUStore<PaneBodyKey, String>()
 
   /// 阅读面板正文：剥 frontmatter，翻译面板再清一次旧译文回显的元数据块。
   static func paneBody(source: String, strippingEchoedMetadata: Bool) -> String {
     let key = PaneBodyKey(source: source, stripsEchoedMetadata: strippingEchoedMetadata)
-    if let cached = lookup(key, in: paneBodyEntries, order: &paneBodyOrder) { return cached }
+    if let cached = paneBodyStore.lookup(key) { return cached }
     var body = MarkdownNoteFrontmatter.parse(source).body
     if strippingEchoedMetadata {
       body = MarkdownNoteFrontmatter.strippingEchoedMetadataBlock(from: body)
     }
-    remember(body, forKey: key, in: &paneBodyEntries, order: &paneBodyOrder)
+    paneBodyStore.remember(body, forKey: key, capacity: capacity)
     return body
   }
 
@@ -155,18 +144,17 @@ enum ReadingRenderCache {
     let source: String
   }
 
-  private static var citationsEntries: [CitationsKey: [String]] = [:]
-  private static var citationsOrder: [CitationsKey] = []
+  private static var citationsStore = LRUStore<CitationsKey, [String]>()
 
   /// 总结的「原文依据」：原来每次求值都要把原文整篇重建纯文本再逐条 contains。
   static func summaryCitations(summary: String, source: String) -> [String] {
     let key = CitationsKey(summary: summary, source: source)
-    if let cached = lookup(key, in: citationsEntries, order: &citationsOrder) { return cached }
+    if let cached = citationsStore.lookup(key) { return cached }
     let quotes = SummaryCitationMatcher.exactQuotes(
       summary: MarkdownNoteFrontmatter.parse(summary).body,
       source: MarkdownNoteFrontmatter.parse(source).body
     )
-    remember(quotes, forKey: key, in: &citationsEntries, order: &citationsOrder)
+    citationsStore.remember(quotes, forKey: key, capacity: capacity)
     return quotes
   }
 
@@ -177,8 +165,7 @@ enum ReadingRenderCache {
     let groupsConsecutiveImages: Bool
   }
 
-  private static var segmentsEntries: [SegmentsKey: [LocalMarkdownImageLayout.Segment]] = [:]
-  private static var segmentsOrder: [SegmentsKey] = []
+  private static var segmentsStore = LRUStore<SegmentsKey, [LocalMarkdownImageLayout.Segment]>()
 
   /// 图文混排切段（含图集合并）：整篇正则扫描，只随正文与本地图片清单变化。
   static func gallerySegments(
@@ -193,7 +180,7 @@ enum ReadingRenderCache {
       appendsUnusedLocalImages: appendsUnusedLocalImages,
       groupsConsecutiveImages: groupsConsecutiveImages
     )
-    if let cached = lookup(key, in: segmentsEntries, order: &segmentsOrder) { return cached }
+    if let cached = segmentsStore.lookup(key) { return cached }
     let grouped = LocalMarkdownImageLayout.galleryGrouped(
       LocalMarkdownImageLayout.segments(
         markdown: markdown,
@@ -202,7 +189,7 @@ enum ReadingRenderCache {
       ),
       groupsConsecutiveImages: groupsConsecutiveImages
     )
-    remember(grouped, forKey: key, in: &segmentsEntries, order: &segmentsOrder)
+    segmentsStore.remember(grouped, forKey: key, capacity: capacity)
     return grouped
   }
 
@@ -213,33 +200,46 @@ enum ReadingRenderCache {
     return [srgb.redComponent, srgb.greenComponent, srgb.blueComponent, srgb.alphaComponent]
   }
 
-  /// 命中即续命：把命中的键挪到队尾，淘汰顺序从 FIFO 变成 LRU。
+  /// 命中即续命：把该条目的序号刷新成最新，淘汰时只比较序号、不比较键。
   /// 没有这一步，正在看的这篇长文会被后进的条目顶出去。
-  private static func lookup<Key: Hashable, Value>(
-    _ key: Key,
-    in entries: [Key: Value],
-    order: inout [Key]
-  ) -> Value? {
-    guard let value = entries[key] else { return nil }
-    if order.last != key, let index = order.lastIndex(of: key) {
-      order.remove(at: index)
-      order.append(key)
-    }
-    return value
+  private struct Cached<Value> {
+    var value: Value
+    var seq: UInt64
   }
 
-  private static func remember<Key: Hashable, Value>(
-    _ value: Value,
-    forKey key: Key,
-    in entries: inout [Key: Value],
-    order: inout [Key],
-    capacity: Int = capacity
-  ) {
-    entries[key] = value
-    order.append(key)
-    if order.count > capacity {
-      let evicted = order.removeFirst()
-      entries.removeValue(forKey: evicted)
+  private struct LRUStore<Key: Hashable, Value> {
+    var entries: [Key: Cached<Value>] = [:]
+    var nextSeq: UInt64 = 0
+
+    mutating func lookup(_ key: Key) -> Value? {
+      guard var entry = entries[key] else { return nil }
+      nextSeq &+= 1
+      entry.seq = nextSeq
+      entries[key] = entry
+      return entry.value
+    }
+
+    mutating func remember(_ value: Value, forKey key: Key, capacity: Int) {
+      nextSeq &+= 1
+      entries[key] = Cached(value: value, seq: nextSeq)
+      if entries.count > capacity {
+        if let victim = entries.min(by: { $0.value.seq < $1.value.seq })?.key {
+          entries.removeValue(forKey: victim)
+        }
+      }
     }
   }
+
+  /// 测试入口：清空全部缓存。不改变生产路径的容量、键或返回值。
+  static func resetForTests() {
+    blockStore = LRUStore()
+    inlineStore = LRUStore()
+    attributedStore = LRUStore()
+    plainStore = LRUStore()
+    paneBodyStore = LRUStore()
+    citationsStore = LRUStore()
+    segmentsStore = LRUStore()
+  }
+
+  static var lruCapacityForTests: Int { capacity }
 }

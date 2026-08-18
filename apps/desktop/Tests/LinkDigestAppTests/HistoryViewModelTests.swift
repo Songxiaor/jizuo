@@ -141,6 +141,46 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertEqual(saved, "切换前写的笔记", "防抖窗口内切换条目丢掉了笔记")
   }
 
+  /// 摘录、笔记和 Token 账原来在 `receiveDetail` 里同步读，四次 SQLite 全压在主线程上，
+  /// 切换文章时界面不出帧。现在它们和正文一起在后台读完再一次性铺上——这条测试守住
+  /// 「换个搬运方式，屏幕上出现的东西不能少」。
+  func testSwitchingItemsLoadsAnnotationsWithTheDetail() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-sideload-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+
+    func makeDocument(_ tag: String) -> CapturedDocument {
+      CapturedDocument(
+        createdAt: "2026-07-20T00:00:00Z", origin: .manualLink,
+        url: "https://example.test/sideload-\(tag)", title: "条目\(tag)",
+        platform: "fixture", method: "fixture", text: "正文 \(tag)",
+        completeness: "visible_only", capturedAt: "2026-07-20T00:00:00Z", sourceLabel: "fixture")
+    }
+    let a = try repository.acceptCapture(.init(document: makeDocument("A"), receivedAtMilliseconds: 1))
+    let b = try repository.acceptCapture(.init(document: makeDocument("B"), receivedAtMilliseconds: 2))
+
+    let service = HistoryApplicationService(repository: repository)
+    let store = try XCTUnwrap(service.annotationStore)
+    try store.saveNote(taskID: b.taskID, body: "B 的笔记", updatedAtMilliseconds: 10)
+    try store.addExcerpt(
+      .init(taskID: b.taskID, excerpt: "B 的摘录", createdAtMilliseconds: 11)
+    )
+
+    let model = HistoryViewModel()
+    model.configure(history: service, isReadOnly: false, unavailableCode: nil)
+    model.selectedTaskIDs = [a.taskID]
+    await waitUntil { model.selectedTaskID == a.taskID && model.detailState == .loaded }
+    XCTAssertTrue(model.taskExcerpts.isEmpty)
+
+    model.selectedTaskIDs = [b.taskID]
+    await waitUntil { model.selectedTaskID == b.taskID && model.detailState == .loaded }
+    XCTAssertEqual(model.taskNoteDraft, "B 的笔记")
+    XCTAssertEqual(model.taskExcerpts.map(\.excerpt), ["B 的摘录"])
+  }
+
   /// 上一条／下一条在当前列表里移动选中项，到两端停住。
   ///
   /// 不假设列表是新→旧还是旧→新：最早创建的那条必在某一端，从它出发只有一个方向可走；

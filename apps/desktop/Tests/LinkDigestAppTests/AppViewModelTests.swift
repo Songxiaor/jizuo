@@ -1332,6 +1332,71 @@ final class AppViewModelTests: XCTestCase {
     notificationCounter.cancel()
   }
 
+  /// 推理模型的思考阶段每收到一个 delta 就上报一次 `.thinking(intent:)`，值
+  /// 完全相同。这种同值拍点不得触发整体通知：实测不去重时主线程 100% CPU、
+  /// 连续 23 秒几乎不出帧，界面完全无法操作。
+  func testRepeatedIdenticalThinkingTicksDoNotNotifyWholeObject() {
+    let model = AppViewModel()
+    let runID = RunID()
+    model.receiveRunState(runID: runID, state: .starting(intent: .translate))
+
+    var wholeObjectNotifications = 0
+    let notificationCounter = model.objectWillChange.sink { _ in wholeObjectNotifications += 1 }
+
+    // 第一次是 starting → thinking 的真实切换，照常通知。
+    model.receiveRunState(runID: runID, state: .thinking(intent: .translate))
+    XCTAssertEqual(wholeObjectNotifications, 1)
+
+    for _ in 0..<50 {
+      model.receiveRunState(runID: runID, state: .thinking(intent: .translate))
+    }
+    XCTAssertEqual(wholeObjectNotifications, 1)
+    XCTAssertEqual(model.runState, .thinking(intent: .translate))
+
+    // intent 变了就不再是同值，必须照常通知。
+    model.receiveRunState(runID: runID, state: .thinking(intent: .summarize))
+    XCTAssertEqual(wholeObjectNotifications, 2)
+
+    // 正文到达是真实切换，叶子同步。
+    model.receiveRunState(runID: runID, state: .streaming(intent: .summarize, partialText: "首段"))
+    XCTAssertEqual(wholeObjectNotifications, 3)
+    XCTAssertEqual(model.liveRunText.text, "首段")
+
+    notificationCounter.cancel()
+  }
+
+  /// 卡顿的形态是「整棵历史窗口按 delta 速率重求值」，所以真正要钉住的不是
+  /// 某一个拍点的行为，而是「通知总量与 delta 数量无关」。这里按一次真实
+  /// 推理型翻译的形状回放：先长时间只出 reasoning，再转正文流式，最后终态。
+  func testWholeObjectNotificationsDoNotScaleWithDeltaCount() {
+    func notificationCount(thinkingTicks: Int, streamingDeltas: Int) -> Int {
+      let model = AppViewModel()
+      let runID = RunID()
+      var notifications = 0
+      let counter = model.objectWillChange.sink { _ in notifications += 1 }
+      defer { counter.cancel() }
+
+      model.receiveRunState(runID: runID, state: .starting(intent: .translate))
+      for _ in 0..<thinkingTicks {
+        model.receiveRunState(runID: runID, state: .thinking(intent: .translate))
+      }
+      var text = ""
+      for index in 0..<streamingDeltas {
+        text += "第\(index)段。"
+        model.receiveRunState(runID: runID, state: .streaming(intent: .translate, partialText: text))
+      }
+      model.receiveRunState(runID: runID, state: .completed(intent: .translate, text: text))
+      XCTAssertEqual(model.liveRunText.text, text)
+      return notifications
+    }
+
+    // 只有阶段切换该通知整树，delta 数量不该进入这个式子。
+    let short = notificationCount(thinkingTicks: 5, streamingDeltas: 3)
+    let long = notificationCount(thinkingTicks: 600, streamingDeltas: 200)
+    XCTAssertEqual(short, long)
+    XCTAssertLessThanOrEqual(long, 8)
+  }
+
   func testStorageCopyNeverSuggestsProviderAPIKeyBaseURLOrNetwork() {
     for code in StorageErrorCode.allCases {
       let text = StorageErrorCatalog.presentation(for: code).visibleText.lowercased()

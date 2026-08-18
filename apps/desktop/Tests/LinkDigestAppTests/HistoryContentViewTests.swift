@@ -456,9 +456,12 @@ final class HistoryContentViewTests: XCTestCase {
   func testDetailUsesCenteredReadingColumnAndShowsStandaloneEngagementStats() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    XCTAssertTrue(detail.contains(".frame(maxWidth: 680, alignment: .leading)"))
+    XCTAssertTrue(
+      detail.contains("maxWidth: DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: readingFont.bodySize)"),
+      "内容列上限应随字号联动，而不是钉死的 680pt"
+    )
     XCTAssertTrue(detail.contains(".frame(maxWidth: .infinity, alignment: .center)"))
-    XCTAssertTrue(detail.contains(".padding(.horizontal, 40)"))
+    XCTAssertTrue(detail.contains(".padding(.horizontal, DesignTokens.Layout.readingHorizontalInset)"))
     XCTAssertFalse(detail.contains(".padding(.leading, 48)"))
     // Non-WeChat captures retain their independently extracted social stats;
     // WeChat deliberately never presents that row, including old imports.
@@ -1327,9 +1330,12 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(
       source.contains(".frame(maxWidth: 590, alignment: .leading)"),
       "阅读区的第二层宽度上限回来了，正文又会缩窄并在右侧留下空白")
-    XCTAssertTrue(
+    XCTAssertFalse(
       source.contains(".frame(maxWidth: 680, alignment: .leading)"),
-      "行宽仍要有上限，只是应当唯一——去掉 680 会让宽屏下的行长到不可读")
+      "钉死的 680pt 上限应已被字号联动的可读上限取代")
+    XCTAssertTrue(
+      source.contains("maxWidth: DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: readingFont.bodySize)"),
+      "行宽仍要有上限，只是应当唯一——没有上限会让宽屏下的行长到不可读")
   }
 
   func testLiveTranscriptionRendersOnlyInSourcePaneWithSharedBodyTypography() {
