@@ -23,6 +23,23 @@ enum AppColdStart {
       log("auto-launch disabled by env")
       return false
     }
+    return openPeerApp(
+      hostExecutable: hostExecutable,
+      environment: environment,
+      fileManager: fileManager,
+      launcher: launcher,
+      log: log
+    )
+  }
+
+  /// 用户点了「打开汲作」：即使关了发送时自动冷启动，也要按同包路径唤起。
+  static func openPeerApp(
+    hostExecutable: URL,
+    environment: [String: String] = ProcessInfo.processInfo.environment,
+    fileManager: FileManager = .default,
+    launcher: (URL) throws -> Void = launchWithOpen,
+    log: (String) -> Void = { _ in }
+  ) -> Bool {
     guard let appBundle = AppBundleLocator.resolveAppBundle(
       fromNativeHostExecutable: hostExecutable,
       environment: environment
@@ -53,7 +70,7 @@ enum AppColdStart {
     // Absolute .app path only — never a free-form name that could resolve elsewhere.
     // Bring the app forward so cold-start is visible (users previously reported "flash quit"
     // when the window never appeared in front).
-    process.arguments = [appBundle.path]
+    process.arguments = ["-a", appBundle.path]
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
     try process.run()

@@ -132,6 +132,8 @@ public actor ModelRunOrchestrator {
   private var currentCommittedPartialText = ""
   private var currentPersistedPartialText = ""
   private var currentPublishedPartialText = ""
+  /// 本次运行是否已经报过「正在思考」。见 `publishThinking`。
+  private var currentPublishedThinking = false
   private var currentArtifactID: ArtifactID?
   private var currentSecretRedactor: StreamingSecretRedactor?
   private var currentTask: Task<Void, Never>?
@@ -242,6 +244,7 @@ public actor ModelRunOrchestrator {
     currentCommittedPartialText = ""
     currentPersistedPartialText = ""
     currentPublishedPartialText = ""
+    currentPublishedThinking = false
     currentArtifactID = ArtifactID()
     currentSecretRedactor = nil
     currentUIPublishTask = nil
@@ -564,6 +567,11 @@ public actor ModelRunOrchestrator {
     guard let runID = currentRunID, !Task.isCancelled,
           let onState = currentStateHandler
     else { return }
+    // 一次运行只报一次：`.thinking(intent:)` 不带随 delta 变化的负载，而调用点
+    // 对每个 reasoning delta 都会走到这里。不去重就是按 delta 速率做无谓的
+    // 跨 actor 跳转；正文一开始就不再进入这条路径（见调用点的 isEmpty 判断）。
+    guard !currentPublishedThinking else { return }
+    currentPublishedThinking = true
     await onState(runID, .thinking(intent: intent))
   }
 
@@ -903,6 +911,7 @@ public actor ModelRunOrchestrator {
     currentCommittedPartialText = ""
     currentPersistedPartialText = ""
     currentPublishedPartialText = ""
+    currentPublishedThinking = false
     currentArtifactID = nil
     currentSecretRedactor = nil
     currentTask = nil

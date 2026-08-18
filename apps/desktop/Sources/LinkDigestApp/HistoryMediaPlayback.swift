@@ -274,12 +274,27 @@ final class RemotePreviewPlayerController: ObservableObject {
   /// 已就绪播放器驻留条数：切换历史再回来可秒开，不必黑屏重连。
   static var parkedPlayerCapacity = 4
 
-  @Published private(set) var player: AVPlayer?
-  @Published private(set) var preparePhase: RemotePreviewPreparePhase = .idle
+  // 切换文章会反复调用 `release()`，把这两项写回同一个空值。`@Published` 不比较
+  // 新旧值就发通知，而整棵历史视图树都在观察这个对象——没有视频的文章也要为此
+  // 多跑两轮整屏重求值。写入前先比一次。
+  @Published private var playerStorage: AVPlayer?
+  private(set) var player: AVPlayer? {
+    get { playerStorage }
+    set { if playerStorage !== newValue { playerStorage = newValue } }
+  }
+  @Published private var preparePhaseStorage: RemotePreviewPreparePhase = .idle
+  private(set) var preparePhase: RemotePreviewPreparePhase {
+    get { preparePhaseStorage }
+    set { if preparePhaseStorage != newValue { preparePhaseStorage = newValue } }
+  }
   /// 失败时可见的技术细节：走的哪条路、片长、错误码。
   /// 只放非敏感信息——不含签名 URL、不含 Cookie。
   /// 这一层之前完全没有，失败了只能靠猜，反复改了七轮都没定位到根因。
-  @Published private(set) var playbackDiagnostic: String?
+  @Published private var playbackDiagnosticStorage: String?
+  private(set) var playbackDiagnostic: String? {
+    get { playbackDiagnosticStorage }
+    set { if playbackDiagnosticStorage != newValue { playbackDiagnosticStorage = newValue } }
+  }
   private var currentURL: URL?
   private var currentCompanionAudioURL: URL?
   /// 当前准备使用的会话 Cookie（B 站等）；仅内存，不写历史。
@@ -692,8 +707,8 @@ final class RemotePreviewPlayerController: ObservableObject {
       case reanchor
     }
     let statusEvents = item.publisher(for: \.status).map(Event.status)
-    let playerEvents = $player.dropFirst().map { _ in Event.reanchor }
-    let phaseEvents = $preparePhase.dropFirst().map { _ in Event.reanchor }
+    let playerEvents = $playerStorage.dropFirst().map { _ in Event.reanchor }
+    let phaseEvents = $preparePhaseStorage.dropFirst().map { _ in Event.reanchor }
     for await event in Publishers.Merge3(statusEvents, playerEvents, phaseEvents).values {
       switch event {
       case .status(.failed): return .failed
@@ -933,6 +948,7 @@ struct CurrentCaptureMediaPreviewCard: View {
   @State private var videoPixelHeight: Int?
   @State private var videoGeometryTask: Task<Void, Never>?
   @State private var playerStatusTask: Task<Void, Never>?
+  @State private var isPlaybackEnded = false
 
   private var previewState: CurrentCaptureMediaPreviewState {
     CurrentCaptureMediaPreview.resolve(descriptor)
@@ -998,6 +1014,7 @@ struct CurrentCaptureMediaPreviewCard: View {
     .onAppear { synchronizePlayback() }
     .onChange(of: descriptor) { _, _ in
       cancelGeometryAndStatusMonitors()
+      isPlaybackEnded = false
       synchronizePlayback()
     }
     .onChange(of: model.transcriptionState) { oldState, newState in
@@ -1144,7 +1161,17 @@ struct CurrentCaptureMediaPreviewCard: View {
         )
         .background(Color.black)
         .background(VideoScrollWheelAnchor().allowsHitTesting(false))
+        .background(
+          PlayerSpaceKeyToggle(
+            player: playback.player,
+            onPlaybackEnded: { isPlaybackEnded = true },
+            onDidRestart: { isPlaybackEnded = false }
+          ).allowsHitTesting(false)
+        )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+        .overlay {
+          PlaybackReplayOverlay(player: playback.player, isPlaybackEnded: $isPlaybackEnded)
+        }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("history-video-remote-player")
     }
@@ -1611,18 +1638,86 @@ struct ReleaseInitialSearchFocus: NSViewRepresentable {
   }
 }
 
+/// 片尾时 `AVPlayer.play()` 是空操作：item 停在 duration，默认
+/// `actionAtItemEnd == .pause`。AVKit「重新播放」和空格都会落到这条
+/// 路径，必须先 seek 到 0。纯函数供单测钉住，避免再靠真机碰运气。
+enum MediaPlaybackRestart {
+  static let endEpsilonSeconds: Double = 0.35
+
+  static func isAtEnd(
+    currentTime: CMTime,
+    duration: CMTime,
+    epsilonSeconds: Double = endEpsilonSeconds
+  ) -> Bool {
+    guard duration.isNumeric, duration.seconds.isFinite, duration.seconds > 0,
+          currentTime.isNumeric, currentTime.seconds.isFinite
+    else { return false }
+    return currentTime.seconds >= max(0, duration.seconds - epsilonSeconds)
+  }
+
+  static func playOrRestart(_ player: AVPlayer) {
+    let current = player.currentTime()
+    let duration = player.currentItem?.duration ?? .invalid
+    if isAtEnd(currentTime: current, duration: duration) {
+      player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
+        guard finished else { return }
+        player.play()
+      }
+      return
+    }
+    if player.timeControlStatus == .playing {
+      player.pause()
+    } else {
+      player.play()
+    }
+  }
+}
+
+/// 盖在 AVKit 片尾 overlay 上面：那颗系统「重新播放」在 SwiftUI `VideoPlayer`
+/// + 描边 overlay / AppKit 滚动器里经常点了没反应。这颗按钮走我们自己的
+/// seek+play，不依赖 AVKit 内部动作。
+private struct PlaybackReplayOverlay: View {
+  let player: AVPlayer?
+  @Binding var isPlaybackEnded: Bool
+
+  var body: some View {
+    if isPlaybackEnded, let player {
+      ZStack {
+        Color.black.opacity(0.32)
+        Button("重新播放") {
+          MediaPlaybackRestart.playOrRestart(player)
+          isPlaybackEnded = false
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .accessibilityIdentifier("history-video-replay")
+      }
+    }
+  }
+}
+
 private struct PlayerSpaceKeyToggle: NSViewRepresentable {
   let player: AVPlayer?
+  var onPlaybackEnded: (() -> Void)? = nil
+  var onDidRestart: (() -> Void)? = nil
 
   func makeNSView(context: Context) -> CatcherView { CatcherView() }
 
   func updateNSView(_ nsView: CatcherView, context: Context) {
+    nsView.onPlaybackEnded = onPlaybackEnded
+    nsView.onDidRestart = onDidRestart
     nsView.player = player
   }
 
   final class CatcherView: NSView {
-    var player: AVPlayer?
+    var onPlaybackEnded: (() -> Void)?
+    var onDidRestart: (() -> Void)?
+    var player: AVPlayer? {
+      didSet { attachEndObserverIfNeeded() }
+    }
     private var monitor: Any?
+    private var endObserver: NSObjectProtocol?
+    private var observedItem: AVPlayerItem?
 
     override var acceptsFirstResponder: Bool { false }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -1631,9 +1726,34 @@ private struct PlayerSpaceKeyToggle: NSViewRepresentable {
       super.viewDidMoveToWindow()
       if window == nil {
         removeMonitor()
+        detachEndObserver()
       } else {
         installMonitor()
+        attachEndObserverIfNeeded()
       }
+    }
+
+    private func attachEndObserverIfNeeded() {
+      let item = player?.currentItem
+      guard item !== observedItem else { return }
+      detachEndObserver()
+      observedItem = item
+      guard let item else { return }
+      endObserver = NotificationCenter.default.addObserver(
+        forName: .AVPlayerItemDidPlayToEndTime,
+        object: item,
+        queue: .main
+      ) { [weak self] _ in
+        self?.onPlaybackEnded?()
+      }
+    }
+
+    private func detachEndObserver() {
+      if let endObserver {
+        NotificationCenter.default.removeObserver(endObserver)
+      }
+      endObserver = nil
+      observedItem = nil
     }
 
     private func installMonitor() {
@@ -1676,7 +1796,12 @@ private struct PlayerSpaceKeyToggle: NSViewRepresentable {
              is NSPopUpButton, is NSSegmentedControl: return event
         default: break
         }
-        if player.timeControlStatus == .playing { player.pause() } else { player.play() }
+        let wasAtEnd = MediaPlaybackRestart.isAtEnd(
+          currentTime: player.currentTime(),
+          duration: player.currentItem?.duration ?? .invalid
+        )
+        MediaPlaybackRestart.playOrRestart(player)
+        if wasAtEnd { self.onDidRestart?() }
         return nil
       }
     }
@@ -1707,10 +1832,19 @@ struct HistoryVideoPlayerCard: View {
   @State private var saveFeedback: String?
   @State private var saveFeedbackTask: Task<Void, Never>?
   @State private var isSaveFailurePresented = false
+  @State private var isPlaybackEnded = false
   @ObservedObject private var cinema = VideoCinemaController.shared
 
   /// 本卡的播放器正被影院 overlay 放大：卡内显示占位，避免双重渲染。
   private var isInCinema: Bool { cinema.isPresenting(player: player) }
+
+  private var spaceKeyToggle: PlayerSpaceKeyToggle {
+    PlayerSpaceKeyToggle(
+      player: player,
+      onPlaybackEnded: { isPlaybackEnded = true },
+      onDidRestart: { isPlaybackEnded = false }
+    )
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -1791,12 +1925,14 @@ struct HistoryVideoPlayerCard: View {
       if player == nil {
         player = AVPlayer(url: fileURL)
       }
+      isPlaybackEnded = false
       loadVideoGeometry(fileURL)
     }
     .onChange(of: fileURL) { _, newURL in
       if isInCinema { cinema.dismiss() }
       player?.pause()
       player = AVPlayer(url: newURL)
+      isPlaybackEnded = false
       loadVideoGeometry(newURL)
     }
     .onDisappear {
@@ -1864,7 +2000,7 @@ struct HistoryVideoPlayerCard: View {
             maxHeight: VideoDisplayGeometry.inlineMaximumHeight,
             alignment: .leading
           )
-          .background(PlayerSpaceKeyToggle(player: player).allowsHitTesting(false))
+          .background(spaceKeyToggle.allowsHitTesting(false))
           .overlay {
             VStack(spacing: 6) {
               Image(systemName: "rectangle.on.rectangle").font(.title2).foregroundStyle(.white.opacity(0.7))
@@ -1883,12 +2019,16 @@ struct HistoryVideoPlayerCard: View {
           )
           .background(Color.black)
           .background(VideoScrollWheelAnchor().allowsHitTesting(false))
-          .background(PlayerSpaceKeyToggle(player: player).allowsHitTesting(false))
+          .background(spaceKeyToggle.allowsHitTesting(false))
           .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
           .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
               .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+              .allowsHitTesting(false)
           )
+          .overlay {
+            PlaybackReplayOverlay(player: player, isPlaybackEnded: $isPlaybackEnded)
+          }
           .frame(maxWidth: .infinity, alignment: .leading)
           .accessibilityIdentifier("history-video-player")
       }
@@ -1917,12 +2057,16 @@ struct HistoryVideoPlayerCard: View {
         VideoPlayer(player: player)
           .frame(height: 64)
           .background(Color.black)
-          .background(PlayerSpaceKeyToggle(player: player).allowsHitTesting(false))
+          .background(spaceKeyToggle.allowsHitTesting(false))
           .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
           .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
               .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+              .allowsHitTesting(false)
           )
+          .overlay {
+            PlaybackReplayOverlay(player: player, isPlaybackEnded: $isPlaybackEnded)
+          }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityIdentifier("history-audio-only-player")
@@ -2080,6 +2224,7 @@ private struct HistoryStreamingMediaCard: View {
   @State private var videoGeometryTask: Task<Void, Never>?
   @State private var playerStatusTask: Task<Void, Never>?
   @State private var playbackFailed = false
+  @State private var isPlaybackEnded = false
   @ObservedObject private var cinema = VideoCinemaController.shared
 
   /// 本卡的播放器正被影院 overlay 放大：卡内显示占位，避免双重渲染。
@@ -2149,7 +2294,13 @@ private struct HistoryStreamingMediaCard: View {
               maxHeight: VideoDisplayGeometry.inlineMaximumHeight,
               alignment: .leading
             )
-            .background(PlayerSpaceKeyToggle(player: playback.player).allowsHitTesting(false))
+            .background(
+              PlayerSpaceKeyToggle(
+                player: playback.player,
+                onPlaybackEnded: { isPlaybackEnded = true },
+                onDidRestart: { isPlaybackEnded = false }
+              ).allowsHitTesting(false)
+            )
             .overlay {
               VStack(spacing: 6) {
                 Image(systemName: "rectangle.on.rectangle").font(.title2).foregroundStyle(.white.opacity(0.7))
@@ -2166,8 +2317,17 @@ private struct HistoryStreamingMediaCard: View {
             )
             .background(Color.black)
             .background(VideoScrollWheelAnchor().allowsHitTesting(false))
-            .background(PlayerSpaceKeyToggle(player: playback.player).allowsHitTesting(false))
+            .background(
+              PlayerSpaceKeyToggle(
+                player: playback.player,
+                onPlaybackEnded: { isPlaybackEnded = true },
+                onDidRestart: { isPlaybackEnded = false }
+              ).allowsHitTesting(false)
+            )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+            .overlay {
+              PlaybackReplayOverlay(player: playback.player, isPlaybackEnded: $isPlaybackEnded)
+            }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("history-video-streaming-player")
         }
