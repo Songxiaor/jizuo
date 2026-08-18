@@ -452,7 +452,7 @@ export function extractRedditPostPage(documentLike: Document): ExtractedPage {
     ?? post.querySelector("[slot='text-body']");
   const canonicalURL = redditCanonicalURL(post.getAttribute("permalink"), baseHref);
   const title = post.getAttribute("post-title")?.trim() || resolveTitle(documentLike);
-  let bodyMarkdown = "";
+  let bodyMarkdown: string;
   if (body && (body.textContent?.trim().length ?? 0) >= 2) {
     const bodyClone = body.cloneNode(true) as Element;
     bodyClone.querySelectorAll("shreddit-comment").forEach((node) => node.remove());
