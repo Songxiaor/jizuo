@@ -169,8 +169,43 @@ extension DesignTokens {
     static let listIdeal: CGFloat = 340
 
     static let detailMin: CGFloat = 420
-    /// 阅读列宽上限。约 65 个汉字，超过这个宽度眼睛回行会丢行。
+    /// 阅读列「偏好」宽度：默认正文字号下约 65 个汉字。首帧宽度未知时回退到这里；
+    /// 默认 1200 窗口里详情列可用宽度通常更窄，真正画出来仍是可用宽度。
+    ///
+    /// 正式列宽走 `readingColumnMaxWidth(availableWidth:bodySize:)`，不要只拿这个常数
+    /// 当死上限——窗口拉宽后正文应跟着变宽。
     static let readingMaxWidth: CGFloat = 680
+
+    /// 可读性绝对上限（默认字号）：再宽长行伤阅读。约 90 个汉字一行。
+    /// 4K 全屏也停在这里，两侧继续留白。
+    static let readingAbsoluteMaxWidth: CGFloat = 960
+
+    /// 详情列正文左右内边距。列宽计算要扣掉两侧，和 `.padding(.horizontal, …)` 同源。
+    static let readingHorizontalInset: CGFloat = 40
+
+    /// 偏好行宽按正文字号等比缩放，保持「一行多少个字」不随字号变化。
+    ///
+    /// 比例与 `ResolvedReadingFont.scaledSize` 同源（`size / ReadingFontSize.default`）。
+    static func readingMaxWidth(bodySize: CGFloat) -> CGFloat {
+      readingMaxWidth * ReadingFontSize.clamped(bodySize) / ReadingFontSize.default
+    }
+
+    /// 绝对上限按正文字号等比缩放：字号大时允许更宽，每行字数仍受控。
+    static func readingAbsoluteMaxWidth(bodySize: CGFloat) -> CGFloat {
+      readingAbsoluteMaxWidth * ReadingFontSize.clamped(bodySize) / ReadingFontSize.default
+    }
+
+    /// 正文列宽：随详情列可用宽度增长，封顶在字号联动的可读上限。
+    ///
+    /// - `availableWidth` 是详情列全宽（含左右 inset）；这里扣除 `readingHorizontalInset * 2`。
+    /// - 宽度未知（首帧 0）时回退到偏好宽度，与旧默认窗口观感接近。
+    static func readingColumnMaxWidth(availableWidth: CGFloat, bodySize: CGFloat) -> CGFloat {
+      let ceiling = readingAbsoluteMaxWidth(bodySize: bodySize)
+      let preferred = readingMaxWidth(bodySize: bodySize)
+      guard availableWidth > 0 else { return preferred }
+      let usable = max(0, availableWidth - readingHorizontalInset * 2)
+      return min(usable, ceiling)
+    }
 
     /// 20 — 设置侧栏分类图标 chip 的边长。比页头同款 chip（`IconSize.empty`）小一档，
     /// 侧栏一行只有一个行高的空间，放不下页头那种大方块。

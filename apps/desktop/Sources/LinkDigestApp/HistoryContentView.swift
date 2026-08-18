@@ -2441,9 +2441,14 @@ private struct HistoryDetailView: View {
           .padding(.top, 20)
           .id(ReadingAnchor.module("tags"))
       }
-      .frame(maxWidth: 680, alignment: .leading)
+      // 行宽随详情列可用宽度增长：SwiftUI 会把实际宽度收在
+      // min(可用宽度 − inset, 字号联动上限)，不必把可用宽度写进 State。
+      .frame(
+        maxWidth: DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: readingFont.bodySize),
+        alignment: .leading
+      )
       .frame(maxWidth: .infinity, alignment: .center)
-      .padding(.horizontal, 40)
+      .padding(.horizontal, DesignTokens.Layout.readingHorizontalInset)
       .padding(.top, 32)
       .padding(.bottom, 48)
       .subtleScrollers()
@@ -3166,8 +3171,8 @@ private struct HistoryDetailView: View {
     // 680 - 590 - 32 = 58pt，正文实际只有 558pt。那块空白不是留白设计，是两层
     // 上限打架的残留：读起来像卡片右边缺了一块。
     //
-    // 行宽仍由外层 680pt 的内容列封顶（正文 648pt，约 39 个汉字一行，仍在
-    // 舒适区间）。真正的行宽控制点只应有一个，就是那一层。
+    // 行宽由外层内容列封顶（随详情列可用宽度增长，默认字号下绝对上限 960pt；
+    // 字号变大时同比放宽）。真正的行宽控制点只应有一个，就是那一层。
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, 16)
     .padding(.top, showsReadingPanePicker ? 12 : 16)

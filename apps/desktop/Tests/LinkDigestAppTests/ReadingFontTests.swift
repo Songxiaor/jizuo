@@ -78,4 +78,76 @@ final class ReadingFontTests: XCTestCase {
       "标题与正文的比例必须保持不变"
     )
   }
+
+  // 行宽：偏好宽度跟着正文字号走；可用宽度上来后随列变宽，直到字号联动的绝对上限。
+  // 固定 680pt 时把窗口拉宽两侧只剩空白，正文看起来越拉越窄。
+  func testReadingColumnWidthScalesWithBodySize() {
+    XCTAssertEqual(
+      DesignTokens.Layout.readingMaxWidth(bodySize: ReadingFontSize.default),
+      DesignTokens.Layout.readingMaxWidth,
+      accuracy: 0.001,
+      "默认字号的偏好宽度必须与旧基准逐像素一致"
+    )
+    XCTAssertEqual(
+      DesignTokens.Layout.readingMaxWidth(bodySize: ReadingFontSize.maximum),
+      DesignTokens.Layout.readingMaxWidth * ReadingFontSize.maximum / ReadingFontSize.default,
+      accuracy: 0.001
+    )
+    XCTAssertEqual(
+      DesignTokens.Layout.readingMaxWidth(bodySize: ReadingFontSize.minimum),
+      DesignTokens.Layout.readingMaxWidth * ReadingFontSize.minimum / ReadingFontSize.default,
+      accuracy: 0.001
+    )
+    // 越界字号走和渲染层同一条夹取，不会算出荒唐的行宽。
+    XCTAssertEqual(
+      DesignTokens.Layout.readingMaxWidth(bodySize: 999),
+      DesignTokens.Layout.readingMaxWidth(bodySize: ReadingFontSize.maximum),
+      accuracy: 0.001
+    )
+  }
+
+  func testReadingColumnWidthGrowsWithAvailableWidthUpToFontScaledCeiling() {
+    let body = ReadingFontSize.default
+    let inset = DesignTokens.Layout.readingHorizontalInset * 2
+    let preferred = DesignTokens.Layout.readingMaxWidth(bodySize: body)
+    let ceiling = DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: body)
+
+    // 首帧宽度未知：回退偏好，默认窗口观感不突变。
+    XCTAssertEqual(
+      DesignTokens.Layout.readingColumnMaxWidth(availableWidth: 0, bodySize: body),
+      preferred,
+      accuracy: 0.001
+    )
+
+    // 默认约 1200 窗口：详情列可用宽度通常窄于旧 680，列宽等于可用宽度。
+    let defaultWindowDetail: CGFloat = 640
+    XCTAssertEqual(
+      DesignTokens.Layout.readingColumnMaxWidth(availableWidth: defaultWindowDetail, bodySize: body),
+      defaultWindowDetail - inset,
+      accuracy: 0.001,
+      "默认窗口下应吃满可用宽度，与旧观感接近"
+    )
+
+    // 窗口明显拉宽：超过旧 680 后继续涨。
+    let wideDetail: CGFloat = 952
+    let wideColumn = DesignTokens.Layout.readingColumnMaxWidth(availableWidth: wideDetail, bodySize: body)
+    XCTAssertEqual(wideColumn, wideDetail - inset, accuracy: 0.001)
+    XCTAssertGreaterThan(wideColumn, preferred, "拉宽后正文必须可感知地宽于旧固定上限")
+
+    // 4K 级超宽：停在绝对上限，不无限拉长行。
+    XCTAssertEqual(
+      DesignTokens.Layout.readingColumnMaxWidth(availableWidth: 3200, bodySize: body),
+      ceiling,
+      accuracy: 0.001
+    )
+
+    // 字号更大时绝对上限同比放宽。
+    let largeCeiling = DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: ReadingFontSize.maximum)
+    XCTAssertGreaterThan(largeCeiling, ceiling)
+    XCTAssertEqual(
+      DesignTokens.Layout.readingColumnMaxWidth(availableWidth: 3200, bodySize: ReadingFontSize.maximum),
+      largeCeiling,
+      accuracy: 0.001
+    )
+  }
 }
