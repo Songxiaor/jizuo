@@ -107,6 +107,83 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   }
 }
 
+/// One source of truth for platform identity across navigation, filtering and
+/// bundled icon lookup. `canonicalHost` is a stable platform key; it is usually
+/// a domain, but may represent a family such as Discourse whose installations
+/// live on different domains.
+public struct HistoryPlatformDescriptor: Sendable, Equatable {
+  public let canonicalHost: String
+  public let displayName: String
+  public let exactHosts: [String]
+  public let suffixHosts: [String]
+  public let bundledAssetName: String?
+
+  public init(
+    canonicalHost: String,
+    displayName: String,
+    exactHosts: [String],
+    suffixHosts: [String] = [],
+    bundledAssetName: String? = nil
+  ) {
+    self.canonicalHost = canonicalHost
+    self.displayName = displayName
+    self.exactHosts = exactHosts
+    self.suffixHosts = suffixHosts
+    self.bundledAssetName = bundledAssetName
+  }
+}
+
+public enum HistoryPlatformRegistry {
+  /// Keep aliases, display names and bundled assets together. Adding a source
+  /// in multiple switches made the sidebar name, filter and icon drift apart.
+  public static let platforms: [HistoryPlatformDescriptor] = [
+    .init(canonicalHost: "douyin.com", displayName: "抖音", exactHosts: ["douyin.com", "iesdouyin.com", "v.douyin.com"], bundledAssetName: "douyin"),
+    .init(canonicalHost: "mp.weixin.qq.com", displayName: "微信公众号", exactHosts: ["mp.weixin.qq.com", "weixin.qq.com"], bundledAssetName: "wechat"),
+    .init(canonicalHost: "github.com", displayName: "GitHub", exactHosts: ["github.com"], bundledAssetName: "github"),
+    .init(canonicalHost: "x.com", displayName: "X", exactHosts: ["x.com", "twitter.com"], bundledAssetName: "x.com"),
+    .init(canonicalHost: "youtube.com", displayName: "YouTube", exactHosts: ["youtube.com", "youtu.be"], bundledAssetName: "youtube"),
+    .init(canonicalHost: "bilibili.com", displayName: "哔哩哔哩", exactHosts: ["bilibili.com", "b23.tv"], bundledAssetName: "bilibili"),
+    .init(canonicalHost: "xiaohongshu.com", displayName: "小红书", exactHosts: ["xiaohongshu.com", "xhslink.com"], bundledAssetName: "xiaohongshu"),
+    .init(canonicalHost: "zhihu.com", displayName: "知乎", exactHosts: ["zhihu.com", "zhuanlan.zhihu.com"], bundledAssetName: "zhihu"),
+    .init(canonicalHost: "weibo.com", displayName: "微博", exactHosts: ["weibo.com", "weibo.cn"], bundledAssetName: "weibo"),
+    .init(canonicalHost: "medium.com", displayName: "Medium", exactHosts: ["medium.com"], bundledAssetName: "medium"),
+    .init(canonicalHost: "reddit.com", displayName: "Reddit", exactHosts: ["reddit.com"], bundledAssetName: "reddit"),
+    .init(canonicalHost: "toutiao.com", displayName: "今日头条", exactHosts: ["toutiao.com"], bundledAssetName: "toutiao"),
+    .init(canonicalHost: "douban.com", displayName: "豆瓣", exactHosts: ["douban.com"], bundledAssetName: "douban"),
+    .init(canonicalHost: "juejin.cn", displayName: "掘金", exactHosts: ["juejin.cn"], bundledAssetName: "juejin"),
+    .init(canonicalHost: "substack.com", displayName: "Substack", exactHosts: ["substack.com"], suffixHosts: ["substack.com"]),
+    .init(canonicalHost: "news.ycombinator.com", displayName: "Hacker News", exactHosts: ["news.ycombinator.com"]),
+    .init(canonicalHost: "v2ex.com", displayName: "V2EX", exactHosts: ["v2ex.com"]),
+    .init(canonicalHost: "stackoverflow.com", displayName: "Stack Overflow", exactHosts: ["stackoverflow.com"]),
+    .init(canonicalHost: "dev.to", displayName: "dev.to", exactHosts: ["dev.to"]),
+    .init(canonicalHost: "discourse", displayName: "Discourse", exactHosts: ["linux.do", "uscardforum.com"]),
+    .init(canonicalHost: "lemmy.world", displayName: "Lemmy", exactHosts: ["lemmy.world"]),
+    .init(canonicalHost: "mastodon.social", displayName: "Mastodon", exactHosts: ["mastodon.social"]),
+  ]
+
+  public static func descriptor(forHost rawHost: String) -> HistoryPlatformDescriptor? {
+    let host = HistoryHostNormalizer.normalized(rawHost)
+    guard !host.isEmpty else { return nil }
+    if let exact = platforms.first(where: { $0.canonicalHost == host || $0.exactHosts.contains(host) }) { return exact }
+    return platforms.first { platform in
+      platform.suffixHosts.contains { host == $0 || host.hasSuffix(".\($0)") }
+    }
+  }
+
+  public static func canonicalHost(for rawHost: String) -> String {
+    let normalized = HistoryHostNormalizer.normalized(rawHost)
+    return descriptor(forHost: normalized)?.canonicalHost ?? normalized
+  }
+
+  public static func displayName(forHost rawHost: String) -> String? {
+    descriptor(forHost: rawHost)?.displayName
+  }
+
+  public static func bundledAssetName(forHost rawHost: String) -> String? {
+    descriptor(forHost: rawHost)?.bundledAssetName
+  }
+}
+
 /// 平台是"内容从哪来"的系统维度：侧边栏显示人类可读的中文平台名，
 /// 未收录的 host 回退为去 www 的域名本身。
 public enum HistoryPlatformDisplay {
@@ -142,30 +219,15 @@ public enum HistoryPlatformDisplay {
     if rawHost == draftHost { return "工作台稿件" }
     if rawHost == workHost { return "我的作品" }
     let host = HistoryHostNormalizer.normalized(rawHost)
-    // Substack 刊物几乎都在 `<刊物>.substack.com` 子域，用后缀而非精确匹配。
-    if host == "substack.com" || host.hasSuffix(".substack.com") { return "Substack" }
-    switch host {
-    case "douyin.com", "iesdouyin.com", "v.douyin.com": return "抖音"
-    case "mp.weixin.qq.com", "weixin.qq.com": return "微信公众号"
-    case "github.com": return "GitHub"
-    case "x.com", "twitter.com": return "X"
-    case "youtube.com", "youtu.be": return "YouTube"
-    case "bilibili.com", "b23.tv": return "哔哩哔哩"
-    case "xiaohongshu.com", "xhslink.com": return "小红书"
-    case "zhihu.com", "zhuanlan.zhihu.com": return "知乎"
-    case "weibo.com": return "微博"
-    case "medium.com": return "Medium"
-    case "reddit.com": return "Reddit"
-    case "toutiao.com": return "今日头条"
-    default: return host.isEmpty ? rawHost : host
-    }
+    return HistoryPlatformRegistry.displayName(forHost: host) ?? (host.isEmpty ? rawHost : host)
   }
 
   /// 命中品牌映射的算公共平台；其余杂项来源在侧边栏聚合为"待分类"。
   public static func isWellKnown(host rawHost: String) -> Bool {
     let normalized = HistoryHostNormalizer.normalized(rawHost)
     guard !normalized.isEmpty else { return false }
-    return name(forHost: rawHost) != normalized
+    if [noteHost, draftHost, workHost].contains(normalized) { return true }
+    return HistoryPlatformRegistry.descriptor(forHost: normalized) != nil
   }
 }
 
@@ -198,7 +260,7 @@ public struct HistoryListFilter: Sendable, Equatable {
     tagNormalizedNames = tagNames.compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
       .filter { seen.insert($0).inserted }
     var seenHosts = Set<String>()
-    self.hosts = hosts.map(HistoryHostNormalizer.normalized)
+    self.hosts = hosts.map(HistoryPlatformRegistry.canonicalHost)
       .filter { !$0.isEmpty && seenHosts.insert($0).inserted }
     self.scope = scope
     self.searchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)

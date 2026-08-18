@@ -1474,13 +1474,9 @@ struct ProviderSettingsView: View {
             index: 2,
             title: "模型校对",
             trailingNote: "只发送文字",
-            // 这句只针对**自动管线**这一个场景：新内容自动进来时，① 不开就没有
-            // 转写稿给 ② 用。但它长得像前置条件警告，读起来像「② 依赖 ①」——
-            // 实际上手动点「转写」完成后，只要 ② 开着就会自动整理，与 ① 无关。
-            // 收到过按此误解的反馈，所以把适用范围写进文案本身。
             requirementUnmet: model.autoTranscribeNewCaptures
               ? nil
-              : "仅影响自动进来的新内容：① 未开启就没有转写稿可整理。你手动点「转写」时，本步照常生效",
+              : "仅影响自动进来的新内容：① 未开启就没有转写稿可整理",
             isOn: $model.autoTidyTranscription,
             identifier: "auto-tidy-transcription"
           )
@@ -1521,7 +1517,7 @@ struct ProviderSettingsView: View {
 
         DisclosureGroup("了解更多") {
           VStack(alignment: .leading, spacing: 6) {
-            Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；校对/总结/脑图只发送文字。")
+            Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；校对/总结/脑图只发送文字。手动转写完成后请点「模型校对」。")
               .fixedSize(horizontal: false, vertical: true)
               .frame(maxWidth: .infinity, alignment: .leading)
             // 完整 Base URL 是排障才看的东西，收进来；上面那行只留 host 和模型，

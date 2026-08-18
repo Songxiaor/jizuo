@@ -226,6 +226,7 @@ private final class OrchestratorHistoryRepository: HistoryRepository, @unchecked
   func removeTag(normalizedName _: String, from _: TaskID) throws {}
   func deleteTask(taskID _: TaskID) throws { throw RepositoryFailure.notFound }
   var eventCount: Int { lock.withLock { events.count } }
+  var partialEventCount: Int { lock.withLock { events.filter { $0.hasPrefix("partial:") }.count } }
   var terminalCount: Int { lock.withLock { events.filter { $0.hasPrefix("terminal:") }.count } }
   var tagAssignments: [(TaskID, [HistoryTag])] { lock.withLock { automaticTagAssignments } }
 }
@@ -437,6 +438,38 @@ final class ModelRunOrchestratorTests: XCTestCase {
     let states = await recorder.states
     XCTAssertTrue(states.contains(.streaming(intent: .summarize, partialText: "第一段")))
     XCTAssertTrue(states.contains(.streaming(intent: .summarize, partialText: "第一段第二段")))
+  }
+
+  func testRapidTokenBurstCoalescesUIAndPartialArtifactWritesWithoutLosingText() async throws {
+    let pieces = (0..<200).map { "片\($0)," }
+    let provider = ScriptedModelProvider(scripts: [
+      .init(steps: pieces.map { .event(.delta($0)) } + [.event(.completed)])
+    ])
+    let repository = OrchestratorHistoryRepository()
+    let service = ProviderConfigurationService(
+      profileStore: OrchestratorProfileStore(profile: try profile()),
+      secretStore: OrchestratorSecretStore(value: "fixture-secret")
+    )
+    let orchestrator = ModelRunOrchestrator(
+      configurationService: service,
+      provider: provider,
+      history: HistoryApplicationService(repository: repository)
+    )
+    let recorder = RunStateRecorder()
+    let expected = pieces.joined()
+
+    await start(orchestrator, intent: .summarize, capture: capture(), recorder: recorder)
+    await waitUntil {
+      await recorder.lastState == .completed(intent: .summarize, text: expected)
+    }
+
+    let streamingUpdates = await recorder.states.filter {
+      if case .streaming = $0 { return true }
+      return false
+    }
+    XCTAssertLessThanOrEqual(streamingUpdates.count, 3)
+    XCTAssertLessThanOrEqual(repository.partialEventCount, 3)
+    XCTAssertEqual(streamingUpdates.last?.outputText, expected)
   }
 
   func testCompletedSummaryAddsNormalizedAutomaticTagsFromSummaryOnlyUsingSameModel() async throws {

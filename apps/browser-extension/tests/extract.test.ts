@@ -13,6 +13,8 @@ import {
   isXProfileChromeImageURL,
   isXVideoThumbnailURL,
   isMediumProfileChromeImageURL,
+  isRedditPostURL,
+  communityPlatformForURL,
   resolveResponsiveImageURL,
   resolveZhihuAnswerMetadata,
   stripDouyinCaptionPrefix,
@@ -136,20 +138,20 @@ function matchesSimple(node: FakeNode, selector: string): boolean {
   const attrs = node.attrs ?? {};
   const classNames = new Set((attrs.class ?? "").split(/\s+/u).filter(Boolean));
 
-  const idMatch = selector.match(/^([a-z0-9]+)?#([a-z0-9_-]+)$/iu);
+  const idMatch = selector.match(/^([a-z0-9-]+)?#([a-z0-9_-]+)$/iu);
   if (idMatch) {
     if (idMatch[1] && idMatch[1].toLowerCase() !== tag) return false;
     return (attrs.id ?? "") === idMatch[2];
   }
 
-  const classMatch = selector.match(/^([a-z0-9]+)?((?:\.[a-z0-9_-]+)+)$/iu);
+  const classMatch = selector.match(/^([a-z0-9-]+)?((?:\.[a-z0-9_-]+)+)$/iu);
   if (classMatch) {
     if (classMatch[1] && classMatch[1].toLowerCase() !== tag) return false;
     return classMatch[2]!.split(".").filter(Boolean).every((name) => classNames.has(name));
   }
 
   // tag[attr='value'], [attr*='value'], tag, or a[href]
-  const re = /^([a-z0-9]+)?(?:\[([a-z0-9_-]+)(?:([*^$]?=)['"]([^'"]*)['"])?\])?$/i;
+  const re = /^([a-z0-9-]+)?(?:\[([a-z0-9_-]+)(?:([*^$]?=)['"]([^'"]*)['"])?\])?$/i;
   const m = selector.match(re);
   if (!m) {
     // fallback: plain tag
@@ -224,6 +226,139 @@ function makeDocument(options: {
 }
 
 describe("page extraction", () => {
+  it("recognizes only concrete community post URLs", () => {
+    expect(communityPlatformForURL("https://news.ycombinator.com/item?id=123")).toBe("hacker-news");
+    expect(communityPlatformForURL("https://www.v2ex.com/t/123")).toBe("v2ex");
+    expect(communityPlatformForURL("https://stackoverflow.com/questions/123/example")).toBe("stack-overflow");
+    expect(communityPlatformForURL("https://dev.to/alice/a-post-123")).toBe("dev-to");
+    expect(communityPlatformForURL("https://linux.do/t/topic/2756623")).toBe("discourse");
+    expect(communityPlatformForURL("https://news.ycombinator.com/news")).toBeUndefined();
+  });
+
+  it("captures a Hacker News story and the comments rendered in the current page", () => {
+    const root = el("main", [
+      el("div", [el("a", [text("Show HN: A local-first reader")], { href: "https://example.test/project" })], { class: "titleline" }),
+      el("div", [el("span", [text("alice")], { class: "hnuser" }), el("span", [text("2 hours ago")], { class: "age" })], { class: "subtext" }),
+      el("div", [el("p", [text("This story explains the design and the tradeoffs in enough detail.")])], { class: "toptext" }),
+      el("tr", [
+        el("span", [text("bob")], { class: "hnuser" }),
+        el("span", [text("1 hour ago")], { class: "age" }),
+        el("div", [text("The comment adds an important implementation detail.")], { class: "commtext" }),
+      ], { class: "comtr", id: "987" }),
+    ]);
+    const result = extractCurrentPage(makeDocument({
+      title: "Show HN: A local-first reader | Hacker News",
+      href: "https://news.ycombinator.com/item?id=123&utm_source=test",
+      root,
+    }));
+    expect(result.title).toBe("Show HN: A local-first reader");
+    expect(result.url).toBe("https://news.ycombinator.com/item?id=123");
+    expect(result.text).toContain("author: \"alice\"");
+    expect(result.text).toContain("## 评论与回复（当前页面已加载 1）");
+    expect(result.text).toContain("**bob**");
+  });
+
+  it("captures a V2EX topic and loaded replies without navigation cards", () => {
+    const root = el("main", [
+      el("h1", [text("怎样设计可靠的抓取器")]),
+      el("div", [el("a", [text("alice")]), text(" · 3 小时前")], { class: "topic_info" }),
+      el("div", [el("div", [el("p", [text("正文需要准确保留段落，同时不能把侧边栏卷进来。")])], { class: "markdown_body" })], { class: "topic_content" }),
+      el("div", [
+        el("a", [text("bob")], { class: "dark" }), el("span", [text("2 小时前")], { class: "ago" }),
+        el("div", [text("回复补充了一个可复现的边界条件。")], { class: "reply_content" }),
+      ], { class: "cell", id: "r_456" }),
+    ]);
+    const result = extractCurrentPage(makeDocument({ title: "V2EX Topic", href: "https://www.v2ex.com/t/123", root }));
+    expect(result.text).toContain("# 怎样设计可靠的抓取器");
+    expect(result.text).toContain("回复补充了一个可复现的边界条件");
+    expect(result.text).not.toContain("V2EX Topic");
+  });
+
+  it("captures Stack Overflow question, answers and comments as one useful record", () => {
+    const question = el("div", [
+      el("div", [el("p", [text("How can I preserve article structure while extracting a page?")])], { class: "js-post-body" }),
+      el("div", [
+        el("span", [text("alice")], { class: "comment-user" }),
+        el("span", [text("Use a semantic root first.")], { class: "comment-copy" }),
+      ], { class: "comment" }),
+      el("a", [text("questioner")], { class: "user-details" }),
+      el("time", [text("2026-08-16")]),
+    ], { id: "question" });
+    const answer = el("div", [
+      el("div", [el("p", [text("Start with platform-specific selectors, then use a generic fallback.")])], { class: "js-post-body" }),
+      el("div", [el("a", [text("answerer")])], { class: "user-details" }),
+      el("time", [text("2026-08-16")]),
+    ], { class: "answer", "data-answerid": "55" });
+    const root = el("main", [el("div", [el("h1", [text("Reliable DOM extraction")])], { id: "question-header" }), question, answer]);
+    const result = extractCurrentPage(makeDocument({
+      title: "Reliable DOM extraction - Stack Overflow",
+      href: "https://stackoverflow.com/questions/123/reliable-dom-extraction",
+      root,
+    }));
+    expect(result.title).toBe("Reliable DOM extraction");
+    expect(result.text).toContain("Start with platform-specific selectors");
+    expect(result.text).toContain("Use a semantic root first");
+  });
+
+  it("captures dev.to and Discourse post bodies with their loaded discussion", () => {
+    const dev = el("main", [
+      el("header", [
+        el("a", [], { href: "/alice" }),
+        el("a", [text("Alice")], { class: "crayons-link fw-bold", href: "/alice" }),
+        el("h1", [text("Building a robust content adapter")]),
+        el("a", [text("#testing")], { class: "crayons-tag", href: "/t/testing" }),
+      ], { id: "main-title", class: "crayons-article__header__meta" }),
+      el("div", [el("p", [text("The article body contains the complete implementation rationale.")])], { id: "article-body" }),
+      el("div", [
+        el("div", [text("A useful comment about testing the adapter.")], { class: "comment__body" }),
+        el("div", [el("a", [text("reader")])], { class: "comment__header" }),
+      ], { class: "comment" }),
+    ], { id: "comments-container" });
+    const devResult = extractCurrentPage(makeDocument({ title: "dev.to article", href: "https://dev.to/alice/robust-adapter-123", root: dev }));
+    expect(devResult.title).toBe("Building a robust content adapter");
+    expect(devResult.text).toContain('author: "Alice"');
+    expect(devResult.text).not.toContain("# Building a robust content adapter #testing");
+    expect(devResult.text).toContain("complete implementation rationale");
+    expect(devResult.text).toContain("A useful comment about testing");
+
+    const discourse = el("main", [
+      el("h1", [text("社区抓取的正确边界")]),
+      el("article", [el("div", [text("首帖正文解释了为什么只抓当前已渲染内容。")], { class: "cooked" })], { id: "post_1" }),
+      el("article", [
+        el("a", [text("reply-user")], { "data-user-card": "reply-user" }),
+        el("time", [text("2026-08-16")]),
+        el("div", [text("这条回复给出了平台变化时的失败语义。")], { class: "cooked" }),
+      ], { id: "post_2" }),
+    ]);
+    const discourseResult = extractCurrentPage(makeDocument({ title: "linux.do", href: "https://linux.do/t/topic/2756623", root: discourse }));
+    expect(discourseResult.text).toContain("首帖正文解释了为什么");
+    expect(discourseResult.text).toContain("这条回复给出了平台变化时的失败语义");
+    expect(discourseResult.text).not.toContain("## 评论与回复（当前页面已加载 2）");
+  });
+
+  it("reports community login, security challenge and changed DOM states instead of archiving shells", () => {
+    const login = extractCurrentPage(makeDocument({
+      title: "登录 V2EX",
+      href: "https://www.v2ex.com/t/123",
+      root: el("main", [el("p", [text("请登录后继续阅读")]), el("input", [], { type: "password" })]),
+    }));
+    expect(login.captureIssue).toBe("CAPTURE_LOGIN_WALL");
+
+    const challenge = extractCurrentPage(makeDocument({
+      title: "Just a moment...",
+      href: "https://linux.do/t/topic/2756623",
+      root: el("main", [text("Checking your browser before accessing. Enable JavaScript and cookies to continue")]),
+    }));
+    expect(challenge.captureIssue).toBe("CAPTURE_SECURITY_CHALLENGE");
+
+    const changed = extractCurrentPage(makeDocument({
+      title: "Hacker News",
+      href: "https://news.ycombinator.com/item?id=123",
+      root: el("main", [el("div", [text("The expected story root is no longer present.")])]),
+    }));
+    expect(changed.captureIssue).toBe("CAPTURE_PAGE_LOAD_FAILED");
+    expect(changed.completeness).toBe("unknown");
+  });
   it("removes an author and relative-time prefix from a Douyin caption, but never returns empty", () => {
     expect(stripDouyinCaptionPrefix("@吴小杰 · 6天前为什么别人都是六改五？", "吴小杰"))
       .toBe("为什么别人都是六改五？");
@@ -346,6 +481,25 @@ describe("page extraction", () => {
     expect(navigation.captureIssue).toBe("CAPTURE_NAVIGATION_ONLY");
   });
 
+  it("rejects security challenge and throttle shells instead of community posts", () => {
+    const cloudflare = extractCurrentPage(makeDocument({
+      title: "Just a moment...",
+      href: "https://www.nodeseek.com/post-7922-1",
+      root: el("main", [
+        el("h1", [text("Just a moment...")]),
+        el("p", [text("Enable JavaScript and cookies to continue")]),
+      ]),
+    }));
+    expect(cloudflare.captureIssue).toBe("CAPTURE_SECURITY_CHALLENGE");
+
+    const throttled = extractCurrentPage(makeDocument({
+      title: "提示信息",
+      href: "https://hostloc.com/thread-1175760-1-1.html",
+      root: el("main", [el("p", [text("休息下，一会见")])]),
+    }));
+    expect(throttled.captureIssue).toBe("CAPTURE_SECURITY_CHALLENGE");
+  });
+
   it("uses a GitHub blob document heading and falls back to its filename", () => {
     const markdown = el("article", [
       el("h1", [text("第 1 章 FDE 的崛起")]),
@@ -408,6 +562,172 @@ describe("page extraction", () => {
     expect(result.text).not.toContain("作者卡片和阅读时间");
     expect(result.text).not.toContain("回复头像与互动区");
     expect(result.faviconURL).toBe(favicon);
+  });
+
+  it("captures a Reddit single post plus the comments rendered in the current page", () => {
+    const postImage = "https://preview.redd.it/workflow.png?width=1200&format=png";
+    const postBody = el("div", [
+      el("p", [text("I want to share how I interact with Claude Code.")]),
+      el("ol", [
+        el("li", [text("Always use Git and keep each task in its own context.")]),
+        el("li", [text("Measure and audit instead of guessing from memory.")]),
+      ]),
+      el("img", [], { alt: "workflow screenshot", src: postImage }),
+    ], { id: "t3_1vmey7d-post-rtjson-content" });
+    const post = el("shreddit-post", [
+      el("div", [postBody], { slot: "text-body" }),
+    ], {
+      id: "t3_1vmey7d",
+      permalink: "/r/ClaudeCode/comments/1vmey7d/my_claude_code_workflow_after_months_of_daily_use/",
+      "post-title": "My Claude Code workflow after months of daily use",
+      author: "oxmannnn",
+      "subreddit-prefixed-name": "r/ClaudeCode",
+      score: "419",
+      "created-timestamp": "2026-08-12T13:59:47.653000+0000",
+      "comment-count": "3",
+    });
+    const firstComment = el("shreddit-comment", [
+      el("div", [
+        el("p", [text("I always maintain a MISTAKES.md file.")]),
+      ], { slot: "comment" }),
+    ], {
+      thingid: "t1_p3cqx7l",
+      author: "thabxi",
+      depth: "0",
+      score: "45",
+      created: "2026-08-13T00:50:58.981000+0000",
+      permalink: "/r/ClaudeCode/comments/1vmey7d/comment/p3cqx7l/",
+      "aria-hidden": "false",
+    });
+    const reply = el("shreddit-comment", [
+      el("div", [
+        el("p", [text("Knowing the error in advance helps prioritize fixes.")]),
+      ], { slot: "comment" }),
+    ], {
+      thingid: "t1_p3evfj0",
+      author: "LividCan4323",
+      depth: "1",
+      score: "3",
+      created: "2026-08-13T09:49:24.096000+0000",
+      permalink: "/r/ClaudeCode/comments/1vmey7d/comment/p3evfj0/",
+      "aria-hidden": "false",
+    });
+    const sidebarCard = el("article", [
+      el("p", [text("you are out of usage credits.")]),
+    ]);
+    const recommendedPost = el("shreddit-post", [
+      el("div", [el("p", [text("A neighboring recommendation that is not the current post.")])], { slot: "text-body" }),
+    ], {
+      id: "t3_neighbor",
+      permalink: "/r/ClaudeCode/comments/neighbor/not_the_current_post/",
+      "post-title": "Neighboring recommendation",
+      author: "wrong-author",
+    });
+    const favicon = el("link", [], {
+      rel: "icon shortcut",
+      href: "https://www.redditstatic.com/shreddit/assets/favicon/64x64.png",
+    });
+    const documentLike = makeDocument({
+      title: "My Claude Code workflow after months of daily use : r/ClaudeCode",
+      href: "https://www.reddit.com/r/ClaudeCode/comments/1vmey7d/my_claude_code_workflow_after_months_of_daily_use/?utm_source=share",
+      root: el("main", [sidebarCard, recommendedPost, post, firstComment, reply, favicon]),
+    });
+
+    expect(isRedditPostURL(documentLike.location.href)).toBe(true);
+    const result = extractCurrentPage(documentLike);
+    expect(result.title).toBe("My Claude Code workflow after months of daily use");
+    expect(result.url).toBe("https://www.reddit.com/r/ClaudeCode/comments/1vmey7d/my_claude_code_workflow_after_months_of_daily_use/");
+    expect(result.text).toContain('author: "oxmannnn"');
+    expect(result.text).toContain('published: "2026-08-12T13:59:47.653000+00:00"');
+    expect(result.text).toContain('comments: "3"');
+    expect(result.text).toContain("> r/ClaudeCode · Reddit score 419");
+    expect(result.text).toContain("I want to share how I interact with Claude Code.");
+    expect(result.text).toContain(`![workflow screenshot](${postImage})`);
+    expect(result.text).toContain("## 评论（当前页面已加载 2 / 页面显示 3）");
+    expect(result.text).toContain("**u/thabxi** · score 45");
+    expect(result.text).toContain("**u/LividCan4323** · score 3");
+    expect(result.text).toContain("https://www.reddit.com/r/ClaudeCode/comments/1vmey7d/comment/p3evfj0/");
+    expect(result.text).not.toContain("you are out of usage credits");
+    expect(result.text).not.toContain("neighboring recommendation");
+    expect(result.faviconURL).toBe("https://www.redditstatic.com/shreddit/assets/favicon/64x64.png");
+    expect(result.completeness).toBe("visible_only");
+
+    const previousDocument = globalThis.document;
+    Object.defineProperty(globalThis, "document", {
+      configurable: true,
+      writable: true,
+      value: documentLike,
+    });
+    try {
+      expect(extractCurrentPage()).toEqual(result);
+    } finally {
+      if (previousDocument) {
+        Object.defineProperty(globalThis, "document", {
+          configurable: true,
+          writable: true,
+          value: previousDocument,
+        });
+      } else {
+        delete (globalThis as { document?: Document }).document;
+      }
+    }
+  });
+
+  it("captures a Reddit image post without inventing a text body", () => {
+    const imageURL = "https://i.redd.it/eclipse.jpeg";
+    const post = el("shreddit-post", [], {
+      id: "t3_image",
+      permalink: "/r/pics/comments/image/eclipse/",
+      "post-title": "Solar eclipse",
+      "post-type": "image",
+      "content-href": imageURL,
+      author: "photographer",
+      "subreddit-prefixed-name": "r/pics",
+      score: "5738",
+      "comment-count": "51",
+    });
+    const documentLike = makeDocument({
+      title: "Solar eclipse : r/pics",
+      href: "https://www.reddit.com/r/pics/comments/image/eclipse/",
+      root: el("main", [post]),
+    });
+
+    const result = extractCurrentPage(documentLike);
+    expect(result.captureIssue).toBeUndefined();
+    expect(result.text).toContain("> r/pics · Reddit score 5738");
+    expect(result.text).toContain(`![Solar eclipse](${imageURL})`);
+    expect(result.text).not.toContain("Reddit 帖子结构已变化");
+  });
+
+  it("rejects a Reddit login wall instead of capturing the page shell", () => {
+    const documentLike = makeDocument({
+      title: "Log in - Reddit",
+      href: "https://www.reddit.com/r/private/comments/abc123/restricted/",
+      root: el("main", [
+        el("h1", [text("Log in")]),
+        el("input", [], { type: "password" }),
+        el("p", [text("Log in with your password to continue.")]),
+      ]),
+    });
+    const result = extractCurrentPage(documentLike);
+    expect(result.captureIssue).toBe("CAPTURE_LOGIN_WALL");
+    expect(result.text).not.toContain("Log in with your password");
+  });
+
+  it("rejects a changed Reddit post body shape instead of falling back to a sidebar card", () => {
+    const documentLike = makeDocument({
+      title: "Reddit changed fixture",
+      href: "https://www.reddit.com/r/ClaudeCode/comments/changed/post/",
+      root: el("main", [
+        el("article", [el("p", [text("you are out of usage credits.")])]),
+        el("shreddit-post", [
+          el("div", [text("Post chrome without a stable text-body slot")], { slot: "future-body" }),
+        ], { id: "t3_changed", "post-title": "Changed post" }),
+      ]),
+    });
+    const result = extractCurrentPage(documentLike);
+    expect(result.captureIssue).toBe("CAPTURE_PAGE_LOAD_FAILED");
+    expect(result.text).not.toContain("you are out of usage credits");
   });
 
   it("drops wechat-style chrome lines and related-reading tails", () => {

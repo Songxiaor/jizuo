@@ -119,6 +119,21 @@ final class ProviderStoreTests: XCTestCase {
     XCTAssertTrue(rawText.contains(profile.secretReference.rawValue))
   }
 
+  func testSecretStoreTimeoutCancelsHungRead() async throws {
+    let started = Date()
+    do {
+      _ = try await SecretStoreTimeout.run(nanoseconds: 40_000_000) {
+        Thread.sleep(forTimeInterval: 1)
+        return "should-not-return"
+      }
+      XCTFail("Expected timeout")
+    } catch let failure as SecretStoreFailure {
+      XCTAssertTrue(failure.isTimeout)
+      XCTAssertEqual(failure.operation, .read)
+    }
+    XCTAssertLessThan(Date().timeIntervalSince(started), 0.8)
+  }
+
   func testKeychainWriteReadReplaceAndDeleteUsesIsolatedService() async throws {
     let serviceName = "com.syc.linkdigest.tests.\(UUID().uuidString)"
     let reference = SecretReference(rawValue: UUID().uuidString)

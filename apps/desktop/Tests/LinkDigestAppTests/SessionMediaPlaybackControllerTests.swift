@@ -1,4 +1,5 @@
 import XCTest
+import Combine
 
 @testable import LinkDigestAdapters
 @testable import LinkDigestApp
@@ -95,6 +96,67 @@ final class SessionMediaPlaybackControllerTests: XCTestCase {
       "详情页重入不得重启在飞的刷新"
     )
     XCTAssertEqual(controller.phase, .refreshing)
+  }
+
+  /// 没有会话媒体的文章不得改写 activeTaskID、也不得发通知。
+  ///
+  /// 窗口根观察整个 controller；`detailBecameActive` 每次切篇都会走到，
+  /// 原实现无条件 `activeTaskID = taskID`，即使这篇根本没有视频也把整扇窗
+  /// 再通知一遍。现在无媒体文章走早退分支，只清在飞刷新、不碰 activeTaskID。
+  func testMediaLessArticleDoesNotPublishActiveTaskID() throws {
+    let store = try makeStore()
+    store.sessionMediaRestoreMode = .manual
+    let controller = SessionMediaPlaybackController(
+      preferenceStore: store,
+      refreshService: SessionMediaRefreshService(resources: BilibiliPlayURLFake())
+    )
+    var publishCount = 0
+    let cancellable = controller.objectWillChange.sink { publishCount += 1 }
+
+    controller.detailBecameActive(
+      taskID: taskID, platform: nil, sourceURL: "https://example.test/plain",
+      author: nil, hadMediaDescriptor: false, hasLocalMedia: false,
+      isCurrentCaptureWithDescriptor: false, isYouTube: false
+    )
+    XCTAssertNil(controller.activeTaskID)
+    XCTAssertEqual(publishCount, 0, "无媒体文章不得改写 activeTaskID，也不得发通知")
+
+    // 有会话媒体的文章才更新 activeTaskID。
+    controller.detailBecameActive(
+      taskID: taskID, platform: "bilibili", sourceURL: pageURL, author: nil,
+      hadMediaDescriptor: true, hasLocalMedia: false,
+      isCurrentCaptureWithDescriptor: false, isYouTube: false
+    )
+    XCTAssertEqual(controller.activeTaskID, taskID)
+
+    withExtendedLifetime(cancellable) {}
+  }
+
+  /// 抖音已存本地文件走 HistoryVideoPlayerCard，不写 session activeTaskID。
+  /// 重播路径不得依赖这条 ID；早退只清在飞刷新。
+  func testLocalDouyinMediaDoesNotPublishActiveTaskID() throws {
+    let store = try makeStore()
+    store.sessionMediaRestoreMode = .manual
+    let controller = SessionMediaPlaybackController(
+      preferenceStore: store,
+      refreshService: SessionMediaRefreshService(resources: BilibiliPlayURLFake())
+    )
+    var publishCount = 0
+    let cancellable = controller.objectWillChange.sink { publishCount += 1 }
+
+    controller.detailBecameActive(
+      taskID: taskID,
+      platform: "douyin",
+      sourceURL: "https://www.douyin.com/video/7670909364680592680",
+      author: nil,
+      hadMediaDescriptor: true,
+      hasLocalMedia: true,
+      isCurrentCaptureWithDescriptor: false,
+      isYouTube: false
+    )
+    XCTAssertNil(controller.activeTaskID)
+    XCTAssertEqual(publishCount, 0, "已存本地视频不得改写 activeTaskID，也不得发通知")
+    withExtendedLifetime(cancellable) {}
   }
 
   func testDouyinHistoryRefreshUsesRenderedCaptureCallback() async throws {

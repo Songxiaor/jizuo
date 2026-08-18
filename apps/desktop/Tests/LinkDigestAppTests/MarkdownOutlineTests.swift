@@ -219,12 +219,18 @@ extension MarkdownOutlineTests {
   }
 
   /// 跳转靠 ScrollViewReader 驱动外层滚动容器。
+  ///
+  /// 阅读面板保活后多个面板同时挂载，章节锚点必须按面板命名空间隔离
+  /// （ScopedReadingAnchor），否则目录跳转会撞到隐藏面板的同名锚点。
   func testOutlineJumpUsesScrollAnchors() throws {
     let source = try presentationSource()
     XCTAssertTrue(source.contains("ScrollViewReader { proxy in"))
-    XCTAssertTrue(source.contains("proxy.scrollTo(target, anchor: .top)"))
+    XCTAssertTrue(source.contains("proxy.scrollTo(resolved, anchor: .top)"))
     XCTAssertTrue(
-      source.contains(".id(ReadingAnchor.block(entry.anchor))"),
-      "每段要挂锚点，且与模块共用一套锚点类型，否则 Int 与 String 会撞车")
+      source.contains(".id(ScopedReadingAnchor(scope: anchorScope, block: entry.anchor))"),
+      "每段要挂按面板隔离的锚点；模块锚点保持 ReadingAnchor.module 原值")
+    XCTAssertTrue(
+      source.contains("case let .module(anchor): ReadingAnchor.module(anchor)"),
+      "模块锚点只在详情页注册一份，跳转要落在原值上")
   }
 }

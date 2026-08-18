@@ -531,6 +531,13 @@ final class ManualLinkViewModel: ObservableObject {
     input = url.absoluteString; state = .idle; isPresented = true
   }
 
+  private func markClipboardURLHandled(_ rawURL: String) {
+    guard let canonical = try? CanonicalURL(rawURL.trimmingCharacters(in: .whitespacesAndNewlines)) else { return }
+    lastHandledClipboardCanonicalURL = canonical.value
+    if clipboardSuggestion?.canonicalURL == canonical.value { clipboardSuggestion = nil }
+    if pendingClipboardSuggestion?.canonicalURL == canonical.value { pendingClipboardSuggestion = nil }
+  }
+
   func submit() {
     guard !isBusy, ingestor != nil else { return }
     guard let submittedURL = ExplicitWebLinkInput.singleURL(from: input) else {
@@ -548,6 +555,7 @@ final class ManualLinkViewModel: ObservableObject {
       return
     }
     allowsDuplicateSubmit = false
+    markClipboardURLHandled(value)
     // 入队即关窗：抓取进度移到列表顶部排队区，用户可以继续浏览。
     pendingCaptures.append(PendingCapture(id: UUID(), urlString: value, phase: .queued))
     state = .idle
@@ -701,6 +709,7 @@ final class ManualLinkViewModel: ObservableObject {
       // A committed SQLite write cannot honestly be reported as cancelled.
       updatePendingPhase(pendingID, .saving)
       let accepted = try await ingestor.ingest(document)
+      markClipboardURLHandled(value)
       // Signed media URLs must be downloaded in the same flow; never stored for later.
       if let media = document.media, let onMediaCaptured {
         // Pass page URL so CDN downloads can set a public Referer (no cookies).

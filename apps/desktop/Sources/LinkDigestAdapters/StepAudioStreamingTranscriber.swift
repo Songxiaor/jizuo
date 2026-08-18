@@ -176,6 +176,7 @@ public final class StepAudioStreamingTranscriber: StreamingOnlineAudioTranscribi
         .joined(separator: "\n")
         .trimmingCharacters(in: .whitespacesAndNewlines)
       guard !combined.isEmpty else { throw OnlineAudioTranscriptionError.emptyTranscript }
+      await collector.flush()
       return combined
     } catch is CancellationError {
       throw OnlineAudioTranscriptionError.cancelled
@@ -338,25 +339,60 @@ actor PartialTranscriptCollector {
   private var deltas: [Int: String] = [:]
   private var finished: [Int: String] = [:]
   private let onAdvance: (@Sendable (String) -> Void)?
+  private let publishInterval: Duration
+  private var lastPublished: String?
+  private var pendingPublish: Task<Void, Never>?
 
-  init(onAdvance: (@Sendable (String) -> Void)?) {
+  init(
+    onAdvance: (@Sendable (String) -> Void)?,
+    publishInterval: Duration = .milliseconds(250)
+  ) {
     self.onAdvance = onAdvance
+    self.publishInterval = publishInterval
   }
 
   func append(index: Int, delta: String) {
     guard onAdvance != nil else { return }
     deltas[index, default: ""] += delta
-    publish()
+    schedulePublish()
   }
 
   func commit(index: Int, text: String) {
     guard onAdvance != nil else { return }
     finished[index] = text
     deltas[index] = text
-    publish()
+    schedulePublish()
   }
 
-  private func publish() {
+  /// 完成时不等节流时钟，确保 UI 能收到最后一段连续前缀。
+  func flush() {
+    pendingPublish?.cancel()
+    pendingPublish = nil
+    publishNow()
+  }
+
+  private func schedulePublish() {
+    // 第一行立即出现；后面的 token 合并到固定刷新拍点。测试可传 .zero
+    // 验证每一步的分片顺序，而生产默认不会逐 token 重绘窗口。
+    if lastPublished == nil || publishInterval == .zero {
+      publishNow()
+      return
+    }
+    guard pendingPublish == nil else { return }
+    let delay = publishInterval
+    pendingPublish = Task { [weak self] in
+      try? await Task.sleep(for: delay)
+      guard !Task.isCancelled else { return }
+      await self?.publishScheduled()
+    }
+  }
+
+  private func publishScheduled() {
+    pendingPublish = nil
+    publishNow()
+  }
+
+  private func publishNow() {
     guard let onAdvance else { return }
     var parts: [String] = []
     var index = 0
@@ -368,6 +404,9 @@ actor PartialTranscriptCollector {
       index += 1
     }
     guard !parts.isEmpty else { return }
-    onAdvance(parts.joined(separator: "\n"))
+    let value = parts.joined(separator: "\n")
+    guard value != lastPublished else { return }
+    lastPublished = value
+    onAdvance(value)
   }
 }

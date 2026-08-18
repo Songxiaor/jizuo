@@ -10,6 +10,8 @@ struct PlatformGridView: View {
   struct Item: Identifiable {
     let host: String
     let count: Int
+    let faviconURL: URL?
+    let faviconTaskID: TaskID?
     var id: String { host }
   }
 
@@ -47,8 +49,13 @@ private struct PlatformNavigationRow: View {
   var body: some View {
     Button(action: onSelect) {
       HStack(spacing: DesignTokens.Space.sm) {
-        PlatformNavigationIcon(host: item.host)
+        PlatformNavigationIcon(
+          host: item.host,
+          faviconURL: item.faviconURL,
+          faviconTaskID: item.faviconTaskID
+        )
           .frame(width: 18, height: 18)
+          .accessibilityHidden(true)
         Text(name)
           .lineLimit(1)
           .truncationMode(.tail)

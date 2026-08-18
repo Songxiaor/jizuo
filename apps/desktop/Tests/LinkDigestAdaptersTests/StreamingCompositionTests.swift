@@ -54,6 +54,28 @@ final class StreamingCompositionTests: XCTestCase {
     XCTAssertEqual(duration.seconds, 1.0, accuracy: 0.25)
   }
 
+  func testComposeLoadsVideoAndAudioTracksTogether() throws {
+    let sourceURL = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Sources/LinkDigestAdapters/StreamingComposition.swift")
+    let source = try String(contentsOf: sourceURL, encoding: .utf8)
+    XCTAssertTrue(source.contains("loadValuesAsynchronously"))
+    XCTAssertTrue(source.contains("videoAsset.loadValuesAsynchronously"))
+    XCTAssertTrue(source.contains("audioAsset.loadValuesAsynchronously"))
+  }
+
+  func testKnownDurationComposesWithoutReadingAssetDuration() async throws {
+    let videoURL = try await makeVideoOnlyFile(seconds: 1.0)
+    let audioURL = try await makeAudioOnlyFile(seconds: 1.0)
+    let asset = try await StreamingComposition.makePlayableAsset(
+      videoURL: videoURL,
+      companionAudioURL: audioURL,
+      knownDurationSeconds: 1.0
+    )
+    let duration = try await asset.load(.duration)
+    XCTAssertEqual(duration.seconds, 1.0, accuracy: 0.25)
+  }
+
   func testDualURLUsesShorterTrackDuration() async throws {
     let videoURL = try await makeVideoOnlyFile(seconds: 1.2)
     let audioURL = try await makeAudioOnlyFile(seconds: 0.6)

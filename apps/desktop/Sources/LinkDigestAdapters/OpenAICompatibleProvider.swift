@@ -606,7 +606,14 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       messages = [
         Message(
           role: "system",
-          content: "Translate only the captured webpage content into \(targetLanguage). Preserve meaning, structure, names, numbers, and links. Do not add commentary or facts that are not present in the captured content."
+          content: """
+          Translate only the captured webpage content into \(targetLanguage). Preserve meaning, structure, names, numbers, and links. Do not add commentary or facts that are not present in the captured content.
+
+          Preserve Markdown syntax and indentation exactly. LinkDigest comment sections use structural metadata that must remain machine-readable:
+          - Copy unchanged every section heading beginning with `## 评论（` or `## 评论与回复（`.
+          - Copy unchanged every comment metadata line beginning with `- **`, including its leading indentation, username, score, timestamp, `回复层级`, and `[原评论](...)` link.
+          - Translate only the prose body of each comment. Never translate usernames or change comment nesting.
+          """
         ),
         Message(role: "user", content: capturedContent(title: title, text: text))
       ]

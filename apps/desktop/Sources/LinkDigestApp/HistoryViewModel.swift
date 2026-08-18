@@ -713,7 +713,23 @@ final class HistoryViewModel: ObservableObject {
   /// 转写校对保存失败的人话提示；nil 表示无待展示错误。
   @Published private(set) var snapshotEditFailure: String?
   @Published private(set) var listState: HistoryListState = .idle
-  @Published private(set) var detailState: HistoryDetailState = .idle
+  /// 详情读取的状态机。刻意不是 `@Published`。
+  ///
+  /// 界面只有在没有内容可显示时才看它——`detail == nil` 那条分支里的转圈和失败页。
+  /// 上一条详情还留在屏幕上时把它翻成 `.loading`，画面一个像素都不会变，却会通知
+  /// 整个历史窗口重求值，连带一整轮 AppKit 布局递归。实测切换文章时这一拍空转
+  /// 稳定占 60–125ms，是两拍停顿里的头一拍。
+  ///
+  /// 所以值照常更新（`detailState == .loading` 仍然是「读取进行中」的可靠判据），
+  /// 只有在真会改变画面时才发通知。
+  private var detailStateStorage: HistoryDetailState = .idle
+  var detailState: HistoryDetailState { detailStateStorage }
+
+  private func setDetailState(_ newValue: HistoryDetailState) {
+    guard newValue != detailStateStorage else { return }
+    if detail == nil { objectWillChange.send() }
+    detailStateStorage = newValue
+  }
   @Published private(set) var isLoadingNextPage = false
   @Published private(set) var isReadOnly = false
   @Published private(set) var historyReadOnlyReason: RepositoryRecoveryReason?
@@ -785,14 +801,19 @@ final class HistoryViewModel: ObservableObject {
     didSet {
       if !transcriptionState.isActive {
         onlineTranscriptionPhase = nil
-        onlineTranscriptionPreview = nil
+        setOnlineTranscriptionPreview(nil)
       }
       if case .cancelled = transcriptionState {
-        transcriptionText = ""
+        setTranscriptionText("")
       }
     }
   }
-  @Published private(set) var transcriptionText = ""
+  /// 非 @Published：写入统一走 `setTranscriptionText`。转写 partial 每
+  /// 250ms 一个增长拍点，只更新 `liveTranscriptionText` 收窄重绘；
+  /// 空↔非空边界与终态清空仍整体通知。
+  private(set) var transcriptionText = ""
+  /// 转写流式正文的热路径发布通道，与 transcriptionText 同步更新。
+  let liveTranscriptionText = LiveRunTextModel()
   @Published private(set) var transcriptionTaskID: TaskID?
   @Published private(set) var transcriptionUsesOnlineService = false
   /// 在线转写进行到哪一步。「正在在线转写…」曾覆盖从建任务记录到最后一片
@@ -801,7 +822,11 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var onlineTranscriptionPhase: String?
   /// 流式通道下已确定的文稿前缀，边转写边显示。终态时清空，成品由
   /// `transcriptionText` 接管，避免同一段文字在界面上出现两份。
-  @Published private(set) var onlineTranscriptionPreview: String?
+  /// 非 @Published：partial 增长拍点只写 `liveOnlineTranscriptionPreview`
+  /// 收窄重绘（见 setOnlineTranscriptionPreview）。
+  private(set) var onlineTranscriptionPreview: String?
+  /// 在线转写预览的热路径发布通道，与 onlineTranscriptionPreview 同步。
+  let liveOnlineTranscriptionPreview = LiveRunTextModel()
   /// 上一次在线转写的分段耗时，终态后保留（阶段文案会被清掉，这条不能跟着走）。
   /// 「慢」必须先拆开看：下载音轨慢、本机切片导出慢、等 ASR 返回慢，
   /// 三段的修法完全不同（带宽 / 编码 preset / 分片粒度与并发），
@@ -1012,6 +1037,26 @@ final class HistoryViewModel: ObservableObject {
     transcriptionTaskID == taskID ? transcriptionText : ""
   }
 
+  /// `transcriptionText` 唯一的写入口。两侧都非空的纯增长拍点只更新
+  /// `liveTranscriptionText`（订阅它的是转写流式叶子视图）；首段文字、
+  /// 清空和 final 整体替换会改变「空/非空」或全文内容，照常整体通知。
+  /// 存储属性本身每次都更新，读取方（如转写后整理）拿到的始终是最新值。
+  private func setTranscriptionText(_ value: String) {
+    let isPureGrowth = !value.isEmpty && !transcriptionText.isEmpty
+    if !isPureGrowth { objectWillChange.send() }
+    transcriptionText = value
+    liveTranscriptionText.setText(value)
+  }
+
+  /// `onlineTranscriptionPreview` 唯一的写入口，规则同 setTranscriptionText：
+  /// 有→有的更新只走叶子模型；nil↔非 nil 的边界（首段出现、终态清空）整体通知。
+  private func setOnlineTranscriptionPreview(_ value: String?) {
+    let isPureGrowth = value != nil && onlineTranscriptionPreview != nil
+    if !isPureGrowth { objectWillChange.send() }
+    onlineTranscriptionPreview = value
+    liveOnlineTranscriptionPreview.setText(value ?? "")
+  }
+
   func imageTextRecognitionState(for taskID: TaskID) -> ImageTextRecognitionUIState {
     imageTextRecognitionTaskID == taskID ? imageTextRecognitionState : .idle
   }
@@ -1121,11 +1166,18 @@ final class HistoryViewModel: ObservableObject {
   }
   var hasCategoryFilter: Bool { !selectedHosts.isEmpty || !selectedTagNormalizedNames.isEmpty }
   func faviconImageURL(for row: HistoryRowProjection) -> URL? { faviconImageURLs[row.taskID] }
+  func platformFavicon(forHost host: String) -> (url: URL, taskID: TaskID)? {
+    let canonical = HistoryPlatformRegistry.canonicalHost(for: host)
+    for row in rows where HistoryPlatformRegistry.canonicalHost(for: row.host) == canonical {
+      if let url = faviconImageURLs[row.taskID] { return (url, row.taskID) }
+    }
+    return nil
+  }
 
   func beginBootstrapLoading() {
     guard history == nil, blockingErrorCode == nil else { return }
     listState = .loading
-    detailState = .loading
+    setDetailState(.loading)
   }
 
   func configure(
@@ -1162,7 +1214,7 @@ final class HistoryViewModel: ObservableObject {
     isBatchSummaryConfirmationPresented = false; isBatchSummaryOutcomePresented = false
     batchSummaryOutcomeMessage = ""
     transcriptionRequestID = UUID()
-    transcriptionState = .idle; transcriptionText = ""; transcriptionTaskID = nil; isTranscriptionModelConfirmationPresented = false; pendingTranscriptionContext = nil
+    transcriptionState = .idle; setTranscriptionText(""); transcriptionTaskID = nil; isTranscriptionModelConfirmationPresented = false; pendingTranscriptionContext = nil
     transcriptionUsesOnlineService = false
     isOnlineTranscriptionConfirmationPresented = false; pendingOnlineTranscriptionContext = nil
     imageTextRecognitionRequestID = UUID(); imageTextRecognitionState = .idle; recognizedImageText = ""; imageTextRecognitionTaskID = nil
@@ -1174,7 +1226,7 @@ final class HistoryViewModel: ObservableObject {
     selectedPiece = nil; pieceMaterials = []; workbenchFailure = nil
     topicCandidates = []; writingMethods = []; distilledCandidates = []
     hitPredictions = []
-    guard history != nil else { listState = .failed; detailState = .idle; return }
+    guard history != nil else { listState = .failed; setDetailState(.idle); return }
     reload()
     // 侧栏那个「进行中 N」和列表右键的「加入工作台」都要用到这份列表，
     // 所以启动时就取一次，而不是等用户点进工作台。
@@ -1290,7 +1342,7 @@ final class HistoryViewModel: ObservableObject {
       return false
     }
     transcriptionTaskID = detail.task.id
-    transcriptionText = ""
+    setTranscriptionText("")
     transcriptionState = .checkingModel
     transcriptionTask = Task { [weak self, worker] in
       guard self?.transcriptionRequestID == requestID else { return }
@@ -1384,7 +1436,7 @@ final class HistoryViewModel: ObservableObject {
     let requestID = UUID()
     transcriptionRequestID = requestID
     transcriptionTaskID = taskID
-    transcriptionText = ""
+    setTranscriptionText("")
     transcriptionUsesOnlineService = false
     transcriptionState = .preparingMedia
     transcriptionTask = Task { [weak self, worker] in
@@ -2864,12 +2916,12 @@ final class HistoryViewModel: ObservableObject {
     let requestID = UUID()
     transcriptionRequestID = requestID
     transcriptionTaskID = context.taskID
-    transcriptionText = ""
+    setTranscriptionText("")
     transcriptionUsesOnlineService = true
     transcriptionState = .preparingMedia
     onlineTranscriptionPhase = "正在创建转写任务记录…"
     onlineTranscriptionTimings = nil
-    onlineTranscriptionPreview = nil
+    setOnlineTranscriptionPreview(nil)
     onlineUploadStartInstant = nil
     onlineChunkTotal = nil
     // 单调时钟：耗时测量不能用注入的 nowMilliseconds（测试里是可控假时钟，
@@ -2983,7 +3035,7 @@ final class HistoryViewModel: ObservableObject {
         let onPartial: @Sendable (String) -> Void = { [weak self] prefix in
           Task { @MainActor in
             guard let self, self.transcriptionRequestID == requestID else { return }
-            self.onlineTranscriptionPreview = prefix
+            self.setOnlineTranscriptionPreview(prefix)
           }
         }
         let text: String
@@ -3014,7 +3066,7 @@ final class HistoryViewModel: ObservableObject {
           downloadedBytes: downloadedBytes,
           succeeded: true
         )
-        self.transcriptionText = text
+        self.setTranscriptionText(text)
         let completedAt = self.nowMilliseconds()
         let persisted = await worker.saveOnlineTaskTranscription(
           history,
@@ -3339,8 +3391,8 @@ final class HistoryViewModel: ObservableObject {
         switch event {
         case .extractingAudio: transcriptionState = .extractingAudio
         case .transcribing: transcriptionState = .transcribing
-        case let .partial(text): transcriptionText = text
-        case let .final(text): finalText = text; transcriptionText = text
+        case let .partial(text): setTranscriptionText(text)
+        case let .final(text): finalText = text; setTranscriptionText(text)
         }
       }
       try Task.checkCancellation()
@@ -3458,8 +3510,8 @@ final class HistoryViewModel: ObservableObject {
         switch event {
         case .extractingAudio: transcriptionState = .extractingAudio
         case .transcribing: transcriptionState = .transcribing
-        case let .partial(text): transcriptionText = text
-        case let .final(text): finalText = text; transcriptionText = text
+        case let .partial(text): setTranscriptionText(text)
+        case let .final(text): finalText = text; setTranscriptionText(text)
         }
       }
       try Task.checkCancellation()
@@ -3524,14 +3576,18 @@ final class HistoryViewModel: ObservableObject {
     let generation = configurationGeneration, requestID = UUID()
     detailRequestID = requestID
     detailTask?.cancel()
+    let imageCache = self.imageCache
     detailTask = Task { [weak self] in
-      let result = await Task.detached(priority: .utility) {
-        Self.detailResult(history, taskID: taskID)
+      let payload = await Task.detached(priority: .utility) {
+        Self.detailPayload(history, taskID: taskID, imageCache: imageCache)
       }.value
       guard !Task.isCancelled else { return }
       // This request replaced the ordinary detail request, so it must also
       // complete that request's visible state machine on both success/failure.
-      self?.receiveDetail(result, taskID: taskID, generation: generation, requestID: requestID)
+      self?.receiveDetail(
+        payload.0, sideload: payload.1,
+        taskID: taskID, generation: generation, requestID: requestID
+      )
     }
   }
   func toggleTag(_ tag: HistoryTag, additive: Bool) {
@@ -3837,7 +3893,7 @@ final class HistoryViewModel: ObservableObject {
       rows = page.rows; nextCursor = page.nextCursor; listState = page.rows.isEmpty ? .empty : .loaded
       loadFavicons(for: page.rows, generation: generation)
       if page.rows.isEmpty {
-        selectedTaskIDs = []; detail = nil; detailState = .idle
+        selectedTaskIDs = []; detail = nil; setDetailState(.idle)
       } else if selectedTaskIDs.isEmpty {
         selectedTaskID = rows.first?.taskID
       } else {
@@ -3852,11 +3908,11 @@ final class HistoryViewModel: ObservableObject {
         } else {
           // 多选仍保留批量语义，不擅自收窄成第一条。
           detail = nil
-          detailState = .idle
+          setDetailState(.idle)
         }
       }
     case let .failure(code):
-      listState = .failed; listErrorCode = code; rows = []; selectedTaskIDs = []; detail = nil; detailState = .idle
+      listState = .failed; listErrorCode = code; rows = []; selectedTaskIDs = []; detail = nil; setDetailState(.idle)
     }
   }
 
@@ -3874,24 +3930,30 @@ final class HistoryViewModel: ObservableObject {
 
   private func loadDetailForSelection() {
     invalidateExportPreparation()
-    localMediaLease = nil
-    localMediaFileURL = nil
-    localMediaResolutionFailure = nil
     guard let history, let taskID = selectedTaskID else {
+      localMediaLease = nil
+      localMediaFileURL = nil
+      localMediaResolutionFailure = nil
       detail = nil
       localImageURLs = []
-      localMediaFileURL = nil
-      detailState = .idle
+      setDetailState(.idle)
       return
     }
+    // 上一条详情留在屏幕上，直到新详情读出来再整体换掉。清空会让详情视图树被
+    // 拆成一屏转圈再重建，每次切换要多跑一整轮 AppKit 布局；媒体和图片这些配套
+    // 状态也一起留到 `receiveDetail`，避免中途卡片消失又出现，白白多一次重排。
     let generation = configurationGeneration, requestID = UUID()
-    detailRequestID = requestID; detailTask?.cancel(); detail = nil; detailErrorCode = nil; detailState = .loading
+    detailRequestID = requestID; detailTask?.cancel(); detailErrorCode = nil; setDetailState(.loading)
+    let imageCache = self.imageCache
     detailTask = Task { [weak self] in
-      let result = await Task.detached(priority: .userInitiated) {
-        Self.detailResult(history, taskID: taskID)
+      let payload = await Task.detached(priority: .userInitiated) {
+        Self.detailPayload(history, taskID: taskID, imageCache: imageCache)
       }.value
       guard !Task.isCancelled else { return }
-      self?.receiveDetail(result, taskID: taskID, generation: generation, requestID: requestID)
+      self?.receiveDetail(
+        payload.0, sideload: payload.1,
+        taskID: taskID, generation: generation, requestID: requestID
+      )
     }
   }
 
@@ -4851,7 +4913,7 @@ final class HistoryViewModel: ObservableObject {
     let requestID = UUID()
     transcriptionRequestID = requestID
     transcriptionTaskID = taskID
-    transcriptionText = ""
+    setTranscriptionText("")
     transcriptionUsesOnlineService = false
     transcriptionState = .transcribing
     let (stopSignal, stopContinuation) = AsyncStream.makeStream(of: Void.self)
@@ -4880,7 +4942,7 @@ final class HistoryViewModel: ObservableObject {
             latest = text
             pendingPartial = text
             if ContinuousClock.now - lastPartialFlush > .milliseconds(250) {
-              self.transcriptionText = text
+              self.setTranscriptionText(text)
               pendingPartial = nil
               lastPartialFlush = .now
             }
@@ -4900,7 +4962,7 @@ final class HistoryViewModel: ObservableObject {
           return
         }
         // 冲刷：合批期间攒下的最后一段必须落地，不能丢在缓冲里。
-        if let pendingPartial { self.transcriptionText = pendingPartial }
+        if let pendingPartial { self.setTranscriptionText(pendingPartial) }
         let trimmed = latest.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
           _ = await worker.updateTaskTranscriptionStatus(
@@ -4953,13 +5015,15 @@ final class HistoryViewModel: ObservableObject {
     let generation = configurationGeneration, requestID = UUID()
     detailRequestID = requestID
     detailTask?.cancel()
+    let imageCache = self.imageCache
     detailTask = Task { [weak self] in
-      let result = await Task.detached(priority: .userInitiated) {
-        Self.detailResult(history, taskID: taskID)
+      let payload = await Task.detached(priority: .userInitiated) {
+        Self.detailPayload(history, taskID: taskID, imageCache: imageCache)
       }.value
       guard !Task.isCancelled else { return }
       self?.receiveDetail(
-        result,
+        payload.0,
+        sideload: payload.1,
         taskID: taskID,
         generation: generation,
         requestID: requestID
@@ -4967,20 +5031,25 @@ final class HistoryViewModel: ObservableObject {
     }
   }
 
-  private func receiveDetail(_ result: DetailResult, taskID: TaskID, generation: UUID, requestID: UUID) {
+  private func receiveDetail(
+    _ result: DetailResult,
+    sideload: DetailSideload,
+    taskID: TaskID,
+    generation: UUID,
+    requestID: UUID
+  ) {
     guard generation == configurationGeneration, requestID == detailRequestID, selectedTaskID == taskID else { return }
     switch result {
     case let .success(value):
       detail = value
+      localImageURLs = sideload.localImageURLs
       if let snapshot = value.snapshots.last {
-        let snapshotID = snapshot.id
-        localImageURLs = imageCache?.localImageURLs(taskID: taskID, snapshotID: snapshotID) ?? []
         backfillRemoteImagesIfNeeded(
           snapshot: snapshot,
           taskID: taskID,
           generation: generation
         )
-      } else { localImageURLs = [] }
+      }
       if let media = value.media, let mediaStore {
         do {
           let lease = try mediaStore.resolve(media)
@@ -5001,15 +5070,15 @@ final class HistoryViewModel: ObservableObject {
         localMediaFileURL = nil
         localMediaResolutionFailure = nil
       }
-      mindMapRecord = (try? history?.mindMapStore?.loadMindMap(taskID: taskID)) ?? nil
+      mindMapRecord = sideload.mindMapRecord
       // 后台自动管线可能正在给另一条生成脑图。切换详情只应让当前条目看到
       // 自己的 idle 状态，不能把那条仍在运行的全局任务清掉并放开并发闸门。
       if !mindMapState.isActive, mindMapTaskID != taskID {
         mindMapState = .idle
         mindMapTaskID = nil
       }
-      ledgerTokenTotals = (try? history?.tokenUsageStore?.ledgerTokenTotals(taskID: taskID)) ?? nil
-      taskExcerpts = (try? history?.annotationStore?.listExcerpts(taskID: taskID)) ?? []
+      ledgerTokenTotals = sideload.ledgerTokenTotals
+      taskExcerpts = sideload.taskExcerpts
       if loadedNoteTaskID != taskID {
         // 覆盖草稿之前先把上一条待落库的笔记冲刷掉。这里必须在同一个同步段里把
         // pendingNote 取走：赋值 taskNoteDraft 会触发编辑器的 onChange →
@@ -5017,10 +5086,10 @@ final class HistoryViewModel: ObservableObject {
         // 就晚了，上一条的最后一段编辑会被静默丢掉。
         let carriedOver = takePendingNote()
         loadedNoteTaskID = taskID
-        taskNoteDraft = (try? history?.annotationStore?.loadNote(taskID: taskID) ?? nil) ?? ""
+        taskNoteDraft = sideload.note
         if let carriedOver { persistNoteDetached(carriedOver) }
       }
-      detailState = .loaded
+      setDetailState(.loaded)
     case let .failure(code):
       detail = nil
       localImageURLs = []
@@ -5030,7 +5099,7 @@ final class HistoryViewModel: ObservableObject {
       mindMapRecord = nil
       ledgerTokenTotals = nil
       detailErrorCode = code
-      detailState = .failed
+      setDetailState(.failed)
     }
   }
 
@@ -5098,7 +5167,7 @@ final class HistoryViewModel: ObservableObject {
         detail = nil
         localImageURLs = []
         localMediaFileURL = nil
-        detailState = .idle
+        setDetailState(.idle)
       }
       let failedCount = batch.failedTaskIDs.count
       if failedCount > 0 || protectedCount > 0 {
@@ -5340,7 +5409,9 @@ final class HistoryViewModel: ObservableObject {
 
   private func loadFavicons(for rows: [HistoryRowProjection], generation: UUID) {
     guard let faviconCache, let faviconResources else { return }
-    let candidates = rows.filter { $0.host.lowercased() != "github.com" && faviconImageURLs[$0.taskID] == nil }
+    let candidates = rows.filter {
+      PlatformIconCatalog.assetName(for: $0.host) == nil && faviconImageURLs[$0.taskID] == nil
+    }
     guard !candidates.isEmpty else { return }
     faviconTask?.cancel()
     faviconTask = Task { [weak self, faviconCache, faviconResources] in
@@ -5431,6 +5502,51 @@ final class HistoryViewModel: ObservableObject {
   nonisolated private static func detailResult(_ history: HistoryApplicationService, taskID: TaskID) -> DetailResult {
     do { return .success(try history.detail(taskID: taskID)) }
     catch { return .failure(storageCode(for: error, context: .open)) }
+  }
+
+  /// 一条详情的配套数据：脑图、Token 账、摘录、笔记草稿、本地图片。
+  ///
+  /// 这些原来在 `receiveDetail` 里同步读——四次 SQLite 加一次目录枚举全压在主线程，
+  /// 切换文章时整段时间界面不出帧。它们和正文投影一起在后台读完再回主线程一次性铺上。
+  struct DetailSideload: Sendable {
+    var localImageURLs: [URL] = []
+    var mindMapRecord: TaskMindMapRecord?
+    var ledgerTokenTotals: TaskTokenTotals?
+    var taskExcerpts: [TaskExcerpt] = []
+    var note: String = ""
+  }
+
+  nonisolated private static func detailSideload(
+    _ history: HistoryApplicationService,
+    taskID: TaskID,
+    snapshotID: ContentSnapshotID?,
+    imageCache: GitHubREADMEImageCache?
+  ) -> DetailSideload {
+    var side = DetailSideload()
+    if let snapshotID {
+      side.localImageURLs = imageCache?.localImageURLs(taskID: taskID, snapshotID: snapshotID) ?? []
+    }
+    side.mindMapRecord = (try? history.mindMapStore?.loadMindMap(taskID: taskID)) ?? nil
+    side.ledgerTokenTotals = (try? history.tokenUsageStore?.ledgerTokenTotals(taskID: taskID)) ?? nil
+    side.taskExcerpts = (try? history.annotationStore?.listExcerpts(taskID: taskID)) ?? []
+    side.note = ((try? history.annotationStore?.loadNote(taskID: taskID) ?? nil) ?? "")
+    return side
+  }
+
+  /// 正文投影和配套数据在同一个后台任务里读完，主线程只做一次赋值。
+  nonisolated private static func detailPayload(
+    _ history: HistoryApplicationService,
+    taskID: TaskID,
+    imageCache: GitHubREADMEImageCache?
+  ) -> (DetailResult, DetailSideload) {
+    let result = detailResult(history, taskID: taskID)
+    guard case let .success(value) = result else { return (result, DetailSideload()) }
+    let side = detailSideload(
+      history, taskID: taskID,
+      snapshotID: value.snapshots.last?.id,
+      imageCache: imageCache
+    )
+    return (result, side)
   }
 
   nonisolated static func batchSummaryState(

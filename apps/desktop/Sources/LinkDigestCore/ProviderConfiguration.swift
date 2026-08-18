@@ -20,6 +20,7 @@ public enum ProviderConfigurationError: String, Error, Codable, Sendable, Equata
   case profileStoreReadFailed = "PROFILE_STORE_READ_FAILED"
   case profileStoreWriteFailed = "PROFILE_STORE_WRITE_FAILED"
   case secretStoreReadFailed = "SECRET_STORE_READ_FAILED"
+  case secretStoreReadTimedOut = "SECRET_STORE_READ_TIMED_OUT"
   case secretStoreWriteFailed = "SECRET_STORE_WRITE_FAILED"
   case secretStoreDeleteFailed = "SECRET_STORE_DELETE_FAILED"
   case configurationChanged = "PROVIDER_CONFIGURATION_CHANGED"
@@ -68,6 +69,9 @@ public enum SecretStoreOperation: String, Sendable, Equatable {
 }
 
 public struct SecretStoreFailure: Error, Sendable, Equatable {
+  /// 与 Security `errSecTimeout` 相同，给钥匙串读取套超时用，不引入 Security 依赖。
+  public static let timeoutStatus: Int32 = -25248
+
   public let operation: SecretStoreOperation
   public let status: Int32
 
@@ -75,6 +79,8 @@ public struct SecretStoreFailure: Error, Sendable, Equatable {
     self.operation = operation
     self.status = status
   }
+
+  public var isTimeout: Bool { status == Self.timeoutStatus }
 
   public var code: String {
     switch operation {
@@ -278,10 +284,8 @@ public actor ProviderConfigurationService {
       guard try await secretStore.contains(profile.secretReference) else {
         throw ProviderConfigurationError.secretStoreReadFailed
       }
-    } catch let error as ProviderConfigurationError {
-      throw error
     } catch {
-      throw ProviderConfigurationError.secretStoreReadFailed
+      throw mapSecretStoreReadError(error)
     }
     try validateStableRead(revision)
     return profile
@@ -330,10 +334,8 @@ public actor ProviderConfigurationService {
         throw ProviderConfigurationError.secretStoreReadFailed
       }
       apiKey = value
-    } catch let error as ProviderConfigurationError {
-      throw error
     } catch {
-      throw ProviderConfigurationError.secretStoreReadFailed
+      throw mapSecretStoreReadError(error)
     }
     try validateStableRead(revision)
 
@@ -375,10 +377,8 @@ public actor ProviderConfigurationService {
             !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       else { throw ProviderConfigurationError.secretStoreReadFailed }
       apiKey = value
-    } catch let error as ProviderConfigurationError {
-      throw error
     } catch {
-      throw ProviderConfigurationError.secretStoreReadFailed
+      throw mapSecretStoreReadError(error)
     }
     try validateStableRead(revision)
 
@@ -694,7 +694,7 @@ public actor ProviderConfigurationService {
       do {
         removedSecret = try await secretStore.read(removed.secretReference)
       } catch {
-        throw ProviderConfigurationError.secretStoreReadFailed
+        throw mapSecretStoreReadError(error)
       }
     }
 
@@ -858,11 +858,19 @@ public actor ProviderConfigurationService {
         throw ProviderConfigurationError.secretStoreReadFailed
       }
       return value
-    } catch let error as ProviderConfigurationError {
-      throw error
     } catch {
-      throw ProviderConfigurationError.secretStoreReadFailed
+      throw mapSecretStoreReadError(error)
     }
+  }
+
+  private func mapSecretStoreReadError(_ error: Error) -> ProviderConfigurationError {
+    if let error = error as? ProviderConfigurationError {
+      return error
+    }
+    if let error = error as? SecretStoreFailure, error.isTimeout {
+      return .secretStoreReadTimedOut
+    }
+    return .secretStoreReadFailed
   }
 
   private func beginStableRead() throws -> UInt64 {

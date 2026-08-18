@@ -50,6 +50,9 @@ public enum StreamingComposition {
     if applyOutOfBandMIME {
       options["AVURLAssetOutOfBandMIMETypeKey"] = mimeTypeHint(for: url, role: role)
     }
+    // 精确时长要扫完整 moov / sidx。4K 远程 m4s 这一下经常要十秒；
+    // 起播只需要轨道和大致片长，精确度让给已知片长或估算。
+    options[AVURLAssetPreferPreciseDurationAndTimingKey] = false
     if options.isEmpty {
       return AVURLAsset(url: url)
     }
@@ -58,11 +61,13 @@ public enum StreamingComposition {
 
   /// 单 URL：返回带 header + MIME 的 `AVURLAsset`。
   /// 双 URL：分别构造两个 `AVURLAsset`，合成 `AVMutableComposition`（不导出）。
+  /// `knownDurationSeconds` 来自站点 API 时，跳过远程资产的慢时长扫描。
   public static func makePlayableAsset(
     videoURL: URL,
     companionAudioURL: URL? = nil,
     httpHeaders: [String: String]? = nil,
-    applyOutOfBandMIME: Bool = true
+    applyOutOfBandMIME: Bool = true,
+    knownDurationSeconds: Double? = nil
   ) async throws -> AVAsset {
     let videoAsset = urlAsset(
       url: videoURL,
@@ -78,7 +83,11 @@ public enum StreamingComposition {
       httpHeaders: httpHeaders,
       applyOutOfBandMIME: applyOutOfBandMIME
     )
-    return try await compose(videoAsset: videoAsset, audioAsset: audioAsset)
+    return try await compose(
+      videoAsset: videoAsset,
+      audioAsset: audioAsset,
+      knownDurationSeconds: knownDurationSeconds
+    )
   }
 
   /// HLS 用 playlist MIME；其余按轨角色给 mp4 容器提示。
@@ -92,28 +101,95 @@ public enum StreamingComposition {
 
   private static func compose(
     videoAsset: AVAsset,
-    audioAsset: AVAsset
+    audioAsset: AVAsset,
+    knownDurationSeconds: Double?
   ) async throws -> AVMutableComposition {
-    // AVAsset / AVAssetTrack 非 Sendable，必须串行 load（并行 async let 会触发 data race）。
-    guard let sourceVideoTrack = try await videoAsset.loadTracks(withMediaType: .video).first else {
+    // 画面和声音是两个资产，可以并行等 tracks。串行的话 4K 双轨经常把等待叠成十几秒。
+    // 有站点片长就只拉 tracks；时长已经够用来 insert。
+    let keys = knownDurationSeconds != nil ? ["tracks"] : ["tracks", "duration"]
+    try await loadValues(of: videoAsset, and: audioAsset, keys: keys)
+
+    guard let sourceVideoTrack = videoAsset.tracks(withMediaType: .video).first else {
       throw StreamingCompositionError.missingVideoTrack
     }
-    guard let sourceAudioTrack = try await audioAsset.loadTracks(withMediaType: .audio).first else {
+    guard let sourceAudioTrack = audioAsset.tracks(withMediaType: .audio).first else {
       throw StreamingCompositionError.missingAudioTrack
     }
 
-    let composition = AVMutableComposition()
-    guard
-      let videoTrack = composition.addMutableTrack(
-        withMediaType: .video,
-        preferredTrackID: kCMPersistentTrackID_Invalid
-      ),
-      let audioTrack = composition.addMutableTrack(
-        withMediaType: .audio,
-        preferredTrackID: kCMPersistentTrackID_Invalid
-      )
-    else { throw StreamingCompositionError.compositionUnavailable }
+    let transform = sourceVideoTrack.preferredTransform
 
+    if let known = knownDurationSeconds, known.isFinite, known > 0 {
+      let knownDuration = CMTime(seconds: known, preferredTimescale: 600)
+      if let composed = try? buildComposition(
+        sourceVideoTrack: sourceVideoTrack,
+        sourceAudioTrack: sourceAudioTrack,
+        duration: knownDuration,
+        preferredTransform: transform
+      ) {
+        return composed
+      }
+    }
+
+    if let duration = cachedNumericDuration(videoAsset: videoAsset, audioAsset: audioAsset) {
+      return try buildComposition(
+        sourceVideoTrack: sourceVideoTrack,
+        sourceAudioTrack: sourceAudioTrack,
+        duration: duration,
+        preferredTransform: transform
+      )
+    }
+
+    let duration = try await resolvedDuration(
+      videoAsset: videoAsset,
+      audioAsset: audioAsset,
+      sourceVideoTrack: sourceVideoTrack,
+      sourceAudioTrack: sourceAudioTrack
+    )
+    return try buildComposition(
+      sourceVideoTrack: sourceVideoTrack,
+      sourceAudioTrack: sourceAudioTrack,
+      duration: duration,
+      preferredTransform: transform
+    )
+  }
+
+  /// 两个远程资产同时 `loadValuesAsynchronously`，避免画面等完再等声音。
+  private static func loadValues(
+    of videoAsset: AVAsset,
+    and audioAsset: AVAsset,
+    keys: [String]
+  ) async throws {
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+      let group = DispatchGroup()
+      group.enter()
+      videoAsset.loadValuesAsynchronously(forKeys: keys) { group.leave() }
+      group.enter()
+      audioAsset.loadValuesAsynchronously(forKeys: keys) { group.leave() }
+      group.notify(queue: .global()) { continuation.resume() }
+    }
+    var videoError: NSError?
+    var audioError: NSError?
+    if videoAsset.statusOfValue(forKey: "tracks", error: &videoError) == .failed {
+      throw videoError ?? StreamingCompositionError.missingVideoTrack
+    }
+    if audioAsset.statusOfValue(forKey: "tracks", error: &audioError) == .failed {
+      throw audioError ?? StreamingCompositionError.missingAudioTrack
+    }
+  }
+
+  private static func cachedNumericDuration(videoAsset: AVAsset, audioAsset: AVAsset) -> CMTime? {
+    let video = videoAsset.duration
+    let audio = audioAsset.duration
+    guard video.isNumeric, audio.isNumeric, video.seconds > 0, audio.seconds > 0 else { return nil }
+    return CMTimeMinimum(video, audio)
+  }
+
+  private static func resolvedDuration(
+    videoAsset: AVAsset,
+    audioAsset: AVAsset,
+    sourceVideoTrack: AVAssetTrack,
+    sourceAudioTrack: AVAssetTrack
+  ) async throws -> CMTime {
     // 与 SeparateTrackMuxer 一致：两条流时长可能差几帧，按较短的一条截齐。
     // 远程 fMP4/m4s 有时 asset.duration 为 indefinite，改用轨 timeRange。
     let videoDuration = try await videoAsset.load(.duration)
@@ -134,11 +210,32 @@ public enum StreamingComposition {
     guard duration.isValid, duration.isNumeric, duration.seconds > 0 else {
       throw StreamingCompositionError.invalidDuration
     }
+    return duration
+  }
+
+  private static func buildComposition(
+    sourceVideoTrack: AVAssetTrack,
+    sourceAudioTrack: AVAssetTrack,
+    duration: CMTime,
+    preferredTransform: CGAffineTransform
+  ) throws -> AVMutableComposition {
+    let composition = AVMutableComposition()
+    guard
+      let videoTrack = composition.addMutableTrack(
+        withMediaType: .video,
+        preferredTrackID: kCMPersistentTrackID_Invalid
+      ),
+      let audioTrack = composition.addMutableTrack(
+        withMediaType: .audio,
+        preferredTrackID: kCMPersistentTrackID_Invalid
+      )
+    else { throw StreamingCompositionError.compositionUnavailable }
+
     let range = CMTimeRange(start: .zero, duration: duration)
     try videoTrack.insertTimeRange(range, of: sourceVideoTrack, at: .zero)
     try audioTrack.insertTimeRange(range, of: sourceAudioTrack, at: .zero)
     // 竖屏旋转信息在 preferredTransform 上，不带过来会横过来播。
-    videoTrack.preferredTransform = try await sourceVideoTrack.load(.preferredTransform)
+    videoTrack.preferredTransform = preferredTransform
     return composition
   }
 }

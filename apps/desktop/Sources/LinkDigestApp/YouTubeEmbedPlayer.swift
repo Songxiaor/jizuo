@@ -1,3 +1,4 @@
+import AppKit
 import AVKit
 import SwiftUI
 import WebKit
@@ -129,6 +130,7 @@ struct YouTubeEmbedPlayerCard: View {
           } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
             .buttonStyle(.link)
             .font(.caption)
+            .help("双击视频也可放大")
             .accessibilityIdentifier("history-youtube-cinema")
         }
         .frame(maxWidth: 720)
@@ -262,6 +264,67 @@ private struct YouTubeEmbedPosterView: View {
   func dismiss() { content = nil }
 }
 
+/// 不抢单击：AVPlayerView 的播放、进度条继续可用。
+/// 只在本视图范围内监听双击，用来进出影院。
+struct VideoCinemaDoubleClickCatcher: NSViewRepresentable {
+  var action: () -> Void
+
+  func makeNSView(context: Context) -> MonitorView {
+    let view = MonitorView()
+    view.action = action
+    return view
+  }
+
+  func updateNSView(_ nsView: MonitorView, context: Context) {
+    nsView.action = action
+  }
+
+  final class MonitorView: NSView {
+    var action: (() -> Void)?
+    private var monitor: Any?
+
+    override var acceptsFirstResponder: Bool { false }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      if window == nil { removeMonitor() } else { installMonitor() }
+    }
+
+    private func installMonitor() {
+      guard monitor == nil else { return }
+      monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
+        guard let self,
+              event.clickCount == 2,
+              let window = self.window,
+              event.window === window,
+              self.bounds.width > 0,
+              self.bounds.height > 0
+        else { return event }
+        let location = self.convert(event.locationInWindow, from: nil)
+        if self.bounds.contains(location) {
+          // 下一拍再进出影院，避免同一次双击打到刚出现的 overlay 上立刻关掉。
+          DispatchQueue.main.async { self.action?() }
+        }
+        return event
+      }
+    }
+
+    private func removeMonitor() {
+      if let monitor { NSEvent.removeMonitor(monitor) }
+      self.monitor = nil
+    }
+  }
+}
+
+extension View {
+  func videoCinemaDoubleClick(_ action: @escaping () -> Void) -> some View {
+    background(
+      VideoCinemaDoubleClickCatcher(action: action).allowsHitTesting(false)
+    )
+  }
+}
+
 struct VideoCinemaOverlay: View {
   @ObservedObject private var cinema = VideoCinemaController.shared
   @ObservedObject private var diagnostics = YouTubeEmbedDiagnostics.shared
@@ -329,6 +392,8 @@ struct VideoCinemaOverlay: View {
                   }
               case let .player(player, _):
                 VideoPlayer(player: player)
+                  .linkDigestVideoSurface(player: player)
+                  .videoCinemaDoubleClick { cinema.dismiss() }
               }
             }
             .frame(width: fitted.width, height: fitted.height)

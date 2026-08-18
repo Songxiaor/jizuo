@@ -399,6 +399,194 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(tasks.map(\.text), ["待办一项"])
   }
 
+  func testRedditCommentsPreserveHierarchyAuthorsAndMetadata() throws {
+    let source = """
+    正文结尾。
+
+    ## 评论（当前页面已加载 4 / 页面显示 10）
+
+    - **u/thabxi** · score 45 · 2026-08-13T00:50:58.981000+00:00 · [原评论](https://www.reddit.com/r/test/comments/abc/comment/one/)
+      第一条评论。
+      第二段仍属于第一条。
+      - **u/LividCan4323** · score 3 · 2026-08-13T09:49:24.096000+00:00 · [原评论](https://www.reddit.com/r/test/comments/abc/comment/two/)
+        回复内容。
+        - **u/thabxi** · score 2 · 2026-08-13T09:50:49.642000+00:00
+          再次回复。
+    - **u/[deleted]** · score 1
+      已删除用户的正文仍应保留。
+    """
+
+    let blocks = MarkdownPresentation.blocks(from: source)
+    XCTAssertEqual(blocks.count, 2)
+    guard case let .comments(section) = blocks[1] else {
+      return XCTFail("评论区应成为独立结构块，实际是 \(blocks[1])")
+    }
+    XCTAssertEqual(section.countTitle, "评论 4/10")
+    XCTAssertEqual(section.progressLabel, "已加载 40%")
+    XCTAssertEqual(section.items.count, 4)
+    XCTAssertEqual(section.items.map(\.depth), [0, 1, 2, 0])
+    XCTAssertEqual(section.items.map(\.parentAuthor), [nil, "thabxi", "LividCan4323", nil])
+    XCTAssertEqual(section.items[0].author, "u/thabxi")
+    XCTAssertEqual(section.items[0].displayAuthor, "thabxi")
+    XCTAssertEqual(section.items[1].displayAuthor, "LividCan4323")
+    XCTAssertEqual(section.items[0].score, "45")
+    XCTAssertEqual(section.items[0].published, "2026-08-13T00:50:58.981000+00:00")
+    XCTAssertEqual(
+      section.items[0].permalink,
+      URL(string: "https://www.reddit.com/r/test/comments/abc/comment/one/")
+    )
+    XCTAssertEqual(section.items[0].body, "第一条评论。\n第二段仍属于第一条。")
+    XCTAssertEqual(section.items[1].body, "回复内容。")
+    XCTAssertEqual(section.items[3].displayAuthor, "已删除用户")
+    XCTAssertTrue(section.items[3].body.contains("正文仍应保留"))
+  }
+
+  func testTranslatedRedditCommentBodiesRemainACommentTree() {
+    let translated = """
+    已翻译正文。
+
+    ## 评论（当前页面已加载 3 / 页面显示 3）
+
+    - **u/root** · score 5 · 2026-08-13T00:00:00Z · [原评论](https://www.reddit.com/comments/root/)
+      这是已经翻译的根评论。
+      - **u/reply** · score 2 · 2026-08-13T01:00:00Z · [原评论](https://www.reddit.com/comments/reply/)
+        这是已经翻译的回复。
+        - **u/deep** · score 1 · 回复层级 2
+          这是第二层回复。
+    """
+
+    let blocks = MarkdownPresentation.blocks(from: translated)
+    XCTAssertEqual(blocks.count, 2)
+    guard case let .comments(section) = blocks[1] else {
+      return XCTFail("保留结构元数据的译文必须继续显示为评论树")
+    }
+    XCTAssertEqual(section.items.map(\.displayAuthor), ["root", "reply", "deep"])
+    XCTAssertEqual(section.items.map(\.depth), [0, 1, 2])
+    XCTAssertEqual(section.items.map(\.parentAuthor), [nil, "root", "reply"])
+    XCTAssertEqual(
+      section.items.map(\.body),
+      ["这是已经翻译的根评论。", "这是已经翻译的回复。", "这是第二层回复。"]
+    )
+    XCTAssertEqual(section.items[1].permalink, URL(string: "https://www.reddit.com/comments/reply/"))
+  }
+
+  func testCommentSectionStaysAtomicWhenAReplyContainsCachedImage() {
+    let remote = "https://preview.redd.it/comment-shot.png"
+    let digest = SHA256.hash(data: Data(remote.utf8)).map { String(format: "%02x", $0) }.joined()
+    let local = URL(fileURLWithPath: "/tmp/\(digest)")
+    let source = """
+    正文在评论之前。
+
+    ## 评论（当前页面已加载 3 / 页面显示 3）
+
+    - **u/root** · score 2
+      根评论
+      - **u/with-image** · score 1
+        图片在这条回复里：
+        ![截图](\(remote))
+    - **u/after-image** · score 1
+      图片后的根评论也必须保留层级。
+    """
+
+    let segments = LocalMarkdownImageLayout.segments(
+      markdown: source,
+      localImageURLs: [local],
+      appendsUnusedLocalImages: false
+    )
+    XCTAssertEqual(segments.count, 2)
+    guard case let .text(commentTail) = segments[1] else {
+      return XCTFail("评论区不应在评论图片处切段")
+    }
+    let blocks = MarkdownPresentation.blocks(from: commentTail)
+    guard case let .comments(section) = blocks.first else {
+      return XCTFail("完整评论尾段应继续进入结构化评论组件")
+    }
+    XCTAssertEqual(section.items.map(\.author), ["u/root", "u/with-image", "u/after-image"])
+    XCTAssertEqual(section.items.map(\.depth), [0, 1, 0])
+    XCTAssertTrue(section.items[1].body.contains(remote))
+    XCTAssertEqual(
+      LocalMarkdownImageLayout.segments(
+        markdown: section.items[1].body,
+        localImageURLs: [local],
+        appendsUnusedLocalImages: false
+      ).compactMap { segment in
+        if case let .image(url) = segment { return url }
+        return nil
+      },
+      [local]
+    )
+  }
+
+  func testOrdinaryParenthesizedCommentHeadingDoesNotDisableImageLayout() {
+    let remote = "https://example.test/ordinary.png"
+    let digest = SHA256.hash(data: Data(remote.utf8)).map { String(format: "%02x", $0) }.joined()
+    let local = URL(fileURLWithPath: "/tmp/\(digest)")
+    let source = """
+    ## 评论（写作示例）
+
+    - **重要结论**
+
+    ![普通正文图片](\(remote))
+    """
+    let segments = LocalMarkdownImageLayout.segments(
+      markdown: source,
+      localImageURLs: [local],
+      appendsUnusedLocalImages: false
+    )
+    XCTAssertTrue(segments.contains(.image(local)))
+  }
+
+  func testCommentDepthLabelRestoresLevelsBeyondMarkdownIndentCap() {
+    let source = """
+    ## 评论（当前页面已加载 2）
+
+    - **u/root** · score 1
+      根评论
+                - **u/deep** · score 1 · 回复层级 8
+                  深层回复
+    """
+    let blocks = MarkdownPresentation.blocks(from: source)
+    guard case let .comments(section) = blocks.first else {
+      return XCTFail("expected comment section")
+    }
+    XCTAssertEqual(section.items.map(\.depth), [0, 8])
+    XCTAssertEqual(section.items[1].parentAuthor, "root")
+  }
+
+  func testOrdinaryCommentHeadingAndBoldListRemainOrdinaryMarkdown() {
+    let blocks = MarkdownPresentation.blocks(from: "## 评论\n\n- **重要结论**\n- 普通列表")
+    XCTAssertEqual(blocks.count, 2)
+    guard case .heading = blocks[0] else { return XCTFail("标题不应被误判为结构化评论") }
+    guard case let .list(items) = blocks[1] else { return XCTFail("普通列表不应被评论解析器接管") }
+    XCTAssertEqual(items.count, 2)
+  }
+
+  func testBoldBulletInsideRedditCommentBodyDoesNotBecomeAUser() {
+    let source = """
+    ## 评论（当前页面已加载 1）
+
+    - **u/root** · score 2
+      这是一条评论。
+      - **重点结论**
+      - 普通子项
+    """
+    let blocks = MarkdownPresentation.blocks(from: source)
+    guard case let .comments(section) = blocks.first else { return XCTFail("expected comments") }
+    XCTAssertEqual(section.items.count, 1)
+    XCTAssertTrue(section.items[0].body.contains("**重点结论**"))
+    XCTAssertTrue(section.items[0].body.contains("普通子项"))
+  }
+
+  func testCommentPublishedTimeUsesCompactChineseRelativeLabels() {
+    let raw = "2026-08-13T00:00:00+00:00"
+    let published = ISO8601DateFormatter().date(from: raw)!
+    XCTAssertEqual(
+      CommentPublishedTime.relativeLabel(raw, now: published.addingTimeInterval(3 * 86_400)),
+      "3 天前"
+    )
+    XCTAssertEqual(CommentPublishedTime.relativeLabel("3 days ago", now: published), "3 days ago")
+  }
+
   /// `[` 开头但不是复选框的仍是普通列表项，别把 Markdown 链接当成待办。
   func testBracketsThatAreNotCheckboxesStayPlainItems() {
     for source in ["- [链接](https://example.test)", "- [无效] 标记", "- [] 空框"] {
@@ -564,6 +752,20 @@ final class MarkdownPresentationTests: XCTestCase {
 
     let around = ReadingEditLocator.displayedSnippet(in: source, utf16Index: 2, radius: 2)
     XCTAssertTrue(around.contains("申") || around.contains("哥"))
+  }
+
+  func testStreamingTextUpdateReturnsOnlyTheAppendedUTF16Suffix() {
+    XCTAssertEqual(
+      StreamingTextUpdate.appendedSuffix(previous: "第一段🙂", next: "第一段🙂第二段"),
+      "第二段"
+    )
+    XCTAssertEqual(
+      StreamingTextUpdate.appendedSuffix(previous: "相同", next: "相同"),
+      ""
+    )
+    XCTAssertNil(
+      StreamingTextUpdate.appendedSuffix(previous: "旧内容", next: "新内容")
+    )
   }
 
   func testWikiLinksBecomeInAppMarkdownLinksAndStayOutOfCode() throws {
@@ -795,5 +997,68 @@ final class LightboxPanBoundsTests: XCTestCase {
     XCTAssertEqual(atEdge, 200)
     // 缩到 700 后只剩 ±50 的余量。
     XCTAssertEqual(LightboxPanBounds.clampAxis(atEdge, content: 700, container: 600), 50)
+  }
+
+  /// 长文阅读面板冷渲染成本的回归护栏：块解析、富文本组装、TextKit 全文
+  /// 排版三段分别计时。库里最长条目约 7.3 万字，切换阅读页签时整棵面板
+  /// 视图树销毁重建，这些成本逐段全量重付——预算取实测的宽松上限，
+  /// 主要防的是数量级回退（如解析退回 O(n²)），不是防 10% 的抖动。
+  @MainActor
+  func testLongDocumentColdRenderCostStaysWithinBudget() {
+    var paragraphs: [String] = []
+    var characters = 0
+    let sentence = "这是一段用于性能护栏的合成正文，模拟真实长文的密度与标点分布，内容本身没有意义。"
+    while characters < 73_000 {
+      if paragraphs.count % 12 == 0 {
+        paragraphs.append("## 第\(paragraphs.count / 12 + 1) 节 标题")
+        paragraphs.append(sentence + sentence)
+      } else if paragraphs.count % 12 == 7 {
+        paragraphs.append("- 要点一：" + sentence)
+        paragraphs.append("- 要点二：" + sentence)
+        paragraphs.append("- 要点三：" + sentence)
+      } else if paragraphs.count % 12 == 10 {
+        paragraphs.append("> 引用：" + sentence)
+      } else {
+        paragraphs.append(sentence + sentence + sentence)
+      }
+      characters = paragraphs.joined().count
+    }
+    let source = paragraphs.joined(separator: "\n\n")
+    XCTAssertGreaterThan(source.count, 70_000, "合成文档要达到真实最长条目的量级")
+
+    let parseStart = CFAbsoluteTimeGetCurrent()
+    let blocks = MarkdownPresentation.blocks(from: source)
+    let parseElapsed = CFAbsoluteTimeGetCurrent() - parseStart
+
+    let composeStart = CFAbsoluteTimeGetCurrent()
+    let attributed = ReadingTextComposer.attributed(
+      blocks: blocks,
+      readingFont: .sans,
+      palette: .init(primary: .black, secondary: .darkGray, accent: .blue)
+    )
+    let composeElapsed = CFAbsoluteTimeGetCurrent() - composeStart
+
+    let layoutStart = CFAbsoluteTimeGetCurrent()
+    let storage = NSTextStorage(attributedString: attributed)
+    let manager = NSLayoutManager()
+    let container = NSTextContainer(
+      containerSize: NSSize(width: 590, height: CGFloat.greatestFiniteMagnitude)
+    )
+    container.lineFragmentPadding = 0
+    manager.addTextContainer(container)
+    storage.addLayoutManager(manager)
+    manager.ensureLayout(for: container)
+    _ = manager.usedRect(for: container)
+    let layoutElapsed = CFAbsoluteTimeGetCurrent() - layoutStart
+
+    print(
+      "long-document cold render: parse \(String(format: "%.0f", parseElapsed * 1000))ms, "
+        + "compose \(String(format: "%.0f", composeElapsed * 1000))ms, "
+        + "layout \(String(format: "%.0f", layoutElapsed * 1000))ms"
+    )
+    // 宽松预算：三段合计留给 CI 机器与本地差异的余量。
+    XCTAssertLessThan(parseElapsed, 1.0, "块解析回退到秒级")
+    XCTAssertLessThan(composeElapsed, 1.0, "富文本组装回退到秒级")
+    XCTAssertLessThan(layoutElapsed, 1.0, "TextKit 全文排版回退到秒级")
   }
 }

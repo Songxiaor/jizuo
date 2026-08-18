@@ -121,13 +121,24 @@ public actor ModelRunOrchestrator {
   private let onRunMetadataChanged: HistoryMetadataChangedHandler?
   private let storageWriteGate: StorageWriteGate?
   private let nowMilliseconds: @Sendable () -> Int64
+  /// 模型可能每秒吐几十个 token。界面只需要保持“正在增长”的感觉，不应让
+  /// 每个 token 都触发一次整窗 SwiftUI 求值。
+  private let streamingUIPublishInterval: Duration
+  /// 草稿用于崩溃恢复，不需要跟 token 同频写 SQLite。终态仍会强制写入全文。
+  private let partialArtifactSaveInterval: Duration
 
   private var currentRunID: RunID?
   private var currentIntent: RunIntentKind?
   private var currentCommittedPartialText = ""
+  private var currentPersistedPartialText = ""
+  private var currentPublishedPartialText = ""
+  /// 本次运行是否已经报过「正在思考」。见 `publishThinking`。
+  private var currentPublishedThinking = false
   private var currentArtifactID: ArtifactID?
   private var currentSecretRedactor: StreamingSecretRedactor?
   private var currentTask: Task<Void, Never>?
+  private var currentUIPublishTask: Task<Void, Never>?
+  private var currentPartialSaveTask: Task<Void, Never>?
   private var currentTaskID: TaskID?
   private var currentStateHandler: StateHandler?
 
@@ -139,6 +150,8 @@ public actor ModelRunOrchestrator {
     onHistoryMetadataChanged: HistoryMetadataChangedHandler? = nil,
     onRunMetadataChanged: HistoryMetadataChangedHandler? = nil,
     storageWriteGate: StorageWriteGate? = nil,
+    streamingUIPublishInterval: Duration = .milliseconds(250),
+    partialArtifactSaveInterval: Duration = .seconds(1),
     nowMilliseconds: @escaping @Sendable () -> Int64 = {
       Int64((Date().timeIntervalSince1970 * 1_000).rounded())
     }
@@ -150,6 +163,8 @@ public actor ModelRunOrchestrator {
     self.onHistoryMetadataChanged = onHistoryMetadataChanged
     self.onRunMetadataChanged = onRunMetadataChanged
     self.storageWriteGate = storageWriteGate
+    self.streamingUIPublishInterval = streamingUIPublishInterval
+    self.partialArtifactSaveInterval = partialArtifactSaveInterval
     self.nowMilliseconds = nowMilliseconds
   }
 
@@ -227,8 +242,13 @@ public actor ModelRunOrchestrator {
     currentRunID = runID
     currentIntent = request.intent
     currentCommittedPartialText = ""
+    currentPersistedPartialText = ""
+    currentPublishedPartialText = ""
+    currentPublishedThinking = false
     currentArtifactID = ArtifactID()
     currentSecretRedactor = nil
+    currentUIPublishTask = nil
+    currentPartialSaveTask = nil
     currentStateHandler = onState
     currentTaskID = request.taskID
 
@@ -547,6 +567,11 @@ public actor ModelRunOrchestrator {
     guard let runID = currentRunID, !Task.isCancelled,
           let onState = currentStateHandler
     else { return }
+    // 一次运行只报一次：`.thinking(intent:)` 不带随 delta 变化的负载，而调用点
+    // 对每个 reasoning delta 都会走到这里。不去重就是按 delta 速率做无谓的
+    // 跨 actor 跳转；正文一开始就不再进入这条路径（见调用点的 isEmpty 判断）。
+    guard !currentPublishedThinking else { return }
+    currentPublishedThinking = true
     await onState(runID, .thinking(intent: intent))
   }
 
@@ -559,8 +584,8 @@ public actor ModelRunOrchestrator {
     guard
       currentRunID == runID,
       !Task.isCancelled,
-      let onState = currentStateHandler,
-      let artifactID = currentArtifactID
+      currentStateHandler != nil,
+      currentArtifactID != nil
     else {
       return
     }
@@ -572,7 +597,69 @@ public actor ModelRunOrchestrator {
     let candidate = redactor.append(delta)
     currentSecretRedactor = redactor
     guard !candidate.isEmpty, candidate != currentCommittedPartialText else { return }
+    currentCommittedPartialText = candidate
 
+    // 第一段立即落盘并显示，用户不用盯着空白页等一个节流周期。后续增量分成
+    // 两个时钟：UI 约 4Hz，SQLite 约 1Hz；终态再强制冲刷最后全文。
+    if currentPublishedPartialText.isEmpty {
+      guard await persistBufferedPartial(runID: runID, intent: intent) else { return }
+      await publishBufferedPartial(runID: runID, intent: intent)
+      return
+    }
+    scheduleUIPublish(runID: runID, intent: intent)
+    schedulePartialSave(runID: runID, intent: intent)
+  }
+
+  private func scheduleUIPublish(runID: RunID, intent: RunIntentKind) {
+    guard currentUIPublishTask == nil else { return }
+    let delay = streamingUIPublishInterval
+    currentUIPublishTask = Task { [weak self] in
+      try? await Task.sleep(for: delay)
+      guard !Task.isCancelled else { return }
+      await self?.runScheduledUIPublish(runID: runID, intent: intent)
+    }
+  }
+
+  private func runScheduledUIPublish(runID: RunID, intent: RunIntentKind) async {
+    currentUIPublishTask = nil
+    await publishBufferedPartial(runID: runID, intent: intent)
+  }
+
+  private func schedulePartialSave(runID: RunID, intent: RunIntentKind) {
+    guard currentPartialSaveTask == nil else { return }
+    let delay = partialArtifactSaveInterval
+    currentPartialSaveTask = Task { [weak self] in
+      try? await Task.sleep(for: delay)
+      guard !Task.isCancelled else { return }
+      await self?.runScheduledPartialSave(runID: runID, intent: intent)
+    }
+  }
+
+  private func runScheduledPartialSave(runID: RunID, intent: RunIntentKind) async {
+    currentPartialSaveTask = nil
+    _ = await persistBufferedPartial(runID: runID, intent: intent)
+  }
+
+  private func publishBufferedPartial(runID: RunID, intent: RunIntentKind) async {
+    guard currentRunID == runID,
+          !Task.isCancelled,
+          let onState = currentStateHandler
+    else { return }
+    let candidate = currentCommittedPartialText
+    guard !candidate.isEmpty, candidate != currentPublishedPartialText else { return }
+    currentPublishedPartialText = candidate
+    await onState(runID, .streaming(intent: intent, partialText: candidate))
+  }
+
+  @discardableResult
+  private func persistBufferedPartial(runID: RunID, intent: RunIntentKind) async -> Bool {
+    guard currentRunID == runID,
+          !Task.isCancelled,
+          let artifactID = currentArtifactID
+    else { return false }
+    let candidate = currentCommittedPartialText
+    guard !candidate.isEmpty else { return true }
+    guard candidate != currentPersistedPartialText else { return true }
     do {
       try history.savePartialArtifact(.init(
         runID: runID,
@@ -581,11 +668,12 @@ public actor ModelRunOrchestrator {
         bodyText: candidate,
         updatedAtMilliseconds: nowMilliseconds()
       ))
-      guard currentRunID == runID, !Task.isCancelled else { return }
-      currentCommittedPartialText = candidate
-      await onState(runID, .streaming(intent: intent, partialText: candidate))
+      guard currentRunID == runID, !Task.isCancelled else { return false }
+      currentPersistedPartialText = candidate
+      return true
     } catch {
       await persistenceFailed(error, runID: runID, intent: intent)
+      return false
     }
   }
 
@@ -594,35 +682,20 @@ public actor ModelRunOrchestrator {
     intent: RunIntentKind
   ) async -> Bool {
     guard currentRunID == runID else { return false }
-    guard var redactor = currentSecretRedactor else { return true }
-    let candidate = redactor.finalize()
-    currentSecretRedactor = redactor
-    guard candidate != currentCommittedPartialText else { return true }
-    guard
-      !candidate.isEmpty,
-      let artifactID = currentArtifactID,
-      let onState = currentStateHandler
-    else {
-      return true
+    if var redactor = currentSecretRedactor {
+      let candidate = redactor.finalize()
+      currentSecretRedactor = redactor
+      if !candidate.isEmpty, candidate != currentCommittedPartialText {
+        currentCommittedPartialText = candidate
+      }
     }
-
-    do {
-      try history.savePartialArtifact(.init(
-        runID: runID,
-        artifactID: artifactID,
-        contentFormat: .markdown,
-        bodyText: candidate,
-        updatedAtMilliseconds: nowMilliseconds()
-      ))
-      guard currentRunID == runID, !Task.isCancelled else { return false }
-      currentCommittedPartialText = candidate
-      await onState(runID, .streaming(intent: intent, partialText: candidate))
-      guard currentRunID == runID, !Task.isCancelled else { return false }
-      return true
-    } catch {
-      await persistenceFailed(error, runID: runID, intent: intent)
-      return false
-    }
+    currentUIPublishTask?.cancel()
+    currentUIPublishTask = nil
+    currentPartialSaveTask?.cancel()
+    currentPartialSaveTask = nil
+    guard await persistBufferedPartial(runID: runID, intent: intent) else { return false }
+    await publishBufferedPartial(runID: runID, intent: intent)
+    return currentRunID == runID && !Task.isCancelled
   }
 
   private func finishCompleted(
@@ -808,7 +881,9 @@ public actor ModelRunOrchestrator {
     intent: RunIntentKind?
   ) async {
     guard currentRunID == runID, let onState = currentStateHandler else { return }
-    let partialText = currentCommittedPartialText
+    // UI 可能领先最近一次 1Hz 草稿检查点；存储已经失效时只展示真正写成功的
+    // 部分，避免把尚未持久化的文本冒充为可恢复内容。
+    let partialText = currentPersistedPartialText
     let mapped = (error as? RepositoryFailure).map {
       StorageErrorMapper.map($0, context: .write).code
     } ?? .writeFailed
@@ -829,12 +904,19 @@ public actor ModelRunOrchestrator {
   }
 
   private func clearCurrentRun() {
+    currentUIPublishTask?.cancel()
+    currentPartialSaveTask?.cancel()
     currentRunID = nil
     currentIntent = nil
     currentCommittedPartialText = ""
+    currentPersistedPartialText = ""
+    currentPublishedPartialText = ""
+    currentPublishedThinking = false
     currentArtifactID = nil
     currentSecretRedactor = nil
     currentTask = nil
+    currentUIPublishTask = nil
+    currentPartialSaveTask = nil
     currentTaskID = nil
     currentStateHandler = nil
   }

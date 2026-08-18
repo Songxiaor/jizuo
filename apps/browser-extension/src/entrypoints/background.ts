@@ -1397,12 +1397,28 @@ export async function syncSingleTweet(tweetID: unknown): Promise<SingleTweetSync
   return { ok: true, outcome };
 }
 
+export async function openPeerApp(): Promise<{ ok: true } | { ok: false; code: "native_error" }> {
+  const message = { kind: "openApp", version: 1, requestId: requestId() };
+  try {
+    const response: unknown = await withTimeout(
+      browser.runtime.sendNativeMessage(HOST_NAME, message),
+      10_000,
+    );
+    const normalized = normalizeNativeResponse(response, message.requestId);
+    if (normalized.kind === "error") return { ok: false, code: "native_error" };
+    return { ok: true };
+  } catch {
+    return { ok: false, code: "native_error" };
+  }
+}
+
 export default defineBackground(() => {
   browser.runtime.onMessage.addListener(async (
     message: { type?: string; tabId?: number; tweetID?: string; requestedAction?: CaptureRequestedAction },
   ) => {
     // 时间线注入按钮发来的单条同步：只需要 tweetID，不涉及 tabId。
     if (message.type === "sync-single-tweet") return syncSingleTweet(message.tweetID);
+    if (message.type === "open-app") return openPeerApp();
     if (typeof message.tabId !== "number") return undefined;
     if (message.type === "preview-current-page") return previewCurrentPage(message.tabId);
     if (message.type === "send-current-page") {

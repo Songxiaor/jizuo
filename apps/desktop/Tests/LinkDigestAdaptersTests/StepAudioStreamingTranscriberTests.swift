@@ -61,7 +61,10 @@ final class StepAudioStreamingTranscriberTests: XCTestCase {
 
   func testPartialTranscriptWithholdsLaterChunksUntilEarlierOnesFinish() async {
     let recorder = PreviewRecorder()
-    let collector = PartialTranscriptCollector(onAdvance: { recorder.record($0) })
+    let collector = PartialTranscriptCollector(
+      onAdvance: { recorder.record($0) },
+      publishInterval: .zero
+    )
 
     // 第 1 片先出字：第 0 片还没完成，它一个字都不能露出来，
     // 否则用户读到的是倒着的文稿。
@@ -78,11 +81,28 @@ final class StepAudioStreamingTranscriberTests: XCTestCase {
     await collector.commit(index: 1, text: "后半段（定稿）")
     XCTAssertEqual(recorder.latest, "前半段（定稿）\n后半段（定稿）")
   }
+
+  func testRapidTranscriptDeltasCoalescePreviewUpdatesAndFlushFinalPrefix() async {
+    let recorder = PreviewRecorder()
+    let collector = PartialTranscriptCollector(
+      onAdvance: { recorder.record($0) },
+      publishInterval: .seconds(30)
+    )
+
+    for _ in 0..<200 {
+      await collector.append(index: 0, delta: "字")
+    }
+    await collector.flush()
+
+    XCTAssertEqual(recorder.latest, String(repeating: "字", count: 200))
+    XCTAssertLessThanOrEqual(recorder.count, 2)
+  }
 }
 
 private final class PreviewRecorder: @unchecked Sendable {
   private let lock = NSLock()
   private var value: String?
+  private var recordedCount = 0
 
   var latest: String? {
     lock.lock()
@@ -90,9 +110,17 @@ private final class PreviewRecorder: @unchecked Sendable {
     return value
   }
 
+
+  var count: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return recordedCount
+  }
+
   func record(_ text: String) {
     lock.lock()
     value = text
+    recordedCount += 1
     lock.unlock()
   }
 }

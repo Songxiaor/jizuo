@@ -2122,7 +2122,7 @@ private func escapedLikePattern(_ value: String) -> String {
 /// admits a URL or changes network policy.
 private func normalizedTaskHostSQL(tableAlias: String) -> String {
   let raw = "lower(substr(substr(\(tableAlias).canonical_url, instr(\(tableAlias).canonical_url, '://') + 3), 1, instr(substr(\(tableAlias).canonical_url, instr(\(tableAlias).canonical_url, '://') + 3) || '/', '/') - 1))"
-  return """
+  let normalized = """
     CASE
       WHEN \(tableAlias).canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'
         THEN '\(HistoryPlatformDisplay.noteHost)'
@@ -2138,6 +2138,21 @@ private func normalizedTaskHostSQL(tableAlias: String) -> String {
       ELSE \(raw)
     END
     """
+  let cases = HistoryPlatformRegistry.platforms.flatMap { platform -> [String] in
+    var result: [String] = []
+    if !platform.exactHosts.isEmpty {
+      let hosts = platform.exactHosts
+        .map { "'\($0.replacingOccurrences(of: "'", with: "''"))'" }
+        .joined(separator: ", ")
+      result.append("WHEN \(normalized) IN (\(hosts)) THEN '\(platform.canonicalHost)'")
+    }
+    for suffix in platform.suffixHosts {
+      let safe = suffix.replacingOccurrences(of: "'", with: "''")
+      result.append("WHEN \(normalized) = '\(safe)' OR \(normalized) LIKE '%.\(safe)' THEN '\(platform.canonicalHost)'")
+    }
+    return result
+  }.joined(separator: "\n")
+  return "CASE\n\(cases)\nELSE \(normalized)\nEND"
 }
 
 private func requiredID<ID: HistoryIdentifier>(_ raw: String) -> ID { ID(raw)! }

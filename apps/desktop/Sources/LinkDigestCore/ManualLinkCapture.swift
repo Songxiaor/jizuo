@@ -188,6 +188,38 @@ public enum PublicHTMLResponsePolicy {
   }
 }
 
+/// Same-path Markdown copies (e.g. `/post` → `/post.md`). One extra GET, not a crawl.
+public enum PublicMarkdownResponsePolicy {
+  public static let acceptedTypes: Set<String> = ["text/markdown", "text/x-markdown"]
+  public static let byteLimit = 2_000_000
+
+  public static func mediaType(from contentType: String?) -> String? {
+    contentType?.split(separator: ";", maxSplits: 1).first?
+      .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+  }
+
+  public static func accepts(statusCode: Int, contentType: String?, expectedLength: Int64? = nil, bodyCount: Int) -> Bool {
+    guard (200...299).contains(statusCode) else { return false }
+    guard let type = mediaType(from: contentType), acceptedTypes.contains(type) else { return false }
+    guard expectedLength ?? 0 <= Int64(byteLimit), bodyCount <= byteLimit else { return false }
+    return true
+  }
+}
+
+public enum SiblingMarkdownURL {
+  public static func make(from url: URL) -> URL? {
+    guard let scheme = url.scheme?.lowercased(), ["http", "https"].contains(scheme) else { return nil }
+    var path = url.path
+    if path.hasSuffix("/") { path.removeLast() }
+    guard !path.isEmpty, path != "/", !path.lowercased().hasSuffix(".md") else { return nil }
+    guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else { return nil }
+    components.path = path + ".md"
+    components.query = nil
+    components.fragment = nil
+    return components.url
+  }
+}
+
 public protocol HTMLContentExtracting: Sendable {
   func extract(html: String) throws -> ExtractedWebPage
 }
@@ -195,17 +227,33 @@ public protocol HTMLContentExtracting: Sendable {
 public struct ExtractedWebPage: Sendable, Equatable {
   public let title: String?
   public let text: String
-  public init(title: String?, text: String) { self.title = title; self.text = text }
+  public let author: String?
+  public init(title: String?, text: String, author: String? = nil) {
+    self.title = title
+    self.text = text
+    self.author = author
+  }
 }
 
 public struct ManualLinkCaptureService: Sendable {
   private let fetcher: any WebPageFetcher
   private let extractor: any HTMLContentExtracting
   private let sourceAdapters: [any SourceAdapting]
+  private let resources: (any SafeResourceFetching)?
   private let now: @Sendable () -> Date
 
-  public init(fetcher: any WebPageFetcher, extractor: any HTMLContentExtracting = MinimalHTMLExtractor(), sourceAdapters: [any SourceAdapting] = [], now: @escaping @Sendable () -> Date = Date.init) {
-    self.fetcher = fetcher; self.extractor = extractor; self.sourceAdapters = sourceAdapters; self.now = now
+  public init(
+    fetcher: any WebPageFetcher,
+    extractor: any HTMLContentExtracting = MinimalHTMLExtractor(),
+    sourceAdapters: [any SourceAdapting] = [],
+    resources: (any SafeResourceFetching)? = nil,
+    now: @escaping @Sendable () -> Date = Date.init
+  ) {
+    self.fetcher = fetcher
+    self.extractor = extractor
+    self.sourceAdapters = sourceAdapters
+    self.resources = resources ?? (fetcher as? any SafeResourceFetching)
+    self.now = now
   }
 
   public func capture(urlString: String) async throws -> CapturedDocument {
@@ -215,22 +263,132 @@ public struct ManualLinkCaptureService: Sendable {
       if let adapter = sourceAdapters.first(where: { $0.takesOwnership(of: url) }) {
         return try await adapter.capture(url: url)
       }
+      if url.path.lowercased().hasSuffix(".md"),
+         let markdown = try await fetchMarkdownCopy(at: url) {
+        return makeDocument(
+          sourceURL: url,
+          title: markdownTitle(from: markdown),
+          author: markdownAuthor(from: markdown),
+          body: markdownBody(from: markdown),
+          method: "public_markdown"
+        )
+      }
       let page = try await fetcher.fetch(url: url)
+      if let sibling = SiblingMarkdownURL.make(from: page.url),
+         let markdown = try await fetchMarkdownCopy(at: sibling) {
+        let extracted = try? extractor.extract(html: page.html)
+        return makeDocument(
+          sourceURL: page.url,
+          title: extracted?.title ?? markdownTitle(from: markdown),
+          author: extracted?.author ?? markdownAuthor(from: markdown),
+          body: markdownBody(from: markdown),
+          method: "public_markdown"
+        )
+      }
       let extracted = try extractor.extract(html: page.html)
       if VerificationPagePolicy.matches(url: page.url, extractedText: extracted.text) {
         throw ManualLinkError.verificationRequired
       }
       let cleanedText = XTrailingCounterNoiseFilter.removingTrailingCounter(from: extracted.text, sourceURL: page.url)
-      let timestamp = ISO8601DateFormatter().string(from: now())
-      return .init(
-        createdAt: timestamp, idempotencyKey: "manual:\(UUID().uuidString.lowercased())",
-        origin: .manualLink, url: page.url.absoluteString, title: extracted.title,
-        platform: "manual", method: "public_html", text: cleanedText,
-        completeness: "best_effort", capturedAt: timestamp, sourceLabel: "手动链接（公开网页）"
+      return makeDocument(
+        sourceURL: page.url,
+        title: extracted.title,
+        author: extracted.author,
+        body: cleanedText,
+        method: "public_html"
       )
     } catch let error as ManualLinkError { throw error
     } catch is CancellationError { throw ManualLinkError.cancelled }
     catch { throw ManualLinkError.network }
+  }
+
+  private func makeDocument(
+    sourceURL: URL,
+    title: String?,
+    author: String?,
+    body: String,
+    method: String
+  ) -> CapturedDocument {
+    let timestamp = ISO8601DateFormatter().string(from: now())
+    return .init(
+      createdAt: timestamp,
+      idempotencyKey: "manual:\(UUID().uuidString.lowercased())",
+      origin: .manualLink,
+      url: sourceURL.absoluteString,
+      title: title,
+      platform: "manual",
+      method: method,
+      text: capturedText(body: body, author: author),
+      completeness: "best_effort",
+      capturedAt: timestamp,
+      sourceLabel: "手动链接（公开网页）"
+    )
+  }
+
+  private func fetchMarkdownCopy(at url: URL) async throws -> String? {
+    guard let resources else { return nil }
+    let host = url.host?.lowercased()
+    let response: SafeResourceResponse
+    do {
+      response = try await resources.fetchResource(.init(
+        url: url,
+        headers: ["Accept": "text/markdown, text/x-markdown"],
+        byteLimit: PublicMarkdownResponsePolicy.byteLimit,
+        allowsRedirectTarget: { redirect in
+          guard redirect.host?.lowercased() == host else { return false }
+          return redirect.path.lowercased().hasSuffix(".md")
+        }
+      ))
+    } catch is CancellationError {
+      throw ManualLinkError.cancelled
+    } catch {
+      return nil
+    }
+    guard PublicMarkdownResponsePolicy.accepts(
+      statusCode: response.statusCode,
+      contentType: response.contentType,
+      bodyCount: response.body.count
+    ) else { return nil }
+    guard let markdown = String(data: response.body, encoding: .utf8) else { return nil }
+    let body = markdownBody(from: markdown)
+    guard body.unicodeScalars.count >= 20 else { return nil }
+    guard body.unicodeScalars.count <= CaptureValidator.maxTextScalars else { return nil }
+    return markdown
+  }
+
+  private func markdownBody(from markdown: String) -> String {
+    MarkdownNoteFrontmatter.parse(markdown).body
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func markdownTitle(from markdown: String) -> String? {
+    yamlScalar("title", in: markdown)
+  }
+
+  private func markdownAuthor(from markdown: String) -> String? {
+    MarkdownNoteFrontmatter.parse(markdown).author ?? yamlScalar("author", in: markdown)
+  }
+
+  private func yamlScalar(_ key: String, in markdown: String) -> String? {
+    let pattern = "(?m)^" + NSRegularExpression.escapedPattern(for: key) + ":\\s*(?:\"([^\"]+)\"|'([^']+)'|(\\S+))\\s*$"
+    guard let expression = try? NSRegularExpression(pattern: pattern) else { return nil }
+    let range = NSRange(markdown.startIndex..., in: markdown)
+    guard let match = expression.firstMatch(in: markdown, range: range) else { return nil }
+    for index in 1..<match.numberOfRanges {
+      guard let capture = Range(match.range(at: index), in: markdown) else { continue }
+      let value = String(markdown[capture]).trimmingCharacters(in: .whitespacesAndNewlines)
+      if !value.isEmpty { return value }
+    }
+    return nil
+  }
+
+  private func capturedText(body: String, author: String?) -> String {
+    guard let author, !author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return body }
+    let escaped = author
+      .replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "\"", with: "\\\"")
+      .replacingOccurrences(of: "\n", with: " ")
+    return "---\nauthor: \"\(escaped)\"\n---\n\n\(body)"
   }
 }
 
@@ -240,32 +398,37 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     "相关阅读", "相关推荐", "推荐阅读", "热门文章", "猜你喜欢", "更多精彩",
     "点击关注", "扫码关注", "分享到", "版权声明", "免责声明", "广告",
     "阅读原文", "在看", "写留言", "精选留言", "打开微信", "关注公众号",
+    "On this page", "Related reading", "Related articles", "Subscribe",
+    "min read",
   ]
 
   public init() {}
 
   public func extract(html: String) throws -> ExtractedWebPage {
     let title = extractTitle(from: html)
+    let author = extractAuthor(from: html)
+    let prepared = dropChromeBlocks(in: html)
     // Balanced `<article>` / `<main>` must beat `role="main"` and
     // `itemprop=articleBody`: those two patterns stop at the first closer,
     // so a Substack-style wrapper (`<div role="main"><div>…<article>`)
     // previously kept only the title.
     let fragments = [
-      firstMatch("id\\s*=\\s*[\"']js_content[\"'][^>]*>([\\s\\S]*?)</div>", in: html),
-      firstMatch("id\\s*=\\s*[\"']js_article[\"'][^>]*>([\\s\\S]*?)</div>", in: html),
-      firstMatch("<article\\b[^>]*>([\\s\\S]*?)</article>", in: html),
-      firstMatch("<main\\b[^>]*>([\\s\\S]*?)</main>", in: html),
-      firstMatch("itemprop\\s*=\\s*[\"']articleBody[\"'][^>]*>([\\s\\S]*?)</[^>]+>", in: html),
-      firstMatch("role\\s*=\\s*[\"']main[\"'][^>]*>([\\s\\S]*?)</[^>]+>", in: html),
-      firstMatch("<body\\b[^>]*>([\\s\\S]*?)</body>", in: html),
-      html,
+      firstMatch("id\\s*=\\s*[\"']js_content[\"'][^>]*>([\\s\\S]*?)</div>", in: prepared),
+      firstMatch("id\\s*=\\s*[\"']js_article[\"'][^>]*>([\\s\\S]*?)</div>", in: prepared),
+      firstMatch("<article\\b[^>]*>([\\s\\S]*?)</article>", in: prepared),
+      firstMatch("<main\\b[^>]*>([\\s\\S]*?)</main>", in: prepared),
+      firstMatch("itemprop\\s*=\\s*[\"']articleBody[\"'][^>]*>([\\s\\S]*?)</[^>]+>", in: prepared),
+      firstMatch("role\\s*=\\s*[\"']main[\"'][^>]*>([\\s\\S]*?)</[^>]+>", in: prepared),
+      firstMatch("<body\\b[^>]*>([\\s\\S]*?)</body>", in: prepared),
+      prepared,
     ]
     var lastContentError: ManualLinkError?
     for fragment in fragments.compactMap({ $0 }) {
       do {
-        let text = try renderedText(from: fragment)
+        let focused = dropChromeBlocks(in: preferNestedArticle(in: fragment))
+        let text = try renderedText(from: focused, title: title, author: author)
         if isTitleOnly(text, title: title) { continue }
-        return .init(title: title, text: text)
+        return .init(title: title, text: text, author: author)
       } catch let error as ManualLinkError where error == .emptyContent || error == .loginRequired {
         lastContentError = error
       }
@@ -273,7 +436,7 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     throw lastContentError ?? ManualLinkError.emptyContent
   }
 
-  private func renderedText(from selected: String) throws -> String {
+  private func renderedText(from selected: String, title: String?, author: String?) throws -> String {
     var cleaned = selected
     for tag in ["script", "style", "noscript", "template", "nav", "footer", "header", "aside", "form", "iframe", "svg", "button"] {
       cleaned = replacing("<\(tag)\\b[^>]*>[\\s\\S]*?</\(tag)>", in: cleaned, with: " ")
@@ -283,6 +446,7 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     // Structured Markdown: headings, paragraphs, lists — keep CJK punctuation intact.
     var result = markdown(from: cleaned)
     result = stripBoilerplateLines(from: result)
+    result = stripRepeatedTitleAndAuthor(from: result, title: title, author: author)
     guard result.unicodeScalars.count >= 20 else { throw ManualLinkError.emptyContent }
     guard result.unicodeScalars.count <= CaptureValidator.maxTextScalars else { throw ManualLinkError.responseTooLarge }
     let lower = result.lowercased()
@@ -326,6 +490,26 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     return nil
   }
 
+  public func extractAuthor(from html: String) -> String? {
+    let candidates: [String?] = [
+      metaContent(name: "author", in: html),
+      metaContent(property: "article:author", in: html),
+      firstRegex(
+        "\"author\"\\s*:\\s*\\{\\s*\"@type\"\\s*:\\s*\"Person\"\\s*,\\s*\"name\"\\s*:\\s*\"([^\"]+)\"",
+        in: html
+      ),
+      firstRegex(
+        "\"author\"\\s*:\\s*\\{\\s*\"name\"\\s*:\\s*\"([^\"]+)\"",
+        in: html
+      ),
+    ]
+    for candidate in candidates {
+      guard let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), value.count >= 2 else { continue }
+      return value
+    }
+    return nil
+  }
+
   // MARK: - HTML → Markdown
 
   /// Converts a cleaned content fragment into readable Markdown.
@@ -340,6 +524,8 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     // 空白归一化都会破坏代码的换行与缩进。
     var codeBlocks: [String] = []
     value = extractFencedCodeBlocks(from: value, into: &codeBlocks)
+    var tables: [String] = []
+    value = extractMarkdownTables(from: value, into: &tables)
 
     // Blockquotes first (may nest paragraphs).
     value = replacing("<blockquote\\b[^>]*>([\\s\\S]*?)</blockquote>", in: value, with: "\n\n«BLOCKQUOTE»$1«/BLOCKQUOTE»\n\n")
@@ -387,7 +573,10 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     value = expandBlockquotes(in: value)
 
     var result = normalizeMarkdownWhitespace(value)
-    // 归一化完成后再还原代码块，换行与缩进因此原样保留。
+    // 归一化完成后再还原表格和代码块，换行与缩进因此原样保留。
+    for (index, table) in tables.enumerated() {
+      result = result.replacingOccurrences(of: tablePlaceholder(index), with: table)
+    }
     for (index, block) in codeBlocks.enumerated() {
       result = result.replacingOccurrences(of: codeBlockPlaceholder(index), with: block)
     }
@@ -395,6 +584,63 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
   }
 
   private func codeBlockPlaceholder(_ index: Int) -> String { "«CODEBLOCK\(index)»" }
+  private func tablePlaceholder(_ index: Int) -> String { "«TABLE\(index)»" }
+
+  private func extractMarkdownTables(from html: String, into tables: inout [String]) -> String {
+    guard let expression = try? NSRegularExpression(
+      pattern: "<table\\b[^>]*>([\\s\\S]*?)</table>",
+      options: [.caseInsensitive]
+    ) else { return html }
+    var result = html
+    let matches = expression.matches(in: result, range: NSRange(result.startIndex..., in: result)).reversed()
+    for match in matches {
+      guard match.numberOfRanges > 1,
+            let full = Range(match.range, in: result),
+            let innerRange = Range(match.range(at: 1), in: result)
+      else { continue }
+      let rows = tableRows(in: String(result[innerRange]))
+      guard let width = rows.map(\.count).max(), width >= 2 else {
+        result.replaceSubrange(full, with: "\n")
+        continue
+      }
+      let padded = rows.map { row -> [String] in
+        var cells = row
+        while cells.count < width { cells.append("") }
+        return Array(cells.prefix(width))
+      }
+      var lines = ["| " + padded[0].joined(separator: " | ") + " |"]
+      lines.append("| " + Array(repeating: "---", count: width).joined(separator: " | ") + " |")
+      for row in padded.dropFirst() {
+        lines.append("| " + row.joined(separator: " | ") + " |")
+      }
+      tables.append(lines.joined(separator: "\n"))
+      result.replaceSubrange(full, with: "\n\n\(tablePlaceholder(tables.count - 1))\n\n")
+    }
+    return result
+  }
+
+  private func tableRows(in tableHTML: String) -> [[String]] {
+    guard let rowExpression = try? NSRegularExpression(
+      pattern: "<tr\\b[^>]*>([\\s\\S]*?)</tr>",
+      options: [.caseInsensitive]
+    ),
+      let cellExpression = try? NSRegularExpression(
+        pattern: "<t[dh]\\b[^>]*>([\\s\\S]*?)</t[dh]>",
+        options: [.caseInsensitive]
+      )
+    else { return [] }
+    return rowExpression.matches(in: tableHTML, range: NSRange(tableHTML.startIndex..., in: tableHTML)).compactMap { rowMatch in
+      guard rowMatch.numberOfRanges > 1, let rowRange = Range(rowMatch.range(at: 1), in: tableHTML) else { return nil }
+      let rowHTML = String(tableHTML[rowRange])
+      let cells = cellExpression.matches(in: rowHTML, range: NSRange(rowHTML.startIndex..., in: rowHTML)).compactMap { cellMatch -> String? in
+        guard cellMatch.numberOfRanges > 1, let cellRange = Range(cellMatch.range(at: 1), in: rowHTML) else { return nil }
+        var cell = String(rowHTML[cellRange])
+        cell = replacing("<code\\b[^>]*>([\\s\\S]*?)</code>", in: cell, with: "`$1`")
+        return plainInline(from: cell).replacingOccurrences(of: "|", with: "\\|")
+      }
+      return cells.isEmpty ? nil : cells
+    }
+  }
 
   /// 把每个 `<pre>` 转成 fenced code 并以占位符顶替。微信 code-snippet 每行
   /// 一个 `<code>`，按行拼接还原换行；普通 `<pre>` 直接保留自身文本换行。
@@ -604,6 +850,49 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
       return true
     }
     return normalizeMarkdownWhitespace(kept.joined(separator: "\n"))
+  }
+
+  private func firstRegex(_ pattern: String, in value: String) -> String? {
+    firstMatch(pattern, in: value)
+  }
+
+  private func preferNestedArticle(in fragment: String) -> String {
+    guard let inner = firstMatch("<article\\b[^>]*>([\\s\\S]*?)</article>", in: fragment) else { return fragment }
+    let trimmed = inner.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.unicodeScalars.count >= 40 ? inner : fragment
+  }
+
+  private func dropChromeBlocks(in html: String) -> String {
+    var value = html
+    let patterns = [
+      "<[^>]+\\bid\\s*=\\s*[\"']related-reading[\"'][^>]*>[\\s\\S]*?</(?:section|div|aside|nav)>",
+      "<[^>]+\\baria-label\\s*=\\s*[\"']Related reading[\"'][^>]*>[\\s\\S]*?</(?:section|div|aside|nav|details)>",
+      "<[^>]+\\bid\\s*=\\s*[\"']course-cta[\"'][^>]*>[\\s\\S]*?</(?:aside|section|div)>",
+      "<[^>]+\\bdata-toc-cta\\b[^>]*>[\\s\\S]*?</(?:aside|section|div|nav)>",
+      "<[^>]+\\baria-label\\s*=\\s*[\"']On this page[\"'][^>]*>[\\s\\S]*?</(?:nav|aside|div|details)>",
+      "<details\\b[^>]*>[\\s\\S]*?On this page[\\s\\S]*?</details>",
+    ]
+    for pattern in patterns {
+      value = replacing(pattern, in: value, with: "\n")
+    }
+    return value
+  }
+
+  private func stripRepeatedTitleAndAuthor(from text: String, title: String?, author: String?) -> String {
+    var lines = text.components(separatedBy: "\n")
+    func dropMatchingLeading(_ expected: String?) {
+      guard let expected else { return }
+      let collapsedExpected = collapsedPlainText(expected)
+      guard !collapsedExpected.isEmpty else { return }
+      while lines.first?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == true {
+        lines.removeFirst()
+      }
+      guard let first = lines.first else { return }
+      if collapsedPlainText(first) == collapsedExpected { lines.removeFirst() }
+    }
+    dropMatchingLeading(title)
+    dropMatchingLeading(author)
+    return normalizeMarkdownWhitespace(lines.joined(separator: "\n"))
   }
 
   private func firstMatch(_ pattern: String, in value: String) -> String? {

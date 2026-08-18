@@ -83,8 +83,8 @@ enum ReadingTextComposer {
           inline(body, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary),
           spacingAfter: 20, lineSpacing: 8, headIndent: 18, firstLineIndent: 18
         ))
-      case .code, .table:
-        // 代码卡和表格由 SwiftUI 独立渲染；不应进入本合成器。
+      case .code, .table, .comments:
+        // 代码卡、表格和评论树由 SwiftUI 独立渲染；不应进入本合成器。
         continue
       }
     }
@@ -346,16 +346,127 @@ struct SelectableReadingTextView: NSViewRepresentable {
       guard let container = textContainer, let manager = layoutManager else {
         return super.intrinsicContentSize
       }
+      // 临时诊断：验证完整体撤除。只包 usedRect 前的全文字形布局，不改返回值。
+      let started = CFAbsoluteTimeGetCurrent()
       manager.ensureLayout(for: container)
       let used = manager.usedRect(for: container)
+      ReadingLayoutProbe.recordIntrinsic(duration: CFAbsoluteTimeGetCurrent() - started)
       return NSSize(width: NSView.noIntrinsicMetric, height: ceil(used.height))
     }
 
     override func setFrameSize(_ newSize: NSSize) {
+      // 必须在 super 之前读旧宽度：super 之后 frame.width 已经是新值。
+      let widthChanged = abs(newSize.width - frame.width) > 0.5
       super.setFrameSize(newSize)
-      // 宽度变化后重排，高度重新上报，避免留白或截断。
-      invalidateIntrinsicContentSize()
+      // 临时诊断：验证完整体撤除。只记次数。每次调用都记，不论宽度变没变。
+      ReadingLayoutProbe.recordSetFrameSize()
+      // 只有宽度变了才重排。高度变化是上次 invalidate 的结果，
+      // 再 invalidate 会和 SwiftUI 布局形成自激循环。
+      if widthChanged {
+        invalidateIntrinsicContentSize()
+      }
     }
+  }
+}
+
+/// 生成中的长正文使用一个稳定的 NSTextView，并且只把新增后缀追加到
+/// textStorage。这样已经排版的几千行不会在每个流式拍点被整篇替换，外层
+/// ScrollView 的当前位置和用户选区也不会被新 token 抢走。
+struct StreamingReadingTextView: NSViewRepresentable {
+  let text: String
+  let font: NSFont
+  let color: NSColor
+  let lineSpacing: CGFloat
+
+  func makeCoordinator() -> Coordinator { Coordinator() }
+
+  func makeNSView(context: Context) -> SelectableReadingTextView.SelfSizingTextView {
+    let view = SelectableReadingTextView.SelfSizingTextView(frame: .zero)
+    view.isEditable = false
+    view.isSelectable = true
+    view.drawsBackground = false
+    view.textContainerInset = .zero
+    view.textContainer?.lineFragmentPadding = 0
+    view.textContainer?.widthTracksTextView = true
+    view.isAutomaticLinkDetectionEnabled = false
+    view.textStorage?.setAttributedString(attributed(text))
+    context.coordinator.lastText = text
+    context.coordinator.lastStyle = styleKey
+    return view
+  }
+
+  func updateNSView(
+    _ view: SelectableReadingTextView.SelfSizingTextView,
+    context: Context
+  ) {
+    let styleChanged = context.coordinator.lastStyle != styleKey
+    if !styleChanged,
+       let suffix = StreamingTextUpdate.appendedSuffix(
+        previous: context.coordinator.lastText,
+        next: text
+       ) {
+      if !suffix.isEmpty {
+        view.textStorage?.beginEditing()
+        view.textStorage?.append(attributed(suffix))
+        view.textStorage?.endEditing()
+        view.invalidateIntrinsicContentSize()
+      }
+    } else {
+      let selection = view.selectedRange()
+      view.textStorage?.setAttributedString(attributed(text))
+      let length = (text as NSString).length
+      view.setSelectedRange(NSRange(
+        location: min(selection.location, length),
+        length: min(selection.length, max(0, length - min(selection.location, length)))
+      ))
+      view.invalidateIntrinsicContentSize()
+    }
+    context.coordinator.lastText = text
+    context.coordinator.lastStyle = styleKey
+  }
+
+  final class Coordinator {
+    var lastText = ""
+    var lastStyle: StyleKey?
+  }
+
+  struct StyleKey: Equatable {
+    let fontName: String
+    let pointSize: CGFloat
+    let color: [CGFloat]
+    let lineSpacing: CGFloat
+  }
+
+  private var styleKey: StyleKey {
+    StyleKey(
+      fontName: font.fontName,
+      pointSize: font.pointSize,
+      color: ReadingRenderCache.colorFingerprint(color),
+      lineSpacing: lineSpacing
+    )
+  }
+
+  private func attributed(_ value: String) -> NSAttributedString {
+    let paragraph = NSMutableParagraphStyle()
+    paragraph.lineSpacing = lineSpacing
+    return NSAttributedString(string: value, attributes: [
+      .font: font,
+      .foregroundColor: color,
+      .paragraphStyle: paragraph,
+    ])
+  }
+}
+
+enum StreamingTextUpdate {
+  /// nil 表示不是纯追加（例如重新运行、切换条目或内容被服务端修订），调用方
+  /// 必须整篇替换；空字符串表示没有变化。
+  static func appendedSuffix(previous: String, next: String) -> String? {
+    let old = previous as NSString
+    let new = next as NSString
+    guard new.length >= old.length,
+          new.substring(with: NSRange(location: 0, length: old.length)) == previous
+    else { return nil }
+    return new.substring(from: old.length)
   }
 }
 

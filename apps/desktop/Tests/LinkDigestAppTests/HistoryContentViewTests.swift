@@ -456,9 +456,12 @@ final class HistoryContentViewTests: XCTestCase {
   func testDetailUsesCenteredReadingColumnAndShowsStandaloneEngagementStats() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    XCTAssertTrue(detail.contains(".frame(maxWidth: 680, alignment: .leading)"))
+    XCTAssertTrue(
+      detail.contains("maxWidth: DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: readingFont.bodySize)"),
+      "内容列上限应随字号联动，而不是钉死的 680pt"
+    )
     XCTAssertTrue(detail.contains(".frame(maxWidth: .infinity, alignment: .center)"))
-    XCTAssertTrue(detail.contains(".padding(.horizontal, 40)"))
+    XCTAssertTrue(detail.contains(".padding(.horizontal, DesignTokens.Layout.readingHorizontalInset)"))
     XCTAssertFalse(detail.contains(".padding(.leading, 48)"))
     // Non-WeChat captures retain their independently extracted social stats;
     // WeChat deliberately never presents that row, including old imports.
@@ -622,13 +625,31 @@ final class HistoryContentViewTests: XCTestCase {
       XCTAssertTrue(branch.contains("qualityOverride: quality"))
       XCTAssertTrue(branch.contains("selectedQuality: sessionMediaPlayback.chosenQuality"))
       XCTAssertTrue(branch.contains(".id(sessionMediaPlayback.generation)"))
-      // 能手选清晰度就必须能看到选流诊断。缺了这行，「手选高清后拿不到更高档」
-      // 只表现为重新加载一次、画质不变，用户分不清是登录掉了还是本来就没有更高档。
+      let select = section(
+        in: branch,
+        from: "onSelectQuality: { quality in",
+        to: "selectedQuality:"
+      )
+      XCTAssertTrue(select.contains("requestRefresh("))
+      XCTAssertFalse(
+        select.contains("remotePreviewPlayback.release()"),
+        "换档不能先拆掉正在播的画面"
+      )
+      XCTAssertFalse(
+        select.contains("invalidateAndRefresh("),
+        "换档不能先清掉还能播的旧地址"
+      )
+      // 诊断仍挂在带清晰度菜单的分支上，但出货默认不渲染。
       XCTAssertTrue(
         branch.contains("streamSelectionDiagnostic"),
         "带清晰度菜单的分支必须同时挂上选流诊断"
       )
     }
+    XCTAssertTrue(
+      detail.contains("showsStreamSelectionDiagnostic"),
+      "选流诊断必须有出货开关，不能把 Cookie / API 档位直接铺在播放器下"
+    )
+    XCTAssertTrue(detail.contains("LINKDIGEST_PRINT_CHANGES"))
     XCTAssertTrue(
       currentCapture.contains(
         "sessionMediaPlayback.cachedDescriptor(for: capture.taskID)"
@@ -742,6 +763,19 @@ final class HistoryContentViewTests: XCTestCase {
         isCurrentCaptureWithDescriptor: false,
         isYouTube: false,
         legacyPlatformHint: "douyin"
+      )
+    )
+    // 极老 V1 B 站视频：合同是 v1、库里没有 media_assets，重启后会话缓存清空
+    // 时仍应出现「重新获取播放」，不能整块消失只剩转写稿。
+    XCTAssertTrue(
+      HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable(
+        hadMediaDescriptor: false,
+        hasLocalMediaFile: false,
+        hasLocalMediaRow: false,
+        hasLocalMediaResolutionFailure: false,
+        isCurrentCaptureWithDescriptor: false,
+        isYouTube: false,
+        legacyPlatformHint: "bilibili"
       )
     )
 
@@ -927,6 +961,42 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(release.contains("editor.string.isEmpty"))
   }
 
+  func testQualitySwitchRebuildsPlayerViewSoHighResDoesNotStayBlurry() {
+    let playback = appSource("HistoryMediaPlayback.swift")
+    XCTAssertTrue(playback.contains("struct VideoPlayerDisplayRefresh"))
+    XCTAssertTrue(playback.contains("preferredMaximumResolution = .zero"))
+    XCTAssertTrue(playback.contains("contentsScale"))
+    XCTAssertTrue(playback.contains("drawableSize"))
+    XCTAssertTrue(playback.contains("nudgeBounds"))
+    XCTAssertTrue(playback.contains("resumeIfNeeded"))
+    XCTAssertTrue(playback.contains("不要 `.id(player)`"))
+    let surface = section(
+      in: playback,
+      from: "func linkDigestVideoSurface(player: AVPlayer?)",
+      to: "盖在 AVKit 片尾 overlay 上面"
+    )
+    XCTAssertFalse(
+      surface.contains(".id(player.map"),
+      "换播放器时拆 AVPlayerView 会把已经播到的进度暂停"
+    )
+    let preview = section(
+      in: playback,
+      from: "case .ready, .idle, .preparing:",
+      to: "accessibilityIdentifier(\"history-video-remote-player\")"
+    )
+    XCTAssertTrue(preview.contains("linkDigestVideoSurface(player: playback.player)"))
+  }
+
+  func testNativeVideoPlayersEnterCinemaOnDoubleClick() {
+    let playback = appSource("HistoryMediaPlayback.swift")
+    let cinema = appSource("YouTubeEmbedPlayer.swift")
+    XCTAssertTrue(cinema.contains("struct VideoCinemaDoubleClickCatcher"))
+    XCTAssertTrue(cinema.contains("event.clickCount == 2"))
+    XCTAssertTrue(cinema.contains(".videoCinemaDoubleClick { cinema.dismiss() }"))
+    let doubleClickCount = playback.components(separatedBy: "videoCinemaDoubleClick").count - 1
+    XCTAssertEqual(doubleClickCount, 3, "预览、本机、流媒体三张卡都要能双击放大")
+  }
+
   func testCinemaButtonAlignsToTheVideoEdgeNotTheReadingColumnEdge() {
     // 播放卡片已拆到 HistoryMediaPlayback.swift。
     let source = appSource("HistoryMediaPlayback.swift")
@@ -1078,12 +1148,19 @@ final class HistoryContentViewTests: XCTestCase {
   func testDetailBindsLatestRunMetadataAndTokenBreakdownWithoutCostEstimate() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    XCTAssertTrue(detail.contains("if let run = newestRun"))
-    XCTAssertTrue(detail.contains("historyAction(run.run.kind)"))
-    XCTAssertTrue(detail.contains("run.run.model?.trimmedNonEmpty"))
-    XCTAssertTrue(detail.contains("historyStatus(run.run.status)"))
+    let header = section(in: source, from: "private var metadata: some View {", to: "private var hasCollapsedRunMetadata")
+    let extras = section(in: source, from: "private var collapsedRunMetadata: some View {", to: "private func metadataRow")
+    XCTAssertTrue(header.contains("title: \"创建时间\""))
+    XCTAssertFalse(header.contains("title: \"操作\""), "操作不应再占标题下那一行")
+    XCTAssertFalse(header.contains("title: \"Token\""), "Token 总账应进运行详情")
+    XCTAssertFalse(header.contains("title: \"视频\""), "视频描述应进运行详情")
+    XCTAssertTrue(extras.contains("if let run = newestRun"))
+    XCTAssertTrue(extras.contains("historyAction(run.run.kind)"))
+    XCTAssertTrue(extras.contains("run.run.model?.trimmedNonEmpty"))
+    XCTAssertTrue(extras.contains("historyStatus(run.run.status)"))
     // Token 行改为全文总账（Run + 整理/脑图台账），分项用量在各功能状态行显示。
-    XCTAssertTrue(detail.contains("model.taskTokenGrandTotals"))
+    XCTAssertTrue(extras.contains("model.taskTokenGrandTotals"))
+    XCTAssertTrue(detail.contains("hasCollapsedRunMetadata"))
     XCTAssertFalse(detail.contains("title: \"费用\""), "BYOK prices are not reliable enough to display an estimate")
   }
 
@@ -1130,7 +1207,18 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertEqual(PlatformIconCatalog.assetName(for: "zhuanlan.zhihu.com"), "zhihu")
     XCTAssertEqual(PlatformIconCatalog.assetName(for: "mp.weixin.qq.com"), "wechat")
     XCTAssertEqual(PlatformIconCatalog.assetName(for: "WWW.X.COM"), "x.com")
+    XCTAssertNil(PlatformIconCatalog.assetName(for: "news.ycombinator.com"))
     XCTAssertNil(PlatformIconCatalog.assetName(for: "example.test"))
+  }
+
+  func testPlatformNavigationCanUseLocalFaviconBeforeInitialFallback() {
+    let source = historyContentViewSource()
+    let grid = appSource("PlatformGridView.swift")
+    let icon = section(in: source, from: "struct PlatformNavigationIcon: View", to: "private struct ManualLinkSheet: View")
+    XCTAssertTrue(grid.contains("faviconURL: item.faviconURL"))
+    XCTAssertTrue(grid.contains(".accessibilityHidden(true)"))
+    XCTAssertTrue(icon.contains("HistoryFaviconDiskImage"))
+    XCTAssertTrue(icon.contains("fallbackBadge"))
   }
 
   func testMonochromePlatformMarksFollowTheCurrentThemeTextColor() {
@@ -1292,11 +1380,18 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(detail.contains("生成预览"), "生成中的字不该再单独挂一块预览卡")
     XCTAssertFalse(detail.contains("streamingResultCard"))
     XCTAssertTrue(detail.contains("liveRunReadingBody"))
-    XCTAssertTrue(detail.contains("showsLiveRunInReadingPane, liveRunReadingPane == effectiveReadingPane"))
+    // 面板保活：content 不再用 switch 销毁重建，各面板按传入的 pane 参数
+    // 渲染并折叠（见 mountedReadingPane）。
+    XCTAssertTrue(detail.contains("liveRunReadingPane == pane"))
+    XCTAssertTrue(detail.contains("mountedReadingPane(.translation)"))
+    XCTAssertTrue(detail.contains("visitedReadingPanes"))
     XCTAssertTrue(detail.contains("pendingRunPane = .summary"))
     XCTAssertTrue(detail.contains("readingPane = .summary"))
     XCTAssertTrue(detail.contains("pendingRunPane = .translation"))
-    XCTAssertTrue(detail.contains("model-run-output"))
+    // 流式正文挪进了文件尾部的 LiveRunReadingBody 叶子视图（观察
+    // LiveRunTextModel，拍点只重绘那一块）；标识符与接线改为钉全文。
+    XCTAssertTrue(source.contains("model-run-output"))
+    XCTAssertTrue(detail.contains("live: appModel.liveRunText"))
   }
 
   /// 行宽只能有一个控制点。
@@ -1309,9 +1404,12 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(
       source.contains(".frame(maxWidth: 590, alignment: .leading)"),
       "阅读区的第二层宽度上限回来了，正文又会缩窄并在右侧留下空白")
-    XCTAssertTrue(
+    XCTAssertFalse(
       source.contains(".frame(maxWidth: 680, alignment: .leading)"),
-      "行宽仍要有上限，只是应当唯一——去掉 680 会让宽屏下的行长到不可读")
+      "钉死的 680pt 上限应已被字号联动的可读上限取代")
+    XCTAssertTrue(
+      source.contains("maxWidth: DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: readingFont.bodySize)"),
+      "行宽仍要有上限，只是应当唯一——没有上限会让宽屏下的行长到不可读")
   }
 
   func testLiveTranscriptionRendersOnlyInSourcePaneWithSharedBodyTypography() {
@@ -1320,7 +1418,11 @@ final class HistoryContentViewTests: XCTestCase {
     let localVideo = section(in: source, from: "struct HistoryVideoPlayerCard: View", to: "/// UI state changes")
     let remoteVideo = section(in: source, from: "struct CurrentCaptureMediaPreviewCard: View", to: "/// Top-of-detail video card")
 
-    XCTAssertTrue(detail.contains("history-reading-source-live-transcription"))
+    // 转写流式正文挪进了文件尾部的 LiveTranscriptionReadingBody 叶子视图
+    // （观察 LiveRunTextModel）；标识符改为钉全文，接线与排版仍钉详情区。
+    XCTAssertTrue(source.contains("history-reading-source-live-transcription"))
+    XCTAssertTrue(detail.contains("LiveTranscriptionReadingBody("))
+    XCTAssertTrue(detail.contains("live: model.liveTranscriptionText"))
     // 正文排版已改为跟随用户偏好；实时转写必须读同一个来源，不能写死回 16.5。
     // readingFont.body() 连字体族一起带上，而不是只借字号（那会丢掉宋体等家族设置）。
     XCTAssertTrue(detail.contains("readingFont.body()"))
@@ -1701,7 +1803,7 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
     XCTAssertTrue(remote.contains("remote-transcript-tidy-blocked-reason"))
   }
 
-  func testCurrentRemoteVideoConnectsBothTranscriptionRoutesToManualAndAutomaticTidy() throws {
+  func testCurrentRemoteVideoExposesManualTidyWithoutAutoTriggerOnTranscriptionComplete() throws {
     let playbackSource = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -1714,11 +1816,12 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
       to: "/// Top-of-detail video card"
     )
     XCTAssertTrue(remote.contains("let tidyModel: String?"))
-    XCTAssertTrue(remote.contains("let autoTidyEnabled: Bool"))
+    XCTAssertFalse(remote.contains("let autoTidyEnabled: Bool"))
     XCTAssertTrue(remote.contains("model.requestTranscriptTidy(taskID: taskID, model: tidyModel)"))
-    XCTAssertTrue(remote.contains(".onChange(of: model.transcriptionState)"))
-    XCTAssertTrue(remote.contains("oldState.isActive, newState == .completed"))
-    XCTAssertTrue(remote.contains("model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)"))
+    XCTAssertFalse(
+      remote.contains("model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)"),
+      "视频卡不应在转写完成时自动校对，应交给设置里的自动管线或用户手动点按钮"
+    )
     XCTAssertFalse(
       remote.contains("descriptor.author"),
       "详情头部已有作者行，当前视频卡不能再显示一份可能混入统计的 author"
@@ -1737,9 +1840,9 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
       from: "struct HistoryVideoPlayerCard: View",
       to: "private struct HistoryStreamingMediaCard: View"
     )
-    XCTAssertTrue(
-      local.contains("oldState.isActive, newState == .completed"),
-      "重新打开已有转写的本机视频时不能重复调用模型校对"
+    XCTAssertFalse(
+      local.contains("startTranscriptTidyAuto"),
+      "本机视频卡也不应在转写完成时自动校对"
     )
     XCTAssertFalse(
       local.contains("media?.author"),
@@ -1768,10 +1871,9 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
       3,
       "本机媒体与两种当前远程媒体入口都必须接入同一校对模型"
     )
-    XCTAssertEqual(
-      contentSource.components(separatedBy: "autoTidyEnabled: providerSettings.autoTidyTranscription").count - 1,
-      3,
-      "本机媒体与两种当前远程媒体入口都必须接入同一自动校对开关"
+    XCTAssertTrue(
+      contentSource.contains("tidy: settings.autoTidyTranscription"),
+      "自动校对只应通过新内容自动管线触发，不应在视频卡 onChange 里硬接"
     )
   }
 
@@ -1801,11 +1903,6 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
 }
 
 /// 自动管线第 ② 步的前置提示，必须写明它只适用于自动进来的新内容。
-///
-/// 原文案「① 未开启：新内容还没有转写稿可整理」出现在 ② 正下方、长得像前置条件
-/// 警告，读起来就是「② 依赖 ①」。而代码里手动转写完成后的自动整理只检查 ② 的开关
-/// （HistoryMediaPlayback 的 onChange 里 `guard autoTidyEnabled`），与 ① 无关。
-/// 收到过按此误解的反馈。
 final class AutoPipelineTidyHintTests: XCTestCase {
   func testTidyHintStatesItOnlyAppliesToAutoCapturedContent() throws {
     let settings = try String(
@@ -1815,23 +1912,25 @@ final class AutoPipelineTidyHintTests: XCTestCase {
       encoding: .utf8
     )
     XCTAssertTrue(settings.contains("仅影响自动进来的新内容"))
-    XCTAssertTrue(settings.contains("你手动点「转写」时，本步照常生效"))
+    XCTAssertTrue(settings.contains("手动转写完成后请点「模型校对」"))
+    XCTAssertFalse(settings.contains("你手动点「转写」时，本步照常生效"))
   }
 
-  /// 钉住真实行为：手动转写后的自动整理只依赖 ② 的开关。
-  func testManualTranscriptionTidyDoesNotDependOnAutoTranscribe() throws {
+  /// 钉住真实行为：自动校对只走新内容自动管线，不在视频卡转写完成时偷偷触发。
+  func testAutoTidyIsOnlyWiredThroughAutoPipeline() throws {
     let playback = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Sources/LinkDigestApp/HistoryMediaPlayback.swift"),
       encoding: .utf8
     )
-    // oldState.isActive：只有本次转写从运行态进入完成态才触发自动整理；
-    // 打开一条已有转写的历史记录也会恢复成 .completed，不能重复调模型计费。
-    XCTAssertTrue(playback.contains("guard autoTidyEnabled, oldState.isActive, newState == .completed"))
-    XCTAssertFalse(
-      playback.contains("autoTranscribeNewCaptures"),
-      "手动转写后的整理不得依赖自动转写开关"
+    XCTAssertFalse(playback.contains("guard autoTidyEnabled, oldState.isActive, newState == .completed"))
+    let viewModel = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryViewModel.swift"),
+      encoding: .utf8
     )
+    XCTAssertTrue(viewModel.contains("if request.tidy, Self.latestTranscriptText(in: storedDetail) != nil"))
   }
 }

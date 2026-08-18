@@ -7,6 +7,7 @@
 import AppKit
 import AVKit
 import Combine
+import QuartzCore
 import CryptoKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -274,16 +275,35 @@ final class RemotePreviewPlayerController: ObservableObject {
   /// 已就绪播放器驻留条数：切换历史再回来可秒开，不必黑屏重连。
   static var parkedPlayerCapacity = 4
 
-  @Published private(set) var player: AVPlayer?
-  @Published private(set) var preparePhase: RemotePreviewPreparePhase = .idle
+  // 切换文章会反复调用 `release()`，把这两项写回同一个空值。`@Published` 不比较
+  // 新旧值就发通知，而整棵历史视图树都在观察这个对象——没有视频的文章也要为此
+  // 多跑两轮整屏重求值。写入前先比一次。
+  @Published private var playerStorage: AVPlayer?
+  private(set) var player: AVPlayer? {
+    get { playerStorage }
+    set { if playerStorage !== newValue { playerStorage = newValue } }
+  }
+  @Published private var preparePhaseStorage: RemotePreviewPreparePhase = .idle
+  private(set) var preparePhase: RemotePreviewPreparePhase {
+    get { preparePhaseStorage }
+    set { if preparePhaseStorage != newValue { preparePhaseStorage = newValue } }
+  }
   /// 失败时可见的技术细节：走的哪条路、片长、错误码。
   /// 只放非敏感信息——不含签名 URL、不含 Cookie。
   /// 这一层之前完全没有，失败了只能靠猜，反复改了七轮都没定位到根因。
-  @Published private(set) var playbackDiagnostic: String?
+  @Published private var playbackDiagnosticStorage: String?
+  private(set) var playbackDiagnostic: String? {
+    get { playbackDiagnosticStorage }
+    set { if playbackDiagnosticStorage != newValue { playbackDiagnosticStorage = newValue } }
+  }
   private var currentURL: URL?
   private var currentCompanionAudioURL: URL?
   /// 当前准备使用的会话 Cookie（B 站等）；仅内存，不写历史。
   private var currentCookieHeader: String?
+  /// 站点 API 给出的片长；双轨合成用来跳过远程资产的慢时长扫描。
+  private var currentDurationSeconds: Double?
+  /// 换到更慢的新流时，旧播放器先留在画面上。
+  private var retainedDuringSwitch: ParkedRemotePlayback?
   /// 已经走完「仅 header、无 MIME / 无合成」回退时为 true，避免无限重试。
   private var usedLegacyPath = false
   private var prepareTask: Task<Void, Never>?
@@ -357,25 +377,44 @@ final class RemotePreviewPlayerController: ObservableObject {
     // 驻留命中：切回历史条目时直接恢复，避免黑屏重连。
     if let parked = takeParked(url: url, companionAudioURL: companion) {
       parkCurrentIfReady()
+      discardRetainedDuringSwitch()
       cancelPrepare()
       cleanupDualTrackTemp()
       currentURL = parked.url
       currentCompanionAudioURL = parked.companionAudioURL
       currentCookieHeader = parked.cookieHeader ?? cookieHeader
+      currentDurationSeconds = durationSeconds
       usedLegacyPath = parked.usedLegacyPath
       player = parked.player
       preparePhase = .ready
       return
     }
 
-    // 切换目标：把当前 ready 播放器 park 起来，而不是毁掉。
-    parkCurrentIfReady()
+    // 新流要异步准备（双轨 / 带 Cookie）时，旧画面继续播。
+    // 立刻拆掉播放器会让换高清对着黑屏等十几秒。
+    let newNeedsAsync = companion != nil || needsSessionCookieLookup(for: url)
+    if newNeedsAsync, let visible = player, let oldURL = currentURL, retainedDuringSwitch == nil {
+      retainedDuringSwitch = ParkedRemotePlayback(
+        url: oldURL,
+        companionAudioURL: currentCompanionAudioURL,
+        cookieHeader: currentCookieHeader,
+        player: visible,
+        usedLegacyPath: usedLegacyPath
+      )
+    } else if !newNeedsAsync {
+      parkCurrentIfReady()
+      discardRetainedDuringSwitch()
+      player = nil
+    }
+
     cancelPrepare()
     cleanupDualTrackTemp()
-    player = nil
+    if retainedDuringSwitch == nil { player = nil }
     currentURL = url
     currentCompanionAudioURL = companion
-    currentCookieHeader = cookieHeader
+    let cookieToUse = (cookieHeader?.isEmpty == false) ? cookieHeader : currentCookieHeader
+    currentCookieHeader = cookieToUse
+    currentDurationSeconds = durationSeconds
     currentAllowsLongFormDual = allowLongFormDual
     usedLegacyPath = false
     preparePhase = .preparing
@@ -386,7 +425,7 @@ final class RemotePreviewPlayerController: ObservableObject {
         await self.prepareRemotePlayback(
           url: url,
           companionAudioURL: companion,
-          providedCookie: cookieHeader
+          providedCookie: cookieToUse
         )
       }
     } else {
@@ -397,12 +436,14 @@ final class RemotePreviewPlayerController: ObservableObject {
   /// 离开可播上下文时：驻留 ready 播放器，清空当前展示（不销毁缓存）。
   func parkAndIdle() {
     parkCurrentIfReady()
+    discardRetainedDuringSwitch()
     cancelPrepare()
     cleanupDualTrackTemp()
     player = nil
     currentURL = nil
     currentCompanionAudioURL = nil
     currentCookieHeader = nil
+    currentDurationSeconds = nil
     usedLegacyPath = false
     preparePhase = .idle
   }
@@ -459,7 +500,8 @@ final class RemotePreviewPlayerController: ObservableObject {
           videoURL: url,
           companionAudioURL: companionAudioURL,
           httpHeaders: headers,
-          applyOutOfBandMIME: true
+          applyOutOfBandMIME: true,
+          knownDurationSeconds: currentDurationSeconds
         )
       } catch {
         box.error = error
@@ -487,8 +529,7 @@ final class RemotePreviewPlayerController: ObservableObject {
     guard !Task.isCancelled, currentURL == url else { return }
 
     if let asset = box.asset {
-      player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
-      preparePhase = .ready
+      installReadyPlayer(AVPlayer(playerItem: AVPlayerItem(asset: asset)))
       return
     }
     if Self.isNetworkUnavailable(box.error) {
@@ -498,6 +539,7 @@ final class RemotePreviewPlayerController: ObservableObject {
         host: url.host,
         error: box.error
       )
+      if restoreRetainedPlayerIfPossible() { return }
       preparePhase = .failed(.networkUnavailable)
       return
     }
@@ -510,11 +552,11 @@ final class RemotePreviewPlayerController: ObservableObject {
       headers: headers
     ) {
       guard !Task.isCancelled, currentURL == url else { return }
-      player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
-      preparePhase = .ready
+      installReadyPlayer(AVPlayer(playerItem: AVPlayerItem(asset: asset)))
       return
     }
     guard !Task.isCancelled, currentURL == url else { return }
+    if restoreRetainedPlayerIfPossible() { return }
     // 超时和真失败必须分开写：超时时 box.error 是 nil，混在一起就成了
     // 没有任何线索的「连接失败」。附上实际等待秒数和超时档位。
     let elapsed = Int(Date().timeIntervalSince(startedAt))
@@ -692,8 +734,8 @@ final class RemotePreviewPlayerController: ObservableObject {
       case reanchor
     }
     let statusEvents = item.publisher(for: \.status).map(Event.status)
-    let playerEvents = $player.dropFirst().map { _ in Event.reanchor }
-    let phaseEvents = $preparePhase.dropFirst().map { _ in Event.reanchor }
+    let playerEvents = $playerStorage.dropFirst().map { _ in Event.reanchor }
+    let phaseEvents = $preparePhaseStorage.dropFirst().map { _ in Event.reanchor }
     for await event in Publishers.Merge3(statusEvents, playerEvents, phaseEvents).values {
       switch event {
       case .status(.failed): return .failed
@@ -745,7 +787,12 @@ final class RemotePreviewPlayerController: ObservableObject {
   func release() {
     cancelPrepare()
     cleanupDualTrackTemp()
+    let retained = retainedDuringSwitch
+    retainedDuringSwitch = nil
     disposePlayer(player)
+    if let retained, retained.player !== player {
+      disposePlayer(retained.player)
+    }
     player = nil
     for slot in parkedPlayers {
       disposePlayer(slot.player)
@@ -754,6 +801,7 @@ final class RemotePreviewPlayerController: ObservableObject {
     currentURL = nil
     currentCompanionAudioURL = nil
     currentCookieHeader = nil
+    currentDurationSeconds = nil
     usedLegacyPath = false
     preparePhase = .idle
   }
@@ -761,22 +809,94 @@ final class RemotePreviewPlayerController: ObservableObject {
   /// 单 URL 增强路径（muxed mp4 / HLS 等）。DASH 拆轨不应走这里当「成功」。
   private func installEnhancedVideoOnly(url: URL, cookieHeader: String? = nil) {
     usedLegacyPath = false
-    player = AVPlayer(
-      playerItem: AVPlayerItem(
-        asset: RemotePlaybackAsset.make(url: url, cookieHeader: cookieHeader)
+    installReadyPlayer(
+      AVPlayer(
+        playerItem: AVPlayerItem(
+          asset: RemotePlaybackAsset.make(url: url, cookieHeader: cookieHeader)
+        )
       )
     )
-    preparePhase = .ready
   }
 
   private func installLegacy(url: URL, cookieHeader: String? = nil) {
     usedLegacyPath = true
-    player = AVPlayer(
-      playerItem: AVPlayerItem(
-        asset: RemotePlaybackAsset.makeLegacy(url: url, cookieHeader: cookieHeader)
+    installReadyPlayer(
+      AVPlayer(
+        playerItem: AVPlayerItem(
+          asset: RemotePlaybackAsset.makeLegacy(url: url, cookieHeader: cookieHeader)
+        )
       )
     )
+  }
+
+  private func installReadyPlayer(_ newPlayer: AVPlayer) {
+    let resumeFrom = retainedDuringSwitch?.player
+    let resume = MediaPlaybackRestart.switchResume(from: resumeFrom)
+    let targetURL = currentURL
+    if resumeFrom != nil, let time = resume?.time, MediaPlaybackRestart.shouldSeek(time) {
+      // 先 seek 再换上画面，避免新播放器从 0 秒闪一下。
+      let shouldPlay = resume?.playing == true
+      Task { @MainActor in
+        await MediaPlaybackRestart.seek(newPlayer, to: time)
+        guard currentURL == targetURL else {
+          disposePlayer(newPlayer)
+          return
+        }
+        commitReadyPlayer(newPlayer, resumePlaying: shouldPlay)
+      }
+      return
+    }
+    commitReadyPlayer(newPlayer, resumePlaying: resume?.playing == true)
+  }
+
+  private func commitReadyPlayer(_ newPlayer: AVPlayer, resumePlaying: Bool) {
+    if let retained = retainedDuringSwitch {
+      retainedDuringSwitch = nil
+      if retained.player !== newPlayer {
+        retained.player.pause()
+        removeParked(url: retained.url, companionAudioURL: retained.companionAudioURL)
+        parkedPlayers.append(retained)
+        while parkedPlayers.count > Self.parkedPlayerCapacity {
+          let evicted = parkedPlayers.removeFirst()
+          disposePlayer(evicted.player)
+        }
+      }
+    } else if player !== newPlayer {
+      disposePlayer(player)
+    }
+    player = newPlayer
     preparePhase = .ready
+    if case let .player(presented, ratio) = VideoCinemaController.shared.content,
+       presented !== newPlayer {
+      VideoCinemaController.shared.present(player: newPlayer, aspectRatio: ratio)
+    }
+    if resumePlaying {
+      newPlayer.play()
+      // SwiftUI / AVKit 在换 player 时会把刚 play() 的实例再 pause 一次。
+      VideoPlayerDisplayRefresh.resumeIfNeeded(newPlayer, attempts: [0.05, 0.2, 0.45])
+    }
+  }
+
+  /// 新流没准备成：旧画面还在，继续播，不要改成黑屏失败卡。
+  @discardableResult
+  private func restoreRetainedPlayerIfPossible() -> Bool {
+    guard let retained = retainedDuringSwitch else { return false }
+    retainedDuringSwitch = nil
+    currentURL = retained.url
+    currentCompanionAudioURL = retained.companionAudioURL
+    currentCookieHeader = retained.cookieHeader
+    usedLegacyPath = retained.usedLegacyPath
+    player = retained.player
+    preparePhase = .ready
+    return true
+  }
+
+  private func discardRetainedDuringSwitch() {
+    guard let retained = retainedDuringSwitch else { return }
+    retainedDuringSwitch = nil
+    if retained.player !== player {
+      disposePlayer(retained.player)
+    }
   }
 
   private func cancelPrepare() {
@@ -797,6 +917,8 @@ final class RemotePreviewPlayerController: ObservableObject {
           let player,
           let url = currentURL else {
       if preparePhase == .preparing {
+        // 换档期间画面上就是旧播放器，不能当半成品拆掉。
+        if retainedDuringSwitch != nil { return }
         cancelPrepare()
         disposePlayer(self.player)
         self.player = nil
@@ -886,6 +1008,23 @@ private struct ParkedRemotePlayback {
   let usedLegacyPath: Bool
 }
 
+/// 在线转写流式预览的叶子视图：partial 拍点只重绘这一小块
+/// （见 HistoryViewModel.setOnlineTranscriptionPreview）。
+private struct OnlineTranscriptionPreviewText: View {
+  @ObservedObject var live: LiveRunTextModel
+
+  var body: some View {
+    ScrollView {
+      Text(live.text)
+        .font(.callout)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    .frame(maxHeight: 120)
+    .accessibilityIdentifier("remote-transcribe-preview")
+  }
+}
+
 /// 拆出本文件后不再是 file-private —— 使用方 HistoryContentView 已不同文件。
 struct CurrentCaptureMediaPreviewCard: View {
   // 错误色走主题：写死 .red 在暖褐主题上是全屏最跳的一块，
@@ -897,7 +1036,6 @@ struct CurrentCaptureMediaPreviewCard: View {
   @ObservedObject var model: HistoryViewModel
   let onlineTranscriptionModel: String?
   let tidyModel: String?
-  let autoTidyEnabled: Bool
   /// 与列表预热共享；卡片不 release，由 HistoryContentView 在离开可播上下文时释放。
   @ObservedObject var playback: RemotePreviewPlayerController
   /// 会话流失败时：清缓存并重新拉取可播档（避开 DV 等不可播编码）。
@@ -916,6 +1054,7 @@ struct CurrentCaptureMediaPreviewCard: View {
   @State private var videoPixelHeight: Int?
   @State private var videoGeometryTask: Task<Void, Never>?
   @State private var playerStatusTask: Task<Void, Never>?
+  @State private var isPlaybackEnded = false
 
   private var previewState: CurrentCaptureMediaPreviewState {
     CurrentCaptureMediaPreview.resolve(descriptor)
@@ -981,17 +1120,11 @@ struct CurrentCaptureMediaPreviewCard: View {
     .onAppear { synchronizePlayback() }
     .onChange(of: descriptor) { _, _ in
       cancelGeometryAndStatusMonitors()
+      isPlaybackEnded = false
       synchronizePlayback()
     }
-    .onChange(of: model.transcriptionState) { oldState, newState in
-      // 本机与在线转写共用同一完成态；用户开启自动校对后，两条路线都应在
-      // 当前远程视频上继续执行文本模型处理，而不是只有“已保存到本机”的卡片能触发。
-      // 必须确实从本次转写过程进入完成态；打开一条已有转写的历史记录也会恢复为
-      // `.completed`，不能因此重复调用模型、重复计费。
-      guard autoTidyEnabled, oldState.isActive, newState == .completed,
-            model.transcriptionTaskID == taskID,
-            model.canTidyTranscript(taskID: taskID) else { return }
-      model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)
+    .onChange(of: playback.preparePhase) { _, phase in
+      if phase == .ready { applyGeometryFromPlayingItem() }
     }
     .onDisappear {
       // 不 release 共享 controller：列表预热与快速切回同一抓取需要保留。
@@ -1049,6 +1182,7 @@ struct CurrentCaptureMediaPreviewCard: View {
         } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
           .buttonStyle(.link)
           .font(.caption)
+          .help("双击视频也可放大")
           .accessibilityIdentifier("history-video-preview-cinema")
       }
       Button("在浏览器中打开", action: openInBrowser)
@@ -1110,12 +1244,13 @@ struct CurrentCaptureMediaPreviewCard: View {
           onRefreshStream()
         }
       }
-    case .preparing:
+    case .preparing where playback.player == nil:
       preparingPlaceholder(url: url, companionAudioURL: companionAudioURL)
     case .idle where playback.player == nil:
       preparingPlaceholder(url: url, companionAudioURL: companionAudioURL)
-    case .ready, .idle:
+    case .ready, .idle, .preparing:
       VideoPlayer(player: playback.player)
+        .linkDigestVideoSurface(player: playback.player)
         .aspectRatio(
           videoDisplaySize.map { VideoDisplayGeometry.aspectRatio(displaySize: $0) } ?? (16.0 / 9.0),
           contentMode: .fit
@@ -1127,7 +1262,28 @@ struct CurrentCaptureMediaPreviewCard: View {
         )
         .background(Color.black)
         .background(VideoScrollWheelAnchor().allowsHitTesting(false))
+        .background(
+          PlayerSpaceKeyToggle(
+            player: playback.player,
+            onPlaybackEnded: { isPlaybackEnded = true },
+            onDidRestart: { isPlaybackEnded = false }
+          ).allowsHitTesting(false)
+        )
         .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+        .overlay {
+          PlaybackReplayOverlay(player: playback.player, isPlaybackEnded: $isPlaybackEnded)
+          if playback.preparePhase == .preparing {
+            switchingQualityBadge
+          }
+        }
+        .videoCinemaDoubleClick {
+          guard let player = playback.player else { return }
+          cinema.present(
+            player: player,
+            aspectRatio: videoDisplaySize
+              .map { VideoDisplayGeometry.aspectRatio(displaySize: $0) } ?? (16.0 / 9.0)
+          )
+        }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("history-video-remote-player")
     }
@@ -1262,15 +1418,10 @@ struct CurrentCaptureMediaPreviewCard: View {
           Text(message).foregroundStyle(appTheme.danger)
         }
         // 流式通道边转写边出字：先看到文字，等待感就和总耗时脱钩了。
+        // 预览文本单独成叶子视图观察 LiveRunTextModel：partial 拍点只重绘
+        // 这一小块，视频卡与详情其余部分不受影响。
         if let preview, !preview.isEmpty {
-          ScrollView {
-            Text(preview)
-              .font(.callout)
-              .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
-          }
-          .frame(maxHeight: 120)
-          .accessibilityIdentifier("remote-transcribe-preview")
+          OnlineTranscriptionPreviewText(live: model.liveOnlineTranscriptionPreview)
         }
         if let timings {
           Text(timings)
@@ -1359,6 +1510,24 @@ struct CurrentCaptureMediaPreviewCard: View {
     .accessibilityIdentifier(identifier)
   }
 
+  private var switchingQualityBadge: some View {
+    VStack {
+      HStack {
+        Spacer()
+        Label("正在切换清晰度…", systemImage: "slider.horizontal.3")
+          .font(.caption.weight(.medium))
+          .padding(.horizontal, 10)
+          .padding(.vertical, 6)
+          .background(.black.opacity(0.62), in: Capsule())
+          .foregroundStyle(.white)
+          .padding(10)
+      }
+      Spacer()
+    }
+    .allowsHitTesting(false)
+    .accessibilityIdentifier("history-video-preview-switching-quality")
+  }
+
   private func preparingPlaceholder(url: URL, companionAudioURL: URL?) -> some View {
     ZStack {
       RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
@@ -1426,8 +1595,7 @@ struct CurrentCaptureMediaPreviewCard: View {
 
   private func loadVideoGeometry(_ url: URL) {
     videoGeometryTask?.cancel()
-    videoDisplaySize = nil
-    videoPixelHeight = nil
+    // 换档时旧画面还在，先清空尺寸会让播放器重布局，AVPlayerLayer 容易糊住。
     videoGeometryTask = Task { @MainActor in
       let asset = RemotePlaybackAsset.make(url: url)
       guard let track = try? await asset.loadTracks(withMediaType: .video).first,
@@ -1443,6 +1611,18 @@ struct CurrentCaptureMediaPreviewCard: View {
       // 竖屏经 transform 后宽高互换，取短边才是「多少 P」。
       videoPixelHeight = Int(min(displaySize.width, displaySize.height).rounded())
     }
+  }
+
+  /// 以真正在播的那一轨为准，避免换高清后标签还写着旧的 720P。
+  private func applyGeometryFromPlayingItem() {
+    let size = playback.player?.currentItem?.presentationSize ?? .zero
+    guard size.width > 1, size.height > 1 else { return }
+    let displaySize = VideoDisplayGeometry.displaySize(
+      naturalSize: size,
+      preferredTransform: .identity
+    )
+    videoDisplaySize = displaySize
+    videoPixelHeight = Int(min(displaySize.width, displaySize.height).rounded())
   }
 
   private func monitorPlayerStatus() {
@@ -1476,7 +1656,6 @@ struct CurrentCaptureMediaPreviewCard: View {
     videoGeometryTask = nil
     playerStatusTask?.cancel()
     playerStatusTask = nil
-    videoDisplaySize = nil
   }
 
   private func openInBrowser() {
@@ -1599,18 +1778,277 @@ struct ReleaseInitialSearchFocus: NSViewRepresentable {
   }
 }
 
+/// 片尾时 `AVPlayer.play()` 是空操作：item 停在 duration，默认
+/// `actionAtItemEnd == .pause`。AVKit「重新播放」和空格都会落到这条
+/// 路径，必须先 seek 到 0。纯函数供单测钉住，避免再靠真机碰运气。
+enum MediaPlaybackRestart {
+  static let endEpsilonSeconds: Double = 0.35
+  /// 小于这个进度视为还在片头，换档不必先 seek。
+  static let seekThresholdSeconds: Double = 0.15
+
+  static func switchResume(from player: AVPlayer?) -> (time: CMTime, playing: Bool)? {
+    guard let player else { return nil }
+    let playing = player.rate > 0 || player.timeControlStatus == .playing || player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+    return (player.currentTime(), playing)
+  }
+
+  static func shouldSeek(_ time: CMTime) -> Bool {
+    time.isNumeric && time.seconds.isFinite && time.seconds > seekThresholdSeconds
+  }
+
+  /// 换档后接到旧进度。超时就停，避免新流 seek 挂死时旧画面一直不能切过去。
+  static func seek(_ player: AVPlayer, to time: CMTime, timeoutSeconds: TimeInterval = 4) async {
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+      let once = ResumeOnce()
+      player.seek(
+        to: time,
+        toleranceBefore: .zero,
+        toleranceAfter: CMTime(seconds: 0.75, preferredTimescale: 600)
+      ) { _ in
+        once.finish(continuation)
+      }
+      DispatchQueue.main.asyncAfter(deadline: .now() + timeoutSeconds) {
+        once.finish(continuation)
+      }
+    }
+  }
+
+  private final class ResumeOnce: @unchecked Sendable {
+    private let lock = NSLock()
+    private var finished = false
+
+    func finish(_ continuation: CheckedContinuation<Void, Never>) {
+      lock.lock()
+      defer { lock.unlock() }
+      guard !finished else { return }
+      finished = true
+      continuation.resume()
+    }
+  }
+
+  static func isAtEnd(
+    currentTime: CMTime,
+    duration: CMTime,
+    epsilonSeconds: Double = endEpsilonSeconds
+  ) -> Bool {
+    guard duration.isNumeric, duration.seconds.isFinite, duration.seconds > 0,
+          currentTime.isNumeric, currentTime.seconds.isFinite
+    else { return false }
+    return currentTime.seconds >= max(0, duration.seconds - epsilonSeconds)
+  }
+
+  static func playOrRestart(_ player: AVPlayer) {
+    let current = player.currentTime()
+    let duration = player.currentItem?.duration ?? .invalid
+    if isAtEnd(currentTime: current, duration: duration) {
+      player.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { finished in
+        guard finished else { return }
+        player.play()
+      }
+      return
+    }
+    if player.timeControlStatus == .playing {
+      player.pause()
+    } else {
+      player.play()
+    }
+  }
+}
+
+/// 换高清后 AVPlayerView 常继续用旧的 1x 图层 / 720p 解码上限，
+/// 画面看起来还是糊的；缩小再放大窗口等于逼它重排，所以才会突然变清。
+/// 这里按当前 backingScale 重刷整棵子树，并给 AVPlayerView 做一次与改窗口等价的 bounds 轻推。
+struct VideoPlayerDisplayRefresh: NSViewRepresentable {
+  var player: AVPlayer?
+
+  func makeNSView(context: Context) -> AnchorView {
+    let view = AnchorView()
+    view.player = player
+    return view
+  }
+
+  func updateNSView(_ nsView: AnchorView, context: Context) {
+    let changed = nsView.player !== player
+    nsView.player = player
+    nsView.refreshSoon(nudge: changed)
+  }
+
+  static func resumeIfNeeded(_ player: AVPlayer, attempts: [TimeInterval]) {
+    for delay in attempts {
+      DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+        if player.rate == 0, player.timeControlStatus != .playing {
+          player.play()
+        }
+      }
+    }
+  }
+
+  final class AnchorView: NSView {
+    var player: AVPlayer?
+    private var pending: DispatchWorkItem?
+    private var lastNudgedPlayer: ObjectIdentifier?
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      refreshSoon(nudge: true)
+    }
+
+    override func viewDidChangeBackingProperties() {
+      super.viewDidChangeBackingProperties()
+      refreshSoon(nudge: true)
+    }
+
+    func refreshSoon(nudge: Bool) {
+      pending?.cancel()
+      DispatchQueue.main.async { [weak self] in self?.refresh(nudge: nudge) }
+      let work = DispatchWorkItem { [weak self] in self?.refresh(nudge: nudge) }
+      pending = work
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
+    private func refresh(nudge: Bool) {
+      let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+      guard let playerView = findPlayerView(from: self) else { return }
+      applyScaleRecursively(scale, to: playerView)
+      if let item = (player ?? playerView.player)?.currentItem {
+        // .zero = 不限制。否则 AVKit 会按旧视图像素把 4K 压回 720p。
+        item.preferredMaximumResolution = .zero
+      }
+      let playerID = player.map { ObjectIdentifier($0) }
+      if nudge, playerID != lastNudgedPlayer || lastNudgedPlayer == nil {
+        lastNudgedPlayer = playerID
+        nudgeBounds(playerView)
+      }
+      playerView.needsLayout = true
+      playerView.needsDisplay = true
+      playerView.layoutSubtreeIfNeeded()
+    }
+
+    /// 用户现场有效的那条路：改窗口 bounds。这里只把 AVPlayerView 推进 1pt 再收回。
+    private func nudgeBounds(_ view: NSView) {
+      let original = view.frame
+      guard original.width > 4, original.height > 4 else { return }
+      view.frame = original.insetBy(dx: 1, dy: 1)
+      view.layoutSubtreeIfNeeded()
+      view.displayIfNeeded()
+      view.frame = original
+      view.layoutSubtreeIfNeeded()
+      view.displayIfNeeded()
+    }
+
+    private func applyScaleRecursively(_ scale: CGFloat, to view: NSView) {
+      view.wantsLayer = true
+      applyContentsScale(scale, on: view.layer)
+      if let metal = view.layer as? CAMetalLayer {
+        metal.contentsScale = scale
+        metal.drawableSize = CGSize(width: max(view.bounds.width * scale, 1), height: max(view.bounds.height * scale, 1))
+      }
+      for child in view.subviews {
+        applyScaleRecursively(scale, to: child)
+      }
+    }
+
+    private func applyContentsScale(_ scale: CGFloat, on layer: CALayer?) {
+      guard let layer else { return }
+      layer.contentsScale = scale
+      for sublayer in layer.sublayers ?? [] {
+        applyContentsScale(scale, on: sublayer)
+      }
+    }
+
+    private func findPlayerView(from start: NSView) -> AVPlayerView? {
+      var current: NSView? = start.superview
+      while let view = current {
+        if let playerView = view as? AVPlayerView { return playerView }
+        if let playerView = findPlayerViewDescending(view) { return playerView }
+        current = view.superview
+      }
+      return nil
+    }
+
+    private func findPlayerViewDescending(_ root: NSView) -> AVPlayerView? {
+      if let playerView = root as? AVPlayerView { return playerView }
+      for child in root.subviews {
+        if let playerView = findPlayerViewDescending(child) { return playerView }
+      }
+      return nil
+    }
+  }
+}
+
+private struct LinkDigestVideoSurfaceModifier: ViewModifier {
+  var player: AVPlayer?
+  @State private var nudge: CGFloat = 0
+  @State private var lastPlayerID: ObjectIdentifier?
+
+  func body(content: Content) -> some View {
+    content
+      .padding(nudge)
+      .background(VideoPlayerDisplayRefresh(player: player).allowsHitTesting(false))
+      .onChange(of: player.map { ObjectIdentifier($0) }) { _, newID in
+        guard newID != lastPlayerID else { return }
+        lastPlayerID = newID
+        // 走 SwiftUI 布局，效果接近用户改窗口；只改 NSView.frame 会被约束立刻写回。
+        nudge = 1
+        DispatchQueue.main.async { nudge = 0 }
+      }
+  }
+}
+
+extension View {
+  /// 换播放器后重刷 Retina 图层。不要 `.id(player)`：拆掉 AVPlayerView 会把正在播的实例暂停。
+  func linkDigestVideoSurface(player: AVPlayer?) -> some View {
+    modifier(LinkDigestVideoSurfaceModifier(player: player))
+  }
+}
+
+/// 盖在 AVKit 片尾 overlay 上面：那颗系统「重新播放」在 SwiftUI `VideoPlayer`
+/// + 描边 overlay / AppKit 滚动器里经常点了没反应。这颗按钮走我们自己的
+/// seek+play，不依赖 AVKit 内部动作。
+private struct PlaybackReplayOverlay: View {
+  let player: AVPlayer?
+  @Binding var isPlaybackEnded: Bool
+
+  var body: some View {
+    if isPlaybackEnded, let player {
+      ZStack {
+        Color.black.opacity(0.32)
+        Button("重新播放") {
+          MediaPlaybackRestart.playOrRestart(player)
+          isPlaybackEnded = false
+        }
+        .buttonStyle(.borderedProminent)
+        .controlSize(.large)
+        .accessibilityIdentifier("history-video-replay")
+      }
+    }
+  }
+}
+
 private struct PlayerSpaceKeyToggle: NSViewRepresentable {
   let player: AVPlayer?
+  var onPlaybackEnded: (() -> Void)? = nil
+  var onDidRestart: (() -> Void)? = nil
 
   func makeNSView(context: Context) -> CatcherView { CatcherView() }
 
   func updateNSView(_ nsView: CatcherView, context: Context) {
+    nsView.onPlaybackEnded = onPlaybackEnded
+    nsView.onDidRestart = onDidRestart
     nsView.player = player
   }
 
   final class CatcherView: NSView {
-    var player: AVPlayer?
+    var onPlaybackEnded: (() -> Void)?
+    var onDidRestart: (() -> Void)?
+    var player: AVPlayer? {
+      didSet { attachEndObserverIfNeeded() }
+    }
     private var monitor: Any?
+    private var endObserver: NSObjectProtocol?
+    private var observedItem: AVPlayerItem?
 
     override var acceptsFirstResponder: Bool { false }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
@@ -1619,9 +2057,34 @@ private struct PlayerSpaceKeyToggle: NSViewRepresentable {
       super.viewDidMoveToWindow()
       if window == nil {
         removeMonitor()
+        detachEndObserver()
       } else {
         installMonitor()
+        attachEndObserverIfNeeded()
       }
+    }
+
+    private func attachEndObserverIfNeeded() {
+      let item = player?.currentItem
+      guard item !== observedItem else { return }
+      detachEndObserver()
+      observedItem = item
+      guard let item else { return }
+      endObserver = NotificationCenter.default.addObserver(
+        forName: .AVPlayerItemDidPlayToEndTime,
+        object: item,
+        queue: .main
+      ) { [weak self] _ in
+        self?.onPlaybackEnded?()
+      }
+    }
+
+    private func detachEndObserver() {
+      if let endObserver {
+        NotificationCenter.default.removeObserver(endObserver)
+      }
+      endObserver = nil
+      observedItem = nil
     }
 
     private func installMonitor() {
@@ -1664,7 +2127,12 @@ private struct PlayerSpaceKeyToggle: NSViewRepresentable {
              is NSPopUpButton, is NSSegmentedControl: return event
         default: break
         }
-        if player.timeControlStatus == .playing { player.pause() } else { player.play() }
+        let wasAtEnd = MediaPlaybackRestart.isAtEnd(
+          currentTime: player.currentTime(),
+          duration: player.currentItem?.duration ?? .invalid
+        )
+        MediaPlaybackRestart.playOrRestart(player)
+        if wasAtEnd { self.onDidRestart?() }
         return nil
       }
     }
@@ -1686,7 +2154,6 @@ struct HistoryVideoPlayerCard: View {
   @ObservedObject var model: HistoryViewModel
   let onlineTranscriptionModel: String?
   let tidyModel: String?
-  let autoTidyEnabled: Bool
   @State private var player: AVPlayer?
   @State private var surfaceGeometry: PlaybackSurfaceGeometry = .loading
   /// 既有版式按"有尺寸/没尺寸"分支，这里保持它的语义不变。
@@ -1695,10 +2162,19 @@ struct HistoryVideoPlayerCard: View {
   @State private var saveFeedback: String?
   @State private var saveFeedbackTask: Task<Void, Never>?
   @State private var isSaveFailurePresented = false
+  @State private var isPlaybackEnded = false
   @ObservedObject private var cinema = VideoCinemaController.shared
 
   /// 本卡的播放器正被影院 overlay 放大：卡内显示占位，避免双重渲染。
   private var isInCinema: Bool { cinema.isPresenting(player: player) }
+
+  private var spaceKeyToggle: PlayerSpaceKeyToggle {
+    PlayerSpaceKeyToggle(
+      player: player,
+      onPlaybackEnded: { isPlaybackEnded = true },
+      onDidRestart: { isPlaybackEnded = false }
+    )
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -1743,14 +2219,6 @@ struct HistoryVideoPlayerCard: View {
         }
         Spacer(minLength: 0)
       }
-      .onChange(of: model.transcriptionState) { oldState, newState in
-        // 设置勾选即持久授权：自动校对不再逐次弹发送确认。只有本次转写从运行态
-        // 进入完成态才触发；历史状态恢复成 `.completed` 时不能重复调用模型。
-        guard autoTidyEnabled, oldState.isActive, newState == .completed,
-              model.transcriptionTaskID == taskID,
-              model.canTidyTranscript(taskID: taskID) else { return }
-        model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)
-      }
 
       playerSurface
 
@@ -1767,6 +2235,7 @@ struct HistoryVideoPlayerCard: View {
           } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
             .buttonStyle(.link)
             .font(.caption)
+            .help("双击视频也可放大")
             .accessibilityIdentifier("history-video-cinema")
         }
         // 右对齐要对到视频右边缘，不是阅读区右边缘：竖屏视频收窄后，按整行
@@ -1779,12 +2248,14 @@ struct HistoryVideoPlayerCard: View {
       if player == nil {
         player = AVPlayer(url: fileURL)
       }
+      isPlaybackEnded = false
       loadVideoGeometry(fileURL)
     }
     .onChange(of: fileURL) { _, newURL in
       if isInCinema { cinema.dismiss() }
       player?.pause()
       player = AVPlayer(url: newURL)
+      isPlaybackEnded = false
       loadVideoGeometry(newURL)
     }
     .onDisappear {
@@ -1852,7 +2323,7 @@ struct HistoryVideoPlayerCard: View {
             maxHeight: VideoDisplayGeometry.inlineMaximumHeight,
             alignment: .leading
           )
-          .background(PlayerSpaceKeyToggle(player: player).allowsHitTesting(false))
+          .background(spaceKeyToggle.allowsHitTesting(false))
           .overlay {
             VStack(spacing: 6) {
               Image(systemName: "rectangle.on.rectangle").font(.title2).foregroundStyle(.white.opacity(0.7))
@@ -1861,6 +2332,7 @@ struct HistoryVideoPlayerCard: View {
           }
       } else {
         VideoPlayer(player: player)
+          .linkDigestVideoSurface(player: player)
           .aspectRatio(VideoDisplayGeometry.aspectRatio(displaySize: videoDisplaySize), contentMode: .fit)
           // 竖屏视频（9:16）的黑底必须收到视频自身宽度，否则两侧就是死黑边。
           // 横屏仍被阅读区宽度约束，表现与之前一致。
@@ -1871,12 +2343,23 @@ struct HistoryVideoPlayerCard: View {
           )
           .background(Color.black)
           .background(VideoScrollWheelAnchor().allowsHitTesting(false))
-          .background(PlayerSpaceKeyToggle(player: player).allowsHitTesting(false))
+          .background(spaceKeyToggle.allowsHitTesting(false))
           .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
           .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
               .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+              .allowsHitTesting(false)
           )
+          .overlay {
+            PlaybackReplayOverlay(player: player, isPlaybackEnded: $isPlaybackEnded)
+          }
+          .videoCinemaDoubleClick {
+            guard let player else { return }
+            cinema.present(
+              player: player,
+              aspectRatio: VideoDisplayGeometry.aspectRatio(displaySize: videoDisplaySize)
+            )
+          }
           .frame(maxWidth: .infinity, alignment: .leading)
           .accessibilityIdentifier("history-video-player")
       }
@@ -1905,12 +2388,16 @@ struct HistoryVideoPlayerCard: View {
         VideoPlayer(player: player)
           .frame(height: 64)
           .background(Color.black)
-          .background(PlayerSpaceKeyToggle(player: player).allowsHitTesting(false))
+          .background(spaceKeyToggle.allowsHitTesting(false))
           .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
           .overlay(
             RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
               .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
+              .allowsHitTesting(false)
           )
+          .overlay {
+            PlaybackReplayOverlay(player: player, isPlaybackEnded: $isPlaybackEnded)
+          }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityIdentifier("history-audio-only-player")
@@ -2068,6 +2555,7 @@ private struct HistoryStreamingMediaCard: View {
   @State private var videoGeometryTask: Task<Void, Never>?
   @State private var playerStatusTask: Task<Void, Never>?
   @State private var playbackFailed = false
+  @State private var isPlaybackEnded = false
   @ObservedObject private var cinema = VideoCinemaController.shared
 
   /// 本卡的播放器正被影院 overlay 放大：卡内显示占位，避免双重渲染。
@@ -2137,7 +2625,13 @@ private struct HistoryStreamingMediaCard: View {
               maxHeight: VideoDisplayGeometry.inlineMaximumHeight,
               alignment: .leading
             )
-            .background(PlayerSpaceKeyToggle(player: playback.player).allowsHitTesting(false))
+            .background(
+              PlayerSpaceKeyToggle(
+                player: playback.player,
+                onPlaybackEnded: { isPlaybackEnded = true },
+                onDidRestart: { isPlaybackEnded = false }
+              ).allowsHitTesting(false)
+            )
             .overlay {
               VStack(spacing: 6) {
                 Image(systemName: "rectangle.on.rectangle").font(.title2).foregroundStyle(.white.opacity(0.7))
@@ -2146,6 +2640,7 @@ private struct HistoryStreamingMediaCard: View {
             }
         } else {
           VideoPlayer(player: playback.player)
+            .linkDigestVideoSurface(player: playback.player)
             .aspectRatio(streamingAspectRatio, contentMode: .fit)
             .frame(
               maxWidth: VideoDisplayGeometry.inlineMaximumHeight * streamingAspectRatio,
@@ -2154,8 +2649,21 @@ private struct HistoryStreamingMediaCard: View {
             )
             .background(Color.black)
             .background(VideoScrollWheelAnchor().allowsHitTesting(false))
-            .background(PlayerSpaceKeyToggle(player: playback.player).allowsHitTesting(false))
+            .background(
+              PlayerSpaceKeyToggle(
+                player: playback.player,
+                onPlaybackEnded: { isPlaybackEnded = true },
+                onDidRestart: { isPlaybackEnded = false }
+              ).allowsHitTesting(false)
+            )
             .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+            .overlay {
+              PlaybackReplayOverlay(player: playback.player, isPlaybackEnded: $isPlaybackEnded)
+            }
+            .videoCinemaDoubleClick {
+              guard let player = playback.player else { return }
+              cinema.present(player: player, aspectRatio: streamingAspectRatio)
+            }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("history-video-streaming-player")
         }
@@ -2174,6 +2682,7 @@ private struct HistoryStreamingMediaCard: View {
           } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
             .buttonStyle(.link)
             .font(.caption)
+            .help("双击视频也可放大")
             .accessibilityIdentifier("history-video-streaming-cinema")
         }
       }
@@ -2212,7 +2721,6 @@ private struct HistoryStreamingMediaCard: View {
 
   private func loadVideoGeometry(_ url: URL) {
     videoGeometryTask?.cancel()
-    videoDisplaySize = nil
     videoGeometryTask = Task { @MainActor in
       let asset = RemotePlaybackAsset.make(url: url)
       guard let track = try? await asset.loadTracks(withMediaType: .video).first,

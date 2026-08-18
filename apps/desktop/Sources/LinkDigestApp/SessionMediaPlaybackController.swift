@@ -12,9 +12,24 @@ final class SessionMediaPlaybackController: ObservableObject {
     case failed(String)
   }
 
-  @Published private(set) var restoreMode: SessionMediaRestoreMode
-  @Published private(set) var phase: RefreshPhase = .idle
-  @Published private(set) var activeTaskID: TaskID?
+  // 这几项每次切换文章都会被重写一遍，绝大多数时候写的是同一个值。
+  // `@Published` 不比较新旧值，照发通知；而历史窗口整棵视图树都在观察这个对象，
+  // 于是一次「没有视频的文章」切换也要多跑三四轮整屏重求值。写入前先比一次。
+  @Published private var restoreModeStorage: SessionMediaRestoreMode
+  private(set) var restoreMode: SessionMediaRestoreMode {
+    get { restoreModeStorage }
+    set { if restoreModeStorage != newValue { restoreModeStorage = newValue } }
+  }
+  @Published private var phaseStorage: RefreshPhase = .idle
+  private(set) var phase: RefreshPhase {
+    get { phaseStorage }
+    set { if phaseStorage != newValue { phaseStorage = newValue } }
+  }
+  @Published private var activeTaskIDStorage: TaskID?
+  private(set) var activeTaskID: TaskID? {
+    get { activeTaskIDStorage }
+    set { if activeTaskIDStorage != newValue { activeTaskIDStorage = newValue } }
+  }
   /// Bumps when cache or phase changes so detail views re-read descriptors.
   @Published private(set) var generation = 0
 
@@ -26,7 +41,11 @@ final class SessionMediaPlaybackController: ObservableObject {
   private var chosenQuality: [TaskID: BilibiliStreamQualityPreference] = [:]
   /// 最近一次选流的可见记录：API 给了哪些档、我们选了哪条、为什么。
   /// 不含 Cookie 与签名 URL。
-  @Published private(set) var selectionDiagnostic: String?
+  @Published private var selectionDiagnosticStorage: String?
+  private(set) var selectionDiagnostic: String? {
+    get { selectionDiagnosticStorage }
+    set { if selectionDiagnosticStorage != newValue { selectionDiagnosticStorage = newValue } }
+  }
   /// 当前这条已经发起过多少次刷新。
   ///
   /// 「一直转圈」有两种截然不同的成因：请求真的慢，或者刷新被反复取消重启。
@@ -45,7 +64,7 @@ final class SessionMediaPlaybackController: ObservableObject {
     self.preferenceStore = preferenceStore
     self.refreshService = refreshService
     self.cache = cache
-    self.restoreMode = preferenceStore.sessionMediaRestoreMode
+    self.restoreModeStorage = preferenceStore.sessionMediaRestoreMode
   }
 
   func reloadPreferences() {
@@ -83,12 +102,15 @@ final class SessionMediaPlaybackController: ObservableObject {
     // 必须在覆盖 activeTaskID 之前记下旧值，否则无法判断「在飞的那次刷新是不是同一条」。
     let previouslyActive = activeTaskID
     restoreMode = preferenceStore.sessionMediaRestoreMode
-    activeTaskID = taskID
     // Local file / live current capture / YouTube embed own their own UI paths.
+    // 没有会话媒体的文章不写 activeTaskID：它是 @Published，而窗口根观察整个
+    // controller——改它等于为一条没有视频的文章把整扇窗再通知一遍。这里只把
+    // 可能在飞的刷新清掉；phase 有等值守卫，本来 idle 就不会发通知。
     if hasLocalMedia || isCurrentCaptureWithDescriptor || isYouTube || !hadMediaDescriptor {
       cancelRefresh(clearPhase: true)
       return
     }
+    activeTaskID = taskID
     if cache.descriptor(for: taskID) != nil {
       phase = .idle
       generation &+= 1

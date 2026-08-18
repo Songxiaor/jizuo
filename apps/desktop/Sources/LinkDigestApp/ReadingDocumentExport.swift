@@ -152,6 +152,31 @@ enum ReadingDocumentExport {
           color: .secondaryLabelColor,
           spacingBefore: 6, spacingAfter: 6, headIndent: 18, firstLineIndent: 18
         ))
+      case let .comments(section):
+        result.append(styledParagraph(
+          section.countTitle,
+          font: font(readingFont, size: 16, weight: .semibold),
+          spacingBefore: 14, spacingAfter: 8
+        ))
+        for item in section.items {
+          let indent = CGFloat(min(item.depth, 3)) * 18
+          var metadata = item.displayAuthor
+          if let score = item.score { metadata += " · \(score) 分" }
+          if let published = item.published { metadata += " · \(published)" }
+          result.append(styledParagraph(
+            metadata,
+            font: font(readingFont, size: bodySize, weight: .semibold),
+            color: .secondaryLabelColor,
+            spacingBefore: 4, spacingAfter: 3, headIndent: indent, firstLineIndent: indent
+          ))
+          if !item.body.isEmpty {
+            result.append(styledParagraph(
+              plain(item.body),
+              font: font(readingFont, size: bodySize, weight: .regular),
+              spacingBefore: 0, spacingAfter: 7, headIndent: indent, firstLineIndent: indent
+            ))
+          }
+        }
       case let .table(headers, rows):
         result.append(styledParagraph(
           headers.joined(separator: " · "),

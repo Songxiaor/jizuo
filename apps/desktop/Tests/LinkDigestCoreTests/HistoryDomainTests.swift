@@ -273,6 +273,18 @@ final class UserNoteDocumentTests: XCTestCase {
     XCTAssertEqual(HistoryPlatformDisplay.name(forHost: HistoryPlatformDisplay.noteHost), "我的笔记")
     XCTAssertTrue(HistoryPlatformDisplay.isWellKnown(host: HistoryPlatformDisplay.noteHost))
   }
+
+  func testPlatformRegistryKeepsAliasesNamesAndAssetsTogether() {
+    XCTAssertEqual(HistoryPlatformRegistry.canonicalHost(for: "mobile.twitter.com"), "x.com")
+    XCTAssertEqual(HistoryPlatformRegistry.canonicalHost(for: "v.douyin.com"), "douyin.com")
+    XCTAssertEqual(HistoryPlatformRegistry.canonicalHost(for: "creator.substack.com"), "substack.com")
+    XCTAssertEqual(HistoryPlatformRegistry.canonicalHost(for: "uscardforum.com"), "discourse")
+    XCTAssertEqual(HistoryPlatformDisplay.name(forHost: "news.ycombinator.com"), "Hacker News")
+    XCTAssertEqual(HistoryPlatformDisplay.name(forHost: "douban.com"), "豆瓣")
+    XCTAssertTrue(HistoryPlatformDisplay.isWellKnown(host: "juejin.cn"))
+    XCTAssertEqual(HistoryPlatformRegistry.bundledAssetName(forHost: "twitter.com"), "x.com")
+    XCTAssertNil(HistoryPlatformRegistry.bundledAssetName(forHost: "v2ex.com"))
+  }
 }
 
 /// 笔记能否真的走完落库前的命令组装。

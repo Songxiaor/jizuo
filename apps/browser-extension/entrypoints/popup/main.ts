@@ -241,4 +241,10 @@ if (tabId === undefined) {
       void submit();
     }
   };
+  openApp.addEventListener("click", (event) => {
+    // 不能靠 <a href="linkdigest://open">：Launch Services 的默认 scheme 绑定
+    // 在本机上会打到过期声明，正在跑的汲作不会到前台。走 Host 用同包路径 open。
+    event.preventDefault();
+    void browser.runtime.sendMessage({ type: "open-app" });
+  });
 }

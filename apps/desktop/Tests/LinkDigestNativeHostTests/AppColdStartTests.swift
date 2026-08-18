@@ -46,6 +46,21 @@ final class AppColdStartTests: XCTestCase {
     XCTAssertEqual(launched, [], "用户显式关掉自动启动后，绝不能拉起 App")
   }
 
+  func testExplicitOpenIgnoresAutoLaunchDisableAndStillUsesThePeerBundle() throws {
+    let bundle = try makeAppBundle()
+    var launched: [URL] = []
+    let didOpen = AppColdStart.openPeerApp(
+      hostExecutable: bundle.appendingPathComponent("Contents/MacOS/Host"),
+      environment: [
+        "LINKDIGEST_DISABLE_AUTO_LAUNCH": "1",
+        "LINKDIGEST_APP_BUNDLE_PATH": bundle.path,
+      ],
+      launcher: { launched.append($0) }
+    )
+    XCTAssertTrue(didOpen, "用户点「打开汲作」不能被发送时的自动启动开关挡住")
+    XCTAssertEqual(launched.map(\.standardizedFileURL), [bundle.standardizedFileURL])
+  }
+
   func testLaunchesTheResolvedPeerBundle() throws {
     let bundle = try makeAppBundle()
     var launched: [URL] = []
@@ -150,6 +165,19 @@ final class AppColdStartTests: XCTestCase {
   }
 
   // MARK: 夹具
+
+  func testLaunchWithOpenTargetsTheAbsoluteAppPathViaDashA() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestNativeHost/AppColdStart.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(
+      source.contains("process.arguments = [\"-a\", appBundle.path]"),
+      "必须用 open -a 绝对路径；裸 open linkdigest:// 会打到过期的 Launch Services 声明"
+    )
+  }
 
   /// 造一个够真实的 `.app`：`AppBundleLocator` 沿父目录往上找 `.app` 后缀，
   /// 启动前还要 `fileExists`，所以目录必须真的存在。
