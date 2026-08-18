@@ -929,7 +929,6 @@ struct CurrentCaptureMediaPreviewCard: View {
   @ObservedObject var model: HistoryViewModel
   let onlineTranscriptionModel: String?
   let tidyModel: String?
-  let autoTidyEnabled: Bool
   /// 与列表预热共享；卡片不 release，由 HistoryContentView 在离开可播上下文时释放。
   @ObservedObject var playback: RemotePreviewPlayerController
   /// 会话流失败时：清缓存并重新拉取可播档（避开 DV 等不可播编码）。
@@ -1016,16 +1015,6 @@ struct CurrentCaptureMediaPreviewCard: View {
       cancelGeometryAndStatusMonitors()
       isPlaybackEnded = false
       synchronizePlayback()
-    }
-    .onChange(of: model.transcriptionState) { oldState, newState in
-      // 本机与在线转写共用同一完成态；用户开启自动校对后，两条路线都应在
-      // 当前远程视频上继续执行文本模型处理，而不是只有“已保存到本机”的卡片能触发。
-      // 必须确实从本次转写过程进入完成态；打开一条已有转写的历史记录也会恢复为
-      // `.completed`，不能因此重复调用模型、重复计费。
-      guard autoTidyEnabled, oldState.isActive, newState == .completed,
-            model.transcriptionTaskID == taskID,
-            model.canTidyTranscript(taskID: taskID) else { return }
-      model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)
     }
     .onDisappear {
       // 不 release 共享 controller：列表预热与快速切回同一抓取需要保留。
@@ -1823,7 +1812,6 @@ struct HistoryVideoPlayerCard: View {
   @ObservedObject var model: HistoryViewModel
   let onlineTranscriptionModel: String?
   let tidyModel: String?
-  let autoTidyEnabled: Bool
   @State private var player: AVPlayer?
   @State private var surfaceGeometry: PlaybackSurfaceGeometry = .loading
   /// 既有版式按"有尺寸/没尺寸"分支，这里保持它的语义不变。
@@ -1888,14 +1876,6 @@ struct HistoryVideoPlayerCard: View {
           transcriptTidyStatus
         }
         Spacer(minLength: 0)
-      }
-      .onChange(of: model.transcriptionState) { oldState, newState in
-        // 设置勾选即持久授权：自动校对不再逐次弹发送确认。只有本次转写从运行态
-        // 进入完成态才触发；历史状态恢复成 `.completed` 时不能重复调用模型。
-        guard autoTidyEnabled, oldState.isActive, newState == .completed,
-              model.transcriptionTaskID == taskID,
-              model.canTidyTranscript(taskID: taskID) else { return }
-        model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)
       }
 
       playerSurface

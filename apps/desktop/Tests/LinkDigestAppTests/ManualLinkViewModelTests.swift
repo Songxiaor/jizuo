@@ -658,6 +658,24 @@ final class ManualLinkViewModelTests: XCTestCase {
     XCTAssertTrue(model.pendingCaptures.isEmpty)
   }
 
+  func testSubmitMarksClipboardHandledSoReturningToAppDoesNotReshowSuggestion() {
+    let clipboard = ManualVMClipboard("https://example.test/queued")
+    let model = makeModel(clipboard: clipboard)
+
+    model.handleApplicationDidBecomeActive()
+    XCTAssertEqual(model.clipboardSuggestion?.canonicalURL, "https://example.test/queued")
+
+    model.open()
+    model.input = "https://example.test/queued"
+    model.submit()
+
+    model.handleApplicationDidBecomeActive()
+    XCTAssertNil(
+      model.clipboardSuggestion,
+      "刚提交过的链接不应在切回窗口时再弹剪贴板建议，即使剪贴板里仍是同一条"
+    )
+  }
+
   func testManualSubmitCommitsThenPublishesManualDocument() async {
     let clipboard = ManualVMClipboard(nil)
     let repository = ManualVMRepository()

@@ -1729,7 +1729,7 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
     XCTAssertTrue(remote.contains("remote-transcript-tidy-blocked-reason"))
   }
 
-  func testCurrentRemoteVideoConnectsBothTranscriptionRoutesToManualAndAutomaticTidy() throws {
+  func testCurrentRemoteVideoExposesManualTidyWithoutAutoTriggerOnTranscriptionComplete() throws {
     let playbackSource = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -1742,11 +1742,12 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
       to: "/// Top-of-detail video card"
     )
     XCTAssertTrue(remote.contains("let tidyModel: String?"))
-    XCTAssertTrue(remote.contains("let autoTidyEnabled: Bool"))
+    XCTAssertFalse(remote.contains("let autoTidyEnabled: Bool"))
     XCTAssertTrue(remote.contains("model.requestTranscriptTidy(taskID: taskID, model: tidyModel)"))
-    XCTAssertTrue(remote.contains(".onChange(of: model.transcriptionState)"))
-    XCTAssertTrue(remote.contains("oldState.isActive, newState == .completed"))
-    XCTAssertTrue(remote.contains("model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)"))
+    XCTAssertFalse(
+      remote.contains("model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)"),
+      "视频卡不应在转写完成时自动校对，应交给设置里的自动管线或用户手动点按钮"
+    )
     XCTAssertFalse(
       remote.contains("descriptor.author"),
       "详情头部已有作者行，当前视频卡不能再显示一份可能混入统计的 author"
@@ -1765,9 +1766,9 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
       from: "struct HistoryVideoPlayerCard: View",
       to: "private struct HistoryStreamingMediaCard: View"
     )
-    XCTAssertTrue(
-      local.contains("oldState.isActive, newState == .completed"),
-      "重新打开已有转写的本机视频时不能重复调用模型校对"
+    XCTAssertFalse(
+      local.contains("startTranscriptTidyAuto"),
+      "本机视频卡也不应在转写完成时自动校对"
     )
     XCTAssertFalse(
       local.contains("media?.author"),
@@ -1796,10 +1797,9 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
       3,
       "本机媒体与两种当前远程媒体入口都必须接入同一校对模型"
     )
-    XCTAssertEqual(
-      contentSource.components(separatedBy: "autoTidyEnabled: providerSettings.autoTidyTranscription").count - 1,
-      3,
-      "本机媒体与两种当前远程媒体入口都必须接入同一自动校对开关"
+    XCTAssertTrue(
+      contentSource.contains("tidy: settings.autoTidyTranscription"),
+      "自动校对只应通过新内容自动管线触发，不应在视频卡 onChange 里硬接"
     )
   }
 
@@ -1829,11 +1829,6 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
 }
 
 /// 自动管线第 ② 步的前置提示，必须写明它只适用于自动进来的新内容。
-///
-/// 原文案「① 未开启：新内容还没有转写稿可整理」出现在 ② 正下方、长得像前置条件
-/// 警告，读起来就是「② 依赖 ①」。而代码里手动转写完成后的自动整理只检查 ② 的开关
-/// （HistoryMediaPlayback 的 onChange 里 `guard autoTidyEnabled`），与 ① 无关。
-/// 收到过按此误解的反馈。
 final class AutoPipelineTidyHintTests: XCTestCase {
   func testTidyHintStatesItOnlyAppliesToAutoCapturedContent() throws {
     let settings = try String(
@@ -1843,23 +1838,25 @@ final class AutoPipelineTidyHintTests: XCTestCase {
       encoding: .utf8
     )
     XCTAssertTrue(settings.contains("仅影响自动进来的新内容"))
-    XCTAssertTrue(settings.contains("你手动点「转写」时，本步照常生效"))
+    XCTAssertTrue(settings.contains("手动转写完成后请点「模型校对」"))
+    XCTAssertFalse(settings.contains("你手动点「转写」时，本步照常生效"))
   }
 
-  /// 钉住真实行为：手动转写后的自动整理只依赖 ② 的开关。
-  func testManualTranscriptionTidyDoesNotDependOnAutoTranscribe() throws {
+  /// 钉住真实行为：自动校对只走新内容自动管线，不在视频卡转写完成时偷偷触发。
+  func testAutoTidyIsOnlyWiredThroughAutoPipeline() throws {
     let playback = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Sources/LinkDigestApp/HistoryMediaPlayback.swift"),
       encoding: .utf8
     )
-    // oldState.isActive：只有本次转写从运行态进入完成态才触发自动整理；
-    // 打开一条已有转写的历史记录也会恢复成 .completed，不能重复调模型计费。
-    XCTAssertTrue(playback.contains("guard autoTidyEnabled, oldState.isActive, newState == .completed"))
-    XCTAssertFalse(
-      playback.contains("autoTranscribeNewCaptures"),
-      "手动转写后的整理不得依赖自动转写开关"
+    XCTAssertFalse(playback.contains("guard autoTidyEnabled, oldState.isActive, newState == .completed"))
+    let viewModel = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryViewModel.swift"),
+      encoding: .utf8
     )
+    XCTAssertTrue(viewModel.contains("if request.tidy, Self.latestTranscriptText(in: storedDetail) != nil"))
   }
 }

@@ -2292,8 +2292,7 @@ private struct HistoryDetailView: View, Equatable {
               taskID: detail.task.id,
               model: model,
               onlineTranscriptionModel: providerSettings.effectiveTranscriptionModelName,
-              tidyModel: providerSettings.effectiveTidyModelName,
-              autoTidyEnabled: providerSettings.autoTidyTranscription
+              tidyModel: providerSettings.effectiveTidyModelName
             )
             .padding(.top, 14)
             .accessibilityIdentifier("history-video-player-card")
@@ -2313,7 +2312,6 @@ private struct HistoryDetailView: View, Equatable {
               model: model,
               onlineTranscriptionModel: providerSettings.effectiveTranscriptionModelName,
               tidyModel: providerSettings.effectiveTidyModelName,
-              autoTidyEnabled: providerSettings.autoTidyTranscription,
               playback: remotePreviewPlayback,
               onRefreshStream: {
                 remotePreviewPlayback.release()
@@ -2365,7 +2363,6 @@ private struct HistoryDetailView: View, Equatable {
               model: model,
               onlineTranscriptionModel: providerSettings.effectiveTranscriptionModelName,
               tidyModel: providerSettings.effectiveTidyModelName,
-              autoTidyEnabled: providerSettings.autoTidyTranscription,
               playback: remotePreviewPlayback,
               onRefreshStream: {
                 remotePreviewPlayback.release()
