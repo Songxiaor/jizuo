@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import XCTest
 import LinkDigestCore
@@ -125,6 +126,36 @@ final class RemotePlaybackPrepareTests: XCTestCase {
     XCTAssertEqual(controller.preparePhase, .ready)
     XCTAssertTrue(controller.hasPlayer)
     controller.release()
+  }
+
+  func testQualitySwitchKeepsCurrentPlayerWhileNewDualTrackPrepares() {
+    let controller = RemotePreviewPlayerController()
+    let current = URL(string: "https://media.example.test/current.mp4")!
+    let nextVideo = URL(string: "https://upos.bilivideo.com/next-video.m4s")!
+    let nextAudio = URL(string: "https://upos.bilivideo.com/next-audio.m4s")!
+
+    controller.prepare(url: current)
+    let visible = controller.player
+    XCTAssertNotNil(visible)
+    XCTAssertEqual(controller.preparePhase, .ready)
+
+    controller.prepare(
+      url: nextVideo,
+      companionAudioURL: nextAudio,
+      durationSeconds: 11 * 60,
+      allowLongFormDual: true
+    )
+    XCTAssertTrue(controller.player === visible, "换高清时旧画面必须继续留着")
+    XCTAssertEqual(controller.preparePhase, .preparing)
+    controller.release()
+  }
+
+  func testQualitySwitchResumeSeeksPastTheStartAndIgnoresTheOpening() {
+    XCTAssertFalse(MediaPlaybackRestart.shouldSeek(.zero))
+    XCTAssertFalse(MediaPlaybackRestart.shouldSeek(.invalid))
+    XCTAssertFalse(MediaPlaybackRestart.shouldSeek(CMTime(seconds: 0.05, preferredTimescale: 600)))
+    XCTAssertTrue(MediaPlaybackRestart.shouldSeek(CMTime(seconds: 12, preferredTimescale: 1)))
+    XCTAssertNil(MediaPlaybackRestart.switchResume(from: nil))
   }
 
   func testPrepareWithCompanionUsesAsyncPathAndTracksCompanionForDedup() {

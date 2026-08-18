@@ -625,13 +625,31 @@ final class HistoryContentViewTests: XCTestCase {
       XCTAssertTrue(branch.contains("qualityOverride: quality"))
       XCTAssertTrue(branch.contains("selectedQuality: sessionMediaPlayback.chosenQuality"))
       XCTAssertTrue(branch.contains(".id(sessionMediaPlayback.generation)"))
-      // 能手选清晰度就必须能看到选流诊断。缺了这行，「手选高清后拿不到更高档」
-      // 只表现为重新加载一次、画质不变，用户分不清是登录掉了还是本来就没有更高档。
+      let select = section(
+        in: branch,
+        from: "onSelectQuality: { quality in",
+        to: "selectedQuality:"
+      )
+      XCTAssertTrue(select.contains("requestRefresh("))
+      XCTAssertFalse(
+        select.contains("remotePreviewPlayback.release()"),
+        "换档不能先拆掉正在播的画面"
+      )
+      XCTAssertFalse(
+        select.contains("invalidateAndRefresh("),
+        "换档不能先清掉还能播的旧地址"
+      )
+      // 诊断仍挂在带清晰度菜单的分支上，但出货默认不渲染。
       XCTAssertTrue(
         branch.contains("streamSelectionDiagnostic"),
         "带清晰度菜单的分支必须同时挂上选流诊断"
       )
     }
+    XCTAssertTrue(
+      detail.contains("showsStreamSelectionDiagnostic"),
+      "选流诊断必须有出货开关，不能把 Cookie / API 档位直接铺在播放器下"
+    )
+    XCTAssertTrue(detail.contains("LINKDIGEST_PRINT_CHANGES"))
     XCTAssertTrue(
       currentCapture.contains(
         "sessionMediaPlayback.cachedDescriptor(for: capture.taskID)"
@@ -745,6 +763,19 @@ final class HistoryContentViewTests: XCTestCase {
         isCurrentCaptureWithDescriptor: false,
         isYouTube: false,
         legacyPlatformHint: "douyin"
+      )
+    )
+    // 极老 V1 B 站视频：合同是 v1、库里没有 media_assets，重启后会话缓存清空
+    // 时仍应出现「重新获取播放」，不能整块消失只剩转写稿。
+    XCTAssertTrue(
+      HistorySessionMediaPresentation.shouldShowSessionOnlyUnavailable(
+        hadMediaDescriptor: false,
+        hasLocalMediaFile: false,
+        hasLocalMediaRow: false,
+        hasLocalMediaResolutionFailure: false,
+        isCurrentCaptureWithDescriptor: false,
+        isYouTube: false,
+        legacyPlatformHint: "bilibili"
       )
     )
 
@@ -930,6 +961,42 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(release.contains("editor.string.isEmpty"))
   }
 
+  func testQualitySwitchRebuildsPlayerViewSoHighResDoesNotStayBlurry() {
+    let playback = appSource("HistoryMediaPlayback.swift")
+    XCTAssertTrue(playback.contains("struct VideoPlayerDisplayRefresh"))
+    XCTAssertTrue(playback.contains("preferredMaximumResolution = .zero"))
+    XCTAssertTrue(playback.contains("contentsScale"))
+    XCTAssertTrue(playback.contains("drawableSize"))
+    XCTAssertTrue(playback.contains("nudgeBounds"))
+    XCTAssertTrue(playback.contains("resumeIfNeeded"))
+    XCTAssertTrue(playback.contains("不要 `.id(player)`"))
+    let surface = section(
+      in: playback,
+      from: "func linkDigestVideoSurface(player: AVPlayer?)",
+      to: "盖在 AVKit 片尾 overlay 上面"
+    )
+    XCTAssertFalse(
+      surface.contains(".id(player.map"),
+      "换播放器时拆 AVPlayerView 会把已经播到的进度暂停"
+    )
+    let preview = section(
+      in: playback,
+      from: "case .ready, .idle, .preparing:",
+      to: "accessibilityIdentifier(\"history-video-remote-player\")"
+    )
+    XCTAssertTrue(preview.contains("linkDigestVideoSurface(player: playback.player)"))
+  }
+
+  func testNativeVideoPlayersEnterCinemaOnDoubleClick() {
+    let playback = appSource("HistoryMediaPlayback.swift")
+    let cinema = appSource("YouTubeEmbedPlayer.swift")
+    XCTAssertTrue(cinema.contains("struct VideoCinemaDoubleClickCatcher"))
+    XCTAssertTrue(cinema.contains("event.clickCount == 2"))
+    XCTAssertTrue(cinema.contains(".videoCinemaDoubleClick { cinema.dismiss() }"))
+    let doubleClickCount = playback.components(separatedBy: "videoCinemaDoubleClick").count - 1
+    XCTAssertEqual(doubleClickCount, 3, "预览、本机、流媒体三张卡都要能双击放大")
+  }
+
   func testCinemaButtonAlignsToTheVideoEdgeNotTheReadingColumnEdge() {
     // 播放卡片已拆到 HistoryMediaPlayback.swift。
     let source = appSource("HistoryMediaPlayback.swift")
@@ -1081,12 +1148,19 @@ final class HistoryContentViewTests: XCTestCase {
   func testDetailBindsLatestRunMetadataAndTokenBreakdownWithoutCostEstimate() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    XCTAssertTrue(detail.contains("if let run = newestRun"))
-    XCTAssertTrue(detail.contains("historyAction(run.run.kind)"))
-    XCTAssertTrue(detail.contains("run.run.model?.trimmedNonEmpty"))
-    XCTAssertTrue(detail.contains("historyStatus(run.run.status)"))
+    let header = section(in: source, from: "private var metadata: some View {", to: "private var hasCollapsedRunMetadata")
+    let extras = section(in: source, from: "private var collapsedRunMetadata: some View {", to: "private func metadataRow")
+    XCTAssertTrue(header.contains("title: \"创建时间\""))
+    XCTAssertFalse(header.contains("title: \"操作\""), "操作不应再占标题下那一行")
+    XCTAssertFalse(header.contains("title: \"Token\""), "Token 总账应进运行详情")
+    XCTAssertFalse(header.contains("title: \"视频\""), "视频描述应进运行详情")
+    XCTAssertTrue(extras.contains("if let run = newestRun"))
+    XCTAssertTrue(extras.contains("historyAction(run.run.kind)"))
+    XCTAssertTrue(extras.contains("run.run.model?.trimmedNonEmpty"))
+    XCTAssertTrue(extras.contains("historyStatus(run.run.status)"))
     // Token 行改为全文总账（Run + 整理/脑图台账），分项用量在各功能状态行显示。
-    XCTAssertTrue(detail.contains("model.taskTokenGrandTotals"))
+    XCTAssertTrue(extras.contains("model.taskTokenGrandTotals"))
+    XCTAssertTrue(detail.contains("hasCollapsedRunMetadata"))
     XCTAssertFalse(detail.contains("title: \"费用\""), "BYOK prices are not reliable enough to display an estimate")
   }
 

@@ -2256,8 +2256,8 @@ private struct HistoryDetailView: View, Equatable {
             .padding(.top, 10)
         }
 
-        // Keep run stats under the title (not after the body). Capture-only
-        // items show creation time only — never a wall of empty dashes.
+        // 标题下只留创建时间。操作、模型、Token、状态、视频都进「运行详情」，
+        // 避免和工具栏模型名、播放器片头重复。
         metadata
           .padding(.top, 12)
 
@@ -2323,8 +2323,8 @@ private struct HistoryDetailView: View, Equatable {
                 )
               },
               onSelectQuality: { quality in
-                remotePreviewPlayback.release()
-                sessionMediaPlayback.invalidateAndRefresh(
+                // 旧画面继续播，只换新地址；立刻 release 会黑屏等十几秒。
+                sessionMediaPlayback.requestRefresh(
                   taskID: capture.taskID,
                   platform: latestSourceSnapshot?.platform ?? capture.document.platform,
                   sourceURL: sourceURL,
@@ -2374,9 +2374,8 @@ private struct HistoryDetailView: View, Equatable {
                 )
               },
               onSelectQuality: { quality in
-                // 换档必须丢掉当前播放器：驻留的是旧清晰度那一份，留着会切不过去。
-                remotePreviewPlayback.release()
-                sessionMediaPlayback.invalidateAndRefresh(
+                // 旧画面继续播；新清晰度就绪后再切。立刻拆播放器会黑屏等十几秒。
+                sessionMediaPlayback.requestRefresh(
                   taskID: detail.task.id,
                   platform: latestSourceSnapshot?.platform ?? detail.snapshots.last?.platform,
                   sourceURL: sourceURL,
@@ -2551,7 +2550,11 @@ private struct HistoryDetailView: View, Equatable {
         platform: latestSourceSnapshot?.platform ?? detail.snapshots.last?.platform,
         sourceURL: sourceURL,
         author: sourceFrontmatter.author,
-        hadMediaDescriptor: detail.hadMediaDescriptor,
+        hadMediaDescriptor: HistorySessionMediaPresentation.expectsSessionMedia(
+          hadMediaDescriptor: detail.hadMediaDescriptor,
+          isDouyinImagePost: isDouyinImagePostCapture,
+          legacyPlatformHint: latestSourceSnapshot?.platform ?? detail.snapshots.last?.platform
+        ),
         hasLocalMedia: localMediaFileURL != nil || detail.media != nil,
         isCurrentCaptureWithDescriptor: showsCurrentCapture
           && appModel.currentCapture?.mediaDescriptor != nil,
@@ -2798,14 +2801,14 @@ private struct HistoryDetailView: View, Equatable {
 
   private var titleNeedsScrolling: Bool { measuredTitleHeight > Self.titleMaximumHeight }
 
-  /// 「登录了为什么还是 720P」只能由这行回答：API 给了哪些档、我们最后选了哪条。
-  /// 读代码查不出来，每一环读起来都是通的。
-  ///
-  /// 必须挂在**每一个**带清晰度菜单的播放卡片下面。之前只有「会话恢复」分支有，
-  /// 当前抓取分支没有——于是手选高清后拿不到更高档时，那条分支只是重新加载一遍，
-  /// 不给任何说明，表现就是「点了尽量高清没反应」。
+  /// 选流诊断仍挂在带清晰度菜单的卡片下，方便排障时打开；出货默认不渲染。
+  /// Cookie / API 档位 / CDN 白名单不是观看需要的内容。
+  private static let showsStreamSelectionDiagnostic =
+    ProcessInfo.processInfo.environment["LINKDIGEST_PRINT_CHANGES"] == "1"
+
   @ViewBuilder private var streamSelectionDiagnostic: some View {
-    if let selection = sessionMediaPlayback.selectionDiagnostic {
+    if Self.showsStreamSelectionDiagnostic,
+       let selection = sessionMediaPlayback.selectionDiagnostic {
       Text(selection)
         .font(.caption2)
         .foregroundStyle(.secondary)
@@ -3051,7 +3054,7 @@ private struct HistoryDetailView: View, Equatable {
           .lineLimit(1)
         }
         Spacer(minLength: 0)
-        if canRunHistory || showsCurrentCapture || isRunPanelExpanded {
+        if canRunHistory || showsCurrentCapture || isRunPanelExpanded || hasCollapsedRunMetadata {
           Button(isRunPanelExpanded ? "收起运行详情" : "运行详情") {
             withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isRunPanelExpanded.toggle() }
           }
@@ -3100,8 +3103,11 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   /// Optional hints only (model names / storage). Streaming body lives in the reading card.
+  /// 同时展示从顶部 metadata 移入的运行元数据（操作、模型、Token、状态、视频）。
   private var captureAndRunControlsExtras: some View {
     VStack(alignment: .leading, spacing: 8) {
+      collapsedRunMetadata
+
       if showsCurrentCapture {
         currentCaptureExtras
       } else if canRunHistory {
@@ -3263,17 +3269,33 @@ private struct HistoryDetailView: View, Equatable {
 
   @ViewBuilder
   private var metadata: some View {
+    // 顶部只显示创建时间；其他运行元数据移进展开的「运行详情」。
+    metadataRow {
+      MetadataItem(
+        symbol: "calendar",
+        title: "创建时间",
+        value: historyDate(detail.task.createdAtMilliseconds)
+      )
+    }
+    .font(.caption)
+    .foregroundStyle(.secondary)
+    .opacity(0.95)
+    .accessibilityIdentifier(newestRun != nil ? "history-run-metadata" : "history-capture-metadata")
+  }
+
+  private var hasCollapsedRunMetadata: Bool {
+    newestRun != nil || model.taskTokenGrandTotals != nil || videoMetadataValue != nil
+  }
+
+  @ViewBuilder
+  private var collapsedRunMetadata: some View {
     if let run = newestRun {
-      // Full run strip: only after summarize/translate has produced a Run.
       VStack(alignment: .leading, spacing: 6) {
         metadataRow {
           MetadataItem(symbol: "wand.and.stars", title: "操作", value: historyAction(run.run.kind))
           MetadataItem(symbol: "cpu", title: "模型", value: run.run.model?.trimmedNonEmpty ?? "—")
-          MetadataItem(symbol: "calendar", title: "创建时间", value: historyDate(detail.task.createdAtMilliseconds))
         }
         metadataRow {
-          // 全文总账：总结/翻译 Run + 整理/脑图台账的累计花费；
-          // 各功能的单次用量在各自状态行单独显示。
           MetadataItem(
             symbol: "number",
             title: "Token",
@@ -3292,16 +3314,8 @@ private struct HistoryDetailView: View, Equatable {
       .font(.caption)
       .foregroundStyle(.secondary)
       .opacity(0.95)
-      .accessibilityIdentifier("history-run-metadata")
-    } else {
-      // Capture-only: real creation time, no fake 操作/模型 dashes；
-      // 但整理/脑图已产生花费时，Token 总账照样显示。
+    } else if model.taskTokenGrandTotals != nil || videoMetadataValue != nil {
       metadataRow {
-        MetadataItem(
-          symbol: "calendar",
-          title: "创建时间",
-          value: historyDate(detail.task.createdAtMilliseconds)
-        )
         if let totals = model.taskTokenGrandTotals {
           MetadataItem(
             symbol: "number",
@@ -3318,7 +3332,6 @@ private struct HistoryDetailView: View, Equatable {
       .font(.caption)
       .foregroundStyle(.secondary)
       .opacity(0.95)
-      .accessibilityIdentifier("history-capture-metadata")
     }
   }
 
@@ -4624,7 +4637,8 @@ enum HistorySessionMediaPresentation {
   ///   而不会把纯文字的 X 帖误判成视频。
   /// - `wechat` 在扩展 `attachDetectedMedia` 里被显式丢弃 media，不会进 V2，不受影响。
   /// - 抖音图文帖不带 mediaDescriptor，也不是 V2 视频路径；若正文仍命中图文启发式则排除。
-  /// - `legacyPlatformHint` 仅兜底极老的 V1 抖音视频（无 V2 合同行）；新平台不要往这里加白名单。
+  /// - `legacyPlatformHint` 兜底极老的 V1 视频（无 V2 合同行）：抖音、B 站。
+  ///   这两类抓取当时不写 `media_assets`，重启后会话流缓存清空就会整块消失。
   static func expectsSessionMedia(
     hadMediaDescriptor: Bool,
     isDouyinImagePost: Bool = false,
@@ -4632,8 +4646,8 @@ enum HistorySessionMediaPresentation {
   ) -> Bool {
     if isDouyinImagePost { return false }
     if hadMediaDescriptor { return true }
-    // Legacy V1 douyin video-only path (optional CaptureMedia, not MediaDescriptor).
-    return legacyPlatformHint == "douyin"
+    // Legacy V1 video-only path (optional CaptureMedia, not MediaDescriptor).
+    return legacyPlatformHint == "douyin" || legacyPlatformHint == "bilibili"
   }
 
   /// 是否应显示「有视频但此处不可播」卡片，而不是整块消失。

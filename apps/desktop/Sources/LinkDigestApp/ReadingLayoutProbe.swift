@@ -11,6 +11,12 @@ import Foundation
 // 探针本身不能成为新的性能问题：调用只在内存里累加，最多每秒写一行汇总。
 
 enum ReadingLayoutProbe {
+  /// 出货路径默认关闭。探针在每次 intrinsic / setFrameSize 上加锁，
+  /// 拖窗口时 AppKit 会连续改 frame，写盘和加锁会自己变成卡顿来源。
+  private static let enabled =
+    ProcessInfo.processInfo.environment["LINKDIGEST_PRINT_CHANGES"] == "1"
+    || ProcessInfo.processInfo.environment["LINKDIGEST_STALL_PROBE"] == "1"
+
   /// 文件上限。超了就从头写，避免长期使用堆成一个没人清理的大文件。
   private static let byteLimit = 256 * 1_024
 
@@ -41,6 +47,7 @@ enum ReadingLayoutProbe {
 
   /// 详情页上报当前实际挂载的阅读面板数（visited ∪ {effective}）。
   static func setMountedPaneCount(_ count: Int) {
+    guard enabled else { return }
     lock.lock()
     mountedPaneCount = max(0, count)
     lock.unlock()
@@ -48,6 +55,7 @@ enum ReadingLayoutProbe {
 
   /// `usedRect` 前后用 `CFAbsoluteTimeGetCurrent()` 包住后传入秒数。
   static func recordIntrinsic(duration: CFAbsoluteTime) {
+    guard enabled else { return }
     lock.lock()
     intrinsicCount += 1
     intrinsicMs += duration * 1_000
@@ -56,6 +64,7 @@ enum ReadingLayoutProbe {
   }
 
   static func recordSetFrameSize() {
+    guard enabled else { return }
     lock.lock()
     setFrameCount += 1
     scheduleOrFlushLocked()

@@ -298,6 +298,77 @@ final class ManualLinkCaptureTests: XCTestCase {
     let valid = CapturedDocument(createdAt: "2026-07-15T04:00:00Z", origin: .manualLink, url: "https://example.test", title: nil, platform: "manual", method: "public_html", text: "valid enough body", completeness: "best_effort", capturedAt: "not-a-timestamp", sourceLabel: "fixture")
     XCTAssertThrowsError(try CapturedDocumentValidator.validate(valid)) { XCTAssertEqual($0 as? CapturedDocumentValidationError, .invalidTimestamp) }
   }
+
+  func testExtractorDropsEnglishChromeKeepsInstructionBudgetAndTables() throws {
+    let html = """
+    <html><head>
+      <meta property="og:title" content="A Complete Guide To AGENTS.md" />
+      <script type="application/ld+json">{"author":{"@type":"Person","name":"Matt Pocock"}}</script>
+    </head><body>
+    <article>
+      <span>8 min read</span>
+      <h1>A Complete Guide To AGENTS.md</h1>
+      <span>Matt Pocock</span>
+      <details><summary>On this page</summary><nav aria-label="On this page"><a href="#a">What</a></nav></details>
+      <article>
+        <p>Have you ever felt concerned about the size of your AGENTS.md file?</p>
+        <p>Kyle mentions the concept of an "instruction budget" for agents.</p>
+        <table><thead><tr><th>Scenario</th><th>Impact</th></tr></thead>
+        <tbody><tr><td>Small, focused AGENTS.md</td><td>More tokens available</td></tr></tbody></table>
+        <aside id="course-cta">Subscribe to the Skills newsletter</aside>
+      </article>
+      <section id="related-reading" aria-label="Related reading"><h2>Related reading</h2><p>Other post</p></section>
+    </article>
+    </body></html>
+    """
+    let page = try MinimalHTMLExtractor().extract(html: html)
+    XCTAssertEqual(page.title, "A Complete Guide To AGENTS.md")
+    XCTAssertEqual(page.author, "Matt Pocock")
+    XCTAssertTrue(page.text.contains("Have you ever felt concerned"), page.text)
+    XCTAssertTrue(page.text.contains("instruction budget"), page.text)
+    XCTAssertTrue(page.text.contains("| Scenario | Impact |"), page.text)
+    XCTAssertFalse(page.text.contains("8 min read"), page.text)
+    XCTAssertFalse(page.text.contains("On this page"), page.text)
+    XCTAssertFalse(page.text.contains("Related reading"), page.text)
+    XCTAssertFalse(page.text.hasPrefix("# A Complete Guide"), page.text)
+    XCTAssertFalse(page.text.contains("Matt Pocock"), page.text)
+  }
+
+  func testManualServicePrefersSiblingMarkdownCopy() async throws {
+    let pageURL = URL(string: "https://www.aihero.dev/a-complete-guide-to-agents-md")!
+    let markdown = """
+    ---
+    title: "A Complete Guide To AGENTS.md"
+    slug: "a-complete-guide-to-agents-md"
+    ---
+
+    Have you ever felt concerned about the size of your AGENTS.md file?
+
+    Kyle mentions the concept of an instruction budget.
+    """
+    let html = """
+    <html><head><meta property="og:title" content="A Complete Guide To AGENTS.md" /></head>
+    <body><article><span>8 min read</span><h1>A Complete Guide To AGENTS.md</h1>
+    <details><summary>On this page</summary><p>TOC</p></details>
+    <p>Have you ever felt concerned about the size of your AGENTS.md file?</p>
+    <p>Kyle mentions the concept of an instruction budget.</p></article></body></html>
+    """
+    let resources = MapResourceFetcher(pages: [
+      pageURL.appendingPathExtension("md").absoluteString: (200, "text/markdown", markdown)
+    ])
+    let service = ManualLinkCaptureService(
+      fetcher: StaticFetcher(url: pageURL, html: html),
+      resources: resources
+    )
+    let document = try await service.capture(urlString: pageURL.absoluteString)
+    XCTAssertEqual(document.method, "public_markdown")
+    XCTAssertEqual(document.title, "A Complete Guide To AGENTS.md")
+    XCTAssertTrue(document.text.contains("Have you ever felt concerned"), document.text)
+    XCTAssertTrue(document.text.contains("instruction budget"), document.text)
+    XCTAssertFalse(document.text.contains("8 min read"), document.text)
+    XCTAssertFalse(document.text.contains("On this page"), document.text)
+    XCTAssertEqual(SiblingMarkdownURL.make(from: pageURL)?.absoluteString, "https://www.aihero.dev/a-complete-guide-to-agents-md.md")
+  }
 }
 
 private struct FixtureFetcher: WebPageFetcher {
@@ -310,6 +381,16 @@ private struct StaticFetcher: WebPageFetcher {
   let url: URL
   let html: String
   func fetch(url _: URL) async throws -> WebPageFetchResult { .init(url: url, html: html, contentType: "text/html") }
+}
+
+private struct MapResourceFetcher: SafeResourceFetching {
+  let pages: [String: (Int, String, String)]
+  func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
+    guard let page = pages[request.url.absoluteString] else {
+      return .init(url: request.url, statusCode: 404, contentType: "text/plain", body: Data())
+    }
+    return .init(url: request.url, statusCode: page.0, contentType: page.1, body: Data(page.2.utf8))
+  }
 }
 
 private final class FixtureSourceAdapter: SourceAdapting, @unchecked Sendable {
