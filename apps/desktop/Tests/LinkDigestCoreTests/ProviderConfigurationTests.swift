@@ -114,16 +114,19 @@ private actor MemorySecretStore: SecretStore {
   private var values: [SecretReference: String]
   private let failSave: Bool
   private let failDelete: Bool
+  private let failReadStatus: Int32?
   private var deletedReferences: [SecretReference] = []
 
   init(
     values: [SecretReference: String] = [:],
     failSave: Bool = false,
-    failDelete: Bool = false
+    failDelete: Bool = false,
+    failReadStatus: Int32? = nil
   ) {
     self.values = values
     self.failSave = failSave
     self.failDelete = failDelete
+    self.failReadStatus = failReadStatus
   }
 
   func save(_ secret: String, for reference: SecretReference) async throws {
@@ -134,11 +137,17 @@ private actor MemorySecretStore: SecretStore {
   }
 
   func read(_ reference: SecretReference) async throws -> String? {
-    values[reference]
+    if let failReadStatus {
+      throw SecretStoreFailure(operation: .read, status: failReadStatus)
+    }
+    return values[reference]
   }
 
   func contains(_ reference: SecretReference) async throws -> Bool {
-    values[reference] != nil
+    if let failReadStatus {
+      throw SecretStoreFailure(operation: .read, status: failReadStatus)
+    }
+    return values[reference] != nil
   }
 
   func delete(_ reference: SecretReference) async throws {
@@ -249,6 +258,25 @@ final class ProviderConfigurationTests: XCTestCase {
         allowLoopbackHTTP: true
       )
     )
+  }
+
+  func testLoadCredentialsSurfacesKeychainTimeout() async throws {
+    let profile = try ProviderProfile(
+      baseURL: "https://example.test/v1",
+      model: "fixture-model",
+      secretReference: SecretReference(rawValue: UUID().uuidString)
+    )
+    let service = ProviderConfigurationService(
+      profileStore: MemoryProviderProfileStore(profile: profile),
+      secretStore: MemorySecretStore(failReadStatus: SecretStoreFailure.timeoutStatus)
+    )
+
+    do {
+      _ = try await service.loadCredentials()
+      XCTFail("Expected keychain timeout")
+    } catch let error as ProviderConfigurationError {
+      XCTAssertEqual(error, .secretStoreReadTimedOut)
+    }
   }
 
   func testSecretWriteFailureDoesNotCommitProfileReference() async throws {

@@ -24,6 +24,7 @@ enum V02ErrorCatalog {
     ProviderConfigurationError.profileStoreReadFailed.rawValue,
     ProviderConfigurationError.profileStoreWriteFailed.rawValue,
     ProviderConfigurationError.secretStoreReadFailed.rawValue,
+    ProviderConfigurationError.secretStoreReadTimedOut.rawValue,
     ProviderConfigurationError.secretStoreWriteFailed.rawValue,
     ProviderConfigurationError.configurationChanged.rawValue,
     "SECRET_STORE_DELETE_FAILED"
@@ -95,6 +96,11 @@ enum V02ErrorCatalog {
       .init(
         message: "无法安全读取 API Key。",
         recoveryAction: "请在模型配置中重新输入并保存 API Key 后重试。"
+      )
+    case ProviderConfigurationError.secretStoreReadTimedOut.rawValue:
+      .init(
+        message: "读取 API Key 超时。",
+        recoveryAction: "钥匙串可能在等待解锁或确认。请解锁本机、处理钥匙串提示后重试；仍失败时在模型配置中重新保存 API Key。"
       )
     case ProviderConfigurationError.secretStoreWriteFailed.rawValue:
       .init(
