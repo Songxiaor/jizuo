@@ -1,0 +1,315 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>汲作 — 收藏夹里的链接，终于读得完</title>
+<meta name="description" content="macOS 上的链接理解工具：抓取网页正文，用你自己的 AI 服务做总结、翻译和脑图。数据全部留在本机。">
+<link rel="icon" href="assets/icon.png">
+<!--
+  刻意不引入 Google Fonts。两个理由，任一条都够：
+
+  1. 这是个主打「数据全部留在本机」的产品。官网向 Google 发一次字体请求，
+     就把每个访问者的 IP 交了出去——和产品承诺自相矛盾。
+  2. 目标用户以中文用户为主，而 Google Fonts 在中国大陆基本不可用：不是变慢，
+     是等到超时才回落，首屏会白很久。
+
+  改用系统字体栈。中文本来就落在 PingFang SC 上（引不引 Onest 都一样），
+  受影响的只有拉丁字形，而 SF Pro 的几何感与参考站选的 Onest 足够接近。
+  代价是英文字形略有不同，换来的是零外部请求、零隐私泄露、任何网络下都秒开。
+-->
+<style>
+  :root {
+    --bg: #faf8f5;
+    --surface: #ffffff;
+    --text: #0f0e0d;
+    --muted: #6f6d66;
+    --faint: #9b9890;
+    --line: #e9e6df;
+    --ink: #0f0e0d;
+    --accent-chip: #eaff8f;
+    --radius: 14px;
+    --radius-sm: 10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #131211;
+      --surface: #1c1b19;
+      --text: #f5f3ee;
+      --muted: #a6a39b;
+      --faint: #7b7871;
+      --line: #2e2c28;
+      --ink: #f5f3ee;
+      --accent-chip: #3d4a1c;
+    }
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", ui-sans-serif, system-ui,
+                 "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", sans-serif;
+    font-size: 16px;
+    line-height: 1.75;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 0 32px; }
+  @media (max-width: 640px) { .wrap { padding: 0 20px; } }
+  a { color: inherit; }
+
+  /* ── Nav ── */
+  nav {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 22px 0; gap: 16px;
+  }
+  .brand { display: flex; align-items: center; gap: 10px; font-weight: 600; text-decoration: none; }
+  .brand img { width: 28px; height: 28px; border-radius: 7px; }
+  .btn {
+    display: inline-block; background: var(--ink);
+    color: var(--bg); text-decoration: none;
+    padding: 11px 22px; border-radius: var(--radius-sm);
+    font-weight: 600; font-size: 0.95rem; white-space: nowrap;
+    transition: opacity .15s;
+  }
+  .btn:hover { opacity: .85; }
+  .btn-lg { padding: 14px 30px; font-size: 1rem; }
+
+  /* ── Hero ── */
+  .hero { padding: 76px 0 64px; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 9px;
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: 999px; padding: 6px 8px 6px 16px;
+    font-size: 0.87rem; color: var(--muted); margin-bottom: 32px;
+  }
+  .chip b { color: var(--text); font-weight: 600; background: var(--bg); border-radius: 999px; padding: 3px 12px; }
+  .hero-grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 56px; align-items: start; }
+  @media (max-width: 820px) { .hero-grid { grid-template-columns: 1fr; gap: 28px; } }
+  h1 {
+    font-size: clamp(2.1rem, 5vw, 3rem);
+    font-weight: 400;
+    line-height: 1.22;
+    letter-spacing: -0.02em;
+    margin: 0;
+  }
+  .lede { color: var(--muted); margin: 0; font-size: 1.02rem; }
+  .lede p { margin: 0 0 14px; }
+  .cta-row { margin-top: 38px; display: flex; align-items: center; gap: 18px; flex-wrap: wrap; }
+  .req { color: var(--faint); font-size: 0.86rem; }
+
+  /* ── Sections ── */
+  section { padding: 56px 0; }
+  .sec-head { margin-bottom: 34px; }
+  h2 { font-size: 1.6rem; font-weight: 500; letter-spacing: -0.015em; margin: 0 0 6px; }
+  .sec-head p { color: var(--muted); margin: 0; font-size: 0.98rem; }
+
+  /* ── Cards ── */
+  .cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+  @media (max-width: 820px) { .cards { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 560px) { .cards { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 22px;
+  }
+  .card h3 { margin: 0 0 6px; font-size: 1rem; font-weight: 600; }
+  .card p { margin: 0; color: var(--muted); font-size: 0.93rem; line-height: 1.65; }
+
+  /* ── Steps ── */
+  .step { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 26px 28px; margin-bottom: 14px; }
+  .step-top { display: flex; align-items: center; gap: 12px; margin-bottom: 4px; }
+  .step-n {
+    flex: none; width: 24px; height: 24px; border-radius: 7px;
+    background: var(--ink); color: var(--bg);
+    font-size: 0.8rem; font-weight: 700;
+    display: inline-flex; align-items: center; justify-content: center;
+  }
+  .step h3 { margin: 0; font-size: 1.06rem; font-weight: 600; }
+  .step-body { padding-left: 36px; }
+  .step-body p { color: var(--muted); margin: 8px 0 0; font-size: 0.95rem; }
+  .step-body ol { margin: 12px 0 0; padding-left: 20px; color: var(--muted); font-size: 0.95rem; }
+  .step-body li { margin: 7px 0; }
+  .step-body li b { color: var(--text); }
+  kbd {
+    background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 2px 7px; font-size: 0.85em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .tag {
+    display: inline-block; background: var(--accent-chip); color: var(--text);
+    border-radius: 6px; padding: 2px 9px; font-size: 0.78rem; font-weight: 600;
+    margin-left: 8px; vertical-align: middle;
+  }
+  .aside {
+    margin-top: 16px; padding: 14px 16px;
+    background: var(--bg); border: 1px solid var(--line);
+    border-radius: var(--radius-sm); font-size: 0.91rem; color: var(--muted);
+  }
+  .aside b { color: var(--text); font-weight: 600; }
+
+  /* ── Screenshot slot ── */
+  .shot {
+    border: 1px solid var(--line); border-radius: var(--radius);
+    background: var(--surface); color: var(--faint);
+    padding: 72px 20px; text-align: center; font-size: 0.9rem;
+  }
+
+  /* ── FAQ ── */
+  details { border-bottom: 1px solid var(--line); padding: 18px 0; }
+  details:first-of-type { border-top: 1px solid var(--line); }
+  summary { cursor: pointer; font-weight: 500; list-style: none; display: flex; justify-content: space-between; gap: 16px; }
+  summary::-webkit-details-marker { display: none; }
+  summary::after { content: "+"; color: var(--faint); font-size: 1.2rem; line-height: 1; }
+  details[open] summary::after { content: "−"; }
+  details p { color: var(--muted); margin: 12px 0 0; font-size: 0.95rem; max-width: 60ch; }
+
+  footer {
+    border-top: 1px solid var(--line); margin-top: 40px;
+    padding: 32px 0 56px; color: var(--faint); font-size: 0.88rem;
+    display: flex; justify-content: space-between; gap: 16px; flex-wrap: wrap;
+  }
+  footer a { text-decoration: none; color: var(--muted); }
+  footer a:hover { color: var(--text); }
+</style>
+</head>
+<body>
+
+<div class="wrap">
+
+<nav>
+  <a class="brand" href="./"><img src="assets/icon.png" alt=""> 汲作</a>
+  <a class="btn" href="https://github.com/Songxiaor/linkdigest/releases/latest">下载</a>
+</nav>
+
+<div class="hero">
+  <span class="chip">开源 · 免费 <b>v0.2.9</b></span>
+  <div class="hero-grid">
+    <h1>收藏夹里的链接，<br>终于读得完</h1>
+    <div class="lede">
+      <p>存下一篇文章只要一秒，读完它要二十分钟——差距就是这么攒出来的。</p>
+      <p>汲作抓下正文，用你自己的模型做成总结、译文和脑图。全部留在这台电脑上。</p>
+    </div>
+  </div>
+  <div class="cta-row">
+    <a class="btn btn-lg" href="https://github.com/Songxiaor/linkdigest/releases/latest">下载 macOS 版</a>
+    <span class="req">macOS 15 及以上 · <b>一个安装包同时支持 Apple 芯片和 Intel 芯片</b>，不用选</span>
+  </div>
+</div>
+
+<div class="shot">应用截图待补</div>
+
+<section>
+  <div class="sec-head">
+    <h2>它做什么</h2>
+    <p>一条链接进去，一份能带走的东西出来。</p>
+  </div>
+  <div class="cards">
+    <div class="card"><h3>抓取正文</h3><p>粘贴链接，或从浏览器一键发送当前页面。只取正文，不要广告和导航。</p></div>
+    <div class="card"><h3>总结与翻译</h3><p>用你自己配置的 AI 服务处理。长文自动拆片并行翻译，不必干等。</p></div>
+    <div class="card"><h3>生成脑图</h3><p>把总结变成结构图。可换主题、可编辑、可导出，不再消耗额度。</p></div>
+    <div class="card"><h3>视频转写</h3><p>B 站、抖音、YouTube 等站点的音频转成文字，再走同一套总结流程。</p></div>
+    <div class="card"><h3>标签与检索</h3><p>自动打标签，按标签和平台筛选，搜索覆盖标题、正文、总结、作者和标签。</p></div>
+    <div class="card"><h3>导出</h3><p>Markdown、纯文本、PDF、Word，脑图另可存 SVG。也能导出完整 JSON——你的数据随时带得走。</p></div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head">
+    <h2>安装</h2>
+    <p>第一次打开会被系统拦一次，这是正常的——第 1 步专门讲怎么放行。</p>
+  </div>
+
+  <div class="step">
+    <div class="step-top"><span class="step-n">1</span><h3>让系统允许打开</h3></div>
+    <div class="step-body">
+      <p>这个软件还没有购买苹果开发者证书，所以 macOS 会拦一次。它不是病毒，但需要你手动放行一次：</p>
+      <ol>
+        <li>双击应用，弹出「<b>无法打开，因为无法验证开发者</b>」——点「完成」</li>
+        <li>打开 <b>系统设置</b> › <b>隐私与安全性</b>，滚到最下面的「安全性」区域</li>
+        <li>看到「已阻止使用 汲作」，点右边的 <b>仍要打开</b></li>
+        <li>再确认一次「打开」。<b>以后正常双击即可，不用再放行。</b></li>
+      </ol>
+      <div class="aside">
+        网上很多教程说「右键点图标再选打开」——<b>那个方法在 macOS 15 之后已被苹果移除</b>。本软件要求 macOS 15 以上，请按上面的系统设置流程操作。
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-top"><span class="step-n">2</span><h3>安装浏览器扩展<span class="tag">可跳过</span></h3></div>
+    <div class="step-body">
+      <p>只用粘贴链接的话，这步可以不做。装了扩展才能把<b>需要登录才看得到的页面</b>发给应用。</p>
+      <ol>
+        <li>打开 Chrome，地址栏输入 <kbd>chrome://extensions</kbd></li>
+        <li>打开右上角的「<b>开发者模式</b>」开关</li>
+        <li>点「<b>加载已解压的扩展程序</b>」，选择应用「浏览器支持」页面指出的文件夹</li>
+      </ol>
+      <div class="aside">
+        扩展尚未上架 Chrome 应用商店，只能用开发者模式安装。<b>Chrome 每次启动会提示「请停用以开发者模式运行的扩展程序」，点「取消」即可</b>，不影响使用。
+      </div>
+    </div>
+  </div>
+
+  <div class="step">
+    <div class="step-top"><span class="step-n">3</span><h3>填入你自己的 AI 密钥</h3></div>
+    <div class="step-body">
+      <p>本软件<b>不含</b>任何 AI 额度，也不代收费用。你在服务商那边注册充值，用多少和服务商结算。</p>
+      <ol>
+        <li>打开应用的 <b>设置</b> › <b>模型与服务</b></li>
+        <li>选一个服务商或填自定义地址，粘贴 API Key</li>
+        <li>点「测试连接」确认可用，保存</li>
+      </ol>
+      <div class="aside">
+        密钥存在 macOS <b>钥匙串</b>里，不会写进数据库、日志或导出文件。
+      </div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <div class="sec-head"><h2>常见问题</h2></div>
+
+  <details>
+    <summary>为什么提示「无法验证开发者」？安全吗？</summary>
+    <p>因为还没有购买苹果开发者证书（年费 99 美元）为软件签名。macOS 对所有未签名软件都会这样提示，与软件本身是否安全无关。源代码公开，你可以自己查看或自行编译。</p>
+  </details>
+
+  <details>
+    <summary>我的数据会被上传吗？</summary>
+    <p>抓取的网页、总结、翻译和历史记录全部保存在你自己的电脑上。只有点击总结或翻译时，正文才会发送给<b>你自己配置的</b>那家 AI 服务商——发送前应用会明确告诉你发给谁。除此之外没有任何服务器。</p>
+  </details>
+
+  <details>
+    <summary>为什么转写视频要屏幕录制权限？</summary>
+    <p>转写需要采集正在播放的声音，而 macOS 把「录制系统音频」归在屏幕录制权限里。弹窗措辞是苹果定的，无法改成「录制音频」。不做视频转写就不需要授予这个权限。</p>
+  </details>
+
+  <details>
+    <summary>支持 Intel 芯片的 Mac 吗？</summary>
+    <p>支持。安装包同时包含 Apple 芯片和 Intel 芯片两套程序，两种电脑都能直接运行。系统需要 macOS 15 或更新版本。</p>
+  </details>
+
+  <details>
+    <summary>支持 Windows 吗？</summary>
+    <p>暂不支持，目前只有 macOS 版本。</p>
+  </details>
+
+  <details>
+    <summary>要花钱吗？</summary>
+    <p>软件本身免费开源。你只需向自己选择的 AI 服务商付费，按实际用量计费，与本软件无关。</p>
+  </details>
+</section>
+
+<footer>
+  <span>汲作 · 数据全部留在你自己的电脑上。</span>
+  <span>
+    <a href="privacy.html">隐私政策</a> ·
+    <a href="https://github.com/Songxiaor/linkdigest">GitHub</a> ·
+    <a href="https://github.com/Songxiaor/linkdigest/issues">反馈问题</a>
+  </span>
+</footer>
+
+</div>
+</body>
+</html>
