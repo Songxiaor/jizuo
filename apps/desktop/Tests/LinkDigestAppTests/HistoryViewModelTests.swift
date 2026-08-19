@@ -951,7 +951,11 @@ final class HistoryViewModelTests: XCTestCase {
       let history = HistoryApplicationService(repository: repository)
       let model = HistoryViewModel()
       model.configure(history: history, isReadOnly: false, unavailableCode: nil)
-      await waitUntil { model.selectedTaskID == accepted.taskID && model.detailState == .loaded }
+      await waitUntil {
+        model.selectedTaskID == accepted.taskID
+          && model.detailState == .loaded
+          && model.listState == .loaded
+      }
       let provider = AutomaticTagMetadataProvider(tagOutcome: .success("本地优先, Swift"))
       let events = MetadataEventCounter()
       let orchestrator = try metadataOrchestrator(
@@ -988,7 +992,11 @@ final class HistoryViewModelTests: XCTestCase {
       let history = HistoryApplicationService(repository: repository)
       let model = HistoryViewModel()
       model.configure(history: history, isReadOnly: false, unavailableCode: nil)
-      await waitUntil { model.selectedTaskID == accepted.taskID && model.detailState == .loaded }
+      await waitUntil {
+        model.selectedTaskID == accepted.taskID
+          && model.detailState == .loaded
+          && model.listState == .loaded
+      }
       let provider = AutomaticTagMetadataProvider(tagOutcome: .failure)
       let events = MetadataEventCounter()
       let orchestrator = try metadataOrchestrator(
