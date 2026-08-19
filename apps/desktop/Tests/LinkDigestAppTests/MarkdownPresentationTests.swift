@@ -370,7 +370,7 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertTrue(p1.contains("第二段正文"))
     guard case let .list(items) = blocks[3] else { return XCTFail("expected list") }
     XCTAssertEqual(items.count, 2)
-    XCTAssertTrue(items[0].contains("交付物付费"))
+    XCTAssertTrue(items[0].text.contains("交付物付费"))
     guard case let .quote(q) = blocks[4] else { return XCTFail("expected quote") }
     XCTAssertTrue(q.contains("引用一句结论"))
   }
@@ -394,7 +394,7 @@ final class MarkdownPresentationTests: XCTestCase {
     let blocks = MarkdownPresentation.blocks(from: "- 普通一项\n- [ ] 待办一项")
     XCTAssertEqual(blocks.count, 2)
     guard case let .list(plain) = blocks[0] else { return XCTFail("第一块应是普通列表") }
-    XCTAssertEqual(plain, ["普通一项"])
+    XCTAssertEqual(plain.map(\.text), ["普通一项"])
     guard case let .taskList(tasks) = blocks[1] else { return XCTFail("第二块应是任务列表") }
     XCTAssertEqual(tasks.map(\.text), ["待办一项"])
   }
@@ -654,9 +654,76 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(after, "后续正文")
   }
 
+  /// 混排列表必须留在一个块里，编号才不会在每个子列表之后重新从 1 开始。
+  ///
+  /// 这是拆成 `.list` / `.orderedList` 两个 case 时的真实症状：扫描有序列表
+  /// 撞上 `- ` 就收尾，一个列表被切成三块，第二、三步显示成「1.」「2.」。
+  func testNestedSubItemsDoNotRestartOrderedNumbering() {
+    let blocks = MarkdownPresentation.blocks(from: """
+      1. 准备数据集
+        - 来源用 MS MARCO 的子集
+        - 归一化到单位长度
+      2. 启动三个实例
+      3. 跑 30 分钟预热
+      """)
+    XCTAssertEqual(blocks.count, 1)
+    guard case let .list(entries) = blocks[0] else { return XCTFail("应当是一个列表块") }
+    XCTAssertEqual(entries.map(\.number), [1, nil, nil, 2, 3])
+    XCTAssertEqual(entries.map(\.depth), [0, 1, 1, 0, 0])
+    XCTAssertEqual(entries[1].text, "来源用 MS MARCO 的子集")
+  }
+
+  /// 回到浅层之后再进子层，子层要重新从 1 数，不能接着上一个子列表往下。
+  func testSiblingSubListsEachStartFromOne() {
+    let blocks = MarkdownPresentation.blocks(from: """
+      1. 第一步
+        1. 甲
+        2. 乙
+      2. 第二步
+        1. 丙
+      """)
+    guard case let .list(entries) = blocks[0] else { return XCTFail("应当是一个列表块") }
+    XCTAssertEqual(entries.map(\.number), [1, 1, 2, 2, 1])
+    XCTAssertEqual(entries.map(\.depth), [0, 1, 1, 0, 1])
+  }
+
+  /// 缩进深度封顶，避免正文被缩到没地方放。
+  func testListDepthIsCapped() {
+    let blocks = MarkdownPresentation.blocks(from: "- 顶层\n          - 极深")
+    guard case let .list(entries) = blocks[0] else { return XCTFail("应当是一个列表块") }
+    XCTAssertEqual(entries.map(\.depth), [0, 3])
+  }
+
+  /// 单元格里的竖线由抽取侧转义成 `\|`；照单全收地按竖线切分会把一格切成两格，
+  /// 整行随后被裁到表宽，内容直接丢失。
+  func testEscapedPipeStaysInsideOneTableCell() {
+    let blocks = MarkdownPresentation.blocks(from: """
+      | 命令 | 用途 |
+      | --- | --- |
+      | ps \\| grep swift | 查进程 |
+      """)
+    guard case let .table(headers, rows) = blocks[0] else { return XCTFail("应当是表格") }
+    XCTAssertEqual(headers, ["命令", "用途"])
+    XCTAssertEqual(rows, [["ps | grep swift", "查进程"]])
+  }
+
+  /// 反斜杠本身不是转义符，只有 `\|` 是。否则正则和 Windows 路径会被吃掉字符。
+  func testLoneBackslashInCellSurvives() {
+    let blocks = MarkdownPresentation.blocks(from: """
+      | 模式 | 说明 |
+      | --- | --- |
+      | \\d+ | 数字 |
+      """)
+    guard case let .table(_, rows) = blocks[0] else { return XCTFail("应当是表格") }
+    XCTAssertEqual(rows, [["\\d+", "数字"]])
+  }
+
   func testBlocksRecognizeOrderedLists() {
     let blocks = MarkdownPresentation.blocks(from: "1. 第一步\n2. **第二步**")
-    XCTAssertEqual(blocks, [.orderedList(["第一步", "**第二步**"])])
+    XCTAssertEqual(blocks, [.list([
+      .init(depth: 0, number: 1, text: "第一步"),
+      .init(depth: 0, number: 2, text: "**第二步**"),
+    ])])
   }
 
   /// 代码里的尖括号是字面量。整篇当 HTML 洗会把开发文变成「已省略 HTML 片段」。

@@ -22,11 +22,14 @@ public enum TidyStyle: String, Sendable, CaseIterable {
   case transcript
   /// 手写笔记：字没错，但结构没成形。
   case note
+  /// 抓取回来的长文：字没错、段落也分好了，但整篇没有一个小标题，只能从头读到尾。
+  case article
 
   public var systemPrompt: String {
     switch self {
     case .transcript: TranscriptTidyPrompt.system
     case .note: TranscriptTidyPrompt.note
+    case .article: TranscriptTidyPrompt.article
     }
   }
 }
@@ -91,14 +94,38 @@ public enum TranscriptTidyError: Error, Sendable, Equatable {
 /// The system prompt is a fixed contract, not a user template: tidying must
 /// never become rewriting, so the constraints live in code and in tests.
 public enum TranscriptTidyPrompt {
+  /// 转写稿整理：校对 + 版面，一次做完。
+  ///
+  /// 原本只做校对（标点、错别字、重新分段），版面是另一个按钮。对用户来说
+  /// 「把这份稿子弄干净」是一件事，不是两件，所以合并成一个动作。
+  ///
+  /// 关于标题数量为什么按「这一片」说而不是「全篇」：长稿会切片，每片是一次独立
+  /// 请求，模型根本看不到全篇。2026-08-19 实测一份 6214 字的转写稿切成两片，
+  /// 提示词写「全篇 3 到 10 个」时，第一片一个标题都没插（12 个段落连成一堵墙），
+  /// 四个标题全挤在第二片——前半篇的读者等于什么都没得到。
+  ///
+  /// 重新分段是这个功能的核心价值之一：原始转写按说话停顿切段，一句话经常被
+  /// 切开，或者一个话题连成一大段。
+  ///
+  /// 代价是时间锚点不能再靠段落序号对应（见 `TranscriptParagraphMigration`，
+  /// 改用前缀锚定把新段落定位回原文）。**内容顺序不许调整**这一条是锚定能成立
+  /// 的前提：只要文字流的顺序没变，新段落的开头就一定能在原文里找到位置。
   public static let system = """
-    你是转写稿整理器。只做三件事：修正标点符号；按语义重新分段；\
-    纠正明显的同音错别字和被误写的品牌、型号、术语名。
+    你是转写稿整理器。做两件事：
+    一、校对——修正标点符号，纠正明显的同音错别字和被误写的品牌、型号、术语名。
+    二、版面——在段落之间插入 Markdown 小标题（`##`），从下文原文提炼，6 到 14 个字。
+    **这一段文字无论长短都要插标题**：每 3 到 8 个段落插一个，不足 3 段才可以不插。\
+    不要因为它看起来只是整篇里的一截就跳过——你收到的每一截都会这样交给你，\
+    你不插就等于那一截永远没有标题。
     排版规则：一个段落写成连续的一行，段落内部绝不换行；段落之间用一个空行分隔；\
-    中文标点后不加空格。
+    中文标点后不加空格；小标题独占一行。
+    三、分段——按语义重新划分段落。原始转写是按说话停顿切的，常常一句话被切开、\
+    或者一个话题连成一大段；按意思重新分，一段讲一件事。
+    **内容顺序绝对不许调整**：只能在原有文字流上重新划边界，不搬动任何一句话的位置。
     严格禁止：增加或删除信息、改写语义、概括压缩、翻译、评论，或添加任何前后缀说明。
-    输入是同一份转写稿的一个连续片段，可能从句中开始或结束；保持片段边界原样，不要补全句子。
-    只输出整理后的正文纯文本。
+    输入是同一份转写稿的一个连续片段，可能从句中开始或结束；保持片段边界原样，不要补全句子——\
+    但**照样要给它插标题**。
+    只输出整理后的正文。
     """
 
   /// 笔记的整理排版。
@@ -116,6 +143,25 @@ public enum TranscriptTidyPrompt {
     严格禁止：增加或删除信息、改写语义、概括压缩、翻译、评论、润色措辞，\
     或添加任何前后缀说明。
     只输出整理后的正文。
+    """
+
+  /// 长文的版面重排。
+  ///
+  /// 和前两种又不一样：转写稿要修错别字，笔记要补记号，而抓取回来的长文**字是
+  /// 对的、段落也分好了**，缺的只是"读到一半找不到自己在哪"——整篇没有一个小
+  /// 标题。所以这一版只做一件事：在已有的段落边界上插入小标题。
+  ///
+  /// 「不得改动正文一个字」是这份提示词的全部重量所在。重排一旦变成重写，用户
+  /// 拿到的就不再是他抓的那篇文章了，而这件事无法从产出上一眼看出来——这正是
+  /// 最危险的那类失败。段落顺序同样不许动：作者的行文顺序是内容的一部分。
+  public static let article = """
+    你是长文版面整理器。只做一件事：在正文原有的段落之间插入 Markdown 小标题（`##`）。
+    小标题必须从它下面那几段的原文里提炼，6 到 14 个字，概括这一节讲什么。
+    每 3 到 8 个段落插入一个，全篇 3 到 10 个；正文本身太短就少插甚至不插。
+    严格禁止：改动正文的任何一个字、增删内容、调整段落顺序、合并或拆分段落、\
+    翻译、概括、评论，或添加任何前后缀说明。
+    输入是同一篇文章的一个连续片段，可能从段落中间开始；保持片段边界原样。
+    输出＝原文逐字不动 ＋ 插入的小标题行。
     """
 }
 
@@ -141,11 +187,27 @@ public enum TranscriptTidyNormalizer {
       // 只有单换行：按“每行一段”处理，宁可段落略碎也不能折叠成空格。
       : lines.map { [$0] }
 
-    let joined = paragraphs.compactMap { paragraphLines -> String? in
+    let joined = paragraphs.flatMap { paragraphLines -> [String] in
+      var result: [String] = []
       var merged = ""
+      func flush() {
+        guard !merged.isEmpty else { return }
+        result.append(collapsingCJKSpaces(merged))
+        merged = ""
+      }
       for line in paragraphLines {
         let trimmedLine = line.trimmingCharacters(in: .whitespaces)
         guard !trimmedLine.isEmpty else { continue }
+        // 小标题自成一段。
+        //
+        // 整理稿现在同时做校对和版面，产物里夹着 `## 小标题` 行。模型不一定在
+        // 标题后留空行，而这里的合并逻辑会把「标题 + 下一段」拼成一行——标题
+        // 就这么被吃进正文里，功能白做。
+        if isHeadingLine(trimmedLine) {
+          flush()
+          result.append(trimmedLine)
+          continue
+        }
         if merged.isEmpty {
           merged = trimmedLine
         } else if let last = merged.last, let first = trimmedLine.first,
@@ -155,16 +217,25 @@ public enum TranscriptTidyNormalizer {
           merged += " " + trimmedLine
         }
       }
-      guard !merged.isEmpty else { return nil }
-      // 模型偶尔在中文标点后跟半角空格；两个 CJK 字符之间的空格一律多余。
-      // 中西文之间的空格（如“三星 Galaxy”）保留。
-      return merged.replacingOccurrences(
-        of: "(?<=[\\u3000-\\u303F\\u4E00-\\u9FFF\\uFF00-\\uFFEF]) +(?=[\\u3000-\\u303F\\u4E00-\\u9FFF\\uFF00-\\uFFEF])",
-        with: "",
-        options: .regularExpression
-      )
+      flush()
+      return result
     }
     return joined.joined(separator: "\n\n")
+  }
+
+  private static func isHeadingLine(_ line: String) -> Bool {
+    guard line.hasPrefix("#") else { return false }
+    return line.drop(while: { $0 == "#" }).hasPrefix(" ")
+  }
+
+  /// 模型偶尔在中文标点后跟半角空格；两个 CJK 字符之间的空格一律多余。
+  /// 中西文之间的空格（如“三星 Galaxy”）保留。
+  private static func collapsingCJKSpaces(_ value: String) -> String {
+    value.replacingOccurrences(
+      of: "(?<=[\\u3000-\\u303F\\u4E00-\\u9FFF\\uFF00-\\uFFEF]) +(?=[\\u3000-\\u303F\\u4E00-\\u9FFF\\uFF00-\\uFFEF])",
+      with: "",
+      options: .regularExpression
+    )
   }
 
   private static func isCJK(_ character: Character) -> Bool {

@@ -37,18 +37,20 @@ enum ReadingTextComposer {
           inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.primary),
           spacingAfter: 20, lineSpacing: MarkdownPresentation.bodyLineSpacing
         ))
-      case let .list(items):
-        for item in items {
+      case let .list(entries):
+        for entry in entries {
+          // 同导出：编号用解析时算好的值，缩进跟着 depth 走，复制出去的文本
+          // 才和屏幕上看到的层级一致。
+          let marker = entry.number.map { "\($0).  " } ?? "•  "
+          let indent = CGFloat(entry.depth) * 22
           result.append(paragraph(
-            bulletLine("•  ", item, readingFont: readingFont, color: palette.primary),
-            spacingAfter: 8, lineSpacing: 6, headIndent: 22
-          ))
-        }
-      case let .orderedList(items):
-        for (index, item) in items.enumerated() {
-          result.append(paragraph(
-            bulletLine("\(index + 1).  ", item, readingFont: readingFont, color: palette.primary),
-            spacingAfter: 8, lineSpacing: 6, headIndent: 26
+            bulletLine(
+              String(repeating: " ", count: entry.depth * 2) + marker,
+              entry.text,
+              readingFont: readingFont,
+              color: palette.primary
+            ),
+            spacingAfter: 8, lineSpacing: 6, headIndent: (entry.number == nil ? 22 : 26) + indent
           ))
         }
       case let .taskList(items):

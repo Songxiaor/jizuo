@@ -98,11 +98,13 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
         // 归一化换行方言：Markdown 阅读区把单换行折叠成空格，
         // 不归一化就会出现“句号后一坨空格 + 整篇不分段”。
         //
-        // 笔记不能走这一步：它的产物是 Markdown，换行本身有语义。归一化会把
-        // 段内单换行拼回一行，`- a\n- b` 这样的列表会被拼成 `- a - b`。
+        // 笔记和长文重排都不能走这一步：它们的产物是 Markdown，换行本身有语义。
+        // 归一化会把段内单换行拼回一行，`- a\n- b` 这样的列表会被拼成 `- a - b`，
+        // 而长文重排插入的 `## 小标题` 会被拼进它下面那一段的开头——整个功能
+        // 的产出就白做了。
         let cleaned: String = switch style {
         case .transcript: TranscriptTidyNormalizer.normalize(outcome.text)
-        case .note: outcome.text.replacingOccurrences(of: "\r\n", with: "\n")
+        case .note, .article: outcome.text.replacingOccurrences(of: "\r\n", with: "\n")
           .trimmingCharacters(in: .whitespacesAndNewlines)
         }
         outputs.append(cleaned.isEmpty ? chunk : cleaned)

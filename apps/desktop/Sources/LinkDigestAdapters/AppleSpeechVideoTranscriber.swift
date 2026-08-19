@@ -99,15 +99,19 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
 
           try Task.checkCancellation()
           continuation.yield(.transcribing)
-          let text = try await Self.recognize(
+          let recognized = try await Self.recognize(
             audioURL: audioURL,
             localeIdentifier: localeIdentifier,
             continuation: continuation
           )
           try Task.checkCancellation()
-          let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+          let trimmed = recognized.text.trimmingCharacters(in: .whitespacesAndNewlines)
           guard !trimmed.isEmpty else { throw LocalVideoTranscriptionError.emptyTranscript }
           continuation.yield(.final(trimmed))
+          // 紧跟在 .final 之后：接收方先拿到正文（落库要用），再拿到时间。
+          if !recognized.paragraphs.isEmpty {
+            continuation.yield(.finalParagraphs(recognized.paragraphs))
+          }
           continuation.finish()
         } catch is CancellationError {
           continuation.finish(throwing: CancellationError())
@@ -191,7 +195,7 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
     audioURL: URL,
     localeIdentifier: String,
     continuation: AsyncThrowingStream<LocalVideoTranscriptionEvent, Error>.Continuation
-  ) async throws -> String {
+  ) async throws -> (text: String, paragraphs: [TranscriptParagraph]) {
     guard SpeechTranscriber.isAvailable else { throw LocalVideoTranscriptionError.speechUnavailable }
     guard let locale = await SpeechTranscriber.supportedLocale(
       equivalentTo: Locale(identifier: localeIdentifier)
@@ -205,7 +209,7 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
     do { audioFile = try AVAudioFile(forReading: audioURL) }
     catch { throw LocalVideoTranscriptionError.audioExtractionFailed }
     let analyzer = SpeechAnalyzer(modules: [transcriber])
-    let resultsTask = Task { () throws -> String in
+    let resultsTask = Task { () throws -> (text: String, paragraphs: [TranscriptParagraph]) in
       var accumulator = TimedTranscriptionAccumulator()
       // 文件分析比实时播放快得多，volatile 结果每秒可达几十条；逐条重算
       // 全文并推给 UI 会让长转写滚动卡顿。定稿必推，草稿节流到约 3 次/秒。
@@ -223,7 +227,7 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
           continuation.yield(.partial(accumulator.displayText))
         }
       }
-      return accumulator.finalText
+      return (accumulator.finalText, accumulator.finalParagraphs)
     }
 
     do {

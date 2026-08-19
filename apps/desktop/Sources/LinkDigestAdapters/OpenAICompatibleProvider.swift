@@ -297,22 +297,37 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
     }
     let url = try OpenAICompatibleEndpoint.chatCompletionsURL(baseURL: profile.baseURL)
+
+    // 整理、脑图这类非流式活和总结/翻译一样要的是**转述**，不是推理，同样必须
+    // 请求最低推理档。
+    //
+    // 这条路径此前漏了 `reasoning_effort`，代价和当年总结变慢是同一个：
+    // 2026-08-19 一次真实的转写整理，输入 953 token、输出 10419 token——绝大部分
+    // 是用户看不见的思考，然后撞满 180 秒超时，那一片整理失败、以原文回填，
+    // 界面上表现为「整理完看着跟没整理一样」。
+    var includesReasoningEffort = acceptsReasoningEffort(profile)
+    var didDropReasoningEffort = false
+    func makeBody() throws -> Data {
+      try JSONEncoder().encode(RequestBody(
+        model: model,
+        messages: [
+          Message(role: "system", content: systemPrompt),
+          Message(role: "user", content: userContent),
+        ],
+        stream: false,
+        maxTokens: nil,
+        reasoningEffort: includesReasoningEffort ? Self.lowReasoningEffort : nil
+      ))
+    }
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.timeoutInterval = 180
     request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("application/json", forHTTPHeaderField: "Accept")
-    request.httpBody = try JSONEncoder().encode(RequestBody(
-      model: model,
-      messages: [
-        Message(role: "system", content: systemPrompt),
-        Message(role: "user", content: userContent),
-      ],
-      stream: false,
-      maxTokens: nil
-    ))
+    request.httpBody = try makeBody()
 
+    while true {
     do {
       let (bytes, response) = try await session.bytes(for: request)
       var body = Data()
@@ -335,6 +350,15 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         totalTokens: decoded?.usage?.totalTokens
       )
     } catch let failure as ModelProviderFailure {
+      // 服务端拒了请求，而我们确实多发了那个键——先怀疑是它不被接受，去掉重来。
+      // 只降级一次；并记住这个目的地，后续分片直接不带。与流式路径同一套规则。
+      if includesReasoningEffort, !didDropReasoningEffort, Self.mayRejectUnknownParameter(failure) {
+        didDropReasoningEffort = true
+        includesReasoningEffort = false
+        rememberReasoningEffortRejected(profile)
+        request.httpBody = try makeBody()
+        continue
+      }
       throw failure
     } catch is CancellationError {
       throw CancellationError()
@@ -342,6 +366,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       throw CancellationError()
     } catch {
       throw ModelProviderFailure(code: .networkInterrupted, retryable: true, hadOutput: false)
+    }
     }
   }
 

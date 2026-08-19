@@ -482,8 +482,16 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(strip.contains("read_num"))
     XCTAssertFalse(strip.contains("like_num"))
     XCTAssertTrue(source.contains("(!isWeChatCapture && sourceFrontmatter.hasEngagementStats)"))
-    XCTAssertTrue(source.contains("appendsUnusedLocalImages: !isWeChatCapture"))
-    XCTAssertTrue(source.contains("groupsConsecutiveImages: !isWeChatCapture"))
+    // 图片策略已从「是不是微信」改成「正文是什么形态」：判据是图片怎么分布
+    // （一张张夹在文字之间 vs 成组出现），微信图文只是最典型的一类。真实库
+    // 40 条实测，三条微信图文的图/段比是 32/32、18/18、4/3，全部落在
+    // `inline-illustrated` 档，行为与改动前一致；另有两条同形态的 generic
+    // 长文因此获得修正——它们以前会被错误地合并图片。
+    //
+    // 行为不变量由 `ReadingFormatProfileTests` 钉住，这里只确认接线没被绕过。
+    XCTAssertTrue(source.contains("appendsUnusedLocalImages: !readingFormat.keepsImagePositions"))
+    XCTAssertTrue(source.contains("groupsConsecutiveImages: !readingFormat.keepsImagePositions"))
+    XCTAssertFalse(source.contains("groupsConsecutiveImages: !isWeChatCapture"), "平台硬编码不该再出现")
   }
 
   func testWeChatArticleBodyPrecedesTheGeneralMediaSection() {

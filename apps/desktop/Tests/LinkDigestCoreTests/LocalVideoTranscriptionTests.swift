@@ -123,3 +123,70 @@ final class LocalVideoTranscriptionTests: XCTestCase {
     )
   }
 }
+
+/// 分段时间。
+///
+/// 时间一直都在识别结果里，过去在出口被丢掉了；这一组钉住它能活着出来，并且
+/// 和文本切段用的是同一套规则——两者一旦各走各的，锚点就会指向别的段落。
+final class TranscriptParagraphTimingTests: XCTestCase {
+  private func range(_ start: Double, _ duration: Double) -> CMTimeRange {
+    CMTimeRange(
+      start: CMTime(seconds: start, preferredTimescale: 600),
+      duration: CMTime(seconds: duration, preferredTimescale: 600)
+    )
+  }
+
+  func testParagraphsCarryTheirStartAndEndTime() {
+    var value = TimedTranscriptionAccumulator()
+    _ = value.apply(range: range(0, 1), text: "第一段开头", isFinal: true)
+    _ = value.apply(range: range(1.2, 1), text: "还是第一段", isFinal: true)
+    // 1.5s 静默：新的一段。
+    _ = value.apply(range: range(3.7, 1.3), text: "第二段", isFinal: true)
+
+    let paragraphs = value.finalParagraphs
+    XCTAssertEqual(paragraphs.count, 2)
+    XCTAssertEqual(paragraphs[0].startMilliseconds, 0)
+    XCTAssertEqual(paragraphs[0].endMilliseconds, 2200)
+    XCTAssertEqual(paragraphs[1].startMilliseconds, 3700)
+    XCTAssertEqual(paragraphs[1].endMilliseconds, 5000)
+  }
+
+  /// 分段文本必须和 `finalText` 完全一致。两边各切各的，点第三段就会跳到第二段。
+  func testParagraphTextMatchesTheRenderedTranscript() {
+    var value = TimedTranscriptionAccumulator()
+    _ = value.apply(range: range(0, 1), text: "第一段", isFinal: true)
+    _ = value.apply(range: range(2, 1), text: "第二段", isFinal: true)
+    _ = value.apply(range: range(4, 1), text: "第三段", isFinal: true)
+    XCTAssertEqual(
+      value.finalParagraphs.map(\.text).joined(separator: "\n\n"),
+      value.finalText
+    )
+  }
+
+  /// 草稿不进分段——和 `finalText` 一个道理，volatile 结果随时会被撤销。
+  func testVolatileResultsNeverBecomeParagraphs() {
+    var value = TimedTranscriptionAccumulator()
+    _ = value.apply(range: range(0, 1), text: "定稿", isFinal: true)
+    _ = value.apply(range: range(2, 1), text: "草稿", isFinal: false)
+    XCTAssertEqual(value.finalParagraphs.map(\.text), ["定稿"])
+  }
+
+  /// 超长段落会被按字数切开，切出来的子段共享父段时间。
+  ///
+  /// 它们本来就没有各自的时间：是同一段连续语音硬切的。按字符比例插值只会造出
+  /// 一个看着精确、点下去对不上的数字。
+  func testSplitPiecesShareTheParentParagraphTime() {
+    var value = TimedTranscriptionAccumulator()
+    let long = String(repeating: "这是一句会被切开的长句子。", count: 30)
+    _ = value.apply(range: range(10, 20), text: long, isFinal: true)
+    let paragraphs = value.finalParagraphs
+    XCTAssertGreaterThan(paragraphs.count, 1, "超长段落应当被切开")
+    XCTAssertTrue(paragraphs.allSatisfy { $0.startMilliseconds == 10_000 })
+  }
+
+  func testStartLabelShowsHoursOnlyWhenPresent() {
+    XCTAssertEqual(TranscriptParagraph(startMilliseconds: 12_000, endMilliseconds: 0, text: "").startLabel, "00:12")
+    XCTAssertEqual(TranscriptParagraph(startMilliseconds: 192_000, endMilliseconds: 0, text: "").startLabel, "03:12")
+    XCTAssertEqual(TranscriptParagraph(startMilliseconds: 3_849_000, endMilliseconds: 0, text: "").startLabel, "1:04:09")
+  }
+}

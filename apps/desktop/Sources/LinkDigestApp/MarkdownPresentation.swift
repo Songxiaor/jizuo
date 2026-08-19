@@ -504,8 +504,14 @@ enum MarkdownPresentation {
   enum Block: Equatable, Hashable {
     case heading(level: Int, text: String)
     case paragraph(String)
-    case list([String])
-    case orderedList([String])
+    /// 有序与无序合成同一个块。
+    ///
+    /// 原本是 `.list` 和 `.orderedList` 两个 case，各自持平铺的 `[String]`。
+    /// 两个问题：层级无处安放（子项只能和父项平起平坐），以及**混合列表会被
+    /// 切开**——`1. 父项` 底下挂一个 `- 子项`，扫描有序列表时撞上 `- ` 就收尾，
+    /// 于是一个列表变成三个块，而每块的编号都从 1 重数（步骤 2、3 显示成 1、2）。
+    /// 一个 case 带 `ListEntry.depth` 才能如实表达「同一个列表」。
+    case list([ListEntry])
     /// 社区评论不能降级成普通 Markdown 列表：列表会丢掉作者、回复对象和层级，
     /// 也无法提供局部展开。原始 Markdown / 导出文本保持不变，只在阅读呈现层
     /// 把扩展已经写出的缩进和元数据恢复成结构化评论。
@@ -525,6 +531,21 @@ enum MarkdownPresentation {
   struct TaskItem: Equatable, Hashable {
     public let isDone: Bool
     public let text: String
+  }
+
+  /// 列表里的一项。
+  ///
+  /// `number` 在**解析时**就算好，而不是留给每个消费点 `enumerated()` 自己数。
+  /// 阅读区、导出、选中复制是三个独立的消费点，各数各的必然漂移——嵌套一进来，
+  /// 「第几项」和「数组下标」就不再是同一件事了。
+  struct ListEntry: Equatable, Hashable {
+    /// 嵌套深度，0 为顶层。
+    public let depth: Int
+    /// 有序项的显示编号；无序项为 nil。
+    public let number: Int?
+    public let text: String
+
+    public var isOrdered: Bool { number != nil }
   }
 
   struct CommentSection: Equatable, Hashable {
@@ -700,50 +721,38 @@ enum MarkdownPresentation {
         continue
       }
 
-      if isListItem(trimmed) {
-        var items: [String] = []
+      // 有序与无序走同一个扫描器：混排的列表必须留在**一个**块里，否则编号
+      // 会在每个子列表之后重新从 1 开始。
+      if listMarker(trimmed) != nil, taskItem(trimmed) == nil {
+        var entries: [ListEntry] = []
+        // 每层各自计数。回到浅层时把更深的计数器作废，下一个子列表才会重新
+        // 从 1 起；不作废的话，第二个父项底下的子列表会接着上一个往下数。
+        var counters: [Int: Int] = [:]
         while index < lines.count {
-          let line = lines[index].trimmingCharacters(in: .whitespaces)
+          let raw = lines[index]
+          let line = raw.trimmingCharacters(in: .whitespaces)
           if line.isEmpty {
             let next = index + 1 < lines.count ? lines[index + 1].trimmingCharacters(in: .whitespaces) : ""
-            if isListItem(next) {
+            if listMarker(next) != nil, taskItem(next) == nil {
               index += 1
               continue
             }
             break
           }
           // 撞上任务项就收尾：两种清单混在一起时，让它们各自成块。
-          if isListItem(line), taskItem(line) == nil {
-            items.append(listItemText(line))
-            index += 1
-          } else {
-            break
+          guard let marker = listMarker(line), taskItem(line) == nil else { break }
+          let depth = listDepth(of: raw)
+          for key in counters.keys where key > depth { counters[key] = nil }
+          var number: Int?
+          if marker.ordered {
+            let next = (counters[depth] ?? 0) + 1
+            counters[depth] = next
+            number = next
           }
+          entries.append(ListEntry(depth: depth, number: number, text: marker.text))
+          index += 1
         }
-        if !items.isEmpty { blocks.append(.list(items)) }
-        continue
-      }
-
-      if orderedListItem(trimmed) != nil {
-        var items: [String] = []
-        while index < lines.count {
-          let line = lines[index].trimmingCharacters(in: .whitespaces)
-          if line.isEmpty {
-            let next = index + 1 < lines.count ? lines[index + 1].trimmingCharacters(in: .whitespaces) : ""
-            if orderedListItem(next) != nil {
-              index += 1
-              continue
-            }
-            break
-          }
-          if let item = orderedListItem(line) {
-            items.append(item)
-            index += 1
-          } else {
-            break
-          }
-        }
-        if !items.isEmpty { blocks.append(.orderedList(items)) }
+        if !entries.isEmpty { blocks.append(.list(entries)) }
         continue
       }
 
@@ -990,6 +999,33 @@ enum MarkdownPresentation {
     return TaskItem(isDone: done, text: text)
   }
 
+  /// 一行是不是列表项，以及它是有序还是无序。调用方必须先排除任务项
+  /// （`- [ ]` 同时满足 `isListItem`）。
+  private static func listMarker(_ line: String) -> (ordered: Bool, text: String)? {
+    if isListItem(line) { return (false, listItemText(line)) }
+    if let text = orderedListItem(line) { return (true, text) }
+    return nil
+  }
+
+  /// 行首缩进换算成嵌套深度。抽取侧每层缩进两个空格，这里按两空格一层折算，
+  /// 奇数个空格向下取整。
+  ///
+  /// 上限 3 层：再深的层级，正文在阅读宽度里已经被缩得没地方放了；宁可让最深
+  /// 的几层挤在一起，也不要把正文挤成一列。
+  private static func listDepth(of line: String) -> Int {
+    var spaces = 0
+    for character in line {
+      if character == " " {
+        spaces += 1
+      } else if character == "\t" {
+        spaces += 2
+      } else {
+        break
+      }
+    }
+    return min(spaces / 2, 3)
+  }
+
   private static func listItemText(_ line: String) -> String {
     if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
       return String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
@@ -1180,9 +1216,32 @@ enum MarkdownPresentation {
     var body = trimmed
     if body.hasPrefix("|") { body.removeFirst() }
     if body.hasSuffix("|") { body.removeLast() }
-    let cells = body.split(separator: "|", omittingEmptySubsequences: false).map {
-      $0.trimmingCharacters(in: .whitespaces)
+    // 只在**未转义**的竖线上切分。抽取侧按 GFM 规矩把单元格内的 `|` 写成 `\|`，
+    // 照单全收地 split 会把一格切成两格，整行随后被裁到表宽——内容直接丢失。
+    var cells: [String] = []
+    var current = ""
+    var escaped = false
+    for character in body {
+      if escaped {
+        // 只有 `\|` 是转义；其余情况把反斜杠原样留下，免得吃掉 Windows 路径
+        // 和正则里的反斜杠。
+        if character != "|" { current.append("\\") }
+        current.append(character)
+        escaped = false
+        continue
+      }
+      switch character {
+      case "\\":
+        escaped = true
+      case "|":
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        current = ""
+      default:
+        current.append(character)
+      }
     }
+    if escaped { current.append("\\") }
+    cells.append(current.trimmingCharacters(in: .whitespaces))
     guard cells.count >= 2 else { return nil }
     return cells
   }
@@ -1754,21 +1813,33 @@ struct MarkdownContentView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
         .padding(.bottom, 20)
-    case let .list(items):
+    case let .list(entries):
       VStack(alignment: .leading, spacing: 12) {
-        ForEach(0..<items.count, id: \.self) { index in
+        ForEach(0..<entries.count, id: \.self) { index in
+          let entry = entries[index]
           HStack(alignment: .top, spacing: 0) {
-            Circle()
-              .fill(secondaryTextColor.opacity(0.85))
-              .frame(width: 5, height: 5)
-              .frame(width: 22, alignment: .center)
-              .padding(.top, 8)
-              .accessibilityHidden(true)
-            inlineBody(items[index], baseSize: 16.5)
+            if let number = entry.number {
+              Text("\(number).")
+                .font(.system(.body, design: .rounded).weight(.medium))
+                .foregroundStyle(secondaryTextColor)
+                .frame(width: 30, alignment: .trailing)
+                .padding(.trailing, 9)
+                .padding(.top, 1)
+            } else {
+              Circle()
+                // 子层的点小一档、淡一点：层级要在余光里就看出来，不能只靠缩进。
+                .fill(secondaryTextColor.opacity(entry.depth > 0 ? 0.55 : 0.85))
+                .frame(width: entry.depth > 0 ? 4 : 5, height: entry.depth > 0 ? 4 : 5)
+                .frame(width: 22, alignment: .center)
+                .padding(.top, 8)
+                .accessibilityHidden(true)
+            }
+            inlineBody(entry.text, baseSize: 16.5)
               .lineSpacing(8)
               .frame(maxWidth: .infinity, alignment: .leading)
               .fixedSize(horizontal: false, vertical: true)
           }
+          .padding(.leading, CGFloat(entry.depth) * 22)
         }
       }
       .padding(.leading, 4)
@@ -1802,24 +1873,6 @@ struct MarkdownContentView: View {
         .padding(.vertical, 10)
         .padding(.bottom, 18)
         .accessibilityHidden(true)
-    case let .orderedList(items):
-      VStack(alignment: .leading, spacing: 12) {
-        ForEach(0..<items.count, id: \.self) { index in
-          HStack(alignment: .top, spacing: 0) {
-            Text("\(index + 1).")
-              .font(.system(.body, design: .rounded).weight(.medium))
-              .foregroundStyle(secondaryTextColor)
-              .frame(width: 30, alignment: .trailing)
-              .padding(.trailing, 9)
-              .padding(.top, 1)
-            inlineBody(items[index], baseSize: 16.5)
-              .lineSpacing(8)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .fixedSize(horizontal: false, vertical: true)
-          }
-        }
-      }
-      .padding(.bottom, 18)
     case let .quote(text):
       inlineBody(text, baseSize: 15.5)
         .foregroundStyle(secondaryTextColor)
