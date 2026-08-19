@@ -1014,8 +1014,13 @@ final class HistoryViewModelTests: XCTestCase {
         await recorder.record(runID: runID, state: state)
       }
       await waitUntilAsync { await recorder.last == .completed(intent: .summarize, text: "已完成的总结") }
-      await waitUntil { provider.tagRequestCount == 1 }
-      try? await Task.sleep(for: .milliseconds(30))
+      await waitUntil {
+        provider.tagRequestCount == 1
+          && model.detailState == .loaded
+          && model.listState == .loaded
+      }
+      try? await Task.sleep(for: .milliseconds(50))
+      await waitUntil { model.detailState == .loaded && model.listState == .loaded }
 
       let recordedEvents = await events.taskIDs
       XCTAssertEqual(recordedEvents, [])
