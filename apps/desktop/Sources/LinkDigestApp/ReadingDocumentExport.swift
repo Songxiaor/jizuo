@@ -105,20 +105,16 @@ enum ReadingDocumentExport {
         ))
       case let .paragraph(text):
         result.append(inlineStyled(text, readingFont: readingFont))
-      case let .list(items):
-        for item in items {
+      case let .list(entries):
+        for entry in entries {
+          // 编号取解析时算好的值，不用数组下标：嵌套之后「第几项」和下标不再
+          // 是同一件事，各数各的会让导出稿和屏幕上的编号对不上。
+          let marker = entry.number.map { "\($0). " } ?? "• "
+          let indent = CGFloat(entry.depth) * 16
           result.append(styledParagraph(
-            "• " + plain(item),
+            String(repeating: " ", count: entry.depth * 2) + marker + plain(entry.text),
             font: font(readingFont, size: bodySize, weight: .regular),
-            spacingBefore: 0, spacingAfter: 4, headIndent: 14
-          ))
-        }
-      case let .orderedList(items):
-        for (index, item) in items.enumerated() {
-          result.append(styledParagraph(
-            "\(index + 1). " + plain(item),
-            font: font(readingFont, size: bodySize, weight: .regular),
-            spacingBefore: 0, spacingAfter: 4, headIndent: 14
+            spacingBefore: 0, spacingAfter: 4, headIndent: 14 + indent
           ))
         }
       case let .taskList(items):

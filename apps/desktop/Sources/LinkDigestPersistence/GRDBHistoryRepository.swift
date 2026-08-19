@@ -2241,6 +2241,118 @@ extension GRDBHistoryRepository: MindMapStoring {
   }
 }
 
+// MARK: - Reformat (整理排版产物)
+
+extension GRDBHistoryRepository: ReformatStoring {
+  public func saveReformat(_ record: TaskReformatRecord) throws {
+    guard !record.bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      throw RepositoryFailure.invalidInput
+    }
+    try database.write { db in
+      guard let storedTask: String = try String.fetchOne(
+        db, sql: "SELECT id FROM tasks WHERE id = ?", arguments: [record.taskID.rawValue]
+      ), storedTask == record.taskID.rawValue else { throw RepositoryFailure.invalidInput }
+      try db.execute(
+        sql: """
+          INSERT INTO task_reformats
+            (task_id, body_text, user_edited, is_partial, provider, model,
+             prompt_tokens, completion_tokens, total_tokens, created_at_ms, updated_at_ms)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          ON CONFLICT(task_id) DO UPDATE SET
+            body_text = excluded.body_text,
+            user_edited = excluded.user_edited,
+            is_partial = excluded.is_partial,
+            provider = excluded.provider,
+            model = excluded.model,
+            prompt_tokens = excluded.prompt_tokens,
+            completion_tokens = excluded.completion_tokens,
+            total_tokens = excluded.total_tokens,
+            updated_at_ms = excluded.updated_at_ms
+          """,
+        arguments: [
+          record.taskID.rawValue, record.bodyText, record.userEdited ? 1 : 0,
+          record.isPartial ? 1 : 0, record.provider, record.model,
+          record.promptTokens, record.completionTokens, record.totalTokens,
+          record.createdAtMilliseconds, record.updatedAtMilliseconds,
+        ]
+      )
+    }
+  }
+
+  public func loadReformat(taskID: TaskID) throws -> TaskReformatRecord? {
+    try database.read { db in
+      guard let row = try Row.fetchOne(
+        db, sql: "SELECT * FROM task_reformats WHERE task_id = ?", arguments: [taskID.rawValue]
+      ) else { return nil }
+      return TaskReformatRecord(
+        taskID: taskID,
+        bodyText: row["body_text"],
+        userEdited: (row["user_edited"] as Int64? ?? 0) == 1,
+        isPartial: (row["is_partial"] as Int64? ?? 0) == 1,
+        provider: row["provider"],
+        model: row["model"],
+        promptTokens: (row["prompt_tokens"] as Int64?).map(Int.init),
+        completionTokens: (row["completion_tokens"] as Int64?).map(Int.init),
+        totalTokens: (row["total_tokens"] as Int64?).map(Int.init),
+        createdAtMilliseconds: row["created_at_ms"],
+        updatedAtMilliseconds: row["updated_at_ms"]
+      )
+    }
+  }
+
+  public func deleteReformat(taskID: TaskID) throws {
+    try database.write { db in
+      try db.execute(sql: "DELETE FROM task_reformats WHERE task_id = ?", arguments: [taskID.rawValue])
+    }
+  }
+}
+
+// MARK: - Transcript paragraph timing
+
+extension GRDBHistoryRepository: TranscriptParagraphStoring {
+  public func saveTranscriptParagraphs(_ paragraphs: [TranscriptParagraph], snapshotID: String) throws {
+    try database.write { db in
+      guard let stored: String = try String.fetchOne(
+        db, sql: "SELECT id FROM content_snapshots WHERE id = ?", arguments: [snapshotID]
+      ), stored == snapshotID else { throw RepositoryFailure.invalidInput }
+      // 覆盖式：先清空再写。重新转写同一条时，旧分段必须整批消失，否则新稿短了
+      // 就会拖着一截对不上的尾巴。
+      try db.execute(sql: "DELETE FROM transcript_paragraphs WHERE snapshot_id = ?", arguments: [snapshotID])
+      for (ordinal, paragraph) in paragraphs.enumerated() {
+        try db.execute(
+          sql: """
+            INSERT INTO transcript_paragraphs (snapshot_id, ordinal, start_ms, end_ms, text)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+          arguments: [snapshotID, ordinal, paragraph.startMilliseconds, paragraph.endMilliseconds, paragraph.text]
+        )
+      }
+    }
+  }
+
+  public func loadTranscriptParagraphs(snapshotID: String) throws -> [TranscriptParagraph] {
+    try database.read { db in
+      try Row.fetchAll(
+        db,
+        sql: "SELECT start_ms, end_ms, text FROM transcript_paragraphs WHERE snapshot_id = ? ORDER BY ordinal",
+        arguments: [snapshotID]
+      ).map { row in
+        TranscriptParagraph(
+          startMilliseconds: row["start_ms"],
+          endMilliseconds: row["end_ms"],
+          text: row["text"]
+        )
+      }
+    }
+  }
+
+  public func deleteTranscriptParagraphs(snapshotID: String) throws {
+    try database.write { db in
+      try db.execute(sql: "DELETE FROM transcript_paragraphs WHERE snapshot_id = ?", arguments: [snapshotID])
+    }
+  }
+}
+
 // MARK: - Token ledger
 
 extension GRDBHistoryRepository: TokenUsageRecording {

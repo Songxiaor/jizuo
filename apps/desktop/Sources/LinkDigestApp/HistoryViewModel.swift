@@ -61,7 +61,11 @@ private enum BeginTaskTranscriptionPersistenceResult: Sendable {
   case failure(StorageErrorCode)
 }
 private enum TranscriptionPersistenceResult: Sendable {
-  case applied
+  /// 带上 snapshotID：分段时间挂在 snapshot 上，调用方落完正文才知道挂到哪。
+  ///
+  /// nil 表示这次操作**没有产出正文** —— 状态变更（开始／失败／取消）走的是
+  /// 同一个结果类型，但它们不写 snapshot，也就没有能挂分段的地方。
+  case applied(ContentSnapshotID?)
   case stale
   case replay
   case failure(StorageErrorCode)
@@ -410,7 +414,7 @@ private actor HistoryRepositoryWorker {
   ) -> TranscriptionPersistenceResult {
     do {
       switch try history.updateMediaTranscriptionStatus(taskID: taskID, attempt: attempt, status: status) {
-      case .applied: return .applied
+      case .applied: return .applied(nil)
       case .stale: return .stale
       }
     } catch {
@@ -432,7 +436,7 @@ private actor HistoryRepositoryWorker {
         status: status,
         updatedAtMilliseconds: updatedAtMilliseconds
       ) {
-      case .applied: return .applied
+      case .applied: return .applied(nil)
       case .stale: return .stale
       }
     } catch {
@@ -473,7 +477,7 @@ private actor HistoryRepositoryWorker {
       switch result {
       case let .accepted(accepted):
         guard accepted.taskID == taskID else { throw RepositoryFailure.invalidInput }
-        return .applied
+        return .applied(accepted.snapshotID)
       case let .replay(replayed):
         guard replayed.taskID == taskID else { throw RepositoryFailure.invalidInput }
         return .replay
@@ -523,7 +527,7 @@ private actor HistoryRepositoryWorker {
       )) {
       case let .accepted(value):
         guard value.taskID == taskID else { throw RepositoryFailure.invalidInput }
-        return .applied
+        return .applied(value.snapshotID)
       case let .replay(value):
         guard value.taskID == taskID else { throw RepositoryFailure.invalidInput }
         return .replay
@@ -574,7 +578,7 @@ private actor HistoryRepositoryWorker {
         ),
         receivedAtMilliseconds: receivedAtMilliseconds
       )) {
-      case let .accepted(value): return value.taskID == taskID ? .applied : .failure(.writeFailed)
+      case let .accepted(value): return value.taskID == taskID ? .applied(value.snapshotID) : .failure(.writeFailed)
       case let .replay(value): return value.taskID == taskID ? .replay : .failure(.writeFailed)
       case .stale: return .stale
       }
@@ -622,7 +626,7 @@ private actor HistoryRepositoryWorker {
         ),
         receivedAtMilliseconds: receivedAtMilliseconds
       )) {
-      case let .accepted(value): return value.taskID == taskID ? .applied : .failure(.writeFailed)
+      case let .accepted(value): return value.taskID == taskID ? .applied(value.snapshotID) : .failure(.writeFailed)
       case let .replay(value): return value.taskID == taskID ? .replay : .failure(.writeFailed)
       case .stale: return .stale
       }
@@ -906,6 +910,196 @@ final class HistoryViewModel: ObservableObject {
   private var livePlaybackStopContinuation: AsyncStream<Void>.Continuation?
   private let nowMilliseconds: @Sendable () -> Int64
   private let onDiscardedTranscriptionAttempt: @Sendable () -> Void
+  // MARK: - 整理排版（长文重排）
+
+  /// 重排产物与原文并存，永远可以切回去。这个开关只影响**当前会话的这一次查看**，
+  /// 不落盘：用户下次打开这条记录，看到的仍然是原文。
+  ///
+  /// 刻意不做成持久偏好——重排是「换个样子再看一遍」，不是「以后都这么看」。
+  @Published var showsReformattedBody = false
+  @Published private(set) var reformatState: TranscriptTidyUIState = .idle
+  @Published private(set) var reformatRecord: TaskReformatRecord?
+  /// 部分失败时如实告知：长稿切片重排，中间几片失败会以原文回填，
+  /// 产出看起来正常但有几段没重排过。
+  @Published private(set) var reformatPartialNotice: String?
+  private var reformatTaskID: TaskID?
+  private var reformatRequestID = UUID()
+  private var reformatTask: Task<Void, Never>?
+
+  func reformatState(for taskID: TaskID) -> TranscriptTidyUIState {
+    reformatTaskID == taskID ? reformatState : .idle
+  }
+
+  /// 读当前条目已有的重排产物。切换条目时调用。
+  func loadReformat(taskID: TaskID) {
+    reformatRecord = (try? history?.reformatStore?.loadReformat(taskID: taskID)) ?? nil
+    showsReformattedBody = false
+    reformatPartialNotice = reformatRecord?.isPartial == true
+      ? "有几段没能重排，那几段保持原文。" : nil
+    if reformatTaskID != taskID { reformatState = .idle }
+  }
+
+  /// 这篇值不值得重排。判据全在 Core 里，UI 只负责显示结论。
+  func reformatEligibility(bodyText: String, platform: String, isTranscript: Bool)
+    -> ArticleReformatEligibility {
+    let shape = ContentShape.measure(markdown: bodyText)
+    let decisions = ReadingFormatRegistry.decisions(for: ReadingFormatContext(
+      shape: shape, platform: platform, isTranscript: isTranscript
+    ))
+    return ArticleReformatEligibility.evaluate(shape: shape, allowsOutline: decisions.allowsOutline)
+  }
+
+  func reformatUnavailableReason(taskID: TaskID) -> String? {
+    if isReadOnly { return "历史库当前只读，无法保存重排结果。" }
+    if transcriptTidier == nil { return "需先在设置里配置聊天模型" }
+    if reformatState(for: taskID).isActive { return "正在重排…" }
+    return nil
+  }
+
+  /// 开始重排。产物落 `task_reformats`，**原文一个字都不动**。
+  ///
+  /// 用户改过重排稿之后再次点重排会覆盖他的修改，所以调用方要先确认；
+  /// `record.userEdited` 就是给这个判断用的。
+  func startArticleReformat(taskID: TaskID, bodyText: String, model: String?) {
+    guard let history, let transcriptTidier, !isReadOnly else {
+      reformatState = .failed("需先在设置里配置聊天模型。")
+      return
+    }
+    let source = MarkdownNoteFrontmatter.parse(bodyText).body
+    guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      reformatState = .failed("没有可重排的正文。")
+      return
+    }
+    reformatTask?.cancel()
+    let requestID = UUID()
+    reformatRequestID = requestID
+    reformatTaskID = taskID
+    reformatState = .running
+    reformatPartialNotice = nil
+    reformatTask = Task { [weak self] in
+      guard let self else { return }
+      do {
+        let outcome = try await transcriptTidier.tidy(text: source, model: model, style: .article)
+        try Task.checkCancellation()
+        guard self.reformatRequestID == requestID else { return }
+        let now = self.nowMilliseconds()
+        // 保住首次生成时间：重新重排是同一份产物的新版本，不是一份新产物。
+        let existing = (try? history.reformatStore?.loadReformat(taskID: taskID)) ?? nil
+        let record = TaskReformatRecord(
+          taskID: taskID,
+          bodyText: outcome.text,
+          userEdited: false,
+          isPartial: outcome.isPartial,
+          provider: "configured_provider",
+          model: model,
+          promptTokens: outcome.promptTokens,
+          completionTokens: outcome.completionTokens,
+          totalTokens: outcome.totalTokens,
+          createdAtMilliseconds: existing?.createdAtMilliseconds ?? now,
+          updatedAtMilliseconds: now
+        )
+        do {
+          try history.reformatStore?.saveReformat(record)
+        } catch {
+          self.reformatState = .failed("重排完成但没能保存；原文没有改动。")
+          return
+        }
+        guard self.reformatRequestID == requestID else { return }
+        self.reformatRecord = record
+        self.showsReformattedBody = true
+        self.reformatState = .completed
+        self.reformatPartialNotice = outcome.isPartial
+          ? "\(outcome.chunkCount) 段里有 \(outcome.failedChunkCount) 段没能重排，那几段保持原文。"
+          : nil
+        await self.recordTokenUsage(
+          taskID: taskID, operation: "article_reformat",
+          promptTokens: outcome.promptTokens, completionTokens: outcome.completionTokens,
+          totalTokens: outcome.totalTokens
+        )
+      } catch is CancellationError {
+        guard self.reformatRequestID == requestID else { return }
+        self.reformatState = .cancelled
+      } catch {
+        guard self.reformatRequestID == requestID else { return }
+        let message = (error as? TranscriptTidyError)?.userMessage
+          ?? "重排失败，原文没有改动。"
+        self.reformatState = .failed(message)
+      }
+    }
+  }
+
+  /// 待确认的重排请求。正文要离开本机，所以和转写校对一样先弹确认。
+  private struct PendingReformatContext {
+    let taskID: TaskID
+    let bodyText: String
+    /// 用户在设置里配的「整理模型」，留空则继承总结模型。UI 传入，与转写校对同源。
+    let model: String?
+  }
+  @Published var isReformatConfirmationPresented = false
+  private var pendingReformatContext: PendingReformatContext?
+
+  func requestArticleReformat(taskID: TaskID, bodyText: String, model: String?) {
+    pendingReformatContext = .init(taskID: taskID, bodyText: bodyText, model: model)
+    isReformatConfirmationPresented = true
+  }
+
+  func cancelReformatConfirmation() {
+    pendingReformatContext = nil
+    isReformatConfirmationPresented = false
+  }
+
+  func confirmArticleReformat() {
+    isReformatConfirmationPresented = false
+    guard let context = pendingReformatContext else { return }
+    pendingReformatContext = nil
+    startArticleReformat(taskID: context.taskID, bodyText: context.bodyText, model: context.model)
+  }
+
+  func cancelArticleReformat() {
+    reformatTask?.cancel()
+    reformatTask = nil
+    reformatState = .cancelled
+  }
+
+  /// 丢弃重排产物，回到只有原文的状态。
+  func discardReformat(taskID: TaskID) {
+    try? history?.reformatStore?.deleteReformat(taskID: taskID)
+    reformatRecord = nil
+    showsReformattedBody = false
+    reformatPartialNotice = nil
+    reformatState = .idle
+  }
+
+  /// 阅读区点了时间锚点，请这条任务的播放器跳过去。
+  ///
+  /// 播放器实例是 `HistoryVideoPlayerCard` 的 `@State`，阅读区够不到它。让卡片
+  /// 观察一个请求，比把 `AVPlayer` 提升成共享状态轻得多——后者会把播放生命周期
+  /// 和详情页的重建绑在一起，那正是之前视频卡出过问题的地方。
+  struct TranscriptSeekRequest: Equatable {
+    let taskID: TaskID
+    let seconds: Double
+    /// 连点同一个锚点两次也要生效，所以带一个自增序号让值真的变化。
+    let token: Int
+  }
+
+  @Published private(set) var transcriptSeekRequest: TranscriptSeekRequest?
+  private var transcriptSeekToken = 0
+
+  func requestTranscriptSeek(taskID: TaskID, milliseconds: Int) {
+    transcriptSeekToken += 1
+    transcriptSeekRequest = TranscriptSeekRequest(
+      taskID: taskID,
+      seconds: Double(max(0, milliseconds)) / 1000,
+      token: transcriptSeekToken
+    )
+  }
+
+  /// 读取某份转写稿的分段时间。没有分段（在线转写、整理稿、手改稿）时返回空数组。
+  func transcriptParagraphs(snapshotID: ContentSnapshotID) -> [TranscriptParagraph] {
+    guard let store = history?.transcriptParagraphStore else { return [] }
+    return (try? store.loadTranscriptParagraphs(snapshotID: snapshotID.rawValue)) ?? []
+  }
+
   private var history: HistoryApplicationService?
   /// 笔记写作窗口要读写同一个历史库，而不是另开一份连接。
   var historyService: HistoryApplicationService? { history }
@@ -2712,6 +2906,7 @@ final class HistoryViewModel: ObservableObject {
           self.transcriptTidyState = .failed("整理完成但没能保存；原文没有改动。")
           return
         }
+        self.invalidateTranscriptParagraphs(snapshotID: snapshot.id)
         self.transcriptTidyState = .completed
         self.transcriptTidyTokenSummary = Self.tidyTokenSummary(outcome)
         self.refreshDetailAfterTranscription(taskID: taskID)
@@ -2868,7 +3063,10 @@ final class HistoryViewModel: ObservableObject {
         )
         guard self.transcriptTidyRequestID == requestID else { return }
         switch persisted {
-        case .applied:
+        case let .applied(newSnapshotID):
+          self.migrateTranscriptParagraphs(
+            from: context.detail, to: newSnapshotID, tidiedBody: outcome.text
+          )
           self.transcriptTidyState = .completed
           self.transcriptTidyTokenSummary = Self.tidyTokenSummary(outcome)
           await self.recordTokenUsage(
@@ -3385,6 +3583,7 @@ final class HistoryViewModel: ObservableObject {
 
     do {
       var finalText = ""
+      var finalParagraphs: [TranscriptParagraph] = []
       for try await event in transcriber.transcribe(fileURL: context.fileURL, workspaceURL: context.workspaceURL, localeIdentifier: "zh_CN") {
         try Task.checkCancellation()
         guard transcriptionRequestID == requestID else { return }
@@ -3393,6 +3592,7 @@ final class HistoryViewModel: ObservableObject {
         case .transcribing: transcriptionState = .transcribing
         case let .partial(text): setTranscriptionText(text)
         case let .final(text): finalText = text; setTranscriptionText(text)
+        case let .finalParagraphs(paragraphs): finalParagraphs = paragraphs
         }
       }
       try Task.checkCancellation()
@@ -3411,7 +3611,8 @@ final class HistoryViewModel: ObservableObject {
       )
       guard transcriptionRequestID == requestID else { return }
       switch persisted {
-      case .applied:
+      case let .applied(snapshotID):
+        persistTranscriptParagraphs(finalParagraphs, snapshotID: snapshotID)
         transcriptionState = .completed
         pendingRemoteTranscriptionContext = nil
         refreshDetailAfterTranscription(taskID: context.taskID)
@@ -3504,6 +3705,7 @@ final class HistoryViewModel: ObservableObject {
     }
     do {
       var finalText = ""
+      var finalParagraphs: [TranscriptParagraph] = []
       for try await event in transcriber.transcribe(fileURL: context.fileURL, workspaceURL: context.workspaceURL, localeIdentifier: "zh_CN") {
         try Task.checkCancellation()
         guard transcriptionRequestID == requestID else { return }
@@ -3512,6 +3714,7 @@ final class HistoryViewModel: ObservableObject {
         case .transcribing: transcriptionState = .transcribing
         case let .partial(text): setTranscriptionText(text)
         case let .final(text): finalText = text; setTranscriptionText(text)
+        case let .finalParagraphs(paragraphs): finalParagraphs = paragraphs
         }
       }
       try Task.checkCancellation()
@@ -3529,8 +3732,8 @@ final class HistoryViewModel: ObservableObject {
       )
       guard transcriptionRequestID == requestID else { return }
       switch persisted {
-      case .applied:
-        break
+      case let .applied(snapshotID):
+        persistTranscriptParagraphs(finalParagraphs, snapshotID: snapshotID)
       case .replay, .stale:
         onDiscardedTranscriptionAttempt()
         transcriptionState = .failed("这次转写已被更新的请求替代，请重试。")
@@ -3968,6 +4171,49 @@ final class HistoryViewModel: ObservableObject {
   /// - 写库在 worker 串行队列上，主线程不碰 SQLite；
   /// - 成功后只就地补丁当前详情里的那份 snapshot，不回读、不整树刷新；
   /// - 保存任务链式排队，保证连续两次保存不会乱序落库。
+  /// 把分段时间挂到刚落库的转写 snapshot 上。
+  ///
+  /// 刻意 fail-open：写不进去只是少了跳转锚点，转写稿本身已经存好了。用转写
+  /// 失败去换一个锦上添花的功能不划算——但这条「吞掉错误」是有意为之，不是漏写。
+  private func persistTranscriptParagraphs(
+    _ paragraphs: [TranscriptParagraph],
+    snapshotID: ContentSnapshotID?
+  ) {
+    guard let snapshotID, !paragraphs.isEmpty,
+          let store = history?.transcriptParagraphStore else { return }
+    try? store.saveTranscriptParagraphs(paragraphs, snapshotID: snapshotID.rawValue)
+  }
+
+  /// 整理稿落库后，把原稿的时间锚点迁过去。
+  ///
+  /// 整理会重新分段，所以按序号对不上；`TranscriptParagraphMigration` 用前缀锚定
+  /// 把新段落定位回原文。命中率不足时它返回 nil，这里就什么都不做——整理稿退回
+  /// 没有锚点的普通转写稿，而不是带着一份跳错地方的时间。
+  private func migrateTranscriptParagraphs(
+    from detail: HistoryDetailProjection,
+    to newSnapshotID: ContentSnapshotID?,
+    tidiedBody: String
+  ) {
+    guard let newSnapshotID, let store = history?.transcriptParagraphStore else { return }
+    // 原稿：整理之前最新的那份转写 snapshot。
+    let transcriptKind = CapturedDocument.Origin.localTranscription.rawValue
+    guard let source = detail.snapshots.reversed().first(where: {
+      $0.sourceKind == transcriptKind && $0.id != newSnapshotID
+    }) else { return }
+    guard let original = try? store.loadTranscriptParagraphs(snapshotID: source.id.rawValue),
+          !original.isEmpty else { return }
+    guard let migrated = TranscriptParagraphMigration.migrated(original, toTidiedBody: tidiedBody)
+    else { return }
+    try? store.saveTranscriptParagraphs(migrated, snapshotID: newSnapshotID.rawValue)
+  }
+
+  /// 正文被改过之后分段就不再对齐了——模型整理会重写每一个字，手改也一样。
+  /// 宁可退回没有锚点的普通转写稿，也不要留一份点了就跳错地方的时间。
+  private func invalidateTranscriptParagraphs(snapshotID: ContentSnapshotID) {
+    guard let store = history?.transcriptParagraphStore else { return }
+    try? store.deleteTranscriptParagraphs(snapshotID: snapshotID.rawValue)
+  }
+
   func saveEditedSnapshotText(taskID: TaskID, snapshotID: ContentSnapshotID, bodyText: String) {
     guard let history else { return }
     let generation = configurationGeneration
@@ -3985,6 +4231,7 @@ final class HistoryViewModel: ObservableObject {
       switch result {
       case .success:
         self.snapshotEditFailure = nil
+        self.invalidateTranscriptParagraphs(snapshotID: snapshotID)
         self.applySnapshotBodyTextLocally(taskID: taskID, snapshotID: snapshotID, bodyText: bodyText)
         // 工作台的修订记录也在 worker 上顺带完成；界面不等它。
         await worker.recordPieceRevisionIfNeeded(
@@ -4948,6 +5195,9 @@ final class HistoryViewModel: ObservableObject {
             }
           case .final(let text):
             latest = text
+          case .finalParagraphs:
+            // 直播转写没有可跳转的媒体文件，时间锚点无处可去。
+            break
           case .transcribing:
             self.transcriptionState = .transcribing
           case .extractingAudio:

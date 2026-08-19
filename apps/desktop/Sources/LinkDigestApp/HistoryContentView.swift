@@ -256,6 +256,12 @@ struct HistoryContentView: View {
           } message: {
             Text("App 只发送转写文字本身，用于修正标点、分段和明显错别字，不发送视频、音频或链接。校对稿保存为最新原文，原始转写稿保留在历史中。")
           }
+          .alert("将正文发送给聊天模型整理版面？", isPresented: $model.isReformatConfirmationPresented) {
+            Button("取消", role: .cancel) { model.cancelReformatConfirmation() }
+            Button("同意并整理") { model.confirmArticleReformat() }
+          } message: {
+            Text("App 只发送正文文字，用于在段落之间插入小标题，不改动正文一个字。重排稿与原文并存，随时可以切回原文。")
+          }
           .fileExporter(
             isPresented: $model.isExportPanelPresented,
             document: model.exportFile.map(HistoryExportDocument.init),
@@ -1873,6 +1879,15 @@ private struct HistoryDetailView: View, Equatable {
   @State private var noteTitleDraft = ""
   /// 笔记编辑器排版后的实际高度，由编辑器回报，用来让它长到内容那么高。
   @State private var noteEditorHeight: CGFloat = 320
+  /// 当前条目的排版档案。随条目算一次——形态指纹要扫一遍全文，长文有九万字，
+  /// 放在 body 里每次重求值都算等于把它做成了热路径。
+  @State private var readingFormat: ReadingFormatDecisions = .init(
+    keepsImagePositions: false, allowsOutline: true)
+  /// 当前转写稿的分段时间，空数组表示这份正文没有可跳转的时间。
+  @State private var transcriptParagraphs: [TranscriptParagraph] = []
+  /// 分段属于哪一份 snapshot。切换条目时新分段还没读回来，旧分段会在这一帧
+  /// 配上新正文——记住来源，对不上就不画锚点。
+  @State private var transcriptParagraphsSnapshotID: ContentSnapshotID?
   @State private var noteAutosaveTask: Task<Void, Never>?
   /// 刚存过的提示，几秒后自行消失。
   @State private var noteSaveIndicator = false
@@ -2504,6 +2519,9 @@ private struct HistoryDetailView: View, Equatable {
       editingNote = nil
       isRunPanelExpanded = false
       showsPlainText = false
+      loadTranscriptParagraphs()
+      refreshReadingFormat()
+      model.loadReformat(taskID: detail.task.id)
       completionBanner = nil
       pendingRunPane = nil
       readingPane = defaultReadingPane
@@ -3243,9 +3261,65 @@ private struct HistoryDetailView: View, Equatable {
       .labelsHidden()
       .frame(maxWidth: 168)
       .accessibilityIdentifier("history-reading-pane-picker")
+      if readingPane == .source { reformatControl }
       Spacer(minLength: 0)
       ReadingProgressBadge(progress: readingProgressModel)
     }
+  }
+
+  /// 整理排版的入口。
+  ///
+  /// **手动按钮，不进自动管线**：重排是主观的，自动跑会攒下一堆用户不想要的
+  /// 重排稿，而一条任务只留最新一份——覆盖掉的那份就找不回来了。
+  ///
+  /// 只在「看原文」时出现：重排的是原文，总结和翻译各有自己的产物。
+  @ViewBuilder private var reformatControl: some View {
+    let taskID = detail.task.id
+    if model.reformatRecord != nil {
+      // 已有产物：给切换，不再重复提供生成入口。
+      Picker("正文版面", selection: $model.showsReformattedBody) {
+        Text("原文").tag(false)
+        Text("重排").tag(true)
+      }
+      .pickerStyle(.segmented)
+      .controlSize(.small)
+      .labelsHidden()
+      .frame(maxWidth: 108)
+      .accessibilityIdentifier("history-reformat-toggle")
+    } else if case .running = model.reformatState(for: taskID) {
+      HStack(spacing: 6) {
+        ProgressView().controlSize(.small)
+        Button("停止") { model.cancelArticleReformat() }
+          .buttonStyle(.plain)
+          .font(.caption)
+          .foregroundStyle(theme.accent)
+      }
+      .accessibilityIdentifier("history-reformat-running")
+    } else if let snapshot = latestSnapshot, reformatEligibility(snapshot).canReformat {
+      Button {
+        model.requestArticleReformat(
+          taskID: taskID,
+          bodyText: snapshot.bodyText,
+          model: providerSettings.effectiveTidyModelName
+        )
+      } label: {
+        Label("整理文稿", systemImage: "text.append")
+          .font(.caption)
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(theme.accent)
+      .disabled(model.reformatUnavailableReason(taskID: taskID) != nil)
+      .help(model.reformatUnavailableReason(taskID: taskID) ?? "给这篇长文分节、加上小标题；原文不会被改动，随时可以切回")
+      .accessibilityIdentifier("history-reformat-button")
+    }
+  }
+
+  private func reformatEligibility(_ snapshot: ContentSnapshot) -> ArticleReformatEligibility {
+    model.reformatEligibility(
+      bodyText: snapshot.bodyText,
+      platform: snapshot.platform,
+      isTranscript: snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+    )
   }
 
   /// 生成中的总结/翻译正文。就是这一页的内容，不再另挂一张预览卡。
@@ -3588,8 +3662,8 @@ private struct HistoryDetailView: View, Equatable {
           ),
           sourceURL: URL(string: sourceURL),
           localImageURLs: localImageURLs,
-          appendsUnusedLocalImages: !isWeChatCapture,
-          groupsConsecutiveImages: !isWeChatCapture,
+          appendsUnusedLocalImages: !readingFormat.keepsImagePositions,
+          groupsConsecutiveImages: !readingFormat.keepsImagePositions,
           readingFont: readingFont,
           primaryTextColor: theme.primaryText,
           secondaryTextColor: theme.secondaryText,
@@ -3686,13 +3760,47 @@ private struct HistoryDetailView: View, Equatable {
               .stroke(isOwnWriting ? Color.clear : theme.hairline, lineWidth: 1)
           )
           .accessibilityIdentifier("history-transcription-editor")
+        } else if model.showsReformattedBody, let reformatted = model.reformatRecord?.bodyText {
+          // 重排稿：原文一个字没动，这里只是换一份正文来渲染。用户随时切回。
+          MarkdownContentView(
+            source: reformatted,
+            sourceURL: URL(string: sourceURL),
+            localImageURLs: localImageURLs,
+            appendsUnusedLocalImages: !readingFormat.keepsImagePositions,
+            groupsConsecutiveImages: !readingFormat.keepsImagePositions,
+            readingFont: readingFont,
+            primaryTextColor: theme.primaryText,
+            secondaryTextColor: theme.secondaryText,
+            accentColor: theme.accent,
+            showsPlainText: $showsPlainText,
+            showsInlinePlainTextToggle: false,
+            navigationModules: navigationModules,
+            anchorScope: anchorScope(for: .source),
+            revealText: pendingSourceCitation,
+            onFollowWikiLink: { title in model.followWikiLink(toTitle: title) },
+            onRequestEdit: nil
+          )
+        } else if !showsPlainText, !transcriptParagraphs.isEmpty,
+                  snapshot.id == transcriptParagraphsSnapshotID {
+          // 有分段时间的转写稿走时间线视图；纯文本模式仍回普通阅读区，那是
+          // 「我只想看字」的入口，不该被锚点打断。
+          TranscriptTimelineView(
+            paragraphs: transcriptParagraphs,
+            readingFont: readingFont,
+            primaryTextColor: theme.primaryText,
+            secondaryTextColor: theme.secondaryText,
+            accentColor: theme.accent,
+            onSeek: { milliseconds in
+              model.requestTranscriptSeek(taskID: detail.task.id, milliseconds: milliseconds)
+            }
+          )
         } else {
           MarkdownContentView(
             source: MarkdownNoteFrontmatter.parse(snapshot.bodyText).body,
             sourceURL: URL(string: sourceURL),
             localImageURLs: localImageURLs,
-            appendsUnusedLocalImages: !isWeChatCapture,
-            groupsConsecutiveImages: !isWeChatCapture,
+            appendsUnusedLocalImages: !readingFormat.keepsImagePositions,
+            groupsConsecutiveImages: !readingFormat.keepsImagePositions,
             readingFont: readingFont,
             primaryTextColor: theme.primaryText,
             secondaryTextColor: theme.secondaryText,
@@ -3772,6 +3880,38 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   /// 保留原 frontmatter，只把正文替换为校对稿；无 frontmatter 时整体替换。
+  /// 读当前转写稿的分段时间。
+  ///
+  /// 读的是**这一条正在显示的**转写 snapshot：一条任务可能有原稿和整理稿两份，
+  /// 只有原稿带分段。读不到就清空，退回普通阅读区。
+  private func loadTranscriptParagraphs() {
+    guard let snapshot = latestTranscriptionSnapshot else {
+      transcriptParagraphs = []
+      transcriptParagraphsSnapshotID = nil
+      return
+    }
+    transcriptParagraphs = model.transcriptParagraphs(snapshotID: snapshot.id)
+    transcriptParagraphsSnapshotID = transcriptParagraphs.isEmpty ? nil : snapshot.id
+  }
+
+  /// 按当前正文重算排版档案。
+  ///
+  /// 取的是**正在显示的那份**正文：整理稿、翻译稿和原稿的形态可以完全不同
+  /// （模型整理会把一堵段落墙分出标题），照旧稿的档案排版就会错。
+  private func refreshReadingFormat() {
+    let snapshot = latestTranscriptionSnapshot ?? latestSnapshot
+    guard let snapshot else {
+      readingFormat = .init(keepsImagePositions: false, allowsOutline: true)
+      return
+    }
+    let body = MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
+    readingFormat = ReadingFormatRegistry.decisions(for: ReadingFormatContext(
+      shape: ContentShape.measure(markdown: body),
+      platform: snapshot.platform,
+      isTranscript: snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+    ))
+  }
+
   private func saveTranscriptionDraft(_ snapshot: ContentSnapshot, exiting: Bool) {
     let original = snapshot.bodyText
     let body = MarkdownNoteFrontmatter.parse(original).body

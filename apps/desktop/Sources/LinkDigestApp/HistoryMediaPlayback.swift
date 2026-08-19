@@ -1367,14 +1367,14 @@ struct CurrentCaptureMediaPreviewCard: View {
 
   @ViewBuilder private var remoteTranscriptTidyControl: some View {
     let blockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
-    Button("模型校对") {
+    Button("整理文稿") {
       model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
     }
     .controlSize(.small)
     .disabled(blockedReason != nil)
     .help(
       blockedReason
-        ?? "只把转写文字发送给聊天模型，修正标点、分段和明显错别字；不发送视频或音频，原始转写保留。"
+        ?? "把转写文字发送给聊天模型，一次做完校对和版面：修标点错别字、按语义重新分段、加上小标题。不发送视频或音频，原始转写保留在历史中。"
     )
     .accessibilityIdentifier("remote-transcript-tidy")
   }
@@ -2258,6 +2258,16 @@ struct HistoryVideoPlayerCard: View {
       isPlaybackEnded = false
       loadVideoGeometry(newURL)
     }
+    // 阅读区点了转写稿的时间锚点。只认自己这条任务的请求——详情页同时挂着
+    // 别的卡片时，不能全体一起跳。
+    .onChange(of: model.transcriptSeekRequest) { _, request in
+      guard let request, request.taskID == taskID, let player else { return }
+      isPlaybackEnded = false
+      let target = CMTime(seconds: request.seconds, preferredTimescale: 600)
+      // 精确跳转：容差留给系统会落到最近的关键帧，说好跳到 03:12 就不该到 03:05。
+      player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+      player.play()
+    }
     .onDisappear {
       if isInCinema { cinema.dismiss() }
       player?.pause()
@@ -2437,16 +2447,19 @@ struct HistoryVideoPlayerCard: View {
       .disabled(!model.canTranscribeLocalMediaOnline(taskID: taskID, model: onlineTranscriptionModel))
       .help("把本机提取的音频分片发送到你配置的在线转写服务，获得更准的文字和标点。需在设置中配置在线转写模型。")
       .accessibilityIdentifier("history-video-transcription-online")
-      // 转写后整理：只发送文字给聊天模型修标点/分段/错别字，不发送媒体。
+      // 转写后整理：校对和版面一次做完，只发送文字，不发送媒体。
+      //
+      // 原本这里是「模型校对」、原文面板另有一个「整理版面」——对用户来说
+      // 「把这份稿子弄干净」是一件事，不是两件，所以合并成一个动作。
       let tidyBlockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
-      Button("模型校对") {
+      Button("整理文稿") {
         model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
       }
       .controlSize(.small)
       .disabled(tidyBlockedReason != nil)
       .help(
         tidyBlockedReason
-          ?? "把转写文字发送给你配置的聊天模型，修正标点、分段和明显错别字，不改写内容。原始转写稿保留在历史中。"
+          ?? "把转写文字发送给你配置的聊天模型，一次做完校对和版面：修标点错别字、按语义重新分段、加上小标题。不改写内容，原始转写稿保留在历史中。"
       )
       .accessibilityIdentifier("history-transcript-tidy")
       // 灰按钮必须自己说明为什么不能点。
