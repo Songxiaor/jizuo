@@ -64,10 +64,20 @@ final class ProviderSettingsViewModel: ObservableObject {
   @Published var translationModelName = ""
   @Published var transcriptionModelName = ""
   @Published var tidyModelName = ""
-  @Published var autoTidyTranscription = false
-  @Published var autoTranscribeNewCaptures = false
-  @Published var autoSummarizeNewCaptures = false
-  @Published var autoMindMapNewCaptures = false
+  /// 四个管线开关拨下去就要落盘：它们是持久授权，不是草稿。
+  /// 以前只改内存、要另点「保存生成偏好」，退出后再打开就会回到上次真正写下的值。
+  @Published var autoTidyTranscription = false {
+    didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoTidyTranscription) }
+  }
+  @Published var autoTranscribeNewCaptures = false {
+    didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoTranscribeNewCaptures) }
+  }
+  @Published var autoSummarizeNewCaptures = false {
+    didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoSummarizeNewCaptures) }
+  }
+  @Published var autoMindMapNewCaptures = false {
+    didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoMindMapNewCaptures) }
+  }
   @Published var translationConcurrency = ModelPreferences.defaultTranslationConcurrency
   @Published private(set) var preferencesState: ModelPreferencesState = .loading
   @Published private(set) var savedPreferences = ModelPreferences.default
@@ -89,6 +99,10 @@ final class ProviderSettingsViewModel: ObservableObject {
   private let preferencesStore: any ModelPreferencesStore
   private var hasStartedConfigurationLoad = false
   private var draftGeneration: UInt64 = 0
+  /// 读盘或写回自己的快照时，不要把赋值再当成一次用户拨杆。
+  private var isApplyingLoadedPreferences = false
+  /// 连续拨杆串成一条保存链，后来的等待先到的写完，再按最新开关落盘。
+  private var preferencesSaveTail: Task<Void, Never>?
   private var activeTestRequest: ConnectionTestRequest?
   private var activeModelCatalogRequest: ModelCatalogRequest?
 
@@ -322,17 +336,7 @@ final class ProviderSettingsViewModel: ObservableObject {
     preferencesState = .loading
     do {
       let preferences = try await preferencesStore.load()
-      summaryPrompt = preferences.summaryPrompt
-      targetLanguage = preferences.targetLanguage
-      translationModelName = preferences.translationModel ?? ""
-      transcriptionModelName = preferences.transcriptionModel ?? ""
-      tidyModelName = preferences.tidyModel ?? ""
-      autoTidyTranscription = preferences.autoTidyTranscription == true
-      autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures == true
-      autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
-      autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
-      translationConcurrency = preferences.effectiveTranslationConcurrency
-      savedPreferences = preferences
+      applyLoadedPreferences(preferences)
       preferencesState = .idle
     } catch {
       preferencesState = .failed("无法读取生成偏好，当前使用默认值。")
@@ -544,58 +548,104 @@ final class ProviderSettingsViewModel: ObservableObject {
   }
 
   func savePreferences() async {
-    guard canSavePreferences else { return }
-    preferencesState = .saving
-    do {
-      let preferences = try ModelPreferences(
-        summaryPrompt: summaryPrompt,
-        targetLanguage: targetLanguage,
-        translationModel: usesSeparateTranslationModel ? translationModelName : nil,
-        transcriptionModel: transcriptionModelName,
-        tidyModel: tidyModelName,
-        autoTidyTranscription: autoTidyTranscription,
-        autoTranscribeNewCaptures: autoTranscribeNewCaptures,
-        autoSummarizeNewCaptures: autoSummarizeNewCaptures,
-        autoMindMapNewCaptures: autoMindMapNewCaptures,
-        translationConcurrency: translationConcurrency
-      )
-      try await preferencesStore.save(preferences)
-      summaryPrompt = preferences.summaryPrompt
-      targetLanguage = preferences.targetLanguage
-      translationModelName = preferences.translationModel ?? ""
-      transcriptionModelName = preferences.transcriptionModel ?? ""
-      tidyModelName = preferences.tidyModel ?? ""
-      autoTidyTranscription = preferences.autoTidyTranscription == true
-      autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures == true
-      autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
-      autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
-      translationConcurrency = preferences.effectiveTranslationConcurrency
-      savedPreferences = preferences
-      preferencesState = .saved
-    } catch let error as ModelPreferencesError {
-      switch error {
-      case .summaryPromptTooLong:
-        preferencesState = .failed("总结提示词不能超过 4,000 个字符。")
-      case .targetLanguageRequired:
-        preferencesState = .failed("请选择或填写翻译目标语言。")
-      case .targetLanguageTooLong:
-        preferencesState = .failed("翻译目标语言不能超过 100 个字符。")
-      case .translationModelTooLong:
-        preferencesState = .failed("翻译模型名不能超过 256 个字符。")
-      case .transcriptionModelTooLong:
-        preferencesState = .failed("在线转写模型名不能超过 256 个字符。")
-      case .tidyModelTooLong:
-        preferencesState = .failed("校对模型名不能超过 256 个字符。")
-      case .readFailed, .writeFailed:
-        preferencesState = .failed("无法保存生成偏好，请稍后重试。")
-      }
-    } catch {
-      preferencesState = .failed("无法保存生成偏好，请稍后重试。")
+    guard preferencesState != .loading else { return }
+    let previous = preferencesSaveTail
+    let task = Task { @MainActor in
+      await previous?.value
+      await self.performSavePreferencesOnce()
     }
+    preferencesSaveTail = task
+    await task.value
   }
 
   func resetSummaryPrompt() {
     summaryPrompt = ModelPreferences.defaultSummaryPrompt
+  }
+
+  private func persistPipelinePreferenceIfChanged(from oldValue: Bool, to newValue: Bool) {
+    guard !isApplyingLoadedPreferences, oldValue != newValue, preferencesState != .loading else {
+      return
+    }
+    Task { await savePreferences() }
+  }
+
+  private func performSavePreferencesOnce() async {
+    guard preferencesState != .loading else { return }
+    while true {
+      preferencesState = .saving
+      let snapshot = pipelineFlagSnapshot
+      let preferences: ModelPreferences
+      do {
+        preferences = try currentDraftPreferences()
+        try await preferencesStore.save(preferences)
+      } catch let error as ModelPreferencesError {
+        applyPreferencesSaveFailure(error)
+        return
+      } catch {
+        preferencesState = .failed("无法保存生成偏好，请稍后重试。")
+        return
+      }
+      if pipelineFlagSnapshot != snapshot {
+        continue
+      }
+      applyLoadedPreferences(preferences)
+      preferencesState = .saved
+      return
+    }
+  }
+
+  private var pipelineFlagSnapshot: (Bool, Bool, Bool, Bool) {
+    (autoTidyTranscription, autoTranscribeNewCaptures, autoSummarizeNewCaptures, autoMindMapNewCaptures)
+  }
+
+  private func currentDraftPreferences() throws -> ModelPreferences {
+    try ModelPreferences(
+      summaryPrompt: summaryPrompt,
+      targetLanguage: targetLanguage,
+      translationModel: usesSeparateTranslationModel ? translationModelName : nil,
+      transcriptionModel: transcriptionModelName,
+      tidyModel: tidyModelName,
+      autoTidyTranscription: autoTidyTranscription,
+      autoTranscribeNewCaptures: autoTranscribeNewCaptures,
+      autoSummarizeNewCaptures: autoSummarizeNewCaptures,
+      autoMindMapNewCaptures: autoMindMapNewCaptures,
+      translationConcurrency: translationConcurrency
+    )
+  }
+
+  private func applyLoadedPreferences(_ preferences: ModelPreferences) {
+    isApplyingLoadedPreferences = true
+    defer { isApplyingLoadedPreferences = false }
+    summaryPrompt = preferences.summaryPrompt
+    targetLanguage = preferences.targetLanguage
+    translationModelName = preferences.translationModel ?? ""
+    transcriptionModelName = preferences.transcriptionModel ?? ""
+    tidyModelName = preferences.tidyModel ?? ""
+    autoTidyTranscription = preferences.autoTidyTranscription == true
+    autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures == true
+    autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
+    autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
+    translationConcurrency = preferences.effectiveTranslationConcurrency
+    savedPreferences = preferences
+  }
+
+  private func applyPreferencesSaveFailure(_ error: ModelPreferencesError) {
+    switch error {
+    case .summaryPromptTooLong:
+      preferencesState = .failed("总结提示词不能超过 4,000 个字符。")
+    case .targetLanguageRequired:
+      preferencesState = .failed("请选择或填写翻译目标语言。")
+    case .targetLanguageTooLong:
+      preferencesState = .failed("翻译目标语言不能超过 100 个字符。")
+    case .translationModelTooLong:
+      preferencesState = .failed("翻译模型名不能超过 256 个字符。")
+    case .transcriptionModelTooLong:
+      preferencesState = .failed("在线转写模型名不能超过 256 个字符。")
+    case .tidyModelTooLong:
+      preferencesState = .failed("校对模型名不能超过 256 个字符。")
+    case .readFailed, .writeFailed:
+      preferencesState = .failed("无法保存生成偏好，请稍后重试。")
+    }
   }
 
   func beginAPIKeyReplacement() {

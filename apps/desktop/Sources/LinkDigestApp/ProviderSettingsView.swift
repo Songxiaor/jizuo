@@ -1,4 +1,5 @@
 import SwiftUI
+import Sparkle
 import LinkDigestCore
 
 enum SettingsNavigationRequest {
@@ -22,7 +23,7 @@ struct ProviderSettingsView: View {
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
   private enum SettingsTab: String, Hashable, CaseIterable, Identifiable {
-    case service, generation, appearance, mediaStorage, knowledgeVault, siteLogin, browserSupport, labs
+    case service, generation, appearance, mediaStorage, knowledgeVault, siteLogin, browserSupport, updates, labs
     var id: String { rawValue }
     var title: String {
       switch self {
@@ -33,6 +34,7 @@ struct ProviderSettingsView: View {
       case .knowledgeVault: "知识库同步"
       case .siteLogin: "站点登录"
       case .browserSupport: "浏览器支持"
+      case .updates: "版本与更新"
       case .labs: "实验室"
       }
     }
@@ -45,6 +47,7 @@ struct ProviderSettingsView: View {
       case .knowledgeVault: "folder.badge.gearshape"
       case .siteLogin: "person.crop.circle.badge.checkmark"
       case .browserSupport: "puzzlepiece.extension"
+      case .updates: "arrow.triangle.2.circlepath"
       case .labs: "flask"
       }
     }
@@ -62,7 +65,7 @@ struct ProviderSettingsView: View {
     }
   }
 
-  /// 侧栏分组：把 8 个分类按「做什么」归成三组，而不是让人从头到尾扫一条平列表。
+  /// 侧栏分组：把分类按「做什么」归成三组，而不是让人从头到尾扫一条平列表。
   ///
   /// 分组本身不控制可见性——那仍然只由 `SettingsTab.visibleCases` 一处判据决定；
   /// 这里只负责「同一批分类摆在哪个标题下面」。
@@ -83,7 +86,7 @@ struct ProviderSettingsView: View {
       switch self {
       case .serviceAndGeneration: [.service, .generation]
       case .readingAndAppearance: [.appearance, .labs]
-      case .connectionAndData: [.browserSupport, .siteLogin, .mediaStorage, .knowledgeVault]
+      case .connectionAndData: [.browserSupport, .siteLogin, .mediaStorage, .knowledgeVault, .updates]
       }
     }
 
@@ -103,6 +106,7 @@ struct ProviderSettingsView: View {
   @ObservedObject var browserSupport: BrowserSupportViewModel
   @ObservedObject var mediaStorage: MediaStorageSettingsViewModel
   @ObservedObject var knowledgeVault: KnowledgeVaultSettingsViewModel
+  let updater: SPUUpdater
   @State private var apiKeyInput = ""
   @State private var selectedTab: SettingsTab = .service
   @State private var isCustomOutputLanguage = false
@@ -275,6 +279,8 @@ struct ProviderSettingsView: View {
           SiteLoginSettingsView(mediaStorage: mediaStorage)
         case .browserSupport:
           BrowserSupportSettingsView(model: browserSupport, appModel: appModel)
+        case .updates:
+          AppUpdateSettingsView(updater: updater)
         }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1658,7 +1664,8 @@ struct ProviderSettingsView: View {
   /// 原来 UI 是四个平级、无序、互不相关的开关，顺序只在 footer 用一句话交代——
   /// 于是「只勾整理、不勾转写」这种基本不会生效的组合，界面完全不拦也不提示。
   ///
-  /// - Parameter requirementUnmet: 上游没开时的原因。这里**只置灰视觉、不禁用开关**：
+  /// - Parameter requirementUnmet: 上游没开时的原因。只在标题下用提示说明，
+  ///   **不禁用、也不把开关画淡**：淡了会看起来像坏掉或点不了，其实还能开。
   ///   重新抓取一条早先转写过的条目时，整理确实能独立生效，硬禁用会砍掉这个可用组合。
   @ViewBuilder
   private func pipelineStep(
@@ -1713,7 +1720,6 @@ struct ProviderSettingsView: View {
             .foregroundStyle(.tertiary)
         }
       }
-      .opacity(requirementUnmet == nil ? 1 : 0.55)
       .padding(.bottom, isLast ? 0 : 8)
     }
   }

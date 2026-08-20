@@ -326,4 +326,30 @@ final class ModelPreferencesFullRoundTripTests: XCTestCase {
     XCTAssertNil(loaded.autoSummarizeNewCaptures)
     XCTAssertEqual(loaded.effectiveTranslationConcurrency, ModelPreferences.defaultTranslationConcurrency)
   }
+
+  func testTurningOffPipelineFlagsSurvivesRestartAsExplicitFalse() async throws {
+    let suite = ephemeralDefaultsSuiteName("com.syc.linkdigest.preferences-pipeline-off.")
+    let store = UserDefaultsModelPreferencesStore(suiteName: suite)
+    let saved = try ModelPreferences(
+      autoTidyTranscription: false,
+      autoTranscribeNewCaptures: true,
+      autoSummarizeNewCaptures: false,
+      autoMindMapNewCaptures: false
+    )
+    try await store.save(saved)
+
+    let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+    let data = try XCTUnwrap(defaults.data(forKey: "linkdigest.model-preferences.v1"))
+    let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    XCTAssertEqual(json["autoTranscribeNewCaptures"] as? Bool, true)
+    XCTAssertEqual(json["autoTidyTranscription"] as? Bool, false)
+    XCTAssertEqual(json["autoSummarizeNewCaptures"] as? Bool, false)
+    XCTAssertEqual(json["autoMindMapNewCaptures"] as? Bool, false)
+
+    let loaded = try await UserDefaultsModelPreferencesStore(suiteName: suite).load()
+    XCTAssertEqual(loaded.autoTranscribeNewCaptures, true)
+    XCTAssertNil(loaded.autoTidyTranscription)
+    XCTAssertNil(loaded.autoSummarizeNewCaptures)
+    XCTAssertNil(loaded.autoMindMapNewCaptures)
+  }
 }

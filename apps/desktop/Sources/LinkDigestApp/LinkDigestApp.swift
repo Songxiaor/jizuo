@@ -1366,7 +1366,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         appModel: model,
         browserSupport: browserSupport,
         mediaStorage: mediaStorageSettings,
-        knowledgeVault: knowledgeVaultSettings
+        knowledgeVault: knowledgeVaultSettings,
+        updater: appUpdateController.updaterController.updater
       )
         .background(SettingsWindowResizer())
         .appThemeEnvironment(appearanceThemeRaw)

@@ -50,6 +50,7 @@ enum SettingsCategoryChip {
     case "siteLogin": return theme.success
     case "mediaStorage": return theme.warning
     case "knowledgeVault": return theme.accent
+    case "updates": return theme.info
     default: return theme.accent
     }
   }

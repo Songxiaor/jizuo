@@ -78,10 +78,13 @@ private struct ModelPreferencesDTO: Codable {
     translationModel = preferences.translationModel
     transcriptionModel = preferences.transcriptionModel
     tidyModel = preferences.tidyModel
-    autoTidyTranscription = preferences.autoTidyTranscription
-    autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures
-    autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures
-    autoMindMapNewCaptures = preferences.autoMindMapNewCaptures
+    // 关掉也要写成 false。以前 false 收成 nil、JSON 里省略该键，
+    // 读回来和「从没设过」长得一样；再叠加开关只改内存、不立刻落盘，
+    // 重启就会回到上一份真正写下的值（常见是四个全开）。
+    autoTidyTranscription = preferences.autoTidyTranscription ?? false
+    autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures ?? false
+    autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures ?? false
+    autoMindMapNewCaptures = preferences.autoMindMapNewCaptures ?? false
     translationConcurrency = preferences.translationConcurrency
   }
 }

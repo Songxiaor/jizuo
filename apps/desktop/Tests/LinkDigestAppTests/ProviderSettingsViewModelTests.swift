@@ -574,6 +574,55 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertEqual(model.runPreferences.summaryPrompt, ModelPreferences.defaultSummaryPrompt)
   }
 
+  func testAutoPipelineTogglePersistsWithoutClickingSaveAndSurvivesRestart() async throws {
+    let allOn = try ModelPreferences(
+      autoTidyTranscription: true,
+      autoTranscribeNewCaptures: true,
+      autoSummarizeNewCaptures: true,
+      autoMindMapNewCaptures: true
+    )
+    let store = ViewModelPreferencesStore(allOn)
+    let first = ProviderSettingsViewModel(
+      configurationService: ProviderConfigurationService(
+        profileStore: ViewModelProfileStore(),
+        secretStore: ViewModelSecretStore()
+      ),
+      provider: SettingsTestProvider(scripts: []),
+      preferencesStore: store
+    )
+    await first.load()
+    XCTAssertTrue(first.autoTranscribeNewCaptures)
+    XCTAssertTrue(first.autoSummarizeNewCaptures)
+    XCTAssertTrue(first.autoMindMapNewCaptures)
+    XCTAssertTrue(first.autoTidyTranscription)
+
+    first.autoTidyTranscription = false
+    first.autoSummarizeNewCaptures = false
+    first.autoMindMapNewCaptures = false
+    await first.savePreferences()
+
+    XCTAssertTrue(first.autoTranscribeNewCaptures)
+    XCTAssertFalse(first.autoTidyTranscription)
+    XCTAssertFalse(first.autoSummarizeNewCaptures)
+    XCTAssertFalse(first.autoMindMapNewCaptures)
+
+    let restarted = ProviderSettingsViewModel(
+      configurationService: ProviderConfigurationService(
+        profileStore: ViewModelProfileStore(),
+        secretStore: ViewModelSecretStore()
+      ),
+      provider: SettingsTestProvider(scripts: []),
+      preferencesStore: store
+    )
+    await restarted.load()
+    XCTAssertTrue(restarted.autoTranscribeNewCaptures)
+    XCTAssertFalse(restarted.autoTidyTranscription)
+    XCTAssertFalse(restarted.autoSummarizeNewCaptures)
+    XCTAssertFalse(restarted.autoMindMapNewCaptures)
+    XCTAssertEqual(restarted.runPreferences.autoTranscribeNewCaptures, true)
+    XCTAssertNil(restarted.runPreferences.autoSummarizeNewCaptures)
+  }
+
   func testInitialAPIKeyEntryUsesNeutralGuidanceUntilSaveIsAttempted() async {
     let model = ProviderSettingsViewModel(
       configurationService: ProviderConfigurationService(

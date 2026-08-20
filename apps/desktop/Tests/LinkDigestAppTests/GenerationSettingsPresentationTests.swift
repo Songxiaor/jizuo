@@ -55,19 +55,22 @@ final class GenerationSettingsPresentationTests: XCTestCase {
       "脑图优先吃总结产物，总结没开时必须说明")
   }
 
-  /// 依赖只做视觉降级，不禁用开关。
+  /// 依赖用标题下的提示说明，不禁用开关，也不把开关画淡。
   ///
   /// 重新抓取一条早先转写过的条目时，整理确实能独立生效（`tidySourceReady` 也认
-  /// 历史转写稿）。硬禁用会砍掉这个真实可用的组合。
-  func testDependencyDimsButDoesNotDisableDownstreamToggles() throws {
+  /// 历史转写稿）。硬禁用会砍掉这个真实可用的组合；整行变淡会让人以为点不了。
+  func testDependencyExplainsWithoutDimmingOrDisablingToggles() throws {
     let text = try source()
     guard let start = text.range(of: "private func pipelineStep(") else {
       return XCTFail("pipelineStep 不见了")
     }
-    // 2_200：开关行改为「拨杆靠右」的 HStack 后 pipelineStep 变长，1_600 截不到
-    // opacity 修饰符；窗口只是取样范围，不承载断言语义。
     let step = String(text[start.lowerBound...].prefix(2_200))
-    XCTAssertTrue(step.contains("opacity(requirementUnmet == nil"), "未满足依赖时应当降低视觉权重")
+    XCTAssertTrue(
+      step.contains("if let requirementUnmet"),
+      "上游没开时必须在步骤里给出原因")
+    XCTAssertFalse(
+      step.contains("opacity(requirementUnmet"),
+      "开关画淡会看起来像坏掉或点不了")
     XCTAssertFalse(
       step.contains(".disabled(requirementUnmet"),
       "硬禁用会砍掉「重抓已有转写稿的条目时只整理」这个可用组合")
