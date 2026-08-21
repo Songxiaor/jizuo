@@ -3,11 +3,11 @@
   <h1>汲作</h1>
   <p><strong>我把网页和视频收进自己电脑，做成总结、翻译和脑图。</strong></p>
   <p>
-    <a href="https://songxiaor.github.io/linkdigest/">官网</a>
+    <a href="https://songxiaor.github.io/jizuo/">官网</a>
     ·
-    <a href="https://github.com/Songxiaor/linkdigest/releases/latest">下载 macOS 版</a>
+    <a href="https://github.com/Songxiaor/jizuo/releases/latest">下载 macOS 版</a>
     ·
-    <a href="https://songxiaor.github.io/linkdigest/privacy.html">隐私政策</a>
+    <a href="https://songxiaor.github.io/jizuo/privacy.html">隐私政策</a>
   </p>
   <p>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
@@ -82,7 +82,7 @@
 
 ## 现在发到哪一步
 
-我还在自己用、自己改。下载在 [GitHub Releases](https://github.com/Songxiaor/linkdigest/releases/latest)。安装包文件名是 `Jizuo`，就是汲作。
+我还在自己用、自己改。下载在 [GitHub Releases](https://github.com/Songxiaor/jizuo/releases/latest)。安装包文件名是 `Jizuo`，就是汲作。
 
 - 需要 macOS 15 及以上。
 - 苹果本机视频转写需要 macOS 26 及以上。

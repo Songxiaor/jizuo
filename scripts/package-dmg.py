@@ -486,11 +486,11 @@ def generate_signed_appcast(
     shutil.copy2(update_archive, archive_copy)
     shutil.copy2(release_notes, archive_copy.with_suffix(".md"))
     generated = appcast_root / "appcast.xml"
-    release_base = f"https://github.com/Songxiaor/linkdigest/releases/download/v{version}/"
+    release_base = f"https://github.com/Songxiaor/jizuo/releases/download/v{version}/"
     run(
         str(generate_appcast),
         "--download-url-prefix", release_base,
-        "--link", f"https://github.com/Songxiaor/linkdigest/releases/tag/v{version}",
+        "--link", f"https://github.com/Songxiaor/jizuo/releases/tag/v{version}",
         "--embed-release-notes",
         "--maximum-deltas", "0",
         "--versions", app_config["bundleVersion"],

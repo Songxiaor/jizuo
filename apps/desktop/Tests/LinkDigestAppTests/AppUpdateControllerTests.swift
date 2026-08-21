@@ -8,14 +8,14 @@ final class AppUpdateControllerTests: XCTestCase {
 
   func testConfigurationAcceptsSignedHTTPSFeedWithManualInstallDefault() throws {
     let configuration = try XCTUnwrap(AppUpdateConfiguration(infoDictionary: [
-      "SUFeedURL": "https://github.com/Songxiaor/linkdigest/releases/latest/download/appcast.xml",
+      "SUFeedURL": "https://github.com/Songxiaor/jizuo/releases/latest/download/appcast.xml",
       "SUPublicEDKey": publicKey,
       "SUAutomaticallyUpdate": false,
     ]))
 
     XCTAssertEqual(
       configuration.feedURL.absoluteString,
-      "https://github.com/Songxiaor/linkdigest/releases/latest/download/appcast.xml"
+      "https://github.com/Songxiaor/jizuo/releases/latest/download/appcast.xml"
     )
     XCTAssertEqual(configuration.publicEDKey, publicKey)
     XCTAssertFalse(configuration.automaticallyUpdates)

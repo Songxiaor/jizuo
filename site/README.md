@@ -8,7 +8,7 @@
 |---|---|
 | 我改的源码 | 分支 `site/glass-landing` 的 `site/` 目录 |
 | 线上 | 分支 `gh-pages` 的仓库根目录 |
-| 地址 | https://songxiaor.github.io/linkdigest/ |
+| 地址 | https://songxiaor.github.io/jizuo/ |
 
 两份内容应当一致。现在没有自动发布，是我改完后手工推到 `gh-pages`。`.nojekyll` 要留着。
 

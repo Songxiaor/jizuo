@@ -251,7 +251,7 @@ def load_app_config(root: Path | None = None) -> dict[str, Any]:
         "bundleVersion": "22",
         "minimumMacOS": "15.0",
         "category": "public.app-category.productivity",
-        "sparkleFeedURL": "https://github.com/Songxiaor/linkdigest/releases/latest/download/appcast.xml",
+        "sparkleFeedURL": "https://github.com/Songxiaor/jizuo/releases/latest/download/appcast.xml",
         "sparklePublicEDKey": "s0iZUen0dQ8irIs2kGI4ulzWvrqOn18atSGPguAIWHY=",
     }
     for key, expected in exact_strings.items():
