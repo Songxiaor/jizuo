@@ -86,7 +86,7 @@
 - Chrome 扩展通过 Native Messaging 与 macOS App 交接内容。
 - 当前安装包使用 ad-hoc 签名，Developer ID 签名与公证尚未完成；首次打开需按 DMG 内说明在“系统设置 → 隐私与安全性”确认。
 - v0.2.9 起支持应用内“检查更新”和周期检查；更新包使用 Ed25519 验签，安装仍需用户确认。v0.2.8 及更早版本需要先手动升级一次。
-- 最新下载入口：[GitHub Releases](https://github.com/Songxiaor/linkdigest/releases/latest)。新机安装与扩展连接见 [`docs/新机测试指南.md`](docs/新机测试指南.md)。
+- 最新下载入口：[GitHub Releases](https://github.com/Songxiaor/jizuo/releases/latest)。新机安装与扩展连接见 [`docs/新机测试指南.md`](docs/新机测试指南.md)。
 
 ## 技术结构
 
