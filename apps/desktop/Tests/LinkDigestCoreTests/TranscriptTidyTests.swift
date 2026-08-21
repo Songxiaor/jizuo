@@ -59,11 +59,49 @@ final class TranscriptTidyTests: XCTestCase {
 
   // MARK: - Prompt contract
 
-  func testTidyPromptForbidsRewriting() {
+  func testTidyPromptRestoresSpeechWithoutInventingAnArticle() {
     let prompt = TranscriptTidyPrompt.system
-    for constraint in ["标点", "分段", "错别字", "禁止", "翻译", "改写"] {
+    for constraint in ["还原", "标点", "分段", "时间戳", "禁止", "翻译", "编造", "原样"] {
       XCTAssertTrue(prompt.contains(constraint), "prompt 缺少约束词: \(constraint)")
     }
+    XCTAssertTrue(prompt.contains("不是润色成一篇新文章"))
+  }
+
+  func testUserMessageWrapsTitleAndCaptionAndEmptyContextIsPassthrough() {
+    let chunk = "21:15 I've sate sorry"
+    XCTAssertEqual(TranscriptTidyPrompt.userMessage(chunk: chunk, context: .empty), chunk)
+
+    let context = TranscriptTidyContext(title: "今晚别刷 Netflix 了。", caption: "引用了一堂课")
+    let wrapped = TranscriptTidyPrompt.userMessage(chunk: chunk, context: context)
+    XCTAssertTrue(wrapped.contains("标题：今晚别刷 Netflix 了。"))
+    XCTAssertTrue(wrapped.contains("配文：引用了一堂课"))
+    XCTAssertTrue(wrapped.hasSuffix("转写片段：\n" + chunk))
+  }
+
+  func testStripEchoedContextRemovesHeaderOnly() {
+    let chunk = "21:15 I've sate sorry"
+    let context = TranscriptTidyContext(title: "评测视频", caption: "占位正文")
+    let echoed = TranscriptTidyPrompt.userMessage(chunk: chunk, context: context)
+    XCTAssertEqual(
+      TranscriptTidyPrompt.stripEchoedContext(echoed, chunk: chunk, context: context),
+      chunk
+    )
+    XCTAssertEqual(
+      TranscriptTidyPrompt.stripEchoedContext("I've said sorry.", chunk: chunk, context: context),
+      "I've said sorry."
+    )
+    XCTAssertEqual(
+      TranscriptTidyPrompt.stripEchoedContext(chunk, chunk: chunk, context: .empty),
+      chunk
+    )
+  }
+
+  func testContextDropsCaptionThatDuplicatesTranscriptAndClipsLongCaption() {
+    let transcript = "厚度只有9。7毫米"
+    XCTAssertNil(TranscriptTidyContext(title: "评测", caption: transcript, transcript: transcript).caption)
+    let long = String(repeating: "配", count: TranscriptTidyContext.captionCharacterLimit + 40)
+    let clipped = TranscriptTidyContext(caption: long)
+    XCTAssertEqual(clipped.caption?.count, TranscriptTidyContext.captionCharacterLimit)
   }
 
   // MARK: - ModelPreferences compatibility

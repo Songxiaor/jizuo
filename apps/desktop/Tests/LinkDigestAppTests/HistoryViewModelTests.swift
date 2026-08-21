@@ -1190,6 +1190,24 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertEqual(detail.snapshots.last?.bodyText, "完整中文转写")
     XCTAssertEqual(detail.media?.transcriptionStatus, .completed)
     XCTAssertEqual(try fixture.repository.exportProjection(taskID: fixture.taskID).snapshots.last?.bodyText, "完整中文转写")
+    XCTAssertEqual(transcriber.lastLocaleIdentifier, "zh_CN")
+  }
+
+  func testEnglishCaptionUsesEnglishSpeechLocaleForLocalTranscription() async throws {
+    let transcriber = ScriptedVideoTranscriber(
+      modelState: .ready,
+      scripts: [.events([.extractingAudio, .transcribing, .final("lecture transcript")])]
+    )
+    let fixture = try makeTranscriptionFixture(
+      transcriber: transcriber,
+      captionText: String(repeating: "Instead of watching Netflix tonight, watch this Stanford lecture. ", count: 2)
+    )
+    defer { fixture.close() }
+    await waitUntil { fixture.model.detailState == .loaded && fixture.model.canTranscribeVideo }
+
+    fixture.model.requestTranscription()
+    await waitUntil { fixture.model.transcriptionState == .completed }
+    XCTAssertEqual(transcriber.lastLocaleIdentifier, "en_US")
   }
 
   func testFailureCanRetryAndReadOnlyExplainsWhyTranscriptionIsBlocked() async throws {
@@ -1915,8 +1933,10 @@ final class HistoryViewModelTests: XCTestCase {
 
     let sentText = await tidier.receivedText
     let sentModel = await tidier.receivedModel
+    let sentContext = await tidier.receivedContext
     XCTAssertEqual(sentText, rawTranscript)
     XCTAssertEqual(sentModel, "tidy-model")
+    XCTAssertEqual(sentContext, TranscriptTidyContext(title: "评测视频", caption: "占位正文"))
     XCTAssertEqual(
       model.transcriptTidyTokenSummary(for: accepted.taskID),
       "1200 tokens（输入 1000 / 输出 200）"
@@ -2308,19 +2328,31 @@ private actor RecordingTranscriptTidier: TranscriptTidying {
   private(set) var receivedText: String?
   private(set) var receivedModel: String?
   private(set) var receivedStyle: TidyStyle?
+  private(set) var receivedContext: TranscriptTidyContext?
 
   init(result: String) { self.result = result }
 
-  func tidy(text: String, model: String?, style: TidyStyle) async throws -> TranscriptTidyOutcome {
+  func tidy(
+    text: String,
+    model: String?,
+    style: TidyStyle,
+    context: TranscriptTidyContext
+  ) async throws -> TranscriptTidyOutcome {
     receivedText = text
     receivedModel = model
     receivedStyle = style
+    receivedContext = context
     return TranscriptTidyOutcome(text: result, promptTokens: 1_000, completionTokens: 200, totalTokens: 1_200)
   }
 }
 
 private struct FailingTranscriptTidier: TranscriptTidying {
-  func tidy(text _: String, model _: String?, style _: TidyStyle) async throws -> TranscriptTidyOutcome {
+  func tidy(
+    text _: String,
+    model _: String?,
+    style _: TidyStyle,
+    context _: TranscriptTidyContext
+  ) async throws -> TranscriptTidyOutcome {
     throw TranscriptTidyError.networkInterrupted
   }
 }
@@ -2396,6 +2428,7 @@ private final class ScriptedVideoTranscriber: LocalVideoTranscribing, @unchecked
   private var downloads = 0
   private var modelChecks = 0
   private var transcriptions = 0
+  private var locales: [String] = []
   private let downloadSuspends: Bool
 
   init(modelState: LocalSpeechModelState, scripts: [TranscriptionScript], downloadSuspends: Bool = false) {
@@ -2413,19 +2446,25 @@ private final class ScriptedVideoTranscriber: LocalVideoTranscribing, @unchecked
   var downloadCallCount: Int { lock.withLock { downloads } }
   var modelStateCallCount: Int { lock.withLock { modelChecks } }
   var transcribeCallCount: Int { lock.withLock { transcriptions } }
-  func modelState(localeIdentifier _: String) async -> LocalSpeechModelState {
+  var lastLocaleIdentifier: String? { lock.withLock { locales.last } }
+  func modelState(localeIdentifier: String) async -> LocalSpeechModelState {
     lock.withLock {
       modelChecks += 1
+      locales.append(localeIdentifier)
       return readiness.count > 1 ? readiness.removeFirst() : readiness.first ?? .unavailable(.speechUnavailable)
     }
   }
-  func downloadModel(localeIdentifier _: String) async throws {
-    lock.withLock { downloads += 1 }
+  func downloadModel(localeIdentifier: String) async throws {
+    lock.withLock {
+      downloads += 1
+      locales.append(localeIdentifier)
+    }
     if downloadSuspends { try await Task.sleep(for: .seconds(60)) }
   }
-  func transcribe(fileURL _: URL, workspaceURL _: URL, localeIdentifier _: String) -> AsyncThrowingStream<LocalVideoTranscriptionEvent, Error> {
+  func transcribe(fileURL _: URL, workspaceURL _: URL, localeIdentifier: String) -> AsyncThrowingStream<LocalVideoTranscriptionEvent, Error> {
     let script = lock.withLock { () -> TranscriptionScript in
       transcriptions += 1
+      locales.append(localeIdentifier)
       return pendingScripts.isEmpty ? .failure(.recognitionFailed) : pendingScripts.removeFirst()
     }
     return AsyncThrowingStream { continuation in
@@ -2730,6 +2769,7 @@ private struct TranscriptionFixture {
 private func makeTranscriptionFixture(
   transcriber: any LocalVideoTranscribing,
   includesSecondTask: Bool = false,
+  captionText: String = "视频说明",
   dependencies: PersistenceDependencies = .live,
   statusObserver: TranscriptionStatusObserver? = nil,
   onDiscardedTranscriptionAttempt: @escaping @Sendable () -> Void = {},
@@ -2748,7 +2788,7 @@ private func makeTranscriptionFixture(
     title: "本机视频",
     platform: "douyin",
     method: "fixture",
-    text: "视频说明",
+    text: captionText,
     completeness: "complete",
     capturedAt: "2026-07-19T00:00:00Z",
     sourceLabel: "fixture"

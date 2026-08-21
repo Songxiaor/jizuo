@@ -92,4 +92,54 @@ public enum CapturedContentLanguage: String, Sendable, Equatable {
     }
     return detected == target
   }
+
+  /// 本机听写要的 locale。跟「想看什么语言」无关，只猜视频在说什么。
+  ///
+  /// 配文能明确判出语种就用它；混排或太短时看哪种字母更多。都看不出才回落到
+  /// `zh_CN`——产品默认中文，且不能空着交给 Apple（它必须指定一种语言）。
+  public static func speechLocaleIdentifier(in text: String) -> String {
+    switch detect(in: text) {
+    case .chinese: return "zh_CN"
+    case .latin: return "en_US"
+    case .japanese: return "ja_JP"
+    case .korean: return "ko_KR"
+    case nil: return majorityScriptLocale(in: text)
+    }
+  }
+
+  public static func speechLanguageCode(forLocaleIdentifier locale: String) -> String {
+    let normalized = locale.replacingOccurrences(of: "-", with: "_").lowercased()
+    if normalized.hasPrefix("zh") { return "zh" }
+    if normalized.hasPrefix("en") { return "en" }
+    if normalized.hasPrefix("ja") { return "ja" }
+    if normalized.hasPrefix("ko") { return "ko" }
+    let prefix = normalized.prefix { $0.isLetter }
+    return prefix.isEmpty ? "zh" : String(prefix)
+  }
+
+  private static func majorityScriptLocale(in text: String) -> String {
+    var han = 0
+    var latin = 0
+    var kana = 0
+    var hangul = 0
+    for scalar in text.unicodeScalars {
+      guard scalar.properties.isAlphabetic else { continue }
+      switch scalar.value {
+      case 0x4E00...0x9FFF, 0x3400...0x4DBF: han += 1
+      case 0x3040...0x30FF, 0x31F0...0x31FF: kana += 1
+      case 0xAC00...0xD7AF: hangul += 1
+      case 0x0041...0x005A, 0x0061...0x007A: latin += 1
+      default: break
+      }
+    }
+    let pairs: [(String, Int)] = [
+      ("ja_JP", kana),
+      ("ko_KR", hangul),
+      ("en_US", latin),
+      ("zh_CN", han),
+    ]
+    let best = pairs.max { $0.1 < $1.1 }
+    guard let best, best.1 >= 8 else { return "zh_CN" }
+    return best.0
+  }
 }

@@ -399,7 +399,7 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     "点击关注", "扫码关注", "分享到", "版权声明", "免责声明", "广告",
     "阅读原文", "在看", "写留言", "精选留言", "打开微信", "关注公众号",
     "On this page", "Related reading", "Related articles", "Subscribe",
-    "min read",
+    "min read", "Loading",
   ]
 
   public init() {}

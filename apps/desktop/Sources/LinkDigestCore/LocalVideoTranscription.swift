@@ -48,8 +48,9 @@ public struct TimedTranscriptionAccumulator: Sendable, Equatable {
       return left < right
     }
 
-    var paragraphs: [String] = []
+    var paragraphs: [(start: Double, text: String)] = []
     var current = ""
+    var currentStart: Double?
     var previousEnd: Double?
     for segment in ordered {
       let start = CMTimeGetSeconds(segment.range.start)
@@ -57,17 +58,35 @@ public struct TimedTranscriptionAccumulator: Sendable, Equatable {
       if let previousEnd, start.isFinite, previousEnd.isFinite,
          start - previousEnd >= paragraphPauseSeconds, !current.isEmpty,
          !isNumberSeam(current.last, segment.text.first) {
-        paragraphs.append(current)
+        paragraphs.append((currentStart ?? 0, current))
         current = ""
+        currentStart = nil
       }
+      if current.isEmpty { currentStart = start.isFinite ? start : 0 }
       current = joined(current, segment.text)
       previousEnd = end.isFinite ? end : previousEnd
     }
-    if !current.isEmpty { paragraphs.append(current) }
+    if !current.isEmpty { paragraphs.append((currentStart ?? 0, current)) }
 
     // Markdown treats a single newline as a soft wrap, so paragraphs must be
     // separated by a blank line to actually render as paragraphs.
-    return paragraphs.flatMap(splitLongParagraph).joined(separator: "\n\n")
+    // 段首时间码是转写时间线：点开原文就能对上视频进度。
+    return paragraphs
+      .flatMap { paragraph in splitLongParagraph(paragraph.text).map { (paragraph.start, $0) } }
+      .map { "\(clock($0.0)) \($0.1)" }
+      .joined(separator: "\n\n")
+  }
+
+  public static func clock(_ seconds: Double) -> String {
+    guard seconds.isFinite, seconds >= 0 else { return "00:00" }
+    let total = Int(seconds.rounded(.towardZero))
+    let hours = total / 3600
+    let minutes = (total % 3600) / 60
+    let remainder = total % 60
+    if hours > 0 {
+      return String(format: "%d:%02d:%02d", hours, minutes, remainder)
+    }
+    return String(format: "%02d:%02d", minutes, remainder)
   }
 
   /// CJK runs together; Latin needs the space that the segment boundary ate.
@@ -170,8 +189,8 @@ public enum LocalVideoTranscriptionError: Error, Sendable, Equatable {
     switch self {
     case .unsupportedOS: "本机系统版本不支持 Apple 本机转写；需要 macOS 26 或更高版本。"
     case .speechUnavailable: "这台 Mac 当前无法使用 Apple 本机语音识别。"
-    case .chineseLocaleUnavailable: "Apple 本机语音识别当前不支持简体中文（zh_CN）。"
-    case .modelDownloadFailed: "无法准备 Apple 中文离线模型。请检查网络和磁盘空间后重试。"
+    case .chineseLocaleUnavailable: "Apple 本机语音识别当前不支持所选语言。"
+    case .modelDownloadFailed: "无法准备 Apple 离线听写模型。请检查网络和磁盘空间后重试。"
     case .invalidLocalFile: "找不到可读取的本机 MP4 或 MOV 视频。"
     case .noAudioTrack: "这个视频没有可转写的音轨。"
     case .audioExtractionFailed: "无法从视频中提取音频；原视频没有被改动。"

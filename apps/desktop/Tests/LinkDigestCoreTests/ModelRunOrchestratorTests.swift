@@ -502,6 +502,35 @@ final class ModelRunOrchestratorTests: XCTestCase {
     XCTAssertEqual(repository.tagAssignments.first?.1.map(\.name), ["人工智能", "Swift"])
   }
 
+  func testCompletedSummaryUsesEmbeddedTagsWithoutExtraRequest() async throws {
+    let provider = ScriptedModelProvider(scripts: [
+      .init(steps: [.event(.delta("本地总结文本\nTAGS: 人工智能, Swift")), .event(.completed)])
+    ])
+    let tags = RecordingSummaryTagGenerator(results: [.value("不该被调用")])
+    let repository = OrchestratorHistoryRepository()
+    let service = ProviderConfigurationService(
+      profileStore: OrchestratorProfileStore(profile: try profile()),
+      secretStore: OrchestratorSecretStore(value: "fixture-secret")
+    )
+    let orchestrator = ModelRunOrchestrator(
+      configurationService: service,
+      provider: provider,
+      summaryTagGenerator: tags,
+      history: HistoryApplicationService(repository: repository)
+    )
+    let recorder = RunStateRecorder()
+    let request = PersistentRunRequest(runID: RunID(), taskID: TaskID(), snapshotID: ContentSnapshotID(), intent: .summarize)
+
+    await orchestrator.start(request: request, capture: capture(text: "原文不能进入标签请求")) { runID, state in
+      await recorder.append(runID: runID, state: state)
+    }
+    await waitUntil { await recorder.lastState == .completed(intent: .summarize, text: "本地总结文本") }
+    await waitUntil { repository.tagAssignments.count == 1 }
+
+    XCTAssertEqual(tags.callCount, 0)
+    XCTAssertEqual(repository.tagAssignments.first?.1.map(\.name), ["人工智能", "Swift"])
+  }
+
   func testAutomaticTaggingFailureOrEmptyParseNeverChangesCompletedRunAndTranslationsUseGeneratedText() async throws {
     let provider = ScriptedModelProvider(scripts: [
       .init(steps: [.event(.delta("第一份总结")), .event(.completed)]),

@@ -207,17 +207,20 @@ public final class StepAudioStreamingTranscriber: StreamingOnlineAudioTranscribi
       )
     }
     let trimmedLanguage = language?.trimmingCharacters(in: .whitespacesAndNewlines)
+    var transcription: [String: Any] = [
+      "model": model,
+      "enable_itn": true,
+      // 时间戳我们不用，关掉能少传一截，也少一份服务端开销。
+      "enable_timestamp": false,
+    ]
+    if let trimmedLanguage, !trimmedLanguage.isEmpty {
+      transcription["language"] = trimmedLanguage
+    }
     let body: [String: Any] = [
       "audio": [
         "data": encoded,
         "input": [
-          "transcription": [
-            "language": (trimmedLanguage?.isEmpty == false ? trimmedLanguage! : "zh"),
-            "model": model,
-            "enable_itn": true,
-            // 时间戳我们不用，关掉能少传一截，也少一份服务端开销。
-            "enable_timestamp": false,
-          ],
+          "transcription": transcription,
           "format": [
             "type": "pcm",
             "codec": "pcm_s16le",

@@ -35,6 +35,16 @@ final class HistoryDomainTests: XCTestCase {
     )
   }
 
+  func testSummaryTagTrailerSplitsLastLineAndHidesInProgressMarker() {
+    let split = SummaryTagTrailer.split("结论是本地优先。\nTAGS: 本地, 隐私")
+    XCTAssertEqual(split.body, "结论是本地优先。")
+    XCTAssertEqual(split.tags.map(\.name), ["本地", "隐私"])
+    XCTAssertEqual(SummaryTagTrailer.visibleBody("结论是本地优先。\nTA"), "结论是本地优先。")
+    XCTAssertEqual(SummaryTagTrailer.visibleBody("结论是本地优先。"), "结论是本地优先。")
+    XCTAssertEqual(SummaryTagTrailer.split("没有尾标").body, "没有尾标")
+    XCTAssertTrue(SummaryTagTrailer.split("没有尾标").tags.isEmpty)
+  }
+
   func testBrowserWireV1FingerprintGoldenHashAndManualNamespaceStaySeparate() {
     let envelope = fixture(requestID: "golden", idempotencyKey: "delivery-golden")
     let fingerprinter = SHA256CaptureFingerprinter()

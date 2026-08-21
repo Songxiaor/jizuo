@@ -1,24 +1,64 @@
 import Foundation
 
-/// Post-edits a finished transcript with the user's configured chat model:
-/// punctuation, paragraphing and obvious homophone typos only. The transcript
-/// leaves the machine, so every call sits behind an explicit user confirmation.
+/// Post-edits a finished transcript with the user's configured chat model.
+/// For speech transcripts this is **听写还原**: recover likely spoken words
+/// from ASR errors using title/caption context. It is not article rewriting.
+/// The transcript leaves the machine, so every call sits behind confirmation.
 public protocol TranscriptTidying: Sendable {
   /// `model` overrides the profile's chat model when non-empty; nil falls back
   /// to the configured summary/chat model.
-  func tidy(text: String, model: String?, style: TidyStyle) async throws -> TranscriptTidyOutcome
+  func tidy(
+    text: String,
+    model: String?,
+    style: TidyStyle,
+    context: TranscriptTidyContext
+  ) async throws -> TranscriptTidyOutcome
 }
 
 public extension TranscriptTidying {
+  func tidy(text: String, model: String?, style: TidyStyle) async throws -> TranscriptTidyOutcome {
+    try await tidy(text: text, model: model, style: style, context: .empty)
+  }
+
   /// 不指定风格时按转写稿处理——这个功能原本就是为转写稿建的。
   func tidy(text: String, model: String?) async throws -> TranscriptTidyOutcome {
-    try await tidy(text: text, model: model, style: .transcript)
+    try await tidy(text: text, model: model, style: .transcript, context: .empty)
+  }
+}
+
+/// 听写还原用的上下文。标题和配文只帮助猜口误，不写进校对稿。
+public struct TranscriptTidyContext: Sendable, Equatable {
+  public var title: String?
+  public var caption: String?
+
+  public static let empty = TranscriptTidyContext()
+  public static let titleCharacterLimit = 200
+  public static let captionCharacterLimit = 1_200
+
+  public init(title: String? = nil, caption: String? = nil, transcript: String? = nil) {
+    self.title = Self.clipped(title, limit: Self.titleCharacterLimit)
+    var captionValue = Self.clipped(caption, limit: Self.captionCharacterLimit)
+    if let existingCaption = captionValue, let transcript {
+      let trimmedTranscript = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+      if existingCaption == trimmedTranscript { captionValue = nil }
+    }
+    self.caption = captionValue
+  }
+
+  public var isEmpty: Bool { title == nil && caption == nil }
+
+  private static func clipped(_ value: String?, limit: Int) -> String? {
+    guard let value else { return nil }
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return nil }
+    if trimmed.count <= limit { return trimmed }
+    return String(trimmed.prefix(limit))
   }
 }
 
 /// 整理哪一种文本。两者的毛病不同，提示词也就不能共用。
 public enum TidyStyle: String, Sendable, CaseIterable {
-  /// 机器听写稿：错别字、缺标点、不分段。
+  /// 机器听写稿：听写还原 + 标点分段。
   case transcript
   /// 手写笔记：字没错，但结构没成形。
   case note
@@ -88,18 +128,59 @@ public enum TranscriptTidyError: Error, Sendable, Equatable {
   }
 }
 
-/// The system prompt is a fixed contract, not a user template: tidying must
-/// never become rewriting, so the constraints live in code and in tests.
+/// The system prompt is a fixed contract, not a user template: restoration
+/// must never become writing a new article, so the constraints live in code
+/// and in tests.
 public enum TranscriptTidyPrompt {
   public static let system = """
-    你是转写稿整理器。只做三件事：修正标点符号；按语义重新分段；\
-    纠正明显的同音错别字和被误写的品牌、型号、术语名。
+    你是听写还原器。把机器听写稿还原成说话人更可能说的那句话，不是润色成一篇新文章。
+    可以做：根据标题、配文和前后句，纠正同音、近音、专有名词和术语听写错误；补齐标点；按语义分段。
+    必须保留原有时间戳（例如 21:15 或 1:02:03）及其相对位置，不要改时间、不要删除时间戳。
     排版规则：一个段落写成连续的一行，段落内部绝不换行；段落之间用一个空行分隔；\
     中文标点后不加空格。
-    严格禁止：增加或删除信息、改写语义、概括压缩、翻译、评论，或添加任何前后缀说明。
+    严格禁止：编造听写稿里完全看不出的内容；翻译；概括压缩；评论；添加任何前后缀说明。
+    某一句已经不像人话、无法从上下文可靠还原时，原样保留该句，不要改写成通顺的新句。
+    输入可能附带标题和配文作为上下文；它们只用来帮助还原听写错误，不要写进输出。
     输入是同一份转写稿的一个连续片段，可能从句中开始或结束；保持片段边界原样，不要补全句子。
-    只输出整理后的正文纯文本。
+    只输出还原后的正文纯文本。
     """
+
+  /// 每个分片都带同一份标题/配文，避免长稿切段后模型看不见上下文。
+  public static func contextHeader(_ context: TranscriptTidyContext) -> String? {
+    guard !context.isEmpty else { return nil }
+    var lines: [String] = []
+    if let title = context.title { lines.append("标题：\(title)") }
+    if let caption = context.caption { lines.append("配文：\(caption)") }
+    lines.append("-----")
+    lines.append("转写片段：")
+    return lines.joined(separator: "\n")
+  }
+
+  public static func userMessage(chunk: String, context: TranscriptTidyContext) -> String {
+    guard let header = contextHeader(context) else { return chunk }
+    return header + "\n" + chunk
+  }
+
+  /// 模型偶尔会把标题/配文包装原样抄回。只剥我们发出去的那一层，避免写进校对稿。
+  public static func stripEchoedContext(
+    _ text: String,
+    chunk: String,
+    context: TranscriptTidyContext
+  ) -> String {
+    guard let header = contextHeader(context) else { return text }
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed == userMessage(chunk: chunk, context: context) { return chunk }
+    let headerPrefix = header + "\n"
+    if trimmed.hasPrefix(headerPrefix) {
+      return String(trimmed.dropFirst(headerPrefix.count))
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    if trimmed.hasPrefix(header) {
+      return String(trimmed.dropFirst(header.count))
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    return text
+  }
 
   /// 笔记的整理排版。
   ///

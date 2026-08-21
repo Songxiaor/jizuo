@@ -38,4 +38,20 @@ final class CapturedContentLanguageTests: XCTestCase {
       XCTAssertFalse(CapturedContentLanguage.isSameOutputLanguage(content: fixture, outputLanguage: "English"))
     }
   }
+
+  func testSpeechLocaleFollowsCaptionLanguageNotOutputLanguage() {
+    let english = String(repeating: "Instead of watching Netflix tonight, watch this Stanford lecture. ", count: 2)
+    XCTAssertEqual(CapturedContentLanguage.speechLocaleIdentifier(in: english), "en_US")
+    XCTAssertEqual(CapturedContentLanguage.speechLanguageCode(forLocaleIdentifier: "en_US"), "en")
+
+    let chinese = String(repeating: "这是一段中文配文。", count: 4)
+    XCTAssertEqual(CapturedContentLanguage.speechLocaleIdentifier(in: chinese), "zh_CN")
+    XCTAssertEqual(CapturedContentLanguage.speechLanguageCode(forLocaleIdentifier: "zh_CN"), "zh")
+  }
+
+  func testSpeechLocaleUsesMajorityScriptWhenDetectIsAmbiguous() {
+    let latinHeavy = String(repeating: "a", count: 20) + String(repeating: "中", count: 12)
+    XCTAssertNil(CapturedContentLanguage.detect(in: latinHeavy))
+    XCTAssertEqual(CapturedContentLanguage.speechLocaleIdentifier(in: latinHeavy), "en_US")
+  }
 }

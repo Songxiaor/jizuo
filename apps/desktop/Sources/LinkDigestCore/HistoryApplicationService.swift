@@ -22,6 +22,9 @@ public struct HistoryApplicationService: Sendable {
   public func finishRun(_ command: FinishRunCommand) throws { try repository.finishRun(command) }
   public func recoverInterruptedRuns(at milliseconds: Int64) throws -> Int { try repository.recoverInterruptedRuns(at: milliseconds) }
   public func containsCanonicalURL(_ canonicalURL: CanonicalURL) throws -> Bool { try repository.containsCanonicalURL(canonicalURL) }
+  public func taskID(matchingCanonicalURL canonicalURL: CanonicalURL) throws -> TaskID? {
+    try repository.taskID(matchingCanonicalURL: canonicalURL)
+  }
   public func historyPage(limit: Int = 50, after cursor: HistoryPageCursor? = nil) throws -> HistoryPage { try repository.historyPage(limit: limit, after: cursor) }
   public func historyPage(limit: Int = 50, after cursor: HistoryPageCursor? = nil, filter: HistoryListFilter) throws -> HistoryPage { try repository.historyPage(limit: limit, after: cursor, filter: filter) }
   public func navigationCounts() throws -> HistoryNavigationCounts { try repository.navigationCounts() }
@@ -35,6 +38,7 @@ public struct HistoryApplicationService: Sendable {
   public func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult {
     try repository.deleteTasks(taskIDs: taskIDs)
   }
+
   public func attachMedia(_ command: AttachMediaCommand) throws { try repository.attachMedia(command) }
   public func updateSnapshotBodyText(
     taskID: TaskID,

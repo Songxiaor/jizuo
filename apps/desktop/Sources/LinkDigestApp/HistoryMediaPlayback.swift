@@ -1374,7 +1374,7 @@ struct CurrentCaptureMediaPreviewCard: View {
     .disabled(blockedReason != nil)
     .help(
       blockedReason
-        ?? "只把转写文字发送给聊天模型，修正标点、分段和明显错别字；不发送视频或音频，原始转写保留。"
+        ?? "把转写文字连同标题、配文发给聊天模型，还原听写错误并补标点分段；看不懂的句子原样保留。不发送视频或音频，原始转写稿保留。"
     )
     .accessibilityIdentifier("remote-transcript-tidy")
   }
@@ -1394,11 +1394,11 @@ struct CurrentCaptureMediaPreviewCard: View {
         case .preparingMedia:
           HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备临时媒体…") }
         case .checkingModel:
-          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在检查中文离线模型…") }
+          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在检查离线听写模型…") }
         case .awaitingModelDownload:
-          Text("等待确认 Apple 中文离线模型下载")
+          Text("等待确认 Apple 离线听写模型下载")
         case .preparingModel:
-          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备中文离线模型…") }
+          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备离线听写模型…") }
         case .extractingAudio:
           HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在提取音频…") }
         case .transcribing:
@@ -2406,6 +2406,7 @@ struct HistoryVideoPlayerCard: View {
 
   @ViewBuilder private var transcriptionControl: some View {
     let state = model.transcriptionState(for: taskID)
+    let hasSavedTranscript = media?.transcriptionStatus == .completed
     switch state {
     case .preparingMedia, .checkingModel, .preparingModel, .extractingAudio, .transcribing:
       Button("取消", role: .cancel, action: model.cancelTranscription)
@@ -2422,7 +2423,7 @@ struct HistoryVideoPlayerCard: View {
         .disabled(!model.canTranscribeVideo)
         .accessibilityIdentifier("history-video-transcription-start")
     case .idle, .awaitingModelDownload:
-      Button("转写", action: model.requestTranscription)
+      Button(hasSavedTranscript ? "重新转写" : "转写", action: model.requestTranscription)
         .controlSize(.small)
         .disabled(!model.canTranscribeVideo || state == .awaitingModelDownload)
         .accessibilityIdentifier("history-video-transcription-start")
@@ -2437,7 +2438,7 @@ struct HistoryVideoPlayerCard: View {
       .disabled(!model.canTranscribeLocalMediaOnline(taskID: taskID, model: onlineTranscriptionModel))
       .help("把本机提取的音频分片发送到你配置的在线转写服务，获得更准的文字和标点。需在设置中配置在线转写模型。")
       .accessibilityIdentifier("history-video-transcription-online")
-      // 转写后整理：只发送文字给聊天模型修标点/分段/错别字，不发送媒体。
+      // 转写后校对：听写还原，附带标题和配文，不发送媒体。
       let tidyBlockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
       Button("模型校对") {
         model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
@@ -2446,7 +2447,7 @@ struct HistoryVideoPlayerCard: View {
       .disabled(tidyBlockedReason != nil)
       .help(
         tidyBlockedReason
-          ?? "把转写文字发送给你配置的聊天模型，修正标点、分段和明显错别字，不改写内容。原始转写稿保留在历史中。"
+          ?? "把转写文字连同标题、配文发给聊天模型，还原听写错误并补标点分段；看不懂的句子原样保留。不发送视频或音频，原始转写稿保留。"
       )
       .accessibilityIdentifier("history-transcript-tidy")
       // 灰按钮必须自己说明为什么不能点。
@@ -2486,9 +2487,9 @@ struct HistoryVideoPlayerCard: View {
         Text(Self.transcriptionStatusText(status)).font(.caption).foregroundStyle(.secondary)
       }
     case .preparingMedia: ProgressView().controlSize(.small); Text("正在准备临时媒体…").font(.caption)
-    case .checkingModel: ProgressView().controlSize(.small); Text("正在检查中文离线模型…").font(.caption)
+    case .checkingModel: ProgressView().controlSize(.small); Text("正在检查离线听写模型…").font(.caption)
     case .awaitingModelDownload: Text("等待确认模型下载").font(.caption).foregroundStyle(.secondary)
-    case .preparingModel: ProgressView().controlSize(.small); Text("正在准备中文离线模型…").font(.caption)
+    case .preparingModel: ProgressView().controlSize(.small); Text("正在准备离线听写模型…").font(.caption)
     case .extractingAudio: ProgressView().controlSize(.small); Text("正在从本机视频提取音频…").font(.caption)
     case .transcribing: ProgressView().controlSize(.small); Text("正在本机转写，音频不会上传…").font(.caption)
     case .completed: Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(appTheme.success)

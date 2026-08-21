@@ -219,6 +219,7 @@ public protocol HistoryRepository: Sendable {
   func finishRun(_ command: FinishRunCommand) throws
   func recoverInterruptedRuns(at milliseconds: Int64) throws -> Int
   func containsCanonicalURL(_ canonicalURL: CanonicalURL) throws -> Bool
+  func taskID(matchingCanonicalURL canonicalURL: CanonicalURL) throws -> TaskID?
   func historyPage(limit: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage
   func historyPage(limit: Int, after cursor: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage
   func navigationCounts() throws -> HistoryNavigationCounts
@@ -230,6 +231,7 @@ public protocol HistoryRepository: Sendable {
   func setFavorite(_ isFavorite: Bool, for taskID: TaskID) throws
   func deleteTask(taskID: TaskID) throws
   func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult
+
   func attachMedia(_ command: AttachMediaCommand) throws
   func mediaAsset(taskID: TaskID) throws -> MediaAsset?
   /// 该任务名下**全部**媒体文件的相对路径（mediaAsset 只返回最新一条）。
@@ -358,6 +360,7 @@ public extension HistoryRepository {
   /// Clipboard suggestions must fail closed when history cannot be queried.
   /// The production repository overrides this with an indexed exact lookup.
   func containsCanonicalURL(_: CanonicalURL) throws -> Bool { throw RepositoryFailure.unavailable }
+  func taskID(matchingCanonicalURL _: CanonicalURL) throws -> TaskID? { nil }
 
   func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult {
     _ = taskIDs

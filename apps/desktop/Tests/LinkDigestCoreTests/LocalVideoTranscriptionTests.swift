@@ -7,23 +7,23 @@ final class LocalVideoTranscriptionTests: XCTestCase {
     var value = TimedTranscriptionAccumulator()
     // The 1s silence between these ranges is a paragraph break, so the joiner
     // emits a blank line — a single newline would render as one Markdown block.
-    XCTAssertEqual(value.apply(range: range(2, 1), text: "后段草稿", isFinal: false), "后段草稿")
-    XCTAssertEqual(value.apply(range: range(0, 1), text: "前段定稿", isFinal: true), "前段定稿\n\n后段草稿")
-    XCTAssertEqual(value.apply(range: range(2, 1), text: "后段修正", isFinal: false), "前段定稿\n\n后段修正")
-    XCTAssertEqual(value.apply(range: range(2, 1), text: "", isFinal: false), "前段定稿")
-    XCTAssertEqual(value.finalText, "前段定稿")
+    XCTAssertEqual(value.apply(range: range(2, 1), text: "后段草稿", isFinal: false), "00:02 后段草稿")
+    XCTAssertEqual(value.apply(range: range(0, 1), text: "前段定稿", isFinal: true), "00:00 前段定稿\n\n00:02 后段草稿")
+    XCTAssertEqual(value.apply(range: range(2, 1), text: "后段修正", isFinal: false), "00:00 前段定稿\n\n00:02 后段修正")
+    XCTAssertEqual(value.apply(range: range(2, 1), text: "", isFinal: false), "00:00 前段定稿")
+    XCTAssertEqual(value.finalText, "00:00 前段定稿")
 
     _ = value.apply(range: range(2, 2), text: "会被覆盖的草稿", isFinal: false)
-    XCTAssertEqual(value.apply(range: range(2.5, 3), text: "后段定稿", isFinal: true), "前段定稿\n\n后段定稿")
-    XCTAssertEqual(value.finalText, "前段定稿\n\n后段定稿")
+    XCTAssertEqual(value.apply(range: range(2.5, 3), text: "后段定稿", isFinal: true), "00:00 前段定稿\n\n00:02 后段定稿")
+    XCTAssertEqual(value.finalText, "00:00 前段定稿\n\n00:02 后段定稿")
   }
 
   func testFinalReplacementRemovesOverlappingOlderFinalAndNeverPersistsVolatile() {
     var value = TimedTranscriptionAccumulator()
     _ = value.apply(range: range(0, 2), text: "旧定稿", isFinal: true)
     _ = value.apply(range: range(2, 1), text: "临时尾巴", isFinal: false)
-    XCTAssertEqual(value.apply(range: range(0, 2.5), text: "新定稿", isFinal: true), "新定稿")
-    XCTAssertEqual(value.finalText, "新定稿")
+    XCTAssertEqual(value.apply(range: range(0, 2.5), text: "新定稿", isFinal: true), "00:00 新定稿")
+    XCTAssertEqual(value.finalText, "00:00 新定稿")
     XCTAssertFalse(value.finalText.contains("临时尾巴"))
   }
 
@@ -33,11 +33,11 @@ final class LocalVideoTranscriptionTests: XCTestCase {
     // runs together — inserting a separator here would be wrong.
     _ = value.apply(range: range(0, 1), text: "我知道了", isFinal: true)
     _ = value.apply(range: range(1.2, 1), text: "十万粉丝的博主", isFinal: true)
-    XCTAssertEqual(value.finalText, "我知道了十万粉丝的博主")
+    XCTAssertEqual(value.finalText, "00:00 我知道了十万粉丝的博主")
 
     // 2s of silence: a new paragraph.
     _ = value.apply(range: range(4.2, 1), text: "自从我发了几条视频", isFinal: true)
-    XCTAssertEqual(value.finalText, "我知道了十万粉丝的博主\n\n自从我发了几条视频")
+    XCTAssertEqual(value.finalText, "00:00 我知道了十万粉丝的博主\n\n00:04 自从我发了几条视频")
   }
 
   func testCommaOnlySpeechStillBreaksAtSoftTerminators() {
@@ -58,7 +58,7 @@ final class LocalVideoTranscriptionTests: XCTestCase {
     var value = TimedTranscriptionAccumulator()
     _ = value.apply(range: range(0, 1), text: "hello there", isFinal: true)
     _ = value.apply(range: range(1.1, 1), text: "friend", isFinal: true)
-    XCTAssertEqual(value.finalText, "hello there friend")
+    XCTAssertEqual(value.finalText, "00:00 hello there friend")
   }
 
   func testAFastTalkerWithoutPausesStillBreaksAtSentenceEnds() {
@@ -86,7 +86,7 @@ final class LocalVideoTranscriptionTests: XCTestCase {
     // than one long paragraph, so it stays whole.
     let run = String(repeating: "没有标点的连续语流", count: 30)
     _ = value.apply(range: range(0, 5), text: run, isFinal: true)
-    XCTAssertEqual(value.finalText, run)
+    XCTAssertEqual(value.finalText, "00:00 \(run)")
     XCTAssertFalse(value.finalText.contains("\n"))
   }
 
@@ -95,13 +95,13 @@ final class LocalVideoTranscriptionTests: XCTestCase {
     // 说数字时的微停顿会把“9.7”切成两个识别结果；断段或补空格都会把数字腰斩。
     _ = value.apply(range: range(0, 1), text: "本季度评分9", isFinal: true)
     _ = value.apply(range: range(2, 1), text: ".7分", isFinal: true)
-    XCTAssertEqual(value.finalText, "本季度评分9.7分")
+    XCTAssertEqual(value.finalText, "00:00 本季度评分9.7分")
 
     // 中文标点模型常把 decimal 写成句号：同样不能在“9”“。7”之间断段。
     var fullwidth = TimedTranscriptionAccumulator()
     _ = fullwidth.apply(range: range(0, 1), text: "增长了9", isFinal: true)
     _ = fullwidth.apply(range: range(2, 1), text: "。7个百分点", isFinal: true)
-    XCTAssertEqual(fullwidth.finalText, "增长了9。7个百分点")
+    XCTAssertEqual(fullwidth.finalText, "00:00 增长了9。7个百分点")
   }
 
   func testLongParagraphNeverSplitsInsideADecimal() {
@@ -114,6 +114,12 @@ final class LocalVideoTranscriptionTests: XCTestCase {
       XCTAssertFalse(value.finalText.contains("\n"), "不得在 \(decimal) 内部切段")
       XCTAssertTrue(value.finalText.contains(decimal + "分"))
     }
+  }
+
+  func testParagraphClockUsesHoursWhenNeeded() {
+    XCTAssertEqual(TimedTranscriptionAccumulator.clock(0), "00:00")
+    XCTAssertEqual(TimedTranscriptionAccumulator.clock(65), "01:05")
+    XCTAssertEqual(TimedTranscriptionAccumulator.clock(3661), "1:01:01")
   }
 
   private func range(_ start: Double, _ duration: Double) -> CMTimeRange {

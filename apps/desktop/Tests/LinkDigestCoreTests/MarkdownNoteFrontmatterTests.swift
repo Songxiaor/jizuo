@@ -24,6 +24,26 @@ final class MarkdownNoteFrontmatterTests: XCTestCase {
     XCTAssertFalse(note.body.hasPrefix("---"))
   }
 
+  func testStripsCapturedEnvelopeAndLoading() {
+    let source = """
+    捕获的标题: Introduction to AI Fluency · Claude Academy
+
+    捕获的内容: <<<
+
+    Introduction to AI Fluency
+
+    加载中
+
+    欢迎！本视频向你介绍本课程。
+    """
+    let cleaned = MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: source)
+    XCTAssertFalse(cleaned.contains("捕获的标题"))
+    XCTAssertFalse(cleaned.contains("捕获的内容"))
+    XCTAssertFalse(cleaned.contains("<<<"))
+    XCTAssertFalse(cleaned.split(separator: "\n").contains("加载中"))
+    XCTAssertTrue(cleaned.contains("欢迎！本视频向你介绍本课程。"))
+  }
+
   /// 旧版翻译回显的元数据块卡在译文中段（前面是翻译后的标题），
   /// 显示层按白名单键清除，标题和正文保持连续。
   func testStripsEchoedMetadataBlockAfterTranslatedTitle() {

@@ -169,7 +169,7 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     XCTAssertEqual(body["stream"] as? Bool, true)
     // 总结与翻译要的是转述不是推理。不发这个参数时，推理模型会拿七成的输出
     // token 去想，用户只能干等——这条钉住它确实发出去了。
-    XCTAssertEqual(body["reasoning_effort"] as? String, "low")
+    XCTAssertEqual(body["reasoning_effort"] as? String, "none")
     let messages = try XCTUnwrap(body["messages"] as? [[String: String]])
     XCTAssertEqual(messages, [["role": "user", "content": "Reply with OK."]])
     XCTAssertFalse(request.description.contains(key))
@@ -261,9 +261,15 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     XCTAssertFalse(summarizeMessages.description.contains("https://example.test/article"))
 
     let translateMessages = try messages(from: server.requests[1].body)
-    XCTAssertTrue(translateMessages[0]["content"]?.contains("简体中文") == true)
-    XCTAssertTrue(translateMessages[1]["content"]?.contains("Fixture title") == true)
+    let translateSystem = try XCTUnwrap(translateMessages[0]["content"])
+    XCTAssertTrue(translateSystem.contains("简体中文"))
+    XCTAssertTrue(translateSystem.contains("one-way into 简体中文, never a language swap"))
+    XCTAssertTrue(translateSystem.contains("If a sentence is already in 简体中文, copy it unchanged."))
+    XCTAssertTrue(translateSystem.contains("Never translate 简体中文 into English or any other language."))
+    XCTAssertTrue(translateSystem.contains("Do not output labels such as Captured title"))
     XCTAssertTrue(translateMessages[1]["content"]?.contains("Fixture body") == true)
+    XCTAssertFalse(translateMessages[1]["content"]?.contains("Captured content") == true)
+    XCTAssertTrue(translateSystem.contains("Fixture title"))
     XCTAssertFalse(server.requests.description.contains(key))
   }
 
@@ -293,10 +299,11 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     let request = try XCTUnwrap(server.requests.first)
     let translationMessages = try messages(from: request.body)
     let systemPrompt = try XCTUnwrap(translationMessages.first?["content"])
+    XCTAssertTrue(systemPrompt.contains("one-way into 简体中文, never a language swap"))
     XCTAssertTrue(systemPrompt.contains("Preserve Markdown syntax and indentation exactly"))
     XCTAssertTrue(systemPrompt.contains("Copy unchanged every section heading beginning with `## 评论（`"))
     XCTAssertTrue(systemPrompt.contains("Copy unchanged every comment metadata line beginning with `- **`"))
-    XCTAssertTrue(systemPrompt.contains("Translate only the prose body of each comment"))
+    XCTAssertTrue(systemPrompt.contains("Translate only the prose body of each comment into 简体中文"))
     XCTAssertTrue(systemPrompt.contains("Never translate usernames or change comment nesting"))
     let userPrompt = try XCTUnwrap(translationMessages.last?["content"])
     XCTAssertTrue(userPrompt.contains("## 评论（当前页面已加载 2 / 页面显示 2）"))
@@ -812,19 +819,72 @@ final class ReasoningEffortRejectionMemoryTests: XCTestCase {
     let provider = makeProvider()
     let profile = try profile(baseURL)
 
-    // 第一轮：带参数 → 被拒 → 去掉重发 → 成功。共 2 个请求。
+    // 第一轮：none 被拒 → 降到 low 成功。共 2 个请求。
     _ = await collect(provider: provider, profile: profile, apiKey: key)
-    XCTAssertEqual(server.requests.count, 2, "首轮应为「带参数被拒」+「去掉重发」")
-    XCTAssertTrue(bodyHasReasoningEffort(server.requests[0]), "第 1 个请求应带参数")
-    XCTAssertFalse(bodyHasReasoningEffort(server.requests[1]), "降级后不应再带")
+    XCTAssertEqual(server.requests.count, 2, "首轮应为 none 被拒 + low 重发")
+    XCTAssertEqual(reasoningEffort(in: server.requests[0]), "none")
+    XCTAssertEqual(reasoningEffort(in: server.requests[1]), "low")
 
-    // 第二轮（相当于下一个分片）：必须直接不带，且只发一次。
+    // 第二轮（下一个分片）：记住 none 被拒，直接从 low 起，只发一次。
     _ = await collect(provider: provider, profile: profile, apiKey: key)
     XCTAssertEqual(server.requests.count, 3, "记住拒绝后，第二轮只应发 1 个请求")
-    XCTAssertFalse(
-      bodyHasReasoningEffort(server.requests[2]),
-      "已知拒绝的目的地不该再试一次——那正是每片浪费一个往返的来源"
-    )
+    XCTAssertEqual(reasoningEffort(in: server.requests[2]), "low")
+  }
+
+  func testLowThenOmittedIsRememberedAcrossRequests() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [
+      .init(statusCode: 400, contentType: "application/json"),
+      .init(statusCode: 400, contentType: "application/json"),
+      .init(chunks: [
+        .init("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"),
+        .init("data: [DONE]\n\n"),
+      ]),
+      .init(chunks: [
+        .init("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"),
+        .init("data: [DONE]\n\n"),
+      ]),
+    ])
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let provider = makeProvider()
+    let profile = try profile(baseURL)
+
+    _ = await collect(provider: provider, profile: profile, apiKey: key)
+    XCTAssertEqual(server.requests.count, 3)
+    XCTAssertEqual(reasoningEffort(in: server.requests[0]), "none")
+    XCTAssertEqual(reasoningEffort(in: server.requests[1]), "low")
+    XCTAssertNil(reasoningEffort(in: server.requests[2]))
+
+    _ = await collect(provider: provider, profile: profile, apiKey: key)
+    XCTAssertEqual(server.requests.count, 4)
+    XCTAssertNil(reasoningEffort(in: server.requests[3]))
+  }
+
+  func testThinkingStallRetriesWithoutThinking() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [
+      .init(chunks: [
+        .init("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"想\"}}]}\n\n"),
+        .init("data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"还在想\"}}]}\n\n", delay: 0.4),
+      ]),
+      .init(chunks: [
+        .init("data: {\"choices\":[{\"delta\":{\"content\":\"正文\"}}]}\n\n"),
+        .init("data: [DONE]\n\n"),
+      ]),
+    ])
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let provider = makeProvider()
+    provider.thinkingStallRetryThreshold = 0.15
+    provider.testingPreferredReasoningEffort = .low
+    let profile = try profile(baseURL)
+
+    let failure = await collect(provider: provider, profile: profile, apiKey: key)
+    XCTAssertNil(failure)
+    XCTAssertEqual(server.requests.count, 2)
+    XCTAssertEqual(reasoningEffort(in: server.requests[0]), "low")
+    XCTAssertEqual(reasoningEffort(in: server.requests[1]), "none")
   }
 
   /// 记忆按目的地隔离：换了模型要重新试，否则一次偶发拒绝会永久关掉这个提速。
@@ -882,9 +942,13 @@ final class ReasoningEffortRejectionMemoryTests: XCTestCase {
   }
 
   private func bodyHasReasoningEffort(_ request: FakeOpenAICompatibleServer.RecordedRequest) -> Bool {
+    reasoningEffort(in: request) != nil
+  }
+
+  private func reasoningEffort(in request: FakeOpenAICompatibleServer.RecordedRequest) -> String? {
     guard let data = request.body.data(using: .utf8),
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-    else { return false }
-    return json["reasoning_effort"] != nil
+    else { return nil }
+    return json["reasoning_effort"] as? String
   }
 }

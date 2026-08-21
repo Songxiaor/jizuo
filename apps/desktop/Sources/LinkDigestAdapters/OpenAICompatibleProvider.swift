@@ -96,6 +96,16 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   /// 会让后面所有目的地都永久失去这个提速。
   private let reasoningEffortLock = NSLock()
   private var reasoningEffortRejectedDestinations: Set<String> = []
+  /// 这个目的地已经拒绝过 `none`。思考卡住时不能再拿 `none` 重试，否则死循环。
+  private var reasoningNoneRejectedDestinations: Set<String> = []
+  /// 这个目的地用 `low` 仍会先想很久。下次直接从 `none` 起。
+  private var reasoningStallDestinations: Set<String> = []
+
+  /// 只出思考、不出正文超过这个时间，就改用不思考再打一次。
+  /// 测试可改小；产品路径 8 秒——正常首字中位约 5 秒，超过即明确在想。
+  var thinkingStallRetryThreshold: TimeInterval = 8
+  /// 测试用来指定第一档推理力度；产品路径为 nil。
+  var testingPreferredReasoningEffort: StreamReasoningEffort?
 
   public init(
     session: URLSession = .shared,
@@ -425,16 +435,15 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     intent: RunIntent,
     continuation: AsyncThrowingStream<ModelStreamEvent, Error>.Continuation
   ) async throws {
-    // 先带上 `reasoning_effort`。不认识这个键的服务端会用 400 拒掉，那时去掉它
-    // 重来一次——宁可多一次握手，也不能因为一个提速参数让整个 provider 用不了。
-    // 这个目的地此前拒绝过的话，直接不带——不必每片重新试一次。
-    var includesReasoningEffort = acceptsReasoningEffort(profile)
+    // 总结/翻译要转述，不要推理。优先发 `none`；不认识就降到 `low`，再不行去掉。
+    // 目的地此前拒绝过的话，按记住的档位起，不必每片重新试。
+    var effort = preferredReasoningEffort(profile)
     var request = try makeRequest(
       profile: profile, apiKey: apiKey, intent: intent,
-      includesReasoningEffort: includesReasoningEffort
+      reasoningEffort: effort
     )
     var retryCount = 0
-    var didDropReasoningEffort = false
+    var didRetryThinkingStall = false
 
     // 首字来得太慢时留一行分段耗时。见 `ProviderTimingLog`。
     let intentLabel: String = switch intent {
@@ -457,42 +466,65 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         let providerError = try await providerError(from: bytes, response: response)
         _ = try validate(response: response, providerError: providerError, hadOutput: false)
 
-        var firstLineAt: Date?
-        var lineCount = 0
-        var reasoningCount = 0
-        for try await line in bytes.lines {
-          try Task.checkCancellation()
-          lineCount += 1
-          if firstLineAt == nil { firstLineAt = Date() }
+        let watch = FirstDeltaWatch()
+        let effortLabel = effort.logLabel
+        let attemptRetryCount = retryCount
+        let stallThreshold = thinkingStallRetryThreshold
+        let stallAllowed = effort != .none && canRetryThinkingStall(profile)
+        // 读流必须留在当前任务里。把 `bytes.lines` 丢进 TaskGroup 再取消，
+        // URLSession 内部缓冲会踩到越界（测试里是 ContiguousArrayBuffer）。
+        // 卡住时只取消这一次 URLSessionTask，读循环按网络中断退出，再改 `none` 重打。
+        let sessionTask = bytes.task
+        let stallWatchdog = Task {
+          guard stallAllowed else { return }
           do {
+            while !watch.hasDelta {
+              try await Task.sleep(for: .milliseconds(200))
+              try Task.checkCancellation()
+              if Date().timeIntervalSince(t0) >= stallThreshold, watch.sawReasoningOnly {
+                sessionTask.cancel()
+                return
+              }
+            }
+          } catch {
+            return
+          }
+        }
+        defer { stallWatchdog.cancel() }
+
+        do {
+          var firstLineAt: Date?
+          var lineCount = 0
+          var reasoningCount = 0
+          for try await line in bytes.lines {
+            try Task.checkCancellation()
+            lineCount += 1
+            if firstLineAt == nil { firstLineAt = Date() }
             guard let event = try ChatCompletionsStreamDecoder().decode(line: line) else {
               continue
             }
             switch event {
             case .delta:
-              if !receivedDelta {
+              if !watch.hasDelta {
                 let elapsed = Date().timeIntervalSince(t0)
                 if elapsed >= ProviderTimingLog.slowFirstDeltaThreshold {
-                  // 分段是为了区分四种长得一样的「慢」：建连慢、服务端接单后
-                  // 不开口、服务端一直在流看不见的思考、App 自己卡住。
                   let connectMs = Int(headersAt.timeIntervalSince(t0) * 1000)
                   let openMs = firstLineAt.map { Int($0.timeIntervalSince(headersAt) * 1000) } ?? -1
                   ProviderTimingLog.write(
                     "SLOW_FIRST_DELTA intent=\(intentLabel) model=\(profile.model) "
                       + "host=\(profile.baseURL.host ?? "?") "
-                      + "reasoningEffort=\(includesReasoningEffort ? Self.lowReasoningEffort : "none") "
-                      + "inflightStreams=\(inflight) retry=\(retryCount) "
+                      + "reasoningEffort=\(effortLabel) "
+                      + "inflightStreams=\(inflight) retry=\(attemptRetryCount) "
                       + "totalMs=\(Int(elapsed * 1000)) connectMs=\(connectMs) openMs=\(openMs) "
                       + "sseLines=\(lineCount) reasoningEvents=\(reasoningCount)"
                   )
                 }
               }
-              receivedDelta = true
+              watch.markDelta()
               continuation.yield(event)
             case .reasoning:
-              // 思考不算 `receivedDelta`：它没有产出任何用户内容，此时失败仍然
-              // 是「一个字都没拿到」，重试与降级都还安全。
               reasoningCount += 1
+              watch.markReasoning()
               continuation.yield(event)
             case .usage:
               continuation.yield(event)
@@ -501,34 +533,52 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
               continuation.finish()
               return
             }
-          } catch let failure as ModelProviderFailure {
-            throw ModelProviderFailure(
-              code: failure.code,
-              retryable: false,
-              hadOutput: receivedDelta
-            )
           }
+          receivedDelta = watch.hasDelta
+          throw ModelProviderFailure(
+            code: .networkInterrupted,
+            retryable: true,
+            hadOutput: receivedDelta
+          )
+        } catch is ThinkingStallRetry {
+          throw ThinkingStallRetry()
+        } catch is CancellationError {
+          receivedDelta = watch.hasDelta
+          if !Task.isCancelled, stallAllowed, watch.sawReasoningOnly, !watch.hasDelta {
+            throw ThinkingStallRetry()
+          }
+          throw CancellationError()
+        } catch let error as URLError where error.code == .cancelled {
+          receivedDelta = watch.hasDelta
+          if !Task.isCancelled, stallAllowed, watch.sawReasoningOnly, !watch.hasDelta {
+            throw ThinkingStallRetry()
+          }
+          throw error
         }
-
-        throw ModelProviderFailure(
-          code: .networkInterrupted,
-          retryable: true,
-          hadOutput: receivedDelta
-        )
       } catch is CancellationError {
         throw CancellationError()
+      } catch is ThinkingStallRetry {
+        guard !didRetryThinkingStall, !receivedDelta, canRetryThinkingStall(profile) else {
+          throw ModelProviderFailure(code: .networkInterrupted, retryable: true, hadOutput: false)
+        }
+        didRetryThinkingStall = true
+        rememberThinkingStall(profile)
+        effort = .none
+        request = try makeRequest(
+          profile: profile, apiKey: apiKey, intent: intent,
+          reasoningEffort: effort
+        )
+        continue
       } catch let failure as ModelProviderFailure {
         // 服务端在还没吐出任何内容时就拒了请求，且我们确实多发了那个键——先怀疑
-        // 是它不被接受，去掉重来。只降级一次，避免和下面的重试互相叠加。
-        if includesReasoningEffort, !didDropReasoningEffort, !receivedDelta,
+        // 是它不被接受，降一档重来。只沿梯子走，避免和下面的重试互相叠加。
+        if let next = effort.steppedDown(), !failure.hadOutput,
            Self.mayRejectUnknownParameter(failure) {
-          didDropReasoningEffort = true
-          includesReasoningEffort = false
-          // 记住这个目的地，后续请求（尤其是长文翻译的其余分片）直接不带。
-          rememberReasoningEffortRejected(profile)
+          rememberRejected(effort, for: profile)
+          effort = next
           request = try makeRequest(
             profile: profile, apiKey: apiKey, intent: intent,
-            includesReasoningEffort: false
+            reasoningEffort: effort
           )
           continue
         }
@@ -569,7 +619,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     profile: ProviderProfile,
     apiKey: String,
     intent: RunIntent,
-    includesReasoningEffort: Bool = false
+    reasoningEffort: StreamReasoningEffort = .none
   ) throws -> URLRequest {
     // 仪表：只记长度和模型名，绝不记 Key 本身。
     //
@@ -603,19 +653,30 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         Message(role: "user", content: capturedContent(title: title, text: text))
       ]
     case let .translate(title, text, targetLanguage):
+      let titleInstruction = title.map {
+        "The source title is: \($0). Put the translated title first as a Markdown heading, then the translated body."
+      } ?? ""
       messages = [
         Message(
           role: "system",
           content: """
-          Translate only the captured webpage content into \(targetLanguage). Preserve meaning, structure, names, numbers, and links. Do not add commentary or facts that are not present in the captured content.
+          Translate the captured webpage content into \(targetLanguage). Do not add commentary or facts that are not present in the captured content.
+          \(titleInstruction)
 
-          Preserve Markdown syntax and indentation exactly. LinkDigest comment sections use structural metadata that must remain machine-readable:
+          Output only the translated title and body. Do not output labels such as Captured title, Captured content, <<<, >>>, or any translation of those labels (including 捕获的标题 and 捕获的内容).
+
+          The finished translation must be entirely in \(targetLanguage). This is one-way into \(targetLanguage), never a language swap:
+          - If a sentence is already in \(targetLanguage), copy it unchanged.
+          - If a sentence is in any other language, translate it into \(targetLanguage).
+          - Never translate \(targetLanguage) into English or any other language.
+
+          Preserve meaning, structure, names, numbers, and links. Preserve Markdown syntax and indentation exactly. LinkDigest comment sections use structural metadata that must remain machine-readable:
           - Copy unchanged every section heading beginning with `## 评论（` or `## 评论与回复（`.
           - Copy unchanged every comment metadata line beginning with `- **`, including its leading indentation, username, score, timestamp, `回复层级`, and `[原评论](...)` link.
-          - Translate only the prose body of each comment. Never translate usernames or change comment nesting.
+          - Translate only the prose body of each comment into \(targetLanguage). Never translate usernames or change comment nesting.
           """
         ),
-        Message(role: "user", content: capturedContent(title: title, text: text))
+        Message(role: "user", content: text)
       ]
     }
     request.httpBody = try JSONEncoder().encode(RequestBody(
@@ -623,7 +684,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       messages: messages,
       stream: true,
       maxTokens: nil,
-      reasoningEffort: includesReasoningEffort ? Self.lowReasoningEffort : nil
+      reasoningEffort: reasoningEffort.jsonValue
     ))
     return request
   }
@@ -789,6 +850,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   /// 所以这两类任务一律请求最低推理档。StepFun 官方文档的取值是 low/medium/high；
   /// 这也正是 OpenAI 的 `reasoning_effort` 参数名，兼容面足够宽。
   static let lowReasoningEffort = "low"
+  static let noneReasoningEffort = "none"
 
   /// 这个失败**可能**是「服务端不认识我们多发的那个参数」。
   ///
@@ -799,14 +861,36 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     "\(profile.baseURL.absoluteString)|\(profile.model)"
   }
 
-  private func acceptsReasoningEffort(_ profile: ProviderProfile) -> Bool {
+  private func preferredReasoningEffort(_ profile: ProviderProfile) -> StreamReasoningEffort {
+    if let testingPreferredReasoningEffort { return testingPreferredReasoningEffort }
     let key = Self.reasoningEffortDestinationKey(profile)
-    return reasoningEffortLock.withLock { !reasoningEffortRejectedDestinations.contains(key) }
+    return reasoningEffortLock.withLock {
+      if reasoningEffortRejectedDestinations.contains(key) { return .omitted }
+      if reasoningNoneRejectedDestinations.contains(key) { return .low }
+      return .none
+    }
   }
 
-  private func rememberReasoningEffortRejected(_ profile: ProviderProfile) {
+  private func rememberRejected(_ effort: StreamReasoningEffort, for profile: ProviderProfile) {
     let key = Self.reasoningEffortDestinationKey(profile)
-    reasoningEffortLock.withLock { _ = reasoningEffortRejectedDestinations.insert(key) }
+    reasoningEffortLock.withLock {
+      switch effort {
+      case .none:
+        _ = reasoningNoneRejectedDestinations.insert(key)
+      case .low, .omitted:
+        _ = reasoningEffortRejectedDestinations.insert(key)
+      }
+    }
+  }
+
+  private func rememberThinkingStall(_ profile: ProviderProfile) {
+    let key = Self.reasoningEffortDestinationKey(profile)
+    reasoningEffortLock.withLock { _ = reasoningStallDestinations.insert(key) }
+  }
+
+  private func canRetryThinkingStall(_ profile: ProviderProfile) -> Bool {
+    let key = Self.reasoningEffortDestinationKey(profile)
+    return reasoningEffortLock.withLock { !reasoningNoneRejectedDestinations.contains(key) }
   }
 
   static func mayRejectUnknownParameter(_ failure: ModelProviderFailure) -> Bool {
@@ -940,6 +1024,45 @@ private final class CatalogRedirectGuard: NSObject, URLSessionTaskDelegate {
       && url.host?.lowercased() == host
       && url.port == port
   }
+}
+
+enum StreamReasoningEffort: Equatable {
+  case none
+  case low
+  case omitted
+
+  var jsonValue: String? {
+    switch self {
+    case .none: OpenAICompatibleProvider.noneReasoningEffort
+    case .low: OpenAICompatibleProvider.lowReasoningEffort
+    case .omitted: nil
+    }
+  }
+
+  var logLabel: String {
+    jsonValue ?? "omitted"
+  }
+
+  func steppedDown() -> StreamReasoningEffort? {
+    switch self {
+    case .none: .low
+    case .low: .omitted
+    case .omitted: nil
+    }
+  }
+}
+
+private struct ThinkingStallRetry: Error {}
+
+private final class FirstDeltaWatch: @unchecked Sendable {
+  private let lock = NSLock()
+  private var delta = false
+  private var reasoning = false
+
+  func markDelta() { lock.withLock { delta = true } }
+  func markReasoning() { lock.withLock { reasoning = true } }
+  var hasDelta: Bool { lock.withLock { delta } }
+  var sawReasoningOnly: Bool { lock.withLock { reasoning && !delta } }
 }
 
 /// 一次「出字特别慢」的流式请求留下的分段耗时。

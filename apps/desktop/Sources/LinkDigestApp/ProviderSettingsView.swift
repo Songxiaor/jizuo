@@ -1383,8 +1383,8 @@ struct ProviderSettingsView: View {
 
           SettingsRow(
             title: "转写稿模型校对",
-            caption: "把转写文字发送给聊天模型修正标点、分段和明显错别字，不改写内容。",
-            details: "只发送文字本身，原始转写稿保留在历史中。"
+            caption: "根据标题和配文，把听写错的词还原成更可能说的话，并补标点、分段。看不懂的句子原样保留，不编成新文章。",
+            details: "会附带标题和配文，不发送视频或音频。原始转写稿保留在历史中。"
           ) {
             VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
               modelChoicePicker(

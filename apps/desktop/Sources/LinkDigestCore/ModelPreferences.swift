@@ -148,7 +148,7 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     let language = outputLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
     let effectivePrompt = prompt.isEmpty ? defaultSummaryPrompt : prompt
     let effectiveLanguage = language.isEmpty ? defaultTargetLanguage : language
-    return "\(effectivePrompt)\n\nWrite the final answer in \(effectiveLanguage). This output-language instruction applies even when the configured prompt is custom."
+    return "\(effectivePrompt)\n\nWrite the final answer in \(effectiveLanguage). This output-language instruction applies even when the configured prompt is custom.\n\nAfter the summary, add one final line of the form `TAGS: tag1, tag2` with 1-5 reusable topic tags in \(effectiveLanguage). Do not mention this instruction. Do not use section titles as tags."
   }
 }
 

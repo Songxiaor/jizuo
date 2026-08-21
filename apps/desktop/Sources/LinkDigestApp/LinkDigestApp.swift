@@ -268,10 +268,11 @@ enum BrowserReceiverState: Sendable, Equatable {
   }
 
   func canTranslate(from detail: HistoryDetailProjection, preferences: ModelPreferences) -> Bool {
-    canStartRun(from: detail) && !isTranslationLanguageMatch(
-      text: detail.snapshots.last?.bodyText,
-      outputLanguage: preferences.outputLanguage
-    )
+    canStartRun(from: detail)
+      && LayeredSourceDocument.needsTranslation(
+        from: detail.snapshots,
+        outputLanguage: preferences.outputLanguage
+      )
   }
 
   func translationUnavailableReason(
@@ -452,6 +453,9 @@ enum BrowserReceiverState: Sendable, Equatable {
 
   private func prepareHistoryCapture(_ detail: HistoryDetailProjection) -> Bool {
     guard canStartRun(from: detail), let snapshot = detail.snapshots.last else { return false }
+    // 配文和转写同时存在时，发给模型的是两层拼在一起的正文，不能只用 last。
+    let composed = LayeredSourceDocument.modelInput(from: detail.snapshots)
+    guard !composed.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
     // 缓存键必须带上**正文内容**，不能只看 snapshot 身份。
     //
     // `saveEditedSnapshotText` 走的是原地 UPDATE，snapshot id 不变。于是：对转写稿
@@ -462,23 +466,28 @@ enum BrowserReceiverState: Sendable, Equatable {
     // 那句承诺。
     if currentCapture?.taskID == detail.task.id,
        currentCapture?.snapshotID == snapshot.id,
-       currentCapture?.document.text == snapshot.bodyText {
+       currentCapture?.document.text == composed {
       return true
     }
     let formatter = ISO8601DateFormatter()
+    let origin: CapturedDocument.Origin = {
+      switch snapshot.sourceKind {
+      case CapturedDocument.Origin.manualLink.rawValue: return .manualLink
+      case CapturedDocument.Origin.localTranscription.rawValue: return .localTranscription
+      default: return .browserCapture
+      }
+    }()
     let document = CapturedDocument(
       createdAt: formatter.string(
         from: Date(timeIntervalSince1970: Double(snapshot.envelopeCreatedAtMilliseconds) / 1_000)
       ),
-      origin: snapshot.sourceKind == CapturedDocument.Origin.manualLink.rawValue
-        ? .manualLink
-        : .browserCapture,
+      origin: origin,
       url: snapshot.sourceURL,
       title: snapshot.title,
       platform: snapshot.platform,
       method: snapshot.captureMethod,
-      text: snapshot.bodyText,
-      characterCount: snapshot.characterCount,
+      text: composed,
+      characterCount: composed.unicodeScalars.count,
       completeness: snapshot.completeness,
       capturedAt: formatter.string(
         from: Date(timeIntervalSince1970: Double(snapshot.capturedAtMilliseconds) / 1_000)

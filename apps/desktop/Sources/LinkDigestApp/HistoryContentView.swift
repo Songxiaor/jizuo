@@ -238,11 +238,11 @@ struct HistoryContentView: View {
           .alert("视频自动保存失败", isPresented: $model.isCapturedMediaAutoSaveFailurePresented) {
             Button("好") { model.dismissCapturedMediaAutoSaveFailure() }
           } message: { Text(model.capturedMediaAutoSaveFailureMessage) }
-          .alert("需要下载 Apple 中文离线模型", isPresented: $model.isTranscriptionModelConfirmationPresented) {
+          .alert("需要下载 Apple 离线听写模型", isPresented: $model.isTranscriptionModelConfirmationPresented) {
             Button("取消", role: .cancel) { model.cancelModelDownloadConfirmation() }
             Button("下载并转写") { model.confirmModelDownloadAndTranscribe() }
           } message: {
-            Text("Apple 中文离线模型可能需要下载并占用本机空间。模型准备完成后，视频音频只在这台 Mac 上处理，不会上传。")
+            Text("Apple 离线听写模型可能需要下载并占用本机空间。会按视频配文判断中文或英文。模型准备完成后，视频音频只在这台 Mac 上处理，不会上传。")
           }
           .alert("将视频音频发送到在线转写服务？", isPresented: $model.isOnlineTranscriptionConfirmationPresented) {
             Button("取消", role: .cancel) { model.cancelOnlineTranscriptionConfirmation() }
@@ -254,7 +254,7 @@ struct HistoryContentView: View {
             Button("取消", role: .cancel) { model.cancelTranscriptTidyConfirmation() }
             Button("同意并校对") { model.confirmTranscriptTidy() }
           } message: {
-            Text("App 只发送转写文字本身，用于修正标点、分段和明显错别字，不发送视频、音频或链接。校对稿保存为最新原文，原始转写稿保留在历史中。")
+            Text("App 会发送转写文字，以及标题和配文作为上下文，用来还原听写错误、补标点和分段。不发送视频、音频或链接。看不懂的句子会原样保留。校对稿保存为最新原文，原始转写稿保留在历史中。")
           }
           .fileExporter(
             isPresented: $model.isExportPanelPresented,
@@ -1515,6 +1515,15 @@ private struct HistoryRowView: View {
   /// 发布时间优先——判断"这条素材新不新鲜"看的是它。抓不到发布时间
   /// （很多网页没有可靠的时间标记）才回落到入库时间，并标明是"存于"，
   /// 免得让人误以为原文是那天发的。
+  private func sanitizedRowPreview(_ row: HistoryRowProjection) -> String? {
+    if let preview = row.artifactPreview?.trimmedNonEmpty {
+      let cleaned = MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: preview)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      if !cleaned.isEmpty { return cleaned }
+    }
+    return row.author?.trimmedNonEmpty
+  }
+
   private var rowTimeText: String {
     if let published = row.published?.trimmedNonEmpty {
       return historyPublishedDate(published)
@@ -1575,7 +1584,7 @@ private struct HistoryRowView: View {
             .multilineTextAlignment(.leading)
           Spacer(minLength: 4)
         }
-        if let preview = row.artifactPreview?.trimmedNonEmpty ?? row.author?.trimmedNonEmpty {
+        if let preview = sanitizedRowPreview(row) {
           Text(preview)
             .font(.callout)
             .foregroundStyle(.secondary)
@@ -1862,6 +1871,9 @@ private struct HistoryDetailView: View, Equatable {
   @State private var pendingSourceCitation: String?
   @State private var measuredTitleHeight: CGFloat = HistoryDetailView.titleLineHeight
   /// 转写校对：编辑态与草稿只属于当前详情页，切换条目即复位。
+  /// 长配文 / 长转写默认收起，避免把「重新转写」顶出一屏。
+  @State private var isCaptionExpanded = false
+  @State private var isTranscriptExpanded = false
   @State private var isEditingTranscription = false
   @State private var transcriptionDraft = ""
   /// 从阅读区点进来时对回源码的光标。
@@ -2043,9 +2055,21 @@ private struct HistoryDetailView: View, Equatable {
     detail.snapshots.reversed().first { $0.sourceKind != CapturedDocument.Origin.localTranscription.rawValue }
   }
   private var latestTranscriptionSnapshot: ContentSnapshot? {
-    detail.snapshots.reversed().first {
-      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue && !$0.bodyText.isEmpty
-    }
+    LayeredSourceDocument.transcriptSnapshot(in: detail.snapshots)
+  }
+  /// 配文还在、而且不是抖音那种和标题重复的空 caption，才值得单独一层。
+  private var hasPresentableCaption: Bool {
+    guard let snapshot = latestSourceSnapshot else { return false }
+    let body = LayeredSourceDocument.body(of: snapshot)
+    guard !body.isEmpty else { return false }
+    return !CapturedSourceBodyPresentation.isRedundantDouyinBody(
+      platform: snapshot.platform,
+      title: CapturedDocumentTitle.display(snapshot.title, for: snapshot.sourceURL),
+      markdown: snapshot.bodyText
+    )
+  }
+  private var showsLayeredSource: Bool {
+    hasPresentableCaption && latestTranscriptionSnapshot != nil
   }
   private var isDouyinCapture: Bool { latestSourceSnapshot?.platform == "douyin" }
   /// 抖音图文帖：正文本身就是内容（文案 + 图集），不像视频帖那样只是重复标题的
@@ -2079,9 +2103,8 @@ private struct HistoryDetailView: View, Equatable {
   private var showsRunControls: Bool { canRunHistory || showsCurrentCapture || showsVisibleRun }
   private var presentsArticleBeforeMedia: Bool {
     guard let latestSnapshot else { return false }
-    // X 帖子的正文就是帖子本身，视频是它的附件——按原帖的顺序读才对：文字在上、
-    // 视频在下。抖音那类视频帖正好相反（正文只是一句 caption），仍旧视频在前。
-    if latestSnapshot.platform == "x" { return true }
+    // 有视频时播放器在上、文稿在下：转写按钮和视频在一起，长转写不会把它们顶走。
+    // 微信长文没有内嵌播放器，仍旧正文在前。
     return RemoteMarkdownImageStagingPolicy.isSubstantiveWeChatArticle(
       platform: latestSnapshot.platform,
       markdown: latestSnapshot.bodyText
@@ -2506,6 +2529,8 @@ private struct HistoryDetailView: View, Equatable {
       showsPlainText = false
       completionBanner = nil
       pendingRunPane = nil
+      isCaptionExpanded = false
+      isTranscriptExpanded = false
       readingPane = defaultReadingPane
       // 保活集合不跨条目：上一条访问过哪些面板不该让这一条多付隐藏布局。
       visitedReadingPanes = []
@@ -2955,32 +2980,21 @@ private struct HistoryDetailView: View, Equatable {
           pendingRunPane = .summary
           readingPane = .summary
           Task {
-            if showsCurrentCapture {
-              await appModel.summarize(preferences: providerSettings.runPreferences)
-            } else {
-              await appModel.summarize(historyDetail: detail, preferences: providerSettings.runPreferences)
-            }
+            await appModel.summarize(historyDetail: detail, preferences: providerSettings.runPreferences)
           }
         }
         actionPill(
           title: "翻译",
           systemImage: "character.book.closed",
           prominent: !isOwnWriting && summaryArtifact != nil && translationArtifact == nil,
-          disabled: !providerSettings.arePreferencesReady || !(
-            showsCurrentCapture
-              ? appModel.canTranslate(preferences: providerSettings.runPreferences)
-              : appModel.canTranslate(from: detail, preferences: providerSettings.runPreferences)
-          ),
+          disabled: !providerSettings.arePreferencesReady
+            || !appModel.canTranslate(from: detail, preferences: providerSettings.runPreferences),
           identifier: showsCurrentCapture ? "translate-current-capture" : "translate-history-detail"
         ) {
           pendingRunPane = .translation
           readingPane = .translation
           Task {
-            if showsCurrentCapture {
-              await appModel.translate(preferences: providerSettings.runPreferences)
-            } else {
-              await appModel.translate(historyDetail: detail, preferences: providerSettings.runPreferences)
-            }
+            await appModel.translate(historyDetail: detail, preferences: providerSettings.runPreferences)
           }
         }
         // 生成脑图和总结、翻译是同一类动作：都是把正文交给模型换回一份新产物，
@@ -3606,19 +3620,133 @@ private struct HistoryDetailView: View, Equatable {
         missingPaneNotice(for: pane)
       }
     case .source:
-      // 转写进行中时无条件走流式视图：重新转写要立即清掉旧文本并流式
-      // 上屏，而不是等落库后整体替换（旧条件只在首次无 snapshot 时流式）。
-      // 叶子视图观察 LiveRunTextModel：partial 拍点只重绘这一块。
-      if isDouyinCapture, hasLiveTranscription {
+      sourcePaneBody
+    }
+  }
+
+  /// 配文和转写是两层：转写完成后配文仍留在原文里，不再被转写稿盖掉。
+  @ViewBuilder private var sourcePaneBody: some View {
+    if hasLiveTranscription {
+      VStack(alignment: .leading, spacing: 18) {
+        if hasPresentableCaption, let caption = latestSourceSnapshot {
+          sourceLayer(heading: LayeredSourceDocument.captionHeading, snapshot: caption)
+        }
+        sourceLayerHeading(LayeredSourceDocument.transcriptHeading)
         LiveTranscriptionReadingBody(
           live: model.liveTranscriptionText,
           font: readingFont.nsFont(),
           color: NSColor(theme.primaryText),
           lineSpacing: MarkdownPresentation.bodyLineSpacing
         )
-      } else if let snapshot = (isDouyinCapture && !isDouyinImagePostCapture)
-        ? latestTranscriptionSnapshot
-        : latestSnapshot, !snapshot.bodyText.isEmpty {
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityIdentifier("history-reading-source")
+    } else if showsLayeredSource, let caption = latestSourceSnapshot {
+      VStack(alignment: .leading, spacing: 22) {
+        collapsibleSourceSection(
+          heading: LayeredSourceDocument.captionHeading,
+          snapshot: caption,
+          isExpanded: $isCaptionExpanded
+        )
+        if let transcript = latestTranscriptionSnapshot {
+          collapsibleSourceSection(
+            heading: LayeredSourceDocument.transcriptHeading,
+            snapshot: transcript,
+            isExpanded: $isTranscriptExpanded
+          )
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityIdentifier("history-reading-source")
+    } else if let snapshot = (isDouyinCapture && !isDouyinImagePostCapture)
+      ? latestTranscriptionSnapshot
+      : latestSnapshot, !snapshot.bodyText.isEmpty {
+      if snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue {
+        collapsibleSourceSection(
+          heading: LayeredSourceDocument.transcriptHeading,
+          snapshot: snapshot,
+          isExpanded: $isTranscriptExpanded
+        )
+          .accessibilityIdentifier("history-reading-source")
+      } else {
+        sourceLayer(heading: nil, snapshot: snapshot)
+          .accessibilityIdentifier("history-reading-source")
+      }
+    } else {
+      missingPaneNotice(for: .source)
+    }
+  }
+
+  private static let sourceCollapseCharacterLimit = 800
+
+  private func isLongSource(_ snapshot: ContentSnapshot) -> Bool {
+    LayeredSourceDocument.body(of: snapshot).count > Self.sourceCollapseCharacterLimit
+  }
+
+  private func sourcePreview(_ text: String) -> String {
+    guard text.count > Self.sourceCollapseCharacterLimit else { return text }
+    let prefix = String(text.prefix(Self.sourceCollapseCharacterLimit))
+    if let lastBreak = prefix.lastIndex(where: \.isNewline) {
+      let trimmed = String(prefix[..<lastBreak]).trimmingCharacters(in: .whitespacesAndNewlines)
+      if !trimmed.isEmpty { return trimmed }
+    }
+    return prefix.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  @ViewBuilder
+  private func collapsibleSourceSection(
+    heading: String,
+    snapshot: ContentSnapshot,
+    isExpanded: Binding<Bool>
+  ) -> some View {
+    let body = LayeredSourceDocument.body(of: snapshot)
+    let long = isLongSource(snapshot)
+    let collapsed = long && !isExpanded.wrappedValue && !isEditingTranscription
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(alignment: .firstTextBaseline, spacing: 10) {
+        sourceLayerHeading(heading)
+        Spacer(minLength: 8)
+        if long, !isEditingTranscription {
+          Button(isExpanded.wrappedValue ? "收起" : "展开全文") {
+            isExpanded.wrappedValue.toggle()
+          }
+          .controlSize(.small)
+          .accessibilityIdentifier("history-source-expand")
+        }
+      }
+      if collapsed {
+        sourceSnapshotReader(snapshot, bodyOverride: sourcePreview(body))
+        Button("展开全文") { isExpanded.wrappedValue = true }
+          .buttonStyle(.link)
+          .font(.callout.weight(.medium))
+          .padding(.top, 4)
+          .accessibilityIdentifier("history-source-expand-inline")
+      } else {
+        sourceSnapshotReader(snapshot)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func sourceLayerHeading(_ title: String) -> some View {
+    Text(title)
+      .font(.caption.weight(.semibold))
+      .foregroundStyle(.secondary)
+      .accessibilityAddTraits(.isHeader)
+  }
+
+  @ViewBuilder
+  private func sourceLayer(heading: String?, snapshot: ContentSnapshot) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
+      if let heading {
+        sourceLayerHeading(heading)
+      }
+      sourceSnapshotReader(snapshot)
+    }
+  }
+
+  @ViewBuilder
+  private func sourceSnapshotReader(_ snapshot: ContentSnapshot, bodyOverride: String? = nil) -> some View {
         if captureWasTruncated(snapshot.completeness) {
           Label("捕获内容已截断，生成结果可能不完整。", systemImage: "exclamationmark.triangle")
             .foregroundStyle(.secondary)
@@ -3627,7 +3755,7 @@ private struct HistoryDetailView: View, Equatable {
         }
         // 可写正文：本机转写、笔记、稿、作品。网页捕获保持只读。
         // 默认看排版，单击进源码；空笔记仍一打开就写。
-        if canEditSource(snapshot), isEditingTranscription {
+        if bodyOverride == nil, canEditSource(snapshot), isEditingTranscription {
           HStack(spacing: 10) {
             Spacer(minLength: 0)
             Text(sourceDraftIsDirty(snapshot) ? "正在保存…" : (noteSaveIndicator ? "已保存" : ""))
@@ -3643,7 +3771,7 @@ private struct HistoryDetailView: View, Equatable {
           }
           .padding(.bottom, 8)
         }
-        if canEditSource(snapshot), isEditingTranscription {
+        if bodyOverride == nil, canEditSource(snapshot), isEditingTranscription {
           // 裸 TextEditor 把标题、代码、引用一律画成同一片灰字，写超过几行就看不出
           // 结构。换成带 Markdown 着色的 NSTextView，排版参数取自阅读区同一套偏好。
           MarkdownEditorView(
@@ -3688,7 +3816,10 @@ private struct HistoryDetailView: View, Equatable {
           .accessibilityIdentifier("history-transcription-editor")
         } else {
           MarkdownContentView(
-            source: MarkdownNoteFrontmatter.parse(snapshot.bodyText).body,
+            source: bodyOverride ?? ReadingRenderCache.paneBody(
+              source: snapshot.bodyText,
+              strippingEchoedMetadata: false
+            ),
             sourceURL: URL(string: sourceURL),
             localImageURLs: localImageURLs,
             appendsUnusedLocalImages: !isWeChatCapture,
@@ -3700,31 +3831,26 @@ private struct HistoryDetailView: View, Equatable {
             showsPlainText: $showsPlainText,
             showsInlinePlainTextToggle: false,
             navigationModules: navigationModules,
-            anchorScope: anchorScope(for: .source),
+            anchorScope: anchorScope(for: .source) + ".\(snapshot.id.rawValue)",
             revealText: pendingSourceCitation,
             onFollowWikiLink: { title in
-              if let snapshot = latestSnapshot, sourceDraftIsDirty(snapshot) {
+              if sourceDraftIsDirty(snapshot) {
                 saveTranscriptionDraft(snapshot, exiting: false)
               }
               model.followWikiLink(toTitle: title)
             },
-            onRequestEdit: canEditSource(snapshot) && !model.isReadOnly
+            onRequestEdit: bodyOverride == nil && canEditSource(snapshot) && !model.isReadOnly
               ? { snippet in beginSourceEditing(snapshot, displayedSnippet: snippet) }
               : nil
           )
           .simultaneousGesture(
             TapGesture().onEnded {
-              guard canEditSource(snapshot), !model.isReadOnly else { return }
+              guard bodyOverride == nil, canEditSource(snapshot), !model.isReadOnly else { return }
               beginSourceEditing(snapshot, displayedSnippet: nil)
             }
           )
           .frame(maxWidth: .infinity, alignment: .leading)
-          .accessibilityIdentifier("history-reading-source")
         }
-      } else {
-        missingPaneNotice(for: .source)
-      }
-    }
   }
 
   private func canEditSource(_ snapshot: ContentSnapshot) -> Bool {

@@ -405,3 +405,33 @@ public enum HistoryTagNormalizer {
     return result.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 }
+
+/// 总结末行的标签尾标：跟摘要同一次生成，不再另打一趟请求。
+///
+/// 模型按提示在最后一行写 `TAGS: a, b`。展示和落库都剥掉这一行，避免标签混进正文。
+public enum SummaryTagTrailer {
+  public static let marker = "TAGS:"
+
+  public static func split(_ text: String) -> (body: String, tags: [HistoryTag]) {
+    let visible = visibleBody(text)
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let lastBreak = trimmed.lastIndex(where: \.isNewline) else { return (text, []) }
+    let lastLine = trimmed[trimmed.index(after: lastBreak)...]
+      .trimmingCharacters(in: .whitespaces)
+    guard lastLine.hasPrefix(marker) else { return (text, []) }
+    let raw = String(lastLine.dropFirst(marker.count))
+    return (visible, HistoryTagNormalizer.automaticTags(from: raw))
+  }
+
+  /// 流式过程中，最后一行一旦开始像尾标就先藏起来，避免 `TAGS` 几个字母闪进正文。
+  public static func visibleBody(_ text: String) -> String {
+    guard let lastBreak = text.lastIndex(where: \.isNewline) else { return text }
+    let lastLine = text[text.index(after: lastBreak)...]
+      .trimmingCharacters(in: .whitespaces)
+    guard !lastLine.isEmpty else { return text }
+    let isComplete = lastLine.hasPrefix(marker)
+    let isPrefix = marker.hasPrefix(lastLine)
+    guard isComplete || isPrefix else { return text }
+    return String(text[..<lastBreak]).trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+}

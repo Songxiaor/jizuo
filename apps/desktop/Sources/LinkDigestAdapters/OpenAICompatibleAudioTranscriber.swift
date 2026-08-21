@@ -180,13 +180,16 @@ public final class OpenAICompatibleAudioTranscriber: OnlineAudioTranscribing, @u
     request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
     request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
     request.setValue("application/json", forHTTPHeaderField: "Accept")
+    var fields = [
+      "model": model,
+      "response_format": "json",
+    ]
+    if let language = language?.trimmingCharacters(in: .whitespacesAndNewlines), !language.isEmpty {
+      fields["language"] = language
+    }
     request.httpBody = Self.multipartBody(
       boundary: boundary,
-      fields: [
-        "model": model,
-        "response_format": "json",
-        "language": language?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-      ],
+      fields: fields,
       audio: audio
     )
     let (data, response) = try await session.data(for: request)

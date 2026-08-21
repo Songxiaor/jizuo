@@ -132,6 +132,7 @@ enum ReadingRenderCache {
     let key = PaneBodyKey(source: source, stripsEchoedMetadata: strippingEchoedMetadata)
     if let cached = paneBodyStore.lookup(key) { return cached }
     var body = MarkdownNoteFrontmatter.parse(source).body
+    body = MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: body)
     if strippingEchoedMetadata {
       body = MarkdownNoteFrontmatter.strippingEchoedMetadataBlock(from: body)
     }

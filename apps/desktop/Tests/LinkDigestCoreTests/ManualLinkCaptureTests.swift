@@ -244,6 +244,20 @@ final class ManualLinkCaptureTests: XCTestCase {
     let document = CapturedDocument(createdAt: "2026-07-18T00:00:00Z", origin: .browserCapture, url: "https://example.com/long/path?ignored=true", title: "  ", platform: "fixture", method: "dom", text: "body", completeness: "complete", capturedAt: "2026-07-18T00:00:00Z", sourceLabel: "fixture")
     XCTAssertEqual(document.title, CapturedDocumentTitle.missing)
     XCTAssertEqual(CapturedDocumentTitle.display(document.title, for: document.url), "无标题")
+    XCTAssertEqual(
+      CapturedDocumentTitle.display(
+        "Introduction to AI Fluency · AI Fluency: Framework & Foundations · Claude Academy",
+        for: "https://academy.claude.com/courses/ai-fluency-framework-foundations/introduction-to-ai-fluency"
+      ),
+      "Introduction to AI Fluency"
+    )
+    XCTAssertEqual(
+      CapturedDocumentTitle.courseTitle(
+        "Introduction to AI Fluency · AI Fluency: Framework & Foundations · Claude Academy",
+        url: "https://academy.claude.com/courses/ai-fluency-framework-foundations/introduction-to-ai-fluency"
+      ),
+      "AI Fluency: Framework & Foundations"
+    )
     // Legacy rows that stored host · /path should display as 无标题, not as a link.
     XCTAssertEqual(
       CapturedDocumentTitle.display("example.com · /long/path", for: "https://example.com/long/path"),
@@ -307,6 +321,7 @@ final class ManualLinkCaptureTests: XCTestCase {
     </head><body>
     <article>
       <span>8 min read</span>
+      <p>Loading</p>
       <h1>A Complete Guide To AGENTS.md</h1>
       <span>Matt Pocock</span>
       <details><summary>On this page</summary><nav aria-label="On this page"><a href="#a">What</a></nav></details>
@@ -328,6 +343,7 @@ final class ManualLinkCaptureTests: XCTestCase {
     XCTAssertTrue(page.text.contains("instruction budget"), page.text)
     XCTAssertTrue(page.text.contains("| Scenario | Impact |"), page.text)
     XCTAssertFalse(page.text.contains("8 min read"), page.text)
+    XCTAssertFalse(page.text.split(separator: "\n").contains("Loading"), page.text)
     XCTAssertFalse(page.text.contains("On this page"), page.text)
     XCTAssertFalse(page.text.contains("Related reading"), page.text)
     XCTAssertFalse(page.text.hasPrefix("# A Complete Guide"), page.text)

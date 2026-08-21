@@ -2,9 +2,9 @@ import Foundation
 import LinkDigestCore
 
 /// Sends transcript text (never audio, never the media URL) to the user's
-/// configured chat provider for a punctuation/paragraph/typo pass. Chunks are
-/// tidied independently; a failed chunk keeps its original text so a partial
-/// outage can never lose transcript content.
+/// configured chat provider for 听写还原. Title and caption ride along as
+/// context on every chunk. Chunks are tidied independently; a failed chunk
+/// keeps its original text so a partial outage can never lose transcript content.
 public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @unchecked Sendable {
   /// 同时在飞的整理请求数。整理和翻译一样是输出受限的活（产出与原文同量级，
   /// 模型只能逐 token 吐），分片之间互不依赖，串行等于把耗时按片数线性叠加：
@@ -24,7 +24,12 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     self.provider = provider
   }
 
-  public func tidy(text: String, model: String?, style: TidyStyle) async throws -> TranscriptTidyOutcome {
+  public func tidy(
+    text: String,
+    model: String?,
+    style: TidyStyle,
+    context: TranscriptTidyContext
+  ) async throws -> TranscriptTidyOutcome {
     let chunks = TranscriptTidyChunker.chunks(of: text)
     guard !chunks.isEmpty else { throw TranscriptTidyError.emptyTranscript }
 
@@ -50,13 +55,16 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
       var collected: [Int: Result<TranscriptTidyOutcome, Error>] = [:]
       var next = 0
       func launch(_ index: Int) {
-        group.addTask { [provider, credentials, effectiveModel, style] in
+        group.addTask { [provider, credentials, effectiveModel, style, context] in
           do {
+            let payload = style == .transcript
+              ? TranscriptTidyPrompt.userMessage(chunk: chunks[index], context: context)
+              : chunks[index]
             let outcome = try await provider.tidyTranscriptChunk(
               profile: credentials.profile,
               apiKey: credentials.apiKey,
               model: effectiveModel,
-              text: chunks[index],
+              text: payload,
               systemPrompt: style.systemPrompt
             )
             return (index, .success(outcome))
@@ -101,7 +109,12 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
         // 笔记不能走这一步：它的产物是 Markdown，换行本身有语义。归一化会把
         // 段内单换行拼回一行，`- a\n- b` 这样的列表会被拼成 `- a - b`。
         let cleaned: String = switch style {
-        case .transcript: TranscriptTidyNormalizer.normalize(outcome.text)
+        case .transcript:
+          TranscriptTidyNormalizer.normalize(
+            TranscriptTidyPrompt.stripEchoedContext(
+              outcome.text, chunk: chunk, context: context
+            )
+          )
         case .note: outcome.text.replacingOccurrences(of: "\r\n", with: "\n")
           .trimmingCharacters(in: .whitespacesAndNewlines)
         }

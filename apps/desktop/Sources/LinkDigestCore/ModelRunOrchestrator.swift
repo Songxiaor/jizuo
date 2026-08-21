@@ -645,7 +645,7 @@ public actor ModelRunOrchestrator {
           !Task.isCancelled,
           let onState = currentStateHandler
     else { return }
-    let candidate = currentCommittedPartialText
+    let candidate = visibleOutput(intent: intent, text: currentCommittedPartialText)
     guard !candidate.isEmpty, candidate != currentPublishedPartialText else { return }
     currentPublishedPartialText = candidate
     await onState(runID, .streaming(intent: intent, partialText: candidate))
@@ -657,7 +657,7 @@ public actor ModelRunOrchestrator {
           !Task.isCancelled,
           let artifactID = currentArtifactID
     else { return false }
-    let candidate = currentCommittedPartialText
+    let candidate = visibleOutput(intent: intent, text: currentCommittedPartialText)
     guard !candidate.isEmpty else { return true }
     guard candidate != currentPersistedPartialText else { return true }
     do {
@@ -708,7 +708,10 @@ public actor ModelRunOrchestrator {
   ) async {
     guard currentRunID == runID else { return }
     guard await flushSecretHoldback(runID: runID, intent: intent) else { return }
-    let text = currentCommittedPartialText
+    let rawText = currentCommittedPartialText
+    let split = intent == .summarize ? SummaryTagTrailer.split(rawText) : (body: rawText, tags: [])
+    let text = split.body
+    currentCommittedPartialText = text
     guard !text.isEmpty else {
       await persistFailure(
         runID: runID,
@@ -733,9 +736,14 @@ public actor ModelRunOrchestrator {
     await applyAutomaticTags(
       to: taskID,
       generatedText: text,
+      embeddedTags: split.tags,
       profile: profile,
       apiKey: apiKey
     )
+  }
+
+  private func visibleOutput(intent: RunIntentKind, text: String) -> String {
+    intent == .summarize ? SummaryTagTrailer.visibleBody(text) : text
   }
 
   private func finishProviderFailure(
@@ -846,11 +854,12 @@ public actor ModelRunOrchestrator {
   private func applyAutomaticTags(
     to taskID: TaskID,
     generatedText: String,
+    embeddedTags: [HistoryTag] = [],
     profile: ProviderProfile,
     apiKey: String
   ) async {
-    var tags: [HistoryTag] = []
-    if let summaryTagGenerator {
+    var tags = embeddedTags
+    if tags.isEmpty, let summaryTagGenerator {
       do {
         let response = try await summaryTagGenerator.generateSummaryTags(
           profile: profile,

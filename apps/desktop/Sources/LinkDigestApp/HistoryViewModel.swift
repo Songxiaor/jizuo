@@ -446,6 +446,7 @@ private actor HistoryRepositoryWorker {
     attempt: TranscriptionAttemptToken,
     detail: HistoryDetailProjection,
     text: String,
+    localeIdentifier: String,
     receivedAtMilliseconds: Int64
   ) -> TranscriptionPersistenceResult {
     let timestamp = ISO8601DateFormatter().string(
@@ -467,7 +468,11 @@ private actor HistoryRepositoryWorker {
     do {
       let result = try history.completeMediaTranscription(.init(
         taskID: taskID, attempt: attempt, document: document,
-        evidence: .appleSpeechAnalyzer(localeIdentifier: "zh_CN", language: "zh", completedAtMilliseconds: receivedAtMilliseconds),
+        evidence: .appleSpeechAnalyzer(
+          localeIdentifier: localeIdentifier,
+          language: CapturedContentLanguage.speechLanguageCode(forLocaleIdentifier: localeIdentifier),
+          completedAtMilliseconds: receivedAtMilliseconds
+        ),
         receivedAtMilliseconds: receivedAtMilliseconds
       ))
       switch result {
@@ -492,6 +497,7 @@ private actor HistoryRepositoryWorker {
     detail: HistoryDetailProjection,
     text: String,
     platform: String,
+    localeIdentifier: String,
     receivedAtMilliseconds: Int64
   ) -> TranscriptionPersistenceResult {
     let timestamp = ISO8601DateFormatter().string(
@@ -515,8 +521,8 @@ private actor HistoryRepositoryWorker {
         attempt: attempt,
         document: document,
         evidence: .appleSpeechAnalyzer(
-          localeIdentifier: "zh_CN",
-          language: "zh",
+          localeIdentifier: localeIdentifier,
+          language: CapturedContentLanguage.speechLanguageCode(forLocaleIdentifier: localeIdentifier),
           completedAtMilliseconds: receivedAtMilliseconds
         ),
         receivedAtMilliseconds: receivedAtMilliseconds
@@ -569,7 +575,7 @@ private actor HistoryRepositoryWorker {
         evidence: .onlineSpeechToText(
           provider: provider,
           model: model,
-          language: "zh",
+          language: nil,
           completedAtMilliseconds: receivedAtMilliseconds
         ),
         receivedAtMilliseconds: receivedAtMilliseconds
@@ -638,6 +644,7 @@ private struct TranscriptionContext {
   let fileURL: URL
   let workspaceURL: URL
   let attempt: TranscriptionAttemptToken
+  let localeIdentifier: String
 }
 
 private struct RemoteTranscriptionContext {
@@ -648,6 +655,7 @@ private struct RemoteTranscriptionContext {
   let workspaceURL: URL
   let attempt: TaskTranscriptionAttemptToken
   let tempAttemptID: String
+  let localeIdentifier: String
 }
 
 private struct PendingOnlineTranscriptionContext {
@@ -667,11 +675,12 @@ private struct PendingOnlineTranscriptionContext {
 private struct PendingTranscriptTidyContext {
   let taskID: TaskID
   let detail: HistoryDetailProjection
-  /// 待整理的转写正文；只发送文字本身，不发送媒体或链接。
+  /// 待还原的转写正文。标题和配文另放 `tidyContext`，不发送媒体或链接。
   let text: String
   let platform: String
   /// nil 表示继承设置页的总结模型。
   let model: String?
+  let tidyContext: TranscriptTidyContext
 }
 
 enum RemoteMediaFavoriteState: Equatable {
@@ -1164,7 +1173,10 @@ final class HistoryViewModel: ObservableObject {
       || !selectedHosts.isEmpty
       || selectedScope != .all
   }
-  var hasCategoryFilter: Bool { !selectedHosts.isEmpty || !selectedTagNormalizedNames.isEmpty }
+  var hasCategoryFilter: Bool {
+    !selectedHosts.isEmpty || !selectedTagNormalizedNames.isEmpty
+  }
+
   func faviconImageURL(for row: HistoryRowProjection) -> URL? { faviconImageURLs[row.taskID] }
   func platformFavicon(forHost host: String) -> (url: URL, taskID: TaskID)? {
     let canonical = HistoryPlatformRegistry.canonicalHost(for: host)
@@ -1304,6 +1316,15 @@ final class HistoryViewModel: ObservableObject {
     return rows.indices.contains(index + offset)
   }
 
+  /// 听写语言跟配文走，不跟设置里的目标语言走。
+  private static func speechLocaleIdentifier(for detail: HistoryDetailProjection) -> String {
+    let caption = LayeredSourceDocument.captionSnapshot(in: detail.snapshots)
+      .map(LayeredSourceDocument.body(of:))
+      ?? detail.snapshots.last.map(LayeredSourceDocument.body(of:))
+      ?? ""
+    return CapturedContentLanguage.speechLocaleIdentifier(in: caption)
+  }
+
   func requestTranscription() {
     transcriptionUsesOnlineService = false
     guard let detail, let fileURL = localMediaFileURL else {
@@ -1364,7 +1385,8 @@ final class HistoryViewModel: ObservableObject {
         detail: detail,
         fileURL: fileURL,
         workspaceURL: workspaceURL,
-        attempt: attempt
+        attempt: attempt,
+        localeIdentifier: Self.speechLocaleIdentifier(for: detail)
       )
       guard !Task.isCancelled, self?.transcriptionRequestID == requestID else {
         _ = await worker.updateTranscriptionStatus(
@@ -1377,7 +1399,7 @@ final class HistoryViewModel: ObservableObject {
         return
       }
       self?.pendingTranscriptionContext = context
-      let modelState = await videoTranscriber.modelState(localeIdentifier: "zh_CN")
+      let modelState = await videoTranscriber.modelState(localeIdentifier: context.localeIdentifier)
       guard !Task.isCancelled, self?.transcriptionRequestID == requestID else {
         _ = await worker.updateTranscriptionStatus(
           history,
@@ -1481,7 +1503,8 @@ final class HistoryViewModel: ObservableObject {
           fileURL: transcriptionInputURL,
           workspaceURL: temp.workspaceURL,
           attempt: attempt,
-          tempAttemptID: temp.attemptID
+          tempAttemptID: temp.attemptID,
+          localeIdentifier: Self.speechLocaleIdentifier(for: detail)
         )
         guard !Task.isCancelled, self.transcriptionRequestID == requestID else {
           _ = await worker.updateTaskTranscriptionStatus(
@@ -1493,7 +1516,7 @@ final class HistoryViewModel: ObservableObject {
         }
         self.pendingRemoteTranscriptionContext = context
         self.transcriptionState = .checkingModel
-        let modelState = await videoTranscriber.modelState(localeIdentifier: "zh_CN")
+        let modelState = await videoTranscriber.modelState(localeIdentifier: context.localeIdentifier)
         guard !Task.isCancelled, self.transcriptionRequestID == requestID else {
           _ = await worker.updateTaskTranscriptionStatus(
             history, taskID: taskID, attempt: attempt, status: .cancelled,
@@ -2359,8 +2382,10 @@ final class HistoryViewModel: ObservableObject {
       .filter { $0.run.kind == .summarize && $0.run.status == .completed }
       .compactMap { $0.artifact?.bodyText.trimmingCharacters(in: .whitespacesAndNewlines) }
       .last { !$0.isEmpty }
-    let source = summary ?? detail.snapshots.last?.bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard let source, !source.isEmpty else { return nil }
+    let source = summary
+      ?? LayeredSourceDocument.modelInput(from: detail.snapshots)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !source.isEmpty else { return nil }
     return String(source.prefix(Self.mindMapInputCharacterLimit))
   }
 
@@ -2636,6 +2661,17 @@ final class HistoryViewModel: ObservableObject {
     return text?.isEmpty == false ? text : nil
   }
 
+  /// 听写还原要带着标题和配文，模型才能把口误还原成课上更可能说的词。
+  private static func transcriptTidyContext(
+    for detail: HistoryDetailProjection,
+    transcript: String
+  ) -> TranscriptTidyContext {
+    let captionSnapshot = LayeredSourceDocument.captionSnapshot(in: detail.snapshots)
+    let title = captionSnapshot?.title ?? detail.snapshots.last?.title
+    let caption = captionSnapshot.map(LayeredSourceDocument.body(of:))
+    return TranscriptTidyContext(title: title, caption: caption, transcript: transcript)
+  }
+
   /// 刚完成的转写优先用流式缓冲：detail 快照要等一次异步刷新才包含新稿，
   /// 「转写后自动整理」不能因为这个窗口而空转。
   private func tidySourceText(taskID: TaskID) -> String? {
@@ -2758,7 +2794,8 @@ final class HistoryViewModel: ObservableObject {
       detail: detail,
       text: text,
       platform: detail.media?.platform ?? detail.snapshots.last?.platform ?? "local_video",
-      model: model?.trimmingCharacters(in: .whitespacesAndNewlines)
+      model: model?.trimmingCharacters(in: .whitespacesAndNewlines),
+      tidyContext: Self.transcriptTidyContext(for: detail, transcript: text)
     )
     presentOrSkipConsent(.transcriptTidy, present: {
       $0.isTranscriptTidyConfirmationPresented = true
@@ -2790,7 +2827,8 @@ final class HistoryViewModel: ObservableObject {
       detail: detail,
       text: text,
       platform: detail.media?.platform ?? detail.snapshots.last?.platform ?? "local_video",
-      model: model?.trimmingCharacters(in: .whitespacesAndNewlines)
+      model: model?.trimmingCharacters(in: .whitespacesAndNewlines),
+      tidyContext: Self.transcriptTidyContext(for: detail, transcript: text)
     )
     CapabilityConsent.grant(.transcriptTidy, defaults: capabilityConsentDefaults)
     beginTranscriptTidy(context)
@@ -2853,7 +2891,12 @@ final class HistoryViewModel: ObservableObject {
         return
       }
       do {
-        let outcome = try await transcriptTidier.tidy(text: context.text, model: context.model)
+        let outcome = try await transcriptTidier.tidy(
+          text: context.text,
+          model: context.model,
+          style: .transcript,
+          context: context.tidyContext
+        )
         try Task.checkCancellation()
         guard self.transcriptTidyRequestID == requestID else { return }
         let persisted = await worker.saveTidiedTranscript(
@@ -3044,7 +3087,7 @@ final class HistoryViewModel: ObservableObject {
           text = try await streaming.transcribe(
             remoteMediaURL: audioSourceURL,
             model: context.model,
-            language: "zh",
+            language: nil,
             progress: onProgress,
             partialTranscript: onPartial
           )
@@ -3052,7 +3095,7 @@ final class HistoryViewModel: ObservableObject {
           text = try await onlineAudioTranscriber.transcribe(
             remoteMediaURL: audioSourceURL,
             model: context.model,
-            language: "zh",
+            language: nil,
             progress: onProgress
           )
         }
@@ -3194,7 +3237,7 @@ final class HistoryViewModel: ObservableObject {
     transcriptionState = .preparingModel
     transcriptionTask = Task { [weak self, worker] in
       do {
-        try await videoTranscriber.downloadModel(localeIdentifier: "zh_CN")
+        try await videoTranscriber.downloadModel(localeIdentifier: context.localeIdentifier)
         try Task.checkCancellation()
         await self?.runTranscription(context: context, history: history, transcriber: videoTranscriber, requestID: requestID)
       } catch is CancellationError {
@@ -3324,7 +3367,7 @@ final class HistoryViewModel: ObservableObject {
     transcriptionTask = Task { [weak self, worker] in
       guard let self else { return }
       do {
-        try await videoTranscriber.downloadModel(localeIdentifier: "zh_CN")
+        try await videoTranscriber.downloadModel(localeIdentifier: context.localeIdentifier)
         try Task.checkCancellation()
         await self.runRemoteTranscription(
           context: context,
@@ -3385,7 +3428,7 @@ final class HistoryViewModel: ObservableObject {
 
     do {
       var finalText = ""
-      for try await event in transcriber.transcribe(fileURL: context.fileURL, workspaceURL: context.workspaceURL, localeIdentifier: "zh_CN") {
+      for try await event in transcriber.transcribe(fileURL: context.fileURL, workspaceURL: context.workspaceURL, localeIdentifier: context.localeIdentifier) {
         try Task.checkCancellation()
         guard transcriptionRequestID == requestID else { return }
         switch event {
@@ -3407,6 +3450,7 @@ final class HistoryViewModel: ObservableObject {
         detail: context.detail,
         text: trimmed,
         platform: context.descriptor.platform,
+        localeIdentifier: context.localeIdentifier,
         receivedAtMilliseconds: completedAt
       )
       guard transcriptionRequestID == requestID else { return }
@@ -3504,7 +3548,7 @@ final class HistoryViewModel: ObservableObject {
     }
     do {
       var finalText = ""
-      for try await event in transcriber.transcribe(fileURL: context.fileURL, workspaceURL: context.workspaceURL, localeIdentifier: "zh_CN") {
+      for try await event in transcriber.transcribe(fileURL: context.fileURL, workspaceURL: context.workspaceURL, localeIdentifier: context.localeIdentifier) {
         try Task.checkCancellation()
         guard transcriptionRequestID == requestID else { return }
         switch event {
@@ -3525,6 +3569,7 @@ final class HistoryViewModel: ObservableObject {
         attempt: context.attempt,
         detail: context.detail,
         text: trimmed,
+        localeIdentifier: context.localeIdentifier,
         receivedAtMilliseconds: completedAtMilliseconds
       )
       guard transcriptionRequestID == requestID else { return }
@@ -3761,9 +3806,8 @@ final class HistoryViewModel: ObservableObject {
     guard let snapshot = detail.snapshots.last else { return nil }
     let sourceSnapshot = detail.snapshots.last(where: { $0.sourceKind != transcriptionKind })
       ?? snapshot
-    let note = MarkdownNoteFrontmatter.parse(snapshot.bodyText)
     let sourceNote = MarkdownNoteFrontmatter.parse(sourceSnapshot.bodyText)
-    let body = note.body.isEmpty ? snapshot.bodyText : note.body
+    let body = LayeredSourceDocument.modelInput(from: detail.snapshots)
     func nonEmpty(_ value: String?) -> String? {
       guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines), !trimmed.isEmpty else { return nil }
       return trimmed
@@ -4934,7 +4978,8 @@ final class HistoryViewModel: ObservableObject {
         // 只留最新值，间隔到了才发布一次；流结束后冲刷最后一段。
         var pendingPartial: String?
         var lastPartialFlush = ContinuousClock.now
-        for try await event in livePlaybackTranscribe("zh_CN", stopSignal) {
+        let localeIdentifier = Self.speechLocaleIdentifier(for: detail)
+        for try await event in livePlaybackTranscribe(localeIdentifier, stopSignal) {
           try Task.checkCancellation()
           guard self.transcriptionRequestID == requestID else { break }
           switch event {
@@ -4975,7 +5020,8 @@ final class HistoryViewModel: ObservableObject {
         let received = self.nowMilliseconds()
         _ = await worker.saveTaskTranscription(
           history, taskID: taskID, attempt: attempt, detail: detail,
-          text: trimmed, platform: platform, receivedAtMilliseconds: received
+          text: trimmed, platform: platform, localeIdentifier: localeIdentifier,
+          receivedAtMilliseconds: received
         )
         self.livePlaybackStopContinuation = nil
         self.transcriptionState = .completed
@@ -5495,7 +5541,9 @@ final class HistoryViewModel: ObservableObject {
   }
 
   nonisolated private static func pageResult(_ history: HistoryApplicationService, cursor: HistoryPageCursor?, filter: HistoryListFilter) -> PageResult {
-    do { return .success(try history.historyPage(limit: 50, after: cursor, filter: filter)) }
+    do {
+      return .success(try history.historyPage(limit: 50, after: cursor, filter: filter))
+    }
     catch { return .failure(storageCode(for: error, context: .open)) }
   }
 

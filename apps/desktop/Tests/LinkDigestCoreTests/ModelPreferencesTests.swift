@@ -9,6 +9,7 @@ final class ModelPreferencesTests: XCTestCase {
     )
     XCTAssertTrue(defaultPrompt.hasPrefix(ModelPreferences.defaultSummaryPrompt))
     XCTAssertTrue(defaultPrompt.contains("Write the final answer in 日本語."))
+    XCTAssertTrue(defaultPrompt.contains("TAGS:"))
 
     let custom = "Return a concise evidence table."
     let customPrompt = ModelPreferences.summaryPrompt(

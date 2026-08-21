@@ -125,6 +125,17 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  public func taskID(matchingCanonicalURL canonicalURL: CanonicalURL) throws -> TaskID? {
+    try database.read { db in
+      guard let raw = try String.fetchOne(
+        db,
+        sql: "SELECT id FROM tasks WHERE canonicalization_version = ? AND canonical_url = ?",
+        arguments: [CanonicalURL.version, canonicalURL.value]
+      ) else { return nil }
+      return TaskID(raw)
+    }
+  }
+
   private func provenanceIsConsistent(
     _ provenance: CaptureDeliveryProvenance,
     with document: CapturedDocument

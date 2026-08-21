@@ -173,7 +173,35 @@ public enum CapturedDocumentTitle {
     let trimmed = title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     if trimmed.isEmpty { return missing }
     if isLegacyURLShapedTitle(trimmed, rawURL: rawURL) { return missing }
-    return trimmed
+    return lessonTitle(trimmed)
+  }
+
+  /// `Lesson · Course · Claude Academy` 只留课时名。
+  public static func lessonTitle(_ title: String) -> String {
+    let parts = title.split(separator: "·", omittingEmptySubsequences: false)
+      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .filter { !$0.isEmpty }
+    if parts.count >= 3 { return parts[0] }
+    if parts.count == 2, parts[1].localizedCaseInsensitiveContains("Academy") {
+      return parts[0]
+    }
+    return title
+  }
+
+  public static func courseTitle(_ title: String?, url rawURL: String) -> String? {
+    if let title {
+      let parts = title.split(separator: "·", omittingEmptySubsequences: false)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+      if parts.count >= 3 { return parts[1] }
+    }
+    guard let url = URL(string: rawURL) else { return nil }
+    let segments = url.path.split(separator: "/").map(String.init)
+    if segments.count >= 2, segments[0].lowercased() == "courses" {
+      return segments[1].replacingOccurrences(of: "-", with: " ")
+    }
+    if segments.first?.lowercased() == "tutorials" { return "教程" }
+    return nil
   }
 
   /// Old builds stored `example.com · /long/path` when the page title was empty.

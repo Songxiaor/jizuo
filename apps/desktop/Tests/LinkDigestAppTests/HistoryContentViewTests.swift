@@ -924,15 +924,15 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(surface.contains("history-audio-only-player"))
   }
 
-  func testXPostsReadInPostOrderWithTextAboveTheVideo() {
+  func testVideoPostsPlayBeforeTranscriptAndWeChatArticlesStayTextFirst() {
     let source = historyContentViewSource()
     let rule = section(
       in: source,
       from: "private var presentsArticleBeforeMedia: Bool",
       to: "private var suppressesEmbeddedMedia"
     )
-    // X 帖子的正文就是帖子本身，视频是附件；抖音那类视频帖仍旧视频在前。
-    XCTAssertTrue(rule.contains("latestSnapshot.platform == \"x\""))
+    // 有视频时播放器在上，文稿在下；只有微信长文仍旧正文在前。
+    XCTAssertFalse(rule.contains("latestSnapshot.platform == \"x\""))
     XCTAssertTrue(rule.contains("isSubstantiveWeChatArticle"))
     XCTAssertFalse(rule.contains("douyin"))
   }
@@ -1053,7 +1053,7 @@ final class HistoryContentViewTests: XCTestCase {
 
   func testTranscriptionConfirmationStatesNoAudioUploadAndUsesSecondExplicitAction() {
     let source = historyContentViewSource()
-    XCTAssertTrue(source.contains("需要下载 Apple 中文离线模型"))
+    XCTAssertTrue(source.contains("需要下载 Apple 离线听写模型"))
     XCTAssertTrue(source.contains("Button(\"下载并转写\")"))
     XCTAssertTrue(source.contains("model.confirmModelDownloadAndTranscribe()"))
     XCTAssertTrue(source.contains("视频音频只在这台 Mac 上处理，不会上传"))
@@ -1533,7 +1533,7 @@ final class HistoryContentViewTests: XCTestCase {
     let source = historyContentViewSource()
     let row = section(in: source, from: "private struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
     // 图24 式排版：摘要优先，回退作者；发布时间仍来自来源元数据。
-    XCTAssertTrue(row.contains("row.artifactPreview?.trimmedNonEmpty ?? row.author?.trimmedNonEmpty"))
+    XCTAssertTrue(row.contains("sanitizedRowPreview(row)"))
     // 一排时间，不是两排：发布时间优先（判断素材新不新鲜看的是它），抓不到
     // 才回落到入库时间。回落时必须带「存于」字样，否则会被读成原文的发布日期。
     XCTAssertTrue(row.contains("historyPublishedDate(published)"))
@@ -1553,9 +1553,32 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertEqual(MarkdownNoteFrontmatter.parse(transcription).body.trimmingCharacters(in: .whitespacesAndNewlines), "转写后的正文")
     XCTAssertNotEqual(MarkdownNoteFrontmatter.parse(transcription).body, MarkdownNoteFrontmatter.parse(source).body)
 
+    let layered = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestCore/LayeredSourceDocument.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(layered.contains("MarkdownNoteFrontmatter.parse(snapshot.bodyText).body"))
     let detail = section(in: historyContentViewSource(), from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    XCTAssertTrue(detail.contains("source: MarkdownNoteFrontmatter.parse(snapshot.bodyText).body"))
     XCTAssertFalse(detail.contains("source: sourceFrontmatter.body"))
+  }
+
+  func testSourcePaneKeepsCaptionAndTranscriptAsSeparateLayers() {
+    let detail = section(
+      in: historyContentViewSource(),
+      from: "private struct HistoryDetailView: View",
+      to: "private struct DataDestinationDisclosureView"
+    )
+    XCTAssertTrue(detail.contains("showsLayeredSource"))
+    XCTAssertTrue(detail.contains("hasPresentableCaption"))
+    XCTAssertTrue(detail.contains("LayeredSourceDocument.captionHeading"))
+    XCTAssertTrue(detail.contains("LayeredSourceDocument.transcriptHeading"))
+    XCTAssertTrue(detail.contains("展开全文"))
+    XCTAssertTrue(detail.contains("collapsibleSourceSection"))
+    XCTAssertFalse(detail.contains("history-reading-retranscribe"))
+    XCTAssertTrue(detail.contains("translate(historyDetail: detail"))
+    XCTAssertFalse(detail.contains("appModel.translate(preferences:"))
   }
 
   func testHistoryTimestampUsesTimeOnlyTodayAndLocalizedDateTimeEarlier() {

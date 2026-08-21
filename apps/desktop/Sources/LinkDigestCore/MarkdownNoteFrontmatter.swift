@@ -148,6 +148,28 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
   /// 出现、`---` 起头；块内至少两行以白名单键开头（半角/全角冒号都算），
   /// 见过已知键之后允许值的折行；`---` 单独一行或黏在行尾都算闭合。
   /// 正常的水平分隔线之间是普通正文，凑不齐两个白名单键，不受影响。
+  /// 翻译模型有时把 `Captured title` / `捕获的标题` 包装行也译出来。
+  public static func strippingCapturedEnvelope(from markdown: String) -> String {
+    let lines = markdown.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+    let dropped = lines.filter { line in
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed == "<<<" || trimmed == ">>>" { return false }
+      if trimmed == "Loading" || trimmed == "加载中" { return false }
+      let lower = trimmed.lowercased()
+      if lower.hasPrefix("captured title") || lower.hasPrefix("captured content") { return false }
+      if trimmed.hasPrefix("捕获的标题") || trimmed.hasPrefix("捕获的内容") { return false }
+      return true
+    }
+    var result: [String] = []
+    for line in dropped {
+      let isBlank = line.trimmingCharacters(in: .whitespaces).isEmpty
+      if isBlank, result.last?.trimmingCharacters(in: .whitespaces).isEmpty == true { continue }
+      result.append(line)
+    }
+    while result.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { result.removeFirst() }
+    return result.joined(separator: "\n")
+  }
+
   public static func strippingEchoedMetadataBlock(from markdown: String) -> String {
     let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
     let lines = normalized.components(separatedBy: "\n")
