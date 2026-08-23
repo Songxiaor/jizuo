@@ -26,6 +26,29 @@ final class KnowledgeVaultRendererTests: XCTestCase {
     XCTAssertTrue(document.text.contains("## 原文\n\n原文"))
   }
 
+  /// 导出的原文必须带上所有层，元数据必须取自抓取来源层。
+  ///
+  /// 原来两者都读 `snapshots.last`。那是最新追加的**派生层**——听写稿或画面
+  /// 字幕：正文只剩最后那一层（配文和另一层全丢），而 platform 会被写成
+  /// 派生层的 sourceLabel（「画面字幕」这种动作名）。派生层每多一种，
+  /// 丢失的内容就多一层，且全程不报错。
+  func testExportKeepsEveryLayerAndTakesMetadataFromTheCapturedSource() {
+    let text = KnowledgeVaultRenderer.render(
+      fixture(includeTranscript: true, includeSubtitles: true),
+      timeZone: fixtureTimeZone
+    ).text
+
+    // 三层都要在，一层都不能少。
+    XCTAssertTrue(text.contains("原文"), "配文层丢失")
+    XCTAssertTrue(text.contains("听写正文"), "听写层丢失")
+    XCTAssertTrue(text.contains("字幕正文"), "画面字幕层丢失")
+
+    // 元数据取自配文层：platform 不能被派生层的 sourceLabel 顶掉。
+    XCTAssertTrue(text.contains("platform: \"网页\""), "platform 被派生层污染")
+    XCTAssertFalse(text.contains("platform: \"画面字幕\""))
+    XCTAssertFalse(text.contains("platform: \"本机转写\""))
+  }
+
   /// 运行记录必须**不在**导出里：下游按「命中次数 / 正文长度」排序，
   /// 模型名、token、费用只会稀释密度，把真正相关的条目压下去。
   func testRunLogIsExcludedSoSearchDensityIsNotDiluted() {
@@ -386,7 +409,8 @@ private func fixture(
   capturedAtMilliseconds: Int64 = 2_000,
   status: RunStatus = .completed,
   tags: [String] = [],
-  includeTranscript: Bool = false
+  includeTranscript: Bool = false,
+  includeSubtitles: Bool = false
 ) -> HistoryExportProjection {
   let taskID = TaskID(UUID(uuidString: "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")!)
   let snapshotID = ContentSnapshotID(UUID(uuidString: "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")!)
@@ -401,7 +425,13 @@ private func fixture(
     createdAtMilliseconds: 1_000,
     updatedAtMilliseconds: 4_000
   )
-  func snapshot(id: ContentSnapshotID, sequence: Int, sourceKind: String, text: String) -> ContentSnapshot {
+  func snapshot(
+    id: ContentSnapshotID,
+    sequence: Int,
+    sourceKind: String,
+    text: String,
+    label: String = "网页"
+  ) -> ContentSnapshot {
     .init(
       id: id, taskID: taskID, sequence: sequence,
       envelopeCreatedAtMilliseconds: 1_500,
@@ -409,13 +439,19 @@ private func fixture(
       sourceKind: sourceKind, sourceURL: canonicalURL, title: title,
       platform: "fixture", captureMethod: "page", completeness: "complete",
       bodyText: text, characterCount: text.unicodeScalars.count,
-      bodySHA256: String(repeating: "a", count: 64), sourceLabel: "网页", usedCookie: true
+      bodySHA256: String(repeating: "a", count: 64), sourceLabel: label, usedCookie: true
     )
   }
   var snapshots = [snapshot(id: snapshotID, sequence: 1, sourceKind: "web", text: body)]
   if includeTranscript {
     snapshots.append(
-      snapshot(id: transcriptID, sequence: 2, sourceKind: "local_transcription", text: body)
+      snapshot(id: transcriptID, sequence: 2, sourceKind: "local_transcription", text: "听写正文", label: "本机转写")
+    )
+  }
+  if includeSubtitles {
+    let subtitleID = ContentSnapshotID(UUID(uuidString: "ffffffff-ffff-ffff-ffff-ffffffffffff")!)
+    snapshots.append(
+      snapshot(id: subtitleID, sequence: 3, sourceKind: "burned_in_subtitles", text: "字幕正文", label: "画面字幕")
     )
   }
 

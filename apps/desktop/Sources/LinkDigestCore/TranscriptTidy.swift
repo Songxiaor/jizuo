@@ -7,15 +7,30 @@ import Foundation
 public protocol TranscriptTidying: Sendable {
   /// `model` overrides the profile's chat model when non-empty; nil falls back
   /// to the configured summary/chat model.
+  /// `progress` 报告「已完成分片数 / 总分片数」。
+  ///
+  /// 长稿要切成十几片、跑上几分钟，没有进度时界面只能干写一句「正在整理…」，
+  /// 用户无从判断它是在跑、卡住了、还是快好了——转写那条早就有帧进度，
+  /// 这里一直缺。
+  func tidy(
+    text: String,
+    model: String?,
+    style: TidyStyle,
+    context: TranscriptTidyContext,
+    progress: (@Sendable (Int, Int) -> Void)?
+  ) async throws -> TranscriptTidyOutcome
+}
+
+public extension TranscriptTidying {
   func tidy(
     text: String,
     model: String?,
     style: TidyStyle,
     context: TranscriptTidyContext
-  ) async throws -> TranscriptTidyOutcome
-}
+  ) async throws -> TranscriptTidyOutcome {
+    try await tidy(text: text, model: model, style: style, context: context, progress: nil)
+  }
 
-public extension TranscriptTidying {
   func tidy(text: String, model: String?, style: TidyStyle) async throws -> TranscriptTidyOutcome {
     try await tidy(text: text, model: model, style: style, context: .empty)
   }
@@ -62,13 +77,22 @@ public enum TidyStyle: String, Sendable, CaseIterable {
   case transcript
   /// 手写笔记：字没错，但结构没成形。
   case note
+  /// 画面字幕 OCR 稿：错的是**形近字**，还常粘着画面角标的残片。
+  case subtitles
 
   public var systemPrompt: String {
     switch self {
     case .transcript: TranscriptTidyPrompt.system
     case .note: TranscriptTidyPrompt.note
+    case .subtitles: TranscriptTidyPrompt.subtitles
     }
   }
+
+  /// 输出是否要做段落归一化（把段内换行拼回一行）。
+  ///
+  /// 笔记的产物是 Markdown，换行本身有语义，不能归一；听写稿和字幕稿都是
+  /// 连续正文，要归一。
+  public var normalizesParagraphs: Bool { self != .note }
 }
 
 /// Tidied text plus the provider-reported token usage summed over chunks.
@@ -110,6 +134,12 @@ public struct TranscriptTidyOutcome: Sendable, Equatable {
 
 public enum TranscriptTidyError: Error, Sendable, Equatable {
   case modelNotConfigured
+  /// 模型配好了，但这次**读不出**凭据（钥匙串读失败或超时）。
+  ///
+  /// 必须和 `modelNotConfigured` 分开：两者的用户动作完全相反——一个要去设置里
+  /// 填配置，另一个只需要重试。曾经它俩共用一句「请先在设置中保存文本模型」，
+  /// 于是一次钥匙串读超时会让人跑去检查一份根本没问题的配置。
+  case credentialsUnavailable
   case emptyTranscript
   case authInvalid
   case responseRejected
@@ -119,6 +149,7 @@ public enum TranscriptTidyError: Error, Sendable, Equatable {
   public var userMessage: String {
     switch self {
     case .modelNotConfigured: "请先在设置中保存文本模型后再校对转写稿。"
+    case .credentialsUnavailable: "这次没能读出模型配置（钥匙串读取失败或超时），请重试。配置本身没有问题。"
     case .emptyTranscript: "没有可整理的转写文字。"
     case .authInvalid: "模型校对使用的 API Key 无效或没有权限。"
     case .responseRejected: "模型服务拒绝了校对请求，请检查模型名和账户额度。"
@@ -143,6 +174,29 @@ public enum TranscriptTidyPrompt {
     输入可能附带标题和配文作为上下文；它们只用来帮助还原听写错误，不要写进输出。
     输入是同一份转写稿的一个连续片段，可能从句中开始或结束；保持片段边界原样，不要补全句子。
     只输出还原后的正文纯文本。
+    """
+
+  /// 画面字幕的校对契约。
+  ///
+  /// 和听写稿是**两类错误**，所以不能共用一份提示词：听写错在同音近音
+  /// （「衡量」→「横梁」），OCR 错在字形相近（实测「衡量」→「後置」、
+  /// 「时间」→「时狗」、「任务」→「低务」）。让模型按同音去猜，只会越改越远。
+  ///
+  /// 另一个听写稿没有的问题：识别时字幕常和画面角标粘成一行，句尾拖着
+  /// `HowN`、`Andrew Ng`、`METR For AI` 这类残片。它们不是说话内容，要删掉。
+  public static let subtitles = """
+    你是画面字幕校对器。输入是从视频画面里 OCR 出来的字幕，把它还原成画面上原本印着的那句话。
+    这些字幕本身是人写的、通常还是人工翻译的，所以句子结构是通顺的，错的只是**个别字**。
+    可以做：根据标题、配文和前后句，纠正字形相近的错字（例如「後置」应为「衡量」、「时狗」应为「时间」、「低务」应为「任务」）；补齐标点。
+    必须删掉：句首或句尾粘进来的画面角标残片，例如讲者署名、机构名、水印的残缺拼写（`HowN`、`Andrew Ng`、`METR`、`CC-BY` 之类）。它们不是字幕内容。
+    必须保留原有时间戳（例如 21:15 或 1:02:03）及其相对位置，不要改时间、不要删除时间戳。
+    排版规则：一个段落写成连续的一行，段落内部绝不换行；段落之间用一个空行分隔；\
+    中文标点后不加空格。
+    严格禁止：改写通顺的句子；翻译；概括压缩；补充画面上没有的内容；添加任何前后缀说明。
+    某一句损坏到无法可靠还原时，原样保留，不要编一句通顺的替上去。
+    输入可能附带标题和配文作为上下文；它们只用来帮助判断专有名词，不要写进输出。
+    输入是同一份字幕稿的一个连续片段，可能从句中开始或结束；保持片段边界原样，不要补全句子。
+    只输出校对后的正文纯文本。
     """
 
   /// 每个分片都带同一份标题/配文，避免长稿切段后模型看不见上下文。

@@ -48,7 +48,8 @@ public struct TimedTranscriptionAccumulator: Sendable, Equatable {
       return left < right
     }
 
-    var paragraphs: [(start: Double, text: String)] = []
+    // 连段落的结束时间一起留下：长段落要按字数切片，而每片得有自己的时间码。
+    var paragraphs: [(start: Double, end: Double, text: String)] = []
     var current = ""
     var currentStart: Double?
     var previousEnd: Double?
@@ -58,7 +59,7 @@ public struct TimedTranscriptionAccumulator: Sendable, Equatable {
       if let previousEnd, start.isFinite, previousEnd.isFinite,
          start - previousEnd >= paragraphPauseSeconds, !current.isEmpty,
          !isNumberSeam(current.last, segment.text.first) {
-        paragraphs.append((currentStart ?? 0, current))
+        paragraphs.append((currentStart ?? 0, previousEnd, current))
         current = ""
         currentStart = nil
       }
@@ -66,15 +67,46 @@ public struct TimedTranscriptionAccumulator: Sendable, Equatable {
       current = joined(current, segment.text)
       previousEnd = end.isFinite ? end : previousEnd
     }
-    if !current.isEmpty { paragraphs.append((currentStart ?? 0, current)) }
+    if !current.isEmpty { paragraphs.append((currentStart ?? 0, previousEnd ?? currentStart ?? 0, current)) }
 
     // Markdown treats a single newline as a soft wrap, so paragraphs must be
     // separated by a blank line to actually render as paragraphs.
     // 段首时间码是转写时间线：点开原文就能对上视频进度。
     return paragraphs
-      .flatMap { paragraph in splitLongParagraph(paragraph.text).map { (paragraph.start, $0) } }
+      .flatMap(timedPieces(of:))
       .map { "\(clock($0.0)) \($0.1)" }
       .joined(separator: "\n\n")
+  }
+
+  /// 把一个段落切成片，并给每片一个**递进**的时间码。
+  ///
+  /// 原来所有切片都复用段落起始时间，于是一段话切出十几片、十几片顶着同一个
+  /// 时间码。识别得越准这个问题越明显：内容变多 → 段落变长 → 每段切得更碎，
+  /// 而锚点数量一点没涨。实测 105 分钟的稿子 457 段只有 41 个不同时间码，
+  /// 点击定位基本失去意义。
+  ///
+  /// 没有片级的时间信息可用（切分是按字数做的），所以按字符占比在段落的
+  /// 起止之间线性插值。它不精确——语速不匀时会有偏差——但比十几片共用一个
+  /// 时间码有用得多，且永远落在这段话真实的时间范围内。
+  private static func timedPieces(
+    of paragraph: (start: Double, end: Double, text: String)
+  ) -> [(Double, String)] {
+    let pieces = splitLongParagraph(paragraph.text)
+    guard pieces.count > 1 else { return [(paragraph.start, paragraph.text)] }
+    let totalCount = pieces.reduce(0) { $0 + $1.count }
+    let span = paragraph.end - paragraph.start
+    // 段落没有可用时长（起止相同或不是有限数）时，退回原行为而不是造出假时间。
+    guard totalCount > 0, span.isFinite, span > 0 else {
+      return pieces.map { (paragraph.start, $0) }
+    }
+    var timed: [(Double, String)] = []
+    var consumed = 0
+    for piece in pieces {
+      let ratio = Double(consumed) / Double(totalCount)
+      timed.append((paragraph.start + span * ratio, piece))
+      consumed += piece.count
+    }
+    return timed
   }
 
   public static func clock(_ seconds: Double) -> String {
@@ -243,4 +275,33 @@ public protocol LocalVideoTranscribing: Sendable {
     workspaceURL: URL,
     localeIdentifier: String
   ) -> AsyncThrowingStream<LocalVideoTranscriptionEvent, Error>
+
+  /// 听写前先听一小段，确认这个 locale 真的对得上音频。
+  ///
+  /// 为什么不能只靠猜：调用方只能从**配文**猜语种，而配文语言和视频语言常常
+  /// 是两回事——中文博主转发英文视频在 X 上是最常见的一类内容。猜错时 Apple
+  /// 的听写不是「准确率下降」而是整篇报废，且报废的稿子会一路流到翻译，
+  /// 让人以为是翻译坏了。
+  ///
+  /// `preferred` 是调用方的猜测，`fallbacks` 是猜错时按顺序试的候选。
+  /// 实现必须只用已安装的模型，不得在这里触发任何下载。
+  func detectLocale(
+    fileURL: URL,
+    workspaceURL: URL,
+    preferred: String,
+    fallbacks: [String]
+  ) async -> String
+}
+
+extension LocalVideoTranscribing {
+  /// 不具备探测能力的实现（测试替身、未来的其它引擎）直接采信调用方的猜测，
+  /// 行为与加入探测之前完全一致。
+  public func detectLocale(
+    fileURL: URL,
+    workspaceURL: URL,
+    preferred: String,
+    fallbacks: [String]
+  ) async -> String {
+    preferred
+  }
 }

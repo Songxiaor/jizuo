@@ -164,7 +164,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     //
     // 漏掉这一行的后果不是报错信息不好看——是 default 分支直接 return false，
     // 落库以 stateConflict 失败，而 UI 上只表现为「点新建没有任何反应」。
-    case (.manualLink, 1), (.localTranscription, 1), (.userNote, 1), (.pieceDraft, 1), (.work, 1):
+    case (.manualLink, 1), (.localTranscription, 1), (.userNote, 1), (.pieceDraft, 1), (.work, 1),
+         (.burnedInSubtitles, 1):
       expectedKey = "manual:v1:\(suffix)"
     default: return false
     }
@@ -407,8 +408,13 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
               -- effective list/search snapshot. A newly created transcription
               -- still falls back to source metadata so author/platform do not
               -- disappear from the sidebar.
+              --
+              -- 派生层清单在 SQL 里只能手写一份，改动必须与 Swift 侧的
+              -- `LayeredSourceDocument.derivedKinds` 同步。漏掉一种的后果实测
+              -- 过：画面字幕成了「有效快照」，侧边栏的平台标签变成「画面字幕」，
+              -- 作者和发布时间一起消失。
               SELECT CASE
-                WHEN effective_snapshot.source_kind <> 'local_transcription'
+                WHEN effective_snapshot.source_kind NOT IN ('local_transcription', 'burned_in_subtitles')
                 THEN latest_evidence.snapshot_id
                 ELSE NULL
               END
@@ -429,7 +435,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
             (
               SELECT s.id
               FROM content_snapshots s
-              WHERE s.task_id = t.id AND s.source_kind <> 'local_transcription'
+              -- 同上：必须排除**所有**派生层，不只是听写。
+              WHERE s.task_id = t.id AND s.source_kind NOT IN ('local_transcription', 'burned_in_subtitles')
               ORDER BY s.sequence DESC
               LIMIT 1
             )

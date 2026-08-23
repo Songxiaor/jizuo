@@ -298,8 +298,13 @@ private actor HistoryRepositoryWorker {
     for lane in lanes {
       for recalled in (try? history.recallMaterials(lane: lane, now: now)) ?? [] {
         guard recalled.isAvailable, !taskIDs.contains(recalled.id) else { continue }
+        // 摘录取配文层，不取 `snapshots.last`。
+        //
+        // last 是最新的派生层：有听写稿就是听写稿，有画面字幕就是字幕稿。摘录
+        // 会被截断到很短，截出来的那点开头远不如配文能说明这条讲的是什么。
         guard let detail = try? history.detail(taskID: recalled.id),
-              let snapshot = detail.snapshots.last else { continue }
+              let snapshot = LayeredSourceDocument.captionSnapshot(in: detail.snapshots)
+                ?? detail.snapshots.last else { continue }
         taskIDs.append(recalled.id)
         materials.append(.init(
           index: materials.count + 1,
@@ -321,8 +326,10 @@ private actor HistoryRepositoryWorker {
     let materials: [DraftPrompt.Material] = ((try? history.materials(of: pieceID)) ?? [])
       .filter(\.isAvailable)
       .compactMap { material in
+        // 同上：摘录取配文层。
         guard let detail = try? history.detail(taskID: material.id),
-              let snapshot = detail.snapshots.last else { return nil }
+              let snapshot = LayeredSourceDocument.captionSnapshot(in: detail.snapshots)
+                ?? detail.snapshots.last else { return nil }
         return .init(
           title: material.title,
           source: HistoryPlatformDisplay.name(forHost: material.host),
@@ -681,6 +688,13 @@ private struct PendingTranscriptTidyContext {
   /// nil 表示继承设置页的总结模型。
   let model: String?
   let tidyContext: TranscriptTidyContext
+  /// 校对哪一类稿子。听写和 OCR 错的不是一类字，提示词也不同。
+  let style: TidyStyle
+  /// 仅字幕校对使用：结果原地写回这条快照。
+  ///
+  /// 听写校对走的是「新建一条转写快照」，那条路径对字幕是错的——会把校对
+  /// 结果存成听写层，等于凭空多出一份听写稿，真正的字幕层还是错的。
+  let targetSnapshotID: ContentSnapshotID?
 }
 
 enum RemoteMediaFavoriteState: Equatable {
@@ -851,7 +865,12 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var transcriptionCleanupFailure: String?
   @Published var isTranscriptionModelConfirmationPresented = false
   @Published var isOnlineTranscriptionConfirmationPresented = false
-  @Published private(set) var transcriptTidyState: TranscriptTidyUIState = .idle
+  @Published private(set) var transcriptTidyState: TranscriptTidyUIState = .idle {
+    // 任何终态都必须带走进度文案，不能让「已校对 5/18 段」陪着失败提示常驻。
+    didSet {
+      if !transcriptTidyState.isActive { transcriptTidyProgress = nil }
+    }
+  }
   @Published private(set) var transcriptTidyTaskID: TaskID?
   @Published var isTranscriptTidyConfirmationPresented = false
   /// 展示用 token 摘要；evidence 表列固定，本轮不入库。
@@ -898,6 +917,7 @@ final class HistoryViewModel: ObservableObject {
   private let faviconCache: WebsiteFaviconCache?
   private let faviconResources: (any SafeResourceFetching)?
   private let videoTranscriber: (any LocalVideoTranscribing)?
+  private let subtitleReader: (any VideoSubtitleReading)?
   private let imageTextRecognizer: (any LocalImageTextRecognizing)?
   private let onlineAudioTranscriber: (any OnlineAudioTranscribing)?
   private let transcriptTidier: (any TranscriptTidying)?
@@ -966,6 +986,7 @@ final class HistoryViewModel: ObservableObject {
     faviconCache: WebsiteFaviconCache? = nil,
     faviconResources: (any SafeResourceFetching)? = nil,
     videoTranscriber: (any LocalVideoTranscribing)? = nil,
+    subtitleReader: (any VideoSubtitleReading)? = nil,
     imageTextRecognizer: (any LocalImageTextRecognizing)? = nil,
     onlineAudioTranscriber: (any OnlineAudioTranscribing)? = nil,
     transcriptTidier: (any TranscriptTidying)? = nil,
@@ -988,6 +1009,7 @@ final class HistoryViewModel: ObservableObject {
     self.faviconCache = faviconCache
     self.faviconResources = faviconResources
     self.videoTranscriber = videoTranscriber
+    self.subtitleReader = subtitleReader
     self.imageTextRecognizer = imageTextRecognizer
     self.onlineAudioTranscriber = onlineAudioTranscriber
     self.transcriptTidier = transcriptTidier
@@ -1316,13 +1338,187 @@ final class HistoryViewModel: ObservableObject {
     return rows.indices.contains(index + offset)
   }
 
-  /// 听写语言跟配文走，不跟设置里的目标语言走。
+  /// 实时流攒够多少字才做语种判断。
+  ///
+  /// 太早判会拿半个词去比对，太晚判则乱码已经铺满屏幕。判据要求至少 12 个字符
+  /// 才肯下结论，这里留出数倍余量。
+  static let livePlaybackLanguageProbeCharacters = 60
+
+  /// 给用户看的语言名。错误提示里出现 `zh_CN` 这种标识没有意义。
+  static func languageName(forLocaleIdentifier locale: String) -> String {
+    switch CapturedContentLanguage.expectedScript(forLocaleIdentifier: locale) {
+    case .chinese: return "中文"
+    case .latin: return "英文"
+    case .japanese: return "日文"
+    case .korean: return "韩文"
+    case nil: return "所选语言"
+    }
+  }
+
+  /// 猜错时按顺序试的候选。英文排在中文前面：出问题的方向几乎总是
+  /// 「中文配文 + 英文视频」，先试 en_US 能让最常见的一类内容一次命中。
+  static let speechLocaleProbeFallbacks = ["en_US", "zh_CN"]
+
+  /// 听写语言的**起点**猜测，跟配文走，不跟设置里的目标语言走。
+  ///
+  /// 只是猜测：配文语言和视频语言常常是两回事，所以调用方必须再经
+  /// `detectLocale` 用音频本身验一遍，不能直接拿它去转写。
   private static func speechLocaleIdentifier(for detail: HistoryDetailProjection) -> String {
     let caption = LayeredSourceDocument.captionSnapshot(in: detail.snapshots)
       .map(LayeredSourceDocument.body(of:))
       ?? detail.snapshots.last.map(LayeredSourceDocument.body(of:))
       ?? ""
     return CapturedContentLanguage.speechLocaleIdentifier(in: caption)
+  }
+
+  // MARK: - 时间码跳转
+
+  /// 一次跳转请求。
+  ///
+  /// 带 `id` 是为了让**重复点击同一个时间码**也能触发：只比秒数的话，第二次
+  /// 点击值没变，`onChange` 不会响应，表现成「点了没反应」。
+  struct MediaSeekRequest: Equatable {
+    let id = UUID()
+    let seconds: Double
+  }
+
+  /// 阅读区点了时间码；播放器那侧监听它。
+  ///
+  /// 走 ViewModel 中转而不是直接持有播放器：播放器是播放视图的 `@State`，
+  /// 阅读区够不到它，而这个 ViewModel 本来就是两边共享的。
+  @Published private(set) var mediaSeekRequest: MediaSeekRequest?
+
+  func requestMediaSeek(toSeconds seconds: Double) {
+    guard seconds.isFinite, seconds >= 0 else { return }
+    mediaSeekRequest = MediaSeekRequest(seconds: seconds)
+  }
+
+  // MARK: - 画面字幕
+
+  /// 校对进度文案，例如「已校对 3/18 段」。长稿要跑几分钟，没有它界面上
+  /// 只有一句「正在整理…」，看不出是在跑还是卡住了。
+  @Published private(set) var transcriptTidyProgress: String?
+
+  /// 字幕和听写各自一条状态。共用一条会让「读字幕」把听写按钮也变成进行中，
+  /// 而它们本就是两条独立来源，可以先后跑、也可以只跑其中一条。
+  @Published private(set) var subtitleState: TranscriptionUIState = .idle
+  @Published private(set) var subtitleProgress: String?
+  private var subtitleTask: Task<Void, Never>?
+  private var subtitleTaskID: TaskID?
+
+  func subtitleState(for taskID: TaskID) -> TranscriptionUIState {
+    subtitleTaskID == taskID ? subtitleState : .idle
+  }
+
+  /// 这条记录已经读到过画面字幕。
+  func hasBurnedInSubtitles(taskID: TaskID) -> Bool {
+    guard let detail, detail.task.id == taskID else { return false }
+    return LayeredSourceDocument.subtitleSnapshot(in: detail.snapshots) != nil
+  }
+
+  func canReadBurnedInSubtitles(taskID: TaskID) -> Bool {
+    history != nil
+      && subtitleReader != nil
+      && !isReadOnly
+      && detail?.task.id == taskID
+      && localMediaFileURL?.isFileURL == true
+      && !subtitleState.isActive
+  }
+
+  /// 从画面里读烧录字幕，作为独立的一层落库。
+  ///
+  /// 手动触发而不是自动：烧录字幕并非总存在，很多视频跑完几十秒只换来一句
+  /// 「没读到」。它一旦存在质量却很高（多半是人工翻译的成品），所以值得给
+  /// 一个明确的入口，而不是替用户决定每条视频都试一遍。
+  ///
+  /// 落库走 `acceptCapture` 追加一条快照，**不碰**听写那套 attempt/媒体状态：
+  /// 两条来源互不覆盖，读了字幕不该让听写按钮消失，反之亦然。
+  func requestBurnedInSubtitles(taskID: TaskID) {
+    guard canReadBurnedInSubtitles(taskID: taskID),
+          let detail, detail.task.id == taskID,
+          let history,
+          let reader = subtitleReader,
+          let fileURL = localMediaFileURL,
+          let latest = detail.snapshots.last else {
+      subtitleTaskID = taskID
+      subtitleState = .failed("找不到可读取字幕的本机视频。")
+      return
+    }
+    subtitleTask?.cancel()
+    subtitleTaskID = taskID
+    subtitleProgress = nil
+    subtitleState = .transcribing
+
+    let title = latest.title
+    let platform = detail.media?.platform ?? latest.platform
+    let sourceURL = latest.sourceURL
+    // 进度回调在这里定义、而不是写进下面的 Task 闭包里：那样等于在一个已经
+    // `[weak self]` 捕获过的闭包里再捕获一次 self，Swift 6 的并发检查会直接拒绝。
+    let reportProgress: @Sendable (Int, Int) -> Void = { [weak self] done, total in
+      Task { @MainActor in
+        guard let self, self.subtitleTaskID == taskID else { return }
+        self.subtitleProgress = "已扫描 \(done)/\(total) 帧"
+      }
+    }
+    subtitleTask = Task { [weak self] in
+      do {
+        let cues = try await reader.readSubtitles(
+          fileURL: fileURL,
+          languages: ["zh-Hans", "en-US"],
+          progress: reportProgress
+        )
+        try Task.checkCancellation()
+        guard let self, self.subtitleTaskID == taskID else { return }
+        guard !cues.isEmpty else {
+          self.subtitleProgress = nil
+          self.subtitleState = .failed("这段视频里没有读到烧录字幕。")
+          return
+        }
+        let text = BurnedInSubtitles.markdown(from: cues)
+        let now = self.nowMilliseconds()
+        let stamp = ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(now) / 1_000))
+        let document = CapturedDocument(
+          createdAt: stamp,
+          origin: .burnedInSubtitles,
+          url: sourceURL,
+          title: title,
+          platform: platform,
+          method: "vision_ocr",
+          text: text,
+          completeness: "complete",
+          capturedAt: stamp,
+          sourceLabel: "画面字幕"
+        )
+        do {
+          _ = try history.acceptCapture(.init(document: document, receivedAtMilliseconds: now))
+        } catch {
+          self.subtitleProgress = nil
+          // 把**真实**错误带出来。
+          //
+          // 这里原本无论什么错都报「库里可能已存在同样的字幕」——那是一句猜测，
+          // 而真实原因是新来源没登记进落库的 origin 白名单，字幕一条都没存进去。
+          // 猜测式的错误文案比没有文案更糟：它把人引向完全错误的方向。
+          self.subtitleState = .failed("字幕没有保存：\(error)")
+          return
+        }
+        self.subtitleProgress = nil
+        self.subtitleState = .completed
+        self.refreshDetailAfterTranscription(taskID: taskID)
+      } catch is CancellationError {
+        guard let self, self.subtitleTaskID == taskID else { return }
+        self.subtitleProgress = nil
+        self.subtitleState = .cancelled
+      } catch {
+        guard let self, self.subtitleTaskID == taskID else { return }
+        self.subtitleProgress = nil
+        self.subtitleState = .failed("读取画面字幕失败，请重试。")
+      }
+    }
+  }
+
+  func cancelBurnedInSubtitles() {
+    subtitleTask?.cancel()
+    subtitleTask = nil
   }
 
   func requestTranscription() {
@@ -1380,13 +1576,21 @@ final class HistoryViewModel: ObservableObject {
       let workspaceURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("linkdigest-transcription-\(UUID().uuidString)", isDirectory: true)
       try? FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+      // 先听开头一小段确认语言。配文猜错时，Apple 的听写不是「差一点」而是
+      // 整篇报废，且报废的稿子会一路流到翻译，看起来像是翻译坏了。
+      let localeIdentifier = await videoTranscriber.detectLocale(
+        fileURL: fileURL,
+        workspaceURL: workspaceURL,
+        preferred: Self.speechLocaleIdentifier(for: detail),
+        fallbacks: Self.speechLocaleProbeFallbacks
+      )
       let context = TranscriptionContext(
         taskID: detail.task.id,
         detail: detail,
         fileURL: fileURL,
         workspaceURL: workspaceURL,
         attempt: attempt,
-        localeIdentifier: Self.speechLocaleIdentifier(for: detail)
+        localeIdentifier: localeIdentifier
       )
       guard !Task.isCancelled, self?.transcriptionRequestID == requestID else {
         _ = await worker.updateTranscriptionStatus(
@@ -1496,6 +1700,12 @@ final class HistoryViewModel: ObservableObject {
         } catch {
           transcriptionInputURL = temp.fileURL
         }
+        let localeIdentifier = await videoTranscriber.detectLocale(
+          fileURL: transcriptionInputURL,
+          workspaceURL: temp.workspaceURL,
+          preferred: Self.speechLocaleIdentifier(for: detail),
+          fallbacks: Self.speechLocaleProbeFallbacks
+        )
         let context = RemoteTranscriptionContext(
           taskID: taskID,
           detail: detail,
@@ -1504,7 +1714,7 @@ final class HistoryViewModel: ObservableObject {
           workspaceURL: temp.workspaceURL,
           attempt: attempt,
           tempAttemptID: temp.attemptID,
-          localeIdentifier: Self.speechLocaleIdentifier(for: detail)
+          localeIdentifier: localeIdentifier
         )
         guard !Task.isCancelled, self.transcriptionRequestID == requestID else {
           _ = await worker.updateTaskTranscriptionStatus(
@@ -1661,6 +1871,21 @@ final class HistoryViewModel: ObservableObject {
       return "\(total) tokens（输入 \(prompt) / 输出 \(completion)）\(partial)"
     }
     return "\(total) tokens\(partial)"
+  }
+
+  /// 已经落库后的 UI 终态。部分分片失败不能再显示绿色「已保存」——已完成部分
+  /// 的确保存了，但失败片只是原文回填；把它藏在 token 摘要里会让人误以为整篇
+  /// 都校对成功。
+  static func tidyStateAfterSaving(
+    _ outcome: TranscriptTidyOutcome,
+    style: TidyStyle
+  ) -> TranscriptTidyUIState {
+    guard outcome.isPartial else { return .completed }
+    let verb = style == .note ? "整理" : "校对"
+    return .failed(
+      "\(verb)未完整完成：\(outcome.chunkCount) 段中有 \(outcome.failedChunkCount) 段失败；"
+        + "已完成部分已保存，失败段保留原文。请重试。"
+    )
   }
 
   /// 全文 token 总和 = Runs（总结/翻译）+ 台账（整理/脑图）的累计花费。
@@ -2575,8 +2800,10 @@ final class HistoryViewModel: ObservableObject {
   }
 
   func updateMindMapTheme(taskID: TaskID, themeID: String) {
+    // `!isReadOnly` 和改大纲那条是同一道闸，漏在这里的后果更隐蔽：换配色只是拨一下
+    // Picker，界面立刻变了，底下却在往一份只读资料库写。
     guard let store = history?.mindMapStore, let existing = mindMapRecord,
-          existing.taskID == taskID, existing.themeID != themeID else { return }
+          existing.taskID == taskID, existing.themeID != themeID, !isReadOnly else { return }
     let record = TaskMindMapRecord(
       taskID: taskID,
       outline: existing.outline,
@@ -2674,7 +2901,15 @@ final class HistoryViewModel: ObservableObject {
 
   /// 刚完成的转写优先用流式缓冲：detail 快照要等一次异步刷新才包含新稿，
   /// 「转写后自动整理」不能因为这个窗口而空转。
-  private func tidySourceText(taskID: TaskID) -> String? {
+  private func tidySourceText(taskID: TaskID, style: TidyStyle) -> String? {
+    if style == .subtitles {
+      guard let detail, detail.task.id == taskID,
+            let snapshot = LayeredSourceDocument.subtitleSnapshot(in: detail.snapshots) else {
+        return nil
+      }
+      let body = LayeredSourceDocument.body(of: snapshot)
+      return body.isEmpty ? nil : body
+    }
     if transcriptionTaskID == taskID, transcriptionState == .completed {
       let text = transcriptionText.trimmingCharacters(in: .whitespacesAndNewlines)
       if !text.isEmpty { return text }
@@ -2748,7 +2983,7 @@ final class HistoryViewModel: ObservableObject {
           self.transcriptTidyState = .failed("整理完成但没能保存；原文没有改动。")
           return
         }
-        self.transcriptTidyState = .completed
+        self.transcriptTidyState = Self.tidyStateAfterSaving(outcome, style: .note)
         self.transcriptTidyTokenSummary = Self.tidyTokenSummary(outcome)
         self.refreshDetailAfterTranscription(taskID: taskID)
       } catch {
@@ -2764,6 +2999,19 @@ final class HistoryViewModel: ObservableObject {
     transcriptTidyUnavailableReason(taskID: taskID) == nil
   }
 
+  /// 每一条「发给聊天模型」的入口共用的前置闸。
+  ///
+  /// 抽出来不是为了少写几行：`requestTranscriptTidy` 之后会写库、并把正文发到外部
+  /// 模型。新增的整理入口漏掉只读或模型这两条，症状不是按钮该灰没灰，而是在一份
+  /// 只读资料库上真的写、真的把正文发出去——「校对字幕」上线时正是这么漏的。
+  /// 共用一份，新入口就不可能各写各的。
+  private func tidyGateUnavailableReason(taskID: TaskID) -> String? {
+    guard let detail, detail.task.id == taskID, history != nil else { return "请先选中这条记录" }
+    if isReadOnly { return "这份历史当前只能浏览" }
+    if transcriptTidier == nil { return "需先在设置里配置聊天模型" }
+    return nil
+  }
+
   /// 「整理文稿」为什么现在不能点。可用时返回 nil。
   ///
   /// 这个按钮同时受五个条件约束，任何一条不满足都会让它变灰。而灰按钮在 SwiftUI 里
@@ -2773,20 +3021,43 @@ final class HistoryViewModel: ObservableObject {
   /// 所以判断和理由必须写在一起：`canTidyTranscript` 直接由本方法推导，两者不可能各改
   /// 各的而说法不一致。顺序按「用户最可能撞上」排，先报最需要先解决的那个。
   func transcriptTidyUnavailableReason(taskID: TaskID) -> String? {
-    guard let detail, detail.task.id == taskID, history != nil else { return "请先选中这条记录" }
-    if isReadOnly { return "这份历史当前只能浏览" }
-    if transcriptTidier == nil { return "需先在设置里配置聊天模型" }
+    if let reason = tidyGateUnavailableReason(taskID: taskID) { return reason }
     if transcriptionState(for: taskID).isActive { return "转写进行中，完成后即可整理" }
     if transcriptTidyState(for: taskID).isActive { return "正在整理…" }
-    if tidySourceText(taskID: taskID) == nil { return "需先完成转写，才有文稿可整理" }
+    if tidySourceText(taskID: taskID, style: .transcript) == nil { return "需先完成转写，才有文稿可整理" }
     return nil
   }
 
-  func requestTranscriptTidy(taskID: TaskID, model: String?) {
-    guard let detail, detail.task.id == taskID, canTidyTranscript(taskID: taskID),
-          let text = tidySourceText(taskID: taskID) else {
+  func canTidySubtitles(taskID: TaskID) -> Bool {
+    subtitleTidyUnavailableReason(taskID: taskID) == nil
+  }
+
+  /// 「校对字幕」为什么现在不能点。可用时返回 nil。
+  ///
+  /// 前半段和听写共用闸门，后半段刻意不同：**不**看「听写进行中」。画面字幕和听写
+  /// 是两条独立来源，本就可以先后跑、也可以只跑其中一条，拿听写的状态挡字幕等于把
+  /// 那份独立性又绑了回去。真正冲突的是共用的整理状态机，所以查的是它。
+  func subtitleTidyUnavailableReason(taskID: TaskID) -> String? {
+    if let reason = tidyGateUnavailableReason(taskID: taskID) { return reason }
+    if subtitleState(for: taskID).isActive { return "正在读取画面字幕…" }
+    if transcriptTidyState(for: taskID).isActive { return "正在校对…" }
+    if tidySourceText(taskID: taskID, style: .subtitles) == nil { return "需先读取画面字幕，才有字幕可校对" }
+    return nil
+  }
+
+  func requestTranscriptTidy(taskID: TaskID, model: String?, style: TidyStyle = .transcript) {
+    // 已经在跑就当没点。走下面的失败分支会把 running 踩成 failed，等于用一次
+    // 无效点击杀掉界面上那条正在跑的进度。
+    guard !transcriptTidyState.isActive else { return }
+    // 拦截理由要照实说。这里原本无论被什么条件拦下都报「没有文稿」，于是只读、
+    // 没配模型这些真实原因全被同一句话盖住，把人引向完全无关的方向。
+    let blockedReason = style == .subtitles
+      ? subtitleTidyUnavailableReason(taskID: taskID)
+      : transcriptTidyUnavailableReason(taskID: taskID)
+    guard let detail, detail.task.id == taskID, blockedReason == nil,
+          let text = tidySourceText(taskID: taskID, style: style) else {
       transcriptTidyTaskID = taskID
-      transcriptTidyState = .failed(TranscriptTidyError.emptyTranscript.userMessage)
+      transcriptTidyState = .failed(blockedReason ?? TranscriptTidyError.emptyTranscript.userMessage)
       return
     }
     pendingTranscriptTidyContext = .init(
@@ -2795,7 +3066,11 @@ final class HistoryViewModel: ObservableObject {
       text: text,
       platform: detail.media?.platform ?? detail.snapshots.last?.platform ?? "local_video",
       model: model?.trimmingCharacters(in: .whitespacesAndNewlines),
-      tidyContext: Self.transcriptTidyContext(for: detail, transcript: text)
+      tidyContext: Self.transcriptTidyContext(for: detail, transcript: text),
+      style: style,
+      targetSnapshotID: style == .subtitles
+        ? LayeredSourceDocument.subtitleSnapshot(in: detail.snapshots)?.id
+        : nil
     )
     presentOrSkipConsent(.transcriptTidy, present: {
       $0.isTranscriptTidyConfirmationPresented = true
@@ -2822,13 +3097,16 @@ final class HistoryViewModel: ObservableObject {
     guard history != nil, transcriptTidier != nil, !isReadOnly,
           !transcriptTidyState.isActive,
           let text = Self.latestTranscriptText(in: detail) else { return false }
+    // 自动队列只校对听写稿：画面字幕是手动触发的，不该在后台悄悄改它。
     let context = PendingTranscriptTidyContext(
       taskID: detail.task.id,
       detail: detail,
       text: text,
       platform: detail.media?.platform ?? detail.snapshots.last?.platform ?? "local_video",
       model: model?.trimmingCharacters(in: .whitespacesAndNewlines),
-      tidyContext: Self.transcriptTidyContext(for: detail, transcript: text)
+      tidyContext: Self.transcriptTidyContext(for: detail, transcript: text),
+      style: .transcript,
+      targetSnapshotID: nil
     )
     CapabilityConsent.grant(.transcriptTidy, defaults: capabilityConsentDefaults)
     beginTranscriptTidy(context)
@@ -2854,6 +3132,14 @@ final class HistoryViewModel: ObservableObject {
   }
 
   private func beginTranscriptTidy(_ context: PendingTranscriptTidyContext) {
+    // 最后一道闸，不是重复检查：这里有三个调用方，其中 `confirmTranscriptTidy` 是
+    // 从确认框回来的——弹框期间资料库可能已经换成只读的了，入口处那次检查就过期了。
+    // 再往下就是写库和把正文发出去，没有第二次机会。
+    guard !isReadOnly else {
+      transcriptTidyTaskID = context.taskID
+      transcriptTidyState = .failed("这份历史当前只能浏览")
+      return
+    }
     guard let history, let transcriptTidier else {
       transcriptTidyState = .failed(TranscriptTidyError.emptyTranscript.userMessage)
       return
@@ -2891,14 +3177,54 @@ final class HistoryViewModel: ObservableObject {
         return
       }
       do {
+        let reportTidyProgress: @Sendable (Int, Int) -> Void = { [weak self] done, total in
+          Task { @MainActor in
+            guard let self, self.transcriptTidyRequestID == requestID else { return }
+            // 只有一片时不报——「已校对 1/1 段」没有信息量。
+            self.transcriptTidyProgress = total > 1 ? "已校对 \(done)/\(total) 段" : nil
+          }
+        }
         let outcome = try await transcriptTidier.tidy(
           text: context.text,
           model: context.model,
-          style: .transcript,
-          context: context.tidyContext
+          style: context.style,
+          context: context.tidyContext,
+          progress: reportTidyProgress
         )
         try Task.checkCancellation()
         guard self.transcriptTidyRequestID == requestID else { return }
+        // 字幕校对**原地写回自己那一层**。
+        //
+        // 听写校对走的是「追加一条新的转写快照」，那条路对字幕是错的：结果会
+        // 变成一份凭空多出来的听写稿，而真正的画面字幕层原封不动还是错的。
+        if context.style == .subtitles, let snapshotID = context.targetSnapshotID {
+          let updated = await worker.updateSnapshotBodyText(
+            history,
+            taskID: context.taskID,
+            snapshotID: snapshotID,
+            bodyText: outcome.text,
+            updatedAtMilliseconds: self.nowMilliseconds()
+          )
+          _ = await worker.updateTaskTranscriptionStatus(
+            history, taskID: context.taskID, attempt: attempt,
+            status: .cancelled, updatedAtMilliseconds: self.nowMilliseconds()
+          )
+          guard self.transcriptTidyRequestID == requestID else { return }
+          switch updated {
+          case .success:
+            self.transcriptTidyState = Self.tidyStateAfterSaving(outcome, style: context.style)
+            self.transcriptTidyTokenSummary = Self.tidyTokenSummary(outcome)
+            await self.recordTokenUsage(
+              taskID: context.taskID, operation: "subtitle_tidy",
+              promptTokens: outcome.promptTokens, completionTokens: outcome.completionTokens,
+              totalTokens: outcome.totalTokens
+            )
+            self.refreshDetailAfterTranscription(taskID: context.taskID)
+          case .failure:
+            self.transcriptTidyState = .failed("校对结果未能保存到本机历史，请重试。原始字幕未受影响。")
+          }
+          return
+        }
         let persisted = await worker.saveTidiedTranscript(
           history,
           taskID: context.taskID,
@@ -2912,7 +3238,7 @@ final class HistoryViewModel: ObservableObject {
         guard self.transcriptTidyRequestID == requestID else { return }
         switch persisted {
         case .applied:
-          self.transcriptTidyState = .completed
+          self.transcriptTidyState = Self.tidyStateAfterSaving(outcome, style: context.style)
           self.transcriptTidyTokenSummary = Self.tidyTokenSummary(outcome)
           await self.recordTokenUsage(
             taskID: context.taskID, operation: "transcript_tidy",
@@ -2947,6 +3273,13 @@ final class HistoryViewModel: ObservableObject {
   func confirmOnlineTranscription() {
     CapabilityConsent.grant(.onlineTranscription, defaults: capabilityConsentDefaults)
     isOnlineTranscriptionConfirmationPresented = false
+    // 入口处查过一次，但那是弹框弹出之前的事。确认之后就要上传音频并写库，
+    // 期间资料库若已换成只读，前一次检查就是过期的。
+    guard !isReadOnly else {
+      pendingOnlineTranscriptionContext = nil
+      transcriptionState = .failed("这份历史当前只能浏览")
+      return
+    }
     guard let history, let onlineAudioTranscriber, let context = pendingOnlineTranscriptionContext,
           selectedTaskID == context.taskID else {
       pendingOnlineTranscriptionContext = nil
@@ -3227,6 +3560,12 @@ final class HistoryViewModel: ObservableObject {
   /// This is the only UI path allowed to call model installation.
   func confirmModelDownloadAndTranscribe() {
     isTranscriptionModelConfirmationPresented = false
+    // 同 `confirmOnlineTranscription`：确认框之后才下载模型、转写并落库。
+    guard !isReadOnly else {
+      pendingTranscriptionContext = nil
+      transcriptionState = .failed("这份历史当前只能浏览")
+      return
+    }
     if let context = takePendingRemoteTranscriptionContext() {
       confirmRemoteModelDownloadAndTranscribe(context)
       return
@@ -3802,10 +4141,9 @@ final class HistoryViewModel: ObservableObject {
     //
     // 作者/发布时间这类 frontmatter 仍应来自来源快照——转写稿没有这些字段，
     // 这正是阅读区 latestSourceSnapshot 已有的区分。
-    let transcriptionKind = CapturedDocument.Origin.localTranscription.rawValue
     guard let snapshot = detail.snapshots.last else { return nil }
-    let sourceSnapshot = detail.snapshots.last(where: { $0.sourceKind != transcriptionKind })
-      ?? snapshot
+    // 同上：派生层不止听写一种，判据统一走 `captionSnapshot`。
+    let sourceSnapshot = LayeredSourceDocument.captionSnapshot(in: detail.snapshots) ?? snapshot
     let sourceNote = MarkdownNoteFrontmatter.parse(sourceSnapshot.bodyText)
     let body = LayeredSourceDocument.modelInput(from: detail.snapshots)
     func nonEmpty(_ value: String?) -> String? {
@@ -4013,7 +4351,9 @@ final class HistoryViewModel: ObservableObject {
   /// - 成功后只就地补丁当前详情里的那份 snapshot，不回读、不整树刷新；
   /// - 保存任务链式排队，保证连续两次保存不会乱序落库。
   func saveEditedSnapshotText(taskID: TaskID, snapshotID: ContentSnapshotID, bodyText: String) {
-    guard let history else { return }
+    // 进入编辑态那一步已经查过只读，但草稿落库可能晚很多（防抖、切换记录时的
+    // 补存），中间资料库可能已经换掉了。写库方法自己带闸才防得住。
+    guard let history, !isReadOnly else { return }
     let generation = configurationGeneration
     let updatedAt = nowMilliseconds()
     snapshotSaveTask = Task { [weak self, worker, previous = snapshotSaveTask] in
@@ -4922,7 +5262,10 @@ final class HistoryViewModel: ObservableObject {
   ///
   /// 空标题不写回默认值以外的东西：列表里一行没有抓手的空白比「无标题笔记」更难认。
   func renameNote(taskID: TaskID, title: String) {
-    guard let history else { return }
+    // 闸必须在这里，不能只靠调用方：打开一条标题含 U+FFFC 的笔记时，视图会**自动**
+    // 调本方法清洗标题——没有任何用户操作，只读资料库就被写了一次。三个调用点里
+    // 只有这一个是自动的，也正是它没有前置检查。
+    guard let history, !isReadOnly else { return }
     // 粘贴进来的富文本会带 U+FFFC 之类的码位，在标题里显示成删不掉的方块。
     let trimmed = UserNoteDocument.sanitizedTitle(title)
     do {
@@ -4979,12 +5322,28 @@ final class HistoryViewModel: ObservableObject {
         var pendingPartial: String?
         var lastPartialFlush = ContinuousClock.now
         let localeIdentifier = Self.speechLocaleIdentifier(for: detail)
-        for try await event in livePlaybackTranscribe(localeIdentifier, stopSignal) {
+        // 实时流没有可预听的文件，只能边转边判。
+        //
+        // 这条路径拿不到本地文件，用不了转写那套「先听一小段再决定 locale」。
+        // 而流一旦跑完，视频也播完了，重转已无意义——所以判断必须在中途做：
+        // 攒够一小段就用同一套判据检查，不对就立刻停下并说明，而不是让它一路
+        // 产出整篇乱码。用户据此换个语言重来，只损失这一小段而不是全程。
+        var languageChecked = false
+        var languageMismatched = false
+        stream: for try await event in livePlaybackTranscribe(localeIdentifier, stopSignal) {
           try Task.checkCancellation()
           guard self.transcriptionRequestID == requestID else { break }
           switch event {
           case .partial(let text):
             latest = text
+            if !languageChecked,
+               text.trimmingCharacters(in: .whitespacesAndNewlines).count >= Self.livePlaybackLanguageProbeCharacters {
+              languageChecked = true
+              if !CapturedContentLanguage.isPlausibleTranscript(text, forLocaleIdentifier: localeIdentifier) {
+                languageMismatched = true
+                break stream
+              }
+            }
             pendingPartial = text
             if ContinuousClock.now - lastPartialFlush > .milliseconds(250) {
               self.setTranscriptionText(text)
@@ -5003,6 +5362,20 @@ final class HistoryViewModel: ObservableObject {
           _ = await worker.updateTaskTranscriptionStatus(
             history, taskID: taskID, attempt: attempt, status: .cancelled,
             updatedAtMilliseconds: self.nowMilliseconds()
+          )
+          return
+        }
+        // 语种判错时不保存那半段乱码——它会顶替阅读区的原文，还会一路流到
+        // 总结和翻译，让人以为是那两步坏了。
+        if languageMismatched {
+          _ = await worker.updateTaskTranscriptionStatus(
+            history, taskID: taskID, attempt: attempt, status: .cancelled,
+            updatedAtMilliseconds: self.nowMilliseconds()
+          )
+          self.setTranscriptionText("")
+          self.transcriptionState = .failed(
+            "听出来的内容不像\(Self.languageName(forLocaleIdentifier: localeIdentifier))，已停止。"
+              + "这条记录的配文语言和视频里说的话可能不是一回事，换一种语言再试。"
           )
           return
         }

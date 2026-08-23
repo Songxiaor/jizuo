@@ -11,7 +11,27 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
   /// 半小时视频的转写稿切 6 片、每片几十秒，串行就是三五分钟白等。
   /// 取 3 而不是翻译那样可调到更高：整理经常在自动管线里与总结/翻译同时跑，
   /// 再抬高会和它们抢同一个服务商的速率配额。
+  /// 同时在飞的校对请求数。
+  ///
+  /// **不要照抄翻译的 6。** 校对和翻译确实都是输出受限的活，但两者的请求形状
+  /// 不同：校对每片都要额外带上标题与配文作为上下文，单请求更重，6 路并发实测
+  /// 直接被服务端限流——一次 7 段的校对里 6 段失败，失败分片静默回填原文，
+  /// 界面显示「已保存」而错字一个没改，比慢得多更糟。
+  ///
+  /// 3 是实测能稳定跑完的值。真要更快，该换更快的模型，而不是加并发。
   private static let maximumConcurrentChunkRequests = 3
+
+  /// 单片最多这么多字。
+  ///
+  /// **这是为了不撞请求超时（180 秒），不是为了省 token。**
+  ///
+  /// 校对的输出和输入同量级：6000 字的片要模型吐出 6000 字，按常见速度正好逼近
+  /// 180 秒。实测一次 7 段的校对里 6 段失败、总耗时 175 秒——几乎就是超时线，
+  /// 而失败的片会静默回填原文，界面显示「已保存」而错字一个没改。
+  ///
+  /// 切到 2000 字，单片生成约几十秒，离超时留出数倍余量。片数变多了，但它们是
+  /// 并发跑的；宁可多跑几波，也不要一波里大半超时。
+  private static let maximumChunkCharacters = 2_000
 
   private let configurationService: ProviderConfigurationService
   private let provider: OpenAICompatibleProvider
@@ -24,26 +44,59 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     self.provider = provider
   }
 
+  /// 取凭据，并把「没配」和「这次读不出来」分开。
+  ///
+  /// 分开是因为用户动作相反：前者要去设置里填，后者只需重试。原来两者都报
+  /// 「请先在设置中保存文本模型」——实测点一次校对失败，配置却完好无损，
+  /// 人被指向了一个根本没问题的地方。
+  ///
+  /// 超时额外自动重试一次：钥匙串首读慢是**一次性**的（App 重新签名后系统要
+  /// 重新评估一次代码签名，之后就有缓存）。让用户手动重试一次才能用，等于把
+  /// 一个已知的一次性延迟变成每次部署后必踩的坑。
+  static func loadCredentials(
+    from configurationService: ProviderConfigurationService
+  ) async throws -> (profile: ProviderProfile, apiKey: String) {
+    var timedOutOnce = false
+    while true {
+      do {
+        guard let loaded = try await configurationService.loadCredentials() else {
+          // 真的没有 profile，这时「去设置里配」才是对的指引。
+          throw TranscriptTidyError.modelNotConfigured
+        }
+        return loaded
+      } catch let error as TranscriptTidyError {
+        throw error
+      } catch ProviderConfigurationError.secretStoreReadTimedOut where !timedOutOnce {
+        timedOutOnce = true
+        continue
+      } catch {
+        throw TranscriptTidyError.credentialsUnavailable
+      }
+    }
+  }
+
   public func tidy(
     text: String,
     model: String?,
     style: TidyStyle,
-    context: TranscriptTidyContext
+    context: TranscriptTidyContext,
+    progress: (@Sendable (Int, Int) -> Void)?
   ) async throws -> TranscriptTidyOutcome {
-    let chunks = TranscriptTidyChunker.chunks(of: text)
+    // 片长按并发反算，让片数落在并发的整数倍上。
+    //
+    // 耗时 ≈ ⌈片数 ÷ 并发⌉ × 单片耗时。片数不是并发整数倍时，最后一波多数通道
+    // 在空转：34,406 字按固定 6000 切出 6 片、并发 6 本可一波跑完，而 110,228 字
+    // 会切出 19 片，第 4 波只剩 1 片在跑、另外 5 条通道白等——这一波的时间不花
+    // 任何额外配额就能省掉。
+    let chunkLimit = ChunkedTranslationStreamer.chunkLimit(
+      forCharacterCount: text.trimmingCharacters(in: .whitespacesAndNewlines).count,
+      concurrency: Self.maximumConcurrentChunkRequests,
+      maximum: Self.maximumChunkCharacters
+    )
+    let chunks = TranscriptTidyChunker.chunks(of: text, limit: chunkLimit)
     guard !chunks.isEmpty else { throw TranscriptTidyError.emptyTranscript }
 
-    let credentials: (profile: ProviderProfile, apiKey: String)
-    do {
-      guard let loaded = try await configurationService.loadCredentials() else {
-        throw TranscriptTidyError.modelNotConfigured
-      }
-      credentials = loaded
-    } catch let error as TranscriptTidyError {
-      throw error
-    } catch {
-      throw TranscriptTidyError.modelNotConfigured
-    }
+    let credentials = try await Self.loadCredentials(from: configurationService)
     let trimmedOverride = model?.trimmingCharacters(in: .whitespacesAndNewlines)
     let effectiveModel = trimmedOverride?.isEmpty == false ? trimmedOverride! : credentials.profile.model
 
@@ -57,9 +110,11 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
       func launch(_ index: Int) {
         group.addTask { [provider, credentials, effectiveModel, style, context] in
           do {
-            let payload = style == .transcript
-              ? TranscriptTidyPrompt.userMessage(chunk: chunks[index], context: context)
-              : chunks[index]
+            // 笔记不带上下文头：它本来就是自己写的，标题配文帮不上忙。
+            // 听写稿和字幕稿都需要——专有名词全靠上下文才认得回来。
+            let payload = style == .note
+              ? chunks[index]
+              : TranscriptTidyPrompt.userMessage(chunk: chunks[index], context: context)
             let outcome = try await provider.tidyTranscriptChunk(
               profile: credentials.profile,
               apiKey: credentials.apiKey,
@@ -83,6 +138,9 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
       do {
         while let (index, result) = try await group.next() {
           collected[index] = result
+          // 每落地一片就报一次。分片是并发跑的，完成顺序不定，所以按**已完成
+          // 片数**报进度，而不是按 index——否则进度会来回跳。
+          progress?(collected.count, chunks.count)
           if next < chunks.count {
             launch(next)
             next += 1
@@ -108,16 +166,14 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
         //
         // 笔记不能走这一步：它的产物是 Markdown，换行本身有语义。归一化会把
         // 段内单换行拼回一行，`- a\n- b` 这样的列表会被拼成 `- a - b`。
-        let cleaned: String = switch style {
-        case .transcript:
-          TranscriptTidyNormalizer.normalize(
-            TranscriptTidyPrompt.stripEchoedContext(
-              outcome.text, chunk: chunk, context: context
+        let cleaned: String = style.normalizesParagraphs
+          ? TranscriptTidyNormalizer.normalize(
+              TranscriptTidyPrompt.stripEchoedContext(
+                outcome.text, chunk: chunk, context: context
+              )
             )
-          )
-        case .note: outcome.text.replacingOccurrences(of: "\r\n", with: "\n")
-          .trimmingCharacters(in: .whitespacesAndNewlines)
-        }
+          : outcome.text.replacingOccurrences(of: "\r\n", with: "\n")
+              .trimmingCharacters(in: .whitespacesAndNewlines)
         outputs.append(cleaned.isEmpty ? chunk : cleaned)
         promptTokens = Self.summed(promptTokens, outcome.promptTokens)
         completionTokens = Self.summed(completionTokens, outcome.completionTokens)

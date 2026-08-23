@@ -1543,10 +1543,20 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(row.contains("latestRunAtMilliseconds ?? row.updatedAtMilliseconds"))
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
     XCTAssertTrue(detail.contains("latestSourceSnapshot"))
-    XCTAssertTrue(detail.contains("sourceKind != CapturedDocument.Origin.localTranscription.rawValue"))
+    // frontmatter 必须取自「抓取来源」，不能取任何派生层。
+    //
+    // 判据统一在 `LayeredSourceDocument.captionSnapshot`，这里只检查视图确实
+    // 走了它、且没有自己另写一份。原来这条断言写死的是
+    // `sourceKind != ...localTranscription.rawValue`——那把判据的**写法**钉死了：
+    // 派生层后来多出画面字幕一种，判据必须改，而改对了反倒让断言失败。
+    XCTAssertTrue(detail.contains("LayeredSourceDocument.captionSnapshot(in: detail.snapshots)"))
+    XCTAssertFalse(
+      detail.contains("sourceKind != CapturedDocument.Origin.localTranscription.rawValue"),
+      "判据不该在视图里重写一份——漏掉新的派生层会静默丢掉 frontmatter"
+    )
   }
 
-  func testEffectiveTranscriptionBodyDoesNotReuseSourceFrontmatterBody() {
+  func testEffectiveTranscriptionBodyDoesNotReuseSourceFrontmatterBody() throws {
     let source = "---\nauthor: \"来源作者\"\n---\n\n来源正文"
     let transcription = "---\nauthor: \"不应作为属性\"\n---\n\n转写后的正文"
     XCTAssertEqual(MarkdownNoteFrontmatter.parse(source).author, "来源作者")
@@ -1624,6 +1634,38 @@ final class HistoryContentViewTests: XCTestCase {
   /// 拆分后返回主文件 + 拆出去的那两个的拼接：这些断言关心的是「实现里有没有
   /// 这段」，不是「它住在哪个文件」。按单文件读会让每次拆分都连带改一批测试，
   /// 而那种改动纯属噪音——真正该守住的行为一点没变。
+  /// 阅读区必须把三层都渲染出来。
+  ///
+  /// Core 的 `LayeredSourceDocument` 决定的是**喂给模型**的正文，阅读区另有
+  /// 一套渲染。画面字幕刚上线时只改了前者：字幕落库 40582 字，界面上却一个字
+  /// 都看不到，看上去和「没保存」完全一样。
+  ///
+  /// 两处的层次和顺序必须一致，否则读到的和送去总结/翻译的不是同一份东西。
+  func testReadingPaneRendersAllThreeSourceLayersInOrder() {
+    let source = historyContentViewSource()
+    let pane = section(in: source, from: "private var sourcePaneBody: some View", to: "private func collapsibleSourceSection")
+    for heading in ["captionHeading", "subtitleHeading", "transcriptHeading"] {
+      XCTAssertTrue(
+        pane.contains("LayeredSourceDocument.\(heading)"),
+        "阅读区漏渲染 \(heading) 这一层——数据会静默不可见"
+      )
+    }
+    // 这里**不**比较三个 heading 的先后：`sourcePaneBody` 有多个分支，实时转写
+    // 那支里也出现 transcriptHeading，而 `range(of:)` 只找第一次出现，跨分支比
+    // 位置得不出任何结论。层次顺序由 `LayeredSourceDocumentTests` 直接对
+    // `orderedLayers` 断言，那里才是顺序的真相源。
+    //
+    // 字幕层要和其它层一样可折叠，否则一份四万字的字幕稿会把整页撑开。
+    XCTAssertTrue(
+      pane.contains("heading: LayeredSourceDocument.subtitleHeading"),
+      "画面字幕应当和其它层一样走 collapsibleSourceSection"
+    )
+
+    // 只有字幕、没有听写的记录也必须走分层渲染，否则那一层会被整个藏起来。
+    let gate = section(in: source, from: "private var showsLayeredSource: Bool", to: "private var isDouyinCapture")
+    XCTAssertTrue(gate.contains("latestSubtitleSnapshot"), "分层判据必须把画面字幕算进去")
+  }
+
   private func historyContentViewSource() -> String {
     ["HistoryContentView.swift", "HistoryMediaPlayback.swift", "VideoScrollWheelRouting.swift"]
       .map(appSource)

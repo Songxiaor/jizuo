@@ -1874,6 +1874,7 @@ private struct HistoryDetailView: View, Equatable {
   /// 长配文 / 长转写默认收起，避免把「重新转写」顶出一屏。
   @State private var isCaptionExpanded = false
   @State private var isTranscriptExpanded = false
+  @State private var isSubtitleExpanded = false
   @State private var isEditingTranscription = false
   @State private var transcriptionDraft = ""
   /// 从阅读区点进来时对回源码的光标。
@@ -2051,11 +2052,18 @@ private struct HistoryDetailView: View, Equatable {
   }
   /// Source frontmatter belongs to the newest captured source, not a later
   /// local transcription snapshot that may have become the effective body.
+  ///
+  /// 走 `captionSnapshot` 而不是自己写「不是听写就行」：派生层不止听写一种，
+  /// 画面字幕同样没有作者和发布时间。判据只该有一份，否则每加一种派生来源
+  /// 都要记得同步这里，漏了就静默丢掉 frontmatter。
   private var latestSourceSnapshot: ContentSnapshot? {
-    detail.snapshots.reversed().first { $0.sourceKind != CapturedDocument.Origin.localTranscription.rawValue }
+    LayeredSourceDocument.captionSnapshot(in: detail.snapshots)
   }
   private var latestTranscriptionSnapshot: ContentSnapshot? {
     LayeredSourceDocument.transcriptSnapshot(in: detail.snapshots)
+  }
+  private var latestSubtitleSnapshot: ContentSnapshot? {
+    LayeredSourceDocument.subtitleSnapshot(in: detail.snapshots)
   }
   /// 配文还在、而且不是抖音那种和标题重复的空 caption，才值得单独一层。
   private var hasPresentableCaption: Bool {
@@ -2069,7 +2077,11 @@ private struct HistoryDetailView: View, Equatable {
     )
   }
   private var showsLayeredSource: Bool {
-    hasPresentableCaption && latestTranscriptionSnapshot != nil
+    // 听写和画面字幕都算派生层，有任意一层就该分层显示。
+    //
+    // 原来只看听写，于是只读了字幕、没跑听写的记录会退回单层渲染，把刚读出来
+    // 的那一层整个藏起来——数据在库里，界面上却什么都看不到。
+    hasPresentableCaption && (latestTranscriptionSnapshot != nil || latestSubtitleSnapshot != nil)
   }
   private var isDouyinCapture: Bool { latestSourceSnapshot?.platform == "douyin" }
   /// 抖音图文帖：正文本身就是内容（文案 + 图集），不像视频帖那样只是重复标题的
@@ -2531,6 +2543,7 @@ private struct HistoryDetailView: View, Equatable {
       pendingRunPane = nil
       isCaptionExpanded = false
       isTranscriptExpanded = false
+      isSubtitleExpanded = false
       readingPane = defaultReadingPane
       // 保活集合不跨条目：上一条访问过哪些面板不该让这一条多付隐藏布局。
       visitedReadingPanes = []
@@ -3631,6 +3644,18 @@ private struct HistoryDetailView: View, Equatable {
         if hasPresentableCaption, let caption = latestSourceSnapshot {
           sourceLayer(heading: LayeredSourceDocument.captionHeading, snapshot: caption)
         }
+        // 已经读到的画面字幕，在实时转写进行时也必须留在页面上。
+        //
+        // 这一分支只画「配文 + 正在转写的文字」，漏掉字幕层的后果是：一条已经
+        // 读出字幕的记录，只要走进这个分支，那一层就整个消失——数据在库里，
+        // 界面上什么都看不到，和没保存完全一样。
+        if let subtitles = latestSubtitleSnapshot {
+          collapsibleSourceSection(
+            heading: LayeredSourceDocument.subtitleHeading,
+            snapshot: subtitles,
+            isExpanded: $isSubtitleExpanded
+          )
+        }
         sourceLayerHeading(LayeredSourceDocument.transcriptHeading)
         LiveTranscriptionReadingBody(
           live: model.liveTranscriptionText,
@@ -3648,6 +3673,15 @@ private struct HistoryDetailView: View, Equatable {
           snapshot: caption,
           isExpanded: $isCaptionExpanded
         )
+        // 顺序与 `LayeredSourceDocument.orderedLayers` 一致：画面字幕排在听写
+        // 之前。两处顺序必须一样，否则阅读区和喂给模型的正文对不上。
+        if let subtitles = latestSubtitleSnapshot {
+          collapsibleSourceSection(
+            heading: LayeredSourceDocument.subtitleHeading,
+            snapshot: subtitles,
+            isExpanded: $isSubtitleExpanded
+          )
+        }
         if let transcript = latestTranscriptionSnapshot {
           collapsibleSourceSection(
             heading: LayeredSourceDocument.transcriptHeading,
@@ -3666,6 +3700,15 @@ private struct HistoryDetailView: View, Equatable {
           heading: LayeredSourceDocument.transcriptHeading,
           snapshot: snapshot,
           isExpanded: $isTranscriptExpanded
+        )
+          .accessibilityIdentifier("history-reading-source")
+      } else if snapshot.sourceKind == CapturedDocument.Origin.burnedInSubtitles.rawValue {
+        // 没有配文可分层时（抖音那类 caption 与标题重复的记录），字幕仍要带上
+        // 自己的标题，否则它看起来就像抓来的原文。
+        collapsibleSourceSection(
+          heading: LayeredSourceDocument.subtitleHeading,
+          snapshot: snapshot,
+          isExpanded: $isSubtitleExpanded
         )
           .accessibilityIdentifier("history-reading-source")
       } else {
@@ -3816,10 +3859,12 @@ private struct HistoryDetailView: View, Equatable {
           .accessibilityIdentifier("history-transcription-editor")
         } else {
           MarkdownContentView(
-            source: bodyOverride ?? ReadingRenderCache.paneBody(
+            // 链接化放在**最外层**：先让 paneBody 做完它的清理，再把时间码变成
+            // 链接，免得清理步骤把刚生成的链接语法拆掉。
+            source: timestampLinked(bodyOverride ?? ReadingRenderCache.paneBody(
               source: snapshot.bodyText,
               strippingEchoedMetadata: false
-            ),
+            )),
             sourceURL: URL(string: sourceURL),
             localImageURLs: localImageURLs,
             appendsUnusedLocalImages: !isWeChatCapture,
@@ -3839,6 +3884,7 @@ private struct HistoryDetailView: View, Equatable {
               }
               model.followWikiLink(toTitle: title)
             },
+            onSeekMedia: { seconds in model.requestMediaSeek(toSeconds: seconds) },
             onRequestEdit: bodyOverride == nil && canEditSource(snapshot) && !model.isReadOnly
               ? { snippet in beginSourceEditing(snapshot, displayedSnippet: snippet) }
               : nil
@@ -3853,8 +3899,28 @@ private struct HistoryDetailView: View, Equatable {
         }
   }
 
+  /// 哪些层允许就地校对。
+  ///
+  /// 画面字幕和听写稿一样是机器识别的结果，一样会有错字（实测出现过
+  /// 「还有 个想法」这种断字），凭什么听写能改而它不能。抓来的原始配文
+  /// 不在此列——那是来源的原话，不该被改写。
+  /// 这条记录有没有可跳转的视频。
+  ///
+  /// 没有视频时不做链接化：纯文章里的 `00:00` 点了无处可去，把它渲染成链接
+  /// 只会让人以为坏了。
+  private var hasSeekableMedia: Bool {
+    detail.media != nil || localMediaFileURL != nil
+  }
+
+  /// 有视频才把段首时间码变成可点击链接。
+  private func timestampLinked(_ text: String) -> String {
+    guard hasSeekableMedia else { return text }
+    return MediaSeekLink.linkifyingTimestamps(in: text)
+  }
+
   private func canEditSource(_ snapshot: ContentSnapshot) -> Bool {
     snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+      || snapshot.sourceKind == CapturedDocument.Origin.burnedInSubtitles.rawValue
       || snapshot.sourceKind == CapturedDocument.Origin.userNote.rawValue
       || snapshot.sourceKind == CapturedDocument.Origin.pieceDraft.rawValue
       || snapshot.sourceKind == CapturedDocument.Origin.work.rawValue

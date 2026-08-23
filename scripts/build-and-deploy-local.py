@@ -125,6 +125,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--app-destination", type=Path, default=DEFAULT_APP)
     parser.add_argument("--extension-destination", type=Path, default=DEFAULT_EXTENSION)
     parser.add_argument("--replace", action="store_true", help="permit replacement of the two explicit existing destinations")
+    parser.add_argument(
+        "--skip-extension",
+        action="store_true",
+        help="build and deploy only the App, leaving the installed extension untouched",
+    )
     return parser.parse_args()
 
 
@@ -143,9 +148,14 @@ def main() -> int:
     if not args.replace:
         raise RuntimeError("refusing to replace daily-use artifacts without --replace")
     require_replaceable_destination(app_destination, "App destination")
-    require_replaceable_destination(extension_destination, "Extension destination")
+    if not args.skip_extension:
+        require_replaceable_destination(extension_destination, "Extension destination")
 
-    run("pnpm", "--config.verifyDepsBeforeRun=false", "browser:build")
+    # 扩展没改动时不必重建它。App 和扩展是两个独立产物，把它们绑死意味着每次
+    # 只改 Swift 的部署都要多跑一遍 WXT；而 WXT 那条链依赖的 pnpm 版本一旦与
+    # 本机不符，一个根本不碰扩展的 App 改动就完全无法部署。
+    if not args.skip_extension:
+        run("pnpm", "--config.verifyDepsBeforeRun=false", "browser:build")
     run("/bin/bash", "scripts/sync-contracts.sh")
     # universal 构建：每个 `--arch` 出一份切片，SwiftPM 再 lipo 成一个二进制。
     # 少了 x86_64 的话，2020 年前的 Intel Mac 下载后完全跑不起来。
@@ -221,24 +231,26 @@ def main() -> int:
             str(embedded_host_package / config["entrypoint"]),
         )
 
-        staged_extension = work / "LinkDigest-extension-0.2.0"
-        extension_source = ROOT / "apps/browser-extension/.output/chrome-mv3"
-        if extension_source.is_symlink() or not extension_source.is_dir():
-            raise RuntimeError("WXT did not produce a real Chromium extension directory")
-        shutil.copytree(extension_source, staged_extension, symlinks=False)
-        manifest = json.loads((staged_extension / "manifest.json").read_text(encoding="utf-8"))
-        if manifest.get("version") != "0.2.0":
-            raise RuntimeError("built extension version does not match the daily-use destination")
+        extension_staging = None
+        if not args.skip_extension:
+            staged_extension = work / "LinkDigest-extension-0.2.0"
+            extension_source = ROOT / "apps/browser-extension/.output/chrome-mv3"
+            if extension_source.is_symlink() or not extension_source.is_dir():
+                raise RuntimeError("WXT did not produce a real Chromium extension directory")
+            shutil.copytree(extension_source, staged_extension, symlinks=False)
+            manifest = json.loads((staged_extension / "manifest.json").read_text(encoding="utf-8"))
+            if manifest.get("version") != "0.2.0":
+                raise RuntimeError("built extension version does not match the daily-use destination")
+            extension_staging = extension_destination.parent / f".{extension_destination.name}.staging-{uuid.uuid4().hex}"
+            shutil.copytree(staged_extension, extension_staging, symlinks=False)
 
         app_staging = app_destination.parent / f".{app_destination.name}.staging-{uuid.uuid4().hex}"
-        extension_staging = extension_destination.parent / f".{extension_destination.name}.staging-{uuid.uuid4().hex}"
         # Sparkle.framework is a versioned framework whose top-level entries
         # are symlinks into Versions/Current. Dereferencing them here changes
         # the signed bundle after verification and makes the installed App
         # fail `codesign --verify --deep --strict` even though `staged_app`
         # was valid. Preserve the already-verified framework layout exactly.
         shutil.copytree(staged_app, app_staging, symlinks=True)
-        shutil.copytree(staged_extension, extension_staging, symlinks=False)
         run(
             "/usr/bin/codesign",
             "--verify",
@@ -250,14 +262,19 @@ def main() -> int:
         )
         try:
             atomic_replace(app_staging, app_destination)
-            atomic_replace(extension_staging, extension_destination)
+            if extension_staging is not None:
+                atomic_replace(extension_staging, extension_destination)
         finally:
             shutil.rmtree(app_staging, ignore_errors=True)
-            shutil.rmtree(extension_staging, ignore_errors=True)
+            if extension_staging is not None:
+                shutil.rmtree(extension_staging, ignore_errors=True)
 
     print(f"deployed App: {app_destination}")
-    print(f"deployed extension: {extension_destination}")
-    print("Next: reload LinkDigest in Brave's extensions page, then use Browser Support in the App when needed.")
+    if args.skip_extension:
+        print("skipped extension: 未构建、未替换（--skip-extension）")
+    else:
+        print(f"deployed extension: {extension_destination}")
+        print("Next: reload LinkDigest in Brave's extensions page, then use Browser Support in the App when needed.")
     return 0
 
 

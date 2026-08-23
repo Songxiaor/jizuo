@@ -474,6 +474,7 @@ enum BrowserReceiverState: Sendable, Equatable {
       switch snapshot.sourceKind {
       case CapturedDocument.Origin.manualLink.rawValue: return .manualLink
       case CapturedDocument.Origin.localTranscription.rawValue: return .localTranscription
+      case CapturedDocument.Origin.burnedInSubtitles.rawValue: return .burnedInSubtitles
       default: return .browserCapture
       }
     }()
@@ -1037,6 +1038,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       faviconCache: faviconCache,
       faviconResources: manualResourceFetcher,
       videoTranscriber: AppleSpeechVideoTranscriber(),
+      subtitleReader: AppleVisionVideoSubtitleReader(),
       imageTextRecognizer: AppleVisionTextRecognizer(),
       // Router 按服务地址在「阶跃流式 SSE」和「通用 /audio/transcriptions」之间选，
       // 两条路径的接口形态不同（增量 vs 一次性返回），不能只换参数。

@@ -134,3 +134,112 @@ private actor TidySecretStore: SecretStore {
   func contains(_ reference: SecretReference) async throws -> Bool { values[reference] != nil }
   func delete(_ reference: SecretReference) async throws { values.removeValue(forKey: reference) }
 }
+
+/// 取凭据失败时说的是哪句话。
+///
+/// 「没配模型」和「这次读不出凭据」原来共用同一句「请先在设置中保存文本模型」。
+/// 实测点一次校对失败、跑去设置里检查，配置完好无损——人被指向了一个没问题的
+/// 地方。两者的用户动作是相反的：一个要去填配置，另一个只需重试。
+final class TidyCredentialFailureTests: XCTestCase {
+  private func service(
+    profile: ProviderProfile?,
+    secretStore: any SecretStore
+  ) async throws -> ProviderConfigurationService {
+    let profileStore = TidyProfileStore()
+    if let profile { try await profileStore.save(profile) }
+    return ProviderConfigurationService(profileStore: profileStore, secretStore: secretStore)
+  }
+
+  private func fixtureProfile(_ reference: SecretReference) throws -> ProviderProfile {
+    try ProviderProfile(
+      baseURL: "http://127.0.0.1:9/v1",
+      model: "fixture-model",
+      secretReference: reference,
+      allowLoopbackHTTP: true
+    )
+  }
+
+  /// 真的没有 profile：这时「去设置里配」才是对的指引。
+  func testMissingProfileStillReportsModelNotConfigured() async throws {
+    let service = try await service(profile: nil, secretStore: TidySecretStore())
+    do {
+      _ = try await OpenAICompatibleTranscriptTidier.loadCredentials(from: service)
+      XCTFail("没有 profile 时不该拿到凭据")
+    } catch let error as TranscriptTidyError {
+      XCTAssertEqual(error, .modelNotConfigured)
+    }
+  }
+
+  /// 钥匙串读失败：配置好好的，不能说人家没配。
+  func testSecretReadFailureIsNotReportedAsMissingConfiguration() async throws {
+    let reference = SecretReference(rawValue: "cred-fail-reference")
+    let store = FlakySecretStore(failures: [.failure], value: "sk-test")
+    let service = try await service(profile: try fixtureProfile(reference), secretStore: store)
+    do {
+      _ = try await OpenAICompatibleTranscriptTidier.loadCredentials(from: service)
+      XCTFail("读不出密钥时不该拿到凭据")
+    } catch let error as TranscriptTidyError {
+      XCTAssertEqual(error, .credentialsUnavailable)
+      XCTAssertNotEqual(error, .modelNotConfigured, "配置没问题，别把人指去设置页")
+      XCTAssertTrue(error.userMessage.contains("重试"))
+    }
+  }
+
+  /// 首读超时自动重试一次就能过。
+  ///
+  /// 钥匙串首读慢是**一次性**的：App 重新签名后系统要重新评估一次代码签名，
+  /// 之后有缓存就快了。不自动重试的话，每次部署新版本后第一次用校对都会失败。
+  func testTimeoutRetriesOnceAndSucceeds() async throws {
+    let reference = SecretReference(rawValue: "cred-timeout-reference")
+    let store = FlakySecretStore(failures: [.timeout], value: "sk-test")
+    let service = try await service(profile: try fixtureProfile(reference), secretStore: store)
+    let credentials = try await OpenAICompatibleTranscriptTidier.loadCredentials(from: service)
+    XCTAssertEqual(credentials.apiKey, "sk-test")
+    let reads = await store.readCount
+    XCTAssertEqual(reads, 2, "首次超时后应自动重试一次")
+  }
+
+  /// 但只重试一次：连着超时说明不是那个一次性延迟，再转就是干等。
+  func testRepeatedTimeoutsStopAfterOneRetry() async throws {
+    let reference = SecretReference(rawValue: "cred-timeout-twice")
+    let store = FlakySecretStore(failures: [.timeout, .timeout], value: "sk-test")
+    let service = try await service(profile: try fixtureProfile(reference), secretStore: store)
+    do {
+      _ = try await OpenAICompatibleTranscriptTidier.loadCredentials(from: service)
+      XCTFail("连续超时不该成功")
+    } catch let error as TranscriptTidyError {
+      XCTAssertEqual(error, .credentialsUnavailable)
+    }
+    let reads = await store.readCount
+    XCTAssertEqual(reads, 2, "只重试一次，不该无限转")
+  }
+}
+
+/// 前 N 次读按脚本失败，之后正常返回。
+private actor FlakySecretStore: SecretStore {
+  enum Failure { case timeout, failure }
+
+  private var remaining: [Failure]
+  private let value: String
+  private(set) var readCount = 0
+
+  init(failures: [Failure], value: String) {
+    self.remaining = failures
+    self.value = value
+  }
+
+  func save(_ secret: String, for reference: SecretReference) async throws {}
+  func contains(_ reference: SecretReference) async throws -> Bool { true }
+  func delete(_ reference: SecretReference) async throws {}
+
+  func read(_ reference: SecretReference) async throws -> String? {
+    readCount += 1
+    guard !remaining.isEmpty else { return value }
+    let next = remaining.removeFirst()
+    switch next {
+    // isTimeout 由 status 推导，超时用的就是这个专门的码。
+    case .timeout: throw SecretStoreFailure(operation: .read, status: SecretStoreFailure.timeoutStatus)
+    case .failure: throw SecretStoreFailure(operation: .read, status: -25300)
+    }
+  }
+}

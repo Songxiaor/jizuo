@@ -143,3 +143,44 @@ public enum CapturedContentLanguage: String, Sendable, Equatable {
     return best.0
   }
 }
+
+extension CapturedContentLanguage {
+  /// 一段听写结果长度多短就不值得采信。60 秒语音正常能出几十字；空串和
+  /// 个位数残片都只说明模型没听懂，不说明音频没内容。
+  static let minimumPlausibleTranscriptCharacters = 12
+
+  /// 某个听写 locale 理应吐出的文字。
+  public static func expectedScript(forLocaleIdentifier locale: String) -> CapturedContentLanguage? {
+    switch speechLanguageCode(forLocaleIdentifier: locale) {
+    case "zh": return .chinese
+    case "en": return .latin
+    case "ja": return .japanese
+    case "ko": return .korean
+    default: return nil
+    }
+  }
+
+  /// 这份听写结果，配这个 locale 说得通吗。
+  ///
+  /// 语种探测的判据。Apple 的听写模型**必须**先指定语言，而指错时它不是「准确
+  /// 率下降」，是两种彻底的坏法——实测同一段斯坦福英文讲座：`zh_CN` 吐出
+  /// 「about carer avisont AI. and in peovisers ae us to do」这样的拉丁碎片，
+  /// 而 `en_US` 跑中文口播直接吐**空**。
+  ///
+  /// 两种坏法看长度都分不出（英文音频下 zh_CN 的乱码并不短），但加上「输出
+  /// 主体文字 vs 这个 locale 该吐的文字」就都能判：拉丁碎片对 `zh_CN` 是冲突，
+  /// 空对任何 locale 都不成立。
+  ///
+  /// 判不出主体文字时**放行**。中英夹杂的技术口播本就判不出主体，在这里误杀
+  /// 一个正确的 locale，比放过一个错的代价大得多。
+  public static func isPlausibleTranscript(
+    _ text: String,
+    forLocaleIdentifier locale: String
+  ) -> Bool {
+    let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard trimmed.count >= minimumPlausibleTranscriptCharacters else { return false }
+    guard let expected = expectedScript(forLocaleIdentifier: locale) else { return true }
+    guard let actual = detect(in: trimmed) else { return true }
+    return actual == expected
+  }
+}

@@ -2805,4 +2805,83 @@ final class DailyNoteIdempotencyTests: XCTestCase {
     calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
     XCTAssertEqual(UserNoteDocument.dailyTitle(for: day, calendar: calendar), "2026-08-02")
   }
+
+  /// 每种本机来源都必须真能落库。
+  ///
+  /// `provenanceIsConsistent` 按 origin 分派期望的 deliveryKey，**新增来源
+  /// 必须登记进那个 switch**，否则走 default 分支直接 return false。后果不是
+  /// 报错难看，而是数据一条都存不进去，UI 上只表现为「点了没反应」——画面字幕
+  /// 刚上线时就是这么丢的：OCR 跑完三千多帧，落库静默失败。
+  ///
+  /// 这条用例遍历所有走 http(s) 的本机来源，将来再加一种而忘了登记就会红。
+  func testEveryLocalHTTPOriginCanActuallyBePersisted() throws {
+    let localOrigins: [CapturedDocument.Origin] = [
+      .manualLink,
+      .localTranscription,
+      .burnedInSubtitles
+    ]
+    for origin in localOrigins {
+      let root = FileManager.default.temporaryDirectory
+        .appendingPathComponent("linkdigest-origin-\(UUID().uuidString)", isDirectory: true)
+      try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+      defer { try? FileManager.default.removeItem(at: root) }
+      let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+      defer { try? repository.database.close() }
+
+      let document = CapturedDocument(
+        createdAt: "2026-07-20T00:00:00Z",
+        origin: origin,
+        url: "https://example.test/origin-check",
+        title: "标题",
+        platform: "x",
+        method: "fixture",
+        text: "\(origin.rawValue) 的正文内容。",
+        completeness: "complete",
+        capturedAt: "2026-07-20T00:00:00Z",
+        sourceLabel: "fixture"
+      )
+      XCTAssertNoThrow(
+        try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1)),
+        "origin \(origin.rawValue) 没能落库——多半是漏登记进 provenanceIsConsistent 的 switch"
+      )
+    }
+  }
+
+  /// 侧边栏和搜索用的「有效快照」必须跳过所有派生层。
+  ///
+  /// 选取逻辑写在 SQL 里，只能手写一份派生层清单。原来只排除了听写，画面字幕
+  /// 上线后立刻顶替配文成为有效快照：平台标签变成「画面字幕」，作者和发布时间
+  /// 一起从侧边栏消失——这正是那段 SQL 注释警告过的场景。
+  func testSidebarMetadataIgnoresDerivedLayers() throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-sidebar-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+
+    let url = "https://example.test/derived-layer-metadata"
+    let caption = CapturedDocument(
+      createdAt: "2026-07-20T00:00:00Z", origin: .manualLink, url: url,
+      title: "视频标题", platform: "x", method: "fixture",
+      text: "---\nauthor: \"某作者\"\npublished: \"2026-07-19T00:00:00Z\"\n---\n\n配文正文。",
+      completeness: "complete", capturedAt: "2026-07-20T00:00:00Z", sourceLabel: "X"
+    )
+    _ = try repository.acceptCapture(.init(document: caption, receivedAtMilliseconds: 1))
+
+    // 之后追加的派生层：sourceLabel 是动作名，且没有 author/published。
+    let subtitles = CapturedDocument(
+      createdAt: "2026-07-20T00:05:00Z", origin: .burnedInSubtitles, url: url,
+      title: "视频标题", platform: "x", method: "vision_ocr",
+      text: "00:00 画面上烧录的字幕内容。",
+      completeness: "complete", capturedAt: "2026-07-20T00:05:00Z", sourceLabel: "画面字幕"
+    )
+    _ = try repository.acceptCapture(.init(document: subtitles, receivedAtMilliseconds: 2))
+
+    let row = try XCTUnwrap(repository.historyPage(limit: 10, after: nil).rows.first)
+    XCTAssertEqual(row.sourceLabel, "X", "平台标签被派生层顶替了")
+    XCTAssertNotEqual(row.sourceLabel, "画面字幕")
+    XCTAssertEqual(row.author, "某作者", "作者不该因为追加派生层而消失")
+    XCTAssertNotNil(row.published, "发布时间不该因为追加派生层而消失")
+  }
 }

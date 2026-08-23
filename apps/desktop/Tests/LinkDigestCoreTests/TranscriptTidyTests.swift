@@ -128,4 +128,37 @@ final class TranscriptTidyTests: XCTestCase {
       XCTAssertEqual($0 as? ModelPreferencesError, .tidyModelTooLong)
     }
   }
+
+  /// 字幕校对的提示词是**独立契约**，不能退化成听写那一套。
+  ///
+  /// 两类稿子错的不是一种字：听写错在同音近音，OCR 错在字形相近
+  /// （实测「衡量」→「後置」、「时间」→「时狗」）。让模型按同音去猜只会越改
+  /// 越远，所以提示词必须明确指向字形，并且要求删掉粘进句尾的画面角标。
+  func testSubtitlePromptTargetsShapeErrorsAndBadgeResidue() {
+    let prompt = TranscriptTidyPrompt.subtitles
+    XCTAssertTrue(prompt.contains("字形"), "必须指明错的是字形相近，而不是同音")
+    XCTAssertTrue(prompt.contains("角标"), "必须要求删掉粘进来的画面角标")
+    XCTAssertTrue(prompt.contains("时间戳"), "时间戳是跳转的锚点，不能被改动")
+
+    // 和听写稿共有的红线：还原不是重写。
+    for forbidden in ["翻译", "概括", "改写"] {
+      XCTAssertTrue(prompt.contains(forbidden), "必须明令禁止「\(forbidden)」")
+    }
+    // 两份提示词必须是两份，别不小心指向同一个常量。
+    XCTAssertNotEqual(prompt, TranscriptTidyPrompt.system)
+  }
+
+  /// 每种 style 都要有自己的提示词，新增时不能漏配。
+  func testEveryTidyStyleHasItsOwnPrompt() {
+    var seen: Set<String> = []
+    for style in TidyStyle.allCases {
+      let prompt = style.systemPrompt
+      XCTAssertFalse(prompt.isEmpty, "\(style.rawValue) 没有提示词")
+      XCTAssertTrue(seen.insert(prompt).inserted, "\(style.rawValue) 与别的 style 共用了同一份提示词")
+    }
+    // 笔记的产物是 Markdown，换行有语义，只有它不做段落归一化。
+    XCTAssertFalse(TidyStyle.note.normalizesParagraphs)
+    XCTAssertTrue(TidyStyle.transcript.normalizesParagraphs)
+    XCTAssertTrue(TidyStyle.subtitles.normalizesParagraphs)
+  }
 }

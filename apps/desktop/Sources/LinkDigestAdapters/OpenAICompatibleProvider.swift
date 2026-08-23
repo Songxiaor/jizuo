@@ -307,6 +307,41 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
     }
     let url = try OpenAICompatibleEndpoint.chatCompletionsURL(baseURL: profile.baseURL)
+
+    // 非流式这条路也要带 `reasoning_effort`。
+    //
+    // 漏了它不是「少个可选参数」，是让模型按默认档去想：实测同一条 105 分钟视频
+    // 的字幕校对，19 片跑了 14 分 23 秒，其中 5 片直接撞满 180 秒超时被判失败——
+    // 而失败的恰好是乱码最密、最需要校对的那几片。流式那边（总结、翻译）早就在
+    // 传了，只有这里漏着，连诊断日志都不写，慢了都查不出来。
+    //
+    // 降级链和重试记忆完全复用流式那套：`none` 被拒就降 `low`，再被拒就不发。
+    var effort = preferredReasoningEffort(profile)
+    while true {
+      do {
+        return try await performNonStreamingChatCompletion(
+          url: url, apiKey: apiKey, model: model,
+          systemPrompt: systemPrompt, userContent: userContent, effort: effort
+        )
+      } catch let failure as ModelProviderFailure
+      where Self.mayRejectUnknownParameter(failure) && effort != .omitted {
+        // 只有「请求本身被拒」才降级重试。鉴权、限流、模型不存在这些，去掉一个
+        // 参数重发毫无意义，只会白打一次往返。
+        rememberRejected(effort, for: profile)
+        guard let next = effort.steppedDown() else { throw failure }
+        effort = next
+      }
+    }
+  }
+
+  private func performNonStreamingChatCompletion(
+    url: URL,
+    apiKey: String,
+    model: String,
+    systemPrompt: String,
+    userContent: String,
+    effort: StreamReasoningEffort
+  ) async throws -> NonStreamingChatResult {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.timeoutInterval = 180
@@ -320,7 +355,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         Message(role: "user", content: userContent),
       ],
       stream: false,
-      maxTokens: nil
+      maxTokens: nil,
+      reasoningEffort: effort.jsonValue
     ))
 
     do {
@@ -669,6 +705,10 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
           - If a sentence is already in \(targetLanguage), copy it unchanged.
           - If a sentence is in any other language, translate it into \(targetLanguage).
           - Never translate \(targetLanguage) into English or any other language.
+
+          Translate meaning, not word order. Reorder clauses into whatever reads naturally in \(targetLanguage); a word-by-word mapping of the source is wrong even when every individual word is right. Below, "preserve structure" means the Markdown layout and section order, never the internal word order of a sentence.
+
+          Speech transcripts need this most. They arrive as unpunctuated spoken runs full of false starts, repetitions, and filler words. Render them as clean written \(targetLanguage) with proper sentence breaks and punctuation, keeping every claim, name, and number intact. Never invent content to smooth over a rough passage.
 
           Preserve meaning, structure, names, numbers, and links. Preserve Markdown syntax and indentation exactly. LinkDigest comment sections use structural metadata that must remain machine-readable:
           - Copy unchanged every section heading beginning with `## 评论（` or `## 评论与回复（`.

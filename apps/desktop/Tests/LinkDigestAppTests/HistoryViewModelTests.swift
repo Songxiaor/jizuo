@@ -17,15 +17,18 @@ final class HistoryViewModelTests: XCTestCase {
   }
 
 
-  /// 导出必须拿到转写稿，而不是几十字的原始 caption。
+  /// 导出必须拿到转写稿，并把它与配文分层标注。
   ///
-  /// 视频条目一定先有一条 browser_capture 快照（caption），转写稿是之后追加的。
-  /// 原实现「优先非转写快照」于是永远命中 caption：抓一条视频 → 转写 → 导出
-  /// Markdown/纯文本/PDF/Word 或「拷贝全文」，几千字转写稿一个字都不在。而阅读区
-  /// 显示的是最新快照、总结喂给模型的也是最新快照，「编辑转写」的说明更明写
-  /// 「保存后总结、翻译与导出都使用校对后的文本」——四条导出路径与 UI 承诺、
-  /// 阅读区、总结输入全部对不上。
-  func testExportUsesTheTranscriptNotTheOriginalCaption() async throws {
+  /// 这条用例守的核心仍是最初那个 bug：视频条目一定先有一条 browser_capture
+  /// 快照（几十字的 caption），转写稿是之后追加的。一旦导出退回「优先非转写
+  /// 快照」，抓一条视频 → 转写 → 导出 Markdown/纯文本/PDF/Word 或「拷贝全文」，
+  /// 几千字的转写稿会一个字都不在，而阅读区和总结输入用的都是转写稿。
+  ///
+  /// 契约变更：本用例原来还断言「导出里不能出现 caption」。那在 2026-07-27
+  /// 修这个 bug 时是对的——当时导出只该取转写稿。2026-08-21 的「配文与转写
+  /// 分层」改了契约：两层都要带上，并各自标清楚是什么，让导出与阅读区一致。
+  /// 那条断言从此与产品设计直接冲突，改为下面的分层断言。
+  func testExportCarriesTranscriptAndLabelsItSeparatelyFromCaption() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-export-transcript-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -77,8 +80,21 @@ final class HistoryViewModelTests: XCTestCase {
     await waitUntil { model.selectedTaskID == accepted.taskID && model.detailState == .loaded }
 
     let exported = try XCTUnwrap(model.composeExportMarkdown())
+    // 原始 bug 的防线：转写稿必须在。
     XCTAssertTrue(exported.markdown.contains(transcript), "导出里没有转写稿：\(exported.markdown)")
-    XCTAssertFalse(exported.markdown.contains(caption), "导出里仍是原始 caption")
+    // 分层契约：配文也在，但两层各有标题，不能糊成一段。标题引用常量而不是
+    // 写死文案，改文案时这条不该假失败。
+    XCTAssertTrue(exported.markdown.contains(caption), "分层导出应当保留配文")
+    let captionHeading = try XCTUnwrap(
+      exported.markdown.range(of: LayeredSourceDocument.captionHeading),
+      "配文层缺少标题：\(exported.markdown)"
+    )
+    let transcriptHeading = try XCTUnwrap(
+      exported.markdown.range(of: LayeredSourceDocument.transcriptHeading),
+      "转写层缺少标题：\(exported.markdown)"
+    )
+    // 顺序与阅读区一致：配文在前，转写在后。
+    XCTAssertLessThan(captionHeading.lowerBound, transcriptHeading.lowerBound, "配文应排在转写之前")
     // frontmatter 仍应来自来源快照——转写稿没有作者字段。
     XCTAssertTrue(exported.markdown.contains("某作者"), "作者应取自来源快照")
   }
@@ -1890,6 +1906,66 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertTrue(after.snapshots.contains { $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue && $0.bodyText.contains("本地优先") })
   }
 
+  /// 实时转写中途发现语种不对，必须停下并且**不落库**。
+  ///
+  /// 这条路径拿不到本地文件，用不了「先听一小段再决定 locale」那套，只能边转
+  /// 边判。配文是中文于是猜 zh_CN，视频里说的却是英文——Apple 的听写这时不是
+  /// 准确率下降，而是吐出成串的拉丁碎片。那半段乱码一旦存下来会顶替阅读区的
+  /// 原文，还会一路流到总结和翻译，让人以为是那两步坏了。
+  func testLivePlaybackStopsAndDiscardsWhenTheSpokenLanguageDoesNotMatch() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-live-mismatch-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    // 配文是中文，于是听写语言会猜成 zh_CN。
+    let document = CapturedDocument(
+      createdAt: "2026-07-20T00:00:00Z", origin: .manualLink,
+      url: "https://www.youtube.com/watch?v=mismatch01", title: "斯坦福讲座",
+      platform: "youtube", method: "fixture",
+      text: "斯坦福教授的人工智能讲座，全程高能，值得反复观看学习。",
+      completeness: "complete", capturedAt: "2026-07-20T00:00:00Z", sourceLabel: "fixture"
+    )
+    let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
+
+    // 视频里说的是英文：zh_CN 模型吐出的是这种拉丁碎片（实测形态）。
+    let gibberish = "about carer avisont AI and in peovisers ae us to do most this yellecture by myself but what I thought"
+    let model = HistoryViewModel(
+      livePlaybackTranscribe: { _, _ in
+        AsyncThrowingStream { continuation in
+          continuation.yield(.transcribing)
+          continuation.yield(.partial(gibberish))
+          continuation.yield(.final(gibberish))
+          continuation.finish()
+        }
+      }
+    )
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+
+    let detail = try repository.detail(taskID: accepted.taskID)
+    model.startLivePlaybackTranscription(detail: detail, platform: "youtube")
+    await waitUntil {
+      if case .failed = model.transcriptionState { return true }
+      return false
+    }
+
+    // 那半段乱码不能落库。
+    let after = try repository.detail(taskID: accepted.taskID)
+    XCTAssertFalse(
+      after.snapshots.contains { $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue },
+      "语种判错时不该留下转写快照"
+    )
+    // 提示里要说人话，不能甩一个 zh_CN 给用户。
+    if case let .failed(message) = model.transcriptionState {
+      XCTAssertTrue(message.contains("中文"), "提示应说明听出来的内容不像哪种语言：\(message)")
+      XCTAssertFalse(message.contains("zh_CN"), "不该把 locale 标识甩给用户：\(message)")
+    } else {
+      XCTFail("应当停在失败态")
+    }
+  }
+
   func testTranscriptTidyPersistsTidiedSnapshotAndKeepsOriginal() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-tidy-\(UUID().uuidString)", isDirectory: true)
@@ -1952,9 +2028,246 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertTrue(transcripts.last?.bodyText.contains("Fold8") == true)
   }
 
+  /// 部分分片失败时，不能用绿色「校对稿已保存」把它包装成完整成功。
+  func testPartialTranscriptTidyUsesAnExplicitFailureState() {
+    let outcome = TranscriptTidyOutcome(
+      text: "第一段已校对\n\n第二段原文",
+      promptTokens: 800,
+      completionTokens: 600,
+      totalTokens: 1_400,
+      failedChunkCount: 1,
+      chunkCount: 2
+    )
+
+    XCTAssertEqual(
+      HistoryViewModel.tidyStateAfterSaving(outcome, style: .subtitles),
+      .failed("校对未完整完成：2 段中有 1 段失败；已完成部分已保存，失败段保留原文。请重试。")
+    )
+    XCTAssertEqual(
+      HistoryViewModel.tidyStateAfterSaving(outcome, style: .note),
+      .failed("整理未完整完成：2 段中有 1 段失败；已完成部分已保存，失败段保留原文。请重试。")
+    )
+  }
+
   /// 笔记的整理排版走的是另一条路：改自己的正文，不产生转写快照。
   ///
   /// 复用转写那条路径会让一条笔记凭空多出一份「本机转写」来源——用户只是想让
+  /// 只读资料库上，本地编辑一律不落库。
+  ///
+  /// 这不是一个按钮的事，是一类：改正文、改标题、换脑图配色分别走各自的入口，
+  /// 谁漏了 `!isReadOnly` 谁就在只读资料库上真的写。改标题那条尤其隐蔽——打开一条
+  /// 标题带 U+FFFC 的笔记时视图会自动调它清洗标题，**不需要任何用户操作**。
+  /// 一条用例同时钉住三个入口，是为了让今后新增的写入路径没法只补其中一个。
+  func testReadOnlyHistoryRejectsLocalEdits() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-readonly-edits-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+
+    let originalBody = "原始正文"
+    let accepted = try repository.acceptCapture(.init(
+      document: CapturedDocument(
+        createdAt: "2026-08-21T00:00:00Z", origin: .manualLink,
+        url: "https://example.test/readonly", title: "原始标题",
+        platform: "web", method: "fixture", text: originalBody,
+        completeness: "complete", capturedAt: "2026-08-21T00:00:00Z", sourceLabel: "fixture"
+      ),
+      receivedAtMilliseconds: 1
+    ))
+    let outline = MindMapOutline(
+      title: "原始标题", subtitle: nil,
+      branches: [.init(title: "要点", leaves: ["一"])]
+    )
+    try repository.saveMindMap(TaskMindMapRecord(
+      taskID: accepted.taskID,
+      outline: outline,
+      themeID: "classic",
+      userEdited: false,
+      provider: "test",
+      model: "test",
+      promptTokens: 1,
+      completionTokens: 1,
+      totalTokens: 2,
+      createdAtMilliseconds: 2,
+      updatedAtMilliseconds: 2
+    ))
+
+    // 先在**可写**模式下走一遍同样的调用。
+    //
+    // 这一段不是凑数：`saveEditedSnapshotText` 是排队异步落库的，只读那一段若不等满
+    // 一个真实的写入窗口就断言，闸门全拆了测试也照样绿。先确认这条路真的会落库，
+    // 下面的等待才有意义——第一版就是漏了这步，红验证时正文那条纹丝不动。
+    let writableModel = HistoryViewModel()
+    writableModel.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { writableModel.detailState == .loaded && writableModel.selectedTaskID == accepted.taskID }
+    let snapshotID = try XCTUnwrap(writableModel.detail?.snapshots.last?.id)
+    writableModel.saveEditedSnapshotText(
+      taskID: accepted.taskID, snapshotID: snapshotID, bodyText: "可写时确实会落库"
+    )
+    await waitUntilAsync {
+      ((try? repository.detail(taskID: accepted.taskID))?.snapshots
+        .contains { $0.bodyText.contains("可写时确实会落库") }) == true
+    }
+    // 还原，让只读那一段从已知状态出发。
+    writableModel.saveEditedSnapshotText(
+      taskID: accepted.taskID, snapshotID: snapshotID, bodyText: originalBody
+    )
+    await waitUntilAsync {
+      ((try? repository.detail(taskID: accepted.taskID))?.snapshots
+        .contains { $0.bodyText.contains(originalBody) }) == true
+    }
+
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: true, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+    let storedTheme = try XCTUnwrap(repository.loadMindMap(taskID: accepted.taskID)).themeID
+
+    model.saveEditedSnapshotText(taskID: accepted.taskID, snapshotID: snapshotID, bodyText: "被改过的正文")
+    model.renameNote(taskID: accepted.taskID, title: "被改过的标题")
+    model.updateMindMapTheme(taskID: accepted.taskID, themeID: "dark-code")
+
+    // 断言的是「什么都没发生」，等不够就等于没测。上面那次可写写入是毫秒级落库的，
+    // 这里给足一秒。
+    try await Task.sleep(for: .seconds(1))
+    let after = try repository.detail(taskID: accepted.taskID)
+    // 标题挂在最新那条 snapshot 上，不在 task 上。
+    XCTAssertEqual(after.snapshots.last?.title, "原始标题", "只读时不该改标题")
+    XCTAssertTrue(
+      after.snapshots.contains { $0.bodyText.contains(originalBody) },
+      "只读时不该改正文"
+    )
+    XCTAssertFalse(
+      after.snapshots.contains { $0.bodyText.contains("被改过的正文") },
+      "只读时不该改正文"
+    )
+    XCTAssertEqual(
+      try XCTUnwrap(repository.loadMindMap(taskID: accepted.taskID)).themeID,
+      storedTheme,
+      "只读时不该改脑图配色"
+    )
+  }
+
+  /// 「校对字幕」必须和「模型校对」受同一道闸约束。
+  ///
+  /// 这条路会写库、还会把字幕正文连同标题配文发到外部聊天模型。它上线时用
+  /// `style == .subtitles || canTidyTranscript(...)` 短路掉了整条前置检查，于是
+  /// 只读资料库照样被写、正文照样被发出去。这里同时钉住三种状态，避免今后
+  /// 只修其中一种。
+  func testSubtitleTidyRespectsReadOnlyAndModelGates() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-subtitle-tidy-gate-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+
+    let accepted = try repository.acceptCapture(.init(
+      document: CapturedDocument(
+        createdAt: "2026-08-20T00:00:00Z", origin: .manualLink,
+        url: "https://example.test/lecture", title: "讲座",
+        platform: "bilibili", method: "fixture", text: "占位配文",
+        completeness: "complete", capturedAt: "2026-08-20T00:00:00Z", sourceLabel: "fixture"
+      ),
+      receivedAtMilliseconds: 1
+    ))
+    let rawSubtitles = "00:03 衡量的标准是完成该任务人类需要多长时间"
+    _ = try repository.acceptCapture(.init(
+      document: CapturedDocument(
+        createdAt: "2026-08-20T00:01:00Z", origin: .burnedInSubtitles,
+        url: "https://example.test/lecture", title: "讲座",
+        platform: "bilibili", method: "vision_ocr", text: rawSubtitles,
+        completeness: "complete", capturedAt: "2026-08-20T00:01:00Z", sourceLabel: "画面字幕"
+      ),
+      receivedAtMilliseconds: 2
+    ))
+
+    // 只读：理由要说只读，且一个字都不能发出去。
+    let readOnlyTidier = RecordingTranscriptTidier(result: "不该被调用")
+    let readOnlyModel = HistoryViewModel(transcriptTidier: readOnlyTidier)
+    readOnlyModel.configure(history: .init(repository: repository), isReadOnly: true, unavailableCode: nil)
+    await waitUntil { readOnlyModel.detailState == .loaded && readOnlyModel.selectedTaskID == accepted.taskID }
+
+    XCTAssertEqual(
+      readOnlyModel.subtitleTidyUnavailableReason(taskID: accepted.taskID),
+      "这份历史当前只能浏览"
+    )
+    XCTAssertFalse(readOnlyModel.canTidySubtitles(taskID: accepted.taskID))
+    readOnlyModel.requestTranscriptTidy(taskID: accepted.taskID, model: "tidy-model", style: .subtitles)
+    XCTAssertFalse(readOnlyModel.isTranscriptTidyConfirmationPresented, "只读时不该弹发送确认")
+    XCTAssertEqual(
+      readOnlyModel.transcriptTidyState(for: accepted.taskID),
+      .failed("这份历史当前只能浏览")
+    )
+    let readOnlySent = await readOnlyTidier.receivedText
+    XCTAssertNil(readOnlySent, "只读时不该把字幕正文发给模型")
+
+    // 没配聊天模型：理由要指向设置，不能报「没有文稿」把人引偏。
+    let unconfiguredModel = HistoryViewModel()
+    unconfiguredModel.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil {
+      unconfiguredModel.detailState == .loaded && unconfiguredModel.selectedTaskID == accepted.taskID
+    }
+    XCTAssertEqual(
+      unconfiguredModel.subtitleTidyUnavailableReason(taskID: accepted.taskID),
+      "需先在设置里配置聊天模型"
+    )
+    unconfiguredModel.requestTranscriptTidy(taskID: accepted.taskID, model: nil, style: .subtitles)
+    XCTAssertEqual(
+      unconfiguredModel.transcriptTidyState(for: accepted.taskID),
+      .failed("需先在设置里配置聊天模型")
+    )
+
+    // 绿的一侧：条件齐了就必须能跑，别把功能整个焊死。
+    let tidier = RecordingTranscriptTidier(result: "00:03 衡量的标准是完成该任务人类需要多长时间")
+    let model = HistoryViewModel(transcriptTidier: tidier)
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+
+    XCTAssertNil(model.subtitleTidyUnavailableReason(taskID: accepted.taskID))
+    XCTAssertTrue(model.canTidySubtitles(taskID: accepted.taskID))
+    model.requestTranscriptTidy(taskID: accepted.taskID, model: "tidy-model", style: .subtitles)
+    XCTAssertTrue(model.isTranscriptTidyConfirmationPresented)
+    model.confirmTranscriptTidy()
+    await waitUntil { model.transcriptTidyState(for: accepted.taskID) == .completed }
+    let sentStyle = await tidier.receivedStyle
+    let sentText = await tidier.receivedText
+    XCTAssertEqual(sentStyle, .subtitles)
+    XCTAssertEqual(sentText, rawSubtitles)
+  }
+
+  /// 没有画面字幕层时，理由要说「先去读字幕」，不能沿用听写那句「先完成转写」。
+  func testSubtitleTidyReasonPointsAtReadingSubtitlesFirst() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-subtitle-tidy-missing-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+
+    let accepted = try repository.acceptCapture(.init(
+      document: CapturedDocument(
+        createdAt: "2026-08-20T00:00:00Z", origin: .manualLink,
+        url: "https://example.test/no-subtitles", title: "讲座",
+        platform: "bilibili", method: "fixture", text: "占位配文",
+        completeness: "complete", capturedAt: "2026-08-20T00:00:00Z", sourceLabel: "fixture"
+      ),
+      receivedAtMilliseconds: 1
+    ))
+    let tidier = RecordingTranscriptTidier(result: "不该被调用")
+    let model = HistoryViewModel(transcriptTidier: tidier)
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.detailState == .loaded && model.selectedTaskID == accepted.taskID }
+
+    XCTAssertEqual(
+      model.subtitleTidyUnavailableReason(taskID: accepted.taskID),
+      "需先读取画面字幕，才有字幕可校对"
+    )
+    let sent = await tidier.receivedText
+    XCTAssertNil(sent)
+  }
+
   /// 自己写的东西排得整齐些，不该因此在记录里多出一个不存在的来源。
   func testNoteTidyRewritesItsOwnSnapshotWithoutCreatingATranscript() async throws {
     let root = FileManager.default.temporaryDirectory
@@ -2336,7 +2649,8 @@ private actor RecordingTranscriptTidier: TranscriptTidying {
     text: String,
     model: String?,
     style: TidyStyle,
-    context: TranscriptTidyContext
+    context: TranscriptTidyContext,
+    progress _: (@Sendable (Int, Int) -> Void)?
   ) async throws -> TranscriptTidyOutcome {
     receivedText = text
     receivedModel = model
@@ -2351,7 +2665,8 @@ private struct FailingTranscriptTidier: TranscriptTidying {
     text _: String,
     model _: String?,
     style _: TidyStyle,
-    context _: TranscriptTidyContext
+    context _: TranscriptTidyContext,
+    progress _: (@Sendable (Int, Int) -> Void)?
   ) async throws -> TranscriptTidyOutcome {
     throw TranscriptTidyError.networkInterrupted
   }

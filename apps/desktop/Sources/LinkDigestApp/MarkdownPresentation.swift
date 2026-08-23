@@ -1375,6 +1375,8 @@ struct MarkdownContentView: View {
   var anchorScope: String = ""
   var revealText: String?
   var onFollowWikiLink: ((String) -> Void)?
+  /// 点击正文里的时间码。没接就当普通链接处理（会被安全校验拦下）。
+  var onSeekMedia: ((Double) -> Void)?
   /// 单击正文进入编辑。只给转写 / 笔记 / 稿这些可写正文。
   var onRequestEdit: ((String?) -> Void)?
   @State private var rejectedLink = false
@@ -1517,6 +1519,7 @@ struct MarkdownContentView: View {
     anchorScope: String = "",
     revealText: String? = nil,
     onFollowWikiLink: ((String) -> Void)? = nil,
+    onSeekMedia: ((Double) -> Void)? = nil,
     onRequestEdit: ((String?) -> Void)? = nil
   ) {
     self.source = source
@@ -1534,6 +1537,7 @@ struct MarkdownContentView: View {
     self.anchorScope = anchorScope
     self.revealText = revealText
     self.onFollowWikiLink = onFollowWikiLink
+    self.onSeekMedia = onSeekMedia
     self.onRequestEdit = onRequestEdit
   }
 
@@ -1969,6 +1973,11 @@ struct MarkdownContentView: View {
   private func openValidated(_ url: URL) -> OpenURLAction.Result {
     if let title = WikiLinkURL.title(from: url) {
       onFollowWikiLink?(title)
+      return .handled
+    }
+    // 时间码跳转在安全校验之前拦下：它是内部指令，不该走 NSWorkspace 打开。
+    if let seconds = MediaSeekLink.seconds(from: url) {
+      onSeekMedia?(Double(seconds))
       return .handled
     }
     guard let resolved = try? MarkdownLinkResolver.resolve(url, sourceURL: sourceURL) else {

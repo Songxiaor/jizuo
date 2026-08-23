@@ -104,6 +104,9 @@ struct MindMapSectionView: View {
         .pickerStyle(.segmented)
         .frame(width: 200)
         .labelsHidden()
+        // 只读时拨了也不会落库，让它可拨等于无声丢弃。ViewModel 那边有兜底闸，
+        // 这里灰掉是为了让「改不了」看得见。
+        .disabled(model.isReadOnly)
         .accessibilityLabel("脑图主题")
         Button("重新生成") { model.requestMindMapGeneration(taskID: taskID) }
           .controlSize(.small)
@@ -113,7 +116,8 @@ struct MindMapSectionView: View {
           .accessibilityIdentifier("mind-map-regenerate")
         Button("编辑") { isEditorPresented = true }
           .controlSize(.small)
-          .help("编辑脑图结构")
+          .disabled(model.isReadOnly)
+          .help(model.isReadOnly ? "这份历史当前只能浏览" : "编辑脑图结构")
           .accessibilityLabel("编辑脑图")
           .accessibilityIdentifier("mind-map-edit")
         Menu {

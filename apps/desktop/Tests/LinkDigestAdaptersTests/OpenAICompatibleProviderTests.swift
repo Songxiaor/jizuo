@@ -941,6 +941,45 @@ final class ReasoningEffortRejectionMemoryTests: XCTestCase {
     }
   }
 
+  /// 校对/整理走的是**非流式**那条路，它一样要带 `reasoning_effort`。
+  ///
+  /// 漏掉时不是「慢一点」：实测同一条 105 分钟视频的字幕校对，19 片跑了 14 分 23 秒，
+  /// 其中 5 片撞满 180 秒超时被判失败——失败的恰好是乱码最密、最需要校对的那几片。
+  /// 流式那边早就在传，只有这条漏着，而且它连诊断日志都不写，慢了都查不出来。
+  func testNonStreamingCompletionCarriesReasoningEffortAndStepsDownWhenRejected() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let ok = FakeOpenAICompatibleServer.ResponseScript(
+      contentType: "application/json",
+      chunks: [.init("{\"choices\":[{\"message\":{\"content\":\"校对后的文字\"}}]}")]
+    )
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [
+      .init(statusCode: 400, contentType: "application/json"),
+      ok,
+      ok,
+    ])
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let provider = makeProvider()
+    let profile = try profile(baseURL)
+
+    // 第一次：none 被拒 → 降到 low 重发并成功。
+    let first = try await provider.tidyTranscriptChunk(
+      profile: profile, apiKey: key, model: "fixture-model", text: "待校对"
+    )
+    XCTAssertEqual(first.text, "校对后的文字")
+    XCTAssertEqual(server.requests.count, 2, "首轮应为 none 被拒 + low 重发")
+    XCTAssertEqual(reasoningEffort(in: server.requests[0]), "none")
+    XCTAssertEqual(reasoningEffort(in: server.requests[1]), "low")
+
+    // 第二片：记忆跨请求，直接从 low 起，只发一次。校对会把长稿切十几片，
+    // 每片都重试一遍等于把一半请求浪费在同一个已知答案上。
+    _ = try await provider.tidyTranscriptChunk(
+      profile: profile, apiKey: key, model: "fixture-model", text: "第二片"
+    )
+    XCTAssertEqual(server.requests.count, 3, "记住拒绝后，第二片只应发 1 个请求")
+    XCTAssertEqual(reasoningEffort(in: server.requests[2]), "low")
+  }
+
   private func bodyHasReasoningEffort(_ request: FakeOpenAICompatibleServer.RecordedRequest) -> Bool {
     reasoningEffort(in: request) != nil
   }

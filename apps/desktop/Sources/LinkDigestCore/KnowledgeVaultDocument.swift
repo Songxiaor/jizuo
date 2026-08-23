@@ -59,12 +59,21 @@ public enum KnowledgeVaultRenderer {
     _ projection: HistoryExportProjection,
     timeZone: TimeZone = .current
   ) -> KnowledgeVaultDocument {
-    let snapshot = projection.snapshots.last
+    // 元数据取「抓取来源」那一层，不能取 `snapshots.last`。
+    //
+    // last 是最新追加的派生层——听写稿，或画面字幕。它们既没有 author/published，
+    // sourceLabel 还分别是「本机转写」「画面字幕」，直接拿来当 platform 会把
+    // 平台名写成一个动作名。派生层每多一种，这个错就多一种表现。
+    let snapshot = LayeredSourceDocument.captionSnapshot(in: projection.snapshots)
+      ?? projection.snapshots.last
     let note = MarkdownNoteFrontmatter.parse(snapshot?.bodyText ?? "")
     let title = CapturedDocumentTitle.display(snapshot?.title, for: projection.task.canonicalURL)
     let digestID = projection.task.id
 
     let summary = latestSummary(projection)
+    // 只看听写层，**不**把画面字幕算进来：这个字段是导出契约的一部分，下游
+    // 检索按它筛选，语义扩大会悄悄改变别处的结果。要不要让它涵盖字幕层，是
+    // 契约层面的决定，不该在这里顺手改掉。
     let hasTranscript = projection.snapshots.contains {
       $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
     }
@@ -98,8 +107,15 @@ public enum KnowledgeVaultRenderer {
       head += "\n## 摘要\n\n" + bounded.text + (bounded.didTruncate ? "\n\n\(truncationNotice)" : "") + "\n"
     }
 
-    let bodyText = (note.body.isEmpty ? (snapshot?.bodyText ?? "") : note.body)
+    // 正文要带上**所有**层。原来只导出 `snapshots.last`：有听写稿时配文就丢了，
+    // 有画面字幕时听写稿也跟着丢——导出的「原文」只剩最后追加的那一层。
+    // `modelInput` 是分层正文的唯一真相源，导出、总结、翻译都该走它。
+    let layered = LayeredSourceDocument.modelInput(from: projection.snapshots)
       .trimmingCharacters(in: .whitespacesAndNewlines)
+    let bodyText = layered.isEmpty
+      ? (note.body.isEmpty ? (snapshot?.bodyText ?? "") : note.body)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      : layered
     let bodyHeader = "\n## 原文\n\n"
     // 原文预算 = 文件硬上限扣掉已经确定的部分，再和原文自身上限取小。
     // 截断按最终文件的字节数算，不是只按正文算——frontmatter 和摘要也占预算。

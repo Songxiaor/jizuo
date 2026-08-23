@@ -186,6 +186,128 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
     }
   }
 
+  /// 探测只听开头这么久。实测 130 秒音频识别耗时 3.2 秒（约 40 倍实时），
+  /// 60 秒足够判出语种，两个候选加起来也只要几秒。
+  static let localeProbeDurationSeconds: Double = 60
+
+  /// 听一小段，挑一个真的对得上音频的 locale。
+  ///
+  /// 判据见 `CapturedContentLanguage.isPlausibleTranscript`：指错 locale 时
+  /// Apple 的输出有两种彻底的坏法（吐异种文字碎片、或直接吐空），两种都能判出来。
+  ///
+  /// 全程只读已安装的模型：探测阶段静默下载模型会把一次「点了转写」变成
+  /// 几百 MB 的后台流量，安装必须留在用户明确确认的那条路径上。
+  public func detectLocale(
+    fileURL: URL,
+    workspaceURL: URL,
+    preferred: String,
+    fallbacks: [String]
+  ) async -> String {
+    guard #available(macOS 26.0, *) else { return preferred }
+
+    // 候选按「先信调用方的猜测」排序，猜对时第一次探测就命中，不多花时间。
+    var candidates: [String] = []
+    for candidate in [preferred] + fallbacks where !candidates.contains(candidate) {
+      candidates.append(candidate)
+    }
+
+    let probeURL: URL
+    do {
+      probeURL = try await Self.extractProbeAudio(from: fileURL, workspaceURL: workspaceURL)
+    } catch {
+      // 探测取不到音频不该拦住正片；照旧用猜测值走原路径，由它去报真正的错。
+      return preferred
+    }
+    defer { try? FileManager.default.removeItem(at: probeURL) }
+
+    for candidate in candidates {
+      if Task.isCancelled { return preferred }
+      guard await Self.isModelInstalled(candidate) else { continue }
+      guard let sample = try? await Self.recognizeProbe(audioURL: probeURL, localeIdentifier: candidate) else {
+        continue
+      }
+      if CapturedContentLanguage.isPlausibleTranscript(sample, forLocaleIdentifier: candidate) {
+        return candidate
+      }
+    }
+
+    // 一个都说不通（可能是纯音乐、无人声、或候选之外的语种）。回到猜测值，
+    // 结果不会比没有探测更差。
+    return preferred
+  }
+
+  /// 开头一小段音频，只服务于探测。与正片的 `extracted-audio.m4a` 分开命名，
+  /// 免得两者互相顶掉。
+  static func extractProbeAudio(from fileURL: URL, workspaceURL: URL) async throws -> URL {
+    let asset = AVURLAsset(url: fileURL)
+    guard !(try await asset.loadTracks(withMediaType: .audio)).isEmpty else {
+      throw LocalVideoTranscriptionError.noAudioTrack
+    }
+    guard let exporter = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetAppleM4A) else {
+      throw LocalVideoTranscriptionError.audioExtractionFailed
+    }
+    let outputURL = workspaceURL.appendingPathComponent("locale-probe.m4a", isDirectory: false)
+    try? FileManager.default.removeItem(at: outputURL)
+
+    let duration = try await asset.load(.duration)
+    let probeSeconds = min(localeProbeDurationSeconds, CMTimeGetSeconds(duration))
+    exporter.timeRange = CMTimeRange(
+      start: .zero,
+      duration: CMTime(seconds: max(1, probeSeconds), preferredTimescale: 600)
+    )
+    do {
+      try await exporter.export(to: outputURL, as: .m4a)
+      return outputURL
+    } catch {
+      try? FileManager.default.removeItem(at: outputURL)
+      throw LocalVideoTranscriptionError.audioExtractionFailed
+    }
+  }
+
+  /// 这台机器上装了这个语言的模型没有。
+  ///
+  /// **不能用 `AssetInventory.status` 判断**：它答的是「**当前进程**有没有占用
+  /// 这个 locale」，而不是「机器上装没装」。实测同一台装好 en_US 的机器上，
+  /// 一个没占用过它的进程问 status 得到的是 `.supported` 而不是 `.installed`；
+  /// 照它设闸会把所有候选全判成「要下载」而跳过，探测于是永远回落到猜测值——
+  /// 也就是等于没探测。`installedLocales` 答的才是系统维度的事实。
+  @available(macOS 26.0, *)
+  static func isModelInstalled(_ localeIdentifier: String) async -> Bool {
+    guard let locale = await SpeechTranscriber.supportedLocale(
+      equivalentTo: Locale(identifier: localeIdentifier)
+    ) else { return false }
+    let installed = await SpeechTranscriber.installedLocales
+    return installed.contains { $0.identifier(.bcp47) == locale.identifier(.bcp47) }
+  }
+
+  /// 探测用的识别：只要最终文本，不报进度、不累计时间轴。
+  @available(macOS 26.0, *)
+  static func recognizeProbe(audioURL: URL, localeIdentifier: String) async throws -> String {
+    guard let locale = await SpeechTranscriber.supportedLocale(
+      equivalentTo: Locale(identifier: localeIdentifier)
+    ) else { throw LocalVideoTranscriptionError.chineseLocaleUnavailable }
+    let transcriber = Self.makeTranscriber(locale: locale)
+    guard let audioFile = try? AVAudioFile(forReading: audioURL) else {
+      throw LocalVideoTranscriptionError.audioExtractionFailed
+    }
+    let analyzer = SpeechAnalyzer(modules: [transcriber])
+    let collector = Task { () throws -> String in
+      var text = ""
+      for try await result in transcriber.results where result.isFinal {
+        text += String(result.text.characters)
+      }
+      return text
+    }
+    do {
+      try await analyzer.start(inputAudioFile: audioFile, finishAfterFile: true)
+      return try await collector.value
+    } catch {
+      collector.cancel()
+      await analyzer.cancelAndFinishNow()
+      throw LocalVideoTranscriptionError.recognitionFailed
+    }
+  }
+
   @available(macOS 26.0, *)
   private static func recognize(
     audioURL: URL,

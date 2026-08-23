@@ -2251,6 +2251,16 @@ struct HistoryVideoPlayerCard: View {
       isPlaybackEnded = false
       loadVideoGeometry(fileURL)
     }
+    // 阅读区点了时间码：把播放位置跳过去。
+    //
+    // 请求走 ViewModel 中转——播放器是这张卡的 `@State`，阅读区够不到它。
+    // `MediaSeekRequest` 每次带一个新 id，所以连点同一个时间码也会触发；
+    // 只比秒数的话第二次点击值没变，`onChange` 不响应，表现成「点了没反应」。
+    .onChange(of: model.mediaSeekRequest) { _, request in
+      guard let request, let player else { return }
+      let time = CMTime(seconds: request.seconds, preferredTimescale: 600)
+      Task { await MediaPlaybackRestart.seek(player, to: time) }
+    }
     .onChange(of: fileURL) { _, newURL in
       if isInCinema { cinema.dismiss() }
       player?.pause()
@@ -2461,13 +2471,77 @@ struct HistoryVideoPlayerCard: View {
           .foregroundStyle(.secondary)
           .accessibilityIdentifier("history-transcript-tidy-blocked-reason")
       }
+
+      // 画面字幕：与听写并列的另一条来源，各跑各的、互不覆盖。
+      //
+      // 手动而不是自动：烧录字幕并非总存在，很多视频扫完几十秒只换来一句
+      // 「没读到」。但它一旦存在质量往往高过听写——多半是人工翻译的成品，
+      // 所以值得给一个明确入口。
+      let subtitleUIState = model.subtitleState(for: taskID)
+      if subtitleUIState.isActive {
+        Button("取消读取字幕", role: .cancel, action: model.cancelBurnedInSubtitles)
+          .controlSize(.small)
+          .accessibilityIdentifier("history-video-subtitles-cancel")
+        if let progress = model.subtitleProgress {
+          Text(progress).font(.caption).foregroundStyle(.secondary)
+        }
+      } else {
+        Button("读画面字幕") { model.requestBurnedInSubtitles(taskID: taskID) }
+          .controlSize(.small)
+          .disabled(!model.canReadBurnedInSubtitles(taskID: taskID))
+          .help("逐帧识别画面上烧录的字幕，作为独立的一层保存，不影响已有的转写稿。全程在本机进行，不上传画面。")
+          .accessibilityIdentifier("history-video-subtitles-read")
+      }
+      // 已经读到字幕时，给它一个校对入口。
+      //
+      // 和听写稿共用一套整理链路，但**提示词不同**：听写错在同音近音，OCR
+      // 错在字形相近（「衡量」→「後置」），还常在句尾粘着画面角标的残片。
+      if model.hasBurnedInSubtitles(taskID: taskID), !subtitleUIState.isActive {
+        // 门禁和文案都走 ViewModel 那份理由，不在这里自己判。这个按钮点下去会写库、
+        // 会把字幕正文发到外部模型，而它旁边的「模型校对」早就这么接了——两个按钮
+        // 各判各的，正是只读资料库上漏掉闸门的来路。
+        let subtitleTidyBlockedReason = model.subtitleTidyUnavailableReason(taskID: taskID)
+        Button("校对字幕") {
+          model.requestTranscriptTidy(taskID: taskID, model: tidyModel, style: .subtitles)
+        }
+        .controlSize(.small)
+        .disabled(subtitleTidyBlockedReason != nil)
+        .help(
+          subtitleTidyBlockedReason
+            ?? "把画面字幕连同标题、配文发给聊天模型，纠正 OCR 认错的字并删掉粘进来的角标；看不懂的句子原样保留。不发送视频或画面。"
+        )
+        .accessibilityIdentifier("history-subtitles-tidy")
+        // 同「模型校对」：灰按钮必须自己说明为什么不能点，否则它在 SwiftUI 里
+        // 淡得几乎看不见，用户会以为功能不存在。
+        if let subtitleTidyBlockedReason {
+          Text(subtitleTidyBlockedReason)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("history-subtitles-tidy-blocked-reason")
+        }
+      }
+
+      // 失败原因必须摆出来：读不到字幕是最常见的结果，静默什么都不发生
+      // 会让人以为按钮坏了。
+      if case let .failed(message) = subtitleUIState {
+        Text(message)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("history-video-subtitles-failed-reason")
+      }
     }
   }
 
   @ViewBuilder private var transcriptTidyStatus: some View {
     switch model.transcriptTidyState(for: taskID) {
     case .idle: EmptyView()
-    case .running: ProgressView().controlSize(.small); Text("正在用模型校对转写稿…").font(.caption)
+    case .running:
+      ProgressView().controlSize(.small)
+      // 有进度就报进度：长稿要切成十几片跑几分钟，只写「正在校对…」的话，
+      // 看不出它是在跑、卡住了、还是快好了。
+      Text(model.transcriptTidyProgress.map { "正在用模型校对…\($0)" } ?? "正在用模型校对…")
+        .font(.caption)
+        .accessibilityIdentifier("history-transcript-tidy-progress")
     case .completed:
       let tokens = model.transcriptTidyTokenSummary(for: taskID)
       Label(

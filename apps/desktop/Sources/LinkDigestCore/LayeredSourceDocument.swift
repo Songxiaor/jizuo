@@ -7,16 +7,34 @@ import Foundation
 public enum LayeredSourceDocument {
   public static let captionHeading = "配文"
   public static let transcriptHeading = "视频转写"
+  public static let subtitleHeading = "画面字幕"
+
+  /// 本机加工出来的层，不是抓来的原始配文。
+  ///
+  /// `captionSnapshot` 靠「不是派生层」来认配文，所以**每加一种派生来源都必须
+  /// 登记到这里**。漏登记不会报错，只会让新层被悄悄当成配文：原本的配文从此
+  /// 取不到，作者、发布时间这些只有配文才有的字段也跟着消失。
+  public static let derivedKinds: Set<String> = [
+    CapturedDocument.Origin.localTranscription.rawValue,
+    CapturedDocument.Origin.burnedInSubtitles.rawValue
+  ]
 
   public static func captionSnapshot(in snapshots: [ContentSnapshot]) -> ContentSnapshot? {
     snapshots.reversed().first {
-      $0.sourceKind != CapturedDocument.Origin.localTranscription.rawValue
+      !derivedKinds.contains($0.sourceKind)
     }
   }
 
   public static func transcriptSnapshot(in snapshots: [ContentSnapshot]) -> ContentSnapshot? {
     snapshots.reversed().first {
       $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+        && !body(of: $0).isEmpty
+    }
+  }
+
+  public static func subtitleSnapshot(in snapshots: [ContentSnapshot]) -> ContentSnapshot? {
+    snapshots.reversed().first {
+      $0.sourceKind == CapturedDocument.Origin.burnedInSubtitles.rawValue
         && !body(of: $0).isEmpty
     }
   }
@@ -30,26 +48,31 @@ public enum LayeredSourceDocument {
 
   /// 发给总结/翻译/脑图的正文：有配文和转写就两层都带上，并标清楚各是什么。
   public static func modelInput(from snapshots: [ContentSnapshot]) -> String {
-    let caption = captionSnapshot(in: snapshots).map(body(of:)).flatMap(nonEmpty)
-    let transcript = transcriptSnapshot(in: snapshots).map(body(of:)).flatMap(nonEmpty)
-    switch (caption, transcript) {
-    case let (caption?, transcript?):
-      return """
-      ## \(captionHeading)
-
-      \(caption)
-
-      ## \(transcriptHeading)
-
-      \(transcript)
-      """
-    case let (caption?, nil):
-      return caption
-    case let (nil, transcript?):
-      return transcript
-    case (nil, nil):
+    // 顺序固定：配文 → 画面字幕 → 视频转写。前者是抓来的原文，后两者是同一段
+    // 视频的两种转录；字幕排在听写前面，是因为它常常是人工翻译的成品。
+    let layers = orderedLayers(from: snapshots)
+    guard !layers.isEmpty else {
       return snapshots.last.map(body(of:)) ?? ""
     }
+    // 只有一层时不加标题。给孤零零一段正文扣个「## 配文」的帽子，对模型和
+    // 导出都是纯噪声。
+    guard layers.count > 1 else { return layers[0].body }
+    return layers.map { "## \($0.heading)\n\n\($0.body)" }.joined(separator: "\n\n")
+  }
+
+  /// 按固定顺序取出所有非空的层。
+  static func orderedLayers(from snapshots: [ContentSnapshot]) -> [(heading: String, body: String)] {
+    let candidates: [(String, ContentSnapshot?)] = [
+      (captionHeading, captionSnapshot(in: snapshots)),
+      (subtitleHeading, subtitleSnapshot(in: snapshots)),
+      (transcriptHeading, transcriptSnapshot(in: snapshots))
+    ]
+    var layers: [(heading: String, body: String)] = []
+    for (heading, snapshot) in candidates {
+      guard let text = snapshot.map(body(of:)).flatMap(nonEmpty) else { continue }
+      layers.append((heading: heading, body: text))
+    }
+    return layers
   }
 
   /// 任一层还不是目标语言，就仍提供翻译。转写常已是中文，不能因此把英文配文的翻译入口关掉。
@@ -57,12 +80,7 @@ public enum LayeredSourceDocument {
     from snapshots: [ContentSnapshot],
     outputLanguage: String
   ) -> Bool {
-    let layers = [
-      captionSnapshot(in: snapshots).map(body(of:)),
-      transcriptSnapshot(in: snapshots).map(body(of:)),
-    ]
-    .compactMap { $0 }
-    .filter { !$0.isEmpty }
+    let layers = orderedLayers(from: snapshots).map(\.body)
     let parts = layers.isEmpty ? [modelInput(from: snapshots)].filter { !$0.isEmpty } : layers
     return parts.contains {
       !CapturedContentLanguage.isSameOutputLanguage(content: $0, outputLanguage: outputLanguage)

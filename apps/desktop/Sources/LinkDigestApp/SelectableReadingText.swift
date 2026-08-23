@@ -307,18 +307,52 @@ struct SelectableReadingTextView: NSViewRepresentable {
       ExcerptCaptureRouter.shared.handler?(selected)
     }
 
+    /// 点击落在链接上了吗。
+    ///
+    /// 判断要带上「点是否真的落在这个字形里」：只按最近字符索引取属性，点在
+    /// 段末空白处也会命中前一个字符，于是明明点的是空白却触发了跳转。
+    private func link(at point: NSPoint) -> URL? {
+      guard let layoutManager, let textContainer, let textStorage, textStorage.length > 0 else {
+        return nil
+      }
+      var fraction: CGFloat = 0
+      let glyphIndex = layoutManager.glyphIndex(
+        for: point,
+        in: textContainer,
+        fractionOfDistanceThroughGlyph: &fraction
+      )
+      guard fraction > 0, fraction < 1 else { return nil }
+      let index = layoutManager.characterIndexForGlyph(at: glyphIndex)
+      guard index < textStorage.length else { return nil }
+      switch textStorage.attribute(.link, at: index, effectiveRange: nil) {
+      case let url as URL: return url
+      case let raw as String: return URL(string: raw)
+      default: return nil
+      }
+    }
+
     /// NSTextView 的 mouseDown 会自己把鼠标跟踪到松开，子类的 mouseUp 常常根本收不到。
     /// 可写正文必须在 mouseDown 里进编辑，并且不要再交给 super 去框选。
+    ///
+    /// **但链接要排在编辑前面**。可写正文原来一进 mouseDown 就直接进编辑并
+    /// `return`，链接连交给 delegate 的机会都没有——转写稿和画面字幕都是可写的，
+    /// 于是正文里的时间码全都点不动，点哪儿都是弹出编辑器。
     override func mouseDown(with event: NSEvent) {
-      if let onRequestEdit,
-         event.clickCount == 1,
-         event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
-        let point = convert(event.locationInWindow, from: nil)
+      let point = convert(event.locationInWindow, from: nil)
+      let isPlainClick = event.clickCount == 1
+        && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty
+      if isPlainClick, link(at: point) != nil {
+        // 交给 super，由 `textView(_:clickedOnLink:at:)` 走既有的链接处理。
+        mouseDownPoint = point
+        super.mouseDown(with: event)
+        return
+      }
+      if let onRequestEdit, isPlainClick {
         let index = characterIndexForInsertion(at: point)
         onRequestEdit(ReadingEditLocator.displayedSnippet(in: string, utf16Index: index))
         return
       }
-      mouseDownPoint = convert(event.locationInWindow, from: nil)
+      mouseDownPoint = point
       super.mouseDown(with: event)
     }
 

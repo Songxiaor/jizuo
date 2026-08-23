@@ -128,4 +128,47 @@ final class LocalVideoTranscriptionTests: XCTestCase {
       duration: CMTime(seconds: duration, preferredTimescale: 1_000)
     )
   }
+
+  /// 长段落切片后，每片必须有自己的时间码。
+  ///
+  /// 原实现让所有切片复用段落起始时间，于是识别得越准问题越明显：内容变多 →
+  /// 段落变长 → 每段切得更碎，而锚点数量一点没涨。实测 105 分钟的稿子 457 段
+  /// 只有 41 个不同时间码，点击定位基本失去意义。
+  func testSplitPiecesOfALongParagraphGetDistinctAscendingTimestamps() {
+    var value = TimedTranscriptionAccumulator()
+    // 一段没有停顿的连续讲话，长到必然被按字数切开。
+    let sentence = "这是一句足够长的话用来把段落撑过软切分的字数上限。"
+    let longSpeech = String(repeating: sentence, count: 12)
+    value.merge(range: range(0, 120), text: longSpeech, isFinal: true)
+    let lines = value.finalText
+      .split(separator: "\n", omittingEmptySubsequences: true)
+      .map(String.init)
+    XCTAssertGreaterThan(lines.count, 1, "fixture 前提：这段话必须被切成多片")
+
+    let stamps = lines.compactMap { $0.split(separator: " ").first.map(String.init) }
+    XCTAssertEqual(stamps.count, lines.count)
+    XCTAssertGreaterThan(Set(stamps).count, 1, "切片不能共用同一个时间码")
+    // 递增而不是乱跳，且不越出这段话的真实时间范围。
+    let seconds = stamps.map { stamp -> Int in
+      let parts = stamp.split(separator: ":").compactMap { Int($0) }
+      return parts.count == 3 ? parts[0] * 3600 + parts[1] * 60 + parts[2]
+        : (parts.count == 2 ? parts[0] * 60 + parts[1] : 0)
+    }
+    XCTAssertEqual(seconds, seconds.sorted(), "时间码必须递增")
+    XCTAssertEqual(seconds.first, 0)
+    XCTAssertLessThanOrEqual(seconds.last ?? 0, 120, "插值不能超出段落结束时间")
+  }
+
+  /// 没有可用时长的段落不许造出假时间。
+  func testParagraphWithoutDurationKeepsTheParagraphStartForEveryPiece() {
+    var value = TimedTranscriptionAccumulator()
+    let sentence = "这是一句足够长的话用来把段落撑过软切分的字数上限。"
+    // duration 为 0：起止相同，无法插值。
+    value.merge(range: range(30, 0), text: String(repeating: sentence, count: 12), isFinal: true)
+    let stamps = value.finalText
+      .split(separator: "\n", omittingEmptySubsequences: true)
+      .compactMap { $0.split(separator: " ").first.map(String.init) }
+    XCTAssertGreaterThan(stamps.count, 1)
+    XCTAssertEqual(Set(stamps), ["00:30"], "无时长可插值时应保持段落起始时间")
+  }
 }

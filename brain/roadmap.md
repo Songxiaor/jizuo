@@ -89,7 +89,7 @@ Loop 10 仅处理 Developer ID、hardened runtime、公证、stapling 和公开�
 **关于数据看板的结论（不建议现在做）**：GitHub Releases 每个附件自带 `download_count`，永久保留，一条命令即可读取：
 
 ```bash
-gh api repos/Songxiaor/linkdigest/releases \
+gh api repos/Songxiaor/jizuo/releases \
   --jq '.[] | "\(.tag_name): \(.assets[] | "\(.name) \(.download_count)")"'
 ```
 

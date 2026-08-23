@@ -20,17 +20,11 @@ public final class OpenAICompatibleMindMapExtractor: MindMapExtracting, @uncheck
     let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { throw MindMapOutlineError.emptyInput }
 
-    let credentials: (profile: ProviderProfile, apiKey: String)
-    do {
-      guard let loaded = try await configurationService.loadCredentials() else {
-        throw TranscriptTidyError.modelNotConfigured
-      }
-      credentials = loaded
-    } catch let error as TranscriptTidyError {
-      throw error
-    } catch {
-      throw TranscriptTidyError.modelNotConfigured
-    }
+    // 和校对共用同一套取凭据规则：漏掉这里，脑图就会在钥匙串读超时时同样
+    // 报出「请先在设置中保存文本模型」，把人指向一份没问题的配置。
+    let credentials = try await OpenAICompatibleTranscriptTidier.loadCredentials(
+      from: configurationService
+    )
     let trimmedOverride = model?.trimmingCharacters(in: .whitespacesAndNewlines)
     let effectiveModel = trimmedOverride?.isEmpty == false ? trimmedOverride! : credentials.profile.model
 

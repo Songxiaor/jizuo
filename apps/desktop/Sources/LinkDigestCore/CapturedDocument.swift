@@ -8,6 +8,12 @@ public struct CapturedDocument: Sendable, Equatable {
     case browserCapture = "browser_capture"
     case manualLink = "manual_link"
     case localTranscription = "local_transcription"
+    /// 从画面里 OCR 出来的烧录字幕。
+    ///
+    /// 与 `localTranscription` 并列而不是合并：它们是两条独立的来源，质量特点
+    /// 也不同——烧录字幕常常是人工翻译的成品，听写则是机器转的原声。哪条更可信
+    /// 因片而异，所以都留着、分层展示，不让后来的覆盖先到的。
+    case burnedInSubtitles = "burned_in_subtitles"
     /// 用户在 App 内自建的笔记。它没有来源网页，是唯一允许使用
     /// `CanonicalURL.noteScheme` 的来源——见 `CapturedDocumentValidator`。
     case userNote = "user_note"
