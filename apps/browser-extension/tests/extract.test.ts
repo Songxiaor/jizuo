@@ -1906,3 +1906,97 @@ describe("body block structure", () => {
   });
 });
 
+describe("inline and block formats that change meaning when flattened", () => {
+  const bodyOf = (root: FakeNode, href = "https://blog.example.test/post"): string =>
+    extractCurrentPage(makeDocument({ title: "格式测试", href, root })).text;
+
+  it("keeps strikethrough so struck-out text cannot read as advice", () => {
+    const root = el("article", [
+      el("h1", [text("做法")]),
+      el("p", [text("推荐："), el("del", [text("已废弃的做法")]), text("、"), el("s", [text("旧写法")])]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("~~已废弃的做法~~");
+    expect(body).toContain("~~旧写法~~");
+  });
+
+  it("maps super and subscripts to unicode so formulas stay correct", () => {
+    const root = el("article", [
+      el("h1", [text("公式")]),
+      el("p", [text("E=mc"), el("sup", [text("2")]), text("，10"), el("sup", [text("6")]), text("，H"), el("sub", [text("2")]), text("O")]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("E=mc\u00B2");
+    expect(body).toContain("10\u2076");
+    expect(body).toContain("H\u2082O");
+  });
+
+  it("leaves a superscript alone when it cannot be fully mapped", () => {
+    const root = el("article", [
+      el("h1", [text("脚注")]),
+      el("p", [text("见"), el("sup", [text("[1]")])]),
+    ]);
+    // 半转的结果比不转更难读，而且看不出哪部分原本是上标。
+    expect(bodyOf(root)).toContain("[1]");
+  });
+
+  it("pairs definition terms with their descriptions", () => {
+    const root = el("article", [
+      el("h1", [text("术语")]),
+      el("dl", [
+        el("dt", [text("幂等")]),
+        el("dd", [text("同一请求执行多次结果一致。")]),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("**幂等**");
+    expect(body).toContain("同一请求执行多次结果一致。");
+    // 术语和解释不能黏在同一行
+    expect(body).not.toContain("**幂等**同一请求");
+  });
+
+  it("lifts a details summary into a heading instead of loose prose", () => {
+    const root = el("article", [
+      el("h1", [text("说明")]),
+      el("details", [
+        el("summary", [text("点击展开：实现细节")]),
+        el("p", [text("折叠区里的正文内容。")]),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toMatch(/#+ 点击展开：实现细节/);
+    expect(body).toContain("折叠区里的正文内容。");
+  });
+
+  it("keeps nested quotes on separate levels", () => {
+    const root = el("article", [
+      el("h1", [text("引用")]),
+      el("blockquote", [
+        el("p", [text("外层引用")]),
+        el("blockquote", [el("p", [text("嵌套的内层引用")])]),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("> 外层引用");
+    expect(body).toContain(">> 嵌套的内层引用");
+    // 两层不能压成一行
+    expect(body).not.toContain("> 外层引用 > 嵌套");
+  });
+
+  it("carries the code language through to the fence", () => {
+    const root = el("article", [
+      el("h1", [text("代码")]),
+      el("pre", [el("code", [text("let x = 1")], { class: "language-swift" })]),
+    ]);
+    expect(bodyOf(root)).toContain("```swift");
+  });
+
+  it("does not invent a language when the class says nothing", () => {
+    const root = el("article", [
+      el("h1", [text("代码")]),
+      el("pre", [el("code", [text("plain")], { class: "highlight" })]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("```\nplain");
+  });
+});

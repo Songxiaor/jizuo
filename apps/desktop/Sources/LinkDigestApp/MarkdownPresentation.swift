@@ -504,7 +504,9 @@ enum MarkdownPresentation {
   enum Block: Equatable, Hashable {
     case heading(level: Int, text: String)
     case paragraph(String)
-    case list([String])
+    /// 每项带嵌套深度（0 为顶层）。原本是平铺的 `[String]`，缩进在解析时就被
+    /// trim 掉了，三层清单会全部塌成并列条目。
+    case list([ListItem])
     /// `start` 是这一段的**起始编号**，来自原文而不是数组下标：抽取侧认 `<ol start>`
     /// 并按实际产出的行递增，渲染时重编会把它全抹掉。
     case orderedList(start: Int, items: [String])
@@ -515,13 +517,25 @@ enum MarkdownPresentation {
     /// 任务列表。编辑器已经能续写 `- [ ]`，阅读区却把方括号当普通文字显示，
     /// 于是同一条清单在「写」和「读」两侧长得不一样。
     case taskList([TaskItem])
-    case quote(String)
+    /// `depth` 是嵌套层级（0 为最外层）。平铺时 `>>` 的第二层会被当成正文，
+    /// 引用框里就会裸露出一个 `>` 记号。
+    case quote(depth: Int, text: String)
     /// Obsidian 风格 `> [!WARNING]`。没有独立告示组件时，至少不要把标记当正文。
     case callout(kind: String, text: String)
     case code(language: String?, content: String)
     case table(headers: [String], rows: [[String]])
     /// `---` 之类的分隔线。不单独成块的话它会掉进段落，显示成一行光秃秃的横杠。
     case divider
+  }
+
+  struct ListItem: Equatable, Hashable {
+    let depth: Int
+    let text: String
+
+    init(depth: Int = 0, text: String) {
+      self.depth = depth
+      self.text = text
+    }
   }
 
   struct TaskItem: Equatable, Hashable {
@@ -637,21 +651,26 @@ enum MarkdownPresentation {
 
       if trimmed.hasPrefix("> ") || trimmed == ">" {
         var quoteLines: [String] = []
+        // 记住这一块里最深的一层。只认 `> ` 会把 `>> 内层` 剥成 `> 内层` 留在正文，
+        // 于是引用框里裸露出一个 `>` 符号——层级没表达出来，还多了个记号。
+        var maxDepth = 0
         while index < lines.count {
           let line = lines[index].trimmingCharacters(in: .whitespaces)
-          if line.hasPrefix("> ") {
-            quoteLines.append(String(line.dropFirst(2)))
-            index += 1
-          } else if line == ">" {
-            quoteLines.append("")
-            index += 1
-          } else {
-            break
+          guard line.hasPrefix(">") else { break }
+          var rest = Substring(line)
+          var depth = 0
+          while rest.hasPrefix(">") {
+            depth += 1
+            rest = rest.dropFirst()
+            if rest.hasPrefix(" ") { rest = rest.dropFirst() }
           }
+          maxDepth = max(maxDepth, depth - 1)
+          quoteLines.append(String(rest))
+          index += 1
         }
         let text = quoteLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty {
-          blocks.append(calloutBlock(from: text) ?? .quote(text))
+          blocks.append(calloutBlock(from: text) ?? .quote(depth: min(maxDepth, 2), text: text))
         }
         continue
       }
@@ -703,9 +722,10 @@ enum MarkdownPresentation {
       }
 
       if isListItem(trimmed) {
-        var items: [String] = []
+        var items: [ListItem] = []
         while index < lines.count {
-          let line = lines[index].trimmingCharacters(in: .whitespaces)
+          let raw = lines[index]
+          let line = raw.trimmingCharacters(in: .whitespaces)
           if line.isEmpty {
             let next = index + 1 < lines.count ? lines[index + 1].trimmingCharacters(in: .whitespaces) : ""
             if isListItem(next) {
@@ -716,7 +736,8 @@ enum MarkdownPresentation {
           }
           // 撞上任务项就收尾：两种清单混在一起时，让它们各自成块。
           if isListItem(line), taskItem(line) == nil {
-            items.append(listItemText(line))
+            // 深度必须从**未 trim 的原行**上算——trim 之后缩进就没了。
+            items.append(ListItem(depth: listDepth(raw), text: listItemText(line)))
             index += 1
           } else {
             break
@@ -1022,6 +1043,21 @@ enum MarkdownPresentation {
     let run = trimmed.prefix { $0 == opening.marker }
     guard run.count >= opening.length else { return false }
     return trimmed.dropFirst(run.count).trimmingCharacters(in: .whitespaces).isEmpty
+  }
+
+  /// 列表项的嵌套深度。每两个空格（或一个 Tab）算一层，与抽取侧的缩进约定一致。
+  ///
+  /// 解析时把行首缩进 trim 掉，层级就地消失——抽取侧辛苦缩出来的两格到了阅读区
+  /// 全变成顶层项，三层清单读起来是一堆并列条目。
+  static func listDepth(_ line: String) -> Int {
+    var spaces = 0
+    for character in line {
+      if character == " " { spaces += 1 }
+      else if character == "\t" { spaces += 2 }
+      else { break }
+    }
+    // 上限 3 层：再深的缩进在正文宽度里已经没有意义，且多半是原站排版噪声。
+    return min(spaces / 2, 3)
   }
 
   /// 有序项的**原始编号**。渲染时按数组下标重编会把 `3.` 显示成 `1.`——抽取侧
@@ -1798,17 +1834,25 @@ struct MarkdownContentView: View {
       VStack(alignment: .leading, spacing: 12) {
         ForEach(0..<items.count, id: \.self) { index in
           HStack(alignment: .top, spacing: 0) {
-            Circle()
-              .fill(secondaryTextColor.opacity(0.85))
-              .frame(width: 5, height: 5)
-              .frame(width: 22, alignment: .center)
-              .padding(.top, 8)
-              .accessibilityHidden(true)
-            inlineBody(items[index], baseSize: 16.5)
+            // 层级靠左缩进 + 点的形状一起表达：只缩进，扫一眼分不出是层级还是
+            // 排版抖动；只换形状，长清单里又看不出从属关系。
+            Group {
+              if items[index].depth == 0 {
+                Circle().fill(secondaryTextColor.opacity(0.85))
+              } else {
+                Circle().strokeBorder(secondaryTextColor.opacity(0.75), lineWidth: 1.2)
+              }
+            }
+            .frame(width: 5, height: 5)
+            .frame(width: 22, alignment: .center)
+            .padding(.top, 8)
+            .accessibilityHidden(true)
+            inlineBody(items[index].text, baseSize: 16.5)
               .lineSpacing(8)
               .frame(maxWidth: .infinity, alignment: .leading)
               .fixedSize(horizontal: false, vertical: true)
           }
+          .padding(.leading, CGFloat(items[index].depth) * 18)
         }
       }
       .padding(.leading, 4)
@@ -1860,7 +1904,7 @@ struct MarkdownContentView: View {
         }
       }
       .padding(.bottom, 18)
-    case let .quote(text):
+    case let .quote(depth, text):
       inlineBody(text, baseSize: 15.5)
         .foregroundStyle(secondaryTextColor)
         .lineSpacing(9)
@@ -1879,6 +1923,8 @@ struct MarkdownContentView: View {
           .fill(accentColor.opacity(0.75))
           .frame(width: 3)
         }
+        // 内层引用整体右移，层级一眼可见。
+        .padding(.leading, CGFloat(depth) * 20)
         .padding(.bottom, 20)
     case let .callout(kind, text):
       VStack(alignment: .leading, spacing: 6) {

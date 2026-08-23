@@ -2216,14 +2216,50 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
       return lines.length ? `\n\n${lines.join("\n")}\n\n` : `\n${inner}\n`;
     }
     if (tag === "blockquote") {
-      const quoted = collapseInline(inner)
+      // 逐行加前缀，**不要**先 collapseInline：那会把内层引用自带的换行压掉，
+      // 两层引用挤成 `> 外层 > 内层` 一行，读者分不清哪句是谁说的。
+      // 内层已经带了 `>`，这里再补一层就成了 `>> 内层`——标准的嵌套写法。
+      const quoted = inner
         .split("\n")
         .map((line) => line.trim())
         .filter(Boolean)
-        .map((line) => `> ${line}`)
+        .map((line) => (line.startsWith(">") ? `>${line}` : `> ${line}`))
         .join("\n");
       return quoted ? `\n\n${quoted}\n\n` : "";
     }
+    // ③ 定义列表：术语和解释压平后黏成一团，看不出哪句在解释哪个词。
+    //    术语加粗单独成行，解释跟在下一行——不引入新语法，阅读区已经认得。
+    if (tag === "dl") {
+      const lines: string[] = [];
+      for (const child of Array.from(el.childNodes ?? [])) {
+        if ((child as Node).nodeType !== ELEMENT_NODE) continue;
+        const childTag = ((child as Element).tagName ?? "").toLowerCase();
+        const body = collapseInline(walk(child));
+        if (!body) continue;
+        if (childTag === "dt") lines.push(`**${body}**`);
+        else if (childTag === "dd") lines.push(body);
+      }
+      return lines.length ? `\n\n${lines.join("\n\n")}\n\n` : `\n${inner}\n`;
+    }
+    if (tag === "dt" || tag === "dd") return inner;
+    // ④ 折叠块：`<summary>` 是这一块的标题，压成正文后会变成「点击展开」这种
+    //    没头没尾的一句话。抬成小标题，折叠里的正文跟在后面——离线阅读本来就
+    //    没有「折叠」这回事，内容不该因此丢失或错位。
+    if (tag === "details") {
+      const summaryNode = Array.from(el.childNodes ?? []).find(
+        (child) =>
+          (child as Node).nodeType === ELEMENT_NODE &&
+          ((child as Element).tagName ?? "").toLowerCase() === "summary",
+      );
+      const heading = summaryNode ? collapseInline(walk(summaryNode)) : "";
+      const rest = Array.from(el.childNodes ?? [])
+        .filter((child) => child !== summaryNode)
+        .map((child) => walk(child))
+        .join("");
+      const head = heading ? `\n\n#### ${heading}\n\n` : "\n\n";
+      return `${head}${rest}\n\n`;
+    }
+    if (tag === "summary") return collapseInline(inner);
     if (tag === "pre") {
       // WeChat code-snippet renders one <code> per line; joining them with
       // newlines restores the original block. Other sites keep newlines in
@@ -2242,11 +2278,30 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
       if (!cleanedCode.trim()) return "";
       const longestBackticks = Math.max(0, ...(cleanedCode.match(/`+/g) ?? []).map((run) => run.length));
       const fence = "`".repeat(Math.max(3, longestBackticks + 1));
-      return `\n\n${fence}\n${cleanedCode}\n${fence}\n\n`;
+      // 语言标注要带出来：阅读区的 `.code(language:)` 早就支持按语言渲染，缺的
+      // 一直是抓取侧没把它传过去，于是所有代码块都退化成无高亮的纯文本。
+      // 只认 `language-xxx` / `lang-xxx` 这类约定类名，不猜。
+      const languageSource = codeLines[0] ?? el.querySelector?.("code") ?? el;
+      const classNames = ((languageSource as Element)?.getAttribute?.("class") ?? "").split(/\s+/);
+      const languageClass = classNames.find((name) => /^(?:language|lang)-[\w+#.-]+$/i.test(name));
+      const language = languageClass ? languageClass.replace(/^(?:language|lang)-/i, "").toLowerCase() : "";
+      return `\n\n${fence}${language}\n${cleanedCode}\n${fence}\n\n`;
     }
     if (tag === "strong" || tag === "b") return `**${collapseInline(inner)}**`;
     if (tag === "em" || tag === "i") return `*${collapseInline(inner)}*`;
     if (tag === "code") return `\`${collapseInline(inner)}\``;
+    // 删除线不能丢：划掉的字和正常的字混在一起会把意思**反过来**——技术文里
+    // 「~~已废弃的做法~~」读成推荐做法。阅读区的 AttributedString(markdown:)
+    // 原生认 `~~`（实测 inlinePresentationIntent = strikethrough）。
+    if (tag === "del" || tag === "s" || tag === "strike") {
+      const body = collapseInline(inner);
+      return body ? `~~${body}~~` : "";
+    }
+    // 上下标改用 Unicode 字符，不引入新语法：`E=mc<sup>2</sup>` 压成 `E=mc2` 是
+    // **算错的公式**，`10<sup>6</sup>` 压成 `106` 更离谱。Unicode 到哪都对，
+    // 导出、复制、检索都不会退化。无法映射的字符按原样留下，不猜。
+    if (tag === "sup") return toUnicodeScript(collapseInline(inner), SUPERSCRIPTS);
+    if (tag === "sub") return toUnicodeScript(collapseInline(inner), SUBSCRIPTS);
     if (tag === "a") {
       // 内含图片就不做链接包裹，原样放行。
       //
@@ -2298,6 +2353,35 @@ function inlineImageText(image: Element, alt: string): string | null {
   if (!isEmoji) return null;
   const semantic = (alt || image.getAttribute("title") || "").trim();
   return semantic || "";
+}
+
+const SUPERSCRIPTS: Record<string, string> = {
+  "0": "\u2070", "1": "\u00B9", "2": "\u00B2", "3": "\u00B3", "4": "\u2074",
+  "5": "\u2075", "6": "\u2076", "7": "\u2077", "8": "\u2078", "9": "\u2079",
+  "+": "\u207A", "-": "\u207B", "=": "\u207C", "(": "\u207D", ")": "\u207E", n: "\u207F",
+};
+
+const SUBSCRIPTS: Record<string, string> = {
+  "0": "\u2080", "1": "\u2081", "2": "\u2082", "3": "\u2083", "4": "\u2084",
+  "5": "\u2085", "6": "\u2086", "7": "\u2087", "8": "\u2088", "9": "\u2089",
+  "+": "\u208A", "-": "\u208B", "=": "\u208C", "(": "\u208D", ")": "\u208E",
+};
+
+/**
+ * 逐字符映射成 Unicode 上/下标。
+ *
+ * 只要有一个字符映射不了就整体放弃——半转的结果（`x\u00B2yz`）比不转更难读，
+ * 而且看不出哪部分原本是上标。脚注引用 `[1]` 这类内容因此保持原样。
+ */
+function toUnicodeScript(value: string, table: Record<string, string>): string {
+  if (!value) return "";
+  let out = "";
+  for (const character of value) {
+    const mapped = table[character];
+    if (!mapped) return value;
+    out += mapped;
+  }
+  return out;
 }
 
 /**
@@ -2381,6 +2465,10 @@ function hasBlockChild(el: Element): boolean {
       // 阅读区就再也认不出这是表格。真实页面（维基的导航模板）里就是这样。
       tag === "table" ||
       tag === "hr" ||
+      // 和 table 同理：这几个也是块级。漏掉就会被父元素当内联内容压平，
+      // 定义列表的配对、折叠块的小标题、引用的层级全部糊成一行。
+      tag === "dl" ||
+      tag === "details" ||
       (tag === "img" && inlineImageText(child as Element, (child as Element).getAttribute("alt") ?? "") == null) ||
       /^h[1-6]$/.test(tag)
     );

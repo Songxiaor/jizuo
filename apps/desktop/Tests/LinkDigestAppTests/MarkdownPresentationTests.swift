@@ -370,8 +370,8 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertTrue(p1.contains("第二段正文"))
     guard case let .list(items) = blocks[3] else { return XCTFail("expected list") }
     XCTAssertEqual(items.count, 2)
-    XCTAssertTrue(items[0].contains("交付物付费"))
-    guard case let .quote(q) = blocks[4] else { return XCTFail("expected quote") }
+    XCTAssertTrue(items[0].text.contains("交付物付费"))
+    guard case let .quote(_, q) = blocks[4] else { return XCTFail("expected quote") }
     XCTAssertTrue(q.contains("引用一句结论"))
   }
 
@@ -394,7 +394,7 @@ final class MarkdownPresentationTests: XCTestCase {
     let blocks = MarkdownPresentation.blocks(from: "- 普通一项\n- [ ] 待办一项")
     XCTAssertEqual(blocks.count, 2)
     guard case let .list(plain) = blocks[0] else { return XCTFail("第一块应是普通列表") }
-    XCTAssertEqual(plain, ["普通一项"])
+    XCTAssertEqual(plain.map(\.text), ["普通一项"])
     guard case let .taskList(tasks) = blocks[1] else { return XCTFail("第二块应是任务列表") }
     XCTAssertEqual(tasks.map(\.text), ["待办一项"])
   }
@@ -691,6 +691,35 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(blocks, [.orderedList(start: 1, items: ["甲", "乙"])])
   }
 
+  /// 嵌套清单的层级要活下来。
+  ///
+  /// 解析时把行首缩进 trim 掉，抽取侧辛苦缩出来的两格就地消失——三层清单在
+  /// 阅读区会变成一堆并列条目，从属关系全没了。
+  /// 嵌套引用要分层，不能把 `>` 记号留在正文里。
+  func testNestedQuoteKeepsItsDepth() {
+    let blocks = MarkdownPresentation.blocks(from: "> 外层引用\n>> 嵌套的内层引用")
+    guard case let .quote(depth, text) = blocks[0] else { return XCTFail("应当是引用") }
+    XCTAssertEqual(depth, 1)
+    // 第二层的 `>` 必须被剥掉，否则引用框里会裸露一个记号。
+    XCTAssertFalse(text.contains(">"))
+    XCTAssertTrue(text.contains("外层引用"))
+    XCTAssertTrue(text.contains("嵌套的内层引用"))
+  }
+
+  func testNestedListKeepsItsDepth() {
+    let blocks = MarkdownPresentation.blocks(from: "- 顶层\n  - 第二层\n    - 第三层\n- 另一个顶层")
+    guard case let .list(items) = blocks[0] else { return XCTFail("应当是列表") }
+    XCTAssertEqual(items.map(\.depth), [0, 1, 2, 0])
+    XCTAssertEqual(items.map(\.text), ["顶层", "第二层", "第三层", "另一个顶层"])
+  }
+
+  /// 缩进再深也封顶：正文宽度装不下，更深的多半是原站排版噪声。
+  func testListDepthIsCapped() {
+    let blocks = MarkdownPresentation.blocks(from: "- 顶层\n" + String(repeating: " ", count: 20) + "- 很深")
+    guard case let .list(items) = blocks[0] else { return XCTFail("应当是列表") }
+    XCTAssertEqual(items.map(\.depth), [0, 3])
+  }
+
   func testBlocksRecognizeOrderedLists() {
     let blocks = MarkdownPresentation.blocks(from: "1. 第一步\n2. **第二步**")
     XCTAssertEqual(blocks, [.orderedList(start: 1, items: ["第一步", "**第二步**"])])
@@ -773,7 +802,7 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertTrue(text.contains("不要把密钥写进仓库"))
 
     let quote = MarkdownPresentation.blocks(from: "> 引用一句结论。")
-    XCTAssertEqual(quote, [.quote("引用一句结论。")])
+    XCTAssertEqual(quote, [.quote(depth: 0, text: "引用一句结论。")])
   }
 
   func testReadingEditLocatorMapsDisplayedSnippetToSourceOffset() {

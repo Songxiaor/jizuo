@@ -39,9 +39,11 @@ enum ReadingTextComposer {
         ))
       case let .list(items):
         for item in items {
+          // 深层用不同的记号，并跟着加缩进——选中复制出去时层级也不该丢。
+          let marker = item.depth == 0 ? "•  " : String(repeating: "    ", count: item.depth) + "◦  "
           result.append(paragraph(
-            bulletLine("•  ", item, readingFont: readingFont, color: palette.primary),
-            spacingAfter: 8, lineSpacing: 6, headIndent: 22
+            bulletLine(marker, item.text, readingFont: readingFont, color: palette.primary),
+            spacingAfter: 8, lineSpacing: 6, headIndent: CGFloat(22 + item.depth * 18)
           ))
         }
       case let .orderedList(start, items):
@@ -71,7 +73,7 @@ enum ReadingTextComposer {
           ),
           spacingBefore: 10, spacingAfter: 14, lineSpacing: 4
         ))
-      case let .quote(text):
+      case let .quote(_, text):
         result.append(paragraph(
           inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary),
           spacingAfter: 20, lineSpacing: 8, headIndent: 18, firstLineIndent: 18

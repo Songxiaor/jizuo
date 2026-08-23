@@ -107,10 +107,11 @@ enum ReadingDocumentExport {
         result.append(inlineStyled(text, readingFont: readingFont))
       case let .list(items):
         for item in items {
+          let marker = String(repeating: "    ", count: item.depth) + (item.depth == 0 ? "• " : "◦ ")
           result.append(styledParagraph(
-            "• " + plain(item),
+            marker + plain(item.text),
             font: font(readingFont, size: bodySize, weight: .regular),
-            spacingBefore: 0, spacingAfter: 4, headIndent: 14
+            spacingBefore: 0, spacingAfter: 4, headIndent: CGFloat(14 + item.depth * 14)
           ))
         }
       case let .orderedList(start, items):
@@ -137,7 +138,7 @@ enum ReadingDocumentExport {
           font: font(readingFont, size: bodySize, weight: .regular),
           spacingBefore: 8, spacingAfter: 8
         ))
-      case let .quote(text):
+      case let .quote(_, text):
         result.append(styledParagraph(
           plain(text),
           font: font(readingFont, size: bodySize, weight: .regular),

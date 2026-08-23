@@ -29,7 +29,7 @@ enum SummaryCitationMatcher {
     let sourceBody = MarkdownPresentation.plainTextPresentation(source)
     var seen = Set<String>()
     return MarkdownPresentation.blocks(from: MarkdownPresentation.sanitized(summary)).compactMap { block in
-      guard case let .quote(raw) = block else { return nil }
+      guard case let .quote(_, raw) = block else { return nil }
       let quote = MarkdownPresentation.plainTextPresentation(raw)
         .trimmingCharacters(in: .whitespacesAndNewlines)
       guard quote.count >= 8, sourceBody.contains(quote), seen.insert(quote).inserted else { return nil }
