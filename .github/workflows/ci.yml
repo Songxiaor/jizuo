@@ -4,6 +4,10 @@ on:
   push:
     branches:
       - main
+      # App 的发布主线。v0.2.11 之后两条线分开走：main 只留官网与门面，
+      # 版本从这条分支发。漏了它的后果是发布分支从不过 CI——v0.2.12 和
+      # v0.2.13 就是这么发出去的。
+      - codex/v0.2.10-stable
   pull_request:
 
 permissions:
