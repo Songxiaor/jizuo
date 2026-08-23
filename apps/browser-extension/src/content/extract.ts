@@ -2157,10 +2157,64 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
       const body = collapseInline(inner);
       return body ? `\n- ${body}` : "";
     }
+    if (tag === "hr") return "\n\n---\n\n";
+    // 图注不是正文。压成普通段落之后它和上下文等权，读起来像作者突然说了
+    // 一句没头没尾的话；斜体一行是阅读区已经认得的最轻记号。
+    if (tag === "figcaption") {
+      const body = collapseInline(inner);
+      return body ? `\n\n*${body}*\n\n` : "";
+    }
+    if (tag === "table") {
+      const table = tableToMarkdown(el, (cell) => collapseInline(walk(cell)));
+      return table ? `\n\n${table}\n\n` : `\n${inner}\n`;
+    }
+    // 表格的结构标签由 `tableToMarkdown` 统一处理；单独落到这里说明它在表格外
+    // （残缺 DOM），此时按透传处理，不要再走 div 那条会补空行的分支。
+    if (tag === "thead" || tag === "tbody" || tag === "tfoot" || tag === "tr" || tag === "td" || tag === "th") {
+      return inner;
+    }
     if ((tag === "ul" || tag === "ol") && /code-snippet__line-index/.test(el.getAttribute?.("class") ?? "")) {
       return ""; // WeChat code line numbers are chrome, not content.
     }
-    if (tag === "ul" || tag === "ol") return `\n${inner}\n`;
+    if (tag === "ul" || tag === "ol") {
+      const items = Array.from(el.childNodes ?? []).filter(
+        (child) =>
+          (child as Node).nodeType === ELEMENT_NODE &&
+          ((child as Element).tagName ?? "").toLowerCase() === "li",
+      );
+      if (!items.length) return `\n${inner}\n`;
+      const ordered = tag === "ol";
+      const parsedStart = Number(el.getAttribute?.("start") ?? "1");
+      const start = Number.isFinite(parsedStart) && parsedStart > 0 ? Math.trunc(parsedStart) : 1;
+      const lines: string[] = [];
+      let emitted = 0;
+      for (const item of items) {
+        // 逐个子节点走，而不是 `walk(item)`——后者会命中 `li` 分支再补一个
+        // `- `，有序列表就变成 `1. - 正文`。子列表单独收着，好缩进一层。
+        const nested: string[] = [];
+        let own = "";
+        for (const child of Array.from((item as Element).childNodes ?? [])) {
+          const childTag = ((child as Element).tagName ?? "").toLowerCase();
+          if (childTag === "ul" || childTag === "ol") nested.push(walk(child));
+          else own += walk(child);
+        }
+        const body = collapseInline(own);
+        if (body) {
+          // 编号按**实际产出的行**递增，不按 li 下标：空 li 不产出行，按下标会
+          // 留下 1、3、4 这种看得见的跳号。
+          lines.push(ordered ? `${start + emitted}. ${body}` : `- ${body}`);
+          emitted += 1;
+        }
+        // 每层缩进两个空格，与阅读区 `listDepth` 的折算一致。
+        for (const block of nested) {
+          for (const line of block.split("\n")) {
+            const value = line.trimEnd();
+            if (value.trim()) lines.push(`  ${value}`);
+          }
+        }
+      }
+      return lines.length ? `\n\n${lines.join("\n")}\n\n` : `\n${inner}\n`;
+    }
     if (tag === "blockquote") {
       const quoted = collapseInline(inner)
         .split("\n")
@@ -2193,7 +2247,29 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
     if (tag === "strong" || tag === "b") return `**${collapseInline(inner)}**`;
     if (tag === "em" || tag === "i") return `*${collapseInline(inner)}*`;
     if (tag === "code") return `\`${collapseInline(inner)}\``;
-    if (tag === "a") return collapseInline(inner);
+    if (tag === "a") {
+      // 内含图片就不做链接包裹，原样放行。
+      //
+      // 图片语法本身带方括号，而链接标签必须清掉方括号（否则嵌套的 `[` 会把
+      // 链接语法截断）。两条规则撞在一起，`![alt](src)` 会先被削成 `!alt(src)`，
+      // 再包进 `[...](href)`，产出一段既不是图片也不是链接的畸形文本。
+      // `<a><img></a>` 在真实页面里极常见——logo、缩略图、信息框、卡片。
+      // 保住图片比保住这一个链接地址重要。
+      if (inner.includes("![")) return inner;
+      const label = collapseInline(inner).replace(/[[\]]/g, "");
+      if (!label) return "";
+      const href = (el.getAttribute?.("href") ?? "").trim();
+      // 页内锚点与 javascript: 对离线阅读没有意义，留文字即可。
+      if (!href || /^(?:javascript:|#)/i.test(href)) return label;
+      let absolute: string;
+      try {
+        absolute = new URL(href, baseHref).toString();
+      } catch {
+        return label;
+      }
+      // 只保留 http(s)：mailto/tel/自定义 scheme 进正文既点不开也脏。
+      return /^https?:/i.test(absolute) ? `[${label}](${absolute})` : label;
+    }
     if (tag === "img") {
       const alt = (el.getAttribute("alt") ?? el.getAttribute("data-alt") ?? "图像").trim() || "图像";
       const inlineText = inlineImageText(el, alt);
@@ -2222,6 +2298,68 @@ function inlineImageText(image: Element, alt: string): string | null {
   if (!isEmoji) return null;
   const semantic = (alt || image.getAttribute("title") || "").trim();
   return semantic || "";
+}
+
+/**
+ * 表格是正文里唯一「压平就毁掉语义」的结构。
+ *
+ * 其余块压平只是难看：段落连成一片仍然读得懂。表格不是——列的归属一旦消失，
+ * `| 12 ms | 8k/s |` 就退化成 `12 ms8k/s`，读者再也分不出哪个数字属于哪一列。
+ * 阅读区本来就认 GFM 管道表（`MarkdownPresentation.Block.table`），缺的只是
+ * 抽取侧这一段序列化。
+ *
+ * 行的收集只走 childNodes，不用 `querySelectorAll("tr")`：后者会把嵌套表格的
+ * 行一并捞进来，拼出一张行数对不上的表。
+ *
+ * 已知不处理 `colspan` / `rowspan`：跨列单元格会按单格对齐。GFM 本身表达不了
+ * 合并单元格，硬补只会产出一张假表。
+ */
+function tableRows(table: Element): Element[][] {
+  const elementChildren = (node: Element): Element[] =>
+    Array.from(node.childNodes ?? []).filter(
+      (child) => (child as Node).nodeType === 1,
+    ) as unknown as Element[];
+  const rows: Element[] = [];
+  for (const child of elementChildren(table)) {
+    const tag = (child.tagName ?? "").toLowerCase();
+    if (tag === "tr") {
+      rows.push(child);
+      continue;
+    }
+    if (tag !== "thead" && tag !== "tbody" && tag !== "tfoot") continue;
+    for (const row of elementChildren(child)) {
+      if ((row.tagName ?? "").toLowerCase() === "tr") rows.push(row);
+    }
+  }
+  return rows.map((row) =>
+    elementChildren(row).filter((cell) => {
+      const tag = (cell.tagName ?? "").toLowerCase();
+      return tag === "td" || tag === "th";
+    }),
+  );
+}
+
+function tableToMarkdown(table: Element, cellText: (cell: Element) => string): string {
+  const rows = tableRows(table).filter((cells) => cells.length > 0);
+  // 一行的表和单列的表多半是布局表格（导航条、图文并排），当成表格渲染反而
+  // 更糟；退回原路径按普通内容处理。
+  if (rows.length < 2) return "";
+  const width = Math.max(...rows.map((cells) => cells.length));
+  if (width < 2) return "";
+  const line = (cells: Element[]): string => {
+    const values = Array.from({ length: width }, (_, index) => {
+      const cell = cells[index];
+      return cell ? cellText(cell).replace(/\|/g, "\\|") : "";
+    });
+    return `| ${values.join(" | ")} |`;
+  };
+  const [header, ...body] = rows;
+  if (!header) return "";
+  return [
+    line(header),
+    `| ${Array.from({ length: width }, () => "---").join(" | ")} |`,
+    ...body.map(line),
+  ].join("\n");
 }
 
 function hasBlockChild(el: Element): boolean {
@@ -2261,7 +2399,11 @@ function normalizeMarkdownWhitespace(value: string): string {
       inFence = !inFence;
       return line;
     }
-    return inFence ? line : line.replace(/[ \t]{2,}/g, " ");
+    if (inFence) return line;
+    // 行首缩进有语义（列表层级），只压行内的连续空格。整行一起压会把嵌套
+    // 列表的两格缩进压成一格，层级在阅读区就还原不出来了。
+    const indent = /^[ \t]*/.exec(line)?.[0] ?? "";
+    return indent + line.slice(indent.length).replace(/[ \t]{2,}/g, " ");
   });
   return kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
 }

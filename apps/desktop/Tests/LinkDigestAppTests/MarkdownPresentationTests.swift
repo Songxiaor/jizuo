@@ -654,6 +654,28 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(after, "后续正文")
   }
 
+  func testEscapedPipeStaysInsideOneTableCell() {
+    let blocks = MarkdownPresentation.blocks(from: """
+      | 命令 | 用途 |
+      | --- | --- |
+      | ps \\| grep swift | 查进程 |
+      """)
+    guard case let .table(headers, rows) = blocks[0] else { return XCTFail("应当是表格") }
+    XCTAssertEqual(headers, ["命令", "用途"])
+    XCTAssertEqual(rows, [["ps | grep swift", "查进程"]])
+  }
+
+  /// 反斜杠本身不是转义符，只有 `\|` 是。否则正则和 Windows 路径会被吃掉字符。
+  func testLoneBackslashInCellSurvives() {
+    let blocks = MarkdownPresentation.blocks(from: """
+      | 模式 | 说明 |
+      | --- | --- |
+      | \\d+ | 数字 |
+      """)
+    guard case let .table(_, rows) = blocks[0] else { return XCTFail("应当是表格") }
+    XCTAssertEqual(rows, [["\\d+", "数字"]])
+  }
+
   func testBlocksRecognizeOrderedLists() {
     let blocks = MarkdownPresentation.blocks(from: "1. 第一步\n2. **第二步**")
     XCTAssertEqual(blocks, [.orderedList(["第一步", "**第二步**"])])

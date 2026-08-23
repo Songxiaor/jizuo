@@ -1180,9 +1180,32 @@ enum MarkdownPresentation {
     var body = trimmed
     if body.hasPrefix("|") { body.removeFirst() }
     if body.hasSuffix("|") { body.removeLast() }
-    let cells = body.split(separator: "|", omittingEmptySubsequences: false).map {
-      $0.trimmingCharacters(in: .whitespaces)
+    // 只在**未转义**的竖线上切分。抽取侧按 GFM 规矩把单元格内的 `|` 写成 `\|`，
+    // 照单全收地 split 会把一格切成两格，整行随后被裁到表宽——内容直接丢失。
+    var cells: [String] = []
+    var current = ""
+    var escaped = false
+    for character in body {
+      if escaped {
+        // 只有 `\|` 是转义；其余情况把反斜杠原样留下，免得吃掉 Windows 路径
+        // 和正则里的反斜杠。
+        if character != "|" { current.append("\\") }
+        current.append(character)
+        escaped = false
+        continue
+      }
+      switch character {
+      case "\\":
+        escaped = true
+      case "|":
+        cells.append(current.trimmingCharacters(in: .whitespaces))
+        current = ""
+      default:
+        current.append(character)
+      }
     }
+    if escaped { current.append("\\") }
+    cells.append(current.trimmingCharacters(in: .whitespaces))
     guard cells.count >= 2 else { return nil }
     return cells
   }

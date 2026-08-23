@@ -1663,3 +1663,246 @@ describe("host-scoped content root", () => {
     expect(result.text).toContain("2026-07-26 14:02·央视新闻");
   });
 });
+
+describe("body block structure", () => {
+  const bodyOf = (root: FakeNode, href = "https://blog.example.test/post"): string =>
+    extractCurrentPage(makeDocument({ title: "结构测试", href, root })).text;
+
+
+  it("serializes a table as a pipe table instead of collapsing the cells", () => {
+    const root = el("article", [
+      el("h1", [text("压测结果")]),
+      el("p", [text("下面这张表是这篇文章最要紧的部分，必须保留列的归属。")]),
+      el("table", [
+        el("thead", [el("tr", [el("th", [text("方案")]), el("th", [text("P95 延迟")])])]),
+        el("tbody", [
+          el("tr", [el("td", [text("Qdrant")]), el("td", [text("12 ms")])]),
+          el("tr", [el("td", [text("pgvector")]), el("td", [text("31 ms")])]),
+        ]),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("| 方案 | P95 延迟 |");
+    expect(body).toContain("| --- | --- |");
+    expect(body).toContain("| Qdrant | 12 ms |");
+    expect(body).toContain("| pgvector | 31 ms |");
+    // 塌成一行是这条修复之前的症状，不能再出现。
+    expect(body).not.toContain("Qdrant12 ms");
+  });
+
+  it("keeps rows aligned when the table has no thead and cells are uneven", () => {
+    const root = el("article", [
+      el("h1", [text("无表头")]),
+      el("table", [
+        el("tr", [el("td", [text("键")]), el("td", [text("值")])]),
+        el("tr", [el("td", [text("超时")])]),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("| 键 | 值 |");
+    // 缺格补空，而不是让这一行少一列——少列的表在阅读区会整张解析失败。
+    // 空格数以出口归一化之后为准：`normalizeMarkdownWhitespace` 会把连续空格压成一个。
+    expect(body).toContain("| 超时 | |");
+  });
+
+  it("escapes pipes inside cells so one cell cannot split into two columns", () => {
+    const root = el("article", [
+      el("h1", [text("转义")]),
+      el("table", [
+        el("tr", [el("td", [text("命令")]), el("td", [text("用途")])]),
+        el("tr", [el("td", [text("ps | grep swift")]), el("td", [text("查进程")])]),
+      ]),
+    ]);
+    expect(bodyOf(root)).toContain("| ps \\| grep swift | 查进程 |");
+  });
+
+  it("leaves layout tables alone", () => {
+    // 单行或单列的表几乎都是布局表格（导航条、图文并排）。把它们渲染成表格
+    // 比压平更糟，所以要退回普通内容路径。
+    const singleRow = el("article", [
+      el("h1", [text("布局")]),
+      el("table", [el("tr", [el("td", [text("上一篇")]), el("td", [text("下一篇")])])]),
+      el("p", [text("这段正文足够长，能保证抽取器不会因为内容太短而回退到别的根。")]),
+    ]);
+    expect(bodyOf(singleRow)).not.toContain("| --- |");
+
+    const singleColumn = el("article", [
+      el("h1", [text("单列")]),
+      el("table", [
+        el("tr", [el("td", [text("第一行")])]),
+        el("tr", [el("td", [text("第二行")])]),
+      ]),
+      el("p", [text("这段正文足够长，能保证抽取器不会因为内容太短而回退到别的根。")]),
+    ]);
+    expect(bodyOf(singleColumn)).not.toContain("| --- |");
+  });
+
+  it("does not pull nested table rows into the outer table", () => {
+    const inner = el("table", [
+      el("tr", [el("td", [text("内层甲")]), el("td", [text("内层乙")])]),
+      el("tr", [el("td", [text("内层丙")]), el("td", [text("内层丁")])]),
+    ]);
+    const root = el("article", [
+      el("h1", [text("嵌套表格")]),
+      el("table", [
+        el("tr", [el("td", [text("外层甲")]), el("td", [text("外层乙")])]),
+        el("tr", [el("td", [inner]), el("td", [text("外层丁")])]),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    // GFM 表达不了嵌套表格，所以内层被压进外层单元格——这没问题。要紧的是它
+    // **不能破坏外层结构**：内层的竖线必须全部转义，外层仍然是一张两列的表。
+    // 用 querySelectorAll("tr") 收行则会把内层两行也算进外层，拼出一张四行的假表。
+    const separators = body.split("\n").filter((line) => line.trim() === "| --- | --- |");
+    expect(separators).toHaveLength(1);
+    expect(body).toContain("| 外层甲 | 外层乙 |");
+    expect(body).toContain("\\| 内层甲 \\| 内层乙 \\|");
+  });
+
+  it("numbers ordered list items and honours the start attribute", () => {
+    const root = el("article", [
+      el("h1", [text("复现步骤")]),
+      el("ol", [
+        el("li", [text("准备数据集")]),
+        el("li", [text("启动三个实例")]),
+        el("li", [text("跑 30 分钟预热")]),
+      ]),
+      el("ol", [el("li", [text("第四步继续")])], { start: "4" }),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("1. 准备数据集");
+    expect(body).toContain("2. 启动三个实例");
+    expect(body).toContain("3. 跑 30 分钟预热");
+    expect(body).toContain("4. 第四步继续");
+    expect(body).not.toContain("- 准备数据集");
+  });
+
+  it("keeps unordered lists on the dash marker", () => {
+    const root = el("article", [
+      el("h1", [text("要点")]),
+      el("ul", [el("li", [text("第一点")]), el("li", [text("第二点")])]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("- 第一点");
+    expect(body).toContain("- 第二点");
+    expect(body).not.toContain("1. 第一点");
+  });
+
+  it("indents nested sub-items by two spaces per level", () => {
+    // 缩进量是和阅读区的约定：`MarkdownPresentation.listDepth` 按两空格一层
+    // 折算。改这里就得改那边，否则层级要么消失要么多出一级。
+    const root = el("article", [
+      el("h1", [text("嵌套")]),
+      el("ol", [
+        el("li", [
+          text("准备数据集"),
+          el("ul", [el("li", [text("来源用 MS MARCO 的子集")]), el("li", [text("归一化到单位长度")])]),
+        ]),
+        el("li", [text("启动三个实例")]),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("1. 准备数据集");
+    expect(body).toContain("  - 来源用 MS MARCO 的子集");
+    expect(body).toContain("  - 归一化到单位长度");
+    // 父项的编号不能被子项打断——这正是拆成两个块时会出的错。
+    expect(body).toContain("2. 启动三个实例");
+    expect(body).not.toContain("1. 准备数据集 - 来源用");
+  });
+
+  it("keeps leading indentation through whitespace normalization", () => {
+    // 出口归一化原本把整行的连续空格压成一个，两格缩进会被压成一格，层级在
+    // 阅读区就还原不出来。行首缩进有语义，只压行内的。
+    const root = el("article", [
+      el("h1", [text("三层")]),
+      el("ul", [
+        el("li", [
+          text("顶层"),
+          el("ul", [el("li", [text("第二层"), el("ul", [el("li", [text("第三层")])])])]),
+        ]),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("- 顶层");
+    expect(body).toContain("  - 第二层");
+    expect(body).toContain("    - 第三层");
+  });
+
+  it("keeps horizontal rules as section breaks", () => {
+    const root = el("article", [
+      el("h1", [text("分节")]),
+      el("p", [text("上半段讲的是压测结果，下半段讲复现步骤，作者用一条横线分开。")]),
+      el("hr"),
+      el("p", [text("下半段从这里开始，两段之间原本有一条明确的分隔线。")]),
+    ]);
+    expect(bodyOf(root)).toContain("\n---\n");
+  });
+
+  it("keeps link targets and resolves relative hrefs", () => {
+    const root = el("article", [
+      el("h1", [text("外链")]),
+      el("p", [
+        text("完整配置见"),
+        el("a", [text("仓库")], { href: "/example/bench" }),
+        text("，另见"),
+        el("a", [text("官网")], { href: "https://qdrant.tech" }),
+        text("。"),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("[仓库](https://blog.example.test/example/bench)");
+    expect(body).toContain("[官网](https://qdrant.tech/)");
+  });
+
+  it("does not wrap an image in link syntax", () => {
+    // 真机在维基百科信息框上抓到的：`<a><img></a>` 原本被打碎成 `[!图像(src)](href)`
+    // ——既不是图片也不是链接。图片语法自带方括号，而链接标签必须清方括号，
+    // 两条规则撞在一起。保住图片，放弃这一个链接地址。
+    const root = el("article", [
+      el("h1", [text("图片链接")]),
+      el("p", [text("这段正文足够长，能保证抽取器不会因为内容太短而回退到别的根。")]),
+      el("a", [el("img", [], { src: "https://cdn.example.test/logo.png", alt: "标志" })], {
+        href: "https://example.test/about",
+      }),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("![标志](https://cdn.example.test/logo.png)");
+    expect(body).not.toContain("[!标志(");
+    expect(body).not.toContain("!标志(https");
+  });
+
+  it("keeps only the label for links that cannot be opened offline", () => {
+    const root = el("article", [
+      el("h1", [text("非 http 链接")]),
+      el("p", [
+        text("回到"),
+        el("a", [text("顶部")], { href: "#top" }),
+        text("，或者"),
+        el("a", [text("写信")], { href: "mailto:alice@example.test" }),
+        text("，也可以"),
+        el("a", [text("展开")], { href: "javascript:void(0)" }),
+        text("。"),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("回到顶部，或者写信，也可以展开。");
+    expect(body).not.toContain("mailto:");
+    expect(body).not.toContain("javascript:");
+    expect(body).not.toContain("](#top)");
+  });
+
+  it("marks figure captions so they stop reading as body prose", () => {
+    const root = el("article", [
+      el("h1", [text("配图")]),
+      el("figure", [
+        el("img", [], { src: "https://cdn.example.test/bench.png", alt: "压测曲线" }),
+        el("figcaption", [text("图 1：P95 延迟随并发变化")]),
+      ]),
+      el("p", [text("这段正文足够长，能保证抽取器不会因为内容太短而回退到别的根。")]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("![压测曲线](https://cdn.example.test/bench.png)");
+    expect(body).toContain("*图 1：P95 延迟随并发变化*");
+  });
+});
+
