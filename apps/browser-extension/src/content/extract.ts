@@ -2376,6 +2376,11 @@ function hasBlockChild(el: Element): boolean {
       tag === "li" ||
       tag === "blockquote" ||
       tag === "pre" ||
+      // 表格与分隔线也是块级。漏了它们，外面套一层 div 的表格会被父元素当成
+      // 内联内容压平——换行没了，整张表挤成一行，`| --- |` 跑到行中间，
+      // 阅读区就再也认不出这是表格。真实页面（维基的导航模板）里就是这样。
+      tag === "table" ||
+      tag === "hr" ||
       (tag === "img" && inlineImageText(child as Element, (child as Element).getAttribute("alt") ?? "") == null) ||
       /^h[1-6]$/.test(tag)
     );

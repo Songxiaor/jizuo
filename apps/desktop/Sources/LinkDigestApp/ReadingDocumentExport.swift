@@ -113,10 +113,10 @@ enum ReadingDocumentExport {
             spacingBefore: 0, spacingAfter: 4, headIndent: 14
           ))
         }
-      case let .orderedList(items):
+      case let .orderedList(start, items):
         for (index, item) in items.enumerated() {
           result.append(styledParagraph(
-            "\(index + 1). " + plain(item),
+            "\(start + index). " + plain(item),
             font: font(readingFont, size: bodySize, weight: .regular),
             spacingBefore: 0, spacingAfter: 4, headIndent: 14
           ))

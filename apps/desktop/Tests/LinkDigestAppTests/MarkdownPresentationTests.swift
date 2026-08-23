@@ -676,9 +676,24 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(rows, [["\\d+", "数字"]])
   }
 
+  /// 有序列表要保留原文的起始编号。
+  ///
+  /// 渲染侧原本按数组下标重编（`index + 1`），抽取侧刚按 `<ol start>` 算好的
+  /// `3.` 到了阅读区就变回 `1.`——真实 App 里实测到的就是这个。
+  func testOrderedListKeepsItsOriginalStartNumber() {
+    let blocks = MarkdownPresentation.blocks(from: "3. 第三步\n4. 第四步")
+    XCTAssertEqual(blocks, [.orderedList(start: 3, items: ["第三步", "第四步"])])
+  }
+
+  /// 没写起始编号时仍从 1 起。
+  func testOrderedListWithoutExplicitStartBeginsAtOne() {
+    let blocks = MarkdownPresentation.blocks(from: "1. 甲\n2. 乙")
+    XCTAssertEqual(blocks, [.orderedList(start: 1, items: ["甲", "乙"])])
+  }
+
   func testBlocksRecognizeOrderedLists() {
     let blocks = MarkdownPresentation.blocks(from: "1. 第一步\n2. **第二步**")
-    XCTAssertEqual(blocks, [.orderedList(["第一步", "**第二步**"])])
+    XCTAssertEqual(blocks, [.orderedList(start: 1, items: ["第一步", "**第二步**"])])
   }
 
   /// 代码里的尖括号是字面量。整篇当 HTML 洗会把开发文变成「已省略 HTML 片段」。

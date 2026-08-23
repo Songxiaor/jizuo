@@ -505,7 +505,9 @@ enum MarkdownPresentation {
     case heading(level: Int, text: String)
     case paragraph(String)
     case list([String])
-    case orderedList([String])
+    /// `start` 是这一段的**起始编号**，来自原文而不是数组下标：抽取侧认 `<ol start>`
+    /// 并按实际产出的行递增，渲染时重编会把它全抹掉。
+    case orderedList(start: Int, items: [String])
     /// 社区评论不能降级成普通 Markdown 列表：列表会丢掉作者、回复对象和层级，
     /// 也无法提供局部展开。原始 Markdown / 导出文本保持不变，只在阅读呈现层
     /// 把扩展已经写出的缩进和元数据恢复成结构化评论。
@@ -725,6 +727,7 @@ enum MarkdownPresentation {
       }
 
       if orderedListItem(trimmed) != nil {
+        let start = orderedListNumber(trimmed) ?? 1
         var items: [String] = []
         while index < lines.count {
           let line = lines[index].trimmingCharacters(in: .whitespaces)
@@ -743,7 +746,7 @@ enum MarkdownPresentation {
             break
           }
         }
-        if !items.isEmpty { blocks.append(.orderedList(items)) }
+        if !items.isEmpty { blocks.append(.orderedList(start: start, items: items)) }
         continue
       }
 
@@ -1019,6 +1022,16 @@ enum MarkdownPresentation {
     let run = trimmed.prefix { $0 == opening.marker }
     guard run.count >= opening.length else { return false }
     return trimmed.dropFirst(run.count).trimmingCharacters(in: .whitespaces).isEmpty
+  }
+
+  /// 有序项的**原始编号**。渲染时按数组下标重编会把 `3.` 显示成 `1.`——抽取侧
+  /// 已经按 `start` 和实际产出行算好了编号，读的一侧不该再算一遍。
+  private static func orderedListNumber(_ line: String) -> Int? {
+    guard let expression = try? NSRegularExpression(pattern: #"^(\d+)[.)]\s+.+$"#),
+          let match = expression.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+          match.numberOfRanges > 1,
+          let range = Range(match.range(at: 1), in: line) else { return nil }
+    return Int(line[range])
   }
 
   private static func orderedListItem(_ line: String) -> String? {
@@ -1829,11 +1842,11 @@ struct MarkdownContentView: View {
         .padding(.vertical, 10)
         .padding(.bottom, 18)
         .accessibilityHidden(true)
-    case let .orderedList(items):
+    case let .orderedList(start, items):
       VStack(alignment: .leading, spacing: 12) {
         ForEach(0..<items.count, id: \.self) { index in
           HStack(alignment: .top, spacing: 0) {
-            Text("\(index + 1).")
+            Text("\(start + index).")
               .font(.system(.body, design: .rounded).weight(.medium))
               .foregroundStyle(secondaryTextColor)
               .frame(width: 30, alignment: .trailing)

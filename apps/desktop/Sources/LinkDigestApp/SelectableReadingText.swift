@@ -44,10 +44,10 @@ enum ReadingTextComposer {
             spacingAfter: 8, lineSpacing: 6, headIndent: 22
           ))
         }
-      case let .orderedList(items):
+      case let .orderedList(start, items):
         for (index, item) in items.enumerated() {
           result.append(paragraph(
-            bulletLine("\(index + 1).  ", item, readingFont: readingFont, color: palette.primary),
+            bulletLine("\(start + index).  ", item, readingFont: readingFont, color: palette.primary),
             spacingAfter: 8, lineSpacing: 6, headIndent: 26
           ))
         }
