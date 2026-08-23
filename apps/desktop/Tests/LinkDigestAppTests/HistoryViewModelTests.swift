@@ -925,7 +925,13 @@ final class HistoryViewModelTests: XCTestCase {
     model.toggleTag(swift, additive: false)
     await waitUntil { model.rows.map(\.taskID) == [first.taskID, second.taskID] }
     model.toggleTag(ai, additive: true)
-    await waitUntil { model.rows.map(\.taskID) == [first.taskID] }
+    // 等 filters 而不是等 rows：rows 收敛到 [first] 也可能是**上一次**只筛
+    // swift 的结果，此时带 ai 的查询还没发出去，紧接着断言 filters 就会读到
+    // 旧的那条。等待条件必须和断言对象是同一个东西。
+    await waitUntil(timeout: .seconds(5)) {
+      repository.filters.last?.tagNormalizedNames == ["ai", "swift"]
+    }
+    await waitUntil(timeout: .seconds(5)) { model.rows.map(\.taskID) == [first.taskID] }
     XCTAssertEqual(repository.filters.last?.tagNormalizedNames, ["ai", "swift"])
     XCTAssertEqual(repository.filters.last?.searchText, "Swift")
 
@@ -1024,7 +1030,7 @@ final class HistoryViewModelTests: XCTestCase {
       await waitUntilAsync { await recorder.last == .completed(intent: .summarize, text: "已完成的总结") }
       // 打标签失败后要等列表**真正 settle** 再断言：只等 30ms 会撞上一个竞态，
       // 列表刷新还在路上，断言就跑了。这两条来自 main 上的 f0938eb / 563ae21。
-      await waitUntil {
+      await waitUntil(timeout: .seconds(5)) {
         provider.tagRequestCount == 1
           && model.detailState == .loaded
           && model.listState == .loaded
@@ -1037,8 +1043,12 @@ final class HistoryViewModelTests: XCTestCase {
       XCTAssertEqual(model.selectedTaskID, accepted.taskID)
       XCTAssertTrue(model.detail?.tags.isEmpty == true)
       XCTAssertTrue(model.availableTags.isEmpty)
-      XCTAssertEqual(model.detailState, .loaded)
-      XCTAssertEqual(model.listState, .loaded)
+      // 这里要的是「最终稳定在 loaded」，不是「此刻正好是 loaded」：断言与上面
+      // 那次 waitUntil 之间仍可能插进一次排队的刷新，把状态短暂打回 loading。
+      // 用例的主旨是上面几条——失败不发事件、不改 UI，加载态只是附带确认。
+      await waitUntil(timeout: .seconds(5)) {
+        model.detailState == .loaded && model.listState == .loaded
+      }
     }
   }
 
