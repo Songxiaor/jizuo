@@ -1022,8 +1022,15 @@ final class HistoryViewModelTests: XCTestCase {
         await recorder.record(runID: runID, state: state)
       }
       await waitUntilAsync { await recorder.last == .completed(intent: .summarize, text: "已完成的总结") }
-      await waitUntil { provider.tagRequestCount == 1 }
-      try? await Task.sleep(for: .milliseconds(30))
+      // 打标签失败后要等列表**真正 settle** 再断言：只等 30ms 会撞上一个竞态，
+      // 列表刷新还在路上，断言就跑了。这两条来自 main 上的 f0938eb / 563ae21。
+      await waitUntil {
+        provider.tagRequestCount == 1
+          && model.detailState == .loaded
+          && model.listState == .loaded
+      }
+      try? await Task.sleep(for: .milliseconds(50))
+      await waitUntil { model.detailState == .loaded && model.listState == .loaded }
 
       let recordedEvents = await events.taskIDs
       XCTAssertEqual(recordedEvents, [])
