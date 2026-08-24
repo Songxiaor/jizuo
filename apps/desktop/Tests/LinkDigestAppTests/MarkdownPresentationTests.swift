@@ -660,7 +660,7 @@ final class MarkdownPresentationTests: XCTestCase {
       | --- | --- |
       | ps \\| grep swift | 查进程 |
       """)
-    guard case let .table(headers, rows) = blocks[0] else { return XCTFail("应当是表格") }
+    guard case let .table(headers, rows, _) = blocks[0] else { return XCTFail("应当是表格") }
     XCTAssertEqual(headers, ["命令", "用途"])
     XCTAssertEqual(rows, [["ps | grep swift", "查进程"]])
   }
@@ -672,7 +672,7 @@ final class MarkdownPresentationTests: XCTestCase {
       | --- | --- |
       | \\d+ | 数字 |
       """)
-    guard case let .table(_, rows) = blocks[0] else { return XCTFail("应当是表格") }
+    guard case let .table(_, rows, _) = blocks[0] else { return XCTFail("应当是表格") }
     XCTAssertEqual(rows, [["\\d+", "数字"]])
   }
 
@@ -696,6 +696,32 @@ final class MarkdownPresentationTests: XCTestCase {
   /// 解析时把行首缩进 trim 掉，抽取侧辛苦缩出来的两格就地消失——三层清单在
   /// 阅读区会变成一堆并列条目，从属关系全没了。
   /// 嵌套引用要分层，不能把 `>` 记号留在正文里。
+  /// `==高亮==` 要变成底色，不能把记号留在正文里。
+  func testHighlightMarkerBecomesBackgroundNotLiteralText() {
+    let value = MarkdownPresentation.attributed("这句 ==最要紧== 请注意")
+    let plain = String(value.characters)
+    XCTAssertFalse(plain.contains("=="), "记号必须被吃掉：\(plain)")
+    XCTAssertTrue(plain.contains("最要紧"))
+    let highlighted = value.runs.filter { $0.backgroundColor != nil }
+    XCTAssertEqual(highlighted.count, 1, "应当只有被标记的那一段带底色")
+    XCTAssertEqual(String(value[highlighted[0].range].characters), "最要紧")
+  }
+
+  /// 高亮和真正的强调必须分得开。
+  func testHighlightAndBoldStayDistinct() {
+    let value = MarkdownPresentation.attributed("==高亮== 与 **强调**")
+    let bg = value.runs.filter { $0.backgroundColor != nil }
+    XCTAssertEqual(bg.map { String(value[$0.range].characters) }, ["高亮"])
+    let bold = value.runs.filter { $0.inlinePresentationIntent?.contains(.stronglyEmphasized) == true }
+    XCTAssertEqual(bold.map { String(value[$0.range].characters) }, ["强调"])
+  }
+
+  /// 空高亮不该死循环，也不该留下记号。
+  func testEmptyHighlightMarkerIsRemovedWithoutHanging() {
+    let value = MarkdownPresentation.attributed("前 ==== 后")
+    XCTAssertFalse(String(value.characters).contains("=="))
+  }
+
   func testNestedQuoteKeepsItsDepth() {
     let blocks = MarkdownPresentation.blocks(from: "> 外层引用\n>> 嵌套的内层引用")
     guard case let .quote(depth, text) = blocks[0] else { return XCTFail("应当是引用") }
@@ -704,6 +730,28 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertFalse(text.contains(">"))
     XCTAssertTrue(text.contains("外层引用"))
     XCTAssertTrue(text.contains("嵌套的内层引用"))
+  }
+
+  /// 列对齐要从分隔行读出来，不能一律左对齐。
+  ///
+  /// 数字列右对齐、状态列居中是作者排版时的决定，抹平之后长表格的数字参差
+  /// 不齐，很难扫读。
+  func testTableColumnAlignmentsComeFromTheSeparatorRow() {
+    let blocks = MarkdownPresentation.blocks(from: """
+      | 名称 | 数量 | 状态 |
+      | :--- | ---: | :---: |
+      | 甲 | 12 | 完成 |
+      """)
+    guard case let .table(_, _, alignments) = blocks[0] else { return XCTFail("应当是表格") }
+    XCTAssertEqual(alignments, [.leading, .trailing, .center])
+  }
+
+  /// 分隔行没写对齐时全部按左，且列数对不上要补齐而不是错位。
+  func testTableAlignmentsDefaultToLeadingAndPadToWidth() {
+    XCTAssertEqual(
+      MarkdownPresentation.tableAlignments("| --- | --- |", width: 3),
+      [.leading, .leading, .leading]
+    )
   }
 
   func testNestedListKeepsItsDepth() {
@@ -781,7 +829,7 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(blocks.count, 3)
     guard case let .paragraph(before) = blocks[0] else { return XCTFail("expected lead paragraph") }
     XCTAssertTrue(before.contains("前面一段"))
-    guard case let .table(headers, rows) = blocks[1] else { return XCTFail("expected table \(blocks[1])") }
+    guard case let .table(headers, rows, _) = blocks[1] else { return XCTFail("expected table \(blocks[1])") }
     XCTAssertEqual(headers, ["维度", "传统SEO", "GEO"])
     XCTAssertEqual(rows, [
       ["目标", "搜索引擎排名", "成为 AI 引用源"],

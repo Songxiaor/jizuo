@@ -399,9 +399,40 @@ enum MarkdownPresentation {
     )
     let withWiki = rewritingWikiLinksAsMarkdown(source)
     let normalized = normalizingCJKEmphasis(withWiki)
-    return (try? AttributedString(markdown: normalized, options: options))
+    let parsed = (try? AttributedString(markdown: normalized, options: options))
       ?? AttributedString(normalized)
+    return applyingHighlights(parsed)
   }
+
+  /// 把 `==高亮==` 变成带背景色的片段。
+  ///
+  /// Foundation 的 Markdown 解析器不认这个记号（实测原样输出 `==高亮==`），
+  /// 而作者主动标黄的句子往往是全文最要紧的。不降级成 `**加粗**`：那会和真正
+  /// 的强调混在一起，读者分不出哪个是原文强调、哪个是原文高亮。
+  ///
+  /// 在解析**之后**做：先让 Markdown 处理完粗体斜体链接，再在结果上按记号
+  /// 着色，这样高亮里的其它标记不会被吃掉。
+  static func applyingHighlights(_ source: AttributedString) -> AttributedString {
+    var value = source
+    let marker = "=="
+    while let opening = value.range(of: marker),
+          let closing = value[opening.upperBound...].range(of: marker) {
+      let inner = opening.upperBound..<closing.lowerBound
+      // 空高亮（`====`）不着色，直接把记号删掉，免得死循环。
+      if !value[inner].characters.isEmpty {
+        value[inner].backgroundColor = Self.highlightMarkerColor
+      }
+      value.removeSubrange(closing)
+      value.removeSubrange(opening)
+    }
+    return value
+  }
+
+  /// 高亮底色。
+  ///
+  /// 用系统黄的低透明度而不是固定色值：阅读区在深浅两套外观下都要读得清，
+  /// 写死颜色会在其中一套里糊成一片。透明度压得低，文字对比度不受影响。
+  static let highlightMarkerColor = Color.yellow.opacity(0.28)
 
   /// 阅读区要把 `[[笔记]]` 变成可点的链接。Foundation 的 Markdown 不认双链，
   /// 先改写成 `[显示](linkdigest-wiki:/标题)`，点击仍走 `WikiLinkURL`，不会进浏览器。
@@ -523,9 +554,31 @@ enum MarkdownPresentation {
     /// Obsidian 风格 `> [!WARNING]`。没有独立告示组件时，至少不要把标记当正文。
     case callout(kind: String, text: String)
     case code(language: String?, content: String)
-    case table(headers: [String], rows: [[String]])
+    case table(headers: [String], rows: [[String]], alignments: [ColumnAlignment])
     /// `---` 之类的分隔线。不单独成块的话它会掉进段落，显示成一行光秃秃的横杠。
     case divider
+  }
+
+  /// 列对齐。抓取侧从 `align` 属性或行内 `text-align` 读出来，写进分隔行
+  /// （`:---:` / `---:`）。统一按左对齐渲染会把数字列的可扫读性毁掉。
+  enum ColumnAlignment: Equatable, Hashable {
+    case leading, center, trailing
+
+    var frameAlignment: Alignment {
+      switch self {
+      case .leading: .leading
+      case .center: .center
+      case .trailing: .trailing
+      }
+    }
+
+    var textAlignment: TextAlignment {
+      switch self {
+      case .leading: .leading
+      case .center: .center
+      case .trailing: .trailing
+      }
+    }
   }
 
   struct ListItem: Equatable, Hashable {
@@ -678,6 +731,7 @@ enum MarkdownPresentation {
       if index + 1 < lines.count,
          let headers = tableCells(trimmed),
          isTableSeparator(lines[index + 1].trimmingCharacters(in: .whitespaces)) {
+        let separatorIndex = index + 1
         let width = headers.count
         var rows: [[String]] = []
         index += 2
@@ -689,7 +743,11 @@ enum MarkdownPresentation {
           rows.append(alignedTableRow(cells, width: width))
           index += 1
         }
-        blocks.append(.table(headers: headers, rows: rows))
+        let alignments = tableAlignments(
+          lines[separatorIndex].trimmingCharacters(in: .whitespaces),
+          width: width
+        )
+        blocks.append(.table(headers: headers, rows: rows, alignments: alignments))
         continue
       }
 
@@ -1267,6 +1325,26 @@ enum MarkdownPresentation {
     }
   }
 
+  /// 从分隔行读出每列对齐：`:---:` 居中、`---:` 右、其余左。
+  static func tableAlignments(_ separator: String, width: Int) -> [ColumnAlignment] {
+    guard let cells = tableCells(separator) else {
+      return Array(repeating: .leading, count: width)
+    }
+    var result: [ColumnAlignment] = cells.map { cell in
+      let trimmed = cell.trimmingCharacters(in: .whitespaces)
+      let left = trimmed.hasPrefix(":")
+      let right = trimmed.hasSuffix(":")
+      if left && right { return .center }
+      if right { return .trailing }
+      return .leading
+    }
+    // 分隔行的列数和表宽对不上时按左对齐补齐——宁可不标，也不要错位。
+    if result.count < width {
+      result += Array(repeating: .leading, count: width - result.count)
+    }
+    return Array(result.prefix(width))
+  }
+
   private static func alignedTableRow(_ cells: [String], width: Int) -> [String] {
     if cells.count == width { return cells }
     if cells.count > width { return Array(cells.prefix(width)) }
@@ -1717,8 +1795,8 @@ struct MarkdownContentView: View {
       }()
       if case let .code(language, content) = block {
         runs.append((index, .code(language: language, content: content)))
-      } else if case let .table(headers, rows) = block {
-        runs.append((index, .table(headers: headers, rows: rows)))
+      } else if case let .table(headers, rows, alignments) = block {
+        runs.append((index, .table(headers: headers, rows: rows, alignments: alignments)))
       } else if case let .comments(section) = block {
         runs.append((index, .comments(section)))
       } else if !startsSection, case var .text(accumulated) = runs.last?.run {
@@ -1780,8 +1858,8 @@ struct MarkdownContentView: View {
     case let .code(language, content):
       codeBlock(language: language, content: content)
         .padding(.bottom, 20)
-    case let .table(headers, rows):
-      markdownTable(headers: headers, rows: rows)
+    case let .table(headers, rows, alignments):
+      markdownTable(headers: headers, rows: rows, alignments: alignments)
         .padding(.bottom, 20)
     case let .comments(section):
       CommentThreadSectionView(
@@ -1799,7 +1877,7 @@ struct MarkdownContentView: View {
   private enum StructuredRun {
     case text([MarkdownPresentation.Block])
     case code(language: String?, content: String)
-    case table(headers: [String], rows: [[String]])
+    case table(headers: [String], rows: [[String]], alignments: [MarkdownPresentation.ColumnAlignment])
     case comments(MarkdownPresentation.CommentSection)
   }
 
@@ -1957,8 +2035,8 @@ struct MarkdownContentView: View {
     case let .code(language, content):
       codeBlock(language: language, content: content)
         .padding(.bottom, 20)
-    case let .table(headers, rows):
-      markdownTable(headers: headers, rows: rows)
+    case let .table(headers, rows, alignments):
+      markdownTable(headers: headers, rows: rows, alignments: alignments)
         .padding(.bottom, 20)
     case let .comments(section):
       CommentThreadSectionView(
@@ -2070,12 +2148,16 @@ struct MarkdownContentView: View {
     return .handled
   }
 
-  private func markdownTable(headers: [String], rows: [[String]]) -> some View {
+  private func markdownTable(
+    headers: [String],
+    rows: [[String]],
+    alignments: [MarkdownPresentation.ColumnAlignment]
+  ) -> some View {
     VStack(alignment: .leading, spacing: 0) {
-      tableRow(headers, isHeader: true)
+      tableRow(headers, isHeader: true, alignments: alignments)
       Rectangle().fill(primaryTextColor.opacity(0.12)).frame(height: 1)
       ForEach(rows.indices, id: \.self) { index in
-        tableRow(rows[index], isHeader: false)
+        tableRow(rows[index], isHeader: false, alignments: alignments)
         if index < rows.count - 1 {
           Rectangle().fill(primaryTextColor.opacity(0.06)).frame(height: 1)
         }
@@ -2088,7 +2170,11 @@ struct MarkdownContentView: View {
     .accessibilityIdentifier("history-content-markdown-table")
   }
 
-  private func tableRow(_ cells: [String], isHeader: Bool) -> some View {
+  private func tableRow(
+    _ cells: [String],
+    isHeader: Bool,
+    alignments: [MarkdownPresentation.ColumnAlignment]
+  ) -> some View {
     HStack(alignment: .top, spacing: 0) {
       ForEach(cells.indices, id: \.self) { index in
         Group {
@@ -2100,7 +2186,15 @@ struct MarkdownContentView: View {
             inlineBody(cells[index], baseSize: 14.5)
           }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        // 按列对齐渲染：数字列右对齐、状态列居中，是作者排版时的决定，
+        // 统一左对齐会让长表格的数字参差不齐、很难扫读。
+        .multilineTextAlignment(
+          (index < alignments.count ? alignments[index] : .leading).textAlignment
+        )
+        .frame(
+          maxWidth: .infinity,
+          alignment: (index < alignments.count ? alignments[index] : .leading).frameAlignment
+        )
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
         if index < cells.count - 1 {

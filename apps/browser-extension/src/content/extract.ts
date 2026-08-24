@@ -2137,6 +2137,9 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
     if (node.nodeType !== ELEMENT_NODE) return "";
     const el = node as Element;
     const tag = el.tagName.toLowerCase();
+    // 脚注区的「返回正文」按钮是导航控件，不是内容。离线阅读里它跳不回去，
+    // 只会在每条注释前留下一个孤零零的 ↑，21 条注释就是 21 个。
+    if (isFootnoteBacklink(el)) return "";
     const inner = Array.from(el.childNodes).map(walk).join("");
 
     if (tag === "br") return "\n";
@@ -2300,6 +2303,12 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
     // 上下标改用 Unicode 字符，不引入新语法：`E=mc<sup>2</sup>` 压成 `E=mc2` 是
     // **算错的公式**，`10<sup>6</sup>` 压成 `106` 更离谱。Unicode 到哪都对，
     // 导出、复制、检索都不会退化。无法映射的字符按原样留下，不猜。
+    // 作者主动标黄的句子往往是全文最要紧的，丢掉可惜。用 `==` 而不是降级成
+    // `**`：后者会和原文真正的强调混在一起，读者分不出哪个是哪个。
+    if (tag === "mark") {
+      const body = collapseInline(inner);
+      return body ? `==${body}==` : "";
+    }
     if (tag === "sup") return toUnicodeScript(collapseInline(inner), SUPERSCRIPTS);
     if (tag === "sub") return toUnicodeScript(collapseInline(inner), SUBSCRIPTS);
     if (tag === "a") {
@@ -2439,11 +2448,65 @@ function tableToMarkdown(table: Element, cellText: (cell: Element) => string): s
   };
   const [header, ...body] = rows;
   if (!header) return "";
+  // 列对齐是表格语义的一部分：数字列右对齐、状态列居中，都是作者排版时的决定。
+  // 统一输出 `---` 会把它抹平，长表格里数字左右参差就很难扫读。
+  const alignments = Array.from({ length: width }, (_, index) => columnAlignment(rows, index));
+  const separator = alignments.map((align) => {
+    if (align === "center") return ":---:";
+    if (align === "right") return "---:";
+    if (align === "left") return ":---";
+    return "---";
+  });
   return [
     line(header),
-    `| ${Array.from({ length: width }, () => "---").join(" | ")} |`,
+    `| ${separator.join(" | ")} |`,
     ...body.map(line),
   ].join("\n");
+}
+
+/**
+ * 一列的对齐方式。
+ *
+ * 只认**明确写出来**的对齐：`align` 属性或行内 `text-align`。CSS 类名带来的
+ * 对齐读不到（要算样式表，代价太大且不可靠），这种情况按默认处理——宁可不标，
+ * 也不要标错一列。
+ *
+ * 表头那格优先：作者通常只在表头声明一次对齐，数据格跟着继承。
+ */
+function columnAlignment(rows: Element[][], index: number): string {
+  for (const cells of rows) {
+    const cell = cells[index];
+    if (!cell) continue;
+    const attribute = (cell.getAttribute?.("align") ?? "").trim().toLowerCase();
+    if (attribute === "center" || attribute === "right" || attribute === "left") return attribute;
+    const style = (cell.getAttribute?.("style") ?? "").toLowerCase();
+    const match = /text-align\s*:\s*(left|right|center)/.exec(style);
+    if (match?.[1]) return match[1];
+  }
+  return "";
+}
+
+/**
+ * 脚注注释前的「跳转回正文」控件。
+ *
+ * 不按站点写死类名：这个模式在维基、学术站、文档站上到处都是，只是类名各不
+ * 相同。按**语义特征**认——元素本身内容只有一个返回箭头/脱字符，且带着指回
+ * 页内锚点的链接或公认的 backlink 类名。
+ *
+ * 判据要求内容极短，正文里正常出现的箭头字符（比如「A ↑ B」这种表格标记）
+ * 不会被误伤，因为它们不会独占一个带 backlink 语义的元素。
+ */
+function isFootnoteBacklink(el: Element): boolean {
+  const text = (el.textContent ?? "").trim();
+  if (!text || text.length > 2) return false;
+  if (!/^[\u2191\u21A9\u02C4^]+$/.test(text)) return false;
+  const className = (el.getAttribute?.("class") ?? "").toLowerCase();
+  if (/backlink|back-to|cite-back|footnote-back|reversefootnote/.test(className)) return true;
+  // 没有约定类名时，看它是不是一个指回页内锚点的链接。
+  const href = (el.getAttribute?.("href") ?? "").trim();
+  if (href.startsWith("#")) return true;
+  const inner = el.querySelector?.("a[href^='#']");
+  return inner != null;
 }
 
 function hasBlockChild(el: Element): boolean {

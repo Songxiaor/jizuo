@@ -1705,6 +1705,35 @@ describe("body block structure", () => {
     expect(body).toContain("| 超时 | |");
   });
 
+  it("carries column alignment into the separator row", () => {
+    const root = el("article", [
+      el("h1", [text("对齐")]),
+      el("table", [
+        el("tr", [
+          el("th", [text("名称")]),
+          el("th", [text("数量")], { align: "right" }),
+          el("th", [text("状态")], { style: "text-align: center" }),
+        ]),
+        el("tr", [el("td", [text("甲")]), el("td", [text("12")]), el("td", [text("完成")])]),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    // 数字列右对齐、状态列居中是作者排版时的决定，抹平会让长表格很难扫读。
+    expect(body).toContain("| --- | ---: | :---: |");
+  });
+
+  it("leaves alignment unmarked when the page never declares it", () => {
+    const root = el("article", [
+      el("h1", [text("对齐")]),
+      el("table", [
+        el("tr", [el("th", [text("甲")]), el("th", [text("乙")])]),
+        el("tr", [el("td", [text("1")]), el("td", [text("2")])]),
+      ]),
+    ]);
+    // 读不到就不标——宁可不标，也不要标错一列。
+    expect(bodyOf(root)).toContain("| --- | --- |");
+  });
+
   it("escapes pipes inside cells so one cell cannot split into two columns", () => {
     const root = el("article", [
       el("h1", [text("转义")]),
@@ -1920,6 +1949,18 @@ describe("inline and block formats that change meaning when flattened", () => {
     expect(body).toContain("~~旧写法~~");
   });
 
+  it("keeps author highlights distinguishable from emphasis", () => {
+    const root = el("article", [
+      el("h1", [text("重点")]),
+      el("p", [text("其中 "), el("mark", [text("这句最要紧")]), text(" 值得注意，"), el("strong", [text("这是强调")])]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).toContain("==这句最要紧==");
+    // 高亮不能降级成加粗，否则和原文真正的强调混为一谈。
+    expect(body).toContain("**这是强调**");
+    expect(body).not.toContain("**这句最要紧**");
+  });
+
   it("maps super and subscripts to unicode so formulas stay correct", () => {
     const root = el("article", [
       el("h1", [text("公式")]),
@@ -1998,5 +2039,36 @@ describe("inline and block formats that change meaning when flattened", () => {
     ]);
     const body = bodyOf(root);
     expect(body).toContain("```\nplain");
+  });
+});
+
+describe("footnote section", () => {
+  const bodyOf = (root: FakeNode, href = "https://blog.example.test/post"): string =>
+    extractCurrentPage(makeDocument({ title: "脚注", href, root })).text;
+
+  it("drops the jump-back control that only makes sense on the live page", () => {
+    const root = el("article", [
+      el("h1", [text("正文")]),
+      el("p", [text("一段带引用的话。")]),
+      el("ol", [
+        el("li", [
+          el("span", [el("a", [text("\u2191")], { href: "#cite_ref-1" })], { class: "mw-cite-backlink" }),
+          text("Kozlan, Melanie (2010). 文章标题."),
+        ]),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    // 离线阅读里这个箭头跳不回去，只会在每条注释前留一个孤零零的记号。
+    expect(body).not.toContain("\u2191");
+    expect(body).toContain("Kozlan, Melanie (2010). 文章标题.");
+  });
+
+  it("keeps arrows that are real content", () => {
+    const root = el("article", [
+      el("h1", [text("流程")]),
+      el("p", [text("A \u2191 B \u2191 C 表示逐级上升。")]),
+    ]);
+    // 判据要求元素内容极短且带 backlink 语义，正文里的箭头不该被误伤。
+    expect(bodyOf(root)).toContain("A \u2191 B \u2191 C");
   });
 });

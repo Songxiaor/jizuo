@@ -178,7 +178,7 @@ enum ReadingDocumentExport {
             ))
           }
         }
-      case let .table(headers, rows):
+      case let .table(headers, rows, _):
         result.append(styledParagraph(
           headers.joined(separator: " · "),
           font: font(readingFont, size: bodySize, weight: .semibold),
