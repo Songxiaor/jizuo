@@ -306,3 +306,32 @@ arch -x86_64 <NativeHost>                             # 用 Rosetta 实跑 Intel
 - Production installer 只操作 LinkDigest 自有 basename/receipt；未知旧 manifest 必须显式确认、备份与可恢复，禁止静默覆盖。
 - Chrome、Brave、Edge 的真实目录和行为必须现场验证；不得只沿用旧浏览器版本假设。
 - Git、真实 Provider、真实 HOME/profile、Developer ID、公证、商店和公开发布继续分别受授权门禁约束。
+
+## 分支收敛：放弃 main 那条线（2026-08-24 决定）
+
+2026-08-19 起 `main` 与 `codex/v0.2.10-stable` 分成两条线，之后再没合过。
+探测过一次合并：**16 个文件冲突，含两边各自的 `Migration018.swift`**——硬合会让
+数据库迁移编号打架。所以不能靠「合回 main」收敛。
+
+**决定：`main` 只留官网与 GitHub 门面，App 版本一律从 `codex/v0.2.10-stable` 发。**
+CI 已在 2026-08-23 把发布分支加进 push 触发（在那之前 v0.2.12、v0.2.13 是没过 CI
+就发出去的）。
+
+main 上那个未合并的提交 `602f22d`（阅读排版四阶段）逐项核对后的处置：
+
+| main 上的东西 | 发布线现状 | 处置 |
+|---|---|---|
+| 网页表格 / 有序列表 / 链接 / 图注 | 已于 v0.2.15–v0.2.16 单点搬回并修正 | 已完成 |
+| 转写时间锚点（`TranscriptTimelineView`、`TranscriptParagraphStore`、Migration018） | 已用 `MediaSeekLink` 另行实现，实测可用 | **放弃**，不需要 |
+| 模型整理排版（`ReformatStore`、Migration017） | 已有「整理排版」入口 | **放弃**，功能等价 |
+| 形态档案（`ReadingFormatProfile`，232 行） | 仍按 `isWeChatCapture` 平台硬编码（3 处） | **唯一真缺口**，见下 |
+
+### 唯一值得回收的：按内容形态而非平台决定排版
+
+`ReadingFormatProfile` 要解决的问题是真的：排版决策按**平台**硬编码，而平台是
+弱信号——同一个公众号既发代码教程也发随笔。它用 `imageRunCount`（连续图片段的
+段数）把「画廊」和「穿插配图」分开，并在真实库 40 条上验证过。
+
+没有随这批一起做，因为它牵动数据库（形态指纹要落库）且改动面大。若要回收，
+应当作为独立一版处理，并重新分配 Migration 编号——**不要直接 cherry-pick**，
+main 上的 018 与本线的 018 是两回事。
