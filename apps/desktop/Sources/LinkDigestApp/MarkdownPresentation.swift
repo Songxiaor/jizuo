@@ -414,18 +414,69 @@ enum MarkdownPresentation {
   /// 着色，这样高亮里的其它标记不会被吃掉。
   static func applyingHighlights(_ source: AttributedString) -> AttributedString {
     var value = source
-    let marker = "=="
-    while let opening = value.range(of: marker),
-          let closing = value[opening.upperBound...].range(of: marker) {
+    var searchStart = value.startIndex
+    while searchStart < value.endIndex,
+          let opening = value[searchStart...].range(of: "=="),
+          let closing = value[opening.upperBound...].range(of: "==") {
       let inner = opening.upperBound..<closing.lowerBound
-      // 空高亮（`====`）不着色，直接把记号删掉，免得死循环。
-      if !value[inner].characters.isEmpty {
+      if isHighlightPair(value, opening: opening, closing: closing, inner: inner) {
         value[inner].backgroundColor = Self.highlightMarkerColor
+        value.removeSubrange(closing)
+        value.removeSubrange(opening)
+        searchStart = value.startIndex
+      } else {
+        // 不是高亮就跳过这个 `==` 继续找，**不能**把它删掉——`FOO==1` 里的
+        // 等号是内容的一部分，删了值就变了。
+        searchStart = opening.upperBound
       }
-      value.removeSubrange(closing)
-      value.removeSubrange(opening)
     }
     return value
+  }
+
+  /// 这一对 `==` 是不是高亮标记。
+  ///
+  /// 只按字符匹配会毁掉三类正常内容，都是实测撞到的：
+  /// - 行内代码里的比较：`` `if (a == b)` 和 `c == d` `` 被吃成 `if (a  b) 和 c  d`
+  /// - 配置值：`FOO==1 与 BAR==2` 被吃成 `FOO1 与 BAR2`
+  /// - 连续等号：`===== 分隔线` 被吃剩一个 `=`
+  ///
+  /// 判据取自 GFM 的强调规则：开标记后面、闭标记前面都不能是空白（`== x ==`
+  /// 不是高亮），两端不能紧贴等号（避免咬进 `===` 这类连续记号），且跨度内不能
+  /// 换行。行内代码整段跳过——那里的等号是代码，不是标记。
+  private static func isHighlightPair(
+    _ value: AttributedString,
+    opening: Range<AttributedString.Index>,
+    closing: Range<AttributedString.Index>,
+    inner: Range<AttributedString.Index>
+  ) -> Bool {
+    let body = value[inner]
+    if body.characters.isEmpty { return false }
+    if body.characters.contains("\n") { return false }
+    // 紧贴内侧的字符不能是空白：`== 前后有空格 ==` 按 GFM 不算强调。
+    if body.characters.first?.isWhitespace == true { return false }
+    if body.characters.last?.isWhitespace == true { return false }
+    // 开标记左侧不能紧贴字母数字。真正的高亮从词边界起头（句首、空格后、
+    // 标点后）；紧贴单词的等号是内容，例如 `FOO==1 与 BAR==2` 里的配置值——
+    // 那两个 `==` 恰好成对，只看两侧非空白会把 `1 与 BAR` 整段吃掉着色。
+    // 两端也不能再挨着等号，否则 `===` / `=====` 会被拆开当标记。
+    if opening.lowerBound > value.startIndex {
+      let before = value.characters[value.index(beforeCharacter: opening.lowerBound)]
+      if before == "=" { return false }
+      if before.isLetter || before.isNumber { return false }
+    }
+    if closing.upperBound < value.endIndex {
+      let after = value.characters[closing.upperBound]
+      if after == "=" { return false }
+      // 闭标记右侧同理：`==1` 这种收尾说明它是值的一部分。
+      if after.isLetter || after.isNumber { return false }
+    }
+    // 行内代码里的等号是代码。任一端落在代码跨度内就不算标记。
+    if value[opening].inlinePresentationIntent?.contains(.code) == true { return false }
+    if value[closing].inlinePresentationIntent?.contains(.code) == true { return false }
+    if body.runs.contains(where: { $0.inlinePresentationIntent?.contains(.code) == true }) {
+      return false
+    }
+    return true
   }
 
   /// 高亮底色。

@@ -707,6 +707,28 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(String(value[highlighted[0].range].characters), "最要紧")
   }
 
+  /// 正文里正常出现的 `==` 不能被当成高亮标记吃掉。
+  ///
+  /// 这五条都是实测撞到的：只按字符找成对 `==`，会把行内代码里的比较、配置值、
+  /// 连续等号全部毁掉——而且是**静默**毁掉，读者看到的是缺字的句子。
+  func testEqualsSignsInProseAreNotTreatedAsHighlight() {
+    let cases: [(String, String)] = [
+      ("判断相等要写 x == y，不是 x = y", "判断相等要写 x == y，不是 x = y"),
+      ("代码里 `if (a == b)` 和 `c == d` 都常见", "代码里 if (a == b) 和 c == d 都常见"),
+      ("配置项 FOO==1 与 BAR==2 是两个值", "配置项 FOO==1 与 BAR==2 是两个值"),
+      ("分隔线 ===== 下面是正文", "分隔线 ===== 下面是正文"),
+      ("== 前后有空格 == 不算高亮", "== 前后有空格 == 不算高亮"),
+    ]
+    for (input, expected) in cases {
+      let value = MarkdownPresentation.attributed(input)
+      XCTAssertEqual(String(value.characters), expected, "输入：\(input)")
+      XCTAssertTrue(
+        value.runs.allSatisfy { $0.backgroundColor == nil },
+        "不该有任何片段被着色：\(input)"
+      )
+    }
+  }
+
   /// 高亮和真正的强调必须分得开。
   func testHighlightAndBoldStayDistinct() {
     let value = MarkdownPresentation.attributed("==高亮== 与 **强调**")
@@ -716,10 +738,21 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(bold.map { String(value[$0.range].characters) }, ["强调"])
   }
 
-  /// 空高亮不该死循环，也不该留下记号。
-  func testEmptyHighlightMarkerIsRemovedWithoutHanging() {
+  /// 连续等号是正文，不是空高亮。
+  ///
+  /// 这条原先写的是「`====` 应当被删掉」——那个期望本身就是错的：`====` 出现在
+  /// 正文里通常是分隔线或强调符号，删掉等于吞字。判据加上词边界与连续等号检查
+  /// 之后它按内容原样保留，同时不会死循环（不成对的 `==` 跳过而不是删除）。
+  func testConsecutiveEqualsStayAsContent() {
     let value = MarkdownPresentation.attributed("前 ==== 后")
-    XCTAssertFalse(String(value.characters).contains("=="))
+    XCTAssertEqual(String(value.characters), "前 ==== 后")
+    XCTAssertTrue(value.runs.allSatisfy { $0.backgroundColor == nil })
+  }
+
+  /// 未闭合的高亮记号不该让解析卡住，也不该吞掉后面的正文。
+  func testUnclosedHighlightMarkerDoesNotHang() {
+    let value = MarkdownPresentation.attributed("这句 ==没有收尾 后面还有正文")
+    XCTAssertEqual(String(value.characters), "这句 ==没有收尾 后面还有正文")
   }
 
   func testNestedQuoteKeepsItsDepth() {
