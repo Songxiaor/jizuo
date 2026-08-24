@@ -81,7 +81,7 @@ BROWSER_EXTENSION_IDENTITY = Path("config/extension-identity.json")
 PRODUCT_DISPLAY = Path("apps/desktop/Sources/LinkDigestCore/Resources/product-display.json")
 RELEASE_UNIT_NAME = "release-unit.json"
 UNIT_ID = "com.syc.linkdigest.release-unit.v1"
-DMG_NAME = "汲作-0.2.17-macOS-Universal.dmg"
+DMG_NAME = "汲作-0.2.18-macOS-Universal.dmg"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*)){0,2}$")
@@ -247,8 +247,8 @@ def load_app_config(root: Path | None = None) -> dict[str, Any]:
         "executable": "LinkDigestApp",
         "bundleIdentifier": "com.syc.linkdigest",
         "bundleIdentifierStatus": "engineering-candidate",
-        "shortVersion": "0.2.17",
-        "bundleVersion": "26",
+        "shortVersion": "0.2.18",
+        "bundleVersion": "27",
         "minimumMacOS": "15.0",
         "category": "public.app-category.productivity",
         "sparkleFeedURL": "https://github.com/Songxiaor/jizuo/releases/latest/download/appcast.xml",
