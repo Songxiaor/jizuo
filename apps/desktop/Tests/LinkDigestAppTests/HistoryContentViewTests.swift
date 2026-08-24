@@ -1666,6 +1666,50 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(gate.contains("latestSubtitleSnapshot"), "分层判据必须把画面字幕算进去")
   }
 
+  /// 没有配文的记录，字幕层也必须显示。
+  ///
+  /// 抖音视频帖的 caption 多半只是重复标题，`hasPresentableCaption` 是 false。
+  /// 旧判据把配文当成分层的前提，于是「字幕 + 听写都有、但没配文」的记录退回
+  /// 单层渲染，只画听写稿——实测一条已读出正确字幕的抖音记录，界面上只看得到
+  /// 听错的听写稿，字幕层在库里却一个字都不显示。
+  ///
+  /// 这里断言的是**不变量**而非写法：判据里必须存在一条不依赖配文的通路，且
+  /// 分层分支不能再拿配文的存在与否当分支条件。
+  func testSubtitleLayerSurvivesMissingCaption() {
+    let source = historyContentViewSource()
+    let gate = section(in: source, from: "private var showsLayeredSource: Bool", to: "private var isDouyinCapture")
+
+    // 去掉注释再判断，否则注释里出现的标识符会让断言假绿。
+    let gateCode = gate
+      .split(separator: "\n")
+      .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("//") }
+      .joined(separator: "\n")
+
+    let bypass = gateCode
+      .split(separator: "\n")
+      .filter { $0.contains("return true") }
+      .joined(separator: "\n")
+    XCTAssertFalse(
+      bypass.isEmpty,
+      "分层判据缺少「不看配文」的通路：没配文的记录会把字幕层整个藏掉"
+    )
+    XCTAssertTrue(
+      bypass.contains("latestSubtitleSnapshot"),
+      "那条通路必须由画面字幕触发，否则守不住这个回归"
+    )
+    XCTAssertFalse(
+      bypass.contains("hasPresentableCaption"),
+      "这条通路一旦再挂上配文条件，等于回到旧行为"
+    )
+
+    // 分层分支自己也不能把配文写进分支条件——那样配文一缺，另外两层全都画不出来。
+    let pane = section(in: source, from: "private var sourcePaneBody: some View", to: "private func collapsibleSourceSection")
+    XCTAssertFalse(
+      pane.contains("showsLayeredSource, let caption"),
+      "配文必须是分层分支里可选的一层，不能充当整支的进入条件"
+    )
+  }
+
   private func historyContentViewSource() -> String {
     ["HistoryContentView.swift", "HistoryMediaPlayback.swift", "VideoScrollWheelRouting.swift"]
       .map(appSource)

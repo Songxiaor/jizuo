@@ -2081,7 +2081,13 @@ private struct HistoryDetailView: View, Equatable {
     //
     // 原来只看听写，于是只读了字幕、没跑听写的记录会退回单层渲染，把刚读出来
     // 的那一层整个藏起来——数据在库里，界面上却什么都看不到。
-    hasPresentableCaption && (latestTranscriptionSnapshot != nil || latestSubtitleSnapshot != nil)
+    //
+    // 配文**不是**分层的前提。抖音视频帖的 caption 多半和标题重复，
+    // `hasPresentableCaption` 因此是 false；此时只要字幕和听写同时存在，旧判据就
+    // 让整条记录退回单层渲染、只画听写稿，把已经读出来的字幕层原地藏掉——上面
+    // 那个坑换条路又走了一遍。两条派生层同时在，就必须分层。
+    if latestSubtitleSnapshot != nil, latestTranscriptionSnapshot != nil { return true }
+    return hasPresentableCaption && (latestTranscriptionSnapshot != nil || latestSubtitleSnapshot != nil)
   }
   private var isDouyinCapture: Bool { latestSourceSnapshot?.platform == "douyin" }
   /// 抖音图文帖：正文本身就是内容（文案 + 图集），不像视频帖那样只是重复标题的
@@ -3666,13 +3672,18 @@ private struct HistoryDetailView: View, Equatable {
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityIdentifier("history-reading-source")
-    } else if showsLayeredSource, let caption = latestSourceSnapshot {
+    } else if showsLayeredSource {
       VStack(alignment: .leading, spacing: 22) {
-        collapsibleSourceSection(
-          heading: LayeredSourceDocument.captionHeading,
-          snapshot: caption,
-          isExpanded: $isCaptionExpanded
-        )
+        // 配文是**可选**的一层：抖音视频帖没有值得单独显示的 caption，字幕和听写
+        // 却仍要各自成层。旧写法把 `let caption` 写进分支条件，等于让配文在不在
+        // 决定另外两层显不显示——配文一缺，整支就走不进来。
+        if hasPresentableCaption, let caption = latestSourceSnapshot {
+          collapsibleSourceSection(
+            heading: LayeredSourceDocument.captionHeading,
+            snapshot: caption,
+            isExpanded: $isCaptionExpanded
+          )
+        }
         // 顺序与 `LayeredSourceDocument.orderedLayers` 一致：画面字幕排在听写
         // 之前。两处顺序必须一样，否则阅读区和喂给模型的正文对不上。
         if let subtitles = latestSubtitleSnapshot {
