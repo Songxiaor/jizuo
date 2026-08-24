@@ -1961,6 +1961,56 @@ describe("inline and block formats that change meaning when flattened", () => {
     expect(body).not.toContain("**这句最要紧**");
   });
 
+  it("keeps adjacent strikethroughs from merging into one broken marker", () => {
+    const root = el("article", [
+      el("h1", [text("相邻")]),
+      el("p", [el("del", [text("甲")]), el("del", [text("乙")])]),
+    ]);
+    const body = bodyOf(root);
+    // `~~甲~~~~乙~~` 里四个连续波浪号会被解析成一个空标记，两个词都消失。
+    expect(body).not.toContain("~~~~");
+    expect(body).toContain("~~甲~~");
+    expect(body).toContain("~~乙~~");
+  });
+
+  it("does not wrap a term that already contains asterisks", () => {
+    const root = el("article", [
+      el("h1", [text("术语")]),
+      el("dl", [
+        el("dt", [text("*星号*开头")]),
+        el("dd", [text("解释一")]),
+        el("dt", [text("普通术语")]),
+        el("dd", [text("解释二")]),
+      ]),
+    ]);
+    const body = bodyOf(root);
+    // `***星号*开头**` 会被当成粗斜体，配对全乱。
+    expect(body).not.toContain("***");
+    expect(body).toContain("*星号*开头");
+    // 不含星号的术语照常加粗。
+    expect(body).toContain("**普通术语**");
+  });
+
+  it("keeps an overlong summary as prose instead of a heading", () => {
+    const long = "这个 summary 特别长，长到不该当标题：它其实是一整段说明文字，抬成标题会破坏文档结构";
+    const root = el("article", [
+      el("h1", [text("折叠")]),
+      el("details", [el("summary", [text(long)]), el("p", [text("折叠正文")])]),
+    ]);
+    const body = bodyOf(root);
+    expect(body).not.toMatch(new RegExp("#+ " + long.slice(0, 10)));
+    expect(body).toContain(long);
+    expect(body).toContain("折叠正文");
+  });
+
+  it("still lifts a short summary into a heading", () => {
+    const root = el("article", [
+      el("h1", [text("折叠")]),
+      el("details", [el("summary", [text("短标题")]), el("p", [text("正文")])]),
+    ]);
+    expect(bodyOf(root)).toMatch(/#+ 短标题/);
+  });
+
   it("maps super and subscripts to unicode so formulas stay correct", () => {
     const root = el("article", [
       el("h1", [text("公式")]),

@@ -754,10 +754,13 @@ enum MarkdownPresentation {
       }
 
       if trimmed.hasPrefix("> ") || trimmed == ">" {
-        var quoteLines: [String] = []
-        // 记住这一块里最深的一层。只认 `> ` 会把 `>> 内层` 剥成 `> 内层` 留在正文，
-        // 于是引用框里裸露出一个 `>` 符号——层级没表达出来，还多了个记号。
-        var maxDepth = 0
+        // 逐行读出层级，**按层级分块**。
+        //
+        // 只认 `> ` 会把 `>> 内层` 剥成 `> 内层` 留在正文，引用框里裸露出一个
+        // `>` 记号；而只记「最深那层」又会把整块统一按最深缩进——`> 甲说 /
+        // >> 乙说 / >>> 丙说` 会让甲说也被推到第三层去。连续同层的行归一块，
+        // 层级一变就开新块，每层各自成一个视觉块。
+        var pending: [(depth: Int, line: String)] = []
         while index < lines.count {
           let line = lines[index].trimmingCharacters(in: .whitespaces)
           guard line.hasPrefix(">") else { break }
@@ -768,13 +771,22 @@ enum MarkdownPresentation {
             rest = rest.dropFirst()
             if rest.hasPrefix(" ") { rest = rest.dropFirst() }
           }
-          maxDepth = max(maxDepth, depth - 1)
-          quoteLines.append(String(rest))
+          pending.append((min(depth - 1, 2), String(rest)))
           index += 1
         }
-        let text = quoteLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-        if !text.isEmpty {
-          blocks.append(calloutBlock(from: text) ?? .quote(depth: min(maxDepth, 2), text: text))
+        var groupStart = 0
+        while groupStart < pending.count {
+          let depth = pending[groupStart].depth
+          var groupEnd = groupStart
+          while groupEnd < pending.count, pending[groupEnd].depth == depth { groupEnd += 1 }
+          let text = pending[groupStart..<groupEnd]
+            .map(\.line)
+            .joined(separator: "\n")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+          if !text.isEmpty {
+            blocks.append(calloutBlock(from: text) ?? .quote(depth: depth, text: text))
+          }
+          groupStart = groupEnd
         }
         continue
       }
@@ -1171,6 +1183,16 @@ enum MarkdownPresentation {
 
   /// 有序项的**原始编号**。渲染时按数组下标重编会把 `3.` 显示成 `1.`——抽取侧
   /// 已经按 `start` 和实际产出行算好了编号，读的一侧不该再算一遍。
+  /// 行首编号本身，不判断是否算列表项——`orderedListItem` 的上限检查要用它，
+  /// 不能反过来调用那个函数，否则互相递归。
+  private static func orderedListLeadingNumber(_ line: String) -> Int? {
+    guard let expression = try? NSRegularExpression(pattern: #"^(\d+)[.)]\s+.+$"#),
+          let match = expression.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+          match.numberOfRanges > 1,
+          let range = Range(match.range(at: 1), in: line) else { return nil }
+    return Int(line[range])
+  }
+
   private static func orderedListNumber(_ line: String) -> Int? {
     guard let expression = try? NSRegularExpression(pattern: #"^(\d+)[.)]\s+.+$"#),
           let match = expression.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
@@ -1179,7 +1201,19 @@ enum MarkdownPresentation {
     return Int(line[range])
   }
 
+  /// 有序项的编号上限。
+  ///
+  /// 按 CommonMark，`2026. 这一年发生了很多事` 确实是一个编号 2026 的列表项，
+  /// GitHub 也这么渲染。但阅读场景里没有上千项的清单，而以年份、编号开头的
+  /// **句子**很常见——判成列表的代价（正文变成一个孤零零的编号项，后面段落
+  /// 继续 2027、2028）比漏判大得多。
+  static let maximumOrderedListNumber = 999
+
   private static func orderedListItem(_ line: String) -> String? {
+    // 超过上限的不当列表项，让它留在正文里。
+    if let number = orderedListLeadingNumber(line), number > maximumOrderedListNumber {
+      return nil
+    }
     guard let expression = try? NSRegularExpression(pattern: #"^\d+[.)]\s+(.+)$"#),
           let match = expression.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
           match.numberOfRanges > 1,

@@ -2239,7 +2239,10 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
         const childTag = ((child as Element).tagName ?? "").toLowerCase();
         const body = collapseInline(walk(child));
         if (!body) continue;
-        if (childTag === "dt") lines.push(`**${body}**`);
+        // 术语里本来就有 `*` 时不能直接包 `**`——`*星号*开头` 会拼成
+        // `***星号*开头**`，解析器当成粗斜体，配对全乱。这种情况退回纯文本，
+        // 靠独立成行区分术语与解释。
+        if (childTag === "dt") lines.push(body.includes("*") ? body : `**${body}**`);
         else if (childTag === "dd") lines.push(body);
       }
       return lines.length ? `\n\n${lines.join("\n\n")}\n\n` : `\n${inner}\n`;
@@ -2254,13 +2257,20 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
           (child as Node).nodeType === ELEMENT_NODE &&
           ((child as Element).tagName ?? "").toLowerCase() === "summary",
       );
-      const heading = summaryNode ? collapseInline(walk(summaryNode)) : "";
+      const rawHeading = summaryNode ? collapseInline(walk(summaryNode)) : "";
+      // summary 偶尔是一整段说明而不是标题。抬成标题会污染文档大纲，也难看。
+      // 超长或含换行的按普通段落处理，只保留「它在折叠块开头」这个位置关系。
+      const headingIsTitleLike =
+        rawHeading.length > 0 && rawHeading.length <= 40 && !rawHeading.includes("\n");
+      const heading = headingIsTitleLike ? rawHeading : "";
+      const leadParagraph = headingIsTitleLike ? "" : rawHeading;
       const rest = Array.from(el.childNodes ?? [])
         .filter((child) => child !== summaryNode)
         .map((child) => walk(child))
         .join("");
       const head = heading ? `\n\n#### ${heading}\n\n` : "\n\n";
-      return `${head}${rest}\n\n`;
+      const lead = leadParagraph ? `${leadParagraph}\n\n` : "";
+      return `${head}${lead}${rest}\n\n`;
     }
     if (tag === "summary") return collapseInline(inner);
     if (tag === "pre") {
@@ -2298,7 +2308,11 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
     // 原生认 `~~`（实测 inlinePresentationIntent = strikethrough）。
     if (tag === "del" || tag === "s" || tag === "strike") {
       const body = collapseInline(inner);
-      return body ? `~~${body}~~` : "";
+      if (!body) return "";
+      // 相邻两段删除线会拼出 `~~甲~~~~乙~~`——四个连续波浪号被解析成一个空标记，
+      // 两个词都显示不出来。用零宽不换行空格把它们隔开：不占版面、不影响复制，
+      // 但足以让解析器把两段各自配对。
+      return `~~${body}~~\u2060`;
     }
     // 上下标改用 Unicode 字符，不引入新语法：`E=mc<sup>2</sup>` 压成 `E=mc2` 是
     // **算错的公式**，`10<sup>6</sup>` 压成 `106` 更离谱。Unicode 到哪都对，

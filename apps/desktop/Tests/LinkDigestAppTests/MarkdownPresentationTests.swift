@@ -755,14 +755,66 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(String(value.characters), "这句 ==没有收尾 后面还有正文")
   }
 
-  func testNestedQuoteKeepsItsDepth() {
+  /// 嵌套引用按层级**分块**，每层各自成一个视觉块。
+  ///
+  /// 原先把整段并成一块、只记最深那层，`> 甲 / >> 乙 / >>> 丙` 会让甲也被推到
+  /// 第三层去——层级信息在，位置全错。
+  func testNestedQuoteSplitsIntoBlocksByDepth() {
     let blocks = MarkdownPresentation.blocks(from: "> 外层引用\n>> 嵌套的内层引用")
+    XCTAssertEqual(blocks.count, 2)
+    guard case let .quote(d0, t0) = blocks[0], case let .quote(d1, t1) = blocks[1] else {
+      return XCTFail("两块都应当是引用")
+    }
+    XCTAssertEqual([d0, d1], [0, 1])
+    XCTAssertEqual([t0, t1], ["外层引用", "嵌套的内层引用"])
+    // `>` 记号必须被剥掉，否则引用框里会裸露出来。
+    XCTAssertFalse((t0 + t1).contains(">"))
+  }
+
+  /// 三层各自独立，不会被最深那层带着走。
+  func testThreeQuoteLevelsEachKeepTheirOwn() {
+    let blocks = MarkdownPresentation.blocks(from: "> 甲说\n>> 乙说\n>>> 丙说")
+    let depths = blocks.compactMap { block -> Int? in
+      if case let .quote(d, _) = block { return d }
+      return nil
+    }
+    XCTAssertEqual(depths, [0, 1, 2])
+  }
+
+  /// 连续同层的行仍归一块，不该每行都拆开。
+  func testConsecutiveSameLevelQuoteLinesStayTogether() {
+    let blocks = MarkdownPresentation.blocks(from: "> 第一句\n> 第二句")
+    XCTAssertEqual(blocks.count, 1)
     guard case let .quote(depth, text) = blocks[0] else { return XCTFail("应当是引用") }
-    XCTAssertEqual(depth, 1)
-    // 第二层的 `>` 必须被剥掉，否则引用框里会裸露一个记号。
-    XCTAssertFalse(text.contains(">"))
-    XCTAssertTrue(text.contains("外层引用"))
-    XCTAssertTrue(text.contains("嵌套的内层引用"))
+    XCTAssertEqual(depth, 0)
+    XCTAssertEqual(text, "第一句\n第二句")
+  }
+
+  /// 正文里的 `>` 是内容，不是层级记号。
+  func testGreaterThanInsideQuoteIsContent() {
+    let blocks = MarkdownPresentation.blocks(from: "> 温度 > 阈值时报警")
+    guard case let .quote(depth, text) = blocks[0] else { return XCTFail("应当是引用") }
+    XCTAssertEqual(depth, 0)
+    XCTAssertEqual(text, "温度 > 阈值时报警")
+  }
+
+  /// 以年份开头的句子不是清单。
+  ///
+  /// 按 CommonMark，`2026. 文字` 确实是编号 2026 的列表项，但阅读场景里没有
+  /// 上千项的清单，而年份开头的句子很常见——判成列表会让正文变成一个孤零零
+  /// 的编号项。
+  func testYearLikePrefixStaysInProse() {
+    let blocks = MarkdownPresentation.blocks(from: "2026. 这一年发生了很多事")
+    guard case let .paragraph(text) = blocks[0] else { return XCTFail("应当是段落：\(blocks[0])") }
+    XCTAssertEqual(text, "2026. 这一年发生了很多事")
+  }
+
+  /// 上限之内的编号照常当列表。
+  func testOrderedListWithinCapStillParses() {
+    let blocks = MarkdownPresentation.blocks(from: "999. 最后一项")
+    guard case let .orderedList(start, items) = blocks[0] else { return XCTFail("应当是列表") }
+    XCTAssertEqual(start, 999)
+    XCTAssertEqual(items, ["最后一项"])
   }
 
   /// 列对齐要从分隔行读出来，不能一律左对齐。
