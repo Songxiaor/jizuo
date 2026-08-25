@@ -160,6 +160,56 @@ final class ChunkedTranslationTests: XCTestCase {
     }
     return output
   }
+
+  /// 整篇装得下的稿子，不能被「按并发凑整」切开。
+  ///
+  /// 实测：一份 1557 字的画面字幕稿，单片上限本是 2000、整篇发绰绰有余，却因为
+  /// `chunkLimit` 的下限 1500 被切成两片——大片失败、只剩几十字的尾巴片成功，
+  /// 界面报「2 段中有 1 段失败」，用户看到校对完几乎没变，配额还白扣一次。
+  ///
+  /// 这里守的是**调用方的判据**：短于单片上限时必须整篇一片。反算函数本身没错，
+  /// 错在不该对这种长度调用它。
+  func testShortTextIsNotSplitByConcurrencyRounding() {
+    let maximum = 2_000
+    let concurrency = 3
+    // 文本必须**分段**，否则测不出东西：分段器遇到超长的单个段落会整段保留，
+    // 一整块无分隔的字符无论门槛多低都只会得到一片，断言于是永远为真。真实的
+    // 字幕稿和听写稿都按时间码分段，段间是空行。
+    func paragraphed(_ count: Int) -> String {
+      let perParagraph = 170
+      var paragraphs: [String] = []
+      var remaining = count
+      while remaining > 0 {
+        let take = min(perParagraph, remaining)
+        paragraphs.append(String(repeating: "字", count: take))
+        remaining -= take
+        if remaining > 0 { remaining -= 2 }  // 抵掉分隔符自身占的长度
+      }
+      return paragraphs.joined(separator: "\n\n")
+    }
+
+    // 1557 是触发过真实故障的长度：单片上限 2000 装得下，却被下限 1500 切成两片。
+    for count in [1_501, 1_557, 1_999, maximum] {
+      let text = paragraphed(count)
+      XCTAssertLessThanOrEqual(text.count, maximum, "构造的样本本身就超了上限，测不到点子上")
+      let limit = text.count <= maximum
+        ? maximum
+        : ChunkedTranslationStreamer.chunkLimit(
+            forCharacterCount: text.count, concurrency: concurrency, maximum: maximum)
+      XCTAssertEqual(
+        TranscriptTidyChunker.chunks(of: text, limit: limit).count, 1,
+        "\(text.count) 字装得下一片却被切开了"
+      )
+    }
+  }
+
+  /// 反算依然要对超长稿生效——修短稿不能把长稿的吞吐优化一起关掉。
+  func testLongTextStillRoundsChunkCountToConcurrency() {
+    let limit = ChunkedTranslationStreamer.chunkLimit(
+      forCharacterCount: 34_406, concurrency: 3, maximum: 2_000)
+    XCTAssertGreaterThan(limit, 1_500, "超长稿仍应按并发反算出接近上限的片长")
+    XCTAssertLessThanOrEqual(limit, 2_000)
+  }
 }
 
 /// 回声 Provider：把收到的分片原样吐回，但故意让不同片以不同速度完成。
@@ -219,4 +269,5 @@ private final class OrderScrambledProvider: ModelProvider, @unchecked Sendable {
     guard let open = text.range(of: "[["), let close = text.range(of: "]]") else { return nil }
     return Int(text[open.upperBound..<close.lowerBound])
   }
+
 }

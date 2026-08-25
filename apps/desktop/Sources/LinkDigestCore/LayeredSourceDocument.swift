@@ -60,6 +60,48 @@ public enum LayeredSourceDocument {
     return layers.map { "## \($0.heading)\n\n\($0.body)" }.joined(separator: "\n\n")
   }
 
+  /// 把 `modelInput` 拼出来的那份文档**拆回各层**。
+  ///
+  /// 为什么需要这个：翻译是整份文档一次翻完的，译文里同样带着
+  /// `## 配文` / `## 画面字幕` / `## 视频转写` 这几个小标题。不拆的话，翻译页就
+  /// 只能把各层纵向叠着显示——而这正是原文页当初改掉的形态：画面字幕和视频转写
+  /// 是同一段话的两个版本，叠着意味着要滚过整份字幕才够得着转写稿。
+  ///
+  /// 只认这三个已知标题，而且必须是 `## ` 开头的整行。译文正文里出现同名的
+  /// 普通句子不会被误当成分层点。
+  ///
+  /// 拆不出（只有一层、或模型没保留标题）时返回单个 heading 为 nil 的层，
+  /// 调用方据此退回「不显示切换控件、整篇渲染」。
+  public static func split(_ composed: String) -> [(heading: String?, body: String)] {
+    let known = Set([captionHeading, subtitleHeading, transcriptHeading])
+    var layers: [(heading: String?, body: String)] = []
+    var currentHeading: String?
+    var buffer: [String] = []
+
+    func flush() {
+      let body = buffer.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+      // 标题下面空无一物时不产出层：那是个只会让切换控件多一个空档的死项。
+      guard !body.isEmpty else { buffer = []; return }
+      layers.append((heading: currentHeading, body: body))
+      buffer = []
+    }
+
+    for line in composed.components(separatedBy: .newlines) {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.hasPrefix("## ") {
+        let title = String(trimmed.dropFirst(3)).trimmingCharacters(in: .whitespaces)
+        if known.contains(title) {
+          flush()
+          currentHeading = title
+          continue
+        }
+      }
+      buffer.append(line)
+    }
+    flush()
+    return layers
+  }
+
   /// 按固定顺序取出所有非空的层。
   static func orderedLayers(from snapshots: [ContentSnapshot]) -> [(heading: String, body: String)] {
     let candidates: [(String, ContentSnapshot?)] = [

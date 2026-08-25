@@ -710,7 +710,14 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
 
           Speech transcripts need this most. They arrive as unpunctuated spoken runs full of false starts, repetitions, and filler words. Render them as clean written \(targetLanguage) with proper sentence breaks and punctuation, keeping every claim, name, and number intact. Never invent content to smooth over a rough passage.
 
-          Preserve meaning, structure, names, numbers, and links. Preserve Markdown syntax and indentation exactly. LinkDigest comment sections use structural metadata that must remain machine-readable:
+          Preserve meaning, structure, names, numbers, and links. Preserve Markdown syntax and indentation exactly.
+
+          Layered source documents mark each layer with a fixed heading. Copy each of these three lines unchanged, including the `## ` prefix, even when they are not in \(targetLanguage). Translate only the prose under them:
+          - `## \(LayeredSourceDocument.captionHeading)`
+          - `## \(LayeredSourceDocument.subtitleHeading)`
+          - `## \(LayeredSourceDocument.transcriptHeading)`
+
+          LinkDigest comment sections use structural metadata that must remain machine-readable:
           - Copy unchanged every section heading beginning with `## 评论（` or `## 评论与回复（`.
           - Copy unchanged every comment metadata line beginning with `- **`, including its leading indentation, username, score, timestamp, `回复层级`, and `[原评论](...)` link.
           - Translate only the prose body of each comment into \(targetLanguage). Never translate usernames or change comment nesting.

@@ -311,6 +311,51 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     XCTAssertFalse(server.requests.description.contains(key))
   }
 
+  func testTranslationPromptKeepsSourceLayerHeadingsUntranslated() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [
+      .init(chunks: [.init("data: [DONE]\n\n")])
+    ])
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let source = """
+    ## \(LayeredSourceDocument.captionHeading)
+
+    Caption body.
+
+    ## \(LayeredSourceDocument.subtitleHeading)
+
+    Subtitle body.
+
+    ## \(LayeredSourceDocument.transcriptHeading)
+
+    Transcript body.
+    """
+
+    _ = await collect(
+      provider: makeProvider(),
+      profile: try profile(baseURL),
+      apiKey: key,
+      intent: .translate(title: "Layered fixture", text: source, targetLanguage: "English")
+    )
+
+    let request = try XCTUnwrap(server.requests.first)
+    let translationMessages = try messages(from: request.body)
+    let systemPrompt = try XCTUnwrap(translationMessages.first?["content"])
+    XCTAssertTrue(
+      systemPrompt.contains("Copy each of these three lines unchanged"),
+      "译成非中文时，三层标题必须被点名保留，否则翻译页的切换控件会静默消失"
+    )
+    XCTAssertTrue(systemPrompt.contains("`## \(LayeredSourceDocument.captionHeading)`"))
+    XCTAssertTrue(systemPrompt.contains("`## \(LayeredSourceDocument.subtitleHeading)`"))
+    XCTAssertTrue(systemPrompt.contains("`## \(LayeredSourceDocument.transcriptHeading)`"))
+    XCTAssertTrue(systemPrompt.contains("even when they are not in English"))
+    let userPrompt = try XCTUnwrap(translationMessages.last?["content"])
+    XCTAssertTrue(userPrompt.contains("## \(LayeredSourceDocument.captionHeading)"))
+    XCTAssertTrue(userPrompt.contains("## \(LayeredSourceDocument.transcriptHeading)"))
+    XCTAssertFalse(server.requests.description.contains(key))
+  }
+
   func test401IsNotRetriedAndFailureDoesNotExposeSecret() async throws {
     let key = "sentinel-\(UUID().uuidString)"
     let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [

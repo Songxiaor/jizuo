@@ -90,6 +90,53 @@ public enum BurnedInSubtitles {
   /// 转场残影或误识别。
   static let minimumFramesForBand = 3
 
+  /// 字幕的**静止位**容差。
+  ///
+  /// 实测单行字幕逐帧落在 midY 0.219~0.223，抖动不到 0.005。0.02 给足余量，
+  /// 又远小于带宽 0.08——落在带内却离静止位这么远的行，不是字幕本体。
+  static let restingPositionTolerance = 0.02
+
+  /// 帧内多行文字的排列方向。
+  enum InFrameOrdering {
+    /// 双行字幕：一句话折成两行，从上往下读。
+    case topDown
+    /// 单行字幕：同一帧出现两行只可能是**正赶上切换**——新句从上方滑入、
+    /// 旧句尚未消失。此时下面那句是先说的，得从下往上读。
+    case bottomUp
+  }
+
+  /// 这个视频的字幕是单行还是双行。
+  ///
+  /// 不能假定成双行。实测一条 470 秒的抖音视频里，19 个采样帧有 12 帧只有
+  /// 一行字幕，两行的只有 1 帧——那 1 帧恰是切换瞬间。按「双行、从上往下」
+  /// 去拼，切换帧就会把后说的那句排到前面：
+  ///
+  ///     midY=0.271 | Agent领域非常重要的概念   ← 后说的
+  ///     midY=0.222 | 我讲一个我觉得接下来      ← 先说的
+  ///
+  /// 拼出来是「Agent领域非常重要的概念 我讲一个我觉得接下来」，前后颠倒。
+  static func inFrameOrdering(bandedLineCounts counts: [Int]) -> InFrameOrdering {
+    let multi = counts.filter { $0 >= 2 }.count
+    let single = counts.filter { $0 == 1 }.count
+    // 平局判给 topDown：双行是更常见的字幕形态，样本不足时不该改变既有行为。
+    return multi >= single ? .topDown : .bottomUp
+  }
+
+  /// 字幕静止位：带内像字幕的行里，出现最密集的那个高度。
+  static func restingPosition(of frames: [VideoFrameText], lower: Double, upper: Double) -> Double? {
+    var histogram: [Int: Int] = [:]
+    for frame in frames {
+      for line in frame.lines
+      where line.midY >= lower && line.midY <= upper && isSubtitleShaped(line) {
+        histogram[Int((line.midY / restingPositionTolerance).rounded()), default: 0] += 1
+      }
+    }
+    guard let best = histogram.max(by: { lhs, rhs in
+      lhs.value != rhs.value ? lhs.value < rhs.value : lhs.key > rhs.key
+    }) else { return nil }
+    return Double(best.key) * restingPositionTolerance
+  }
+
   /// 贴着右边缘开始的文字是角标，不是字幕。
   ///
   /// 实测讲者署名固定落在 x=0.89~1.00，而字幕行从 x≤0.16 起头。用起点位置
@@ -104,9 +151,98 @@ public enum BurnedInSubtitles {
   /// 短句留了余量。
   static let minimumSubtitleWidth = 0.25
 
+  /// 贴在静止位上的行，宽度门槛放到多低。
+  ///
+  /// 0.25 那道门槛是为了挡住幻灯片上的零散标注，代价却是把中文短句一起杀了：
+  /// 实测「已是优质资产」（5 字）宽度只有 0.210，直接不算字幕。中文短句极常
+  /// 见，这等于**每个视频都在静默丢句**，正文因此缺得七零八落。
+  ///
+  /// 但「正落在字幕静止位上」本身就是极强的证据——那个高度上除了字幕不会有
+  /// 别的东西反复出现。既然位置已经把关，宽度就不必再把一遍；0.06 只用来挡
+  /// 单个字符级别的误识别。
+  static let restingPositionMinimumWidth = 0.06
+
   /// 这一行看起来像不像字幕。
   static func isSubtitleShaped(_ line: RecognizedTextLine) -> Bool {
     line.minX < cornerBadgeMinX && line.width >= minimumSubtitleWidth
+  }
+
+  /// 同上，但已知字幕静止位时按位置放宽宽度门槛。
+  ///
+  /// `restingPosition` 为 nil 时退回固定门槛——定位阶段还没有静止位可用，
+  /// 那时必须靠宽度挡住标注，否则带心会被图表拖走。
+  static func isSubtitleShaped(_ line: RecognizedTextLine, restingPosition: Double?) -> Bool {
+    guard line.minX < cornerBadgeMinX else { return false }
+    guard let rest = restingPosition else { return line.width >= minimumSubtitleWidth }
+    return abs(line.midY - rest) <= restingPositionTolerance
+      ? line.width >= restingPositionMinimumWidth
+      : line.width >= minimumSubtitleWidth
+  }
+
+  /// 偏离静止位的行，最多允许在几帧里反复出现，才还算「正在切换的字幕」。
+  ///
+  /// 切换中的字幕在偏离静止位的高度上只会闪现一两帧就落位；画面上定住的东西
+  /// （白板板书、图表标注）则一动不动地待着。实测这条视频：白板上的
+  /// 「任务→执行→反馈→反思」在 midY≈0.283 连续占了 3 帧，而**每一条**真正的
+  /// 切换残影都只出现 1 帧。2 把两类分得很开，也给真字幕留了余量。
+  static let maximumOffRestFramesForCue = 2
+
+  /// 那些赖在偏离静止位的高度上不走的文字。
+  ///
+  /// 必须按**相似度**聚类，不能按精确文本计数：OCR 抖动会把同一块板书在相邻帧
+  /// 认成「世务一执行一反馈》」「世务一执行一反馈一反」「世务一执行一反馈一反忠」，
+  /// 精确比之下每种都只出现一次，恰好伪装成「只闪了一帧」的切换残影。
+  ///
+  /// 也不能指望 `backgroundTexts`：它要求覆盖四成帧才算背景，而板书只在讲那一段
+  /// 时出现，远够不着；何况第二阶段只 OCR 字幕带内的画面，带外的东西根本不在输入里。
+  static func persistentOffRestTexts(
+    in frames: [VideoFrameText],
+    restingPosition: Double?
+  ) -> [String] {
+    guard let rest = restingPosition else { return [] }
+    var clusters: [(bucket: Int, representative: String, frames: Set<Int>)] = []
+    for (index, frame) in frames.enumerated() {
+      for line in frame.lines where abs(line.midY - rest) > restingPositionTolerance {
+        guard !normalize(line.text).isEmpty else { continue }
+        let bucket = Int((line.midY / bandBucketHeight).rounded(.down))
+        if let hit = clusters.firstIndex(where: {
+          $0.bucket == bucket && isSimilarText($0.representative, line.text, threshold: 0.6)
+        }) {
+          clusters[hit].frames.insert(index)
+        } else {
+          clusters.append((bucket, line.text, [index]))
+        }
+      }
+    }
+    return clusters
+      .filter { $0.frames.count > maximumOffRestFramesForCue }
+      .map(\.representative)
+  }
+
+  /// 离静止位很远的行，是不是**正在切换中的字幕**。
+  ///
+  /// 字幕切换时新句从上方滑入、旧句尚未消失，同一帧里会短暂出现两行——上面
+  /// 那行确实是字幕，只是还没落位。但同样落在带内、同样离静止位很远的，还有
+  /// 片头标题卡：它从画面中央滑向顶部，途中恰好路过字幕带。
+  ///
+  /// 两者的区别在**有没有同伴**：切换帧里静止位上一定还压着那句旧字幕，而
+  /// 标题卡路过时静止位上是空的。实测片头 t=0 只有孤零零一行「应该越用越聪明」
+  /// 落在 midY=0.279，静止位 0.222 上什么都没有——就是靠这一点认出它不是字幕。
+  ///
+  /// 不用「这句话在别处反复出现」来判：第二阶段只 OCR 字幕带内的画面，带外
+  /// 那个定住的标题根本不在输入里，背景统计看不到它。
+  static func isSettledOrAccompanied(
+    _ line: RecognizedTextLine,
+    inFrame lines: [RecognizedTextLine],
+    restingPosition: Double?,
+    persistent: [String]
+  ) -> Bool {
+    guard let rest = restingPosition else { return true }
+    guard abs(line.midY - rest) > restingPositionTolerance else { return true }
+    guard !persistent.contains(where: { isSimilarText($0, line.text, threshold: 0.6) }) else {
+      return false
+    }
+    return lines.contains { abs($0.midY - rest) <= restingPositionTolerance }
   }
 
   /// 一行文字出现在超过这个比例的帧里，就判为背景而不是字幕。
@@ -347,18 +483,44 @@ public enum BurnedInSubtitles {
     let lower = center - bandHalfHeight
     let upper = center + bandHalfHeight
 
-    var cues: [BurnedInSubtitleCue] = []
-    var lastCueObservationTime: Double?
-    for frame in cleaned.sorted(by: { $0.timeSeconds < $1.timeSeconds }) {
-      let banded = frame.lines
+    // 静止位：带内字幕反复停在的那个高度。有了它才能把宽度门槛按位置放宽，
+    // 也才认得出「路过字幕带的背景元素」。
+    let rest = restingPosition(of: cleaned, lower: lower, upper: upper)
+    func shapedLines(in frame: VideoFrameText) -> [RecognizedTextLine] {
+      frame.lines
         .filter { $0.midY >= lower && $0.midY <= upper }
         .filter { !normalize($0.text).isEmpty }
         // 落在字幕带里不等于就是字幕：右下角的讲者署名、图表底部的零散标注
         // 都可能挤在同一条带上，几何特征才认得出它们。
-        .filter(isSubtitleShaped)
-        // 画面从上到下 = midY 从大到小。双行字幕颠倒过来就读不通了。
+        .filter { isSubtitleShaped($0, restingPosition: rest) }
+    }
+
+    // 赖在偏离静止位的高度上不走的文字（板书、图表标注），先整批认出来。
+    let persistent = persistentOffRestTexts(
+      in: cleaned.map { VideoFrameText(timeSeconds: $0.timeSeconds, lines: shapedLines(in: $0)) },
+      restingPosition: rest
+    )
+
+    func bandedLines(in frame: VideoFrameText) -> [RecognizedTextLine] {
+      let shaped = shapedLines(in: frame)
+      return shaped.filter {
+        isSettledOrAccompanied($0, inFrame: shaped, restingPosition: rest, persistent: persistent)
+      }
+    }
+
+    // 先数一遍每帧有几行，据此判断这个视频的字幕是单行还是双行——单行视频里
+    // 同帧两行只可能是切换瞬间，读序与双行相反。
+    let ordering = inFrameOrdering(bandedLineCounts: cleaned.map { bandedLines(in: $0).count })
+
+    var cues: [BurnedInSubtitleCue] = []
+    var lastCueObservationTime: Double?
+    for frame in cleaned.sorted(by: { $0.timeSeconds < $1.timeSeconds }) {
+      let banded = bandedLines(in: frame)
         .sorted { lhs, rhs in
-          abs(lhs.midY - rhs.midY) > 0.01 ? lhs.midY > rhs.midY : lhs.minX < rhs.minX
+          guard abs(lhs.midY - rhs.midY) > 0.01 else { return lhs.minX < rhs.minX }
+          // 双行字幕：画面从上到下 = midY 从大到小。
+          // 单行字幕的切换帧：下面那句是先说的，得反过来。
+          return ordering == .topDown ? lhs.midY > rhs.midY : lhs.midY < rhs.midY
         }
       guard !banded.isEmpty else { continue }
       let joined = banded.map { $0.text.trimmingCharacters(in: .whitespacesAndNewlines) }

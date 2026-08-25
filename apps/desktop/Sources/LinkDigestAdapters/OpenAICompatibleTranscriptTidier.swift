@@ -88,11 +88,20 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     // 在空转：34,406 字按固定 6000 切出 6 片、并发 6 本可一波跑完，而 110,228 字
     // 会切出 19 片，第 4 波只剩 1 片在跑、另外 5 条通道白等——这一波的时间不花
     // 任何额外配额就能省掉。
-    let chunkLimit = ChunkedTranslationStreamer.chunkLimit(
-      forCharacterCount: text.trimmingCharacters(in: .whitespacesAndNewlines).count,
-      concurrency: Self.maximumConcurrentChunkRequests,
-      maximum: Self.maximumChunkCharacters
-    )
+    //
+    // 但**整篇装得下就绝不能切**。这个反算只在片数多于并发时才有意义；稿子短到
+    // 一片就够时，它反而会把不该切的切开：`chunkLimit` 的下限是 1500，于是一份
+    // 1557 字的字幕稿（上限本是 2000，整篇发绰绰有余）被切成两片——大片失败、
+    // 只剩几十字的尾巴片成功，用户看到的是「校对完几乎没变」，还白扣一次配额。
+    // 实测那次 prompt_tokens=409、completion=38，正是那条尾巴。
+    let trimmedCharacterCount = text.trimmingCharacters(in: .whitespacesAndNewlines).count
+    let chunkLimit = trimmedCharacterCount <= Self.maximumChunkCharacters
+      ? Self.maximumChunkCharacters
+      : ChunkedTranslationStreamer.chunkLimit(
+          forCharacterCount: trimmedCharacterCount,
+          concurrency: Self.maximumConcurrentChunkRequests,
+          maximum: Self.maximumChunkCharacters
+        )
     let chunks = TranscriptTidyChunker.chunks(of: text, limit: chunkLimit)
     guard !chunks.isEmpty else { throw TranscriptTidyError.emptyTranscript }
 
