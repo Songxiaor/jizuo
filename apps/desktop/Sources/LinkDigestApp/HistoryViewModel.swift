@@ -2614,11 +2614,21 @@ final class HistoryViewModel: ObservableObject {
     return String(source.prefix(Self.mindMapInputCharacterLimit))
   }
 
+  /// 「生成脑图」为什么现在不能点。可用时返回 nil。
+  ///
+  /// 判断和理由必须是同一份：按钮的 disabled 由本方法推导，不能再各写一套门禁。
+  func mindMapUnavailableReason(taskID: TaskID) -> String? {
+    guard let detail, detail.task.id == taskID else { return "请先选中这条记录" }
+    if isReadOnly { return "这份历史当前只能浏览" }
+    if history?.mindMapStore == nil { return "本地脑图存储还没准备好" }
+    if mindMapExtractor == nil { return "需先在设置里配置聊天模型" }
+    if mindMapState(for: taskID).isActive { return "正在生成脑图…" }
+    if mindMapSourceText() == nil { return "还没有可用来生成脑图的文字" }
+    return nil
+  }
+
   func canGenerateMindMap(taskID: TaskID) -> Bool {
-    guard let detail, history?.mindMapStore != nil, mindMapExtractor != nil, !isReadOnly,
-          detail.task.id == taskID,
-          !mindMapState(for: taskID).isActive else { return false }
-    return mindMapSourceText() != nil
+    mindMapUnavailableReason(taskID: taskID) == nil
   }
 
   func requestMindMapGeneration(taskID: TaskID) {

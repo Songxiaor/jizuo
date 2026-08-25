@@ -84,6 +84,15 @@ struct HistoryContentView: View {
       .onAppear {
         AppearanceTheme.applyApplicationAppearance(appearanceThemeRaw)
         synchronizeRemotePreviewPreheat()
+        appModel.startQueuedMindMap = { [weak model] taskID in
+          model?.requestMindMapGeneration(taskID: taskID)
+        }
+      }
+      .onChange(of: model.isBatchSummarizing) { _, summarizing in
+        appModel.defersQueuedGeneration = summarizing
+        if !summarizing {
+          Task { await appModel.startNextQueuedGenerationIfIdle() }
+        }
       }
       .task { await browserSupport.load() }
       .onChange(of: firstCaptureIsComplete) { _, completed in
@@ -1253,34 +1262,6 @@ struct HistoryContentView: View {
   }
 }
 
-private struct HistoryInlineState: View {
-  let symbol: String
-  let title: String
-  let message: String
-  var actionTitle: String?
-  var action: (() -> Void)?
-
-  var body: some View {
-    VStack(spacing: 10) {
-      Image(systemName: symbol)
-        .font(.system(size: DesignTokens.IconSize.empty, weight: .medium))
-        .foregroundStyle(.secondary)
-        .frame(width: 58, height: 58)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
-      Text(title).themedFont(.headline)
-      Text(message)
-        .themedFont(.callout)
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-        .frame(maxWidth: 330)
-      if let actionTitle, let action {
-        Button(actionTitle, action: action).buttonStyle(.borderedProminent)
-      }
-    }
-    .padding(20)
-  }
-}
-
 /// 窗口工具栏的主题背景。主窗口与设置窗口共用，避免两处各写一份判据再各自漂移
 /// ——设置窗口原来自己写了一份且判据是 `== .paper`，深色主题下工具栏没跟上。
 ///
@@ -1309,34 +1290,6 @@ struct HistoryWindowToolbarThemeModifier: ViewModifier {
         .toolbarBackground(background ?? theme.canvas, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
     }
-  }
-}
-
-private struct ClipboardSuggestionBanner: View {
-  let suggestion: ClipboardLinkSuggestion
-  let capture: () -> Void
-  let ignore: () -> Void
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text("检测到剪贴板链接：\(suggestion.host)")
-        .themedFont(.callout, weight: .semibold)
-      Text(suggestion.displayURL)
-        .themedFont(.caption)
-        .foregroundStyle(.secondary)
-        .lineLimit(1)
-        .truncationMode(.middle)
-      HStack(spacing: 10) {
-        Button("抓取", action: capture)
-          .accessibilityIdentifier("history-clipboard-capture")
-        Button("忽略", action: ignore)
-          .accessibilityIdentifier("history-clipboard-ignore")
-      }
-    }
-    .padding(10)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
-    .accessibilityIdentifier("history-clipboard-suggestion")
   }
 }
 
@@ -1373,468 +1326,8 @@ struct PlatformNavigationIcon: View {
   }
 }
 
-private struct ManualLinkSheet: View {
-  // 错误色走主题，理由同其它视图：写死 .red 在低对比与高对比主题上都不成立。
-  @Environment(\.appTheme) private var appTheme
-  @ObservedObject var model: ManualLinkViewModel
-  let modelCallDisclosure: AutomaticModelCallDisclosure
-  @FocusState private var focusURL: Bool
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 16) {
-      Text("添加网页链接").themedFont(.title3, weight: .semibold)
-      Text("只读取你主动提交的公开 HTML 页面；登录页面请使用 \(ProductDisplay.extensionName)。")
-        .themedFont(.callout).foregroundStyle(.secondary)
-      TextField("https://example.com/article", text: $model.input)
-        .textFieldStyle(.roundedBorder).focused($focusURL)
-        .disabled(model.isBusy).accessibilityIdentifier("manual-link-url-input")
-      if let validation = model.inputValidationMessage {
-        Label(validation, systemImage: "exclamationmark.triangle.fill")
-          .themedFont(.caption)
-          .foregroundStyle(appTheme.danger)
-          .accessibilityIdentifier("manual-link-validation")
-      }
-      if let disclosure = modelCallDisclosure.message {
-        Text(disclosure)
-          .themedFont(.caption).foregroundStyle(.secondary)
-          .accessibilityIdentifier("manual-link-model-call-hint")
-      }
-      if let error = model.errorMessage {
-        Label(error, systemImage: "exclamationmark.triangle.fill")
-          .themedFont(.callout).foregroundStyle(appTheme.danger).accessibilityIdentifier("manual-link-error")
-      }
-      if model.isFetching { ProgressView(model.fetchingMessage).accessibilityIdentifier("manual-link-fetching") }
-      if model.isSaving { ProgressView("正在保存到本机历史…").accessibilityIdentifier("manual-link-saving") }
-      HStack {
-        Button("取消") { model.dismiss() }
-          .keyboardShortcut(.cancelAction)
-        Spacer()
-        if model.isFetching {
-          Button("停止读取", action: model.cancelFetch).accessibilityIdentifier("manual-link-cancel")
-        } else if model.isSaving {
-          Text("保存中").foregroundStyle(.secondary).accessibilityIdentifier("manual-link-saving-label")
-        } else {
-          Button("添加") { model.submit() }
-            .keyboardShortcut(.defaultAction).disabled(!model.canSubmit)
-            .accessibilityIdentifier("manual-link-submit")
-        }
-      }
-    }
-    .padding(24).frame(width: 480)
-    .onAppear { focusURL = true }
-    .alert("这个链接已在库中", isPresented: $model.isDuplicatePromptPresented) {
-      Button("取消", role: .cancel) { model.cancelDuplicateSubmit() }
-      Button("仍要重新抓取") { model.confirmDuplicateSubmit() }
-    } message: {
-      Text("重复添加不会产生新条目：重新抓取的内容会併入原条目成为最新快照。若只想查看，请直接在列表中打开。")
-    }
-  }
-}
-
-/// 抓取队列行：URL + 阶段状态；失败可重试/移除，进行中可取消。
-private struct PendingCaptureRow: View {
-  let pending: ManualLinkViewModel.PendingCapture
-  @ObservedObject var model: ManualLinkViewModel
-  @Environment(\.appTheme) private var theme
-
-  var body: some View {
-    HStack(spacing: 8) {
-      switch pending.phase {
-      case .queued:
-        Image(systemName: "clock").foregroundStyle(.secondary)
-      case .fetching, .saving:
-        ProgressView().controlSize(.small)
-      case .failed:
-        Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(theme.warning)
-      }
-      VStack(alignment: .leading, spacing: 2) {
-        Text(pending.urlString)
-          .themedFont(.caption)
-          .lineLimit(1)
-          .truncationMode(.middle)
-        switch pending.phase {
-        case .queued: Text("排队中").themedFont(.caption2).foregroundStyle(.tertiary)
-        case .fetching: Text("正在抓取…").themedFont(.caption2).foregroundStyle(.tertiary)
-        case .saving: Text("正在保存…").themedFont(.caption2).foregroundStyle(.tertiary)
-        case let .failed(message):
-          // 失败原因必须完整可读。`lineLimit(2)` 会把「网页暂时无法打开，
-          // 请检查链接后重试」截掉尾巴——而尾巴恰恰是那句可执行的建议。
-          Text(message)
-            .themedFont(.caption2)
-            .foregroundStyle(theme.warning)
-            .fixedSize(horizontal: false, vertical: true)
-        }
-      }
-      Spacer(minLength: 4)
-      if case .failed = pending.phase {
-        Button("重试") { model.retryPendingCapture(pending.id) }
-          .controlSize(.mini)
-      }
-      Button {
-        model.removePendingCapture(pending.id)
-      } label: {
-        Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
-      }
-      .buttonStyle(.plain)
-      .help(pending.phase == .queued ? "移出队列" : "取消并移除")
-      .accessibilityLabel(pending.phase == .queued ? "移出队列" : "取消并移除")
-    }
-    .padding(.vertical, 4)
-    // 与 HistoryRowView 同一个坑：macOS List 会沿用估算行高把内容压扁，
-    // 失败提示换行后第三行就被裁掉。固定纵向 intrinsic 高度 + 内容变化换 identity，
-    // 强制按真实内容测量。
-    .fixedSize(horizontal: false, vertical: true)
-    .id("\(pending.id)-\(pending.phase)")
-    .accessibilityIdentifier("pending-capture-row")
-  }
-}
-
-private struct HistoryRowView: View {
-  // 只收值输入，不再整体观察 ViewModel：以前每行都挂着 @ObservedObject，
-  // 任何无关的 @Published 变化（转写流式输出、图标到货、导航计数……）
-  // 都会让列表逐行整体重算。现在行体只在自己的输入变化时才重算（见文件
-  // 下方的 Equatable 扩展），选中/图标由父层算好传进来。
-  let row: HistoryRowProjection
-  let isSelected: Bool
-  let faviconURL: URL?
-  let theme: HistoryThemeTokens
-  @State private var isHovering = false
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-  /// 图24 式状态点：已有总结产物为绿色，未总结为橙色。
-  private var isSummarized: Bool {
-    row.artifactPreview?.trimmedNonEmpty != nil
-  }
-
-  /// 高对比主题改用形状编码：实心 = 已总结，空心 = 未总结。
-  /// 尺寸和其它主题保持一致，换主题时行内文字不会跟着挪位。
-  @ViewBuilder private var statusIndicator: some View {
-    if theme.encodesStatusByShape {
-      if isSummarized {
-        Circle().fill(theme.primaryText)
-      } else {
-        Circle().strokeBorder(theme.primaryText, lineWidth: 1.5)
-      }
-    } else {
-      Circle().fill(isSummarized ? theme.success : theme.warning)
-    }
-  }
-
-  /// 这一行显示哪个时间。
-  ///
-  /// 发布时间优先——判断"这条素材新不新鲜"看的是它。抓不到发布时间
-  /// （很多网页没有可靠的时间标记）才回落到入库时间，并标明是"存于"，
-  /// 免得让人误以为原文是那天发的。
-  private func sanitizedRowPreview(_ row: HistoryRowProjection) -> String? {
-    if let preview = row.artifactPreview?.trimmedNonEmpty {
-      let cleaned = MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: preview)
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      if !cleaned.isEmpty { return cleaned }
-    }
-    return row.author?.trimmedNonEmpty
-  }
-
-  private var rowTimeText: String {
-    if let published = row.published?.trimmedNonEmpty {
-      return historyPublishedDate(published)
-    }
-    return "存于 \(HistoryRelativeTime.text(row.createdAtMilliseconds ?? row.updatedAtMilliseconds))"
-  }
-
-  /// 整行作为一个可访问元素，读屏只报标题、来源、时间和处理状态；正文预览
-  /// 留在视觉层，不再把几百字摘要当作列表项 value 一口气念完。
-  private var rowAccessibilityLabel: String {
-    CapturedDocumentTitle.display(row.title, for: row.canonicalURL)
-  }
-
-  private var rowAccessibilityValue: String {
-    var values = [
-      "来源：\(HistoryPlatformDisplay.name(forHost: row.host))",
-      rowTimeText,
-      isSummarized ? "已总结" : "未总结",
-    ]
-    if row.hasTranscript == true {
-      values.append("已转写")
-    } else if row.hasMedia == true {
-      values.append("有视频，还没转写")
-    }
-    if row.hasMindMap == true { values.append("已生成脑图") }
-    return values.joined(separator: "，")
-  }
-
-  var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      // 左侧锚点：状态点 + 平台标记竖排。
-      //
-      // 平台标记从标题右侧挪过来。放在右边有两个问题：位置和「关闭按钮」
-      // 撞车，语义容易误解；而且列表纯文字堆叠时扫视没有落点——眼睛需要
-      // 一个每行都在同一位置、且颜色各不相同的东西来定位。
-      //
-      // 没有用缩略图：36 条里只有 22 条正文带图（61%），而且那些图是远程
-      // URL——列表里加载等于每次开 App 就朝各平台发几十个请求，既违背
-      // local-first，也把「我在看这条」暴露给了内容平台。平台色块零网络、
-      // 100% 覆盖，扫视效果反而更稳定。
-      VStack(spacing: 6) {
-        statusIndicator
-          .frame(width: 7, height: 7)
-          .help(isSummarized ? "已总结" : "未总结")
-          // label 说「这是什么」，value 说「现在是什么值」。
-          // 把状态塞进 label（原来的写法）时，VoiceOver 只念一句「已总结」，
-          // 听不出这是一个状态指示器；分开之后念的是「总结状态，已总结」。
-          .accessibilityLabel("总结状态")
-          .accessibilityValue(isSummarized ? "已总结" : "未总结")
-        favicon
-      }
-      .padding(.top, 4)
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(alignment: .top, spacing: 8) {
-          Text(CapturedDocumentTitle.display(row.title, for: row.canonicalURL))
-            .themedFont(.body, weight: .semibold)
-            .lineLimit(2)
-            .multilineTextAlignment(.leading)
-          Spacer(minLength: 4)
-        }
-        if let preview = sanitizedRowPreview(row) {
-          Text(preview)
-            .themedFont(.callout)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-        }
-        // 时间合成一排。
-        //
-        // 原本是两排——"发布 2026年8月5日 14:37" 和 "创建 2026年8月5日"，
-        // 吃掉近一半行高，而这是整行最次要的信息。而且"创建"时间对用户
-        // 几乎没有意义（他知道自己什么时候存的），判断素材新不新鲜看的是
-        // 发布时间。所以只留发布时间，没抓到才回落到入库时间。
-        HStack(alignment: .bottom, spacing: 6) {
-          Text(rowTimeText)
-            .themedFont(.footnote)
-            .foregroundStyle(.tertiary)
-            .lineLimit(1)
-          Spacer(minLength: 4)
-          // 处理状态徽标：一眼分清生料和成品，自动管线跑完什么立刻可见。
-          // 这一排是裸 Image，不是 Label——`.help()` 只喂给鼠标悬停的 tooltip，
-          // VoiceOver 读不到，所以每个都要自己声明可访问名称。工具栏那些按钮
-          // 用的是 `Label(文字, systemImage:)`，文字本身就是名称，不用补。
-          HStack(spacing: 4) {
-            if row.hasTranscript == true {
-              Image(systemName: "waveform")
-                .help("已转写")
-                .accessibilityLabel("已转写")
-            } else if row.hasMedia == true {
-              // 只标异常，不标常态：有视频却还没转写的条目，正文往往只有一百来字的
-              // 站点描述，在列表里和几千字的长文长得一模一样，点进去才发现是空的。
-              // 不判「字数少」这类阈值——「有视频且无转写稿」是可判定的事实。
-              Image(systemName: "waveform.slash")
-                .foregroundStyle(theme.warning)
-                .help("有视频，还没转写")
-                .accessibilityLabel("有视频，还没转写")
-                .accessibilityIdentifier("history-row-needs-transcript")
-            }
-            if row.hasSummary == true {
-              Image(systemName: "text.alignleft")
-                .help("已总结")
-                .accessibilityLabel("已总结")
-            }
-            if row.hasMindMap == true {
-              Image(systemName: "brain")
-                .help("已生成脑图")
-                .accessibilityLabel("已生成脑图")
-            }
-          }
-          .font(.system(size: BadgeTypography.size))
-          .foregroundStyle(.tertiary)
-          .accessibilityIdentifier("history-row-status-badges")
-        }
-      }
-    }
-    .padding(.horizontal, DesignTokens.Space.md)
-    .padding(.vertical, DesignTokens.Space.sm)
-    .frame(minHeight: 68, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-        .fill(rowBackground)
-    )
-    .overlay(alignment: .leading) {
-      if isSelected {
-        Capsule()
-          .fill(theme.accent)
-          .frame(width: 3, height: 30)
-          .padding(.leading, DesignTokens.Space.xxs)
-      }
-    }
-    .animation(
-      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
-      value: isHovering
-    )
-    .onHover { isHovering = $0 }
-    // 新到行在 macOS List 里可能沿用估算行高并把内容压扁；
-    // 固定纵向 intrinsic 高度 + 内容变化换 identity，强制按真实内容测量。
-    .fixedSize(horizontal: false, vertical: true)
-    .id("\(row.taskID.rawValue)-\(row.updatedAtMilliseconds)")
-    .accessibilityElement(children: .ignore)
-    .accessibilityLabel(rowAccessibilityLabel)
-    .accessibilityValue(rowAccessibilityValue)
-  }
-
-  private var rowBackground: Color {
-    if isSelected { return theme.accent.opacity(0.04) }
-    if isHovering { return theme.primaryText.opacity(0.035) }
-    return .clear
-  }
-
-  @ViewBuilder private var favicon: some View {
-    if row.host == HistoryPlatformDisplay.noteHost {
-      // 笔记没有站点图标可取。给它侧边栏同一个符号，一眼能和抓来的东西分开。
-      Image(systemName: "square.and.pencil")
-        .font(.system(size: DesignTokens.IconSize.inline, weight: .medium))
-        .foregroundStyle(.tint)
-        .frame(width: 18, height: 18)
-        .accessibilityLabel("笔记")
-    } else if let image = PlatformIconCatalog.image(for: row.host) {
-      Image(nsImage: image).resizable().scaledToFit().frame(width: 18, height: 18)
-        .accessibilityLabel("\(row.host) 图标")
-    } else if let url = faviconURL {
-      HistoryFaviconDiskImage(url: url, host: row.host, taskID: row.taskID) {
-        fallbackBadge
-      }
-    } else {
-      fallbackBadge
-    }
-  }
-
-  /// Deterministic initial mark. A source with neither a bundled icon nor a
-  /// reachable favicon still gets a stable, identifiable badge.
-  private var fallbackBadge: some View {
-    Text(PlatformIconCatalog.fallbackInitial(for: row.host))
-      .font(.system(size: BadgeTypography.size, weight: .bold))
-      .foregroundStyle(.white)
-      .frame(width: 16, height: 16)
-      .background(PlatformIconCatalog.fallbackColor(for: row.host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
-      .padding(.top, 1)
-      .accessibilityLabel("\(row.host) 图标")
-  }
-}
-
-/// 行体只随自己的输入变化重算。theme 参与比较：主题切换时行必须换色，
-/// 而行拿的是传值不是环境，比较里漏掉它会让旧配色滞留到下一次输入变化。
-extension HistoryRowView: Equatable {
-  // nonisolated：Equatable 是非隔离协议，比较的又都是传值的存储属性，
-  // 不碰主线程状态；不标的话 Swift 6 视为跨隔离一致性拒绝编译。
-  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
-    lhs.row == rhs.row
-      && lhs.isSelected == rhs.isSelected
-      && lhs.faviconURL == rhs.faviconURL
-      && lhs.theme == rhs.theme
-  }
-}
-
-/// 磁盘上的站点图标：内存缓存命中就直接画；未命中先画占位徽标，文件读取
-/// 放到后台，读完入缓存再切换。以前是在行 body 里同步读盘构造图像——
-/// 列表滚动或整表重建时，几十行图标的磁盘读取全部压在主线程上。
-private struct HistoryFaviconDiskImage<Fallback: View>: View {
-  let url: URL
-  let host: String
-  let taskID: TaskID
-  @ViewBuilder var fallback: () -> Fallback
-  @State private var loaded: NSImage?
-
-  var body: some View {
-    if let image = HistoryFaviconImageMemoryCache.cachedImage(host: host, taskID: taskID, url: url) ?? loaded {
-      Image(nsImage: image).resizable().scaledToFit().frame(width: 18, height: 18)
-        .accessibilityHidden(true)
-    } else {
-      fallback()
-        .task(id: url) {
-          loaded = await HistoryFaviconImageMemoryCache.decodeImage(at: url, host: host, taskID: taskID)
-        }
-    }
-  }
-}
-
-/// SwiftUI can recompute a row's body many times while selection, scrolling,
-/// or favicon callbacks change. This process-local cache keeps disk image
-/// decoding out of that hot path. `NSCache` is thread-safe and bounded, so it
-/// remains safe when AppKit asks for a view from a different rendering thread.
-///
-/// body 里只允许查内存（`cachedImage`）；磁盘读取一律走 `decodeImage`——
-/// 文件 I/O 在后台完成，只把字节变成 NSImage 这一步留在主线程（小图标
-/// 的解码本身是微秒级，贵的是读盘）。
-private enum HistoryFaviconImageMemoryCache {
-  nonisolated(unsafe) private static let images: NSCache<NSString, NSImage> = {
-    let cache = NSCache<NSString, NSImage>()
-    cache.countLimit = 256
-    return cache
-  }()
-
-  private static func keys(url: URL, host: String, taskID: TaskID) -> (host: NSString, task: NSString) {
-    (
-      "host:\(PlatformIconCatalog.normalizedHost(host))" as NSString,
-      "task:\(taskID.rawValue):\(url.absoluteString)" as NSString
-    )
-  }
-
-  static func cachedImage(host: String, taskID: TaskID, url: URL) -> NSImage? {
-    let keys = keys(url: url, host: host, taskID: taskID)
-    return images.object(forKey: keys.task) ?? images.object(forKey: keys.host)
-  }
-
-  @MainActor
-  static func decodeImage(at url: URL, host: String, taskID: TaskID) async -> NSImage? {
-    if let cached = cachedImage(host: host, taskID: taskID, url: url) { return cached }
-    let bytes = await Task.detached(priority: .utility) { try? Data(contentsOf: url) }.value
-    guard let bytes, let decoded = NSImage(data: bytes) else { return nil }
-    let keys = keys(url: url, host: host, taskID: taskID)
-    images.setObject(decoded, forKey: keys.host)
-    images.setObject(decoded, forKey: keys.task)
-    return decoded
-  }
-}
-
 /// The detail header needs a recognizable source, not a wire-format URL.
 /// Opening and copying still use the untouched value; this is display-only.
-enum HistorySourceLinkPresentation {
-  static func host(_ rawURL: String) -> String? {
-    guard let components = URLComponents(string: rawURL),
-          var host = components.host?.lowercased(),
-          !host.isEmpty
-    else { return nil }
-    if host.hasPrefix("www.") { host.removeFirst(4) }
-    return host
-  }
-
-  static func text(_ rawURL: String) -> String {
-    guard let host = host(rawURL),
-          let components = URLComponents(string: rawURL)
-    else { return rawURL }
-
-    let segments = components.path
-      .split(separator: "/", omittingEmptySubsequences: true)
-      .map { String($0).removingPercentEncoding ?? String($0) }
-
-    if (host == "x.com" || host == "twitter.com"),
-       segments.count >= 3,
-       segments[1].lowercased() == "status" {
-      return "\(host) · @\(segments[0]) 的帖子"
-    }
-
-    if host == "bilibili.com" || host.hasSuffix(".bilibili.com"),
-       segments.count >= 2,
-       segments[0].lowercased() == "video" {
-      return "\(host) · 视频 \(shortened(segments[1], limit: 18))"
-    }
-
-    guard !segments.isEmpty else { return host }
-    let path = segments.joined(separator: "/")
-    return "\(host) · /\(shortened(path, limit: 32))"
-  }
-
-  private static func shortened(_ value: String, limit: Int) -> String {
-    guard value.count > limit else { return value }
-    return "\(value.prefix(limit))…"
-  }
-}
-
 private struct HistoryDetailView: View, Equatable {
   /// 父视图重求值一次，就会新造一个 `HistoryDetailView` 结构体。里面带着两个闭包，
   /// SwiftUI 因此永远判定「变了」，于是整棵详情树连同 `MarkdownContentView` 重画一遍。
@@ -2244,28 +1737,61 @@ private struct HistoryDetailView: View, Equatable {
   private var showsVisibleRun: Bool { appModel.showsVisibleRun(for: detail.task.id) }
   private var canRunHistory: Bool { appModel.canStartRun(from: detail) }
   private var summarizeUnavailableReason: String? {
-    appModel.summarizeUnavailableReason(
+    if appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .summarize) {
+      return nil
+    }
+    let reason = appModel.summarizeUnavailableReason(
       usingCurrentCapture: showsCurrentCapture,
       detail: detail,
       preferencesReady: providerSettings.arePreferencesReady
     )
+    if reason != nil, appModel.canEnqueueManualGeneration(for: detail.task.id) {
+      return nil
+    }
+    return reason
   }
   private var translateUnavailableReason: String? {
-    appModel.translateUnavailableReason(
+    if appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .translate) {
+      return nil
+    }
+    let reason = appModel.translateUnavailableReason(
       usingCurrentCapture: showsCurrentCapture,
       detail: detail,
       preferences: providerSettings.runPreferences,
       preferencesReady: providerSettings.arePreferencesReady
     )
+    if reason != nil, appModel.canEnqueueManualGeneration(for: detail.task.id) {
+      return nil
+    }
+    return reason
+  }
+  private var mindMapUnavailableReason: String? {
+    guard !isOwnWriting, model.mindMapRecord?.taskID != detail.task.id else { return nil }
+    if appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) {
+      return nil
+    }
+    if let reason = model.mindMapUnavailableReason(taskID: detail.task.id) {
+      return reason
+    }
+    return nil
   }
   /// 一行说清为什么灰。两颗钮同一原因只写一次；总结能点、翻译不能时写翻译的原因。
   private var runActionBlockedReason: String? {
+    if appModel.hasQueuedGeneration(for: detail.task.id) {
+      return "已排队，等当前这条做完"
+    }
     if summarizeUnavailableReason != nil, translateUnavailableReason != nil {
       return summarizeUnavailableReason
     }
-    return summarizeUnavailableReason ?? translateUnavailableReason
+    return summarizeUnavailableReason ?? translateUnavailableReason ?? mindMapUnavailableReason
   }
-  private var showsRunControls: Bool { canRunHistory || showsCurrentCapture || showsVisibleRun }
+  private var showsRunControls: Bool {
+    canRunHistory
+      || showsCurrentCapture
+      || showsVisibleRun
+      || appModel.canEnqueueManualGeneration(for: detail.task.id)
+      || appModel.hasQueuedGeneration(for: detail.task.id)
+  }
   private var presentsArticleBeforeMedia: Bool {
     guard let latestSnapshot else { return false }
     // 有视频时播放器在上、文稿在下：转写按钮和视频在一起，长转写不会把它们顶走。
@@ -2672,8 +2198,6 @@ private struct HistoryDetailView: View, Equatable {
       readingPane = defaultReadingPane
       // 保活集合不跨条目：上一条访问过哪些面板不该让这一条多付隐藏布局。
       visitedReadingPanes = []
-      // 临时诊断：验证完整体撤除
-      reportMountedReadingPaneCount()
       pendingSourceCitation = nil
       ReadingSelectionRouter.shared.formatter = { selected in
         ReadingCitationFormatter.format(selection: selected, title: title, sourceURL: sourceURL)
@@ -2857,7 +2381,8 @@ private struct HistoryDetailView: View, Equatable {
             Divider()
           }
           Button("重新生成…") { isRegeneratePopoverPresented = true }
-            .disabled(!canRunHistory || !providerSettings.arePreferencesReady)
+            .disabled(summarizeUnavailableReason != nil)
+            .help(summarizeUnavailableReason ?? "用本机已保存正文重新总结或翻译")
             .accessibilityIdentifier("regenerate-history")
           Divider()
           // `role: .destructive` 让系统把它标红并排在最后，这是 macOS 菜单里
@@ -3110,7 +2635,7 @@ private struct HistoryDetailView: View, Equatable {
     VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 8) {
         actionPill(
-          title: "总结",
+          title: appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .summarize) ? "已排队" : "总结",
           systemImage: "text.alignleft",
           prominent: false,
           disabled: summarizeUnavailableReason != nil,
@@ -3123,7 +2648,7 @@ private struct HistoryDetailView: View, Equatable {
           }
         }
         actionPill(
-          title: "翻译",
+          title: appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .translate) ? "已排队" : "翻译",
           systemImage: "character.book.closed",
           prominent: false,
           disabled: translateUnavailableReason != nil,
@@ -3144,14 +2669,25 @@ private struct HistoryDetailView: View, Equatable {
         // 挨着主题切换和导出，和它们是一组。
         if !isOwnWriting, model.mindMapRecord?.taskID != detail.task.id {
           actionPill(
-            title: "生成脑图",
+            title: appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) ? "已排队" : "生成脑图",
             systemImage: "brain",
             prominent: false,
-            disabled: !model.canGenerateMindMap(taskID: detail.task.id),
+            disabled: mindMapUnavailableReason != nil,
             identifier: "mind-map-generate"
           ) {
-            model.requestMindMapGeneration(taskID: detail.task.id)
+            if appModel.canEnqueueManualGeneration(for: detail.task.id)
+              || appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) {
+              appModel.enqueueOrCancelMindMapGeneration(taskID: detail.task.id)
+            } else {
+              model.requestMindMapGeneration(taskID: detail.task.id)
+            }
           }
+          .help(
+            mindMapUnavailableReason
+              ?? (appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap)
+                ? "再点一次取消排队"
+                : "把正文发给模型提取结构")
+          )
         }
         if isOwnWriting {
           // 想到哪写到哪的东西需要有人重排结构：标题和正文黏成一段、编号挤在
@@ -3721,19 +3257,7 @@ private struct HistoryDetailView: View, Equatable {
     // 惰性成立）；这里只负责把后续切换过的面板记入保活集合。
     .onChange(of: effectiveReadingPane) { _, pane in
       visitedReadingPanes.insert(pane)
-      // 临时诊断：验证完整体撤除
-      reportMountedReadingPaneCount()
     }
-    // 临时诊断：验证完整体撤除。初始挂载不走 onChange，这里补一次。
-    .onAppear { reportMountedReadingPaneCount() }
-  }
-
-  /// 临时诊断：验证完整体撤除。
-  /// 实际挂载数 = visitedReadingPanes ∪ {effectiveReadingPane}。
-  private func reportMountedReadingPaneCount() {
-    var mounted = visitedReadingPanes
-    mounted.insert(effectiveReadingPane)
-    ReadingLayoutProbe.setMountedPaneCount(mounted.count)
   }
 
   @ViewBuilder
@@ -4360,6 +3884,7 @@ private struct HistoryDetailView: View, Equatable {
             )
           }
         }
+        .disabled(summarizeUnavailableReason != nil)
         Button("翻译") {
           let override = temporaryModel.trimmingCharacters(in: .whitespacesAndNewlines).emptyToNil
           isRegeneratePopoverPresented = false
@@ -4371,7 +3896,14 @@ private struct HistoryDetailView: View, Equatable {
             )
           }
         }
-        .disabled(!appModel.canTranslate(from: detail, preferences: providerSettings.runPreferences))
+        .disabled(translateUnavailableReason != nil)
+      }
+      if let reason = summarizeUnavailableReason ?? translateUnavailableReason {
+        Text(reason)
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("regenerate-blocked-reason")
       }
     }
     .padding(16)
@@ -4665,38 +4197,6 @@ private func isUserCancelledExport(_ error: Error) -> Bool {
   return cocoa.domain == NSCocoaErrorDomain && cocoa.code == CocoaError.userCancelled.rawValue
 }
 
-private struct ReadOnlyHistoryCallout: View {
-  let reason: RepositoryRecoveryReason?
-  @Environment(\.appTheme) private var theme
-
-  var body: some View {
-    HStack(alignment: .top, spacing: 8) {
-      Image(systemName: "lock.fill")
-        .foregroundStyle(theme.warning)
-        .padding(.top, 1)
-      Text(message)
-        .themedFont(.body)
-        .foregroundStyle(.primary)
-        .fixedSize(horizontal: false, vertical: true)
-    }
-    .padding(10)
-    .background(theme.warning.opacity(0.12), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
-  }
-
-  private var message: String {
-    switch reason {
-    case .futureSchema:
-      "这份历史由较新版本创建，当前仅可浏览。原数据未修改；请使用较新版本的 \(ProductDisplay.name) 后再编辑或删除。"
-    case .migrationFailed:
-      "这份历史的迁移未完成，当前仅可浏览。原数据未修改；请在恢复后重新启动 \(ProductDisplay.name)，再编辑或删除。"
-    case .storageUnavailable:
-      "本地历史暂时无法以可写方式打开，当前仅可浏览。原数据未修改；请检查本机存储后重新启动 \(ProductDisplay.name)，再编辑或删除。"
-    case nil:
-      "本地历史当前仅可浏览。原数据未修改；请在恢复后重新启动 \(ProductDisplay.name)，再编辑或删除。"
-    }
-  }
-}
-
 private struct MetadataItem: View {
   let symbol: String; let title: String; let value: String; let detail: String?
   init(symbol: String, title: String, value: String, detail: String? = nil) {
@@ -4725,108 +4225,7 @@ private struct MetadataItem: View {
     .fixedSize(horizontal: false, vertical: true)
   }
 }
-// 列表行与播放卡片都在用；拆分后不能再是 file-private。
-extension String {
-  var trimmedNonEmpty: String? { let value = trimmingCharacters(in: .whitespacesAndNewlines); return value.isEmpty ? nil : value }
-  var emptyToNil: String? { trimmedNonEmpty }
-}
-enum HistoryTimestampFormatter {
-  // DateFormatter 的创建是毫秒级开销，而这条路在列表行和详情页反复走。
-  // 配好即只读（只调 string(from:)），只读用法下 DateFormatter 线程安全。
-  // 两档样式各缓存一份；测试注入自定义历法/时区时仍走现建路径。
-  private static let sameDayFormatter = makeDefault(dateStyle: .none)
-  private static let otherDayFormatter = makeDefault(dateStyle: .medium)
-
-  private static func makeDefault(dateStyle: DateFormatter.Style) -> DateFormatter {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "zh_CN")
-    formatter.calendar = .autoupdatingCurrent
-    formatter.timeZone = .autoupdatingCurrent
-    formatter.dateStyle = dateStyle
-    formatter.timeStyle = .short
-    return formatter
-  }
-
-  static func text(
-    _ milliseconds: Int64?,
-    now: Date = Date(),
-    calendar: Calendar = .autoupdatingCurrent,
-    // 和 `HistoryPublishedTimestampFormatter` 同一个理由，这里之前漏了：
-    // 界面通篇中文但 App 没有本地化资源，`.autoupdatingCurrent` 会回退成英文，
-    // 于是详情页同一屏里出现「发布 2026年8月5日 14:37」和
-    // 「创建时间 Aug 5, 2026 at 18:13」两种写法。钉住 zh_CN。
-    locale: Locale = Locale(identifier: "zh_CN"),
-    timeZone: TimeZone = .autoupdatingCurrent
-  ) -> String {
-    guard let milliseconds else { return "—" }
-    let date = Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
-    var localCalendar = calendar
-    localCalendar.timeZone = timeZone
-    let sameDay = localCalendar.isDate(date, inSameDayAs: now)
-    if calendar == Calendar.autoupdatingCurrent,
-       timeZone == TimeZone.autoupdatingCurrent,
-       locale.identifier == "zh_CN" {
-      return (sameDay ? sameDayFormatter : otherDayFormatter).string(from: date)
-    }
-    let formatter = DateFormatter()
-    formatter.locale = locale
-    formatter.calendar = localCalendar
-    formatter.timeZone = timeZone
-    formatter.dateStyle = sameDay ? .none : .medium
-    formatter.timeStyle = .short
-    return formatter.string(from: date)
-  }
-}
 private func historyDate(_ milliseconds: Int64?) -> String { HistoryTimestampFormatter.text(milliseconds) }
-enum HistoryPublishedTimestampFormatter {
-  // ISO8601 解析器与 zh_CN 展示格式化器都缓存：列表每一行都要走这里，
-  // 原来一次调用现建 2~3 个 formatter。ISO8601DateFormatter 线程安全；
-  // DateFormatter 只读用法（只调 string(from:)）同样安全。
-  private nonisolated(unsafe) static let standardISO = ISO8601DateFormatter()
-  private nonisolated(unsafe) static let fractionalISO: ISO8601DateFormatter = {
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions.insert(.withFractionalSeconds)
-    return formatter
-  }()
-  private static let defaultLocalized: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "zh_CN")
-    formatter.calendar = .autoupdatingCurrent
-    formatter.timeZone = .autoupdatingCurrent
-    formatter.dateStyle = .medium
-    formatter.timeStyle = .short
-    return formatter
-  }()
-
-  static func text(
-    _ value: String?,
-    calendar: Calendar = .autoupdatingCurrent,
-    // The app's entire UI is Simplified Chinese but ships unlocalized, so an
-    // autoupdating locale falls back to English ("Jul 22, 2026 at 03:47").
-    // Pin zh_CN so dates read like the rest of the interface.
-    locale: Locale = Locale(identifier: "zh_CN"),
-    timeZone: TimeZone = .autoupdatingCurrent
-  ) -> String {
-    // 旧抓取可能存有抖音 DOM 的「· 」装饰前缀；展示层剥掉它兜底。
-    let cleanedValue = value?
-      .trimmingCharacters(in: .whitespaces)
-      .replacingOccurrences(of: "^[·•|｜,，\\s]+|[·•|｜,，\\s]+$", with: "", options: .regularExpression)
-    guard let value = cleanedValue?.trimmedNonEmpty else { return "发布时间未获取" }
-    guard let date = standardISO.date(from: value) ?? fractionalISO.date(from: value) else { return value }
-    if calendar == Calendar.autoupdatingCurrent,
-       timeZone == TimeZone.autoupdatingCurrent,
-       locale.identifier == "zh_CN" {
-      return defaultLocalized.string(from: date)
-    }
-    let localized = DateFormatter()
-    localized.locale = locale
-    localized.calendar = calendar
-    localized.timeZone = timeZone
-    localized.dateStyle = .medium
-    localized.timeStyle = .short
-    return localized.string(from: date)
-  }
-}
 private func historyPublishedDate(_ value: String?) -> String { HistoryPublishedTimestampFormatter.text(value) }
 /// 列表行的时间：近的说"多久以前"，远的说日期。
 ///
@@ -4837,67 +4236,6 @@ private func historyPublishedDate(_ value: String?) -> String { HistoryPublished
 ///
 /// 七天是分界：一周内人对"几天前"有直觉，超过一周就只剩"很久以前"，
 /// 那时候日期反而更有用。
-enum HistoryRelativeTime {
-  // 列表滚动路径，formatter 缓存理由同 `HistoryTimestampFormatter`。
-  private static let defaultTimeOfDay: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "zh_CN")
-    formatter.calendar = .autoupdatingCurrent
-    formatter.dateFormat = "HH:mm"
-    return formatter
-  }()
-  private static let defaultDay: DateFormatter = {
-    let formatter = DateFormatter()
-    formatter.locale = Locale(identifier: "zh_CN")
-    formatter.calendar = .autoupdatingCurrent
-    formatter.dateStyle = .medium
-    formatter.timeStyle = .none
-    return formatter
-  }()
-
-  private static func isDefault(_ locale: Locale, _ calendar: Calendar) -> Bool {
-    locale.identifier == "zh_CN" && calendar == Calendar.autoupdatingCurrent
-  }
-
-  static func text(
-    _ milliseconds: Int64,
-    now: Date = Date(),
-    calendar: Calendar = .autoupdatingCurrent,
-    locale: Locale = Locale(identifier: "zh_CN")
-  ) -> String {
-    let date = Date(timeIntervalSince1970: Double(milliseconds) / 1_000)
-    // 按"日历天"算而不是按 24 小时：昨晚 23:00 和今早 08:00 差 9 小时，
-    // 但人会说"昨天"，不会说"9 小时前"。
-    let days = calendar.dateComponents([.day], from: calendar.startOfDay(for: date),
-                                       to: calendar.startOfDay(for: now)).day ?? 0
-    switch days {
-    case ..<0:
-      // 未来时间通常是源站时区解析出的偏差，别显示"-2 天前"这种。
-      return dayText(date, locale: locale, calendar: calendar)
-    case 0:
-      if isDefault(locale, calendar) { return "今天 \(defaultTimeOfDay.string(from: date))" }
-      let formatter = DateFormatter()
-      formatter.locale = locale
-      formatter.calendar = calendar
-      formatter.dateFormat = "HH:mm"
-      return "今天 \(formatter.string(from: date))"
-    case 1: return "昨天"
-    case 2...6: return "\(days) 天前"
-    default: return dayText(date, locale: locale, calendar: calendar)
-    }
-  }
-
-  private static func dayText(_ date: Date, locale: Locale, calendar: Calendar) -> String {
-    if isDefault(locale, calendar) { return defaultDay.string(from: date) }
-    let formatter = DateFormatter()
-    formatter.locale = locale
-    formatter.calendar = calendar
-    formatter.dateStyle = .medium
-    formatter.timeStyle = .none
-    return formatter.string(from: date)
-  }
-}
-
 private let historyDayOnlyFormatter: DateFormatter = {
   let formatter = DateFormatter()
   formatter.locale = Locale(identifier: "zh_CN")
@@ -4961,216 +4299,6 @@ extension FocusedValues {
   }
 }
 
-enum CapturedSourceBodyPresentation {
-  static func isRedundantDouyinBody(
-    platform: String?,
-    title: String,
-    markdown: String
-  ) -> Bool {
-    guard platform == "douyin" else { return false }
-    let titleKey = canonicalText(title)
-    var remainder = canonicalText(MarkdownNoteFrontmatter.parse(markdown).body)
-    guard !titleKey.isEmpty, !remainder.isEmpty else { return false }
-    while remainder.hasPrefix(titleKey) {
-      remainder.removeFirst(titleKey.count)
-    }
-    return remainder.isEmpty
-  }
-
-  /// 详情顶上已经有标题时，正文里再印一遍同名标题（外加一行日期/时长）就是重复。
-  ///
-  /// 只剥「和标题同一句话」的开头，以及紧随其后、看起来像稿件信息行的短句。
-  /// 正文里真正的第一节不要动。
-  static func strippingEchoedOpening(title: String, from markdown: String) -> String {
-    let titleKey = canonicalText(title)
-    guard !titleKey.isEmpty else { return markdown }
-    var lines = markdown.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
-    guard let headingIndex = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else {
-      return markdown
-    }
-    let headingLine = lines[headingIndex].trimmingCharacters(in: .whitespaces)
-    let headingText = headingLine.hasPrefix("#")
-      ? headingLine.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
-      : headingLine
-    guard canonicalText(headingText) == titleKey else { return markdown }
-    lines.remove(at: headingIndex)
-    if let bylineIndex = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
-       isEchoedByline(lines[bylineIndex].trimmingCharacters(in: .whitespaces)) {
-      lines.remove(at: bylineIndex)
-    }
-    while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
-      lines.removeFirst()
-    }
-    return lines.joined(separator: "\n")
-  }
-
-  private static func isEchoedByline(_ line: String) -> Bool {
-    guard line.count <= 80, !line.hasPrefix("#") else { return false }
-    let lower = line.lowercased()
-    let looksLikeDate = line.contains("20") && (line.contains("-") || line.contains("年") || line.contains("月"))
-    let looksLikeDuration = lower.contains("min") || line.contains("分钟") || line.contains("字")
-    return looksLikeDate || looksLikeDuration
-  }
-
-  private static func canonicalText(_ value: String) -> String {
-    String(value.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }).lowercased()
-  }
-}
-
-struct RemoteMediaDegradationPresentation: Equatable {
-  let kindLabel: String
-  let message: String
-  let nextAction: String
-}
-
-enum CurrentCaptureMediaPreviewState: Equatable {
-  case playable(url: URL, kind: MediaKind, companionAudioURL: URL?)
-  case expired
-  case degraded(RemoteMediaDegradationPresentation)
-}
-
-/// 远程预览准备阶段：双轨 `loadTracks` 可能要数秒拉 moov，期间必须有文案。
-enum RemotePreviewPreparePhase: Equatable {
-  case idle
-  case preparing
-  case ready
-  case failed(RemotePreviewPlaybackFailure)
-}
-
-/// 可区分的远程播放失败：断网 vs 地址/播放器问题。
-enum RemotePreviewPlaybackFailure: Equatable {
-  case networkUnavailable
-  case generic
-  /// 长片仍带着 DASH 双轨地址：应改拉 progressive mp4，不要卡在合成。
-  case longFormDualNeedsRefresh
-
-  var message: String {
-    switch self {
-    case .networkUnavailable:
-      return "网络似乎不可用，暂时无法读取视频流。"
-    case .generic:
-      return "高清流连接失败（可能是杜比视界/编码不兼容或地址失效）。请点「重新获取可播地址」拉取 AVPlayer 能播的最高清档。"
-    case .longFormDualNeedsRefresh:
-      return "长视频不适合双轨合成。请点「重新获取可播地址」拉取整段可播 MP4。"
-    }
-  }
-}
-
-/// 历史条目在「没有可播放 descriptor」时的展示决策。
-/// descriptor / 签名 URL 只在当前抓取内存中有效，从不写入历史——这是设计，不是故障。
-enum HistorySessionMediaPresentation {
-  /// 是否应把这条历史当作「曾有会话媒体」。
-  ///
-  /// 优先用抓取事实，而不是平台白名单：
-  /// - `hadMediaDescriptor`：来自 `capture_deliveries.capture_contract_version == 2`。
-  ///   扩展侧只有存在 `MediaDescriptor` 时才发 V2（见 `captureEnvelopeForPage`），
-  ///   因此覆盖 x / bilibili / xiaohongshu / github / generic 等所有会带媒体的抓取，
-  ///   而不会把纯文字的 X 帖误判成视频。
-  /// - `wechat` 在扩展 `attachDetectedMedia` 里被显式丢弃 media，不会进 V2，不受影响。
-  /// - 抖音图文帖不带 mediaDescriptor，也不是 V2 视频路径；若正文仍命中图文启发式则排除。
-  /// - `legacyPlatformHint` 兜底极老的 V1 视频（无 V2 合同行）：抖音、B 站。
-  ///   这两类抓取当时不写 `media_assets`，重启后会话流缓存清空就会整块消失。
-  static func expectsSessionMedia(
-    hadMediaDescriptor: Bool,
-    isDouyinImagePost: Bool = false,
-    legacyPlatformHint: String? = nil
-  ) -> Bool {
-    if isDouyinImagePost { return false }
-    if hadMediaDescriptor { return true }
-    // Legacy V1 video-only path (optional CaptureMedia, not MediaDescriptor).
-    return legacyPlatformHint == "douyin" || legacyPlatformHint == "bilibili"
-  }
-
-  /// 是否应显示「有视频但此处不可播」卡片，而不是整块消失。
-  static func shouldShowSessionOnlyUnavailable(
-    hadMediaDescriptor: Bool,
-    hasLocalMediaFile: Bool,
-    hasLocalMediaRow: Bool,
-    hasLocalMediaResolutionFailure: Bool,
-    isCurrentCaptureWithDescriptor: Bool,
-    isYouTube: Bool,
-    isDouyinImagePost: Bool = false,
-    legacyPlatformHint: String? = nil
-  ) -> Bool {
-    guard !hasLocalMediaFile,
-          !hasLocalMediaRow,
-          !hasLocalMediaResolutionFailure,
-          !isCurrentCaptureWithDescriptor,
-          !isYouTube else { return false }
-    return expectsSessionMedia(
-      hadMediaDescriptor: hadMediaDescriptor,
-      isDouyinImagePost: isDouyinImagePost,
-      legacyPlatformHint: legacyPlatformHint
-    )
-  }
-
-  static let title = "此记录包含视频"
-  static let explanation =
-    "临时播放地址只在抓取当次有效，从不写入历史。这是设计行为，不是故障；换到其它条目后，这里不能继续在线播放。"
-  static let openSourceActionTitle = "回到原页面观看"
-  static let refreshActionTitle = "重新获取播放"
-}
-
-/// 否则界面会永远停在转圈上。读取失败同理：给它一个明确出口，而不是无限等待。
-enum PlaybackSurfaceGeometry: Equatable {
-  case loading
-  case video(CGSize)
-  case audioOnly
-  case unavailable
-
-  var displaySize: CGSize? {
-    if case let .video(size) = self { return size }
-    return nil
-  }
-}
-
-struct VideoDisplayGeometry {
-  /// 内联播放器高度上限。竖屏视频按它算出的宽度约 292，横屏先撞阅读区宽度。
-  static let inlineMaximumHeight: CGFloat = 520
-
-  /// 由已读到的轨道信息判定播放面状态。抽成纯函数是为了能脱离 AVFoundation 资源
-  /// 直接测：有画面就给尺寸，没画面但有声音就是纯音频，两者都没有才是读不出。
-  static func surfaceGeometry(
-    videoTrack: (naturalSize: CGSize, preferredTransform: CGAffineTransform)?,
-    hasAudioTrack: Bool
-  ) -> PlaybackSurfaceGeometry {
-    if let videoTrack {
-      let size = displaySize(
-        naturalSize: videoTrack.naturalSize,
-        preferredTransform: videoTrack.preferredTransform
-      )
-      if size.width > 0, size.height > 0 { return .video(size) }
-    }
-    return hasAudioTrack ? .audioOnly : .unavailable
-  }
-
-  /// 内联播放器的宽度上限：让黑底收到视频自身宽度，竖屏才不会挂着两条死黑边。
-  /// 单给 `maxHeight` 不够——弹性 frame 会把整块可用宽度占满，比例只作用在内部。
-  static func inlineMaximumWidth(displaySize: CGSize?) -> CGFloat {
-    let ratio = displaySize.map(aspectRatio(displaySize:)) ?? (16.0 / 9.0)
-    return inlineMaximumHeight * ratio
-  }
-
-  static func displaySize(naturalSize: CGSize, preferredTransform: CGAffineTransform) -> CGSize {
-    let transformed = CGRect(origin: .zero, size: naturalSize).applying(preferredTransform)
-    return CGSize(width: abs(transformed.width), height: abs(transformed.height))
-  }
-
-  static func aspectRatio(displaySize: CGSize) -> CGFloat {
-    guard displaySize.width > 0, displaySize.height > 0 else { return 1 }
-    return displaySize.width / displaySize.height
-  }
-
-  static func fittedSize(displaySize: CGSize, maxWidth: CGFloat, maxHeight: CGFloat) -> CGSize {
-    guard displaySize.width > 0, displaySize.height > 0, maxWidth > 0, maxHeight > 0 else { return .zero }
-    let scale = min(maxWidth / displaySize.width, maxHeight / displaySize.height)
-    return CGSize(width: displaySize.width * scale, height: displaySize.height * scale)
-  }
-}
-
-
-/// UI state changes use a critically damped spring; Reduce Motion keeps a
-/// short non-spatial fade so state changes stay visible without movement.
 func historyUIAnimation(reduceMotion: Bool) -> Animation {
   // 保留这个函数名——三十多处调用点在用它，而且它的语义（"历史界面的
   // 默认过渡"）比 token 名更贴调用现场。只把取值交给 token，免得同一条
@@ -5231,6 +4359,7 @@ private struct LiveRunReadingBody: View {
           color: color,
           lineSpacing: lineSpacing
         )
+          .frame(minHeight: StreamingViewport.minHeight, maxHeight: .infinity)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
@@ -5261,6 +4390,7 @@ private struct LiveTranscriptionReadingBody: View {
           color: color,
           lineSpacing: lineSpacing
         )
+        .frame(minHeight: StreamingViewport.minHeight, maxHeight: .infinity)
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("history-reading-source-live-transcription")
       }

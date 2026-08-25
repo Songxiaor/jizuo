@@ -376,7 +376,9 @@ struct PieceDeskView: View {
         StageTool(
           title: "生成脑图理骨架",
           icon: "circle.hexagongrid",
-          hint: "把已写的内容画成结构，看哪一节缺东西"
+          hint: model.mindMapUnavailableReason(taskID: piece.noteTaskID)
+            ?? "把已写的内容画成结构，看哪一节缺东西",
+          isDisabled: !model.canGenerateMindMap(taskID: piece.noteTaskID)
         ) { model.requestMindMapGeneration(taskID: piece.noteTaskID) },
         // 第二块画板。和起草吃同一份表达方式设置。
         StageTool(

@@ -292,7 +292,7 @@ final class HistoryContentViewTests: XCTestCase {
 
   func testRootToolbarOwnsManualLinkMenuAndBindsAvailability() {
     let source = historyContentViewSource()
-    let root = section(in: source, from: "struct HistoryContentView: View", to: "private struct ManualLinkSheet")
+    let root = section(in: source, from: "struct HistoryContentView: View", to: "struct HistoryWindowToolbarThemeModifier")
 
     XCTAssertTrue(root.contains(".toolbar {"))
     XCTAssertTrue(root.contains("ToolbarItemGroup(placement: .primaryAction)"))
@@ -323,7 +323,7 @@ final class HistoryContentViewTests: XCTestCase {
 
   func testDetailMoreMenuOffersAccessibleSourceRecaptureThroughExistingFlow() {
     let source = historyContentViewSource()
-    let root = section(in: source, from: "struct HistoryContentView: View", to: "private struct ManualLinkSheet")
+    let root = section(in: source, from: "struct HistoryContentView: View", to: "struct HistoryWindowToolbarThemeModifier")
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
 
     XCTAssertTrue(root.contains("openRecapture: { manualLink.openForRecapture($0) }"))
@@ -338,10 +338,19 @@ final class HistoryContentViewTests: XCTestCase {
     // 禁用与理由必须同源：不能再各写一套 `canStartRun` / `arePreferencesReady`。
     XCTAssertTrue(detail.contains("disabled: summarizeUnavailableReason != nil"))
     XCTAssertTrue(detail.contains("disabled: translateUnavailableReason != nil"))
+    XCTAssertTrue(detail.contains("disabled: mindMapUnavailableReason != nil"))
     XCTAssertTrue(detail.contains("history-run-blocked-reason"))
+    XCTAssertTrue(detail.contains("regenerate-blocked-reason"))
     XCTAssertTrue(detail.contains("preferencesReady: providerSettings.arePreferencesReady"))
     XCTAssertTrue(detail.contains("actionPill"))
     XCTAssertTrue(detail.contains("summarize-history-detail") || detail.contains("summarize-current-capture"))
+    XCTAssertFalse(
+      detail.contains(".disabled(!canRunHistory || !providerSettings.arePreferencesReady)"),
+      "重新生成不能再另写一套门禁，必须复用 summarizeUnavailableReason"
+    )
+    XCTAssertTrue(detail.contains("已排队，等当前这条做完"))
+    XCTAssertTrue(detail.contains("isManualGenerationQueued(taskID: detail.task.id, kind: .summarize)"))
+    XCTAssertTrue(detail.contains("canEnqueueManualGeneration(for: detail.task.id)"))
   }
 
   func testThreeColumnNavigationKeepsSearchInTheContentList() {
@@ -1203,12 +1212,12 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("settingsModelButton(providerSettings.activeSummaryModelName)"))
     XCTAssertTrue(detail.contains("history-open-model-settings") || detail.contains("openSettings()"))
     XCTAssertTrue(detail.contains("capture-truncated-notice"))
-    XCTAssertTrue(detail.contains("appModel.canTranslate"))
+    XCTAssertTrue(detail.contains(".disabled(translateUnavailableReason != nil)"))
   }
 
   func testListIconsUseBuiltInPlatformMapThenLocalFaviconFallbackWithoutRemoteLoading() {
     let source = historyContentViewSource()
-    let row = section(in: source, from: "private struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
+    let row = section(in: source, from: "struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
     // 行不再整体观察 ViewModel：favicon 地址由父层算好传值进来。
     XCTAssertTrue(row.contains("let faviconURL: URL?"))
     XCTAssertTrue(source.contains("faviconURL: model.faviconImageURL(for: row)"))
@@ -1246,7 +1255,7 @@ final class HistoryContentViewTests: XCTestCase {
   func testPlatformNavigationCanUseLocalFaviconBeforeInitialFallback() {
     let source = historyContentViewSource()
     let grid = appSource("PlatformGridView.swift")
-    let icon = section(in: source, from: "struct PlatformNavigationIcon: View", to: "private struct ManualLinkSheet: View")
+    let icon = section(in: source, from: "struct PlatformNavigationIcon: View", to: "private struct HistoryDetailView")
     XCTAssertTrue(grid.contains("faviconURL: item.faviconURL"))
     XCTAssertTrue(grid.contains(".accessibilityHidden(true)"))
     XCTAssertTrue(icon.contains("HistoryFaviconDiskImage"))
@@ -1537,7 +1546,7 @@ final class HistoryContentViewTests: XCTestCase {
   /// 否则高对比主题下仍旧是那两个彩色圆点。
   func testRowStatusIndicatorBranchesOnThemeShapeEncoding() {
     let source = historyContentViewSource()
-    let row = section(in: source, from: "private struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
+    let row = section(in: source, from: "struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
     XCTAssertTrue(row.contains("theme.encodesStatusByShape"))
     XCTAssertTrue(row.contains("strokeBorder"), "空心圆是高对比主题下「未总结」的唯一标记")
     XCTAssertTrue(row.contains("theme.success"), "普通主题的已总结状态应使用主题成功色")
@@ -1552,7 +1561,7 @@ final class HistoryContentViewTests: XCTestCase {
 
   func testHistoryRowExposesOneConciseVoiceOverElement() {
     let source = historyContentViewSource()
-    let row = section(in: source, from: "private struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
+    let row = section(in: source, from: "struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
     XCTAssertTrue(row.contains(".accessibilityElement(children: .ignore)"))
     XCTAssertTrue(row.contains(".accessibilityLabel(rowAccessibilityLabel)"))
     XCTAssertTrue(row.contains(".accessibilityValue(rowAccessibilityValue)"))
@@ -1563,12 +1572,12 @@ final class HistoryContentViewTests: XCTestCase {
 
   func testSidebarUsesSourceMetadataInsteadOfURLOrImportTime() {
     let source = historyContentViewSource()
-    let row = section(in: source, from: "private struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
+    let row = section(in: source, from: "struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
     // 图24 式排版：摘要优先，回退作者；发布时间仍来自来源元数据。
     XCTAssertTrue(row.contains("sanitizedRowPreview(row)"))
     // 一排时间，不是两排：发布时间优先（判断素材新不新鲜看的是它），抓不到
     // 才回落到入库时间。回落时必须带「存于」字样，否则会被读成原文的发布日期。
-    XCTAssertTrue(row.contains("historyPublishedDate(published)"))
+    XCTAssertTrue(row.contains("HistoryPublishedTimestampFormatter.text(published)"))
     XCTAssertTrue(row.contains("存于 \\(HistoryRelativeTime.text("))
     XCTAssertFalse(row.contains("更新 \\(historyUpdatedDate"), "行里显示发布或入库时间，不显示 updated")
     XCTAssertFalse(row.contains("Text(row.canonicalURL)"))
@@ -1857,7 +1866,18 @@ final class HistoryContentViewTests: XCTestCase {
   }
 
   private func historyContentViewSource() -> String {
-    ["HistoryContentView.swift", "HistoryMediaPlayback.swift", "VideoScrollWheelRouting.swift"]
+    [
+      "HistoryContentView.swift",
+      "HistoryMediaPlayback.swift",
+      "VideoScrollWheelRouting.swift",
+      "HistorySourceLinkPresentation.swift",
+      "HistoryTimestampFormatters.swift",
+      "CapturedSourceBodyPresentation.swift",
+      "VideoDisplayGeometry.swift",
+      "HistorySessionMediaPresentation.swift",
+      "HistoryRowView.swift",
+      "HistoryWindowChrome.swift",
+    ]
       .map(appSource)
       .joined(separator: "\n\n")
   }
@@ -2141,6 +2161,10 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
       encoding: .utf8
     )
     XCTAssertTrue(source.contains("transcriptTidyUnavailableReason(taskID: taskID) == nil"))
+    XCTAssertTrue(
+      source.contains("mindMapUnavailableReason(taskID: taskID) == nil"),
+      "生成脑图的判断必须从理由推导，不能再各写一套门禁"
+    )
   }
 
   private func section(in source: String, from start: String, to end: String) -> String {

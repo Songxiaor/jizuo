@@ -2461,6 +2461,44 @@ extension HistoryViewModelTests {
     XCTAssertFalse(tagNames.contains("外观"))
   }
 
+  /// 脑图灰掉时必须说得出原因；判断只能从这份理由推导。
+  func testMindMapUnavailableReasonExplainsEachGate() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-vm-mindmap-reason-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let document = CapturedDocument(
+      createdAt: "2026-07-23T00:00:00Z", origin: .manualLink,
+      url: "https://example.test/mindmap-reason", title: "评测视频",
+      platform: "web", method: "fixture", text: "很长的正文内容，讲了外观和屏幕。",
+      completeness: "complete", capturedAt: "2026-07-23T00:00:00Z", sourceLabel: "fixture"
+    )
+    let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
+
+    let unconfigured = HistoryViewModel(mindMapExtractor: nil)
+    unconfigured.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { unconfigured.detailState == .loaded && unconfigured.selectedTaskID == accepted.taskID }
+    XCTAssertEqual(
+      unconfigured.mindMapUnavailableReason(taskID: accepted.taskID),
+      "需先在设置里配置聊天模型"
+    )
+    XCTAssertFalse(unconfigured.canGenerateMindMap(taskID: accepted.taskID))
+
+    let readOnly = HistoryViewModel(mindMapExtractor: StubMindMapExtractor(outcome: .init(
+      outline: MindMapOutline(title: "评测", subtitle: nil, branches: [], tags: []),
+      totalTokens: 1
+    )))
+    readOnly.configure(history: .init(repository: repository), isReadOnly: true, unavailableCode: nil)
+    await waitUntil { readOnly.detailState == .loaded && readOnly.selectedTaskID == accepted.taskID }
+    XCTAssertEqual(
+      readOnly.mindMapUnavailableReason(taskID: accepted.taskID),
+      "这份历史当前只能浏览"
+    )
+    XCTAssertFalse(readOnly.canGenerateMindMap(taskID: accepted.taskID))
+  }
+
   /// 校对保存是「worker 写库 + 详情就地补丁」：主线程不写 SQLite，也不再
   /// 整条详情回读（自动保存每停笔一秒就可能触发，回读曾是打字卡顿的主要
   /// 来源）。锁定三件事：真的落了库、连续两次保存不乱序、当前详情投影

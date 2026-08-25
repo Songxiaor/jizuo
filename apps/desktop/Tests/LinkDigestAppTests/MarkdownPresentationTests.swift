@@ -978,6 +978,32 @@ final class MarkdownPresentationTests: XCTestCase {
     )
   }
 
+  func testStreamingViewportFollowsTailOnlyWhenNearTheBottom() {
+    XCTAssertTrue(StreamingViewport.shouldFollowTail(visibleMaxY: 400, contentHeight: 420))
+    XCTAssertFalse(StreamingViewport.shouldFollowTail(visibleMaxY: 200, contentHeight: 800))
+  }
+
+  func testStreamingReadingTextViewKeepsOuterHeightStable() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/SelectableReadingText.swift"),
+      encoding: .utf8
+    )
+    guard let start = source.range(of: "struct StreamingReadingTextView"),
+          let end = source.range(of: "enum StreamingViewport")
+    else {
+      return XCTFail("StreamingReadingTextView 结构已变")
+    }
+    let streaming = String(source[start.lowerBound..<end.lowerBound])
+    XCTAssertTrue(streaming.contains("func makeNSView(context: Context) -> NSScrollView"))
+    XCTAssertFalse(
+      streaming.contains("invalidateIntrinsicContentSize"),
+      "流式追加不得再撑高外层 SwiftUI 布局"
+    )
+    XCTAssertTrue(streaming.contains("forCharacterRange:"))
+  }
+
   func testWikiLinksBecomeInAppMarkdownLinksAndStayOutOfCode() throws {
     let rewritten = MarkdownPresentation.rewritingWikiLinksAsMarkdown(
       "见 [[知识库构建]] 与 `[[字面量]]`"

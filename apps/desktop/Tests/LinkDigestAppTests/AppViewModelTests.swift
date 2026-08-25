@@ -1586,6 +1586,50 @@ final class AppViewModelTests: XCTestCase {
     await orchestrator.stop()
   }
 
+  func testOtherItemSummarizeQueuesUntilCurrentRunStops() async throws {
+    let provider = AppTestModelProvider(results: [
+      .pendingWithPrefix("A output"),
+      .pendingWithPrefix("B output"),
+    ])
+    let model = try makeModel(provider: provider)
+    let captureA = currentCapture(title: "A", text: "Article A")
+    model.receive(captureA)
+    await model.summarize()
+    await waitUntil { model.runState == .streaming(intent: .summarize, partialText: "A output") }
+
+    let detailB = historyDetail(body: "Article B")
+    XCTAssertTrue(model.canEnqueueManualGeneration(for: detailB.task.id))
+    await model.summarize(historyDetail: detailB, preferences: .default)
+
+    XCTAssertTrue(model.isManualGenerationQueued(taskID: detailB.task.id, kind: .summarize))
+    XCTAssertEqual(provider.callCount, 1)
+    XCTAssertEqual(model.activeRunTaskID, captureA.taskID)
+
+    await model.summarize(historyDetail: detailB, preferences: .default)
+    XCTAssertFalse(model.isManualGenerationQueued(taskID: detailB.task.id, kind: .summarize))
+    XCTAssertEqual(provider.callCount, 1, "再点一次只取消排队，不能开跑")
+
+    await model.summarize(historyDetail: detailB, preferences: .default)
+    await model.stop()
+    await waitUntil { provider.callCount == 2 }
+    XCTAssertFalse(model.isManualGenerationQueued(taskID: detailB.task.id, kind: .summarize))
+    XCTAssertEqual(model.activeRunTaskID, detailB.task.id)
+  }
+
+  func testSameItemDoesNotQueueWhileItsOwnRunIsActive() async throws {
+    let provider = AppTestModelProvider(results: [.pendingWithPrefix("A output")])
+    let model = try makeModel(provider: provider)
+    let captureA = currentCapture()
+    model.receive(captureA)
+    await model.summarize()
+    await waitUntil { model.runState == .streaming(intent: .summarize, partialText: "A output") }
+
+    XCTAssertFalse(model.canEnqueueManualGeneration(for: captureA.taskID))
+    await model.summarize()
+    XCTAssertTrue(model.queuedGenerations.isEmpty)
+    XCTAssertEqual(provider.callCount, 1)
+  }
+
   private func makeModel(
     provider: AppTestModelProvider,
     secret: String = "not-a-real-key",
@@ -1678,8 +1722,7 @@ final class AppViewModelTests: XCTestCase {
     )
   }
 
-  private func historyDetail(body: String) -> HistoryDetailProjection {
-    let taskID = TaskID()
+  private func historyDetail(body: String, taskID: TaskID = TaskID()) -> HistoryDetailProjection {
     let snapshotID = ContentSnapshotID()
     let snapshot = ContentSnapshot(
       id: snapshotID,

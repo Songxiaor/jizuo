@@ -47,6 +47,20 @@ enum BrowserReceiverState: Sendable, Equatable {
   case unavailable
 }
 
+enum ManualGenerationKind: Equatable {
+  case summarize
+  case translate
+  case mindMap
+}
+
+struct ManualGenerationRequest: Equatable {
+  let taskID: TaskID
+  let kind: ManualGenerationKind
+  let historyDetail: HistoryDetailProjection?
+  let preferences: ModelPreferences
+  let modelOverride: String?
+}
+
 @MainActor final class AppViewModel: ObservableObject {
   @Published var connection = "等待扩展连接"
   @Published private(set) var browserReceiverState: BrowserReceiverState = .starting
@@ -62,6 +76,12 @@ enum BrowserReceiverState: Sendable, Equatable {
   @Published private(set) var storageAvailability: StorageAvailability = .bootstrapping
   @Published private(set) var dataDestinationDisclosure: DataDestinationDisclosure?
   @Published private(set) var dataDestinationNotice: String?
+  /// 通道忙时记下的手动总结/翻译/脑图。一次只跑一条，做完再接下一条。
+  @Published private(set) var queuedGenerations: [ManualGenerationRequest] = []
+  /// 批量总结整批结束前不要把排队条目插进两条之间。
+  var defersQueuedGeneration = false
+  /// 脑图不走模型通道，由历史页接手真正开跑。
+  var startQueuedMindMap: (@MainActor (TaskID) -> Void)?
 
   private var modelRunOrchestrator: ModelRunOrchestrator?
   private let configurationService: ProviderConfigurationService?
@@ -71,6 +91,7 @@ enum BrowserReceiverState: Sendable, Equatable {
   private var launchPendingRunID: RunID?
   private var taskIDByRunID: [RunID: TaskID] = [:]
   private var preparationAttempt: RunPreparationAttempt?
+  private var queuedGenerationStartTask: Task<Void, Never>?
   private var confirmingAttemptToken: UUID?
 
   init(
@@ -180,12 +201,32 @@ enum BrowserReceiverState: Sendable, Equatable {
     preferences: ModelPreferences = .default,
     modelOverride: String? = nil
   ) async {
+    if let currentCapture,
+       handledManualGenerationRequest(
+        kind: .summarize,
+        taskID: currentCapture.taskID,
+        historyDetail: nil,
+        preferences: preferences,
+        modelOverride: modelOverride
+      ) {
+      return
+    }
     await requestRun(intent: .summarize, preferences: preferences, modelOverride: modelOverride)
   }
   func translate(
     preferences: ModelPreferences = .default,
     modelOverride: String? = nil
   ) async {
+    if let currentCapture,
+       handledManualGenerationRequest(
+        kind: .translate,
+        taskID: currentCapture.taskID,
+        historyDetail: nil,
+        preferences: preferences,
+        modelOverride: modelOverride
+      ) {
+      return
+    }
     guard !isTranslationLanguageMatch(
       text: currentCapture?.document.text,
       outputLanguage: preferences.outputLanguage
@@ -201,8 +242,17 @@ enum BrowserReceiverState: Sendable, Equatable {
     preferences: ModelPreferences,
     modelOverride: String? = nil
   ) async {
+    if handledManualGenerationRequest(
+      kind: .summarize,
+      taskID: historyDetail.task.id,
+      historyDetail: historyDetail,
+      preferences: preferences,
+      modelOverride: modelOverride
+    ) {
+      return
+    }
     guard prepareHistoryCapture(historyDetail) else { return }
-    await summarize(preferences: preferences, modelOverride: modelOverride)
+    await requestRun(intent: .summarize, preferences: preferences, modelOverride: modelOverride)
   }
 
   /// 自动队列需要知道这次是否真的占上模型通道。普通 summarize 保持原来的
@@ -228,12 +278,145 @@ enum BrowserReceiverState: Sendable, Equatable {
     preferences: ModelPreferences,
     modelOverride: String? = nil
   ) async {
+    if handledManualGenerationRequest(
+      kind: .translate,
+      taskID: historyDetail.task.id,
+      historyDetail: historyDetail,
+      preferences: preferences,
+      modelOverride: modelOverride
+    ) {
+      return
+    }
     guard prepareHistoryCapture(historyDetail) else { return }
     await translate(preferences: preferences, modelOverride: modelOverride)
   }
 
   func canStartRun(from detail: HistoryDetailProjection) -> Bool {
     runStartUnavailableReason(usingCurrentCapture: false, detail: detail) == nil
+  }
+
+  func isManualGenerationQueued(taskID: TaskID, kind: ManualGenerationKind) -> Bool {
+    queuedGenerations.contains { $0.taskID == taskID && $0.kind == kind }
+  }
+
+  func hasQueuedGeneration(for taskID: TaskID) -> Bool {
+    queuedGenerations.contains { $0.taskID == taskID }
+  }
+
+  /// 通道被别的条目占用时，这一条可以先排上，不必灰死。
+  func canEnqueueManualGeneration(for taskID: TaskID) -> Bool {
+    isGenerationChannelBusy && !isGenerationChannelHeld(by: taskID)
+  }
+
+  func enqueueOrCancelMindMapGeneration(taskID: TaskID) {
+    if isManualGenerationQueued(taskID: taskID, kind: .mindMap) {
+      queuedGenerations.removeAll { $0.taskID == taskID && $0.kind == .mindMap }
+      return
+    }
+    guard canEnqueueManualGeneration(for: taskID) else { return }
+    queuedGenerations.append(
+      ManualGenerationRequest(
+        taskID: taskID,
+        kind: .mindMap,
+        historyDetail: nil,
+        preferences: .default,
+        modelOverride: nil
+      )
+    )
+  }
+
+  func startNextQueuedGenerationIfIdle() async {
+    guard !defersQueuedGeneration, !isGenerationChannelBusy else { return }
+    guard !queuedGenerations.isEmpty else { return }
+    let next = queuedGenerations.removeFirst()
+    switch next.kind {
+    case .summarize:
+      if let detail = next.historyDetail {
+        guard prepareHistoryCapture(detail) else {
+          await startNextQueuedGenerationIfIdle()
+          return
+        }
+      } else if currentCapture?.taskID != next.taskID {
+        await startNextQueuedGenerationIfIdle()
+        return
+      }
+      await requestRun(
+        intent: .summarize,
+        preferences: next.preferences,
+        modelOverride: next.modelOverride
+      )
+    case .translate:
+      if let detail = next.historyDetail {
+        guard prepareHistoryCapture(detail) else {
+          await startNextQueuedGenerationIfIdle()
+          return
+        }
+      } else if currentCapture?.taskID != next.taskID {
+        await startNextQueuedGenerationIfIdle()
+        return
+      }
+      if isTranslationLanguageMatch(
+        text: currentCapture?.document.text,
+        outputLanguage: next.preferences.outputLanguage
+      ) {
+        dataDestinationNotice = "捕获内容与输出语言相同，无需翻译。"
+        await startNextQueuedGenerationIfIdle()
+        return
+      }
+      await requestRun(
+        intent: .translate,
+        preferences: next.preferences,
+        modelOverride: next.modelOverride
+      )
+    case .mindMap:
+      startQueuedMindMap?(next.taskID)
+    }
+  }
+
+  private var isGenerationChannelBusy: Bool {
+    runState.isActive
+      || launchPendingRunID != nil
+      || preparationAttempt != nil
+      || isDataDestinationDisclosurePresented
+      || isConfirmingDataDestinationDisclosure
+  }
+
+  private func isGenerationChannelHeld(by taskID: TaskID) -> Bool {
+    if activeRunTaskID == taskID { return true }
+    if visibleRunTaskID == taskID, runState.isActive { return true }
+    if let preparationAttempt, preparationAttempt.capture.taskID == taskID { return true }
+    return false
+  }
+
+  private func handledManualGenerationRequest(
+    kind: ManualGenerationKind,
+    taskID: TaskID,
+    historyDetail: HistoryDetailProjection?,
+    preferences: ModelPreferences,
+    modelOverride: String?
+  ) -> Bool {
+    if isManualGenerationQueued(taskID: taskID, kind: kind) {
+      queuedGenerations.removeAll { $0.taskID == taskID && $0.kind == kind }
+      return true
+    }
+    guard canEnqueueManualGeneration(for: taskID) else { return false }
+    queuedGenerations.append(
+      ManualGenerationRequest(
+        taskID: taskID,
+        kind: kind,
+        historyDetail: historyDetail,
+        preferences: preferences,
+        modelOverride: modelOverride
+      )
+    )
+    return true
+  }
+
+  private func scheduleQueuedGenerationStart() {
+    queuedGenerationStartTask?.cancel()
+    queuedGenerationStartTask = Task { [weak self] in
+      await self?.startNextQueuedGenerationIfIdle()
+    }
   }
 
   func canTranslate(preferences: ModelPreferences) -> Bool {
@@ -870,6 +1053,7 @@ enum BrowserReceiverState: Sendable, Equatable {
     if isTerminal(state) {
       activeRunTaskID = nil
       taskIDByRunID.removeValue(forKey: runID)
+      scheduleQueuedGenerationStart()
     }
   }
 

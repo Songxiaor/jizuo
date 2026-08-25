@@ -382,11 +382,8 @@ struct SelectableReadingTextView: NSViewRepresentable {
       guard let container = textContainer, let manager = layoutManager else {
         return super.intrinsicContentSize
       }
-      // 临时诊断：验证完整体撤除。只包 usedRect 前的全文字形布局，不改返回值。
-      let started = CFAbsoluteTimeGetCurrent()
       manager.ensureLayout(for: container)
       let used = manager.usedRect(for: container)
-      ReadingLayoutProbe.recordIntrinsic(duration: CFAbsoluteTimeGetCurrent() - started)
       return NSSize(width: NSView.noIntrinsicMetric, height: ceil(used.height))
     }
 
@@ -394,8 +391,6 @@ struct SelectableReadingTextView: NSViewRepresentable {
       // 必须在 super 之前读旧宽度：super 之后 frame.width 已经是新值。
       let widthChanged = abs(newSize.width - frame.width) > 0.5
       super.setFrameSize(newSize)
-      // 临时诊断：验证完整体撤除。只记次数。每次调用都记，不论宽度变没变。
-      ReadingLayoutProbe.recordSetFrameSize()
       // 只有宽度变了才重排。高度变化是上次 invalidate 的结果，
       // 再 invalidate 会和 SwiftUI 布局形成自激循环。
       if widthChanged {
@@ -405,9 +400,11 @@ struct SelectableReadingTextView: NSViewRepresentable {
   }
 }
 
-/// 生成中的长正文使用一个稳定的 NSTextView，并且只把新增后缀追加到
-/// textStorage。这样已经排版的几千行不会在每个流式拍点被整篇替换，外层
-/// ScrollView 的当前位置和用户选区也不会被新 token 抢走。
+/// 生成中的正文自己滚动，不再撑高外层 SwiftUI ScrollView。
+///
+/// 只追加后缀还不够：每次 `invalidateIntrinsicContentSize()` 都会让详情页
+/// 重测整块高度，用户正在滑的时候内容尺寸跟着变，120Hz 也会一顿一顿。
+/// 外层高度锁定，增量排在 NSScrollView 里，滑动走 AppKit。
 struct StreamingReadingTextView: NSViewRepresentable {
   let text: String
   let font: NSFont
@@ -416,7 +413,15 @@ struct StreamingReadingTextView: NSViewRepresentable {
 
   func makeCoordinator() -> Coordinator { Coordinator() }
 
-  func makeNSView(context: Context) -> SelectableReadingTextView.SelfSizingTextView {
+  func makeNSView(context: Context) -> NSScrollView {
+    let scroll = NSScrollView(frame: .zero)
+    scroll.drawsBackground = false
+    scroll.borderType = .noBorder
+    scroll.hasVerticalScroller = true
+    scroll.hasHorizontalScroller = false
+    scroll.autohidesScrollers = true
+    scroll.scrollerStyle = .overlay
+
     let view = SelectableReadingTextView.SelfSizingTextView(frame: .zero)
     view.isEditable = false
     view.isSelectable = true
@@ -424,28 +429,44 @@ struct StreamingReadingTextView: NSViewRepresentable {
     view.textContainerInset = .zero
     view.textContainer?.lineFragmentPadding = 0
     view.textContainer?.widthTracksTextView = true
+    view.textContainer?.heightTracksTextView = false
+    view.isHorizontallyResizable = false
+    view.isVerticallyResizable = true
+    view.autoresizingMask = [.width]
+    view.minSize = .zero
+    view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
     view.isAutomaticLinkDetectionEnabled = false
     view.textStorage?.setAttributedString(attributed(text))
+    scroll.documentView = view
+
     context.coordinator.lastText = text
     context.coordinator.lastStyle = styleKey
-    return view
+    return scroll
   }
 
-  func updateNSView(
-    _ view: SelectableReadingTextView.SelfSizingTextView,
-    context: Context
-  ) {
+  func updateNSView(_ scroll: NSScrollView, context: Context) {
+    guard let view = scroll.documentView as? SelectableReadingTextView.SelfSizingTextView else {
+      return
+    }
     let styleChanged = context.coordinator.lastStyle != styleKey
+    let followTail = StreamingViewport.shouldFollowTail(
+      visibleMaxY: scroll.contentView.bounds.maxY,
+      contentHeight: view.frame.height
+    )
     if !styleChanged,
        let suffix = StreamingTextUpdate.appendedSuffix(
         previous: context.coordinator.lastText,
         next: text
        ) {
       if !suffix.isEmpty {
+        let start = (view.string as NSString).length
         view.textStorage?.beginEditing()
         view.textStorage?.append(attributed(suffix))
         view.textStorage?.endEditing()
-        view.invalidateIntrinsicContentSize()
+        let added = (suffix as NSString).length
+        view.layoutManager?.ensureLayout(
+          forCharacterRange: NSRange(location: start, length: added)
+        )
       }
     } else {
       let selection = view.selectedRange()
@@ -455,10 +476,34 @@ struct StreamingReadingTextView: NSViewRepresentable {
         location: min(selection.location, length),
         length: min(selection.length, max(0, length - min(selection.location, length)))
       ))
-      view.invalidateIntrinsicContentSize()
+      if let container = view.textContainer {
+        view.layoutManager?.ensureLayout(for: container)
+      }
     }
+    resizeDocument(view, in: scroll, followTail: followTail)
     context.coordinator.lastText = text
     context.coordinator.lastStyle = styleKey
+  }
+
+  private func resizeDocument(
+    _ view: NSTextView,
+    in scroll: NSScrollView,
+    followTail: Bool
+  ) {
+    let width = max(scroll.contentSize.width, 1)
+    if let container = view.textContainer, abs(container.containerSize.width - width) > 0.5 {
+      container.containerSize = NSSize(width: width, height: CGFloat.greatestFiniteMagnitude)
+      view.layoutManager?.ensureLayout(for: container)
+    }
+    guard let container = view.textContainer else { return }
+    let used = view.layoutManager?.usedRect(for: container).height ?? 0
+    let height = max(ceil(used), scroll.contentSize.height)
+    if abs(view.frame.width - width) > 0.5 || abs(view.frame.height - height) > 0.5 {
+      view.setFrameSize(NSSize(width: width, height: height))
+    }
+    if followTail {
+      view.scrollToEndOfDocument(nil)
+    }
   }
 
   final class Coordinator {
@@ -490,6 +535,17 @@ struct StreamingReadingTextView: NSViewRepresentable {
       .foregroundColor: color,
       .paragraphStyle: paragraph,
     ])
+  }
+}
+
+enum StreamingViewport {
+  /// 生成中外层高度锁定，避免 SwiftUI 每拍重测整页。
+  static let minHeight: CGFloat = 360
+  /// 离底部这么近就跟着新字走；再往上滑则保持用户位置。
+  static let tailSlop: CGFloat = 48
+
+  static func shouldFollowTail(visibleMaxY: CGFloat, contentHeight: CGFloat) -> Bool {
+    visibleMaxY >= contentHeight - tailSlop
   }
 }
 

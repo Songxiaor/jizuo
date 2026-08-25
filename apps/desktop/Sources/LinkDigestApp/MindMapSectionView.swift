@@ -110,10 +110,16 @@ struct MindMapSectionView: View {
         .accessibilityLabel("脑图主题")
         Button("重新生成") { model.requestMindMapGeneration(taskID: taskID) }
           .controlSize(.small)
-          .disabled(!model.canGenerateMindMap(taskID: taskID))
-          .help("重新把文字发送给模型提取脑图结构；会覆盖当前脑图（含手动编辑）。")
+          .disabled(model.mindMapUnavailableReason(taskID: taskID) != nil)
+          .help(model.mindMapUnavailableReason(taskID: taskID) ?? "重新把文字发送给模型提取脑图结构；会覆盖当前脑图（含手动编辑）。")
           .accessibilityLabel("重新生成脑图")
           .accessibilityIdentifier("mind-map-regenerate")
+        if let reason = model.mindMapUnavailableReason(taskID: taskID) {
+          Text(reason)
+            .themedFont(.caption)
+            .foregroundStyle(.secondary)
+            .accessibilityIdentifier("mind-map-blocked-reason")
+        }
         Button("编辑") { isEditorPresented = true }
           .controlSize(.small)
           .disabled(model.isReadOnly)
