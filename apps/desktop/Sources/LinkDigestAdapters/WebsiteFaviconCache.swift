@@ -16,6 +16,16 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
   /// every history reload. Keep that negative result local for one day, then
   /// permit a retry in case the site has fixed its icon.
   public static let negativeCacheTTL: TimeInterval = 24 * 60 * 60
+  /// 第一次失败只压这么久。
+  ///
+  /// 24 小时对**偶发**失败太重了：实测 earendil.com 只是抓取当次失手一次，
+  /// 负缓存就把它锁死一整天——用户看到的是「这个站永远没有图标」，中间既没有
+  /// 提示也没有重试入口，而把标记删掉原样重抓一次就成功了。
+  ///
+  /// 一次失败区分不出「网络抖了一下」和「这个站真没图标」，那就别急着下结论：
+  /// 先只压 30 分钟，连着失败第二次再升到 24 小时。代价是真没图标的站一天里多打
+  /// 一次请求，换偶发失手能在半小时内自愈。
+  public static let firstFailureNegativeCacheTTL: TimeInterval = 30 * 60
 
   private let root: URL
   private let fileManager: FileManager
@@ -384,7 +394,9 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
     return favicon.url
   }
 
-  private static func cacheKey(for sourceURL: URL) -> String? {
+  /// 放宽到 internal 供测试构造标记文件：在测试里重抄一遍 SHA-256 的算法，
+  /// 等于让测试有机会算出和生产不同的键，然后测了个寂寞。
+  static func cacheKey(for sourceURL: URL) -> String? {
     guard let host = PublicWebURLPolicy.normalizedHost(sourceURL.host ?? ""), !host.isEmpty else { return nil }
     return SHA256.hash(data: Data(host.lowercased().utf8)).map { String(format: "%02x", $0) }.joined()
   }
@@ -446,17 +458,28 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
     root.appendingPathComponent("\(key).miss", isDirectory: false)
   }
 
+  /// 标记里记着连续失败次数。旧版本写的是 0 字节文件，按「第一次」处理。
+  private func negativeCacheAttempts(at marker: URL) -> Int {
+    guard let data = try? Data(contentsOf: marker),
+          let text = String(data: data, encoding: .utf8),
+          let attempts = Int(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+          attempts > 0
+    else { return 1 }
+    return attempts
+  }
+
   private func hasFreshNegativeCache(for key: String) -> Bool {
     lock.lock()
     defer { lock.unlock() }
     let marker = negativeCacheURL(for: key)
     guard fileManager.fileExists(atPath: marker.path) else { return false }
     let date = (try? marker.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-    guard date.addingTimeInterval(Self.negativeCacheTTL) > now() else {
-      try? fileManager.removeItem(at: marker)
-      return false
-    }
-    return true
+    let attempts = negativeCacheAttempts(at: marker)
+    let ttl = attempts <= 1 ? Self.firstFailureNegativeCacheTTL : Self.negativeCacheTTL
+    // 过期了也**不删**标记：删掉次数就丢了，下次失败又会被当成「第一次」，
+    // 真没图标的站就变成每 30 分钟重试一次。留着让它累加，由 `pruneLocked`
+    // 按 30 天保留期统一清理。
+    return date.addingTimeInterval(ttl) > now()
   }
 
   private func recordNegativeCache(for key: String) {
@@ -468,7 +491,10 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
   private func recordNegativeCacheLocked(for key: String) {
     guard (try? fileManager.createDirectory(at: root, withIntermediateDirectories: true)) != nil else { return }
     let marker = negativeCacheURL(for: key)
-    guard fileManager.createFile(atPath: marker.path, contents: Data()) else { return }
+    let attempts = fileManager.fileExists(atPath: marker.path)
+      ? negativeCacheAttempts(at: marker) + 1
+      : 1
+    guard fileManager.createFile(atPath: marker.path, contents: Data(String(attempts).utf8)) else { return }
     try? fileManager.setAttributes([.modificationDate: now()], ofItemAtPath: marker.path)
     pruneLocked()
   }

@@ -1,4 +1,5 @@
 import XCTest
+import LinkDigestCore
 @testable import LinkDigestAdapters
 
 /// 子域拿不到图标时回退到注册域。
@@ -296,5 +297,102 @@ extension FaviconHostChainTests {
       contentType: "image/png",
       body: Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])
     ))
+  }
+}
+
+/// 一次失手不该把一个站锁死一整天。
+///
+/// 起因是真事：earendil.com 只是在抓取当次失败了一次，`.miss` 负缓存就让它
+/// 24 小时不再重试——用户看到的是「这个站永远没图标」。把标记删掉原样重抓，
+/// 一次就成功了。所以第一次失败只压 30 分钟，连着失败第二次才升到 24 小时。
+final class FaviconNegativeCacheTests: XCTestCase {
+  /// 永远失败的取数器，同时记下被调用了多少次——用它来判断「有没有真的去重试」。
+  private final class AlwaysFailingFetcher: SafeResourceFetching, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var callCount: Int { lock.withLock { count } }
+    func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
+      lock.withLock { count += 1 }
+      throw URLError(.timedOut)
+    }
+  }
+
+  /// `now` 闭包会被并发执行，可变的 `var clock` 不能直接捕获。
+  private final class TestClock: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Date
+    init(_ value: Date) { self.value = value }
+    var now: Date { lock.withLock { value } }
+    func advance(_ interval: TimeInterval) { lock.withLock { value = value.addingTimeInterval(interval) } }
+  }
+
+  private var root: URL!
+
+  override func setUpWithError() throws {
+    root = URL(fileURLWithPath: NSTemporaryDirectory())
+      .appendingPathComponent("favicon-negative-cache-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+  }
+
+  override func tearDownWithError() throws {
+    try? FileManager.default.removeItem(at: root)
+  }
+
+  func testFirstFailureIsRetriedAfterHalfAnHourAndOnlyThenLocksForADay() async {
+    let page = URL(string: "https://www.residentialvps.com/post")!
+    let clock = TestClock(Date(timeIntervalSince1970: 1_700_000_000))
+    let cache = WebsiteFaviconCache(applicationSupportRoot: root, now: { clock.now })
+    let fetcher = AlwaysFailingFetcher()
+
+    _ = await cache.localImageURL(fetchingIfNeededFor: page, resources: fetcher)
+    let afterFirst = fetcher.callCount
+    XCTAssertGreaterThan(afterFirst, 0, "第一次就该真的去抓")
+
+    // 还在 30 分钟内：压着，一个请求都不该发。
+    clock.advance(10 * 60)
+    _ = await cache.localImageURL(fetchingIfNeededFor: page, resources: fetcher)
+    XCTAssertEqual(fetcher.callCount, afterFirst, "半小时内不该重试")
+
+    // 过了 30 分钟：偶发失败要能自愈，必须重试。
+    clock.advance(21 * 60)
+    _ = await cache.localImageURL(fetchingIfNeededFor: page, resources: fetcher)
+    let afterRetry = fetcher.callCount
+    XCTAssertGreaterThan(afterRetry, afterFirst, "过了半小时该重试一次")
+
+    // 这已经是连着第二次失败，升到 24 小时：两小时后仍不该动。
+    clock.advance(2 * 60 * 60)
+    _ = await cache.localImageURL(fetchingIfNeededFor: page, resources: fetcher)
+    XCTAssertEqual(fetcher.callCount, afterRetry, "连续失败后该压满一天")
+
+    // 满 24 小时之后才允许再试一次。
+    clock.advance(23 * 60 * 60)
+    _ = await cache.localImageURL(fetchingIfNeededFor: page, resources: fetcher)
+    XCTAssertGreaterThan(fetcher.callCount, afterRetry, "满一天后该再试")
+  }
+
+  /// 旧版本写的是 0 字节标记，不能因为读不出次数就当成「已经失败很多次」。
+  func testLegacyEmptyMarkerCountsAsTheFirstFailure() async throws {
+    let page = URL(string: "https://www.residentialvps.com/post")!
+    let clock = TestClock(Date(timeIntervalSince1970: 1_700_000_000))
+    let cache = WebsiteFaviconCache(applicationSupportRoot: root, now: { clock.now })
+    let fetcher = AlwaysFailingFetcher()
+
+    // 手工放一个旧格式（0 字节）的标记，时间就是现在。
+    let dir = root.appendingPathComponent("LinkDigest/WebsiteFavicons", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let key = try XCTUnwrap(WebsiteFaviconCache.cacheKey(for: page))
+    let marker = dir.appendingPathComponent("\(key).miss", isDirectory: false)
+    XCTAssertTrue(FileManager.default.createFile(atPath: marker.path, contents: Data()))
+    try FileManager.default.setAttributes([.modificationDate: clock.now], ofItemAtPath: marker.path)
+
+    // 30 分钟内仍受压制。
+    clock.advance(10 * 60)
+    _ = await cache.localImageURL(fetchingIfNeededFor: page, resources: fetcher)
+    XCTAssertEqual(fetcher.callCount, 0, "旧标记也要压住，不能立刻重抓")
+
+    // 但只压 30 分钟，而不是继承一整天。
+    clock.advance(21 * 60)
+    _ = await cache.localImageURL(fetchingIfNeededFor: page, resources: fetcher)
+    XCTAssertGreaterThan(fetcher.callCount, 0, "旧标记该按第一次处理，半小时后重试")
   }
 }
