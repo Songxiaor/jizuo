@@ -281,7 +281,7 @@ struct HistoryContentView: View {
               .lineLimit(1)
               .truncationMode(.middle)
           }
-            .font(.callout.weight(.medium))
+            .themedFont(.callout, weight: .medium)
             .foregroundStyle(theme.secondaryText)
             .padding(.horizontal, 10).padding(.vertical, 5)
             .background(theme.info.opacity(0.10), in: Capsule())
@@ -307,32 +307,31 @@ struct HistoryContentView: View {
           .accessibilityLabel("删除选中项")
           .accessibilityIdentifier("delete-selected-history")
         }
-        Button(action: { openSettings() }) {
-          Label("模型设置", systemImage: "gearshape")
+        ControlGroup {
+          Button(action: { openSettings() }) {
+            Label("模型设置", systemImage: "gearshape")
+          }
+          .help("打开设置")
+          .accessibilityLabel("模型设置")
+          .accessibilityIdentifier("open-provider-settings")
+          Menu {
+            Button("添加链接", action: manualLink.open)
+            Button("从剪贴板添加链接", action: manualLink.readClipboardAndOpen)
+          } label: {
+            Label("添加链接", systemImage: "link.badge.plus")
+          }
+          .disabled(!manualLink.canOpen)
+          .help("添加一个或多个链接")
+          .accessibilityLabel("添加链接")
+          .accessibilityIdentifier("manual-link-add-toolbar")
+          Button(action: createNote) {
+            Label("新建笔记", systemImage: "square.and.pencil")
+          }
+          .disabled(!manualLink.canOpen)
+          .help("新建笔记")
+          .accessibilityLabel("新建笔记")
+          .accessibilityIdentifier("create-user-note")
         }
-        .help("打开设置")
-        .accessibilityLabel("模型设置")
-        .accessibilityIdentifier("open-provider-settings")
-        Menu {
-          Button("添加链接", action: manualLink.open)
-          Button("从剪贴板添加链接", action: manualLink.readClipboardAndOpen)
-        } label: {
-          Label("添加链接", systemImage: "link.badge.plus")
-        }
-        .disabled(!manualLink.canOpen)
-        .help("添加一个或多个链接")
-        .accessibilityLabel("添加链接")
-        .accessibilityIdentifier("manual-link-add-toolbar")
-
-        // 写笔记是一等动作，不是「添加链接」的附属项，所以独立成钮。
-        // 它打开一个独立窗口而不是往列表塞一条记录——写东西和找资料是两种心智。
-        Button(action: createNote) {
-          Label("新建笔记", systemImage: "square.and.pencil")
-        }
-        .disabled(!manualLink.canOpen)
-        .help("新建笔记")
-        .accessibilityLabel("新建笔记")
-        .accessibilityIdentifier("create-user-note")
       }
     }
     .sheet(isPresented: Binding(
@@ -397,7 +396,7 @@ struct HistoryContentView: View {
         .background(ReleaseInitialSearchFocus().allowsHitTesting(false))
       if model.isReadOnly {
         Label("只读", systemImage: "lock.fill")
-          .font(.caption.weight(.semibold))
+          .themedFont(.caption, weight: .semibold)
           .foregroundStyle(theme.primaryText)
           .padding(.horizontal, 8).padding(.vertical, 4)
           .background(theme.warning.opacity(0.14), in: Capsule())
@@ -467,7 +466,7 @@ struct HistoryContentView: View {
                 PendingCaptureRow(pending: pending, model: manualLink)
               }
             } header: {
-              Text("抓取队列").font(.caption).foregroundStyle(.secondary)
+              Text("抓取队列").themedFont(.caption).foregroundStyle(.secondary)
             }
           }
           ForEach(model.rows, id: \.taskID) { row in
@@ -575,6 +574,7 @@ struct HistoryContentView: View {
         // 随手记东西最大的摩擦是「这条该记去哪」，给每天一个默认容器就没这个决定了。
         Button(action: openTodayNote) {
           Label("今天", systemImage: "calendar")
+            .themedFont(.body)
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier("history-navigation-today-note")
@@ -612,6 +612,7 @@ struct HistoryContentView: View {
             Image(systemName: "hammer")
               .frame(width: 18)
             Text("工作台")
+              .themedFont(.body)
             Spacer()
             let active = model.pieces.filter { !$0.isFinished }.count
             if active > 0 {
@@ -630,7 +631,9 @@ struct HistoryContentView: View {
         // 公共平台各占一行；杂项来源聚合进"待分类"，避免侧栏被长域名占满。
         let knownPlatforms = model.navigationCounts.platforms.filter { HistoryPlatformDisplay.isWellKnown(host: $0.host) }
         let miscPlatforms = model.navigationCounts.platforms.filter { !HistoryPlatformDisplay.isWellKnown(host: $0.host) }
-        Section("平台") {
+        // 分区标题同样要显式给字体：`Section("平台")` 那种字符串写法的标题是 List
+        // 自己渲染的，和行内容一样收不到环境字体。
+        Section(header: Text("平台").themedFont(.subheadline, weight: .semibold)) {
           // 平台名称必须常驻可见。只显示图标虽然省高度，但把理解成本转嫁给
           // tooltip；新的紧凑行仍然只占一行，同时给出图标、名称和数量。
           PlatformGridView(
@@ -671,9 +674,9 @@ struct HistoryContentView: View {
       if model.navigationCounts.tags.isEmpty {
         // 标签是"内容讲什么"：总结后由模型生成，也可在详情里手动添加。
         // 空态保留区块存在感，而不是让整块消失。
-        Section("标签") {
+        Section(header: Text("标签").themedFont(.subheadline, weight: .semibold)) {
           Text("总结后自动生成，也可在详情中手动添加")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.tertiary)
         }
       } else {
@@ -693,10 +696,10 @@ struct HistoryContentView: View {
                   HStack(spacing: 4) {
                     Text(item.tag.name).lineLimit(1)
                     Text("\(item.count)")
-                      .font(.caption2.monospacedDigit())
+                      .themedFont(.caption2, monospacedDigit: true)
                       .foregroundStyle(selected ? theme.selectionText.opacity(0.8) : .secondary)
                   }
-                  .font(.caption)
+                  .themedFont(.caption)
                   .padding(.vertical, 4).padding(.horizontal, 9)
                   .background(
                     selected ? AnyShapeStyle(theme.selectionFill) : AnyShapeStyle(theme.primaryText.opacity(0.06)),
@@ -744,7 +747,14 @@ struct HistoryContentView: View {
   ) -> some View {
     Button(action: action) {
       HStack(spacing: 8) {
+        // 字体必须写在这里，不能靠窗口根部注入的环境字体。
+        //
+        // 这一行是 `List` 的行内容，而 macOS 的 List 是 NSTableView 支撑的：
+        // 它会给行套上自己的字体，**盖过 `.environment(\.font,)`**。实测根部
+        // 注入对详情列、工具栏、设置页都生效，唯独进不了 List 行——表现就是
+        // 整扇窗都换了字体，只有侧栏这一列还是系统字体。
         Label(title, systemImage: systemImage)
+          .themedFont(.body)
         Spacer()
         countBadge(count, selected: selected)
       }
@@ -779,7 +789,7 @@ struct HistoryContentView: View {
   /// 只有需要进位时才变宽。
   private func countBadge(_ count: Int, selected: Bool) -> some View {
     Text("\(count)")
-      .font(.caption.weight(.medium).monospacedDigit())
+      .themedFont(.caption, weight: .medium, monospacedDigit: true)
       .foregroundStyle(selected ? theme.accent : .secondary)
       .padding(.horizontal, 6).padding(.vertical, 1)
       .background(selected ? theme.accent.opacity(0.12) : theme.badge, in: Capsule())
@@ -849,11 +859,11 @@ struct HistoryContentView: View {
         .font(.system(size: DesignTokens.IconSize.empty))
         .foregroundStyle(.tertiary)
       Text(model.pieces.isEmpty ? "还没有在做的创作" : "从左边选一件")
-        .font(.title3.weight(.medium))
+        .themedFont(.title3, weight: .medium)
       Text(model.pieces.isEmpty
         ? "一个念头写下来就是一件创作。"
         : "打开后能看到它攒了哪些素材、稿子写到哪了。")
-        .font(.callout)
+        .themedFont(.callout)
         .foregroundStyle(.secondary)
       if model.pieces.isEmpty {
         Button("记一个新灵感") { isNewSparkPresented = true }
@@ -871,9 +881,9 @@ struct HistoryContentView: View {
   private var newSparkSheet: some View {
     VStack(alignment: .leading, spacing: 14) {
       Text("记一个新灵感")
-        .font(.headline)
+        .themedFont(.headline)
       Text("一句话就够，之后可以随时改。")
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(.secondary)
       TextField("比如：AI 时代的内容创作是可以偷懒的", text: $newSparkText, axis: .vertical)
         .textFieldStyle(.plain)
@@ -949,9 +959,9 @@ struct HistoryContentView: View {
         Image(systemName: "checklist.checked")
           .font(.system(size: DesignTokens.IconSize.empty, weight: .medium))
           .foregroundStyle(.secondary)
-        Text("已选择 \(model.selectedTaskCount) 项").font(.title2.weight(.semibold))
+        Text("已选择 \(model.selectedTaskCount) 项").themedFont(.title2, weight: .semibold)
         Text("可从工具栏、右键菜单或 Delete 键批量删除；导出、标签、识别和转写等单条能力暂不可用。")
-          .font(.body)
+          .themedFont(.body)
           .foregroundStyle(.secondary)
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -963,7 +973,7 @@ struct HistoryContentView: View {
     case .loading:
       ProgressView("正在载入详情…").frame(maxWidth: .infinity, maxHeight: .infinity)
     case .failed:
-      VStack(spacing: 12) { Image(systemName: "exclamationmark.triangle").font(.title2); Text("无法载入这条记录").font(.headline); Button("重试", action: model.retryDetail) }
+      VStack(spacing: 12) { Image(systemName: "exclamationmark.triangle").font(.title2); Text("无法载入这条记录").themedFont(.headline); Button("重试", action: model.retryDetail) }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     case .loaded:
       // 成功路径总是先写 detail 再翻 .loaded，走不到这里；只为 switch 穷尽。
@@ -1049,10 +1059,10 @@ struct HistoryContentView: View {
         .background(theme.badge, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl).stroke(theme.hairline, lineWidth: 1))
         .padding(.bottom, 18)
-      Text("还没有笔记").font(.title2.weight(.semibold))
+      Text("还没有笔记").themedFont(.title2, weight: .semibold)
         .padding(.bottom, 6)
       Text("随手记下想法、灵感或读后感。笔记和抓取的内容一样可以打标签、搜索和导出。")
-        .font(.callout)
+        .themedFont(.callout)
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
         .frame(maxWidth: 380)
@@ -1081,10 +1091,10 @@ struct HistoryContentView: View {
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl).stroke(theme.hairline, lineWidth: 1))
         .padding(.bottom, 18)
       Text(isCaptureOnboardingDismissed ? "还没有保存页面" : "也可以直接添加公开链接")
-        .font(.title2.weight(.semibold))
+        .themedFont(.title2, weight: .semibold)
         .padding(.bottom, 6)
       Text("粘贴公开网页链接，或从 \(ProductDisplay.extensionName) 接收已打开的页面后，可在这里总结或翻译。")
-        .font(.callout)
+        .themedFont(.callout)
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
         .frame(maxWidth: 380)
@@ -1118,9 +1128,9 @@ struct HistoryContentView: View {
     VStack(alignment: .leading, spacing: 14) {
       HStack(alignment: .top) {
         VStack(alignment: .leading, spacing: 3) {
-          Text("三步开始使用汲作").font(.headline)
+          Text("三步开始使用汲作").themedFont(.headline)
           Text("完成第一条总结后，这张卡会永久消失。")
-            .font(.caption).foregroundStyle(.secondary)
+            .themedFont(.caption).foregroundStyle(.secondary)
         }
         Spacer()
         Button {
@@ -1172,8 +1182,8 @@ struct HistoryContentView: View {
       Image(systemName: "sparkles")
         .foregroundStyle(theme.accent)
       VStack(alignment: .leading, spacing: 2) {
-        Text("完成首次设置").font(.callout.weight(.semibold))
-        Text(firstCaptureNextStepMessage).font(.caption).foregroundStyle(.secondary)
+        Text("完成首次设置").themedFont(.callout, weight: .semibold)
+        Text(firstCaptureNextStepMessage).themedFont(.caption).foregroundStyle(.secondary)
       }
       Spacer(minLength: 0)
       Button(firstCaptureNextStepActionTitle) {
@@ -1224,7 +1234,7 @@ struct HistoryContentView: View {
       Image(systemName: completed ? "checkmark.circle.fill" : "\(number).circle")
         .foregroundStyle(completed ? theme.success : theme.secondaryText)
         .font(.title3)
-      Text(title).font(.callout.weight(.medium))
+      Text(title).themedFont(.callout, weight: .medium)
       Spacer()
       if !completed {
         Button(actionTitle, action: action).buttonStyle(.borderless)
@@ -1257,9 +1267,9 @@ private struct HistoryInlineState: View {
         .foregroundStyle(.secondary)
         .frame(width: 58, height: 58)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
-      Text(title).font(.headline)
+      Text(title).themedFont(.headline)
       Text(message)
-        .font(.callout)
+        .themedFont(.callout)
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
         .frame(maxWidth: 330)
@@ -1310,9 +1320,9 @@ private struct ClipboardSuggestionBanner: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       Text("检测到剪贴板链接：\(suggestion.host)")
-        .font(.callout.weight(.semibold))
+        .themedFont(.callout, weight: .semibold)
       Text(suggestion.displayURL)
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(.secondary)
         .lineLimit(1)
         .truncationMode(.middle)
@@ -1372,26 +1382,26 @@ private struct ManualLinkSheet: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
-      Text("添加网页链接").font(.title3.weight(.semibold))
+      Text("添加网页链接").themedFont(.title3, weight: .semibold)
       Text("只读取你主动提交的公开 HTML 页面；登录页面请使用 \(ProductDisplay.extensionName)。")
-        .font(.callout).foregroundStyle(.secondary)
+        .themedFont(.callout).foregroundStyle(.secondary)
       TextField("https://example.com/article", text: $model.input)
         .textFieldStyle(.roundedBorder).focused($focusURL)
         .disabled(model.isBusy).accessibilityIdentifier("manual-link-url-input")
       if let validation = model.inputValidationMessage {
         Label(validation, systemImage: "exclamationmark.triangle.fill")
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(appTheme.danger)
           .accessibilityIdentifier("manual-link-validation")
       }
       if let disclosure = modelCallDisclosure.message {
         Text(disclosure)
-          .font(.caption).foregroundStyle(.secondary)
+          .themedFont(.caption).foregroundStyle(.secondary)
           .accessibilityIdentifier("manual-link-model-call-hint")
       }
       if let error = model.errorMessage {
         Label(error, systemImage: "exclamationmark.triangle.fill")
-          .font(.callout).foregroundStyle(appTheme.danger).accessibilityIdentifier("manual-link-error")
+          .themedFont(.callout).foregroundStyle(appTheme.danger).accessibilityIdentifier("manual-link-error")
       }
       if model.isFetching { ProgressView(model.fetchingMessage).accessibilityIdentifier("manual-link-fetching") }
       if model.isSaving { ProgressView("正在保存到本机历史…").accessibilityIdentifier("manual-link-saving") }
@@ -1439,18 +1449,18 @@ private struct PendingCaptureRow: View {
       }
       VStack(alignment: .leading, spacing: 2) {
         Text(pending.urlString)
-          .font(.caption)
+          .themedFont(.caption)
           .lineLimit(1)
           .truncationMode(.middle)
         switch pending.phase {
-        case .queued: Text("排队中").font(.caption2).foregroundStyle(.tertiary)
-        case .fetching: Text("正在抓取…").font(.caption2).foregroundStyle(.tertiary)
-        case .saving: Text("正在保存…").font(.caption2).foregroundStyle(.tertiary)
+        case .queued: Text("排队中").themedFont(.caption2).foregroundStyle(.tertiary)
+        case .fetching: Text("正在抓取…").themedFont(.caption2).foregroundStyle(.tertiary)
+        case .saving: Text("正在保存…").themedFont(.caption2).foregroundStyle(.tertiary)
         case let .failed(message):
           // 失败原因必须完整可读。`lineLimit(2)` 会把「网页暂时无法打开，
           // 请检查链接后重试」截掉尾巴——而尾巴恰恰是那句可执行的建议。
           Text(message)
-            .font(.caption2)
+            .themedFont(.caption2)
             .foregroundStyle(theme.warning)
             .fixedSize(horizontal: false, vertical: true)
         }
@@ -1579,14 +1589,14 @@ private struct HistoryRowView: View {
       VStack(alignment: .leading, spacing: 4) {
         HStack(alignment: .top, spacing: 8) {
           Text(CapturedDocumentTitle.display(row.title, for: row.canonicalURL))
-            .font(.body.weight(.semibold))
+            .themedFont(.body, weight: .semibold)
             .lineLimit(2)
             .multilineTextAlignment(.leading)
           Spacer(minLength: 4)
         }
         if let preview = sanitizedRowPreview(row) {
           Text(preview)
-            .font(.callout)
+            .themedFont(.callout)
             .foregroundStyle(.secondary)
             .lineLimit(1)
         }
@@ -1598,7 +1608,7 @@ private struct HistoryRowView: View {
         // 发布时间。所以只留发布时间，没抓到才回落到入库时间。
         HStack(alignment: .bottom, spacing: 6) {
           Text(rowTimeText)
-            .font(.footnote)
+            .themedFont(.footnote)
             .foregroundStyle(.tertiary)
             .lineLimit(1)
           Spacer(minLength: 4)
@@ -1668,7 +1678,7 @@ private struct HistoryRowView: View {
   }
 
   private var rowBackground: Color {
-    if isSelected { return theme.accent.opacity(0.10) }
+    if isSelected { return theme.accent.opacity(0.04) }
     if isHovering { return theme.primaryText.opacity(0.035) }
     return .clear
   }
@@ -1784,15 +1794,19 @@ private enum HistoryFaviconImageMemoryCache {
 /// The detail header needs a recognizable source, not a wire-format URL.
 /// Opening and copying still use the untouched value; this is display-only.
 enum HistorySourceLinkPresentation {
-  static func text(_ rawURL: String) -> String {
+  static func host(_ rawURL: String) -> String? {
     guard let components = URLComponents(string: rawURL),
           var host = components.host?.lowercased(),
           !host.isEmpty
-    else { return rawURL }
+    else { return nil }
+    if host.hasPrefix("www.") { host.removeFirst(4) }
+    return host
+  }
 
-    if host.hasPrefix("www.") {
-      host.removeFirst(4)
-    }
+  static func text(_ rawURL: String) -> String {
+    guard let host = host(rawURL),
+          let components = URLComponents(string: rawURL)
+    else { return rawURL }
 
     let segments = components.path
       .split(separator: "/", omittingEmptySubsequences: true)
@@ -1875,6 +1889,14 @@ private struct HistoryDetailView: View, Equatable {
   @State private var isCaptionExpanded = false
   @State private var isTranscriptExpanded = false
   @State private var isSubtitleExpanded = false
+  /// 选中的原文层。nil 表示还没手动切过，按 `defaultSourceLayer` 走。
+  @State private var selectedSourceLayer: SourceLayer?
+  /// 选中的译文层。
+  ///
+  /// 和 `selectedSourceLayer` 分开存，不共用：两边可选的层不一定一样——译文是
+  /// 翻译那一刻的快照，之后新跑出来的字幕/转写不在里面。共用一个状态会出现
+  /// 「在原文里选了画面字幕，切到翻译却是空的」。
+  @State private var selectedTranslationLayer: SourceLayer?
   @State private var isEditingTranscription = false
   @State private var transcriptionDraft = ""
   /// 从阅读区点进来时对回源码的光标。
@@ -1930,6 +1952,33 @@ private struct HistoryDetailView: View, Equatable {
   /// 总结和翻译各占一格，而不是共用一个「结果」格。原来只有 result/source 两格，
   /// result 显示哪一个由「最近产出文本的那次运行」决定——于是先翻译再总结，翻译
   /// 就被挤掉了：那份译文一直在库里，只是没有任何入口能点回去。
+  /// 原文里的一层。
+  ///
+  /// 画面字幕和视频转写是**同一段话的两个版本**，不是先后两段内容——纵向叠着
+  /// 意味着要滚过整份字幕才够得着转写稿，而没有人会顺着读完一个再读另一个。
+  /// 这里改成一次只显示一层，用和顶上「总结/翻译/原文」相同的分段控件切换。
+  private enum SourceLayer: String, CaseIterable, Identifiable {
+    case caption
+    case subtitles
+    case transcript
+    var id: String { rawValue }
+    var heading: String {
+      switch self {
+      case .caption: LayeredSourceDocument.captionHeading
+      case .subtitles: LayeredSourceDocument.subtitleHeading
+      case .transcript: LayeredSourceDocument.transcriptHeading
+      }
+    }
+
+    /// 从小标题反查是哪一层。
+    ///
+    /// 翻译是整份文档一次翻完的，回来时只剩 `## 配文` 这样的文本，没有类型信息。
+    init?(heading: String) {
+      guard let match = Self.allCases.first(where: { $0.heading == heading }) else { return nil }
+      self = match
+    }
+  }
+
   private enum ReadingPane: String, CaseIterable, Identifiable {
     case summary
     case translation
@@ -2076,6 +2125,83 @@ private struct HistoryDetailView: View, Equatable {
       markdown: snapshot.bodyText
     )
   }
+  /// 这条记录有哪几层原文可选。
+  ///
+  /// 顺序与 `LayeredSourceDocument.orderedLayers` 一致：配文 → 画面字幕 → 视频转写。
+  /// 三处顺序必须一样，否则切换控件的排列、阅读区的内容、喂给模型的正文各说各话。
+  private var availableSourceLayers: [SourceLayer] {
+    var layers: [SourceLayer] = []
+    if hasPresentableCaption { layers.append(.caption) }
+    if latestSubtitleSnapshot != nil { layers.append(.subtitles) }
+    if latestTranscriptionSnapshot != nil { layers.append(.transcript) }
+    return layers
+  }
+
+  /// 当前显示哪一层。
+  ///
+  /// 选中的层可能因为重新抓取而消失（例如字幕被删掉），此时回落到第一层而不是
+  /// 显示空白。
+  private var activeSourceLayer: SourceLayer? {
+    let available = availableSourceLayers
+    if let selected = selectedSourceLayer, available.contains(selected) { return selected }
+    return available.first
+  }
+
+  /// 只有一层时不出控件：一个没有选择余地的分段控件只是看起来像有。
+  private var showsSourceLayerPicker: Bool { availableSourceLayers.count > 1 }
+
+  /// 译文拆出来的各层。
+  ///
+  /// 翻译是把 `LayeredSourceDocument.modelInput` 拼出的整份文档一次翻完，所以
+  /// 译文里同样带着「## 配文 / ## 画面字幕 / ## 视频转写」。不拆就只能纵向叠着
+  /// 显示——而那正是原文页当初改掉的形态：字幕和转写是同一段话的两个版本，
+  /// 叠着意味着要滚过整份字幕才够得着转写稿。
+  private var translationLayers: [(layer: SourceLayer?, body: String)] {
+    guard let body = translationArtifact?.bodyText, !body.isEmpty else { return [] }
+    return LayeredSourceDocument.split(body).map {
+      (layer: $0.heading.flatMap(SourceLayer.init(heading:)), body: $0.body)
+    }
+  }
+
+  /// 译文开头那段没有小标题的内容——通常是翻译过来的**标题行**。
+  ///
+  /// 它在第一个 `## 配文` 之前，不属于任何一层。切层时它必须一直在，否则
+  /// 每切一次标题就消失一次。
+  private var translationPreamble: String? {
+    guard let first = translationLayers.first, first.layer == nil else { return nil }
+    return first.body
+  }
+
+  /// 译文里可切换的层。
+  ///
+  /// 「开头那段无名内容」要单独拿掉再判断——它是标题，不是一层。第一版忘了这件事，
+  /// 结果 `named.count == layers.count` 永远不成立，控件一次都没出现过，而译文
+  /// 照旧纵向叠着：一个不报错、只是「功能像没做」的失败。
+  private var availableTranslationLayers: [SourceLayer] {
+    let layers = translationPreamble == nil ? translationLayers : Array(translationLayers.dropFirst())
+    guard layers.count > 1 else { return [] }
+    let named = layers.compactMap(\.layer)
+    return named.count == layers.count ? named : []
+  }
+
+  private var activeTranslationLayer: SourceLayer? {
+    let available = availableTranslationLayers
+    if let selected = selectedTranslationLayer, available.contains(selected) { return selected }
+    return available.first
+  }
+
+  private var showsTranslationLayerPicker: Bool { availableTranslationLayers.count > 1 }
+
+  /// 当前该渲染的译文正文：开头那段（标题）+ 当前这一层。没分层时返回 nil，
+  /// 调用方退回整篇。
+  private var activeTranslationBody: String? {
+    guard showsTranslationLayerPicker, let active = activeTranslationLayer,
+          let body = translationLayers.first(where: { $0.layer == active })?.body
+    else { return nil }
+    guard let preamble = translationPreamble else { return body }
+    return preamble + "\n\n" + body
+  }
+
   private var showsLayeredSource: Bool {
     // 听写和画面字幕都算派生层，有任意一层就该分层显示。
     //
@@ -2110,7 +2236,6 @@ private struct HistoryDetailView: View, Equatable {
   }
   private var title: String { CapturedDocumentTitle.display(detail.snapshots.last?.title, for: sourceURL) }
   private var sourceURL: String { detail.snapshots.last?.sourceURL ?? detail.task.canonicalURL }
-  private var sourceURLDisplay: String { HistorySourceLinkPresentation.text(sourceURL) }
   /// Tolaria-style properties from capture frontmatter (author / published / description).
   private var sourceFrontmatter: MarkdownNoteFrontmatter {
     MarkdownNoteFrontmatter.parse(latestSourceSnapshot?.bodyText ?? "")
@@ -2118,6 +2243,28 @@ private struct HistoryDetailView: View, Equatable {
   private var showsCurrentCapture: Bool { appModel.currentCapture?.taskID == detail.task.id }
   private var showsVisibleRun: Bool { appModel.showsVisibleRun(for: detail.task.id) }
   private var canRunHistory: Bool { appModel.canStartRun(from: detail) }
+  private var summarizeUnavailableReason: String? {
+    appModel.summarizeUnavailableReason(
+      usingCurrentCapture: showsCurrentCapture,
+      detail: detail,
+      preferencesReady: providerSettings.arePreferencesReady
+    )
+  }
+  private var translateUnavailableReason: String? {
+    appModel.translateUnavailableReason(
+      usingCurrentCapture: showsCurrentCapture,
+      detail: detail,
+      preferences: providerSettings.runPreferences,
+      preferencesReady: providerSettings.arePreferencesReady
+    )
+  }
+  /// 一行说清为什么灰。两颗钮同一原因只写一次；总结能点、翻译不能时写翻译的原因。
+  private var runActionBlockedReason: String? {
+    if summarizeUnavailableReason != nil, translateUnavailableReason != nil {
+      return summarizeUnavailableReason
+    }
+    return summarizeUnavailableReason ?? translateUnavailableReason
+  }
   private var showsRunControls: Bool { canRunHistory || showsCurrentCapture || showsVisibleRun }
   private var presentsArticleBeforeMedia: Bool {
     guard let latestSnapshot else { return false }
@@ -2241,7 +2388,7 @@ private struct HistoryDetailView: View, Equatable {
         }
         if let completionBanner {
           Label(completionBanner, systemImage: "checkmark.circle.fill")
-            .font(.callout.weight(.medium))
+            .themedFont(.callout, weight: .medium)
             .foregroundStyle(theme.success)
             .padding(.bottom, 10)
             .accessibilityIdentifier("history-run-completion-banner")
@@ -2252,7 +2399,7 @@ private struct HistoryDetailView: View, Equatable {
         if completionBanner == nil, let notice = UnfinishedRunNotice.latest(in: detail.runs) {
           HStack(spacing: 8) {
             Label(notice.message, systemImage: "exclamationmark.arrow.circlepath")
-              .font(.callout.weight(.medium))
+              .themedFont(.callout, weight: .medium)
               .foregroundStyle(theme.warning)
               .fixedSize(horizontal: false, vertical: true)
             Button("重新\(UnfinishedRunNotice.label(for: notice.kind))") {
@@ -2267,53 +2414,23 @@ private struct HistoryDetailView: View, Equatable {
           .accessibilityIdentifier("history-run-unfinished-banner")
         }
         titleView
-        // 自己写的东西没有来源网页：显示 `linkdigest-*:<uuid>` 并配「打开/复制链接」
-        // 只会让人困惑——那不是一个能打开的地址，也没有复制的意义。
         if !isOwnWriting {
-        HStack(spacing: 10) {
-          Text(sourceURLDisplay)
-            .font(.callout)
-            .foregroundStyle(.tertiary)
-            .lineLimit(1)
-            .textSelection(.enabled)
-            .help(sourceURL)
-            .accessibilityLabel("来源链接 \(sourceURL)")
-          Button("打开") { openSourceURL() }
-            .buttonStyle(.link)
-            .font(.callout.weight(.medium))
-            .linkCursor()
-            .accessibilityIdentifier("history-source-url-open")
-          Button("复制链接") { CopyFeedbackController.shared.copy(sourceURL) }
-            .buttonStyle(.link)
-            .font(.callout.weight(.medium))
-            .linkCursor()
-            .accessibilityIdentifier("history-source-url-copy")
+          sourceByline
+            .padding(.top, DesignTokens.Space.sm)
         }
-        .padding(.top, 8)
-        }
-
-        if sourceFrontmatter.hasProperties || (!isWeChatCapture && sourceFrontmatter.hasEngagementStats) {
+        if !isWeChatCapture && sourceFrontmatter.hasEngagementStats {
           notePropertiesStrip(sourceFrontmatter)
-            .padding(.top, 10)
+            .padding(.top, DesignTokens.Space.sm)
         }
-
-        // 标题下只留创建时间。操作、模型、Token、状态、视频都进「运行详情」，
-        // 避免和工具栏模型名、播放器片头重复。
-        metadata
-          .padding(.top, 12)
 
         if showsRunControls {
-          // 上面是「这条是什么」（标题、来源、作者、时间），这一排是「对它做什么」。
-          // 原来两者只隔 14pt，按钮读起来像元数据的第五行。
-          //
-          // 用一条横线而不是给上半块描边：横线只说「这里换段」，描边会说「这是一个
-          // 盒子」。详情列刚从四个色块收成两个，不该再添一个分块。
+          // 上面是「这条是什么」，这一排是「对它做什么」。
           Rectangle()
             .fill(theme.hairline)
             .frame(height: 1)
-            .padding(.top, 16)
+            .padding(.top, DesignTokens.Space.lg)
           actionToolbar
-            .padding(.top, 14)
+            .padding(.top, DesignTokens.Space.md)
             .accessibilityIdentifier("history-action-toolbar")
         }
 
@@ -2386,7 +2503,7 @@ private struct HistoryDetailView: View, Equatable {
               Label(failure, systemImage: "externaldrive.badge.exclamationmark")
                 .foregroundStyle(theme.warning)
               Text("请在“设置 → 视频存储”重新选择文件夹，或把已保存的视频移回原位置。")
-                .font(.caption)
+                .themedFont(.caption)
                 .foregroundStyle(.secondary)
             }
             .padding(14)
@@ -2550,6 +2667,8 @@ private struct HistoryDetailView: View, Equatable {
       isCaptionExpanded = false
       isTranscriptExpanded = false
       isSubtitleExpanded = false
+      selectedSourceLayer = nil
+      selectedTranslationLayer = nil
       readingPane = defaultReadingPane
       // 保活集合不跨条目：上一条访问过哪些面板不该让这一条多付隐藏布局。
       visitedReadingPanes = []
@@ -2682,29 +2801,30 @@ private struct HistoryDetailView: View, Equatable {
           .accessibilityIdentifier("reading-font-size-control")
         }
 
-        // 收藏／取消收藏当前条目。左栏「收藏」分类按此筛选。
-        if model.canToggleFavorite {
-          let favorited = model.isSelectedFavorite
-          Button { model.toggleFavorite() } label: {
-            Label(
-              favorited ? "取消收藏" : "收藏",
-              systemImage: favorited ? "star.fill" : "star")
-          }
-          .help(favorited ? "取消收藏" : "收藏")
-          .accessibilityIdentifier("reading-toggle-favorite")
-        }
-
-        // 快速打标签：复用底部那个标签编辑器，省得滚到最下面。打开即展开输入框。
-        if model.canEditTags {
-          Button { isTagPopoverPresented = true } label: {
-            Label("标签", systemImage: "tag")
-          }
-          .help("添加标签")
-          .accessibilityIdentifier("reading-quick-tag")
-          .popover(isPresented: $isTagPopoverPresented, arrowEdge: .bottom) {
-            HistoryTagEditor(tags: detail.tags, model: model, autoExpandComposer: true)
-              .padding(16)
-              .frame(width: 320)
+        if model.canToggleFavorite || model.canEditTags {
+          ControlGroup {
+            if model.canToggleFavorite {
+              let favorited = model.isSelectedFavorite
+              Button { model.toggleFavorite() } label: {
+                Label(
+                  favorited ? "取消收藏" : "收藏",
+                  systemImage: favorited ? "star.fill" : "star")
+              }
+              .help(favorited ? "取消收藏" : "收藏")
+              .accessibilityIdentifier("reading-toggle-favorite")
+            }
+            if model.canEditTags {
+              Button { isTagPopoverPresented = true } label: {
+                Label("标签", systemImage: "tag")
+              }
+              .help("添加标签")
+              .accessibilityIdentifier("reading-quick-tag")
+              .popover(isPresented: $isTagPopoverPresented, arrowEdge: .bottom) {
+                HistoryTagEditor(tags: detail.tags, model: model, autoExpandComposer: true)
+                  .padding(DesignTokens.Space.lg)
+                  .frame(width: 320)
+              }
+            }
           }
         }
 
@@ -2854,7 +2974,7 @@ private struct HistoryDetailView: View, Equatable {
     if Self.showsStreamSelectionDiagnostic,
        let selection = sessionMediaPlayback.selectionDiagnostic {
       Text(selection)
-        .font(.caption2)
+        .themedFont(.caption2)
         .foregroundStyle(.secondary)
         .textSelection(.enabled)
         .fixedSize(horizontal: false, vertical: true)
@@ -2938,7 +3058,7 @@ private struct HistoryDetailView: View, Equatable {
     if !noteBacklinks.isEmpty {
       VStack(alignment: .leading, spacing: 8) {
         Label("链接到这条的笔记 \(noteBacklinks.count)", systemImage: "arrow.turn.up.left")
-          .font(.callout.weight(.medium))
+          .themedFont(.callout, weight: .medium)
           .foregroundStyle(.secondary)
         ForEach(noteBacklinks) { backlink in
           Button {
@@ -2950,7 +3070,7 @@ private struct HistoryDetailView: View, Equatable {
                 .font(.system(size: DesignTokens.IconSize.inline))
                 .foregroundStyle(.tertiary)
               Text(backlink.title)
-                .font(.callout)
+                .themedFont(.callout)
                 .lineLimit(1)
               Spacer(minLength: 0)
             }
@@ -2975,10 +3095,10 @@ private struct HistoryDetailView: View, Equatable {
     switch model.transcriptTidyState(for: detail.task.id) {
     case .running:
       ProgressView().controlSize(.small)
-      Text("正在整理…").font(.caption).foregroundStyle(.secondary)
+      Text("正在整理…").themedFont(.caption).foregroundStyle(.secondary)
     case let .failed(message):
       Label(message, systemImage: "exclamationmark.triangle")
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(theme.warning)
         .accessibilityIdentifier("note-tidy-failed")
     default:
@@ -2992,8 +3112,8 @@ private struct HistoryDetailView: View, Equatable {
         actionPill(
           title: "总结",
           systemImage: "text.alignleft",
-          prominent: !isOwnWriting && summaryArtifact == nil,
-          disabled: !providerSettings.arePreferencesReady || !(showsCurrentCapture ? appModel.canStartRun : appModel.canStartRun(from: detail)),
+          prominent: false,
+          disabled: summarizeUnavailableReason != nil,
           identifier: showsCurrentCapture ? "summarize-current-capture" : "summarize-history-detail"
         ) {
           pendingRunPane = .summary
@@ -3005,9 +3125,8 @@ private struct HistoryDetailView: View, Equatable {
         actionPill(
           title: "翻译",
           systemImage: "character.book.closed",
-          prominent: !isOwnWriting && summaryArtifact != nil && translationArtifact == nil,
-          disabled: !providerSettings.arePreferencesReady
-            || !appModel.canTranslate(from: detail, preferences: providerSettings.runPreferences),
+          prominent: false,
+          disabled: translateUnavailableReason != nil,
           identifier: showsCurrentCapture ? "translate-current-capture" : "translate-history-detail"
         ) {
           pendingRunPane = .translation
@@ -3062,18 +3181,25 @@ private struct HistoryDetailView: View, Equatable {
               .controlSize(.small)
           }
           Text(appModel.runStatusText)
-            .font(.subheadline.weight(.medium))
+            .themedFont(.subheadline, weight: .medium)
             .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
             .lineLimit(1)
             .accessibilityIdentifier("model-run-status")
         }
+      }
+      if let runActionBlockedReason {
+        Text(runActionBlockedReason)
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("history-run-blocked-reason")
       }
 
       HStack(spacing: DesignTokens.Space.sm) {
         if !providerSettings.arePreferencesReady {
           Button("设置模型") { openSettings() }
             .buttonStyle(.link)
-            .font(.caption.weight(.medium))
+            .themedFont(.caption, weight: .medium)
             .accessibilityIdentifier("history-open-model-settings")
         } else {
           Label(
@@ -3082,7 +3208,7 @@ private struct HistoryDetailView: View, Equatable {
               : providerSettings.activeSummaryModelName,
             systemImage: "cpu"
           )
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .foregroundStyle(.tertiary)
           .lineLimit(1)
         }
@@ -3092,7 +3218,7 @@ private struct HistoryDetailView: View, Equatable {
             withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isRunPanelExpanded.toggle() }
           }
           .buttonStyle(.borderless)
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .foregroundStyle(.secondary)
           .accessibilityIdentifier("history-run-panel-toggle")
         }
@@ -3114,25 +3240,15 @@ private struct HistoryDetailView: View, Equatable {
     identifier: String,
     action: @escaping () -> Void
   ) -> some View {
-    let button = Button(action: action) {
+    Button(action: action) {
       Label(title, systemImage: systemImage)
-        .font(.callout.weight(.semibold))
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+        .themedFont(.callout, weight: prominent ? .semibold : .regular)
     }
+    .buttonStyle(.borderless)
+    .foregroundStyle(prominent && !disabled ? theme.accent : theme.secondaryText)
     .controlSize(.small)
     .disabled(disabled)
     .accessibilityIdentifier(identifier)
-
-    // 禁用时一律退回普通描边样式：`.borderedProminent` 的禁用态是一块
-    // 去饱和的橙色死板——它既不像能点，也不像装饰，只像坏了。
-    if prominent, !disabled {
-      button
-        .buttonStyle(.borderedProminent)
-        .tint(theme.accent)
-    } else {
-      button.buttonStyle(.bordered)
-    }
   }
 
   /// Optional hints only (model names / storage). Streaming body lives in the reading card.
@@ -3145,19 +3261,19 @@ private struct HistoryDetailView: View, Equatable {
         currentCaptureExtras
       } else if canRunHistory {
         Text("使用本机已保存正文生成；结果作为新运行保存。")
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
         HStack(spacing: 10) {
           settingsModelButton(providerSettings.activeSummaryModelName)
           settingsModelButton(providerSettings.effectiveTranslationModelName)
           Text("输出：\(providerSettings.runPreferences.outputLanguage)")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.tertiary)
         }
       }
       if showsVisibleRun, appModel.runHasFailure {
         Text(appModel.runStatusText)
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(theme.danger)
           .accessibilityIdentifier("model-run-status-detail")
       }
@@ -3180,12 +3296,12 @@ private struct HistoryDetailView: View, Equatable {
         Text("·")
         Text(appModel.storageStatusText)
       }
-      .font(.caption)
+      .themedFont(.caption)
       .foregroundStyle(appModel.storageAvailability.isWriteReady ? Color.secondary : theme.warning)
       .accessibilityIdentifier("storage-availability")
       if let notice = appModel.dataDestinationNotice {
         Label(notice, systemImage: "info.circle")
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("data-destination-notice")
@@ -3217,7 +3333,7 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   private var readingSurface: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
       if showsReadingPanePicker {
         readingPanePicker
       }
@@ -3264,6 +3380,65 @@ private struct HistoryDetailView: View, Equatable {
     showsLiveRunInReadingPane || hasResultBody || hasSourceBody || isDouyinCapture
   }
 
+  /// 原文里的层切换。
+  ///
+  /// 刻意和顶上「总结/翻译/原文」用同一种控件：两处是同一件事的两级——先选看
+  /// 哪种产物，再选看哪一份原文。换成别的样式只会让人以为它们不是一类东西。
+  private var sourceLayerPicker: some View {
+    layerPicker(
+      title: "原文层",
+      layers: availableSourceLayers,
+      active: activeSourceLayer,
+      identifier: "history-source-layer-picker",
+      select: { selectedSourceLayer = $0 }
+    )
+  }
+
+  /// 译文里的层切换。和原文用**同一个**控件，不是长得像的另一个。
+  ///
+  /// 两处是同一件事：先选看哪种产物（总结/翻译/原文），再选看哪一层内容。
+  /// 翻译页原来把各层纵向叠着，读者要滚过整份配文才够得着转写稿的译文。
+  private var translationLayerPicker: some View {
+    layerPicker(
+      title: "译文层",
+      layers: availableTranslationLayers,
+      active: activeTranslationLayer,
+      identifier: "history-translation-layer-picker",
+      select: { selectedTranslationLayer = $0 }
+    )
+  }
+
+  private func layerPicker(
+    title: String,
+    layers: [SourceLayer],
+    active: SourceLayer?,
+    identifier: String,
+    select: @escaping (SourceLayer) -> Void
+  ) -> some View {
+    Picker(
+      title,
+      selection: Binding(
+        get: { active ?? layers.first ?? .transcript },
+        set: select
+      )
+    ) {
+      ForEach(layers) { layer in
+        Text(layer.heading).tag(layer)
+      }
+    }
+    .pickerStyle(.segmented)
+    .controlSize(.small)
+    .labelsHidden()
+    .frame(maxWidth: 264)
+    // 居中写在这里、而不是交给各自的父容器。
+    //
+    // 原文页的父容器是 `VStack(alignment: .leading)`、翻译页的不是，于是同一个
+    // 控件在两处一个靠左一个居中——看起来像两个不同的东西。对齐属于「这个控件
+    // 长什么样」的一部分，放进构造里才不会再次跑偏。
+    .frame(maxWidth: .infinity, alignment: .center)
+    .accessibilityIdentifier(identifier)
+  }
+
   private var readingPanePicker: some View {
     HStack(spacing: 12) {
       Picker("阅读内容", selection: $readingPane) {
@@ -3300,20 +3475,50 @@ private struct HistoryDetailView: View, Equatable {
     )
   }
 
-  @ViewBuilder
-  private var metadata: some View {
-    // 顶部只显示创建时间；其他运行元数据移进展开的「运行详情」。
-    metadataRow {
-      MetadataItem(
-        symbol: "calendar",
-        title: "创建时间",
-        value: historyDate(detail.task.createdAtMilliseconds)
-      )
+  /// 标题下的一行浅字：作者 · 日期 · 站点。打开/复制链在同一行末尾，不再单独占三行表单。
+  private var sourceByline: some View {
+    HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
+      Text(sourceBylineText)
+        .themedFont(.callout)
+        .foregroundStyle(.secondary)
+        .textSelection(.enabled)
+        .fixedSize(horizontal: false, vertical: true)
+      Button("打开") { openSourceURL() }
+        .buttonStyle(.link)
+        .themedFont(.callout)
+        .linkCursor()
+        .accessibilityIdentifier("history-source-url-open")
+      Button("复制链接") { CopyFeedbackController.shared.copy(sourceURL) }
+        .buttonStyle(.link)
+        .themedFont(.callout)
+        .linkCursor()
+        .accessibilityIdentifier("history-source-url-copy")
+      Spacer(minLength: 0)
     }
-    .font(.caption)
-    .foregroundStyle(.secondary)
-    .opacity(0.95)
-    .accessibilityIdentifier(newestRun != nil ? "history-run-metadata" : "history-capture-metadata")
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("来源 \(sourceBylineText)")
+    .accessibilityIdentifier("history-capture-metadata")
+    .help(sourceURL)
+  }
+
+  private var sourceBylineText: String {
+    var parts: [String] = []
+    if let account = sourceFrontmatter.accountName?.trimmedNonEmpty {
+      parts.append(account)
+    }
+    if let author = sourceFrontmatter.author?.trimmedNonEmpty,
+       author != sourceFrontmatter.accountName {
+      parts.append(author)
+    }
+    if let published = sourceFrontmatter.published {
+      parts.append(historyPublishedDate(published))
+    } else {
+      parts.append(historyDate(detail.task.createdAtMilliseconds))
+    }
+    if let host = HistorySourceLinkPresentation.host(sourceURL) {
+      parts.append(host)
+    }
+    return parts.joined(separator: " · ")
   }
 
   private var hasCollapsedRunMetadata: Bool {
@@ -3344,7 +3549,7 @@ private struct HistoryDetailView: View, Equatable {
           }
         }
       }
-      .font(.caption)
+      .themedFont(.caption)
       .foregroundStyle(.secondary)
       .opacity(0.95)
     } else if model.taskTokenGrandTotals != nil || videoMetadataValue != nil {
@@ -3362,7 +3567,7 @@ private struct HistoryDetailView: View, Equatable {
             .accessibilityIdentifier("history-video-metadata")
         }
       }
-      .font(.caption)
+      .themedFont(.caption)
       .foregroundStyle(.secondary)
       .opacity(0.95)
     }
@@ -3426,69 +3631,34 @@ private struct HistoryDetailView: View, Equatable {
     return String(format: "%d:%02d", total / 60, total % 60)
   }
 
-  /// Lightweight properties strip (Tolaria/Obsidian frontmatter fields), not a full editor.
+  /// 互动数单独一行。作者/发布/公众号已经收进 byline，这里不再重复。
   @ViewBuilder
   private func notePropertiesStrip(_ note: MarkdownNoteFrontmatter) -> some View {
-    VStack(alignment: .leading, spacing: 6) {
-      if let accountName = note.accountName {
-        propertyRow(symbol: "building.2", title: "公众号", value: accountName)
+    HStack(spacing: DesignTokens.Space.lg) {
+      if let likes = note.likes {
+        Label(likes, systemImage: "heart")
+          .accessibilityIdentifier("history-stats-likes")
       }
-      if let author = note.author {
-        propertyRow(symbol: "person", title: "作者", value: author)
+      if let comments = note.comments {
+        Label(comments, systemImage: "bubble.right")
+          .accessibilityIdentifier("history-stats-comments")
       }
-      if let published = note.published {
-        // Raw frontmatter values are often ISO 8601 ("2026-07-21T19:47:07.000Z");
-        // present them in the same localized style as the list rows.
-        propertyRow(symbol: "calendar", title: "发布", value: historyPublishedDate(published))
+      if let shares = note.shares {
+        Label(shares, systemImage: "arrowshape.turn.up.right")
+          .accessibilityIdentifier("history-stats-shares")
       }
-      // No cover thumbnail here. The article body already carries its images in
-      // the author's own order, and a WeChat cover is usually either a repeat of
-      // the first body image or a promotional card that was never part of the
-      // reading flow — showing it above the text displaced the actual opening.
-      // Do not show meta/og description: often promotional and not article-faithful.
-      if !isWeChatCapture && note.hasEngagementStats {
-        HStack(spacing: 16) {
-          if let likes = note.likes {
-            Label(likes, systemImage: "heart")
-              .accessibilityIdentifier("history-stats-likes")
-          }
-          if let comments = note.comments {
-            Label(comments, systemImage: "bubble.right")
-              .accessibilityIdentifier("history-stats-comments")
-          }
-          if let shares = note.shares {
-            Label(shares, systemImage: "arrowshape.turn.up.right")
-              .accessibilityIdentifier("history-stats-shares")
-          }
-          if let collects = note.collects {
-            Label(collects, systemImage: "bookmark")
-              .accessibilityIdentifier("history-stats-collects")
-          }
-          if let views = note.views {
-            Label(views, systemImage: "eye")
-              .accessibilityIdentifier("history-stats-views")
-          }
-        }
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .padding(.top, 2)
-        .accessibilityIdentifier("history-engagement-stats")
+      if let collects = note.collects {
+        Label(collects, systemImage: "bookmark")
+          .accessibilityIdentifier("history-stats-collects")
+      }
+      if let views = note.views {
+        Label(views, systemImage: "eye")
+          .accessibilityIdentifier("history-stats-views")
       }
     }
-    .font(.callout)
+    .themedFont(.callout)
     .foregroundStyle(.secondary)
-    .accessibilityIdentifier("history-note-properties")
-  }
-
-  private func propertyRow(symbol: String, title: String, value: String) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: 8) {
-      Image(systemName: symbol).frame(width: 14)
-      Text(title).frame(width: 36, alignment: .leading)
-      Text(value)
-        .foregroundStyle(theme.primaryText)
-        .textSelection(.enabled)
-        .fixedSize(horizontal: false, vertical: true)
-    }
+    .accessibilityIdentifier("history-engagement-stats")
   }
 
   private func localImageURL(forRemoteURL remoteURL: String) -> URL? {
@@ -3513,7 +3683,7 @@ private struct HistoryDetailView: View, Equatable {
     if !exactSummaryCitations.isEmpty {
       HStack(spacing: 8) {
         Label("原文依据", systemImage: "quote.opening")
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .foregroundStyle(.secondary)
         ForEach(Array(exactSummaryCitations.enumerated()), id: \.offset) { index, quote in
           Button("依据 \(index + 1)") { openSourceCitation(quote) }
@@ -3609,6 +3779,11 @@ private struct HistoryDetailView: View, Equatable {
             .padding(.bottom, 6)
         }
         if pane == .summary { sourceCitationLinks }
+        // 译文和原文一样，一次只显示一层。控件放在正文之上，位置与原文页一致。
+        if pane == .translation, showsTranslationLayerPicker {
+          translationLayerPicker
+            .padding(.bottom, 10)
+        }
         // 旧版翻译把元数据块也翻了一遍，块卡在译文中段（前面是翻译后的标题），
         // 开头剥离对它无效。显示时按白名单再清一次；只清翻译——总结里出现
         // 同构块的可能性低，且误删的代价是丢正文。
@@ -3616,7 +3791,8 @@ private struct HistoryDetailView: View, Equatable {
         // Summaries rarely carry images; still allow local map if present.
         MarkdownContentView(
           source: ReadingRenderCache.paneBody(
-            source: artifact.bodyText,
+            // 分层时只喂当前那一层，元数据清理仍按整篇的规则走。
+            source: (pane == .translation ? activeTranslationBody : nil) ?? artifact.bodyText,
             strippingEchoedMetadata: pane == .translation
           ),
           sourceURL: URL(string: sourceURL),
@@ -3673,32 +3849,35 @@ private struct HistoryDetailView: View, Equatable {
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityIdentifier("history-reading-source")
     } else if showsLayeredSource {
-      VStack(alignment: .leading, spacing: 22) {
-        // 配文是**可选**的一层：抖音视频帖没有值得单独显示的 caption，字幕和听写
-        // 却仍要各自成层。旧写法把 `let caption` 写进分支条件，等于让配文在不在
-        // 决定另外两层显不显示——配文一缺，整支就走不进来。
-        if hasPresentableCaption, let caption = latestSourceSnapshot {
-          collapsibleSourceSection(
-            heading: LayeredSourceDocument.captionHeading,
-            snapshot: caption,
-            isExpanded: $isCaptionExpanded
-          )
-        }
-        // 顺序与 `LayeredSourceDocument.orderedLayers` 一致：画面字幕排在听写
-        // 之前。两处顺序必须一样，否则阅读区和喂给模型的正文对不上。
-        if let subtitles = latestSubtitleSnapshot {
-          collapsibleSourceSection(
-            heading: LayeredSourceDocument.subtitleHeading,
-            snapshot: subtitles,
-            isExpanded: $isSubtitleExpanded
-          )
-        }
-        if let transcript = latestTranscriptionSnapshot {
-          collapsibleSourceSection(
-            heading: LayeredSourceDocument.transcriptHeading,
-            snapshot: transcript,
-            isExpanded: $isTranscriptExpanded
-          )
+      VStack(alignment: .leading, spacing: 14) {
+        if showsSourceLayerPicker { sourceLayerPicker }
+        switch activeSourceLayer {
+        case .caption:
+          if let caption = latestSourceSnapshot {
+            collapsibleSourceSection(
+              heading: LayeredSourceDocument.captionHeading,
+              snapshot: caption,
+              isExpanded: $isCaptionExpanded
+            )
+          }
+        case .subtitles:
+          if let subtitles = latestSubtitleSnapshot {
+            collapsibleSourceSection(
+              heading: LayeredSourceDocument.subtitleHeading,
+              snapshot: subtitles,
+              isExpanded: $isSubtitleExpanded
+            )
+          }
+        case .transcript:
+          if let transcript = latestTranscriptionSnapshot {
+            collapsibleSourceSection(
+              heading: LayeredSourceDocument.transcriptHeading,
+              snapshot: transcript,
+              isExpanded: $isTranscriptExpanded
+            )
+          }
+        case nil:
+          EmptyView()
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -3756,23 +3935,30 @@ private struct HistoryDetailView: View, Equatable {
     let body = LayeredSourceDocument.body(of: snapshot)
     let long = isLongSource(snapshot)
     let collapsed = long && !isExpanded.wrappedValue && !isEditingTranscription
+    // 有切换控件时不再重复一遍层名：控件上就写着「配文 / 视频转写」，
+    // 底下再来一行同样的字只是多占一行高度。没有控件的路径（只有一层、
+    // 或者非分层来源）仍然要这个标题，否则那段正文就没有名字了。
+    let showsHeading = !showsSourceLayerPicker
+    let showsExpandControl = long && !isEditingTranscription
     VStack(alignment: .leading, spacing: 8) {
-      HStack(alignment: .firstTextBaseline, spacing: 10) {
-        sourceLayerHeading(heading)
-        Spacer(minLength: 8)
-        if long, !isEditingTranscription {
-          Button(isExpanded.wrappedValue ? "收起" : "展开全文") {
-            isExpanded.wrappedValue.toggle()
+      if showsHeading || showsExpandControl {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+          if showsHeading { sourceLayerHeading(heading) }
+          Spacer(minLength: 8)
+          if showsExpandControl {
+            Button(isExpanded.wrappedValue ? "收起" : "展开全文") {
+              isExpanded.wrappedValue.toggle()
+            }
+            .controlSize(.small)
+            .accessibilityIdentifier("history-source-expand")
           }
-          .controlSize(.small)
-          .accessibilityIdentifier("history-source-expand")
         }
       }
       if collapsed {
         sourceSnapshotReader(snapshot, bodyOverride: sourcePreview(body))
         Button("展开全文") { isExpanded.wrappedValue = true }
           .buttonStyle(.link)
-          .font(.callout.weight(.medium))
+          .themedFont(.callout, weight: .medium)
           .padding(.top, 4)
           .accessibilityIdentifier("history-source-expand-inline")
       } else {
@@ -3784,7 +3970,7 @@ private struct HistoryDetailView: View, Equatable {
 
   private func sourceLayerHeading(_ title: String) -> some View {
     Text(title)
-      .font(.caption.weight(.semibold))
+      .themedFont(.caption, weight: .semibold)
       .foregroundStyle(.secondary)
       .accessibilityAddTraits(.isHeader)
   }
@@ -3797,6 +3983,16 @@ private struct HistoryDetailView: View, Equatable {
       }
       sourceSnapshotReader(snapshot)
     }
+  }
+
+  /// 阅读卡里不再重复印标题。笔记是用户自己写的，开头的标题要留着。
+  private func displayedSourceMarkdown(_ snapshot: ContentSnapshot, bodyOverride: String?) -> String {
+    let cleaned = bodyOverride ?? ReadingRenderCache.paneBody(
+      source: snapshot.bodyText,
+      strippingEchoedMetadata: false
+    )
+    guard !isOwnWriting else { return cleaned }
+    return CapturedSourceBodyPresentation.strippingEchoedOpening(title: title, from: cleaned)
   }
 
   @ViewBuilder
@@ -3813,7 +4009,7 @@ private struct HistoryDetailView: View, Equatable {
           HStack(spacing: 10) {
             Spacer(minLength: 0)
             Text(sourceDraftIsDirty(snapshot) ? "正在保存…" : (noteSaveIndicator ? "已保存" : ""))
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(.tertiary)
               .animation(historyUIAnimation(reduceMotion: reduceMotion), value: noteSaveIndicator)
               .accessibilityIdentifier("history-note-save-state")
@@ -3872,10 +4068,7 @@ private struct HistoryDetailView: View, Equatable {
           MarkdownContentView(
             // 链接化放在**最外层**：先让 paneBody 做完它的清理，再把时间码变成
             // 链接，免得清理步骤把刚生成的链接语法拆掉。
-            source: timestampLinked(bodyOverride ?? ReadingRenderCache.paneBody(
-              source: snapshot.bodyText,
-              strippingEchoedMetadata: false
-            )),
+            source: timestampLinked(displayedSourceMarkdown(snapshot, bodyOverride: bodyOverride)),
             sourceURL: URL(string: sourceURL),
             localImageURLs: localImageURLs,
             appendsUnusedLocalImages: !isWeChatCapture,
@@ -4035,7 +4228,7 @@ private struct HistoryDetailView: View, Equatable {
         Text(pane == .translation ? "尚未生成翻译" : "尚未生成总结").foregroundStyle(.secondary)
         if canRunHistory || showsCurrentCapture {
           Text(pane == .translation ? "点击上方「翻译」开始" : "点击上方「生成总结」开始")
-            .font(.callout)
+            .themedFont(.callout)
             .foregroundStyle(.tertiary)
         }
       case .source:
@@ -4046,7 +4239,7 @@ private struct HistoryDetailView: View, Equatable {
              model.canTranscribeCurrentCapture($0, taskID: detail.task.id)
            } == true) {
           Text("点击上方的『转写』开始")
-            .font(.callout)
+            .themedFont(.callout)
             .foregroundStyle(.tertiary)
         }
       }
@@ -4069,9 +4262,9 @@ private struct HistoryDetailView: View, Equatable {
         }
         .frame(width: 34, height: 34)
         VStack(alignment: .leading, spacing: 2) {
-          Text("图片文字识别").font(.headline)
+          Text("图片文字识别").themedFont(.headline)
           Text("Apple Vision 本机处理，图片不会上传。")
-            .font(.caption).foregroundStyle(.secondary)
+            .themedFont(.caption).foregroundStyle(.secondary)
         }
         Spacer(minLength: 0)
         if recognitionState == .recognizing {
@@ -4087,10 +4280,10 @@ private struct HistoryDetailView: View, Equatable {
       switch recognitionState {
       case .idle:
         Text("从正文缓存的 \(localImageURLs.count) 张图片提取可复制文字。")
-          .font(.caption).foregroundStyle(.secondary)
+          .themedFont(.caption).foregroundStyle(.secondary)
       case .recognizing:
         HStack(spacing: 8) { ProgressView().controlSize(.small); Text("正在本机识别…") }
-          .font(.caption).foregroundStyle(.secondary)
+          .themedFont(.caption).foregroundStyle(.secondary)
       case .completed:
         HStack {
           Label("识别完成", systemImage: "checkmark.circle.fill").foregroundStyle(theme.success)
@@ -4100,12 +4293,12 @@ private struct HistoryDetailView: View, Equatable {
           }
           .controlSize(.small)
         }
-        .font(.caption)
+        .themedFont(.caption)
       case .cancelled:
         Text(LocalImageTextRecognitionError.cancelled.userMessage)
-          .font(.caption).foregroundStyle(.secondary)
+          .themedFont(.caption).foregroundStyle(.secondary)
       case let .failed(message):
-        Text(message).font(.caption).foregroundStyle(theme.danger)
+        Text(message).themedFont(.caption).foregroundStyle(theme.danger)
       }
       if !recognizedText.isEmpty {
         ScrollView {
@@ -4132,15 +4325,15 @@ private struct HistoryDetailView: View, Equatable {
       openSettings()
     }
     .buttonStyle(.link)
-    .font(.caption)
+    .themedFont(.caption)
     .help("打开模型设置")
   }
 
   private var regeneratePopover: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("重新生成").font(.headline)
+      Text("重新生成").themedFont(.headline)
       Text("直接使用本机保存的正文，不会重新抓取网页。可只为本次运行临时换模型。")
-        .font(.caption).foregroundStyle(.secondary)
+        .themedFont(.caption).foregroundStyle(.secondary)
       // 从已添加的模型里选，不让人手打——模型名拼错不会当场报错，
       // 只会在真正调用时失败，而失败信息未必说得清是名字错了。
       Picker("临时模型", selection: $temporaryModel) {
@@ -4287,7 +4480,7 @@ private struct HistoryTagEditor: View {
                   .accessibilityLabel("移除标签 \(tag.name)")
                 }
               }
-              .font(.caption)
+              .themedFont(.caption)
               .padding(.horizontal, 8).padding(.vertical, 3)
               .background(.quaternary, in: Capsule())
             }
@@ -4332,7 +4525,7 @@ private struct HistoryTagEditor: View {
                 add()
               }
               .buttonStyle(.link)
-              .font(.caption)
+              .themedFont(.caption)
               .accessibilityIdentifier("history-tag-suggestion-\(tag.normalizedName)")
             }
           }
@@ -4342,7 +4535,7 @@ private struct HistoryTagEditor: View {
 
       if model.tagErrorCode != nil {
         Text("无法更新标签；历史记录未发生更改。")
-          .font(.caption).foregroundStyle(.secondary)
+          .themedFont(.caption).foregroundStyle(.secondary)
           .accessibilityIdentifier("history-tag-error")
       }
     }
@@ -4360,7 +4553,7 @@ private struct HistoryTagEditor: View {
       }
     } label: {
       Label(isComposerExpanded ? "收起" : "添加标签", systemImage: isComposerExpanded ? "xmark" : "plus")
-        .font(.caption)
+        .themedFont(.caption)
         .labelStyle(.titleAndIcon)
     }
     .buttonStyle(.borderless)
@@ -4385,14 +4578,14 @@ private struct DataDestinationDisclosureView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       Text("发送前确认")
-        .font(.headline)
+        .themedFont(.headline)
 
       // 这一屏只回答一个问题：正文发给谁。答案就是「服务 + 模型」，其余都不是
       // 决定依据——Base URL 是 host 的展开写法，接口名是实现细节，两者收进默认
       // 收起的详情；原来那两条脚注（API Key 在 Keychain、历史只在本机）讲的是
       // 产品的常态边界，和「这一次要不要发」无关，属于文档而不是拦路弹窗。
       destinationSentence
-        .font(.body)
+        .themedFont(.body)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityIdentifier("data-destination-summary")
 
@@ -4406,11 +4599,11 @@ private struct DataDestinationDisclosureView: View {
           }
           LabeledContent("接口", value: "OpenAI-compatible Chat Completions")
         }
-        .font(.callout)
+        .themedFont(.callout)
         .foregroundStyle(.secondary)
         .padding(.top, 6)
       }
-      .font(.callout)
+      .themedFont(.callout)
 
       HStack {
         Spacer()
@@ -4482,7 +4675,7 @@ private struct ReadOnlyHistoryCallout: View {
         .foregroundStyle(theme.warning)
         .padding(.top, 1)
       Text(message)
-        .font(.body)
+        .themedFont(.body)
         .foregroundStyle(.primary)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -4524,10 +4717,10 @@ private struct MetadataItem: View {
           .truncationMode(.middle)
       }
       if let detail {
-        Text(detail).font(.caption.monospacedDigit()).padding(.leading, 19)
+        Text(detail).themedFont(.caption, monospacedDigit: true).padding(.leading, 19)
       }
     }
-    .font(.callout)
+    .themedFont(.callout)
     .foregroundStyle(.secondary)
     .fixedSize(horizontal: false, vertical: true)
   }
@@ -4784,6 +4977,41 @@ enum CapturedSourceBodyPresentation {
     return remainder.isEmpty
   }
 
+  /// 详情顶上已经有标题时，正文里再印一遍同名标题（外加一行日期/时长）就是重复。
+  ///
+  /// 只剥「和标题同一句话」的开头，以及紧随其后、看起来像稿件信息行的短句。
+  /// 正文里真正的第一节不要动。
+  static func strippingEchoedOpening(title: String, from markdown: String) -> String {
+    let titleKey = canonicalText(title)
+    guard !titleKey.isEmpty else { return markdown }
+    var lines = markdown.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+    guard let headingIndex = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else {
+      return markdown
+    }
+    let headingLine = lines[headingIndex].trimmingCharacters(in: .whitespaces)
+    let headingText = headingLine.hasPrefix("#")
+      ? headingLine.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+      : headingLine
+    guard canonicalText(headingText) == titleKey else { return markdown }
+    lines.remove(at: headingIndex)
+    if let bylineIndex = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
+       isEchoedByline(lines[bylineIndex].trimmingCharacters(in: .whitespaces)) {
+      lines.remove(at: bylineIndex)
+    }
+    while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true {
+      lines.removeFirst()
+    }
+    return lines.joined(separator: "\n")
+  }
+
+  private static func isEchoedByline(_ line: String) -> Bool {
+    guard line.count <= 80, !line.hasPrefix("#") else { return false }
+    let lower = line.lowercased()
+    let looksLikeDate = line.contains("20") && (line.contains("-") || line.contains("年") || line.contains("月"))
+    let looksLikeDuration = lower.contains("min") || line.contains("分钟") || line.contains("字")
+    return looksLikeDate || looksLikeDuration
+  }
+
   private static func canonicalText(_ value: String) -> String {
     String(value.unicodeScalars.filter { CharacterSet.alphanumerics.contains($0) }).lowercased()
   }
@@ -4984,7 +5212,7 @@ private struct LiveRunReadingBody: View {
             ProgressView().controlSize(.small)
           }
           Text(statusText)
-            .font(.body)
+            .themedFont(.body)
             .foregroundStyle(hasFailure ? dangerColor : Color.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -4992,7 +5220,7 @@ private struct LiveRunReadingBody: View {
       } else {
         if hasFailure || !isActive {
           Text(statusText)
-            .font(.callout)
+            .themedFont(.callout)
             .foregroundStyle(hasFailure ? dangerColor : Color.secondary)
         }
         // 外层详情已经是 ScrollView。这里只长正文，不再套一层限高预览框。
@@ -5048,7 +5276,7 @@ private struct ReadingProgressBadge: View {
 
   var body: some View {
     Label("阅读 \(progress.percent)%", systemImage: "book.pages")
-      .font(.caption)
+      .themedFont(.caption)
       .foregroundStyle(.tertiary)
       .monospacedDigit()
       .accessibilityIdentifier("history-reading-progress")

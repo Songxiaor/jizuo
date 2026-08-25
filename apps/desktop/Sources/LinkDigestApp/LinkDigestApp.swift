@@ -116,20 +116,7 @@ enum BrowserReceiverState: Sendable, Equatable {
   }
 
   var canStartRun: Bool {
-    guard
-      storageAvailability.isWriteReady,
-      modelRunOrchestrator != nil,
-      configurationService != nil,
-      consentStore != nil,
-      let currentCapture
-    else {
-      return false
-    }
-    return !currentCapture.document.text
-      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      && !runState.isActive
-      && launchPendingRunID == nil
-      && preparationAttempt == nil
+    runStartUnavailableReason(usingCurrentCapture: true, detail: nil) == nil
   }
 
   var canStopRun: Bool { runState.isActive }
@@ -246,33 +233,25 @@ enum BrowserReceiverState: Sendable, Equatable {
   }
 
   func canStartRun(from detail: HistoryDetailProjection) -> Bool {
-    guard !detail.snapshots.isEmpty else { return false }
-    if currentCapture?.taskID == detail.task.id { return canStartRun }
-    guard storageAvailability.isWriteReady,
-          modelRunOrchestrator != nil,
-          configurationService != nil,
-          consentStore != nil,
-          !runState.isActive,
-          launchPendingRunID == nil,
-          preparationAttempt == nil
-    else { return false }
-    return detail.snapshots.last?.bodyText
-      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    runStartUnavailableReason(usingCurrentCapture: false, detail: detail) == nil
   }
 
   func canTranslate(preferences: ModelPreferences) -> Bool {
-    canStartRun && !isTranslationLanguageMatch(
-      text: currentCapture?.document.text,
-      outputLanguage: preferences.outputLanguage
-    )
+    translateUnavailableReason(
+      usingCurrentCapture: true,
+      detail: nil,
+      preferences: preferences,
+      preferencesReady: true
+    ) == nil
   }
 
   func canTranslate(from detail: HistoryDetailProjection, preferences: ModelPreferences) -> Bool {
-    canStartRun(from: detail)
-      && LayeredSourceDocument.needsTranslation(
-        from: detail.snapshots,
-        outputLanguage: preferences.outputLanguage
-      )
+    translateUnavailableReason(
+      usingCurrentCapture: false,
+      detail: detail,
+      preferences: preferences,
+      preferencesReady: true
+    ) == nil
   }
 
   func translationUnavailableReason(
@@ -282,6 +261,101 @@ enum BrowserReceiverState: Sendable, Equatable {
     isTranslationLanguageMatch(text: text, outputLanguage: outputLanguage)
       ? "捕获内容与输出语言相同，无需翻译。"
       : nil
+  }
+
+  /// 总结为什么现在不能点。可用时返回 nil。
+  ///
+  /// 判断和理由必须是同一份：按钮的 disabled 由本方法推导，不能再各写一套门禁。
+  func summarizeUnavailableReason(
+    usingCurrentCapture: Bool,
+    detail: HistoryDetailProjection?,
+    preferencesReady: Bool
+  ) -> String? {
+    if !preferencesReady { return "先在设置里配置模型" }
+    return runStartUnavailableReason(usingCurrentCapture: usingCurrentCapture, detail: detail)
+  }
+
+  /// 翻译为什么现在不能点。可用时返回 nil。
+  func translateUnavailableReason(
+    usingCurrentCapture: Bool,
+    detail: HistoryDetailProjection?,
+    preferences: ModelPreferences,
+    preferencesReady: Bool
+  ) -> String? {
+    if let reason = summarizeUnavailableReason(
+      usingCurrentCapture: usingCurrentCapture,
+      detail: detail,
+      preferencesReady: preferencesReady
+    ) {
+      return reason
+    }
+    if usingCurrentCapture {
+      return translationUnavailableReason(
+        text: currentCapture?.document.text,
+        outputLanguage: preferences.outputLanguage
+      )
+    }
+    guard let detail else { return "还没有可发送的内容" }
+    return LayeredSourceDocument.needsTranslation(
+      from: detail.snapshots,
+      outputLanguage: preferences.outputLanguage
+    ) ? nil : "捕获内容与输出语言相同，无需翻译。"
+  }
+
+  /// `canStartRun` 的人话版。顺序按用户最可能先撞上的拦下来。
+  func runStartUnavailableReason(
+    usingCurrentCapture: Bool,
+    detail: HistoryDetailProjection?
+  ) -> String? {
+    if !usingCurrentCapture {
+      guard let detail else { return "还没有可发送的内容" }
+      if detail.snapshots.isEmpty { return "这条没有可发送的正文" }
+      if currentCapture?.taskID == detail.task.id {
+        return runStartUnavailableReason(usingCurrentCapture: true, detail: nil)
+      }
+    }
+
+    switch storageAvailability {
+    case .writable:
+      break
+    case .bootstrapping:
+      return "正在准备本地历史…"
+    case .unavailable:
+      return storageStatusText
+    }
+
+    if modelRunOrchestrator == nil || configurationService == nil || consentStore == nil {
+      return "模型服务尚未就绪"
+    }
+
+    if runState.isActive {
+      let verb = runState.intent == .translate ? "翻译" : "总结"
+      let runningID = activeRunTaskID ?? visibleRunTaskID
+      if let runningID {
+        let thisID = usingCurrentCapture ? currentCapture?.taskID : detail?.task.id
+        if thisID == runningID {
+          return "正在\(verb)这条，完成后可再做其他生成"
+        }
+      }
+      return "正在\(verb)其他条目，完成后可再试"
+    }
+
+    if launchPendingRunID != nil || preparationAttempt != nil {
+      return "正在准备发送…"
+    }
+
+    if usingCurrentCapture {
+      guard let currentCapture else { return "还没有可发送的内容" }
+      if currentCapture.document.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        return "这条没有可发送的正文"
+      }
+      return nil
+    }
+
+    if detail?.snapshots.last?.bodyText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false {
+      return "这条没有可发送的正文"
+    }
+    return nil
   }
 
   var isDataDestinationDisclosurePresented: Bool {
@@ -865,6 +939,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   /// 注入 `\.appTheme` 用。视图各自读 AppStorage 会重复三行样板，
   /// 而设置页那几个子视图当初就是因为拿不到主题才写死了 `.red`。
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
+  /// 用户指定的界面字体。空/theme 表示跟随主题。
+  @AppStorage(UIFontSelection.storageKey) private var uiFontRaw = UIFontSelection.defaultStoredValue
 
   private let configurationService: ProviderConfigurationService
   private let provider: any ModelProvider
@@ -1355,7 +1431,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
           minWidth: DesignTokens.Layout.windowMinWidth,
           minHeight: DesignTokens.Layout.windowMinHeight
         )
-        .appThemeEnvironment(appearanceThemeRaw)
+        .appThemeEnvironment(appearanceThemeRaw, uiFontRawValue: uiFontRaw)
     }
     .defaultSize(width: 1200, height: 760)
     // 明确声明这个场景不接任何外部事件。不写这一条，SwiftUI 会把每个进来的
@@ -1381,7 +1457,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         updater: appUpdateController.updaterController.updater
       )
         .background(SettingsWindowResizer())
-        .appThemeEnvironment(appearanceThemeRaw)
+        .appThemeEnvironment(appearanceThemeRaw, uiFontRawValue: uiFontRaw)
     }
     .windowResizability(.contentMinSize)
     // Hiding the toolbar outright also takes the titlebar (and the traffic

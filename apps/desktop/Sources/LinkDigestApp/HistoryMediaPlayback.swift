@@ -1016,7 +1016,7 @@ private struct OnlineTranscriptionPreviewText: View {
   var body: some View {
     ScrollView {
       Text(live.text)
-        .font(.callout)
+        .themedFont(.callout)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1064,9 +1064,9 @@ struct CurrentCaptureMediaPreviewCard: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 8) {
         Label("视频速览", systemImage: "play.rectangle.fill")
-          .font(.headline)
+          .themedFont(.headline)
         Text(CurrentCaptureMediaPreview.kindLabel(descriptor.kind))
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .foregroundStyle(.secondary)
           .padding(.horizontal, 7)
           .padding(.vertical, 3)
@@ -1076,7 +1076,7 @@ struct CurrentCaptureMediaPreviewCard: View {
         // 选的哪条路：整段 mp4（快、上限 720P/1080P）还是 DASH 双轨（能到 4K，慢）。
         // 没有这个标签，「选了高清没变化」分不清是没换路还是换了路仍拿不到高档。
         Text(descriptor.companionAudioURL == nil ? "整段" : "双轨")
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .foregroundStyle(.secondary)
           .padding(.horizontal, 7)
           .padding(.vertical, 3)
@@ -1084,7 +1084,7 @@ struct CurrentCaptureMediaPreviewCard: View {
           .accessibilityIdentifier("history-video-preview-track-mode")
         if let videoPixelHeight {
           Text("\(videoPixelHeight)P")
-            .font(.caption.weight(.medium))
+            .themedFont(.caption, weight: .medium)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
@@ -1156,7 +1156,7 @@ struct CurrentCaptureMediaPreviewCard: View {
         .accessibilityIdentifier("history-video-preview-favorite")
       } else {
         Text("暂不支持保存 HLS")
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
           .accessibilityIdentifier("history-video-preview-favorite")
       }
@@ -1166,7 +1166,7 @@ struct CurrentCaptureMediaPreviewCard: View {
         remoteTranscriptionControl
       } else {
         Text("当前 Debug 暂不支持 HLS 转写")
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
           .accessibilityIdentifier("remote-transcribe")
       }
@@ -1181,7 +1181,7 @@ struct CurrentCaptureMediaPreviewCard: View {
           )
         } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
           .buttonStyle(.link)
-          .font(.caption)
+          .themedFont(.caption)
           .help("双击视频也可放大")
           .accessibilityIdentifier("history-video-preview-cinema")
       }
@@ -1200,14 +1200,14 @@ struct CurrentCaptureMediaPreviewCard: View {
           failure.message,
           systemImage: failure == .networkUnavailable ? "wifi.slash" : "exclamationmark.triangle.fill"
         )
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(appTheme.warning)
           .fixedSize(horizontal: false, vertical: true)
         // 失败时把走的哪条路、哪个主机、什么错误码摆出来。没有这一行，
         // 排查只能靠猜——之前就是这么反复改了七轮还没定位到根因。
         if let diagnostic = playback.playbackDiagnostic {
           Text(diagnostic)
-            .font(.caption2)
+            .themedFont(.caption2)
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
@@ -1312,7 +1312,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       }
       .menuStyle(.borderlessButton)
       .fixedSize()
-      .font(.caption)
+      .themedFont(.caption)
       .accessibilityIdentifier("history-video-preview-quality")
     }
   }
@@ -1359,7 +1359,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       .accessibilityIdentifier("remote-transcribe")
     case .awaitingModelDownload:
       Text("等待模型下载确认")
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(.secondary)
         .accessibilityIdentifier("remote-transcribe-state")
     }
@@ -1438,7 +1438,7 @@ struct CurrentCaptureMediaPreviewCard: View {
           .accessibilityIdentifier("remote-transcribe-cleanup-failure")
         }
       }
-      .font(.caption)
+      .themedFont(.caption)
       .fixedSize(horizontal: false, vertical: true)
       .accessibilityIdentifier("remote-transcribe-state")
     }
@@ -1468,7 +1468,7 @@ struct CurrentCaptureMediaPreviewCard: View {
           Text(message).foregroundStyle(appTheme.danger)
         }
       }
-      .font(.caption)
+      .themedFont(.caption)
       .fixedSize(horizontal: false, vertical: true)
       .accessibilityIdentifier("remote-transcript-tidy-state")
     }
@@ -1480,17 +1480,17 @@ struct CurrentCaptureMediaPreviewCard: View {
       EmptyView()
     case .saving:
       HStack(spacing: 6) { ProgressView().controlSize(.small); Text("正在保存到本地…") }
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(.secondary)
         .accessibilityIdentifier("history-video-preview-favorite-status")
     case .saved:
       Label("已保存到本地", systemImage: "checkmark.circle.fill")
-        .font(.caption.weight(.medium))
+        .themedFont(.caption, weight: .medium)
         .foregroundStyle(appTheme.success)
         .accessibilityIdentifier("history-video-preview-favorite-status")
     case let .failed(message):
       Text(message)
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(appTheme.danger)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityIdentifier("history-video-preview-favorite-status")
@@ -1500,8 +1500,8 @@ struct CurrentCaptureMediaPreviewCard: View {
   private func degradationContent(message: String, nextAction: String, identifier: String) -> some View {
     VStack(alignment: .leading, spacing: 10) {
       Label(message, systemImage: descriptor.kind == .embed ? "rectangle.on.rectangle.slash" : "exclamationmark.triangle.fill")
-        .font(.callout.weight(.medium))
-      Text(nextAction).font(.caption).foregroundStyle(.secondary)
+        .themedFont(.callout, weight: .medium)
+      Text(nextAction).themedFont(.caption).foregroundStyle(.secondary)
       Button("返回浏览器", action: openInBrowser)
         .buttonStyle(.bordered)
         .controlSize(.small)
@@ -1515,7 +1515,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       HStack {
         Spacer()
         Label("正在切换清晰度…", systemImage: "slider.horizontal.3")
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .padding(.horizontal, 10)
           .padding(.vertical, 6)
           .background(.black.opacity(0.62), in: Capsule())
@@ -1539,7 +1539,7 @@ struct CurrentCaptureMediaPreviewCard: View {
         Text(companionAudioURL == nil
           ? "正在读取远程视频信息"
           : "正在连接高清双轨（会员清晰度）；必要时会短暂下载后播放")
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.white.opacity(0.75))
           .multilineTextAlignment(.center)
         Button("取消并重试") {
@@ -1678,9 +1678,9 @@ struct HistorySessionMediaUnavailableCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       Label(HistorySessionMediaPresentation.title, systemImage: "play.rectangle")
-        .font(.headline)
+        .themedFont(.headline)
       Text(HistorySessionMediaPresentation.explanation)
-        .font(.callout)
+        .themedFont(.callout)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
@@ -1690,13 +1690,13 @@ struct HistorySessionMediaUnavailableCard: View {
           ProgressView().controlSize(.small)
           // 次数大于 1 说明刷新在被反复取消重启，而不是请求慢——两者界面本来一模一样。
           Text(refreshAttempts > 1 ? "正在重新获取播放…（第 \(refreshAttempts) 次尝试）" : "正在重新获取播放…")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.secondary)
         }
         .accessibilityIdentifier("history-video-session-refreshing")
       case let .failed(message):
         Text(message)
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(appTheme.warning)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("history-video-session-refresh-failed")
@@ -2183,19 +2183,19 @@ struct HistoryVideoPlayerCard: View {
       HStack(spacing: 12) {
         if let durationSeconds = media?.durationSeconds, durationSeconds > 0 {
           Label(Self.formatDuration(durationSeconds), systemImage: "clock")
-            .font(.caption.monospacedDigit())
+            .themedFont(.caption, monospacedDigit: true)
             .foregroundStyle(.secondary)
         }
         if let byteSize = media?.byteSize, byteSize > 0 {
           Label("已保存到本机 · \(Self.formatByteSize(byteSize))", systemImage: "internaldrive.fill")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.secondary)
             .accessibilityIdentifier("history-video-local-size")
         }
         Spacer(minLength: 0)
         if let saveFeedback {
           Label(saveFeedback, systemImage: "checkmark.circle.fill")
-            .font(.caption.weight(.medium))
+            .themedFont(.caption, weight: .medium)
             .foregroundStyle(appTheme.success)
             .accessibilityIdentifier("history-video-save-feedback")
         }
@@ -2204,13 +2204,14 @@ struct HistoryVideoPlayerCard: View {
       HStack(spacing: 10) {
         transcriptionControl
         Button("另存一份", systemImage: "square.and.arrow.down", action: saveToLocalFile)
+          .themedFont(.body)
           .buttonStyle(.borderless)
           .controlSize(.small)
           .disabled(!LocalMediaExport.isSupportedLocalFile(fileURL))
           .accessibilityIdentifier("history-video-save-local")
         if model.isReadOnly {
           Text("只读模式不能保存转写结果；恢复可写存储后可重试。")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(appTheme.warning)
             .accessibilityIdentifier("history-video-transcription-read-only")
         } else {
@@ -2234,7 +2235,7 @@ struct HistoryVideoPlayerCard: View {
             )
           } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
             .buttonStyle(.link)
-            .font(.caption)
+            .themedFont(.caption)
             .help("双击视频也可放大")
             .accessibilityIdentifier("history-video-cinema")
         }
@@ -2337,7 +2338,7 @@ struct HistoryVideoPlayerCard: View {
           .overlay {
             VStack(spacing: 6) {
               Image(systemName: "rectangle.on.rectangle").font(.title2).foregroundStyle(.white.opacity(0.7))
-              Text("正在放大播放…").font(.caption).foregroundStyle(.white.opacity(0.7))
+              Text("正在放大播放…").themedFont(.caption).foregroundStyle(.white.opacity(0.7))
             }
           }
       } else {
@@ -2393,7 +2394,7 @@ struct HistoryVideoPlayerCard: View {
             : "读不出画面，仅按声音播放",
           systemImage: "waveform"
         )
-        .font(.callout)
+        .themedFont(.callout)
         .foregroundStyle(.secondary)
         VideoPlayer(player: player)
           .frame(height: 64)
@@ -2467,7 +2468,7 @@ struct HistoryVideoPlayerCard: View {
       // 一直都在。把理由摆在旁边，才不会让人以为功能不存在。
       if let tidyBlockedReason {
         Text(tidyBlockedReason)
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
           .accessibilityIdentifier("history-transcript-tidy-blocked-reason")
       }
@@ -2483,7 +2484,7 @@ struct HistoryVideoPlayerCard: View {
           .controlSize(.small)
           .accessibilityIdentifier("history-video-subtitles-cancel")
         if let progress = model.subtitleProgress {
-          Text(progress).font(.caption).foregroundStyle(.secondary)
+          Text(progress).themedFont(.caption).foregroundStyle(.secondary)
         }
       } else {
         Button("读画面字幕") { model.requestBurnedInSubtitles(taskID: taskID) }
@@ -2515,7 +2516,7 @@ struct HistoryVideoPlayerCard: View {
         // 淡得几乎看不见，用户会以为功能不存在。
         if let subtitleTidyBlockedReason {
           Text(subtitleTidyBlockedReason)
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.secondary)
             .accessibilityIdentifier("history-subtitles-tidy-blocked-reason")
         }
@@ -2525,7 +2526,7 @@ struct HistoryVideoPlayerCard: View {
       // 会让人以为按钮坏了。
       if case let .failed(message) = subtitleUIState {
         Text(message)
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
           .accessibilityIdentifier("history-video-subtitles-failed-reason")
       }
@@ -2540,7 +2541,7 @@ struct HistoryVideoPlayerCard: View {
       // 有进度就报进度：长稿要切成十几片跑几分钟，只写「正在校对…」的话，
       // 看不出它是在跑、卡住了、还是快好了。
       Text(model.transcriptTidyProgress.map { "正在用模型校对…\($0)" } ?? "正在用模型校对…")
-        .font(.caption)
+        .themedFont(.caption)
         .accessibilityIdentifier("history-transcript-tidy-progress")
     case .completed:
       let tokens = model.transcriptTidyTokenSummary(for: taskID)
@@ -2548,9 +2549,9 @@ struct HistoryVideoPlayerCard: View {
         tokens.map { "校对稿已保存 · \($0)" } ?? "校对稿已保存为最新原文",
         systemImage: "checkmark.circle.fill"
       )
-      .font(.caption).foregroundStyle(appTheme.success)
-    case .cancelled: Text(TranscriptTidyError.cancelled.userMessage).font(.caption).foregroundStyle(.secondary)
-    case let .failed(message): Text(message).font(.caption).foregroundStyle(appTheme.danger).lineLimit(3)
+      .themedFont(.caption).foregroundStyle(appTheme.success)
+    case .cancelled: Text(TranscriptTidyError.cancelled.userMessage).themedFont(.caption).foregroundStyle(.secondary)
+    case let .failed(message): Text(message).themedFont(.caption).foregroundStyle(appTheme.danger).lineLimit(3)
     }
   }
 
@@ -2558,17 +2559,17 @@ struct HistoryVideoPlayerCard: View {
     switch model.transcriptionState(for: taskID) {
     case .idle:
       if let status = media?.transcriptionStatus, status != .none {
-        Text(Self.transcriptionStatusText(status)).font(.caption).foregroundStyle(.secondary)
+        Text(Self.transcriptionStatusText(status)).themedFont(.caption).foregroundStyle(.secondary)
       }
-    case .preparingMedia: ProgressView().controlSize(.small); Text("正在准备临时媒体…").font(.caption)
-    case .checkingModel: ProgressView().controlSize(.small); Text("正在检查离线听写模型…").font(.caption)
-    case .awaitingModelDownload: Text("等待确认模型下载").font(.caption).foregroundStyle(.secondary)
-    case .preparingModel: ProgressView().controlSize(.small); Text("正在准备离线听写模型…").font(.caption)
-    case .extractingAudio: ProgressView().controlSize(.small); Text("正在从本机视频提取音频…").font(.caption)
-    case .transcribing: ProgressView().controlSize(.small); Text("正在本机转写，音频不会上传…").font(.caption)
-    case .completed: Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(appTheme.success)
-    case .cancelled: Text(LocalVideoTranscriptionError.cancelled.userMessage).font(.caption).foregroundStyle(.secondary)
-    case let .failed(message): Text(message).font(.caption).foregroundStyle(appTheme.danger).lineLimit(3)
+    case .preparingMedia: ProgressView().controlSize(.small); Text("正在准备临时媒体…").themedFont(.caption)
+    case .checkingModel: ProgressView().controlSize(.small); Text("正在检查离线听写模型…").themedFont(.caption)
+    case .awaitingModelDownload: Text("等待确认模型下载").themedFont(.caption).foregroundStyle(.secondary)
+    case .preparingModel: ProgressView().controlSize(.small); Text("正在准备离线听写模型…").themedFont(.caption)
+    case .extractingAudio: ProgressView().controlSize(.small); Text("正在从本机视频提取音频…").themedFont(.caption)
+    case .transcribing: ProgressView().controlSize(.small); Text("正在本机转写，音频不会上传…").themedFont(.caption)
+    case .completed: Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").themedFont(.caption).foregroundStyle(appTheme.success)
+    case .cancelled: Text(LocalVideoTranscriptionError.cancelled.userMessage).themedFont(.caption).foregroundStyle(.secondary)
+    case let .failed(message): Text(message).themedFont(.caption).foregroundStyle(appTheme.danger).lineLimit(3)
     }
   }
 
@@ -2657,20 +2658,20 @@ private struct HistoryStreamingMediaCard: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 8) {
         Label("视频速览", systemImage: "play.rectangle.fill")
-          .font(.headline)
+          .themedFont(.headline)
         Text("联网播放")
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .foregroundStyle(.secondary)
           .padding(.horizontal, 7)
           .padding(.vertical, 3)
           .background(Color.secondary.opacity(0.1), in: Capsule())
         Spacer(minLength: 0)
         if let author = media.author?.trimmingCharacters(in: .whitespacesAndNewlines), !author.isEmpty {
-          Text(author).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+          Text(author).themedFont(.caption).foregroundStyle(.secondary).lineLimit(1)
         }
         if let durationSeconds = media.durationSeconds, durationSeconds > 0 {
           Text(Self.formatDuration(durationSeconds))
-            .font(.caption.monospacedDigit())
+            .themedFont(.caption, monospacedDigit: true)
             .foregroundStyle(.secondary)
         }
       }
@@ -2678,10 +2679,10 @@ private struct HistoryStreamingMediaCard: View {
       if playbackFailed {
         VStack(alignment: .leading, spacing: 8) {
           Label("远程播放失败。地址可能已失效。", systemImage: "exclamationmark.triangle.fill")
-            .font(.callout)
+            .themedFont(.callout)
             .foregroundStyle(appTheme.warning)
           Text("临时播放地址不会写入历史；APP 重启或地址过期后，请回到浏览器重新同步。")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.secondary)
           Button("在浏览器中打开", action: openInBrowser)
             .buttonStyle(.bordered)
@@ -2710,7 +2711,7 @@ private struct HistoryStreamingMediaCard: View {
             .overlay {
               VStack(spacing: 6) {
                 Image(systemName: "rectangle.on.rectangle").font(.title2).foregroundStyle(.white.opacity(0.7))
-                Text("正在放大播放…").font(.caption).foregroundStyle(.white.opacity(0.7))
+                Text("正在放大播放…").themedFont(.caption).foregroundStyle(.white.opacity(0.7))
               }
             }
         } else {
@@ -2756,7 +2757,7 @@ private struct HistoryStreamingMediaCard: View {
             cinema.present(player: player, aspectRatio: streamingAspectRatio)
           } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
             .buttonStyle(.link)
-            .font(.caption)
+            .themedFont(.caption)
             .help("双击视频也可放大")
             .accessibilityIdentifier("history-video-streaming-cinema")
         }

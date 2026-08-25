@@ -426,6 +426,23 @@ final class AppViewModelTests: XCTestCase {
     let preferences = try ModelPreferences(outputLanguage: "简体中文")
 
     XCTAssertFalse(model.canTranslate(preferences: preferences))
+    XCTAssertEqual(
+      model.translateUnavailableReason(
+        usingCurrentCapture: true,
+        detail: nil,
+        preferences: preferences,
+        preferencesReady: true
+      ),
+      "捕获内容与输出语言相同，无需翻译。"
+    )
+    XCTAssertNil(
+      model.summarizeUnavailableReason(
+        usingCurrentCapture: true,
+        detail: nil,
+        preferencesReady: true
+      ),
+      "同语种只挡翻译，总结必须仍可点"
+    )
     await model.translate(preferences: preferences)
 
     XCTAssertEqual(provider.callCount, 0)
@@ -1144,6 +1161,10 @@ final class AppViewModelTests: XCTestCase {
     let cold = AppViewModel()
     XCTAssertEqual(cold.storageAvailability, .bootstrapping)
     XCTAssertFalse(cold.canStartRun)
+    XCTAssertEqual(
+      cold.runStartUnavailableReason(usingCurrentCapture: true, detail: nil),
+      "正在准备本地历史…"
+    )
 
     let readOnly = try makeModel(provider: provider)
     readOnly.receive(currentCapture())
@@ -1441,6 +1462,10 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(model.activeRunTaskID, captureA.taskID)
     XCTAssertEqual(model.visibleRunTaskID, captureA.taskID)
     XCTAssertNotEqual(model.activeRunTaskID, captureB.taskID)
+    XCTAssertEqual(
+      model.runStartUnavailableReason(usingCurrentCapture: true, detail: nil),
+      "正在总结其他条目，完成后可再试"
+    )
     XCTAssertTrue(model.showsVisibleRun(for: captureA.taskID))
     XCTAssertFalse(model.showsVisibleRun(for: captureB.taskID))
     XCTAssertTrue(model.canStopVisibleRun(for: captureA.taskID))
@@ -1469,11 +1494,19 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(model.activeRunTaskID, capture.taskID)
     XCTAssertFalse(model.canStartRun)
     XCTAssertEqual(model.runState, .idle)
+    XCTAssertEqual(
+      model.runStartUnavailableReason(usingCurrentCapture: true, detail: nil),
+      "正在准备发送…"
+    )
 
     repository.releaseCreateRun()
     await startTask.value
     await waitUntil { model.runState == .starting(intent: .summarize) }
     XCTAssertEqual(model.activeRunTaskID, capture.taskID)
+    XCTAssertEqual(
+      model.runStartUnavailableReason(usingCurrentCapture: true, detail: nil),
+      "正在总结这条，完成后可再做其他生成"
+    )
 
     await model.stop()
     await waitUntil { model.runState == .stopped(intent: .summarize, partialText: "") }

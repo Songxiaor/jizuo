@@ -158,6 +158,8 @@ struct ProviderSettingsView: View {
   }
   @AppStorage(ReadingFontSelection.storageKey)
   private var readingFontRaw = ReadingFontSelection.defaultStoredValue
+  @AppStorage(UIFontSelection.storageKey)
+  private var uiFontRaw = UIFontSelection.defaultStoredValue
   @AppStorage(ReadingFontSize.storageKey)
   private var readingFontSizeRaw = Double(ReadingFontSize.default)
 
@@ -192,10 +194,72 @@ struct ProviderSettingsView: View {
   /// 「，」「。」后面会不会裂开大缝，只有真渲染出来才看得见——按字体名判断不出来，
   /// 单字宽度也量不出来（各字体都是 1 em，差别在上下文挤压）。所以预览句必须含
   /// 中文标点和中英混排。
+  /// 「推荐 / 其它」两档的字体选择器。
+  ///
+  /// 分档而不是一长条平铺：74 个自带中文字形的家族里，绝大多数是日文/韩文字体
+  /// （缺简化字，排中文会逐字回退）或书法装饰体（读不了正文）。平铺等于把八个
+  /// 能用的埋进六十几个不能用的里面。
+  ///
+  /// 「其它」仍然全列，不替用户做决定——只是不推荐。
+  @ViewBuilder private func fontPicker(
+    title: String,
+    selection: Binding<String>,
+    themeLabel: String,
+    themeTag: String,
+    recommended: [String],
+    identifier: String
+  ) -> some View {
+    Picker(title, selection: selection) {
+      Text(themeLabel).tag(themeTag)
+      Divider()
+      Section("推荐") {
+        // 每一项用它自己的字形显示，选之前就能看出长什么样。
+        ForEach(recommended, id: \.self) { family in
+          Text(family).font(.custom(family, size: 13)).tag(family)
+        }
+      }
+      Section("其它") {
+        ForEach(RecommendedFonts.others(excluding: recommended), id: \.self) { family in
+          Text(family).font(.custom(family, size: 13)).tag(family)
+        }
+      }
+    }
+    .pickerStyle(.menu)
+    .labelsHidden()
+    .fixedSize()
+    .accessibilityIdentifier(identifier)
+  }
+
+  /// 界面字体预览：故意用界面里**最小**的两个字号。
+  ///
+  /// 界面字体的成败在 10pt 上——计数、时间戳都是这个尺寸，笔画细的字体在这里
+  /// 发虚。用正文字号预览界面字体，等于避开了唯一该看的地方。
+  @ViewBuilder private var uiFontPreview: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text("预览（界面里最小的两个字号）")
+        .themedFont(.caption)
+        .foregroundStyle(.secondary)
+      VStack(alignment: .leading, spacing: 4) {
+        Text("未总结 149     哔哩哔哩 5     待分类 9")
+          .themedFont(.subheadline)
+        Text("2026-08-17 19:24 · 已保存到本机 · 19.6 MB")
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(12)
+      .background(
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.md)
+          .fill(Color.secondary.opacity(0.08))
+      )
+      .accessibilityIdentifier("appearance-ui-font-preview")
+    }
+  }
+
   @ViewBuilder private var readingFontPreview: some View {
     VStack(alignment: .leading, spacing: 6) {
       Text("预览")
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(.secondary)
       Text("众所周知，搜索是 Agent 最基础的能力之一。模型的知识停在训练截止那天。")
         .font(resolvedReadingFont.body())
@@ -244,8 +308,8 @@ struct ProviderSettingsView: View {
       }
       .safeAreaInset(edge: .top, spacing: 0) {
         VStack(alignment: .leading, spacing: 4) {
-          Text(ProductDisplay.name).font(.title3.weight(.semibold))
-          Text("设置").font(.caption).foregroundStyle(.secondary)
+          Text(ProductDisplay.name).themedFont(.title3, weight: .semibold)
+          Text("设置").themedFont(.caption).foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 10)
@@ -344,7 +408,8 @@ struct ProviderSettingsView: View {
         VStack(alignment: .leading, spacing: 8) {
           if model.libraryEntryDisplays.isEmpty {
             Text("还没有添加模型。添加后即可在上方为每个功能选择模型。")
-              .font(.caption).foregroundStyle(.secondary)
+              .themedFont(.body)
+              .themedFont(.caption).foregroundStyle(.secondary)
           } else {
             LazyVGrid(
               columns: [GridItem(.adaptive(minimum: 168), spacing: 8, alignment: .top)],
@@ -371,13 +436,14 @@ struct ProviderSettingsView: View {
           // 而它恰恰是解释这个按钮为什么没成功的那句话。
           if let errorText = model.libraryErrorText {
             Label(errorText, systemImage: "exclamationmark.triangle.fill")
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(appTheme.danger)
               .fixedSize(horizontal: false, vertical: true)
               .accessibilityIdentifier("model-library-error")
           }
           HStack {
             Button("添加模型…") { model.beginAddModel() }
+              .themedFont(.body)
               .buttonStyle(.borderedProminent)
               .controlSize(.small)
               .tint(settingsTheme.accent)
@@ -435,8 +501,9 @@ struct ProviderSettingsView: View {
     if model.libraryEntryDisplays.isEmpty {
       HStack(alignment: .firstTextBaseline) {
         Text("总结与翻译")
+          .themedFont(.body)
         Spacer(minLength: 16)
-        Text("先在下方添加模型").foregroundStyle(.secondary)
+        Text("先在下方添加模型").themedFont(.body).foregroundStyle(.secondary)
       }
     } else {
       assignmentPickerRow(
@@ -454,10 +521,11 @@ struct ProviderSettingsView: View {
 
     HStack(alignment: .firstTextBaseline) {
       Text("图片文字")
+        .themedFont(.body)
       Spacer(minLength: 16)
       VStack(alignment: .trailing, spacing: 2) {
-        Text("Apple Vision").fontWeight(.medium)
-        Text("本机 · 离线").font(.caption).foregroundStyle(.secondary)
+        Text("Apple Vision").themedFont(.body, weight: .medium)
+        Text("本机 · 离线").themedFont(.caption).foregroundStyle(.secondary)
       }
     }
     .accessibilityIdentifier("image-text-assignment-picker")
@@ -470,6 +538,7 @@ struct ProviderSettingsView: View {
   ) -> some View {
     HStack(alignment: .firstTextBaseline) {
       Text(title)
+        .themedFont(.body)
       Spacer(minLength: 16)
       Button {
         activeAssignmentPicker = kind
@@ -477,10 +546,10 @@ struct ProviderSettingsView: View {
         HStack(spacing: 8) {
           VStack(alignment: .trailing, spacing: 2) {
             Text(assignmentDisplayName(kind: kind, entry: selectedEntry))
-              .fontWeight(.medium)
+              .themedFont(.body, weight: .medium)
               .foregroundStyle(.primary)
             Text(assignmentDetail(kind: kind, entry: selectedEntry))
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(.secondary)
           }
           Image(systemName: "chevron.up.chevron.down")
@@ -527,7 +596,7 @@ struct ProviderSettingsView: View {
     let entries = kind == .transcription ? model.transcriptionEntryDisplays : model.summaryEntryDisplays
     return VStack(alignment: .leading, spacing: 0) {
       Text(kind == .transcription ? "选择视频转写模型" : "选择总结与翻译模型")
-        .font(.headline)
+        .themedFont(.headline)
         .padding(.horizontal, 16)
         .padding(.top, 14)
         .padding(.bottom, 10)
@@ -552,7 +621,7 @@ struct ProviderSettingsView: View {
             assignmentSectionTitle(kind == .transcription ? "在线模型" : "已添加的模型")
             ForEach(assignmentProviderTitles(in: entries), id: \.self) { providerTitle in
               Text(providerTitle)
-                .font(.caption.weight(.semibold))
+                .themedFont(.caption, weight: .semibold)
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
@@ -577,7 +646,7 @@ struct ProviderSettingsView: View {
             }
           } else if kind == .transcription {
             Text("还没有添加可用于音频转写的在线模型。")
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(.secondary)
               .padding(16)
           }
@@ -592,7 +661,7 @@ struct ProviderSettingsView: View {
 
   private func assignmentSectionTitle(_ title: String) -> some View {
     Text(title)
-      .font(.caption.weight(.semibold))
+      .themedFont(.caption, weight: .semibold)
       .foregroundStyle(.secondary)
       .textCase(.uppercase)
       .padding(.horizontal, 16)
@@ -610,7 +679,7 @@ struct ProviderSettingsView: View {
       HStack(spacing: 10) {
         VStack(alignment: .leading, spacing: 2) {
           Text(title)
-            .font(.headline)
+            .themedFont(.headline)
             .foregroundStyle(.primary)
           Text(detail)
             .font(.caption.monospaced())
@@ -689,7 +758,7 @@ struct ProviderSettingsView: View {
         HStack(spacing: 6) {
           providerIcon(group.preset, fallbackName: group.id)
           Text(group.id)
-            .font(.subheadline.weight(.semibold))
+            .themedFont(.subheadline, weight: .semibold)
             .lineLimit(1)
             .truncationMode(.tail)
           Spacer(minLength: 4)
@@ -698,7 +767,7 @@ struct ProviderSettingsView: View {
         }
         HStack(spacing: 4) {
           Text("\(group.entries.count) 个模型")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.secondary)
           Spacer(minLength: 0)
           Image(systemName: "chevron.right")
@@ -717,10 +786,10 @@ struct ProviderSettingsView: View {
     HStack(spacing: 10) {
       providerIcon(entry.preset, fallbackName: entry.title)
       VStack(alignment: .leading, spacing: 2) {
-        Text(entry.displayName).font(.headline)
+        Text(entry.displayName).themedFont(.headline)
         // 服务商名已经写在这张卡的标题上，行里再写一遍是噪音；模型 ID 留着，
         // 它是同一家里区分两个模型的唯一凭据。
-        Text(entry.modelName).font(.caption).foregroundStyle(.secondary)
+        Text(entry.modelName).themedFont(.caption).foregroundStyle(.secondary)
       }
       Spacer(minLength: 12)
       if model.summaryAssignmentID == entry.id {
@@ -757,7 +826,7 @@ struct ProviderSettingsView: View {
 
   private func assignmentBadge(_ text: String) -> some View {
     Text(text)
-      .font(.caption2.weight(.semibold))
+      .themedFont(.caption2, weight: .semibold)
       .padding(.horizontal, 6).padding(.vertical, 2)
       .background(Color.accentColor.opacity(0.15), in: Capsule())
       .foregroundStyle(Color.accentColor)
@@ -898,7 +967,7 @@ struct ProviderSettingsView: View {
           )
           .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(settingsTheme.hairline, lineWidth: 1))
           Text("已选择 \(model.selectedCatalogModelCount) 个模型")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(model.selectedCatalogModelCount == 0 ? .secondary : Color.accentColor)
             .accessibilityIdentifier("provider-model-selection-count")
         } else {
@@ -958,7 +1027,10 @@ struct ProviderSettingsView: View {
               paperSidebarRow(tab)
             }
           } header: {
+            // 和主窗侧栏同一个坑：这是 `List` 的分区标题，收不到窗口根部注入的
+            // 环境字体，必须显式给。
             Text(group.title)
+              .themedFont(.subheadline, weight: .semibold)
           }
         }
       }
@@ -990,6 +1062,7 @@ struct ProviderSettingsView: View {
     } label: {
       Label {
         Text(tab.title)
+          .themedFont(.body)
       } icon: {
         SettingsSidebarChip(symbol: tab.symbol, fill: sidebarChipFill(tab))
       }
@@ -1102,7 +1175,7 @@ struct ProviderSettingsView: View {
               .accessibilityIdentifier("topic-schedule-enabled")
             if TopicSchedule.decoded(from: topicScheduleRaw).isEnabled {
               HStack(spacing: 8) {
-                Text("时间").font(.caption).foregroundStyle(.secondary)
+                Text("时间").themedFont(.caption).foregroundStyle(.secondary)
                 Picker("", selection: scheduleBinding(\.hour)) {
                   ForEach(0..<24, id: \.self) { Text(String(format: "%02d", $0)).tag($0) }
                 }
@@ -1149,16 +1222,16 @@ struct ProviderSettingsView: View {
           .pickerStyle(.segmented)
 
           VStack(alignment: .leading, spacing: 5) {
-            Text("从不使用的词").font(.caption).foregroundStyle(.secondary)
+            Text("从不使用的词").themedFont(.caption).foregroundStyle(.secondary)
             TextField("赋能、抓手、闭环…", text: voiceBinding(\.forbiddenWords))
               .textFieldStyle(.roundedBorder)
               .accessibilityIdentifier("voice-forbidden-words")
           }
 
           VStack(alignment: .leading, spacing: 5) {
-            Text("参考段落").font(.caption).foregroundStyle(.secondary)
+            Text("参考段落").themedFont(.caption).foregroundStyle(.secondary)
             TextEditor(text: voiceBinding(\.sample))
-              .font(.callout)
+              .themedFont(.callout)
               .frame(minHeight: 88)
               .scrollContentBackground(.hidden)
               .padding(6)
@@ -1175,15 +1248,43 @@ struct ProviderSettingsView: View {
 
   private var appearanceTab: some View {
     SettingsPlainPage {
-      pageHeader(for: .appearance, caption: "选择界面主题，调整文章的阅读字体与字号。")
+      pageHeader(for: .appearance, caption: "选择界面主题，分别指定界面字体与阅读字体。")
 
       settingCard(
         title: "主题",
         summary: "选择界面明暗与阅读纸色；切换即时生效。",
-        details: "浅色为纸质米黄，暖褐更黄、对比更低，深色为石墨灰，高对比为纯黑白，系统跟随 macOS。暖褐和浅色默认用宋体排文章；指定阅读字体后不再随主题变化。",
+        details: "浅色为纸质米黄，暖褐更黄、对比更低，深色为石墨灰，高对比为纯黑白，系统跟随 macOS。主题同时决定界面字体：浅色用思源宋体、深色用圆体、暖褐用楷体、高对比用 PingFang，系统主题保持 macOS 系统字体。下面两项可以各自覆盖，覆盖后不再随主题变化。",
         controlWidth: .full
       ) {
         ThemeSwatchPicker(selection: $appearanceThemeRaw)
+      }
+
+      // 界面字体和阅读字体分成两张卡、两个偏好，故意不合并：两者的取舍方向相反。
+      // 界面最小 10pt，要的是「立得住」；正文最小 13pt，要的是「读着舒服」。
+      // 同一个字体很少两边都最优，绑在一起等于强迫用户二选一。
+      settingCard(
+        title: "界面字体",
+        summary: "侧栏、列表、按钮与设置页；不影响文章阅读区。",
+        details: "推荐一档只列能自己画完整简体中文、且至少有两个字重的家族。日文与韩文字体（Klee、Hiragino Mincho、YuMincho 等）缺简化字，拿它们排中文会逐字回退到别的字体，一句话里两种字形混排——它们仍在「其它」里，但不推荐。",
+        controlWidth: .full
+      ) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
+          HStack(spacing: DesignTokens.Space.sm) {
+            Text("字体")
+              .themedFont(.subheadline)
+              .foregroundStyle(.secondary)
+            fontPicker(
+              title: "界面字体",
+              selection: $uiFontRaw,
+              themeLabel: "跟随主题",
+              themeTag: UIFontSelection.defaultStoredValue,
+              recommended: RecommendedFonts.ui(),
+              identifier: "appearance-ui-font-picker"
+            )
+            Spacer(minLength: 0)
+          }
+          uiFontPreview
+        }
       }
 
       // 字体选择和字号预览原来是两张卡：选完字体看不到效果，调完字号才在另一张卡
@@ -1196,26 +1297,22 @@ struct ProviderSettingsView: View {
         // 「浅色使用衬线、其它使用无衬线」——那是 New York 时期的行为，
         // 字体改成中文家族后就成了错的文案。
         summary: "只调整文章阅读区；界面控件与代码块保持原字体。",
-        details: "列表只收录自带中文字形的字体家族。像 New York、Georgia 这类只有拉丁字形的字体，中文要逐字回退且不做标点挤压，每个「，」「。」后面都会裂开一道缝，所以不列出来。",
+        details: "列表只收录自带中文字形的字体家族。像 New York、Georgia 这类只有拉丁字形的字体，中文要逐字回退且不做标点挤压，每个「，」「。」后面都会裂开一道缝，所以不列出来。推荐一档还额外要求能画完整的简体中文——日文字体只缺一部分简化字，症状更隐蔽：整段里零星几个字掉到别的字体上。",
         controlWidth: .full
       ) {
         VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
           HStack(spacing: DesignTokens.Space.sm) {
             Text("字体")
-              .font(.subheadline)
+              .themedFont(.subheadline)
               .foregroundStyle(.secondary)
-            // 每一项用它自己的字形显示，选之前就能看出长什么样。
-            Picker("阅读字体", selection: $readingFontRaw) {
-              Text("跟随主题").tag(ReadingFontSelection.defaultStoredValue)
-              Divider()
-              ForEach(ReadingFontCatalog.cjkCapableFamilies(), id: \.self) { family in
-                Text(family).font(.custom(family, size: 13)).tag(family)
-              }
-            }
-            .pickerStyle(.menu)
-            .labelsHidden()
-            .fixedSize()
-            .accessibilityIdentifier("appearance-reading-font-picker")
+            fontPicker(
+              title: "阅读字体",
+              selection: $readingFontRaw,
+              themeLabel: "跟随主题",
+              themeTag: ReadingFontSelection.defaultStoredValue,
+              recommended: RecommendedFonts.reading(),
+              identifier: "appearance-reading-font-picker"
+            )
             Spacer(minLength: 0)
           }
 
@@ -1224,12 +1321,12 @@ struct ProviderSettingsView: View {
           VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
             HStack(spacing: DesignTokens.Space.sm) {
               Text("正文字号")
-                .font(.subheadline)
+                .themedFont(.subheadline)
                 .foregroundStyle(.secondary)
               Spacer(minLength: 0)
             }
             Text("标题与引用按同一比例跟着缩放，不会只有正文变大。")
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 10) {
@@ -1241,7 +1338,7 @@ struct ProviderSettingsView: View {
               .frame(maxWidth: 220)
               .accessibilityIdentifier("appearance-reading-font-size-slider")
               Text(String(format: "%.1f", readingFontSizeRaw))
-                .font(.caption.monospacedDigit())
+                .themedFont(.caption, monospacedDigit: true)
                 .foregroundStyle(.secondary)
                 .frame(width: 34, alignment: .trailing)
               Spacer(minLength: 0)
@@ -1421,7 +1518,7 @@ struct ProviderSettingsView: View {
               .accessibilityIdentifier("revoke-remembered-consents")
               if let consentRevokeNotice {
                 Text(consentRevokeNotice)
-                  .font(.caption)
+                  .themedFont(.caption)
                   .foregroundStyle(.secondary)
               }
             }
@@ -1436,7 +1533,7 @@ struct ProviderSettingsView: View {
       ) {
         VStack(alignment: .leading, spacing: 8) {
           TextEditor(text: $model.summaryPrompt)
-            .font(.callout)
+            .themedFont(.callout)
             .scrollContentBackground(.hidden)
             .frame(minHeight: 96, maxHeight: 140)
             .padding(10)
@@ -1462,9 +1559,9 @@ struct ProviderSettingsView: View {
       // 行背景）取得卡片外观；离开 Form 之后自己直接套 `SettingsThemedCardChrome`，
       // 和站点登录页 `sitesCard` 的做法一致。
       VStack(alignment: .leading, spacing: 10) {
-        Text("自动处理管线").font(.headline)
-        Text("新内容到达后按编号顺序串行执行已开启的步骤。")
-          .font(.callout)
+        Text("自动处理管线").themedFont(.headline)
+        Text("新内容到了可以自动做这些。翻译不在这条链上，要自己点。")
+          .themedFont(.callout)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
 
@@ -1489,7 +1586,7 @@ struct ProviderSettingsView: View {
           pipelineStep(
             index: 3,
             title: "总结",
-            trailingNote: "只发送文字",
+            trailingNote: "读原文，不读译文",
             isOn: $model.autoSummarizeNewCaptures,
             identifier: "auto-pipeline-summarize"
           )
@@ -1532,11 +1629,11 @@ struct ProviderSettingsView: View {
               LabeledContent("Base URL", value: identity.normalizedBaseURL)
             }
           }
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
           .padding(.top, 4)
         }
-        .font(.caption)
+        .themedFont(.caption)
       }
       .padding(.vertical, DesignTokens.Space.md)
       .padding(.horizontal, DesignTokens.Space.lg)
@@ -1680,7 +1777,7 @@ struct ProviderSettingsView: View {
     HStack(alignment: .top, spacing: 10) {
       VStack(spacing: 0) {
         Text("\(index)")
-          .font(.caption2.weight(.bold).monospacedDigit())
+          .themedFont(.caption2, weight: .bold, monospacedDigit: true)
           .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
           .frame(width: 18, height: 18)
           .background(
@@ -1711,12 +1808,12 @@ struct ProviderSettingsView: View {
         }
         if let requirementUnmet {
           Label(requirementUnmet, systemImage: "arrow.turn.left.up")
-            .font(.caption2)
+            .themedFont(.caption2)
             .foregroundStyle(appTheme.warning)
             .fixedSize(horizontal: false, vertical: true)
         } else {
           Text(trailingNote)
-            .font(.caption2)
+            .themedFont(.caption2)
             .foregroundStyle(.tertiary)
         }
       }
@@ -1737,7 +1834,7 @@ struct ProviderSettingsView: View {
       HStack(spacing: 6) {
         providerIcon(preset)
         Text(preset.displayName)
-          .font(.subheadline.weight(.semibold))
+          .themedFont(.subheadline, weight: .semibold)
           .lineLimit(1)
           .truncationMode(.tail)
         Spacer(minLength: 4)
@@ -1753,7 +1850,7 @@ struct ProviderSettingsView: View {
         }
       }
       Text(preset.endpointHost)
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(.secondary)
         .lineLimit(1)
         .truncationMode(.middle)
@@ -1960,6 +2057,10 @@ private struct ThemeSwatchPicker: View {
   var body: some View {
     LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
       ForEach(AppearanceTheme.allCases) { theme in
+        // 这里**不要**加 `withAnimation` 的交叉淡入淡出。试过，实测更慢：
+        // 不加是 234ms 一次重排，加了变成 344ms 摊在 ~13 帧上（每帧 26ms，
+        // 超过 16.7ms 的帧预算），既掉帧总量又更大。一次干脆的重排比一段
+        // 卡顿的过渡好。
         Button { selection = theme.rawValue } label: { swatch(theme) }
           .buttonStyle(.plain)
           .help(theme.displayName)
@@ -1999,7 +2100,7 @@ private struct ThemeSwatchPicker: View {
           }
         }
       Text(theme.displayName)
-        .font(.caption2)
+        .themedFont(.caption2)
         .fontWeight(isSelected ? .semibold : .regular)
         .lineLimit(1)
     }

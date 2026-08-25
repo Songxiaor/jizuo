@@ -335,8 +335,11 @@ final class HistoryContentViewTests: XCTestCase {
   func testRunActionsWaitForStartupPreferencesBeforeGenerating() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    // Action pills gate on preferences readiness before summarize/translate.
-    XCTAssertTrue(detail.contains("!providerSettings.arePreferencesReady"))
+    // 禁用与理由必须同源：不能再各写一套 `canStartRun` / `arePreferencesReady`。
+    XCTAssertTrue(detail.contains("disabled: summarizeUnavailableReason != nil"))
+    XCTAssertTrue(detail.contains("disabled: translateUnavailableReason != nil"))
+    XCTAssertTrue(detail.contains("history-run-blocked-reason"))
+    XCTAssertTrue(detail.contains("preferencesReady: providerSettings.arePreferencesReady"))
     XCTAssertTrue(detail.contains("actionPill"))
     XCTAssertTrue(detail.contains("summarize-history-detail") || detail.contains("summarize-current-capture"))
   }
@@ -415,8 +418,13 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("actionToolbar"))
     XCTAssertTrue(detail.contains("readingSurface"))
     XCTAssertTrue(detail.contains("actionPill"))
-    XCTAssertTrue(detail.contains("prominent: !isOwnWriting && summaryArtifact == nil"))
-    XCTAssertTrue(detail.contains(".buttonStyle(.borderedProminent)"))
+    XCTAssertFalse(
+      detail.contains("summaryArtifact != nil && translationArtifact == nil"),
+      "翻译醒目不能再暗示必须先总结"
+    )
+    let actions = section(in: detail, from: "private var actionToolbar", to: "private var captureAndRunControlsExtras")
+    XCTAssertTrue(actions.contains(".buttonStyle(.borderless)"), "生成动作不应再用填充主按钮和标题抢权重")
+    XCTAssertFalse(actions.contains(".buttonStyle(.borderedProminent)"))
     // Run/capture metadata sits under the title, not after the reading body.
     XCTAssertTrue(detail.contains("history-run-metadata") || detail.contains("if let run = newestRun"))
     XCTAssertTrue(detail.contains("history-capture-metadata"))
@@ -465,23 +473,23 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(detail.contains(".padding(.leading, 48)"))
     // Non-WeChat captures retain their independently extracted social stats;
     // WeChat deliberately never presents that row, including old imports.
-    XCTAssertTrue(detail.contains("sourceFrontmatter.hasProperties || (!isWeChatCapture && sourceFrontmatter.hasEngagementStats)"))
+    XCTAssertTrue(detail.contains("!isWeChatCapture && sourceFrontmatter.hasEngagementStats"))
     XCTAssertTrue(detail.contains("history-engagement-stats"))
+    XCTAssertTrue(detail.contains("sourceByline"), "作者、日期、站点应收成一行，不再各占一列表单")
   }
 
   func testWeChatPropertiesShowSourceFieldsWithoutInventingEngagementStats() {
     let source = historyContentViewSource()
-    let strip = section(in: source, from: "private func notePropertiesStrip", to: "private func propertyRow")
-    XCTAssertTrue(strip.contains("note.accountName"))
+    let byline = section(in: source, from: "private var sourceBylineText", to: "private var hasCollapsedRunMetadata")
+    XCTAssertTrue(byline.contains("sourceFrontmatter.accountName"), "公众号名应出现在 byline，不再单独占一行")
     // The cover thumbnail was removed on purpose: a WeChat cover is usually a
     // repeat of the first body image or a promotional card, and showing it above
     // the text displaced the article's real opening. The body carries its own
     // images in the author's order, which is the only ordering worth trusting.
-    XCTAssertFalse(strip.contains("history-wechat-cover-image"))
-    XCTAssertTrue(strip.contains("!isWeChatCapture && note.hasEngagementStats"))
-    XCTAssertFalse(strip.contains("read_num"))
-    XCTAssertFalse(strip.contains("like_num"))
-    XCTAssertTrue(source.contains("(!isWeChatCapture && sourceFrontmatter.hasEngagementStats)"))
+    XCTAssertFalse(source.contains("history-wechat-cover-image"))
+    XCTAssertTrue(source.contains("!isWeChatCapture && sourceFrontmatter.hasEngagementStats"))
+    XCTAssertFalse(source.contains("read_num"))
+    XCTAssertFalse(source.contains("like_num"))
     XCTAssertTrue(source.contains("appendsUnusedLocalImages: !isWeChatCapture"))
     XCTAssertTrue(source.contains("groupsConsecutiveImages: !isWeChatCapture"))
   }
@@ -542,6 +550,29 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("defaultReadingPane"))
     XCTAssertTrue(detail.contains("showsLiveRunInReadingPane || hasResultBody || hasSourceBody"))
     XCTAssertTrue(detail.contains("if !presentsArticleBeforeMedia, showsReadingSurface"))
+  }
+
+  func testEchoedOpeningTitleIsStrippedFromTheReadingCard() {
+    let title = "The deepseek of DeepSeek Harness: Overengineering or built for self-evolution?"
+    let body = """
+    # \(title)
+
+    2026-08-20 36 min
+
+    对 DeepSeek Harness 的一次 deepseek。
+    """
+    let stripped = CapturedSourceBodyPresentation.strippingEchoedOpening(title: title, from: body)
+    XCTAssertFalse(stripped.contains(title), "阅读卡不应再印一遍已经在页眉的标题")
+    XCTAssertFalse(stripped.contains("36 min"), "紧跟标题的日期/时长行也是重复信息")
+    XCTAssertTrue(stripped.contains("对 DeepSeek Harness 的一次 deepseek。"))
+    XCTAssertEqual(
+      CapturedSourceBodyPresentation.strippingEchoedOpening(title: title, from: "目录\n\n第一节"),
+      "目录\n\n第一节",
+      "对不上标题的开头不能剥"
+    )
+    let source = historyContentViewSource()
+    XCTAssertTrue(source.contains("strippingEchoedOpening(title: title, from: cleaned)"))
+    XCTAssertTrue(source.contains("guard !isOwnWriting else { return cleaned }"))
   }
 
   func testHistoryTagEmptyStateIsMinimalWithoutLongHint() {
@@ -857,13 +888,11 @@ final class HistoryContentViewTests: XCTestCase {
   func testDetailPropertiesMetadataAndPrimaryActionsPrecedeVideoCard() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    let properties = detail.range(of: "notePropertiesStrip(sourceFrontmatter)")
-    let metadata = detail.range(of: "metadata\n")
+    let byline = detail.range(of: "sourceByline")
     let actions = detail.range(of: "actionToolbar\n")
     let video = detail.range(of: "HistoryVideoPlayerCard(")
-    XCTAssertNotNil(properties); XCTAssertNotNil(metadata); XCTAssertNotNil(actions); XCTAssertNotNil(video)
-    XCTAssertLessThan(properties!.lowerBound, video!.lowerBound)
-    XCTAssertLessThan(metadata!.lowerBound, video!.lowerBound)
+    XCTAssertNotNil(byline); XCTAssertNotNil(actions); XCTAssertNotNil(video)
+    XCTAssertLessThan(byline!.lowerBound, video!.lowerBound)
     XCTAssertLessThan(actions!.lowerBound, video!.lowerBound)
   }
 
@@ -1143,14 +1172,17 @@ final class HistoryContentViewTests: XCTestCase {
       "example.com · /this/is/a/very/long/path/that/ne…"
     )
     XCTAssertEqual(HistorySourceLinkPresentation.text("not a url"), "not a url")
+    XCTAssertEqual(HistorySourceLinkPresentation.host("https://www.zhenjia.dev/posts/x"), "zhenjia.dev")
+    XCTAssertNil(HistorySourceLinkPresentation.host("not a url"))
   }
 
   func testDetailBindsLatestRunMetadataAndTokenBreakdownWithoutCostEstimate() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    let header = section(in: source, from: "private var metadata: some View {", to: "private var hasCollapsedRunMetadata")
+    let header = section(in: source, from: "private var sourceByline: some View {", to: "private var hasCollapsedRunMetadata")
     let extras = section(in: source, from: "private var collapsedRunMetadata: some View {", to: "private func metadataRow")
-    XCTAssertTrue(header.contains("title: \"创建时间\""))
+    XCTAssertTrue(header.contains("sourceBylineText"), "标题下应是一行 byline，不再单独占「创建时间」表单行")
+    XCTAssertFalse(header.contains("title: \"创建时间\""), "创建时间已并入 byline")
     XCTAssertFalse(header.contains("title: \"操作\""), "操作不应再占标题下那一行")
     XCTAssertFalse(header.contains("title: \"Token\""), "Token 总账应进运行详情")
     XCTAssertFalse(header.contains("title: \"视频\""), "视频描述应进运行详情")
@@ -1707,6 +1739,120 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(
       pane.contains("showsLayeredSource, let caption"),
       "配文必须是分层分支里可选的一层，不能充当整支的进入条件"
+    )
+  }
+
+  /// 画面字幕和视频转写不能同时铺在页面上。
+  ///
+  /// 它们是同一段话的两个版本，纵向叠着意味着要滚过整份字幕才够得着转写稿，
+  /// 而没有人会顺着读完一个再读另一个。改成一次只显示一层、用分段控件切换。
+  ///
+  /// 断言的是**不变量**：分层分支里必须出现按层分发的 switch，且三层各自的
+  /// 渲染要互斥；只要有人把它改回顺序罗列（三个 if 并排），这条就红。
+  func testSourceLayersAreSwitchedNotStacked() {
+    let source = historyContentViewSource()
+    let pane = section(
+      in: source,
+      from: "private var sourcePaneBody: some View",
+      to: "private func collapsibleSourceSection"
+    )
+    // 分层分支的入口
+    guard let branch = pane.range(of: "} else if showsLayeredSource {") else {
+      return XCTFail("分层分支不见了，这条测试盯错了地方")
+    }
+    let layered = String(pane[branch.lowerBound...])
+    XCTAssertTrue(
+      layered.contains("switch activeSourceLayer"),
+      "分层分支应当按选中的层分发，而不是把几层顺序铺开"
+    )
+    XCTAssertTrue(
+      layered.contains("sourceLayerPicker"),
+      "多于一层时要给出切换控件，否则另一层没有入口"
+    )
+    // 切换控件本身：三层都要能选到，顺序与文档层次一致。
+    let picker = section(
+      in: source,
+      from: "private var sourceLayerPicker: some View",
+      to: "private var readingPanePicker"
+    )
+    XCTAssertTrue(picker.contains("availableSourceLayers"), "可选项应当来自实际存在的层")
+    XCTAssertTrue(picker.contains("history-source-layer-picker"))
+  }
+
+  /// 只有一层时不该出现分段控件——没有选择余地的控件只是看起来像有。
+  func testSourceLayerPickerHidesWhenOnlyOneLayer() {
+    let source = historyContentViewSource()
+    let gate = section(
+      in: source,
+      from: "private var showsSourceLayerPicker: Bool",
+      to: "private var showsLayeredSource"
+    )
+    XCTAssertTrue(
+      gate.contains("availableSourceLayers.count > 1"),
+      "单层记录不该显示层切换控件"
+    )
+  }
+
+  /// 翻译页必须和原文页一样按层切换，不能把各层纵向叠着。
+  ///
+  /// 翻译是整份文档一次翻完的，回来时只剩 `## 配文` 这样的文本。第一版
+  /// 忘了把开头的标题行从层数里拿掉，于是控件一次都没出现过，译文照旧
+  /// 叠着——不报错，只是功能像没做。这里钉住接线和那个判据。
+  func testTranslationLayersAreSwitchedNotStacked() {
+    let source = historyContentViewSource()
+    let pane = section(
+      in: source,
+      from: "private func readingPaneBody",
+      to: "private var sourcePaneBody"
+    )
+    XCTAssertTrue(
+      pane.contains("showsTranslationLayerPicker"),
+      "翻译页应当按层数决定要不要出切换控件"
+    )
+    XCTAssertTrue(
+      pane.contains("translationLayerPicker"),
+      "多于一层时要给出切换控件，否则另一层没有入口"
+    )
+    XCTAssertTrue(
+      pane.contains("activeTranslationBody"),
+      "分层时只该喂当前这一层，不能把整篇译文平铺上去"
+    )
+
+    let picker = section(
+      in: source,
+      from: "private var translationLayerPicker: some View",
+      to: "private func layerPicker"
+    )
+    XCTAssertTrue(picker.contains("availableTranslationLayers"), "可选项应当来自拆出来的层")
+    XCTAssertTrue(picker.contains("history-translation-layer-picker"))
+
+    let available = section(
+      in: source,
+      from: "private var availableTranslationLayers",
+      to: "private var activeTranslationLayer"
+    )
+    XCTAssertTrue(
+      available.contains("translationPreamble"),
+      "开头的标题行必须从层数里拿掉，否则控件永远出不来"
+    )
+    XCTAssertTrue(available.contains("dropFirst()"))
+  }
+
+  /// 有切换控件时，层名小标题和空的工具条行都要去掉。
+  func testLayerHeadingIsOmittedWhenThePickerIsVisible() {
+    let source = historyContentViewSource()
+    let chrome = section(
+      in: source,
+      from: "private func collapsibleSourceSection",
+      to: "private func sourceLayerHeading"
+    )
+    XCTAssertTrue(
+      chrome.contains("let showsHeading = !showsSourceLayerPicker"),
+      "有切换控件时不应再渲染一层同名小标题"
+    )
+    XCTAssertTrue(
+      chrome.contains("if showsHeading || showsExpandControl"),
+      "标题和展开按钮都没有时，整行工具条都要去掉，否则会留下空行"
     )
   }
 

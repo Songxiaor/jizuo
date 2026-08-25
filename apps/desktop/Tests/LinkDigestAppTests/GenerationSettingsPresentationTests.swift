@@ -42,6 +42,14 @@ final class GenerationSettingsPresentationTests: XCTestCase {
     XCTAssertFalse(
       tab.contains("Toggle(\"自动转写（本机）\""),
       "平级 Toggle 的写法回来了，链条结构就没了")
+    XCTAssertTrue(
+      tab.contains("翻译不在这条链上"),
+      "自动链不能看起来像还要先翻译再总结"
+    )
+    XCTAssertTrue(
+      tab.contains("读原文，不读译文"),
+      "总结吃的是原文，必须写在步骤上"
+    )
   }
 
   /// 上游没开时，下游必须当场说明为什么，而不是让人事后发现没生效。
