@@ -112,7 +112,9 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     // 已添加的模型按服务商归拢：服务商名写在分组卡的标题上，行里只留模型 ID。
     // 2026-08-06 之前是平铺，每行都重复一次「服务商 · 模型」。
     XCTAssertTrue(service.contains("libraryProviderGroups"))
-    XCTAssertTrue(service.contains("Text(entry.modelName).font(.caption)"))
+    // 同上：锁「模型 ID 用 caption 字号」，不锁它走 .font 还是 .themedFont。
+    XCTAssertNotNil(
+      service.range(of: #"Text\(entry\.modelName\)\.\w*[Ff]ont\(\.caption\)"#, options: .regularExpression))
     XCTAssertFalse(service.contains("Text(\"\\(entry.title) · 在线转写\").tag(entry.id)"))
     XCTAssertTrue(source.contains("ProviderIconCatalog.image(for: preset)"))
   }

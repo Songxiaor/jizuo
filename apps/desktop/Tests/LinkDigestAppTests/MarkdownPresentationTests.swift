@@ -8,15 +8,23 @@ final class MarkdownPresentationTests: XCTestCase {
   func testPaperThemeUsesOfficialClaudePaletteAndEditorialTypographyOnly() throws {
     let paper = AppearanceTheme.paper.tokens
 
-    // canvas 是 sunken(#EFEDE5) 而不是最亮的 #FAF9F5：三栏要能分层。首版给
-    // canvas 用亮底时，中栏到详情卡片只差 1.2% 灰阶，实机上根本看不出是两层。
-    assertColor(paper.canvas, red: 0xEF, green: 0xED, blue: 0xE5)
+    // canvas 是 sunken 而不是最亮的 #FDFCF9：三栏要能分层。首版给 canvas 用
+    // 亮底时，中栏到详情卡片只差 1.2% 灰阶，实机上根本看不出是两层。
+    //
+    // 2026-08-25 从 #EFEDE5 再调暗到 #E6E3D8：唯一那条看得见的明度边界原本落在
+    // 导航列和列表列之间（两个都是辅助列），调暗后挪到「辅助区 vs 正文区」，
+    // 明度差 4% → 9%。
+    assertColor(paper.canvas, red: 0xE6, green: 0xE3, blue: 0xD8)
     assertColor(paper.primaryText, red: 0x14, green: 0x14, blue: 0x13)
-    // 次要文字偏离官方 palette 的 #B0AEA5：那个值在正文卡上对比度只有 2.2:1，
-    // 真实信息（批量进度、引导文字）读不清。#6E6C63 在卡面 5.1:1、画布 4.5:1，
-    // 是同色相里能过 WCAG AA 的最浅一档。
-    assertColor(paper.secondaryText, red: 0x6E, green: 0x6C, blue: 0x63)
-    assertColor(paper.hairline, red: 0xE8, green: 0xE6, blue: 0xDC)
+    // 次要文字和分隔线跟着画布重算——底色一暗，压在上面的两档就得跟着深，
+    // 否则白调过的对比度全部作废：
+    //
+    // - 次要文字：官方 palette 的 #B0AEA5 在正文卡上只有 2.2:1，真实信息
+    //   （批量进度、引导文字）读不清；旧的 #6E6C63 过 AA 但余量薄，现在是 #656356。
+    // - 分隔线：旧的 #E8E6DC 在新画布上只有 1.027:1（旧画布上还有 1.067:1），
+    //   等于看不见，现在是 #DFDCD1。
+    assertColor(paper.secondaryText, red: 0x65, green: 0x63, blue: 0x56)
+    assertColor(paper.hairline, red: 0xDF, green: 0xDC, blue: 0xD1)
     assertColor(paper.accent, red: 0xD9, green: 0x77, blue: 0x57)
     XCTAssertTrue(AppearanceTheme.paper.usesEditorialReadingTypography)
     XCTAssertFalse(AppearanceTheme.glass.usesEditorialReadingTypography)
@@ -152,9 +160,12 @@ final class MarkdownPresentationTests: XCTestCase {
     // 「跟随主题」在纸质主题下要衬线质感，但必须是**中文**衬线：原来解析成
     // system(design:.serif)（New York，无中文字形），中文逐字回退且不做标点挤压，
     // 每个「，」「。」后面都会裂开一道缝。
+    //
+    // 2026-08-25 从 Songti SC 换成思源宋体 VF：Songti SC 只有 2 个字重，上屏
+    // 发虚；思源宋体 7 个真字重，是这台机器上唯一撑得住完整界面层级的中文衬线。
     XCTAssertEqual(
       ReadingFontSelection.theme.resolved(usesEditorialReadingTypography: true, bodySize: 16.5),
-      ResolvedReadingFont(face: .named("Songti SC"), bodySize: 16.5)
+      ResolvedReadingFont(face: .named("思源宋体 VF"), bodySize: 16.5)
     )
     XCTAssertEqual(
       ReadingFontSelection.theme.resolved(usesEditorialReadingTypography: false, bodySize: 16.5),

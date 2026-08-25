@@ -2,13 +2,14 @@ import AppKit
 import SwiftUI
 
 /// 用户可选外观：玻璃（系统原生 material）、纸质米黄、墨黑（石墨灰）、
-/// 暖褐（低对比护眼）、高对比（黑白）。
+/// 石楠（冷灰紫）、珊瑚（暖粉）、高对比（黑白）。
 /// 颜色统一收口为令牌，视图不直接写色值。
 enum AppearanceTheme: String, CaseIterable, Identifiable {
   case glass
   case paper
   case ink
   case sepia
+  case coral
   case mono
 
   static let storageKey = "com.syc.linkdigest.appearance-theme"
@@ -21,6 +22,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
     case .paper: "浅色"
     case .ink: "深色"
     case .sepia: "石楠"
+    case .coral: "珊瑚"
     case .mono: "高对比"
     }
   }
@@ -31,6 +33,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
     case .paper: "sun.max"
     case .ink: "moon"
     case .sepia: "leaf"
+    case .coral: "drop"
     case .mono: "circle.lefthalf.filled"
     }
   }
@@ -39,7 +42,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
   var colorScheme: ColorScheme? {
     switch self {
     case .glass: nil
-    case .paper, .sepia, .mono: .light
+    case .paper, .sepia, .coral, .mono: .light
     case .ink: .dark
     }
   }
@@ -51,7 +54,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
   /// 逼着人回答「这套主题读长文用不用宋体」，而不是默默继承一个 false。
   var usesEditorialReadingTypography: Bool {
     switch self {
-    case .paper, .sepia: true
+    case .paper, .sepia, .coral: true
     case .glass, .ink, .mono: false
     }
   }
@@ -69,14 +72,14 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
   /// 脑图这类独立生成产物（有自己整块底色的 SVG/位图）默认走深色还是浅色。
   ///
   /// 只决定「用户没显式选过风格时的默认值」，不覆盖任何已保存的选择。
-  /// 深色主题默认深色，三套浅色主题默认浅色；玻璃主题跟随系统当前明暗。
+  /// 深色主题默认深色，四套浅色主题默认浅色；玻璃主题跟随系统当前明暗。
   @MainActor static func currentPrefersDarkGeneratedArtwork(
     defaults: UserDefaults = .standard
   ) -> Bool {
     let theme = AppearanceTheme(rawValue: defaults.string(forKey: storageKey) ?? "") ?? .glass
     switch theme {
     case .ink: return true
-    case .paper, .sepia, .mono: return false
+    case .paper, .sepia, .coral, .mono: return false
     case .glass:
       return NSApp?.effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
     }
@@ -93,7 +96,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
   var renderingAppearance: NSAppearance? {
     switch self {
     case .glass: nil
-    case .paper, .sepia, .mono: NSAppearance(named: .aqua)
+    case .paper, .sepia, .coral, .mono: NSAppearance(named: .aqua)
     case .ink: NSAppearance(named: .darkAqua)
     }
   }
@@ -254,6 +257,43 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
         info: themeColor(0x3C, 0x58, 0x74),    // sky #6A9BCC 压到 56%，4.58:1
         encodesStatusByShape: false
       )
+    case .coral:
+      // 第六套主题，也是官方色板还能凑出的**最后**一套浅色。
+      //
+      // 上一轮把色板里所有组合都跑了一遍：kraft 和 cloud 的分栏差 17.5 / 23.0
+      // （官方色板在它们和 ivory 之间没有中间值），cactus 分栏差 15.8 且是绿的，
+      // 只有 coral 三项全过——对浅色 ΔE 12.3、对石楠 14.1、分栏差 8.9。
+      HistoryThemeTokens(
+        identity: "coral",
+        isNative: false,
+        // 冬青黑。这套底色是低饱和粉，字形再带风格就腻了——宋（浅色）、圆
+        // （深色）、楷（石楠）三种有性格的字面已经各占一套。
+        //
+        // 它和高对比的 PingFang SC 不冲突：那一套要的是「看得清」，取字面最开
+        // 的；这里要的是比 PingFang 更软一点的黑体，冬青的字面稍窄、笔尖略圆。
+        // W3/W6 两个字重，`headline` 的 semibold 有着落（只有一个字重的字体会让
+        // 小标题和正文一样粗，而且不报错）。
+        typography: .family("Hiragino Sans GB"),
+        canvas: CoralPalette.sunkenPaper,     // #EBCECE  导航列 / 列表列
+        listPane: CoralPalette.sunkenPaper,
+        // 和石楠同构：卡片比画布亮一档，低对比主题里 hairline 也淡，
+        // 卡片再同色就分不出边界。
+        card: CoralPalette.raisedPaper,       // #FAF9F5
+        selectionFill: CoralPalette.fig,      // #C46686
+        selectionText: CoralPalette.onAccent,
+        hairline: CoralPalette.rule,          // #E8E6DC
+        badge: CoralPalette.badge,            // #B0AEA5
+        primaryText: CoralPalette.ink,        // #141413
+        secondaryText: CoralPalette.fadedInk, // #3D3D3A
+        accent: CoralPalette.fig,
+        // 和石楠同一批按 AA 压深过的取值。在珊瑚这张更亮的画布上只会更宽裕
+        // （4.94–5.02 : 1，卡片面 6.91–7.02 : 1），所以直接沿用，不另调一套。
+        success: themeColor(0x4E, 0x5B, 0x3C), // olive 压到 65%
+        warning: themeColor(0x6A, 0x51, 0x40), // kraft 压到 50%
+        danger: themeColor(0x87, 0x42, 0x2B),  // accent 压到 68%
+        info: themeColor(0x3C, 0x58, 0x74),    // sky 压到 56%
+        encodesStatusByShape: false
+      )
     case .mono:
       // 可读性优先：纯白底、纯黑字，强调色也是黑。
       //
@@ -263,7 +303,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
       HistoryThemeTokens(
         identity: "mono",
         isNative: false,
-        // 这套主题的目的是**看得清**，不是有性格。所以取四套里字面最开、
+        // 这套主题的目的是**看得清**，不是有性格。所以取五套里字面最开、
         // 小字号最稳的 PingFang SC，而不是任何一种有风格的字体。
         //
         // 它不等于系统字体：系统字体是 SF Pro（中文才回退到 PingFang），
@@ -398,6 +438,49 @@ private enum SepiaPalette {
   /// 配白字 3.68:1——按 WCAG 大字/粗体的 3:1 门槛是过的，而且比现状浅色的
   /// clay（3.12:1）还好一档。这是全 App 一致的既有取舍，不是这套主题的新问题。
   static let ochre = themeColor(0x78, 0x8C, 0x5D)
+  /// `--swatch--ivory-light`。压在强调色上的文字。
+  static let onAccent = themeColor(0xFA, 0xF9, 0xF5)
+}
+
+/// 珊瑚主题。暖粉画布 + 近白正文卡，全部取自 anthropic.com 的官方色板。
+///
+/// 和石楠的关系是**冷暖对角**：石楠是冷灰紫配橄榄绿，珊瑚是暖粉配莓红，
+/// 两者画布 ΔE 14.1，不会看成同一套。
+private enum CoralPalette {
+  /// `--swatch--coral`。侧栏与列表列。
+  static let sunkenPaper = themeColor(0xEB, 0xCE, 0xCE)
+  /// `--swatch--ivory-light`。正文卡。比画布亮 8.5 个 L* 单位。
+  static let raisedPaper = themeColor(0xFA, 0xF9, 0xF5)
+  /// `--swatch--ivory-dark`。分隔线。
+  ///
+  /// 石楠那套用的是 oat，这里**换成 ivory-dark**：oat 在 coral 画布上只有
+  /// 1.064（门槛 1.05，余量只剩 0.014），一旦有人微调画布就会跌破；两面还失衡
+  /// （画布 1.064 / 卡片 1.314）。ivory-dark 是 1.178 / 1.188，和石楠的手感
+  /// （1.166 / 1.192）几乎一样。
+  ///
+  /// 石楠当初拒绝 ivory-dark 是因为它对 ivory-medium 卡片只有 1.077——珊瑚的
+  /// 卡片是更亮的 ivory-light，同一支色在这里反而是最稳的。
+  static let rule = themeColor(0xE8, 0xE6, 0xDC)
+  /// `--swatch--ivory-dark`。徽章底，和分隔线同一支。
+  ///
+  /// 先选的是 cloud-medium（对画布 1.509，指标上最漂亮的一支）。部署后放大看，
+  /// 侧栏那排计数**发脏**：它是冷灰，压在暖粉画布上两个色温直接打架，同屏
+  /// 的选中态徽章（走强调色，是粉的）一对比就露馅。指标能证伪，不能生成——
+  /// 这一条又验证了一次。
+  ///
+  /// 换成 ivory-dark：暖白，和石楠一样走「徽章比画布更亮一档」（石楠 1.290、
+  /// 这里 1.178），色温和画布同侧。托 slate-medium 文字 8.71:1。
+  ///
+  /// 和 `rule` 同色是刻意的：色板里够暖又够亮的只有这一支，而分隔线是 1px 的
+  /// 线、徽章是色块，同色不会互相混淆。
+  static let badge = themeColor(0xE8, 0xE6, 0xDC)
+  /// `--swatch--slate-dark`。正文：对画布 12.5:1、对卡 17.5:1。
+  static let ink = themeColor(0x14, 0x14, 0x13)
+  /// `--swatch--slate-medium`。次要文字：对画布 7.40:1、对卡 10.34:1。
+  static let fadedInk = themeColor(0x3D, 0x3D, 0x3A)
+  /// `--swatch--fig`。强调色。配白字 3.57:1，过大字/粗体的 3:1 门槛，
+  /// 比浅色主题的 clay（3.12:1）还宽一点。
+  static let fig = themeColor(0xC4, 0x66, 0x86)
   /// `--swatch--ivory-light`。压在强调色上的文字。
   static let onAccent = themeColor(0xFA, 0xF9, 0xF5)
 }

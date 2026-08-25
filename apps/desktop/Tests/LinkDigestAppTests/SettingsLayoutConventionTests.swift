@@ -169,8 +169,13 @@ final class SettingsLayoutConventionTests: XCTestCase {
       return XCTFail("SettingsCard 的类型声明不见了")
     }
     let card = String(shared[start.lowerBound...].prefix(6000))
+    // 字体修饰符写成正则而不是字面量：这条断言被 `.font(.headline)` →
+    // `.themedFont(.headline)`（主题带上界面字体那一轮）打红过一次，而布局
+    // 一个像素都没动。这里要锁的不变量是「标题用 headline 字号、和主控件同行」，
+    // 不是标题走的哪一套字体管线。
     XCTAssertTrue(
-      card.contains("Text(title).font(.headline)") && card.contains("titleAccessory()"),
+      card.range(of: #"Text\(title\)\.\w*[Ff]ont\(\.headline\)"#, options: .regularExpression) != nil
+        && card.contains("titleAccessory()"),
       "标题和主控件要在同一行，中间靠 Spacer 撑开成右对齐一列")
     XCTAssertTrue(
       card.contains("Spacer(minLength:"),
