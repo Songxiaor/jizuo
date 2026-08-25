@@ -178,10 +178,18 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
         secondaryText: ClaudePalette.midGray, // #6E6C63
         accent: ClaudePalette.orange,
         // 纸底上的状态色统一降饱和：默认的 .green/.red 在暖白纸上过跳。
-        success: themeColor(0x5A, 0x8A, 0x5C),
-        warning: themeColor(0xC0, 0x8A, 0x3E),
-        danger: themeColor(0xB5, 0x54, 0x4A),
-        info: themeColor(0x4A, 0x7A, 0x8C),
+        //
+        // 2026-08-26 按 AA 收口。这一批取值原本只顾了「不过跳」，没验过对比度：
+        // 实测 warning 在画布上只有 2.35:1、success 3.13:1，作为文字色远低于
+        // WCAG AA 的 4.5:1——错误提示、批量进度这些真要读的字首当其冲。
+        //
+        // 压深方式和石楠那批一致：**只按比例降明度，不动色相**，保住「绿=成功、
+        // 红=危险」的认知。压到刚过 4.5:1 就停，避免把纸质主题压出一片死黑。
+        // 两个面都验过，画布是更难的那面（#E6E3D8 比正文卡 #FDFCF9 暗）。
+        success: themeColor(0x48, 0x6E, 0x4A), // 原 #5A8A5C 压到 80%，画布 4.53:1
+        warning: themeColor(0x83, 0x5E, 0x2A), // 原 #C08A3E 压到 68%，画布 4.54:1
+        danger: themeColor(0xA1, 0x4B, 0x42),  // 原 #B5544A 压到 89%，画布 4.54:1
+        info: themeColor(0x41, 0x6B, 0x7B),    // 原 #4A7A8C 压到 88%，画布 4.52:1
         encodesStatusByShape: false
       )
     case .ink:

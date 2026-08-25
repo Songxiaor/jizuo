@@ -143,15 +143,23 @@ final class PaperThemeContrastTests: XCTestCase {
       XCTAssertGreaterThanOrEqual(
         contrastRatio(t.hairline, t.card), 1.05, "\(name)：分隔线在正文卡上看不见"
       )
-      // 状态色**故意不在这里断言**。
+      // 状态色曾经**故意不断言**：那一批取值定得早，只顾了「在纸上不过跳」，
+      // 加断言会把每套主题一起判红，不该在「换掉暖褐」那件事里顺手改掉。
       //
-      // 加过一次，结果把每一套主题都判红了——浅色的 warning 只有 2.58:1、
-      // success 3.43:1，深色和高对比也各有不达标的。那是一批更早定下的取值，
-      // 波及四套主题的观感，不该在「换掉暖褐」这件事里顺手改掉。
+      // 2026-08-26 收口。重新量过之后，实际只剩浅色一套不达标（warning 2.35:1、
+      // success 3.13:1、danger 3.77、info 3.67），深色、石楠、珊瑚、高对比都已经
+      // 过线。把浅色那四支按比例压深到刚过 4.5:1 之后，这条断言可以真的立起来了。
       //
-      // 记在这里而不是删掉：这是**已知未修**的一类缺陷，不是没人想到。石楠
-      // 主题的状态色已经按 4.5:1 选过（见 SepiaPalette 旁的注释），要收口时
-      // 把这段换成真正的断言即可。
+      // 状态色是**文字色**——错误提示、批量进度这些真要读的字就用它。所以门槛和
+      // 次要文字一致，两个面都验。
+      for (label, color) in [("success", t.success), ("warning", t.warning), ("danger", t.danger), ("info", t.info)] {
+        XCTAssertGreaterThanOrEqual(
+          contrastRatio(color, t.canvas), 4.5, "\(name)：\(label) 在画布上跌破 AA"
+        )
+        XCTAssertGreaterThanOrEqual(
+          contrastRatio(color, t.card), 4.5, "\(name)：\(label) 在正文卡上跌破 AA"
+        )
+      }
       XCTAssertEqual(t.listPane, t.canvas, "\(name)：列表列不该自成一档")
     }
   }
