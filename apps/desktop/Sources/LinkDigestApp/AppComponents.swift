@@ -93,12 +93,12 @@ struct AppStateView<Actions: View>: View {
         .accessibilityHidden(true)
 
       Text(title)
-        .font(.title3.weight(.semibold))
+        .themedFont(.title3, weight: .semibold)
         .foregroundStyle(theme.primaryText)
 
       if let message {
         Text(message)
-          .font(.callout)
+          .themedFont(.callout)
           .foregroundStyle(theme.secondaryText)
           .multilineTextAlignment(.center)
           // 说明文字不能拉太宽，否则一行扫过去眼睛会丢行。
@@ -139,7 +139,7 @@ struct AppSectionHeader: View {
 
   var body: some View {
     Text(title)
-      .font(.footnote.weight(.semibold))
+      .themedFont(.footnote, weight: .semibold)
       .foregroundStyle(theme.secondaryText)
       .textCase(nil)
       .padding(.bottom, DesignTokens.Space.xxs)

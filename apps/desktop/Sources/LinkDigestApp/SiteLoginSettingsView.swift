@@ -75,7 +75,7 @@ struct SiteLoginSettingsView: View {
         // 任何可操作项，状态也永远不会变，一整张卡的视觉重量和信息量完全不匹配。
         // 收成页尾一行说明，原因还在，只是不再占一张卡的地方。
         Text("YouTube、X 无需登录，直接粘贴链接即可。")
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("site-login-no-login-card")
@@ -171,13 +171,13 @@ struct SiteLoginSettingsView: View {
         VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
           HStack(alignment: .center, spacing: DesignTokens.Space.sm) {
             Text(platform.displayName)
-              .font(.body.weight(.semibold))
+              .themedFont(.body, weight: .semibold)
             if hasDetails {
               detailsToggle(platform: platform, isExpanded: isExpanded)
             }
           }
           Text(caption)
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("site-login-\(id)-caption")
@@ -202,6 +202,7 @@ struct SiteLoginSettingsView: View {
         Button("清除登录") {
           Task { await clearSession(platform, session: session) }
         }
+        .themedFont(.body)
         .buttonStyle(.plain)
         .controlSize(.small)
         .foregroundStyle(appTheme.danger)
@@ -268,13 +269,13 @@ struct SiteLoginSettingsView: View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
       if let detail = session.accountDetail {
         Text(detail)
-          .font(.caption2.monospacedDigit())
+          .themedFont(.caption2, monospacedDigit: true)
           .foregroundStyle(.tertiary)
           .textSelection(.enabled)
       }
       if let diagnostic = session.sessionDiagnostic {
         Text(diagnostic)
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.tertiary)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
@@ -295,7 +296,7 @@ struct SiteLoginSettingsView: View {
           // 否则「校验会话」点完没有任何回音。
           if let verification = bilibiliSession.verificationLabel {
             Label(verification, systemImage: "checkmark.seal")
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(.secondary)
               .textSelection(.enabled)
               .fixedSize(horizontal: false, vertical: true)
@@ -323,7 +324,7 @@ struct SiteLoginSettingsView: View {
         .frame(width: 6, height: 6)
         .accessibilityHidden(true)
       Text(text)
-        .font(.caption.weight(.medium))
+        .themedFont(.caption, weight: .medium)
         .foregroundStyle(tone == .active ? color : Color.secondary)
     }
     .padding(.horizontal, 8)
@@ -344,7 +345,7 @@ struct SiteLoginSettingsView: View {
         .frame(width: 20, height: 20)
         .overlay(
           Text(PlatformIconCatalog.fallbackInitial(for: host))
-            .font(.caption2.weight(.semibold))
+            .themedFont(.caption2, weight: .semibold)
             .foregroundStyle(.white)
         )
     }

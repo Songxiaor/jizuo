@@ -102,7 +102,7 @@ struct AppButtonStyle: ButtonStyle {
 
     var body: some View {
       configuration.label
-        .font(.callout)
+        .themedFont(.callout)
         .foregroundStyle(foreground)
         .padding(.horizontal, DesignTokens.Space.md)
         .frame(height: 28)

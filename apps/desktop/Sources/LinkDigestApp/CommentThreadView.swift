@@ -68,13 +68,13 @@ struct CommentThreadSectionView: View {
       Spacer(minLength: DesignTokens.Space.sm)
       if section.isCapped {
         Label("已截取上限", systemImage: "exclamationmark.triangle")
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .foregroundStyle(secondaryTextColor)
           .help("为保证单次抓取稳定，只保留了平台当前页面中的前若干条评论。")
       }
       if let progressLabel = section.progressLabel {
         Text(progressLabel)
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .foregroundStyle(secondaryTextColor)
           .padding(.horizontal, DesignTokens.Space.sm)
           .padding(.vertical, DesignTokens.Space.xs)
@@ -139,7 +139,7 @@ struct CommentThreadSectionView: View {
       if reduceMotion { update() } else { withAnimation(DesignTokens.Motion.standard) { update() } }
     } label: {
       Label(title, systemImage: systemImage)
-        .font(.caption.weight(.semibold))
+        .themedFont(.caption, weight: .semibold)
         .foregroundStyle(accentColor)
         .padding(.vertical, DesignTokens.Space.sm)
         .padding(.leading, 38)
@@ -169,12 +169,12 @@ struct CommentThreadSectionView: View {
         commentHeader(item)
         if let parentAuthor = item.parentAuthor {
           Text("回复 @\(parentAuthor)")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(secondaryTextColor)
         }
         if item.depth > 3 {
           Text("第 \(item.depth + 1) 层回复")
-            .font(.caption2.weight(.semibold))
+            .themedFont(.caption2, weight: .semibold)
             .foregroundStyle(secondaryTextColor)
             .padding(.horizontal, DesignTokens.Space.sm)
             .padding(.vertical, DesignTokens.Space.xxs)
@@ -230,7 +230,7 @@ struct CommentThreadSectionView: View {
   private func commentHeader(_ item: MarkdownPresentation.CommentItem) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
       Text(item.displayAuthor)
-        .font(.subheadline.weight(.semibold))
+        .themedFont(.subheadline, weight: .semibold)
         .foregroundStyle(primaryTextColor)
         .lineLimit(1)
         .truncationMode(.middle)
@@ -238,13 +238,13 @@ struct CommentThreadSectionView: View {
         .accessibilityLabel(accessibilityHeader(for: item))
       if let score = item.score {
         Text("\(score) 分")
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(secondaryTextColor)
           .lineLimit(1)
       }
       if let published = item.published {
         Text(CommentPublishedTime.relativeLabel(published))
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(secondaryTextColor)
           .lineLimit(1)
           .help(published)
@@ -253,7 +253,7 @@ struct CommentThreadSectionView: View {
       if let permalink = item.permalink {
         Button { onOpenURL(permalink) } label: {
           Label("原评论", systemImage: "arrow.up.right")
-            .font(.caption.weight(.medium))
+            .themedFont(.caption, weight: .medium)
             .foregroundStyle(accentColor)
         }
         .buttonStyle(.plain)
@@ -335,7 +335,7 @@ private struct CommentThreadRail: View {
           Circle().fill(avatarColor.opacity(isDeleted ? 0.08 : 0.16))
           Circle().strokeBorder(lineColor.opacity(0.16), lineWidth: 1)
           Text(isDeleted ? "?" : avatarInitial)
-            .font(.caption.weight(.bold))
+            .themedFont(.caption, weight: .bold)
             .foregroundStyle(primaryTextColor)
         }
         .frame(width: avatarSize, height: avatarSize)

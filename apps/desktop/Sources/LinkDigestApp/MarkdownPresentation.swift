@@ -377,7 +377,14 @@ enum LocalMarkdownImageLayout {
 enum MarkdownPresentation {
   static let omittedHTML = "[已省略 HTML 片段]"
   static let bodyFontSize: CGFloat = 16.5
-  static let bodyLineSpacing: CGFloat = 11
+  /// 正文行间距（**行与行之间的空隙**，不是行高）。行高 = `bodyFontSize` + 这个值。
+  ///
+  /// 13 → 行高 29.5pt → 1.79 倍字号。曾经是 11（1.67 倍）。中文字面方正、笔画比
+  /// 拉丁密，同样倍数下灰度更高，所以要比英文正文的 1.5–1.6 再松一档。
+  ///
+  /// 改这里要连带想到 `SelectableReadingText`：那边的引用块、列表项各有自己的
+  /// 行距常数，正文松了而它们没动，段落之间会显得节奏不齐。
+  static let bodyLineSpacing: CGFloat = 13
 
   static func sanitized(_ source: String) -> String {
     var value = replacingHTMLLikeTokensPreservingCode(in: source)
@@ -1645,7 +1652,7 @@ struct MarkdownContentView: View {
       showsOutlinePopover = true
     } label: {
       Label(outlineButtonTitle, systemImage: "list.bullet.indent")
-        .font(.subheadline.weight(.medium))
+        .themedFont(.subheadline, weight: .medium)
         .foregroundStyle(.secondary)
     }
     .buttonStyle(.plain)
@@ -1696,7 +1703,7 @@ struct MarkdownContentView: View {
 
   @ViewBuilder private func popoverGroupTitle(_ text: String) -> some View {
     Text(text)
-      .font(.footnote.weight(.semibold))
+      .themedFont(.footnote, weight: .semibold)
       .foregroundStyle(.tertiary)
       .padding(.bottom, 2)
   }
@@ -1719,7 +1726,7 @@ struct MarkdownContentView: View {
             .frame(width: 14)
         }
         Text(title)
-          .font(.callout)
+          .themedFont(.callout)
           .foregroundStyle(.primary)
           .lineLimit(2)
           .multilineTextAlignment(.leading)
@@ -1787,7 +1794,7 @@ struct MarkdownContentView: View {
           if showsInlinePlainTextToggle {
             Toggle(isOn: $showsPlainText) {
               Text("纯文本")
-                .font(.subheadline.weight(.medium))
+                .themedFont(.subheadline, weight: .medium)
                 .foregroundStyle(.tertiary)
             }
             .toggleStyle(.checkbox)
@@ -2092,7 +2099,7 @@ struct MarkdownContentView: View {
     case let .callout(kind, text):
       VStack(alignment: .leading, spacing: 6) {
         Text(MarkdownPresentation.calloutLabel(kind))
-          .font(.caption.weight(.semibold))
+          .themedFont(.caption, weight: .semibold)
           .foregroundStyle(MarkdownPresentation.calloutColor(kind, accent: accentColor))
         if !text.isEmpty {
           inlineBody(text, baseSize: 15.5)
@@ -2308,13 +2315,13 @@ struct QuotedTweetCardView: View {
     VStack(alignment: .leading, spacing: 10) {
       if let author = quote.author, !author.isEmpty {
         Text(author)
-          .font(.body.weight(.semibold))
+          .themedFont(.body, weight: .semibold)
           .foregroundStyle(.primary)
       }
       ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
         // Text 的 markdown 解析会把 t.co 等裸链接自动做成可点链接。
         Text(LocalizedStringKey(paragraph))
-          .font(.title3)
+          .themedFont(.title3)
           .foregroundStyle(.primary)
           .tint(accentColor)
           .lineSpacing(5)
@@ -2330,7 +2337,7 @@ struct QuotedTweetCardView: View {
         } label: {
           HStack(spacing: 4) {
             Image(systemName: "arrow.up.right.square").font(.system(size: DesignTokens.IconSize.inline))
-            Text("查看原推").font(.callout)
+            Text("查看原推").themedFont(.callout)
           }
           .foregroundStyle(.secondary)
         }

@@ -169,14 +169,19 @@ extension DesignTokens {
     static let listIdeal: CGFloat = 340
 
     static let detailMin: CGFloat = 420
-    /// 阅读列「偏好」宽度：默认正文字号下约 65 个汉字。首帧宽度未知时回退到这里；
-    /// 默认 1200 窗口里详情列可用宽度通常更窄，真正画出来仍是可用宽度。
+    /// 阅读列「偏好」宽度：默认正文字号（16.5pt）下约 45 个汉字。首帧宽度未知时
+    /// 回退到这里；默认 1200 窗口里详情列可用宽度通常更窄，真正画出来仍是可用宽度。
+    ///
+    /// 曾经是 680（约 41 字）。汉字是全宽字，一行字数就是「列宽 ÷ 字号」，41 正好
+    /// 踩在中文长行的下限上——再短，一句话被切成三行，读起来发碎。45 是排版惯例
+    /// 里中文正文的舒适区中段。注意上一版注释写的「约 65 个汉字」是错的，680 ÷ 16.5
+    /// 只有 41。
     ///
     /// 正式列宽走 `readingColumnMaxWidth(availableWidth:bodySize:)`，不要只拿这个常数
     /// 当死上限——窗口拉宽后正文应跟着变宽。
-    static let readingMaxWidth: CGFloat = 680
+    static let readingMaxWidth: CGFloat = 748
 
-    /// 可读性绝对上限（默认字号）：再宽长行伤阅读。约 90 个汉字一行。
+    /// 可读性绝对上限（默认字号）：再宽长行伤阅读。约 58 个汉字一行。
     /// 4K 全屏也停在这里，两侧继续留白。
     static let readingAbsoluteMaxWidth: CGFloat = 960
 

@@ -31,7 +31,7 @@ struct AppUpdateSettingsView: View {
           caption: model.buildLine
         ) {
           Text(model.versionLine)
-            .font(.body.monospacedDigit())
+            .themedFont(.body, monospacedDigit: true)
             .foregroundStyle(.secondary)
             .accessibilityIdentifier("app-update-version")
         }

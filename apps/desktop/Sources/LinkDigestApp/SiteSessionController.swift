@@ -290,20 +290,20 @@ struct SiteLoginSheet: View {
     VStack(spacing: 0) {
       HStack {
         VStack(alignment: .leading, spacing: 2) {
-          Text("登录 \(siteName)").font(.headline)
+          Text("登录 \(siteName)").themedFont(.headline)
           Text("仅用于在本机获取更高清晰度的临时播放地址。可随时在设置中清除。")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.secondary)
           if session.isLoggedIn {
             Text("右上角「已登录」表示本机已有会话 Cookie，可直接点完成；下方若仍提示浏览器过旧，关掉后重新打开「登录」即可刷新页面。")
-              .font(.caption2)
+              .themedFont(.caption2)
               .foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
           }
         }
         Spacer()
         Text(session.statusLabel)
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(session.isLoggedIn ? appTheme.success : Color.secondary)
           .accessibilityIdentifier("\(idPrefix)-login-status")
         Button("完成") { dismiss() }
@@ -338,7 +338,7 @@ struct SiteLoginSheet: View {
         Spacer()
         if session.isLoggedIn {
           Text("已检测到登录，可关闭此窗口。")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.secondary)
         }
       }

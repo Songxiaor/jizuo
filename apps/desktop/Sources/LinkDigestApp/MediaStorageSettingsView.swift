@@ -47,7 +47,7 @@ struct MediaStorageSettingsView: View {
         control: {
           VStack(alignment: .leading, spacing: 8) {
             Text(model.bilibiliStreamQuality.settingsExplanation)
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(.tertiary)
               .fixedSize(horizontal: false, vertical: true)
               .accessibilityIdentifier("media-storage-bilibili-quality-explanation")

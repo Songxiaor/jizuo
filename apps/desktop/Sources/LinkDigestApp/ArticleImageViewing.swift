@@ -242,7 +242,7 @@ private struct InlineImageLightboxCanvas: View {
           Divider()
           HStack {
             Text("双指滑动平移 · 双指捏合缩放 · 双击复位 · 点框外或 Esc 退出")
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(.secondary)
             Spacer()
             recognizeButton
@@ -383,7 +383,7 @@ private struct InlineImageLightboxCanvas: View {
     case .running:
       HStack(spacing: 6) {
         ProgressView().controlSize(.small)
-        Text("识别中…").font(.caption).foregroundStyle(.secondary)
+        Text("识别中…").themedFont(.caption).foregroundStyle(.secondary)
       }
     case .done, .failed:
       Button {
@@ -397,7 +397,7 @@ private struct InlineImageLightboxCanvas: View {
     VStack(alignment: .leading, spacing: 0) {
       HStack {
         Text("识别文字")
-          .font(.caption.weight(.semibold))
+          .themedFont(.caption, weight: .semibold)
           .foregroundStyle(.secondary)
         Spacer()
         if case let .done(text) = recognition {
@@ -415,7 +415,7 @@ private struct InlineImageLightboxCanvas: View {
         switch recognition {
         case let .done(text):
           Text(text)
-            .font(.callout)
+            .themedFont(.callout)
             .lineSpacing(4)
             .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -423,7 +423,7 @@ private struct InlineImageLightboxCanvas: View {
             .accessibilityIdentifier("history-inline-image-lightbox-recognized-text")
         case let .failed(message):
           Text(message)
-            .font(.callout)
+            .themedFont(.callout)
             .foregroundStyle(.secondary)
             .padding(12)
         default:

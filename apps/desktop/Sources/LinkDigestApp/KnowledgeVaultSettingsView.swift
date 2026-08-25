@@ -33,6 +33,7 @@ struct KnowledgeVaultSettingsView: View {
           HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("当前文件夹").foregroundStyle(.secondary)
             Text(model.directoryPath ?? "尚未选择")
+              .themedFont(.body)
               .lineLimit(1)
               .truncationMode(.middle)
               .textSelection(.enabled)
@@ -85,7 +86,7 @@ struct KnowledgeVaultSettingsView: View {
               ProgressView(value: Double(done), total: Double(total))
                 .frame(maxWidth: 180)
               Text("\(done)/\(total)")
-                .font(.caption)
+                .themedFont(.caption)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
             }
@@ -94,7 +95,7 @@ struct KnowledgeVaultSettingsView: View {
 
             if let lastSyncText = model.lastSyncText {
               Text("上次同步：\(lastSyncText)")
-                .font(.caption)
+                .themedFont(.caption)
                 .foregroundStyle(.tertiary)
                 .accessibilityIdentifier("knowledge-vault-last-sync")
             }
@@ -114,19 +115,19 @@ struct KnowledgeVaultSettingsView: View {
               .accessibilityIdentifier("knowledge-vault-auto-sync")
           }
           Text("在后台安静进行，不打断你；抓一批内容只会同步一次。")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.tertiary)
 
           if let failure = model.lastAutoSyncFailureMessage {
             Label(failure, systemImage: "exclamationmark.triangle.fill")
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(appTheme.danger)
               .accessibilityIdentifier("knowledge-vault-auto-sync-error")
           }
 
           if !model.hasDirectory {
             Text("请先选择知识库文件夹。")
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(.secondary)
           }
 
@@ -152,7 +153,7 @@ struct KnowledgeVaultSettingsView: View {
   private func resultView(_ report: KnowledgeVaultSyncReport) -> some View {
     VStack(alignment: .leading, spacing: 8) {
       Text(report.summaryLine)
-        .font(.callout)
+        .themedFont(.callout)
         .monospacedDigit()
         .accessibilityIdentifier("knowledge-vault-summary")
 
@@ -160,11 +161,11 @@ struct KnowledgeVaultSettingsView: View {
       if !report.conflicts.isEmpty {
         VStack(alignment: .leading, spacing: 4) {
           Text("以下文件已存在且不归汲作管，已跳过，未做任何修改：")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.secondary)
           ForEach(report.conflicts, id: \.filename) { conflict in
             Text("· \(conflict.filename) —— \(conflict.reason)")
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(.secondary)
               .textSelection(.enabled)
           }
@@ -175,11 +176,11 @@ struct KnowledgeVaultSettingsView: View {
       if !report.failures.isEmpty {
         VStack(alignment: .leading, spacing: 4) {
           Text("以下条目没能写入：")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.secondary)
           ForEach(report.failures, id: \.filename) { failure in
             Text("· \(failure.filename) —— \(failure.message)")
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(appTheme.danger)
               .textSelection(.enabled)
           }

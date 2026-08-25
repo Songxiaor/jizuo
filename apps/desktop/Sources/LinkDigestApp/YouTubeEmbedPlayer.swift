@@ -55,9 +55,9 @@ struct YouTubeEmbedPlayerCard: View {
     VStack(alignment: .leading, spacing: 10) {
       HStack {
         Label("视频速览", systemImage: "play.rectangle.fill")
-          .font(.callout.weight(.semibold))
+          .themedFont(.callout, weight: .semibold)
         Text("YouTube 官方嵌入 · 联网播放")
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
         Spacer()
         Button("在浏览器打开") {
@@ -66,7 +66,7 @@ struct YouTubeEmbedPlayerCard: View {
           }
         }
         .buttonStyle(.link)
-        .font(.caption)
+        .themedFont(.caption)
       }
       Group {
         if isInCinema {
@@ -76,7 +76,7 @@ struct YouTubeEmbedPlayerCard: View {
             .overlay {
               VStack(spacing: 6) {
                 Image(systemName: "rectangle.on.rectangle").font(.title2).foregroundStyle(.white.opacity(0.7))
-                Text("正在放大播放…").font(.caption).foregroundStyle(.white.opacity(0.7))
+                Text("正在放大播放…").themedFont(.caption).foregroundStyle(.white.opacity(0.7))
               }
             }
         } else if !isPlayerRequested {
@@ -104,7 +104,7 @@ struct YouTubeEmbedPlayerCard: View {
                         .font(.title2)
                         .foregroundStyle(.white.opacity(0.75))
                       Text(message)
-                        .font(.caption)
+                        .themedFont(.caption)
                         .foregroundStyle(.white.opacity(0.85))
                         .multilineTextAlignment(.center)
                         .textSelection(.enabled)
@@ -129,7 +129,7 @@ struct YouTubeEmbedPlayerCard: View {
             cinema.present(videoID: videoID)
           } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
             .buttonStyle(.link)
-            .font(.caption)
+            .themedFont(.caption)
             .help("双击视频也可放大")
             .accessibilityIdentifier("history-youtube-cinema")
         }
@@ -142,7 +142,7 @@ struct YouTubeEmbedPlayerCard: View {
         HStack(spacing: 8) {
           Image(systemName: "captions.bubble").foregroundStyle(.secondary)
           Text("此视频无字幕，暂无法提取文字。可在浏览器中打开观看。")
-            .font(.caption)
+            .themedFont(.caption)
             .foregroundStyle(.secondary)
           Spacer()
         }
@@ -187,7 +187,7 @@ private struct YouTubeEmbedPosterView: View {
               .foregroundStyle(.white.opacity(0.92))
               .shadow(color: .black.opacity(0.45), radius: 10)
             Text("点击加载播放器")
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(.white.opacity(0.85))
               .shadow(color: .black.opacity(0.5), radius: 4)
           }
@@ -380,7 +380,7 @@ struct VideoCinemaOverlay: View {
                               .font(.title2)
                               .foregroundStyle(.white.opacity(0.75))
                             Text(message)
-                              .font(.caption)
+                              .themedFont(.caption)
                               .foregroundStyle(.white.opacity(0.85))
                               .multilineTextAlignment(.center)
                               .textSelection(.enabled)

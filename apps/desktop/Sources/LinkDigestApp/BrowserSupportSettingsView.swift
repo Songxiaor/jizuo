@@ -81,7 +81,7 @@ struct BrowserSupportSettingsView: View {
 
           // ② 每个浏览器压成一行：状态点 + 名字 + 一个词，只有需要动作的才带按钮。
           HStack(spacing: 8) {
-            Text("已检测到的浏览器").font(.subheadline.weight(.medium))
+            Text("已检测到的浏览器").themedFont(.subheadline, weight: .medium)
             Spacer()
             if model.isLoading { ProgressView().controlSize(.small) }
             Button("重新检查") { Task { await model.load() } }
@@ -97,7 +97,7 @@ struct BrowserSupportSettingsView: View {
           // 孤零零地悬着，看不出是「还没扫」还是「扫完了没有」。
           if detectedBrowsers.isEmpty && !model.isLoading {
             Text("没有检测到\(supportedBrowserNames)。装好之后点「重新检查」。")
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(.secondary)
               .accessibilityIdentifier("browser-support-empty")
           } else {
@@ -179,7 +179,7 @@ struct BrowserSupportSettingsView: View {
         .font(.caption)
         .foregroundStyle(receiverColor)
       Text(receiverLineText)
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(appModel.browserReceiverState == .ready ? Color.secondary : receiverColor)
         .fixedSize(horizontal: false, vertical: true)
       Spacer(minLength: 0)
@@ -216,7 +216,7 @@ struct BrowserSupportSettingsView: View {
       Text(browser.displayName)
         .gridColumnAlignment(.leading)
       Text(display.text)
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(display.needsAction ? appTheme.warning : Color.secondary)
         .gridColumnAlignment(.leading)
       HStack(spacing: 8) {
@@ -241,7 +241,7 @@ struct BrowserSupportSettingsView: View {
         // 第一列留空，让说明和上面那行的浏览器名对齐。
         Color.clear.frame(width: 18, height: 0)
         Text("原来指向的程序已不在原位（\(ProductDisplay.name) 改过名或被移动过）。点「重新连接」即可，浏览器里的扩展不用重装。")
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .gridCellColumns(3)
@@ -392,12 +392,12 @@ struct BrowserSupportSettingsView: View {
   private func installStep(_ index: Int, _ text: String) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: 8) {
       Text("\(index)")
-        .font(.caption2.weight(.bold).monospacedDigit())
+        .themedFont(.caption2, weight: .bold, monospacedDigit: true)
         .foregroundStyle(.secondary)
         .frame(width: 16, height: 16)
         .background(Circle().fill(Color.secondary.opacity(0.15)))
       Text(text)
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }

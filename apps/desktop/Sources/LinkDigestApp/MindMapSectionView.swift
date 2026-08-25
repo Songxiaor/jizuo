@@ -88,9 +88,9 @@ struct MindMapSectionView: View {
   @ViewBuilder private func mapCard(_ record: TaskMindMapRecord) -> some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(spacing: 10) {
-        Text("脑图").font(.headline)
+        Text("脑图").themedFont(.headline)
         if record.userEdited {
-          Text("已编辑").font(.caption2).foregroundStyle(.secondary)
+          Text("已编辑").themedFont(.caption2).foregroundStyle(.secondary)
         }
         Spacer(minLength: 0)
         Picker("主题", selection: Binding(
@@ -152,7 +152,7 @@ struct MindMapSectionView: View {
       HStack(spacing: 12) {
         stateText
         if let tokens = model.mindMapTokenSummary {
-          Text(tokens).font(.caption).foregroundStyle(.secondary)
+          Text(tokens).themedFont(.caption).foregroundStyle(.secondary)
         }
         Spacer(minLength: 0)
       }
@@ -170,13 +170,13 @@ struct MindMapSectionView: View {
     case .idle: EmptyView()
     case .running:
       ProgressView().controlSize(.small)
-      Text("正在生成脑图…").font(.caption)
+      Text("正在生成脑图…").themedFont(.caption)
     case .completed:
       Label("脑图已保存", systemImage: "checkmark.circle.fill")
-        .font(.caption).foregroundStyle(appTheme.success)
+        .themedFont(.caption).foregroundStyle(appTheme.success)
     case .cancelled: EmptyView()
     case let .failed(message):
-      Text(message).font(.caption).foregroundStyle(appTheme.danger).lineLimit(2)
+      Text(message).themedFont(.caption).foregroundStyle(appTheme.danger).lineLimit(2)
     }
   }
 
@@ -305,7 +305,7 @@ struct MindMapOutlineEditor: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      Text("编辑脑图").font(.headline).padding(.bottom, 12)
+      Text("编辑脑图").themedFont(.headline).padding(.bottom, 12)
       Form {
         Section("中心") {
           TextField("中心主题", text: $title)

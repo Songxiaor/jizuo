@@ -27,7 +27,7 @@ extension View {
   /// 别再一页一改。
   func settingsSectionHeaderStyle() -> some View {
     self
-      .font(.footnote.weight(.medium))
+      .themedFont(.footnote, weight: .medium)
       .foregroundStyle(.secondary)
   }
 }
@@ -104,7 +104,7 @@ struct SettingsPageHeader: View {
       )
       VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
         Text(title)
-          .font(.title2.weight(.semibold))
+          .themedFont(.title2, weight: .semibold)
           .foregroundStyle(.primary)
         captionText
       }
@@ -116,7 +116,7 @@ struct SettingsPageHeader: View {
 
   @ViewBuilder private var captionText: some View {
     let text = Text(caption)
-      .font(.callout)
+      .themedFont(.callout)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
     if let captionIdentifier {
@@ -176,7 +176,7 @@ struct SettingsCardGroup<Content: View>: View {
       content()
       if let footer {
         Text(footer)
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -203,7 +203,7 @@ struct SettingsRow<Control: View>: View {
         VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
           HStack(alignment: .center, spacing: DesignTokens.Space.sm) {
             Text(title)
-              .font(.body)
+              .themedFont(.body)
               .fixedSize(horizontal: false, vertical: true)
             if details != nil {
               settingsInfoButton(
@@ -216,7 +216,7 @@ struct SettingsRow<Control: View>: View {
           }
           if let caption {
             Text(caption)
-              .font(.caption)
+              .themedFont(.caption)
               .foregroundStyle(.tertiary)
               .fixedSize(horizontal: false, vertical: true)
           }
@@ -226,7 +226,7 @@ struct SettingsRow<Control: View>: View {
       }
       if isDetailsPresented, let details {
         Text(details)
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -369,7 +369,7 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
 
   @ViewBuilder private var summaryText: some View {
     Text(summary)
-      .font(.caption)
+      .themedFont(.caption)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -378,7 +378,7 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       HStack(alignment: .firstTextBaseline, spacing: 16) {
-        Text(title).font(.headline)
+        Text(title).themedFont(.headline)
         Spacer(minLength: 12)
         titleAccessory()
         if details != nil {
@@ -395,7 +395,7 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
       if summaryPlacement == .belowControl { summaryText }
       if isDetailsPresented, let details {
         Text(details)
-          .font(.caption)
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -484,10 +484,10 @@ struct SettingsChoiceList<Value: Hashable>: View {
               .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
               Text(choice.title)
-                .font(.body)
+                .themedFont(.body)
                 .foregroundStyle(.primary)
               Text(choice.explanation)
-                .font(.caption)
+                .themedFont(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .multilineTextAlignment(.leading)
@@ -514,7 +514,7 @@ struct SettingsCrossReference: View {
 
   var body: some View {
     Label(message, systemImage: systemImage)
-      .font(.caption)
+      .themedFont(.caption)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       .frame(maxWidth: .infinity, alignment: .leading)

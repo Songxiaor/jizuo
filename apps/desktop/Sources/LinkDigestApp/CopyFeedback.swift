@@ -41,7 +41,7 @@ struct CopyFeedbackOverlay: View {
       Spacer()
       if controller.isVisible {
         Label("已复制", systemImage: "checkmark.circle.fill")
-          .font(.callout.weight(.medium))
+          .themedFont(.callout, weight: .medium)
           .padding(.vertical, 8).padding(.horizontal, 16)
           .background(.regularMaterial, in: Capsule())
           .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1))

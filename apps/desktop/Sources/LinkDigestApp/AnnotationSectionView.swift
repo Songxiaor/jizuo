@@ -11,7 +11,7 @@ struct AnnotationSectionView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       if !model.taskExcerpts.isEmpty {
-        Text("摘录").font(.headline)
+        Text("摘录").themedFont(.headline)
         ForEach(model.taskExcerpts) { excerpt in
           HStack(alignment: .top, spacing: 8) {
             Rectangle()
@@ -19,7 +19,7 @@ struct AnnotationSectionView: View {
               .frame(width: 3)
               .clipShape(Capsule())
             Text(excerpt.excerpt)
-              .font(.callout)
+              .themedFont(.callout)
               .textSelection(.enabled)
             Spacer(minLength: 4)
             Button {
@@ -37,9 +37,9 @@ struct AnnotationSectionView: View {
           .accessibilityIdentifier("annotation-excerpt-row")
         }
       }
-      Text("我的笔记").font(.headline)
+      Text("我的笔记").themedFont(.headline)
       TextEditor(text: $model.taskNoteDraft)
-        .font(.callout)
+        .themedFont(.callout)
         .frame(minHeight: 72, maxHeight: 180)
         .scrollContentBackground(.hidden)
         .padding(8)
@@ -53,7 +53,7 @@ struct AnnotationSectionView: View {
         }
         .accessibilityIdentifier("annotation-note-editor")
       Text("阅读时选中文字，右键「添加到摘录」即可收集；笔记自动保存。")
-        .font(.caption2)
+        .themedFont(.caption2)
         .foregroundStyle(.tertiary)
       // 「自动保存」这句承诺必须有对应的失败出口，否则存储出问题时用户毫无察觉
       // 地丢掉整段笔记。这条路径原来全是 `try?`。
@@ -62,13 +62,13 @@ struct AnnotationSectionView: View {
           Image(systemName: "exclamationmark.triangle.fill")
             .foregroundStyle(appTheme.warning)
           Text(failure)
-            .font(.caption2)
+            .themedFont(.caption2)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
           Spacer()
           Button("知道了") { model.annotationFailureMessage = nil }
             .buttonStyle(.link)
-            .font(.caption2)
+            .themedFont(.caption2)
         }
         .accessibilityIdentifier("annotation-failure-banner")
       }

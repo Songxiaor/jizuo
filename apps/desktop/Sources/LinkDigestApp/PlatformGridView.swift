@@ -62,7 +62,7 @@ private struct PlatformNavigationRow: View {
         Spacer(minLength: DesignTokens.Space.xs)
         if item.count > 0 {
           Text("\(item.count)")
-            .font(.caption2.weight(.medium).monospacedDigit())
+            .themedFont(.caption2, weight: .medium, monospacedDigit: true)
             .foregroundStyle(isSelected ? theme.accent : theme.secondaryText)
             .padding(.horizontal, DesignTokens.Space.xs + DesignTokens.Space.xxs)
             .padding(.vertical, DesignTokens.Space.xxs)
@@ -72,7 +72,7 @@ private struct PlatformNavigationRow: View {
             )
         }
       }
-      .font(.callout)
+      .themedFont(.callout)
       .foregroundStyle(theme.primaryText)
       .padding(.horizontal, DesignTokens.Space.sm)
       .frame(height: 30)
