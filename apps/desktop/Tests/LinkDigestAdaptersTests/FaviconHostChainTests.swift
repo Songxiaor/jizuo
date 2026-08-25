@@ -145,6 +145,25 @@ extension FaviconHostChainTests {
     )
   }
 
+  /// 同档时先试位图，别拿一张不知道多大的 SVG 去撞字节上限。
+  ///
+  /// 取自 earendil.com 的真实声明顺序（SVG 写在最前）。那张 SVG 实测 4.6 MB，
+  /// 远超 64 KiB 上限必然被拒；同目录的 apple-touch-icon 只有 49 KB，完全可用。
+  /// 排序若把 SVG 放在前面，每次抓取都要先白费一个请求才轮到它。
+  func testPrefersRasterOverVectorAmongLargeEnoughIcons() {
+    let html = """
+    <link rel="icon" type="image/svg+xml" href="/static/favicon/square.svg">
+    <link rel="icon" type="image/x-icon" href="/static/favicon/favicon.ico">
+    <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon/favicon-32x32.png">
+    <link rel="icon" type="image/png" sizes="16x16" href="/static/favicon/favicon-16x16.png">
+    <link rel="apple-touch-icon" sizes="180x180" href="/static/favicon/apple-touch-icon.png">
+    """
+    let ordered = WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).map(\.absoluteString)
+    XCTAssertEqual(ordered.first, "https://www.residentialvps.com/static/favicon/apple-touch-icon.png")
+    // 矢量图仍要留在候选里：只提供 SVG 的站点靠它才不会回落到首字母方块。
+    XCTAssertTrue(ordered.contains("https://www.residentialvps.com/static/favicon/square.svg"))
+  }
+
   /// 同一地址被 icon 与 apple-touch-icon 同时声明很常见，不该重复请求。
   func testDeduplicatesRepeatedDeclarations() {
     let html = """
@@ -222,11 +241,20 @@ extension FaviconHostChainTests {
     )
   }
 
-  /// 矢量图任何尺寸都清晰，应当优先。现在大量站点只提供 SVG。
-  func testPrefersVectorIcons() {
+  /// 只提供 SVG 的站点必须仍能拿到图标，否则它们永远回落到首字母方块。
+  ///
+  /// 这条原来叫「矢量图应当优先」，断言 SVG 排在 180×180 的 PNG 前面。理由是
+  /// 「矢量任何尺寸都清晰」——那句话没错，但它只说明**清晰度**，完全没说明
+  /// **字节数**，而候选是按 64 KiB 上限筛的。实测 earendil.com 的第一个声明是
+  /// 一张 4.6 MB 的 SVG，同目录的 apple-touch-icon 只有 49 KB：旧规则每次都先
+  /// 撞一次上限才轮到能用的那张。
+  ///
+  /// 所以「同档优先矢量」反转成「同档优先位图」，但矢量的**兜底**地位不变——
+  /// 这条测试现在守的就是兜底：没有够大的位图时，SVG 仍然是首选。
+  func testVectorRemainsTheFallbackWhenNoRasterIsLargeEnough() {
     let html = """
     <link rel="icon" href="/icon.svg" type="image/svg+xml">
-    <link rel="apple-touch-icon" href="/icon-180.png" sizes="180x180">
+    <link rel="apple-touch-icon" href="/icon-16.png" sizes="16x16">
     """
     XCTAssertEqual(
       WebsiteFaviconCache.declaredIconURLs(inHTML: html, baseURL: base).first?.absoluteString,

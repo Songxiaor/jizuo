@@ -234,7 +234,7 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
       }
       return html
     }()
-    var found: [(url: URL, side: Int)] = []
+    var found: [(url: URL, side: Int, isVector: Bool)] = []
     for match in regex.matches(in: scope, range: NSRange(scope.startIndex..., in: scope)) {
       guard let tagRange = Range(match.range, in: scope),
             let relRange = Range(match.range(at: 1), in: scope)
@@ -256,7 +256,7 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
       let isVector = attribute("type", in: tag)?.lowercased().contains("svg") == true
         || resolved.pathExtension.lowercased() == "svg"
       let side = isVector ? preferredIconPixelSize : (declared ?? assumedIconPixelSize)
-      found.append((resolved, side))
+      found.append((resolved, side, isVector))
     }
     // 去重保序：同一个地址被 icon 和 apple-touch-icon 同时声明很常见。
     var seen = Set<String>()
@@ -265,7 +265,7 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
       .compactMap { seen.insert($0.url.absoluteString).inserted ? $0.url : nil }
   }
 
-  /// 取「不小于显示尺寸的最小那张」。
+  /// 取「不小于显示尺寸的最小那张」，同档位图优先于矢量。
   ///
   /// 两个方向都会出问题，所以不能简单地按大小排：
   /// - 一味求大：512×512 实测 197 KB，超 64 KiB 缓存上限直接被丢，白费一次尝试；
@@ -273,13 +273,23 @@ public final class WebsiteFaviconCache: @unchecked Sendable {
   ///
   /// 够用的里面挑最小的，既清晰又省流量。一张都不够大时退而取其中最大的——糊总比
   /// 没有强。
+  ///
+  /// **同档时位图优先**：矢量图没有像素尺寸，上面按 `preferredIconPixelSize` 给它
+  /// 记了个「正好够用」，于是它总排在够用组的最前——但那个假定只说明它清晰，
+  /// **完全没说明它有多大**。实测 earendil.com 声明的第一个图标是一张 4.6 MB 的
+  /// SVG（同目录下的 apple-touch-icon 只有 49 KB），每次抓取都先去撞一次 64 KiB
+  /// 上限才轮到下一个：白费一次请求，也把整条链路的失败窗口拉长。位图的字节数和
+  /// 声明的尺寸大致成正比，是可预测的那一个，同档就该先试它。
+  ///
+  /// 矢量图仍然保留在候选里——只提供 SVG 的站点靠它才不至于回落到首字母方块。
   private static func isBetterIcon(
-    _ lhs: (url: URL, side: Int),
-    _ rhs: (url: URL, side: Int)
+    _ lhs: (url: URL, side: Int, isVector: Bool),
+    _ rhs: (url: URL, side: Int, isVector: Bool)
   ) -> Bool {
     let lhsSufficient = lhs.side >= preferredIconPixelSize
     let rhsSufficient = rhs.side >= preferredIconPixelSize
     if lhsSufficient != rhsSufficient { return lhsSufficient }
+    if lhsSufficient, lhs.isVector != rhs.isVector { return !lhs.isVector }
     return lhsSufficient ? lhs.side < rhs.side : lhs.side > rhs.side
   }
 
