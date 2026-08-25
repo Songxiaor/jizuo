@@ -58,3 +58,7 @@ __pycache__/
 
 # 部署前的 history.sqlite 备份，装的是真实历史数据，只应留在本机
 db-backups/
+
+# dev-suite 的本机运行状态（用量统计与知识库缓存），跟着工具生成，不进仓库
+.dev-suite-analytics/
+.kb-cache/
