@@ -42,4 +42,41 @@ final class XBookmarksSyncTests: XCTestCase {
       XCTAssertEqual($0 as? CaptureValidationError, .CAPTURE_PAYLOAD_TOO_LARGE)
     }
   }
+
+  func testLookupAllowsEmptyAndDeduplicates() throws {
+    XCTAssertNil(try XBookmarksLookupRequest.decode(data(#"{"version":1,"kind":"xBookmarks"}"#)))
+
+    let empty = try XCTUnwrap(try XBookmarksLookupRequest.decode(data(
+      #"{"kind":"xBookmarksLookup","version":1,"requestId":"look-1","tweetIDs":[]}"#
+    )))
+    XCTAssertEqual(empty.requestId, "look-1")
+    XCTAssertEqual(empty.tweetIDs, [])
+
+    let request = try XCTUnwrap(try XBookmarksLookupRequest.decode(data(#"""
+    {"kind":"xBookmarksLookup","version":1,"requestId":"look-2",
+     "tweetIDs":["2080312096865271866","1234567890123","2080312096865271866"]}
+    """#)))
+    XCTAssertEqual(request.tweetIDs, ["2080312096865271866", "1234567890123"])
+  }
+
+  func testLookupRejectsBadPayload() {
+    XCTAssertThrowsError(try XBookmarksLookupRequest.decode(data(
+      #"{"kind":"xBookmarksLookup","version":2,"requestId":"r","tweetIDs":[]}"#
+    ))) { XCTAssertEqual($0 as? CaptureValidationError, .PROTOCOL_VERSION_UNSUPPORTED) }
+
+    XCTAssertThrowsError(try XBookmarksLookupRequest.decode(data(
+      #"{"kind":"xBookmarksLookup","version":1,"requestId":"r","tweetIDs":["abc"]}"#
+    ))) { XCTAssertEqual($0 as? CaptureValidationError, .CAPTURE_SCHEMA_INVALID) }
+  }
+
+  func testNativeResponseRoundTripsBookmarksLookup() throws {
+    let response = NativeResponse.bookmarksLookup(
+      version: 1,
+      requestId: "look-1",
+      existingIDs: ["1234567890123", "2080312096865271866"]
+    )
+    let encoded = try JSONEncoder().encode(response)
+    let decoded = try JSONDecoder().decode(NativeResponse.self, from: encoded)
+    XCTAssertEqual(decoded, response)
+  }
 }

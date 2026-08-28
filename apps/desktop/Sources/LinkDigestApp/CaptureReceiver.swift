@@ -113,9 +113,26 @@ struct CaptureReceiver: Sendable {
   }
 
   func process(_ data: Data) async -> NativeResponse {
-    // 收藏夹同步走独立消息：它带的只是一串推文 id，不是一次页面捕获，
-    // 因此不经过 capture envelope 的 schema（那套契约保持冻结）。
+    // 收藏夹相关走独立消息：只带推文 id，不经过 capture envelope（那套契约保持冻结）。
     do {
+      if let lookup = try XBookmarksLookupRequest.decode(data) {
+        // 勾选前查重：只读历史，不入队。history 缺失时回空列表（扩展可降级到游标粗标）。
+        var existing: [String] = []
+        if let history {
+          for id in lookup.tweetIDs {
+            let urlString = XBookmarksSyncRequest.statusURLString(forTweetID: id)
+            if let canonical = try? CanonicalURL(urlString),
+               (try? history.containsCanonicalURL(canonical)) == true {
+              existing.append(id)
+            }
+          }
+        }
+        return .bookmarksLookup(
+          version: 1,
+          requestId: lookup.requestId,
+          existingIDs: existing
+        )
+      }
       if let request = try XBookmarksSyncRequest.decode(data) {
         guard let bookmarksSink else {
           return .error(appError(

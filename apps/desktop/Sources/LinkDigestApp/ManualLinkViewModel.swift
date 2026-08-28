@@ -591,7 +591,7 @@ final class ManualLinkViewModel: ObservableObject {
     var queuedURLs = Set(pendingCaptures.map(\.urlString))
     for id in tweetIDs {
       guard XBookmarksSyncRequest.isValidTweetID(id) else { skipped += 1; continue }
-      let urlString = "https://x.com/i/status/\(id)"
+      let urlString = XBookmarksSyncRequest.statusURLString(forTweetID: id)
       if let history,
          let canonical = try? CanonicalURL(urlString),
          (try? history.containsCanonicalURL(canonical)) == true {

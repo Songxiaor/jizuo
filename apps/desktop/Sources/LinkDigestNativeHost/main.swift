@@ -196,12 +196,16 @@ do {
     exit(0)
   }
 
-  // 收藏夹 / 时间线同步走独立消息：它带的是一串推文 id，不是页面捕获，所以
-  // 不能过 capture envelope 的 schema。识别到就直接转发给 App，让它的
-  // CaptureReceiver 路由到 bookmarksSink——否则会被下面的校验挡成 schema 错误。
-  // decode 返回 nil 表示「不是这类消息」，继续走 capture 校验；抛错表示「是这类
-  // 消息但不合法」，如实回错，不再当作页面捕获。
+  // 收藏夹查重 / 同步走独立消息：只带推文 id，不能过 capture envelope。
+  // decode 返回 nil → 继续走 capture；抛错 → 如实回错。
   do {
+    if let lookup = try XBookmarksLookupRequest.decode(body) {
+      writeDebugLog("bookmarks_lookup ids=\(lookup.tweetIDs.count)")
+      let result = deliverToApp(body, requestId: lookup.requestId)
+      recordDeliveryIfSucceeded(result)
+      try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
+      exit(0)
+    }
     if let bookmarks = try XBookmarksSyncRequest.decode(body) {
       writeDebugLog("bookmarks_sync ids=\(bookmarks.tweetIDs.count)")
       let result = deliverToApp(body, requestId: bookmarks.requestId)

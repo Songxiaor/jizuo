@@ -40,7 +40,10 @@ function popupDOM(): Record<string, FakeElement> {
     "#availability": element(), "#platform": element(), "#status": element(), "#meta": element(),
     "#diag": element(), "#metadata-diagnostic": element(),
     "#error": element(), "#send": element(), "#extension-name": element(), "#build-label": element(),
-    "#sync-bookmarks": element(), "#action-card": element(), "#action-detail": element(),
+    "#sync-bookmarks": element(), "#sync-selected": element(),
+    "#bookmarks-picker": element(), "#picker-list": element(), "#picker-count": element(),
+    "#picker-select-all": element(), "#picker-select-none": element(), "#picker-select-new": element(),
+    "#action-card": element(), "#action-detail": element(),
     "#result": element(), "#recovery-action": element(), "#open-app": element(),
   };
 }

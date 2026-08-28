@@ -70,7 +70,9 @@ import {
   isValidTweetID,
   isXBookmarksURL,
   MAX_BOOKMARK_IDS,
+  normalizeBookmarkItems,
   parseBookmarksAccepted,
+  parseBookmarksLookup,
   type BookmarksSyncOutcome,
   type CollectResult,
 } from "../content/x-bookmarks";
@@ -1309,17 +1311,24 @@ export async function previewCurrentPage(tabId: number): Promise<SafeCapturePrev
   );
 }
 
-/** 记住上次同步到的最新收藏 id，供下次增量同步判断「追上了」。 */
+/** 记住上次同步到的最新收藏 id，供下次增量同步判断「追上了」/标「已在库」。 */
 const BOOKMARKS_CURSOR_KEY = "x-bookmarks-last-synced-id";
+
+export type BookmarksCollectResult =
+  | {
+      ok: true;
+      items: import("../content/x-bookmarks").BookmarkPreviewItem[];
+      reachedKnown: boolean;
+      /** App 历史查重是否成功；失败时 alreadySynced 仅来自本地游标粗标。 */
+      libraryLookup: "ok" | "unavailable";
+    }
+  | { ok: false; code: "not_bookmarks" | "empty" | "injection_failed" };
 
 export type BookmarksSyncResult =
   | { ok: true; outcome: BookmarksSyncOutcome; collected: number; reachedKnown: boolean }
   | { ok: false; code: "not_bookmarks" | "empty" | "native_error" | "injection_failed" };
 
-export async function syncXBookmarks(tabId: number): Promise<BookmarksSyncResult> {
-  const tab = await browser.tabs.get(tabId).catch(() => undefined);
-  if (!isXBookmarksURL(tab?.url)) return { ok: false, code: "not_bookmarks" };
-
+async function loadBookmarksCursor(): Promise<string[]> {
   // 游标必须存**一批** id，不能只存一条。
   //
   // 采集器要求「连续遇到 stopAfterKnownStreak(=3) 条已知」才判定追上，而它内部用
@@ -1329,32 +1338,108 @@ export async function syncXBookmarks(tabId: number): Promise<BookmarksSyncResult
   // 每次都只重复采集最上面同一批 300 条，更早的收藏永远同步不到。
   const stored = await browser.storage.local.get(BOOKMARKS_CURSOR_KEY);
   const rawCursor = stored[BOOKMARKS_CURSOR_KEY];
-  const knownIDs = (Array.isArray(rawCursor) ? rawCursor : [rawCursor])
+  return (Array.isArray(rawCursor) ? rawCursor : [rawCursor])
     .filter((id): id is string => isValidTweetID(id));
+}
 
+async function rememberBookmarksCursor(ids: string[]): Promise<void> {
+  // 收藏夹按加入时间倒序。存最新的一小批而不是一条：连续命中 3 条才算追上，
+  // 只存一条的话那个判据永远不成立。存 8 条留出余量——用户在两次同步之间
+  // 取消收藏了其中几条时，剩下的仍足以凑够连续 3 条。
+  const nextCursor = ids.filter(isValidTweetID).slice(0, 8);
+  if (nextCursor.length > 0) {
+    await browser.storage.local.set({ [BOOKMARKS_CURSOR_KEY]: nextCursor });
+  }
+}
+
+/** 只滚动收集，不立刻交给 App——弹窗勾选后再 sync。 */
+export async function collectXBookmarks(tabId: number): Promise<BookmarksCollectResult> {
+  const tab = await browser.tabs.get(tabId).catch(() => undefined);
+  if (!isXBookmarksURL(tab?.url)) return { ok: false, code: "not_bookmarks" };
+
+  const knownIDs = await loadBookmarksCursor();
   let collected: CollectResult;
   try {
     const results = await browser.scripting.executeScript({
       target: { tabId },
       world: "MAIN",
       func: collectXBookmarkIDsInPage,
-      // 只把上次游标交给页面；连续遇到 3 条已知即判定追上。
-      args: [knownIDs, MAX_BOOKMARK_IDS, 3],
+      // 勾选模式：不因追上已知而早停（streak=0），尽量把列表滚全再让用户挑。
+      args: [knownIDs, MAX_BOOKMARK_IDS, 0],
     });
     const raw = results[0]?.result as CollectResult | undefined;
-    collected = raw && Array.isArray(raw.ids)
-      ? { ids: raw.ids.filter(isValidTweetID), reachedKnown: raw.reachedKnown === true }
-      : { ids: [], reachedKnown: false };
+    const items = normalizeBookmarkItems(
+      raw?.items
+      ?? raw?.ids?.map((id) => ({
+        id,
+        author: "",
+        text: "",
+        alreadySynced: knownIDs.includes(id),
+      })),
+    );
+    collected = {
+      items,
+      ids: items.map((item) => item.id),
+      reachedKnown: raw?.reachedKnown === true,
+    };
   } catch {
     return { ok: false, code: "injection_failed" };
   }
 
-  if (collected.ids.length === 0) {
-    return { ok: false, code: "empty" };
+  if (collected.items.length === 0) return { ok: false, code: "empty" };
+
+  // 以 App 本地历史为准标「已在库」；App 不可达时保留游标粗标。
+  const existing = await lookupExistingBookmarkIDs(collected.ids);
+  if (existing) {
+    const inLibrary = new Set(existing);
+    return {
+      ok: true,
+      items: collected.items.map((item) => ({
+        ...item,
+        alreadySynced: inLibrary.has(item.id),
+      })),
+      reachedKnown: collected.reachedKnown,
+      libraryLookup: "ok",
+    };
   }
 
+  return {
+    ok: true,
+    items: collected.items,
+    reachedKnown: collected.reachedKnown,
+    libraryLookup: "unavailable",
+  };
+}
+
+/** 问 App：这批 id 里哪些已在本地历史。失败返回 null（调用方降级）。 */
+async function lookupExistingBookmarkIDs(tweetIDs: string[]): Promise<string[] | null> {
+  const ids = tweetIDs.filter(isValidTweetID).slice(0, MAX_BOOKMARK_IDS);
+  const message = {
+    kind: "xBookmarksLookup",
+    version: 1,
+    requestId: requestId(),
+    tweetIDs: ids,
+  };
+  try {
+    const response: unknown = await withTimeout(
+      browser.runtime.sendNativeMessage(HOST_NAME, message),
+      15_000,
+    );
+    return parseBookmarksLookup(response);
+  } catch {
+    return null;
+  }
+}
+
+/** 把用户勾选的 id 交给 App；不再二次滚动。 */
+export async function enqueueXBookmarkIDs(tweetIDs: unknown): Promise<BookmarksSyncResult> {
+  const ids = (Array.isArray(tweetIDs) ? tweetIDs : [])
+    .filter(isValidTweetID)
+    .slice(0, MAX_BOOKMARK_IDS);
+  if (ids.length === 0) return { ok: false, code: "empty" };
+
   const syncRequestId = requestId();
-  const message = { kind: "xBookmarks", version: 1, requestId: syncRequestId, tweetIDs: collected.ids };
+  const message = { kind: "xBookmarks", version: 1, requestId: syncRequestId, tweetIDs: ids };
   let response: unknown;
   try {
     response = await withTimeout(browser.runtime.sendNativeMessage(HOST_NAME, message), 30_000);
@@ -1364,15 +1449,17 @@ export async function syncXBookmarks(tabId: number): Promise<BookmarksSyncResult
   const outcome = parseBookmarksAccepted(response);
   if (!outcome) return { ok: false, code: "native_error" };
 
-  // 收藏夹按加入时间倒序。存最新的一小批而不是一条：连续命中 3 条才算追上，
-  // 只存一条的话那个判据永远不成立（见上面读取处的说明）。存 8 条留出余量——
-  // 用户在两次同步之间取消收藏了其中几条时，剩下的仍足以凑够连续 3 条。
-  const nextCursor = collected.ids.slice(0, 8);
-  if (nextCursor.length > 0) {
-    await browser.storage.local.set({ [BOOKMARKS_CURSOR_KEY]: nextCursor });
-  }
+  await rememberBookmarksCursor(ids);
+  return { ok: true, outcome, collected: ids.length, reachedKnown: false };
+}
 
-  return { ok: true, outcome, collected: collected.ids.length, reachedKnown: collected.reachedKnown };
+/** 兼容旧入口：收集后立刻全量同步（测试与外部仍可调用）。 */
+export async function syncXBookmarks(tabId: number): Promise<BookmarksSyncResult> {
+  const collected = await collectXBookmarks(tabId);
+  if (!collected.ok) return collected;
+  const synced = await enqueueXBookmarkIDs(collected.items.map((item) => item.id));
+  if (!synced.ok) return synced;
+  return { ...synced, reachedKnown: collected.reachedKnown };
 }
 
 export type SingleTweetSyncResult =
@@ -1414,17 +1501,27 @@ export async function openPeerApp(): Promise<{ ok: true } | { ok: false; code: "
 
 export default defineBackground(() => {
   browser.runtime.onMessage.addListener(async (
-    message: { type?: string; tabId?: number; tweetID?: string; requestedAction?: CaptureRequestedAction },
+    message: {
+      type?: string;
+      tabId?: number;
+      tweetID?: string;
+      tweetIDs?: string[];
+      requestedAction?: CaptureRequestedAction;
+    },
   ) => {
     // 时间线注入按钮发来的单条同步：只需要 tweetID，不涉及 tabId。
     if (message.type === "sync-single-tweet") return syncSingleTweet(message.tweetID);
     if (message.type === "open-app") return openPeerApp();
+    // 勾选后提交：只交 id 列表，不再依赖当前 tab 滚动。
+    if (message.type === "enqueue-x-bookmarks") return enqueueXBookmarkIDs(message.tweetIDs);
     if (typeof message.tabId !== "number") return undefined;
     if (message.type === "preview-current-page") return previewCurrentPage(message.tabId);
     if (message.type === "send-current-page") {
       const action = message.requestedAction;
       return sendCapture(message.tabId, action === "summarize" || action === "translate" ? action : "save");
     }
+    if (message.type === "collect-x-bookmarks") return collectXBookmarks(message.tabId);
+    // 旧入口仍保留：一键收集并全量同步。
     if (message.type === "sync-x-bookmarks") return syncXBookmarks(message.tabId);
     return undefined;
   });
