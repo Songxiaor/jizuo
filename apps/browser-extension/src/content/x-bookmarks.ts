@@ -70,8 +70,8 @@ export function bookmarksSyncMessage(
 ): string {
   if (collected === 0) return "没有找到可同步的收藏。请确认已打开收藏夹页面。";
   const parts: string[] = [];
-  if (outcome.queued > 0) parts.push(`新增 ${outcome.queued} 条正在抓取`);
-  if (outcome.skipped > 0) parts.push(`${outcome.skipped} 条已在库`);
+  if (outcome.queued > 0) parts.push(`新增 ${outcome.queued} 条`);
+  if (outcome.skipped > 0) parts.push(`已在库 ${outcome.skipped} 条，已跳过`);
   const head = parts.length > 0 ? parts.join("，") : "本次没有新增";
   const tail = reachedKnown ? "（已同步到上次的位置）" : "";
   return `${head}${tail}`;

@@ -589,15 +589,14 @@ final class ManualLinkViewModel: ObservableObject {
     var queued = 0
     var skipped = 0
     var queuedURLs = Set(pendingCaptures.map(\.urlString))
+    let existingIDs = (try? history?.existingXTweetIDs(in: tweetIDs)) ?? []
     for id in tweetIDs {
       guard XBookmarksSyncRequest.isValidTweetID(id) else { skipped += 1; continue }
-      let urlString = "https://x.com/i/status/\(id)"
-      if let history,
-         let canonical = try? CanonicalURL(urlString),
-         (try? history.containsCanonicalURL(canonical)) == true {
+      if existingIDs.contains(id) {
         skipped += 1
         continue
       }
+      let urlString = "https://x.com/i/status/\(id)"
       // 同一条已在本次队列里（滚动重复采到）也跳过。
       if !queuedURLs.insert(urlString).inserted { skipped += 1; continue }
       pendingCaptures.append(PendingCapture(id: UUID(), urlString: urlString, phase: .queued))

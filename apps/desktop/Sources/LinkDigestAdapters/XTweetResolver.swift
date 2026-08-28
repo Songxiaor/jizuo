@@ -145,21 +145,11 @@ public struct XTweetResolver: Sendable {
 
   /// 从推文地址里取出数字 id。只认 x.com / twitter.com 的 status 路径。
   public static func tweetID(from rawURL: String) -> String? {
-    guard let url = URL(string: rawURL),
-          url.scheme?.lowercased() == "https",
-          let rawHost = url.host?.lowercased()
-    else { return nil }
-    let host = rawHost.hasPrefix("www.") ? String(rawHost.dropFirst(4)) : rawHost
-    guard host == "x.com" || host == "twitter.com" else { return nil }
-    let parts = url.pathComponents
-    guard let marker = parts.firstIndex(where: { $0 == "status" || $0 == "statuses" }) else { return nil }
-    let next = parts.index(after: marker)
-    guard next < parts.endIndex else { return nil }
-    return isValidTweetID(parts[next]) ? parts[next] : nil
+    XBookmarksSyncRequest.tweetID(fromCanonicalURL: rawURL)
   }
 
   public static func isValidTweetID(_ value: String) -> Bool {
-    (8...25).contains(value.count) && value.allSatisfy { $0.isASCII && $0.isNumber }
+    XBookmarksSyncRequest.isValidTweetID(value)
   }
 
   /// 直链只接受 X 自己的视频 CDN，且必须是 https 标准端口。
