@@ -219,6 +219,8 @@ public protocol HistoryRepository: Sendable {
   func finishRun(_ command: FinishRunCommand) throws
   func recoverInterruptedRuns(at milliseconds: Int64) throws -> Int
   func containsCanonicalURL(_ canonicalURL: CanonicalURL) throws -> Bool
+  /// 这批推文 id 里哪些已经在本地历史。`/i/status/id` 与 `/user/status/id` 算同一条。
+  func existingXTweetIDs(in tweetIDs: [String]) throws -> Set<String>
   func historyPage(limit: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage
   func historyPage(limit: Int, after cursor: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage
   func navigationCounts() throws -> HistoryNavigationCounts
@@ -358,6 +360,11 @@ public extension HistoryRepository {
   /// Clipboard suggestions must fail closed when history cannot be queried.
   /// The production repository overrides this with an indexed exact lookup.
   func containsCanonicalURL(_: CanonicalURL) throws -> Bool { throw RepositoryFailure.unavailable }
+
+  func existingXTweetIDs(in tweetIDs: [String]) throws -> Set<String> {
+    _ = tweetIDs
+    return []
+  }
 
   func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult {
     _ = taskIDs

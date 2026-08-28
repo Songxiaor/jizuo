@@ -55,4 +55,22 @@ public struct XBookmarksSyncRequest: Sendable, Equatable {
   public static func isValidTweetID(_ value: String) -> Bool {
     (8...25).contains(value.count) && value.allSatisfy { $0.isASCII && $0.isNumber }
   }
+
+  /// 从已落库或待查的推文地址里取出数字 id。
+  ///
+  /// `/i/status/123` 和 `/alice/status/123` 是同一条帖。查重必须认 id，
+  /// 不能拿整串 URL 去做相等——收藏同步入队用前者，解析落库用后者。
+  public static func tweetID(fromCanonicalURL rawURL: String) -> String? {
+    guard let url = URL(string: rawURL),
+          url.scheme?.lowercased() == "https",
+          let rawHost = url.host?.lowercased()
+    else { return nil }
+    let host = rawHost.hasPrefix("www.") ? String(rawHost.dropFirst(4)) : rawHost
+    guard host == "x.com" || host == "twitter.com" else { return nil }
+    let parts = url.pathComponents
+    guard let marker = parts.firstIndex(where: { $0 == "status" || $0 == "statuses" }) else { return nil }
+    let next = parts.index(after: marker)
+    guard next < parts.endIndex else { return nil }
+    return isValidTweetID(parts[next]) ? parts[next] : nil
+  }
 }

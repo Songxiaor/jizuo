@@ -18,6 +18,27 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
     }
   }
 
+  func testExistingXTweetIDsMatchesHandleAndIStatusForms() throws {
+    try withRepository { repository, _ in
+      try repository.database.write { db in
+        try db.execute(
+          sql: "INSERT INTO tasks (id, canonical_url, canonicalization_version, created_at_ms, updated_at_ms) VALUES (?, ?, ?, 1, 1)",
+          arguments: ["11111111-1111-1111-1111-111111111111", "https://x.com/alice/status/1234567890123", CanonicalURL.version]
+        )
+        try db.execute(
+          sql: "INSERT INTO tasks (id, canonical_url, canonicalization_version, created_at_ms, updated_at_ms) VALUES (?, ?, ?, 1, 1)",
+          arguments: ["22222222-2222-2222-2222-222222222222", "https://x.com/i/status/2080312096865271866", CanonicalURL.version]
+        )
+      }
+      let found = try repository.existingXTweetIDs(in: [
+        "1234567890123",
+        "2080312096865271866",
+        "9999999999999",
+      ])
+      XCTAssertEqual(found, ["1234567890123", "2080312096865271866"])
+    }
+  }
+
   func testEmptyDatabaseMigratesDirectlyTo008AndRejectsExtraHyphenUUIDs() throws {
     try withRepository { repository, _ in
       XCTAssertEqual(repository.accessMode, .writable)

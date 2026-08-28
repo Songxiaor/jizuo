@@ -125,6 +125,36 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  public func existingXTweetIDs(in tweetIDs: [String]) throws -> Set<String> {
+    let wanted = Set(tweetIDs.filter(XBookmarksSyncRequest.isValidTweetID))
+    guard !wanted.isEmpty else { return [] }
+    return try database.read { db in
+      // 只拉 X/Twitter 的 status 地址，再在内存里按 id 相交。
+      // 不能用 i/status 整串相等：解析落库后是 /用户名/status/id。
+      let urls = try String.fetchAll(
+        db,
+        sql: """
+          SELECT canonical_url FROM tasks
+          WHERE canonicalization_version = ?
+            AND (
+              canonical_url LIKE 'https://x.com/%/status/%'
+              OR canonical_url LIKE 'https://www.x.com/%/status/%'
+              OR canonical_url LIKE 'https://twitter.com/%/status/%'
+              OR canonical_url LIKE 'https://www.twitter.com/%/status/%'
+            )
+          """,
+        arguments: [CanonicalURL.version]
+      )
+      var found = Set<String>()
+      for url in urls {
+        if let id = XBookmarksSyncRequest.tweetID(fromCanonicalURL: url), wanted.contains(id) {
+          found.insert(id)
+        }
+      }
+      return found
+    }
+  }
+
   private func provenanceIsConsistent(
     _ provenance: CaptureDeliveryProvenance,
     with document: CapturedDocument
