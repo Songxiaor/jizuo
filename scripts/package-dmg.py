@@ -600,7 +600,7 @@ def main() -> int:
             sign_and_verify_app(
                 architecture_app, app_config["bundleIdentifier"], config
             )
-            dmg = output_dir / f"汲作-{args.version}-macOS-{filename_edition}.dmg"
+            dmg = output_dir / f"Jizuo-{args.version}-macOS-{filename_edition}.dmg"
             build_dmg(
                 architecture_app,
                 staged_extension,
