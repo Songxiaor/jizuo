@@ -250,14 +250,18 @@ private final class OrderScrambledProvider: ModelProvider, @unchecked Sendable {
 
     return AsyncThrowingStream { continuation in
       let producer = Task {
-        defer { lock.withLock { inFlight -= 1 } }
+        defer {
+          // 计数的是仍占服务商并发配额的流。必须先归还名额再 finish；否则消费者
+          // 已经启动下一片，而 producer 尾部的 defer 还没跑，会制造出虚假的 +1 峰值。
+          lock.withLock { inFlight -= 1 }
+          continuation.finish()
+        }
         if delay > 0 { try? await Task.sleep(for: .milliseconds(delay)) }
         continuation.yield(.delta(text))
         if let tokens {
           continuation.yield(.usage(RunUsageCost(outputTokens: tokens)))
         }
         continuation.yield(.completed)
-        continuation.finish()
       }
       continuation.onTermination = { _ in producer.cancel() }
     }

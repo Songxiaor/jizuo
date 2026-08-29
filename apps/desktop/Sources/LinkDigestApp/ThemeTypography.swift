@@ -79,12 +79,15 @@ enum ThemeTextStyle: CaseIterable {
 
 /// 一个主题的界面字体。
 ///
-/// `family == nil` 表示「用系统字体」。这不是缺省失败，是系统主题的正确取值。
+/// `requestedFamily` 保留配置意图；`family` 是当前机器真正能用的家族。
+/// `family == nil` 表示「用系统字体」。这不是缺省失败，是系统主题或缺字库时的
+/// 正确取值。
 struct ThemeTypography: Equatable, Hashable {
+  let requestedFamily: String?
   let family: String?
 
   /// 系统主题专用：不指定家族。
-  static let system = ThemeTypography(family: nil)
+  static let system = ThemeTypography(requestedFamily: nil, family: nil)
 
   /// 指定家族，但**装不上就退回系统字体**。
   ///
@@ -94,7 +97,10 @@ struct ThemeTypography: Equatable, Hashable {
   /// 挤压跟着丢，就是当初 New York 那个「每个逗号后裂一道缝」的老问题。
   /// 所以在这里就地判定，宁可退回系统字体，也不要一个半坏的渲染结果。
   static func family(_ name: String) -> ThemeTypography {
-    ThemeTypography(family: NSFont(name: name, size: 13) != nil ? name : nil)
+    ThemeTypography(
+      requestedFamily: name,
+      family: NSFont(name: name, size: 13) != nil ? name : nil
+    )
   }
 
   func font(_ style: ThemeTextStyle, weight: Font.Weight? = nil) -> Font {

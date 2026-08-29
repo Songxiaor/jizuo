@@ -161,11 +161,14 @@ final class MarkdownPresentationTests: XCTestCase {
     // system(design:.serif)（New York，无中文字形），中文逐字回退且不做标点挤压，
     // 每个「，」「。」后面都会裂开一道缝。
     //
-    // 2026-08-25 从 Songti SC 换成思源宋体 VF：Songti SC 只有 2 个字重，上屏
-    // 发虚；思源宋体 7 个真字重，是这台机器上唯一撑得住完整界面层级的中文衬线。
+    // 首选思源宋体，但它不随 macOS 附带；没安装时必须按目录契约退回 Songti SC，
+    // 不能把某台开发机的字体集写死成所有运行环境的前提。
+    let expectedEditorialFamily = NSFont(name: "思源宋体 VF", size: 16) == nil
+      ? "Songti SC"
+      : "思源宋体 VF"
     XCTAssertEqual(
       ReadingFontSelection.theme.resolved(usesEditorialReadingTypography: true, bodySize: 16.5),
-      ResolvedReadingFont(face: .named("思源宋体 VF"), bodySize: 16.5)
+      ResolvedReadingFont(face: .named(expectedEditorialFamily), bodySize: 16.5)
     )
     XCTAssertEqual(
       ReadingFontSelection.theme.resolved(usesEditorialReadingTypography: false, bodySize: 16.5),

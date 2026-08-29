@@ -15,6 +15,7 @@ final class ThemeTypographyTests: XCTestCase {
   // 右键菜单、字体面板、Sparkle 弹窗）只会用系统字体。给它指定字体，那些控件
   // 不跟着变，界面反而更花。
   func testSystemThemeKeepsTheSystemFont() {
+    XCTAssertNil(AppearanceTheme.glass.tokens.typography.requestedFamily)
     XCTAssertNil(AppearanceTheme.glass.tokens.typography.family)
   }
 
@@ -25,8 +26,8 @@ final class ThemeTypographyTests: XCTestCase {
   func testEveryNonSystemThemeDeclaresItsOwnFont() {
     for theme in AppearanceTheme.allCases where theme != .glass {
       XCTAssertNotNil(
-        theme.tokens.typography.family,
-        "\(theme.displayName) 主题没有自己的字体，退回了系统字体"
+        theme.tokens.typography.requestedFamily,
+        "\(theme.displayName) 主题没有声明自己的字体"
       )
     }
   }
@@ -50,8 +51,13 @@ final class ThemeTypographyTests: XCTestCase {
   // `Font.custom` 遇到不存在的家族不报错，会掉回系统默认——那正是上面那条
   // 标点裂缝的来源。宁可整套退回系统字体，也不要一个半坏的渲染结果。
   func testMissingFamilyFallsBackToSystem() {
-    XCTAssertNil(ThemeTypography.family("Definitely Not An Installed Font").family)
-    XCTAssertEqual(ThemeTypography.family("PingFang SC").family, "PingFang SC")
+    let missing = ThemeTypography.family("Definitely Not An Installed Font")
+    XCTAssertEqual(missing.requestedFamily, "Definitely Not An Installed Font")
+    XCTAssertNil(missing.family)
+
+    let installed = ThemeTypography.family("PingFang SC")
+    XCTAssertEqual(installed.requestedFamily, "PingFang SC")
+    XCTAssertEqual(installed.family, "PingFang SC")
   }
 
   // 具名字体的点数必须和系统语义字号一致。
