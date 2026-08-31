@@ -1560,7 +1560,7 @@ struct ProviderSettingsView: View {
       // 和站点登录页 `sitesCard` 的做法一致。
       VStack(alignment: .leading, spacing: 10) {
         Text("自动处理管线").themedFont(.headline)
-        Text("新内容到了可以自动做这些。翻译不在这条链上，要自己点。")
+        Text("新内容到达后按编号顺序串行执行已开启的步骤。① 只译标题并在正文保留原文标题，不会把条目移出待总结；正文翻译仍需自己点。")
           .themedFont(.callout)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -1568,36 +1568,43 @@ struct ProviderSettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
           pipelineStep(
             index: 1,
+            title: "中文标题",
+            trailingNote: "只发送标题",
+            isOn: $model.autoLocalizeTitleNewCaptures,
+            identifier: "auto-pipeline-localize-title"
+          )
+          pipelineStep(
+            index: 2,
             title: "本机转写",
             trailingNote: "不出网",
             isOn: $model.autoTranscribeNewCaptures,
             identifier: "auto-pipeline-transcribe"
           )
           pipelineStep(
-            index: 2,
+            index: 3,
             title: "模型校对",
             trailingNote: "只发送文字",
             requirementUnmet: model.autoTranscribeNewCaptures
               ? nil
-              : "仅影响自动进来的新内容：① 未开启就没有转写稿可整理",
+              : "仅影响自动进来的新内容：② 未开启就没有转写稿可整理",
             isOn: $model.autoTidyTranscription,
             identifier: "auto-tidy-transcription"
           )
           pipelineStep(
-            index: 3,
+            index: 4,
             title: "总结",
             trailingNote: "读原文，不读译文",
             isOn: $model.autoSummarizeNewCaptures,
             identifier: "auto-pipeline-summarize"
           )
           pipelineStep(
-            index: 4,
+            index: 5,
             title: "脑图",
             trailingNote: "优先用总结产物",
             isLast: true,
             requirementUnmet: model.autoSummarizeNewCaptures
               ? nil
-              : "③ 未开启：将直接读原文生成，质量通常不如先总结",
+              : "④ 未开启：将直接读原文生成，质量通常不如先总结",
             isOn: $model.autoMindMapNewCaptures,
             identifier: "auto-pipeline-mindmap"
           )
@@ -1620,7 +1627,7 @@ struct ProviderSettingsView: View {
 
         DisclosureGroup("了解更多") {
           VStack(alignment: .leading, spacing: 6) {
-            Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；校对/总结/脑图只发送文字。手动转写完成后请点「模型校对」。")
+            Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；中文标题/校对/总结/脑图只发送文字。手动转写完成后请点「模型校对」。")
               .fixedSize(horizontal: false, vertical: true)
               .frame(maxWidth: .infinity, alignment: .leading)
             // 完整 Base URL 是排障才看的东西，收进来；上面那行只留 host 和模型，

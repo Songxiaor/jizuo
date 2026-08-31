@@ -38,13 +38,27 @@ struct HistoryRowView: View {
   /// 发布时间优先——判断"这条素材新不新鲜"看的是它。抓不到发布时间
   /// （很多网页没有可靠的时间标记）才回落到入库时间，并标明是"存于"，
   /// 免得让人误以为原文是那天发的。
-  private func sanitizedRowPreview(_ row: HistoryRowProjection) -> String? {
-    if let preview = row.artifactPreview?.trimmedNonEmpty {
-      let cleaned = MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: preview)
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      if !cleaned.isEmpty { return cleaned }
-    }
-    return row.author?.trimmedNonEmpty
+  private var capturedTitle: String {
+    CapturedDocumentTitle.display(row.title, for: row.canonicalURL)
+  }
+
+  private var cleanedArtifactPreview: String? {
+    guard let preview = row.artifactPreview?.trimmedNonEmpty else { return nil }
+    let cleaned = MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: preview)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    return cleaned.isEmpty ? nil : cleaned
+  }
+
+  private var rowPrimaryTitle: String {
+    HistoryReadingTitle.primaryTitle(captured: capturedTitle, artifactPreview: cleanedArtifactPreview)
+  }
+
+  private var rowPreviewLine: String? {
+    HistoryReadingTitle.listPreview(
+      artifactPreview: cleanedArtifactPreview,
+      primaryTitle: rowPrimaryTitle,
+      authorFallback: row.author
+    )
   }
 
   private var rowTimeText: String {
@@ -56,9 +70,7 @@ struct HistoryRowView: View {
 
   /// 整行作为一个可访问元素，读屏只报标题、来源、时间和处理状态；正文预览
   /// 留在视觉层，不再把几百字摘要当作列表项 value 一口气念完。
-  private var rowAccessibilityLabel: String {
-    CapturedDocumentTitle.display(row.title, for: row.canonicalURL)
-  }
+  private var rowAccessibilityLabel: String { rowPrimaryTitle }
 
   private var rowAccessibilityValue: String {
     var values = [
@@ -101,13 +113,13 @@ struct HistoryRowView: View {
       .padding(.top, 4)
       VStack(alignment: .leading, spacing: 4) {
         HStack(alignment: .top, spacing: 8) {
-          Text(CapturedDocumentTitle.display(row.title, for: row.canonicalURL))
+          Text(rowPrimaryTitle)
             .themedFont(.body, weight: .semibold)
             .lineLimit(2)
             .multilineTextAlignment(.leading)
           Spacer(minLength: 4)
         }
-        if let preview = sanitizedRowPreview(row) {
+        if let preview = rowPreviewLine {
           Text(preview)
             .themedFont(.callout)
             .foregroundStyle(.secondary)

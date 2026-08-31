@@ -1728,6 +1728,19 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
   private var title: String { CapturedDocumentTitle.display(detail.snapshots.last?.title, for: sourceURL) }
+  /// 详情头：有总结/翻译一级标题时主标题用产物，原文降副行；标题本地化后副行读 original_title。
+  private var readingTitles: (primary: String, original: String?) {
+    HistoryReadingTitle.detailTitles(
+      captured: title,
+      product: HistoryReadingTitle.productTitle(
+        summaryBody: summaryArtifact?.bodyText,
+        translationBody: translationArtifact?.bodyText
+      ),
+      preservedOriginalTitle: sourceFrontmatter.originalTitle
+    )
+  }
+  private var readingPrimaryTitle: String { readingTitles.primary }
+  private var readingOriginalSubtitle: String? { readingTitles.original }
   private var sourceURL: String { detail.snapshots.last?.sourceURL ?? detail.task.canonicalURL }
   /// Tolaria-style properties from capture frontmatter (author / published / description).
   private var sourceFrontmatter: MarkdownNoteFrontmatter {
@@ -2200,7 +2213,7 @@ private struct HistoryDetailView: View, Equatable {
       visitedReadingPanes = []
       pendingSourceCitation = nil
       ReadingSelectionRouter.shared.formatter = { selected in
-        ReadingCitationFormatter.format(selection: selected, title: title, sourceURL: sourceURL)
+        ReadingCitationFormatter.format(selection: selected, title: readingPrimaryTitle, sourceURL: sourceURL)
       }
       measuredTitleHeight = HistoryDetailView.titleLineHeight
       // 切换条目时丢弃未保存的转写草稿，避免草稿串到别的记录。
@@ -2526,22 +2539,36 @@ private struct HistoryDetailView: View, Equatable {
         }
         .focused($focusedField, equals: .noteTitle)
         .accessibilityIdentifier("history-detail-title")
-    } else if titleNeedsScrolling {
-      ScrollView(.vertical) {
-        measuredTitleText
-      }
-      .frame(height: Self.titleMaximumHeight)
-      .scrollBounceBehavior(.basedOnSize)
-      .scrollIndicators(.automatic)
-      .accessibilityIdentifier("history-detail-title")
     } else {
-      measuredTitleText
-        .accessibilityIdentifier("history-detail-title")
+      VStack(alignment: .leading, spacing: 4) {
+        if titleNeedsScrolling {
+          ScrollView(.vertical) {
+            measuredTitleText
+          }
+          .frame(height: Self.titleMaximumHeight)
+          .scrollBounceBehavior(.basedOnSize)
+          .scrollIndicators(.automatic)
+          .accessibilityIdentifier("history-detail-title")
+        } else {
+          measuredTitleText
+            .accessibilityIdentifier("history-detail-title")
+        }
+        if let original = readingOriginalSubtitle {
+          Text(original)
+            .themedFont(.callout)
+            .foregroundStyle(.secondary)
+            .lineLimit(2)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("history-detail-original-title")
+            .accessibilityLabel("原文标题 \(original)")
+        }
+      }
     }
   }
 
   private var measuredTitleText: some View {
-    Text(title)
+    Text(readingPrimaryTitle)
       .font(readingFont.font(size: Self.titleFontSize, weight: .bold))
       .foregroundStyle(theme.primaryText)
       .tracking(-0.4)
@@ -2557,6 +2584,13 @@ private struct HistoryDetailView: View, Equatable {
         guard height > 0 else { return }
         measuredTitleHeight = height
       }
+  }
+
+  /// 只有模型通道真的占上（或弹出数据去向确认）时才切阅读页，避免只打开空翻译页。
+  private func engageReadingPane(_ pane: ReadingPane, started: Bool) {
+    guard started else { return }
+    pendingRunPane = pane
+    readingPane = pane
   }
 
   /// 重试没跑完的那一类运行。走的是和工具栏按钮完全相同的入口——
@@ -2641,10 +2675,12 @@ private struct HistoryDetailView: View, Equatable {
           disabled: summarizeUnavailableReason != nil,
           identifier: showsCurrentCapture ? "summarize-current-capture" : "summarize-history-detail"
         ) {
-          pendingRunPane = .summary
-          readingPane = .summary
           Task {
-            await appModel.summarize(historyDetail: detail, preferences: providerSettings.runPreferences)
+            let started = await appModel.summarize(
+              historyDetail: detail,
+              preferences: providerSettings.runPreferences
+            )
+            engageReadingPane(.summary, started: started)
           }
         }
         actionPill(
@@ -2654,12 +2690,20 @@ private struct HistoryDetailView: View, Equatable {
           disabled: translateUnavailableReason != nil,
           identifier: showsCurrentCapture ? "translate-current-capture" : "translate-history-detail"
         ) {
-          pendingRunPane = .translation
-          readingPane = .translation
           Task {
-            await appModel.translate(historyDetail: detail, preferences: providerSettings.runPreferences)
+            let started = await appModel.translate(
+              historyDetail: detail,
+              preferences: providerSettings.runPreferences
+            )
+            engageReadingPane(.translation, started: started)
           }
         }
+        .help(
+          appModel.translationUnavailableReason(
+            snapshots: detail.snapshots,
+            outputLanguage: providerSettings.runPreferences.outputLanguage
+          ) ?? "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
+        )
         // 生成脑图和总结、翻译是同一类动作：都是把正文交给模型换回一份新产物，
         // 前置条件（有正文 + 配好模型）、代价（花 token，必经确认）和结果
         // （一份可保存、可导出的东西）完全一致。原来它却单独待在媒体和正文之间，

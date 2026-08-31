@@ -111,6 +111,13 @@ private struct AutoPipelineRequest {
   var readAttempts = 0
 }
 
+private struct AutoTitleLocalizationRequest: Sendable {
+  let taskID: TaskID
+  let outputLanguage: String
+  let model: String?
+  var readAttempts = 0
+}
+
 /// 批量总结的实时进度。`skipped` 指执行期间才发现可跳过的条目（预检之后、
 /// 轮到它之前被别的路径总结掉了）。
 struct BatchSummaryProgress: Sendable, Equatable {
@@ -921,6 +928,7 @@ final class HistoryViewModel: ObservableObject {
   private let imageTextRecognizer: (any LocalImageTextRecognizing)?
   private let onlineAudioTranscriber: (any OnlineAudioTranscribing)?
   private let transcriptTidier: (any TranscriptTidying)?
+  private let titleLocalizer: (any TitleLocalizing)?
   /// 起草用的 Agent。没有就是没装 CLI,那一步的入口会说清楚缺什么。
   private let draftAgent: ClaudeCLIAgent?
   private let mindMapExtractor: (any MindMapExtracting)?
@@ -990,6 +998,7 @@ final class HistoryViewModel: ObservableObject {
     imageTextRecognizer: (any LocalImageTextRecognizing)? = nil,
     onlineAudioTranscriber: (any OnlineAudioTranscribing)? = nil,
     transcriptTidier: (any TranscriptTidying)? = nil,
+    titleLocalizer: (any TitleLocalizing)? = nil,
     draftAgent: ClaudeCLIAgent? = nil,
     mindMapExtractor: (any MindMapExtracting)? = nil,
     transcriptionTempStore: TranscriptionTempStore? = nil,
@@ -1013,6 +1022,7 @@ final class HistoryViewModel: ObservableObject {
     self.imageTextRecognizer = imageTextRecognizer
     self.onlineAudioTranscriber = onlineAudioTranscriber
     self.transcriptTidier = transcriptTidier
+    self.titleLocalizer = titleLocalizer
     self.draftAgent = draftAgent
     self.mindMapExtractor = mindMapExtractor
     self.transcriptionTempStore = transcriptionTempStore
@@ -1023,7 +1033,7 @@ final class HistoryViewModel: ObservableObject {
     self.nowMilliseconds = nowMilliseconds
   }
 
-  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel(); batchSummaryTask?.cancel(); autoPipelineTask?.cancel(); requestedActionTask?.cancel() }
+  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel(); batchSummaryTask?.cancel(); autoTitleLocalizationTask?.cancel(); autoPipelineTask?.cancel(); requestedActionTask?.cancel() }
 
   var canDelete: Bool { history != nil && !isReadOnly && !selectedTaskIDs.isEmpty && !isDeleting }
   var canExport: Bool { history != nil && selectedTaskID != nil && !isPreparingExport }
@@ -1242,6 +1252,8 @@ final class HistoryViewModel: ObservableObject {
     isDeleteOutcomePresented = false; deleteOutcomeMessage = ""
     isLoadingNextPage = false; isDeleting = false
     batchSummaryTask?.cancel(); batchSummaryTask = nil; batchSummaryProgress = nil
+    autoTitleLocalizationTask?.cancel(); autoTitleLocalizationTask = nil
+    autoTitleLocalizationQueue = []; autoTitleLocalizationQueuedTaskIDs = []
     autoPipelineTask?.cancel(); autoPipelineTask = nil
     autoPipelineQueue = []; autoPipelineQueuedTaskIDs = []; autoPipelineHandledTaskIDs = []
     pendingBatchSummaryPlan = nil; isPreparingBatchSummary = false
@@ -1265,6 +1277,7 @@ final class HistoryViewModel: ObservableObject {
     // 侧栏那个「进行中 N」和列表右键的「加入工作台」都要用到这份列表，
     // 所以启动时就取一次，而不是等用户点进工作台。
     reloadPieces()
+    runAutoTitleLocalizationQueueIfNeeded()
   }
 
   func reload() {
@@ -2050,6 +2063,9 @@ final class HistoryViewModel: ObservableObject {
   private var autoPipelineQueuedTaskIDs: Set<TaskID> = []
   private var autoPipelineQueue: [AutoPipelineRequest] = []
   private var autoPipelineTask: Task<Void, Never>?
+  private var autoTitleLocalizationQueuedTaskIDs: Set<TaskID> = []
+  private var autoTitleLocalizationQueue: [AutoTitleLocalizationRequest] = []
+  private var autoTitleLocalizationTask: Task<Void, Never>?
   private var requestedActionHandledTaskIDs: Set<TaskID> = []
   private var requestedActionTask: Task<Void, Never>?
 
@@ -2068,6 +2084,64 @@ final class HistoryViewModel: ObservableObject {
         self.selectedTaskID == taskID && self.detailState == .loaded && self.detail?.task.id == taskID
       }), let detail = self.detail else { return }
       await action(detail)
+    }
+  }
+
+  /// 新捕获入库后后台补中文标题；不写总结产物，也不把条目移出「待总结」。
+  func scheduleAutomaticTitleLocalization(
+    taskID: TaskID,
+    title: String?,
+    body: String?,
+    outputLanguage: String,
+    model: String?
+  ) {
+    guard !isReadOnly,
+          CapturedTitleLocalization.shouldLocalizeIncoming(
+            title: title,
+            body: body,
+            outputLanguage: outputLanguage
+          ),
+          !autoTitleLocalizationQueuedTaskIDs.contains(taskID) else { return }
+    autoTitleLocalizationQueuedTaskIDs.insert(taskID)
+    autoTitleLocalizationQueue.append(.init(
+      taskID: taskID,
+      outputLanguage: outputLanguage,
+      model: model
+    ))
+    runAutoTitleLocalizationQueueIfNeeded()
+  }
+
+  private func runAutoTitleLocalizationQueueIfNeeded() {
+    guard autoTitleLocalizationTask == nil, !autoTitleLocalizationQueue.isEmpty else { return }
+    autoTitleLocalizationTask = Task { [weak self] in
+      guard let self else { return }
+      while !Task.isCancelled, !self.autoTitleLocalizationQueue.isEmpty {
+        guard self.history != nil, self.titleLocalizer != nil else { break }
+        var request = self.autoTitleLocalizationQueue.removeFirst()
+        guard let detail = await self.waitForStoredDetail(taskID: request.taskID, timeoutSeconds: 15) else {
+          if request.readAttempts < 5 {
+            request.readAttempts += 1
+            self.autoTitleLocalizationQueue.insert(request, at: 0)
+            try? await Task.sleep(for: .seconds(1))
+          } else {
+            self.autoTitleLocalizationQueuedTaskIDs.remove(request.taskID)
+          }
+          continue
+        }
+        self.autoTitleLocalizationQueuedTaskIDs.remove(request.taskID)
+        if await self.localizeAndPersistTitle(
+          detail: detail,
+          outputLanguage: request.outputLanguage,
+          model: request.model
+        ) {
+          self.reload()
+          if self.selectedTaskID == request.taskID {
+            self.loadDetailForSelection()
+          }
+        }
+      }
+      self.autoTitleLocalizationTask = nil
+      if !self.autoTitleLocalizationQueue.isEmpty { self.runAutoTitleLocalizationQueueIfNeeded() }
     }
   }
 
@@ -2231,6 +2305,56 @@ final class HistoryViewModel: ObservableObject {
       }
     }
     return true
+  }
+
+  @discardableResult
+  private func localizeAndPersistTitle(
+    detail: HistoryDetailProjection,
+    outputLanguage: String,
+    model: String?
+  ) async -> Bool {
+    guard let history, let titleLocalizer, !isReadOnly,
+          let snapshot = detail.snapshots.last
+    else { return false }
+    let originalTitle = snapshot.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !originalTitle.isEmpty,
+          CapturedTitleLocalization.needsLocalization(
+            title: originalTitle,
+            bodyText: snapshot.bodyText,
+            outputLanguage: outputLanguage
+          )
+    else { return false }
+    do {
+      let localized = try await titleLocalizer.localize(
+        title: originalTitle,
+        body: snapshot.bodyText,
+        outputLanguage: outputLanguage,
+        model: model
+      )
+      let trimmed = CapturedTitleLocalization.sanitizedModelTitle(localized)
+      guard !trimmed.isEmpty, trimmed != originalTitle else { return false }
+      let body = CapturedTitleLocalization.bodyWithPreservedOriginal(
+        bodyText: snapshot.bodyText,
+        originalTitle: originalTitle
+      )
+      let now = nowMilliseconds()
+      let bodyResult = await worker.updateSnapshotBodyText(
+        history,
+        taskID: detail.task.id,
+        snapshotID: snapshot.id,
+        bodyText: body,
+        updatedAtMilliseconds: now
+      )
+      guard case .success = bodyResult else { return false }
+      try history.updateTaskTitle(
+        taskID: detail.task.id,
+        title: trimmed,
+        updatedAtMilliseconds: now
+      )
+      return true
+    } catch {
+      return false
+    }
   }
 
   private func loadStoredDetail(taskID: TaskID) async -> HistoryDetailProjection? {

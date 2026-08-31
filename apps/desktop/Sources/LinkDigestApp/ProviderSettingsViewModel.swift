@@ -69,6 +69,9 @@ final class ProviderSettingsViewModel: ObservableObject {
   @Published var autoTidyTranscription = false {
     didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoTidyTranscription) }
   }
+  @Published var autoLocalizeTitleNewCaptures = true {
+    didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoLocalizeTitleNewCaptures) }
+  }
   @Published var autoTranscribeNewCaptures = false {
     didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoTranscribeNewCaptures) }
   }
@@ -594,8 +597,14 @@ final class ProviderSettingsViewModel: ObservableObject {
     }
   }
 
-  private var pipelineFlagSnapshot: (Bool, Bool, Bool, Bool) {
-    (autoTidyTranscription, autoTranscribeNewCaptures, autoSummarizeNewCaptures, autoMindMapNewCaptures)
+  private var pipelineFlagSnapshot: (Bool, Bool, Bool, Bool, Bool) {
+    (
+      autoLocalizeTitleNewCaptures,
+      autoTidyTranscription,
+      autoTranscribeNewCaptures,
+      autoSummarizeNewCaptures,
+      autoMindMapNewCaptures
+    )
   }
 
   private func currentDraftPreferences() throws -> ModelPreferences {
@@ -606,6 +615,7 @@ final class ProviderSettingsViewModel: ObservableObject {
       transcriptionModel: transcriptionModelName,
       tidyModel: tidyModelName,
       autoTidyTranscription: autoTidyTranscription,
+      autoLocalizeTitleNewCaptures: autoLocalizeTitleNewCaptures ? nil : false,
       autoTranscribeNewCaptures: autoTranscribeNewCaptures,
       autoSummarizeNewCaptures: autoSummarizeNewCaptures,
       autoMindMapNewCaptures: autoMindMapNewCaptures,
@@ -622,6 +632,7 @@ final class ProviderSettingsViewModel: ObservableObject {
     transcriptionModelName = preferences.transcriptionModel ?? ""
     tidyModelName = preferences.tidyModel ?? ""
     autoTidyTranscription = preferences.autoTidyTranscription == true
+    autoLocalizeTitleNewCaptures = preferences.effectiveAutoLocalizeTitleNewCaptures
     autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures == true
     autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
     autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true

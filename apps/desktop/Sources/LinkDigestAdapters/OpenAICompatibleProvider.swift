@@ -252,6 +252,24 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
 
   /// One tidy pass over one transcript chunk. Non-streaming on purpose: the
   /// result replaces nothing until it is complete and persisted.
+  public func localizeTitle(
+    profile: ProviderProfile,
+    apiKey: String,
+    model: String,
+    title: String,
+    body: String?,
+    outputLanguage: String
+  ) async throws -> String {
+    let completion = try await nonStreamingChatCompletion(
+      profile: profile,
+      apiKey: apiKey,
+      model: model,
+      systemPrompt: TitleLocalizationPrompt.system(outputLanguage: outputLanguage),
+      userContent: CapturedTitleLocalization.modelInput(title: title, body: body)
+    )
+    return completion.content
+  }
+
   public func tidyTranscriptChunk(
     profile: ProviderProfile,
     apiKey: String,
