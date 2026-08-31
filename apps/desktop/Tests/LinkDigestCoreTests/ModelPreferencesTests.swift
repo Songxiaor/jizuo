@@ -31,9 +31,12 @@ extension ModelPreferencesTests {
     XCTAssertNil(decoded.autoTranscribeNewCaptures)
     XCTAssertNil(decoded.autoSummarizeNewCaptures)
     XCTAssertNil(decoded.autoMindMapNewCaptures)
+    XCTAssertNil(decoded.autoLocalizeTitleNewCaptures)
+    XCTAssertTrue(decoded.effectiveAutoLocalizeTitleNewCaptures)
 
     // false 归一化为 nil；true 保留。
     let preferences = try ModelPreferences(
+      autoLocalizeTitleNewCaptures: false,
       autoTranscribeNewCaptures: true,
       autoSummarizeNewCaptures: false,
       autoMindMapNewCaptures: true
@@ -41,5 +44,7 @@ extension ModelPreferencesTests {
     XCTAssertEqual(preferences.autoTranscribeNewCaptures, true)
     XCTAssertNil(preferences.autoSummarizeNewCaptures)
     XCTAssertEqual(preferences.autoMindMapNewCaptures, true)
+    XCTAssertEqual(preferences.autoLocalizeTitleNewCaptures, false)
+    XCTAssertFalse(preferences.effectiveAutoLocalizeTitleNewCaptures)
   }
 }

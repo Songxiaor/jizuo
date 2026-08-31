@@ -1426,9 +1426,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("liveRunReadingPane == pane"))
     XCTAssertTrue(detail.contains("mountedReadingPane(.translation)"))
     XCTAssertTrue(detail.contains("visitedReadingPanes"))
-    XCTAssertTrue(detail.contains("pendingRunPane = .summary"))
-    XCTAssertTrue(detail.contains("readingPane = .summary"))
-    XCTAssertTrue(detail.contains("pendingRunPane = .translation"))
+    XCTAssertTrue(detail.contains("engageReadingPane(.summary, started: started)"))
+    XCTAssertTrue(detail.contains("engageReadingPane(.translation, started: started)"))
     // 流式正文挪进了文件尾部的 LiveRunReadingBody 叶子视图（观察
     // LiveRunTextModel，拍点只重绘那一块）；标识符与接线改为钉全文。
     XCTAssertTrue(source.contains("model-run-output"))
@@ -1574,7 +1573,9 @@ final class HistoryContentViewTests: XCTestCase {
     let source = historyContentViewSource()
     let row = section(in: source, from: "struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
     // 图24 式排版：摘要优先，回退作者；发布时间仍来自来源元数据。
-    XCTAssertTrue(row.contains("sanitizedRowPreview(row)"))
+    // 列表主标题/副行走 HistoryReadingTitle（可把产物一级标题抬成主标题）。
+    XCTAssertTrue(row.contains("HistoryReadingTitle.listPreview("))
+    XCTAssertTrue(row.contains("rowPreviewLine"))
     // 一排时间，不是两排：发布时间优先（判断素材新不新鲜看的是它），抓不到
     // 才回落到入库时间。回落时必须带「存于」字样，否则会被读成原文的发布日期。
     XCTAssertTrue(row.contains("HistoryPublishedTimestampFormatter.text(published)"))

@@ -237,11 +237,12 @@ struct ManualGenerationRequest: Equatable {
     await requestRun(intent: .translate, preferences: preferences, modelOverride: modelOverride)
   }
 
+  @discardableResult
   func summarize(
     historyDetail: HistoryDetailProjection,
     preferences: ModelPreferences,
     modelOverride: String? = nil
-  ) async {
+  ) async -> Bool {
     if handledManualGenerationRequest(
       kind: .summarize,
       taskID: historyDetail.task.id,
@@ -249,10 +250,11 @@ struct ManualGenerationRequest: Equatable {
       preferences: preferences,
       modelOverride: modelOverride
     ) {
-      return
+      return didEngageModelRun
     }
-    guard prepareHistoryCapture(historyDetail) else { return }
+    guard prepareHistoryCapture(historyDetail) else { return false }
     await requestRun(intent: .summarize, preferences: preferences, modelOverride: modelOverride)
+    return didEngageModelRun
   }
 
   /// 自动队列需要知道这次是否真的占上模型通道。普通 summarize 保持原来的
@@ -268,16 +270,15 @@ struct ManualGenerationRequest: Equatable {
       preferences: preferences,
       modelOverride: modelOverride
     )
-    return runState.isActive
-      || isDataDestinationDisclosurePresented
-      || isConfirmingDataDestinationDisclosure
+    return didEngageModelRun
   }
 
+  @discardableResult
   func translate(
     historyDetail: HistoryDetailProjection,
     preferences: ModelPreferences,
     modelOverride: String? = nil
-  ) async {
+  ) async -> Bool {
     if handledManualGenerationRequest(
       kind: .translate,
       taskID: historyDetail.task.id,
@@ -285,10 +286,27 @@ struct ManualGenerationRequest: Equatable {
       preferences: preferences,
       modelOverride: modelOverride
     ) {
-      return
+      return didEngageModelRun
     }
-    guard prepareHistoryCapture(historyDetail) else { return }
-    await translate(preferences: preferences, modelOverride: modelOverride)
+    guard prepareHistoryCapture(historyDetail) else { return false }
+    // 详情页门禁按分层快照判断；若这里仍用合并后的 currentCapture 正文，
+    // 中文转写 + 英文配文会被误判为「已是中文」，按钮可点但翻译静默退出。
+    guard LayeredSourceDocument.needsTranslation(
+      from: historyDetail.snapshots,
+      outputLanguage: preferences.outputLanguage
+    ) else {
+      dataDestinationNotice = "捕获内容与输出语言相同，无需翻译。"
+      return false
+    }
+    await requestRun(intent: .translate, preferences: preferences, modelOverride: modelOverride)
+    return didEngageModelRun
+  }
+
+  private var didEngageModelRun: Bool {
+    runState.isActive
+      || isDataDestinationDisclosurePresented
+      || isConfirmingDataDestinationDisclosure
+      || launchPendingRunID != nil
   }
 
   func canStartRun(from detail: HistoryDetailProjection) -> Bool {
@@ -444,6 +462,15 @@ struct ManualGenerationRequest: Equatable {
     isTranslationLanguageMatch(text: text, outputLanguage: outputLanguage)
       ? "捕获内容与输出语言相同，无需翻译。"
       : nil
+  }
+
+  func translationUnavailableReason(
+    snapshots: [ContentSnapshot],
+    outputLanguage: String
+  ) -> String? {
+    LayeredSourceDocument.needsTranslation(from: snapshots, outputLanguage: outputLanguage)
+      ? nil
+      : "捕获内容与输出语言相同，无需翻译。"
   }
 
   /// 总结为什么现在不能点。可用时返回 nil。
@@ -1308,6 +1335,9 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       transcriptTidier: OpenAICompatibleTranscriptTidier(
         configurationService: configurationService
       ),
+      titleLocalizer: OpenAICompatibleTitleLocalizer(
+        configurationService: configurationService
+      ),
       // 起草用用户自己装的 Claude Code。没装的话构造出来也无妨——
       // 它的 locateExecutable() 会返回 nil,那一步的入口说清楚缺什么。
       draftAgent: ClaudeCLIAgent(),
@@ -1394,6 +1424,17 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         // 新素材进库后排一次同步。只是排队（默认 20 秒后跑），不占这条
         // 必须在 10 秒内 ACK 浏览器的路径。
         await knowledgeVaultSettingsModel.scheduleAutoSync()
+        Task { @MainActor in
+          let preferences = (try? await preferencesStore.load()) ?? .default
+          guard preferences.effectiveAutoLocalizeTitleNewCaptures else { return }
+          await historyModel.scheduleAutomaticTitleLocalization(
+            taskID: value.taskID,
+            title: value.document.title,
+            body: value.document.text,
+            outputLanguage: preferences.outputLanguage,
+            model: nil
+          )
+        }
         // Video download starts immediately so signed URLs are not kept for later.
         // It runs off the native-message ACK path (same fail-open pattern as images).
         if value.shouldAutomaticallyPersistLegacyMedia {
@@ -1577,6 +1618,16 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
                 await model.receive(value)
                 await historyModel.reveal(taskID: value.taskID)
                 await knowledgeVaultSettings.scheduleAutoSync()
+                Task { @MainActor in
+                  guard providerSettings.autoLocalizeTitleNewCaptures else { return }
+                  await historyModel.scheduleAutomaticTitleLocalization(
+                    taskID: value.taskID,
+                    title: value.document.title,
+                    body: value.document.text,
+                    outputLanguage: providerSettings.outputLanguage,
+                    model: providerSettings.activeSummaryModelName
+                  )
+                }
               }
             )
           }

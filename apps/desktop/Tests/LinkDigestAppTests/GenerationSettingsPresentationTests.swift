@@ -31,21 +31,20 @@ final class GenerationSettingsPresentationTests: XCTestCase {
   /// 管线必须是有编号的链条，不是四个平级开关。
   func testAutoPipelineIsRenderedAsAnOrderedChain() throws {
     let tab = try generationTab(in: try source())
-    for index in 1...4 {
+    for index in 1...5 {
       XCTAssertTrue(
         tab.contains("index: \(index)"),
         "管线第 \(index) 步必须带编号——顺序要是结构，不能只写在说明文字里")
     }
     XCTAssertTrue(
       tab.contains("pipelineStep("),
-      "四个步骤要走同一个构件，各写各的迟早漂移")
+      "五个步骤要走同一个构件，各写各的迟早漂移")
     XCTAssertFalse(
       tab.contains("Toggle(\"自动转写（本机）\""),
       "平级 Toggle 的写法回来了，链条结构就没了")
     XCTAssertTrue(
-      tab.contains("翻译不在这条链上"),
-      "自动链不能看起来像还要先翻译再总结"
-    )
+      tab.contains("auto-pipeline-localize-title"),
+      "中文标题必须是管线第一步且可单独关闭")
     XCTAssertTrue(
       tab.contains("读原文，不读译文"),
       "总结吃的是原文，必须写在步骤上"

@@ -449,6 +449,90 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(model.dataDestinationNotice, "捕获内容与输出语言相同，无需翻译。")
   }
 
+  func testHistoryTranslationUsesLatestTranscriptWhenCurrentCaptureStillHoldsChineseCaption() async throws {
+    let chinese = String(repeating: "这是中文正文。", count: 4)
+    let english = String(repeating: "This is English prose about building websites with AI. ", count: 4)
+    let original = historyDetail(body: chinese)
+    let caption = try XCTUnwrap(original.snapshots.first)
+    let transcript = ContentSnapshot(
+      id: ContentSnapshotID(),
+      taskID: original.task.id,
+      sequence: 2,
+      envelopeCreatedAtMilliseconds: caption.envelopeCreatedAtMilliseconds + 1,
+      capturedAtMilliseconds: caption.capturedAtMilliseconds + 1,
+      sourceKind: CapturedDocument.Origin.localTranscription.rawValue,
+      sourceURL: caption.sourceURL,
+      title: caption.title,
+      platform: caption.platform,
+      captureMethod: "speech_analyzer_local",
+      completeness: caption.completeness,
+      bodyText: english,
+      characterCount: english.unicodeScalars.count,
+      bodySHA256: String(repeating: "b", count: 64),
+      sourceLabel: "本机视频转写",
+      usedCookie: false
+    )
+    let detail = HistoryDetailProjection(
+      task: original.task,
+      snapshots: [caption, transcript],
+      runs: []
+    )
+    let provider = AppTestModelProvider(results: [.success([.delta("译文"), .completed])])
+    let model = try makeModel(provider: provider)
+    model.receive(
+      CurrentCapture(
+        envelope: capture(text: chinese),
+        taskID: original.task.id,
+        snapshotID: caption.id
+      )
+    )
+    let preferences = try ModelPreferences(outputLanguage: "简体中文")
+
+    XCTAssertFalse(
+      model.canTranslate(preferences: preferences),
+      "stale currentCapture is still the Chinese caption"
+    )
+    XCTAssertTrue(
+      model.canTranslate(from: detail, preferences: preferences),
+      "toolbar must key off the English transcript the user is reading"
+    )
+    XCTAssertNil(
+      model.translationUnavailableReason(text: english, outputLanguage: preferences.outputLanguage)
+    )
+
+    await model.translate(historyDetail: detail, preferences: preferences)
+    await waitUntil { model.runState == .completed(intent: .translate, text: "译文") }
+    guard case let .translate(title, text, targetLanguage)? = provider.intents.last else {
+      return XCTFail("expected a translate intent")
+    }
+    XCTAssertEqual(title, caption.title ?? "历史快照")
+    XCTAssertTrue(
+      text.contains(english.trimmingCharacters(in: .whitespacesAndNewlines)),
+      "layered model input must include the English transcript the user is reading"
+    )
+    XCTAssertEqual(targetLanguage, "简体中文")
+  }
+
+  func testHistoryTranslationReturnsFalseWithoutCallingProviderWhenLayersAlreadyMatchOutputLanguage() async throws {
+    let chinese = String(repeating: "这是中文正文。", count: 4)
+    let detail = historyDetail(body: chinese)
+    let provider = AppTestModelProvider(results: [.success([.delta("unexpected"), .completed])])
+    let model = try makeModel(provider: provider)
+    model.receive(
+      CurrentCapture(
+        envelope: capture(text: chinese),
+        taskID: detail.task.id,
+        snapshotID: detail.snapshots.last!.id
+      )
+    )
+    let preferences = try ModelPreferences(outputLanguage: "简体中文")
+
+    let started = await model.translate(historyDetail: detail, preferences: preferences)
+    XCTAssertFalse(started)
+    XCTAssertEqual(provider.callCount, 0)
+    XCTAssertEqual(model.dataDestinationNotice, "捕获内容与输出语言相同，无需翻译。")
+  }
+
   func testAmbiguousScriptCapturesRemainTranslatableThroughActionEntry() async throws {
     let cases: [(String, String)] = [
       (String(repeating: "中", count: 24) + String(repeating: "a", count: 20), "简体中文"),

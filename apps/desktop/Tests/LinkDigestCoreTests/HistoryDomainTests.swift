@@ -297,6 +297,76 @@ final class UserNoteDocumentTests: XCTestCase {
   }
 }
 
+
+final class HistoryReadingTitleTests: XCTestCase {
+  func testPreservedOriginalTitlePreferredForDetailSubtitle() {
+    let titles = HistoryReadingTitle.detailTitles(
+      captured: "如何更快学习",
+      product: nil,
+      preservedOriginalTitle: "How to learn faster"
+    )
+    XCTAssertEqual(titles.primary, "如何更快学习")
+    XCTAssertEqual(titles.original, "How to learn faster")
+  }
+
+  func testSummaryHeadingBecomesDetailPrimaryTitle() {
+    let titles = HistoryReadingTitle.detailTitles(
+      captured: "Este tipo explica cómo crear páginas",
+      product: HistoryReadingTitle.productTitle(
+        summaryBody: "# 这个人讲解了如何创建网页\n\n- 要点一",
+        translationBody: nil
+      )
+    )
+    XCTAssertEqual(titles.primary, "这个人讲解了如何创建网页")
+    XCTAssertEqual(titles.original, "Este tipo explica cómo crear páginas")
+  }
+
+  func testFallsBackToTranslationThenCaptured() {
+    XCTAssertEqual(
+      HistoryReadingTitle.productTitle(
+        summaryBody: "没有一级标题的总结",
+        translationBody: "# 译过来的标题\n\n正文"
+      ),
+      "译过来的标题"
+    )
+    let titles = HistoryReadingTitle.detailTitles(
+      captured: "原文标题",
+      product: HistoryReadingTitle.productTitle(summaryBody: "纯段落", translationBody: "也没有")
+    )
+    XCTAssertEqual(titles.primary, "原文标题")
+    XCTAssertNil(titles.original)
+  }
+
+  func testListPromotesPreviewHeadingAndStripsDuplicate() {
+    let captured = "Este tipo explica"
+    let preview = "# 这个人讲解了如何创建网页\n\n他演示了 Galaxy Home"
+    let primary = HistoryReadingTitle.primaryTitle(captured: captured, artifactPreview: preview)
+    XCTAssertEqual(primary, "这个人讲解了如何创建网页")
+    XCTAssertEqual(
+      HistoryReadingTitle.listPreview(
+        artifactPreview: preview,
+        primaryTitle: primary,
+        authorFallback: "alex"
+      ),
+      "他演示了 Galaxy Home"
+    )
+  }
+
+  func testListKeepsPreviewWhenNoHeadingToPromote() {
+    let preview = "一段没有标题的总结开头"
+    let primary = HistoryReadingTitle.primaryTitle(captured: "原文", artifactPreview: preview)
+    XCTAssertEqual(primary, "原文")
+    XCTAssertEqual(
+      HistoryReadingTitle.listPreview(
+        artifactPreview: preview,
+        primaryTitle: primary,
+        authorFallback: "alex"
+      ),
+      preview
+    )
+  }
+}
+
 /// 笔记能否真的走完落库前的命令组装。
 ///
 /// 「点新建没反应」时，错误只写进 ManualLinkState 而那个状态不在主界面显示，

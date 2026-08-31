@@ -26,6 +26,7 @@ public actor UserDefaultsModelPreferencesStore: ModelPreferencesStore {
         transcriptionModel: dto.transcriptionModel,
         tidyModel: dto.tidyModel,
         autoTidyTranscription: dto.autoTidyTranscription,
+        autoLocalizeTitleNewCaptures: dto.autoLocalizeTitleNewCaptures,
         autoTranscribeNewCaptures: dto.autoTranscribeNewCaptures,
         autoSummarizeNewCaptures: dto.autoSummarizeNewCaptures,
         autoMindMapNewCaptures: dto.autoMindMapNewCaptures,
@@ -66,6 +67,7 @@ private struct ModelPreferencesDTO: Codable {
   /// 否则一次升级会让整份偏好读不出来（`readFailed`）。
   let tidyModel: String?
   let autoTidyTranscription: Bool?
+  let autoLocalizeTitleNewCaptures: Bool?
   let autoTranscribeNewCaptures: Bool?
   let autoSummarizeNewCaptures: Bool?
   let autoMindMapNewCaptures: Bool?
@@ -82,6 +84,8 @@ private struct ModelPreferencesDTO: Codable {
     // 读回来和「从没设过」长得一样；再叠加开关只改内存、不立刻落盘，
     // 重启就会回到上一份真正写下的值（常见是四个全开）。
     autoTidyTranscription = preferences.autoTidyTranscription ?? false
+    // 中文标题例外：nil 表示默认开启，显式 false 才是关。
+    autoLocalizeTitleNewCaptures = preferences.autoLocalizeTitleNewCaptures
     autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures ?? false
     autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures ?? false
     autoMindMapNewCaptures = preferences.autoMindMapNewCaptures ?? false

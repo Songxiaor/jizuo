@@ -151,6 +151,24 @@ final class MarkdownNoteFrontmatterTests: XCTestCase {
     XCTAssertEqual(note.body.trimmingCharacters(in: .whitespacesAndNewlines), "正文")
   }
 
+  func testParsesOriginalTitleAndRendersRoundTrip() {
+    let source = """
+    ---
+    author: "alice"
+    original_title: "How it works"
+    ---
+
+    正文
+    """
+    let note = MarkdownNoteFrontmatter.parse(source)
+    XCTAssertEqual(note.originalTitle, "How it works")
+    XCTAssertEqual(note.author, "alice")
+    let rendered = note.render()
+    let again = MarkdownNoteFrontmatter.parse(rendered)
+    XCTAssertEqual(again.originalTitle, "How it works")
+    XCTAssertEqual(again.body.trimmingCharacters(in: .whitespacesAndNewlines), "正文")
+  }
+
   func testParsesAllEngagementStatsWithoutAuthorOrPublishedProperties() {
     let note = MarkdownNoteFrontmatter.parse("""
     ---

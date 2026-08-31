@@ -12,6 +12,32 @@ final class CapturedContentLanguageTests: XCTestCase {
     XCTAssertNil(CapturedContentLanguage.detect(in: "短文本"), "ambiguous short text must stay translatable")
   }
 
+  func testForeignContentDoesNotForceAutoSummarize() {
+    let english = String(repeating: "This is English prose about product design. ", count: 3)
+    XCTAssertTrue(
+      CapturedTitleLocalization.shouldLocalize(
+        title: "How to learn faster",
+        outputLanguage: "简体中文"
+      )
+    )
+    let chinese = String(repeating: "这是中文正文用来测试。", count: 4)
+    XCTAssertFalse(
+      CapturedTitleLocalization.shouldLocalize(
+        title: "中文标题也足够长一些",
+        outputLanguage: "简体中文"
+      )
+    )
+    XCTAssertFalse(
+      CapturedTitleLocalization.shouldLocalize(
+        title: "短",
+        outputLanguage: "简体中文"
+      ),
+      "检测不确定时不强制标题本地化"
+    )
+    _ = english
+    _ = chinese
+  }
+
   func testMixedTiedMinorKanaAndUnknownScriptsRemainAmbiguous() {
     let closeMixed = String(repeating: "中", count: 24) + String(repeating: "a", count: 20)
     XCTAssertNil(CapturedContentLanguage.detect(in: closeMixed), "close mixed scripts are not a unique language")
