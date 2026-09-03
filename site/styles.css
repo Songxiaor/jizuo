@@ -717,4 +717,3 @@ footer a:hover { color: var(--text); text-decoration: underline; text-underline-
 @media (max-width: 640px) {
   .hero-float { left: -4px; bottom: 24px; font-size: 0.78rem; padding: 7px 13px; }
 }
-
