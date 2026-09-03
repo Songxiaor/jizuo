@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light dark">
 <title>隐私政策 — 汲作</title>
-<meta name="description" content="汲作的隐私政策：数据全部留在本机，没有我们的服务器，没有统计埋点。">
+<meta name="description" content="汲作的隐私政策：本地保存、无开发者服务器、无统计埋点，并如实说明用户触发的网络请求。">
 <link rel="canonical" href="https://songxiaor.github.io/jizuo/privacy.html">
 <link rel="icon" href="assets/icon.png">
 <link rel="apple-touch-icon" href="assets/icon.png">
@@ -16,7 +16,7 @@
 <meta property="og:locale" content="zh_CN">
 <meta property="og:url" content="https://songxiaor.github.io/jizuo/privacy.html">
 <meta property="og:title" content="隐私政策 — 汲作">
-<meta property="og:description" content="数据全部留在本机，没有服务器，没有统计埋点。官网也不加载任何第三方脚本、字体或统计代码。">
+<meta property="og:description" content="本地保存、无开发者服务器、无统计埋点；联网只发生在你触发的抓取、模型、媒体和更新流程。">
 <meta property="og:image" content="https://songxiaor.github.io/jizuo/assets/og.jpg">
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:image" content="https://songxiaor.github.io/jizuo/assets/og.jpg">
@@ -37,10 +37,10 @@
 
 <article class="article">
   <h1>隐私政策</h1>
-  <p class="updated">更新于 2026 年 8 月 18 日</p>
+  <p class="updated">更新于 2026 年 9 月 3 日</p>
 
   <div class="callout glass">
-    <p><b>一句话版本：你的数据全部留在你自己的电脑上。我们没有服务器，收不到、也不想收你的任何数据。</b></p>
+    <p><b>一句话版本：汲作默认把资料保存在你的电脑上。我们没有开发者服务器，也不收集使用数据；只有你触发抓取、模型、媒体、Apple 离线模型下载或更新功能时，相关请求才会发往原网站、你选择的服务商、Apple 或 GitHub。</b></p>
   </div>
 
   <h2>我们不收集任何数据</h2>
@@ -48,24 +48,33 @@
 
   <h2>你的数据保存在哪里</h2>
   <ul>
-    <li><b>链接、正文、总结、翻译、脑图、标签和历史记录</b>：全部保存在你电脑上的本地数据库里，不上传到任何地方。</li>
+    <li><b>链接、正文、总结、翻译、脑图、标签和历史记录</b>：默认保存在你电脑上的本地数据库里，不上传到汲作的服务器——因为我们没有服务器。</li>
     <li><b>AI 服务的 API Key</b>：保存在 macOS 钥匙串里，不写入数据库、日志或导出文件。</li>
-    <li>所有内容随时可以导出为 Markdown、纯文本、PDF、Word 或 JSON 带走，也可以随数据库文件一并删除。</li>
+    <li>当前打开的单条记录可以导出为 Markdown、纯文本、PDF、Word 或 JSON 带走。当前版本还没有批量或整库导出。</li>
   </ul>
 
   <h2>软件什么时候联网</h2>
-  <p>汲作只在下面几种情况发出网络请求，每一种都由你主动触发或明确允许：</p>
+  <p>汲作只在下面这些用户可控的场景联网：</p>
   <ul>
-    <li><b>抓取网页</b>：你粘贴链接或从浏览器发送页面时，访问那个网页本身。</li>
-    <li><b>总结与翻译</b>：你点击总结或翻译时，把这篇正文发送给<b>你自己配置的</b> AI 服务商（发送前界面会明确显示发给谁）。这部分数据如何处理，适用该服务商自己的隐私政策。</li>
+    <li><b>抓取网页</b>：你粘贴链接或从浏览器发送页面时，访问原网站。为显示正文图片、站点图标、视频封面、临时播放或保存媒体，可能继续请求原网站或它使用的 CDN。</li>
+    <li><b>使用 AI 功能</b>：你运行总结、翻译、脑图、标题整理、转写校对或自动标签等功能时，把完成该任务所需的正文发送给<b>你自己配置的</b> AI 服务商。若你开启了新内容自动处理，保存后会按你的设置自动发起同类请求。发送前界面会显示数据去向；服务商如何处理数据，适用它自己的隐私政策。</li>
+    <li><b>在线语音转写</b>：只有你选择在线转写时，音频片段才会发给你配置的转写服务。</li>
+    <li><b>下载 Apple 离线听写模型</b>：首次使用本机 Apple 语音识别且所需模型尚未安装时，App 会先征求确认，再由 macOS 向 Apple 下载模型。模型安装完成后，视频音频与转写文字只在本机处理，不会上传。</li>
+    <li><b>站点登录</b>：你可以在 App 自带的登录窗口登录哔哩哔哩、小红书或抖音，用于手动抓取登录后正文或恢复临时播放。登录页面直接连接对应站点。</li>
     <li><b>检查更新</b>：在你允许后，定期向 GitHub 检查是否有新版本。这个请求不携带任何个人信息。</li>
   </ul>
-  <p>除此之外没有任何网络活动。<b>本官网同样不加载任何第三方脚本、字体或统计代码</b>——这两个页面除了自己的样式表和图标之外不发出任何请求，你可以打开浏览器的开发者工具「网络」面板自行核对。</p>
+  <p>汲作不把这些请求转发给开发者，也不通过它们统计你使用了什么功能。<b>本官网不加载任何第三方脚本、字体或统计代码</b>——首页只加载本站的样式表、图标和产品截图，隐私页只加载本站的样式表和图标；你可以打开浏览器的开发者工具「网络」面板自行核对。</p>
 
   <h2>浏览器扩展</h2>
   <ul>
     <li>扩展只在<b>你主动点击</b>时读取当前标签页的正文，发送给本机的汲作应用；两者之间通过浏览器的本地通道通信，不经过互联网。</li>
     <li>扩展不追踪浏览历史，不在后台读取页面，不读取整个浏览器的 Cookie 数据库。</li>
+  </ul>
+
+  <h2>站点登录会话</h2>
+  <ul>
+    <li>登录 Cookie 保存在 App 为各站点分别建立的本机 WebView 数据仓中，不会上传给开发者，也不会从你的浏览器 Profile 导入。</li>
+    <li>Cookie 只用于对应站点的用户触发流程。你可以在“设置 → 站点登录”中查看状态并随时清除。</li>
   </ul>
 
   <h2>系统权限</h2>
@@ -86,7 +95,7 @@
 
 <footer>
   <div class="foot-brand">
-    <span>汲作 · 数据全部留在你自己的电脑上。</span>
+    <span>汲作 · 资料库默认保存在你自己的电脑上。</span>
     <span class="foot-meta">MIT 许可证 · 开源免费</span>
   </div>
   <nav class="foot-links" aria-label="页脚">
