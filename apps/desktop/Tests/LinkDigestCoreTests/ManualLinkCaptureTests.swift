@@ -127,6 +127,41 @@ final class ManualLinkCaptureTests: XCTestCase {
     XCTAssertTrue(page.text.contains("final paragraph"), page.text)
   }
 
+  func testExtractorDropsPrettyPrintedHighLinkDensityList() throws {
+    let html = """
+    <html><head><title>Documentation article</title></head><body><article>
+      <p>The real article body must remain available after navigation cleanup.</p>
+      <ul>
+        <li>
+          <a href="/one">Item 1</a>
+        </li>
+        <li>
+          <a href="/two">Item 2</a>
+        </li>
+        <li>
+          <a href="/three">Item 3</a>
+        </li>
+        <li>
+          <a href="/four">Item 4</a>
+        </li>
+        <li>
+          <a href="/five">Item 5</a>
+        </li>
+        <li>
+          <a href="/six">Item 6</a>
+        </li>
+      </ul>
+      <p>The final article paragraph must also remain available.</p>
+    </article></body></html>
+    """
+
+    let page = try MinimalHTMLExtractor().extract(html: html)
+
+    XCTAssertTrue(page.text.contains("real article body"), page.text)
+    XCTAssertTrue(page.text.contains("final article paragraph"), page.text)
+    XCTAssertFalse(page.text.contains("Item 1"), page.text)
+  }
+
   func testExtractorEmitsMarkdownParagraphsHeadingsListsAndKeepsChinesePunctuation() throws {
     let html = """
     <html><head><meta property="og:title" content="中文标题：方法论文章" /></head>

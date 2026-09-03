@@ -819,7 +819,8 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
       guard match.numberOfRanges > 2 else { continue }
       let inner = ns.substring(with: match.range(at: 2))
       let plain = plainInline(from: inner)
-      guard plain.unicodeScalars.count >= 40 else { continue }
+      let plainTextLength = normalizedLinkDensityTextLength(plain)
+      guard plainTextLength >= 40 else { continue }
       guard let linkExpression = try? NSRegularExpression(
         pattern: "<a\\b[^>]*>([\\s\\S]*?)</a>",
         options: [.caseInsensitive]
@@ -830,15 +831,22 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
         guard linkMatch.numberOfRanges > 1,
               let range = Range(linkMatch.range(at: 1), in: inner)
         else { return }
-        total += plainInline(from: String(inner[range])).unicodeScalars.count
+        total += normalizedLinkDensityTextLength(plainInline(from: String(inner[range])))
       }
-      if Double(linkTextLength) >= Double(plain.unicodeScalars.count) * 0.55 {
+      if Double(linkTextLength) >= Double(plainTextLength) * 0.55 {
         if let full = Range(match.range, in: result) {
           result.replaceSubrange(full, with: "\n")
         }
       }
     }
     return result
+  }
+
+  private func normalizedLinkDensityTextLength(_ value: String) -> Int {
+    value
+      .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .unicodeScalars.count
   }
 
   private func stripBoilerplateLines(from text: String) -> String {
