@@ -311,10 +311,8 @@ def verify_zip(
     artifact: Path,
     identity: dict[str, str | int],
     display: dict[str, str | int],
-    public_version: str | None = None,
+    public_version: str,
 ) -> list[str]:
-    if public_version is None:
-        public_version = load_public_version(ROOT)
     if artifact.is_symlink() or not artifact.is_file() or stat.S_IMODE(artifact.lstat().st_mode) != 0o644:
         fail("extension artifact must be one real 0644 file")
     try:
@@ -351,7 +349,7 @@ def extract_verified_zip(
     destination: Path,
     identity: dict[str, str | int],
     display: dict[str, str | int],
-    public_version: str | None = None,
+    public_version: str,
 ) -> Path:
     names = verify_zip(artifact, identity, display, public_version)
     if destination.exists() or destination.is_symlink():

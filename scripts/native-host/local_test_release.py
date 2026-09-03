@@ -901,7 +901,8 @@ def extension_artifact_facts(source_root: Path, config: dict[str, Any]) -> dict[
         reject(f"extension artifact set is invalid: {error}")
     if artifact.relative_to(source_root).as_posix() != configured["artifactSource"]:
         reject("extension artifact path does not equal the frozen configuration")
-    entries = extension_artifact.verify_zip(artifact, identity, display)
+    public_version = extension_artifact.load_public_version(source_root)
+    entries = extension_artifact.verify_zip(artifact, identity, display, public_version)
     templates = extension_artifact.verify_templates(
         source_root,
         identity,

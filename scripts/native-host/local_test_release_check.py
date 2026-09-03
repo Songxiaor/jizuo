@@ -180,11 +180,12 @@ def extension_artifact_checks(
     facts = local.extension_artifact_facts(source, config)
     identity = local.extension_artifact.load_identity(source)
     display = local.extension_artifact.load_display(source)
+    public_version = local.extension_artifact.load_public_version(source)
     source_artifact = source / facts["artifact"]["sourcePath"]
     candidate_artifact = candidate / facts["artifact"]["handoffPath"]
     check(local.sha256_file(source_artifact) == facts["artifact"]["sha256"], "source extension artifact hash")
     check(local.sha256_file(candidate_artifact) == facts["artifact"]["sha256"], "candidate extension artifact hash")
-    check(local.extension_artifact.verify_zip(candidate_artifact, identity, display) == facts["zipEntries"], "candidate extension artifact manifest and ZIP metadata")
+    check(local.extension_artifact.verify_zip(candidate_artifact, identity, display, public_version) == facts["zipEntries"], "candidate extension artifact manifest and ZIP metadata")
     check(facts["version"] == configured["version"], "extension artifact manifest version equals frozen configuration")
     template_hashes = local.extension_artifact.verify_templates(
         source,
@@ -202,6 +203,7 @@ def extension_artifact_checks(
         review / "determinism/extension-extracted",
         identity,
         display,
+        public_version,
     )
     first = review / "determinism/extension.first.zip"
     second = review / "determinism/extension.second.zip"

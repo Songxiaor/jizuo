@@ -351,6 +351,33 @@ def check_chinese_bundle_localization(module) -> None:
     check(plist["CFBundleLocalizations"] == ["zh-Hans"], "bundle must explicitly advertise Simplified Chinese")
 
 
+def check_browser_extension_public_version(module) -> None:
+    unit = module.release_unit
+    app_config = unit.load_app_config(ROOT)
+    _, manifest = unit.verified_browser_extension_payloads(ROOT)
+    check(
+        manifest["version_name"] == app_config["shortVersion"],
+        "packaging must bind the extension public version to the App version",
+    )
+
+    drifted_config = dict(app_config)
+    drifted_config["shortVersion"] = "0.2.25"
+    original_load_app_config = unit.load_app_config
+    unit.load_app_config = lambda _root=None: drifted_config
+    try:
+        try:
+            unit.verified_browser_extension_payloads(ROOT)
+        except unit.ReleaseUnitError as error:
+            check(
+                error.code == unit.INVALID_UNSAFE and "version_name" in str(error),
+                "packaging must reject a stale extension public version",
+            )
+        else:
+            raise CheckFailure("packaging accepted a stale extension public version")
+    finally:
+        unit.load_app_config = original_load_app_config
+
+
 def check_sparkle_runtime_link_contract(module) -> None:
     """A signed App must still teach dyld where the embedded framework lives."""
     unit = module.release_unit
@@ -397,6 +424,7 @@ def main() -> int:
     check_dmg_signing_metadata_cleanup(module)
     check_distribution_signing_and_notarization(module)
     check_chinese_bundle_localization(module)
+    check_browser_extension_public_version(module)
     check_sparkle_runtime_link_contract(module)
     print(f"package-dmg-check: PASS ({TESTS} assertions)")
     return 0
