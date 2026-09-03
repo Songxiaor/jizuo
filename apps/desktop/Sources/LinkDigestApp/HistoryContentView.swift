@@ -442,7 +442,7 @@ struct HistoryContentView: View {
           HistoryInlineState(
             symbol: "tray",
             title: "还没有保存的内容",
-            message: "从浏览器扩展保存第一条链接后，会显示在这里。"
+            message: "粘贴一条公开链接，或用浏览器扩展保存当前页面后，会显示在这里。"
           )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-empty")
@@ -1099,7 +1099,7 @@ struct HistoryContentView: View {
         .background(theme.badge, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl).stroke(theme.hairline, lineWidth: 1))
         .padding(.bottom, 18)
-      Text(isCaptureOnboardingDismissed ? "还没有保存页面" : "也可以直接添加公开链接")
+      Text(isCaptureOnboardingDismissed ? "还没有保存页面" : "直接添加公开链接")
         .themedFont(.title2, weight: .semibold)
         .padding(.bottom, 6)
       Text("粘贴公开网页链接，或从 \(ProductDisplay.extensionName) 接收已打开的页面后，可在这里总结或翻译。")
@@ -1124,8 +1124,7 @@ struct HistoryContentView: View {
   }
 
   private var firstCaptureIsComplete: Bool {
-    hasInstalledBrowserSupport
-      && providerSettings.hasConfiguredAPIKey
+    providerSettings.hasConfiguredAPIKey
       && model.rows.contains { $0.hasSummary == true }
   }
 
@@ -1153,12 +1152,11 @@ struct HistoryContentView: View {
       }
       onboardingStep(
         number: 1,
-        title: "安装浏览器支持",
-        completed: hasInstalledBrowserSupport,
-        actionTitle: "去安装"
+        title: "添加第一条链接",
+        completed: !model.rows.isEmpty,
+        actionTitle: "添加链接"
       ) {
-        SettingsNavigationRequest.request("browserSupport")
-        openSettings()
+        manualLink.open()
       }
       onboardingStep(
         number: 2,
@@ -1171,12 +1169,31 @@ struct HistoryContentView: View {
       }
       onboardingStep(
         number: 3,
-        title: "保存并总结第一条内容",
+        title: "生成第一份总结",
         completed: model.rows.contains { $0.hasSummary == true },
-        actionTitle: "打开浏览器扩展"
+        actionTitle: model.rows.isEmpty ? "先添加链接" : "打开内容"
       ) {
-        SettingsNavigationRequest.request("browserSupport")
-        openSettings()
+        if let row = model.rows.first(where: { $0.hasSummary != true }) ?? model.rows.first {
+          model.selectedTaskIDs = [row.taskID]
+        } else {
+          manualLink.open()
+        }
+      }
+      Divider()
+      HStack(spacing: 10) {
+        Image(systemName: hasInstalledBrowserSupport ? "checkmark.circle.fill" : "puzzlepiece.extension")
+          .foregroundStyle(hasInstalledBrowserSupport ? theme.success : theme.secondaryText)
+        Text(hasInstalledBrowserSupport ? "浏览器扩展已安装" : "浏览器扩展可稍后安装，用来保存登录后才能看到的页面。")
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+        Spacer()
+        if !hasInstalledBrowserSupport {
+          Button("去安装") {
+            SettingsNavigationRequest.request("browserSupport")
+            openSettings()
+          }
+          .buttonStyle(.borderless)
+        }
       }
     }
     .padding(18)
@@ -1196,10 +1213,7 @@ struct HistoryContentView: View {
       }
       Spacer(minLength: 0)
       Button(firstCaptureNextStepActionTitle) {
-        if !hasInstalledBrowserSupport {
-          SettingsNavigationRequest.request("browserSupport")
-          openSettings()
-        } else if !providerSettings.hasConfiguredAPIKey {
+        if !providerSettings.hasConfiguredAPIKey {
           SettingsNavigationRequest.request("service")
           openSettings()
         } else {
@@ -1222,13 +1236,11 @@ struct HistoryContentView: View {
   }
 
   private var firstCaptureNextStepMessage: String {
-    if !hasInstalledBrowserSupport { return "先安装浏览器支持，之后可从当前页面直接保存。" }
     if !providerSettings.hasConfiguredAPIKey { return "还差一步：配置模型后即可总结当前内容。" }
     return "保存已完成，生成第一份总结后引导会自动消失。"
   }
 
   private var firstCaptureNextStepActionTitle: String {
-    if !hasInstalledBrowserSupport { return "安装支持" }
     return providerSettings.hasConfiguredAPIKey ? "生成总结" : "配置模型"
   }
 

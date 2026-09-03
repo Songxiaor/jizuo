@@ -5,10 +5,10 @@
 这个是产出一个能上传、能给别人下载的磁盘映像。两者共用同一套 bundle 组装
 逻辑(`release_unit`),所以别人下载到的东西和你本机跑的是同一个装配。
 
-签名说明:这里只做 ad-hoc 签名(`codesign -s -`)。没有 Developer ID,
-所以下载方首次打开会被 Gatekeeper 拦下——DMG 里附的「安装说明」就是为此
-存在的。等有了证书,把 sign_release() 换成真实身份并加公证即可,
-其余流程不用动。
+显式传入 `--ad-hoc` 时只做本机测试签名(`codesign -s -`)。正式分发必须
+同时传入 Developer ID Application 身份和 Keychain 公证凭据名称；脚本会启用
+hardened runtime,完成 App/DMG 公证、stapling 与 Gatekeeper 验证。两种模式不能
+混用,任何一步失败都不会被当成正式分发成功。
 """
 
 from __future__ import annotations
@@ -60,6 +60,34 @@ def run(
     env: dict[str, str] | None = None,
 ) -> None:
     subprocess.run(command, check=True, cwd=cwd, env=env)
+
+
+def distribution_signing(
+    signing_identity: str | None,
+    notary_keychain_profile: str | None,
+) -> tuple[str | None, str | None]:
+    if (signing_identity is None) != (notary_keychain_profile is None):
+        raise RuntimeError("正式分发必须同时提供 --signing-identity 和 --notary-keychain-profile")
+    if signing_identity is not None and not signing_identity.startswith("Developer ID Application: "):
+        raise RuntimeError("--signing-identity 必须是 Developer ID Application 身份")
+    if notary_keychain_profile is not None and not notary_keychain_profile.strip():
+        raise RuntimeError("--notary-keychain-profile 不能为空")
+    return signing_identity, notary_keychain_profile
+
+
+def release_signing_mode(
+    ad_hoc: bool,
+    signing_identity: str | None,
+    notary_keychain_profile: str | None,
+) -> tuple[str | None, str | None]:
+    signing_identity, notary_keychain_profile = distribution_signing(
+        signing_identity, notary_keychain_profile
+    )
+    if ad_hoc and signing_identity is not None:
+        raise RuntimeError("--ad-hoc 不能与正式分发参数同时使用")
+    if not ad_hoc and signing_identity is None:
+        raise RuntimeError("请选择 --ad-hoc 测试包，或同时提供正式签名与公证参数")
+    return signing_identity, notary_keychain_profile
 
 
 def swift_build_environment() -> dict[str, str]:
@@ -219,26 +247,43 @@ def build_universal(work: Path) -> Path:
     return Path(shown.stdout.strip())
 
 
-def sign_release(app: Path, bundle_identifier: str) -> None:
-    """ad-hoc 签名。
-
-    换成真实身份时,把 "-" 替换为 "Developer ID Application: …",
-    并在之后追加 notarytool submit + stapler staple 两步。
-    """
-    run("/usr/bin/codesign", "--force", "--deep", "--sign", "-",
-        "--identifier", bundle_identifier, str(app))
+def sign_release(
+    app: Path,
+    bundle_identifier: str,
+    signing_identity: str | None = None,
+) -> None:
+    if signing_identity is None:
+        run("/usr/bin/codesign", "--force", "--deep", "--sign", "-",
+            "--identifier", bundle_identifier, str(app))
+    else:
+        run(
+            "/usr/bin/codesign", "--force", "--deep", "--options", "runtime",
+            "--timestamp", "--sign", signing_identity, "--identifier", bundle_identifier,
+            str(app),
+        )
     run("/usr/bin/codesign", "--verify", "--deep", "--strict", str(app))
 
 
-def sign_native_host(source: Path, destination: Path, host_name: str) -> Path:
+def sign_native_host(
+    source: Path,
+    destination: Path,
+    host_name: str,
+    signing_identity: str | None = None,
+) -> Path:
     """签名临时副本，让 Host 包的校验和绑定签名后的 universal 二进制。"""
     destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     shutil.copy2(source, destination, follow_symlinks=False)
     os.chmod(destination, 0o755)
-    run(
-        "/usr/bin/codesign", "--force", "--sign", "-",
-        "--identifier", host_name, str(destination),
-    )
+    if signing_identity is None:
+        run(
+            "/usr/bin/codesign", "--force", "--sign", "-",
+            "--identifier", host_name, str(destination),
+        )
+    else:
+        run(
+            "/usr/bin/codesign", "--force", "--options", "runtime", "--timestamp",
+            "--sign", signing_identity, "--identifier", host_name, str(destination),
+        )
     run("/usr/bin/codesign", "--verify", "--strict", str(destination))
     return destination
 
@@ -253,19 +298,68 @@ def verify_app_native_host(app: Path, config: dict) -> None:
     stable_host.verify_package(native_host_package(app, config), ROOT)
 
 
-def sign_and_verify_app(app: Path, bundle_identifier: str, config: dict) -> None:
-    sign_release(app, bundle_identifier)
+def sign_and_verify_app(
+    app: Path,
+    bundle_identifier: str,
+    config: dict,
+    signing_identity: str | None = None,
+) -> None:
+    sign_release(app, bundle_identifier, signing_identity)
     # `codesign --deep` 不会签 Resources/NativeHost；但它仍可能改变 bundle
     # 内容。最终封装后重验 Host seal，不能把先前检查当作最终事实。
     verify_app_native_host(app, config)
 
 
-def create_host_package(binary_root: Path, work: Path, config: dict) -> Path:
+def notarize_and_staple_app(app: Path, work: Path, keychain_profile: str) -> None:
+    work.mkdir(parents=True, exist_ok=False)
+    submission = work / "app-for-notarization.zip"
+    run(
+        "/usr/bin/ditto", "-c", "-k", "--sequesterRsrc", "--keepParent",
+        str(app), str(submission),
+    )
+    run(
+        "/usr/bin/xcrun", "notarytool", "submit", str(submission),
+        "--keychain-profile", keychain_profile, "--wait",
+    )
+    run("/usr/bin/xcrun", "stapler", "staple", str(app))
+    run("/usr/bin/xcrun", "stapler", "validate", str(app))
+    run("/usr/sbin/spctl", "--assess", "--type", "execute", "--verbose=2", str(app))
+
+
+def sign_notarize_and_staple_dmg(
+    dmg: Path,
+    signing_identity: str,
+    keychain_profile: str,
+) -> None:
+    run(
+        "/usr/bin/codesign", "--force", "--timestamp", "--sign",
+        signing_identity, str(dmg),
+    )
+    run("/usr/bin/codesign", "--verify", "--strict", str(dmg))
+    run(
+        "/usr/bin/xcrun", "notarytool", "submit", str(dmg),
+        "--keychain-profile", keychain_profile, "--wait",
+    )
+    run("/usr/bin/xcrun", "stapler", "staple", str(dmg))
+    run("/usr/bin/xcrun", "stapler", "validate", str(dmg))
+    run(
+        "/usr/sbin/spctl", "--assess", "--type", "open",
+        "--context", "context:primary-signature", "--verbose=2", str(dmg),
+    )
+
+
+def create_host_package(
+    binary_root: Path,
+    work: Path,
+    config: dict,
+    signing_identity: str | None = None,
+) -> Path:
     """签名 Host 副本并将其封装成严格校验的 universal Host package。"""
     signed_host = sign_native_host(
         binary_root / config["entrypoint"],
         work / "signed-native-host" / config["entrypoint"],
         config["hostName"],
+        signing_identity,
     )
     host_package = work / "host-package" / (
         f"LinkDigestNativeHost-{config['productVersion']}-macos-arm64"
@@ -286,7 +380,7 @@ def create_host_package(binary_root: Path, work: Path, config: dict) -> Path:
 # 于是它让用户去找「已阻止使用 LinkDigest」那一行,而系统显示的是「汲作」。
 # 在一个用户已经被拦下、正在犯嘀咕的时刻,让他找一个不存在的字符串,
 # 是这份说明唯一不能犯的错。名字取自 config/app-release.json,不再手写。
-INSTALL_NOTE_TEMPLATE = """{name} 安装说明
+AD_HOC_INSTALL_NOTE_TEMPLATE = """{name} 安装说明
 ====================
 
 1. 把 {name} 拖进「应用程序」文件夹。
@@ -297,7 +391,8 @@ INSTALL_NOTE_TEMPLATE = """{name} 安装说明
    所以 macOS 会提示「无法验证开发者」，
    在某些系统版本上甚至会说「已损坏，应移到废纸篓」。
 
-   ⚠️ 这不是文件损坏，也不是病毒。是没有付费签名的正常表现。
+   这表示系统无法验证开发者身份，不能单独证明文件是否安全。
+   请只使用 GitHub 官方发布页下载的安装包，并核对版本与文件摘要。
 
 3. 怎么打开：
 
@@ -332,9 +427,42 @@ INSTALL_NOTE_TEMPLATE = """{name} 安装说明
    视频转文字和图片文字识别在本机处理，不需要联网。
 """
 
+DISTRIBUTION_INSTALL_NOTE_TEMPLATE = """{name} 安装说明
+====================
+
+1. 把 {name} 拖进「应用程序」文件夹。
+
+2. 从「应用程序」打开 {name}。本安装包应已完成 Developer ID 签名和苹果公证，
+   不需要关闭 Gatekeeper、清除 quarantine 或执行 sudo 命令。
+
+3. 浏览器扩展是可选功能。需要保存登录后才能看到的页面时，再打开
+   「设置 → 浏览器支持」，按页面指引安装。
+
+4. 使用总结、翻译、脑图等 AI 功能前，在「设置 → 模型与识别」中配置
+   你自己的 OpenAI-compatible 服务。
+
+如果系统仍提示无法验证开发者，请停止安装并在 GitHub Issues 反馈；
+不要绕过系统安全设置继续打开。
+"""
+
+
+def install_note(display_name: str, developer_id_signed: bool) -> str:
+    template = (
+        DISTRIBUTION_INSTALL_NOTE_TEMPLATE
+        if developer_id_signed
+        else AD_HOC_INSTALL_NOTE_TEMPLATE
+    )
+    return template.format(name=display_name)
+
 
 def build_dmg(
-    app: Path, extension: Path, output: Path, version: str, display_name: str, edition: str
+    app: Path,
+    extension: Path,
+    output: Path,
+    version: str,
+    display_name: str,
+    edition: str,
+    developer_id_signed: bool = False,
 ) -> None:
     """组装带固定 Finder 安装界面的压缩 DMG。"""
     with tempfile.TemporaryDirectory(prefix="linkdigest-dmg-stage.", dir="/private/tmp") as tmp:
@@ -346,7 +474,7 @@ def build_dmg(
         # 「应用程序」的软链:让拖拽安装成为一个不用解释的动作。
         (stage / "Applications").symlink_to("/Applications")
         (stage / "安装说明.txt").write_text(
-            INSTALL_NOTE_TEMPLATE.format(name=display_name), encoding="utf-8"
+            install_note(display_name, developer_id_signed), encoding="utf-8"
         )
         background_directory = stage / ".background"
         background_directory.mkdir()
@@ -444,12 +572,20 @@ def build_universal_update_archive(
     work: Path,
     app_config: dict,
     host_config: dict,
+    signing_identity: str | None = None,
+    notary_keychain_profile: str | None = None,
 ) -> Path:
     update_root = work / "universal-update"
     update_root.mkdir()
     update_app = update_root / release_unit.APP_BUNDLE
     shutil.copytree(staged_app, update_app, symlinks=True)
-    sign_and_verify_app(update_app, app_config["bundleIdentifier"], host_config)
+    sign_and_verify_app(
+        update_app, app_config["bundleIdentifier"], host_config, signing_identity
+    )
+    if notary_keychain_profile is not None:
+        notarize_and_staple_app(
+            update_app, work / "notary-universal-app", notary_keychain_profile
+        )
     verify_signed_update_app(update_app, app_config, host_config)
     if output.exists():
         output.unlink()
@@ -533,7 +669,23 @@ def main() -> int:
                         help="DMG 的输出目录（默认 dist/，已在 .gitignore 里）")
     parser.add_argument("--version", required=True,
                         help="版本号，例如 0.2.6；必须与 config/app-release.json 一致。")
+    parser.add_argument(
+        "--ad-hoc",
+        action="store_true",
+        help="明确生成会被 Gatekeeper 拦截的本机测试包。",
+    )
+    parser.add_argument(
+        "--signing-identity",
+        help="正式分发使用的 Developer ID Application 完整身份。",
+    )
+    parser.add_argument(
+        "--notary-keychain-profile",
+        help="已由 notarytool store-credentials 保存到 Keychain 的凭据名称。",
+    )
     args = parser.parse_args()
+    signing_identity, notary_keychain_profile = release_signing_mode(
+        args.ad_hoc, args.signing_identity, args.notary_keychain_profile
+    )
 
     output_dir = args.output_dir.resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -553,7 +705,9 @@ def main() -> int:
         # 目录名沿用 `-macos-arm64`,尽管二进制已是 universal:
         # 这个名字被浏览器的 Native Messaging manifest 以绝对路径写死,
         # 改名会让已安装的扩展立刻找不到 Host。release_unit 里的校验也钉死了它。
-        host_package = create_host_package(binary_root, work, config)
+        host_package = create_host_package(
+            binary_root, work, config, signing_identity
+        )
 
         print("→ 组装 App bundle…")
         staged_app = work / release_unit.APP_BUNDLE
@@ -577,7 +731,13 @@ def main() -> int:
         print("→ 生成 Sparkle Universal 更新归档与签名 appcast…")
         update_archive = output_dir / f"Jizuo-{args.version}-macOS-Universal.zip"
         build_universal_update_archive(
-            staged_app, update_archive, work, app_config, config
+            staged_app,
+            update_archive,
+            work,
+            app_config,
+            config,
+            signing_identity,
+            notary_keychain_profile,
         )
         appcast = output_dir / "appcast.xml"
         generate_signed_appcast(
@@ -598,8 +758,17 @@ def main() -> int:
                 architecture,
             )
             sign_and_verify_app(
-                architecture_app, app_config["bundleIdentifier"], config
+                architecture_app,
+                app_config["bundleIdentifier"],
+                config,
+                signing_identity,
             )
+            if notary_keychain_profile is not None:
+                notarize_and_staple_app(
+                    architecture_app,
+                    work / f"notary-{architecture}-app",
+                    notary_keychain_profile,
+                )
             dmg = output_dir / f"Jizuo-{args.version}-macOS-{filename_edition}.dmg"
             build_dmg(
                 architecture_app,
@@ -608,13 +777,21 @@ def main() -> int:
                 args.version,
                 app_config["appDisplayName"],
                 edition,
+                developer_id_signed=signing_identity is not None,
             )
+            if signing_identity is not None and notary_keychain_profile is not None:
+                sign_notarize_and_staple_dmg(
+                    dmg, signing_identity, notary_keychain_profile
+                )
             outputs.append(dmg)
 
     for artifact in outputs:
         size_mb = artifact.stat().st_size / 1024 / 1024
         print(f"\n完成: {artifact}  ({size_mb:.1f} MB)")
-    print("提醒: ad-hoc 签名，下载方首次打开需要走「系统设置 → 隐私与安全性」。")
+    if signing_identity is None:
+        print("提醒: 当前是 ad-hoc 测试包，下载方首次打开会被 Gatekeeper 拦截。")
+    else:
+        print("正式分发校验完成: Developer ID、hardened runtime、公证与 stapling 均已通过。")
     return 0
 
 

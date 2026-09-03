@@ -26,6 +26,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 IDENTITY_PATH = Path("config/extension-identity.json")
+APP_RELEASE_PATH = Path("config/app-release.json")
 DISPLAY_PATH = Path("apps/desktop/Sources/LinkDigestCore/Resources/product-display.json")
 NATIVE_HOST_PATH = Path("config/native-host.json")
 BUILD_OUTPUT = Path("apps/browser-extension/.output/chrome-mv3")
@@ -199,6 +200,14 @@ def load_display(root: Path = ROOT) -> dict[str, str | int]:
     return value
 
 
+def load_public_version(root: Path = ROOT) -> str:
+    value = load_json(root / APP_RELEASE_PATH, "app release")
+    version = value.get("shortVersion")
+    if value.get("formatVersion") != 1 or not isinstance(version, str) or not version:
+        fail("app release shortVersion is invalid")
+    return version
+
+
 def native_host_template(identity: dict[str, str | int], host: dict[str, Any]) -> dict[str, Any]:
     return {
         "allowed_origins": [f"chrome-extension://{identity['extensionID']}/"],
@@ -222,8 +231,10 @@ def verify_display_wiring(root: Path) -> None:
     expected_references = {
         "apps/browser-extension/wxt.config.ts": [
             "product-display.json",
+            "app-release.json",
             "name: productDisplay.displayName",
             "description: productDisplay.extensionDescription",
+            "version_name: appRelease.shortVersion",
         ],
         "apps/browser-extension/entrypoints/popup/main.ts": ["browser.runtime.getManifest()", "manifest.name"],
         "apps/desktop/Sources/LinkDigestApp/LinkDigestApp.swift": ["WindowGroup(ProductDisplay.name)"],
@@ -259,13 +270,19 @@ def output_files(output: Path) -> list[Path]:
     return sorted(files, key=lambda path: os.fsencode(path.relative_to(output).as_posix()))
 
 
-def validate_built_manifest(output: Path, identity: dict[str, str | int], display: dict[str, str | int]) -> dict[str, Any]:
+def validate_built_manifest(
+    output: Path,
+    identity: dict[str, str | int],
+    display: dict[str, str | int],
+    public_version: str,
+) -> dict[str, Any]:
     manifest = load_json(output / "manifest.json", "built extension manifest")
     expected = {
         "key": identity["manifestKey"],
         "name": display["displayName"],
         "description": display["extensionDescription"],
         "version": identity["version"],
+        "version_name": public_version,
     }
     for field, expected_value in expected.items():
         if manifest.get(field) != expected_value:
@@ -290,7 +307,14 @@ def deterministic_zip(source: Path, destination: Path) -> str:
     return sha256_file(destination)
 
 
-def verify_zip(artifact: Path, identity: dict[str, str | int], display: dict[str, str | int]) -> list[str]:
+def verify_zip(
+    artifact: Path,
+    identity: dict[str, str | int],
+    display: dict[str, str | int],
+    public_version: str | None = None,
+) -> list[str]:
+    if public_version is None:
+        public_version = load_public_version(ROOT)
     if artifact.is_symlink() or not artifact.is_file() or stat.S_IMODE(artifact.lstat().st_mode) != 0o644:
         fail("extension artifact must be one real 0644 file")
     try:
@@ -315,6 +339,7 @@ def verify_zip(artifact: Path, identity: dict[str, str | int], display: dict[str
         "name": display["displayName"],
         "description": display["extensionDescription"],
         "version": identity["version"],
+        "version_name": public_version,
     }.items():
         if manifest.get(field) != expected:
             fail(f"extension artifact manifest {field} drifted")
@@ -326,8 +351,9 @@ def extract_verified_zip(
     destination: Path,
     identity: dict[str, str | int],
     display: dict[str, str | int],
+    public_version: str | None = None,
 ) -> Path:
-    names = verify_zip(artifact, identity, display)
+    names = verify_zip(artifact, identity, display, public_version)
     if destination.exists() or destination.is_symlink():
         fail("extension artifact extraction destination already exists")
     destination.mkdir(parents=True, mode=0o700)
@@ -392,10 +418,11 @@ def verify_app_installer_resources(root: Path, identity: dict[str, str | int], h
 def build_live_artifacts(root: Path) -> dict[str, Any]:
     identity = load_identity(root)
     display = load_display(root)
+    public_version = load_public_version(root)
     host = validate_native_host_binding(root, identity)
     verify_display_wiring(root)
     output = root / BUILD_OUTPUT
-    validate_built_manifest(output, identity, display)
+    validate_built_manifest(output, identity, display, public_version)
     artifact = root / str(identity["artifactSource"])
     require_real_directory(artifact.parent, "extension artifact")
     if artifact.exists() or artifact.is_symlink():
@@ -441,12 +468,13 @@ def _determinism_scratch_root() -> str:
 def verify_live_artifacts(root: Path) -> dict[str, Any]:
     identity = load_identity(root)
     display = load_display(root)
+    public_version = load_public_version(root)
     host = validate_native_host_binding(root, identity)
     verify_display_wiring(root)
     output = root / BUILD_OUTPUT
-    validate_built_manifest(output, identity, display)
+    validate_built_manifest(output, identity, display, public_version)
     artifact = require_exact_configured_artifact(root, identity)
-    entries = verify_zip(artifact, identity, display)
+    entries = verify_zip(artifact, identity, display, public_version)
     with tempfile.TemporaryDirectory(prefix="linkdigest-extension-identity.", dir=_determinism_scratch_root()) as temporary:
         first = Path(temporary) / "one.zip"
         second = Path(temporary) / "two.zip"
@@ -513,7 +541,8 @@ def main() -> int:
         else:
             identity = load_identity(ROOT)
             display = load_display(ROOT)
-            entries = verify_zip(Path(args.artifact), identity, display)
+            public_version = load_public_version(ROOT)
+            entries = verify_zip(Path(args.artifact), identity, display, public_version)
             result = {"artifactHash": sha256_file(Path(args.artifact)), "entries": entries, "extensionID": identity["extensionID"], "version": identity["version"]}
         print(canonical_json_bytes(result).decode("utf-8"), end="")
         return 0

@@ -2,7 +2,7 @@
 
 > **2026-08-14 依据真机体验检查刷新**（证据：`docs/体验报告-2026-08-14.md`）。
 >
-> 状态：当前实际运行版本为 v0.2.7 (build 16)，App 已投入日常真实使用。真机检查时本机历史共 132 条，覆盖 X、抖音、GitHub、微信公众号、哔哩哔哩、YouTube 等来源分类；浏览器扩展已连接 Chrome 并有真实同步记录（最近同步 2026-07-30）。实际产品能力已超出本文原 P0 记录：PDF/Word 导出、脑图、笔记摘录、本机 OCR、知识库同步、视频存储管理、多主题外观与站点登录会话等已在真机确认，见 §5.3。Developer ID 签名、公证、stapling 与公开发布的当前状态本次检查未核实，仍列为待确认（见 §13）。
+> 状态：当前公开发布版本为 v0.2.24 (build 33)。2026-08-14 的 v0.2.7 真机检查曾确认本机日常使用、132 条历史和 Chrome 真实同步；该证据仍用于说明已有能力，不代表当前安装版本。v0.2.24 发布包已核实为 ad-hoc 签名，尚未完成 Developer ID 签名、公证和 stapling（见 §13）。
 >
 > 历史状态（保留备查）：V0.1–V0.4 工程链曾按各自证据收口；V0.5 发布验证的 Loop 4 r1/r2/r3/r4a/r4b 曾以 unsigned local-test DMG 收口于 READY_FOR_MANUAL_OPEN，当时判定"产品仍 BLOCKED"。该判定针对的是当时的公开发布门禁，不再描述当前日常运行状态；各 Loop 的 clean-room、receipt、gate 明细见对应 `docs/specs/P0_RC_LOOP_4_*` spec，本文不再复制。
 >
@@ -152,7 +152,7 @@ LinkDigest 是一款 macOS 原生、local-first 的链接理解工具：用户�
 | V0.2 BYOK | 用户能配置模型并获得流式总结（已完成） | 多 Provider、账号、云端 |
 | V0.3 本地历史 | 02A/02B 已通过独立复审；02C 已完成 History Sidebar、分页、详情、删除、重启读取与 future-schema 只读浏览 | 同步、全文搜索优化 |
 | V0.4 导出与打磨 | Loop 2 已完成单条 Markdown、`.txt`、JSON 本地导出与原生保存面板；Loop 3 数据去向/连接测试与最终独立复审已完成 | 媒体、批量处理 |
-| V0.5 发布验证 | 历史记录：r1/r2/r3/r4a 曾独立工程 PASS，当时因 unsigned artifact 与 malformed manifest 判定 BLOCKED。该状态已过期——2026-08-14 真机确认 App v0.2.7 (build 16) 日常运行、扩展已连接 Chrome 并有真实同步记录；Developer ID、公证、公开发布的当前状态待确认（见 §13） | Windows、App Store 承诺 |
+| V0.5 发布验证 | v0.2.24 已公开发布，App、DMG 与 Sparkle 更新链可构建和校验；当前仍是 ad-hoc 签名，Developer ID、公证和 stapling 未完成，因此陌生用户首次打开仍会被 Gatekeeper 拦截 | Windows、App Store 承诺 |
 | 视频 M1 合同与识别 | V1 保持兼容；V2 能把通用媒体能力经 Host 交给 APP，正文进入 History。后续 Loop V 已实现视频落库、播放与本机/在线转写（见 §5.3 与对应 spec） | PromptPreset、真实样本扩容 |
 | V0.5 之后（Loop 5 起，至 v0.2.7） | 手动添加链接、PDF/Word 导出、脑图、笔记摘录、本机 OCR、知识库同步、视频存储管理、多主题外观、站点登录会话、多平台来源分类（2026-08-14 真机确认，明细见 §5.3） | 账号体系、云同步、批量采集 |
 
@@ -286,7 +286,7 @@ P0 不承诺自动事实核查外部世界，只承诺摘要忠于本次捕获�
 
 - 正式产品名、商标、域名和图标（真机界面已使用中文名「汲作」，正式商标/域名状态未确认）。
 - Swift SQLite binding 的最终选择与签名兼容性。
-- Developer ID 签名、notarization/stapling 与公开发布的**当前**状态：Loop 4 时代的 r4a/r4b unsigned DMG 与 "Chrome/Edge manifest malformed" 记录已过期（真机确认扩展已连接 Chrome 并有真实同步），但本次检查未核实签名与发布现状，待确认。
+- Developer ID 签名、notarization/stapling：v0.2.24 已公开发布，但发布包仍为 ad-hoc 签名；正式分发流程在证书和 Keychain 公证凭据就绪后仍需真实跑通并验收。
 - 首发使用公证 DMG 还是 Mac App Store；P0 不承诺 App Store。
 - SwiftUI 富文本显示和结果编辑是否需要 AppKit 桥接。
 - OpenAI-compatible 端点之间的流式协议差异。
