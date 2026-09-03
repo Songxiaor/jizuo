@@ -8,22 +8,28 @@ private final class XTweetFixtureResourceFetcher: SafeResourceFetching, @uncheck
   private var seen: [SafeResourceRequest] = []
   private let syndication: Data
   private let graphQL: Data
+  private let graphQLStatus: Int
 
-  init(syndication: String, graphQL: String) {
+  init(syndication: String, graphQL: String, graphQLStatus: Int = 200) {
     self.syndication = Data(syndication.utf8)
     self.graphQL = Data(graphQL.utf8)
+    self.graphQLStatus = graphQLStatus
   }
 
   func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
     lock.withLock { seen.append(request) }
     let path = request.url.path
     let body: Data
+    let status: Int
     if request.url.host == "cdn.syndication.twimg.com" {
       body = syndication
+      status = 200
     } else if path == "/1.1/guest/activate.json" {
       body = Data(#"{"guest_token":"1234567890123456789"}"#.utf8)
+      status = 200
     } else if path.hasSuffix("/TweetResultByRestId") {
       body = graphQL
+      status = graphQLStatus
     } else {
       return .init(
         url: request.url,
@@ -34,7 +40,7 @@ private final class XTweetFixtureResourceFetcher: SafeResourceFetching, @uncheck
     }
     return .init(
       url: request.url,
-      statusCode: 200,
+      statusCode: status,
       contentType: "application/json",
       body: body
     )
@@ -272,6 +278,99 @@ final class XTweetResolverTests: XCTestCase {
     XCTAssertFalse(article.markdown.contains("evil.test"))
   }
 
+  func testXArticleCoverMediaIsPrependedAndNotDuplicated() throws {
+    let cover = "https://pbs.twimg.com/media/COVER.jpg"
+    let inline = "https://pbs.twimg.com/media/INLINE.png"
+    let json = """
+    {
+      "data": {"tweetResult": {"result": {
+        "article": {"article_results": {"result": {
+          "title": "带封面的文章",
+          "cover_media": {"media_info": {
+            "original_img_url": "\(cover)"
+          }},
+          "content_state": {
+            "blocks": [
+              {"type": "unstyled", "text": "第一段", "entityRanges": []},
+              {"type": "atomic", "text": " ", "entityRanges": [{"key": 0, "offset": 0, "length": 1}]}
+            ],
+            "entityMap": [
+              {"key": "0", "value": {"type": "MEDIA", "data": {
+                "mediaItems": [{"mediaId": "7"}]
+              }}}
+            ]
+          },
+          "media_entities": [
+            {"media_id": "7", "media_info": {"original_img_url": "\(inline)"}}
+          ]
+        }}}
+      }}}
+    }
+    """
+    let article = try XCTUnwrap(XTweetResolver.articleContentFromGraphQL(Data(json.utf8)))
+    XCTAssertTrue(article.markdown.hasPrefix("![](\(cover))"))
+    XCTAssertTrue(article.markdown.contains("第一段"))
+    XCTAssertTrue(article.markdown.contains("![](\(inline))"))
+    XCTAssertEqual(article.markdown.components(separatedBy: cover).count - 1, 1)
+
+    let duplicateCoverJSON = """
+    {
+      "data": {"tweetResult": {"result": {
+        "article": {"article_results": {"result": {
+          "title": "封面也在正文里",
+          "cover_media": {"media_info": {
+            "original_img_url": "\(cover)"
+          }},
+          "content_state": {
+            "blocks": [
+              {"type": "atomic", "text": " ", "entityRanges": [{"key": 0, "offset": 0, "length": 1}]}
+            ],
+            "entityMap": [
+              {"key": "0", "value": {"type": "MEDIA", "data": {
+                "mediaItems": [{"mediaId": "9"}]
+              }}}
+            ]
+          },
+          "media_entities": [
+            {"media_id": "9", "media_info": {"original_img_url": "\(cover)"}}
+          ]
+        }}}
+      }}}
+    }
+    """
+    let deduped = try XCTUnwrap(XTweetResolver.articleContentFromGraphQL(Data(duplicateCoverJSON.utf8)))
+    XCTAssertEqual(deduped.markdown.components(separatedBy: cover).count - 1, 1)
+  }
+
+  func testSyndicationArticlePreviewKeepsTheCover() throws {
+    let payload = try JSONDecoder().decode(
+      XTweetResolver.Payload.self,
+      from: Data("""
+      {
+        "text": "文章入口",
+        "article": {
+          "rest_id": "1",
+          "title": "预览标题",
+          "preview_text": "第一段预览",
+          "cover_media": {"media_info": {
+            "original_img_url": "https://pbs.twimg.com/media/HQwC9-zb0AAnbz2.jpg"
+          }}
+        }
+      }
+      """.utf8)
+    )
+    XCTAssertEqual(
+      XTweetResolver.coverURL(from: payload.article),
+      "https://pbs.twimg.com/media/HQwC9-zb0AAnbz2.jpg"
+    )
+    let markdown = XTweetResolver.prependArticleCover(
+      payload.article?.preview_text ?? "",
+      coverURL: XTweetResolver.coverURL(from: payload.article)
+    )
+    XCTAssertTrue(markdown.hasPrefix("![](https://pbs.twimg.com/media/HQwC9-zb0AAnbz2.jpg)"))
+    XCTAssertTrue(markdown.contains("第一段预览"))
+  }
+
   func testXArticleBodyReplacesTheLauncherTweet() throws {
     let payload = try JSONDecoder().decode(
       XTweetResolver.Payload.self,
@@ -342,6 +441,48 @@ final class XTweetResolverTests: XCTestCase {
     XCTAssertNil(graphQLRequest.headers["cookie"])
   }
 
+  /// GraphQL 全文常不含 cover_media；封面只在 syndication 的 article.cover_media。
+  /// 以前用 GraphQL 结果整份覆盖预览后封面就丢了。
+  func testResolveTweetKeepsSyndicationCoverWhenGraphQLOmitsIt() async throws {
+    let cover = "https://pbs.twimg.com/media/HRIkm6IaAAErbRr.jpg"
+    let resources = XTweetFixtureResourceFetcher(
+      syndication: """
+      {
+        "text": "入口短帖",
+        "user": {"name": "LanLance", "screen_name": "LanLance24"},
+        "article": {
+          "rest_id": "2094777203984896418",
+          "title": "读懂 Warp 的 Agent Skill 自进化机制",
+          "preview_text": "预览不会当正文",
+          "cover_media": {"media_info": {"original_img_url": "\(cover)"}}
+        }
+      }
+      """,
+      graphQL: """
+      {"data":{"tweetResult":{"result":{"article":{"article_results":{"result":{
+        "title":"读懂 Warp 的 Agent Skill 自进化机制",
+        "content_state":{
+          "blocks":[{"type":"unstyled","text":"上周 Anthropic 发布了一篇讲 Warp 构建自进化 Agent 的博客。","entityRanges":[]}],
+          "entityMap":[]
+        },
+        "media_entities":[]
+      }}}}}}}
+      """
+    )
+
+    let resolved = await XTweetResolver(resources: resources)
+      .resolveTweet(id: "2094777203984896418")
+    let tweet = try XCTUnwrap(resolved)
+    let body = tweet.markdownBody.replacingOccurrences(
+      of: #"^---[\s\S]*?---\n*"#,
+      with: "",
+      options: .regularExpression
+    )
+    XCTAssertTrue(body.hasPrefix("![](\(cover))"))
+    XCTAssertTrue(body.contains("上周 Anthropic"))
+    XCTAssertFalse(body.contains("预览不会当正文"))
+  }
+
   func testArticlePreviewIsNotMarkedAsComplete() throws {
     let payload = try JSONDecoder().decode(
       XTweetResolver.Payload.self,
@@ -402,5 +543,232 @@ final class XTweetResolverTests: XCTestCase {
       from: Data(json.utf8)
     )
     XCTAssertNil(XTweetResolver.bestVideo(in: payload, author: nil))
+  }
+
+  func testMetricsFromGraphQLReadsLegacyCountsAndStringViewCount() throws {
+    let json = """
+    {"data":{"tweetResult":{"result":{
+      "legacy":{
+        "favorite_count":12,
+        "reply_count":3,
+        "retweet_count":7,
+        "quote_count":99,
+        "bookmark_count":4
+      },
+      "views":{"count":"2661117","state":"EnabledWithCount"}
+    }}}}
+    """
+    let metrics = try XCTUnwrap(XTweetResolver.metricsFromGraphQL(Data(json.utf8)))
+    XCTAssertEqual(metrics.favoriteCount, 12)
+    XCTAssertEqual(metrics.replyCount, 3)
+    XCTAssertEqual(metrics.retweetCount, 7)
+    XCTAssertEqual(metrics.bookmarkCount, 4)
+    XCTAssertEqual(metrics.viewCount, 2_661_117)
+
+    let payload = try JSONDecoder().decode(
+      XTweetResolver.Payload.self,
+      from: Data(#"{"text":"普通推文","favorite_count":1,"conversation_count":1}"#.utf8)
+    )
+    let tweet = try XCTUnwrap(
+      XTweetResolver.tweet(from: payload, id: "1234567890123", metrics: metrics)
+    )
+    XCTAssertEqual(tweet.likeCount, 12)
+    XCTAssertEqual(tweet.replyCount, 3)
+    XCTAssertEqual(tweet.repostCount, 7)
+    XCTAssertEqual(tweet.bookmarkCount, 4)
+    XCTAssertEqual(tweet.viewCount, 2_661_117)
+    let markdown = tweet.markdownBody
+    XCTAssertTrue(markdown.contains("likes: \"12\""))
+    XCTAssertTrue(markdown.contains("replies: \"3\"\nshares: \"7\"\ncollects: \"4\"\nviews: \"2661117\""))
+    XCTAssertFalse(markdown.contains("99"))
+  }
+
+  func testArticleInlineStylesAndLinksRespectUTF16Offsets() throws {
+    // "看这篇🙂说明即可"：🙂 占 2 个 UTF-16 unit。LINK+BOLD 同时盖住「篇🙂说」
+    // （offset 2 / length 4）。若误用 Character 索引，会把「明」也包进去。
+    let json = """
+    {
+      "data": {"tweetResult": {"result": {
+        "article": {"article_results": {"result": {
+          "title": "富文本",
+          "content_state": {
+            "blocks": [
+              {
+                "type": "unstyled",
+                "text": "看这篇🙂说明即可",
+                "inlineStyleRanges": [{"offset": 2, "length": 4, "style": "BOLD"}],
+                "entityRanges": [{"offset": 2, "length": 4, "key": 0}]
+              },
+              {
+                "type": "header-two",
+                "text": "小标题",
+                "inlineStyleRanges": [{"offset": 0, "length": 3, "style": "ITALIC"}],
+                "entityRanges": []
+              },
+              {
+                "type": "unordered-list-item",
+                "text": "列表项",
+                "inlineStyleRanges": [{"offset": 0, "length": 3, "style": "BOLD"}],
+                "entityRanges": []
+              },
+              {
+                "type": "code-block",
+                "text": "let x = 1",
+                "inlineStyleRanges": [{"offset": 0, "length": 3, "style": "BOLD"}],
+                "entityRanges": []
+              },
+              {
+                "type": "unstyled",
+                "text": "http 不渲染",
+                "inlineStyleRanges": [],
+                "entityRanges": [{"offset": 0, "length": 8, "key": 1}]
+              }
+            ],
+            "entityMap": [
+              {"key": 0, "value": {"type": "LINK", "data": {"url": "https://example.com/post"}}},
+              {"key": 1, "value": {"type": "LINK", "data": {"url": "http://example.com/insecure"}}}
+            ]
+          },
+          "media_entities": []
+        }}}
+      }}}
+    }
+    """
+    let article = try XCTUnwrap(XTweetResolver.articleContentFromGraphQL(Data(json.utf8)))
+    XCTAssertTrue(article.markdown.contains("看这[**篇🙂说**](https://example.com/post)明即可"))
+    XCTAssertTrue(article.markdown.contains("## *小标题*"))
+    XCTAssertTrue(article.markdown.contains("- **列表项**"))
+    XCTAssertTrue(article.markdown.contains("```\nlet x = 1\n```"))
+    XCTAssertFalse(article.markdown.contains("**let"))
+    XCTAssertTrue(article.markdown.contains("http 不渲染"))
+    XCTAssertFalse(article.markdown.contains("http://example.com/insecure"))
+  }
+
+  func testArticleInlineRangesOutOfBoundsFallBackToPlainText() throws {
+    let json = """
+    {
+      "data": {"tweetResult": {"result": {
+        "article": {"article_results": {"result": {
+          "title": "越界",
+          "content_state": {
+            "blocks": [
+              {
+                "type": "unstyled",
+                "text": "完整文字不能丢",
+                "inlineStyleRanges": [{"offset": 0, "length": 2, "style": "BOLD"}],
+                "entityRanges": [{"offset": 0, "length": 99, "key": 0}]
+              }
+            ],
+            "entityMap": [
+              {"key": 0, "value": {"type": "LINK", "data": {"url": "https://example.com/lost"}}}
+            ]
+          },
+          "media_entities": []
+        }}}
+      }}}
+    }
+    """
+    let article = try XCTUnwrap(XTweetResolver.articleContentFromGraphQL(Data(json.utf8)))
+    XCTAssertTrue(article.markdown.contains("完整文字不能丢"))
+    XCTAssertFalse(article.markdown.contains("**"))
+    XCTAssertFalse(article.markdown.contains("example.com/lost"))
+  }
+
+  func testSyndicationAndNoteTweetExpandTcoURLs() throws {
+    let payload = try JSONDecoder().decode(
+      XTweetResolver.Payload.self,
+      from: Data("""
+      {
+        "text": "阅读 https://t.co/abc123 和 https://t.co/skip",
+        "entities": {
+          "urls": [
+            {"url": "https://t.co/abc123", "expanded_url": "https://example.com/full"},
+            {"url": "https://t.co/skip", "expanded_url": "ftp://example.com/x"}
+          ]
+        }
+      }
+      """.utf8)
+    )
+    let tweet = try XCTUnwrap(XTweetResolver.tweet(from: payload, id: "1234567890123"))
+    XCTAssertEqual(tweet.text, "阅读 https://example.com/full 和 https://t.co/skip")
+
+    let noteJSON = """
+    {"data":{"tweetResult":{"result":{"note_tweet":{"note_tweet_results":{"result":{
+      "text":"长文 https://t.co/note1 结束",
+      "entity_set":{"urls":[
+        {"url":"https://t.co/note1","expanded_url":"http://example.com/note","display_url":"example.com/note"}
+      ]}
+    }}}}}}}
+    """
+    XCTAssertEqual(
+      XTweetResolver.noteTextFromGraphQL(Data(noteJSON.utf8)),
+      "长文 http://example.com/note 结束"
+    )
+  }
+
+  func testOrdinaryTweetStillQueriesGraphQLAndFallsBackWhenItFails() async throws {
+    let resources = XTweetFixtureResourceFetcher(
+      syndication: """
+      {
+        "text": "只是一条普通推文",
+        "favorite_count": 8,
+        "conversation_count": 6,
+        "user": {"name": "作者", "screen_name": "writer"}
+      }
+      """,
+      graphQL: "{}",
+      graphQLStatus: 500
+    )
+
+    let resolved = await XTweetResolver(resources: resources)
+      .resolveTweet(id: "1234567890123")
+    let tweet = try XCTUnwrap(resolved)
+    XCTAssertEqual(tweet.text, "只是一条普通推文")
+    XCTAssertEqual(tweet.likeCount, 8)
+    XCTAssertEqual(tweet.replyCount, 6)
+    XCTAssertNil(tweet.repostCount)
+    XCTAssertNil(tweet.bookmarkCount)
+    XCTAssertNil(tweet.viewCount)
+    XCTAssertTrue(tweet.markdownBody.contains("likes: \"8\""))
+    XCTAssertTrue(tweet.markdownBody.contains("replies: \"6\""))
+    XCTAssertFalse(tweet.markdownBody.contains("shares:"))
+    XCTAssertNotNil(resources.requests.first { $0.url.path.hasSuffix("/TweetResultByRestId") })
+  }
+
+  func testOrdinaryTweetUsesGraphQLMetricsWhenPresent() async throws {
+    let resources = XTweetFixtureResourceFetcher(
+      syndication: """
+      {
+        "text": "只是一条普通推文",
+        "favorite_count": 8,
+        "conversation_count": 6,
+        "user": {"name": "作者", "screen_name": "writer"}
+      }
+      """,
+      graphQL: """
+      {"data":{"tweetResult":{"result":{
+        "legacy":{
+          "favorite_count":21,
+          "reply_count":9,
+          "retweet_count":5,
+          "quote_count":2,
+          "bookmark_count":11
+        },
+        "views":{"count":"42","state":"EnabledWithCount"}
+      }}}}
+      """
+    )
+
+    let resolved = await XTweetResolver(resources: resources)
+      .resolveTweet(id: "1234567890123")
+    let tweet = try XCTUnwrap(resolved)
+    XCTAssertEqual(tweet.text, "只是一条普通推文")
+    XCTAssertEqual(tweet.likeCount, 21)
+    XCTAssertEqual(tweet.replyCount, 9)
+    XCTAssertEqual(tweet.repostCount, 5)
+    XCTAssertEqual(tweet.bookmarkCount, 11)
+    XCTAssertEqual(tweet.viewCount, 42)
+    XCTAssertTrue(tweet.markdownBody.contains("shares: \"5\""))
+    XCTAssertFalse(tweet.markdownBody.contains("quote"))
   }
 }

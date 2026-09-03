@@ -212,7 +212,14 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       || document.title
     ));
 
-    const verification = /请完成安全验证|滑动验证|异常访问|验证码|登录后继续/.test(bodyText);
+    // 风控拦截页正文常常是空的，只有 <title> 写着「验证码中间页」；只查正文会把这个
+    // 标题当作品标题存进历史。标题命中即判定为验证页，不再往下解析。
+    const verificationTitle = /^验证码中间页$|请完成安全验证/u.test(normalize(document.title));
+    const verification = verificationTitle
+      || /请完成安全验证|滑动验证|异常访问|验证码|登录后继续/.test(bodyText);
+    if (verificationTitle) {
+      return { status: 'verification' };
+    }
     const placeholderTitle = !title || title === '抖音';
     if (placeholderTitle && !pathLooksLikeNote) {
       return { status: verification ? 'verification' : 'loading' };
@@ -407,6 +414,51 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
     const isImagePost = imageURLs.length > 0;
     const canonicalKind = (pathLooksLikeNote || isImagePost) ? 'note' : 'video';
 
+    const stats = {};
+    const statText = (raw) => {
+      const match = String(raw || '').trim().match(/\d+(?:\.\d+)?\s*[万亿wWkK]?/);
+      if (!match) return '';
+      const candidate = match[0];
+      if (!/^\d+(?:\.\d+)?\s*[万亿wWkK]?$/.test(candidate)) return '';
+      return candidate.replace(/\s+/g, '');
+    };
+    const readStat = (selectors, ariaKeyword) => {
+      for (const selector of selectors) {
+        const node = document.querySelector(selector);
+        const value = statText(node && node.textContent);
+        if (value) return value;
+      }
+      const labeled = document.querySelectorAll('[aria-label]');
+      if (labeled.length > 200) return '';
+      for (const node of labeled) {
+        const label = String(node.getAttribute('aria-label') || '');
+        if (!ariaKeyword.test(label)) continue;
+        const value = statText(label);
+        if (value) return value;
+      }
+      return '';
+    };
+    const likes = readStat(
+      ["[data-e2e='video-player-digg']", "[data-e2e='like-count']", "[data-e2e='digg-count']", "[data-e2e='video-like-count']", "[data-e2e='feed-video-like-count']", "[data-e2e='feed-video-digg-count']", "[data-e2e='browse-video-like-count']"],
+      /点赞/
+    );
+    const comments = readStat(
+      ["[data-e2e='video-player-comment']", "[data-e2e='feed-comment-icon']", "[data-e2e='comment-count']", "[data-e2e='video-comment-count']", "[data-e2e='feed-video-comment-count']", "[data-e2e='browse-video-comment-count']"],
+      /评论/
+    );
+    const shares = readStat(
+      ["[data-e2e='video-player-share']", "[data-e2e='share-count']", "[data-e2e='video-share-count']", "[data-e2e='feed-video-share-count']", "[data-e2e='browse-video-share-count']"],
+      /分享/
+    );
+    const collects = readStat(
+      ["[data-e2e='video-player-collect']", "[data-e2e='collect-count']", "[data-e2e='favorite-count']", "[data-e2e='video-collect-count']", "[data-e2e='video-favorite-count']", "[data-e2e='feed-video-collect-count']", "[data-e2e='feed-video-favorite-count']", "[data-e2e='browse-video-collect-count']", "[data-e2e='browse-video-favorite-count']"],
+      /收藏/
+    );
+    if (likes) stats.likes = likes;
+    if (comments) stats.comments = comments;
+    if (shares) stats.shares = shares;
+    if (collects) stats.collects = collects;
+
     return {
       status: 'ready',
       awemeID,
@@ -419,6 +471,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       coverURL,
       imageURLs,
       stateSnippet: isImagePost ? '' : stateSnippet,
+      ...(Object.keys(stats).length ? { stats } : {}),
       ...(durationSeconds && !isImagePost ? { durationSeconds } : {}),
       videoElementCount: videos.length
     };
@@ -556,9 +609,28 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
     guard status == "ready" else { return .notReady }
 
     var page = try DouyinWebCapturePolicy.validateJavaScriptResult(dictionary)
+    let stateSnippet = dictionary["stateSnippet"] as? String
+    if let stateSnippet, !stateSnippet.isEmpty,
+       let parsed = DouyinPageParser.parseStatistics(stateSnippet, awemeID: page.awemeID) {
+      page = DouyinRenderedPage(
+        awemeID: page.awemeID,
+        canonicalURL: page.canonicalURL,
+        title: page.title,
+        description: page.description,
+        author: page.author,
+        publishedAt: page.publishedAt,
+        videoURL: page.videoURL,
+        coverURL: page.coverURL,
+        durationSeconds: page.durationSeconds,
+        imageURLs: page.imageURLs,
+        likes: parsed.likes ?? page.likes,
+        comments: parsed.comments ?? page.comments,
+        shares: parsed.shares ?? page.shares,
+        collects: parsed.collects ?? page.collects
+      )
+    }
     if page.imageURLs.isEmpty,
-       let stateSnippet = dictionary["stateSnippet"] as? String,
-       !stateSnippet.isEmpty {
+       let stateSnippet, !stateSnippet.isEmpty {
       let gallery = DouyinPageParser.parseGalleryImageURLs(
         stateSnippet,
         pageURL: page.canonicalURL
@@ -574,7 +646,11 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
           videoURL: nil,
           coverURL: page.coverURL,
           durationSeconds: nil,
-          imageURLs: gallery
+          imageURLs: gallery,
+          likes: page.likes,
+          comments: page.comments,
+          shares: page.shares,
+          collects: page.collects
         )
       } else if page.videoURL == nil,
                 let parsed = DouyinPageParser.parseStateSnippet(
@@ -591,7 +667,11 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
           videoURL: parsed.videoURL,
           coverURL: page.coverURL ?? parsed.coverURL,
           durationSeconds: page.durationSeconds ?? parsed.durationSeconds,
-          imageURLs: page.imageURLs
+          imageURLs: page.imageURLs,
+          likes: page.likes,
+          comments: page.comments,
+          shares: page.shares,
+          collects: page.collects
         )
       }
     }
@@ -628,38 +708,8 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
   }
 
   private func makeDocument(from page: DouyinRenderedPage) throws -> CapturedDocument {
-    func yaml(_ value: String) -> String {
-      "\"" + value
-        .replacingOccurrences(of: "\\", with: "\\\\")
-        .replacingOccurrences(of: "\"", with: "\\\"")
-        .replacingOccurrences(of: "\n", with: " ") + "\""
-    }
     let isImagePost = !page.imageURLs.isEmpty
-    var metadata = ["aweme_id: \(yaml(page.awemeID))"]
-    if let author = page.author { metadata.insert("author: \(yaml(author))", at: 0) }
-    if let published = page.publishedAt { metadata.append("published: \(yaml(published))") }
-    if isImagePost { metadata.append("content_kind: images") }
-    var body = "# \(page.title)"
-    if let description = page.description,
-       description.caseInsensitiveCompare(page.title) != .orderedSame {
-      let suffix: String? = description.hasPrefix(page.title)
-        ? String(description.dropFirst(page.title.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-        : nil
-      let suffixIsOnlyTopics = suffix.map { value in
-        let parts = value.split(whereSeparator: \.isWhitespace)
-        return !parts.isEmpty && parts.allSatisfy { $0.hasPrefix("#") && $0.count > 1 }
-      } ?? false
-      body += "\n\n\(suffixIsOnlyTopics ? suffix! : description)"
-    }
-    if isImagePost {
-      let gallery = page.imageURLs
-        .map { "![](\($0.absoluteString))" }
-        .joined(separator: "\n\n")
-      if !gallery.isEmpty {
-        body += "\n\n\(gallery)"
-      }
-    }
-    let text = "---\n\(metadata.joined(separator: "\n"))\n---\n\n\(body)"
+    let text = DouyinWebCapturePolicy.renderedDocumentMarkdown(from: page)
     let timestamp = ISO8601DateFormatter().string(from: now())
     let media = (!isImagePost ? page.videoURL : nil).map {
       CaptureMedia(

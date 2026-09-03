@@ -1037,13 +1037,16 @@ export function collectXStatusBlocksInOrder(root: Element, baseHref: string): st
         ? [mediaRoot]
         : Array.from(mediaRoot.querySelectorAll("img, video[poster]"));
     candidates.forEach((media) => {
-      const raw =
-        media.getAttribute("data-src") ||
-        media.getAttribute("data-original") ||
-        media.getAttribute("src") ||
-        media.getAttribute("poster") ||
-        "";
-      const href = absoluteUrl(raw, baseHref);
+      const href =
+        (media.tagName.toLowerCase() === "img" ? resolveResponsiveImageURL(media, baseHref) : null)
+        || absoluteUrl(
+          media.getAttribute("data-src")
+            || media.getAttribute("data-original")
+            || media.getAttribute("src")
+            || media.getAttribute("poster")
+            || "",
+          baseHref,
+        );
       // 视频封面不进正文：视频本体由 App 换直链存下来，封面只会重复一遍画面。
       if (!href || isXProfileChromeImageURL(href) || isXVideoThumbnailURL(href)) return;
       const key = xMediaDedupeKey(href);
@@ -1187,6 +1190,7 @@ export function collectXStatusBlocksInOrder(root: Element, baseHref: string): st
     // The read view appends a Premium upsell row after the article body;
     // it is page chrome, not the author's prose.
     const kept = dropXArticleUpsellBlocks(blocks);
+    prependXArticleCoverIfMissing(kept, root, richArticle, baseHref);
     if (kept.length > 0) return kept;
   }
 
@@ -1223,6 +1227,59 @@ const X_ARTICLE_UPSELL_PATTERN =
 
 function dropXArticleUpsellBlocks(blocks: string[]): string[] {
   return blocks.filter((block) => !X_ARTICLE_UPSELL_PATTERN.test(block.replace(/\s+/g, " ").trim()));
+}
+
+/**
+ * X Article 封面经常在阅读区外：英雄图、og:image，或不在 twitterArticleReadView
+ * 里的 tweetPhoto。阅读区树序走不到它们，正文就会从第一段字开始、封面丢失。
+ */
+function prependXArticleCoverIfMissing(
+  blocks: string[],
+  root: Element,
+  readView: Element,
+  baseHref: string,
+): void {
+  const cover = firstXArticleCoverURL(root, readView, baseHref);
+  if (!cover) return;
+  const key = xMediaDedupeKey(cover);
+  if (blocks.some((block) => block.includes(cover) || block.includes(key))) return;
+  blocks.unshift(`![](${cover})`);
+}
+
+function firstXArticleCoverURL(root: Element, readView: Element, baseHref: string): string | null {
+  const outside = Array.from(root.querySelectorAll("[data-testid='tweetPhoto'], img"))
+    .filter((node) => !readView.contains(node));
+  for (const node of outside) {
+    const href = xPhotoURLFromNode(node, baseHref);
+    if (href) return href;
+  }
+  const documentLike = root.ownerDocument;
+  const og = documentLike
+    ?.querySelector("meta[property='og:image']")
+    ?.getAttribute("content")
+    ?.trim();
+  if (!og) return null;
+  const href = absoluteUrl(og, baseHref);
+  if (!href || isXProfileChromeImageURL(href) || isXVideoThumbnailURL(href)) return null;
+  try {
+    const host = new URL(href).hostname.toLowerCase();
+    if (host !== "pbs.twimg.com" && !host.endsWith(".pbs.twimg.com")) return null;
+  } catch {
+    return null;
+  }
+  return href;
+}
+
+function xPhotoURLFromNode(node: Element, baseHref: string): string | null {
+  const images = node.tagName.toLowerCase() === "img"
+    ? [node]
+    : Array.from(node.querySelectorAll("img"));
+  for (const image of images) {
+    const href = resolveResponsiveImageURL(image, baseHref);
+    if (!href || isXProfileChromeImageURL(href) || isXVideoThumbnailURL(href)) continue;
+    return href;
+  }
+  return null;
 }
 
 /** Prefer real line breaks from the DOM; soft-wrap Chinese walls when X gives one blob. */
@@ -3471,19 +3528,19 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
   };
   const domStats = {
     likes: readStat(1,
-      ["[data-e2e='like-count']", "[data-e2e='digg-count']", "[data-e2e='video-like-count']", "[data-e2e='feed-video-like-count']", "[data-e2e='feed-video-digg-count']", "[data-e2e='browse-video-like-count']"],
+      ["[data-e2e='video-player-digg']", "[data-e2e='like-count']", "[data-e2e='digg-count']", "[data-e2e='video-like-count']", "[data-e2e='feed-video-like-count']", "[data-e2e='feed-video-digg-count']", "[data-e2e='browse-video-like-count']"],
       /digg|like|praise|点赞|喜欢|赞/iu,
     ),
     comments: readStat(2,
-      ["[data-e2e='comment-count']", "[data-e2e='video-comment-count']", "[data-e2e='feed-video-comment-count']", "[data-e2e='browse-video-comment-count']"],
+      ["[data-e2e='video-player-comment']", "[data-e2e='feed-comment-icon']", "[data-e2e='comment-count']", "[data-e2e='video-comment-count']", "[data-e2e='feed-video-comment-count']", "[data-e2e='browse-video-comment-count']"],
       /评论|comment/iu,
     ),
     shares: readStat(4,
-      ["[data-e2e='share-count']", "[data-e2e='video-share-count']", "[data-e2e='feed-video-share-count']", "[data-e2e='browse-video-share-count']"],
+      ["[data-e2e='video-player-share']", "[data-e2e='share-count']", "[data-e2e='video-share-count']", "[data-e2e='feed-video-share-count']", "[data-e2e='browse-video-share-count']"],
       /分享|转发|share/iu,
     ),
     collects: readStat(8,
-      ["[data-e2e='collect-count']", "[data-e2e='favorite-count']", "[data-e2e='video-collect-count']", "[data-e2e='video-favorite-count']", "[data-e2e='feed-video-collect-count']", "[data-e2e='feed-video-favorite-count']", "[data-e2e='browse-video-collect-count']", "[data-e2e='browse-video-favorite-count']"],
+      ["[data-e2e='video-player-collect']", "[data-e2e='collect-count']", "[data-e2e='favorite-count']", "[data-e2e='video-collect-count']", "[data-e2e='video-favorite-count']", "[data-e2e='feed-video-collect-count']", "[data-e2e='feed-video-favorite-count']", "[data-e2e='browse-video-collect-count']", "[data-e2e='browse-video-favorite-count']"],
       /收藏|collect|favou?rite/iu,
     ),
   };

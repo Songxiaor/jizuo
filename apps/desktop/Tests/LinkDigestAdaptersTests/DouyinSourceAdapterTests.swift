@@ -157,6 +157,37 @@ final class DouyinSourceAdapterTests: XCTestCase {
     XCTAssertEqual(parsed.durationSeconds, 165)
   }
 
+  func testParseStatisticsReadsOnlyTheRequestedAwemeFromNormalAndEscapedJSON() {
+    let target = "7000000000000000002"
+    let neighbor = "7000000000000000001"
+    let normal = """
+    {"items":[
+      {"aweme_id":"\(neighbor)","statistics":{"digg_count":11,"comment_count":12,"share_count":13,"collect_count":14}},
+      {"aweme_id":"\(target)","statistics":{"digg_count":21,"comment_count":22,"share_count":23,"collect_count":24}}
+    ]}
+    """
+    let escaped = #"""
+    {\"items\":[
+      {\"aweme_id\":\"\#(neighbor)\",\"statistics\":{\"digg_count\":11,\"comment_count\":12,\"share_count\":13,\"collect_count\":14}},
+      {\"aweme_id\":\"\#(target)\",\"statistics\":{\"digg_count\":21,\"comment_count\":22,\"share_count\":23,\"collect_count\":24}}
+    ]}
+    """#
+
+    for snippet in [normal, escaped] {
+      let parsed = DouyinPageParser.parseStatistics(snippet, awemeID: target)
+      XCTAssertEqual(parsed?.likes, "21", "片段：\(snippet)")
+      XCTAssertEqual(parsed?.comments, "22", "片段：\(snippet)")
+      XCTAssertEqual(parsed?.shares, "23", "片段：\(snippet)")
+      XCTAssertEqual(parsed?.collects, "24", "片段：\(snippet)")
+
+      let neighborStats = DouyinPageParser.parseStatistics(snippet, awemeID: neighbor)
+      XCTAssertEqual(neighborStats?.likes, "11", "片段：\(snippet)")
+      XCTAssertEqual(neighborStats?.comments, "12")
+      XCTAssertEqual(neighborStats?.shares, "13")
+      XCTAssertEqual(neighborStats?.collects, "14")
+    }
+  }
+
   func testRiskControlSurfacesExtensionGuide() async {
     let fetcher = DouyinFixtureFetcher()
     fetcher.htmlByHostPath["www.douyin.com/video/blocked"] = "<html><body>请完成安全验证 滑动验证</body></html>"

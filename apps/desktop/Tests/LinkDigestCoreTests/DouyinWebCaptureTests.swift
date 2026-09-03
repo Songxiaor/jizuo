@@ -174,6 +174,87 @@ final class DouyinWebCaptureTests: XCTestCase {
       .completeWithPlayableMedia
     )
   }
+
+  func testAcceptsValidStatsAndDropsInvalidOnesWithoutFailing() throws {
+    let accepted = try DouyinWebCapturePolicy.validateJavaScriptResult([
+      "awemeID": "7000000000000000003",
+      "canonicalURL": "https://www.douyin.com/video/7000000000000000003",
+      "title": "短标题",
+      "stats": [
+        "likes": "1.2 万",
+        "comments": "88",
+        "shares": "3",
+        "collects": "1.0k",
+      ],
+    ])
+    XCTAssertEqual(accepted.likes, "1.2万")
+    XCTAssertEqual(accepted.comments, "88")
+    XCTAssertEqual(accepted.shares, "3")
+    XCTAssertEqual(accepted.collects, "1.0k")
+
+    let mixed = try DouyinWebCapturePolicy.validateJavaScriptResult([
+      "awemeID": "7000000000000000003",
+      "canonicalURL": "https://www.douyin.com/video/7000000000000000003",
+      "title": "短标题",
+      "stats": [
+        "likes": "1.2万",
+        "comments": 88,
+        "shares": "12ab",
+        "collects": "12345678901234567",
+      ],
+    ])
+    XCTAssertEqual(mixed.likes, "1.2万")
+    XCTAssertNil(mixed.comments)
+    XCTAssertNil(mixed.shares)
+    XCTAssertNil(mixed.collects)
+
+    XCTAssertNoThrow(
+      try DouyinWebCapturePolicy.validateJavaScriptResult([
+        "awemeID": "7000000000000000003",
+        "canonicalURL": "https://www.douyin.com/video/7000000000000000003",
+        "title": "短标题",
+        "stats": ["1.2万"],
+      ])
+    )
+  }
+
+  func testRenderedMarkdownWritesEngagementAfterPublished() {
+    let page = DouyinRenderedPage(
+      awemeID: "7000000000000000003",
+      canonicalURL: URL(string: "https://www.douyin.com/video/7000000000000000003")!,
+      title: "短标题",
+      author: "作者甲",
+      publishedAt: "2026-01-01 12:00",
+      likes: "100",
+      comments: "20",
+      shares: "3",
+      collects: "5"
+    )
+    let markdown = DouyinWebCapturePolicy.renderedDocumentMarkdown(from: page)
+    XCTAssertTrue(
+      markdown.contains(
+        "published: \"2026-01-01 12:00\"\nlikes: \"100\"\ncomments: \"20\"\nshares: \"3\"\ncollects: \"5\"\n---"
+      ),
+      "实际输出：\(markdown)"
+    )
+    XCTAssertTrue(markdown.contains("# 短标题"))
+  }
+
+  func testLongTitleDoesNotEmitHeadingLine() {
+    let title = String(repeating: "字", count: 61)
+    let page = DouyinRenderedPage(
+      awemeID: "7000000000000000003",
+      canonicalURL: URL(string: "https://www.douyin.com/video/7000000000000000003")!,
+      title: title
+    )
+    let markdown = DouyinWebCapturePolicy.renderedDocumentMarkdown(from: page)
+    XCTAssertFalse(markdown.contains("# \(title)"), "实际输出：\(markdown)")
+    XCTAssertTrue(markdown.contains("---\n\n\(title)"), "实际输出：\(markdown)")
+    let body = MarkdownNoteFrontmatter.parse(markdown).body
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    XCTAssertFalse(body.hasPrefix("# "))
+    XCTAssertEqual(body, title)
+  }
 }
 
 /// 慢加载回归。原始缺陷只在「视频地址晚于标题出现」时暴露，而真机上是否暴露
