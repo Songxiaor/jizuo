@@ -244,6 +244,71 @@ public enum DouyinPageParser {
     return extractFromJSONBlob(snippet, pageURL: pageURL)
   }
 
+  /// 从渲染态片段里取出这条 aweme 的互动计数。状态值是精确整数。
+  ///
+  /// 片段可能是正常 JSON，也可能是 `\"digg_count\":123` 这种转义形式。
+  /// 只认挨着 `awemeID` 的那个 `statistics` 对象，避免吃到推荐流邻居。
+  static func parseStatistics(
+    _ snippet: String,
+    awemeID: String
+  ) -> (likes: String?, comments: String?, shares: String?, collects: String?)? {
+    guard snippet.unicodeScalars.count <= maximumStateSnippetScalars else { return nil }
+    guard awemeID.range(of: #"^\d{8,25}$"#, options: .regularExpression) != nil else { return nil }
+    let flattened = snippet.replacingOccurrences(of: "\\\"", with: "\"")
+    guard let statsExpression = try? NSRegularExpression(
+      pattern: #""statistics"\s*:\s*\{([^}]{0,800})"#,
+      options: []
+    ),
+    let idExpression = try? NSRegularExpression(
+      pattern: #""(?:aweme_id|awemeId)"\s*:\s*"(\d{8,25})""#,
+      options: []
+    ) else { return nil }
+
+    let fullRange = NSRange(flattened.startIndex..., in: flattened)
+    let idHits: [(id: String, location: Int)] = idExpression.matches(
+      in: flattened,
+      range: fullRange
+    ).compactMap { match in
+      guard match.numberOfRanges > 1,
+            let capture = Range(match.range(at: 1), in: flattened)
+      else { return nil }
+      return (String(flattened[capture]), match.range.location)
+    }
+    guard !idHits.isEmpty else { return nil }
+
+    var best: (
+      distance: Int,
+      likes: String?,
+      comments: String?,
+      shares: String?,
+      collects: String?
+    )?
+    for match in statsExpression.matches(in: flattened, range: fullRange) {
+      let location = match.range.location
+      guard let nearest = idHits.min(by: {
+        abs($0.location - location) < abs($1.location - location)
+      }), nearest.id == awemeID else { continue }
+      let distance = abs(nearest.location - location)
+      guard distance <= 6_000 else { continue }
+      guard match.numberOfRanges > 1,
+            let bodyRange = Range(match.range(at: 1), in: flattened)
+      else { continue }
+      let body = String(flattened[bodyRange])
+      let counts = (
+        distance,
+        firstMatch(#""digg_count"\s*:\s*"?(\d+)"?"#, in: body),
+        firstMatch(#""comment_count"\s*:\s*"?(\d+)"?"#, in: body),
+        firstMatch(#""share_count"\s*:\s*"?(\d+)"?"#, in: body),
+        firstMatch(#""collect_count"\s*:\s*"?(\d+)"?"#, in: body)
+      )
+      if best == nil || distance < best!.distance {
+        best = counts
+      }
+    }
+    guard let best else { return nil }
+    return (best.likes, best.comments, best.shares, best.collects)
+  }
+
   /// Collect note gallery URLs from the same bounded aweme window.
   /// Skips avatars and comment images; only `aweme_images` / `tplv-dy-aweme-images`.
   public static func parseGalleryImageURLs(_ snippet: String, pageURL: URL) -> [URL] {

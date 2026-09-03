@@ -7,6 +7,27 @@ struct XArticleContent: Sendable, Equatable {
   let isComplete: Bool
 }
 
+/// GraphQL `legacy` / `views` 里的互动数字。`quote_count` 故意不收入：
+/// 产品把 `shares` 只对应转发（retweet），不和引用次数混在一起。
+struct XTweetMetrics: Sendable, Equatable {
+  let favoriteCount: Int?
+  let replyCount: Int?
+  let retweetCount: Int?
+  let bookmarkCount: Int?
+  let viewCount: Int?
+}
+
+/// 同一 resolver 实例内复用 guest token；401/403 时清掉再取一次。
+private actor GuestTokenCache {
+  private var token: String?
+
+  func current() -> String? { token }
+
+  func store(_ value: String) { token = value }
+
+  func clear() { token = nil }
+}
+
 /// 一条已解析的推文。字段与浏览器扩展抓取 X 帖子时产出的结构保持一致，
 /// 这样两条来源落库后读起来是同一种东西。
 public struct ResolvedTweet: Sendable, Equatable {
@@ -32,6 +53,9 @@ public struct ResolvedTweet: Sendable, Equatable {
   public let articleTitle: String?
   public let articleMarkdown: String?
   public let isArticleComplete: Bool
+  public let repostCount: Int?
+  public let bookmarkCount: Int?
+  public let viewCount: Int?
 
   public var canonicalURL: String {
     guard let handle = authorHandle, !handle.isEmpty else {
@@ -71,6 +95,9 @@ public struct ResolvedTweet: Sendable, Equatable {
     if let publishedAt { lines.append("published: \(quoted(publishedAt))") }
     if let likeCount { lines.append("likes: \(quoted(String(likeCount)))") }
     if let replyCount { lines.append("replies: \(quoted(String(replyCount)))") }
+    if let repostCount { lines.append("shares: \(quoted(String(repostCount)))") }
+    if let bookmarkCount { lines.append("collects: \(quoted(String(bookmarkCount)))") }
+    if let viewCount { lines.append("views: \(quoted(String(viewCount)))") }
     lines.append("---")
     let header = lines.joined(separator: "\n")
     let gallery = photoURLs.map { "![](\($0))" }.joined(separator: "\n\n")
@@ -134,6 +161,7 @@ public struct ResolvedTweet: Sendable, Equatable {
 /// 来的诚实提示，不影响正文与其余捕获结果。
 public struct XTweetResolver: Sendable {
   private let resources: any SafeResourceFetching
+  private let tokenCache: GuestTokenCache
   /// 推文元数据是小 JSON；给一个宽裕但有界的上限。
   private static let maximumBodyBytes = 512 * 1024
   /// X Article 的富文本状态会明显大于普通推文，但仍保持明确上限。
@@ -141,6 +169,7 @@ public struct XTweetResolver: Sendable {
 
   public init(resources: any SafeResourceFetching) {
     self.resources = resources
+    self.tokenCache = GuestTokenCache()
   }
 
   /// 从推文地址里取出数字 id。只认 x.com / twitter.com 的 status 路径。
@@ -209,20 +238,31 @@ public struct XTweetResolver: Sendable {
 
     guard let payload = try? JSONDecoder().decode(Payload.self, from: response.body) else { return nil }
 
-    // 原生长推文和 X Article 都只在 syndication 留一个入口。用同一个匿名
-    // TweetResultByRestId 请求补齐；取不到时保留可用预览，不伪装成全文。
+    // 每条推文都走一次匿名 TweetResultByRestId：补互动数字，长推文/文章
+    // 再顺手取全文。失败时正文、图片、视频全部保留 syndication，不假装成功。
     var fullText: String?
     var article = payload.article.flatMap(Self.previewArticle)
-    if payload.note_tweet != nil || payload.article != nil,
-       let richContent = await richContent(id: id) {
+    var metrics: XTweetMetrics?
+    if let richContent = await richContent(id: id) {
       fullText = richContent.noteText
       article = richContent.article ?? article
+      metrics = richContent.metrics
+    }
+    // 封面在 article.cover_media，不在正文块里。GraphQL 全文若没带上，
+    // 仍用 syndication 这份封面补到文首，避免只剩中间插图。
+    if let current = article {
+      article = XArticleContent(
+        title: current.title,
+        markdown: Self.prependArticleCover(current.markdown, coverURL: Self.coverURL(from: payload.article)),
+        isComplete: current.isComplete
+      )
     }
     return Self.tweet(
       from: payload,
       id: id,
       overrideText: fullText,
-      articleContent: article
+      articleContent: article,
+      metrics: metrics
     )
   }
 
@@ -238,10 +278,15 @@ public struct XTweetResolver: Sendable {
   private struct GraphQLRichContent {
     let noteText: String?
     let article: XArticleContent?
+    let metrics: XTweetMetrics?
   }
 
   private func richContent(id: String) async -> GraphQLRichContent? {
-    guard let token = await activateGuestToken() else { return nil }
+    await fetchRichContent(id: id, retryOnAuthFailure: true)
+  }
+
+  private func fetchRichContent(id: String, retryOnAuthFailure: Bool) async -> GraphQLRichContent? {
+    guard let token = await cachedGuestToken() else { return nil }
     let variables = "{\"tweetId\":\"\(id)\",\"withCommunity\":false,\"includePromotedContent\":false,\"withVoice\":false}"
     let features = Self.graphQLFeatures
     let fieldToggles =
@@ -267,12 +312,29 @@ public struct XTweetResolver: Sendable {
         byteLimit: Self.maximumGraphQLBodyBytes,
         allowsRedirectTarget: { $0.host?.lowercased() == "api.x.com" }
       )
-    ), (200...299).contains(response.statusCode) else { return nil }
+    ) else { return nil }
+
+    if response.statusCode == 401 || response.statusCode == 403 {
+      await tokenCache.clear()
+      if retryOnAuthFailure {
+        return await fetchRichContent(id: id, retryOnAuthFailure: false)
+      }
+      return nil
+    }
+    guard (200...299).contains(response.statusCode) else { return nil }
 
     let noteText = Self.noteTextFromGraphQL(response.body)
     let article = Self.articleContentFromGraphQL(response.body)
-    guard noteText != nil || article != nil else { return nil }
-    return GraphQLRichContent(noteText: noteText, article: article)
+    let metrics = Self.metricsFromGraphQL(response.body)
+    guard noteText != nil || article != nil || metrics != nil else { return nil }
+    return GraphQLRichContent(noteText: noteText, article: article, metrics: metrics)
+  }
+
+  private func cachedGuestToken() async -> String? {
+    if let token = await tokenCache.current() { return token }
+    guard let token = await activateGuestToken() else { return nil }
+    await tokenCache.store(token)
+    return token
   }
 
   private func activateGuestToken() async -> String? {
@@ -301,7 +363,7 @@ public struct XTweetResolver: Sendable {
         if let results = dict["note_tweet_results"] as? [String: Any],
            let result = results["result"] as? [String: Any],
            let text = result["text"] as? String, !text.isEmpty {
-          return text
+          return expandShortURLs(text, urls: urlsFromEntitySet(result["entity_set"]))
         }
         for value in dict.values { if let found = search(value) { return found } }
       } else if let array = node as? [Any] {
@@ -350,25 +412,33 @@ public struct XTweetResolver: Sendable {
     }
 
     var embeddedMedia: [Int: (url: String, caption: String?)] = [:]
+    var linkURLByKey: [Int: String] = [:]
     for entity in contentState["entityMap"] as? [[String: Any]] ?? [] {
       guard let key = intValue(entity["key"]),
             let value = entity["value"] as? [String: Any],
-            (value["type"] as? String)?.uppercased() == "MEDIA",
-            let metadata = value["data"] as? [String: Any],
-            let items = metadata["mediaItems"] as? [[String: Any]],
-            let mediaID = items.compactMap({ stringValue($0["mediaId"]) }).first,
-            let mediaURL = mediaURLByID[mediaID]
+            let entityType = (value["type"] as? String)?.uppercased()
       else { continue }
-      let caption = (metadata["caption"] as? String)?
-        .trimmingCharacters(in: .whitespacesAndNewlines)
-      embeddedMedia[key] = (mediaURL, caption.flatMap { $0.isEmpty ? nil : $0 })
+      if entityType == "MEDIA" {
+        guard let metadata = value["data"] as? [String: Any],
+              let items = metadata["mediaItems"] as? [[String: Any]],
+              let mediaID = items.compactMap({ stringValue($0["mediaId"]) }).first,
+              let mediaURL = mediaURLByID[mediaID]
+        else { continue }
+        let caption = (metadata["caption"] as? String)?
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        embeddedMedia[key] = (mediaURL, caption.flatMap { $0.isEmpty ? nil : $0 })
+      } else if entityType == "LINK" {
+        let raw = ((value["data"] as? [String: Any])?["url"] as? String)?
+          .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard raw.lowercased().hasPrefix("https://") else { continue }
+        linkURLByKey[key] = raw
+      }
     }
 
     var rendered: [String] = []
     for block in blocks {
       let type = (block["type"] as? String)?.lowercased() ?? "unstyled"
-      let text = (block["text"] as? String ?? "")
-        .trimmingCharacters(in: .whitespacesAndNewlines)
+      let rawText = block["text"] as? String ?? ""
 
       if type == "atomic" {
         let key = (block["entityRanges"] as? [[String: Any]])?
@@ -383,6 +453,18 @@ public struct XTweetResolver: Sendable {
         continue
       }
 
+      let formatted: String
+      if type == "code-block" {
+        formatted = rawText
+      } else {
+        formatted = renderDraftInline(
+          text: rawText,
+          entityRanges: block["entityRanges"] as? [[String: Any]] ?? [],
+          inlineStyleRanges: block["inlineStyleRanges"] as? [[String: Any]] ?? [],
+          linkURLByKey: linkURLByKey
+        )
+      }
+      let text = formatted.trimmingCharacters(in: .whitespacesAndNewlines)
       guard !text.isEmpty else { continue }
       switch type {
       case "header-one":
@@ -406,8 +488,10 @@ public struct XTweetResolver: Sendable {
       }
     }
 
-    let markdown = rendered.joined(separator: "\n\n")
-      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let markdown = Self.prependArticleCover(
+      rendered.joined(separator: "\n\n").trimmingCharacters(in: .whitespacesAndNewlines),
+      coverURL: Self.coverURL(from: result["cover_media"] as? [String: Any])
+    )
     guard !markdown.isEmpty else { return nil }
     let rawTitle = (result["title"] as? String)?
       .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -424,7 +508,43 @@ public struct XTweetResolver: Sendable {
     let resolvedTitle = title.isEmpty
       ? (preview.split(separator: "\n").first.map(String.init) ?? "X 文章")
       : title
-    return XArticleContent(title: resolvedTitle, markdown: preview, isComplete: false)
+    return XArticleContent(
+      title: resolvedTitle,
+      markdown: prependArticleCover(preview, coverURL: coverURL(from: marker)),
+      isComplete: false
+    )
+  }
+
+  /// 文章封面：`cover_media.media_info.original_img_url`，与正文插图不是同一条路径。
+  static func coverURL(from media: [String: Any]?) -> String? {
+    guard let media else { return nil }
+    let info = media["media_info"] as? [String: Any]
+    let candidates = [
+      info?["original_img_url"] as? String,
+      (info?["preview_image"] as? [String: Any])?["original_img_url"] as? String,
+    ]
+    return candidates.compactMap { $0 }.first { isAllowedPhotoURL($0) }
+  }
+
+  static func coverURL(from marker: Payload.ArticleMarker?) -> String? {
+    guard let raw = marker?.cover_media?.media_info?.original_img_url else { return nil }
+    return isAllowedPhotoURL(raw) ? raw : nil
+  }
+
+  static func prependArticleCover(_ markdown: String, coverURL: String?) -> String {
+    guard let coverURL, isAllowedPhotoURL(coverURL) else { return markdown }
+    let key = photoDedupeKey(coverURL)
+    if markdown.contains(coverURL) || markdown.contains(key) { return markdown }
+    let image = "![](\(coverURL))"
+    let trimmed = markdown.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.isEmpty ? image : "\(image)\n\n\(trimmed)"
+  }
+
+  static func photoDedupeKey(_ rawURL: String) -> String {
+    guard let url = URL(string: rawURL) else { return rawURL }
+    let last = url.path.split(separator: "/").last.map(String.init) ?? rawURL
+    if let dot = last.lastIndex(of: ".") { return String(last[..<dot]) }
+    return last
   }
 
   private static func stringValue(_ value: Any?) -> String? {
@@ -438,6 +558,201 @@ public struct XTweetResolver: Sendable {
     if let value = value as? NSNumber { return value.intValue }
     if let value = value as? String { return Int(value) }
     return nil
+  }
+
+  /// 从 `data.tweetResult.result` 取互动数字。`views.count` 在线上是字符串。
+  static func metricsFromGraphQL(_ data: Data) -> XTweetMetrics? {
+    guard let root = try? JSONSerialization.jsonObject(with: data) else { return nil }
+
+    func tweetResultNode(_ node: Any) -> [String: Any]? {
+      if let dictionary = node as? [String: Any] {
+        if let wrapper = dictionary["tweetResult"] as? [String: Any],
+           let result = wrapper["result"] as? [String: Any] {
+          return result
+        }
+        for value in dictionary.values {
+          if let found = tweetResultNode(value) { return found }
+        }
+      } else if let array = node as? [Any] {
+        for value in array {
+          if let found = tweetResultNode(value) { return found }
+        }
+      }
+      return nil
+    }
+
+    guard var result = tweetResultNode(root) else { return nil }
+    if result["legacy"] == nil, let inner = result["tweet"] as? [String: Any] {
+      result = inner
+    }
+    let legacy = result["legacy"] as? [String: Any]
+    let views = result["views"] as? [String: Any]
+    guard legacy != nil || views != nil else { return nil }
+    return XTweetMetrics(
+      favoriteCount: intValue(legacy?["favorite_count"]),
+      replyCount: intValue(legacy?["reply_count"]),
+      retweetCount: intValue(legacy?["retweet_count"]),
+      bookmarkCount: intValue(legacy?["bookmark_count"]),
+      viewCount: intValue(views?["count"])
+    )
+  }
+
+  static func expandShortURLs(_ text: String, urls: [(url: String, expanded: String)]) -> String {
+    var result = text
+    for item in urls {
+      let short = item.url.trimmingCharacters(in: .whitespacesAndNewlines)
+      let expanded = item.expanded.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !short.isEmpty, isExpandableHTTPURL(expanded) else { continue }
+      result = result.replacingOccurrences(of: short, with: expanded)
+    }
+    return result
+  }
+
+  private static func isExpandableHTTPURL(_ raw: String) -> Bool {
+    guard let url = URL(string: raw),
+          let scheme = url.scheme?.lowercased(),
+          scheme == "http" || scheme == "https",
+          url.host != nil
+    else { return false }
+    return true
+  }
+
+  private static func urlsFromEntitySet(_ entitySet: Any?) -> [(url: String, expanded: String)] {
+    guard let dictionary = entitySet as? [String: Any],
+          let urls = dictionary["urls"] as? [[String: Any]]
+    else { return [] }
+    return urls.compactMap { item in
+      guard let url = item["url"] as? String,
+            let expanded = item["expanded_url"] as? String
+      else { return nil }
+      return (url, expanded)
+    }
+  }
+
+  /// Draft.js 的 offset/length 按 UTF-16 code unit 计。切段失败或范围异常时
+  /// 整块退回原文，避免把字切丢。
+  static func renderDraftInline(
+    text: String,
+    entityRanges: [[String: Any]],
+    inlineStyleRanges: [[String: Any]],
+    linkURLByKey: [Int: String]
+  ) -> String {
+    let unitCount = text.utf16.count
+    if unitCount == 0 { return text }
+
+    var links: [(start: Int, end: Int, url: String)] = []
+    var bolds: [(start: Int, end: Int)] = []
+    var italics: [(start: Int, end: Int)] = []
+    var cuts: Set<Int> = [0, unitCount]
+
+    func parseRange(_ raw: [String: Any]) -> (start: Int, end: Int)? {
+      guard let offset = intValue(raw["offset"]),
+            let length = intValue(raw["length"])
+      else { return nil }
+      if length == 0 { return nil }
+      let end = offset + length
+      guard offset >= 0, length > 0, end <= unitCount,
+            isUTF16Aligned(text, offset: offset),
+            isUTF16Aligned(text, offset: end)
+      else { return nil }
+      return (offset, end)
+    }
+
+    func isMalformedRange(_ raw: [String: Any]) -> Bool {
+      guard let offset = intValue(raw["offset"]),
+            let length = intValue(raw["length"]),
+            length != 0
+      else { return false }
+      let end = offset + length
+      return offset < 0 || length < 0 || end > unitCount
+        || !isUTF16Aligned(text, offset: offset)
+        || !isUTF16Aligned(text, offset: end)
+    }
+
+    if entityRanges.contains(where: isMalformedRange) || inlineStyleRanges.contains(where: isMalformedRange) {
+      return text
+    }
+
+    for range in entityRanges {
+      guard let span = parseRange(range),
+            let key = intValue(range["key"]),
+            let url = linkURLByKey[key]
+      else { continue }
+      links.append((span.start, span.end, url))
+      cuts.insert(span.start)
+      cuts.insert(span.end)
+    }
+
+    for range in inlineStyleRanges {
+      guard let span = parseRange(range) else { continue }
+      let style = (range["style"] as? String)?.uppercased() ?? ""
+      if style == "BOLD" {
+        bolds.append(span)
+        cuts.insert(span.start)
+        cuts.insert(span.end)
+      } else if style == "ITALIC" {
+        italics.append(span)
+        cuts.insert(span.start)
+        cuts.insert(span.end)
+      }
+    }
+
+    let sortedLinks = links.sorted { $0.start < $1.start }
+    for index in 0..<sortedLinks.count {
+      for other in (index + 1)..<sortedLinks.count {
+        let left = sortedLinks[index]
+        let right = sortedLinks[other]
+        if left.start < right.end && right.start < left.end && left.url != right.url {
+          return text
+        }
+      }
+    }
+
+    if links.isEmpty && bolds.isEmpty && italics.isEmpty { return text }
+
+    let points = cuts.sorted()
+    var output = ""
+    for index in 0..<(points.count - 1) {
+      let start = points[index]
+      let end = points[index + 1]
+      if start == end { continue }
+      guard let piece = utf16Slice(text, start: start, end: end) else { return text }
+      let url = links.first { $0.start <= start && end <= $0.end }?.url
+      let bold = bolds.contains { $0.start <= start && end <= $0.end }
+      let italic = italics.contains { $0.start <= start && end <= $0.end }
+      output += wrapDraftSegment(piece, url: url, bold: bold, italic: italic)
+    }
+    return output
+  }
+
+  private static func isUTF16Aligned(_ text: String, offset: Int) -> Bool {
+    let units = text.utf16
+    guard offset >= 0, offset <= units.count else { return false }
+    if offset == 0 || offset == units.count { return true }
+    let index = units.index(units.startIndex, offsetBy: offset)
+    return !UTF16.isTrailSurrogate(units[index])
+  }
+
+  private static func utf16Slice(_ text: String, start: Int, end: Int) -> String? {
+    let units = text.utf16
+    guard start >= 0, end <= units.count, start <= end else { return nil }
+    let from = units.index(units.startIndex, offsetBy: start)
+    let to = units.index(units.startIndex, offsetBy: end)
+    return String(units[from..<to])
+  }
+
+  private static func wrapDraftSegment(_ text: String, url: String?, bold: Bool, italic: Bool) -> String {
+    // Draft.js 的样式范围常把结尾空格也圈进去；`**词 **` 在 CommonMark 里不成立，
+    // 所以标记只包住非空白部分，空白原样留在外面。
+    let core = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !core.isEmpty else { return text }
+    let leading = String(text.prefix(while: { $0.isWhitespace || $0.isNewline }))
+    let trailing = String(text.reversed().prefix(while: { $0.isWhitespace || $0.isNewline }).reversed())
+    var result = core
+    if italic { result = "*\(result)*" }
+    if bold { result = "**\(result)**" }
+    if let url { result = "[\(result)](\(url))" }
+    return leading + result + trailing
   }
 
   private static let graphQLFeatures =
@@ -462,9 +777,16 @@ public struct XTweetResolver: Sendable {
     from payload: Payload,
     id: String,
     overrideText: String? = nil,
-    articleContent: XArticleContent? = nil
+    articleContent: XArticleContent? = nil,
+    metrics: XTweetMetrics? = nil
   ) -> ResolvedTweet? {
-    let syndicationText = (payload.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+    let syndicationText = expandShortURLs(
+      (payload.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines),
+      urls: (payload.entities?.urls ?? []).compactMap { entity in
+        guard let url = entity.url, let expanded = entity.expanded_url else { return nil }
+        return (url, expanded)
+      }
+    )
     // 长推文全文优先（syndication 的 text 只是截断预览）；取不到就用截断版。
     let text = (overrideText?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap { $0.isEmpty ? nil : $0 }
       ?? syndicationText
@@ -501,8 +823,8 @@ public struct XTweetResolver: Sendable {
       authorName: payload.user?.name,
       authorHandle: payload.user?.screen_name,
       publishedAt: payload.created_at,
-      likeCount: payload.favorite_count,
-      replyCount: payload.conversation_count,
+      likeCount: metrics?.favoriteCount ?? payload.favorite_count,
+      replyCount: metrics?.replyCount ?? payload.conversation_count,
       photoURLs: photos,
       video: video,
       quotedText: (quotedText?.isEmpty ?? true) ? nil : quotedText,
@@ -511,7 +833,10 @@ public struct XTweetResolver: Sendable {
       quotedURL: quotedURL,
       articleTitle: articleContent?.title,
       articleMarkdown: articleContent?.markdown,
-      isArticleComplete: articleContent?.isComplete ?? false
+      isArticleComplete: articleContent?.isComplete ?? false,
+      repostCount: metrics?.retweetCount,
+      bookmarkCount: metrics?.bookmarkCount,
+      viewCount: metrics?.viewCount
     )
   }
 
@@ -573,6 +898,13 @@ public struct XTweetResolver: Sendable {
       let photos: [Photo]?
       let id_str: String?
     }
+    struct URLEntity: Decodable {
+      let url: String?
+      let expanded_url: String?
+    }
+    struct Entities: Decodable {
+      let urls: [URLEntity]?
+    }
     let text: String?
     let created_at: String?
     let favorite_count: Int?
@@ -591,10 +923,18 @@ public struct XTweetResolver: Sendable {
     /// X Article 的公开预览。完整正文位于 TweetResultByRestId 的
     /// `article_results.result.content_state`。
     struct ArticleMarker: Decodable {
+      struct CoverMedia: Decodable {
+        struct MediaInfo: Decodable {
+          let original_img_url: String?
+        }
+        let media_info: MediaInfo?
+      }
       let rest_id: String?
       let title: String?
       let preview_text: String?
+      let cover_media: CoverMedia?
     }
     let article: ArticleMarker?
+    let entities: Entities?
   }
 }

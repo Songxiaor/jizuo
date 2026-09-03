@@ -88,11 +88,221 @@ final class XiaohongshuSourceAdapterTests: XCTestCase {
 
     let document = try await adapter.capture(url: shortURL)
 
-    XCTAssertEqual(plain.fetched, [shortURL])
+    XCTAssertEqual(plain.fetched, [shortURL, noteURL])
     XCTAssertEqual(resources.requestedHosts, ["www.xiaohongshu.com"])
     XCTAssertTrue(document.text.contains("夏天手腕最怕闷热"))
     XCTAssertTrue(document.text.contains("sns-webpic-qc.xhscdn.com"))
     XCTAssertEqual(document.platform, "xiaohongshu")
+    XCTAssertEqual(document.method, "xiaohongshu_session_html")
+    XCTAssertEqual(document.completeness, "best_effort")
+  }
+
+  func testInitialStateFixtureFillsFrontmatterAndFiltersImages() throws {
+    let html = XiaohongshuFixtures.notePageHTML
+    let detail = XiaohongshuPageParser.parseInitialState(
+      html: html,
+      noteID: XiaohongshuFixtures.noteID
+    )
+    XCTAssertEqual(detail?.title, "周末手冲咖啡入门")
+    XCTAssertEqual(detail?.author, "夹具作者")
+    XCTAssertEqual(detail?.publishedAt, "2026-08-27T19:01:29.000Z")
+    XCTAssertEqual(detail?.likes, "1.2万")
+    XCTAssertEqual(detail?.comments, "56")
+    XCTAssertEqual(detail?.shares, "12")
+    XCTAssertEqual(detail?.collects, "800")
+    XCTAssertEqual(
+      detail?.imageURLs.map(\.absoluteString),
+      [
+        "https://sns-webpic-qc.xhscdn.com/notes/fixture-a.jpg",
+        "https://sns-avatar-qc.xhscdn.com/notes/fixture-b.jpg",
+      ]
+    )
+    XCTAssertFalse(detail?.imageURLs.contains { $0.host?.contains("example.com") == true } == true)
+
+    let text = XiaohongshuPageParser.documentText(from: try XCTUnwrap(detail))
+    let note = MarkdownNoteFrontmatter.parse(text)
+    XCTAssertEqual(note.author, "夹具作者")
+    XCTAssertEqual(note.published, "2026-08-27T19:01:29.000Z")
+    XCTAssertEqual(note.likes, "1.2万")
+    XCTAssertEqual(note.comments, "56")
+    XCTAssertEqual(note.shares, "12")
+    XCTAssertEqual(note.collects, "800")
+    XCTAssertTrue(note.body.contains("#手冲咖啡"))
+    XCTAssertFalse(note.body.contains("[话题]#"))
+    XCTAssertTrue(note.body.contains("#周末日常"))
+    XCTAssertTrue(note.body.contains("![](https://sns-webpic-qc.xhscdn.com/notes/fixture-a.jpg)"))
+    XCTAssertTrue(note.body.contains("![](https://sns-avatar-qc.xhscdn.com/notes/fixture-b.jpg)"))
+    XCTAssertFalse(note.body.contains("example.com"))
+    XCTAssertFalse(note.body.contains(XiaohongshuFixtures.noteTitle))
+  }
+
+  func testShareLinkWithoutSessionUsesPublicHTMLPath() async throws {
+    let noteURL = XiaohongshuFixtures.shareURL
+    let plain = XiaohongshuHTMLFetcher(resultURL: noteURL, html: XiaohongshuFixtures.notePageHTML)
+    let resources = XiaohongshuUnusedResourceFetcher()
+    let adapter = XiaohongshuSourceAdapter(
+      fetcher: plain,
+      resources: resources,
+      cookieHeader: { nil }
+    )
+
+    let document = try await adapter.capture(url: noteURL)
+
+    XCTAssertEqual(plain.fetched, [noteURL])
+    XCTAssertEqual(resources.requestCount, 0)
+    XCTAssertEqual(document.method, "xiaohongshu_public_html")
+    XCTAssertEqual(document.completeness, "full_article")
+    XCTAssertEqual(document.sourceLabel, "手动链接（小红书笔记）")
+    XCTAssertEqual(document.title, XiaohongshuFixtures.noteTitle)
+    XCTAssertEqual(MarkdownNoteFrontmatter.parse(document.text).likes, "1.2万")
+  }
+
+  func testExpiredShareTokenWithoutSessionThrowsShareLinkExpired() async {
+    let noteURL = XiaohongshuFixtures.shareURL
+    let expiredURL = URL(string: "https://www.xiaohongshu.com/404?source=note&error_code=300031&error_msg=当前笔记暂时无法浏览")!
+    let plain = XiaohongshuHTMLFetcher(resultURL: expiredURL, html: XiaohongshuFixtures.expiredPageHTML)
+    let adapter = XiaohongshuSourceAdapter(
+      fetcher: plain,
+      resources: XiaohongshuUnusedResourceFetcher(),
+      cookieHeader: { nil }
+    )
+
+    do {
+      _ = try await adapter.capture(url: noteURL)
+      XCTFail("失效分享链接应当抛 shareLinkExpired")
+    } catch let error as ManualLinkError {
+      XCTAssertEqual(error, .shareLinkExpired)
+      XCTAssertEqual(
+        error.userMessage,
+        "这条分享链接已失效（小红书的 xsec_token 有时效），请在小红书 App 里重新复制分享链接。"
+      )
+    } catch {
+      XCTFail("应当抛 ManualLinkError，实际是 \(error)")
+    }
+  }
+
+  func testPublicShellFallsBackToSessionHTML() async throws {
+    let noteURL = URL(string: "https://www.xiaohongshu.com/explore/\(XiaohongshuFixtures.noteID)")!
+    let plain = XiaohongshuHTMLFetcher(resultURL: noteURL, html: XiaohongshuFixtures.shellHTML)
+    let resources = XiaohongshuSessionResourceFetcher(html: XiaohongshuFixtures.notePageHTML)
+    let adapter = XiaohongshuSourceAdapter(
+      fetcher: plain,
+      resources: resources,
+      cookieHeader: { "session=1" }
+    )
+
+    let document = try await adapter.capture(url: noteURL)
+
+    XCTAssertEqual(plain.fetched, [noteURL])
+    XCTAssertEqual(resources.requestedHosts, ["www.xiaohongshu.com"])
+    XCTAssertEqual(document.method, "xiaohongshu_session_html")
+    XCTAssertEqual(document.completeness, "full_article")
+    XCTAssertEqual(MarkdownNoteFrontmatter.parse(document.text).author, "夹具作者")
+  }
+
+  func testShellWithoutTokenOrSessionStillRequiresLogin() async {
+    let noteURL = URL(string: "https://www.xiaohongshu.com/explore/\(XiaohongshuFixtures.noteID)")!
+    let plain = XiaohongshuHTMLFetcher(resultURL: noteURL, html: XiaohongshuFixtures.shellHTML)
+    let adapter = XiaohongshuSourceAdapter(
+      fetcher: plain,
+      resources: XiaohongshuUnusedResourceFetcher(),
+      cookieHeader: { nil }
+    )
+
+    do {
+      _ = try await adapter.capture(url: noteURL)
+      XCTFail("无 token 的外壳应当抛 loginRequired")
+    } catch let error as ManualLinkError {
+      XCTAssertEqual(error, .loginRequired)
+    } catch {
+      XCTFail("应当抛 ManualLinkError，实际是 \(error)")
+    }
+  }
+
+  func testOGFallbackWritesAuthorFrontmatterNotBodyLine() async throws {
+    let noteURL = URL(string: "https://www.xiaohongshu.com/explore/\(XiaohongshuFixtures.noteID)")!
+    let ogHTML = """
+      <html><head>
+      <meta property="og:title" content="三天两夜厦门citywalk路线 - 小红书">
+      <meta property="og:description" content="第一天先去鼓浪屿，建议早上八点前上岛。">
+      <meta name="og:xhs:note_user_nickname" content="旅行的小张">
+      <meta property="og:image" content="https://sns-webpic-qc.xhscdn.com/note/fixture-cover.jpg">
+      </head></html>
+      """
+    let adapter = XiaohongshuSourceAdapter(
+      fetcher: XiaohongshuHTMLFetcher(resultURL: noteURL, html: ogHTML),
+      resources: XiaohongshuUnusedResourceFetcher(),
+      cookieHeader: { nil }
+    )
+
+    let document = try await adapter.capture(url: noteURL)
+    XCTAssertEqual(document.method, "xiaohongshu_public_html")
+    XCTAssertEqual(document.completeness, "best_effort")
+    XCTAssertEqual(document.title, "三天两夜厦门citywalk路线")
+    let note = MarkdownNoteFrontmatter.parse(document.text)
+    XCTAssertEqual(note.author, "旅行的小张")
+    XCTAssertFalse(document.text.contains("作者："))
+    XCTAssertTrue(note.body.contains("第一天先去鼓浪屿"))
+    XCTAssertTrue(note.body.contains("![](https://sns-webpic-qc.xhscdn.com/note/fixture-cover.jpg)"))
+  }
+}
+
+private enum XiaohongshuFixtures {
+  static let noteID = "aabbccddeeff001122334455"
+  static let noteTitle = "周末手冲咖啡入门"
+  static let shareURL = URL(
+    string: "https://www.xiaohongshu.com/explore/\(noteID)?xsec_token=TESTTOKEN&xsec_source=app_share"
+  )!
+
+  static let notePageHTML = """
+    <html><head><title>\(noteTitle) - 小红书</title></head><body>
+    <script>window.__INITIAL_STATE__={"note":{"firstNoteId":undefined,"currentNoteId":"\(noteID)","noteDetailMap":{"\(noteID)":{"note":{"title":"\(noteTitle)","desc":"水温控制在92度左右#手冲咖啡[话题]#","type":"normal","time":1787857289000,"ipLocation":"上海","user":{"nickname":"夹具作者","userId":"userfixture01"},"interactInfo":{"likedCount":"1.2万","collectedCount":"800","commentCount":"56","shareCount":"12"},"imageList":[{"urlDefault":"https://sns-webpic-qc.xhscdn.com/notes/fixture-a.jpg","infoList":[]},{"urlDefault":"https://ci.example.com/not-allowed.jpg","infoList":[]},{"urlDefault":"https://sns-avatar-qc.xhscdn.com/notes/fixture-b.jpg","infoList":[]}],"tagList":[{"name":"手冲咖啡","type":"topic"},{"name":"周末日常","type":"topic"}]}}}}}</script>
+    </body></html>
+    """
+
+  static let expiredPageHTML = """
+    <html><head><title>小红书 - 你访问的页面不见了</title></head><body>
+    <script>window.__INITIAL_STATE__={"note":{"noteDetailMap":{}}}</script>
+    </body></html>
+    """
+
+  static let shellHTML = """
+    <html><head>
+    <meta property="og:title" content="小红书 - 你的生活指南">
+    <meta property="og:description" content="小红书是年轻人的生活方式平台，标记我的生活。">
+    </head><body>更多有趣内容尽在小红书</body></html>
+    """
+}
+
+private final class XiaohongshuHTMLFetcher: WebPageFetcher, @unchecked Sendable {
+  let resultURL: URL
+  let html: String
+  private let lock = NSLock()
+  private var seen: [URL] = []
+
+  init(resultURL: URL, html: String) {
+    self.resultURL = resultURL
+    self.html = html
+  }
+
+  var fetched: [URL] { lock.withLock { seen } }
+
+  func fetch(url: URL) async throws -> WebPageFetchResult {
+    lock.withLock { seen.append(url) }
+    return .init(url: resultURL, html: html, contentType: "text/html")
+  }
+}
+
+private final class XiaohongshuUnusedResourceFetcher: SafeResourceFetching, @unchecked Sendable {
+  private let lock = NSLock()
+  private var count = 0
+
+  var requestCount: Int { lock.withLock { count } }
+
+  func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
+    _ = request
+    lock.withLock { count += 1 }
+    throw ManualLinkError.network
   }
 }
 
