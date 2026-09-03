@@ -820,10 +820,18 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
       let inner = ns.substring(with: match.range(at: 2))
       let plain = plainInline(from: inner)
       guard plain.unicodeScalars.count >= 40 else { continue }
-      let linkCount = (try? NSRegularExpression(pattern: "<a\\b", options: [.caseInsensitive]))
-        .map { $0.numberOfMatches(in: inner, range: NSRange(inner.startIndex..., in: inner)) } ?? 0
-      guard linkCount >= 3 else { continue }
-      let linkTextLength = plainInline(from: replacing("<a\\b[^>]*>([\\s\\S]*?)</a>", in: inner, with: "$1")).unicodeScalars.count
+      guard let linkExpression = try? NSRegularExpression(
+        pattern: "<a\\b[^>]*>([\\s\\S]*?)</a>",
+        options: [.caseInsensitive]
+      ) else { continue }
+      let linkMatches = linkExpression.matches(in: inner, range: NSRange(inner.startIndex..., in: inner))
+      guard linkMatches.count >= 3 else { continue }
+      let linkTextLength = linkMatches.reduce(into: 0) { total, linkMatch in
+        guard linkMatch.numberOfRanges > 1,
+              let range = Range(linkMatch.range(at: 1), in: inner)
+        else { return }
+        total += plainInline(from: String(inner[range])).unicodeScalars.count
+      }
       if Double(linkTextLength) >= Double(plain.unicodeScalars.count) * 0.55 {
         if let full = Range(match.range, in: result) {
           result.replaceSubrange(full, with: "\n")

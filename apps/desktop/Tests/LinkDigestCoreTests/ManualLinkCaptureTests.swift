@@ -109,6 +109,24 @@ final class ManualLinkCaptureTests: XCTestCase {
     XCTAssertThrowsError(try MinimalHTMLExtractor().extract(html: "<body>Please enable JavaScript to continue this page content.</body>")) { XCTAssertEqual($0 as? ManualLinkError, .loginRequired) }
   }
 
+  func testExtractorKeepsProseContainerWithSeveralInlineLinks() throws {
+    let html = """
+    <html><head><title>Documentation article</title></head><body>
+      <div class="document">
+        <h1>Documentation article</h1>
+        <p>This opening paragraph contains the real article body and enough explanatory prose to outweigh a few ordinary inline links.</p>
+        <p>Readers can consult the <a href="/guide">guide</a>, <a href="/api">API reference</a>, and <a href="/faq">FAQ</a> without turning this whole container into navigation.</p>
+        <p>The final paragraph must remain available when the page is captured.</p>
+      </div>
+    </body></html>
+    """
+
+    let page = try MinimalHTMLExtractor().extract(html: html)
+
+    XCTAssertTrue(page.text.contains("real article body"), page.text)
+    XCTAssertTrue(page.text.contains("final paragraph"), page.text)
+  }
+
   func testExtractorEmitsMarkdownParagraphsHeadingsListsAndKeepsChinesePunctuation() throws {
     let html = """
     <html><head><meta property="og:title" content="中文标题：方法论文章" /></head>
