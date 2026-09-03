@@ -285,13 +285,23 @@ struct SiteLoginSheet: View {
 
   private var siteName: String { session.profile.platform.displayName }
   private var idPrefix: String { session.profile.platform.rawValue }
+  private var loginPurpose: String {
+    switch session.profile.platform {
+    case .bilibili:
+      "用于在本机获取更高清晰度的临时播放地址。可随时在设置中清除。"
+    case .xiaohongshu:
+      "用于手动粘贴链接时读取登录后可见的正文。可随时在设置中清除。"
+    case .douyin:
+      "用于手动粘贴链接时尝试读取登录后正文；如果抓取失败，请改用浏览器扩展。可随时在设置中清除。"
+    }
+  }
 
   var body: some View {
     VStack(spacing: 0) {
       HStack {
         VStack(alignment: .leading, spacing: 2) {
           Text("登录 \(siteName)").themedFont(.headline)
-          Text("仅用于在本机获取更高清晰度的临时播放地址。可随时在设置中清除。")
+          Text(loginPurpose)
             .themedFont(.caption)
             .foregroundStyle(.secondary)
           if session.isLoggedIn {

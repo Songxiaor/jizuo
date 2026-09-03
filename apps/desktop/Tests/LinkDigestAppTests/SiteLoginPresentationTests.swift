@@ -33,6 +33,23 @@ final class SiteLoginPresentationTests: XCTestCase {
     return count
   }
 
+  private func loginSheetSource() throws -> String {
+    try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/SiteSessionController.swift"),
+      encoding: .utf8)
+  }
+
+  func testLoginSheetExplainsEachSitesRealPurpose() throws {
+    let text = try loginSheetSource()
+    XCTAssertTrue(text.contains("private var loginPurpose: String"))
+    XCTAssertTrue(text.contains("用于在本机获取更高清晰度的临时播放地址"))
+    XCTAssertTrue(text.contains("用于手动粘贴链接时读取登录后可见的正文"))
+    XCTAssertTrue(text.contains("如果抓取失败，请改用浏览器扩展"))
+    XCTAssertFalse(text.contains("仅用于在本机获取更高清晰度的临时播放地址"))
+  }
+
   /// B 站不能再被描述成「必须登录」。
   ///
   /// 「登录是可选的」这件事现在由分组标题独自承担——卡片里已经不写说明了，所以

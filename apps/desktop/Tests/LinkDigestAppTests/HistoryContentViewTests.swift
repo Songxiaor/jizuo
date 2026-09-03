@@ -4,6 +4,24 @@ import LinkDigestCore
 @testable import LinkDigestApp
 
 final class HistoryContentViewTests: XCTestCase {
+  func testFirstCaptureOnboardingKeepsBrowserSupportOptional() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8
+    )
+    let completion = section(
+      in: source,
+      from: "private var firstCaptureIsComplete: Bool",
+      to: "private var hasInstalledBrowserSupport: Bool"
+    )
+    XCTAssertFalse(completion.contains("hasInstalledBrowserSupport"))
+    XCTAssertTrue(source.contains("title: \"添加第一条链接\""))
+    XCTAssertTrue(source.contains("浏览器扩展可稍后安装"))
+    XCTAssertFalse(source.contains("actionTitle: \"打开浏览器扩展\""))
+  }
+
   func testCurrentCapturePreviewResolvesPlayableDirectAndHLSWithoutDownload() throws {
     let now = Date(timeIntervalSince1970: 1_784_500_000)
     let direct = mediaDescriptor(kind: .directFile, playbackURL: "https://media.example.test/video.mp4")

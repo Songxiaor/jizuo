@@ -1341,6 +1341,7 @@ def verified_browser_extension_payloads(source_root: Path) -> tuple[list[tuple[P
     """
     identity = load_json(source_root / BROWSER_EXTENSION_IDENTITY, "extension identity config")
     display = load_json(source_root / PRODUCT_DISPLAY, "product display config")
+    app_config = load_app_config(source_root)
     artifact_text = identity.get("artifactSource")
     if not isinstance(artifact_text, str):
         reject("extension identity artifactSource must be a relative path")
@@ -1382,6 +1383,7 @@ def verified_browser_extension_payloads(source_root: Path) -> tuple[list[tuple[P
         "name": display.get("displayName"),
         "description": display.get("extensionDescription"),
         "version": identity.get("version"),
+        "version_name": app_config["shortVersion"],
     }.items():
         if not isinstance(expected, str) or manifest.get(field) != expected:
             reject(f"extension identity artifact manifest {field} drifted")

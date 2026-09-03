@@ -8,9 +8,12 @@ const productDisplay = JSON.parse(
 const extensionIdentity = JSON.parse(
   readFileSync(fileURLToPath(new URL("../../config/extension-identity.json", import.meta.url)), "utf8")
 ) as { extensionID: string; formatVersion: number; manifestKey: string; version: string };
+const appRelease = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../../config/app-release.json", import.meta.url)), "utf8")
+) as { formatVersion: number; shortVersion: string };
 
-if (productDisplay.formatVersion !== 1 || extensionIdentity.formatVersion !== 1) {
-  throw new Error("LinkDigest product display or extension identity config is invalid");
+if (productDisplay.formatVersion !== 1 || extensionIdentity.formatVersion !== 1 || appRelease.formatVersion !== 1) {
+  throw new Error("LinkDigest product display, extension identity, or app release config is invalid");
 }
 
 export default defineConfig({
@@ -28,7 +31,7 @@ export default defineConfig({
     name: productDisplay.displayName,
     description: productDisplay.extensionDescription,
     version: extensionIdentity.version,
-    version_name: "0.2.0-x-timeline-clean-r13",
+    version_name: appRelease.shortVersion,
     permissions: ["activeTab", "scripting", "storage", "nativeMessaging"],
     icons: { "16": "icon/16.png", "32": "icon/32.png", "48": "icon/48.png", "96": "icon/96.png", "128": "icon/128.png" },
     action: { default_icon: { "16": "icon/16.png", "32": "icon/32.png" } }

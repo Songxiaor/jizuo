@@ -171,9 +171,14 @@ def check_thinned_app_and_final_seal(module) -> None:
             events.append("verify-package")
             return object()
 
-        def fake_sign_release(app: Path, bundle_identifier: str) -> None:
+        def fake_sign_release(
+            app: Path,
+            bundle_identifier: str,
+            signing_identity: str | None = None,
+        ) -> None:
             check(app == destination, "final app signature must target the thinned app")
             check(isinstance(bundle_identifier, str) and bundle_identifier, "final app signature requires its bundle identifier")
+            check(signing_identity is None, "default package check must keep ad-hoc signing")
             events.append("sign-release")
 
         module.run = fake_run
@@ -247,12 +252,130 @@ def check_dmg_signing_metadata_cleanup(module) -> None:
         )
 
 
+def check_distribution_signing_and_notarization(module) -> None:
+    identity = "Developer ID Application: Example (ABCDE12345)"
+    profile = "jizuo-notary"
+    check(
+        module.distribution_signing(identity, profile) == (identity, profile),
+        "paired Developer ID and Keychain profile must enable distribution signing",
+    )
+    check(
+        module.release_signing_mode(True, None, None) == (None, None),
+        "ad-hoc mode must remain an explicit local-test choice",
+    )
+    check(
+        module.release_signing_mode(False, identity, profile) == (identity, profile),
+        "distribution mode must require the complete Developer ID pair",
+    )
+    for invalid_mode in ((False, None, None), (True, identity, profile)):
+        try:
+            module.release_signing_mode(*invalid_mode)
+        except RuntimeError:
+            pass
+        else:
+            raise CheckFailure("ambiguous release signing mode was accepted")
+    for invalid in ((identity, None), (None, profile), ("Apple Development: Example", profile)):
+        try:
+            module.distribution_signing(*invalid)
+        except RuntimeError:
+            pass
+        else:
+            raise CheckFailure("incomplete or non-Developer-ID distribution credentials were accepted")
+
+    with tempfile.TemporaryDirectory(prefix="package-dmg-notary-check.") as temporary:
+        root = Path(temporary)
+        app = root / "汲作.app"
+        app.mkdir()
+        dmg = root / "汲作.dmg"
+        dmg.write_bytes(b"dmg")
+        calls: list[tuple[str, ...]] = []
+        original_run = module.run
+
+        def fake_run(*command: str, cwd: Path | None = None, env=None) -> None:
+            check(cwd is None and env is None, "signing and notarization must not inherit a custom execution context")
+            calls.append(command)
+
+        module.run = fake_run
+        try:
+            module.sign_release(app, "com.syc.linkdigest", identity)
+            module.notarize_and_staple_app(app, root / "app-notary", profile)
+            module.sign_notarize_and_staple_dmg(dmg, identity, profile)
+        finally:
+            module.run = original_run
+
+        check(
+            calls[0] == (
+                "/usr/bin/codesign", "--force", "--deep", "--options", "runtime",
+                "--timestamp", "--sign", identity, "--identifier", "com.syc.linkdigest",
+                str(app),
+            ),
+            "distribution App signing must use Developer ID, hardened runtime, and timestamp",
+        )
+        check(
+            calls[2][0:3] == ("/usr/bin/ditto", "-c", "-k")
+            and calls[3] == (
+                "/usr/bin/xcrun", "notarytool", "submit",
+                str(root / "app-notary/app-for-notarization.zip"),
+                "--keychain-profile", profile, "--wait",
+            ),
+            "App notarization must submit a sealed ZIP through the named Keychain profile",
+        )
+        check(
+            ("/usr/bin/xcrun", "stapler", "validate", str(app)) in calls
+            and ("/usr/bin/xcrun", "stapler", "validate", str(dmg)) in calls,
+            "App and DMG must both receive stapling validation",
+        )
+        check(
+            calls[-1] == (
+                "/usr/sbin/spctl", "--assess", "--type", "open", "--context",
+                "context:primary-signature", "--verbose=2", str(dmg),
+            ),
+            "the notarized DMG must finish with a Gatekeeper assessment",
+        )
+
+    check(
+        "不需要关闭 Gatekeeper" in module.install_note("汲作", True),
+        "notarized builds need ordinary installation guidance",
+    )
+    check(
+        "无法验证开发者" in module.install_note("汲作", False),
+        "ad-hoc builds must keep their Gatekeeper warning",
+    )
+
+
 def check_chinese_bundle_localization(module) -> None:
     """The shipped Chinese app must not make AppKit panels fall back to English."""
     config = module.release_unit.load_app_config(ROOT)
     plist = module.release_unit.info_plist(config)
     check(plist["CFBundleDevelopmentRegion"] == "zh-Hans", "development region must be Simplified Chinese")
     check(plist["CFBundleLocalizations"] == ["zh-Hans"], "bundle must explicitly advertise Simplified Chinese")
+
+
+def check_browser_extension_public_version(module) -> None:
+    unit = module.release_unit
+    app_config = unit.load_app_config(ROOT)
+    _, manifest = unit.verified_browser_extension_payloads(ROOT)
+    check(
+        manifest["version_name"] == app_config["shortVersion"],
+        "packaging must bind the extension public version to the App version",
+    )
+
+    drifted_config = dict(app_config)
+    drifted_config["shortVersion"] = "0.2.25"
+    original_load_app_config = unit.load_app_config
+    unit.load_app_config = lambda _root=None: drifted_config
+    try:
+        try:
+            unit.verified_browser_extension_payloads(ROOT)
+        except unit.ReleaseUnitError as error:
+            check(
+                error.code == unit.INVALID_UNSAFE and "version_name" in str(error),
+                "packaging must reject a stale extension public version",
+            )
+        else:
+            raise CheckFailure("packaging accepted a stale extension public version")
+    finally:
+        unit.load_app_config = original_load_app_config
 
 
 def check_sparkle_runtime_link_contract(module) -> None:
@@ -299,7 +422,9 @@ def main() -> int:
     check_signed_host_package(module)
     check_thinned_app_and_final_seal(module)
     check_dmg_signing_metadata_cleanup(module)
+    check_distribution_signing_and_notarization(module)
     check_chinese_bundle_localization(module)
+    check_browser_extension_public_version(module)
     check_sparkle_runtime_link_contract(module)
     print(f"package-dmg-check: PASS ({TESTS} assertions)")
     return 0
