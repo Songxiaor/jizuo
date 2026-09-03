@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://songxiaor.github.io/linkdigest/sitemap.xml
+Sitemap: https://songxiaor.github.io/jizuo/sitemap.xml
