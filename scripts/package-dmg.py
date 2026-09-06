@@ -244,7 +244,7 @@ def build_universal(work: Path) -> Path:
         [*flags[:2], "--show-bin-path", *flags[2:]],
         check=True, cwd=package, capture_output=True, text=True, env=environment,
     )
-    return Path(shown.stdout.strip())
+    return Path(shown.stdout.strip()).resolve()
 
 
 def sign_release(
