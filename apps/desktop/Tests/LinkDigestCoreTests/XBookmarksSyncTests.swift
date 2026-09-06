@@ -42,4 +42,20 @@ final class XBookmarksSyncTests: XCTestCase {
       XCTAssertEqual($0 as? CaptureValidationError, .CAPTURE_PAYLOAD_TOO_LARGE)
     }
   }
+
+  func testTweetIDFromCanonicalURLTreatsHandleAndIStatusAsTheSamePost() {
+    XCTAssertEqual(
+      XBookmarksSyncRequest.tweetID(fromCanonicalURL: "https://x.com/alice/status/1234567890123"),
+      "1234567890123"
+    )
+    XCTAssertEqual(
+      XBookmarksSyncRequest.tweetID(fromCanonicalURL: "https://x.com/i/status/1234567890123"),
+      "1234567890123"
+    )
+    XCTAssertEqual(
+      XBookmarksSyncRequest.tweetID(fromCanonicalURL: "https://www.twitter.com/bob/status/1234567890123/photo/1"),
+      "1234567890123"
+    )
+    XCTAssertNil(XBookmarksSyncRequest.tweetID(fromCanonicalURL: "https://example.test/status/1234567890123"))
+  }
 }

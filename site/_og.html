@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>OG 分享图模板（非正式页面）</title>
+<link rel="stylesheet" href="styles.css">
+<!-- assets/og.jpg 的来源。改完之后重新截图：视口 1200x630、deviceScaleFactor 1、浅色模式，
+     整页截图后转 JPEG（sips -s format jpeg -s formatOptions 88）存为 assets/og.jpg。
+     这个页面带 noindex、不在站内被链接；robots.txt 刻意不 Disallow 它——爬虫必须能抓到页面才看得到 noindex。 -->
+<style>
+  html,body{margin:0}
+  body{width:1200px;height:630px;overflow:hidden}
+  .og{position:relative;width:1200px;height:630px;display:flex;align-items:center;gap:44px;padding:0 64px;overflow:hidden}
+  .og-copy{position:relative;z-index:2;flex:0 0 512px}
+  .og-brand{display:flex;align-items:center;gap:12px;font-weight:600;font-size:24px;margin-bottom:26px}
+  .og-brand img{width:44px;height:44px;border-radius:11px}
+  .og h1{font-size:52px;white-space:nowrap;line-height:1.16;letter-spacing:-0.035em;font-weight:500;margin:0 0 20px}
+  .og-sub{color:var(--muted);font-size:21px;line-height:1.6;margin:0 0 26px;max-width:26ch}
+  .og-tags{display:flex;gap:8px;flex-wrap:wrap}
+  .og-tags span{border:1px solid var(--glass-edge);background:var(--glass);border-radius:999px;padding:5px 15px;font-size:16px;color:var(--muted)}
+  .og-shot{position:absolute;z-index:1;left:556px;top:96px;width:900px}
+  .og-shot img{display:block;width:100%;height:auto;border-radius:16px;box-shadow:0 40px 90px -34px rgba(20,20,19,.5);border:1px solid rgba(255,255,255,.65)}
+</style></head>
+<body>
+<div class="wallpaper" aria-hidden="true"></div>
+<div class="og">
+  <div class="og-copy">
+    <div class="og-brand"><img src="assets/icon.png" alt="">汲作</div>
+    <h1>收藏夹里的链接，<br>终于读得完</h1>
+    <p class="og-sub">抓下正文，用你自己的模型做成总结、译文和脑图。</p>
+    <div class="og-tags"><span>macOS</span><span>开源免费</span><span>数据留在本机</span></div>
+  </div>
+  <div class="og-shot">
+    <img src="assets/screenshot-reading@2x.png" alt="">
+  </div>
+</div>
+</body></html>

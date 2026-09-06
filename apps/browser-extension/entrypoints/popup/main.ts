@@ -128,6 +128,7 @@ if (tabId === undefined) {
     syncBookmarks.disabled = true;
     syncBookmarks.classList.remove("done");
     error.textContent = "";
+    resultNotice.hidden = true;
     syncBookmarks.textContent = "正在收集收藏…";
     try {
       const result = await browser.runtime.sendMessage({
@@ -135,8 +136,12 @@ if (tabId === undefined) {
         tabId,
       }) as BookmarksSyncResult;
       if (result.ok) {
-        syncBookmarks.textContent = "✓ " + bookmarksSyncMessage(result.outcome, result.collected, result.reachedKnown);
+        const message = bookmarksSyncMessage(result.outcome, result.collected, result.reachedKnown);
+        syncBookmarks.textContent = "✓ " + message;
         syncBookmarks.classList.add("done");
+        // 回执单独占一块，避免只写在按钮上、弹窗一裁就看不见加了几条。
+        resultNotice.textContent = "✓ " + message;
+        resultNotice.hidden = false;
       } else {
         error.textContent = bookmarksErrorCopy[result.code] ?? "同步未完成，请重试。";
         syncBookmarks.textContent = "同步收藏夹到桌面 App";

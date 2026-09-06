@@ -86,6 +86,19 @@ private final class ManualVMRepository: HistoryRepository, @unchecked Sendable {
       return existingCanonicalURLs.contains(canonicalURL.value)
     }
   }
+  func existingXTweetIDs(in tweetIDs: [String]) throws -> Set<String> {
+    try lock.withLock {
+      if let canonicalLookupFailure { throw canonicalLookupFailure }
+      let wanted = Set(tweetIDs.filter(XBookmarksSyncRequest.isValidTweetID))
+      var found = Set<String>()
+      for url in existingCanonicalURLs {
+        if let id = XBookmarksSyncRequest.tweetID(fromCanonicalURL: url), wanted.contains(id) {
+          found.insert(id)
+        }
+      }
+      return found
+    }
+  }
   var lookupCount: Int { lock.withLock { canonicalLookupCount } }
   func addCanonicalURL(_ value: String) { _ = lock.withLock { existingCanonicalURLs.insert(value) } }
   func failCanonicalLookup(with failure: RepositoryFailure) { lock.withLock { canonicalLookupFailure = failure } }
@@ -810,7 +823,8 @@ final class ManualLinkViewModelTests: XCTestCase {
 
   func testEnqueueXBookmarksSilentlySkipsWhatIsAlreadyInLibrary() throws {
     // 已在库的推文全部静默跳过——批量场景不能对每条弹重复确认框。
-    let seeded = try CanonicalURL("https://x.com/i/status/1234567890123").value
+    // 落库是 /用户名/status/id，入队查的是 id，两种 URL 必须算同一条。
+    let seeded = try CanonicalURL("https://x.com/alice/status/1234567890123").value
     let repository = ManualVMRepository(existingCanonicalURLs: [seeded])
     let model = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
     model.configure(
@@ -821,6 +835,19 @@ final class ManualLinkViewModelTests: XCTestCase {
     let outcome = model.enqueueXBookmarks(["1234567890123"])
     XCTAssertEqual(outcome, .init(queued: 0, skipped: 1))
     XCTAssertTrue(model.pendingCaptures.isEmpty)
+  }
+
+  func testEnqueueXBookmarksAlsoSkipsIStatusFormAlreadyInLibrary() throws {
+    let seeded = try CanonicalURL("https://x.com/i/status/1234567890123").value
+    let repository = ManualVMRepository(existingCanonicalURLs: [seeded])
+    let model = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 }, captureSink: { _ in }
+    )
+    let outcome = model.enqueueXBookmarks(["1234567890123"])
+    XCTAssertEqual(outcome, .init(queued: 0, skipped: 1))
   }
 
   func testInvalidNonemptyInputExplainsWhySubmitIsDisabled() {
