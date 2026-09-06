@@ -89,17 +89,90 @@
     所以它们是同一个角色，共用一套样式。原来只给 #send 写了样式，
     #sync-bookmarks 是个裸 button，于是收藏夹页面上主操作反而长得像次要按钮。
   */
-  #send, #sync-bookmarks, #recovery-action, #open-app {
+  #send, #sync-bookmarks, #sync-selected, #recovery-action, #open-app {
     appearance: none; border: 0; border-radius: var(--radius-control); padding: 10px 12px; min-height: 44px;
     font-size: 13.5px; font-weight: 650; background: #c56f49; color: #ffffff;
     cursor: pointer; transition: background 0.15s ease;
     display: flex; align-items: center; justify-content: center; gap: 6px;
     text-align: center; line-height: 1.35; text-decoration: none;
   }
-  #send:hover, #sync-bookmarks:hover, #recovery-action:hover, #open-app:hover { background: #ae5d3c; }
-  #send:active, #sync-bookmarks:active, #recovery-action:active, #open-app:active { background: #934a31; }
-  #send:disabled, #sync-bookmarks:disabled { background: #d1d1d6; color: #8e8e93; cursor: default; }
-  #send.done, #sync-bookmarks.done { background: rgba(48,209,88,0.16); color: #248a3d; }
+  #send:hover, #sync-bookmarks:hover, #sync-selected:hover, #recovery-action:hover, #open-app:hover { background: #ae5d3c; }
+  #send:active, #sync-bookmarks:active, #sync-selected:active, #recovery-action:active, #open-app:active { background: #934a31; }
+  #send:disabled, #sync-bookmarks:disabled, #sync-selected:disabled { background: #d1d1d6; color: #8e8e93; cursor: default; }
+  #send.done, #sync-bookmarks.done, #sync-selected.done { background: rgba(48,209,88,0.16); color: #248a3d; }
+
+  /*
+    收藏页必须一开始就按 Chromium 弹窗上限开满。只在读完列表后加高，
+    窗口往往不再长高，底部「同步所选」会被裁掉，点了也看不见报错。
+  */
+  html.bookmarks-popup,
+  html.bookmarks-popup body {
+    width: 380px;
+    min-height: 600px;
+    max-height: 600px;
+    overflow: hidden;
+  }
+  html.bookmarks-popup body {
+    display: flex;
+  }
+  html.bookmarks-popup main {
+    flex: 1 1 auto;
+    min-height: 0;
+    max-height: none;
+    overflow: hidden;
+    gap: 8px;
+    padding: 12px;
+  }
+  html.bookmarks-popup .diag { display: none; }
+  html.bookmarks-popup #error {
+    flex-shrink: 0;
+    order: 5;
+  }
+  html.bookmarks-popup #result { flex-shrink: 0; order: 6; }
+  html.bookmarks-popup #sync-bookmarks { flex-shrink: 0; }
+  html.bookmarks-popup #sync-selected { flex-shrink: 0; order: 7; }
+  html.bookmarks-popup #bookmarks-picker { order: 4; }
+  #bookmarks-picker {
+    display: flex; flex-direction: column; gap: 8px;
+    background: #fffdf8; border: 1px solid rgba(93,77,62,0.10); border-radius: var(--radius-card);
+    padding: 10px; min-height: 0; flex: 1 1 auto; overflow: hidden;
+  }
+  .picker-toolbar {
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+  #picker-count { flex: 1; font-size: 11.5px; color: #746b63; font-weight: 600; min-width: 90px; }
+  .picker-toolbar button {
+    appearance: none; border: 0; border-radius: 8px; padding: 5px 8px;
+    font-size: 11.5px; font-weight: 650; background: #f2eee7; color: #746b63; cursor: pointer;
+  }
+  .picker-toolbar button:hover { background: #e8e0d4; }
+  #picker-list {
+    overflow: auto; display: flex; flex-direction: column; gap: 6px;
+    max-height: none; flex: 1 1 auto; min-height: 0; padding-right: 2px;
+  }
+  #sync-selected { flex-shrink: 0; }
+  .bookmark-card {
+    display: grid; grid-template-columns: 18px 1fr; gap: 8px; align-items: start;
+    padding: 8px 9px; border-radius: 10px; background: #f7f3ec;
+    border: 1px solid transparent; cursor: pointer;
+  }
+  .bookmark-card:hover { border-color: rgba(197,111,73,.25); }
+  .bookmark-card.is-checked { background: #fff7f2; border-color: rgba(197,111,73,.35); }
+  .bookmark-card.is-synced { opacity: 0.72; }
+  .bookmark-card input { margin-top: 2px; accent-color: #c56f49; }
+  .bookmark-card .author {
+    font-size: 11.5px; font-weight: 700; color: #2e2925;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .bookmark-card .badge {
+    font-size: 10px; font-weight: 650; padding: 1px 6px; border-radius: 999px;
+    background: rgba(142,142,147,.18); color: #6e6e73;
+  }
+  .bookmark-card .snippet {
+    margin: 3px 0 0; font-size: 12px; line-height: 1.4; color: #746b63;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
 
   .action-card { padding: 5px; gap: 6px; }
   .action-options {
@@ -151,10 +224,19 @@
     .card { background: #2d2925; border-color: rgba(255,255,255,.06); box-shadow: none; }
     #platform { color: #98989d; }
     #meta .chip { background: #3a3a3c; color: #aeaeb2; }
-    #send, #sync-bookmarks, #recovery-action, #open-app { background: #d77b55; color: #fff; }
-    #send:hover, #sync-bookmarks:hover, #recovery-action:hover, #open-app:hover { background: #e48a63; }
-    #send:disabled, #sync-bookmarks:disabled { background: #3a3a3c; color: #8e8e93; }
-    #send.done, #sync-bookmarks.done { background: rgba(48,209,88,0.2); color: #30d158; }
+    #send, #sync-bookmarks, #sync-selected, #recovery-action, #open-app { background: #d77b55; color: #fff; }
+    #send:hover, #sync-bookmarks:hover, #sync-selected:hover, #recovery-action:hover, #open-app:hover { background: #e48a63; }
+    #send:disabled, #sync-bookmarks:disabled, #sync-selected:disabled { background: #3a3a3c; color: #8e8e93; }
+    #send.done, #sync-bookmarks.done, #sync-selected.done { background: rgba(48,209,88,0.2); color: #30d158; }
+    #bookmarks-picker { background: #2d2925; border-color: rgba(255,255,255,.06); }
+    .picker-toolbar button { background: #3a3a3c; color: #aeaeb2; }
+    .picker-toolbar button:hover { background: #48484a; }
+    #picker-count { color: #aaa19a; }
+    .bookmark-card { background: #39332e; }
+    .bookmark-card.is-checked { background: #453830; border-color: rgba(215,123,85,.35); }
+    .bookmark-card .author { color: #f5f0e9; }
+    .bookmark-card .snippet { color: #aaa19a; }
+    .bookmark-card .badge { background: rgba(142,142,147,.22); color: #aeaeb2; }
     #metadata-diagnostic { color: #98989d; background: #1c1c1e; }
     #build-label { color: #636366; }
     .action-options { background: #24211e; }
@@ -196,7 +278,17 @@
     但没有任何监听者——用户点下去不变灰、不报错、不发送，只能以为是自己没点中。
   -->
   <button id="send" disabled>准备中…</button>
-  <button id="sync-bookmarks" hidden>同步收藏夹到桌面 App</button>
+  <button id="sync-bookmarks" hidden>读取收藏列表</button>
+  <section id="bookmarks-picker" hidden>
+    <div class="picker-toolbar">
+      <span id="picker-count">已选 0 / 0</span>
+      <button type="button" id="picker-select-new">选未同步</button>
+      <button type="button" id="picker-select-all">全选</button>
+      <button type="button" id="picker-select-none">清空</button>
+    </div>
+    <div id="picker-list"></div>
+  </section>
+  <button id="sync-selected" hidden disabled>同步所选到汲作</button>
   <p id="result" hidden></p>
   <button id="recovery-action" hidden></button>
   <a id="open-app" href="linkdigest://open" hidden>打开汲作查看</a>

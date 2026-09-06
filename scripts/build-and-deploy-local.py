@@ -97,6 +97,11 @@ def atomic_replace(staged: Path, destination: Path) -> None:
 def sign_ad_hoc(path: Path, identifier: str, *, bundle: bool) -> None:
     # The local product is a development artifact. This is not Developer ID
     # signing and never performs notarization or public release work.
+    #
+    # 注意：不要在 ad-hoc 签名上挂 iCloud/CloudKit 受限 entitlement。
+    # 本机当前没有有效 codesign 开发证书时，挂上会导致 launchd spawn 失败
+    #（RBSRequestErrorDomain Code=5 / POSIX 163）。CloudKit 真开通需
+    # Apple Development 身份 + provisioning；见 apps/desktop/Resources/LinkDigest.entitlements。
     run(
         "/usr/bin/codesign",
         "--force",
@@ -217,6 +222,7 @@ def main() -> int:
         # assembly (the public release pipeline signs in a later sealed step).
         # Verify that exact layout first, then ad-hoc sign the local copy.
         release_unit.verify_app(staged_app, None, ROOT, app_config)
+        sign_ad_hoc(staged_app / "Contents/MacOS/LinkDigestMCP", "com.syc.linkdigest.mcp", bundle=False)
         sign_ad_hoc(staged_app, app_config["bundleIdentifier"], bundle=True)
         embedded_host_package = staged_app / "Contents/Resources/NativeHost" / host_package.name
         # The outer App signature must not mutate or invalidate the already

@@ -77,6 +77,7 @@ public enum TidyStyle: String, Sendable, CaseIterable {
   case transcript
   /// 手写笔记：字没错，但结构没成形。
   case note
+  case article
   /// 画面字幕 OCR 稿：错的是**形近字**，还常粘着画面角标的残片。
   case subtitles
 
@@ -84,6 +85,7 @@ public enum TidyStyle: String, Sendable, CaseIterable {
     switch self {
     case .transcript: TranscriptTidyPrompt.system
     case .note: TranscriptTidyPrompt.note
+    case .article: TranscriptTidyPrompt.article
     case .subtitles: TranscriptTidyPrompt.subtitles
     }
   }
@@ -163,6 +165,16 @@ public enum TranscriptTidyError: Error, Sendable, Equatable {
 /// must never become writing a new article, so the constraints live in code
 /// and in tests.
 public enum TranscriptTidyPrompt {
+  public static let article = """
+    你是长文版面整理器。只做一件事：在正文原有的段落之间插入 Markdown 小标题（`##`）。
+    小标题必须从它下面那几段的原文里提炼，6 到 14 个字，概括这一节讲什么。
+    每 3 到 8 个段落插入一个，全篇 3 到 10 个；正文本身太短就少插甚至不插。
+    严格禁止：改动正文的任何一个字、增删内容、调整段落顺序、合并或拆分段落、\
+    翻译、概括、评论，或添加任何前后缀说明。
+    输入是同一篇文章的一个连续片段，可能从段落中间开始；保持片段边界原样。
+    输出＝原文逐字不动 ＋ 插入的小标题行。
+    """
+
   public static let system = """
     你是听写还原器。把机器听写稿还原成说话人更可能说的那句话，不是润色成一篇新文章。
     可以做：根据标题、配文和前后句，纠正同音、近音、专有名词和术语听写错误；补齐标点；按语义分段。

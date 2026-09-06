@@ -226,6 +226,7 @@ SQLite 保存：
 - Artifact
 - 非敏感 ProviderProfile
 - migration history
+- creators / creator_works（Migration020：UNIQUE(platform, author_id)，作品按已存 task 关联并 CASCADE 删除）
 
 GRDB 7.11.1 exact 已通过许可证、SwiftPM Debug/Release、事务、migration、并发、备份与只读恢复门禁。migration 001 的 `Task → ContentSnapshot → Run → Artifact` 与 `capture_deliveries` 已通过独立复审并冻结，02B/02C/Loop 2 均未修改其字节；未来 schema 变化只能追加 002+。future schema 以只读模式打开并保留列表、详情与导出，UI 说明原因、数据未修改和升级恢复动作；签名与公证仍属后续门禁。
 
@@ -425,3 +426,13 @@ P0 发布验证按 r1 → r2 → r3 → r4a 顺序推进：
 - 版本化、可解释的跨端协议。
 
 需要改变不可变项时，必须先通过 Project Brain 记录 reversal，再同步 PRD、Architecture 和验收。
+
+### 本地 Agent 入口：MCP（2026-09-06）
+
+汲作以 MCP 作为唯一 Agent 接口，不要求额外 Skill。`LinkDigestMCP` 为随 App 安装的 Swift 可执行程序，位于 `Contents/MacOS`；客户端用 stdio 启动，外部消息使用 MCP JSON-RPC 换行协议（支持 2024-11-05、2025-03-26、2025-06-18、2025-11-25 初始化版本）。不需要 Node、Python、云端服务或公网端口。App 必须运行；未开启服务时，工具调用明确返回连接不可用，不将握手成功当成 App 已连接。
+
+程序通过独立的本机 Unix socket 调用 `MCPController`，与浏览器 Native Host 的捕获 socket/合同分离。socket 仅当前 macOS 用户可访问；设置默认关闭，抓取整理、转写总结分别授权。关闭即停止接收并拒绝在途尚未执行的请求；已经交给捕获/转写队列的任务继续执行。接口不开放凭据、任意文件路径、任意命令或删除操作。同用户进程是信任边界，不声称逐 Agent 身份认证；复制资料正文给云端 Agent 会将该正文交给其模型。
+
+业务操作复用 `HistoryApplicationService`、`ManualLinkViewModel` 的串行队列、`DouyinProfileImportViewModel` 以及 `HistoryViewModel` 的本地转写状态机。发现窗口可供用户完成平台登录/验证。当前一次保留一位抖音博主的发现任务，多个主页由 Agent 依次发现、选择、保存；任务ID仅当前 App 进程有效。发现顺序是平台页面顺序，不承诺严格按发布时间排序；转写目前要求视频已下载，本地模型下载仍须 App 内确认。总结仍遵守原有数据发送授权。
+
+设置页根据实际 `Bundle.main` 安装位置生成连接说明和 JSON，搬动 App 后重新复制即可。打包流程须携带并签名 `LinkDigestMCP`，不能只更新设置页而漏装连接程序。搜索只返回小范围标题/ID/来源；正文按记录分段读取，工具参数有类型、数量、长度限制，资料内容标记为不可信。

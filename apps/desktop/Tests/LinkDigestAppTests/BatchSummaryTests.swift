@@ -76,6 +76,7 @@ final class BatchSummaryTests: XCTestCase {
 
     let model = HistoryViewModel()
     model.configure(history: fixture.service, isReadOnly: false, unavailableCode: nil)
+    model.selectScope(.all)
     await waitUntil { model.rows.count == 3 }
     model.selectedTaskIDs = Set(taskIDs)
 
@@ -103,6 +104,7 @@ final class BatchSummaryTests: XCTestCase {
 
     let model = HistoryViewModel()
     model.configure(history: fixture.service, isReadOnly: false, unavailableCode: nil)
+    model.selectScope(.all)
     await waitUntil { model.rows.count == 2 }
     model.selectedTaskIDs = Set(taskIDs)
 
@@ -293,6 +295,17 @@ final class BatchSummaryTests: XCTestCase {
     )
     await waitUntil(timeout: .seconds(3)) { claimed }
     XCTAssertTrue(claimed, "批量处理过的条目被永久排除在自动管线之外了")
+  }
+
+  /// 发布整合保持「全部」入口，避免已有内容因默认筛选而看似消失。
+  func testConfigureDefaultsToAllScope() async throws {
+    let fixture = try Fixture()
+    defer { fixture.close() }
+    _ = try fixture.acceptCaptures(count: 1)
+    let model = HistoryViewModel()
+    model.configure(history: fixture.service, isReadOnly: false, unavailableCode: nil)
+    await waitUntil { !model.rows.isEmpty || model.listState == .empty || model.listState == .loaded }
+    XCTAssertEqual(model.selectedScope, .all)
   }
 
   // MARK: - Helpers

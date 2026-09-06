@@ -86,6 +86,10 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   /// 默认值——漏写一个字段不会报错，只会悄悄变成 0。侧边栏「我的笔记」长期显示
   /// 0 就是这么来的。留一个可变字段，过滤就不再需要重建。
   public var tags: [HistoryNavigationTag]
+  /// 已添加的博主总数。计数来自 creators 表，零保存博主也算一位。
+  public let creatorCount: Int
+  /// 最多 5 位；顺序即 pinned_rank。
+  public let pinnedCreators: [CreatorSummary]
   public init(
     all: Int = 0,
     recent: Int = 0,
@@ -94,7 +98,9 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     notes: Int = 0,
     works: Int = 0,
     platforms: [HistoryNavigationPlatform] = [],
-    tags: [HistoryNavigationTag] = []
+    tags: [HistoryNavigationTag] = [],
+    creatorCount: Int = 0,
+    pinnedCreators: [CreatorSummary] = []
   ) {
     self.all = all
     self.recent = recent
@@ -104,6 +110,8 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     self.works = works
     self.platforms = platforms
     self.tags = tags
+    self.creatorCount = creatorCount
+    self.pinnedCreators = pinnedCreators
   }
 }
 
@@ -249,12 +257,14 @@ public struct HistoryListFilter: Sendable, Equatable {
   public let hosts: [String]
   public let scope: HistoryListScope
   public let searchText: String
+  public let creatorID: CreatorID?
 
   public init(
     tagNames: [String] = [],
     hosts: [String] = [],
     scope: HistoryListScope = .all,
-    searchText: String = ""
+    searchText: String = "",
+    creatorID: CreatorID? = nil
   ) {
     var seen = Set<String>()
     tagNormalizedNames = tagNames.compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
@@ -264,6 +274,7 @@ public struct HistoryListFilter: Sendable, Equatable {
       .filter { !$0.isEmpty && seenHosts.insert($0).inserted }
     self.scope = scope
     self.searchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    self.creatorID = creatorID
   }
 
   public static let none = HistoryListFilter()

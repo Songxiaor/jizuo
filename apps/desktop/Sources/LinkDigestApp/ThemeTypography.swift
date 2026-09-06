@@ -99,7 +99,7 @@ struct ThemeTypography: Equatable, Hashable {
   static func family(_ name: String) -> ThemeTypography {
     ThemeTypography(
       requestedFamily: name,
-      family: NSFont(name: name, size: 13) != nil ? name : nil
+      family: ReadingFontCatalog.installedFont(named: name, size: 13) != nil ? name : nil
     )
   }
 

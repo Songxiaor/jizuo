@@ -1832,6 +1832,8 @@ struct MarkdownContentView: View {
               groupsConsecutiveImages: groupsConsecutiveImages
             ).enumerated()
           ),
+          // 不能只用 offset：换条目后同位置常仍是「第一张图」，SwiftUI 会复用
+          // 子视图。把图片路径编进 id，强制按文件身份重建。
           id: \.offset
         ) { _, segment in
           switch segment {
@@ -1842,8 +1844,10 @@ struct MarkdownContentView: View {
           case let .image(url):
             // 白色衬卡 + 后台下采样解码 + 双击进灯箱；见 ArticleImageViewing。
             InlineArticleImageView(url: url)
+              .id(url.path)
           case let .gallery(urls):
             InlineArticleGalleryView(urls: urls)
+              .id(urls.map(\.path).joined(separator: "|"))
           case let .quotedTweet(quote):
             QuotedTweetCardView(quote: quote, accentColor: accentColor, onOpenURL: { _ = openValidated($0) })
           }

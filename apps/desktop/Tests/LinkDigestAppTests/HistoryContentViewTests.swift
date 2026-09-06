@@ -399,6 +399,34 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("history-navigation-all"))
     XCTAssertTrue(source.contains("history-navigation-recent"))
     XCTAssertTrue(source.contains("history-navigation-unsummarized"))
+    XCTAssertTrue(source.contains("navigationButton(\"待总结\""), "侧栏文案应是待总结")
+    guard
+      let todayIndex = source.range(of: "history-navigation-today-note")?.lowerBound,
+      let creatorsIndex = source.range(of: "history-navigation-creators")?.lowerBound,
+      let platformsIndex = source.range(of: "Section(\"平台\")")?.lowerBound
+    else {
+      return XCTFail("侧栏必须同时有今天、博主和平台")
+    }
+    XCTAssertTrue(todayIndex < creatorsIndex && creatorsIndex < platformsIndex, "博主分区必须在今天和平台之间")
+    XCTAssertTrue(source.contains("history-navigation-creators-all"))
+    XCTAssertTrue(source.contains("history-navigation-creator-add"))
+    XCTAssertTrue(source.contains("DisclosureGroup(isExpanded: $navigationCreatorsExpanded)"))
+    XCTAssertFalse(source.contains("Label(\"添加博主\", systemImage: \"plus\")"), "加号应在博主标题右侧，不在展开内容里")
+    XCTAssertTrue(source.contains("!model.isCreatorDirectoryActive"), "全部博主目录打开时，全部不得同时选中")
+    XCTAssertTrue(source.contains("history-creator-select-"))
+    XCTAssertTrue(source.contains("history-creator-directory-filtered-empty"))
+    XCTAssertTrue(source.contains("history-creator-directory-failed"))
+    XCTAssertTrue(source.contains("manualLink.creatorAssociationRevision"))
+    XCTAssertTrue(source.contains(".sheet(item: $douyinProfileImportRequest)"))
+    XCTAssertTrue(source.contains("DouyinProfileImportRequest"))
+    XCTAssertFalse(source.contains("isDouyinProfileImportPresented"))
+    XCTAssertFalse(source.contains("shouldAutoSummarizeForReading"))
+    XCTAssertTrue(source.contains("HistoryMultiSelectionPanel("))
+    XCTAssertTrue(source.contains("batch-summarize-history"))
+    XCTAssertTrue(source.contains("batch-translate-history"))
+    XCTAssertFalse(source.contains("batch-summarize-unsummarized"))
+    XCTAssertFalse(source.contains("requestBatchSummaryForUnsummarized"))
+    XCTAssertTrue(source.contains("history-unsummarized-empty"))
     XCTAssertTrue(source.contains("history-navigation-tags-all"))
     XCTAssertTrue(source.contains("@State private var navigationTagsExpanded = false"))
     XCTAssertTrue(source.contains("Array(ordered.prefix(6))"))
@@ -517,8 +545,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("!isWeChatCapture && sourceFrontmatter.hasEngagementStats"))
     XCTAssertFalse(source.contains("read_num"))
     XCTAssertFalse(source.contains("like_num"))
-    XCTAssertTrue(source.contains("appendsUnusedLocalImages: !isWeChatCapture"))
-    XCTAssertTrue(source.contains("groupsConsecutiveImages: !isWeChatCapture"))
+    XCTAssertTrue(source.contains("appendsUnusedLocalImages: !readingFormat.keepsImagePositions"))
+    XCTAssertTrue(source.contains("groupsConsecutiveImages: !readingFormat.keepsImagePositions"))
   }
 
   func testWeChatArticleBodyPrecedesTheGeneralMediaSection() {
@@ -853,7 +881,7 @@ final class HistoryContentViewTests: XCTestCase {
       to: ".executableTarget(name: \"LinkDigestNativeHost\""
     )
 
-    XCTAssertTrue(appTarget.contains("linkerSettings: [.linkedFramework(\"AVKit\")]"))
+    XCTAssertTrue(appTarget.contains(".linkedFramework(\"AVKit\")"))
   }
 
   func testVideoSaveUsesNativePanelAndLocalOnlyCopyPath() {
@@ -877,12 +905,15 @@ final class HistoryContentViewTests: XCTestCase {
 
     let local = video.range(of: "已保存到本机")
     let transcribe = video.range(of: "transcriptionControl")
-    let save = video.range(of: "Button(\"另存一份\"")
     let player = video.range(of: "playerSurface")
-    XCTAssertNotNil(local); XCTAssertNotNil(transcribe); XCTAssertNotNil(save); XCTAssertNotNil(player)
+    let save = video.range(of: "Button(\"另存一份\"")
+    let improve = video.range(of: "改进转写")
+    XCTAssertNotNil(local); XCTAssertNotNil(transcribe); XCTAssertNotNil(player); XCTAssertNotNil(save)
+    XCTAssertNotNil(improve, "转写完成后应收成「改进转写」菜单，而不是平铺三个按钮")
     XCTAssertLessThan(local!.lowerBound, player!.lowerBound)
     XCTAssertLessThan(transcribe!.lowerBound, player!.lowerBound)
-    XCTAssertLessThan(save!.lowerBound, player!.lowerBound)
+    // 「另存一份」是文件操作，跟在播放器旁，不再和转写抢同一行。
+    XCTAssertGreaterThan(save!.lowerBound, player!.lowerBound)
     XCTAssertTrue(video.contains("media?.byteSize"))
     // 作者不再出现在播放卡片的事实行：详情属性区已有「作者」一栏，
     // 卡片里重复一遍只会挤占时长/体积的空间。
@@ -893,6 +924,18 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(video.contains("preferredTransform"))
     XCTAssertFalse(video.contains(".frame(minHeight: 220, maxHeight: 360)"))
     XCTAssertTrue(video.contains("history-video-geometry-placeholder"))
+    XCTAssertTrue(video.contains("history-video-transcription-improve"))
+  }
+
+  func testReadingLayersUseSecondLevelPickerInsteadOfStacking() {
+    let source = historyContentViewSource()
+    XCTAssertTrue(source.contains("history-translation-layer-picker"))
+    XCTAssertTrue(source.contains("history-source-layer-picker"))
+    XCTAssertTrue(source.contains("showsTranslationLayerPicker"))
+    XCTAssertTrue(source.contains("showsSourceLayerPicker"))
+    XCTAssertTrue(source.contains("activeTranslationBody"))
+    // 默认对准转写：有转写层时不要先停在配文。
+    XCTAssertTrue(source.contains("if available.contains(.transcript) { return .transcript }"))
   }
 
   func testRemotePreviewTranscriptionIsExplicitDirectOnlyAndExposesRecoveryIdentifiers() {
@@ -1060,12 +1103,14 @@ final class HistoryContentViewTests: XCTestCase {
     // 写法只用在放大按钮那一处——播放器自身的 frame 是多行的，不会误命中。
     let button = source.range(of: "history-video-cinema")
     let alignment = source.range(
-      of: ".frame(maxWidth: VideoDisplayGeometry.inlineMaximumWidth(displaySize: videoDisplaySize))"
+      of: "VideoDisplayGeometry.inlineMaximumWidth(displaySize: $0)"
     )
     XCTAssertNotNil(button)
     XCTAssertNotNil(alignment)
     // 约束挂在按钮所在的那个 HStack 上，所以出现在按钮之后。
-    XCTAssertLessThan(button!.lowerBound, alignment!.lowerBound)
+    if let button, let alignment {
+      XCTAssertLessThan(button.lowerBound, alignment.lowerBound)
+    }
   }
 
   func testInlinePlayerWidthFollowsAspectRatioSoPortraitVideoDropsItsBlackBars() {
@@ -1228,6 +1273,9 @@ final class HistoryContentViewTests: XCTestCase {
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
     XCTAssertTrue(detail.contains("openSettings: () -> Void"))
     XCTAssertTrue(detail.contains("settingsModelButton(providerSettings.activeSummaryModelName)"))
+    XCTAssertTrue(detail.contains("usesSeparateTranslationModel"))
+    XCTAssertFalse(detail.contains("ReadingProgressBadge"), "阅读百分比长期卡在 0%，已撤掉标签")
+    XCTAssertFalse(detail.contains("history-reading-progress"))
     XCTAssertTrue(detail.contains("history-open-model-settings") || detail.contains("openSettings()"))
     XCTAssertTrue(detail.contains("capture-truncated-notice"))
     XCTAssertTrue(detail.contains(".disabled(translateUnavailableReason != nil)"))
@@ -1489,12 +1537,18 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(remoteVideo.contains("remote-transcribe-partial"))
   }
 
-  func testHistoryListUsesNativeMultiSelectionAndShowsCountPlaceholder() {
+  func testHistoryListUsesNativeMultiSelectionAndShowsActionPanel() {
     let source = historyContentViewSource()
     XCTAssertTrue(source.contains("List(selection: $model.selectedTaskIDs)"))
-    XCTAssertTrue(source.contains("history-multi-selection-placeholder"))
+    XCTAssertTrue(source.contains("HistoryMultiSelectionPanel("))
+    XCTAssertTrue(source.contains("history-multi-selection-panel"))
     XCTAssertTrue(source.contains("Text(\"已选择 \\(model.selectedTaskCount) 项\")"))
+    XCTAssertTrue(source.contains("batch-summarize-history"))
+    XCTAssertTrue(source.contains("batch-translate-history"))
     XCTAssertTrue(source.contains("delete-selected-history"))
+    XCTAssertTrue(source.contains("clear-history-selection"))
+    XCTAssertFalse(source.contains("history-multi-selection-placeholder"))
+    XCTAssertFalse(source.contains("可从工具栏、右键菜单或 Delete 键批量删除"))
   }
 
   func testAppBootstrapUsesOneShotLatchBeforeConfiguringHistory() {
@@ -1587,7 +1641,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(value.contains("artifactPreview"), "读屏 value 不应复用可能很长的正文预览")
   }
 
-  func testSidebarUsesSourceMetadataInsteadOfURLOrImportTime() {
+  func testSidebarUsesProductTitleFromSummaryPreviewWhenPresent() {
     let source = historyContentViewSource()
     let row = section(in: source, from: "struct HistoryRowView: View", to: "private struct HistoryDetailView: View")
     // 图24 式排版：摘要优先，回退作者；发布时间仍来自来源元数据。
@@ -2086,6 +2140,9 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
     XCTAssertTrue(source.contains(".disabled(tidyBlockedReason != nil)"))
     // 理由要显示出来，不能只放在悬停提示里——鼠标不停上去就看不到。
     XCTAssertTrue(source.contains("history-transcript-tidy-blocked-reason"))
+    // 完成后收进菜单，未完成转写时不再平铺灰掉的「整理文稿」。
+    XCTAssertTrue(source.contains("改进转写"))
+    XCTAssertTrue(source.contains("localTidyBlockedReasonForCaption"))
 
     let remote = section(
       in: source,
@@ -2095,6 +2152,7 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
     XCTAssertTrue(remote.contains("let blockedReason = model.transcriptTidyUnavailableReason("))
     XCTAssertTrue(remote.contains(".disabled(blockedReason != nil)"))
     XCTAssertTrue(remote.contains("remote-transcript-tidy-blocked-reason"))
+    XCTAssertTrue(remote.contains("showsStandaloneRemoteTidy"))
   }
 
   func testCurrentRemoteVideoExposesManualTidyWithoutAutoTriggerOnTranscriptionComplete() throws {
@@ -2125,8 +2183,12 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
       "空闲的转写状态不能留下一个会参与外层 spacing 的空 VStack"
     )
     XCTAssertTrue(
-      remote.contains("if state != .idle || blockedReason != nil"),
+      remote.contains("if state != .idle || showBlockedCaption"),
       "空闲且可校对时不能留下一个会参与外层 spacing 的空 VStack"
+    )
+    XCTAssertTrue(
+      remote.contains("需先完成转写，才有文稿可整理") && remote.contains("showsStandaloneRemoteTidy"),
+      "没有文稿时不占独立「整理文稿」灰位"
     )
 
     let local = section(

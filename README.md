@@ -3,11 +3,11 @@
   <h1>汲作</h1>
   <p><strong>我把网页和视频收进自己电脑，做成总结、翻译和脑图。</strong></p>
   <p>
-    <a href="https://songxiaor.github.io/jizuo/">官网</a>
+    <a href="https://songxiaor.github.io/linkdigest/">官网</a>
     ·
-    <a href="https://github.com/Songxiaor/jizuo/releases/latest">下载 macOS 版</a>
+    <a href="https://github.com/Songxiaor/linkdigest/releases/latest">下载 macOS 版</a>
     ·
-    <a href="https://songxiaor.github.io/jizuo/privacy.html">隐私政策</a>
+    <a href="https://songxiaor.github.io/linkdigest/privacy.html">隐私政策</a>
   </p>
   <p>
     <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License: MIT"></a>
@@ -41,10 +41,10 @@
 
 | 场景 | 当前能力 |
 |---|---|
-| 网页采集 | 从 Chrome 当前页面保存标题、正文、选区和来源，也可在 App 中添加公开链接；外文新捕获可自动生成本地中文标题 |
+| 网页采集 | 从 Chrome 当前页面保存标题、正文、选区和来源，也可在 App 中添加公开链接 |
 | 视频转写 | 优先使用已有字幕，并为无字幕视频提供本机或在线转写路径 |
-| 内容理解 | 总结、翻译、转写稿整理、结构化分析和脑图生成；翻译按分层语言判定，点翻译会真正启动模型，不会只切空页 |
-| 阅读与复核 | 原文、总结和翻译分开查看，保留来源与原文标题副行，支持转写稿人工校对 |
+| 内容理解 | 总结、翻译、转写稿整理、结构化分析和脑图生成 |
+| 阅读与复核 | 原文、总结和翻译分开查看，保留来源，支持转写稿人工校对 |
 | 个人资料管理 | 本地历史、全文搜索、平台筛选、标签、收藏、笔记和摘录 |
 | 图片文字识别 | 使用 Apple Vision 在本机识别图片文字，图片不会交给在线模型 |
 | 导出 | Markdown、TXT、PDF、DOCX、JSON，以及脑图 SVG 和自包含 HTML |
@@ -82,7 +82,7 @@
 
 ## 现在发到哪一步
 
-我还在自己用、自己改。下载在 [GitHub Releases](https://github.com/Songxiaor/jizuo/releases/latest)。安装包文件名是 `Jizuo`，就是汲作。
+我还在自己用、自己改。下载在 [GitHub Releases](https://github.com/Songxiaor/linkdigest/releases/latest)。安装包文件名是 `Jizuo`，就是汲作。
 
 - 需要 macOS 15 及以上。
 - 苹果本机视频转写需要 macOS 26 及以上。

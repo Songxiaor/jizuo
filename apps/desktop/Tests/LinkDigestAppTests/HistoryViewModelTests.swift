@@ -278,6 +278,50 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertEqual(model.navigationCounts.favorite, 0, "取消收藏后计数要回到 0")
   }
 
+  func testSelectingCreatorClearsPlatformFilterAndLeavingClearsCreatorMode() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-creator-filter-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let creator = try repository.upsertCreator(
+      UpsertCreatorCommand(
+        identity: CreatorIdentity(platform: "douyin.com", authorID: "MS4wLjABAAAA-vm")!,
+        profileURL: "https://www.douyin.com/user/MS4wLjABAAAA-vm",
+        displayName: "侧栏博主",
+        nowMilliseconds: 1
+      )!
+    )
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.listState == .loaded || model.listState == .empty }
+
+    model.searchText = "旧内容关键词"
+    model.selectHost("douyin.com")
+    XCTAssertEqual(model.selectedHosts, ["douyin.com"])
+    model.selectCreator(creator.id)
+    XCTAssertTrue(model.selectedHosts.isEmpty)
+    XCTAssertEqual(model.searchText, "")
+    XCTAssertEqual(model.selectedCreatorID, creator.id)
+    XCTAssertFalse(model.isCreatorDirectoryActive)
+    model.searchText = "又一次搜索"
+    model.enterCreatorDirectory()
+    XCTAssertTrue(model.isCreatorDirectoryActive)
+    XCTAssertEqual(model.searchText, "")
+    XCTAssertNil(model.selectedCreatorID)
+    XCTAssertFalse(model.hasCategoryFilter)
+    await waitUntil { !model.isLoadingCreatorPage }
+    XCTAssertFalse(model.showsCreatorNeverAddedEmpty, "已有博主时不能显示还未添加")
+    model.creatorSearchText = "没有这个人"
+    await waitUntil { model.showsCreatorNoMatchEmpty }
+    XCTAssertFalse(model.showsCreatorNeverAddedEmpty)
+    XCTAssertFalse(model.showsCreatorDirectoryFailure)
+    model.selectScope(.all)
+    XCTAssertFalse(model.isCreatorDirectoryActive)
+    XCTAssertNil(model.selectedCreatorID)
+  }
+
   func testSameHashRepairMakesHistoryResolveNewUserDirectoryFile() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-media-repair-\(UUID().uuidString)", isDirectory: true)

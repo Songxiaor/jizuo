@@ -4,18 +4,24 @@ import {
   bookmarksSyncMessage,
   isValidTweetID,
   isXBookmarksURL,
+  normalizeBookmarkItems,
   parseBookmarksAccepted,
+  parseBookmarksLookup,
   tweetIDFromArticle,
   tweetIDFromHref,
 } from "../src/content/x-bookmarks";
 
 describe("X bookmarks page detection", () => {
-  it("accepts the bookmarks routes and rejects everything else", () => {
+  it("accepts bookmarks and the renamed history hub, rejects everything else", () => {
     for (const ok of [
       "https://x.com/i/bookmarks",
       "https://x.com/i/bookmarks/all",
       "https://x.com/i/bookmarks/1889000",
       "https://www.twitter.com/i/bookmarks",
+      // 2026：侧栏改名「历史」后 /i/bookmarks 会落到这里。
+      "https://x.com/i/history",
+      "https://x.com/i/history/bookmarks",
+      "https://www.twitter.com/i/history",
     ]) {
       expect(isXBookmarksURL(ok)).toBe(true);
     }
@@ -23,8 +29,11 @@ describe("X bookmarks page detection", () => {
       "https://x.com/home",
       "https://x.com/op7418/status/2080486709729587300",
       "https://x.com/i/bookmarksomething",
+      "https://x.com/i/historysomething",
       "http://x.com/i/bookmarks",
+      "http://x.com/i/history",
       "https://evil.test/i/bookmarks",
+      "https://evil.test/i/history",
       undefined,
     ]) {
       expect(isXBookmarksURL(no)).toBe(false);
@@ -42,6 +51,24 @@ describe("bookmarks native response parsing", () => {
     expect(parseBookmarksAccepted({ kind: "bookmarksAccepted", version: 1, queuedCount: -1, skippedCount: 0 })).toBeNull();
     expect(parseBookmarksAccepted({ kind: "bookmarksAccepted", version: 1, queuedCount: 1.5, skippedCount: 0 })).toBeNull();
     expect(parseBookmarksAccepted(null)).toBeNull();
+  });
+
+  it("accepts bookmarksLookup existingIDs and rejects bad payloads", () => {
+    expect(parseBookmarksLookup({
+      kind: "bookmarksLookup",
+      version: 1,
+      requestId: "r",
+      existingIDs: ["12345678", "2080312096865271866"],
+    })).toEqual(["12345678", "2080312096865271866"]);
+    expect(parseBookmarksLookup({
+      kind: "bookmarksLookup",
+      version: 1,
+      requestId: "r",
+      existingIDs: [],
+    })).toEqual([]);
+    expect(parseBookmarksLookup({ kind: "bookmarksAccepted", version: 1, queuedCount: 1, skippedCount: 0 })).toBeNull();
+    expect(parseBookmarksLookup({ kind: "bookmarksLookup", version: 2, existingIDs: [] })).toBeNull();
+    expect(parseBookmarksLookup({ kind: "bookmarksLookup", version: 1, existingIDs: ["not-id"] })).toBeNull();
   });
 });
 
@@ -113,7 +140,36 @@ describe("injected collector stays self-contained", () => {
     expect(injected).not.toHaveLength(0);
     expect(injected).toContain("article[data-testid='tweet']");
     expect(injected).toContain("/status/");
+    expect(injected).toContain("tweetText");
+    expect(injected).toContain("User-Name");
+    // 半成品 DOM 要允许二次补全文案，不能只 seen 一次就跳过。
+    expect(injected).toContain("existingIndex");
     // 不能引用模块级的 isValidTweetID：注入体内自带正则。
     expect(injected).not.toContain("isValidTweetID(");
+  });
+});
+
+describe("bookmark preview normalization", () => {
+  it("keeps only valid tweet ids and clamps preview fields", () => {
+    expect(normalizeBookmarkItems([
+      { id: "12345678", author: "A".repeat(100), text: "B".repeat(300), alreadySynced: true },
+      { id: "bad", author: "x", text: "y" },
+      null,
+    ])).toEqual([{
+      id: "12345678",
+      author: "A".repeat(80),
+      text: "B".repeat(200),
+      alreadySynced: true,
+    }]);
+  });
+});
+
+describe("bookmarks popup chrome", () => {
+  it("reserves Chromium popup height so the sync button cannot be clipped", () => {
+    const html = readFileSync(new URL("../entrypoints/popup/index.html", import.meta.url), "utf8");
+    expect(html).toContain("html.bookmarks-popup");
+    expect(html).toContain("min-height: 600px");
+    expect(html).toContain("max-height: 600px");
+    expect(html).toContain("order: 7");
   });
 });

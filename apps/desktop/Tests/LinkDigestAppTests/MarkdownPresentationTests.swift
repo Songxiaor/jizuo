@@ -245,13 +245,17 @@ final class MarkdownPresentationTests: XCTestCase {
     // 性能：CGImageSource 下采样 + NSCache；解码在后台 Task。
     XCTAssertTrue(imaging.contains("kCGImageSourceThumbnailMaxPixelSize"))
     XCTAssertTrue(imaging.contains("Task.detached(priority: .userInitiated)"))
+    // 换条目时按 url 重载：旧实现只在 image == nil 时 .task，复用视图会把上一篇
+    // 的位图留在 @State 里（Warp 详情里出现 JSON 封面）。
+    XCTAssertTrue(imaging.contains(".task(id: url)"))
+    XCTAssertTrue(imaging.contains("guard target == url else { return }"))
+    XCTAssertTrue(source.contains(".id(url.path)"))
     // 灯箱：点击图外暗区退出、Esc 退出、捏合缩放、拖拽平移、双击切换。
     XCTAssertTrue(imaging.contains(".onTapGesture { InlineImageLightboxController.shared.dismiss() }"))
     XCTAssertTrue(imaging.contains(".keyboardShortcut(.cancelAction)"))
     XCTAssertTrue(imaging.contains("MagnificationGesture()"))
     XCTAssertTrue(imaging.contains("DragGesture()"))
-    XCTAssertTrue(imaging.contains(".onTapGesture(count: 2) { toggleZoom() }"))
-    // 滚动分派：触控板两指滑动平移、鼠标滚轮缩放，两种意图都要接上。
+    XCTAssertTrue(imaging.contains(".onTapGesture(count: 2) { toggleZoom() }"))    // 滚动分派：触控板两指滑动平移、鼠标滚轮缩放，两种意图都要接上。
     // 断言写行为而不是类名——类名改一次就假失败一次，行为才是要守的东西。
     XCTAssertTrue(imaging.contains("hasPreciseScrollingDeltas"))
     XCTAssertTrue(imaging.contains("case let .pan(delta)"))

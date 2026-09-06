@@ -86,6 +86,19 @@ private final class ManualVMRepository: HistoryRepository, @unchecked Sendable {
       return existingCanonicalURLs.contains(canonicalURL.value)
     }
   }
+  func existingXTweetIDs(in tweetIDs: Set<String>) throws -> Set<String> {
+    try lock.withLock {
+      if let canonicalLookupFailure { throw canonicalLookupFailure }
+      let wanted = Set(tweetIDs.filter(XBookmarksSyncRequest.isValidTweetID))
+      var found = Set<String>()
+      for url in existingCanonicalURLs {
+        if let id = XBookmarksSyncRequest.tweetID(fromCanonicalURL: url), wanted.contains(id) {
+          found.insert(id)
+        }
+      }
+      return found
+    }
+  }
   var lookupCount: Int { lock.withLock { canonicalLookupCount } }
   func addCanonicalURL(_ value: String) { _ = lock.withLock { existingCanonicalURLs.insert(value) } }
   func failCanonicalLookup(with failure: RepositoryFailure) { lock.withLock { canonicalLookupFailure = failure } }
@@ -93,6 +106,45 @@ private final class ManualVMRepository: HistoryRepository, @unchecked Sendable {
   func detail(taskID _: TaskID) throws -> HistoryDetailProjection { throw RepositoryFailure.notFound }
   func exportProjection(taskID _: TaskID) throws -> HistoryExportProjection { throw RepositoryFailure.notFound }
   func deleteTask(taskID _: TaskID) throws { throw RepositoryFailure.notFound }
+
+  private var attachedPairs: [(CreatorID, TaskID)] = []
+  private var creatorsByIdentity: [CreatorIdentity: CreatorSummary] = [:]
+  func upsertCreator(_ command: UpsertCreatorCommand) throws -> CreatorSummary {
+    try lock.withLock {
+      if var existing = creatorsByIdentity[command.identity] {
+        existing = .init(
+          id: existing.id,
+          identity: existing.identity,
+          profileURL: command.profileURL,
+          displayName: command.displayName ?? existing.displayName,
+          avatarURL: command.avatarURL ?? existing.avatarURL,
+          pinnedRank: existing.pinnedRank,
+          savedWorkCount: existing.savedWorkCount,
+          createdAtMilliseconds: existing.createdAtMilliseconds,
+          updatedAtMilliseconds: command.nowMilliseconds
+        )
+        creatorsByIdentity[command.identity] = existing
+        return existing
+      }
+      let created = CreatorSummary(
+        id: CreatorID(),
+        identity: command.identity,
+        profileURL: command.profileURL,
+        displayName: command.displayName,
+        avatarURL: command.avatarURL,
+        pinnedRank: nil,
+        savedWorkCount: 0,
+        createdAtMilliseconds: command.nowMilliseconds,
+        updatedAtMilliseconds: command.nowMilliseconds
+      )
+      creatorsByIdentity[command.identity] = created
+      return created
+    }
+  }
+  func attachCreatorWork(creatorID: CreatorID, taskID: TaskID) throws {
+    lock.withLock { attachedPairs.append((creatorID, taskID)) }
+  }
+  var attachedCreatorWorks: [(CreatorID, TaskID)] { lock.withLock { attachedPairs } }
 }
 
 private final class ManualVMClipboard: ClipboardReading, @unchecked Sendable {
@@ -157,6 +209,54 @@ private final class ManualVMDouyinCapture: DouyinWebCapturing {
       capturedAt: "2026-07-27T00:00:00Z",
       sourceLabel: "fixture"
     )
+  }
+}
+
+private actor ManualVMMediaCallbackCounter {
+  private(set) var count = 0
+  func increment() { count += 1 }
+}
+
+@MainActor
+private final class ManualVMFlakyDouyinMediaCapture: DouyinWebCapturing {
+  private(set) var attempts = 0
+
+  func capture(url: URL) async throws -> CapturedDocument {
+    attempts += 1
+    if attempts == 1 { throw ManualLinkError.network }
+    return CapturedDocument(
+      createdAt: "2026-09-05T00:00:00Z",
+      origin: .manualLink,
+      url: url.absoluteString,
+      title: "批量主页作品",
+      platform: "douyin",
+      method: "douyin_rendered_webkit",
+      text: "# 批量主页作品",
+      completeness: "best_effort",
+      capturedAt: "2026-09-05T00:00:00Z",
+      sourceLabel: "fixture",
+      media: .init(platform: "douyin", videoURL: "https://media.example.test/video.mp4")
+    )
+  }
+}
+
+@MainActor
+private final class ManualVMBlockingDouyinCapture: DouyinWebCapturing {
+  private var started = false
+  private var waiters: [CheckedContinuation<Void, Never>] = []
+
+  func capture(url: URL) async throws -> CapturedDocument {
+    started = true
+    let pending = waiters
+    waiters.removeAll()
+    pending.forEach { $0.resume() }
+    try await Task.sleep(for: .seconds(30))
+    throw ManualLinkError.network
+  }
+
+  func waitForStart() async {
+    if started { return }
+    await withCheckedContinuation { waiters.append($0) }
   }
 }
 
@@ -787,6 +887,115 @@ final class ManualLinkViewModelTests: XCTestCase {
     XCTAssertEqual(queuedWrites.count, 0)
   }
 
+  func testProfileImportQueueSkipsInvalidExistingAndInBatchDuplicates() throws {
+    let existing = "https://www.douyin.com/video/7000000000000000001"
+    let repository = ManualVMRepository(existingCanonicalURLs: [try CanonicalURL(existing).value])
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFetcher()),
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+
+    let outcome = model.enqueueProfileImport(
+      canonicalURLs: [
+        existing,
+        "https://www.douyin.com/video/7000000000000000002?from=profile",
+        "https://www.douyin.com/video/7000000000000000002",
+        "https://www.douyin.com/user/not-a-work",
+      ],
+      downloadsVideo: false
+    )
+
+    XCTAssertEqual(outcome, .init(queued: 1, skipped: 3))
+    XCTAssertEqual(model.pendingCaptures.count, 1)
+    XCTAssertEqual(model.pendingCaptures[0].urlString, "https://www.douyin.com/video/7000000000000000002")
+    XCTAssertEqual(model.pendingCaptures[0].requestedAction, .save)
+    XCTAssertFalse(model.pendingCaptures[0].downloadsVideo)
+    XCTAssertTrue(model.pendingCaptures[0].suppressesAutomaticEnrichment)
+  }
+
+  func testProfileImportFailureCanRetryAndDefaultDoesNotDownloadVideo() async {
+    let rendered = ManualVMFlakyDouyinMediaCapture()
+    let mediaCallbacks = ManualVMMediaCallbackCounter()
+    let repository = ManualVMRepository()
+    let sink = ManualVMSink()
+    let model = ManualLinkViewModel(
+      captureService: .init(
+        fetcher: ManualVMFetcher(),
+        sourceAdapters: [ManualVMDouyinShellAdapter()]
+      ),
+      douyinCapture: rendered,
+      clipboard: ManualVMClipboard(nil),
+      onMediaCaptured: { _, _, _, _ in await mediaCallbacks.increment() }
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { await sink.receive($0) }
+    )
+    _ = model.enqueueProfileImport(
+      canonicalURLs: ["https://www.douyin.com/video/7000000000000000003"],
+      downloadsVideo: false
+    )
+
+    let clock = ContinuousClock()
+    let deadline = clock.now + .seconds(2)
+    while model.pendingCaptures.first.map({ if case .failed = $0.phase { true } else { false } }) != true,
+          clock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+    guard let failedID = model.pendingCaptures.first?.id else {
+      return XCTFail("首次失败后应保留单条队列项")
+    }
+    if case .failed = model.pendingCaptures[0].phase {} else { XCTFail("首次抓取应显示失败") }
+
+    model.retryPendingCapture(failedID)
+    let captures = await sink.waitForValues(count: 1)
+    XCTAssertEqual(rendered.attempts, 2)
+    XCTAssertEqual(captures.first?.requestedAction, .save)
+    XCTAssertEqual(captures.first?.allowsAutomaticEnrichment, false)
+    let mediaCallbackCount = await mediaCallbacks.count
+    XCTAssertEqual(mediaCallbackCount, 0)
+  }
+
+  func testRemovingActiveProfileImportCancelsRenderedCaptureWithoutSaving() async {
+    let rendered = ManualVMBlockingDouyinCapture()
+    let repository = ManualVMRepository()
+    let model = ManualLinkViewModel(
+      captureService: .init(
+        fetcher: ManualVMFetcher(),
+        sourceAdapters: [ManualVMDouyinShellAdapter()]
+      ),
+      douyinCapture: rendered,
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    _ = model.enqueueProfileImport(
+      canonicalURLs: ["https://www.douyin.com/video/7000000000000000004"],
+      downloadsVideo: false
+    )
+    await rendered.waitForStart()
+    guard let activeID = model.pendingCaptures.first?.id else {
+      return XCTFail("应有正在读取的队列项")
+    }
+
+    model.removePendingCapture(activeID)
+    try? await Task.sleep(for: .milliseconds(40))
+    XCTAssertTrue(model.pendingCaptures.isEmpty)
+    XCTAssertTrue(repository.acceptedDocuments.isEmpty)
+  }
+
   func testEnqueueXBookmarksSkipsInvalidAndInBatchDuplicatesAndQueuesTheRest() {
     let repository = ManualVMRepository()
     let model = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
@@ -810,7 +1019,8 @@ final class ManualLinkViewModelTests: XCTestCase {
 
   func testEnqueueXBookmarksSilentlySkipsWhatIsAlreadyInLibrary() throws {
     // 已在库的推文全部静默跳过——批量场景不能对每条弹重复确认框。
-    let seeded = try CanonicalURL("https://x.com/i/status/1234567890123").value
+    // 落库是 /用户名/status/id，入队查的是 id，两种 URL 必须算同一条。
+    let seeded = try CanonicalURL("https://x.com/alice/status/1234567890123").value
     let repository = ManualVMRepository(existingCanonicalURLs: [seeded])
     let model = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
     model.configure(
@@ -821,6 +1031,19 @@ final class ManualLinkViewModelTests: XCTestCase {
     let outcome = model.enqueueXBookmarks(["1234567890123"])
     XCTAssertEqual(outcome, .init(queued: 0, skipped: 1))
     XCTAssertTrue(model.pendingCaptures.isEmpty)
+  }
+
+  func testEnqueueXBookmarksAlsoSkipsIStatusFormAlreadyInLibrary() throws {
+    let seeded = try CanonicalURL("https://x.com/i/status/1234567890123").value
+    let repository = ManualVMRepository(existingCanonicalURLs: [seeded])
+    let model = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 }, captureSink: { _ in }
+    )
+    let outcome = model.enqueueXBookmarks(["1234567890123"])
+    XCTAssertEqual(outcome, .init(queued: 0, skipped: 1))
   }
 
   func testInvalidNonemptyInputExplainsWhySubmitIsDisabled() {
@@ -866,6 +1089,52 @@ final class ManualLinkViewModelTests: XCTestCase {
     let model = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: clipboard)
     model.configure(history: HistoryApplicationService(repository: repository), storageWriteGate: StorageWriteGate(initialAvailability: .writable), nowMilliseconds: { 1 }, captureSink: { await sink.receive($0) })
     return model
+  }
+
+  func testProfileImportBindsCreatorAfterIngestNotAtEnqueue() async throws {
+    let rendered = ManualVMDouyinCapture()
+    let repository = ManualVMRepository()
+    let sink = ManualVMSink()
+    let model = ManualLinkViewModel(
+      captureService: .init(
+        fetcher: ManualVMFetcher(),
+        sourceAdapters: [ManualVMDouyinShellAdapter()]
+      ),
+      douyinCapture: rendered,
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { await sink.receive($0) }
+    )
+    let creatorID = try XCTUnwrap(
+      model.ensureDouyinCreator(
+        authorID: "MS4wLjABAAAA-bind",
+        profileURL: "https://www.douyin.com/user/MS4wLjABAAAA-bind",
+        displayName: nil
+      )
+    )
+    XCTAssertTrue(repository.attachedCreatorWorks.isEmpty, "入队时任务还不存在，不能先绑")
+    _ = model.enqueueProfileImport(
+      canonicalURLs: ["https://www.douyin.com/video/7661288207509769506"],
+      downloadsVideo: false,
+      creatorID: creatorID
+    )
+    XCTAssertEqual(model.pendingCaptures.first?.creatorID, creatorID)
+    XCTAssertTrue(repository.attachedCreatorWorks.isEmpty, "抓取完成前不应查询并丢掉关联")
+    let captures = await sink.waitForValues(count: 1)
+    XCTAssertEqual(captures.count, 1)
+    let clock = ContinuousClock()
+    let deadline = clock.now + .seconds(2)
+    while repository.attachedCreatorWorks.isEmpty, clock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+    XCTAssertEqual(repository.attachedCreatorWorks.map(\.0), [creatorID])
+    XCTAssertEqual(repository.attachedCreatorWorks.map(\.1), [captures[0].taskID])
+    XCTAssertNil(model.captureNotice)
+    XCTAssertGreaterThan(model.creatorAssociationRevision, 0, "关联写入后必须发出刷新信号，不能只靠 ingest 早到的通知")
   }
 
   private func capturedDocument(platform: String, text: String, hasMedia: Bool) -> CapturedDocument {

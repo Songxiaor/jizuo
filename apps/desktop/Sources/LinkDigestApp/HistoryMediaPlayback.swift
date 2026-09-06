@@ -1016,7 +1016,7 @@ private struct OnlineTranscriptionPreviewText: View {
   var body: some View {
     ScrollView {
       Text(live.text)
-        .themedFont(.callout)
+        .font(.callout)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1064,9 +1064,9 @@ struct CurrentCaptureMediaPreviewCard: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 8) {
         Label("视频速览", systemImage: "play.rectangle.fill")
-          .themedFont(.headline)
+          .font(.headline)
         Text(CurrentCaptureMediaPreview.kindLabel(descriptor.kind))
-          .themedFont(.caption, weight: .medium)
+          .font(.caption.weight(.medium))
           .foregroundStyle(.secondary)
           .padding(.horizontal, 7)
           .padding(.vertical, 3)
@@ -1076,7 +1076,7 @@ struct CurrentCaptureMediaPreviewCard: View {
         // 选的哪条路：整段 mp4（快、上限 720P/1080P）还是 DASH 双轨（能到 4K，慢）。
         // 没有这个标签，「选了高清没变化」分不清是没换路还是换了路仍拿不到高档。
         Text(descriptor.companionAudioURL == nil ? "整段" : "双轨")
-          .themedFont(.caption, weight: .medium)
+          .font(.caption.weight(.medium))
           .foregroundStyle(.secondary)
           .padding(.horizontal, 7)
           .padding(.vertical, 3)
@@ -1084,7 +1084,7 @@ struct CurrentCaptureMediaPreviewCard: View {
           .accessibilityIdentifier("history-video-preview-track-mode")
         if let videoPixelHeight {
           Text("\(videoPixelHeight)P")
-            .themedFont(.caption, weight: .medium)
+            .font(.caption.weight(.medium))
             .foregroundStyle(.secondary)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
@@ -1170,7 +1170,10 @@ struct CurrentCaptureMediaPreviewCard: View {
           .foregroundStyle(.secondary)
           .accessibilityIdentifier("remote-transcribe")
       }
-      remoteTranscriptTidyControl
+      // 未转写时不占「整理文稿」灰位；完成后整理入口收进「改进转写」菜单。
+      if showsStandaloneRemoteTidy {
+        remoteTranscriptTidyControl
+      }
       qualityMenu
       if let player = playback.player, !isInCinema {
         Button {
@@ -1207,7 +1210,7 @@ struct CurrentCaptureMediaPreviewCard: View {
         // 排查只能靠猜——之前就是这么反复改了七轮还没定位到根因。
         if let diagnostic = playback.playbackDiagnostic {
           Text(diagnostic)
-            .themedFont(.caption2)
+            .font(.caption2)
             .foregroundStyle(.secondary)
             .textSelection(.enabled)
             .fixedSize(horizontal: false, vertical: true)
@@ -1327,8 +1330,27 @@ struct CurrentCaptureMediaPreviewCard: View {
     return "在线转写"
   }
 
+  private var remoteTidyMenuTitle: String {
+    if let reason = model.transcriptTidyUnavailableReason(taskID: taskID) {
+      return "整理文稿（\(reason)）"
+    }
+    return "整理文稿"
+  }
+
+  /// 独立「整理文稿」按钮只在「已有文稿、且不在改进菜单里」时出现。
+  /// 没有文稿时灰按钮只会占位；完成后入口已并进「改进转写」。
+  private var showsStandaloneRemoteTidy: Bool {
+    let state = model.transcriptionState(for: taskID)
+    if state == .completed { return false }
+    if model.transcriptTidyUnavailableReason(taskID: taskID) == "需先完成转写，才有文稿可整理" {
+      return false
+    }
+    return true
+  }
+
   @ViewBuilder private var remoteTranscriptionControl: some View {
     let state = model.transcriptionState(for: taskID)
+    let tidyBlockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
     switch state {
     case .preparingMedia, .checkingModel, .preparingModel, .extractingAudio, .transcribing:
       Button("取消转写", role: .cancel, action: model.cancelTranscription)
@@ -1344,7 +1366,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       }
       .controlSize(.small)
       .accessibilityIdentifier("remote-transcribe-retry")
-    case .idle, .completed:
+    case .idle:
       Menu {
         Button("本机转写") { model.requestRemoteTranscription(descriptor, taskID: taskID) }
           .disabled(!model.canTranscribeCurrentCapture(descriptor, taskID: taskID))
@@ -1353,7 +1375,24 @@ struct CurrentCaptureMediaPreviewCard: View {
         }
         .disabled(!model.canTranscribeCurrentCaptureOnline(descriptor, taskID: taskID, model: onlineTranscriptionModel))
       } label: {
-        Label(state == .completed ? "重新转写" : "转写", systemImage: "waveform")
+        Label("转写", systemImage: "waveform")
+      }
+      .controlSize(.small)
+      .accessibilityIdentifier("remote-transcribe")
+    case .completed:
+      Menu {
+        Button("重新本机转写") { model.requestRemoteTranscription(descriptor, taskID: taskID) }
+          .disabled(!model.canTranscribeCurrentCapture(descriptor, taskID: taskID))
+        Button(onlineTranscribeTitle) {
+          model.requestOnlineTranscription(descriptor, taskID: taskID, model: onlineTranscriptionModel)
+        }
+        .disabled(!model.canTranscribeCurrentCaptureOnline(descriptor, taskID: taskID, model: onlineTranscriptionModel))
+        Button(remoteTidyMenuTitle) {
+          model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
+        }
+        .disabled(tidyBlockedReason != nil)
+      } label: {
+        Label("改进转写", systemImage: "waveform")
       }
       .controlSize(.small)
       .accessibilityIdentifier("remote-transcribe")
@@ -1367,14 +1406,14 @@ struct CurrentCaptureMediaPreviewCard: View {
 
   @ViewBuilder private var remoteTranscriptTidyControl: some View {
     let blockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
-    Button("模型校对") {
+    Button("整理文稿") {
       model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
     }
     .controlSize(.small)
     .disabled(blockedReason != nil)
     .help(
       blockedReason
-        ?? "把转写文字连同标题、配文发给聊天模型，还原听写错误并补标点分段；看不懂的句子原样保留。不发送视频或音频，原始转写稿保留。"
+        ?? "把转写文字发送给聊天模型，一次做完校对和版面：修标点错别字、按语义重新分段、加上小标题。不发送视频或音频，原始转写保留在历史中。"
     )
     .accessibilityIdentifier("remote-transcript-tidy")
   }
@@ -1394,11 +1433,11 @@ struct CurrentCaptureMediaPreviewCard: View {
         case .preparingMedia:
           HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备临时媒体…") }
         case .checkingModel:
-          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在检查离线听写模型…") }
+          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在检查中文离线模型…") }
         case .awaitingModelDownload:
-          Text("等待确认 Apple 离线听写模型下载")
+          Text("等待确认 Apple 中文离线模型下载")
         case .preparingModel:
-          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备离线听写模型…") }
+          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在准备中文离线模型…") }
         case .extractingAudio:
           HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在提取音频…") }
         case .transcribing:
@@ -1447,12 +1486,16 @@ struct CurrentCaptureMediaPreviewCard: View {
   @ViewBuilder private var remoteTranscriptTidyStatus: some View {
     let state = model.transcriptTidyState(for: taskID)
     let blockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
-    if state != .idle || blockedReason != nil {
+    // 「需先完成转写」不再单独占位——入口会在转写完成后出现在「改进转写」里。
+    let visibleBlockedReason = blockedReason == "需先完成转写，才有文稿可整理" ? nil : blockedReason
+    let showBlockedCaption = visibleBlockedReason != nil
+      && (showsStandaloneRemoteTidy || model.transcriptionState(for: taskID) == .completed)
+    if state != .idle || showBlockedCaption {
       VStack(alignment: .leading, spacing: 6) {
         switch state {
         case .idle:
-          if let blockedReason {
-            Text(blockedReason)
+          if showBlockedCaption, let visibleBlockedReason {
+            Text(visibleBlockedReason)
               .foregroundStyle(.secondary)
               .accessibilityIdentifier("remote-transcript-tidy-blocked-reason")
           }
@@ -1485,7 +1528,7 @@ struct CurrentCaptureMediaPreviewCard: View {
         .accessibilityIdentifier("history-video-preview-favorite-status")
     case .saved:
       Label("已保存到本地", systemImage: "checkmark.circle.fill")
-        .themedFont(.caption, weight: .medium)
+        .font(.caption.weight(.medium))
         .foregroundStyle(appTheme.success)
         .accessibilityIdentifier("history-video-preview-favorite-status")
     case let .failed(message):
@@ -1500,7 +1543,7 @@ struct CurrentCaptureMediaPreviewCard: View {
   private func degradationContent(message: String, nextAction: String, identifier: String) -> some View {
     VStack(alignment: .leading, spacing: 10) {
       Label(message, systemImage: descriptor.kind == .embed ? "rectangle.on.rectangle.slash" : "exclamationmark.triangle.fill")
-        .themedFont(.callout, weight: .medium)
+        .font(.callout.weight(.medium))
       Text(nextAction).themedFont(.caption).foregroundStyle(.secondary)
       Button("返回浏览器", action: openInBrowser)
         .buttonStyle(.bordered)
@@ -1515,7 +1558,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       HStack {
         Spacer()
         Label("正在切换清晰度…", systemImage: "slider.horizontal.3")
-          .themedFont(.caption, weight: .medium)
+          .font(.caption.weight(.medium))
           .padding(.horizontal, 10)
           .padding(.vertical, 6)
           .background(.black.opacity(0.62), in: Capsule())
@@ -1678,9 +1721,9 @@ struct HistorySessionMediaUnavailableCard: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
       Label(HistorySessionMediaPresentation.title, systemImage: "play.rectangle")
-        .themedFont(.headline)
+        .font(.headline)
       Text(HistorySessionMediaPresentation.explanation)
-        .themedFont(.callout)
+        .font(.callout)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
@@ -2178,12 +2221,12 @@ struct HistoryVideoPlayerCard: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      // All facts and actions precede playback so the player never pushes its
-      // ownership/status controls below a tall portrait video.
+      // 事实与转写入口仍在播放器上方：竖屏视频很高，工具沉到下方等于功能消失。
+      // 「另存一份」是文件操作，不跟转写抢同一行——挪到播放器旁的次要操作区。
       HStack(spacing: 12) {
         if let durationSeconds = media?.durationSeconds, durationSeconds > 0 {
           Label(Self.formatDuration(durationSeconds), systemImage: "clock")
-            .themedFont(.caption, monospacedDigit: true)
+            .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
         }
         if let byteSize = media?.byteSize, byteSize > 0 {
@@ -2195,7 +2238,7 @@ struct HistoryVideoPlayerCard: View {
         Spacer(minLength: 0)
         if let saveFeedback {
           Label(saveFeedback, systemImage: "checkmark.circle.fill")
-            .themedFont(.caption, weight: .medium)
+            .font(.caption.weight(.medium))
             .foregroundStyle(appTheme.success)
             .accessibilityIdentifier("history-video-save-feedback")
         }
@@ -2203,12 +2246,6 @@ struct HistoryVideoPlayerCard: View {
 
       HStack(spacing: 10) {
         transcriptionControl
-        Button("另存一份", systemImage: "square.and.arrow.down", action: saveToLocalFile)
-          .themedFont(.body)
-          .buttonStyle(.borderless)
-          .controlSize(.small)
-          .disabled(!LocalMediaExport.isSupportedLocalFile(fileURL))
-          .accessibilityIdentifier("history-video-save-local")
         if model.isReadOnly {
           Text("只读模式不能保存转写结果；恢复可写存储后可重试。")
             .themedFont(.caption)
@@ -2221,27 +2258,46 @@ struct HistoryVideoPlayerCard: View {
         Spacer(minLength: 0)
       }
 
+      // 灰按钮必须自己说明为什么不能点；收进菜单后，菜单外仍留一行可见理由。
+      if let tidyBlockedReason = localTidyBlockedReasonForCaption {
+        Text(tidyBlockedReason)
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("history-transcript-tidy-blocked-reason")
+      }
+
       playerSurface
 
-      // 「放大」是所有视频卡的固定能力，与 YouTube 卡同位：视频正下方右对齐。
-      if let videoDisplaySize, player != nil, !isInCinema {
-        HStack {
-          Spacer()
-          Button {
-            guard let player else { return }
-            cinema.present(
-              player: player,
-              aspectRatio: VideoDisplayGeometry.aspectRatio(displaySize: videoDisplaySize)
-            )
-          } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
+      // 播放器旁的次要操作：另存一份（文件）+ 放大（观看）。
+      if !isInCinema {
+        HStack(spacing: 12) {
+          Button("另存一份", systemImage: "square.and.arrow.down", action: saveToLocalFile)
             .buttonStyle(.link)
             .themedFont(.caption)
-            .help("双击视频也可放大")
-            .accessibilityIdentifier("history-video-cinema")
+            .disabled(!LocalMediaExport.isSupportedLocalFile(fileURL))
+            .accessibilityIdentifier("history-video-save-local")
+          Spacer(minLength: 0)
+          if let videoDisplaySize, player != nil {
+            Button {
+              guard let player else { return }
+              cinema.present(
+                player: player,
+                aspectRatio: VideoDisplayGeometry.aspectRatio(displaySize: videoDisplaySize)
+              )
+            } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
+              .buttonStyle(.link)
+              .themedFont(.caption)
+              .help("双击视频也可放大")
+              .accessibilityIdentifier("history-video-cinema")
+          }
         }
         // 右对齐要对到视频右边缘，不是阅读区右边缘：竖屏视频收窄后，按整行
         // 右对齐会把按钮甩到离视频很远的地方。
-        .frame(maxWidth: VideoDisplayGeometry.inlineMaximumWidth(displaySize: videoDisplaySize))
+        .frame(
+          maxWidth: videoDisplaySize.map {
+            VideoDisplayGeometry.inlineMaximumWidth(displaySize: $0)
+          }
+        )
         .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
@@ -2252,6 +2308,13 @@ struct HistoryVideoPlayerCard: View {
       isPlaybackEnded = false
       loadVideoGeometry(fileURL)
     }
+    .onChange(of: fileURL) { _, newURL in
+      if isInCinema { cinema.dismiss() }
+      player?.pause()
+      player = AVPlayer(url: newURL)
+      isPlaybackEnded = false
+      loadVideoGeometry(newURL)
+    }
     // 阅读区点了时间码：把播放位置跳过去。
     //
     // 请求走 ViewModel 中转——播放器是这张卡的 `@State`，阅读区够不到它。
@@ -2261,13 +2324,6 @@ struct HistoryVideoPlayerCard: View {
       guard let request, let player else { return }
       let time = CMTime(seconds: request.seconds, preferredTimescale: 600)
       Task { await MediaPlaybackRestart.seek(player, to: time) }
-    }
-    .onChange(of: fileURL) { _, newURL in
-      if isInCinema { cinema.dismiss() }
-      player?.pause()
-      player = AVPlayer(url: newURL)
-      isPlaybackEnded = false
-      loadVideoGeometry(newURL)
     }
     .onDisappear {
       if isInCinema { cinema.dismiss() }
@@ -2394,7 +2450,7 @@ struct HistoryVideoPlayerCard: View {
             : "读不出画面，仅按声音播放",
           systemImage: "waveform"
         )
-        .themedFont(.callout)
+        .font(.callout)
         .foregroundStyle(.secondary)
         VideoPlayer(player: player)
           .frame(height: 64)
@@ -2415,134 +2471,126 @@ struct HistoryVideoPlayerCard: View {
     }
   }
 
+  /// 菜单里禁用的「在线转写」必须自己说明为什么灰。
+  private var localOnlineTranscribeTitle: String {
+    let trimmed = onlineTranscriptionModel?.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed?.isEmpty != false {
+      return "在线转写（未配置模型，见 设置 → 模型与识别）"
+    }
+    return "在线转写"
+  }
+
+  /// 已有文稿、整理仍不可用时，在菜单外留一行可见理由（不只靠悬停）。
+  private var localTidyBlockedReasonForCaption: String? {
+    let state = model.transcriptionState(for: taskID)
+    guard state == .completed || media?.transcriptionStatus == .completed else { return nil }
+    let reason = model.transcriptTidyUnavailableReason(taskID: taskID)
+    // 「需先完成转写」在已完成态不会出现；其它原因（只读、没配模型、进行中）要露出来。
+    guard let reason, reason != "需先完成转写，才有文稿可整理" else { return nil }
+    return reason
+  }
+
+  private var localTidyMenuTitle: String {
+    if let reason = model.transcriptTidyUnavailableReason(taskID: taskID),
+       reason != "需先完成转写，才有文稿可整理" {
+      return "整理文稿（\(reason)）"
+    }
+    return "整理文稿"
+  }
+
   @ViewBuilder private var transcriptionControl: some View {
     let state = model.transcriptionState(for: taskID)
-    let hasSavedTranscript = media?.transcriptionStatus == .completed
+    let canOnline = model.canTranscribeLocalMediaOnline(
+      taskID: taskID,
+      model: onlineTranscriptionModel
+    )
+    let tidyBlockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
+    // 会话态回到 idle 后，仍以落库的 transcriptionStatus 判断「已经转写过」。
+    let hasCompletedTranscript = state == .completed
+      || media?.transcriptionStatus == .completed
     switch state {
     case .preparingMedia, .checkingModel, .preparingModel, .extractingAudio, .transcribing:
       Button("取消", role: .cancel, action: model.cancelTranscription)
         .controlSize(.small)
         .accessibilityIdentifier("history-video-transcription-cancel")
     case .failed, .cancelled:
-      Button("重试", action: model.retryTranscription)
-        .controlSize(.small)
-        .disabled(!model.canTranscribeVideo)
-        .accessibilityIdentifier("history-video-transcription-retry")
-    case .completed:
-      Button("重新转写", action: model.requestTranscription)
-        .controlSize(.small)
-        .disabled(!model.canTranscribeVideo)
-        .accessibilityIdentifier("history-video-transcription-start")
-    case .idle, .awaitingModelDownload:
-      Button(hasSavedTranscript ? "重新转写" : "转写", action: model.requestTranscription)
-        .controlSize(.small)
-        .disabled(!model.canTranscribeVideo || state == .awaitingModelDownload)
-        .accessibilityIdentifier("history-video-transcription-start")
-    }
-    // 本机模型准确率与标点有限；已存视频随时可改走在线转写换取
-    // Whisper 级质量。音频分片在本机提取后上传，发送前必经同意弹窗。
-    if !state.isActive {
-      Button("在线转写") {
-        model.requestOnlineTranscriptionFromLocalMedia(taskID: taskID, model: onlineTranscriptionModel)
+      Menu("重试转写") {
+        Button("本机转写", action: model.retryTranscription)
+          .disabled(!model.canTranscribeVideo)
+        Button(localOnlineTranscribeTitle) {
+          model.requestOnlineTranscriptionFromLocalMedia(
+            taskID: taskID,
+            model: onlineTranscriptionModel
+          )
+        }
+        .disabled(!canOnline)
       }
       .controlSize(.small)
-      .disabled(!model.canTranscribeLocalMediaOnline(taskID: taskID, model: onlineTranscriptionModel))
-      .help("把本机提取的音频分片发送到你配置的在线转写服务，获得更准的文字和标点。需在设置中配置在线转写模型。")
-      .accessibilityIdentifier("history-video-transcription-online")
-      // 转写后校对：听写还原，附带标题和配文，不发送媒体。
-      let tidyBlockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
-      Button("模型校对") {
+      .accessibilityIdentifier("history-video-transcription-retry")
+    case .completed:
+      improveTranscriptionMenu(
+        canOnline: canOnline,
+        tidyBlockedReason: tidyBlockedReason
+      )
+    case .idle, .awaitingModelDownload:
+      if hasCompletedTranscript {
+        improveTranscriptionMenu(
+          canOnline: canOnline,
+          tidyBlockedReason: tidyBlockedReason
+        )
+      } else {
+        Menu {
+          Button("本机转写", action: model.requestTranscription)
+            .disabled(!model.canTranscribeVideo || state == .awaitingModelDownload)
+          Button(localOnlineTranscribeTitle) {
+            model.requestOnlineTranscriptionFromLocalMedia(
+              taskID: taskID,
+              model: onlineTranscriptionModel
+            )
+          }
+          .disabled(!canOnline || state == .awaitingModelDownload)
+        } label: {
+          Label("转写", systemImage: "waveform")
+        }
+        .controlSize(.small)
+        .disabled(state == .awaitingModelDownload)
+        .accessibilityIdentifier("history-video-transcription-start")
+      }
+    }
+  }
+
+  @ViewBuilder
+  private func improveTranscriptionMenu(
+    canOnline: Bool,
+    tidyBlockedReason: String?
+  ) -> some View {
+    // 转写完成后不再平铺「重新 / 在线 / 整理」：收成一个次要入口，
+    // 主视觉只留状态，避免和上方总结/翻译抢注意力。
+    Menu {
+      Button("重新本机转写", action: model.requestTranscription)
+        .disabled(!model.canTranscribeVideo)
+      Button(localOnlineTranscribeTitle) {
+        model.requestOnlineTranscriptionFromLocalMedia(
+          taskID: taskID,
+          model: onlineTranscriptionModel
+        )
+      }
+      .disabled(!canOnline)
+      Button(localTidyMenuTitle) {
         model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
       }
-      .controlSize(.small)
       .disabled(tidyBlockedReason != nil)
-      .help(
-        tidyBlockedReason
-          ?? "把转写文字连同标题、配文发给聊天模型，还原听写错误并补标点分段；看不懂的句子原样保留。不发送视频或音频，原始转写稿保留。"
-      )
-      .accessibilityIdentifier("history-transcript-tidy")
-      // 灰按钮必须自己说明为什么不能点。
-      //
-      // 这个按钮受五个条件约束，而灰掉的按钮在 SwiftUI 里颜色很淡、和旁边说明文字
-      // 混在一起，扫一眼注意不到——实际收到过「一直没看到这个功能」的反馈，功能却
-      // 一直都在。把理由摆在旁边，才不会让人以为功能不存在。
-      if let tidyBlockedReason {
-        Text(tidyBlockedReason)
-          .themedFont(.caption)
-          .foregroundStyle(.secondary)
-          .accessibilityIdentifier("history-transcript-tidy-blocked-reason")
-      }
-
-      // 画面字幕：与听写并列的另一条来源，各跑各的、互不覆盖。
-      //
-      // 手动而不是自动：烧录字幕并非总存在，很多视频扫完几十秒只换来一句
-      // 「没读到」。但它一旦存在质量往往高过听写——多半是人工翻译的成品，
-      // 所以值得给一个明确入口。
-      let subtitleUIState = model.subtitleState(for: taskID)
-      if subtitleUIState.isActive {
-        Button("取消读取字幕", role: .cancel, action: model.cancelBurnedInSubtitles)
-          .controlSize(.small)
-          .accessibilityIdentifier("history-video-subtitles-cancel")
-        if let progress = model.subtitleProgress {
-          Text(progress).themedFont(.caption).foregroundStyle(.secondary)
-        }
-      } else {
-        Button("读画面字幕") { model.requestBurnedInSubtitles(taskID: taskID) }
-          .controlSize(.small)
-          .disabled(!model.canReadBurnedInSubtitles(taskID: taskID))
-          .help("逐帧识别画面上烧录的字幕，作为独立的一层保存，不影响已有的转写稿。全程在本机进行，不上传画面。")
-          .accessibilityIdentifier("history-video-subtitles-read")
-      }
-      // 已经读到字幕时，给它一个校对入口。
-      //
-      // 和听写稿共用一套整理链路，但**提示词不同**：听写错在同音近音，OCR
-      // 错在字形相近（「衡量」→「後置」），还常在句尾粘着画面角标的残片。
-      if model.hasBurnedInSubtitles(taskID: taskID), !subtitleUIState.isActive {
-        // 门禁和文案都走 ViewModel 那份理由，不在这里自己判。这个按钮点下去会写库、
-        // 会把字幕正文发到外部模型，而它旁边的「模型校对」早就这么接了——两个按钮
-        // 各判各的，正是只读资料库上漏掉闸门的来路。
-        let subtitleTidyBlockedReason = model.subtitleTidyUnavailableReason(taskID: taskID)
-        Button("校对字幕") {
-          model.requestTranscriptTidy(taskID: taskID, model: tidyModel, style: .subtitles)
-        }
-        .controlSize(.small)
-        .disabled(subtitleTidyBlockedReason != nil)
-        .help(
-          subtitleTidyBlockedReason
-            ?? "把画面字幕连同标题、配文发给聊天模型，纠正 OCR 认错的字并删掉粘进来的角标；看不懂的句子原样保留。不发送视频或画面。"
-        )
-        .accessibilityIdentifier("history-subtitles-tidy")
-        // 同「模型校对」：灰按钮必须自己说明为什么不能点，否则它在 SwiftUI 里
-        // 淡得几乎看不见，用户会以为功能不存在。
-        if let subtitleTidyBlockedReason {
-          Text(subtitleTidyBlockedReason)
-            .themedFont(.caption)
-            .foregroundStyle(.secondary)
-            .accessibilityIdentifier("history-subtitles-tidy-blocked-reason")
-        }
-      }
-
-      // 失败原因必须摆出来：读不到字幕是最常见的结果，静默什么都不发生
-      // 会让人以为按钮坏了。
-      if case let .failed(message) = subtitleUIState {
-        Text(message)
-          .themedFont(.caption)
-          .foregroundStyle(.secondary)
-          .accessibilityIdentifier("history-video-subtitles-failed-reason")
-      }
+    } label: {
+      Label("改进转写", systemImage: "waveform")
     }
+    .controlSize(.small)
+    .accessibilityIdentifier("history-video-transcription-improve")
   }
 
   @ViewBuilder private var transcriptTidyStatus: some View {
     switch model.transcriptTidyState(for: taskID) {
     case .idle: EmptyView()
-    case .running:
-      ProgressView().controlSize(.small)
-      // 有进度就报进度：长稿要切成十几片跑几分钟，只写「正在校对…」的话，
-      // 看不出它是在跑、卡住了、还是快好了。
-      Text(model.transcriptTidyProgress.map { "正在用模型校对…\($0)" } ?? "正在用模型校对…")
-        .themedFont(.caption)
-        .accessibilityIdentifier("history-transcript-tidy-progress")
+    case .running: ProgressView().controlSize(.small); Text("正在用模型校对转写稿…").themedFont(.caption)
     case .completed:
       let tokens = model.transcriptTidyTokenSummary(for: taskID)
       Label(
@@ -2562,9 +2610,9 @@ struct HistoryVideoPlayerCard: View {
         Text(Self.transcriptionStatusText(status)).themedFont(.caption).foregroundStyle(.secondary)
       }
     case .preparingMedia: ProgressView().controlSize(.small); Text("正在准备临时媒体…").themedFont(.caption)
-    case .checkingModel: ProgressView().controlSize(.small); Text("正在检查离线听写模型…").themedFont(.caption)
+    case .checkingModel: ProgressView().controlSize(.small); Text("正在检查中文离线模型…").themedFont(.caption)
     case .awaitingModelDownload: Text("等待确认模型下载").themedFont(.caption).foregroundStyle(.secondary)
-    case .preparingModel: ProgressView().controlSize(.small); Text("正在准备离线听写模型…").themedFont(.caption)
+    case .preparingModel: ProgressView().controlSize(.small); Text("正在准备中文离线模型…").themedFont(.caption)
     case .extractingAudio: ProgressView().controlSize(.small); Text("正在从本机视频提取音频…").themedFont(.caption)
     case .transcribing: ProgressView().controlSize(.small); Text("正在本机转写，音频不会上传…").themedFont(.caption)
     case .completed: Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").themedFont(.caption).foregroundStyle(appTheme.success)
@@ -2658,9 +2706,9 @@ private struct HistoryStreamingMediaCard: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 8) {
         Label("视频速览", systemImage: "play.rectangle.fill")
-          .themedFont(.headline)
+          .font(.headline)
         Text("联网播放")
-          .themedFont(.caption, weight: .medium)
+          .font(.caption.weight(.medium))
           .foregroundStyle(.secondary)
           .padding(.horizontal, 7)
           .padding(.vertical, 3)
@@ -2671,7 +2719,7 @@ private struct HistoryStreamingMediaCard: View {
         }
         if let durationSeconds = media.durationSeconds, durationSeconds > 0 {
           Text(Self.formatDuration(durationSeconds))
-            .themedFont(.caption, monospacedDigit: true)
+            .font(.caption.monospacedDigit())
             .foregroundStyle(.secondary)
         }
       }
@@ -2679,7 +2727,7 @@ private struct HistoryStreamingMediaCard: View {
       if playbackFailed {
         VStack(alignment: .leading, spacing: 8) {
           Label("远程播放失败。地址可能已失效。", systemImage: "exclamationmark.triangle.fill")
-            .themedFont(.callout)
+            .font(.callout)
             .foregroundStyle(appTheme.warning)
           Text("临时播放地址不会写入历史；APP 重启或地址过期后，请回到浏览器重新同步。")
             .themedFont(.caption)

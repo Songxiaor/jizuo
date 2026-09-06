@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import Foundation
+import LinkDigestMCPKit
 import SwiftUI
 import LinkDigestAdapters
 import LinkDigestCore
@@ -212,13 +213,42 @@ final class ManualLinkViewModel: ObservableObject {
   @Published var isDuplicatePromptPresented = false
   /// 排队抓取：提交即入队关窗，进度在列表顶部展示。
   @Published private(set) var pendingCaptures: [PendingCapture] = []
+  /// 内容已入库、但博主归属没写上时的说明。不能把它说成「没保存」。
+  @Published private(set) var captureNotice: String?
+  /// 博主表或作品关联刚写完。历史界面用它刷新计数和当前博主列表，不经过 ingest 的早到通知。
+  @Published private(set) var creatorAssociationRevision = 0
 
   struct PendingCapture: Identifiable, Equatable {
     enum Phase: Equatable { case queued, fetching, saving, failed(String) }
     let id: UUID
     let urlString: String
     var phase: Phase
+    let requestedAction: CaptureRequestedAction?
+    let downloadsVideo: Bool
+    let suppressesAutomaticEnrichment: Bool
+    let creatorID: CreatorID?
+
+    init(
+      id: UUID,
+      urlString: String,
+      phase: Phase,
+      requestedAction: CaptureRequestedAction? = nil,
+      downloadsVideo: Bool = true,
+      suppressesAutomaticEnrichment: Bool = false,
+      creatorID: CreatorID? = nil
+    ) {
+      self.id = id
+      self.urlString = urlString
+      self.phase = phase
+      self.requestedAction = requestedAction
+      self.downloadsVideo = downloadsVideo
+      self.suppressesAutomaticEnrichment = suppressesAutomaticEnrichment
+      self.creatorID = creatorID
+    }
   }
+
+  private(set) var captureDownloadStatuses: [String: String] = [:]
+  private(set) var completedCaptureIDs: [String: TaskID] = [:]
 
   private var allowsDuplicateSubmit = false
   private var queueWorker: Task<Void, Never>?
@@ -564,6 +594,34 @@ final class ManualLinkViewModel: ObservableObject {
     kickCaptureQueue()
   }
 
+  /// Explicit MCP submissions share the existing serial capture worker.
+  func enqueueMCPLinks(_ urls: [String], downloadsVideo: Bool) throws -> [[String: String]] {
+    guard ingestor != nil, history != nil else { throw MCPFailure("not_ready", "抓取服务尚未就绪") }
+    let normalized = try urls.map { raw -> String in
+      guard let url = ExplicitWebLinkInput.singleURL(from: raw), url.user == nil, url.password == nil else {
+        throw MCPFailure("invalid_url", "请输入公开网页链接，不要包含账号凭据")
+      }
+      try PublicWebURLPolicy(resolver: { _ in [] }).validateSyntax(url)
+      if DouyinProfileInputRoute.parse(raw) != nil { throw MCPFailure("profile_url", "博主主页请先调用 discover_creator") }
+      return url.absoluteString
+    }
+    var results: [[String: String]] = []
+    for value in normalized {
+      let savedID = completedCaptureIDs[value] ?? (try? CanonicalURL(value)).flatMap { try? history?.taskID(forCanonicalURL: $0) }
+      if let id = savedID, (try? history?.detail(taskID: id)) != nil {
+        results.append(["url": value, "status": "already_saved", "task_id": id.rawValue]); continue
+      }
+      if pendingCaptures.contains(where: { $0.urlString == value }) {
+        results.append(["url": value, "status": "already_queued"]); continue
+      }
+      pendingCaptures.append(PendingCapture(id: UUID(), urlString: value, phase: .queued,
+        requestedAction: .save, downloadsVideo: downloadsVideo, suppressesAutomaticEnrichment: true))
+      results.append(["url": value, "status": "queued"])
+    }
+    kickCaptureQueue()
+    return results
+  }
+
   func confirmDuplicateSubmit() {
     isDuplicatePromptPresented = false
     allowsDuplicateSubmit = true
@@ -580,6 +638,127 @@ final class ManualLinkViewModel: ObservableObject {
     let skipped: Int
   }
 
+  typealias ProfileImportEnqueueOutcome = BookmarksEnqueueOutcome
+
+  /// 主页导入只接收已经在候选页中由用户勾选的规范单条 URL。发现阶段不会调用此方法，
+  /// 因此不会提前入库、抓详情或触发模型。批量项一律携带 `.save`，并默认不下载视频。
+  @discardableResult
+  func enqueueProfileImport(
+    canonicalURLs: [String],
+    downloadsVideo: Bool,
+    creatorID: CreatorID? = nil
+  ) -> ProfileImportEnqueueOutcome {
+    guard ingestor != nil else { return .init(queued: 0, skipped: canonicalURLs.count) }
+    var queued = 0
+    var skipped = 0
+    var queuedURLs = Set(pendingCaptures.map(\.urlString))
+
+    for rawURL in canonicalURLs {
+      guard let url = URL(string: rawURL),
+            let canonical = DouyinProfileWorkURL.canonical(url)
+      else {
+        skipped += 1
+        continue
+      }
+      if !queuedURLs.insert(canonical).inserted {
+        skipped += 1
+        continue
+      }
+      if let history,
+         let value = try? CanonicalURL(canonical),
+         (try? history.containsCanonicalURL(value)) == true {
+        skipped += 1
+        continue
+      }
+      pendingCaptures.append(PendingCapture(
+        id: UUID(),
+        urlString: canonical,
+        phase: .queued,
+        requestedAction: .save,
+        downloadsVideo: downloadsVideo,
+        suppressesAutomaticEnrichment: true,
+        creatorID: creatorID
+      ))
+      queued += 1
+    }
+    if queued > 0 { kickCaptureQueue() }
+    return .init(queued: queued, skipped: skipped)
+  }
+
+  func ensureDouyinCreator(
+    authorID: String,
+    profileURL: String,
+    displayName: String?,
+    avatarURL: String? = nil
+  ) -> CreatorID? {
+    guard let history,
+          let identity = CreatorIdentity(platform: "douyin.com", authorID: authorID),
+          let command = UpsertCreatorCommand(
+            identity: identity,
+            profileURL: profileURL,
+            displayName: displayName,
+            avatarURL: admittedCreatorAvatarURL(avatarURL),
+            nowMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+          )
+    else { return nil }
+    do {
+      let id = try history.upsertCreator(command).id
+      bumpCreatorAssociationRevision()
+      return id
+    } catch {
+      captureNotice = "博主没能记下。粘贴的主页链接还在，可以稍后重试。"
+      return nil
+    }
+  }
+
+  func refreshDouyinCreator(creatorID: CreatorID, displayName: String?, avatarURL: String?) {
+    guard let history,
+          let creator = try? history.creator(id: creatorID),
+          let command = UpsertCreatorCommand(
+            identity: creator.identity,
+            profileURL: creator.profileURL,
+            displayName: displayName ?? creator.displayName,
+            avatarURL: admittedCreatorAvatarURL(avatarURL) ?? creator.avatarURL,
+            nowMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+          )
+    else { return }
+    if (try? history.upsertCreator(command)) != nil {
+      bumpCreatorAssociationRevision()
+    }
+  }
+
+  func attachExistingCreatorWorks(creatorID: CreatorID, canonicalURLs: [String]) {
+    guard let history, !canonicalURLs.isEmpty else { return }
+    do {
+      _ = try history.attachCreatorWorks(creatorID: creatorID, canonicalURLs: canonicalURLs)
+      bumpCreatorAssociationRevision()
+    } catch RepositoryFailure.invalidInput {
+      captureNotice = "已保存的作品还在，但有些已经归在另一位博主名下，没有改归属。"
+    } catch {
+      captureNotice = "已保存的作品还在，但有些没能归入该博主。可稍后在博主页重试。"
+    }
+  }
+
+  private func admittedCreatorAvatarURL(_ raw: String?) -> String? {
+    guard let raw, DouyinProfilePreviewResource.admittedURL(raw) != nil else { return nil }
+    return raw
+  }
+
+  private func bumpCreatorAssociationRevision() {
+    creatorAssociationRevision += 1
+  }
+
+  func dismissCaptureNotice() { captureNotice = nil }
+
+  func containsProfileImportURL(_ rawURL: String) -> Bool {
+    guard let history,
+          let url = URL(string: rawURL),
+          let canonical = DouyinProfileWorkURL.canonical(url),
+          let value = try? CanonicalURL(canonical)
+    else { return false }
+    return (try? history.containsCanonicalURL(value)) == true
+  }
+
   /// 收藏夹同步：把一批推文 id 转成 x.com 链接塞进抓取队列，已在库的静默跳过
   /// （批量场景不能对每条弹重复确认框）。抓取本身复用既有的串行 worker——
   /// X 链接会在 performCapture 里走公开端点取回完整推文。
@@ -589,15 +768,15 @@ final class ManualLinkViewModel: ObservableObject {
     var queued = 0
     var skipped = 0
     var queuedURLs = Set(pendingCaptures.map(\.urlString))
+    let requested = Set(tweetIDs.filter(XBookmarksSyncRequest.isValidTweetID))
+    let alreadyInLibrary = (try? history?.existingXTweetIDs(in: requested)) ?? []
     for id in tweetIDs {
       guard XBookmarksSyncRequest.isValidTweetID(id) else { skipped += 1; continue }
-      let urlString = "https://x.com/i/status/\(id)"
-      if let history,
-         let canonical = try? CanonicalURL(urlString),
-         (try? history.containsCanonicalURL(canonical)) == true {
+      if alreadyInLibrary.contains(id) {
         skipped += 1
         continue
       }
+      let urlString = XBookmarksSyncRequest.statusURLString(forTweetID: id)
       // 同一条已在本次队列里（滚动重复采到）也跳过。
       if !queuedURLs.insert(urlString).inserted { skipped += 1; continue }
       pendingCaptures.append(PendingCapture(id: UUID(), urlString: urlString, phase: .queued))
@@ -632,7 +811,16 @@ final class ManualLinkViewModel: ObservableObject {
       while let self, let next = self.pendingCaptures.first(where: { $0.phase == .queued }) {
         self.updatePendingPhase(next.id, .fetching)
         self.activeCaptureID = next.id
-        let work = Task { try await self.performCapture(value: next.urlString, pendingID: next.id) }
+        let work = Task {
+          try await self.performCapture(
+            value: next.urlString,
+            pendingID: next.id,
+            requestedAction: next.requestedAction,
+            downloadsVideo: next.downloadsVideo,
+            suppressesAutomaticEnrichment: next.suppressesAutomaticEnrichment,
+            creatorID: next.creatorID
+          )
+        }
         self.activeCaptureTask = work
         do {
           try await work.value
@@ -651,7 +839,14 @@ final class ManualLinkViewModel: ObservableObject {
   }
 
   /// 单条链接的完整捕获流程；由队列 worker 串行调用。
-  private func performCapture(value: String, pendingID: UUID) async throws {
+  private func performCapture(
+    value: String,
+    pendingID: UUID,
+    requestedAction: CaptureRequestedAction?,
+    downloadsVideo: Bool,
+    suppressesAutomaticEnrichment: Bool,
+    creatorID: CreatorID? = nil
+  ) async throws {
     guard let ingestor else { throw ManualLinkError.network }
     var capturedDocument: CapturedDocument?
     do {
@@ -708,12 +903,36 @@ final class ManualLinkViewModel: ObservableObject {
       }
       // A committed SQLite write cannot honestly be reported as cancelled.
       updatePendingPhase(pendingID, .saving)
-      let accepted = try await ingestor.ingest(document)
+      let accepted = try await ingestor.ingest(
+        document,
+        requestedAction: requestedAction,
+        suppressesAutomaticEnrichment: suppressesAutomaticEnrichment
+      )
+      if let creatorID {
+        do {
+          guard let history else { throw RepositoryFailure.unavailable }
+          try history.attachCreatorWork(creatorID: creatorID, taskID: accepted.taskID)
+          bumpCreatorAssociationRevision()
+        } catch RepositoryFailure.invalidInput {
+          captureNotice = "这条内容已保存，但已经归在另一位博主名下，没有改归属。"
+        } catch {
+          captureNotice = "这条内容已保存，但没能归入该博主。可在「全部博主」里稍后重试。"
+        }
+      }
+      if completedCaptureIDs.count >= 100, let evicted = completedCaptureIDs.keys.first {
+        completedCaptureIDs.removeValue(forKey: evicted)
+        captureDownloadStatuses.removeValue(forKey: evicted)
+      }
+      completedCaptureIDs[value] = accepted.taskID
+      captureDownloadStatuses[value] = downloadsVideo ? (document.media == nil ? "no_media_found" : "unavailable") : "not_requested"
       markClipboardURLHandled(value)
       // Signed media URLs must be downloaded in the same flow; never stored for later.
-      if let media = document.media, let onMediaCaptured {
+      if downloadsVideo, let media = document.media, let onMediaCaptured {
         // Pass page URL so CDN downloads can set a public Referer (no cookies).
+        captureDownloadStatuses[value] = "downloading"
         await onMediaCaptured(media, accepted.taskID, accepted.snapshotID, document.url)
+        let stored = try? history?.detail(taskID: accepted.taskID).media
+        captureDownloadStatuses[value] = stored?.snapshotID == accepted.snapshotID ? "completed" : "failed"
       }
     } catch {
       if let capturedDocument { imageCache?.discardStaged(captureID: capturedDocument.requestID) }

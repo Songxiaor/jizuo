@@ -748,6 +748,10 @@ struct ManualGenerationRequest: Equatable {
     // 又把 T1 发给模型。用户改的字白改了，而界面上没有任何迹象。
     // 这直接违背「编辑转写」按钮说明里「保存后总结、翻译与导出都使用校对后的文本」
     // 那句承诺。
+    //
+    // 有配文 + 转写时发给模型的是分层拼装稿，不能只拿 snapshots.last。
+    let layeredText = LayeredSourceDocument.modelInput(from: detail.snapshots)
+    let text = layeredText.isEmpty ? snapshot.bodyText : layeredText
     if currentCapture?.taskID == detail.task.id,
        currentCapture?.snapshotID == snapshot.id,
        currentCapture?.document.text == composed {
@@ -1145,6 +1149,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   @StateObject private var browserSupport: BrowserSupportViewModel
   @StateObject private var mediaStorageSettings: MediaStorageSettingsViewModel
   @StateObject private var knowledgeVaultSettings: KnowledgeVaultSettingsViewModel
+  @State private var companionNoteSync = CompanionNoteSyncCoordinator()
   @StateObject private var sessionMediaPlayback: SessionMediaPlaybackController
   @State private var didBootstrap = false
   /// 注入 `\.appTheme` 用。视图各自读 AppStorage 会重复三行样板，
@@ -1425,6 +1430,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         // 必须在 10 秒内 ACK 浏览器的路径。
         await knowledgeVaultSettingsModel.scheduleAutoSync()
         Task { @MainActor in
+          guard value.allowsAutomaticEnrichment else { return }
           let preferences = (try? await preferencesStore.load()) ?? .default
           guard preferences.effectiveAutoLocalizeTitleNewCaptures else { return }
           await historyModel.scheduleAutomaticTitleLocalization(
@@ -1451,7 +1457,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
               )
             }
           }
-        } else if mediaStoragePreference.autoSaveCapturedVideo,
+        } else if value.allowsAutomaticEnrichment,
+                  mediaStoragePreference.autoSaveCapturedVideo,
                   let descriptor = value.mediaDescriptor,
                   let media = CurrentCaptureMediaPreview.favoriteMedia(descriptor) {
           let taskID = value.taskID
@@ -1579,6 +1586,9 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         browserSupport: browserSupport,
         sessionMediaPlayback: sessionMediaPlayback
       )
+        .onReceive(NotificationCenter.default.publisher(for: .companionNoteSyncDidFinish)) { _ in
+          historyModel.reload()
+        }
         .task {
           manualLink.handleScenePhase(scenePhase)
           guard !didBootstrap else { return }
@@ -1600,6 +1610,10 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
           )
           didConfigureHistory = true
           knowledgeVaultSettings.configure(history: result.history)
+          companionNoteSync.configure(history: result.history)
+          if result.availability.isWriteReady, result.history != nil, companionNoteSync.canSync {
+            Task { await companionNoteSync.synchronize() }
+          }
           // 历史就绪之后才接回链，冷启动时排队的那一个 URL 也在这里被消费。
           //
           // scheme 一注册，任何网页都能构造这样一个链接扔过来，所以这里只做
@@ -1619,6 +1633,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
                 await historyModel.reveal(taskID: value.taskID)
                 await knowledgeVaultSettings.scheduleAutoSync()
                 Task { @MainActor in
+                  guard value.allowsAutomaticEnrichment else { return }
                   guard providerSettings.autoLocalizeTitleNewCaptures else { return }
                   await historyModel.scheduleAutomaticTitleLocalization(
                     taskID: value.taskID,
@@ -1646,6 +1661,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
             )
             model.installModelRunOrchestrator(orchestrator)
           }
+          MCPController.shared.configure(history: result.history, historyModel: historyModel, manual: manualLink,
+                                         appModel: model, preferences: providerSettings, writable: result.availability.isWriteReady)
           if !result.serverStarted {
             model.setConnection("接收服务启动失败")
           }
@@ -1689,7 +1706,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         browserSupport: browserSupport,
         mediaStorage: mediaStorageSettings,
         knowledgeVault: knowledgeVaultSettings,
-        updater: appUpdateController.updaterController.updater
+        updater: appUpdateController.updaterController.updater,
+        companionSync: companionNoteSync
       )
         .background(SettingsWindowResizer())
         .appThemeEnvironment(appearanceThemeRaw, uiFontRawValue: uiFontRaw)

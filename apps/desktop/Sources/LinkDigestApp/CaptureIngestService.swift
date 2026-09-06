@@ -42,13 +42,23 @@ struct CaptureIngestService: Sendable {
     }
   }
 
-  func ingest(_ document: CapturedDocument) async throws -> CurrentCapture {
+  func ingest(
+    _ document: CapturedDocument,
+    requestedAction: CaptureRequestedAction? = nil,
+    suppressesAutomaticEnrichment: Bool = false
+  ) async throws -> CurrentCapture {
     let command = try AcceptCaptureCommand(
       document: document,
       receivedAtMilliseconds: nowMilliseconds()
     )
     return try await commitAndPublish(command: command, document: document) { accepted in
-      CurrentCapture(document: document, taskID: accepted.taskID, snapshotID: accepted.snapshotID)
+      CurrentCapture(
+        document: document,
+        taskID: accepted.taskID,
+        snapshotID: accepted.snapshotID,
+        requestedAction: requestedAction,
+        suppressesAutomaticEnrichment: suppressesAutomaticEnrichment
+      )
     }
   }
 
