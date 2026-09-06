@@ -14,6 +14,19 @@ enum ReadingFontCatalog {
   /// 枚举一次要遍历几百个家族并各做一次 CoreText 查询，够慢到不能放进 body。
   nonisolated(unsafe) private static var cachedFamilies: [String]?
 
+  private static let registeredFontNames = Set(
+    NSFontManager.shared.availableFontFamilies + NSFontManager.shared.availableFonts
+  )
+
+  /// 只实例化已注册字体，避免缺失字体触发系统字体服务的长时间查找。
+  /// 思源宋体的本机显示名与家族名不同，保留已支持的中文别名。
+  static func installedFont(named name: String, size: CGFloat) -> NSFont? {
+    let registeredName = name == "思源宋体 VF" ? "Source Han Serif SC VF" : name
+    guard registeredFontNames.contains(registeredName)
+      || registeredFontNames.contains(name) else { return nil }
+    return NSFont(name: name, size: size)
+  }
+
   /// 保底项：即使目录枚举失败也必须有得选。
   static let fallbackFamily = "PingFang SC"
 
@@ -32,7 +45,7 @@ enum ReadingFontCatalog {
   /// `"Source Han Serif SC VF"`，两个名字对不上，所以别拿 familyName 去反查。
   static let editorialSerifFamily: String = {
     let preferred = "思源宋体 VF"
-    return NSFont(name: preferred, size: 16) != nil ? preferred : "Songti SC"
+    return installedFont(named: preferred, size: 16) != nil ? preferred : "Songti SC"
   }()
 
   static func cjkCapableFamilies() -> [String] {
@@ -45,9 +58,17 @@ enum ReadingFontCatalog {
   }
 
   static func supportsCJK(_ family: String) -> Bool {
-    guard let font = NSFont(name: family, size: 16) else { return false }
-    let resolved = CTFontCreateForString(font, "中" as CFString, CFRange(location: 0, length: 1))
-    return (resolved as NSFont).familyName == font.familyName
+    guard let font = installedFont(named: family, size: 16) else { return false }
+    return containsGlyphs("中", in: font)
+  }
+
+  // 直接检查该字体自身的字形；不请求 CoreText 查找替代字体。
+  // 全目录逐项请求字体回退，在全新 macOS 上曾耗时约 1000 秒。
+  private static func containsGlyphs(_ text: String, in font: NSFont) -> Bool {
+    let characters = Array(text.utf16)
+    var glyphs = [CGGlyph](repeating: 0, count: characters.count)
+    return CTFontGetGlyphsForCharacters(font, characters, &glyphs, characters.count)
+      && glyphs.allSatisfy { $0 != 0 }
   }
 
   /// 简化字探针。
@@ -64,12 +85,8 @@ enum ReadingFontCatalog {
   /// 判据和 `supportsCJK` 一样是「用它画这个字时 CoreText 是否仍落在它自己
   /// 身上」，只是把探针从一个中日韩共有字换成一组简化字。
   static func supportsSimplifiedChinese(_ family: String) -> Bool {
-    guard let font = NSFont(name: family, size: 16) else { return false }
-    return simplifiedProbe.allSatisfy { ch in
-      let s = String(ch)
-      let resolved = CTFontCreateForString(font, s as CFString, CFRange(location: 0, length: s.utf16.count))
-      return (resolved as NSFont).familyName == font.familyName
-    }
+    guard let font = installedFont(named: family, size: 16) else { return false }
+    return containsGlyphs(simplifiedProbe, in: font)
   }
 }
 
