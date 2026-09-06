@@ -220,9 +220,19 @@ public protocol HistoryRepository: Sendable {
   func recoverInterruptedRuns(at milliseconds: Int64) throws -> Int
   func containsCanonicalURL(_ canonicalURL: CanonicalURL) throws -> Bool
   func taskID(matchingCanonicalURL canonicalURL: CanonicalURL) throws -> TaskID?
+  /// 按规范化 URL 找回任务；同步桥接用它把远端笔记卡对回本机 History。
+  func taskID(forCanonicalURL canonicalURL: CanonicalURL) throws -> TaskID?
+  /// 这批推文 id 里哪些已经在本地历史。`/i/status/id` 与 `/user/status/id` 算同一条。
+  func existingXTweetIDs(in tweetIDs: Set<String>) throws -> Set<String>
   func historyPage(limit: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage
   func historyPage(limit: Int, after cursor: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage
   func navigationCounts() throws -> HistoryNavigationCounts
+  func upsertCreator(_ command: UpsertCreatorCommand) throws -> CreatorSummary
+  func attachCreatorWork(creatorID: CreatorID, taskID: TaskID) throws
+  func attachCreatorWorks(creatorID: CreatorID, canonicalURLs: [String]) throws -> AttachCreatorWorksResult
+  func setCreatorPinned(creatorID: CreatorID, pinned: Bool) throws
+  func creatorPage(limit: Int, after cursor: CreatorPageCursor?, searchText: String) throws -> CreatorPage
+  func creator(id: CreatorID) throws -> CreatorSummary?
   func detail(taskID: TaskID) throws -> HistoryDetailProjection
   func exportProjection(taskID: TaskID) throws -> HistoryExportProjection
   func allTags() throws -> [HistoryTag]
@@ -362,6 +372,20 @@ public extension HistoryRepository {
   func containsCanonicalURL(_: CanonicalURL) throws -> Bool { throw RepositoryFailure.unavailable }
   func taskID(matchingCanonicalURL _: CanonicalURL) throws -> TaskID? { nil }
 
+  func taskID(forCanonicalURL _: CanonicalURL) throws -> TaskID? { throw RepositoryFailure.unavailable }
+
+  /// 测试替身默认只认入队用的 `/i/status/id`。生产仓库覆盖为按推文 id 相交。
+  func existingXTweetIDs(in tweetIDs: Set<String>) throws -> Set<String> {
+    var found = Set<String>()
+    for id in tweetIDs {
+      let urlString = XBookmarksSyncRequest.statusURLString(forTweetID: id)
+      if let canonical = try? CanonicalURL(urlString), try containsCanonicalURL(canonical) {
+        found.insert(id)
+      }
+    }
+    return found
+  }
+
   func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult {
     _ = taskIDs
     throw RepositoryFailure.unavailable
@@ -370,6 +394,41 @@ public extension HistoryRepository {
   /// Read-only / unavailable repositories deliberately return an empty rail:
   /// navigation must never make an otherwise readable list fail to load.
   func navigationCounts() throws -> HistoryNavigationCounts { .init() }
+
+  func upsertCreator(_ command: UpsertCreatorCommand) throws -> CreatorSummary {
+    _ = command
+    throw RepositoryFailure.unavailable
+  }
+
+  func attachCreatorWork(creatorID: CreatorID, taskID: TaskID) throws {
+    _ = creatorID
+    _ = taskID
+    throw RepositoryFailure.unavailable
+  }
+
+  func attachCreatorWorks(creatorID: CreatorID, canonicalURLs: [String]) throws -> AttachCreatorWorksResult {
+    _ = creatorID
+    _ = canonicalURLs
+    throw RepositoryFailure.unavailable
+  }
+
+  func setCreatorPinned(creatorID: CreatorID, pinned: Bool) throws {
+    _ = creatorID
+    _ = pinned
+    throw RepositoryFailure.unavailable
+  }
+
+  func creatorPage(limit: Int, after cursor: CreatorPageCursor?, searchText: String) throws -> CreatorPage {
+    _ = limit
+    _ = cursor
+    _ = searchText
+    return .init(rows: [], nextCursor: nil)
+  }
+
+  func creator(id: CreatorID) throws -> CreatorSummary? {
+    _ = id
+    return nil
+  }
 
   /// Default no-op so older test doubles stay source-compatible until they opt in.
   func attachMedia(_ command: AttachMediaCommand) throws {

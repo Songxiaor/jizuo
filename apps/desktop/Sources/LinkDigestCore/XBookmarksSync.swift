@@ -56,10 +56,14 @@ public struct XBookmarksSyncRequest: Sendable, Equatable {
     (8...25).contains(value.count) && value.allSatisfy { $0.isASCII && $0.isNumber }
   }
 
-  /// 从已落库或待查的推文地址里取出数字 id。
-  ///
-  /// `/i/status/123` 和 `/alice/status/123` 是同一条帖。查重必须认 id，
-  /// 不能拿整串 URL 去做相等——收藏同步入队用前者，解析落库用后者。
+  /// 入队抓取用的公开状态页。查重不能拿它做整串相等：落库几乎都是
+  /// `https://x.com/{handle}/status/{id}`，这两种地址是同一条推文。
+  public static func statusURLString(forTweetID id: String) -> String {
+    "https://x.com/i/status/\(id)"
+  }
+
+  /// 从 x.com / twitter.com 的 status 地址取出数字 id。
+  /// `/i/status/id` 与 `/user/status/id` 视为同一条。
   public static func tweetID(fromCanonicalURL rawURL: String) -> String? {
     guard let url = URL(string: rawURL),
           url.scheme?.lowercased() == "https",
@@ -72,5 +76,51 @@ public struct XBookmarksSyncRequest: Sendable, Equatable {
     let next = parts.index(after: marker)
     guard next < parts.endIndex else { return nil }
     return isValidTweetID(parts[next]) ? parts[next] : nil
+  }
+}
+
+/// 勾选前查重：扩展把刚收集的 id 交给 App，问「本地历史里已有哪些」。
+///
+/// 仍不走 capture envelope。允许空列表（返回空 existingIDs），方便调用方省事。
+public struct XBookmarksLookupRequest: Sendable, Equatable {
+  public let version: Int
+  public let requestId: String
+  public let tweetIDs: [String]
+
+  public init(version: Int, requestId: String, tweetIDs: [String]) {
+    self.version = version
+    self.requestId = requestId
+    self.tweetIDs = tweetIDs
+  }
+
+  public static func decode(_ data: Data) throws -> XBookmarksLookupRequest? {
+    guard
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let kind = object["kind"] as? String
+    else { return nil }
+    guard kind == "xBookmarksLookup" else { return nil }
+
+    guard (object["version"] as? NSNumber)?.intValue == 1 else {
+      throw CaptureValidationError.PROTOCOL_VERSION_UNSUPPORTED
+    }
+    guard let requestId = object["requestId"] as? String,
+          !requestId.isEmpty, requestId.count <= 128
+    else { throw CaptureValidationError.CAPTURE_SCHEMA_INVALID }
+    guard let rawIDs = object["tweetIDs"] as? [Any] else {
+      throw CaptureValidationError.CAPTURE_SCHEMA_INVALID
+    }
+    guard rawIDs.count <= XBookmarksSyncRequest.maximumIDs else {
+      throw CaptureValidationError.CAPTURE_PAYLOAD_TOO_LARGE
+    }
+
+    var seen = Set<String>()
+    var ids: [String] = []
+    for raw in rawIDs {
+      guard let id = raw as? String, XBookmarksSyncRequest.isValidTweetID(id) else {
+        throw CaptureValidationError.CAPTURE_SCHEMA_INVALID
+      }
+      if seen.insert(id).inserted { ids.append(id) }
+    }
+    return .init(version: 1, requestId: requestId, tweetIDs: ids)
   }
 }

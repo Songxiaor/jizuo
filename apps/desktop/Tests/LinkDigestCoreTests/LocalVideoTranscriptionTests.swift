@@ -208,7 +208,7 @@ final class TranscriptParagraphTimingTests: XCTestCase {
     _ = value.apply(range: range(4, 1), text: "第三段", isFinal: true)
     XCTAssertEqual(
       value.finalParagraphs.map(\.text).joined(separator: "\n\n"),
-      value.finalText
+      value.finalText.replacingOccurrences(of: #"(?m)^\d+:\d{2}(?::\d{2})? "#, with: "", options: .regularExpression)
     )
   }
 

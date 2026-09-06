@@ -42,6 +42,7 @@ export type ExtractedPage = {
 };
 
 export type CaptureQualityIssueCode =
+  | "CAPTURE_CONTENT_EMPTY"
   | "CAPTURE_APP_SHELL"
   | "CAPTURE_PAGE_LOAD_FAILED"
   | "CAPTURE_LOGIN_WALL"

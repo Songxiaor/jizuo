@@ -14,17 +14,21 @@ import {
 } from "../../src/popup-presentation";
 import type { DouyinSessionDiagnostic } from "../../src/content/douyin-session-detail";
 import type { DouyinMetadataDiagnostic } from "../../src/content/douyin-metadata-diagnostic";
-import { bookmarksSyncMessage, isXBookmarksURL, type BookmarksSyncOutcome } from "../../src/content/x-bookmarks";
+import { bookmarksSyncMessage, isXBookmarksURL, type BookmarkPreviewItem, type BookmarksSyncOutcome } from "../../src/content/x-bookmarks";
+
+type BookmarksCollectResult =
+  | { ok: true; items: BookmarkPreviewItem[]; reachedKnown: boolean; libraryLookup: "ok" | "unavailable" }
+  | { ok: false; code: "not_bookmarks" | "empty" | "injection_failed" };
 
 type BookmarksSyncResult =
   | { ok: true; outcome: BookmarksSyncOutcome; collected: number; reachedKnown: boolean }
   | { ok: false; code: "not_bookmarks" | "empty" | "native_error" | "injection_failed" };
 
 const bookmarksErrorCopy: Readonly<Record<string, string>> = {
-  not_bookmarks: "请在 X 的收藏夹页面（x.com/i/bookmarks）打开后再同步。",
-  empty: "没有找到可同步的收藏。请向下滚动确认收藏已加载。",
+  not_bookmarks: "请在 X 的「历史」页打开，并切到「书签/收藏」分页后再同步（地址栏是 x.com/i/history）。",
+  empty: "没有找到可同步的收藏。请确认已切到「书签/收藏」分页，并向下滚动加载列表。",
   native_error: "无法连接汲作，或本次同步未被受理。如果汲作已经打开，请完全退出后重新打开，再重试。",
-  injection_failed: "读取收藏夹失败，请刷新页面后重试。",
+  injection_failed: "读取收藏列表失败，请刷新页面后重试。",
 };
 
 type CapturePlatform =
@@ -53,6 +57,13 @@ const metadataDiagnostic = document.querySelector<HTMLPreElement>("#metadata-dia
 const error = document.querySelector<HTMLPreElement>("#error")!;
 const send = document.querySelector<HTMLButtonElement>("#send")!;
 const syncBookmarks = document.querySelector<HTMLButtonElement>("#sync-bookmarks")!;
+const syncSelected = document.querySelector<HTMLButtonElement>("#sync-selected")!;
+const bookmarksPicker = document.querySelector<HTMLElement>("#bookmarks-picker")!;
+const pickerList = document.querySelector<HTMLDivElement>("#picker-list")!;
+const pickerCount = document.querySelector<HTMLSpanElement>("#picker-count")!;
+const pickerSelectAll = document.querySelector<HTMLButtonElement>("#picker-select-all")!;
+const pickerSelectNone = document.querySelector<HTMLButtonElement>("#picker-select-none")!;
+const pickerSelectNew = document.querySelector<HTMLButtonElement>("#picker-select-new")!;
 const actionCard = document.querySelector<HTMLElement>("#action-card")!;
 const actionDetail = document.querySelector<HTMLParagraphElement>("#action-detail")!;
 const actionInputs = Array.from(document.querySelectorAll<HTMLInputElement>('input[name="capture-action"]'));
@@ -115,41 +126,223 @@ if (tabId === undefined) {
   status.textContent = "无法读取当前标签页";
   send.disabled = true;
 } else if (isXBookmarksURL(tab?.url)) {
-  // 收藏夹页面：主操作换成批量同步。普通「发送」在这里只会抓到收藏夹外壳。
+  // 历史/收藏页：先读列表再勾选同步。普通「发送」在这里只会抓到列表外壳。
   send.hidden = true;
   actionCard.hidden = true;
   syncBookmarks.hidden = false;
-  setAvailability("ready", "可同步");
-  renderPlatform("X · 收藏夹");
-  status.textContent = "同步收藏夹";
-  renderMeta([{ text: "滚动收集后交给 App 逐条抓取" }]);
+  // 弹窗第一次绘制就要 600px 高，否则读完列表后底部按钮会被裁掉。
+  document.documentElement.classList.add("bookmarks-popup");
+  document.body.classList.add("picker-open");
+  bookmarksPicker.hidden = false;
+  syncSelected.hidden = false;
+  syncSelected.disabled = false;
+  pickerCount.textContent = "尚未读取列表";
+  setAvailability("ready", "可勾选");
+  renderPlatform("X · 历史收藏");
+  status.textContent = "勾选后同步到汲作";
+  renderMeta([{ text: "请停在「书签/收藏」分页" }, { text: "先读列表，再挑要同步的" }]);
+
+  let pickerItems: BookmarkPreviewItem[] = [];
+  let lastLibraryLookup: "ok" | "unavailable" = "unavailable";
+
+  const applyLibrarySummary = (): void => {
+    if (pickerItems.length === 0) return;
+    const inLibrary = pickerItems.filter((item) => item.alreadySynced).length;
+    const fresh = pickerItems.length - inLibrary;
+    status.textContent = `找到 ${pickerItems.length} 条收藏`;
+    if (lastLibraryLookup === "ok") {
+      if (fresh === 0) {
+        renderMeta([
+          { text: `全部 ${pickerItems.length} 条已在库` },
+          { text: "已在库的不会再抓" },
+        ]);
+      } else {
+        renderMeta([
+          { text: `未在库 ${fresh} 条 · 已在库 ${inLibrary} 条` },
+          { text: "勾选后点下方同步；已在库的默认不勾" },
+        ]);
+      }
+    } else {
+      renderMeta([
+        { text: `未同步约 ${fresh} 条（App 未连上，粗标）` },
+        { text: "勾选后点下方同步" },
+      ]);
+    }
+  };
+
+  const selectedIDs = (): string[] =>
+    Array.from(pickerList.querySelectorAll<HTMLInputElement>("input[type='checkbox']:checked"))
+      .map((input) => input.value);
+
+  const refreshPickerChrome = (): void => {
+    const total = pickerItems.length;
+    const selected = selectedIDs().length;
+    pickerCount.textContent = `已选 ${selected} / ${total}`;
+    // 0 条时仍可点：给出「请先勾选」反馈，避免底部按钮像坏了一样没反应。
+    syncSelected.disabled = false;
+    syncSelected.textContent = selected > 0 ? `同步所选 ${selected} 条到汲作` : "同步所选到汲作";
+    for (const card of pickerList.querySelectorAll<HTMLElement>(".bookmark-card")) {
+      const box = card.querySelector<HTMLInputElement>("input[type='checkbox']");
+      card.classList.toggle("is-checked", box?.checked === true);
+    }
+  };
+
+  const setAllChecked = (predicate: (item: BookmarkPreviewItem) => boolean): void => {
+    const boxes = pickerList.querySelectorAll<HTMLInputElement>("input[type='checkbox']");
+    boxes.forEach((box, index) => {
+      const item = pickerItems[index];
+      if (!item) return;
+      box.checked = predicate(item);
+    });
+    refreshPickerChrome();
+  };
+
+  const renderPicker = (items: BookmarkPreviewItem[], libraryLookup: "ok" | "unavailable"): void => {
+    pickerItems = items;
+    document.body.classList.add("picker-open");
+    bookmarksPicker.hidden = false;
+    syncSelected.hidden = false;
+    pickerList.replaceChildren();
+    for (const item of items) {
+      const label = document.createElement("label");
+      label.className = "bookmark-card" + (item.alreadySynced ? " is-synced" : "");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = item.id;
+      // 默认勾选未同步过的；已在库的留给用户按需补同步。
+      box.checked = !item.alreadySynced;
+      box.addEventListener("change", refreshPickerChrome);
+
+      const body = document.createElement("div");
+      const authorRow = document.createElement("div");
+      authorRow.className = "author";
+      authorRow.textContent = item.author || "未知作者";
+      if (item.alreadySynced) {
+        const badge = document.createElement("span");
+        badge.className = "badge";
+        badge.textContent = libraryLookup === "ok" ? "已在库" : "可能已在库";
+        authorRow.append(badge);
+      }
+      const snippet = document.createElement("p");
+      snippet.className = "snippet";
+      snippet.textContent = item.text || "（无预览）";
+      body.append(authorRow, snippet);
+      label.append(box, body);
+      pickerList.append(label);
+    }
+    refreshPickerChrome();
+  };
+
+  pickerSelectAll.onclick = () => setAllChecked(() => true);
+  pickerSelectNone.onclick = () => setAllChecked(() => false);
+  pickerSelectNew.onclick = () => setAllChecked((item) => !item.alreadySynced);
 
   syncBookmarks.onclick = async () => {
     syncBookmarks.disabled = true;
     syncBookmarks.classList.remove("done");
+    // 读列表时不要收起 picker：弹窗一缩小，Chromium 就不会再长高。
     error.textContent = "";
     resultNotice.hidden = true;
-    syncBookmarks.textContent = "正在收集收藏…";
+    pickerCount.textContent = "正在读取…";
+    syncBookmarks.textContent = "正在滚动收集收藏…";
+    status.textContent = "正在读取收藏列表";
+    renderMeta([{ text: "请保持页面打开，不要切换标签" }]);
     try {
       const result = await browser.runtime.sendMessage({
-        type: "sync-x-bookmarks",
+        type: "collect-x-bookmarks",
         tabId,
+      }) as BookmarksCollectResult;
+      if (!result.ok) {
+        error.textContent = bookmarksErrorCopy[result.code] ?? "读取未完成，请重试。";
+        syncBookmarks.textContent = "读取收藏列表";
+        syncBookmarks.disabled = false;
+        status.textContent = "勾选后同步到汲作";
+        pickerCount.textContent = pickerItems.length > 0
+          ? `已选 ${selectedIDs().length} / ${pickerItems.length}`
+          : "尚未读取列表";
+        return;
+      }
+      lastLibraryLookup = result.libraryLookup;
+      renderPicker(result.items, result.libraryLookup);
+      applyLibrarySummary();
+      syncBookmarks.textContent = "重新读取列表";
+      syncBookmarks.disabled = false;
+    } catch {
+      error.textContent = "读取失败，请重试。";
+      syncBookmarks.textContent = "读取收藏列表";
+      syncBookmarks.disabled = false;
+      pickerCount.textContent = pickerItems.length > 0
+        ? `已选 ${selectedIDs().length} / ${pickerItems.length}`
+        : "尚未读取列表";
+    }
+  };
+
+  syncSelected.onclick = async () => {
+    const ids = selectedIDs();
+    if (pickerItems.length === 0) {
+      error.textContent = "请先点上方「读取收藏列表」。";
+      return;
+    }
+    if (ids.length === 0) {
+      error.textContent = "请先勾选要同步的收藏。已在库的默认不勾，可点「全选」或「选未同步」。";
+      return;
+    }
+    if (
+      lastLibraryLookup === "ok"
+      && ids.every((id) => pickerItems.find((item) => item.id === id)?.alreadySynced === true)
+    ) {
+      const message = `${ids.length} 条已在库，不会再抓`;
+      syncSelected.textContent = "✓ " + message;
+      syncSelected.classList.add("done");
+      resultNotice.textContent = "✓ " + message;
+      resultNotice.hidden = false;
+      return;
+    }
+    syncSelected.disabled = true;
+    syncBookmarks.disabled = true;
+    syncSelected.classList.remove("done");
+    error.textContent = "";
+    syncSelected.textContent = `正在同步 ${ids.length} 条…`;
+    try {
+      const result = await browser.runtime.sendMessage({
+        type: "enqueue-x-bookmarks",
+        tweetIDs: ids,
       }) as BookmarksSyncResult;
       if (result.ok) {
         const message = bookmarksSyncMessage(result.outcome, result.collected, result.reachedKnown);
-        syncBookmarks.textContent = "✓ " + message;
-        syncBookmarks.classList.add("done");
-        // 回执单独占一块，避免只写在按钮上、弹窗一裁就看不见加了几条。
+        syncSelected.textContent = "✓ " + message;
+        syncSelected.classList.add("done");
         resultNotice.textContent = "✓ " + message;
         resultNotice.hidden = false;
+        // 勾掉已提交的，避免重复点。
+        for (const box of pickerList.querySelectorAll<HTMLInputElement>("input[type='checkbox']")) {
+          if (ids.includes(box.value)) {
+            box.checked = false;
+            const item = pickerItems.find((row) => row.id === box.value);
+            if (item) item.alreadySynced = true;
+            const card = box.closest(".bookmark-card");
+            card?.classList.add("is-synced");
+            const authorRow = card?.querySelector(".author");
+            if (authorRow && !authorRow.querySelector(".badge")) {
+              const badge = document.createElement("span");
+              badge.className = "badge";
+              badge.textContent = "已在库";
+              authorRow.append(badge);
+            }
+          }
+        }
+        lastLibraryLookup = "ok";
+        refreshPickerChrome();
+        applyLibrarySummary();
+        syncBookmarks.disabled = false;
       } else {
         error.textContent = bookmarksErrorCopy[result.code] ?? "同步未完成，请重试。";
-        syncBookmarks.textContent = "同步收藏夹到桌面 App";
+        refreshPickerChrome();
         syncBookmarks.disabled = false;
       }
     } catch {
       error.textContent = "同步失败，请重试。";
-      syncBookmarks.textContent = "同步收藏夹到桌面 App";
+      refreshPickerChrome();
       syncBookmarks.disabled = false;
     }
   };

@@ -942,7 +942,7 @@ def exact_app_paths(app: Path) -> None:
     contents = {path.name for path in (app / "Contents").iterdir()}
     if contents != {"Info.plist", "MacOS", "Resources", "_CodeSignature"}:
         reject("signed App Contents tree is not exact")
-    if {path.name for path in (app / "Contents/MacOS").iterdir()} != {"LinkDigestApp"}:
+    if {path.name for path in (app / "Contents/MacOS").iterdir()} != {"LinkDigestApp", "LinkDigestMCP"}:
         reject("signed App MacOS tree is not exact")
     if {path.name for path in (app / "Contents/Resources").iterdir()} != {RESOURCE_BUNDLE, "NativeHost", APP_ICON_FILE, PLATFORM_ICONS_DIRECTORY, PROVIDER_ICONS_DIRECTORY}:
         reject("signed App Resources tree is not exact")
@@ -1491,6 +1491,7 @@ def build_candidate(audit_root_text: str) -> dict[str, Any]:
         app = r4a.build_app_bundle(
             staging / config["appBundle"], app_binary, resource_bundle, host_package, app_config, build_source
         )
+        sign_and_verify(app / "Contents/MacOS/LinkDigestMCP", "com.syc.linkdigest.mcp", bundle=False)
         app_signing = sign_and_verify(app, config["appIdentifier"], bundle=True)
         app_result = verify_app_bundle(app, build_source)
         if app_result["host"]["packageDigest"] != pre_app_package.package_digest:

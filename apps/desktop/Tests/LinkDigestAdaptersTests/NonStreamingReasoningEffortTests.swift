@@ -47,7 +47,7 @@ final class NonStreamingReasoningEffortTests: XCTestCase {
     XCTAssertEqual(outcome.text, "整理后的文字")
     XCTAssertEqual(server.requests.count, 1)
     let sent = try body(server.requests[0])
-    XCTAssertEqual(sent["reasoning_effort"] as? String, "low", "整理是转述不是推理，必须请求最低档")
+    XCTAssertEqual(sent["reasoning_effort"] as? String, "none", "整理是转述不是推理，必须请求最低档")
     XCTAssertEqual(sent["stream"] as? Bool, false)
   }
 
@@ -56,6 +56,7 @@ final class NonStreamingReasoningEffortTests: XCTestCase {
   func testRejectedParameterIsDroppedAndRemembered() async throws {
     let key = "sentinel-\(UUID().uuidString)"
     let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [
+      .init(statusCode: 400, contentType: "application/json"),
       .init(statusCode: 400, contentType: "application/json"),
       completionScript(),
       completionScript(),
@@ -68,16 +69,17 @@ final class NonStreamingReasoningEffortTests: XCTestCase {
     _ = try await provider.tidyTranscriptChunk(
       profile: profile, apiKey: key, model: "fixture-model", text: "第一片"
     )
-    XCTAssertEqual(server.requests.count, 2, "首片应为「带参数被拒」+「去掉重发」")
+    XCTAssertEqual(server.requests.count, 3, "先尝试 none，再降级 low，两者拒绝后去掉参数")
     XCTAssertNotNil(try body(server.requests[0])["reasoning_effort"])
-    XCTAssertNil(try body(server.requests[1])["reasoning_effort"])
+    XCTAssertEqual(try body(server.requests[1])["reasoning_effort"] as? String, "low")
+    XCTAssertNil(try body(server.requests[2])["reasoning_effort"])
 
     _ = try await provider.tidyTranscriptChunk(
       profile: profile, apiKey: key, model: "fixture-model", text: "第二片"
     )
-    XCTAssertEqual(server.requests.count, 3, "记住拒绝后，第二片只应发 1 个请求")
+    XCTAssertEqual(server.requests.count, 4, "记住拒绝后，第二片只应发 1 个请求")
     XCTAssertNil(
-      try body(server.requests[2])["reasoning_effort"],
+      try body(server.requests[3])["reasoning_effort"],
       "已知拒绝的目的地不该再试——那正是每片浪费一个往返的来源"
     )
   }

@@ -23,7 +23,7 @@ struct ProviderSettingsView: View {
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
   private enum SettingsTab: String, Hashable, CaseIterable, Identifiable {
-    case service, generation, appearance, mediaStorage, knowledgeVault, siteLogin, browserSupport, updates, labs
+    case service, generation, appearance, mediaStorage, knowledgeVault, companionSync, siteLogin, browserSupport, mcp, updates, labs
     var id: String { rawValue }
     var title: String {
       switch self {
@@ -32,9 +32,11 @@ struct ProviderSettingsView: View {
       case .appearance: "外观"
       case .mediaStorage: "视频存储"
       case .knowledgeVault: "知识库同步"
+      case .companionSync: "手机同步"
       case .siteLogin: "站点登录"
       case .browserSupport: "浏览器支持"
       case .updates: "版本与更新"
+      case .mcp: "MCP 连接"
       case .labs: "实验室"
       }
     }
@@ -45,9 +47,11 @@ struct ProviderSettingsView: View {
       case .appearance: "paintpalette"
       case .mediaStorage: "externaldrive"
       case .knowledgeVault: "folder.badge.gearshape"
+      case .companionSync: "iphone.and.arrow.forward"
       case .siteLogin: "person.crop.circle.badge.checkmark"
       case .browserSupport: "puzzlepiece.extension"
       case .updates: "arrow.triangle.2.circlepath"
+      case .mcp: "point.3.connected.trianglepath.dotted"
       case .labs: "flask"
       }
     }
@@ -86,7 +90,7 @@ struct ProviderSettingsView: View {
       switch self {
       case .serviceAndGeneration: [.service, .generation]
       case .readingAndAppearance: [.appearance, .labs]
-      case .connectionAndData: [.browserSupport, .siteLogin, .mediaStorage, .knowledgeVault, .updates]
+      case .connectionAndData: [.mcp, .browserSupport, .siteLogin, .mediaStorage, .knowledgeVault, .companionSync, .updates]
       }
     }
 
@@ -107,6 +111,7 @@ struct ProviderSettingsView: View {
   @ObservedObject var mediaStorage: MediaStorageSettingsViewModel
   @ObservedObject var knowledgeVault: KnowledgeVaultSettingsViewModel
   let updater: SPUUpdater
+  @Bindable var companionSync: CompanionNoteSyncCoordinator
   @State private var apiKeyInput = ""
   @State private var selectedTab: SettingsTab = .service
   @State private var isCustomOutputLanguage = false
@@ -331,6 +336,7 @@ struct ProviderSettingsView: View {
     } detail: {
       Group {
         switch selectedTab {
+        case .mcp: MCPSettingsView(model: MCPController.shared)
         case .service: serviceTab
         case .generation: generationTab
         case .appearance: appearanceTab
@@ -339,6 +345,8 @@ struct ProviderSettingsView: View {
           MediaStorageSettingsView(model: mediaStorage)
         case .knowledgeVault:
           KnowledgeVaultSettingsView(model: knowledgeVault)
+        case .companionSync:
+          CompanionNoteSyncSettingsView(model: companionSync)
         case .siteLogin:
           SiteLoginSettingsView(mediaStorage: mediaStorage)
         case .browserSupport:

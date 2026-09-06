@@ -331,9 +331,13 @@ public enum NativeResponse: Codable, Sendable, Equatable {
   case taskAccepted(version: Int, requestId: String, characterCount: Int)
   /// 收藏夹同步：受理了一批推文 id，逐条抓取在 App 的队列里进行。
   case bookmarksAccepted(version: Int, requestId: String, queuedCount: Int, skippedCount: Int)
+  /// 勾选前查重：本地历史里已有的推文 id（与请求同序子集）。
+  case bookmarksLookup(version: Int, requestId: String, existingIDs: [String])
   case error(AppError)
 
-  enum CodingKeys: String, CodingKey { case kind, version, requestId, characterCount, queuedCount, skippedCount, error }
+  enum CodingKeys: String, CodingKey {
+    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, error
+  }
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     switch try c.decode(String.self, forKey: .kind) {
@@ -358,6 +362,16 @@ public enum NativeResponse: Codable, Sendable, Equatable {
         queuedCount: try c.decode(Int.self, forKey: .queuedCount),
         skippedCount: try c.decode(Int.self, forKey: .skippedCount)
       )
+    case "bookmarksLookup":
+      let version = try c.decode(Int.self, forKey: .version)
+      guard version == 1 else {
+        throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "Unsupported NativeResponse version")
+      }
+      self = .bookmarksLookup(
+        version: version,
+        requestId: try c.decode(String.self, forKey: .requestId),
+        existingIDs: try c.decode([String].self, forKey: .existingIDs)
+      )
     case "error":
       let error = try c.decode(AppError.self, forKey: .error)
       guard error.version == 1 else {
@@ -378,6 +392,9 @@ public enum NativeResponse: Codable, Sendable, Equatable {
       try c.encode("bookmarksAccepted", forKey: .kind); try c.encode(v, forKey: .version)
       try c.encode(r, forKey: .requestId)
       try c.encode(queued, forKey: .queuedCount); try c.encode(skipped, forKey: .skippedCount)
+    case let .bookmarksLookup(v, r, existing):
+      try c.encode("bookmarksLookup", forKey: .kind); try c.encode(v, forKey: .version)
+      try c.encode(r, forKey: .requestId); try c.encode(existing, forKey: .existingIDs)
     case let .error(e):
       try c.encode("error", forKey: .kind); try c.encode(e, forKey: .error)
     }

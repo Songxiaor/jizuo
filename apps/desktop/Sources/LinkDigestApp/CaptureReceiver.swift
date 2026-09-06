@@ -9,9 +9,17 @@ struct CurrentCapture: Sendable, Equatable {
   let mediaDescriptor: MediaDescriptor?
   let taskID: TaskID
   let snapshotID: ContentSnapshotID
+  /// App 内部发起的抓取没有 wire envelope；批量主页导入仍需要把用户明确选择的
+  /// “只保存”意图带到自动处理与媒体保存边界。
+  private let appRequestedAction: CaptureRequestedAction?
+  /// 仅供 App 内批量主页导入使用。wire envelope 的 `.save` 保持既有媒体语义，
+  /// 避免把扩展的“保存”误当成“禁止自动媒体保存”。
+  let suppressesAutomaticEnrichment: Bool
+
+  var allowsAutomaticEnrichment: Bool { !suppressesAutomaticEnrichment }
 
   var requestedAction: CaptureRequestedAction? {
-    wireEnvelope?.requestedAction ?? wireEnvelopeV2?.requestedAction
+    wireEnvelope?.requestedAction ?? wireEnvelopeV2?.requestedAction ?? appRequestedAction
   }
 
   var browserDeclaredFaviconURL: URL? {
@@ -40,6 +48,8 @@ struct CurrentCapture: Sendable, Equatable {
     }
     self.taskID = taskID
     self.snapshotID = snapshotID
+    appRequestedAction = nil
+    suppressesAutomaticEnrichment = false
   }
 
   init(envelope: CaptureEnvelopeV2, taskID: TaskID, snapshotID: ContentSnapshotID) {
@@ -49,9 +59,17 @@ struct CurrentCapture: Sendable, Equatable {
     mediaDescriptor = envelope.media
     self.taskID = taskID
     self.snapshotID = snapshotID
+    appRequestedAction = nil
+    suppressesAutomaticEnrichment = false
   }
 
-  init(document: CapturedDocument, taskID: TaskID, snapshotID: ContentSnapshotID) {
+  init(
+    document: CapturedDocument,
+    taskID: TaskID,
+    snapshotID: ContentSnapshotID,
+    requestedAction: CaptureRequestedAction? = nil,
+    suppressesAutomaticEnrichment: Bool = false
+  ) {
     self.document = document
     wireEnvelope = nil
     wireEnvelopeV2 = nil
@@ -72,12 +90,14 @@ struct CurrentCapture: Sendable, Equatable {
     }
     self.taskID = taskID
     self.snapshotID = snapshotID
+    appRequestedAction = requestedAction
+    self.suppressesAutomaticEnrichment = suppressesAutomaticEnrichment
   }
 
   /// Browser media stays session-only until the user taps “保存到本地”. Manual
   /// source adapters keep their established explicit local-ingest callback.
   var shouldAutomaticallyPersistLegacyMedia: Bool {
-    document.media != nil && document.origin != .browserCapture
+    allowsAutomaticEnrichment && document.media != nil && document.origin != .browserCapture
   }
 
 }
@@ -116,6 +136,16 @@ struct CaptureReceiver: Sendable {
     // 收藏夹同步走独立消息：它带的只是一串推文 id，不是一次页面捕获，
     // 因此不经过 capture envelope 的 schema（那套契约保持冻结）。
     do {
+      if let lookup = try XBookmarksLookupRequest.decode(data) {
+        // 勾选前查重：只读历史，不入队。按推文 id 认，不拿 /i/status 整串去比。
+        // history 缺失或查询失败时回空列表（扩展可降级到游标粗标）。
+        let found = (try? history?.existingXTweetIDs(in: Set(lookup.tweetIDs))) ?? []
+        return .bookmarksLookup(
+          version: 1,
+          requestId: lookup.requestId,
+          existingIDs: lookup.tweetIDs.filter { found.contains($0) }
+        )
+      }
       if let request = try XBookmarksSyncRequest.decode(data) {
         guard let bookmarksSink else {
           return .error(appError(

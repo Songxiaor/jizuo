@@ -463,6 +463,7 @@ def build_dmg(
     display_name: str,
     edition: str,
     developer_id_signed: bool = False,
+    configure_layout: bool = True,
 ) -> None:
     """组装带固定 Finder 安装界面的压缩 DMG。"""
     with tempfile.TemporaryDirectory(prefix="linkdigest-dmg-stage.", dir="/private/tmp") as tmp:
@@ -504,9 +505,10 @@ def build_dmg(
         mounted_device: str | None = None
         try:
             mounted_device, mountpoint = attach_read_write_image(read_write_image)
-            configure_finder_layout(
-                mountpoint, layout_volume_name, app.name, extension.name
-            )
+            if configure_layout:
+                configure_finder_layout(
+                    mountpoint, layout_volume_name, app.name, extension.name
+                )
             remove_forbidden_signing_metadata_and_verify(mountpoint / app.name)
             run("/usr/sbin/diskutil", "rename", mounted_device, final_volume_name)
             run("/usr/bin/hdiutil", "detach", mounted_device)
@@ -682,6 +684,8 @@ def main() -> int:
         "--notary-keychain-profile",
         help="已由 notarytool store-credentials 保存到 Keychain 的凭据名称。",
     )
+    parser.add_argument("--preview", action="store_true",
+                        help="生成预览安装包，不生成稳定更新通道的 appcast。")
     args = parser.parse_args()
     signing_identity, notary_keychain_profile = release_signing_mode(
         args.ad_hoc, args.signing_identity, args.notary_keychain_profile
@@ -728,7 +732,7 @@ def main() -> int:
             symlinks=False,
         )
 
-        print("→ 生成 Sparkle Universal 更新归档与签名 appcast…")
+        print("→ 生成 Universal 归档…")
         update_archive = output_dir / f"Jizuo-{args.version}-macOS-Universal.zip"
         build_universal_update_archive(
             staged_app,
@@ -739,11 +743,13 @@ def main() -> int:
             signing_identity,
             notary_keychain_profile,
         )
-        appcast = output_dir / "appcast.xml"
-        generate_signed_appcast(
-            update_archive, appcast, work, args.version, app_config
-        )
-        outputs = [update_archive, appcast]
+        outputs = [update_archive]
+        if not args.preview:
+            appcast = output_dir / "appcast.xml"
+            generate_signed_appcast(
+                update_archive, appcast, work, args.version, app_config
+            )
+            outputs.append(appcast)
         editions = [
             ("arm64", "Apple Silicon", "Apple-Silicon"),
             ("x86_64", "Intel", "Intel"),
@@ -778,6 +784,7 @@ def main() -> int:
                 app_config["appDisplayName"],
                 edition,
                 developer_id_signed=signing_identity is not None,
+                configure_layout=not args.preview,
             )
             if signing_identity is not None and notary_keychain_profile is not None:
                 sign_notarize_and_staple_dmg(

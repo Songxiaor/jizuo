@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT/apps/desktop"
 
-for specification in "LinkDigestApp Debug" "LinkDigestApp Release" "LinkDigestNativeHost Debug" "LinkDigestNativeHost Release"; do
+for specification in "LinkDigestApp Debug" "LinkDigestApp Release" "LinkDigestNativeHost Debug" "LinkDigestNativeHost Release" "LinkDigestMCP Debug" "LinkDigestMCP Release"; do
   scheme="${specification% *}"
   configuration="${specification##* }"
   log="/tmp/linkdigest-xcode-${scheme}-${configuration}.log"

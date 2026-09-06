@@ -1,6 +1,28 @@
 import Foundation
 import CoreMedia
 
+public struct TranscriptParagraph: Sendable, Equatable, Hashable {
+  public let startMilliseconds: Int
+  public let endMilliseconds: Int
+  public let text: String
+
+  public init(startMilliseconds: Int, endMilliseconds: Int, text: String) {
+    self.startMilliseconds = startMilliseconds
+    self.endMilliseconds = endMilliseconds
+    self.text = text
+  }
+
+  /// `03:12` / `1:04:09`。超过一小时才显示小时位——绝大多数条目是几分钟的短片，
+  /// 一律补 `00:` 只是让每一行都变长。
+  public var startLabel: String {
+    let total = max(0, startMilliseconds / 1000)
+    let seconds = total % 60, minutes = (total / 60) % 60, hours = total / 3600
+    return hours > 0
+      ? String(format: "%d:%02d:%02d", hours, minutes, seconds)
+      : String(format: "%02d:%02d", minutes, seconds)
+  }
+}
+
 /// Reconciles Apple's finalized and volatile timed results. Volatile segments
 /// may be replaced or revoked; only finalized segments are eligible to persist.
 public struct TimedTranscriptionAccumulator: Sendable, Equatable {
@@ -40,6 +62,58 @@ public struct TimedTranscriptionAccumulator: Sendable, Equatable {
   /// Continuous speech without a qualifying pause still has to break somewhere,
   /// or a fast talker produces one unreadable wall of text.
   public static let softParagraphCharacterCount = 170
+
+  private static func milliseconds(_ value: Double?) -> Int {
+    guard let value, value.isFinite else { return 0 }; return Int((max(0, value) * 1000).rounded())
+  }
+  public var finalParagraphs: [TranscriptParagraph] { Self.paragraphs(from: finalized) }
+  private static func paragraphs(from segments: [Segment]) -> [TranscriptParagraph] {
+    let ordered = segments.sorted {
+      let left = CMTimeGetSeconds($0.range.start), right = CMTimeGetSeconds($1.range.start)
+      if left == right { return CMTimeGetSeconds($0.range.duration) < CMTimeGetSeconds($1.range.duration) }
+      return left < right
+    }
+
+    var paragraphs: [TranscriptParagraph] = []
+    var current = ""
+    var currentStart: Double?
+    var currentEnd: Double?
+    var previousEnd: Double?
+    /// 一个段落收尾：把文本按长度切开，切出来的子段共享父段的时间。
+    ///
+    /// 子段没有自己的时间是**事实**，不是偷懒——它们是同一段连续语音按字数
+    /// 硬切出来的，按字符比例插值只会造出一个看着精确、实际对不上的时间。
+    /// 点子段跳到该段落开头，是这里唯一诚实的行为。
+    func flush() {
+      guard !current.isEmpty else { return }
+      let start = milliseconds(currentStart)
+      let end = milliseconds(currentEnd)
+      for piece in splitLongParagraph(current) {
+        paragraphs.append(TranscriptParagraph(startMilliseconds: start, endMilliseconds: end, text: piece))
+      }
+      current = ""
+      currentStart = nil
+      currentEnd = nil
+    }
+    for segment in ordered {
+      let start = CMTimeGetSeconds(segment.range.start)
+      let end = CMTimeGetSeconds(CMTimeRangeGetEnd(segment.range))
+      if let previousEnd, start.isFinite, previousEnd.isFinite,
+         start - previousEnd >= paragraphPauseSeconds, !current.isEmpty,
+         !isNumberSeam(current.last, segment.text.first) {
+        flush()
+      }
+      if current.isEmpty, start.isFinite { currentStart = start }
+      if end.isFinite { currentEnd = end }
+      current = joined(current, segment.text)
+      previousEnd = end.isFinite ? end : previousEnd
+    }
+    flush()
+    return paragraphs
+  }
+
+  /// 秒转毫秒。非有限值（识别结果偶尔给 NaN/∞）落到 0，而不是把 NaN 一路带进
+  /// 数据库——那会让排序和跳转都变成未定义行为。
 
   private static func text(from segments: [Segment]) -> String {
     let ordered = segments.sorted {
@@ -202,6 +276,7 @@ public enum LocalVideoTranscriptionEvent: Sendable, Equatable {
   case transcribing
   case partial(String)
   case final(String)
+  case finalParagraphs([TranscriptParagraph])
 }
 
 public enum LocalVideoTranscriptionError: Error, Sendable, Equatable {

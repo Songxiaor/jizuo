@@ -92,25 +92,13 @@ final class ArticleReformatTests: XCTestCase {
 /// 每一片都会各自判断「这篇要不要标题」——实测一份 6214 字的稿子切两片，
 /// 第一片一个标题都没插，四个标题全挤在第二片。
 final class ChunkAwarePromptTests: XCTestCase {
-  func testTranscriptPromptScopesHeadingCountToTheChunk() {
+  // 已发布版把听写还原与文章重排分开；还原不应强制插入新标题。
+  func testTranscriptRestorationKeepsChunkBoundariesAndTimestamps() {
     let prompt = TranscriptTidyPrompt.system
-    XCTAssertFalse(prompt.contains("全篇 3 到 10 个"), "按全篇说的数量指令对分片无效")
-    XCTAssertTrue(prompt.contains("无论长短都要插标题"))
-    XCTAssertTrue(
-      prompt.contains("你不插就等于那一截永远没有标题"),
-      "必须点破「这只是一截」这个误解，否则模型会跳过"
-    )
-  }
-
-  /// 「保持片段边界原样」这句话容易被读成「所以不要加结构」，必须当场纠正。
-  func testChunkBoundaryNoticeDoesNotSuppressHeadings() {
-    let prompt = TranscriptTidyPrompt.system
-    let range = try? XCTUnwrap(prompt.range(of: "保持片段边界原样"))
-    XCTAssertNotNil(range)
-    if let range {
-      let tail = prompt[range.upperBound...]
-      XCTAssertTrue(tail.contains("照样要给它插标题"), "片段说明之后必须紧跟一句纠正")
-    }
+    XCTAssertTrue(prompt.contains("保持片段边界原样"))
+    XCTAssertTrue(prompt.contains("必须保留原有时间戳"))
+    XCTAssertTrue(prompt.contains("不是润色成一篇新文章"))
+    XCTAssertFalse(prompt.contains("无论长短都要插标题"))
   }
 
   /// 长文重排走的是另一份提示词，同样按「这一段文字」说，不按全篇。
