@@ -35,7 +35,9 @@ HOST_BUNDLE="$(dirname "$HOST")/LinkDigest_LinkDigestCore.bundle"
   echo "Host resource bundle is missing beside the selected Host" >&2
   exit 2
 }
-[[ -f "$HOST_BUNDLE/Resources/contracts/capture-envelope-v1.schema.json" ]] || {
+# SwiftPM flat bundles and Xcode macOS bundles have different resource roots.
+[[ -f "$HOST_BUNDLE/Resources/contracts/capture-envelope-v1.schema.json" ||
+   -f "$HOST_BUNDLE/Contents/Resources/Resources/contracts/capture-envelope-v1.schema.json" ]] || {
   echo "Host contract schema is missing from the selected resource bundle" >&2
   exit 2
 }
