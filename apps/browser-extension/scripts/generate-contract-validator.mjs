@@ -50,6 +50,35 @@ const output = [
   "",
 ].join("\n");
 
+const xProfileSchemaPath = resolve(packageRoot, "../../contracts/x-profile-candidates-v1.schema.json");
+const xProfileOutputPath = resolve(packageRoot, "src/generated/x-profile-validator.mjs");
+const xProfileSchema = JSON.parse(await readFile(xProfileSchemaPath, "utf8"));
+const xProfileAjv = new Ajv2020({
+  allErrors: true,
+  strict: false,
+  code: { source: true, esm: true, lines: true },
+});
+addFormats(xProfileAjv);
+let xProfileGenerated = standaloneCode(xProfileAjv, xProfileAjv.compile(xProfileSchema));
+xProfileGenerated = xProfileGenerated.replace(
+  /const (\w+) = require\("ajv\/dist\/runtime\/ucs2length"\)\.default;/g,
+  "const $1 = (value) => [...value].length;",
+);
+xProfileGenerated = xProfileGenerated.replace(
+  /const (\w+) = require\("ajv-formats\/dist\/formats"\)\.fullFormats(\[[^\n;]+\]|\.\w+);/g,
+  "const $1 = __ajvFormats.fullFormats$2;",
+);
+if (xProfileGenerated.includes("require(")) {
+  throw new Error("Standalone x-profile validator contains an unexpected runtime require()");
+}
+const xProfileOutput = [
+  "/* eslint-disable */",
+  "// Generated from x-profile-candidates-v1.schema.json. Do not edit by hand.",
+  'import * as __ajvFormats from "ajv-formats/dist/formats.js";',
+  xProfileGenerated,
+  "",
+].join("\n");
+
 if (process.argv.includes("--check")) {
   const current = await readFile(outputPath, "utf8").catch(() => "");
   if (current !== output) {
@@ -57,8 +86,16 @@ if (process.argv.includes("--check")) {
     process.exit(1);
   }
   console.log("capture-validator: OK");
+  const currentX = await readFile(xProfileOutputPath, "utf8").catch(() => "");
+  if (currentX !== xProfileOutput) {
+    console.error("x-profile-validator: OUT OF DATE; run pnpm --filter @linkdigest/browser-extension generate:validator");
+    process.exit(1);
+  }
+  console.log("x-profile-validator: OK");
 } else {
   await mkdir(dirname(outputPath), { recursive: true });
   await writeFile(outputPath, output);
   console.log("capture-validator: generated");
+  await writeFile(xProfileOutputPath, xProfileOutput);
+  console.log("x-profile-validator: generated");
 }

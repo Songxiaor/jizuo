@@ -3,6 +3,14 @@ import LinkDigestCore
 @testable import LinkDigestAdapters
 
 final class BilibiliPlaybackRefresherTests: XCTestCase {
+  func testHTTPPlatformCoverIsUpgradedWithoutAdmittingOtherHosts() {
+    XCTAssertEqual(BilibiliPlaybackRefresher.allowedCoverURL("http://i2.hdslb.com/bfs/archive/fixture.jpg")?.absoluteString,
+                   "https://i2.hdslb.com/bfs/archive/fixture.jpg")
+    XCTAssertNil(BilibiliPlaybackRefresher.allowedCoverURL("http://i2.hdslb.com.evil.test/fixture.jpg"))
+    XCTAssertNil(BilibiliPlaybackRefresher.allowedCoverURL("http://i2.hdslb.com:8080/fixture.jpg"))
+    XCTAssertNil(BilibiliPlaybackRefresher.allowedCoverURL("https://user:password@i2.hdslb.com/fixture.jpg"))
+  }
+
   func testQualityPreferenceMapsToIncreasingQNCeilings() {
     XCTAssertEqual(BilibiliStreamQualityPreference.dataSaver.requestedQN, 64)
     XCTAssertEqual(BilibiliStreamQualityPreference.balanced.requestedQN, 80)

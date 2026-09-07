@@ -82,8 +82,12 @@ func callingBrowser() -> BrowserSupportBrowser? {
 }
 
 /// 只在内容真的进了 App 之后才记。记「试过」没有意义——这一行要陈述的是既成事实。
+///
+/// 主页候选 ACK（`profileCandidatesPresented`）也算送达：App 已收下待展示的候选，
+/// 设置页据此显示「最近一次由该浏览器送到」，而不是虚构在线。浏览器身份仍只来自
+/// 父进程路径（`callingBrowser()` → `BrowserSupportBrowser.identify`）。
 func recordDeliveryIfSucceeded(_ response: NativeResponse) {
-  if case .error = response { return }
+  guard response.isSuccessfulBrowserDelivery else { return }
   guard let browser = callingBrowser() else { return }
   BrowserDeliveryLog.standard().record(browser)
 }
@@ -212,6 +216,14 @@ do {
     if let bookmarks = try XBookmarksSyncRequest.decode(body) {
       writeDebugLog("bookmarks_sync ids=\(bookmarks.tweetIDs.count)")
       let result = deliverToApp(body, requestId: bookmarks.requestId)
+      recordDeliveryIfSucceeded(result)
+      try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
+      exit(0)
+    }
+    if let profile = try XProfileCandidatesRequest.decode(body) {
+      writeDebugLog("x_profile_candidates items=\(profile.items.count)")
+      let result = deliverToApp(body, requestId: profile.requestId)
+      // 成功 ACK 才记真实送达时间；错误/旧 App 的 schema 失败不记。
       recordDeliveryIfSucceeded(result)
       try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
       exit(0)

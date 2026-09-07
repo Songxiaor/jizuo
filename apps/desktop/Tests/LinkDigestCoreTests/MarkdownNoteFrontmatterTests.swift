@@ -24,6 +24,44 @@ final class MarkdownNoteFrontmatterTests: XCTestCase {
     XCTAssertFalse(note.body.hasPrefix("---"))
   }
 
+  func testPreviewCoverPrefersCoverImageThenFirstMarkdownImage() {
+    let withCover = MarkdownNoteFrontmatter.parse("""
+    ---
+    cover_image: "https://pbs.twimg.com/media/cover.jpg"
+    likes: "12"
+    ---
+
+    ![other](https://pbs.twimg.com/media/other.jpg)
+    """)
+    XCTAssertEqual(withCover.previewCoverURL, "https://pbs.twimg.com/media/cover.jpg")
+    XCTAssertEqual(withCover.likes, "12")
+    let fromBody = MarkdownNoteFrontmatter.parse("""
+    ---
+    comments: "0"
+    ---
+
+    一段话
+
+    ![alt](https://pbs.twimg.com/media/from-body.jpg "title")
+    """)
+    XCTAssertEqual(fromBody.previewCoverURL, "https://pbs.twimg.com/media/from-body.jpg")
+    XCTAssertEqual(fromBody.comments, "0")
+    XCTAssertNil(fromBody.likes)
+  }
+
+  func testDirectorySourcePreviewStripsImagesAndKeepsBoundedBody() {
+    let onlyCover = MarkdownNoteFrontmatter.directorySourcePreview(
+      fromBody: "![cover](https://p3.douyinpic.com/aweme/cover.jpeg)"
+    )
+    XCTAssertNil(onlyCover)
+    let mixed = MarkdownNoteFrontmatter.directorySourcePreview(
+      fromBody: "![cover](https://p3.douyinpic.com/aweme/cover.jpeg)\n\n这是配文，用作卡片预览。"
+    )
+    XCTAssertEqual(mixed, "这是配文，用作卡片预览。")
+    let long = String(repeating: "字", count: 300)
+    XCTAssertEqual(MarkdownNoteFrontmatter.directorySourcePreview(fromBody: long)?.count, 240)
+  }
+
   func testStripsCapturedEnvelopeAndLoading() {
     let source = """
     捕获的标题: Introduction to AI Fluency · Claude Academy

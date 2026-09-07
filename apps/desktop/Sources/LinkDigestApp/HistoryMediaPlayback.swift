@@ -195,8 +195,7 @@ enum RemotePlaybackAsset {
 
   static func referer(forHost host: String?) -> String? {
     guard let host = host?.lowercased() else { return nil }
-    if host == "douyin.com" || host.hasSuffix(".douyin.com")
-      || host.hasSuffix("douyinvod.com") || host.hasSuffix("douyincdn.com") {
+    if isDouyinPlaybackHost(host) {
       return "https://www.douyin.com/"
     }
     if host.hasSuffix("qpic.cn") || host.hasSuffix("qq.com") {
@@ -217,8 +216,19 @@ enum RemotePlaybackAsset {
       || host.hasSuffix("hdslb.com")
   }
 
+  static func isDouyinPlaybackHost(_ host: String?) -> Bool {
+    guard let host = host?.lowercased() else { return false }
+    return host == "douyin.com" || host.hasSuffix(".douyin.com")
+      || host == "iesdouyin.com" || host.hasSuffix(".iesdouyin.com")
+      || host.hasSuffix("douyinvod.com") || host.hasSuffix("douyincdn.com")
+      || host.hasSuffix("bytevod.com") || host.hasSuffix("bytecdn.cn")
+      || host.hasSuffix("snssdk.com") || host.hasSuffix("amemv.com")
+      || host.hasSuffix("ixigua.com")
+  }
+
   /// HTTPS 源需要的浏览器 UA + 平台 Referer。`file://` 返回 nil。
-  /// B 站会员/高清 CDN 常需会话 Cookie；只用于内存播放请求，永不落盘。
+  /// B 站会员/高清 CDN 才带会话 Cookie；抖音只加 Origin/Referer，不扩大 Cookie 域。
+  /// 只用于内存播放请求，永不落盘。
   static func httpHeaders(for url: URL, cookieHeader: String? = nil) -> [String: String]? {
     guard url.scheme?.lowercased() == "https" else { return nil }
     var headers: [String: String] = ["User-Agent": browserUserAgent]
@@ -226,6 +236,9 @@ enum RemotePlaybackAsset {
       headers["Referer"] = referer
       if isBilibiliPlaybackHost(url.host) {
         headers["Origin"] = "https://www.bilibili.com"
+      }
+      if isDouyinPlaybackHost(url.host) {
+        headers["Origin"] = "https://www.douyin.com"
       }
     }
     if let cookieHeader, !cookieHeader.isEmpty, isBilibiliPlaybackHost(url.host) {
@@ -272,6 +285,8 @@ final class RemotePreviewPlayerController: ObservableObject {
   static var dualTrackDownloadTimeoutSeconds: TimeInterval = 45
   /// HEAD 预检超时（不可达地址应快速放弃，避免拖死 UI）。
   static var dualTrackProbeTimeoutSeconds: TimeInterval = 2
+  /// 远程单轨：必须等到 item 就绪且有时长，禁止「有 URL 就算可播」的黑屏假 ready。
+  static var singleTrackPrepareTimeoutSeconds: TimeInterval = 12
   /// 已就绪播放器驻留条数：切换历史再回来可秒开，不必黑屏重连。
   static var parkedPlayerCapacity = 4
 
@@ -390,9 +405,11 @@ final class RemotePreviewPlayerController: ObservableObject {
       return
     }
 
-    // 新流要异步准备（双轨 / 带 Cookie）时，旧画面继续播。
+    // 新流要异步准备（双轨 / 带 Cookie / 远程单轨就绪等待）时，旧画面继续播。
     // 立刻拆掉播放器会让换高清对着黑屏等十几秒。
-    let newNeedsAsync = companion != nil || needsSessionCookieLookup(for: url)
+    let newNeedsAsync = companion != nil
+      || needsSessionCookieLookup(for: url)
+      || Self.isRemoteStreamingURL(url)
     if newNeedsAsync, let visible = player, let oldURL = currentURL, retainedDuringSwitch == nil {
       retainedDuringSwitch = ParkedRemotePlayback(
         url: oldURL,
@@ -419,8 +436,8 @@ final class RemotePreviewPlayerController: ObservableObject {
     usedLegacyPath = false
     preparePhase = .preparing
 
-    if companion != nil || needsSessionCookieLookup(for: url) {
-      // 双轨 / B 站：异步取 Cookie 再合成；禁止无限 preparing。
+    if companion != nil || needsSessionCookieLookup(for: url) || Self.isRemoteStreamingURL(url) {
+      // 双轨 / B 站 Cookie / 远程单轨：等到真正可播；禁止无限 preparing。
       prepareTask = Task { @MainActor in
         await self.prepareRemotePlayback(
           url: url,
@@ -458,6 +475,23 @@ final class RemotePreviewPlayerController: ObservableObject {
     RemotePlaybackAsset.isBilibiliPlaybackHost(url.host)
   }
 
+  static func isRemoteStreamingURL(_ url: URL) -> Bool {
+    let scheme = url.scheme?.lowercased()
+    return scheme == "https" || scheme == "http"
+  }
+
+  /// item 必须 readyToPlay，且有有效时长或可见画面。有 URL 不算可播。
+  static func isPlayableItem(_ item: AVPlayerItem) -> Bool {
+    guard item.status == .readyToPlay else { return false }
+    let duration = item.duration
+    if duration.isValid, duration.isNumeric, !duration.isIndefinite,
+       duration.seconds.isFinite, duration.seconds > 0 {
+      return true
+    }
+    let size = item.presentationSize
+    return size.width > 1 && size.height > 1
+  }
+
   /// 取会话 Cookie（若调用方未传）→ 双轨合成或单轨增强。
   private func prepareRemotePlayback(
     url: URL,
@@ -481,7 +515,7 @@ final class RemotePreviewPlayerController: ObservableObject {
         cookieHeader: cookie
       )
     } else {
-      installEnhancedVideoOnly(url: url, cookieHeader: cookie)
+      await prepareSingleTrackUntilPlayable(url: url, cookieHeader: cookie)
     }
   }
 
@@ -696,7 +730,28 @@ final class RemotePreviewPlayerController: ObservableObject {
   @discardableResult
   func fallbackToLegacyIfNeeded() -> Bool {
     guard canFallbackToLegacy, let url = currentURL else { return false }
-    installLegacy(url: url, cookieHeader: currentCookieHeader)
+    cancelPrepare()
+    if Self.isRemoteStreamingURL(url) {
+      usedLegacyPath = true
+      disposePlayer(player)
+      player = nil
+      preparePhase = .preparing
+      let cookie = currentCookieHeader
+      prepareTask = Task { @MainActor in
+        let result = await awaitPlayablePlayer(
+          asset: RemotePlaybackAsset.makeLegacy(url: url, cookieHeader: cookie), url: url
+        )
+        guard !Task.isCancelled, currentURL == url else { return }
+        switch result {
+        case let .playable(readyPlayer): installReadyPlayer(readyPlayer)
+        case let .failed(error):
+          preparePhase = .failed(Self.isNetworkUnavailable(error) ? .networkUnavailable : .streamUnreadable)
+        case .cancelled: break
+        }
+      }
+    } else {
+      installLegacy(url: url, cookieHeader: currentCookieHeader)
+    }
     return true
   }
 
@@ -807,6 +862,7 @@ final class RemotePreviewPlayerController: ObservableObject {
   }
 
   /// 单 URL 增强路径（muxed mp4 / HLS 等）。DASH 拆轨不应走这里当「成功」。
+  /// 仅本地 `file://` 仍可立即装上播放器；远程 https 必须走就绪等待。
   private func installEnhancedVideoOnly(url: URL, cookieHeader: String? = nil) {
     usedLegacyPath = false
     installReadyPlayer(
@@ -816,6 +872,118 @@ final class RemotePreviewPlayerController: ObservableObject {
         )
       )
     )
+  }
+
+  /// 远程单轨：等到 item 就绪且有时长才标 ready；失败给出可重试的用户可见原因。
+  private func prepareSingleTrackUntilPlayable(url: URL, cookieHeader: String?) async {
+    usedLegacyPath = false
+    let startedAt = Date()
+    switch await awaitPlayablePlayer(
+      asset: RemotePlaybackAsset.make(url: url, cookieHeader: cookieHeader),
+      url: url
+    ) {
+    case let .playable(player):
+      guard !Task.isCancelled, currentURL == url else {
+        disposePlayer(player)
+        return
+      }
+      installReadyPlayer(player)
+      return
+    case .cancelled:
+      return
+    case let .failed(error):
+      if Self.isNetworkUnavailable(error) {
+        guard !Task.isCancelled, currentURL == url else { return }
+        if restoreRetainedPlayerIfPossible() { return }
+        playbackDiagnostic = Self.diagnosticLine(
+          stage: "单轨就绪等待",
+          isDual: false,
+          host: url.host,
+          error: error
+        )
+        player = nil
+        preparePhase = .failed(.networkUnavailable)
+        return
+      }
+    }
+
+    guard !Task.isCancelled, currentURL == url else { return }
+    if canFallbackToLegacy {
+      usedLegacyPath = true
+      switch await awaitPlayablePlayer(
+        asset: RemotePlaybackAsset.makeLegacy(url: url, cookieHeader: cookieHeader),
+        url: url
+      ) {
+      case let .playable(player):
+        guard !Task.isCancelled, currentURL == url else {
+          disposePlayer(player)
+          return
+        }
+        installReadyPlayer(player)
+        return
+      case .cancelled:
+        return
+      case let .failed(error):
+        guard !Task.isCancelled, currentURL == url else { return }
+        if restoreRetainedPlayerIfPossible() { return }
+        if Self.isNetworkUnavailable(error) {
+          playbackDiagnostic = Self.diagnosticLine(
+            stage: "单轨回退",
+            isDual: false,
+            host: url.host,
+            error: error
+          )
+          player = nil
+          preparePhase = .failed(.networkUnavailable)
+          return
+        }
+      }
+    }
+
+    guard !Task.isCancelled, currentURL == url else { return }
+    if restoreRetainedPlayerIfPossible() { return }
+    let elapsed = Int(Date().timeIntervalSince(startedAt))
+    playbackDiagnostic = Self.diagnosticLine(
+      stage: "单轨就绪等待（\(elapsed)s）",
+      isDual: false,
+      host: url.host,
+      error: nil
+    )
+    player = nil
+    preparePhase = .failed(.streamUnreadable)
+  }
+
+  private enum SingleTrackWaitResult {
+    case playable(AVPlayer)
+    case failed(Error?)
+    case cancelled
+  }
+
+  private func awaitPlayablePlayer(asset: AVURLAsset, url: URL) async -> SingleTrackWaitResult {
+    let item = AVPlayerItem(asset: asset)
+    let player = AVPlayer(playerItem: item)
+    let deadline = Date().addingTimeInterval(Self.singleTrackPrepareTimeoutSeconds)
+    while Date() < deadline {
+      if Task.isCancelled || currentURL != url {
+        disposePlayer(player)
+        return .cancelled
+      }
+      switch item.status {
+      case .readyToPlay:
+        if Self.isPlayableItem(item) {
+          return .playable(player)
+        }
+      case .failed:
+        let error = item.error
+        disposePlayer(player)
+        return .failed(error)
+      default:
+        break
+      }
+      try? await Task.sleep(for: .milliseconds(50))
+    }
+    disposePlayer(player)
+    return .failed(nil)
   }
 
   private func installLegacy(url: URL, cookieHeader: String? = nil) {
@@ -1198,29 +1366,17 @@ struct CurrentCaptureMediaPreviewCard: View {
 
     switch playback.preparePhase {
     case let .failed(failure):
-      VStack(alignment: .leading, spacing: 8) {
+      VStack(alignment: .leading, spacing: 6) {
         Label(
           failure.message,
           systemImage: failure == .networkUnavailable ? "wifi.slash" : "exclamationmark.triangle.fill"
         )
-          .themedFont(.caption)
+          .themedFont(.caption, weight: .medium)
           .foregroundStyle(appTheme.warning)
           .fixedSize(horizontal: false, vertical: true)
-        // 失败时把走的哪条路、哪个主机、什么错误码摆出来。没有这一行，
-        // 排查只能靠猜——之前就是这么反复改了七轮还没定位到根因。
-        if let diagnostic = playback.playbackDiagnostic {
-          Text(diagnostic)
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .textSelection(.enabled)
-            .fixedSize(horizontal: false, vertical: true)
-            .accessibilityIdentifier("history-video-preview-diagnostic")
-        }
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
           if let onRefreshStream {
-            Button(
-              failure == .longFormDualNeedsRefresh ? "重新获取整段 MP4" : "重新获取可播地址"
-            ) {
+            Button(HistorySessionMediaPresentation.refreshActionTitle) {
               onRefreshStream()
             }
             .controlSize(.small)
@@ -1232,8 +1388,22 @@ struct CurrentCaptureMediaPreviewCard: View {
               .controlSize(.small)
               .accessibilityIdentifier("history-video-preview-retry")
           }
-          Button("回到原页面观看") { openInBrowser() }
+          Button(HistorySessionMediaPresentation.openSourceActionTitle) { openInBrowser() }
             .controlSize(.small)
+            .buttonStyle(.bordered)
+        }
+        if let diagnostic = playback.playbackDiagnostic {
+          DisclosureGroup(HistorySessionMediaPresentation.technicalDetailsTitle) {
+            Text(diagnostic)
+              .font(.caption2)
+              .foregroundStyle(.secondary)
+              .textSelection(.enabled)
+              .fixedSize(horizontal: false, vertical: true)
+              .padding(.top, 2)
+              .accessibilityIdentifier("history-video-preview-diagnostic")
+          }
+          .themedFont(.caption2)
+          .foregroundStyle(.secondary)
         }
       }
       .accessibilityIdentifier(
@@ -1717,63 +1887,91 @@ struct HistorySessionMediaUnavailableCard: View {
   /// 已发起的刷新次数；大于 1 表示在被反复重启，而不是单次请求慢。
   var refreshAttempts: Int = 1
   let onRefresh: () -> Void
+  @State private var showsTechnicalDetails = false
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      Label(HistorySessionMediaPresentation.title, systemImage: "play.rectangle")
-        .font(.headline)
-      Text(HistorySessionMediaPresentation.explanation)
-        .font(.callout)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      ViewThatFits(in: .horizontal) {
+        HStack(alignment: .center, spacing: DesignTokens.Space.lg) {
+          statusLabel
+          Spacer(minLength: 8)
+          actionRow.fixedSize()
+        }
+        VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+          statusLabel
+          actionRow
+        }
+      }
 
       switch phase {
       case .refreshing:
-        HStack(spacing: 8) {
-          ProgressView().controlSize(.small)
-          // 次数大于 1 说明刷新在被反复取消重启，而不是请求慢——两者界面本来一模一样。
-          Text(refreshAttempts > 1 ? "正在重新获取播放…（第 \(refreshAttempts) 次尝试）" : "正在重新获取播放…")
-            .themedFont(.caption)
-            .foregroundStyle(.secondary)
-        }
-        .accessibilityIdentifier("history-video-session-refreshing")
+        Text(refreshAttempts > 1
+          ? "正在重新获取…（第 \(refreshAttempts) 次）"
+          : "正在重新获取…")
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("history-video-session-refreshing")
       case let .failed(message):
         Text(message)
           .themedFont(.caption)
           .foregroundStyle(appTheme.warning)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("history-video-session-refresh-failed")
-        HStack(spacing: 10) {
-          Button(HistorySessionMediaPresentation.refreshActionTitle, action: onRefresh)
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .accessibilityIdentifier("history-video-session-refresh")
-          Button(HistorySessionMediaPresentation.openSourceActionTitle, action: openSource)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .accessibilityIdentifier("history-video-session-open-source")
-        }
       case .idle:
-        HStack(spacing: 10) {
-          Button(HistorySessionMediaPresentation.refreshActionTitle, action: onRefresh)
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .accessibilityIdentifier("history-video-session-refresh")
-          Button(HistorySessionMediaPresentation.openSourceActionTitle, action: openSource)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-            .accessibilityIdentifier("history-video-session-open-source")
-        }
+        EmptyView()
       }
+
+      DisclosureGroup(
+        HistorySessionMediaPresentation.technicalDetailsTitle,
+        isExpanded: $showsTechnicalDetails
+      ) {
+        Text(HistorySessionMediaPresentation.explanation)
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .padding(.top, 4)
+      }
+      .themedFont(.caption)
+      .foregroundStyle(.secondary)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(14)
-    .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
-        .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-    )
+    .padding(.horizontal, DesignTokens.Space.md)
+    .padding(.vertical, DesignTokens.Space.sm)
+    .background(appTheme.primaryText.opacity(0.025), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
     .accessibilityIdentifier("history-video-session-unavailable")
+  }
+
+  private var statusLabel: some View {
+    HStack(spacing: DesignTokens.Space.sm) {
+      Image(systemName: "play.rectangle")
+        .foregroundStyle(appTheme.secondaryText)
+      VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+        Text(HistorySessionMediaPresentation.title)
+          .themedFont(.callout, weight: .medium)
+        Text(HistorySessionMediaPresentation.compactSummary)
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+  }
+
+  private var actionRow: some View {
+    HStack(spacing: DesignTokens.Space.md) {
+      if case .refreshing = phase {
+        ProgressView().controlSize(.small)
+      } else {
+        Button(HistorySessionMediaPresentation.refreshActionTitle, action: onRefresh)
+          .accessibilityIdentifier("history-video-session-refresh")
+      }
+      Button(HistorySessionMediaPresentation.openSourceActionTitle, action: openSource)
+        .accessibilityIdentifier("history-video-session-open-source")
+    }
+    .buttonStyle(.borderless)
+    .themedFont(.callout, weight: .medium)
+    .foregroundStyle(appTheme.accent)
+    .controlSize(.small)
+    .frame(minHeight: 28)
   }
 
   private func openSource() {
@@ -2725,16 +2923,24 @@ private struct HistoryStreamingMediaCard: View {
       }
 
       if playbackFailed {
-        VStack(alignment: .leading, spacing: 8) {
-          Label("远程播放失败。地址可能已失效。", systemImage: "exclamationmark.triangle.fill")
-            .font(.callout)
+        VStack(alignment: .leading, spacing: 6) {
+          Label("远程播放失败，地址可能已失效。", systemImage: "exclamationmark.triangle.fill")
+            .themedFont(.caption, weight: .medium)
             .foregroundStyle(appTheme.warning)
-          Text("临时播放地址不会写入历史；APP 重启或地址过期后，请回到浏览器重新同步。")
-            .themedFont(.caption)
+          HStack(spacing: 8) {
+            Button(HistorySessionMediaPresentation.openSourceActionTitle, action: openInBrowser)
+              .buttonStyle(.borderedProminent)
+              .controlSize(.small)
+            DisclosureGroup(HistorySessionMediaPresentation.technicalDetailsTitle) {
+              Text("临时播放地址不会写入历史；APP 重启或地址过期后，请回到浏览器重新同步。")
+                .themedFont(.caption2)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 2)
+            }
+            .themedFont(.caption2)
             .foregroundStyle(.secondary)
-          Button("在浏览器中打开", action: openInBrowser)
-            .buttonStyle(.bordered)
-            .controlSize(.small)
+          }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("history-video-streaming-failed")

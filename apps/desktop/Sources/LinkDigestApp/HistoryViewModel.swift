@@ -785,12 +785,24 @@ private actor DraftStreamBuffer {
 
 @MainActor
 final class HistoryViewModel: ObservableObject {
+  struct ProfileImportReturnTarget: Equatable {
+    let taskID: TaskID
+    let batchID: UUID
+    let itemID: UUID
+  }
+
   @Published private(set) var rows: [HistoryRowProjection] = []
   @Published var selectedTaskIDs: Set<TaskID> = [] {
     didSet {
       let previous = Self.singleSelection(in: oldValue)
       let current = selectedTaskID
       if current != previous {
+        if profileImportReturnTarget?.taskID != current {
+          profileImportReturnTarget = nil
+        }
+        if isCreatorDirectoryActive, current != nil {
+          isReadingCreatorWorkInDirectory = true
+        }
         remoteMediaFavoriteState = .idle
         loadDetailForSelection()
       }
@@ -860,6 +872,12 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var selectedCreatorID: CreatorID?
   @Published private(set) var selectedCreatorSnapshot: CreatorSummary?
   @Published private(set) var isCreatorDirectoryActive = false
+  @Published private(set) var profileImportReturnTarget: ProfileImportReturnTarget?
+  @Published private(set) var profileImportScrollTarget: UUID?
+  /// Directory browsing shows the creator's works in the detail column.
+  /// Selecting a work turns this on so the reader appears; it must not follow
+  /// the list's usual auto-select-first-row behavior.
+  @Published private(set) var isReadingCreatorWorkInDirectory = false
   @Published private(set) var creatorDirectoryRows: [CreatorSummary] = []
   @Published var creatorSearchText = "" { didSet { scheduleCreatorSearchReload() } }
   @Published private(set) var creatorFailure: String?
@@ -1191,6 +1209,8 @@ final class HistoryViewModel: ObservableObject {
   private var creatorNextCursor: CreatorPageCursor?
   private var creatorPageTask: Task<Void, Never>?
   private var creatorSearchTask: Task<Void, Never>?
+  /// Last creator focused in this session (directory or sidebar). Survives leaving the directory.
+  private var sessionDirectoryCreatorID: CreatorID?
   private var configurationGeneration = UUID()
   private var listRequestID = UUID()
   private var detailRequestID = UUID()
@@ -1471,7 +1491,22 @@ final class HistoryViewModel: ObservableObject {
   var showsCreatorDirectoryFailure: Bool {
     isCreatorDirectoryActive && creatorDirectoryLoadFailed && creatorDirectoryRows.isEmpty
   }
+  var isBrowsingCreatorDirectory: Bool {
+    isCreatorDirectoryActive && !isReadingCreatorWorkInDirectory
+  }
+  /// Creator filter with no works — not a failed load and not a search miss.
+  var showsCreatorZeroWorks: Bool {
+    selectedCreatorID != nil
+      && listState == .empty
+      && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && selectedHosts.isEmpty
+      && selectedTagNormalizedNames.isEmpty
+  }
   func faviconImageURL(for row: HistoryRowProjection) -> URL? { faviconImageURLs[row.taskID] }
+  func localCoverURL(for taskID: TaskID, matching coverURL: String?) async -> URL? {
+    guard let coverURL, !coverURL.isEmpty else { return nil }
+    return await imageCache?.localImageURL(taskID: taskID, matchingRemoteURL: coverURL)
+  }
   func platformFavicon(forHost host: String) -> (url: URL, taskID: TaskID)? {
     let canonical = HistoryPlatformRegistry.canonicalHost(for: host)
     for row in rows where HistoryPlatformRegistry.canonicalHost(for: row.host) == canonical {
@@ -1508,7 +1543,7 @@ final class HistoryViewModel: ObservableObject {
     blockingErrorCode = unavailableCode
     rows = []; selectedTaskIDs = []; detail = nil; localImageURLs = []; localMediaFileURL = nil; localMediaLease = nil; localMediaResolutionFailure = nil; faviconImageURLs = [:]; nextCursor = nil
     availableTags = []; navigationCounts = .init(); selectedTagNormalizedNames = []; selectedHosts = []; selectedScope = .all; showsAllNavigationTags = false; searchText = ""
-    selectedCreatorID = nil; selectedCreatorSnapshot = nil; isCreatorDirectoryActive = false; creatorDirectoryRows = []; creatorSearchText = ""; creatorFailure = nil; creatorNextCursor = nil; isLoadingCreatorPage = false; creatorDirectoryLoadFailed = false
+    selectedCreatorID = nil; selectedCreatorSnapshot = nil; isCreatorDirectoryActive = false; isReadingCreatorWorkInDirectory = false; sessionDirectoryCreatorID = nil; creatorDirectoryRows = []; creatorSearchText = ""; creatorFailure = nil; creatorNextCursor = nil; isLoadingCreatorPage = false; creatorDirectoryLoadFailed = false
     listErrorCode = nil; detailErrorCode = nil; deleteErrorCode = nil; tagErrorCode = nil
     pendingDeletionTaskIDs = []; pendingProtectedDeletionTaskIDs = []
     isDeleteConfirmationPresented = false; isDeleteFailurePresented = false; isProtectedDeletionAlertPresented = false
@@ -1548,10 +1583,34 @@ final class HistoryViewModel: ObservableObject {
     runAutoTitleLocalizationQueueIfNeeded()
   }
 
+  /// Drop any in-flight history page so a later completion cannot refill `rows`.
+  private func invalidateInFlightListRequest() {
+    pageTask?.cancel()
+    pageTask = nil
+    isLoadingNextPage = false
+    listRequestID = UUID()
+    nextCursor = nil
+    listErrorCode = nil
+  }
+
+  private func discardVisibleList(state: HistoryListState) {
+    invalidateInFlightListRequest()
+    rows = []
+    listState = state
+    selectedTaskIDs = []
+    detail = nil
+    setDetailState(.idle)
+  }
+
   func reload() {
+    reload(preservingCurrentSelection: false)
+  }
+
+  private func reload(preservingCurrentSelection: Bool) {
     guard let history else { return }
     let generation = configurationGeneration, requestID = UUID()
     let filter = listFilter
+    let preservedSelection = preservingCurrentSelection ? selectedTaskIDs : nil
     listRequestID = requestID; pageTask?.cancel(); isLoadingNextPage = false
     listState = .loading; listErrorCode = nil; nextCursor = nil
     pageTask = Task { [weak self] in
@@ -1559,7 +1618,12 @@ final class HistoryViewModel: ObservableObject {
         Self.pageResult(history, cursor: nil, filter: filter)
       }.value
       guard !Task.isCancelled else { return }
-      self?.receiveInitialPage(result, generation: generation, requestID: requestID)
+      self?.receiveInitialPage(
+        result,
+        generation: generation,
+        requestID: requestID,
+        preservedSelection: preservedSelection
+      )
     }
     reloadAvailableTags(reloadsListIfSelectedTagsDisappear: false)
     reloadNavigationCounts()
@@ -1581,6 +1645,35 @@ final class HistoryViewModel: ObservableObject {
   func retryList() { guard canRetryList else { return }; reload() }
   func retryDetail() { loadDetailForSelection() }
   func reveal(taskID: TaskID) { selectedTaskID = taskID; reload() }
+
+  func revealProfileImportResult(taskID: TaskID, batchID: UUID, itemID: UUID) {
+    profileImportReturnTarget = .init(taskID: taskID, batchID: batchID, itemID: itemID)
+    reveal(taskID: taskID)
+  }
+
+  func returnToProfileImportBatch() {
+    guard let target = profileImportReturnTarget else { return }
+    if isCreatorDirectoryActive { leaveCreatorWorkReading() }
+    else {
+      selectedTaskIDs = []
+      detail = nil
+      setDetailState(.idle)
+    }
+    profileImportScrollTarget = target.itemID
+    profileImportReturnTarget = nil
+  }
+
+  func consumeProfileImportScrollTarget() {
+    profileImportScrollTarget = nil
+  }
+
+  /// A committed profile item refreshes counts and visible rows, but an empty
+  /// selection stays empty and an open article remains the open article.
+  func handleProfileImportCompletion() {
+    reload(preservingCurrentSelection: true)
+    refreshSelectedCreator()
+    if isCreatorDirectoryActive { reloadCreators() }
+  }
 
   /// 从 `linkdigest://digest/<id>` 跳进来时的定位。
   ///
@@ -4725,24 +4818,38 @@ final class HistoryViewModel: ObservableObject {
   func enterCreatorDirectory() {
     isWorkbenchActive = false
     isCreatorDirectoryActive = true
-    selectedCreatorID = nil
-    selectedCreatorSnapshot = nil
+    isReadingCreatorWorkInDirectory = false
     selectedHosts = []
     selectedTagNormalizedNames = []
     selectedScope = .all
     searchText = ""
+    discardVisibleList(state: .loading)
+    if let remembered = sessionDirectoryCreatorID {
+      selectedCreatorID = remembered
+      if selectedCreatorSnapshot?.id != remembered {
+        selectedCreatorSnapshot = nil
+      }
+      refreshSelectedCreator()
+    } else {
+      selectedCreatorID = nil
+      selectedCreatorSnapshot = nil
+    }
     reloadCreators()
   }
 
+  /// Sidebar / filter chip: leave the directory and filter the middle list.
+  /// Tapping the same creator again clears the filter, matching existing chips.
   func selectCreator(_ id: CreatorID) {
     isWorkbenchActive = false
     isCreatorDirectoryActive = false
+    isReadingCreatorWorkInDirectory = false
     searchText = ""
     if selectedCreatorID == id {
       selectedCreatorID = nil
       selectedCreatorSnapshot = nil
     } else {
       selectedCreatorID = id
+      sessionDirectoryCreatorID = id
       selectedCreatorSnapshot = navigationCounts.pinnedCreators.first(where: { $0.id == id })
         ?? creatorDirectoryRows.first(where: { $0.id == id })
       refreshSelectedCreator()
@@ -4751,6 +4858,40 @@ final class HistoryViewModel: ObservableObject {
     selectedTagNormalizedNames = []
     selectedScope = .all
     reload()
+  }
+
+  /// Directory row: keep the catalog in the middle column and load this creator's works on the right.
+  func focusCreatorInDirectory(_ id: CreatorID) {
+    isWorkbenchActive = false
+    isCreatorDirectoryActive = true
+    if selectedCreatorID == id, isReadingCreatorWorkInDirectory {
+      leaveCreatorWorkReading()
+      return
+    }
+    let switching = selectedCreatorID != id
+    selectedCreatorID = id
+    sessionDirectoryCreatorID = id
+    selectedCreatorSnapshot = creatorDirectoryRows.first(where: { $0.id == id })
+      ?? navigationCounts.pinnedCreators.first(where: { $0.id == id })
+      ?? selectedCreatorSnapshot
+    searchText = ""
+    selectedHosts = []
+    selectedTagNormalizedNames = []
+    selectedScope = .all
+    isReadingCreatorWorkInDirectory = false
+    if switching {
+      discardVisibleList(state: .loading)
+    }
+    refreshSelectedCreator()
+    reload()
+  }
+
+  func leaveCreatorWorkReading() {
+    guard isCreatorDirectoryActive else { return }
+    isReadingCreatorWorkInDirectory = false
+    selectedTaskIDs = []
+    detail = nil
+    setDetailState(.idle)
   }
 
   func handleCreatorAssociationChanged() {
@@ -4786,6 +4927,7 @@ final class HistoryViewModel: ObservableObject {
     selectedCreatorID = nil
     selectedCreatorSnapshot = nil
     isCreatorDirectoryActive = false
+    isReadingCreatorWorkInDirectory = false
     creatorNextCursor = nil
   }
 
@@ -5024,23 +5166,49 @@ final class HistoryViewModel: ObservableObject {
     confirmDeletion(protectedTaskIDs: Set(protectedTaskID.map { [$0] } ?? []))
   }
 
-  private func receiveInitialPage(_ result: PageResult, generation: UUID, requestID: UUID) {
+  private func receiveInitialPage(
+    _ result: PageResult,
+    generation: UUID,
+    requestID: UUID,
+    preservedSelection: Set<TaskID>? = nil
+  ) {
     guard generation == configurationGeneration, requestID == listRequestID else { return }
     switch result {
     case let .success(page):
       rows = page.rows; nextCursor = page.nextCursor; listState = page.rows.isEmpty ? .empty : .loaded
       loadFavicons(for: page.rows, generation: generation)
+      if let preservedSelection {
+        selectedTaskIDs = preservedSelection
+        if preservedSelection.isEmpty {
+          detail = nil
+          setDetailState(.idle)
+        } else if detail == nil {
+          loadDetailForSelection()
+        }
+        return
+      }
       if page.rows.isEmpty {
         selectedTaskIDs = []; detail = nil; setDetailState(.idle)
       } else if selectedTaskIDs.isEmpty {
-        selectedTaskID = rows.first?.taskID
+        if isBrowsingCreatorDirectory {
+          detail = nil
+          setDetailState(.idle)
+        } else {
+          selectedTaskID = rows.first?.taskID
+        }
       } else {
         let visible = Set(rows.map(\.taskID))
         selectedTaskIDs.formIntersection(visible)
         // 搜索或筛选把原选中项排除后，交集会变空。列表明明有结果却把详情清成
         // 空白，会让用户误以为「没有搜索结果」。自动接住第一条可见结果。
+        // 博主目录浏览作品时除外：右侧应先列出作品，点进后再读，不能闪到旧文章。
         if selectedTaskIDs.isEmpty {
-          selectedTaskID = rows.first?.taskID
+          if isBrowsingCreatorDirectory {
+            detail = nil
+            setDetailState(.idle)
+          } else {
+            selectedTaskID = rows.first?.taskID
+          }
         } else if selectedTaskID != nil {
           loadDetailForSelection()
         } else {
@@ -6565,10 +6733,43 @@ final class HistoryViewModel: ObservableObject {
         self.creatorDirectoryLoadFailed = false
         self.creatorDirectoryRows = page.rows
         self.creatorNextCursor = page.nextCursor
+        self.reconcileDirectorySelection()
       } else {
         self.creatorDirectoryLoadFailed = true
         self.creatorFailure = "无法载入博主列表，请稍后重试。"
       }
+    }
+  }
+
+  private func reconcileDirectorySelection() {
+    guard isCreatorDirectoryActive else { return }
+    let visibleIDs = Set(creatorDirectoryRows.map(\.id))
+    if let current = selectedCreatorID, visibleIDs.contains(current) {
+      sessionDirectoryCreatorID = current
+      if selectedCreatorSnapshot?.id != current {
+        selectedCreatorSnapshot = creatorDirectoryRows.first(where: { $0.id == current })
+      }
+      reload()
+      return
+    }
+    if let remembered = sessionDirectoryCreatorID, visibleIDs.contains(remembered) {
+      focusCreatorInDirectory(remembered)
+      return
+    }
+    let searching = !creatorSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    if searching {
+      selectedCreatorID = nil
+      selectedCreatorSnapshot = nil
+      isReadingCreatorWorkInDirectory = false
+      discardVisibleList(state: .empty)
+      return
+    }
+    if selectedCreatorID != nil {
+      reload()
+      return
+    }
+    if let first = creatorDirectoryRows.first {
+      focusCreatorInDirectory(first.id)
     }
   }
 
@@ -6581,7 +6782,11 @@ final class HistoryViewModel: ObservableObject {
     Task { [weak self, worker] in
       let summary = await worker.creator(history, id: id)
       guard let self, generation == self.configurationGeneration, self.selectedCreatorID == id else { return }
-      if let summary { self.selectedCreatorSnapshot = summary }
+      if let summary {
+        self.selectedCreatorSnapshot = summary
+      } else if self.isCreatorDirectoryActive {
+        self.selectedCreatorSnapshot = nil
+      }
     }
   }
 

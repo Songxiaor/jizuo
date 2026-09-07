@@ -1,11 +1,7 @@
 import LinkDigestCore
 import SwiftUI
 
-/// 侧栏「平台」分组。
-///
-/// 类型名保留 `PlatformGridView`，避免把这次视觉调整扩大成无意义的调用链改名；
-/// 实际呈现已从无文字的三列图标网格收拢为紧凑列表。平台筛选不是启动器，名称
-/// 不能只藏在 tooltip 里：图标负责扫视，文字负责确认，数量负责反馈抓取结果。
+/// 来源平台：固定顺序的双列按钮，名称和库存数量始终可见。
 struct PlatformGridView: View {
   struct Item: Identifiable {
     let host: String
@@ -20,9 +16,18 @@ struct PlatformGridView: View {
   let isSelected: (String) -> Bool
   let onSelect: (String) -> Void
 
+  private var orderedItems: [Item] {
+    let order = ["X", "抖音", "微信公众号", "哔哩哔哩", "GitHub", "YouTube", "Discourse", "Reddit", "Substack", "待分类"]
+    return items.sorted {
+      let left = order.firstIndex(of: HistoryPlatformDisplay.name(forHost: $0.host)) ?? order.count
+      let right = order.firstIndex(of: HistoryPlatformDisplay.name(forHost: $1.host)) ?? order.count
+      return left == right ? $0.host < $1.host : left < right
+    }
+  }
+
   var body: some View {
-    VStack(spacing: DesignTokens.Space.xxs) {
-      ForEach(items) { item in
+    LazyVGrid(columns: [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)], spacing: 4) {
+      ForEach(orderedItems) { item in
         PlatformNavigationRow(
           item: item,
           theme: theme,
@@ -44,38 +49,41 @@ private struct PlatformNavigationRow: View {
   @State private var isHovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  private var name: String { HistoryPlatformDisplay.name(forHost: item.host) }
+  private var fullName: String { HistoryPlatformDisplay.name(forHost: item.host) }
+  private var name: String {
+    switch fullName {
+    case "微信公众号": "公众号"
+    case "哔哩哔哩": "B站"
+    case "待分类": "其他"
+    default: fullName
+    }
+  }
 
   var body: some View {
     Button(action: onSelect) {
-      HStack(spacing: DesignTokens.Space.sm) {
+      HStack(spacing: DesignTokens.Space.xs) {
         PlatformNavigationIcon(
           host: item.host,
           faviconURL: item.faviconURL,
           faviconTaskID: item.faviconTaskID
         )
-          .frame(width: 18, height: 18)
+          .scaleEffect(0.78)
+          .frame(width: 12, height: 14)
           .accessibilityHidden(true)
         Text(name)
           .lineLimit(1)
-          .truncationMode(.tail)
-        Spacer(minLength: DesignTokens.Space.xs)
-        if item.count > 0 {
-          Text("\(item.count)")
-            .themedFont(.caption2, weight: .medium, monospacedDigit: true)
-            .foregroundStyle(isSelected ? theme.accent : theme.secondaryText)
-            .padding(.horizontal, DesignTokens.Space.xs + DesignTokens.Space.xxs)
-            .padding(.vertical, DesignTokens.Space.xxs)
-            .background(
-              isSelected ? theme.accent.opacity(0.12) : theme.badge,
-              in: Capsule()
-            )
-        }
+          .minimumScaleFactor(0.85)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        Text("\(item.count)")
+          .themedFont(.caption2, weight: .medium, monospacedDigit: true)
+          .foregroundStyle(isSelected ? theme.accent : theme.secondaryText)
+          .fixedSize()
+
       }
-      .themedFont(.callout)
+      .themedFont(.caption2)
       .foregroundStyle(theme.primaryText)
-      .padding(.horizontal, DesignTokens.Space.sm)
-      .frame(height: 30)
+      .padding(.horizontal, DesignTokens.Space.xs)
+      .frame(height: 32)
       .frame(maxWidth: .infinity)
       .background(
         RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
@@ -97,8 +105,8 @@ private struct PlatformNavigationRow: View {
       value: isHovering
     )
     .onHover { isHovering = $0 }
-    .help(item.count > 0 ? "\(name)（\(item.count) 条）" : name)
-    .accessibilityLabel(name)
+    .help("\(fullName)（\(item.count) 条）")
+    .accessibilityLabel(fullName)
     .accessibilityValue("\(item.count) 条")
     .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
     .accessibilityIdentifier("history-navigation-platform-\(item.host)")
@@ -107,6 +115,6 @@ private struct PlatformNavigationRow: View {
   private var rowBackground: Color {
     if isSelected { return theme.accent.opacity(0.10) }
     if isHovering { return theme.primaryText.opacity(0.035) }
-    return .clear
+    return theme.primaryText.opacity(0.025)
   }
 }

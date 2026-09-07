@@ -88,7 +88,7 @@ final class HistoryContentViewTests: XCTestCase {
   @MainActor
   func testRemotePlaybackControllerReleasesPlayerOnCaptureSwitch() {
     let controller = RemotePreviewPlayerController()
-    controller.prepare(url: URL(string: "https://media.example.test/a.mp4")!)
+    controller.prepare(url: URL(fileURLWithPath: "/tmp/linkdigest-local-preview.mp4"))
     XCTAssertTrue(controller.hasPlayer)
 
     controller.release()
@@ -354,9 +354,9 @@ final class HistoryContentViewTests: XCTestCase {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
     // 禁用与理由必须同源：不能再各写一套 `canStartRun` / `arePreferencesReady`。
-    XCTAssertTrue(detail.contains("disabled: summarizeUnavailableReason != nil"))
-    XCTAssertTrue(detail.contains("disabled: translateUnavailableReason != nil"))
-    XCTAssertTrue(detail.contains("disabled: mindMapUnavailableReason != nil"))
+    XCTAssertTrue(detail.contains(".disabled(summarizeUnavailableReason != nil)"))
+    XCTAssertTrue(detail.contains(".disabled(translateUnavailableReason != nil)"))
+    XCTAssertTrue(detail.contains(".disabled(mindMapUnavailableReason != nil)"))
     XCTAssertTrue(detail.contains("history-run-blocked-reason"))
     XCTAssertTrue(detail.contains("regenerate-blocked-reason"))
     XCTAssertTrue(detail.contains("preferencesReady: providerSettings.arePreferencesReady"))
@@ -381,8 +381,10 @@ final class HistoryContentViewTests: XCTestCase {
     // previously drifted below the token minimums and truncated both sidebars.
     XCTAssertTrue(source.contains("min: DesignTokens.Layout.sidebarMin"))
     XCTAssertTrue(source.contains("ideal: DesignTokens.Layout.sidebarIdeal"))
-    XCTAssertTrue(source.contains("min: DesignTokens.Layout.listMin"))
-    XCTAssertTrue(source.contains("ideal: DesignTokens.Layout.listIdeal"))
+    XCTAssertTrue(source.contains("min: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMin : DesignTokens.Layout.listMin"))
+    XCTAssertTrue(source.contains("ideal: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnIdeal : DesignTokens.Layout.listIdeal"))
+    XCTAssertTrue(source.contains("CreatorDirectoryChrome.listColumnMin"), "博主目录中栏才缩窄，历史列表仍用 listMin")
+    XCTAssertTrue(source.contains("互动数据为保存时快照"))
     XCTAssertTrue(source.contains(".modifier(HistoryWindowToolbarThemeModifier(theme: theme))"))
     // 工具栏背景必须逐列挂载：根部那一份对 macOS 分栏窗口不生效，表现是
     // 详情列滚动时标题从工具栏图标底下原样穿过。详情列用正文色当挡板。
@@ -393,7 +395,7 @@ final class HistoryContentViewTests: XCTestCase {
     // line pierces the toolbar and reaches the window top; the in-content
     // SwiftUI hairline approach must not return (it cannot reach the toolbar).
     XCTAssertTrue(source.contains("WindowColumnDividerInstaller("))
-    XCTAssertTrue(source.contains("lineColor: (theme.isNative || inlineImageLightbox.url != nil || videoCinema.isPresented) ? nil : NSColor(theme.hairline)"))
+    XCTAssertTrue(source.contains("lineColor: (columnVisibility == .detailOnly || theme.isNative || inlineImageLightbox.url != nil || videoCinema.isPresented) ? nil : NSColor(theme.hairline)"))
     XCTAssertFalse(source.contains("themedColumnDivider"))
     XCTAssertTrue(source.contains("private var navigationRail: some View"))
     XCTAssertTrue(source.contains("history-navigation-all"))
@@ -403,19 +405,42 @@ final class HistoryContentViewTests: XCTestCase {
     guard
       let todayIndex = source.range(of: "history-navigation-today-note")?.lowerBound,
       let creatorsIndex = source.range(of: "history-navigation-creators")?.lowerBound,
-      let platformsIndex = source.range(of: "Section(\"平台\")")?.lowerBound
+      let platformsIndex = source.range(of: "navigationSectionHeader(\"来源平台\")")?.lowerBound
     else {
       return XCTFail("侧栏必须同时有今天、博主和平台")
     }
     XCTAssertTrue(todayIndex < creatorsIndex && creatorsIndex < platformsIndex, "博主分区必须在今天和平台之间")
     XCTAssertTrue(source.contains("history-navigation-creators-all"))
     XCTAssertTrue(source.contains("history-navigation-creator-add"))
-    XCTAssertTrue(source.contains("DisclosureGroup(isExpanded: $navigationCreatorsExpanded)"))
+    XCTAssertTrue(source.contains("navigationSectionHeader(\"博主\", expanded: $navigationCreatorsExpanded"))
     XCTAssertFalse(source.contains("Label(\"添加博主\", systemImage: \"plus\")"), "加号应在博主标题右侧，不在展开内容里")
     XCTAssertTrue(source.contains("!model.isCreatorDirectoryActive"), "全部博主目录打开时，全部不得同时选中")
     XCTAssertTrue(source.contains("history-creator-select-"))
+    XCTAssertTrue(source.contains("focusCreatorInDirectory"))
+    XCTAssertTrue(source.contains("history-creator-directory-title"))
+    XCTAssertTrue(source.contains("history-creator-directory-works"))
+    XCTAssertTrue(source.contains("LazyVGrid("))
+    XCTAssertTrue(source.contains("GridItem(.flexible(minimum: 0)"))
+    XCTAssertTrue(source.contains("creatorWorksGridColumns(for: creator, availableWidth: geometry.size.width)"))
+    XCTAssertTrue(source.contains("CreatorSavedWorkCard("))
+    XCTAssertTrue(source.contains(".buttonStyle(.plain)"))
+    XCTAssertTrue(source.contains("accessibilityElement(children: .contain)"))
+    XCTAssertFalse(source.contains(".onTapGesture { model.selectedTaskID"))
+    XCTAssertTrue(source.contains("localCoverURL(for:"))
+    XCTAssertFalse(source.contains("firstLocalCoverURL"))
+    XCTAssertTrue(source.contains("history-creator-refresh-"))
+    XCTAssertTrue(source.contains("directoryDisplayName"))
+    XCTAssertTrue(source.contains("person.crop.circle.badge.questionmark"))
+    XCTAssertTrue(source.contains("failed = true"))
+    XCTAssertTrue(source.contains("history-creator-directory-works-empty"))
+    XCTAssertTrue(source.contains("history-creator-directory-back"))
     XCTAssertTrue(source.contains("history-creator-directory-filtered-empty"))
     XCTAssertTrue(source.contains("history-creator-directory-failed"))
+    XCTAssertTrue(source.contains("Button(\"抓取作品\")"))
+    XCTAssertFalse(
+      appSource("HistoryContentView.swift").contains("square.and.arrow.down"),
+      "目录行主操作应是「抓取作品」文案，不是下载图标"
+    )
     XCTAssertTrue(source.contains("manualLink.creatorAssociationRevision"))
     XCTAssertTrue(source.contains(".sheet(item: $douyinProfileImportRequest)"))
     XCTAssertTrue(source.contains("DouyinProfileImportRequest"))
@@ -520,9 +545,11 @@ final class HistoryContentViewTests: XCTestCase {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
     XCTAssertTrue(
-      detail.contains("maxWidth: DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: readingFont.bodySize)"),
+      detail.contains("maxWidth: readingContentMaxWidth"),
       "内容列上限应随字号联动，而不是钉死的 680pt"
     )
+    XCTAssertTrue(detail.contains("let scaled = DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: readingFont.bodySize)"))
+    XCTAssertTrue(detail.contains("isFocusReading ? min(Self.focusReadingMaxWidth, scaled) : scaled"))
     XCTAssertTrue(detail.contains(".frame(maxWidth: .infinity, alignment: .center)"))
     XCTAssertTrue(detail.contains(".padding(.horizontal, DesignTokens.Layout.readingHorizontalInset)"))
     XCTAssertFalse(detail.contains(".padding(.leading, 48)"))
@@ -626,8 +653,180 @@ final class HistoryContentViewTests: XCTestCase {
       "对不上标题的开头不能剥"
     )
     let source = historyContentViewSource()
-    XCTAssertTrue(source.contains("strippingEchoedOpening(title: title, from: cleaned)"))
+    XCTAssertTrue(source.contains("strippingEchoedOpening(title: title, from: cleaned, style: style)"))
     XCTAssertTrue(source.contains("guard !isOwnWriting else { return cleaned }"))
+  }
+
+  func testFilteredEmptyDoesNotLookLikeAnEmptyLibrary() {
+    let source = historyContentViewSource()
+    let sidebar = section(in: source, from: "private var sidebar: some View", to: "@ViewBuilder private var detail")
+    let emptyDetail = section(in: source, from: "private var emptyDetail: some View", to: "private func createNote()")
+    XCTAssertTrue(sidebar.contains("history-filter-empty"))
+    XCTAssertTrue(sidebar.contains("history-empty"))
+    XCTAssertTrue(sidebar.contains("history-notes-empty"))
+    XCTAssertTrue(sidebar.contains("history-unsummarized-empty"))
+    XCTAssertTrue(source.contains("history-creator-directory-empty"))
+    XCTAssertTrue(source.contains("history-creator-directory-filtered-empty"))
+    XCTAssertTrue(source.contains("history-creator-zero-works"))
+    XCTAssertTrue(source.contains("history-creator-directory-works-empty"))
+    XCTAssertTrue(source.contains("尚未保存作品"))
+    XCTAssertTrue(emptyDetail.contains("showsCreatorZeroWorks"))
+    guard
+      let zeroWorks = emptyDetail.range(of: "showsCreatorZeroWorks"),
+      let filterFirst = emptyDetail.range(of: "hasActiveFilter")
+    else {
+      return XCTFail("零作品必须在通用筛选空状态之前判断")
+    }
+    XCTAssertLessThan(zeroWorks.lowerBound, filterFirst.lowerBound)
+    XCTAssertTrue(source.contains("notes-empty-detail"))
+    XCTAssertTrue(source.contains("还没有保存页面"))
+    XCTAssertTrue(emptyDetail.contains("hasActiveFilter"))
+    XCTAssertTrue(emptyDetail.contains("history-filter-empty-detail"))
+    XCTAssertTrue(emptyDetail.contains("emptyNotesDetail"))
+    XCTAssertTrue(emptyDetail.contains("emptyCaptureDetail"))
+    XCTAssertTrue(source.contains("没有符合条件的资料"))
+    XCTAssertTrue(source.contains("调整搜索词或清除筛选后再试"))
+    XCTAssertFalse(source.contains("该分类下暂无内容"))
+    XCTAssertFalse(source.contains("没有搜索结果"))
+    guard
+      let filter = emptyDetail.range(of: "hasActiveFilter"),
+      let notes = emptyDetail.range(of: "emptyNotesDetail"),
+      let capture = emptyDetail.range(of: "emptyCaptureDetail")
+    else {
+      return XCTFail("详情空状态必须先判断筛选，再区分笔记和抓取欢迎页")
+    }
+    XCTAssertLessThan(filter.lowerBound, notes.lowerBound)
+    XCTAssertLessThan(notes.lowerBound, capture.lowerBound)
+  }
+
+  func testEchoedOpeningKeepsTheOnlyLineWhenItEqualsTheTitle() {
+    let title = "A short X post about one idea"
+    XCTAssertEqual(
+      CapturedSourceBodyPresentation.strippingEchoedOpening(title: title, from: title),
+      title
+    )
+    XCTAssertEqual(
+      CapturedSourceBodyPresentation.strippingEchoedOpening(title: title, from: "# \(title)"),
+      "# \(title)"
+    )
+  }
+
+  func testEchoedOpeningKeepsTitleAndInfoLineWhenThereIsNoBody() {
+    let title = "The deepseek of DeepSeek Harness: Overengineering or built for self-evolution?"
+    let markdown = """
+    # \(title)
+
+    2026-08-20 36 min
+    """
+    XCTAssertEqual(
+      CapturedSourceBodyPresentation.strippingEchoedOpening(title: title, from: markdown),
+      markdown
+    )
+  }
+
+  func testEchoedOpeningStillStripsTitleWhenAParagraphRemains() {
+    let title = "The deepseek of DeepSeek Harness: Overengineering or built for self-evolution?"
+    let markdown = """
+    # \(title)
+
+    2026-08-20 36 min
+
+    对 DeepSeek Harness 的一次 deepseek。
+    """
+    let stripped = CapturedSourceBodyPresentation.strippingEchoedOpening(title: title, from: markdown)
+    XCTAssertFalse(stripped.contains(title))
+    XCTAssertFalse(stripped.contains("36 min"))
+    XCTAssertEqual(stripped, "对 DeepSeek Harness 的一次 deepseek。")
+  }
+
+  func testEchoedBylineDoesNotDropAnOrdinaryFirstParagraph() {
+    let title = "储蓄"
+    let dashRange = CapturedSourceBodyPresentation.strippingEchoedOpening(
+      title: title,
+      from: "# 储蓄\n\n从20-30岁开始存钱，比盯着指数更重要。"
+    )
+    XCTAssertTrue(dashRange.contains("从20-30岁开始存钱，比盯着指数更重要。"), "含 20 和 - 的正常首段不能当日期行")
+    XCTAssertFalse(dashRange.contains("# 储蓄"))
+
+    let yearSentence = CapturedSourceBodyPresentation.strippingEchoedOpening(
+      title: title,
+      from: "# 储蓄\n\n2020年我开始做独立开发。"
+    )
+    XCTAssertEqual(yearSentence, "2020年我开始做独立开发。")
+
+    let englishDated = CapturedSourceBodyPresentation.strippingEchoedOpening(
+      title: "A start",
+      from: "# A start\n\nOn 2026-09-01 I started writing"
+    )
+    XCTAssertEqual(englishDated, "On 2026-09-01 I started writing")
+  }
+
+  func testDouyinCaptionKeepsMatchingBodyAndHashtags() {
+    let title = "Astra的搭配blender实现平面图建模 又是一大步"
+    let style = CapturedSourceBodyPresentation.EchoedOpeningStyle.stripSyntheticTitleHeadingOnly
+    let firstPlusTags = CapturedSourceBodyPresentation.strippingEchoedOpening(
+      title: title,
+      from: "\(title)\n\n#blender #平面图",
+      style: style
+    )
+    XCTAssertTrue(firstPlusTags.contains(title), "真实配文首段即使与标题相同也要留下")
+    XCTAssertTrue(firstPlusTags.contains("#blender"))
+    XCTAssertTrue(firstPlusTags.contains("#平面图"))
+
+    XCTAssertEqual(
+      CapturedSourceBodyPresentation.strippingEchoedOpening(
+        title: title,
+        from: title,
+        style: style
+      ),
+      title
+    )
+
+    let withHeading = CapturedSourceBodyPresentation.strippingEchoedOpening(
+      title: title,
+      from: "# \(title)\n\n\(title)\n\n#blender #平面图",
+      style: style
+    )
+    XCTAssertFalse(withHeading.hasPrefix("# \(title)"))
+    XCTAssertTrue(withHeading.contains(title))
+    XCTAssertTrue(withHeading.contains("#blender"))
+
+    let headingOnly = CapturedSourceBodyPresentation.strippingEchoedOpening(
+      title: title,
+      from: "# \(title)",
+      style: style
+    )
+    XCTAssertFalse(headingOnly.contains("# \(title)"))
+
+    let unchanged = CapturedSourceBodyPresentation.strippingEchoedOpening(
+      title: title,
+      from: "\(title)\n\n#blender",
+      style: .stripMatchingOpening
+    )
+    XCTAssertFalse(unchanged.contains(title), "非抖音仍剥与标题相同的首段")
+    XCTAssertTrue(unchanged.contains("#blender"))
+
+    let source = historyContentViewSource()
+    let caption = section(
+      in: source,
+      from: "private var hasPresentableCaption: Bool",
+      to: "private var availableSourceLayers"
+    )
+    XCTAssertFalse(caption.contains("isRedundantDouyinBody"), "抖音配文层不能因与标题相同而隐藏")
+    XCTAssertTrue(source.contains("stripSyntheticTitleHeadingOnly"))
+    XCTAssertTrue(source.contains("hasPresentableCaption"))
+    let panes = section(
+      in: source,
+      from: "private var availableReadingPanes",
+      to: "private var showsReadingPanePicker"
+    )
+    XCTAssertTrue(panes.contains("hasPresentableCaption"), "无转写的抖音视频也要有原文面板")
+    let layered = section(
+      in: source,
+      from: "private var showsLayeredSource: Bool",
+      to: "private var isDouyinCapture"
+    )
+    XCTAssertTrue(layered.contains("isDouyinCapture && hasPresentableCaption"))
   }
 
   func testHistoryTagEmptyStateIsMinimalWithoutLongHint() {
@@ -865,11 +1064,11 @@ final class HistoryContentViewTests: XCTestCase {
       )
     )
 
-    XCTAssertEqual(HistorySessionMediaPresentation.title, "此记录包含视频")
+    XCTAssertEqual(HistorySessionMediaPresentation.title, "此处暂不可播")
     XCTAssertTrue(HistorySessionMediaPresentation.explanation.contains("只在抓取当次有效"))
     XCTAssertFalse(HistorySessionMediaPresentation.explanation.contains("加载失败"))
     XCTAssertFalse(HistorySessionMediaPresentation.explanation.contains("地址已失效"))
-    XCTAssertEqual(HistorySessionMediaPresentation.openSourceActionTitle, "回到原页面观看")
+    XCTAssertEqual(HistorySessionMediaPresentation.openSourceActionTitle, "回到原页面")
     XCTAssertEqual(HistorySessionMediaPresentation.refreshActionTitle, "重新获取播放")
   }
 
@@ -1471,7 +1670,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("点击上方的『转写』开始"))
     XCTAssertTrue(detail.contains("history-reading-result-empty"))
     XCTAssertTrue(detail.contains("尚未生成总结"))
-    XCTAssertTrue(detail.contains("点击上方「生成总结」开始"))
+    XCTAssertTrue(detail.contains("在「AI 处理」中生成总结"))
     XCTAssertTrue(detail.contains("本条没有抓取到正文"))
     XCTAssertTrue(detail.contains("readingPane = defaultReadingPane"))
     XCTAssertTrue(
@@ -1514,7 +1713,7 @@ final class HistoryContentViewTests: XCTestCase {
       source.contains(".frame(maxWidth: 680, alignment: .leading)"),
       "钉死的 680pt 上限应已被字号联动的可读上限取代")
     XCTAssertTrue(
-      source.contains("maxWidth: DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: readingFont.bodySize)"),
+      source.contains("maxWidth: readingContentMaxWidth"),
       "行宽仍要有上限，只是应当唯一——没有上限会让宽屏下的行长到不可读")
   }
 
@@ -1573,20 +1772,18 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(captureSink.contains("value.shouldAutomaticallyPersistLegacyMedia"))
   }
 
-  func testLongTitleShrinksAndScrollsInsteadOfTruncating() {
+  func testLongTitleCanExpandAndResetsWhenSwitchingRecords() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct TitleHeightPreferenceKey")
-    XCTAssertTrue(detail.contains("titleFontSize: CGFloat = 22"), "28pt was too large for video captions")
-    XCTAssertTrue(detail.contains("titleMaximumHeight: CGFloat { titleLineHeight * 3 }"))
-    XCTAssertTrue(detail.contains("if titleNeedsScrolling"), "Short titles must stay plain Text views")
-    XCTAssertTrue(detail.contains("private var measuredTitleText: some View"))
-    XCTAssertTrue(detail.contains(".frame(height: Self.titleMaximumHeight)"))
-    XCTAssertTrue(detail.contains("scrollBounceBehavior(.basedOnSize)"))
-    XCTAssertTrue(detail.contains("history-detail-title"))
-    XCTAssertFalse(
-      detail.contains(".lineLimit(4)"),
-      "Overflow is now reachable by scrolling rather than discarded"
-    )
+    let title = section(in: detail, from: "@ViewBuilder private var titleView", to: "private func engageReadingPane")
+    XCTAssertTrue(title.contains(".lineLimit(isTitleExpanded ? nil : 3)"))
+    XCTAssertTrue(title.contains("收起标题"))
+    XCTAssertTrue(title.contains("展开标题"))
+    XCTAssertTrue(title.contains("history-detail-title-expand"))
+    XCTAssertFalse(title.contains("ScrollView(.vertical)"))
+    let reset = section(in: detail, from: ".onChange(of: detail.task.id", to: "transcriptionDraft =")
+    XCTAssertTrue(reset.contains("isTitleExpanded = false"))
+    XCTAssertTrue(title.contains(".onSubmit { commitNoteTitle() }"))
   }
 
   /// 这一版不提供工作台，就是谁都看不到——包括当初自己打开过开关的人。
@@ -1716,6 +1913,30 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(today.contains("Jul"))
     XCTAssertTrue(earlier.contains("Jul") || earlier.contains("2026"))
     XCTAssertEqual(HistoryTimestampFormatter.text(nil, now: now, calendar: calendar, locale: locale, timeZone: zone), "—")
+  }
+
+  func testEngagementCountsUseUnitsWithoutTruncatingUnknownFormats() {
+    XCTAssertEqual(HistoryEngagementCount.compact("338636"), "33.9万")
+    XCTAssertEqual(HistoryEngagementCount.compact("225,766,140"), "2.3亿")
+    XCTAssertEqual(HistoryEngagementCount.compact("10000"), "1万")
+    XCTAssertEqual(HistoryEngagementCount.compact("9080"), "9080")
+    XCTAssertEqual(HistoryEngagementCount.compact("1.2M"), "1.2M")
+    XCTAssertEqual(HistoryEngagementCount.compact("1.1万"), "1.1万")
+  }
+
+  func testCompactListDatesPreserveYearAndUnparsedSourceDates() {
+    let calendar = Calendar.autoupdatingCurrent
+    let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 6, hour: 12))!
+    let yesterday = calendar.date(byAdding: .day, value: -1, to: now)!
+    let earlier = calendar.date(from: DateComponents(year: 2026, month: 8, day: 20, hour: 12))!
+    let previousYear = calendar.date(from: DateComponents(year: 2025, month: 8, day: 20, hour: 12))!
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(now, now: now), "今天")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(yesterday, now: now), "昨天")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(earlier, now: now), "8/20")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(previousYear, now: now), "2025/8/20")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("5天前", now: now), "5天前")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026-08-20T12:00:00Z", now: now),
+                   HistoryPublishedTimestampFormatter.compactText("2026-08-20T12:00:00.000Z", now: now))
   }
 
   func testPublishedTimestampFormatterParsesStandardAndFractionalISOWithoutImportFallback() {
@@ -1941,6 +2162,8 @@ final class HistoryContentViewTests: XCTestCase {
   private func historyContentViewSource() -> String {
     [
       "HistoryContentView.swift",
+      "CreatorDirectoryViews.swift",
+      "CreatorWorkEngagement.swift",
       "HistoryMediaPlayback.swift",
       "VideoScrollWheelRouting.swift",
       "HistorySourceLinkPresentation.swift",

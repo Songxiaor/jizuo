@@ -77,6 +77,21 @@ import {
   type BookmarksSyncOutcome,
   type CollectResult,
 } from "../content/x-bookmarks";
+import {
+  collectXProfileItemsInPage,
+  canonicalXProfileURL,
+  isPublicTwimgProfileImageURL,
+  isXProfileURL,
+  MAX_X_PROFILE_CANDIDATES,
+  normalizeXProfileItems,
+  parseProfileCandidatesPresented,
+  profileHandleFromURL,
+  resolvedXProfileDisplayName,
+  X_PROFILE_CANDIDATES_KIND,
+  type XProfileCollectResult,
+  type XProfilePreviewItem,
+} from "../content/x-profile";
+import validateXProfileSchema from "../generated/x-profile-validator.mjs";
 
 type DouyinEngagementStats = {
   likes?: string;
@@ -1544,6 +1559,89 @@ export async function syncSingleTweet(tweetID: unknown): Promise<SingleTweetSync
   return { ok: true, outcome };
 }
 
+export type ProfileCollectResult =
+  | { ok: true; authorID: string; profileURL: string; profileName: string; profileAvatarURL?: string; items: XProfilePreviewItem[] }
+  | { ok: false; code: "not_profile" | "empty" | "login" | "injection_failed" };
+
+export type ProfilePresentResult =
+  | { ok: true; acceptedCount: number }
+  | { ok: false; code: "not_profile" | "empty" | "login" | "injection_failed" | "native_error" | "upgrade_app" };
+
+export async function collectXProfile(tabId: number): Promise<ProfileCollectResult> {
+  const tab = await browser.tabs.get(tabId).catch(() => undefined);
+  const handle = profileHandleFromURL(tab?.url);
+  if (!isXProfileURL(tab?.url) || !handle) return { ok: false, code: "not_profile" };
+
+  let collected: XProfileCollectResult;
+  try {
+    const results = await browser.scripting.executeScript({
+      target: { tabId },
+      world: "MAIN",
+      func: collectXProfileItemsInPage,
+      args: [handle, MAX_X_PROFILE_CANDIDATES],
+    });
+    collected = results[0]?.result as XProfileCollectResult;
+  } catch {
+    return { ok: false, code: "injection_failed" };
+  }
+
+  if (collected?.loginRequired) return { ok: false, code: "login" };
+  const items = normalizeXProfileItems(collected?.items, handle);
+  if (items.length === 0) return { ok: false, code: "empty" };
+  const rawName = typeof collected?.profileName === "string" ? collected.profileName : "";
+  const profileName = resolvedXProfileDisplayName(rawName, handle) ?? "";
+  const rawAvatar = typeof collected?.profileAvatarURL === "string" ? collected.profileAvatarURL : "";
+  const profileAvatarURL = isPublicTwimgProfileImageURL(rawAvatar) ? rawAvatar.slice(0, 2048) : undefined;
+  return {
+    ok: true,
+    authorID: handle,
+    profileURL: canonicalXProfileURL(handle),
+    profileName,
+    ...(profileAvatarURL ? { profileAvatarURL } : {}),
+    items,
+  };
+}
+
+export async function presentXProfileCandidates(tabId: number): Promise<ProfilePresentResult> {
+  const collected = await collectXProfile(tabId);
+  if (!collected.ok) return collected;
+
+  const message = {
+    kind: X_PROFILE_CANDIDATES_KIND,
+    version: 1 as const,
+    requestId: requestId(),
+    profileURL: collected.profileURL,
+    authorID: collected.authorID,
+    ...(collected.profileName ? { profileName: collected.profileName } : {}),
+    ...(collected.profileAvatarURL ? { profileAvatarURL: collected.profileAvatarURL } : {}),
+    items: collected.items,
+  };
+  if (!validateXProfileSchema(message)) return { ok: false, code: "empty" };
+
+  let response: unknown;
+  try {
+    response = await withTimeout(browser.runtime.sendNativeMessage(HOST_NAME, message), 30_000);
+  } catch {
+    return { ok: false, code: "native_error" };
+  }
+  if (response && typeof response === "object") {
+    const row = response as { kind?: string; error?: { code?: string; action?: string } };
+    if (row.kind === "bookmarksAccepted" || row.kind === "taskAccepted" || row.kind === "bookmarksLookup") {
+      return { ok: false, code: "upgrade_app" };
+    }
+    if (row.kind === "error") {
+      if (row.error?.action === "upgrade_app" || row.error?.code === "CAPTURE_SCHEMA_INVALID") {
+        return { ok: false, code: "upgrade_app" };
+      }
+      return { ok: false, code: "native_error" };
+    }
+  }
+  const presented = parseProfileCandidatesPresented(response);
+  if (!validateXProfileSchema(response) || !presented || presented.requestId !== message.requestId
+      || presented.acceptedCount > message.items.length) return { ok: false, code: "upgrade_app" };
+  return { ok: true, acceptedCount: presented.acceptedCount };
+}
+
 export async function openPeerApp(): Promise<{ ok: true } | { ok: false; code: "native_error" }> {
   const message = { kind: "openApp", version: 1, requestId: requestId() };
   try {
@@ -1581,6 +1679,8 @@ export default defineBackground(() => {
       return sendCapture(message.tabId, action === "summarize" || action === "translate" ? action : "save");
     }
     if (message.type === "collect-x-bookmarks") return collectXBookmarks(message.tabId);
+    if (message.type === "collect-x-profile") return collectXProfile(message.tabId);
+    if (message.type === "present-x-profile-candidates") return presentXProfileCandidates(message.tabId);
     // 旧入口仍保留：一键收集并全量同步。
     if (message.type === "sync-x-bookmarks") return syncXBookmarks(message.tabId);
     return undefined;

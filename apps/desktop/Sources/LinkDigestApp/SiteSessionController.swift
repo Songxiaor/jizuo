@@ -13,11 +13,10 @@ import WebKit
 /// 是加一份数据，不是复制一份控制器。
 @MainActor
 final class SiteSessionController: ObservableObject {
-  /// B 站是目前唯一有真实消费者的站点：`SessionMediaRefreshService` 用它刷新
-  /// 高清播放地址。其余平台的 profile 在有消费者之前不建实例，避免设置页出现
-  /// 点了不产生任何效果的登录入口。
+  /// 四个站点各有一个持久分区。分区 id 一经写入 UserDefaults 就不能换，否则已有登录态会变成孤儿。
+  /// 主页导入和手动抓取都复用这些实例，不另开 ephemeral store，也不导入外部浏览器 Cookie。
+  static let x = SiteSessionController(profile: .x)
   static let bilibili = SiteSessionController(profile: .bilibili)
-  /// 这两个的消费端是手动链接抓取：未登录时服务端只返回登录墙 / 风控页。
   static let douyin = SiteSessionController(profile: .douyin)
   static let xiaohongshu = SiteSessionController(profile: .xiaohongshu)
 
@@ -67,8 +66,8 @@ final class SiteSessionController: ObservableObject {
   func refreshStatus() async {
     readCount += 1
     var all = await allCookies()
-    var cookies = all.filter { profile.ownsCookieDomain($0.domain) }
-    let coldSiteCount = cookies.count
+    var owned = all.filter { profile.ownsCookieDomain($0.domain) }
+    let coldSiteCount = owned.count
     let coldAllCount = all.count
 
     // 第一次读不出本站 cookie 时，再给数据分区一次机会后重读。
@@ -77,13 +76,15 @@ final class SiteSessionController: ObservableObject {
     // 在冷启动后未必已经把磁盘上的内容加载进来。`fetchDataRecords` 会让分区落地，
     // 之后再读才是它真正持有的内容。这一步是只读的，拿不到就照旧报未登录。
     var warmedSiteCount: Int?
-    if cookies.isEmpty {
+    if owned.isEmpty {
       await warmUpDataStore()
       all = await allCookies()
-      cookies = all.filter { profile.ownsCookieDomain($0.domain) }
-      warmedSiteCount = cookies.count
+      owned = all.filter { profile.ownsCookieDomain($0.domain) }
+      warmedSiteCount = owned.count
     }
 
+    let cookies = SiteSessionCookieFilter.excludingExpired(owned)
+    let expiredNames = Set(owned.map(\.name)).subtracting(Set(cookies.map(\.name)))
     let loggedIn = profile.looksLoggedIn(Set(cookies.map(\.name)))
     sessionDiagnostic = diagnosticLine(
       coldSiteCount: coldSiteCount,
@@ -91,6 +92,7 @@ final class SiteSessionController: ObservableObject {
       warmedSiteCount: warmedSiteCount,
       warmedAllCount: all.count,
       presentNames: Set(cookies.map(\.name)),
+      expiredNames: expiredNames,
       loggedIn: loggedIn
     )
     isLoggedIn = loggedIn
@@ -100,14 +102,13 @@ final class SiteSessionController: ObservableObject {
       lastError = nil
       return
     }
-    let account = profile.accountIDCookieName.flatMap { name in
-      cookies.first(where: { $0.name == name })?.value
-    }
-    if let account, !account.isEmpty, let label = profile.accountIDLabel {
-      statusLabel = "已登录（\(label) \(account)）"
+    statusLabel = "登录已保存"
+    if let name = profile.accountIDCookieName,
+       let label = profile.accountIDLabel,
+       let account = cookies.first(where: { $0.name == name })?.value,
+       !account.isEmpty {
       accountDetail = "\(label) \(account)"
     } else {
-      statusLabel = "已登录"
       accountDetail = nil
     }
     lastError = nil
@@ -115,10 +116,10 @@ final class SiteSessionController: ObservableObject {
 
   /// 业务请求用的 Cookie 头。绝不打印这个字符串。
   func cookieHeader() async -> String? {
-    var cookies = await siteCookies()
+    var cookies = SiteSessionCookieFilter.excludingExpired(await siteCookies())
     if !profile.looksLoggedIn(Set(cookies.map(\.name))) {
       await warmUpDataStore()
-      cookies = await siteCookies()
+      cookies = SiteSessionCookieFilter.excludingExpired(await siteCookies())
     }
     guard profile.looksLoggedIn(Set(cookies.map(\.name))) else { return nil }
     let header = HTTPCookie.requestHeaderFields(with: cookies)["Cookie"]
@@ -188,14 +189,18 @@ final class SiteSessionController: ObservableObject {
     warmedSiteCount: Int?,
     warmedAllCount: Int,
     presentNames: Set<String>,
+    expiredNames: Set<String>,
     loggedIn: Bool
   ) -> String {
     var line = "读取 #\(readCount)：本站 \(coldSiteCount) 条（分区共 \(coldAllCount) 条）"
     if let warmedSiteCount {
       line += " → 预热后本站 \(warmedSiteCount) 条（分区共 \(warmedAllCount) 条）"
     }
+    if !expiredNames.isEmpty {
+      line += "；过期 \(expiredNames.sorted().joined(separator: "、"))"
+    }
     if loggedIn {
-      line += "；判定已登录"
+      line += "；判定登录已保存"
       return line
     }
     // 取「最接近齐全」的那一组来报缺失：报所有组的并集会把 B 站
@@ -218,6 +223,19 @@ final class SiteSessionController: ObservableObject {
   }
 }
 
+enum SiteSessionCookieFilter {
+  /// 有过期时间且已经到期的丢掉；没有 `expiresDate` 的 session cookie 保留。
+  /// 只看时间，不看、不返回 cookie 值。
+  static func isUnexpired(expiresDate: Date?, now: Date = Date()) -> Bool {
+    guard let expiresDate else { return true }
+    return expiresDate > now
+  }
+
+  static func excludingExpired(_ cookies: [HTTPCookie], now: Date = Date()) -> [HTTPCookie] {
+    cookies.filter { isUnexpired(expiresDate: $0.expiresDate, now: now) }
+  }
+}
+
 // MARK: - Login WebView
 
 struct SiteLoginWebView: NSViewRepresentable {
@@ -225,9 +243,10 @@ struct SiteLoginWebView: NSViewRepresentable {
   let dataStore: WKWebsiteDataStore
   let initialURL: URL
   var onNavigationFinished: (() -> Void)?
+  var onExternalLogin: (() -> Void)?
 
   func makeCoordinator() -> Coordinator {
-    Coordinator(profile: profile, onNavigationFinished: onNavigationFinished)
+    Coordinator(profile: profile, onNavigationFinished: onNavigationFinished, onExternalLogin: onExternalLogin)
   }
 
   func makeNSView(context: Context) -> WKWebView {
@@ -237,6 +256,7 @@ struct SiteLoginWebView: NSViewRepresentable {
     let view = WKWebView(frame: .zero, configuration: config)
     view.customUserAgent = SiteSessionProfile.browserUserAgent
     view.navigationDelegate = context.coordinator
+    view.uiDelegate = context.coordinator
     view.allowsBackForwardNavigationGestures = true
     view.load(URLRequest(url: initialURL))
     return view
@@ -244,6 +264,7 @@ struct SiteLoginWebView: NSViewRepresentable {
 
   func updateNSView(_ nsView: WKWebView, context: Context) {
     context.coordinator.onNavigationFinished = onNavigationFinished
+    context.coordinator.onExternalLogin = onExternalLogin
     if nsView.customUserAgent != SiteSessionProfile.browserUserAgent {
       nsView.customUserAgent = SiteSessionProfile.browserUserAgent
     }
@@ -253,13 +274,16 @@ struct SiteLoginWebView: NSViewRepresentable {
   /// 且 delegate 回调本来就由 WebKit 保证在主线程派发。标注 `@MainActor` 只是把这一
   /// 既有事实写进类型（与 `YouTubeEmbedNavigationDelegate` 同款），不改变运行行为。
   @MainActor
-  final class Coordinator: NSObject, WKNavigationDelegate {
+  final class Coordinator: NSObject, WKNavigationDelegate, WKUIDelegate {
     let profile: SiteSessionProfile
     var onNavigationFinished: (() -> Void)?
 
-    init(profile: SiteSessionProfile, onNavigationFinished: (() -> Void)?) {
+    var onExternalLogin: (() -> Void)?
+
+    init(profile: SiteSessionProfile, onNavigationFinished: (() -> Void)?, onExternalLogin: (() -> Void)?) {
       self.profile = profile
       self.onNavigationFinished = onNavigationFinished
+      self.onExternalLogin = onExternalLogin
     }
 
     func webView(
@@ -267,8 +291,23 @@ struct SiteLoginWebView: NSViewRepresentable {
       decidePolicyFor navigationAction: WKNavigationAction,
       decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
-      // 这是这个 WebView 唯一的边界：白名单外一律取消，避免它变成自由浏览器。
+      if profile.platform == .x, XExternalLoginPolicy.isProviderURL(navigationAction.request.url) {
+        onExternalLogin?()
+        decisionHandler(.cancel)
+        return
+      }
+      // 白名单外不在内嵌网页打开。
       decisionHandler(profile.isAllowedHost(navigationAction.request.url?.host) ? .allow : .cancel)
+    }
+
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+      if profile.platform == .x, XExternalLoginPolicy.isProviderURL(navigationAction.request.url) {
+        onExternalLogin?()
+      } else if profile.isAllowedHost(navigationAction.request.url?.host) {
+        webView.load(navigationAction.request)
+      }
+      return nil
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -277,22 +316,43 @@ struct SiteLoginWebView: NSViewRepresentable {
   }
 }
 
+enum XExternalLoginPolicy {
+  static let loginURL = URL(string: "https://x.com/i/flow/login")!
+
+  static func isProviderURL(_ url: URL?) -> Bool {
+    guard let url, url.scheme == "https", url.user == nil, url.password == nil,
+          url.port == nil || url.port == 443 else { return false }
+    return ["accounts.google.com", "appleid.apple.com"].contains(url.host?.lowercased() ?? "")
+  }
+}
+
 struct SiteLoginSheet: View {
   @Environment(\.appTheme) private var appTheme
   @ObservedObject var session: SiteSessionController
   @Environment(\.dismiss) private var dismiss
   @State private var refreshTask: Task<Void, Never>?
+  @State private var browserLoginNotice: String?
+
+  private func openBrowserLogin() {
+    // Start X-owned login afresh in the browser; never export an embedded OAuth request or its state.
+    let opened = NSWorkspace.shared.open(XExternalLoginPolicy.loginURL)
+    browserLoginNotice = opened
+      ? "已打开浏览器。登录 X 后，打开博主主页并点击汲作扩展读取作品；本窗口的登录状态不会因此改变。"
+      : "未能打开默认浏览器，请检查系统默认浏览器设置后重试。"
+  }
 
   private var siteName: String { session.profile.platform.displayName }
   private var idPrefix: String { session.profile.platform.rawValue }
   private var loginPurpose: String {
     switch session.profile.platform {
+    case .x:
+      "登录一次后，下次读取该站博主主页可复用本机会话。可随时在设置中清除。"
     case .bilibili:
-      "用于在本机获取更高清晰度的临时播放地址。可随时在设置中清除。"
+      "登录一次后，下次读取该站博主主页可复用；也用于在本机获取更高清晰度的临时播放地址。可随时在设置中清除。"
     case .xiaohongshu:
-      "用于手动粘贴链接时读取登录后可见的正文。可随时在设置中清除。"
+      "登录一次后，下次读取该站博主主页可复用；也用于手动粘贴链接时读取登录后可见的正文。可随时在设置中清除。"
     case .douyin:
-      "用于手动粘贴链接时尝试读取登录后正文；如果抓取失败，请改用浏览器扩展。可随时在设置中清除。"
+      "登录一次后，下次读取该站博主主页可复用。手动粘链接仍常失败，如果抓取失败，请改用浏览器扩展。可随时在设置中清除。"
     }
   }
 
@@ -305,7 +365,7 @@ struct SiteLoginSheet: View {
             .themedFont(.caption)
             .foregroundStyle(.secondary)
           if session.isLoggedIn {
-            Text("右上角「已登录」表示本机已有会话 Cookie，可直接点完成；下方若仍提示浏览器过旧，关掉后重新打开「登录」即可刷新页面。")
+            Text("右上角「登录已保存」表示本机仍有会话，可点完成；不表示站点一定还认。下方若仍提示浏览器过旧，关掉后重新打开即可。")
               .themedFont(.caption2)
               .foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)
@@ -324,6 +384,24 @@ struct SiteLoginSheet: View {
 
       Divider()
 
+      if session.profile.platform == .x {
+        HStack(alignment: .top) {
+          VStack(alignment: .leading, spacing: 4) {
+            Text("使用 Google 或 Apple 登录？")
+              .themedFont(.subheadline)
+            Text(browserLoginNotice ?? "请在默认浏览器登录 X，再用汲作扩展读取博主主页。浏览器登录与本窗口独立。")
+              .themedFont(.caption)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          Spacer()
+          Button("在浏览器中登录") { openBrowserLogin() }
+            .accessibilityIdentifier("x-login-open-browser")
+        }
+        .padding(12)
+        Divider()
+      }
+
       SiteLoginWebView(
         profile: session.profile,
         dataStore: session.dataStore,
@@ -331,7 +409,8 @@ struct SiteLoginSheet: View {
         onNavigationFinished: {
           refreshTask?.cancel()
           refreshTask = Task { await session.refreshStatus() }
-        }
+        },
+        onExternalLogin: { openBrowserLogin() }
       )
       .frame(minWidth: 720, minHeight: 520)
 
@@ -347,7 +426,7 @@ struct SiteLoginSheet: View {
         .accessibilityIdentifier("\(idPrefix)-login-clear")
         Spacer()
         if session.isLoggedIn {
-          Text("已检测到登录，可关闭此窗口。")
+          Text("登录已保存，可关闭此窗口。")
             .themedFont(.caption)
             .foregroundStyle(.secondary)
         }

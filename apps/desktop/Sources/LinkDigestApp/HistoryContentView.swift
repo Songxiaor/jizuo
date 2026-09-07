@@ -20,6 +20,8 @@ struct HistoryContentView: View {
   @State private var isNewSparkPresented = false
   @State private var newSparkText = ""
   @State private var douyinProfileImportRequest: DouyinProfileImportRequest?
+  @AppStorage(ProfileImportQueuePresentation.dismissedKey) private var dismissedImportNotices = ""
+  @State private var isReadingWeChatArticle = false
   @State private var navigationCreatorsExpanded = true
   // 标签是低频筛选，不该在每次启动时抢走半个导航栏。需要时再展开，
   // 当前已选标签仍由 ViewModel 保留，不会因为折叠而丢失筛选状态。
@@ -37,6 +39,9 @@ struct HistoryContentView: View {
 
   private var appearanceTheme: AppearanceTheme { AppearanceTheme(rawValue: appearanceThemeRaw) ?? .glass }
   private var theme: HistoryThemeTokens { appearanceTheme.tokens }
+  private var ordinaryPendingCaptures: [ManualLinkViewModel.PendingCapture] {
+    manualLink.pendingCaptures.filter { $0.profileImportBatchID == nil }
+  }
   /// 工作台的四处入口都问它，不各自与开关做 `&&`。
   private var isWorkbenchVisible: Bool {
     ExperimentalFeatures.isWorkbenchVisible(userEnabled: isWorkbenchUserEnabled)
@@ -146,9 +151,38 @@ struct HistoryContentView: View {
           }
         )
       }
+      .onChange(of: manualLink.creatorAssociationRevision) { _, _ in
+        model.handleCreatorAssociationChanged()
+      }
+      .onChange(of: manualLink.profileImportCompletionRevision) { _, _ in
+        model.handleProfileImportCompletion()
+      }
       .onChange(of: appearanceThemeRaw) { _, newValue in
         AppearanceTheme.applyApplicationAppearance(newValue)
       }
+  }
+
+  private var showsWeChatArticleSurface: Bool {
+    !model.isCreatorDirectoryActive && !model.isWorkbenchActive
+      && model.selectedHosts == Set(["mp.weixin.qq.com"])
+  }
+
+  @ViewBuilder private var weChatArticleSurface: some View {
+    if isReadingWeChatArticle {
+      VStack(spacing: 0) {
+        HStack {
+          Button("返回公众号文章") { isReadingWeChatArticle = false }
+            .accessibilityIdentifier("wechat-gallery-back")
+          Spacer()
+        }.padding(.horizontal, 16).padding(.vertical, 8)
+        detailColumn
+      }
+    } else {
+      WeChatArticleGallery(model: model, theme: theme, searchFocused: $isSearchFocused) { taskID in
+        model.selectedTaskID = taskID
+        isReadingWeChatArticle = true
+      }
+    }
   }
 
   private var themedBody: some View {
@@ -156,46 +190,66 @@ struct HistoryContentView: View {
       if model.blockingErrorCode != nil {
         blockingError
       } else {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-          navigationRail.navigationSplitViewColumnWidth(
-            min: DesignTokens.Layout.sidebarMin,
-            ideal: DesignTokens.Layout.sidebarIdeal,
-            max: DesignTokens.Layout.sidebarMax
-          )
-          .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
-          .onChange(of: manualLink.creatorAssociationRevision) { _, _ in
-            model.handleCreatorAssociationChanged()
-          }
-        } content: {
-          // 工作台接管中间列：它列的是「正在做的创作」，和历史条目不是一种东西，
-          // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
-          Group {
-            if model.isWorkbenchActive, isWorkbenchVisible {
-              WorkbenchListView(
-                model: model,
-                onNewSpark: { isNewSparkPresented = true },
-                onTakeTopic: takeTopic
+        Group {
+          if columnVisibility == .detailOnly {
+            // macOS 三列 NavigationSplitView 不保证响应 detailOnly；专注模式直接呈现详情。
+            Group {
+              if showsWeChatArticleSurface { weChatArticleSurface }
+              else { detailColumn }
+            }
+              .frame(maxWidth: .infinity, maxHeight: .infinity)
+              .background(theme.card)
+              .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
+          } else if showsWeChatArticleSurface {
+            NavigationSplitView {
+              navigationRail.navigationSplitViewColumnWidth(
+                min: DesignTokens.Layout.sidebarMin, ideal: DesignTokens.Layout.sidebarIdeal,
+                max: DesignTokens.Layout.sidebarMax
               )
-            } else if model.isCreatorDirectoryActive {
-              creatorDirectory
-            } else {
-              sidebar
+              .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
+            } detail: {
+              weChatArticleSurface
+            }
+          } else {
+            NavigationSplitView(columnVisibility: $columnVisibility) {
+              navigationRail.navigationSplitViewColumnWidth(
+                min: DesignTokens.Layout.sidebarMin,
+                ideal: DesignTokens.Layout.sidebarIdeal,
+                max: DesignTokens.Layout.sidebarMax
+              )
+              .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
+            } content: {
+              // 工作台接管中间列：它列的是「正在做的创作」，和历史条目不是一种东西，
+              // 塞进同一个列表只会让两边的排序、筛选、多选互相打架。
+              Group {
+                if model.isWorkbenchActive, isWorkbenchVisible {
+                  WorkbenchListView(
+                    model: model,
+                    onNewSpark: { isNewSparkPresented = true },
+                    onTakeTopic: takeTopic
+                  )
+                } else if model.isCreatorDirectoryActive {
+                  creatorDirectory
+                } else {
+                  sidebar
+                }
+              }
+              .navigationSplitViewColumnWidth(
+                min: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMin : DesignTokens.Layout.listMin,
+                ideal: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnIdeal : DesignTokens.Layout.listIdeal,
+                max: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMax : DesignTokens.Layout.listIdeal + DesignTokens.Space.xxl
+              )
+              .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
+            } detail: {
+              detailColumn
+                .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
             }
           }
-          .navigationSplitViewColumnWidth(
-            min: DesignTokens.Layout.listMin,
-            ideal: DesignTokens.Layout.listIdeal,
-            max: DesignTokens.Layout.listIdeal + DesignTokens.Space.xxl
-          )
-          .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
-        } detail: {
-          detailColumn
-            .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
         }
           // 窗口级分栏细线：贯通工具栏直达窗口顶；系统玻璃主题走原生外观，
           // 图片灯箱打开时移除，避免细线盖在放大的图片上。
           .background(WindowColumnDividerInstaller(
-            lineColor: (theme.isNative || inlineImageLightbox.url != nil || videoCinema.isPresented) ? nil : NSColor(theme.hairline)
+            lineColor: (columnVisibility == .detailOnly || theme.isNative || inlineImageLightbox.url != nil || videoCinema.isPresented) ? nil : NSColor(theme.hairline)
           ))
           .alert(model.deletionConfirmationTitle, isPresented: $model.isDeleteConfirmationPresented) {
             Button("取消", role: .cancel) { model.cancelDeletion() }
@@ -244,6 +298,12 @@ struct HistoryContentView: View {
           } message: { Text(model.batchSummaryConfirmationMessage) }
           .alert("批量总结结果", isPresented: $model.isBatchSummaryOutcomePresented) {
             Button("好") { model.dismissBatchSummaryOutcome() }
+            if model.batchSummaryOutcomeMessage.contains("失败") {
+              Button("重试选中项") {
+                model.dismissBatchSummaryOutcome()
+                model.requestBatchSummary()
+              }
+            }
           } message: { Text(model.batchSummaryOutcomeMessage) }
           .alert(
             model.batchTranslationConfirmationTitle,
@@ -267,6 +327,12 @@ struct HistoryContentView: View {
           } message: { Text(model.batchTranslationConfirmationMessage) }
           .alert("批量翻译结果", isPresented: $model.isBatchTranslationOutcomePresented) {
             Button("好") { model.dismissBatchTranslationOutcome() }
+            if model.batchTranslationOutcomeMessage.contains("失败") {
+              Button("重试选中项") {
+                model.dismissBatchTranslationOutcome()
+                model.requestBatchTranslation(outputLanguage: providerSettings.outputLanguage)
+              }
+            }
           } message: { Text(model.batchTranslationOutcomeMessage) }
           .alert("无法准备导出", isPresented: $model.isExportPreparationFailurePresented) {
             Button("好") { model.dismissExportPreparationFailure() }
@@ -317,6 +383,20 @@ struct HistoryContentView: View {
     }
     .toolbar {
       ToolbarItemGroup(placement: .primaryAction) {
+        // 专注阅读：只留详情列，侧栏与列表用现成 columnVisibility 藏起，退出即恢复。
+        Button {
+          columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+        } label: {
+          Label(
+            columnVisibility == .detailOnly ? "退出专注阅读" : "专注阅读",
+            systemImage: columnVisibility == .detailOnly
+              ? "arrow.down.right.and.arrow.up.left"
+              : "arrow.up.left.and.arrow.down.right"
+          )
+        }
+        .help(columnVisibility == .detailOnly ? "恢复侧栏与列表" : "隐藏侧栏与列表，只留阅读区")
+        .accessibilityLabel(columnVisibility == .detailOnly ? "退出专注阅读" : "专注阅读")
+        .accessibilityIdentifier("history-focus-reading-toggle")
         // 批量总结进行中：进度和停止按钮必须一直可见，否则「跑了十几分钟、
         // 现在到哪了、能不能停」全靠猜。
         if model.isBatchSummarizing {
@@ -334,6 +414,8 @@ struct HistoryContentView: View {
             .accessibilityIdentifier("batch-summarize-progress")
           Button("停止") { model.stopBatchSummary() }
             .disabled(model.batchSummaryProgress?.isStopping == true)
+            .help("停止尚未开始的批量总结")
+            .accessibilityLabel("停止批量总结")
             .accessibilityIdentifier("batch-summarize-stop")
         }
         if model.selectedTaskCount > 1 {
@@ -362,12 +444,13 @@ struct HistoryContentView: View {
           Menu {
             Button("添加链接", action: manualLink.open)
             Button("从剪贴板添加链接", action: manualLink.readClipboardAndOpen)
+            Button("添加博主主页") { presentDouyinProfileImport() }
           } label: {
-            Label("添加链接", systemImage: "link.badge.plus")
+            Label("添加", systemImage: "plus")
           }
           .disabled(!manualLink.canOpen)
-          .help("添加一个或多个链接")
-          .accessibilityLabel("添加链接")
+          .help("添加链接或博主主页")
+          .accessibilityLabel("添加")
           .accessibilityIdentifier("manual-link-add-toolbar")
           Button(action: createNote) {
             Label("新建笔记", systemImage: "square.and.pencil")
@@ -404,8 +487,33 @@ struct HistoryContentView: View {
       )
     }
     .sheet(item: $douyinProfileImportRequest) { request in
-      DouyinProfileImportSheet(manualLink: manualLink, request: request)
+      DouyinProfileImportSheet(manualLink: manualLink, request: request) { creatorID in
+        model.focusCreatorInDirectory(creatorID)
+        columnVisibility = .all
+      }
         .id(request.id)
+    }
+    .sheet(item: Binding(
+      get: { douyinProfileImportRequest == nil ? manualLink.browserProfileImportToken : nil },
+      set: { if $0 == nil, douyinProfileImportRequest == nil { manualLink.dismissBrowserProfileImport() } }
+    )) { _ in
+      if let model = manualLink.browserProfileImportModel {
+        DouyinProfileImportSheet(external: model, manualLink: manualLink) { creatorID in
+          self.model.focusCreatorInDirectory(creatorID)
+          columnVisibility = .all
+        }
+      }
+    }
+    .alert(
+      "要换成另一个主页吗？",
+      isPresented: Binding(
+        get: { manualLink.browserProfileImportConflict != nil },
+        set: { if !$0 { manualLink.cancelIncomingBrowserProfile() } }
+      )
+    ) {
+      browserProfileConflictButtons(incoming: manualLink.browserProfileImportConflict?.incoming)
+    } message: {
+      Text(manualLink.browserProfileImportConflict?.message ?? "")
     }
   }
 
@@ -430,7 +538,7 @@ struct HistoryContentView: View {
         // （见 GRDBHistoryRepository 里遍历全部 artifacts 的那段 EXISTS），
         // 而这行占位文字是它唯一的曝光入口。要缩短就砍「作者」——作者没有
         // 独立列，本来就只是搜正文时顺带覆盖到的。
-        TextField("搜索标题、正文、总结、标签", text: $model.searchText)
+        TextField(listSearchPlaceholder, text: $model.searchText)
           .textFieldStyle(.plain)
           .focused($isSearchFocused)
       }
@@ -443,6 +551,9 @@ struct HistoryContentView: View {
       .padding(.horizontal, 10).padding(.vertical, 10)
         .accessibilityIdentifier("history-search")
         .background(ReleaseInitialSearchFocus().allowsHitTesting(false))
+      if hasClearableListFilters {
+        activeFilterBar
+      }
       if model.isReadOnly {
         Label("只读", systemImage: "lock.fill")
           .themedFont(.caption, weight: .semibold)
@@ -466,15 +577,23 @@ struct HistoryContentView: View {
       }
       if let creator = model.selectedCreator {
         HStack(spacing: 8) {
-          Text(creator.listingTitle)
+          Text(creator.directoryDisplayName)
             .font(.headline)
-            .lineLimit(1)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
           Spacer()
+          Button("更新资料") {
+            presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
+          }
+          .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
+          .help("只刷新姓名和头像，不必保存新作品")
+          .accessibilityIdentifier("history-creator-refresh-selected")
           Button("抓取作品") {
             presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
           }
-          .disabled(creator.identity.platform != "douyin.com")
-          .help(creator.identity.platform == "douyin.com" ? "打开该博主主页已有的三列导入卡" : "目前只有抖音主页支持抓取作品")
+          .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
+          .help(ProfileImportPlatform.parse(creator.profileURL) != nil ? "打开主页并选择作品" : "暂不支持此平台主页")
           .accessibilityIdentifier("history-creator-capture-selected")
         }
         .padding(.horizontal, 12)
@@ -506,14 +625,35 @@ struct HistoryContentView: View {
           )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-unsummarized-empty")
-        } else if model.hasActiveFilter {
+        } else if model.selectedScope == .notes, !model.hasCategoryFilter,
+                  model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           HistoryInlineState(
-            symbol: "line.3.horizontal.decrease.circle",
-            title: model.hasCategoryFilter ? "该分类下暂无内容" : "没有搜索结果",
-            message: "调整搜索词或筛选条件后再试。"
+            symbol: "square.and.pencil",
+            title: "还没有笔记",
+            message: "随手记下想法、灵感或读后感。",
+            actionTitle: "写第一条笔记",
+            action: createNote
           )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .accessibilityIdentifier("history-filter-empty")
+          .accessibilityIdentifier("history-notes-empty")
+        } else if model.showsCreatorZeroWorks {
+          HistoryInlineState(
+            symbol: "tray",
+            title: "尚未保存作品",
+            message: "打开主页后勾选要保存的内容。",
+            actionTitle: "抓取作品",
+            action: {
+              if let url = model.selectedCreator?.profileURL {
+                presentDouyinProfileImport(profileURL: url, autoStart: true)
+              }
+            }
+          )
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityIdentifier("history-creator-zero-works")
+        } else if model.hasActiveFilter {
+          filterEmptyState
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .accessibilityIdentifier("history-filter-empty")
         } else {
           // 没有任何内容时也要说话：纯空白分不清「扫完了没有」和「还没加载」。
           // 完整的三步引导在详情列，这里只给一句轻量状态。
@@ -535,6 +675,7 @@ struct HistoryContentView: View {
             action: { model.retryList() }
           )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityIdentifier("history-list-failed")
         } else {
           HistoryInlineState(
             symbol: "exclamationmark.triangle",
@@ -542,14 +683,27 @@ struct HistoryContentView: View {
             message: "本机历史没有显示，当前不会写入新的变更。"
           )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityIdentifier("history-list-failed")
         }
       case .loaded, .loading, .failed, .idle:
-        List(selection: $model.selectedTaskIDs) {
+        ScrollViewReader { batchScroll in
+          List(selection: $model.selectedTaskIDs) {
+          if manualLink.profileImportBatches.contains(where: { ProfileImportQueuePresentation.visible($0, dismissed: dismissedImportNotices) }) {
+            Section {
+              ProfileImportBatchStack(
+                manualLink: manualLink,
+                historyModel: model,
+                compact: true
+              )
+            } header: {
+              Text("主页抓取批次").themedFont(.caption).foregroundStyle(.secondary)
+            }
+          }
           // 排队抓取区：提交链接后立刻回到列表，这里可见进度/失败重试，
           // 不再让用户守着弹窗转圈。
-          if !manualLink.pendingCaptures.isEmpty {
+          if !ordinaryPendingCaptures.isEmpty {
             Section {
-              ForEach(manualLink.pendingCaptures) { pending in
+              ForEach(ordinaryPendingCaptures) { pending in
                 PendingCaptureRow(pending: pending, model: manualLink)
               }
             } header: {
@@ -564,6 +718,7 @@ struct HistoryContentView: View {
               theme: theme
             ).equatable().tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
               .listRowBackground(Color.clear)
+              .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
               .listRowSeparator(.hidden)
               .contextMenu {
                 Button { openHistoryURL(row.canonicalURL) } label: { Label("在浏览器中打开", systemImage: "safari") }
@@ -620,6 +775,14 @@ struct HistoryContentView: View {
           // 的测量始终正确，因此新条目登顶时整表重建（新行本就在顶部，
           // 不损失滚动位置），行高恢复按真实内容计算。
           .id(model.rows.first?.taskID)
+          .onChange(of: model.profileImportScrollTarget) { _, target in
+            guard let target else { return }
+            withAnimation(historyUIAnimation(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) {
+              batchScroll.scrollTo(target, anchor: .center)
+            }
+            model.consumeProfileImportScrollTarget()
+          }
+        }
       }
     }
     .frame(maxWidth: .infinity)
@@ -648,6 +811,8 @@ struct HistoryContentView: View {
           model.selectScope(.favorite)
         }
         .accessibilityIdentifier("history-navigation-favorite")
+      } header: {
+        navigationSectionHeader("资料")
       }
 
       // 笔记自成一区，不混进上面那组，也不进「平台」。
@@ -666,16 +831,14 @@ struct HistoryContentView: View {
         .accessibilityIdentifier("history-navigation-notes")
         // 「今天」不是一个筛选项，是一个动作——点它直接进今天那条笔记。
         // 随手记东西最大的摩擦是「这条该记去哪」，给每天一个默认容器就没这个决定了。
-        Button(action: openTodayNote) {
-          Label("今天", systemImage: "calendar")
-            .themedFont(.body)
-        }
-        .buttonStyle(.plain)
-        .accessibilityIdentifier("history-navigation-today-note")
+        navigationButton("今天", systemImage: "calendar", count: nil, selected: false, action: openTodayNote)
+          .accessibilityIdentifier("history-navigation-today-note")
+      } header: {
+        navigationSectionHeader("笔记")
       }
 
       Section {
-        DisclosureGroup(isExpanded: $navigationCreatorsExpanded) {
+        if navigationCreatorsExpanded {
           navigationButton(
             "全部博主",
             systemImage: "person.2",
@@ -687,23 +850,11 @@ struct HistoryContentView: View {
           .accessibilityIdentifier("history-navigation-creators-all")
           ForEach(model.navigationCounts.pinnedCreators) { creator in
             creatorPinRow(creator)
-          }
-        } label: {
-          HStack(spacing: 6) {
-            Text("博主")
-            Spacer(minLength: 8)
-            Button {
-              presentDouyinProfileImport()
-            } label: {
-              Image(systemName: "plus")
-            }
-            .buttonStyle(.borderless)
-            .controlSize(.small)
-            .help("粘贴抖音博主主页。其他平台暂不支持从主页抓取作品。")
-            .accessibilityLabel("添加博主")
-            .accessibilityIdentifier("history-navigation-creator-add")
+              .padding(.leading, 14)
           }
         }
+      } header: {
+        navigationSectionHeader("博主", expanded: $navigationCreatorsExpanded, addCreator: true)
       }
       .accessibilityIdentifier("history-navigation-creators")
 
@@ -760,7 +911,7 @@ struct HistoryContentView: View {
         let miscPlatforms = model.navigationCounts.platforms.filter { !HistoryPlatformDisplay.isWellKnown(host: $0.host) }
         // 分区标题同样要显式给字体：`Section("平台")` 那种字符串写法的标题是 List
         // 自己渲染的，和行内容一样收不到环境字体。
-        Section(header: Text("平台").themedFont(.subheadline, weight: .semibold)) {
+        Section {
           // 平台名称必须常驻可见。只显示图标虽然省高度，但把理解成本转嫁给
           // tooltip；新的紧凑行仍然只占一行，同时给出图标、名称和数量。
           PlatformGridView(
@@ -788,6 +939,7 @@ struct HistoryContentView: View {
                 : model.selectedHosts.contains(host)
             },
             onSelect: { host in
+              isReadingWeChatArticle = false
               if host == HistoryPlatformDisplay.miscHost {
                 model.selectHosts(miscPlatforms.map(\.host))
               } else {
@@ -795,20 +947,25 @@ struct HistoryContentView: View {
               }
             }
           )
+          .padding(.horizontal, -6)
+        } header: {
+          navigationSectionHeader("来源平台")
         }
       }
 
       if model.navigationCounts.tags.isEmpty {
         // 标签是"内容讲什么"：总结后由模型生成，也可在详情里手动添加。
         // 空态保留区块存在感，而不是让整块消失。
-        Section(header: Text("标签").themedFont(.subheadline, weight: .semibold)) {
+        Section {
           Text("总结后自动生成，也可在详情中手动添加")
             .themedFont(.caption)
             .foregroundStyle(.tertiary)
+        } header: {
+          navigationSectionHeader("标签")
         }
       } else {
         Section {
-          DisclosureGroup("标签", isExpanded: $navigationTagsExpanded) {
+          if navigationTagsExpanded {
             // 标签是跨内容的分类关键词：按引用数降序的药丸云，
             // 大类自然浮到最前。
             let ordered = model.navigationCounts.tags.sorted { $0.count > $1.count }
@@ -856,6 +1013,8 @@ struct HistoryContentView: View {
                 .accessibilityIdentifier("history-navigation-tags-clear")
             }
           }
+        } header: {
+          navigationSectionHeader("标签", expanded: $navigationTagsExpanded)
         }
       }
     }
@@ -865,10 +1024,51 @@ struct HistoryContentView: View {
     .accessibilityIdentifier("history-navigation-rail")
   }
 
+  /// All sections share the same title baseline; disclosure controls occupy a
+  /// leading overlay so expandable groups do not indent their top-level rows.
+  private func navigationSectionHeader(
+    _ title: String,
+    expanded: Binding<Bool>? = nil,
+    addCreator: Bool = false
+  ) -> some View {
+    HStack(spacing: 8) {
+      if let expanded {
+        Button { expanded.wrappedValue.toggle() } label: {
+          Text(title)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .overlay(alignment: .leading) {
+              Image(systemName: expanded.wrappedValue ? "chevron.down" : "chevron.right")
+                .font(.system(size: 8, weight: .semibold))
+                .offset(x: -12)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityValue(expanded.wrappedValue ? "已展开" : "已折叠")
+      } else {
+        Text(title)
+        Spacer(minLength: 0)
+      }
+      if addCreator {
+        Button { presentDouyinProfileImport() } label: {
+          Image(systemName: "plus")
+        }
+        .buttonStyle(.plain)
+        .help("粘贴抖音、小红书、X 或 B 站博主主页。")
+        .accessibilityLabel("添加博主")
+        .accessibilityIdentifier("history-navigation-creator-add")
+      }
+    }
+    .themedFont(.caption, weight: .semibold)
+    .foregroundStyle(theme.secondaryText)
+    .frame(height: 24)
+    .textCase(nil)
+  }
+
   private func navigationButton(
     _ title: String,
     systemImage: String,
-    count: Int,
+    count: Int?,
     selected: Bool,
     action: @escaping () -> Void
   ) -> some View {
@@ -880,11 +1080,20 @@ struct HistoryContentView: View {
         // 它会给行套上自己的字体，**盖过 `.environment(\.font,)`**。实测根部
         // 注入对详情列、工具栏、设置页都生效，唯独进不了 List 行——表现就是
         // 整扇窗都换了字体，只有侧栏这一列还是系统字体。
-        Label(title, systemImage: systemImage)
+        Image(systemName: systemImage)
+          .frame(width: 18)
+        Text(title)
           .themedFont(.body)
-        Spacer()
-        countBadge(count, selected: selected)
+          .lineLimit(2)
+          .multilineTextAlignment(.leading)
+          .fixedSize(horizontal: false, vertical: true)
+          .layoutPriority(1)
+        Spacer(minLength: DesignTokens.Space.xs)
+        if let count {
+          countBadge(count, selected: selected)
+        }
       }
+      .frame(minHeight: 20)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -907,6 +1116,9 @@ struct HistoryContentView: View {
     .foregroundStyle(theme.primaryText)
     .padding(.horizontal, -6)
     .fontWeight(selected ? .semibold : .regular)
+    .help(title)
+    .accessibilityLabel(title)
+    .accessibilityValue(count.map(String.init) ?? "")
   }
 
   /// 图24 式计数徽章：灰底小胶囊；选中时反白依附在蓝色药丸上。
@@ -918,6 +1130,14 @@ struct HistoryContentView: View {
     douyinProfileImportRequest = autoStart
       ? .capture(profileURL: profileURL)
       : .blank()
+  }
+
+  @ViewBuilder
+  private func browserProfileConflictButtons(incoming: XProfileCandidatesRequest?) -> some View {
+    Button("保留当前勾选") { manualLink.cancelIncomingBrowserProfile() }
+    Button("换成新主页", role: .destructive) {
+      if let incoming { manualLink.replaceIncomingBrowserProfile(incoming) }
+    }
   }
 
   private func captureNoticeBanner(_ notice: String) -> some View {
@@ -939,17 +1159,21 @@ struct HistoryContentView: View {
   private func creatorPinRow(_ creator: CreatorSummary) -> some View {
     Button { model.selectCreator(creator.id) } label: {
       HStack(spacing: 8) {
-        creatorAvatar(creator)
+        CreatorDirectoryAvatar(creator: creator, size: 22, theme: theme)
         VStack(alignment: .leading, spacing: 1) {
-          Text(creator.listingTitle).lineLimit(1)
+          Text(creator.directoryDisplayName)
+            .themedFont(.body)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .layoutPriority(1)
           HStack(spacing: 4) {
             Text(HistoryPlatformDisplay.name(forHost: creator.identity.platform))
               .font(.caption2)
-              .padding(.horizontal, 5).padding(.vertical, 1)
-              .background(theme.badge, in: Capsule())
+              .foregroundStyle(theme.secondaryText)
             Text("\(creator.savedWorkCount)")
               .font(.caption2.monospacedDigit())
-              .foregroundStyle(.secondary)
+              .foregroundStyle(theme.secondaryText)
           }
         }
         Spacer(minLength: 0)
@@ -966,33 +1190,23 @@ struct HistoryContentView: View {
       Button("抓取作品") {
         presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
       }
-      .disabled(creator.identity.platform != "douyin.com")
+      .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
       Button("取消置顶") { model.setCreatorPinned(creator.id, pinned: false) }
     }
   }
 
-  private func creatorAvatar(_ creator: CreatorSummary) -> some View {
-    let url = creator.avatarURL.flatMap(DouyinProfilePreviewResource.admittedURL)
-    return Group {
-      if url != nil {
-        DouyinProfilePreviewImage(url: url)
-          .frame(width: 22, height: 22)
-          .clipShape(Circle())
-      } else {
-        Image(systemName: "person.crop.circle.fill")
-          .font(.title3)
-          .foregroundStyle(.secondary)
-          .frame(width: 22, height: 22)
-      }
-    }
-    .accessibilityHidden(true)
-  }
-
   private var creatorDirectory: some View {
     VStack(spacing: 0) {
+      Text("全部博主 · \(model.navigationCounts.creatorCount)")
+        .themedFont(.headline)
+        .foregroundStyle(theme.primaryText)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.top, 12)
+        .accessibilityIdentifier("history-creator-directory-title")
       HStack(spacing: 6) {
         Image(systemName: "magnifyingglass")
-          .foregroundStyle(.secondary)
+          .foregroundStyle(theme.secondaryText)
         TextField("搜索博主名称、主页或作者 ID", text: $model.creatorSearchText)
           .textFieldStyle(.plain)
       }
@@ -1008,7 +1222,7 @@ struct HistoryContentView: View {
       }
       if let failure = model.creatorFailure {
         HStack {
-          Text(failure).font(.caption)
+          Text(failure).font(.caption).foregroundStyle(theme.secondaryText)
           Spacer()
           Button("知道了", action: model.dismissCreatorFailure)
         }
@@ -1028,7 +1242,7 @@ struct HistoryContentView: View {
         HistoryInlineState(
           symbol: "person.2",
           title: "还没有添加博主",
-          message: "点加号粘贴抖音博主主页。没有已存作品也可以先添加。",
+          message: "点加号粘贴抖音、小红书、X 或 B 站主页，选择要保存的作品。",
           actionTitle: "添加博主",
           action: { presentDouyinProfileImport() }
         )
@@ -1045,47 +1259,8 @@ struct HistoryContentView: View {
       } else {
         List {
           ForEach(model.creatorDirectoryRows) { creator in
-            HStack(spacing: 10) {
-              Button { model.selectCreator(creator.id) } label: {
-                HStack(spacing: 10) {
-                  creatorAvatar(creator)
-                  VStack(alignment: .leading, spacing: 2) {
-                    Text(creator.listingTitle).lineLimit(1)
-                    HStack(spacing: 6) {
-                      Text(HistoryPlatformDisplay.name(forHost: creator.identity.platform))
-                        .font(.caption2)
-                        .padding(.horizontal, 5).padding(.vertical, 1)
-                        .background(theme.badge, in: Capsule())
-                      Text("已保存 \(creator.savedWorkCount) 条")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    }
-                  }
-                  Spacer(minLength: 0)
-                }
-                .contentShape(Rectangle())
-              }
-              .buttonStyle(.plain)
-              .accessibilityIdentifier("history-creator-select-\(creator.id.rawValue)")
-              Button {
-                model.setCreatorPinned(creator.id, pinned: !creator.isPinned)
-              } label: {
-                Image(systemName: creator.isPinned ? "pin.fill" : "pin")
-              }
-              .buttonStyle(.plain)
-              .help(creator.isPinned ? "取消置顶" : "置顶到侧栏，最多 5 位")
-              .accessibilityIdentifier("history-creator-pin-\(creator.id.rawValue)")
-              Button {
-                presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
-              } label: {
-                Image(systemName: "square.and.arrow.down")
-              }
-              .buttonStyle(.plain)
-              .disabled(creator.identity.platform != "douyin.com")
-              .help(creator.identity.platform == "douyin.com" ? "抓取该主页作品" : "目前只有抖音主页支持抓取作品")
-              .accessibilityIdentifier("history-creator-capture-\(creator.id.rawValue)")
-            }
-            .onAppear { model.loadNextCreatorPageIfNeeded(after: creator) }
+            creatorDirectoryRow(creator)
+              .onAppear { model.loadNextCreatorPageIfNeeded(after: creator) }
           }
           if model.isLoadingCreatorPage {
             HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
@@ -1100,12 +1275,180 @@ struct HistoryContentView: View {
     .background(theme.listPane.opacity(theme.isNative ? 0 : 1))
   }
 
+  private func creatorDirectoryRow(_ creator: CreatorSummary) -> some View {
+    let canCapture = ProfileImportPlatform.parse(creator.profileURL) != nil
+    return Button { model.focusCreatorInDirectory(creator.id) } label: {
+      HStack(alignment: .center, spacing: 10) {
+        CreatorDirectoryAvatar(creator: creator, size: 32, theme: theme) {
+          presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
+        }
+        VStack(alignment: .leading, spacing: 3) {
+          Text(creator.directoryDisplayName)
+            .themedFont(.body)
+            .foregroundStyle(theme.primaryText)
+            .lineLimit(2)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+          Text(creatorDirectoryRowSubtitle(creator))
+            .themedFont(.caption)
+            .foregroundStyle(theme.secondaryText)
+            .lineLimit(1)
+        }
+        .layoutPriority(1)
+        Spacer(minLength: 0)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .accessibilityIdentifier("history-creator-select-\(creator.id.rawValue)")
+    .padding(.vertical, 6)
+    .listRowBackground(
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+        .fill(model.selectedCreatorID == creator.id ? theme.accent.opacity(0.12) : Color.clear)
+    )
+    .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
+    .listRowSeparator(.hidden)
+    .contextMenu {
+      Button("更新资料") {
+        presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
+      }
+      .disabled(!canCapture)
+      .accessibilityIdentifier("history-creator-refresh-\(creator.id.rawValue)")
+      Button(creator.isPinned ? "取消置顶" : "置顶到侧栏") {
+        model.setCreatorPinned(creator.id, pinned: !creator.isPinned)
+      }
+      .accessibilityIdentifier("history-creator-pin-\(creator.id.rawValue)")
+    }
+  }
+
+  private func creatorDirectorySubtitle(_ creator: CreatorSummary) -> String {
+    var parts = [
+      HistoryPlatformDisplay.name(forHost: creator.identity.platform),
+      "已保存 \(creator.savedWorkCount) 条",
+    ]
+    if creator.isPinned { parts.append("已置顶") }
+    return parts.joined(separator: " · ")
+  }
+
+  private func creatorDirectoryRowSubtitle(_ creator: CreatorSummary) -> String {
+    var parts = [
+      HistoryPlatformDisplay.name(forHost: creator.identity.platform),
+      "\(creator.savedWorkCount) 条",
+    ]
+    if creator.isPinned { parts.append("已置顶") }
+    return parts.joined(separator: " · ")
+  }
+
   private func countBadge(_ count: Int, selected: Bool) -> some View {
     Text("\(count)")
       .themedFont(.caption, weight: .medium, monospacedDigit: true)
       .foregroundStyle(selected ? theme.accent : .secondary)
       .padding(.horizontal, 6).padding(.vertical, 1)
       .background(selected ? theme.accent.opacity(0.12) : theme.badge, in: Capsule())
+  }
+
+  private var listSearchPlaceholder: String {
+    if model.selectedCreator != nil {
+      return "搜索该博主的标题、正文、总结、标签"
+    }
+    switch model.selectedScope {
+    case .notes: return "搜索笔记标题、正文、标签"
+    case .unsummarized: return "搜索待总结的标题、正文、标签"
+    case .favorite: return "搜索收藏的标题、正文、总结、标签"
+    case .recent: return "搜索最近的标题、正文、总结、标签"
+    case .works: return "搜索作品标题、正文、标签"
+    case .drafts: return "搜索稿件标题、正文、标签"
+    case .all: return "搜索标题、正文、总结、标签"
+    }
+  }
+
+  private var hasClearableListFilters: Bool {
+    !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      || model.hasCategoryFilter
+      || ([HistoryListScope.recent, .unsummarized, .favorite].contains(model.selectedScope) && !model.isCreatorDirectoryActive)
+  }
+
+  private var listScopeFilterTitle: String? {
+    guard !model.isCreatorDirectoryActive else { return nil }
+    switch model.selectedScope {
+    case .all: return nil
+    case .recent: return "最近"
+    case .unsummarized: return "待总结"
+    case .favorite: return "收藏"
+    case .notes, .drafts, .works: return nil
+    }
+  }
+
+  private func clearListFilters() {
+    let scope = model.selectedScope
+    model.searchText = ""
+    model.selectScope([HistoryListScope.notes, .drafts, .works].contains(scope) ? scope : .all)
+  }
+
+  private func removeHostFilter(_ host: String) {
+    let remaining = model.selectedHosts.subtracting([host])
+    if remaining.isEmpty { model.selectScope(.all) }
+    else { model.selectHosts(Array(remaining)) }
+  }
+
+  private var activeFilterBar: some View {
+    HStack(alignment: .center, spacing: 6) {
+      ScrollView(.horizontal, showsIndicators: false) {
+        HStack(spacing: 6) {
+          if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            filterChip("“\(model.searchText.trimmingCharacters(in: .whitespacesAndNewlines))”") {
+              model.searchText = ""
+            }
+          }
+          if let scopeTitle = listScopeFilterTitle {
+            filterChip(scopeTitle) { model.selectScope(.all) }
+          }
+          if let creator = model.selectedCreator {
+            filterChip(creator.listingTitle) { model.selectCreator(creator.id) }
+          }
+          ForEach(Array(model.selectedHosts).sorted(), id: \.self) { host in
+            filterChip(HistoryPlatformDisplay.name(forHost: host)) { removeHostFilter(host) }
+          }
+          ForEach(activeFilterTags, id: \.normalizedName) { tag in
+            filterChip(tag.name) { model.toggleTag(tag, additive: true) }
+          }
+        }
+      }
+      Button("清除") { clearListFilters() }
+        .buttonStyle(.borderless)
+        .themedFont(.caption, weight: .medium)
+        .help("清除当前搜索和筛选")
+        .accessibilityLabel("清除筛选")
+        .accessibilityIdentifier("history-clear-filters")
+    }
+    .padding(.horizontal, 10)
+    .padding(.bottom, 8)
+    .accessibilityIdentifier("history-active-filters")
+  }
+
+  private var activeFilterTags: [HistoryTag] {
+    model.navigationCounts.tags
+      .map(\.tag)
+      .filter { model.selectedTagNormalizedNames.contains($0.normalizedName) }
+  }
+
+  private func filterChip(_ title: String, clear: @escaping () -> Void) -> some View {
+    Button(action: clear) {
+      HStack(spacing: 4) {
+        Text(title).lineLimit(1)
+        Image(systemName: "xmark")
+          .themedFont(.caption2, weight: .bold)
+      }
+      .themedFont(.caption)
+      .padding(.vertical, 3)
+      .padding(.horizontal, 8)
+      .background(theme.primaryText.opacity(0.06), in: Capsule())
+      .foregroundStyle(theme.primaryText)
+    }
+    .buttonStyle(.plain)
+    .help("移除这个筛选")
+    .accessibilityLabel("移除筛选 \(title)")
   }
 
   private func openHistoryURL(_ raw: String) {
@@ -1160,6 +1503,8 @@ struct HistoryContentView: View {
       )
     } else if model.isWorkbenchActive, isWorkbenchVisible {
       workbenchPlaceholder
+    } else if model.isCreatorDirectoryActive {
+      creatorDirectoryDetail
     } else {
       detail
     }
@@ -1167,24 +1512,273 @@ struct HistoryContentView: View {
 
   /// 工作台里没选中任何一件时的右侧。
   private var workbenchPlaceholder: some View {
-    VStack(spacing: 12) {
-      Image(systemName: "hammer")
-        .font(.system(size: DesignTokens.IconSize.empty))
-        .foregroundStyle(.tertiary)
-      Text(model.pieces.isEmpty ? "还没有在做的创作" : "从左边选一件")
-        .themedFont(.title3, weight: .medium)
-      Text(model.pieces.isEmpty
-        ? "一个念头写下来就是一件创作。"
-        : "打开后能看到它攒了哪些素材、稿子写到哪了。")
-        .themedFont(.callout)
-        .foregroundStyle(.secondary)
+    Group {
       if model.pieces.isEmpty {
-        Button("记一个新灵感") { isNewSparkPresented = true }
-          .buttonStyle(.borderedProminent)
-          .padding(.top, 4)
+        HistoryInlineState(
+          symbol: "hammer",
+          title: "还没有在做的创作",
+          message: "一个念头写下来就是一件创作。",
+          actionTitle: "记一个新灵感",
+          action: { isNewSparkPresented = true }
+        )
+      } else {
+        HistoryInlineState(
+          symbol: "hammer",
+          title: "从左边选一件",
+          message: "打开后能看到它攒了哪些素材、稿子写到哪了。"
+        )
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
+  }
+
+  @ViewBuilder private var creatorDirectoryDetail: some View {
+    if model.showsCreatorNeverAddedEmpty {
+      creatorDirectoryPlaceholder
+    } else if model.showsCreatorDirectoryFailure {
+      HistoryInlineState(
+        symbol: "exclamationmark.triangle",
+        title: "无法载入博主列表",
+        message: model.creatorFailure ?? "请稍后重试。",
+        actionTitle: "重试",
+        action: { model.reloadCreators() }
+      )
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+    } else if model.showsCreatorNoMatchEmpty {
+      HistoryInlineState(
+        symbol: "line.3.horizontal.decrease.circle",
+        title: "没有符合的博主",
+        message: "换个名称、主页或作者 ID 再搜。"
+      )
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .accessibilityIdentifier("history-creator-directory-detail-empty")
+    } else if model.isReadingCreatorWorkInDirectory {
+      creatorDirectoryReader
+    } else if let creator = model.selectedCreator {
+      creatorDirectoryWorks(creator)
+    } else if model.isLoadingCreatorPage {
+      ProgressView("正在载入博主…")
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    } else {
+      creatorDirectoryPlaceholder
+    }
+  }
+
+  private var creatorDirectoryReader: some View {
+    VStack(spacing: 0) {
+      HStack(spacing: 10) {
+        Button(model.profileImportReturnTarget == nil ? "返回作品" : "返回抓取批次") {
+          if model.profileImportReturnTarget != nil {
+            model.returnToProfileImportBatch()
+            columnVisibility = .all
+          } else {
+            model.leaveCreatorWorkReading()
+          }
+        }
+          .accessibilityIdentifier("history-creator-directory-back")
+        Spacer(minLength: 8)
+        if let creator = model.selectedCreator {
+          Button("抓取作品") {
+            presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
+          }
+          .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
+          .accessibilityIdentifier("history-creator-capture-selected")
+        }
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 8)
+      detailStateContent
+    }
+  }
+
+  private func creatorDirectoryWorks(_ creator: CreatorSummary) -> some View {
+    let canCapture = ProfileImportPlatform.parse(creator.profileURL) != nil
+    let batches = manualLink.profileImportBatches.filter { $0.creatorID == creator.id }
+    return VStack(spacing: 0) {
+      HStack(alignment: .center, spacing: 10) {
+        CreatorDirectoryAvatar(creator: creator, size: 36, theme: theme) {
+          presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
+        }
+        VStack(alignment: .leading, spacing: 2) {
+          Text(creator.directoryDisplayName)
+            .themedFont(.headline)
+            .foregroundStyle(theme.primaryText)
+            .lineLimit(2)
+          Text(creatorDirectorySubtitle(creator))
+            .themedFont(.caption)
+            .foregroundStyle(theme.secondaryText)
+        }
+        .layoutPriority(1)
+        Spacer(minLength: 8)
+        Button("更新资料") {
+          presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
+        }
+        .disabled(!canCapture)
+        .help("只刷新姓名和头像，不必保存新作品")
+        .accessibilityIdentifier("history-creator-refresh-selected")
+        Button("抓取作品") {
+          presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
+        }
+        .disabled(!canCapture)
+        .help(canCapture ? "打开主页并选择作品" : "暂不支持此平台主页")
+        .accessibilityIdentifier("history-creator-capture-selected")
+      }
+      .padding(.horizontal, 14)
+      .padding(.top, 10)
+      Text("互动数据为保存时快照")
+        .themedFont(.caption2)
+        .foregroundStyle(theme.secondaryText)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.top, 2)
+        .padding(.bottom, 8)
+      if !batches.isEmpty {
+        creatorWorksGridSurface(creator: creator, batches: batches)
+      } else {
+        switch model.listState {
+      case .idle where model.rows.isEmpty, .loading where model.rows.isEmpty:
+        ProgressView("正在载入作品…")
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+      case .failed where model.rows.isEmpty:
+        HistoryInlineState(
+          symbol: "exclamationmark.triangle",
+          title: "无法载入作品",
+          message: "请稍后重试。",
+          actionTitle: "重试",
+          action: { model.retryList() }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("history-list-failed")
+      case .empty:
+        HistoryInlineState(
+          symbol: "tray",
+          title: "尚未保存作品",
+          message: "打开主页后勾选要保存的内容。",
+          actionTitle: "抓取作品",
+          action: { presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true) }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("history-creator-directory-works-empty")
+      default:
+        creatorWorksGridSurface(creator: creator, batches: [])
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .background(theme.card.opacity(theme.isNative ? 0 : 1))
+  }
+
+  private func creatorWorksGridSurface(
+    creator: CreatorSummary,
+    batches: [ProfileImportBatch]
+  ) -> some View {
+    GeometryReader { geometry in
+      let columns = creatorWorksGridColumns(for: creator, availableWidth: geometry.size.width)
+      let savedRows = Dictionary(uniqueKeysWithValues: model.rows.map { ($0.taskID, $0) })
+      let reservedTaskIDs = Set(batches.filter { !$0.isCollapsed }.flatMap { batch in
+        batch.items.compactMap { item -> TaskID? in
+          if case let .completed(taskID) = item.phase { return taskID }
+          return nil
+        }
+      })
+      ScrollViewReader { batchScroll in
+        ScrollView {
+          VStack(alignment: .leading, spacing: 14) {
+            ForEach(batches) { batch in
+              ProfileImportBatchHeader(batch: batch, manualLink: manualLink)
+            }
+            LazyVGrid(columns: columns, spacing: CreatorDirectoryChrome.xGridSpacing) {
+              ForEach(batches.filter { !$0.isCollapsed }) { batch in
+                ForEach(batch.items) { item in
+                  ProfileImportBatchWorkCard(
+                    batchID: batch.id,
+                    item: item,
+                    savedRows: savedRows,
+                    localCover: { taskID, coverURL in
+                      await model.localCoverURL(for: taskID, matching: coverURL)
+                    },
+                    manualLink: manualLink,
+                    historyModel: model
+                  )
+                  .id(item.id)
+                }
+              }
+              ForEach(model.rows.filter { !reservedTaskIDs.contains($0.taskID) }, id: \.taskID) { row in
+                Button {
+                  model.selectedTaskID = row.taskID
+                } label: {
+                  CreatorSavedWorkCard(
+                    row: row,
+                    theme: theme,
+                    localCover: { await model.localCoverURL(for: row.taskID, matching: $0) }
+                  )
+                }
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .contain)
+                .accessibilityHint("打开作品")
+                .onAppear { model.loadNextPageIfNeeded(after: row) }
+                .accessibilityIdentifier("history-creator-work-card-\(row.taskID.rawValue)")
+              }
+            }
+          }
+          .padding(12)
+        }
+        .onAppear {
+          scrollToProfileImportTarget(using: batchScroll)
+        }
+        .onChange(of: model.profileImportScrollTarget) { _, _ in
+          scrollToProfileImportTarget(using: batchScroll)
+        }
+      }
+    }
+    .accessibilityIdentifier("history-creator-directory-works")
+  }
+
+  private func scrollToProfileImportTarget(using proxy: ScrollViewProxy) {
+    guard let target = model.profileImportScrollTarget else { return }
+    withAnimation(historyUIAnimation(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) {
+      proxy.scrollTo(target, anchor: .center)
+    }
+    model.consumeProfileImportScrollTarget()
+  }
+
+  private func creatorWorksGridColumns(for creator: CreatorSummary, availableWidth: CGFloat) -> [GridItem] {
+    if CreatorWorkMetricLayout.usesAdaptiveWorkGrid(creator.identity.platform) {
+      let count = CreatorDirectoryChrome.xColumnCount(availableWidth: availableWidth)
+      return Array(
+        repeating: GridItem(.flexible(minimum: 0), spacing: 10, alignment: .top),
+        count: count
+      )
+    }
+    return [
+      GridItem(.flexible(minimum: 0), spacing: 10, alignment: .top),
+      GridItem(.flexible(minimum: 0), spacing: 10, alignment: .top),
+      GridItem(.flexible(minimum: 0), spacing: 10, alignment: .top),
+    ]
+  }
+
+  /// 目录还没选出有效博主时的右侧。
+  private var creatorDirectoryPlaceholder: some View {
+    Group {
+      if model.showsCreatorNeverAddedEmpty {
+        HistoryInlineState(
+          symbol: "person.2",
+          title: "还没有添加博主",
+          message: "点加号粘贴抖音、小红书、X 或 B 站主页，选择要保存的作品。",
+          actionTitle: "添加博主",
+          action: { presentDouyinProfileImport() }
+        )
+        .accessibilityIdentifier("history-creator-directory-detail-add")
+      } else {
+        HistoryInlineState(
+          symbol: "person.2",
+          title: "从左边选择一位博主",
+          message: "打开后能看到这位博主已保存的作品。"
+        )
+      }
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .accessibilityIdentifier("history-creator-directory-detail-empty")
   }
 
   /// 新灵感只要一句话。
@@ -1297,6 +1891,20 @@ struct HistoryContentView: View {
   /// 每次切换白白多跑一轮 AppKit 布局递归——那正是切换文章要卡半秒的地方。
   private func articleDetail(detail: HistoryDetailProjection) -> some View {
     VStack(spacing: 0) {
+      if model.profileImportReturnTarget?.taskID == detail.task.id,
+         !model.isReadingCreatorWorkInDirectory {
+        HStack {
+          Button("返回抓取批次") {
+            model.returnToProfileImportBatch()
+            columnVisibility = .all
+          }
+          .accessibilityIdentifier("profile-import-return-to-batch")
+          Spacer()
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(theme.badge)
+      }
       if !isCaptureOnboardingDismissed && !firstCaptureIsComplete {
         firstCaptureNextStepBanner(detail: detail)
       }
@@ -1308,6 +1916,7 @@ struct HistoryContentView: View {
         appearanceTheme: appearanceTheme,
         localImageURLs: model.localImageURLs,
         localMediaFileURL: model.localMediaFileURL,
+        isFocusReading: columnVisibility == .detailOnly,
         openSettings: { openSettings() },
         openRecapture: { manualLink.openForRecapture($0) },
         remotePreviewPlayback: remotePreviewPlayback,
@@ -1320,12 +1929,47 @@ struct HistoryContentView: View {
   private var emptyDetail: some View {
     // 空状态必须跟着当前区域走。
     //
+    // 有搜索或筛选时，列表空只表示「当前条件没命中」，不是库空，更不是没写过笔记。
     // 「我的笔记」是自己写东西的地方，在那里显示「还没有保存页面 / 添加链接 /
     // 从剪贴板添加链接」不只是文案不对——它把用户往完全相反的动作上引。
+    if model.showsCreatorZeroWorks {
+      return AnyView(
+        HistoryInlineState(
+          symbol: "tray",
+          title: "尚未保存作品",
+          message: "打开主页后勾选要保存的内容。",
+          actionTitle: "抓取作品",
+          action: {
+            if let url = model.selectedCreator?.profileURL {
+              presentDouyinProfileImport(profileURL: url, autoStart: true)
+            }
+          }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("history-creator-zero-works-detail")
+      )
+    }
+    if model.hasActiveFilter {
+      return AnyView(
+        filterEmptyState
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityIdentifier("history-filter-empty-detail")
+      )
+    }
     if model.selectedScope == .notes {
       return AnyView(emptyNotesDetail)
     }
     return AnyView(emptyCaptureDetail)
+  }
+
+  private var filterEmptyState: some View {
+    HistoryInlineState(
+      symbol: "line.3.horizontal.decrease.circle",
+      title: "没有符合条件的资料",
+      message: "调整搜索词或清除筛选后再试",
+      actionTitle: "清除筛选",
+      action: clearListFilters
+    )
   }
 
   /// 笔记区的空状态：只讲写，不讲抓。
@@ -1589,11 +2233,15 @@ private struct HistoryMultiSelectionPanel: View {
           .frame(width: 58, height: 58)
           .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
         if model.isBatchSummarizing {
-          Text("正在批量总结").font(.title2.weight(.semibold))
+          Text("正在批量总结").themedFont(.title2, weight: .semibold)
         } else if model.isBatchTranslating {
-          Text("正在批量翻译").font(.title2.weight(.semibold))
+          Text("正在批量翻译").themedFont(.title2, weight: .semibold)
         } else {
-          Text("已选择 \(model.selectedTaskCount) 项").font(.title2.weight(.semibold))
+          Text("已选择 \(model.selectedTaskCount) 项").themedFont(.title2, weight: .semibold)
+          Text(selectionScopeDescription)
+            .themedFont(.callout)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
         }
       }
 
@@ -1611,6 +2259,8 @@ private struct HistoryMultiSelectionPanel: View {
           Button("停止") { model.stopBatchSummary() }
             .buttonStyle(AppButtonStyle(emphasis: .normal))
             .disabled(model.batchSummaryProgress?.isStopping == true)
+            .help("停止尚未开始的批量总结")
+            .accessibilityLabel("停止批量总结")
             .accessibilityIdentifier("batch-summarize-stop")
         }
         .frame(maxWidth: 360)
@@ -1628,6 +2278,8 @@ private struct HistoryMultiSelectionPanel: View {
           Button("停止") { model.stopBatchTranslation() }
             .buttonStyle(AppButtonStyle(emphasis: .normal))
             .disabled(model.batchTranslationProgress?.isStopping == true)
+            .help("停止尚未开始的批量翻译")
+            .accessibilityLabel("停止批量翻译")
             .accessibilityIdentifier("batch-translate-stop")
         }
         .frame(maxWidth: 360)
@@ -1671,8 +2323,8 @@ private struct HistoryMultiSelectionPanel: View {
       }
 
       if !model.isBatchSummarizing, !model.isBatchTranslating {
-        Text("列表右键菜单提供同样操作；Delete 键可删除。导出、标签、识别和转写等单条能力暂不可用。")
-          .font(.callout)
+        Text("已有总结或译文的条目会跳过。失败后可再次总结或翻译选中项。列表右键菜单提供同样操作；Delete 键可删除。")
+          .themedFont(.callout)
           .foregroundStyle(.secondary)
           .multilineTextAlignment(.center)
           .frame(maxWidth: 340)
@@ -1681,6 +2333,30 @@ private struct HistoryMultiSelectionPanel: View {
     .padding(24)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .accessibilityIdentifier("history-multi-selection-panel")
+  }
+
+  private var selectionScopeDescription: String {
+    var parts: [String] = []
+    if let creator = model.selectedCreator {
+      parts.append("博主 \(creator.listingTitle)")
+    } else {
+      switch model.selectedScope {
+      case .all: parts.append("全部资料")
+      case .recent: parts.append("最近")
+      case .unsummarized: parts.append("待总结")
+      case .favorite: parts.append("收藏")
+      case .notes: parts.append("笔记")
+      case .drafts: parts.append("稿件")
+      case .works: parts.append("作品")
+      }
+    }
+    if !model.selectedHosts.isEmpty {
+      parts.append("\(model.selectedHosts.count) 个平台")
+    }
+    if !model.selectedTagNormalizedNames.isEmpty {
+      parts.append("\(model.selectedTagNormalizedNames.count) 个标签")
+    }
+    return "范围：" + parts.joined(separator: " · ")
   }
 }
 
@@ -1757,6 +2433,7 @@ private struct HistoryDetailView: View, Equatable {
       && lhs.appearanceTheme == rhs.appearanceTheme
       && lhs.localImageURLs == rhs.localImageURLs
       && lhs.localMediaFileURL == rhs.localMediaFileURL
+      && lhs.isFocusReading == rhs.isFocusReading
   }
 
   let detail: HistoryDetailProjection
@@ -1766,6 +2443,8 @@ private struct HistoryDetailView: View, Equatable {
   let appearanceTheme: AppearanceTheme
   let localImageURLs: [URL]
   let localMediaFileURL: URL?
+  /// 主界面「专注阅读」：隐藏侧栏后正文收窄居中，约 760pt。
+  let isFocusReading: Bool
   let openSettings: () -> Void
   let openRecapture: (String) -> Void
   /// 与列表预热共享：选中当前抓取时已开始 prepare，详情卡复用同一 controller。
@@ -1792,7 +2471,9 @@ private struct HistoryDetailView: View, Equatable {
   /// 隐藏面板保持自然尺寸不被折叠——切换因此不触发任何几何重算。
   @State private var paneHeights: [ReadingPane: CGFloat] = [:]
   @State private var pendingSourceCitation: String?
-  @State private var measuredTitleHeight: CGFloat = HistoryDetailView.titleLineHeight
+  @State private var measuredTitleHeight: CGFloat = HistoryDetailView.captureTitleLineHeight
+  /// 抓取长标题默认最多 3 行；超出后用「展开标题 / 收起标题」，切换条目复位。
+  @State private var isTitleExpanded = false
   /// 转写校对：编辑态与草稿只属于当前详情页，切换条目即复位。
   /// 长配文 / 长转写默认收起，避免把「重新转写」顶出一屏。
   @State private var isCaptionExpanded = false
@@ -2032,16 +2713,10 @@ private struct HistoryDetailView: View, Equatable {
   private var latestSubtitleSnapshot: ContentSnapshot? {
     LayeredSourceDocument.subtitleSnapshot(in: detail.snapshots)
   }
-  /// 配文还在、而且不是抖音那种和标题重复的空 caption，才值得单独一层。
+  /// 配文层：抓取正文非空就呈现。抖音即使配文与标题相同也要能读，不能藏掉。
   private var hasPresentableCaption: Bool {
     guard let snapshot = latestSourceSnapshot else { return false }
-    let body = LayeredSourceDocument.body(of: snapshot)
-    guard !body.isEmpty else { return false }
-    return !CapturedSourceBodyPresentation.isRedundantDouyinBody(
-      platform: snapshot.platform,
-      title: CapturedDocumentTitle.display(snapshot.title, for: snapshot.sourceURL),
-      markdown: snapshot.bodyText
-    )
+    return !LayeredSourceDocument.body(of: snapshot).isEmpty
   }
   /// 这条记录有哪几层原文可选。
   ///
@@ -2128,12 +2803,14 @@ private struct HistoryDetailView: View, Equatable {
     // 原来只看听写，于是只读了字幕、没跑听写的记录会退回单层渲染，把刚读出来
     // 的那一层整个藏起来——数据在库里，界面上却什么都看不到。
     //
-    // 配文**不是**分层的前提。抖音视频帖的 caption 多半和标题重复，
-    // `hasPresentableCaption` 因此是 false；此时只要字幕和听写同时存在，旧判据就
-    // 让整条记录退回单层渲染、只画听写稿，把已经读出来的字幕层原地藏掉——上面
-    // 那个坑换条路又走了一遍。两条派生层同时在，就必须分层。
+    // 配文**不是**分层的前提。字幕和听写同时在，就必须分层，不能因为配文与标题
+    // 相同就把整页退回单层、只画听写稿。
     if latestSubtitleSnapshot != nil, latestTranscriptionSnapshot != nil { return true }
-    return hasPresentableCaption && (latestTranscriptionSnapshot != nil || latestSubtitleSnapshot != nil)
+    if hasPresentableCaption && (latestTranscriptionSnapshot != nil || latestSubtitleSnapshot != nil) {
+      return true
+    }
+    // 抖音只有配文、还没转写时也要走配文层，避免退回「只显示转写」而整页空白。
+    return isDouyinCapture && hasPresentableCaption
   }
   private var isDouyinCapture: Bool { latestSourceSnapshot?.platform == "douyin" }
   /// 抖音图文帖：正文本身就是内容（文案 + 图集），不像视频帖那样只是重复标题的
@@ -2155,10 +2832,33 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
   private var title: String { CapturedDocumentTitle.display(detail.snapshots.last?.title, for: sourceURL) }
+  private var contentName: CapturedContentNaming.Name {
+    if isOwnWriting { return .init(text: title, origin: .sourceTitle) }
+    if latestSourceSnapshot?.sourceLabel == "X public article endpoint", title != CapturedDocumentTitle.missing {
+      return .init(text: title, origin: .sourceTitle)
+    }
+    return CapturedContentNaming.name(
+      title: latestSourceSnapshot?.title,
+      body: latestSourceSnapshot.map { LayeredSourceDocument.body(of: $0) },
+      host: URL(string: sourceURL)?.host ?? "",
+      author: sourceFrontmatter.author, published: sourceFrontmatter.published
+    )
+  }
+  private var hidesRepeatedCaptureHeading: Bool {
+    guard !isOwnWriting, effectiveReadingPane == .source,
+          (!showsLayeredSource || activeSourceLayer == .caption),
+          readingPrimaryTitle == contentName.text,
+          readingOriginalSubtitle == nil, let source = latestSourceSnapshot else { return false }
+    if contentName.origin == .caption { return true }
+    return CapturedContentNaming.hidesRepeatedHeading(
+      name: .init(text: contentName.text, origin: contentName.origin == .fallback ? .fallback : .caption),
+      body: LayeredSourceDocument.body(of: source)
+    )
+  }
   /// 详情头：有总结/翻译一级标题时主标题用产物，原文降副行；标题本地化后副行读 original_title。
   private var readingTitles: (primary: String, original: String?) {
     HistoryReadingTitle.detailTitles(
-      captured: title,
+      captured: contentName.text,
       product: HistoryReadingTitle.productTitle(
         summaryBody: summaryArtifact?.bodyText,
         translationBody: translationArtifact?.bodyText
@@ -2168,6 +2868,12 @@ private struct HistoryDetailView: View, Equatable {
   }
   private var readingPrimaryTitle: String { readingTitles.primary }
   private var readingOriginalSubtitle: String? { readingTitles.original }
+  /// 专注阅读约 760pt；常规模式仍用字号联动的绝对上限。
+  private static let focusReadingMaxWidth: CGFloat = 760
+  private var readingContentMaxWidth: CGFloat {
+    let scaled = DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: readingFont.bodySize)
+    return isFocusReading ? min(Self.focusReadingMaxWidth, scaled) : scaled
+  }
   private var sourceURL: String { detail.snapshots.last?.sourceURL ?? detail.task.canonicalURL }
   /// Tolaria-style properties from capture frontmatter (author / published / description).
   private var sourceFrontmatter: MarkdownNoteFrontmatter {
@@ -2234,7 +2940,16 @@ private struct HistoryDetailView: View, Equatable {
   }
   private var presentsArticleBeforeMedia: Bool {
     guard let latestSnapshot else { return false }
-    // 有视频时播放器在上、文稿在下：转写按钮和视频在一起，长转写不会把它们顶走。
+    if effectiveReadingPane == .source, !hasLiveTranscription,
+       (!showsLayeredSource || activeSourceLayer == .caption),
+       CreatorWorkMetricLayout.usesAdaptiveWorkGrid(URL(string: sourceURL)?.host ?? ""),
+       let source = latestSourceSnapshot {
+      let body = LayeredSourceDocument.body(of: source)
+      if !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, body.count <= 800 {
+        return true
+      }
+    }
+    // 长转写仍置于播放器之后，避免把播放控件推离屏幕。
     // 微信长文没有内嵌播放器，仍旧正文在前。
     return RemoteMarkdownImageStagingPolicy.isSubstantiveWeChatArticle(
       platform: latestSnapshot.platform,
@@ -2295,11 +3010,11 @@ private struct HistoryDetailView: View, Equatable {
     // 笔记也例外：给一条刚写的笔记留一个空的「总结」页签，等于在写作页面上摆一个
     // 常驻的待办。没总结时它就只有正文一件东西，那就不该出现分段控件。
     if panes.isEmpty, !isDouyinCapture, !isOwnWriting { panes.append(.summary) }
-    if !isDouyinCapture || hasSourceBody || hasLiveTranscription { panes.append(.source) }
+    if !isDouyinCapture || hasSourceBody || hasLiveTranscription || hasPresentableCaption {
+      panes.append(.source)
+    }
     return panes
   }
-  /// For Douyin, source means a saved local transcription—not the duplicate
-  /// caption. Other platforms retain their existing source-pane behavior.
   private var showsReadingPanePicker: Bool {
     // 笔记只有一份正文，除非真的跑出了翻译或总结，否则「原文」是个只有一个选项的
     // 分段控件——它不提供任何选择，只是看起来像有。
@@ -2385,24 +3100,21 @@ private struct HistoryDetailView: View, Equatable {
             .padding(.top, DesignTokens.Space.sm)
         }
         if !isWeChatCapture && sourceFrontmatter.hasEngagementStats {
-          notePropertiesStrip(sourceFrontmatter)
+          engagementDisclosure(sourceFrontmatter)
             .padding(.top, DesignTokens.Space.sm)
         }
 
-        if showsRunControls {
-          // 上面是「这条是什么」，这一排是「对它做什么」。
-          Rectangle()
-            .fill(theme.hairline)
-            .frame(height: 1)
-            .padding(.top, DesignTokens.Space.lg)
+        // 抓取记录的生成入口并入阅读工具栏「AI 处理」菜单，避免与结果切换分两行。
+        // 笔记仍保持正文直达，整理排版留在正文之后。
+        if !isOwnWriting, showsReadingPanePicker || showsRunControls {
           actionToolbar
-            .padding(.top, DesignTokens.Space.md)
-            .accessibilityIdentifier("history-action-toolbar")
+            .padding(.top, DesignTokens.Space.lg)
+          Divider().padding(.top, DesignTokens.Space.sm)
         }
 
         if presentsArticleBeforeMedia, showsReadingSurface {
           readingSurface
-            .padding(.top, 18)
+            .padding(.top, isOwnWriting ? DesignTokens.Space.sm : 18)
         }
 
         if !suppressesEmbeddedMedia {
@@ -2549,7 +3261,15 @@ private struct HistoryDetailView: View, Equatable {
         // Substantive WeChat articles already rendered the reading surface above.
         if !presentsArticleBeforeMedia, showsReadingSurface {
           readingSurface
-            .padding(.top, 18)
+            .padding(.top, isOwnWriting ? DesignTokens.Space.sm : 18)
+        }
+
+        if isOwnWriting, showsRunControls,
+           showsVisibleRun || latestSnapshot.map({ !storedNoteBody($0).isEmpty }) == true {
+          // 笔记：正文先行；整理/生成不挡编辑。
+          noteActionToolbar
+            .padding(.top, DesignTokens.Space.lg)
+            .accessibilityIdentifier("history-action-toolbar")
         }
 
         // 脑图是正文的衍生输出，不再挡在阅读内容前面。先读总结／翻译／原文，
@@ -2584,10 +3304,9 @@ private struct HistoryDetailView: View, Equatable {
           .padding(.top, 20)
           .id(ReadingAnchor.module("tags"))
       }
-      // 行宽随详情列可用宽度增长：SwiftUI 会把实际宽度收在
-      // min(可用宽度 − inset, 字号联动上限)，不必把可用宽度写进 State。
+      // 常规列表保留较宽上限；专注阅读收窄到约 760pt 并居中。
       .frame(
-        maxWidth: DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: readingFont.bodySize),
+        maxWidth: readingContentMaxWidth,
         alignment: .leading
       )
       .frame(maxWidth: .infinity, alignment: .center)
@@ -2645,20 +3364,18 @@ private struct HistoryDetailView: View, Equatable {
       ReadingSelectionRouter.shared.formatter = { selected in
         ReadingCitationFormatter.format(selection: selected, title: readingPrimaryTitle, sourceURL: sourceURL)
       }
-      measuredTitleHeight = HistoryDetailView.titleLineHeight
+      measuredTitleHeight = HistoryDetailView.captureTitleLineHeight
+      isTitleExpanded = false
       // 切换条目时丢弃未保存的转写草稿，避免草稿串到别的记录。
       isEditingTranscription = false
       transcriptionDraft = ""
       sourceEditCaretUTF16 = 0
-      // 有正文的笔记先看排版，点字再写。空笔记（含刚建的）没有可读的东西，
-      // 仍一打开就进编辑，否则多出来一次空击。
+      // 有正文的笔记先看排版，点字再写；新建的空笔记直接进入编辑。
       if isOwnWriting, let snapshot = latestSnapshot {
         let body = storedNoteBody(snapshot)
         transcriptionDraft = body
         editingNote = (detail.task.id, snapshot.id, body)
-        if body.isEmpty {
-          isEditingTranscription = true
-        }
+        if body.isEmpty { isEditingTranscription = true }
       }
       noteTitleDraft = title
       // 清洗规则是后加的，早先存下的标题里还留着 U+FFFC 那类显示成方块的字符。
@@ -2729,6 +3446,8 @@ private struct HistoryDetailView: View, Equatable {
           }
           .disabled(!model.canSelectPrevious)
           .keyboardShortcut(.upArrow, modifiers: .command)
+          .help("上一条")
+          .accessibilityLabel("上一条")
           .accessibilityIdentifier("reading-previous-item")
           Button {
             model.selectAdjacent(offset: 1)
@@ -2737,18 +3456,16 @@ private struct HistoryDetailView: View, Equatable {
           }
           .disabled(!model.canSelectNext)
           .keyboardShortcut(.downArrow, modifiers: .command)
+          .help("下一条")
+          .accessibilityLabel("下一条")
           .accessibilityIdentifier("reading-next-item")
         }
         .help("上一条 / 下一条（⌘↑ / ⌘↓）")
         .accessibilityIdentifier("reading-item-navigation")
 
-        // 阅读区字号的快捷调节，省得为改字号专门开设置。只在有正文可读时出现——
-        // 纯视频、无正文的详情里字号没有意义。两个按钮到边界各自禁用。
+        // 阅读区字号收进「阅读设置」菜单，保留加减与边界禁用。
         if hasReadableBody {
-          // 用图标而不是「小」「大」两个字：这一排其余全是 SF Symbol，
-          // 夹两个汉字进去，工具栏就有了两种视觉语言，一眼看过去像没做完。
-          // 图标自带大小语义，也不必再靠字号差别去暗示按钮的作用。
-          ControlGroup {
+          Menu {
             Button {
               adjustReadingFontSize(by: -ReadingFontSize.step)
             } label: {
@@ -2763,8 +3480,11 @@ private struct HistoryDetailView: View, Equatable {
             }
             .disabled(readingFontSizeRaw >= Double(ReadingFontSize.maximum))
             .accessibilityIdentifier("reading-font-larger")
+          } label: {
+            Label("阅读设置", systemImage: "textformat.size")
           }
-          .help("调整正文字号")
+          .help("阅读设置：调整正文字号")
+          .accessibilityLabel("阅读设置")
           .accessibilityIdentifier("reading-font-size-control")
         }
 
@@ -2778,6 +3498,7 @@ private struct HistoryDetailView: View, Equatable {
                   systemImage: favorited ? "star.fill" : "star")
               }
               .help(favorited ? "取消收藏" : "收藏")
+              .accessibilityLabel(favorited ? "取消收藏" : "收藏")
               .accessibilityIdentifier("reading-toggle-favorite")
             }
             if model.canEditTags {
@@ -2785,6 +3506,7 @@ private struct HistoryDetailView: View, Equatable {
                 Label("标签", systemImage: "tag")
               }
               .help("添加标签")
+              .accessibilityLabel("标签")
               .accessibilityIdentifier("reading-quick-tag")
               .popover(isPresented: $isTagPopoverPresented, arrowEdge: .bottom) {
                 HistoryTagEditor(tags: detail.tags, model: model, autoExpandComposer: true)
@@ -2804,40 +3526,43 @@ private struct HistoryDetailView: View, Equatable {
         // 导出那一组直接平铺进来，不做二级菜单：它们本来就属于「对这条做点
         // 什么」，多一层嵌套只是多一次点击。
         Menu {
-          Button("拷贝全文") { copyFullArticle() }
-            .accessibilityIdentifier("history-copy-full-text")
-          Divider()
-          Button("导出 Markdown (.md)") { exportCleanText(.markdown) }
-          Button("导出纯文本 (.txt)") { exportCleanText(.plainText) }
-          Button("导出 PDF (.pdf)") { exportStyledDocument(.pdf) }
-            .accessibilityIdentifier("history-export-pdf")
-          Button("导出 Word (.docx)") { exportStyledDocument(.docx) }
-            .accessibilityIdentifier("history-export-docx")
-          Button("导出完整数据 (.json)") { model.requestExport(.json) }
-          Divider()
-          Toggle("以纯文本查看正文", isOn: $showsPlainText)
-            .accessibilityIdentifier("history-content-plain-text-toggle")
-          Divider()
-          if canRecaptureSource {
-            Button("重新抓取原文…") { openRecapture(sourceURL) }
-              .accessibilityIdentifier("history-recapture-source")
-            Divider()
+          Section("复制") {
+            Button("拷贝全文") { copyFullArticle() }
+              .accessibilityIdentifier("history-copy-full-text")
+            Toggle("以纯文本查看正文", isOn: $showsPlainText)
+              .accessibilityIdentifier("history-content-plain-text-toggle")
           }
-          Button("重新生成…") { isRegeneratePopoverPresented = true }
-            .disabled(summarizeUnavailableReason != nil)
-            .help(summarizeUnavailableReason ?? "用本机已保存正文重新总结或翻译")
-            .accessibilityIdentifier("regenerate-history")
-          Divider()
-          // `role: .destructive` 让系统把它标红并排在最后，这是 macOS 菜单里
-          // 「这一项会毁掉东西」的标准表达，比自己涂色可靠。
-          Button("删除", role: .destructive) {
-            model.requestDeletion(protectedTaskIDs: protectedTaskIDs)
+          Section("导出") {
+            Button("导出 Markdown (.md)") { exportCleanText(.markdown) }
+            Button("导出纯文本 (.txt)") { exportCleanText(.plainText) }
+            Button("导出 PDF (.pdf)") { exportStyledDocument(.pdf) }
+              .accessibilityIdentifier("history-export-pdf")
+            Button("导出 Word (.docx)") { exportStyledDocument(.docx) }
+              .accessibilityIdentifier("history-export-docx")
+            Button("导出完整数据 (.json)") { model.requestExport(.json) }
           }
-          .disabled(!model.canDelete(protectedTaskIDs: protectedTaskIDs))
-          .accessibilityIdentifier("delete-history")
+          Section("重新处理") {
+            if canRecaptureSource {
+              Button("重新抓取原文…") { openRecapture(sourceURL) }
+                .accessibilityIdentifier("history-recapture-source")
+            }
+            Button("重新生成…") { isRegeneratePopoverPresented = true }
+              .disabled(summarizeUnavailableReason != nil)
+              .help(summarizeUnavailableReason ?? "用本机已保存正文重新总结或翻译")
+              .accessibilityIdentifier("regenerate-history")
+          }
+          Section {
+            Button("删除", role: .destructive) {
+              model.requestDeletion(protectedTaskIDs: protectedTaskIDs)
+            }
+            .disabled(!model.canDelete(protectedTaskIDs: protectedTaskIDs))
+            .accessibilityIdentifier("delete-history")
+          }
         } label: {
           Label("更多", systemImage: "ellipsis")
         }
+        .help("复制、导出、重新处理或删除当前条目")
+        .accessibilityLabel("更多")
         // popover 锚在这个按钮上——原来它挂在独立的「重新生成」按钮上，
         // 那个按钮现在没了，锚点得跟过来。
         .popover(isPresented: $isRegeneratePopoverPresented) { regeneratePopover }
@@ -2924,14 +3649,17 @@ private struct HistoryDetailView: View, Equatable {
 
   /// Capsule tool strip under the title — product control, not system Disclosure.
   /// Captions from short-video platforms are the document title here and can run
-  /// to several hundred characters. The title stays visually a title (never the
-  /// tallest thing on screen) by capping at three lines and scrolling the rest,
-  /// rather than truncating text the reader cannot recover any other way.
-  private static let titleFontSize: CGFloat = 22
-  private static let titleLineHeight: CGFloat = 28
-  private static var titleMaximumHeight: CGFloat { titleLineHeight * 3 }
+  /// to several hundred characters. Capture titles default to at most three lines;
+  /// overflow is recovered via「展开标题 / 收起标题」instead of an in-title scroller.
+  /// Note titles keep the existing editable field (22pt bold).
+  private static let noteTitleFontSize: CGFloat = 22
+  private static let captureTitleFontSize: CGFloat = 22
+  private static let captureTitleLineHeight: CGFloat = 28
+  private static var captureTitleMaximumHeight: CGFloat { captureTitleLineHeight * 3 }
 
-  private var titleNeedsScrolling: Bool { measuredTitleHeight > Self.titleMaximumHeight }
+  private var titleExceedsCollapsedLimit: Bool {
+    measuredTitleHeight > Self.captureTitleMaximumHeight
+  }
 
   /// 选流诊断仍挂在带清晰度菜单的卡片下，方便排障时打开；出货默认不渲染。
   /// Cookie / API 档位 / CDN 白名单不是观看需要的内容。
@@ -2956,7 +3684,7 @@ private struct HistoryDetailView: View, Equatable {
       // 自己写的东西标题就地可改。抓取记录的标题保持只读——那是抓来的事实。
       TextField(UserNoteDocument.untitledTitle, text: $noteTitleDraft)
         .textFieldStyle(.plain)
-        .font(readingFont.font(size: Self.titleFontSize, weight: .bold))
+        .font(readingFont.font(size: Self.noteTitleFontSize, weight: .bold))
         .foregroundStyle(theme.primaryText)
         .tracking(-0.4)
         .lineLimit(1...3)
@@ -2969,19 +3697,42 @@ private struct HistoryDetailView: View, Equatable {
         }
         .focused($focusedField, equals: .noteTitle)
         .accessibilityIdentifier("history-detail-title")
-    } else {
+    } else if !hidesRepeatedCaptureHeading {
       VStack(alignment: .leading, spacing: 4) {
-        if titleNeedsScrolling {
-          ScrollView(.vertical) {
-            measuredTitleText
+        Text(readingPrimaryTitle)
+          .font(readingFont.font(size: Self.captureTitleFontSize, weight: .medium))
+          .foregroundStyle(theme.primaryText)
+          .tracking(-0.4)
+          .lineLimit(isTitleExpanded ? nil : 3)
+          .textSelection(.enabled)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .background {
+            // 隐藏测量完整理想高度：可见标题可被 lineLimit 截断，测量副本不受限。
+            Text(readingPrimaryTitle)
+              .font(readingFont.font(size: Self.captureTitleFontSize, weight: .medium))
+              .tracking(-0.4)
+              .fixedSize(horizontal: false, vertical: true)
+              .hidden()
+              .accessibilityHidden(true)
+              .background(
+                GeometryReader { proxy in
+                  Color.clear.preference(key: TitleHeightPreferenceKey.self, value: proxy.size.height)
+                }
+              )
           }
-          .frame(height: Self.titleMaximumHeight)
-          .scrollBounceBehavior(.basedOnSize)
-          .scrollIndicators(.automatic)
+          .onPreferenceChange(TitleHeightPreferenceKey.self) { height in
+            guard height > 0 else { return }
+            measuredTitleHeight = height
+          }
           .accessibilityIdentifier("history-detail-title")
-        } else {
-          measuredTitleText
-            .accessibilityIdentifier("history-detail-title")
+        if titleExceedsCollapsedLimit {
+          Button(isTitleExpanded ? "收起标题" : "展开标题") {
+            isTitleExpanded.toggle()
+          }
+          .buttonStyle(.link)
+          .themedFont(.callout, weight: .medium)
+          .padding(.top, 2)
+          .accessibilityIdentifier("history-detail-title-expand")
         }
         if let original = readingOriginalSubtitle {
           Text(original)
@@ -2995,25 +3746,6 @@ private struct HistoryDetailView: View, Equatable {
         }
       }
     }
-  }
-
-  private var measuredTitleText: some View {
-    Text(readingPrimaryTitle)
-      .font(readingFont.font(size: Self.titleFontSize, weight: .bold))
-      .foregroundStyle(theme.primaryText)
-      .tracking(-0.4)
-      .fixedSize(horizontal: false, vertical: true)
-      .textSelection(.enabled)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .background(
-        GeometryReader { proxy in
-          Color.clear.preference(key: TitleHeightPreferenceKey.self, value: proxy.size.height)
-        }
-      )
-      .onPreferenceChange(TitleHeightPreferenceKey.self) { height in
-        guard height > 0 else { return }
-        measuredTitleHeight = height
-      }
   }
 
   /// 只有模型通道真的占上（或弹出数据去向确认）时才切阅读页，避免只打开空翻译页。
@@ -3095,151 +3827,199 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
 
-  private var actionToolbar: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 8) {
-        actionPill(
-          title: appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .summarize) ? "已排队" : "总结",
-          systemImage: "text.alignleft",
-          prominent: false,
-          disabled: summarizeUnavailableReason != nil,
-          identifier: showsCurrentCapture ? "summarize-current-capture" : "summarize-history-detail"
-        ) {
-          Task {
-            let started = await appModel.summarize(
-              historyDetail: detail,
-              preferences: providerSettings.runPreferences
-            )
-            engageReadingPane(.summary, started: started)
-          }
+  /// 抓取记录：结果切换与 AI 处理同一行；生成进菜单，切换本身不触发生成。
+  private var readingToolsRow: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      HStack(alignment: .center, spacing: DesignTokens.Space.sm) {
+        if showsReadingPanePicker {
+          readingPanePicker
         }
-        actionPill(
-          title: appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .translate) ? "已排队" : "翻译",
-          systemImage: "character.book.closed",
-          prominent: false,
-          disabled: translateUnavailableReason != nil,
-          identifier: showsCurrentCapture ? "translate-current-capture" : "translate-history-detail"
-        ) {
-          Task {
-            let started = await appModel.translate(
-              historyDetail: detail,
-              preferences: providerSettings.runPreferences
-            )
-            engageReadingPane(.translation, started: started)
-          }
-        }
-        .help(
-          appModel.translationUnavailableReason(
-            snapshots: detail.snapshots,
-            outputLanguage: providerSettings.runPreferences.outputLanguage
-          ) ?? "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
-        )
-        // 生成脑图和总结、翻译是同一类动作：都是把正文交给模型换回一份新产物，
-        // 前置条件（有正文 + 配好模型）、代价（花 token，必经确认）和结果
-        // （一份可保存、可导出的东西）完全一致。原来它却单独待在媒体和正文之间，
-        // 是一行很容易滚过去的小按钮——同类不同位。
-        //
-        // 已经有脑图就不显示：那时候「重新生成」在脑图卡自己的标题行里，
-        // 挨着主题切换和导出，和它们是一组。
-        if !isOwnWriting, model.mindMapRecord?.taskID != detail.task.id {
-          actionPill(
-            title: appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) ? "已排队" : "生成脑图",
-            systemImage: "brain",
-            prominent: false,
-            disabled: mindMapUnavailableReason != nil,
-            identifier: "mind-map-generate"
-          ) {
-            if appModel.canEnqueueManualGeneration(for: detail.task.id)
-              || appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) {
-              appModel.enqueueOrCancelMindMapGeneration(taskID: detail.task.id)
-            } else {
-              model.requestMindMapGeneration(taskID: detail.task.id)
-            }
-          }
-          .help(
-            mindMapUnavailableReason
-              ?? (appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap)
-                ? "再点一次取消排队"
-                : "把正文发给模型提取结构")
-          )
-        }
-        if isOwnWriting {
-          // 想到哪写到哪的东西需要有人重排结构：标题和正文黏成一段、编号挤在
-          // 一行、层级看不出来。这跟「修转写错别字」是两件事，用的是另一套提示词。
-          actionPill(
-            title: "整理排版",
-            systemImage: "text.alignleft",
-            prominent: true,
-            disabled: !model.canTidyNote(taskID: detail.task.id),
-            identifier: "tidy-note"
-          ) {
-            model.requestNoteTidy(taskID: detail.task.id, model: providerSettings.effectiveTidyModelName)
-          }
-          .help(model.noteTidyUnavailableReason(taskID: detail.task.id) ?? "把段落、列表与标题层级重排一遍；不改文字内容")
-          noteTidyStatus
-        }
-        Spacer(minLength: 0)
-        // 这一行只留状态和停止。生成中的正文在总结/翻译页里长出来。
+        Spacer(minLength: DesignTokens.Space.sm)
         if showsVisibleRun {
           if appModel.canStopVisibleRun(for: detail.task.id) {
             Button("停止", role: .cancel) { Task { await appModel.stop() } }
-              .controlSize(.small)
+              .controlSize(.mini)
+              .help("停止当前生成")
+              .accessibilityLabel("停止当前生成")
               .accessibilityIdentifier("stop-model-run")
           }
           if appModel.runState.isActive {
             ProgressView()
-              .controlSize(.small)
+              .controlSize(.mini)
           }
           Text(appModel.runStatusText)
-            .themedFont(.subheadline, weight: .medium)
+            .themedFont(.caption, weight: .medium)
             .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
             .lineLimit(1)
             .accessibilityIdentifier("model-run-status")
+        }
+        if showsRunControls {
+          aiProcessingMenu
+        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityIdentifier("history-action-toolbar")
+
+      if isRunPanelExpanded {
+        captureAndRunControlsExtras
+          .transition(historyBannerTransition(reduceMotion: reduceMotion))
+      }
+    }
+  }
+
+  /// 笔记：整理排版直达，不挡正文；可选 AI 菜单不抢编辑焦点。
+  private var noteActionToolbar: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      HStack(spacing: DesignTokens.Space.sm) {
+        actionPill(
+          title: "整理排版",
+          systemImage: "text.alignleft",
+          prominent: true,
+          disabled: !model.canTidyNote(taskID: detail.task.id),
+          identifier: "tidy-note"
+        ) {
+          model.requestNoteTidy(taskID: detail.task.id, model: providerSettings.effectiveTidyModelName)
+        }
+        .help(model.noteTidyUnavailableReason(taskID: detail.task.id) ?? "把段落、列表与标题层级重排一遍；不改文字内容")
+        noteTidyStatus
+        Spacer(minLength: DesignTokens.Space.sm)
+        if showsVisibleRun {
+          if appModel.canStopVisibleRun(for: detail.task.id) {
+            Button("停止", role: .cancel) { Task { await appModel.stop() } }
+              .controlSize(.mini)
+              .help("停止当前生成")
+              .accessibilityLabel("停止当前生成")
+              .accessibilityIdentifier("stop-model-run")
+          }
+          if appModel.runState.isActive {
+            ProgressView().controlSize(.mini)
+          }
+          Text(appModel.runStatusText)
+            .themedFont(.caption, weight: .medium)
+            .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
+            .lineLimit(1)
+            .accessibilityIdentifier("model-run-status")
+        }
+        if canRunHistory || showsVisibleRun {
+          aiProcessingMenu
         }
       }
       if let runActionBlockedReason {
         Text(runActionBlockedReason)
           .themedFont(.caption)
           .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
+          .lineLimit(2)
           .accessibilityIdentifier("history-run-blocked-reason")
       }
-
-      HStack(spacing: DesignTokens.Space.sm) {
-        if !providerSettings.arePreferencesReady {
-          Button("设置模型") { openSettings() }
-            .buttonStyle(.link)
-            .themedFont(.caption, weight: .medium)
-            .accessibilityIdentifier("history-open-model-settings")
-        } else {
-          Label(
-            providerSettings.activeSummaryModelName.isEmpty
-              ? "模型未命名"
-              : providerSettings.activeSummaryModelName,
-            systemImage: "cpu"
-          )
-          .themedFont(.caption, weight: .medium)
-          .foregroundStyle(.tertiary)
-          .lineLimit(1)
-        }
-        Spacer(minLength: 0)
-        if canRunHistory || showsCurrentCapture || isRunPanelExpanded || hasCollapsedRunMetadata {
-          Button(isRunPanelExpanded ? "收起运行详情" : "运行详情") {
-            withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isRunPanelExpanded.toggle() }
-          }
-          .buttonStyle(.borderless)
-          .themedFont(.caption, weight: .medium)
-          .foregroundStyle(.secondary)
-          .accessibilityIdentifier("history-run-panel-toggle")
-        }
-      }
-
-      // Optional model hints only — never dump streaming tokens here.
       if isRunPanelExpanded {
         captureAndRunControlsExtras
           .transition(historyBannerTransition(reduceMotion: reduceMotion))
       }
     }
+  }
+
+  private var aiProcessingMenu: some View {
+    Menu {
+      Button {
+        Task {
+          let started = await appModel.summarize(
+            historyDetail: detail,
+            preferences: providerSettings.runPreferences
+          )
+          engageReadingPane(.summary, started: started)
+        }
+      } label: {
+        Label(
+          appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .summarize)
+            ? "已排队总结" : (summaryArtifact == nil ? "生成总结" : "重新生成总结"),
+          systemImage: "text.alignleft"
+        )
+      }
+      .disabled(summarizeUnavailableReason != nil)
+      .accessibilityIdentifier(showsCurrentCapture ? "summarize-current-capture" : "summarize-history-detail")
+
+      Button {
+        Task {
+          let started = await appModel.translate(
+            historyDetail: detail,
+            preferences: providerSettings.runPreferences
+          )
+          engageReadingPane(.translation, started: started)
+        }
+      } label: {
+        Label(
+          appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .translate)
+            ? "已排队翻译" : (translationArtifact == nil ? "生成翻译" : "重新生成翻译"),
+          systemImage: "character.book.closed"
+        )
+      }
+      .disabled(translateUnavailableReason != nil)
+      .help(
+        appModel.translationUnavailableReason(
+          snapshots: detail.snapshots,
+          outputLanguage: providerSettings.runPreferences.outputLanguage
+        ) ?? "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
+      )
+      .accessibilityIdentifier(showsCurrentCapture ? "translate-current-capture" : "translate-history-detail")
+
+      if !isOwnWriting, model.mindMapRecord?.taskID != detail.task.id {
+        Button {
+          if appModel.canEnqueueManualGeneration(for: detail.task.id)
+            || appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) {
+            appModel.enqueueOrCancelMindMapGeneration(taskID: detail.task.id)
+          } else {
+            model.requestMindMapGeneration(taskID: detail.task.id)
+          }
+        } label: {
+          Label(
+            appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) ? "已排队脑图" : "生成脑图",
+            systemImage: "brain"
+          )
+        }
+        .disabled(mindMapUnavailableReason != nil)
+        .help(
+          mindMapUnavailableReason
+            ?? (appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap)
+              ? "再点一次取消排队"
+              : "把正文发给模型提取结构")
+        )
+        .accessibilityIdentifier("mind-map-generate")
+      }
+
+      Divider()
+      if let runActionBlockedReason { Text(runActionBlockedReason) }
+
+      if !providerSettings.arePreferencesReady {
+        Button("设置模型") { openSettings() }
+          .accessibilityIdentifier("history-open-model-settings")
+      } else if !showsVisibleRun {
+        let modelName = providerSettings.activeSummaryModelName.isEmpty
+          ? "模型未命名"
+          : "模型：\(providerSettings.activeSummaryModelName)"
+        Button(modelName) {}
+          .disabled(true)
+      }
+
+      if canRunHistory || showsCurrentCapture || isRunPanelExpanded || hasCollapsedRunMetadata {
+        Button(isRunPanelExpanded ? "收起运行详情" : "运行详情") {
+          withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isRunPanelExpanded.toggle() }
+        }
+        .accessibilityIdentifier("history-run-panel-toggle")
+      }
+    } label: {
+      Label("AI 处理", systemImage: "sparkles")
+        .themedFont(.callout, weight: .medium)
+    }
+    .menuStyle(.borderlessButton)
+    .controlSize(.small)
+    .help("总结、翻译与脑图")
+    .accessibilityLabel("AI 处理")
+    .accessibilityIdentifier("history-ai-processing-menu")
+  }
+
+  /// 生成动作与已有结果切换分开呈现（抓取记录已并入 readingToolsRow）。
+  private var actionToolbar: some View {
+    readingToolsRow
   }
 
   @ViewBuilder private func actionPill(
@@ -3253,11 +4033,15 @@ private struct HistoryDetailView: View, Equatable {
     Button(action: action) {
       Label(title, systemImage: systemImage)
         .themedFont(.callout, weight: prominent ? .semibold : .regular)
+        .padding(.horizontal, 4)
+        .frame(minHeight: 28)
     }
     .buttonStyle(.borderless)
     .foregroundStyle(prominent && !disabled ? theme.accent : theme.secondaryText)
     .controlSize(.small)
     .disabled(disabled)
+    .help(title)
+    .accessibilityLabel(title)
     .accessibilityIdentifier(identifier)
   }
 
@@ -3345,47 +4129,15 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   private var readingSurface: some View {
-    VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
-      if showsReadingPanePicker {
-        readingPanePicker
-      }
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      if isOwnWriting, showsReadingPanePicker { readingPanePicker }
       content
     }
     .animation(historyUIAnimation(reduceMotion: reduceMotion), value: showsLiveRunInReadingPane)
-    // 正文铺满内容列，不再另设一层更窄的上限。
-    //
-    // 原来阅读区卡在 590pt，而它所在的内容列有 680pt，且左对齐——右边固定空出
-    // 680 - 590 - 32 = 58pt，正文实际只有 558pt。那块空白不是留白设计，是两层
-    // 上限打架的残留：读起来像卡片右边缺了一块。
-    //
-    // 行宽由外层内容列封顶（随详情列可用宽度增长，默认字号下绝对上限 960pt；
-    // 字号变大时同比放宽）。真正的行宽控制点只应有一个，就是那一层。
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.horizontal, 16)
-    .padding(.top, showsReadingPanePicker ? 12 : 16)
-    .padding(.bottom, 16)
+    .padding(.top, 0)
+    .padding(.bottom, DesignTokens.Space.lg)
     .frame(maxWidth: .infinity, alignment: .leading)
-    // 卡片外壳的意思是「这里装着一份抓回来的东西」。笔记正文不是装进来的，
-    // 是当场写的——给它描边，写字的地方就变成了一个被展示的对象。
-    //
-    // 填充和描边是两件事，别一起处理。
-    //
-    // 填充在 paper / sepia / ink 下是卡片上再叠一张卡片：量出来底色 #FDFCF9、
-    // 这层 #FEFEFC，差 1/255，看不见，只是白搭一层。所以非系统主题不填。
-    //
-    // 描边不一样——它就是那圈「画框」，是正文和上面那堆元数据之间唯一的分界。
-    // 去掉之后正文只剩 10pt 间距托着，直接散开，所以**所有主题都保留**。
-    // 非系统主题走 `theme.hairline`，跟窗口里其它分隔线同一个值。
-    .background(
-      RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
-        .fill(Color(nsColor: .controlBackgroundColor).opacity(isOwnWriting || !theme.isNative ? 0 : 0.55))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
-        .strokeBorder(
-          isOwnWriting ? Color.clear : (theme.isNative ? Color.primary.opacity(0.05) : theme.hairline),
-          lineWidth: 1)
-    )
   }
 
   private var showsReadingSurface: Bool {
@@ -3452,7 +4204,8 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   private var readingPanePicker: some View {
-    HStack(spacing: 12) {
+    // 只切换已有原文/摘要/译文，不会发起付费生成。重新生成在「AI 处理」。
+    HStack(spacing: DesignTokens.Space.sm) {
       Picker("阅读内容", selection: $readingPane) {
         ForEach(availableReadingPanes) { pane in
           Text(paneLabel(pane)).tag(pane)
@@ -3461,11 +4214,11 @@ private struct HistoryDetailView: View, Equatable {
       .pickerStyle(.segmented)
       .controlSize(.small)
       .labelsHidden()
-      .frame(maxWidth: 168)
+      .fixedSize()
       .accessibilityIdentifier("history-reading-pane-picker")
       if readingPane == .source { reformatControl }
-      Spacer(minLength: 0)
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   /// 整理排版的入口。
@@ -3549,6 +4302,7 @@ private struct HistoryDetailView: View, Equatable {
         .themedFont(.callout)
         .foregroundStyle(.secondary)
         .textSelection(.enabled)
+        .lineLimit(2)
         .fixedSize(horizontal: false, vertical: true)
       Button("打开") { openSourceURL() }
         .buttonStyle(.link)
@@ -3698,33 +4452,70 @@ private struct HistoryDetailView: View, Equatable {
     return String(format: "%d:%02d", total / 60, total % 60)
   }
 
+  /// 同一组互动数据只显示一次；完整数值通过悬停和读屏提供。
+  private func engagementDisclosure(_ note: MarkdownNoteFrontmatter) -> some View {
+    engagementCompactChips(note)
+      .foregroundStyle(.secondary)
+      .accessibilityIdentifier("history-engagement-more")
+  }
+
+  @ViewBuilder
+  private func engagementCompactChips(_ note: MarkdownNoteFrontmatter) -> some View {
+    TagPillFlowLayout(spacing: DesignTokens.Space.sm) {
+      Text("互动").themedFont(.caption, weight: .medium)
+      let host = URL(string: sourceURL)?.host ?? ""
+      let slots = CreatorWorkMetricLayout.usesAdaptiveWorkGrid(host)
+        ? CreatorWorkMetricLayout.slots(forHost: host)
+        : CreatorWorkMetricKind.allCases.filter { $0.value(from: note) != nil }
+      ForEach(slots, id: \.rawValue) { slot in
+        let shown = CreatorWorkMetricLayout.displayValue(slot.value(from: note))
+        Label(shown.visible, systemImage: slot.systemImage)
+          .help("\(slot.title(forHost: host)) \(shown.accessibility) · 保存时")
+          .accessibilityLabel(slot.title(forHost: host))
+          .accessibilityValue(shown.accessibility)
+      }
+    }
+    .themedFont(.caption)
+    .labelStyle(.titleAndIcon)
+  }
+
+  private func compactEngagementCount(_ value: String) -> String {
+    HistoryEngagementCount.compact(value)
+  }
+
   /// 互动数单独一行。作者/发布/公众号已经收进 byline，这里不再重复。
   @ViewBuilder
   private func notePropertiesStrip(_ note: MarkdownNoteFrontmatter) -> some View {
-    HStack(spacing: DesignTokens.Space.lg) {
+    HStack(spacing: DesignTokens.Space.md) {
       if let likes = note.likes {
         Label(likes, systemImage: "heart")
+          .help("点赞 \(likes)")
           .accessibilityIdentifier("history-stats-likes")
       }
       if let comments = note.comments {
         Label(comments, systemImage: "bubble.right")
+          .help("评论 \(comments)")
           .accessibilityIdentifier("history-stats-comments")
       }
       if let shares = note.shares {
         Label(shares, systemImage: "arrowshape.turn.up.right")
+          .help("转发 \(shares)")
           .accessibilityIdentifier("history-stats-shares")
       }
       if let collects = note.collects {
         Label(collects, systemImage: "bookmark")
+          .help("收藏 \(collects)")
           .accessibilityIdentifier("history-stats-collects")
       }
       if let views = note.views {
         Label(views, systemImage: "eye")
+          .help("浏览 \(views)")
           .accessibilityIdentifier("history-stats-views")
       }
     }
     .themedFont(.callout)
     .foregroundStyle(.secondary)
+    .lineLimit(1)
     .accessibilityIdentifier("history-engagement-stats")
   }
 
@@ -4047,19 +4838,22 @@ private struct HistoryDetailView: View, Equatable {
       strippingEchoedMetadata: false
     )
     guard !isOwnWriting else { return cleaned }
-    return CapturedSourceBodyPresentation.strippingEchoedOpening(title: title, from: cleaned)
+    let style: CapturedSourceBodyPresentation.EchoedOpeningStyle =
+      .stripSyntheticTitleHeadingOnly
+    let body = CapturedSourceBodyPresentation.strippingEchoedOpening(title: title, from: cleaned, style: style)
+    return CapturedSourceBodyPresentation.preservingCaptionParagraphs(body, platform: snapshot.platform)
   }
 
   @ViewBuilder
   private func sourceSnapshotReader(_ snapshot: ContentSnapshot, bodyOverride: String? = nil) -> some View {
-        if captureWasTruncated(snapshot.completeness) {
-          Label("捕获内容已截断，生成结果可能不完整。", systemImage: "exclamationmark.triangle")
+        if let notice = captureCompletenessNotice(snapshot.completeness) {
+          Label(notice, systemImage: "exclamationmark.triangle")
             .foregroundStyle(.secondary)
             .padding(.bottom, 6)
             .accessibilityIdentifier("capture-truncated-notice")
         }
         // 可写正文：本机转写、笔记、稿、作品。网页捕获保持只读。
-        // 默认看排版，单击进源码；空笔记仍一打开就写。
+        // 默认看排版，单击进源码；新建空笔记直接进入编辑。
         if bodyOverride == nil, canEditSource(snapshot), isEditingTranscription {
           HStack(spacing: 10) {
             Spacer(minLength: 0)
@@ -4074,7 +4868,9 @@ private struct HistoryDetailView: View, Equatable {
               .frame(width: 0)
               .accessibilityIdentifier("history-transcription-edit-save")
           }
-          .padding(.bottom, 8)
+          .frame(height: sourceDraftIsDirty(snapshot) || noteSaveIndicator ? nil : 0)
+          .clipped()
+          .padding(.bottom, sourceDraftIsDirty(snapshot) || noteSaveIndicator ? DesignTokens.Space.sm : 0)
         }
         if bodyOverride == nil, canEditSource(snapshot), isEditingTranscription {
           // 裸 TextEditor 把标题、代码、引用一律画成同一片灰字，写超过几行就看不出
@@ -4348,7 +5144,7 @@ private struct HistoryDetailView: View, Equatable {
       case .summary, .translation:
         Text(pane == .translation ? "尚未生成翻译" : "尚未生成总结").foregroundStyle(.secondary)
         if canRunHistory || showsCurrentCapture {
-          Text(pane == .translation ? "点击上方「翻译」开始" : "点击上方「生成总结」开始")
+          Text(pane == .translation ? "在「AI 处理」中生成翻译" : "在「AI 处理」中生成总结")
             .themedFont(.callout)
             .foregroundStyle(.tertiary)
         }
@@ -4507,8 +5303,15 @@ private struct HistoryDetailView: View, Equatable {
     .frame(width: 340)
   }
 
-  private func captureWasTruncated(_ completeness: String) -> Bool {
-    ["visible_only", "selection_only"].contains(completeness.lowercased())
+  private func captureCompletenessNotice(_ completeness: String) -> String? {
+    switch completeness.lowercased() {
+    case "visible_only":
+      return "仅保存当前页面可见内容，可能不是全文。"
+    case "selection_only":
+      return "仅保存所选内容。"
+    default:
+      return nil
+    }
   }
 
   private func openSourceURL() {
@@ -5013,4 +5816,17 @@ private struct ReadingProgressBadge: View {
 extension View {
   /// Desktop pointer affordance for link-styled buttons.
   func linkCursor() -> some View { modifier(PointingHandOnHover()) }
+}
+
+/// 保留平台已有单位；纯数字使用中文紧凑计数，完整值仍由视图 help 提供。
+enum HistoryEngagementCount {
+  static func compact(_ value: String) -> String {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let numeric = trimmed.replacingOccurrences(of: ",", with: "")
+    guard !numeric.isEmpty, numeric.allSatisfy({ $0.isASCII && ($0.isNumber || $0 == ".") }),
+          let count = Double(numeric), count.isFinite, count >= 10_000 else { return trimmed }
+    let divisor = count >= 100_000_000 ? 100_000_000.0 : 10_000.0
+    let number = String(format: "%.1f", locale: Locale(identifier: "en_US_POSIX"), count / divisor)
+    return (number.hasSuffix(".0") ? String(number.dropLast(2)) : number) + (divisor == 10_000 ? "万" : "亿")
+  }
 }

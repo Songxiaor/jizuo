@@ -5,6 +5,8 @@ import SwiftUI
 /// 用户思考的优先级高于分类整理。
 struct AnnotationSectionView: View {
   @Environment(\.appTheme) private var appTheme
+  @State private var isNoteEditorPresented = false
+  @FocusState private var isNoteEditorFocused: Bool
   let taskID: TaskID
   @ObservedObject var model: HistoryViewModel
 
@@ -37,24 +39,36 @@ struct AnnotationSectionView: View {
           .accessibilityIdentifier("annotation-excerpt-row")
         }
       }
-      Text("我的笔记").themedFont(.headline)
-      TextEditor(text: $model.taskNoteDraft)
-        .themedFont(.callout)
-        .frame(minHeight: 72, maxHeight: 180)
-        .scrollContentBackground(.hidden)
-        .padding(8)
-        .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
-        .overlay(
-          RoundedRectangle(cornerRadius: DesignTokens.Radius.md)
-            .strokeBorder(Color.secondary.opacity(0.15), lineWidth: 1)
-        )
-        .onChange(of: model.taskNoteDraft) { _, _ in
-          model.scheduleNoteSave(taskID: taskID)
+      if isNoteEditorPresented || !model.taskNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        Text("这篇内容的笔记").themedFont(.headline)
+        TextEditor(text: $model.taskNoteDraft)
+          .focused($isNoteEditorFocused)
+          .accessibilityLabel("这篇内容的笔记")
+          .themedFont(.callout)
+          .frame(minHeight: 72, maxHeight: 180)
+          .scrollContentBackground(.hidden)
+          .padding(8)
+          .background(Color.secondary.opacity(0.05), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
+          .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.md)
+              .strokeBorder(Color.secondary.opacity(0.15), lineWidth: 1)
+          )
+          .onChange(of: model.taskNoteDraft) { _, _ in
+            model.scheduleNoteSave(taskID: taskID)
+          }
+          .accessibilityIdentifier("annotation-note-editor")
+        Text("阅读时选中文字，右键「添加到摘录」即可收集；笔记自动保存。")
+          .themedFont(.footnote)
+          .foregroundStyle(.secondary)
+      } else {
+        Button("为这篇内容添加笔记", systemImage: "square.and.pencil") {
+          isNoteEditorPresented = true
+          isNoteEditorFocused = true
         }
-        .accessibilityIdentifier("annotation-note-editor")
-      Text("阅读时选中文字，右键「添加到摘录」即可收集；笔记自动保存。")
-        .themedFont(.caption2)
-        .foregroundStyle(.tertiary)
+          .buttonStyle(.borderless)
+          .themedFont(.callout)
+          .accessibilityIdentifier("annotation-add-note")
+      }
       // 「自动保存」这句承诺必须有对应的失败出口，否则存储出问题时用户毫无察觉
       // 地丢掉整段笔记。这条路径原来全是 `try?`。
       if let failure = model.annotationFailureMessage {
@@ -76,6 +90,7 @@ struct AnnotationSectionView: View {
     // 摘录路由跟随当前详情条目；离开时清空，避免误挂到旧条目。
     .onAppear { ExcerptCaptureRouter.shared.handler = { model.addExcerpt($0, taskID: taskID) } }
     .onChange(of: taskID) { _, newTaskID in
+      isNoteEditorPresented = false
       ExcerptCaptureRouter.shared.handler = { model.addExcerpt($0, taskID: newTaskID) }
     }
     .onDisappear { ExcerptCaptureRouter.shared.handler = nil }

@@ -53,7 +53,24 @@ final class DouyinWebCaptureTests: XCTestCase {
     XCTAssertEqual(page.author, "青山言")
     XCTAssertEqual(page.publishedAt, "2026-07-11 23:11")
     XCTAssertEqual(page.durationSeconds, 510)
+    XCTAssertEqual(page.coverURL?.absoluteString, "https://p3.douyinpic.com/example.jpeg")
     XCTAssertTrue(page.imageURLs.isEmpty)
+  }
+
+  func testEmptyPosterResolvedToItemPageIsNotACover() throws {
+    let canonical = URL(string: "https://www.douyin.com/video/7661288207509769506")!
+    XCTAssertNil(
+      DouyinWebCapturePolicy.renderedCoverURL(canonical, canonicalURL: canonical)
+    )
+    let page = try DouyinWebCapturePolicy.validateJavaScriptResult([
+      "awemeID": "7661288207509769506",
+      "canonicalURL": canonical.absoluteString,
+      "title": "短标题",
+      "videoURL": "https://v3.douyinvod.com/example",
+      "coverURL": canonical.absoluteString,
+    ])
+    XCTAssertNil(page.coverURL)
+    XCTAssertEqual(page.videoURL?.absoluteString, "https://v3.douyinvod.com/example")
   }
 
   func testValidatesNoteCanonicalAndGalleryImages() throws {
@@ -254,6 +271,38 @@ final class DouyinWebCaptureTests: XCTestCase {
       .trimmingCharacters(in: .whitespacesAndNewlines)
     XCTAssertFalse(body.hasPrefix("# "))
     XCTAssertEqual(body, title)
+  }
+
+  func testRenderedMarkdownKeepsCaptionCoverAndTrailingHashtags() {
+    let cover = URL(string: "https://p3.douyinpic.com/aweme/current.jpeg")!
+    let page = DouyinRenderedPage(
+      awemeID: "7682114530020740387",
+      canonicalURL: URL(string: "https://www.douyin.com/video/7682114530020740387")!,
+      title: "Astra的搭配blender实现平面图建模 又是一大步",
+      description: "Astra的搭配blender实现平面图建模 又是一大步 #blender #平面图",
+      coverURL: cover
+    )
+    let markdown = DouyinWebCapturePolicy.renderedDocumentMarkdown(from: page)
+    XCTAssertTrue(markdown.contains("cover_image: \"https://p3.douyinpic.com/aweme/current.jpeg\""), "实际输出：\(markdown)")
+    let body = MarkdownNoteFrontmatter.parse(markdown).body
+    XCTAssertEqual(MarkdownNoteFrontmatter.parse(markdown).coverImage, cover.absoluteString)
+    XCTAssertTrue(body.contains("Astra的搭配blender实现平面图建模 又是一大步"))
+    XCTAssertTrue(body.contains("#blender"))
+    XCTAssertTrue(body.contains("#平面图"))
+
+    let note = DouyinRenderedPage(
+      awemeID: "7623619149508086373",
+      canonicalURL: URL(string: "https://www.douyin.com/note/7623619149508086373")!,
+      title: "图文标题",
+      description: "图文标题 #笔记",
+      imageURLs: [URL(string: "https://p3.douyinpic.com/aweme/tplv-dy-aweme-images/one.jpeg?biz_tag=aweme_images")!]
+    )
+    let noteMarkdown = DouyinWebCapturePolicy.renderedDocumentMarkdown(from: note)
+    XCTAssertEqual(
+      MarkdownNoteFrontmatter.parse(noteMarkdown).coverImage,
+      "https://p3.douyinpic.com/aweme/tplv-dy-aweme-images/one.jpeg?biz_tag=aweme_images"
+    )
+    XCTAssertTrue(MarkdownNoteFrontmatter.parse(noteMarkdown).body.contains("#笔记"))
   }
 }
 

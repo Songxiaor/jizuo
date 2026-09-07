@@ -71,7 +71,12 @@ public final class DouyinSourceAdapter: SourceAdapting, @unchecked Sendable {
     }
 
     let timestamp = ISO8601DateFormatter().string(from: now())
-    let text = DouyinPageParser.documentText(title: parsed.title, author: parsed.author, description: parsed.description)
+    let text = DouyinPageParser.documentText(
+      title: parsed.title,
+      author: parsed.author,
+      description: parsed.description,
+      coverURL: parsed.coverURL?.absoluteString
+    )
     guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw ManualLinkError.extensionCaptureRequired
     }
@@ -187,6 +192,45 @@ public struct DouyinParsedPage: Sendable, Equatable {
   public let canonicalURL: URL?
 }
 
+/// 抖音 JSON / DOM 里到处是 `url_list`：封面、头像、推荐位都用它。
+/// 播放地址必须是可交给 AVPlayer 的 HTTPS 视频，不能把图片或条目页当成视频。
+public enum DouyinPlayableURL {
+  public static func isPlayable(_ url: URL) -> Bool {
+    guard url.scheme?.lowercased() == "https",
+          let host = url.host?.lowercased(),
+          !host.isEmpty
+    else { return false }
+    let absolute = url.absoluteString.lowercased()
+    let path = url.path.lowercased()
+    if absolute.contains(".m3u8") { return false }
+    if isImageURL(url) { return false }
+    if host == "douyinpic.com" || host.hasSuffix(".douyinpic.com") { return false }
+    if absolute.contains("avatar") || absolute.contains("/aweme/100x100/") { return false }
+    if path.range(of: #"/(?:video|note)/\d{8,25}(?:/|$)"#, options: .regularExpression) != nil {
+      return false
+    }
+    return true
+  }
+
+  public static func isImageURL(_ url: URL) -> Bool {
+    let path = url.path.lowercased()
+    let absolute = url.absoluteString.lowercased()
+    for ext in [".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".heic"] {
+      if path.hasSuffix(ext) || absolute.contains("\(ext)?") || absolute.contains("\(ext)&") {
+        return true
+      }
+    }
+    return false
+  }
+
+  /// `play_addr` 优先于页面 `<video src>`：后者经常是 blob、封面或条目页。
+  public static func select(primary: URL?, secondary: URL?) -> URL? {
+    if let primary, isPlayable(primary) { return primary }
+    if let secondary, isPlayable(secondary) { return secondary }
+    return nil
+  }
+}
+
 public enum DouyinPageParser {
   static let maximumStateSnippetScalars = 240_000
 
@@ -242,6 +286,187 @@ public enum DouyinPageParser {
   static func parseStateSnippet(_ snippet: String, pageURL: URL) -> DouyinParsedPage? {
     guard snippet.unicodeScalars.count <= maximumStateSnippetScalars else { return nil }
     return extractFromJSONBlob(snippet, pageURL: pageURL)
+  }
+
+  /// 本条 aweme 的播放地址：只认身份匹配对象上的明确播放字段。
+  /// 与 `parseAnchoredCoverURL` 同一套完整 JSON / 不完整外壳扫描；
+  /// 目标只有封面时不得借邻居 `play_addr`，字段在 ±6000 窗外仍属于本条。
+  private static func ownedAwemeObject(in snippet: String, awemeID: String) -> [String: Any]? {
+    func identity(_ object: [String: Any]) -> Bool {
+      (object["aweme_id"] as? String ?? object["awemeId"] as? String) == awemeID
+    }
+    func search(_ value: Any, depth: Int = 0) -> [String: Any]? {
+      guard depth < 64 else { return nil }
+      if let object = value as? [String: Any] {
+        if identity(object) { return object }
+        for child in object.values {
+          if let found = search(child, depth: depth + 1) { return found }
+        }
+      } else if let array = value as? [Any] {
+        for child in array {
+          if let found = search(child, depth: depth + 1) { return found }
+        }
+      }
+      return nil
+    }
+    if let root = try? JSONSerialization.jsonObject(with: Data(snippet.utf8)) {
+      return search(root)
+    }
+    let bytes = Array(snippet.utf8)
+    var starts: [Int] = []
+    var quoted = false
+    var escaped = false
+    for (index, byte) in bytes.enumerated() {
+      if quoted {
+        if escaped { escaped = false }
+        else if byte == 92 { escaped = true }
+        else if byte == 34 { quoted = false }
+        continue
+      }
+      if byte == 34 { quoted = true; continue }
+      if byte == 123 { starts.append(index) }
+      if byte == 125, let start = starts.popLast() {
+        let data = Data(bytes[start...index])
+        guard let text = String(data: data, encoding: .utf8),
+              text.contains(awemeID),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              identity(object)
+        else { continue }
+        return object
+      }
+    }
+    return nil
+  }
+
+  /// 只读 `play_addr` / `playAddr` / `download_addr` / `playApi` / `.mp4` src。
+  /// 不接受封面、头像上的通用 `url_list`。
+  private static func playbackURL(in object: [String: Any]) -> URL? {
+    if let video = object["video"] as? [String: Any],
+       let url = playableURL(fromPlaybackFields: video) {
+      return url
+    }
+    return playableURL(fromPlaybackFields: object)
+  }
+
+  private static func playableURL(fromPlaybackFields container: [String: Any]) -> URL? {
+    for key in ["play_addr", "playAddr", "download_addr", "downloadAddr"] {
+      if let url = firstPlayableURL(in: container[key]) { return url }
+    }
+    if let raw = container["playApi"] as? String,
+       let url = URL(string: raw),
+       DouyinPlayableURL.isPlayable(url) {
+      return url
+    }
+    if let raw = container["src"] as? String,
+       raw.lowercased().contains(".mp4"),
+       let url = URL(string: raw),
+       DouyinPlayableURL.isPlayable(url) {
+      return url
+    }
+    return nil
+  }
+
+  private static func firstPlayableURL(in value: Any?) -> URL? {
+    if let raw = value as? String, let url = URL(string: raw), DouyinPlayableURL.isPlayable(url) {
+      return url
+    }
+    guard let field = value as? [String: Any] else { return nil }
+    let lists = field["url_list"] ?? field["urlList"]
+    guard let urls = lists as? [String] else { return nil }
+    for raw in urls {
+      if let url = URL(string: raw), DouyinPlayableURL.isPlayable(url) { return url }
+    }
+    return nil
+  }
+
+  private static func durationSeconds(in object: [String: Any]) -> Double? {
+    func parse(_ raw: Any?) -> Double? {
+      let value: Double?
+      if let number = raw as? NSNumber { value = number.doubleValue }
+      else if let text = raw as? String { value = Double(text) }
+      else { return nil }
+      guard let value, value.isFinite, value > 0 else { return nil }
+      return value > 1000 ? value / 1000.0 : value
+    }
+    if let video = object["video"] as? [String: Any], let duration = parse(video["duration"]) {
+      return duration
+    }
+    return parse(object["duration"])
+  }
+
+  private static func nickname(in object: [String: Any]) -> String? {
+    if let author = object["author"] as? [String: Any],
+       let name = (author["nickname"] as? String)?.trimmedNonEmpty {
+      return name
+    }
+    return (object["nickname"] as? String)?.trimmedNonEmpty
+  }
+
+  /// Read only the video object owned by the exact requested aweme.
+  /// A bounded response may omit the outer wrapper, so complete inner objects
+  /// are also considered. Nearby recommendations never supply missing fields.
+  static func parseAnchoredCoverURL(_ snippet: String, pageURL: URL) -> URL? {
+    guard snippet.unicodeScalars.count <= maximumStateSnippetScalars,
+          let awemeID = DouyinURL.awemeID(from: pageURL) else { return nil }
+
+    func cover(in object: [String: Any]) -> URL? {
+      guard (object["aweme_id"] as? String ?? object["awemeId"] as? String) == awemeID,
+            let video = object["video"] as? [String: Any] else { return nil }
+      for key in ["origin_cover", "originCover", "cover"] {
+        guard let field = video[key] as? [String: Any],
+              let urls = (field["url_list"] ?? field["urlList"]) as? [String] else { continue }
+        for raw in urls {
+          if let url = DouyinWebCapturePolicy.renderedCoverURL(URL(string: raw), canonicalURL: pageURL) {
+            return url
+          }
+        }
+      }
+      return nil
+    }
+    func search(_ value: Any, depth: Int = 0) -> URL? {
+      guard depth < 64 else { return nil }
+      if let object = value as? [String: Any] {
+        if let found = cover(in: object) { return found }
+        for child in object.values {
+          if let found = search(child, depth: depth + 1) { return found }
+        }
+      } else if let array = value as? [Any] {
+        for child in array {
+          if let found = search(child, depth: depth + 1) { return found }
+        }
+      }
+      return nil
+    }
+
+    if let root = try? JSONSerialization.jsonObject(with: Data(snippet.utf8)) {
+      return search(root)
+    }
+    // Scan balanced objects without treating braces inside JSON strings as
+    // structure. Parsing validates the candidate before its identity is used.
+    let bytes = Array(snippet.utf8)
+    var starts: [Int] = []
+    var quoted = false
+    var escaped = false
+    for (index, byte) in bytes.enumerated() {
+      if quoted {
+        if escaped { escaped = false }
+        else if byte == 92 { escaped = true }
+        else if byte == 34 { quoted = false }
+        continue
+      }
+      if byte == 34 { quoted = true; continue }
+      if byte == 123 { starts.append(index) }
+      if byte == 125, let start = starts.popLast() {
+        let data = Data(bytes[start...index])
+        // Most completed objects are media variants and do not own an aweme.
+        guard let text = String(data: data, encoding: .utf8),
+              text.contains(awemeID),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let found = cover(in: object) else { continue }
+        return found
+      }
+    }
+    return nil
   }
 
   /// 从渲染态片段里取出这条 aweme 的互动计数。状态值是精确整数。
@@ -339,9 +564,15 @@ public enum DouyinPageParser {
     return urls
   }
 
-  public static func documentText(title: String?, author: String?, description: String?) -> String {
+  public static func documentText(
+    title: String?,
+    author: String?,
+    description: String?,
+    coverURL: String? = nil
+  ) -> String {
     var lines: [String] = ["---"]
     if let author, !author.isEmpty { lines.append("author: \(jsonString(author))") }
+    if let coverURL, !coverURL.isEmpty { lines.append("cover_image: \(jsonString(coverURL))") }
     if lines.count > 1 {
       lines.append("---")
       lines.append("")
@@ -372,7 +603,8 @@ public enum DouyinPageParser {
       "<source\\b[^>]*\\bsrc\\s*=\\s*[\\\"']([^\\\"']+)[\\\"']",
       in: html
     ) else { return nil }
-    guard let videoURL = absoluteHTTPS(src, base: pageURL) else { return nil }
+    guard let videoURL = absoluteHTTPS(src, base: pageURL),
+          DouyinPlayableURL.isPlayable(videoURL) else { return nil }
     let cover = metaContent(property: "og:image", in: html).flatMap { absoluteHTTPS($0, base: pageURL) }
     let title = metaContent(property: "og:title", in: html)
       ?? firstMatch("<title\\b[^>]*>([\\s\\S]*?)</title>", in: html).map(stripTags)
@@ -426,8 +658,7 @@ public enum DouyinPageParser {
       "https://[^\\\"'\\s]+\\.(?:mp4|m3u8)[^\\\"'\\s]*",
       in: html
     ), let videoURL = URL(string: raw.replacingOccurrences(of: "\\u002F", with: "/")),
-       videoURL.scheme?.lowercased() == "https",
-       !raw.contains(".m3u8") {
+       DouyinPlayableURL.isPlayable(videoURL) {
       let cover = metaContent(property: "og:image", in: html).flatMap { absoluteHTTPS($0, base: pageURL) }
       let title = metaContent(property: "og:title", in: html)
       return DouyinParsedPage(
@@ -444,74 +675,28 @@ public enum DouyinPageParser {
   }
 
   private static func extractFromJSONBlob(_ blob: String, pageURL: URL) -> DouyinParsedPage? {
+    guard let awemeID = DouyinURL.awemeID(from: pageURL) else { return nil }
     let normalized = blob
       .replacingOccurrences(of: "\\u002F", with: "/")
       .replacingOccurrences(of: "\\/", with: "/")
-    // Prefer url_list / urlList entries that end with mp4 or contain mime_type video.
-    let listPatterns = [
-      "\"url_list\"\\s*:\\s*\\[\\s*\"(https:[^\"]+)\"",
-      "\"urlList\"\\s*:\\s*\\[\\s*\"(https:[^\"]+)\"",
-      "\"src\"\\s*:\\s*\"(https:[^\"]+\\.mp4[^\"]*)\"",
-      "\"playApi\"\\s*:\\s*\"(https:[^\"]+)\"",
-      "\"play_addr\"\\s*:\\s*\"(https:[^\"]+)\"",
-    ]
-    // 媒体字段与 title/author 一样，必须锚定到这条 aweme。
-    //
-    // `url_list` 是个通用键：作者头像 `avatar_thumb`/`avatar_larger`、封面、
-    // 相关推荐里每一条视频都用它。全 blob 取第一个命中，很可能拿到**作者头像的
-    // JPEG**——而 `parse` 依然"成功"，于是入库一条 media.videoURL 指向头像、
-    // 时长来自另一条视频的记录。这比抓不到严重：它不会回落到「请用扩展」。
-    let scoped = DouyinURL.awemeID(from: pageURL).flatMap { windowAround(id: $0, in: normalized) }
-    guard let anchored = scoped else { return nil }
+    // state / SSR 播放地址只来自本条 aweme 对象上的明确播放字段。
+    // ±6000 窗口 + nearest url_list 会在目标只有封面时借到邻居正片，
+    // 也会在 video 字段离 id 超过 6000 时漏掉本条。
+    guard let object = ownedAwemeObject(in: normalized, awemeID: awemeID)
+            ?? ownedAwemeObject(in: blob, awemeID: awemeID),
+          let videoURL = playbackURL(in: object)
+    else { return nil }
 
-    var videoURL: URL?
-    for pattern in listPatterns {
-      for raw in capturedMatchesNearest(
-        pattern,
-        in: anchored,
-        anchor: DouyinURL.awemeID(from: pageURL) ?? ""
-      ) {
-        guard let url = URL(string: raw),
-              url.scheme?.lowercased() == "https",
-              !raw.contains(".m3u8"),
-              // 头像地址同样满足上面所有条件，只能靠路径特征排掉。
-              !raw.contains("avatar"), !raw.contains("/aweme/100x100/")
-        else { continue }
-        videoURL = url
-        break
-      }
-      if videoURL != nil { break }
-    }
-    guard let videoURL else { return nil }
-
-    let coverRaw = firstMatch("\"cover\"\\s*:\\s*\\{[^\\}]*\"url_list\"\\s*:\\s*\\[\\s*\"(https:[^\"]+)\"", in: anchored)
-      ?? firstMatch("\"origin_cover\"\\s*:\\s*\\{[^\\}]*\"url_list\"\\s*:\\s*\\[\\s*\"(https:[^\"]+)\"", in: anchored)
-      ?? firstMatch("\"coverUrl\"\\s*:\\s*\"(https:[^\"]+)\"", in: anchored)
-    let coverURL = coverRaw.flatMap { URL(string: $0) }
-    // 文本字段同样只在锚定窗口里找。
-    //
-    // 页面外壳里到处都是 `"desc"` / `"nickname"`：推荐流的作者、按钮文案、当前
-    // 登录用户的资料。不锚定就会抓到它们——2026-07-27 真机实测抓到过标题
-    // 「PC Tab」（一个按钮的文案）和推荐位博主的昵称。两个都长得像真数据，
-    // 存进库谁也看不出错，这比抓不到严重得多。
-    let title = firstNonEmptyMatch(
-      "\"desc\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", in: anchored).map(unescapeJSON)
-    let author = firstNonEmptyMatch(
-      "\"nickname\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"", in: anchored).map(unescapeJSON)
-    let duration: Double?
-    if let ms = firstMatch("\"duration\"\\s*:\\s*(\\d+)", in: anchored), let value = Double(ms) {
-      // Douyin duration is often milliseconds when > 1000.
-      duration = value > 1000 ? value / 1000.0 : value
-    } else {
-      duration = nil
-    }
+    let coverURL = parseAnchoredCoverURL(blob, pageURL: pageURL)
+    let title = (object["desc"] as? String)?.trimmedNonEmpty
+    let author = nickname(in: object)
     return DouyinParsedPage(
       videoURL: videoURL,
       coverURL: coverURL,
-      title: title?.trimmedNonEmpty,
-      author: author?.trimmedNonEmpty,
-      description: title?.trimmedNonEmpty,
-      durationSeconds: duration,
+      title: title,
+      author: author,
+      description: title,
+      durationSeconds: durationSeconds(in: object),
       canonicalURL: pageURL
     )
   }
@@ -587,41 +772,6 @@ public enum DouyinPageParser {
       if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return text }
     }
     return nil
-  }
-
-  /// Captured values ordered by their distance from the requested aweme id.
-  ///
-  /// A ±6000-character window can still contain the tail of the previous
-  /// recommendation. Taking the first `url_list` therefore selects a valid but
-  /// wrong video. Distance ordering keeps the current object's nearby fields
-  /// first while still allowing both "id before media" and "media before id"
-  /// object layouts.
-  private static func capturedMatchesNearest(
-    _ pattern: String,
-    in value: String,
-    anchor: String
-  ) -> [String] {
-    guard !anchor.isEmpty,
-          let expression = try? NSRegularExpression(
-            pattern: pattern,
-            options: [.caseInsensitive]
-          )
-    else { return [] }
-    let fullRange = NSRange(value.startIndex..., in: value)
-    guard let anchorRange = value.range(of: anchor) else { return [] }
-    let anchorLocation = NSRange(anchorRange, in: value).location
-    return expression.matches(in: value, range: fullRange)
-      .compactMap { match -> (distance: Int, value: String)? in
-        guard match.numberOfRanges > 1,
-              let capture = Range(match.range(at: 1), in: value)
-        else { return nil }
-        return (
-          abs(match.range.location - anchorLocation),
-          String(value[capture])
-        )
-      }
-      .sorted { $0.distance < $1.distance }
-      .map(\.value)
   }
 
   private static func allMatches(_ pattern: String, in value: String) -> [String] {

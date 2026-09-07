@@ -324,6 +324,95 @@ final class CreatorPersistenceTests: XCTestCase {
     }
   }
 
+  func testHistoryPageProjectsOwnCoverAndEngagementWithoutMixingNeighbors() throws {
+    try withCreatorRepository { repository in
+      let creator = try repository.upsertCreator(creatorCommand(
+        authorID: "MS4wLjABAAAA-metrics",
+        now: 1
+      ))
+      let first = try repository.acceptCapture(.init(
+        envelope: capture(
+          requestID: "m-one", key: "m-one",
+          url: "https://www.douyin.com/video/7000000000000000401",
+          body: """
+          ---
+          likes: "12"
+          comments: "0"
+          collects: "3"
+          cover_image: "https://p3.douyinpic.com/aweme/cover-one.jpeg"
+          ---
+
+          第一条
+          """
+        ),
+        receivedAtMilliseconds: 10
+      ))
+      let second = try repository.acceptCapture(.init(
+        envelope: capture(
+          requestID: "m-two", key: "m-two",
+          url: "https://www.douyin.com/video/7000000000000000402",
+          body: """
+          ---
+          likes: "99"
+          views: "10000"
+          ---
+
+          ![alt](https://p3.douyinpic.com/aweme/cover-two.jpeg)
+          """
+        ),
+        receivedAtMilliseconds: 11
+      ))
+      try repository.attachCreatorWork(creatorID: creator.id, taskID: first.taskID)
+      try repository.attachCreatorWork(creatorID: creator.id, taskID: second.taskID)
+      let rows = try repository.historyPage(limit: 10, after: nil, filter: .init(creatorID: creator.id)).rows
+      let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.taskID, $0) })
+      XCTAssertEqual(byID[first.taskID]?.likes, "12")
+      XCTAssertEqual(byID[first.taskID]?.comments, "0")
+      XCTAssertEqual(byID[first.taskID]?.collects, "3")
+      XCTAssertNil(byID[first.taskID]?.views)
+      XCTAssertEqual(byID[first.taskID]?.coverURL, "https://p3.douyinpic.com/aweme/cover-one.jpeg")
+      XCTAssertEqual(byID[second.taskID]?.likes, "99")
+      XCTAssertEqual(byID[second.taskID]?.views, "10000")
+      XCTAssertNil(byID[second.taskID]?.collects)
+      XCTAssertEqual(byID[second.taskID]?.coverURL, "https://p3.douyinpic.com/aweme/cover-two.jpeg")
+      XCTAssertNil(byID[first.taskID]?.artifactPreview, "普通 saveOnly 不得把正文写进列表 artifactPreview")
+      XCTAssertEqual(byID[first.taskID]?.sourcePreview, "第一条")
+      XCTAssertEqual(byID[second.taskID]?.sourcePreview, nil)
+    }
+  }
+
+  func testSaveOnlyDirectoryPreviewComesFromBodyNotArtifact() throws {
+    try withCreatorRepository { repository in
+      let creator = try repository.upsertCreator(creatorCommand(
+        authorID: "MS4wLjABAAAA-preview",
+        now: 1
+      ))
+      let saved = try repository.acceptCapture(.init(
+        envelope: capture(
+          requestID: "p-one", key: "p-one",
+          url: "https://www.douyin.com/video/7000000000000000501",
+          body: """
+          ---
+          published: "2026-09-01T12:00:00Z"
+          cover_image: "https://p3.douyinpic.com/aweme/cover-preview.jpeg"
+          ---
+
+          ![cover](https://p3.douyinpic.com/aweme/cover-preview.jpeg)
+
+          这是一段可见配文，卡片在没有封面图时应显示它。
+          """
+        ),
+        receivedAtMilliseconds: 10
+      ))
+      try repository.attachCreatorWork(creatorID: creator.id, taskID: saved.taskID)
+      let row = try XCTUnwrap(repository.historyPage(limit: 10, after: nil, filter: .init(creatorID: creator.id)).rows.first)
+      XCTAssertNil(row.artifactPreview)
+      XCTAssertEqual(row.sourcePreview, "这是一段可见配文，卡片在没有封面图时应显示它。")
+      XCTAssertEqual(row.published, "2026-09-01T12:00:00Z")
+      XCTAssertEqual(row.directoryCardPreview(fallbackTitle: "标题"), "这是一段可见配文，卡片在没有封面图时应显示它。")
+    }
+  }
+
   func testAvatarURLPersistsOnUpsertAndStaysWhenNameRefreshes() throws {
     try withCreatorRepository { repository in
       let first = try repository.upsertCreator(creatorCommand(

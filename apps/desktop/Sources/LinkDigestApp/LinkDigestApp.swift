@@ -1361,10 +1361,16 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       },
       startupTranscriptionCleanupFailure: startupTranscriptionCleanupFailure
     )
+    var manualAdapters: [any SourceAdapting] = [douyinAdapter, xiaohongshuAdapter, bilibiliAdapter, githubAdapter]
+    #if DEBUG
+    if let fixtureRoot = ProfileImportBatchPipelineFixture.root {
+      manualAdapters.insert(ProfileImportBatchFixtureAdapter(root: fixtureRoot), at: 0)
+    }
+    #endif
     let manualLink = ManualLinkViewModel(
       captureService: .init(
         fetcher: manualResourceFetcher,
-        sourceAdapters: [douyinAdapter, xiaohongshuAdapter, bilibiliAdapter, githubAdapter]
+        sourceAdapters: manualAdapters
       ),
       douyinCapture: douyinWebCaptureService,
       imageCache: imageCache,
@@ -1377,7 +1383,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
           snapshotID: snapshotID,
           pageURL: pageURL
         )
-      }
+      },
+      profileImportJournal: cacheRoot.map(ProfileImportBatchJournal.init(applicationSupportRoot:))
     )
     historyModel.beginBootstrapLoading()
     let nowMilliseconds: @Sendable () -> Int64 = {
@@ -1415,7 +1422,9 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         // Keep a process-only playable descriptor in the session LRU so switching
         // back within the capacity limit does not need a network refresh.
         await sessionMediaPlaybackController.rememberCurrentCapture(value)
-        await historyModel.reveal(taskID: value.taskID)
+        if value.navigationIntent == .reveal {
+          await historyModel.reveal(taskID: value.taskID)
+        }
         if let sourceURL = URL(string: value.document.url),
            let faviconURL = value.browserDeclaredFaviconURL {
           // 只排后台抓取，不占扩展 10 秒 ACK。URL 仍会在 App 侧重新走安全
@@ -1515,8 +1524,13 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
               taskID: taskID,
               snapshotID: snapshotID
             )
-            // Refresh the open detail so local images appear once staging finishes.
-            await historyModel.reveal(taskID: taskID)
+            // Refresh the open detail only when this capture intentionally owns
+            // navigation. A background profile item must not steal reading focus.
+            if value.navigationIntent == .reveal {
+              await historyModel.reveal(taskID: taskID)
+            } else {
+              await historyModel.historyMetadataChanged(taskID: taskID)
+            }
           }
         }
       },
@@ -1525,6 +1539,10 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       bookmarksSink: { request in
         let outcome = await MainActor.run { manualLink.enqueueXBookmarks(request.tweetIDs) }
         return .init(queued: outcome.queued, skipped: outcome.skipped)
+      },
+      profileCandidatesSink: { request in
+        let accepted = await MainActor.run { manualLink.presentProfileCandidates(request) }
+        return .init(acceptedCount: accepted)
       }
     ))
 
@@ -1630,7 +1648,9 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
               nowMilliseconds: { Int64((Date().timeIntervalSince1970 * 1_000).rounded()) },
               captureSink: { value in
                 await model.receive(value)
-                await historyModel.reveal(taskID: value.taskID)
+                if value.navigationIntent == .reveal {
+                  await historyModel.reveal(taskID: value.taskID)
+                }
                 await knowledgeVaultSettings.scheduleAutoSync()
                 Task { @MainActor in
                   guard value.allowsAutomaticEnrichment else { return }
@@ -1646,6 +1666,11 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
               }
             )
           }
+          #if DEBUG
+          if result.availability.isWriteReady {
+            ProfileImportBatchPipelineFixture.start(manualLink: manualLink, historyModel: historyModel)
+          }
+          #endif
           if result.availability.isWriteReady, let history = result.history {
             let orchestrator = ModelRunOrchestrator(
               configurationService: configurationService,

@@ -69,28 +69,34 @@ struct ProviderSettingsView: View {
     }
   }
 
-  /// 侧栏分组：把分类按「做什么」归成三组，而不是让人从头到尾扫一条平列表。
+  /// 侧栏分组：把分类按「做什么」归成五组，而不是让人从头到尾扫一条平列表。
   ///
   /// 分组本身不控制可见性——那仍然只由 `SettingsTab.visibleCases` 一处判据决定；
   /// 这里只负责「同一批分类摆在哪个标题下面」。
   private enum SettingsTabGroup: CaseIterable, Hashable {
-    case serviceAndGeneration
+    case aiAndProcessing
     case readingAndAppearance
-    case connectionAndData
+    case connection
+    case dataAndStorage
+    case aboutAndUpdates
 
     var title: String {
       switch self {
-      case .serviceAndGeneration: "服务与生成"
+      case .aiAndProcessing: "AI与处理"
       case .readingAndAppearance: "阅读与外观"
-      case .connectionAndData: "连接与数据"
+      case .connection: "连接"
+      case .dataAndStorage: "数据与存储"
+      case .aboutAndUpdates: "关于与更新"
       }
     }
 
     var tabs: [SettingsTab] {
       switch self {
-      case .serviceAndGeneration: [.service, .generation]
+      case .aiAndProcessing: [.service, .generation]
       case .readingAndAppearance: [.appearance, .labs]
-      case .connectionAndData: [.mcp, .browserSupport, .siteLogin, .mediaStorage, .knowledgeVault, .companionSync, .updates]
+      case .connection: [.mcp, .browserSupport, .siteLogin]
+      case .dataAndStorage: [.mediaStorage, .knowledgeVault, .companionSync]
+      case .aboutAndUpdates: [.updates]
       }
     }
 
@@ -348,7 +354,8 @@ struct ProviderSettingsView: View {
         case .companionSync:
           CompanionNoteSyncSettingsView(model: companionSync)
         case .siteLogin:
-          SiteLoginSettingsView(mediaStorage: mediaStorage)
+          SiteLoginSettingsView(mediaStorage: mediaStorage, browserSupport: browserSupport,
+                                openBrowserSupport: { selectedTab = .browserSupport })
         case .browserSupport:
           BrowserSupportSettingsView(model: browserSupport, appModel: appModel)
         case .updates:
@@ -1380,16 +1387,9 @@ struct ProviderSettingsView: View {
     SettingsPlainPage {
       pageHeader(for: .generation, caption: "控制总结、翻译输出，以及新内容进来后自动跑哪些步骤。")
 
-      // 高频的语言/模型行组挪到页首：这几项才是大多数人打开这一页真正要调的东西，
-      // 长文本框「总结提示词」排在页首反而会占掉半屏，把它们推到下面才要滚一屏找。
-      //
-      // 原来这六项各占一整张卡，但每项都只是「一个下拉/开关 + 一句说明」，
-      // 和系统设置里一屏能看到七八行的密度差得远。收进一张行式卡片：
-      // 标签左、控件右，hairline 分隔，说明和详细说明还是逐行各自的——
-      // 只是不再各自单占一张卡的空白。
+      // 常用默认在前：大多数人打开这页只改语言与模型。
+      // 并发、长提示词收进高级；发送授权必须独立可见，不能折进高级。
       SettingsRowGroup {
-          // 原来是裸 Section("输出语言") + Picker("输出语言")，section 标题和 picker
-          // 标签都是「输出语言」，同一句话出现两遍。收进行控件后不再重复。
           SettingsRow(
             title: "输出语言",
             caption: "总结、翻译等生成结果统一用这个语言输出。"
@@ -1404,7 +1404,6 @@ struct ProviderSettingsView: View {
               .accessibilityIdentifier("output-language")
               if showsCustomOutputLanguageField {
                 LabeledContent("自定义语言") {
-                  // 无边框 + 右对齐时，光标落在一片空白里，找不到该点哪。
                   TextField("例如：Italiano", text: $model.targetLanguage)
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 220)
@@ -1414,13 +1413,6 @@ struct ProviderSettingsView: View {
             }
           }
 
-          // 原来这里是一个开关：关着的时候只说「默认与总结共用 X」，不说打开会怎样；
-          // 打开之后才在下面长出一个模型选择器。于是「用哪个模型」这一个问题被拆成了
-          // 两步，而这一整页其余每一项（输出语言、翻译并发、在线视频转文字、转写稿
-          // 整理）都是一个下拉直接答完。
-          //
-          // 隔着两行的「转写稿整理」早就把同样的问题解对了——下拉的第一项就是
-          // 「跟随总结模型」。翻译改成同一个写法：空值即跟随，选了就是另用一个。
           SettingsRow(
             title: "翻译模型",
             caption: "不另选就与总结共用同一个模型。",
@@ -1443,26 +1435,6 @@ struct ProviderSettingsView: View {
             }
           }
 
-          // 这是个性能旋钮，不是开关：长文翻译会被切成多片同时发，这个数就是同时
-          // 在飞的片数。放在翻译模型下面，因为它只影响翻译。
-          SettingsRow(
-            title: "翻译并发",
-            caption: "长文翻译会切成多段同时发送，段数越多越快。",
-            details: "只对超过约 8000 字的正文生效，短文仍是单次请求。免费或有速率限制的服务商调高后可能被限流，遇到限流会自动退避重试。"
-          ) {
-            Picker("翻译并发", selection: $model.translationConcurrency) {
-              ForEach(
-                Array(ModelPreferences.translationConcurrencyRange),
-                id: \.self
-              ) { value in
-                Text(value == 1 ? "不并发" : "\(value) 段").tag(value)
-              }
-            }
-            .labelsHidden()
-            .fixedSize()
-            .accessibilityIdentifier("translation-concurrency")
-          }
-
           SettingsRow(
             title: "在线视频转文字",
             caption: "给超过 200MB、无法本机导入的视频用。选「不使用」时只跑 Apple 本机转写。",
@@ -1472,7 +1444,6 @@ struct ProviderSettingsView: View {
               modelChoicePicker(
                 label: "在线转写模型",
                 emptyOptionTitle: "不使用：只用 Apple 本机转写",
-                // 只列声明支持在线转写的服务，选到一个用不了的模型没有意义。
                 options: model.transcriptionEntryDisplays,
                 text: $model.transcriptionModelName,
                 identifier: "transcription-model-name"
@@ -1495,7 +1466,6 @@ struct ProviderSettingsView: View {
               modelChoicePicker(
                 label: "校对模型",
                 emptyOptionTitle: "跟随总结模型",
-                // 整理是纯文本改写，用的是聊天模型这一侧。
                 options: model.summaryEntryDisplays,
                 text: $model.tidyModelName,
                 identifier: "tidy-model-name"
@@ -1509,8 +1479,7 @@ struct ProviderSettingsView: View {
             }
           }
 
-          // 发送确认从「每跑一次问一次」改成「问一次就记住」之后，必须有一条把它
-          // 收回来的路，否则那一次点击就是不可逆的。
+          // 发送授权与撤回必须独立可见，不得收入高级 DisclosureGroup。
           SettingsRow(
             title: "已记住的发送授权",
             caption: "首次把内容发往某个服务商、或首次使用在线转写、模型校对、生成脑图时会各告知一次，之后不再重复询问。",
@@ -1533,40 +1502,62 @@ struct ProviderSettingsView: View {
           }
       }
 
-      settingCard(
-        title: "总结提示词",
-        summary: "无论用内置还是自定义提示词，\(ProductDisplay.name) 都会追加输出语言指令。",
-        details: "提示词只保存在本机，不随任何请求以外的途径离开这台机器。",
-        controlWidth: .full
-      ) {
-        VStack(alignment: .leading, spacing: 8) {
-          TextEditor(text: $model.summaryPrompt)
-            .themedFont(.callout)
-            .scrollContentBackground(.hidden)
-            .frame(minHeight: 96, maxHeight: 140)
-            .padding(10)
-            // 圆角 6 在主界面只用于侧栏选中药丸；描边容器一律 8 起。
-            .background(settingsTheme.isNative ? Color(nsColor: .textBackgroundColor) : settingsTheme.listPane)
-            .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(settingsTheme.hairline, lineWidth: 1))
-            .accessibilityIdentifier("summary-prompt")
-          HStack {
-            Spacer()
-            Button("重置为默认提示词", action: model.resetSummaryPrompt)
-              .buttonStyle(.bordered)
-              .controlSize(.small)
-              .tint(Color.secondary)
-              .disabled(model.preferencesState == .saving)
-              .accessibilityIdentifier("reset-summary-prompt")
+      DisclosureGroup("高级：翻译并发与总结提示词") {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
+          VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+            Text("翻译并发")
+              .themedFont(.body)
+            Text("长文翻译会切成多段同时发送，段数越多越快。只对超过约 8000 字的正文生效；免费或有速率限制的服务商调高后可能被限流。")
+              .themedFont(.footnote)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+            Picker("翻译并发", selection: $model.translationConcurrency) {
+              ForEach(
+                Array(ModelPreferences.translationConcurrencyRange),
+                id: \.self
+              ) { value in
+                Text(value == 1 ? "不并发" : "\(value) 段").tag(value)
+              }
+            }
+            .labelsHidden()
+            .fixedSize()
+            .accessibilityIdentifier("translation-concurrency")
+          }
+
+          VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+            Text("总结提示词")
+              .themedFont(.body)
+            Text("无论用内置还是自定义提示词，\(ProductDisplay.name) 都会追加输出语言指令。提示词设置保存在本机；生成时会随正文发送给所选模型。")
+              .themedFont(.footnote)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+            TextEditor(text: $model.summaryPrompt)
+              .themedFont(.callout)
+              .scrollContentBackground(.hidden)
+              .frame(minHeight: 96, maxHeight: 140)
+              .padding(DesignTokens.Space.sm)
+              .background(settingsTheme.isNative ? Color(nsColor: .textBackgroundColor) : settingsTheme.listPane)
+              .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(settingsTheme.hairline, lineWidth: 1))
+              .accessibilityIdentifier("summary-prompt")
+            HStack {
+              Spacer(minLength: 0)
+              Button("重置为默认提示词", action: model.resetSummaryPrompt)
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .tint(Color.secondary)
+                .disabled(model.preferencesState == .saving)
+                .accessibilityIdentifier("reset-summary-prompt")
+            }
           }
         }
+        .padding(.top, DesignTokens.Space.sm)
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
+      .themedFont(.callout)
+      .padding(.vertical, DesignTokens.Space.xs)
 
       // 这条链在代码里严格串行且有依赖，所以画成有序链条而不是四个平级开关。
-      //
-      // 这张卡原来在 Form 的 Section 里靠 `SettingsFormRowTint`（只染 Form 自己的
-      // 行背景）取得卡片外观；离开 Form 之后自己直接套 `SettingsThemedCardChrome`，
-      // 和站点登录页 `sitesCard` 的做法一致。
-      VStack(alignment: .leading, spacing: 10) {
+      VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
         Text("自动处理管线").themedFont(.headline)
         Text("新内容到达后按编号顺序串行执行已开启的步骤。① 只译标题并在正文保留原文标题，不会把条目移出待总结；正文翻译仍需自己点。")
           .themedFont(.callout)
@@ -1617,16 +1608,9 @@ struct ProviderSettingsView: View {
             identifier: "auto-pipeline-mindmap"
           )
         }
-        .padding(.top, 2)
+        .padding(.top, DesignTokens.Space.xxs)
 
-        // 数据去向紧贴着造成出网的那几个开关，而不是另起一张卡。
-        //
-        // 必须留在 DisclosureGroup 外面：这些开关一开就是持久授权，之后自动执行
-        // 不再逐次弹确认（就是下面那段文案说的），那之后这一行是「内容发去哪」
-        // 唯一的常驻可见位置。折起来等于自动模式下再也看不到目的地。
-        //
-        // 原来它是页面底部一张独立的「数据去向」卡：只读的东西却和上面可操作的卡
-        // 同等分量，读者会先以为能点；而且把「调开关 → 保存」的动线从中间截断。
+        // 数据去向紧贴造成出网的开关；必须留在 DisclosureGroup 外面。
         SettingsCrossReference(
           message: dataDestinationLine.message,
           systemImage: dataDestinationLine.symbol
@@ -1634,19 +1618,17 @@ struct ProviderSettingsView: View {
         .accessibilityIdentifier("data-destination-card")
 
         DisclosureGroup("了解更多") {
-          VStack(alignment: .leading, spacing: 6) {
+          VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
             Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；中文标题/校对/总结/脑图只发送文字。手动转写完成后请点「模型校对」。")
               .fixedSize(horizontal: false, vertical: true)
               .frame(maxWidth: .infinity, alignment: .leading)
-            // 完整 Base URL 是排障才看的东西，收进来；上面那行只留 host 和模型，
-            // 那两个才是「发给谁、用什么」的日常答案。
             if let identity = model.dataDestinationCard {
               LabeledContent("Base URL", value: identity.normalizedBaseURL)
             }
           }
           .themedFont(.caption)
           .foregroundStyle(.secondary)
-          .padding(.top, 4)
+          .padding(.top, DesignTokens.Space.xs)
         }
         .themedFont(.caption)
       }

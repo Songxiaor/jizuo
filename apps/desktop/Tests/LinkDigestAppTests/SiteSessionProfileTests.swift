@@ -6,6 +6,19 @@ import XCTest
 final class SiteSessionProfileTests: XCTestCase {
   private let bilibili = SiteSessionProfile.bilibili
 
+  func testExternalLoginRoutesOnlyKnownHTTPSProviders() {
+    XCTAssertTrue(XExternalLoginPolicy.isProviderURL(URL(string: "https://accounts.google.com/o/oauth2/auth")))
+    XCTAssertTrue(XExternalLoginPolicy.isProviderURL(URL(string: "https://appleid.apple.com/auth/authorize")))
+    for value in ["http://accounts.google.com", "https://accounts.google.com.evil.test",
+                  "https://evil.test/accounts.google.com", "https://user@accounts.google.com",
+                  "https://accounts.google.com:8443", "javascript:alert(1)"] {
+      XCTAssertFalse(XExternalLoginPolicy.isProviderURL(URL(string: value)), value)
+    }
+    XCTAssertEqual(XExternalLoginPolicy.loginURL.absoluteString, "https://x.com/i/flow/login")
+    XCTAssertFalse(SiteSessionProfile.x.isAllowedHost("accounts.google.com"))
+  }
+
+
   func testAllowedHostsCoverPassportAndCDNButRejectForeign() {
     // 登录会连跳 passport → 主站 → CDN，少一个后缀就卡在白屏。
     XCTAssertTrue(bilibili.isAllowedHost("www.bilibili.com"))
@@ -30,6 +43,18 @@ final class SiteSessionProfileTests: XCTestCase {
     XCTAssertFalse(bilibili.looksLoggedIn([]))
   }
 
+  func testCookieFilterDropsExpiredAndKeepsSessionCookiesWithoutReadingValues() {
+    let now = Date(timeIntervalSince1970: 1_800_000_000)
+    XCTAssertTrue(SiteSessionCookieFilter.isUnexpired(expiresDate: nil, now: now))
+    XCTAssertTrue(SiteSessionCookieFilter.isUnexpired(expiresDate: now.addingTimeInterval(60), now: now))
+    XCTAssertFalse(SiteSessionCookieFilter.isUnexpired(expiresDate: now, now: now))
+    XCTAssertFalse(SiteSessionCookieFilter.isUnexpired(expiresDate: now.addingTimeInterval(-1), now: now))
+    let session = cookie(name: "SESSDATA", expires: nil)
+    let kept = SiteSessionCookieFilter.excludingExpired([session], now: now)
+    XCTAssertEqual(kept.map(\.name), ["SESSDATA"])
+    XCTAssertTrue(bilibili.looksLoggedIn(Set(kept.map(\.name))))
+  }
+
   func testCookieDomainOwnershipStaysNarrowerThanNavigation() {
     XCTAssertTrue(bilibili.ownsCookieDomain(".bilibili.com"))
     XCTAssertTrue(bilibili.ownsCookieDomain("bilibili.com"))
@@ -46,6 +71,18 @@ final class SiteSessionProfileTests: XCTestCase {
     // 泛化前这个键是写死的字符串。换掉它等于换掉 WebKit 数据分区，用户已经登录的
     // 会话会变成孤儿——表现是「明明登录过，升级后又要重登」，且没有任何报错。
     XCTAssertEqual(bilibili.dataStoreIDKey, "linkdigest.site-session.bilibili.data-store-id")
+    XCTAssertEqual(SiteSessionProfile.douyin.dataStoreIDKey, "linkdigest.site-session.douyin.data-store-id")
+    XCTAssertEqual(SiteSessionProfile.xiaohongshu.dataStoreIDKey, "linkdigest.site-session.xiaohongshu.data-store-id")
+    XCTAssertEqual(SiteSessionProfile.x.dataStoreIDKey, "linkdigest.site-session.x.data-store-id")
+  }
+
+  func testXiaohongshuNavigationAllowsBothShortLinkDomainsWithoutTreatingThemAsVerified() {
+    XCTAssertTrue(SiteSessionProfile.xiaohongshu.isAllowedHost("xhslink.com"))
+    XCTAssertTrue(SiteSessionProfile.xiaohongshu.isAllowedHost("xhslink.cn"))
+    XCTAssertFalse(SiteSessionProfile.xiaohongshu.isAllowedHost("xhslink.com.evil.test"))
+    XCTAssertNil(SiteSessionProfile.xiaohongshu.verifier)
+    XCTAssertNil(SiteSessionProfile.x.verifier)
+    XCTAssertNil(SiteSessionProfile.douyin.verifier)
   }
 
   func testBilibiliShipsAVerifierBecauseCookiePresenceIsNotValidity() {
@@ -53,5 +90,18 @@ final class SiteSessionProfileTests: XCTestCase {
     XCTAssertNotNil(bilibili.verifier)
     XCTAssertEqual(bilibili.accountIDCookieName, "DedeUserID")
     XCTAssertEqual(bilibili.platform, .bilibili)
+  }
+
+  private func cookie(name: String, expires: Date?) -> HTTPCookie {
+    var properties: [HTTPCookiePropertyKey: Any] = [
+      .name: name,
+      .value: "redacted",
+      .domain: ".bilibili.com",
+      .path: "/",
+    ]
+    if let expires {
+      properties[.expires] = expires
+    }
+    return HTTPCookie(properties: properties)!
   }
 }

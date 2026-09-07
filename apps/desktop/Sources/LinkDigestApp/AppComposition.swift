@@ -31,6 +31,7 @@ actor AppComposition {
     /// 收藏夹同步的受理入口。缺省为 nil：单元测试与降级路径不需要它，
     /// 此时扩展会收到「请升级 App」而不是静默丢弃这批 id。
     let bookmarksSink: CaptureReceiver.BookmarksSink?
+    let profileCandidatesSink: CaptureReceiver.ProfileCandidatesSink?
 
     init(
       applicationSupportRoot: @escaping ApplicationSupportRoot,
@@ -39,7 +40,8 @@ actor AppComposition {
       serverStarter: @escaping ServerStarter,
       availabilitySink: @escaping AvailabilitySink,
       captureSink: @escaping CaptureReceiver.CaptureSink,
-      bookmarksSink: CaptureReceiver.BookmarksSink? = nil
+      bookmarksSink: CaptureReceiver.BookmarksSink? = nil,
+      profileCandidatesSink: CaptureReceiver.ProfileCandidatesSink? = nil
     ) {
       self.applicationSupportRoot = applicationSupportRoot
       self.repositoryFactory = repositoryFactory
@@ -48,6 +50,7 @@ actor AppComposition {
       self.availabilitySink = availabilitySink
       self.captureSink = captureSink
       self.bookmarksSink = bookmarksSink
+      self.profileCandidatesSink = profileCandidatesSink
     }
   }
 
@@ -119,7 +122,8 @@ actor AppComposition {
           storageWriteGate: storageWriteGate,
           nowMilliseconds: dependencies.nowMilliseconds,
           captureSink: dependencies.captureSink,
-          bookmarksSink: dependencies.bookmarksSink
+          bookmarksSink: dependencies.bookmarksSink,
+          profileCandidatesSink: dependencies.profileCandidatesSink
         )
         let started = startServer(receiver, using: dependencies.serverStarter)
         return .init(
@@ -160,7 +164,8 @@ actor AppComposition {
         storageWriteGate: storageWriteGate,
         nowMilliseconds: dependencies.nowMilliseconds,
         captureSink: dependencies.captureSink,
-        bookmarksSink: dependencies.bookmarksSink
+        bookmarksSink: dependencies.bookmarksSink,
+        profileCandidatesSink: dependencies.profileCandidatesSink
       )
       return .init(
         availability: availability,
@@ -186,7 +191,8 @@ actor AppComposition {
       storageWriteGate: storageWriteGate,
       nowMilliseconds: dependencies.nowMilliseconds,
       captureSink: dependencies.captureSink,
-      bookmarksSink: dependencies.bookmarksSink
+      bookmarksSink: dependencies.bookmarksSink,
+      profileCandidatesSink: dependencies.profileCandidatesSink
     )
     return .init(
       availability: degraded,

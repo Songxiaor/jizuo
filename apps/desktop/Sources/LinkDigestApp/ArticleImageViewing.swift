@@ -134,12 +134,6 @@ struct InlineArticleImageView: View {
             maxHeight: layout == .gallery ? nil : min(Self.maximumHeight, image.size.height)
           )
           .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-          .padding(8)
-          .background(Color.white, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
-          .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
-              .stroke(Color.primary.opacity(0.12), lineWidth: 1)
-          )
           .onTapGesture(count: 2) { InlineImageLightboxController.shared.present(url) }
           .contextMenu {
             Button {

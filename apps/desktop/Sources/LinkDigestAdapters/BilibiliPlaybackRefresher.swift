@@ -304,7 +304,7 @@ public struct BilibiliPlaybackRefresher: Sendable {
       return nil
     }()
     let author = nonEmptyString((data["owner"] as? [String: Any])?["name"])
-    let coverURL = allowedCoverURL(nonEmptyString(data["pic"]))
+    let coverURL = Self.allowedCoverURL(nonEmptyString(data["pic"]))
     let publishedAt = int64(data["pubdate"]).map {
       ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: TimeInterval($0)))
     }
@@ -718,8 +718,15 @@ public struct BilibiliPlaybackRefresher: Sendable {
     return trimmed.isEmpty ? nil : trimmed
   }
 
-  private func allowedCoverURL(_ raw: String?) -> URL? {
-    guard let raw, let url = URL(string: raw),
+  static func allowedCoverURL(_ raw: String?) -> URL? {
+    guard let raw, var components = URLComponents(string: raw),
+          ["http", "https"].contains(components.scheme?.lowercased() ?? "") else { return nil }
+    if components.scheme?.lowercased() == "http" {
+      guard components.port == nil || components.port == 80 else { return nil }
+      components.scheme = "https"
+      components.port = nil
+    }
+    guard let url = components.url,
           url.scheme?.lowercased() == "https",
           url.user == nil, url.password == nil,
           url.port == nil || url.port == 443,

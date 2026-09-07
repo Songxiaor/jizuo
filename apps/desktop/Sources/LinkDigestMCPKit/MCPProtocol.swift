@@ -31,7 +31,7 @@ public enum MCPTools {
       tool("jizuo_add_links", "保存1至20条内容链接，自动跳过已有项。返回排队结果；必须调用capture_status确认完成。博主主页请用discover_creator。", ["urls": strings, "download_video": flag], ["urls"], read: false),
       tool("jizuo_capture_status", "按提交的链接分别查询保存状态、视频下载状态与是否结束。saved仅指正文入库，下载须看download_status。可用返回的task_id继续转写。", ["urls": strings], ["urls"]),
       tool("jizuo_creators", "查询已保存博主，返回博主ID和作品数量。", ["query": string, "limit": limit]),
-      tool("jizuo_discover_creator", "添加并发现一个抖音博主主页的作品，支持分享短链。返回job_id；多个主页依次执行。需登录或验证时在汲作窗口由用户处理。结果按页面发现顺序，不能承诺严格发布时间排序。", ["url": string, "limit": limit], ["url"], read: false),
+      tool("jizuo_discover_creator", "添加并发现一个抖音、小红书、X 或 B 站博主主页的作品；支持主页分享文案、常见手机主页和抖音/xhslink/b23.tv 短链；短链最终须指向博主主页，单条作品请用add_links。返回job_id；多个主页依次执行。需登录或验证时在汲作窗口由用户处理。结果按页面发现顺序，不能承诺严格发布时间排序。", ["url": string, "limit": limit], ["url"], read: false),
       tool("jizuo_discovery_status", "查询发现任务和候选作品。job_id仅在当前App运行期间有效。", ["job_id": string], ["job_id"]),
       tool("jizuo_save_works", "保存发现任务中指定作品，去重并关联博主。先查询候选，再明确提供work_ids；排队不等于完成。", ["job_id": string, "work_ids": strings, "download_video": flag], ["job_id", "work_ids"], read: false),
       tool("jizuo_continue_discovery", "用户完成登录/验证后继续发现作品。", ["job_id": string], ["job_id"], read: false),

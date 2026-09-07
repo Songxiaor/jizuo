@@ -158,10 +158,10 @@ extension DesignTokens {
   /// 记在这里而不是散在各 `frame(minWidth:)` 里：三栏的最小宽度互相牵制，
   /// 单独改一栏会让另一栏在窄窗口下被挤到不可用。
   enum Layout {
-    static let windowMinWidth: CGFloat = 900
+    static let windowMinWidth: CGFloat = 940
     static let windowMinHeight: CGFloat = 620
 
-    static let sidebarMin: CGFloat = 180
+    static let sidebarMin: CGFloat = 210
     static let sidebarIdeal: CGFloat = 220
     static let sidebarMax: CGFloat = 300
 
@@ -215,5 +215,9 @@ extension DesignTokens {
     /// 20 — 设置侧栏分类图标 chip 的边长。比页头同款 chip（`IconSize.empty`）小一档，
     /// 侧栏一行只有一个行高的空间，放不下页头那种大方块。
     static let settingsSidebarChip: CGFloat = 20
+
+    /// 设置页内容宽度与侧边留白；所有手排设置页使用同一刻度。
+    static let settingsContentMaxWidth: CGFloat = 760
+    static let settingsHorizontalInset: CGFloat = 20
   }
 }

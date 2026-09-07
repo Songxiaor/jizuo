@@ -309,17 +309,141 @@ final class HistoryViewModelTests: XCTestCase {
     model.enterCreatorDirectory()
     XCTAssertTrue(model.isCreatorDirectoryActive)
     XCTAssertEqual(model.searchText, "")
-    XCTAssertNil(model.selectedCreatorID)
-    XCTAssertFalse(model.hasCategoryFilter)
-    await waitUntil { !model.isLoadingCreatorPage }
+    await waitUntil { !model.isLoadingCreatorPage && model.selectedCreatorID == creator.id }
+    XCTAssertEqual(model.selectedCreatorID, creator.id, "进目录应恢复本会话刚选中的博主")
     XCTAssertFalse(model.showsCreatorNeverAddedEmpty, "已有博主时不能显示还未添加")
     model.creatorSearchText = "没有这个人"
     await waitUntil { model.showsCreatorNoMatchEmpty }
+    XCTAssertNil(model.selectedCreatorID, "搜索无匹配时不能继续选中被隐藏的博主")
+    XCTAssertTrue(model.rows.isEmpty, "搜索无匹配时不能留下上一博主的作品")
+    XCTAssertNil(model.detail)
+    XCTAssertFalse(model.isReadingCreatorWorkInDirectory)
     XCTAssertFalse(model.showsCreatorNeverAddedEmpty)
     XCTAssertFalse(model.showsCreatorDirectoryFailure)
     model.selectScope(.all)
     XCTAssertFalse(model.isCreatorDirectoryActive)
     XCTAssertNil(model.selectedCreatorID)
+  }
+
+  func testCreatorDirectoryKeepsCatalogAndDoesNotAutoOpenWorks() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-creator-directory-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let first = try repository.upsertCreator(
+      UpsertCreatorCommand(
+        identity: CreatorIdentity(platform: "x.com", authorID: "first_author")!,
+        profileURL: "https://x.com/first_author",
+        displayName: "第一位",
+        nowMilliseconds: 1
+      )!
+    )
+    let second = try repository.upsertCreator(
+      UpsertCreatorCommand(
+        identity: CreatorIdentity(platform: "x.com", authorID: "second_author")!,
+        profileURL: "https://x.com/second_author",
+        displayName: "第二位",
+        nowMilliseconds: 2
+      )!
+    )
+    let work = try repository.acceptCapture(.init(
+      document: CapturedDocument(
+        createdAt: "2026-07-20T00:00:00Z", origin: .manualLink,
+        url: "https://x.com/first_author/status/1234567890123", title: "第一位的作品",
+        platform: "x", method: "fixture", text: "正文",
+        completeness: "full_article", capturedAt: "2026-07-20T00:00:00Z", sourceLabel: "fixture"
+      ),
+      receivedAtMilliseconds: 10
+    ))
+    try repository.attachCreatorWork(creatorID: first.id, taskID: work.taskID)
+
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.listState == .loaded && !model.rows.isEmpty }
+    let allMaterialsIDs = Set(model.rows.map(\.taskID))
+    XCTAssertTrue(allMaterialsIDs.contains(work.taskID))
+
+    model.enterCreatorDirectory()
+    XCTAssertTrue(model.rows.isEmpty, "进目录必须立刻清掉全部资料的旧列表")
+    XCTAssertEqual(model.listState, .loading)
+    XCTAssertNil(model.detail)
+    XCTAssertNil(model.selectedTaskID)
+    await waitUntil { model.creatorDirectoryRows.count == 2 && model.selectedCreatorID != nil }
+    XCTAssertTrue(model.isCreatorDirectoryActive)
+    XCTAssertEqual(model.selectedCreatorID, model.creatorDirectoryRows.first?.id, "无会话记忆时应选中目录第一位")
+    XCTAssertNil(model.selectedTaskID, "目录里列出作品时不应自动打开一篇")
+    XCTAssertFalse(model.isReadingCreatorWorkInDirectory)
+
+    model.focusCreatorInDirectory(first.id)
+    await waitUntil { model.selectedCreatorID == first.id && model.rows.map(\.taskID) == [work.taskID] }
+    XCTAssertNil(model.selectedTaskID, "点选有作品的博主仍应停在作品列表")
+    XCTAssertEqual(model.rows.first?.title, "第一位的作品")
+
+    model.focusCreatorInDirectory(second.id)
+    await waitUntil { model.selectedCreatorID == second.id && model.showsCreatorZeroWorks }
+    XCTAssertTrue(model.isCreatorDirectoryActive)
+    XCTAssertTrue(model.rows.isEmpty)
+    XCTAssertNil(model.selectedTaskID)
+    XCTAssertFalse(model.isReadingCreatorWorkInDirectory)
+
+    model.focusCreatorInDirectory(first.id)
+    await waitUntil { model.rows.map(\.taskID) == [work.taskID] }
+    model.selectedTaskID = work.taskID
+    await waitUntil { model.isReadingCreatorWorkInDirectory }
+    XCTAssertEqual(model.selectedTaskID, work.taskID)
+
+    model.focusCreatorInDirectory(second.id)
+    await waitUntil { model.selectedCreatorID == second.id && model.selectedTaskID == nil }
+    XCTAssertFalse(model.isReadingCreatorWorkInDirectory, "换博主不能把上一篇留在右侧")
+
+    model.selectScope(.all)
+    XCTAssertFalse(model.isCreatorDirectoryActive)
+    await waitUntil { model.rows.map(\.taskID).contains(work.taskID) }
+    model.enterCreatorDirectory()
+    XCTAssertTrue(model.rows.isEmpty, "从全部资料返回目录时不能短暂留下旧 rows")
+    XCTAssertEqual(model.listState, .loading)
+    XCTAssertNil(model.detail)
+    if model.selectedCreatorSnapshot?.id != second.id {
+      XCTAssertNil(model.selectedCreatorSnapshot, "不匹配的 snapshot 必须清掉，避免右侧先画错人")
+    }
+    await waitUntil { model.selectedCreatorID == second.id }
+    XCTAssertTrue(model.isCreatorDirectoryActive, "再次进入应恢复上次有效选择")
+    XCTAssertNil(model.selectedTaskID)
+    XCTAssertFalse(model.rows.contains { $0.taskID == work.taskID }, "第二位没有作品时不能回填第一位的条目")
+
+    model.selectCreator(first.id)
+    XCTAssertFalse(model.isCreatorDirectoryActive, "侧栏选择仍应离开目录、进入普通阅读列表")
+    XCTAssertEqual(model.selectedCreatorID, first.id)
+  }
+
+  func testEnterCreatorDirectoryIgnoresInFlightAllMaterialsPage() async {
+    let first = makeRow(title: "第一页", updatedAt: 30)
+    let second = makeRow(title: "下一页", updatedAt: 20)
+    let blocker = PageBlocker()
+    let repository = HistoryScreenRepository(
+      firstPage: .init(rows: [first], nextCursor: cursor(for: first)),
+      remainingPages: [first.taskID.rawValue: .init(rows: [second], nextCursor: nil)],
+      details: [first.taskID: makeDetail(for: first), second.taskID: makeDetail(for: second)],
+      pageBlocker: blocker
+    )
+    let model = HistoryViewModel()
+    model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.listState == .loaded }
+    XCTAssertEqual(model.rows.map(\.taskID), [first.taskID])
+    model.loadNextPageIfNeeded(after: first)
+    await blocker.waitUntilEntered()
+    XCTAssertTrue(model.isLoadingNextPage)
+    model.enterCreatorDirectory()
+    XCTAssertTrue(model.rows.isEmpty)
+    XCTAssertEqual(model.listState, .loading)
+    XCTAssertNil(model.detail)
+    XCTAssertFalse(model.isLoadingNextPage)
+    blocker.release()
+    try? await Task.sleep(for: .milliseconds(50))
+    XCTAssertTrue(model.rows.isEmpty, "已作废的分页请求不得把全部资料的下一页写回目录")
+    XCTAssertFalse(model.rows.contains { $0.taskID == second.taskID })
   }
 
   func testSameHashRepairMakesHistoryResolveNewUserDirectoryFile() async throws {
@@ -2441,6 +2565,40 @@ final class HistoryViewModelTests: XCTestCase {
       $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
     }
     XCTAssertEqual(transcripts.map(\.bodyText), ["原始转写"])
+  }
+
+  func testProfileImportCompletionRefreshesRowsWithoutSelectingNewWork() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-profile-background-refresh-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.listState == .empty }
+    XCTAssertNil(model.selectedTaskID)
+
+    let accepted = try repository.acceptCapture(.init(
+      document: CapturedDocument(
+        createdAt: "2026-09-07T00:00:00Z",
+        origin: .manualLink,
+        url: "https://www.douyin.com/video/7000000000000000099",
+        title: "后台批量作品",
+        platform: "douyin",
+        method: "fixture",
+        text: "批量作品正文",
+        completeness: "complete",
+        capturedAt: "2026-09-07T00:00:00Z",
+        sourceLabel: "fixture"
+      ),
+      receivedAtMilliseconds: 1
+    ))
+
+    model.handleProfileImportCompletion()
+    await waitUntil { model.rows.contains(where: { $0.taskID == accepted.taskID }) }
+    XCTAssertNil(model.selectedTaskID, "后台完成只刷新列表与计数，不能自动打开新作品")
+    XCTAssertNil(model.detail)
   }
 }
 

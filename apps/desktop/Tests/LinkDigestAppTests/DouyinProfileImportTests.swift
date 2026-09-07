@@ -24,11 +24,12 @@ final class DouyinProfileImportTests: XCTestCase {
   func testProfileInputAcceptsShareTextShortLinkAndCanonicalProfile() {
     XCTAssertEqual(
       DouyinProfileInputRoute.parse("复制打开抖音 https://v.douyin.com/abc123/ 看主页"),
-      .shortLink(sourceURL: URL(string: "https://v.douyin.com/abc123/")!)
+      .shortLink(platform: .douyin, sourceURL: URL(string: "https://v.douyin.com/abc123/")!)
     )
     XCTAssertEqual(
       DouyinProfileInputRoute.parse("https://www.douyin.com/user/\(authorID)?from_tab_name=main"),
       .profile(
+        platform: .douyin,
         sourceURL: URL(string: "https://www.douyin.com/user/\(authorID)")!,
         authorID: authorID
       )
@@ -86,12 +87,13 @@ final class DouyinProfileImportTests: XCTestCase {
     XCTAssertTrue(model.selectedIDs.isEmpty)
   }
 
-  func testThreeScreensWithoutNewCardsStopsWithHedgedVisibleEnd() {
+  func testInitialEmptyPageWaitsBeforeHedgedVisibleEnd() {
     let model = makeModel()
     start(model)
 
-    XCTAssertEqual(model.merge(snapshot([])), .keepLoading)
-    XCTAssertEqual(model.merge(snapshot([])), .keepLoading)
+    for _ in 1..<DouyinProfileImportViewModel.initialEmptyScreenLimit {
+      XCTAssertEqual(model.merge(snapshot([])), .keepLoading)
+    }
     XCTAssertEqual(model.merge(snapshot([])), .stop(.visibleEnd))
     XCTAssertEqual(model.phase, .stopped(.visibleEnd))
     XCTAssertTrue(DouyinProfileImportStopReason.visibleEnd.message.contains("暂未发现"))
@@ -180,6 +182,75 @@ final class DouyinProfileImportTests: XCTestCase {
     }
   }
 
+  func testLoginSnapshotStillSavesVisiblePublicHeaderAndIgnoresWorks() {
+    final class Refresh {
+      var calls: [(String?, String?)] = []
+    }
+    let refresh = Refresh()
+    let creatorID = CreatorID()
+    let model = makeModel(
+      ensureCreator: { _, _, _ in creatorID },
+      refreshCreatorName: { _, name, avatar in refresh.calls.append((name, avatar)) }
+    )
+    start(model)
+    let avatar = "https://p3.douyinpic.com/aweme/100x100/fixture-avatar.jpeg"
+    XCTAssertEqual(
+      model.merge(.init(
+        status: "login",
+        profileAuthorID: authorID,
+        profileName: "夹具博主",
+        profileAvatarURL: avatar,
+        activeTab: nil,
+        candidates: [item("https://www.douyin.com/video/7000000000000000001", authorID: authorID)]
+      )),
+      .stop(.loginRequired)
+    )
+    XCTAssertEqual(model.profileName, "夹具博主")
+    XCTAssertEqual(refresh.calls.count, 1)
+    XCTAssertEqual(refresh.calls.first?.0, "夹具博主")
+    XCTAssertEqual(refresh.calls.first?.1, avatar)
+    XCTAssertTrue(model.candidates.isEmpty)
+  }
+
+  func testVerificationDoesNotRefreshEmptyHeaderOverExisting() {
+    final class Refresh {
+      var calls: [(String?, String?)] = []
+    }
+    let refresh = Refresh()
+    let creatorID = CreatorID()
+    let model = makeModel(
+      ensureCreator: { _, _, _ in creatorID },
+      refreshCreatorName: { _, name, avatar in refresh.calls.append((name, avatar)) }
+    )
+    start(model)
+    let avatar = "https://p3.douyinpic.com/aweme/100x100/fixture-avatar.jpeg"
+    XCTAssertEqual(
+      model.merge(.init(
+        status: "ready",
+        profileAuthorID: authorID,
+        profileName: "夹具博主",
+        profileAvatarURL: avatar,
+        activeTab: "作品",
+        candidates: [item("https://www.douyin.com/video/7000000000000000001", authorID: authorID)]
+      )),
+      .keepLoading
+    )
+    XCTAssertEqual(refresh.calls.count, 1)
+    XCTAssertEqual(
+      model.merge(.init(
+        status: "verification",
+        profileAuthorID: authorID,
+        profileName: nil,
+        profileAvatarURL: nil,
+        activeTab: nil,
+        candidates: []
+      )),
+      .stop(.verificationRequired)
+    )
+    XCTAssertEqual(model.profileName, "夹具博主")
+    XCTAssertEqual(refresh.calls.count, 1, "验证码页的空姓名/头像不得覆盖已保存资料")
+  }
+
   func testPerRoundBudgetPausesButContinueKeepsExistingCandidates() {
     let model = makeModel()
     start(model)
@@ -215,6 +286,213 @@ final class DouyinProfileImportTests: XCTestCase {
     }
   }
 
+  func testBrowserPreviewUpsertsSameCreatorHeaderIncludingAvatar() {
+    var created = 0
+    var refreshed: [(String?, String?)] = []
+    let creatorID = CreatorID()
+    let model = makeModel(
+      ensureCreator: { _, _, _ in created += 1; return creatorID },
+      refreshCreatorName: { _, name, avatar in refreshed.append((name, avatar)) }
+    )
+    let avatar = "https://pbs.twimg.com/profile_images/1/owner.jpg"
+    model.presentExternalCandidates(.init(
+      requestId: "preview",
+      profileURL: "https://x.com/sample_author",
+      authorID: "sample_author",
+      profileName: "夹具作者",
+      profileAvatarURL: avatar,
+      items: [.init(id: "1234567890123", url: "https://x.com/sample_author/status/1234567890123")]
+    ))
+    XCTAssertEqual(created, 1)
+    XCTAssertEqual(model.creatorID, creatorID)
+    XCTAssertEqual(model.profileName, "夹具作者")
+    XCTAssertEqual(refreshed.count, 1)
+    XCTAssertEqual(refreshed.first?.0, "夹具作者")
+    XCTAssertEqual(refreshed.first?.1, avatar)
+    model.toggleSelection("1234567890123")
+    model.saveSelected()
+    XCTAssertEqual(created, 1, "保存作品必须复用同一 creator，不得再插一条")
+    XCTAssertTrue(model.mergeExternalCandidates(.init(
+      requestId: "preview-2",
+      profileURL: "https://x.com/sample_author",
+      authorID: "sample_author",
+      profileName: "夹具作者",
+      profileAvatarURL: avatar,
+      items: [.init(id: "1234567890456", url: "https://x.com/sample_author/status/1234567890456")]
+    )))
+    XCTAssertEqual(created, 1)
+    XCTAssertEqual(refreshed.count, 2)
+  }
+
+  func testBrowserSourcedCandidatesDoNotStartWebKitScanAndKeepSelectionOnMerge() {
+    let model = makeModel()
+    model.presentExternalCandidates(
+      XProfileCandidatesRequest(
+        requestId: "req-1",
+        profileURL: "https://x.com/sample_author",
+        authorID: "sample_author",
+        items: [
+          .init(id: "1234567890123", url: "https://x.com/sample_author/status/1234567890123", previewText: "One"),
+        ]
+      )
+    )
+    XCTAssertEqual(model.discoverySource, .browserExtension)
+    XCTAssertEqual(model.phase, .stopped(.browserExtension))
+    XCTAssertEqual(model.candidates.map(\.workID), ["1234567890123"])
+    model.toggleSelection("1234567890123")
+    XCTAssertTrue(model.mergeExternalCandidates(
+      XProfileCandidatesRequest(
+        requestId: "req-2",
+        profileURL: "https://x.com/sample_author",
+        authorID: "sample_author",
+        items: [
+          .init(id: "1234567890123", url: "https://x.com/sample_author/status/1234567890123", previewText: "One"),
+          .init(id: "1234567890456", url: "https://x.com/sample_author/status/1234567890456", previewText: "Two"),
+        ]
+      )
+    ))
+    XCTAssertEqual(model.selectedIDs, ["1234567890123"])
+    XCTAssertEqual(model.candidates.map(\.workID), ["1234567890123", "1234567890456"])
+    model.continueLoading()
+    XCTAssertEqual(model.phase, .stopped(.browserExtension))
+    XCTAssertTrue((model.saveMessage ?? "").contains("浏览器"))
+  }
+
+  func testEmbeddedXImportAdoptsBrowserCandidatesWithoutClearingSelection() {
+    let model = makeModel()
+    model.input = "https://x.com/sample_author"
+    model.start()
+    model.acceptNavigation(URL(string: "https://x.com/sample_author")!)
+    XCTAssertEqual(model.phase, .scanning)
+    XCTAssertEqual(model.discoverySource, .embeddedWebKit)
+    let snapshot = DouyinProfileDOMSnapshot(
+      status: "ready",
+      profileAuthorID: "sample_author",
+      profileName: "要查看键盘快捷键，按下问号查看键盘快捷键",
+      activeTab: "Posts",
+      candidates: [
+        DouyinProfileDOMCandidate(
+          url: "https://x.com/sample_author/status/1234567890123",
+          authorID: "sample_author",
+          previewText: "One",
+          coverURL: nil,
+          publishedText: "Now"
+        )
+      ]
+    )
+    XCTAssertEqual(model.merge(snapshot), .keepLoading)
+    model.toggleSelection("1234567890123")
+    XCTAssertTrue(model.mergeExternalCandidates(
+      XProfileCandidatesRequest(
+        requestId: "browser-1",
+        profileURL: "https://x.com/sample_author",
+        authorID: "sample_author",
+        profileName: "DAN KOE",
+        items: [
+          .init(id: "1234567890123", url: "https://x.com/sample_author/status/1234567890123", previewText: "One"),
+          .init(id: "1234567890456", url: "https://x.com/sample_author/status/1234567890456", previewText: "Two"),
+        ]
+      )
+    ))
+    XCTAssertEqual(model.discoverySource, .browserExtension)
+    XCTAssertEqual(model.phase, .stopped(.browserExtension))
+    XCTAssertEqual(model.selectedIDs, ["1234567890123"])
+    XCTAssertEqual(model.candidates.map(\.workID), ["1234567890123", "1234567890456"])
+    XCTAssertEqual(model.profileName, "DAN KOE")
+    XCTAssertFalse(model.isScanning)
+  }
+
+  func testDoesNotMergeXCandidatesIntoDouyinWithTheSameAuthorID() {
+    let model = makeModel()
+    model.input = "https://www.douyin.com/user/alice"
+    model.start()
+    model.acceptNavigation(URL(string: "https://www.douyin.com/user/alice")!)
+    XCTAssertEqual(model.platform, .douyin)
+    XCTAssertEqual(model.currentAuthorID, "alice")
+    XCTAssertFalse(model.mergeExternalCandidates(
+      XProfileCandidatesRequest(
+        requestId: "x-alice",
+        profileURL: "https://x.com/alice",
+        authorID: "alice",
+        items: [.init(id: "1234567890123", url: "https://x.com/alice/status/1234567890123", previewText: "A")]
+      )
+    ))
+    XCTAssertEqual(model.platform, .douyin)
+    XCTAssertEqual(model.discoverySource, .embeddedWebKit)
+    XCTAssertEqual(model.phase, .scanning)
+    XCTAssertTrue(model.candidates.isEmpty)
+  }
+
+  func testBrowserHandoffIgnoresInFlightWebKitSnapshotAndNavigation() async throws {
+    let model = makeModel()
+    model.input = "https://x.com/sample_author"
+    model.start()
+    model.acceptNavigation(URL(string: "https://x.com/sample_author")!)
+    let coordinator = DouyinProfileImportWebView.Coordinator(model: model)
+    let configuration = WKWebViewConfiguration()
+    configuration.websiteDataStore = .nonPersistent()
+    let webView = WKWebView(frame: .zero, configuration: configuration)
+    let navigation = try XCTUnwrap(webView.loadHTMLString("<p>Open</p>", baseURL: nil))
+    coordinator.trackNavigation(navigation, requestID: model.navigationRequestID)
+    let pending = PendingProfileJavaScript()
+    let invoked = expectation(description: "Extraction suspended")
+    let task = coordinator.startScan { script in
+      pending.scripts.append(script)
+      return try await withCheckedThrowingContinuation { continuation in
+        pending.continuation = continuation
+        invoked.fulfill()
+      }
+    }
+    await fulfillment(of: [invoked], timeout: 2)
+    XCTAssertTrue(model.mergeExternalCandidates(
+      XProfileCandidatesRequest(
+        requestId: "browser-1",
+        profileURL: "https://x.com/sample_author",
+        authorID: "sample_author",
+        profileName: "DAN KOE",
+        items: [.init(id: "1234567890123", url: "https://x.com/sample_author/status/1234567890123", previewText: "One")]
+      )
+    ))
+    XCTAssertEqual(model.phase, .stopped(.browserExtension))
+    let stale = DouyinProfileDOMSnapshot(
+      status: "ready",
+      profileAuthorID: "sample_author",
+      profileName: "WK overwrite",
+      activeTab: "Posts",
+      candidates: [
+        DouyinProfileDOMCandidate(
+          url: "https://x.com/sample_author/status/9999999999999",
+          authorID: "sample_author",
+          previewText: "Stale",
+          coverURL: nil,
+          publishedText: "Then"
+        )
+      ]
+    )
+    pending.continuation?.resume(returning: String(decoding: try JSONEncoder().encode(stale), as: UTF8.self))
+    await task.value
+    coordinator.finishNavigation(navigation, url: URL(string: "https://x.com/other_author")!)
+    coordinator.failNavigation(navigation, error: URLError(.notConnectedToInternet))
+    model.scanFailed(scanRequestID: model.scanRequestID)
+    XCTAssertEqual(model.merge(stale), .stop(.browserExtension))
+    XCTAssertEqual(model.phase, .stopped(.browserExtension))
+    XCTAssertEqual(model.profileName, "DAN KOE")
+    XCTAssertEqual(model.candidates.map(\.workID), ["1234567890123"])
+    XCTAssertEqual(model.discoverySource, .browserExtension)
+  }
+
+  func testPrepareForBrowserHandoffStopsEmbeddedScanAndKeepsAuthor() {
+    let model = makeModel()
+    model.input = "https://x.com/sample_author"
+    model.start()
+    model.acceptNavigation(URL(string: "https://x.com/sample_author")!)
+    model.prepareForBrowserHandoff()
+    XCTAssertEqual(model.discoverySource, .browserExtension)
+    XCTAssertEqual(model.phase, .stopped(.browserExtension))
+    XCTAssertEqual(model.currentAuthorID, "sample_author")
+    XCTAssertEqual(model.platform, .x)
+  }
+
   func testShortLinkToAWorkFailsClearlyButLoginNavigationCanStillResolve() {
     let model = makeModel()
     model.input = "https://v.douyin.com/fixture/"
@@ -222,7 +500,7 @@ final class DouyinProfileImportTests: XCTestCase {
     model.acceptNavigation(URL(string: "https://www.douyin.com/passport/login")!)
     XCTAssertEqual(model.phase, .loading)
     model.acceptNavigation(URL(string: "https://www.douyin.com/video/7000000000000000001")!)
-    XCTAssertEqual(model.phase, .failed("这是单条作品链接，请使用博主主页链接。"))
+    XCTAssertEqual(model.phase, .failed("这是单条作品链接，请改用单条保存入口，不能当作博主主页导入。"))
   }
 
   func testCancelledAndOldNavigationCallbacksCannotStopOrRebindCurrentRequest() throws {
@@ -516,6 +794,9 @@ final class DouyinProfileImportTests: XCTestCase {
     XCTAssertEqual(login.status, "login")
     let verification = try await extractMetricsFixture("<div class='captcha' style='height:100px'>完成验证</div>", expectedID: id)
     XCTAssertEqual(verification.status, "verification")
+    let rateLimit = try await extractMetricsFixture("<p>访问过于频繁</p>", expectedID: id)
+    XCTAssertEqual(rateLimit.status, "rate_limit")
+    XCTAssertTrue(DouyinProfileMetricsCapture.pausesAutomaticReading(rateLimit.status))
     let result = try await extractMetricsFixture("""
       <div data-e2e="detail-video-info" data-e2e-aweme-id="7000000000000000001">作品</div>
       <div data-e2e="player-container" class="video_7000000000000000001">
@@ -586,6 +867,71 @@ final class DouyinProfileImportTests: XCTestCase {
       canonicalURL: "https://www.douyin.com/video/7000000000000000002", previewText: nil,
       coverURL: nil, publishedText: nil, wasAlreadySaved: false)
     reader.read(candidate, dataStore: .nonPersistent(), load: { _, _ in XCTFail("Mismatched identity must not load") }) { _ in XCTFail("No data expected") }
+    XCTAssertNil(reader.readingID)
+  }
+
+  func testPartialCacheIsReceivedThenReadingContinues() {
+    var cache = DouyinProfileMetricsCache()
+    cache.store(.init(
+      workID: "7000000000000000001",
+      authorID: authorID,
+      likes: "1",
+      comments: nil,
+      collects: "2",
+      observedAt: "2026-09-07T14:00:00Z",
+      source: DouyinProfileMetricsSource.homepageList
+    ))
+    let reader = DouyinProfileMetricsReader(cache: cache)
+    var received: [DouyinProfileWorkMetrics] = []
+    let candidate = DouyinProfileImportCandidate(
+      workID: "7000000000000000001",
+      authorID: authorID,
+      canonicalURL: "https://www.douyin.com/video/7000000000000000001",
+      previewText: nil,
+      coverURL: nil,
+      publishedText: nil,
+      wasAlreadySaved: false
+    )
+    reader.read(candidate, dataStore: .nonPersistent(), load: { _, _ in }) { received.append($0) }
+    XCTAssertEqual(received.count, 1)
+    XCTAssertEqual(received[0].likes, "1")
+    XCTAssertNil(received[0].comments)
+    XCTAssertEqual(received[0].collects, "2")
+    XCTAssertEqual(reader.messages["7000000000000000001"], DouyinProfileMetricsCapture.partialMessage)
+    XCTAssertEqual(DouyinProfileMetricsCapture.partialMessage, "仍有未读取项")
+    XCTAssertEqual(reader.readingID, "7000000000000000001")
+    reader.cancel()
+    XCTAssertNil(reader.readingID)
+  }
+
+  func testCompleteCacheDoesNotOpenDetailPage() {
+    var cache = DouyinProfileMetricsCache()
+    cache.store(.init(
+      workID: "7000000000000000001",
+      authorID: authorID,
+      likes: "1",
+      comments: "0",
+      collects: "2",
+      observedAt: "2026-09-07T14:00:00Z",
+      source: DouyinProfileMetricsSource.homepageList
+    ))
+    let reader = DouyinProfileMetricsReader(cache: cache)
+    var loads = 0
+    var received: [DouyinProfileWorkMetrics] = []
+    let candidate = DouyinProfileImportCandidate(
+      workID: "7000000000000000001",
+      authorID: authorID,
+      canonicalURL: "https://www.douyin.com/video/7000000000000000001",
+      previewText: nil,
+      coverURL: nil,
+      publishedText: nil,
+      wasAlreadySaved: false
+    )
+    reader.read(candidate, dataStore: .nonPersistent(), load: { _, _ in loads += 1 }) { received.append($0) }
+    XCTAssertEqual(loads, 0)
+    XCTAssertEqual(received.count, 1)
+    XCTAssertEqual(received[0].comments, "0")
+    XCTAssertEqual(reader.messages["7000000000000000001"], "数据已更新")
     XCTAssertNil(reader.readingID)
   }
 
@@ -660,18 +1006,121 @@ final class DouyinProfileImportTests: XCTestCase {
     XCTAssertEqual(queue.next(in: ["first", "second"]), "second")
   }
 
+  func testVisibleMetricsQueuePausesOnVerificationUntilExplicitRetry() {
+    var queue = DouyinProfileVisibleMetricsQueue()
+    queue.setVisible("first", true)
+    queue.setVisible("second", true)
+    XCTAssertEqual(queue.next(in: ["first", "second"]), "first")
+    queue.finish("first")
+    queue.pause()
+    XCTAssertNil(queue.next(in: ["first", "second"]))
+    queue.retry("second")
+    XCTAssertEqual(queue.next(in: ["first", "second"]), "second")
+  }
+
+  func testHomepageListMapMergesOntoExistingDOMCandidatesWithoutStartingNewIDs() {
+    let model = makeModel()
+    start(model)
+    var card = item("https://www.douyin.com/video/7682764905618918710", authorID: authorID)
+    card.likes = "19"
+    _ = model.merge(snapshot([card]))
+    XCTAssertEqual(model.incompleteMetricIDs, ["7682764905618918710"])
+    card.comments = "2"
+    card.collects = "9"
+    card.metricsSource = DouyinProfileMetricsSource.homepageList
+    card.metricsReadAt = "2026-09-07T14:00:00Z"
+    _ = model.merge(snapshot([card]))
+    XCTAssertEqual(model.candidates.count, 1)
+    XCTAssertEqual(model.candidates[0].likes, "19")
+    XCTAssertEqual(model.candidates[0].comments, "2")
+    XCTAssertEqual(model.candidates[0].collects, "9")
+    XCTAssertEqual(model.candidates[0].metricsSource, DouyinProfileMetricsSource.homepageList)
+    XCTAssertTrue(model.incompleteMetricIDs.isEmpty, "Complete homepage list stats must not need per-item detail")
+  }
+
+  func testSaveSelectedPassesSeedsWithPreviewAndKeepsLegacyURLEnqueue() {
+    final class CaptureBox {
+      var urls: [String] = []
+      var seeds: [ProfileImportCandidateSeed] = []
+    }
+    let captured = CaptureBox()
+    let model = DouyinProfileImportViewModel(
+      alreadySaved: { _ in false },
+      enqueue: { urls, _, _ in
+        captured.urls = urls
+        return .init(queued: urls.count, skipped: 0)
+      },
+      enqueueCandidates: { seeds, downloads, _ in
+        captured.seeds = seeds
+        XCTAssertFalse(downloads)
+        return .init(queued: seeds.count, skipped: 0)
+      }
+    )
+    start(model)
+    let card = DouyinProfileDOMCandidate(
+      url: "https://www.douyin.com/video/7682764905618918710", authorID: authorID,
+      previewText: "羊羊作品", coverURL: nil, publishedText: nil,
+      likes: "19", comments: "2", collects: "9"
+    )
+    _ = model.merge(snapshot([card]))
+    model.toggleSelection("7682764905618918710")
+    XCTAssertEqual(model.saveSelected(), 1)
+    XCTAssertEqual(model.saveSelected(), 0, "An empty second submit must not navigate or enqueue again")
+    XCTAssertEqual(captured.seeds.count, 1)
+    XCTAssertEqual(captured.seeds.first?.workID, "7682764905618918710")
+    XCTAssertEqual(captured.seeds.first?.authorID, authorID)
+    XCTAssertEqual(captured.seeds.first?.canonicalURL, "https://www.douyin.com/video/7682764905618918710")
+    XCTAssertEqual(captured.seeds.first?.previewText, "羊羊作品")
+    XCTAssertEqual(captured.seeds.first?.likes, "19")
+    XCTAssertEqual(captured.seeds.first?.comments, "2")
+    XCTAssertEqual(captured.seeds.first?.collects, "9")
+    XCTAssertTrue(captured.urls.isEmpty, "Seed path must not fall back to URL-only enqueue")
+  }
+
+  func testDOMMergesCapturedHomepageListStatsForMatchingAuthorOnly() async throws {
+    let result = try await extractFixture("""
+      <div data-e2e="user-post-list"><ul>
+        <li><a href="/video/7682764905618918710"><img alt="一条" />
+          <span class="author-card-user-video-like">19</span></a></li>
+        <li><a href="/video/7682315027700927784">二条
+          <span class="author-card-user-video-like">71</span></a></li>
+      </ul></div>
+      <script>
+      window.__linkdigestAwemeStats = {
+        "7682764905618918710": {workID:"7682764905618918710",authorID:"\(authorID)",likes:"19",comments:"2",collects:"9",observedAt:"2026-09-07T14:00:00Z",source:"homepage_list"},
+        "7682315027700927784": {workID:"7682315027700927784",authorID:"other-author",likes:"0",comments:"0",collects:"0",observedAt:"2026-09-07T14:00:00Z",source:"homepage_list"},
+        "7999999999999999999": {workID:"7999999999999999999",authorID:"\(authorID)",likes:"999",comments:"999",collects:"999",observedAt:"2026-09-07T14:00:00Z",source:"homepage_list"}
+      };
+      </script>
+      """)
+    XCTAssertEqual(result.candidates.map(\.url), [
+      "https://www.douyin.com/video/7682764905618918710",
+      "https://www.douyin.com/video/7682315027700927784",
+    ])
+    XCTAssertEqual(result.candidates[0].likes, "19")
+    XCTAssertEqual(result.candidates[0].comments, "2")
+    XCTAssertEqual(result.candidates[0].collects, "9")
+    XCTAssertEqual(result.candidates[0].metricsSource, DouyinProfileMetricsSource.homepageList)
+    XCTAssertEqual(result.candidates[1].likes, "71")
+    XCTAssertNil(result.candidates[1].comments)
+    XCTAssertNil(result.candidates[1].collects)
+    XCTAssertFalse(result.candidates.contains { $0.url.contains("7999999999999999999") })
+  }
+
   private func makeModel(
     alreadySaved: @escaping (String) -> Bool = { _ in false },
     enqueue: @escaping ([String], Bool) -> ManualLinkViewModel.ProfileImportEnqueueOutcome = { urls, _ in
       .init(queued: urls.count, skipped: 0)
     },
     ensureCreator: @escaping (String, String, String?) -> CreatorID? = { _, _, _ in nil },
+    refreshCreatorName: @escaping (CreatorID, String?, String?) -> Void = { _, _, _ in },
     attachExisting: @escaping (CreatorID, [String]) -> Void = { _, _ in }
   ) -> DouyinProfileImportViewModel {
     DouyinProfileImportViewModel(
       alreadySaved: alreadySaved,
       enqueue: { urls, downloads, _ in enqueue(urls, downloads) },
       ensureCreator: ensureCreator,
+      refreshCreatorName: refreshCreatorName,
       attachExisting: attachExisting
     )
   }

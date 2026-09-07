@@ -77,6 +77,137 @@ enum HistoryPublishedTimestampFormatter {
     return formatter
   }()
 
+  private static let compactDay: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.calendar = .autoupdatingCurrent
+    formatter.timeZone = .autoupdatingCurrent
+    formatter.dateFormat = "M/d"
+    return formatter
+  }()
+  private static let compactYearDay: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.calendar = .autoupdatingCurrent
+    formatter.timeZone = .autoupdatingCurrent
+    formatter.dateFormat = "yyyy/M/d"
+    return formatter
+  }()
+  private static let directoryDateTime: DateFormatter = {
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    formatter.calendar = .autoupdatingCurrent
+    formatter.timeZone = .autoupdatingCurrent
+    formatter.dateFormat = "yyyy年M月d日 HH:mm"
+    return formatter
+  }()
+  private static let gmtGregorian: Calendar = {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+    return calendar
+  }()
+
+  static func compactDate(_ date: Date, now: Date = Date()) -> String {
+    let calendar = Calendar.autoupdatingCurrent
+    if calendar.isDate(date, inSameDayAs: now) { return "今天" }
+    if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+       calendar.isDate(date, inSameDayAs: yesterday) { return "昨天" }
+    return (calendar.component(.year, from: date) == calendar.component(.year, from: now)
+      ? compactDay : compactYearDay).string(from: date)
+  }
+
+  static func compactText(_ value: String, now: Date = Date()) -> String {
+    let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      .replacingOccurrences(of: "^[·•|｜,，\\s]+|[·•|｜,，\\s]+$", with: "", options: .regularExpression)
+    guard let date = standardISO.date(from: cleaned) ?? fractionalISO.date(from: cleaned) else {
+      return text(cleaned)
+    }
+    return compactDate(date, now: now)
+  }
+
+  static func directoryCardStamp(
+    published: String?,
+    savedAtMilliseconds: Int64,
+    now: Date = Date(),
+    timeZone: TimeZone = .autoupdatingCurrent
+  ) -> String {
+    _ = now
+    if let published = published?.trimmedNonEmpty {
+      let cleaned = published.replacingOccurrences(
+        of: "^[·•|｜,，\\s]+|[·•|｜,，\\s]+$",
+        with: "",
+        options: .regularExpression
+      )
+      if let date = standardISO.date(from: cleaned) ?? fractionalISO.date(from: cleaned) {
+        return "发布于 \(dateTimeStamp(date, timeZone: timeZone))"
+      }
+      if let dateOnly = calendarDateOnly(cleaned) {
+        return "发布于 \(dateOnly.year)年\(dateOnly.month)月\(dateOnly.day)日"
+      }
+      if let wallclock = wallclockStamp(cleaned) {
+        return "发布于 \(wallclock)"
+      }
+      return "发布于 \(cleaned)"
+    }
+    let saved = Date(timeIntervalSince1970: Double(savedAtMilliseconds) / 1_000)
+    return "保存于 \(dateTimeStamp(saved, timeZone: timeZone))"
+  }
+
+  private static func dateTimeStamp(_ date: Date, timeZone: TimeZone) -> String {
+    if timeZone == TimeZone.autoupdatingCurrent {
+      return directoryDateTime.string(from: date)
+    }
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "zh_CN")
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = timeZone
+    formatter.calendar = calendar
+    formatter.timeZone = timeZone
+    formatter.dateFormat = "yyyy年M月d日 HH:mm"
+    return formatter.string(from: date)
+  }
+
+  private static func calendarDateOnly(_ value: String) -> (year: Int, month: Int, day: Int)? {
+    guard value.count == 10 else { return nil }
+    let parts = value.split(separator: "-", omittingEmptySubsequences: false)
+    guard parts.count == 3,
+          parts[0].count == 4, parts[1].count == 2, parts[2].count == 2,
+          let year = Int(parts[0]), let month = Int(parts[1]), let day = Int(parts[2])
+    else { return nil }
+    var components = DateComponents()
+    components.calendar = gmtGregorian
+    components.timeZone = gmtGregorian.timeZone
+    components.year = year
+    components.month = month
+    components.day = day
+    guard components.isValidDate else { return nil }
+    return (year, month, day)
+  }
+
+  /// Douyin wall-clock `yyyy-MM-dd HH:mm[:ss]` has no timezone; keep the digits.
+  private static func wallclockStamp(_ value: String) -> String? {
+    guard value.count == 16 || value.count == 19 else { return nil }
+    let separator = value.index(value.startIndex, offsetBy: 10)
+    guard value[separator] == " " else { return nil }
+    guard let date = calendarDateOnly(String(value[..<separator])) else { return nil }
+    let timeParts = value[value.index(after: separator)...]
+      .split(separator: ":", omittingEmptySubsequences: false)
+    let expected = value.count == 19 ? 3 : 2
+    guard timeParts.count == expected,
+          timeParts.allSatisfy({ $0.count == 2 && $0.unicodeScalars.allSatisfy { $0 >= "0" && $0 <= "9" } }),
+          let hour = Int(timeParts[0]), let minute = Int(timeParts[1]),
+          (0...23).contains(hour), (0...59).contains(minute)
+    else { return nil }
+    if expected == 3 {
+      guard let second = Int(timeParts[2]), (0...59).contains(second) else { return nil }
+    }
+    return "\(date.year)年\(date.month)月\(date.day)日 \(twoDigits(hour)):\(twoDigits(minute))"
+  }
+
+  private static func twoDigits(_ value: Int) -> String {
+    value < 10 ? "0\(value)" : "\(value)"
+  }
+
   static func text(
     _ value: String?,
     calendar: Calendar = .autoupdatingCurrent,
@@ -91,11 +222,15 @@ enum HistoryPublishedTimestampFormatter {
       .trimmingCharacters(in: .whitespaces)
       .replacingOccurrences(of: "^[·•|｜,，\\s]+|[·•|｜,，\\s]+$", with: "", options: .regularExpression)
     guard let value = cleanedValue?.trimmedNonEmpty else { return "发布时间未获取" }
+    if let dateOnly = calendarDateOnly(value) {
+      return "\(dateOnly.year)年\(dateOnly.month)月\(dateOnly.day)日"
+    }
+    if let wallclock = wallclockStamp(value) { return wallclock }
     guard let date = standardISO.date(from: value) ?? fractionalISO.date(from: value) else { return value }
     if calendar == Calendar.autoupdatingCurrent,
        timeZone == TimeZone.autoupdatingCurrent,
        locale.identifier == "zh_CN" {
-      return defaultLocalized.string(from: date)
+      return dateTimeStamp(date, timeZone: timeZone)
     }
     let localized = DateFormatter()
     localized.locale = locale

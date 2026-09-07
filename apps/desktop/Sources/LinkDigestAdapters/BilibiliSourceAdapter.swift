@@ -107,6 +107,7 @@ public struct BilibiliSourceAdapter: SourceAdapting, Sendable {
     var frontmatter: [String] = []
     if let author = metadata.author { frontmatter.append("author: \(yaml(author))") }
     if let published = metadata.publishedAt { frontmatter.append("published: \(yaml(published))") }
+    if let cover = metadata.coverURL { frontmatter.append("cover_image: \(yaml(cover.absoluteString))") }
     if let likes = metadata.likes { frontmatter.append("likes: \(yaml(likes))") }
     if let comments = metadata.comments { frontmatter.append("comments: \(yaml(comments))") }
     if let shares = metadata.shares { frontmatter.append("shares: \(yaml(shares))") }
@@ -115,7 +116,6 @@ public struct BilibiliSourceAdapter: SourceAdapting, Sendable {
 
     var body: [String] = []
     if let description = metadata.description { body.append(description) }
-    if let cover = metadata.coverURL { body.append("![视频封面](\(cover.absoluteString))") }
     if body.isEmpty { body.append("B 站公开视频：\(metadata.title)") }
     let header = frontmatter.isEmpty ? "" : "---\n\(frontmatter.joined(separator: "\n"))\n---\n\n"
     return header + body.joined(separator: "\n\n")

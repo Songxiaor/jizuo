@@ -2,6 +2,13 @@ import Foundation
 import LinkDigestCore
 import LinkDigestTransport
 
+enum CaptureNavigationIntent: Sendable, Equatable {
+  /// Existing single-link and browser capture behavior: open the committed item.
+  case reveal
+  /// Background profile-import behavior: refresh data without stealing reading focus.
+  case keepCurrent
+}
+
 struct CurrentCapture: Sendable, Equatable {
   let document: CapturedDocument
   let wireEnvelope: CaptureEnvelopeV1?
@@ -15,6 +22,7 @@ struct CurrentCapture: Sendable, Equatable {
   /// 仅供 App 内批量主页导入使用。wire envelope 的 `.save` 保持既有媒体语义，
   /// 避免把扩展的“保存”误当成“禁止自动媒体保存”。
   let suppressesAutomaticEnrichment: Bool
+  let navigationIntent: CaptureNavigationIntent
 
   var allowsAutomaticEnrichment: Bool { !suppressesAutomaticEnrichment }
 
@@ -50,6 +58,7 @@ struct CurrentCapture: Sendable, Equatable {
     self.snapshotID = snapshotID
     appRequestedAction = nil
     suppressesAutomaticEnrichment = false
+    navigationIntent = .reveal
   }
 
   init(envelope: CaptureEnvelopeV2, taskID: TaskID, snapshotID: ContentSnapshotID) {
@@ -61,6 +70,7 @@ struct CurrentCapture: Sendable, Equatable {
     self.snapshotID = snapshotID
     appRequestedAction = nil
     suppressesAutomaticEnrichment = false
+    navigationIntent = .reveal
   }
 
   init(
@@ -68,7 +78,8 @@ struct CurrentCapture: Sendable, Equatable {
     taskID: TaskID,
     snapshotID: ContentSnapshotID,
     requestedAction: CaptureRequestedAction? = nil,
-    suppressesAutomaticEnrichment: Bool = false
+    suppressesAutomaticEnrichment: Bool = false,
+    navigationIntent: CaptureNavigationIntent = .reveal
   ) {
     self.document = document
     wireEnvelope = nil
@@ -92,6 +103,7 @@ struct CurrentCapture: Sendable, Equatable {
     self.snapshotID = snapshotID
     appRequestedAction = requestedAction
     self.suppressesAutomaticEnrichment = suppressesAutomaticEnrichment
+    self.navigationIntent = navigationIntent
   }
 
   /// Browser media stays session-only until the user taps “保存到本地”. Manual
@@ -111,25 +123,32 @@ struct CaptureReceiver: Sendable {
     let skipped: Int
   }
   typealias BookmarksSink = @Sendable (XBookmarksSyncRequest) async -> BookmarksOutcome
+  struct ProfileCandidatesOutcome: Sendable, Equatable {
+    let acceptedCount: Int
+  }
+  typealias ProfileCandidatesSink = @Sendable (XProfileCandidatesRequest) async -> ProfileCandidatesOutcome
 
   private let history: HistoryApplicationService?
   private let storageWriteGate: StorageWriteGate
   private let nowMilliseconds: @Sendable () -> Int64
   private let captureSink: CaptureSink
   private let bookmarksSink: BookmarksSink?
+  private let profileCandidatesSink: ProfileCandidatesSink?
 
   init(
     history: HistoryApplicationService?,
     storageWriteGate: StorageWriteGate,
     nowMilliseconds: @escaping @Sendable () -> Int64,
     captureSink: @escaping CaptureSink,
-    bookmarksSink: BookmarksSink? = nil
+    bookmarksSink: BookmarksSink? = nil,
+    profileCandidatesSink: ProfileCandidatesSink? = nil
   ) {
     self.history = history
     self.storageWriteGate = storageWriteGate
     self.nowMilliseconds = nowMilliseconds
     self.captureSink = captureSink
     self.bookmarksSink = bookmarksSink
+    self.profileCandidatesSink = profileCandidatesSink
   }
 
   func process(_ data: Data) async -> NativeResponse {
@@ -162,6 +181,29 @@ struct CaptureReceiver: Sendable {
           requestId: request.requestId,
           queuedCount: outcome.queued,
           skippedCount: outcome.skipped
+        )
+      }
+      if let request = try XProfileCandidatesRequest.decode(data) {
+        guard let profileCandidatesSink else {
+          return .error(appError(
+            requestID: request.requestId,
+            category: "protocol",
+            code: CaptureValidationError.CAPTURE_SCHEMA_INVALID.rawValue,
+            retryable: false,
+            action: "upgrade_app"
+          ))
+        }
+        let outcome = await profileCandidatesSink(request)
+        guard (1...request.items.count).contains(outcome.acceptedCount) else {
+          return .error(appError(requestID: request.requestId, category: "protocol",
+            code: CaptureValidationError.CAPTURE_SCHEMA_INVALID.rawValue,
+            retryable: true, action: "retry"))
+        }
+        let accepted = outcome.acceptedCount
+        return .profileCandidatesPresented(
+          version: 1,
+          requestId: request.requestId,
+          acceptedCount: accepted
         )
       }
     } catch let issue as CaptureValidationError {

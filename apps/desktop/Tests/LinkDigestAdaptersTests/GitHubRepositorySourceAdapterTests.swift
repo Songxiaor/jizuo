@@ -72,6 +72,41 @@ final class GitHubRepositorySourceAdapterTests: XCTestCase {
     XCTAssertTrue(cache.localImageURLs(taskID: taskID, snapshotID: snapshotID).isEmpty)
   }
 
+  func testLocalCoverURLMatchesRemoteHashAndIgnoresUnrelatedFirstImage() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "linkdigest-cover-match.\(UUID().uuidString)",
+      isDirectory: true
+    )
+    defer { try? FileManager.default.removeItem(at: root) }
+    let png = Data([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])
+    let old = URL(string: "https://cdn.example.test/old-body.png")!
+    let cover = URL(string: "https://cdn.example.test/cover.png")!
+    let fixture = GitHubFixtureResourceFetcher([
+      old.absoluteString: .init(url: old, statusCode: 200, contentType: "image/png", body: png),
+      cover.absoluteString: .init(url: cover, statusCode: 200, contentType: "image/png", body: png),
+    ])
+    let cache = GitHubREADMEImageCache(applicationSupportRoot: root)
+    await cache.stageRemoteMarkdownImages(
+      markdown: "![old](\(old.absoluteString))\n![cover](\(cover.absoluteString))",
+      captureID: "covers",
+      resources: fixture
+    )
+    let taskID = TaskID(), snapshotID = ContentSnapshotID()
+    cache.promote(captureID: "covers", taskID: taskID, snapshotID: snapshotID)
+    XCTAssertEqual(cache.localImageURLs(taskID: taskID, snapshotID: snapshotID).count, 2)
+    let coverResult = await cache.localImageURL(taskID: taskID, matchingRemoteURL: cover.absoluteString)
+    let matchedCover = try XCTUnwrap(coverResult)
+    let oldResult = await cache.localImageURL(taskID: taskID, matchingRemoteURL: old.absoluteString)
+    let matchedOld = try XCTUnwrap(oldResult)
+    XCTAssertNotEqual(matchedCover, matchedOld)
+    XCTAssertTrue(cache.localImageURLs(taskID: taskID, snapshotID: snapshotID).contains {
+      $0.resolvingSymlinksInPath().standardizedFileURL.path
+        == matchedCover.resolvingSymlinksInPath().standardizedFileURL.path
+    })
+    let missingResult = await cache.localImageURL(taskID: taskID, matchingRemoteURL: "https://cdn.example.test/missing.png")
+    XCTAssertNil(missingResult)
+  }
+
   func testImageCacheRejectsWrongTypeAndCapsAtTwenty() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("linkdigest-github-cache.\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: root) }
@@ -257,7 +292,10 @@ final class GitHubRepositorySourceAdapterTests: XCTestCase {
     let taskID = TaskID(), snapshotID = ContentSnapshotID()
     cache.promote(captureID: captureID, taskID: taskID, snapshotID: snapshotID)
     let cached = try XCTUnwrap(cache.localImageURLs(taskID: taskID, snapshotID: snapshotID).first)
+    XCTAssertEqual(cache.firstLocalImageURL(taskID: taskID), cached)
     XCTAssertTrue(FileManager.default.fileExists(atPath: cached.path))
+    let matchedLive = await cache.localImageURL(taskID: taskID, matchingRemoteURL: url.absoluteString)
+    XCTAssertEqual(matchedLive, cached)
     XCTAssertTrue(try Data(contentsOf: cached).starts(with: [0x89, 0x50, 0x4e, 0x47]))
   }
 

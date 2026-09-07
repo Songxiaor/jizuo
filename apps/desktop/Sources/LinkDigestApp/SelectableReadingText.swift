@@ -177,6 +177,11 @@ enum ReadingTextComposer {
     firstLineIndent: CGFloat = 0
   ) -> NSAttributedString {
     let mutable = NSMutableAttributedString(attributedString: content)
+    // A Markdown hard break stays inside the same paragraph. Cocoa treats LF
+    // as a paragraph boundary and would apply the 20pt paragraph gap each time.
+    mutable.mutableString.replaceOccurrences(
+      of: "\n", with: "\u{2028}", range: NSRange(location: 0, length: mutable.length)
+    )
     mutable.append(NSAttributedString(string: "\n"))
     let style = NSMutableParagraphStyle()
     style.paragraphSpacingBefore = spacingBefore

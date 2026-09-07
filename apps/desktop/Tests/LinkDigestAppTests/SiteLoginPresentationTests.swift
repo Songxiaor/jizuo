@@ -138,10 +138,16 @@ final class SiteLoginPresentationTests: XCTestCase {
   func testFooterSeparatesExtensionPathFromAppOwnedSessions() throws {
     let text = try source()
     XCTAssertTrue(
-      text.contains("这一页只管手动粘链接"),
-      "必须点明这页的适用范围，否则会被当成所有抓取路径的开关")
+      text.contains("在这里登录一次，后续添加链接和博主主页会自动复用"),
+      "必须点明登录一次后链接和主页都会复用")
     XCTAssertTrue(
-      text.contains("用扩展抓不需要在这里登录"),
-      "扩展走浏览器自己的登录态，这一点要说清")
+      text.contains("登录失效时再重新登录"),
+      "失效后再登，不要暗示每次都要重登")
+    XCTAssertTrue(
+      text.contains("不表示一定有效"),
+      "有本机会话不能写成已经校验有效")
+    XCTAssertTrue(
+      text.contains("登录已保存"),
+      "状态只表示登录已保存，不承诺服务端有效")
   }
 }

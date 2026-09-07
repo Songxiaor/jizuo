@@ -89,17 +89,17 @@
     所以它们是同一个角色，共用一套样式。原来只给 #send 写了样式，
     #sync-bookmarks 是个裸 button，于是收藏夹页面上主操作反而长得像次要按钮。
   */
-  #send, #sync-bookmarks, #sync-selected, #recovery-action, #open-app {
+  #send, #sync-bookmarks, #sync-selected, #read-x-profile, #recovery-action, #open-app {
     appearance: none; border: 0; border-radius: var(--radius-control); padding: 10px 12px; min-height: 44px;
     font-size: 13.5px; font-weight: 650; background: #c56f49; color: #ffffff;
     cursor: pointer; transition: background 0.15s ease;
     display: flex; align-items: center; justify-content: center; gap: 6px;
     text-align: center; line-height: 1.35; text-decoration: none;
   }
-  #send:hover, #sync-bookmarks:hover, #sync-selected:hover, #recovery-action:hover, #open-app:hover { background: #ae5d3c; }
-  #send:active, #sync-bookmarks:active, #sync-selected:active, #recovery-action:active, #open-app:active { background: #934a31; }
-  #send:disabled, #sync-bookmarks:disabled, #sync-selected:disabled { background: #d1d1d6; color: #8e8e93; cursor: default; }
-  #send.done, #sync-bookmarks.done, #sync-selected.done { background: rgba(48,209,88,0.16); color: #248a3d; }
+  #send:hover, #sync-bookmarks:hover, #sync-selected:hover, #read-x-profile:hover, #recovery-action:hover, #open-app:hover { background: #ae5d3c; }
+  #send:active, #sync-bookmarks:active, #sync-selected:active, #read-x-profile:active, #recovery-action:active, #open-app:active { background: #934a31; }
+  #send:disabled, #sync-bookmarks:disabled, #sync-selected:disabled, #read-x-profile:disabled { background: #d1d1d6; color: #8e8e93; cursor: default; }
+  #send.done, #sync-bookmarks.done, #sync-selected.done, #read-x-profile.done { background: rgba(48,209,88,0.16); color: #248a3d; }
 
   /*
     收藏页必须一开始就按 Chromium 弹窗上限开满。只在读完列表后加高，
@@ -224,10 +224,10 @@
     .card { background: #2d2925; border-color: rgba(255,255,255,.06); box-shadow: none; }
     #platform { color: #98989d; }
     #meta .chip { background: #3a3a3c; color: #aeaeb2; }
-    #send, #sync-bookmarks, #sync-selected, #recovery-action, #open-app { background: #d77b55; color: #fff; }
-    #send:hover, #sync-bookmarks:hover, #sync-selected:hover, #recovery-action:hover, #open-app:hover { background: #e48a63; }
-    #send:disabled, #sync-bookmarks:disabled, #sync-selected:disabled { background: #3a3a3c; color: #8e8e93; }
-    #send.done, #sync-bookmarks.done, #sync-selected.done { background: rgba(48,209,88,0.2); color: #30d158; }
+    #send, #sync-bookmarks, #sync-selected, #read-x-profile, #recovery-action, #open-app { background: #d77b55; color: #fff; }
+    #send:hover, #sync-bookmarks:hover, #sync-selected:hover, #read-x-profile:hover, #recovery-action:hover, #open-app:hover { background: #e48a63; }
+    #send:disabled, #sync-bookmarks:disabled, #sync-selected:disabled, #read-x-profile:disabled { background: #3a3a3c; color: #8e8e93; }
+    #send.done, #sync-bookmarks.done, #sync-selected.done, #read-x-profile.done { background: rgba(48,209,88,0.2); color: #30d158; }
     #bookmarks-picker { background: #2d2925; border-color: rgba(255,255,255,.06); }
     .picker-toolbar button { background: #3a3a3c; color: #aeaeb2; }
     .picker-toolbar button:hover { background: #48484a; }
@@ -289,6 +289,7 @@
     <div id="picker-list"></div>
   </section>
   <button id="sync-selected" hidden disabled>同步所选到汲作</button>
+  <button id="read-x-profile" hidden>读取主页作品到汲作</button>
   <p id="result" hidden></p>
   <button id="recovery-action" hidden></button>
   <a id="open-app" href="linkdigest://open" hidden>打开汲作查看</a>

@@ -323,12 +323,32 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       );
       try {
         const parsed = new URL(source, href);
-        if (parsed.protocol === 'https:') videoURL = parsed.href;
+        const host = parsed.hostname.toLowerCase();
+        const path = parsed.pathname.toLowerCase();
+        const hrefLower = parsed.href.toLowerCase();
+        const isImage = host === 'douyinpic.com' || host.endsWith('.douyinpic.com')
+          || /\.(?:jpg|jpeg|png|webp|gif|bmp|heic)(?:$|[?&#])/i.test(parsed.href);
+        const isItemPage = /\/(?:video|note)\/\d{8,25}(?:\/|$)/.test(path);
+        const isHLS = hrefLower.includes('.m3u8');
+        if (parsed.protocol === 'https:' && !isImage && !isItemPage && !isHLS) {
+          videoURL = parsed.href;
+        }
       } catch (_) {}
-      try {
-        const parsedCover = new URL(normalize(selectedVideo.poster), href);
-        if (parsedCover.protocol === 'https:') coverURL = parsedCover.href;
-      } catch (_) {}
+      const poster = normalize(selectedVideo.poster);
+      // Empty poster must not be resolved against `href`: `new URL('', href)` is
+      // the current /video/{id} page, which then looks like a real cover.
+      if (poster) {
+        try {
+          const parsedCover = new URL(poster, href);
+          const page = new URL(href);
+          const looksLikeItemPage = /\/(?:video|note)\/\d{8,25}(?:\/|$)/.test(parsedCover.pathname);
+          if (parsedCover.protocol === 'https:'
+              && parsedCover.href !== page.href
+              && !looksLikeItemPage) {
+            coverURL = parsedCover.href;
+          }
+        } catch (_) {}
+      }
       const duration = Number(selectedVideo.duration);
       if (Number.isFinite(duration) && duration > 0) durationSeconds = duration;
     }
@@ -355,7 +375,7 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
       window.__SSR_DATA__
     ]) {
       if (!candidate || stateSnippet) continue;
-      try { stateSnippet = boundedSnippet(JSON.stringify(candidate)); } catch (_) {}
+      try { stateSnippet = boundedSnippet(typeof candidate === 'string' ? candidate : JSON.stringify(candidate)); } catch (_) {}
     }
     if (!stateSnippet) {
       for (const script of Array.from(document.scripts).slice(0, 200)) {
@@ -652,28 +672,58 @@ private final class DouyinWKWebViewCaptureSession: NSObject, WKNavigationDelegat
           shares: page.shares,
           collects: page.collects
         )
-      } else if page.videoURL == nil,
-                let parsed = DouyinPageParser.parseStateSnippet(
-                  stateSnippet,
-                  pageURL: page.canonicalURL
-                ) {
-        page = DouyinRenderedPage(
-          awemeID: page.awemeID,
-          canonicalURL: page.canonicalURL,
-          title: page.title,
-          description: page.description,
-          author: page.author,
-          publishedAt: page.publishedAt,
-          videoURL: parsed.videoURL,
-          coverURL: page.coverURL ?? parsed.coverURL,
-          durationSeconds: page.durationSeconds ?? parsed.durationSeconds,
-          imageURLs: page.imageURLs,
-          likes: page.likes,
-          comments: page.comments,
-          shares: page.shares,
-          collects: page.collects
+      } else {
+        // DOM `<video src>` 可能是封面图或条目页；即便已有 https 地址，
+        // 仍以锚定后的 play_addr 为准，否则 AVPlayer 会黑屏且时长 --:--。
+        let parsed = DouyinPageParser.parseStateSnippet(
+          stateSnippet,
+          pageURL: page.canonicalURL
         )
+        let chosen = DouyinPlayableURL.select(
+          primary: parsed?.videoURL,
+          secondary: page.videoURL
+        )
+        if chosen != page.videoURL
+            || (page.durationSeconds == nil && parsed?.durationSeconds != nil)
+            || (page.coverURL == nil && parsed?.coverURL != nil) {
+          page = DouyinRenderedPage(
+            awemeID: page.awemeID,
+            canonicalURL: page.canonicalURL,
+            title: page.title,
+            description: page.description,
+            author: page.author,
+            publishedAt: page.publishedAt,
+            videoURL: chosen,
+            coverURL: page.coverURL ?? parsed?.coverURL,
+            durationSeconds: page.durationSeconds ?? parsed?.durationSeconds,
+            imageURLs: page.imageURLs,
+            likes: page.likes,
+            comments: page.comments,
+            shares: page.shares,
+            collects: page.collects
+          )
+        }
       }
+    }
+    if DouyinWebCapturePolicy.renderedCoverURL(page.coverURL, canonicalURL: page.canonicalURL) == nil,
+       let stateSnippet, !stateSnippet.isEmpty,
+       let cover = DouyinPageParser.parseAnchoredCoverURL(stateSnippet, pageURL: page.canonicalURL) {
+      page = DouyinRenderedPage(
+        awemeID: page.awemeID,
+        canonicalURL: page.canonicalURL,
+        title: page.title,
+        description: page.description,
+        author: page.author,
+        publishedAt: page.publishedAt,
+        videoURL: page.videoURL,
+        coverURL: cover,
+        durationSeconds: page.durationSeconds,
+        imageURLs: page.imageURLs,
+        likes: page.likes,
+        comments: page.comments,
+        shares: page.shares,
+        collects: page.collects
+      )
     }
     latestReadyPage = page
     // `/note/` 在首轮渲染时可能先挂一个用于轮播控制的 video 元素，正片图稍后才

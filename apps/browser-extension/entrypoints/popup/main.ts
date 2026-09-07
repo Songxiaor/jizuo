@@ -15,6 +15,11 @@ import {
 import type { DouyinSessionDiagnostic } from "../../src/content/douyin-session-detail";
 import type { DouyinMetadataDiagnostic } from "../../src/content/douyin-metadata-diagnostic";
 import { bookmarksSyncMessage, isXBookmarksURL, type BookmarkPreviewItem, type BookmarksSyncOutcome } from "../../src/content/x-bookmarks";
+import {
+  isXProfileURL,
+  profileCollectFailureCopy,
+  profilePresentedMessage,
+} from "../../src/content/x-profile";
 
 type BookmarksCollectResult =
   | { ok: true; items: BookmarkPreviewItem[]; reachedKnown: boolean; libraryLookup: "ok" | "unavailable" }
@@ -58,6 +63,7 @@ const error = document.querySelector<HTMLPreElement>("#error")!;
 const send = document.querySelector<HTMLButtonElement>("#send")!;
 const syncBookmarks = document.querySelector<HTMLButtonElement>("#sync-bookmarks")!;
 const syncSelected = document.querySelector<HTMLButtonElement>("#sync-selected")!;
+const readXProfile = document.querySelector<HTMLButtonElement>("#read-x-profile")!;
 const bookmarksPicker = document.querySelector<HTMLElement>("#bookmarks-picker")!;
 const pickerList = document.querySelector<HTMLDivElement>("#picker-list")!;
 const pickerCount = document.querySelector<HTMLSpanElement>("#picker-count")!;
@@ -346,6 +352,57 @@ if (tabId === undefined) {
       syncBookmarks.disabled = false;
     }
   };
+} else if (isXProfileURL(tab?.url)) {
+  send.hidden = true;
+  actionCard.hidden = true;
+  readXProfile.hidden = false;
+  readXProfile.disabled = false;
+  setAvailability("ready", "可读取");
+  renderPlatform("X · 主页作品");
+  status.textContent = "读取后到汲作勾选";
+  renderMeta([{ text: "请停在「帖子」分页" }, { text: "不会自动保存或总结" }]);
+  readXProfile.onclick = async () => {
+    readXProfile.disabled = true;
+    readXProfile.classList.remove("done");
+    error.textContent = "";
+    resultNotice.hidden = true;
+    readXProfile.textContent = "正在读取主页作品…";
+    status.textContent = "正在读取主页作品";
+    renderMeta([{ text: "请保持页面打开，不要切换标签" }]);
+    try {
+      const result = await browser.runtime.sendMessage({
+        type: "present-x-profile-candidates",
+        tabId,
+      }) as { ok: true; acceptedCount: number } | { ok: false; code: string };
+      if (result.ok) {
+        const message = profilePresentedMessage(result.acceptedCount);
+        readXProfile.textContent = "✓ 已交给汲作选择";
+        readXProfile.classList.add("done");
+        resultNotice.textContent = "✓ " + message;
+        resultNotice.hidden = false;
+        status.textContent = "请到汲作勾选要保存的作品";
+        renderMeta([{ text: `候选 ${result.acceptedCount} 条` }, { text: "尚未入库" }]);
+        openApp.textContent = "打开汲作勾选";
+        openApp.hidden = false;
+      } else {
+        error.textContent = profileCollectFailureCopy(result.code);
+        readXProfile.textContent = "读取主页作品到汲作";
+        readXProfile.disabled = false;
+        if (result.code === "native_error" || result.code === "upgrade_app") {
+          openApp.textContent = "打开汲作";
+          openApp.hidden = false;
+        }
+      }
+    } catch {
+      error.textContent = profileCollectFailureCopy("native_error");
+      readXProfile.textContent = "读取主页作品到汲作";
+      readXProfile.disabled = false;
+    }
+  };
+  openApp.addEventListener("click", (event) => {
+    event.preventDefault();
+    void browser.runtime.sendMessage({ type: "open-app" });
+  });
 } else {
   try {
     const preview = await browser.runtime.sendMessage({

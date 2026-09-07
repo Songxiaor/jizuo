@@ -333,10 +333,12 @@ public enum NativeResponse: Codable, Sendable, Equatable {
   case bookmarksAccepted(version: Int, requestId: String, queuedCount: Int, skippedCount: Int)
   /// 勾选前查重：本地历史里已有的推文 id（与请求同序子集）。
   case bookmarksLookup(version: Int, requestId: String, existingIDs: [String])
+  /// 主页候选已收下，待选择页展示。不表示窗口已可见，也不表示已入库。
+  case profileCandidatesPresented(version: Int, requestId: String, acceptedCount: Int)
   case error(AppError)
 
   enum CodingKeys: String, CodingKey {
-    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, error
+    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, acceptedCount, error
   }
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -372,6 +374,20 @@ public enum NativeResponse: Codable, Sendable, Equatable {
         requestId: try c.decode(String.self, forKey: .requestId),
         existingIDs: try c.decode([String].self, forKey: .existingIDs)
       )
+    case "profileCandidatesPresented":
+      let version = try c.decode(Int.self, forKey: .version)
+      guard version == 1 else {
+        throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "Unsupported NativeResponse version")
+      }
+      let acceptedCount = try c.decode(Int.self, forKey: .acceptedCount)
+      guard (1...XProfileCandidatesRequest.maximumItems).contains(acceptedCount) else {
+        throw DecodingError.dataCorruptedError(forKey: .acceptedCount, in: c, debugDescription: "acceptedCount out of range")
+      }
+      self = .profileCandidatesPresented(
+        version: version,
+        requestId: try c.decode(String.self, forKey: .requestId),
+        acceptedCount: acceptedCount
+      )
     case "error":
       let error = try c.decode(AppError.self, forKey: .error)
       guard error.version == 1 else {
@@ -395,8 +411,22 @@ public enum NativeResponse: Codable, Sendable, Equatable {
     case let .bookmarksLookup(v, r, existing):
       try c.encode("bookmarksLookup", forKey: .kind); try c.encode(v, forKey: .version)
       try c.encode(r, forKey: .requestId); try c.encode(existing, forKey: .existingIDs)
+    case let .profileCandidatesPresented(v, r, accepted):
+      try c.encode("profileCandidatesPresented", forKey: .kind); try c.encode(v, forKey: .version)
+      try c.encode(r, forKey: .requestId); try c.encode(accepted, forKey: .acceptedCount)
     case let .error(e):
       try c.encode("error", forKey: .kind); try c.encode(e, forKey: .error)
+    }
+  }
+
+  /// Host 用它决定要不要记下「这个浏览器刚把内容送到 App」。
+  /// `profileCandidatesPresented` 算送达：候选已进 App 内存，不是探测、也不是虚构在线。
+  public var isSuccessfulBrowserDelivery: Bool {
+    switch self {
+    case .taskAccepted, .bookmarksAccepted, .bookmarksLookup, .profileCandidatesPresented:
+      return true
+    case .error:
+      return false
     }
   }
 }

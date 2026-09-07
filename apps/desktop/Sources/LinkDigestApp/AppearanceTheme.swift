@@ -47,15 +47,15 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
     }
   }
 
-  /// 宋体 + Claude 风格排版属于「读长文」的浅色主题；系统玻璃、深色和
-  /// 高对比都用 macOS 原生排版（高对比要的是笔画清晰，不是书卷气）。
+  /// 浅色阅读主题采用中文无衬线；石楠与珊瑚仍保留书卷式阅读默认。
+  /// 用户指定的阅读字体优先于主题默认。
   ///
   /// 写成 switch 而不是 `self == .paper`：加主题时编译器会在这里报错，
   /// 逼着人回答「这套主题读长文用不用宋体」，而不是默默继承一个 false。
   var usesEditorialReadingTypography: Bool {
     switch self {
-    case .paper, .sepia, .coral: true
-    case .glass, .ink, .mono: false
+    case .sepia, .coral: true
+    case .glass, .paper, .ink, .mono: false
     }
   }
 
@@ -157,26 +157,18 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
       HistoryThemeTokens(
         identity: "paper",
         isNative: false,
-        // 思源宋体：纸质主题的落点是「印刷品」，衬线是这套主题的一半。
-        // 7 个真字重，是这台机器上唯一撑得住完整界面层级的中文衬线。
-        typography: .family("思源宋体 VF"),
-        // 两档，不是三档：辅助区 #E6E3D8（导航列 + 列表列）→ 正文区 #FDFCF9。
-        //
-        // 原来是三档递进，导航列 #EFEDE5、列表列 #FAF9F5、详情卡片 #FDFCF9。
-        // 量出来的问题是分级方向反了：唯一看得见的那一档（差 11/255）落在导航列
-        // 和列表列之间——两个都是辅助列，本来最不需要分界；而真正该分开的
-        // 「辅助 vs 正文」两侧只差 3/255，等于没分。列表列跟着画布走之后，
-        // 整扇窗只剩一条明度边界，正好落在辅助区和正文区中间。
-        canvas: ClaudePalette.sunken,         // #E6E3D8  导航列 / 列表列
-        listPane: ClaudePalette.sunken,       // 同上：列表列不再自成一档
-        card: ClaudePalette.raised,           // #FDFCF9  正文区
-        selectionFill: ClaudePalette.orange,  // #D97757
-        selectionText: ClaudePalette.light,
-        hairline: ClaudePalette.lightGray,    // #DFDCD1
-        badge: ClaudePalette.lightGray,
-        primaryText: ClaudePalette.dark,      // #141413
-        secondaryText: ClaudePalette.midGray, // #6E6C63
-        accent: ClaudePalette.orange,
+        // 清晰的中文无衬线界面，阅读字体仍可由用户单独选择。
+        typography: .family("PingFang SC"),
+        canvas: ReadingPalette.sidebar,
+        listPane: ReadingPalette.sidebar,
+        card: ReadingPalette.paper,
+        selectionFill: ReadingPalette.green,
+        selectionText: ReadingPalette.paper,
+        hairline: ReadingPalette.rule,
+        badge: ReadingPalette.badge,
+        primaryText: ReadingPalette.ink,
+        secondaryText: ReadingPalette.secondary,
+        accent: ReadingPalette.green,
         // 纸底上的状态色统一降饱和：默认的 .green/.red 在暖白纸上过跳。
         //
         // 2026-08-26 按 AA 收口。这一批取值原本只顾了「不过跳」，没验过对比度：
@@ -350,6 +342,17 @@ private func themeColor(_ red: Int, _ green: Int, _ blue: Int) -> Color {
     blue: CGFloat(blue) / 255,
     alpha: 1
   ))
+}
+
+/// 汲作阅读主题：中性纸面、清晰墨色、少量绿色强调。
+private enum ReadingPalette {
+  static let sidebar = themeColor(0xE4, 0xE5, 0xE2)
+  static let paper = themeColor(0xFA, 0xFA, 0xF7)
+  static let ink = themeColor(0x27, 0x2D, 0x28)
+  static let secondary = themeColor(0x60, 0x67, 0x60)
+  static let green = themeColor(0x35, 0x60, 0x46)
+  static let rule = themeColor(0xD6, 0xDA, 0xD2)
+  static let badge = themeColor(0xDD, 0xE3, 0xD9)
 }
 
 /// Anthropic/Claude 公开品牌色。集中定义，避免视图层自行取近似值。

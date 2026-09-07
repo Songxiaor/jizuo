@@ -293,6 +293,37 @@ private final class ManualVMGitHubResource: SafeResourceFetching, @unchecked Sen
   }
 }
 
+private actor ManualVMBlockingImageResource: SafeResourceFetching {
+  private var didStart = false
+  private var startWaiters: [CheckedContinuation<Void, Never>] = []
+  private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+  func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
+    didStart = true
+    let waiters = startWaiters
+    startWaiters.removeAll()
+    waiters.forEach { $0.resume() }
+    await withCheckedContinuation { releaseWaiters.append($0) }
+    return .init(
+      url: request.url,
+      statusCode: 404,
+      contentType: "application/octet-stream",
+      body: Data()
+    )
+  }
+
+  func waitForStart() async {
+    guard !didStart else { return }
+    await withCheckedContinuation { startWaiters.append($0) }
+  }
+
+  func release() {
+    let waiters = releaseWaiters
+    releaseWaiters.removeAll()
+    waiters.forEach { $0.resume() }
+  }
+}
+
 private actor ManualVMSink {
   private(set) var values: [CurrentCapture] = []
   private var valueWaiters: [CheckedContinuation<[CurrentCapture], Never>] = []
@@ -667,6 +698,34 @@ final class ManualLinkViewModelTests: XCTestCase {
     XCTAssertNil(model.errorMessage)
   }
 
+  func testConfirmedDuplicateRecaptureSavesWithoutDownloadOrEnrichment() throws {
+    let existing = "https://www.douyin.com/video/7682114530020740387"
+    let repository = ManualVMRepository(existingCanonicalURLs: [try CanonicalURL(existing).value])
+    let model = makeModel(clipboard: ManualVMClipboard(nil), repository: repository)
+
+    model.open()
+    model.input = existing
+    model.submit()
+    XCTAssertTrue(model.isDuplicatePromptPresented)
+    XCTAssertTrue(model.pendingCaptures.isEmpty)
+
+    model.confirmDuplicateSubmit()
+    XCTAssertFalse(model.isDuplicatePromptPresented)
+    XCTAssertEqual(model.pendingCaptures.count, 1)
+    XCTAssertEqual(model.pendingCaptures[0].requestedAction, .save)
+    XCTAssertFalse(model.pendingCaptures[0].downloadsVideo)
+    XCTAssertTrue(model.pendingCaptures[0].suppressesAutomaticEnrichment)
+
+    model.open()
+    model.input = "https://example.test/ordinary"
+    model.submit()
+    let ordinary = model.pendingCaptures.last
+    XCTAssertEqual(ordinary?.urlString, "https://example.test/ordinary")
+    XCTAssertNil(ordinary?.requestedAction)
+    XCTAssertEqual(ordinary?.downloadsVideo, true)
+    XCTAssertEqual(ordinary?.suppressesAutomaticEnrichment, false)
+  }
+
   func testHistoricalRecapturePrefillsExistingCaptureSheetWithoutReadingClipboard() {
     let clipboard = ManualVMClipboard("https://private.example.test/clipboard")
     let model = makeModel(clipboard: clipboard)
@@ -887,6 +946,57 @@ final class ManualLinkViewModelTests: XCTestCase {
     XCTAssertEqual(queuedWrites.count, 0)
   }
 
+  func testCancellingDuringImageStagingDoesNotCommitCapture() async {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-cancel-image-staging.\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let imageResource = ManualVMBlockingImageResource()
+    let document = CapturedDocument(
+      createdAt: "2026-09-07T00:00:00Z",
+      origin: .manualLink,
+      url: "https://mp.weixin.qq.com/s/cancel-during-images",
+      title: "取消图片暂存",
+      platform: "wechat",
+      method: "fixture",
+      text: "这是一段足够长的公众号正文，用来确保图片暂存已经真正开始，然后在落库之前取消当前任务。"
+        + "\n\n![](https://mmbiz.qpic.cn/body.png)",
+      completeness: "full_article",
+      capturedAt: "2026-09-07T00:00:00Z",
+      sourceLabel: "fixture"
+    )
+    let repository = ManualVMRepository()
+    let sink = ManualVMSink()
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFetcher()),
+      weChatCapture: ManualVMWeChatCapture(result: document),
+      clipboard: ManualVMClipboard(nil),
+      imageCache: GitHubREADMEImageCache(applicationSupportRoot: root),
+      imageResources: imageResource
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { await sink.receive($0) }
+    )
+    model.open()
+    model.input = document.url
+    model.submit()
+    await imageResource.waitForStart()
+    guard let activeID = model.pendingCaptures.first?.id else {
+      return XCTFail("图片暂存开始时应保留活动队列项")
+    }
+
+    model.removePendingCapture(activeID)
+    await imageResource.release()
+    try? await Task.sleep(for: .milliseconds(100))
+
+    XCTAssertTrue(repository.acceptedDocuments.isEmpty, "暂存 await 后必须先观察取消，不能进入 ingest")
+    XCTAssertTrue(model.pendingCaptures.isEmpty)
+    let published = await sink.snapshot()
+    XCTAssertTrue(published.isEmpty)
+  }
+
   func testProfileImportQueueSkipsInvalidExistingAndInBatchDuplicates() throws {
     let existing = "https://www.douyin.com/video/7000000000000000001"
     let repository = ManualVMRepository(existingCanonicalURLs: [try CanonicalURL(existing).value])
@@ -917,6 +1027,78 @@ final class ManualLinkViewModelTests: XCTestCase {
     XCTAssertEqual(model.pendingCaptures[0].requestedAction, .save)
     XCTAssertFalse(model.pendingCaptures[0].downloadsVideo)
     XCTAssertTrue(model.pendingCaptures[0].suppressesAutomaticEnrichment)
+  }
+
+  func testProfileImportReservesAllFiveCardsBeforeSerialCaptureCompletes() async {
+    let rendered = ManualVMBlockingDouyinCapture()
+    let model = ManualLinkViewModel(
+      captureService: .init(
+        fetcher: ManualVMFetcher(),
+        sourceAdapters: [ManualVMDouyinShellAdapter()]
+      ),
+      douyinCapture: rendered,
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: ManualVMRepository()),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+
+    let candidates = (1...5).map { index in
+      profileSeed("700000000000000000\(index)", preview: "第 \(index) 条")
+    }
+    let outcome = model.enqueueProfileImport(candidates: candidates, downloadsVideo: false)
+
+    XCTAssertEqual(outcome, .init(queued: 5, skipped: 0))
+    XCTAssertEqual(model.profileImportBatches.count, 1)
+    XCTAssertEqual(model.profileImportBatches[0].items.map(\.seed.previewText), candidates.map(\.previewText))
+    XCTAssertEqual(model.profileImportBatches[0].items.count, 5, "worker 启动前后都必须保留全部预留卡")
+    XCTAssertEqual(model.pendingCaptures.count, 5, "执行队列必须串行，但不能延迟建其余卡")
+
+    await rendered.waitForStart()
+    XCTAssertEqual(model.profileImportBatches[0].items.count, 5)
+    for item in model.profileImportBatches[0].items {
+      model.cancelProfileImportItem(batchID: model.profileImportBatches[0].id, itemID: item.id)
+    }
+  }
+
+  func testProfileImportFailureDoesNotBlockFollowingReservedCard() async {
+    let rendered = ManualVMFlakyDouyinMediaCapture()
+    let sink = ManualVMSink()
+    let model = ManualLinkViewModel(
+      captureService: .init(
+        fetcher: ManualVMFetcher(),
+        sourceAdapters: [ManualVMDouyinShellAdapter()]
+      ),
+      douyinCapture: rendered,
+      clipboard: ManualVMClipboard(nil)
+    )
+    model.configure(
+      history: HistoryApplicationService(repository: ManualVMRepository()),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { await sink.receive($0) }
+    )
+
+    _ = model.enqueueProfileImport(
+      candidates: [profileSeed("7000000000000000011"), profileSeed("7000000000000000012")],
+      downloadsVideo: false
+    )
+    let captures = await sink.waitForValues(count: 1)
+    let clock = ContinuousClock(), deadline = clock.now + .seconds(2)
+    while model.profileImportBatches[0].completedCount != 1, clock.now < deadline {
+      try? await Task.sleep(for: .milliseconds(20))
+    }
+
+    if case .failed = model.profileImportBatches[0].items[0].phase {} else {
+      XCTFail("第一条失败必须原位保留")
+    }
+    if case .completed = model.profileImportBatches[0].items[1].phase {} else {
+      XCTFail("第一条失败不能阻塞第二条")
+    }
+    XCTAssertEqual(captures.first?.navigationIntent, .keepCurrent)
   }
 
   func testProfileImportFailureCanRetryAndDefaultDoesNotDownloadVideo() async {
@@ -960,6 +1142,7 @@ final class ManualLinkViewModelTests: XCTestCase {
     XCTAssertEqual(rendered.attempts, 2)
     XCTAssertEqual(captures.first?.requestedAction, .save)
     XCTAssertEqual(captures.first?.allowsAutomaticEnrichment, false)
+    XCTAssertEqual(captures.first?.navigationIntent, .keepCurrent)
     let mediaCallbackCount = await mediaCallbacks.count
     XCTAssertEqual(mediaCallbackCount, 0)
   }
@@ -994,6 +1177,7 @@ final class ManualLinkViewModelTests: XCTestCase {
     try? await Task.sleep(for: .milliseconds(40))
     XCTAssertTrue(model.pendingCaptures.isEmpty)
     XCTAssertTrue(repository.acceptedDocuments.isEmpty)
+    XCTAssertEqual(model.profileImportBatches.first?.items.first?.phase, .cancelled)
   }
 
   func testEnqueueXBookmarksSkipsInvalidAndInBatchDuplicatesAndQueuesTheRest() {
@@ -1044,6 +1228,269 @@ final class ManualLinkViewModelTests: XCTestCase {
     )
     let outcome = model.enqueueXBookmarks(["1234567890123"])
     XCTAssertEqual(outcome, .init(queued: 0, skipped: 1))
+  }
+
+  func testPresentProfileCandidatesMergesSameHomepageAndConflictsOnDifferentUnsavedSelection() {
+    let model = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
+    let alice = XProfileCandidatesRequest(
+      requestId: "a1",
+      profileURL: "https://x.com/alice",
+      authorID: "alice",
+      items: [.init(id: "1234567890123", url: "https://x.com/alice/status/1234567890123", previewText: "A")]
+    )
+    XCTAssertEqual(model.presentProfileCandidates(alice), 1)
+    XCTAssertTrue(model.pendingCaptures.isEmpty)
+    XCTAssertNil(model.browserProfileImportConflict)
+    model.browserProfileImportModel?.toggleSelection("1234567890123")
+    XCTAssertEqual(
+      model.presentProfileCandidates(
+        XProfileCandidatesRequest(
+          requestId: "a2",
+          profileURL: "https://x.com/alice",
+          authorID: "alice",
+          items: [
+            .init(id: "1234567890123", url: "https://x.com/alice/status/1234567890123", previewText: "A"),
+            .init(id: "1234567890456", url: "https://x.com/alice/status/1234567890456", previewText: "B"),
+          ]
+        )
+      ),
+      2
+    )
+    XCTAssertNil(model.browserProfileImportConflict)
+    XCTAssertEqual(model.browserProfileImportModel?.selectedIDs, ["1234567890123"])
+    XCTAssertEqual(model.browserProfileImportModel?.candidates.count, 2)
+
+    XCTAssertEqual(
+      model.presentProfileCandidates(
+        XProfileCandidatesRequest(
+          requestId: "b1",
+          profileURL: "https://x.com/bob",
+          authorID: "bob",
+          items: [.init(id: "2234567890123", url: "https://x.com/bob/status/2234567890123", previewText: "C")]
+        )
+      ),
+      1
+    )
+    XCTAssertEqual(model.browserProfileImportConflict?.incomingAuthorID, "bob")
+    XCTAssertEqual(model.browserProfileImportModel?.currentAuthorID, "alice")
+    XCTAssertEqual(model.browserProfileImportModel?.selectedIDs, ["1234567890123"])
+    model.replaceIncomingBrowserProfile()
+    XCTAssertNil(model.browserProfileImportConflict)
+    XCTAssertEqual(model.browserProfileImportModel?.currentAuthorID, "bob")
+    XCTAssertTrue(model.pendingCaptures.isEmpty)
+  }
+
+  func testReplaceUsesCapturedRequestAfterConflictWasCleared() {
+    let host = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
+    let visible = DouyinProfileImportViewModel(manualLink: host)
+    visible.input = "https://x.com/alice"
+    visible.start()
+    visible.acceptNavigation(URL(string: "https://x.com/alice")!)
+    _ = visible.merge(
+      DouyinProfileDOMSnapshot(
+        status: "ready",
+        profileAuthorID: "alice",
+        profileName: "Alice",
+        activeTab: "Posts",
+        candidates: [
+          DouyinProfileDOMCandidate(
+            url: "https://x.com/alice/status/1234567890123",
+            authorID: "alice",
+            previewText: "A",
+            coverURL: nil,
+            publishedText: "Now"
+          )
+        ]
+      )
+    )
+    visible.toggleSelection("1234567890123")
+    host.attachVisibleProfileImport(visible)
+    XCTAssertEqual(
+      host.presentProfileCandidates(
+        XProfileCandidatesRequest(
+          requestId: "ext-bob",
+          profileURL: "https://x.com/bob",
+          authorID: "bob",
+          items: [.init(id: "2234567890123", url: "https://x.com/bob/status/2234567890123", previewText: "C")]
+        )
+      ),
+      1
+    )
+    guard let captured = host.browserProfileImportConflict?.incoming else {
+      return XCTFail("conflict should capture the incoming request")
+    }
+    XCTAssertEqual(captured.authorID, "bob")
+    host.cancelIncomingBrowserProfile()
+    XCTAssertNil(host.browserProfileImportConflict)
+    XCTAssertEqual(visible.currentAuthorID, "alice")
+    XCTAssertEqual(visible.selectedIDs, ["1234567890123"])
+    host.replaceIncomingBrowserProfile(captured)
+    XCTAssertNil(host.browserProfileImportConflict)
+    XCTAssertEqual(visible.currentAuthorID, "bob")
+    XCTAssertTrue(visible.selectedIDs.isEmpty)
+    XCTAssertEqual(visible.candidates.map(\.workID), ["2234567890123"])
+    XCTAssertTrue(host.pendingCaptures.isEmpty)
+  }
+
+  func testVisibleEmbeddedXImportAdoptsSameAuthorWithoutSecondSheet() {
+    let host = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
+    let visible = DouyinProfileImportViewModel(manualLink: host)
+    visible.input = "https://x.com/alice"
+    visible.start()
+    visible.acceptNavigation(URL(string: "https://x.com/alice")!)
+    _ = visible.merge(
+      DouyinProfileDOMSnapshot(
+        status: "ready",
+        profileAuthorID: "alice",
+        profileName: "Alice",
+        activeTab: "Posts",
+        candidates: [
+          DouyinProfileDOMCandidate(
+            url: "https://x.com/alice/status/1234567890123",
+            authorID: "alice",
+            previewText: "A",
+            coverURL: nil,
+            publishedText: "Now"
+          )
+        ]
+      )
+    )
+    visible.toggleSelection("1234567890123")
+    host.attachVisibleProfileImport(visible)
+    XCTAssertEqual(
+      host.presentProfileCandidates(
+        XProfileCandidatesRequest(
+          requestId: "ext-1",
+          profileURL: "https://x.com/alice",
+          authorID: "alice",
+          profileName: "Alice",
+          items: [
+            .init(id: "1234567890123", url: "https://x.com/alice/status/1234567890123", previewText: "A"),
+            .init(id: "1234567890456", url: "https://x.com/alice/status/1234567890456", previewText: "B"),
+          ]
+        )
+      ),
+      2
+    )
+    XCTAssertNil(host.browserProfileImportToken)
+    XCTAssertNil(host.browserProfileImportModel)
+    XCTAssertNil(host.browserProfileImportConflict)
+    XCTAssertEqual(visible.discoverySource, .browserExtension)
+    XCTAssertEqual(visible.selectedIDs, ["1234567890123"])
+    XCTAssertEqual(visible.candidates.map(\.workID), ["1234567890123", "1234567890456"])
+    XCTAssertTrue(host.pendingCaptures.isEmpty)
+  }
+
+  func testVisibleEmbeddedXImportConflictsOnDifferentAuthorWithSelection() {
+    let host = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
+    let visible = DouyinProfileImportViewModel(manualLink: host)
+    visible.input = "https://x.com/alice"
+    visible.start()
+    visible.acceptNavigation(URL(string: "https://x.com/alice")!)
+    _ = visible.merge(
+      DouyinProfileDOMSnapshot(
+        status: "ready",
+        profileAuthorID: "alice",
+        profileName: "Alice",
+        activeTab: "Posts",
+        candidates: [
+          DouyinProfileDOMCandidate(
+            url: "https://x.com/alice/status/1234567890123",
+            authorID: "alice",
+            previewText: "A",
+            coverURL: nil,
+            publishedText: "Now"
+          )
+        ]
+      )
+    )
+    visible.toggleSelection("1234567890123")
+    host.attachVisibleProfileImport(visible)
+    XCTAssertEqual(
+      host.presentProfileCandidates(
+        XProfileCandidatesRequest(
+          requestId: "ext-bob",
+          profileURL: "https://x.com/bob",
+          authorID: "bob",
+          items: [.init(id: "2234567890123", url: "https://x.com/bob/status/2234567890123", previewText: "C")]
+        )
+      ),
+      1
+    )
+    XCTAssertEqual(host.browserProfileImportConflict?.incomingAuthorID, "bob")
+    XCTAssertEqual(visible.currentAuthorID, "alice")
+    XCTAssertEqual(visible.selectedIDs, ["1234567890123"])
+    XCTAssertNil(host.browserProfileImportToken)
+    host.cancelIncomingBrowserProfile()
+    XCTAssertNil(host.browserProfileImportConflict)
+    XCTAssertEqual(visible.currentAuthorID, "alice")
+  }
+
+  func testDoesNotTreatDouyinSameAuthorIDAsXMerge() {
+    let host = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
+    let visible = DouyinProfileImportViewModel(manualLink: host)
+    visible.input = "https://www.douyin.com/user/alice"
+    visible.start()
+    visible.acceptNavigation(URL(string: "https://www.douyin.com/user/alice")!)
+    _ = visible.merge(
+      DouyinProfileDOMSnapshot(
+        status: "ready",
+        profileAuthorID: "alice",
+        profileName: "抖音爱丽丝",
+        activeTab: "作品",
+        candidates: [
+          DouyinProfileDOMCandidate(
+            url: "https://www.douyin.com/video/7000000000000000001",
+            authorID: "alice",
+            previewText: "抖音作品",
+            coverURL: nil,
+            publishedText: "Now"
+          )
+        ]
+      )
+    )
+    visible.toggleSelection("7000000000000000001")
+    host.attachVisibleProfileImport(visible)
+    XCTAssertEqual(
+      host.presentProfileCandidates(
+        XProfileCandidatesRequest(
+          requestId: "x-alice",
+          profileURL: "https://x.com/alice",
+          authorID: "alice",
+          items: [.init(id: "1234567890123", url: "https://x.com/alice/status/1234567890123", previewText: "A")]
+        )
+      ),
+      1
+    )
+    XCTAssertEqual(host.browserProfileImportConflict?.incomingAuthorID, "alice")
+    XCTAssertEqual(visible.platform, .douyin)
+    XCTAssertEqual(visible.currentAuthorID, "alice")
+    XCTAssertEqual(visible.selectedIDs, ["7000000000000000001"])
+    XCTAssertEqual(visible.discoverySource, .embeddedWebKit)
+    XCTAssertNil(host.browserProfileImportToken)
+  }
+
+  func testDetachVisibleProfileImportClearsLifecycle() {
+    let host = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: ManualVMClipboard(nil))
+    let visible = DouyinProfileImportViewModel(manualLink: host)
+    visible.input = "https://x.com/alice"
+    host.attachVisibleProfileImport(visible)
+    XCTAssertTrue(host.activeProfileImportModel === visible)
+    _ = host.presentProfileCandidates(
+      XProfileCandidatesRequest(
+        requestId: "ext-1",
+        profileURL: "https://x.com/alice",
+        authorID: "alice",
+        items: [.init(id: "1234567890123", url: "https://x.com/alice/status/1234567890123", previewText: "A")]
+      )
+    )
+    XCTAssertEqual(visible.candidates.count, 1)
+    XCTAssertNil(host.browserProfileImportToken)
+    host.detachVisibleProfileImport(visible)
+    XCTAssertNil(host.activeProfileImportModel)
+    XCTAssertNil(host.browserProfileImportModel)
+    XCTAssertNil(host.browserProfileImportToken)
+    XCTAssertNil(host.browserProfileImportConflict)
   }
 
   func testInvalidNonemptyInputExplainsWhySubmitIsDisabled() {
@@ -1128,13 +1575,13 @@ final class ManualLinkViewModelTests: XCTestCase {
     XCTAssertEqual(captures.count, 1)
     let clock = ContinuousClock()
     let deadline = clock.now + .seconds(2)
-    while repository.attachedCreatorWorks.isEmpty, clock.now < deadline {
+    while (repository.attachedCreatorWorks.isEmpty || model.profileImportCompletionRevision == 0), clock.now < deadline {
       try? await Task.sleep(for: .milliseconds(20))
     }
     XCTAssertEqual(repository.attachedCreatorWorks.map(\.0), [creatorID])
     XCTAssertEqual(repository.attachedCreatorWorks.map(\.1), [captures[0].taskID])
     XCTAssertNil(model.captureNotice)
-    XCTAssertGreaterThan(model.creatorAssociationRevision, 0, "关联写入后必须发出刷新信号，不能只靠 ingest 早到的通知")
+    XCTAssertGreaterThan(model.profileImportCompletionRevision, 0, "提交成功后才刷新批次计数与作品列表")
   }
 
   private func capturedDocument(platform: String, text: String, hasMedia: Bool) -> CapturedDocument {
@@ -1150,6 +1597,18 @@ final class ManualLinkViewModelTests: XCTestCase {
       capturedAt: "2026-07-21T00:00:00Z",
       sourceLabel: "fixture",
       media: hasMedia ? CaptureMedia(platform: platform, videoURL: "https://media.example.test/video.mp4") : nil
+    )
+  }
+
+  private func profileSeed(_ id: String, preview: String? = nil) -> ProfileImportCandidateSeed {
+    ProfileImportCandidateSeed(
+      workID: id,
+      authorID: "creator-fixture",
+      canonicalURL: "https://www.douyin.com/video/\(id)",
+      previewText: preview,
+      likes: "0",
+      comments: nil,
+      collects: "12"
     )
   }
 }
