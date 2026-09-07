@@ -75,7 +75,7 @@ const xProfileOutput = [
   "/* eslint-disable */",
   "// Generated from x-profile-candidates-v1.schema.json. Do not edit by hand.",
   'import * as __ajvFormats from "ajv-formats/dist/formats.js";',
-  xProfileGenerated,
+  xProfileGenerated.trimEnd(),
   "",
 ].join("\n");
 
