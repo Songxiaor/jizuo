@@ -56,7 +56,7 @@ enum SettingsCategoryChip {
   }
 }
 
-/// 设置侧栏 / 页头用的彩色小方块：白图标压在语义色底上。
+/// 设置侧栏 / 页头用语义色图标与轻底色，降低装饰层级。
 ///
 /// 装饰性图形，VoiceOver 不读——旁边的分类名才是标签。
 struct SettingsSidebarChip: View {
@@ -67,10 +67,10 @@ struct SettingsSidebarChip: View {
   var body: some View {
     Image(systemName: symbol)
       .font(.system(size: symbolPointSize, weight: .medium))
-      .foregroundStyle(.white)
+      .foregroundStyle(fill)
       .frame(width: edge, height: edge)
       .background(
-        fill,
+        fill.opacity(0.10),
         in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
       )
       .accessibilityHidden(true)
@@ -139,17 +139,16 @@ struct SettingsPlainPage<Content: View>: View {
   @Environment(\.appTheme) private var theme
   @ViewBuilder var content: () -> Content
 
-  /// 与 `SiteLoginSettingsView` 相同的水平内距：项目里没有专门收拢这个数值的
-  /// 令牌，两处都是手排页，保持同一个数字才不会切换 tab 时观感跳一下。
-  private static var horizontalInset: CGFloat { 20 }
+  private static var horizontalInset: CGFloat { DesignTokens.Layout.settingsHorizontalInset }
 
   var body: some View {
     ScrollView {
       VStack(alignment: .leading, spacing: DesignTokens.Space.lg) {
         content()
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
+      .frame(maxWidth: DesignTokens.Layout.settingsContentMaxWidth, alignment: .leading)
       .padding(.horizontal, Self.horizontalInset)
+      .frame(maxWidth: .infinity, alignment: .center)
     }
     .background(theme.isNative ? Color.clear : theme.canvas)
     .settingsDetailContentMargins()
@@ -199,30 +198,16 @@ struct SettingsRow<Control: View>: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-      HStack(alignment: .center, spacing: DesignTokens.Space.lg) {
-        VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
-          HStack(alignment: .center, spacing: DesignTokens.Space.sm) {
-            Text(title)
-              .themedFont(.body)
-              .fixedSize(horizontal: false, vertical: true)
-            if details != nil {
-              settingsInfoButton(
-                title: title,
-                isExpanded: $isDetailsPresented,
-                reduceMotion: reduceMotion
-              )
-            }
-            Spacer(minLength: 0)
-          }
-          if let caption {
-            Text(caption)
-              .themedFont(.caption)
-              .foregroundStyle(.tertiary)
-              .fixedSize(horizontal: false, vertical: true)
-          }
+      ViewThatFits(in: .horizontal) {
+        HStack(alignment: .center, spacing: DesignTokens.Space.lg) {
+          rowLabel
+          Spacer(minLength: DesignTokens.Space.md)
+          control().fixedSize(horizontal: true, vertical: false)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        control()
+        VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
+          rowLabel
+          control()
+        }
       }
       if isDetailsPresented, let details {
         Text(details)
@@ -233,10 +218,35 @@ struct SettingsRow<Control: View>: View {
           .transition(.opacity.combined(with: .move(edge: .top)))
       }
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.vertical, DesignTokens.Space.sm)
     .padding(.horizontal, DesignTokens.Space.lg)
     .accessibilityElement(children: .contain)
   }
+
+  private var rowLabel: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+      HStack(spacing: DesignTokens.Space.sm) {
+        Text(title)
+          .themedFont(.body)
+          .fixedSize(horizontal: false, vertical: true)
+        if details != nil {
+          settingsInfoButton(
+            title: title,
+            isExpanded: $isDetailsPresented,
+            reduceMotion: reduceMotion
+          )
+        }
+      }
+      if let caption {
+        Text(caption)
+          .themedFont(.footnote)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+  }
+
 }
 
 /// 若干 `SettingsRow` 收成一张圆角卡，行间 hairline。
@@ -288,7 +298,7 @@ struct SettingsThemedCardChrome: ViewModifier {
 
   func body(content: Content) -> some View {
     let appearance = AppearanceTheme(rawValue: appearanceRaw) ?? .glass
-    let lifts = (appearance == .paper || appearance == .sepia)
+    let lifts = appearance == .sepia
     let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
     return content
       .background(theme.card, in: shape)

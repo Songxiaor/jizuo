@@ -27,6 +27,36 @@ final class HistoryCreatorsTests: XCTestCase {
       updatedAtMilliseconds: 1
     )
     XCTAssertEqual(summary.listingTitle, "未命名抖音博主")
+    XCTAssertFalse(summary.hasResolvedDisplayName)
+    XCTAssertEqual(summary.directoryDisplayName, "待获取")
+  }
+
+  func testDirectoryNameRejectsHandleAndKeepsRealDisplayName() {
+    let identity = CreatorIdentity(platform: "x.com", authorID: "thedankoe")!
+    let handle = CreatorSummary(
+      id: CreatorID(),
+      identity: identity,
+      profileURL: "https://x.com/thedankoe",
+      displayName: "@thedankoe",
+      pinnedRank: nil,
+      savedWorkCount: 0,
+      createdAtMilliseconds: 1,
+      updatedAtMilliseconds: 1
+    )
+    XCTAssertFalse(handle.hasResolvedDisplayName)
+    XCTAssertEqual(handle.directoryDisplayName, "待获取")
+    let named = CreatorSummary(
+      id: CreatorID(),
+      identity: identity,
+      profileURL: "https://x.com/thedankoe",
+      displayName: "DAN KOE",
+      pinnedRank: nil,
+      savedWorkCount: 4,
+      createdAtMilliseconds: 1,
+      updatedAtMilliseconds: 1
+    )
+    XCTAssertTrue(named.hasResolvedDisplayName)
+    XCTAssertEqual(named.directoryDisplayName, "DAN KOE")
   }
 
   func testHistoryListFilterCarriesCreatorWithoutTreatingNicknameAsHost() {

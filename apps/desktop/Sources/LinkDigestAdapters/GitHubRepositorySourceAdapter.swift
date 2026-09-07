@@ -279,6 +279,45 @@ public final class GitHubREADMEImageCache: @unchecked Sendable {
     }
   }
 
+  /// First cached image for a task without loading the full history detail.
+  public func firstLocalImageURL(taskID: TaskID) -> URL? {
+    let directory = root.appendingPathComponent(taskID.rawValue, isDirectory: true)
+    guard let snapshots = try? fileManager.contentsOfDirectory(
+      at: directory,
+      includingPropertiesForKeys: [.isDirectoryKey],
+      options: [.skipsHiddenFiles]
+    ) else { return nil }
+    for snapshotDir in snapshots {
+      guard (try? snapshotDir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+            let snapshotID = ContentSnapshotID(snapshotDir.lastPathComponent),
+            let url = localImageURLs(taskID: taskID, snapshotID: snapshotID).first
+      else { continue }
+      return url
+    }
+    return nil
+  }
+
+  /// Local file whose name is the SHA-256 of this remote cover URL. Directory
+  /// listing and existence checks run off the caller’s actor; no NSImage decode.
+  public func localImageURL(taskID: TaskID, matchingRemoteURL: String) async -> URL? {
+    let filename = Self.filename(forRemote: matchingRemoteURL)
+    let directory = root.appendingPathComponent(taskID.rawValue, isDirectory: true)
+    let fileManager = self.fileManager
+    return await Task.detached(priority: .utility) {
+      guard let snapshots = try? fileManager.contentsOfDirectory(
+        at: directory,
+        includingPropertiesForKeys: [.isDirectoryKey],
+        options: [.skipsHiddenFiles]
+      ) else { return nil }
+      for snapshotDir in snapshots {
+        guard (try? snapshotDir.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { continue }
+        let url = snapshotDir.appendingPathComponent(filename, isDirectory: false)
+        if fileManager.fileExists(atPath: url.path) { return url }
+      }
+      return nil
+    }.value
+  }
+
   private func stagingDirectory(_ captureID: String) -> URL {
     root.appendingPathComponent(".staging", isDirectory: true).appendingPathComponent(captureID, isDirectory: true)
   }
@@ -286,7 +325,10 @@ public final class GitHubREADMEImageCache: @unchecked Sendable {
     root.appendingPathComponent(taskID.rawValue, isDirectory: true).appendingPathComponent(snapshotID.rawValue, isDirectory: true)
   }
   private func remove(_ url: URL) throws { if fileManager.fileExists(atPath: url.path) { try fileManager.removeItem(at: url) } }
-  private static func filename(for url: URL) -> String { SHA256.hash(data: Data(url.absoluteString.utf8)).map { String(format: "%02x", $0) }.joined() }
+  private static func filename(for url: URL) -> String { filename(forRemote: url.absoluteString) }
+  private static func filename(forRemote value: String) -> String {
+    SHA256.hash(data: Data(value.utf8)).map { String(format: "%02x", $0) }.joined()
+  }
   private static func remoteImageHeaders(for url: URL) -> [String: String] {
     var headers = ["User-Agent": browserUserAgent]
     guard let host = url.host?.lowercased() else { return headers }

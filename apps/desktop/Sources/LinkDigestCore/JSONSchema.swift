@@ -76,6 +76,27 @@ struct JSONSchemaValidator {
         }
       }
     }
+
+    if let array = value as? [Any] {
+      if let minimum = integer(schema["minItems"]), array.count < minimum {
+        throw JSONSchemaValidationError.invalid("\(path) has too few items")
+      }
+      if let maximum = integer(schema["maxItems"]), array.count > maximum {
+        throw JSONSchemaValidationError.invalid("\(path) has too many items")
+      }
+      if schema["uniqueItems"] as? Bool == true {
+        for index in 0..<array.count {
+          for prior in 0..<index where jsonEqual(array[prior], array[index]) {
+            throw JSONSchemaValidationError.invalid("\(path) contains duplicate items")
+          }
+        }
+      }
+      if let itemSchema = schema["items"] as? [String: Any] {
+        for (index, item) in array.enumerated() {
+          try validate(item, against: itemSchema, path: "\(path)[\(index)]")
+        }
+      }
+    }
   }
 
   private func resolve(_ reference: String) throws -> [String: Any] {
@@ -142,6 +163,7 @@ enum CaptureWireContractSchema {
   static let resourceBundleName = "LinkDigest_LinkDigestCore.bundle"
   static let schemaRelativePath = "Resources/contracts/capture-envelope-v1.schema.json"
   static let schemaV2RelativePath = "Resources/contracts/capture-envelope-v2.schema.json"
+  static let xProfileCandidatesRelativePath = "Resources/contracts/x-profile-candidates-v1.schema.json"
 
   enum ResourceMode: Equatable {
     case application(resourceURL: URL?)
@@ -168,7 +190,28 @@ enum CaptureWireContractSchema {
     }
 
     func schemaURL(version: Int = 1, fileManager: FileManager = .default) throws -> URL {
-      let relativePath = version == 2 ? schemaV2RelativePath : schemaRelativePath
+      try resourceURL(
+        relativePath: version == 2 ? schemaV2RelativePath : schemaRelativePath,
+        testRelativePath: version == 2
+          ? "contracts/capture-envelope-v2.schema.json"
+          : "contracts/capture-envelope-v1.schema.json",
+        fileManager: fileManager
+      )
+    }
+
+    func xProfileCandidatesSchemaURL(fileManager: FileManager = .default) throws -> URL {
+      try resourceURL(
+        relativePath: xProfileCandidatesRelativePath,
+        testRelativePath: "contracts/x-profile-candidates-v1.schema.json",
+        fileManager: fileManager
+      )
+    }
+
+    private func resourceURL(
+      relativePath: String,
+      testRelativePath: String,
+      fileManager: FileManager
+    ) throws -> URL {
       let schemaURL: URL?
       switch mode {
       case let .application(resourceURL):
@@ -193,11 +236,7 @@ enum CaptureWireContractSchema {
         // compile-time SwiftPM .build path. Bundle.resourceURL already points
         // at the bundle's Resources directory, unlike the two bundle-root
         // production paths above.
-        schemaURL = moduleResourceURL?
-          .appendingPathComponent(
-            version == 2 ? "contracts/capture-envelope-v2.schema.json" : "contracts/capture-envelope-v1.schema.json",
-            isDirectory: false
-          )
+        schemaURL = moduleResourceURL?.appendingPathComponent(testRelativePath, isDirectory: false)
       }
 
       guard let schemaURL else {
@@ -239,6 +278,15 @@ enum CaptureWireContractSchema {
     let url = try locator.schemaURL(version: version)
     guard let data = try? Data(contentsOf: url) else {
       throw JSONSchemaValidationError.invalid("bundled capture schema is missing")
+    }
+    return try JSONSchemaValidator(schemaData: data)
+  }
+
+  static func xProfileCandidatesValidator(locator: ResourceLocator? = nil) throws -> JSONSchemaValidator {
+    let locator = locator ?? runtimeLocator()
+    let url = try locator.xProfileCandidatesSchemaURL()
+    guard let data = try? Data(contentsOf: url) else {
+      throw JSONSchemaValidationError.invalid("bundled x-profile-candidates schema is missing")
     }
     return try JSONSchemaValidator(schemaData: data)
   }

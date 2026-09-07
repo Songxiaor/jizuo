@@ -899,7 +899,7 @@ enum MarkdownPresentation {
         continue
       }
 
-      var paragraphLines: [String] = [trimmed]
+      var paragraphLines: [String] = [lines[index]]
       index += 1
       while index < lines.count {
         let line = lines[index].trimmingCharacters(in: .whitespaces)
@@ -918,7 +918,7 @@ enum MarkdownPresentation {
               && isTableSeparator(lines[index + 1].trimmingCharacters(in: .whitespaces))) {
           break
         }
-        paragraphLines.append(line)
+        paragraphLines.append(lines[index])
         index += 1
       }
       let text = joinParagraphLines(paragraphLines)
@@ -1246,13 +1246,19 @@ enum MarkdownPresentation {
   }
 
   private static func joinParagraphLines(_ lines: [String]) -> String {
-    guard var result = lines.first else { return "" }
-    for line in lines.dropFirst() {
-      if needsASCIISpace(before: line, after: result) {
+    guard let first = lines.first else { return "" }
+    var result = first.trimmingCharacters(in: .whitespaces)
+    var previous = first
+    for raw in lines.dropFirst() {
+      let line = raw.trimmingCharacters(in: .whitespaces)
+      if previous.hasSuffix("  ") {
+        result += "\n" + line
+      } else if needsASCIISpace(before: line, after: result) {
         result += " " + line
       } else {
         result += line
       }
+      previous = raw
     }
     return result
   }
@@ -1640,9 +1646,9 @@ struct MarkdownContentView: View {
   /// 有模块时不能只写「章节」——那会让人以为点开只有正文标题，白白错过跳转入口。
   private var outlineButtonTitle: String {
     let sections = MarkdownOutline.shouldPresent(outlineEntries) ? outlineEntries.count : 0
-    if sections > 0, !navigationModules.isEmpty { return "导航 \(sections + navigationModules.count)" }
-    if sections > 0 { return "章节 \(sections)" }
-    return "模块 \(navigationModules.count)"
+    if sections > 0, !navigationModules.isEmpty { return "目录 · \(sections) 节及模块" }
+    if sections > 0 { return "目录 · \(sections) 节" }
+    return "目录 · \(navigationModules.count) 个模块"
   }
 
   /// 目录用弹层而不是常驻侧栏：阅读列宽只有 590pt，再切一栏会一直压缩正文；
@@ -1656,6 +1662,8 @@ struct MarkdownContentView: View {
         .foregroundStyle(.secondary)
     }
     .buttonStyle(.plain)
+    .help("正文章节与下方模块")
+    .accessibilityLabel(outlineButtonTitle)
     .accessibilityIdentifier("history-content-outline-button")
     .popover(isPresented: $showsOutlinePopover, arrowEdge: .bottom) {
       outlinePopover(outlineEntries)
@@ -1665,9 +1673,9 @@ struct MarkdownContentView: View {
   @ViewBuilder private func outlinePopover(_ entries: [MarkdownOutline.Entry]) -> some View {
     let showsSections = MarkdownOutline.shouldPresent(entries)
     ScrollView {
-      VStack(alignment: .leading, spacing: 2) {
+      VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
         if showsSections {
-          popoverGroupTitle("章节")
+          popoverGroupTitle("正文章节")
           ForEach(entries) { entry in
             popoverRow(
               title: entry.text,
@@ -1680,9 +1688,9 @@ struct MarkdownContentView: View {
         // 不该因为它不在正文里就得改用另一种操作。
         if !navigationModules.isEmpty {
           if showsSections {
-            Divider().padding(.vertical, 6)
+            Divider().padding(.vertical, DesignTokens.Space.sm)
           }
-          popoverGroupTitle("模块")
+          popoverGroupTitle("下方模块")
           ForEach(navigationModules) { link in
             popoverRow(
               title: link.title,
@@ -1692,7 +1700,7 @@ struct MarkdownContentView: View {
           }
         }
       }
-      .padding(12)
+      .padding(DesignTokens.Space.md)
     }
     .frame(
       width: 260,
@@ -1784,11 +1792,12 @@ struct MarkdownContentView: View {
   }
 
   var body: some View {
+    ScrollViewReader { proxy in
     VStack(alignment: .leading, spacing: 10) {
       // 目录入口不能挂在「纯文本」那一行里：真实阅读区两个调用点都传
       // showsInlinePlainTextToggle: false（纯文本开关在菜单里），挂上去等于永不显示。
       if showsInlinePlainTextToggle || showsOutlineEntry {
-        HStack(spacing: 12) {
+        HStack(spacing: DesignTokens.Space.sm) {
           if showsOutlineEntry { outlineButton }
           Spacer(minLength: 0)
           if showsInlinePlainTextToggle {
@@ -1823,26 +1832,32 @@ struct MarkdownContentView: View {
       } else {
         // 切段走备忘缓存：整篇正则扫描 + 图集合并只随正文与图片清单变化，
         // 巨型 ViewModel 引发的无关重绘不再重付这一遍。
+        let segments = ReadingRenderCache.gallerySegments(
+          markdown: source, localImageURLs: localImageURLs,
+          appendsUnusedLocalImages: appendsUnusedLocalImages,
+          groupsConsecutiveImages: groupsConsecutiveImages
+        )
         ForEach(
-          Array(
-            ReadingRenderCache.gallerySegments(
-              markdown: source,
-              localImageURLs: localImageURLs,
-              appendsUnusedLocalImages: appendsUnusedLocalImages,
-              groupsConsecutiveImages: groupsConsecutiveImages
-            ).enumerated()
-          ),
+          Array(segments.enumerated()),
           // 不能只用 offset：换条目后同位置常仍是「第一张图」，SwiftUI 会复用
           // 子视图。把图片路径编进 id，强制按文件身份重建。
           id: \.offset
-        ) { _, segment in
+        ) { segmentIndex, segment in
           switch segment {
           case let .text(chunk):
             if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-              structuredMarkdown(chunk)
+              structuredMarkdown(
+                chunk,
+                headingOffset: segments.prefix(segmentIndex).reduce(0) { count, segment in
+                  guard case let .text(previous) = segment else { return count }
+                  return count + MarkdownOutline.entries(from: ReadingRenderCache.blocks(from: previous)).count
+                },
+                segmentIndex: segmentIndex
+              )
             }
           case let .image(url):
-            // 白色衬卡 + 后台下采样解码 + 双击进灯箱；见 ArticleImageViewing。
+            // 白底/描边由 InlineArticleImageView 控制；本文件不改其 chrome。
+            // 比例、双击放大、菜单动作仍走原组件。
             InlineArticleImageView(url: url)
               .id(url.path)
           case let .gallery(urls):
@@ -1869,15 +1884,42 @@ struct MarkdownContentView: View {
         from: ReadingRenderCache.blocks(from: MarkdownPresentation.sanitized(source))
       )
     }
+      .onChange(of: scrollTarget) { _, target in
+        guard let target else { return }
+        // 命名空间后的落点：模块锚点（tags 等）只在详情页注册一份，保持原值；
+        // 章节锚点按面板隔离，避免撞到保活的隐藏面板。
+        let resolved: AnyHashable = switch target {
+        case let .block(index): ScopedReadingAnchor(scope: anchorScope, block: index)
+        case let .module(anchor): ReadingAnchor.module(anchor)
+        }
+        // 开了「减弱动态效果」就直接落位：跳转本身是必要的，滚动过程不是。
+        if reduceMotion {
+          proxy.scrollTo(resolved, anchor: .top)
+        } else {
+          // 走 token 而不是写死 0.25：全 App 的「展开/切换」都用这一档，
+          // 散落的自定义时长正是当初间距和字号失控的同一个成因。
+          withAnimation(DesignTokens.Motion.standard) { proxy.scrollTo(resolved, anchor: .top) }
+        }
+        scrollTarget = nil
+      }
+    }
   }
 
   /// Block-first reading layout: air before headings, body leading ~1.65, clear lists.
-  private func structuredMarkdown(_ value: String) -> some View {
+  private func structuredMarkdown(_ value: String, headingOffset: Int = 0, segmentIndex: Int = 0) -> some View {
     // 相邻文本块合成一个 NSTextView 段（跨段连续选择）；代码块保持
     // SwiftUI 卡片独立渲染，复制按钮不丢。
     // 解析走备忘缓存：这个 body 每次重新求值都会路过这里，正文没变就不再重新解析。
     let blocks = ReadingRenderCache.blocks(from: value)
-    let anchorable = MarkdownOutline.shouldPresent(MarkdownOutline.entries(from: blocks))
+    let localHeadings = MarkdownOutline.entries(from: blocks)
+    let anchorable = MarkdownOutline.shouldPresent(outlineEntries)
+    func resolvedBlockIndex(_ localIndex: Int) -> Int {
+      if let ordinal = localHeadings.firstIndex(where: { $0.blockIndex == localIndex }),
+         outlineEntries.indices.contains(headingOffset + ordinal) {
+        return outlineEntries[headingOffset + ordinal].blockIndex
+      }
+      return -((segmentIndex + 1) * 1_000_000 + localIndex + 1)
+    }
     var runs: [(anchor: Int, run: StructuredRun)] = []
     for (index, block) in blocks.enumerated() {
       // 目录可用时在标题处另起一段，这样每个章节都有自己的锚点可以跳。
@@ -1902,31 +1944,11 @@ struct MarkdownContentView: View {
         runs.append((index, .text([block])))
       }
     }
-    return ScrollViewReader { proxy in
-      VStack(alignment: .leading, spacing: 0) {
+    return VStack(alignment: .leading, spacing: 0) {
         ForEach(Array(runs.enumerated()), id: \.offset) { _, entry in
           runView(entry.run)
-            .id(ScopedReadingAnchor(scope: anchorScope, block: entry.anchor))
+            .id(ScopedReadingAnchor(scope: anchorScope, block: resolvedBlockIndex(entry.anchor)))
         }
-      }
-      .onChange(of: scrollTarget) { _, target in
-        guard let target else { return }
-        // 命名空间后的落点：模块锚点（tags 等）只在详情页注册一份，保持原值；
-        // 章节锚点按面板隔离，避免撞到保活的隐藏面板。
-        let resolved: AnyHashable = switch target {
-        case let .block(index): ScopedReadingAnchor(scope: anchorScope, block: index)
-        case let .module(anchor): ReadingAnchor.module(anchor)
-        }
-        // 开了「减弱动态效果」就直接落位：跳转本身是必要的，滚动过程不是。
-        if reduceMotion {
-          proxy.scrollTo(resolved, anchor: .top)
-        } else {
-          // 走 token 而不是写死 0.25：全 App 的「展开/切换」都用这一档，
-          // 散落的自定义时长正是当初间距和字号失控的同一个成因。
-          withAnimation(DesignTokens.Motion.standard) { proxy.scrollTo(resolved, anchor: .top) }
-        }
-        scrollTarget = nil
-      }
     }
   }
 

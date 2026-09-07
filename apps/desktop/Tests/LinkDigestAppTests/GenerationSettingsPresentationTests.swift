@@ -84,12 +84,17 @@ final class GenerationSettingsPresentationTests: XCTestCase {
   }
 
   /// 说明必须在卡片内，不能再堆回卡片外的 footer。
+  ///
+  /// 2026-09 生成偏好改成行组卡（`SettingsRowGroup` + `SettingsThemedCardChrome`），
+  /// 不再走旧的 `settingCard(`。要守的是：说明贴着控件，不回到 Form Section footer。
   func testExplanationsLiveInsideCards() throws {
     let tab = try generationTab(in: try source())
-    XCTAssertTrue(tab.contains("settingCard("), "设置项要走统一的卡片构件")
+    XCTAssertTrue(tab.contains("SettingsRowGroup"), "设置项要收进行组卡，不能散落成无容器的控件")
+    XCTAssertTrue(tab.contains("SettingsThemedCardChrome()"), "行组必须带主题卡面")
+    XCTAssertTrue(tab.contains("details:"), "每行自己的详细说明要跟控件走，不能只靠页脚")
     XCTAssertTrue(
       tab.contains("DisclosureGroup(\"了解更多\")"),
-      "详细说明默认收起，但一条都不能删")
+      "管线的详细说明默认收起，但一条都不能删")
     XCTAssertFalse(
       tab.contains("在线视频转文字\")\n      } footer: {"),
       "说明回到 footer 就又和控件分家了")

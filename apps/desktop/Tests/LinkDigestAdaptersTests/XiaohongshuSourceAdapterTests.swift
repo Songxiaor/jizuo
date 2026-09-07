@@ -8,6 +8,24 @@ import XCTest
 /// 302 送到站外；登录墙外壳解析成功则会存下一条「标题像模像样、正文是站点样板文」
 /// 的记录。三类都在这里钉住。
 final class XiaohongshuSourceAdapterTests: XCTestCase {
+  func testExactNoteCanUseOwnOGCoverWhenImageListIsAbsent() {
+    let id = XiaohongshuFixtures.noteID
+    let html = """
+      <meta property="og:image" content="http://sns-webpic-qc.xhscdn.com/note/video-cover.jpg">
+      <script>window.__INITIAL_STATE__={"note":{"noteDetailMap":{"\(id)":{"note":{"title":"视频标题","desc":"真实配文","type":"video","imageList":[]}}}}}</script>
+      """
+    let parsed = XiaohongshuPageParser.parseInitialState(html: html, noteID: id)
+    XCTAssertEqual(parsed?.imageURLs.first?.absoluteString, "https://sns-webpic-qc.xhscdn.com/note/video-cover.jpg")
+    XCTAssertNil(XiaohongshuPageParser.parseInitialState(html: html, noteID: "missing"))
+  }
+
+  func testHTTPNoteImagesUpgradeToHTTPSWithHostValidation() {
+    let html = XiaohongshuFixtures.notePageHTML.replacingOccurrences(of: "https://sns-webpic-qc.xhscdn.com", with: "http://sns-webpic-qc.xhscdn.com")
+    let parsed = XiaohongshuPageParser.parseInitialState(html: html, noteID: XiaohongshuFixtures.noteID)
+    XCTAssertEqual(parsed?.imageURLs.first?.absoluteString, "https://sns-webpic-qc.xhscdn.com/notes/fixture-a.jpg")
+    XCTAssertFalse(parsed?.imageURLs.contains { $0.host == "ci.example.com" } ?? true)
+  }
+
   private let adapter = XiaohongshuSourceAdapter()
 
   func testClaimsNoteAndShortLinkHosts() {

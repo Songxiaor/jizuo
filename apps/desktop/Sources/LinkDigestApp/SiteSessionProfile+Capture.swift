@@ -10,6 +10,15 @@ import LinkDigestCore
 /// 签名接口，那是项目明确回避的。没有 verifier 时控制器只依赖本机 Cookie 判定，
 /// 会话失效的表现是抓取回落到「请用浏览器扩展」——有明确出口，不会静默出坏结果。
 extension SiteSessionProfile {
+  static let x = SiteSessionProfile(
+    platform: .x,
+    allowedHostSuffixes: ["x.com", "twitter.com"],
+    cookieDomainSuffixes: ["x.com", "twitter.com"],
+    loginCookieGroups: [["auth_token"]],
+    loginURL: URL(string: "https://x.com/i/flow/login")!,
+    accountIDCookieName: nil, accountIDLabel: nil, verifier: nil
+  )
+
   static let douyin = SiteSessionProfile(
     platform: .douyin,
     // 登录会在 douyin.com 与 www.douyin.com 之间跳，静态资源在 byteimg/pstatp，
@@ -38,6 +47,7 @@ extension SiteSessionProfile {
     allowedHostSuffixes: [
       "xiaohongshu.com",
       "xhslink.com",
+      "xhslink.cn",
       "xhscdn.com",
       "fegine.com",
     ],

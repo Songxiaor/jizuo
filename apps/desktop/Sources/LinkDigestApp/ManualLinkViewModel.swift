@@ -213,8 +213,32 @@ final class ManualLinkViewModel: ObservableObject {
   @Published var isDuplicatePromptPresented = false
   /// 排队抓取：提交即入队关窗，进度在列表顶部展示。
   @Published private(set) var pendingCaptures: [PendingCapture] = []
+  /// 主页导入批次与执行队列分离：执行完成后卡片仍留在原位，可阅读、收起或单项重试。
+  @Published private(set) var profileImportBatches: [ProfileImportBatch] = []
+  /// 每条批量作品成功提交后才增加。历史界面据此刷新列表与统计，但保持当前阅读。
+  @Published private(set) var profileImportCompletionRevision = 0
   /// 内容已入库、但博主归属没写上时的说明。不能把它说成「没保存」。
   @Published private(set) var captureNotice: String?
+  /// 浏览器扩展回传的主页候选选择页。只活在内存里，打开不等于已入库。
+  @Published private(set) var browserProfileImportToken: BrowserProfileImportToken?
+  @Published private(set) var browserProfileImportModel: DouyinProfileImportViewModel?
+  @Published private(set) var browserProfileImportConflict: BrowserProfileImportConflict?
+  /// 当前可见的导入 sheet。关掉即释放，避免扩展回传再叠一张候选页。
+  private(set) weak var activeProfileImportModel: DouyinProfileImportViewModel?
+
+  struct BrowserProfileImportToken: Identifiable, Equatable {
+    let id: UUID
+  }
+
+  struct BrowserProfileImportConflict: Equatable {
+    let currentAuthorID: String
+    let incomingAuthorID: String
+    let incoming: XProfileCandidatesRequest
+
+    var message: String {
+      "正在选择 @\(currentAuthorID) 的作品，勾选尚未保存。换成 @\(incomingAuthorID) 会丢掉当前勾选。"
+    }
+  }
   /// 博主表或作品关联刚写完。历史界面用它刷新计数和当前博主列表，不经过 ingest 的早到通知。
   @Published private(set) var creatorAssociationRevision = 0
 
@@ -227,6 +251,8 @@ final class ManualLinkViewModel: ObservableObject {
     let downloadsVideo: Bool
     let suppressesAutomaticEnrichment: Bool
     let creatorID: CreatorID?
+    let profileImportBatchID: UUID?
+    let profileImportSeed: ProfileImportCandidateSeed?
 
     init(
       id: UUID,
@@ -235,7 +261,9 @@ final class ManualLinkViewModel: ObservableObject {
       requestedAction: CaptureRequestedAction? = nil,
       downloadsVideo: Bool = true,
       suppressesAutomaticEnrichment: Bool = false,
-      creatorID: CreatorID? = nil
+      creatorID: CreatorID? = nil,
+      profileImportBatchID: UUID? = nil,
+      profileImportSeed: ProfileImportCandidateSeed? = nil
     ) {
       self.id = id
       self.urlString = urlString
@@ -244,6 +272,8 @@ final class ManualLinkViewModel: ObservableObject {
       self.downloadsVideo = downloadsVideo
       self.suppressesAutomaticEnrichment = suppressesAutomaticEnrichment
       self.creatorID = creatorID
+      self.profileImportBatchID = profileImportBatchID
+      self.profileImportSeed = profileImportSeed
     }
   }
 
@@ -253,7 +283,7 @@ final class ManualLinkViewModel: ObservableObject {
   private var allowsDuplicateSubmit = false
   private var queueWorker: Task<Void, Never>?
   private var activeCaptureID: UUID?
-  private var activeCaptureTask: Task<Void, Error>?
+  private var activeCaptureTask: Task<CurrentCapture, Error>?
 
   private let captureService: ManualLinkCaptureService
   private let weChatCapture: any WeChatWebCapturing
@@ -265,6 +295,7 @@ final class ManualLinkViewModel: ObservableObject {
   /// 有解析器时，X 链接改走公开端点取回完整推文。
   private let xResolver: XTweetResolver?
   private let onMediaCaptured: ((CaptureMedia, TaskID, ContentSnapshotID, String) async -> Void)?
+  private let profileImportJournal: (any ProfileImportBatchJournalStoring)?
   /// 笔记写作窗口复用同一个 ingestor：两条路都是「往库里加一条记录」，
   /// 没有理由维护两套落库逻辑。
   private(set) var ingestor: CaptureIngestService?
@@ -283,7 +314,8 @@ final class ManualLinkViewModel: ObservableObject {
     imageCache: GitHubREADMEImageCache? = nil,
     imageResources: (any SafeResourceFetching)? = nil,
     xResolver: XTweetResolver? = nil,
-    onMediaCaptured: ((CaptureMedia, TaskID, ContentSnapshotID, String) async -> Void)? = nil
+    onMediaCaptured: ((CaptureMedia, TaskID, ContentSnapshotID, String) async -> Void)? = nil,
+    profileImportJournal: (any ProfileImportBatchJournalStoring)? = nil
   ) {
     self.captureService = captureService
     self.weChatCapture = weChatCapture
@@ -293,9 +325,15 @@ final class ManualLinkViewModel: ObservableObject {
     self.imageResources = imageResources
     self.xResolver = xResolver
     self.onMediaCaptured = onMediaCaptured
+    self.profileImportJournal = profileImportJournal
+    profileImportBatches = (try? profileImportJournal?.load()) ?? []
   }
 
-  deinit { task?.cancel() }
+  deinit {
+    task?.cancel()
+    queueWorker?.cancel()
+    activeCaptureTask?.cancel()
+  }
 
   var isFetching: Bool { if case .fetching = state { true } else { false } }
   var isSaving: Bool { if case .saving = state { true } else { false } }
@@ -584,10 +622,24 @@ final class ManualLinkViewModel: ObservableObject {
       isDuplicatePromptPresented = true
       return
     }
+    let recaptureExisting = allowsDuplicateSubmit
     allowsDuplicateSubmit = false
     markClipboardURLHandled(value)
     // 入队即关窗：抓取进度移到列表顶部排队区，用户可以继续浏览。
-    pendingCaptures.append(PendingCapture(id: UUID(), urlString: value, phase: .queued))
+    // 确认重复后的 recapture 只保存新快照：不下载视频、不自动增强。
+    // 普通输入不得继承这次意图。
+    if recaptureExisting {
+      pendingCaptures.append(PendingCapture(
+        id: UUID(),
+        urlString: value,
+        phase: .queued,
+        requestedAction: .save,
+        downloadsVideo: false,
+        suppressesAutomaticEnrichment: true
+      ))
+    } else {
+      pendingCaptures.append(PendingCapture(id: UUID(), urlString: value, phase: .queued))
+    }
     state = .idle
     isPresented = false
     input = ""
@@ -602,7 +654,7 @@ final class ManualLinkViewModel: ObservableObject {
         throw MCPFailure("invalid_url", "请输入公开网页链接，不要包含账号凭据")
       }
       try PublicWebURLPolicy(resolver: { _ in [] }).validateSyntax(url)
-      if DouyinProfileInputRoute.parse(raw) != nil { throw MCPFailure("profile_url", "博主主页请先调用 discover_creator") }
+      if ProfileImportPlatform.fromProfileURL(url) != nil { throw MCPFailure("profile_url", "博主主页请先调用 discover_creator") }
       return url.absoluteString
     }
     var results: [[String: String]] = []
@@ -640,22 +692,54 @@ final class ManualLinkViewModel: ObservableObject {
 
   typealias ProfileImportEnqueueOutcome = BookmarksEnqueueOutcome
 
-  /// 主页导入只接收已经在候选页中由用户勾选的规范单条 URL。发现阶段不会调用此方法，
-  /// 因此不会提前入库、抓详情或触发模型。批量项一律携带 `.save`，并默认不下载视频。
+  /// Backward-compatible URL-only entry point. New profile importers should use
+  /// candidate seeds so all selected cards can reserve their preview in one frame.
   @discardableResult
   func enqueueProfileImport(
     canonicalURLs: [String],
     downloadsVideo: Bool,
     creatorID: CreatorID? = nil
   ) -> ProfileImportEnqueueOutcome {
-    guard ingestor != nil else { return .init(queued: 0, skipped: canonicalURLs.count) }
+    enqueueProfileImport(
+      candidates: canonicalURLs.map { rawURL in
+        let canonical = URL(string: rawURL).flatMap(ProfileImportPlatform.canonicalWork) ?? rawURL
+        return ProfileImportCandidateSeed(
+          workID: URL(string: canonical)?.lastPathComponent ?? canonical,
+          authorID: "",
+          canonicalURL: canonical,
+          captureURL: URL(string: rawURL).flatMap(ProfileImportPlatform.fromWorkURL) == .xiaohongshu && rawURL != canonical ? rawURL : nil
+        )
+      },
+      downloadsVideo: downloadsVideo,
+      creatorID: creatorID
+    )
+  }
+
+  /// 主页导入只接收已经在候选页中由用户勾选的单条作品。所有有效项先一次性
+  /// 建卡，再启动串行 worker；因此第 1 条开始抓取时其余 4 条也已经可见。
+  @discardableResult
+  func enqueueProfileImport(
+    candidates: [ProfileImportCandidateSeed],
+    downloadsVideo: Bool,
+    creatorID: CreatorID? = nil
+  ) -> ProfileImportEnqueueOutcome {
+    guard ingestor != nil else { return .init(queued: 0, skipped: candidates.count) }
     var queued = 0
     var skipped = 0
-    var queuedURLs = Set(pendingCaptures.map(\.urlString))
+    var queuedURLs = Set(pendingCaptures.compactMap { pending in
+      pending.profileImportSeed?.canonicalURL
+        ?? URL(string: pending.urlString).flatMap(ProfileImportPlatform.canonicalWork)
+    })
+    queuedURLs.formUnion(profileImportBatches.flatMap { $0.items.map(\.seed.canonicalURL) })
+    let batchID = UUID()
+    var items: [ProfileImportBatchItem] = []
+    var pending: [PendingCapture] = []
 
-    for rawURL in canonicalURLs {
-      guard let url = URL(string: rawURL),
-            let canonical = DouyinProfileWorkURL.canonical(url)
+    for seed in candidates {
+      guard !seed.workID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            let url = URL(string: seed.canonicalURL),
+            let canonical = ProfileImportPlatform.canonicalWork(url),
+            URL(string: canonical)?.lastPathComponent.caseInsensitiveCompare(seed.workID) == .orderedSame
       else {
         skipped += 1
         continue
@@ -670,29 +754,70 @@ final class ManualLinkViewModel: ObservableObject {
         skipped += 1
         continue
       }
-      pendingCaptures.append(PendingCapture(
-        id: UUID(),
-        urlString: canonical,
+      let captureURL: String = {
+        guard let raw = seed.captureURL,
+              let value = URL(string: raw), ProfileImportPlatform.safe(value),
+              ProfileImportPlatform.canonicalWork(value) == canonical
+        else { return canonical }
+        return raw
+      }()
+      let normalized = ProfileImportCandidateSeed(
+        workID: seed.workID,
+        authorID: seed.authorID,
+        canonicalURL: canonical,
+        captureURL: captureURL == canonical ? nil : captureURL,
+        previewText: seed.previewText,
+        coverURL: seed.coverURL,
+        publishedText: seed.publishedText,
+        likes: seed.likes,
+        comments: seed.comments,
+        collects: seed.collects
+      )
+      let itemID = UUID()
+      items.append(.init(id: itemID, seed: normalized, phase: .queued))
+      pending.append(PendingCapture(
+        id: itemID,
+        urlString: captureURL,
         phase: .queued,
         requestedAction: .save,
         downloadsVideo: downloadsVideo,
         suppressesAutomaticEnrichment: true,
-        creatorID: creatorID
+        creatorID: creatorID,
+        profileImportBatchID: batchID,
+        profileImportSeed: normalized
       ))
       queued += 1
     }
-    if queued > 0 { kickCaptureQueue() }
+    if !items.isEmpty {
+      profileImportBatches.insert(ProfileImportBatch(
+        id: batchID,
+        createdAtMilliseconds: Int64((Date().timeIntervalSince1970 * 1_000).rounded()),
+        downloadsVideo: downloadsVideo,
+        creatorID: creatorID,
+        isCollapsed: false,
+        items: items
+      ), at: 0)
+      pendingCaptures.append(contentsOf: pending)
+      persistProfileImportBatches()
+      kickCaptureQueue()
+    }
     return .init(queued: queued, skipped: skipped)
+  }
+
+  func ensureProfileCreator(authorID: String, profileURL: String, displayName: String?) -> CreatorID? {
+    guard let url = URL(string: profileURL), let platform = ProfileImportPlatform.fromProfileURL(url) else { return nil }
+    return ensureDouyinCreator(authorID: authorID, profileURL: profileURL, displayName: displayName, platform: platform.host)
   }
 
   func ensureDouyinCreator(
     authorID: String,
     profileURL: String,
     displayName: String?,
-    avatarURL: String? = nil
+    avatarURL: String? = nil,
+    platform: String = "douyin.com"
   ) -> CreatorID? {
     guard let history,
-          let identity = CreatorIdentity(platform: "douyin.com", authorID: authorID),
+          let identity = CreatorIdentity(platform: platform, authorID: authorID),
           let command = UpsertCreatorCommand(
             identity: identity,
             profileURL: profileURL,
@@ -750,10 +875,107 @@ final class ManualLinkViewModel: ObservableObject {
 
   func dismissCaptureNotice() { captureNotice = nil }
 
+  @discardableResult
+  func presentProfileCandidates(_ request: XProfileCandidatesRequest) -> Int {
+    guard !request.items.isEmpty, request.items.count <= XProfileCandidatesRequest.maximumItems else { return 0 }
+    let accepted = request.items.count
+    let visible = activeProfileImportModel ?? browserProfileImportModel
+    if let model = visible {
+      if Self.isSameXAuthor(model, as: request) {
+        _ = model.mergeExternalCandidates(request)
+        presentBrowserSheetIfNeeded(for: model)
+        NSApp.activate(ignoringOtherApps: true)
+        return accepted
+      }
+      if !model.selectedIDs.isEmpty {
+        browserProfileImportConflict = .init(
+          currentAuthorID: model.currentAuthorID ?? "",
+          incomingAuthorID: request.authorID,
+          incoming: request
+        )
+        NSApp.activate(ignoringOtherApps: true)
+        return accepted
+      }
+      if model === activeProfileImportModel {
+        model.presentExternalCandidates(request)
+        NSApp.activate(ignoringOtherApps: true)
+        return accepted
+      }
+    }
+    let model = DouyinProfileImportViewModel(manualLink: self)
+    model.presentExternalCandidates(request)
+    browserProfileImportModel = model
+    browserProfileImportConflict = nil
+    browserProfileImportToken = .init(id: UUID())
+    NSApp.activate(ignoringOtherApps: true)
+    return accepted
+  }
+
+  func attachVisibleProfileImport(_ model: DouyinProfileImportViewModel) {
+    activeProfileImportModel = model
+  }
+
+  func detachVisibleProfileImport(_ model: DouyinProfileImportViewModel) {
+    if activeProfileImportModel === model {
+      activeProfileImportModel = nil
+      browserProfileImportConflict = nil
+    }
+    if browserProfileImportModel === model {
+      browserProfileImportModel = nil
+      browserProfileImportToken = nil
+      browserProfileImportConflict = nil
+    }
+  }
+
+  func dismissBrowserProfileImport() {
+    browserProfileImportModel?.stop()
+    browserProfileImportModel = nil
+    browserProfileImportToken = nil
+    browserProfileImportConflict = nil
+  }
+
+  func cancelIncomingBrowserProfile() {
+    browserProfileImportConflict = nil
+  }
+
+  func replaceIncomingBrowserProfile() {
+    guard let incoming = browserProfileImportConflict?.incoming else { return }
+    replaceIncomingBrowserProfile(incoming)
+  }
+
+  func replaceIncomingBrowserProfile(_ incoming: XProfileCandidatesRequest) {
+    if let model = activeProfileImportModel {
+      model.presentExternalCandidates(incoming)
+      browserProfileImportConflict = nil
+      return
+    }
+    let model = browserProfileImportModel ?? DouyinProfileImportViewModel(manualLink: self)
+    model.presentExternalCandidates(incoming)
+    browserProfileImportModel = model
+    browserProfileImportConflict = nil
+    if browserProfileImportToken == nil {
+      browserProfileImportToken = .init(id: UUID())
+    }
+  }
+
+  private func presentBrowserSheetIfNeeded(for model: DouyinProfileImportViewModel) {
+    if model === activeProfileImportModel { return }
+    if browserProfileImportToken == nil {
+      browserProfileImportToken = .init(id: UUID())
+    }
+  }
+
+  private static func isSameXAuthor(_ model: DouyinProfileImportViewModel, as request: XProfileCandidatesRequest) -> Bool {
+    guard model.platform == .x else { return false }
+    if model.currentAuthorID == request.authorID { return true }
+    guard model.currentAuthorID == nil else { return false }
+    return DouyinProfileImportViewModel.parsedXAuthorID(from: model.input) == request.authorID
+  }
+
   func containsProfileImportURL(_ rawURL: String) -> Bool {
     guard let history,
           let url = URL(string: rawURL),
-          let canonical = DouyinProfileWorkURL.canonical(url),
+          let canonical = ProfileImportPlatform.canonicalWork(url),
           let value = try? CanonicalURL(canonical)
     else { return false }
     return (try? history.containsCanonicalURL(value)) == true
@@ -787,6 +1009,10 @@ final class ManualLinkViewModel: ObservableObject {
   }
 
   func retryPendingCapture(_ id: UUID) {
+    if let batchID = pendingCaptures.first(where: { $0.id == id })?.profileImportBatchID {
+      retryProfileImportItem(batchID: batchID, itemID: id)
+      return
+    }
     guard let index = pendingCaptures.firstIndex(where: { $0.id == id }),
           case .failed = pendingCaptures[index].phase else { return }
     pendingCaptures[index].phase = .queued
@@ -794,13 +1020,101 @@ final class ManualLinkViewModel: ObservableObject {
   }
 
   func removePendingCapture(_ id: UUID) {
+    if let batchID = pendingCaptures.first(where: { $0.id == id })?.profileImportBatchID {
+      cancelProfileImportItem(batchID: batchID, itemID: id)
+      return
+    }
     if activeCaptureID == id { activeCaptureTask?.cancel() }
     pendingCaptures.removeAll { $0.id == id }
+  }
+
+  func toggleProfileImportBatch(_ batchID: UUID) {
+    guard let index = profileImportBatches.firstIndex(where: { $0.id == batchID }) else { return }
+    profileImportBatches[index].isCollapsed.toggle()
+    persistProfileImportBatches()
+  }
+
+
+  func cancelProfileImportItem(batchID: UUID, itemID: UUID) {
+    guard let location = profileImportItemLocation(batchID: batchID, itemID: itemID),
+          profileImportBatches[location.batch].items[location.item].phase.canCancel
+    else { return }
+    if activeCaptureID == itemID { activeCaptureTask?.cancel() }
+    pendingCaptures.removeAll { $0.id == itemID }
+    profileImportBatches[location.batch].items[location.item].phase = .cancelled
+    persistProfileImportBatches()
+  }
+
+  func retryProfileImportItem(batchID: UUID, itemID: UUID) {
+    guard let location = profileImportItemLocation(batchID: batchID, itemID: itemID),
+          profileImportBatches[location.batch].items[location.item].phase.canRetry
+    else { return }
+    enqueueProfileImportRetry(batchIndex: location.batch, itemIndex: location.item)
+  }
+
+  func resumeProfileImportBatch(_ batchID: UUID) {
+    guard let batchIndex = profileImportBatches.firstIndex(where: { $0.id == batchID }) else { return }
+    let interrupted = profileImportBatches[batchIndex].items.indices.filter {
+      profileImportBatches[batchIndex].items[$0].phase == .interrupted
+    }
+    for itemIndex in interrupted {
+      enqueueProfileImportRetry(batchIndex: batchIndex, itemIndex: itemIndex, startsWorker: false)
+    }
+    kickCaptureQueue()
+  }
+
+  private func enqueueProfileImportRetry(
+    batchIndex: Int,
+    itemIndex: Int,
+    startsWorker: Bool = true
+  ) {
+    let batch = profileImportBatches[batchIndex]
+    let item = batch.items[itemIndex]
+    if let history,
+       let canonical = try? CanonicalURL(item.seed.canonicalURL),
+       let existing = try? history.taskID(forCanonicalURL: canonical) {
+      profileImportBatches[batchIndex].items[itemIndex].phase = .completed(existing)
+      if let creatorID = batch.creatorID {
+        do {
+          try history.attachCreatorWork(creatorID: creatorID, taskID: existing)
+        } catch {
+          captureNotice = "这条内容已经保存，但没能归入该博主。可稍后重试。"
+        }
+      }
+      profileImportCompletionRevision += 1
+      persistProfileImportBatches()
+      return
+    }
+    pendingCaptures.removeAll { $0.id == item.id }
+    profileImportBatches[batchIndex].items[itemIndex].phase = .queued
+    pendingCaptures.append(PendingCapture(
+      id: item.id,
+      urlString: item.seed.captureURL ?? item.seed.canonicalURL,
+      phase: .queued,
+      requestedAction: .save,
+      downloadsVideo: batch.downloadsVideo,
+      suppressesAutomaticEnrichment: true,
+      creatorID: batch.creatorID,
+      profileImportBatchID: batch.id,
+      profileImportSeed: item.seed
+    ))
+    persistProfileImportBatches()
+    if startsWorker { kickCaptureQueue() }
   }
 
   private func updatePendingPhase(_ id: UUID, _ phase: PendingCapture.Phase) {
     guard let index = pendingCaptures.firstIndex(where: { $0.id == id }) else { return }
     pendingCaptures[index].phase = phase
+    guard let batchID = pendingCaptures[index].profileImportBatchID,
+          let location = profileImportItemLocation(batchID: batchID, itemID: id)
+    else { return }
+    switch phase {
+    case .queued: profileImportBatches[location.batch].items[location.item].phase = .queued
+    case .fetching: profileImportBatches[location.batch].items[location.item].phase = .fetching
+    case .saving: profileImportBatches[location.batch].items[location.item].phase = .saving
+    case let .failed(message): profileImportBatches[location.batch].items[location.item].phase = .failed(message)
+    }
+    persistProfileImportBatches()
   }
 
   /// 串行处理：微信捕获走同一个 WKWebView 服务，不做并发。
@@ -818,16 +1132,29 @@ final class ManualLinkViewModel: ObservableObject {
             requestedAction: next.requestedAction,
             downloadsVideo: next.downloadsVideo,
             suppressesAutomaticEnrichment: next.suppressesAutomaticEnrichment,
-            creatorID: next.creatorID
+            creatorID: next.creatorID,
+            navigationIntent: next.profileImportBatchID == nil ? .reveal : .keepCurrent
           )
         }
         self.activeCaptureTask = work
         do {
-          try await work.value
+          let captured = try await work.value
+          if let batchID = next.profileImportBatchID,
+             let location = self.profileImportItemLocation(batchID: batchID, itemID: next.id) {
+            self.profileImportBatches[location.batch].items[location.item].phase = .completed(captured.taskID)
+            self.profileImportCompletionRevision += 1
+            self.persistProfileImportBatches()
+          }
           self.pendingCaptures.removeAll { $0.id == next.id }
         } catch let error as ManualLinkError {
           self.updatePendingPhase(next.id, .failed(error.userMessage))
         } catch is CancellationError {
+          if let batchID = next.profileImportBatchID,
+             let location = self.profileImportItemLocation(batchID: batchID, itemID: next.id),
+             self.profileImportBatches[location.batch].items[location.item].phase.isActive {
+            self.profileImportBatches[location.batch].items[location.item].phase = .cancelled
+            self.persistProfileImportBatches()
+          }
           self.pendingCaptures.removeAll { $0.id == next.id }
         } catch {
           self.updatePendingPhase(next.id, .failed("无法保存这条链接，本地历史未发生变更。"))
@@ -845,8 +1172,9 @@ final class ManualLinkViewModel: ObservableObject {
     requestedAction: CaptureRequestedAction?,
     downloadsVideo: Bool,
     suppressesAutomaticEnrichment: Bool,
-    creatorID: CreatorID? = nil
-  ) async throws {
+    creatorID: CreatorID? = nil,
+    navigationIntent: CaptureNavigationIntent = .reveal
+  ) async throws -> CurrentCapture {
     guard let ingestor else { throw ManualLinkError.network }
     var capturedDocument: CapturedDocument?
     do {
@@ -876,7 +1204,7 @@ final class ManualLinkViewModel: ObservableObject {
       } else {
         document = try await captureService.capture(urlString: value)
       }
-      guard let document else { return }
+      guard let document else { throw ManualLinkError.emptyContent }
       capturedDocument = document
       try Task.checkCancellation()
       // Substantive WeChat articles keep their inline images even when they
@@ -901,18 +1229,24 @@ final class ManualLinkViewModel: ObservableObject {
           )
         }
       }
+      // Image staging is an await point. A user cancellation during that work
+      // must be observed before the irreversible history commit begins.
+      try Task.checkCancellation()
       // A committed SQLite write cannot honestly be reported as cancelled.
       updatePendingPhase(pendingID, .saving)
       let accepted = try await ingestor.ingest(
         document,
         requestedAction: requestedAction,
-        suppressesAutomaticEnrichment: suppressesAutomaticEnrichment
+        suppressesAutomaticEnrichment: suppressesAutomaticEnrichment,
+        navigationIntent: navigationIntent
       )
       if let creatorID {
         do {
           guard let history else { throw RepositoryFailure.unavailable }
           try history.attachCreatorWork(creatorID: creatorID, taskID: accepted.taskID)
-          bumpCreatorAssociationRevision()
+          if navigationIntent == .reveal {
+            bumpCreatorAssociationRevision()
+          }
         } catch RepositoryFailure.invalidInput {
           captureNotice = "这条内容已保存，但已经归在另一位博主名下，没有改归属。"
         } catch {
@@ -934,9 +1268,26 @@ final class ManualLinkViewModel: ObservableObject {
         let stored = try? history?.detail(taskID: accepted.taskID).media
         captureDownloadStatuses[value] = stored?.snapshotID == accepted.snapshotID ? "completed" : "failed"
       }
+      return accepted
     } catch {
       if let capturedDocument { imageCache?.discardStaged(captureID: capturedDocument.requestID) }
       throw error
+    }
+  }
+
+  private func profileImportItemLocation(batchID: UUID, itemID: UUID) -> (batch: Int, item: Int)? {
+    guard let batch = profileImportBatches.firstIndex(where: { $0.id == batchID }),
+          let item = profileImportBatches[batch].items.firstIndex(where: { $0.id == itemID })
+    else { return nil }
+    return (batch, item)
+  }
+
+  private func persistProfileImportBatches() {
+    guard let profileImportJournal else { return }
+    do {
+      try profileImportJournal.save(profileImportBatches)
+    } catch {
+      captureNotice = "批次进度暂时无法保存；本次抓取仍会继续，但重启后可能无法恢复。"
     }
   }
 

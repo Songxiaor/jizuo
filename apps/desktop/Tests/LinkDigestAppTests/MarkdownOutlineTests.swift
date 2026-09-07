@@ -115,7 +115,7 @@ extension MarkdownOutlineTests {
   func testRunsOnlySplitAtHeadingsWhenAnOutlineWillBeShown() throws {
     let source = try presentationSource()
     XCTAssertTrue(
-      source.contains("MarkdownOutline.shouldPresent(MarkdownOutline.entries(from: blocks))"),
+      source.contains("MarkdownOutline.shouldPresent(outlineEntries)"),
       "切分必须由「目录是否出现」决定，无条件切会牺牲八成条目的连续选择")
     XCTAssertTrue(
       source.contains("guard anchorable, case .heading = block else { return false }"),
@@ -185,9 +185,9 @@ extension MarkdownOutlineTests {
   func testButtonTitleReflectsWhatThePopoverActuallyContains() throws {
     let source = try presentationSource()
     XCTAssertTrue(source.contains("private var outlineButtonTitle: String"))
-    XCTAssertTrue(source.contains("return \"导航 \\(sections + navigationModules.count)\""))
+    XCTAssertTrue(source.contains("return \"目录 · \\(sections) 节及模块\""))
     XCTAssertTrue(
-      source.contains("return \"模块 \\(navigationModules.count)\""),
+      source.contains("return \"目录 · \\(navigationModules.count) 个模块\""),
       "没有章节但有模块时，入口仍要出现")
   }
 
@@ -227,7 +227,7 @@ extension MarkdownOutlineTests {
     XCTAssertTrue(source.contains("ScrollViewReader { proxy in"))
     XCTAssertTrue(source.contains("proxy.scrollTo(resolved, anchor: .top)"))
     XCTAssertTrue(
-      source.contains(".id(ScopedReadingAnchor(scope: anchorScope, block: entry.anchor))"),
+      source.contains(".id(ScopedReadingAnchor(scope: anchorScope, block: resolvedBlockIndex(entry.anchor)))"),
       "每段要挂按面板隔离的锚点；模块锚点保持 ReadingAnchor.module 原值")
     XCTAssertTrue(
       source.contains("case let .module(anchor): ReadingAnchor.module(anchor)"),

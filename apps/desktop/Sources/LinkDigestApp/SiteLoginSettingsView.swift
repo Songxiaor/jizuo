@@ -28,6 +28,10 @@ struct SiteLoginSettingsView: View {
   @Environment(\.appTheme) private var appTheme
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @ObservedObject var mediaStorage: MediaStorageSettingsViewModel
+  @ObservedObject var browserSupport: BrowserSupportViewModel
+  var openBrowserSupport: () -> Void
+  @State private var browserOpenError: String?
+  @ObservedObject private var xSession = SiteSessionController.x
   @ObservedObject private var bilibiliSession = SiteSessionController.bilibili
   @ObservedObject private var douyinSession = SiteSessionController.douyin
   @ObservedObject private var xiaohongshuSession = SiteSessionController.xiaohongshu
@@ -64,17 +68,18 @@ struct SiteLoginSettingsView: View {
         SettingsPageHeader(
           title: "站点登录",
           symbol: "person.crop.circle.badge.checkmark",
-          caption: "这一页只管手动粘链接；用扩展抓不需要在这里登录。",
+          caption: "在这里登录一次，后续添加链接和博主主页会自动复用；登录失效时再重新登录。",
           fill: SettingsCategoryChip.fill(for: "siteLogin", theme: appTheme),
           captionIdentifier: "site-login-scope-note"
         )
 
         sitesCard
+        browserConnectionCard
 
         // 原来「无需登录」单独占一张列着 YouTube/X 的整卡——这两个站在这页没有
         // 任何可操作项，状态也永远不会变，一整张卡的视觉重量和信息量完全不匹配。
         // 收成页尾一行说明，原因还在，只是不再占一张卡的地方。
-        Text("YouTube、X 无需登录，直接粘贴链接即可。")
+        Text("YouTube 和 X 单条公开链接无需登录；四个平台的博主主页都可以在上面登录一次后复用。")
           .themedFont(.caption)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -85,6 +90,8 @@ struct SiteLoginSettingsView: View {
     .background(appTheme.isNative ? Color.clear : appTheme.canvas)
     .settingsDetailContentMargins()
     .onAppear {
+      browserSupport.refreshDeliveries()
+      Task { await xSession.refreshStatus() }
       Task { await bilibiliSession.refreshStatus() }
       Task { await douyinSession.refreshStatus() }
       Task { await xiaohongshuSession.refreshStatus() }
@@ -98,6 +105,40 @@ struct SiteLoginSettingsView: View {
     .accessibilityIdentifier("site-login-settings")
   }
 
+  private var browserConnectionCard: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
+      Text("通过本机浏览器读取 X")
+        .themedFont(.headline)
+      Text("在浏览器中使用 Google、Apple 或已有 X 登录。打开博主主页后，点击汲作扩展读取作品，再回到汲作勾选保存。")
+        .themedFont(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      if let recent = browserSupport.lastDeliveries.max(by: { $0.value < $1.value }) {
+        Text("最近收到 \(recent.key.displayName) 的内容：\(recent.value.formatted(date: .abbreviated, time: .shortened))")
+          .themedFont(.caption)
+      } else {
+        Text("尚无浏览器送达记录。请先连接扩展，再从 X 主页发送一次作品清单。")
+          .themedFont(.caption)
+      }
+      Text("送达记录不代表浏览器当前在线，也不代表 X 登录仍有效；与上方 App 内登录分别保存。")
+        .themedFont(.caption2)
+        .foregroundStyle(.secondary)
+      HStack {
+        Button("在浏览器中登录 X") {
+          browserOpenError = NSWorkspace.shared.open(XExternalLoginPolicy.loginURL)
+            ? nil : "未能打开默认浏览器，请检查系统设置后重试。"
+        }
+        .accessibilityIdentifier("site-login-x-browser")
+        Button("连接浏览器扩展") { openBrowserSupport() }
+          .accessibilityIdentifier("site-login-browser-support")
+        Button("刷新状态") { browserSupport.refreshDeliveries() }
+      }
+      if let browserOpenError { Text(browserOpenError).themedFont(.caption) }
+    }
+    .padding(16)
+    .accessibilityIdentifier("site-login-browser-connection")
+  }
+
   // MARK: - 三站合一的行组卡
 
   /// 三个站点收进一张卡，一站一行、hairline 分隔——排布上是 `SettingsRowGroup`
@@ -105,22 +146,24 @@ struct SiteLoginSettingsView: View {
   @ViewBuilder
   private var sitesCard: some View {
     VStack(spacing: 0) {
+      siteRow(platform: .x, session: xSession, caption: "博主主页；与浏览器登录独立")
+      siteRowDivider
       siteRow(
         platform: .bilibili,
         session: bilibiliSession,
-        caption: "登录可选，影响高清档位"
+        caption: "登录可选，也影响高清档位"
       )
       siteRowDivider
       siteRow(
         platform: .xiaohongshu,
         session: xiaohongshuSession,
-        caption: "登录才能抓到正文"
+        caption: "博主主页"
       )
       siteRowDivider
       siteRow(
         platform: .douyin,
         session: douyinSession,
-        caption: "登录才能抓到正文；建议用扩展抓，粘链接常失败"
+        caption: "建议用扩展抓单条"
       )
     }
     .modifier(SettingsThemedCardChrome())
@@ -135,6 +178,7 @@ struct SiteLoginSettingsView: View {
 
   private func controller(for platform: SiteSessionPlatform) -> SiteSessionController {
     switch platform {
+    case .x: xSession
     case .bilibili: bilibiliSession
     case .douyin: douyinSession
     case .xiaohongshu: xiaohongshuSession
@@ -143,6 +187,7 @@ struct SiteLoginSettingsView: View {
 
   private func host(for platform: SiteSessionPlatform) -> String {
     switch platform {
+    case .x: "x.com"
     case .bilibili: "bilibili.com"
     case .douyin: "douyin.com"
     case .xiaohongshu: "xiaohongshu.com"
@@ -162,7 +207,7 @@ struct SiteLoginSettingsView: View {
   ) -> some View {
     let id = platform.rawValue
     let isExpanded = expandedDetailSites.contains(platform)
-    let hasDetails = session.accountDetail != nil || session.sessionDiagnostic != nil || platform == .bilibili
+    let hasDetails = session.isLoggedIn || session.accountDetail != nil || session.sessionDiagnostic != nil || platform == .bilibili
 
     VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
       HStack(alignment: .center, spacing: DesignTokens.Space.md) {
@@ -186,7 +231,7 @@ struct SiteLoginSettingsView: View {
 
         statusBadge(
           isLoggedIn: session.isLoggedIn,
-          text: session.isLoggedIn ? "已登录" : "未登录",
+          text: session.isLoggedIn ? "登录已保存" : "未登录",
           tone: session.isLoggedIn ? .active : .neutral
         )
         .accessibilityIdentifier("site-login-\(id)-status")
@@ -280,6 +325,12 @@ struct SiteLoginSettingsView: View {
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("site-login-\(id)-diagnostic")
+      }
+      if session.isLoggedIn, session.verificationLabel == nil {
+        Text("登录已保存只表示本机还有会话，不表示一定有效。失效时再重新登录。")
+          .themedFont(.caption)
+          .foregroundStyle(.tertiary)
+          .fixedSize(horizontal: false, vertical: true)
       }
       if platform == .bilibili {
         HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {

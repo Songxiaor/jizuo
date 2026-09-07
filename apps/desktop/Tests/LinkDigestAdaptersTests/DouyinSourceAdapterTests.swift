@@ -115,6 +115,8 @@ final class DouyinSourceAdapterTests: XCTestCase {
     XCTAssertEqual(document.origin, .manualLink)
     XCTAssertEqual(document.media?.videoURL, "https://cdn.example.test/clip.mp4")
     XCTAssertEqual(document.media?.coverURL, "https://cdn.example.test/cover.jpg")
+    XCTAssertTrue(document.text.contains("cover_image:"))
+    XCTAssertTrue(document.text.contains("cover.jpg"))
     XCTAssertTrue(document.text.contains("口播示例") || document.text.contains("这是描述"))
   }
 
@@ -140,7 +142,8 @@ final class DouyinSourceAdapterTests: XCTestCase {
     )!
     let snippet = #"""
     {"recommendation":{"awemeId":"7000000000000000001",
-      "play_addr":{"url_list":["https://cdn.example.test/wrong.mp4"]}},
+      "video":{"play_addr":{"url_list":["https://cdn.example.test/wrong.mp4"]},
+      "cover":{"url_list":["https://p3.douyinpic.com/recommended.jpeg"]}}},
      "current":{"awemeId":"7661288207509769506",
       "video":{"play_addr":{"url_list":["https://v3.douyinvod.com/current.mp4"]},
       "cover":{"url_list":["https://p3.douyinpic.com/current.jpeg"]},
@@ -153,8 +156,41 @@ final class DouyinSourceAdapterTests: XCTestCase {
     )
 
     XCTAssertEqual(parsed.videoURL.absoluteString, "https://v3.douyinvod.com/current.mp4")
+    XCTAssertEqual(parsed.coverURL?.absoluteString, "https://p3.douyinpic.com/current.jpeg")
     XCTAssertEqual(parsed.author, "青山言")
     XCTAssertEqual(parsed.durationSeconds, 165)
+
+    XCTAssertEqual(
+      DouyinPageParser.parseAnchoredCoverURL(snippet, pageURL: pageURL)?.absoluteString,
+      "https://p3.douyinpic.com/current.jpeg"
+    )
+    let neighborPage = URL(string: "https://www.douyin.com/video/7000000000000000001")!
+    XCTAssertEqual(
+      DouyinPageParser.parseAnchoredCoverURL(snippet, pageURL: neighborPage)?.absoluteString,
+      "https://p3.douyinpic.com/recommended.jpeg"
+    )
+  }
+
+  func testCoverUrlListCloserToAwemeIDDoesNotBecomePlaybackURL() throws {
+    let pageURL = URL(string: "https://www.douyin.com/video/7682114530020740387")!
+    let snippet = """
+    {"aweme_id":"7682114530020740387",\
+    "video":{"cover":{"url_list":["https://p3.douyinpic.com/cover.jpeg"]},\
+    "play_addr":{"url_list":["https://v3.douyinvod.com/play.mp4"]}}}
+    """
+    let parsed = try XCTUnwrap(DouyinPageParser.parseStateSnippet(snippet, pageURL: pageURL))
+    XCTAssertEqual(parsed.videoURL.absoluteString, "https://v3.douyinvod.com/play.mp4")
+    XCTAssertTrue(DouyinPlayableURL.isPlayable(parsed.videoURL))
+    XCTAssertFalse(
+      DouyinPlayableURL.isPlayable(URL(string: "https://p3.douyinpic.com/cover.jpeg")!)
+    )
+    XCTAssertEqual(
+      DouyinPlayableURL.select(
+        primary: URL(string: "https://v3.douyinvod.com/play.mp4"),
+        secondary: URL(string: "https://www.douyin.com/video/7682114530020740387")
+      )?.absoluteString,
+      "https://v3.douyinvod.com/play.mp4"
+    )
   }
 
   func testParseStatisticsReadsOnlyTheRequestedAwemeFromNormalAndEscapedJSON() {
@@ -215,6 +251,20 @@ final class DouyinSourceAdapterTests: XCTestCase {
     } catch {
       XCTFail("unexpected \(error)")
     }
+  }
+
+  func testRenderedCaptureDoesNotTreatEmptyPosterAsTheItemPage() throws {
+    let root = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Sources/LinkDigestAdapters/DouyinWKWebViewCaptureService.swift")
+    let source = try String(contentsOf: root, encoding: .utf8)
+    XCTAssertTrue(source.contains("const poster = normalize(selectedVideo.poster)"))
+    XCTAssertTrue(source.contains("if (poster)"))
+    XCTAssertTrue(source.contains("looksLikeItemPage"))
+    XCTAssertTrue(source.contains("isImage"))
+    XCTAssertTrue(source.contains("DouyinPlayableURL.select"))
+    XCTAssertTrue(source.contains("renderedCoverURL(page.coverURL, canonicalURL: page.canonicalURL) == nil"))
+    XCTAssertTrue(source.contains("parseAnchoredCoverURL(stateSnippet, pageURL: page.canonicalURL)"))
   }
 }
 

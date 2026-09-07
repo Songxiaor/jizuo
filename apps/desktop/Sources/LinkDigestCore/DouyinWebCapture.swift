@@ -137,6 +137,20 @@ public enum DouyinWebCapturePolicy {
       || host == "bytedance.com" || host.hasSuffix(".bytedance.com")
   }
 
+  /// Poster/cover for a rendered item. Item-page URLs (empty `video.poster`
+  /// resolved against the current href) are not covers.
+  public static func renderedCoverURL(_ raw: URL?, canonicalURL: URL) -> URL? {
+    guard let raw else { return nil }
+    guard raw.scheme?.lowercased() == "https",
+          raw.user == nil,
+          raw.password == nil
+    else { return nil }
+    if raw == canonicalURL { return nil }
+    if let host = normalizedHost(raw.host), isDouyinHost(host) { return nil }
+    guard isDouyinPicHost(raw.host) else { return nil }
+    return raw
+  }
+
   /// Accept a single gallery URL, or `nil` when it is not a Douyin note image.
   public static func galleryImageURL(from raw: String) -> URL? {
     let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -235,7 +249,10 @@ public enum DouyinWebCapturePolicy {
     let author = try optionalString("author").flatMap(cleanAuthor)
     let publishedAt = try optionalString("publishedAt").flatMap(cleanPublishedAt)
     let videoURL = try optionalHTTPSURL("videoURL", in: dictionary)
-    let coverURL = try optionalHTTPSURL("coverURL", in: dictionary)
+    let coverURL = renderedCoverURL(
+      try optionalHTTPSURL("coverURL", in: dictionary),
+      canonicalURL: canonicalURL
+    )
     let imageURLs = try validatedGalleryImageURLs(dictionary["imageURLs"])
 
     let durationSeconds: Double?
@@ -283,34 +300,24 @@ public enum DouyinWebCapturePolicy {
     var metadata = ["aweme_id: \(yaml(page.awemeID))"]
     if let author = page.author { metadata.insert("author: \(yaml(author))", at: 0) }
     if let published = page.publishedAt { metadata.append("published: \(yaml(published))") }
+    let cover = page.coverURL ?? (isImagePost ? page.imageURLs.first : nil)
+    if let cover {
+      metadata.append("cover_image: \(yaml(cover.absoluteString))")
+    }
     if let likes = page.likes { metadata.append("likes: \(yaml(likes))") }
     if let comments = page.comments { metadata.append("comments: \(yaml(comments))") }
     if let shares = page.shares { metadata.append("shares: \(yaml(shares))") }
     if let collects = page.collects { metadata.append("collects: \(yaml(collects))") }
     if isImagePost { metadata.append("content_kind: images") }
 
-    var extra: String?
-    if let description = page.description,
-       description.caseInsensitiveCompare(page.title) != .orderedSame {
-      let suffix: String? = description.hasPrefix(page.title)
-        ? String(description.dropFirst(page.title.count))
-          .trimmingCharacters(in: .whitespacesAndNewlines)
-        : nil
-      let suffixIsOnlyTopics = suffix.map { value in
-        let parts = value.split(whereSeparator: \.isWhitespace)
-        return !parts.isEmpty && parts.allSatisfy { $0.hasPrefix("#") && $0.count > 1 }
-      } ?? false
-      extra = suffixIsOnlyTopics ? suffix! : description
-    }
+    let caption = page.description?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let captionOrTitle = (caption?.isEmpty == false) ? caption! : page.title
 
     var body: String
     if page.title.count <= maximumHeadingTitleCharacters {
-      body = "# \(page.title)"
-      if let extra { body += "\n\n\(extra)" }
-    } else if let extra, !extra.isEmpty {
-      body = extra
+      body = "# \(page.title)\n\n\(captionOrTitle)"
     } else {
-      body = page.title
+      body = captionOrTitle
     }
     if isImagePost {
       let gallery = page.imageURLs

@@ -25,17 +25,21 @@ enum RemotePreviewPreparePhase: Equatable {
 enum RemotePreviewPlaybackFailure: Equatable {
   case networkUnavailable
   case generic
+  /// 地址已拿到，但播放器读不出画面/时长。
+  case streamUnreadable
   /// 长片仍带着 DASH 双轨地址：应改拉 progressive mp4，不要卡在合成。
   case longFormDualNeedsRefresh
 
   var message: String {
     switch self {
     case .networkUnavailable:
-      return "网络似乎不可用，暂时无法读取视频流。"
+      return "网络不可用，暂时无法读取视频流。请检查网络后重试。"
     case .generic:
-      return "高清流连接失败（可能是杜比视界/编码不兼容或地址失效）。请点「重新获取可播地址」拉取 AVPlayer 能播的最高清档。"
+      return "高清流连接失败。可重新获取可播地址，或回到原页面。"
+    case .streamUnreadable:
+      return "暂时无法打开这段视频。可以重新获取播放，或回到原页面。"
     case .longFormDualNeedsRefresh:
-      return "长视频不适合双轨合成。请点「重新获取可播地址」拉取整段可播 MP4。"
+      return "长视频需整段可播地址。请重新获取播放。"
     }
   }
 }
@@ -88,9 +92,11 @@ enum HistorySessionMediaPresentation {
     )
   }
 
-  static let title = "此记录包含视频"
+  static let title = "此处暂不可播"
   static let explanation =
     "临时播放地址只在抓取当次有效，从不写入历史。这是设计行为，不是故障；换到其它条目后，这里不能继续在线播放。"
-  static let openSourceActionTitle = "回到原页面观看"
+  static let compactSummary = "本次未加载播放地址，可重新获取或回到原页面。"
+  static let openSourceActionTitle = "回到原页面"
   static let refreshActionTitle = "重新获取播放"
+  static let technicalDetailsTitle = "技术说明"
 }

@@ -7,6 +7,7 @@ DESTINATION="$ROOT/apps/desktop/Sources/LinkDigestCore/Resources/contracts"
 
 cmp "$SOURCE/capture-envelope-v1.schema.json" "$DESTINATION/capture-envelope-v1.schema.json"
 cmp "$SOURCE/capture-envelope-v2.schema.json" "$DESTINATION/capture-envelope-v2.schema.json"
+cmp "$SOURCE/x-profile-candidates-v1.schema.json" "$DESTINATION/x-profile-candidates-v1.schema.json"
 cmp "$SOURCE/native-response-fixtures.json" "$DESTINATION/native-response-fixtures.json"
 for source in "$SOURCE/fixtures/"*.json; do
   cmp "$source" "$DESTINATION/fixtures/$(basename "$source")"

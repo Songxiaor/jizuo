@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://syc.local/linkdigest/x-profile-candidates-v1.schema.json",
+  "title": "LinkDigest X Profile Candidates V1",
+  "description": "Language-neutral Native Messaging contract for in-memory X homepage work candidates. The request never saves, summarizes, or copies cookies. The ACK only means the App received candidates for a selection sheet; it does not mean a window is visible.",
+  "oneOf": [
+    { "$ref": "#/$defs/XProfileCandidatesRequest" },
+    { "$ref": "#/$defs/XProfileCandidatesPresented" }
+  ],
+  "$defs": {
+    "handle": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_]{1,15}$",
+      "not": {
+        "enum": [
+          "home", "explore", "search", "i", "settings", "login", "logout", "intent",
+          "signup", "notifications", "messages", "compose", "tos", "privacy"
+        ]
+      }
+    },
+    "tweetID": {
+      "type": "string",
+      "pattern": "^[0-9]{8,25}$"
+    },
+    "httpsXProfileURL": {
+      "type": "string",
+      "maxLength": 128,
+      "pattern": "^https://(www\\.)?(x\\.com|twitter\\.com)/[A-Za-z0-9_]{1,15}$"
+    },
+    "httpsXStatusURL": {
+      "type": "string",
+      "maxLength": 256,
+      "pattern": "^https://(www\\.)?(x\\.com|twitter\\.com)/[A-Za-z0-9_]{1,15}/status/[0-9]{8,25}$"
+    },
+    "httpsTwimgProfileImageURL": {
+      "type": "string",
+      "minLength": 40,
+      "maxLength": 2048,
+      "pattern": "^https://([A-Za-z0-9-]+\\.)?twimg\\.com/profile_images/"
+    },
+    "XProfileCandidateItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "url"],
+      "properties": {
+        "id": { "$ref": "#/$defs/tweetID" },
+        "url": { "$ref": "#/$defs/httpsXStatusURL" },
+        "previewText": { "type": "string", "maxLength": 200 },
+        "publishedText": { "type": "string", "maxLength": 40 }
+      }
+    },
+    "XProfileCandidatesRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "version", "requestId", "profileURL", "authorID", "items"],
+      "properties": {
+        "kind": { "const": "xProfileCandidates" },
+        "version": { "type": "integer", "const": 1 },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "profileURL": { "$ref": "#/$defs/httpsXProfileURL" },
+        "authorID": { "$ref": "#/$defs/handle" },
+        "profileName": { "type": "string", "maxLength": 80 },
+        "profileAvatarURL": { "$ref": "#/$defs/httpsTwimgProfileImageURL" },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/XProfileCandidateItem" }
+        }
+      }
+    },
+    "XProfileCandidatesPresented": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "version", "requestId", "acceptedCount"],
+      "description": "Received for in-memory selection only. Does not claim the selection UI is on screen, and does not save or process items.",
+      "properties": {
+        "kind": { "const": "profileCandidatesPresented" },
+        "version": { "type": "integer", "const": 1 },
+        "requestId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "acceptedCount": { "type": "integer", "minimum": 1, "maximum": 100 }
+      }
+    }
+  }
+}

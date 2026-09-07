@@ -39,7 +39,17 @@ struct HistoryRowView: View {
   /// （很多网页没有可靠的时间标记）才回落到入库时间，并标明是"存于"，
   /// 免得让人误以为原文是那天发的。
   private var capturedTitle: String {
-    CapturedDocumentTitle.display(row.title, for: row.canonicalURL)
+    if row.sourceLabel == "X public article endpoint",
+       let original = row.title, !original.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      return original
+    }
+    if row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
+      return CapturedDocumentTitle.display(row.title, for: row.canonicalURL)
+    }
+    return CapturedContentNaming.name(
+      title: row.title, body: row.sourcePreview, host: row.host,
+      author: row.author, published: row.published
+    ).text
   }
 
   private var cleanedArtifactPreview: String? {
@@ -68,16 +78,32 @@ struct HistoryRowView: View {
     return "存于 \(HistoryRelativeTime.text(row.createdAtMilliseconds ?? row.updatedAtMilliseconds))"
   }
 
+  private var rowSourceText: String {
+    row.author?.trimmedNonEmpty ?? HistoryPlatformDisplay.name(forHost: row.host)
+  }
+
+  private var compactTimeText: String {
+    if let published = row.published?.trimmedNonEmpty {
+      return HistoryPublishedTimestampFormatter.compactText(published)
+    }
+    return "存于 " + HistoryPublishedTimestampFormatter.compactDate(
+      Date(timeIntervalSince1970: Double(row.createdAtMilliseconds ?? row.updatedAtMilliseconds) / 1_000)
+    )
+  }
+
   /// 整行作为一个可访问元素，读屏只报标题、来源、时间和处理状态；正文预览
   /// 留在视觉层，不再把几百字摘要当作列表项 value 一口气念完。
   private var rowAccessibilityLabel: String { rowPrimaryTitle }
 
   private var rowAccessibilityValue: String {
     var values = [
-      "来源：\(HistoryPlatformDisplay.name(forHost: row.host))",
+      "来源：\(rowSourceText)",
       rowTimeText,
       isSummarized ? "已总结" : "未总结",
     ]
+    if let preview = rowPreviewLine, preview.count < 40, preview != rowPrimaryTitle {
+      values.insert(preview, at: 1)
+    }
     if row.hasTranscript == true {
       values.append("已转写")
     } else if row.hasMedia == true {
@@ -111,55 +137,36 @@ struct HistoryRowView: View {
         favicon
       }
       .padding(.top, 4)
-      VStack(alignment: .leading, spacing: 4) {
-        HStack(alignment: .top, spacing: 8) {
-          Text(rowPrimaryTitle)
-            .themedFont(.body, weight: .semibold)
-            .lineLimit(2)
-            .multilineTextAlignment(.leading)
-          Spacer(minLength: 4)
-        }
-        if let preview = rowPreviewLine {
-          Text(preview)
-            .themedFont(.callout)
+      VStack(alignment: .leading, spacing: 3) {
+        Text(rowPrimaryTitle)
+          .themedFont(.body, weight: .semibold)
+          .lineLimit(2)
+          .multilineTextAlignment(.leading)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        // 列表保留标题、作者或来源、时间与必要状态。
+        HStack(alignment: .center, spacing: 6) {
+          Text(rowSourceText)
+            .themedFont(.footnote)
             .foregroundStyle(.secondary)
             .lineLimit(1)
-        }
-        // 时间合成一排。
-        //
-        // 原本是两排——"发布 2026年8月5日 14:37" 和 "创建 2026年8月5日"，
-        // 吃掉近一半行高，而这是整行最次要的信息。而且"创建"时间对用户
-        // 几乎没有意义（他知道自己什么时候存的），判断素材新不新鲜看的是
-        // 发布时间。所以只留发布时间，没抓到才回落到入库时间。
-        HStack(alignment: .bottom, spacing: 6) {
-          Text(rowTimeText)
-            .themedFont(.footnote)
-            .foregroundStyle(.tertiary)
-            .lineLimit(1)
           Spacer(minLength: 4)
-          // 处理状态徽标：一眼分清生料和成品，自动管线跑完什么立刻可见。
-          // 这一排是裸 Image，不是 Label——`.help()` 只喂给鼠标悬停的 tooltip，
-          // VoiceOver 读不到，所以每个都要自己声明可访问名称。工具栏那些按钮
-          // 用的是 `Label(文字, systemImage:)`，文字本身就是名称，不用补。
+          Text(compactTimeText)
+            .themedFont(.footnote)
+            .foregroundStyle(theme.secondaryText)
+            .lineLimit(1)
+            .fixedSize()
+            .help(rowTimeText)
           HStack(spacing: 4) {
             if row.hasTranscript == true {
               Image(systemName: "waveform")
                 .help("已转写")
                 .accessibilityLabel("已转写")
             } else if row.hasMedia == true {
-              // 只标异常，不标常态：有视频却还没转写的条目，正文往往只有一百来字的
-              // 站点描述，在列表里和几千字的长文长得一模一样，点进去才发现是空的。
-              // 不判「字数少」这类阈值——「有视频且无转写稿」是可判定的事实。
               Image(systemName: "waveform.slash")
                 .foregroundStyle(theme.warning)
                 .help("有视频，还没转写")
                 .accessibilityLabel("有视频，还没转写")
                 .accessibilityIdentifier("history-row-needs-transcript")
-            }
-            if row.hasSummary == true {
-              Image(systemName: "text.alignleft")
-                .help("已总结")
-                .accessibilityLabel("已总结")
             }
             if row.hasMindMap == true {
               Image(systemName: "brain")
@@ -175,16 +182,18 @@ struct HistoryRowView: View {
     }
     .padding(.horizontal, DesignTokens.Space.md)
     .padding(.vertical, DesignTokens.Space.sm)
-    .frame(minHeight: 68, alignment: .leading)
+    .frame(minHeight: 60, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
         .fill(rowBackground)
     )
+    .background(HistoryListSelectionStyle(usesSystemSelection: theme.isNative))
+    .foregroundStyle(theme.primaryText)
     .overlay(alignment: .leading) {
       if isSelected {
         Capsule()
           .fill(theme.accent)
-          .frame(width: 3, height: 30)
+          .frame(width: 3, height: 28)
           .padding(.leading, DesignTokens.Space.xxs)
       }
     }
@@ -203,8 +212,8 @@ struct HistoryRowView: View {
   }
 
   private var rowBackground: Color {
-    if isSelected { return theme.accent.opacity(0.04) }
-    if isHovering { return theme.primaryText.opacity(0.035) }
+    if isSelected && !theme.isNative { return theme.accent.opacity(0.12) }
+    if isHovering && !isSelected { return theme.primaryText.opacity(0.035) }
     return .clear
   }
 
@@ -316,3 +325,41 @@ enum HistoryFaviconImageMemoryCache {
   }
 }
 
+
+/// SwiftUI List 没有单独关闭系统选中底色的入口。只调整当前行所在的表格，
+/// 保留原生选择、键盘导航、多选和可访问性，主题色由行视图绘制。
+private struct HistoryListSelectionStyle: NSViewRepresentable {
+  var usesSystemSelection: Bool
+
+  func makeNSView(context: Context) -> SelectionView { SelectionView() }
+
+  func updateNSView(_ view: SelectionView, context: Context) {
+    view.usesSystemSelection = usesSystemSelection
+    view.applyStyle()
+    DispatchQueue.main.async { [weak view] in view?.applyStyle() }
+  }
+
+  final class SelectionView: NSView {
+    var usesSystemSelection = true
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      applyStyle()
+    }
+    override func viewDidMoveToSuperview() {
+      super.viewDidMoveToSuperview()
+      applyStyle()
+    }
+    func applyStyle() {
+      var ancestor = superview
+      while let view = ancestor {
+        if let table = view as? NSTableView {
+          let style: NSTableView.SelectionHighlightStyle = usesSystemSelection ? .regular : .none
+          if table.selectionHighlightStyle != style { table.selectionHighlightStyle = style }
+          return
+        }
+        ancestor = view.superview
+      }
+    }
+  }
+}

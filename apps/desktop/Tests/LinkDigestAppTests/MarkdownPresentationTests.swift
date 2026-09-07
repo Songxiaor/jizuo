@@ -8,28 +8,21 @@ final class MarkdownPresentationTests: XCTestCase {
   func testPaperThemeUsesOfficialClaudePaletteAndEditorialTypographyOnly() throws {
     let paper = AppearanceTheme.paper.tokens
 
-    // canvas 是 sunken 而不是最亮的 #FDFCF9：三栏要能分层。首版给 canvas 用
-    // 亮底时，中栏到详情卡片只差 1.2% 灰阶，实机上根本看不出是两层。
-    //
-    // 2026-08-25 从 #EFEDE5 再调暗到 #E6E3D8：唯一那条看得见的明度边界原本落在
-    // 导航列和列表列之间（两个都是辅助列），调暗后挪到「辅助区 vs 正文区」，
-    // 明度差 4% → 9%。
-    assertColor(paper.canvas, red: 0xE6, green: 0xE3, blue: 0xD8)
-    assertColor(paper.primaryText, red: 0x14, green: 0x14, blue: 0x13)
-    // 次要文字和分隔线跟着画布重算——底色一暗，压在上面的两档就得跟着深，
-    // 否则白调过的对比度全部作废：
-    //
-    // - 次要文字：官方 palette 的 #B0AEA5 在正文卡上只有 2.2:1，真实信息
-    //   （批量进度、引导文字）读不清；旧的 #6E6C63 过 AA 但余量薄，现在是 #656356。
-    // - 分隔线：旧的 #E8E6DC 在新画布上只有 1.027:1（旧画布上还有 1.067:1），
-    //   等于看不见，现在是 #DFDCD1。
-    assertColor(paper.secondaryText, red: 0x65, green: 0x63, blue: 0x56)
-    assertColor(paper.hairline, red: 0xDF, green: 0xDC, blue: 0xD1)
-    assertColor(paper.accent, red: 0xD9, green: 0x77, blue: 0x57)
-    XCTAssertTrue(AppearanceTheme.paper.usesEditorialReadingTypography)
+    // 2026-09 UI 优化后，「浅色」是中性绿纸，不是旧 Claude 米黄。令牌收口在
+    // ReadingPalette：侧栏 #E4E5E2、正文卡 #FAFAF7、强调绿 #356046。
+    // 测试钉当前已验收外观，不为旧色板回退主题。
+    assertColor(paper.canvas, red: 0xE4, green: 0xE5, blue: 0xE2)
+    assertColor(paper.card, red: 0xFA, green: 0xFA, blue: 0xF7)
+    assertColor(paper.primaryText, red: 0x27, green: 0x2D, blue: 0x28)
+    assertColor(paper.secondaryText, red: 0x60, green: 0x67, blue: 0x60)
+    assertColor(paper.hairline, red: 0xD6, green: 0xDA, blue: 0xD2)
+    assertColor(paper.accent, red: 0x35, green: 0x60, blue: 0x46)
+    XCTAssertGreaterThan(try contrastRatio(paper.primaryText, paper.canvas), 7)
+    XCTAssertGreaterThan(try contrastRatio(paper.secondaryText, paper.canvas), 4.5)
+    // 浅色走清晰无衬线；书卷宋体留给石楠/珊瑚。
+    XCTAssertFalse(AppearanceTheme.paper.usesEditorialReadingTypography)
     XCTAssertFalse(AppearanceTheme.glass.usesEditorialReadingTypography)
     XCTAssertFalse(AppearanceTheme.ink.usesEditorialReadingTypography)
-    // 暖褐和浅色同属「读长文」的纸系主题，跟着用宋体；高对比要的是笔画清晰。
     XCTAssertTrue(AppearanceTheme.sepia.usesEditorialReadingTypography)
     XCTAssertFalse(AppearanceTheme.mono.usesEditorialReadingTypography)
   }
@@ -83,15 +76,13 @@ final class MarkdownPresentationTests: XCTestCase {
     }
   }
 
-  /// 暖褐是「低对比护眼」，但低对比不等于读不清。
+  /// 石楠要护眼，但低对比不等于读不清。浅色绿纸优化后对比度与石楠独立，
+  /// 不再要求石楠一定比浅色更低。
   func testSepiaStaysReadableWhileLoweringContrast() throws {
     let sepia = AppearanceTheme.sepia.tokens
-    let paper = AppearanceTheme.paper.tokens
     let sepiaBody = try contrastRatio(sepia.primaryText, sepia.canvas)
-    // 正文仍要远超 AA 的 4.5:1。
     XCTAssertGreaterThan(sepiaBody, 7)
-    // 但要确实比 paper 柔和——否则「护眼」只是换了个色相而已。
-    XCTAssertLessThan(sepiaBody, try contrastRatio(paper.primaryText, paper.canvas))
+    XCTAssertGreaterThan(try contrastRatio(sepia.secondaryText, sepia.canvas), 4.5)
   }
 
   /// WCAG 相对亮度对比度。
@@ -220,7 +211,7 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(MarkdownInlineImageActions.suggestedFilename(for: url, data: jpeg), "b547fee0399faac9.jpg")
   }
 
-  func testInlineImagesRenderOnWhiteCardWithHairlineAndContextMenu() throws {
+  func testInlineImagesPreserveContextMenuWithoutDecorativeCard() throws {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent()
       .deletingLastPathComponent()
@@ -236,9 +227,9 @@ final class MarkdownPresentationTests: XCTestCase {
       contentsOf: sourceURL.deletingLastPathComponent().appendingPathComponent("ArticleImageViewing.swift"),
       encoding: .utf8
     )
-    // 白色衬卡 + 细边线 + 右键动作仍在异步组件里。
-    XCTAssertTrue(imaging.contains(".background(Color.white, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))"))
-    XCTAssertTrue(imaging.contains(".stroke(Color.primary.opacity(0.12), lineWidth: 1)"))
+    // 图片直接融入正文，异步加载与右键动作仍保留。
+    XCTAssertFalse(imaging.contains(".background(Color.white, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))"))
+    XCTAssertFalse(imaging.contains(".stroke(Color.primary.opacity(0.12), lineWidth: 1)"))
     XCTAssertTrue(imaging.contains("MarkdownInlineImageActions.saveImage(at: url)"))
     XCTAssertTrue(imaging.contains("存储图片为…"))
     XCTAssertTrue(imaging.contains("拷贝图片"))

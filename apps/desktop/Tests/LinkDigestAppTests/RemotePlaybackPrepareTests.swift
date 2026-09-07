@@ -47,7 +47,7 @@ final class RemotePlaybackPrepareTests: XCTestCase {
 
   func testPrepareSingleTrackCreatesPlayer() {
     let controller = RemotePreviewPlayerController()
-    let url = URL(string: "https://media.example.test/a.mp4")!
+    let url = URL(fileURLWithPath: "/tmp/linkdigest-local-preview.mp4")
     controller.prepare(url: url)
     XCTAssertTrue(controller.hasPlayer)
     XCTAssertEqual(controller.preparePhase, .ready)
@@ -58,15 +58,26 @@ final class RemotePlaybackPrepareTests: XCTestCase {
     XCTAssertFalse(controller.canFallbackToLegacy)
   }
 
+  func testRemoteSingleTrackDoesNotFakeReadyFromURLAlone() {
+    let controller = RemotePreviewPlayerController()
+    let url = URL(string: "https://media.example.test/a.mp4")!
+    controller.prepare(url: url)
+    XCTAssertEqual(controller.preparePhase, .preparing, "远程单轨不能凭 URL 存在就标 ready")
+    XCTAssertFalse(controller.hasPlayer, "未就绪前不得装上会黑屏的 AVPlayer")
+    XCTAssertTrue(controller.canFallbackToLegacy)
+    controller.release()
+  }
+
   func testPrepareDedupesSameURLAndCompanion() {
     let controller = RemotePreviewPlayerController()
     let url = URL(string: "https://media.example.test/a.mp4")!
-    // 单轨同步路径：同一 URL 再次 prepare 应保持现有 player。
     controller.prepare(url: url)
+    XCTAssertEqual(controller.preparePhase, .preparing)
     let firstPlayer = controller.player
     controller.prepare(url: url)
     XCTAssertTrue(controller.player === firstPlayer)
-    XCTAssertTrue(controller.hasPlayer)
+    XCTAssertEqual(controller.preparePhase, .preparing)
+    controller.release()
   }
 
   func testParkedPlayerRestoredWhenSwitchingBack() {
@@ -75,8 +86,8 @@ final class RemotePlaybackPrepareTests: XCTestCase {
     defer { RemotePreviewPlayerController.parkedPlayerCapacity = previous }
 
     let controller = RemotePreviewPlayerController()
-    let a = URL(string: "https://media.example.test/park-a.mp4")!
-    let b = URL(string: "https://media.example.test/park-b.mp4")!
+    let a = URL(fileURLWithPath: "/tmp/linkdigest-park-a.mp4")
+    let b = URL(fileURLWithPath: "/tmp/linkdigest-park-b.mp4")
 
     controller.prepare(url: a)
     let playerA = controller.player
@@ -114,7 +125,7 @@ final class RemotePlaybackPrepareTests: XCTestCase {
 
   func testLongFormProgressiveMP4StripsCompanionAndPlaysSingleTrack() {
     let controller = RemotePreviewPlayerController()
-    // 非 bilivideo host：避免异步 Cookie 查找，同步验证 companion 被剥离。
+    // 非 bilivideo host：避免异步 Cookie 查找，验证 companion 被剥离后走远程单轨等待。
     let video = URL(string: "https://media.example.test/long-form.mp4")!
     let audio = URL(string: "https://media.example.test/ignored-audio.m4s")!
     controller.prepare(
@@ -122,15 +133,15 @@ final class RemotePlaybackPrepareTests: XCTestCase {
       companionAudioURL: audio,
       durationSeconds: 63 * 60
     )
-    // progressive mp4 丢弃 companion，走单轨同步 ready。
-    XCTAssertEqual(controller.preparePhase, .ready)
-    XCTAssertTrue(controller.hasPlayer)
+    XCTAssertNotEqual(controller.preparePhase, .failed(.longFormDualNeedsRefresh))
+    XCTAssertEqual(controller.preparePhase, .preparing)
+    XCTAssertFalse(controller.hasPlayer, "剥离 companion 后仍须等 item 就绪，不能假 ready")
     controller.release()
   }
 
   func testQualitySwitchKeepsCurrentPlayerWhileNewDualTrackPrepares() {
     let controller = RemotePreviewPlayerController()
-    let current = URL(string: "https://media.example.test/current.mp4")!
+    let current = URL(fileURLWithPath: "/tmp/linkdigest-current.mp4")
     let nextVideo = URL(string: "https://upos.bilivideo.com/next-video.m4s")!
     let nextAudio = URL(string: "https://upos.bilivideo.com/next-audio.m4s")!
 
@@ -327,13 +338,15 @@ final class RemotePlaybackPrepareTests: XCTestCase {
     )
     XCTAssertEqual(controller.preparePhase, .failed(.networkUnavailable))
     if case let .failed(kind) = controller.preparePhase {
-      XCTAssertTrue(kind.message.contains("网络似乎不可用"))
+      XCTAssertEqual(kind, .networkUnavailable)
+      XCTAssertTrue(kind.message.contains("网络不可用"))
     }
 
     controller.markPlaybackFailed(error: NSError(domain: "AVFoundationErrorDomain", code: -11828))
     XCTAssertEqual(controller.preparePhase, .failed(.generic))
     if case let .failed(kind) = controller.preparePhase {
-      XCTAssertFalse(kind.message.contains("网络似乎不可用"))
+      XCTAssertEqual(kind, .generic)
+      XCTAssertFalse(kind.message.contains("网络不可用"))
     }
 
     // 过期是 resolve 层语义，不是 runtime failure。
@@ -362,20 +375,77 @@ final class RemotePlaybackPrepareTests: XCTestCase {
     XCTAssertEqual(controller.preparePhase, .failed(.networkUnavailable))
 
     controller.retry()
-    // 单轨同步：retry 后应再次 ready（不需要真实网络就能建 AVPlayer）。
-    XCTAssertEqual(controller.preparePhase, .ready)
-    XCTAssertTrue(controller.hasPlayer)
+    XCTAssertEqual(controller.preparePhase, .preparing, "远程单轨重试必须重新等待 item 就绪")
+    XCTAssertFalse(controller.hasPlayer)
+    controller.release()
   }
 
   func testFallbackToLegacyDisablesFurtherFallback() {
     let controller = RemotePreviewPlayerController()
-    let url = URL(string: "https://media.example.test/a.mp4")!
+    let url = URL(fileURLWithPath: "/tmp/linkdigest-legacy-fallback.mp4")
     controller.prepare(url: url)
     XCTAssertTrue(controller.canFallbackToLegacy)
     XCTAssertTrue(controller.fallbackToLegacyIfNeeded())
     XCTAssertTrue(controller.hasPlayer)
     XCTAssertFalse(controller.canFallbackToLegacy)
     XCTAssertFalse(controller.fallbackToLegacyIfNeeded())
+    controller.release()
+  }
+
+  func testRemoteLegacyFallbackAlsoWaitsForReadiness() {
+    let controller = RemotePreviewPlayerController()
+    controller.prepare(url: URL(string: "https://media.example.test/unreadable.mp4")!)
+    XCTAssertTrue(controller.fallbackToLegacyIfNeeded())
+    XCTAssertEqual(controller.preparePhase, .preparing)
+    XCTAssertFalse(controller.hasPlayer)
+    XCTAssertFalse(controller.canFallbackToLegacy)
+    controller.release()
+  }
+
+  func testUnreachableRemoteSingleTrackFailsWithVisibleRetryReason() async {
+    let previous = RemotePreviewPlayerController.singleTrackPrepareTimeoutSeconds
+    RemotePreviewPlayerController.singleTrackPrepareTimeoutSeconds = 0.2
+    defer { RemotePreviewPlayerController.singleTrackPrepareTimeoutSeconds = previous }
+
+    let controller = RemotePreviewPlayerController()
+    let url = URL(string: "https://198.51.100.1/unreachable.mp4")!
+    controller.prepare(url: url)
+    XCTAssertEqual(controller.preparePhase, .preparing)
+
+    let deadline = Date().addingTimeInterval(4)
+    while controller.preparePhase == .preparing, Date() < deadline {
+      try? await Task.sleep(for: .milliseconds(30))
+    }
+    guard case let .failed(kind) = controller.preparePhase else {
+      return XCTFail("坏地址必须离开 preparing，不能黑屏假 ready")
+    }
+    XCTAssertTrue(
+      kind == .streamUnreadable || kind == .networkUnavailable,
+      "实际失败：\(kind)"
+    )
+    XCTAssertFalse(kind.message.contains("http"), "用户可见文案不得带内部地址")
+    XCTAssertFalse(controller.hasPlayer)
+    XCTAssertTrue(kind.message.contains("重新获取") || kind.message.contains("重试") || kind.message.contains("打开"))
+    controller.release()
+  }
+
+  func testDouyinHeadersIncludeOriginAndRefererButNotCookie() {
+    let headers = RemotePlaybackAsset.httpHeaders(
+      for: URL(string: "https://v3-web.douyinvod.com/aweme/v1/play/?token=secret")!,
+      cookieHeader: "sessionid=must-not-leak"
+    )
+    XCTAssertEqual(headers?["Referer"], "https://www.douyin.com/")
+    XCTAssertEqual(headers?["Origin"], "https://www.douyin.com")
+    XCTAssertNotNil(headers?["User-Agent"])
+    XCTAssertNil(headers?["Cookie"], "不得把抖音会话 Cookie 扩到 CDN")
+  }
+
+  func testStreamUnreadableMessageKeepsRetryWithoutInternalURL() {
+    let failure = RemotePreviewPlaybackFailure.streamUnreadable
+    XCTAssertTrue(failure.message.contains("暂时无法打开这段视频"))
+    XCTAssertTrue(failure.message.contains("重新获取播放"))
+    XCTAssertFalse(failure.message.contains("http"))
+    XCTAssertFalse(failure.message.contains("token"))
   }
 
   func testRemotePlaybackAssetLeavesFileURLUnchanged() {

@@ -71,6 +71,7 @@ required_resources=(
   "browser-support/manifest-integrity.json"
   "contracts/capture-envelope-v1.schema.json"
   "contracts/capture-envelope-v2.schema.json"
+  "contracts/x-profile-candidates-v1.schema.json"
   "contracts/native-response-fixtures.json"
 )
 for relative in "${required_resources[@]}"; do

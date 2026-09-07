@@ -2272,7 +2272,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     } else {
       URLComponents(string: canonical)?.host ?? ""
     }
-    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: host, sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: hasTranscript, hasMedia: hasMedia, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite)
+    let sourcePreview = frontmatter.flatMap { MarkdownNoteFrontmatter.directorySourcePreview(fromBody: $0.body) }
+    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: host, sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, sourcePreview: sourcePreview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: hasTranscript, hasMedia: hasMedia, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite, coverURL: frontmatter?.previewCoverURL, likes: frontmatter?.likes, comments: frontmatter?.comments, shares: frontmatter?.shares, collects: frontmatter?.collects, views: frontmatter?.views)
   }
 
   private func detail(db: Database, taskID: TaskID) throws -> HistoryDetailProjection {

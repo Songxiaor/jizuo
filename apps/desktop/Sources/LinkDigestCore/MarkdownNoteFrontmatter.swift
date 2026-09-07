@@ -57,6 +57,43 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     likes != nil || comments != nil || shares != nil || collects != nil || views != nil
   }
 
+  /// Cover for list cards: explicit `cover_image`, else the first markdown image in the body.
+  public var previewCoverURL: String? {
+    if let coverImage, !coverImage.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      return coverImage
+    }
+    return Self.firstMarkdownImageURL(in: body)
+  }
+
+  /// Bounded plain text from a capture body for directory cards. Image markup is
+  /// dropped so a cover-only body does not become the preview.
+  public static func directorySourcePreview(fromBody body: String, scalarLimit: Int = 240) -> String? {
+    var text = body
+    while let start = text.range(of: "![") {
+      guard let altEnd = text.range(of: "](", range: start.upperBound..<text.endIndex),
+            let close = text[altEnd.upperBound...].firstIndex(of: ")")
+      else { break }
+      text.removeSubrange(start.lowerBound...close)
+    }
+    let collapsed = text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !collapsed.isEmpty else { return nil }
+    if collapsed.unicodeScalars.count <= scalarLimit { return collapsed }
+    return String(collapsed.unicodeScalars.prefix(scalarLimit))
+  }
+
+  public static func firstMarkdownImageURL(in markdown: String) -> String? {
+    guard let start = markdown.range(of: "![") else { return nil }
+    var search = markdown[start.upperBound...]
+    guard let altEnd = search.range(of: "](") else { return nil }
+    search = markdown[altEnd.upperBound...]
+    guard let close = search.firstIndex(of: ")") else { return nil }
+    let raw = String(search[..<close]).trimmingCharacters(in: .whitespacesAndNewlines)
+    let url = raw.split(whereSeparator: \.isWhitespace).first.map(String.init) ?? raw
+    guard url.hasPrefix("https://") else { return nil }
+    return url
+  }
+
   /// Parses a leading `---` … `---` block. Invalid/incomplete frontmatter returns the original text as body.
   public static func parse(_ markdown: String) -> MarkdownNoteFrontmatter {
     // 详情页会反复读取没有属性头的正文，先避开整篇 Unicode 归一化，

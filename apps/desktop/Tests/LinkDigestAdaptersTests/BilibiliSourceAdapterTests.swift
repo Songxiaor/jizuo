@@ -68,7 +68,9 @@ final class BilibiliSourceAdapterTests: XCTestCase {
     XCTAssertTrue(document.text.contains("author: \"演示创作者\""))
     XCTAssertTrue(document.text.contains("views: \"1200\""))
     XCTAssertTrue(document.text.contains("这是一段不含真实账号数据的公开视频简介"))
-    XCTAssertTrue(document.text.contains("![视频封面](https://i0.hdslb.com/bfs/archive/redacted-cover.jpg)"))
+    XCTAssertEqual(MarkdownNoteFrontmatter.parse(document.text).previewCoverURL,
+                   "https://i0.hdslb.com/bfs/archive/redacted-cover.jpg")
+    XCTAssertFalse(MarkdownNoteFrontmatter.parse(document.text).body.contains("![视频封面]"))
     XCTAssertEqual(document.media?.platform, "bilibili")
     XCTAssertEqual(document.media?.durationSeconds, 125)
     XCTAssertEqual(document.media?.coverURL, "https://i0.hdslb.com/bfs/archive/redacted-cover.jpg")

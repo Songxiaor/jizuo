@@ -69,6 +69,17 @@ public struct CreatorSummary: Sendable, Equatable, Identifiable {
     return name.isEmpty ? CreatorDisplay.placeholderName(platform: identity.platform) : name
   }
 
+  public var hasResolvedDisplayName: Bool {
+    CreatorDisplay.isResolvedDisplayName(displayName, authorID: identity.authorID)
+  }
+
+  /// Directory copy: a real display name, or 待获取. Never an @handle.
+  public var directoryDisplayName: String {
+    hasResolvedDisplayName
+      ? displayName!.trimmingCharacters(in: .whitespacesAndNewlines)
+      : "待获取"
+  }
+
   public var isPinned: Bool { pinnedRank != nil }
 }
 
@@ -80,6 +91,15 @@ public enum CreatorDisplay {
     case "douyin.com": return "未命名抖音博主"
     default: return "未命名博主"
     }
+  }
+
+  public static func isResolvedDisplayName(_ raw: String?, authorID: String) -> Bool {
+    let name = raw?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !name.isEmpty else { return false }
+    let stripped = name.hasPrefix("@") ? String(name.dropFirst()) : name
+    let author = authorID.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !author.isEmpty else { return true }
+    return stripped.caseInsensitiveCompare(author) != .orderedSame
   }
 }
 

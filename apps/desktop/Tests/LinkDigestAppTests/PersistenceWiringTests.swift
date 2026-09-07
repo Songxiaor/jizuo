@@ -1080,6 +1080,45 @@ final class CaptureReceiverTests: XCTestCase {
     XCTAssertEqual(storage.category, "storage")
     XCTAssertNil(storage.safeDetail)
   }
+
+  func testXProfileZeroAcceptedIsFailure() async throws {
+    let receiver = CaptureReceiver(history: nil,
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 }, captureSink: { _ in },
+      profileCandidatesSink: { _ in .init(acceptedCount: 0) })
+    let data = Data(#"{"kind":"xProfileCandidates","version":1,"requestId":"zero","profileURL":"https://x.com/sample","authorID":"sample","items":[{"id":"12345678901","url":"https://x.com/sample/status/12345678901"}]}"#.utf8)
+    guard case .error = await receiver.process(data) else { return XCTFail("Zero received must not claim success") }
+  }
+
+  func testXProfileCandidatesArePresentedWithoutIngestingOrPretendingBookmarks() async throws {
+    let repository = WiringRepository()
+    let sink = WiringCaptureSink()
+    let presented = WiringEventLog()
+    let receiver = CaptureReceiver(
+      history: HistoryApplicationService(repository: repository),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { await sink.receive($0) },
+      profileCandidatesSink: { request in
+        presented.append("presented:\(request.items.count)")
+        return .init(acceptedCount: request.items.count)
+      }
+    )
+    let body = Data(#"""
+    {"kind":"xProfileCandidates","version":1,"requestId":"req-p",
+     "profileURL":"https://x.com/sample_author","authorID":"sample_author",
+     "items":[{"id":"1234567890123","url":"https://x.com/sample_author/status/1234567890123"}]}
+    """#.utf8)
+    let response = await receiver.process(body)
+    XCTAssertEqual(
+      response,
+      .profileCandidatesPresented(version: 1, requestId: "req-p", acceptedCount: 1)
+    )
+    if case .bookmarksAccepted = response { XCTFail("must not pretend bookmarks success") }
+    XCTAssertEqual(presented.values, ["presented:1"])
+    let captures = await sink.captures
+    XCTAssertTrue(captures.isEmpty)
+  }
 }
 
 private func capture(requestID: String = "request-02b") -> CaptureEnvelopeV1 {

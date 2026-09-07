@@ -45,7 +45,8 @@ struct CaptureIngestService: Sendable {
   func ingest(
     _ document: CapturedDocument,
     requestedAction: CaptureRequestedAction? = nil,
-    suppressesAutomaticEnrichment: Bool = false
+    suppressesAutomaticEnrichment: Bool = false,
+    navigationIntent: CaptureNavigationIntent = .reveal
   ) async throws -> CurrentCapture {
     let command = try AcceptCaptureCommand(
       document: document,
@@ -57,7 +58,8 @@ struct CaptureIngestService: Sendable {
         taskID: accepted.taskID,
         snapshotID: accepted.snapshotID,
         requestedAction: requestedAction,
-        suppressesAutomaticEnrichment: suppressesAutomaticEnrichment
+        suppressesAutomaticEnrichment: suppressesAutomaticEnrichment,
+        navigationIntent: navigationIntent
       )
     }
   }

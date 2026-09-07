@@ -6,66 +6,53 @@ import SwiftUI
 import WebKit
 
 enum DouyinProfileInputRoute: Equatable {
-  case profile(sourceURL: URL, authorID: String)
-  case shortLink(sourceURL: URL)
+  case profile(platform: ProfileImportPlatform, sourceURL: URL, authorID: String)
+  case shortLink(platform: ProfileImportPlatform, sourceURL: URL)
 
   static func parse(_ rawValue: String) -> DouyinProfileInputRoute? {
-    guard let url = ExplicitWebLinkInput.singleURL(from: rawValue),
-          url.scheme?.lowercased() == "https",
-          url.user == nil,
-          url.password == nil,
-          url.port == nil || url.port == 443,
-          let host = url.host?.lowercased()
-    else { return nil }
+    ProfileImportPlatform.parse(rawValue)
+  }
 
-    if host == "v.douyin.com" || host.hasSuffix(".v.douyin.com") {
-      return .shortLink(sourceURL: url)
+  var platform: ProfileImportPlatform {
+    switch self {
+    case let .profile(platform, _, _), let .shortLink(platform, _): platform
     }
-    guard host == "douyin.com" || host.hasSuffix(".douyin.com"),
-          let authorID = authorID(from: url)
-    else { return nil }
-    return .profile(sourceURL: normalizedProfileURL(authorID: authorID), authorID: authorID)
-  }
-
-  static func authorID(from url: URL) -> String? {
-    let components = url.pathComponents.filter { $0 != "/" }
-    guard components.count >= 2,
-          components[0].lowercased() == "user"
-    else { return nil }
-    let authorID = components[1].trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !authorID.isEmpty else { return nil }
-    return authorID
-  }
-
-  private static func normalizedProfileURL(authorID: String) -> URL {
-    var components = URLComponents()
-    components.scheme = "https"
-    components.host = "www.douyin.com"
-    components.path = "/user/\(authorID)"
-    return components.url!
   }
 
   var sourceURL: URL {
     switch self {
-    case let .profile(sourceURL, _), let .shortLink(sourceURL): sourceURL
+    case let .profile(_, sourceURL, _), let .shortLink(_, sourceURL): sourceURL
+    }
+  }
+
+  var persistentURL: URL {
+    switch self {
+    case let .profile(platform, _, authorID):
+      platform.canonicalProfileURL(authorID: authorID)
+    case let .shortLink(_, sourceURL):
+      sourceURL
     }
   }
 }
 
 enum DouyinProfileWorkURL {
   static func canonical(_ url: URL) -> String? {
-    guard DouyinProfileNavigationPolicy.allows(url),
-          let host = url.host?.lowercased(),
-          host == "douyin.com" || host.hasSuffix(".douyin.com")
-    else { return nil }
+    guard ProfileImportPlatform.fromWorkURL(url) == .douyin else { return nil }
     let components = url.pathComponents.filter { $0 != "/" }
-    guard components.count >= 2 else { return nil }
-    let kind = components[0].lowercased()
-    let workID = components[1]
-    guard (kind == "video" || kind == "note"),
-          workID.count >= 10,
-          workID.allSatisfy(\.isNumber)
-    else { return nil }
+    let kind: String
+    let workID: String
+    if components.count >= 2, ["video", "note"].contains(components[0].lowercased()) {
+      kind = components[0].lowercased()
+      workID = components[1]
+    } else if components.count >= 3,
+              components[0].lowercased() == "share",
+              ["video", "note"].contains(components[1].lowercased()) {
+      kind = components[1].lowercased()
+      workID = components[2]
+    } else {
+      return nil
+    }
+    guard workID.count >= 10, workID.allSatisfy(\.isNumber) else { return nil }
     return "https://www.douyin.com/\(kind)/\(workID)"
   }
 
@@ -93,12 +80,20 @@ enum DouyinProfilePreviewResource {
   static func admittedURL(_ value: String) -> URL? {
     guard let url = URL(string: value), url.scheme?.lowercased() == "https",
           let host = url.host?.lowercased(),
-          ["douyinpic.com", "byteimg.com", "pstatp.com", "douyinstatic.com", "douyin.com", "iesdouyin.com"]
+          ["douyinpic.com", "byteimg.com", "pstatp.com", "douyinstatic.com", "douyin.com", "iesdouyin.com", "xhscdn.com", "xiaohongshu.com", "hdslb.com", "bilibili.com", "twimg.com"]
             .contains(where: { host == $0 || host.hasSuffix(".\($0)") })
     else { return nil }
     do { try PublicWebURLPolicy(resolver: { _ in [] }).validateSyntax(url) }
     catch { return nil }
     return url
+  }
+
+  private static func imageReferer(_ url: URL) -> String {
+    let host = url.host ?? ""
+    if host.hasSuffix("xhscdn.com") { return "https://www.xiaohongshu.com/" }
+    if host.hasSuffix("hdslb.com") { return "https://www.bilibili.com/" }
+    if host.hasSuffix("twimg.com") { return "https://x.com/" }
+    return "https://www.douyin.com/"
   }
 
   static func fetch(_ url: URL, using resources: any SafeResourceFetching = resources) async throws -> Data {
@@ -107,7 +102,7 @@ enum DouyinProfilePreviewResource {
     // Keep the same image-host boundary on redirects as on the initial DOM URL.
     let response = try await resources.fetchResource(.init(
       url: url,
-      headers: ["Accept": "image/*", "Referer": "https://www.douyin.com/"],
+      headers: ["Accept": "image/*", "Referer": imageReferer(url)],
       byteLimit: byteLimit,
       allowsRedirectTarget: { admittedURL($0.absoluteString) != nil }
     ))
@@ -125,17 +120,43 @@ struct DouyinProfilePreviewImage: View {
   @Environment(\.appTheme) private var theme
   let url: URL?
   @State private var image: NSImage?
+  @State private var failed = false
+  @State private var retryID = 0
 
   var body: some View {
-    Group {
-      if let image { Image(nsImage: image).resizable().scaledToFill() }
-      else { Rectangle().fill(theme.badge) }
+    ZStack {
+      Rectangle().fill(theme.badge)
+      if let image {
+        Image(nsImage: image).resizable().scaledToFill()
+      } else if failed {
+        VStack(spacing: 4) {
+          Image(systemName: "arrow.clockwise")
+            .font(.system(size: 14, weight: .semibold))
+          Text("重试")
+            .themedFont(.caption2)
+        }
+        .foregroundStyle(theme.secondaryText)
+        .help("图片加载失败，点击重试")
+        .accessibilityLabel("图片加载失败，点击重试")
+        .accessibilityIdentifier("profile-preview-image-retry")
+      }
     }
-    .task(id: url) {
+    .contentShape(Rectangle())
+    .onTapGesture {
+      guard failed else { return }
+      retryID += 1
+    }
+    .task(id: "\(url?.absoluteString ?? "")#\(retryID)") {
       image = nil
-      guard let url, let data = try? await DouyinProfilePreviewResource.fetch(url),
-            !Task.isCancelled else { return }
-      image = NSImage(data: data)
+      failed = false
+      guard let url else { return }
+      if let data = try? await DouyinProfilePreviewResource.fetch(url),
+         !Task.isCancelled,
+         let loaded = NSImage(data: data) {
+        image = loaded
+      } else if !Task.isCancelled {
+        failed = true
+      }
     }
   }
 }
@@ -149,6 +170,8 @@ struct DouyinProfileDOMCandidate: Codable, Equatable {
   var likes: String? = nil
   var comments: String? = nil
   var collects: String? = nil
+  var metricsSource: String? = nil
+  var metricsReadAt: String? = nil
 }
 
 struct DouyinProfileDOMSnapshot: Codable, Equatable {
@@ -187,6 +210,8 @@ struct DouyinProfileImportCandidate: Identifiable, Equatable {
   var likes: String? = nil
   var comments: String? = nil
   var collects: String? = nil
+  var metricsSource: String? = nil
+  var metricsReadAt: String? = nil
 
   var id: String { workID }
 }
@@ -197,6 +222,7 @@ struct DouyinProfileVisibleMetricsQueue {
   private(set) var attemptedIDs: Set<String> = []
   private(set) var activeID: String?
   private(set) var isStopped = false
+  private(set) var isPaused = false
 
   mutating func setVisible(_ id: String, _ visible: Bool) {
     guard !isStopped else { return }
@@ -204,12 +230,15 @@ struct DouyinProfileVisibleMetricsQueue {
   }
 
   mutating func next(in orderedIDs: [String]) -> String? {
-    guard !isStopped, activeID == nil,
+    guard !isStopped, !isPaused, activeID == nil,
           let id = orderedIDs.first(where: { visibleIDs.contains($0) && !attemptedIDs.contains($0) }) else { return nil }
     attemptedIDs.insert(id)
     activeID = id
     return id
   }
+
+  mutating func pause() { isPaused = true }
+  mutating func resume() { guard !isStopped else { return }; isPaused = false }
 
   mutating func finish(_ id: String) {
     guard activeID == id else { return }
@@ -218,6 +247,7 @@ struct DouyinProfileVisibleMetricsQueue {
 
   mutating func retry(_ id: String) {
     guard !isStopped, activeID != id, visibleIDs.contains(id) else { return }
+    isPaused = false
     attemptedIDs.remove(id)
   }
 
@@ -225,6 +255,7 @@ struct DouyinProfileVisibleMetricsQueue {
 
   mutating func stop() {
     isStopped = true
+    isPaused = false
     visibleIDs.removeAll()
     activeID = nil
   }
@@ -236,6 +267,9 @@ struct DouyinProfileWorkMetrics: Codable, Equatable {
   let likes: String?
   let comments: String?
   let collects: String?
+  var source: String? = nil
+  var readAt: String? = nil
+  var authorID: String? = nil
 }
 
 /// Reads one requested public work at a time without disturbing the profile grid.
@@ -243,14 +277,29 @@ struct DouyinProfileWorkMetrics: Codable, Equatable {
 final class DouyinProfileMetricsReader: NSObject, ObservableObject, WKNavigationDelegate {
   @Published private(set) var readingID: String?
   @Published private(set) var messages: [String: String] = [:]
+  @Published private(set) var accessLimit: String?
   private var task: Task<Void, Never>?
+  private var timeoutTask: Task<Void, Never>?
   private var webView: WKWebView?
   private var generation = 0
+  private var cache: DouyinProfileMetricsCache
+
+  override init() {
+    cache = DouyinProfileMetricsCache()
+    super.init()
+  }
+
+  init(cache: DouyinProfileMetricsCache) {
+    self.cache = cache
+    super.init()
+  }
 
   func cancel() {
     generation += 1
     task?.cancel()
     task = nil
+    timeoutTask?.cancel()
+    timeoutTask = nil
     webView?.stopLoading()
     webView?.navigationDelegate = nil
     webView = nil
@@ -259,6 +308,7 @@ final class DouyinProfileMetricsReader: NSObject, ObservableObject, WKNavigation
   }
 
   func read(_ candidate: DouyinProfileImportCandidate, dataStore: WKWebsiteDataStore,
+            deadlineSeconds: TimeInterval = DouyinProfileMetricsCapture.detailDeadlineSeconds,
             load: (WKWebView, URL) -> Void = { view, url in
               view.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 20))
             }, receive: @escaping (DouyinProfileWorkMetrics) -> Void) {
@@ -268,40 +318,125 @@ final class DouyinProfileMetricsReader: NSObject, ObservableObject, WKNavigation
     generation += 1
     let request = generation
     let id = candidate.workID
+    let authorID = candidate.authorID
     readingID = id
     messages[id] = nil
+    accessLimit = nil
+    let seed = cache.lookup(workID: id, authorID: authorID)
+    if let cached = seed {
+      receive(.init(
+        status: "ready",
+        workID: id,
+        likes: cached.likes,
+        comments: cached.comments,
+        collects: cached.collects,
+        source: cached.source,
+        readAt: cached.observedAt,
+        authorID: authorID
+      ))
+      if cached.isComplete {
+        messages[id] = "数据已更新"
+        readingID = nil
+        return
+      }
+      messages[id] = DouyinProfileMetricsCapture.partialMessage
+    }
     let configuration = WKWebViewConfiguration()
     configuration.websiteDataStore = dataStore
     configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
     configuration.mediaTypesRequiringUserActionForPlayback = .all
     configuration.allowsAirPlayForMediaPlayback = false
+    configuration.userContentController.addUserScript(DouyinProfileMetricsCapture.documentStartUserScript())
     let view = WKWebView(frame: CGRect(x: 0, y: 0, width: 1000, height: 760), configuration: configuration)
     view.customUserAgent = SiteSessionProfile.browserUserAgent
     view.navigationDelegate = self
     webView = view
     load(view, url)
+    // This task runs independently of evaluateJavaScript. A page that never
+    // answers must release the queue, and any late result loses its generation.
+    timeoutTask = Task { @MainActor [weak self, weak view] in
+      do { try await Task.sleep(for: .seconds(max(0, deadlineSeconds))) }
+      catch { return }
+      guard let self, !Task.isCancelled, request == self.generation else { return }
+      self.generation += 1
+      self.task?.cancel()
+      self.task = nil
+      view?.stopLoading()
+      view?.navigationDelegate = nil
+      self.webView = nil
+      self.messages[id] = self.cache.lookup(workID: id, authorID: authorID) == nil
+        ? "读取超时，可重试" : "仍有未读取项，可重试"
+      self.readingID = nil
+      self.timeoutTask = nil
+    }
     task = Task { @MainActor [weak self] in
       guard let self else { return }
+      var delivered = seed != nil
+      var accumulated = seed
       var result: DouyinProfileWorkMetrics?
-      var message = "暂未读取到数据，可重试"
-      for _ in 0..<20 {
+      var message = seed == nil ? "暂未读取到数据，可重试" : DouyinProfileMetricsCapture.partialMessage
+      let deadline = Date().addingTimeInterval(deadlineSeconds)
+      while Date() < deadline {
         do {
-          try await Task.sleep(for: .seconds(1))
+          try await Task.sleep(for: .milliseconds(500))
           guard !Task.isCancelled, request == self.generation else { return }
+          guard Date() < deadline else { break }
           guard let loadedURL = view.url, DouyinProfileWorkURL.canonical(loadedURL) == candidate.canonicalURL else { continue }
-          let raw = try await view.evaluateJavaScript(Self.extractionJavaScript(workID: id))
+          let raw = try await view.evaluateJavaScript(
+            DouyinProfileMetricsCapture.detailExtractionJavaScript(workID: id, authorID: authorID)
+          )
           guard !Task.isCancelled, request == self.generation else { return }
           guard let json = raw as? String,
                 let metrics = try? JSONDecoder().decode(DouyinProfileWorkMetrics.self, from: Data(json.utf8)) else { continue }
           switch metrics.status {
           case "ready":
             guard metrics.workID == id else { continue }
-            result = metrics
-            message = [metrics.likes, metrics.comments, metrics.collects].allSatisfy { $0 != nil }
-              ? "数据已更新" : "已读取，部分数据未提供"
-            if [metrics.likes, metrics.comments, metrics.collects].contains(where: { $0 == nil }) { continue }
-          case "login": result = nil; message = "作品需要登录，请在“查看主页”登录后重试"
-          case "verification": result = nil; message = "作品需要验证，请在“查看主页”完成后重试"
+            let merged = DouyinProfileMetricsCapture.merging(
+              accumulated,
+              with: .init(
+                workID: id,
+                authorID: authorID,
+                likes: metrics.likes,
+                comments: metrics.comments,
+                collects: metrics.collects,
+                observedAt: metrics.readAt ?? ISO8601DateFormatter().string(from: Date()),
+                source: metrics.source ?? DouyinProfileMetricsSource.detailDOM
+              )
+            )
+            accumulated = merged
+            result = .init(
+              status: "ready",
+              workID: id,
+              likes: merged.likes,
+              comments: merged.comments,
+              collects: merged.collects,
+              source: merged.source,
+              readAt: merged.observedAt,
+              authorID: authorID
+            )
+            if request == self.generation, let result {
+              receive(result)
+              delivered = true
+              self.cache.store(merged)
+            }
+            message = merged.isComplete ? "数据已更新" : DouyinProfileMetricsCapture.partialMessage
+            if merged.isComplete { break }
+            continue
+          case "login":
+            if request == self.generation { receive(metrics) }
+            result = nil
+            message = "作品需要登录，请在“查看主页”登录后重试"
+            self.accessLimit = "login"
+          case "verification":
+            if request == self.generation { receive(metrics) }
+            result = nil
+            message = "作品需要验证，请在“查看主页”完成后重试"
+            self.accessLimit = "verification"
+          case "rate_limit":
+            if request == self.generation { receive(metrics) }
+            result = nil
+            message = "访问过于频繁，已暂停自动读取，稍后可重试"
+            self.accessLimit = "rate_limit"
           case "wrong_work": result = nil; message = "页面作品不一致，未更新数据"
           default: continue
           }
@@ -311,9 +446,12 @@ final class DouyinProfileMetricsReader: NSObject, ObservableObject, WKNavigation
       }
       guard !Task.isCancelled, request == self.generation else { return }
       if let result {
-        if let finalURL = view.url, DouyinProfileWorkURL.canonical(finalURL) == candidate.canonicalURL { receive(result) }
-        else { message = "页面作品不一致，未更新数据" }
+        if let finalURL = view.url, DouyinProfileWorkURL.canonical(finalURL) == candidate.canonicalURL {
+          if !delivered { receive(result) }
+        } else { message = "页面作品不一致，未更新数据" }
       }
+      self.timeoutTask?.cancel()
+      self.timeoutTask = nil
       self.messages[id] = message
       self.readingID = nil
       view.stopLoading()
@@ -328,57 +466,8 @@ final class DouyinProfileMetricsReader: NSObject, ObservableObject, WKNavigation
     decisionHandler(DouyinProfileNavigationPolicy.allows(navigationAction.request.url) ? .allow : .cancel)
   }
 
-  static func extractionJavaScript(workID: String) -> String {
-    guard workID.count >= 10, workID.allSatisfy(\.isNumber) else { return "null" }
-    return #"""
-    (() => {
-      const expectedID = "__WORK_ID__";
-      const clean = value => String(value || '').replace(/\s+/g, ' ').trim();
-      const visible = node => {
-        for (let n = node; n; n = n.parentElement) {
-          const style = getComputedStyle(n);
-          if (n.hidden || n.getAttribute('aria-hidden') === 'true' || style.display === 'none'
-              || style.visibility === 'hidden' || style.visibility === 'collapse' || Number(style.opacity) === 0) return false;
-        }
-        const rect = node.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      };
-      const reply = (status, counts = {}) => JSON.stringify({status, workID:expectedID, likes:null, comments:null, collects:null, ...counts});
-      const body = clean(document.body && document.body.innerText);
-      if (/完成验证|安全验证|环境异常|人机验证/.test(body)
-          || Array.from(document.querySelectorAll('[class*="captcha"], [id*="captcha"]')).some(visible)) return reply('verification');
-      const path = location.pathname.match(/^\/(?:video|note)\/(\d{10,})/);
-      if (!path || path[1] !== expectedID) return reply('wrong_work');
-      const info = Array.from(document.querySelectorAll('[data-e2e="detail-video-info"][data-e2e-aweme-id]')).filter(visible);
-      const players = Array.from(document.querySelectorAll('[data-e2e="player-container"]')).filter(visible);
-      const player = players.find(n => n.classList.contains('video_' + expectedID));
-      if (!info.some(n => n.getAttribute('data-e2e-aweme-id') === expectedID) || !player) {
-        if (/登录后查看|登录即可查看|扫码登录/.test(body)) return reply('login');
-        return reply(info.length ? 'wrong_work' : 'pending');
-      }
-      const selectors = ['[data-e2e="video-player-digg"]', '[data-e2e="feed-comment-icon"]', '[data-e2e="video-player-collect"]'];
-      const number = value => /^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:万|亿|[kKmMwW])?\+?$/.test(value) ? value : null;
-      const nodes = selectors.map(selector => {
-        const matches = Array.from(player.querySelectorAll(selector));
-        return matches.length === 1 ? matches[0] : null;
-      });
-      const semantic = nodes.map(node => node ? number(clean(node.textContent)) : null);
-      const matchingInfo = info.find(n => n.getAttribute('data-e2e-aweme-id') === expectedID);
-      const share = matchingInfo.querySelector('[data-e2e="video-share-icon-container"]');
-      const toolbar = share?.parentElement;
-      const cells = toolbar ? Array.from(toolbar.children) : [];
-      // The current wide layout mirrors the three semantic controls in order immediately
-      // before Share. Require the entire visible vector to match, never just a number's presence.
-      const mirrors = cells.length === 4 && cells[3] === share ? cells.slice(0, 3).map(cell => {
-        const spans = Array.from(cell.children).filter(node => node.tagName === 'SPAN' && visible(node));
-        return spans.length === 1 ? number(clean(spans[0].innerText)) : null;
-      }) : [];
-      const mirrored = mirrors.length === 3 && semantic.every((value, index) => value !== null && value === mirrors[index]);
-      const values = nodes.map((node, index) => node && (visible(node) || mirrored) ? semantic[index] : null);
-      const counts = {likes:values[0], comments:values[1], collects:values[2]};
-      return reply(Object.values(counts).some(value => value !== null) ? 'ready' : 'pending', counts);
-    })()
-    """#.replacingOccurrences(of: "__WORK_ID__", with: workID)
+  static func extractionJavaScript(workID: String, authorID: String = "") -> String {
+    DouyinProfileMetricsCapture.detailExtractionJavaScript(workID: workID, authorID: authorID)
   }
 }
 
@@ -391,6 +480,7 @@ enum DouyinProfileImportStopReason: Equatable {
   case worksTabRequired
   case platformChanged
   case navigationFailed
+  case browserExtension
 
   var message: String {
     switch self {
@@ -401,15 +491,17 @@ enum DouyinProfileImportStopReason: Equatable {
     case .visibleEnd:
       return "暂未发现更多作品，可继续加载。"
     case .loginRequired:
-      return "请点击“查看主页”完成登录，再继续加载。"
+      return "当前平台需要登录。可点「登录」使用本机会话，完成后会继续当前主页，不必重新粘贴。"
     case .verificationRequired:
       return "请点击“查看主页”完成人机验证，再继续加载。"
     case .worksTabRequired:
-      return "请点击“查看主页”，切换到“作品”后继续加载。"
+      return "请点击“查看主页”，切换到本人作品／投稿列表后继续加载。"
     case .platformChanged:
       return "等待后仍未识别到主页作品列表，平台页面结构可能已变化。请重试或使用浏览器扩展保存单条作品。"
     case .navigationFailed:
       return "主页暂时无法打开，请检查链接或网络后重试。"
+    case .browserExtension:
+      return "这些作品来自浏览器扩展，尚未保存，也不会自动总结。更多作品请在浏览器向下滚动后，再点一次汲作扩展。"
     }
   }
 }
@@ -425,6 +517,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
   }
 
   enum ScanDirective: Equatable { case keepLoading, stop(DouyinProfileImportStopReason) }
+  enum DiscoverySource: Equatable { case embeddedWebKit, browserExtension }
 
   @Published var input = ""
   @Published private(set) var phase: Phase = .input
@@ -436,9 +529,28 @@ final class DouyinProfileImportViewModel: ObservableObject {
   @Published private(set) var scanRequestID = 0
   @Published var downloadsVideo = false
   @Published private(set) var saveMessage: String?
+  @Published private(set) var resolvedPlatform: ProfileImportPlatform?
+  @Published private(set) var discoverySource: DiscoverySource = .embeddedWebKit
 
+  var currentAuthorID: String? { profileAuthorID }
+  var isBrowserSourced: Bool { discoverySource == .browserExtension }
+
+  var platform: ProfileImportPlatform {
+    resolvedPlatform
+      ?? sourceURL.flatMap(ProfileImportPlatform.fromProfileURL)
+      ?? sourceURL.flatMap(ProfileImportPlatform.fromShortLink)
+      ?? ProfileImportPlatform.parse(input)?.platform
+      ?? .douyin
+  }
+  var dataStore: WKWebsiteDataStore { platform.session.dataStore }
+  // Signed access URLs live only for this discovery session, never in returned MCP data.
+  private var accessURLs: [String: String] = [:]
+  func captureURL(for candidate: DouyinProfileImportCandidate) -> String {
+    accessURLs[candidate.canonicalURL] ?? candidate.canonicalURL
+  }
   private let alreadySaved: (String) -> Bool
   private let enqueue: ([String], Bool, CreatorID?) -> ManualLinkViewModel.ProfileImportEnqueueOutcome
+  private let enqueueCandidates: (([ProfileImportCandidateSeed], Bool, CreatorID?) -> ManualLinkViewModel.ProfileImportEnqueueOutcome)?
   private let ensureCreator: (String, String, String?) -> CreatorID?
   private let refreshCreatorName: (CreatorID, String?, String?) -> Void
   private let attachExisting: (CreatorID, [String]) -> Void
@@ -450,17 +562,20 @@ final class DouyinProfileImportViewModel: ObservableObject {
 
   static let perRoundBudget = 100
   static let noNewScreenLimit = 3
+  static let initialEmptyScreenLimit = 20
   static let missingRootLimit = 8
 
   init(
     alreadySaved: @escaping (String) -> Bool,
     enqueue: @escaping ([String], Bool, CreatorID?) -> ManualLinkViewModel.ProfileImportEnqueueOutcome,
+    enqueueCandidates: (([ProfileImportCandidateSeed], Bool, CreatorID?) -> ManualLinkViewModel.ProfileImportEnqueueOutcome)? = nil,
     ensureCreator: @escaping (String, String, String?) -> CreatorID? = { _, _, _ in nil },
     refreshCreatorName: @escaping (CreatorID, String?, String?) -> Void = { _, _, _ in },
     attachExisting: @escaping (CreatorID, [String]) -> Void = { _, _ in }
   ) {
     self.alreadySaved = alreadySaved
     self.enqueue = enqueue
+    self.enqueueCandidates = enqueueCandidates
     self.ensureCreator = ensureCreator
     self.refreshCreatorName = refreshCreatorName
     self.attachExisting = attachExisting
@@ -472,8 +587,11 @@ final class DouyinProfileImportViewModel: ObservableObject {
       enqueue: { urls, downloads, creatorID in
         manualLink.enqueueProfileImport(canonicalURLs: urls, downloadsVideo: downloads, creatorID: creatorID)
       },
+      enqueueCandidates: { candidates, downloads, creatorID in
+        manualLink.enqueueProfileImport(candidates: candidates, downloadsVideo: downloads, creatorID: creatorID)
+      },
       ensureCreator: { authorID, profileURL, name in
-        manualLink.ensureDouyinCreator(authorID: authorID, profileURL: profileURL, displayName: name)
+        manualLink.ensureProfileCreator(authorID: authorID, profileURL: profileURL, displayName: name)
       },
       refreshCreatorName: { id, name, avatar in
         manualLink.refreshDouyinCreator(creatorID: id, displayName: name, avatarURL: avatar)
@@ -486,29 +604,35 @@ final class DouyinProfileImportViewModel: ObservableObject {
 
   var validationMessage: String? {
     let trimmed = input.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !trimmed.isEmpty, DouyinProfileInputRoute.parse(input) == nil else { return nil }
-    return "请输入抖音博主主页分享文案、v.douyin.com 短链或完整 /user/ 主页链接。"
+    guard !trimmed.isEmpty, ProfileImportPlatform.parse(input) == nil else { return nil }
+    return "请输入一个抖音、小红书、X 或 B 站主页链接或分享文案。支持常见手机主页地址和短链；短链若打开后是单条作品，请改用单条保存。"
   }
 
-  var canStart: Bool { DouyinProfileInputRoute.parse(input) != nil && phase != .loading }
+  var canStart: Bool { ProfileImportPlatform.parse(input) != nil && phase != .loading }
   var isScanning: Bool { phase == .scanning }
   var selectedCount: Int { selectedIDs.count }
   var unsavedCandidateIDs: Set<String> {
     Set(candidates.lazy.filter { !$0.wasAlreadySaved }.map(\.id))
   }
+  var incompleteMetricIDs: [String] {
+    candidates.filter { $0.likes == nil || $0.comments == nil || $0.collects == nil }.map(\.id)
+  }
 
   func start() {
-    guard let route = DouyinProfileInputRoute.parse(input) else {
-      phase = .failed("无法识别抖音博主主页链接。")
+    guard let route = ProfileImportPlatform.parse(input) else {
+      phase = .failed("无法识别博主主页。请使用抖音、小红书、X 或 B 站主页链接、分享文案或短链。")
       return
     }
     candidates = []
+    accessURLs = [:]
     selectedIDs = []
     saveMessage = nil
     profileName = nil
     creatorID = nil
+    discoverySource = .embeddedWebKit
+    resolvedPlatform = route.platform
     profileAuthorID = {
-      if case let .profile(_, authorID) = route { return authorID }
+      if case let .profile(_, _, authorID) = route { return authorID }
       return nil
     }()
     consecutiveNoNewScreens = 0
@@ -521,24 +645,42 @@ final class DouyinProfileImportViewModel: ObservableObject {
   }
 
   private func bindCreatorIfNeeded() {
-    guard creatorID == nil,
-          let authorID = profileAuthorID,
-          let sourceURL else { return }
-    creatorID = ensureCreator(authorID, sourceURL.absoluteString, profileName)
+    guard creatorID == nil, let authorID = profileAuthorID else { return }
+    let persisted = sourceURL.flatMap { url in
+      platform.authorID(url).map { platform.canonicalProfileURL(authorID: $0).absoluteString }
+    } ?? platform.canonicalProfileURL(authorID: authorID).absoluteString
+    creatorID = ensureCreator(authorID, persisted, profileName)
   }
 
   func acceptNavigation(_ url: URL, navigationRequestID requestID: Int? = nil) {
+    guard discoverySource != .browserExtension else { return }
     guard requestID == nil || requestID == navigationRequestID else { return }
-    guard DouyinProfileNavigationPolicy.allows(url) else { return }
+    guard platform.allowsNavigation(url) else {
+      rejectDisallowedNavigation(url)
+      return
+    }
     switch phase {
     case .loading, .scanning, .stopped(.loginRequired), .stopped(.verificationRequired), .stopped(.worksTabRequired):
       break
     case .input, .stopped(_), .failed(_):
       return
     }
-    guard let authorID = DouyinProfileInputRoute.authorID(from: url) else {
-      if DouyinProfileWorkURL.canonical(url) != nil {
-        phase = .failed("这是单条作品链接，请使用博主主页链接。")
+    if let landed = ProfileImportPlatform.fromProfileURL(url), landed != platform {
+      phase = .failed("打开后的站点与当前平台不一致，已停止。")
+      return
+    }
+    if let landedShort = ProfileImportPlatform.fromShortLink(url), landedShort != platform {
+      phase = .failed("打开后的站点与当前平台不一致，已停止。")
+      return
+    }
+    guard let authorID = platform.authorID(url) else {
+      if platform != .douyin,
+         url.path.lowercased().range(of: "login|signin|passport", options: .regularExpression) != nil {
+        phase = .stopped(.loginRequired)
+        return
+      }
+      if ProfileImportPlatform.fromWorkURL(url) != nil {
+        phase = .failed("这是单条作品链接，请改用单条保存入口，不能当作博主主页导入。")
       }
       return
     }
@@ -547,14 +689,59 @@ final class DouyinProfileImportViewModel: ObservableObject {
       return
     }
     profileAuthorID = profileAuthorID ?? authorID
-    if sourceURL == nil {
-      sourceURL = DouyinProfileInputRoute.parse("https://www.douyin.com/user/\(authorID)")?.sourceURL
-    }
+    let next = platform.navigationProfileURL(authorID: authorID, retaining: url)
+    let needsCanonicalLoad = Self.needsCanonicalNavigation(from: url, to: next)
+    sourceURL = next
     bindCreatorIfNeeded()
+    if needsCanonicalLoad {
+      navigationRequestID += 1
+      phase = .loading
+      return
+    }
     beginScanRound()
   }
 
+  static func needsCanonicalNavigation(from landed: URL, to target: URL) -> Bool {
+    func normalized(_ url: URL) -> (String, String) {
+      var host = (url.host ?? "").lowercased()
+      if host.hasPrefix("www.") { host = String(host.dropFirst(4)) }
+      var path = url.path
+      while path.count > 1, path.hasSuffix("/") { path.removeLast() }
+      return (host, path)
+    }
+    return normalized(landed) != normalized(target)
+  }
+
+  func rejectDisallowedNavigation(_ url: URL?) {
+    guard discoverySource != .browserExtension else { return }
+    switch phase {
+    case .loading, .scanning, .stopped(.loginRequired), .stopped(.verificationRequired), .stopped(.worksTabRequired):
+      if let url, ProfileImportPlatform.fromWorkURL(url) != nil {
+        phase = .failed("这是单条作品链接，请改用单条保存入口，不能当作博主主页导入。")
+      } else {
+        phase = .failed("打开后的地址离开了当前平台，已停止。")
+      }
+    case .input, .stopped(_), .failed(_):
+      return
+    }
+  }
+
+  func reloadCurrentHomepage() {
+    guard sourceURL != nil else { return }
+    if discoverySource == .browserExtension {
+      saveMessage = "请在浏览器刷新该主页后，再点一次汲作扩展。"
+      return
+    }
+    consecutiveNoNewScreens = 0
+    consecutiveMissingRoots = 0
+    newItemsThisRound = 0
+    saveMessage = nil
+    navigationRequestID += 1
+    phase = .loading
+  }
+
   func navigationStarted(navigationRequestID requestID: Int) {
+    guard discoverySource != .browserExtension else { return }
     guard requestID == navigationRequestID else { return }
     if phase == .scanning {
       scanRequestID += 1
@@ -563,18 +750,20 @@ final class DouyinProfileImportViewModel: ObservableObject {
   }
 
   func navigationFailed(navigationRequestID requestID: Int) {
+    guard discoverySource != .browserExtension else { return }
     guard requestID == navigationRequestID else { return }
     switch phase {
     case .loading, .scanning,
          .stopped(.loginRequired), .stopped(.verificationRequired), .stopped(.worksTabRequired):
       phase = .stopped(.navigationFailed)
     case .input, .stopped(.user), .stopped(.perRoundBudget), .stopped(.visibleEnd),
-         .stopped(.navigationFailed), .stopped(.platformChanged), .failed:
+         .stopped(.navigationFailed), .stopped(.platformChanged), .stopped(.browserExtension), .failed:
       return
     }
   }
 
   func scanFailed(scanRequestID requestID: Int) {
+    guard discoverySource != .browserExtension else { return }
     guard requestID == scanRequestID, phase == .scanning else { return }
     phase = .stopped(.navigationFailed)
   }
@@ -586,6 +775,10 @@ final class DouyinProfileImportViewModel: ObservableObject {
 
   func continueLoading() {
     guard sourceURL != nil, profileAuthorID != nil else { return }
+    if discoverySource == .browserExtension {
+      saveMessage = "请在浏览器继续向下滚动该主页，再点一次汲作扩展。不会自动保存或总结。"
+      return
+    }
     beginScanRound()
   }
 
@@ -601,13 +794,21 @@ final class DouyinProfileImportViewModel: ObservableObject {
     _ snapshot: DouyinProfileDOMSnapshot,
     scanRequestID requestID: Int? = nil
   ) -> ScanDirective {
+    guard discoverySource != .browserExtension else { return .stop(.browserExtension) }
     guard (requestID == nil || requestID == scanRequestID), phase == .scanning else {
       return .stop(.user)
     }
     switch snapshot.status {
-    case "verification": return finish(.verificationRequired)
-    case "login": return finish(.loginRequired)
-    case "wrong_tab": return finish(.worksTabRequired)
+    case "verification":
+      // Captcha pages return empty header fields. Do not write nulls over a
+      // previously saved name or avatar.
+      return finish(.verificationRequired)
+    case "login":
+      applyVisibleProfileMetadata(snapshot)
+      return finish(.loginRequired)
+    case "wrong_tab":
+      applyVisibleProfileMetadata(snapshot)
+      return finish(.worksTabRequired)
     case "missing_root":
       consecutiveMissingRoots += 1
       return consecutiveMissingRoots >= Self.missingRootLimit ? finish(.platformChanged) : .keepLoading
@@ -621,13 +822,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
       phase = .failed("页面中的博主身份与主页链接不一致，已停止读取。")
       return .stop(.navigationFailed)
     }
-    if let name = snapshot.profileName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
-      profileName = name
-    }
-    let avatar = snapshot.profileAvatarURL.flatMap(DouyinProfilePreviewResource.admittedURL)?.absoluteString
-    if let creatorID, profileName != nil || avatar != nil {
-      refreshCreatorName(creatorID, profileName, avatar)
-    }
+    applyVisibleProfileMetadata(snapshot)
 
     var indices = Dictionary(uniqueKeysWithValues: candidates.enumerated().map { ($0.element.workID, $0.offset) })
     var additions = 0
@@ -635,14 +830,14 @@ final class DouyinProfileImportViewModel: ObservableObject {
     let remainingBudget = max(0, Self.perRoundBudget - newItemsThisRound)
     for item in snapshot.candidates where item.authorID == expectedAuthorID {
       guard let rawURL = URL(string: item.url),
-            let canonicalURL = DouyinProfileWorkURL.canonical(rawURL),
+            ProfileImportPlatform.fromWorkURL(rawURL) == platform,
+            let canonicalURL = ProfileImportPlatform.canonicalWork(rawURL),
             let workID = DouyinProfileWorkURL.workID(from: canonicalURL)
       else { continue }
+      accessURLs[canonicalURL] = rawURL.absoluteString
       if let index = indices[workID] {
-        // Virtualized cards can return with more data; absent values must not erase known counts.
-        candidates[index].likes = item.likes?.nilIfTrimmedEmpty ?? candidates[index].likes
-        candidates[index].comments = item.comments?.nilIfTrimmedEmpty ?? candidates[index].comments
-        candidates[index].collects = item.collects?.nilIfTrimmedEmpty ?? candidates[index].collects
+        // Virtualized cards and later list responses can add counts; nil must not erase known values.
+        applyMetrics(item, to: &candidates[index])
         continue
       }
       guard additions < remainingBudget else { continue }
@@ -658,7 +853,9 @@ final class DouyinProfileImportViewModel: ObservableObject {
         wasAlreadySaved: saved,
         likes: item.likes?.nilIfTrimmedEmpty,
         comments: item.comments?.nilIfTrimmedEmpty,
-        collects: item.collects?.nilIfTrimmedEmpty
+        collects: item.collects?.nilIfTrimmedEmpty,
+        metricsSource: item.metricsSource?.nilIfTrimmedEmpty,
+        metricsReadAt: item.metricsReadAt?.nilIfTrimmedEmpty
       ))
       if saved { existingURLs.append(canonicalURL) }
       additions += 1
@@ -672,7 +869,8 @@ final class DouyinProfileImportViewModel: ObservableObject {
     if newItemsThisRound >= Self.perRoundBudget {
       return finish(.perRoundBudget(newItemsThisRound))
     }
-    if consecutiveNoNewScreens >= Self.noNewScreenLimit {
+    let emptyLimit = candidates.isEmpty ? Self.initialEmptyScreenLimit : Self.noNewScreenLimit
+    if consecutiveNoNewScreens >= emptyLimit {
       return finish(.visibleEnd)
     }
     return .keepLoading
@@ -683,12 +881,54 @@ final class DouyinProfileImportViewModel: ObservableObject {
     return .stop(reason)
   }
 
+  /// Saves a legally visible public header even when the works list is blocked.
+  /// Nil name/avatar are skipped so an earlier real header is not erased.
+  private func applyVisibleProfileMetadata(_ snapshot: DouyinProfileDOMSnapshot) {
+    guard let expectedAuthorID = profileAuthorID,
+          snapshot.profileAuthorID == nil || snapshot.profileAuthorID == expectedAuthorID
+    else { return }
+    if let name = snapshot.profileName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
+       CreatorDisplay.isResolvedDisplayName(name, authorID: expectedAuthorID) {
+      profileName = name
+    }
+    let avatar = snapshot.profileAvatarURL.flatMap(DouyinProfilePreviewResource.admittedURL)?.absoluteString
+    guard let creatorID, profileName != nil || avatar != nil else { return }
+    refreshCreatorName(creatorID, profileName, avatar)
+  }
+
   func updateMetrics(_ metrics: DouyinProfileWorkMetrics, expectedWorkID: String) {
     guard metrics.status == "ready", metrics.workID == expectedWorkID,
           let index = candidates.firstIndex(where: { $0.workID == expectedWorkID }) else { return }
-    candidates[index].likes = metrics.likes?.nilIfTrimmedEmpty ?? candidates[index].likes
-    candidates[index].comments = metrics.comments?.nilIfTrimmedEmpty ?? candidates[index].comments
-    candidates[index].collects = metrics.collects?.nilIfTrimmedEmpty ?? candidates[index].collects
+    if let authorID = metrics.authorID, !authorID.isEmpty, authorID != candidates[index].authorID { return }
+    applyMetrics(
+      DouyinProfileDOMCandidate(
+        url: candidates[index].canonicalURL,
+        authorID: candidates[index].authorID,
+        previewText: nil,
+        coverURL: nil,
+        publishedText: nil,
+        likes: metrics.likes,
+        comments: metrics.comments,
+        collects: metrics.collects,
+        metricsSource: metrics.source,
+        metricsReadAt: metrics.readAt
+      ),
+      to: &candidates[index]
+    )
+  }
+
+  /// Existing cards keep identity/order; later list or detail counts fill missing fields in place.
+  private func applyMetrics(_ item: DouyinProfileDOMCandidate, to candidate: inout DouyinProfileImportCandidate) {
+    let previousLikes = candidate.likes
+    let previousComments = candidate.comments
+    let previousCollects = candidate.collects
+    candidate.likes = item.likes?.nilIfTrimmedEmpty ?? candidate.likes
+    candidate.comments = item.comments?.nilIfTrimmedEmpty ?? candidate.comments
+    candidate.collects = item.collects?.nilIfTrimmedEmpty ?? candidate.collects
+    if candidate.likes != previousLikes || candidate.comments != previousComments || candidate.collects != previousCollects {
+      candidate.metricsSource = item.metricsSource?.nilIfTrimmedEmpty ?? candidate.metricsSource
+      candidate.metricsReadAt = item.metricsReadAt?.nilIfTrimmedEmpty ?? candidate.metricsReadAt
+    }
   }
 
   func toggleSelection(_ id: String) {
@@ -699,14 +939,148 @@ final class DouyinProfileImportViewModel: ObservableObject {
   func selectAllLoaded() { selectedIDs = unsavedCandidateIDs }
   func clearSelection() { selectedIDs.removeAll() }
 
-  func saveSelected() {
-    let selectedURLs = candidates
-      .filter { selectedIDs.contains($0.id) && !$0.wasAlreadySaved }
-      .map(\.canonicalURL)
-    guard !selectedURLs.isEmpty else { return }
-    let outcome = enqueue(selectedURLs, downloadsVideo, creatorID)
-    saveMessage = "已加入保存队列 \(outcome.queued) 条，跳过 \(outcome.skipped) 条。失败项可在列表顶部单独重试。"
+  @discardableResult
+  func saveSelected() -> Int {
+    let selected = candidates.filter { selectedIDs.contains($0.id) && !$0.wasAlreadySaved }
+    guard !selected.isEmpty else { return 0 }
+    if discoverySource == .browserExtension { bindCreatorIfNeeded() }
+    let outcome: ManualLinkViewModel.ProfileImportEnqueueOutcome
+    if let enqueueCandidates {
+      let seeds = selected.map { candidate in
+        ProfileImportCandidateSeed(
+          workID: candidate.workID,
+          authorID: candidate.authorID,
+          canonicalURL: candidate.canonicalURL,
+          captureURL: captureURL(for: candidate),
+          previewText: candidate.previewText,
+          coverURL: candidate.coverURL?.absoluteString,
+          publishedText: candidate.publishedText,
+          likes: candidate.likes,
+          comments: candidate.comments,
+          collects: candidate.collects
+        )
+      }
+      outcome = enqueueCandidates(seeds, downloadsVideo, creatorID)
+    } else {
+      outcome = enqueue(selected.map { captureURL(for: $0) }, downloadsVideo, creatorID)
+    }
+    saveMessage = "已加入保存队列 \(outcome.queued) 条，跳过 \(outcome.skipped) 条。失败项可在抓取卡片上单独重试。"
     selectedIDs.removeAll()
+    return outcome.queued
+  }
+
+  func presentExternalCandidates(_ request: XProfileCandidatesRequest) {
+    resolvedPlatform = .x
+    input = request.profileURL
+    profileAuthorID = request.authorID
+    sourceURL = URL(string: request.profileURL)
+    if CreatorDisplay.isResolvedDisplayName(request.profileName, authorID: request.authorID) {
+      profileName = request.profileName
+    }
+    candidates = []
+    selectedIDs = []
+    accessURLs = [:]
+    saveMessage = nil
+    creatorID = nil
+    enterBrowserExtensionSource()
+    bindCreatorIfNeeded()
+    applyExternalProfileMetadata(request)
+    appendExternalItems(request.items, authorID: request.authorID)
+  }
+
+  @discardableResult
+  func mergeExternalCandidates(_ request: XProfileCandidatesRequest) -> Bool {
+    guard platform == .x else { return false }
+    let expectedAuthor = profileAuthorID ?? Self.parsedXAuthorID(from: input)
+    guard expectedAuthor == request.authorID else { return false }
+    if profileAuthorID == nil {
+      profileAuthorID = request.authorID
+    }
+    resolvedPlatform = .x
+    if sourceURL == nil {
+      sourceURL = URL(string: request.profileURL)
+    }
+    if input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      input = request.profileURL
+    }
+    enterBrowserExtensionSource()
+    if CreatorDisplay.isResolvedDisplayName(request.profileName, authorID: request.authorID) {
+      profileName = request.profileName?.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    bindCreatorIfNeeded()
+    applyExternalProfileMetadata(request)
+    appendExternalItems(request.items, authorID: request.authorID)
+    return true
+  }
+
+  func prepareForBrowserHandoff() {
+    guard let route = ProfileImportPlatform.parse(input), route.platform == .x else {
+      guard platform == .x, profileAuthorID != nil else { return }
+      enterBrowserExtensionSource()
+      return
+    }
+    if case let .profile(_, url, authorID) = route {
+      if profileAuthorID == nil { profileAuthorID = authorID }
+      if sourceURL == nil { sourceURL = url }
+      resolvedPlatform = .x
+    }
+    enterBrowserExtensionSource()
+  }
+
+  private func enterBrowserExtensionSource() {
+    discoverySource = .browserExtension
+    scanRequestID += 1
+    phase = .stopped(.browserExtension)
+  }
+
+  func openCurrentProfileInBrowser() {
+    prepareForBrowserHandoff()
+    guard let sourceURL = sourceURL ?? ProfileImportPlatform.parse(input)?.sourceURL else { return }
+    if !NSWorkspace.shared.open(sourceURL) {
+      saveMessage = "未能打开默认浏览器，请检查系统设置后重试。"
+    }
+  }
+
+  static func parsedXAuthorID(from input: String) -> String? {
+    guard case let .profile(platform, _, authorID) = ProfileImportPlatform.parse(input), platform == .x else {
+      return nil
+    }
+    return authorID
+  }
+
+  private func applyExternalProfileMetadata(_ request: XProfileCandidatesRequest) {
+    guard let expectedAuthorID = profileAuthorID, expectedAuthorID == request.authorID else { return }
+    if let name = request.profileName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
+       CreatorDisplay.isResolvedDisplayName(name, authorID: expectedAuthorID) {
+      profileName = name
+    }
+    let avatar = XProfileCandidatesRequest.admittedAvatarURL(request.profileAvatarURL)
+      .flatMap(DouyinProfilePreviewResource.admittedURL)?.absoluteString
+    guard let creatorID, profileName != nil || avatar != nil else { return }
+    refreshCreatorName(creatorID, profileName, avatar)
+  }
+
+  private func appendExternalItems(_ items: [XProfileCandidatesRequest.Item], authorID: String) {
+    var indices = Dictionary(uniqueKeysWithValues: candidates.enumerated().map { ($0.element.workID, $0.offset) })
+    var existingURLs: [String] = []
+    for item in items {
+      if indices[item.id] != nil { continue }
+      let saved = alreadySaved(item.url)
+      indices[item.id] = candidates.count
+      candidates.append(.init(
+        workID: item.id,
+        authorID: authorID,
+        canonicalURL: item.url,
+        previewText: item.previewText,
+        coverURL: nil,
+        publishedText: item.publishedText,
+        wasAlreadySaved: saved
+      ))
+      if saved { existingURLs.append(item.url) }
+    }
+    if let creatorID, !existingURLs.isEmpty {
+      attachExisting(creatorID, existingURLs)
+    }
   }
 }
 
@@ -728,6 +1102,9 @@ struct DouyinProfileImportWebView: NSViewRepresentable {
     configuration.websiteDataStore = dataStore
     configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
     configuration.defaultWebpagePreferences.allowsContentJavaScript = true
+    if model.platform == .douyin {
+      configuration.userContentController.addUserScript(DouyinProfileMetricsCapture.documentStartUserScript())
+    }
     let view = WKWebView(frame: .zero, configuration: configuration)
     view.customUserAgent = SiteSessionProfile.browserUserAgent
     view.navigationDelegate = context.coordinator
@@ -737,6 +1114,10 @@ struct DouyinProfileImportWebView: NSViewRepresentable {
 
   func updateNSView(_ webView: WKWebView, context: Context) {
     context.coordinator.model = model
+    if model.discoverySource == .browserExtension {
+      context.coordinator.cancelScan()
+      return
+    }
     if context.coordinator.navigationRequestID != model.navigationRequestID,
        let sourceURL = model.sourceURL {
       context.coordinator.navigationRequestID = model.navigationRequestID
@@ -791,7 +1172,7 @@ struct DouyinProfileImportWebView: NSViewRepresentable {
         }
         while !Task.isCancelled, self.model.isScanning, requestID == self.model.scanRequestID {
           do {
-            let result = try await evaluate(Self.extractionJavaScript)
+            let result = try await evaluate(self.model.platform == .douyin ? Self.extractionJavaScript : self.model.platform.discoveryScript)
             guard isCurrent() else { return }
             guard let raw = result as? String,
                   let data = raw.data(using: .utf8)
@@ -802,8 +1183,8 @@ struct DouyinProfileImportWebView: NSViewRepresentable {
             let snapshot = try JSONDecoder().decode(DouyinProfileDOMSnapshot.self, from: data)
             guard self.model.merge(snapshot, scanRequestID: requestID) == .keepLoading,
                   isCurrent() else { return }
-            if snapshot.status == "ready" {
-              _ = try await evaluate(Self.scrollJavaScript)
+            if snapshot.status == "ready", !self.model.candidates.isEmpty {
+              _ = try await evaluate(self.model.platform == .douyin ? Self.scrollJavaScript : self.model.platform.advanceScript)
               guard isCurrent() else { return }
             }
             try await Task.sleep(for: .milliseconds(900))
@@ -849,7 +1230,15 @@ struct DouyinProfileImportWebView: NSViewRepresentable {
       decidePolicyFor navigationAction: WKNavigationAction,
       decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
     ) {
-      decisionHandler(DouyinProfileNavigationPolicy.allows(navigationAction.request.url) ? .allow : .cancel)
+      let url = navigationAction.request.url
+      if model.platform.allowsNavigation(url) {
+        decisionHandler(.allow)
+        return
+      }
+      if navigationAction.targetFrame?.isMainFrame != false {
+        model.rejectDisallowedNavigation(url)
+      }
+      decisionHandler(.cancel)
     }
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
@@ -910,12 +1299,13 @@ struct DouyinProfileImportWebView: NSViewRepresentable {
         return JSON.stringify({status:'wrong_tab', profileAuthorID, profileName:null, profileAvatarURL:null, activeTab, candidates:[]});
       }
 
-      const nameNode = document.querySelector('[data-e2e="user-title"], [data-e2e="user-name"], h1');
+      const nameNode = document.querySelector('[data-e2e="user-title"], [data-e2e="user-name"]');
       const titleMatch = String(document.title || '').match(/^(.+?)的抖音/);
-      const profileName = clean(nameNode && nameNode.textContent) || (titleMatch && clean(titleMatch[1])) || null;
+      let profileName = clean(nameNode && nameNode.textContent) || (titleMatch && clean(titleMatch[1])) || null;
+      if (profileName && profileAuthorID && profileName.replace(/^@/, '').toLowerCase() === String(profileAuthorID).toLowerCase()) profileName = null;
       const avatarNode = Array.from(document.querySelectorAll(
         '[data-e2e="user-avatar"] img, [data-e2e="user-info"] img, [data-e2e="user-detail"] img'
-      )).find(node => isVisible(node) && !node.closest('[data-e2e="user-post-list"]'));
+      )).find(node => isVisible(node) && !node.closest('[data-e2e="user-post-list"], aside, nav, [class*="recommend"]'));
       const profileAvatarURL = avatarNode
         ? (avatarNode.currentSrc || avatarNode.getAttribute('src') || null)
         : null;
@@ -953,11 +1343,21 @@ struct DouyinProfileImportWebView: NSViewRepresentable {
         const time = card.querySelector && card.querySelector('time, [data-e2e*="time"], [class*="time"]');
         const preview = clean((image && image.getAttribute('alt')) || (card && card.textContent));
         const coverURL = image && (image.currentSrc || image.getAttribute('src'));
-        // Calibrated against the visible public profile card (2026-09-06).
-        // Profile grids expose likes only; do not invent comments/collects from page totals.
         const likeNode = Array.from(metricScope.querySelectorAll('.author-card-user-video-like')).find(isVisible);
         const likeText = clean(likeNode && likeNode.textContent);
-        const likes = /^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:万|亿|[kKmMwW])?\+?$/.test(likeText) ? likeText : null;
+        let likes = /^(?:\d{1,3}(?:,\d{3})+|\d+)(?:\.\d+)?(?:万|亿|[kKmMwW])?\+?$/.test(likeText) ? likeText : null;
+        let comments = null;
+        let collects = null;
+        let metricsSource = likes ? 'homepage_dom' : null;
+        let metricsReadAt = null;
+        const captured = (window.__linkdigestAwemeStats || {})[workMatch[2]];
+        if (captured && captured.authorID === authorID) {
+          if (captured.likes != null) likes = captured.likes;
+          if (captured.comments != null) comments = captured.comments;
+          if (captured.collects != null) collects = captured.collects;
+          metricsSource = captured.source || 'homepage_list';
+          metricsReadAt = captured.observedAt || null;
+        }
         candidates.push({
           url: `https://www.douyin.com/${workMatch[1]}/${workMatch[2]}`,
           authorID,
@@ -965,8 +1365,10 @@ struct DouyinProfileImportWebView: NSViewRepresentable {
           coverURL: coverURL || null,
           publishedText: clean(time && time.textContent) || null,
           likes,
-          comments: null,
-          collects: null
+          comments,
+          collects,
+          metricsSource,
+          metricsReadAt
         });
       }
       const loginRequired = candidates.length === 0 && /登录后查看|登录即可查看|扫码登录/.test(bodyText);
@@ -1020,19 +1422,37 @@ struct DouyinProfileImportSheet: View {
   @Environment(\.dismiss) private var dismiss
   @Environment(\.appTheme) private var theme
   @StateObject private var model: DouyinProfileImportViewModel
+  @ObservedObject private var manualLink: ManualLinkViewModel
+  @ObservedObject private var xSession = SiteSessionController.x
+  @ObservedObject private var bilibiliSession = SiteSessionController.bilibili
+  @ObservedObject private var douyinSession = SiteSessionController.douyin
+  @ObservedObject private var xiaohongshuSession = SiteSessionController.xiaohongshu
   @State private var showsHomepage = false
+  @State private var presentedLoginPlatform: ProfileImportPlatform?
   @StateObject private var metricsReader = DouyinProfileMetricsReader()
   @State private var metricsQueue = DouyinProfileVisibleMetricsQueue()
   private let request: DouyinProfileImportRequest
+  private let onQueued: (CreatorID) -> Void
   @State private var didApplyRequest = false
 
-  init(manualLink: ManualLinkViewModel, request: DouyinProfileImportRequest) {
+  init(manualLink: ManualLinkViewModel, request: DouyinProfileImportRequest,
+       onQueued: @escaping (CreatorID) -> Void = { _ in }) {
     let viewModel = DouyinProfileImportViewModel(manualLink: manualLink)
     if !request.initialInput.isEmpty {
       viewModel.input = request.initialInput
     }
     _model = StateObject(wrappedValue: viewModel)
+    _manualLink = ObservedObject(wrappedValue: manualLink)
     self.request = request
+    self.onQueued = onQueued
+  }
+
+  init(external model: DouyinProfileImportViewModel, manualLink: ManualLinkViewModel,
+       onQueued: @escaping (CreatorID) -> Void = { _ in }) {
+    _model = StateObject(wrappedValue: model)
+    _manualLink = ObservedObject(wrappedValue: manualLink)
+    self.request = .init(id: UUID(), initialInput: model.input, autoStart: false)
+    self.onQueued = onQueued
   }
 
   var body: some View {
@@ -1049,12 +1469,15 @@ struct DouyinProfileImportSheet: View {
             ZStack(alignment: .topLeading) {
               // Keep WebKit mounted at a stable desktop viewport even while the
               // loading sheet is compact, so lazy-loaded discovery is unaffected.
-              DouyinProfileImportWebView(model: model, dataStore: SiteSessionController.douyin.dataStore)
-                .frame(width: 960, height: 480)
-                .allowsHitTesting(showsHomepage)
-                .accessibilityHidden(!showsHomepage)
-              if !showsHomepage {
-                candidatePanel
+              if model.discoverySource != .browserExtension {
+                DouyinProfileImportWebView(model: model, dataStore: model.dataStore)
+                  .id(model.platform)
+                  .frame(width: 960, height: 480)
+                  .allowsHitTesting(showsHomepage)
+                  .accessibilityHidden(!showsHomepage)
+              }
+              if !showsHomepage || model.discoverySource == .browserExtension {
+                candidatePanel(availableWidth: geometry.size.width)
                   .frame(width: geometry.size.width, height: geometry.size.height)
                   .background(theme.canvas)
               }
@@ -1071,10 +1494,16 @@ struct DouyinProfileImportSheet: View {
     }
     .frame(width: showsHomepage || !model.candidates.isEmpty ? 960 : 640,
            height: sheetHeight, alignment: .top)
+    .background(theme.card)
     .onChange(of: metricsReader.readingID) { previous, current in
       if let previous, current == nil {
         metricsQueue.finish(previous)
         readNextVisibleMetrics()
+      }
+    }
+    .onChange(of: metricsReader.accessLimit) { _, limit in
+      if DouyinProfileMetricsCapture.pausesAutomaticReading(limit) {
+        metricsQueue.pause()
       }
     }
     .onChange(of: showsHomepage) { _, shown in
@@ -1082,79 +1511,258 @@ struct DouyinProfileImportSheet: View {
     }
     .id(request.id)
     .onAppear {
+      manualLink.attachVisibleProfileImport(model)
       guard !didApplyRequest else { return }
       didApplyRequest = true
       if model.input != request.initialInput {
         model.input = request.initialInput
       }
+      Task { await refreshVisibleSession() }
+      if model.discoverySource == .browserExtension { return }
       if request.autoStart {
         model.start()
       }
     }
-    .onDisappear { stopReading(); model.stop() }
+    .onChange(of: model.platform) { _, _ in
+      Task { await refreshVisibleSession() }
+    }
+    .onChange(of: sessionPlatform) { _, _ in
+      Task { await refreshVisibleSession() }
+    }
+    .alert(
+      "要换成另一个主页吗？",
+      isPresented: Binding(
+        get: { manualLink.browserProfileImportConflict != nil },
+        set: { if !$0 { manualLink.cancelIncomingBrowserProfile() } }
+      )
+    ) {
+      browserProfileConflictButtons(incoming: manualLink.browserProfileImportConflict?.incoming)
+    } message: {
+      Text(manualLink.browserProfileImportConflict?.message ?? "")
+    }
+    .sheet(item: $presentedLoginPlatform, onDismiss: {
+      Task {
+        await refreshVisibleSession()
+        if model.sourceURL != nil {
+          model.reloadCurrentHomepage()
+        }
+      }
+    }) { platform in
+      SiteLoginSheet(session: session(for: platform))
+    }
+    .onDisappear {
+      stopReading()
+      model.stop()
+      manualLink.detachVisibleProfileImport(model)
+    }
+  }
+
+  @ViewBuilder
+  private func browserProfileConflictButtons(incoming: XProfileCandidatesRequest?) -> some View {
+    Button("保留当前勾选") { manualLink.cancelIncomingBrowserProfile() }
+    Button("换成新主页", role: .destructive) {
+      if let incoming { manualLink.replaceIncomingBrowserProfile(incoming) }
+    }
+  }
+
+  private var sessionPlatform: ProfileImportPlatform? {
+    if model.sourceURL != nil { return model.resolvedPlatform ?? model.platform }
+    return ProfileImportPlatform.parse(model.input)?.platform
+  }
+
+  private func session(for platform: ProfileImportPlatform) -> SiteSessionController {
+    switch platform {
+    case .x: xSession
+    case .bilibili: bilibiliSession
+    case .douyin: douyinSession
+    case .xiaohongshu: xiaohongshuSession
+    }
+  }
+
+  private func refreshVisibleSession() async {
+    if let platform = sessionPlatform {
+      await session(for: platform).refreshStatus()
+    }
   }
 
   private var sheetHeight: CGFloat {
     if showsHomepage { return 740 }
-    if !model.candidates.isEmpty { return model.candidates.count <= 3 ? 600 : 740 }
-    return model.sourceURL == nil ? 320 : 360
+    if !model.candidates.isEmpty { return model.candidates.count <= 3 ? 560 : 720 }
+    return model.sourceURL == nil ? 320 : 300
+  }
+
+  private var stageTitle: String {
+    if model.sourceURL == nil { return "1. 输入主页" }
+    if model.candidates.isEmpty { return "2. 发现作品" }
+    return "3. 选择作品"
+  }
+
+  private var stageProgressLine: String? {
+    if model.sourceURL == nil { return nil }
+    if model.isScanning { return "进度：正在加载更多作品…" }
+    if model.phase == .loading { return "进度：正在打开主页…" }
+    if case .stopped = model.phase {
+      return "进度：已暂停 · 已发现 \(model.candidates.count) 条"
+    }
+    if case .failed = model.phase { return "进度：发现失败，可重试或查看主页" }
+    if model.candidates.isEmpty { return "进度：等待作品出现" }
+    if model.saveMessage != nil {
+      return "进度：已发现 \(model.candidates.count) 条 · 下方显示最近保存结果"
+    }
+    return "进度：已发现 \(model.candidates.count) 条，可继续加载或保存"
+  }
+
+  private var selectionSummary: String {
+    let loaded = model.candidates.count
+    let alreadySaved = model.candidates.filter(\.wasAlreadySaved).count
+    let selectable = model.unsavedCandidateIDs.count
+    return "已选 \(model.selectedCount) / 可保存 \(selectable)（已加载 \(loaded)，其中已保存 \(alreadySaved)）"
   }
 
   private var header: some View {
-    HStack {
-      VStack(alignment: .leading, spacing: 3) {
-        Text("导入抖音博主内容").font(.headline)
-        if !model.candidates.isEmpty {
-          Text("选择想保存的作品，随时继续加载更多。")
-            .font(.caption).foregroundStyle(.secondary)
+    HStack(alignment: .top, spacing: DesignTokens.Space.md) {
+      VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+        Text("导入博主内容")
+          .themedFont(.headline)
+        Text(stageTitle)
+          .themedFont(.callout, weight: .medium)
+          .foregroundStyle(theme.secondaryText)
+        if let stageProgressLine {
+          Text(stageProgressLine)
+            .themedFont(.caption)
+            .foregroundStyle(theme.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
         }
       }
-      Spacer()
-      Button("关闭") { stopReading(); model.stop(); dismiss() }.keyboardShortcut(.cancelAction)
+      Spacer(minLength: DesignTokens.Space.sm)
+      Button("关闭") { stopReading(); model.stop(); dismiss() }
+        .keyboardShortcut(.cancelAction)
     }
-    .padding(.horizontal, 24)
-    .padding(.vertical, 18)
+    .padding(.horizontal, DesignTokens.Space.lg)
+    .padding(.vertical, DesignTokens.Space.md)
   }
 
   private var inputPanel: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      Text("博主主页").font(.headline)
-      TextField("粘贴主页链接或分享文案", text: $model.input)
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      Text("粘贴博主主页链接或分享文案")
+        .themedFont(.callout, weight: .medium)
+      TextField("主页链接或分享文案", text: $model.input)
         .textFieldStyle(.roundedBorder)
+        .onSubmit { if model.canStart { model.start() } }
         .accessibilityIdentifier("douyin-profile-import-input")
       if let validation = model.validationMessage {
         Label(validation, systemImage: "exclamationmark.triangle.fill")
-          .font(.caption).foregroundStyle(theme.danger)
+          .themedFont(.caption)
+          .foregroundStyle(theme.danger)
+          .fixedSize(horizontal: false, vertical: true)
       }
-      Text("支持抖音主页链接和分享短链。")
-        .font(.callout).foregroundStyle(.secondary)
+      Text("支持主页链接、分享文案、常见手机主页和短链。")
+        .themedFont(.caption)
+        .foregroundStyle(.secondary)
+      sessionStatusRow
+      if model.canStart, model.platform == .x {
+        Text("也可以使用浏览器中的登录：打开主页后，点击汲作扩展读取作品。")
+          .themedFont(.caption).foregroundStyle(.secondary)
+      }
       HStack {
-        Spacer()
+        if model.canStart, model.platform == .x {
+          Button("在浏览器读取") { model.openCurrentProfileInBrowser() }
+            .accessibilityIdentifier("profile-import-browser-start")
+        }
+        Spacer(minLength: 0)
         Button("发现作品") { model.start() }
           .buttonStyle(.borderedProminent)
           .disabled(!model.canStart)
           .accessibilityIdentifier("douyin-profile-import-start")
       }
-      .padding(.top, 8)
     }
-    .padding(24)
+    .padding(.horizontal, DesignTokens.Space.lg)
+    .padding(.vertical, DesignTokens.Space.md)
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   private var discoveryHeader: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 12) {
-        VStack(alignment: .leading, spacing: 4) {
-          Text(model.profileName ?? "抖音主页").font(.title3.weight(.semibold))
-          Text("已发现 \(model.candidates.count) 条作品")
-            .font(.callout).foregroundStyle(theme.secondaryText)
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      ViewThatFits(in: .horizontal) {
+        HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+          discoveryIdentity
+          Spacer(minLength: DesignTokens.Space.sm)
+          discoveryControls
         }
-        Spacer()
-        if model.isScanning || model.phase == .loading {
-          ProgressView().controlSize(.small)
-          Text(model.isScanning ? "正在加载作品…" : "正在打开主页…")
-            .font(.caption).foregroundStyle(theme.secondaryText)
+        VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+          discoveryIdentity
+          discoveryControls
         }
+      }
+      sessionStatusRow
+      if case let .stopped(reason) = model.phase {
+        Label(reason.message, systemImage: "info.circle")
+          .themedFont(.caption)
+          .foregroundStyle(theme.secondaryText)
+          .fixedSize(horizontal: false, vertical: true)
+      } else if case let .failed(message) = model.phase {
+        Label("\(message) 可点击「查看主页」检查后重试。", systemImage: "exclamationmark.triangle.fill")
+          .themedFont(.caption)
+          .foregroundStyle(theme.danger)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(.horizontal, DesignTokens.Space.md)
+    .padding(.vertical, DesignTokens.Space.sm)
+  }
+
+  @ViewBuilder
+  private var sessionStatusRow: some View {
+    if model.isBrowserSourced {
+      Text("来源：浏览器扩展 · 已收到作品清单；浏览器登录与 App 内登录独立。")
+        .themedFont(.caption).foregroundStyle(theme.secondaryText)
+        .accessibilityIdentifier("profile-import-browser-source")
+    } else if let platform = sessionPlatform {
+      let current = session(for: platform)
+      HStack(spacing: DesignTokens.Space.sm) {
+        Text(platform.displayName)
+          .themedFont(.caption)
+          .foregroundStyle(theme.secondaryText)
+        Text(current.isLoggedIn ? "登录已保存" : "未登录")
+          .themedFont(.caption, weight: .medium)
+          .foregroundStyle(current.isLoggedIn ? theme.success : theme.secondaryText)
+          .accessibilityIdentifier("profile-import-session-status")
+        Spacer(minLength: 0)
+        Button("管理登录") {
+          presentedLoginPlatform = platform
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .accessibilityIdentifier("profile-import-session-login")
+      }
+    }
+  }
+
+  private var discoveryIdentity: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+      Text(model.profileName ?? "\(model.platform.displayName)主页")
+        .themedFont(.title3, weight: .semibold)
+        .fixedSize(horizontal: false, vertical: true)
+      Text("已发现 \(model.candidates.count) 条作品")
+        .themedFont(.caption)
+        .foregroundStyle(theme.secondaryText)
+    }
+  }
+
+  private var discoveryControls: some View {
+    HStack(spacing: DesignTokens.Space.sm) {
+      if model.isScanning || model.phase == .loading {
+        ProgressView().controlSize(.small)
+        Text(model.isScanning ? "正在加载…" : "正在打开…")
+          .themedFont(.caption)
+          .foregroundStyle(theme.secondaryText)
+          .lineLimit(1)
+      }
+      if model.discoverySource == .browserExtension {
+        Button("在浏览器打开当前主页", action: model.openCurrentProfileInBrowser)
+          .accessibilityIdentifier("douyin-profile-import-open-browser")
+        Button("继续加载", action: model.continueLoading)
+      } else {
         if model.isScanning {
           Button("暂停加载", action: model.stop)
         } else if model.phase != .loading {
@@ -1167,35 +1775,51 @@ struct DouyinProfileImportSheet: View {
                 systemImage: showsHomepage ? "square.grid.2x2" : "globe")
         }
         .accessibilityIdentifier("douyin-profile-import-toggle-homepage")
-      }
-      if case let .stopped(reason) = model.phase {
-        Label(reason.message, systemImage: "info.circle")
-          .font(.caption).foregroundStyle(theme.secondaryText)
-          .fixedSize(horizontal: false, vertical: true)
-      } else if case let .failed(message) = model.phase {
-        Label("\(message) 可点击“查看主页”检查。", systemImage: "exclamationmark.triangle.fill")
-          .font(.caption).foregroundStyle(theme.danger)
-          .fixedSize(horizontal: false, vertical: true)
+        if model.platform == .x {
+          Button("在浏览器读取", action: model.openCurrentProfileInBrowser)
+            .accessibilityIdentifier("profile-import-browser-start")
+        }
       }
     }
-    .padding(12)
   }
 
-  private var candidatePanel: some View {
-    ScrollView {
+  private func candidatePanel(availableWidth: CGFloat) -> some View {
+    let columns = CreatorDirectoryChrome.xColumnCount(availableWidth: availableWidth)
+    return ScrollView {
       if model.candidates.isEmpty {
-        VStack(spacing: 12) {
-          Image(systemName: "square.grid.2x2").font(.largeTitle)
-          Text(model.phase == .loading || model.isScanning ? "作品加载后会显示在这里" : "还没有发现作品")
-            .font(.headline)
-          Text("如需登录或验证，请点击上方“查看主页”。")
-            .font(.callout)
+        VStack(spacing: DesignTokens.Space.sm) {
+          Image(systemName: "square.grid.2x2")
+            .font(.system(size: DesignTokens.IconSize.empty, weight: .medium))
+          if model.phase == .loading || model.isScanning {
+            Text("正在发现作品")
+              .themedFont(.headline)
+            Text("作品出现后会显示在这里。")
+              .themedFont(.callout)
+          } else if case .failed = model.phase {
+            Text("发现失败")
+              .themedFont(.headline)
+            Text("请查看上方说明，或打开主页后重试。")
+              .themedFont(.callout)
+          } else {
+            Text("还没有发现作品")
+              .themedFont(.headline)
+            Text("如需登录或验证，请点击上方「查看主页」。")
+              .themedFont(.callout)
+          }
         }
         .foregroundStyle(theme.secondaryText)
+        .multilineTextAlignment(.center)
         .frame(maxWidth: .infinity)
-        .padding(.vertical, 24)
+        .padding(.vertical, DesignTokens.Space.xl)
+        .padding(.horizontal, DesignTokens.Space.lg)
       } else {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .top), count: 3), spacing: 12) {
+        LazyVGrid(
+          columns: Array(
+            repeating: GridItem(.flexible(minimum: 0), spacing: CreatorDirectoryChrome.xGridSpacing, alignment: .top),
+            count: columns
+          ),
+          spacing: CreatorDirectoryChrome.xGridSpacing
+        ) {
           ForEach(model.candidates) { candidate in
             candidateCard(candidate)
               .onScrollVisibilityChange(threshold: 0.2) { visible in
@@ -1205,7 +1829,7 @@ struct DouyinProfileImportSheet: View {
               .onDisappear { metricsQueue.setVisible(candidate.id, false) }
           }
         }
-        .padding(12)
+        .padding(DesignTokens.Space.md)
       }
     }
     .accessibilityIdentifier("douyin-profile-import-candidates")
@@ -1213,19 +1837,11 @@ struct DouyinProfileImportSheet: View {
 
   private func candidateCard(_ candidate: DouyinProfileImportCandidate) -> some View {
     let selected = model.selectedIDs.contains(candidate.id)
-    return VStack(spacing: 0) {
-      Button { model.toggleSelection(candidate.id) } label: {
-      VStack(alignment: .leading, spacing: 0) {
-        // The container fixes the crop independently of the source image dimensions.
-        Rectangle().fill(theme.badge)
-          .aspectRatio(3.0 / 2.0, contentMode: .fit)
-          .overlay {
-            GeometryReader { geometry in
-              DouyinProfilePreviewImage(url: candidate.coverURL)
-                .frame(width: geometry.size.width, height: geometry.size.height)
-                .clipped()
-            }
-          }
+    let unread = CreatorWorkMetricLayout.displayValue(nil).accessibility
+    return Button { model.toggleSelection(candidate.id) } label: {
+      CreatorWorkCardShell(theme: theme, highlight: selected) {
+      CreatorWorkCardCoverSlot {
+        DouyinProfilePreviewImage(url: candidate.coverURL)
           .overlay(alignment: .topTrailing) {
             Image(systemName: candidate.wasAlreadySaved ? "checkmark.circle.fill" : (selected ? "checkmark.circle.fill" : "circle"))
               .font(.body)
@@ -1233,72 +1849,77 @@ struct DouyinProfileImportSheet: View {
               .padding(4)
               .background(theme.card, in: Circle())
               .padding(8)
+              .accessibilityHidden(true)
           }
-        VStack(alignment: .leading, spacing: 8) {
-          Text(displayTitle(for: candidate))
-            .font(.caption.weight(.semibold))
-            .lineLimit(2, reservesSpace: true)
-            .multilineTextAlignment(.leading)
-            .foregroundStyle(theme.primaryText)
-          HStack(spacing: 0) {
-            metric("点赞", symbol: "heart", value: candidate.likes)
-            metric("评论", symbol: "bubble.right", value: candidate.comments)
-            metric("收藏", symbol: "bookmark", value: candidate.collects)
-          }
-          .padding(.vertical, 7)
-          .background(theme.badge.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
-          HStack {
-            Text(candidate.wasAlreadySaved ? "已保存" : (selected ? "已选择" : "点击选择"))
-            Spacer()
-            if let published = candidate.publishedText { Text(published).lineLimit(1) }
-          }
-          .font(.caption).foregroundStyle(theme.secondaryText)
-        }
-        .padding(10)
       }
+    } text: {
+      VStack(alignment: .leading, spacing: CreatorWorkCardLayout.textSpacing) {
+        CreatorWorkCardTextHeader(
+          title: displayTitle(for: candidate),
+          dateText: candidate.publishedText?.nilIfTrimmedEmpty ?? "发布时间待获取",
+          theme: theme
+        )
+        CreatorWorkMetricStrip(host: model.platform.host, theme: theme, values: { slot in
+          switch slot {
+          case .likes: candidate.likes
+          case .comments: candidate.comments
+          case .collects: candidate.collects
+          case .shares, .views: nil
+          }
+        }, helpSuffix: "选择导入")
       }
-      .buttonStyle(.plain)
-      .disabled(candidate.wasAlreadySaved)
-      .accessibilityLabel(displayTitle(for: candidate))
-      .accessibilityValue("\(candidate.wasAlreadySaved ? "已保存" : (selected ? "已选择" : "未选择"))，点赞 \(candidate.likes ?? "未提供")，评论 \(candidate.comments ?? "未提供")，收藏 \(candidate.collects ?? "未提供")")
+    }
+    }
+    .buttonStyle(.plain)
+    .disabled(candidate.wasAlreadySaved)
+    .overlay(alignment: .topLeading) {
+      GeometryReader { geometry in
+        candidateMetricsStatusOverlay(candidate)
+          .frame(width: geometry.size.width,
+                 height: geometry.size.width / CreatorWorkCardLayout.coverAspect,
+                 alignment: .bottomLeading)
+      }
+    }
+    .accessibilityLabel(displayTitle(for: candidate))
+    .accessibilityValue("\(candidate.wasAlreadySaved ? "已保存" : (selected ? "已选择" : "未选择"))，点赞 \(candidate.likes ?? unread)，评论 \(candidate.comments ?? unread)，收藏 \(candidate.collects ?? unread)")
+  }
+
+  @ViewBuilder
+  private func candidateMetricsStatusOverlay(_ candidate: DouyinProfileImportCandidate) -> some View {
+    if model.platform == .douyin {
+      let complete = hasCompleteMetrics(candidate)
+      let message = metricsReader.messages[candidate.id]
       HStack(spacing: 5) {
         if metricsReader.readingID == candidate.id {
           ProgressView().controlSize(.mini)
-          Text("补全数据…").font(.caption2).foregroundStyle(theme.secondaryText)
-          Spacer(minLength: 2)
-          Button("取消") { metricsReader.cancel() }.font(.caption2)
+          Text("补全数据…")
+          Button("取消") { metricsReader.cancel() }
+            .buttonStyle(.plain)
+            .accessibilityLabel("取消补全数据")
         } else {
-          let complete = hasCompleteMetrics(candidate)
-          let message = metricsReader.messages[candidate.id]
-          Text(complete ? "数据已完整" : (message ?? "等待自动补全"))
-            .font(.caption2).foregroundStyle(theme.secondaryText)
+          Text(complete ? "数据已完整" : (message ?? "等待主页列表数据"))
             .lineLimit(1)
-            .help(message ?? (complete ? "点赞、评论、收藏已读取" : "进入可见区域后自动补全评论和收藏"))
-          Spacer(minLength: 2)
+            .help(metricsHelp(candidate, complete: complete, message: message))
           if !complete, message != nil {
             Button {
               metricsQueue.retry(candidate.id)
               readNextVisibleMetrics()
             } label: { Image(systemName: "arrow.clockwise") }
               .buttonStyle(.plain)
-              .font(.caption)
               .help("重试读取这条作品的数据")
               .accessibilityLabel("重试读取数据")
               .disabled(metricsReader.readingID != nil)
           } else if complete {
-            Image(systemName: "checkmark").font(.caption2).foregroundStyle(theme.success)
+            Image(systemName: "checkmark").foregroundStyle(theme.success)
           }
         }
       }
-      .frame(height: 20)
-      .padding(.horizontal, 10).padding(.bottom, 8)
-    }
-    .background(theme.card)
-    .clipShape(RoundedRectangle(cornerRadius: 12))
-    .overlay {
-      RoundedRectangle(cornerRadius: 12)
-        .strokeBorder(selected ? theme.accent : theme.hairline, lineWidth: selected ? 2 : 1)
-        .allowsHitTesting(false)
+      .themedFont(.caption2)
+      .foregroundStyle(theme.secondaryText)
+      .padding(.horizontal, 7)
+      .padding(.vertical, 5)
+      .background(.ultraThinMaterial, in: Capsule())
+      .padding(6)
     }
   }
 
@@ -1306,13 +1927,39 @@ struct DouyinProfileImportSheet: View {
     candidate.likes != nil && candidate.comments != nil && candidate.collects != nil
   }
 
+  private func metricsHelp(_ candidate: DouyinProfileImportCandidate, complete: Bool, message: String?) -> String {
+    let source: String
+    switch candidate.metricsSource {
+    case DouyinProfileMetricsSource.homepageList: source = "来源：主页已加载列表"
+    case DouyinProfileMetricsSource.homepageDOM: source = "来源：主页卡片"
+    case DouyinProfileMetricsSource.detailList, DouyinProfileMetricsSource.detailStructured: source = "来源：作品页数据"
+    case DouyinProfileMetricsSource.detailDOM: source = "来源：作品页"
+    default: source = complete ? "点赞、评论、收藏已读取" : "主页列表到达后会补全；缺字段才打开作品页"
+    }
+    if let readAt = candidate.metricsReadAt?.nilIfTrimmedEmpty {
+      return "\(source) · 读取于 \(readAt)"
+    }
+    return message ?? source
+  }
+
   private func readNextVisibleMetrics() {
-    guard !showsHomepage, metricsReader.readingID == nil else { return }
+    guard model.platform == .douyin, !showsHomepage, metricsReader.readingID == nil else { return }
+    guard !model.isScanning, model.phase != .loading else { return }
+    guard !metricsQueue.isPaused else { return }
     let incomplete = model.candidates.filter { !hasCompleteMetrics($0) }
     guard let id = metricsQueue.next(in: incomplete.map(\.id)),
           let candidate = incomplete.first(where: { $0.id == id }) else { return }
     metricsReader.read(candidate, dataStore: SiteSessionController.douyin.dataStore) { metrics in
+      if DouyinProfileMetricsCapture.pausesAutomaticReading(metrics.status) {
+        metricsQueue.pause()
+      }
       model.updateMetrics(metrics, expectedWorkID: candidate.workID)
+    }
+    // A complete cache hit finishes synchronously; SwiftUI may coalesce
+    // nil -> id -> nil and never deliver the readingID onChange.
+    if metricsReader.readingID == nil {
+      metricsQueue.finish(id)
+      Task { @MainActor in readNextVisibleMetrics() }
     }
   }
 
@@ -1321,24 +1968,8 @@ struct DouyinProfileImportSheet: View {
     metricsReader.cancel()
   }
 
-  private func metric(_ label: String, symbol: String, value: String?) -> some View {
-    VStack(spacing: 3) {
-      Text(value ?? "—")
-        .font(.callout.weight(.semibold))
-        .monospacedDigit()
-        .foregroundStyle(value == nil ? theme.secondaryText : theme.primaryText)
-        .lineLimit(1)
-        .minimumScaleFactor(0.8)
-      Label(label, systemImage: symbol)
-        .font(.caption2)
-        .foregroundStyle(theme.secondaryText)
-    }
-    .frame(maxWidth: .infinity)
-    .help(value == nil ? "尚未读取到这条作品的\(label)数据，— 不代表 0。" : "\(label)：\(value!)（页面显示值）")
-  }
-
   private func displayTitle(for candidate: DouyinProfileImportCandidate) -> String {
-    let title = candidate.previewText ?? "抖音作品 \(candidate.workID)"
+    let title = candidate.previewText ?? "作品 \(candidate.workID)"
     guard let author = model.profileName?.nilIfTrimmedEmpty else { return title }
     for separator in ["：", ":"] {
       let prefix = author + separator
@@ -1350,26 +1981,55 @@ struct DouyinProfileImportSheet: View {
   }
 
   private var footer: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      HStack(spacing: 12) {
-        Button("全选已加载", action: model.selectAllLoaded)
-          .disabled(model.unsavedCandidateIDs.isEmpty)
-        Button("清空", action: model.clearSelection)
-          .disabled(model.selectedIDs.isEmpty)
-        Text("已选 \(model.selectedCount) 条").font(.callout)
-          .foregroundStyle(theme.secondaryText)
-        Spacer(minLength: 12)
-        Toggle("同时下载视频", isOn: $model.downloadsVideo)
-          .toggleStyle(.checkbox)
-        Button("保存所选 \(model.selectedCount) 条") { model.saveSelected() }
-          .buttonStyle(.borderedProminent)
-          .disabled(model.selectedIDs.isEmpty)
-          .accessibilityIdentifier("douyin-profile-import-save")
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: DesignTokens.Space.sm) {
+          selectionControls
+          Spacer(minLength: DesignTokens.Space.md)
+          saveControls
+        }
+        VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+          selectionControls
+          saveControls
+        }
       }
-      Text(model.saveMessage ?? "可见卡片会自动补全评论和收藏；— 表示尚未读取到数据。保存后可在汲作中查看；总结和转写由你手动发起。")
-        .font(.caption).foregroundStyle(theme.secondaryText)
+      Text(selectionSummary)
+        .themedFont(.callout, weight: .medium)
+        .foregroundStyle(theme.primaryText)
         .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("douyin-profile-import-selection-summary")
+      Text(model.saveMessage ?? "互动数据仅显示页面可确认的值；— 表示尚未读取到数据。保存后可在汲作中查看；总结和转写由你手动发起。")
+        .themedFont(.caption)
+        .foregroundStyle(theme.secondaryText)
+        .fixedSize(horizontal: false, vertical: true)
+        .accessibilityIdentifier("douyin-profile-import-save-result")
     }
-    .padding(12)
+    .padding(DesignTokens.Space.md)
+  }
+
+  private var selectionControls: some View {
+    HStack(spacing: DesignTokens.Space.sm) {
+      Button("全选已加载", action: model.selectAllLoaded)
+        .disabled(model.unsavedCandidateIDs.isEmpty)
+      Button("清空选择", action: model.clearSelection)
+        .disabled(model.selectedIDs.isEmpty)
+    }
+  }
+
+  private var saveControls: some View {
+    HStack(spacing: DesignTokens.Space.sm) {
+      Toggle("同时下载视频", isOn: $model.downloadsVideo)
+        .toggleStyle(.checkbox)
+      Button("保存所选 \(model.selectedCount) 条") {
+        guard model.saveSelected() > 0, let creatorID = model.creatorID else { return }
+        stopReading()
+        model.stop()
+        onQueued(creatorID)
+        dismiss()
+      }
+        .buttonStyle(.borderedProminent)
+        .disabled(model.selectedIDs.isEmpty)
+        .accessibilityIdentifier("douyin-profile-import-save")
+    }
   }
 }

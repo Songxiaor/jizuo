@@ -329,7 +329,9 @@ public enum XiaohongshuPageParser {
     let user = note["user"] as? [String: Any]
     let author = jsonString(user?["nickname"])
     let interact = note["interactInfo"] as? [String: Any]
-    let images = imageURLs(from: note["imageList"] as? [Any] ?? [])
+    var images = imageURLs(from: note["imageList"] as? [Any] ?? [])
+    // Some video notes expose only the page's own cover metadata.
+    if images.isEmpty, let cover = noteImageURL(html: html) { images = [cover] }
     let tags = tagNames(from: note["tagList"] as? [Any] ?? [])
     let type = jsonString(note["type"])?.lowercased()
     let publishedAt = jsonInt64(note["time"]).map(iso8601UTCMilliseconds(fromMilliseconds:))
@@ -441,28 +443,137 @@ public enum XiaohongshuPageParser {
   }
 
   /// property 和 name 两种写法都要认：小红书两种都下发过。
+  /// 全页先找 `property`，没有非空结果再找 `name`，与旧正则两轮扫描一致。
   static func metaContent(html: String, property: String) -> String? {
-    let escaped = NSRegularExpression.escapedPattern(for: property)
-    for attribute in ["property", "name"] {
-      let pattern = "<meta[^>]+\(attribute)=[\"']\(escaped)[\"'][^>]*content=[\"']([^\"']*)[\"']"
-      if let match = html.range(of: pattern, options: [.regularExpression, .caseInsensitive]) {
-        let fragment = String(html[match])
-        if let value = fragment.range(of: "content=[\"']([^\"']*)[\"']", options: .regularExpression) {
-          let raw = String(fragment[value])
-            .replacingOccurrences(of: #"^content=[\"']"#, with: "", options: .regularExpression)
-            .replacingOccurrences(of: #"[\"']$"#, with: "", options: .regularExpression)
-          let decoded = raw
-            .replacingOccurrences(of: "&amp;", with: "&")
-            .replacingOccurrences(of: "&lt;", with: "<")
-            .replacingOccurrences(of: "&gt;", with: ">")
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-          if !decoded.isEmpty { return decoded }
-        }
-      }
+    firstMetaContent(html: html, key: property, attribute: "property")
+      ?? firstMetaContent(html: html, key: property, attribute: "name")
+  }
+
+  private static func firstMetaContent(html: String, key: String, attribute: String) -> String? {
+    var cursor = html.startIndex
+    while let tagStart = nextMetaTagStart(in: html, from: cursor) {
+      let parsed = parseMetaTagAttributes(in: html, tagStart: tagStart)
+      cursor = parsed.end
+      guard metaAttribute(parsed.attrs, named: attribute, equals: key),
+            let raw = parsed.attrs["content"] else { continue }
+      let decoded = decodeMetaEntities(raw)
+        .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+      if !decoded.isEmpty { return decoded }
     }
     return nil
+  }
+
+  /// 标签名必须恰好是 `meta`：后面只能是空白、`/` 或 `>`，排除 `<metadata>` / `<meta:custom>`。
+  private static func nextMetaTagStart(in html: String, from start: String.Index) -> String.Index? {
+    var cursor = start
+    while cursor < html.endIndex {
+      guard let range = html.range(
+        of: "<meta",
+        options: .caseInsensitive,
+        range: cursor..<html.endIndex
+      ) else {
+        return nil
+      }
+      let afterName = range.upperBound
+      if afterName < html.endIndex {
+        let next = html[afterName]
+        if !(next.isWhitespace || next == "/" || next == ">") {
+          cursor = afterName
+          continue
+        }
+      }
+      return range.lowerBound
+    }
+    return nil
+  }
+
+  /// 按 HTML 属性规则读到标签结束：引号内的 `>`、相反引号保留；属性名精确匹配。
+  private static func parseMetaTagAttributes(
+    in html: String,
+    tagStart: String.Index
+  ) -> (attrs: [String: String], end: String.Index) {
+    var index = html.index(tagStart, offsetBy: 5, limitedBy: html.endIndex) ?? html.endIndex
+    var attrs: [String: String] = [:]
+    while index < html.endIndex {
+      while index < html.endIndex {
+        let char = html[index]
+        if char.isWhitespace || char == "/" {
+          index = html.index(after: index)
+          continue
+        }
+        break
+      }
+      if index >= html.endIndex { break }
+      if html[index] == ">" {
+        index = html.index(after: index)
+        break
+      }
+
+      let nameStart = index
+      while index < html.endIndex {
+        let char = html[index]
+        if char.isWhitespace || char == "=" || char == ">" || char == "/" { break }
+        index = html.index(after: index)
+      }
+      let name = String(html[nameStart..<index]).lowercased()
+
+      while index < html.endIndex, html[index].isWhitespace {
+        index = html.index(after: index)
+      }
+
+      var value = ""
+      if index < html.endIndex, html[index] == "=" {
+        index = html.index(after: index)
+        while index < html.endIndex, html[index].isWhitespace {
+          index = html.index(after: index)
+        }
+        if index < html.endIndex {
+          let delimiter = html[index]
+          if delimiter == "\"" || delimiter == "'" {
+            index = html.index(after: index)
+            let valueStart = index
+            while index < html.endIndex, html[index] != delimiter {
+              index = html.index(after: index)
+            }
+            value = String(html[valueStart..<index])
+            if index < html.endIndex {
+              index = html.index(after: index)
+            }
+          } else {
+            let valueStart = index
+            while index < html.endIndex {
+              let char = html[index]
+              if char.isWhitespace || char == ">" { break }
+              index = html.index(after: index)
+            }
+            value = String(html[valueStart..<index])
+          }
+        }
+      }
+
+      if !name.isEmpty, attrs[name] == nil {
+        attrs[name] = value
+      }
+    }
+    return (attrs, index)
+  }
+
+  private static func metaAttribute(
+    _ attrs: [String: String],
+    named name: String,
+    equals expected: String
+  ) -> Bool {
+    guard let value = attrs[name] else { return false }
+    return value.caseInsensitiveCompare(expected) == .orderedSame
+  }
+
+  private static func decodeMetaEntities(_ raw: String) -> String {
+    raw
+      .replacingOccurrences(of: "&amp;", with: "&")
+      .replacingOccurrences(of: "&lt;", with: "<")
+      .replacingOccurrences(of: "&gt;", with: ">")
+      .replacingOccurrences(of: "&quot;", with: "\"")
+      .replacingOccurrences(of: "&#39;", with: "'")
   }
 
   private static func extractInitialStateObject(from html: String) -> String? {
@@ -524,8 +635,16 @@ public enum XiaohongshuPageParser {
   }
 
   private static func acceptedImageURL(_ raw: String) -> URL? {
-    guard let url = URL(string: raw),
+    guard var components = URLComponents(string: raw),
+          ["http", "https"].contains(components.scheme?.lowercased() ?? "") else { return nil }
+    if components.scheme?.lowercased() == "http" {
+      guard components.port == nil || components.port == 80 else { return nil }
+      components.scheme = "https"
+      components.port = nil
+    }
+    guard let url = components.url,
           url.scheme?.lowercased() == "https",
+          url.port == nil || url.port == 443,
           url.user == nil,
           url.password == nil,
           let host = url.host?.lowercased(),
