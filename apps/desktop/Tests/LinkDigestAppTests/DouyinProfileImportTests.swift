@@ -1,4 +1,5 @@
 import Foundation
+import Combine
 import WebKit
 import XCTest
 @testable import LinkDigestAdapters
@@ -36,6 +37,26 @@ final class DouyinProfileImportTests: XCTestCase {
     )
     XCTAssertNil(DouyinProfileInputRoute.parse("https://www.douyin.com/video/7661288207509769506"))
     XCTAssertNil(DouyinProfileInputRoute.parse("https://www.xiaohongshu.com/user/profile/demo"))
+  }
+
+  func testMergePublishesOnceAndAcceptsLateLazyCoverWithoutLosingSelection() {
+    let model = makeModel()
+    start(model)
+    var publications = 0
+    let observation = model.$candidates.dropFirst().sink { _ in publications += 1 }
+    defer { observation.cancel() }
+    let url = "https://www.douyin.com/video/7661288207509769506"
+    _ = model.merge(snapshot([item(url, authorID: authorID),
+      item("https://www.douyin.com/video/7673819714897187302", authorID: authorID)]))
+    XCTAssertEqual(publications, 1, "Publish a scan once, not once per card")
+    model.toggleSelection("7661288207509769506")
+    _ = model.merge(snapshot([item(url, authorID: authorID)]))
+    XCTAssertEqual(publications, 1, "An unchanged scan must not invalidate the grid")
+    _ = model.merge(snapshot([.init(url: url, authorID: authorID, previewText: "预览",
+      coverURL: "https://p3.douyinpic.com/cover.jpg", publishedText: "2026-09-05")]))
+    XCTAssertEqual(publications, 2)
+    XCTAssertEqual(model.candidates.first?.coverURL?.absoluteString, "https://p3.douyinpic.com/cover.jpg")
+    XCTAssertTrue(model.selectedIDs.contains("7661288207509769506"))
   }
 
   func testMergeKeepsOnlySameAuthorCanonicalWorksAndDeduplicatesVirtualScroll() {
@@ -590,6 +611,54 @@ final class DouyinProfileImportTests: XCTestCase {
     XCTAssertNotNil(DouyinProfilePreviewResource.admittedURL("https://p3-pc-sign.douyinpic.com/image.jpg"))
   }
 
+  func testGalleryCoverAdmissionAllowsCrossPlatformCDNsAndStillRejectsArbitraryHosts() {
+    for raw in [
+      "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+      "https://raw.githubusercontent.com/octocat/Hello-World/master/cover.png",
+      "https://user-images.githubusercontent.com/1/cover.png",
+      "https://opengraph.githubassets.com/abc/owner/repo",
+      "https://i.redd.it/abc.jpg",
+      "https://preview.redd.it/abc.jpg",
+      "https://substackcdn.com/image/fetch/cover.jpg",
+      "https://linux.do/uploads/default/original/1X/cover.png",
+      "https://cdn3.ldstatic.com/optimized/4X/1/5/2/cover.png",
+    ] {
+      XCTAssertEqual(GalleryCoverAdmission.admittedURL(raw)?.absoluteString, raw, raw)
+      XCTAssertEqual(DouyinProfilePreviewResource.admittedURL(raw)?.absoluteString, raw, raw)
+    }
+    for raw in [
+      "https://evil.example/a.jpg",
+      "https://tracker.example.test/a.jpg",
+      "http://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg",
+      "https://127.0.0.1/a.jpg",
+      "https://d123.cloudfront.net/cover.jpg",
+      "https://attacker.fastly.net/cover.jpg",
+    ] {
+      XCTAssertNil(GalleryCoverAdmission.admittedURL(raw), raw)
+    }
+  }
+
+  func testCoverRedirectMustStayInTheSameNamedPlatformFamily() async throws {
+    let start = URL(string: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")!
+    let resources = ProfilePreviewResources(response: .init(
+      url: start, statusCode: 200, contentType: "image/jpeg", body: Data([1, 2, 3])
+    ))
+    _ = try await DouyinProfilePreviewResource.fetch(start, using: resources)
+    let recordedRequest = await resources.lastRequest
+    let request = try XCTUnwrap(recordedRequest)
+    XCTAssertTrue(request.allowsRedirectTarget(URL(string: "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg")!))
+    XCTAssertTrue(GalleryCoverAdmission.allowsRedirect(
+      from: start,
+      to: URL(string: "https://i.ytimg.com/vi/dQw4w9WgXcQ/mqdefault.jpg")!
+    ))
+    XCTAssertFalse(request.allowsRedirectTarget(URL(string: "https://d123.cloudfront.net/cover.jpg")!))
+    XCTAssertFalse(request.allowsRedirectTarget(URL(string: "https://opengraph.githubassets.com/abc/owner/repo")!))
+    XCTAssertFalse(GalleryCoverAdmission.allowsRedirect(
+      from: start,
+      to: URL(string: "https://p3.douyinpic.com/image.jpg")!
+    ))
+  }
+
   func testPreviewFetchUsesSafeResourceRequestAndRejectsUnsafeRedirectTargets() async throws {
     let url = URL(string: "https://p3.douyinpic.com/image.jpg")!
     let resources = ProfilePreviewResources(response: .init(url: url, statusCode: 200, contentType: "image/jpeg", body: Data([1, 2, 3])))
@@ -609,6 +678,128 @@ final class DouyinProfileImportTests: XCTestCase {
       _ = try await DouyinProfilePreviewResource.fetch(url, using: unsafeResponse)
       XCTFail("A transport response outside the permitted image hosts must fail closed")
     } catch { XCTAssertEqual(error as? ManualLinkError, .unsafeURL) }
+  }
+
+  func testWeChatCoverUpgradesLegacyOfficialHTTPWithoutAllowingHTTPTransport() {
+    let legacy = "http://mmbiz.qpic.cn/mmbiz_jpg/example/0?wx_fmt=jpeg"
+    XCTAssertEqual(
+      WeChatArticleLayout.coverURL(legacy)?.absoluteString,
+      "https://mmbiz.qpic.cn/mmbiz_jpg/example/0?wx_fmt=jpeg"
+    )
+    XCTAssertEqual(WeChatArticleLayout.coverURL("http://mmbiz.qpic.cn:80/a")?.absoluteString,
+                   "https://mmbiz.qpic.cn/a")
+    XCTAssertNil(DouyinProfilePreviewResource.admittedURL(legacy))
+    for raw in [
+      "http://mmbiz.qpic.cn.evil.example/a", "http://other.qpic.cn/a",
+      "http://mmbiz.qpic.cn:8080/a", "http://user:pass@mmbiz.qpic.cn/a"
+    ] {
+      XCTAssertNil(WeChatArticleLayout.coverURL(raw))
+    }
+  }
+
+  func testWeChatCoverFetchAllowsOfficialCDNAndSendsArticleReferer() async throws {
+    let url = URL(string: "https://mmbiz.qpic.cn/mmbiz_jpg/example/0?wx_fmt=jpeg")!
+    XCTAssertEqual(DouyinProfilePreviewResource.admittedURL(url.absoluteString), url)
+    let resources = ProfilePreviewResources(response: .init(
+      url: url, statusCode: 200, contentType: "image/jpeg", body: Data([1, 2, 3])
+    ))
+    _ = try await DouyinProfilePreviewResource.fetch(url, using: resources)
+    let recordedRequest = await resources.lastRequest
+    let request = try XCTUnwrap(recordedRequest)
+    XCTAssertEqual(request.headers["Referer"], "https://mp.weixin.qq.com/")
+    XCTAssertNil(request.headers["Cookie"])
+    XCTAssertTrue(request.allowsRedirectTarget(url))
+    for raw in [
+      "https://mmbiz.qpic.cn.evil.example/a", "https://other.qpic.cn/a",
+      "http://mmbiz.qpic.cn/a", "https://mmbiz.qpic.cn:8443/a",
+      "https://user:pass@mmbiz.qpic.cn/a", "https://127.0.0.1/a"
+    ] {
+      XCTAssertNil(DouyinProfilePreviewResource.admittedURL(raw))
+      XCTAssertFalse(request.allowsRedirectTarget(URL(string: raw)!))
+    }
+  }
+
+  func testNewlyAdmittedYouTubeCoverStillEnforcesTypeSizeAndUnsafeRedirect() async throws {
+    let url = URL(string: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg")!
+    XCTAssertNotNil(GalleryCoverAdmission.admittedURL(url.absoluteString))
+    let ok = ProfilePreviewResources(response: .init(
+      url: url, statusCode: 200, contentType: "image/jpeg", body: Data([1, 2, 3])
+    ))
+    _ = try await DouyinProfilePreviewResource.fetch(url, using: ok)
+    let recordedRequest = await ok.lastRequest
+    let request = try XCTUnwrap(recordedRequest)
+    XCTAssertEqual(request.byteLimit, DouyinProfilePreviewResource.byteLimit)
+    XCTAssertEqual(request.headers["Referer"], "https://www.youtube.com/")
+    XCTAssertFalse(request.allowsRedirectTarget(URL(string: "https://127.0.0.1/a")!))
+    XCTAssertFalse(request.allowsRedirectTarget(URL(string: "https://evil.example/a")!))
+    do {
+      _ = try await DouyinProfilePreviewResource.fetch(url, using: ProfilePreviewResources(response: .init(
+        url: url, statusCode: 200, contentType: "text/html", body: Data([1])
+      )))
+      XCTFail("non-image content type must fail closed")
+    } catch { XCTAssertEqual(error as? ManualLinkError, .unsupportedContentType) }
+    let oversized = Data(repeating: 1, count: DouyinProfilePreviewResource.byteLimit + 1)
+    do {
+      _ = try await DouyinProfilePreviewResource.fetch(url, using: ProfilePreviewResources(response: .init(
+        url: url, statusCode: 200, contentType: "image/jpeg", body: oversized
+      )))
+      XCTFail("oversize body must fail closed")
+    } catch { XCTAssertEqual(error as? ManualLinkError, .responseTooLarge) }
+    do {
+      _ = try await DouyinProfilePreviewResource.fetch(url, using: ProfilePreviewResources(response: .init(
+        url: URL(string: "https://127.0.0.1/a")!, statusCode: 200, contentType: "image/jpeg", body: Data([1])
+      )))
+      XCTFail("private redirect target must fail closed")
+    } catch { XCTAssertEqual(error as? ManualLinkError, .unsafeURL) }
+    for extra in [
+      URL(string: "https://cdn3.ldstatic.com/optimized/4X/1/5/2/cover.png")!,
+      URL(string: "https://opengraph.githubassets.com/abc/owner/repo")!,
+    ] {
+      XCTAssertNotNil(GalleryCoverAdmission.admittedURL(extra.absoluteString), extra.absoluteString)
+      do {
+        _ = try await DouyinProfilePreviewResource.fetch(extra, using: ProfilePreviewResources(response: .init(
+          url: extra, statusCode: 200, contentType: "text/html", body: Data([1])
+        )))
+        XCTFail("non-image content type must fail closed for \(extra)")
+      } catch { XCTAssertEqual(error as? ManualLinkError, .unsupportedContentType) }
+      do {
+        _ = try await DouyinProfilePreviewResource.fetch(extra, using: ProfilePreviewResources(response: .init(
+          url: extra, statusCode: 200, contentType: "image/jpeg",
+          body: Data(repeating: 1, count: DouyinProfilePreviewResource.byteLimit + 1)
+        )))
+        XCTFail("oversize body must fail closed for \(extra)")
+      } catch { XCTAssertEqual(error as? ManualLinkError, .responseTooLarge) }
+      do {
+        _ = try await DouyinProfilePreviewResource.fetch(extra, using: ProfilePreviewResources(response: .init(
+          url: URL(string: "https://127.0.0.1/a")!, statusCode: 200, contentType: "image/jpeg", body: Data([1])
+        )))
+        XCTFail("private redirect target must fail closed for \(extra)")
+      } catch { XCTAssertEqual(error as? ManualLinkError, .unsafeURL) }
+    }
+  }
+
+  func testContainedInternalMediaURLRejectsTraversalAndRequiresHashedMediaFile() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let store = LocalMediaStore(applicationSupportRoot: root)
+    try store.ensureRoot()
+    let name = String(repeating: "ab", count: 32) + ".mp4"
+    XCTAssertEqual(name.count - 4, 64)
+    let file = store.absoluteURL(relativePath: name)
+    try Data([0, 0, 0, 0]).write(to: file)
+    XCTAssertEqual(store.containedInternalMediaURL(relativePath: name), file.standardizedFileURL)
+    XCTAssertNil(store.containedInternalMediaURL(relativePath: "../\(name)"))
+    XCTAssertNil(store.containedInternalMediaURL(relativePath: "not-a-hash.mp4"))
+    XCTAssertNil(store.containedInternalMediaURL(relativePath: name + "/../secrets.txt"))
+    let missing = String(repeating: "cd", count: 32) + ".mp4"
+    XCTAssertNil(store.containedInternalMediaURL(relativePath: missing))
+    let outside = root.appendingPathComponent("outside-\(UUID().uuidString).mp4")
+    try Data([1, 2, 3, 4]).write(to: outside)
+    let linked = String(repeating: "ef", count: 32) + ".mp4"
+    let link = store.absoluteURL(relativePath: linked)
+    try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+    XCTAssertNil(store.containedInternalMediaURL(relativePath: linked))
+    XCTAssertNil(WorkThumbnailLoader.containedInternalVideoFile(link))
   }
 
   func testPreviewTransportRejectsPrivateDNSAndReboundConnectedPeer() async {

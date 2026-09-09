@@ -55,7 +55,7 @@ APP_ICON_FILE = "AppIcon.icns"
 PLATFORM_ICONS_DIRECTORY = "PlatformIcons"
 PLATFORM_ICON_FILES = ("bilibili.svg", "douban.svg", "douyin.svg", "github.svg", "juejin.svg", "medium.svg", "reddit.svg", "toutiao.svg", "wechat.svg", "weibo.svg", "x.com.svg", "xiaohongshu.svg", "youtube.svg", "zhihu.svg")
 PROVIDER_ICONS_DIRECTORY = "ProviderIcons"
-PROVIDER_ICON_FILES = ("bailian.svg", "deepinfra.svg", "deepseek.svg", "groq.svg", "ollama.svg", "openai.svg", "opencode.svg", "openrouter.svg", "siliconflow.svg", "stepfun.svg", "zhipu.svg")
+PROVIDER_ICON_FILES = ("bailian.svg", "commandcode.svg", "deepinfra.svg", "deepseek.svg", "groq.svg", "ollama.svg", "openai.svg", "opencode.svg", "openrouter.svg", "siliconflow.svg", "stepfun.svg", "zhipu.svg")
 BROWSER_EXTENSION_DIRECTORY = "BrowserExtension"
 SPARKLE_VERSION = "2.9.5"
 SPARKLE_FRAMEWORK = "Sparkle.framework"
@@ -81,7 +81,7 @@ BROWSER_EXTENSION_IDENTITY = Path("config/extension-identity.json")
 PRODUCT_DISPLAY = Path("apps/desktop/Sources/LinkDigestCore/Resources/product-display.json")
 RELEASE_UNIT_NAME = "release-unit.json"
 UNIT_ID = "com.syc.linkdigest.release-unit.v1"
-DMG_NAME = "汲作-0.2.26-macOS-Universal.dmg"
+DMG_NAME = "汲作-0.2.27-macOS-Universal.dmg"
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 SEMVER_RE = re.compile(r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$")
 VERSION_RE = re.compile(r"^(0|[1-9][0-9]*)(?:\.(0|[1-9][0-9]*)){0,2}$")
@@ -247,8 +247,8 @@ def load_app_config(root: Path | None = None) -> dict[str, Any]:
         "executable": "LinkDigestApp",
         "bundleIdentifier": "com.syc.linkdigest",
         "bundleIdentifierStatus": "engineering-candidate",
-        "shortVersion": "0.2.26",
-        "bundleVersion": "35",
+        "shortVersion": "0.2.27",
+        "bundleVersion": "36",
         "minimumMacOS": "15.0",
         "category": "public.app-category.productivity",
         "sparkleFeedURL": "https://github.com/Songxiaor/jizuo/releases/latest/download/appcast.xml",

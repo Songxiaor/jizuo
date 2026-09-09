@@ -1075,6 +1075,60 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertFalse(head.contains("LDQUOTE"))
   }
 
+  func testArticleVideoMarkerBecomesACardSegmentBetweenParagraphs() {
+    let markdown = """
+    开头说明。
+
+    <!--LDVIDEO kind="youtube" platform="youtube" id="8_JZehVSRAI" url="https://www.youtube.com/watch?v=8_JZehVSRAI" title="产品演示" -->
+
+    中间说明。
+
+    <!--LDVIDEO kind="direct" platform="generic" url="https://cdn.example.test/demo.mp4" -->
+
+    结尾说明。
+    """
+    let segments = LocalMarkdownImageLayout.segments(markdown: markdown, localImageURLs: [])
+    var videos: [ArticleEmbeddedVideo] = []
+    var texts: [String] = []
+    for segment in segments {
+      switch segment {
+      case let .text(text): texts.append(text)
+      case let .video(video): videos.append(video)
+      default: XCTFail("unexpected segment \(segment)")
+      }
+    }
+    XCTAssertEqual(videos.count, 2)
+    XCTAssertEqual(videos[0].kind, .youtube)
+    XCTAssertEqual(videos[0].id, "8_JZehVSRAI")
+    XCTAssertEqual(videos[0].url?.absoluteString, "https://www.youtube.com/watch?v=8_JZehVSRAI")
+    XCTAssertEqual(videos[0].title, "产品演示")
+    XCTAssertEqual(videos[1].kind, .direct)
+    XCTAssertTrue(videos[1].bindsLocalFile)
+    XCTAssertFalse(videos[0].bindsLocalFile)
+    let joined = texts.joined()
+    XCTAssertTrue(joined.contains("开头说明。"))
+    XCTAssertTrue(joined.contains("中间说明。"))
+    XCTAssertTrue(joined.contains("结尾说明。"))
+    XCTAssertFalse(joined.contains("LDVIDEO"))
+  }
+
+  func testSignedVideoMarkerDoesNotKeepPlaybackToken() {
+    let markdown = """
+    前文
+
+    <!--LDVIDEO kind="unknown" platform="generic" title="演示" -->
+
+    后文
+    """
+    let segments = LocalMarkdownImageLayout.segments(markdown: markdown, localImageURLs: [])
+    guard case let .video(video) = segments[1] else {
+      return XCTFail("unknown video marker should become a card")
+    }
+    XCTAssertEqual(video.kind, .unknown)
+    XCTAssertNil(video.url)
+    XCTAssertEqual(video.title, "演示")
+  }
+
   func testConsecutiveImagesBecomeAGalleryWhileProseKeepsSingleImagesInPlace() {
     let a = URL(fileURLWithPath: "/tmp/linkdigest-a")
     let b = URL(fileURLWithPath: "/tmp/linkdigest-b")

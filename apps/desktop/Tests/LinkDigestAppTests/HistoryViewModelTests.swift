@@ -325,6 +325,177 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertNil(model.selectedCreatorID)
   }
 
+
+  func testSelectHostIsIdempotentAndClearsCrossPlatformSearch() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-host-idempotent-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.listState == .loaded || model.listState == .empty }
+
+    model.searchText = "旧平台关键词"
+    model.selectHost("x.com")
+    await waitUntil { model.listState != .loading || model.selectedHosts == ["x.com"] }
+    XCTAssertEqual(model.selectedHosts, ["x.com"])
+    XCTAssertEqual(model.searchText, "")
+    XCTAssertTrue(model.isBrowsingPlatformGallery)
+
+    model.searchText = "同平台应保留"
+    model.selectHost("x.com")
+    XCTAssertEqual(model.selectedHosts, ["x.com"], "再次点击同一来源平台应保持筛选，不回全部")
+    XCTAssertEqual(model.searchText, "同平台应保留")
+
+    model.selectHost("douyin.com")
+    XCTAssertEqual(model.selectedHosts, ["douyin.com"])
+    XCTAssertEqual(model.searchText, "", "跨平台切换应清掉上个平台搜索词")
+    XCTAssertTrue(model.rows.isEmpty || model.listState == .loading || model.listState == .empty || model.listState == .loaded)
+
+    model.clearHostSelection()
+    XCTAssertTrue(model.selectedHosts.isEmpty)
+    XCTAssertFalse(model.isBrowsingPlatformGallery)
+  }
+
+  func testSelectHostFromWorkbenchWithSameHostReentersGallery() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-host-from-workbench-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.listState == .loaded || model.listState == .empty }
+
+    model.selectHost("x.com")
+    await waitUntil { model.selectedHosts == ["x.com"] }
+    model.enterWorkbench()
+    XCTAssertTrue(model.isWorkbenchActive)
+    XCTAssertEqual(model.selectedHosts, ["x.com"], "工作台可暂留同 host 筛选")
+
+    model.selectHost("x.com")
+    XCTAssertFalse(model.isWorkbenchActive, "同平台点击应退出工作台回到图库")
+    XCTAssertEqual(model.selectedScope, .all)
+    XCTAssertEqual(model.selectedHosts, ["x.com"])
+    XCTAssertTrue(model.isBrowsingPlatformGallery)
+  }
+
+  func testPlatformGalleryReadingRestoresEmptyAndMultiSelection() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-gallery-reading-stash-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    func makeXDocument(_ tag: String, at ms: Int64) -> CapturedDocument {
+      CapturedDocument(
+        createdAt: "2026-07-20T00:00:00Z",
+        origin: .manualLink,
+        url: "https://x.com/user/status/\(ms)",
+        title: "帖子\(tag)",
+        platform: "x",
+        method: "fixture",
+        text: "正文 \(tag)",
+        completeness: "visible_only",
+        capturedAt: "2026-07-20T00:00:00Z",
+        sourceLabel: "X"
+      )
+    }
+    let first = try repository.acceptCapture(.init(document: makeXDocument("甲", at: 1), receivedAtMilliseconds: 1))
+    let second = try repository.acceptCapture(.init(document: makeXDocument("乙", at: 2), receivedAtMilliseconds: 2))
+    let third = try repository.acceptCapture(.init(document: makeXDocument("丙", at: 3), receivedAtMilliseconds: 3))
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.listState == .loaded }
+    model.selectHost("x.com")
+    await waitUntil { model.listState == .loaded && model.selectedHosts == ["x.com"] }
+    XCTAssertTrue(model.selectedTaskIDs.isEmpty)
+
+    let openEmpty = model.rows.first?.taskID ?? first.taskID
+    model.beginPlatformGalleryReading(taskID: openEmpty)
+    XCTAssertEqual(model.selectedTaskID, openEmpty)
+    XCTAssertTrue(model.hasPlatformGalleryReadingStash)
+    let emptyAnchor = model.endPlatformGalleryReading()
+    XCTAssertEqual(emptyAnchor, openEmpty)
+    XCTAssertTrue(model.selectedTaskIDs.isEmpty, "读前无选择，返回后仍无选择")
+    XCTAssertFalse(model.hasPlatformGalleryReadingStash)
+    XCTAssertNil(model.detail)
+
+    model.toggleGallerySelection(first.taskID)
+    model.toggleGallerySelection(second.taskID)
+    XCTAssertEqual(model.selectedTaskIDs, [first.taskID, second.taskID])
+    model.beginPlatformGalleryReading(taskID: third.taskID)
+    XCTAssertEqual(model.selectedTaskID, third.taskID, "阅读期间临时以阅读项驱动详情")
+    let multiAnchor = model.endPlatformGalleryReading()
+    XCTAssertEqual(multiAnchor, third.taskID)
+    XCTAssertEqual(model.selectedTaskIDs, [first.taskID, second.taskID], "返回应恢复进入阅读前的多选")
+    XCTAssertNil(model.detail, "多选恢复后不单开详情")
+
+    model.beginPlatformGalleryReading(taskID: first.taskID)
+    model.selectHost("douyin.com")
+    XCTAssertFalse(model.hasPlatformGalleryReadingStash, "切平台应丢弃旧阅读暂存")
+  }
+
+  func testPlatformGalleryDoesNotAutoSelectFirstRow() async throws {
+    let root = FileManager.default.temporaryDirectory
+      .appendingPathComponent("linkdigest-gallery-no-autoselect-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: .init(applicationSupportRoot: root))
+    defer { try? repository.database.close() }
+    func makeXDocument(_ tag: String, at ms: Int64) -> CapturedDocument {
+      CapturedDocument(
+        createdAt: "2026-07-20T00:00:00Z",
+        origin: .manualLink,
+        url: "https://x.com/user/status/\(ms)",
+        title: "帖子\(tag)",
+        platform: "x",
+        method: "fixture",
+        text: "正文 \(tag)",
+        completeness: "visible_only",
+        capturedAt: "2026-07-20T00:00:00Z",
+        sourceLabel: "X"
+      )
+    }
+    _ = try repository.acceptCapture(.init(document: makeXDocument("甲", at: 1), receivedAtMilliseconds: 1))
+    _ = try repository.acceptCapture(.init(document: makeXDocument("乙", at: 2), receivedAtMilliseconds: 2))
+    let model = HistoryViewModel()
+    model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.listState == .loaded }
+    XCTAssertFalse(model.selectedTaskIDs.isEmpty, "普通列表仍可自动选中首条")
+
+    model.selectHost("x.com")
+    await waitUntil { model.listState == .loaded && model.selectedHosts == ["x.com"] }
+    XCTAssertTrue(model.isBrowsingPlatformGallery)
+    XCTAssertTrue(model.selectedTaskIDs.isEmpty, "进入来源平台图库不应自动勾选")
+    XCTAssertNil(model.detail)
+    XCTAssertFalse(model.rows.isEmpty)
+  }
+
+  func testGalleryMultiSelectionDoesNotEnterCreatorReader() {
+    let model = HistoryViewModel()
+    model.enterCreatorDirectory()
+    let first = TaskID(), second = TaskID()
+
+    model.toggleGallerySelection(first)
+    XCTAssertEqual(model.selectedTaskIDs, [first])
+    XCTAssertFalse(model.isReadingCreatorWorkInDirectory)
+    model.toggleGallerySelection(second)
+    XCTAssertEqual(model.selectedTaskCount, 2)
+    XCTAssertFalse(model.isReadingCreatorWorkInDirectory)
+    model.toggleGallerySelection(first)
+    XCTAssertEqual(model.selectedTaskIDs, [second])
+    XCTAssertFalse(model.isReadingCreatorWorkInDirectory, "从两条减到一条也不能自动打开详情")
+    model.toggleGallerySelection(second)
+    XCTAssertTrue(model.selectedTaskIDs.isEmpty)
+
+    model.selectedTaskID = first
+    XCTAssertTrue(model.isReadingCreatorWorkInDirectory, "普通点击仍应进入阅读")
+  }
+
   func testCreatorDirectoryKeepsCatalogAndDoesNotAutoOpenWorks() async throws {
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-creator-directory-\(UUID().uuidString)", isDirectory: true)
@@ -781,6 +952,31 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertFalse(model.isLoadingNextPage)
     blocker.release()
     await waitUntil { model.listState == .loaded && model.rows == [first] }
+  }
+
+  /// Pagination failure must not wipe the first page on retry — only re-fetch nextCursor.
+  func testPaginationFailureRetryKeepsLoadedRowsAndSelection() async {
+    let first = makeRow(title: "第一页", updatedAt: 30)
+    let second = makeRow(title: "下一页", updatedAt: 20)
+    let repository = HistoryScreenRepository(
+      firstPage: .init(rows: [first], nextCursor: cursor(for: first)),
+      remainingPages: [first.taskID.rawValue: .init(rows: [second], nextCursor: nil)],
+      details: [first.taskID: makeDetail(for: first), second.taskID: makeDetail(for: second)],
+      pageFailCounts: [first.taskID.rawValue: 1]
+    )
+    let model = HistoryViewModel()
+    model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.listState == .loaded && model.detailState == .loaded }
+    XCTAssertEqual(model.selectedTaskID, first.taskID)
+    model.loadNextPageIfNeeded(after: first)
+    await waitUntil { model.listErrorCode != nil && !model.isLoadingNextPage }
+    XCTAssertEqual(model.rows.map(\.taskID), [first.taskID], "分页失败不得清空已加载页")
+    XCTAssertEqual(model.selectedTaskID, first.taskID, "分页失败不得丢掉当前选择")
+    XCTAssertEqual(model.listState, .loaded)
+    model.retryList()
+    await waitUntil { model.rows.count == 2 && model.listErrorCode == nil }
+    XCTAssertEqual(model.rows.map(\.taskID), [first.taskID, second.taskID])
+    XCTAssertEqual(model.selectedTaskID, first.taskID, "仅重试下一页时选择应保持")
   }
 
   func testDeletionNeedsConfirmationAndOnlyDeletesSelectedTask() async {
@@ -3683,9 +3879,36 @@ private final class HistoryScreenRepository: HistoryRepository, @unchecked Senda
   private let firstPage: HistoryPage, remainingPages: [String: HistoryPage], details: [TaskID: HistoryDetailProjection]
   private let blocker: DetailBlocker?, pageBlocker: PageBlocker?, exportBlocker: ExportBlocker?, deleteFailure: RepositoryFailure?, exportFailure: RepositoryFailure?
   private let batchDeleteFailures: Set<TaskID>
-  private let mediaAssetValue: MediaAsset?, mediaReferenceFailure: RepositoryFailure?
   private let lock = NSLock(); private var deletes: [TaskID] = []
-  init(firstPage: HistoryPage, remainingPages: [String: HistoryPage] = [:], details: [TaskID: HistoryDetailProjection], blocker: DetailBlocker? = nil, pageBlocker: PageBlocker? = nil, exportBlocker: ExportBlocker? = nil, deleteFailure: RepositoryFailure? = nil, exportFailure: RepositoryFailure? = nil, mediaAssetValue: MediaAsset? = nil, mediaReferenceFailure: RepositoryFailure? = nil, batchDeleteFailures: Set<TaskID> = []) { self.firstPage = firstPage; self.remainingPages = remainingPages; self.details = details; self.blocker = blocker; self.pageBlocker = pageBlocker; self.exportBlocker = exportBlocker; self.deleteFailure = deleteFailure; self.exportFailure = exportFailure; self.mediaAssetValue = mediaAssetValue; self.mediaReferenceFailure = mediaReferenceFailure; self.batchDeleteFailures = batchDeleteFailures }
+  private var pageFailRemaining: [String: Int]
+  private let mediaAssetValue: MediaAsset?, mediaReferenceFailure: RepositoryFailure?
+  init(
+    firstPage: HistoryPage,
+    remainingPages: [String: HistoryPage] = [:],
+    details: [TaskID: HistoryDetailProjection],
+    blocker: DetailBlocker? = nil,
+    pageBlocker: PageBlocker? = nil,
+    exportBlocker: ExportBlocker? = nil,
+    deleteFailure: RepositoryFailure? = nil,
+    exportFailure: RepositoryFailure? = nil,
+    mediaAssetValue: MediaAsset? = nil,
+    mediaReferenceFailure: RepositoryFailure? = nil,
+    batchDeleteFailures: Set<TaskID> = [],
+    pageFailCounts: [String: Int] = [:]
+  ) {
+    self.firstPage = firstPage
+    self.remainingPages = remainingPages
+    self.details = details
+    self.blocker = blocker
+    self.pageBlocker = pageBlocker
+    self.exportBlocker = exportBlocker
+    self.deleteFailure = deleteFailure
+    self.exportFailure = exportFailure
+    self.mediaAssetValue = mediaAssetValue
+    self.mediaReferenceFailure = mediaReferenceFailure
+    self.batchDeleteFailures = batchDeleteFailures
+    self.pageFailRemaining = pageFailCounts
+  }
   var deletedTaskIDs: [TaskID] { lock.withLock { deletes } }
   func acceptCapture(_: AcceptCaptureCommand) throws -> AcceptCaptureResult { throw RepositoryFailure.invalidInput }
   func createRun(_: CreateRunCommand) throws -> CreateRunResult { throw RepositoryFailure.invalidInput }
@@ -3693,7 +3916,18 @@ private final class HistoryScreenRepository: HistoryRepository, @unchecked Senda
   func savePartialArtifact(_: SavePartialArtifactCommand) throws { throw RepositoryFailure.invalidInput }
   func finishRun(_: FinishRunCommand) throws { throw RepositoryFailure.invalidInput }
   func recoverInterruptedRuns(at _: Int64) throws -> Int { 0 }
-  func historyPage(limit _: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage { guard let cursor else { return firstPage }; pageBlocker?.block(); return remainingPages[cursor.taskID.rawValue] ?? .init(rows: [], nextCursor: nil) }
+  func historyPage(limit _: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage {
+    guard let cursor else { return firstPage }
+    pageBlocker?.block()
+    let key = cursor.taskID.rawValue
+    let shouldFail = lock.withLock { () -> Bool in
+      guard let remaining = pageFailRemaining[key], remaining > 0 else { return false }
+      pageFailRemaining[key] = remaining - 1
+      return true
+    }
+    if shouldFail { throw RepositoryFailure.unavailable }
+    return remainingPages[key] ?? .init(rows: [], nextCursor: nil)
+  }
   func detail(taskID: TaskID) throws -> HistoryDetailProjection { if blocker?.taskID == taskID { blocker?.block() }; guard let detail = details[taskID] else { throw RepositoryFailure.notFound }; return detail }
   func exportProjection(taskID: TaskID) throws -> HistoryExportProjection {
     if exportBlocker?.taskID == taskID { exportBlocker?.block() }

@@ -1,7 +1,7 @@
 import Foundation
 
 public enum ManualLinkError: Error, Sendable, Equatable {
-  case invalidURL, unsafeURL, webHostNotAllowed, invalidPageResult, proxyHTTPSRequired, proxyAuthenticationRequired, fakeIPProxyUnavailable, proxyTLSValidation, responseStatus, unsupportedContentType, responseTooLarge, timedOut, emptyContent, loginRequired, shareLinkExpired, verificationRequired, extensionCaptureRequired, githubRepositoryUnavailable, githubRateLimited, cancelled, network
+  case invalidURL, unsafeURL, webHostNotAllowed, invalidPageResult, proxyHTTPSRequired, proxyAuthenticationRequired, fakeIPProxyUnavailable, proxyTLSValidation, responseStatus, unsupportedContentType, responseTooLarge, timedOut, emptyContent, loginRequired, shareLinkExpired, verificationRequired, extensionCaptureRequired, githubRepositoryUnavailable, githubFileUnavailable, githubRateLimited, cancelled, network
 
   public var userMessage: String {
     switch self {
@@ -23,6 +23,7 @@ public enum ManualLinkError: Error, Sendable, Equatable {
     case .verificationRequired: "该页面需要登录或人机验证，请使用浏览器扩展捕获。"
     case .extensionCaptureRequired: "请在浏览器打开后用扩展发送。"
     case .githubRepositoryUnavailable: "仓库不存在或不是公开仓库。"
+    case .githubFileUnavailable: "无法读取这个 GitHub 文件。请确认它是公开文件，或在浏览器打开后用扩展发送。"
     case .githubRateLimited: "GitHub 接口暂时限流，请稍后重试。"
     case .cancelled: "已取消读取网页。"
     case .network: "无法读取网页，请检查网络后重试。"
@@ -93,6 +94,19 @@ public enum VerificationPagePolicy {
   /// Public article URLs are typically `/s/<id>` (optional trailing slash/query).
   private static func isWeChatArticlePath(_ path: String) -> Bool {
     path == "/s" || path.hasPrefix("/s/") || path.hasPrefix("/s?")
+  }
+}
+
+/// GitHub 文件页加载失败时，页面壳标题是 “Uh oh!”，不能当正文入库。
+public enum GitHubErrorPagePolicy {
+  public static func matches(url: URL, extractedText: String) -> Bool {
+    let host = url.host?.lowercased() ?? ""
+    guard host == "github.com" || host == "www.github.com" else { return false }
+    guard url.path.contains("/blob/") else { return false }
+    return extractedText.range(
+      of: #"(?:Uh oh!\s*)?There was an error while loading\.|加载(?:此页面|内容)时出错|请重新加载(?:此页面)?"#,
+      options: [.regularExpression, .caseInsensitive]
+    ) != nil
   }
 }
 
@@ -229,10 +243,41 @@ public struct ExtractedWebPage: Sendable, Equatable {
   public let title: String?
   public let text: String
   public let author: String?
-  public init(title: String?, text: String, author: String? = nil) {
+  public let coverImage: String?
+  public init(title: String?, text: String, author: String? = nil, coverImage: String? = nil) {
     self.title = title
     self.text = text
     self.author = author
+    self.coverImage = coverImage
+  }
+}
+
+/// Contract `platform` from a public URL host. Matches the extension
+/// `detectCapturePlatform` table so a manual Substack link is stored as
+/// `substack`, not the off-contract `"manual"` string.
+public enum CapturePlatformDetection {
+  public static func platform(from url: URL) -> String {
+    let host = url.host?.lowercased() ?? ""
+    if host == "mp.weixin.qq.com" || host == "weixin.qq.com" { return "wechat" }
+    if host == "x.com" || host.hasSuffix(".x.com") || host == "twitter.com" || host.hasSuffix(".twitter.com") {
+      return "x"
+    }
+    if host == "youtube.com" || host.hasSuffix(".youtube.com") || host == "youtu.be" || host.hasSuffix(".youtu.be") {
+      return "youtube"
+    }
+    if host == "github.com" || host.hasSuffix(".github.com") { return "github" }
+    if host == "douyin.com" || host.hasSuffix(".douyin.com")
+      || host == "iesdouyin.com" || host.hasSuffix(".iesdouyin.com")
+    { return "douyin" }
+    if host == "bilibili.com" || host.hasSuffix(".bilibili.com") || host == "b23.tv" { return "bilibili" }
+    if host == "xiaohongshu.com" || host.hasSuffix(".xiaohongshu.com") || host == "xhslink.com" {
+      return "xiaohongshu"
+    }
+    if host == "zhihu.com" || host.hasSuffix(".zhihu.com") { return "zhihu" }
+    if host == "medium.com" || host.hasSuffix(".medium.com") { return "medium" }
+    if host == "substack.com" || host.hasSuffix(".substack.com") { return "substack" }
+    if host == "toutiao.com" || host.hasSuffix(".toutiao.com") { return "toutiao" }
+    return "generic"
   }
 }
 
@@ -271,6 +316,7 @@ public struct ManualLinkCaptureService: Sendable {
           title: markdownTitle(from: markdown),
           author: markdownAuthor(from: markdown),
           body: markdownBody(from: markdown),
+          coverImage: nil,
           method: "public_markdown"
         )
       }
@@ -283,6 +329,7 @@ public struct ManualLinkCaptureService: Sendable {
           title: extracted?.title ?? markdownTitle(from: markdown),
           author: extracted?.author ?? markdownAuthor(from: markdown),
           body: markdownBody(from: markdown),
+          coverImage: extracted?.coverImage,
           method: "public_markdown"
         )
       }
@@ -290,12 +337,16 @@ public struct ManualLinkCaptureService: Sendable {
       if VerificationPagePolicy.matches(url: page.url, extractedText: extracted.text) {
         throw ManualLinkError.verificationRequired
       }
+      if GitHubErrorPagePolicy.matches(url: page.url, extractedText: extracted.text) {
+        throw ManualLinkError.githubFileUnavailable
+      }
       let cleanedText = XTrailingCounterNoiseFilter.removingTrailingCounter(from: extracted.text, sourceURL: page.url)
       return makeDocument(
         sourceURL: page.url,
         title: extracted.title,
         author: extracted.author,
         body: cleanedText,
+        coverImage: extracted.coverImage,
         method: "public_html"
       )
     } catch let error as ManualLinkError { throw error
@@ -308,6 +359,7 @@ public struct ManualLinkCaptureService: Sendable {
     title: String?,
     author: String?,
     body: String,
+    coverImage: String?,
     method: String
   ) -> CapturedDocument {
     let timestamp = ISO8601DateFormatter().string(from: now())
@@ -317,9 +369,9 @@ public struct ManualLinkCaptureService: Sendable {
       origin: .manualLink,
       url: sourceURL.absoluteString,
       title: title,
-      platform: "manual",
+      platform: CapturePlatformDetection.platform(from: sourceURL),
       method: method,
-      text: capturedText(body: body, author: author),
+      text: capturedText(body: body, author: author, coverImage: coverImage),
       completeness: "best_effort",
       capturedAt: timestamp,
       sourceLabel: "手动链接（公开网页）"
@@ -383,13 +435,32 @@ public struct ManualLinkCaptureService: Sendable {
     return nil
   }
 
-  private func capturedText(body: String, author: String?) -> String {
-    guard let author, !author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return body }
-    let escaped = author
-      .replacingOccurrences(of: "\\", with: "\\\\")
-      .replacingOccurrences(of: "\"", with: "\\\"")
-      .replacingOccurrences(of: "\n", with: " ")
-    return "---\nauthor: \"\(escaped)\"\n---\n\n\(body)"
+  private func capturedText(body: String, author: String?, coverImage: String?) -> String {
+    var lines: [String] = []
+    if let author, !author.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      let escaped = author
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: " ")
+      lines.append("author: \"\(escaped)\"")
+    }
+    if let cover = Self.httpsCoverImage(coverImage) {
+      let escaped = cover
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+      lines.append("cover_image: \"\(escaped)\"")
+    }
+    guard !lines.isEmpty else { return body }
+    return "---\n\(lines.joined(separator: "\n"))\n---\n\n\(body)"
+  }
+
+  fileprivate static func httpsCoverImage(_ raw: String?) -> String? {
+    guard let raw else { return nil }
+    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let url = URL(string: trimmed), url.scheme?.lowercased() == "https", url.host != nil else {
+      return nil
+    }
+    return trimmed
   }
 }
 
@@ -429,7 +500,7 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
         let focused = dropChromeBlocks(in: preferNestedArticle(in: fragment))
         let text = try renderedText(from: focused, title: title, author: author)
         if isTitleOnly(text, title: title) { continue }
-        return .init(title: title, text: text, author: author)
+        return .init(title: title, text: text, author: author, coverImage: extractCoverImage(from: html))
       } catch let error as ManualLinkError where error == .emptyContent || error == .loginRequired {
         lastContentError = error
       }
@@ -487,6 +558,18 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
       guard let value = candidate?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { continue }
       if value.count < 2 { continue }
       return value
+    }
+    return nil
+  }
+
+  public func extractCoverImage(from html: String) -> String? {
+    let candidates: [String?] = [
+      metaContent(property: "og:image", in: html),
+      metaContent(name: "twitter:image", in: html),
+      metaContent(property: "twitter:image", in: html),
+    ]
+    for candidate in candidates {
+      if let https = ManualLinkCaptureService.httpsCoverImage(candidate) { return https }
     }
     return nil
   }

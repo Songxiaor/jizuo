@@ -105,14 +105,17 @@ final class GenerationSettingsPresentationTests: XCTestCase {
   /// 右对齐的 placeholder 看起来像已经配好的值——截图里「留空时使用总结模型」
   /// 就被当成了当前设置。
   func testEmptyModelFieldsStateWhatActuallyApplies() throws {
-    let tab = try generationTab(in: try source())
-    // 2026-07-29 起空值不再是「输入框留空」，而是下拉里的第一个选项——
-    // 承载方式变了，要守的东西没变：空值必须说清实际生效的是什么。
-    XCTAssertTrue(tab.contains("emptyOptionTitle: \"不使用：只用 Apple 本机转写\""))
-    XCTAssertTrue(tab.contains("emptyOptionTitle: \"跟随总结模型\""))
+    let text = try source()
+    // 模型分配集中在「模型与识别」；空值仍必须说清实际生效的是什么。
+    XCTAssertTrue(text.contains("emptyOptionTitle: \"不使用：只用 Apple 本机转写\""))
+    XCTAssertTrue(text.contains("emptyOptionTitle: \"跟随总结模型\""))
     XCTAssertFalse(
-      tab.contains("TextField(\"留空时使用总结模型\""),
+      text.contains("TextField(\"留空时使用总结模型\""),
       "语义不能只靠 placeholder 承载")
+    let tab = try generationTab(in: text)
+    XCTAssertFalse(
+      tab.contains("emptyOptionTitle:"),
+      "生成偏好不再承载模型下拉")
   }
 
   /// 空值只说一遍。
@@ -135,16 +138,17 @@ final class GenerationSettingsPresentationTests: XCTestCase {
   /// 2026-08-13 行式重建后，承载方式从「卡片标题行 `} control: {`」换成
   /// `SettingsRow`（标签左、控件右、同一行）——意图相同，机制换了。
   func testPrimaryControlsUseTheCardTitleAsTheirLabel() throws {
-    let tab = try generationTab(in: try source())
+    let text = try source()
+    let tab = try generationTab(in: text)
     XCTAssertFalse(
       tab.contains("Toggle(\"翻译使用不同模型\""),
       "翻译模型不再用开关承载")
     XCTAssertTrue(
-      tab.contains("emptyOptionTitle: \"跟随总结模型\""),
+      text.contains("emptyOptionTitle: \"跟随总结模型\""),
       "空值要是下拉里的一个选项，而不是一个需要先关掉的开关")
     XCTAssertTrue(
       tab.contains("SettingsRow("),
-      "模型项的主控件要和标签同一行（行式布局），不能落回孤零零的卡内控件")
+      "生成偏好主控件要和标签同一行（行式布局），不能落回孤零零的卡内控件")
   }
 
   /// 说明文字要跟着承载方式一起改。

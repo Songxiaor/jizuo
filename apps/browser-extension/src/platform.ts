@@ -6,6 +6,7 @@ import {
 } from "./content/douyin-detect";
 import { isBilibiliHost } from "./content/bilibili";
 import { isXiaohongshuHost } from "./content/xiaohongshu";
+import { isYouTubeHost } from "./content/youtube";
 
 /**
  * Keeps browser-only source recognition at the capture boundary. The desktop
@@ -22,6 +23,7 @@ export function detectCapturePlatform(rawURL: string): CapturePlatform {
 
   if (host === "mp.weixin.qq.com" || host === "weixin.qq.com") return "wechat";
   if (host === "x.com" || host.endsWith(".x.com") || host === "twitter.com" || host.endsWith(".twitter.com")) return "x";
+  if (isYouTubeHost(rawURL)) return "youtube";
   if (host === "github.com" || host.endsWith(".github.com")) return "github";
   if (isDouyinHost(rawURL)) return "douyin";
   if (isBilibiliHost(rawURL)) return "bilibili";

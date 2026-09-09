@@ -14,6 +14,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
   /// 所以必须各自成为一个预设——只留一个的话，用户只能靠手改 Base URL 区分，
   /// 而指错的表现是 401 + `CreditsError`，看起来完全像 Key 出了问题。
   case openCodeZen
+  case commandCode
   case groq
   case siliconFlow
   case dashScope
@@ -31,6 +32,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .openRouter: "OpenRouter"
     case .openCodeGo: "OpenCode Go"
     case .openCodeZen: "OpenCode Zen"
+    case .commandCode: "Command Code"
     case .groq: "Groq"
     case .siliconFlow: "SiliconFlow"
     case .dashScope: "阿里云百炼"
@@ -51,6 +53,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     // 看起来像 Key 有问题或没充值，实际是订阅额度在另一个地址上。
     case .openCodeGo: "https://opencode.ai/zen/go/v1"
     case .openCodeZen: "https://opencode.ai/zen/v1"
+    case .commandCode: "https://api.commandcode.ai/provider/v1"
     case .groq: "https://api.groq.com/openai/v1"
     case .siliconFlow: "https://api.siliconflow.cn/v1"
     case .dashScope: "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -70,6 +73,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .openRouter: "OR"
     case .openCodeGo: "OC"
     case .openCodeZen: "OC"
+    case .commandCode: "CC"
     case .groq: "G"
     case .siliconFlow: "SF"
     case .dashScope: "Q"
@@ -87,6 +91,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .openRouter: 0x6D28D9
     case .openCodeGo: 0x1F2937
     case .openCodeZen: 0x1F2937
+    case .commandCode: 0x1F2937
     case .groq: 0xF55036
     case .siliconFlow: 0x0F766E
     case .dashScope: 0x615CED
@@ -108,6 +113,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
   }
   public var recommendedChatModel: String? {
     switch self {
+    case .commandCode: "deepseek/deepseek-v4-flash"
     case .deepSeek: "deepseek-v4-flash"
     case .openRouter: "~openai/gpt-latest"
     case .dashScope: "qwen3.7-plus"
@@ -133,6 +139,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
   }
   public var documentationHint: String {
     switch self {
+    case .commandCode: "支持 GOAT、Pro、Max、Team 套餐额度及 Provider 按量付费；Go 套餐不支持 API。请在官网 Studio 创建 API Key，模型权限与额度以你的套餐为准。Claude 自动使用 Messages 接口，其他模型使用 Chat Completions；不支持在线语音转写。"
     case .ollama: "本地端点：请确认 Ollama 正在运行，并查看其本机 API 文档。"
     case .custom: "请输入 OpenAI-compatible Chat Completions API root。"
     default: "请在 \(displayName) 控制台查看 API 文档与模型可用性。"

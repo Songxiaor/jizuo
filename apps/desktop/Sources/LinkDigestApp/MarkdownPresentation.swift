@@ -99,6 +99,8 @@ enum LocalMarkdownImageLayout {
     case gallery([URL])
     /// 引用推文卡片。
     case quotedTweet(QuotedTweet)
+    /// 长文里穿插的视频，按原文位置渲染。
+    case video(ArticleEmbeddedVideo)
   }
 
   /// 把连续的图片并成一组。图集（抖音图文帖、README 截图序列）因此能铺满阅读区
@@ -131,7 +133,7 @@ enum LocalMarkdownImageLayout {
         if chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { continue }
         flushRun()
         result.append(segment)
-      case .gallery, .quotedTweet:
+      case .gallery, .quotedTweet, .video:
         flushRun()
         result.append(segment)
       }
@@ -170,6 +172,36 @@ enum LocalMarkdownImageLayout {
           .map(Segment.image))
       }
       return result
+    }
+    // 文中视频先剥离：没有本地图片时也必须变成卡片，不能把标记当正文。
+    if let videoRange = firstVideoMarkerRange(in: markdown) {
+      var result: [Segment] = []
+      let head = String(markdown[markdown.startIndex..<videoRange.lowerBound])
+      if !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        result.append(contentsOf: segments(
+          markdown: head,
+          localImageURLs: localImageURLs,
+          appendsUnusedLocalImages: false
+        ))
+      }
+      if let video = parseVideoMarker(String(markdown[videoRange])) {
+        result.append(.video(video))
+      }
+      let tail = String(markdown[videoRange.upperBound...])
+      if !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        result.append(contentsOf: segments(
+          markdown: tail,
+          localImageURLs: localImageURLs,
+          appendsUnusedLocalImages: false
+        ))
+      }
+      if appendsUnusedLocalImages {
+        let referenced = referencedLocalImagePaths(in: markdown, byHash: byHash)
+        result.append(contentsOf: localImageURLs
+          .filter { !referenced.contains($0.path) }
+          .map(Segment.image))
+      }
+      return result.isEmpty ? [.text(markdown)] : result
     }
     // 引用卡先剥离：它可能没有图片（纯文字引用），所以必须在「无本地图片就整段
     // 返回」之前处理，否则标记会被当成字面文本渲染出来。
@@ -296,6 +328,44 @@ enum LocalMarkdownImageLayout {
       guard let rawURL, let local = resolveLocal(rawURL: rawURL, byHash: byHash) else { return nil }
       return local.path
     })
+  }
+
+  /// 定位正文视频标记 `<!--LDVIDEO ... -->`。
+  static func firstVideoMarkerRange(in markdown: String) -> Range<String.Index>? {
+    guard let start = markdown.range(of: "<!--LDVIDEO "),
+          let end = markdown.range(of: "-->", range: start.upperBound..<markdown.endIndex)
+    else { return nil }
+    return start.lowerBound..<end.upperBound
+  }
+
+  static func parseVideoMarker(_ raw: String) -> ArticleEmbeddedVideo? {
+    guard raw.hasPrefix("<!--LDVIDEO "),
+          let close = raw.range(of: "-->")
+    else { return nil }
+    let header = String(raw[raw.index(raw.startIndex, offsetBy: 12)..<close.lowerBound])
+    func attribute(_ name: String) -> String? {
+      guard let range = header.range(of: "\(name)=\"") else { return nil }
+      guard let closeQuote = header.range(of: "\"", range: range.upperBound..<header.endIndex)
+      else { return nil }
+      let value = unescapeMarkerAttribute(String(header[range.upperBound..<closeQuote.lowerBound]))
+      return value.isEmpty ? nil : value
+    }
+    guard let kindRaw = attribute("kind"),
+          let kind = ArticleEmbeddedVideo.Kind(rawValue: kindRaw)
+    else { return nil }
+    return ArticleEmbeddedVideo(
+      kind: kind,
+      platform: attribute("platform") ?? "generic",
+      id: attribute("id"),
+      url: attribute("url").flatMap(URL.init(string:)),
+      title: attribute("title")
+    )
+  }
+
+  private static func unescapeMarkerAttribute(_ raw: String) -> String {
+    raw.replacingOccurrences(of: "&quot;", with: "\"")
+      .replacingOccurrences(of: "&amp;", with: "&")
+      .trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   /// 定位引用卡标记块 `<!--LDQUOTE ...-->...<!--/LDQUOTE-->` 的完整范围。
@@ -1605,6 +1675,8 @@ struct MarkdownContentView: View {
   let source: String
   var sourceURL: URL?
   var localImageURLs: [URL] = []
+  /// 已保存到本机的视频；按正文里第一段可绑定的文中视频就地播放。
+  var localMediaFileURL: URL? = nil
   var appendsUnusedLocalImages = true
   /// 公众号相邻图中间只有空行，不能并成图集；抖音图文 / README 截图序列才并。
   var groupsConsecutiveImages = true
@@ -1757,6 +1829,7 @@ struct MarkdownContentView: View {
     source: String,
     sourceURL: URL? = nil,
     localImageURLs: [URL] = [],
+    localMediaFileURL: URL? = nil,
     appendsUnusedLocalImages: Bool = true,
     groupsConsecutiveImages: Bool = true,
     readingFont: ResolvedReadingFont = .sans,
@@ -1775,6 +1848,7 @@ struct MarkdownContentView: View {
     self.source = source
     self.sourceURL = sourceURL
     self.localImageURLs = localImageURLs
+    self.localMediaFileURL = localMediaFileURL
     self.appendsUnusedLocalImages = appendsUnusedLocalImages
     self.groupsConsecutiveImages = groupsConsecutiveImages
     self.readingFont = readingFont
@@ -1826,7 +1900,9 @@ struct MarkdownContentView: View {
           onRequestEdit: onRequestEdit
         )
         .frame(maxWidth: .infinity, alignment: .leading)
-      } else if localImageURLs.isEmpty && LocalMarkdownImageLayout.quotedTweetRange(in: source) == nil {
+      } else if localImageURLs.isEmpty
+                  && LocalMarkdownImageLayout.quotedTweetRange(in: source) == nil
+                  && LocalMarkdownImageLayout.firstVideoMarkerRange(in: source) == nil {
         structuredMarkdown(source)
           .accessibilityIdentifier("history-content-markdown")
       } else {
@@ -1865,6 +1941,13 @@ struct MarkdownContentView: View {
               .id(urls.map(\.path).joined(separator: "|"))
           case let .quotedTweet(quote):
             QuotedTweetCardView(quote: quote, accentColor: accentColor, onOpenURL: { _ = openValidated($0) })
+          case let .video(video):
+            ArticleInlineVideoCard(
+              video: video,
+              localFileURL: localFile(forVideoAt: segmentIndex, in: segments),
+              pageURL: sourceURL,
+              onOpenURL: { _ = openValidated($0) }
+            )
           }
         }
         .accessibilityIdentifier("history-content-markdown")
@@ -2246,6 +2329,18 @@ struct MarkdownContentView: View {
     case 3: return 22
     default: return 16
     }
+  }
+
+  private func localFile(
+    forVideoAt index: Int,
+    in segments: [LocalMarkdownImageLayout.Segment]
+  ) -> URL? {
+    guard let localMediaFileURL else { return nil }
+    let playable = segments.enumerated().compactMap { offset, segment -> Int? in
+      if case let .video(video) = segment, video.bindsLocalFile { return offset }
+      return nil
+    }
+    return playable.first == index ? localMediaFileURL : nil
   }
 
   private func openValidated(_ url: URL) -> OpenURLAction.Result {

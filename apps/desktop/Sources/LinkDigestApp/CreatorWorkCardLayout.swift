@@ -7,8 +7,8 @@ enum CreatorWorkCardLayout {
   static let coverAspect: CGFloat = 2.35
   static let textPadding: CGFloat = 10
   static let textSpacing: CGFloat = 4
-  static let metricGap: CGFloat = 3
-  static let metricIconSpacing: CGFloat = 1
+  static let metricGap: CGFloat = DesignTokens.Space.xs
+  static let metricIconSpacing: CGFloat = DesignTokens.Space.xxs
 }
 
 /// Cover is flush to the card top and side edges; callers pad only the text block.
@@ -68,20 +68,22 @@ struct CreatorWorkCardFillImage: View {
 }
 
 struct CreatorWorkCardTextHeader: View {
-  let title: String
+  let title: String?
   let dateText: String
   let theme: HistoryThemeTokens
   var titleHelp: String? = nil
 
   var body: some View {
     VStack(alignment: .leading, spacing: CreatorWorkCardLayout.textSpacing) {
-      Text(title)
-        .themedFont(.callout, weight: .medium)
-        .foregroundStyle(theme.primaryText)
-        .lineLimit(2, reservesSpace: true)
-        .multilineTextAlignment(.leading)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .help(titleHelp ?? title)
+      if let title, !title.isEmpty {
+        Text(title)
+          .themedFont(.callout, weight: .medium)
+          .foregroundStyle(theme.primaryText)
+          .lineLimit(2, reservesSpace: true)
+          .multilineTextAlignment(.leading)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .help(titleHelp ?? title)
+      }
       Text(dateText)
         .themedFont(.caption2)
         .foregroundStyle(theme.secondaryText)
@@ -99,26 +101,34 @@ struct CreatorWorkMetricStrip: View {
   var helpSuffix: String = ""
 
   var body: some View {
-    HStack(spacing: CreatorWorkCardLayout.metricGap) {
-      ForEach(CreatorWorkMetricLayout.slots(forHost: host), id: \.rawValue) { slot in
-        let shown = CreatorWorkMetricLayout.displayValue(values(slot))
-        HStack(spacing: CreatorWorkCardLayout.metricIconSpacing) {
-          Image(systemName: slot.systemImage)
-          Text(shown.visible)
-            .monospacedDigit()
-            .fixedSize(horizontal: true, vertical: false)
+    Group {
+      if !visibleSlots.isEmpty {
+        HStack(alignment: .firstTextBaseline, spacing: CreatorWorkCardLayout.metricGap) {
+          ForEach(visibleSlots, id: \.rawValue) { slot in
+            let shown = CreatorWorkMetricLayout.displayValue(values(slot))
+            HStack(alignment: .firstTextBaseline, spacing: CreatorWorkCardLayout.metricIconSpacing) {
+              Image(systemName: slot.systemImage)
+              Text(shown.visible)
+                .monospacedDigit()
+                .fixedSize(horizontal: true, vertical: false)
+            }
+            .lineLimit(1)
+            .help(helpText(slot, shown: shown))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(slot.title(forHost: host))
+            .accessibilityValue(shown.accessibility)
+          }
+          Spacer(minLength: 0)
         }
-        .lineLimit(1)
-        .help(helpText(slot, shown: shown))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(slot.title(forHost: host))
-        .accessibilityValue(shown.accessibility)
+        .themedFont(.caption2)
+        .foregroundStyle(theme.secondaryText)
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
-      Spacer(minLength: 0)
     }
-    .themedFont(.caption2)
-    .foregroundStyle(theme.secondaryText)
-    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private var visibleSlots: [CreatorWorkMetricKind] {
+    CreatorWorkMetricLayout.visibleSlots(forHost: host, values: values)
   }
 
   private func helpText(_ slot: CreatorWorkMetricKind, shown: (visible: String, accessibility: String)) -> String {

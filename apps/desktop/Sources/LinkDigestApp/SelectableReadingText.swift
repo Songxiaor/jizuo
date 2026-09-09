@@ -507,7 +507,8 @@ struct StreamingReadingTextView: NSViewRepresentable {
       view.setFrameSize(NSSize(width: width, height: height))
     }
     if followTail {
-      view.scrollToEndOfDocument(nil)
+      let end = NSRange(location: max((view.string as NSString).length - 1, 0), length: 0)
+      view.scrollRangeToVisible(end)
     }
   }
 
@@ -545,7 +546,8 @@ struct StreamingReadingTextView: NSViewRepresentable {
 
 enum StreamingViewport {
   /// 生成中外层高度锁定，避免 SwiftUI 每拍重测整页。
-  static let minHeight: CGFloat = 360
+  /// 用接近阅读列的高度，避免译文挤在一小块里自己滚。
+  static let minHeight: CGFloat = 520
   /// 离底部这么近就跟着新字走；再往上滑则保持用户位置。
   static let tailSlop: CGFloat = 48
 

@@ -1036,7 +1036,7 @@ struct ManualGenerationRequest: Equatable {
     TranslationMatchCache.isMatch(text: text, outputLanguage: outputLanguage)
   }
 
-  /// `runState` 唯一的写入口。流式生成每 250ms 就有一个「同 intent、正文
+  /// `runState` 唯一的写入口。流式生成每 80ms 就有一个「同 intent、正文
   /// 纯增长」的拍点——这种拍点不触发 objectWillChange，正文只写进
   /// `liveRunText`，重绘收窄到显示它的叶子视图；其余任何变化（开始/思考/
   /// 停止/终态、intent 切换、清空）照常通知整树。`runState` 本身每个拍点
@@ -1669,6 +1669,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
           #if DEBUG
           if result.availability.isWriteReady {
             ProfileImportBatchPipelineFixture.start(manualLink: manualLink, historyModel: historyModel)
+            WorkGalleryAcceptanceFixture.show(manualLink: manualLink)
           }
           #endif
           if result.availability.isWriteReady, let history = result.history {

@@ -377,10 +377,11 @@ final class HistoryContentViewTests: XCTestCase {
 
     XCTAssertTrue(source.contains("NavigationSplitView(columnVisibility: $columnVisibility)"))
     XCTAssertTrue(source.contains("content: {"))
-    // The split view must consume the shared layout tokens. Hard-coded widths
-    // previously drifted below the token minimums and truncated both sidebars.
-    XCTAssertTrue(source.contains("min: DesignTokens.Layout.sidebarMin"))
+    // Both navigation containers pin the same shared width to prevent platform
+    // switches from resizing the rail; the content list remains independently sized.
+    XCTAssertTrue(source.contains("min: DesignTokens.Layout.sidebarIdeal"))
     XCTAssertTrue(source.contains("ideal: DesignTokens.Layout.sidebarIdeal"))
+    XCTAssertTrue(source.contains("max: DesignTokens.Layout.sidebarIdeal"))
     XCTAssertTrue(source.contains("min: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMin : DesignTokens.Layout.listMin"))
     XCTAssertTrue(source.contains("ideal: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnIdeal : DesignTokens.Layout.listIdeal"))
     XCTAssertTrue(source.contains("CreatorDirectoryChrome.listColumnMin"), "博主目录中栏才缩窄，历史列表仍用 listMin")
@@ -405,7 +406,7 @@ final class HistoryContentViewTests: XCTestCase {
     guard
       let todayIndex = source.range(of: "history-navigation-today-note")?.lowerBound,
       let creatorsIndex = source.range(of: "history-navigation-creators")?.lowerBound,
-      let platformsIndex = source.range(of: "navigationSectionHeader(\"来源平台\")")?.lowerBound
+      let platformsIndex = source.range(of: "navigationSectionHeader(\"来源平台\"")?.lowerBound
     else {
       return XCTFail("侧栏必须同时有今天、博主和平台")
     }
@@ -437,6 +438,40 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("history-creator-directory-filtered-empty"))
     XCTAssertTrue(source.contains("history-creator-directory-failed"))
     XCTAssertTrue(source.contains("Button(\"抓取作品\")"))
+    let creatorDirectory = section(in: source, from: "private var creatorDirectory: some View", to: "private func creatorDirectoryRow")
+    XCTAssertTrue(creatorDirectory.contains("LazyVGrid("), "全部博主应先以卡片网格展示")
+    XCTAssertTrue(creatorDirectory.contains("creatorDirectoryGridColumns"))
+    XCTAssertTrue(creatorDirectory.contains("CreatorDirectoryPlatformGroup.groups(from: model.creatorDirectoryRows)"))
+    XCTAssertTrue(creatorDirectory.contains("CreatorDirectoryPlatformSection("))
+    XCTAssertTrue(creatorDirectory.contains("VStack(alignment: .leading, spacing: 28)"))
+    XCTAssertTrue(creatorDirectory.contains("collapsedCreatorPlatforms.removeAll()"), "搜索时展开平台，避免隐藏匹配结果")
+    XCTAssertTrue(creatorDirectory.contains(".id(model.creatorDirectoryRows.last?.id)"))
+    XCTAssertTrue(creatorDirectory.contains("model.loadNextCreatorPageIfNeeded(after: last)"), "折叠后仍可继续分页")
+    XCTAssertTrue(creatorDirectory.contains("ScrollViewReader"))
+    XCTAssertTrue(creatorDirectory.contains(".id(creator.id)"))
+    XCTAssertFalse(creatorDirectory.contains("List {"), "博主目录不应退回普通列表行")
+    XCTAssertTrue(source.contains("CreatorDirectoryCard("))
+    XCTAssertTrue(source.contains("creatorDirectorySurface"))
+    XCTAssertTrue(source.contains("history-creator-directory-back-to-catalog"))
+    XCTAssertTrue(source.contains("creatorWorkScrollTarget"))
+    XCTAssertTrue(source.contains(".id(row.taskID)"))
+    XCTAssertFalse(source.contains("NavigationSplitView {"), "每个分栏容器都必须绑定共享的可见性状态")
+    XCTAssertTrue(source.contains("showsPlatformGallerySurface || model.isCreatorDirectoryActive"))
+    XCTAssertTrue(source.contains(".id(\"history-gallery-navigation\")"))
+    XCTAssertTrue(source.contains("HistoryGallerySplitView {"))
+    XCTAssertTrue(source.contains("history-gallery-sidebar-toggle"))
+    XCTAssertTrue(source.contains("themedBody\n      .frame(maxWidth: .infinity, maxHeight: .infinity)"))
+    XCTAssertTrue(source.contains(".id(\"creator-pagination-\\(last.taskID.rawValue)\")"))
+    XCTAssertTrue(source.contains("model.loadNextPageIfNeeded(after: last)"), "分页不能依赖被展开批次替换的末条卡片")
+    XCTAssertTrue(source.contains("model.toggleGallerySelection(row.taskID)"))
+    XCTAssertTrue(source.contains("canonicalHost(for: creator.identity.platform) != \"mp.weixin.qq.com\""))
+    XCTAssertTrue(source.contains("PlatformHistoryGalleryPresentation.showsGallery"))
+    XCTAssertTrue(source.contains("PlatformHistoryGallery("))
+    XCTAssertTrue(source.contains("isReadingPlatformGalleryItem"))
+    XCTAssertTrue(source.contains("platformGalleryScrollTarget"))
+    XCTAssertTrue(source.contains("x-post-gallery-back"))
+    XCTAssertTrue(source.contains("wechat-gallery-back"))
+    XCTAssertTrue(source.contains("historyContextMenu(for: row)"), "新画廊必须保留历史条目的右键操作")
     XCTAssertFalse(
       appSource("HistoryContentView.swift").contains("square.and.arrow.down"),
       "目录行主操作应是「抓取作品」文案，不是下载图标"
@@ -458,6 +493,21 @@ final class HistoryContentViewTests: XCTestCase {
     let platforms = appSource("PlatformGridView.swift")
     XCTAssertTrue(platforms.contains("Text(name)"), "Platform names must remain visible without hover")
     XCTAssertTrue(platforms.contains("PlatformNavigationRow"))
+    XCTAssertTrue(platforms.contains("ForEach(orderedItems)"))
+    XCTAssertFalse(platforms.contains("scaleEffect(0.78)"))
+    XCTAssertFalse(platforms.contains("GridItem(.flexible(), spacing: 4), GridItem(.flexible()"))
+    XCTAssertTrue(platforms.contains(".frame(width: 16, height: 16)"))
+    XCTAssertTrue(platforms.contains("alignment: .trailing"))
+    XCTAssertFalse(platforms.contains("padding(.horizontal, -6)"))
+    XCTAssertTrue(platforms.contains("reduceMotion ? nil : DesignTokens.Motion.instant"), "选中条在减弱动态效果时不得弹跳")
+    XCTAssertTrue(source.contains("ScrollViewReader { proxy in"))
+    XCTAssertTrue(source.contains(".frame(minHeight: 0, maxHeight: .infinity)"))
+    XCTAssertTrue(source.contains("navigationPlatformScrollTarget"))
+    XCTAssertTrue(source.contains("contentMargins(.bottom, 20, for: .scrollContent)"))
+    XCTAssertTrue(source.contains("history-navigation-tags-header"))
+    let historyVM = appSource("HistoryViewModel.swift")
+    XCTAssertTrue(historyVM.contains("return localInternalMediaURL(for: taskID)"))
+    XCTAssertTrue(historyVM.contains("asset.fileBookmark == nil"))
     // 普通点击=叠加（AND 缩小范围），⌘点击=只看此标签；Syc 2026-07-23 拍板翻转。
     XCTAssertTrue(source.contains("model.toggleTag(item.tag, additive: !NSEvent.modifierFlags.contains(.command))"))
     XCTAssertTrue(sidebar.contains(".frame(maxWidth: .infinity)"))
@@ -553,10 +603,14 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains(".frame(maxWidth: .infinity, alignment: .center)"))
     XCTAssertTrue(detail.contains(".padding(.horizontal, DesignTokens.Layout.readingHorizontalInset)"))
     XCTAssertFalse(detail.contains(".padding(.leading, 48)"))
-    // Non-WeChat captures retain their independently extracted social stats;
-    // WeChat deliberately never presents that row, including old imports.
-    XCTAssertTrue(detail.contains("!isWeChatCapture && sourceFrontmatter.hasEngagementStats"))
+    // Show engagement only when frontmatter actually carries stats; missing stays "—"/未获取.
+    // Do not force an empty WeChat strip that implies every old article now has live counts.
+    XCTAssertTrue(detail.contains("if sourceFrontmatter.hasEngagementStats"))
+    XCTAssertFalse(detail.contains("!isWeChatCapture && sourceFrontmatter.hasEngagementStats"))
+    XCTAssertFalse(detail.contains("hasEngagementStats || isWeChatCapture"))
     XCTAssertTrue(detail.contains("history-engagement-stats"))
+    XCTAssertTrue(detail.contains("history-engagement-snapshot-note"))
+    XCTAssertTrue(detail.contains("数据为采集时快照"))
     XCTAssertTrue(detail.contains("sourceByline"), "作者、日期、站点应收成一行，不再各占一列表单")
   }
 
@@ -569,7 +623,9 @@ final class HistoryContentViewTests: XCTestCase {
     // the text displaced the article's real opening. The body carries its own
     // images in the author's order, which is the only ordering worth trusting.
     XCTAssertFalse(source.contains("history-wechat-cover-image"))
-    XCTAssertTrue(source.contains("!isWeChatCapture && sourceFrontmatter.hasEngagementStats"))
+    XCTAssertTrue(source.contains("if sourceFrontmatter.hasEngagementStats"))
+    XCTAssertFalse(source.contains("hasEngagementStats || isWeChatCapture"))
+    XCTAssertTrue(source.contains("CreatorWorkMetricLayout.usesAdaptiveWorkGrid(host)"))
     XCTAssertFalse(source.contains("read_num"))
     XCTAssertFalse(source.contains("like_num"))
     XCTAssertTrue(source.contains("appendsUnusedLocalImages: !readingFormat.keepsImagePositions"))
@@ -580,6 +636,8 @@ final class HistoryContentViewTests: XCTestCase {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
     XCTAssertTrue(detail.contains("presentsArticleBeforeMedia"))
+    XCTAssertTrue(detail.contains("hasInlineArticleVideos"))
+    XCTAssertTrue(detail.contains("isLongFormArticleCapture"))
     XCTAssertTrue(detail.contains("RemoteMarkdownImageStagingPolicy.isSubstantiveWeChatArticle"))
     XCTAssertTrue(detail.contains("if presentsArticleBeforeMedia"))
     XCTAssertTrue(detail.contains("if !presentsArticleBeforeMedia"))
@@ -598,7 +656,8 @@ final class HistoryContentViewTests: XCTestCase {
   func testWeChatNeverRendersEmbeddedVideoOrVideoMetadata() {
     let source = historyContentViewSource()
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
-    XCTAssertTrue(detail.contains("private var suppressesEmbeddedMedia: Bool { latestSnapshot?.platform == \"wechat\" }"))
+    XCTAssertTrue(detail.contains("latestSnapshot?.platform == \"wechat\""))
+    XCTAssertTrue(detail.contains("hasInlineArticleVideos"))
     XCTAssertTrue(detail.contains("if !suppressesEmbeddedMedia"))
     XCTAssertTrue(detail.contains("guard !suppressesEmbeddedMedia else { return nil }"))
   }
@@ -1229,10 +1288,11 @@ final class HistoryContentViewTests: XCTestCase {
       from: "private var presentsArticleBeforeMedia: Bool",
       to: "private var suppressesEmbeddedMedia"
     )
-    // 有视频时播放器在上，文稿在下；只有微信长文仍旧正文在前。
+    // 短视频作品播放器在上；长文（含文中视频标记、微信）正文在前。
     XCTAssertFalse(rule.contains("latestSnapshot.platform == \"x\""))
     XCTAssertTrue(rule.contains("isSubstantiveWeChatArticle"))
-    XCTAssertFalse(rule.contains("douyin"))
+    XCTAssertTrue(rule.contains("isLongFormArticleCapture"))
+    XCTAssertTrue(rule.contains("isVideoNativeWork"))
   }
 
   func testSpaceKeyFallbackDoesNotSurrenderToTheSelectedList() {
@@ -1525,6 +1585,9 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(grid.contains(".accessibilityHidden(true)"))
     XCTAssertTrue(icon.contains("HistoryFaviconDiskImage"))
     XCTAssertTrue(icon.contains("fallbackBadge"))
+    XCTAssertTrue(icon.contains("Image(systemName: \"tray\")"))
+    XCTAssertTrue(icon.contains(".resizable()"), "杂项托盘图标必须按 16 框缩放，不能被 List 字号撑到 18 后裁切")
+    XCTAssertFalse(icon.contains("DesignTokens.IconSize.control"))
   }
 
   func testMonochromePlatformMarksFollowTheCurrentThemeTextColor() {
@@ -2141,7 +2204,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(available.contains("dropFirst()"))
   }
 
-  /// 有切换控件时，层名小标题和空的工具条行都要去掉。
+  /// 有切换控件时，层名小标题要去掉；展开/收起只留正文末尾一处。
   func testLayerHeadingIsOmittedWhenThePickerIsVisible() {
     let source = historyContentViewSource()
     let chrome = section(
@@ -2154,8 +2217,20 @@ final class HistoryContentViewTests: XCTestCase {
       "有切换控件时不应再渲染一层同名小标题"
     )
     XCTAssertTrue(
-      chrome.contains("if showsHeading || showsExpandControl"),
-      "标题和展开按钮都没有时，整行工具条都要去掉，否则会留下空行"
+      chrome.contains("history-source-expand-inline"),
+      "展开入口只在正文末尾"
+    )
+    XCTAssertTrue(
+      chrome.contains("history-source-collapse-inline"),
+      "收起也只在正文末尾"
+    )
+    XCTAssertFalse(
+      chrome.contains("history-source-expand\""),
+      "顶部重复的展开/收起应已删除"
+    )
+    XCTAssertTrue(
+      chrome.contains("sourceCollapseScrollTarget"),
+      "收起后应滚回该层顶部，避免滚动位置迷失"
     )
   }
 
@@ -2164,6 +2239,10 @@ final class HistoryContentViewTests: XCTestCase {
       "HistoryContentView.swift",
       "CreatorDirectoryViews.swift",
       "CreatorWorkEngagement.swift",
+      "CreatorWorkCardLayout.swift",
+      "PlatformHistoryGallery.swift",
+      "WeChatArticleGallery.swift",
+      "XPostGallery.swift",
       "HistoryMediaPlayback.swift",
       "VideoScrollWheelRouting.swift",
       "HistorySourceLinkPresentation.swift",

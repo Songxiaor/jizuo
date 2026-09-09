@@ -18,16 +18,30 @@ enum YouTubeWatchLink {
       let id = components.path.split(separator: "/").first.map(String.init) ?? ""
       return isValid(id) ? id : nil
     }
-    guard host == "youtube.com" || host.hasSuffix(".youtube.com") else { return nil }
+    guard host == "youtube.com" || host.hasSuffix(".youtube.com") || host == "youtube-nocookie.com" else { return nil }
     if components.path == "/watch" {
       let id = components.queryItems?.first(where: { $0.name == "v" })?.value ?? ""
       return isValid(id) ? id : nil
     }
-    for prefix in ["/shorts/", "/live/"] where components.path.hasPrefix(prefix) {
+    for prefix in ["/embed/", "/shorts/", "/live/"] where components.path.hasPrefix(prefix) {
       let id = String(components.path.dropFirst(prefix.count)).split(separator: "/").first.map(String.init) ?? ""
       return isValid(id) ? id : nil
     }
     return nil
+  }
+
+  /// Display-only gallery cover from a stored canonical watch URL.
+  /// Same `i.ytimg.com/vi/<id>/hqdefault.jpg` shape as the extension
+  /// `youTubeThumbnailURL` and the detail poster fallback. Does not rewrite
+  /// markdown, frontmatter, or the capture envelope.
+  static func galleryThumbnailURL(fromCanonicalURL urlString: String) -> URL? {
+    guard let videoID = videoID(from: urlString) else { return nil }
+    let raw = "https://i.ytimg.com/vi/\(videoID)/hqdefault.jpg"
+    guard let admitted = GalleryCoverAdmission.admittedURL(raw),
+          admitted.host?.lowercased() == "i.ytimg.com",
+          admitted.path == "/vi/\(videoID)/hqdefault.jpg"
+    else { return nil }
+    return admitted
   }
 }
 

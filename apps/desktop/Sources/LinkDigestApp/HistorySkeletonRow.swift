@@ -3,12 +3,11 @@ import SwiftUI
 /// 历史列表载入时的占位行。
 ///
 /// 替掉整屏转圈：转圈只说明「在忙」，但它占的空间和真实内容毫无关系，
-/// 内容一到位整个列表会突然撑开跳一下。占位行照 `HistoryRowView` 的骨架
-/// 画——状态点、标题、摘要、时间各占一块——载入完成时只是灰条变成字，
+/// 内容一到位整个列表会突然撑开跳一下。占位行照 `UIReadingHistoryRow` 的骨架
+/// 画——平台图标与总结状态叠在同一锚点——载入完成时只是灰条变成字，
 /// 布局不动。
 ///
-/// 尺寸跟着真实行走：状态点 7×7、标题 13pt、摘要 12pt、时间 10.5pt。
-/// 改 `HistoryRowView` 的排版时这里要一起改，否则「不跳」这个前提就没了。
+/// 尺寸跟着真实行走：图标 18×18、状态点 7×7、标题 13pt、来源时间 10.5pt。
 struct HistorySkeletonRow: View {
   let theme: HistoryThemeTokens
   /// 同一屏里让每行宽度不同，避免整齐得像一张表格——真实标题本来就长短不一。
@@ -21,27 +20,27 @@ struct HistorySkeletonRow: View {
   private var previewWidth: CGFloat { [0.55, 0.78, 0.42, 0.66, 0.71][widthSeed % 5] }
 
   var body: some View {
-    HStack(alignment: .top, spacing: 10) {
-      // 跟着 `HistoryRowView` 走：左栏是状态点 + 平台标记竖排。
-      // 这两个结构必须一致，否则内容到位时布局会跳——那正是骨架屏要防的事。
-      VStack(spacing: 6) {
-        Circle().fill(placeholder).frame(width: 7, height: 7)
+    HStack(alignment: .center, spacing: DesignTokens.Space.sm) {
+      ZStack(alignment: .bottomTrailing) {
         RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
           .fill(placeholder)
           .frame(width: 18, height: 18)
+        Circle()
+          .fill(placeholder)
+          .frame(width: 7, height: 7)
+          .offset(x: 1, y: 1)
       }
-      .padding(.top, 4)
-      VStack(alignment: .leading, spacing: 4) {
+      .frame(width: 18, height: 18)
+      .padding(.trailing, 2)
+      .padding(.bottom, 2)
+      VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
         bar(height: 13, widthFraction: titleWidth)
-        bar(height: 12, widthFraction: previewWidth)
-        bar(height: 10, widthFraction: 0.28)
+        bar(height: 10, widthFraction: previewWidth)
       }
     }
-    .padding(.vertical, 2)
-    // 开了「减弱动态效果」就停在一个固定灰度上。
-    //
-    // 无限循环的呼吸比一次性过渡更需要这道闸：它永远不停，对前庭敏感的用户
-    // 是持续的刺激源。占位行本身靠形状就说明了「在载入」，那口呼吸只是锦上添花。
+    .padding(.horizontal, DesignTokens.Space.xs)
+    .padding(.vertical, DesignTokens.Space.xs)
+    .frame(minHeight: 44, alignment: .leading)
     .opacity(reduceMotion ? 0.6 : (isBreathing ? 0.45 : 0.85))
     .animation(
       reduceMotion ? nil : .easeInOut(duration: 1.1).repeatForever(autoreverses: true),

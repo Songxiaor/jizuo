@@ -8,8 +8,10 @@ import SwiftUI
 /// 再叠一层 `.contentMargins(.horizontal:)` 只会和它相加，把卡片越推越窄。所以标准
 /// 只钉上下——顶部留一档呼吸，底部留够，让首张/末张卡都不贴着窗口边。
 enum SettingsMetrics {
-  static let contentTop: CGFloat = 18
+  static let contentTop: CGFloat = 16
   static let contentBottom: CGFloat = 28
+  /// 表单内容区组间距：组间约 24pt，组内由卡片自身控制。
+  static let groupSpacing: CGFloat = DesignTokens.Space.xl
 }
 
 extension View {
@@ -104,7 +106,8 @@ struct SettingsPageHeader: View {
       )
       VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
         Text(title)
-          .themedFont(.title2, weight: .semibold)
+          // 设置页标题约定约 18pt 半粗；不用 title2，避免大字体主题下显得过重。
+          .font(.system(size: 18, weight: .semibold))
           .foregroundStyle(.primary)
         captionText
       }
@@ -143,7 +146,7 @@ struct SettingsPlainPage<Content: View>: View {
 
   var body: some View {
     ScrollView {
-      VStack(alignment: .leading, spacing: DesignTokens.Space.lg) {
+      VStack(alignment: .leading, spacing: SettingsMetrics.groupSpacing) {
         content()
       }
       .frame(maxWidth: DesignTokens.Layout.settingsContentMaxWidth, alignment: .leading)

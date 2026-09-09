@@ -73,27 +73,110 @@ enum DouyinProfileNavigationPolicy {
   }
 }
 
-enum DouyinProfilePreviewResource {
-  static let byteLimit = 2_000_000
-  private static let resources: any SafeResourceFetching = ProxyAwareWebPageFetcher()
-
+/// Card and directory covers: named platform CDNs only. Redirects must stay
+/// in the same platform family so an admitted start URL cannot hop onto an
+/// unrelated public CDN. Remote fetch still rejects private/loopback hosts.
+enum GalleryCoverAdmission {
   static func admittedURL(_ value: String) -> URL? {
     guard let url = URL(string: value), url.scheme?.lowercased() == "https",
           let host = url.host?.lowercased(),
-          ["douyinpic.com", "byteimg.com", "pstatp.com", "douyinstatic.com", "douyin.com", "iesdouyin.com", "xhscdn.com", "xiaohongshu.com", "hdslb.com", "bilibili.com", "twimg.com"]
-            .contains(where: { host == $0 || host.hasSuffix(".\($0)") })
+          isAllowedHost(host)
     else { return nil }
     do { try PublicWebURLPolicy(resolver: { _ in [] }).validateSyntax(url) }
     catch { return nil }
     return url
   }
 
+  static func isAllowedHost(_ host: String) -> Bool {
+    platformFamily(for: host) != nil
+  }
+
+  static func allowsRedirect(from start: URL, to target: URL) -> Bool {
+    guard let admittedStart = admittedURL(start.absoluteString),
+          let admittedTarget = admittedURL(target.absoluteString),
+          let startHost = admittedStart.host?.lowercased(),
+          let targetHost = admittedTarget.host?.lowercased(),
+          let startFamily = platformFamily(for: startHost),
+          startFamily == platformFamily(for: targetHost)
+    else { return false }
+    return true
+  }
+
+  static func platformFamily(for host: String) -> String? {
+    if host == "mmbiz.qpic.cn" { return "wechat" }
+    if matches(host, ["douyinpic.com", "byteimg.com", "pstatp.com", "douyinstatic.com", "douyin.com", "iesdouyin.com"]) {
+      return "douyin"
+    }
+    if matches(host, ["xhscdn.com", "xiaohongshu.com"]) { return "xiaohongshu" }
+    if matches(host, ["hdslb.com", "bilibili.com"]) { return "bilibili" }
+    if matches(host, ["twimg.com"]) { return "x" }
+    if matches(host, ["ytimg.com", "youtube.com"]) { return "youtube" }
+    if host == "raw.githubusercontent.com"
+      || host == "user-images.githubusercontent.com"
+      || matches(host, ["githubusercontent.com", "githubassets.com", "github.com"])
+    { return "github" }
+    if matches(host, ["redd.it", "redditmedia.com", "redditstatic.com", "reddit.com"]) { return "reddit" }
+    if matches(host, ["substackcdn.com", "substack.com"]) { return "substack" }
+    if host == "linux.do" || host.hasSuffix(".linux.do")
+      || matches(host, ["ldstatic.com", "discourse-cdn.com", "discourse.org", "uscardforum.com"])
+    { return "discourse" }
+    if matches(host, ["medium.com"]) { return "medium" }
+    return nil
+  }
+
+  private static func matches(_ host: String, _ suffixes: [String]) -> Bool {
+    suffixes.contains { host == $0 || host.hasSuffix(".\($0)") }
+  }
+}
+
+enum DouyinProfilePreviewResource {
+  static let byteLimit = 2_000_000
+  private static let resources: any SafeResourceFetching = ProxyAwareWebPageFetcher()
+
+  static func admittedURL(_ value: String) -> URL? {
+    GalleryCoverAdmission.admittedURL(value)
+  }
+
   private static func imageReferer(_ url: URL) -> String {
-    let host = url.host ?? ""
-    if host.hasSuffix("xhscdn.com") { return "https://www.xiaohongshu.com/" }
-    if host.hasSuffix("hdslb.com") { return "https://www.bilibili.com/" }
+    let host = url.host?.lowercased() ?? ""
+    if host == "mmbiz.qpic.cn" { return "https://mp.weixin.qq.com/" }
+    if host.hasSuffix("xhscdn.com") || host.hasSuffix("xiaohongshu.com") {
+      return "https://www.xiaohongshu.com/"
+    }
+    if host.hasSuffix("hdslb.com") || host.hasSuffix("bilibili.com") {
+      return "https://www.bilibili.com/"
+    }
     if host.hasSuffix("twimg.com") { return "https://x.com/" }
-    return "https://www.douyin.com/"
+    if host.hasSuffix("ytimg.com") || host.hasSuffix("youtube.com") {
+      return "https://www.youtube.com/"
+    }
+    if host.hasSuffix("githubusercontent.com") || host.hasSuffix("githubassets.com")
+      || host.hasSuffix("github.com")
+    {
+      return "https://github.com/"
+    }
+    if host.hasSuffix("redd.it") || host.hasSuffix("reddit.com")
+      || host.hasSuffix("redditmedia.com") || host.hasSuffix("redditstatic.com")
+    {
+      return "https://www.reddit.com/"
+    }
+    if host.hasSuffix("substackcdn.com") || host.hasSuffix("substack.com") {
+      return "https://substack.com/"
+    }
+    if host == "linux.do" || host.hasSuffix(".linux.do") || host.hasSuffix("ldstatic.com") {
+      return "https://linux.do/"
+    }
+    if host == "uscardforum.com" || host.hasSuffix(".uscardforum.com") {
+      return "https://uscardforum.com/"
+    }
+    if host.hasSuffix("medium.com") { return "https://medium.com/" }
+    if host.hasSuffix("douyinpic.com") || host.hasSuffix("byteimg.com")
+      || host.hasSuffix("pstatp.com") || host.hasSuffix("douyinstatic.com")
+      || host.hasSuffix("douyin.com") || host.hasSuffix("iesdouyin.com")
+    {
+      return "https://www.douyin.com/"
+    }
+    return "https://\(host)/"
   }
 
   static func fetch(_ url: URL, using resources: any SafeResourceFetching = resources) async throws -> Data {
@@ -104,9 +187,9 @@ enum DouyinProfilePreviewResource {
       url: url,
       headers: ["Accept": "image/*", "Referer": imageReferer(url)],
       byteLimit: byteLimit,
-      allowsRedirectTarget: { admittedURL($0.absoluteString) != nil }
+      allowsRedirectTarget: { GalleryCoverAdmission.allowsRedirect(from: url, to: $0) }
     ))
-    guard admittedURL(response.url.absoluteString) != nil else { throw ManualLinkError.unsafeURL }
+    guard GalleryCoverAdmission.allowsRedirect(from: url, to: response.url) else { throw ManualLinkError.unsafeURL }
     guard (200...299).contains(response.statusCode) else { throw ManualLinkError.responseStatus }
     guard response.contentType?.lowercased().hasPrefix("image/") == true else {
       throw ManualLinkError.unsupportedContentType
@@ -119,6 +202,8 @@ enum DouyinProfilePreviewResource {
 struct DouyinProfilePreviewImage: View {
   @Environment(\.appTheme) private var theme
   let url: URL?
+  var previewText: String? = nil
+  var thumbnailLoader: WorkThumbnailLoader = .shared
   @State private var image: NSImage?
   @State private var failed = false
   @State private var retryID = 0
@@ -128,6 +213,13 @@ struct DouyinProfilePreviewImage: View {
       Rectangle().fill(theme.badge)
       if let image {
         Image(nsImage: image).resizable().scaledToFill()
+      } else if url == nil {
+        Text(HistoryRowProjection.sanitizedDirectoryPreview(previewText, isSummary: false) ?? "无封面图片")
+          .themedFont(.caption)
+          .foregroundStyle(theme.secondaryText)
+          .lineLimit(6)
+          .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+          .padding(10)
       } else if failed {
         VStack(spacing: 4) {
           Image(systemName: "arrow.clockwise")
@@ -135,27 +227,33 @@ struct DouyinProfilePreviewImage: View {
           Text("重试")
             .themedFont(.caption2)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { retryID += 1 }
         .foregroundStyle(theme.secondaryText)
         .help("图片加载失败，点击重试")
+        .accessibilityElement(children: .ignore)
         .accessibilityLabel("图片加载失败，点击重试")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { retryID += 1 }
         .accessibilityIdentifier("profile-preview-image-retry")
+      } else {
+        Text("封面加载中")
+          .themedFont(.caption2)
+          .foregroundStyle(theme.secondaryText)
       }
     }
     .contentShape(Rectangle())
-    .onTapGesture {
-      guard failed else { return }
-      retryID += 1
-    }
     .task(id: "\(url?.absoluteString ?? "")#\(retryID)") {
       image = nil
       failed = false
       guard let url else { return }
-      if let data = try? await DouyinProfilePreviewResource.fetch(url),
-         !Task.isCancelled,
-         let loaded = NSImage(data: data) {
-        image = loaded
-      } else if !Task.isCancelled {
-        failed = true
+      do {
+        let thumbnail = try await thumbnailLoader.image(url: url)
+        guard !Task.isCancelled else { return }
+        image = NSImage(cgImage: thumbnail.image, size: .zero)
+      } catch {
+        if !Task.isCancelled { failed = true }
       }
     }
   }
@@ -203,9 +301,9 @@ struct DouyinProfileImportCandidate: Identifiable, Equatable {
   let workID: String
   let authorID: String
   let canonicalURL: String
-  let previewText: String?
-  let coverURL: URL?
-  let publishedText: String?
+  var previewText: String?
+  var coverURL: URL?
+  var publishedText: String?
   let wasAlreadySaved: Bool
   var likes: String? = nil
   var comments: String? = nil
@@ -559,6 +657,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
   private var consecutiveNoNewScreens = 0
   private var consecutiveMissingRoots = 0
   private var newItemsThisRound = 0
+  private var lastHeaderRefresh: String?
 
   static let perRoundBudget = 100
   static let noNewScreenLimit = 3
@@ -824,7 +923,8 @@ final class DouyinProfileImportViewModel: ObservableObject {
     }
     applyVisibleProfileMetadata(snapshot)
 
-    var indices = Dictionary(uniqueKeysWithValues: candidates.enumerated().map { ($0.element.workID, $0.offset) })
+    var updatedCandidates = candidates
+    var indices = Dictionary(uniqueKeysWithValues: updatedCandidates.enumerated().map { ($0.element.workID, $0.offset) })
     var additions = 0
     var existingURLs: [String] = []
     let remainingBudget = max(0, Self.perRoundBudget - newItemsThisRound)
@@ -837,13 +937,19 @@ final class DouyinProfileImportViewModel: ObservableObject {
       accessURLs[canonicalURL] = rawURL.absoluteString
       if let index = indices[workID] {
         // Virtualized cards and later list responses can add counts; nil must not erase known values.
-        applyMetrics(item, to: &candidates[index])
+        applyMetrics(item, to: &updatedCandidates[index])
+        // Lazy image URLs can arrive on a later scan; never freeze an empty first cover.
+        if let cover = item.coverURL.flatMap(DouyinProfilePreviewResource.admittedURL) {
+          updatedCandidates[index].coverURL = cover
+        }
+        if let text = item.previewText?.nilIfTrimmedEmpty { updatedCandidates[index].previewText = text }
+        if let date = item.publishedText?.nilIfTrimmedEmpty { updatedCandidates[index].publishedText = date }
         continue
       }
       guard additions < remainingBudget else { continue }
-      indices[workID] = candidates.count
+      indices[workID] = updatedCandidates.count
       let saved = alreadySaved(canonicalURL)
-      candidates.append(.init(
+      updatedCandidates.append(.init(
         workID: workID,
         authorID: expectedAuthorID,
         canonicalURL: canonicalURL,
@@ -860,6 +966,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
       if saved { existingURLs.append(canonicalURL) }
       additions += 1
     }
+    if updatedCandidates != candidates { candidates = updatedCandidates }
     if let creatorID, !existingURLs.isEmpty {
       attachExisting(creatorID, existingURLs)
     }
@@ -888,11 +995,14 @@ final class DouyinProfileImportViewModel: ObservableObject {
           snapshot.profileAuthorID == nil || snapshot.profileAuthorID == expectedAuthorID
     else { return }
     if let name = snapshot.profileName?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty,
-       CreatorDisplay.isResolvedDisplayName(name, authorID: expectedAuthorID) {
+       CreatorDisplay.isResolvedDisplayName(name, authorID: expectedAuthorID), profileName != name {
       profileName = name
     }
     let avatar = snapshot.profileAvatarURL.flatMap(DouyinProfilePreviewResource.admittedURL)?.absoluteString
     guard let creatorID, profileName != nil || avatar != nil else { return }
+    let signature = "\(creatorID.rawValue)\n\(profileName ?? "")\n\(avatar ?? "")"
+    guard signature != lastHeaderRefresh else { return }
+    lastHeaderRefresh = signature
     refreshCreatorName(creatorID, profileName, avatar)
   }
 
@@ -1428,6 +1538,8 @@ struct DouyinProfileImportSheet: View {
   @ObservedObject private var douyinSession = SiteSessionController.douyin
   @ObservedObject private var xiaohongshuSession = SiteSessionController.xiaohongshu
   @State private var showsHomepage = false
+  @State private var workSort: WorkSortOrder = .original
+  @State private var sortReferenceDate = Date()
   @State private var presentedLoginPlatform: ProfileImportPlatform?
   @StateObject private var metricsReader = DouyinProfileMetricsReader()
   @State private var metricsQueue = DouyinProfileVisibleMetricsQueue()
@@ -1820,7 +1932,7 @@ struct DouyinProfileImportSheet: View {
           ),
           spacing: CreatorDirectoryChrome.xGridSpacing
         ) {
-          ForEach(model.candidates) { candidate in
+          ForEach(workSort.sorted(model.candidates, likes: { $0.likes }, published: { $0.publishedText }, referenceDate: sortReferenceDate)) { candidate in
             candidateCard(candidate)
               .onScrollVisibilityChange(threshold: 0.2) { visible in
                 metricsQueue.setVisible(candidate.id, visible && !showsHomepage)
@@ -1832,6 +1944,23 @@ struct DouyinProfileImportSheet: View {
         .padding(DesignTokens.Space.md)
       }
     }
+    .safeAreaInset(edge: .top, spacing: 0) {
+      HStack {
+        Text("仅排序已加载 \(model.candidates.count) 条")
+          .themedFont(.caption)
+          .foregroundStyle(theme.secondaryText)
+        Spacer()
+        Picker("排序", selection: $workSort) {
+          ForEach(WorkSortOrder.allCases) { Text($0.title).tag($0) }
+        }
+        .frame(width: 220)
+        .accessibilityIdentifier("profile-import-work-sort")
+        .help("缺失数据排最后；月日按本次读取时最近的该日期排列。只改变展示，不改变勾选或保存顺序。")
+      }
+      .padding(.horizontal, DesignTokens.Space.md)
+      .padding(.vertical, 8)
+      .background(theme.canvas)
+    }
     .accessibilityIdentifier("douyin-profile-import-candidates")
   }
 
@@ -1841,7 +1970,7 @@ struct DouyinProfileImportSheet: View {
     return Button { model.toggleSelection(candidate.id) } label: {
       CreatorWorkCardShell(theme: theme, highlight: selected) {
       CreatorWorkCardCoverSlot {
-        DouyinProfilePreviewImage(url: candidate.coverURL)
+        DouyinProfilePreviewImage(url: candidate.coverURL, previewText: candidate.previewText)
           .overlay(alignment: .topTrailing) {
             Image(systemName: candidate.wasAlreadySaved ? "checkmark.circle.fill" : (selected ? "checkmark.circle.fill" : "circle"))
               .font(.body)

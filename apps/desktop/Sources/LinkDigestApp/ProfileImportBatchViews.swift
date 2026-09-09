@@ -18,7 +18,7 @@ struct ProfileImportBatchStack: View {
   let compact: Bool
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
       ForEach(manualLink.profileImportBatches.filter { ProfileImportQueuePresentation.visible($0, dismissed: dismissed) }) { batch in
         ProfileImportBatchCard(
           batch: batch,
@@ -68,7 +68,7 @@ struct ProfileImportBatchWorkCard: View {
   let batchID: UUID
   let item: ProfileImportBatchItem
   let savedRows: [TaskID: HistoryRowProjection]
-  let localCover: (TaskID, String) async -> URL?
+  let localCover: (TaskID, String?) async -> URL?
   @ObservedObject var manualLink: ManualLinkViewModel
   @ObservedObject var historyModel: HistoryViewModel
   @Environment(\.appTheme) private var theme
@@ -112,7 +112,7 @@ struct ProfileImportBatchGrid: View {
   let batch: ProfileImportBatch
   let columns: [GridItem]
   let savedRows: [TaskID: HistoryRowProjection]
-  let localCover: (TaskID, String) async -> URL?
+  let localCover: (TaskID, String?) async -> URL?
   @ObservedObject var manualLink: ManualLinkViewModel
   @ObservedObject var historyModel: HistoryViewModel
 
@@ -151,7 +151,8 @@ private struct ProfileImportReservedWorkCard: View {
     CreatorWorkCardShell(theme: theme) {
       CreatorWorkCardCoverSlot {
         DouyinProfilePreviewImage(
-          url: item.seed.coverURL.flatMap(DouyinProfilePreviewResource.admittedURL)
+          url: item.seed.coverURL.flatMap(DouyinProfilePreviewResource.admittedURL),
+          previewText: item.seed.previewText
         )
         .overlay(alignment: .bottomLeading) { statusBadge }
         .overlay(alignment: .topTrailing) { actionButton.padding(6) }
@@ -278,17 +279,21 @@ private struct ProfileImportBatchCard: View {
 
   var body: some View {
     if ProfileImportQueuePresentation.succeeded(batch) {
-      HStack {
-        Label("已保存 \(batch.completedCount) 条", systemImage: "checkmark.circle.fill")
+      HStack(spacing: DesignTokens.Space.xs) {
+        Image(systemName: "checkmark.circle.fill")
           .foregroundStyle(theme.success)
-        Spacer()
+          .accessibilityHidden(true)
+        Text("主页抓取批次 · 已保存 \(batch.completedCount) 条")
+          .foregroundStyle(theme.secondaryText)
+          .lineLimit(1)
+        Spacer(minLength: 4)
         Button(action: dismiss) { Image(systemName: "xmark") }
           .buttonStyle(.plain)
           .help("关闭完成提示，不会删除资料")
           .accessibilityLabel("关闭抓取完成提示")
       }
       .themedFont(.caption)
-      .padding(.vertical, 6)
+      .padding(.vertical, DesignTokens.Space.xxs)
       .accessibilityIdentifier("profile-import-completion-notice")
     } else {
     VStack(alignment: .leading, spacing: 8) {

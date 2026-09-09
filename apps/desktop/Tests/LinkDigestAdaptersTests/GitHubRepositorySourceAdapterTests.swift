@@ -19,11 +19,53 @@ final class GitHubRepositorySourceAdapterTests: XCTestCase {
   func testTakeoverOnlyMatchesExactRepositoryPaths() {
     let adapter = GitHubRepositorySourceAdapter(resources: GitHubFixtureResourceFetcher([:]))
     XCTAssertTrue(adapter.takesOwnership(of: URL(string: "https://github.com/owner/repo/")!))
+    XCTAssertTrue(adapter.takesOwnership(of: URL(string: "https://github.com/owner/repo/blob/main/a.md")!))
+    XCTAssertTrue(adapter.takesOwnership(of: URL(string: "https://raw.githubusercontent.com/owner/repo/main/a.md")!))
     for raw in [
-      "https://github.com/owner/repo/issues/1", "https://github.com/owner/repo/blob/main/a.md",
+      "https://github.com/owner/repo/issues/1",
       "https://github.com/owner/repo/tree/main", "https://example.com/owner/repo",
       "http://github.com/owner/repo", "https://user:pass@github.com/owner/repo"
     ] { XCTAssertFalse(adapter.takesOwnership(of: URL(string: raw)!)) }
+  }
+
+  func testBlobFileReadsRawContentAndUsesHeadingTitle() async throws {
+    let blob = URL(string: "https://github.com/octo/hello/blob/main/docs/guide.md")!
+    let raw = URL(string: "https://raw.githubusercontent.com/octo/hello/main/docs/guide.md")!
+    let fixture = GitHubFixtureResourceFetcher([
+      raw.absoluteString: .init(
+        url: raw,
+        statusCode: 200,
+        contentType: "text/plain; charset=utf-8",
+        body: Data("# 第 1 章 FDE 的崛起\n\n正文第一段。".utf8)
+      )
+    ])
+    let document = try await GitHubRepositorySourceAdapter(resources: fixture).capture(url: blob)
+    XCTAssertEqual(document.url, "https://github.com/octo/hello/blob/main/docs/guide.md")
+    XCTAssertEqual(document.title, "第 1 章 FDE 的崛起")
+    XCTAssertEqual(document.platform, "github")
+    XCTAssertEqual(document.method, "github_raw_file")
+    XCTAssertTrue(document.text.contains("正文第一段。"))
+    XCTAssertEqual(fixture.requests.first?.url, raw)
+    XCTAssertFalse(document.text.contains("Uh oh!"))
+  }
+
+  func testBlobErrorShellIsRejectedAndDoesNotBecomeTitle() async {
+    let blob = URL(string: "https://github.com/octo/hello/blob/main/missing.md")!
+    let raw = URL(string: "https://raw.githubusercontent.com/octo/hello/main/missing.md")!
+    let fixture = GitHubFixtureResourceFetcher([
+      raw.absoluteString: .init(
+        url: raw,
+        statusCode: 200,
+        contentType: "text/html",
+        body: Data("<html><p>Uh oh! There was an error while loading. Please reload this page.</p></html>".utf8)
+      )
+    ])
+    do {
+      _ = try await GitHubRepositorySourceAdapter(resources: fixture).capture(url: blob)
+      XCTFail("error shell must not be stored")
+    } catch {
+      XCTAssertEqual(error as? ManualLinkError, .githubFileUnavailable)
+    }
   }
 
   func testReadmeSuccessUsesRawAcceptAndPreservesMarkdownDocument() async throws {

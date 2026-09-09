@@ -61,7 +61,7 @@ describe("youtube capture", () => {
       transcript: "大家好，欢迎收看。",
       canonicalURL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
     });
-    expect(markdown.startsWith('---\nauthor: "示例频道"\npublished: "2026-06-01"\nlikes: "1234"\nviews: "56789"\n---')).toBe(true);
+    expect(markdown.startsWith('---\nauthor: "示例频道"\npublished: "2026-06-01"\ncover_image: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"\nlikes: "1234"\nviews: "56789"\n---')).toBe(true);
     expect(markdown).toContain("# 如何构建本地优先应用");
     // 观看数只进 frontmatter，不再占正文。
     expect(markdown).not.toContain("观看 56789");
@@ -77,6 +77,23 @@ describe("youtube capture", () => {
     expect(noTranscript).not.toContain("## 字幕");
     expect(noTranscript).toContain("该视频未提供字幕");
     expect(noTranscript).not.toContain("## 简介");
+    expect(noTranscript).toContain('cover_image: "https://i.ytimg.com/vi/AbCdEf12345/hqdefault.jpg"');
+  });
+
+  it("keeps an admitted player thumbnail and ignores a foreign cover URL", () => {
+    const player = buildYouTubeMarkdown({
+      title: "有封面",
+      canonicalURL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      coverImage: "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg",
+    });
+    expect(player).toContain('cover_image: "https://i.ytimg.com/vi/dQw4w9WgXcQ/maxresdefault.jpg"');
+    const ignored = buildYouTubeMarkdown({
+      title: "有封面",
+      canonicalURL: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      coverImage: "https://evil.test/cover.jpg",
+    });
+    expect(ignored).toContain('cover_image: "https://i.ytimg.com/vi/dQw4w9WgXcQ/hqdefault.jpg"');
+    expect(ignored).not.toContain("evil.test");
   });
 });
 

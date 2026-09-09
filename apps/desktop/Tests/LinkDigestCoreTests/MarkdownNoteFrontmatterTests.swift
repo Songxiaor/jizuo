@@ -49,6 +49,36 @@ final class MarkdownNoteFrontmatterTests: XCTestCase {
     XCTAssertNil(fromBody.likes)
   }
 
+  func testFirstMarkdownImageURLAdmitsHTTPSOnlyAndRejectsLocalPaths() {
+    XCTAssertEqual(
+      MarkdownNoteFrontmatter.firstMarkdownImageURL(
+        in: "text\n\n![](https://pbs.twimg.com/media/from-body.jpg)"
+      ),
+      "https://pbs.twimg.com/media/from-body.jpg"
+    )
+    // Localization stores a parallel cache keyed by the remote URL; stored
+    // markdown is not rewritten to file paths. If a body did contain one,
+    // the cover parser must not treat it as a fetchable cover.
+    XCTAssertNil(
+      MarkdownNoteFrontmatter.firstMarkdownImageURL(
+        in: "![](file:///tmp/LinkDigest/GitHubREADMEImages/task/hash)"
+      )
+    )
+    XCTAssertNil(
+      MarkdownNoteFrontmatter.firstMarkdownImageURL(
+        in: "![](/tmp/LinkDigest/GitHubREADMEImages/task/hash)"
+      )
+    )
+    XCTAssertNil(
+      MarkdownNoteFrontmatter.firstMarkdownImageURL(in: "![](./cover.jpg)")
+    )
+    XCTAssertNil(
+      MarkdownNoteFrontmatter.firstMarkdownImageURL(
+        in: "![](http://pbs.twimg.com/media/insecure.jpg)"
+      )
+    )
+  }
+
   func testDirectorySourcePreviewStripsImagesAndKeepsBoundedBody() {
     let onlyCover = MarkdownNoteFrontmatter.directorySourcePreview(
       fromBody: "![cover](https://p3.douyinpic.com/aweme/cover.jpeg)"

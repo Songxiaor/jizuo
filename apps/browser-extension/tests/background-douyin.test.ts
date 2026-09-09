@@ -1378,6 +1378,11 @@ describe("background douyin item identity lock", () => {
     expect(visibleOnly.capture.completeness).toBe("visible_only");
     expect(captureEnvelopeForPage({
       ...page,
+      url: "https://letters.custom-publisher.test/p/fixture",
+      platform: "substack" as const,
+    }, "https://letters.custom-publisher.test/p/fixture", page.title, "2026-07-20T00:00:00Z", "substack-dom").source.platform).toBe("substack");
+    expect(captureEnvelopeForPage({
+      ...page,
       mediaDescriptor: {
         kind: "browserSessionOnly" as const,
         pageURL: page.url,

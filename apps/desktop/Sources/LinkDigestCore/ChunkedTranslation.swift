@@ -206,9 +206,44 @@ public struct ChunkedTranslationStreamer: Sendable {
       }
     }
     if let tail = await assembler.complete(index: index) {
-      continuation.yield(.delta(tail))
+      let slices = StreamingDeltaSlicer.slices(tail)
+      for (offset, slice) in slices.enumerated() {
+        continuation.yield(.delta(slice))
+        if offset + 1 < slices.count {
+          try await Task.sleep(for: .milliseconds(24))
+        }
+      }
     }
     return usage
+  }
+}
+
+/// 把已经攒好的大段译文拆成可读的增量，避免队首片结束后后段一次性灌进阅读区。
+enum StreamingDeltaSlicer {
+  static let maxSliceCharacters = 280
+
+  static func slices(_ text: String, maxCharacters: Int = maxSliceCharacters) -> [String] {
+    guard !text.isEmpty else { return [] }
+    guard text.count > maxCharacters else { return [text] }
+    var result: [String] = []
+    var remainder = Substring(text)
+    while !remainder.isEmpty {
+      if remainder.count <= maxCharacters {
+        result.append(String(remainder))
+        break
+      }
+      let end = remainder.index(remainder.startIndex, offsetBy: maxCharacters)
+      let window = remainder[..<end]
+      if let newline = window.lastIndex(of: "\n") {
+        let piece = remainder[...newline]
+        result.append(String(piece))
+        remainder = remainder[remainder.index(after: newline)...]
+      } else {
+        result.append(String(window))
+        remainder = remainder[end...]
+      }
+    }
+    return result
   }
 }
 

@@ -9,15 +9,22 @@ private final class XTweetFixtureResourceFetcher: SafeResourceFetching, @uncheck
   private let syndication: Data
   private let graphQL: Data
   private let graphQLStatus: Int
+  private let delay: Duration
+  private var active = 0
+  private var peak = 0
+  var maximumConcurrentRequests: Int { lock.withLock { peak } }
 
-  init(syndication: String, graphQL: String, graphQLStatus: Int = 200) {
+  init(syndication: String, graphQL: String, graphQLStatus: Int = 200, delay: Duration = .zero) {
     self.syndication = Data(syndication.utf8)
     self.graphQL = Data(graphQL.utf8)
     self.graphQLStatus = graphQLStatus
+    self.delay = delay
   }
 
   func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
-    lock.withLock { seen.append(request) }
+    lock.withLock { seen.append(request); active += 1; peak = max(peak, active) }
+    defer { lock.withLock { active -= 1 } }
+    if delay > .zero { try await Task.sleep(for: delay) }
     let path = request.url.path
     let body: Data
     let status: Int
@@ -128,6 +135,39 @@ final class XTweetResolverTests: XCTestCase {
       media.coverURL,
       "https://pbs.twimg.com/amplify_video_thumb/2080486192186109952/img/cover.jpg"
     )
+  }
+
+  func testVideoOnlyTweetWritesCoverImageWithoutRepeatingThePosterInTheBody() throws {
+    let json = """
+    {
+      "text": "只有视频",
+      "mediaDetails": [{
+        "type": "video",
+        "media_url_https": "https://pbs.twimg.com/amplify_video_thumb/2080486192186109952/img/cover.jpg",
+        "video_info": {
+          "variants": [
+            {"bitrate": 256000, "content_type": "video/mp4", "url": "https://video.twimg.com/amplify_video/2080486192186109952/vid/avc1/282x270/NBt6T8I8x228XVqB.mp4"}
+          ]
+        }
+      }]
+    }
+    """
+    let payload = try JSONDecoder().decode(XTweetResolver.Payload.self, from: Data(json.utf8))
+    let tweet = try XCTUnwrap(XTweetResolver.tweet(from: payload, id: "2080486192186109952"))
+    XCTAssertTrue(tweet.photoURLs.isEmpty)
+    XCTAssertEqual(
+      tweet.video?.coverURL,
+      "https://pbs.twimg.com/amplify_video_thumb/2080486192186109952/img/cover.jpg"
+    )
+    let markdown = tweet.markdownBody
+    XCTAssertTrue(markdown.contains("cover_image: \"https://pbs.twimg.com/amplify_video_thumb/2080486192186109952/img/cover.jpg\""))
+    let body = markdown.replacingOccurrences(
+      of: #"^---[\s\S]*?---\n*"#,
+      with: "",
+      options: .regularExpression
+    )
+    XCTAssertFalse(body.contains("amplify_video_thumb"))
+    XCTAssertTrue(body.contains("只有视频"))
   }
 
   func testResolvesAWholeTweetIntoTheSameShapeTheExtensionProduces() throws {
@@ -704,6 +744,16 @@ final class XTweetResolverTests: XCTestCase {
       XTweetResolver.noteTextFromGraphQL(Data(noteJSON.utf8)),
       "长文 http://example.com/note 结束"
     )
+  }
+
+  func testIndependentTweetReadsOverlapWithoutLosingFallbackBody() async throws {
+    let resources = XTweetFixtureResourceFetcher(
+      syndication: #"{"text":"完整的原文","favorite_count":8,"user":{"name":"Fixture","screen_name":"fixture"}}"#,
+      graphQL: "{}", graphQLStatus: 500, delay: .milliseconds(40))
+    let resolved = await XTweetResolver(resources: resources).resolveTweet(id: "1234567890123")
+    XCTAssertEqual(resolved?.text, "完整的原文")
+    XCTAssertEqual(resolved?.likeCount, 8)
+    XCTAssertEqual(resources.maximumConcurrentRequests, 2, "Overlap independent reads, not the shared save/WebKit queue")
   }
 
   func testOrdinaryTweetStillQueriesGraphQLAndFallsBackWhenItFails() async throws {

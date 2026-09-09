@@ -103,6 +103,41 @@ final class ManualLinkCaptureTests: XCTestCase {
     XCTAssertTrue(page.text.contains("title-only capture cannot pass"), page.text)
   }
 
+  func testManualCaptureWritesContractPlatformAndHttpsOpenGraphCover() async throws {
+    let html = """
+    <html><head>
+      <meta property="og:title" content="How an obscure decision on a preliminary matter could make a huge difference" />
+      <meta property="og:image" content="https://substackcdn.com/image/fetch/cover.jpg" />
+      <meta property="og:image" content="http://evil.example/cover.jpg" />
+    </head>
+    <body>
+    <div aria-label="Post" role="main" class="single-post-container"><div class="container">
+    <article class="typography newsletter-post">
+      <h1>How an obscure decision on a preliminary matter could make a huge difference</h1>
+      <div class="available-content"><div class="body markup">
+        <p>TL:DR Last week’s Upper Tribunal decision contains bombshells for social media companies.</p>
+        <p>The second paragraph is here so a title-only capture cannot pass as the article body.</p>
+      </div></div>
+    </article>
+    </div></div>
+    </body></html>
+    """
+    let url = URL(string: "https://globalprivacyconsultants.substack.com/p/how-an-obscure-decision-on-a-preliminary")!
+    XCTAssertEqual(CapturePlatformDetection.platform(from: url), "substack")
+    XCTAssertEqual(
+      CapturePlatformDetection.platform(from: URL(string: "https://en.wikipedia.org/wiki/SwiftUI")!),
+      "generic"
+    )
+    let page = try MinimalHTMLExtractor().extract(html: html)
+    XCTAssertEqual(page.coverImage, "https://substackcdn.com/image/fetch/cover.jpg")
+    let document = try await ManualLinkCaptureService(fetcher: StaticFetcher(url: url, html: html))
+      .capture(urlString: url.absoluteString)
+    XCTAssertEqual(document.platform, "substack")
+    XCTAssertTrue(document.text.contains("cover_image: \"https://substackcdn.com/image/fetch/cover.jpg\""), document.text)
+    XCTAssertFalse(document.text.contains("http://evil.example"), document.text)
+    XCTAssertTrue(document.text.contains("TL:DR Last week"), document.text)
+  }
+
   func testExtractorFallsBackMainThenBodyAndRejectsLoginShell() throws {
     XCTAssertEqual(try MinimalHTMLExtractor().extract(html: "<main>Enough words are placed in this main area for extraction.</main>").text, "Enough words are placed in this main area for extraction.")
     XCTAssertEqual(try MinimalHTMLExtractor().extract(html: "<body>Enough words are placed in this body area for extraction.</body>").text, "Enough words are placed in this body area for extraction.")
@@ -275,6 +310,19 @@ final class ManualLinkCaptureTests: XCTestCase {
     ))
     let accepted = try await normalArticle.capture(urlString: "https://mp.weixin.qq.com/s/article")
     XCTAssertFalse(accepted.text.isEmpty)
+  }
+
+  func testGitHubBlobErrorShellIsRejectedWhenGenericHTMLCaptureRuns() async throws {
+    let service = ManualLinkCaptureService(fetcher: StaticFetcher(
+      url: URL(string: "https://github.com/octo/hello/blob/main/guide.md")!,
+      html: "<article>Uh oh! There was an error while loading. Please reload this page. 这里还有足够长的壳层文字避免被当成空页。</article>"
+    ))
+    do {
+      _ = try await service.capture(urlString: "https://github.com/octo/hello/blob/main/guide.md")
+      XCTFail("GitHub error shell must not be stored as an article")
+    } catch let error as ManualLinkError {
+      XCTAssertEqual(error, .githubFileUnavailable)
+    }
   }
 
   func testXTrailingCounterNoiseIsRemovedWithoutHarmingOrdinaryNumbers() async throws {

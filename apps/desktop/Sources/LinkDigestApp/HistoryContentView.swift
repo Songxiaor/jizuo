@@ -21,8 +21,17 @@ struct HistoryContentView: View {
   @State private var newSparkText = ""
   @State private var douyinProfileImportRequest: DouyinProfileImportRequest?
   @AppStorage(ProfileImportQueuePresentation.dismissedKey) private var dismissedImportNotices = ""
-  @State private var isReadingWeChatArticle = false
+  @State private var isReadingPlatformGalleryItem = false
+  @State private var platformGalleryScrollTarget: TaskID?
+  @State private var showsCreatorDirectoryCatalog = true
+  @State private var creatorDirectoryScrollTarget: CreatorID?
+  @State private var collapsedCreatorPlatforms: Set<String> = []
+  @State private var creatorWorkSort: WorkSortOrder = .original
+  @State private var creatorSortReferenceDate = Date()
+  @State private var creatorWorkScrollTarget: TaskID?
   @State private var navigationCreatorsExpanded = true
+  // 来源平台沿用分区标题折叠，不改 selectedHosts。
+  @State private var navigationPlatformsExpanded = true
   // 标签是低频筛选，不该在每次启动时抢走半个导航栏。需要时再展开，
   // 当前已选标签仍由 ViewModel 保留，不会因为折叠而丢失筛选状态。
   @State private var navigationTagsExpanded = false
@@ -41,6 +50,14 @@ struct HistoryContentView: View {
   private var theme: HistoryThemeTokens { appearanceTheme.tokens }
   private var ordinaryPendingCaptures: [ManualLinkViewModel.PendingCapture] {
     manualLink.pendingCaptures.filter { $0.profileImportBatchID == nil }
+  }
+  private var visibleProfileImportBatches: [ProfileImportBatch] {
+    manualLink.profileImportBatches.filter {
+      ProfileImportQueuePresentation.visible($0, dismissed: dismissedImportNotices)
+    }
+  }
+  private var hasInProgressProfileImportBatch: Bool {
+    visibleProfileImportBatches.contains { !ProfileImportQueuePresentation.succeeded($0) }
   }
   /// 工作台的四处入口都问它，不各自与开关做 `&&`。
   private var isWorkbenchVisible: Bool {
@@ -78,6 +95,7 @@ struct HistoryContentView: View {
 
   var body: some View {
     themedBody
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
       .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
       // 图片灯箱盖在整个窗口内容之上；点击图外区域或 Esc 退出。
       .overlay { InlineImageLightboxOverlay() }
@@ -107,6 +125,13 @@ struct HistoryContentView: View {
       }
       .onChange(of: model.selectedTaskID) { _, _ in
         synchronizeRemotePreviewPreheat()
+      }
+      .onChange(of: model.selectedHosts) { oldHosts, hosts in
+        guard oldHosts != hosts else { return }
+        // Any host-set change (including platform A → B) leaves reading and drops anchors.
+        isReadingPlatformGalleryItem = false
+        platformGalleryScrollTarget = nil
+        model.abandonPlatformGalleryReadingStash()
       }
       // 自动处理管线：新捕获（浏览器/手动链接）到达即按设置勾选步骤串行处理。
       .onChange(of: appModel.currentCapture?.taskID) { _, newTaskID in
@@ -162,27 +187,57 @@ struct HistoryContentView: View {
       }
   }
 
-  private var showsWeChatArticleSurface: Bool {
+  private var showsPlatformGallerySurface: Bool {
     !model.isCreatorDirectoryActive && !model.isWorkbenchActive
-      && model.selectedHosts == Set(["mp.weixin.qq.com"])
+      && PlatformHistoryGalleryPresentation.showsGallery(for: model.selectedHosts)
   }
 
-  @ViewBuilder private var weChatArticleSurface: some View {
-    if isReadingWeChatArticle {
+  private var platformGalleryAccessibilityPrefix: String {
+    if model.selectedHosts == Set(["x.com"]) { return "x-post-gallery" }
+    if model.selectedHosts == Set(["mp.weixin.qq.com"]) { return "wechat-article-gallery" }
+    return "platform-gallery"
+  }
+
+  @ViewBuilder private var platformGallerySurface: some View {
+    if isReadingPlatformGalleryItem {
       VStack(spacing: 0) {
         HStack {
-          Button("返回公众号文章") { isReadingWeChatArticle = false }
-            .accessibilityIdentifier("wechat-gallery-back")
+          Button(platformGalleryBackTitle) {
+            platformGalleryScrollTarget = model.endPlatformGalleryReading()
+            isReadingPlatformGalleryItem = false
+          }
+          .accessibilityIdentifier(platformGalleryBackIdentifier)
           Spacer()
-        }.padding(.horizontal, 16).padding(.vertical, 8)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
         detailColumn
       }
     } else {
-      WeChatArticleGallery(model: model, theme: theme, searchFocused: $isSearchFocused) { taskID in
-        model.selectedTaskID = taskID
-        isReadingWeChatArticle = true
-      }
+      PlatformHistoryGallery(
+        model: model,
+        theme: theme,
+        searchFocused: $isSearchFocused,
+        scrollTarget: $platformGalleryScrollTarget,
+        onOpen: { taskID in
+          model.beginPlatformGalleryReading(taskID: taskID)
+          isReadingPlatformGalleryItem = true
+        },
+        contextMenu: { row in AnyView(historyContextMenu(for: row)) },
+        accessibilityPrefix: platformGalleryAccessibilityPrefix
+      )
     }
+  }
+
+  private var platformGalleryBackTitle: String {
+    let name = PlatformHistoryGalleryPresentation.platformDisplayName(for: model.selectedHosts)
+    return "返回\(name)"
+  }
+
+  private var platformGalleryBackIdentifier: String {
+    if model.selectedHosts == Set(["x.com"]) { return "x-post-gallery-back" }
+    if model.selectedHosts == Set(["mp.weixin.qq.com"]) { return "wechat-gallery-back" }
+    return "platform-gallery-back"
   }
 
   private var themedBody: some View {
@@ -194,28 +249,34 @@ struct HistoryContentView: View {
           if columnVisibility == .detailOnly {
             // macOS 三列 NavigationSplitView 不保证响应 detailOnly；专注模式直接呈现详情。
             Group {
-              if showsWeChatArticleSurface { weChatArticleSurface }
+              if showsPlatformGallerySurface { platformGallerySurface }
+              else if model.isCreatorDirectoryActive { creatorDirectorySurface }
               else { detailColumn }
             }
               .frame(maxWidth: .infinity, maxHeight: .infinity)
               .background(theme.card)
               .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
-          } else if showsWeChatArticleSurface {
-            NavigationSplitView {
-              navigationRail.navigationSplitViewColumnWidth(
-                min: DesignTokens.Layout.sidebarMin, ideal: DesignTokens.Layout.sidebarIdeal,
-                max: DesignTokens.Layout.sidebarMax
-              )
-              .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
+          } else if showsPlatformGallerySurface || model.isCreatorDirectoryActive {
+            // A gallery is a desktop split, not an adaptive navigation stack.
+            // NavigationSplitView can collapse its own host to the reader's
+            // intrinsic width when the detail swaps back to a ScrollViewReader.
+            HistoryGallerySplitView {
+              navigationRail.modifier(HistoryWindowToolbarThemeModifier(theme: theme))
             } detail: {
-              weChatArticleSurface
+              Group {
+                if model.isCreatorDirectoryActive { creatorDirectorySurface }
+                else { platformGallerySurface }
+              }
+              .modifier(HistoryWindowToolbarThemeModifier(theme: theme, background: theme.card))
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .id("history-gallery-navigation")
           } else {
             NavigationSplitView(columnVisibility: $columnVisibility) {
               navigationRail.navigationSplitViewColumnWidth(
-                min: DesignTokens.Layout.sidebarMin,
+                min: DesignTokens.Layout.sidebarIdeal,
                 ideal: DesignTokens.Layout.sidebarIdeal,
-                max: DesignTokens.Layout.sidebarMax
+                max: DesignTokens.Layout.sidebarIdeal
               )
               .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
             } content: {
@@ -382,6 +443,18 @@ struct HistoryContentView: View {
       }
     }
     .toolbar {
+      ToolbarItem(placement: .navigation) {
+        if showsPlatformGallerySurface || model.isCreatorDirectoryActive {
+          Button {
+            columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
+          } label: {
+            Image(systemName: "sidebar.left")
+          }
+          .help(columnVisibility == .detailOnly ? "显示边栏" : "隐藏边栏")
+          .accessibilityLabel(columnVisibility == .detailOnly ? "显示边栏" : "隐藏边栏")
+          .accessibilityIdentifier("history-gallery-sidebar-toggle")
+        }
+      }
       ToolbarItemGroup(placement: .primaryAction) {
         // 专注阅读：只留详情列，侧栏与列表用现成 columnVisibility 藏起，退出即恢复。
         Button {
@@ -488,6 +561,8 @@ struct HistoryContentView: View {
     }
     .sheet(item: $douyinProfileImportRequest) { request in
       DouyinProfileImportSheet(manualLink: manualLink, request: request) { creatorID in
+        showsCreatorDirectoryCatalog = false
+        creatorWorkScrollTarget = nil
         model.focusCreatorInDirectory(creatorID)
         columnVisibility = .all
       }
@@ -499,6 +574,8 @@ struct HistoryContentView: View {
     )) { _ in
       if let model = manualLink.browserProfileImportModel {
         DouyinProfileImportSheet(external: model, manualLink: manualLink) { creatorID in
+          showsCreatorDirectoryCatalog = false
+          creatorWorkScrollTarget = nil
           self.model.focusCreatorInDirectory(creatorID)
           columnVisibility = .all
         }
@@ -688,15 +765,20 @@ struct HistoryContentView: View {
       case .loaded, .loading, .failed, .idle:
         ScrollViewReader { batchScroll in
           List(selection: $model.selectedTaskIDs) {
-          if manualLink.profileImportBatches.contains(where: { ProfileImportQueuePresentation.visible($0, dismissed: dismissedImportNotices) }) {
+          if !visibleProfileImportBatches.isEmpty {
             Section {
               ProfileImportBatchStack(
                 manualLink: manualLink,
                 historyModel: model,
                 compact: true
               )
+              .listRowBackground(Color.clear)
+              .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+              .listRowSeparator(.hidden)
             } header: {
-              Text("主页抓取批次").themedFont(.caption).foregroundStyle(.secondary)
+              if hasInProgressProfileImportBatch {
+                Text("主页抓取批次").themedFont(.caption).foregroundStyle(.secondary)
+              }
             }
           }
           // 排队抓取区：提交链接后立刻回到列表，这里可见进度/失败重试，
@@ -711,14 +793,14 @@ struct HistoryContentView: View {
             }
           }
           ForEach(model.rows, id: \.taskID) { row in
-            HistoryRowView(
+            UIReadingHistoryRow(
               row: row,
               isSelected: model.selectedTaskIDs.contains(row.taskID),
               faviconURL: model.faviconImageURL(for: row),
               theme: theme
             ).equatable().tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
               .listRowBackground(Color.clear)
-              .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+              .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
               .listRowSeparator(.hidden)
               .contextMenu {
                 Button { openHistoryURL(row.canonicalURL) } label: { Label("在浏览器中打开", systemImage: "safari") }
@@ -793,6 +875,7 @@ struct HistoryContentView: View {
   }
 
   private var navigationRail: some View {
+    ScrollViewReader { proxy in
     List {
       Section {
         navigationButton("全部", systemImage: "tray.full", count: model.navigationCounts.all, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
@@ -845,6 +928,9 @@ struct HistoryContentView: View {
             count: model.navigationCounts.creatorCount,
             selected: model.isCreatorDirectoryActive
           ) {
+            showsCreatorDirectoryCatalog = true
+            creatorWorkScrollTarget = nil
+            creatorDirectoryScrollTarget = model.selectedCreatorID
             model.enterCreatorDirectory()
           }
           .accessibilityIdentifier("history-navigation-creators-all")
@@ -912,44 +998,45 @@ struct HistoryContentView: View {
         // 分区标题同样要显式给字体：`Section("平台")` 那种字符串写法的标题是 List
         // 自己渲染的，和行内容一样收不到环境字体。
         Section {
-          // 平台名称必须常驻可见。只显示图标虽然省高度，但把理解成本转嫁给
-          // tooltip；新的紧凑行仍然只占一行，同时给出图标、名称和数量。
-          PlatformGridView(
-            items: knownPlatforms.map { platform in
-              let favicon = model.platformFavicon(forHost: platform.host)
-              return .init(
-                host: platform.host,
-                count: platform.count,
-                faviconURL: favicon?.url,
-                faviconTaskID: favicon?.taskID
-              )
-            }
-              + (miscPlatforms.isEmpty ? [] : [
-                .init(
-                  host: HistoryPlatformDisplay.miscHost,
-                  count: miscPlatforms.reduce(0) { $0 + $1.count },
-                  faviconURL: nil,
-                  faviconTaskID: nil
+          if navigationPlatformsExpanded {
+            // 平台名称必须常驻可见。只显示图标虽然省高度，但把理解成本转嫁给
+            // tooltip；新的紧凑行仍然只占一行，同时给出图标、名称和数量。
+            UIReadingPlatformNavigation(
+              items: knownPlatforms.map { platform in
+                let favicon = model.platformFavicon(forHost: platform.host)
+                return .init(
+                  host: platform.host,
+                  count: platform.count,
+                  faviconURL: favicon?.url,
+                  faviconTaskID: favicon?.taskID
                 )
-              ]),
-            theme: theme,
-            isSelected: { host in
-              host == HistoryPlatformDisplay.miscHost
-                ? model.selectedHosts == Set(miscPlatforms.map(\.host))
-                : model.selectedHosts.contains(host)
-            },
-            onSelect: { host in
-              isReadingWeChatArticle = false
-              if host == HistoryPlatformDisplay.miscHost {
-                model.selectHosts(miscPlatforms.map(\.host))
-              } else {
-                model.selectHost(host)
               }
-            }
-          )
-          .padding(.horizontal, -6)
+                + (miscPlatforms.isEmpty ? [] : [
+                  .init(
+                    host: HistoryPlatformDisplay.miscHost,
+                    count: miscPlatforms.reduce(0) { $0 + $1.count },
+                    faviconURL: nil,
+                    faviconTaskID: nil
+                  )
+                ]),
+              theme: theme,
+              isSelected: { host in
+                host == HistoryPlatformDisplay.miscHost
+                  ? model.selectedHosts == Set(miscPlatforms.map(\.host))
+                  : model.selectedHosts.contains(host)
+              },
+              onSelect: { host in
+                isReadingPlatformGalleryItem = false
+                if host == HistoryPlatformDisplay.miscHost {
+                  model.selectHosts(miscPlatforms.map(\.host))
+                } else {
+                  model.selectHost(host)
+                }
+              }
+            )
+          }
         } header: {
-          navigationSectionHeader("来源平台")
+          navigationSectionHeader("来源平台", expanded: $navigationPlatformsExpanded)
         }
       }
 
@@ -1015,13 +1102,39 @@ struct HistoryContentView: View {
           }
         } header: {
           navigationSectionHeader("标签", expanded: $navigationTagsExpanded)
+            .accessibilityIdentifier("history-navigation-tags-header")
         }
+        .id("history-navigation-tags")
       }
     }
     .listStyle(.sidebar)
     .scrollContentBackground(theme.isNative ? .automatic : .hidden)
     .background(theme.isNative ? Color.clear : theme.canvas)
+    .contentMargins(.bottom, 20, for: .scrollContent)
     .accessibilityIdentifier("history-navigation-rail")
+    .onAppear {
+      if let target = navigationPlatformScrollTarget(model.selectedHosts) {
+        DispatchQueue.main.async { proxy.scrollTo(target, anchor: .center) }
+      }
+    }
+    .onChange(of: model.selectedHosts) { _, hosts in
+      if let target = navigationPlatformScrollTarget(hosts) {
+        proxy.scrollTo(target, anchor: .center)
+      }
+    }
+    }
+    .frame(minHeight: 0, maxHeight: .infinity)
+  }
+
+  private func navigationPlatformScrollTarget(_ hosts: Set<String>) -> String? {
+    guard !hosts.isEmpty else { return nil }
+    let misc = Set(
+      model.navigationCounts.platforms
+        .filter { !HistoryPlatformDisplay.isWellKnown(host: $0.host) }
+        .map(\.host)
+    )
+    if !misc.isEmpty, hosts == misc { return HistoryPlatformDisplay.miscHost }
+    return hosts.count == 1 ? hosts.first : nil
   }
 
   /// All sections share the same title baseline; disclosure controls occupy a
@@ -1197,7 +1310,7 @@ struct HistoryContentView: View {
 
   private var creatorDirectory: some View {
     VStack(spacing: 0) {
-      Text("全部博主 · \(model.navigationCounts.creatorCount)")
+      Text("全部博主 · 全部已添加 \(model.navigationCounts.creatorCount) 位")
         .themedFont(.headline)
         .foregroundStyle(theme.primaryText)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -1257,17 +1370,59 @@ struct HistoryContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("history-creator-directory-filtered-empty")
       } else {
-        List {
-          ForEach(model.creatorDirectoryRows) { creator in
-            creatorDirectoryRow(creator)
-              .onAppear { model.loadNextCreatorPageIfNeeded(after: creator) }
-          }
-          if model.isLoadingCreatorPage {
-            HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
+        GeometryReader { geometry in
+          ScrollViewReader { proxy in
+            ScrollView {
+              VStack(alignment: .leading, spacing: 28) {
+                ForEach(CreatorDirectoryPlatformGroup.groups(from: model.creatorDirectoryRows)) { group in
+                  CreatorDirectoryPlatformSection(
+                    platform: group.id,
+                    count: group.creators.count,
+                    theme: theme,
+                    isExpanded: Binding(
+                      get: { !collapsedCreatorPlatforms.contains(group.id) },
+                      set: { expanded in
+                        if expanded { collapsedCreatorPlatforms.remove(group.id) }
+                        else { collapsedCreatorPlatforms.insert(group.id) }
+                      }
+                    )
+                  ) {
+                    LazyVGrid(
+                      columns: creatorDirectoryGridColumns(availableWidth: geometry.size.width),
+                      spacing: CreatorDirectoryChrome.xGridSpacing
+                    ) {
+                      ForEach(group.creators) { creator in
+                        creatorDirectoryRow(creator)
+                          .id(creator.id)
+                      }
+                    }
+                  }
+                }
+              }
+              // Pagination must not depend on a card hidden by a collapsed group,
+              // or on the old last row's position after platform regrouping.
+              Color.clear.frame(height: 1)
+                .id(model.creatorDirectoryRows.last?.id)
+                .onAppear {
+                  if let last = model.creatorDirectoryRows.last {
+                    model.loadNextCreatorPageIfNeeded(after: last)
+                  }
+                }
+              if model.isLoadingCreatorPage {
+                HStack { Spacer(); ProgressView().controlSize(.small); Spacer() }
+                  .padding(.vertical, 8)
+              }
+            }
+            .padding(12)
+            .onAppear { restoreCreatorDirectoryScroll(using: proxy) }
+            .onChange(of: creatorDirectoryScrollTarget) { _, _ in
+              restoreCreatorDirectoryScroll(using: proxy)
+            }
+            .onChange(of: model.creatorSearchText) { _, _ in
+              collapsedCreatorPlatforms.removeAll()
+            }
           }
         }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
         .accessibilityIdentifier("history-creator-directory")
       }
     }
@@ -1277,38 +1432,21 @@ struct HistoryContentView: View {
 
   private func creatorDirectoryRow(_ creator: CreatorSummary) -> some View {
     let canCapture = ProfileImportPlatform.parse(creator.profileURL) != nil
-    return Button { model.focusCreatorInDirectory(creator.id) } label: {
-      HStack(alignment: .center, spacing: 10) {
-        CreatorDirectoryAvatar(creator: creator, size: 32, theme: theme) {
-          presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
-        }
-        VStack(alignment: .leading, spacing: 3) {
-          Text(creator.directoryDisplayName)
-            .themedFont(.body)
-            .foregroundStyle(theme.primaryText)
-            .lineLimit(2)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-          Text(creatorDirectoryRowSubtitle(creator))
-            .themedFont(.caption)
-            .foregroundStyle(theme.secondaryText)
-            .lineLimit(1)
-        }
-        .layoutPriority(1)
-        Spacer(minLength: 0)
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .contentShape(Rectangle())
+    return Button {
+      showsCreatorDirectoryCatalog = false
+      creatorDirectoryScrollTarget = nil
+      creatorWorkScrollTarget = nil
+      model.focusCreatorInDirectory(creator.id)
+    } label: {
+      CreatorDirectoryCard(
+        creator: creator,
+        theme: theme,
+        isSelected: model.selectedCreatorID == creator.id,
+        onRetryAvatar: { presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true) }
+      )
     }
     .buttonStyle(.plain)
     .accessibilityIdentifier("history-creator-select-\(creator.id.rawValue)")
-    .padding(.vertical, 6)
-    .listRowBackground(
-      RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-        .fill(model.selectedCreatorID == creator.id ? theme.accent.opacity(0.12) : Color.clear)
-    )
-    .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 4, trailing: 8))
-    .listRowSeparator(.hidden)
     .contextMenu {
       Button("更新资料") {
         presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
@@ -1322,19 +1460,28 @@ struct HistoryContentView: View {
     }
   }
 
+  private func creatorDirectoryGridColumns(availableWidth: CGFloat) -> [GridItem] {
+    let count = CreatorDirectoryChrome.xColumnCount(availableWidth: availableWidth)
+    return Array(
+      repeating: GridItem(.flexible(minimum: 0), spacing: CreatorDirectoryChrome.xGridSpacing, alignment: .top),
+      count: count
+    )
+  }
+
+  private func restoreCreatorDirectoryScroll(using proxy: ScrollViewProxy) {
+    guard let creatorID = creatorDirectoryScrollTarget else { return }
+    DispatchQueue.main.async {
+      withAnimation(historyUIAnimation(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) {
+        proxy.scrollTo(creatorID, anchor: .center)
+      }
+      creatorDirectoryScrollTarget = nil
+    }
+  }
+
   private func creatorDirectorySubtitle(_ creator: CreatorSummary) -> String {
     var parts = [
       HistoryPlatformDisplay.name(forHost: creator.identity.platform),
       "已保存 \(creator.savedWorkCount) 条",
-    ]
-    if creator.isPinned { parts.append("已置顶") }
-    return parts.joined(separator: " · ")
-  }
-
-  private func creatorDirectoryRowSubtitle(_ creator: CreatorSummary) -> String {
-    var parts = [
-      HistoryPlatformDisplay.name(forHost: creator.identity.platform),
-      "\(creator.savedWorkCount) 条",
     ]
     if creator.isPinned { parts.append("已置顶") }
     return parts.joined(separator: " · ")
@@ -1388,7 +1535,7 @@ struct HistoryContentView: View {
 
   private func removeHostFilter(_ host: String) {
     let remaining = model.selectedHosts.subtracting([host])
-    if remaining.isEmpty { model.selectScope(.all) }
+    if remaining.isEmpty { model.clearHostSelection() }
     else { model.selectHosts(Array(remaining)) }
   }
 
@@ -1462,6 +1609,53 @@ struct HistoryContentView: View {
 
   private func copyHistoryURL(_ raw: String) {
     CopyFeedbackController.shared.copy(raw)
+  }
+
+  /// Gallery cards keep the same context actions as the history list.
+  @ViewBuilder private func historyContextMenu(for row: HistoryRowProjection) -> some View {
+    Button { openHistoryURL(row.canonicalURL) } label: {
+      Label("在浏览器中打开", systemImage: "safari")
+    }
+    Button { copyHistoryURL(row.canonicalURL) } label: {
+      Label("复制链接", systemImage: "doc.on.doc")
+    }
+    if model.selectedTaskIDs.contains(row.taskID), model.selectedTaskCount > 1 {
+      Divider()
+      Button { model.requestBatchSummary() } label: {
+        Label("总结选中的 \(model.selectedTaskCount) 条…", systemImage: "text.badge.checkmark")
+      }
+      .disabled(!model.canBatchSummarize || !providerSettings.arePreferencesReady)
+      .accessibilityIdentifier("batch-summarize-history-context")
+      Button {
+        model.requestBatchTranslation(outputLanguage: providerSettings.outputLanguage)
+      } label: {
+        Label("翻译选中的 \(model.selectedTaskCount) 条…", systemImage: "character.book.closed")
+      }
+      .disabled(!model.canBatchTranslate || !providerSettings.arePreferencesReady)
+      .accessibilityIdentifier("batch-translate-history-context")
+    }
+    let unfinished = model.pieces.filter { !$0.isFinished }
+    if isWorkbenchVisible, !unfinished.isEmpty {
+      Divider()
+      Menu {
+        ForEach(unfinished) { piece in
+          Button(piece.title) { model.addMaterial(taskID: row.taskID, to: piece.id) }
+        }
+      } label: {
+        Label("加入工作台", systemImage: "hammer")
+      }
+      .accessibilityIdentifier("add-material-to-piece")
+    }
+    Divider()
+    Button(role: .destructive) {
+      if !model.selectedTaskIDs.contains(row.taskID) {
+        model.selectedTaskIDs = [row.taskID]
+      }
+      model.requestDeletion(protectedTaskIDs: protectedTaskIDs)
+    } label: {
+      Label("删除…", systemImage: "trash")
+    }
+    .disabled(model.isReadOnly || model.isDeleting)
   }
 
   /// 右侧那一列:工作台激活时是创作台,否则是常规详情页。
@@ -1564,14 +1758,31 @@ struct HistoryContentView: View {
     }
   }
 
+  @ViewBuilder private var creatorDirectorySurface: some View {
+    switch CreatorDirectorySurfaceState.resolve(
+      showsCatalog: showsCreatorDirectoryCatalog,
+      hasSelectedCreator: model.selectedCreator != nil,
+      isReading: model.isReadingCreatorWorkInDirectory
+    ) {
+    case .catalog:
+      creatorDirectory
+    case .works:
+      creatorDirectoryDetail
+    case .reader:
+      creatorDirectoryReader
+    }
+  }
+
   private var creatorDirectoryReader: some View {
     VStack(spacing: 0) {
       HStack(spacing: 10) {
         Button(model.profileImportReturnTarget == nil ? "返回作品" : "返回抓取批次") {
           if model.profileImportReturnTarget != nil {
+            creatorWorkScrollTarget = nil
             model.returnToProfileImportBatch()
             columnVisibility = .all
           } else {
+            creatorWorkScrollTarget = model.selectedTaskID
             model.leaveCreatorWorkReading()
           }
         }
@@ -1595,6 +1806,14 @@ struct HistoryContentView: View {
     let canCapture = ProfileImportPlatform.parse(creator.profileURL) != nil
     let batches = manualLink.profileImportBatches.filter { $0.creatorID == creator.id }
     return VStack(spacing: 0) {
+      HStack {
+        Button("返回全部博主") { returnToCreatorDirectory() }
+          .accessibilityIdentifier("history-creator-directory-back-to-catalog")
+        Spacer()
+      }
+      .padding(.horizontal, 14)
+      .padding(.top, 8)
+      .padding(.bottom, 2)
       HStack(alignment: .center, spacing: 10) {
         CreatorDirectoryAvatar(creator: creator, size: 36, theme: theme) {
           presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
@@ -1625,15 +1844,17 @@ struct HistoryContentView: View {
       }
       .padding(.horizontal, 14)
       .padding(.top, 10)
-      Text("互动数据为保存时快照")
-        .themedFont(.caption2)
-        .foregroundStyle(theme.secondaryText)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14)
-        .padding(.top, 2)
-        .padding(.bottom, 8)
+      if HistoryPlatformRegistry.canonicalHost(for: creator.identity.platform) != "mp.weixin.qq.com" {
+        Text("互动数据为保存时快照")
+          .themedFont(.caption2)
+          .foregroundStyle(theme.secondaryText)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 14)
+          .padding(.top, 2)
+          .padding(.bottom, 8)
+      }
       if !batches.isEmpty {
-        creatorWorksGridSurface(creator: creator, batches: batches)
+        creatorWorksGridSurface(creator: creator, batches: batches, scrollTarget: $creatorWorkScrollTarget)
       } else {
         switch model.listState {
       case .idle where model.rows.isEmpty, .loading where model.rows.isEmpty:
@@ -1660,7 +1881,7 @@ struct HistoryContentView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("history-creator-directory-works-empty")
       default:
-        creatorWorksGridSurface(creator: creator, batches: [])
+        creatorWorksGridSurface(creator: creator, batches: [], scrollTarget: $creatorWorkScrollTarget)
         }
       }
     }
@@ -1670,7 +1891,8 @@ struct HistoryContentView: View {
 
   private func creatorWorksGridSurface(
     creator: CreatorSummary,
-    batches: [ProfileImportBatch]
+    batches: [ProfileImportBatch],
+    scrollTarget: Binding<TaskID?>
   ) -> some View {
     GeometryReader { geometry in
       let columns = creatorWorksGridColumns(for: creator, availableWidth: geometry.size.width)
@@ -1689,7 +1911,13 @@ struct HistoryContentView: View {
             }
             LazyVGrid(columns: columns, spacing: CreatorDirectoryChrome.xGridSpacing) {
               ForEach(batches.filter { !$0.isCollapsed }) { batch in
-                ForEach(batch.items) { item in
+                ForEach(creatorWorkSort.sorted(batch.items, likes: { item in
+                  if case let .completed(id) = item.phase { return savedRows[id]?.likes ?? item.seed.likes }
+                  return item.seed.likes
+                }, published: { item in
+                  if case let .completed(id) = item.phase { return savedRows[id]?.published ?? item.seed.publishedText }
+                  return item.seed.publishedText
+                }, referenceDate: creatorSortReferenceDate)) { item in
                   ProfileImportBatchWorkCard(
                     batchID: batch.id,
                     item: item,
@@ -1703,7 +1931,8 @@ struct HistoryContentView: View {
                   .id(item.id)
                 }
               }
-              ForEach(model.rows.filter { !reservedTaskIDs.contains($0.taskID) }, id: \.taskID) { row in
+              ForEach(creatorWorkSort.sorted(model.rows.filter { !reservedTaskIDs.contains($0.taskID) },
+                likes: { $0.likes }, published: { $0.published }), id: \.taskID) { row in
                 Button {
                   model.selectedTaskID = row.taskID
                 } label: {
@@ -1716,8 +1945,23 @@ struct HistoryContentView: View {
                 .buttonStyle(.plain)
                 .accessibilityElement(children: .contain)
                 .accessibilityHint("打开作品")
-                .onAppear { model.loadNextPageIfNeeded(after: row) }
+                .contextMenu { historyContextMenu(for: row) }
+                .overlay(alignment: .topTrailing) {
+                  CreatorWorkSelectionControl(
+                    isSelected: model.selectedTaskIDs.contains(row.taskID), theme: theme
+                  ) { model.toggleGallerySelection(row.taskID) }
+                  .accessibilityIdentifier("history-work-select-\(row.taskID.rawValue)")
+                  .padding(6)
+                }
                 .accessibilityIdentifier("history-creator-work-card-\(row.taskID.rawValue)")
+                .id(row.taskID)
+              }
+              // A completed batch can own rows.last and remove its saved card.
+              // This lazy footer still advances pagination at the visual end.
+              if let last = model.rows.last {
+                Color.clear.frame(height: 1)
+                  .id("creator-pagination-\(last.taskID.rawValue)")
+                  .onAppear { model.loadNextPageIfNeeded(after: last) }
               }
             }
           }
@@ -1725,11 +1969,29 @@ struct HistoryContentView: View {
         }
         .onAppear {
           scrollToProfileImportTarget(using: batchScroll)
+          restoreCreatorWorkScroll(using: batchScroll, target: scrollTarget)
         }
         .onChange(of: model.profileImportScrollTarget) { _, _ in
           scrollToProfileImportTarget(using: batchScroll)
         }
       }
+    }
+    .safeAreaInset(edge: .top, spacing: 0) {
+      HStack {
+        Text("各组内仅排序已加载作品")
+          .themedFont(.caption)
+          .foregroundStyle(theme.secondaryText)
+        Spacer()
+        Picker("排序", selection: $creatorWorkSort) {
+          ForEach(WorkSortOrder.allCases) { Text($0.title).tag($0) }
+        }
+        .frame(width: 220)
+        .accessibilityIdentifier("creator-work-sort")
+        .help("本次抓取和已有作品分别排序，缺失值排最后；不改变后台抓取顺序。")
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 8)
+      .background(theme.canvas)
     }
     .accessibilityIdentifier("history-creator-directory-works")
   }
@@ -1740,6 +2002,22 @@ struct HistoryContentView: View {
       proxy.scrollTo(target, anchor: .center)
     }
     model.consumeProfileImportScrollTarget()
+  }
+
+  private func restoreCreatorWorkScroll(using proxy: ScrollViewProxy, target: Binding<TaskID?>) {
+    guard let taskID = target.wrappedValue else { return }
+    DispatchQueue.main.async {
+      withAnimation(historyUIAnimation(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) {
+        proxy.scrollTo(taskID, anchor: .center)
+      }
+      target.wrappedValue = nil
+    }
+  }
+
+  private func returnToCreatorDirectory() {
+    creatorDirectoryScrollTarget = model.selectedCreatorID
+    showsCreatorDirectoryCatalog = true
+    model.leaveCreatorWorkReading()
   }
 
   private func creatorWorksGridColumns(for creator: CreatorSummary, availableWidth: CGFloat) -> [GridItem] {
@@ -2394,10 +2672,12 @@ struct PlatformNavigationIcon: View {
   var body: some View {
     if host == HistoryPlatformDisplay.miscHost {
       // 杂项来源没有 logo 可取，用收件盘符号——它表达的正是「还没归类」。
+      // List 会盖掉环境字号；resizable + 16 框避免 SF Symbol 按 18pt 被裁。
       Image(systemName: "tray")
-        .font(.system(size: DesignTokens.IconSize.control, weight: .medium))
+        .resizable()
+        .scaledToFit()
         .foregroundStyle(.secondary)
-        .frame(width: 18, height: 18)
+        .frame(width: 16, height: 16)
     } else if let image = PlatformIconCatalog.image(for: host) {
       Image(nsImage: image).resizable().scaledToFit().frame(width: 16, height: 16)
     } else if let faviconURL, let faviconTaskID {
@@ -2479,6 +2759,8 @@ private struct HistoryDetailView: View, Equatable {
   @State private var isCaptionExpanded = false
   @State private var isTranscriptExpanded = false
   @State private var isSubtitleExpanded = false
+  /// 收起长文后滚回该层顶部，避免停在空白处。
+  @State private var sourceCollapseScrollTarget: String?
   /// 选中的原文层。nil 表示还没手动切过，按 `defaultSourceLayer` 走。
   @State private var selectedSourceLayer: SourceLayer?
   /// 选中的译文层。
@@ -2743,6 +3025,12 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 只有一层时不出控件：一个没有选择余地的分段控件只是看起来像有。
   private var showsSourceLayerPicker: Bool { availableSourceLayers.count > 1 }
+  private var showsToolbarSourceLayerPicker: Bool {
+    !isOwnWriting && showsSourceLayerPicker && effectiveReadingPane == .source
+  }
+  private var showsToolbarTranslationLayerPicker: Bool {
+    !isOwnWriting && showsTranslationLayerPicker && effectiveReadingPane == .translation
+  }
 
   /// 译文拆出来的各层。
   ///
@@ -2939,6 +3227,7 @@ private struct HistoryDetailView: View, Equatable {
       || appModel.hasQueuedGeneration(for: detail.task.id)
   }
   private var presentsArticleBeforeMedia: Bool {
+    if hasInlineArticleVideos { return true }
     guard let latestSnapshot else { return false }
     if effectiveReadingPane == .source, !hasLiveTranscription,
        (!showsLayeredSource || activeSourceLayer == .caption),
@@ -2950,13 +3239,32 @@ private struct HistoryDetailView: View, Equatable {
       }
     }
     // 长转写仍置于播放器之后，避免把播放控件推离屏幕。
-    // 微信长文没有内嵌播放器，仍旧正文在前。
+    // 长文（含旧记录里没有文中标记的）正文在前，避免播放器盖住目录。
+    if isLongFormArticleCapture { return true }
     return RemoteMarkdownImageStagingPolicy.isSubstantiveWeChatArticle(
       platform: latestSnapshot.platform,
       markdown: latestSnapshot.bodyText
     )
   }
-  private var suppressesEmbeddedMedia: Bool { latestSnapshot?.platform == "wechat" }
+  private var hasInlineArticleVideos: Bool {
+    guard let body = latestSnapshot?.bodyText else { return false }
+    return LocalMarkdownImageLayout.firstVideoMarkerRange(in: body) != nil
+  }
+  private var isVideoNativeWork: Bool {
+    let platform = latestSnapshot?.platform
+    if platform == "douyin" || platform == "bilibili" || platform == "x" || platform == "youtube" {
+      return true
+    }
+    return YouTubeWatchLink.videoID(from: sourceURL) != nil
+  }
+  private var isLongFormArticleCapture: Bool {
+    guard let snapshot = latestSnapshot, !isVideoNativeWork else { return false }
+    let body = MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
+    return body.contains("\n## ") || body.count > 1_200
+  }
+  private var suppressesEmbeddedMedia: Bool {
+    latestSnapshot?.platform == "wechat" || hasInlineArticleVideos
+  }
   private var hasResultBody: Bool {
     guard let artifact = latestArtifact else { return false }
     return !artifact.bodyText.isEmpty
@@ -3060,7 +3368,8 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   var body: some View {
-    ScrollView {
+    ScrollViewReader { scrollProxy in
+      ScrollView {
       // Title → URL → run/capture metadata (top) → action toolbar → reading → tags.
       VStack(alignment: .leading, spacing: 0) {
         if model.isReadOnly {
@@ -3099,9 +3408,9 @@ private struct HistoryDetailView: View, Equatable {
           sourceByline
             .padding(.top, DesignTokens.Space.sm)
         }
-        if !isWeChatCapture && sourceFrontmatter.hasEngagementStats {
+        if sourceFrontmatter.hasEngagementStats {
           engagementDisclosure(sourceFrontmatter)
-            .padding(.top, DesignTokens.Space.sm)
+            .padding(.top, DesignTokens.Space.xs)
         }
 
         // 抓取记录的生成入口并入阅读工具栏「AI 处理」菜单，避免与结果切换分两行。
@@ -3570,6 +3879,14 @@ private struct HistoryDetailView: View, Equatable {
       }
     }
     .accessibilityIdentifier("history-detail")
+    .onChange(of: sourceCollapseScrollTarget) { _, target in
+      guard let target else { return }
+      withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
+        scrollProxy.scrollTo(target, anchor: .top)
+      }
+      sourceCollapseScrollTarget = nil
+    }
+    } // ScrollViewReader
   }
 
   private var hasReadableBody: Bool {
@@ -3833,6 +4150,12 @@ private struct HistoryDetailView: View, Equatable {
       HStack(alignment: .center, spacing: DesignTokens.Space.sm) {
         if showsReadingPanePicker {
           readingPanePicker
+        }
+        if showsToolbarSourceLayerPicker {
+          sourceLayerPicker
+        }
+        if showsToolbarTranslationLayerPicker {
+          translationLayerPicker
         }
         Spacer(minLength: DesignTokens.Space.sm)
         if showsVisibleRun {
@@ -4279,7 +4602,7 @@ private struct HistoryDetailView: View, Equatable {
   /// 生成中的总结/翻译正文。就是这一页的内容，不再另挂一张预览卡。
   ///
   /// 单独成叶子视图并观察 `LiveRunTextModel`：流式拍点（正文纯增长）只
-  /// 重绘这一小块，外层详情的元数据、工具栏、评论区不再每 250ms 跟着
+  /// 重绘这一小块，外层详情的元数据、工具栏、评论区不再每 80ms 跟着
   /// 重求值——那是生成期间滚动持续卡顿的来源。状态行等低频输入以值
   /// 传入，切换时由父视图整体刷新带过来。
   private var liveRunReadingBody: some View {
@@ -4452,31 +4775,52 @@ private struct HistoryDetailView: View, Equatable {
     return String(format: "%d:%02d", total / 60, total % 60)
   }
 
-  /// 同一组互动数据只显示一次；完整数值通过悬停和读屏提供。
+  /// 同一组互动数据只显示一次；明细按需展开，完整数值通过悬停和读屏提供。
   private func engagementDisclosure(_ note: MarkdownNoteFrontmatter) -> some View {
-    engagementCompactChips(note)
-      .foregroundStyle(.secondary)
-      .accessibilityIdentifier("history-engagement-more")
+    DisclosureGroup {
+      VStack(alignment: .leading, spacing: 4) {
+        engagementCompactChips(note)
+          .foregroundStyle(.secondary)
+        Text("数据为采集时快照")
+          .themedFont(.caption2)
+          .foregroundStyle(.tertiary)
+          .accessibilityIdentifier("history-engagement-snapshot-note")
+      }
+    } label: {
+      engagementCompactChips(note)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+    }
+    .themedFont(.caption)
+    .accessibilityIdentifier("history-engagement-more")
   }
 
   @ViewBuilder
   private func engagementCompactChips(_ note: MarkdownNoteFrontmatter) -> some View {
     TagPillFlowLayout(spacing: DesignTokens.Space.sm) {
       Text("互动").themedFont(.caption, weight: .medium)
-      let host = URL(string: sourceURL)?.host ?? ""
+      let host = engagementHost
       let slots = CreatorWorkMetricLayout.usesAdaptiveWorkGrid(host)
         ? CreatorWorkMetricLayout.slots(forHost: host)
         : CreatorWorkMetricKind.allCases.filter { $0.value(from: note) != nil }
       ForEach(slots, id: \.rawValue) { slot in
         let shown = CreatorWorkMetricLayout.displayValue(slot.value(from: note))
         Label(shown.visible, systemImage: slot.systemImage)
-          .help("\(slot.title(forHost: host)) \(shown.accessibility) · 保存时")
+          .help("\(slot.title(forHost: host)) \(shown.accessibility)")
           .accessibilityLabel(slot.title(forHost: host))
           .accessibilityValue(shown.accessibility)
       }
     }
     .themedFont(.caption)
     .labelStyle(.titleAndIcon)
+    .accessibilityIdentifier("history-engagement-stats")
+  }
+
+  private var engagementHost: String {
+    if let host = URL(string: sourceURL)?.host, !host.isEmpty {
+      return host
+    }
+    return isWeChatCapture ? "mp.weixin.qq.com" : ""
   }
 
   private func compactEngagementCount(_ value: String) -> String {
@@ -4626,7 +4970,7 @@ private struct HistoryDetailView: View, Equatable {
         }
         if pane == .summary { sourceCitationLinks }
         // 译文和原文一样，一次只显示一层。控件放在正文之上，位置与原文页一致。
-        if pane == .translation, showsTranslationLayerPicker {
+        if pane == .translation, showsTranslationLayerPicker, !showsToolbarTranslationLayerPicker {
           translationLayerPicker
             .padding(.bottom, 10)
         }
@@ -4643,6 +4987,7 @@ private struct HistoryDetailView: View, Equatable {
           ),
           sourceURL: URL(string: sourceURL),
           localImageURLs: localImageURLs,
+          localMediaFileURL: nil,
           appendsUnusedLocalImages: !readingFormat.keepsImagePositions,
           groupsConsecutiveImages: !readingFormat.keepsImagePositions,
           readingFont: readingFont,
@@ -4696,7 +5041,7 @@ private struct HistoryDetailView: View, Equatable {
       .accessibilityIdentifier("history-reading-source")
     } else if showsLayeredSource {
       VStack(alignment: .leading, spacing: 14) {
-        if showsSourceLayerPicker { sourceLayerPicker }
+        if showsSourceLayerPicker, !showsToolbarSourceLayerPicker { sourceLayerPicker }
         switch activeSourceLayer {
         case .caption:
           if let caption = latestSourceSnapshot {
@@ -4786,19 +5131,10 @@ private struct HistoryDetailView: View, Equatable {
     // 或者非分层来源）仍然要这个标题，否则那段正文就没有名字了。
     let showsHeading = !showsSourceLayerPicker
     let showsExpandControl = long && !isEditingTranscription
+    let collapseAnchor = "source-collapse-\(heading)"
     VStack(alignment: .leading, spacing: 8) {
-      if showsHeading || showsExpandControl {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-          if showsHeading { sourceLayerHeading(heading) }
-          Spacer(minLength: 8)
-          if showsExpandControl {
-            Button(isExpanded.wrappedValue ? "收起" : "展开全文") {
-              isExpanded.wrappedValue.toggle()
-            }
-            .controlSize(.small)
-            .accessibilityIdentifier("history-source-expand")
-          }
-        }
+      if showsHeading {
+        sourceLayerHeading(heading)
       }
       if collapsed {
         sourceSnapshotReader(snapshot, bodyOverride: sourcePreview(body))
@@ -4809,9 +5145,20 @@ private struct HistoryDetailView: View, Equatable {
           .accessibilityIdentifier("history-source-expand-inline")
       } else {
         sourceSnapshotReader(snapshot)
+        if showsExpandControl {
+          Button("收起") {
+            isExpanded.wrappedValue = false
+            sourceCollapseScrollTarget = collapseAnchor
+          }
+          .buttonStyle(.link)
+          .themedFont(.callout, weight: .medium)
+          .padding(.top, 4)
+          .accessibilityIdentifier("history-source-collapse-inline")
+        }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+    .id(collapseAnchor)
   }
 
   private func sourceLayerHeading(_ title: String) -> some View {
@@ -4921,6 +5268,7 @@ private struct HistoryDetailView: View, Equatable {
             source: reformatted,
             sourceURL: URL(string: sourceURL),
             localImageURLs: localImageURLs,
+            localMediaFileURL: localMediaFileURL,
             appendsUnusedLocalImages: !readingFormat.keepsImagePositions,
             groupsConsecutiveImages: !readingFormat.keepsImagePositions,
             readingFont: readingFont,
@@ -4956,6 +5304,7 @@ private struct HistoryDetailView: View, Equatable {
             source: timestampLinked(displayedSourceMarkdown(snapshot, bodyOverride: bodyOverride)),
             sourceURL: URL(string: sourceURL),
             localImageURLs: localImageURLs,
+            localMediaFileURL: localMediaFileURL,
             appendsUnusedLocalImages: !readingFormat.keepsImagePositions,
             groupsConsecutiveImages: !readingFormat.keepsImagePositions,
             readingFont: readingFont,

@@ -1,7 +1,8 @@
-import { GENERIC_CONTENT_ROOTS, siteProfile, type SiteProfile } from "./site-profiles";
-import type { MediaDescriptor } from "../contract";
+import { GENERIC_CONTENT_ROOTS, siteProfileForDocument, type SiteProfile } from "./site-profiles";
+import type { CapturePlatform, MediaDescriptor } from "../contract";
 import type { DouyinSessionDiagnostic } from "./douyin-session-detail";
 import type { DouyinMetadataDOMDiagnostic } from "./douyin-metadata-diagnostic";
+import { articleVideoMarkdown } from "./article-embedded-video";
 import { detectMediaInPage } from "./media-detection";
 import {
   detectDouyinAwemeIdFromURL,
@@ -27,6 +28,11 @@ export type ExtractedPage = {
   text: string;
   characterCount: number;
   method: "selection" | "rendered_dom";
+  /**
+   * DOM-detected platform when the URL host is not enough (custom-domain
+   * Substack). Background copies this onto the envelope; it is not a contract change.
+   */
+  platform?: CapturePlatform;
   /** Generic whole-document fallbacks are visible-only, never a proven full article. */
   completeness?: "full_article" | "visible_only" | "selection_only" | "unknown";
   /** Internal extraction verdict. Background rejects it before Native Messaging. */
@@ -168,7 +174,7 @@ export const BOILERPLATE_LINE_MARKERS = [
 
 // Single string (not array.join) so minifiers keep attribute selectors intact.
 const NOISE_SELECTOR =
-  "script,style,noscript,template,nav,footer,header,aside,form,iframe,svg,button," +
+  "script,style,noscript,template,nav,footer,header,aside,form,svg,button," +
   "[class*='qrcode' i],[id*='qrcode' i],[class*='reward' i]," +
   "[class*='rich_media_tool' i],[class*='rich_media_area_extra' i],[id*='js_tags' i]," +
   "[class*='sns_opr' i],[class*='comment' i],[id*='comment' i]," +
@@ -181,10 +187,11 @@ const NOISE_SELECTOR =
  * Production injection runs this same function through entrypoints/extract-page.ts.
  */
 export function extractCurrentPage(documentLike: Document = document): ExtractedPage {
+  const profile = profileFor(documentLike);
   const selection = documentLike.defaultView?.getSelection()?.toString() ?? "";
   if (selection.trim()) {
     const text = normalizeMarkdownWhitespace(selection);
-    return page(documentLike, text, "selection");
+    return withProfilePlatform(page(documentLike, text, "selection"), profile);
   }
 
   if (isXStatusURL(documentLike.location.href)) {
@@ -224,13 +231,34 @@ export function extractCurrentPage(documentLike: Document = document): Extracted
     };
   }
 
+  if (profile?.requireContentRoot && !firstSubstantiveNode(documentLike, profile.contentRoot ?? [])) {
+    return withProfilePlatform(
+      page(documentLike, "", "rendered_dom", undefined, "unknown", "CAPTURE_CONTENT_EMPTY"),
+      profile,
+    );
+  }
+
   const root = pickContentRoot(documentLike);
   const clone = root.cloneNode(true) as Element;
   scrubNoise(clone);
   const baseHref = documentLike.location.href;
   const markdown = htmlElementToMarkdown(clone, baseHref);
   // 出口归一化：来源怎么写标题都不影响产出的层级结构。
-  const body = rebaseHeadingLevels(stripBoilerplateLines(markdown));
+  let body = rebaseHeadingLevels(stripBoilerplateLines(markdown));
+  const subtitleNode = profile?.subtitle ? firstNode(documentLike, profile.subtitle) : null;
+  if (subtitleNode) {
+    const subtitleMarkdown = rebaseHeadingLevels(
+      stripBoilerplateLines(htmlElementToMarkdown(subtitleNode, baseHref)),
+    ).trim();
+    const subtitleText = subtitleNode.textContent?.replace(/\s+/gu, " ").trim() ?? "";
+    if (
+      subtitleMarkdown
+      && !body.includes(subtitleMarkdown)
+      && (!subtitleText || !body.includes(subtitleText))
+    ) {
+      body = `${subtitleMarkdown}\n\n${body}`;
+    }
+  }
   const meta = isZhihuAnswerURL(baseHref)
     ? { ...resolvePageMetadata(documentLike), ...resolveZhihuAnswerMetadata(documentLike) }
     : resolvePageMetadata(documentLike);
@@ -238,14 +266,23 @@ export function extractCurrentPage(documentLike: Document = document): Extracted
   const text = `${header}${body}`.trim();
   const captureIssue = captureQualityIssue(documentLike, root);
   const usedWholeDocument = root === documentLike.body || root === documentLike.documentElement;
-  return page(
-    documentLike,
-    text,
-    "rendered_dom",
-    undefined,
-    usedWholeDocument ? "visible_only" : undefined,
-    captureIssue,
+  const paywalled = Boolean(profile?.paywall && firstNode(documentLike, profile.paywall));
+  return withProfilePlatform(
+    page(
+      documentLike,
+      text,
+      "rendered_dom",
+      undefined,
+      paywalled || usedWholeDocument ? "visible_only" : undefined,
+      captureIssue,
+    ),
+    profile,
   );
+}
+
+function withProfilePlatform(extracted: ExtractedPage, profile: SiteProfile | undefined): ExtractedPage {
+  if (profile?.id === "substack") return { ...extracted, platform: "substack" };
+  return extracted;
 }
 
 function page(
@@ -330,6 +367,7 @@ export function extractCommunityPostPage(documentLike: Document): ExtractedPage 
   const frontmatter = buildCaptureFrontmatter({
     author: firstText(documentLike, profile.author) || undefined,
     published: firstText(documentLike, profile.published) || undefined,
+    coverImage: resolveCoverImageURL(documentLike),
   });
   const text = `${frontmatter}# ${title}\n\n${bodyMarkdown}${comments ? `\n\n${comments}` : ""}`.trim();
   const faviconURL = resolveDocumentFaviconURL(documentLike);
@@ -479,6 +517,7 @@ export function extractRedditPostPage(documentLike: Document): ExtractedPage {
     author: cleanRedditAttribute(post.getAttribute("author")),
     published: normalizeRedditTimestamp(post.getAttribute("created-timestamp")),
     comments: redditNumericAttribute(post.getAttribute("comment-count")),
+    coverImage: resolveCoverImageURL(documentLike),
   };
   const frontmatter = buildCaptureFrontmatter(metadata);
   const subreddit = cleanRedditAttribute(post.getAttribute("subreddit-prefixed-name"));
@@ -818,6 +857,7 @@ export function extractBilibiliPage(documentLike: Document): ExtractedPage {
   const header = buildCaptureFrontmatter({
     author,
     published,
+    coverImage: resolveCoverImageURL(documentLike),
     likes: firstDomCount(documentLike, ".video-like-info"),
     collects: firstDomCount(documentLike, ".video-fav-info"),
     shares: firstDomCount(documentLike, ".video-share-info"),
@@ -974,8 +1014,12 @@ function extractXStatusPage(documentLike: Document): ExtractedPage {
     documentLike.querySelector("article");
 
   const meta = resolveXStatusMetadata(documentLike, article);
-  const header = buildCaptureFrontmatter(meta);
   const body = buildXStatusBody(documentLike, article, baseHref);
+  const videoCover = firstXVideoCoverURL(article, baseHref);
+  const header = buildCaptureFrontmatter({
+    ...meta,
+    ...(videoCover && !hasMarkdownHTTPSImage(body) ? { coverImage: videoCover } : {}),
+  });
   const text = `${header}${body}`.trim();
   // X long-form articles carry an explicit title node — always the full
   // headline, unlike tab titles which browsers truncate and prefix.
@@ -1687,12 +1731,7 @@ function parseAriaCount(scope: ParentNode, selector: string, verb: RegExp): stri
  * href，hostname 则不一定，读它会让这个分支在测试里静默失效。
  */
 function profileFor(documentLike: Document): SiteProfile | undefined {
-  try {
-    const host = new URL(documentLike.location?.href ?? "").hostname;
-    return host ? siteProfile(host) : undefined;
-  } catch {
-    return undefined;
-  }
+  return siteProfileForDocument(documentLike);
 }
 
 /** 命中后仍要求文本够长，否则宁可退回下一候选，也不产出一个空壳正文。 */
@@ -1897,6 +1936,7 @@ export function buildCaptureFrontmatter(fields: {
   // can be passed straight through; every field is guarded before it serializes.
   author?: string | undefined;
   published?: string | undefined;
+  coverImage?: string | undefined;
   likes?: string | undefined;
   comments?: string | undefined;
   shares?: string | undefined;
@@ -1909,6 +1949,7 @@ export function buildCaptureFrontmatter(fields: {
   const lines: string[] = ["---"];
   if (fields.author) lines.push(`author: ${JSON.stringify(fields.author)}`);
   if (fields.published) lines.push(`published: ${JSON.stringify(fields.published)}`);
+  if (fields.coverImage) lines.push(`cover_image: ${JSON.stringify(fields.coverImage)}`);
   // Engagement is optional structured chrome — only when a stable parse succeeded.
   if (fields.likes) lines.push(`likes: ${JSON.stringify(fields.likes)}`);
   if (fields.comments ?? fields.replies) {
@@ -2048,12 +2089,19 @@ export function resolveZhihuAnswerMetadata(documentLike: Document): ZhihuAnswerM
 export function resolvePageMetadata(documentLike: Document): {
   author?: string;
   published?: string;
+  coverImage?: string;
 } {
   const profile = profileFor(documentLike);
   const fromProfile = (selectors: readonly string[] | undefined): string | undefined => {
     for (const selector of selectors ?? []) {
-      const value = documentLike.querySelector(selector)?.textContent?.trim();
-      if (value) return value;
+      for (const node of Array.from(documentLike.querySelectorAll(selector))) {
+        const datetime = node.tagName.toLowerCase() === "time"
+          ? node.getAttribute("datetime")?.trim()
+          : undefined;
+        if (datetime) return datetime;
+        const value = node.textContent?.replace(/\s+/gu, " ").trim();
+        if (value) return value;
+      }
     }
     return undefined;
   };
@@ -2070,10 +2118,63 @@ export function resolvePageMetadata(documentLike: Document): {
     metaContent(documentLike, "og:published_time", "property") ||
     metaContent(documentLike, "publish_date") ||
     metaContent(documentLike, "date");
-  const metadata: { author?: string; published?: string } = {};
+  const metadata: { author?: string; published?: string; coverImage?: string } = {};
   if (author) metadata.author = author;
   if (published) metadata.published = published;
+  const coverImage = resolveCoverImageURL(documentLike);
+  if (coverImage) metadata.coverImage = coverImage;
   return metadata;
+}
+
+/** Card cover from page-declared image. HTTPS only, except official WeChat CDN http. */
+export function resolveCoverImageURL(documentLike: Document): string | undefined {
+  const raw =
+    metaContent(documentLike, "og:image", "property")
+    || metaContent(documentLike, "og:image:url", "property")
+    || metaContent(documentLike, "twitter:image")
+    || metaContent(documentLike, "twitter:image:src");
+  if (!raw) return undefined;
+  const absolute = absoluteUrl(raw, documentLike.location.href);
+  if (!absolute) return undefined;
+  try {
+    const url = new URL(absolute);
+    if (url.username || url.password) return undefined;
+    if (url.protocol === "https:") {
+      if (url.port && url.port !== "443") return undefined;
+      return url.href;
+    }
+    if (
+      url.protocol === "http:"
+      && url.hostname.toLowerCase() === "mmbiz.qpic.cn"
+      && (!url.port || url.port === "80")
+    ) {
+      return url.href;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function hasMarkdownHTTPSImage(markdown: string): boolean {
+  return /!\[[^\]]*\]\(https:\/\//u.test(markdown);
+}
+
+function firstXVideoCoverURL(root: Element | null, baseHref: string): string | undefined {
+  if (!root) return undefined;
+  const candidates = Array.from(root.querySelectorAll("img, video"));
+  for (const media of candidates) {
+    const href =
+      (media.tagName.toLowerCase() === "img" ? resolveResponsiveImageURL(media, baseHref) : null)
+      || absoluteUrl(
+        media.getAttribute("poster")
+          || media.getAttribute("src")
+          || "",
+        baseHref,
+      );
+    if (href && isXVideoThumbnailURL(href)) return href;
+  }
+  return undefined;
 }
 
 function absoluteUrl(href: string, baseHref: string): string | null {
@@ -2124,12 +2225,101 @@ export function resolveDocumentFaviconURL(documentLike: Document): string | unde
 
 function imageCandidateScore(rawURL: string, descriptor: string | undefined, priority: number): number {
   const width = descriptor?.match(/^(\d+)w$/u)?.[1];
-  if (width) return Number(width) * 10 + priority;
+  if (width && Number(width) > 0) return Number(width) * 10 + priority;
   const density = descriptor?.match(/^(\d+(?:\.\d+)?)x$/u)?.[1];
-  if (density) return Number(density) * 10_000 + priority;
+  if (density && Number(density) > 0) return Number(density) * 10_000 + priority;
   const embeddedWidth = rawURL.match(/resize:(?:fit|fill):(\d+)(?::\d+)?/iu)?.[1];
-  if (embeddedWidth) return Number(embeddedWidth) * 10 + priority;
+  if (embeddedWidth && Number(embeddedWidth) > 0) return Number(embeddedWidth) * 10 + priority;
   return priority;
+}
+
+function srcsetDescriptor(token: string): string | undefined {
+  const width = token.match(/^(\d+)w$/iu);
+  if (width) {
+    const value = Number(width[1]);
+    return Number.isInteger(value) && value > 0 ? `${value}w` : undefined;
+  }
+  const density = token.match(/^(\d+(?:\.\d+)?)x$/iu);
+  if (density) {
+    const value = Number(density[1]);
+    return Number.isFinite(value) && value > 0 ? density[0]!.toLowerCase() : undefined;
+  }
+  return undefined;
+}
+
+function isSrcsetAsciiWhitespace(ch: string): boolean {
+  return ch === "\t" || ch === "\n" || ch === "\f" || ch === "\r" || ch === " ";
+}
+
+/**
+ * HTML srcset candidates by character cursor. URL phase stops at ASCII
+ * whitespace and keeps internal commas; a trailing comma yields a
+ * descriptor-less candidate. Descriptor phase ends at a comma regardless of
+ * following whitespace; more than one token discards the candidate.
+ */
+function parseSrcsetCandidates(raw: string | null | undefined): Array<{ url: string; descriptor?: string }> {
+  const input = raw ?? "";
+  const candidates: Array<{ url: string; descriptor?: string }> = [];
+  let cursor = 0;
+  const end = input.length;
+
+  const skipSeparators = () => {
+    while (cursor < end) {
+      const ch = input[cursor] ?? "";
+      if (!isSrcsetAsciiWhitespace(ch) && ch !== ",") break;
+      cursor += 1;
+    }
+  };
+
+  while (cursor < end) {
+    skipSeparators();
+    if (cursor >= end) break;
+
+    let url = "";
+    while (cursor < end && !isSrcsetAsciiWhitespace(input[cursor] ?? "")) {
+      url += input[cursor];
+      cursor += 1;
+    }
+    if (!url) continue;
+    if (url.endsWith(",")) {
+      const stripped = url.replace(/,+$/u, "");
+      if (stripped) candidates.push({ url: stripped });
+      continue;
+    }
+
+    const tokens: string[] = [];
+    let token = "";
+    let depth = 0;
+    while (cursor < end) {
+      const ch = input[cursor] ?? "";
+      if (ch === "," && depth === 0) {
+        cursor += 1;
+        break;
+      }
+      if (isSrcsetAsciiWhitespace(ch) && depth === 0) {
+        if (token) {
+          tokens.push(token);
+          token = "";
+        }
+        cursor += 1;
+        continue;
+      }
+      if (ch === "(") depth += 1;
+      else if (ch === ")" && depth > 0) depth -= 1;
+      token += ch;
+      cursor += 1;
+    }
+    if (token) tokens.push(token);
+    if (tokens.length > 1) continue;
+    if (tokens.length === 0) {
+      candidates.push({ url });
+      continue;
+    }
+    const descriptor = srcsetDescriptor(tokens[0] ?? "");
+    if (!descriptor) continue;
+    candidates.push({ url, descriptor });
+  }
+  return candidates;
 }
 
 /**
@@ -2142,13 +2332,13 @@ export function resolveResponsiveImageURL(image: Element, baseHref: string): str
   const add = (raw: string | null | undefined, descriptor: string | undefined, priority: number) => {
     const trimmed = raw?.trim();
     if (!trimmed) return;
+    if (descriptor && !srcsetDescriptor(descriptor)) return;
     const href = absoluteUrl(trimmed, baseHref);
     if (href) candidates.push({ href, score: imageCandidateScore(trimmed, descriptor, priority) });
   };
   const addSrcset = (raw: string | null | undefined, priority: number) => {
-    for (const candidate of raw?.split(",") ?? []) {
-      const [url, descriptor] = candidate.trim().split(/\s+/u);
-      add(url, descriptor, priority);
+    for (const candidate of parseSrcsetCandidates(raw)) {
+      add(candidate.url, candidate.descriptor, priority);
     }
   };
 
@@ -2198,6 +2388,9 @@ function htmlElementToMarkdown(root: Element, baseHref: string): string {
     // 脚注区的「返回正文」按钮是导航控件，不是内容。离线阅读里它跳不回去，
     // 只会在每条注释前留下一个孤零零的 ↑，21 条注释就是 21 个。
     if (isFootnoteBacklink(el)) return "";
+    if (tag === "iframe" || tag === "video" || tag === "lite-youtube") {
+      return articleVideoMarkdown(el, baseHref) ?? "";
+    }
     const inner = Array.from(el.childNodes).map(walk).join("");
 
     if (tag === "br") return "\n";
@@ -2605,6 +2798,9 @@ function hasBlockChild(el: Element): boolean {
       tag === "dl" ||
       tag === "details" ||
       (tag === "img" && inlineImageText(child as Element, (child as Element).getAttribute("alt") ?? "") == null) ||
+      tag === "iframe" ||
+      tag === "video" ||
+      tag === "lite-youtube" ||
       /^h[1-6]$/.test(tag)
     );
   });

@@ -261,10 +261,14 @@ final class ProviderSettingsViewModel: ObservableObject {
   }
   var modelCatalogStatusText: String {
     switch modelCatalogState {
-    case .idle: "先填写 Base URL 和 API Key，再验证模型列表；匹配推荐模型时会自动选择。"
+    case .idle:
+      selectedPreset == .commandCode
+        ? "填写 API Key 后读取公开模型目录；保存配置后再测试套餐权限。"
+        : "先填写 Base URL 和 API Key，再验证模型列表；匹配推荐模型时会自动选择。"
     case .loading: "正在读取模型列表…"
     case .loaded:
       "已读取 \(availableModels.count) 个模型；已选择 \(selectedCatalogModels.count) 个。"
+        + (selectedPreset == .commandCode ? "这是公开模型目录，不代表已验证密钥或套餐权限；保存后可测试连接，测试会使用套餐额度。" : "")
     // secret-hygiene:reviewed code 是内部错误码枚举，经 modelCatalogFailureText 映射成
     // 固定本地文案后才显示——这正是本规则要求的做法，provider 原文不跨边界。
     case let .failed(code): modelCatalogFailureText(code)  // secret-hygiene:reviewed
@@ -277,18 +281,31 @@ final class ProviderSettingsViewModel: ObservableObject {
 
   /// The preference save action follows the same rule at both the SwiftUI and
   /// ViewModel boundaries. A load in flight owns the persisted value until it
-  /// has finished populating this draft.
+  /// has finished populating this draft. Unchanged drafts stay disabled.
   var canSavePreferences: Bool {
-    preferencesState != .loading && preferencesState != .saving
+    preferencesState != .loading && preferencesState != .saving && hasUnsavedPreferences
+  }
+
+  var hasUnsavedPreferences: Bool {
+    guard preferencesState != .loading else { return false }
+    do {
+      return try currentDraftPreferences() != savedPreferences
+    } catch {
+      return true
+    }
   }
 
   var preferencesStatusText: String {
     switch preferencesState {
-    case .loading: "正在读取生成偏好…"
-    case .idle: "使用已保存的生成偏好"
-    case .saving: "正在保存生成偏好…"
-    case .saved: "生成偏好已保存"
-    case let .failed(message): message
+    case .loading:
+      return "正在读取生成偏好…"
+    case .saving:
+      return "正在保存生成偏好…"
+    case let .failed(message):
+      return message
+    case .idle, .saved:
+      if hasUnsavedPreferences { return "有未保存的修改" }
+      return preferencesState == .saved ? "生成偏好已保存" : "使用已保存的生成偏好"
     }
   }
 
@@ -303,7 +320,9 @@ final class ProviderSettingsViewModel: ObservableObject {
     }
     return switch state {
     case .unconfigured:
-      "先验证模型列表并选择模型，再保存；\(ProductDisplay.name) 不会回显完整 API Key。"
+      selectedPreset == .commandCode
+        ? "先读取模型列表并选择模型，再保存；套餐权限需通过测试连接确认。"
+        : "先验证模型列表并选择模型，再保存；\(ProductDisplay.name) 不会回显完整 API Key。"
     case .saving:
       "正在安全保存…"
     case .configured:
@@ -322,7 +341,11 @@ final class ProviderSettingsViewModel: ObservableObject {
     case .success:
       "连接成功。"
     case let .failure(code):
-      V02ErrorCatalog.presentation(for: code).visibleText
+      if selectedPreset == .commandCode && code == ModelProviderErrorCode.authForbidden.rawValue {
+        "Command Code 拒绝访问。请确认套餐支持 API（Go 不支持），并已开通所选模型权限。"
+      } else {
+        V02ErrorCatalog.presentation(for: code).visibleText
+      }
     case .blockedUnsavedChanges:
       "有未保存更改，请先保存后再测试"
     }

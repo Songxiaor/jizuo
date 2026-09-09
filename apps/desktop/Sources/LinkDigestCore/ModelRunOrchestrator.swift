@@ -150,7 +150,7 @@ public actor ModelRunOrchestrator {
     onHistoryMetadataChanged: HistoryMetadataChangedHandler? = nil,
     onRunMetadataChanged: HistoryMetadataChangedHandler? = nil,
     storageWriteGate: StorageWriteGate? = nil,
-    streamingUIPublishInterval: Duration = .milliseconds(250),
+    streamingUIPublishInterval: Duration = .milliseconds(80),
     partialArtifactSaveInterval: Duration = .seconds(1),
     nowMilliseconds: @escaping @Sendable () -> Int64 = {
       Int64((Date().timeIntervalSince1970 * 1_000).rounded())

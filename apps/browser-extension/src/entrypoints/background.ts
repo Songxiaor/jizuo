@@ -22,6 +22,7 @@ import {
   readYouTubePlayerSnapshotInMainWorld,
   transcriptFromJSON3,
   youTubeCanonicalURL,
+  youTubeThumbnailURL,
   youTubeVideoID,
 } from "../content/youtube";
 import {
@@ -311,7 +312,7 @@ export function captureEnvelopeForPage(
       kind: "browser_capture" as const,
       url: sourceURL,
       title: page.title || tabTitle || null,
-      platform: detectCapturePlatform(sourceURL),
+      platform: page.platform ?? detectCapturePlatform(sourceURL),
       ...(page.faviconURL ? { faviconURL: page.faviconURL } : {}),
     },
     capture: {
@@ -1058,6 +1059,7 @@ export async function captureYouTubeSingleVideo(tabId: number, tabURL: string): 
       ...(dom.author ? { author: dom.author } : {}),
       ...(dom.description ? { description: dom.description } : {}),
       canonicalURL: canonical,
+      coverImage: youTubeThumbnailURL(urlVideoID),
     });
     return {
       title: dom.title,
@@ -1122,6 +1124,7 @@ export async function captureYouTubeSingleVideo(tabId: number, tabURL: string): 
     ...(snapshot.shortDescription ? { description: snapshot.shortDescription } : {}),
     ...(transcript ? { transcript } : {}),
     canonicalURL,
+    coverImage: snapshot.thumbnailURL ?? youTubeThumbnailURL(urlVideoID),
   });
   return {
     title: snapshot.title,

@@ -411,6 +411,47 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertTrue(model.canSaveConfiguration)
   }
 
+  func testCommandCodeSaveReloadAndForbiddenConnectionExplainPlanAccess() async throws {
+    let store = ViewModelProfileStore()
+    let configuration = ProviderConfigurationService(profileStore: store, secretStore: ViewModelSecretStore())
+    let provider = SettingsTestProvider(scripts: [.failure(ModelProviderFailure(code: .authForbidden, retryable: false, hadOutput: false))])
+    let model = ProviderSettingsViewModel(configurationService: configuration, provider: provider)
+    await model.load()
+    model.selectPreset(.commandCode)
+    model.modelName = "claude-sonnet-4-6"
+    await model.save(apiKey: "fake-command-code-key")
+    XCTAssertEqual(model.state, .configured)
+    let reloaded = ProviderSettingsViewModel(configurationService: configuration, provider: provider)
+    await reloaded.load()
+    XCTAssertEqual(reloaded.selectedPreset, .commandCode)
+    XCTAssertEqual(reloaded.modelName, "claude-sonnet-4-6")
+    await reloaded.testConnection()
+    XCTAssertTrue(reloaded.connectionTestStatusText.contains("Go 不支持"))
+  }
+
+  func testCommandCodeCatalogPreservesExactModelIDsAndDoesNotClaimAuthentication() async throws {
+    let models = ["claude-sonnet-4-6", "deepseek/deepseek-v4-flash"]
+    let loader = SettingsCatalogLoader(result: .models(models))
+    let model = ProviderSettingsViewModel(
+      configurationService: ProviderConfigurationService(
+        profileStore: ViewModelProfileStore(), secretStore: ViewModelSecretStore()
+      ),
+      provider: SettingsTestProvider(scripts: []),
+      modelCatalogLoader: loader
+    )
+    await model.load()
+    model.selectPreset(.commandCode)
+    await model.loadModels(apiKey: "fake-key")
+    XCTAssertEqual(model.baseURL, "https://api.commandcode.ai/provider/v1")
+    XCTAssertEqual(model.availableModels, models)
+    XCTAssertEqual(model.modelName, "deepseek/deepseek-v4-flash")
+    XCTAssertTrue(model.modelCatalogStatusText.contains("不代表已验证密钥或套餐权限"))
+    XCTAssertNotEqual(model.connectionTestState, .success)
+    model.selectModel("claude-sonnet-4-6")
+    XCTAssertEqual(model.modelName, "claude-sonnet-4-6")
+    XCTAssertEqual(model.selectedPreset, .commandCode)
+  }
+
   func testBaseURLAndAPIKeyDraftChangesInvalidateOldCatalogResults() async throws {
     let barrier = SettingsAsyncBarrier()
     let loader = SettingsCatalogLoader(result: .models(["late-model"]), barrier: barrier)
@@ -524,6 +565,30 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertEqual(restarted.runPreferences.outputLanguage, "日本語")
     XCTAssertEqual(restarted.runPreferences.translationModel, "translation-model")
     XCTAssertTrue(restarted.usesSeparateTranslationModel)
+  }
+
+  func testPreferenceSaveStaysDisabledUntilDraftDiffersAndKeepsUnsavedAcrossReloadWindow() async throws {
+    let store = ViewModelPreferencesStore()
+    let model = ProviderSettingsViewModel(
+      configurationService: ProviderConfigurationService(
+        profileStore: ViewModelProfileStore(), secretStore: ViewModelSecretStore()
+      ),
+      provider: SettingsTestProvider(scripts: []),
+      preferencesStore: store
+    )
+    await model.load()
+    XCTAssertFalse(model.hasUnsavedPreferences)
+    XCTAssertFalse(model.canSavePreferences)
+
+    model.targetLanguage = "English"
+    XCTAssertTrue(model.hasUnsavedPreferences)
+    XCTAssertTrue(model.canSavePreferences)
+    XCTAssertEqual(model.preferencesStatusText, "有未保存的修改")
+
+    await model.savePreferences()
+    XCTAssertFalse(model.hasUnsavedPreferences)
+    XCTAssertFalse(model.canSavePreferences)
+    XCTAssertEqual(model.runPreferences.outputLanguage, "English")
   }
 
   func testGenerationPreferencesLoadValidateSaveAndBecomeRunPreferences() async throws {

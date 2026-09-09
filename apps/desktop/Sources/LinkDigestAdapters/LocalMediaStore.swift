@@ -58,6 +58,22 @@ public final class LocalMediaStore: @unchecked Sendable {
     root.appendingPathComponent(relativePath, isDirectory: false)
   }
 
+  /// Gallery posters for old video rows: only this store's hashed mp4/mov,
+  /// never a user-selected bookmark or a path that escapes `Media/`.
+  public func containedInternalMediaURL(relativePath: String) -> URL? {
+    let name = (relativePath as NSString).lastPathComponent
+    guard name == relativePath,
+          name.range(of: #"^[0-9a-f]{64}\.(mp4|mov)$"#, options: .regularExpression) != nil
+    else { return nil }
+    let url = root.appendingPathComponent(name, isDirectory: false).standardizedFileURL
+    let rootPath = root.standardizedFileURL.path
+    let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
+    guard url.path.hasPrefix(prefix) else { return nil }
+    let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+    guard values?.isRegularFile == true, values?.isSymbolicLink != true else { return nil }
+    return url
+  }
+
   /// Validates Content-Type + magic bytes for mp4/mov containers.
   public static func validatedContainer(body: Data, contentType: String?) throws -> String {
     guard !body.isEmpty else { throw MediaDownloadError.emptyBody }

@@ -18,10 +18,20 @@ public final class GitHubRepositorySourceAdapter: SourceAdapting, @unchecked Sen
     self.now = now
   }
 
-  public func takesOwnership(of url: URL) -> Bool { GitHubRepository(url: url) != nil }
+  public func takesOwnership(of url: URL) -> Bool { GitHubCaptureTarget(url: url) != nil }
 
   public func capture(url: URL) async throws -> CapturedDocument {
-    guard let repository = GitHubRepository(url: url) else { throw ManualLinkError.invalidURL }
+    switch GitHubCaptureTarget(url: url) {
+    case let .file(file):
+      return try await captureFile(file)
+    case let .repository(repository):
+      return try await captureReadme(repository)
+    case nil:
+      throw ManualLinkError.invalidURL
+    }
+  }
+
+  private func captureReadme(_ repository: GitHubRepository) async throws -> CapturedDocument {
     let apiURL = repository.readmeAPIURL
     let response = try await resources.fetchResource(.init(
       url: apiURL,
@@ -58,6 +68,135 @@ public final class GitHubRepositorySourceAdapter: SourceAdapting, @unchecked Sen
     await imageCache?.stage(markdown: markdown, repository: repository, captureID: document.requestID, resources: resources)
     return document
   }
+
+  private func captureFile(_ file: GitHubFileLocation) async throws -> CapturedDocument {
+    let response = try await resources.fetchResource(.init(
+      url: file.rawURL,
+      headers: ["Accept": "text/plain, text/markdown, text/x-markdown, text/html;q=0.1"],
+      byteLimit: URLSessionWebPageFetcher.Limits().responseBytes,
+      allowsRedirectTarget: { redirect in
+        let host = PublicWebURLPolicy.normalizedHost(redirect.host ?? "")
+        return host == "raw.githubusercontent.com" || host == "github.com"
+      }
+    ))
+    switch response.statusCode {
+    case 200...299: break
+    case 404: throw ManualLinkError.githubFileUnavailable
+    case 403, 429: throw ManualLinkError.githubRateLimited
+    default: throw ManualLinkError.responseStatus
+    }
+    let contentType = (response.contentType ?? "").lowercased()
+    if contentType.hasPrefix("image/")
+      || contentType.hasPrefix("audio/")
+      || contentType.hasPrefix("video/")
+      || contentType.contains("octet-stream")
+      || contentType.contains("application/zip")
+    {
+      throw ManualLinkError.unsupportedContentType
+    }
+    guard let text = String(data: response.body, encoding: .utf8),
+          !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { throw ManualLinkError.emptyContent }
+    if GitHubErrorPagePolicy.matches(url: file.canonicalURL, extractedText: text)
+      || contentType.contains("text/html") && text.localizedCaseInsensitiveContains("<html")
+    {
+      throw ManualLinkError.githubFileUnavailable
+    }
+    guard text.unicodeScalars.count <= CaptureValidator.maxTextScalars else { throw ManualLinkError.responseTooLarge }
+
+    let timestamp = ISO8601DateFormatter().string(from: now())
+    return CapturedDocument(
+      createdAt: timestamp,
+      idempotencyKey: "manual:\(UUID().uuidString.lowercased())",
+      origin: .manualLink,
+      url: file.canonicalURL.absoluteString,
+      title: file.displayTitle(in: text),
+      platform: "github",
+      method: "github_raw_file",
+      text: text,
+      completeness: "complete",
+      capturedAt: timestamp,
+      sourceLabel: "GitHub 公开文件"
+    )
+  }
+}
+
+public enum GitHubCaptureTarget: Sendable, Equatable {
+  case repository(GitHubRepository)
+  case file(GitHubFileLocation)
+
+  public init?(url: URL) {
+    if let repository = GitHubRepository(url: url) {
+      self = .repository(repository)
+      return
+    }
+    if let file = GitHubFileLocation(url: url) {
+      self = .file(file)
+      return
+    }
+    return nil
+  }
+}
+
+public struct GitHubFileLocation: Sendable, Equatable {
+  public let owner: String
+  public let name: String
+  public let ref: String
+  public let path: String
+
+  public init?(url: URL) {
+    guard url.scheme?.lowercased() == "https",
+          url.user == nil, url.password == nil,
+          url.port == nil || url.port == 443
+    else { return nil }
+    let host = PublicWebURLPolicy.normalizedHost(url.host ?? "")
+    let parts = url.path.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
+    if host == "raw.githubusercontent.com" {
+      guard parts.count >= 4 else { return nil }
+      owner = parts[0]
+      name = parts[1]
+      ref = parts[2]
+      path = parts.dropFirst(3).joined(separator: "/")
+    } else if host == "github.com" {
+      guard parts.count >= 5, parts[2] == "blob" || parts[2] == "raw" else { return nil }
+      owner = parts[0]
+      name = parts[1]
+      ref = parts[3]
+      path = parts.dropFirst(4).joined(separator: "/")
+    } else {
+      return nil
+    }
+    guard GitHubRepository.isValidPathPart(owner),
+          GitHubRepository.isValidPathPart(name),
+          !ref.isEmpty, !path.isEmpty, !path.hasSuffix("/")
+    else { return nil }
+  }
+
+  public var canonicalURL: URL {
+    URL(string: "https://github.com/\(owner)/\(name)/blob/\(ref)/\(path)")!
+  }
+
+  public var rawURL: URL {
+    var encodedPath = ""
+    for (index, segment) in ([ref] + path.split(separator: "/").map(String.init)).enumerated() {
+      let encoded = segment.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? segment
+      encodedPath += index == 0 ? "/\(owner)/\(name)/\(encoded)" : "/\(encoded)"
+    }
+    return URL(string: "https://raw.githubusercontent.com\(encodedPath)")!
+  }
+
+  public var displayName: String { path.split(separator: "/").last.map(String.init) ?? path }
+
+  public func displayTitle(in text: String) -> String {
+    for line in text.split(whereSeparator: \.isNewline) {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.hasPrefix("# ") {
+        let heading = trimmed.dropFirst(2).trimmingCharacters(in: .whitespaces)
+        if heading.count >= 2 { return String(heading) }
+      }
+    }
+    return displayName
+  }
 }
 
 public struct GitHubRepository: Sendable, Equatable {
@@ -92,8 +231,12 @@ public struct GitHubRepository: Sendable, Equatable {
     URL(string: "https://raw.githubusercontent.com/\(owner)/\(name)/HEAD/")!
   }
 
-  private static func validPathPart(_ value: Substring) -> Bool {
+  static func isValidPathPart(_ value: String) -> Bool {
     !value.isEmpty && value.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == "." }
+  }
+
+  private static func validPathPart(_ value: Substring) -> Bool {
+    isValidPathPart(String(value))
   }
 }
 

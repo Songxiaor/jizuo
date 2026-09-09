@@ -410,6 +410,96 @@ describe("page extraction", () => {
     expect(result.completeness).toBeUndefined();
   });
 
+  it("keeps YouTube and direct videos in article order and drops ad iframes", () => {
+    const article = el("article", [
+      el("p", [text("开头说明。")]),
+      el("iframe", [], {
+        src: "https://www.youtube.com/embed/8_JZehVSRAI",
+        title: "产品演示",
+      }),
+      el("p", [text("中间说明。")]),
+      el("video", [el("source", [], { src: "https://cdn.example.test/demo.mp4", type: "video/mp4" })]),
+      el("p", [text("结尾说明。")]),
+      el("iframe", [], { src: "https://ads.example.test/pixel" }),
+    ]);
+    const result = extractCurrentPage(
+      makeDocument({
+        title: "混排长文",
+        href: "https://blog.example.test/mixed",
+        root: article,
+      }),
+    );
+    const intro = result.text.indexOf("开头说明。");
+    const youtube = result.text.indexOf('<!--LDVIDEO kind="youtube"');
+    const middle = result.text.indexOf("中间说明。");
+    const direct = result.text.indexOf('<!--LDVIDEO kind="direct"');
+    const ending = result.text.indexOf("结尾说明。");
+    expect(intro).toBeGreaterThan(-1);
+    expect(youtube).toBeGreaterThan(intro);
+    expect(middle).toBeGreaterThan(youtube);
+    expect(direct).toBeGreaterThan(middle);
+    expect(ending).toBeGreaterThan(direct);
+    expect(result.text).toContain('id="8_JZehVSRAI"');
+    expect(result.text).toContain("https://www.youtube.com/watch?v=8_JZehVSRAI");
+    expect(result.text).toContain("https://cdn.example.test/demo.mp4");
+    expect(result.text).toContain('title="产品演示"');
+    expect(result.text).not.toContain("ads.example.test");
+  });
+
+  it("does not persist signed playback URLs or duplicate a YouTube watch page player", () => {
+    const signed = el("article", [
+      el("p", [text("签名流不应入库。")]),
+      el("video", [], {
+        src: "https://cdn.example.test/clip.mp4?token=secret&expires=999",
+      }),
+    ]);
+    const signedResult = extractCurrentPage(
+      makeDocument({
+        title: "签名视频",
+        href: "https://blog.example.test/signed",
+        root: signed,
+      }),
+    );
+    expect(signedResult.text).toContain('<!--LDVIDEO kind="unknown"');
+    expect(signedResult.text).not.toContain("token=secret");
+    expect(signedResult.text).not.toContain("cdn.example.test/clip.mp4");
+
+    const watch = el("article", [
+      el("iframe", [], { src: "https://www.youtube.com/embed/8_JZehVSRAI" }),
+      el("p", [text("观看页说明。")]),
+    ]);
+    const watchResult = extractCurrentPage(
+      makeDocument({
+        title: "YouTube",
+        href: "https://www.youtube.com/watch?v=8_JZehVSRAI",
+        root: watch,
+      }),
+    );
+    expect(watchResult.text).toContain("观看页说明。");
+    expect(watchResult.text).not.toContain("<!--LDVIDEO");
+  });
+
+  it("keeps a WeChat article video in the body instead of promoting the page to a video capture", () => {
+    const article = el("div", [
+      el("p", [text("公众号正文里夹着一段演示。")]),
+      el("video", [], { src: "https://mmbiz.qpic.cn/demo.mp4" }),
+      el("p", [text("后面还有文字。")]),
+    ], { id: "js_content" });
+    const result = extractCurrentPage(
+      makeDocument({
+        title: "公众号图文",
+        href: "https://mp.weixin.qq.com/s/demo",
+        root: article,
+      }),
+    );
+    expect(result.text).toContain("公众号正文里夹着一段演示。");
+    expect(result.text).toContain('<!--LDVIDEO kind="direct"');
+    expect(result.text).toContain("https://mmbiz.qpic.cn/demo.mp4");
+    expect(result.text.indexOf("公众号正文里夹着一段演示。"))
+      .toBeLessThan(result.text.indexOf("<!--LDVIDEO"));
+    expect(result.mediaDescriptor).toBeUndefined();
+  });
+
   it("marks a legitimate whole-document fallback as visible-only", () => {
     const result = extractCurrentPage(makeDocument({
       title: "Simple page",
@@ -780,6 +870,27 @@ describe("page extraction", () => {
     }
   });
 
+  it("writes a WeChat og:image into cover_image instead of relying on the first body image", () => {
+    const cover = "https://mmbiz.qpic.cn/mmbiz_jpg/cover/0?wx_fmt=jpeg";
+    const bodyImage = "https://mmbiz.qpic.cn/mmbiz_jpg/example/640?wx_fmt=jpeg";
+    const root = el("div", [
+      el("meta", [], { property: "og:image", content: cover }),
+      el("p", [text("正文章节：远程操控可以节省碎片时间。")]),
+      el("img", [], { "data-src": bodyImage, alt: "正文配图" }),
+    ]);
+    (root as { __id?: string }).__id = "js_content";
+    root.getAttribute = (name: string) => (name === "id" ? "js_content" : null);
+    root.attrs = { id: "js_content" };
+    const result = extractCurrentPage(makeDocument({
+      title: "WeChat fixture",
+      href: "https://mp.weixin.qq.com/s/demo",
+      root,
+      activityName: "分享一下我的远程操控方案",
+    }));
+    expect(result.text).toContain(`cover_image: "${cover}"`);
+    expect(result.text).toContain(`![正文配图](${bodyImage})`);
+  });
+
   it("captures item-scoped Zhihu answer metadata without leaking question totals", () => {
     const answerID = "2035509772494033394";
     const answer = el("div", [
@@ -837,6 +948,169 @@ describe("page extraction", () => {
     }
   });
 
+  it("keeps commas inside Substack srcset URLs and prefers the widest candidate", () => {
+    const small =
+      "https://substackcdn.com/image/fetch/w_424,c_limit,f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Ffixture.png";
+    const large =
+      "https://substackcdn.com/image/fetch/w_1456,c_limit,f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Ffixture.png";
+    const image = el("img", [], {
+      src: small,
+      srcset: `${small} 424w, ${large} 1456w`,
+    });
+    expect(
+      resolveResponsiveImageURL(image as unknown as Element, "https://letters.example.test/p/fixture"),
+    ).toBe(large);
+  });
+
+  it("accepts density descriptors, descriptor-less comma URLs, and skips illegal srcset candidates", () => {
+    const oneX = "https://cdn.example.test/hero.jpg";
+    const twoX = "https://cdn.example.test/hero@2x.jpg";
+    const density = el("img", [], {
+      src: oneX,
+      srcset: `${oneX} 1x, ${twoX} 2x`,
+    });
+    expect(resolveResponsiveImageURL(density as unknown as Element, "https://example.test/story")).toBe(twoX);
+
+    const commaURL =
+      "https://substackcdn.com/image/fetch/w_1456,c_limit,f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Fplain.png";
+    const noDescriptor = el("img", [], {
+      src: "https://cdn.example.test/small.png",
+      srcset: commaURL,
+    });
+    expect(
+      resolveResponsiveImageURL(noDescriptor as unknown as Element, "https://example.test/story"),
+    ).toBe(commaURL);
+
+    const valid = "https://cdn.example.test/ok.jpg";
+    const mixed = el("img", [], {
+      src: "https://cdn.example.test/fallback.jpg",
+      srcset: `not-a-protocol:broken 100w, ${valid} 200w`,
+    });
+    expect(resolveResponsiveImageURL(mixed as unknown as Element, "https://example.test/story")).toBe(valid);
+
+    const allIllegal = el("img", [], {
+      src: "https://cdn.example.test/from-src.jpg",
+      srcset: "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7 100w, javascript:void(0) 200w",
+    });
+    expect(
+      resolveResponsiveImageURL(allIllegal as unknown as Element, "https://example.test/story"),
+    ).toBe("https://cdn.example.test/from-src.jpg");
+  });
+
+  it("scans srcset tokens and drops merged, spaced, zero-width, and glued density candidates", () => {
+    const src = "https://cdn.example.test/from-src.jpg";
+    const ok = "https://cdn.example.test/ok.png";
+    const base = "https://example.test/story";
+
+    const merged = el("img", [], {
+      src,
+      srcset: `https://cdn.example.test/a.png, ${ok} 200w`,
+    });
+    const mergedURL = resolveResponsiveImageURL(merged as unknown as Element, base);
+    expect(mergedURL).toBe(ok);
+    expect(mergedURL).not.toContain("%20");
+    expect(mergedURL).not.toMatch(/a\.png,/u);
+
+    const spaced = el("img", [], {
+      src,
+      srcset: "https://cdn.example.test/bad.png bogus 100w",
+    });
+    expect(resolveResponsiveImageURL(spaced as unknown as Element, base)).toBe(src);
+
+    const zero = el("img", [], {
+      src,
+      srcset: "https://cdn.example.test/zero.png 0w",
+    });
+    expect(resolveResponsiveImageURL(zero as unknown as Element, base)).toBe(src);
+
+    const glued = el("img", [], {
+      src,
+      srcset: "https://cdn.example.test/glued.png 1x2x",
+    });
+    const gluedURL = resolveResponsiveImageURL(glued as unknown as Element, base);
+    expect(gluedURL).toBe(src);
+    expect(gluedURL).not.toContain("%20");
+    expect(gluedURL).not.toContain("1x2x");
+
+    const multi = el("img", [], {
+      src: "https://cdn.test/from-src.jpg",
+      srcset: "https://cdn.test/b.png 1x 2x",
+    });
+    expect(resolveResponsiveImageURL(multi as unknown as Element, "https://cdn.test/story")).toBe(
+      "https://cdn.test/from-src.jpg",
+    );
+
+    const tightComma = el("img", [], {
+      src: "https://cdn.test/from-src.jpg",
+      srcset: "https://cdn.test/a.png 1x,https://cdn.test/b.png 2x",
+    });
+    expect(resolveResponsiveImageURL(tightComma as unknown as Element, "https://cdn.test/story")).toBe(
+      "https://cdn.test/b.png",
+    );
+  });
+
+  it("does not merge a descriptor-less URL with the next srcset candidate", () => {
+    const src = "https://cdn.test/from-src.jpg";
+    const mixed = el("img", [], {
+      src,
+      srcset: "https://cdn.test/a.png, https://cdn.test/b.png 2x",
+    });
+    const mixedURL = resolveResponsiveImageURL(mixed as unknown as Element, "https://cdn.test/story");
+    expect(mixedURL).toBe("https://cdn.test/b.png");
+    expect(mixedURL).not.toContain("%20");
+    expect(mixedURL).not.toMatch(/a\.png,/u);
+
+    const manyBare = el("img", [], {
+      src,
+      srcset: "https://cdn.test/a.png, https://cdn.test/b.png",
+    });
+    const manyBareURL = resolveResponsiveImageURL(manyBare as unknown as Element, "https://cdn.test/story");
+    expect(["https://cdn.test/a.png", "https://cdn.test/b.png"]).toContain(manyBareURL);
+    expect(manyBareURL).not.toContain("%20");
+
+    const bogus = el("img", [], {
+      src,
+      srcset: "https://cdn.test/bad.png bogus",
+    });
+    expect(resolveResponsiveImageURL(bogus as unknown as Element, "https://cdn.test/story")).toBe(src);
+
+    const zeroRelative = el("img", [], {
+      src,
+      srcset: "a.png 0w",
+    });
+    const zeroURL = resolveResponsiveImageURL(zeroRelative as unknown as Element, "https://cdn.test/story");
+    expect(zeroURL).toBe(src);
+    expect(zeroURL).not.toContain("%20");
+
+    const multiRelative = el("img", [], {
+      src,
+      srcset: "b.png 1x 2x",
+    });
+    const multiURL = resolveResponsiveImageURL(multiRelative as unknown as Element, "https://cdn.test/story");
+    expect(multiURL).toBe(src);
+    expect(multiURL).not.toContain("%20");
+  });
+
+  it("still prefers a surrounding picture source srcset over the img placeholder", () => {
+    const small = "https://miro.medium.com/v2/resize:fit:212/1*article.png";
+    const large = "https://miro.medium.com/v2/resize:fit:1200/1*article.png";
+    const image = el("img", [], { src: small, alt: "文章插图" });
+    el("picture", [
+      el("source", [], { srcset: `${small} 212w, ${large} 1200w` }),
+      image,
+    ]);
+    expect(
+      resolveResponsiveImageURL(image as unknown as Element, "https://humanparts.medium.com/story"),
+    ).toBe(large);
+  });
+
+  it("keeps a src-only path that contains a space", () => {
+    const image = el("img", [], { src: "hero image.jpg" });
+    expect(
+      resolveResponsiveImageURL(image as unknown as Element, "https://example.test/"),
+    ).toBe("https://example.test/hero%20image.jpg");
+  });
+
   it("uses Medium responsive content images and drops the tiny author avatar", () => {
     const avatar = "https://miro.medium.com/v2/resize:fill:64:64/1*avatar.jpeg";
     const small = "https://miro.medium.com/v2/resize:fit:212/1*article.png";
@@ -883,6 +1157,127 @@ describe("page extraction", () => {
         delete (globalThis as { document?: Document }).document;
       }
     }
+  });
+
+  it("captures a custom-domain Substack post by page fingerprint, not by host allowlist", () => {
+    const small =
+      "https://substackcdn.com/image/fetch/w_424,c_limit,f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Fa.png";
+    const large =
+      "https://substackcdn.com/image/fetch/w_1456,c_limit,f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Fa.png";
+    const figureTwo =
+      "https://substackcdn.com/image/fetch/w_1456,c_limit,f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fsubstack-post-media.s3.amazonaws.com%2Fpublic%2Fimages%2Fb.png";
+    const avatar = "https://substackcdn.com/image/fetch/w_64,c_limit,f_auto,q_auto:good,fl_progressive:steep/https%3A%2F%2Fbucketeer.example.test%2Favatar.png";
+    const root = el("article", [
+      el("link", [], { rel: "preconnect", href: "https://substackcdn.com" }),
+      el("div", [
+        el("h1", [text("How to Fix Your Entire Life in 1 Day")], { class: "post-title" }),
+        el("h3", [text("do this before 2026")], { class: "subtitle" }),
+        el("div", [
+          el("a", [el("img", [], { alt: "", src: avatar })], { href: "/people/123" }),
+          el("a", [text("DAN KOE")], { href: "/people/123" }),
+          el("time", [text("Dec 23, 2025")], { datetime: "2025-12-23T17:04:50.396Z" }),
+        ], { class: "byline-wrapper" }),
+      ], { class: "post-header" }),
+      el("div", [
+        el("div", [
+          el("p", [text("Start with one constraint that actually changes how the day is spent.")]),
+          el("p", [text("Write the list before opening any inbox or timeline.")]),
+          el("h3", [text("The first hour")]),
+          el("ul", [el("li", [text("Move the body")]), el("li", [text("Clear the desk")])]),
+          el("blockquote", [el("p", [text("Do the work before you name the identity.")])]),
+          el("img", [], { alt: "desk", src: small, srcset: `${small} 424w, ${large} 1456w` }),
+          el("img", [], { alt: "window", src: figureTwo, srcset: `${figureTwo} 1456w` }),
+        ], { class: "body markup" }),
+      ], { class: "available-content" }),
+      el("div", [el("p", [text("Subscribe to keep reading this newsletter.")])], { class: "subscribe" }),
+      el("div", [
+        el("p", [text("You might also like this unrelated recommended essay about shipping.")]),
+      ], { class: "recommended" }),
+    ]);
+    const result = extractCurrentPage(makeDocument({
+      title: "How to Fix Your Entire Life in 1 Day",
+      href: "https://letters.custom-publisher.test/p/how-to-fix-your-entire-life-in-1",
+      root,
+    }));
+
+    expect(result.platform).toBe("substack");
+    expect(result.title).toBe("How to Fix Your Entire Life in 1 Day");
+    expect(result.text).toContain('author: "DAN KOE"');
+    expect(result.text).toContain('published: "2025-12-23T17:04:50.396Z"');
+    expect(result.text).toContain("do this before 2026");
+    expect(result.text).toContain("Start with one constraint");
+    expect(result.text).toContain("The first hour");
+    expect(result.text).toContain(`![desk](${large})`);
+    expect(result.text).toContain(`![window](${figureTwo})`);
+    expect(result.text).not.toContain(avatar);
+    expect(result.text).not.toContain("Subscribe to keep reading this newsletter.");
+    expect(result.text).not.toContain("unrelated recommended essay");
+    expect(result.completeness).toBeUndefined();
+  });
+
+  it("marks a Substack paywall preview as visible-only instead of a full article", () => {
+    const root = el("article", [
+      el("link", [], { rel: "preconnect", href: "https://substackcdn.com" }),
+      el("div", [
+        el("h1", [text("Members-only fixture")], { class: "post-title" }),
+        el("div", [el("a", [text("DAN KOE")])], { class: "byline-wrapper" }),
+      ], { class: "post-header" }),
+      el("div", [
+        el("div", [
+          el("p", [text("This preview is only the opening paragraph of a gated post.")]),
+        ], { class: "body markup" }),
+      ], { class: "available-content" }),
+      el("div", [text("This post is for paying subscribers.")], { class: "paywall" }),
+    ]);
+    const result = extractCurrentPage(makeDocument({
+      title: "Members-only fixture",
+      href: "https://letters.custom-publisher.test/p/members-only-fixture",
+      root,
+    }));
+    expect(result.platform).toBe("substack");
+    expect(result.completeness).toBe("visible_only");
+    expect(result.text).toContain("opening paragraph of a gated post");
+    expect(result.text).not.toContain("This post is for paying subscribers.");
+  });
+
+  it("does not scrape recommended copy when a Substack body root is missing", () => {
+    const root = el("div", [
+      el("link", [], { rel: "preconnect", href: "https://substackcdn.com" }),
+      el("div", [
+        el("h1", [text("Header without article body")], { class: "post-title" }),
+        el("div", [el("a", [text("DAN KOE")])], { class: "byline-wrapper" }),
+      ], { class: "post-header" }),
+      el("main", [
+        el("article", [
+          el("p", [text("You might also like this unrelated recommended essay about shipping.")]),
+        ]),
+      ]),
+    ]);
+    const result = extractCurrentPage(makeDocument({
+      title: "Header without article body",
+      href: "https://letters.custom-publisher.test/p/missing-body",
+      root,
+    }));
+    expect(result.platform).toBe("substack");
+    expect(result.completeness).toBe("unknown");
+    expect(result.captureIssue).toBe("CAPTURE_CONTENT_EMPTY");
+    expect(result.text).toBe("");
+    expect(result.text).not.toContain("unrelated recommended essay");
+    expect(result.text).not.toContain("DAN KOE");
+  });
+
+  it("does not treat an ordinary blog with a post-header as Substack", () => {
+    const article = el("article", [
+      el("div", [el("h1", [text("Not a Substack post")])], { class: "post-header" }),
+      el("p", [text("An independent blog that happens to reuse a post-header class name.")]),
+    ]);
+    const result = extractCurrentPage(makeDocument({
+      title: "Not a Substack post",
+      href: "https://notes.example.test/not-substack",
+      root: article,
+    }));
+    expect(result.platform).toBeUndefined();
+    expect(result.text).toContain("independent blog that happens to reuse");
   });
 
   it("preserves WeChat code-snippet blocks as fenced code with one line per <code>", () => {
@@ -1197,6 +1592,25 @@ describe("page extraction", () => {
     expect(isXVideoThumbnailURL("not a url")).toBe(false);
   });
 
+  it("stores an X video poster in cover_image and keeps it out of the body", () => {
+    const cover = "https://pbs.twimg.com/amplify_video_thumb/2080486192186109952/img/cover.jpg";
+    const article = el(
+      "article",
+      [
+        el("div", [el("span", [text("只有视频的帖子")])], { "data-testid": "tweetText" }),
+        el("video", [], { poster: cover }),
+      ],
+      { "data-testid": "tweet" },
+    );
+    const result = extractCurrentPage(
+      makeDocument({ title: "X", href: "https://x.com/s/status/2080486192186109952", root: article }),
+    );
+    expect(result.text).toContain(`cover_image: "${cover}"`);
+    const body = result.text.replace(/^---[\s\S]*?---\n*/, "");
+    expect(body).not.toContain(cover);
+    expect(body).toContain("只有视频的帖子");
+  });
+
   it("falls back to cleaned page title when tweetText is missing", () => {
     const post = "99% 的人没看出来的数字人口播实战攻略";
     const media = "https://pbs.twimg.com/media/HNWMh9eXQAAFCKW?format=jpg&name=medium";
@@ -1425,6 +1839,21 @@ describe("douyin media extraction", () => {
     expect(result.text).not.toContain("# 测试视频标题");
     expect(result.title).toBe("测试视频标题");
     expect(result.text).toContain("这是视频简介");
+  });
+
+  it("writes a Bilibili og:image into cover_image frontmatter", () => {
+    const cover = "https://i0.hdslb.com/bfs/archive/cover.jpg";
+    const doc = makeDocument({
+      title: "测试视频标题_哔哩哔哩_bilibili",
+      href: "https://www.bilibili.com/video/BV1xx411c7mD",
+      root: el("div", [
+        el("h1", [text("测试视频标题")]),
+        el("meta", [], { property: "og:image", content: cover }),
+      ]),
+    });
+    const result = extractBilibiliPage(doc);
+    expect(result.text).toContain(`cover_image: "${cover}"`);
+    expect(result.text).not.toContain(`![](${cover})`);
   });
 
   it("keeps a Bilibili capture's body to the on-page description, never the SEO meta tail", () => {

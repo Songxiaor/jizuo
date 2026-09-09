@@ -792,6 +792,7 @@ final class HistoryViewModel: ObservableObject {
   }
 
   @Published private(set) var rows: [HistoryRowProjection] = []
+  private var isSelectingGalleryItems = false
   @Published var selectedTaskIDs: Set<TaskID> = [] {
     didSet {
       let previous = Self.singleSelection(in: oldValue)
@@ -800,7 +801,7 @@ final class HistoryViewModel: ObservableObject {
         if profileImportReturnTarget?.taskID != current {
           profileImportReturnTarget = nil
         }
-        if isCreatorDirectoryActive, current != nil {
+        if isCreatorDirectoryActive, current != nil, !isSelectingGalleryItems {
           isReadingCreatorWorkInDirectory = true
         }
         remoteMediaFavoriteState = .idle
@@ -812,6 +813,56 @@ final class HistoryViewModel: ObservableObject {
     get { Self.singleSelection(in: selectedTaskIDs) }
     set { selectedTaskIDs = newValue.map { [$0] } ?? [] }
   }
+  /// Selecting a checkbox is not a request to open a creator's reader.
+  func toggleGallerySelection(_ taskID: TaskID) {
+    isSelectingGalleryItems = true
+    defer { isSelectingGalleryItems = false }
+    var selection = selectedTaskIDs
+    if !selection.insert(taskID).inserted { selection.remove(taskID) }
+    selectedTaskIDs = selection
+  }
+
+  /// Intentional batch checks stashed while a platform-gallery card is opened for reading.
+  /// `nil` means not inside a platform-gallery reading session.
+  private var platformGallerySelectionStash: Set<TaskID>?
+
+  /// Open one card for reading without permanently replacing the user's batch checks.
+  func beginPlatformGalleryReading(taskID: TaskID) {
+    if platformGallerySelectionStash == nil {
+      platformGallerySelectionStash = selectedTaskIDs
+    }
+    selectedTaskID = taskID
+  }
+
+  /// Leave reading and restore the stashed batch selection (possibly empty).
+  /// Returns the reading task id for scroll restore.
+  @discardableResult
+  func endPlatformGalleryReading() -> TaskID? {
+    let anchor = selectedTaskID
+    let restore = platformGallerySelectionStash ?? []
+    platformGallerySelectionStash = nil
+    isSelectingGalleryItems = true
+    selectedTaskIDs = restore
+    isSelectingGalleryItems = false
+    if restore.isEmpty {
+      detail = nil
+      setDetailState(.idle)
+    } else if restore.count == 1 {
+      loadDetailForSelection()
+    } else {
+      detail = nil
+      setDetailState(.idle)
+    }
+    return anchor
+  }
+
+  /// Host/filter changed mid-read: drop the stash; do not restore onto the new platform.
+  func abandonPlatformGalleryReadingStash() {
+    platformGallerySelectionStash = nil
+  }
+
+  var hasPlatformGalleryReadingStash: Bool { platformGallerySelectionStash != nil }
+
   @Published private(set) var detail: HistoryDetailProjection?
   /// 转写校对保存失败的人话提示；nil 表示无待展示错误。
   @Published private(set) var snapshotEditFailure: String?
@@ -863,7 +914,11 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var localMediaFileURL: URL?
   @Published private(set) var localMediaResolutionFailure: String?
   @Published private(set) var faviconImageURLs: [TaskID: URL] = [:]
-  @Published var searchText = "" { didSet { scheduleSearchReload() } }
+  @Published var searchText = "" {
+    didSet {
+      if oldValue != searchText { scheduleSearchReload() }
+    }
+  }
   @Published private(set) var availableTags: [HistoryTag] = []
   @Published private(set) var selectedTagNormalizedNames: Set<String> = []
   @Published private(set) var navigationCounts = HistoryNavigationCounts()
@@ -1494,6 +1549,10 @@ final class HistoryViewModel: ObservableObject {
   var isBrowsingCreatorDirectory: Bool {
     isCreatorDirectoryActive && !isReadingCreatorWorkInDirectory
   }
+  /// 来源平台卡片图库：有平台筛选且不在博主目录/工作台时，列表不自动勾选首条。
+  var isBrowsingPlatformGallery: Bool {
+    !selectedHosts.isEmpty && !isCreatorDirectoryActive && !isWorkbenchActive
+  }
   /// Creator filter with no works — not a failed load and not a search miss.
   var showsCreatorZeroWorks: Bool {
     selectedCreatorID != nil
@@ -1504,8 +1563,19 @@ final class HistoryViewModel: ObservableObject {
   }
   func faviconImageURL(for row: HistoryRowProjection) -> URL? { faviconImageURLs[row.taskID] }
   func localCoverURL(for taskID: TaskID, matching coverURL: String?) async -> URL? {
-    guard let coverURL, !coverURL.isEmpty else { return nil }
-    return await imageCache?.localImageURL(taskID: taskID, matchingRemoteURL: coverURL)
+    let trimmed = coverURL?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    if !trimmed.isEmpty {
+      return await imageCache?.localImageURL(taskID: taskID, matchingRemoteURL: trimmed)
+    }
+    return localInternalMediaURL(for: taskID)
+  }
+
+  /// Poster source for video rows that never stored `cover_image`. Only this
+  /// task's hashed file under Application Support `Media/`.
+  func localInternalMediaURL(for taskID: TaskID) -> URL? {
+    guard let history, let mediaStore else { return nil }
+    guard let asset = try? history.mediaAsset(taskID: taskID), asset.fileBookmark == nil else { return nil }
+    return mediaStore.containedInternalMediaURL(relativePath: asset.relativePath)
   }
   func platformFavicon(forHost host: String) -> (url: URL, taskID: TaskID)? {
     let canonical = HistoryPlatformRegistry.canonicalHost(for: host)
@@ -1608,6 +1678,10 @@ final class HistoryViewModel: ObservableObject {
 
   private func reload(preservingCurrentSelection: Bool) {
     guard let history else { return }
+    // Explicit navigation/reloads already use the current query. A queued search
+    // must not reload page one later and cancel an in-flight next page.
+    searchTask?.cancel()
+    searchTask = nil
     let generation = configurationGeneration, requestID = UUID()
     let filter = listFilter
     let preservedSelection = preservingCurrentSelection ? selectedTaskIDs : nil
@@ -1642,7 +1716,20 @@ final class HistoryViewModel: ObservableObject {
     }
   }
 
-  func retryList() { guard canRetryList else { return }; reload() }
+  /// Initial list failure reloads from scratch. Pagination failure retries only the
+  /// next page (same `nextCursor` + last row) so already-loaded rows, selection, and
+  /// scroll position stay put.
+  func retryList() {
+    guard canRetryList else { return }
+    if listState == .loaded,
+       listErrorCode != nil,
+       nextCursor != nil,
+       let last = rows.last {
+      loadNextPageIfNeeded(after: last)
+      return
+    }
+    reload()
+  }
   func retryDetail() { loadDetailForSelection() }
   func reveal(taskID: TaskID) { selectedTaskID = taskID; reload() }
 
@@ -4777,41 +4864,68 @@ final class HistoryViewModel: ObservableObject {
     // 点任何一个筛选项都意味着「回到看资料」，工作台该让位。
     isWorkbenchActive = false
     clearCreatorMode()
+    let leavingPlatformGallery = !selectedHosts.isEmpty
+    if leavingPlatformGallery {
+      abandonPlatformGalleryReadingStash()
+    }
     selectedScope = scope
     selectedHosts = []
     selectedTagNormalizedNames = []
+    if leavingPlatformGallery {
+      discardVisibleList(state: .loading)
+    }
     reload()
   }
 
   func selectHost(_ host: String) {
-    isWorkbenchActive = false
-    clearCreatorMode()
-    let normalized = HistoryHostNormalizer.normalized(host)
+    let normalized = HistoryPlatformRegistry.canonicalHost(for: host)
     guard !normalized.isEmpty else { return }
-    if selectedHosts == [normalized] {
-      selectedHosts = []
-    } else {
-      selectedHosts = [normalized]
-    }
-    selectedScope = .all
-    selectedTagNormalizedNames = []
+    applyPlatformHosts([normalized])
+  }
+
+  /// 侧边栏「其他/待分类」聚合：一次筛选全部非知名平台的杂项来源。
+  /// 再次点击同一组合保持筛选（幂等）；显式清除走筛选条或「全部」。
+  func selectHosts(_ hosts: [String]) {
+    let normalized = Set(
+      hosts.map { HistoryPlatformRegistry.canonicalHost(for: $0) }.filter { !$0.isEmpty }
+    )
+    guard !normalized.isEmpty else { return }
+    applyPlatformHosts(normalized)
+  }
+
+  /// 显式清除来源平台筛选（筛选条 × / 清除），不走再次点击同项。
+  func clearHostSelection() {
+    guard !selectedHosts.isEmpty else { return }
+    abandonPlatformGalleryReadingStash()
+    selectedHosts = []
+    discardVisibleList(state: .loading)
     reload()
   }
 
-  /// 侧边栏"待分类"聚合：一次筛选全部非知名平台的杂项来源。
-  /// 再次点击同一组合时取消筛选，与单平台的开关行为一致。
-  func selectHosts(_ hosts: [String]) {
+  private func applyPlatformHosts(_ hosts: Set<String>) {
+    // Idempotent only when already browsing the same platform gallery surface.
+    // Same host while workbench/creator/non-all scope is active must still enter gallery.
+    let alreadyInSameGallery =
+      hosts == selectedHosts
+      && !isWorkbenchActive
+      && !isCreatorDirectoryActive
+      && selectedScope == .all
+    if alreadyInSameGallery { return }
+
+    abandonPlatformGalleryReadingStash()
     isWorkbenchActive = false
     clearCreatorMode()
-    let normalized = Set(hosts.map(HistoryHostNormalizer.normalized).filter { !$0.isEmpty })
-    guard !normalized.isEmpty else { return }
-    if selectedHosts == normalized {
-      selectedHosts = []
-    } else {
-      selectedHosts = normalized
-    }
+    let previousHosts = selectedHosts
+    let hostsChanged = previousHosts != hosts
+    selectedHosts = hosts
     selectedScope = .all
     selectedTagNormalizedNames = []
+    // 跨平台不遗留上个平台的搜索词，避免隐形查询。
+    if hostsChanged, !searchText.isEmpty {
+      searchText = ""
+    }
+    // 切换或从工作台回到图库时立刻清空旧 rows/详情。
+    discardVisibleList(state: .loading)
     reload()
   }
 
@@ -5190,7 +5304,8 @@ final class HistoryViewModel: ObservableObject {
       if page.rows.isEmpty {
         selectedTaskIDs = []; detail = nil; setDetailState(.idle)
       } else if selectedTaskIDs.isEmpty {
-        if isBrowsingCreatorDirectory {
+        if isBrowsingCreatorDirectory || isBrowsingPlatformGallery {
+          // 图库/博主作品：阅读点选与批量勾选分开，进入时不自动打勾首条。
           detail = nil
           setDetailState(.idle)
         } else {
@@ -5201,9 +5316,9 @@ final class HistoryViewModel: ObservableObject {
         selectedTaskIDs.formIntersection(visible)
         // 搜索或筛选把原选中项排除后，交集会变空。列表明明有结果却把详情清成
         // 空白，会让用户误以为「没有搜索结果」。自动接住第一条可见结果。
-        // 博主目录浏览作品时除外：右侧应先列出作品，点进后再读，不能闪到旧文章。
+        // 博主目录与来源平台图库除外：右侧应先列出卡片，点进后再读。
         if selectedTaskIDs.isEmpty {
-          if isBrowsingCreatorDirectory {
+          if isBrowsingCreatorDirectory || isBrowsingPlatformGallery {
             detail = nil
             setDetailState(.idle)
           } else {
@@ -6687,6 +6802,7 @@ final class HistoryViewModel: ObservableObject {
     searchTask = Task { [weak self] in
       try? await Task.sleep(for: .milliseconds(200))
       guard !Task.isCancelled, generation == self?.configurationGeneration else { return }
+      self?.searchTask = nil
       self?.reload()
     }
   }

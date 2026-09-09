@@ -246,7 +246,7 @@ struct ProviderSettingsView: View {
   /// 界面字体的成败在 10pt 上——计数、时间戳都是这个尺寸，笔画细的字体在这里
   /// 发虚。用正文字号预览界面字体，等于避开了唯一该看的地方。
   @ViewBuilder private var uiFontPreview: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: 4) {
       Text("预览（界面里最小的两个字号）")
         .themedFont(.caption)
         .foregroundStyle(.secondary)
@@ -258,7 +258,7 @@ struct ProviderSettingsView: View {
           .foregroundStyle(.secondary)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(12)
+      .padding(DesignTokens.Space.sm)
       .background(
         RoundedRectangle(cornerRadius: DesignTokens.Radius.md)
           .fill(Color.secondary.opacity(0.08))
@@ -268,7 +268,7 @@ struct ProviderSettingsView: View {
   }
 
   @ViewBuilder private var readingFontPreview: some View {
-    VStack(alignment: .leading, spacing: 6) {
+    VStack(alignment: .leading, spacing: 4) {
       Text("预览")
         .themedFont(.caption)
         .foregroundStyle(.secondary)
@@ -277,7 +277,7 @@ struct ProviderSettingsView: View {
         .lineSpacing(MarkdownPresentation.bodyLineSpacing)
         .fixedSize(horizontal: false, vertical: true)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
+        .padding(DesignTokens.Space.sm)
         .background(
           RoundedRectangle(cornerRadius: DesignTokens.Radius.md)
             .fill(Color.secondary.opacity(0.08))
@@ -318,21 +318,19 @@ struct ProviderSettingsView: View {
         }
       }
       .safeAreaInset(edge: .top, spacing: 0) {
-        VStack(alignment: .leading, spacing: 4) {
-          Text(ProductDisplay.name).themedFont(.title3, weight: .semibold)
-          Text("设置").themedFont(.caption).foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 10)
+        // 窗口标题已经是「设置」，侧栏顶栏只留产品名，避免「设置」叠两次。
+        Text(ProductDisplay.name)
+          .themedFont(.title3, weight: .semibold)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.horizontal, 14).padding(.top, 8).padding(.bottom, 8)
       }
       // 实测 `navigationSplitViewColumnWidth` 的 min 在这个窗口压不住:设成 205
       // 之后侧栏仍然只有 148pt(分栏宽度被拖动后持久化了)。所以改成对内容加
       // 硬性 minWidth——那是布局约束,分栏必须让位。
       //
-      // 190/205 都装不下「模型与识别」「浏览器支持」,会被截成「模型与…」。
-      // 导航项被截断是最不该省的那种省:用户要靠它认路。
-      .frame(minWidth: 205)
-      .navigationSplitViewColumnWidth(min: 205, ideal: 215, max: 260)
+      // 中文导航（「模型与识别」「浏览器支持」）需要完整显示；不压到 200。
+      .frame(minWidth: 220)
+      .navigationSplitViewColumnWidth(min: 220, ideal: 236, max: 280)
       // 去掉 NavigationSplitView 自动塞进工具栏的侧栏折叠按钮：设置窗口的分类栏是
       // 导航主轴，不该被折叠，那个图标只是噪声。
       //
@@ -403,48 +401,44 @@ struct ProviderSettingsView: View {
 
   private var serviceTab: some View {
     SettingsPlainPage {
-      pageHeader(for: .service, caption: "配置总结、翻译和转写各自要用的模型服务。")
+      pageHeader(for: .service, caption: "配置总结、翻译、转写、校对和图片识别各自要用的模型。")
 
       settingCard(
         title: "功能与模型",
-        summary: "视频转文字和图片文字默认在本机处理，网页正文先保存在本机。",
-        details: "只有总结、翻译，以及你主动指派给在线模型的转写，才会访问所选服务商。",
+        summary: "每个功能单独指定模型；每个模型仍用自己的服务商、地址和密钥。",
+        details: "翻译和校对默认跟随总结模型。本地转写默认 Apple 听写、不出网。在线备用转写只用于超大视频。图片识别固定用本机 Vision。",
         controlWidth: .full
       ) {
         capabilityAssignmentRows
       }
 
       settingCard(
-        title: "已添加的模型",
-        summary: "每个模型配置都有独立的 Base URL、模型名和 API Key。",
-        details: "密钥只保存在本机钥匙串，不写进历史库、导出文件或日志。",
+        title: UISettingsPresentation.modelServicesCardTitle,
+        summary: UISettingsPresentation.modelServicesSummary,
+        details: UISettingsPresentation.modelServicesDetails,
         controlWidth: .full
       ) {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 10) {
           if model.libraryEntryDisplays.isEmpty {
             Text("还没有添加模型。添加后即可在上方为每个功能选择模型。")
-              .themedFont(.body)
-              .themedFont(.caption).foregroundStyle(.secondary)
+              .themedFont(.caption)
+              .foregroundStyle(.secondary)
           } else {
-            LazyVGrid(
-              columns: [GridItem(.adaptive(minimum: 168), spacing: 8, alignment: .top)],
-              alignment: .leading,
-              spacing: 8
-            ) {
+            // 单列展开：组头只放服务商图标与名称，模型清单紧跟组头，归属一眼可读。
+            VStack(alignment: .leading, spacing: 8) {
               ForEach(libraryProviderGroups) { group in
-                libraryProviderCard(group)
-              }
-            }
-            // 展开的那一家的模型清单落在网格下面，整行宽度都归它——每行要放
-            // 模型 ID、指派徽标和编辑/删除两个按钮，挤在一张 168pt 的卡里放不下。
-            if let expandedID = expandedLibraryProvider,
-               let group = libraryProviderGroups.first(where: { $0.id == expandedID }) {
-              VStack(alignment: .leading, spacing: 6) {
-                ForEach(group.entries) { entry in
-                  libraryRow(entry)
+                VStack(alignment: .leading, spacing: 6) {
+                  libraryProviderCard(group)
+                  if expandedLibraryProvider == group.id {
+                    VStack(alignment: .leading, spacing: 6) {
+                      ForEach(group.entries) { entry in
+                        libraryRow(entry)
+                      }
+                    }
+                    .padding(.leading, 4)
+                  }
                 }
               }
-              .padding(.top, 2)
             }
           }
           // 错误必须留在控件旁边。挪进 footer 就会离「添加模型…」很远，
@@ -512,30 +506,63 @@ struct ProviderSettingsView: View {
 
   // 标签在左、当前值靠右：LabeledContent 只有在 Form 里才会自动两端撑开，
   // 手排页上会抱团靠左，所以这里显式用 HStack + Spacer 排。
+  //
+  // 标题用「总结模型」而不是「总结与翻译」：翻译另有独立配置（生成偏好），
+  // 合并标题会让人以为这里已经管了翻译。
   @ViewBuilder private var capabilityAssignmentRows: some View {
     if model.libraryEntryDisplays.isEmpty {
       HStack(alignment: .firstTextBaseline) {
-        Text("总结与翻译")
+        Text(UISettingsPresentation.summaryAssignmentTitle)
           .themedFont(.body)
         Spacer(minLength: 16)
         Text("先在下方添加模型").themedFont(.body).foregroundStyle(.secondary)
       }
     } else {
       assignmentPickerRow(
-        title: "总结与翻译",
+        title: UISettingsPresentation.summaryAssignmentTitle,
         kind: .summary,
         selectedEntry: model.summaryEntryDisplays.first(where: { $0.id == model.summaryAssignmentID })
       )
     }
 
+    preferenceModelAssignmentRow(
+      title: UISettingsPresentation.translationAssignmentTitle,
+      caption: UISettingsPresentation.translationFollowsSummaryHint,
+      emptyOptionTitle: "跟随总结模型",
+      options: model.summaryEntryDisplays,
+      text: $model.translationModelName,
+      identifier: "translation-model-name",
+      customPlaceholder: "模型名称"
+    )
+
     assignmentPickerRow(
-      title: "视频转文字",
+      title: UISettingsPresentation.localTranscriptionTitle,
       kind: .transcription,
       selectedEntry: model.transcriptionEntryDisplays.first(where: { $0.id == model.transcriptionAssignmentID })
     )
 
+    preferenceModelAssignmentRow(
+      title: UISettingsPresentation.onlineTranscriptionTitle,
+      caption: "给超过 200MB、无法本机导入的视频用。",
+      emptyOptionTitle: "不使用：只用 Apple 本机转写",
+      options: model.transcriptionEntryDisplays,
+      text: $model.transcriptionModelName,
+      identifier: "transcription-model-name",
+      customPlaceholder: "例如 whisper-large-v3-turbo"
+    )
+
+    preferenceModelAssignmentRow(
+      title: UISettingsPresentation.tidyAssignmentTitle,
+      caption: "根据标题和配文还原听写错词并补标点；看不懂的句子原样保留。",
+      emptyOptionTitle: "跟随总结模型",
+      options: model.summaryEntryDisplays,
+      text: $model.tidyModelName,
+      identifier: "tidy-model-name",
+      customPlaceholder: "模型名称"
+    )
+
     HStack(alignment: .firstTextBaseline) {
-      Text("图片文字")
+      Text(UISettingsPresentation.imageRecognitionTitle)
         .themedFont(.body)
       Spacer(minLength: 16)
       VStack(alignment: .trailing, spacing: 2) {
@@ -544,6 +571,44 @@ struct ProviderSettingsView: View {
       }
     }
     .accessibilityIdentifier("image-text-assignment-picker")
+  }
+
+  @ViewBuilder
+  private func preferenceModelAssignmentRow(
+    title: String,
+    caption: String,
+    emptyOptionTitle: String,
+    options: [ProviderSettingsViewModel.LibraryEntryDisplay],
+    text: Binding<String>,
+    identifier: String,
+    customPlaceholder: String
+  ) -> some View {
+    HStack(alignment: .firstTextBaseline) {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(title)
+          .themedFont(.body)
+        Text(caption)
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer(minLength: 16)
+      VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
+        modelChoicePicker(
+          label: title,
+          emptyOptionTitle: emptyOptionTitle,
+          options: options,
+          text: text,
+          identifier: identifier
+        )
+        modelChoiceCustomField(
+          placeholder: customPlaceholder,
+          options: options,
+          text: text,
+          identifier: identifier
+        )
+      }
+    }
   }
 
   private func assignmentPickerRow(
@@ -610,7 +675,7 @@ struct ProviderSettingsView: View {
   private func assignmentPickerPopover(_ kind: AssignmentPicker) -> some View {
     let entries = kind == .transcription ? model.transcriptionEntryDisplays : model.summaryEntryDisplays
     return VStack(alignment: .leading, spacing: 0) {
-      Text(kind == .transcription ? "选择视频转写模型" : "选择总结与翻译模型")
+      Text(kind == .transcription ? "选择本地/在线转写模型" : "选择总结模型")
         .themedFont(.headline)
         .padding(.horizontal, 16)
         .padding(.top, 14)
@@ -633,7 +698,7 @@ struct ProviderSettingsView: View {
           }
 
           if !entries.isEmpty {
-            assignmentSectionTitle(kind == .transcription ? "在线模型" : "已添加的模型")
+            assignmentSectionTitle(kind == .transcription ? "在线模型" : UISettingsPresentation.modelServicesCardTitle)
             ForEach(assignmentProviderTitles(in: entries), id: \.self) { providerTitle in
               Text(providerTitle)
                 .themedFont(.caption, weight: .semibold)
@@ -756,41 +821,32 @@ struct ProviderSettingsView: View {
     }
   }
 
-  /// 已添加的服务商卡片。和下面「选择服务商」那张网格用同一个外壳、同一套列宽，
-  /// 因为它们说的是同一件事的两面：这里是「已经有哪几家」，那里是「还能加哪几家」。
+  /// 已添加的服务商组头：单列展开，图标与服务商名只出现一次。
   ///
-  /// 展开的模型清单不塞进卡片里，而是落在整张网格下面。塞进去的话，展开哪一张，
-  /// 那一整行卡片就被撑到同样高——网格立刻参差；模型行还要放编辑和删除两个按钮，
-  /// 168pt 宽的卡片也装不下。
+  /// 用途徽标（总结 / 转写）改挂在具体模型行上，组头只回答「这是哪一家、有几个模型」。
   private func libraryProviderCard(_ group: LibraryProviderGroup) -> some View {
     let expanded = expandedLibraryProvider == group.id
-    let hasSummary = group.entries.contains { model.summaryAssignmentID == $0.id }
-    let hasTranscription = group.entries.contains { model.transcriptionAssignmentID == $0.id }
     return Button {
       expandedLibraryProvider = expanded ? nil : group.id
     } label: {
-      VStack(alignment: .leading, spacing: 3) {
-        HStack(spacing: 6) {
-          providerIcon(group.preset, fallbackName: group.id)
+      HStack(spacing: 10) {
+        providerIcon(group.preset, fallbackName: group.id)
+        VStack(alignment: .leading, spacing: 2) {
           Text(group.id)
             .themedFont(.subheadline, weight: .semibold)
             .lineLimit(1)
             .truncationMode(.tail)
-          Spacer(minLength: 4)
-          if hasSummary { assignmentBadge("总结") }
-          if hasTranscription { assignmentBadge("转写") }
-        }
-        HStack(spacing: 4) {
           Text("\(group.entries.count) 个模型")
             .themedFont(.caption)
             .foregroundStyle(.secondary)
-          Spacer(minLength: 0)
-          Image(systemName: "chevron.right")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .rotationEffect(.degrees(expanded ? 90 : 0))
         }
+        Spacer(minLength: 8)
+        Image(systemName: "chevron.right")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(.secondary)
+          .rotationEffect(.degrees(expanded ? 90 : 0))
       }
+      .frame(maxWidth: .infinity, alignment: .leading)
       .modifier(SettingsCardChrome(selected: expanded, theme: appTheme))
     }
     .buttonStyle(.plain)
@@ -799,11 +855,9 @@ struct ProviderSettingsView: View {
 
   private func libraryRow(_ entry: ProviderSettingsViewModel.LibraryEntryDisplay) -> some View {
     HStack(spacing: 10) {
-      providerIcon(entry.preset, fallbackName: entry.title)
+      // 服务商图标已在组头，行内不再重复。
       VStack(alignment: .leading, spacing: 2) {
         Text(entry.displayName).themedFont(.headline)
-        // 服务商名已经写在这张卡的标题上，行里再写一遍是噪音；模型 ID 留着，
-        // 它是同一家里区分两个模型的唯一凭据。
         Text(entry.modelName).themedFont(.caption).foregroundStyle(.secondary)
       }
       Spacer(minLength: 12)
@@ -818,23 +872,23 @@ struct ProviderSettingsView: View {
       } label: {
         Image(systemName: "pencil")
       }
-      // 换掉 `.borderless`：那个样式在静止和悬停时长得一模一样，这两个图标
-      // 看起来像图例而不是能点的东西。`.appIcon` 给出 hover 底色和按下缩放。
       .buttonStyle(.appIcon)
       .help("编辑这个模型配置")
-      // accessibilityIdentifier 是给自动化测试用的，VoiceOver 不读它。
-      // 纯图标按钮必须另外声明 label，否则读出来只有一个符号名。
       .accessibilityLabel("编辑这个模型配置")
       .accessibilityIdentifier("edit-library-model")
-      Button {
-        pendingDeletionID = entry.id
+      // 删除收进更多菜单，确认对话框仍走既有 pendingDeletionID 流程。
+      Menu {
+        Button("删除这个模型配置", role: .destructive) {
+          pendingDeletionID = entry.id
+        }
+        .accessibilityIdentifier("delete-library-model")
       } label: {
-        Image(systemName: "trash")
+        Image(systemName: "ellipsis.circle")
       }
-      .buttonStyle(.appIcon)
-      .help("删除这个模型配置")
-      .accessibilityLabel("删除这个模型配置")
-      .accessibilityIdentifier("delete-library-model")
+      .menuStyle(.borderlessButton)
+      .help("更多")
+      .accessibilityLabel("更多操作")
+      .accessibilityIdentifier("library-model-more")
     }
     .contentShape(Rectangle())
   }
@@ -876,6 +930,15 @@ struct ProviderSettingsView: View {
         .padding(.vertical, DesignTokens.Space.md)
         .padding(.horizontal, DesignTokens.Space.lg)
         .modifier(SettingsThemedCardChrome())
+      }
+
+      if model.selectedPreset == .commandCode {
+        HStack(spacing: 16) {
+          Link("套餐与 API 接入说明", destination: URL(string: "https://commandcode.ai/docs/provider")!)
+          Link("获取 API Key", destination: URL(string: "https://commandcode.ai/docs/studio#api-keys")!)
+        }
+        .themedFont(.caption)
+        .accessibilityIdentifier("command-code-setup-links")
       }
 
       SettingsCardGroup(header: "连接") {
@@ -920,7 +983,7 @@ struct ProviderSettingsView: View {
       SettingsCardGroup(header: "模型", footer: model.modelCatalogStatusText) {
         Group {
         HStack(spacing: 12) {
-          Button("验证并配置模型") {
+          Button(model.selectedPreset == .commandCode ? "读取并配置模型" : "验证并配置模型") {
             let submittedKey = apiKeyInput
             Task {
               if model.shouldShowAPIKeyInput {
@@ -1045,7 +1108,8 @@ struct ProviderSettingsView: View {
             // 和主窗侧栏同一个坑：这是 `List` 的分区标题，收不到窗口根部注入的
             // 环境字体，必须显式给。
             Text(group.title)
-              .themedFont(.subheadline, weight: .semibold)
+              .themedFont(.caption, weight: .semibold)
+              .foregroundStyle(.secondary)
           }
         }
       }
@@ -1263,7 +1327,7 @@ struct ProviderSettingsView: View {
 
   private var appearanceTab: some View {
     SettingsPlainPage {
-      pageHeader(for: .appearance, caption: "选择界面主题，分别指定界面字体与阅读字体。")
+      pageHeader(for: .appearance, caption: "选择界面主题，分别指定界面字体与阅读字体。切换即时生效，无需保存。")
 
       settingCard(
         title: "主题",
@@ -1283,11 +1347,11 @@ struct ProviderSettingsView: View {
         details: "推荐一档只列能自己画完整简体中文、且至少有两个字重的家族。日文与韩文字体（Klee、Hiragino Mincho、YuMincho 等）缺简化字，拿它们排中文会逐字回退到别的字体，一句话里两种字形混排——它们仍在「其它」里，但不推荐。",
         controlWidth: .full
       ) {
-        VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
-          HStack(spacing: DesignTokens.Space.sm) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+          HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.md) {
             Text("字体")
-              .themedFont(.subheadline)
-              .foregroundStyle(.secondary)
+              .themedFont(.body)
+              .frame(width: 72, alignment: .leading)
             fontPicker(
               title: "界面字体",
               selection: $uiFontRaw,
@@ -1315,11 +1379,11 @@ struct ProviderSettingsView: View {
         details: "列表只收录自带中文字形的字体家族。像 New York、Georgia 这类只有拉丁字形的字体，中文要逐字回退且不做标点挤压，每个「，」「。」后面都会裂开一道缝，所以不列出来。推荐一档还额外要求能画完整的简体中文——日文字体只缺一部分简化字，症状更隐蔽：整段里零星几个字掉到别的字体上。",
         controlWidth: .full
       ) {
-        VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
-          HStack(spacing: DesignTokens.Space.sm) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+          HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.md) {
             Text("字体")
-              .themedFont(.subheadline)
-              .foregroundStyle(.secondary)
+              .themedFont(.body)
+              .frame(width: 72, alignment: .leading)
             fontPicker(
               title: "阅读字体",
               selection: $readingFontRaw,
@@ -1333,11 +1397,11 @@ struct ProviderSettingsView: View {
 
           Divider()
 
-          VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-            HStack(spacing: DesignTokens.Space.sm) {
+          VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+            HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.md) {
               Text("正文字号")
-                .themedFont(.subheadline)
-                .foregroundStyle(.secondary)
+                .themedFont(.body)
+                .frame(width: 72, alignment: .leading)
               Spacer(minLength: 0)
             }
             Text("标题与引用按同一比例跟着缩放，不会只有正文变大。")
@@ -1351,6 +1415,7 @@ struct ProviderSettingsView: View {
                 step: Double(ReadingFontSize.step)
               )
               .frame(maxWidth: 220)
+              .frame(height: 38)
               .accessibilityIdentifier("appearance-reading-font-size-slider")
               Text(String(format: "%.1f", readingFontSizeRaw))
                 .themedFont(.caption, monospacedDigit: true)
@@ -1385,14 +1450,15 @@ struct ProviderSettingsView: View {
 
   private var generationTab: some View {
     SettingsPlainPage {
-      pageHeader(for: .generation, caption: "控制总结、翻译输出，以及新内容进来后自动跑哪些步骤。")
+      pageHeader(for: .generation, caption: "控制总结、翻译输出，以及新内容进来后自动跑哪些步骤。模型分配在「模型与识别」。")
 
-      // 常用默认在前：大多数人打开这页只改语言与模型。
+      // 常用默认在前：大多数人打开这页只改语言。
       // 并发、长提示词收进高级；发送授权必须独立可见，不能折进高级。
       SettingsRowGroup {
           SettingsRow(
             title: "输出语言",
-            caption: "总结、翻译等生成结果统一用这个语言输出。"
+            caption: "总结、翻译等生成结果统一用这个语言输出。",
+            details: "生成时会把这条语言指令追加到提示词；模型分配仍在「模型与识别」。"
           ) {
             VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
               Picker("输出语言", selection: outputLanguageSelection) {
@@ -1412,74 +1478,10 @@ struct ProviderSettingsView: View {
               }
             }
           }
+      }
 
-          SettingsRow(
-            title: "翻译模型",
-            caption: "不另选就与总结共用同一个模型。",
-            details: "翻译和总结是两种活：总结要概括，翻译要贴原文。想让翻译走更便宜或更擅长语言的模型时，在这里另选一个。"
-          ) {
-            VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
-              modelChoicePicker(
-                label: "翻译模型",
-                emptyOptionTitle: "跟随总结模型",
-                options: model.summaryEntryDisplays,
-                text: $model.translationModelName,
-                identifier: "translation-model-name"
-              )
-              modelChoiceCustomField(
-                placeholder: "模型名称",
-                options: model.summaryEntryDisplays,
-                text: $model.translationModelName,
-                identifier: "translation-model-name"
-              )
-            }
-          }
-
-          SettingsRow(
-            title: "在线视频转文字",
-            caption: "给超过 200MB、无法本机导入的视频用。选「不使用」时只跑 Apple 本机转写。",
-            details: "配置后，App 会从直连视频流提取短 M4A 分片并调用 /audio/transcriptions；每次上传前仍会确认。"
-          ) {
-            VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
-              modelChoicePicker(
-                label: "在线转写模型",
-                emptyOptionTitle: "不使用：只用 Apple 本机转写",
-                options: model.transcriptionEntryDisplays,
-                text: $model.transcriptionModelName,
-                identifier: "transcription-model-name"
-              )
-              modelChoiceCustomField(
-                placeholder: "例如 whisper-large-v3-turbo",
-                options: model.transcriptionEntryDisplays,
-                text: $model.transcriptionModelName,
-                identifier: "transcription-model-name"
-              )
-            }
-          }
-
-          SettingsRow(
-            title: "转写稿模型校对",
-            caption: "根据标题和配文，把听写错的词还原成更可能说的话，并补标点、分段。看不懂的句子原样保留，不编成新文章。",
-            details: "会附带标题和配文，不发送视频或音频。原始转写稿保留在历史中。"
-          ) {
-            VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
-              modelChoicePicker(
-                label: "校对模型",
-                emptyOptionTitle: "跟随总结模型",
-                options: model.summaryEntryDisplays,
-                text: $model.tidyModelName,
-                identifier: "tidy-model-name"
-              )
-              modelChoiceCustomField(
-                placeholder: "模型名称",
-                options: model.summaryEntryDisplays,
-                text: $model.tidyModelName,
-                identifier: "tidy-model-name"
-              )
-            }
-          }
-
-          // 发送授权与撤回必须独立可见，不得收入高级 DisclosureGroup。
+      // 发送授权独立成组：只提供「清除已记住记录」，不虚构逐项撤销。
+      SettingsRowGroup {
           SettingsRow(
             title: "已记住的发送授权",
             caption: "首次把内容发往某个服务商、或首次使用在线转写、模型校对、生成脑图时会各告知一次，之后不再重复询问。",
@@ -1558,8 +1560,8 @@ struct ProviderSettingsView: View {
 
       // 这条链在代码里严格串行且有依赖，所以画成有序链条而不是四个平级开关。
       VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-        Text("自动处理管线").themedFont(.headline)
-        Text("新内容到达后按编号顺序串行执行已开启的步骤。① 只译标题并在正文保留原文标题，不会把条目移出待总结；正文翻译仍需自己点。")
+        Text(UISettingsPresentation.newCaptureAutoProcessTitle).themedFont(.headline)
+        Text(UISettingsPresentation.newCaptureAutoProcessCaption)
           .themedFont(.callout)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -1567,21 +1569,21 @@ struct ProviderSettingsView: View {
         VStack(alignment: .leading, spacing: 0) {
           pipelineStep(
             index: 1,
-            title: "中文标题",
+            title: UISettingsPresentation.pipelineStepTitle(index: 1),
             trailingNote: "只发送标题",
             isOn: $model.autoLocalizeTitleNewCaptures,
             identifier: "auto-pipeline-localize-title"
           )
           pipelineStep(
             index: 2,
-            title: "本机转写",
+            title: UISettingsPresentation.pipelineStepTitle(index: 2),
             trailingNote: "不出网",
             isOn: $model.autoTranscribeNewCaptures,
             identifier: "auto-pipeline-transcribe"
           )
           pipelineStep(
             index: 3,
-            title: "模型校对",
+            title: UISettingsPresentation.pipelineStepTitle(index: 3),
             trailingNote: "只发送文字",
             requirementUnmet: model.autoTranscribeNewCaptures
               ? nil
@@ -1591,19 +1593,22 @@ struct ProviderSettingsView: View {
           )
           pipelineStep(
             index: 4,
-            title: "总结",
+            title: UISettingsPresentation.pipelineStepTitle(index: 4),
             trailingNote: "读原文，不读译文",
             isOn: $model.autoSummarizeNewCaptures,
             identifier: "auto-pipeline-summarize"
           )
           pipelineStep(
             index: 5,
-            title: "脑图",
+            title: UISettingsPresentation.pipelineStepTitle(index: 5),
             trailingNote: "优先用总结产物",
             isLast: true,
+            // 脑图未开启时不展示前置条件警告，避免关掉时仍被无关提示打扰。
             requirementUnmet: model.autoSummarizeNewCaptures
               ? nil
-              : "④ 未开启：将直接读原文生成，质量通常不如先总结",
+              : (model.autoMindMapNewCaptures
+                ? "④ 未开启：将直接读原文生成，质量通常不如先总结"
+                : nil),
             isOn: $model.autoMindMapNewCaptures,
             identifier: "auto-pipeline-mindmap"
           )
@@ -1635,16 +1640,32 @@ struct ProviderSettingsView: View {
       .padding(.vertical, DesignTokens.Space.md)
       .padding(.horizontal, DesignTokens.Space.lg)
       .modifier(SettingsThemedCardChrome())
+    }
+    .safeAreaInset(edge: .bottom, spacing: 0) {
+      generationPreferencesSaveBar
+    }
+  }
 
-      actionRow(status: model.preferencesStatusText, color: preferencesStatusColor, showsProgress: model.preferencesState == .saving, statusIdentifier: "model-preferences-status") {
+  private var generationPreferencesSaveBar: some View {
+    VStack(spacing: 0) {
+      Divider()
+      actionRow(
+        status: model.preferencesStatusText,
+        color: preferencesStatusColor,
+        showsProgress: model.preferencesState == .saving,
+        statusIdentifier: "model-preferences-status"
+      ) {
         Button("保存生成偏好") { Task { await model.savePreferences() } }
+          .buttonStyle(.borderedProminent)
+          .tint(settingsTheme.accent)
           .disabled(!model.canSavePreferences)
           .accessibilityIdentifier("save-model-preferences")
       }
-      .padding(.vertical, DesignTokens.Space.md)
-      .padding(.horizontal, DesignTokens.Space.lg)
-      .modifier(SettingsThemedCardChrome())
+      .padding(.horizontal, DesignTokens.Layout.settingsHorizontalInset)
+      .padding(.vertical, DesignTokens.Space.sm)
     }
+    .background(settingsTheme.isNative ? Color(nsColor: .windowBackgroundColor) : settingsTheme.canvas)
+    .accessibilityIdentifier("generation-preferences-save-bar")
   }
 
   // MARK: - 设置卡片零件
@@ -1855,9 +1876,8 @@ struct ProviderSettingsView: View {
     .modifier(SettingsCardChrome(selected: selected, theme: appTheme))
   }
 
-  /// 「已添加的模型」和「选择服务商」两张网格必须长得一模一样：它们相邻、都是
-  /// 「一家服务商一张卡」，只要圆角、边框、内距、选中态有任何一处不同，看上去
-  /// 就是两套东西凑在一起。所以卡片外壳收在这一个 modifier 里，两处共用。
+/// 「模型服务」组头与「选择服务商」网格共用同一张卡片外壳，避免两套 chrome 漂移。
+  /// 模型服务已改为单列展开；选择服务商编辑器仍用多列网格。
   private struct SettingsCardChrome: ViewModifier {
     let selected: Bool
     let theme: HistoryThemeTokens

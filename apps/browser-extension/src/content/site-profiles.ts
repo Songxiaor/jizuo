@@ -23,16 +23,30 @@ export type SiteProfile = {
   /** 匹配 host（已小写、已去掉末尾点）。 */
   readonly matches: (host: string) => boolean;
   /**
+   * Host 不够时的页面指纹。自定义域 Substack 没有 `.substack.com`，
+   * 但会带 `substackcdn.com` preconnect 和 `.post-header`。
+   */
+  readonly matchesDocument?: (documentLike: Document) => boolean;
+  /**
    * 正文根选择器，按优先级。命中后仍要求文本够长，否则退回通用候选——
    * 宁可用通用路径，也不产出一个空壳正文。
    */
   readonly contentRoot?: readonly string[];
+  /**
+   * 档案已命中但正文根缺失时，不要退回 `article`/`main`：那些容器常是
+   * 推荐流，会把别人的文章当成当前这篇。
+   */
+  readonly requireContentRoot?: boolean;
   /** 标题选择器，优先于通用的 h1 / og:title。 */
   readonly title?: readonly string[];
+  /** 副标题，写入正文、不进入 title 字段。 */
+  readonly subtitle?: readonly string[];
   /** 作者选择器。 */
   readonly author?: readonly string[];
   /** 发布时间选择器。 */
   readonly published?: readonly string[];
+  /** 付费墙；命中则 completeness 只能是可见预览，不能报全文。 */
+  readonly paywall?: readonly string[];
 };
 
 const hostSuffix =
@@ -78,17 +92,66 @@ export const SITE_PROFILES: readonly SiteProfile[] = [
     contentRoot: [".Post-RichText", ".RichText.ztext"],
   },
   {
-    // Substack 及其自定义域名的正文容器。
+    // Substack 及其自定义域名的正文容器。`.substack.com` 走 host；
+    // 自定义域靠 CDN preconnect + `.post-header`，不写死具体域名。
     id: "substack",
     matches: hostSuffix("substack.com"),
-    contentRoot: [".available-content"],
+    matchesDocument: documentLooksLikeSubstack,
+    contentRoot: [".available-content .body.markup", ".available-content"],
+    requireContentRoot: true,
+    title: [".post-header .post-title", ".post-header h1"],
+    subtitle: [".post-header h3.subtitle"],
+    author: [".post-header .byline-wrapper a"],
+    published: [".post-header time[datetime]"],
+    paywall: [".paywall", "[data-testid='paywall']"],
   },
 ];
+
+function isHttpOrHttpsPageURL(raw: string): boolean {
+  try {
+    const protocol = new URL(raw).protocol;
+    return protocol === "http:" || protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
+function substackCdnHref(href: string): boolean {
+  try {
+    const url = new URL(href);
+    if (url.protocol !== "https:") return false;
+    const host = url.hostname.toLowerCase();
+    return host === "substackcdn.com" || host.endsWith(".substackcdn.com");
+  } catch {
+    return false;
+  }
+}
+
+function documentLooksLikeSubstack(documentLike: Document): boolean {
+  const hasCdnPreconnect = Array.from(documentLike.querySelectorAll("link[rel]")).some((link) => {
+    const rel = (link.getAttribute("rel") ?? "").toLowerCase().split(/\s+/u);
+    if (!rel.includes("preconnect")) return false;
+    const href = link.getAttribute("href")?.trim();
+    return Boolean(href && substackCdnHref(href));
+  });
+  if (!hasCdnPreconnect) return false;
+  return Boolean(documentLike.querySelector(".post-header"));
+}
 
 export function siteProfile(host: string): SiteProfile | undefined {
   const normalized = host.toLowerCase().replace(/\.+$/, "");
   if (!normalized) return undefined;
   return SITE_PROFILES.find((profile) => profile.matches(normalized));
+}
+
+/** Host 档案优先；否则用页面指纹认出自定义域。只认有效 http(s) 页面。 */
+export function siteProfileForDocument(documentLike: Document): SiteProfile | undefined {
+  const href = documentLike.location?.href ?? "";
+  if (!isHttpOrHttpsPageURL(href)) return undefined;
+  const host = new URL(href).hostname;
+  const byHost = host ? siteProfile(host) : undefined;
+  if (byHost) return byHost;
+  return SITE_PROFILES.find((profile) => profile.matchesDocument?.(documentLike));
 }
 
 /**

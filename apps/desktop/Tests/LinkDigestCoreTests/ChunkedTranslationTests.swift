@@ -119,6 +119,14 @@ final class ChunkedTranslationTests: XCTestCase {
     )
   }
 
+  func testStreamingDeltaSlicerBreaksLargeDumpsOnNewlines() {
+    let text = String(repeating: "甲", count: 200) + "\n" + String(repeating: "乙", count: 200)
+    let slices = StreamingDeltaSlicer.slices(text, maxCharacters: 220)
+    XCTAssertGreaterThan(slices.count, 1)
+    XCTAssertEqual(slices.joined(), text)
+    XCTAssertTrue(slices[0].hasSuffix("\n") || slices[0].contains("甲"))
+  }
+
   func testLongSingleParagraphIsNotChunkedBecauseItCannotBeSplitSafely() {
     // 段落是唯一的切分边界；一整段超长时宁可整段发，也不从句子中间切开。
     let single = String(repeating: "字", count: 20_000)

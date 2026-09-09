@@ -222,6 +222,13 @@ struct CommentThreadSectionView: View {
             accentColor: accentColor,
             onOpenURL: onOpenURL
           )
+        case let .video(video):
+          ArticleInlineVideoCard(
+            video: video,
+            localFileURL: nil,
+            pageURL: nil,
+            onOpenURL: onOpenURL
+          )
         }
       }
     }

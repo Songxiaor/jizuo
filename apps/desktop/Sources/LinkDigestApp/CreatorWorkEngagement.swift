@@ -18,7 +18,10 @@ enum CreatorWorkMetricKind: String, CaseIterable, Equatable {
       if platform == "douyin.com" { return "转发" }
       return "分享"
     case .collects: return platform == "x.com" ? "书签" : "收藏"
-    case .views: return platform == "bilibili.com" ? "播放" : "浏览"
+    case .views:
+      if platform == "bilibili.com" { return "播放" }
+      if platform == "mp.weixin.qq.com" { return "阅读" }
+      return "浏览"
     }
   }
 
@@ -60,12 +63,14 @@ enum CreatorWorkMetricLayout {
       return [.likes, .comments, .collects, .shares]
     case "x.com":
       return [.likes, .comments, .shares, .collects, .views]
-    case "bilibili.com":
+    case "bilibili.com", "youtube.com":
       return [.views, .likes, .comments, .collects, .shares]
     case "xiaohongshu.com":
       return [.likes, .comments, .collects, .shares]
+    case "mp.weixin.qq.com":
+      return []
     default:
-      return [.likes, .comments, .collects]
+      return []
     }
   }
 
@@ -79,7 +84,8 @@ enum CreatorWorkMetricLayout {
 
   /// Social works share a responsive 2–4 column grid.
   static func usesAdaptiveWorkGrid(_ host: String) -> Bool {
-    ["x.com", "douyin.com", "xiaohongshu.com", "bilibili.com"].contains(HistoryPlatformRegistry.canonicalHost(for: host))
+    // All source-platform galleries share the same responsive column math.
+    true
   }
 
   /// Card and reader use the same platform order; compact cards keep one row.
@@ -91,13 +97,39 @@ enum CreatorWorkMetricLayout {
     return [Array(slots.prefix(mid)), Array(slots.dropFirst(mid))]
   }
 
+  /// Card and reader use the same platform order; compact cards keep one row.
+  /// Missing metrics stay hidden (no "—" filler). Real zero remains visible.
+  /// WeChat and non-social sites do not force like/collect rows.
+  static func visibleSlots(
+    forHost host: String,
+    values: (CreatorWorkMetricKind) -> String?
+  ) -> [CreatorWorkMetricKind] {
+    let platform = HistoryPlatformRegistry.canonicalHost(for: host)
+    if platform == "mp.weixin.qq.com" { return [] }
+    if !showsEngagementMetrics(forHost: platform) { return [] }
+    return slots(forHost: host).filter { slot in
+      guard let raw = values(slot) else { return false }
+      return !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+  }
+
+  /// Social / video platforms may show engagement; articles and generic sites do not.
+  static func showsEngagementMetrics(forHost host: String) -> Bool {
+    switch HistoryPlatformRegistry.canonicalHost(for: host) {
+    case "x.com", "douyin.com", "xiaohongshu.com", "bilibili.com", "youtube.com":
+      return true
+    default:
+      return false
+    }
+  }
+
   static func displayValue(_ raw: String?) -> (visible: String, accessibility: String) {
     guard let raw else {
-      return ("—", "尚未读取")
+      return ("—", "未获取")
     }
     let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed.isEmpty {
-      return ("—", "尚未读取")
+      return ("—", "未获取")
     }
     return (HistoryEngagementCount.compact(trimmed), trimmed)
   }
@@ -117,6 +149,22 @@ enum CreatorDirectoryChrome {
     let inner = max(0, availableWidth - xGridHorizontalPadding) + xGridSpacing
     let raw = Int(floor(inner / (xCardMinimumWidth + xGridSpacing)))
     return min(4, max(1, raw))
+  }
+}
+
+enum CreatorDirectorySurfaceState: Equatable {
+  case catalog
+  case works
+  case reader
+
+  static func resolve(
+    showsCatalog: Bool,
+    hasSelectedCreator: Bool,
+    isReading: Bool
+  ) -> Self {
+    if isReading { return .reader }
+    if showsCatalog || !hasSelectedCreator { return .catalog }
+    return .works
   }
 }
 
@@ -152,18 +200,67 @@ enum CreatorDirectoryCardCopy {
     case "x.com": return "帖子"
     case "douyin.com": return "作品"
     case "xiaohongshu.com": return "笔记"
-    case "bilibili.com": return "稿件"
-    default: return "文字"
+    case "bilibili.com", "youtube.com": return "视频"
+    case "mp.weixin.qq.com", "substack.com": return "文章"
+    case "github.com": return "仓库"
+    case "reddit.com", "discourse": return "讨论"
+    default: return "内容"
     }
   }
 
-  static func headline(capturedTitle: String, preview: String, host: String, hasCover: Bool) -> String {
+  /// Author / site identity line. Never invent; never use platform name as author.
+  static func authorLine(row: HistoryRowProjection) -> String? {
+    if let author = row.author?.trimmingCharacters(in: .whitespacesAndNewlines), !author.isEmpty {
+      return author
+    }
+    let host = HistoryPlatformRegistry.canonicalHost(for: row.host)
+    switch host {
+    case "mp.weixin.qq.com":
+      return "作者未获取"
+    case "github.com":
+      return siteIdentity(row) ?? "GitHub"
+    case "substack.com":
+      return siteIdentity(row) ?? "刊物未获取"
+    case "discourse", "reddit.com":
+      return siteIdentity(row) ?? "社区未获取"
+    default:
+      if HistoryPlatformDisplay.isWellKnown(host: host) {
+        return nil
+      }
+      return siteIdentity(row)
+    }
+  }
+
+  /// Site / host identity for cards. Never use `sourceLabel` — that is the capture
+  /// channel (e.g. "GitHub 公开仓库 README"), not author or publication name.
+  static func siteIdentity(_ row: HistoryRowProjection) -> String? {
+    if let host = URLComponents(string: row.canonicalURL)?.host {
+      let normalized = HistoryHostNormalizer.normalized(host)
+      if !normalized.isEmpty { return normalized }
+    }
+    let host = row.host.trimmingCharacters(in: .whitespacesAndNewlines)
+    if host.isEmpty { return nil }
+    let normalized = HistoryHostNormalizer.normalized(host)
+    return normalized.isEmpty ? nil : normalized
+  }
+
+  /// Card title line. `nil` means omit — used when the cover slot already shows the same body preview.
+  static func headline(
+    capturedTitle: String,
+    preview: String,
+    host: String,
+    hasCover: Bool,
+    showsBodyPreview: Bool = false
+  ) -> String? {
     let trimmed = capturedTitle.trimmingCharacters(in: .whitespacesAndNewlines)
     let missing = trimmed.isEmpty || trimmed == CapturedDocumentTitle.missing
     if hasCover {
       return missing ? contentKind(host: host) : capturedTitle
     }
     if isIndependentTitle(capturedTitle, preview: preview) { return capturedTitle }
+    // No independent title: body preview already carries the text — don't repeat a truncated copy.
+    if showsBodyPreview { return nil }
+    // Cover slot is a status placeholder, not body text — keep a kind label so the card isn't empty.
     return contentKind(host: host)
   }
 }

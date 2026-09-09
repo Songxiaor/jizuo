@@ -18,6 +18,7 @@ enum ProviderIconCatalog {
     .groq: "groq",
     .siliconFlow: "siliconflow",
     .dashScope: "bailian",
+    .commandCode: "commandcode",
     .zhipu: "zhipu",
     .stepFun: "stepfun",
     .ollama: "ollama",

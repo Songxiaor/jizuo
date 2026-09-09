@@ -88,11 +88,14 @@ public struct ResolvedTweet: Sendable, Equatable {
   }
 
   /// 与扩展抓取产出的 markdown 同构：frontmatter + 正文 + 内联图片。
-  /// 视频不进正文（它走 media 通道由 App 下载），封面帧同理。
+  /// 视频不进正文（它走 media 通道由 App 下载）。纯视频帖把封面写入 cover_image，正文不重复插图。
   public var markdownBody: String {
     var lines = ["---"]
     if let author = displayAuthor { lines.append("author: \(quoted(author))") }
     if let publishedAt { lines.append("published: \(quoted(publishedAt))") }
+    if photoURLs.isEmpty, let cover = video?.coverURL, XTweetResolver.isAllowedPhotoURL(cover) {
+      lines.append("cover_image: \(quoted(cover))")
+    }
     if let likeCount { lines.append("likes: \(quoted(String(likeCount)))") }
     if let replyCount { lines.append("replies: \(quoted(String(replyCount)))") }
     if let repostCount { lines.append("shares: \(quoted(String(repostCount)))") }
@@ -215,6 +218,9 @@ public struct XTweetResolver: Sendable {
     ]
     guard let endpoint = components.url else { return nil }
 
+    // These two reads are independent. Overlap them within ONE queued tweet,
+    // retaining the serial WebKit/save queue and awaiting full text before saving.
+    async let supplementary = richContent(id: id)
     guard let response = try? await resources.fetchResource(
       .init(
         url: endpoint,
@@ -233,7 +239,7 @@ public struct XTweetResolver: Sendable {
     var fullText: String?
     var article = payload.article.flatMap(Self.previewArticle)
     var metrics: XTweetMetrics?
-    if let richContent = await richContent(id: id) {
+    if let richContent = await supplementary {
       fullText = richContent.noteText
       article = richContent.article ?? article
       metrics = richContent.metrics
@@ -265,7 +271,7 @@ public struct XTweetResolver: Sendable {
   /// 会降级回截断版；更新此值即可恢复。**
   private static let tweetResultQueryID = "LkId5Akr61BS6BmOIcffRg"
 
-  private struct GraphQLRichContent {
+  private struct GraphQLRichContent: Sendable {
     let noteText: String?
     let article: XArticleContent?
     let metrics: XTweetMetrics?

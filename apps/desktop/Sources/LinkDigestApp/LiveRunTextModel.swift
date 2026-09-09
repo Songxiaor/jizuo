@@ -3,7 +3,7 @@ import Combine
 
 /// 流式正文的专属发布通道。
 ///
-/// 总结/翻译/转写生成期间，正文每约 250ms 增长一次。这些拍点如果写进
+/// 总结/翻译/转写生成期间，正文每约 80ms 增长一次。这些拍点如果写进
 /// `AppViewModel` / `HistoryViewModel` 那样的巨型 ObservableObject，
 /// `objectWillChange` 会把观察它们的整棵历史窗口（侧栏、元数据、评论区）
 /// 全部重新求值——正文越长 diff 越贵，生成期间滚动因此持续卡顿。

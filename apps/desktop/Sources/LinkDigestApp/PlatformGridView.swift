@@ -1,7 +1,7 @@
 import LinkDigestCore
 import SwiftUI
 
-/// 来源平台：固定顺序的双列按钮，名称和库存数量始终可见。
+/// 来源平台：固定顺序，各占一行；名称和库存数量始终可见。
 struct PlatformGridView: View {
   struct Item: Identifiable {
     let host: String
@@ -17,7 +17,7 @@ struct PlatformGridView: View {
   let onSelect: (String) -> Void
 
   private var orderedItems: [Item] {
-    let order = ["X", "抖音", "微信公众号", "哔哩哔哩", "GitHub", "YouTube", "Discourse", "Reddit", "Substack", "待分类"]
+    let order = ["X", "抖音", "微信公众号", "哔哩哔哩", "GitHub", "YouTube", "Discourse", "Reddit", "Substack", "小红书", "待分类"]
     return items.sorted {
       let left = order.firstIndex(of: HistoryPlatformDisplay.name(forHost: $0.host)) ?? order.count
       let right = order.firstIndex(of: HistoryPlatformDisplay.name(forHost: $1.host)) ?? order.count
@@ -26,17 +26,15 @@ struct PlatformGridView: View {
   }
 
   var body: some View {
-    LazyVGrid(columns: [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)], spacing: 4) {
-      ForEach(orderedItems) { item in
-        PlatformNavigationRow(
-          item: item,
-          theme: theme,
-          isSelected: isSelected(item.host),
-          onSelect: { onSelect(item.host) }
-        )
-      }
+    ForEach(orderedItems) { item in
+      PlatformNavigationRow(
+        item: item,
+        theme: theme,
+        isSelected: isSelected(item.host),
+        onSelect: { onSelect(item.host) }
+      )
+      .id(item.host)
     }
-    .padding(.vertical, DesignTokens.Space.xxs)
   }
 }
 
@@ -67,8 +65,7 @@ private struct PlatformNavigationRow: View {
           faviconURL: item.faviconURL,
           faviconTaskID: item.faviconTaskID
         )
-          .scaleEffect(0.78)
-          .frame(width: 12, height: 14)
+          .frame(width: 16, height: 16)
           .accessibilityHidden(true)
         Text(name)
           .lineLimit(1)
@@ -77,6 +74,7 @@ private struct PlatformNavigationRow: View {
         Text("\(item.count)")
           .themedFont(.caption2, weight: .medium, monospacedDigit: true)
           .foregroundStyle(isSelected ? theme.accent : theme.secondaryText)
+          .frame(minWidth: 28, alignment: .trailing)
           .fixedSize()
 
       }
@@ -104,6 +102,7 @@ private struct PlatformNavigationRow: View {
       DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
       value: isHovering
     )
+    .animation(reduceMotion ? nil : DesignTokens.Motion.instant, value: isSelected)
     .onHover { isHovering = $0 }
     .help("\(fullName)（\(item.count) 条）")
     .accessibilityLabel(fullName)

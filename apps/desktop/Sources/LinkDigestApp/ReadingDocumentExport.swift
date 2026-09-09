@@ -63,6 +63,14 @@ enum ReadingDocumentExport {
             result.append(NSAttributedString(string: "\n\n"))
           }
         }
+      case let .video(video):
+        let label = video.title?.isEmpty == false ? video.title! : video.platformLabel
+        if let url = video.openURL {
+          result.append(attributedTextOnly(markdown: "[\(label)](\(url.absoluteString))", readingFont: readingFont))
+        } else {
+          result.append(attributedTextOnly(markdown: label, readingFont: readingFont))
+        }
+        result.append(NSAttributedString(string: "\n\n"))
       case let .quotedTweet(quote):
         // 导出成线性文档：引用作者一行 + 正文引用块 + 图片顺排 + 原推链接。
         if let author = quote.author {

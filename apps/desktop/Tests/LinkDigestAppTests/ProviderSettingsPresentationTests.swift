@@ -6,7 +6,7 @@ import LinkDigestCore
 
 final class ProviderSettingsPresentationTests: XCTestCase {
   private let providerAssets = [
-    "bailian.svg", "deepinfra.svg", "deepseek.svg", "groq.svg", "ollama.svg",
+    "bailian.svg", "commandcode.svg", "deepinfra.svg", "deepseek.svg", "groq.svg", "ollama.svg",
     "openai.svg", "opencode.svg", "openrouter.svg", "siliconflow.svg", "stepfun.svg", "zhipu.svg",
   ]
 
@@ -15,7 +15,7 @@ final class ProviderSettingsPresentationTests: XCTestCase {
       .openAI: "openai", .deepSeek: "deepseek", .deepInfra: "deepinfra",
       .openRouter: "openrouter", .openCodeGo: "opencode", .openCodeZen: "opencode",
       .groq: "groq", .siliconFlow: "siliconflow",
-      .dashScope: "bailian", .zhipu: "zhipu", .stepFun: "stepfun", .ollama: "ollama",
+      .dashScope: "bailian", .commandCode: "commandcode", .zhipu: "zhipu", .stepFun: "stepfun", .ollama: "ollama",
     ]
     let directory = repositoryRoot().appendingPathComponent("apps/desktop/Assets/ProviderIcons", isDirectory: true)
 
@@ -45,7 +45,7 @@ final class ProviderSettingsPresentationTests: XCTestCase {
   }
 
   func testProviderCatalogWritesRasterizationComparisonPNG() throws {
-    let orderedNames = ["openai", "deepseek", "deepinfra", "openrouter", "groq", "siliconflow", "bailian", "zhipu", "stepfun", "ollama"]
+    let orderedNames = ["openai", "deepseek", "deepinfra", "openrouter", "groq", "siliconflow", "bailian", "commandcode", "zhipu", "stepfun", "ollama"]
     let directory = repositoryRoot().appendingPathComponent("apps/desktop/Assets/ProviderIcons", isDirectory: true)
     let cell: CGFloat = 64
     let padding: CGFloat = 8
@@ -90,10 +90,7 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     // 2026-08-13 从 grouped Form 迁到 SettingsPlainPage：macOS 忽略
     // listRowBackground，Form 容器卡永远是系统冷灰，主题卡面在 Form 路线上无解。
     //
-    // 但「不要瓦片墙」不等于「任何地方都不许出现网格」。服务商选择是 12 个只有
-    // 图标 + 名字 + 一句话的项，排成一列要占约 650pt；2026-08-06 按 Syc 要求改成
-    // 多列卡片，约 200pt。原来那条 `LazyVGrid` 全局禁令会把这类局部布局一并挡掉，
-    // 所以撤掉它，改由上面两个具体禁项继续守住骨架。
+    // 「模型服务」已改为单列展开；编辑器里的「选择服务商」仍可用 LazyVGrid。
     XCTAssertTrue(service.contains("SettingsPlainPage"))
     XCTAssertFalse(service.contains("providerTile"))
     XCTAssertFalse(service.contains("capabilityCard"))
@@ -109,14 +106,34 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     XCTAssertTrue(service.contains("detail: entry.modelName"))
     XCTAssertTrue(service.contains("model.transcriptionEntryDisplays"))
     XCTAssertTrue(service.contains("model.summaryEntryDisplays"))
-    // 已添加的模型按服务商归拢：服务商名写在分组卡的标题上，行里只留模型 ID。
-    // 2026-08-06 之前是平铺，每行都重复一次「服务商 · 模型」。
+    // 模型服务按服务商归拢：组头放图标与服务商名，行里只留模型 ID 与用途徽标。
     XCTAssertTrue(service.contains("libraryProviderGroups"))
+    XCTAssertTrue(service.contains("UISettingsPresentation.modelServicesCardTitle"))
+    XCTAssertTrue(service.contains("UISettingsPresentation.summaryAssignmentTitle"))
+    XCTAssertFalse(service.contains("Text(\"总结与翻译\")"))
+    XCTAssertTrue(service.contains("library-model-more"))
+    XCTAssertTrue(service.contains("delete-library-model"))
     // 同上：锁「模型 ID 用 caption 字号」，不锁它走 .font 还是 .themedFont。
     XCTAssertNotNil(
       service.range(of: #"Text\(entry\.modelName\)\.\w*[Ff]ont\(\.caption\)"#, options: .regularExpression))
     XCTAssertFalse(service.contains("Text(\"\\(entry.title) · 在线转写\").tag(entry.id)"))
     XCTAssertTrue(source.contains("ProviderIconCatalog.image(for: preset)"))
+  }
+
+  func testModelServicesUsesSingleColumnExpandableGroups() throws {
+    let source = try String(
+      contentsOf: repositoryRoot().appendingPathComponent(
+        "apps/desktop/Sources/LinkDigestApp/ProviderSettingsView.swift"
+      ),
+      encoding: .utf8
+    )
+    let service = section(in: source, from: "private var serviceTab", to: "// MARK: - 功能与模型指派")
+    XCTAssertFalse(
+      service.contains("LazyVGrid("),
+      "模型服务列表应单列展开，不再用服务商三列网格"
+    )
+    XCTAssertTrue(service.contains("ForEach(libraryProviderGroups)"))
+    XCTAssertTrue(service.contains("expandedLibraryProvider == group.id"))
   }
 
   func testPaperThemeSettingsSidebarKeepsNamedAccessibleButtons() throws {
@@ -209,7 +226,7 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     let root = repositoryRoot()
     let release = try String(contentsOf: root.appendingPathComponent("scripts/native-host/release_unit.py"), encoding: .utf8)
     let local = try String(contentsOf: root.appendingPathComponent("scripts/native-host/local_test_release.py"), encoding: .utf8)
-    let expectedTuple = "(\"bailian.svg\", \"deepinfra.svg\", \"deepseek.svg\", \"groq.svg\", \"ollama.svg\", \"openai.svg\", \"opencode.svg\", \"openrouter.svg\", \"siliconflow.svg\", \"stepfun.svg\", \"zhipu.svg\")"
+    let expectedTuple = "(\"bailian.svg\", \"commandcode.svg\", \"deepinfra.svg\", \"deepseek.svg\", \"groq.svg\", \"ollama.svg\", \"openai.svg\", \"opencode.svg\", \"openrouter.svg\", \"siliconflow.svg\", \"stepfun.svg\", \"zhipu.svg\")"
 
     for source in [release, local] {
       XCTAssertTrue(source.contains("PROVIDER_ICONS_DIRECTORY = \"ProviderIcons\""))

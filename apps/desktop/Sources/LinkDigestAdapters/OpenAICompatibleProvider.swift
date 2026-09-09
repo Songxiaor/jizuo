@@ -333,16 +333,27 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     // 而失败的恰好是乱码最密、最需要校对的那几片。流式那边（总结、翻译）早就在
     // 传了，只有这里漏着，连诊断日志都不写，慢了都查不出来。
     //
+    // Command Code Claude 走 Anthropic Messages：不带 reasoning_effort，也无降级链。
+    let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(
+      baseURL: profile.baseURL,
+      model: model
+    )
+    let requestURL = usesAnthropicMessages
+      ? try CommandCodeProviderRouting.messagesURL(baseURL: profile.baseURL)
+      : url
     // 降级链和重试记忆完全复用流式那套：`none` 被拒就降 `low`，再被拒就不发。
-    var effort = preferredReasoningEffort(profile)
+    var effort = usesAnthropicMessages ? StreamReasoningEffort.omitted : preferredReasoningEffort(profile)
     while true {
       do {
         return try await performNonStreamingChatCompletion(
-          url: url, apiKey: apiKey, model: model,
-          systemPrompt: systemPrompt, userContent: userContent, effort: effort
+          url: requestURL, apiKey: apiKey, model: model,
+          systemPrompt: systemPrompt, userContent: userContent, effort: effort,
+          usesAnthropicMessages: usesAnthropicMessages
         )
       } catch let failure as ModelProviderFailure
-      where Self.mayRejectUnknownParameter(failure) && effort != .omitted {
+      where !usesAnthropicMessages
+        && Self.mayRejectUnknownParameter(failure)
+        && effort != .omitted {
         // 只有「请求本身被拒」才降级重试。鉴权、限流、模型不存在这些，去掉一个
         // 参数重发毫无意义，只会白打一次往返。
         rememberRejected(effort, for: profile)
@@ -358,7 +369,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     model: String,
     systemPrompt: String,
     userContent: String,
-    effort: StreamReasoningEffort
+    effort: StreamReasoningEffort,
+    usesAnthropicMessages: Bool
   ) async throws -> NonStreamingChatResult {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
@@ -366,16 +378,28 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("application/json", forHTTPHeaderField: "Accept")
-    request.httpBody = try JSONEncoder().encode(RequestBody(
-      model: model,
-      messages: [
-        Message(role: "system", content: systemPrompt),
-        Message(role: "user", content: userContent),
-      ],
-      stream: false,
-      maxTokens: nil,
-      reasoningEffort: effort.jsonValue
-    ))
+    if usesAnthropicMessages {
+      request.httpBody = try CommandCodeMessagesCodec.encodeRequest(
+        model: model,
+        system: systemPrompt,
+        messages: [
+          .init(role: "user", content: userContent),
+        ],
+        stream: false,
+        maxTokens: CommandCodeMessagesCodec.defaultMaxTokens
+      )
+    } else {
+      request.httpBody = try JSONEncoder().encode(RequestBody(
+        model: model,
+        messages: [
+          Message(role: "system", content: systemPrompt),
+          Message(role: "user", content: userContent),
+        ],
+        stream: false,
+        maxTokens: nil,
+        reasoningEffort: effort.jsonValue
+      ))
+    }
 
     do {
       let (bytes, response) = try await session.bytes(for: request)
@@ -390,6 +414,15 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       _ = try validateStatus(response: response, providerError: providerError, hadOutput: false)
       guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("application/json") == true else {
         throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
+      }
+      if usesAnthropicMessages {
+        let decoded = CommandCodeMessagesCodec.decodeNonStreamingText(from: body)
+        return NonStreamingChatResult(
+          content: decoded.content,
+          promptTokens: decoded.promptTokens,
+          completionTokens: decoded.completionTokens,
+          totalTokens: decoded.totalTokens
+        )
       }
       let decoded = try? JSONDecoder().decode(NonStreamingCompletionResponse.self, from: body)
       return NonStreamingChatResult(
@@ -416,22 +449,39 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     guard profile.apiMode == .chatCompletions else {
       throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
     }
-    let url = try OpenAICompatibleEndpoint.chatCompletionsURL(baseURL: profile.baseURL)
+    let tagSystemPrompt = "为以下摘要输出 1-5 个中文主题标签，逗号分隔，不要输出其他内容。标签必须是可用于归类多篇文章的领域名或实体名（如：AI 工具、折叠屏、Claude Code），严禁输出文中章节标题或“概述/建议/要点”这类结构词。"
+    let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(
+      baseURL: profile.baseURL,
+      model: profile.model
+    )
+    let url = usesAnthropicMessages
+      ? try CommandCodeProviderRouting.messagesURL(baseURL: profile.baseURL)
+      : try OpenAICompatibleEndpoint.chatCompletionsURL(baseURL: profile.baseURL)
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.timeoutInterval = 15
     request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
     request.setValue("application/json", forHTTPHeaderField: "Accept")
-    request.httpBody = try JSONEncoder().encode(RequestBody(
-      model: profile.model,
-      messages: [
-        Message(role: "system", content: "为以下摘要输出 1-5 个中文主题标签，逗号分隔，不要输出其他内容。标签必须是可用于归类多篇文章的领域名或实体名（如：AI 工具、折叠屏、Claude Code），严禁输出文中章节标题或“概述/建议/要点”这类结构词。"),
-        Message(role: "user", content: summary),
-      ],
-      stream: false,
-      maxTokens: Self.automaticTagMaximumTokens
-    ))
+    if usesAnthropicMessages {
+      request.httpBody = try CommandCodeMessagesCodec.encodeRequest(
+        model: profile.model,
+        system: tagSystemPrompt,
+        messages: [.init(role: "user", content: summary)],
+        stream: false,
+        maxTokens: Self.automaticTagMaximumTokens
+      )
+    } else {
+      request.httpBody = try JSONEncoder().encode(RequestBody(
+        model: profile.model,
+        messages: [
+          Message(role: "system", content: tagSystemPrompt),
+          Message(role: "user", content: summary),
+        ],
+        stream: false,
+        maxTokens: Self.automaticTagMaximumTokens
+      ))
+    }
 
     do {
       let (bytes, response) = try await session.bytes(for: request)
@@ -446,6 +496,9 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       _ = try validateStatus(response: response, providerError: providerError, hadOutput: false)
       guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("application/json") == true else {
         throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
+      }
+      if usesAnthropicMessages {
+        return CommandCodeMessagesCodec.decodeNonStreamingText(from: body).content
       }
       return (try? JSONDecoder().decode(NonStreamingCompletionResponse.self, from: body))?
         .choices.first?.message.content ?? ""
@@ -491,7 +544,12 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   ) async throws {
     // 总结/翻译要转述，不要推理。优先发 `none`；不认识就降到 `low`，再不行去掉。
     // 目的地此前拒绝过的话，按记住的档位起，不必每片重新试。
-    var effort = preferredReasoningEffort(profile)
+    // Command Code Claude 走 Messages，不发 reasoning_effort。
+    let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(
+      baseURL: profile.baseURL,
+      model: profile.model
+    )
+    var effort = usesAnthropicMessages ? StreamReasoningEffort.omitted : preferredReasoningEffort(profile)
     var request = try makeRequest(
       profile: profile, apiKey: apiKey, intent: intent,
       reasoningEffort: effort
@@ -524,7 +582,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         let effortLabel = effort.logLabel
         let attemptRetryCount = retryCount
         let stallThreshold = thinkingStallRetryThreshold
-        let stallAllowed = effort != .none && canRetryThinkingStall(profile)
+        let stallAllowed = !usesAnthropicMessages && effort != .none && canRetryThinkingStall(profile)
         // 读流必须留在当前任务里。把 `bytes.lines` 丢进 TaskGroup 再取消，
         // URLSession 内部缓冲会踩到越界（测试里是 ContiguousArrayBuffer）。
         // 卡住时只取消这一次 URLSessionTask，读循环按网络中断退出，再改 `none` 重打。
@@ -550,42 +608,51 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
           var firstLineAt: Date?
           var lineCount = 0
           var reasoningCount = 0
+          let anthropicDecoder = usesAnthropicMessages ? CommandCodeMessagesStreamDecoder() : nil
           for try await line in bytes.lines {
             try Task.checkCancellation()
             lineCount += 1
             if firstLineAt == nil { firstLineAt = Date() }
-            guard let event = try ChatCompletionsStreamDecoder().decode(line: line) else {
-              continue
+            let events: [ModelStreamEvent]
+            if let anthropicDecoder {
+              events = try anthropicDecoder.decode(line: line)
+            } else if let event = try ChatCompletionsStreamDecoder().decode(line: line) {
+              events = [event]
+            } else {
+              events = []
             }
-            switch event {
-            case .delta:
-              if !watch.hasDelta {
-                let elapsed = Date().timeIntervalSince(t0)
-                if elapsed >= ProviderTimingLog.slowFirstDeltaThreshold {
-                  let connectMs = Int(headersAt.timeIntervalSince(t0) * 1000)
-                  let openMs = firstLineAt.map { Int($0.timeIntervalSince(headersAt) * 1000) } ?? -1
-                  ProviderTimingLog.write(
-                    "SLOW_FIRST_DELTA intent=\(intentLabel) model=\(profile.model) "
-                      + "host=\(profile.baseURL.host ?? "?") "
-                      + "reasoningEffort=\(effortLabel) "
-                      + "inflightStreams=\(inflight) retry=\(attemptRetryCount) "
-                      + "totalMs=\(Int(elapsed * 1000)) connectMs=\(connectMs) openMs=\(openMs) "
-                      + "sseLines=\(lineCount) reasoningEvents=\(reasoningCount)"
-                  )
+            for event in events {
+              switch event {
+              case .delta:
+                if !watch.hasDelta {
+                  let elapsed = Date().timeIntervalSince(t0)
+                  if elapsed >= ProviderTimingLog.slowFirstDeltaThreshold {
+                    let connectMs = Int(headersAt.timeIntervalSince(t0) * 1000)
+                    let openMs = firstLineAt.map { Int($0.timeIntervalSince(headersAt) * 1000) } ?? -1
+                    ProviderTimingLog.write(
+                      "SLOW_FIRST_DELTA intent=\(intentLabel) model=\(profile.model) "
+                        + "host=\(profile.baseURL.host ?? "?") "
+                        + "reasoningEffort=\(effortLabel) "
+                        + "inflightStreams=\(inflight) retry=\(attemptRetryCount) "
+                        + "totalMs=\(Int(elapsed * 1000)) connectMs=\(connectMs) openMs=\(openMs) "
+                        + "sseLines=\(lineCount) reasoningEvents=\(reasoningCount)"
+                    )
+                  }
                 }
+                watch.markDelta()
+                receivedDelta = true
+                continuation.yield(event)
+              case .reasoning:
+                reasoningCount += 1
+                watch.markReasoning()
+                continuation.yield(event)
+              case .usage:
+                continuation.yield(event)
+              case .completed:
+                continuation.yield(.completed)
+                continuation.finish()
+                return
               }
-              watch.markDelta()
-              continuation.yield(event)
-            case .reasoning:
-              reasoningCount += 1
-              watch.markReasoning()
-              continuation.yield(event)
-            case .usage:
-              continuation.yield(event)
-            case .completed:
-              continuation.yield(.completed)
-              continuation.finish()
-              return
             }
           }
           receivedDelta = watch.hasDelta
@@ -626,7 +693,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       } catch let failure as ModelProviderFailure {
         // 服务端在还没吐出任何内容时就拒了请求，且我们确实多发了那个键——先怀疑
         // 是它不被接受，降一档重来。只沿梯子走，避免和下面的重试互相叠加。
-        if let next = effort.steppedDown(), !failure.hadOutput,
+        if !usesAnthropicMessages,
+           let next = effort.steppedDown(), !failure.hadOutput,
            Self.mayRejectUnknownParameter(failure) {
           rememberRejected(effort, for: profile)
           effort = next
@@ -687,7 +755,13 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
     }
 
-    let url = try OpenAICompatibleEndpoint.chatCompletionsURL(baseURL: profile.baseURL)
+    let usesAnthropicMessages = CommandCodeProviderRouting.usesAnthropicMessages(
+      baseURL: profile.baseURL,
+      model: profile.model
+    )
+    let url = usesAnthropicMessages
+      ? try CommandCodeProviderRouting.messagesURL(baseURL: profile.baseURL)
+      : try OpenAICompatibleEndpoint.chatCompletionsURL(baseURL: profile.baseURL)
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
@@ -744,13 +818,31 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         Message(role: "user", content: text)
       ]
     }
-    request.httpBody = try JSONEncoder().encode(RequestBody(
-      model: profile.model,
-      messages: messages,
-      stream: true,
-      maxTokens: nil,
-      reasoningEffort: reasoningEffort.jsonValue
-    ))
+    if usesAnthropicMessages {
+      let system = messages.first(where: { $0.role == "system" })?.content
+      let anthropicMessages = messages
+        .filter { $0.role == "user" || $0.role == "assistant" }
+        .map { CommandCodeMessagesCodec.TextMessage(role: $0.role, content: $0.content) }
+      let maxTokens: Int = switch intent {
+      case .connectionTest: 64
+      case .summarize, .translate: CommandCodeMessagesCodec.defaultMaxTokens
+      }
+      request.httpBody = try CommandCodeMessagesCodec.encodeRequest(
+        model: profile.model,
+        system: system,
+        messages: anthropicMessages,
+        stream: true,
+        maxTokens: maxTokens
+      )
+    } else {
+      request.httpBody = try JSONEncoder().encode(RequestBody(
+        model: profile.model,
+        messages: messages,
+        stream: true,
+        maxTokens: nil,
+        reasoningEffort: reasoningEffort.jsonValue
+      ))
+    }
     return request
   }
 

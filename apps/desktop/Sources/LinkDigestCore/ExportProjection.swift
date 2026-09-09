@@ -47,11 +47,27 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
   }
 
   /// Directory card text: summary preview, else capture body, else the title. Never empty.
+  /// Display-only sanitization — does not change persisted source/export text.
   public func directoryCardPreview(fallbackTitle: String) -> String {
-    if let text = Self.collapsedPreview(artifactPreview) { return text }
-    if let text = Self.collapsedPreview(sourcePreview) { return text }
-    if let text = Self.collapsedPreview(fallbackTitle) { return text }
+    if let text = Self.sanitizedDirectoryPreview(artifactPreview, isSummary: true) { return text }
+    if let text = Self.sanitizedDirectoryPreview(sourcePreview, isSummary: false) { return text }
+    if let text = Self.sanitizedDirectoryPreview(fallbackTitle, isSummary: false) { return text }
     return "未提供预览"
+  }
+
+  /// Labels follow the same fallback order as the card text, not just hasSummary.
+  public var directoryCardPreviewLabel: String {
+    if Self.sanitizedDirectoryPreview(artifactPreview, isSummary: true) != nil {
+      switch latestRunKind {
+      case .some(.summarize): return "总结预览"
+      case .some(.translate): return "译文预览"
+      case .none: return "处理结果预览"
+      }
+    }
+    if Self.sanitizedDirectoryPreview(sourcePreview, isSummary: false) != nil {
+      return "原文预览"
+    }
+    return "标题预览"
   }
 
   public static func collapsedPreview(_ raw: String?) -> String? {
@@ -59,6 +75,51 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
     let text = raw.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     return text.isEmpty ? nil : text
+  }
+
+  /// Card-only cleanup: strip wrapping markers and label headings, keep body/code/link labels.
+  /// Handles both multiline fixtures and real `directorySourcePreview` values (newlines already
+  /// collapsed to spaces). Display-only — never mutates persisted source/export text.
+  public static func sanitizedDirectoryPreview(_ raw: String?, isSummary: Bool) -> String? {
+    guard var text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+    // Drop common capture wrappers that leak into X/source previews.
+    text = text.replacingOccurrences(of: #"(?m)^<{2,}\s*$"#, with: "", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"(?m)^>{2,}\s*$"#, with: "", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"<<<+|>>>+"#, with: " ", options: .regularExpression)
+    // Section labels like "## 配文" / "# 原文" are scaffolding, not body.
+    text = text.replacingOccurrences(
+      of: #"(?m)^#{1,6}\s*(配文|原文|正文|内容|Caption|Tweet|Post)\s*$"#,
+      with: "",
+      options: [.regularExpression, .caseInsensitive]
+    )
+    // Collapsed previews: leading "## 配文 " is no longer alone on a line.
+    text = text.replacingOccurrences(
+      of: #"^(?:#{1,6}\s*(?:配文|原文|正文|内容|Caption|Tweet|Post)\s+)+"#,
+      with: "",
+      options: [.regularExpression, .caseInsensitive]
+    )
+    if !isSummary {
+      // Dense markdown image/link dumps compress to readable labels, keep bare URLs short.
+      text = text.replacingOccurrences(
+        of: #"!\[[^\]]*\]\([^)]+\)"#,
+        with: " ",
+        options: .regularExpression
+      )
+      text = text.replacingOccurrences(
+        of: #"\[([^\]]+)\]\((https?:\/\/[^)]+)\)"#,
+        with: "$1",
+        options: .regularExpression
+      )
+    }
+    // Heading markers left mid-paragraph after line joins.
+    text = text.replacingOccurrences(of: #"(?m)^#{1,6}\s+"#, with: "", options: .regularExpression)
+    // Orphan label left after stripping "## " from a collapsed "## 配文 body" string.
+    text = text.replacingOccurrences(
+      of: #"^(?:配文|原文|正文|内容|Caption|Tweet|Post)\s+"#,
+      with: "",
+      options: [.regularExpression, .caseInsensitive]
+    )
+    return collapsedPreview(text)
   }
 }
 

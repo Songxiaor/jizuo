@@ -7,9 +7,50 @@ final class YouTubeEmbedPlayerTests: XCTestCase {
     XCTAssertEqual(YouTubeWatchLink.videoID(from: "https://youtu.be/8_JZehVSRAI?t=10"), "8_JZehVSRAI")
     XCTAssertEqual(YouTubeWatchLink.videoID(from: "https://m.youtube.com/watch?v=8_JZehVSRAI"), "8_JZehVSRAI")
     XCTAssertEqual(YouTubeWatchLink.videoID(from: "https://www.youtube.com/shorts/AbCdEf12345"), "AbCdEf12345")
+    XCTAssertEqual(YouTubeWatchLink.videoID(from: "https://www.youtube.com/embed/8_JZehVSRAI"), "8_JZehVSRAI")
+    XCTAssertEqual(YouTubeWatchLink.videoID(from: "https://www.youtube-nocookie.com/embed/8_JZehVSRAI"), "8_JZehVSRAI")
     XCTAssertNil(YouTubeWatchLink.videoID(from: "https://www.youtube.com/"))
     XCTAssertNil(YouTubeWatchLink.videoID(from: "https://example.com/watch?v=8_JZehVSRAI"))
     XCTAssertNil(YouTubeWatchLink.videoID(from: "https://www.douyin.com/video/123"))
+  }
+
+  func testGalleryThumbnailURLIsDisplayOnlyAndStaysOnAdmittedYtimgHost() {
+    let watch = "https://www.youtube.com/watch?v=Qk8rSlDR8z4"
+    XCTAssertEqual(
+      YouTubeWatchLink.galleryThumbnailURL(fromCanonicalURL: watch)?.absoluteString,
+      "https://i.ytimg.com/vi/Qk8rSlDR8z4/hqdefault.jpg"
+    )
+    XCTAssertEqual(
+      YouTubeWatchLink.galleryThumbnailURL(fromCanonicalURL: "https://youtu.be/ZIaOBAjvc38?t=10")?.absoluteString,
+      "https://i.ytimg.com/vi/ZIaOBAjvc38/hqdefault.jpg"
+    )
+    XCTAssertEqual(
+      YouTubeWatchLink.galleryThumbnailURL(fromCanonicalURL: "https://www.youtube.com/shorts/JBKYwV4WsVA")?.absoluteString,
+      "https://i.ytimg.com/vi/JBKYwV4WsVA/hqdefault.jpg"
+    )
+    XCTAssertNotNil(GalleryCoverAdmission.admittedURL("https://i.ytimg.com/vi/Qk8rSlDR8z4/hqdefault.jpg"))
+    XCTAssertNil(YouTubeWatchLink.galleryThumbnailURL(fromCanonicalURL: "https://example.com/watch?v=Qk8rSlDR8z4"))
+    XCTAssertNil(YouTubeWatchLink.galleryThumbnailURL(fromCanonicalURL: "https://www.youtube.com/watch?v=../evil"))
+    XCTAssertNil(YouTubeWatchLink.galleryThumbnailURL(fromCanonicalURL: "https://www.youtube.com/watch?v="))
+    XCTAssertNil(YouTubeWatchLink.galleryThumbnailURL(fromCanonicalURL: "https://i.ytimg.com/vi/Qk8rSlDR8z4/hqdefault.jpg"))
+  }
+
+  func testSavedWorkCardUsesCanonicalYouTubeThumbnailWithoutRewritingMarkdown() throws {
+    let card = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/CreatorDirectoryViews.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(card.contains("YouTubeWatchLink.galleryThumbnailURL(fromCanonicalURL: row.canonicalURL)"))
+    XCTAssertTrue(card.contains("displayCoverURL"))
+    XCTAssertTrue(card.contains("if let cover = displayCoverURL"))
+    XCTAssertTrue(card.contains("if row.hasMedia == true, let file = await localCover(nil)"))
+    XCTAssertTrue(card.contains("prefersTextPreview = true"))
+    XCTAssertTrue(card.contains("else if prefersTextPreview"))
+    XCTAssertFalse(card.contains("guard let admitted else {\n          coverFailed = true"))
   }
 
   func testEmbedWebViewLocksNavigationAndDataStore() throws {

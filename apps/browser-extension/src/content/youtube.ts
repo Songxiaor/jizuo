@@ -36,6 +36,33 @@ export function isYouTubeWatchURL(rawURL: string): boolean {
   return youTubeVideoID(rawURL) !== undefined;
 }
 
+export function isYouTubeHost(rawURL: string): boolean {
+  try {
+    const host = new URL(rawURL).hostname.toLowerCase();
+    return host === "youtu.be" || host === "youtube.com" || host.endsWith(".youtube.com");
+  } catch {
+    return false;
+  }
+}
+
+export function youTubeThumbnailURL(videoID: string): string {
+  return `https://i.ytimg.com/vi/${videoID}/hqdefault.jpg`;
+}
+
+export function isYouTubeThumbnailURL(raw: string): boolean {
+  try {
+    const url = new URL(raw);
+    const host = url.hostname.toLowerCase();
+    return url.protocol === "https:"
+      && !url.username
+      && !url.password
+      && (!url.port || url.port === "443")
+      && (host === "i.ytimg.com" || host === "img.youtube.com" || host.endsWith(".ytimg.com"));
+  } catch {
+    return false;
+  }
+}
+
 export function youTubeCanonicalURL(videoID: string): string {
   return `https://www.youtube.com/watch?v=${videoID}`;
 }
@@ -119,6 +146,7 @@ export type YouTubeCaptureFields = {
   description?: string;
   transcript?: string;
   canonicalURL: string;
+  coverImage?: string;
 };
 
 /** Frontmatter keys mirror the Douyin capture so the App parses them as-is. */
@@ -126,6 +154,12 @@ export function buildYouTubeMarkdown(fields: YouTubeCaptureFields): string {
   const lines: string[] = ["---"];
   if (fields.author) lines.push(`author: ${JSON.stringify(fields.author)}`);
   if (fields.published) lines.push(`published: ${JSON.stringify(fields.published)}`);
+  const videoID = youTubeVideoID(fields.canonicalURL);
+  const cover = (fields.coverImage && isYouTubeThumbnailURL(fields.coverImage)
+    ? fields.coverImage
+    : undefined)
+    || (videoID ? youTubeThumbnailURL(videoID) : undefined);
+  if (cover) lines.push(`cover_image: ${JSON.stringify(cover)}`);
   if (fields.likes) lines.push(`likes: ${JSON.stringify(fields.likes)}`);
   // 观看数走 frontmatter，由 App 顶部元数据条以眼睛图标展示，不占正文。
   if (fields.views) lines.push(`views: ${JSON.stringify(fields.views)}`);
@@ -152,6 +186,7 @@ export type YouTubePlayerSnapshot = {
   viewCount?: string | undefined;
   publishDate?: string | undefined;
   likeCount?: string | undefined;
+  thumbnailURL?: string | undefined;
   captionTracks?: YouTubeCaptionTrack[] | undefined;
 };
 
@@ -177,6 +212,7 @@ export function readYouTubePlayerSnapshotInMainWorld(): YouTubePlayerSnapshot | 
           author?: string;
           shortDescription?: string;
           viewCount?: string;
+          thumbnail?: { thumbnails?: Array<{ url?: string; width?: number }> };
         };
         microformat?: {
           playerMicroformatRenderer?: {
@@ -195,6 +231,28 @@ export function readYouTubePlayerSnapshotInMainWorld(): YouTubePlayerSnapshot | 
   const details = playerResponse.videoDetails;
   const micro = playerResponse.microformat?.playerMicroformatRenderer;
   const tracks = playerResponse.captions?.playerCaptionsTracklistRenderer?.captionTracks ?? [];
+  let thumbnailURL: string | undefined;
+  let bestWidth = -1;
+  for (const thumb of details?.thumbnail?.thumbnails ?? []) {
+    const raw = thumb.url;
+    const width = typeof thumb.width === "number" ? thumb.width : 0;
+    if (typeof raw !== "string" || width <= bestWidth) continue;
+    try {
+      const parsed = new URL(raw);
+      const host = parsed.hostname.toLowerCase();
+      if (
+        parsed.protocol !== "https:"
+        || parsed.username
+        || parsed.password
+        || (parsed.port && parsed.port !== "443")
+        || !(host === "i.ytimg.com" || host === "img.youtube.com" || host.endsWith(".ytimg.com"))
+      ) continue;
+      thumbnailURL = parsed.href;
+      bestWidth = width;
+    } catch {
+      continue;
+    }
+  }
   return {
     videoId: details?.videoId,
     title: details?.title,
@@ -203,6 +261,7 @@ export function readYouTubePlayerSnapshotInMainWorld(): YouTubePlayerSnapshot | 
     viewCount: details?.viewCount,
     publishDate: micro?.publishDate,
     likeCount: micro?.likeCount,
+    ...(thumbnailURL ? { thumbnailURL } : {}),
     captionTracks: tracks
       .filter((track) => typeof track.baseUrl === "string")
       .map((track) => ({

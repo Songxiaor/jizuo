@@ -82,6 +82,10 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     return String(collapsed.unicodeScalars.prefix(scalarLimit))
   }
 
+  /// Cover candidate from the first `![]()` in the body. Only `https://` is
+  /// admitted: image localization keeps the remote URL in stored markdown and
+  /// keys the parallel disk cache by that URL. `file://`, relative paths and
+  /// `http://` are rejected so this value cannot point at an arbitrary local file.
   public static func firstMarkdownImageURL(in markdown: String) -> String? {
     guard let start = markdown.range(of: "![") else { return nil }
     var search = markdown[start.upperBound...]

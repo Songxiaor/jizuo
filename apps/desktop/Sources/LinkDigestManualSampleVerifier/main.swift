@@ -74,6 +74,7 @@ func stableErrorCode(_ error: Error) -> String {
   case .verificationRequired: return "verificationRequired"
   case .extensionCaptureRequired: return "extensionCaptureRequired"
   case .githubRepositoryUnavailable: return "githubRepositoryUnavailable"
+  case .githubFileUnavailable: return "githubFileUnavailable"
   case .githubRateLimited: return "githubRateLimited"
   case .cancelled: return "cancelled"
   case .network: return "network"
