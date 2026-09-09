@@ -52,8 +52,12 @@ final class ProviderSettingsViewModel: ObservableObject {
   @Published private(set) var state: ProviderSettingsState = .unconfigured
   @Published private(set) var connectionTestState: ConnectionTestState = .idle
   @Published private(set) var savedIdentity: DataDestinationIdentity?
-  @Published var summaryPrompt = ModelPreferences.defaultSummaryPrompt
-  @Published var targetLanguage = ModelPreferences.defaultTargetLanguage
+  @Published var summaryPrompt = ModelPreferences.defaultSummaryPrompt {
+    didSet { schedulePreferenceAutosave(from: oldValue, to: summaryPrompt, debounce: .milliseconds(800)) }
+  }
+  @Published var targetLanguage = ModelPreferences.defaultTargetLanguage {
+    didSet { schedulePreferenceAutosave(from: oldValue, to: targetLanguage, debounce: .milliseconds(600)) }
+  }
   /// 「翻译是否另用一个模型」不再是一个独立的开关状态，而是从模型名推出来的：
   /// 名字为空就是跟随总结。原来它是一个 `@Published` 布尔量，于是同一件事有了
   /// 两个真相源——开关开着但名字为空、或名字填了开关却是关的，两种矛盾状态都能
@@ -61,9 +65,15 @@ final class ProviderSettingsViewModel: ObservableObject {
   var usesSeparateTranslationModel: Bool {
     !translationModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
-  @Published var translationModelName = ""
-  @Published var transcriptionModelName = ""
-  @Published var tidyModelName = ""
+  @Published var translationModelName = "" {
+    didSet { schedulePreferenceAutosave(from: oldValue, to: translationModelName, debounce: .milliseconds(600)) }
+  }
+  @Published var transcriptionModelName = "" {
+    didSet { schedulePreferenceAutosave(from: oldValue, to: transcriptionModelName, debounce: .milliseconds(600)) }
+  }
+  @Published var tidyModelName = "" {
+    didSet { schedulePreferenceAutosave(from: oldValue, to: tidyModelName, debounce: .milliseconds(600)) }
+  }
   /// 四个管线开关拨下去就要落盘：它们是持久授权，不是草稿。
   /// 以前只改内存、要另点「保存生成偏好」，退出后再打开就会回到上次真正写下的值。
   @Published var autoTidyTranscription = false {
@@ -81,7 +91,9 @@ final class ProviderSettingsViewModel: ObservableObject {
   @Published var autoMindMapNewCaptures = false {
     didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoMindMapNewCaptures) }
   }
-  @Published var translationConcurrency = ModelPreferences.defaultTranslationConcurrency
+  @Published var translationConcurrency = ModelPreferences.defaultTranslationConcurrency {
+    didSet { schedulePreferenceAutosave(from: oldValue, to: translationConcurrency, debounce: .zero) }
+  }
   @Published private(set) var preferencesState: ModelPreferencesState = .loading
   @Published private(set) var savedPreferences = ModelPreferences.default
   @Published private(set) var isReplacingAPIKey = false
@@ -588,6 +600,29 @@ final class ProviderSettingsViewModel: ObservableObject {
     summaryPrompt = ModelPreferences.defaultSummaryPrompt
   }
 
+  /// 输出语言、翻译并发、三个模型名和总结提示词改完即存，和管线开关一样不再需要
+  /// 「保存生成偏好」按钮——原来翻译模型在「模型与识别」页改，却要回「生成偏好」
+  /// 页按保存才生效，两页之间没有任何提示。
+  ///
+  /// 文本类字段带去抖：每敲一个字就写一次盘没必要；停手 0.6–0.8 秒后再存。
+  private var preferenceAutosaveTask: Task<Void, Never>?
+
+  private func schedulePreferenceAutosave<Value: Equatable>(
+    from oldValue: Value, to newValue: Value, debounce: Duration
+  ) {
+    guard !isApplyingLoadedPreferences, oldValue != newValue, preferencesState != .loading else {
+      return
+    }
+    preferenceAutosaveTask?.cancel()
+    preferenceAutosaveTask = Task { @MainActor [weak self] in
+      if debounce > .zero {
+        try? await Task.sleep(for: debounce)
+        guard !Task.isCancelled else { return }
+      }
+      await self?.savePreferences()
+    }
+  }
+
   private func persistPipelinePreferenceIfChanged(from oldValue: Bool, to newValue: Bool) {
     guard !isApplyingLoadedPreferences, oldValue != newValue, preferencesState != .loading else {
       return
@@ -612,6 +647,11 @@ final class ProviderSettingsViewModel: ObservableObject {
         return
       }
       if pipelineFlagSnapshot != snapshot {
+        continue
+      }
+      // 自动保存期间用户可能还在打字：草稿和刚存的不一致就再存一轮，
+      // 不能拿存过的旧值把正在输入的内容盖掉。
+      if (try? currentDraftPreferences()) != preferences {
         continue
       }
       applyLoadedPreferences(preferences)
@@ -731,6 +771,20 @@ final class ProviderSettingsViewModel: ObservableObject {
     isManualModelEntryEnabled = true
   }
 
+  /// 「验证并保存」：保存成功后立刻用极短提示测一次连接，结果留在同一行状态里。
+  ///
+  /// 添加流程原来保存完就把编辑器关掉，测试结果没地方显示；这里保存期间先把编辑器
+  /// 留着，测完再由用户自己关。
+  func saveAndVerify(apiKey: String) async {
+    keepsEditorOpenAfterSave = true
+    await save(apiKey: apiKey)
+    keepsEditorOpenAfterSave = false
+    guard state == .configured, canTestConnection else { return }
+    await testConnection()
+  }
+
+  private var keepsEditorOpenAfterSave = false
+
   func save(apiKey: String) async {
     guard canSaveConfiguration else {
       return
@@ -776,7 +830,7 @@ final class ProviderSettingsViewModel: ObservableObject {
       await refreshLibrary()
       if editingProfileID == nil {
         selectedCatalogModels = []
-        isEditorVisible = false
+        if !keepsEditorOpenAfterSave { isEditorVisible = false }
       }
     } catch let error as ProviderConfigurationError {
       state = .failed(code: error.rawValue)

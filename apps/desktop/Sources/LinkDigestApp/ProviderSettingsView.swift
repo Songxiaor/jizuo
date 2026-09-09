@@ -129,6 +129,10 @@ struct ProviderSettingsView: View {
   /// 哪一段属于谁。默认全部收起——归拢的意义就是先只看「有哪几家」。
   @State private var expandedLibraryProvider: String?
   @State private var activeAssignmentPicker: AssignmentPicker?
+  /// 「功能与模型」里哪几行的 ⓘ 展开着。按标题记，不给六行各开一个 Bool。
+  @State private var expandedAssignmentDetails: Set<String> = []
+  /// 编辑模型时是否展开服务商网格。默认折叠成一行，点「更换」才展开。
+  @State private var isChoosingPreset = false
   /// 自绘侧栏选中高亮的滑动锚点。见 `paperSidebarRow`。
   @Namespace private var sidebarSelectionNamespace
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -192,6 +196,12 @@ struct ProviderSettingsView: View {
     (AppearanceTheme(rawValue: appearanceThemeRaw) ?? .glass).usesEditorialReadingTypography
   }
 
+  /// 本机装了思源宋体才给「宋体」一键位；返回的就是它在选择器里的存储值。
+  private var editorialSerifQuickOption: String? {
+    let family = ReadingFontCatalog.editorialSerifFamily
+    return family == "Songti SC" ? nil : family
+  }
+
   private var resolvedReadingFont: ResolvedReadingFont {
     ReadingFontSelection(storedValue: readingFontRaw)
       .resolved(
@@ -237,7 +247,7 @@ struct ProviderSettingsView: View {
     }
     .pickerStyle(.menu)
     .labelsHidden()
-    .fixedSize()
+    .settingsControlWidth()
     .accessibilityIdentifier(identifier)
   }
 
@@ -248,13 +258,15 @@ struct ProviderSettingsView: View {
   @ViewBuilder private var uiFontPreview: some View {
     VStack(alignment: .leading, spacing: 4) {
       Text("预览（界面里最小的两个字号）")
-        .themedFont(.caption)
+        .themedFont(.subheadline)
         .foregroundStyle(.secondary)
       VStack(alignment: .leading, spacing: 4) {
-        Text("未总结 149     哔哩哔哩 5     待分类 9")
+        // 预览句直接用主窗口侧栏的真实文案：原来写的「未总结 / 哔哩哔哩 / 待分类」
+        // 和侧栏实际显示的「待总结 / B站 / 其他」对不上，预览预览的是一套不存在的界面。
+        Text("待总结 149     B站 5     其他 9")
           .themedFont(.subheadline)
         Text("2026-08-17 19:24 · 已保存到本机 · 19.6 MB")
-          .themedFont(.caption)
+          .themedFont(.subheadline)
           .foregroundStyle(.secondary)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -270,7 +282,7 @@ struct ProviderSettingsView: View {
   @ViewBuilder private var readingFontPreview: some View {
     VStack(alignment: .leading, spacing: 4) {
       Text("预览")
-        .themedFont(.caption)
+        .themedFont(.subheadline)
         .foregroundStyle(.secondary)
       Text("众所周知，搜索是 Agent 最基础的能力之一。模型的知识停在训练截止那天。")
         .font(resolvedReadingFont.body())
@@ -403,41 +415,51 @@ struct ProviderSettingsView: View {
     SettingsPlainPage {
       pageHeader(for: .service, caption: "配置总结、翻译、转写、校对和图片识别各自要用的模型。")
 
+      // 这张卡只剩「标签 + 控件」六行：说明全部收进各行的 ⓘ，卡片脚注也删掉——
+      // 原来每行下面一段灰字、卡底再一句脚注，六个控件配了五段说明，控件密度极低，
+      // 而且脚注和下一张卡的脚注讲的是同一句话。
       settingCard(
         title: "功能与模型",
-        summary: "每个功能单独指定模型；每个模型仍用自己的服务商、地址和密钥。",
-        details: "翻译和校对默认跟随总结模型。本地转写默认 Apple 听写、不出网。在线备用转写只用于超大视频。图片识别固定用本机 Vision。",
+        summary: "翻译和校对默认跟随总结模型；本地转写和图片识别默认本机离线。",
+        details: "本地转写默认 Apple 听写、不出网。在线备用转写只用于超过 200MB、无法本机导入的视频。校对会根据标题和配文还原听写错词并补标点，看不懂的句子原样保留。图片识别固定用本机 Vision。",
         controlWidth: .full
       ) {
         capabilityAssignmentRows
       }
 
+      // 「添加模型…」放标题行右端：它是这张卡唯一的主动作，原来孤零零缩在
+      // 列表左下角，和列表内容抢同一列，看起来像列表的一项。
       settingCard(
         title: UISettingsPresentation.modelServicesCardTitle,
         summary: UISettingsPresentation.modelServicesSummary,
         details: UISettingsPresentation.modelServicesDetails,
-        controlWidth: .full
+        controlWidth: .full,
+        titleAccessory: {
+          Button("添加模型…") { model.beginAddModel() }
+            .buttonStyle(.appProminent(settingsTheme.accent))
+            .disabled(model.isSaving || model.isConfigurationLoading || model.isTestingConnection || model.isLoadingModels)
+            .accessibilityIdentifier("add-library-model")
+        }
       ) {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 0) {
           if model.libraryEntryDisplays.isEmpty {
             Text("还没有添加模型。添加后即可在上方为每个功能选择模型。")
-              .themedFont(.caption)
+              .themedFont(.subheadline)
               .foregroundStyle(.secondary)
+              .padding(.vertical, DesignTokens.Space.sm)
           } else {
-            // 单列展开：组头只放服务商图标与名称，模型清单紧跟组头，归属一眼可读。
-            VStack(alignment: .leading, spacing: 8) {
-              ForEach(libraryProviderGroups) { group in
-                VStack(alignment: .leading, spacing: 6) {
-                  libraryProviderCard(group)
-                  if expandedLibraryProvider == group.id {
-                    VStack(alignment: .leading, spacing: 6) {
-                      ForEach(group.entries) { entry in
-                        libraryRow(entry)
-                      }
-                    }
-                    .padding(.leading, 4)
-                  }
+            // 服务商是紧凑的分组行，不再是带边框的大卡片：卡里套卡，分组头
+            // 和它下面的模型行看起来像两种东西。现在组头和模型行同一个左边距、
+            // 同样 40pt 高，只靠字重和 hairline 分层。
+            ForEach(libraryProviderGroups) { group in
+              libraryProviderCard(group)
+              if expandedLibraryProvider == group.id {
+                ForEach(group.entries) { entry in
+                  libraryRow(entry)
                 }
+              }
+              if group.id != libraryProviderGroups.last?.id {
+                Rectangle().fill(settingsTheme.hairline).frame(height: 1)
               }
             }
           }
@@ -445,36 +467,29 @@ struct ProviderSettingsView: View {
           // 而它恰恰是解释这个按钮为什么没成功的那句话。
           if let errorText = model.libraryErrorText {
             Label(errorText, systemImage: "exclamationmark.triangle.fill")
-              .themedFont(.caption)
+              .themedFont(.subheadline)
               .foregroundStyle(appTheme.danger)
               .fixedSize(horizontal: false, vertical: true)
+              .padding(.top, DesignTokens.Space.sm)
               .accessibilityIdentifier("model-library-error")
           }
-          HStack {
-            Button("添加模型…") { model.beginAddModel() }
-              .themedFont(.body)
-              .buttonStyle(.borderedProminent)
-              .controlSize(.small)
-              .tint(settingsTheme.accent)
-              .disabled(model.isSaving || model.isConfigurationLoading || model.isTestingConnection || model.isLoadingModels)
-              .accessibilityIdentifier("add-library-model")
-            Spacer()
-            if model.isEditorVisible {
-              Button("收起编辑") { model.closeEditor() }
-                .disabled(model.isSaving || model.isTestingConnection || model.isLoadingModels)
-                .accessibilityIdentifier("close-library-editor")
-            }
-          }
         }
-      }
-
-      if model.isEditorVisible {
-        editorSections
       }
     }
     .controlSize(.regular)
     .onChange(of: apiKeyInput) { oldValue, newValue in
       if oldValue != newValue { model.apiKeyDraftDidChange() }
+    }
+    .onChange(of: model.isEditorVisible) { _, visible in
+      // 每次打开编辑器都从「已选服务商折叠成一行」开始；添加流程本来就没有
+      // 已选项，会直接展开网格（见 `showsPresetGrid`）。
+      if visible { isChoosingPreset = false }
+    }
+    // 编辑表单改成 Sheet：原来它长在列表底下，只有一行小灰字「编辑模型：服务商」
+    // 提示这是编辑区，和「模型服务」列表之间没有任何分隔，用户分不清哪些字段
+    // 属于列表、哪些属于正在编辑的那个模型。
+    .sheet(isPresented: isEditorSheetPresented) {
+      editorSheet
     }
     .confirmationDialog(
       "删除这个模型配置？",
@@ -504,155 +519,188 @@ struct ProviderSettingsView: View {
     var id: String { rawValue }
   }
 
-  // 标签在左、当前值靠右：LabeledContent 只有在 Form 里才会自动两端撑开，
-  // 手排页上会抱团靠左，所以这里显式用 HStack + Spacer 排。
+  // 六行同一种形态：标签在左（带 ⓘ），控件在右、统一 240pt 宽、右对齐成一列。
   //
-  // 标题用「总结模型」而不是「总结与翻译」：翻译另有独立配置（生成偏好），
+  // 原来这张卡里三种控件样式并存：总结模型是右对齐纯文字 + 上下小箭头，翻译
+  // 模型是通栏灰底下拉，在线备用转写是半宽灰底下拉，图片识别是纯文字——同一列
+  // 右边缘四个位置。
+  //
+  // 标题用「总结模型」而不是「总结与翻译」：翻译另有独立配置，
   // 合并标题会让人以为这里已经管了翻译。
   @ViewBuilder private var capabilityAssignmentRows: some View {
-    if model.libraryEntryDisplays.isEmpty {
-      HStack(alignment: .firstTextBaseline) {
-        Text(UISettingsPresentation.summaryAssignmentTitle)
+    VStack(alignment: .leading, spacing: 0) {
+      assignmentRow(title: UISettingsPresentation.summaryAssignmentTitle) {
+        if model.libraryEntryDisplays.isEmpty {
+          Text("先在下方添加模型")
+            .themedFont(.body)
+            .foregroundStyle(.secondary)
+            .settingsControlWidth()
+        } else {
+          assignmentPickerButton(
+            kind: .summary,
+            selectedEntry: model.summaryEntryDisplays.first(where: { $0.id == model.summaryAssignmentID })
+          )
+        }
+      }
+
+      assignmentRow(
+        title: UISettingsPresentation.translationAssignmentTitle,
+        details: UISettingsPresentation.translationFollowsSummaryHint
+      ) {
+        preferenceModelAssignmentControl(
+          title: UISettingsPresentation.translationAssignmentTitle,
+          emptyOptionTitle: "跟随总结模型",
+          options: model.summaryEntryDisplays,
+          text: $model.translationModelName,
+          identifier: "translation-model-name",
+          customPlaceholder: "模型名称"
+        )
+      }
+
+      assignmentRow(title: UISettingsPresentation.localTranscriptionTitle) {
+        assignmentPickerButton(
+          kind: .transcription,
+          selectedEntry: model.transcriptionEntryDisplays.first(where: { $0.id == model.transcriptionAssignmentID })
+        )
+      }
+
+      assignmentRow(
+        title: UISettingsPresentation.onlineTranscriptionTitle,
+        details: "给超过 200MB、无法本机导入的视频用。"
+      ) {
+        preferenceModelAssignmentControl(
+          title: UISettingsPresentation.onlineTranscriptionTitle,
+          emptyOptionTitle: "不使用：只用 Apple 本机转写",
+          options: model.transcriptionEntryDisplays,
+          text: $model.transcriptionModelName,
+          identifier: "transcription-model-name",
+          customPlaceholder: "例如 whisper-large-v3-turbo"
+        )
+      }
+
+      assignmentRow(
+        title: UISettingsPresentation.tidyAssignmentTitle,
+        details: "根据标题和配文还原听写错词并补标点；看不懂的句子原样保留。"
+      ) {
+        preferenceModelAssignmentControl(
+          title: UISettingsPresentation.tidyAssignmentTitle,
+          emptyOptionTitle: "跟随总结模型",
+          options: model.summaryEntryDisplays,
+          text: $model.tidyModelName,
+          identifier: "tidy-model-name",
+          customPlaceholder: "模型名称"
+        )
+      }
+
+      assignmentRow(title: UISettingsPresentation.imageRecognitionTitle) {
+        Text("Apple Vision · 本机离线")
           .themedFont(.body)
-        Spacer(minLength: 16)
-        Text("先在下方添加模型").themedFont(.body).foregroundStyle(.secondary)
-      }
-    } else {
-      assignmentPickerRow(
-        title: UISettingsPresentation.summaryAssignmentTitle,
-        kind: .summary,
-        selectedEntry: model.summaryEntryDisplays.first(where: { $0.id == model.summaryAssignmentID })
-      )
-    }
-
-    preferenceModelAssignmentRow(
-      title: UISettingsPresentation.translationAssignmentTitle,
-      caption: UISettingsPresentation.translationFollowsSummaryHint,
-      emptyOptionTitle: "跟随总结模型",
-      options: model.summaryEntryDisplays,
-      text: $model.translationModelName,
-      identifier: "translation-model-name",
-      customPlaceholder: "模型名称"
-    )
-
-    assignmentPickerRow(
-      title: UISettingsPresentation.localTranscriptionTitle,
-      kind: .transcription,
-      selectedEntry: model.transcriptionEntryDisplays.first(where: { $0.id == model.transcriptionAssignmentID })
-    )
-
-    preferenceModelAssignmentRow(
-      title: UISettingsPresentation.onlineTranscriptionTitle,
-      caption: "给超过 200MB、无法本机导入的视频用。",
-      emptyOptionTitle: "不使用：只用 Apple 本机转写",
-      options: model.transcriptionEntryDisplays,
-      text: $model.transcriptionModelName,
-      identifier: "transcription-model-name",
-      customPlaceholder: "例如 whisper-large-v3-turbo"
-    )
-
-    preferenceModelAssignmentRow(
-      title: UISettingsPresentation.tidyAssignmentTitle,
-      caption: "根据标题和配文还原听写错词并补标点；看不懂的句子原样保留。",
-      emptyOptionTitle: "跟随总结模型",
-      options: model.summaryEntryDisplays,
-      text: $model.tidyModelName,
-      identifier: "tidy-model-name",
-      customPlaceholder: "模型名称"
-    )
-
-    HStack(alignment: .firstTextBaseline) {
-      Text(UISettingsPresentation.imageRecognitionTitle)
-        .themedFont(.body)
-      Spacer(minLength: 16)
-      VStack(alignment: .trailing, spacing: 2) {
-        Text("Apple Vision").themedFont(.body, weight: .medium)
-        Text("本机 · 离线").themedFont(.caption).foregroundStyle(.secondary)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .settingsControlWidth()
+          .accessibilityIdentifier("image-text-assignment-picker")
       }
     }
-    .accessibilityIdentifier("image-text-assignment-picker")
+  }
+
+  /// 「功能与模型」里的一行：标签 + 可展开的 ⓘ 在左，控件靠右。
+  ///
+  /// 不复用 `SettingsRow`：它自带左右 16pt 内距，而这里已经在卡片内，再套一层
+  /// 会让六行比卡片标题往里缩一截。
+  @ViewBuilder
+  private func assignmentRow<Control: View>(
+    title: String,
+    details: String? = nil,
+    @ViewBuilder control: () -> Control
+  ) -> some View {
+    let isExpanded = expandedAssignmentDetails.contains(title)
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+      HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+        HStack(spacing: DesignTokens.Space.sm) {
+          Text(title).themedFont(.body)
+          if details != nil {
+            Button {
+              withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+                if isExpanded { expandedAssignmentDetails.remove(title) } else { expandedAssignmentDetails.insert(title) }
+              }
+            } label: {
+              Image(systemName: "info.circle")
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+            .help("查看\(title)说明")
+            .accessibilityLabel("\(title)详细说明")
+          }
+        }
+        Spacer(minLength: DesignTokens.Space.md)
+        control()
+      }
+      if isExpanded, let details {
+        Text(details)
+          .themedFont(.subheadline)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .transition(.opacity.combined(with: .move(edge: .top)))
+      }
+    }
+    .padding(.vertical, DesignTokens.Space.sm)
   }
 
   @ViewBuilder
-  private func preferenceModelAssignmentRow(
+  private func preferenceModelAssignmentControl(
     title: String,
-    caption: String,
     emptyOptionTitle: String,
     options: [ProviderSettingsViewModel.LibraryEntryDisplay],
     text: Binding<String>,
     identifier: String,
     customPlaceholder: String
   ) -> some View {
-    HStack(alignment: .firstTextBaseline) {
-      VStack(alignment: .leading, spacing: 2) {
-        Text(title)
-          .themedFont(.body)
-        Text(caption)
-          .themedFont(.caption)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-      Spacer(minLength: 16)
-      VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
-        modelChoicePicker(
-          label: title,
-          emptyOptionTitle: emptyOptionTitle,
-          options: options,
-          text: text,
-          identifier: identifier
-        )
-        modelChoiceCustomField(
-          placeholder: customPlaceholder,
-          options: options,
-          text: text,
-          identifier: identifier
-        )
-      }
+    VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
+      modelChoicePicker(
+        label: title,
+        emptyOptionTitle: emptyOptionTitle,
+        options: options,
+        text: text,
+        identifier: identifier
+      )
+      modelChoiceCustomField(
+        placeholder: customPlaceholder,
+        options: options,
+        text: text,
+        identifier: identifier
+      )
     }
   }
 
-  private func assignmentPickerRow(
-    title: String,
+  /// 总结 / 本地转写的选择按钮：和其它行的下拉同一宽度、同一描边，点开是分组 popover。
+  ///
+  /// 不用系统 `Picker`：选项要按服务商分组、每项带模型 ID 副标题，menu Picker 画不出来。
+  private func assignmentPickerButton(
     kind: AssignmentPicker,
     selectedEntry: ProviderSettingsViewModel.LibraryEntryDisplay?
   ) -> some View {
-    HStack(alignment: .firstTextBaseline) {
-      Text(title)
-        .themedFont(.body)
-      Spacer(minLength: 16)
-      Button {
-        activeAssignmentPicker = kind
-      } label: {
-        HStack(spacing: 8) {
-          VStack(alignment: .trailing, spacing: 2) {
-            Text(assignmentDisplayName(kind: kind, entry: selectedEntry))
-              .themedFont(.body, weight: .medium)
-              .foregroundStyle(.primary)
-            Text(assignmentDetail(kind: kind, entry: selectedEntry))
-              .themedFont(.caption)
-              .foregroundStyle(.secondary)
+    Button {
+      activeAssignmentPicker = kind
+    } label: {
+      SettingsMenuLabel(
+        title: assignmentDisplayName(kind: kind, entry: selectedEntry),
+        subtitle: assignmentDetail(kind: kind, entry: selectedEntry)
+      )
+    }
+    .buttonStyle(.plain)
+    .accessibilityIdentifier(kind == .summary ? "summary-assignment-picker" : "transcription-assignment-picker")
+    .popover(
+      isPresented: Binding(
+        get: { activeAssignmentPicker == kind },
+        set: { isPresented in
+          if !isPresented, activeAssignmentPicker == kind {
+            activeAssignmentPicker = nil
           }
-          Image(systemName: "chevron.up.chevron.down")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.tertiary)
         }
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-      .accessibilityIdentifier(kind == .summary ? "summary-assignment-picker" : "transcription-assignment-picker")
-      .popover(
-        isPresented: Binding(
-          get: { activeAssignmentPicker == kind },
-          set: { isPresented in
-            if !isPresented, activeAssignmentPicker == kind {
-              activeAssignmentPicker = nil
-            }
-          }
-        ),
-        arrowEdge: .trailing
-      ) {
-        assignmentPickerPopover(kind)
-      }
+      ),
+      arrowEdge: .trailing
+    ) {
+      assignmentPickerPopover(kind)
     }
   }
 
@@ -726,7 +774,7 @@ struct ProviderSettingsView: View {
             }
           } else if kind == .transcription {
             Text("还没有添加可用于音频转写的在线模型。")
-              .themedFont(.caption)
+              .themedFont(.subheadline)
               .foregroundStyle(.secondary)
               .padding(16)
           }
@@ -792,7 +840,7 @@ struct ProviderSettingsView: View {
 
   // MARK: - 模型库列表
 
-  /// 按服务商归拢的模型库。一家一张卡，展开才列它下面的模型。
+  /// 按服务商归拢的模型库。一家一组，展开才列它下面的模型。
   ///
   /// 平铺时，同一家的几个模型各占一行、每行都重复一遍服务商名和图标——三家十个
   /// 模型就是十行几乎一样的东西，要找「阶跃星辰下面配了哪几个」得自己用眼睛扫。
@@ -821,25 +869,25 @@ struct ProviderSettingsView: View {
     }
   }
 
-  /// 已添加的服务商组头：单列展开，图标与服务商名只出现一次。
+  /// 已添加的服务商组头：一行 40pt，图标 + 名称 + 模型数 + 展开箭头。
   ///
-  /// 用途徽标（总结 / 转写）改挂在具体模型行上，组头只回答「这是哪一家、有几个模型」。
+  /// 用途徽标（总结 / 转写）挂在具体模型行上，组头只回答「这是哪一家、有几个模型」。
   private func libraryProviderCard(_ group: LibraryProviderGroup) -> some View {
     let expanded = expandedLibraryProvider == group.id
     return Button {
-      expandedLibraryProvider = expanded ? nil : group.id
+      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+        expandedLibraryProvider = expanded ? nil : group.id
+      }
     } label: {
-      HStack(spacing: 10) {
+      HStack(spacing: DesignTokens.Space.sm) {
         providerIcon(group.preset, fallbackName: group.id)
-        VStack(alignment: .leading, spacing: 2) {
-          Text(group.id)
-            .themedFont(.subheadline, weight: .semibold)
-            .lineLimit(1)
-            .truncationMode(.tail)
-          Text("\(group.entries.count) 个模型")
-            .themedFont(.caption)
-            .foregroundStyle(.secondary)
-        }
+        Text(group.id)
+          .themedFont(.body, weight: .semibold)
+          .lineLimit(1)
+          .truncationMode(.tail)
+        Text("\(group.entries.count) 个模型")
+          .themedFont(.subheadline)
+          .foregroundStyle(.secondary)
         Spacer(minLength: 8)
         Image(systemName: "chevron.right")
           .font(.caption2.weight(.semibold))
@@ -847,18 +895,20 @@ struct ProviderSettingsView: View {
           .rotationEffect(.degrees(expanded ? 90 : 0))
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-      .modifier(SettingsCardChrome(selected: expanded, theme: appTheme))
+      .frame(height: 40)
+      .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
     .accessibilityIdentifier("library-provider-group")
   }
 
+  /// 模型行：和组头同一个左边距，靠 24pt 缩进表示从属。
   private func libraryRow(_ entry: ProviderSettingsViewModel.LibraryEntryDisplay) -> some View {
     HStack(spacing: 10) {
       // 服务商图标已在组头，行内不再重复。
-      VStack(alignment: .leading, spacing: 2) {
-        Text(entry.displayName).themedFont(.headline)
-        Text(entry.modelName).themedFont(.caption).foregroundStyle(.secondary)
+      VStack(alignment: .leading, spacing: 1) {
+        Text(entry.displayName).themedFont(.body)
+        Text(entry.modelName).themedFont(.subheadline).foregroundStyle(.secondary)
       }
       Spacer(minLength: 12)
       if model.summaryAssignmentID == entry.id {
@@ -890,6 +940,8 @@ struct ProviderSettingsView: View {
       .accessibilityLabel("更多操作")
       .accessibilityIdentifier("library-model-more")
     }
+    .padding(.leading, DesignTokens.Space.xl)
+    .frame(height: 40)
     .contentShape(Rectangle())
   }
 
@@ -903,45 +955,188 @@ struct ProviderSettingsView: View {
 
   // MARK: - 模型编辑器
 
-  @ViewBuilder private var editorSections: some View {
-      SettingsCardGroup(
-        header: model.editingProfileID == nil ? "添加模型：选择服务商" : "编辑模型：服务商",
-        footer: model.selectedPreset.documentationHint
+  private var isEditorSheetPresented: Binding<Bool> {
+    Binding(
+      get: { model.isEditorVisible },
+      set: { if !$0 { model.closeEditor() } }
+    )
+  }
+
+  private var editorTitle: String {
+    if model.editingProfileID == nil { return "添加模型" }
+    let name = model.libraryEntryDisplays.first(where: { $0.id == model.editingProfileID })?.displayName
+    return name.map { "编辑模型 · \($0)" } ?? "编辑模型"
+  }
+
+  /// 添加流程没有已选服务商，直接展开网格；编辑流程默认折叠成一行，点「更换」才展开。
+  private var showsPresetGrid: Bool {
+    model.editingProfileID == nil || isChoosingPreset
+  }
+
+  private var editorBusy: Bool {
+    model.isSaving || model.isConfigurationLoading || model.isTestingConnection || model.isLoadingModels
+  }
+
+  private var editorSheet: some View {
+    VStack(spacing: 0) {
+      HStack(spacing: DesignTokens.Space.md) {
+        Text(editorTitle)
+          .themedFont(.title3, weight: .semibold)
+          .lineLimit(1)
+          .truncationMode(.middle)
+        Spacer(minLength: 0)
+        Button { model.closeEditor() } label: {
+          Image(systemName: "xmark")
+        }
+        .buttonStyle(.appIcon)
+        .disabled(editorBusy)
+        .help("关闭")
+        .accessibilityLabel("关闭编辑")
+        .accessibilityIdentifier("close-library-editor")
+      }
+      .padding(.horizontal, DesignTokens.Space.xl)
+      .padding(.vertical, DesignTokens.Space.lg)
+
+      Divider()
+
+      ScrollView {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.lg) {
+          editorProviderSection
+          editorConnectionCard
+        }
+        .padding(.horizontal, DesignTokens.Space.xl)
+        .padding(.vertical, DesignTokens.Space.lg)
+      }
+
+      Divider()
+
+      // 一个主动作：验证并保存。「仅保存」「测试连接」降为文字按钮。
+      SettingsActionRow(
+        status: editorStatusText,
+        statusColor: editorStatusColor,
+        showsProgress: model.isSaving || model.isTestingConnection,
+        statusIdentifier: "provider-settings-status"
       ) {
+        Button("测试连接") { Task { await model.testConnection() } }
+          .buttonStyle(.appQuiet)
+          .disabled(!model.canTestConnection || !apiKeyInput.isEmpty)
+          .help(testConnectionBlocked ? unsavedChangesText : "发送极短提示验证当前已保存配置")
+          .accessibilityIdentifier("test-provider-connection")
+        if !model.isAddingModelBatch {
+          Button("仅保存") {
+            let submittedKey = apiKeyInput
+            Task {
+              await model.save(apiKey: submittedKey)
+              apiKeyInput = ""
+            }
+          }
+          .buttonStyle(.appQuiet)
+          .disabled(!model.canSaveConfiguration)
+          .accessibilityIdentifier("save-provider-settings-only")
+        }
+        Button(model.isAddingModelBatch ? "保存 \(model.selectedCatalogModelCount) 个模型" : "验证并保存") {
+          let submittedKey = apiKeyInput
+          Task {
+            await model.saveAndVerify(apiKey: submittedKey)
+            apiKeyInput = ""
+          }
+        }
+        .buttonStyle(.appProminent(settingsTheme.accent))
+        .disabled(!model.canSaveConfiguration)
+        .accessibilityIdentifier("save-provider-settings")
+      }
+      .padding(.horizontal, DesignTokens.Space.xl)
+      .padding(.vertical, DesignTokens.Space.md)
+    }
+    .frame(width: 640)
+    .frame(minHeight: 420, idealHeight: 560, maxHeight: 720)
+    .background(settingsTheme.isNative ? Color(nsColor: .windowBackgroundColor) : settingsTheme.canvas)
+    .foregroundStyle(settingsTheme.primaryText)
+    .tint(settingsTheme.accent)
+    .accessibilityIdentifier("model-editor-sheet")
+  }
+
+  /// 状态只留一行：保存状态优先，有连接测试结果时接在后面。
+  private var editorStatusText: String {
+    if model.connectionTestState != .idle { return connectionStatusText }
+    return model.statusText
+  }
+
+  private var editorStatusColor: Color {
+    if model.connectionTestState != .idle { return connectionStatusColor }
+    return statusColor
+  }
+
+  @ViewBuilder private var editorProviderSection: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      Text("服务商").settingsSectionHeaderStyle()
+      if showsPresetGrid {
         // 12 家服务商排成一列时，每行连着行内距和分隔线要占 54pt，光这一块
         // 就吃掉约 650pt——一屏几乎装不下，选个服务商得先滚半天。
-        //
-        // 换成多列卡片后约 200pt。这里每一项只有图标、名字和一句话，本来就
-        // 不需要整行宽度；一列排下去纯属浪费横向空间。
+        // 换成多列卡片后约 200pt。
         LazyVGrid(
           columns: [GridItem(.adaptive(minimum: 168), spacing: 8, alignment: .top)],
           alignment: .leading,
           spacing: 8
         ) {
           ForEach(ProviderPreset.allCases) { preset in
-            Button { model.selectPreset(preset) } label: {
+            Button {
+              model.selectPreset(preset)
+              if model.editingProfileID != nil { isChoosingPreset = false }
+            } label: {
               providerCard(preset)
             }
             .buttonStyle(.plain)
-            .disabled(model.isSaving || model.isConfigurationLoading || model.isTestingConnection || model.isLoadingModels)
+            .disabled(editorBusy)
           }
           .accessibilityIdentifier("provider-preset")
         }
         .padding(.vertical, DesignTokens.Space.md)
         .padding(.horizontal, DesignTokens.Space.lg)
         .modifier(SettingsThemedCardChrome())
+      } else {
+        // 已选服务商折叠成一行：图标 + 名称 + 端点，右端「更换」。
+        HStack(spacing: DesignTokens.Space.sm) {
+          providerIcon(model.selectedPreset, fallbackName: model.selectedPreset.endpointHost)
+          Text(model.selectedPreset.displayName)
+            .themedFont(.body, weight: .semibold)
+          Text(model.selectedPreset.endpointHost)
+            .themedFont(.subheadline)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+          Spacer(minLength: DesignTokens.Space.md)
+          Button("更换") { isChoosingPreset = true }
+            .buttonStyle(.appQuiet)
+            .disabled(editorBusy)
+            .accessibilityIdentifier("change-provider-preset")
+        }
+        .padding(.vertical, DesignTokens.Space.md)
+        .padding(.horizontal, DesignTokens.Space.lg)
+        .modifier(SettingsThemedCardChrome())
       }
 
+      // 套餐说明收成一行 caption；Command Code 另给两个链接。
+      Text(model.selectedPreset.documentationHint)
+        .themedFont(.subheadline)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
       if model.selectedPreset == .commandCode {
         HStack(spacing: 16) {
           Link("套餐与 API 接入说明", destination: URL(string: "https://commandcode.ai/docs/provider")!)
           Link("获取 API Key", destination: URL(string: "https://commandcode.ai/docs/studio#api-keys")!)
         }
-        .themedFont(.caption)
+        .themedFont(.subheadline)
         .accessibilityIdentifier("command-code-setup-links")
       }
+    }
+  }
 
-      SettingsCardGroup(header: "连接") {
+  /// Base URL、API Key、模型收成一张卡，一行一个字段，标签同宽对齐。
+  @ViewBuilder private var editorConnectionCard: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      Text("连接与模型").settingsSectionHeaderStyle()
+      VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
         Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
           GridRow(alignment: .firstTextBaseline) {
             Text("Base URL")
@@ -966,132 +1161,155 @@ struct ProviderSettingsView: View {
               HStack(spacing: 10) {
                 Text(model.apiKeyStatusText).foregroundStyle(appTheme.success)
                   .accessibilityIdentifier("provider-api-key-configured")
+                Spacer(minLength: 0)
                 Button("更换", action: model.beginAPIKeyReplacement)
+                  .buttonStyle(.appQuiet)
                   .disabled(!model.canBeginAPIKeyReplacement)
                   .accessibilityIdentifier("replace-provider-api-key")
               }
-              .frame(maxWidth: .infinity, alignment: .trailing)
+            }
+          }
+
+          GridRow(alignment: .firstTextBaseline) {
+            Text("模型")
+              .frame(width: 86, alignment: .leading)
+            VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+              HStack(spacing: DesignTokens.Space.sm) {
+                if !model.isAddingModelBatch { editorModelControl }
+                Button(model.selectedPreset == .commandCode ? "读取模型列表" : "验证并读取模型列表") {
+                  let submittedKey = apiKeyInput
+                  Task {
+                    if model.shouldShowAPIKeyInput {
+                      await model.loadModels(apiKey: submittedKey)
+                    } else {
+                      await model.loadModels()
+                    }
+                  }
+                }
+                .buttonStyle(.appNormal)
+                .disabled(
+                  !model.canLoadModelCatalog
+                    || (model.shouldShowAPIKeyInput && apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                )
+                .accessibilityIdentifier("load-provider-models")
+                if model.isLoadingModels { ProgressView().controlSize(.small) }
+                if model.shouldOfferManualModelEntry {
+                  Button("手动填写模型名", action: model.enableManualModelEntry)
+                    .buttonStyle(.appQuiet)
+                    .accessibilityIdentifier("enable-manual-provider-model")
+                }
+                Spacer(minLength: 0)
+              }
+
+              if model.isAddingModelBatch {
+                TextField("", text: $model.modelSearchQuery, prompt: Text("输入关键词过滤"))
+                  .textFieldStyle(.roundedBorder)
+                  .frame(maxWidth: 260)
+                  .accessibilityLabel("搜索模型")
+                  .accessibilityIdentifier("provider-model-search")
+
+                ScrollView {
+                  LazyVStack(spacing: 0) {
+                    ForEach(model.filteredModels, id: \.self) { name in
+                      Button {
+                        model.toggleCatalogModel(name)
+                      } label: {
+                        HStack(spacing: 10) {
+                          Image(systemName: model.selectedCatalogModels.contains(name) ? "checkmark.square.fill" : "square")
+                            .foregroundStyle(model.selectedCatalogModels.contains(name) ? Color.accentColor : .secondary)
+                          Text(name)
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                          Spacer()
+                        }
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 8)
+                        .contentShape(Rectangle())
+                      }
+                      .buttonStyle(.plain)
+                      .accessibilityIdentifier("provider-model-option")
+                      if name != model.filteredModels.last {
+                        Divider().padding(.leading, 36)
+                      }
+                    }
+                  }
+                }
+                .frame(minHeight: 120, maxHeight: 260)
+                // 与主界面的滚动容器同一套令牌（HistoryContentView 的转写编辑器）：
+                // `.background.opacity(0.55)` 在浅色/深色主题下会露出半透明白框，
+                // `.separator` 也是系统色，两者都不随主题走。
+                .background(
+                  settingsTheme.isNative ? Color(nsColor: .textBackgroundColor) : settingsTheme.listPane,
+                  in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md)
+                )
+                .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(settingsTheme.hairline, lineWidth: 1))
+                Text("已选择 \(model.selectedCatalogModelCount) 个模型")
+                  .themedFont(.subheadline)
+                  .foregroundStyle(model.selectedCatalogModelCount == 0 ? .secondary : Color.accentColor)
+                  .accessibilityIdentifier("provider-model-selection-count")
+              }
             }
           }
         }
         .frame(maxWidth: .infinity)
-        .padding(.vertical, DesignTokens.Space.md)
-        .padding(.horizontal, DesignTokens.Space.lg)
-        .modifier(SettingsThemedCardChrome())
+
+        Text(model.modelCatalogStatusText)
+          .themedFont(.subheadline)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+          .accessibilityIdentifier("provider-model-catalog-status")
       }
+      .padding(.vertical, DesignTokens.Space.md)
+      .padding(.horizontal, DesignTokens.Space.lg)
+      .modifier(SettingsThemedCardChrome())
 
-      SettingsCardGroup(header: "模型", footer: model.modelCatalogStatusText) {
-        Group {
-        HStack(spacing: 12) {
-          Button(model.selectedPreset == .commandCode ? "读取并配置模型" : "验证并配置模型") {
-            let submittedKey = apiKeyInput
-            Task {
-              if model.shouldShowAPIKeyInput {
-                await model.loadModels(apiKey: submittedKey)
-              } else {
-                await model.loadModels()
-              }
-            }
-          }
-          .disabled(
-            !model.canLoadModelCatalog
-              || (model.shouldShowAPIKeyInput && apiKeyInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-          )
-          .accessibilityIdentifier("load-provider-models")
-          if model.isLoadingModels { ProgressView().controlSize(.small) }
-        }
+      Text("测试只发送“Reply with OK.”的极短提示；不会创建历史记录或保存回复内容。")
+        .themedFont(.subheadline)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+  }
 
-        if model.isAddingModelBatch {
-          LabeledContent("搜索模型") {
-            TextField("", text: $model.modelSearchQuery, prompt: Text("输入关键词过滤"))
-              .labelsHidden()
-              .accessibilityLabel("搜索模型")
-              .accessibilityIdentifier("provider-model-search")
-          }
-
-          ScrollView {
-            LazyVStack(spacing: 0) {
-              ForEach(model.filteredModels, id: \.self) { name in
-                Button {
-                  model.toggleCatalogModel(name)
-                } label: {
-                  HStack(spacing: 10) {
-                    Image(systemName: model.selectedCatalogModels.contains(name) ? "checkmark.square.fill" : "square")
-                      .foregroundStyle(model.selectedCatalogModels.contains(name) ? Color.accentColor : .secondary)
-                    Text(name)
-                      .foregroundStyle(.primary)
-                      .lineLimit(1)
-                    Spacer()
-                  }
-                  .padding(.horizontal, 10)
-                  .padding(.vertical, 8)
-                  .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .accessibilityIdentifier("provider-model-option")
-                if name != model.filteredModels.last {
-                  Divider().padding(.leading, 36)
-                }
-              }
-            }
-          }
-          .frame(minHeight: 120, maxHeight: 260)
-          // 与主界面的滚动容器同一套令牌（HistoryContentView 的转写编辑器）：
-          // `.background.opacity(0.55)` 在浅色/深色主题下会露出半透明白框，
-          // `.separator` 也是系统色，两者都不随主题走。
-          .background(
-            settingsTheme.isNative ? Color(nsColor: .textBackgroundColor) : settingsTheme.listPane,
-            in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md)
-          )
-          .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(settingsTheme.hairline, lineWidth: 1))
-          Text("已选择 \(model.selectedCatalogModelCount) 个模型")
-            .themedFont(.caption)
-            .foregroundStyle(model.selectedCatalogModelCount == 0 ? .secondary : Color.accentColor)
-            .accessibilityIdentifier("provider-model-selection-count")
-        } else {
-          modelSelector(title: "模型", selection: Binding(
-            get: { model.modelName },
-            set: { model.selectModel($0) }
-          ), forTranslation: false)
+  /// 编辑表单「模型」行的控件：读到目录就下拉选，没读到就按状态给文本框或占位。
+  @ViewBuilder private var editorModelControl: some View {
+    let selection = Binding(
+      get: { model.modelName },
+      set: { model.selectModel($0) }
+    )
+    if model.modelCatalogState == .loaded, !model.availableModels.isEmpty {
+      Picker("模型", selection: selection) {
+        if selection.wrappedValue.isEmpty {
+          Text("请选择模型").tag("")
+        } else if !model.availableModels.contains(selection.wrappedValue) {
+          Text("当前：\(selection.wrappedValue)").tag(selection.wrappedValue)
         }
-
-        if model.shouldOfferManualModelEntry {
-          Button("高级：手动填写模型名", action: model.enableManualModelEntry)
-            .accessibilityIdentifier("enable-manual-provider-model")
-        }
-        }
-        .padding(.vertical, DesignTokens.Space.md)
-        .padding(.horizontal, DesignTokens.Space.lg)
-        .modifier(SettingsThemedCardChrome())
+        ForEach(model.filteredModels, id: \.self) { Text($0).tag($0) }
       }
-
-      SettingsCardGroup(
-        footer: "测试只发送“Reply with OK.”的极短提示；不会创建历史记录或保存回复内容。"
-      ) {
-        Group {
-        actionRow(status: model.statusText, color: statusColor, showsProgress: model.isSaving, statusIdentifier: "provider-settings-status") {
-          Button(model.isAddingModelBatch ? "保存 \(model.selectedCatalogModelCount) 个模型" : "保存模型配置") {
-            let submittedKey = apiKeyInput
-            Task {
-              await model.save(apiKey: submittedKey)
-              apiKeyInput = ""
-            }
-          }
-          .disabled(!model.canSaveConfiguration)
-          .accessibilityIdentifier("save-provider-settings")
-        }
-
-        actionRow(status: connectionStatusText, color: connectionStatusColor, showsProgress: model.isTestingConnection, statusIdentifier: "provider-connection-status") {
-          Button("测试连接") { Task { await model.testConnection() } }
-            .disabled(!model.canTestConnection || !apiKeyInput.isEmpty)
-            .accessibilityIdentifier("test-provider-connection")
-            .accessibilityHint(testConnectionBlocked ? unsavedChangesText : "发送极短提示验证当前已保存配置")
-        }
-        }
-        .padding(.vertical, DesignTokens.Space.md)
-        .padding(.horizontal, DesignTokens.Space.lg)
-        .modifier(SettingsThemedCardChrome())
-      }
+      .labelsHidden()
+      .frame(maxWidth: 260)
+      .accessibilityIdentifier("provider-model-picker")
+      TextField("", text: $model.modelSearchQuery, prompt: Text("过滤"))
+        .textFieldStyle(.roundedBorder)
+        .frame(width: 96)
+        .accessibilityLabel("搜索模型")
+        .accessibilityIdentifier("provider-model-search")
+    } else if model.isManualModelEntryEnabled {
+      TextField("", text: selection, prompt: Text("手动填写模型名"))
+        .textFieldStyle(.roundedBorder)
+        .frame(maxWidth: 260)
+        .disabled(model.isSaving || model.isConfigurationLoading)
+        .accessibilityIdentifier("provider-model-name")
+    } else if model.hasConfiguredAPIKey, !model.modelName.isEmpty {
+      Text(model.modelName)
+        .themedFont(.body)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .accessibilityIdentifier("provider-model-name")
+    } else {
+      Text("读取列表后选择")
+        .themedFont(.body)
+        .foregroundStyle(.secondary)
+    }
   }
 
   /// 纸质主题的设置侧栏：画布底色 + 主窗口同款橙色选中样式。
@@ -1143,7 +1361,10 @@ struct ProviderSettingsView: View {
         Text(tab.title)
           .themedFont(.body)
       } icon: {
-        SettingsSidebarChip(symbol: tab.symbol, fill: sidebarChipFill(tab))
+        SettingsSidebarChip(
+          symbol: tab.symbol,
+          fill: isSelected ? settingsTheme.accent : settingsTheme.secondaryText
+        )
       }
       .lineLimit(1)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -1162,15 +1383,6 @@ struct ProviderSettingsView: View {
           .matchedGeometryEffect(id: "settings-sidebar-highlight", in: sidebarSelectionNamespace)
       }
     }
-    .overlay(alignment: .leading) {
-      if isSelected {
-        Capsule()
-          .fill(settingsTheme.accent)
-          .frame(width: 3, height: 18)
-          .padding(.leading, DesignTokens.Space.xxs)
-          .matchedGeometryEffect(id: "settings-sidebar-accent", in: sidebarSelectionNamespace)
-      }
-    }
     .foregroundStyle(settingsTheme.primaryText)
     .fontWeight(isSelected ? .semibold : .regular)
     .listRowSeparator(.hidden)
@@ -1180,8 +1392,9 @@ struct ProviderSettingsView: View {
   // MARK: - 外观
 
   /// 设置窗口与主窗口共用同一套主题令牌，保证外观切换全局一致。
+  @Environment(\.colorScheme) private var systemColorScheme
   private var settingsTheme: HistoryThemeTokens {
-    (AppearanceTheme(rawValue: appearanceThemeRaw) ?? .glass).tokens
+    (AppearanceTheme(rawValue: appearanceThemeRaw) ?? .glass).tokens(systemColorScheme: systemColorScheme)
   }
 
   /// 侧栏 chip 的底色。两条侧栏分支共用同一份取色逻辑，避免图标换了颜色却漏了一处。
@@ -1254,7 +1467,7 @@ struct ProviderSettingsView: View {
               .accessibilityIdentifier("topic-schedule-enabled")
             if TopicSchedule.decoded(from: topicScheduleRaw).isEnabled {
               HStack(spacing: 8) {
-                Text("时间").themedFont(.caption).foregroundStyle(.secondary)
+                Text("时间").themedFont(.subheadline).foregroundStyle(.secondary)
                 Picker("", selection: scheduleBinding(\.hour)) {
                   ForEach(0..<24, id: \.self) { Text(String(format: "%02d", $0)).tag($0) }
                 }
@@ -1301,14 +1514,14 @@ struct ProviderSettingsView: View {
           .pickerStyle(.segmented)
 
           VStack(alignment: .leading, spacing: 5) {
-            Text("从不使用的词").themedFont(.caption).foregroundStyle(.secondary)
+            Text("从不使用的词").themedFont(.subheadline).foregroundStyle(.secondary)
             TextField("赋能、抓手、闭环…", text: voiceBinding(\.forbiddenWords))
               .textFieldStyle(.roundedBorder)
               .accessibilityIdentifier("voice-forbidden-words")
           }
 
           VStack(alignment: .leading, spacing: 5) {
-            Text("参考段落").themedFont(.caption).foregroundStyle(.secondary)
+            Text("参考段落").themedFont(.subheadline).foregroundStyle(.secondary)
             TextEditor(text: voiceBinding(\.sample))
               .themedFont(.callout)
               .frame(minHeight: 88)
@@ -1332,7 +1545,7 @@ struct ProviderSettingsView: View {
       settingCard(
         title: "主题",
         summary: "选择界面明暗与阅读纸色；切换即时生效。",
-        details: "浅色为纸质米黄，暖褐更黄、对比更低，深色为石墨灰，高对比为纯黑白，系统跟随 macOS。主题同时决定界面字体：浅色用思源宋体、深色用圆体、暖褐用楷体、高对比用 PingFang，系统主题保持 macOS 系统字体。下面两项可以各自覆盖，覆盖后不再随主题变化。",
+        details: "浅色和深色是同一套配色的白天和夜晚：同一组带绿的中性色、同一个墨绿强调色。「跟随系统」在两者之间自动切换。界面字体默认跟随系统（英文数字 SF Pro、中文 PingFang），下面两项可以各自覆盖。",
         controlWidth: .full
       ) {
         ThemeSwatchPicker(selection: $appearanceThemeRaw)
@@ -1348,10 +1561,10 @@ struct ProviderSettingsView: View {
         controlWidth: .full
       ) {
         VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-          HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.md) {
+          HStack(alignment: .center, spacing: DesignTokens.Space.md) {
             Text("字体")
               .themedFont(.body)
-              .frame(width: 72, alignment: .leading)
+            Spacer(minLength: DesignTokens.Space.md)
             fontPicker(
               title: "界面字体",
               selection: $uiFontRaw,
@@ -1360,7 +1573,6 @@ struct ProviderSettingsView: View {
               recommended: RecommendedFonts.ui(),
               identifier: "appearance-ui-font-picker"
             )
-            Spacer(minLength: 0)
           }
           uiFontPreview
         }
@@ -1380,10 +1592,30 @@ struct ProviderSettingsView: View {
         controlWidth: .full
       ) {
         VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-          HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.md) {
+          // 无衬线 / 宋体一键切换：宋体是长文最常被选的替代，不该藏在下拉的第二组里。
+          // 只在本机装了思源宋体时出现——Songti SC 在 16.5pt 上发虚，不值得给一键位。
+          if let serif = editorialSerifQuickOption {
+            HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+              Text("风格")
+                .themedFont(.body)
+              Spacer(minLength: DesignTokens.Space.md)
+              Picker("阅读风格", selection: Binding(
+                get: { readingFontRaw == serif ? serif : ReadingFontSelection.defaultStoredValue },
+                set: { readingFontRaw = $0 }
+              )) {
+                Text("无衬线").tag(ReadingFontSelection.defaultStoredValue)
+                Text("宋体").tag(serif)
+              }
+              .pickerStyle(.segmented)
+              .labelsHidden()
+              .settingsControlWidth()
+              .accessibilityIdentifier("appearance-reading-style")
+            }
+          }
+          HStack(alignment: .center, spacing: DesignTokens.Space.md) {
             Text("字体")
               .themedFont(.body)
-              .frame(width: 72, alignment: .leading)
+            Spacer(minLength: DesignTokens.Space.md)
             fontPicker(
               title: "阅读字体",
               selection: $readingFontRaw,
@@ -1392,37 +1624,33 @@ struct ProviderSettingsView: View {
               recommended: RecommendedFonts.reading(),
               identifier: "appearance-reading-font-picker"
             )
-            Spacer(minLength: 0)
           }
 
           Divider()
 
-          VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-            HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.md) {
+          // 字号滑块和字体下拉同一列右对齐；说明收进标签下方一行 caption。
+          HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+            VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
               Text("正文字号")
                 .themedFont(.body)
-                .frame(width: 72, alignment: .leading)
-              Spacer(minLength: 0)
+              Text("标题与引用按同一比例跟着缩放。")
+                .themedFont(.subheadline)
+                .foregroundStyle(.secondary)
             }
-            Text("标题与引用按同一比例跟着缩放，不会只有正文变大。")
-              .themedFont(.caption)
-              .foregroundStyle(.secondary)
-              .fixedSize(horizontal: false, vertical: true)
-            HStack(spacing: 10) {
+            Spacer(minLength: DesignTokens.Space.md)
+            HStack(spacing: DesignTokens.Space.sm) {
               Slider(
                 value: $readingFontSizeRaw,
                 in: Double(ReadingFontSize.minimum)...Double(ReadingFontSize.maximum),
                 step: Double(ReadingFontSize.step)
               )
-              .frame(maxWidth: 220)
-              .frame(height: 38)
               .accessibilityIdentifier("appearance-reading-font-size-slider")
               Text(String(format: "%.1f", readingFontSizeRaw))
                 .themedFont(.caption, monospacedDigit: true)
                 .foregroundStyle(.secondary)
                 .frame(width: 34, alignment: .trailing)
-              Spacer(minLength: 0)
             }
+            .settingsControlWidth()
           }
 
           readingFontPreview
@@ -1450,119 +1678,45 @@ struct ProviderSettingsView: View {
 
   private var generationTab: some View {
     SettingsPlainPage {
-      pageHeader(for: .generation, caption: "控制总结、翻译输出，以及新内容进来后自动跑哪些步骤。模型分配在「模型与识别」。")
+      pageHeader(for: .generation, caption: "控制总结、翻译输出，以及新内容进来后自动跑哪些步骤。改完即时生效，无需保存。")
 
       // 常用默认在前：大多数人打开这页只改语言。
-      // 并发、长提示词收进高级；发送授权必须独立可见，不能折进高级。
+      // 并发、长提示词收进「高级」卡；发送授权并进管线卡底部，不再独占一张卡。
+      //
+      // 这一页原来有一条底部固定的「保存生成偏好」条，而外观页写着「切换即时生效」，
+      // 模型页又是每个模型各自保存——三页三种保存模型。现在统一即时生效，状态只
+      // 在保存失败时以一行提示条露出来。
       SettingsRowGroup {
           SettingsRow(
             title: "输出语言",
-            caption: "总结、翻译等生成结果统一用这个语言输出。",
-            details: "生成时会把这条语言指令追加到提示词；模型分配仍在「模型与识别」。"
+            details: "总结、翻译等生成结果统一用这个语言输出。生成时会把这条语言指令追加到提示词；模型分配仍在「模型与识别」。"
           ) {
             VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
-              Picker("输出语言", selection: outputLanguageSelection) {
-                ForEach(Self.outputLanguagePresets, id: \.self) { Text($0).tag($0) }
-                Text("自定义…").tag(Self.customOutputLanguageTag)
-              }
-              .labelsHidden()
-              .fixedSize()
-              .accessibilityIdentifier("output-language")
+              SettingsMenuPicker(
+                sections: [
+                  Self.outputLanguagePresets.map { .init(value: $0, title: $0) },
+                  [.init(value: Self.customOutputLanguageTag, title: "自定义…")],
+                ],
+                selection: outputLanguageSelection,
+                identifier: "output-language"
+              )
+              .accessibilityLabel("输出语言")
               if showsCustomOutputLanguageField {
-                LabeledContent("自定义语言") {
-                  TextField("例如：Italiano", text: $model.targetLanguage)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 220)
-                    .accessibilityIdentifier("output-language-custom")
-                }
+                TextField("例如：Italiano", text: $model.targetLanguage)
+                  .textFieldStyle(.roundedBorder)
+                  .settingsControlWidth()
+                  .accessibilityLabel("自定义语言")
+                  .accessibilityIdentifier("output-language-custom")
               }
             }
           }
       }
-
-      // 发送授权独立成组：只提供「清除已记住记录」，不虚构逐项撤销。
-      SettingsRowGroup {
-          SettingsRow(
-            title: "已记住的发送授权",
-            caption: "首次把内容发往某个服务商、或首次使用在线转写、模型校对、生成脑图时会各告知一次，之后不再重复询问。",
-            details: "清除后，下一次发送会重新告知一遍。清除只影响本机记录，不改动任何模型配置或密钥。"
-          ) {
-            VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
-              Button("清除授权记录") {
-                Task {
-                  let cleared = await appModel.revokeRememberedConsents()
-                  consentRevokeNotice = cleared ? "已清除。下一次发送会重新询问。" : "清除失败：无法写入本机记录。"
-                }
-              }
-              .accessibilityIdentifier("revoke-remembered-consents")
-              if let consentRevokeNotice {
-                Text(consentRevokeNotice)
-                  .themedFont(.caption)
-                  .foregroundStyle(.secondary)
-              }
-            }
-          }
-      }
-
-      DisclosureGroup("高级：翻译并发与总结提示词") {
-        VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
-          VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-            Text("翻译并发")
-              .themedFont(.body)
-            Text("长文翻译会切成多段同时发送，段数越多越快。只对超过约 8000 字的正文生效；免费或有速率限制的服务商调高后可能被限流。")
-              .themedFont(.footnote)
-              .foregroundStyle(.secondary)
-              .fixedSize(horizontal: false, vertical: true)
-            Picker("翻译并发", selection: $model.translationConcurrency) {
-              ForEach(
-                Array(ModelPreferences.translationConcurrencyRange),
-                id: \.self
-              ) { value in
-                Text(value == 1 ? "不并发" : "\(value) 段").tag(value)
-              }
-            }
-            .labelsHidden()
-            .fixedSize()
-            .accessibilityIdentifier("translation-concurrency")
-          }
-
-          VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-            Text("总结提示词")
-              .themedFont(.body)
-            Text("无论用内置还是自定义提示词，\(ProductDisplay.name) 都会追加输出语言指令。提示词设置保存在本机；生成时会随正文发送给所选模型。")
-              .themedFont(.footnote)
-              .foregroundStyle(.secondary)
-              .fixedSize(horizontal: false, vertical: true)
-            TextEditor(text: $model.summaryPrompt)
-              .themedFont(.callout)
-              .scrollContentBackground(.hidden)
-              .frame(minHeight: 96, maxHeight: 140)
-              .padding(DesignTokens.Space.sm)
-              .background(settingsTheme.isNative ? Color(nsColor: .textBackgroundColor) : settingsTheme.listPane)
-              .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(settingsTheme.hairline, lineWidth: 1))
-              .accessibilityIdentifier("summary-prompt")
-            HStack {
-              Spacer(minLength: 0)
-              Button("重置为默认提示词", action: model.resetSummaryPrompt)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(Color.secondary)
-                .disabled(model.preferencesState == .saving)
-                .accessibilityIdentifier("reset-summary-prompt")
-            }
-          }
-        }
-        .padding(.top, DesignTokens.Space.sm)
-        .frame(maxWidth: .infinity, alignment: .leading)
-      }
-      .themedFont(.callout)
-      .padding(.vertical, DesignTokens.Space.xs)
 
       // 这条链在代码里严格串行且有依赖，所以画成有序链条而不是四个平级开关。
       VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
         Text(UISettingsPresentation.newCaptureAutoProcessTitle).themedFont(.headline)
         Text(UISettingsPresentation.newCaptureAutoProcessCaption)
-          .themedFont(.callout)
+          .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
 
@@ -1631,41 +1785,111 @@ struct ProviderSettingsView: View {
               LabeledContent("Base URL", value: identity.normalizedBaseURL)
             }
           }
-          .themedFont(.caption)
+          .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .padding(.top, DesignTokens.Space.xs)
         }
-        .themedFont(.caption)
+        .themedFont(.subheadline)
+
+        Rectangle().fill(settingsTheme.hairline).frame(height: 1)
+          .padding(.vertical, DesignTokens.Space.xs)
+
+        // 发送授权并进这张卡的底部：它讲的就是「自动处理会把内容发出去」这件事的
+        // 另一面。只提供「清除已记住记录」，不虚构逐项撤销。
+        HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+          VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+            Text("已记住的发送授权").themedFont(.body)
+            Text(consentRevokeNotice ?? "首次把内容发往某个服务商、或首次使用在线转写、校对、脑图时会各告知一次，之后不再重复询问。")
+              .themedFont(.subheadline)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+          Spacer(minLength: DesignTokens.Space.md)
+          Button("清除授权记录") {
+            Task {
+              let cleared = await appModel.revokeRememberedConsents()
+              consentRevokeNotice = cleared ? "已清除。下一次发送会重新询问。" : "清除失败：无法写入本机记录。"
+            }
+          }
+          .buttonStyle(.appQuiet)
+          .accessibilityIdentifier("revoke-remembered-consents")
+        }
       }
       .padding(.vertical, DesignTokens.Space.md)
       .padding(.horizontal, DesignTokens.Space.lg)
       .modifier(SettingsThemedCardChrome())
-    }
-    .safeAreaInset(edge: .bottom, spacing: 0) {
-      generationPreferencesSaveBar
-    }
-  }
 
-  private var generationPreferencesSaveBar: some View {
-    VStack(spacing: 0) {
-      Divider()
-      actionRow(
-        status: model.preferencesStatusText,
-        color: preferencesStatusColor,
-        showsProgress: model.preferencesState == .saving,
-        statusIdentifier: "model-preferences-status"
-      ) {
-        Button("保存生成偏好") { Task { await model.savePreferences() } }
-          .buttonStyle(.borderedProminent)
-          .tint(settingsTheme.accent)
-          .disabled(!model.canSavePreferences)
-          .accessibilityIdentifier("save-model-preferences")
+      // 高级项收成一张可折叠的卡，不再裸露在两张卡之间。
+      VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+        DisclosureGroup("高级：翻译并发与总结提示词") {
+          VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
+            HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+              VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+                Text("翻译并发")
+                  .themedFont(.body)
+                Text("长文翻译会切成多段同时发送，段数越多越快。只对超过约 8000 字的正文生效；免费或有速率限制的服务商调高后可能被限流。")
+                  .themedFont(.subheadline)
+                  .foregroundStyle(.secondary)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+              Spacer(minLength: DesignTokens.Space.md)
+              Picker("翻译并发", selection: $model.translationConcurrency) {
+                ForEach(
+                  Array(ModelPreferences.translationConcurrencyRange),
+                  id: \.self
+                ) { value in
+                  Text(value == 1 ? "不并发" : "\(value) 段").tag(value)
+                }
+              }
+              .labelsHidden()
+              .frame(width: 120)
+              .accessibilityIdentifier("translation-concurrency")
+            }
+
+            VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+              Text("总结提示词")
+                .themedFont(.body)
+              Text("无论用内置还是自定义提示词，\(ProductDisplay.name) 都会追加输出语言指令。提示词保存在本机；生成时会随正文发送给所选模型。")
+                .themedFont(.subheadline)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+              TextEditor(text: $model.summaryPrompt)
+                .themedFont(.callout)
+                .scrollContentBackground(.hidden)
+                .frame(minHeight: 96, maxHeight: 140)
+                .padding(DesignTokens.Space.sm)
+                .background(settingsTheme.isNative ? Color(nsColor: .textBackgroundColor) : settingsTheme.listPane)
+                .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(settingsTheme.hairline, lineWidth: 1))
+                .accessibilityIdentifier("summary-prompt")
+              HStack {
+                Spacer(minLength: 0)
+                Button("重置为默认提示词", action: model.resetSummaryPrompt)
+                  .buttonStyle(.appQuiet)
+                  .disabled(model.preferencesState == .saving)
+                  .accessibilityIdentifier("reset-summary-prompt")
+              }
+            }
+          }
+          .padding(.top, DesignTokens.Space.md)
+          .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .themedFont(.headline)
       }
-      .padding(.horizontal, DesignTokens.Layout.settingsHorizontalInset)
-      .padding(.vertical, DesignTokens.Space.sm)
+      .padding(.vertical, DesignTokens.Space.md)
+      .padding(.horizontal, DesignTokens.Space.lg)
+      .modifier(SettingsThemedCardChrome())
+
+      // 即时生效，正常时安静；只有保存失败才需要一行说明。
+      if case .failed = model.preferencesState {
+        SettingsInlineNotice(message: model.preferencesStatusText, tone: .danger)
+          .accessibilityIdentifier("model-preferences-status")
+      } else if model.preferencesState == .saving {
+        Text(model.preferencesStatusText)
+          .themedFont(.subheadline)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("model-preferences-status")
+      }
     }
-    .background(settingsTheme.isNative ? Color(nsColor: .windowBackgroundColor) : settingsTheme.canvas)
-    .accessibilityIdentifier("generation-preferences-save-bar")
   }
 
   // MARK: - 设置卡片零件
@@ -1725,26 +1949,25 @@ struct ProviderSettingsView: View {
     text: Binding<String>,
     identifier: String
   ) -> some View {
-    Picker(label, selection: Binding(
-      get: { isCustomModelName(text.wrappedValue, in: options) ? Self.customModelTag : text.wrappedValue },
-      set: { selected in
-        // 选「自定义…」时不清空已有值，否则改一次下拉就丢掉手填的名字。
-        if selected != Self.customModelTag { text.wrappedValue = selected }
-      }
-    )) {
-      Text(emptyOptionTitle).tag("")
-      if !options.isEmpty {
-        Divider()
-        ForEach(options) { option in
-          Text("\(option.modelName)（\(option.title)）").tag(option.modelName)
+    SettingsMenuPicker(
+      sections: modelChoiceSections(
+        emptyOptionTitle: emptyOptionTitle, options: options, current: text.wrappedValue
+      ),
+      selection: Binding(
+        get: { isCustomModelName(text.wrappedValue, in: options) ? Self.customModelTag : text.wrappedValue },
+        set: { selected in
+          // 选「自定义…」时不清空已有值，否则改一次下拉就丢掉手填的名字；
+          // 从预设切到自定义时先放一个空格占位，让输入框出现。
+          if selected != Self.customModelTag {
+            text.wrappedValue = selected
+          } else if !isCustomModelName(text.wrappedValue, in: options) {
+            text.wrappedValue = " "
+          }
         }
-      }
-      Divider()
-      Text("自定义…").tag(Self.customModelTag)
-    }
-    .labelsHidden()
-    .fixedSize()
-    .accessibilityIdentifier(identifier)
+      ),
+      identifier: identifier
+    )
+    .accessibilityLabel(label)
   }
 
   /// 只在选了「自定义…」时出现。带边框——否则光标落在一片空白里，找不到该点哪。
@@ -1761,6 +1984,29 @@ struct ProviderSettingsView: View {
         .frame(maxWidth: 260)
         .accessibilityIdentifier("\(identifier)-custom")
     }
+  }
+
+  /// 下拉的三组：空值语义项、已添加的模型（带服务商副标题）、自定义。
+  /// 自定义项的标题就是当前手填的名字，标签上直接能看到，不是一个「自定义…」占位。
+  private func modelChoiceSections(
+    emptyOptionTitle: String,
+    options: [ProviderSettingsViewModel.LibraryEntryDisplay],
+    current: String
+  ) -> [[SettingsMenuPicker<String>.Option]] {
+    let isCustom = isCustomModelName(current, in: options)
+    var sections: [[SettingsMenuPicker<String>.Option]] = [[.init(value: "", title: emptyOptionTitle)]]
+    if !options.isEmpty {
+      sections.append(options.map { .init(value: $0.modelName, title: $0.modelName, subtitle: $0.title) })
+    }
+    let customTitle = current.trimmingCharacters(in: .whitespaces)
+    sections.append([
+      .init(
+        value: Self.customModelTag,
+        title: isCustom && !customTitle.isEmpty ? customTitle : "自定义…",
+        subtitle: isCustom ? "自定义" : nil
+      ),
+    ])
+    return sections
   }
 
   private func isCustomModelName(
@@ -1868,7 +2114,7 @@ struct ProviderSettingsView: View {
         }
       }
       Text(preset.endpointHost)
-        .themedFont(.caption)
+        .themedFont(.subheadline)
         .foregroundStyle(.secondary)
         .lineLimit(1)
         .truncationMode(.middle)

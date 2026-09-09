@@ -21,6 +21,8 @@ struct HistoryContentView: View {
   @State private var newSparkText = ""
   @State private var douyinProfileImportRequest: DouyinProfileImportRequest?
   @AppStorage(ProfileImportQueuePresentation.dismissedKey) private var dismissedImportNotices = ""
+  /// 来源平台是否全部展开。默认只露出条数最多的 5 家。
+  @AppStorage("history.navigation.platforms-show-all") private var navigationPlatformsShowsAll = false
   @State private var isReadingPlatformGalleryItem = false
   @State private var platformGalleryScrollTarget: TaskID?
   @State private var showsCreatorDirectoryCatalog = true
@@ -47,7 +49,9 @@ struct HistoryContentView: View {
   @StateObject private var remotePreviewPlayback = RemotePreviewPlayerController()
 
   private var appearanceTheme: AppearanceTheme { AppearanceTheme(rawValue: appearanceThemeRaw) ?? .glass }
-  private var theme: HistoryThemeTokens { appearanceTheme.tokens }
+  /// 「跟随系统」靠 SwiftUI 的 colorScheme 环境值在系统翻转时刷新。
+  @Environment(\.colorScheme) private var systemColorScheme
+  private var theme: HistoryThemeTokens { appearanceTheme.tokens(systemColorScheme: systemColorScheme) }
   private var ordinaryPendingCaptures: [ManualLinkViewModel.PendingCapture] {
     manualLink.pendingCaptures.filter { $0.profileImportBatchID == nil }
   }
@@ -514,24 +518,22 @@ struct HistoryContentView: View {
           .help("打开设置")
           .accessibilityLabel("模型设置")
           .accessibilityIdentifier("open-provider-settings")
+          // 新建笔记并进「添加」菜单：它和添加链接、添加博主都是「往库里放东西」，
+          // 单独占一个工具栏位只是让右上角多一个图标。⌘⇧N 仍走菜单命令。
           Menu {
             Button("添加链接", action: manualLink.open)
             Button("从剪贴板添加链接", action: manualLink.readClipboardAndOpen)
             Button("添加博主主页") { presentDouyinProfileImport() }
+            Divider()
+            Button("新建笔记", action: createNote)
+              .accessibilityIdentifier("create-user-note")
           } label: {
             Label("添加", systemImage: "plus")
           }
           .disabled(!manualLink.canOpen)
-          .help("添加链接或博主主页")
+          .help("添加链接、博主主页或新建笔记")
           .accessibilityLabel("添加")
           .accessibilityIdentifier("manual-link-add-toolbar")
-          Button(action: createNote) {
-            Label("新建笔记", systemImage: "square.and.pencil")
-          }
-          .disabled(!manualLink.canOpen)
-          .help("新建笔记")
-          .accessibilityLabel("新建笔记")
-          .accessibilityIdentifier("create-user-note")
         }
       }
     }
@@ -878,7 +880,7 @@ struct HistoryContentView: View {
     ScrollViewReader { proxy in
     List {
       Section {
-        navigationButton("全部", systemImage: "tray.full", count: model.navigationCounts.all, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+        navigationButton("全部", systemImage: "tray", count: model.navigationCounts.all, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.all)
         }
         .accessibilityIdentifier("history-navigation-all")
@@ -886,7 +888,7 @@ struct HistoryContentView: View {
           model.selectScope(.recent)
         }
         .accessibilityIdentifier("history-navigation-recent")
-        navigationButton("待总结", systemImage: "text.badge.xmark", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
+        navigationButton("待总结", systemImage: "doc.plaintext", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized, emphasizesCount: true) {
           model.selectScope(.unsummarized)
         }
         .accessibilityIdentifier("history-navigation-unsummarized")
@@ -924,7 +926,7 @@ struct HistoryContentView: View {
         if navigationCreatorsExpanded {
           navigationButton(
             "全部博主",
-            systemImage: "person.2",
+            systemImage: "person",
             count: model.navigationCounts.creatorCount,
             selected: model.isCreatorDirectoryActive
           ) {
@@ -1032,7 +1034,9 @@ struct HistoryContentView: View {
                 } else {
                   model.selectHost(host)
                 }
-              }
+              },
+              collapsedLimit: 5,
+              isExpanded: $navigationPlatformsShowsAll
             )
           }
         } header: {
@@ -1144,19 +1148,18 @@ struct HistoryContentView: View {
     expanded: Binding<Bool>? = nil,
     addCreator: Bool = false
   ) -> some View {
+    // 四个分组标题一种写法：11pt 中等、次要灰、和图标左边缘对齐、不带折叠箭头
+    // （点标题本身就能折叠）。原来「资料」「笔记」不带箭头、「博主」「来源平台」带，
+    // 四个标题两种样子。
     HStack(spacing: 8) {
       if let expanded {
         Button { expanded.wrappedValue.toggle() } label: {
           Text(title)
             .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
-            .overlay(alignment: .leading) {
-              Image(systemName: expanded.wrappedValue ? "chevron.down" : "chevron.right")
-                .font(.system(size: 8, weight: .semibold))
-                .offset(x: -12)
-            }
         }
         .buttonStyle(.plain)
+        .help(expanded.wrappedValue ? "点击折叠" : "点击展开")
         .accessibilityValue(expanded.wrappedValue ? "已展开" : "已折叠")
       } else {
         Text(title)
@@ -1172,8 +1175,9 @@ struct HistoryContentView: View {
         .accessibilityIdentifier("history-navigation-creator-add")
       }
     }
-    .themedFont(.caption, weight: .semibold)
+    .themedFont(.subheadline, weight: .medium)
     .foregroundStyle(theme.secondaryText)
+    .padding(.leading, DesignTokens.Space.xs)
     .frame(height: 24)
     .textCase(nil)
   }
@@ -1183,6 +1187,7 @@ struct HistoryContentView: View {
     systemImage: String,
     count: Int?,
     selected: Bool,
+    emphasizesCount: Bool = false,
     action: @escaping () -> Void
   ) -> some View {
     Button(action: action) {
@@ -1193,7 +1198,12 @@ struct HistoryContentView: View {
         // 它会给行套上自己的字体，**盖过 `.environment(\.font,)`**。实测根部
         // 注入对详情列、工具栏、设置页都生效，唯独进不了 List 行——表现就是
         // 整扇窗都换了字体，只有侧栏这一列还是系统字体。
+        //
+        // 图标统一 14pt、medium 字重、单色：未选中次要灰，选中强调色。
+        // 原来各符号按默认字重各画各的，粗细不一，是「像拼凑的」最直接来源。
         Image(systemName: systemImage)
+          .font(.system(size: DesignTokens.IconSize.control, weight: .medium))
+          .foregroundStyle(selected ? theme.accent : theme.secondaryText)
           .frame(width: 18)
         Text(title)
           .themedFont(.body)
@@ -1203,29 +1213,20 @@ struct HistoryContentView: View {
           .layoutPriority(1)
         Spacer(minLength: DesignTokens.Space.xs)
         if let count {
-          countBadge(count, selected: selected)
+          countBadge(count, selected: selected, emphasized: emphasizesCount)
         }
       }
       .frame(minHeight: 20)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    // 选中态保留品牌色，但不再整行反白。浅色底 + 左侧锚点比实心色块更安静，
-    // 也让平台图标和计数继续保持原本的辨识度。
+    // 选中态只留浅色底一种提示。原来同时有左侧色条、浅底、加粗三种，一个就够。
     .padding(.vertical, DesignTokens.Space.xs)
     .padding(.horizontal, DesignTokens.Space.sm)
     .background(
       selected ? theme.accent.opacity(0.12) : .clear,
       in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
     )
-    .overlay(alignment: .leading) {
-      if selected {
-        Capsule()
-          .fill(theme.accent)
-          .frame(width: 3, height: 18)
-          .padding(.leading, DesignTokens.Space.xxs)
-      }
-    }
     .foregroundStyle(theme.primaryText)
     .padding(.horizontal, -6)
     .fontWeight(selected ? .semibold : .regular)
@@ -1487,12 +1488,16 @@ struct HistoryContentView: View {
     return parts.joined(separator: " · ")
   }
 
-  private func countBadge(_ count: Int, selected: Bool) -> some View {
+  /// 计数只是一个数字，用次要灰的等宽数字直接右对齐；不再套灰底胶囊——
+  /// 一整列胶囊比左边的文字还重，看起来像一排按钮。只有需要提醒的那一项
+  /// （待总结）保留一个浅色胶囊。
+  private func countBadge(_ count: Int, selected: Bool, emphasized: Bool = false) -> some View {
     Text("\(count)")
-      .themedFont(.caption, weight: .medium, monospacedDigit: true)
-      .foregroundStyle(selected ? theme.accent : .secondary)
-      .padding(.horizontal, 6).padding(.vertical, 1)
-      .background(selected ? theme.accent.opacity(0.12) : theme.badge, in: Capsule())
+      .themedFont(.subheadline, monospacedDigit: true)
+      .foregroundStyle(selected ? theme.accent : theme.secondaryText)
+      .padding(.horizontal, emphasized ? 6 : 2)
+      .padding(.vertical, emphasized ? 1 : 0)
+      .background(emphasized ? theme.accent.opacity(0.12) : Color.clear, in: Capsule())
   }
 
   private var listSearchPlaceholder: String {
@@ -2655,10 +2660,12 @@ struct HistoryWindowToolbarThemeModifier: ViewModifier {
       content
         .scrollEdgeEffectStyle(.hard, for: .top)
         .toolbarBackground(background ?? theme.canvas, for: .windowToolbar)
+        .toolbarColorScheme(theme.isDark ? .dark : .light, for: .windowToolbar)
     } else {
       content
         .toolbarBackground(background ?? theme.canvas, for: .windowToolbar)
         .toolbarBackground(.visible, for: .windowToolbar)
+        .toolbarColorScheme(theme.isDark ? .dark : .light, for: .windowToolbar)
     }
   }
 }
@@ -2668,18 +2675,33 @@ struct PlatformNavigationIcon: View {
   let host: String
   var faviconURL: URL? = nil
   var faviconTaskID: TaskID? = nil
+  /// 侧栏里的平台 logo 改成单色剪影：一列里既有黑白线稿又有彩色商标，视线会被
+  /// 商标抢走。列表行里仍用彩色 logo 保持辨识度。颜色由调用方的 foregroundStyle 给。
+  var monochrome: Bool = false
 
   var body: some View {
     if host == HistoryPlatformDisplay.miscHost {
       // 杂项来源没有 logo 可取，用收件盘符号——它表达的正是「还没归类」。
       // List 会盖掉环境字号；resizable + 16 框避免 SF Symbol 按 18pt 被裁。
+      // 颜色由调用方给，和其它平台剪影一致。
       Image(systemName: "tray")
         .resizable()
         .scaledToFit()
-        .foregroundStyle(.secondary)
         .frame(width: 16, height: 16)
     } else if let image = PlatformIconCatalog.image(for: host) {
-      Image(nsImage: image).resizable().scaledToFit().frame(width: 16, height: 16)
+      // 单色分两种：线条型 logo（X、GitHub）走模板渲染，颜色由调用方给；
+      // 满底型 logo（抖音、B 站、公众号）模板渲染会变成一块实心方块，改为去色。
+      if monochrome, let name = PlatformIconCatalog.assetName(for: host),
+         PlatformIconCatalog.usesTemplateRendering(forAssetName: name) {
+        Image(nsImage: image)
+          .renderingMode(.template)
+          .resizable().scaledToFit().frame(width: 16, height: 16)
+      } else {
+        Image(nsImage: image)
+          .resizable().scaledToFit().frame(width: 16, height: 16)
+          .saturation(monochrome ? 0 : 1)
+          .opacity(monochrome ? 0.72 : 1)
+      }
     } else if let faviconURL, let faviconTaskID {
       HistoryFaviconDiskImage(url: faviconURL, host: host, taskID: faviconTaskID) {
         fallbackBadge
@@ -4017,7 +4039,7 @@ private struct HistoryDetailView: View, Equatable {
     } else if !hidesRepeatedCaptureHeading {
       VStack(alignment: .leading, spacing: 4) {
         Text(readingPrimaryTitle)
-          .font(readingFont.font(size: Self.captureTitleFontSize, weight: .medium))
+          .font(readingFont.font(size: Self.captureTitleFontSize, weight: .semibold))
           .foregroundStyle(theme.primaryText)
           .tracking(-0.4)
           .lineLimit(isTitleExpanded ? nil : 3)
@@ -4026,7 +4048,7 @@ private struct HistoryDetailView: View, Equatable {
           .background {
             // 隐藏测量完整理想高度：可见标题可被 lineLimit 截断，测量副本不受限。
             Text(readingPrimaryTitle)
-              .font(readingFont.font(size: Self.captureTitleFontSize, weight: .medium))
+              .font(readingFont.font(size: Self.captureTitleFontSize, weight: .semibold))
               .tracking(-0.4)
               .fixedSize(horizontal: false, vertical: true)
               .hidden()
@@ -4170,11 +4192,22 @@ private struct HistoryDetailView: View, Equatable {
             ProgressView()
               .controlSize(.mini)
           }
-          Text(appModel.runStatusText)
-            .themedFont(.caption, weight: .medium)
-            .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
-            .lineLimit(1)
-            .accessibilityIdentifier("model-run-status")
+          // 状态做成小圆点标签，和右边的「AI 处理」按钮分开——原来「已完成 · AI 处理 ▾」
+          // 是一段灰字接一个菜单，看起来像一句话。
+          HStack(spacing: DesignTokens.Space.xs) {
+            Circle()
+              .fill(appModel.runHasFailure ? theme.danger : (appModel.runState.isActive ? theme.info : theme.success))
+              .frame(width: 6, height: 6)
+              .accessibilityHidden(true)
+            Text(appModel.runStatusText)
+              .themedFont(.caption, weight: .medium)
+              .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
+              .lineLimit(1)
+          }
+          .padding(.horizontal, DesignTokens.Space.sm)
+          .padding(.vertical, 3)
+          .background(theme.badge, in: Capsule())
+          .accessibilityIdentifier("model-run-status")
         }
         if showsRunControls {
           aiProcessingMenu
@@ -4332,6 +4365,12 @@ private struct HistoryDetailView: View, Equatable {
     } label: {
       Label("AI 处理", systemImage: "sparkles")
         .themedFont(.callout, weight: .medium)
+        .padding(.horizontal, DesignTokens.Space.sm)
+        .padding(.vertical, 3)
+        .background(
+          RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+            .strokeBorder(theme.primaryText.opacity(0.15))
+        )
     }
     .menuStyle(.borderlessButton)
     .controlSize(.small)
@@ -4627,16 +4666,24 @@ private struct HistoryDetailView: View, Equatable {
         .textSelection(.enabled)
         .lineLimit(2)
         .fixedSize(horizontal: false, vertical: true)
-      Button("打开") { openSourceURL() }
-        .buttonStyle(.link)
-        .themedFont(.callout)
-        .linkCursor()
-        .accessibilityIdentifier("history-source-url-open")
-      Button("复制链接") { CopyFeedbackController.shared.copy(sourceURL) }
-        .buttonStyle(.link)
-        .themedFont(.callout)
-        .linkCursor()
-        .accessibilityIdentifier("history-source-url-copy")
+      // 动作和元信息分开：原来「打开」「复制链接」和作者、日期同字号同灰色排在
+      // 一行，读起来像四段元信息。改成两个图标按钮，悬停才浮出底色。
+      Button { openSourceURL() } label: {
+        Image(systemName: "arrow.up.right.square")
+      }
+      .buttonStyle(AppIconButtonStyle(size: 22))
+      .foregroundStyle(theme.accent)
+      .help("在浏览器中打开原文")
+      .accessibilityLabel("打开")
+      .accessibilityIdentifier("history-source-url-open")
+      Button { CopyFeedbackController.shared.copy(sourceURL) } label: {
+        Image(systemName: "doc.on.doc")
+      }
+      .buttonStyle(AppIconButtonStyle(size: 22))
+      .foregroundStyle(theme.accent)
+      .help("复制链接")
+      .accessibilityLabel("复制链接")
+      .accessibilityIdentifier("history-source-url-copy")
       Spacer(minLength: 0)
     }
     .accessibilityElement(children: .combine)
@@ -4980,10 +5027,12 @@ private struct HistoryDetailView: View, Equatable {
         // 剥离与清理都是整篇扫描，走备忘缓存，正文没变不重付。
         // Summaries rarely carry images; still allow local map if present.
         MarkdownContentView(
-          source: ReadingRenderCache.paneBody(
-            // 分层时只喂当前那一层，元数据清理仍按整篇的规则走。
-            source: (pane == .translation ? activeTranslationBody : nil) ?? artifact.bodyText,
-            strippingEchoedMetadata: pane == .translation
+          source: displayedArtifactMarkdown(
+            ReadingRenderCache.paneBody(
+              // 分层时只喂当前那一层，元数据清理仍按整篇的规则走。
+              source: (pane == .translation ? activeTranslationBody : nil) ?? artifact.bodyText,
+              strippingEchoedMetadata: pane == .translation
+            )
           ),
           sourceURL: URL(string: sourceURL),
           localImageURLs: localImageURLs,
@@ -5176,6 +5225,18 @@ private struct HistoryDetailView: View, Equatable {
       }
       sourceSnapshotReader(snapshot)
     }
+  }
+
+  /// 译文 / 总结开头如果是一行和页头标题同名的 `# 标题`，不再印第二遍。
+  ///
+  /// 翻译产物几乎总是以「# 译后标题」开头，而页头显示的正是这个译后标题——
+  /// 同一句话在屏幕上下相隔 40pt 出现两次。只认 ATX 标题行（`# `），正文首段
+  /// 恰好等于标题的情况不动。
+  private func displayedArtifactMarkdown(_ body: String) -> String {
+    guard !isOwnWriting else { return body }
+    return CapturedSourceBodyPresentation.strippingEchoedOpening(
+      title: readingPrimaryTitle, from: body, style: .stripSyntheticTitleHeadingOnly
+    )
   }
 
   /// 阅读卡里不再重复印标题。笔记是用户自己写的，开头的标题要留着。

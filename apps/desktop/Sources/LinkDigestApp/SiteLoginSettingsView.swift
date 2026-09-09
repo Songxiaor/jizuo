@@ -80,7 +80,7 @@ struct SiteLoginSettingsView: View {
         // 任何可操作项，状态也永远不会变，一整张卡的视觉重量和信息量完全不匹配。
         // 收成页尾一行说明，原因还在，只是不再占一张卡的地方。
         Text("YouTube 和 X 单条公开链接无需登录；四个平台的博主主页都可以在上面登录一次后复用。")
-          .themedFont(.caption)
+          .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("site-login-no-login-card")
@@ -105,37 +105,49 @@ struct SiteLoginSettingsView: View {
     .accessibilityIdentifier("site-login-settings")
   }
 
+  /// 浏览器登录这一段也进一张卡：原来它裸露在站点卡下面，和上面的卡片风格断裂。
+  /// 三个等重灰按钮收成「一个主动作 + 一个图标」：「连接浏览器扩展」删掉——
+  /// 「浏览器支持」页已经是它的正式入口，这里再放一个只会让人以为要装两次。
   private var browserConnectionCard: some View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
-      Text("通过本机浏览器读取 X")
-        .themedFont(.headline)
-      Text("在浏览器中使用 Google、Apple 或已有 X 登录。打开博主主页后，点击汲作扩展读取作品，再回到汲作勾选保存。")
-        .themedFont(.caption)
-        .foregroundStyle(.secondary)
-        .fixedSize(horizontal: false, vertical: true)
-      if let recent = browserSupport.lastDeliveries.max(by: { $0.value < $1.value }) {
-        Text("最近收到 \(recent.key.displayName) 的内容：\(recent.value.formatted(date: .abbreviated, time: .shortened))")
-          .themedFont(.caption)
-      } else {
-        Text("尚无浏览器送达记录。请先连接扩展，再从 X 主页发送一次作品清单。")
-          .themedFont(.caption)
-      }
-      Text("送达记录不代表浏览器当前在线，也不代表 X 登录仍有效；与上方 App 内登录分别保存。")
-        .themedFont(.caption2)
-        .foregroundStyle(.secondary)
-      HStack {
+      HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+        Text("通过本机浏览器读取 X")
+          .themedFont(.headline)
+        Spacer(minLength: DesignTokens.Space.md)
+        Button { browserSupport.refreshDeliveries() } label: {
+          Image(systemName: "arrow.clockwise")
+        }
+        .buttonStyle(.appIcon)
+        .help("刷新送达状态")
+        .accessibilityLabel("刷新状态")
         Button("在浏览器中登录 X") {
           browserOpenError = NSWorkspace.shared.open(XExternalLoginPolicy.loginURL)
             ? nil : "未能打开默认浏览器，请检查系统设置后重试。"
         }
+        .buttonStyle(.appProminent(appTheme.accent))
         .accessibilityIdentifier("site-login-x-browser")
-        Button("连接浏览器扩展") { openBrowserSupport() }
-          .accessibilityIdentifier("site-login-browser-support")
-        Button("刷新状态") { browserSupport.refreshDeliveries() }
       }
-      if let browserOpenError { Text(browserOpenError).themedFont(.caption) }
+      Text("在浏览器中使用 Google、Apple 或已有 X 登录。打开博主主页后，点击汲作扩展读取作品，再回到汲作勾选保存。")
+        .themedFont(.subheadline)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      if let recent = browserSupport.lastDeliveries.max(by: { $0.value < $1.value }) {
+        Text("最近收到 \(recent.key.displayName) 的内容：\(recent.value.formatted(date: .abbreviated, time: .shortened))")
+          .themedFont(.subheadline)
+      } else {
+        Text("尚无浏览器送达记录。请先在「浏览器支持」连接扩展，再从 X 主页发送一次作品清单。")
+          .themedFont(.subheadline)
+      }
+      Text("送达记录不代表浏览器当前在线，也不代表 X 登录仍有效；与上方 App 内登录分别保存。")
+        .themedFont(.caption2)
+        .foregroundStyle(.secondary)
+      if let browserOpenError {
+        SettingsInlineNotice(message: browserOpenError, tone: .warning)
+      }
     }
-    .padding(16)
+    .padding(.vertical, DesignTokens.Space.md)
+    .padding(.horizontal, DesignTokens.Space.lg)
+    .modifier(SettingsThemedCardChrome())
     .accessibilityIdentifier("site-login-browser-connection")
   }
 
@@ -222,7 +234,7 @@ struct SiteLoginSettingsView: View {
             }
           }
           Text(caption)
-            .themedFont(.caption)
+            .themedFont(.subheadline)
             .foregroundStyle(.tertiary)
             .fixedSize(horizontal: false, vertical: true)
             .accessibilityIdentifier("site-login-\(id)-caption")
@@ -236,23 +248,27 @@ struct SiteLoginSettingsView: View {
         )
         .accessibilityIdentifier("site-login-\(id)-status")
 
+        // 登录/重新登录是这一行的动作，用文字按钮；清除登录是低频且不可逆的，
+        // 收进行末「…」菜单——三个等重控件并排时，用户分不出哪个是常用的。
         Button(session.isLoggedIn ? "重新登录…" : "登录…") {
           presentLogin(platform)
         }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .tint(Color.secondary)
+        .buttonStyle(session.isLoggedIn ? .appQuiet : .appNormal)
         .accessibilityIdentifier("site-login-\(id)-login")
 
-        Button("清除登录") {
-          Task { await clearSession(platform, session: session) }
+        Menu {
+          Button("清除登录", role: .destructive) {
+            Task { await clearSession(platform, session: session) }
+          }
+          .disabled(!session.isLoggedIn)
+          .accessibilityIdentifier("site-login-\(id)-clear")
+        } label: {
+          Image(systemName: "ellipsis.circle")
         }
-        .themedFont(.body)
-        .buttonStyle(.plain)
-        .controlSize(.small)
-        .foregroundStyle(appTheme.danger)
-        .disabled(!session.isLoggedIn)
-        .accessibilityIdentifier("site-login-\(id)-clear")
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("更多")
+        .accessibilityLabel("\(platform.displayName)更多操作")
       }
 
       if isExpanded {
@@ -320,7 +336,7 @@ struct SiteLoginSettingsView: View {
       }
       if let diagnostic = session.sessionDiagnostic {
         Text(diagnostic)
-          .themedFont(.caption)
+          .themedFont(.subheadline)
           .foregroundStyle(.tertiary)
           .textSelection(.enabled)
           .fixedSize(horizontal: false, vertical: true)
@@ -328,7 +344,7 @@ struct SiteLoginSettingsView: View {
       }
       if session.isLoggedIn, session.verificationLabel == nil {
         Text("登录已保存只表示本机还有会话，不表示一定有效。失效时再重新登录。")
-          .themedFont(.caption)
+          .themedFont(.subheadline)
           .foregroundStyle(.tertiary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -337,9 +353,7 @@ struct SiteLoginSettingsView: View {
           Button(bilibiliSession.isVerifying ? "校验中…" : "校验会话") {
             Task { await bilibiliSession.verifySession() }
           }
-          .buttonStyle(.bordered)
-          .controlSize(.small)
-          .tint(Color.secondary)
+          .buttonStyle(.appNormal)
           .disabled(bilibiliSession.isVerifying)
           .accessibilityIdentifier("site-login-bilibili-verify")
 
@@ -347,7 +361,7 @@ struct SiteLoginSettingsView: View {
           // 否则「校验会话」点完没有任何回音。
           if let verification = bilibiliSession.verificationLabel {
             Label(verification, systemImage: "checkmark.seal")
-              .themedFont(.caption)
+              .themedFont(.subheadline)
               .foregroundStyle(.secondary)
               .textSelection(.enabled)
               .fixedSize(horizontal: false, vertical: true)

@@ -8,6 +8,8 @@ struct KnowledgeVaultSettingsView: View {
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
   @ObservedObject var model: KnowledgeVaultSettingsViewModel
+  /// 「清除」不可逆（要重新选一次文件夹并重新授权），先问一句。
+  @State private var isClearConfirmationPresented = false
 
   var body: some View {
     SettingsPlainPage {
@@ -41,23 +43,32 @@ struct KnowledgeVaultSettingsView: View {
               .help(model.directoryPath ?? "尚未选择")
               .accessibilityIdentifier("knowledge-vault-directory")
             Button(model.hasDirectory ? "更改文件夹" : "选择文件夹", action: chooseDirectory)
-              .buttonStyle(.bordered)
-              .controlSize(.small)
-              .tint(Color.secondary)
+              .buttonStyle(.appNormal)
               .accessibilityIdentifier("knowledge-vault-choose")
-            Button("清除", action: model.clearDirectory)
-              .buttonStyle(.bordered)
-              .controlSize(.small)
-              .tint(Color.secondary)
+            // 危险动作：文字按钮 + 危险色，和「更改文件夹」拉开层级，并二次确认。
+            Button("清除") { isClearConfirmationPresented = true }
+              .buttonStyle(.appDestructive(appTheme.danger))
               .disabled(!model.hasDirectory)
               .accessibilityIdentifier("knowledge-vault-clear")
+              .confirmationDialog(
+                "清除知识库文件夹？",
+                isPresented: $isClearConfirmationPresented
+              ) {
+                Button("清除", role: .destructive) { model.clearDirectory() }
+                Button("取消", role: .cancel) {}
+              } message: {
+                Text("只清除汲作记住的位置和访问权限，不会删除文件夹里的任何文件。")
+              }
           }
         }
       }
 
+      // 「同步到知识库」是这张卡唯一的主动作，放标题行右端；上次同步时间作为
+      // 说明的一部分放标题下，不再和按钮挤同一行。
       SettingsCard(
         title: "同步到知识库",
-        summary: "只处理新增和有变化的条目；没变的文件一个字都不会动。",
+        summary: model.lastSyncText.map { "只处理新增和有变化的条目；没变的文件一个字都不会动。上次同步：\($0)" }
+          ?? "只处理新增和有变化的条目；没变的文件一个字都不会动。",
         details: """
         每条内容导出成一个 Markdown：开头的属性区记录来源、平台、作者、发布与入库时间和标签，正文包含摘要和原文全文，便于全文检索命中。
         正文里带一个「回链」，点它能回到汲作定位到这条内容看全文、视频和转写。
@@ -65,43 +76,20 @@ struct KnowledgeVaultSettingsView: View {
         你在汲作里写的笔记、稿件和成品不会被同步——那些是你自己写的东西，不是采集来的素材。
         """,
         summaryPlacement: .aboveControl,
-        controlWidth: .full
-      ) {
+        controlWidth: .full,
+        control: {
         VStack(alignment: .leading, spacing: 12) {
-          HStack(spacing: 12) {
-            Button(action: { Task { await model.sync() } }) {
-              if model.isRunning {
-                Text("同步中…")
-              } else {
-                Text("同步到知识库")
-              }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .tint(appTheme.accent)
-            .disabled(!model.canSync)
-            .accessibilityIdentifier("knowledge-vault-sync")
-
-            if case let .running(done, total) = model.state, total > 0 {
+          if case let .running(done, total) = model.state, total > 0 {
+            HStack(spacing: 12) {
               ProgressView(value: Double(done), total: Double(total))
                 .frame(maxWidth: 180)
               Text("\(done)/\(total)")
-                .themedFont(.caption)
+                .themedFont(.subheadline)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
             }
-
-            Spacer(minLength: 0)
-
-            if let lastSyncText = model.lastSyncText {
-              Text("上次同步：\(lastSyncText)")
-                .themedFont(.caption)
-                .foregroundStyle(.tertiary)
-                .accessibilityIdentifier("knowledge-vault-last-sync")
-            }
+            Divider()
           }
-
-          Divider()
 
           // 手排页里默认 Toggle 是勾选框；设置窗口的开关统一用拨杆并靠右，
           // 和视频存储页保持同一形态。
@@ -115,19 +103,19 @@ struct KnowledgeVaultSettingsView: View {
               .accessibilityIdentifier("knowledge-vault-auto-sync")
           }
           Text("在后台安静进行，不打断你；抓一批内容只会同步一次。")
-            .themedFont(.caption)
+            .themedFont(.subheadline)
             .foregroundStyle(.tertiary)
 
           if let failure = model.lastAutoSyncFailureMessage {
             Label(failure, systemImage: "exclamationmark.triangle.fill")
-              .themedFont(.caption)
+              .themedFont(.subheadline)
               .foregroundStyle(appTheme.danger)
               .accessibilityIdentifier("knowledge-vault-auto-sync-error")
           }
 
           if !model.hasDirectory {
             Text("请先选择知识库文件夹。")
-              .themedFont(.caption)
+              .themedFont(.subheadline)
               .foregroundStyle(.secondary)
           }
 
@@ -135,7 +123,20 @@ struct KnowledgeVaultSettingsView: View {
             resultView(report)
           }
         }
-      }
+        },
+        titleAccessory: {
+          Button(action: { Task { await model.sync() } }) {
+            if model.isRunning {
+              Text("同步中…")
+            } else {
+              Text("同步到知识库")
+            }
+          }
+          .buttonStyle(.appProminent(appTheme.accent))
+          .disabled(!model.canSync)
+          .accessibilityIdentifier("knowledge-vault-sync")
+        }
+      )
 
       if case let .failed(message) = model.state {
         Text(message)
@@ -161,11 +162,11 @@ struct KnowledgeVaultSettingsView: View {
       if !report.conflicts.isEmpty {
         VStack(alignment: .leading, spacing: 4) {
           Text("以下文件已存在且不归汲作管，已跳过，未做任何修改：")
-            .themedFont(.caption)
+            .themedFont(.subheadline)
             .foregroundStyle(.secondary)
           ForEach(report.conflicts, id: \.filename) { conflict in
             Text("· \(conflict.filename) —— \(conflict.reason)")
-              .themedFont(.caption)
+              .themedFont(.subheadline)
               .foregroundStyle(.secondary)
               .textSelection(.enabled)
           }
@@ -176,11 +177,11 @@ struct KnowledgeVaultSettingsView: View {
       if !report.failures.isEmpty {
         VStack(alignment: .leading, spacing: 4) {
           Text("以下条目没能写入：")
-            .themedFont(.caption)
+            .themedFont(.subheadline)
             .foregroundStyle(.secondary)
           ForEach(report.failures, id: \.filename) { failure in
             Text("· \(failure.filename) —— \(failure.message)")
-              .themedFont(.caption)
+              .themedFont(.subheadline)
               .foregroundStyle(appTheme.danger)
               .textSelection(.enabled)
           }

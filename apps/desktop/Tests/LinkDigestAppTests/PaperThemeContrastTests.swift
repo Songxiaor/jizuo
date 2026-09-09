@@ -64,9 +64,12 @@ final class PaperThemeContrastTests: XCTestCase {
     XCTAssertLessThan(delta, 12, "辅助区和正文区的明度差太大，像三个 App 拼在一起")
   }
 
-  // 列表列跟着画布走，不自成一档。三档递进试过，分级方向是反的。
-  func testListPaneSharesTheCanvasSurface() {
-    XCTAssertEqual(tokens.listPane, tokens.canvas)
+  // 三栏三档：侧栏最沉、列表居中、正文卡最亮。列表列必须落在两者之间——
+  // 之前的一版三档把方向做反了（列表比侧栏还沉），这里把方向也钉住。
+  func testListPaneSitsBetweenCanvasAndCard() {
+    let canvasL = lightness(tokens.canvas), paneL = lightness(tokens.listPane), cardL = lightness(tokens.card)
+    XCTAssertGreaterThan(paneL, canvasL, "列表列要比侧栏亮")
+    XCTAssertLessThan(paneL, cardL, "列表列要比正文卡暗")
   }
 
   // MARK: - 色度
@@ -160,7 +163,12 @@ final class PaperThemeContrastTests: XCTestCase {
           contrastRatio(color, t.card), 4.5, "\(name)：\(label) 在正文卡上跌破 AA"
         )
       }
-      XCTAssertEqual(t.listPane, t.canvas, "\(name)：列表列不该自成一档")
+      // 三栏三档：侧栏最沉、列表居中、正文卡最亮（深色主题方向相反）。
+      // 列表列必须落在画布和正文卡之间，否则侧栏和列表黏成一大块。
+      let canvasL = lightness(t.canvas), paneL = lightness(t.listPane), cardL = lightness(t.card)
+      XCTAssertTrue(
+        (canvasL < paneL && paneL < cardL) || (canvasL > paneL && paneL > cardL),
+        "\(name)：列表列的明度 \(paneL) 不在侧栏 \(canvasL) 和正文卡 \(cardL) 之间")
     }
   }
 
@@ -173,7 +181,8 @@ final class PaperThemeContrastTests: XCTestCase {
     // 排除高对比：它的身份是纯黑白的**对比度**，不是底色色相。拿底色 ΔE 去
     // 要求它和浅色拉开，会逼着把它的纯白底染色，反而破坏它存在的理由。
     let lightThemes = AppearanceTheme.allCases.filter {
-      !$0.tokens.isNative && $0 != .ink && $0 != .mono
+      // 「跟随系统」解析成浅色或深色其中一套，本来就和它们同底色，不参与比较。
+      !$0.tokens.isNative && $0 != .ink && $0 != .glass
     }
     for (i, a) in lightThemes.enumerated() {
       for b in lightThemes.dropFirst(i + 1) {

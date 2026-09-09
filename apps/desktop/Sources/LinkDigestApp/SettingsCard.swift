@@ -29,7 +29,7 @@ extension View {
   /// 别再一页一改。
   func settingsSectionHeaderStyle() -> some View {
     self
-      .themedFont(.footnote, weight: .medium)
+      .themedFont(.subheadline, weight: .medium)
       .foregroundStyle(.secondary)
   }
 }
@@ -39,22 +39,10 @@ extension View {
 /// 高对比主题靠形状而不是色相编码（`encodesStatusByShape`），chip 改用 `primaryText`
 /// 单色，形状还在，颜色不再承担分类信息。
 enum SettingsCategoryChip {
+  /// 一律强调色。原来每个分类一种颜色（绿蓝棕红轮着来），是「彩虹图标」——
+  /// 最容易显得像模板应用的一处。分类靠图标形状和文字区分就够了。
   static func fill(for category: String, theme: HistoryThemeTokens) -> Color {
-    if theme.encodesStatusByShape {
-      return theme.primaryText
-    }
-    switch category {
-    case "service": return theme.accent
-    case "generation": return theme.info
-    case "appearance": return theme.warning
-    case "labs": return theme.danger
-    case "browserSupport": return theme.info
-    case "siteLogin": return theme.success
-    case "mediaStorage": return theme.warning
-    case "knowledgeVault": return theme.accent
-    case "updates": return theme.info
-    default: return theme.accent
-    }
+    theme.accent
   }
 }
 
@@ -65,6 +53,8 @@ struct SettingsSidebarChip: View {
   let symbol: String
   let fill: Color
   var edge: CGFloat = DesignTokens.Layout.settingsSidebarChip
+  /// 侧栏行里不画色底：单色线条图标和主窗口侧栏同一套。页头的大 chip 才带淡底。
+  var showsBackground: Bool = false
 
   var body: some View {
     Image(systemName: symbol)
@@ -72,7 +62,7 @@ struct SettingsSidebarChip: View {
       .foregroundStyle(fill)
       .frame(width: edge, height: edge)
       .background(
-        fill.opacity(0.10),
+        showsBackground ? fill.opacity(0.10) : Color.clear,
         in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous)
       )
       .accessibilityHidden(true)
@@ -102,7 +92,8 @@ struct SettingsPageHeader: View {
       SettingsSidebarChip(
         symbol: symbol,
         fill: fill,
-        edge: DesignTokens.IconSize.empty
+        edge: DesignTokens.IconSize.empty,
+        showsBackground: true
       )
       VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
         Text(title)
@@ -178,7 +169,7 @@ struct SettingsCardGroup<Content: View>: View {
       content()
       if let footer {
         Text(footer)
-          .themedFont(.caption)
+          .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -214,7 +205,7 @@ struct SettingsRow<Control: View>: View {
       }
       if isDetailsPresented, let details {
         Text(details)
-          .themedFont(.caption)
+          .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -297,16 +288,14 @@ struct SettingsRowGroup<Content: View>: View {
 /// 一个能打的卡面底色，不需要再交给谁兜底。
 struct SettingsThemedCardChrome: ViewModifier {
   @Environment(\.appTheme) private var theme
-  @AppStorage(AppearanceTheme.storageKey) private var appearanceRaw = AppearanceTheme.glass.rawValue
 
+  /// 卡面只靠底色差和 hairline 分层，不投影：容器语言收成「面」和「点」两种，
+  /// 投影是第三种，去掉。
   func body(content: Content) -> some View {
-    let appearance = AppearanceTheme(rawValue: appearanceRaw) ?? .glass
-    let lifts = appearance == .sepia
     let shape = RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
     return content
       .background(theme.card, in: shape)
       .overlay(shape.strokeBorder(theme.hairline))
-      .designShadow(lifts ? .raised : .flat, tint: theme.canvas)
   }
 }
 
@@ -382,7 +371,7 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
 
   @ViewBuilder private var summaryText: some View {
     Text(summary)
-      .themedFont(.caption)
+      .themedFont(.subheadline)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -390,17 +379,22 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
+      // ⓘ 紧跟标题，而不是甩到卡片最右端：全 App 只允许这一种 ⓘ 位置——
+      // 行式设置（`SettingsRow`）本来就是「标题 + ⓘ」，卡片跟它对齐，用户
+      // 在两种容器里找说明的动作一样。右端留给主控件（`titleAccessory`）。
       HStack(alignment: .firstTextBaseline, spacing: 16) {
-        Text(title).themedFont(.headline)
+        HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
+          Text(title).themedFont(.headline)
+          if details != nil {
+            settingsInfoButton(
+              title: title,
+              isExpanded: $isDetailsPresented,
+              reduceMotion: reduceMotion
+            )
+          }
+        }
         Spacer(minLength: 12)
         titleAccessory()
-        if details != nil {
-          settingsInfoButton(
-            title: title,
-            isExpanded: $isDetailsPresented,
-            reduceMotion: reduceMotion
-          )
-        }
       }
       if summaryPlacement == .aboveControl { summaryText }
       control()
@@ -408,7 +402,7 @@ struct SettingsCard<Control: View, TitleAccessory: View>: View {
       if summaryPlacement == .belowControl { summaryText }
       if isDetailsPresented, let details {
         Text(details)
-          .themedFont(.caption)
+          .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
@@ -500,7 +494,7 @@ struct SettingsChoiceList<Value: Hashable>: View {
                 .themedFont(.body)
                 .foregroundStyle(.primary)
               Text(choice.explanation)
-                .themedFont(.caption)
+                .themedFont(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
                 .multilineTextAlignment(.leading)
@@ -527,9 +521,213 @@ struct SettingsCrossReference: View {
 
   var body: some View {
     Label(message, systemImage: systemImage)
-      .themedFont(.caption)
+      .themedFont(.subheadline)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
       .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+extension View {
+  /// 设置行右端的下拉/选择器：统一 240pt、右对齐成一列。
+  ///
+  /// 给 `Picker(.menu)` 用时**不要再叠 `.fixedSize()`**——那会让它缩回内容宽度，
+  /// 这里的宽度就白钉了。
+  func settingsControlWidth() -> some View {
+    frame(width: DesignTokens.Layout.settingsControlWidth, alignment: .trailing)
+  }
+}
+
+/// 卡片里的一行提示条：错误、警告或「暂不可用」的原因。
+///
+/// 原来这类文字直接红字塞在按钮旁边（手机同步页一整行红字挤着一个禁用按钮），
+/// 既读不完整，又分不清是错误还是说明。收成一条带底色的提示行，放在控件下方
+/// 独占一行，文案说结论，技术原因留给 ⓘ。
+struct SettingsInlineNotice: View {
+  enum Tone { case info, warning, danger }
+
+  let message: String
+  var tone: Tone = .info
+  @Environment(\.appTheme) private var theme
+
+  private var color: Color {
+    switch tone {
+    case .info: theme.info
+    case .warning: theme.warning
+    case .danger: theme.danger
+    }
+  }
+
+  private var symbol: String {
+    switch tone {
+    case .info: "info.circle"
+    case .warning: "exclamationmark.triangle"
+    case .danger: "xmark.octagon"
+    }
+  }
+
+  var body: some View {
+    Label(message, systemImage: symbol)
+      .themedFont(.subheadline)
+      .foregroundStyle(color)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.vertical, DesignTokens.Space.sm)
+      .padding(.horizontal, DesignTokens.Space.md)
+      .background(color.opacity(0.10), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+  }
+}
+
+/// 卡片底部的操作行：状态在左、按钮在右，按钮按「品牌主色一个 + 文字按钮若干」排。
+///
+/// 全 App 的按钮只有三级：主动作（`appProminent`）、次要（`appNormal`）、
+/// 文字按钮（`appQuiet`）。同一行里最多一个主动作。危险动作用文字按钮 + 危险色。
+struct SettingsActionRow<Actions: View>: View {
+  var status: String? = nil
+  var statusColor: Color = .secondary
+  var showsProgress = false
+  var statusIdentifier: String? = nil
+  @ViewBuilder var actions: () -> Actions
+
+  var body: some View {
+    HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+      if showsProgress { ProgressView().controlSize(.small) }
+      if let status {
+        let text = Text(status)
+          .themedFont(.subheadline)
+          .foregroundStyle(statusColor)
+          .lineLimit(2)
+          .fixedSize(horizontal: false, vertical: true)
+        if let statusIdentifier {
+          text.accessibilityIdentifier(statusIdentifier)
+        } else {
+          text
+        }
+      }
+      Spacer(minLength: DesignTokens.Space.md)
+      HStack(spacing: DesignTokens.Space.sm) {
+        actions()
+      }
+    }
+    .frame(maxWidth: .infinity)
+  }
+}
+
+/// 设置行右端下拉的统一外观：240pt、描边、当前值 + 副标题 + 上下箭头。
+///
+/// 系统 `Picker(.menu)` 只会按最长选项收缩，撑不到固定宽度——六行下拉六个宽度。
+/// 自绘标签，宽度才真的一样。
+struct SettingsMenuLabel: View {
+  let title: String
+  var subtitle: String? = nil
+
+  var body: some View {
+    HStack(spacing: DesignTokens.Space.sm) {
+      Text(title)
+        .themedFont(.body)
+        .foregroundStyle(.primary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      if let subtitle, !subtitle.isEmpty {
+        Text(subtitle)
+          .themedFont(.subheadline)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.middle)
+      }
+      Spacer(minLength: 0)
+      Image(systemName: "chevron.up.chevron.down")
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(.secondary)
+    }
+    .padding(.horizontal, DesignTokens.Space.sm)
+    .frame(height: 22)
+    .frame(width: DesignTokens.Layout.settingsControlWidth, alignment: .leading)
+    .background(
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.sm + 1, style: .continuous)
+        .fill(Color.primary.opacity(0.05))
+    )
+    .overlay(
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.sm + 1, style: .continuous)
+        .strokeBorder(Color.primary.opacity(0.15))
+    )
+    .contentShape(Rectangle())
+  }
+}
+
+/// 固定 240pt 宽的下拉：分组选项，选中项打勾。
+///
+/// 用「按钮 + popover」而不是 `Menu`：macOS 上 `Menu` 的 borderless 样式会无视自定义
+/// 标签的底色和宽度，画成「箭头 + 强调色文字」，六行下拉又变成两种样子。
+struct SettingsMenuPicker<Value: Hashable>: View {
+  struct Option: Identifiable {
+    let value: Value
+    let title: String
+    var subtitle: String? = nil
+    var id: Value { value }
+  }
+
+  /// 每组之间画一条分隔线。
+  let sections: [[Option]]
+  @Binding var selection: Value
+  var identifier: String? = nil
+  @State private var isPresented = false
+
+  private var selected: Option? {
+    sections.joined().first { $0.value == selection }
+  }
+
+  var body: some View {
+    Button {
+      isPresented = true
+    } label: {
+      SettingsMenuLabel(title: selected?.title ?? "", subtitle: selected?.subtitle)
+    }
+    .buttonStyle(.plain)
+    .accessibilityIdentifier(identifier ?? "")
+    .accessibilityValue(selected?.title ?? "")
+    .popover(isPresented: $isPresented, arrowEdge: .trailing) {
+      ScrollView {
+        VStack(alignment: .leading, spacing: 0) {
+          ForEach(Array(sections.enumerated()), id: \.offset) { index, group in
+            ForEach(group) { option in
+              Button {
+                selection = option.value
+                isPresented = false
+              } label: {
+                HStack(spacing: 10) {
+                  VStack(alignment: .leading, spacing: 1) {
+                    Text(option.title)
+                      .themedFont(.body)
+                      .foregroundStyle(.primary)
+                      .lineLimit(1)
+                    if let subtitle = option.subtitle, !subtitle.isEmpty {
+                      Text(subtitle)
+                        .themedFont(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    }
+                  }
+                  Spacer(minLength: 12)
+                  Image(systemName: "checkmark")
+                    .foregroundStyle(.tint)
+                    .opacity(option.value == selection ? 1 : 0)
+                }
+                .padding(.horizontal, DesignTokens.Space.lg)
+                .padding(.vertical, 7)
+                .contentShape(Rectangle())
+              }
+              .buttonStyle(.plain)
+            }
+            if index < sections.count - 1 {
+              Divider().padding(.vertical, DesignTokens.Space.xs)
+            }
+          }
+        }
+        .padding(.vertical, DesignTokens.Space.sm)
+      }
+      .frame(width: 320)
+      .frame(maxHeight: 420)
+    }
   }
 }

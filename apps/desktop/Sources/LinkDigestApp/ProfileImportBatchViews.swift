@@ -295,6 +295,13 @@ private struct ProfileImportBatchCard: View {
       .themedFont(.caption)
       .padding(.vertical, DesignTokens.Space.xxs)
       .accessibilityIdentifier("profile-import-completion-notice")
+      // 完成提示 3 秒后自己走：它原来常驻在列表顶上占一行，直到用户去点 ×。
+      // 资料已经进列表了，这一行的信息量只有一次。
+      .task(id: batch.id) {
+        try? await Task.sleep(for: .seconds(3))
+        guard !Task.isCancelled else { return }
+        dismiss()
+      }
     } else {
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 8) {

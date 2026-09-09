@@ -6,7 +6,7 @@ import Foundation
 /// 「总结与翻译」这类标题和独立翻译配置各写一份后互相打架。
 enum UISettingsPresentation {
   static let modelServicesCardTitle = "模型服务"
-  static let modelServicesSummary = "每个模型配置都有独立的 Base URL、模型名和 API Key。"
+  static let modelServicesSummary = "按服务商归拢；每个模型有自己的 Base URL 和 API Key。"
   static let modelServicesDetails = "密钥只保存在本机钥匙串，不写进历史库、导出文件或日志。"
   static let summaryAssignmentTitle = "总结模型"
   static let translationAssignmentTitle = "翻译模型"

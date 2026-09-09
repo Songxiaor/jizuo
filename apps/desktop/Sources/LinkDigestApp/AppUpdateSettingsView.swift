@@ -26,14 +26,21 @@ struct AppUpdateSettingsView: View {
       )
 
       SettingsRowGroup {
+        // 「检查更新」和版本号同一行：它是这页唯一的动作，原来裸露在卡片外的左下角。
         SettingsRow(
           title: "当前版本",
           caption: model.buildLine
         ) {
-          Text(model.versionLine)
-            .themedFont(.body, monospacedDigit: true)
-            .foregroundStyle(.secondary)
-            .accessibilityIdentifier("app-update-version")
+          HStack(spacing: DesignTokens.Space.md) {
+            Text(model.versionLine)
+              .themedFont(.body, monospacedDigit: true)
+              .foregroundStyle(.secondary)
+              .accessibilityIdentifier("app-update-version")
+            Button("检查更新") { model.checkForUpdates() }
+              .buttonStyle(.appNormal)
+              .disabled(!model.canCheckForUpdates)
+              .accessibilityIdentifier("app-update-check")
+          }
         }
 
         SettingsRow(
@@ -48,16 +55,6 @@ struct AppUpdateSettingsView: View {
             .accessibilityLabel("有新版本时提醒我")
             .accessibilityIdentifier("app-update-remind-toggle")
         }
-      }
-
-      HStack {
-        Button("检查更新") { model.checkForUpdates() }
-          .buttonStyle(.borderedProminent)
-          .controlSize(.small)
-          .tint(appTheme.accent)
-          .disabled(!model.canCheckForUpdates)
-          .accessibilityIdentifier("app-update-check")
-        Spacer(minLength: 0)
       }
     }
   }

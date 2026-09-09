@@ -39,43 +39,38 @@ struct MediaStorageSettingsView: View {
 
       // 清晰度是这张卡唯一的主控件，放标题行右端；否则它单独占一行，
       // 前面是说明、后面是解释，选择器夹在中间和谁都对不齐。
+      // 当前档位的解释收进 ⓘ（随选择变化），卡里只留一句跨页去处。
+      // 原来三段说明层层递进：一句 summary、一段灰字、再一行带箭头的依赖提示，
+      // 一个下拉配了三段字。
       SettingsCard(
         title: "B 站重新获取清晰度",
         summary: "「重新获取播放」时请求的清晰度上限。档位越高，起播越慢。",
-        details: "公开接口一般只到 720P；4K 与会员专属档需要你自己的账号权限。实际拿到哪一档，可以看播放器下方那行选流诊断——它会写明接口返回了哪些档、最后选了哪条。",
+        details: model.bilibiliStreamQuality.settingsExplanation
+          + "\n公开接口一般只到 720P；4K 与会员专属档需要你自己的账号权限。实际拿到哪一档，可以看播放器下方那行选流诊断——它会写明接口返回了哪些档、最后选了哪条。",
         summaryPlacement: .aboveControl,
         control: {
-          VStack(alignment: .leading, spacing: 8) {
-            Text(model.bilibiliStreamQuality.settingsExplanation)
-              .themedFont(.caption)
-              .foregroundStyle(.tertiary)
-              .fixedSize(horizontal: false, vertical: true)
-              .accessibilityIdentifier("media-storage-bilibili-quality-explanation")
-
-            // 跨页依赖必须给出去处：只说「依赖本机会话」，读者还得自己找那一页。
-            SettingsCrossReference(
-              message: "高清依赖「站点登录 → B 站」里的本机会话；未登录时回退公开接口。"
-            )
-            .accessibilityIdentifier("media-storage-bilibili-login-hint")
-          }
+          // 跨页依赖必须给出去处：只说「依赖本机会话」，读者还得自己找那一页。
+          SettingsCrossReference(
+            message: "高清需先在「站点登录 → B 站」登录；未登录时回退公开接口。"
+          )
+          .accessibilityIdentifier("media-storage-bilibili-login-hint")
         },
         titleAccessory: {
-          Picker("B 站重新获取清晰度", selection: $model.bilibiliStreamQuality) {
-            ForEach(BilibiliStreamQualityPreference.allCases, id: \.self) { quality in
-              Text(quality.settingsTitle).tag(quality)
-            }
-          }
-          .labelsHidden()
-          .fixedSize()
-          .accessibilityIdentifier("media-storage-bilibili-quality")
+          SettingsMenuPicker(
+            sections: [BilibiliStreamQualityPreference.allCases.map { .init(value: $0, title: $0.settingsTitle) }],
+            selection: $model.bilibiliStreamQuality,
+            identifier: "media-storage-bilibili-quality"
+          )
+          .accessibilityLabel("B 站重新获取清晰度")
         }
       )
 
       // 「自动保存开关」「保存文件夹」「单个视频上限」原来各占一张整卡，但三项
       // 都只是「一句说明 + 一个控件」，收进同一张行式卡片：都是在回答
       // 「已保存的视频存不存、存哪、多大不存」这一件事。
-      SettingsCardGroup(header: "已保存的视频") {
-        SettingsRowGroup {
+      // 三行都在回答「已保存的视频存不存、存哪、多大不存」；不再给它单独一个
+      // 组标题——前两张卡都没有组标题，只有第三张有，看起来像漏了两个。
+      SettingsRowGroup {
           // 整行 Toggle：标签在左、开关贴右边缘，就是系统设置里那种标准行。
           SettingsRow(
             title: "抓取视频后自动保存到本地",
@@ -101,14 +96,10 @@ struct MediaStorageSettingsView: View {
                 .foregroundStyle(.secondary)
                 .accessibilityIdentifier("media-storage-directory")
               Button(model.usesCustomDirectory ? "更改文件夹" : "选择文件夹", action: chooseDirectory)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(Color.secondary)
+                .buttonStyle(.appNormal)
                 .accessibilityIdentifier("media-storage-choose")
               Button("恢复默认", action: model.restoreDefault)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-                .tint(Color.secondary)
+                .buttonStyle(.appQuiet)
                 .disabled(!model.usesCustomDirectory)
                 .accessibilityIdentifier("media-storage-default")
             }
@@ -132,7 +123,6 @@ struct MediaStorageSettingsView: View {
             .fixedSize()
             .accessibilityIdentifier("media-storage-download-limit")
           }
-        }
       }
 
       if case let .failed(message) = model.state {

@@ -19,15 +19,14 @@ final class ThemeTypographyTests: XCTestCase {
     XCTAssertNil(AppearanceTheme.glass.tokens.typography.family)
   }
 
-  // 反过来，其余每个主题都**必须**有自己的字体。
-  //
-  // 这条是这次改造的初衷：在这之前换主题只换颜色，字体全 App 写死。漏掉一个
-  // 主题不会有任何报错，只会是那个主题看起来「没做完」。
-  func testEveryNonSystemThemeDeclaresItsOwnFont() {
-    for theme in AppearanceTheme.allCases where theme != .glass {
-      XCTAssertNotNil(
+  // 三套主题的界面字体都交给系统：英文数字 SF Pro、中文 PingFang，和 macOS
+  // 自家应用同一套。这是「Mac 味」最直接的来源；主题只换颜色，不再各配一种字体
+  // （圆体、楷体、冬青黑那批随旧主题一起下架）。用户在设置里指定的界面字体仍优先。
+  func testEveryThemeUsesTheSystemUIFontByDefault() {
+    for theme in AppearanceTheme.allCases {
+      XCTAssertNil(
         theme.tokens.typography.requestedFamily,
-        "\(theme.displayName) 主题没有声明自己的字体"
+        "\(theme.displayName) 主题不该再自带界面字体"
       )
     }
   }

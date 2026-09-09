@@ -43,11 +43,18 @@ final class UISettingsPresentationTests: XCTestCase {
     )
     let tab = section(in: source, from: "private var generationTab: some View", to: "// MARK: - 设置卡片零件")
     XCTAssertTrue(tab.contains("UISettingsPresentation.newCaptureAutoProcessTitle"))
+    // 生成偏好改为即时生效：没有保存按钮、没有底部固定条，只有保存失败时露出一行状态。
+    // 真正的落盘由 ViewModel 的自动保存负责——这里锁的是「入口不存在」+「失败可见」。
     XCTAssertTrue(tab.contains("model.preferencesStatusText"))
-    XCTAssertTrue(tab.contains("model.canSavePreferences"))
-    XCTAssertTrue(tab.contains("save-model-preferences"))
-    XCTAssertTrue(tab.contains("safeAreaInset(edge: .bottom"))
-    XCTAssertTrue(tab.contains("generation-preferences-save-bar"))
+    XCTAssertTrue(tab.contains("model-preferences-status"))
+    XCTAssertFalse(tab.contains("save-model-preferences"), "生成偏好即时生效，不该再有保存按钮")
+    XCTAssertFalse(tab.contains("safeAreaInset(edge: .bottom"), "底部固定保存条已撤")
+    XCTAssertTrue(tab.contains("即时生效"))
+    let viewModel = try String(
+      contentsOf: root.appendingPathComponent("Sources/LinkDigestApp/ProviderSettingsViewModel.swift"),
+      encoding: .utf8
+    )
+    XCTAssertTrue(viewModel.contains("schedulePreferenceAutosave("), "非管线偏好也要改完即存")
     XCTAssertTrue(tab.contains("revoke-remembered-consents"))
     // 脑图未开启时不展示前置条件警告。
     XCTAssertTrue(tab.contains("model.autoMindMapNewCaptures"))

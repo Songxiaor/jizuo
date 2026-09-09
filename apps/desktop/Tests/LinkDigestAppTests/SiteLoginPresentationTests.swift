@@ -92,8 +92,15 @@ final class SiteLoginPresentationTests: XCTestCase {
     XCTAssertTrue(
       text.contains("private func siteRow("),
       "三个站点必须收进同一个行构件，不能各写一份，否则文案和交互迟早各自漂移")
+    // 卡面只允许两张：三站共用的 `sitesCard`，和页尾「通过本机浏览器读取 X」那张。
+    // 站点行本身（`siteRow`）不许再套卡面——那正是「一站一张卡」的退化路径。
     XCTAssertEqual(
-      occurrences(of: ".modifier(SettingsThemedCardChrome())", in: text), 1,
+      occurrences(of: ".modifier(SettingsThemedCardChrome())", in: text), 2,
+      "站点卡 + 浏览器卡各一张；多出来的必然是站点行各自套了卡面")
+    let siteRowBody = text.range(of: "private func siteRow(").map { String(text[$0.lowerBound...]) } ?? ""
+    let siteRowOnly = siteRowBody.range(of: "// MARK: - 卡片零件").map { String(siteRowBody[..<$0.lowerBound]) } ?? siteRowBody
+    XCTAssertFalse(
+      siteRowOnly.contains("SettingsThemedCardChrome()"),
       "三个站点必须收进同一张自绘卡，不能各自套一层卡面")
     XCTAssertFalse(
       text.contains("LabeledContent("),

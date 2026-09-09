@@ -219,5 +219,12 @@ extension DesignTokens {
     /// 设置页内容宽度与侧边留白；所有手排设置页使用同一刻度。
     static let settingsContentMaxWidth: CGFloat = 760
     static let settingsHorizontalInset: CGFloat = 20
+
+    /// 240 — 设置行右端下拉/选择器的统一宽度。
+    ///
+    /// 原来同一张卡里三种下拉三种宽度（右对齐纯文字、通栏、半宽），外观页又是
+    /// 520pt、生成偏好页 200pt。控件宽度不一致比字号不一致更显眼：整列右边缘
+    /// 参差不齐，用户一眼就觉得「歪」。所有行式下拉都钉在这一档，右对齐成一列。
+    static let settingsControlWidth: CGFloat = 240
   }
 }

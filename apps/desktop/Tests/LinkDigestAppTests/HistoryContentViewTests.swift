@@ -1995,7 +1995,7 @@ final class HistoryContentViewTests: XCTestCase {
     let previousYear = calendar.date(from: DateComponents(year: 2025, month: 8, day: 20, hour: 12))!
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(now, now: now), "今天")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(yesterday, now: now), "昨天")
-    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(earlier, now: now), "8/20")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(earlier, now: now), "8月20日")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(previousYear, now: now), "2025/8/20")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("5天前", now: now), "5天前")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026-08-20T12:00:00Z", now: now),

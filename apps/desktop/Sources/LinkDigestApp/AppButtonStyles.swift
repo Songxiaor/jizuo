@@ -82,6 +82,8 @@ struct AppButtonStyle: ButtonStyle {
     case normal
     /// 辅助动作：无背景无描边，只有 hover 时浮出底色。
     case quiet
+    /// 危险动作：和 quiet 同形，但字用危险色（传进 `accent`）。清除、删除、断开走这一档。
+    case destructive
   }
 
   var emphasis: Emphasis = .normal
@@ -128,6 +130,7 @@ struct AppButtonStyle: ButtonStyle {
       switch emphasis {
       case .prominent: .white
       case .normal, .quiet: .primary
+      case .destructive: accent
       }
     }
 
@@ -140,12 +143,14 @@ struct AppButtonStyle: ButtonStyle {
         Color.primary.opacity(configuration.isPressed ? 0.08 : (isHovering ? 0.05 : 0))
       case .quiet:
         Color.primary.opacity(configuration.isPressed ? 0.08 : (isHovering ? 0.05 : 0))
+      case .destructive:
+        accent.opacity(configuration.isPressed ? 0.14 : (isHovering ? 0.08 : 0))
       }
     }
 
     private var border: Color {
       switch emphasis {
-      case .prominent, .quiet: .clear
+      case .prominent, .quiet, .destructive: .clear
       case .normal: Color.primary.opacity(0.15)
       }
     }
@@ -162,5 +167,9 @@ extension ButtonStyle where Self == AppButtonStyle {
   static var appNormal: AppButtonStyle { AppButtonStyle(emphasis: .normal) }
   static func appProminent(_ accent: Color) -> AppButtonStyle {
     AppButtonStyle(emphasis: .prominent, accent: accent)
+  }
+  /// 危险动作的文字按钮。`danger` 传当前主题的危险色。
+  static func appDestructive(_ danger: Color) -> AppButtonStyle {
+    AppButtonStyle(emphasis: .destructive, accent: danger)
   }
 }

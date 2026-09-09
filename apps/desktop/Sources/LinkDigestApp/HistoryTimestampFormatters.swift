@@ -82,7 +82,8 @@ enum HistoryPublishedTimestampFormatter {
     formatter.locale = Locale(identifier: "zh_CN")
     formatter.calendar = .autoupdatingCurrent
     formatter.timeZone = .autoupdatingCurrent
-    formatter.dateFormat = "M/d"
+    // 「1/1」在列表里读不出是日期还是进度；同年用「1月1日」，隔年才带年份。
+    formatter.dateFormat = "M月d日"
     return formatter
   }()
   private static let compactYearDay: DateFormatter = {

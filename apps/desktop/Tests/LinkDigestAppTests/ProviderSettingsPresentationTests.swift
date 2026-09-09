@@ -115,7 +115,7 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     XCTAssertTrue(service.contains("delete-library-model"))
     // 同上：锁「模型 ID 用 caption 字号」，不锁它走 .font 还是 .themedFont。
     XCTAssertNotNil(
-      service.range(of: #"Text\(entry\.modelName\)\.\w*[Ff]ont\(\.caption\)"#, options: .regularExpression))
+      service.range(of: #"Text\(entry\.modelName\)\.\w*[Ff]ont\(\.(caption|subheadline)\)"#, options: .regularExpression))
     XCTAssertFalse(service.contains("Text(\"\\(entry.title) · 在线转写\").tag(entry.id)"))
     XCTAssertTrue(source.contains("ProviderIconCatalog.image(for: preset)"))
   }

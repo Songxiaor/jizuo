@@ -40,7 +40,9 @@ final class ModelChoicePresentationTests: XCTestCase {
   /// 库里未必有想用的模型，自定义要保留——但它是例外路径，不是默认。
   func testCustomEntryStaysAvailableBehindThePicker() throws {
     let settings = try source("ProviderSettingsView.swift")
-    XCTAssertTrue(settings.contains(#"Text("自定义…").tag(Self.customModelTag)"#))
+    // 下拉换成自绘的 `SettingsMenuPicker` 之后，自定义项仍靠哨兵值挂在最后一组里。
+    XCTAssertTrue(settings.contains("value: Self.customModelTag"))
+    XCTAssertTrue(settings.contains(#""自定义…""#))
     XCTAssertTrue(
       settings.contains("private static let customModelTag"),
       "哨兵值要不可能与真实模型名撞车")

@@ -18,6 +18,13 @@ struct BrowserSupportSettingsView: View {
   }
 
   @State private var revealFailure: ExtensionFolderMiss?
+  /// 已经连上浏览器之后，安装三步默认收起；点「重新安装扩展」再展开。
+  @State private var showsInstallSteps = false
+
+  /// 有没有一个浏览器的通道已经通了。通了之后安装步骤就是噪音。
+  private var hasConnectedBrowser: Bool {
+    detectedBrowsers.contains { isChannelHealthy(model.status(for: $0).state) }
+  }
 
   /// 列哪些浏览器：档案表里提供的、且本机真的装着的。
   ///
@@ -49,33 +56,27 @@ struct BrowserSupportSettingsView: View {
       // 从上往下读：先做什么 → 各浏览器状态 → 接收状态收成一行。
       SettingsCard(
         title: "连接浏览器",
-        summary: "在 Chrome 里装一次扩展，之后自动同步。",
-        details: "扩展只在你点击同步时连接，不会保持在线。加载扩展后，首次同步成功会在下方显示送达时间。",
+        summary: "扩展只在你点同步时连接，不常驻。",
+        details: "加载扩展后，首次同步成功会在下方显示送达时间。安装位置改变后需要重新连接一次，浏览器里的扩展不用重装。",
         controlWidth: .full
       ) {
         VStack(alignment: .leading, spacing: 16) {
           // ① 动手步骤放最前——这才是要做的事，不是先看两屏状态。
-          VStack(alignment: .leading, spacing: 6) {
-            installStep(1, "打开浏览器的扩展管理页")
-            installStep(2, "开启「开发者模式」")
-            installStep(3, "选择「加载已解压的扩展程序」，再选下面打开的文件夹")
-          }
-          Button("打开扩展文件夹", action: revealExtensionFiles)
-            .buttonStyle(.borderedProminent)
-            .controlSize(.small)
-            .tint(appTheme.accent)
-            .accessibilityIdentifier("reveal-test-browser-extension")
-            .alert(item: $revealFailure) { miss in
-              Alert(
-                title: Text("扩展文件夹没有打开"),
-                message: Text(
-                  [miss.detail, "找过这些位置：\n" + miss.searched.map(\.path).joined(separator: "\n")]
-                    .compactMap { $0 }
-                    .joined(separator: "\n\n")
-                ),
-                dismissButton: .default(Text("好"))
-              )
+          // 已经连上之后收起：三步说明对连好的人是噪音，只留一个「重新安装」入口。
+          if !hasConnectedBrowser || showsInstallSteps {
+            VStack(alignment: .leading, spacing: 6) {
+              installStep(1, "打开浏览器的扩展管理页")
+              installStep(2, "开启「开发者模式」")
+              installStep(3, "选择「加载已解压的扩展程序」，再选下面打开的文件夹")
             }
+            Button("打开扩展文件夹", action: revealExtensionFiles)
+              .buttonStyle(.appProminent(appTheme.accent))
+              .accessibilityIdentifier("reveal-test-browser-extension")
+          } else {
+            Button("重新安装扩展…") { showsInstallSteps = true }
+              .buttonStyle(.appNormal)
+              .accessibilityIdentifier("browser-support-reinstall")
+          }
 
           Divider()
 
@@ -85,9 +86,7 @@ struct BrowserSupportSettingsView: View {
             Spacer()
             if model.isLoading { ProgressView().controlSize(.small) }
             Button("重新检查") { Task { await model.load() } }
-              .buttonStyle(.bordered)
-              .controlSize(.small)
-              .tint(Color.secondary)
+              .buttonStyle(.appQuiet)
               .disabled(model.isLoading || model.activeBrowser != nil)
           }
           // Grid 而不是 VStack：浏览器名长度不同，用 HStack 排状态词的起点就会参差
@@ -97,7 +96,7 @@ struct BrowserSupportSettingsView: View {
           // 孤零零地悬着，看不出是「还没扫」还是「扫完了没有」。
           if detectedBrowsers.isEmpty && !model.isLoading {
             Text("没有检测到\(supportedBrowserNames)。装好之后点「重新检查」。")
-              .themedFont(.caption)
+              .themedFont(.subheadline)
               .foregroundStyle(.secondary)
               .accessibilityIdentifier("browser-support-empty")
           } else {
@@ -121,6 +120,17 @@ struct BrowserSupportSettingsView: View {
           .padding(.horizontal, DesignTokens.Space.lg)
           .modifier(SettingsThemedCardChrome())
       }
+    }
+    .alert(item: $revealFailure) { miss in
+      Alert(
+        title: Text("扩展文件夹没有打开"),
+        message: Text(
+          [miss.detail, "找过这些位置：\n" + miss.searched.map(\.path).joined(separator: "\n")]
+            .compactMap { $0 }
+            .joined(separator: "\n\n")
+        ),
+        dismissButton: .default(Text("好"))
+      )
     }
     .task { await model.load() }
     // 送达随时会发生：你在浏览器里点一次同步，这一行就得跟着变。原来只在切进这一页时
@@ -179,7 +189,7 @@ struct BrowserSupportSettingsView: View {
         .font(.caption)
         .foregroundStyle(receiverColor)
       Text(receiverLineText)
-        .themedFont(.caption)
+        .themedFont(.subheadline)
         .foregroundStyle(appModel.browserReceiverState == .ready ? Color.secondary : receiverColor)
         .fixedSize(horizontal: false, vertical: true)
       Spacer(minLength: 0)
@@ -216,7 +226,7 @@ struct BrowserSupportSettingsView: View {
       Text(browser.displayName)
         .gridColumnAlignment(.leading)
       Text(display.text)
-        .themedFont(.caption)
+        .themedFont(.subheadline)
         .foregroundStyle(display.needsAction ? appTheme.warning : Color.secondary)
         .gridColumnAlignment(.leading)
       HStack(spacing: 8) {
@@ -241,7 +251,7 @@ struct BrowserSupportSettingsView: View {
         // 第一列留空，让说明和上面那行的浏览器名对齐。
         Color.clear.frame(width: 18, height: 0)
         Text("原来指向的程序已不在原位（\(ProductDisplay.name) 改过名或被移动过）。点「重新连接」即可，浏览器里的扩展不用重装。")
-          .themedFont(.caption)
+          .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .gridCellColumns(3)
@@ -256,13 +266,10 @@ struct BrowserSupportSettingsView: View {
   ) -> some View {
     if model.canInstall(browser) || (model.canRepair(browser) && needsConnectionAction(state)) {
       Button("连接") { Task { await model.requestInstall(browser) } }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
+        .buttonStyle(.appNormal)
     } else if model.canUninstall(browser) {
       Button("断开") { Task { await model.uninstall(browser) } }
-        .buttonStyle(.bordered)
-        .controlSize(.small)
-        .tint(Color.secondary)
+        .buttonStyle(.appQuiet)
     }
   }
 
@@ -397,7 +404,7 @@ struct BrowserSupportSettingsView: View {
         .frame(width: 16, height: 16)
         .background(Circle().fill(Color.secondary.opacity(0.15)))
       Text(text)
-        .themedFont(.caption)
+        .themedFont(.subheadline)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
     }

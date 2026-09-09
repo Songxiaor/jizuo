@@ -16,6 +16,10 @@ struct UIReadingPlatformNavigation: View {
   let theme: HistoryThemeTokens
   let isSelected: (String) -> Bool
   let onSelect: (String) -> Void
+  /// 折叠时最多显示几行。平台一多（十几个）就把侧栏占掉一半，「标签」被顶到底下
+  /// 看不见；默认只露出条数最多的几家，其余折进「更多平台」。`nil` 表示不折叠。
+  var collapsedLimit: Int? = nil
+  var isExpanded: Binding<Bool> = .constant(true)
 
   private var orderedItems: [Item] {
     let order = ["X", "抖音", "微信公众号", "哔哩哔哩", "GitHub", "YouTube", "Discourse", "Reddit", "Substack", "小红书", "待分类"]
@@ -26,8 +30,20 @@ struct UIReadingPlatformNavigation: View {
     }
   }
 
+  /// 折叠时露出的行：按条数取前 N 家，再按固定顺序排；当前选中的平台一定露出，
+  /// 否则选了一个折叠里的平台，侧栏却看不出选中了谁。
+  private var visibleItems: [Item] {
+    guard let collapsedLimit, !isExpanded.wrappedValue, orderedItems.count > collapsedLimit + 1 else {
+      return orderedItems
+    }
+    let top = Set(orderedItems.sorted { $0.count > $1.count }.prefix(collapsedLimit).map(\.host))
+    return orderedItems.filter { top.contains($0.host) || isSelected($0.host) }
+  }
+
+  private var hiddenCount: Int { orderedItems.count - visibleItems.count }
+
   var body: some View {
-    ForEach(orderedItems) { item in
+    ForEach(visibleItems) { item in
       UIReadingPlatformRow(
         item: item,
         theme: theme,
@@ -35,6 +51,29 @@ struct UIReadingPlatformNavigation: View {
         onSelect: { onSelect(item.host) }
       )
       .id(item.host)
+    }
+    if let collapsedLimit, orderedItems.count > collapsedLimit + 1 {
+      Button {
+        isExpanded.wrappedValue.toggle()
+      } label: {
+        HStack(spacing: DesignTokens.Space.xs) {
+          Image(systemName: isExpanded.wrappedValue ? "chevron.up" : "chevron.down")
+            .font(.system(size: 9, weight: .semibold))
+            .frame(width: 16, height: 16)
+          Text(isExpanded.wrappedValue ? "收起" : "更多平台 · \(hiddenCount)")
+            .themedFont(.subheadline)
+          Spacer(minLength: 0)
+        }
+        .foregroundStyle(.secondary)
+        .padding(.vertical, DesignTokens.Space.xs)
+        .padding(.horizontal, DesignTokens.Space.sm)
+        .frame(minHeight: 24)
+        .frame(maxWidth: .infinity)
+        .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .padding(.horizontal, -6)
+      .accessibilityIdentifier("history-navigation-platforms-more")
     }
   }
 }
@@ -64,8 +103,10 @@ private struct UIReadingPlatformRow: View {
         PlatformNavigationIcon(
           host: item.host,
           faviconURL: item.faviconURL,
-          faviconTaskID: item.faviconTaskID
+          faviconTaskID: item.faviconTaskID,
+          monochrome: true
         )
+        .foregroundStyle(isSelected ? theme.accent : theme.secondaryText)
         .frame(width: 16, height: 16)
         .accessibilityHidden(true)
         Text(name)
@@ -76,14 +117,9 @@ private struct UIReadingPlatformRow: View {
           .layoutPriority(1)
           .frame(maxWidth: .infinity, alignment: .leading)
         Text("\(item.count)")
-          .themedFont(.caption, weight: .medium, monospacedDigit: true)
-          .foregroundStyle(isSelected ? theme.accent : .secondary)
-          .padding(.horizontal, 6)
-          .padding(.vertical, 1)
-          .background(
-            isSelected ? theme.accent.opacity(0.12) : theme.badge,
-            in: Capsule()
-          )
+          .themedFont(.subheadline, monospacedDigit: true)
+          .foregroundStyle(isSelected ? theme.accent : theme.secondaryText)
+          .padding(.horizontal, 2)
       }
       .foregroundStyle(theme.primaryText)
       .padding(.vertical, DesignTokens.Space.xs)
@@ -94,14 +130,6 @@ private struct UIReadingPlatformRow: View {
         isSelected ? theme.accent.opacity(0.12) : hoverFill,
         in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
       )
-      .overlay(alignment: .leading) {
-        if isSelected {
-          Capsule()
-            .fill(theme.accent)
-            .frame(width: 3, height: 16)
-            .padding(.leading, DesignTokens.Space.xxs)
-        }
-      }
       .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
     }
     .buttonStyle(.plain)

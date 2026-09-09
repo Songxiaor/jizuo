@@ -1717,6 +1717,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
     // AppDelegate——表现就是点一次回链多一个汲作窗口。
     .handlesExternalEvents(matching: [])
     .windowResizability(.contentMinSize)
+    // 标题必须留着：试过 `showsTitle: false`，工具栏失去分栏锚点，右侧那组图标
+    // 整体漂到列表列上方。「汲作」两个字落在列表列顶上是这一取舍的代价。
     .windowToolbarStyle(.unified(showsTitle: true))
     .commands {
       LinkDigestCommands(manualLink: manualLink)
