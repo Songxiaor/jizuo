@@ -123,6 +123,8 @@ struct ProviderSettingsView: View {
   @State private var isCustomOutputLanguage = false
   @State private var translationModelSearchQuery = ""
   @State private var pendingDeletionID: String?
+  /// 待确认「整组删除」的服务商（组名 + 该组全部模型 ID）。
+  @State private var pendingGroupDeletion: LibraryProviderGroup?
   /// 「清除授权记录」按下之后的一行反馈。成功和失败都要说，因为清除本身没有可见效果。
   @State private var consentRevokeNotice: String?
   /// 当前展开的服务商。同时只展开一家：模型清单落在网格下面，同时摊开两家就分不清
@@ -508,6 +510,25 @@ struct ProviderSettingsView: View {
     } message: {
       Text("对应的 API Key 会一并从本机钥匙串移除；正在使用它的功能会回到未配置或本机状态。")
     }
+    .confirmationDialog(
+      "删除「\(pendingGroupDeletion?.id ?? "")」下的全部 \(pendingGroupDeletion?.entries.count ?? 0) 个模型？",
+      isPresented: Binding(
+        get: { pendingGroupDeletion != nil },
+        set: { if !$0 { pendingGroupDeletion = nil } }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("全部删除", role: .destructive) {
+        if let group = pendingGroupDeletion {
+          pendingGroupDeletion = nil
+          Task { await model.deleteModels(group.entries.map(\.id)) }
+        }
+      }
+      .accessibilityIdentifier("delete-library-provider-confirm")
+      Button("取消", role: .cancel) { pendingGroupDeletion = nil }
+    } message: {
+      Text("这家服务商的 API Key 会一并从本机钥匙串移除；正在用这些模型的功能会回到未配置或本机状态。")
+    }
   }
 
   // MARK: - 功能与模型指派
@@ -874,32 +895,47 @@ struct ProviderSettingsView: View {
   /// 用途徽标（总结 / 转写）挂在具体模型行上，组头只回答「这是哪一家、有几个模型」。
   private func libraryProviderCard(_ group: LibraryProviderGroup) -> some View {
     let expanded = expandedLibraryProvider == group.id
-    return Button {
-      withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
-        expandedLibraryProvider = expanded ? nil : group.id
+    return HStack(spacing: DesignTokens.Space.sm) {
+      Button {
+        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+          expandedLibraryProvider = expanded ? nil : group.id
+        }
+      } label: {
+        HStack(spacing: DesignTokens.Space.sm) {
+          providerIcon(group.preset, fallbackName: group.id)
+          Text(group.id)
+            .themedFont(.body, weight: .semibold)
+            .lineLimit(1)
+            .truncationMode(.tail)
+          Text("\(group.entries.count) 个模型")
+            .themedFont(.subheadline)
+            .foregroundStyle(.secondary)
+          Spacer(minLength: 8)
+          Image(systemName: "chevron.right")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .rotationEffect(.degrees(expanded ? 90 : 0))
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(height: 40)
+        .contentShape(Rectangle())
       }
-    } label: {
-      HStack(spacing: DesignTokens.Space.sm) {
-        providerIcon(group.preset, fallbackName: group.id)
-        Text(group.id)
-          .themedFont(.body, weight: .semibold)
-          .lineLimit(1)
-          .truncationMode(.tail)
-        Text("\(group.entries.count) 个模型")
-          .themedFont(.subheadline)
-          .foregroundStyle(.secondary)
-        Spacer(minLength: 8)
-        Image(systemName: "chevron.right")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(.secondary)
-          .rotationEffect(.degrees(expanded ? 90 : 0))
+      .buttonStyle(.plain)
+      .accessibilityIdentifier("library-provider-group")
+      // 整组删除收进组头的更多菜单：一家服务商十来个模型，一条条删太折腾。
+      Menu {
+        Button("删除这家的全部模型（\(group.entries.count) 个）", role: .destructive) {
+          pendingGroupDeletion = group
+        }
+        .accessibilityIdentifier("delete-library-provider")
+      } label: {
+        Image(systemName: "ellipsis.circle")
       }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .frame(height: 40)
-      .contentShape(Rectangle())
+      .menuStyle(.borderlessButton)
+      .help("更多")
+      .accessibilityLabel("这家服务商的更多操作")
+      .accessibilityIdentifier("library-provider-more")
     }
-    .buttonStyle(.plain)
-    .accessibilityIdentifier("library-provider-group")
   }
 
   /// 模型行：和组头同一个左边距，靠 24pt 缩进表示从属。
@@ -1211,22 +1247,29 @@ struct ProviderSettingsView: View {
                 ScrollView {
                   LazyVStack(spacing: 0) {
                     ForEach(model.filteredModels, id: \.self) { name in
+                      let alreadyAdded = model.isModelAlreadyInLibrary(name)
                       Button {
                         model.toggleCatalogModel(name)
                       } label: {
                         HStack(spacing: 10) {
-                          Image(systemName: model.selectedCatalogModels.contains(name) ? "checkmark.square.fill" : "square")
+                          Image(systemName: alreadyAdded ? "checkmark.circle" : (model.selectedCatalogModels.contains(name) ? "checkmark.square.fill" : "square"))
                             .foregroundStyle(model.selectedCatalogModels.contains(name) ? Color.accentColor : .secondary)
                           Text(name)
-                            .foregroundStyle(.primary)
+                            .foregroundStyle(alreadyAdded ? .secondary : .primary)
                             .lineLimit(1)
                           Spacer()
+                          if alreadyAdded {
+                            Text("已添加")
+                              .font(.caption)
+                              .foregroundStyle(.secondary)
+                          }
                         }
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                         .contentShape(Rectangle())
                       }
                       .buttonStyle(.plain)
+                      .disabled(alreadyAdded)
                       .accessibilityIdentifier("provider-model-option")
                       if name != model.filteredModels.last {
                         Divider().padding(.leading, 36)

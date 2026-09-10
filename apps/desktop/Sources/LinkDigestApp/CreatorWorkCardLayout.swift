@@ -3,8 +3,13 @@ import LinkDigestCore
 
 /// Shared work-card geometry for import selection, reserved queue, and saved cards.
 enum CreatorWorkCardLayout {
-  /// WeChat gallery should use this same cover ratio.
-  static let coverAspect: CGFloat = 2.35
+  /// 所有平台卡片同一个媒体区比例。16:9 而不是 2.35：竖版视频和公众号封面在
+  /// 2.35 的窄条里只剩中间一截，16:9 是各平台封面的最大公约数。
+  static let coverAspect: CGFloat = 16.0 / 9.0
+  /// 媒体区里没有图时的平台图标尺寸。
+  static let placeholderIconSize: CGFloat = 28
+  /// 卡底互动数据行的固定高度：没有数据的卡也占这一行，整排卡片才等高。
+  static let metricRowHeight: CGFloat = 14
   static let textPadding: CGFloat = 10
   static let textSpacing: CGFloat = 4
   static let metricGap: CGFloat = DesignTokens.Space.xs
@@ -60,10 +65,29 @@ struct CreatorWorkCardCoverSlot<Content: View>: View {
 struct CreatorWorkCardFillImage: View {
   let image: NSImage
 
+  /// 竖版图（抖音、小红书的封面）按 16:9 居中裁只剩身子没有脸。
+  /// 竖版改成「模糊放大的同图做底 + 完整缩略图居中」，横版仍然铺满。
+  private var isPortrait: Bool {
+    image.size.width > 0 && image.size.height > image.size.width * 1.15
+  }
+
   var body: some View {
-    Image(nsImage: image)
-      .resizable()
-      .scaledToFill()
+    if isPortrait {
+      ZStack {
+        Image(nsImage: image)
+          .resizable()
+          .scaledToFill()
+          .blur(radius: 18)
+          .opacity(0.85)
+        Image(nsImage: image)
+          .resizable()
+          .scaledToFit()
+      }
+    } else {
+      Image(nsImage: image)
+        .resizable()
+        .scaledToFill()
+    }
   }
 }
 

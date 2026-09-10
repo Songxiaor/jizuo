@@ -393,6 +393,83 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertEqual(model.summaryEntryDisplays.map(\.modelName), ["step-3.7-flash"])
   }
 
+  func testAddingModelAlreadyInLibraryIsSkippedAndSavedEntryBecomesEditable() async throws {
+    let configuration = ProviderConfigurationService(
+      profileStore: ViewModelProfileStore(),
+      secretStore: ViewModelSecretStore(),
+      libraryStore: ViewModelLibraryStore()
+    )
+    let base = ProviderPreset.deepSeek.baseURLTemplate
+    _ = try await configuration.addProfiles(baseURL: base, models: ["deepseek-v4-flash"], apiKey: "fake-key")
+    let loader = SettingsCatalogLoader(result: .models(["deepseek-v4-flash", "deepseek-v4-pro"]))
+    let model = ProviderSettingsViewModel(
+      configurationService: configuration,
+      provider: SettingsTestProvider(scripts: []),
+      modelCatalogLoader: loader
+    )
+    await model.load()
+
+    model.beginAddModel()
+    model.selectPreset(.deepSeek)
+    await model.loadModels(apiKey: "fake-key")
+    XCTAssertTrue(model.isModelAlreadyInLibrary("deepseek-v4-flash"))
+    XCTAssertFalse(model.selectedCatalogModels.contains("deepseek-v4-flash"), "读取列表后不能默认勾上已添加的模型")
+    model.toggleCatalogModel("deepseek-v4-flash")
+    XCTAssertFalse(model.selectedCatalogModels.contains("deepseek-v4-flash"), "已添加的模型不可再勾选")
+    model.toggleCatalogModel("deepseek-v4-pro")
+    XCTAssertTrue(model.canSaveConfiguration)
+
+    await model.save(apiKey: "fake-key")
+    XCTAssertEqual(model.libraryEntryDisplays.map(\.modelName), ["deepseek-v4-flash", "deepseek-v4-pro"])
+    XCTAssertEqual(model.editingProfileID, model.libraryEntryDisplays.last?.id, "刚存的那条要成为当前编辑项，测试连接才读得到它的凭据")
+    XCTAssertTrue(model.canTestConnection)
+    XCTAssertEqual(model.statusText, "模型配置已保存")
+
+    // 手动填一个已存在的模型名再保存（没有模型目录的服务商）：不写库、提示已存在。
+    let manual = ProviderSettingsViewModel(
+      configurationService: configuration,
+      provider: SettingsTestProvider(scripts: [])
+    )
+    await manual.load()
+    manual.beginAddModel()
+    manual.selectPreset(.deepSeek)
+    manual.selectModel("deepseek-v4-flash")
+    XCTAssertTrue(manual.canSaveConfiguration)
+    await manual.save(apiKey: "fake-key")
+    XCTAssertEqual(manual.libraryEntryDisplays.count, 2)
+    XCTAssertEqual(manual.statusText, "这些模型已经在列表里，没有重复添加。")
+  }
+
+  func testDeletingAProviderGroupRemovesEveryModelUnderIt() async throws {
+    let configuration = ProviderConfigurationService(
+      profileStore: ViewModelProfileStore(),
+      secretStore: ViewModelSecretStore(),
+      libraryStore: ViewModelLibraryStore()
+    )
+    _ = try await configuration.addProfiles(
+      baseURL: ProviderPreset.deepSeek.baseURLTemplate,
+      models: ["deepseek-v4-flash", "deepseek-v4-pro"],
+      apiKey: "fake-key"
+    )
+    _ = try await configuration.addProfiles(
+      baseURL: "https://api.stepfun.com/v1",
+      models: ["step-3.7-flash"],
+      apiKey: "other-key"
+    )
+    let model = ProviderSettingsViewModel(
+      configurationService: configuration,
+      provider: SettingsTestProvider(scripts: [])
+    )
+    await model.load()
+    let deepSeekIDs = model.libraryEntryDisplays.filter { $0.modelName.hasPrefix("deepseek") }.map(\.id)
+    XCTAssertEqual(deepSeekIDs.count, 2)
+
+    await model.deleteModels(deepSeekIDs)
+
+    XCTAssertEqual(model.libraryEntryDisplays.map(\.modelName), ["step-3.7-flash"])
+    XCTAssertNil(model.libraryErrorText)
+  }
+
   func testPresetSelectsRecommendedChatModelOnlyWhenCatalogActuallyContainsIt() async throws {
     let loader = SettingsCatalogLoader(result: .models(["embedding-model", "deepseek-v4-flash"]))
     let model = ProviderSettingsViewModel(

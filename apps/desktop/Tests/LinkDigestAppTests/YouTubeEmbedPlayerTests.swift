@@ -49,7 +49,7 @@ final class YouTubeEmbedPlayerTests: XCTestCase {
     XCTAssertTrue(card.contains("if let cover = displayCoverURL"))
     XCTAssertTrue(card.contains("if row.hasMedia == true, let file = await localCover(nil)"))
     XCTAssertTrue(card.contains("prefersTextPreview = true"))
-    XCTAssertTrue(card.contains("else if prefersTextPreview"))
+    XCTAssertTrue(card.contains("prefersTextPreview {"), "没有本机视频文件时退回文字摘录，不报「封面加载失败」")
     XCTAssertFalse(card.contains("guard let admitted else {\n          coverFailed = true"))
   }
 

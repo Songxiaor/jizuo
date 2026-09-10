@@ -92,7 +92,11 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
   /// SwiftUI 的 preferredColorScheme(nil) 在 macOS 上不会把已设置的外观
   /// 复位，因此统一用 NSApp.appearance 做全局切换：nil 即回到跟随系统。
   @MainActor static func applyApplicationAppearance(_ rawValue: String) {
-    NSApp.appearance = (AppearanceTheme(rawValue: rawValue) ?? .glass).renderingAppearance
+    let target = (AppearanceTheme(rawValue: rawValue) ?? .glass).renderingAppearance
+    // 主窗口和设置窗口各自监听同一个偏好，切一次主题会各调一次。给 NSApp 重复赋同一个
+    // appearance 仍会让 AppKit 把所有窗口重走一遍外观切换（整屏一块块重画），只赋一次。
+    guard NSApp.appearance?.name != target?.name else { return }
+    NSApp.appearance = target
   }
 
   /// 令牌表按主题**算一次就存下来**。

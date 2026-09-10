@@ -107,8 +107,12 @@ struct WindowColumnDividerInstaller: NSViewRepresentable {
       overlay.frame = frameView.bounds
       frameView.addSubview(overlay)
     }
+    // 切主题时 SwiftUI 会连着刷很多次；颜色和分栏都没变就不动 overlay，
+    // 否则每次都重挂观察者、重画细线，分栏缝隙跟着一闪一闪。
+    let split = splitView(in: contentView)
+    guard overlay.lineColor != lineColor || overlay.trackedSplitView !== split else { return }
     overlay.lineColor = lineColor
-    overlay.trackedSplitView = splitView(in: contentView)
+    overlay.trackedSplitView = split
     overlay.refreshObservation()
     overlay.needsDisplay = true
   }

@@ -37,8 +37,11 @@ enum CapturedContentNaming {
     if platform == .x, let basis = captionBasisTitle(title, host: host),
        titleMatchesBodyStart(basis, cleanedBody: cleaned)
     {
-      if let text = derivedCaption(from: basis)
-        ?? derivedCaption(from: firstSubstantialParagraph(in: cleaned))
+      // 推文没有独立标题，列表标题就是正文开头。列表行有两行位置，按 40 字截会在
+      // 半句话甚至半个单词处断掉（"…to know what …"）；放宽到 72 字并在词边界收尾。
+      // 抓取端可能已把标题截到 36 字，所以优先从正文重新取，取不到再用标题。
+      if let text = derivedCaption(from: firstSubstantialParagraph(in: cleaned), limit: xCaptionCharacterLimit)
+        ?? derivedCaption(from: basis, limit: xCaptionCharacterLimit)
       {
         return Name(text: text, origin: .caption)
       }
@@ -72,6 +75,7 @@ private extension CapturedContentNaming {
   }
 
   static let captionCharacterLimit = 40
+  static let xCaptionCharacterLimit = 72
 
   static func platformKind(_ host: String) -> PlatformKind {
     switch HistoryPlatformRegistry.canonicalHost(for: host) {
@@ -100,7 +104,7 @@ private extension CapturedContentNaming {
     return trimmed.isEmpty ? nil : trimmed
   }
 
-  static func derivedCaption(from raw: String?) -> String? {
+  static func derivedCaption(from raw: String?, limit: Int = captionCharacterLimit) -> String? {
     guard var remainder = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
           !remainder.isEmpty
     else { return nil }
@@ -109,14 +113,27 @@ private extension CapturedContentNaming {
       let stripped = strippingTrailingHashtags(sentence)
         .trimmingCharacters(in: .whitespacesAndNewlines)
       if !stripped.isEmpty {
-        if stripped.count <= captionCharacterLimit { return stripped }
-        return String(stripped.prefix(captionCharacterLimit)) + "…"
+        if stripped.count <= limit { return stripped }
+        return clippedAtWordBoundary(stripped, limit: limit) + "…"
       }
       if sentence.count >= remainder.count { break }
       remainder = String(remainder.dropFirst(sentence.count))
         .trimmingCharacters(in: .whitespacesAndNewlines)
     }
     return nil
+  }
+
+  /// 截断点落在英文单词中间时退到前一个空格；中文按字截。退得太多（不到一半）就不退。
+  static func clippedAtWordBoundary(_ text: String, limit: Int) -> String {
+    let chars = Array(text)
+    guard chars.count > limit else { return text }
+    let cutsInsideWord = chars[limit - 1].isLetter && chars[limit].isLetter
+      && chars[limit - 1].isASCII && chars[limit].isASCII
+    var end = limit
+    if cutsInsideWord, let space = chars[..<limit].lastIndex(where: { $0.isWhitespace }), space >= limit / 2 {
+      end = space
+    }
+    return String(chars[..<end]).trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
   static func firstSentence(from text: String) -> String {

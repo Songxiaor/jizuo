@@ -121,9 +121,35 @@ enum HistoryPublishedTimestampFormatter {
     let cleaned = value.trimmingCharacters(in: .whitespacesAndNewlines)
       .replacingOccurrences(of: "^[·•|｜,，\\s]+|[·•|｜,，\\s]+$", with: "", options: .regularExpression)
     guard let date = standardISO.date(from: cleaned) ?? fractionalISO.date(from: cleaned) else {
+      // 抖音、公众号存的是「2026-09-07 20:11」这类本地墙钟；列表和卡片同样只要「9月7日」，
+      // 不然同一排里 X 显示「9月8日」、抖音显示「2026年9月7日 20:11」。完整时间留给悬停提示。
+      if let local = localCalendarDate(cleaned) { return compactDate(local, now: now) }
       return text(cleaned)
     }
     return compactDate(date, now: now)
+  }
+
+  /// 把「yyyy-MM-dd」或「yyyy-MM-dd HH:mm[:ss]」按本机时区解析成 Date；其他写法返回 nil。
+  private static func localCalendarDate(_ value: String) -> Date? {
+    let calendar = Calendar.autoupdatingCurrent
+    if let day = calendarDateOnly(value) {
+      return calendar.date(from: DateComponents(year: day.year, month: day.month, day: day.day, hour: 12))
+    }
+    // 公众号存的是「2026年8月20日 17:54」这种中文写法。
+    if let match = value.wholeMatch(of: /^(\d{4})年(\d{1,2})月(\d{1,2})日(?:\s+(\d{1,2}):(\d{2}))?$/) {
+      return calendar.date(from: DateComponents(
+        year: Int(match.1), month: Int(match.2), day: Int(match.3),
+        hour: match.4.flatMap { Int($0) } ?? 12, minute: match.5.flatMap { Int($0) } ?? 0
+      ))
+    }
+    guard wallclockStamp(value) != nil else { return nil }
+    let separator = value.index(value.startIndex, offsetBy: 10)
+    guard let day = calendarDateOnly(String(value[..<separator])) else { return nil }
+    let timeParts = value[value.index(after: separator)...].split(separator: ":")
+    return calendar.date(from: DateComponents(
+      year: day.year, month: day.month, day: day.day,
+      hour: Int(timeParts[0]), minute: Int(timeParts[1])
+    ))
   }
 
   static func directoryCardStamp(

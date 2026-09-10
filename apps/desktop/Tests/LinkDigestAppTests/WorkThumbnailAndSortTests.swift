@@ -35,6 +35,27 @@ final class WorkThumbnailAndSortTests: XCTestCase {
     return data as Data
   }
 
+  func testThumbnailsPersistToDiskAcrossLoaderInstances() async throws {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("thumb-disk-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = URL(string: "https://images.example.test/persist.png")!
+    let probe = ThumbnailFetchProbe(data: try png())
+    let first = WorkThumbnailLoader(diskDirectory: directory, fetch: { try await probe.fetch($0) })
+    let fetched = try await first.image(url: url, pixels: 256)
+    let file = WorkThumbnailLoader.diskFileURL(directory: directory, url: url, pixels: 256)
+    for _ in 0..<50 where !FileManager.default.fileExists(atPath: file.path) {
+      try await Task.sleep(nanoseconds: 20_000_000)
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "封面缩略图应落盘")
+
+    let offline = WorkThumbnailLoader(diskDirectory: directory, fetch: { _ in throw URLError(.notConnectedToInternet) })
+    let restored = try await offline.image(url: url, pixels: 256)
+    XCTAssertEqual(restored.image.width, fetched.image.width)
+    let calls = await probe.calls
+    XCTAssertEqual(calls, 1)
+  }
+
   func testDuplicateThumbnailRequestsShareDownloadAndDecodedCache() async throws {
     let probe = ThumbnailFetchProbe(data: try png())
     let loader = WorkThumbnailLoader(fetch: { try await probe.fetch($0) })

@@ -50,9 +50,10 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
   }
 
   func testPlatformSlotsDoNotInventPlaybackForDouyinOrMixViewsWithCollects() {
+    // 2026-09-10 全平台统一「赞评转藏看」顺序；平台没有的项拿掉，不改顺序。
     XCTAssertEqual(
       CreatorWorkMetricLayout.slots(forHost: "www.douyin.com"),
-      [.likes, .comments, .collects, .shares]
+      [.likes, .comments, .shares, .collects]
     )
     XCTAssertEqual(
       CreatorWorkMetricLayout.slots(forHost: "x.com"),
@@ -60,11 +61,11 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
     )
     XCTAssertEqual(
       CreatorWorkMetricLayout.slots(forHost: "bilibili.com"),
-      [.views, .likes, .comments, .collects, .shares]
+      [.likes, .comments, .shares, .collects, .views]
     )
     XCTAssertEqual(
       CreatorWorkMetricLayout.slots(forHost: "xiaohongshu.com"),
-      [.likes, .comments, .collects, .shares]
+      [.likes, .comments, .shares, .collects]
     )
     XCTAssertEqual(
       CreatorWorkMetricLayout.slots(forHost: "mp.weixin.qq.com"),
@@ -334,6 +335,10 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
       author: nil
     )
     XCTAssertEqual(CreatorDirectoryCardCopy.authorLine(row: missing), "作者未获取")
+    XCTAssertTrue(CreatorDirectoryCardCopy.isPlaceholderAuthor("作者未获取"))
+    XCTAssertFalse(CreatorDirectoryCardCopy.isPlaceholderAuthor("真实公众号名"))
+    XCTAssertTrue(CreatorDirectoryCardCopy.isVideoPlatform(host: "v.douyin.com"))
+    XCTAssertFalse(CreatorDirectoryCardCopy.isVideoPlatform(host: "mp.weixin.qq.com"))
     XCTAssertNotEqual(CreatorDirectoryCardCopy.authorLine(row: missing), "公众号")
     let named = HistoryRowProjection(
       taskID: TaskID(),
@@ -482,7 +487,7 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
     XCTAssertEqual(CreatorDirectoryChrome.xColumnCount(availableWidth: 10_000), 4)
     let douyin = CreatorWorkMetricLayout.rows(forHost: "www.douyin.com")
     XCTAssertEqual(douyin.map(\.count), [4])
-    XCTAssertEqual(douyin[0], [.likes, .comments, .collects, .shares])
+    XCTAssertEqual(douyin[0], [.likes, .comments, .shares, .collects])
     XCTAssertEqual(CreatorWorkMetricLayout.rows(forHost: "x.com").map(\.count), [5])
     XCTAssertEqual(CreatorWorkMetricLayout.rows(forHost: "xiaohongshu.com").map(\.count), [4])
     XCTAssertEqual(CreatorWorkMetricLayout.rows(forHost: "bilibili.com").map(\.count), [5])
@@ -745,14 +750,16 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
     let layout = try String(contentsOf: root.appendingPathComponent("CreatorWorkCardLayout.swift"), encoding: .utf8)
     let batch = try String(contentsOf: root.appendingPathComponent("ProfileImportBatchViews.swift"), encoding: .utf8)
     let importing = try String(contentsOf: root.appendingPathComponent("DouyinProfileImport.swift"), encoding: .utf8)
-    let saved = section(views, from: "struct CreatorSavedWorkCard: View", to: "private var coverStatus")
+    let saved = section(views, from: "struct CreatorSavedWorkCard: View", to: "private func placeholderCover")
     let reserved = section(batch, from: "private struct ProfileImportReservedWorkCard: View", to: "private struct ProfileImportBatchCard")
     let candidate = section(importing, from: "private func candidateCard(", to: "private func hasCompleteMetrics(")
     XCTAssertTrue(history.contains("usesAdaptiveWorkGrid(creator.identity.platform)"))
     XCTAssertTrue(history.contains("CreatorDirectoryChrome.xColumnCount(availableWidth: availableWidth)"))
-    XCTAssertTrue(layout.contains("static let coverAspect: CGFloat = 2.35"))
+    // 2026-09-10 媒体区统一 16:9：竖版视频和公众号封面在 2.35 的窄条里只剩中间一截。
+    XCTAssertTrue(layout.contains("static let coverAspect: CGFloat = 16.0 / 9.0"))
     XCTAssertTrue(layout.contains("scaledToFill()"))
-    XCTAssertFalse(layout.contains("scaledToFit()"))
+    // 竖版封面走「模糊底 + 完整缩略图」，所以 layout 里允许 scaledToFit；横版仍铺满。
+    XCTAssertTrue(layout.contains("isPortrait"))
     XCTAssertTrue(saved.contains("CreatorWorkCardCoverSlot"))
     XCTAssertTrue(saved.contains("CreatorWorkCardFillImage"))
     XCTAssertTrue(saved.contains("CreatorWorkMetricStrip"))
@@ -761,13 +768,17 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
     XCTAssertTrue(saved.contains("showsBodyPreview: showsBodyPreview"))
     XCTAssertFalse(saved.contains("private var headline: String { capturedTitle }"))
     XCTAssertFalse(saved.contains("4 / 3"))
-    XCTAssertFalse(saved.contains("16 / 9"))
-    XCTAssertFalse(saved.contains("scaledToFit()"))
+    XCTAssertFalse(saved.contains("scaledToFit()"), "比例和裁切只在 CreatorWorkCardLayout 一处定")
     XCTAssertTrue(views.contains("封面未获取"))
     XCTAssertTrue(views.contains("封面加载中"))
     XCTAssertTrue(saved.contains("coverFailed"))
-    XCTAssertTrue(saved.contains("Text(row.directoryCardPreviewLabel)"))
+    // 「原文预览 / 总结预览」标签已撤：每张卡重复一遍的固定文字是噪音，摘录按句读收尾。
+    XCTAssertFalse(saved.contains("directoryCardPreviewLabel"))
+    XCTAssertTrue(saved.contains("CreatorDirectoryCardCopy.excerpt("))
     XCTAssertTrue(saved.contains("showsBodyPreview"))
+    // 骨架固定：标题两行占位、元信息一行、互动一行固定高度。
+    XCTAssertTrue(saved.contains("lineLimit(2, reservesSpace: true)"))
+    XCTAssertTrue(saved.contains("CreatorWorkCardLayout.metricRowHeight"))
     XCTAssertTrue(reserved.contains("发布时间待获取"))
     XCTAssertTrue(reserved.contains("case .shares, .views: nil"))
     XCTAssertTrue(reserved.contains("CreatorWorkMetricStrip"))
@@ -801,7 +812,8 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
     XCTAssertTrue(gallery.contains("scrollTarget"))
     XCTAssertTrue(gallery.contains("contextMenu(row)"))
     XCTAssertTrue(gallery.contains("toggleGallerySelection"))
-    XCTAssertTrue(gallery.contains("按最近更新排列"))
+    XCTAssertTrue(gallery.contains("最近更新"), "排序入口要保留「最近更新」这一档")
+    XCTAssertTrue(gallery.contains("WorkSortOrder"), "平台图库要提供排序下拉")
     XCTAssertTrue(gallery.contains("isLoadingNextPage"))
     XCTAssertFalse(gallery.contains("scrollTarget = row.taskID"), "打开详情时不应提前消耗返回锚点")
     let xGallery = try String(contentsOf: root.appendingPathComponent("XPostGallery.swift"), encoding: .utf8)

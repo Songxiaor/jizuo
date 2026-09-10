@@ -302,7 +302,7 @@ struct HistoryContentView: View {
               .navigationSplitViewColumnWidth(
                 min: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMin : DesignTokens.Layout.listMin,
                 ideal: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnIdeal : DesignTokens.Layout.listIdeal,
-                max: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMax : DesignTokens.Layout.listIdeal + DesignTokens.Space.xxl
+                max: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMax : DesignTokens.Layout.listMax
               )
               .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
             } detail: {
@@ -1311,8 +1311,8 @@ struct HistoryContentView: View {
 
   private var creatorDirectory: some View {
     VStack(spacing: 0) {
-      Text("全部博主 · 全部已添加 \(model.navigationCounts.creatorCount) 位")
-        .themedFont(.headline)
+      Text("全部博主 · \(model.navigationCounts.creatorCount) 位")
+        .font(.system(size: 18, weight: .semibold))
         .foregroundStyle(theme.primaryText)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, 14)
@@ -1374,7 +1374,7 @@ struct HistoryContentView: View {
         GeometryReader { geometry in
           ScrollViewReader { proxy in
             ScrollView {
-              VStack(alignment: .leading, spacing: 28) {
+              VStack(alignment: .leading, spacing: DesignTokens.Space.xl) {
                 ForEach(CreatorDirectoryPlatformGroup.groups(from: model.creatorDirectoryRows)) { group in
                   CreatorDirectoryPlatformSection(
                     platform: group.id,
@@ -1388,8 +1388,9 @@ struct HistoryContentView: View {
                       }
                     )
                   ) {
+                    // 自适应列数、横排小卡：原来固定两列、竖排大卡，右边空一整列。
                     LazyVGrid(
-                      columns: creatorDirectoryGridColumns(availableWidth: geometry.size.width),
+                      columns: [GridItem(.adaptive(minimum: CreatorDirectoryChrome.xCardMinimumWidth), spacing: CreatorDirectoryChrome.xGridSpacing, alignment: .top)],
                       spacing: CreatorDirectoryChrome.xGridSpacing
                     ) {
                       ForEach(group.creators) { creator in
@@ -2696,12 +2697,27 @@ struct PlatformNavigationIcon: View {
         Image(nsImage: image)
           .renderingMode(.template)
           .resizable().scaledToFit().frame(width: 16, height: 16)
+      } else if monochrome, let name = PlatformIconCatalog.assetName(for: host),
+                PlatformIconCatalog.usesLuminanceMask(forAssetName: name) {
+        // 深底 logo：亮部（白色音符）变成遮罩，用当前文字色填，和 X、GitHub 同一重量。
+        Rectangle()
+          .fill(.foreground)
+          .mask {
+            Image(nsImage: image)
+              .resizable().scaledToFit()
+              .luminanceToAlpha()
+          }
+          .frame(width: 16, height: 16)
       } else {
         Image(nsImage: image)
           .resizable().scaledToFit().frame(width: 16, height: 16)
           .saturation(monochrome ? 0 : 1)
           .opacity(monochrome ? 0.72 : 1)
       }
+    } else if monochrome {
+      // 侧栏不用站点 favicon：Substack 这类没有内置 logo 的平台，favicon 取自某一条
+      // 记录的刊物头像，换一条记录图标就换一张，看起来像在闪。首字母描边稳定且单色。
+      monochromeBadge
     } else if let faviconURL, let faviconTaskID {
       HistoryFaviconDiskImage(url: faviconURL, host: host, taskID: faviconTaskID) {
         fallbackBadge
@@ -2709,6 +2725,13 @@ struct PlatformNavigationIcon: View {
     } else {
       fallbackBadge
     }
+  }
+
+  private var monochromeBadge: some View {
+    Text(PlatformIconCatalog.fallbackInitial(for: host))
+      .font(.system(size: 9, weight: .bold))
+      .frame(width: 16, height: 16)
+      .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous).strokeBorder(.foreground, lineWidth: 1.2))
   }
 
   private var fallbackBadge: some View {
@@ -4342,6 +4365,17 @@ private struct HistoryDetailView: View, Equatable {
         .accessibilityIdentifier("mind-map-generate")
       }
 
+      // 「整理文稿」只对 2000 字以上、还没分节的长文显示。短帖看不到入口会以为功能没了，
+      // 这里留一条灰项说明原因，功能的存在感不随内容长短消失。
+      if !isOwnWriting, let snapshot = detail.snapshots.last {
+        let eligibility = reformatEligibility(snapshot)
+        if !eligibility.canReformat, let message = eligibility.userMessage {
+          Button {} label: { Label("整理文稿：\(message)", systemImage: "text.append") }
+            .disabled(true)
+            .accessibilityIdentifier("history-reformat-unavailable")
+        }
+      }
+
       Divider()
       if let runActionBlockedReason { Text(runActionBlockedReason) }
 
@@ -4822,21 +4856,18 @@ private struct HistoryDetailView: View, Equatable {
     return String(format: "%d:%02d", total / 60, total % 60)
   }
 
-  /// 同一组互动数据只显示一次；明细按需展开，完整数值通过悬停和读屏提供。
+  /// 同一组互动数据只显示一次。原来是个折叠组，展开后又画一遍同样的数字，
+  /// 只多一句「采集时快照」；现在一行到底，那句提示放在行尾和悬停里。
   private func engagementDisclosure(_ note: MarkdownNoteFrontmatter) -> some View {
-    DisclosureGroup {
-      VStack(alignment: .leading, spacing: 4) {
-        engagementCompactChips(note)
-          .foregroundStyle(.secondary)
-        Text("数据为采集时快照")
-          .themedFont(.caption2)
-          .foregroundStyle(.tertiary)
-          .accessibilityIdentifier("history-engagement-snapshot-note")
-      }
-    } label: {
+    HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
       engagementCompactChips(note)
         .foregroundStyle(.secondary)
         .lineLimit(1)
+      Text("采集时快照")
+        .themedFont(.caption2)
+        .foregroundStyle(.tertiary)
+        .help("互动数据为采集时快照，不会随原帖更新")
+        .accessibilityIdentifier("history-engagement-snapshot-note")
     }
     .themedFont(.caption)
     .accessibilityIdentifier("history-engagement-more")

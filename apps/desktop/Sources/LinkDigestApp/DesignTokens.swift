@@ -167,6 +167,7 @@ extension DesignTokens {
 
     static let listMin: CGFloat = 280
     static let listIdeal: CGFloat = 340
+    static let listMax: CGFloat = 520
 
     static let detailMin: CGFloat = 420
     /// 阅读列「偏好」宽度：默认正文字号（16.5pt）下约 45 个汉字。首帧宽度未知时

@@ -440,10 +440,10 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("Button(\"抓取作品\")"))
     let creatorDirectory = section(in: source, from: "private var creatorDirectory: some View", to: "private func creatorDirectoryRow")
     XCTAssertTrue(creatorDirectory.contains("LazyVGrid("), "全部博主应先以卡片网格展示")
-    XCTAssertTrue(creatorDirectory.contains("creatorDirectoryGridColumns"))
+    XCTAssertTrue(creatorDirectory.contains("GridItem(.adaptive(minimum: CreatorDirectoryChrome.xCardMinimumWidth)"), "博主目录按可用宽度自适应列数，不固定两列")
     XCTAssertTrue(creatorDirectory.contains("CreatorDirectoryPlatformGroup.groups(from: model.creatorDirectoryRows)"))
     XCTAssertTrue(creatorDirectory.contains("CreatorDirectoryPlatformSection("))
-    XCTAssertTrue(creatorDirectory.contains("VStack(alignment: .leading, spacing: 28)"))
+    XCTAssertTrue(creatorDirectory.contains("VStack(alignment: .leading, spacing: DesignTokens.Space.xl)"))
     XCTAssertTrue(creatorDirectory.contains("collapsedCreatorPlatforms.removeAll()"), "搜索时展开平台，避免隐藏匹配结果")
     XCTAssertTrue(creatorDirectory.contains(".id(model.creatorDirectoryRows.last?.id)"))
     XCTAssertTrue(creatorDirectory.contains("model.loadNextCreatorPageIfNeeded(after: last)"), "折叠后仍可继续分页")
@@ -1595,6 +1595,12 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(PlatformIconCatalog.usesTemplateRendering(forAssetName: "github"))
     XCTAssertFalse(PlatformIconCatalog.usesTemplateRendering(forAssetName: "wechat"))
     XCTAssertFalse(PlatformIconCatalog.usesTemplateRendering(forAssetName: "youtube"))
+    XCTAssertTrue(PlatformIconCatalog.usesLuminanceMask(forAssetName: "douyin"))
+    XCTAssertFalse(PlatformIconCatalog.usesLuminanceMask(forAssetName: "wechat"))
+    let source = historyContentViewSource()
+    let icon = section(in: source, from: "struct PlatformNavigationIcon: View", to: "private struct HistoryDetailView")
+    XCTAssertTrue(icon.contains("} else if monochrome {"), "侧栏单色模式不能再拿站点 favicon 当平台图标，否则 Substack 一会儿头像一会儿字母")
+    XCTAssertTrue(icon.contains("luminanceToAlpha()"))
   }
 
   func testUnmappedHostStillGetsAStableNonEmptyMark() {
@@ -1998,6 +2004,11 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(earlier, now: now), "8月20日")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(previousYear, now: now), "2025/8/20")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("5天前", now: now), "5天前")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026-08-20 15:21", now: now), "8月20日")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026-08-20", now: now), "8月20日")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026年8月20日 17:54", now: now), "8月20日")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026年9月5日", now: now), "昨天")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2025-08-20 15:21:07", now: now), "2025/8/20")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026-08-20T12:00:00Z", now: now),
                    HistoryPublishedTimestampFormatter.compactText("2026-08-20T12:00:00.000Z", now: now))
   }

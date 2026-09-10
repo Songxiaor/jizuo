@@ -179,6 +179,18 @@ final class ProviderSettingsViewModel: ObservableObject {
     editingProfileID == nil && modelCatalogState == .loaded && !availableModels.isEmpty
   }
 
+  /// 保存时跳过了几个已在列表里的模型；保存成功的状态行用它替换「模型配置已保存」。
+  @Published private(set) var duplicateSkipNotice: String?
+
+  /// 同一个 Base URL 下已经有这个模型名。列表里标「已添加」、不可勾选，保存时也跳过。
+  func isModelAlreadyInLibrary(_ name: String) -> Bool {
+    guard let base = validatedCatalogBaseURL?.absoluteString else { return false }
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    return libraryProfiles.contains {
+      $0.id != editingProfileID && $0.baseURL.absoluteString == base && $0.model == trimmed
+    }
+  }
+
   var selectedCatalogModelCount: Int { selectedCatalogModels.count }
 
   var orderedSelectedCatalogModels: [String] {
@@ -338,7 +350,7 @@ final class ProviderSettingsViewModel: ObservableObject {
     case .saving:
       "正在安全保存…"
     case .configured:
-      lastSavedProfileCount > 1 ? "已保存 \(lastSavedProfileCount) 个模型配置" : "模型配置已保存"
+      duplicateSkipNotice ?? (lastSavedProfileCount > 1 ? "已保存 \(lastSavedProfileCount) 个模型配置" : "模型配置已保存")
     case let .failed(code):
       V02ErrorCatalog.presentation(for: code).visibleText
     }
@@ -521,6 +533,7 @@ final class ProviderSettingsViewModel: ObservableObject {
     state = .unconfigured
     selectedCatalogModels = []
     lastSavedProfileCount = 0
+    duplicateSkipNotice = nil
     invalidateModelCatalog()
   }
 
@@ -539,6 +552,7 @@ final class ProviderSettingsViewModel: ObservableObject {
     state = .configured
     selectedCatalogModels = []
     lastSavedProfileCount = 0
+    duplicateSkipNotice = nil
     invalidateModelCatalog()
   }
 
@@ -561,6 +575,27 @@ final class ProviderSettingsViewModel: ObservableObject {
     } catch {
       libraryErrorText = "无法删除该模型配置。"
     }
+  }
+
+  /// 一次删掉一个服务商下的全部模型：逐条走既有的单条删除，任一条失败就停下并提示，
+  /// 已删的不回滚（每条都是独立记录，回滚反而会把用户已经确认要删的又加回来）。
+  func deleteModels(_ ids: [String]) async {
+    guard !isSaving, !isTestingConnection, !isLoadingModels else { return }
+    for id in ids {
+      do {
+        _ = try await configurationService.deleteProfile(id: id)
+      } catch {
+        libraryErrorText = "有模型没删干净，请展开该服务商检查。"
+        break
+      }
+      if editingProfileID == id {
+        editingProfileID = nil
+        isEditorVisible = false
+        savedIdentity = nil
+        state = .unconfigured
+      }
+    }
+    await refreshLibrary()
   }
 
   func assignSummaryModel(_ id: String?) async {
@@ -753,7 +788,7 @@ final class ProviderSettingsViewModel: ObservableObject {
   }
 
   func toggleCatalogModel(_ value: String) {
-    guard isAddingModelBatch, availableModels.contains(value) else { return }
+    guard isAddingModelBatch, availableModels.contains(value), !isModelAlreadyInLibrary(value) else { return }
     if selectedCatalogModels.contains(value) {
       selectedCatalogModels.remove(value)
     } else {
@@ -790,14 +825,22 @@ final class ProviderSettingsViewModel: ObservableObject {
       return
     }
     connectionTestState = .idle
+    duplicateSkipNotice = nil
     state = .saving
     let submittedBaseURL = baseURL
     let submittedModels = isAddingModelBatch
       ? orderedSelectedCatalogModels
       : [modelName]
+    let wasAddingNewEntry = editingProfileID == nil
 
     do {
       let savedProfiles: [ProviderProfile]
+      // 新增时先把同一 Base URL 下已经存在的模型名剔掉：同一个模型点两次「保存」
+      // 不该在列表里出现两份。全部已存在就直接沿用已有的那条，不写库。
+      let freshModels = wasAddingNewEntry
+        ? submittedModels.filter { !isModelAlreadyInLibrary($0) }
+        : submittedModels
+      let skippedCount = submittedModels.count - freshModels.count
       if let editingProfileID {
         // Replacing the key requires a fresh value; otherwise keep the
         // stored secret and only update endpoint/model.
@@ -809,10 +852,16 @@ final class ProviderSettingsViewModel: ObservableObject {
           apiKey: submittedKey,
           allowLoopbackHTTP: Self.isExactLoopbackHTTP(submittedBaseURL)
         )]
+      } else if freshModels.isEmpty,
+                let base = validatedCatalogBaseURL?.absoluteString,
+                let existing = libraryProfiles.first(where: {
+                  $0.baseURL.absoluteString == base && submittedModels.contains($0.model)
+                }) {
+        savedProfiles = [existing]
       } else {
         savedProfiles = try await configurationService.addProfiles(
           baseURL: submittedBaseURL,
-          models: submittedModels,
+          models: freshModels,
           apiKey: apiKey,
           allowLoopbackHTTP: Self.isExactLoopbackHTTP(submittedBaseURL)
         )
@@ -823,13 +872,21 @@ final class ProviderSettingsViewModel: ObservableObject {
       savedIdentity = DataDestinationIdentity(profile: profile)
       modelName = profile.model
       lastSavedProfileCount = savedProfiles.count
+      if skippedCount > 0 {
+        duplicateSkipNotice = freshModels.isEmpty
+          ? "这些模型已经在列表里，没有重复添加。"
+          : "已保存 \(savedProfiles.count) 个模型；另外 \(skippedCount) 个已在列表里，跳过。"
+      }
       connectionTestState = .idle
       isReplacingAPIKey = false
       state = .configured
       selectedPreset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
       await refreshLibrary()
-      if editingProfileID == nil {
+      if wasAddingNewEntry {
         selectedCatalogModels = []
+        // 刚存进去的那条就是接下来「测试连接」要用的凭据。不接管的话，测试会去读
+        // 总结位上的另一个模型，报「模型目的地已变化」，而且再也保存不了。
+        editingProfileID = profile.id
         if !keepsEditorOpenAfterSave { isEditorVisible = false }
       }
     } catch let error as ProviderConfigurationError {
@@ -964,6 +1021,7 @@ final class ProviderSettingsViewModel: ObservableObject {
           modelName = onlyModel
         }
       }
+      if editingProfileID == nil, isModelAlreadyInLibrary(modelName) { modelName = "" }
       selectedCatalogModels = availableModels.contains(modelName) ? [modelName] : []
       modelCatalogState = .loaded
       isManualModelEntryEnabled = false

@@ -17,7 +17,7 @@ enum PlatformHistoryGalleryPresentation {
     let name = platformDisplayName(for: selectedHosts)
     if !query.isEmpty { return "\(name) · 当前筛选" }
     if let total = matchingPlatformCount(selectedHosts: selectedHosts, in: navigationCounts) {
-      return "\(name) · 全部已保存 \(total) 条"
+      return "\(name) · \(total) 条"
     }
     return name
   }
@@ -76,11 +76,18 @@ struct PlatformHistoryGallery: View {
   let onOpen: (TaskID) -> Void
   let contextMenu: (HistoryRowProjection) -> AnyView
   var accessibilityPrefix: String = "platform-gallery"
+  /// 页头右端的排序：只排已加载的卡，不改后台分页顺序。`.original` 即「最近更新」。
+  @State private var sortOrder: WorkSortOrder = .original
 
   private var selectedHosts: Set<String> { model.selectedHosts }
 
   private var rows: [HistoryRowProjection] {
-    model.rows.filter { PlatformHistoryGalleryPresentation.filtersRow($0, selectedHosts: selectedHosts) }
+    let filtered = model.rows.filter { PlatformHistoryGalleryPresentation.filtersRow($0, selectedHosts: selectedHosts) }
+    return sortOrder.sorted(filtered, likes: { $0.likes }, published: { $0.published })
+  }
+
+  private func sortTitle(_ order: WorkSortOrder) -> String {
+    order == .original ? "最近更新" : order.title
   }
 
   private var titleText: String {
@@ -97,16 +104,25 @@ struct PlatformHistoryGallery: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      VStack(alignment: .leading, spacing: 4) {
+      // 页头一行：标题和设置页页头同一字号；右端一个排序下拉，取代原来常驻的
+      // 「按最近更新排列」说明文字。
+      HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.md) {
         Text(titleText)
-          .themedFont(.headline)
+          .font(.system(size: 18, weight: .semibold))
           .foregroundStyle(theme.primaryText)
-          .frame(maxWidth: .infinity, alignment: .leading)
+          .lineLimit(1)
           .accessibilityIdentifier("\(accessibilityPrefix)-title")
-        Text(PlatformHistoryGalleryPresentation.sortCaption(searchActive: searchActive))
-          .themedFont(.caption2)
-          .foregroundStyle(theme.secondaryText)
-          .accessibilityIdentifier("\(accessibilityPrefix)-sort-caption")
+        Spacer(minLength: 0)
+        Picker("排序", selection: $sortOrder) {
+          ForEach(WorkSortOrder.allCases) { order in
+            Text(sortTitle(order)).tag(order)
+          }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .fixedSize()
+        .help("只排序已加载的卡片；\(PlatformHistoryGalleryPresentation.sortCaption(searchActive: searchActive))")
+        .accessibilityIdentifier("\(accessibilityPrefix)-sort")
       }
       .padding(.horizontal, 14)
       .padding(.top, 12)
@@ -143,28 +159,17 @@ struct PlatformHistoryGallery: View {
               spacing: CreatorDirectoryChrome.xGridSpacing
             ) {
               ForEach(rows, id: \.taskID) { row in
-                Button {
-                  onOpen(row.taskID)
-                } label: {
-                  CreatorSavedWorkCard(
-                    row: row,
-                    theme: theme,
-                    localCover: { await model.localCoverURL(for: row.taskID, matching: $0) }
-                  )
-                }
-                .buttonStyle(.plain)
-                .accessibilityElement(children: .contain)
-                .accessibilityHint("打开内容")
-                .accessibilityIdentifier("\(accessibilityPrefix)-card-\(row.taskID.rawValue)")
-                .contextMenu { contextMenu(row) }
-                .overlay(alignment: .topTrailing) {
-                  CreatorWorkSelectionControl(
-                    isSelected: model.selectedTaskIDs.contains(row.taskID),
-                    theme: theme
-                  ) { model.toggleGallerySelection(row.taskID) }
-                  .accessibilityIdentifier("history-work-select-\(row.taskID.rawValue)")
-                  .padding(6)
-                }
+                PlatformGalleryCell(
+                  row: row,
+                  theme: theme,
+                  isSelected: model.selectedTaskIDs.contains(row.taskID),
+                  selectionActive: !model.selectedTaskIDs.isEmpty,
+                  accessibilityPrefix: accessibilityPrefix,
+                  localCover: { await model.localCoverURL(for: row.taskID, matching: $0) },
+                  onOpen: { onOpen(row.taskID) },
+                  onToggleSelection: { model.toggleGallerySelection(row.taskID) },
+                  contextMenu: { contextMenu(row) }
+                )
                 .onAppear { model.loadNextPageIfNeeded(after: row) }
                 .id(row.taskID)
               }
@@ -223,5 +228,46 @@ struct PlatformHistoryGallery: View {
       proxy.scrollTo(target, anchor: .center)
       scrollTarget = nil
     }
+  }
+}
+
+/// 网格里的一格：卡片 + 悬停才出现的多选圆圈。
+///
+/// 原来每张卡右上角常驻一个空心圆，一屏几十个圆比内容还抢眼。现在只在鼠标悬停
+/// 这张卡、或者已经有卡被选中（进入多选状态）时才画出来。
+private struct PlatformGalleryCell<Menu: View>: View {
+  let row: HistoryRowProjection
+  let theme: HistoryThemeTokens
+  let isSelected: Bool
+  let selectionActive: Bool
+  let accessibilityPrefix: String
+  let localCover: (String?) async -> URL?
+  let onOpen: () -> Void
+  let onToggleSelection: () -> Void
+  @ViewBuilder let contextMenu: () -> Menu
+
+  @State private var isHovering = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  var body: some View {
+    Button(action: onOpen) {
+      CreatorSavedWorkCard(row: row, theme: theme, localCover: localCover)
+    }
+    .buttonStyle(.plain)
+    .accessibilityElement(children: .contain)
+    .accessibilityHint("打开内容")
+    .accessibilityIdentifier("\(accessibilityPrefix)-card-\(row.taskID.rawValue)")
+    .contextMenu { contextMenu() }
+    .overlay(alignment: .topTrailing) {
+      CreatorWorkSelectionControl(isSelected: isSelected, theme: theme, onToggle: onToggleSelection)
+        .opacity(isHovering || selectionActive || isSelected ? 1 : 0)
+        .accessibilityIdentifier("history-work-select-\(row.taskID.rawValue)")
+        .padding(6)
+    }
+    .animation(
+      DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
+      value: isHovering
+    )
+    .onHover { isHovering = $0 }
   }
 }

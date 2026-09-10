@@ -57,16 +57,19 @@ enum CreatorWorkMetricKind: String, CaseIterable, Equatable {
 }
 
 enum CreatorWorkMetricLayout {
+  /// 全平台同一个顺序：赞、评、转、藏、看。
+  ///
+  /// 原来 X 是「赞评转藏看」、抖音「赞评藏转」、B 站「看赞评藏转」，同一个眼睛
+  /// 图标在 X 排最后、在 B 站排第一，扫两张卡就要重新找一遍。平台没有的项
+  /// 从列表里拿掉（抖音没有播放量），不改顺序。
+  static let unifiedOrder: [CreatorWorkMetricKind] = [.likes, .comments, .shares, .collects, .views]
+
   static func slots(forHost host: String) -> [CreatorWorkMetricKind] {
     switch HistoryPlatformRegistry.canonicalHost(for: host) {
-    case "douyin.com":
-      return [.likes, .comments, .collects, .shares]
-    case "x.com":
-      return [.likes, .comments, .shares, .collects, .views]
-    case "bilibili.com", "youtube.com":
-      return [.views, .likes, .comments, .collects, .shares]
-    case "xiaohongshu.com":
-      return [.likes, .comments, .collects, .shares]
+    case "douyin.com", "xiaohongshu.com":
+      return unifiedOrder.filter { $0 != .views }
+    case "x.com", "bilibili.com", "youtube.com":
+      return unifiedOrder
     case "mp.weixin.qq.com":
       return []
     default:
@@ -169,6 +172,15 @@ enum CreatorDirectorySurfaceState: Equatable {
 }
 
 enum CreatorDirectoryCardCopy {
+  /// 「作者未获取」「刊物未获取」这类占位在详情页有用，卡片元信息行不显示，只剩日期。
+  static func isPlaceholderAuthor(_ author: String) -> Bool {
+    author.hasSuffix("未获取")
+  }
+
+  static func isVideoPlatform(host: String) -> Bool {
+    ["douyin.com", "bilibili.com", "youtube.com"].contains(HistoryPlatformRegistry.canonicalHost(for: host))
+  }
+
   static func normalizeForCompare(_ raw: String) -> String {
     var text = raw.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
       .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -193,6 +205,31 @@ enum CreatorDirectoryCardCopy {
     if headline == body { return false }
     if body.hasPrefix(headline) || headline.hasPrefix(body) { return false }
     return true
+  }
+
+  /// 摘录：在最后一个句读处收尾并补省略号。
+  ///
+  /// 存下来的预览是按字符数切的，卡片上直接显示会停在「achieve t」这种半个词上。
+  /// 结尾不是句号、问号一类的收尾符号时，往回退到最近的空格或中文标点再补「…」；
+  /// 退不到（整段没有句读）就只补省略号。
+  static func excerpt(_ raw: String, limit: Int = 180) -> String {
+    var text = raw.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let terminal: Set<Character> = ["。", "！", "？", ".", "!", "?", "」", "”", "…", ")", "）"]
+    if text.count > limit {
+      text = String(text.prefix(limit))
+    } else if let last = text.last, terminal.contains(last) {
+      return text
+    } else if text.count < 60 {
+      // 短句本身就是完整内容（标题、一句话帖子），不当成被截断。
+      return text
+    }
+    let breakers: Set<Character> = [" ", "，", "。", "、", "；", "！", "？", ",", ";", "：", ":"]
+    let tail = text.suffix(24)
+    if let cut = tail.lastIndex(where: { breakers.contains($0) }) {
+      text = String(text[..<cut])
+    }
+    return text.trimmingCharacters(in: .whitespaces) + "…"
   }
 
   static func contentKind(host: String) -> String {

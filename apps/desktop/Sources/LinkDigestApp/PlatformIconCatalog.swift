@@ -35,6 +35,12 @@ enum PlatformIconCatalog {
     name == "x.com" || name == "github"
   }
 
+  /// 深底白字型 logo（抖音：黑色圆角方块上的白色音符）。去色后仍是一块实心黑，
+  /// 和旁边的线条剪影不是一个重量；改用亮度当遮罩，只留白色音符，再用当前文字色填。
+  static func usesLuminanceMask(forAssetName name: String) -> Bool {
+    name == "douyin"
+  }
+
   /// Rasterizing an SVG is expensive and the history list re-renders every row
   /// on each state change, so the bitmap is produced once per asset.
   /// `NSCache` is thread-safe, which is what `nonisolated(unsafe)` asserts here.

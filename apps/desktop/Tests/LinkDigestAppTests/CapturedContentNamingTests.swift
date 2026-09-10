@@ -196,6 +196,30 @@ final class CapturedContentNamingTests: XCTestCase {
     XCTAssertFalse(CapturedContentNaming.hidesRepeatedHeading(name: name, body: body))
   }
 
+  func testXPostCaptionUsesSeventyTwoCharactersAndBreaksAtWordBoundary() {
+    let body = "The greatest focus hack is to know what you want and why you want it before anyone else tells you what to want"
+    let name = CapturedContentNaming.name(
+      title: "The greatest focus hack is to know what …",
+      body: body,
+      host: "x.com",
+      author: "DAN KOE",
+      published: nil
+    )
+    XCTAssertEqual(name.origin, .caption)
+    XCTAssertTrue(name.text.hasSuffix("…"))
+    XCTAssertLessThanOrEqual(name.text.count, 73)
+    XCTAssertGreaterThan(name.text.count, 45, "推文标题应放宽到两行能装下的长度，不再 40 字就截")
+    XCTAssertTrue(body.hasPrefix(String(name.text.dropLast())), "从正文重新取，不沿用抓取端截过的标题")
+    let stem = String(name.text.dropLast())
+    let nextIndex = body.index(body.startIndex, offsetBy: stem.count)
+    XCTAssertTrue(body[nextIndex].isWhitespace, "不能在单词中间截断：\(name.text)")
+
+    let short = CapturedContentNaming.name(
+      title: "Grab a notebook.", body: "Grab a notebook.\n\nWrite it down.", host: "x.com", author: nil, published: nil
+    )
+    XCTAssertEqual(short.text, "Grab a notebook.")
+  }
+
   func testXPostMatchingBodyStartIsTreatedAsCaption() {
     let body = "just shipped a small thing today\n\nmore in the thread"
     let name = CapturedContentNaming.name(
@@ -216,7 +240,8 @@ final class CapturedContentNamingTests: XCTestCase {
       published: nil
     )
     XCTAssertEqual(truncated.origin, .caption)
-    XCTAssertEqual(truncated.text, "just shipped a small thing…")
+    // 抓取端截过的标题只当「这是配文」的证据，标题本身从正文重新取完整句子。
+    XCTAssertEqual(truncated.text, "just shipped a small thing today and it feels great")
   }
 
   func testMissingTitleUsesFirstSubstantialParagraph() {
