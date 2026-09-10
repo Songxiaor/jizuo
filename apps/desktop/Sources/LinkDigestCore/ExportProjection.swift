@@ -98,6 +98,9 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
       with: "",
       options: [.regularExpression, .caseInsensitive]
     )
+    // 卡片预览是纯文字：加粗的 ** / __ 和行首 # 原样露出来只是噪音。
+    text = text.replacingOccurrences(of: #"\*\*|__"#, with: "", options: .regularExpression)
+    text = text.replacingOccurrences(of: #"(?m)^#{1,6}\s+"#, with: "", options: .regularExpression)
     if !isSummary {
       // Dense markdown image/link dumps compress to readable labels, keep bare URLs short.
       text = text.replacingOccurrences(

@@ -104,7 +104,7 @@ struct KnowledgeVaultSettingsView: View {
           }
           Text("在后台安静进行，不打断你；抓一批内容只会同步一次。")
             .themedFont(.subheadline)
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.secondary)
 
           if let failure = model.lastAutoSyncFailureMessage {
             Label(failure, systemImage: "exclamationmark.triangle.fill")

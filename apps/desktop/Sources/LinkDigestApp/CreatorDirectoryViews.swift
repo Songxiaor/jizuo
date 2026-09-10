@@ -269,6 +269,8 @@ struct CreatorSavedWorkCard: View {
   let theme: HistoryThemeTokens
   let localCover: (String?) async -> URL?
 
+  /// 博主作品页整页都在讲同一个人，卡片上不再重复作者名。
+  var showsAuthor: Bool = true
   @State private var coverImage: NSImage?
   @State private var coverFailed = false
   @State private var coverLoading = false
@@ -318,6 +320,19 @@ struct CreatorSavedWorkCard: View {
     return line
   }
 
+  /// 纯文字帖（推文）没有独立标题时，标题用正文首句——和列表行同一个取法；
+  /// 原来这里放作者名，第二行空着，日期又单占一行，三行有一行半是空的。
+  private var captionTitle: String? {
+    guard showsBodyPreview else { return nil }
+    let name = CapturedContentNaming.name(
+      title: row.title, body: row.sourcePreview, host: row.host,
+      author: row.author, published: row.published
+    )
+    if name.origin == .caption { return name.text }
+    // 标题和正文开头对不上（抓取端另取过标题）时，直接从预览文字取首句兜底。
+    return CapturedContentNaming.captionTitle(from: row.sourcePreview ?? preview)
+  }
+
   /// 标题行：独立标题优先；没有独立标题时用作者名顶上，卡片高度不变。
   /// 两者都没有时退回内容类型（「帖子」「作品」），不留空行。
   private var displayTitle: String {
@@ -325,6 +340,7 @@ struct CreatorSavedWorkCard: View {
        headline != CreatorDirectoryCardCopy.contentKind(host: row.host) {
       return headline
     }
+    if let captionTitle { return captionTitle }
     if let author, !author.isEmpty { return author }
     return headline ?? CreatorDirectoryCardCopy.contentKind(host: row.host)
   }
@@ -336,7 +352,7 @@ struct CreatorSavedWorkCard: View {
   /// 「作者 · 9月8日」。作者已经在标题行时只剩日期。完整时间留给详情页和悬停提示。
   private var metaLine: String {
     var parts: [String] = []
-    if !titleShowsAuthor, let author, !author.isEmpty { parts.append(author) }
+    if showsAuthor, !titleShowsAuthor, let author, !author.isEmpty { parts.append(author) }
     parts.append(shortDateText)
     return parts.joined(separator: " · ")
   }

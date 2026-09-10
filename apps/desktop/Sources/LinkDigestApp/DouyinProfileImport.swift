@@ -199,6 +199,15 @@ enum DouyinProfilePreviewResource {
   }
 }
 
+enum ProfileImportExamples {
+  static let lines = [
+    "抖音：https://www.douyin.com/user/MS4wLjAB…  或「复制主页」得到的分享文案",
+    "小红书：https://www.xiaohongshu.com/user/profile/…",
+    "X：https://x.com/用户名",
+    "B 站：https://space.bilibili.com/12345678",
+  ]
+}
+
 struct DouyinProfilePreviewImage: View {
   @Environment(\.appTheme) private var theme
   let url: URL?
@@ -1771,6 +1780,16 @@ struct DouyinProfileImportSheet: View {
       Text("支持主页链接、分享文案、常见手机主页和短链。")
         .themedFont(.caption)
         .foregroundStyle(.secondary)
+      if model.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        // 弹窗下半截原来全是空白；放几条真实形状的例子，比留白有用。
+        VStack(alignment: .leading, spacing: 3) {
+          Text("例如").themedFont(.caption, weight: .medium).foregroundStyle(.secondary)
+          ForEach(ProfileImportExamples.lines, id: \.self) { line in
+            Text(line).themedFont(.caption).foregroundStyle(.secondary).monospacedDigit()
+          }
+        }
+        .padding(.top, DesignTokens.Space.xs)
+      }
       sessionStatusRow
       if model.canStart, model.platform == .x {
         Text("也可以使用浏览器中的登录：打开主页后，点击汲作扩展读取作品。")

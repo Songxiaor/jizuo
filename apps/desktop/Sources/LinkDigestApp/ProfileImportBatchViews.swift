@@ -44,7 +44,10 @@ struct ProfileImportBatchHeader: View {
 
   var body: some View {
     HStack(spacing: 8) {
-      Text("本次抓取 · 已保存 \(batch.completedCount) / \(batch.items.count)")
+      // 抓完之后还叫「本次抓取」会让人以为还在抓；抓完就改成「最近一次抓取」。
+      Text(batch.isFinished
+        ? "最近一次抓取 · \(batch.completedCount) 条"
+        : "正在抓取 · 已保存 \(batch.completedCount) / \(batch.items.count)")
         .themedFont(.caption, weight: .semibold)
         .monospacedDigit()
       Spacer(minLength: 4)
@@ -86,7 +89,8 @@ struct ProfileImportBatchWorkCard: View {
           CreatorSavedWorkCard(
             row: row,
             theme: theme,
-            localCover: { await localCover(taskID, $0) }
+            localCover: { await localCover(taskID, $0) },
+            showsAuthor: false
           )
         }
         .buttonStyle(.plain)

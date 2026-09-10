@@ -73,9 +73,14 @@ struct BrowserSupportSettingsView: View {
               .buttonStyle(.appProminent(appTheme.accent))
               .accessibilityIdentifier("reveal-test-browser-extension")
           } else {
-            Button("重新安装扩展…") { showsInstallSteps = true }
-              .buttonStyle(.appNormal)
-              .accessibilityIdentifier("browser-support-reinstall")
+            HStack(spacing: DesignTokens.Space.md) {
+              Button("重新安装扩展…") { showsInstallSteps = true }
+                .buttonStyle(.appNormal)
+                .accessibilityIdentifier("browser-support-reinstall")
+              Text("扩展已装好。换了浏览器、或扩展文件夹挪过位置时再点。")
+                .themedFont(.caption)
+                .foregroundStyle(.secondary)
+            }
           }
 
           Divider()
@@ -204,7 +209,7 @@ struct BrowserSupportSettingsView: View {
     }
     return switch appModel.browserReceiverState {
     case .starting: "正在启动接收服务…"
-    case .ready: "App 接收就绪 · 首次同步后显示送达时间"
+    case .ready: "App 接收就绪 · 还没收到过同步"
     case .unavailable: "App 正在恢复浏览器连接；若持续不可用，请完全退出并重新打开汲作"
     }
   }

@@ -5,7 +5,7 @@ enum WorkSortOrder: String, CaseIterable, Identifiable {
   var id: String { rawValue }
   var title: String {
     switch self {
-    case .original: "默认顺序"
+    case .original: "抓取顺序"
     case .newest: "发布时间 · 新到旧"
     case .oldest: "发布时间 · 旧到新"
     case .mostLiked: "点赞 · 高到低"

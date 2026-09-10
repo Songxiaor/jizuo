@@ -1712,7 +1712,10 @@ struct MarkdownContentView: View {
   /// 少于 3 条不显示入口——一两个标题直接滚更快，摆个按钮只是噪音。
   private var showsOutlineEntry: Bool {
     guard !showsPlainText else { return false }
-    return MarkdownOutline.shouldPresent(outlineEntries) || !navigationModules.isEmpty
+    if MarkdownOutline.shouldPresent(outlineEntries) { return true }
+    // 只有模块、没有章节时，正文得长到需要跳转才值得占一行；一段 60 字的配文上
+    // 摆个「目录 · 3 个模块」是噪音。
+    return !navigationModules.isEmpty && source.count >= 600
   }
 
   /// 有模块时不能只写「章节」——那会让人以为点开只有正文标题，白白错过跳转入口。

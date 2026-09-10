@@ -57,6 +57,11 @@ enum CapturedContentNaming {
     return fallbackName(host: host, author: author, published: published)
   }
 
+  /// 从一段正文里取首句当标题（卡片用）。取不到返回 nil。
+  static func captionTitle(from text: String?, limit: Int = xCaptionCharacterLimit) -> String? {
+    derivedCaption(from: text, limit: limit)
+  }
+
   /// 仅当配文名称就是去图片/合成标题后的全文时，阅读区才藏掉重复标题。
   static func hidesRepeatedHeading(name: Name, body: String) -> Bool {
     guard name.origin == .caption else { return false }

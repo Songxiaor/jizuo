@@ -1961,15 +1961,16 @@ struct HistorySessionMediaUnavailableCard: View {
       if case .refreshing = phase {
         ProgressView().controlSize(.small)
       } else {
+        // 一主一次：重新获取是主动作，回到原页面是退路。
         Button(HistorySessionMediaPresentation.refreshActionTitle, action: onRefresh)
+          .buttonStyle(.appProminent(appTheme.accent))
           .accessibilityIdentifier("history-video-session-refresh")
       }
       Button(HistorySessionMediaPresentation.openSourceActionTitle, action: openSource)
+        .buttonStyle(.appQuiet)
         .accessibilityIdentifier("history-video-session-open-source")
     }
-    .buttonStyle(.borderless)
     .themedFont(.callout, weight: .medium)
-    .foregroundStyle(appTheme.accent)
     .controlSize(.small)
     .frame(minHeight: 28)
   }

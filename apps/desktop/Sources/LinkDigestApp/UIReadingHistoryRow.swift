@@ -9,6 +9,8 @@ struct UIReadingHistoryRow: View {
   let isSelected: Bool
   let faviconURL: URL?
   let theme: HistoryThemeTokens
+  /// 同一博主连续多条时，从第二条起副标题只留日期，不再每行重复作者名。
+  var showsAuthor: Bool = true
   @State private var isHovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -125,7 +127,7 @@ struct UIReadingHistoryRow: View {
           .multilineTextAlignment(.leading)
           .frame(maxWidth: .infinity, alignment: .leading)
         HStack(alignment: .center, spacing: DesignTokens.Space.xs) {
-          Text(rowSourceText)
+          Text(showsAuthor ? rowSourceText : "")
             .themedFont(.subheadline)
             .foregroundStyle(.secondary)
             .lineLimit(1)
@@ -222,6 +224,14 @@ extension UIReadingHistoryRow: Equatable {
       && lhs.isSelected == rhs.isSelected
       && lhs.faviconURL == rhs.faviconURL
       && lhs.theme == rhs.theme
+      && lhs.showsAuthor == rhs.showsAuthor
+  }
+
+  static func repeatsPreviousAuthor(in rows: [HistoryRowProjection], at index: Int) -> Bool {
+    guard index > 0, index < rows.count, let author = rows[index].author?.trimmedNonEmpty else { return false }
+    let previous = rows[index - 1]
+    return previous.author?.trimmedNonEmpty == author
+      && HistoryPlatformRegistry.canonicalHost(for: previous.host) == HistoryPlatformRegistry.canonicalHost(for: rows[index].host)
   }
 }
 
