@@ -66,7 +66,7 @@ describe("native wire excludes popup-only metadata diagnostics", () => {
       { name: "strip", text: "Strip body", media: {
         kind: "directFile", platform: "douyin", pageURL: `https://www.douyin.com/video/${id}`,
         canonicalURL: `https://www.douyin.com/video/${id}`, ephemeralPlaybackURL: "https://media.example.test/strip.mp4",
-        rawExtra: "p".repeat(3 * 1024 * 1024),
+        rawExtra: "p".repeat(4 * 1024 * 1024 + 64),
         transcriptionCapability: "supported",
       } },
       { name: "fresh-retry", text: "Fresh retry body" },

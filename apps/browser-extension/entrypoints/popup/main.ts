@@ -8,6 +8,7 @@ import {
   popupMetadataDiagnostic,
   popupPlatformLabel,
   popupPreviewFailure,
+  popupCaughtFailure,
   type SafeExtensionSendResult,
   type SafeMediaPreview,
   type PopupCaptureAction,
@@ -27,13 +28,14 @@ type BookmarksCollectResult =
 
 type BookmarksSyncResult =
   | { ok: true; outcome: BookmarksSyncOutcome; collected: number; reachedKnown: boolean }
-  | { ok: false; code: "not_bookmarks" | "empty" | "native_error" | "injection_failed" };
+  | { ok: false; code: "not_bookmarks" | "empty" | "native_error" | "injection_failed" | "upgrade_app" };
 
 const bookmarksErrorCopy: Readonly<Record<string, string>> = {
   not_bookmarks: "请在 X 的「历史」页打开，并切到「书签/收藏」分页后再同步（地址栏是 x.com/i/history）。",
   empty: "没有找到可同步的收藏。请确认已切到「书签/收藏」分页，并向下滚动加载列表。",
   native_error: "无法连接汲作，或本次同步未被受理。如果汲作已经打开，请完全退出后重新打开，再重试。",
   injection_failed: "读取收藏列表失败，请刷新页面后重试。",
+  upgrade_app: "扩展与汲作版本不兼容。请打开汲作检查更新。",
 };
 
 type CapturePlatform =
@@ -273,8 +275,8 @@ if (tabId === undefined) {
       applyLibrarySummary();
       syncBookmarks.textContent = "重新读取列表";
       syncBookmarks.disabled = false;
-    } catch {
-      error.textContent = "读取失败，请重试。";
+    } catch (cause) {
+      error.textContent = popupCaughtFailure(cause, "读取失败，请重试。");
       syncBookmarks.textContent = "读取收藏列表";
       syncBookmarks.disabled = false;
       pickerCount.textContent = pickerItems.length > 0
@@ -346,8 +348,8 @@ if (tabId === undefined) {
         refreshPickerChrome();
         syncBookmarks.disabled = false;
       }
-    } catch {
-      error.textContent = "同步失败，请重试。";
+    } catch (cause) {
+      error.textContent = popupCaughtFailure(cause, "同步失败，请重试。");
       refreshPickerChrome();
       syncBookmarks.disabled = false;
     }
@@ -389,12 +391,12 @@ if (tabId === undefined) {
         readXProfile.textContent = "读取主页作品到汲作";
         readXProfile.disabled = false;
         if (result.code === "native_error" || result.code === "upgrade_app") {
-          openApp.textContent = "打开汲作";
+          openApp.textContent = result.code === "upgrade_app" ? "打开汲作检查更新" : "打开汲作";
           openApp.hidden = false;
         }
       }
-    } catch {
-      error.textContent = profileCollectFailureCopy("native_error");
+    } catch (cause) {
+      error.textContent = popupCaughtFailure(cause, profileCollectFailureCopy("native_error"));
       readXProfile.textContent = "读取主页作品到汲作";
       readXProfile.disabled = false;
     }
@@ -479,9 +481,9 @@ if (tabId === undefined) {
         openApp.textContent = "打开汲作查看";
         openApp.hidden = false;
       }
-    } catch {
+    } catch (cause) {
       renderMetadataDiagnostic(undefined);
-      error.textContent = "发送失败，请重试。";
+      error.textContent = popupCaughtFailure(cause, "发送失败，请重试。");
       send.hidden = true;
       recoveryMode = "retry";
       recoveryAction.textContent = "重试发送";

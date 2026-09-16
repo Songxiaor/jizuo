@@ -57,7 +57,10 @@ import {
 } from "../content/xiaohongshu";
 import {
   makeAppError,
+  MAX_CAPTURE_PAYLOAD_BYTES,
   normalizeNativeResponse,
+  truncateToUtf8Bytes,
+  utf8ByteLength,
   validateCapture,
   type CaptureEnvelope,
   type CapturePlatform,
@@ -1315,30 +1318,28 @@ export async function sendCapture(
   }
 
   // Payload size guard: Native Messaging has a 4 MiB hard limit.
-  // Text is already capped at 1 MB in the extraction layer — this is a
-  // safety net for edge cases (e.g. media descriptor with many candidates).
-  // Truncates at paragraph boundary (\n\n) to preserve readability.
-  const MAX_PAYLOAD_BYTES = 3 * 1024 * 1024; // 3 MiB safety net
+  // 按 UTF-8 字节算，不用 JS 字符串长度（中文 1 字 3 字节）。
   let serialized = JSON.stringify(wireEnvelope);
-  if (serialized.length > MAX_PAYLOAD_BYTES) {
+  if (utf8ByteLength(serialized) > MAX_CAPTURE_PAYLOAD_BYTES) {
     const envelopeCopy = { ...wireEnvelope };
     const captureCopy = { ...envelopeCopy.capture };
-    const textLen = captureCopy.text?.length ?? 0;
-    const overhead = serialized.length - textLen;
-    const maxTextLen = Math.max(10_000, MAX_PAYLOAD_BYTES - overhead - 2_000);
-    if (captureCopy.text && textLen > maxTextLen) {
-      // Cut at last paragraph boundary within budget; fall back to hard cut
-      const cutAt = captureCopy.text.lastIndexOf("\n\n", maxTextLen);
-      const sliceEnd = cutAt > maxTextLen * 0.3 ? cutAt : maxTextLen;
-      captureCopy.text = captureCopy.text.slice(0, sliceEnd) + "\n\n…（内容过长，已截断）";
+    const textBytes = utf8ByteLength(captureCopy.text ?? "");
+    const overhead = Math.max(0, utf8ByteLength(serialized) - textBytes);
+    const maxTextBytes = Math.max(10_000, MAX_CAPTURE_PAYLOAD_BYTES - overhead - 2_000);
+    if (captureCopy.text && textBytes > maxTextBytes) {
+      captureCopy.text = truncateToUtf8Bytes(captureCopy.text, maxTextBytes);
+      const cutAt = captureCopy.text.lastIndexOf("\n\n");
+      if (cutAt > captureCopy.text.length * 0.3) {
+        captureCopy.text = captureCopy.text.slice(0, cutAt);
+      }
+      captureCopy.text += "\n\n…（内容过长，已截断）";
       captureCopy.characterCount = [...captureCopy.text].length;
       captureCopy.completeness = "selection_only";
     }
     envelopeCopy.capture = captureCopy;
     wireEnvelope = envelopeCopy;
     serialized = JSON.stringify(wireEnvelope);
-    // Last resort: strip media descriptor entirely
-    if (serialized.length > MAX_PAYLOAD_BYTES && "media" in wireEnvelope) {
+    if (utf8ByteLength(serialized) > MAX_CAPTURE_PAYLOAD_BYTES && "media" in wireEnvelope) {
       const stripped = { ...wireEnvelope };
       delete (stripped as Record<string, unknown>).media;
       stripped.version = 1;
@@ -1404,7 +1405,7 @@ export type BookmarksCollectResult =
 
 export type BookmarksSyncResult =
   | { ok: true; outcome: BookmarksSyncOutcome; collected: number; reachedKnown: boolean }
-  | { ok: false; code: "not_bookmarks" | "empty" | "native_error" | "injection_failed" };
+  | { ok: false; code: "not_bookmarks" | "empty" | "native_error" | "injection_failed" | "upgrade_app" };
 
 async function loadBookmarksCursor(): Promise<string[]> {
   // 游标必须存**一批** id，不能只存一条。
@@ -1525,7 +1526,7 @@ export async function enqueueXBookmarkIDs(tweetIDs: unknown): Promise<BookmarksS
     return { ok: false, code: "native_error" };
   }
   const outcome = parseBookmarksAccepted(response);
-  if (!outcome) return { ok: false, code: "native_error" };
+  if (!outcome) return { ok: false, code: nativeFailureCode(response) };
 
   await rememberBookmarksCursor(ids);
   return { ok: true, outcome, collected: ids.length, reachedKnown: false };
@@ -1542,7 +1543,7 @@ export async function syncXBookmarks(tabId: number): Promise<BookmarksSyncResult
 
 export type SingleTweetSyncResult =
   | { ok: true; outcome: BookmarksSyncOutcome }
-  | { ok: false; code: "invalid_id" | "native_error" };
+  | { ok: false; code: "invalid_id" | "native_error" | "upgrade_app" };
 
 /**
  * 时间线上就地同步一条推文。它就是「tweetIDs 只含一条的收藏夹同步」——App 侧
@@ -1558,7 +1559,7 @@ export async function syncSingleTweet(tweetID: unknown): Promise<SingleTweetSync
     return { ok: false, code: "native_error" };
   }
   const outcome = parseBookmarksAccepted(response);
-  if (!outcome) return { ok: false, code: "native_error" };
+  if (!outcome) return { ok: false, code: nativeFailureCode(response) };
   return { ok: true, outcome };
 }
 
@@ -1633,10 +1634,7 @@ export async function presentXProfileCandidates(tabId: number): Promise<ProfileP
       return { ok: false, code: "upgrade_app" };
     }
     if (row.kind === "error") {
-      if (row.error?.action === "upgrade_app" || row.error?.code === "CAPTURE_SCHEMA_INVALID") {
-        return { ok: false, code: "upgrade_app" };
-      }
-      return { ok: false, code: "native_error" };
+      return { ok: false, code: nativeFailureCode(response) };
     }
   }
   const presented = parseProfileCandidatesPresented(response);
@@ -1645,7 +1643,19 @@ export async function presentXProfileCandidates(tabId: number): Promise<ProfileP
   return { ok: true, acceptedCount: presented.acceptedCount };
 }
 
-export async function openPeerApp(): Promise<{ ok: true } | { ok: false; code: "native_error" }> {
+function nativeFailureCode(response: unknown): "upgrade_app" | "native_error" {
+  if (response && typeof response === "object") {
+    const row = response as { kind?: string; error?: { code?: string; action?: string } };
+    if (row.kind === "error") {
+      if (row.error?.action === "upgrade_app" || row.error?.code === "PROTOCOL_VERSION_UNSUPPORTED") {
+        return "upgrade_app";
+      }
+    }
+  }
+  return "native_error";
+}
+
+export async function openPeerApp(): Promise<{ ok: true } | { ok: false; code: "native_error" | "upgrade_app" }> {
   const message = { kind: "openApp", version: 1, requestId: requestId() };
   try {
     const response: unknown = await withTimeout(
@@ -1653,8 +1663,15 @@ export async function openPeerApp(): Promise<{ ok: true } | { ok: false; code: "
       10_000,
     );
     const normalized = normalizeNativeResponse(response, message.requestId);
-    if (normalized.kind === "error") return { ok: false, code: "native_error" };
-    return { ok: true };
+    if (normalized.kind === "error") {
+      return { ok: false, code: nativeFailureCode(normalized) };
+    }
+    if (normalized.kind === "openAppAccepted") {
+      if (!normalized.supportedVersions.includes(1)) return { ok: false, code: "upgrade_app" };
+      return { ok: true };
+    }
+    if (normalized.kind === "taskAccepted") return { ok: true };
+    return { ok: false, code: "native_error" };
   } catch {
     return { ok: false, code: "native_error" };
   }

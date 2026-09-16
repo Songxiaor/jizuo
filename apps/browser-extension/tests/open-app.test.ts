@@ -40,4 +40,33 @@ describe("openPeerApp native message", () => {
       { kind: "openApp", version: 1, requestId: "fixed" },
     );
   });
+
+  it("treats openAppAccepted with supported version 1 as success", async () => {
+    const sendNativeMessage = vi.fn().mockResolvedValue({
+      kind: "openAppAccepted", version: 1, requestId: "fixed", supportedVersions: [1],
+    });
+    vi.stubGlobal("crypto", { randomUUID: () => "fixed" });
+    vi.stubGlobal("browser", { runtime: { sendNativeMessage } });
+    vi.stubGlobal("defineBackground", (factory: unknown) => factory);
+    vi.resetModules();
+    const { openPeerApp } = await import("../src/entrypoints/background");
+    await expect(openPeerApp()).resolves.toEqual({ ok: true });
+  });
+
+  it("maps PROTOCOL_VERSION_UNSUPPORTED to upgrade_app instead of collapsing to native_error", async () => {
+    const sendNativeMessage = vi.fn().mockResolvedValue({
+      kind: "error",
+      error: {
+        version: 1, requestId: "fixed", createdAt: "2026-09-15T00:00:00Z",
+        category: "protocol", code: "PROTOCOL_VERSION_UNSUPPORTED",
+        retryable: false, action: "upgrade_app",
+      },
+    });
+    vi.stubGlobal("crypto", { randomUUID: () => "fixed" });
+    vi.stubGlobal("browser", { runtime: { sendNativeMessage } });
+    vi.stubGlobal("defineBackground", (factory: unknown) => factory);
+    vi.resetModules();
+    const { openPeerApp } = await import("../src/entrypoints/background");
+    await expect(openPeerApp()).resolves.toEqual({ ok: false, code: "upgrade_app" });
+  });
 });

@@ -58,6 +58,12 @@ describe("popup error presentation", () => {
       response: { kind: "error", error: makeAppError("req", "network", "NATIVE_HOST_NOT_FOUND", false, "open_install_guide") },
     });
     expect(install).toMatchObject({ action: "open_settings" });
+
+    const upgrade = popupRecoveryForSendResult({
+      response: { kind: "error", error: makeAppError("req", "protocol", "PROTOCOL_VERSION_UNSUPPORTED", false, "upgrade_app") },
+    });
+    expect(upgrade).toMatchObject({ action: "open_app", label: "打开汲作检查更新" });
+    expect(upgrade?.message).toContain("检查更新");
   });
   it("uses fixed allowlisted layer-specific copy without raw wire fields", () => {
     for (const code of knownCodes) {

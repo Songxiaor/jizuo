@@ -1,6 +1,19 @@
 import validateWireSchema, { type SchemaValidationError } from "./generated/capture-validator.mjs";
 
 export const MAX_CAPTURE_TEXT_SCALARS = 2_000_000;
+/** Native Messaging 硬上限是 4 MiB；字数校验按 UTF-8 字节，不按 JS 字符串长度。 */
+export const MAX_CAPTURE_PAYLOAD_BYTES = 4 * 1024 * 1024;
+
+export function utf8ByteLength(text: string): number {
+  return new TextEncoder().encode(text).length;
+}
+
+export function truncateToUtf8Bytes(text: string, maxBytes: number): string {
+  const encoded = new TextEncoder().encode(text);
+  if (encoded.length <= maxBytes) return text;
+  const sliced = encoded.slice(0, Math.max(0, maxBytes));
+  return new TextDecoder("utf-8", { fatal: false }).decode(sliced).replace(/\uFFFD$/u, "");
+}
 export type CaptureRequestedAction = "save" | "summarize" | "translate";
 export type CapturePlatform = "generic" | "x" | "youtube" | "wechat" | "xiaohongshu" | "douyin" | "bilibili" | "github" | "zhihu" | "medium" | "substack" | "toutiao";
 export type CaptureMedia = {
@@ -76,6 +89,7 @@ export type AppError = {
 };
 export type NativeResponse =
   | { kind: "taskAccepted"; version: 1; requestId: string; characterCount: number }
+  | { kind: "openAppAccepted"; version: 1; requestId: string; supportedVersions: number[] }
   | { kind: "error"; error: AppError };
 
 const categories = new Set<AppError["category"]>(["protocol", "permission", "network", "extraction", "storage", "unknown"]);
@@ -101,6 +115,14 @@ export function isWireNativeResponse(value: unknown): value is NativeResponse {
       && typeof candidate.characterCount === "number"
       && Number.isInteger(candidate.characterCount);
   }
+  if (candidate.kind === "openAppAccepted") {
+    return candidate.version === 1
+      && typeof candidate.requestId === "string"
+      && candidate.requestId.length > 0
+      && Array.isArray(candidate.supportedVersions)
+      && candidate.supportedVersions.length > 0
+      && candidate.supportedVersions.every((value) => Number.isInteger(value) && value >= 1);
+  }
   if (candidate.kind !== "error" || !candidate.error || typeof candidate.error !== "object") return false;
   const error = candidate.error as Record<string, unknown>;
   return error.version === 1
@@ -118,6 +140,9 @@ export function normalizeNativeResponse(value: unknown, expectedRequestId: strin
     return { kind: "error", error: makeAppError(expectedRequestId, "protocol", "NATIVE_RESPONSE_INVALID", false, "retry") };
   }
   if (value.kind === "taskAccepted" && value.requestId !== expectedRequestId) {
+    return { kind: "error", error: makeAppError(expectedRequestId, "protocol", "NATIVE_RESPONSE_INVALID", false, "retry") };
+  }
+  if (value.kind === "openAppAccepted" && value.requestId !== expectedRequestId) {
     return { kind: "error", error: makeAppError(expectedRequestId, "protocol", "NATIVE_RESPONSE_INVALID", false, "retry") };
   }
   return value;
@@ -141,6 +166,7 @@ export function validateCapture(value: unknown, declaredSchema?: string): string
   if (!candidate.source || typeof candidate.source.url !== "string" || !/^https?:\/\//.test(candidate.source.url)) return "CAPTURE_URL_UNSUPPORTED";
   if (!candidate.capture || typeof candidate.capture.text !== "string") return "CAPTURE_SCHEMA_INVALID";
   if ([...candidate.capture.text].length === 0) return "CAPTURE_CONTENT_EMPTY";
+  if (utf8ByteLength(candidate.capture.text) > MAX_CAPTURE_PAYLOAD_BYTES) return "CAPTURE_PAYLOAD_TOO_LARGE";
   if ([...candidate.capture.text].length > MAX_CAPTURE_TEXT_SCALARS) return "CAPTURE_PAYLOAD_TOO_LARGE";
   if ([...candidate.capture.text].length !== candidate.capture.characterCount) return "CAPTURE_COUNT_MISMATCH";
   // Forward-compatible wire validation accepts unknown optional fields. Strict

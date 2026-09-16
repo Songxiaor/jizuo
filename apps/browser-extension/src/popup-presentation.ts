@@ -100,6 +100,7 @@ export function popupRecoveryForSendResult(result: SafeExtensionSendResult): Pop
   if (result.response.kind !== "error") return null;
   const message = popupMessageForResponse(result.response) ?? "操作未完成。";
   const requested = result.response.error.action;
+  if (requested === "upgrade_app") return { message, action: "open_app", label: "打开汲作检查更新" };
   if (requested === "open_app") return { message, action: "open_app", label: "前往汲作处理" };
   if (requested === "open_install_guide") {
     return { message, action: "open_settings", label: "打开汲作安装浏览器支持" };
@@ -114,7 +115,7 @@ export function popupRecoveryForSendResult(result: SafeExtensionSendResult): Pop
 }
 
 const knownErrorMessages: Readonly<Record<string, string>> = {
-  PROTOCOL_VERSION_UNSUPPORTED: "扩展与 LinkDigest 版本不兼容，请升级后重试。",
+  PROTOCOL_VERSION_UNSUPPORTED: "扩展与汲作版本不兼容。请打开汲作检查更新。",
   CAPTURE_SCHEMA_INVALID: "当前页面数据格式无效，请刷新页面后重试。",
   CAPTURE_URL_UNSUPPORTED: "当前页面地址不受支持，请打开 HTTP 或 HTTPS 页面。",
   CAPTURE_CONTENT_EMPTY: "当前页面没有可发送的内容。",
@@ -142,6 +143,16 @@ const knownErrorMessages: Readonly<Record<string, string>> = {
 export function popupMessageForResponse(response: NativeResponse): string | null {
   if (response.kind !== "error") return null;
   return knownErrorMessages[response.error.code] ?? "操作未完成，请重试。";
+}
+
+/** 裸 catch 不得静默吞错，也不得把原始 URL/堆栈亮给用户。 */
+export function popupCaughtFailure(raw: unknown, fallback: string): string {
+  const message = raw instanceof Error ? raw.message : String(raw);
+  for (const code of Object.keys(knownErrorMessages)) {
+    const mapped = knownErrorMessages[code];
+    if (mapped && message.includes(code)) return mapped;
+  }
+  return fallback;
 }
 
 export type SafeExtensionSendResult = {
