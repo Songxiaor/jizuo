@@ -10,8 +10,8 @@ struct CompanionNoteSyncSettingsView: View {
       SettingsPageHeader(
         title: "手机同步",
         symbol: "iphone.and.arrow.forward",
-        // 页头只说这页干什么。签名、CloudKit 容器这些技术原因在卡片的 ⓘ 里。
-        caption: "把「我的笔记」和链接卡同步到 iPhone。API Key 不同步。",
+        // 页头只说这页干什么。签名、iCloud 容器这些技术原因在卡片的 ⓘ 里。
+        caption: "把「我的笔记」和链接卡同步到 iPhone。密钥不会同步过去。",
         fill: SettingsCategoryChip.fill(for: "companionSync", theme: appTheme)
       )
 
@@ -19,10 +19,9 @@ struct CompanionNoteSyncSettingsView: View {
         title: "与 iPhone 同步",
         summary: "本机历史里的「我的笔记」和链接会投影成笔记卡，经 iCloud 私有库与手机互相同步。",
         details: """
-        流程：导出本机条目 → CloudKit 拉推合并 → 写回本机历史。
-        软删除会在两端传播；稿件与作品不同步。
-        需要系统已登录 Apple ID，并在签名产物里打开 iCloud(CloudKit) 容器 iCloud.com.syc.linkdigest。当前日用包是 ad-hoc 签名，没有 iCloud 能力，启动时不会连 CloudKit，避免闪退。
-        免费 Personal Team 可能无法开通自定义 CloudKit 容器；若同步报权限错误，需要付费 Apple Developer Program。
+        同步走你自己的 iCloud 私人空间：本机先导出，和 iCloud 上的合并，再写回本机。两边都只有你自己看得到。
+        在一边删掉的，另一边也会跟着删；稿件和成品不参与同步。
+        需要这台 Mac 已经登录 Apple ID。当前这一版汲作没有开通 iCloud 能力，所以启动时不会去连，也不会因此闪退——这就是下面按钮点不动的原因。
         当前状态：\(model.statusSummary)
         """,
         summaryPlacement: .aboveControl,

@@ -25,6 +25,48 @@ enum ExperimentalFeatures {
   /// 改回 true 的当天,开过的人还是原样回来。
   static let isOfferedToUsers = false
 
+  /// 这一版对外提不提供「手机同步」。
+  ///
+  /// 0.2.x 定为**不提供**:同步本身还没做完,而它牵扯的是用户最私密的一批数据——
+  /// 笔记正文会被写进 iCloud 私有库。
+  ///
+  /// 关的是两件事,缺一不可:
+  ///
+  /// 1. 设置里那一栏不出现。这一条原来是靠 `case .companionSync: false` 这个
+  ///    裸字面量做到的——能用,但读代码的人看不出它是「这一版故意关的」还是
+  ///    「谁调试时随手改的」,也没有任何地方拦得住第二处忘记判断。
+  /// 2. **启动时不自动同步**。这一条原来根本没做:入口藏起来了,启动路径却仍然
+  ///    照常调 `companionNoteSync.synchronize()`,而协调器的 enabled 默认值来自
+  ///    `CloudKitCapability.isContainerEntitled()`——也就是说,哪天换成带 iCloud
+  ///    能力的正式签名,笔记就会在用户毫不知情的情况下开始往 iCloud 上传。
+  ///    一个「这一版不提供」的功能,不该由签名方式来决定它跑不跑。
+  ///
+  /// 收成一个命名常量,两处都读它:关的是同一件事,就只能有一个开关。
+  static let isCompanionSyncOffered = false
+
+  /// 手机同步:把「我的笔记」和链接卡经 iCloud 私有库同步到 iPhone。
+  ///
+  /// 默认关闭,而且**默认值就是 false,不看签名能力**。原来的默认值是
+  /// `CloudKitCapability.isContainerEntitled()`——「这台机器的签名支持 iCloud」
+  /// 被当成了「用户想同步」,而这两件事毫无关系。上传用户数据这种事只能由
+  /// 用户自己按下,不能由构建配置替他决定。
+  static let companionSyncKey = "experimental.companionSync.enabled"
+
+  /// 启动时到底要不要同步:这一版对外提供,**并且**用户自己在设置里打开过。
+  ///
+  /// 与 `isWorkbenchVisible` 同一个形状、同一个理由:两处判断各写一遍 `&&`,
+  /// 漏掉一处的表现是「设置里看不到手机同步,后台却在往 iCloud 传东西」——
+  /// 那种 bug 自己不会喊。
+  static func isCompanionSyncEnabled(userEnabled: Bool) -> Bool {
+    isCompanionSyncOffered && userEnabled
+  }
+
+  /// 读用户偏好。没设过一律 false——`UserDefaults.bool(forKey:)` 对缺失键返回
+  /// false,正是这里想要的默认。
+  static func isCompanionSyncEnabled(defaults: UserDefaults = .standard) -> Bool {
+    isCompanionSyncEnabled(userEnabled: defaults.bool(forKey: companionSyncKey))
+  }
+
   /// 入口到底显不显示:这一版对外提供,**并且**用户自己打开过。
   ///
   /// 收口成一个函数而不是让各视图各写一遍 `&&`:侧边栏、中间列、详情列和

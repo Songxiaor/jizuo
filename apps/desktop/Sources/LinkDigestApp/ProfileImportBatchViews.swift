@@ -14,7 +14,7 @@ enum ProfileImportQueuePresentation {
 struct ProfileImportBatchStack: View {
   @AppStorage(ProfileImportQueuePresentation.dismissedKey) private var dismissed = ""
   @ObservedObject var manualLink: ManualLinkViewModel
-  @ObservedObject var historyModel: HistoryViewModel
+  var historyModel: HistoryViewModel
   let compact: Bool
 
   var body: some View {
@@ -73,7 +73,7 @@ struct ProfileImportBatchWorkCard: View {
   let savedRows: [TaskID: HistoryRowProjection]
   let localCover: (TaskID, String?) async -> URL?
   @ObservedObject var manualLink: ManualLinkViewModel
-  @ObservedObject var historyModel: HistoryViewModel
+  var historyModel: HistoryViewModel
   @Environment(\.appTheme) private var theme
 
   var body: some View {
@@ -118,7 +118,7 @@ struct ProfileImportBatchGrid: View {
   let savedRows: [TaskID: HistoryRowProjection]
   let localCover: (TaskID, String?) async -> URL?
   @ObservedObject var manualLink: ManualLinkViewModel
-  @ObservedObject var historyModel: HistoryViewModel
+  var historyModel: HistoryViewModel
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
@@ -146,7 +146,7 @@ private struct ProfileImportReservedWorkCard: View {
   let batchID: UUID
   let item: ProfileImportBatchItem
   @ObservedObject var manualLink: ManualLinkViewModel
-  @ObservedObject var historyModel: HistoryViewModel
+  var historyModel: HistoryViewModel
   @Environment(\.appTheme) private var theme
 
   private var host: String { URL(string: item.seed.canonicalURL)?.host ?? "" }
@@ -259,7 +259,8 @@ private struct ProfileImportReservedWorkCard: View {
     case .likes: item.seed.likes
     case .comments: item.seed.comments
     case .collects: item.seed.collects
-    case .shares, .views: nil
+    case .views: item.seed.views
+    case .shares: nil
     }
   }
 
@@ -272,7 +273,7 @@ private struct ProfileImportReservedWorkCard: View {
 private struct ProfileImportBatchCard: View {
   let batch: ProfileImportBatch
   @ObservedObject var manualLink: ManualLinkViewModel
-  @ObservedObject var historyModel: HistoryViewModel
+  var historyModel: HistoryViewModel
   let compact: Bool
   let dismiss: () -> Void
   @Environment(\.appTheme) private var theme
@@ -358,7 +359,7 @@ private struct ProfileImportBatchItemRow: View {
   let batchID: UUID
   let item: ProfileImportBatchItem
   @ObservedObject var manualLink: ManualLinkViewModel
-  @ObservedObject var historyModel: HistoryViewModel
+  var historyModel: HistoryViewModel
   let compact: Bool
   @Environment(\.appTheme) private var theme
 

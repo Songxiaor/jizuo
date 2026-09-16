@@ -54,11 +54,12 @@ struct YouTubeEmbedPlayerCard: View {
   @ObservedObject private var diagnostics = YouTubeEmbedDiagnostics.shared
   /// 封面优先：用户点过播放才创建 WKWebView。
   ///
-  /// 以前卡片一渲染就冷启动一个无缓存的 WKWebView（非持久存储是隐私取舍，
-  /// 不能改），YouTube 播放器整套 JS 每次重新下载，「正在加载嵌入播放器…」
-  /// 一转好几秒；切走条目即释放，切回来又是一遍。封面图只有几十 KB 且有
-  /// 内存 + 系统 URLCache 两层缓存，显示是即时的；播放器的加载成本推迟到
-  /// 用户真的要看的那一刻。条目切换（本卡离屏）后状态归零，回来重新是封面，
+  /// 以前卡片一渲染就冷启动一个无缓存的 WKWebView，YouTube 播放器整套 JS
+  /// 每次重新下载，慢网下要转好几秒；切走条目即释放，切回来又是一遍。
+  /// 现在播放器的零件走磁盘缓存（见 YouTubeEmbedWebViewPool.embedDataStore）
+  /// 且在详情页出现时就预热，成本大头已经提前付掉。封面图只有几十 KB 且有
+  /// 内存 + 系统 URLCache 两层缓存，显示仍然是即时的，播放器的加载成本也
+  /// 依旧推迟到用户真的要看的那一刻。条目切换（本卡离屏）后状态归零，回来重新是封面，
   /// 不会有看不见的播放器在后台出声。
   @State private var isPlayerRequested = false
 
@@ -109,7 +110,8 @@ struct YouTubeEmbedPlayerCard: View {
             )
             // 加载没成功时，用可读的一行字盖住那个纯白框——空白本身不携带任何信息。
             .overlay {
-              if let message = diagnostics.status[videoID] {
+              if let message = diagnostics.status[videoID],
+                 message != YouTubeEmbedDiagnostics.loadingMessage {
                 RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
                   .fill(Color.black.opacity(0.88))
                   .overlay {
@@ -128,7 +130,23 @@ struct YouTubeEmbedPlayerCard: View {
                   .accessibilityIdentifier("history-youtube-embed-diagnostic")
               }
             }
-            .onTapGesture(count: 2) { cinema.present(videoID: videoID) }
+            // 加载期间盖一层可读的等待提示。之前这里是纯黑的一格：
+            // 慢网下要黑好几秒，看上去像坏了；文字 + 转圈至少说明在做事。
+            .overlay {
+              if diagnostics.status[videoID] == YouTubeEmbedDiagnostics.loadingMessage {
+                ZStack {
+                  Color.black.opacity(0.92)
+                  VStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("正在载入 YouTube 播放器…")
+                      .themedFont(.caption)
+                      .foregroundStyle(.white.opacity(0.8))
+                  }
+                }
+                .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+              }
+            }
+            .onTapGesture(count: 2) { if !cinema.isPresented { cinema.present(videoID: videoID) } }
         }
       }
       .aspectRatio(16.0 / 9.0, contentMode: .fit)
@@ -164,6 +182,11 @@ struct YouTubeEmbedPlayerCard: View {
     }
     .padding(14)
     .background(Color.secondary.opacity(0.06), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
+    .onAppear {
+      // 详情页一出现就预热：WebContent 进程提前起、YouTube 域名提前握手，
+      // 用户点封面时省下的就是这段。不创建播放器、不取视频内容。
+      YouTubeEmbedPrewarmer.shared.warm()
+    }
     .onDisappear {
       // 卡片离屏（切换条目）：影院同视频先收掉，再释放池实例——
       // 否则池持有的 webview 会让音频在后台继续播放。
@@ -218,8 +241,12 @@ private struct YouTubeEmbedPosterView: View {
 }
 
 /// 封面图加载：maxresdefault 优先（16:9 高清，部分视频没有），失败落回
-/// hqdefault（一定存在，4:3 带黑边，由视图层 fill 裁掉）。内存缓存之外，
-/// URLSession.shared 自带的 URLCache 还提供磁盘层，重开条目即时显示。
+/// hqdefault（一定存在，4:3 带黑边，由视图层 fill 裁掉）。
+///
+/// 取图走和图库封面同一条线（`WorkThumbnailLoader` → `DouyinProfilePreviewResource`）：
+/// 地址先过 `GalleryCoverAdmission` 与 `PublicWebURLPolicy` 门禁，传输是已经校验
+/// DNS、对端和每一跳重定向的安全抓取，不再用共享会话裸发。
+/// 那条线自带内存 + 落盘两层缓存，原来靠 URLCache 提供的磁盘层不受影响。
 /// 只取公开封面图，不带任何身份信息。
 @MainActor enum YouTubeThumbnailLoader {
   private static let images: NSCache<NSString, NSImage> = {
@@ -232,10 +259,10 @@ private struct YouTubeEmbedPosterView: View {
     if let hit = images.object(forKey: videoID as NSString) { return hit }
     for variant in ["maxresdefault", "hqdefault"] {
       guard let url = URL(string: "https://i.ytimg.com/vi/\(videoID)/\(variant).jpg"),
-            let (data, response) = try? await URLSession.shared.data(from: url),
-            (response as? HTTPURLResponse)?.statusCode == 200,
-            let decoded = NSImage(data: data)
+            DouyinProfilePreviewResource.admittedURL(url.absoluteString) != nil,
+            let thumbnail = try? await WorkThumbnailLoader.shared.image(url: url, pixels: 960)
       else { continue }
+      let decoded = NSImage(cgImage: thumbnail.image, size: .zero)
       images.setObject(decoded, forKey: videoID as NSString)
       return decoded
     }
@@ -278,23 +305,54 @@ private struct YouTubeEmbedPosterView: View {
   func dismiss() { content = nil }
 }
 
+/// 双击监视器注册方的身份：卡片层（双击放大）还是影院 overlay（双击关闭）。
+enum VideoCinemaDoubleClickRole {
+  case card
+  case cinema
+}
+
+/// 「这一次双击该不该由我响应」的判定。
+///
+/// 只看两件事：注册方身份、影院当前是否已展开——不碰任何 AppKit 视图状态，所以
+/// 「两层不会同时响应」这条不变量能直接用纯函数单测钉死。
+///
+/// 根因：影院打开后，卡片那一层虽被 overlay 盖住，却仍在视图树里活着，两层各自的
+/// 本地监视器都会命中同一次双击——一个把影院推上去、另一个又把它关掉。给每层一个
+/// role 后，card 只在影院未展开时响应（双击 = 放大），cinema 只在影院已展开时响应
+/// （双击 = 关闭），两者互斥。
+enum VideoCinemaDoubleClickDecision {
+  static func shouldRespond(
+    role: VideoCinemaDoubleClickRole,
+    isCinemaPresented: Bool
+  ) -> Bool {
+    switch role {
+    case .card: return !isCinemaPresented
+    case .cinema: return isCinemaPresented
+    }
+  }
+}
+
 /// 不抢单击：AVPlayerView 的播放、进度条继续可用。
 /// 只在本视图范围内监听双击，用来进出影院。
 struct VideoCinemaDoubleClickCatcher: NSViewRepresentable {
   var action: () -> Void
+  var role: VideoCinemaDoubleClickRole = .card
 
   func makeNSView(context: Context) -> MonitorView {
     let view = MonitorView()
     view.action = action
+    view.role = role
     return view
   }
 
   func updateNSView(_ nsView: MonitorView, context: Context) {
     nsView.action = action
+    nsView.role = role
   }
 
   final class MonitorView: NSView {
     var action: (() -> Void)?
+    var role: VideoCinemaDoubleClickRole = .card
     private var monitor: Any?
 
     override var acceptsFirstResponder: Bool { false }
@@ -310,6 +368,10 @@ struct VideoCinemaDoubleClickCatcher: NSViewRepresentable {
       monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
         guard let self,
               event.clickCount == 2,
+              VideoCinemaDoubleClickDecision.shouldRespond(
+                role: self.role,
+                isCinemaPresented: VideoCinemaController.shared.isPresented
+              ),
               let window = self.window,
               event.window === window,
               self.bounds.width > 0,
@@ -332,9 +394,12 @@ struct VideoCinemaDoubleClickCatcher: NSViewRepresentable {
 }
 
 extension View {
-  func videoCinemaDoubleClick(_ action: @escaping () -> Void) -> some View {
+  func videoCinemaDoubleClick(
+    role: VideoCinemaDoubleClickRole = .card,
+    _ action: @escaping () -> Void
+  ) -> some View {
     background(
-      VideoCinemaDoubleClickCatcher(action: action).allowsHitTesting(false)
+      VideoCinemaDoubleClickCatcher(action: action, role: role).allowsHitTesting(false)
     )
   }
 }
@@ -377,6 +442,8 @@ struct VideoCinemaOverlay: View {
               .keyboardShortcut(.cancelAction)
               .padding(.bottom, 8)
               .accessibilityIdentifier("history-youtube-cinema-close")
+              .accessibilityLabel("关闭全屏")
+              .help("关闭全屏")
             }
             .frame(width: fitted.width)
             Group {
@@ -386,7 +453,8 @@ struct VideoCinemaOverlay: View {
                   // 影院这条路径此前没有任何状态显示，所以搬移失败时只剩一个
                   // 空框——位置和边框都对，内容却是透明的，看不出是哪一环断了。
                   .overlay {
-                    if let message = diagnostics.status[videoID] {
+                    if let message = diagnostics.status[videoID],
+                         message != YouTubeEmbedDiagnostics.loadingMessage {
                       Color.black.opacity(0.88)
                         .overlay {
                           VStack(spacing: 8) {
@@ -407,7 +475,7 @@ struct VideoCinemaOverlay: View {
               case let .player(player, _):
                 VideoPlayer(player: player)
                   .linkDigestVideoSurface(player: player)
-                  .videoCinemaDoubleClick { cinema.dismiss() }
+                  .videoCinemaDoubleClick(role: .cinema) { cinema.dismiss() }
               }
             }
             .frame(width: fitted.width, height: fitted.height)
@@ -444,12 +512,50 @@ struct VideoCinemaOverlay: View {
 @MainActor final class YouTubeEmbedDiagnostics: ObservableObject {
   static let shared = YouTubeEmbedDiagnostics()
 
+  /// 「正在加载」这一条要单独认得出来：它决定卡片是继续盖着封面还是露出播放器。
+  static let loadingMessage = "正在加载嵌入播放器…"
+
   /// videoID → 当前状态。nil 表示已正常加载完成，卡片不显示任何覆盖层。
   @Published private(set) var status: [String: String] = [:]
 
   func record(_ videoID: String, _ message: String) { status[videoID] = message }
   func clear(_ videoID: String) { status.removeValue(forKey: videoID) }
 
+}
+
+/// 详情页一出现就把成本提前付掉：一个不可见的 WKWebView，只写 preconnect /
+/// dns-prefetch 提示，**不建播放器、不取任何视频内容**。
+///
+/// 它换来两件事：WebContent 进程提前起来（点击时不再等进程启动），以及
+/// youtube-nocookie / ytimg / googlevideo 的 DNS + TCP + TLS 提前完成
+/// （慢网下这是好几秒里最大的一段）。用户手势那道门没有被动：播放器
+/// 仍然是点封面之后才创建，autoplay=1 依旧在兜现那次点击。
+@MainActor final class YouTubeEmbedPrewarmer {
+  static let shared = YouTubeEmbedPrewarmer()
+
+  private var webView: WKWebView?
+
+  /// 幂等：整个 App 生命周期只预热一次。
+  func warm() {
+    guard webView == nil else { return }
+    // 身份数据（Cookie / localStorage）由启动路径统一清，不在这里做：
+    // removeData 是异步落地，而用户可能在几百毫秒后就点开视频，那时它会撞上
+    // 正在使用同一个存储的播放器。启动时清则不会有任何在跑的页面。
+    let view = WKWebView(
+      frame: CGRect(x: 0, y: 0, width: 2, height: 2),
+      configuration: YouTubeEmbedWebViewPool.makeConfiguration()
+    )
+    let html = """
+    <!doctype html><html><head>
+    <link rel="preconnect" href="https://www.youtube-nocookie.com" crossorigin>
+    <link rel="preconnect" href="https://i.ytimg.com" crossorigin>
+    <link rel="preconnect" href="https://googlevideo.com" crossorigin>
+    <link rel="dns-prefetch" href="https://www.google.com">
+    </head><body></body></html>
+    """
+    view.loadHTMLString(html, baseURL: URL(string: "https://www.youtube-nocookie.com"))
+    webView = view
+  }
 }
 
 /// 按 videoID 持有唯一的已加载 WKWebView：卡片与影院 overlay 之间搬移复用，
@@ -469,6 +575,59 @@ struct VideoCinemaOverlay: View {
   /// 实测轨迹里就有别的 videoID 的卡片在离屏渲染，这条路是真的会走到。
   private var entries: [String: Entry] = [:]
 
+  /// 嵌入播放器**专用**的持久数据存储（与登录会话、抓取用的那个互不干扰）。
+  ///
+  /// 这里存的是「零件」而不是「身份」：播放器的 base.js、CSS、缩略图这类
+  /// 谁都能下载的静态资源留在磁盘缓存里，第二次打开直接命中，不再每次冷下载
+  /// （慢网下这是 1～2 秒，是「播放器加载慢」里最大的一块）。
+  /// 身份类数据（Cookie / localStorage / IndexedDB）在每次启动、第一次用到
+  /// 嵌入播放器之前整批清掉——见 `wipeEmbedIdentityData()`——所以
+  /// 「不留登录态、不留浏览痕迹」这条没有变。
+  ///
+  /// 之前每次新建配置都各拿一份 `nonPersistent()`：WebContent 进程和内存缓存
+  /// 各起一套，连第二次打开都和第一次一样冷。共用这一个实例之后，同一进程内
+  /// 的第二次播放能吃到缓存和已建立的连接。
+  static let embedDataStore = WKWebsiteDataStore(
+    forIdentifier: UUID(uuidString: "6F2A1C4E-6C2B-4A1E-9E1E-2B7C9A0D51F3") ?? UUID()
+  )
+
+  /// 抹掉身份类数据，**保留磁盘缓存**。预热时调一次，幂等。
+  ///
+  /// 这里不能用 `allWebsiteDataTypes()`：那会把磁盘缓存一起清掉，等于把上面
+  /// 那 1～2 秒又还回去了。
+  static func wipeEmbedIdentityData() async {
+    let identityTypes: Set<String> = [
+      WKWebsiteDataTypeCookies,
+      WKWebsiteDataTypeLocalStorage,
+      WKWebsiteDataTypeSessionStorage,
+      WKWebsiteDataTypeIndexedDBDatabases,
+      // DRM 持久授权：正常 embed 走 HTML5 时为空，成本为零。
+      WKWebsiteDataTypeMediaKeys,
+      WKWebsiteDataTypeFetchCache,
+    ]
+    await embedDataStore.removeData(ofTypes: identityTypes, modifiedSince: .distantPast)
+    // `removeData` 不保证连 Cookie 一起清干净——登录会话那条线已经踩过这个坑
+    // （SiteSessionController 里同样逐条删一遍收尾）。逐条删是唯一可靠的收尾。
+    let cookies = await withCheckedContinuation { continuation in
+      embedDataStore.httpCookieStore.getAllCookies { continuation.resume(returning: $0) }
+    }
+    for cookie in cookies {
+      await withCheckedContinuation { continuation in
+        embedDataStore.httpCookieStore.delete(cookie) { continuation.resume() }
+      }
+    }
+  }
+
+  /// 播放器与预热器共用同一份配置，否则「预热」预的是另一个进程。
+  static func makeConfiguration() -> WKWebViewConfiguration {
+    let configuration = WKWebViewConfiguration()
+    configuration.websiteDataStore = embedDataStore
+    // 空集合 = 允许 autoplay；用户手势那道门在封面层（isPlayerRequested），
+    // 不依赖 WebKit 的媒体手势策略。
+    configuration.mediaTypesRequiringUserActionForPlayback = []
+    return configuration
+  }
+
   func webView(for videoID: String) -> WKWebView {
     if let existing = entries[videoID] { return existing.webView }
     // 新建之前先收掉用不着的：既不是本视频、也不是影院正持有的，一律释放。
@@ -478,15 +637,13 @@ struct VideoCinemaOverlay: View {
       entry.webView.removeFromSuperview()
       entries.removeValue(forKey: id)
     }
-    let configuration = WKWebViewConfiguration()
-    configuration.websiteDataStore = .nonPersistent()
+    let configuration = Self.makeConfiguration()
     // 空集合 = 允许 autoplay。播放器创建只发生在用户手势之后（封面点击 /
     // 「放大」按钮），embed URL 里的 autoplay=1 是在兑现那次点击——否则用户
     // 点完封面还要在 YouTube 控件上再点一次播放。用户手势这道门由封面层
     // （isPlayerRequested）把守，不再依赖 WebKit 的媒体手势策略。
-    configuration.mediaTypesRequiringUserActionForPlayback = []
     let delegate = YouTubeEmbedNavigationDelegate(videoID: videoID)
-    YouTubeEmbedDiagnostics.shared.record(videoID, "正在加载嵌入播放器…")
+    YouTubeEmbedDiagnostics.shared.record(videoID, YouTubeEmbedDiagnostics.loadingMessage)
     // 非零初始 frame：保证首次加载不在零尺寸下渲染。
     let webView = WKWebView(frame: CGRect(x: 0, y: 0, width: 1280, height: 720), configuration: configuration)
     webView.navigationDelegate = delegate

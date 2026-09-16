@@ -10,7 +10,7 @@ struct MindMapSectionView: View {
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
   let taskID: TaskID
-  @ObservedObject var model: HistoryViewModel
+  @Bindable var model: HistoryViewModel
 
   @State private var isEditorPresented = false
   @State private var svgExport: MindMapExportFile?

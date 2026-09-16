@@ -5,7 +5,9 @@ enum WorkSortOrder: String, CaseIterable, Identifiable {
   var id: String { rawValue }
   var title: String {
     switch self {
-    case .original: "抓取顺序"
+    // 「抓取顺序」会被读成「按我抓的那次排」；这一档其实是内容被发现的先后，
+    // 和后台分页拿回来的顺序一致，所以叫「发现顺序」。
+    case .original: "发现顺序"
     case .newest: "发布时间 · 新到旧"
     case .oldest: "发布时间 · 旧到新"
     case .mostLiked: "点赞 · 高到低"
@@ -84,7 +86,14 @@ private final class WorkSortDateParser {
     }
     guard let referenceDate else { return nil }
     let calendar = Calendar(identifier: .gregorian)
+    if text == "刚刚" { return referenceDate.timeIntervalSince1970 }
     if text == "今天" { return calendar.startOfDay(for: referenceDate).timeIntervalSince1970 }
+    // B 站空间页近期作品只给“2天前”“3小时前”这类相对时间。
+    if let match = text.wholeMatch(of: /^(\d{1,3})\s*(分钟|小时|天)前$/),
+       let amount = Int(match.1) {
+      let component: Calendar.Component = match.2 == "分钟" ? .minute : (match.2 == "小时" ? .hour : .day)
+      return calendar.date(byAdding: component, value: -amount, to: referenceDate)?.timeIntervalSince1970
+    }
     if text == "昨天" { return calendar.date(byAdding: .day, value: -1, to: calendar.startOfDay(for: referenceDate))?.timeIntervalSince1970 }
     if text.range(of: #"^[0-9]{1,2}月[0-9]{1,2}日$"#, options: .regularExpression) != nil {
       let year = calendar.component(.year, from: referenceDate)

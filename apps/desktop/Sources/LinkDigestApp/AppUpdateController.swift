@@ -35,12 +35,22 @@ final class AppUpdateController {
     // `swift run` and test bundles do not use the release Info.plist. Keeping
     // Sparkle stopped there avoids a misleading "updater misconfigured" alert;
     // packaged Apps always carry the validated feed and Ed25519 public key.
-    let isConfigured = AppUpdateConfiguration(infoDictionary: bundle.infoDictionary) != nil
+    let configuration = AppUpdateConfiguration(infoDictionary: bundle.infoDictionary)
     updaterController = SPUStandardUpdaterController(
-      startingUpdater: isConfigured,
+      startingUpdater: configuration != nil,
       updaterDelegate: nil,
       userDriverDelegate: nil
     )
+    // `SUAutomaticallyUpdate` 从 Info.plist 解析出来之后，必须**显式写进 updater**。
+    //
+    // 在此之前它只是被读进了 `AppUpdateConfiguration.automaticallyUpdates`，然后
+    // 就没有任何一处用过它——Sparkle 于是走自己的默认值。守这条承诺的测试断言的
+    // 又是源码里有没有那行字，源码里确实有，所以测试一直绿着，而真实行为可以
+    // 是任何值。字段解析了不用，比没解析更危险：它看起来像已经生效了。
+    //
+    // 这一版固定不静默下载（plist 里是 false）：更新要经过用户点一次「安装」，
+    // 而不是某天打开 App 发现版本自己变了。
+    updaterController.updater.automaticallyDownloadsUpdates = configuration?.automaticallyUpdates ?? false
   }
 }
 

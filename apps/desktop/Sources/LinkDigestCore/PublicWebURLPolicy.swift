@@ -6,7 +6,9 @@ import Foundation
 /// must call `validatePeerAddress` for the address they actually connected to.
 public struct PublicWebURLPolicy: Sendable {
   public typealias Resolver = @Sendable (String) throws -> [String]
-  private let resolver: Resolver
+  /// 解析一律走异步：同步 `getaddrinfo` 在 async 上下文里会占住协作线程池，
+  /// 也不响应取消。用同步闭包构造时会自动搬到普通队列上并加超时。
+  private let resolve: AsyncHostResolver
   /// TUN/透明代理把域名解析成 fake-IP（198.18.0.0/15），流量由虚拟网卡接管，
   /// 系统层面并不存在可用的 HTTP 代理设置。只有这类传输才开这道口子：直连
   /// fake-IP 就是交给虚拟网卡。私有、回环、链路本地与文档/测试网段一律照拒。
@@ -16,7 +18,11 @@ public struct PublicWebURLPolicy: Sendable {
   #endif
 
   public init(resolver: @escaping Resolver, allowsFakeIPPeers: Bool = false) {
-    self.resolver = resolver
+    self.init(asyncResolver: HostResolution.offloaded(resolver), allowsFakeIPPeers: allowsFakeIPPeers)
+  }
+
+  public init(asyncResolver: @escaping AsyncHostResolver, allowsFakeIPPeers: Bool = false) {
+    resolve = asyncResolver
     self.allowsFakeIPPeers = allowsFakeIPPeers
     #if DEBUG
     allowLoopbackForTesting = false
@@ -28,14 +34,33 @@ public struct PublicWebURLPolicy: Sendable {
     case systemProxyForFakeIP
   }
 
+  /// 一次解析的完整结果：规范化后的 host、解析到的地址、以及路由判定。
+  ///
+  /// 存在的理由只有一个：同一次抓取里，路由判定和"连到哪个对端"必须来自
+  /// **同一份**地址答案，调用方也就不必为了拿对端再解析一遍。
+  public struct Admission: Sendable {
+    public let host: String
+    public let addresses: [String]
+    public let decision: RoutingDecision
+  }
+
   /// Classifies a syntactically safe public URL without weakening the direct
   /// peer policy. Fake-IP answers are admitted only as a distinct proxy route;
   /// private, loopback, link-local and documentation/test-net answers remain
   /// rejected.
-  public func routingDecision(for url: URL) throws -> RoutingDecision {
+  public func routingDecision(for url: URL) async throws -> RoutingDecision {
+    try await admission(for: url).decision
+  }
+
+  /// 解析一次并给出判定。判定逻辑与原 `routingDecision` 逐字相同。
+  public func admission(for url: URL) async throws -> Admission {
     let host = try validatedHost(for: url)
-    let addresses = Self.isNumericAddress(host) ? [host] : try resolver(host)
+    let addresses = Self.isNumericAddress(host) ? [host] : try await resolve(host)
     guard !addresses.isEmpty else { throw ManualLinkError.unsafeURL }
+    return Admission(host: host, addresses: addresses, decision: try decision(host: host, addresses: addresses))
+  }
+
+  private func decision(host: String, addresses: [String]) throws -> RoutingDecision {
     if addresses.allSatisfy({ isGloballyRoutable($0) }) { return .direct }
     #if DEBUG
     if allowLoopbackForTesting, addresses.allSatisfy({ isLoopback($0) }) { return .direct }
@@ -47,19 +72,41 @@ public struct PublicWebURLPolicy: Sendable {
   }
 
   #if DEBUG
-  public init(resolver: @escaping Resolver, allowLoopbackForTesting: Bool, allowsFakeIPPeers: Bool = false) {
-    self.resolver = resolver
+  public init(
+    resolver: @escaping Resolver,
+    allowLoopbackForTesting: Bool,
+    allowsFakeIPPeers: Bool = false,
+    resolverTimeoutSeconds: TimeInterval = HostResolution.defaultTimeoutSeconds
+  ) {
+    self.init(
+      asyncResolver: HostResolution.offloaded(resolver, timeoutSeconds: resolverTimeoutSeconds),
+      allowLoopbackForTesting: allowLoopbackForTesting,
+      allowsFakeIPPeers: allowsFakeIPPeers
+    )
+  }
+
+  public init(asyncResolver: @escaping AsyncHostResolver, allowLoopbackForTesting: Bool, allowsFakeIPPeers: Bool = false) {
+    resolve = asyncResolver
     self.allowLoopbackForTesting = allowLoopbackForTesting
     self.allowsFakeIPPeers = allowsFakeIPPeers
   }
   #endif
 
-  public func validate(_ url: URL) throws {
-    switch try routingDecision(for: url) {
+  public func validate(_ url: URL) async throws {
+    _ = try await validatedAdmission(for: url)
+  }
+
+  /// `validate` 的可取值版本：门禁语义完全一致，只是把那次解析的结果交回去，
+  /// 让调用方直接用它绑定对端，而不是再解析一次。
+  @discardableResult
+  public func validatedAdmission(for url: URL) async throws -> Admission {
+    let admission = try await admission(for: url)
+    switch admission.decision {
     case .direct:
-      return
+      return admission
     case .systemProxyForFakeIP:
       guard allowsFakeIPPeers else { throw ManualLinkError.unsafeURL }
+      return admission
     }
   }
 

@@ -47,7 +47,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(CurrentCaptureMediaPreview.isFavoriteEligible(hls))
     XCTAssertEqual(
       CurrentCaptureMediaPreview.favoriteUnavailableMessage(hls),
-      "暂不支持保存 HLS；你仍可在当前会话中速览。"
+      "暂不支持把 HLS 下载到本机；你仍可在当前会话中速览。"
     )
   }
 
@@ -506,7 +506,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("contentMargins(.bottom, 20, for: .scrollContent)"))
     XCTAssertTrue(source.contains("history-navigation-tags-header"))
     let historyVM = appSource("HistoryViewModel.swift")
-    XCTAssertTrue(historyVM.contains("return localInternalMediaURL(for: taskID)"))
+    // 封面查库已挪到仓储 worker：网格每张卡上屏都走这里，不能在主线程同步读。
+    XCTAssertTrue(historyVM.contains("await worker.mediaAsset(history, taskID: taskID)"))
     XCTAssertTrue(historyVM.contains("asset.fileBookmark == nil"))
     // 普通点击=叠加（AND 缩小范围），⌘点击=只看此标签；Syc 2026-07-23 拍板翻转。
     XCTAssertTrue(source.contains("model.toggleTag(item.tag, additive: !NSEvent.modifierFlags.contains(.command))"))
@@ -524,9 +525,11 @@ final class HistoryContentViewTests: XCTestCase {
     //
     // 但要求两个片段落在同一行：拆成两个 contains 的话，一个无关的 TextField
     // 加上另一处对 searchText 的引用就能凑合通过，等于什么都没钉住。
+    // 搜索框换成自持草稿的 DebouncedSearchField：每个按键只重排它自己，
+    // 提交值仍绑到 searchText；两个片段同一行的要求不变。
     XCTAssertTrue(
       sidebar.split(separator: "\n").contains {
-        $0.contains("TextField(") && $0.contains("text: $model.searchText)")
+        $0.contains("DebouncedSearchField(") && $0.contains("committed: model.searchText")
       }
     )
     XCTAssertTrue(sidebar.contains("history-filter-empty"))
@@ -625,7 +628,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(source.contains("history-wechat-cover-image"))
     XCTAssertTrue(source.contains("if sourceFrontmatter.hasEngagementStats"))
     XCTAssertFalse(source.contains("hasEngagementStats || isWeChatCapture"))
-    XCTAssertTrue(source.contains("CreatorWorkMetricLayout.usesAdaptiveWorkGrid(host)"))
+    XCTAssertTrue(source.contains("CreatorWorkMetricLayout.visibleSlots(forHost: host)"))
     XCTAssertFalse(source.contains("read_num"))
     XCTAssertFalse(source.contains("like_num"))
     XCTAssertTrue(source.contains("appendsUnusedLocalImages: !readingFormat.keepsImagePositions"))
@@ -743,7 +746,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(emptyDetail.contains("history-filter-empty-detail"))
     XCTAssertTrue(emptyDetail.contains("emptyNotesDetail"))
     XCTAssertTrue(emptyDetail.contains("emptyCaptureDetail"))
-    XCTAssertTrue(source.contains("没有符合条件的资料"))
+    XCTAssertTrue(source.contains("没有符合条件的内容"))
     XCTAssertTrue(source.contains("调整搜索词或清除筛选后再试"))
     XCTAssertFalse(source.contains("该分类下暂无内容"))
     XCTAssertFalse(source.contains("没有搜索结果"))
@@ -1350,7 +1353,7 @@ final class HistoryContentViewTests: XCTestCase {
     let cinema = appSource("YouTubeEmbedPlayer.swift")
     XCTAssertTrue(cinema.contains("struct VideoCinemaDoubleClickCatcher"))
     XCTAssertTrue(cinema.contains("event.clickCount == 2"))
-    XCTAssertTrue(cinema.contains(".videoCinemaDoubleClick { cinema.dismiss() }"))
+    XCTAssertTrue(cinema.contains(".videoCinemaDoubleClick(role: .cinema) { cinema.dismiss() }"))
     let doubleClickCount = playback.components(separatedBy: "videoCinemaDoubleClick").count - 1
     XCTAssertEqual(doubleClickCount, 3, "预览、本机、流媒体三张卡都要能双击放大")
   }
@@ -2433,6 +2436,22 @@ final class HistoryContentViewTests: XCTestCase {
       return String(source[startRange.lowerBound...])
     }
     return String(source[startRange.lowerBound..<endRange.lowerBound])
+  }
+
+  func testDetailRemediationKeepsTrashTodayAndReadableMetrics() {
+    let source = historyContentViewSource()
+    XCTAssertTrue(source.contains("history-navigation-trash"))
+    XCTAssertTrue(source.contains("todayNoteButton"))
+    XCTAssertTrue(source.contains("rectangle.compress.vertical"))
+    XCTAssertTrue(source.contains("accessibilityLabel(\"打开设置\")"))
+    XCTAssertTrue(source.contains("history-unconfigured-model-banner"))
+    XCTAssertTrue(source.contains("history-note-tag-bar"))
+    XCTAssertTrue(source.contains("移到回收站…"))
+    XCTAssertTrue(source.contains("sourceLayer(heading: isOwnWriting ? nil : \"正文\""))
+    XCTAssertTrue(source.contains("CreatorWorkMetricLayout.visibleSlots(forHost: host)"))
+    XCTAssertEqual(DailyNoteTitleFormat.display("2026-09-15"), "9月15日")
+    XCTAssertEqual(DailyNoteTitleFormat.display("无标题笔记"), "无标题笔记")
+    XCTAssertEqual(DailyNoteTitleFormat.firstLinePreview("第一行\n第二行"), "第一行")
   }
 }
 

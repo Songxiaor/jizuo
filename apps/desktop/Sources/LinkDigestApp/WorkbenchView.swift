@@ -189,7 +189,7 @@ struct PieceCard: View {
 
 /// 工作台首页:我手上有哪几件,各自到哪一步了。
 struct WorkbenchListView: View {
-  @ObservedObject var model: HistoryViewModel
+  var model: HistoryViewModel
   let onNewSpark: () -> Void
   let onTakeTopic: (TopicCandidate) -> Void
 
@@ -274,19 +274,17 @@ struct WorkbenchListView: View {
   }
 
   private var emptyState: some View {
-    VStack(spacing: 10) {
-      Image(systemName: "lightbulb")
-        .font(.system(size: DesignTokens.IconSize.empty))
-        .foregroundStyle(.tertiary)
-      Text("还没有在做的创作")
-        .font(.callout.weight(.medium))
+    // 版式和详情列空态、图库空态同一套：图标瓦片 + 标题 + 说明 + 一个动作。
+    // 原来这里是裸 Text（callout/caption），没有动作，和同一屏的其他空态差一个重量级。
+    HistoryInlineState(
+      symbol: "lightbulb",
+      title: "还没有在做的创作",
       // 说清楚这里跟「笔记」的分别，否则用户不知道该往哪写。
-      Text("一个念头写下来就是一件创作，\n它会跟着你收集素材、起草、打磨一路长大。")
-        .font(.caption)
-        .foregroundStyle(.secondary)
-        .multilineTextAlignment(.center)
-        .fixedSize(horizontal: false, vertical: true)
-    }
+      message: "一个念头写下来就是一件创作，\n它会跟着你收集素材、起草、打磨一路长大。",
+      // 复用本页自己的新建入口（底部常驻的那颗「记一个新灵感」），不另造一条路。
+      actionTitle: "记一个新灵感",
+      action: onNewSpark
+    )
     // 在滚动容器里不能要 maxHeight: .infinity——那是「我要所有剩下的高度」，
     // 而滚动区没有「剩下的高度」这个概念。给一个够站得住的最小高度就行。
     .frame(maxWidth: .infinity, minHeight: 160)

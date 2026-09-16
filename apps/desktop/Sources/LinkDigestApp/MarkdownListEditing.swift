@@ -102,6 +102,50 @@ enum MarkdownListEditing {
     return "\(indent)- [ ] \(content)"
   }
 
+  /// ⌘B/⌘I 真正要替换的那一小段。
+  ///
+  /// `toggleWrap` 返回整篇新文本，用在 NSTextView 上就是「整篇换成另一篇」：
+  /// 几万字的笔记每按一次都要重排整个文本存储，撤销栈里也只剩一条「全篇替换」。
+  /// 这里给出同一个变换的最小编辑，替换范围之外一个字都不动。
+  struct WrapEdit: Equatable {
+    /// 要被替换掉的原文范围。
+    let range: Range<String.Index>
+    /// 替换进去的新文本。
+    let replacement: String
+    /// 替换完成后，选区相对 `range` 起点的 UTF-16 偏移与长度。
+    let selectionOffsetUTF16: Int
+    let selectionLengthUTF16: Int
+  }
+
+  /// 算出 `toggleWrap` 对应的最小编辑。两者必须给出同一个结果，
+  /// `MarkdownIncrementalHighlightTests` 钉着这条等价关系。
+  static func wrapEdit(_ text: String, selection: Range<String.Index>, marker: String) -> WrapEdit {
+    let selected = String(text[selection])
+    let before = text[text.startIndex..<selection.lowerBound]
+    let after = text[selection.upperBound...]
+
+    if selected.hasPrefix(marker), selected.hasSuffix(marker), selected.count >= marker.count * 2 {
+      let inner = String(selected.dropFirst(marker.count).dropLast(marker.count))
+      return WrapEdit(
+        range: selection, replacement: inner,
+        selectionOffsetUTF16: 0, selectionLengthUTF16: inner.utf16.count
+      )
+    }
+    // 选区外侧已经有记号：把外面那一对去掉，而不是再套一层。
+    if before.hasSuffix(marker), after.hasPrefix(marker) {
+      let lower = text.index(selection.lowerBound, offsetBy: -marker.count)
+      let upper = text.index(selection.upperBound, offsetBy: marker.count)
+      return WrapEdit(
+        range: lower..<upper, replacement: selected,
+        selectionOffsetUTF16: 0, selectionLengthUTF16: selected.utf16.count
+      )
+    }
+    return WrapEdit(
+      range: selection, replacement: marker + selected + marker,
+      selectionOffsetUTF16: marker.utf16.count, selectionLengthUTF16: selected.utf16.count
+    )
+  }
+
   /// 用一对记号包住选中的文字，例如加粗。
   ///
   /// 已经被同一对记号包着时反过来去掉——同一个快捷键既开又关，才符合

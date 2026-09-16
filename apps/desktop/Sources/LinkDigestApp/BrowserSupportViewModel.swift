@@ -117,8 +117,9 @@ final class BrowserSupportViewModel: ObservableObject {
   private func presentAccessRequest(browser: BrowserSupportBrowser, deniedPath: String) {
     guard !attemptedAccessGrants.contains(deniedPath) else {
       errorText = """
-        授权之后 macOS 仍然拒绝访问 \(deniedPath)。\
-        可以在「系统设置 › 隐私与安全性 › 完全磁盘访问权限」里加入 LinkDigest，或改用手动安装。
+        你已经授权过了，但 macOS 还是不让汲作打开这个文件夹：\(deniedPath)。\
+        浏览器和你保存的内容都没有受影响。\
+        请到「系统设置 › 隐私与安全性 › 完全磁盘访问权限」里把 \(ProductDisplay.name) 加进去，再回来点一次「连接」。
         """
       return
     }
@@ -135,7 +136,7 @@ final class BrowserSupportViewModel: ObservableObject {
   func completeAccessRequest(_ request: BrowserSupportAccessRequest, granted: URL?) async {
     presentation = nil
     guard let granted, granted.standardizedFileURL == request.directory.standardizedFileURL else {
-      errorText = "需要选中 \(request.browser.displayName) 的 NativeMessagingHosts 文件夹本身。"
+      errorText = "选中的不是要授权的那个文件夹，所以这次没连上，什么都没改。请重新点「连接」，在打开的窗口里直接点右下角的按钮——要选的是 \(request.browser.displayName) 的扩展连接文件夹（NativeMessagingHosts）本身。"
       return
     }
     errorText = nil
@@ -296,25 +297,25 @@ final class BrowserSupportViewModel: ObservableObject {
   private func visibleError(for error: Error) -> String {
     switch error as? BrowserSupportInstallerError {
     case .browserNotDetected:
-      "未检测到该浏览器的 NativeMessagingHosts 目录。"
+      "没有找到这个浏览器的扩展连接文件夹（NativeMessagingHosts），所以连不上。什么都没有被改动。请先把这个浏览器打开一次再点「重新检查」。"
     case .frozenArtifactUnavailable:
-      "当前 App 包缺少已验证的浏览器支持工件。"
+      "这一版汲作里没带浏览器连接文件，所以连不上。你保存的内容不受影响。请换成完整版安装包重新装一次。"
     case .confirmationRequired:
-      "检测到同名 manifest；请先确认备份并接管。"
+      "这个浏览器里已经有一份同名的连接配置，汲作没有直接覆盖它。你的内容和浏览器数据都没被动过。请在弹出的确认框里同意「先备份再接管」。"
     case .confirmationStale:
-      "同名 manifest 已变化，未覆盖；请重新确认最新状态。"
+      "刚才那份连接配置在你确认期间变了，为安全起见没有覆盖。什么都没有被改动。请点「重新检查」看一下最新状态，再连一次。"
     case .uninstallRefused:
-      "manifest 与 \(ProductDisplay.name) 收据不一致，已停止卸载以保护现有文件。"
+      "这个浏览器里的连接文件不是 \(ProductDisplay.name) 装的，所以没有删它。现有文件原样保留。请在浏览器里自行确认后再处理。"
     case .restoreRefused:
-      "当前文件无法确认属于 \(ProductDisplay.name)，不能覆盖恢复。"
+      "现在这个连接文件确认不了是 \(ProductDisplay.name) 的，所以没有覆盖它。文件原样保留。请在浏览器里自行确认后再处理。"
     case .unsafeFilesystemState:
-      "检测到不安全的文件系统状态，未写入任何浏览器目录。"
+      "这次检查发现文件夹状态不安全，汲作一个字都没往浏览器目录里写。你的内容和浏览器数据都没被动过。请重新打开汲作后再点「连接」。"
     // 这条不该出现在错误栏里——它有对应的动作（选一次目录授权），走 `.accessRequest`
     // 那条路。留在这里只是兜底，防止哪天新加的入口忘了处理。
     case .directoryAccessDenied:
-      "macOS 未允许 \(ProductDisplay.name) 打开该浏览器的目录。"
+      "macOS 没让 \(ProductDisplay.name) 打开这个浏览器的文件夹，所以没连上。什么都没有被改动。请重新点「连接」，按提示授权一次。"
     case .transactionFailed, .none:
-      "浏览器支持操作未完成；现有文件已保持或恢复。"
+      "这次连接没做完。现有文件已经保持原样或还原回去了，浏览器和你保存的内容都没受影响。请点「重新检查」后再试一次。"
     }
   }
 }

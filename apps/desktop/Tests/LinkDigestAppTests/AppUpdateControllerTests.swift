@@ -38,6 +38,15 @@ final class AppUpdateControllerTests: XCTestCase {
     ]))
   }
 
+  @MainActor
+  func testControllerWritesAutomaticDownloadFlagOntoRealSparkleUpdater() {
+    let controller = AppUpdateController()
+    XCTAssertFalse(
+      controller.updaterController.updater.automaticallyDownloadsUpdates,
+      "automaticallyDownloadsUpdates 必须写到真实 SPUUpdater 上，测试包没有 Sparkle 配置时也不得静默下载"
+    )
+  }
+
   /// 设置里必须有「版本与更新」，不能只藏在顶部菜单。
   func testSettingsExposesVersionAndUpdateEntry() throws {
     let settings = try String(

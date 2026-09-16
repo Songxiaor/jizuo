@@ -7,6 +7,10 @@ struct MediaStorageSettingsView: View {
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
   @ObservedObject var model: MediaStorageSettingsViewModel
+  /// 删除扫出来的那份清单前先问一句：这些是已经落在本机磁盘上的视频文件，删了就没了。
+  @State private var isUnusedDeletionConfirmationPresented = false
+  /// 「恢复默认」会让之后的视频改存到 App 自己的目录，是一次会改变落盘位置的动作。
+  @State private var isRestoreDefaultConfirmationPresented = false
 
   var body: some View {
     SettingsPlainPage {
@@ -98,10 +102,22 @@ struct MediaStorageSettingsView: View {
               Button(model.usesCustomDirectory ? "更改文件夹" : "选择文件夹", action: chooseDirectory)
                 .buttonStyle(.appNormal)
                 .accessibilityIdentifier("media-storage-choose")
-              Button("恢复默认", action: model.restoreDefault)
-                .buttonStyle(.appQuiet)
+              // 恢复默认会改掉之后视频的落盘位置，属于「重置」类动作：危险色 + 先问一句。
+              Button("恢复默认") { isRestoreDefaultConfirmationPresented = true }
+                .buttonStyle(.appDestructive(appTheme.danger))
                 .disabled(!model.usesCustomDirectory)
                 .accessibilityIdentifier("media-storage-default")
+                .confirmationDialog(
+                  "把保存位置改回汲作自己的文件夹？",
+                  isPresented: $isRestoreDefaultConfirmationPresented,
+                  titleVisibility: .visible
+                ) {
+                  Button("恢复默认", role: .destructive) { model.restoreDefault() }
+                    .accessibilityIdentifier("media-storage-default-confirm")
+                  Button("取消", role: .cancel) {}
+                } message: {
+                  Text("你现在这个文件夹里的视频一个都不会动，只是以后新下载的视频改存到汲作自己的文件夹。随时可以再选回来。")
+                }
             }
           }
 
@@ -123,6 +139,67 @@ struct MediaStorageSettingsView: View {
             .fixedSize()
             .accessibilityIdentifier("media-storage-download-limit")
           }
+
+          // 总容量上限：默认关闭 = 不限制。开启后新下载写盘前会按"最久没碰过"
+          // 淘汰超出的部分——记录留在历史里，只是文件没了，可以重新获取。
+          SettingsRow(
+            title: "本地视频总容量上限",
+            caption: "关闭时不限制。开启后，新下载写入前会自动删掉最久没碰过的本地视频文件。",
+            details: "被删掉的只是文件，历史记录还在——那条记录会回到「暂不可播 / 重新获取」的状态，随时能再下一次。\n只清理 App 自己的视频目录；你自己选的文件夹里的视频永远不动。"
+          ) {
+            HStack(spacing: DesignTokens.Space.sm) {
+              Toggle("", isOn: $model.totalCapacityEnabled)
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .accessibilityLabel("本地视频总容量上限")
+                .accessibilityIdentifier("media-storage-total-capacity-enabled")
+              Stepper(
+                value: $model.totalCapacityGigabytes,
+                in: MediaStorageSettingsViewModel.minimumCapacityGigabytes...MediaStorageSettingsViewModel.maximumCapacityGigabytes,
+                step: MediaStorageSettingsViewModel.capacityStepGigabytes
+              ) {
+                Text("\(model.totalCapacityGigabytes) GB")
+                  .monospacedDigit()
+                  .accessibilityIdentifier("media-storage-total-capacity-value")
+              }
+              .fixedSize()
+              .disabled(!model.totalCapacityEnabled)
+              .accessibilityIdentifier("media-storage-total-capacity")
+            }
+          }
+
+          // 没被任何内容用到的视频：扫描和删除分两步，中间一定停在"有多少、多大"上。
+          // 这些是用户已经保存到本机的视频，删了就没了，不给一键删。
+          SettingsRow(
+            title: "没被任何内容用到的视频",
+            caption: orphanCaption,
+            details: "视频文件夹里有些视频，已经不属于你保存的任何一条内容了——多数是早期版本删记录时没一起删掉的。扫描只看不删，确认之后才会删除，而且只删这次扫出来的那份清单。"
+          ) {
+            HStack(spacing: DesignTokens.Space.sm) {
+              Button("扫描一下", action: model.scanOrphans)
+                .buttonStyle(.appNormal)
+                .disabled(model.orphanState == .unavailable || model.orphanState == .scanning)
+                .accessibilityIdentifier("media-storage-scan-orphans")
+              if case let .scanned(count, bytes) = model.orphanState, count > 0 {
+                // 删除是不可逆的：文件从磁盘上消失，不进废纸篓。先问一句，并把
+                // 数量和体积再报一遍——用户点确认之前要看见自己删的是多少东西。
+                Button("删除这 \(count) 个文件") { isUnusedDeletionConfirmationPresented = true }
+                  .buttonStyle(.appDestructive(appTheme.danger))
+                  .accessibilityIdentifier("media-storage-delete-orphans")
+                  .confirmationDialog(
+                    "删除这 \(count) 个没被用到的视频文件？",
+                    isPresented: $isUnusedDeletionConfirmationPresented,
+                    titleVisibility: .visible
+                  ) {
+                    Button("删除这 \(count) 个文件", role: .destructive) { model.deleteScannedOrphans() }
+                      .accessibilityIdentifier("media-storage-delete-orphans-confirm")
+                    Button("取消", role: .cancel) {}
+                  } message: {
+                    Text("会从磁盘上删掉这 \(count) 个文件，共 \(MediaStorageSettingsViewModel.formattedBytes(bytes))，不进废纸篓，删了没法撤销。你保存的内容和历史记录一条都不会少，只删这次扫出来的这份清单。")
+                  }
+              }
+            }
+          }
       }
 
       if case let .failed(message) = model.state {
@@ -134,6 +211,26 @@ struct MediaStorageSettingsView: View {
       }
     }
     .onAppear(perform: model.load)
+  }
+
+  /// 扫描结果直接写在说明行里：用户要先看见"多少个、多大"，才谈得上确认删除。
+  private var orphanCaption: String {
+    switch model.orphanState {
+    case .unavailable:
+      "现在读不到你保存的内容清单，所以暂时没法判断哪些视频没人用。重新打开汲作后再试。"
+    case .idle:
+      "看看视频文件夹里有哪些视频已经不属于你保存的任何内容。只扫描，不会直接删。"
+    case .scanning:
+      "正在扫描…"
+    case let .scanned(count, bytes):
+      count == 0
+        ? "每个视频都还被用着，没有可清理的。"
+        : "找到 \(count) 个没被用到的视频，共 \(MediaStorageSettingsViewModel.formattedBytes(bytes))。确认后才会删除。"
+    case let .deleted(count, bytes):
+      "已删除 \(count) 个文件，释放 \(MediaStorageSettingsViewModel.formattedBytes(bytes))。"
+    case let .failed(message):
+      message
+    }
   }
 
   private func chooseDirectory() {

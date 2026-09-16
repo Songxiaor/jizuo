@@ -28,6 +28,27 @@ final class SettingsLayoutConventionTests: XCTestCase {
     "SiteLoginSettingsView": 0,
   ]
 
+  /// 去掉注释后的代码：本仓库把注释当设计文档写，旧文案和旧写法经常被留在注释里
+  /// 解释「为什么改」。守住「界面上不再出现这句话」的断言必须只看代码，否则
+  /// 注释一解释就报假红，最后只能把注释删掉，等于用测试惩罚写清楚。
+  ///
+  /// 行尾注释按 `//` 切，但跳过 `https://` 这种前面是冒号的假注释。
+  private func codeOnly(_ source: String) -> String {
+    source.split(separator: "\n", omittingEmptySubsequences: false).map { line -> String in
+      let trimmed = line.drop(while: { $0 == " " || $0 == "\t" })
+      guard !trimmed.hasPrefix("//") else { return "" }
+      var searchStart = line.startIndex
+      while let range = line.range(of: "//", range: searchStart..<line.endIndex) {
+        if range.lowerBound > line.startIndex, line[line.index(before: range.lowerBound)] == ":" {
+          searchStart = range.upperBound
+          continue
+        }
+        return String(line[line.startIndex..<range.lowerBound])
+      }
+      return String(line)
+    }.joined(separator: "\n")
+  }
+
   private func source(_ name: String) throws -> String {
     try String(
       contentsOf: URL(fileURLWithPath: #filePath)
@@ -212,5 +233,200 @@ final class SettingsLayoutConventionTests: XCTestCase {
       media.contains("SettingsCrossReference("),
       "B 站清晰度依赖站点登录，必须指明去哪一页")
     XCTAssertTrue(media.contains("站点登录 → B 站"))
+  }
+
+  // MARK: - 危险动作
+
+  /// 设置窗口里会删东西、抹记录、把设置推回默认的那几个按钮。
+  ///
+  /// 它们和「重新检查」「了解更多」长得一样低调，误点的代价却完全不同：登录被抹掉、
+  /// 磁盘上的视频消失、自己写了很久的提示词被覆盖。少一个确认框不报错、不崩溃，
+  /// 只有用户点下去之后才发现，所以在这里逐个钉住。
+  private static let destructiveActions: [(page: String, confirmIdentifier: String)] = [
+    ("SiteLoginSettingsView", "site-login-clear-confirm"),
+    ("MediaStorageSettingsView", "media-storage-delete-orphans-confirm"),
+    ("MediaStorageSettingsView", "media-storage-default-confirm"),
+    ("ProviderSettingsView", "revoke-remembered-consents-confirm"),
+    ("ProviderSettingsView", "reset-summary-prompt-confirm"),
+    ("BrowserSupportSettingsView", "browser-support-disconnect-confirm"),
+  ]
+
+  func testDestructiveSettingsActionsAskBeforeActing() throws {
+    for action in Self.destructiveActions {
+      let text = try source(action.page)
+      guard let range = text.range(of: action.confirmIdentifier) else {
+        XCTFail("\(action.page) 里没有 \(action.confirmIdentifier)：这个危险动作的确认框不见了")
+        continue
+      }
+      // 确认按钮必须是 destructive 角色：macOS 会把它画成红字并放在惯例位置，
+      // 用户靠这个区分「这一下会删东西」和「这一下只是关掉」。
+      let before = String(text[text.startIndex..<range.lowerBound].suffix(400))
+      XCTAssertTrue(
+        before.contains("role: .destructive"),
+        "\(action.confirmIdentifier) 不是 destructive 角色，看起来和普通确认一样")
+      XCTAssertTrue(
+        text.contains(".confirmationDialog("),
+        "\(action.page) 没有确认框")
+    }
+  }
+
+  /// 删除 / 清除 / 重置类按钮一律用主题的危险色，不能和「了解更多」同一个语气。
+  ///
+  /// 走 `appDestructive`（文字按钮 + 危险色）而不是各页各写一个红色：颜色本身要跟着
+  /// 主题走，暖褐主题和高对比主题的红不是同一个红。
+  func testDestructiveSettingsButtonsCarryTheDangerColour() throws {
+    let minimum = [
+      "MediaStorageSettingsView": 2,  // 删除这 N 个文件、恢复默认
+      "ProviderSettingsView": 2,      // 清除授权记录、重置为默认提示词
+      "BrowserSupportSettingsView": 1,  // 断开
+      "KnowledgeVaultSettingsView": 1,  // 清除知识库文件夹
+    ]
+    for (page, count) in minimum {
+      let text = try source(page)
+      XCTAssertGreaterThanOrEqual(
+        occurrences(of: ".appDestructive(", in: text), count,
+        "\(page) 的删除/清除/重置按钮没有全部走危险色")
+    }
+    XCTAssertTrue(
+      try source("AppButtonStyles").contains("case destructive"),
+      "危险动作要有自己的按钮层级，不能各页各写一个红色")
+  }
+
+  // MARK: - 文案
+
+  /// 用户文案里不出现工程词。
+  ///
+  /// 这类词不报错，只是让人读不懂自己在设置什么：`Base URL` 是「服务地址」，
+  /// `API Key` 是「密钥」，「孤儿文件」是「没被任何内容用到的视频」。
+  /// 只扫字符串字面量，注释里解释设计时提到这些词是正常的。
+  func testSettingsCopyIsFreeOfEngineeringJargon() throws {
+    let pages = [
+      "ProviderSettingsView", "ProviderSettingsViewModel", "UISettingsPresentation",
+      "SettingsCard", "BrowserSupportSettingsView", "BrowserSupportViewModel",
+      "SiteLoginSettingsView", "MCPSettingsView", "KnowledgeVaultSettingsView",
+      "MediaStorageSettingsView", "MediaStorageSettingsViewModel",
+      "CompanionNoteSyncSettingsView", "V02ErrorPresentation",
+    ]
+    let banned = [
+      "reasoning_effort", "SQLite", "vacuum", "schema", "WAL",
+      "併入", "孤儿", "jizuo_", "工件", "Base URL", "API Key",
+    ]
+    for page in pages {
+      for literal in userFacingLiterals(in: try source(page)) {
+        for word in banned {
+          XCTAssertFalse(
+            literal.contains(word),
+            "\(page) 的用户文案里还留着工程词「\(word)」：\(literal)")
+        }
+      }
+    }
+  }
+
+  /// 「MCP 连接」对用户来说是三个字母加两个汉字，说不出它能干什么。
+  func testAgentIntegrationPageIsNamedForWhatItDoes() throws {
+    XCTAssertTrue(
+      try source("ProviderSettingsView").contains("case .mcp: \"AI 助手接入\""),
+      "侧栏分类名要说清这一页是给谁用的")
+    let page = try source("MCPSettingsView")
+    XCTAssertTrue(page.contains("title: \"AI 助手接入\""))
+    XCTAssertTrue(
+      page.contains("Claude Code"),
+      "页头要举出用户认得的助手，否则「AI 助手」仍然是个抽象词")
+    XCTAssertFalse(
+      page.contains("jizuo_status"),
+      "函数名不该出现在正文里，用户没法把它和界面上的任何东西对上")
+  }
+
+  /// 「装没装扩展」和「收没收到内容」是两件事，页面上不能互相打脸。
+  ///
+  /// 改之前：浏览器那一行写「最近同步 14:03」，同一屏下面的接收状态行写
+  /// 「还没收到过同步」——两句读的根本不是一个数据源（一个是落盘的送达记录，
+  /// 一个只记本次运行），但用户看到的就是两句矛盾的话。
+  func testBrowserSupportNeverContradictsItselfAboutDeliveries() throws {
+    let code = codeOnly(try source("BrowserSupportSettingsView"))
+    XCTAssertTrue(code.contains("最近一次收到内容"), "送达事实由浏览器那一行报")
+    XCTAssertTrue(code.contains("还没收到过内容"))
+    XCTAssertFalse(
+      code.contains("还没收到过同步"),
+      "接收状态行不该再报「收没收到过」——它读的是只活一次运行的计时")
+    XCTAssertTrue(
+      code.contains("接收服务已就绪"),
+      "接收状态行只回答「现在能不能收」")
+  }
+
+  /// 说不清的浏览器状态必须带着原因和一个真能点的下一步。
+  ///
+  /// 「安装记录无效」「缺少安装工件」这两行原来既没有解释也没有按钮——用户读完
+  /// 只知道坏了，不知道坏在哪、也不知道该干什么。
+  func testUnresolvedBrowserStatesOfferAnExplanationAndAnAction() throws {
+    let code = codeOnly(try source("BrowserSupportSettingsView"))
+    XCTAssertTrue(code.contains("private func unresolvedStateAdvice("))
+    XCTAssertTrue(code.contains("browser-support-advice-action-"), "说明旁边要有一个能点的按钮")
+    for stale in ["安装记录无效", "缺少安装工件"] {
+      XCTAssertFalse(code.contains(stale), "「\(stale)」说的是内部状态，用户看不懂")
+    }
+  }
+
+  /// 字体预览不能用写死的假数据冒充真实状态。
+  ///
+  /// 「待总结 149」长得和主界面侧栏的计数一模一样，用户会当成自己真有 149 条没总结，
+  /// 而那个数字是死的、永远不变。预览要验证的是字形在 10pt 上立不立得住，
+  /// 中性示例词同样能验证。
+  func testAppearancePreviewUsesNeutralSampleText() throws {
+    let code = codeOnly(try source("ProviderSettingsView"))
+    XCTAssertFalse(code.contains("待总结 149"), "预览里的假计数会被当成真实状态读")
+    XCTAssertTrue(code.contains("示例标题"))
+  }
+
+  /// 设置页标题跟随系统字号。
+  ///
+  /// 写死 18pt 时，把界面字号调大之后正文涨了、页头没涨，标题反而比它下面的说明还小。
+  func testSettingsPageTitleScalesWithTheUsersFontSize() throws {
+    let shared = codeOnly(try source("SettingsCard"))
+    XCTAssertFalse(
+      shared.contains(".font(.system(size: 18, weight: .semibold))"),
+      "页头标题写死字号，放大字号后会比正文还小")
+    XCTAssertTrue(shared.contains(".themedFont(.title3, weight: .semibold)"))
+  }
+
+  /// 主题色不能被 `Color.accentColor` 顶掉。
+  ///
+  /// `Color.accentColor` 读的是 App 级强调色（默认系统蓝），不受窗口根部
+  /// `.tint(theme.accent)` 影响——于是暖褐主题下的单选钮、用途徽标、管线编号
+  /// 全是蓝的，和整页格格不入。
+  func testSettingsControlsFollowTheThemeAccentNotTheSystemBlue() throws {
+    for page in ["ProviderSettingsView", "SettingsCard"] {
+      let code = codeOnly(try source(page))
+      XCTAssertEqual(
+        occurrences(of: "Color.accentColor", in: code), 0,
+        "\(page) 里还有控件用着 App 级强调色（默认系统蓝），换主题时不会跟着变")
+    }
+  }
+
+  /// 只取字符串字面量：注释里为了解释设计而提到工程词是正常的，界面上出现才是问题。
+  ///
+  /// 顺带排掉两类不是文案的字面量：`accessibilityIdentifier` 那种全小写连字符的
+  /// 标识，和 http(s) 开头的网址。
+  private func userFacingLiterals(in source: String) -> [String] {
+    var literals: [String] = []
+    for line in source.split(separator: "\n", omittingEmptySubsequences: false) {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      guard !trimmed.hasPrefix("//"), !trimmed.hasPrefix("///") else { continue }
+      var rest = Substring(line)
+      while let open = rest.firstIndex(of: "\"") {
+        let afterOpen = rest.index(after: open)
+        guard afterOpen < rest.endIndex, let close = rest[afterOpen...].firstIndex(of: "\"") else { break }
+        let literal = String(rest[afterOpen..<close])
+        rest = rest[rest.index(after: close)...]
+        guard !literal.isEmpty, !literal.hasPrefix("http") else { continue }
+        // 纯 ascii 小写连字符 = 无障碍标识 / 偏好键，不是给人读的文案。
+        let isIdentifier = literal.allSatisfy {
+          $0.isLowercase && $0.isASCII || $0 == "-" || $0 == "." || $0.isNumber
+        }
+        if isIdentifier { continue }
+        literals.append(literal)
+      }
+    }
+    return literals
   }
 }

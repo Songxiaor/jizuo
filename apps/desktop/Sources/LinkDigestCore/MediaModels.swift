@@ -216,3 +216,38 @@ public enum MediaDownloadError: Error, Sendable, Equatable {
     }
   }
 }
+
+/// `Media/` 目录治理用的只读清单：全库每个媒体文件一行。
+///
+/// 治理要回答两个问题：目录里哪些文件已经没人认领（孤儿），以及总量超了该先
+/// 淘汰谁。两个问题都需要「DB 里有哪些文件 + 它们多大 + 多久没碰过」，
+/// 所以合成一份清单，而不是让上层拿 `mediaAssets(taskID:)` 逐条问一遍。
+public struct MediaStorageEntry: Sendable, Equatable {
+  public let mediaID: String
+  public let taskID: TaskID
+  public let relativePath: String
+  /// 用户自己选的文件夹里的文件是**用户的**，治理一律不碰。
+  public let usesUserSelectedFile: Bool
+  public let byteSize: Int64
+  /// 最近一次被用到的时间：取「资产落库」和「条目更新」里较晚的那个。
+  ///
+  /// 库里没有单独的「最后播放时间」列。条目的 `updated_at_ms` 是现有信号里最贴近
+  /// 「用户最近碰过它」的一个——打开、改标题、加标签、重新转写都会推它。
+  public let lastUsedMilliseconds: Int64
+
+  public init(
+    mediaID: String,
+    taskID: TaskID,
+    relativePath: String,
+    usesUserSelectedFile: Bool,
+    byteSize: Int64,
+    lastUsedMilliseconds: Int64
+  ) {
+    self.mediaID = mediaID
+    self.taskID = taskID
+    self.relativePath = relativePath
+    self.usesUserSelectedFile = usesUserSelectedFile
+    self.byteSize = byteSize
+    self.lastUsedMilliseconds = lastUsedMilliseconds
+  }
+}

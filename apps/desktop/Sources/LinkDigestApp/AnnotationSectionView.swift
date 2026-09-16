@@ -8,7 +8,9 @@ struct AnnotationSectionView: View {
   @State private var isNoteEditorPresented = false
   @FocusState private var isNoteEditorFocused: Bool
   let taskID: TaskID
-  @ObservedObject var model: HistoryViewModel
+  @Bindable var model: HistoryViewModel
+  /// 详情顶部已经有「笔记 · 标签」栏时关掉这里的笔记编辑器，避免两处抢同一份草稿。
+  var showsNoteEditor: Bool = true
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -39,7 +41,7 @@ struct AnnotationSectionView: View {
           .accessibilityIdentifier("annotation-excerpt-row")
         }
       }
-      if isNoteEditorPresented || !model.taskNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      if showsNoteEditor, isNoteEditorPresented || !model.taskNoteDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         Text("这篇内容的笔记").themedFont(.headline)
         TextEditor(text: $model.taskNoteDraft)
           .focused($isNoteEditorFocused)
@@ -60,7 +62,7 @@ struct AnnotationSectionView: View {
         Text("阅读时选中文字，右键「添加到摘录」即可收集；笔记自动保存。")
           .themedFont(.footnote)
           .foregroundStyle(.secondary)
-      } else {
+      } else if showsNoteEditor {
         Button("为这篇内容添加笔记", systemImage: "square.and.pencil") {
           isNoteEditorPresented = true
           isNoteEditorFocused = true

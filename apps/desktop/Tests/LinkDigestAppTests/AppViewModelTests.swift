@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import XCTest
 @testable import LinkDigestApp
 import LinkDigestAdapters
@@ -283,6 +284,49 @@ private final class AppTestModelProvider: ModelProvider, @unchecked Sendable {
 
   var keyPresence: [Bool] {
     lock.withLock { recordedKeyPresence }
+  }
+}
+
+/// Observation 版的「整棵树重求值」计数器。
+///
+/// `@Observable` 没有 `objectWillChange` 这种整体通知：视图只订阅自己读过的属性。
+/// 所以这里一次读遍 AppViewModel 的全部可观察属性，等价于「任何一个属性变化都要
+/// 让整棵历史窗口重求值一次」；任一属性将要变化时计数 +1 并立刻重新登记下一轮。
+/// 语义与原来的 `model.objectWillChange.sink { count += 1 }` 一致——纯增长拍点
+/// 不计数，边界变化计数。
+@MainActor
+private final class WholeModelObservationCounter {
+  private let model: AppViewModel
+  private(set) var count = 0
+  private var isCancelled = false
+
+  init(_ model: AppViewModel) {
+    self.model = model
+    arm()
+  }
+
+  func cancel() { isCancelled = true }
+
+  private func arm() {
+    withObservationTracking {
+      _ = model.connection
+      _ = model.browserReceiverState
+      _ = model.lastBrowserCaptureAt
+      _ = model.currentCapture
+      _ = model.runState
+      _ = model.activeRunTaskID
+      _ = model.visibleRunTaskID
+      _ = model.storageAvailability
+      _ = model.dataDestinationDisclosure
+      _ = model.dataDestinationNotice
+      _ = model.queuedGenerations
+    } onChange: { [weak self] in
+      MainActor.assumeIsolated {
+        guard let self, !self.isCancelled else { return }
+        self.count += 1
+        self.arm()
+      }
+    }
   }
 }
 
@@ -795,7 +839,7 @@ final class AppViewModelTests: XCTestCase {
 
     await model.summarize()
     XCTAssertTrue(model.canStartRun)
-    XCTAssertTrue(model.dataDestinationNotice?.contains("尚未配置") == true)
+    XCTAssertTrue(model.dataDestinationNotice?.contains("还没配置可用的模型") == true)
 
     _ = try await service.save(
       baseURL: "https://saved.example.test/v1",
@@ -824,7 +868,7 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertTrue(model.canStartRun)
     XCTAssertNil(model.dataDestinationDisclosure)
     XCTAssertEqual(provider.callCount, 0)
-    XCTAssertTrue(model.dataDestinationNotice?.contains("无法读取") == true)
+    XCTAssertTrue(model.dataDestinationNotice?.contains("读不到已经保存的模型配置") == true)
   }
 
   func testIdentityLoadBarrierRejectsDoubleTapAndOldCaptureContinuation() async throws {
@@ -1085,7 +1129,7 @@ final class AppViewModelTests: XCTestCase {
     }
     XCTAssertEqual(model.runResultText, "部分结果")
     XCTAssertTrue(model.runStatusText.hasPrefix("结果不完整。"))
-    XCTAssertTrue(model.runStatusText.contains("检查 Base URL"))
+    XCTAssertTrue(model.runStatusText.contains("核对服务地址"))
     XCTAssertFalse(model.runStatusText.contains(submittedSecret))
     XCTAssertFalse(model.runResultText.contains(submittedSecret))
   }
@@ -1269,7 +1313,7 @@ final class AppViewModelTests: XCTestCase {
     await waitUntil { if case .failed = model.runState { true } else { false } }
     XCTAssertEqual(model.storageAvailability, .writable)
     XCTAssertEqual(model.storageStatusText, "本地历史可用")
-    XCTAssertTrue(model.runStatusText.contains("身份验证"))
+    XCTAssertTrue(model.runStatusText.contains("模型服务不认这个密钥"))
   }
 
   func testPartialAndTerminalStorageFailuresNeverShowUncommittedOrFakeTerminal() async throws {
@@ -1398,39 +1442,39 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(model.runState, .completed(intent: .translate, text: "new"))
   }
 
-  /// 流式纯增长拍点不得触发整个 ObservableObject 的通知（那会让观察
-  /// AppViewModel 的整棵历史窗口每 250ms 重求值，是生成期间滚动卡顿的
+  /// 流式纯增长拍点不得触发整体观察通知（那会让读过 AppViewModel 的
+  /// 整棵历史窗口每 250ms 重求值，是生成期间滚动卡顿的
   /// 来源）；状态切换照常通知，且 runState 读取方始终拿到最新正文。
   func testStreamingGrowthTicksUpdateLeafOnlyAndKeepRunStateFresh() {
     let model = AppViewModel()
     let runID = RunID()
     model.receiveRunState(runID: runID, state: .starting(intent: .summarize))
 
-    var wholeObjectNotifications = 0
-    let notificationCounter = model.objectWillChange.sink { _ in wholeObjectNotifications += 1 }
+    let notificationCounter = WholeModelObservationCounter(model)
 
     model.receiveRunState(runID: runID, state: .thinking(intent: .summarize))
-    XCTAssertEqual(wholeObjectNotifications, 1)
+    XCTAssertEqual(notificationCounter.count, 1)
     XCTAssertTrue(model.liveRunText.text.isEmpty)
 
     // 第一段正文是 thinking → streaming 的边界切换：整体通知 + 叶子更新。
     model.receiveRunState(runID: runID, state: .streaming(intent: .summarize, partialText: "第一"))
-    XCTAssertEqual(wholeObjectNotifications, 2)
+    XCTAssertEqual(notificationCounter.count, 2)
     XCTAssertEqual(model.liveRunText.text, "第一")
     XCTAssertEqual(model.runResultText, "第一")
 
     // 同 intent 的纯增长拍点：叶子更新，整体不通知，存储值保持最新。
     model.receiveRunState(runID: runID, state: .streaming(intent: .summarize, partialText: "第一段"))
     model.receiveRunState(runID: runID, state: .streaming(intent: .summarize, partialText: "第一段落"))
-    XCTAssertEqual(wholeObjectNotifications, 2)
+    XCTAssertEqual(notificationCounter.count, 2)
     XCTAssertEqual(model.liveRunText.text, "第一段落")
     XCTAssertEqual(model.runResultText, "第一段落")
 
-    // 终态切换回到整体通知，叶子同步全文。计数是 4 而非 3：receiveRunState
-    // 在终态还会清空 @Published 的 activeRunTaskID，那是真正的状态切换，
-    // 本就该通知（SwiftUI 会在同一 runloop 合并这两次 objectWillChange）。
+    // 终态切换回到整体通知，叶子同步全文。这里只加 1：receiveRunState 在终态
+    // 还会清空同样可观察的 activeRunTaskID，但这条流程里它本来就是 nil，而
+    // Observation 对「写进去的值和原值相等」不发通知（@Published 时代会发，
+    // 所以当年这个数字是 4）。真正的状态切换——runState 进终态——照常通知。
     model.receiveRunState(runID: runID, state: .completed(intent: .summarize, text: "第一段落。"))
-    XCTAssertEqual(wholeObjectNotifications, 4)
+    XCTAssertEqual(notificationCounter.count, 3)
     XCTAssertEqual(model.liveRunText.text, "第一段落。")
     XCTAssertEqual(model.runResultText, "第一段落。")
 
@@ -1438,33 +1482,32 @@ final class AppViewModelTests: XCTestCase {
   }
 
   /// 推理模型的思考阶段每收到一个 delta 就上报一次 `.thinking(intent:)`，值
-  /// 完全相同。这种同值拍点不得触发整体通知：实测不去重时主线程 100% CPU、
+  /// 完全相同。这种同值拍点不得触发观察通知：实测不去重时主线程 100% CPU、
   /// 连续 23 秒几乎不出帧，界面完全无法操作。
   func testRepeatedIdenticalThinkingTicksDoNotNotifyWholeObject() {
     let model = AppViewModel()
     let runID = RunID()
     model.receiveRunState(runID: runID, state: .starting(intent: .translate))
 
-    var wholeObjectNotifications = 0
-    let notificationCounter = model.objectWillChange.sink { _ in wholeObjectNotifications += 1 }
+    let notificationCounter = WholeModelObservationCounter(model)
 
     // 第一次是 starting → thinking 的真实切换，照常通知。
     model.receiveRunState(runID: runID, state: .thinking(intent: .translate))
-    XCTAssertEqual(wholeObjectNotifications, 1)
+    XCTAssertEqual(notificationCounter.count, 1)
 
     for _ in 0..<50 {
       model.receiveRunState(runID: runID, state: .thinking(intent: .translate))
     }
-    XCTAssertEqual(wholeObjectNotifications, 1)
+    XCTAssertEqual(notificationCounter.count, 1)
     XCTAssertEqual(model.runState, .thinking(intent: .translate))
 
     // intent 变了就不再是同值，必须照常通知。
     model.receiveRunState(runID: runID, state: .thinking(intent: .summarize))
-    XCTAssertEqual(wholeObjectNotifications, 2)
+    XCTAssertEqual(notificationCounter.count, 2)
 
     // 正文到达是真实切换，叶子同步。
     model.receiveRunState(runID: runID, state: .streaming(intent: .summarize, partialText: "首段"))
-    XCTAssertEqual(wholeObjectNotifications, 3)
+    XCTAssertEqual(notificationCounter.count, 3)
     XCTAssertEqual(model.liveRunText.text, "首段")
 
     notificationCounter.cancel()
@@ -1477,8 +1520,7 @@ final class AppViewModelTests: XCTestCase {
     func notificationCount(thinkingTicks: Int, streamingDeltas: Int) -> Int {
       let model = AppViewModel()
       let runID = RunID()
-      var notifications = 0
-      let counter = model.objectWillChange.sink { _ in notifications += 1 }
+      let counter = WholeModelObservationCounter(model)
       defer { counter.cancel() }
 
       model.receiveRunState(runID: runID, state: .starting(intent: .translate))
@@ -1492,7 +1534,7 @@ final class AppViewModelTests: XCTestCase {
       }
       model.receiveRunState(runID: runID, state: .completed(intent: .translate, text: text))
       XCTAssertEqual(model.liveRunText.text, text)
-      return notifications
+      return counter.count
     }
 
     // 只有阶段切换该通知整树，delta 数量不该进入这个式子。

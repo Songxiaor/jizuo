@@ -97,8 +97,10 @@ struct SettingsPageHeader: View {
       )
       VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
         Text(title)
-          // 设置页标题约定约 18pt 半粗；不用 title2，避免大字体主题下显得过重。
-          .font(.system(size: 18, weight: .semibold))
+          // 跟随系统字号：原来写死 `.font(.system(size: 18, weight: .semibold))`，
+          // 放大界面字号之后正文涨了、页头没涨，标题反而比它下面的说明还小。
+          // `.title3` 在默认档位上就是 18pt 左右，同时随主题字体和辅助功能字号缩放。
+          .themedFont(.title3, weight: .semibold)
           .foregroundStyle(.primary)
         captionText
       }
@@ -476,6 +478,9 @@ struct SettingsChoiceList<Value: Hashable>: View {
   let choices: [Choice]
   @Binding var selection: Value
   var identifierPrefix: String
+  /// 选中钮走主题强调色。`Color.accentColor` 读的是 App 级强调色（默认系统蓝），
+  /// 不受窗口根部 `.tint(theme.accent)` 影响——于是暖褐主题下这一颗单选钮是蓝的。
+  @Environment(\.appTheme) private var theme
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -486,7 +491,7 @@ struct SettingsChoiceList<Value: Hashable>: View {
         } label: {
           HStack(alignment: .top, spacing: 8) {
             Image(systemName: isSelected ? "largecircle.fill.circle" : "circle")
-              .foregroundStyle(isSelected ? Color.accentColor : Color.secondary)
+              .foregroundStyle(isSelected ? theme.accent : Color.secondary)
               .font(.body)
               .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {

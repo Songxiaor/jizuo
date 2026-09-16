@@ -5,7 +5,7 @@ import SwiftUI
 ///
 /// 灵感原句钉在最上面——写到第三天很容易偏离，那句话是锚。
 struct PieceDeskView: View {
-  @ObservedObject var model: HistoryViewModel
+  var model: HistoryViewModel
   let piece: PieceSummary
   /// 打开正文那条笔记（复用现有的笔记详情，稿子就是一条笔记）。
   let onOpenNote: (TaskID) -> Void

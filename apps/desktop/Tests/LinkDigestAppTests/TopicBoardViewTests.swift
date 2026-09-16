@@ -6,6 +6,9 @@ import XCTest
 /// 选题板的日期标签。
 ///
 /// 板上多数时候只关心今天和昨天，写成日期反而要多想一步。
+// `TopicBoardView.dayLabel` 是 MainActor 隔离的（它读视图主题里的日历），
+// 测试跟着标一下，否则三处调用都在「非隔离的同步上下文」里报警告。
+@MainActor
 final class TopicBoardDayLabelTests: XCTestCase {
   private var calendar: Calendar {
     var calendar = Calendar(identifier: .gregorian)

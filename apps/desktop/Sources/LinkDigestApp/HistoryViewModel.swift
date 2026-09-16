@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Observation
 import LinkDigestMCPKit
 import LinkDigestAdapters
 import LinkDigestCore
@@ -213,6 +214,45 @@ private actor HistoryRepositoryWorker {
     catch { return .failure(HistoryViewModel.storageCode(for: error, context: .write)) }
   }
 
+  func moveToTrash(_ history: HistoryApplicationService, taskIDs: Set<TaskID>) -> DeleteResult {
+    do {
+      return Self.trashOutcome(changed: try history.moveToTrash(taskIDs: taskIDs), requested: taskIDs)
+    } catch {
+      return .failure(HistoryViewModel.storageCode(for: error, context: .write))
+    }
+  }
+
+  func restoreFromTrash(_ history: HistoryApplicationService, taskIDs: Set<TaskID>) -> DeleteResult {
+    do {
+      return Self.trashOutcome(changed: try history.restoreFromTrash(taskIDs: taskIDs), requested: taskIDs)
+    } catch {
+      return .failure(HistoryViewModel.storageCode(for: error, context: .write))
+    }
+  }
+
+  /// 把「请求集」和「真的改动集」分开记账。
+  ///
+  /// 请求集不等于完成集：已经在回收站里的、或已被 30 天清理掉的 id 改不动任何行。
+  /// 以前这里把请求集原样当成功返回（`failedTaskIDs: []` 是写死的），表现是
+  /// 「行从界面消失了、侧边栏计数没变、切走再回来它又在那儿」。
+  private static func trashOutcome(changed: [TaskID], requested: Set<TaskID>) -> DeleteResult {
+    let ordered = requested.sorted { $0.rawValue < $1.rawValue }
+    let done = Set(changed)
+    return .success(
+      .init(
+        requestedTaskIDs: ordered,
+        deletedTaskIDs: ordered.filter { done.contains($0) },
+        failedTaskIDs: ordered.filter { !done.contains($0) }
+      ),
+      media: []
+    )
+  }
+
+  func purgeTrash(_ history: HistoryApplicationService, olderThanDays: Int) -> (Int?, StorageErrorCode?) {
+    do { return (try history.purgeTrash(olderThanDays: olderThanDays), nil) }
+    catch { return (nil, HistoryViewModel.storageCode(for: error, context: .write)) }
+  }
+
   func export(_ history: HistoryApplicationService, taskID: TaskID, format: HistoryExportFormat) -> ExportResult {
     do { return .success(try HistoryExportRenderer.render(history.exportProjection(taskID: taskID), as: format)) }
     catch { return .failure }
@@ -241,6 +281,10 @@ private actor HistoryRepositoryWorker {
     try? history.creator(id: id)
   }
 
+  func mediaAsset(_ history: HistoryApplicationService, taskID: TaskID) -> MediaAsset? {
+    try? history.mediaAsset(taskID: taskID)
+  }
+
   func setCreatorPinned(
     _ history: HistoryApplicationService,
     creatorID: CreatorID,
@@ -253,6 +297,18 @@ private actor HistoryRepositoryWorker {
       return .pinLimit
     } catch {
       return .failure
+    }
+  }
+
+  func deleteCreator(_ history: HistoryApplicationService, creatorID: CreatorID) -> Bool {
+    do {
+      try history.deleteCreator(creatorID: creatorID)
+      return true
+    } catch RepositoryFailure.notFound {
+      // 已经不在了，对用户来说就是删成功。
+      return true
+    } catch {
+      return false
     }
   }
 
@@ -783,17 +839,21 @@ private actor DraftStreamBuffer {
   func append(_ chunk: String) { text += chunk }
 }
 
+/// 用 Observation 而不是 ObservableObject：视图只在自己读过的属性变化时重绘。
+/// 原来 113 个 任一变化都让整个主界面（侧栏、列表、详情三棵树）重排，
+/// 「打开长文后点哪都顿一下」就是这么来的。
 @MainActor
-final class HistoryViewModel: ObservableObject {
+@Observable
+final class HistoryViewModel {
   struct ProfileImportReturnTarget: Equatable {
     let taskID: TaskID
     let batchID: UUID
     let itemID: UUID
   }
 
-  @Published private(set) var rows: [HistoryRowProjection] = []
+  private(set) var rows: [HistoryRowProjection] = []
   private var isSelectingGalleryItems = false
-  @Published var selectedTaskIDs: Set<TaskID> = [] {
+  var selectedTaskIDs: Set<TaskID> = [] {
     didSet {
       let previous = Self.singleSelection(in: oldValue)
       let current = selectedTaskID
@@ -863,10 +923,10 @@ final class HistoryViewModel: ObservableObject {
 
   var hasPlatformGalleryReadingStash: Bool { platformGallerySelectionStash != nil }
 
-  @Published private(set) var detail: HistoryDetailProjection?
+  private(set) var detail: HistoryDetailProjection?
   /// 转写校对保存失败的人话提示；nil 表示无待展示错误。
-  @Published private(set) var snapshotEditFailure: String?
-  @Published private(set) var listState: HistoryListState = .idle
+  private(set) var snapshotEditFailure: String?
+  private(set) var listState: HistoryListState = .idle
   /// 详情读取的状态机。刻意不是 `@Published`。
   ///
   /// 界面只有在没有内容可显示时才看它——`detail == nil` 那条分支里的转圈和失败页。
@@ -876,103 +936,110 @@ final class HistoryViewModel: ObservableObject {
   ///
   /// 所以值照常更新（`detailState == .loading` 仍然是「读取进行中」的可靠判据），
   /// 只有在真会改变画面时才发通知。
-  private var detailStateStorage: HistoryDetailState = .idle
-  var detailState: HistoryDetailState { detailStateStorage }
+  @ObservationIgnored private var detailStateStorage: HistoryDetailState = .idle
+  var detailState: HistoryDetailState {
+    access(keyPath: \.detailState)
+    return detailStateStorage
+  }
 
   private func setDetailState(_ newValue: HistoryDetailState) {
     guard newValue != detailStateStorage else { return }
-    if detail == nil { objectWillChange.send() }
-    detailStateStorage = newValue
+    if detail == nil {
+      withMutation(keyPath: \.detailState) { detailStateStorage = newValue }
+    } else {
+      detailStateStorage = newValue
+    }
   }
-  @Published private(set) var isLoadingNextPage = false
-  @Published private(set) var isReadOnly = false
-  @Published private(set) var historyReadOnlyReason: RepositoryRecoveryReason?
-  @Published private(set) var blockingErrorCode: StorageErrorCode?
-  @Published private(set) var listErrorCode: StorageErrorCode?
-  @Published private(set) var detailErrorCode: StorageErrorCode?
-  @Published private(set) var deleteErrorCode: StorageErrorCode?
-  @Published var isDeleteConfirmationPresented = false
-  @Published var isDeleteFailurePresented = false
-  @Published var isProtectedDeletionAlertPresented = false
-  @Published var isDeleteOutcomePresented = false
-  @Published private(set) var deleteOutcomeMessage = ""
-  @Published private(set) var isDeleting = false
-  @Published var isBatchSummaryConfirmationPresented = false
-  @Published private(set) var batchSummaryProgress: BatchSummaryProgress?
-  @Published var isBatchSummaryOutcomePresented = false
-  @Published private(set) var batchSummaryOutcomeMessage = ""
-  @Published var isBatchTranslationConfirmationPresented = false
-  @Published private(set) var batchTranslationProgress: BatchTranslationProgress?
-  @Published var isBatchTranslationOutcomePresented = false
-  @Published private(set) var batchTranslationOutcomeMessage = ""
-  @Published private(set) var isPreparingExport = false
-  @Published private(set) var exportFile: HistoryExportFile?
-  @Published var isExportPanelPresented = false
-  @Published var isExportPreparationFailurePresented = false
-  @Published var isExportSaveFailurePresented = false
-  @Published private(set) var localImageURLs: [URL] = []
-  @Published private(set) var localMediaFileURL: URL?
-  @Published private(set) var localMediaResolutionFailure: String?
-  @Published private(set) var faviconImageURLs: [TaskID: URL] = [:]
-  @Published var searchText = "" {
+  private(set) var isLoadingNextPage = false
+  private(set) var isReadOnly = false
+  private(set) var historyReadOnlyReason: RepositoryRecoveryReason?
+  private(set) var historyReadOnlyRecoveryHint: String?
+  private(set) var blockingErrorCode: StorageErrorCode?
+  private(set) var listErrorCode: StorageErrorCode?
+  private(set) var detailErrorCode: StorageErrorCode?
+  private(set) var deleteErrorCode: StorageErrorCode?
+  var isDeleteConfirmationPresented = false
+  var isDeleteFailurePresented = false
+  var isProtectedDeletionAlertPresented = false
+  var isDeleteOutcomePresented = false
+  private(set) var deleteOutcomeMessage = ""
+  private(set) var isDeleting = false
+  var isBatchSummaryConfirmationPresented = false
+  private(set) var batchSummaryProgress: BatchSummaryProgress?
+  var isBatchSummaryOutcomePresented = false
+  private(set) var batchSummaryOutcomeMessage = ""
+  var isBatchTranslationConfirmationPresented = false
+  private(set) var batchTranslationProgress: BatchTranslationProgress?
+  var isBatchTranslationOutcomePresented = false
+  private(set) var batchTranslationOutcomeMessage = ""
+  private(set) var isPreparingExport = false
+  private(set) var exportFile: HistoryExportFile?
+  var isExportPanelPresented = false
+  var isExportPreparationFailurePresented = false
+  var isExportSaveFailurePresented = false
+  private(set) var localImageURLs: [URL] = []
+  private(set) var localMediaFileURL: URL?
+  private(set) var localMediaResolutionFailure: String?
+  private(set) var faviconImageURLs: [TaskID: URL] = [:]
+  var searchText = "" {
     didSet {
       if oldValue != searchText { scheduleSearchReload() }
     }
   }
-  @Published private(set) var availableTags: [HistoryTag] = []
-  @Published private(set) var selectedTagNormalizedNames: Set<String> = []
-  @Published private(set) var navigationCounts = HistoryNavigationCounts()
-  @Published private(set) var selectedHosts: Set<String> = []
-  @Published private(set) var selectedScope: HistoryListScope = .all
-  @Published private(set) var selectedCreatorID: CreatorID?
-  @Published private(set) var selectedCreatorSnapshot: CreatorSummary?
-  @Published private(set) var isCreatorDirectoryActive = false
-  @Published private(set) var profileImportReturnTarget: ProfileImportReturnTarget?
-  @Published private(set) var profileImportScrollTarget: UUID?
+  private(set) var availableTags: [HistoryTag] = []
+  private(set) var selectedTagNormalizedNames: Set<String> = []
+  private(set) var navigationCounts = HistoryNavigationCounts()
+  private(set) var selectedHosts: Set<String> = []
+  private(set) var selectedScope: HistoryListScope = .all
+  private(set) var selectedCreatorID: CreatorID?
+  private(set) var selectedCreatorSnapshot: CreatorSummary?
+  private(set) var isCreatorDirectoryActive = false
+  private(set) var profileImportReturnTarget: ProfileImportReturnTarget?
+  private(set) var profileImportScrollTarget: UUID?
   /// Directory browsing shows the creator's works in the detail column.
   /// Selecting a work turns this on so the reader appears; it must not follow
   /// the list's usual auto-select-first-row behavior.
-  @Published private(set) var isReadingCreatorWorkInDirectory = false
-  @Published private(set) var creatorDirectoryRows: [CreatorSummary] = []
-  @Published var creatorSearchText = "" { didSet { scheduleCreatorSearchReload() } }
-  @Published private(set) var creatorFailure: String?
-  @Published private(set) var isLoadingCreatorPage = false
-  @Published private(set) var creatorDirectoryLoadFailed = false
+  private(set) var isReadingCreatorWorkInDirectory = false
+  private(set) var creatorDirectoryRows: [CreatorSummary] = []
+  var creatorSearchText = "" { didSet { scheduleCreatorSearchReload() } }
+  private(set) var creatorFailure: String?
+  private(set) var isLoadingCreatorPage = false
+  private(set) var creatorDirectoryLoadFailed = false
 
   // MARK: - 工作台
   //
   // 工作台不是 history 列表的一个筛选——它的单位是「一件创作」而不是「一份内容」，
   // 所以不塞进 `HistoryListScope`（那个枚举会进 SQL where 子句，加一个不参与筛选的
   // case 只会污染那条查询）。用一个独立开关表示「现在在工作台里」。
-  @Published private(set) var isWorkbenchActive = false
-  @Published private(set) var pieces: [PieceSummary] = []
-  @Published var selectedPieceID: PieceID? {
+  private(set) var isWorkbenchActive = false
+  private(set) var pieces: [PieceSummary] = []
+  var selectedPieceID: PieceID? {
     didSet {
       guard selectedPieceID != oldValue else { return }
       reloadSelectedPiece()
     }
   }
-  @Published private(set) var selectedPiece: PieceSummary?
-  @Published private(set) var pieceMaterials: [PieceMaterial] = []
-  @Published private(set) var workbenchFailure: String?
+  private(set) var selectedPiece: PieceSummary?
+  private(set) var pieceMaterials: [PieceMaterial] = []
+  private(set) var workbenchFailure: String?
   /// 起草进行中的那件创作。
-  @Published private(set) var draftingPieceID: PieceID?
+  private(set) var draftingPieceID: PieceID?
   /// 起草时流式产出的文字,直接往界面上刷。
-  @Published private(set) var draftingText = ""
+  private(set) var draftingText = ""
   /// 方法库。启用与否都在里面——界面要能看到停用的那些。
-  @Published private(set) var writingMethods: [WritingMethod] = []
+  private(set) var writingMethods: [WritingMethod] = []
   /// 选题板上的候选,新的一天在前。
-  @Published private(set) var topicCandidates: [TopicCandidate] = []
+  private(set) var topicCandidates: [TopicCandidate] = []
   /// 正在出选题。
-  @Published private(set) var isGeneratingTopics = false
+  private(set) var isGeneratingTopics = false
   /// 正在按配方试跑。和正式出选题分开:试跑不落库，界面上也不该
   /// 让人以为选题板马上会多出几条。
-  @Published private(set) var isDryRunningTopics = false
+  private(set) var isDryRunningTopics = false
   /// 上一次试跑的结论。改配方时唯一能立刻验证的东西。
-  @Published var topicDryRunResult: String?
-  @Published var showsAllNavigationTags = false
-  @Published private(set) var tagErrorCode: StorageErrorCode?
-  @Published private(set) var transcriptionState: TranscriptionUIState = .idle {
+  var topicDryRunResult: String?
+  var showsAllNavigationTags = false
+  private(set) var tagErrorCode: StorageErrorCode?
+  private(set) var transcriptionState: TranscriptionUIState = .idle {
     // 任何终态都必须带走阶段文案，不能让「正在下载音频轨…」陪着失败提示常驻。
     didSet {
       if !transcriptionState.isActive {
@@ -988,74 +1055,86 @@ final class HistoryViewModel: ObservableObject {
   /// 非 @Published：写入统一走 `setTranscriptionText`。转写 partial 每
   /// 250ms 一个增长拍点，只更新 `liveTranscriptionText` 收窄重绘；
   /// 空↔非空边界与终态清空仍整体通知。
-  private(set) var transcriptionText = ""
+  @ObservationIgnored private var transcriptionTextStorage = ""
+  private(set) var transcriptionText: String {
+    get { access(keyPath: \.transcriptionText); return transcriptionTextStorage }
+    set { withMutation(keyPath: \.transcriptionText) { transcriptionTextStorage = newValue } }
+  }
   /// 转写流式正文的热路径发布通道，与 transcriptionText 同步更新。
   let liveTranscriptionText = LiveRunTextModel()
-  @Published private(set) var transcriptionTaskID: TaskID?
-  @Published private(set) var transcriptionUsesOnlineService = false
+  private(set) var transcriptionTaskID: TaskID?
+  private(set) var transcriptionUsesOnlineService = false
   /// 在线转写进行到哪一步。「正在在线转写…」曾覆盖从建任务记录到最后一片
   /// 上传的全过程——挂在数据库、挂在下载、挂在导出、挂在上传，界面上
   /// 一模一样。这里按真实阶段更新，卡住时直接读出卡在哪个字。
-  @Published private(set) var onlineTranscriptionPhase: String?
+  private(set) var onlineTranscriptionPhase: String?
   /// 流式通道下已确定的文稿前缀，边转写边显示。终态时清空，成品由
   /// `transcriptionText` 接管，避免同一段文字在界面上出现两份。
   /// 非 @Published：partial 增长拍点只写 `liveOnlineTranscriptionPreview`
   /// 收窄重绘（见 setOnlineTranscriptionPreview）。
-  private(set) var onlineTranscriptionPreview: String?
+  @ObservationIgnored private var onlineTranscriptionPreviewStorage: String?
+  private(set) var onlineTranscriptionPreview: String? {
+    get { access(keyPath: \.onlineTranscriptionPreview); return onlineTranscriptionPreviewStorage }
+    set { withMutation(keyPath: \.onlineTranscriptionPreview) { onlineTranscriptionPreviewStorage = newValue } }
+  }
   /// 在线转写预览的热路径发布通道，与 onlineTranscriptionPreview 同步。
   let liveOnlineTranscriptionPreview = LiveRunTextModel()
   /// 上一次在线转写的分段耗时，终态后保留（阶段文案会被清掉，这条不能跟着走）。
   /// 「慢」必须先拆开看：下载音轨慢、本机切片导出慢、等 ASR 返回慢，
   /// 三段的修法完全不同（带宽 / 编码 preset / 分片粒度与并发），
   /// 凭感觉挑一处改是今天已经栽过的坑。
-  @Published private(set) var onlineTranscriptionTimings: String?
+  private(set) var onlineTranscriptionTimings: String?
   /// 上传段起点：`progress(0, total)` 恰好发生在全部分片导出完成、
   /// 第一片上传之前，是切片段与上传段之间唯一可靠的分界。
   private var onlineUploadStartInstant: ContinuousClock.Instant?
   private var onlineChunkTotal: Int?
-  @Published private(set) var imageTextRecognitionState: ImageTextRecognitionUIState = .idle
-  @Published private(set) var recognizedImageText = ""
-  @Published private(set) var imageTextRecognitionTaskID: TaskID?
-  @Published private(set) var transcriptionCleanupFailure: String?
-  @Published var isTranscriptionModelConfirmationPresented = false
-  @Published var isOnlineTranscriptionConfirmationPresented = false
-  @Published private(set) var transcriptTidyState: TranscriptTidyUIState = .idle {
+  private(set) var imageTextRecognitionState: ImageTextRecognitionUIState = .idle
+  private(set) var recognizedImageText = ""
+  private(set) var imageTextRecognitionTaskID: TaskID?
+  private(set) var transcriptionCleanupFailure: String?
+  /// 启动时的临时目录清理已挪到后台，失败时从那里回报。
+  func reportTranscriptionCleanupFailure(_ message: String) {
+    transcriptionCleanupFailure = message
+  }
+  var isTranscriptionModelConfirmationPresented = false
+  var isOnlineTranscriptionConfirmationPresented = false
+  private(set) var transcriptTidyState: TranscriptTidyUIState = .idle {
     // 任何终态都必须带走进度文案，不能让「已校对 5/18 段」陪着失败提示常驻。
     didSet {
       if !transcriptTidyState.isActive { transcriptTidyProgress = nil }
     }
   }
-  @Published private(set) var transcriptTidyTaskID: TaskID?
-  @Published var isTranscriptTidyConfirmationPresented = false
+  private(set) var transcriptTidyTaskID: TaskID?
+  var isTranscriptTidyConfirmationPresented = false
   /// 展示用 token 摘要；evidence 表列固定，本轮不入库。
-  @Published private(set) var transcriptTidyTokenSummary: String?
-  @Published private(set) var mindMapRecord: TaskMindMapRecord?
-  @Published private(set) var mindMapState: TranscriptTidyUIState = .idle
-  @Published private(set) var mindMapTaskID: TaskID?
-  @Published var isMindMapConfirmationPresented = false
+  private(set) var transcriptTidyTokenSummary: String?
+  private(set) var mindMapRecord: TaskMindMapRecord?
+  private(set) var mindMapState: TranscriptTidyUIState = .idle
+  private(set) var mindMapTaskID: TaskID?
+  var isMindMapConfirmationPresented = false
   /// 台账（整理/脑图）部分的 token 合计；Run 部分由 detail 投影自带。
-  @Published private(set) var ledgerTokenTotals: TaskTokenTotals?
+  private(set) var ledgerTokenTotals: TaskTokenTotals?
   /// 学习批注：用户的摘录与笔记，与机器产物分离。
-  @Published private(set) var taskExcerpts: [TaskExcerpt] = []
-  @Published var taskNoteDraft = ""
-  private var noteSaveTask: Task<Void, Never>?
+  private(set) var taskExcerpts: [TaskExcerpt] = []
+  var taskNoteDraft = ""
+  @ObservationIgnored private var noteSaveTask: Task<Void, Never>?
   /// 正文保存链的末端。新保存任务先 await 前一个，保证连续两次
   /// 自动保存不会在 worker 上乱序落库（后写的旧内容盖掉新内容）。
-  private var snapshotSaveTask: Task<Void, Never>?
+  @ObservationIgnored private var snapshotSaveTask: Task<Void, Never>?
   /// 脑图保存链的末端，作用同上：编辑脑图是连续操作（改一个字存一次、
   /// 换个配色又存一次），独立 detached 任务之间没有先后保证，旧记录
   /// 后落库就会盖掉新编辑。
-  private var mindMapSaveTask: Task<Void, Never>?
+  @ObservationIgnored private var mindMapSaveTask: Task<Void, Never>?
   /// 待落库的笔记。存在这里而不是只活在 Task 闭包里，切换条目时才能先冲刷再覆盖草稿。
   private var pendingNote: (taskID: TaskID, body: String, timestamp: Int64)?
   /// 笔记/摘录落库失败的提示。这条路径原来全是 `try?`，失败完全无声，
   /// 而界面上写着「笔记自动保存」。
-  @Published var annotationFailureMessage: String?
+  var annotationFailureMessage: String?
   private var loadedNoteTaskID: TaskID?
-  @Published private(set) var remoteMediaFavoriteState: RemoteMediaFavoriteState = .idle
-  @Published private(set) var capturedMediaAutoSaveStates: [TaskID: RemoteMediaFavoriteState] = [:]
-  @Published private(set) var capturedMediaAutoSaveFailureMessage = ""
-  @Published var isCapturedMediaAutoSaveFailurePresented = false
+  private(set) var remoteMediaFavoriteState: RemoteMediaFavoriteState = .idle
+  private(set) var capturedMediaAutoSaveStates: [TaskID: RemoteMediaFavoriteState] = [:]
+  private(set) var capturedMediaAutoSaveFailureMessage = ""
+  var isCapturedMediaAutoSaveFailurePresented = false
 
   private let worker = HistoryRepositoryWorker()
   private let imageCache: GitHubREADMEImageCache?
@@ -1096,15 +1175,15 @@ final class HistoryViewModel: ObservableObject {
   /// 不落盘：用户下次打开这条记录，看到的仍然是原文。
   ///
   /// 刻意不做成持久偏好——重排是「换个样子再看一遍」，不是「以后都这么看」。
-  @Published var showsReformattedBody = false
-  @Published private(set) var reformatState: TranscriptTidyUIState = .idle
-  @Published private(set) var reformatRecord: TaskReformatRecord?
+  var showsReformattedBody = false
+  private(set) var reformatState: TranscriptTidyUIState = .idle
+  private(set) var reformatRecord: TaskReformatRecord?
   /// 部分失败时如实告知：长稿切片重排，中间几片失败会以原文回填，
   /// 产出看起来正常但有几段没重排过。
-  @Published private(set) var reformatPartialNotice: String?
+  private(set) var reformatPartialNotice: String?
   private var reformatTaskID: TaskID?
   private var reformatRequestID = UUID()
-  private var reformatTask: Task<Void, Never>?
+  @ObservationIgnored private var reformatTask: Task<Void, Never>?
 
   func reformatState(for taskID: TaskID) -> TranscriptTidyUIState {
     reformatTaskID == taskID ? reformatState : .idle
@@ -1215,7 +1294,7 @@ final class HistoryViewModel: ObservableObject {
     /// 用户在设置里配的「整理模型」，留空则继承总结模型。UI 传入，与转写校对同源。
     let model: String?
   }
-  @Published var isReformatConfirmationPresented = false
+  var isReformatConfirmationPresented = false
   private var pendingReformatContext: PendingReformatContext?
 
   func requestArticleReformat(taskID: TaskID, bodyText: String, model: String?) {
@@ -1262,37 +1341,45 @@ final class HistoryViewModel: ObservableObject {
   private var hasConfiguredHistory = false
   private var nextCursor: HistoryPageCursor?
   private var creatorNextCursor: CreatorPageCursor?
-  private var creatorPageTask: Task<Void, Never>?
-  private var creatorSearchTask: Task<Void, Never>?
+  @ObservationIgnored private var creatorPageTask: Task<Void, Never>?
+  @ObservationIgnored private var creatorSearchTask: Task<Void, Never>?
   /// Last creator focused in this session (directory or sidebar). Survives leaving the directory.
   private var sessionDirectoryCreatorID: CreatorID?
-  private var configurationGeneration = UUID()
+  @ObservationIgnored private var configurationGeneration = UUID()
   private var listRequestID = UUID()
   private var detailRequestID = UUID()
   private var deleteRequestID = UUID()
   private var exportRequestID = UUID()
   private(set) var pendingDeletionTaskIDs: Set<TaskID> = []
   private(set) var pendingProtectedDeletionTaskIDs: Set<TaskID> = []
-  private var pageTask: Task<Void, Never>?
-  private var detailTask: Task<Void, Never>?
-  private var imageBackfillTask: Task<Void, Never>?
+  /// 「这一次删除是不是彻底删除」在**弹确认框的那一刻**就定下来。
+  ///
+  /// 以前它是在点「确认」时才读 `selectedScope`，而确认框是可以跨作用域停留的：
+  /// 在回收站里点了「彻底删除」→ 确认框弹出 → 左侧栏切到「全部」→ 回确认框点确认，
+  /// 这一次就走成了「移到回收站」（什么都没删）；反方向更糟——普通列表里点
+  /// 「移到回收站」、切到回收站再确认，会把可恢复的删除执行成**不可恢复的彻底删除**。
+  /// 要删哪些 id 早就是冻结的（`pendingDeletionTaskIDs`），只有这一个标志没冻结。
+  private(set) var pendingDeletionIsPermanent = false
+  @ObservationIgnored private var pageTask: Task<Void, Never>?
+  @ObservationIgnored private var detailTask: Task<Void, Never>?
+  @ObservationIgnored private var imageBackfillTask: Task<Void, Never>?
   private var imageBackfillAttemptedSnapshotIDs: Set<ContentSnapshotID> = []
-  private var deleteTask: Task<Void, Never>?
-  private var exportTask: Task<Void, Never>?
-  private var faviconTask: Task<Void, Never>?
-  private var browserDeclaredFaviconTasks: [TaskID: Task<Void, Never>] = [:]
-  private var tagsTask: Task<Void, Never>?
-  private var navigationCountsTask: Task<Void, Never>?
-  private var tagMutationTask: Task<Void, Never>?
-  private var searchTask: Task<Void, Never>?
-  private var transcriptionTask: Task<Void, Never>?
-  private var imageTextRecognitionTask: Task<Void, Never>?
+  @ObservationIgnored private var deleteTask: Task<Void, Never>?
+  @ObservationIgnored private var exportTask: Task<Void, Never>?
+  @ObservationIgnored private var faviconTask: Task<Void, Never>?
+  @ObservationIgnored private var browserDeclaredFaviconTasks: [TaskID: Task<Void, Never>] = [:]
+  @ObservationIgnored private var tagsTask: Task<Void, Never>?
+  @ObservationIgnored private var navigationCountsTask: Task<Void, Never>?
+  @ObservationIgnored private var tagMutationTask: Task<Void, Never>?
+  @ObservationIgnored private var searchTask: Task<Void, Never>?
+  @ObservationIgnored private var transcriptionTask: Task<Void, Never>?
+  @ObservationIgnored private var imageTextRecognitionTask: Task<Void, Never>?
   private var imageTextRecognitionRequestID = UUID()
   private var transcriptionRequestID = UUID()
   private var pendingTranscriptionContext: TranscriptionContext?
   private var pendingRemoteTranscriptionContext: RemoteTranscriptionContext?
   private var pendingOnlineTranscriptionContext: PendingOnlineTranscriptionContext?
-  private var transcriptTidyTask: Task<Void, Never>?
+  @ObservationIgnored private var transcriptTidyTask: Task<Void, Never>?
   private var transcriptTidyRequestID = UUID()
   private var pendingTranscriptTidyContext: PendingTranscriptTidyContext?
   private var cleanupRetryAttemptID: String?
@@ -1376,13 +1463,30 @@ final class HistoryViewModel: ObservableObject {
   var selectedTaskCount: Int { selectedTaskIDs.count }
   var pendingDeletionCount: Int { pendingDeletionTaskIDs.count }
   var pendingProtectedDeletionCount: Int { pendingProtectedDeletionTaskIDs.count }
+  /// 确认框里的文案跟的是「这次要做什么」，不是「你现在在哪个作用域」。
+  var isPermanentDeletion: Bool { pendingDeletionIsPermanent }
   var deletionConfirmationTitle: String {
-    pendingDeletionCount == 1 ? "删除这条历史记录？" : "确定删除选中的 \(pendingDeletionCount) 条记录？"
+    if isPermanentDeletion {
+      return pendingDeletionCount == 1
+        ? "彻底删除这条内容？"
+        : "彻底删除选中的 \(pendingDeletionCount) 条？"
+    }
+    return pendingDeletionCount == 1
+      ? "移到回收站？"
+      : "把选中的 \(pendingDeletionCount) 条移到回收站？"
+  }
+  var deletionConfirmationActionTitle: String {
+    isPermanentDeletion ? "彻底删除" : "移到回收站"
   }
   var deletionConfirmationMessage: String {
-    var message = pendingDeletionCount == 1
-      ? "此操作只删除本机的这条记录，无法撤销。"
-      : "此操作只删除本机的这些记录，无法撤销。"
+    var message: String
+    if isPermanentDeletion {
+      message = pendingDeletionCount == 1
+        ? "此操作会从本机永久删除，无法撤销。"
+        : "此操作会从本机永久删除这些内容，无法撤销。"
+    } else {
+      message = "移到回收站，\(HistoryTrashPolicy.retentionDays) 天后自动清理。"
+    }
     if pendingProtectedDeletionCount > 0 {
       message += " 其中 \(pendingProtectedDeletionCount) 条正在生成，将被跳过。"
     }
@@ -1402,18 +1506,24 @@ final class HistoryViewModel: ObservableObject {
   /// 清空和 final 整体替换会改变「空/非空」或全文内容，照常整体通知。
   /// 存储属性本身每次都更新，读取方（如转写后整理）拿到的始终是最新值。
   private func setTranscriptionText(_ value: String) {
-    let isPureGrowth = !value.isEmpty && !transcriptionText.isEmpty
-    if !isPureGrowth { objectWillChange.send() }
-    transcriptionText = value
+    let isPureGrowth = !value.isEmpty && !transcriptionTextStorage.isEmpty
+    if isPureGrowth {
+      transcriptionTextStorage = value
+    } else {
+      transcriptionText = value
+    }
     liveTranscriptionText.setText(value)
   }
 
   /// `onlineTranscriptionPreview` 唯一的写入口，规则同 setTranscriptionText：
   /// 有→有的更新只走叶子模型；nil↔非 nil 的边界（首段出现、终态清空）整体通知。
   private func setOnlineTranscriptionPreview(_ value: String?) {
-    let isPureGrowth = value != nil && onlineTranscriptionPreview != nil
-    if !isPureGrowth { objectWillChange.send() }
-    onlineTranscriptionPreview = value
+    let isPureGrowth = value != nil && onlineTranscriptionPreviewStorage != nil
+    if isPureGrowth {
+      onlineTranscriptionPreviewStorage = value
+    } else {
+      onlineTranscriptionPreview = value
+    }
     liveOnlineTranscriptionPreview.setText(value ?? "")
   }
 
@@ -1567,7 +1677,10 @@ final class HistoryViewModel: ObservableObject {
     if !trimmed.isEmpty {
       return await imageCache?.localImageURL(taskID: taskID, matchingRemoteURL: trimmed)
     }
-    return localInternalMediaURL(for: taskID)
+    // 网格每张卡上屏都走这里；查库放到仓储 worker，不在主线程同步读。
+    guard let history, let mediaStore else { return nil }
+    guard let asset = await worker.mediaAsset(history, taskID: taskID), asset.fileBookmark == nil else { return nil }
+    return mediaStore.containedInternalMediaURL(relativePath: asset.relativePath)
   }
 
   /// Poster source for video rows that never stored `cover_image`. Only this
@@ -1577,12 +1690,24 @@ final class HistoryViewModel: ObservableObject {
     guard let asset = try? history.mediaAsset(taskID: taskID), asset.fileBookmark == nil else { return nil }
     return mediaStore.containedInternalMediaURL(relativePath: asset.relativePath)
   }
+  /// 侧栏每个平台一个代表图标。原来每次求值都对全部已加载行做平台归一化
+  /// （平台数 × 行数次字符串处理，每个按键一遍）；现在按平台缓存首个命中，
+  /// 行或图标变化时整表清空重建。
+  @ObservationIgnored private var platformFaviconTable: [String: (url: URL, taskID: TaskID)] = [:]
+  @ObservationIgnored private var platformFaviconTableStamp: (rows: Int, favicons: Int) = (-1, -1)
   func platformFavicon(forHost host: String) -> (url: URL, taskID: TaskID)? {
-    let canonical = HistoryPlatformRegistry.canonicalHost(for: host)
-    for row in rows where HistoryPlatformRegistry.canonicalHost(for: row.host) == canonical {
-      if let url = faviconImageURLs[row.taskID] { return (url, row.taskID) }
+    let stamp = (rows.count, faviconImageURLs.count)
+    if stamp != platformFaviconTableStamp {
+      var table: [String: (url: URL, taskID: TaskID)] = [:]
+      for row in rows {
+        guard let url = faviconImageURLs[row.taskID] else { continue }
+        let canonical = HistoryPlatformRegistry.canonicalHost(for: row.host)
+        if table[canonical] == nil { table[canonical] = (url, row.taskID) }
+      }
+      platformFaviconTable = table
+      platformFaviconTableStamp = stamp
     }
-    return nil
+    return platformFaviconTable[HistoryPlatformRegistry.canonicalHost(for: host)]
   }
 
   func beginBootstrapLoading() {
@@ -1595,13 +1720,16 @@ final class HistoryViewModel: ObservableObject {
     history: HistoryApplicationService?,
     isReadOnly: Bool,
     unavailableCode: StorageErrorCode?,
-    readOnlyReason: RepositoryRecoveryReason? = nil
+    readOnlyReason: RepositoryRecoveryReason? = nil,
+    readOnlyRecoveryHint: String? = nil
   ) {
+    invalidateDistillCache()
     if hasConfiguredHistory,
        history?.storageIdentity == self.history?.storageIdentity,
        self.isReadOnly == isReadOnly,
        blockingErrorCode == unavailableCode,
-       historyReadOnlyReason == (isReadOnly ? readOnlyReason : nil) {
+       historyReadOnlyReason == (isReadOnly ? readOnlyReason : nil),
+       historyReadOnlyRecoveryHint == (isReadOnly ? readOnlyRecoveryHint : nil) {
       return
     }
     hasConfiguredHistory = true
@@ -1610,12 +1738,13 @@ final class HistoryViewModel: ObservableObject {
     imageBackfillAttemptedSnapshotIDs = []
     self.history = history; self.isReadOnly = isReadOnly
     historyReadOnlyReason = isReadOnly ? readOnlyReason : nil
+    historyReadOnlyRecoveryHint = isReadOnly ? readOnlyRecoveryHint : nil
     blockingErrorCode = unavailableCode
     rows = []; selectedTaskIDs = []; detail = nil; localImageURLs = []; localMediaFileURL = nil; localMediaLease = nil; localMediaResolutionFailure = nil; faviconImageURLs = [:]; nextCursor = nil
     availableTags = []; navigationCounts = .init(); selectedTagNormalizedNames = []; selectedHosts = []; selectedScope = .all; showsAllNavigationTags = false; searchText = ""
     selectedCreatorID = nil; selectedCreatorSnapshot = nil; isCreatorDirectoryActive = false; isReadingCreatorWorkInDirectory = false; sessionDirectoryCreatorID = nil; creatorDirectoryRows = []; creatorSearchText = ""; creatorFailure = nil; creatorNextCursor = nil; isLoadingCreatorPage = false; creatorDirectoryLoadFailed = false
     listErrorCode = nil; detailErrorCode = nil; deleteErrorCode = nil; tagErrorCode = nil
-    pendingDeletionTaskIDs = []; pendingProtectedDeletionTaskIDs = []
+    pendingDeletionTaskIDs = []; pendingProtectedDeletionTaskIDs = []; pendingDeletionIsPermanent = false
     isDeleteConfirmationPresented = false; isDeleteFailurePresented = false; isProtectedDeletionAlertPresented = false
     isDeleteOutcomePresented = false; deleteOutcomeMessage = ""
     isLoadingNextPage = false; isDeleting = false
@@ -1625,7 +1754,7 @@ final class HistoryViewModel: ObservableObject {
     batchTranslationTask?.cancel(); batchTranslationTask = nil; batchTranslationProgress = nil
     autoPipelineTask?.cancel(); autoPipelineTask = nil
     autoPipelineQueue = []; autoPipelineQueuedTaskIDs = []; autoPipelineHandledTaskIDs = []
-    pendingBatchSummaryPlan = nil; isPreparingBatchSummary = false
+    pendingBatchSummaryPlan = nil; pendingBatchSummaryModelName = nil; isPreparingBatchSummary = false
     isBatchSummaryConfirmationPresented = false; isBatchSummaryOutcomePresented = false
     batchSummaryOutcomeMessage = ""
     pendingBatchTranslationPlan = nil; pendingBatchTranslationOutputLanguage = nil
@@ -1676,7 +1805,7 @@ final class HistoryViewModel: ObservableObject {
     reload(preservingCurrentSelection: false)
   }
 
-  private func reload(preservingCurrentSelection: Bool) {
+  private func reload(preservingCurrentSelection: Bool, refreshesAggregates: Bool = true) {
     guard let history else { return }
     // Explicit navigation/reloads already use the current query. A queued search
     // must not reload page one later and cancel an in-flight next page.
@@ -1699,8 +1828,11 @@ final class HistoryViewModel: ObservableObject {
         preservedSelection: preservedSelection
       )
     }
-    reloadAvailableTags(reloadsListIfSelectedTagsDisappear: false)
-    reloadNavigationCounts()
+    // 导航计数和标签清单只随数据变化，不随搜索词变化；搜索路径不重算。
+    if refreshesAggregates {
+      reloadAvailableTags(reloadsListIfSelectedTagsDisappear: false)
+      reloadNavigationCounts()
+    }
   }
 
   func loadNextPageIfNeeded(after row: HistoryRowProjection) {
@@ -1848,7 +1980,7 @@ final class HistoryViewModel: ObservableObject {
   ///
   /// 走 ViewModel 中转而不是直接持有播放器：播放器是播放视图的 `@State`，
   /// 阅读区够不到它，而这个 ViewModel 本来就是两边共享的。
-  @Published private(set) var mediaSeekRequest: MediaSeekRequest?
+  private(set) var mediaSeekRequest: MediaSeekRequest?
 
   func requestTranscriptSeek(taskID: TaskID, milliseconds: Int) {
     guard detail?.task.id == taskID else { return }
@@ -1864,13 +1996,13 @@ final class HistoryViewModel: ObservableObject {
 
   /// 校对进度文案，例如「已校对 3/18 段」。长稿要跑几分钟，没有它界面上
   /// 只有一句「正在整理…」，看不出是在跑还是卡住了。
-  @Published private(set) var transcriptTidyProgress: String?
+  private(set) var transcriptTidyProgress: String?
 
   /// 字幕和听写各自一条状态。共用一条会让「读字幕」把听写按钮也变成进行中，
   /// 而它们本就是两条独立来源，可以先后跑、也可以只跑其中一条。
-  @Published private(set) var subtitleState: TranscriptionUIState = .idle
-  @Published private(set) var subtitleProgress: String?
-  private var subtitleTask: Task<Void, Never>?
+  private(set) var subtitleState: TranscriptionUIState = .idle
+  private(set) var subtitleProgress: String?
+  @ObservationIgnored private var subtitleTask: Task<Void, Never>?
   private var subtitleTaskID: TaskID?
 
   func subtitleState(for taskID: TaskID) -> TranscriptionUIState {
@@ -2400,12 +2532,24 @@ final class HistoryViewModel: ObservableObject {
       promptTokens: promptTokens, completionTokens: completionTokens, totalTokens: totalTokens,
       createdAtMilliseconds: nowMilliseconds()
     )
-    let totals = await Task.detached(priority: .utility) { () -> TaskTokenTotals? in
-      try? store.appendTokenUsage(usage)
-      return try? store.ledgerTokenTotals(taskID: taskID)
+    // 台账写失败原来是 `try?`：界面上的用量合计停在旧数字，看起来像这次
+    // 整理没花钱。用量是要付账的东西，少算了必须让人知道。
+    let outcome = await Task.detached(priority: .utility) { () -> Result<TaskTokenTotals?, Error> in
+      do {
+        try store.appendTokenUsage(usage)
+        return .success(try? store.ledgerTokenTotals(taskID: taskID))
+      } catch {
+        return .failure(error)
+      }
     }.value
-    guard selectedTaskID == taskID, let totals else { return }
-    ledgerTokenTotals = totals
+    switch outcome {
+    case .failure:
+      guard selectedTaskID == taskID else { return }
+      annotationFailureMessage = "这次的用量没能记进台账，处理结果本身已经保存。下面的用量合计会少算这一次，可在设置里核对模型商家的账单。"
+    case let .success(totals):
+      guard selectedTaskID == taskID, let totals else { return }
+      ledgerTokenTotals = totals
+    }
   }
 
   // MARK: - 学习批注（摘录 + 笔记）
@@ -2531,12 +2675,12 @@ final class HistoryViewModel: ObservableObject {
   private var autoPipelineHandledTaskIDs: Set<TaskID> = []
   private var autoPipelineQueuedTaskIDs: Set<TaskID> = []
   private var autoPipelineQueue: [AutoPipelineRequest] = []
-  private var autoPipelineTask: Task<Void, Never>?
+  @ObservationIgnored private var autoPipelineTask: Task<Void, Never>?
   private var autoTitleLocalizationQueuedTaskIDs: Set<TaskID> = []
   private var autoTitleLocalizationQueue: [AutoTitleLocalizationRequest] = []
-  private var autoTitleLocalizationTask: Task<Void, Never>?
+  @ObservationIgnored private var autoTitleLocalizationTask: Task<Void, Never>?
   private var requestedActionHandledTaskIDs: Set<TaskID> = []
-  private var requestedActionTask: Task<Void, Never>?
+  @ObservationIgnored private var requestedActionTask: Task<Void, Never>?
 
   /// 扩展弹窗里的「总结 / 翻译」是一次性的明确意图。先等待新条目详情真正可用，
   /// 再复用 App 内同一条运行链；不让弹窗只改变文案、实际仍旧只是保存。
@@ -2874,11 +3018,14 @@ final class HistoryViewModel: ObservableObject {
   /// 单例 `currentCapture` + `runState`，`canStartRun` 里明写 `!runState.isActive`。
   /// 并发发起只会让第二条起全部被静默丢弃——正是「点了没反应」那类失败。
   private var pendingBatchSummaryPlan: BatchSummaryPlan?
-  private var batchSummaryTask: Task<Void, Never>?
+  /// 确认框里要报出「用哪个模型」。模型归 ProviderSettings 管，这里只收一份
+  /// 用于显示的名字，不参与任何路由判断。
+  private var pendingBatchSummaryModelName: String?
+  @ObservationIgnored private var batchSummaryTask: Task<Void, Never>?
   private var isPreparingBatchSummary = false
   private var pendingBatchTranslationPlan: BatchTranslationPlan?
   private var pendingBatchTranslationOutputLanguage: String?
-  private var batchTranslationTask: Task<Void, Never>?
+  @ObservationIgnored private var batchTranslationTask: Task<Void, Never>?
   private var isPreparingBatchTranslation = false
 
   /// 发起之后等它占上通道的上限。超时即认定压根没启动。
@@ -2887,10 +3034,16 @@ final class HistoryViewModel: ObservableObject {
   /// 单条从占上通道到跑完的上限，覆盖「弹窗等用户确认 + 长稿生成」。
   static var batchSummaryRunTimeoutSeconds: Double = 1_800
 
-  var canBatchSummarize: Bool {
-    history != nil && !isReadOnly && selectedTaskIDs.count > 1
+  /// 批量总结本身能不能跑——和「选中了几条」无关。
+  /// 「待总结」横幅那条入口不依赖选中项，所以这两个条件必须分开。
+  var canRunBatchSummary: Bool {
+    history != nil && !isReadOnly
       && batchSummaryProgress == nil && batchTranslationProgress == nil
       && !isPreparingBatchSummary && !isPreparingBatchTranslation && !isDeleting
+  }
+
+  var canBatchSummarize: Bool {
+    canRunBatchSummary && selectedTaskIDs.count > 1
   }
 
   var isBatchSummarizing: Bool { batchSummaryProgress != nil }
@@ -2905,9 +3058,20 @@ final class HistoryViewModel: ObservableObject {
 
   /// 预检：读每条 detail，分出要发的和跳过的，算出粗估 token 后才弹确认。
   /// 花钱的动作不能先斩后奏。
-  func requestBatchSummary() {
+  func requestBatchSummary(modelName: String? = nil) {
     guard canBatchSummarize else { return }
+    pendingBatchSummaryModelName = modelName?.trimmedNonEmpty
     beginBatchSummaryPlan(taskIDs: orderedSelectedTaskIDs())
+  }
+
+  /// 「待总结」横幅那条入口：不看当前选中，直接处理传进来的这一批。
+  ///
+  /// 走的是和多选批量总结完全相同的预检 → 确认 → 串行执行，不另开一条路径——
+  /// 另开一条就意味着停止、计数、跳过规则要再写一遍，必然有一处对不上。
+  func requestBatchSummary(taskIDs: [TaskID], modelName: String? = nil) {
+    guard canRunBatchSummary, !taskIDs.isEmpty else { return }
+    pendingBatchSummaryModelName = modelName?.trimmedNonEmpty
+    beginBatchSummaryPlan(taskIDs: taskIDs)
   }
 
   private func beginBatchSummaryPlan(taskIDs: [TaskID]) {
@@ -2945,7 +3109,12 @@ final class HistoryViewModel: ObservableObject {
 
   var batchSummaryConfirmationMessage: String {
     guard let plan = pendingBatchSummaryPlan else { return "" }
-    var message = "会按列表顺序逐条发送给模型，一次只发一条。"
+    var message = ""
+    if let modelName = pendingBatchSummaryModelName {
+      // 花钱的动作要先说清花谁的钱。
+      message += "使用模型「\(modelName)」，会消耗该模型的用量。"
+    }
+    message += "会按列表顺序逐条发送给模型，一次只发一条。"
     message += "预计输入约 \(Self.tokenScaleText(plan.estimatedInputTokens)) tokens"
     message += "（按字符粗估，不含模型返回部分；真实用量以每条详情里的台账为准）。"
     var skipped: [String] = []
@@ -2961,6 +3130,7 @@ final class HistoryViewModel: ObservableObject {
 
   func cancelBatchSummaryRequest() {
     pendingBatchSummaryPlan = nil
+    pendingBatchSummaryModelName = nil
     isBatchSummaryConfirmationPresented = false
   }
 
@@ -4860,9 +5030,21 @@ final class HistoryViewModel: ObservableObject {
     reload()
   }
 
+  /// 切筛选 / 切作用域 / 切博主之前，先把正在跑的批处理收掉。
+  ///
+  /// 批处理跑的是「刚选中的那一批」，而筛选一切换，那批就已经不在视线里了。
+  /// 以前它会继续逐条跑完，并且每条都把结果塞进全局 `currentCapture`——
+  /// 自动管线专门为此加了「批处理进行中不许抢」的闸门，手动批量这条路没有，
+  /// 于是右侧正在读的那条会被后台正在跑的那条顶替。
+  private func stopRunningBatchJobsForNavigation() {
+    if batchSummaryProgress != nil { stopBatchSummary() }
+    if batchTranslationProgress != nil { stopBatchTranslation() }
+  }
+
   func selectScope(_ scope: HistoryListScope) {
     // 点任何一个筛选项都意味着「回到看资料」，工作台该让位。
     isWorkbenchActive = false
+    stopRunningBatchJobsForNavigation()
     clearCreatorMode()
     let leavingPlatformGallery = !selectedHosts.isEmpty
     if leavingPlatformGallery {
@@ -4896,6 +5078,7 @@ final class HistoryViewModel: ObservableObject {
   /// 显式清除来源平台筛选（筛选条 × / 清除），不走再次点击同项。
   func clearHostSelection() {
     guard !selectedHosts.isEmpty else { return }
+    stopRunningBatchJobsForNavigation()
     abandonPlatformGalleryReadingStash()
     selectedHosts = []
     discardVisibleList(state: .loading)
@@ -4903,6 +5086,7 @@ final class HistoryViewModel: ObservableObject {
   }
 
   private func applyPlatformHosts(_ hosts: Set<String>) {
+    stopRunningBatchJobsForNavigation()
     // Idempotent only when already browsing the same platform gallery surface.
     // Same host while workbench/creator/non-all scope is active must still enter gallery.
     let alreadyInSameGallery =
@@ -5037,6 +5221,28 @@ final class HistoryViewModel: ObservableObject {
 
   func dismissCreatorFailure() { creatorFailure = nil }
 
+  /// 删除博主：只删博主和它与作品的关联，作品本身留在资料库。
+  func deleteCreator(_ id: CreatorID) {
+    guard let history else { return }
+    let generation = configurationGeneration
+    Task { [weak self, worker] in
+      let deleted = await worker.deleteCreator(history, creatorID: id)
+      guard let self, generation == self.configurationGeneration else { return }
+      if deleted {
+        self.creatorFailure = nil
+        if self.selectedCreatorID == id {
+          self.selectedCreatorID = nil
+          self.selectedCreatorSnapshot = nil
+          self.isReadingCreatorWorkInDirectory = false
+        }
+        self.reloadNavigationCounts()
+        if self.isCreatorDirectoryActive { self.reloadCreators() }
+      } else {
+        self.creatorFailure = "无法删除博主，请稍后重试。"
+      }
+    }
+  }
+
   private func clearCreatorMode() {
     selectedCreatorID = nil
     selectedCreatorSnapshot = nil
@@ -5058,6 +5264,31 @@ final class HistoryViewModel: ObservableObject {
       let result = await worker.addTag(history, rawName: rawName, taskID: taskID)
       guard !Task.isCancelled else { return }
       self?.receiveTagMutation(result, taskID: taskID, generation: generation)
+    }
+  }
+
+  /// 行内加标签：右键菜单要能给任意一行贴标签，而不是先打开它再贴。
+  ///
+  /// 写入走和 `addTag(_:)` 完全相同的 worker 调用；差别只在成功之后——
+  /// 目标不是当前选中那条时没有详情要刷新，只需要把标签库和侧栏计数更新掉。
+  func addTag(_ rawName: String, to taskID: TaskID) {
+    guard
+      let history, !isReadOnly, !isDeleting,
+      HistoryTagNormalizer.normalized(rawName) != nil
+    else { return }
+    let generation = configurationGeneration
+    tagMutationTask?.cancel(); tagErrorCode = nil
+    tagMutationTask = Task { [weak self, worker] in
+      let result = await worker.addTag(history, rawName: rawName, taskID: taskID)
+      guard !Task.isCancelled, let self, generation == self.configurationGeneration else { return }
+      switch result {
+      case .success:
+        if self.selectedTaskID == taskID { self.loadDetailForSelection() }
+        self.reloadAvailableTags()
+        self.reloadNavigationCounts()
+      case let .failure(code):
+        self.tagErrorCode = code
+      }
     }
   }
 
@@ -5087,6 +5318,53 @@ final class HistoryViewModel: ObservableObject {
       guard !Task.isCancelled else { return }
       self?.receiveFavoriteMutation(result, taskID: taskID, isFavorite: target, generation: generation)
     }
+  }
+
+  /// 行内收藏：列表行悬停时露出的那颗星。
+  ///
+  /// 和详情页的 `toggleFavorite()` 走同一个 worker 写入，区别只在目标不必是
+  /// 当前选中那条——为了点一下星标而先把整条详情载进来，代价和风险都不值。
+  func toggleFavorite(taskID: TaskID) {
+    guard let history, !isReadOnly, !isDeleting else { return }
+    let target = !(rows.first(where: { $0.taskID == taskID })?.isFavorite == true)
+    let generation = configurationGeneration
+    Task { [weak self, worker] in
+      let result = await worker.setFavorite(history, isFavorite: target, taskID: taskID)
+      guard let self, generation == self.configurationGeneration else { return }
+      switch result {
+      case .success:
+        self.applyFavoriteLocally(taskID: taskID, isFavorite: target)
+        self.reloadNavigationCounts()
+        // 只有正在看「收藏」时行才会进出列表，其它筛选下重载只是平白闪一下。
+        if self.selectedScope == .favorite { self.reload() }
+      case let .failure(code):
+        self.tagErrorCode = code
+      }
+    }
+  }
+
+  /// 就地翻转一行的收藏位，不回读数据库——否则点一次星标要整表重载。
+  private func applyFavoriteLocally(taskID: TaskID, isFavorite: Bool) {
+    if let d = detail, d.task.id == taskID, selectedTaskID == taskID {
+      detail = HistoryDetailProjection(
+        task: d.task, snapshots: d.snapshots, runs: d.runs,
+        tags: d.tags, media: d.media, hadMediaDescriptor: d.hadMediaDescriptor,
+        isFavorite: isFavorite)
+    }
+    guard let index = rows.firstIndex(where: { $0.taskID == taskID }) else { return }
+    let old = rows[index]
+    rows[index] = HistoryRowProjection(
+      taskID: old.taskID, title: old.title, canonicalURL: old.canonicalURL, host: old.host,
+      sourceLabel: old.sourceLabel, latestRunKind: old.latestRunKind,
+      latestRunStatus: old.latestRunStatus, latestModel: old.latestModel,
+      updatedAtMilliseconds: old.updatedAtMilliseconds,
+      createdAtMilliseconds: old.createdAtMilliseconds,
+      latestRunAtMilliseconds: old.latestRunAtMilliseconds, usageCost: old.usageCost,
+      artifactPreview: old.artifactPreview, sourcePreview: old.sourcePreview,
+      author: old.author, published: old.published, hasTranscript: old.hasTranscript,
+      hasMedia: old.hasMedia, hasSummary: old.hasSummary, hasMindMap: old.hasMindMap,
+      isFavorite: isFavorite, coverURL: old.coverURL, likes: old.likes,
+      comments: old.comments, shares: old.shares, collects: old.collects, views: old.views)
   }
 
   private func receiveFavoriteMutation(
@@ -5215,6 +5493,7 @@ final class HistoryViewModel: ObservableObject {
     }
     pendingDeletionTaskIDs = selectedTaskIDs
     pendingProtectedDeletionTaskIDs = protected
+    pendingDeletionIsPermanent = selectedScope == .trash
     isDeleteConfirmationPresented = true
   }
   func requestDeletion(protectedTaskID: TaskID?) {
@@ -5224,6 +5503,7 @@ final class HistoryViewModel: ObservableObject {
   func cancelDeletion() {
     pendingDeletionTaskIDs = []
     pendingProtectedDeletionTaskIDs = []
+    pendingDeletionIsPermanent = false
     isDeleteConfirmationPresented = false
   }
   func dismissDeleteFailure() { isDeleteFailurePresented = false }
@@ -5247,10 +5527,13 @@ final class HistoryViewModel: ObservableObject {
       return
     }
     let generation = configurationGeneration, requestID = UUID()
+    let permanently = pendingDeletionIsPermanent
     deleteRequestID = requestID; isDeleteConfirmationPresented = false; isDeleting = true; deleteErrorCode = nil
     deleteTask = Task { [weak self, worker] in
-      let result = await worker.delete(history, taskIDs: taskIDs)
-      if case let .success(batch, mediaToCleanup) = result, let store = self?.mediaStore {
+      let result = permanently
+        ? await worker.delete(history, taskIDs: taskIDs)
+        : await worker.moveToTrash(history, taskIDs: taskIDs)
+      if permanently, case let .success(batch, mediaToCleanup) = result, let store = self?.mediaStore {
         // Fail closed: if the repository cannot prove the content hash is no
         // longer referenced, retain the shared file for a later safe cleanup.
         var checkedHashes: Set<String> = []
@@ -5272,13 +5555,66 @@ final class HistoryViewModel: ObservableObject {
         result,
         protectedCount: protected.count,
         generation: generation,
-        requestID: requestID
+        requestID: requestID,
+        removedPermanently: permanently
       )
     }
   }
   func confirmDeletion(protectedTaskID: TaskID?) {
     confirmDeletion(protectedTaskIDs: Set(protectedTaskID.map { [$0] } ?? []))
   }
+
+  func moveToTrash(taskIDs: Set<TaskID>) {
+    guard canDelete, let history, !isReadOnly, !isDeleting, !taskIDs.isEmpty else { return }
+    let generation = configurationGeneration, requestID = UUID()
+    deleteRequestID = requestID; isDeleting = true; deleteErrorCode = nil
+    deleteTask = Task { [weak self, worker] in
+      let result = await worker.moveToTrash(history, taskIDs: taskIDs)
+      guard !Task.isCancelled else { return }
+      self?.receiveDeletion(
+        result,
+        protectedCount: 0,
+        generation: generation,
+        requestID: requestID,
+        removedPermanently: false
+      )
+    }
+  }
+
+  func restoreFromTrash(taskIDs: Set<TaskID>) {
+    guard let history, !isReadOnly, !isDeleting, !taskIDs.isEmpty else { return }
+    let generation = configurationGeneration, requestID = UUID()
+    deleteRequestID = requestID; isDeleting = true; deleteErrorCode = nil
+    deleteTask = Task { [weak self, worker] in
+      let result = await worker.restoreFromTrash(history, taskIDs: taskIDs)
+      guard !Task.isCancelled else { return }
+      self?.receiveDeletion(
+        result,
+        protectedCount: 0,
+        generation: generation,
+        requestID: requestID,
+        removedPermanently: false
+      )
+    }
+  }
+
+  func purgeTrash(olderThanDays: Int) {
+    guard let history, !isReadOnly, !isDeleting else { return }
+    let generation = configurationGeneration
+    Task { [weak self, worker] in
+      let result = await worker.purgeTrash(history, olderThanDays: olderThanDays)
+      guard generation == self?.configurationGeneration else { return }
+      if let code = result.1 {
+        self?.deleteErrorCode = code
+        self?.isDeleteFailurePresented = true
+        return
+      }
+      if self?.selectedScope == .trash { self?.reload() }
+      self?.reloadNavigationCounts()
+    }
+  }
+
+  func trashCount() -> Int { navigationCounts.trash }
 
   private func receiveInitialPage(
     _ result: PageResult,
@@ -5410,6 +5746,7 @@ final class HistoryViewModel: ObservableObject {
         self.snapshotEditFailure = nil
         self.applySnapshotBodyTextLocally(taskID: taskID, snapshotID: snapshotID, bodyText: bodyText)
         // 工作台的修订记录也在 worker 上顺带完成；界面不等它。
+        invalidateDistillCache()
         await worker.recordPieceRevisionIfNeeded(
           history, noteTaskID: taskID, bodyText: bodyText, nowMilliseconds: updatedAt
         )
@@ -5538,7 +5875,7 @@ final class HistoryViewModel: ObservableObject {
 
   // MARK: - 爆款实验室
 
-  @Published private(set) var hitPredictions: [HitPrediction] = []
+  private(set) var hitPredictions: [HitPrediction] = []
 
   var hitCalibration: HitCalibration { .init(predictions: hitPredictions) }
 
@@ -5636,20 +5973,28 @@ final class HistoryViewModel: ObservableObject {
   }
 
   /// 正在从修改里提炼方法。
-  @Published private(set) var isDistilling = false
+  private(set) var isDistilling = false
   /// 提炼出来、等你点头的候选。
   ///
   /// 不直接入库:提炼是模型给的,而方法会进每一次起草。让它自己
   /// 往库里写,等于把「什么算我的写法」这件事也交出去了。
-  @Published var distilledCandidates: [String] = []
+  var distilledCandidates: [String] = []
 
   func distillUnavailableReason() -> String? {
     if history == nil { return "历史存储不可用。" }
     if isReadOnly { return "这份历史当前只能浏览。" }
     if draftAgent == nil { return "需要先安装 Claude Code。" }
     if isDistilling { return "正在提炼…" }
-    let pairs = (try? history?.draftRevisionPairs()) ?? []
-    let usable = pairs.filter { !$0.isNearlyUntouched }.count
+    // 方法库视图每次重绘都问这个值；查一次库返回全部起草/修订全文太重，
+    // 按写作事件代次缓存，有新修订才重查。
+    let usable: Int
+    if let cached = distillUsablePairsCache, cached.generation == distillCacheGeneration {
+      usable = cached.count
+    } else {
+      let pairs = (try? history?.draftRevisionPairs()) ?? []
+      usable = pairs.filter { !$0.isNearlyUntouched }.count
+      distillUsablePairsCache = (distillCacheGeneration, usable)
+    }
     if usable < DistillPrompt.minimumPairs {
       // 说清还差多少。「数据不够」这种提示会让用户以为功能坏了。
       return "还需要 \(DistillPrompt.minimumPairs - usable) 篇改过的稿子。"
@@ -5658,6 +6003,9 @@ final class HistoryViewModel: ObservableObject {
   }
 
   var canDistill: Bool { distillUnavailableReason() == nil }
+  @ObservationIgnored private var distillUsablePairsCache: (generation: Int, count: Int)?
+  @ObservationIgnored private var distillCacheGeneration = 0
+  private func invalidateDistillCache() { distillCacheGeneration &+= 1 }
 
   /// 从「AI 写成这样、我改成了那样」里提炼方法。
   ///
@@ -5725,13 +6073,24 @@ final class HistoryViewModel: ObservableObject {
   func setWritingMethodEnabled(_ isEnabled: Bool, for id: UUID) {
     guard let history else { return }
     // 停用不是删除——试过、发现不合适的方法本身也是信息。
-    try? history.setWritingMethodEnabled(isEnabled, for: id)
+    //
+    // 开关是用户点出来的，写库失败必须说话：原来是 `try?`，界面上的开关
+    // 已经翻过去了，下次打开 App 又翻回来，看着像 App 自己在乱改。
+    do {
+      try history.setWritingMethodEnabled(isEnabled, for: id)
+    } catch {
+      workbenchFailure = "这条方法的启用状态没能存到本机，方法本身还在。请检查存储后重新点一次开关。"
+    }
     reloadWritingMethods()
   }
 
   func deleteWritingMethod(id: UUID) {
     guard let history else { return }
-    try? history.deleteWritingMethod(id: id)
+    do {
+      try history.deleteWritingMethod(id: id)
+    } catch {
+      workbenchFailure = "这条方法没能删除，它仍然保存在本机。请检查存储后重试。"
+    }
     reloadWritingMethods()
   }
 
@@ -5954,7 +6313,11 @@ final class HistoryViewModel: ObservableObject {
   func declineTopic(_ id: UUID) {
     guard let history else { return }
     // 划掉的不删——「这类角度他从来不选」只能从被否决的东西里得出来。
-    try? history.setTopicVerdict(.declined, for: id)
+    do {
+      try history.setTopicVerdict(.declined, for: id)
+    } catch {
+      workbenchFailure = "这条选题没能划掉，它还留在选题板上。请检查存储后重试。"
+    }
     reloadTopicCandidates()
   }
 
@@ -5973,14 +6336,21 @@ final class HistoryViewModel: ObservableObject {
       for taskID in candidate.materialTaskIDs {
         try? history.addMaterial(taskID: taskID, to: id, addedAtMilliseconds: now)
       }
-      try? history.setTopicVerdict(.taken, for: candidate.id)
+      // 创作已经建好了，标记「已采用」失败不该把人挡在外面——但也不能不说：
+      // 不标记的话这条选题下次刷新还会再冒出来，看着像点了没反应。
+      var verdictFailure: String?
+      do {
+        try history.setTopicVerdict(.taken, for: candidate.id)
+      } catch {
+        verdictFailure = "创作已经建好了，这条选题没能标成「已采用」，它下次还会出现在选题板上。直接划掉它即可。"
+      }
       reloadTopicCandidates()
       isWorkbenchActive = true
       reloadPieces()
       selectedPieceID = id
-      workbenchFailure = nil
+      workbenchFailure = verdictFailure
     } catch {
-      workbenchFailure = "无法从这条选题开始，请稍后重试。"
+      workbenchFailure = "没能从这条选题开始，选题板和已有的创作都没有变化。请检查存储后重试。"
     }
   }
 
@@ -6152,13 +6522,20 @@ final class HistoryViewModel: ObservableObject {
       workbenchFailure = "没有产出内容,稿子没有改动。"
       return
     }
-    try? history.updateSnapshotBodyText(
-      taskID: piece.noteTaskID, snapshotID: snapshot.id,
-      bodyText: trimmed, updatedAtMilliseconds: nowMilliseconds()
-    )
+    // AI 写好的稿子只有落库才算数。原来是 `try?`：写失败时界面照常刷新，
+    // 用户以为稿子已经改好，关掉再打开才发现是旧的那版，而产出已经没了。
+    do {
+      try history.updateSnapshotBodyText(
+        taskID: piece.noteTaskID, snapshotID: snapshot.id,
+        bodyText: trimmed, updatedAtMilliseconds: nowMilliseconds()
+      )
+    } catch {
+      workbenchFailure = "这一版稿子没能写回本机，原来的稿子没有被改动。请检查存储后重新跑一次。"
+      return
+    }
     // 记下 AI 写的这一版。它单独看没什么用,但和你随后改成的那版配对之后,
     // 差异就是「你和它的分歧」——那是让 skill 变得像你的唯一原料。
-    try? history.recordPieceEvent(.init(
+    invalidateDistillCache(); try? history.recordPieceEvent(.init(
       pieceID: piece.id, kind: .drafted, detail: trimmed,
       createdAtMilliseconds: nowMilliseconds()
     ))
@@ -6200,7 +6577,7 @@ final class HistoryViewModel: ObservableObject {
     guard let history else { return }
     do {
       _ = try history.finishPiece(id: id, finishedAtMilliseconds: nowMilliseconds())
-      try? history.recordPieceEvent(.init(
+      invalidateDistillCache(); try? history.recordPieceEvent(.init(
         pieceID: id, kind: .finished, detail: "", createdAtMilliseconds: nowMilliseconds()
       ))
       reloadPieces()
@@ -6216,7 +6593,7 @@ final class HistoryViewModel: ObservableObject {
     guard let history else { return }
     do {
       try history.setPieceStage(stage, for: id, updatedAtMilliseconds: nowMilliseconds())
-      try? history.recordPieceEvent(.init(
+      invalidateDistillCache(); try? history.recordPieceEvent(.init(
         pieceID: id, kind: .staged, detail: stage?.rawValue ?? "auto",
         createdAtMilliseconds: nowMilliseconds()
       ))
@@ -6356,7 +6733,7 @@ final class HistoryViewModel: ObservableObject {
       }
       do {
         var latest = ""
-        // partial 每个事件都是整篇全文，直接发布会让 @Published 高频整串
+        // partial 每个事件都是整篇全文，直接发布会让 高频整串
         // 换值、整个窗口树跟着重求值。这里照 favicon 的合批手法：250ms 内
         // 只留最新值，间隔到了才发布一次；流结束后冲刷最后一段。
         var pendingPartial: String?
@@ -6612,14 +6989,17 @@ final class HistoryViewModel: ObservableObject {
     _ result: DeleteResult,
     protectedCount: Int,
     generation: UUID,
-    requestID: UUID
+    requestID: UUID,
+    removedPermanently: Bool
   ) {
     guard generation == configurationGeneration, requestID == deleteRequestID else { return }
     isDeleting = false; pendingDeletionTaskIDs = []; pendingProtectedDeletionTaskIDs = []
     switch result {
     case let .success(batch, _):
       let deleted = Set(batch.deletedTaskIDs)
-      batch.deletedTaskIDs.forEach { imageCache?.delete(taskID: $0) }
+      if removedPermanently {
+        batch.deletedTaskIDs.forEach { imageCache?.delete(taskID: $0) }
+      }
       rows.removeAll { deleted.contains($0.taskID) }
       selectedTaskIDs = []
       if rows.isEmpty {
@@ -6630,8 +7010,13 @@ final class HistoryViewModel: ObservableObject {
         setDetailState(.idle)
       }
       let failedCount = batch.failedTaskIDs.count
-      if failedCount > 0 || protectedCount > 0 {
-        var parts = ["已删除 \(batch.deletedTaskIDs.count) 条"]
+      // 从回收站里恢复成功也要报一声：以前这里只在「有失败/有跳过」时才弹，
+      // 而恢复的失败集以前恒为空，于是那条「已恢复」永远走不到——用户点完恢复
+      // 既不报成功也不报错，只能自己去列表里猜。
+      let restoredFromTrash = selectedScope == .trash && !removedPermanently
+      if failedCount > 0 || protectedCount > 0 || restoredFromTrash {
+        let verb = removedPermanently ? "已删除" : (selectedScope == .trash ? "已恢复" : "已移到回收站")
+        var parts = ["\(verb) \(batch.deletedTaskIDs.count) 条"]
         if failedCount > 0 { parts.append("\(failedCount) 条失败") }
         if protectedCount > 0 { parts.append("\(protectedCount) 条正在生成，已跳过") }
         deleteOutcomeMessage = parts.joined(separator: "，") + "。"
@@ -6803,7 +7188,7 @@ final class HistoryViewModel: ObservableObject {
       try? await Task.sleep(for: .milliseconds(200))
       guard !Task.isCancelled, generation == self?.configurationGeneration else { return }
       self?.searchTask = nil
-      self?.reload()
+      self?.reload(preservingCurrentSelection: false, refreshesAggregates: false)
     }
   }
 

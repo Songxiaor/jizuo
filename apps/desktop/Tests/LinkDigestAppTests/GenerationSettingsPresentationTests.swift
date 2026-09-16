@@ -19,12 +19,19 @@ final class GenerationSettingsPresentationTests: XCTestCase {
       encoding: .utf8)
   }
 
+  /// 切出「生成偏好」那一段源码。
+  ///
+  /// 原来这里在切不出来时 `throw XCTSkip`——于是只要有人改了 `generationTab` 的
+  /// 名字或那条 MARK 注释，这个文件里**全部七条**断言就一起变成跳过，绿灯照常，
+  /// 而它们守的每一条约定都失去了看守。切不出来本身就是「视图结构变了、断言必须
+  /// 跟着改」的信号，应当是失败，不是跳过。
   private func generationTab(in source: String) throws -> String {
-    guard let start = source.range(of: "private var generationTab: some View"),
-          let end = source.range(of: "// MARK: - 设置卡片零件")
-    else {
-      throw XCTSkip("generationTab 结构已变，测试需要同步更新")
-    }
+    let start = try XCTUnwrap(
+      source.range(of: "private var generationTab: some View"),
+      "找不到 generationTab：生成偏好页的结构变了，这个文件里的断言需要同步更新")
+    let end = try XCTUnwrap(
+      source.range(of: "// MARK: - 设置卡片零件"),
+      "找不到「设置卡片零件」这条 MARK：切不出生成偏好那一段，断言需要同步更新")
     return String(source[start.lowerBound..<end.lowerBound])
   }
 

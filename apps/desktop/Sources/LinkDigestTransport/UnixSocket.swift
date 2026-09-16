@@ -7,6 +7,9 @@ public final class UnixSocketServer: @unchecked Sendable {
   private var fd: Int32 = -1
   private var ownershipFD: Int32 = -1
   private var publishedIdentity: SocketNodeIdentity?
+  private var acceptSource: DispatchSourceRead?
+  private var acceptQueueKey: DispatchSpecificKey<Bool>?
+  private var acceptSyscalls = 0
 
   public init(path: String) { self.path = path }
 
@@ -80,18 +83,120 @@ public final class UnixSocketServer: @unchecked Sendable {
   }
 
   public func accept(timeout: TimeInterval = 10, ioTimeout: TimeInterval = 10) throws -> FileHandle {
-    let listeningFD = lock.withLock { fd }
+    let listeningFD = lock.withLock { () -> Int32 in
+      acceptSyscalls += 1
+      return fd
+    }
     guard listeningFD >= 0 else { throw POSIXError(.EBADF) }
     var pollfd = Darwin.pollfd(fd: listeningFD, events: Int16(POLLIN), revents: 0)
     guard Darwin.poll(&pollfd, 1, Int32(timeout * 1_000)) > 0 else { throw POSIXError(.ETIMEDOUT) }
     let client = Darwin.accept(listeningFD, nil, nil)
-    guard client >= 0 else { throw POSIXError(.EIO) }
+    guard client >= 0 else {
+      // The listening fd is non-blocking once an event-driven accept loop has
+      // touched it; a lost race then surfaces as EAGAIN rather than a hang.
+      if errno == EAGAIN || errno == EWOULDBLOCK { throw POSIXError(.ETIMEDOUT) }
+      throw POSIXError(.EIO)
+    }
     applyTimeout(client, ioTimeout)
     return FileHandle(fileDescriptor: client, closeOnDealloc: true)
   }
 
+  // MARK: - Event-driven accept
+
+  /// How many times `accept(2)` has actually been issued on this server.
+  ///
+  /// Exposed so tests can assert the idle case costs nothing: a polling loop
+  /// racks up one syscall per second whether or not anybody ever connects.
+  public var acceptSyscallCount: Int { lock.withLock { acceptSyscalls } }
+
+  /// Delivers incoming connections as they arrive instead of polling for them.
+  ///
+  /// The previous shape was `while true { accept(timeout: 1) }`: a thread woke
+  /// up once a second for the entire life of the process, found nothing, and
+  /// went back to sleep. A read source parks on kqueue instead, so an idle App
+  /// costs zero wakeups.
+  public func startAccepting(
+    ioTimeout: TimeInterval = 10,
+    queue: DispatchQueue? = nil,
+    onClient: @escaping @Sendable (FileHandle) -> Void,
+    onFailure: @escaping @Sendable (POSIXError) -> Void = { _ in }
+  ) throws {
+    let listeningFD = lock.withLock { fd }
+    guard listeningFD >= 0 else { throw POSIXError(.EBADF) }
+    guard lock.withLock({ acceptSource == nil }) else { throw POSIXError(.EALREADY) }
+
+    // One readable event can cover several queued connections, so the drain
+    // loop has to keep calling accept until EAGAIN — which needs O_NONBLOCK.
+    let flags = fcntl(listeningFD, F_GETFL, 0)
+    if flags >= 0 { _ = fcntl(listeningFD, F_SETFL, flags | O_NONBLOCK) }
+
+    let target = queue ?? DispatchQueue(label: "linkdigest.unixsocket.accept", qos: .userInitiated)
+    let key = DispatchSpecificKey<Bool>()
+    target.setSpecific(key: key, value: true)
+    let source = DispatchSource.makeReadSource(fileDescriptor: listeningFD, queue: target)
+    source.setEventHandler { [weak self] in
+      self?.drainPendingConnections(ioTimeout: ioTimeout, onClient: onClient, onFailure: onFailure)
+    }
+    lock.withLock {
+      acceptSource = source
+      acceptQueueKey = key
+    }
+    source.resume()
+  }
+
+  /// Stops delivering connections. Returns once the source can no longer fire,
+  /// so the caller may close the descriptor right after.
+  public func stopAccepting() {
+    let owned = lock.withLock { () -> (DispatchSourceRead?, DispatchSpecificKey<Bool>?) in
+      let current = (acceptSource, acceptQueueKey)
+      acceptSource = nil
+      acceptQueueKey = nil
+      return current
+    }
+    guard let source = owned.0 else { return }
+    // Called from inside the event handler (a health check that decides to
+    // rebuild, say): cancelling from the source's own queue already guarantees
+    // no further invocation, and waiting here would be waiting on ourselves.
+    if let key = owned.1, DispatchQueue.getSpecific(key: key) == true {
+      source.cancel()
+      return
+    }
+    let finished = DispatchSemaphore(value: 0)
+    source.setCancelHandler { finished.signal() }
+    source.cancel()
+    _ = finished.wait(timeout: .now() + 2)
+  }
+
+  private func drainPendingConnections(
+    ioTimeout: TimeInterval,
+    onClient: @Sendable (FileHandle) -> Void,
+    onFailure: @Sendable (POSIXError) -> Void
+  ) {
+    while true {
+      let listeningFD = lock.withLock { () -> Int32 in
+        guard acceptSource != nil else { return -1 }
+        acceptSyscalls += 1
+        return fd
+      }
+      guard listeningFD >= 0 else { return }
+      let client = Darwin.accept(listeningFD, nil, nil)
+      if client >= 0 {
+        applyTimeout(client, ioTimeout)
+        onClient(FileHandle(fileDescriptor: client, closeOnDealloc: true))
+        continue
+      }
+      let code = errno
+      if code == EAGAIN || code == EWOULDBLOCK { return }
+      // A peer that gave up between the event and the accept is not a failure.
+      if code == EINTR || code == ECONNABORTED { continue }
+      onFailure(POSIXError(POSIXErrorCode(rawValue: code) ?? .EIO))
+      return
+    }
+  }
+
   /// Idempotently closes this server and removes only its exact socket node.
   public func stop() {
+    stopAccepting()
     let owned = lock.withLock { () -> (Int32, Int32, SocketNodeIdentity?) in
       let current = (fd, ownershipFD, publishedIdentity)
       fd = -1

@@ -1,5 +1,6 @@
 import AppKit
 import Combine
+import CryptoKit
 import Foundation
 import LinkDigestMCPKit
 import SwiftUI
@@ -305,6 +306,9 @@ final class ManualLinkViewModel: ObservableObject {
   private var lastClipboardCanonicalURL: String?
   private var lastHandledClipboardCanonicalURL: String?
   private var pendingClipboardSuggestion: ClipboardLinkSuggestion?
+  private let defaults: UserDefaults
+  private static let ignoredClipboardHashesKey = "capture.ignoredClipboardLinkHashes"
+  private static let ignoredClipboardHashLimit = 200
 
   init(
     captureService: ManualLinkCaptureService = .init(fetcher: ProxyAwareWebPageFetcher()),
@@ -315,7 +319,8 @@ final class ManualLinkViewModel: ObservableObject {
     imageResources: (any SafeResourceFetching)? = nil,
     xResolver: XTweetResolver? = nil,
     onMediaCaptured: ((CaptureMedia, TaskID, ContentSnapshotID, String) async -> Void)? = nil,
-    profileImportJournal: (any ProfileImportBatchJournalStoring)? = nil
+    profileImportJournal: (any ProfileImportBatchJournalStoring)? = nil,
+    userDefaults: UserDefaults = .standard
   ) {
     self.captureService = captureService
     self.weChatCapture = weChatCapture
@@ -326,6 +331,7 @@ final class ManualLinkViewModel: ObservableObject {
     self.xResolver = xResolver
     self.onMediaCaptured = onMediaCaptured
     self.profileImportJournal = profileImportJournal
+    self.defaults = userDefaults
     profileImportBatches = (try? profileImportJournal?.load()) ?? []
   }
 
@@ -369,6 +375,11 @@ final class ManualLinkViewModel: ObservableObject {
     }
     Task {
       do {
+        let dailyURL = try UserNoteDocument.dailyURL()
+        if let existing = try history?.taskID(matchingCanonicalURL: dailyURL) {
+          await MainActor.run { onOpened?(existing) }
+          return
+        }
         let document = try UserNoteDocument.makeDaily()
         let capture = try await ingestor.ingest(document)
         await MainActor.run { onOpened?(capture.taskID) }
@@ -493,6 +504,7 @@ final class ManualLinkViewModel: ObservableObject {
   func ignoreClipboardSuggestion() {
     guard let suggestion = clipboardSuggestion else { return }
     lastHandledClipboardCanonicalURL = suggestion.canonicalURL
+    persistIgnoredClipboardHash(suggestion.canonicalURL)
     clipboardSuggestion = nil
   }
 
@@ -521,6 +533,12 @@ final class ManualLinkViewModel: ObservableObject {
   private func inspectClipboardOnce() {
     // Never publish or log the returned string. It survives only long enough
     // to decide whether it is a syntactically safe HTTPS URL.
+    guard isClipboardLinkDetectionEnabled else {
+      lastClipboardCanonicalURL = nil
+      clipboardSuggestion = nil
+      pendingClipboardSuggestion = nil
+      return
+    }
     guard let candidate = safeClipboardSuggestion(from: clipboard.string()) else {
       lastClipboardCanonicalURL = nil
       lastHandledClipboardCanonicalURL = nil
@@ -529,11 +547,20 @@ final class ManualLinkViewModel: ObservableObject {
       return
     }
     if candidate.canonicalURL != lastClipboardCanonicalURL {
+      if lastClipboardCanonicalURL != nil {
+        removeIgnoredClipboardHash(candidate.canonicalURL)
+      }
       lastClipboardCanonicalURL = candidate.canonicalURL
       lastHandledClipboardCanonicalURL = nil
       clipboardSuggestion = nil
     }
     guard lastHandledClipboardCanonicalURL != candidate.canonicalURL else { return }
+    if ignoredClipboardHashes.contains(Self.clipboardHash(candidate.canonicalURL)) {
+      lastHandledClipboardCanonicalURL = candidate.canonicalURL
+      clipboardSuggestion = nil
+      pendingClipboardSuggestion = nil
+      return
+    }
     pendingClipboardSuggestion = candidate
     presentPendingClipboardSuggestionIfEligible()
   }
@@ -559,6 +586,36 @@ final class ManualLinkViewModel: ObservableObject {
       pendingClipboardSuggestion = nil
       clipboardSuggestion = nil
     }
+  }
+
+  private var isClipboardLinkDetectionEnabled: Bool {
+    if defaults.object(forKey: ProviderSettingsView.clipboardLinkDetectionKey) == nil { return true }
+    return defaults.bool(forKey: ProviderSettingsView.clipboardLinkDetectionKey)
+  }
+
+  private var ignoredClipboardHashes: [String] {
+    defaults.stringArray(forKey: Self.ignoredClipboardHashesKey) ?? []
+  }
+
+  private static func clipboardHash(_ canonicalURL: String) -> String {
+    SHA256.hash(data: Data(canonicalURL.utf8)).map { String(format: "%02x", $0) }.joined()
+  }
+
+  private func persistIgnoredClipboardHash(_ canonicalURL: String) {
+    var hashes = ignoredClipboardHashes
+    let hash = Self.clipboardHash(canonicalURL)
+    hashes.removeAll { $0 == hash }
+    hashes.append(hash)
+    if hashes.count > Self.ignoredClipboardHashLimit {
+      hashes.removeFirst(hashes.count - Self.ignoredClipboardHashLimit)
+    }
+    defaults.set(hashes, forKey: Self.ignoredClipboardHashesKey)
+  }
+
+  private func removeIgnoredClipboardHash(_ canonicalURL: String) {
+    let hash = Self.clipboardHash(canonicalURL)
+    let hashes = ignoredClipboardHashes.filter { $0 != hash }
+    defaults.set(hashes, forKey: Self.ignoredClipboardHashesKey)
   }
 
   private func safeClipboardSuggestion(from rawValue: String?) -> ClipboardLinkSuggestion? {
@@ -615,7 +672,7 @@ final class ManualLinkViewModel: ObservableObject {
     }
     let value = submittedURL.absoluteString
     // 重复检测：同一链接已在库中时先提示，避免静默重抓浪费请求与 token；
-    // 用户确认后仍可继续（新抓取会併入原条目成为最新快照）。
+    // 用户确认后仍可继续（新抓取会并入原条目成为最新快照）。
     if !allowsDuplicateSubmit, let history,
        let canonical = try? CanonicalURL(value.trimmingCharacters(in: .whitespacesAndNewlines)),
        (try? history.containsCanonicalURL(canonical)) == true {
@@ -771,7 +828,8 @@ final class ManualLinkViewModel: ObservableObject {
         publishedText: seed.publishedText,
         likes: seed.likes,
         comments: seed.comments,
-        collects: seed.collects
+        collects: seed.collects,
+        views: seed.views
       )
       let itemID = UUID()
       items.append(.init(id: itemID, seed: normalized, phase: .queued))
@@ -1282,12 +1340,22 @@ final class ManualLinkViewModel: ObservableObject {
     return (batch, item)
   }
 
+  /// 批次日志是全量 JSON 重写：每条作品每次状态变化都写一遍，50 条导入就是 200 次
+  /// 主线程编码加原子写盘。合并 300ms 内的变化，编码和写盘放到后台。
+  private var profileImportJournalSaveTask: Task<Void, Never>?
   private func persistProfileImportBatches() {
     guard let profileImportJournal else { return }
-    do {
-      try profileImportJournal.save(profileImportBatches)
-    } catch {
-      captureNotice = "批次进度暂时无法保存；本次抓取仍会继续，但重启后可能无法恢复。"
+    profileImportJournalSaveTask?.cancel()
+    profileImportJournalSaveTask = Task { [weak self] in
+      try? await Task.sleep(for: .milliseconds(300))
+      guard !Task.isCancelled, let self else { return }
+      // 日志对象不是 Sendable，写盘留在主线程；合并后一批状态变化只写一次，
+      // 已经把 200 次写压到个位数。
+      do {
+        try profileImportJournal.save(self.profileImportBatches)
+      } catch {
+        self.captureNotice = "批次进度暂时无法保存；本次抓取仍会继续，但重启后可能无法恢复。"
+      }
     }
   }
 

@@ -95,7 +95,7 @@ final class GalleryPaginationAcceptanceState {
 @MainActor
 struct GalleryPaginationAcceptancePanel: View {
   let fixture: GalleryPaginationAcceptanceState
-  @ObservedObject private var model: HistoryViewModel
+  private var model: HistoryViewModel
   @Environment(\.appTheme) private var theme
   @FocusState private var searchFocused: Bool
   @State private var scrollTarget: TaskID?

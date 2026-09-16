@@ -9,7 +9,7 @@ import SwiftUI
 /// 是这个功能成不成立的前提——能改的话,人会不自觉地往结果的方向修,
 /// 然后得出「我判断挺准的」这个毫无价值的结论。
 struct HitLabView: View {
-  @ObservedObject var model: HistoryViewModel
+  var model: HistoryViewModel
   let piece: PieceSummary
   @Environment(\.appTheme) private var appTheme
 

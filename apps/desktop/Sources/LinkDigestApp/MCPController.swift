@@ -14,8 +14,9 @@ final class MCPController: ObservableObject {
   @Published var allowsProcessing: Bool { didSet { defaults.set(allowsProcessing, forKey: "mcp.processing") } }
   private let defaults: UserDefaults
   private let socketPath: String
-  private var listener: UnixSocketServer?
-  private var worker: Task<Void, Never>?
+  private let socketHost = MCPSocketHost()
+  /// 每调用一次 restart 加一，用来丢弃已经过期的那次开启结果。
+  private var startGeneration = 0
   private var history: HistoryApplicationService?
   private var historyModel: HistoryViewModel?
   private var manual: ManualLinkViewModel?
@@ -57,31 +58,46 @@ final class MCPController: ObservableObject {
     restart()
   }
 
+  /// 开关 MCP。
+  ///
+  /// mkdir 和 bind 都要打文件系统，慢起来能到几十毫秒；以前它们直接跑在主线程
+  /// 上，表现就是点一下开关整个界面顿一拍。现在挪到后台串行队列，界面先显示
+  /// 「正在开启」，绑定成功再换成最终状态。
   func restart() {
-    worker?.cancel(); listener?.stop(); listener = nil; worker = nil
-    if !enabled { discovery?.stop(); discovery = nil; status = "未开启"; return }
-    guard history != nil else { status = "等待本地资料库就绪"; return }
-    do {
-      guard socketPath.utf8.count < 104 else { throw MCPFailure("path_too_long", "本机路径过长") }
-      let directory = URL(fileURLWithPath: socketPath).deletingLastPathComponent()
-      try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-      let server = UnixSocketServer(path: socketPath)
-      try server.start()
-      listener = server
-      status = "已开启 · 仅限本机当前用户"
-      worker = Task.detached(priority: .utility) { [weak self] in
-        while !Task.isCancelled {
-          do {
-            let client = try server.accept(timeout: 1, ioTimeout: 5)
-            defer { try? client.close() }
-            let data = try ChromiumFramer.readFrame(from: client, timeout: 5)
-            guard !Task.isCancelled, let self else { return }
-            let response = await self.handle(data)
-            try ChromiumFramer.writeFrame(response, to: client)
-          } catch { if Task.isCancelled { return } }
-        }
+    startGeneration &+= 1
+    let generation = startGeneration
+    guard enabled else {
+      socketHost.shutdown()
+      discovery?.stop(); discovery = nil
+      status = "未开启"
+      return
+    }
+    guard history != nil else { socketHost.shutdown(); status = "等待本地资料库就绪"; return }
+    guard socketPath.utf8.count < 104 else {
+      socketHost.shutdown()
+      status = "开启失败：请确认没有其他汲作副本占用服务，再重试。"
+      return
+    }
+    status = "正在开启…"
+    socketHost.restart(path: socketPath, ioTimeout: 5) { [weak self] client in
+      // 收发都别回主线程：readFrame 最长等 5 秒，那 5 秒界面会整个不动。
+      Task.detached(priority: .utility) {
+        defer { try? client.close() }
+        guard let self else { return }
+        do {
+          let data = try ChromiumFramer.readFrame(from: client, timeout: 5)
+          let response = await self.handle(data)
+          try ChromiumFramer.writeFrame(response, to: client)
+        } catch {}
       }
-    } catch { status = "开启失败：请确认没有其他汲作副本占用服务，再重试。" }
+    } completion: { [weak self] started in
+      Task { @MainActor in
+        guard let self, self.startGeneration == generation, self.enabled else { return }
+        self.status = started
+          ? "已开启 · 仅限本机当前用户"
+          : "开启失败：请确认没有其他汲作副本占用服务，再重试。"
+      }
+    }
   }
 
   func handle(_ data: Data) async -> Data {
@@ -255,6 +271,47 @@ final class MCPController: ObservableObject {
       historyModel.revealFromExternalLink(taskID: try taskID()); NSApp.activate(ignoringOtherApps: true)
       return ["opened": true]
     default: throw MCPFailure("unknown_tool", "未知工具")
+    }
+  }
+}
+
+/// MCP 监听 socket 的持有者。
+///
+/// 单独一个类、单独一条串行队列，是为了「连点几下开关」不出事：关旧的和开新的
+/// 排在同一条队上，后一次 bind 一定在前一次 stop 之后执行，不会撞上 EADDRINUSE。
+private final class MCPSocketHost: @unchecked Sendable {
+  private let queue = DispatchQueue(label: "linkdigest.mcp.socket", qos: .utility)
+  /// 只在 `queue` 上访问。
+  private var server: UnixSocketServer?
+
+  func restart(
+    path: String,
+    ioTimeout: TimeInterval,
+    onClient: @escaping @Sendable (FileHandle) -> Void,
+    completion: @escaping @Sendable (Bool) -> Void
+  ) {
+    queue.async { [self] in
+      server?.stop()
+      server = nil
+      do {
+        let directory = URL(fileURLWithPath: path).deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let candidate = UnixSocketServer(path: path)
+        try candidate.start()
+        // 事件驱动：闲着的时候一次也不醒，有连接进来才回调。
+        try candidate.startAccepting(ioTimeout: ioTimeout, onClient: onClient)
+        server = candidate
+        completion(true)
+      } catch {
+        completion(false)
+      }
+    }
+  }
+
+  func shutdown() {
+    queue.async { [self] in
+      server?.stop()
+      server = nil
     }
   }
 }

@@ -142,6 +142,25 @@ enum LocalMarkdownImageLayout {
     return result
   }
 
+  /// 每个段起点之前累计的标题数（只统计文本段）。
+  ///
+  /// 旧写法把 `segments.prefix(i).reduce` 放在 `ForEach` 里，26 段的正文每帧要重扫
+  /// 约 350 次前缀切片并重查 `ReadingRenderCache`；这里一趟算完，循环里只查表。
+  /// 解析本身仍走备忘缓存，不改成每帧重算。
+  /// `blocks(from:)` 是主线程隔离的；本函数只在 view body 里调用。
+  @MainActor
+  static func headingOffsets(of segments: [Segment]) -> [Int] {
+    var offsets = [Int](repeating: 0, count: segments.count + 1)
+    for (index, segment) in segments.enumerated() {
+      var count = offsets[index]
+      if case let .text(previous) = segment {
+        count += MarkdownOutline.entries(from: ReadingRenderCache.blocks(from: previous)).count
+      }
+      offsets[index + 1] = count
+    }
+    return offsets
+  }
+
   /// 图片标记（Markdown 图片与 `<img>`）的匹配式。编译一次复用：这个扫描
   /// 在每次切段时都要跑，正则编译本身不便宜，不能按调用现编。
   private static let imageMarkupExpression = try? NSRegularExpression(
@@ -150,7 +169,11 @@ enum LocalMarkdownImageLayout {
   )
 
   static func segments(markdown: String, localImageURLs: [URL], appendsUnusedLocalImages: Bool = true) -> [Segment] {
-    let byHash = Dictionary(uniqueKeysWithValues: localImageURLs.map { ($0.lastPathComponent, $0) })
+    // 同名文件（不同目录下的同一个哈希名）不该让渲染崩掉，保留后一条。
+    let byHash = Dictionary(
+      localImageURLs.map { ($0.lastPathComponent, $0) },
+      uniquingKeysWith: { _, new in new }
+    )
     // 评论区必须作为一个整体交给 MarkdownPresentation：评论正文里也可能带图，
     // 如果先按图片切段，图片后的回复会失去 `## 评论（…）` 上下文，退回成普通
     // Markdown 列表。评论组件会在每条评论内部再次切图，因此这里保留整个尾段。
@@ -445,7 +468,12 @@ enum LocalMarkdownImageLayout {
 /// exports retain their original text; this layer never writes a transformed
 /// representation back into History.
 enum MarkdownPresentation {
-  static let omittedHTML = "[已省略 HTML 片段]"
+  /// 读者看到的占位文字。
+  ///
+  /// 原来写的是「[已省略 HTML 片段]」——那是说给写代码的人听的：读者不知道
+  /// 什么是 HTML 片段，也不知道是谁省略的、能不能找回来。这里只说清读者需要
+  /// 知道的那件事：这个位置有东西，但显示不出来。
+  static let omittedHTML = "（此处内容无法显示）"
   static let bodyFontSize: CGFloat = 16.5
   /// 正文行间距（**行与行之间的空隙**，不是行高）。行高 = `bodyFontSize` + 这个值。
   ///
@@ -458,7 +486,7 @@ enum MarkdownPresentation {
 
   static func sanitized(_ source: String) -> String {
     var value = replacingHTMLLikeTokensPreservingCode(in: source)
-    value = replacing(#"(?:\[已省略 HTML 片段\]\s*){2,}"#, in: value, with: omittedHTML + "\n")
+    value = replacing(#"(?:（此处内容无法显示）\s*){2,}"#, in: value, with: omittedHTML + "\n")
     return value
   }
 
@@ -1916,6 +1944,9 @@ struct MarkdownContentView: View {
           appendsUnusedLocalImages: appendsUnusedLocalImages,
           groupsConsecutiveImages: groupsConsecutiveImages
         )
+        // 标题前缀和一趟算完：旧写法把 `segments.prefix(i).reduce` 放在 ForEach 里，
+        // 26 段的正文每帧要重扫约 350 次前缀切片并重查 blocks 缓存。循环里现在只查表。
+        let headingOffsets = LocalMarkdownImageLayout.headingOffsets(of: segments)
         ForEach(
           Array(segments.enumerated()),
           // 不能只用 offset：换条目后同位置常仍是「第一张图」，SwiftUI 会复用
@@ -1927,10 +1958,7 @@ struct MarkdownContentView: View {
             if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
               structuredMarkdown(
                 chunk,
-                headingOffset: segments.prefix(segmentIndex).reduce(0) { count, segment in
-                  guard case let .text(previous) = segment else { return count }
-                  return count + MarkdownOutline.entries(from: ReadingRenderCache.blocks(from: previous)).count
-                },
+                headingOffset: headingOffsets[segmentIndex],
                 segmentIndex: segmentIndex
               )
             }

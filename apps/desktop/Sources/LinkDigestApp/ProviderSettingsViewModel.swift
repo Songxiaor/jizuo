@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import Observation
 import LinkDigestCore
 
 enum ProviderSettingsState: Equatable {
@@ -32,30 +33,33 @@ enum ModelCatalogState: Equatable {
   case failed(code: ModelProviderErrorCode)
 }
 
+/// 用 Observation 而不是 ObservableObject：视图只在自己读过的属性变化时重绘。
+/// 原来这里任何一个属性变化都会让整张设置页（以及同时观察它的历史窗口）重求值。
 @MainActor
-final class ProviderSettingsViewModel: ObservableObject {
+@Observable
+final class ProviderSettingsViewModel {
   private static let modelCatalogLimit = 500
-  @Published var baseURL = "" {
+  var baseURL = "" {
     didSet {
       handleDraftEdit(from: oldValue, to: baseURL, invalidatesModelCatalog: true)
       if selectedPreset.baseURLTemplate != baseURL { selectedPreset = .custom }
     }
   }
-  @Published var modelName = "" {
+  var modelName = "" {
     didSet { handleDraftEdit(from: oldValue, to: modelName, invalidatesModelCatalog: false) }
   }
-  @Published private(set) var selectedPreset: ProviderPreset = .custom
-  @Published var modelSearchQuery = ""
-  @Published private(set) var availableModels: [String] = []
-  @Published private(set) var selectedCatalogModels: Set<String> = []
-  @Published private(set) var modelCatalogState: ModelCatalogState = .idle
-  @Published private(set) var state: ProviderSettingsState = .unconfigured
-  @Published private(set) var connectionTestState: ConnectionTestState = .idle
-  @Published private(set) var savedIdentity: DataDestinationIdentity?
-  @Published var summaryPrompt = ModelPreferences.defaultSummaryPrompt {
+  private(set) var selectedPreset: ProviderPreset = .custom
+  var modelSearchQuery = ""
+  private(set) var availableModels: [String] = []
+  private(set) var selectedCatalogModels: Set<String> = []
+  private(set) var modelCatalogState: ModelCatalogState = .idle
+  private(set) var state: ProviderSettingsState = .unconfigured
+  private(set) var connectionTestState: ConnectionTestState = .idle
+  private(set) var savedIdentity: DataDestinationIdentity?
+  var summaryPrompt = ModelPreferences.defaultSummaryPrompt {
     didSet { schedulePreferenceAutosave(from: oldValue, to: summaryPrompt, debounce: .milliseconds(800)) }
   }
-  @Published var targetLanguage = ModelPreferences.defaultTargetLanguage {
+  var targetLanguage = ModelPreferences.defaultTargetLanguage {
     didSet { schedulePreferenceAutosave(from: oldValue, to: targetLanguage, debounce: .milliseconds(600)) }
   }
   /// 「翻译是否另用一个模型」不再是一个独立的开关状态，而是从模型名推出来的：
@@ -65,61 +69,61 @@ final class ProviderSettingsViewModel: ObservableObject {
   var usesSeparateTranslationModel: Bool {
     !translationModelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
-  @Published var translationModelName = "" {
+  var translationModelName = "" {
     didSet { schedulePreferenceAutosave(from: oldValue, to: translationModelName, debounce: .milliseconds(600)) }
   }
-  @Published var transcriptionModelName = "" {
+  var transcriptionModelName = "" {
     didSet { schedulePreferenceAutosave(from: oldValue, to: transcriptionModelName, debounce: .milliseconds(600)) }
   }
-  @Published var tidyModelName = "" {
+  var tidyModelName = "" {
     didSet { schedulePreferenceAutosave(from: oldValue, to: tidyModelName, debounce: .milliseconds(600)) }
   }
   /// 四个管线开关拨下去就要落盘：它们是持久授权，不是草稿。
   /// 以前只改内存、要另点「保存生成偏好」，退出后再打开就会回到上次真正写下的值。
-  @Published var autoTidyTranscription = false {
+  var autoTidyTranscription = false {
     didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoTidyTranscription) }
   }
-  @Published var autoLocalizeTitleNewCaptures = true {
+  var autoLocalizeTitleNewCaptures = true {
     didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoLocalizeTitleNewCaptures) }
   }
-  @Published var autoTranscribeNewCaptures = false {
+  var autoTranscribeNewCaptures = false {
     didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoTranscribeNewCaptures) }
   }
-  @Published var autoSummarizeNewCaptures = false {
+  var autoSummarizeNewCaptures = false {
     didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoSummarizeNewCaptures) }
   }
-  @Published var autoMindMapNewCaptures = false {
+  var autoMindMapNewCaptures = false {
     didSet { persistPipelinePreferenceIfChanged(from: oldValue, to: autoMindMapNewCaptures) }
   }
-  @Published var translationConcurrency = ModelPreferences.defaultTranslationConcurrency {
+  var translationConcurrency = ModelPreferences.defaultTranslationConcurrency {
     didSet { schedulePreferenceAutosave(from: oldValue, to: translationConcurrency, debounce: .zero) }
   }
-  @Published private(set) var preferencesState: ModelPreferencesState = .loading
-  @Published private(set) var savedPreferences = ModelPreferences.default
-  @Published private(set) var isReplacingAPIKey = false
-  @Published private(set) var isManualModelEntryEnabled = false
-  @Published private(set) var isConfigurationLoading = true
-  @Published private(set) var libraryProfiles: [ProviderProfile] = []
-  @Published private(set) var summaryAssignmentID: String?
-  @Published private(set) var transcriptionAssignmentID: String?
-  @Published private(set) var libraryErrorText: String?
+  private(set) var preferencesState: ModelPreferencesState = .loading
+  private(set) var savedPreferences = ModelPreferences.default
+  private(set) var isReplacingAPIKey = false
+  private(set) var isManualModelEntryEnabled = false
+  private(set) var isConfigurationLoading = true
+  private(set) var libraryProfiles: [ProviderProfile] = []
+  private(set) var summaryAssignmentID: String?
+  private(set) var transcriptionAssignmentID: String?
+  private(set) var libraryErrorText: String?
   /// nil while adding a new model; otherwise the library entry being edited.
-  @Published private(set) var editingProfileID: String?
-  @Published private(set) var isEditorVisible = false
-  @Published private(set) var lastSavedProfileCount = 0
+  private(set) var editingProfileID: String?
+  private(set) var isEditorVisible = false
+  private(set) var lastSavedProfileCount = 0
 
   private let configurationService: ProviderConfigurationService
   private let provider: any ModelProvider
   private let modelCatalogLoader: (any ModelCatalogLoading)?
   private let preferencesStore: any ModelPreferencesStore
-  private var hasStartedConfigurationLoad = false
-  private var draftGeneration: UInt64 = 0
+  @ObservationIgnored private var hasStartedConfigurationLoad = false
+  @ObservationIgnored private var draftGeneration: UInt64 = 0
   /// 读盘或写回自己的快照时，不要把赋值再当成一次用户拨杆。
-  private var isApplyingLoadedPreferences = false
+  @ObservationIgnored private var isApplyingLoadedPreferences = false
   /// 连续拨杆串成一条保存链，后来的等待先到的写完，再按最新开关落盘。
-  private var preferencesSaveTail: Task<Void, Never>?
-  private var activeTestRequest: ConnectionTestRequest?
-  private var activeModelCatalogRequest: ModelCatalogRequest?
+  @ObservationIgnored private var preferencesSaveTail: Task<Void, Never>?
+  @ObservationIgnored private var activeTestRequest: ConnectionTestRequest?
+  @ObservationIgnored private var activeModelCatalogRequest: ModelCatalogRequest?
 
   private struct ConnectionTestRequest {
     let id: UUID
@@ -180,7 +184,7 @@ final class ProviderSettingsViewModel: ObservableObject {
   }
 
   /// 保存时跳过了几个已在列表里的模型；保存成功的状态行用它替换「模型配置已保存」。
-  @Published private(set) var duplicateSkipNotice: String?
+  private(set) var duplicateSkipNotice: String?
 
   /// 同一个 Base URL 下已经有这个模型名。列表里标「已添加」、不可勾选，保存时也跳过。
   func isModelAlreadyInLibrary(_ name: String) -> Bool {
@@ -265,6 +269,22 @@ final class ProviderSettingsViewModel: ObservableObject {
     return value.isEmpty ? nil : value
   }
   var dataDestinationCard: DataDestinationIdentity? { draftIdentity ?? savedIdentity }
+  /// 「内容发去哪」那一行的显示名：服务商名 + 模型显示名。
+  ///
+  /// 不再直接印 `identity.host` 和 `identity.model`——那是 `api.deepinfra.com` 和
+  /// `Qwen/Qwen2.5-72B-Instruct` 这种东西，用户在设置里从没见过它们，认不出自己
+  /// 配的是哪一家。模型库里已经有人话名字（服务商标题 + `friendlyModelName`），
+  /// 这里就用那一份，和列表里看到的完全一致。
+  ///
+  /// 库里找不到（旧的单槽配置、或刚填了草稿还没保存）时才退回 host，
+  /// 那至少比完整 URL 短，也仍然指得出是哪一家。
+  var dataDestinationDisplay: (provider: String, model: String)? {
+    guard let identity = dataDestinationCard else { return nil }
+    if let entry = libraryEntryDisplays.first(where: { $0.modelName == identity.model }) {
+      return (entry.title, entry.displayName)
+    }
+    return (identity.host, Self.friendlyModelName(identity.model))
+  }
   var isLocalEndpoint: Bool { dataDestinationCard?.isLocalEndpoint == true }
   var isLoadingModels: Bool { activeModelCatalogRequest != nil }
   var filteredModels: [String] {
@@ -287,8 +307,8 @@ final class ProviderSettingsViewModel: ObservableObject {
     switch modelCatalogState {
     case .idle:
       selectedPreset == .commandCode
-        ? "填写 API Key 后读取公开模型目录；保存配置后再测试套餐权限。"
-        : "先填写 Base URL 和 API Key，再验证模型列表；匹配推荐模型时会自动选择。"
+        ? "填好密钥就能读公开模型列表；套餐里有没有权限，要保存之后测试连接才知道。"
+        : "先填服务地址和密钥，再读取模型列表；能对上推荐模型时会自动帮你选好。"
     case .loading: "正在读取模型列表…"
     case .loaded:
       "已读取 \(availableModels.count) 个模型；已选择 \(selectedCatalogModels.count) 个。"
@@ -346,7 +366,7 @@ final class ProviderSettingsViewModel: ObservableObject {
     case .unconfigured:
       selectedPreset == .commandCode
         ? "先读取模型列表并选择模型，再保存；套餐权限需通过测试连接确认。"
-        : "先验证模型列表并选择模型，再保存；\(ProductDisplay.name) 不会回显完整 API Key。"
+        : "先读取模型列表并选一个模型，再保存；出于安全，\(ProductDisplay.name) 不会把已存的密钥显示出来。"
     case .saving:
       "正在安全保存…"
     case .configured:
@@ -640,7 +660,7 @@ final class ProviderSettingsViewModel: ObservableObject {
   /// 页按保存才生效，两页之间没有任何提示。
   ///
   /// 文本类字段带去抖：每敲一个字就写一次盘没必要；停手 0.6–0.8 秒后再存。
-  private var preferenceAutosaveTask: Task<Void, Never>?
+  @ObservationIgnored private var preferenceAutosaveTask: Task<Void, Never>?
 
   private func schedulePreferenceAutosave<Value: Equatable>(
     from oldValue: Value, to newValue: Value, debounce: Duration
@@ -818,7 +838,7 @@ final class ProviderSettingsViewModel: ObservableObject {
     await testConnection()
   }
 
-  private var keepsEditorOpenAfterSave = false
+  @ObservationIgnored private var keepsEditorOpenAfterSave = false
 
   func save(apiKey: String) async {
     guard canSaveConfiguration else {
@@ -1107,17 +1127,17 @@ final class ProviderSettingsViewModel: ObservableObject {
   private func modelCatalogFailureText(_ code: ModelProviderErrorCode) -> String {
     switch code {
     case .authInvalid:
-      "API Key 无效或没有读取模型的权限。请检查后重试，或展开高级手动填写。"
+      "这把密钥不对，或者它没有读取模型列表的权限。你已保存的配置没有变化。请核对一次密钥再点「读取模型列表」，或点「手动填写模型名」。"
     case .endpointNotFound:
-      "该 Base URL 没有 /models 接口（404）。请检查地址，或展开高级手动填写。"
+      "这个服务地址上没有模型列表可读。你已保存的配置没有变化。请照服务商文档核对服务地址，或点「手动填写模型名」。"
     case .networkInterrupted, .providerUnavailable, .rateLimited:
-      "网络或模型服务暂时不可用。请稍后重试，或展开高级手动填写。"
+      "网络或模型服务这会儿用不了，没能读到模型列表。你已保存的配置没有变化。请稍后重试，或点「手动填写模型名」。"
     case .inputTooLarge:
-      "模型列表超过安全读取上限（1 MiB 或 500 项）。可展开高级手动填写。"
+      "这家服务商的模型太多，一次读不完，汲作没有截一半给你看。你已保存的配置没有变化。请点「手动填写模型名」直接填你要用的那个。"
     case .baseURLInvalid:
-      "Base URL 无效；仅支持 HTTPS，开发调试可使用 127.0.0.1。"
+      "这个服务地址汲作用不了。已保存的配置没有变化。请填以 https:// 开头的地址（本机调试可以用 127.0.0.1）。"
     default:
-      "服务返回的 /models 协议不兼容。请检查服务说明，或展开高级手动填写。"
+      "这家服务商返回的模型列表格式汲作看不懂。你已保存的配置没有变化。请核对服务商文档，或点「手动填写模型名」。"
     }
   }
 

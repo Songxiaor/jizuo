@@ -99,10 +99,10 @@ enum CurrentCaptureMediaPreview {
 
   static func favoriteUnavailableMessage(_ descriptor: MediaDescriptor) -> String {
     switch descriptor.kind {
-    case .hls: "暂不支持保存 HLS；你仍可在当前会话中速览。"
-    case .embed: "嵌入式视频暂不支持收藏到本机。"
-    case .browserSessionOnly: "该视频只能在原浏览器会话观看，不能收藏到本机。"
-    case .unsupported: "该视频当前不能收藏到本机。"
+    case .hls: "暂不支持把 HLS 下载到本机；你仍可在当前会话中速览。"
+    case .embed: "嵌入式视频暂不支持下载到本机。"
+    case .browserSessionOnly: "该视频只能在原浏览器会话观看，不能下载到本机。"
+    case .unsupported: "该视频当前不能下载到本机。"
     case .directFile: "当前直连视频地址不可用，请回到浏览器重新发送。"
     }
   }
@@ -634,12 +634,12 @@ final class RemotePreviewPlayerController: ObservableObject {
       do {
         // HEAD 体积预检放在限时 work 内，避免不可达地址拖死 preparing。
         let probeTimeout = Self.dualTrackProbeTimeoutSeconds
-        if let videoLen = await Self.probeContentLength(
+        if let videoLen = try await Self.probeContentLength(
           url: videoURL, headers: headers, timeout: probeTimeout
         ), videoLen > maxBytes {
           throw URLError(.dataLengthExceedsMaximum)
         }
-        if let audioLen = await Self.probeContentLength(
+        if let audioLen = try await Self.probeContentLength(
           url: audioURL, headers: headers, timeout: probeTimeout
         ), audioLen > maxBytes {
           throw URLError(.dataLengthExceedsMaximum)
@@ -683,47 +683,26 @@ final class RemotePreviewPlayerController: ObservableObject {
     return nil
   }
 
+  /// 双轨下载与 HEAD 预检共用的安全下载器。
+  ///
+  /// 这两个地址来自抓取回来的页面内容，不是我们自己拼的，所以和其它抓取一样
+  /// 先过 `PublicWebURLPolicy`（私有网段、回环、链路本地一律拒绝），再流式落盘。
+  nonisolated private static let mediaDownloader = SafeMediaStreamDownloader()
+
   nonisolated private static func downloadFile(
     from url: URL,
     to destination: URL,
     headers: [String: String]?
   ) async throws {
-    var request = URLRequest(url: url)
-    request.timeoutInterval = 60
-    if let headers {
-      for (key, value) in headers {
-        request.setValue(value, forHTTPHeaderField: key)
-      }
-    }
-    let (tempURL, response) = try await URLSession.shared.download(for: request)
-    if let http = response as? HTTPURLResponse, !(200...299).contains(http.statusCode) {
-      throw URLError(.badServerResponse)
-    }
-    if FileManager.default.fileExists(atPath: destination.path) {
-      try FileManager.default.removeItem(at: destination)
-    }
-    try FileManager.default.moveItem(at: tempURL, to: destination)
+    try await mediaDownloader.download(from: url, to: destination, headers: headers, timeout: 60)
   }
 
   nonisolated private static func probeContentLength(
     url: URL,
     headers: [String: String]?,
     timeout: TimeInterval
-  ) async -> Int64? {
-    var request = URLRequest(url: url)
-    request.httpMethod = "HEAD"
-    request.timeoutInterval = max(0.05, timeout)
-    if let headers {
-      for (key, value) in headers {
-        request.setValue(value, forHTTPHeaderField: key)
-      }
-    }
-    guard let (_, response) = try? await URLSession.shared.data(for: request),
-          let http = response as? HTTPURLResponse,
-          (200...299).contains(http.statusCode)
-    else { return nil }
-    let length = http.expectedContentLength
-    return length > 0 ? length : nil
+  ) async throws -> Int64? {
+    try await mediaDownloader.contentLength(of: url, headers: headers, timeout: timeout)
   }
 
   /// playerItem 进入 `.failed` 时调用：退回旧的单 URL + header 路径（仅单轨源）。
@@ -1184,7 +1163,7 @@ private struct OnlineTranscriptionPreviewText: View {
   var body: some View {
     ScrollView {
       Text(live.text)
-        .font(.callout)
+        .themedFont(.callout)
         .textSelection(.enabled)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -1201,7 +1180,7 @@ struct CurrentCaptureMediaPreviewCard: View {
   let descriptor: MediaDescriptor
   let taskID: TaskID
   let snapshotID: ContentSnapshotID
-  @ObservedObject var model: HistoryViewModel
+  var model: HistoryViewModel
   let onlineTranscriptionModel: String?
   let tidyModel: String?
   /// 与列表预热共享；卡片不 release，由 HistoryContentView 在离开可播上下文时释放。
@@ -1232,9 +1211,9 @@ struct CurrentCaptureMediaPreviewCard: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 8) {
         Label("视频速览", systemImage: "play.rectangle.fill")
-          .font(.headline)
+          .themedFont(.headline)
         Text(CurrentCaptureMediaPreview.kindLabel(descriptor.kind))
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .foregroundStyle(.secondary)
           .padding(.horizontal, 7)
           .padding(.vertical, 3)
@@ -1244,7 +1223,7 @@ struct CurrentCaptureMediaPreviewCard: View {
         // 选的哪条路：整段 mp4（快、上限 720P/1080P）还是 DASH 双轨（能到 4K，慢）。
         // 没有这个标签，「选了高清没变化」分不清是没换路还是换了路仍拿不到高档。
         Text(descriptor.companionAudioURL == nil ? "整段" : "双轨")
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .foregroundStyle(.secondary)
           .padding(.horizontal, 7)
           .padding(.vertical, 3)
@@ -1252,7 +1231,7 @@ struct CurrentCaptureMediaPreviewCard: View {
           .accessibilityIdentifier("history-video-preview-track-mode")
         if let videoPixelHeight {
           Text("\(videoPixelHeight)P")
-            .font(.caption.weight(.medium))
+            .themedFont(.caption, weight: .medium)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 7)
             .padding(.vertical, 3)
@@ -1316,14 +1295,15 @@ struct CurrentCaptureMediaPreviewCard: View {
             )
           }
         } label: {
-          Label("保存到本地", systemImage: "arrow.down.to.line")
+          Label("下载到本机", systemImage: "arrow.down.to.line")
         }
         .buttonStyle(.bordered)
         .controlSize(.small)
         .disabled(!model.canFavoriteCurrentCaptureMedia)
         .accessibilityIdentifier("history-video-preview-favorite")
+        .accessibilityLabel("下载到本机")
       } else {
-        Text("暂不支持保存 HLS")
+        Text("暂不支持把 HLS 下载到本机")
           .themedFont(.caption)
           .foregroundStyle(.secondary)
           .accessibilityIdentifier("history-video-preview-favorite")
@@ -1332,6 +1312,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       Spacer(minLength: 0)
       if kind == .directFile {
         remoteTranscriptionControl
+          .fixedSize()
       } else {
         Text("当前 Debug 暂不支持 HLS 转写")
           .themedFont(.caption)
@@ -1355,6 +1336,7 @@ struct CurrentCaptureMediaPreviewCard: View {
           .themedFont(.caption)
           .help("双击视频也可放大")
           .accessibilityIdentifier("history-video-preview-cinema")
+          .accessibilityLabel("放大")
       }
       Button("在浏览器中打开", action: openInBrowser)
         .buttonStyle(.link)
@@ -1382,11 +1364,13 @@ struct CurrentCaptureMediaPreviewCard: View {
             .controlSize(.small)
             .buttonStyle(.borderedProminent)
             .accessibilityIdentifier("history-video-preview-refresh-stream")
+            .accessibilityLabel(HistorySessionMediaPresentation.refreshActionTitle)
           }
           if failure != .longFormDualNeedsRefresh {
             Button("重试") { playback.retry() }
               .controlSize(.small)
               .accessibilityIdentifier("history-video-preview-retry")
+              .accessibilityLabel("重试")
           }
           Button(HistorySessionMediaPresentation.openSourceActionTitle) { openInBrowser() }
             .controlSize(.small)
@@ -1395,7 +1379,7 @@ struct CurrentCaptureMediaPreviewCard: View {
         if let diagnostic = playback.playbackDiagnostic {
           DisclosureGroup(HistorySessionMediaPresentation.technicalDetailsTitle) {
             Text(diagnostic)
-              .font(.caption2)
+              .themedFont(.caption2)
               .foregroundStyle(.secondary)
               .textSelection(.enabled)
               .fixedSize(horizontal: false, vertical: true)
@@ -1487,6 +1471,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       .fixedSize()
       .themedFont(.caption)
       .accessibilityIdentifier("history-video-preview-quality")
+      .accessibilityLabel("清晰度")
     }
   }
 
@@ -1549,6 +1534,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       }
       .controlSize(.small)
       .accessibilityIdentifier("remote-transcribe")
+      .accessibilityLabel("转写")
     case .completed:
       Menu {
         Button("重新本机转写") { model.requestRemoteTranscription(descriptor, taskID: taskID) }
@@ -1566,6 +1552,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       }
       .controlSize(.small)
       .accessibilityIdentifier("remote-transcribe")
+      .accessibilityLabel("改进转写")
     case .awaitingModelDownload:
       Text("等待模型下载确认")
         .themedFont(.caption)
@@ -1586,6 +1573,7 @@ struct CurrentCaptureMediaPreviewCard: View {
         ?? "把转写文字发送给聊天模型，一次做完校对和版面：修标点错别字、按语义重新分段、加上小标题。不发送视频或音频，原始转写保留在历史中。"
     )
     .accessibilityIdentifier("remote-transcript-tidy")
+    .accessibilityLabel("整理文稿")
   }
 
   @ViewBuilder private var remoteTranscriptionStatus: some View {
@@ -1692,13 +1680,13 @@ struct CurrentCaptureMediaPreviewCard: View {
     case .idle:
       EmptyView()
     case .saving:
-      HStack(spacing: 6) { ProgressView().controlSize(.small); Text("正在保存到本地…") }
+      HStack(spacing: 6) { ProgressView().controlSize(.small); Text("正在下载到本机…") }
         .themedFont(.caption)
         .foregroundStyle(.secondary)
         .accessibilityIdentifier("history-video-preview-favorite-status")
     case .saved:
-      Label("已保存到本地", systemImage: "checkmark.circle.fill")
-        .font(.caption.weight(.medium))
+      Label("已下载到本机", systemImage: "checkmark.circle.fill")
+        .themedFont(.caption, weight: .medium)
         .foregroundStyle(appTheme.success)
         .accessibilityIdentifier("history-video-preview-favorite-status")
     case let .failed(message):
@@ -1713,7 +1701,7 @@ struct CurrentCaptureMediaPreviewCard: View {
   private func degradationContent(message: String, nextAction: String, identifier: String) -> some View {
     VStack(alignment: .leading, spacing: 10) {
       Label(message, systemImage: descriptor.kind == .embed ? "rectangle.on.rectangle.slash" : "exclamationmark.triangle.fill")
-        .font(.callout.weight(.medium))
+        .themedFont(.callout, weight: .medium)
       Text(nextAction).themedFont(.caption).foregroundStyle(.secondary)
       Button("返回浏览器", action: openInBrowser)
         .buttonStyle(.bordered)
@@ -1728,7 +1716,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       HStack {
         Spacer()
         Label("正在切换清晰度…", systemImage: "slider.horizontal.3")
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .padding(.horizontal, 10)
           .padding(.vertical, 6)
           .background(.black.opacity(0.62), in: Capsule())
@@ -1761,6 +1749,7 @@ struct CurrentCaptureMediaPreviewCard: View {
         .buttonStyle(.bordered)
         .controlSize(.small)
         .accessibilityIdentifier("history-video-preview-preparing-retry")
+        .accessibilityLabel("取消并重试")
       }
       .padding()
     }
@@ -1937,7 +1926,17 @@ struct HistorySessionMediaUnavailableCard: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, DesignTokens.Space.md)
     .padding(.vertical, DesignTokens.Space.sm)
-    .background(appTheme.primaryText.opacity(0.025), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+    // 原来是 2.5% 的中性灰，和正文底色几乎分不开，这张卡看上去像一段说明文字。
+    // 换成淡 warning 底：一眼认得出「这里有情况」，又不到报错的强度。
+    .background(
+      appTheme.warning.opacity(0.10),
+      in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+    )
+    .overlay {
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+        .strokeBorder(appTheme.warning.opacity(0.28), lineWidth: 1)
+        .allowsHitTesting(false)
+    }
     .accessibilityIdentifier("history-video-session-unavailable")
   }
 
@@ -1961,14 +1960,17 @@ struct HistorySessionMediaUnavailableCard: View {
       if case .refreshing = phase {
         ProgressView().controlSize(.small)
       } else {
-        // 一主一次：重新获取是主动作，回到原页面是退路。
+        // 重新获取会真的发一次网络请求，不该长得像「继续」这种无害主按钮；
+        // 降到次级样式，仍比「回到原页面」重一档，顺序上还是这一步在先。
         Button(HistorySessionMediaPresentation.refreshActionTitle, action: onRefresh)
-          .buttonStyle(.appProminent(appTheme.accent))
+          .buttonStyle(.appNormal)
           .accessibilityIdentifier("history-video-session-refresh")
+          .accessibilityLabel(HistorySessionMediaPresentation.refreshActionTitle)
       }
       Button(HistorySessionMediaPresentation.openSourceActionTitle, action: openSource)
         .buttonStyle(.appQuiet)
         .accessibilityIdentifier("history-video-session-open-source")
+        .accessibilityLabel(HistorySessionMediaPresentation.openSourceActionTitle)
     }
     .themedFont(.callout, weight: .medium)
     .controlSize(.small)
@@ -2317,7 +2319,8 @@ private struct PlayerSpaceKeyToggle: NSViewRepresentable {
         object: item,
         queue: .main
       ) { [weak self] _ in
-        self?.onPlaybackEnded?()
+        // `queue: .main` 保证在主线程，但闭包本身是 nonisolated——把这条保证写下来。
+        MainActor.assumeIsolated { self?.onPlaybackEnded?() }
       }
     }
 
@@ -2393,7 +2396,7 @@ struct HistoryVideoPlayerCard: View {
   let fileURL: URL
   let media: MediaAsset?
   let taskID: TaskID
-  @ObservedObject var model: HistoryViewModel
+  var model: HistoryViewModel
   let onlineTranscriptionModel: String?
   let tidyModel: String?
   @State private var player: AVPlayer?
@@ -2425,7 +2428,7 @@ struct HistoryVideoPlayerCard: View {
       HStack(spacing: 12) {
         if let durationSeconds = media?.durationSeconds, durationSeconds > 0 {
           Label(Self.formatDuration(durationSeconds), systemImage: "clock")
-            .font(.caption.monospacedDigit())
+            .themedFont(.caption, monospacedDigit: true)
             .foregroundStyle(.secondary)
         }
         if let byteSize = media?.byteSize, byteSize > 0 {
@@ -2437,14 +2440,17 @@ struct HistoryVideoPlayerCard: View {
         Spacer(minLength: 0)
         if let saveFeedback {
           Label(saveFeedback, systemImage: "checkmark.circle.fill")
-            .font(.caption.weight(.medium))
+            .themedFont(.caption, weight: .medium)
             .foregroundStyle(appTheme.success)
             .accessibilityIdentifier("history-video-save-feedback")
         }
       }
 
       HStack(spacing: 10) {
+        // 转写入口是个下拉菜单：macOS 的 pop-up 按钮宽度可伸缩，和后面的 Spacer 抢空间
+        // 就会被拉成整条横杠、箭头飘到最右。fixedSize 让它只占自身宽度。
         transcriptionControl
+          .fixedSize()
         if model.isReadOnly {
           Text("只读模式不能保存转写结果；恢复可写存储后可重试。")
             .themedFont(.caption)
@@ -2488,6 +2494,7 @@ struct HistoryVideoPlayerCard: View {
               .themedFont(.caption)
               .help("双击视频也可放大")
               .accessibilityIdentifier("history-video-cinema")
+              .accessibilityLabel("放大")
           }
         }
         // 右对齐要对到视频右边缘，不是阅读区右边缘：竖屏视频收窄后，按整行
@@ -2649,7 +2656,7 @@ struct HistoryVideoPlayerCard: View {
             : "读不出画面，仅按声音播放",
           systemImage: "waveform"
         )
-        .font(.callout)
+        .themedFont(.callout)
         .foregroundStyle(.secondary)
         VideoPlayer(player: player)
           .frame(height: 64)
@@ -2754,6 +2761,7 @@ struct HistoryVideoPlayerCard: View {
         .controlSize(.small)
         .disabled(state == .awaitingModelDownload)
         .accessibilityIdentifier("history-video-transcription-start")
+      .accessibilityLabel("转写")
       }
     }
   }
@@ -2784,6 +2792,7 @@ struct HistoryVideoPlayerCard: View {
     }
     .controlSize(.small)
     .accessibilityIdentifier("history-video-transcription-improve")
+    .accessibilityLabel("改进转写")
   }
 
   @ViewBuilder private var transcriptTidyStatus: some View {
@@ -2872,7 +2881,7 @@ private struct HistoryStreamingMediaCard: View {
   @Environment(\.appTheme) private var appTheme
   let media: CaptureMedia
   let sourceURL: String
-  @ObservedObject var model: HistoryViewModel
+  var model: HistoryViewModel
   @StateObject private var playback = RemotePreviewPlayerController()
   @State private var videoDisplaySize: CGSize?
   @State private var videoGeometryTask: Task<Void, Never>?
@@ -2905,9 +2914,9 @@ private struct HistoryStreamingMediaCard: View {
     VStack(alignment: .leading, spacing: 12) {
       HStack(spacing: 8) {
         Label("视频速览", systemImage: "play.rectangle.fill")
-          .font(.headline)
+          .themedFont(.headline)
         Text("联网播放")
-          .font(.caption.weight(.medium))
+          .themedFont(.caption, weight: .medium)
           .foregroundStyle(.secondary)
           .padding(.horizontal, 7)
           .padding(.vertical, 3)
@@ -2918,7 +2927,7 @@ private struct HistoryStreamingMediaCard: View {
         }
         if let durationSeconds = media.durationSeconds, durationSeconds > 0 {
           Text(Self.formatDuration(durationSeconds))
-            .font(.caption.monospacedDigit())
+            .themedFont(.caption, monospacedDigit: true)
             .foregroundStyle(.secondary)
         }
       }
@@ -3015,6 +3024,7 @@ private struct HistoryStreamingMediaCard: View {
             .themedFont(.caption)
             .help("双击视频也可放大")
             .accessibilityIdentifier("history-video-streaming-cinema")
+            .accessibilityLabel("放大")
         }
       }
     }

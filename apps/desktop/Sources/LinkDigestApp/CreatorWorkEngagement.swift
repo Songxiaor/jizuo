@@ -139,6 +139,19 @@ enum CreatorWorkMetricLayout {
 }
 
 enum CreatorDirectoryChrome {
+  /// 页头概览：「5 位博主 · 4 个平台 · 共 121 条作品」。作品数只在列表已全部
+  /// 载入时给，分页未载完就不报一个明显偏小的数。
+  static func overview(creatorCount: Int, loaded: [CreatorSummary]) -> String {
+    var parts = ["\(creatorCount) 位博主"]
+    let platforms = Set(loaded.map(\.identity.platform)).count
+    if platforms > 1 { parts.append("\(platforms) 个平台") }
+    if loaded.count >= creatorCount {
+      let works = loaded.reduce(0) { $0 + $1.savedWorkCount }
+      if works > 0 { parts.append("共 \(works) 条作品") }
+    }
+    return parts.joined(separator: " · ")
+  }
+
   static let listColumnMin: CGFloat = 260
   static let listColumnIdeal: CGFloat = 270
   static let listColumnMax: CGFloat = 270
@@ -243,6 +256,24 @@ enum CreatorDirectoryCardCopy {
     case "reddit.com", "discourse": return "讨论"
     default: return "内容"
     }
+  }
+
+  /// 图库卡的无障碍名字：这条内容的标题。
+  ///
+  /// 卡片原本没有名字，只挂了一句「打开内容」的 hint，VoiceOver 念一屏几十张卡
+  /// 全是同一句。名字按卡面第一行的取法来：独立标题 → 正文首句 → 作者 → 内容类型，
+  /// 一律取已有事实，不编造。
+  static func accessibilityTitle(row: HistoryRowProjection) -> String {
+    let name = CapturedContentNaming.name(
+      title: row.title, body: row.sourcePreview, host: row.host,
+      author: row.author, published: row.published
+    ).text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !name.isEmpty, name != CapturedDocumentTitle.missing { return name }
+    if let author = row.author?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !author.isEmpty, !isPlaceholderAuthor(author) {
+      return author
+    }
+    return contentKind(host: row.host)
   }
 
   /// Author / site identity line. Never invent; never use platform name as author.

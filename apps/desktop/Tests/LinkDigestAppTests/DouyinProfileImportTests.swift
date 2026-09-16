@@ -1390,6 +1390,9 @@ private final class ProfilePreviewResolver: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     calls += 1
-    return rebind && calls == 1 ? ["93.184.216.34"] : ["127.0.0.1"]
+    // 传输层现在一次抓取只解析一次：门禁判定和对端绑定用的是同一份答案，
+    // 原来"第一次公网、第二次私网"的改答案窗口已经不存在。所以这里改成在
+    // 同一份答案里混入私有地址——只要答案里有一个不是公网地址，整条就得拒。
+    return rebind ? ["93.184.216.34", "127.0.0.1"] : ["127.0.0.1"]
   }
 }

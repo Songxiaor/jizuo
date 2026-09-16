@@ -236,7 +236,15 @@ enum CaptureWireContractSchema {
         // compile-time SwiftPM .build path. Bundle.resourceURL already points
         // at the bundle's Resources directory, unlike the two bundle-root
         // production paths above.
-        schemaURL = moduleResourceURL?.appendingPathComponent(testRelativePath, isDirectory: false)
+        // Xcode 27 起单架构构建也产出标准 macOS 包：resourceURL 指向 Contents/Resources，
+        // 文件却在里面再套一层 Resources/。两种都试，和上面两条生产路径同一套语义。
+        schemaURL = moduleResourceURL.flatMap { root in
+          let direct = root.appendingPathComponent(testRelativePath, isDirectory: false)
+          let nested = root.appendingPathComponent("Resources", isDirectory: true)
+            .appendingPathComponent(testRelativePath, isDirectory: false)
+          return fileManager.fileExists(atPath: direct.path) ? direct
+            : (fileManager.fileExists(atPath: nested.path) ? nested : direct)
+        }
       }
 
       guard let schemaURL else {

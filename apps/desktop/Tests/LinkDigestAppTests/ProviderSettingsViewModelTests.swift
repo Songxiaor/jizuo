@@ -559,12 +559,14 @@ final class ProviderSettingsViewModelTests: XCTestCase {
   }
 
   func testCatalogFailuresUseFixedLocalCopyAndRequireExplicitManualFallback() async throws {
+    // 每个失败码都得有自己的本机固定文案，不许把服务商原文直接抬上来；
+    // 这里的关键词跟着实际文案走（去工程化后不再提 404 / 1 MiB 这类细节）。
     let cases: [(ModelProviderErrorCode, String)] = [
-      (.authInvalid, "API Key"),
-      (.endpointNotFound, "404"),
+      (.authInvalid, "密钥"),
+      (.endpointNotFound, "模型列表"),
       (.networkInterrupted, "网络"),
-      (.inputTooLarge, "1 MiB"),
-      (.protocolIncompatible, "协议不兼容"),
+      (.inputTooLarge, "模型太多"),
+      (.protocolIncompatible, "看不懂"),
     ]
     for (code, marker) in cases {
       let model = ProviderSettingsViewModel(
@@ -779,7 +781,7 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertEqual(model.state, .unconfigured)
     XCTAssertTrue(model.shouldShowAPIKeyInput)
     XCTAssertFalse(model.isReplacingAPIKey)
-    XCTAssertEqual(model.statusText, "先验证模型列表并选择模型，再保存；\(ProductDisplay.name) 不会回显完整 API Key。")
+    XCTAssertEqual(model.statusText, "先读取模型列表并选一个模型，再保存；出于安全，\(ProductDisplay.name) 不会把已存的密钥显示出来。")
   }
 
   func testEmptyAPIKeyShowsErrorOnlyAfterExplicitSaveAttempt() async {
@@ -793,12 +795,12 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     await model.load()
     model.baseURL = "https://example.test/v1"
     model.modelName = "fixture-model"
-    XCTAssertEqual(model.statusText, "先验证模型列表并选择模型，再保存；\(ProductDisplay.name) 不会回显完整 API Key。")
+    XCTAssertEqual(model.statusText, "先读取模型列表并选一个模型，再保存；出于安全，\(ProductDisplay.name) 不会把已存的密钥显示出来。")
 
     await model.save(apiKey: "  \n")
 
     XCTAssertEqual(model.state, .failed(code: ProviderConfigurationError.apiKeyRequired.rawValue))
-    XCTAssertTrue(model.statusText.contains("API Key 不能为空"))
+    XCTAssertTrue(model.statusText.contains("密钥还没填"))
     XCTAssertTrue(model.shouldShowAPIKeyInput)
   }
 

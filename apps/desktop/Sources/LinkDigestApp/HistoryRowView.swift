@@ -14,10 +14,10 @@ struct HistoryRowView: View {
   @State private var isHovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  /// 图24 式状态点：已有总结产物为绿色，未总结为橙色。
-  private var isSummarized: Bool {
-    row.artifactPreview?.trimmedNonEmpty != nil
-  }
+  /// 图24 式状态点：已总结为绿色，未总结为橙色。
+  /// 口径与 `UIReadingHistoryRow` 和侧栏「待总结」保持同一个：只认总结本身，
+  /// 不把翻译、脑图留下的产物也算成「已总结」。
+  private var isSummarized: Bool { row.hasSummary == true }
 
   /// 高对比主题改用形状编码：实心 = 已总结，空心 = 未总结。
   /// 尺寸和其它主题保持一致，换主题时行内文字不会跟着挪位。
@@ -44,7 +44,9 @@ struct HistoryRowView: View {
       return original
     }
     if row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
-      return CapturedDocumentTitle.display(row.title, for: row.canonicalURL)
+      return DailyNoteTitleFormat.display(
+        CapturedDocumentTitle.display(row.title, for: row.canonicalURL)
+      )
     }
     return CapturedContentNaming.name(
       title: row.title, body: row.sourcePreview, host: row.host,
@@ -64,7 +66,10 @@ struct HistoryRowView: View {
   }
 
   private var rowPreviewLine: String? {
-    HistoryReadingTitle.listPreview(
+    if row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
+      return DailyNoteTitleFormat.firstLinePreview(row.sourcePreview)
+    }
+    return HistoryReadingTitle.listPreview(
       artifactPreview: cleanedArtifactPreview,
       primaryTitle: rowPrimaryTitle,
       authorFallback: row.author
@@ -84,7 +89,7 @@ struct HistoryRowView: View {
 
   private var compactTimeText: String {
     if let published = row.published?.trimmedNonEmpty {
-      return HistoryPublishedTimestampFormatter.compactText(published)
+      return "发布 " + HistoryPublishedTimestampFormatter.compactText(published)
     }
     return "存于 " + HistoryPublishedTimestampFormatter.compactDate(
       Date(timeIntervalSince1970: Double(row.createdAtMilliseconds ?? row.updatedAtMilliseconds) / 1_000)

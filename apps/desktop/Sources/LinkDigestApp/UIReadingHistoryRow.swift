@@ -11,12 +11,24 @@ struct UIReadingHistoryRow: View {
   let theme: HistoryThemeTokens
   /// 同一博主连续多条时，从第二条起副标题只留日期，不再每行重复作者名。
   var showsAuthor: Bool = true
+  /// 悬停动作与「按下」动作由父层注入：行只收值，不认识 ViewModel。
+  ///
+  /// 闭包不参与下面的 `Equatable`——它们捕获的是引用型 model 和这一行固定不变的
+  /// taskID，跟行数据无关；放进比较里也没法比（闭包不可比较）。
+  var onToggleFavorite: (() -> Void)?
+  var onSummarize: (() -> Void)?
+  var onActivate: (() -> Void)?
+  /// 「更多」菜单：和右键菜单同一份内容，由父层传进来，避免两处各写一遍。
+  var moreMenu: (() -> AnyView)?
   @State private var isHovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  private var isSummarized: Bool {
-    row.artifactPreview?.trimmedNonEmpty != nil
-  }
+  /// 「已总结」只认总结本身。
+  ///
+  /// 原来判断的是 `artifactPreview != nil`——那是「最近一次运行留下的产物」，
+  /// 翻译、脑图同样会写进去，于是只翻译过、从没总结过的内容也被标成绿点，
+  /// 而侧栏「待总结」仍然把它算在内：同一条内容两处说法相反。
+  private var isSummarized: Bool { row.hasSummary == true }
 
   @ViewBuilder private var statusIndicator: some View {
     if theme.encodesStatusByShape {
@@ -36,7 +48,9 @@ struct UIReadingHistoryRow: View {
       return original
     }
     if row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
-      return CapturedDocumentTitle.display(row.title, for: row.canonicalURL)
+      return DailyNoteTitleFormat.display(
+        CapturedDocumentTitle.display(row.title, for: row.canonicalURL)
+      )
     }
     return CapturedContentNaming.name(
       title: row.title, body: row.sourcePreview, host: row.host,
@@ -56,7 +70,10 @@ struct UIReadingHistoryRow: View {
   }
 
   private var rowPreviewLine: String? {
-    HistoryReadingTitle.listPreview(
+    if row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
+      return DailyNoteTitleFormat.firstLinePreview(row.sourcePreview)
+    }
+    return HistoryReadingTitle.listPreview(
       artifactPreview: cleanedArtifactPreview,
       primaryTitle: rowPrimaryTitle,
       authorFallback: row.author
@@ -74,9 +91,13 @@ struct UIReadingHistoryRow: View {
     row.author?.trimmedNonEmpty ?? HistoryPlatformDisplay.name(forHost: row.host)
   }
 
+  /// 日期列永远说清楚「这是哪个时间」。
+  ///
+  /// 原来只有回落到入库时间时才带「存于」，发布时间是光秃秃一个日期。同一列里
+  /// 一半带前缀一半不带，扫过去根本分不清哪条是原文发得早、哪条只是存得早。
   private var compactTimeText: String {
     if let published = row.published?.trimmedNonEmpty {
-      return HistoryPublishedTimestampFormatter.compactText(published)
+      return "发布 " + HistoryPublishedTimestampFormatter.compactText(published)
     }
     return "存于 " + HistoryPublishedTimestampFormatter.compactDate(
       Date(timeIntervalSince1970: Double(row.createdAtMilliseconds ?? row.updatedAtMilliseconds) / 1_000)
@@ -126,6 +147,17 @@ struct UIReadingHistoryRow: View {
           .lineLimit(2)
           .multilineTextAlignment(.leading)
           .frame(maxWidth: .infinity, alignment: .leading)
+        // 预览行原来只喂给 VoiceOver：算好了、骨架屏也给它留了位置，
+        // 视觉上却从来没画出来——看得见的人反而比读屏的人知道得少。
+        if let preview = rowPreviewLine, preview != rowPrimaryTitle {
+          Text(preview)
+            .themedFont(.subheadline)
+            .foregroundStyle(theme.secondaryText)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityHidden(true)
+        }
         HStack(alignment: .center, spacing: DesignTokens.Space.xs) {
           Text(showsAuthor ? rowSourceText : "")
             .themedFont(.subheadline)
@@ -176,11 +208,72 @@ struct UIReadingHistoryRow: View {
       value: isHovering
     )
     .onHover { isHovering = $0 }
+    .overlay(alignment: .trailing) { hoverActions }
     .fixedSize(horizontal: false, vertical: true)
     .id("\(row.taskID.rawValue)-\(row.updatedAtMilliseconds)")
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(rowAccessibilityLabel)
     .accessibilityValue(rowAccessibilityValue)
+    // 读屏和键盘都要能「打开这一条」。整行被合并成一个元素后，里面的
+    // 选中手势对 VoiceOver 不可见，没有这条动作就只能念、不能进。
+    .accessibilityAddTraits(.isButton)
+    .accessibilityAction { onActivate?() }
+    .accessibilityAction(named: Text("打开")) { onActivate?() }
+  }
+
+  private var showsHoverActions: Bool {
+    isHovering && (onToggleFavorite != nil || onSummarize != nil || moreMenu != nil)
+  }
+
+  /// 悬停时才露出的三个动作。
+  ///
+  /// 常驻会让每一行右侧都挂三个图标，扫标题时全是噪声；完全藏起来又等于没有——
+  /// 所以用 overlay 而不是塞进行内布局：显示和隐藏都不改变行的高度与文字位置。
+  @ViewBuilder private var hoverActions: some View {
+    if showsHoverActions {
+      HStack(spacing: DesignTokens.Space.xxs) {
+        if let onToggleFavorite {
+          Button(action: onToggleFavorite) {
+            Image(systemName: row.isFavorite == true ? "star.fill" : "star")
+              .foregroundStyle(row.isFavorite == true ? theme.warning : theme.secondaryText)
+          }
+          .buttonStyle(.plain)
+          .frame(width: 22, height: 20)
+          .contentShape(Rectangle())
+          .help(row.isFavorite == true ? "取消收藏" : "收藏")
+          .accessibilityLabel(row.isFavorite == true ? "取消收藏" : "收藏")
+          .accessibilityIdentifier("history-row-favorite")
+        }
+        if let onSummarize {
+          Button(action: onSummarize) {
+            Image(systemName: "text.badge.checkmark")
+          }
+          .buttonStyle(.plain)
+          .frame(width: 22, height: 20)
+          .contentShape(Rectangle())
+          .help("总结这条内容")
+          .accessibilityLabel("总结")
+          .accessibilityIdentifier("history-row-summarize")
+        }
+        if let moreMenu {
+          Menu { moreMenu() } label: { Image(systemName: "ellipsis") }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .frame(width: 22, height: 20)
+            .help("更多动作")
+            .accessibilityLabel("更多")
+            .accessibilityIdentifier("history-row-more")
+        }
+      }
+      .font(.system(size: DesignTokens.IconSize.control, weight: .medium))
+      .foregroundStyle(theme.secondaryText)
+      .padding(.horizontal, DesignTokens.Space.xs)
+      .padding(.vertical, DesignTokens.Space.xxs)
+      .background(theme.card, in: Capsule())
+      .overlay(Capsule().strokeBorder(theme.hairline, lineWidth: 1))
+      .padding(.trailing, DesignTokens.Space.xs)
+      .accessibilityElement(children: .contain)
+    }
   }
 
   private var rowBackground: Color {
@@ -269,5 +362,34 @@ private struct UIReadingListSelectionStyle: NSViewRepresentable {
         ancestor = view.superview
       }
     }
+  }
+}
+
+/// 每日笔记的展示标题：「2026-09-15」只是库里的幂等键，眼睛要看的是「9月15日」。
+enum DailyNoteTitleFormat {
+  static func display(_ stored: String) -> String {
+    let parts = stored.split(separator: "-")
+    guard parts.count == 3,
+          parts[0].count == 4,
+          let month = Int(parts[1]), (1...12).contains(month),
+          let day = Int(parts[2]), (1...31).contains(day)
+    else { return stored }
+    return "\(month)月\(day)日"
+  }
+
+  static func isISODateTitle(_ stored: String) -> Bool {
+    display(stored) != stored
+  }
+
+  static func firstLinePreview(_ body: String?) -> String? {
+    guard let body else { return nil }
+    let cleaned = MarkdownNoteFrontmatter.parse(body).body
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    if cleaned.isEmpty || cleaned == UserNoteDocument.placeholderBody { return nil }
+    guard let raw = cleaned.split(whereSeparator: \.isNewline).first else { return nil }
+    var line = String(raw).trimmingCharacters(in: .whitespacesAndNewlines)
+    if line.hasPrefix("# ") { line = String(line.dropFirst(2)) }
+    if line.isEmpty { return nil }
+    return String(line.prefix(240))
   }
 }

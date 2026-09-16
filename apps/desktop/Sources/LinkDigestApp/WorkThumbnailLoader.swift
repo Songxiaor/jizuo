@@ -3,6 +3,12 @@ import CryptoKit
 import Foundation
 import ImageIO
 
+/// 缩略图取不出可用画面时的原因。调用方据此决定退回什么占位。
+enum WorkThumbnailError: Error, Equatable {
+  /// 取到的帧几乎全黑（片头黑场、转场），当作没取到。
+  case blankPoster
+}
+
 /// CGImage is immutable; AppKit images are created only by the receiving view.
 struct WorkThumbnail: @unchecked Sendable {
   let image: CGImage
@@ -89,7 +95,7 @@ actor WorkThumbnailLoader {
       return hit.value
     }
     let value = try await Task.detached(priority: .utility) {
-      try Self.decodeVideoPoster(fileURL: contained, pixels: size)
+      try await Self.decodeVideoPoster(fileURL: contained, pixels: size)
     }.value
     try Task.checkCancellation()
     store(value, key: key)
@@ -214,7 +220,12 @@ actor WorkThumbnailLoader {
     return url
   }
 
-  nonisolated static func decodeVideoPoster(fileURL: URL, pixels: Int) throws -> WorkThumbnail {
+  /// 视频首帧常常是黑场（片头、转场），整排卡片就会出现一格纯黑。
+  /// 0.05s 取到全黑时往后再试两个时间点；都黑就报 `blankPoster`，由卡片换成
+  /// 平台图标占位——一格平台剪影比一格黑方块更像「这里是这个平台的视频」。
+  private static let videoPosterProbeSeconds: [Double] = [0.05, 1.0, 3.0]
+
+  nonisolated static func decodeVideoPoster(fileURL: URL, pixels: Int) async throws -> WorkThumbnail {
     let asset = AVURLAsset(url: fileURL)
     let generator = AVAssetImageGenerator(asset: asset)
     generator.appliesPreferredTrackTransform = true
@@ -222,9 +233,50 @@ actor WorkThumbnailLoader {
     generator.maximumSize = CGSize(width: edge, height: edge)
     generator.requestedTimeToleranceBefore = CMTime(seconds: 0.25, preferredTimescale: 600)
     generator.requestedTimeToleranceAfter = CMTime(seconds: 0.25, preferredTimescale: 600)
-    var actual = CMTime.zero
-    let image = try generator.copyCGImage(at: CMTime(seconds: 0.05, preferredTimescale: 600), actualTime: &actual)
-    return WorkThumbnail(image: image)
+    var firstError: Error?
+    for seconds in videoPosterProbeSeconds {
+      do {
+        // `copyCGImage` 从 macOS 15 起废弃（同步阻塞解码）；`image(at:)`
+        // 是同一件事的异步版本，顺带把 actualTime 也一起返回。
+        let image = try await generator.image(at: CMTime(seconds: seconds, preferredTimescale: 600)).image
+        if !isNearlyBlack(image) { return WorkThumbnail(image: image) }
+      } catch {
+        // 短片取不到 3s 这一点很正常，不当成失败；只有一个时间点都没成功才抛。
+        if firstError == nil { firstError = error }
+      }
+    }
+    if let firstError {
+      let decodable = await hasAnyDecodableFrame(generator)
+      if !decodable { throw firstError }
+    }
+    throw WorkThumbnailError.blankPoster
+  }
+
+  /// 一个时间点都解不出来时，原因是文件本身，而不是「画面全黑」。
+  nonisolated private static func hasAnyDecodableFrame(_ generator: AVAssetImageGenerator) async -> Bool {
+    (try? await generator.image(at: .zero).image) != nil
+  }
+
+  /// 全黑判定：把帧缩到 16×16 灰度再取平均亮度。够粗糙也够便宜——
+  /// 判的是「这一格是不是纯黑场」，不是画面质量。
+  nonisolated static func isNearlyBlack(_ image: CGImage, threshold: Double = 0.04) -> Bool {
+    let side = 16
+    var pixels = [UInt8](repeating: 0, count: side * side)
+    guard let space = CGColorSpace(name: CGColorSpace.linearGray) ?? CGColorSpace(name: CGColorSpace.genericGrayGamma2_2),
+          let context = CGContext(
+            data: &pixels,
+            width: side,
+            height: side,
+            bitsPerComponent: 8,
+            bytesPerRow: side,
+            space: space,
+            bitmapInfo: CGImageAlphaInfo.none.rawValue
+          )
+    else { return false }
+    context.draw(image, in: CGRect(x: 0, y: 0, width: side, height: side))
+    let total = pixels.reduce(0) { $0 + Int($1) }
+    let average = Double(total) / Double(pixels.count * 255)
+    return average <= threshold
   }
 
   nonisolated static func decode(_ data: Data, pixels: Int) throws -> WorkThumbnail {

@@ -9,6 +9,10 @@ import XCTest
 ///
 /// 判据用「图片自身有多大」而不是「它是不是表情」——按 URL 或域名识别表情要一个站
 /// 一个站加，换个图床就失效；尺寸是图片自带的事实。
+///
+/// @MainActor：宽度上限算在 `InlineArticleImageView` 上，那是个主 actor 隔离的
+/// 视图类型，测试也钉在主线程，否则隔离检查直接不编译。
+@MainActor
 final class InlineImageSizingTests: XCTestCase {
   private func maximumWidth(width: CGFloat, height: CGFloat) -> CGFloat {
     let image = NSImage(size: NSSize(width: width, height: height))

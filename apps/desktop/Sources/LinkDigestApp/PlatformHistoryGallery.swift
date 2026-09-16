@@ -17,7 +17,8 @@ enum PlatformHistoryGalleryPresentation {
     let name = platformDisplayName(for: selectedHosts)
     if !query.isEmpty { return "\(name) · 当前筛选" }
     if let total = matchingPlatformCount(selectedHosts: selectedHosts, in: navigationCounts) {
-      return "\(name) · \(total) 条"
+      // 全局统一口径：数的是「已保存的内容」，不是「抓过几次」。
+      return "\(name) · 已保存 \(total) 条内容"
     }
     return name
   }
@@ -28,8 +29,30 @@ enum PlatformHistoryGalleryPresentation {
 
   static func emptyMessage(selectedHosts: Set<String>, searchActive: Bool) -> String {
     let name = platformDisplayName(for: selectedHosts)
-    return searchActive ? "没有匹配的\(name)内容" : "尚未保存\(name)内容"
+    return searchActive ? "没有匹配的\(name)内容" : "还没有保存过\(name)内容"
   }
+
+  /// 空态的补充说明：图库只按当前来源筛选，出口在内容列表那边。
+  /// 原来这里只有一行「还没有保存过X内容」，不带图标也不带动作，用户只能去侧栏再点一次。
+  static let emptyHint = "这里只显示当前来源已保存的内容。回到内容列表可以看全部来源，或换一个来源。"
+
+  /// 页头左侧的返回：回到左中右三栏的内容列表，和博主作品页的「返回」同一个说法。
+  static let backToListTitle = "返回内容列表"
+
+  static let retryActionTitle = "重试"
+
+  static func loadFailureTitle(selectedHosts: Set<String>) -> String {
+    "无法载入\(platformDisplayName(for: selectedHosts))图库"
+  }
+
+  /// 三句：发生了什么、数据安不安全、现在能做什么。第三句对应「重试」按钮。
+  static let loadFailureMessage =
+    "这次没能从本机读出图库。已保存的内容都还在，这期间也不会写入任何变更。点「重试」再读一次。"
+
+  static let pageLoadFailureTitle = "无法继续载入"
+
+  static let pageLoadFailureMessage =
+    "这一页没能继续载入。已经显示的内容都还在，这期间也不会写入任何变更。点「重试」再读一次。"
 
   static func loadingMessage(selectedHosts: Set<String>) -> String {
     "正在载入\(platformDisplayName(for: selectedHosts))…"
@@ -69,7 +92,7 @@ enum PlatformHistoryGalleryPresentation {
 
 /// Unified card grid for every source-platform entry. Replaces per-platform gallery copies.
 struct PlatformHistoryGallery: View {
-  @ObservedObject var model: HistoryViewModel
+  var model: HistoryViewModel
   let theme: HistoryThemeTokens
   var searchFocused: FocusState<Bool>.Binding
   @Binding var scrollTarget: TaskID?
@@ -107,8 +130,18 @@ struct PlatformHistoryGallery: View {
       // 页头一行：标题和设置页页头同一字号；右端一个排序下拉，取代原来常驻的
       // 「按最近更新排列」说明文字。
       HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.md) {
+        // 图库是一条独立的路：进来之后原本没有出口，只能靠侧栏再点一次。
+        // 和博主作品页的「返回」同一个位置、同一个样式。
+        Button(PlatformHistoryGalleryPresentation.backToListTitle) {
+          model.clearHostSelection()
+        }
+        .buttonStyle(.appQuiet)
+        .controlSize(.small)
+        .help("回到左中右三栏的内容列表")
+        .accessibilityLabel(PlatformHistoryGalleryPresentation.backToListTitle)
+        .accessibilityIdentifier("\(accessibilityPrefix)-back-to-list")
         Text(titleText)
-          .font(.system(size: 18, weight: .semibold))
+          .themedFont(.title3, weight: .semibold)
           .foregroundStyle(theme.primaryText)
           .lineLimit(1)
           .accessibilityIdentifier("\(accessibilityPrefix)-title")
@@ -121,7 +154,10 @@ struct PlatformHistoryGallery: View {
         .pickerStyle(.menu)
         .labelsHidden()
         .fixedSize()
+        // 系统蓝会在三套主题里都跳出来；排序不是强调项，收回主题色。
+        .tint(theme.accent)
         .help("只排序已加载的卡片；\(PlatformHistoryGalleryPresentation.sortCaption(searchActive: searchActive))")
+        .accessibilityLabel("排序")
         .accessibilityIdentifier("\(accessibilityPrefix)-sort")
       }
       .padding(.horizontal, 14)
@@ -130,8 +166,8 @@ struct PlatformHistoryGallery: View {
       HStack(spacing: 6) {
         Image(systemName: "magnifyingglass")
           .foregroundStyle(theme.secondaryText)
-        TextField("搜索标题、正文、总结、标签", text: $model.searchText)
-          .textFieldStyle(.plain)
+        DebouncedSearchField(placeholder: "搜索标题、正文、总结、标签", committed: model.searchText,
+                             onChange: { model.searchText = $0 })
           .focused(searchFocused)
       }
       .padding(.horizontal, 9)
@@ -198,15 +234,26 @@ struct PlatformHistoryGallery: View {
           .padding()
           .accessibilityIdentifier("\(accessibilityPrefix)-loading")
       } else if model.listState == .failed {
-        Button("载入失败，点击重试", action: model.retryList)
-          .padding()
-          .accessibilityIdentifier("\(accessibilityPrefix)-retry")
+        HistoryInlineState(
+          symbol: "exclamationmark.triangle",
+          title: PlatformHistoryGalleryPresentation.loadFailureTitle(selectedHosts: selectedHosts),
+          message: PlatformHistoryGalleryPresentation.loadFailureMessage,
+          actionTitle: PlatformHistoryGalleryPresentation.retryActionTitle,
+          action: { model.retryList() }
+        )
+        .padding()
+        .accessibilityIdentifier("\(accessibilityPrefix)-retry")
       } else {
-        Text(PlatformHistoryGalleryPresentation.emptyMessage(
-          selectedHosts: selectedHosts,
-          searchActive: searchActive
-        ))
-        .foregroundStyle(theme.secondaryText)
+        HistoryInlineState(
+          symbol: "tray",
+          title: PlatformHistoryGalleryPresentation.emptyMessage(
+            selectedHosts: selectedHosts,
+            searchActive: searchActive
+          ),
+          message: PlatformHistoryGalleryPresentation.emptyHint,
+          actionTitle: PlatformHistoryGalleryPresentation.backToListTitle,
+          action: { model.clearHostSelection() }
+        )
         .padding()
         .accessibilityIdentifier("\(accessibilityPrefix)-empty")
       }
@@ -216,9 +263,15 @@ struct PlatformHistoryGallery: View {
         .padding(.vertical, 8)
         .accessibilityIdentifier("\(accessibilityPrefix)-page-loading")
     } else if model.listErrorCode != nil, model.canRetryList {
-      Button("继续加载失败，点击重试", action: model.retryList)
-        .padding(.vertical, 8)
-        .accessibilityIdentifier("\(accessibilityPrefix)-page-retry")
+      HistoryInlineState(
+        symbol: "exclamationmark.triangle",
+        title: PlatformHistoryGalleryPresentation.pageLoadFailureTitle,
+        message: PlatformHistoryGalleryPresentation.pageLoadFailureMessage,
+        actionTitle: PlatformHistoryGalleryPresentation.retryActionTitle,
+        action: { model.retryList() }
+      )
+      .padding(.vertical, 8)
+      .accessibilityIdentifier("\(accessibilityPrefix)-page-retry")
     }
   }
 
@@ -254,8 +307,10 @@ private struct PlatformGalleryCell<Menu: View>: View {
       CreatorSavedWorkCard(row: row, theme: theme, localCover: localCover)
     }
     .buttonStyle(.plain)
-    .accessibilityElement(children: .contain)
-    .accessibilityHint("打开内容")
+    .accessibilityElement(children: .combine)
+    // 原来只有一句 hint「打开内容」挂在没有名字的元素上，VoiceOver 念出来是
+    // 「按钮，打开内容」，一屏几十张卡全一样。名字改用这条内容的标题。
+    .accessibilityLabel(CreatorDirectoryCardCopy.accessibilityTitle(row: row))
     .accessibilityIdentifier("\(accessibilityPrefix)-card-\(row.taskID.rawValue)")
     .contextMenu { contextMenu() }
     .overlay(alignment: .topTrailing) {

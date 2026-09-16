@@ -23,7 +23,7 @@ struct ProviderSettingsView: View {
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
   private enum SettingsTab: String, Hashable, CaseIterable, Identifiable {
-    case service, generation, appearance, mediaStorage, knowledgeVault, companionSync, siteLogin, browserSupport, mcp, updates, labs
+    case service, generation, appearance, mediaStorage, knowledgeVault, dataBackup, companionSync, siteLogin, browserSupport, mcp, updates, labs
     var id: String { rawValue }
     var title: String {
       switch self {
@@ -32,11 +32,12 @@ struct ProviderSettingsView: View {
       case .appearance: "外观"
       case .mediaStorage: "视频存储"
       case .knowledgeVault: "知识库同步"
+      case .dataBackup: "数据与备份"
       case .companionSync: "手机同步"
       case .siteLogin: "站点登录"
       case .browserSupport: "浏览器支持"
       case .updates: "版本与更新"
-      case .mcp: "MCP 连接"
+      case .mcp: "AI 助手接入"
       case .labs: "实验室"
       }
     }
@@ -47,6 +48,7 @@ struct ProviderSettingsView: View {
       case .appearance: "paintpalette"
       case .mediaStorage: "externaldrive"
       case .knowledgeVault: "folder.badge.gearshape"
+      case .dataBackup: "externaldrive.badge.timemachine"
       case .companionSync: "iphone.and.arrow.forward"
       case .siteLogin: "person.crop.circle.badge.checkmark"
       case .browserSupport: "puzzlepiece.extension"
@@ -65,7 +67,16 @@ struct ProviderSettingsView: View {
     /// 两处侧栏都读这里,不各自过滤:漏掉一处的表现是「换个主题实验室又
     /// 冒出来了」,而那种 bug 没人会想到去换主题才发现。
     static var visibleCases: [SettingsTab] {
-      allCases.filter { $0 != .labs || ExperimentalFeatures.isOfferedToUsers }
+      allCases.filter { tab in
+        switch tab {
+        case .labs: ExperimentalFeatures.isOfferedToUsers
+        // 手机同步还没做完，这一版不给用户看。判据收在 ExperimentalFeatures 里，
+        // 因为「不给看入口」和「启动时不要自动往 iCloud 传」必须是同一个开关——
+        // 原来这里是个裸 false，而启动路径上那次同步根本没有跟着它走。
+        case .companionSync: ExperimentalFeatures.isCompanionSyncOffered
+        default: true
+        }
+      }
     }
   }
 
@@ -95,7 +106,7 @@ struct ProviderSettingsView: View {
       case .aiAndProcessing: [.service, .generation]
       case .readingAndAppearance: [.appearance, .labs]
       case .connection: [.mcp, .browserSupport, .siteLogin]
-      case .dataAndStorage: [.mediaStorage, .knowledgeVault, .companionSync]
+      case .dataAndStorage: [.mediaStorage, .dataBackup, .knowledgeVault, .companionSync]
       case .aboutAndUpdates: [.updates]
       }
     }
@@ -111,8 +122,8 @@ struct ProviderSettingsView: View {
   private static let outputLanguagePresets = ["简体中文", "繁體中文", "English", "日本語", "한국어", "Español", "Français", "Deutsch"]
   private static let customOutputLanguageTag = "__custom__"
 
-  @ObservedObject var model: ProviderSettingsViewModel
-  @ObservedObject var appModel: AppViewModel
+  @Bindable var model: ProviderSettingsViewModel
+  var appModel: AppViewModel
   @ObservedObject var browserSupport: BrowserSupportViewModel
   @ObservedObject var mediaStorage: MediaStorageSettingsViewModel
   @ObservedObject var knowledgeVault: KnowledgeVaultSettingsViewModel
@@ -127,6 +138,10 @@ struct ProviderSettingsView: View {
   @State private var pendingGroupDeletion: LibraryProviderGroup?
   /// 「清除授权记录」按下之后的一行反馈。成功和失败都要说，因为清除本身没有可见效果。
   @State private var consentRevokeNotice: String?
+  /// 「清除授权记录」的二次确认。清完之后每一项都会重新问一遍，是会改变后续行为的重置。
+  @State private var isConsentRevokeConfirmationPresented = false
+  /// 「重置为默认提示词」的二次确认。用户手写的提示词会被整段覆盖，且没有撤销。
+  @State private var isPromptResetConfirmationPresented = false
   /// 当前展开的服务商。同时只展开一家：模型清单落在网格下面，同时摊开两家就分不清
   /// 哪一段属于谁。默认全部收起——归拢的意义就是先只看「有哪几家」。
   @State private var expandedLibraryProvider: String?
@@ -143,6 +158,15 @@ struct ProviderSettingsView: View {
   @AppStorage(VoiceSettings.storageKey) private var voiceSettingsRaw = ""
   @AppStorage(TopicSchedule.storageKey) private var topicScheduleRaw = ""
   @AppStorage(ExperimentalFeatures.hitLabKey) private var isHitLabEnabled = false
+  /// 切回汲作时要不要看一眼剪贴板里有没有链接。默认开：这是「复制一条链接、切回来
+  /// 就能存」的那条最短路径，关掉之后每次都得自己粘。
+  ///
+  /// 键名写死在这里而不是借 `ExperimentalFeatures`：这不是实验开关，是一条普通偏好，
+  /// 读它的地方按同一个键读 `UserDefaults.standard` 即可。
+  @AppStorage(Self.clipboardLinkDetectionKey) private var isClipboardLinkDetectionEnabled = true
+
+  /// 剪贴板链接检测的偏好键。读取方按同一个键读 `UserDefaults.standard`。
+  static let clipboardLinkDetectionKey = "capture.clipboardLinkDetectionEnabled"
 
   private func scheduleBinding<Value>(
     _ keyPath: WritableKeyPath<TopicSchedule, Value>
@@ -263,11 +287,12 @@ struct ProviderSettingsView: View {
         .themedFont(.subheadline)
         .foregroundStyle(.secondary)
       VStack(alignment: .leading, spacing: 4) {
-        // 预览句直接用主窗口侧栏的真实文案：原来写的「未总结 / 哔哩哔哩 / 待分类」
-        // 和侧栏实际显示的「待总结 / B站 / 其他」对不上，预览预览的是一套不存在的界面。
-        Text("待总结 149     B站 5     其他 9")
+        // 预览句用中性的示例文字，不抄侧栏的真实分类和计数：写着「待总结 149」的
+        // 预览会被当成状态读——用户以为自己真有 149 条没总结，而那个数字是死的。
+        // 预览要验证的是字形在 10pt 上立不立得住，示例词同样能验证。
+        Text("示例标题　示例分类 12　其他 9")
           .themedFont(.subheadline)
-        Text("2026-08-17 19:24 · 已保存到本机 · 19.6 MB")
+        Text("2026-08-17 19:24 · 示例说明文字 · 19.6 MB")
           .themedFont(.subheadline)
           .foregroundStyle(.secondary)
       }
@@ -363,6 +388,8 @@ struct ProviderSettingsView: View {
           MediaStorageSettingsView(model: mediaStorage)
         case .knowledgeVault:
           KnowledgeVaultSettingsView(model: knowledgeVault)
+        case .dataBackup:
+          DataBackupSettingsView()
         case .companionSync:
           CompanionNoteSyncSettingsView(model: companionSync)
         case .siteLogin:
@@ -384,11 +411,14 @@ struct ProviderSettingsView: View {
     // 复用主界面那套工具栏主题 modifier，避免两处各写一份判据再各自漂移。
     .modifier(HistoryWindowToolbarThemeModifier(theme: settingsTheme))
     .frame(
+      // 默认开得下一整张卡：900×700 时「模型服务」和「自动处理管线」这种高卡
+      // 一进来就被窗口下沿切掉，用户以为页面到此为止。960×720 是实测能把最高的
+      // 那张卡连同它的操作行一起放进一屏的尺寸。min 不动，窗口照旧能缩。
       minWidth: 780,
-      idealWidth: 900,
+      idealWidth: 960,
       maxWidth: .infinity,
       minHeight: 560,
-      idealHeight: 700,
+      idealHeight: 720,
       maxHeight: .infinity
     )
     .foregroundStyle(settingsTheme.primaryText)
@@ -396,12 +426,14 @@ struct ProviderSettingsView: View {
     .accentColor(settingsTheme.accent)
     .onAppear {
       AppearanceTheme.applyApplicationAppearance(appearanceThemeRaw)
-      if let raw = SettingsNavigationRequest.consume(), let tab = SettingsTab(rawValue: raw) {
+      if let raw = SettingsNavigationRequest.consume(), let tab = SettingsTab(rawValue: raw),
+         SettingsTab.visibleCases.contains(tab) {
         selectedTab = tab
       }
     }
     .onReceive(NotificationCenter.default.publisher(for: SettingsNavigationRequest.notification)) { note in
-      guard let raw = note.object as? String, let tab = SettingsTab(rawValue: raw) else { return }
+      guard let raw = note.object as? String, let tab = SettingsTab(rawValue: raw),
+            SettingsTab.visibleCases.contains(tab) else { return }
       selectedTab = tab
       UserDefaults.standard.removeObject(forKey: SettingsNavigationRequest.defaultsKey)
     }
@@ -508,7 +540,7 @@ struct ProviderSettingsView: View {
       }
       Button("取消", role: .cancel) { pendingDeletionID = nil }
     } message: {
-      Text("对应的 API Key 会一并从本机钥匙串移除；正在使用它的功能会回到未配置或本机状态。")
+      Text("这个模型的密钥会一并从本机钥匙串里删掉，删了没法撤销。你保存的内容一条都不会少；正在用它的功能会回到「未配置」或改用本机处理。")
     }
     .confirmationDialog(
       "删除「\(pendingGroupDeletion?.id ?? "")」下的全部 \(pendingGroupDeletion?.entries.count ?? 0) 个模型？",
@@ -527,7 +559,7 @@ struct ProviderSettingsView: View {
       .accessibilityIdentifier("delete-library-provider-confirm")
       Button("取消", role: .cancel) { pendingGroupDeletion = nil }
     } message: {
-      Text("这家服务商的 API Key 会一并从本机钥匙串移除；正在用这些模型的功能会回到未配置或本机状态。")
+      Text("这家服务商的密钥会一并从本机钥匙串里删掉，删了没法撤销。你保存的内容一条都不会少；正在用这些模型的功能会回到「未配置」或改用本机处理。")
     }
   }
 
@@ -550,7 +582,12 @@ struct ProviderSettingsView: View {
   // 合并标题会让人以为这里已经管了翻译。
   @ViewBuilder private var capabilityAssignmentRows: some View {
     VStack(alignment: .leading, spacing: 0) {
-      assignmentRow(title: UISettingsPresentation.summaryAssignmentTitle) {
+      assignmentRow(
+        title: UISettingsPresentation.summaryAssignmentTitle,
+        // 这一行是整页的中心，原来却是六行里唯一没有 ⓘ 的：用户看不出「总结模型」
+        // 到底管到哪儿，也不知道翻译和校对为什么会跟着它变。
+        details: "把内容写成总结时用这个模型。翻译和校对如果没单独指定，也跟着它走。换成别的模型只影响以后生成的总结，已经生成的不会变。"
+      ) {
         if model.libraryEntryDisplays.isEmpty {
           Text("先在下方添加模型")
             .themedFont(.body)
@@ -613,13 +650,27 @@ struct ProviderSettingsView: View {
         )
       }
 
-      assignmentRow(title: UISettingsPresentation.imageRecognitionTitle) {
-        Text("Apple Vision · 本机离线")
-          .themedFont(.body)
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
-          .settingsControlWidth()
-          .accessibilityIdentifier("image-text-assignment-picker")
+      // 这一行不可改，所以要一眼看出它不是控件。
+      //
+      // 前五行的控件都是 240pt 的描边下拉；这一行原来同宽同位地摆一段灰字，
+      // 于是看起来像一个点不开的下拉——「为什么别的能选，这个点不动」。
+      // 现在明确成只读：灰字、不占控件槽位、右对齐贴边，并说清楚为什么没得选。
+      assignmentRow(
+        title: UISettingsPresentation.imageRecognitionTitle,
+        details: "读图片里的文字（包括视频画面上的字幕）固定用 Mac 自带的识别能力，全程在本机完成，不会把图片发出去，也不消耗任何额度。所以这一项没有可选项。"
+      ) {
+        VStack(alignment: .trailing, spacing: DesignTokens.Space.xxs) {
+          Text("Apple Vision · 本机离线")
+            .themedFont(.body)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+          Text("本机离线，不需要配置")
+            .themedFont(.subheadline)
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("image-text-assignment-picker")
       }
     }
   }
@@ -911,10 +962,6 @@ struct ProviderSettingsView: View {
             .themedFont(.subheadline)
             .foregroundStyle(.secondary)
           Spacer(minLength: 8)
-          Image(systemName: "chevron.right")
-            .font(.caption2.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .rotationEffect(.degrees(expanded ? 90 : 0))
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .frame(height: 40)
@@ -923,6 +970,7 @@ struct ProviderSettingsView: View {
       .buttonStyle(.plain)
       .accessibilityIdentifier("library-provider-group")
       // 整组删除收进组头的更多菜单：一家服务商十来个模型，一条条删太折腾。
+      // 菜单自带的下拉小箭头隐藏掉：原来它被挤到行尾，看起来像第三个控件。
       Menu {
         Button("删除这家的全部模型（\(group.entries.count) 个）", role: .destructive) {
           pendingGroupDeletion = group
@@ -932,9 +980,18 @@ struct ProviderSettingsView: View {
         Image(systemName: "ellipsis.circle")
       }
       .menuStyle(.borderlessButton)
+      .menuIndicator(.hidden)
+      .fixedSize()
       .help("更多")
       .accessibilityLabel("这家服务商的更多操作")
       .accessibilityIdentifier("library-provider-more")
+      // 展开箭头放在行尾，和「更多」并排，整行点击才是展开动作。
+      Image(systemName: "chevron.down")
+        .font(.caption2.weight(.semibold))
+        .foregroundStyle(.secondary)
+        .rotationEffect(.degrees(expanded ? 0 : -90))
+        .frame(width: 16)
+        .accessibilityHidden(true)
     }
   }
 
@@ -972,9 +1029,13 @@ struct ProviderSettingsView: View {
         Image(systemName: "ellipsis.circle")
       }
       .menuStyle(.borderlessButton)
+      .menuIndicator(.hidden)
+      .fixedSize()
       .help("更多")
       .accessibilityLabel("更多操作")
       .accessibilityIdentifier("library-model-more")
+      // 和组头的展开箭头对齐，占同样宽度。
+      Color.clear.frame(width: 16)
     }
     .padding(.leading, DesignTokens.Space.xl)
     .frame(height: 40)
@@ -985,8 +1046,10 @@ struct ProviderSettingsView: View {
     Text(text)
       .themedFont(.caption2, weight: .semibold)
       .padding(.horizontal, 6).padding(.vertical, 2)
-      .background(Color.accentColor.opacity(0.15), in: Capsule())
-      .foregroundStyle(Color.accentColor)
+      // 主题色，不是 `Color.accentColor`：后者读的是 App 级强调色（默认系统蓝），
+      // 不受窗口根部 `.tint(theme.accent)` 影响——暖褐主题下这枚徽标会是蓝的。
+      .background(settingsTheme.accent.opacity(0.15), in: Capsule())
+      .foregroundStyle(settingsTheme.accent)
   }
 
   // MARK: - 模型编辑器
@@ -1160,7 +1223,7 @@ struct ProviderSettingsView: View {
       if model.selectedPreset == .commandCode {
         HStack(spacing: 16) {
           Link("套餐与 API 接入说明", destination: URL(string: "https://commandcode.ai/docs/provider")!)
-          Link("获取 API Key", destination: URL(string: "https://commandcode.ai/docs/studio#api-keys")!)
+          Link("获取密钥", destination: URL(string: "https://commandcode.ai/docs/studio#api-keys")!)
         }
         .themedFont(.subheadline)
         .accessibilityIdentifier("command-code-setup-links")
@@ -1175,22 +1238,22 @@ struct ProviderSettingsView: View {
       VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
         Grid(alignment: .leading, horizontalSpacing: 20, verticalSpacing: 12) {
           GridRow(alignment: .firstTextBaseline) {
-            Text("Base URL")
+            Text("服务地址")
               .frame(width: 86, alignment: .leading)
             TextField("", text: $model.baseURL, prompt: Text("https://api.example.com/v1"))
               .labelsHidden()
-              .accessibilityLabel("Base URL")
+              .accessibilityLabel("服务地址")
               .disabled(model.isSaving || model.isConfigurationLoading || model.isLoadingModels)
               .accessibilityIdentifier("provider-base-url")
           }
 
           GridRow(alignment: .firstTextBaseline) {
-            Text("API Key")
+            Text("密钥")
               .frame(width: 86, alignment: .leading)
             if model.shouldShowAPIKeyInput {
               SecureField("", text: $apiKeyInput, prompt: Text("输入密钥"))
                 .labelsHidden()
-                .accessibilityLabel("API Key")
+                .accessibilityLabel("密钥")
                 .disabled(model.isSaving || model.isConfigurationLoading || model.isLoadingModels)
                 .accessibilityIdentifier("provider-api-key")
             } else {
@@ -1253,7 +1316,7 @@ struct ProviderSettingsView: View {
                       } label: {
                         HStack(spacing: 10) {
                           Image(systemName: alreadyAdded ? "checkmark.circle" : (model.selectedCatalogModels.contains(name) ? "checkmark.square.fill" : "square"))
-                            .foregroundStyle(model.selectedCatalogModels.contains(name) ? Color.accentColor : .secondary)
+                            .foregroundStyle(model.selectedCatalogModels.contains(name) ? settingsTheme.accent : .secondary)
                           Text(name)
                             .foregroundStyle(alreadyAdded ? .secondary : .primary)
                             .lineLimit(1)
@@ -1288,7 +1351,7 @@ struct ProviderSettingsView: View {
                 .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(settingsTheme.hairline, lineWidth: 1))
                 Text("已选择 \(model.selectedCatalogModelCount) 个模型")
                   .themedFont(.subheadline)
-                  .foregroundStyle(model.selectedCatalogModelCount == 0 ? .secondary : Color.accentColor)
+                  .foregroundStyle(model.selectedCatalogModelCount == 0 ? Color.secondary : settingsTheme.accent)
                   .accessibilityIdentifier("provider-model-selection-count")
               }
             }
@@ -1710,13 +1773,13 @@ struct ProviderSettingsView: View {
   /// `https://opencode.ai/zen/v1` 里真正有信息量的就是 `opencode.ai`。
   /// 完整 Base URL 在同一张卡的「了解更多」里。
   private var dataDestinationLine: (message: String, symbol: String) {
-    guard let identity = model.dataDestinationCard else {
-      return ("保存有效模型服务配置后，这里会显示发送目的地。", "arrow.up.doc")
+    guard let destination = model.dataDestinationDisplay else {
+      return ("配好一个模型之后，这里会告诉你内容会发到哪儿。", "arrow.up.doc")
     }
-    if identity.isLocalEndpoint {
-      return ("内容将发送到本地端点 · \(identity.model)", "desktopcomputer")
+    if model.isLocalEndpoint {
+      return ("将发送到这台 Mac 上运行的 \(destination.provider) · \(destination.model)", "desktopcomputer")
     }
-    return ("内容将发送至 \(identity.host) · \(identity.model)", "arrow.up.doc")
+    return ("将发送到 \(destination.provider) · \(destination.model)", "arrow.up.doc")
   }
 
   private var generationTab: some View {
@@ -1752,6 +1815,20 @@ struct ProviderSettingsView: View {
                   .accessibilityIdentifier("output-language-custom")
               }
             }
+          }
+
+          // 和「输出语言」同组：两条都是「新内容进来之前」的偏好，而下面那张卡
+          // 讲的是「进来之后跑什么」。
+          SettingsRow(
+            title: "切回汲作时检测剪贴板里的链接",
+            caption: "在别处复制了一条链接，切回汲作就直接问你要不要保存。",
+            details: "只在汲作重新变成当前窗口的那一刻看一眼剪贴板，而且只认链接；剪贴板里的其它内容不读、不留、也不发出去。关掉之后仍然可以自己粘贴链接添加。"
+          ) {
+            Toggle("", isOn: $isClipboardLinkDetectionEnabled)
+              .toggleStyle(.switch)
+              .labelsHidden()
+              .accessibilityLabel("切回汲作时检测剪贴板里的链接")
+              .accessibilityIdentifier("capture-clipboard-link-detection")
           }
       }
 
@@ -1825,7 +1902,7 @@ struct ProviderSettingsView: View {
               .fixedSize(horizontal: false, vertical: true)
               .frame(maxWidth: .infinity, alignment: .leading)
             if let identity = model.dataDestinationCard {
-              LabeledContent("Base URL", value: identity.normalizedBaseURL)
+              LabeledContent("服务地址", value: identity.normalizedBaseURL)
             }
           }
           .themedFont(.subheadline)
@@ -1848,14 +1925,29 @@ struct ProviderSettingsView: View {
               .fixedSize(horizontal: false, vertical: true)
           }
           Spacer(minLength: DesignTokens.Space.md)
-          Button("清除授权记录") {
-            Task {
-              let cleared = await appModel.revokeRememberedConsents()
-              consentRevokeNotice = cleared ? "已清除。下一次发送会重新询问。" : "清除失败：无法写入本机记录。"
+          // 清除之后每一项都会重新问一遍，是一次会改变后续行为的重置动作：危险色 +
+          // 先问一句。清除本身没有可见效果，所以结果仍然用左边那行反馈。
+          Button("清除授权记录") { isConsentRevokeConfirmationPresented = true }
+            .buttonStyle(.appDestructive(appTheme.danger))
+            .accessibilityIdentifier("revoke-remembered-consents")
+            .confirmationDialog(
+              "清除已经记住的发送授权？",
+              isPresented: $isConsentRevokeConfirmationPresented,
+              titleVisibility: .visible
+            ) {
+              Button("清除授权记录", role: .destructive) {
+                Task {
+                  let cleared = await appModel.revokeRememberedConsents()
+                  consentRevokeNotice = cleared
+                    ? "已清除。下一次发送会重新问你一遍。"
+                    : "没能清除：这条记录没写进去，授权还是原来那样。请再点一次。"
+                }
+              }
+              .accessibilityIdentifier("revoke-remembered-consents-confirm")
+              Button("取消", role: .cancel) {}
+            } message: {
+              Text("会忘掉「你已经同意过把内容发给哪些服务商、用过哪些在线功能」这些记录，之后每一项都会重新问你一次。你保存的内容、模型配置和密钥都不受影响。")
             }
-          }
-          .buttonStyle(.appQuiet)
-          .accessibilityIdentifier("revoke-remembered-consents")
         }
       }
       .padding(.vertical, DesignTokens.Space.md)
@@ -1906,10 +1998,23 @@ struct ProviderSettingsView: View {
                 .accessibilityIdentifier("summary-prompt")
               HStack {
                 Spacer(minLength: 0)
-                Button("重置为默认提示词", action: model.resetSummaryPrompt)
-                  .buttonStyle(.appQuiet)
+                // 重置会把用户自己写的提示词整段覆盖掉，而且没有撤销——这一栏里
+                // 唯一不可逆的动作，必须先问一句，并且不能和「了解更多」一样低调。
+                Button("重置为默认提示词") { isPromptResetConfirmationPresented = true }
+                  .buttonStyle(.appDestructive(appTheme.danger))
                   .disabled(model.preferencesState == .saving)
                   .accessibilityIdentifier("reset-summary-prompt")
+                  .confirmationDialog(
+                    "把总结提示词换回默认的？",
+                    isPresented: $isPromptResetConfirmationPresented,
+                    titleVisibility: .visible
+                  ) {
+                    Button("重置为默认提示词", role: .destructive) { model.resetSummaryPrompt() }
+                      .accessibilityIdentifier("reset-summary-prompt-confirm")
+                    Button("取消", role: .cancel) {}
+                  } message: {
+                    Text("你写的提示词会被覆盖，不能撤销——需要的话先把上面这段文字复制出来。已经生成好的总结不会变，只影响以后生成的。")
+                  }
               }
             }
           }
@@ -2085,11 +2190,11 @@ struct ProviderSettingsView: View {
       VStack(spacing: 0) {
         Text("\(index)")
           .themedFont(.caption2, weight: .bold, monospacedDigit: true)
-          .foregroundStyle(isOn.wrappedValue ? Color.accentColor : Color.secondary)
+          .foregroundStyle(isOn.wrappedValue ? settingsTheme.accent : Color.secondary)
           .frame(width: 18, height: 18)
           .background(
             Circle().fill(
-              (isOn.wrappedValue ? Color.accentColor : Color.secondary).opacity(0.15)
+              (isOn.wrappedValue ? settingsTheme.accent : Color.secondary).opacity(0.15)
             )
           )
         // 连线让「这是一条链」成为结构而不是文案。
@@ -2182,13 +2287,13 @@ struct ProviderSettingsView: View {
           RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
             .fill(
               selected
-                ? Color.accentColor.opacity(0.12)
+                ? theme.accent.opacity(0.12)
                 : (isHovering ? theme.primaryText.opacity(0.035) : theme.card)
             )
         )
         .overlay(
           RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-            .strokeBorder(selected ? Color.accentColor : theme.hairline, lineWidth: 1)
+            .strokeBorder(selected ? theme.accent : theme.hairline, lineWidth: 1)
         )
         .contentShape(Rectangle())
         .animation(
@@ -2355,6 +2460,9 @@ struct ProviderSettingsView: View {
 /// 同为近白底的浅色、石楠、珊瑚和高对比。
 private struct ThemeSwatchPicker: View {
   @Binding var selection: String
+  /// 选中框走主题强调色。`Color.accentColor` 是 App 级强调色（默认系统蓝），
+  /// 在色卡这种「一堆颜色里挑一个」的地方尤其扎眼。
+  @Environment(\.appTheme) private var appTheme
 
   // adaptive 而不是固定列数：设置窗口可以拖宽，固定 5 列在窄窗口会溢出，
   // 固定 3 列在宽窗口又留一大片空白。
@@ -2413,7 +2521,7 @@ private struct ThemeSwatchPicker: View {
     .padding(3)
     .background {
       RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
-        .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2)
+        .strokeBorder(isSelected ? appTheme.accent : .clear, lineWidth: 2)
     }
     .contentShape(Rectangle())
   }

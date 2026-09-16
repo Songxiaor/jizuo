@@ -8,7 +8,7 @@ import SwiftUI
 ///
 /// 默认收起。它不是每天要看的东西,而侧栏上面那两块是。
 struct MethodLibraryView: View {
-  @ObservedObject var model: HistoryViewModel
+  var model: HistoryViewModel
   @Environment(\.appTheme) private var appTheme
 
   @State private var isExpanded = false

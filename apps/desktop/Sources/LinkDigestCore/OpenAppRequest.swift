@@ -6,6 +6,9 @@ import Foundation
 /// 签名声明会把这条 URL 吞掉，正在跑的汲作也不会到前台。Host 已经能用绝对路径
 /// `open` 同包 App，发送内容走的就是这条；打开按钮必须复用它。
 public struct OpenAppRequest: Sendable, Equatable {
+  /// Host 与扩展双方认可的 openApp 版本。成功响应会把这个列表带回去，供对端做协商。
+  public static let supportedVersions = [1]
+
   public let version: Int
   public let requestId: String
 

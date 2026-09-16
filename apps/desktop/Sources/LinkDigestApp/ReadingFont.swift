@@ -119,8 +119,30 @@ enum RecommendedFonts {
   ///
   /// 比阅读字体多一条要求——**10pt 上要立得住**。界面里最小的字（计数、时间戳）
   /// 是 10pt，笔画细的字体在这个尺寸上会发虚。
+  ///
+  /// 界面字体还有一条阅读字体没有的硬要求：**中西混排**。界面里每个字串都同时
+  /// 含中文和拉丁字母/数字（「已保存到本机 · 61.3 MB」「@gkxspace」），而中文字体
+  /// 自带的西文部分普遍是弱项——PingFang SC 的西文是界内公认最平庸的一环，
+  /// 思源黑体的西文同样偏窄偏紧。这里的取舍是：**只收一个家族同时把两边都做好的**，
+  /// 而不是让 CoreText 逐字回退（回退不做标点挤压，就是当初 New York 那个
+  /// 「每个逗号后裂一道缝」）。下面排在 PingFang 之后的那几款，正是按这条选的：
+  /// 它们的西文要么是自绘的（MiSans / HarmonyOS Sans），要么干脆是拿 Inter
+  /// 缝进来的（更纱黑体 = Inter + 思源黑体）。
+  ///
+  /// 全部免费商用，但不随 macOS 附带——没装的会被 `available()` 过滤掉，
+  /// 装了才出现在「推荐」里。获取方式见每行注释。
   static let uiPreference = [
-    "PingFang SC",           // 无衬线，6 字重，macOS 中文标准字，最稳
+    "PingFang SC",           // 无衬线，6 字重，macOS 中文标准字；西文是弱项，但系统自带、最稳
+    "Sarasa Gothic SC",      // 更纱黑体 = Inter + 思源黑体，中西混排一步到位；OFL
+    "MiSans",                // 小米，10 字重，专为界面设计，数字与西文是自绘的；免费商用
+    "MiSans VF",             // 上面的可变字重版，装的是哪个就用哪个
+    "HarmonyOS Sans SC",     // 华为，6 字重，西文几何化、字怀开；免费商用
+    "Source Han Sans SC",    // 思源黑体，7 字重，最安全的开源基线；OFL
+    "思源黑体",               // 上面那款 CN 版安装后的家族名不同，两个都留着
+    "Noto Sans SC",          // 思源黑体的 Google 发行版（可变字重），google/fonts 可直接下载；OFL
+    "OPPO Sans",             // OPPO，多字重，界面观感干净；免费商用
+    "Alibaba PuHuiTi 3.0",   // 阿里巴巴普惠体，字重最全；免费商用
+    "LXGW Neo XiHei",        // 霞鹜新晰黑，小字号清晰度好，数字与汉字间距讲究；OFL
     "思源宋体 VF",            // 衬线，7 字重，唯一撑得住完整界面层级的中文衬线
     "Yuanti SC",             // 圆体，3 字重，笔画均匀偏粗，深色底上最实
     "Lantinghei SC",         // 无衬线，3 字重，比 PingFang 更方
@@ -135,7 +157,10 @@ enum RecommendedFonts {
   /// 不要求 10pt 可读（正文最小 13pt），所以楷体这类界面上不行、长文里很好的
   /// 字体可以进来。
   static let readingPreference = [
+    "霞鹜文楷",               // LXGW WenKai，基于 Klee One 的开源楷体，长文最耐读；OFL
+    "LXGW WenKai",           // 上面的家族名（macOS 中文/英文注册名不同），两个都留
     "思源宋体 VF",            // 为屏幕重画的宋体，长文首选
+    "Noto Serif SC",         // 思源宋体的 Google 发行版（可变字重）；OFL
     "Songti SC",             // 系统自带宋体
     "Kaiti SC",              // 楷体，3 字重，教科书观感
     "PingFang SC",           // 无衬线，不喜欢衬线时的默认

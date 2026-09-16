@@ -9,6 +9,7 @@ let hostTimeout = Double(ProcessInfo.processInfo.environment["LINKDIGEST_TIMEOUT
 
 func errorResponse(_ code: String, requestId: String = "native-host") -> NativeResponse {
   let appUnavailable = code == "APP_UNAVAILABLE"
+  let upgrade = code == "PROTOCOL_VERSION_UNSUPPORTED"
   let networkFailure = appUnavailable || code == "NATIVE_MESSAGE_TIMEOUT" || code == "NATIVE_MESSAGE_FAILED"
   return .error(
     AppError(
@@ -18,8 +19,10 @@ func errorResponse(_ code: String, requestId: String = "native-host") -> NativeR
       category: networkFailure ? "network" : "protocol",
       code: code,
       retryable: networkFailure,
-      action: appUnavailable ? "open_app" : "retry",
-      safeDetail: nil
+      action: upgrade ? "upgrade_app" : appUnavailable ? "open_app" : "retry",
+      safeDetail: upgrade
+        ? "supportedVersions=\(OpenAppRequest.supportedVersions.map(String.init).joined(separator: ","))"
+        : nil
     )
   )
 }
@@ -186,7 +189,11 @@ do {
         log: AppColdStart.logToStderr
       )
       let result: NativeResponse = opened
-        ? .taskAccepted(version: 1, requestId: openApp.requestId, characterCount: 0)
+        ? .openAppAccepted(
+          version: 1,
+          requestId: openApp.requestId,
+          supportedVersions: OpenAppRequest.supportedVersions
+        )
         : errorResponse("APP_UNAVAILABLE", requestId: openApp.requestId)
       try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
       exit(0)
@@ -194,7 +201,9 @@ do {
   } catch let issue as CaptureValidationError {
     writeDebugLog("open_app_decode_failed=\(issue.rawValue)")
     try ChromiumFramer.writeFrame(
-      try JSONEncoder().encode(errorResponse(issue.rawValue)),
+      try JSONEncoder().encode(
+        errorResponse(issue.rawValue, requestId: NativeRequestIdentity.requestId(from: body) ?? "native-host")
+      ),
       to: .standardOutput
     )
     exit(0)

@@ -17,51 +17,71 @@ struct TranscriptTimelineView: View {
   let accentColor: Color
   let onSeek: (Int) -> Void
 
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  @State private var hoveredIndex: Int?
-
   var body: some View {
-    VStack(alignment: .leading, spacing: 18) {
+    // 一小时音频有上千段：LazyVStack 只排可见的；悬停高亮下沉到每一行自己的
+    // 状态，鼠标扫过时间码不再让整份转写稿重排。
+    LazyVStack(alignment: .leading, spacing: 18) {
       ForEach(Array(paragraphs.enumerated()), id: \.offset) { index, paragraph in
-        HStack(alignment: .top, spacing: 12) {
-          Button {
-            onSeek(paragraph.startMilliseconds)
-          } label: {
-            Text(paragraph.startLabel)
-              .font(.system(size: 12, weight: .medium, design: .monospaced))
-              .monospacedDigit()
-              .foregroundStyle(accentColor)
-              .padding(.horizontal, 6)
-              .padding(.vertical, 2)
-              .background(
-                RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
-                  .fill(accentColor.opacity(hoveredIndex == index ? 0.16 : 0.08))
-              )
-          }
-          .buttonStyle(.plain)
-          .help("跳到 \(paragraph.startLabel)")
-          .accessibilityLabel("跳到 \(paragraph.startLabel)")
-          .accessibilityIdentifier("transcript-seek-\(index)")
-          .onHover { hovering in
-            withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
-              hoveredIndex = hovering ? index : (hoveredIndex == index ? nil : hoveredIndex)
-            }
-          }
-          // 时间戳和第一行文字对齐：按钮比正文矮，不补这一点会显得吊在半空。
-          .padding(.top, 2)
-
-          // 走阅读区同一套字体解析：转写稿和正文必须是同一种排版，否则同一页
-          // 里两块文字长得不一样。
-          Text(paragraph.text)
-            .font(readingFont.scaled(designSize: MarkdownPresentation.bodyFontSize))
-            .lineSpacing(MarkdownPresentation.bodyLineSpacing)
-            .foregroundStyle(primaryTextColor)
-            .textSelection(.enabled)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .fixedSize(horizontal: false, vertical: true)
-        }
+        TranscriptTimelineRow(
+          index: index,
+          paragraph: paragraph,
+          readingFont: readingFont,
+          primaryTextColor: primaryTextColor,
+          accentColor: accentColor,
+          onSeek: onSeek
+        )
       }
     }
     .accessibilityIdentifier("transcript-timeline")
+  }
+}
+
+private struct TranscriptTimelineRow: View {
+  let index: Int
+  let paragraph: TranscriptParagraph
+  let readingFont: ResolvedReadingFont
+  let primaryTextColor: Color
+  let accentColor: Color
+  let onSeek: (Int) -> Void
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isHovered = false
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 12) {
+      Button {
+        onSeek(paragraph.startMilliseconds)
+      } label: {
+        Text(paragraph.startLabel)
+          .font(.system(size: 12, weight: .medium, design: .monospaced))
+          .monospacedDigit()
+          .foregroundStyle(accentColor)
+          .padding(.horizontal, 6)
+          .padding(.vertical, 2)
+          .background(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
+              .fill(accentColor.opacity(isHovered ? 0.16 : 0.08))
+          )
+      }
+      .buttonStyle(.plain)
+      .help("跳到 \(paragraph.startLabel)")
+      .accessibilityLabel("跳到 \(paragraph.startLabel)")
+      .accessibilityIdentifier("transcript-seek-\(index)")
+      .onHover { hovering in
+        withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isHovered = hovering }
+      }
+      // 时间戳和第一行文字对齐：按钮比正文矮，不补这一点会显得吊在半空。
+      .padding(.top, 2)
+
+      // 走阅读区同一套字体解析：转写稿和正文必须是同一种排版，否则同一页
+      // 里两块文字长得不一样。
+      Text(paragraph.text)
+        .font(readingFont.scaled(designSize: MarkdownPresentation.bodyFontSize))
+        .lineSpacing(MarkdownPresentation.bodyLineSpacing)
+        .foregroundStyle(primaryTextColor)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .fixedSize(horizontal: false, vertical: true)
+    }
   }
 }

@@ -95,8 +95,12 @@ final class ProviderSettingsPresentationTests: XCTestCase {
     XCTAssertFalse(service.contains("providerTile"))
     XCTAssertFalse(service.contains("capabilityCard"))
     XCTAssertTrue(service.contains("Grid(alignment: .leading"))
-    XCTAssertTrue(service.contains("Text(\"Base URL\")"))
-    XCTAssertTrue(service.contains("Text(\"API Key\")"))
+    // 「Base URL」「API Key」是工程词，表单里改叫「服务地址」「密钥」。
+    // 要守的仍然是同一件事：连接表单一个字段一个标签，不再把两件事写进一行。
+    XCTAssertTrue(service.contains("Text(\"服务地址\")"))
+    XCTAssertTrue(service.contains("Text(\"密钥\")"))
+    XCTAssertFalse(service.contains("Text(\"Base URL\")"))
+    XCTAssertFalse(service.contains("Text(\"API Key\")"))
     XCTAssertTrue(service.contains("SecureField(\"\", text: $apiKeyInput, prompt: Text(\"输入密钥\"))"))
     XCTAssertFalse(service.contains("SecureField(\"输入 API Key\""))
     XCTAssertTrue(service.contains("model.toggleCatalogModel(name)"))

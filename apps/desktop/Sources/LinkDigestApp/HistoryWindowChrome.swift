@@ -111,7 +111,7 @@ struct ManualLinkSheet: View {
       Button("取消", role: .cancel) { model.cancelDuplicateSubmit() }
       Button("仍要重新抓取") { model.confirmDuplicateSubmit() }
     } message: {
-      Text("重复添加不会产生新条目：重新抓取的内容会併入原条目成为最新快照。若只想查看，请直接在列表中打开。")
+      Text("重复添加不会产生新条目：重新抓取的内容会并入原条目成为最新快照。若只想查看，请直接在列表中打开。")
     }
   }
 }
@@ -176,6 +176,7 @@ struct PendingCaptureRow: View {
 
 struct ReadOnlyHistoryCallout: View {
   let reason: RepositoryRecoveryReason?
+  var recoveryHint: String? = nil
   @Environment(\.appTheme) private var theme
 
   var body: some View {
@@ -193,7 +194,7 @@ struct ReadOnlyHistoryCallout: View {
   }
 
   private var message: String {
-    switch reason {
+    let base: String = switch reason {
     case .futureSchema:
       "这份历史由较新版本创建，当前仅可浏览。原数据未修改；请使用较新版本的 \(ProductDisplay.name) 后再编辑或删除。"
     case .migrationFailed:
@@ -203,5 +204,9 @@ struct ReadOnlyHistoryCallout: View {
     case nil:
       "本地历史当前仅可浏览。原数据未修改；请在恢复后重新启动 \(ProductDisplay.name)，再编辑或删除。"
     }
+    if let recoveryHint, !recoveryHint.isEmpty {
+      return base + "\n" + recoveryHint
+    }
+    return base
   }
 }

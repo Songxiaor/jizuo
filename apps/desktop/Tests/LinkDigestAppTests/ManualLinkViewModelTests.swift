@@ -4,33 +4,32 @@ import XCTest
 @testable import LinkDigestApp
 @testable import LinkDigestCore
 
-private actor ManualVMCommitGate {
-  private var entered = false
-  private var released = false
-  private var entryWaiters: [CheckedContinuation<Void, Never>] = []
-  private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+/// 卡住一次同步写事务的闸门。
+///
+/// 这里原来是 actor + `Task.detached`：写事务闭包是同步的、跑在协作线程上，为了
+/// 告诉测试「我进来了」必须先起一个 Task，再阻塞等它跑完。协作线程池不保证在
+/// 已有线程被阻塞时立刻再开一条，于是那个通知任务可能永远排不上号——测试没有
+/// 任何输出地永久挂起，只能靠整轮超时被杀掉。
+///
+/// 现在「进入」和「放行」都走纯 DispatchSemaphore，不需要任何 Swift 并发调度；
+/// 等待方用 `awaitSignal` 轮询，谁也不按住谁。
+private final class ManualVMCommitGate: @unchecked Sendable {
+  fileprivate let enteredSignal = DispatchSemaphore(value: 0)
+  private let releaseSignal = DispatchSemaphore(value: 0)
 
-  func enterAndWaitForRelease() async {
-    entered = true
-    let waiters = entryWaiters
-    entryWaiters.removeAll()
-    waiters.forEach { $0.resume() }
-    guard !released else { return }
-    await withCheckedContinuation { releaseWaiters.append($0) }
+  func enterAndWaitForRelease() {
+    enteredSignal.signal()
+    releaseSignal.wait()
   }
 
-  func waitForEntry() async {
-    guard !entered else { return }
-    await withCheckedContinuation { entryWaiters.append($0) }
+  func waitForEntry(
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async throws {
+    try await awaitSignal(enteredSignal, label: "写事务进入", file: file, line: line)
   }
 
-  func release() {
-    guard !released else { return }
-    released = true
-    let waiters = releaseWaiters
-    releaseWaiters.removeAll()
-    waiters.forEach { $0.resume() }
-  }
+  func release() { releaseSignal.signal() }
 }
 
 private final class ManualVMBlockingCommit: @unchecked Sendable {
@@ -38,14 +37,7 @@ private final class ManualVMBlockingCommit: @unchecked Sendable {
 
   init(gate: ManualVMCommitGate) { self.gate = gate }
 
-  func block() {
-    let released = DispatchSemaphore(value: 0)
-    Task.detached { [gate] in
-      await gate.enterAndWaitForRelease()
-      released.signal()
-    }
-    released.wait()
-  }
+  func block() { gate.enterAndWaitForRelease() }
 }
 
 private final class ManualVMWriteCounter: @unchecked Sendable {
@@ -110,7 +102,7 @@ private final class ManualVMRepository: HistoryRepository, @unchecked Sendable {
   private var attachedPairs: [(CreatorID, TaskID)] = []
   private var creatorsByIdentity: [CreatorIdentity: CreatorSummary] = [:]
   func upsertCreator(_ command: UpsertCreatorCommand) throws -> CreatorSummary {
-    try lock.withLock {
+    lock.withLock {
       if var existing = creatorsByIdentity[command.identity] {
         existing = .init(
           id: existing.id,
@@ -424,6 +416,60 @@ final class ManualLinkViewModelTests: XCTestCase {
     model.handleScenePhase(.active)
     XCTAssertNil(model.clipboardSuggestion)
     XCTAssertGreaterThanOrEqual(repository.lookupCount, 3)
+  }
+
+  func testIgnoredClipboardHashSurvivesAFreshViewModelAndHonorsDetectionSwitch() {
+    let suite = "capture.ignored.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defaults.removePersistentDomain(forName: suite)
+    defer { defaults.removePersistentDomain(forName: suite) }
+
+    let clipboard = ManualVMClipboard("https://example.test/ignored")
+    let first = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFetcher()),
+      clipboard: clipboard,
+      userDefaults: defaults
+    )
+    first.configure(
+      history: HistoryApplicationService(repository: ManualVMRepository()),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    first.handleScenePhase(.active)
+    XCTAssertEqual(first.clipboardSuggestion?.canonicalURL, "https://example.test/ignored")
+    first.ignoreClipboardSuggestion()
+    XCTAssertNil(first.clipboardSuggestion)
+
+    let second = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFetcher()),
+      clipboard: clipboard,
+      userDefaults: defaults
+    )
+    second.configure(
+      history: HistoryApplicationService(repository: ManualVMRepository()),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    second.handleScenePhase(.active)
+    XCTAssertNil(second.clipboardSuggestion, "忽略必须按链接哈希持久化，重启后不再提示")
+
+    defaults.set(false, forKey: ProviderSettingsView.clipboardLinkDetectionKey)
+    clipboard.set("https://example.test/another")
+    let disabled = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFetcher()),
+      clipboard: clipboard,
+      userDefaults: defaults
+    )
+    disabled.configure(
+      history: HistoryApplicationService(repository: ManualVMRepository()),
+      storageWriteGate: StorageWriteGate(initialAvailability: .writable),
+      nowMilliseconds: { 1 },
+      captureSink: { _ in }
+    )
+    disabled.handleScenePhase(.active)
+    XCTAssertNil(disabled.clipboardSuggestion, "开关关闭时不得检测剪贴板链接")
   }
 
   func testIgnoreSurvivesBackgroundAndActiveWithoutASecondLookupForUnchangedClipboard() {
@@ -878,7 +924,7 @@ final class ManualLinkViewModelTests: XCTestCase {
 
   /// 队列化契约（2026-07-24）：提交即入队关窗；保存进行中体现在队列条目的
   /// saving 阶段，发布仍必须等 commit 返回；成功后条目移出队列。
-  func testQueuedSubmitClosesSheetImmediatelyAndPublishesOnlyAfterCommit() async {
+  func testQueuedSubmitClosesSheetImmediatelyAndPublishesOnlyAfterCommit() async throws {
     let commitGate = ManualVMCommitGate()
     let repository = ManualVMRepository(blockingCommit: .init(gate: commitGate))
     let sink = ManualVMSink()
@@ -891,13 +937,13 @@ final class ManualLinkViewModelTests: XCTestCase {
     XCTAssertEqual(model.input, "")
     XCTAssertEqual(model.pendingCaptures.count, 1)
 
-    await commitGate.waitForEntry()
+    try await commitGate.waitForEntry()
     XCTAssertEqual(model.pendingCaptures.first?.phase, .saving)
     let valuesBeforeCommit = await sink.snapshot()
     XCTAssertTrue(valuesBeforeCommit.isEmpty, "CurrentCapture must not publish before commit returns")
     XCTAssertTrue(repository.acceptedDocuments.isEmpty, "the repository has not committed the document")
 
-    await commitGate.release()
+    commitGate.release()
     let published = await sink.waitForValues(count: 1)
 
     XCTAssertEqual(repository.acceptedDocuments.count, 1)
@@ -917,13 +963,18 @@ final class ManualLinkViewModelTests: XCTestCase {
     let commitGate = ManualVMCommitGate()
     let blockingCommit = ManualVMBlockingCommit(gate: commitGate)
     let queuedWrites = ManualVMWriteCounter()
+    // 第一条写事务会一直卡在闸门上。放到普通并发队列执行，阻塞的就不是协作线程
+    // 池的线程——否则下面 `queued` 那条任务可能永远排不到线程，测试挂死。
+    let blockingExecutor = BlockingWorkExecutor()
     let first = Task {
-      try await storageWriteGate.performCaptureWrite(
-        operation: { blockingCommit.block() },
-        mapFailure: { _ in .writeFailed }
-      )
+      try await withTaskExecutorPreference(blockingExecutor) {
+        try await storageWriteGate.performCaptureWrite(
+          operation: { blockingCommit.block() },
+          mapFailure: { _ in .writeFailed }
+        )
+      }
     }
-    await commitGate.waitForEntry()
+    try await commitGate.waitForEntry()
 
     let queued = Task {
       try await storageWriteGate.performCaptureWrite(
@@ -934,15 +985,15 @@ final class ManualLinkViewModelTests: XCTestCase {
     await storageWriteGate.waitForQueuedCaptureAttempt()
     queued.cancel()
     do {
-      try await queued.value
+      _ = try await awaitValue(queued, label: "queued capture")
       XCTFail("a queued capture must finish as cancelled")
     } catch is CancellationError {
       // Expected: cancellation removes the waiter before repository work begins.
     }
     XCTAssertEqual(queuedWrites.count, 0)
 
-    await commitGate.release()
-    try await first.value
+    commitGate.release()
+    _ = try await awaitValue(first, label: "blocking capture")
     XCTAssertEqual(queuedWrites.count, 0)
   }
 
@@ -1533,7 +1584,14 @@ final class ManualLinkViewModelTests: XCTestCase {
   }
 
   private func makeModel(clipboard: ManualVMClipboard, repository: ManualVMRepository = ManualVMRepository(), sink: ManualVMSink = ManualVMSink()) -> ManualLinkViewModel {
-    let model = ManualLinkViewModel(captureService: .init(fetcher: ManualVMFetcher()), clipboard: clipboard)
+    let suite = "manual-link-tests.\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suite)!
+    defaults.removePersistentDomain(forName: suite)
+    let model = ManualLinkViewModel(
+      captureService: .init(fetcher: ManualVMFetcher()),
+      clipboard: clipboard,
+      userDefaults: defaults
+    )
     model.configure(history: HistoryApplicationService(repository: repository), storageWriteGate: StorageWriteGate(initialAvailability: .writable), nowMilliseconds: { 1 }, captureSink: { await sink.receive($0) })
     return model
   }

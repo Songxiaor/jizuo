@@ -18,13 +18,20 @@ final class BatchSummaryTests: XCTestCase {
   override func setUp() {
     super.setUp()
     // 只压缩等待上限，不改行为：产品路径是 20s / 1800s。
-    HistoryViewModel.batchSummaryStartTimeoutSeconds = 1
-    HistoryViewModel.batchSummaryRunTimeoutSeconds = 5
+    //
+    // `setUp()` 覆写的是 XCTestCase 上的 nonisolated 方法，类上的 @MainActor 不会
+    // 传下来；XCTest 本来就在主线程上调用它，所以这里显式进主 actor 再写这两个值。
+    MainActor.assumeIsolated {
+      HistoryViewModel.batchSummaryStartTimeoutSeconds = 1
+      HistoryViewModel.batchSummaryRunTimeoutSeconds = 5
+    }
   }
 
   override func tearDown() {
-    HistoryViewModel.batchSummaryStartTimeoutSeconds = 20
-    HistoryViewModel.batchSummaryRunTimeoutSeconds = 1_800
+    MainActor.assumeIsolated {
+      HistoryViewModel.batchSummaryStartTimeoutSeconds = 20
+      HistoryViewModel.batchSummaryRunTimeoutSeconds = 1_800
+    }
     super.tearDown()
   }
 

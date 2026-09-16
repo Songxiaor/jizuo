@@ -14,13 +14,18 @@ enum InlineImageMemoryCache {
     return cache
   }()
 
-  static func image(for url: URL) -> NSImage? {
-    cache.object(forKey: url.path as NSString)
+  static func image(for url: URL, maxPixelSize: CGFloat = 1600) -> NSImage? {
+    cache.object(forKey: cacheKey(url, maxPixelSize))
   }
 
-  static func store(_ image: NSImage, for url: URL) {
+  /// 同一张图按不同目标尺寸各存一份：画廊格子只要 640px，不该和整幅插图共用 1600px 的位图。
+  private static func cacheKey(_ url: URL, _ maxPixelSize: CGFloat) -> NSString {
+    "\(url.path)#\(Int(maxPixelSize))" as NSString
+  }
+
+  static func store(_ image: NSImage, for url: URL, maxPixelSize: CGFloat = 1600) {
     let cost = Int(image.size.width * image.size.height * 4)
-    cache.setObject(image, forKey: url.path as NSString, cost: cost)
+    cache.setObject(image, forKey: cacheKey(url, maxPixelSize), cost: cost)
   }
 
   /// CGImageSource 缩略下采样：解码成本与目标尺寸挂钩，而不是原图分辨率。
@@ -143,7 +148,12 @@ struct InlineArticleImageView: View {
               MarkdownInlineImageActions.saveImage(at: url)
             } label: { Label("存储图片为…", systemImage: "square.and.arrow.down") }
             Button {
-              if let full = NSImage(contentsOf: url) { MarkdownInlineImageActions.copyImage(full) }
+              // 整张原图解码不在主线程做。
+              let target = url
+              Task.detached(priority: .userInitiated) {
+                guard let full = NSImage(contentsOf: target) else { return }
+                await MainActor.run { MarkdownInlineImageActions.copyImage(full) }
+              }
             } label: { Label("拷贝图片", systemImage: "doc.on.doc") }
           }
           .help("双击放大查看")
@@ -171,16 +181,19 @@ struct InlineArticleImageView: View {
 
   private func load() async {
     let target = url
-    if let cached = InlineImageMemoryCache.image(for: target) {
+    // 画廊格子最小列宽 240pt，按 640px 解码足够清晰；原来和整幅插图一样按 1600px，
+    // 26 图的文章一次就把 256MB 缓存打满，来回滚动反复驱逐重解码。
+    let maxPixelSize: CGFloat = layout == .gallery ? 640 : 1600
+    if let cached = InlineImageMemoryCache.image(for: target, maxPixelSize: maxPixelSize) {
       image = cached
       return
     }
     let loaded = await Task.detached(priority: .userInitiated) {
-      InlineImageMemoryCache.loadDownsampled(at: target)
+      InlineImageMemoryCache.loadDownsampled(at: target, maxPixelSize: maxPixelSize)
     }.value
     guard !Task.isCancelled else { return }
     guard let loaded else { return }
-    InlineImageMemoryCache.store(loaded, for: target)
+    InlineImageMemoryCache.store(loaded, for: target, maxPixelSize: maxPixelSize)
     // 异步回来时可能已经切到另一条；只接受当前 url 的结果。
     guard target == url else { return }
     image = loaded

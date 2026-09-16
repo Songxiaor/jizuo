@@ -16,6 +16,7 @@ struct ProfileImportCandidateSeed: Sendable, Equatable {
   let likes: String?
   let comments: String?
   let collects: String?
+  let views: String?
 
   init(
     workID: String,
@@ -27,7 +28,8 @@ struct ProfileImportCandidateSeed: Sendable, Equatable {
     publishedText: String? = nil,
     likes: String? = nil,
     comments: String? = nil,
-    collects: String? = nil
+    collects: String? = nil,
+    views: String? = nil
   ) {
     self.workID = workID
     self.authorID = authorID
@@ -39,6 +41,7 @@ struct ProfileImportCandidateSeed: Sendable, Equatable {
     self.likes = likes
     self.comments = comments
     self.collects = collects
+    self.views = views
   }
 }
 
@@ -154,6 +157,7 @@ final class ProfileImportBatchJournal: ProfileImportBatchJournalStoring {
     let likes: String?
     let comments: String?
     let collects: String?
+    var views: String? = nil
     let status: String
     let message: String?
     let taskID: String?
@@ -168,6 +172,7 @@ final class ProfileImportBatchJournal: ProfileImportBatchJournalStoring {
       likes = item.seed.likes
       comments = item.seed.comments
       collects = item.seed.collects
+      views = item.seed.views
       switch item.phase {
       case .queued: (status, message, taskID) = ("queued", nil, nil)
       case .fetching: (status, message, taskID) = ("fetching", nil, nil)
@@ -190,7 +195,8 @@ final class ProfileImportBatchJournal: ProfileImportBatchJournalStoring {
           publishedText: publishedText,
           likes: likes,
           comments: comments,
-          collects: collects
+          collects: collects,
+          views: views
         ),
         phase: restoredPhase
       )

@@ -2,6 +2,7 @@ import AppKit
 import Darwin
 import SwiftUI
 import Foundation
+import Observation
 import LinkDigestAdapters
 import LinkDigestCore
 import LinkDigestPersistence
@@ -61,38 +62,47 @@ struct ManualGenerationRequest: Equatable {
   let modelOverride: String?
 }
 
-@MainActor final class AppViewModel: ObservableObject {
-  @Published var connection = "等待扩展连接"
-  @Published private(set) var browserReceiverState: BrowserReceiverState = .starting
-  @Published private(set) var lastBrowserCaptureAt: Date?
-  @Published private(set) var currentCapture: CurrentCapture?
-  /// 非 @Published：写入统一走 `setRunState`（见其注释）。读取方始终拿到
-  /// 最新值；只有状态真正切换时才发 objectWillChange，流式纯增长拍点不发。
-  private(set) var runState: RunState = .idle
+/// 用 Observation 而不是 ObservableObject：视图只在自己读过的属性变化时重绘。
+/// 原来任何一个属性变化都会让观察它的整棵历史窗口重排。
+@MainActor
+@Observable
+final class AppViewModel {
+  var connection = "等待扩展连接"
+  private(set) var browserReceiverState: BrowserReceiverState = .starting
+  private(set) var lastBrowserCaptureAt: Date?
+  private(set) var currentCapture: CurrentCapture?
+  /// 不走 Observation 的自动存储：写入统一走 `setRunState`（见其注释）。读取方
+  /// 始终拿到最新值；只有状态真正切换时才发观察通知，流式纯增长拍点不发。
+  @ObservationIgnored private var runStateStorage: RunState = .idle
+  private(set) var runState: RunState {
+    get { access(keyPath: \.runState); return runStateStorage }
+    set { withMutation(keyPath: \.runState) { runStateStorage = newValue } }
+  }
   /// 流式正文的热路径发布通道；与 runState 同步更新（见 setRunState）。
   let liveRunText = LiveRunTextModel()
-  @Published private(set) var activeRunTaskID: TaskID?
-  @Published private(set) var visibleRunTaskID: TaskID?
-  @Published private(set) var storageAvailability: StorageAvailability = .bootstrapping
-  @Published private(set) var dataDestinationDisclosure: DataDestinationDisclosure?
-  @Published private(set) var dataDestinationNotice: String?
+  private(set) var activeRunTaskID: TaskID?
+  private(set) var visibleRunTaskID: TaskID?
+  private(set) var storageAvailability: StorageAvailability = .bootstrapping
+  private(set) var dataDestinationDisclosure: DataDestinationDisclosure?
+  private(set) var dataDestinationNotice: String?
   /// 通道忙时记下的手动总结/翻译/脑图。一次只跑一条，做完再接下一条。
-  @Published private(set) var queuedGenerations: [ManualGenerationRequest] = []
+  private(set) var queuedGenerations: [ManualGenerationRequest] = []
   /// 批量总结整批结束前不要把排队条目插进两条之间。
-  var defersQueuedGeneration = false
-  /// 脑图不走模型通道，由历史页接手真正开跑。
-  var startQueuedMindMap: (@MainActor (TaskID) -> Void)?
+  /// 不被观察：它是调度用的内部闸门，界面不读它。
+  @ObservationIgnored var defersQueuedGeneration = false
+  /// 脑图不走模型通道，由历史页接手真正开跑。回调句柄不参与观察。
+  @ObservationIgnored var startQueuedMindMap: (@MainActor (TaskID) -> Void)?
 
-  private var modelRunOrchestrator: ModelRunOrchestrator?
+  @ObservationIgnored private var modelRunOrchestrator: ModelRunOrchestrator?
   private let configurationService: ProviderConfigurationService?
   private let consentStore: (any DataDestinationConsentStore)?
   private let makeRunID: @Sendable () -> RunID
-  private var visibleRunID: RunID?
-  private var launchPendingRunID: RunID?
-  private var taskIDByRunID: [RunID: TaskID] = [:]
-  private var preparationAttempt: RunPreparationAttempt?
-  private var queuedGenerationStartTask: Task<Void, Never>?
-  private var confirmingAttemptToken: UUID?
+  @ObservationIgnored private var visibleRunID: RunID?
+  @ObservationIgnored private var launchPendingRunID: RunID?
+  @ObservationIgnored private var taskIDByRunID: [RunID: TaskID] = [:]
+  @ObservationIgnored private var preparationAttempt: RunPreparationAttempt?
+  @ObservationIgnored private var queuedGenerationStartTask: Task<Void, Never>?
+  @ObservationIgnored private var confirmingAttemptToken: UUID?
 
   init(
     modelRunOrchestrator: ModelRunOrchestrator? = nil,
@@ -749,9 +759,6 @@ struct ManualGenerationRequest: Equatable {
     // 这直接违背「编辑转写」按钮说明里「保存后总结、翻译与导出都使用校对后的文本」
     // 那句承诺。
     //
-    // 有配文 + 转写时发给模型的是分层拼装稿，不能只拿 snapshots.last。
-    let layeredText = LayeredSourceDocument.modelInput(from: detail.snapshots)
-    let text = layeredText.isEmpty ? snapshot.bodyText : layeredText
     if currentCapture?.taskID == detail.task.id,
        currentCapture?.snapshotID == snapshot.id,
        currentCapture?.document.text == composed {
@@ -1037,26 +1044,26 @@ struct ManualGenerationRequest: Equatable {
   }
 
   /// `runState` 唯一的写入口。流式生成每 80ms 就有一个「同 intent、正文
-  /// 纯增长」的拍点——这种拍点不触发 objectWillChange，正文只写进
+  /// 纯增长」的拍点——这种拍点不触发观察通知，正文只写进
   /// `liveRunText`，重绘收窄到显示它的叶子视图；其余任何变化（开始/思考/
-  /// 停止/终态、intent 切换、清空）照常通知整树。`runState` 本身每个拍点
-  /// 都会更新，读取方语义与 @Published 时代一致。
+  /// 停止/终态、intent 切换、清空）照常通知所有读过 `runState` 的视图。
+  /// `runState` 本身每个拍点都会更新，读取方语义与 @Published 时代一致。
   private func setRunState(_ state: RunState) {
     // 同值拍点直接丢弃。推理模型的思考阶段每收到一个 delta 就报一次
     // `.thinking(intent:)`，而这个状态不带任何随 delta 变化的负载；照发
-    // objectWillChange 等于让整棵历史窗口按 delta 速率重求值。实测一次
+    // 观察通知等于让整棵历史窗口按 delta 速率重求值。实测一次
     // 翻译的思考阶段主线程 100% CPU、连续 23 秒几乎不出帧。
-    guard state != runState else { return }
+    guard state != runStateStorage else { return }
     if case let .streaming(intent, partialText) = state,
-       case .streaming(let previousIntent, _) = runState,
+       case .streaming(let previousIntent, _) = runStateStorage,
        previousIntent == intent,
        !partialText.isEmpty {
-      runState = state
+      // 绕开 withMutation：值照常更新，但不通知。
+      runStateStorage = state
       liveRunText.setText(partialText)
       return
     }
-    objectWillChange.send()
-    runState = state
+    withMutation(keyPath: \.runState) { runStateStorage = state }
     liveRunText.setText(state.outputText)
   }
 
@@ -1142,10 +1149,10 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
 @main struct LinkDigestApp: App {
   @NSApplicationDelegateAdaptor(LinkDigestAppDelegate.self) private var appDelegate
   @Environment(\.scenePhase) private var scenePhase
-  @StateObject private var model: AppViewModel
-  @StateObject private var historyModel: HistoryViewModel
+  @State private var model: AppViewModel
+  @State private var historyModel: HistoryViewModel
   @StateObject private var manualLink: ManualLinkViewModel
-  @StateObject private var providerSettings: ProviderSettingsViewModel
+  @State private var providerSettings: ProviderSettingsViewModel
   @StateObject private var browserSupport: BrowserSupportViewModel
   @StateObject private var mediaStorageSettings: MediaStorageSettingsViewModel
   @StateObject private var knowledgeVaultSettings: KnowledgeVaultSettingsViewModel
@@ -1160,6 +1167,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
 
   private let configurationService: ProviderConfigurationService
   private let provider: any ModelProvider
+  private let mediaInventory: LateBoundMediaInventory
   private let composition: AppComposition
   private let appUpdateController: AppUpdateController
   private let socketServerLifecycle: UnixSocketServerLifecycle
@@ -1209,6 +1217,9 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       consentStore = UserDefaultsDataDestinationConsentStore()
       preferencesStore = UserDefaultsModelPreferencesStore()
     }
+    // 整理、标题本地化、脑图三条路原来各自 new 一个服务实例（还用全局 URLSession）：
+    // 「停止」停不掉它们，reasoning_effort 的降级记忆也互不相通。统一用主实例。
+    let sharedTextProvider = (provider as? OpenAICompatibleProvider) ?? OpenAICompatibleProvider()
     #else
     configurationService = ProviderConfigurationService(
       profileStore: UserDefaultsProviderProfileStore(),
@@ -1218,9 +1229,10 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
     let sessionConfiguration = URLSessionConfiguration.ephemeral
     sessionConfiguration.httpCookieStorage = nil
     sessionConfiguration.urlCache = nil
-    provider = OpenAICompatibleProvider(
+    let sharedTextProvider = OpenAICompatibleProvider(
       session: URLSession(configuration: sessionConfiguration)
     )
+    provider = sharedTextProvider
     consentStore = UserDefaultsDataDestinationConsentStore()
     preferencesStore = UserDefaultsModelPreferencesStore()
     #endif
@@ -1281,6 +1293,11 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         storagePreference: mediaStoragePreference
       )
     }
+    // 媒体目录治理（孤儿扫描、总容量淘汰）要知道库里认哪些文件。历史服务在
+    // bootstrap 之后才有，所以先接一个「晚绑定」的清单来源；没绑上之前一律不删。
+    let mediaInventory = LateBoundMediaInventory()
+    mediaStore?.setInventoryProvider { try mediaInventory.inventory() }
+    self.mediaInventory = mediaInventory
     // Video downloads need a longer timeout than HTML capture (signed CDN objects).
     let mediaResourceFetcher = ProxyAwareWebPageFetcher(
       limits: .init(redirects: 4, responseBytes: LocalMediaStore.maxBytes, timeout: 120)
@@ -1294,15 +1311,9 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         resources: mediaResourceFetcher
       )
     }
-    let startupTranscriptionCleanupFailure: String?
-    do {
-      try transcriptionTempStore?.cleanupAll()
-      startupTranscriptionCleanupFailure = nil
-    } catch let error as TranscriptionTempStoreError {
-      startupTranscriptionCleanupFailure = error.userMessage
-    } catch {
-      startupTranscriptionCleanupFailure = TranscriptionTempStoreError.unavailable.userMessage
-    }
+    // 清理转写临时目录是目录遍历加递归删除，原来在主线程同步做、窗口都还没出来。
+    // 挪到后台；失败信息等历史模型建好后再送过去（见下方 reportTranscriptionCleanupFailure）。
+    let startupTranscriptionCleanupFailure: String? = nil
     let githubAdapter = GitHubRepositorySourceAdapter(resources: manualResourceFetcher, imageCache: imageCache)
     let bilibiliAdapter = BilibiliSourceAdapter(
       fetcher: manualResourceFetcher,
@@ -1338,16 +1349,19 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         configurationService: configurationService
       ),
       transcriptTidier: OpenAICompatibleTranscriptTidier(
-        configurationService: configurationService
+        configurationService: configurationService,
+        provider: sharedTextProvider
       ),
       titleLocalizer: OpenAICompatibleTitleLocalizer(
-        configurationService: configurationService
+        configurationService: configurationService,
+        provider: sharedTextProvider
       ),
       // 起草用用户自己装的 Claude Code。没装的话构造出来也无妨——
       // 它的 locateExecutable() 会返回 nil,那一步的入口说清楚缺什么。
       draftAgent: ClaudeCLIAgent(),
       mindMapExtractor: OpenAICompatibleMindMapExtractor(
-        configurationService: configurationService
+        configurationService: configurationService,
+        provider: sharedTextProvider
       ),
       transcriptionTempStore: transcriptionTempStore,
       transcriptionAudioTrackURL: { platform, pageURL in
@@ -1442,7 +1456,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
           guard value.allowsAutomaticEnrichment else { return }
           let preferences = (try? await preferencesStore.load()) ?? .default
           guard preferences.effectiveAutoLocalizeTitleNewCaptures else { return }
-          await historyModel.scheduleAutomaticTitleLocalization(
+          historyModel.scheduleAutomaticTitleLocalization(
             taskID: value.taskID,
             title: value.document.title,
             body: value.document.text,
@@ -1569,11 +1583,22 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
     terminationSignalSource.resume()
     self.terminationSignalSource = terminationSignalSource
     self.appUpdateController = appUpdateController
-    _model = StateObject(wrappedValue: model)
-    _historyModel = StateObject(wrappedValue: historyModel)
+    _model = State(initialValue: model)
+    _historyModel = State(initialValue: historyModel)
+    if let transcriptionTempStore {
+      Task.detached(priority: .background) {
+        do {
+          try transcriptionTempStore.cleanupAll()
+        } catch {
+          let message = (error as? TranscriptionTempStoreError)?.userMessage
+            ?? TranscriptionTempStoreError.unavailable.userMessage
+          await MainActor.run { historyModel.reportTranscriptionCleanupFailure(message) }
+        }
+      }
+    }
     _manualLink = StateObject(wrappedValue: manualLink)
-    _providerSettings = StateObject(
-      wrappedValue: ProviderSettingsViewModel(
+    _providerSettings = State(
+      initialValue: ProviderSettingsViewModel(
         configurationService: configurationService,
         provider: provider,
         preferencesStore: preferencesStore
@@ -1588,7 +1613,11 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       )
     )
     _mediaStorageSettings = StateObject(
-      wrappedValue: MediaStorageSettingsViewModel(store: mediaStoragePreference)
+      wrappedValue: MediaStorageSettingsViewModel(
+        store: mediaStoragePreference,
+        mediaStore: mediaStore,
+        inventory: { try mediaInventory.inventory() }
+      )
     )
     _knowledgeVaultSettings = StateObject(wrappedValue: knowledgeVaultSettingsModel)
     _sessionMediaPlayback = StateObject(wrappedValue: sessionMediaPlaybackController)
@@ -1615,7 +1644,9 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
           defer {
             if Task.isCancelled && !didConfigureHistory { didBootstrap = false }
           }
-          await providerSettings.load()
+          // 读模型设置会碰钥匙串（上限 15 秒）；原来它串在打开历史库前面，钥匙串
+          // 一慢首屏就一直是骨架屏。两件事互不依赖，并行。
+          let settingsLoad = Task { await providerSettings.load() }
           if AppApplicationSupportRoot.shouldHoldHistoryLoading() {
             try? await Task.sleep(for: .seconds(10))
           }
@@ -1624,13 +1655,41 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
             history: result.history,
             isReadOnly: result.historyIsReadOnly,
             unavailableCode: result.historyUnavailableCode,
-            readOnlyReason: result.historyReadOnlyReason
+            readOnlyReason: result.historyReadOnlyReason,
+            readOnlyRecoveryHint: result.historyReadOnlyRecoveryHint
           )
           didConfigureHistory = true
+          await settingsLoad.value
           knowledgeVaultSettings.configure(history: result.history)
+          mediaInventory.bind(result.history)
+          // 阅读位置现在存在库里（Migration023）。接上之前详情页照常能开，
+          // 只是拿不到上次读到哪——接上之后第一次打开就恢复了。
+          // 这一步同时把 UserDefaults 里的旧进度搬进来并清掉旧键。
+          ReadingPositionStore.configure(history: result.history)
           companionNoteSync.configure(history: result.history)
-          if result.availability.isWriteReady, result.history != nil, companionNoteSync.canSync {
+          // 手机同步这一版不提供，启动时就**不要连 iCloud**。
+          //
+          // 原来这里只看 `companionNoteSync.canSync`，而那个值最终来自
+          // 「这次构建的签名有没有 iCloud 能力」——换成正式签名的那天，笔记就会
+          // 在用户毫不知情、设置里也看不到这一栏的情况下开始上传。
+          // 现在的判据是两件事同时成立：这一版对外提供，且用户自己打开过。
+          if ExperimentalFeatures.isCompanionSyncEnabled(),
+             result.availability.isWriteReady,
+             result.history != nil,
+             companionNoteSync.canSync {
             Task { await companionNoteSync.synchronize() }
+          }
+          // 嵌入播放器的身份数据每次启动清一次（Cookie / localStorage / IndexedDB），
+          // 磁盘缓存保留。必须在这里而不是「第一次用到播放器时」：removeData 是异步
+          // 落地，放在使用点会撞上正在使用同一个存储的播放器。
+          Task { await YouTubeEmbedWebViewPool.wipeEmbedIdentityData() }
+          // 回收站到期清理。放后台、不等它：首屏不该为「30 天前删掉的东西」等待。
+          //
+          // 每次启动跑一次就够——回收站是以天计的东西，没必要常驻定时器。
+          if result.availability.isWriteReady, let history = result.history {
+            Task.detached(priority: .background) {
+              try? history.purgeTrash(olderThanDays: HistoryTrashPolicy.retentionDays)
+            }
           }
           // 历史就绪之后才接回链，冷启动时排队的那一个 URL 也在这里被消费。
           //
@@ -1655,7 +1714,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
                 Task { @MainActor in
                   guard value.allowsAutomaticEnrichment else { return }
                   guard providerSettings.autoLocalizeTitleNewCaptures else { return }
-                  await historyModel.scheduleAutomaticTitleLocalization(
+                  historyModel.scheduleAutomaticTitleLocalization(
                     taskID: value.taskID,
                     title: value.document.title,
                     body: value.document.text,
@@ -1881,5 +1940,24 @@ private struct LinkDigestCommands: Commands {
         .keyboardShortcut("f", modifiers: .command)
         .disabled(focusHistorySearch == nil)
     }
+  }
+}
+
+
+/// 视频清单的晚绑定来源：设置页和媒体库在 App 构造期就要拿到闭包，历史服务却要等
+/// bootstrap。绑定前返回错误（而不是空清单）——空清单会把整个目录判成孤儿。
+final class LateBoundMediaInventory: @unchecked Sendable {
+  private let lock = NSLock()
+  private var history: HistoryApplicationService?
+
+  func bind(_ history: HistoryApplicationService?) {
+    lock.lock(); defer { lock.unlock() }
+    self.history = history
+  }
+
+  func inventory() throws -> [MediaStorageEntry] {
+    lock.lock(); let service = history; lock.unlock()
+    guard let service else { throw RepositoryFailure.unavailable }
+    return try service.mediaStorageInventory()
   }
 }

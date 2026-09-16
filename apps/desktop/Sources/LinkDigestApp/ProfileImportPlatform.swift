@@ -406,7 +406,7 @@ enum ProfileImportPlatform: String, CaseIterable, Identifiable {
     const seen = new Set();
     for (const card of cards) {
       if (!visible(card) || card.closest('aside,nav,[class*="recommend"]')) continue;
-      let a, url, id, previewText = null, publishedText = null, likes = null, comments = null, collects = null;
+      let a, url, id, previewText = null, publishedText = null, likes = null, comments = null, collects = null, views = null;
       if (platform === 'x') {
         if (card.querySelector('[data-testid="placementTracking"],[data-testid="promotedIndicator"]')) continue;
         if (card.closest('[data-testid="placementTracking"],[data-testid="promotedIndicator"]')) continue;
@@ -494,12 +494,20 @@ enum ProfileImportPlatform: String, CaseIterable, Identifiable {
         const m=url.pathname.match(/^\/video\/(BV[A-Za-z0-9]{10})\/?$/);
         if(!m || !/(^|\.)bilibili\.com$/.test(url.hostname))continue;
         id=m[1];url=new URL('https://www.bilibili.com/video/'+id);
+        // 新版空间页把发布时间放在 `.bili-video-card__subtitle`（“2天前”“9月10日”“2024-01-02”），
+        // 旧版列表用 `.meta .time`；两者都不是 <time>，不单独取就永远是“待获取”。
+        const when = card.querySelector('.bili-video-card__subtitle, .meta .time, .time, .pubdate');
+        publishedText = clean(when && when.textContent) || null;
+        // 封面角标第一格是播放数（图标类名带 playdata），第二格是弹幕，第三格是时长；只取播放。
+        const playStat = Array.from(card.querySelectorAll('.bili-cover-card__stat')).find(n => n.querySelector('[class*="playdata"], [class*="play"]'));
+        const legacyPlay = card.querySelector('.meta .play, .play');
+        views = parseCount(clean((playStat || legacyPlay || {}).textContent));
       }
       if(seen.has(id))continue;seen.add(id);
       const img=Array.from(card.querySelectorAll('img')).find(n => !/avatar|profile_images/.test(n.className+' '+n.src));
       const title=card.querySelector('[data-testid="tweetText"],.title,.bili-video-card__title');
       const preview=previewText || (platform === 'x' ? null : clean(title?.textContent || card.innerText || img?.alt));
-      result.candidates.push({url:url.href,authorID:author,previewText:preview||null,coverURL:img?.currentSrc||img?.src||null,publishedText:publishedText || clean(card.querySelector('time')?.textContent)||null,likes,comments,collects});
+      result.candidates.push({url:url.href,authorID:author,previewText:preview||null,coverURL:img?.currentSrc||img?.src||null,publishedText:publishedText || clean(card.querySelector('time')?.textContent)||null,likes,comments,collects,views});
     }
     if (platform === 'x') {
       result.status = (result.candidates.length || cards.length) ? 'ready' : 'missing_root';

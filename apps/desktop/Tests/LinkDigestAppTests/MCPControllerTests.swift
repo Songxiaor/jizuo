@@ -60,6 +60,14 @@ final class MCPControllerTests: XCTestCase {
     let disabled = try await call("jizuo_status")
     XCTAssertEqual(disabled["error"] as? String, "disabled")
     model.enabled = true
+    // bind 现在排在后台串行队列上（以前在主线程上直接做，点一下开关界面就顿），
+    // 所以这里要等 socket 真的出现，不能开完就立刻去读它。
+    var waited = 0
+    while !FileManager.default.fileExists(atPath: socket), waited < 200 {
+      try await Task.sleep(nanoseconds: 10_000_000)
+      waited += 1
+    }
+    XCTAssertTrue(FileManager.default.fileExists(atPath: socket), "开启 MCP 后应当建立本机 socket")
     let attrs = try FileManager.default.attributesOfItem(atPath: socket)
     XCTAssertEqual((attrs[.posixPermissions] as? NSNumber)?.intValue, 0o600)
     let request = Data("{\"name\":\"jizuo_status\",\"arguments\":{}}".utf8)
@@ -110,6 +118,12 @@ final class MCPControllerTests: XCTestCase {
     let read = try await call("jizuo_read", ["task_id": id.rawValue, "offset": 0, "limit": 4])
     XCTAssertEqual(read["body"] as? String, "这是一段")
     model.enabled = false
+    // 关闭同样排在后台队列上，等 socket 真的撤掉再断言。
+    var closing = 0
+    while UnixSocketClient.canConnect(path: socket, timeout: 0.05), closing < 200 {
+      try await Task.sleep(nanoseconds: 10_000_000)
+      closing += 1
+    }
     XCTAssertFalse(UnixSocketClient.canConnect(path: socket))
     let revoked = try await call("jizuo_read", ["task_id": id.rawValue])
     XCTAssertEqual(revoked["error"] as? String, "disabled")

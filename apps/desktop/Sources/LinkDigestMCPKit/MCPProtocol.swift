@@ -8,7 +8,13 @@ public enum MCPConfiguration {
   }
   public static func connectionJSON(executable: String) -> String {
     let value: [String: Any] = ["mcpServers": ["jizuo": ["command": executable, "args": []]]]
-    return String(data: try! JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]), encoding: .utf8)!
+    guard JSONSerialization.isValidJSONObject(value),
+          let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]),
+          let text = String(data: data, encoding: .utf8)
+    else {
+      return "{\"mcpServers\":{\"jizuo\":{\"command\":\"\",\"args\":[]}}}"
+    }
+    return text
   }
 }
 

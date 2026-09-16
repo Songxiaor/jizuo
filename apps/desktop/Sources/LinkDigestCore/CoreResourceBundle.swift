@@ -44,7 +44,9 @@ enum CoreResourceBundle {
     }
     if mainBundle.bundleURL.pathExtension == "xctest" || NSClassFromString("XCTestCase") != nil {
       // 只有 XCTest 允许退回编译期的模块资源包；标准 .app 永远走不到这里。
-      return moduleBundle()
+      // 模块包也可能是嵌套布局（见 bundle(inDirectory:)），按同一套规则找。
+      let module = moduleBundle()
+      return bundle(inDirectory: module.bundleURL.deletingLastPathComponent()) ?? module
     }
     // 裸可执行文件（`swift run`）：资源包与可执行文件同级。
     return executableURL

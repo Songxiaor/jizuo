@@ -7,7 +7,7 @@ struct BrowserSupportSettingsView: View {
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
   @ObservedObject var model: BrowserSupportViewModel
-  @ObservedObject var appModel: AppViewModel
+  var appModel: AppViewModel
 
   /// 找不到扩展文件夹时报出来的东西。带上找过的路径——这种问题多半是 App 被单独
   /// 挪走、扩展目录留在原处，路径列表直接指出该去哪儿找。
@@ -20,6 +20,9 @@ struct BrowserSupportSettingsView: View {
   @State private var revealFailure: ExtensionFolderMiss?
   /// 已经连上浏览器之后，安装三步默认收起；点「重新安装扩展」再展开。
   @State private var showsInstallSteps = false
+  /// 等待确认「断开」的浏览器。断开之后这个浏览器再点同步就送不进来了，
+  /// 而且它长得和「重新检查」一样低调，误点的代价不小——先问一句。
+  @State private var pendingDisconnect: BrowserSupportBrowser?
 
   /// 有没有一个浏览器的通道已经通了。通了之后安装步骤就是噪音。
   private var hasConnectedBrowser: Bool {
@@ -128,14 +131,35 @@ struct BrowserSupportSettingsView: View {
     }
     .alert(item: $revealFailure) { miss in
       Alert(
-        title: Text("扩展文件夹没有打开"),
+        title: Text("没能打开扩展文件夹"),
         message: Text(
-          [miss.detail, "找过这些位置：\n" + miss.searched.map(\.path).joined(separator: "\n")]
+          [miss.detail, "汲作在这些位置找过，都没找到扩展。你的设置和内容没有受影响；请重新下载安装包，或手动去下面任一位置找找：\n" + miss.searched.map(\.path).joined(separator: "\n")]
             .compactMap { $0 }
             .joined(separator: "\n\n")
         ),
         dismissButton: .default(Text("好"))
       )
+    }
+    // 断开只动汲作自己写进浏览器的那个连接文件，浏览器里的扩展和你保存的内容都不动，
+    // 但断开之后扩展就送不进来了，得重新连一次——所以先说清楚再动手。
+    .confirmationDialog(
+      "断开 \(pendingDisconnect?.displayName ?? "") 的连接？",
+      isPresented: Binding(
+        get: { pendingDisconnect != nil },
+        set: { if !$0 { pendingDisconnect = nil } }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("断开", role: .destructive) {
+        if let browser = pendingDisconnect {
+          pendingDisconnect = nil
+          Task { await model.uninstall(browser) }
+        }
+      }
+      .accessibilityIdentifier("browser-support-disconnect-confirm")
+      Button("取消", role: .cancel) { pendingDisconnect = nil }
+    } message: {
+      Text("断开后，这个浏览器再点同步就送不进汲作了。你已经保存的内容一条都不会少，浏览器里的扩展也不会被删。想用的时候点「连接」就能接回来。")
     }
     .task { await model.load() }
     // 送达随时会发生：你在浏览器里点一次同步，这一行就得跟着变。原来只在切进这一页时
@@ -155,8 +179,8 @@ struct BrowserSupportSettingsView: View {
       switch presentation {
       case let .confirmation(confirmation):
         Alert(
-          title: Text("连接 \(confirmation.browser.displayName) 到此 App？"),
-          message: Text("\(ProductDisplay.name) 会保留现有连接配置的备份，再把这个浏览器切换到当前 App。不会删除浏览器数据或已加载的扩展。"),
+          title: Text("把 \(confirmation.browser.displayName) 连到这个汲作？"),
+          message: Text("这个浏览器里已经有一份连接配置。\(ProductDisplay.name) 会先备份它，再把浏览器切到当前这个汲作。不会删浏览器数据，也不会删已经装好的扩展。"),
           primaryButton: .default(Text("连接")) { Task { await model.confirmReplacement(confirmation) } },
           secondaryButton: .cancel(Text("取消")) { model.cancelPendingReplacement() }
         )
@@ -164,15 +188,15 @@ struct BrowserSupportSettingsView: View {
         switch result.kind {
         case .installed, .repaired:
           Alert(
-            title: Text(result.kind == .installed ? "浏览器支持已安装" : "浏览器支持已修复"),
-            message: Text("下一步：1. 点“打开扩展文件夹”；2. 在浏览器扩展管理页开启开发者模式；3. 选择“加载已解压的扩展程序”，并选择 Finder 刚刚选中的“汲作浏览器扩展”。"),
+            title: Text(result.kind == .installed ? "已连接这个浏览器" : "已重新连接这个浏览器"),
+            message: Text("下一步：1. 点“打开扩展文件夹”；2. 在浏览器的扩展管理页开启开发者模式；3. 选择“加载已解压的扩展程序”，再选 Finder 里刚刚选中的“汲作浏览器扩展”。"),
             primaryButton: .default(Text("打开 \(result.browser.displayName)")) { openBrowser(result.browser) },
             secondaryButton: .default(Text("打开扩展文件夹")) { revealExtensionFiles() }
           )
         case .uninstalled:
-          Alert(title: Text("浏览器支持已卸载"), message: Text("\(ProductDisplay.name) 已移除自己拥有且校验一致的 Native Messaging manifest。浏览器扩展文件不会被删除。"), dismissButton: .default(Text("好")))
+          Alert(title: Text("已断开连接"), message: Text("\(ProductDisplay.name) 只删掉了自己写进这个浏览器的连接文件。浏览器里的扩展还在，你保存的内容也一条没少。想用的时候点「连接」就能接回来。"), dismissButton: .default(Text("好")))
         case .restored:
-          Alert(title: Text("备份已恢复"), message: Text("已恢复本次接管前由收据绑定的备份。"), dismissButton: .default(Text("好")))
+          Alert(title: Text("已还原成接管前的样子"), message: Text("这个浏览器的连接文件已经还原成汲作接管之前的那一份。"), dismissButton: .default(Text("好")))
         }
       // 这不是报错，是还差一步——所以标题问的是「允许吗」，不是「失败了」。文案只说要做
       // 什么、以及为什么必须由你来点：文件夹已经定位好，用户不需要知道 TCC 是什么。
@@ -203,14 +227,23 @@ struct BrowserSupportSettingsView: View {
     .accessibilityIdentifier("browser-receiver-status")
   }
 
+  /// 这一行只说**接收服务在不在跑**，不报「有没有收到过内容」。
+  ///
+  /// 原来它写「App 接收就绪 · 还没收到过同步」，而上面每个浏览器那行同时写着
+  /// 「最近同步 14:03」——两句话直接打架。打架的原因是两边读的根本不是一个东西：
+  /// `lastBrowserCaptureAt` 只记**这次打开汲作之后**收到的内容，退出就归零；
+  /// 浏览器那行读的是落在磁盘上的送达记录，跨次运行都在。
+  ///
+  /// 所以把职责切开：送达事实只由浏览器那一行报（它是准的），这一行只回答
+  /// 「现在能不能收」。本次运行内确实收到过时补一句，并明说范围是「这次打开之后」。
   private var receiverLineText: String {
     if appModel.browserReceiverState == .ready, let date = appModel.lastBrowserCaptureAt {
-      return "App 接收就绪 · 最近送达 \(date.formatted(date: .omitted, time: .standard))"
+      return "接收服务已就绪 · 这次打开汲作后，最近一次收到内容是 \(date.formatted(date: .omitted, time: .standard))"
     }
     return switch appModel.browserReceiverState {
     case .starting: "正在启动接收服务…"
-    case .ready: "App 接收就绪 · 还没收到过同步"
-    case .unavailable: "App 正在恢复浏览器连接；若持续不可用，请完全退出并重新打开汲作"
+    case .ready: "接收服务已就绪，随时可以接收浏览器发来的内容"
+    case .unavailable: "接收服务正在恢复；如果一直这样，请完全退出汲作再重新打开"
     }
   }
 
@@ -264,6 +297,26 @@ struct BrowserSupportSettingsView: View {
           .accessibilityIdentifier("browser-support-stale-path-\(browser.id)")
       }
     }
+
+    // 说不清的状态必须带着「为什么」和「现在能做什么」一起出现，否则那一行只是
+    // 一个用户无从下手的名词。
+    if let advice = unresolvedStateAdvice(status.state) {
+      GridRow {
+        Color.clear.frame(width: 18, height: 0)
+        VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+          Text(advice.text)
+            .themedFont(.subheadline)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+          Button(advice.actionTitle, action: advice.action)
+            .buttonStyle(.appNormal)
+            .accessibilityIdentifier("browser-support-advice-action-\(browser.id)")
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .gridCellColumns(3)
+        .accessibilityIdentifier("browser-support-advice-\(browser.id)")
+      }
+    }
   }
 
   @ViewBuilder private func browserAction(
@@ -273,8 +326,9 @@ struct BrowserSupportSettingsView: View {
       Button("连接") { Task { await model.requestInstall(browser) } }
         .buttonStyle(.appNormal)
     } else if model.canUninstall(browser) {
-      Button("断开") { Task { await model.uninstall(browser) } }
-        .buttonStyle(.appQuiet)
+      Button("断开") { pendingDisconnect = browser }
+        .buttonStyle(.appDestructive(appTheme.danger))
+        .accessibilityIdentifier("browser-support-disconnect-\(browser.id)")
     }
   }
 
@@ -322,13 +376,13 @@ struct BrowserSupportSettingsView: View {
       return (statusSymbol(state), statusText(state), state != .unavailable)
     }
     guard let lastDelivery else {
-      // 没同步过不等于没装——可能只是还没用过，所以不报警。
-      return ("circle", "未同步过", false)
+      // 没收到过不等于没装——可能只是还没用过，所以不报警。
+      return ("circle", "还没收到过内容", false)
     }
-    return ("checkmark.circle", "最近同步 \(Self.deliveryFormat(lastDelivery))", false)
+    return ("checkmark.circle", "最近一次收到内容 \(Self.deliveryFormat(lastDelivery))", false)
   }
 
-  /// 当天只显示时间，跨天补上日期——「最近同步 14:03」在第二天会读成刚刚同步过。
+  /// 当天只显示时间，跨天补上日期——「最近一次收到内容 14:03」在第二天会读成刚刚收到过。
   private static func deliveryFormat(_ date: Date) -> String {
     Calendar.current.isDateInToday(date)
       ? date.formatted(date: .omitted, time: .shortened)
@@ -359,8 +413,35 @@ struct BrowserSupportSettingsView: View {
     // 所以不用「就绪」这种暗示「已经在用了」的词。
     case .installed, .installedAppUpdated, .currentAppUnverified: "已配置"
     case .drifted, .unknownManifest: "需连接"
-    case .invalidReceipt: "安装记录无效"
-    case .unavailableArtifact: "缺少安装工件"
+    // 这两条以前是「安装记录无效」「缺少安装工件」——说的是内部状态，用户既看不懂
+    // 也不知道该干什么。改成人话，并由 `unresolvedStateAdvice` 在下一行补上原因和
+    // 一个真能点的按钮。
+    case .invalidReceipt: "连接文件不是汲作装的"
+    case .unavailableArtifact: "这一版没带连接文件"
+    }
+  }
+
+  /// 「连接文件不是汲作装的」「这一版没带连接文件」这两种状态没有对应的常规按钮
+  /// （既不满足 `canInstall` 也不满足 `canRepair`），光显示一个名词等于死路一条。
+  /// 这里给它们各配一句原因和一个真能点的下一步。
+  private func unresolvedStateAdvice(
+    _ state: BrowserSupportInstallState
+  ) -> (text: String, actionTitle: String, action: () -> Void)? {
+    switch state {
+    case .invalidReceipt:
+      return (
+        "这个浏览器里已经有一个同名的连接文件，但不是汲作写的，所以汲作没有覆盖它——你的内容和浏览器数据都没被动过。请在浏览器里删掉旧的汲作扩展，再按下面三步重装一次。",
+        "重新安装扩展",
+        { showsInstallSteps = true }
+      )
+    case .unavailableArtifact:
+      return (
+        "这一版汲作里没带浏览器连接文件，所以连不上。你已经保存的内容不受影响。换成完整版安装包重新装一次就好。",
+        "去检查更新",
+        { SettingsNavigationRequest.request("updates") }
+      )
+    default:
+      return nil
     }
   }
 
@@ -461,7 +542,7 @@ struct BrowserSupportSettingsView: View {
       } catch {
         revealFailure = ExtensionFolderMiss(
           searched: candidates,
-          detail: "扩展已包含在 App 中，但导出失败：\(error.localizedDescription)"
+          detail: "扩展就在 App 里，但这次没能把它导出到硬盘上：\(error.localizedDescription)\n浏览器和你保存的内容都没有受影响。磁盘空间够的话再点一次「打开扩展文件夹」。"
         )
         return
       }

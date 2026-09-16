@@ -207,42 +207,18 @@ struct CaptureReceiver: Sendable {
         )
       }
     } catch let issue as CaptureValidationError {
-      return .error(appError(
-        requestID: "app-receiver",
-        category: "protocol",
-        code: issue.rawValue,
-        retryable: false,
-        action: "retry"
-      ))
+      return protocolError(from: data, issue: issue)
     } catch {
-      return .error(appError(
-        requestID: "app-receiver",
-        category: "protocol",
-        code: CaptureValidationError.CAPTURE_SCHEMA_INVALID.rawValue,
-        retryable: false,
-        action: "retry"
-      ))
+      return protocolError(from: data, issue: .CAPTURE_SCHEMA_INVALID)
     }
 
     let wire: CaptureWireEnvelope
     do {
       wire = try CaptureWireEnvelope.decode(data)
     } catch let issue as CaptureValidationError {
-      return .error(appError(
-        requestID: "app-receiver",
-        category: "protocol",
-        code: issue.rawValue,
-        retryable: false,
-        action: "retry"
-      ))
+      return protocolError(from: data, issue: issue)
     } catch {
-      return .error(appError(
-        requestID: "app-receiver",
-        category: "protocol",
-        code: CaptureValidationError.CAPTURE_SCHEMA_INVALID.rawValue,
-        retryable: false,
-        action: "retry"
-      ))
+      return protocolError(from: data, issue: .CAPTURE_SCHEMA_INVALID)
     }
 
     let requestID = wire.requestId
@@ -293,6 +269,16 @@ struct CaptureReceiver: Sendable {
       ))
     }
     try? ChromiumFramer.writeFrame(try JSONEncoder().encode(response), to: client)
+  }
+
+  private func protocolError(from data: Data, issue: CaptureValidationError) -> NativeResponse {
+    .error(appError(
+      requestID: NativeRequestIdentity.requestId(from: data) ?? "app-receiver",
+      category: "protocol",
+      code: issue.rawValue,
+      retryable: false,
+      action: issue == .PROTOCOL_VERSION_UNSUPPORTED ? "upgrade_app" : "retry"
+    ))
   }
 
   private func storageError(requestID: String, code: StorageErrorCode) -> AppError {

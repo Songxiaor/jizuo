@@ -6,7 +6,7 @@ import Foundation
 /// 「总结与翻译」这类标题和独立翻译配置各写一份后互相打架。
 enum UISettingsPresentation {
   static let modelServicesCardTitle = "模型服务"
-  static let modelServicesSummary = "按服务商归拢；每个模型有自己的 Base URL 和 API Key。"
+  static let modelServicesSummary = "按服务商归拢；每个模型有自己的服务地址和密钥。"
   static let modelServicesDetails = "密钥只保存在本机钥匙串，不写进历史库、导出文件或日志。"
   static let summaryAssignmentTitle = "总结模型"
   static let translationAssignmentTitle = "翻译模型"
@@ -15,9 +15,9 @@ enum UISettingsPresentation {
   static let onlineTranscriptionTitle = "在线备用转写"
   static let tidyAssignmentTitle = "校对模型"
   static let imageRecognitionTitle = "图片识别"
-  static let newCaptureAutoProcessTitle = "新资料自动处理"
+  static let newCaptureAutoProcessTitle = "新内容自动处理"
   static let newCaptureAutoProcessCaption =
-    "新资料进来后，按编号顺序依次执行已开启的步骤。正文翻译仍需手动点。"
+    "新内容进来后，按编号顺序依次执行已开启的步骤。正文翻译仍需手动点。"
 
   /// 管线步骤标题：动词开头，顺序与执行链一致，不得重排。
   static func pipelineStepTitle(index: Int) -> String {

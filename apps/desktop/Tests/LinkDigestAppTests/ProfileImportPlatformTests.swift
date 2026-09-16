@@ -50,6 +50,26 @@ final class ProfileImportPlatformTests: XCTestCase {
     )
   }
 
+  func testBilibiliReadsSubtitleAsPublishedText() async throws {
+    // 2026-09 真实空间页：日期在 `.bili-video-card__subtitle`，没有 <time>。
+    let body = """
+      <main><div class="upload-content"><div class="video-list">
+      <div class="upload-video-card"><div class="bili-video-card"><a class="bili-cover-card" href="//www.bilibili.com/video/BV1234567890/?spm_id_from=x"><img src="//i2.hdslb.com/a.jpg" alt="标题 A">
+        <div class="bili-cover-card__stats"><div class="bili-cover-card__stat"><i class="sic-BDC-playdata_square_line"></i><span>3万</span></div><div class="bili-cover-card__stat"><i class="sic-BDC-danmu_square_line"></i><span>118</span></div><div class="bili-cover-card__stat"><span>02:17</span></div></div></a>
+        <div class="bili-video-card__details"><div class="bili-video-card__title"><a href="//www.bilibili.com/video/BV1234567890/">标题 A</a></div><div class="bili-video-card__subtitle"><span>2天前</span></div></div></div></div>
+      <div class="upload-video-card"><div class="bili-video-card"><a class="bili-cover-card" href="//www.bilibili.com/video/BV0987654321/"><img src="//i2.hdslb.com/b.jpg" alt="标题 B"></a>
+        <div class="bili-video-card__details"><div class="bili-video-card__title"><a href="//www.bilibili.com/video/BV0987654321/">标题 B</a></div><div class="bili-video-card__subtitle"><span>9月10日</span></div></div></div></div>
+      </div></div></main>
+      """
+    let result = try await extract(.bilibili, url: "https://space.bilibili.com/123/upload/video", body: body)
+    XCTAssertEqual(result.status, "ready")
+    XCTAssertEqual(result.candidates.map(\.publishedText), ["2天前", "9月10日"])
+    XCTAssertEqual(result.candidates.map(\.previewText), ["标题 A", "标题 B"])
+    // 播放数来自封面角标第一格；弹幕数和时长都不能被当成播放。
+    XCTAssertEqual(result.candidates.map(\.views), ["3万", nil])
+    XCTAssertTrue(result.candidates.allSatisfy { $0.likes == nil && $0.comments == nil })
+  }
+
   func testEveryNewPlatformExtractsOnlyScopedAuthorWorks() async throws {
     for (platform, url, body) in samples {
       let result = try await extract(platform, url: url, body: body)

@@ -40,6 +40,9 @@ struct SiteLoginSettingsView: View {
   /// 每行自己的 ⓘ 展开区独立收起/展开——点开 B 站的校验会话不该带着关掉
   /// 小红书那行的诊断细节。
   @State private var expandedDetailSites: Set<SiteSessionPlatform> = []
+  /// 等待确认「清除登录」的站点。清掉之后要重新走一遍扫码/密码登录，
+  /// 在这之前该站的抓取会退回未登录能拿到的那部分内容——所以先问一句。
+  @State private var pendingClearPlatform: SiteSessionPlatform?
 
   // 这一页的行组卡自带主题卡面（`SettingsThemedCardChrome`：底色 + hairline
   // 描边 + 浅色主题下的轻投影），原来却又挂在 grouped Form 的 Section 里——
@@ -101,6 +104,27 @@ struct SiteLoginSettingsView: View {
     }
     .sheet(item: $presentedLogin) { platform in
       SiteLoginSheet(session: controller(for: platform))
+    }
+    // 清除登录不可逆：本机这份登录被抹掉，下次要重新扫码或输密码。抓取本身不会坏，
+    // 只是登录后才看得到的内容会抓不到。标题说清清的是哪一个站。
+    .confirmationDialog(
+      "清除\(pendingClearPlatform?.displayName ?? "")的登录？",
+      isPresented: Binding(
+        get: { pendingClearPlatform != nil },
+        set: { if !$0 { pendingClearPlatform = nil } }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("清除登录", role: .destructive) {
+        if let platform = pendingClearPlatform {
+          pendingClearPlatform = nil
+          Task { await clearSession(platform, session: controller(for: platform)) }
+        }
+      }
+      .accessibilityIdentifier("site-login-clear-confirm")
+      Button("取消", role: .cancel) { pendingClearPlatform = nil }
+    } message: {
+      Text("会抹掉汲作在本机存的这份登录，下次要重新登一遍。你已经保存的内容一条都不会少；只是这个站登录后才看得到的内容，在重新登录前抓不到了。")
     }
     .accessibilityIdentifier("site-login-settings")
   }
@@ -258,7 +282,7 @@ struct SiteLoginSettingsView: View {
 
         Menu {
           Button("清除登录", role: .destructive) {
-            Task { await clearSession(platform, session: session) }
+            pendingClearPlatform = platform
           }
           .disabled(!session.isLoggedIn)
           .accessibilityIdentifier("site-login-\(id)-clear")

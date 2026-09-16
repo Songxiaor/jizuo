@@ -63,144 +63,144 @@ enum V02ErrorCatalog {
     let presentation: V02ErrorPresentation = switch code {
     case ProviderConfigurationError.baseURLRequired.rawValue:
       .init(
-        message: "Base URL 不能为空。",
-        recoveryAction: "请输入以 https:// 开头的 OpenAI-compatible API root 后重新保存。"
+        message: "服务地址还没填。",
+        recoveryAction: "已保存的配置没有变化。请在「模型与识别 → 添加模型」里填上以 https:// 开头的服务地址后再保存。"
       )
     case ProviderConfigurationError.baseURLInvalid.rawValue,
          ModelProviderErrorCode.baseURLInvalid.rawValue:
       .init(
-        message: "模型服务地址不正确。",
-        recoveryAction: "请填写不含账号、查询参数或片段的 https OpenAI-compatible API root 后重试。"
+        message: "这个服务地址汲作用不了。",
+        recoveryAction: "已保存的配置没有变化。请填服务商文档里给的那个 https 地址，不要带账号、问号后面的参数或井号片段。"
       )
     case ProviderConfigurationError.modelRequired.rawValue:
       .init(
-        message: "模型名不能为空。",
-        recoveryAction: "请输入模型服务支持的模型名后重新保存。"
+        message: "还没选模型。",
+        recoveryAction: "已保存的配置没有变化。请先点「读取模型列表」选一个，或手动填上模型名后再保存。"
       )
     case ProviderConfigurationError.apiKeyRequired.rawValue:
       .init(
-        message: "API Key 不能为空。",
-        recoveryAction: "请重新输入 API Key 后保存；\(ProductDisplay.name) 不会回显完整值。"
+        message: "密钥还没填。",
+        recoveryAction: "已保存的配置没有变化。请重新输入一次密钥后保存；出于安全，\(ProductDisplay.name) 不会把已存的密钥显示出来。"
       )
     case ProviderConfigurationError.profileStoreReadFailed.rawValue:
       .init(
-        message: "无法读取已保存的模型配置。",
-        recoveryAction: "请重新打开 APP；仍失败时重新保存模型配置。"
+        message: "读不到已经保存的模型配置。",
+        recoveryAction: "配置本身还在本机，没有被删。请重新打开 \(ProductDisplay.name)；还是这样就把这个模型重新保存一次。"
       )
     case ProviderConfigurationError.profileStoreWriteFailed.rawValue:
       .init(
-        message: "无法保存模型配置。",
-        recoveryAction: "请检查本机存储是否可用后重试。"
+        message: "这次没能把模型配置存下来。",
+        recoveryAction: "原来那份配置还在，可以继续用。请确认磁盘还有空间、没有被锁住，然后再点一次保存。"
       )
     case ProviderConfigurationError.secretStoreReadFailed.rawValue:
       .init(
-        message: "无法安全读取 API Key。",
-        recoveryAction: "请在模型配置中重新输入并保存 API Key 后重试。"
+        message: "读不出这个模型的密钥。",
+        recoveryAction: "密钥只存在本机钥匙串里，没有外泄。请在这个模型的配置里重新输入一次密钥并保存。"
       )
     case ProviderConfigurationError.secretStoreReadTimedOut.rawValue:
       .init(
-        message: "读取 API Key 超时。",
-        recoveryAction: "钥匙串可能在等待解锁或确认。请解锁本机、处理钥匙串提示后重试；仍失败时在模型配置中重新保存 API Key。"
+        message: "读密钥等太久，这次先停下了。",
+        recoveryAction: "密钥没有丢，多半是钥匙串在等你解锁或确认。请解锁本机、处理掉钥匙串弹窗后再试；还是这样就重新保存一次密钥。"
       )
     case ProviderConfigurationError.secretStoreWriteFailed.rawValue:
       .init(
-        message: "无法安全保存 API Key。",
-        recoveryAction: "请重新输入后重试；\(ProductDisplay.name) 不会降级为明文保存。"
+        message: "这次没能把密钥安全地存起来。",
+        recoveryAction: "\(ProductDisplay.name) 宁可不保存，也不会把密钥明文写到别处。请重新输入一次再保存。"
       )
     case ProviderConfigurationError.configurationChanged.rawValue:
       .init(
-        message: "模型目的地已变化。",
-        recoveryAction: "请确认新的发送目的地后再继续。"
+        message: "内容要发去的地方变了。",
+        recoveryAction: "在你确认之前，什么都没有发出去。请看清新的目的地，确认后再继续。"
       )
     case "SECRET_STORE_DELETE_FAILED":
       .init(
-        message: "旧 API Key 的安全清理未完成。",
-        recoveryAction: "当前配置仍可使用；请稍后重新保存，后续可通过维护入口清理。"
+        message: "旧密钥没能从钥匙串里清干净。",
+        recoveryAction: "当前配置照常能用，也没有任何内容因此发错地方。请到「模型与识别」把这个模型删掉再重新添加一次，残留就会一起清掉。"
       )
     case ModelRunErrorCode.modelNotConfigured.rawValue:
       .init(
-        message: "尚未配置模型。",
-        recoveryAction: "请先在模型配置中保存 Base URL、模型名和 API Key。"
+        message: "还没配置可用的模型。",
+        recoveryAction: "你的内容都还在，只是这一步跑不了。请到「模型与识别 → 添加模型」，填好服务地址、密钥并选一个模型。"
       )
     case ModelProviderErrorCode.authInvalid.rawValue:
       .init(
-        message: "模型服务未通过身份验证。",
-        recoveryAction: "请在模型配置中更新 API Key 后重试。"
+        message: "模型服务不认这个密钥。",
+        recoveryAction: "你的内容没有受影响。请到「模型与识别」更新密钥后再试一次。"
       )
     case ModelProviderErrorCode.authForbidden.rawValue:
       .init(
-        message: "模型服务拒绝了这次访问。",
-        recoveryAction: "API Key 本身有效，但没有使用这个模型的权限——免费额度通常不含付费模型。请改用一个已开通的模型，或在服务商处为它开通后重试。"
+        message: "模型服务不让这个账号用这个模型。",
+        recoveryAction: "密钥本身是好的，你的内容也没有受影响——通常是免费额度不含这个付费模型。请换一个已经开通的模型，或去服务商那边为它开通后再试。"
       )
     case ModelProviderErrorCode.endpointNotFound.rawValue:
       .init(
-        message: "模型服务未找到 Chat Completions 接口。",
-        recoveryAction: "请检查 Base URL 是否是 OpenAI-compatible Chat Completions API root。"
+        message: "这个服务地址上没有汲作要调用的接口。",
+        recoveryAction: "你的内容没有受影响。请回到「模型与识别」核对服务地址，照服务商文档里给的那一行填。"
       )
     case ModelProviderErrorCode.modelNotFound.rawValue:
       .init(
-        message: "模型服务未找到所选模型。",
-        recoveryAction: "请检查模型名、访问权限和服务商模型目录后重试。"
+        message: "模型服务那边找不到你选的这个模型。",
+        recoveryAction: "你的内容没有受影响。请回到「模型与识别」点「读取模型列表」重新选一个，或确认这个模型在你的账号下已经开通。"
       )
     case ModelProviderErrorCode.providerBillingLimited.rawValue:
       .init(
-        message: "模型服务的计费或配额限制阻止了本次请求。",
-        recoveryAction: "请前往服务商控制台检查支付方式、余额或可用额度后重试。"
+        message: "模型服务因为计费或配额限制挡下了这次请求。",
+        recoveryAction: "没有产生这次的费用，你的内容也没有受影响。请去服务商控制台看看支付方式、余额或额度，再回来重试。"
       )
     case ModelProviderErrorCode.providerRequestRejected.rawValue:
       .init(
-        message: "模型服务拒绝了本次请求。",
-        recoveryAction: "请检查模型配置、服务商限制和请求参数后重试。"
+        message: "模型服务拒绝了这次请求。",
+        recoveryAction: "你的内容没有受影响。请回到「模型与识别」核对这个模型的配置，或换一个模型再试。"
       )
     case ModelProviderErrorCode.rateLimited.rawValue:
       .init(
-        message: "模型服务当前请求过多。",
-        recoveryAction: "请稍后重试或更换模型服务。"
+        message: "这会儿请求太多，模型服务让先等等。",
+        recoveryAction: "你的内容没有受影响。请稍后重试或更换模型服务。"
       )
     case ModelProviderErrorCode.providerUnavailable.rawValue:
       .init(
-        message: "Provider 暂时不可用。",
-        recoveryAction: "请稍后重试。"
+        message: "模型服务暂时用不了。",
+        recoveryAction: "这是对方的问题，你的内容没有受影响。请稍后重试。"
       )
     case ModelProviderErrorCode.networkInterrupted.rawValue:
       .init(
-        message: "与模型服务的连接中断。",
-        recoveryAction: "请检查网络后手动重试。"
+        message: "跟模型服务的连接中途断了。",
+        recoveryAction: "已经跑出来的部分不会被覆盖。请检查网络后再点一次。"
       )
     case ModelProviderErrorCode.protocolIncompatible.rawValue:
       .init(
-        message: "模型服务返回的协议与当前版本不兼容。",
-        recoveryAction: "请检查 Base URL 是否是 OpenAI-compatible Chat Completions API root。"
+        message: "模型服务返回的东西汲作看不懂。",
+        recoveryAction: "你的内容没有受影响。请回到「模型与识别」核对服务地址，照服务商文档里给的那一行填；确认无误还是这样，就换一个模型服务。"
       )
     case ModelProviderErrorCode.streamMalformed.rawValue:
       .init(
-        message: "模型服务返回的流式数据无法解析。",
-        recoveryAction: "请检查 Provider 兼容性或更换模型服务后重试。"
+        message: "模型服务边生成边发回来的内容读不通。",
+        recoveryAction: "已经保存的内容没有受影响。请再试一次；反复这样就换一个模型服务。"
       )
     case ModelProviderErrorCode.inputTooLarge.rawValue:
       .init(
-        message: "当前正文超过模型服务可接受的长度。",
-        recoveryAction: "请改用选区或较短页面后重试。"
+        message: "这篇正文太长，超过了这个模型一次能吃下的量。",
+        recoveryAction: "原文完整保存着，没有被截断。请选一段正文再跑，或换一个能吃更长正文的模型。"
       )
     case ModelRunErrorCode.captureNotAvailable.rawValue:
       .init(
-        message: "当前没有可处理的页面内容。",
-        recoveryAction: "请先从浏览器重新发送当前页面。"
+        message: "现在没有可以处理的内容。",
+        recoveryAction: "历史里的内容都还在。请先从浏览器重新发送一次当前页面。"
       )
     case ModelRunErrorCode.captureContentEmpty.rawValue:
       .init(
-        message: "当前页面没有可用正文。",
-        recoveryAction: "请等待页面加载、选择正文，或换一个页面后重新发送。"
+        message: "这个页面没抓到正文。",
+        recoveryAction: "没有产生空记录。请等页面加载完、或自己选中正文再发一次；换一个页面也行。"
       )
     case ModelRunErrorCode.runFailed.rawValue:
       .init(
-        message: "本次生成未能开始。",
-        recoveryAction: "请检查模型配置和网络后重试。"
+        message: "这次生成没能开始。",
+        recoveryAction: "你的内容没有受影响。请检查网络和「模型与识别」里的配置后再点一次。"
       )
     default:
       .init(
-        message: "操作未完成。",
-        recoveryAction: "请检查模型配置和网络后重试。"
+        message: "这次操作没做完。",
+        recoveryAction: "你的内容没有受影响。请检查网络和「模型与识别」里的配置后再试一次。"
       )
     }
     return presentation

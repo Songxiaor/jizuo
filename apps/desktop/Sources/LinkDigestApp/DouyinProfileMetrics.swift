@@ -116,6 +116,9 @@ enum DouyinProfileMetricsCapture {
     })
   }
 
+  /// `WKUserScript` 是 MainActor 隔离类型，构造它必须在主线程上；调用点都在
+  /// `makeNSView`（同样是 MainActor），标出来只是把这件事写清楚。
+  @MainActor
   static func documentStartUserScript() -> WKUserScript {
     WKUserScript(
       source: documentStartJavaScript,

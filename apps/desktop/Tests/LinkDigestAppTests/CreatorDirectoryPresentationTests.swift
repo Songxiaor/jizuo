@@ -780,7 +780,9 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
     XCTAssertTrue(saved.contains("lineLimit(2, reservesSpace: true)"))
     XCTAssertTrue(saved.contains("CreatorWorkCardLayout.metricRowHeight"))
     XCTAssertTrue(reserved.contains("发布时间待获取"))
-    XCTAssertTrue(reserved.contains("case .shares, .views: nil"))
+    // B 站主页列表能给播放数，播放槽位从 2026-09 起有值；分享仍无来源。
+    XCTAssertTrue(reserved.contains("case .views: item.seed.views"))
+    XCTAssertTrue(reserved.contains("case .shares: nil"))
     XCTAssertTrue(reserved.contains("CreatorWorkMetricStrip"))
     XCTAssertTrue(candidate.contains("发布时间待获取"))
     XCTAssertFalse(candidate.contains("点击选择"))
@@ -792,7 +794,8 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
     XCTAssertTrue(candidate.contains("Button(\"取消\")"))
     XCTAssertTrue(layout.contains("lineLimit(2, reservesSpace: true)"))
     XCTAssertTrue(layout.contains("accessibilityValue(shown.accessibility)"))
-    XCTAssertTrue(candidate.contains("case .shares, .views: nil"))
+    XCTAssertTrue(candidate.contains("case .views: candidate.views"))
+    XCTAssertTrue(candidate.contains("case .shares: nil"))
     XCTAssertTrue(candidate.contains("CreatorWorkMetricStrip"))
     XCTAssertTrue(batch.contains("struct ProfileImportBatchHeader"))
     XCTAssertTrue(batch.contains("struct ProfileImportBatchWorkCard"))
@@ -849,6 +852,48 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
       ),
       "X · 当前筛选"
     )
+  }
+
+  func testPlatformGalleryCountsSavedContentAndUsesThreeSentenceLoadFailure() throws {
+    XCTAssertEqual(
+      PlatformHistoryGalleryPresentation.title(
+        selectedHosts: ["x.com"],
+        searchText: "",
+        navigationCounts: .init(platforms: [.init(host: "x.com", count: 12)])
+      ),
+      "X · 已保存 12 条内容"
+    )
+    XCTAssertEqual(PlatformHistoryGalleryPresentation.backToListTitle, "返回内容列表")
+    XCTAssertEqual(PlatformHistoryGalleryPresentation.retryActionTitle, "重试")
+    XCTAssertEqual(
+      PlatformHistoryGalleryPresentation.loadFailureTitle(selectedHosts: ["x.com"]),
+      "无法载入X图库"
+    )
+    XCTAssertTrue(PlatformHistoryGalleryPresentation.loadFailureMessage.contains("这次没能从本机读出图库"))
+    XCTAssertTrue(PlatformHistoryGalleryPresentation.loadFailureMessage.contains("已保存的内容都还在"))
+    XCTAssertTrue(PlatformHistoryGalleryPresentation.loadFailureMessage.contains("点「重试」再读一次"))
+    XCTAssertTrue(PlatformHistoryGalleryPresentation.pageLoadFailureMessage.contains("已经显示的内容都还在"))
+
+    let root = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("Sources/LinkDigestApp")
+    let gallery = try String(contentsOf: root.appendingPathComponent("PlatformHistoryGallery.swift"), encoding: .utf8)
+    XCTAssertFalse(gallery.contains("载入失败，点击重试"), "图库失败态不能再是六个字加一个动作")
+    XCTAssertTrue(gallery.contains("HistoryInlineState("))
+    XCTAssertTrue(gallery.contains("themedFont(.title3"))
+
+    let directory = try String(contentsOf: root.appendingPathComponent("CreatorDirectoryViews.swift"), encoding: .utf8)
+    XCTAssertTrue(directory.contains("视频封面是黑场，已改用占位"))
+    XCTAssertFalse(directory.contains("更新资料"), "本路可见文案不再用「更新资料」")
+    XCTAssertTrue(directory.contains("刷新博主信息"))
+
+    let importSource = try String(contentsOf: root.appendingPathComponent("DouyinProfileImport.swift"), encoding: .utf8)
+    XCTAssertFalse(importSource.contains("Dictionary(uniqueKeysWithValues:"))
+    XCTAssertTrue(importSource.contains("uniquingKeysWith:"))
+    let markdown = try String(contentsOf: root.appendingPathComponent("MarkdownPresentation.swift"), encoding: .utf8)
+    XCTAssertFalse(markdown.contains("Dictionary(uniqueKeysWithValues:"))
   }
 
   private func section(_ source: String, from: String, to: String) -> String {

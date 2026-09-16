@@ -40,6 +40,30 @@ final class ColumnDividerOverlayView: NSView {
     ) { [weak self] _ in
       MainActor.assumeIsolated { self?.needsDisplay = true }
     })
+    // 细线住在自己的子窗口里，**不随父窗口自动移动或缩放**，位置和大小都要自己跟。
+    // 漏掉这一段的表现是：窗口一拖或一改大小，细线就停在原地。
+    if let parent = window?.parent {
+      for name in [
+        NSWindow.didResizeNotification,
+        NSWindow.didMoveNotification,
+        NSWindow.didEnterFullScreenNotification,
+        NSWindow.didExitFullScreenNotification,
+      ] {
+        observers.append(center.addObserver(
+          forName: name, object: parent, queue: .main
+        ) { [weak self] _ in
+          MainActor.assumeIsolated { self?.syncFrameToParentWindow() }
+        })
+      }
+    }
+  }
+
+  /// 把子窗口贴回父窗口当前的 frame。
+  func syncFrameToParentWindow() {
+    guard let window, let parent = window.parent else { return }
+    window.setFrame(parent.frame, display: true)
+    frame = NSRect(origin: .zero, size: window.frame.size)
+    needsDisplay = true
   }
 
   private func removeObservers() {
@@ -48,7 +72,7 @@ final class ColumnDividerOverlayView: NSView {
   }
 
   override func draw(_ dirtyRect: NSRect) {
-    guard let splitView = trackedSplitView, splitView.window === window else { return }
+    guard let splitView = trackedSplitView, splitView.window === window?.parent else { return }
     let columns = splitView.arrangedSubviews
       .filter { !$0.isHidden && $0.frame.width > 1 }
       .sorted { $0.frame.minX < $1.frame.minX }
@@ -62,6 +86,21 @@ final class ColumnDividerOverlayView: NSView {
       NSRect(x: originX.rounded(), y: 0, width: max(1, gap), height: bounds.height).fill()
     }
   }
+}
+
+/// 细线所在的窗口。
+///
+/// 原来这条线是作为**子视图**挂进 `NSThemeFrame`（`contentView.superview`）的：
+/// 那是唯一能画到工具栏之上的位置。代价是 AppKit 每次启动都记一条
+/// `adding an unknown subview`，紧跟其后是一条 SwiftUI 的
+/// `NSHostingView is being laid out reentrantly`（**该次布局被跳过**）——
+/// 两个都指向同一件事：往主题框里塞了 AppKit 不认识的视图。
+///
+/// 改成同尺寸的无边框子窗口之后，细线仍然是窗口级的（照样贯通工具栏），
+/// 但不再有任何外来视图进入主题框。
+final class ColumnDividerOverlayWindow: NSWindow {
+  override var canBecomeKey: Bool { false }
+  override var canBecomeMain: Bool { false }
 }
 
 /// 把窗口级细线接进 SwiftUI：作为零尺寸探针挂在 NavigationSplitView 下，
@@ -81,32 +120,43 @@ struct WindowColumnDividerInstaller: NSViewRepresentable {
   }
 
   static func dismantleNSView(_ nsView: NSView, coordinator: ()) {
-    existingOverlay(in: nsView.window)?.removeFromSuperview()
+    teardown(in: nsView.window)
   }
 
   private static func sync(probe: NSView, lineColor: NSColor?) {
-    guard let window = probe.window, let contentView = window.contentView,
-          let frameView = contentView.superview
-    else { return }
+    guard let window = probe.window, let contentView = window.contentView else { return }
     if let split = splitView(in: contentView) {
       applyIndependentColumnHoldingPriorities(split)
     }
     guard let lineColor else {
-      existingOverlay(in: window)?.removeFromSuperview()
+      teardown(in: window)
       return
     }
-    let overlay = existingOverlay(in: window) ?? {
-      let created = ColumnDividerOverlayView(frame: frameView.bounds)
-      created.autoresizingMask = [.width, .height]
+
+    let overlayWindow = existingOverlayWindow(for: window) ?? {
+      let created = ColumnDividerOverlayWindow(
+        contentRect: window.frame,
+        styleMask: .borderless,
+        backing: .buffered,
+        defer: false
+      )
+      // 只是一层画上去的线：不透明、点不到、没阴影，也不占窗口循环。
+      created.isOpaque = false
+      created.backgroundColor = .clear
+      created.hasShadow = false
+      created.ignoresMouseEvents = true
+      created.collectionBehavior = [.fullScreenAuxiliary, .stationary]
+      created.contentView = ColumnDividerOverlayView(
+        frame: NSRect(origin: .zero, size: window.frame.size)
+      )
+      window.addChildWindow(created, ordered: .above)
       return created
     }()
-    // 保持置顶：标题栏容器与工具栏背景层可能后插，
-    // 细线必须盖在它们之上才能贯通到窗口顶。
-    if overlay.superview !== frameView || frameView.subviews.last !== overlay {
-      overlay.removeFromSuperview()
-      overlay.frame = frameView.bounds
-      frameView.addSubview(overlay)
-    }
+
+    guard let overlay = overlayWindow.contentView as? ColumnDividerOverlayView else { return }
+    overlayWindow.setFrame(window.frame, display: false)
+    overlay.frame = NSRect(origin: .zero, size: window.frame.size)
+
     // 切主题时 SwiftUI 会连着刷很多次；颜色和分栏都没变就不动 overlay，
     // 否则每次都重挂观察者、重画细线，分栏缝隙跟着一闪一闪。
     let split = splitView(in: contentView)
@@ -115,6 +165,19 @@ struct WindowColumnDividerInstaller: NSViewRepresentable {
     overlay.trackedSplitView = split
     overlay.refreshObservation()
     overlay.needsDisplay = true
+  }
+
+  private static func teardown(in window: NSWindow?) {
+    guard let window else { return }
+    // `childWindows` 在 Swift 里是可选的（ObjC 侧可空），空数组兜底。
+    for child in window.childWindows ?? [] where child is ColumnDividerOverlayWindow {
+      window.removeChildWindow(child)
+      child.orderOut(nil)
+    }
+  }
+
+  private static func existingOverlayWindow(for window: NSWindow) -> ColumnDividerOverlayWindow? {
+    (window.childWindows ?? []).first { $0 is ColumnDividerOverlayWindow } as? ColumnDividerOverlayWindow
   }
 
   /// 三栏 holding priority 从左到右递减：左目录栏最“硬”，拖动右侧分隔线
@@ -129,14 +192,16 @@ struct WindowColumnDividerInstaller: NSViewRepresentable {
     let items = controller.splitViewItems
     guard items.count >= 2 else { return }
     for (index, item) in items.enumerated() {
-      item.holdingPriority = NSLayoutConstraint.Priority(rawValue: 270 - Float(index) * 10)
+      let priority = NSLayoutConstraint.Priority(rawValue: 270 - Float(index) * 10)
+      // 只在真的不一样时才写。`holdingPriority` 是**布局**属性：赋一次值就会让
+      // 分栏重新布局一次，而 `sync()` 会在每次主题/状态变化（包括启动那一拍）
+      // 被调到——重复写同一个值等于在 SwiftUI 自己的布局周期里反复插队。
+      // 实测这就是启动时那条 `NSHostingView is being laid out reentrantly` 的来源。
+      if item.holdingPriority != priority { item.holdingPriority = priority }
     }
   }
 
-  private static func existingOverlay(in window: NSWindow?) -> ColumnDividerOverlayView? {
-    guard let frameView = window?.contentView?.superview else { return nil }
-    return frameView.subviews.compactMap { $0 as? ColumnDividerOverlayView }.first
-  }
+
 
   private static func splitView(in root: NSView) -> NSSplitView? {
     var queue: [NSView] = [root]

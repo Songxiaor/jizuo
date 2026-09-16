@@ -200,12 +200,45 @@ enum DouyinProfilePreviewResource {
 }
 
 enum ProfileImportExamples {
-  static let lines = [
-    "抖音：https://www.douyin.com/user/MS4wLjAB…  或「复制主页」得到的分享文案",
-    "小红书：https://www.xiaohongshu.com/user/profile/…",
-    "X：https://x.com/用户名",
-    "B 站：https://space.bilibili.com/12345678",
-  ]
+  /// 每个可导入平台的主页链接样例；顺序即弹窗里图标的顺序。
+  static func example(for platform: ProfileImportPlatform) -> String {
+    switch platform {
+    case .douyin: "https://www.douyin.com/user/MS4wLjAB…  或「复制主页」得到的分享文案"
+    case .xiaohongshu: "https://www.xiaohongshu.com/user/profile/…"
+    case .x: "https://x.com/用户名"
+    case .bilibili: "https://space.bilibili.com/12345678"
+    }
+  }
+
+  static var lines: [String] {
+    ProfileImportPlatform.allCases.map { "\($0.displayName)：\(example(for: $0))" }
+  }
+}
+
+/// 弹窗里「支持这些平台」的一排图标：一眼看清能导什么，悬停再看链接长什么样。
+struct ProfileImportPlatformChips: View {
+  @Environment(\.appTheme) private var theme
+
+  var body: some View {
+    HStack(spacing: DesignTokens.Space.sm) {
+      ForEach(ProfileImportPlatform.allCases) { platform in
+        HStack(spacing: DesignTokens.Space.xs) {
+          PlatformNavigationIcon(host: platform.host)
+          Text(platform.displayName)
+            .themedFont(.caption, weight: .medium)
+            .foregroundStyle(theme.primaryText)
+        }
+        .padding(.horizontal, DesignTokens.Space.sm)
+        .padding(.vertical, DesignTokens.Space.xs)
+        .background(theme.badge, in: Capsule())
+        .help("\(platform.displayName)：\(ProfileImportExamples.example(for: platform))")
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("支持 \(platform.displayName)")
+        .accessibilityIdentifier("profile-import-platform-\(platform.rawValue)")
+      }
+      Spacer(minLength: 0)
+    }
+  }
 }
 
 struct DouyinProfilePreviewImage: View {
@@ -277,6 +310,7 @@ struct DouyinProfileDOMCandidate: Codable, Equatable {
   var likes: String? = nil
   var comments: String? = nil
   var collects: String? = nil
+  var views: String? = nil
   var metricsSource: String? = nil
   var metricsReadAt: String? = nil
 }
@@ -317,6 +351,7 @@ struct DouyinProfileImportCandidate: Identifiable, Equatable {
   var likes: String? = nil
   var comments: String? = nil
   var collects: String? = nil
+  var views: String? = nil
   var metricsSource: String? = nil
   var metricsReadAt: String? = nil
 
@@ -933,7 +968,12 @@ final class DouyinProfileImportViewModel: ObservableObject {
     applyVisibleProfileMetadata(snapshot)
 
     var updatedCandidates = candidates
-    var indices = Dictionary(uniqueKeysWithValues: updatedCandidates.enumerated().map { ($0.element.workID, $0.offset) })
+    // 页面上出现重复 workID 时保留后一条：`uniqueKeysWithValues` 遇到重复键
+    // 会直接崩，而重复在滚动加载里是完全可能出现的。
+    var indices = Dictionary(
+      updatedCandidates.enumerated().map { ($0.element.workID, $0.offset) },
+      uniquingKeysWith: { _, new in new }
+    )
     var additions = 0
     var existingURLs: [String] = []
     let remainingBudget = max(0, Self.perRoundBudget - newItemsThisRound)
@@ -969,6 +1009,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
         likes: item.likes?.nilIfTrimmedEmpty,
         comments: item.comments?.nilIfTrimmedEmpty,
         collects: item.collects?.nilIfTrimmedEmpty,
+        views: item.views?.nilIfTrimmedEmpty,
         metricsSource: item.metricsSource?.nilIfTrimmedEmpty,
         metricsReadAt: item.metricsReadAt?.nilIfTrimmedEmpty
       ))
@@ -1044,6 +1085,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
     candidate.likes = item.likes?.nilIfTrimmedEmpty ?? candidate.likes
     candidate.comments = item.comments?.nilIfTrimmedEmpty ?? candidate.comments
     candidate.collects = item.collects?.nilIfTrimmedEmpty ?? candidate.collects
+    candidate.views = item.views?.nilIfTrimmedEmpty ?? candidate.views
     if candidate.likes != previousLikes || candidate.comments != previousComments || candidate.collects != previousCollects {
       candidate.metricsSource = item.metricsSource?.nilIfTrimmedEmpty ?? candidate.metricsSource
       candidate.metricsReadAt = item.metricsReadAt?.nilIfTrimmedEmpty ?? candidate.metricsReadAt
@@ -1076,7 +1118,8 @@ final class DouyinProfileImportViewModel: ObservableObject {
           publishedText: candidate.publishedText,
           likes: candidate.likes,
           comments: candidate.comments,
-          collects: candidate.collects
+          collects: candidate.collects,
+          views: candidate.views
         )
       }
       outcome = enqueueCandidates(seeds, downloadsVideo, creatorID)
@@ -1180,7 +1223,11 @@ final class DouyinProfileImportViewModel: ObservableObject {
   }
 
   private func appendExternalItems(_ items: [XProfileCandidatesRequest.Item], authorID: String) {
-    var indices = Dictionary(uniqueKeysWithValues: candidates.enumerated().map { ($0.element.workID, $0.offset) })
+    // 同上：重复 workID 不该让面板崩掉，保留后一条。
+    var indices = Dictionary(
+      candidates.enumerated().map { ($0.element.workID, $0.offset) },
+      uniquingKeysWith: { _, new in new }
+    )
     var existingURLs: [String] = []
     for item in items {
       if indices[item.id] != nil { continue }
@@ -1547,6 +1594,7 @@ struct DouyinProfileImportSheet: View {
   @ObservedObject private var douyinSession = SiteSessionController.douyin
   @ObservedObject private var xiaohongshuSession = SiteSessionController.xiaohongshu
   @State private var showsHomepage = false
+  @State private var hostWindowSize: CGSize?
   @State private var workSort: WorkSortOrder = .original
   @State private var sortReferenceDate = Date()
   @State private var presentedLoginPlatform: ProfileImportPlatform?
@@ -1578,9 +1626,9 @@ struct DouyinProfileImportSheet: View {
 
   var body: some View {
     VStack(spacing: 0) {
-      header
-      Divider()
       if model.sourceURL == nil {
+        header
+        Divider()
         inputPanel
       } else {
         VStack(spacing: 0) {
@@ -1613,9 +1661,9 @@ struct DouyinProfileImportSheet: View {
         footer
       }
     }
-    .frame(width: showsHomepage || !model.candidates.isEmpty ? 960 : 640,
-           height: sheetHeight, alignment: .top)
+    .frame(width: sheetSize.width, height: sheetSize.height, alignment: .top)
     .background(theme.card)
+    .background(SheetHostWindowSizeReader(size: $hostWindowSize))
     .onChange(of: metricsReader.readingID) { previous, current in
       if let previous, current == nil {
         metricsQueue.finish(previous)
@@ -1712,25 +1760,31 @@ struct DouyinProfileImportSheet: View {
     return model.sourceURL == nil ? 320 : 300
   }
 
+  /// 弹窗不能比承载它的主窗口还大：小屏或缩小过的窗口里，按主窗口留边收缩。
+  private var sheetSize: CGSize {
+    let preferred = CGSize(width: showsHomepage || !model.candidates.isEmpty ? 960 : 640, height: sheetHeight)
+    guard let hostWindowSize else { return preferred }
+    let inset: CGFloat = 40
+    return CGSize(
+      width: max(min(preferred.width, hostWindowSize.width - inset), 480),
+      height: max(min(preferred.height, hostWindowSize.height - inset), 300)
+    )
+  }
+
   private var stageTitle: String {
     if model.sourceURL == nil { return "1. 输入主页" }
     if model.candidates.isEmpty { return "2. 发现作品" }
     return "3. 选择作品"
   }
 
-  private var stageProgressLine: String? {
-    if model.sourceURL == nil { return nil }
-    if model.isScanning { return "进度：正在加载更多作品…" }
-    if model.phase == .loading { return "进度：正在打开主页…" }
-    if case .stopped = model.phase {
-      return "进度：已暂停 · 已发现 \(model.candidates.count) 条"
-    }
-    if case .failed = model.phase { return "进度：发现失败，可重试或查看主页" }
-    if model.candidates.isEmpty { return "进度：等待作品出现" }
-    if model.saveMessage != nil {
-      return "进度：已发现 \(model.candidates.count) 条 · 下方显示最近保存结果"
-    }
-    return "进度：已发现 \(model.candidates.count) 条，可继续加载或保存"
+  /// 发现阶段头部只保留一行状态：阶段 · 条数 · 当前进展。
+  private var stageSummary: String {
+    var parts = [stageTitle, "已发现 \(model.candidates.count) 条作品"]
+    if model.isScanning { parts.append("正在加载更多…") }
+    else if model.phase == .loading { parts.append("正在打开主页…") }
+    else if case let .stopped(reason) = model.phase { parts.append(reason.message) }
+    else if model.saveMessage != nil { parts.append("下方显示最近保存结果") }
+    return parts.joined(separator: " · ")
   }
 
   private var selectionSummary: String {
@@ -1748,16 +1802,9 @@ struct DouyinProfileImportSheet: View {
         Text(stageTitle)
           .themedFont(.callout, weight: .medium)
           .foregroundStyle(theme.secondaryText)
-        if let stageProgressLine {
-          Text(stageProgressLine)
-            .themedFont(.caption)
-            .foregroundStyle(theme.secondaryText)
-            .fixedSize(horizontal: false, vertical: true)
-        }
       }
       Spacer(minLength: DesignTokens.Space.sm)
-      Button("关闭") { stopReading(); model.stop(); dismiss() }
-        .keyboardShortcut(.cancelAction)
+      closeButton
     }
     .padding(.horizontal, DesignTokens.Space.lg)
     .padding(.vertical, DesignTokens.Space.md)
@@ -1777,19 +1824,18 @@ struct DouyinProfileImportSheet: View {
           .foregroundStyle(theme.danger)
           .fixedSize(horizontal: false, vertical: true)
       }
-      Text("支持主页链接、分享文案、常见手机主页和短链。")
+      // 原来是四行文字样例，看着像一段说明；换成一排平台图标，能导什么一眼就清楚，
+      // 链接样例收进悬停提示。
+      HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
+        Text("支持")
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+        ProfileImportPlatformChips()
+      }
+      .padding(.top, DesignTokens.Space.xs)
+      Text("粘贴主页链接、分享文案、手机主页或短链都可以；悬停图标查看链接样例。")
         .themedFont(.caption)
         .foregroundStyle(.secondary)
-      if model.input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-        // 弹窗下半截原来全是空白；放几条真实形状的例子，比留白有用。
-        VStack(alignment: .leading, spacing: 3) {
-          Text("例如").themedFont(.caption, weight: .medium).foregroundStyle(.secondary)
-          ForEach(ProfileImportExamples.lines, id: \.self) { line in
-            Text(line).themedFont(.caption).foregroundStyle(.secondary).monospacedDigit()
-          }
-        }
-        .padding(.top, DesignTokens.Space.xs)
-      }
       sessionStatusRow
       if model.canStart, model.platform == .x {
         Text("也可以使用浏览器中的登录：打开主页后，点击汲作扩展读取作品。")
@@ -1812,26 +1858,33 @@ struct DouyinProfileImportSheet: View {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
+  private var closeButton: some View {
+    Button("关闭") { stopReading(); model.stop(); dismiss() }
+      .keyboardShortcut(.cancelAction)
+  }
+
+  /// 原来“导入博主内容 / 阶段 / 进度”和“博主名 / 条数 / 登录 / 提示”是上下两块，
+  /// 现在合成一块：第一行博主名与操作按钮，第二行阶段、条数、进展和登录状态。
   private var discoveryHeader: some View {
-    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
       ViewThatFits(in: .horizontal) {
         HStack(alignment: .center, spacing: DesignTokens.Space.md) {
           discoveryIdentity
           Spacer(minLength: DesignTokens.Space.sm)
           discoveryControls
+          closeButton
         }
         VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-          discoveryIdentity
+          HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+            discoveryIdentity
+            Spacer(minLength: DesignTokens.Space.sm)
+            closeButton
+          }
           discoveryControls
         }
       }
       sessionStatusRow
-      if case let .stopped(reason) = model.phase {
-        Label(reason.message, systemImage: "info.circle")
-          .themedFont(.caption)
-          .foregroundStyle(theme.secondaryText)
-          .fixedSize(horizontal: false, vertical: true)
-      } else if case let .failed(message) = model.phase {
+      if case let .failed(message) = model.phase {
         Label("\(message) 可点击「查看主页」检查后重试。", systemImage: "exclamationmark.triangle.fill")
           .themedFont(.caption)
           .foregroundStyle(theme.danger)
@@ -1850,7 +1903,16 @@ struct DouyinProfileImportSheet: View {
         .accessibilityIdentifier("profile-import-browser-source")
     } else if let platform = sessionPlatform {
       let current = session(for: platform)
-      HStack(spacing: DesignTokens.Space.sm) {
+      HStack(spacing: DesignTokens.Space.xs) {
+        if model.sourceURL != nil {
+          Text(stageSummary)
+            .themedFont(.caption)
+            .foregroundStyle(theme.secondaryText)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .help(stageSummary)
+          Text("·").themedFont(.caption).foregroundStyle(theme.secondaryText)
+        }
         Text(platform.displayName)
           .themedFont(.caption)
           .foregroundStyle(theme.secondaryText)
@@ -1858,14 +1920,20 @@ struct DouyinProfileImportSheet: View {
           .themedFont(.caption, weight: .medium)
           .foregroundStyle(current.isLoggedIn ? theme.success : theme.secondaryText)
           .accessibilityIdentifier("profile-import-session-status")
-        Spacer(minLength: 0)
         Button("管理登录") {
           presentedLoginPlatform = platform
         }
-        .buttonStyle(.bordered)
+        .buttonStyle(.link)
         .controlSize(.small)
         .accessibilityIdentifier("profile-import-session-login")
+        Spacer(minLength: 0)
       }
+    } else if model.sourceURL != nil {
+      Text(stageSummary)
+        .themedFont(.caption)
+        .foregroundStyle(theme.secondaryText)
+        .lineLimit(1)
+        .help(stageSummary)
     }
   }
 
@@ -1873,10 +1941,8 @@ struct DouyinProfileImportSheet: View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
       Text(model.profileName ?? "\(model.platform.displayName)主页")
         .themedFont(.title3, weight: .semibold)
-        .fixedSize(horizontal: false, vertical: true)
-      Text("已发现 \(model.candidates.count) 条作品")
-        .themedFont(.caption)
-        .foregroundStyle(theme.secondaryText)
+        .lineLimit(1)
+        .truncationMode(.tail)
     }
   }
 
@@ -2012,7 +2078,8 @@ struct DouyinProfileImportSheet: View {
           case .likes: candidate.likes
           case .comments: candidate.comments
           case .collects: candidate.collects
-          case .shares, .views: nil
+          case .views: candidate.views
+          case .shares: nil
           }
         }, helpSuffix: "选择导入")
       }
@@ -2178,6 +2245,54 @@ struct DouyinProfileImportSheet: View {
         .buttonStyle(.borderedProminent)
         .disabled(model.selectedIDs.isEmpty)
         .accessibilityIdentifier("douyin-profile-import-save")
+    }
+  }
+}
+
+/// 读取承载弹窗的主窗口内容区尺寸，并跟随其缩放；弹窗本身的窗口不算数，
+/// 否则尺寸会跟着自己转圈。
+private struct SheetHostWindowSizeReader: NSViewRepresentable {
+  @Binding var size: CGSize?
+
+  func makeNSView(context: Context) -> Probe {
+    let probe = Probe()
+    probe.onSize = { size = $0 }
+    return probe
+  }
+
+  func updateNSView(_ probe: Probe, context: Context) {
+    probe.onSize = { size = $0 }
+  }
+
+  final class Probe: NSView {
+    var onSize: ((CGSize) -> Void)?
+    private var observer: NSObjectProtocol?
+
+    // 离开窗口时（弹窗关闭）就解除监听，不依赖 deinit。
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      if let observer { NotificationCenter.default.removeObserver(observer); self.observer = nil }
+      guard window != nil else { return }
+      // sheetParent 在 beginSheet 之后才有值，推迟一拍再读。
+      DispatchQueue.main.async { [weak self] in self?.attach() }
+    }
+
+    private func attach() {
+      guard let window else { return }
+      guard let host = window.sheetParent ?? NSApp.mainWindow, host !== window else { return }
+      report(host)
+      observer = NotificationCenter.default.addObserver(
+        forName: NSWindow.didResizeNotification, object: host, queue: .main
+      ) { [weak self] _ in
+        // `queue: .main` 已经保证在主线程上跑，但闭包本身是 nonisolated 的，
+        // 编译器不认这层保证——`assumeIsolated` 就是把这条保证写下来。
+        MainActor.assumeIsolated { self?.report(host) }
+      }
+    }
+
+    private func report(_ host: NSWindow) {
+      let size = host.contentLayoutRect.size
+      DispatchQueue.main.async { [weak self] in self?.onSize?(size) }
     }
   }
 }

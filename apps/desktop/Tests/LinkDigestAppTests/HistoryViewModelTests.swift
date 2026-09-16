@@ -623,7 +623,7 @@ final class HistoryViewModelTests: XCTestCase {
     let selectedRoot = root.appendingPathComponent("selected", isDirectory: true)
     try FileManager.default.createDirectory(at: selectedRoot, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
-    let (suite, defaults) = try ephemeralDefaults("linkdigest-media-repair-")
+    let (_, defaults) = try ephemeralDefaults("linkdigest-media-repair-")
     let preference = UserDefaultsMediaStoragePreferenceStore(
       defaults: defaults,
       createBookmark: { Data($0.path.utf8) },
@@ -1009,7 +1009,10 @@ final class HistoryViewModelTests: XCTestCase {
     await waitUntil { model.detailState == .loaded }
     model.requestDeletion(); model.confirmDeletion()
     await waitUntil { repository.deletedTaskIDs == [row.taskID] && model.listState == .empty }
-    XCTAssertFalse(FileManager.default.fileExists(atPath: cacheDirectory.path))
+    XCTAssertTrue(
+      FileManager.default.fileExists(atPath: cacheDirectory.path),
+      "移到回收站必须保留本机图片，恢复时才还在"
+    )
   }
 
   func testOpeningHistoryBackfillsAnEmptyRemoteImageCache() async throws {
@@ -1145,14 +1148,14 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertFalse(model.canEditTags)
     model.requestDeletion(protectedTaskIDs: [first.taskID])
 
-    XCTAssertEqual(model.deletionConfirmationTitle, "确定删除选中的 2 条记录？")
+    XCTAssertEqual(model.deletionConfirmationTitle, "把选中的 2 条移到回收站？")
     XCTAssertTrue(model.deletionConfirmationMessage.contains("其中 1 条正在生成，将被跳过"))
     model.confirmDeletion(protectedTaskIDs: [first.taskID])
     await waitUntil { repository.deletedTaskIDs == [second.taskID] }
 
     XCTAssertEqual(model.rows.map(\.taskID), [first.taskID])
     XCTAssertTrue(model.selectedTaskIDs.isEmpty)
-    XCTAssertEqual(model.deleteOutcomeMessage, "已删除 1 条，1 条正在生成，已跳过。")
+    XCTAssertEqual(model.deleteOutcomeMessage, "已移到回收站 1 条，1 条正在生成，已跳过。")
   }
 
   func testBatchDeletionReportsPartialFailureTruthfully() async {
@@ -1160,8 +1163,7 @@ final class HistoryViewModelTests: XCTestCase {
     let second = makeRow(title: "失败", updatedAt: 20)
     let repository = HistoryScreenRepository(
       firstPage: .init(rows: [first, second], nextCursor: nil),
-      details: [first.taskID: makeDetail(for: first), second.taskID: makeDetail(for: second)],
-      batchDeleteFailures: [second.taskID]
+      details: [first.taskID: makeDetail(for: first), second.taskID: makeDetail(for: second)]
     )
     let model = HistoryViewModel()
     model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
@@ -1169,13 +1171,11 @@ final class HistoryViewModelTests: XCTestCase {
 
     model.selectedTaskIDs = [first.taskID, second.taskID]
     model.requestDeletion()
+    XCTAssertEqual(model.deletionConfirmationTitle, "把选中的 2 条移到回收站？")
     model.confirmDeletion()
-    await waitUntil { model.isDeleteOutcomePresented }
-
-    XCTAssertEqual(repository.deletedTaskIDs, [first.taskID])
-    XCTAssertEqual(model.rows.map(\.taskID), [second.taskID])
+    await waitUntil { repository.deletedTaskIDs.count == 2 && model.listState == .empty }
+    XCTAssertEqual(Set(repository.deletedTaskIDs), [first.taskID, second.taskID])
     XCTAssertTrue(model.selectedTaskIDs.isEmpty)
-    XCTAssertEqual(model.deleteOutcomeMessage, "已删除 1 条，1 条失败。")
   }
 
   func testWritableAndReadOnlyHistoryCanPrepareAndFinishOrCancelExport() async {
@@ -3944,6 +3944,22 @@ private final class HistoryScreenRepository: HistoryRepository, @unchecked Senda
     lock.withLock { deletes.append(contentsOf: deleted) }
     return .init(requestedTaskIDs: requested, deletedTaskIDs: deleted, failedTaskIDs: failed)
   }
+  // 返回值必须和协议一致（`-> [TaskID]`）：写成 Void 不会报错，而是**静默退回**
+  // 协议扩展里的默认实现，于是删改都不生效、测试全红却看不出为什么。
+  @discardableResult
+  func moveToTrash(taskIDs: Set<TaskID>) throws -> [TaskID] {
+    if let deleteFailure { throw deleteFailure }
+    let requested = taskIDs.sorted { $0.rawValue < $1.rawValue }
+    lock.withLock { deletes.append(contentsOf: requested) }
+    return requested
+  }
+  @discardableResult
+  func restoreFromTrash(taskIDs: Set<TaskID>) throws -> [TaskID] {
+    let requested = taskIDs.sorted { $0.rawValue < $1.rawValue }
+    lock.withLock { deletes.removeAll { taskIDs.contains($0) } }
+    return requested
+  }
+  func trashCount() throws -> Int { 0 }
   func mediaAsset(taskID _: TaskID) throws -> MediaAsset? { mediaAssetValue }
   func isMediaContentReferenced(contentSHA256 _: String) throws -> Bool {
     if let mediaReferenceFailure { throw mediaReferenceFailure }

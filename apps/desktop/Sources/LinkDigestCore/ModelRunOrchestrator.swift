@@ -214,6 +214,9 @@ public actor ModelRunOrchestrator {
       ))
     } catch let failure as RepositoryFailure {
       let mapped = StorageErrorMapper.map(failure, context: .write)
+      AppLog.error(.provider, "model_run_create_failed", code: mapped.code.rawValue, [
+        "kind": kind.rawValue,
+      ])
       let gateCode = await degradeStorage(mapped.code)
       await onState(
         request.runID,
@@ -221,6 +224,9 @@ public actor ModelRunOrchestrator {
       )
       return
     } catch {
+      AppLog.error(.provider, "model_run_create_failed", code: StorageErrorCode.writeFailed.rawValue, [
+        "kind": kind.rawValue,
+      ])
       let gateCode = await degradeStorage(.writeFailed)
       await onState(
         request.runID,
@@ -251,6 +257,7 @@ public actor ModelRunOrchestrator {
     currentPartialSaveTask = nil
     currentStateHandler = onState
     currentTaskID = request.taskID
+    AppLog.info(.provider, "model_run_started", ["kind": kind.rawValue])
 
     // Install a cancellable producer before the reentrant starting callback.
     // The gate preserves queued commit → starting UI → credentials ordering.
@@ -594,10 +601,13 @@ public actor ModelRunOrchestrator {
       currentSecretRedactor = StreamingSecretRedactor(secret: secret)
     }
     guard var redactor = currentSecretRedactor else { return }
-    let candidate = redactor.append(delta)
+    // 脱敏器只交回本次新增的片段，累积正文由这里的独占 buffer 维护。
+    // 原来每个 delta 都要复制一遍整串累积文本、再整串比较一次去重，长文
+    // 越写越慢；现在追加是摊还 O(新增)，去重只看有没有新增。
+    let increment = redactor.append(delta)
     currentSecretRedactor = redactor
-    guard !candidate.isEmpty, candidate != currentCommittedPartialText else { return }
-    currentCommittedPartialText = candidate
+    guard !increment.isEmpty else { return }
+    appendCommittedPartial(increment)
 
     // 第一段立即落盘并显示，用户不用盯着空白页等一个节流周期。后续增量分成
     // 两个时钟：UI 约 4Hz，SQLite 约 1Hz；终态再强制冲刷最后全文。
@@ -608,6 +618,17 @@ public actor ModelRunOrchestrator {
     }
     scheduleUIPublish(runID: runID, intent: intent)
     schedulePartialSave(runID: runID, intent: intent)
+  }
+
+  /// 往累积正文后面追加一段。
+  ///
+  /// 这个属性是这条流的**独占** buffer：只有落盘/上屏那两处（约 1Hz 与 4Hz）
+  /// 会把它读出去，读出去才会触发一次写时复制，而不是每个 delta 一次。
+  private func appendCommittedPartial(_ increment: String) {
+    if currentCommittedPartialText.isEmpty {
+      currentCommittedPartialText.reserveCapacity(max(increment.utf8.count * 8, 4_096))
+    }
+    currentCommittedPartialText += increment
   }
 
   private func scheduleUIPublish(runID: RunID, intent: RunIntentKind) {
@@ -683,11 +704,9 @@ public actor ModelRunOrchestrator {
   ) async -> Bool {
     guard currentRunID == runID else { return false }
     if var redactor = currentSecretRedactor {
-      let candidate = redactor.finalize()
+      let increment = redactor.finalize()
       currentSecretRedactor = redactor
-      if !candidate.isEmpty, candidate != currentCommittedPartialText {
-        currentCommittedPartialText = candidate
-      }
+      if !increment.isEmpty { appendCommittedPartial(increment) }
     }
     currentUIPublishTask?.cancel()
     currentUIPublishTask = nil
@@ -939,62 +958,5 @@ public actor ModelRunOrchestrator {
     default:
       error.rawValue
     }
-  }
-}
-
-private struct StreamingSecretRedactor: Sendable {
-  private let secret: String
-  private var holdback = ""
-  private var emitted = ""
-
-  init(secret: String) {
-    self.secret = secret
-  }
-
-  mutating func append(_ delta: String) -> String {
-    holdback += delta
-    processCompleteInput()
-    return emitted
-  }
-
-  mutating func finalize() -> String {
-    processCompleteInput()
-    if !holdback.isEmpty {
-      emitted += "[已隐藏]"
-      holdback = ""
-    }
-    return emitted
-  }
-
-  private mutating func processCompleteInput() {
-    guard !secret.isEmpty else {
-      emitted += holdback
-      holdback = ""
-      return
-    }
-
-    while let range = holdback.range(of: secret) {
-      emitted += String(holdback[..<range.lowerBound])
-      emitted += "[已隐藏]"
-      holdback = String(holdback[range.upperBound...])
-    }
-
-    let bufferCharacters = Array(holdback)
-    let secretCharacters = Array(secret)
-    let upperBound = min(bufferCharacters.count, max(secretCharacters.count - 1, 0))
-    var heldCount = 0
-    if upperBound > 0 {
-      for count in stride(from: upperBound, through: 1, by: -1) {
-        if Array(bufferCharacters.suffix(count)) == Array(secretCharacters.prefix(count)) {
-          heldCount = count
-          break
-        }
-      }
-    }
-    let releaseCount = bufferCharacters.count - heldCount
-    if releaseCount > 0 {
-      emitted += String(bufferCharacters.prefix(releaseCount))
-    }
-    holdback = String(bufferCharacters.suffix(heldCount))
   }
 }

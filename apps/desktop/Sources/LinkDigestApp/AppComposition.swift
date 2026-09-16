@@ -8,6 +8,8 @@ struct AppBootstrapResult: Sendable {
   let history: HistoryApplicationService?
   let historyIsReadOnly: Bool
   let historyReadOnlyReason: RepositoryRecoveryReason?
+  /// 只读降级时给用户看的补充说明（升级失败时带备份路径）。可写或完全打不开时为 nil。
+  let historyReadOnlyRecoveryHint: String?
   /// Set only when opening history failed completely. A read-only repository is
   /// still safe to browse and therefore deliberately has no blocking error.
   let historyUnavailableCode: StorageErrorCode?
@@ -131,6 +133,7 @@ actor AppComposition {
           history: history,
           historyIsReadOnly: false,
           historyReadOnlyReason: nil,
+          historyReadOnlyRecoveryHint: nil,
           historyUnavailableCode: nil,
           storageWriteGate: storageWriteGate,
           serverStarted: started
@@ -172,6 +175,7 @@ actor AppComposition {
         history: HistoryApplicationService(repository: repository),
         historyIsReadOnly: true,
         historyReadOnlyReason: reason,
+        historyReadOnlyRecoveryHint: repository.readOnlyRecoveryHint,
         historyUnavailableCode: nil,
         storageWriteGate: storageWriteGate,
         serverStarted: startServer(receiver, using: dependencies.serverStarter)
@@ -199,6 +203,7 @@ actor AppComposition {
       history: nil,
       historyIsReadOnly: false,
       historyReadOnlyReason: nil,
+      historyReadOnlyRecoveryHint: nil,
       historyUnavailableCode: code,
       storageWriteGate: storageWriteGate,
       serverStarted: startServer(receiver, using: dependencies.serverStarter)
@@ -363,16 +368,29 @@ final class UnixSocketServerLifecycle: @unchecked Sendable {
   private let availabilitySink: @Sendable (Bool) async -> Void
   private let lock = NSLock()
   private var server: UnixSocketServer?
-  private var acceptTask: Task<Void, Never>?
+  private var healthTimer: DispatchSourceTimer?
+
+  /// How often the published socket node gets re-checked.
+  ///
+  /// This used to ride on the accept timeout, which meant a filesystem stat
+  /// every single second for the life of the process. Thirty seconds with a
+  /// generous leeway lets the system coalesce the wakeup with whatever else
+  /// it was already doing, and an unlinked socket is a rare, recoverable
+  /// condition — not something worth a per-second poll.
+  private static let defaultHealthCheckInterval: TimeInterval = 30
+  private static let healthQueue = DispatchQueue(label: "linkdigest.capture.socket.health", qos: .utility)
+  private let healthCheckInterval: TimeInterval
 
   init(
     path: String,
     statusSink: @escaping @Sendable (String) async -> Void,
-    availabilitySink: @escaping @Sendable (Bool) async -> Void = { _ in }
+    availabilitySink: @escaping @Sendable (Bool) async -> Void = { _ in },
+    healthCheckInterval: TimeInterval = UnixSocketServerLifecycle.defaultHealthCheckInterval
   ) {
     self.path = path
     self.statusSink = statusSink
     self.availabilitySink = availabilitySink
+    self.healthCheckInterval = healthCheckInterval
   }
 
   func start(_ receiver: CaptureReceiver) throws {
@@ -392,48 +410,66 @@ final class UnixSocketServerLifecycle: @unchecked Sendable {
       throw error
     }
 
+    do {
+      try candidate.startAccepting(
+        ioTimeout: 10,
+        onClient: { client in
+          Task.detached { await receiver.handleClient(client) }
+        },
+        onFailure: { [weak self] _ in
+          guard let self, self.isRunning(candidate) else { return }
+          Task {
+            await self.statusSink("接收服务错误")
+            await self.availabilitySink(false)
+          }
+        }
+      )
+    } catch {
+      lock.withLock { if server === candidate { server = nil } }
+      candidate.stop()
+      throw error
+    }
+
     Task {
       await statusSink("本机接收服务已启动")
       await availabilitySink(true)
     }
-    let task = Task.detached(priority: .userInitiated) { [weak self] in
-      guard let self else { return }
-      while !Task.isCancelled, self.isRunning(candidate) {
-        let client: FileHandle
-        do {
-          client = try candidate.accept(timeout: 1, ioTimeout: 10)
-        } catch let error as POSIXError where error.code == .ETIMEDOUT {
-          // A pathname socket can disappear while its fd remains open. Detect
-          // that otherwise invisible state and rebuild the public node instead
-          // of waiting for every extension request to fail until App restart.
-          if !candidate.isPublishedAtPath() {
-            await self.recoverMissingPublication(candidate, receiver: receiver)
-            return
-          }
-          continue
-        } catch {
-          guard self.isRunning(candidate), !Task.isCancelled else { return }
-          await self.statusSink("接收服务错误")
-          await self.availabilitySink(false)
-          return
-        }
-        Task.detached { await receiver.handleClient(client) }
-      }
+    startHealthCheck(for: candidate, receiver: receiver)
+  }
+
+  /// A pathname socket can disappear while its fd remains open: the App looks
+  /// alive but every extension request gets ENOENT. Nothing tells us when that
+  /// happens, so it has to be noticed by looking — just not every second.
+  private func startHealthCheck(for candidate: UnixSocketServer, receiver: CaptureReceiver) {
+    let timer = DispatchSource.makeTimerSource(queue: Self.healthQueue)
+    timer.schedule(
+      deadline: .now() + healthCheckInterval,
+      repeating: healthCheckInterval,
+      // 大 leeway 让系统把这次唤醒和别的事合并，闲置时几乎不单独醒。
+      leeway: .milliseconds(max(10, Int(healthCheckInterval * 1000 / 3)))
+    )
+    timer.setEventHandler { [weak self] in
+      guard let self, self.isRunning(candidate) else { return }
+      guard !candidate.isPublishedAtPath() else { return }
+      Task { await self.recoverMissingPublication(candidate, receiver: receiver) }
     }
-    lock.withLock {
-      if server === candidate {
-        acceptTask = task
-      } else {
-        task.cancel()
-      }
+    // 先 resume 再换班：DispatchSource 建出来是挂起的，挂起状态下被释放会崩，
+    // 所以每一个建出来的定时器都必须先跑起来，用不上再 cancel。
+    timer.resume()
+    let stale = lock.withLock { () -> DispatchSourceTimer? in
+      guard server === candidate else { return timer }
+      let previous = healthTimer
+      healthTimer = timer
+      return previous
     }
+    stale?.cancel()
   }
 
   func stop() {
-    let owned = lock.withLock { () -> (UnixSocketServer?, Task<Void, Never>?) in
-      let value = (server, acceptTask)
+    let owned = lock.withLock { () -> (UnixSocketServer?, DispatchSourceTimer?) in
+      let value = (server, healthTimer)
       server = nil
-      acceptTask = nil
+      healthTimer = nil
       return value
     }
     owned.1?.cancel()
@@ -448,13 +484,15 @@ final class UnixSocketServerLifecycle: @unchecked Sendable {
     _ candidate: UnixSocketServer,
     receiver: CaptureReceiver
   ) async {
-    let shouldRecover = lock.withLock { () -> Bool in
-      guard server === candidate else { return false }
+    let owned = lock.withLock { () -> (Bool, DispatchSourceTimer?) in
+      guard server === candidate else { return (false, nil) }
+      let timer = healthTimer
       server = nil
-      acceptTask = nil
-      return true
+      healthTimer = nil
+      return (true, timer)
     }
-    guard shouldRecover else { return }
+    guard owned.0 else { return }
+    owned.1?.cancel()
 
     await statusSink("接收服务连接中断，正在自动恢复")
     await availabilitySink(false)

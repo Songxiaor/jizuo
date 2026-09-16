@@ -145,6 +145,11 @@ final class WorkThumbnailAndSortTests: XCTestCase {
     catch is CancellationError {} catch { XCTFail("Unexpected \(error)") }
   }
 
+  func testOriginalSortTitleIsDiscoveryOrder() {
+    XCTAssertEqual(WorkSortOrder.original.title, "发现顺序")
+    XCTAssertFalse(WorkSortOrder.original.title.contains("抓取"))
+  }
+
   func testMetricUnitsZeroUnknownAndStableTies() {
     let inputs = ["0", "1.2万", "2.5w", "3K", "1M", "1,234", "—", "NaN", "-1"]
     let actual = inputs.map(WorkSortOrder.metric)
@@ -160,5 +165,14 @@ final class WorkThumbnailAndSortTests: XCTestCase {
     XCTAssertEqual(WorkSortOrder.newest.sorted(values, likes: { _ in nil }, published: { $0 }), [values[2], values[1], values[0], values[3]])
     let reference = ISO8601DateFormatter().date(from: "2026-09-08T10:00:00Z")!
     XCTAssertEqual(WorkSortOrder.oldest.sorted(values, likes: { _ in nil }, published: { $0 }, referenceDate: reference), [values[3], values[1], values[2], values[0]])
+  }
+
+  func testDateOrderResolvesRelativeLabelsAgainstReference() {
+    // B 站空间页近期作品只显示“2天前”“3小时前”。
+    let values = ["2天前", "9月10日", "3小时前", "刚刚", "unknown"]
+    let reference = ISO8601DateFormatter().date(from: "2026-09-15T10:00:00Z")!
+    XCTAssertEqual(WorkSortOrder.newest.sorted(values, likes: { _ in nil }, published: { $0 }, referenceDate: reference),
+                   ["刚刚", "3小时前", "2天前", "9月10日", "unknown"])
+    XCTAssertEqual(WorkSortOrder.newest.sorted(values, likes: { _ in nil }, published: { $0 }), values)
   }
 }

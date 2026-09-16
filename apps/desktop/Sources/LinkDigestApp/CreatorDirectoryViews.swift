@@ -14,7 +14,7 @@ struct CreatorDirectoryAvatar: View {
     creator.avatarURL.flatMap(DouyinProfilePreviewResource.admittedURL)
   }
 
-  /// Same remote URL after「更新资料」still refetches when `updatedAt` or retryID changes.
+  /// Same remote URL after「刷新博主信息」still refetches when `updatedAt` or retryID changes.
   var loadIdentity: String {
     "\(admittedURL?.absoluteString ?? "")#\(creator.updatedAtMilliseconds)#\(retryID)"
   }
@@ -153,15 +153,31 @@ struct CreatorDirectoryPlatformSection<Content: View>: View {
           isExpanded.toggle()
         }
       } label: {
-        // 和侧栏分组标签同一种写法：11pt 中等次要灰，不带折叠箭头，点标题折叠。
-        HStack(spacing: 8) {
+        // 平台剪影 + 平台名 + 人数小圆标，右边一条细线把分组和上一组隔开；
+        // 折叠状态用一个小箭头表达，不再只靠「点标题」这种看不见的约定。
+        HStack(spacing: DesignTokens.Space.sm) {
+          PlatformNavigationIcon(host: platform, monochrome: true)
+            .foregroundStyle(theme.secondaryText)
           Text(HistoryPlatformDisplay.name(forHost: platform))
-            .themedFont(.subheadline, weight: .medium)
-          Text("\(count) 位")
-            .themedFont(.subheadline)
-          Spacer(minLength: 0)
+            .themedFont(.subheadline, weight: .semibold)
+            .foregroundStyle(theme.primaryText)
+          Text("\(count)")
+            .themedFont(.caption, weight: .medium)
+            .monospacedDigit()
+            .foregroundStyle(theme.secondaryText)
+            .padding(.horizontal, DesignTokens.Space.sm)
+            .padding(.vertical, 1)
+            .background(theme.badge, in: Capsule())
+          Rectangle()
+            .fill(theme.hairline)
+            .frame(height: 1)
+            .frame(maxWidth: .infinity)
+            .padding(.leading, DesignTokens.Space.xs)
+          Image(systemName: "chevron.down")
+            .font(.system(size: DesignTokens.IconSize.inline, weight: .semibold))
+            .foregroundStyle(theme.secondaryText)
+            .rotationEffect(.degrees(isExpanded ? 0 : -90))
         }
-        .foregroundStyle(theme.secondaryText)
         .padding(.vertical, 4)
         .contentShape(Rectangle())
       }
@@ -186,14 +202,16 @@ struct CreatorDirectoryCard: View {
   let theme: HistoryThemeTokens
   let isSelected: Bool
   var onRetryAvatar: (() -> Void)? = nil
+  /// 「去抓取」的动作。调用方没单独给时沿用 `onRetryAvatar`：那个回调本来就是
+  /// 「打开这位博主的主页并开始抓取」，两处是同一件事，不必在调用点重复一遍。
+  var onCapture: (() -> Void)? = nil
+
+  private var captureAction: (() -> Void)? { onCapture ?? onRetryAvatar }
 
   private var isEmpty: Bool { creator.savedWorkCount == 0 }
 
   private var subtitle: String {
-    var parts: [String] = []
-    parts.append(isEmpty ? "还没抓取作品" : "\(creator.savedWorkCount) 条作品")
-    if creator.isPinned { parts.append("已置顶") }
-    return parts.joined(separator: " · ")
+    isEmpty ? "还没抓取作品" : "\(creator.savedWorkCount) 条作品"
   }
 
   var body: some View {
@@ -205,12 +223,33 @@ struct CreatorDirectoryCard: View {
           .foregroundStyle(theme.primaryText)
           .lineLimit(1)
           .truncationMode(.tail)
-        Text(subtitle)
-          .themedFont(.subheadline)
-          .foregroundStyle(theme.secondaryText)
-          .lineLimit(1)
+        HStack(spacing: DesignTokens.Space.xs) {
+          Text(subtitle)
+            .themedFont(.subheadline)
+            .foregroundStyle(theme.secondaryText)
+            .lineLimit(1)
+          if creator.isPinned {
+            Image(systemName: "pin.fill")
+              .font(.system(size: DesignTokens.IconSize.inline - 2, weight: .semibold))
+              .foregroundStyle(theme.accent)
+              .accessibilityHidden(true)
+          }
+        }
       }
       Spacer(minLength: 0)
+      // 0 条作品的卡点进去只有一个空页面，出口还在里面。直接在卡上给一步。
+      if isEmpty, let captureAction {
+        Button("去抓取", action: captureAction)
+          .buttonStyle(.appQuiet)
+          .controlSize(.small)
+          .help("打开这位博主的主页，挑要保存的内容")
+          .accessibilityHidden(true)
+      }
+      // 卡片能点进去看作品，右端给一个轻的箭头作暗示。
+      Image(systemName: "chevron.right")
+        .font(.system(size: DesignTokens.IconSize.inline, weight: .semibold))
+        .foregroundStyle(theme.secondaryText.opacity(0.6))
+        .accessibilityHidden(true)
     }
     .padding(.horizontal, DesignTokens.Space.md)
     .padding(.vertical, DesignTokens.Space.sm)
@@ -231,6 +270,13 @@ struct CreatorDirectoryCard: View {
     .accessibilityValue(
       "\(HistoryPlatformDisplay.name(forHost: creator.identity.platform))，已保存 \(creator.savedWorkCount) 条作品"
     )
+    // 卡片本身是 combine 出来的单个元素，里面的按钮 VoiceOver 够不到；
+    // 同一个动作以自定义动作的形式挂在这个元素上。
+    .accessibilityActions {
+      if isEmpty, let captureAction {
+        Button("去抓取", action: captureAction)
+      }
+    }
   }
 }
 
@@ -276,6 +322,9 @@ struct CreatorSavedWorkCard: View {
   @State private var coverLoading = false
   /// Video rows with no landed `Media/` file must not claim「封面加载失败」.
   @State private var prefersTextPreview = false
+  /// 视频取到的都是黑场帧：不退回正文摘录（那会让视频卡长得像文字卡），
+  /// 直接用平台图标占位。
+  @State private var posterIsBlank = false
 
   private var capturedTitle: String {
     if row.sourceLabel == "X public article endpoint",
@@ -400,7 +449,8 @@ struct CreatorSavedWorkCard: View {
         .overlay(alignment: .bottomLeading) {
           if showsVideoBadge {
             Image(systemName: "play.fill")
-              .font(.system(size: 9, weight: .bold))
+              // 9pt 低于界面最小字号；行内图标统一走 IconSize.inline（11）。
+              .font(.system(size: DesignTokens.IconSize.inline, weight: .bold))
               .foregroundStyle(.white)
               .frame(width: 20, height: 20)
               .background(Color.black.opacity(0.55), in: Circle())
@@ -455,6 +505,7 @@ struct CreatorSavedWorkCard: View {
       coverImage = nil
       coverFailed = false
       prefersTextPreview = false
+      posterIsBlank = false
       coverLoading = true
       defer { coverLoading = false }
       if let cover = displayCoverURL {
@@ -482,6 +533,10 @@ struct CreatorSavedWorkCard: View {
           return
         } catch {
           if Task.isCancelled { return }
+          if case WorkThumbnailError.blankPoster = error {
+            posterIsBlank = true
+            return
+          }
         }
       }
       if displayCoverURL != nil || row.hasMedia == true {
@@ -495,6 +550,8 @@ struct CreatorSavedWorkCard: View {
       CreatorWorkCardFillImage(image: coverImage)
     } else if coverLoading, hasCoverURL || row.hasMedia == true {
       placeholderCover(showsProgress: true)
+    } else if posterIsBlank {
+      placeholderCover(showsProgress: false, blankPoster: true)
     } else if showsBodyPreview || prefersTextPreview {
       textPreviewCover
     } else {
@@ -515,7 +572,8 @@ struct CreatorSavedWorkCard: View {
   }
 
   /// 图还没到、或取不到时的占位：纯色底 + 平台图标，不写「封面加载失败」这种字。
-  private func placeholderCover(showsProgress: Bool) -> some View {
+  /// 视频开头是黑场时也走这里，但文案单独说「黑场」，避免和「没取到」混成一件事。
+  private func placeholderCover(showsProgress: Bool, blankPoster: Bool = false) -> some View {
     ZStack {
       theme.badge
       PlatformNavigationIcon(host: row.host, monochrome: true)
@@ -524,7 +582,19 @@ struct CreatorSavedWorkCard: View {
       if showsProgress { ProgressView().controlSize(.small) }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .help(coverFailed ? "封面没取到，打开作品后可重新抓取原文以更新封面" : (showsProgress ? "封面加载中" : "封面未获取"))
-    .accessibilityLabel(coverFailed ? "封面加载失败" : (showsProgress ? "封面加载中" : "封面未获取"))
+    .help(placeholderHelp(showsProgress: showsProgress, blankPoster: blankPoster))
+    .accessibilityLabel(placeholderAccessibility(showsProgress: showsProgress, blankPoster: blankPoster))
+  }
+
+  private func placeholderHelp(showsProgress: Bool, blankPoster: Bool) -> String {
+    if blankPoster { return "视频开头是黑场，已改用占位图" }
+    if coverFailed { return "封面没取到，打开作品后可重新抓取原文以更新封面" }
+    return showsProgress ? "封面加载中" : "封面未获取"
+  }
+
+  private func placeholderAccessibility(showsProgress: Bool, blankPoster: Bool) -> String {
+    if blankPoster { return "视频封面是黑场，已改用占位" }
+    if coverFailed { return "封面加载失败" }
+    return showsProgress ? "封面加载中" : "封面未获取"
   }
 }

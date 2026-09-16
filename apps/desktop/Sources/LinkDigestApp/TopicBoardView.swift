@@ -9,7 +9,7 @@ import SwiftUI
 /// AI 只是把「想选题」换成了「审选题」。所以整个界面围绕一件事设计——
 /// 否决必须极其便宜,扫一眼标题和一句摘要就能划掉。
 struct TopicBoardView: View {
-  @ObservedObject var model: HistoryViewModel
+  var model: HistoryViewModel
   let onTake: (TopicCandidate) -> Void
 
   @State private var isExpanded = true

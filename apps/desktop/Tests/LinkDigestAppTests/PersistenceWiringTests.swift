@@ -223,7 +223,11 @@ final class AppCompositionTests: XCTestCase {
   func testSocketLifecycleAutomaticallyRepublishesDeletedNode() async throws {
     let path = "/tmp/linkdigest-composition-recover-\(UUID().uuidString).sock"
     defer { try? FileManager.default.removeItem(atPath: path + ".lock") }
-    let lifecycle = UnixSocketServerLifecycle(path: path, statusSink: { _ in })
+    // 生产上这条自检 30 秒一次（以前挂在 1 秒的 accept 轮询上，等于每秒 stat
+    // 一次文件系统）。测试把周期调短，验的仍是同一条恢复路径。
+    let lifecycle = UnixSocketServerLifecycle(
+      path: path, statusSink: { _ in }, healthCheckInterval: 0.1
+    )
     let gate = StorageWriteGate(availabilitySink: { _ in })
     let receiver = CaptureReceiver(
       history: nil,
@@ -310,7 +314,7 @@ final class AppCompositionTests: XCTestCase {
     XCTAssertEqual(repository.acceptCaptureCallCount, 0)
   }
 
-  func testRecoveryCommitMustFinishBeforeNormalServerStarts() async {
+  func testRecoveryCommitMustFinishBeforeNormalServerStarts() async throws {
     let log = WiringEventLog()
     let blocker = CommitBlocker()
     let repository = WiringRepository(log: log, recoveryBlocker: blocker)
@@ -331,7 +335,7 @@ final class AppCompositionTests: XCTestCase {
     XCTAssertEqual(log.values, ["recovery-entry"])
     XCTAssertEqual(server.startCount, 0)
     blocker.release.signal()
-    let result = await bootstrap.value
+    let result = try await awaitValue(bootstrap, label: "composition.bootstrap()")
     XCTAssertEqual(result.availability, .writable)
     XCTAssertEqual(log.values, ["recovery-entry", "recover", "server"])
     XCTAssertEqual(server.startCount, 1)
@@ -813,7 +817,7 @@ final class CaptureReceiverTests: XCTestCase {
     let beforeCommit = await sink.captures
     XCTAssertTrue(beforeCommit.isEmpty)
     blocker.release.signal()
-    let response = await processing.value
+    let response = try await awaitValue(processing, label: "receiver.process()")
     guard case .taskAccepted = response else { return XCTFail("ACK must follow commit") }
     XCTAssertEqual(log.values, ["capture-entry", "capture-commit"])
     let afterCommit = await sink.captures
@@ -839,12 +843,18 @@ final class CaptureReceiverTests: XCTestCase {
       captureSink: { await captures.receive($0) }
     )
 
+    // 第一条抓取的写事务会一直卡在 CommitBlocker 上。把它放到普通并发队列执行，
+    // 阻塞的就不是协作线程池的线程——否则后面 `second` 那条任务可能永远排不到
+    // 线程，整条测试无输出地挂死（那正是这条测试之前的状态）。
+    let blockingExecutor = BlockingWorkExecutor()
     let first = Task {
-      await receiver.process(
-        try! JSONEncoder().encode(capture(requestID: "linearized-a"))
-      )
+      await withTaskExecutorPreference(blockingExecutor) {
+        await receiver.process(
+          try! JSONEncoder().encode(capture(requestID: "linearized-a"))
+        )
+      }
     }
-    XCTAssertEqual(blocker.entered.wait(timeout: .now() + 1), .success)
+    try await awaitSignal(blocker.entered, label: "第一条抓取进入写事务")
     XCTAssertEqual(repository.acceptCaptureCallCount, 1)
 
     let second = Task {
@@ -858,7 +868,7 @@ final class CaptureReceiverTests: XCTestCase {
     XCTAssertTrue(capturesBeforeRelease.isEmpty)
 
     blocker.release.signal()
-    let responses = await [first.value, second.value]
+    let responses = try await [awaitValue(first), awaitValue(second)]
     let presentation = StorageErrorMapper.presentation(for: .writeFailed)
     for response in responses {
       guard case let .error(error) = response else {
@@ -1070,6 +1080,14 @@ final class CaptureReceiverTests: XCTestCase {
     }
     XCTAssertEqual(invalid.requestId, "app-receiver")
     XCTAssertEqual(invalid.category, "protocol")
+
+    let unsupported = Data(#"{"version":9,"requestId":"req-upgrade-1"}"#.utf8)
+    guard case let .error(upgrade) = await receiver.process(unsupported) else {
+      return XCTFail("expected protocol version error")
+    }
+    XCTAssertEqual(upgrade.requestId, "req-upgrade-1")
+    XCTAssertEqual(upgrade.code, CaptureValidationError.PROTOCOL_VERSION_UNSUPPORTED.rawValue)
+    XCTAssertEqual(upgrade.action, "upgrade_app")
 
     let envelope = capture(requestID: "decoded-request")
     guard case let .error(storage) = await receiver.process(try JSONEncoder().encode(envelope)) else {

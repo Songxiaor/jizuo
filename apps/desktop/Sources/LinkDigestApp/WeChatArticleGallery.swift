@@ -27,7 +27,7 @@ enum WeChatArticleLayout {
 
 /// WeChat source-platform gallery — thin wrapper over the shared platform gallery.
 struct WeChatArticleGallery: View {
-  @ObservedObject var model: HistoryViewModel
+  var model: HistoryViewModel
   let theme: HistoryThemeTokens
   var searchFocused: FocusState<Bool>.Binding
   @Binding var scrollTarget: TaskID?

@@ -131,17 +131,24 @@ final class MarkdownNSTextView: NSTextView {
     return true
   }
 
+  /// ⌘B/⌘I 只改选区那一小段。
+  ///
+  /// 以前是「整篇换成新字符串」：几万字的笔记上每按一次就重排整个文本存储，
+  /// 撤销栈里也只剩「整篇变成另一篇」这一条——按一次 ⌘B 再撤销，会把光标和
+  /// 滚动位置一起丢掉。
   private func wrapSelection(with marker: String) -> Bool {
     let full = string
     let selected = selectedRange()
     guard let range = Range(selected, in: full) else { return false }
 
-    let (result, newSelection) = MarkdownListEditing.toggleWrap(full, selection: range, marker: marker)
-    let whole = NSRange(location: 0, length: (full as NSString).length)
-    guard shouldChangeText(in: whole, replacementString: result) else { return true }
-    textStorage?.replaceCharacters(in: whole, with: result)
+    let edit = MarkdownListEditing.wrapEdit(full, selection: range, marker: marker)
+    let editRange = NSRange(edit.range, in: full)
+    guard shouldChangeText(in: editRange, replacementString: edit.replacement) else { return true }
+    textStorage?.replaceCharacters(in: editRange, with: edit.replacement)
     didChangeText()
-    setSelectedRange(NSRange(newSelection, in: result))
+    setSelectedRange(
+      NSRange(location: editRange.location + edit.selectionOffsetUTF16, length: edit.selectionLengthUTF16)
+    )
     return true
   }
 }
@@ -209,6 +216,9 @@ private struct MarkdownTextView: NSViewRepresentable {
     context.coordinator.linkableTitles = linkableTitles
     context.coordinator.onFinishEditing = onFinishEditing
     textView.allowsWikiComplete = !linkableTitles.isEmpty
+    // 着色要知道「这次改了哪一段」才能只重算那几行，而只有文本存储说得准：
+    // textDidChange 拿到的是改完之后的全文，看不出改动落在哪里。
+    textView.textStorage?.delegate = context.coordinator
     context.coordinator.applyHighlightIfNeeded(to: textView, font: font, palette: palette, lineSpacing: lineSpacing)
     context.coordinator.applyInitialCaretIfNeeded(to: textView, offset: initialCaretUTF16)
     context.coordinator.focusIfNeeded(textView)
@@ -232,18 +242,18 @@ private struct MarkdownTextView: NSViewRepresentable {
     context.coordinator.linkableTitles = linkableTitles
     context.coordinator.onFinishEditing = onFinishEditing
     // 详情页任何无关状态变化（转写进度、图标加载……）都会走到这里。
-    // 着色带指纹判断，没变化就跳过；但高度仍要每次回报——窗口宽度变化
-    // 引起的重排不改文字也不改字体，只有排版高度变了。
-    let didHighlight = context.coordinator.applyHighlightIfNeeded(
+    // 着色带指纹判断，没变化就跳过；键入引起的变化交给合并后的那一次。
+    context.coordinator.applyHighlightIfNeeded(
       to: textView, font: font, palette: palette, lineSpacing: lineSpacing
     )
-    if !didHighlight { context.coordinator.reportHeight(of: textView) }
+    // 高度仍要看一眼：窗口宽度变化引起的重排不改文字也不改字体，只有排版高度变了。
+    context.coordinator.reportHeight(of: textView)
   }
 
   func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
   @MainActor
-  final class Coordinator: NSObject, NSTextViewDelegate {
+  final class Coordinator: NSObject, NSTextViewDelegate, @MainActor NSTextStorageDelegate {
     private let text: Binding<String>
     /// 防止把自己写回去的内容再当成用户输入处理。
     private var isApplyingHighlight = false
@@ -356,7 +366,8 @@ private struct MarkdownTextView: NSViewRepresentable {
       guard !textView.hasMarkedText() else { return }
       textVersion += 1
       text.wrappedValue = textView.string
-      reportHeight(of: textView)
+      // 着色和量高都排进合并窗口：一次按键做一遍，快速连打只做一遍。
+      scheduleCoalescedHighlight(for: textView)
       // 刚打完 `[[` 就把候选弹出来。只在这一刻触发：弹出之后继续打字由系统
       // 自己筛，每次输入都调 `complete(_:)` 会让候选框不停地重开。
       if !linkableTitles.isEmpty, let pending = pendingLink(in: textView), pending.query.isEmpty {
@@ -476,11 +487,26 @@ private struct MarkdownTextView: NSViewRepresentable {
     }
 
     /// 把排版后的实际高度回报给 SwiftUI。
-    func reportHeight(of textView: NSTextView) {
+    ///
+    /// `usedRect` 会把整个容器排完版才给结果，几万字的笔记上这是每次按键最贵的
+    /// 一步。两道闸门把它挡住：文字长度和容器宽度都没变时排版高度不可能变；
+    /// 真要量时也先只给改动那一段补排版，剩下的沿用 NSLayoutManager 的缓存。
+    func reportHeight(of textView: NSTextView, force: Bool = false, layoutHint: NSRange? = nil) {
       guard let contentHeight,
             let layoutManager = textView.layoutManager,
             let container = textView.textContainer else { return }
-      layoutManager.ensureLayout(for: container)
+      let length = (textView.string as NSString).length
+      let width = container.size.width
+      // 高度已经掉到 0（外层重建了状态）时也要重量一次，否则编辑器会一直是一条缝。
+      guard force || length != lastMeasuredLength || width != lastMeasuredWidth
+        || contentHeight.wrappedValue <= 0 else { return }
+      lastMeasuredLength = length
+      lastMeasuredWidth = width
+      if let layoutHint, layoutHint.location >= 0, NSMaxRange(layoutHint) <= length {
+        layoutManager.ensureLayout(forCharacterRange: layoutHint)
+      } else {
+        layoutManager.ensureLayout(for: container)
+      }
       let height = layoutManager.usedRect(for: container).height
         + MarkdownTextView.contentInset.height * 2
       // 半点以内的抖动不回报：布局与高度互相触发时会来回震荡。
@@ -489,19 +515,28 @@ private struct MarkdownTextView: NSViewRepresentable {
       DispatchQueue.main.async { contentHeight.wrappedValue = height }
     }
 
-    // MARK: - 着色去重
+    private var lastMeasuredLength = -1
+    private var lastMeasuredWidth: CGFloat = -1
+
+    // MARK: - 只重算改动那几行
 
     /// 文本代数：每次真实的文字变化（键入、撤销、外部替换）加一。
-    /// 它是着色指纹的一部分——SwiftUI 因无关状态重渲染时文字没变，
-    /// 指纹相同，整个全文着色就可以跳过。
     var textVersion = 0
 
     /// 外部（绑定另一侧）整体替换了文字时由 updateNSView 调用。
-    func noteTextReplaced() { textVersion += 1 }
+    func noteTextReplaced() {
+      textVersion += 1
+      needsFullHighlight = true
+    }
 
-    /// 上一次真正执行着色时的输入组合。
-    private struct HighlightFingerprint: Equatable {
-      let textVersion: Int
+    /// 连续输入的合并窗口。
+    ///
+    /// 太短等于没合并，太长手感就开始发飘——40ms 差不多是「看不出延迟、又能把
+    /// 一串连打并成一次」的那个位置。
+    private static let coalesceInterval: TimeInterval = 0.04
+
+    /// 上一次着色时的排版参数。只有它变了才必须整篇重来。
+    private struct StyleFingerprint: Equatable {
       let fontName: String
       let fontSize: CGFloat
       let lineSpacing: CGFloat
@@ -511,9 +546,37 @@ private struct MarkdownTextView: NSViewRepresentable {
       let paletteKey: [CGFloat]
     }
 
-    private var lastHighlightFingerprint: HighlightFingerprint?
+    private var lastStyleFingerprint: StyleFingerprint?
+    private var lastHighlightedVersion = -1
+    private var needsFullHighlight = true
+    /// 上一次着色后文本里 ``` 的条数，用来判断围栏结构有没有整体改变。
+    private var lastFenceMarkerCount = 0
+    private var pendingHighlight: DispatchWorkItem?
+    private weak var highlightTarget: NSTextView?
+    private var highlightStyle: (font: NSFont, palette: MarkdownSyntaxHighlighter.Palette, lineSpacing: CGFloat)?
 
-    /// 需要时才全文着色；输入组合与上次一致则整段跳过。
+    /// 合并窗口里累计的改动范围（新文本坐标）。nil 表示这一轮还没有字符改动。
+    private var pendingEditLow = Int.max
+    private var pendingEditHigh = -1
+
+    // MARK: NSTextStorageDelegate
+
+    func textStorage(
+      _ textStorage: NSTextStorage,
+      didProcessEditing editedMask: NSTextStorageEditActions,
+      range editedRange: NSRange,
+      changeInLength delta: Int
+    ) {
+      // 只关心文字改动。着色自己写属性时也会走到这里，那不是新的脏范围。
+      guard editedMask.contains(.editedCharacters) else { return }
+      if pendingEditHigh >= editedRange.location { pendingEditHigh += delta }
+      pendingEditLow = min(pendingEditLow, editedRange.location)
+      pendingEditHigh = max(pendingEditHigh, NSMaxRange(editedRange))
+      pendingEditLow = max(0, min(pendingEditLow, textStorage.length))
+      pendingEditHigh = max(pendingEditLow, min(pendingEditHigh, textStorage.length))
+    }
+
+    /// 需要时才着色；排版参数与上次一致、文字也没变则整段跳过。
     ///
     /// 详情页观察着一个有几十个发布属性的 ViewModel，任何无关变化都会带着
     /// 编辑器走一遍 updateNSView。以前这里无条件全文正则着色，是「打开笔记
@@ -525,31 +588,108 @@ private struct MarkdownTextView: NSViewRepresentable {
       palette: MarkdownSyntaxHighlighter.Palette,
       lineSpacing: CGFloat
     ) -> Bool {
-      guard let storage = textView.textStorage else { return false }
-      let fingerprint = HighlightFingerprint(
-        textVersion: textVersion,
+      highlightTarget = textView
+      highlightStyle = (font, palette, lineSpacing)
+      guard textView.textStorage != nil else { return false }
+      // 拼音还在组字：改属性会让输入法把后文当候选填进来。
+      if textView.hasMarkedText() { return false }
+
+      let fingerprint = StyleFingerprint(
         fontName: font.fontName,
         fontSize: font.pointSize,
         lineSpacing: lineSpacing,
         appearanceName: NSApp.effectiveAppearance.name,
         paletteKey: palette.fingerprint
       )
-      if textView.hasMarkedText() { return false }
-      guard fingerprint != lastHighlightFingerprint else { return false }
-      lastHighlightFingerprint = fingerprint
+      if fingerprint != lastStyleFingerprint {
+        lastStyleFingerprint = fingerprint
+        // 换字号、换主题会改写每一个字的属性，只能整篇重来，而且要立刻——
+        // 让用户看着半篇新颜色半篇旧颜色等 40ms 是另一种卡。
+        cancelPendingHighlight()
+        performHighlight(fullDocument: true)
+        return true
+      }
+      guard textVersion != lastHighlightedVersion else { return false }
+      if needsFullHighlight {
+        // 外部整体换掉了文字（切到另一条笔记）：`textView.string = ...` 把属性
+        // 清空了，等 40ms 再上色就是先闪一屏白字。
+        cancelPendingHighlight()
+        performHighlight(fullDocument: true)
+        return true
+      }
+      scheduleCoalescedHighlight(for: textView)
+      return false
+    }
+
+    /// 把这次键入排进合并窗口。窗口里已经排了一次就搭便车。
+    func scheduleCoalescedHighlight(for textView: NSTextView) {
+      highlightTarget = textView
+      guard highlightStyle != nil, pendingHighlight == nil else { return }
+      let item = DispatchWorkItem { [weak self] in
+        guard let self else { return }
+        self.pendingHighlight = nil
+        guard let target = self.highlightTarget, target.textStorage != nil else { return }
+        // 组字期间不着色。组完那一下会再发 textDidChange，到时候再排。
+        guard !target.hasMarkedText() else { return }
+        guard self.textVersion != self.lastHighlightedVersion else { return }
+        self.performHighlight(fullDocument: false)
+      }
+      pendingHighlight = item
+      DispatchQueue.main.asyncAfter(deadline: .now() + Self.coalesceInterval, execute: item)
+    }
+
+    private func cancelPendingHighlight() {
+      pendingHighlight?.cancel()
+      pendingHighlight = nil
+    }
+
+    private func performHighlight(fullDocument: Bool) {
+      guard let textView = highlightTarget,
+            let storage = textView.textStorage,
+            let style = highlightStyle else { return }
 
       isApplyingHighlight = true
       defer { isApplyingHighlight = false }
       // 着色只改属性不改文字，所以光标位置不受影响；但仍显式保存恢复，
       // 因为 setAttributes 在某些输入法状态下会重置选区。
       let selected = textView.selectedRange()
-      MarkdownSyntaxHighlighter.apply(
-        to: storage, baseFont: font, palette: palette, lineSpacing: lineSpacing
+      let text = storage.string as NSString
+      let edited: NSRange? = pendingEditHigh >= pendingEditLow
+        ? NSRange(location: pendingEditLow, length: pendingEditHigh - pendingEditLow)
+        : nil
+      pendingEditLow = Int.max
+      pendingEditHigh = -1
+
+      var scope = MarkdownSyntaxHighlighter.HighlightScope(
+        range: nil, fenceMarkerCount: lastFenceMarkerCount
       )
+      if fullDocument || needsFullHighlight || edited == nil {
+        scope = .init(
+          range: nil,
+          fenceMarkerCount: MarkdownSyntaxHighlighter.fenceMarkerLocations(in: text).count
+        )
+      } else if let edited {
+        scope = MarkdownSyntaxHighlighter.scope(
+          in: text, editedRange: edited, previousFenceMarkerCount: lastFenceMarkerCount
+        )
+      }
+      needsFullHighlight = false
+      lastFenceMarkerCount = scope.fenceMarkerCount
+
+      if let range = scope.range {
+        MarkdownSyntaxHighlighter.apply(
+          to: storage, baseFont: style.font, palette: style.palette,
+          lineSpacing: style.lineSpacing, in: range
+        )
+      } else {
+        MarkdownSyntaxHighlighter.apply(
+          to: storage, baseFont: style.font, palette: style.palette, lineSpacing: style.lineSpacing
+        )
+      }
+      lastHighlightedVersion = textVersion
       textView.setSelectedRange(selected)
-      // 字号、行距、着色都会改变排版高度，重新量一次。
-      reportHeight(of: textView)
-      return true
+      // 整篇重来时字号可能变了，长度没变也得重新量。
+      reportHeight(of: textView, force: scope.range == nil, layoutHint: scope.range)
     }
   }
 }

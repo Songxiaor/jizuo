@@ -261,8 +261,35 @@ public enum CaptureWireEnvelope: Sendable, Equatable {
         throw CaptureValidationError.CAPTURE_SCHEMA_INVALID
       }
     default:
+      // 比本机新的 envelope（version ≥ 3）。
+      //
+      // 原来这里直接拒绝：只要扩展先于 App 升级，用户就会收到「版本不兼容」，
+      // 哪怕那一版只是多了几个可选字段、正文和媒体块一个字都没变。契约本来就是
+      // 向前兼容的（V1/V2 的校验都接受未知的可选字段），所以先尽力按已知形状降级，
+      // 真的对不上再报 PROTOCOL_VERSION_UNSUPPORTED——那时用户看到的升级提示才是
+      // 真需要升级。
+      //
+      // 顺序与 V2 一致：带 media 的先试 V2，再退 V1；不带 media 的直接退 V1。
+      if object["media"] != nil,
+         let downgraded = rewriteVersion(data, to: 2),
+         let v2 = try? CaptureEnvelopeV2Validator.decode(downgraded, schemaLocator: schemaLocator) {
+        return .v2(v2)
+      }
+      if let downgraded = rewriteVersionToV1(data),
+         let v1 = try? CaptureValidator.decode(downgraded, schemaLocator: schemaLocator) {
+        return .v1(v1)
+      }
       throw CaptureValidationError.PROTOCOL_VERSION_UNSUPPORTED
     }
+  }
+
+  /// 只改顶层 `version`，其余原样保留（media 块留在原地）。
+  private static func rewriteVersion(_ data: Data, to version: Int) -> Data? {
+    guard var object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+      return nil
+    }
+    object["version"] = NSNumber(value: version)
+    return try? JSONSerialization.data(withJSONObject: object, options: [])
   }
 
   /// 把顶层 `version` 改成 1，**并丢掉 media 块**，其余原样保留。
@@ -335,10 +362,12 @@ public enum NativeResponse: Codable, Sendable, Equatable {
   case bookmarksLookup(version: Int, requestId: String, existingIDs: [String])
   /// 主页候选已收下，待选择页展示。不表示窗口已可见，也不表示已入库。
   case profileCandidatesPresented(version: Int, requestId: String, acceptedCount: Int)
+  /// 打开 App：成功时带上 Host 支持的协议版本，扩展用它判断要不要提示升级。
+  case openAppAccepted(version: Int, requestId: String, supportedVersions: [Int])
   case error(AppError)
 
   enum CodingKeys: String, CodingKey {
-    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, acceptedCount, error
+    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, acceptedCount, supportedVersions, error
   }
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -388,6 +417,20 @@ public enum NativeResponse: Codable, Sendable, Equatable {
         requestId: try c.decode(String.self, forKey: .requestId),
         acceptedCount: acceptedCount
       )
+    case "openAppAccepted":
+      let version = try c.decode(Int.self, forKey: .version)
+      guard version == 1 else {
+        throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "Unsupported NativeResponse version")
+      }
+      let supported = try c.decode([Int].self, forKey: .supportedVersions)
+      guard !supported.isEmpty, supported.allSatisfy({ $0 >= 1 }) else {
+        throw DecodingError.dataCorruptedError(forKey: .supportedVersions, in: c, debugDescription: "supportedVersions must be a non-empty list of positive integers")
+      }
+      self = .openAppAccepted(
+        version: version,
+        requestId: try c.decode(String.self, forKey: .requestId),
+        supportedVersions: supported
+      )
     case "error":
       let error = try c.decode(AppError.self, forKey: .error)
       guard error.version == 1 else {
@@ -414,6 +457,9 @@ public enum NativeResponse: Codable, Sendable, Equatable {
     case let .profileCandidatesPresented(v, r, accepted):
       try c.encode("profileCandidatesPresented", forKey: .kind); try c.encode(v, forKey: .version)
       try c.encode(r, forKey: .requestId); try c.encode(accepted, forKey: .acceptedCount)
+    case let .openAppAccepted(v, r, supported):
+      try c.encode("openAppAccepted", forKey: .kind); try c.encode(v, forKey: .version)
+      try c.encode(r, forKey: .requestId); try c.encode(supported, forKey: .supportedVersions)
     case let .error(e):
       try c.encode("error", forKey: .kind); try c.encode(e, forKey: .error)
     }
@@ -425,13 +471,24 @@ public enum NativeResponse: Codable, Sendable, Equatable {
     switch self {
     case .taskAccepted, .bookmarksAccepted, .bookmarksLookup, .profileCandidatesPresented:
       return true
-    case .error:
+    case .openAppAccepted, .error:
       return false
     }
   }
 }
 
 public enum CaptureValidationError: String, Error, Codable, Sendable { case PROTOCOL_VERSION_UNSUPPORTED, CAPTURE_URL_UNSUPPORTED, CAPTURE_COUNT_MISMATCH, CAPTURE_CONTENT_EMPTY, CAPTURE_PAYLOAD_TOO_LARGE, CAPTURE_SCHEMA_INVALID }
+
+/// 解码失败时仍尽量取出报文里的 requestId，避免把真实请求塌缩成 "app-receiver"。
+public enum NativeRequestIdentity {
+  public static func requestId(from data: Data) -> String? {
+    guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let id = object["requestId"] as? String,
+          !id.isEmpty, id.count <= 128
+    else { return nil }
+    return id
+  }
+}
 public enum CaptureValidator {
   public static let maxTextScalars = 2_000_000
   public static func validate(_ value: CaptureEnvelopeV1) throws {
