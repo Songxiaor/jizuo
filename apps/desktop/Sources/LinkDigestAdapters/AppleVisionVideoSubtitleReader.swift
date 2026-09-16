@@ -284,7 +284,9 @@ public struct AppleVisionVideoSubtitleReader: VideoSubtitleReading {
       let end = min(index + Self.recognitionConcurrency, total)
       for position in index..<end {
         // 单帧取不出来（seek 落在损坏区、或恰好是片尾）不该中断整片。
-        guard let image = try? generator.copyCGImage(at: times[position], actualTime: nil) else { continue }
+        // `copyCGImage(at:actualTime:)` 从 macOS 15 起废弃：它是同步阻塞解码，
+        // 一次 seek 就要占住当前线程。`image(at:)` 是同一件事的异步版本。
+        guard let image = try? await generator.image(at: times[position]).image else { continue }
         batch.append(DecodedFrame(time: times[position], image: image))
       }
       done += end - index

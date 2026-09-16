@@ -142,6 +142,10 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         } catch is CancellationError {
           continuation.finish(throwing: CancellationError())
         } catch let failure as ModelProviderFailure {
+          AppLog.error(.provider, "model_stream_failed", code: failure.code.rawValue, [
+            "host": AppLog.host(profile.baseURL),
+            "intent": intent.kind.rawValue,
+          ])
           continuation.finish(throwing: failure)
         } catch {
           continuation.finish(throwing: ModelProviderFailure(
@@ -214,13 +218,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       guard http.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("application/json") == true else {
         throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
       }
-      var data = Data()
-      for try await byte in bytes {
-        guard data.count < Self.modelCatalogByteLimit else {
-          throw ModelProviderFailure(code: .inputTooLarge, retryable: false, hadOutput: false)
-        }
-        data.append(byte)
-      }
+      let data = try await Self.collectBody(bytes, response: response, limit: Self.modelCatalogByteLimit)
       guard let responseBody = try? JSONDecoder().decode(ModelCatalogResponse.self, from: data) else {
         throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: false)
       }
@@ -403,13 +401,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
 
     do {
       let (bytes, response) = try await session.bytes(for: request)
-      var body = Data()
-      for try await byte in bytes {
-        guard body.count < Self.transcriptTidyResponseByteLimit else {
-          throw ModelProviderFailure(code: .inputTooLarge, retryable: false, hadOutput: false)
-        }
-        body.append(byte)
-      }
+      let body = try await Self.collectBody(bytes, response: response, limit: Self.transcriptTidyResponseByteLimit)
       let providerError = ProviderErrorBody(data: body)
       _ = try validateStatus(response: response, providerError: providerError, hadOutput: false)
       guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("application/json") == true else {
@@ -485,13 +477,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
 
     do {
       let (bytes, response) = try await session.bytes(for: request)
-      var body = Data()
-      for try await byte in bytes {
-        guard body.count < Self.automaticTagResponseByteLimit else {
-          throw ModelProviderFailure(code: .inputTooLarge, retryable: false, hadOutput: false)
-        }
-        body.append(byte)
-      }
+      let body = try await Self.collectBody(bytes, response: response, limit: Self.automaticTagResponseByteLimit)
       let providerError = ProviderErrorBody(data: body)
       _ = try validateStatus(response: response, providerError: providerError, hadOutput: false)
       guard (response as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type")?.lowercased().hasPrefix("application/json") == true else {
@@ -563,6 +549,10 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     case .summarize: "summarize"
     case .translate: "translate"
     }
+    AppLog.info(.provider, "model_stream_started", [
+      "host": AppLog.host(profile.baseURL),
+      "intent": intentLabel,
+    ])
     let inflight = activeStreamCount
 
     while true {
@@ -923,6 +913,28 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       )
     }
     return response
+  }
+
+  /// 非流式回包收集：保留「超过上限立即中止」的语义（测试和弱网都靠它），但不再
+  /// 逐字节往 Data 里 append——先按 Content-Length 预留，攒进连续缓冲一次转成 Data。
+  static func collectBody(
+    _ bytes: URLSession.AsyncBytes,
+    response: URLResponse,
+    limit: Int
+  ) async throws -> Data {
+    let declared = Int((response as? HTTPURLResponse)?.expectedContentLength ?? -1)
+    if declared > limit {
+      throw ModelProviderFailure(code: .inputTooLarge, retryable: false, hadOutput: false)
+    }
+    var buffer: [UInt8] = []
+    buffer.reserveCapacity(declared > 0 ? declared : min(limit, 64 * 1024))
+    for try await byte in bytes {
+      guard buffer.count < limit else {
+        throw ModelProviderFailure(code: .inputTooLarge, retryable: false, hadOutput: false)
+      }
+      buffer.append(byte)
+    }
+    return Data(buffer)
   }
 
   private func providerError(

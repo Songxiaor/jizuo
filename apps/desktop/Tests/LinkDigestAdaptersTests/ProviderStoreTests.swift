@@ -65,7 +65,7 @@ final class ProviderStoreTests: XCTestCase {
   }
 
   func testConcurrentConsentWritesOnOneProductionStorePreserveEveryIdentity() async throws {
-    let (suiteName, defaults) = try ephemeralDefaults("com.syc.linkdigest.tests.")
+    let (suiteName, _) = try ephemeralDefaults("com.syc.linkdigest.tests.")
     let store = UserDefaultsDataDestinationConsentStore(
       suiteName: suiteName,
       key: "concurrent-data-destination-consents"

@@ -5,7 +5,7 @@ import LinkDigestCore
 
 final class MediaStoragePreferenceStoreTests: XCTestCase {
   func testDirectoryPreferenceRoundTripsAndClearRestoresDefault() throws {
-    let (suite, defaults) = try ephemeralDefaults("linkdigest-media-storage-")
+    let (_, defaults) = try ephemeralDefaults("linkdigest-media-storage-")
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-media-pref-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -23,7 +23,7 @@ final class MediaStoragePreferenceStoreTests: XCTestCase {
   }
 
   func testCustomDirectoryStoresFileBookmarkAndReusesSameHash() throws {
-    let (suite, defaults) = try ephemeralDefaults("linkdigest-media-store-")
+    let (_, defaults) = try ephemeralDefaults("linkdigest-media-store-")
     let base = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-media-custom-\(UUID().uuidString)", isDirectory: true)
     let internalRoot = base.appendingPathComponent("internal", isDirectory: true)
@@ -59,7 +59,7 @@ final class MediaStoragePreferenceStoreTests: XCTestCase {
   }
 
   func testCustomDirectoryNeverOverwritesDirectoryAtHashDestination() throws {
-    let (suite, defaults) = try ephemeralDefaults("linkdigest-media-conflict-")
+    let (_, defaults) = try ephemeralDefaults("linkdigest-media-conflict-")
     let base = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-media-conflict-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
@@ -79,7 +79,7 @@ final class MediaStoragePreferenceStoreTests: XCTestCase {
   }
 
   func testDownloadLimitDefaultsHighAndClampsHandEditedValues() throws {
-    let (suite, defaults) = try ephemeralDefaults("linkdigest-download-limit-")
+    let (_, defaults) = try ephemeralDefaults("linkdigest-download-limit-")
     let store = fixtureStore(defaults: defaults)
 
     // A fixed 200 MB used to refuse videos the user explicitly asked to keep.
@@ -107,7 +107,7 @@ final class MediaStoragePreferenceStoreTests: XCTestCase {
   }
 
   func testCapturedVideoAutoSaveDefaultsOffWhenKeyWasNeverSet() throws {
-    let (suite, defaults) = try ephemeralDefaults("linkdigest-auto-save-video-")
+    let (_, defaults) = try ephemeralDefaults("linkdigest-auto-save-video-")
     let store = fixtureStore(defaults: defaults)
 
     // 新装机默认不自动落盘；从未写过 key 时解析为 false。
@@ -115,7 +115,7 @@ final class MediaStoragePreferenceStoreTests: XCTestCase {
   }
 
   func testCapturedVideoAutoSaveKeepsExplicitFalseForExistingUser() throws {
-    let (suite, defaults) = try ephemeralDefaults("linkdigest-auto-save-video-off-")
+    let (_, defaults) = try ephemeralDefaults("linkdigest-auto-save-video-off-")
     let store = fixtureStore(defaults: defaults)
 
     store.autoSaveCapturedVideo = false
@@ -124,7 +124,7 @@ final class MediaStoragePreferenceStoreTests: XCTestCase {
   }
 
   func testCapturedVideoAutoSaveKeepsExplicitTrue() throws {
-    let (suite, defaults) = try ephemeralDefaults("linkdigest-auto-save-video-on-")
+    let (_, defaults) = try ephemeralDefaults("linkdigest-auto-save-video-on-")
     let store = fixtureStore(defaults: defaults)
 
     store.autoSaveCapturedVideo = true
@@ -133,7 +133,7 @@ final class MediaStoragePreferenceStoreTests: XCTestCase {
   }
 
   func testEffectiveDownloadLimitNeverExceedsWhatTheVolumeCanSpare() throws {
-    let (suite, defaults) = try ephemeralDefaults("linkdigest-effective-limit-")
+    let (_, defaults) = try ephemeralDefaults("linkdigest-effective-limit-")
     let preference = fixtureStore(defaults: defaults)
     let root = FileManager.default.temporaryDirectory
       .appendingPathComponent("linkdigest-effective-\(UUID().uuidString)", isDirectory: true)

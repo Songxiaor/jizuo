@@ -99,24 +99,39 @@ public enum StreamingComposition {
     return role.mimeType
   }
 
+  /// `AVAsset` 不是 `Sendable`，但「并行加载属性」恰恰是苹果推荐的用法（`load(_:)`
+  /// 系列本身线程安全）。这个盒子只是把这条事实写给编译器：里头装的资产只读、
+  /// 只用来取属性，不会跨隔离域被改写。不带它就只剩「串行加载」一个选择，
+  /// 而 4K 双轨串行等待实测会叠到十几秒。
+  private struct ConcurrentAsset: @unchecked Sendable {
+    let asset: AVAsset
+  }
+
   private static func compose(
     videoAsset: AVAsset,
     audioAsset: AVAsset,
     knownDurationSeconds: Double?
   ) async throws -> AVMutableComposition {
-    // 画面和声音是两个资产，可以并行等 tracks。串行的话 4K 双轨经常把等待叠成十几秒。
-    // 有站点片长就只拉 tracks；时长已经够用来 insert。
-    let keys = knownDurationSeconds != nil ? ["tracks"] : ["tracks", "duration"]
-    try await loadValues(of: videoAsset, and: audioAsset, keys: keys)
+    // 画面和声音并行等轨：串行的话 4K 双轨经常把等待叠成十几秒。
+    //
+    // 走 `loadTracks` / `load(_:)` 而不是同步的 `tracks(withMediaType:)` / `duration`：
+    // 同步那套从 macOS 13 起已废弃，而且它要求先手工 `loadValuesAsynchronously`
+    // 预热属性——等于把异步加载自己实现一遍，还多出「拼 DispatchGroup + 逐键查
+    // status」两处能写错的地方。
+    let videoBox = ConcurrentAsset(asset: videoAsset)
+    let audioBox = ConcurrentAsset(asset: audioAsset)
+    async let videoTracks = videoBox.asset.loadTracks(withMediaType: .video)
+    async let audioTracks = audioBox.asset.loadTracks(withMediaType: .audio)
+    let (loadedVideoTracks, loadedAudioTracks) = try await (videoTracks, audioTracks)
 
-    guard let sourceVideoTrack = videoAsset.tracks(withMediaType: .video).first else {
+    guard let sourceVideoTrack = loadedVideoTracks.first else {
       throw StreamingCompositionError.missingVideoTrack
     }
-    guard let sourceAudioTrack = audioAsset.tracks(withMediaType: .audio).first else {
+    guard let sourceAudioTrack = loadedAudioTracks.first else {
       throw StreamingCompositionError.missingAudioTrack
     }
 
-    let transform = sourceVideoTrack.preferredTransform
+    let transform = try await sourceVideoTrack.load(.preferredTransform)
 
     if let known = knownDurationSeconds, known.isFinite, known > 0 {
       let knownDuration = CMTime(seconds: known, preferredTimescale: 600)
@@ -130,7 +145,7 @@ public enum StreamingComposition {
       }
     }
 
-    if let duration = cachedNumericDuration(videoAsset: videoAsset, audioAsset: audioAsset) {
+    if let duration = await numericDuration(videoAsset: videoAsset, audioAsset: audioAsset) {
       return try buildComposition(
         sourceVideoTrack: sourceVideoTrack,
         sourceAudioTrack: sourceAudioTrack,
@@ -153,33 +168,18 @@ public enum StreamingComposition {
     )
   }
 
-  /// 两个远程资产同时 `loadValuesAsynchronously`，避免画面等完再等声音。
-  private static func loadValues(
-    of videoAsset: AVAsset,
-    and audioAsset: AVAsset,
-    keys: [String]
-  ) async throws {
-    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-      let group = DispatchGroup()
-      group.enter()
-      videoAsset.loadValuesAsynchronously(forKeys: keys) { group.leave() }
-      group.enter()
-      audioAsset.loadValuesAsynchronously(forKeys: keys) { group.leave() }
-      group.notify(queue: .global()) { continuation.resume() }
-    }
-    var videoError: NSError?
-    var audioError: NSError?
-    if videoAsset.statusOfValue(forKey: "tracks", error: &videoError) == .failed {
-      throw videoError ?? StreamingCompositionError.missingVideoTrack
-    }
-    if audioAsset.statusOfValue(forKey: "tracks", error: &audioError) == .failed {
-      throw audioError ?? StreamingCompositionError.missingAudioTrack
-    }
-  }
-
-  private static func cachedNumericDuration(videoAsset: AVAsset, audioAsset: AVAsset) -> CMTime? {
-    let video = videoAsset.duration
-    let audio = audioAsset.duration
+  /// 两个资产里较短的那条时长；任何一边还不是有效数值就返回 nil。
+  ///
+  /// 这里每次都会真的去 load 一次 duration（`load(_:)` 自带缓存，重复调用不会
+  /// 再走网络）；原来那个「只读已缓存值」的变体是靠同步 `asset.duration` 判断的，
+  /// 同样是 macOS 13 起废弃的写法。
+  ///
+  /// 远程 fMP4/m4s 的 duration 有时是 indefinite，那种情况交给 `resolvedDuration`
+  /// 改走轨 timeRange。
+  private static func numericDuration(videoAsset: AVAsset, audioAsset: AVAsset) async -> CMTime? {
+    guard let video = try? await videoAsset.load(.duration),
+          let audio = try? await audioAsset.load(.duration)
+    else { return nil }
     guard video.isNumeric, audio.isNumeric, video.seconds > 0, audio.seconds > 0 else { return nil }
     return CMTimeMinimum(video, audio)
   }

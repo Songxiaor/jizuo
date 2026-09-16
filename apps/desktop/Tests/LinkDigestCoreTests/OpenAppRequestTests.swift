@@ -10,6 +10,19 @@ final class OpenAppRequestTests: XCTestCase {
     XCTAssertNil(try OpenAppRequest.decode(data("not json")))
   }
 
+  func testSupportedVersionsAreAdvertisedForNegotiation() {
+    XCTAssertEqual(OpenAppRequest.supportedVersions, [1])
+  }
+
+  func testOpenAppAcceptedRoundTripsSupportedVersions() throws {
+    let encoded = try JSONEncoder().encode(
+      NativeResponse.openAppAccepted(version: 1, requestId: "req-open-1", supportedVersions: [1])
+    )
+    let decoded = try JSONDecoder().decode(NativeResponse.self, from: encoded)
+    XCTAssertEqual(decoded, .openAppAccepted(version: 1, requestId: "req-open-1", supportedVersions: [1]))
+    XCTAssertFalse(decoded.isSuccessfulBrowserDelivery)
+  }
+
   func testValidRequestKeepsRequestId() throws {
     let request = try OpenAppRequest.decode(data(
       #"{"kind":"openApp","version":1,"requestId":"req-open-1"}"#

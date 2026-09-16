@@ -122,7 +122,7 @@ final class AppleVisionVideoSubtitleReaderTests: XCTestCase {
     // 这些东西和字幕挤在同一条带上：讲者署名固定在右下角（x≥0.89），幻灯片
     // 底部还有 CC-BY / METR / 年份刻度这类零散短标注。它们一旦被当成字幕行
     // 拼进去，每句话后面都会拖一截噪声。
-    let joined = cues.map(\.text).joined(separator: "\n")
+    _ = cues.map(\.text).joined(separator: "\n")
     // 只钉住能稳定清掉的那些。
     //
     // `METR` 不在列内，是有意的：实测那一帧 OCR 把它和字幕并成了**同一个文本

@@ -97,6 +97,17 @@ public final class UserDefaultsMediaStoragePreferenceStore: @unchecked Sendable 
     set { defaults.set(LocalMediaStore.clampedDownloadLimit(newValue), forKey: downloadLimitKey) }
   }
 
+  /// `Media/` 目录的总容量上限，字节。**0 = 不限制，也是默认值。**
+  ///
+  /// 开启这项意味着 App 会在用户没点任何按钮的时候删他已经保存的视频，所以默认
+  /// 必须是关的：升级一个版本之后文件悄悄变少，是最不该发生的一类"惊喜"。
+  private var totalCapacityKey: String { key + ".total-capacity-bytes" }
+
+  public var totalCapacityLimitBytes: Int {
+    get { LocalMediaStore.clampedTotalCapacity(defaults.integer(forKey: totalCapacityKey)) }
+    set { defaults.set(LocalMediaStore.clampedTotalCapacity(newValue), forKey: totalCapacityKey) }
+  }
+
   public func resetDownloadLimit() { defaults.removeObject(forKey: downloadLimitKey) }
 
   private var autoSaveCapturedVideoKey: String { key + ".auto-save-captured-video" }

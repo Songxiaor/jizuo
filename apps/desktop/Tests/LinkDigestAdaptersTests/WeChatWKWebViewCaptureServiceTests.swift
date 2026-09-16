@@ -64,7 +64,7 @@ final class WeChatWKWebViewCaptureServiceTests: XCTestCase {
     let configuration = WeChatWKWebViewCaptureService.makeConfiguration()
     XCTAssertFalse(configuration.websiteDataStore.isPersistent)
     XCTAssertFalse(configuration.preferences.javaScriptCanOpenWindowsAutomatically)
-    XCTAssertFalse(configuration.preferences.plugInsEnabled)
+    // 这里原本还有一条 `XCTAssertFalse(preferences.plugInsEnabled)`：该开关从 macOS 10.15 起废弃，WebKit 的插件机制整体被移除，属性恒为 false，断言它只是在测一个死值。
     XCTAssertEqual(configuration.mediaTypesRequiringUserActionForPlayback, .all)
     XCTAssertTrue(configuration.defaultWebpagePreferences.allowsContentJavaScript)
   }

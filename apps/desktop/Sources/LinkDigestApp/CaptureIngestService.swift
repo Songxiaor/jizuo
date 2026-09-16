@@ -11,13 +11,16 @@ struct CaptureIngestService: Sendable {
   private let nowMilliseconds: @Sendable () -> Int64
   private let captureSink: CaptureSink
   private let afterCommit: @Sendable (CapturedDocument, AcceptCaptureResult) -> Void
+  /// 抓取成败的本地计数。测试里是 nil（见 `CaptureOutcomeStore.shared`）。
+  private let outcomeStore: CaptureOutcomeStore?
 
-  init(history: HistoryApplicationService?, storageWriteGate: StorageWriteGate, nowMilliseconds: @escaping @Sendable () -> Int64, captureSink: @escaping CaptureSink, afterCommit: @escaping @Sendable (CapturedDocument, AcceptCaptureResult) -> Void = { _, _ in }) {
+  init(history: HistoryApplicationService?, storageWriteGate: StorageWriteGate, nowMilliseconds: @escaping @Sendable () -> Int64, captureSink: @escaping CaptureSink, afterCommit: @escaping @Sendable (CapturedDocument, AcceptCaptureResult) -> Void = { _, _ in }, outcomeStore: CaptureOutcomeStore? = .shared) {
     self.history = history
     self.storageWriteGate = storageWriteGate
     self.nowMilliseconds = nowMilliseconds
     self.captureSink = captureSink
     self.afterCommit = afterCommit
+    self.outcomeStore = outcomeStore
   }
 
   func ingest(envelope: CaptureEnvelopeV1) async throws -> CurrentCapture {
@@ -69,8 +72,16 @@ struct CaptureIngestService: Sendable {
     document: CapturedDocument,
     makeCurrent: @Sendable (AcceptCaptureResult) -> CurrentCapture
   ) async throws -> CurrentCapture {
+    AppLog.info(.capture, "capture_ingest_started", [
+      "platform": document.platform,
+      "origin": String(describing: document.origin),
+      "host": AppLog.host(document.url),
+      "chars": String(document.text.unicodeScalars.count),
+    ])
     guard let history else {
-      throw StorageWriteGateFailure.unavailable((await storageWriteGate.currentAvailability()).code ?? .unavailable)
+      let code = (await storageWriteGate.currentAvailability()).code ?? .unavailable
+      recordFailure(document: document, code: code.rawValue)
+      throw StorageWriteGateFailure.unavailable(code)
     }
     let accepted: AcceptCaptureResult
     do {
@@ -85,15 +96,30 @@ struct CaptureIngestService: Sendable {
       )
     } catch let failure as StorageWriteGateFailure {
       if failure.didDegrade { await storageWriteGate.publishCurrentAvailability() }
+      recordFailure(document: document, code: failure.code.rawValue)
       throw failure
     } catch {
       _ = await storageWriteGate.degrade(.writeFailed)
       await storageWriteGate.publishCurrentAvailability()
+      recordFailure(document: document, code: StorageErrorCode.writeFailed.rawValue)
       throw StorageWriteGateFailure.captureWriteFailed(.writeFailed)
     }
     afterCommit(document, accepted)
     let current = makeCurrent(accepted)
     await captureSink(current)
+    AppLog.info(.capture, "capture_ingest_succeeded", [
+      "platform": document.platform,
+      "replayed": String(accepted.deliveryWasReplayed),
+    ])
+    outcomeStore?.recordSuccess(platform: document.platform)
     return current
+  }
+
+  private func recordFailure(document: CapturedDocument, code: String) {
+    AppLog.error(.capture, "capture_ingest_failed", code: code, [
+      "platform": document.platform,
+      "host": AppLog.host(document.url),
+    ])
+    outcomeStore?.recordFailure(platform: document.platform, code: code)
   }
 }

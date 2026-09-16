@@ -18,11 +18,14 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
   private let shouldUseSystemProxy: @Sendable (URL) -> Bool
 
   public init(limits: URLSessionWebPageFetcher.Limits = .init()) {
-    let resolver = SystemHostResolver()
-    policy = .init(resolver: resolver.resolve)
-    direct = PeerBoundNetworkWebPageFetcher(limits: limits)
+    // 一次抓取里，路由判定、传输层绑定对端、重定向每一跳原本各查一次 DNS。
+    // 这里让三条路共用同一个带缓存的异步解析器：同一个 host 只解析一次，
+    // 重定向换了 host 才会再解析一次。判定逻辑一个字没改。
+    let resolver = HostResolutionCache(base: SystemHostResolver.asyncResolver()).resolver
+    policy = .init(asyncResolver: resolver)
+    direct = PeerBoundNetworkWebPageFetcher(asyncResolver: resolver, limits: limits)
     proxy = SystemProxyWebPageFetcher(policy: policy, limits: limits)
-    let fakeIP = PeerBoundNetworkWebPageFetcher(limits: limits, allowsFakeIPPeers: true)
+    let fakeIP = PeerBoundNetworkWebPageFetcher(asyncResolver: resolver, limits: limits, allowsFakeIPPeers: true)
     fakeIPDirect = fakeIP
     fakeIPDirectResource = fakeIP
     directResource = direct as? any SafeResourceFetching
@@ -50,19 +53,34 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
   #endif
 
   public func fetch(url: URL) async throws -> WebPageFetchResult {
-    let decision = try policy.routingDecision(for: url)
-    let usesProxy = decision == .systemProxyForFakeIP || shouldUseSystemProxy(url)
+    AppLog.info(.capture, "webpage_fetch_started", ["host": AppLog.host(url), "via": "proxy_aware"])
+    do {
+      let result = try await fetchBody(url: url)
+      AppLog.info(.capture, "webpage_fetch_succeeded", ["host": AppLog.host(result.url), "via": "proxy_aware"])
+      return result
+    } catch {
+      AppLog.error(.capture, "webpage_fetch_failed", code: "FETCH_FAILED", ["host": AppLog.host(url), "via": "proxy_aware"])
+      throw error
+    }
+  }
+
+  private func fetchBody(url: URL) async throws -> WebPageFetchResult {
+    let decision = try await policy.routingDecision(for: url)
+    // 系统代理设置每次抓取只查一次：`CFNetworkCopySystemProxySettings` 会读
+    // 系统配置，原来同一条路径上要查两三遍。
+    let hasSystemProxy = shouldUseSystemProxy(url)
+    let usesProxy = decision == .systemProxyForFakeIP || hasSystemProxy
     guard !usesProxy || url.scheme?.lowercased() == "https" else {
       throw ManualLinkError.proxyHTTPSRequired
     }
     switch decision {
     case .direct:
-      if shouldUseSystemProxy(url) {
+      if hasSystemProxy {
         return try await proxy.fetch(url: url)
       }
       return try await direct.fetch(url: url)
     case .systemProxyForFakeIP:
-      if shouldUseSystemProxy(url) {
+      if hasSystemProxy {
         return try await proxy.fetch(url: url)
       }
       // Some TUN products expose no classic HTTP proxy dictionary but still
@@ -78,8 +96,9 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
   }
 
   public func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
-    let decision = try policy.routingDecision(for: request.url)
-    let usesProxy = decision == .systemProxyForFakeIP || shouldUseSystemProxy(request.url)
+    let decision = try await policy.routingDecision(for: request.url)
+    let hasSystemProxy = shouldUseSystemProxy(request.url)
+    let usesProxy = decision == .systemProxyForFakeIP || hasSystemProxy
     guard !usesProxy || request.url.scheme?.lowercased() == "https" else {
       throw ManualLinkError.proxyHTTPSRequired
     }
@@ -88,7 +107,7 @@ public final class ProxyAwareWebPageFetcher: WebPageFetcher, SafeResourceFetchin
     case .direct:
       resource = usesProxy ? proxyResource : directResource
     case .systemProxyForFakeIP:
-      if shouldUseSystemProxy(request.url) {
+      if hasSystemProxy {
         resource = proxyResource
       } else if let proxyResource {
         do {

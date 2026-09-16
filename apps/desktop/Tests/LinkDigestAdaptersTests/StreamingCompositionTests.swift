@@ -59,9 +59,17 @@ final class StreamingCompositionTests: XCTestCase {
       .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
       .appendingPathComponent("Sources/LinkDigestAdapters/StreamingComposition.swift")
     let source = try String(contentsOf: sourceURL, encoding: .utf8)
-    XCTAssertTrue(source.contains("loadValuesAsynchronously"))
-    XCTAssertTrue(source.contains("videoAsset.loadValuesAsynchronously"))
-    XCTAssertTrue(source.contains("audioAsset.loadValuesAsynchronously"))
+    // 这条测试守的是「画面不能等完再等声音」，不是某个具体 API。判据从
+    // `loadValuesAsynchronously` 换成「两条 loadTracks 是并发发起的、并且一起
+    // await」：同步的 `tracks(withMediaType:)` 与 `loadValuesAsynchronously`
+    // 在 macOS 13 起都已废弃。只钉 `异步发起` 的形状，不钉实现细节。
+    XCTAssertTrue(source.contains("async let videoTracks"), "视频轨必须和音频轨并发加载")
+    XCTAssertTrue(source.contains("async let audioTracks"), "音频轨必须和视频轨并发加载")
+    XCTAssertTrue(source.contains("try await (videoTracks, audioTracks)"), "两条并发加载要一起等")
+    XCTAssertFalse(
+      source.contains("loadValuesAsynchronously(forKeys:"),
+      "已废弃的预热调用不该再出现"
+    )
   }
 
   func testKnownDurationComposesWithoutReadingAssetDuration() async throws {

@@ -2,12 +2,12 @@ import XCTest
 @testable import LinkDigestCore
 
 final class ManualLinkCaptureTests: XCTestCase {
-  func testURLPolicyRejectsPrivateRangesAndOnlyTestPolicyAllowsLoopback() throws {
+  func testURLPolicyRejectsPrivateRangesAndOnlyTestPolicyAllowsLoopback() async throws {
     let resolver: PublicWebURLPolicy.Resolver = { host in
       ["private.test": "10.0.0.1", "reserved.test": "192.0.2.1", "public.test": "8.8.8.8"][host].map { [$0] } ?? []
     }
     let policy = PublicWebURLPolicy(resolver: resolver)
-    XCTAssertNoThrow(try policy.validate(URL(string: "https://public.test/article")!))
+    await assertPolicyAccepts { try await policy.validate(URL(string: "https://public.test/article")!) }
     for raw in [
       "http://localhost/a", "https://user:pass@public.test/a", "https://public.test:444/a",
       "http://public.test:443/a", "https://public.test:80/a", "https://private.test/a",
@@ -17,48 +17,50 @@ final class ManualLinkCaptureTests: XCTestCase {
       "https://[2001::1]/a", "https://[2001:2::1]/a", "https://[2001:10::1]/a",
       "https://[2001:db8::1]/a", "https://[2002::1]/a", "https://[3fff::1]/a"
     ] {
-      XCTAssertThrowsError(try policy.validate(URL(string: raw)!))
+      await assertPolicyRejects(raw) { try await policy.validate(URL(string: raw)!) }
     }
     let testPolicy = PublicWebURLPolicy(resolver: resolver, allowLoopbackForTesting: true)
-    XCTAssertNoThrow(try testPolicy.validate(URL(string: "http://127.0.0.1/test")!))
+    await assertPolicyAccepts { try await testPolicy.validate(URL(string: "http://127.0.0.1/test")!) }
   }
 
-  func testURLPolicyAllowsGloballyRoutedIPv6OutsideSpecialUseRanges() throws {
+  func testURLPolicyAllowsGloballyRoutedIPv6OutsideSpecialUseRanges() async throws {
     let policy = PublicWebURLPolicy(resolver: { _ in [] })
     for raw in ["https://[2606:4700::1111]/a", "https://[2a00:1450::200e]/a"] {
-      XCTAssertNoThrow(try policy.validate(URL(string: raw)!))
+      await assertPolicyAccepts(raw) { try await policy.validate(URL(string: raw)!) }
     }
   }
 
-  func testPeerPolicyRejectsDNSRebindTargetsAfterInitialPublicResolution() throws {
+  func testPeerPolicyRejectsDNSRebindTargetsAfterInitialPublicResolution() async throws {
     let policy = PublicWebURLPolicy(resolver: { _ in ["8.8.8.8"] })
-    XCTAssertNoThrow(try policy.validate(URL(string: "https://rebind.test/article")!))
+    await assertPolicyAccepts { try await policy.validate(URL(string: "https://rebind.test/article")!) }
     for peer in ["127.0.0.1", "169.254.169.254", "::ffff:127.0.0.1"] {
       XCTAssertThrowsError(try policy.validatePeerAddress(peer))
     }
   }
 
-  func testFakeIPIsASeparateProxyDecisionAndNeverBecomesAValidDirectPeer() throws {
+  func testFakeIPIsASeparateProxyDecisionAndNeverBecomesAValidDirectPeer() async throws {
     let fakePolicy = PublicWebURLPolicy(resolver: { _ in ["198.18.1.229"] })
     let url = URL(string: "https://public.example/article")!
-    XCTAssertEqual(try fakePolicy.routingDecision(for: url), .systemProxyForFakeIP)
-    XCTAssertThrowsError(try fakePolicy.validate(url))
+    let decision = try await fakePolicy.routingDecision(for: url)
+    XCTAssertEqual(decision, .systemProxyForFakeIP)
+    await assertPolicyRejects { try await fakePolicy.validate(url) }
     XCTAssertThrowsError(try fakePolicy.validatePeerAddress("198.18.1.229"))
 
     let mixed = PublicWebURLPolicy(resolver: { _ in ["198.18.1.2", "10.0.0.1"] })
-    XCTAssertThrowsError(try mixed.routingDecision(for: url))
-    XCTAssertThrowsError(
-      try fakePolicy.routingDecision(for: URL(string: "https://198.18.1.229/article")!)
-    )
+    await assertPolicyRejects { _ = try await mixed.routingDecision(for: url) }
+    await assertPolicyRejects {
+      _ = try await fakePolicy.routingDecision(for: URL(string: "https://198.18.1.229/article")!)
+    }
   }
 
-  func testFakeIPPeersAreAdmittedOnlyByTheOptInTransportAndNeverWidenPrivateAccess() throws {
+  func testFakeIPPeersAreAdmittedOnlyByTheOptInTransportAndNeverWidenPrivateAccess() async throws {
     let url = URL(string: "https://public.example/article")!
     // TUN/透明代理模式：系统层没有 HTTP 代理，直连 fake-IP 交给虚拟网卡是
     // 唯一走得通的路径，所以这条传输显式开口。
     let tunnelled = PublicWebURLPolicy(resolver: { _ in ["198.18.1.229"] }, allowsFakeIPPeers: true)
-    XCTAssertEqual(try tunnelled.routingDecision(for: url), .systemProxyForFakeIP)
-    XCTAssertNoThrow(try tunnelled.validate(url))
+    let tunnelledDecision = try await tunnelled.routingDecision(for: url)
+    XCTAssertEqual(tunnelledDecision, .systemProxyForFakeIP)
+    await assertPolicyAccepts { try await tunnelled.validate(url) }
     XCTAssertNoThrow(try tunnelled.validatePeerAddress("198.18.1.229"))
 
     // 开口只覆盖 fake-IP 段。私有、回环、链路本地一律照拒。
@@ -66,13 +68,13 @@ final class ManualLinkCaptureTests: XCTestCase {
       XCTAssertThrowsError(try tunnelled.validatePeerAddress(address), address)
     }
     let privatePolicy = PublicWebURLPolicy(resolver: { _ in ["10.0.0.8"] }, allowsFakeIPPeers: true)
-    XCTAssertThrowsError(try privatePolicy.routingDecision(for: url))
+    await assertPolicyRejects { _ = try await privatePolicy.routingDecision(for: url) }
     // 混合答案里只要有一个非 fake-IP，仍旧整体拒绝。
     let mixed = PublicWebURLPolicy(resolver: { _ in ["198.18.1.2", "10.0.0.1"] }, allowsFakeIPPeers: true)
-    XCTAssertThrowsError(try mixed.routingDecision(for: url))
+    await assertPolicyRejects { _ = try await mixed.routingDecision(for: url) }
     // 默认（未开口）的传输行为不变。
     let strict = PublicWebURLPolicy(resolver: { _ in ["198.18.1.229"] })
-    XCTAssertThrowsError(try strict.validate(url))
+    await assertPolicyRejects { try await strict.validate(url) }
     XCTAssertThrowsError(try strict.validatePeerAddress("198.18.1.229"))
   }
 

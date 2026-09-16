@@ -1,3 +1,4 @@
+import AppKit
 import Sparkle
 import SwiftUI
 import LinkDigestCore
@@ -14,6 +15,32 @@ struct AppUpdateSettingsView: View {
 
   init(updater: SPUUpdater) {
     _model = StateObject(wrappedValue: AppUpdateSettingsModel(updater: updater))
+  }
+
+  /// 兜底提示。会临时顶掉「反馈问题」那一行的说明文字，所以得是状态。
+  @State private var feedbackNote: String?
+
+  /// 优先交给系统邮件应用；系统把 `mailto:` 交给了浏览器（或压根没有邮件应用）时
+  /// 改走网页版写信；两个都不行就把地址复制到剪贴板并说明。
+  /// 三种结果都要有反馈——这一行按钮的价值全在「点了真能发出信」。
+  private func writeFeedback() {
+    let address = FeedbackMail.address(releaseConfiguration: nil)
+    switch FeedbackMail.composeTarget(
+      address: address,
+      environment: DiagnosticsReport.liveEnvironment()
+    ) {
+    case let .mailClient(url), let .webMail(url):
+      NSWorkspace.shared.open(url)
+    case .none:
+      copyFeedbackAddress()
+    }
+  }
+
+  private func copyFeedbackAddress() {
+    let address = FeedbackMail.address(releaseConfiguration: nil)
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString(address, forType: .string)
+    feedbackNote = "已把 \(address) 复制到剪贴板，可以粘到任意邮箱里。"
   }
 
   var body: some View {
@@ -54,6 +81,37 @@ struct AppUpdateSettingsView: View {
             .disabled(!model.canManageReminder)
             .accessibilityLabel("有新版本时提醒我")
             .accessibilityIdentifier("app-update-remind-toggle")
+        }
+
+        SettingsRow(
+          title: "导出诊断信息",
+          caption: "不含正文、网址和密钥。含最近两小时运行日志和抓取成败计数。"
+        ) {
+          Button("导出…") {
+            let counts = CaptureOutcomeStore.shared?.snapshot() ?? CaptureOutcomeCounts()
+            _ = DiagnosticsExportAction.exportWithSavePanel(counts: counts)
+          }
+          .buttonStyle(.appNormal)
+          .accessibilityLabel("导出诊断信息")
+          .accessibilityIdentifier("app-update-export-diagnostics")
+        }
+
+        SettingsRow(
+          title: "反馈问题",
+          // 兜底提示会临时顶掉这句说明（见 writeFeedback），所以它得是 @State。
+          caption: feedbackNote ?? "打开邮件把版本信息发给支持邮箱。不会附带你保存的内容。"
+        ) {
+          HStack(spacing: DesignTokens.Space.md) {
+            Button("写邮件…") { writeFeedback() }
+              .buttonStyle(.appNormal)
+              .accessibilityLabel("反馈问题")
+              .accessibilityIdentifier("app-update-feedback")
+            // 系统里没有任何能处理 mailto 的邮件应用时，至少要保证地址拿得到。
+            Button("复制地址") { copyFeedbackAddress() }
+              .buttonStyle(.appNormal)
+              .accessibilityLabel("复制支持邮箱地址")
+              .accessibilityIdentifier("app-update-feedback-copy")
+          }
         }
       }
     }

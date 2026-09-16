@@ -4,6 +4,17 @@ import LinkDigestCore
 
 public struct SystemHostResolver: Sendable {
   public init() {}
+
+  /// 异步、可取消、带超时的系统解析。抓取链路只准用这一个。
+  ///
+  /// `resolve` 本身是阻塞的 `getaddrinfo`，直接在 async 上下文里调用会占住协作
+  /// 线程池并且不理会取消；这里统一搬到普通队列上执行。
+  public static func asyncResolver(
+    timeoutSeconds: TimeInterval = HostResolution.defaultTimeoutSeconds
+  ) -> AsyncHostResolver {
+    HostResolution.offloaded(SystemHostResolver().resolve, timeoutSeconds: timeoutSeconds)
+  }
+
   public func resolve(_ host: String) throws -> [String] {
     var hints = addrinfo(ai_flags: AI_ADDRCONFIG, ai_family: AF_UNSPEC, ai_socktype: SOCK_STREAM, ai_protocol: 0, ai_addrlen: 0, ai_canonname: nil, ai_addr: nil, ai_next: nil)
     var pointer: UnsafeMutablePointer<addrinfo>?
@@ -34,7 +45,7 @@ public final class URLSessionWebPageFetcher: NSObject, WebPageFetcher, @unchecke
   private let peerAddressProvider: PeerAddressProvider
 
   public init(
-    policy: PublicWebURLPolicy = .init(resolver: SystemHostResolver().resolve),
+    policy: PublicWebURLPolicy = .init(asyncResolver: SystemHostResolver.asyncResolver()),
     limits: Limits = .init(),
     peerAddressProvider: @escaping PeerAddressProvider = { _ in throw ManualLinkError.unsafeURL }
   ) {
@@ -42,7 +53,19 @@ public final class URLSessionWebPageFetcher: NSObject, WebPageFetcher, @unchecke
   }
 
   public func fetch(url: URL) async throws -> WebPageFetchResult {
-    try policy.validate(url)
+    AppLog.info(.capture, "webpage_fetch_started", ["host": AppLog.host(url), "via": "urlsession"])
+    do {
+      let result = try await fetchBody(url: url)
+      AppLog.info(.capture, "webpage_fetch_succeeded", ["host": AppLog.host(result.url), "via": "urlsession"])
+      return result
+    } catch {
+      AppLog.error(.capture, "webpage_fetch_failed", code: "FETCH_FAILED", ["host": AppLog.host(url), "via": "urlsession"])
+      throw error
+    }
+  }
+
+  private func fetchBody(url: URL) async throws -> WebPageFetchResult {
+    try await policy.validate(url)
     // Do not start URLSession unless a lower-level transport has supplied the
     // numeric peer it will use. This prevents DNS rebind TOCTOU. Until a
     // peer-bound Network/BSD transport is installed, production fails closed.
@@ -68,9 +91,12 @@ private final class FetchDelegate: NSObject, URLSessionDataDelegate, URLSessionT
   private let policy: PublicWebURLPolicy
   private let limits: URLSessionWebPageFetcher.Limits
   private var data = Data(), redirects = 0
+  private let finishLock = NSLock()
   private var continuation: CheckedContinuation<WebPageFetchResult, Error>?
   private var finished = false
   init(policy: PublicWebURLPolicy, limits: URLSessionWebPageFetcher.Limits) { self.policy = policy; self.limits = limits }
+
+  private var isFinished: Bool { finishLock.withLock { finished } }
 
   func start(session: URLSession, request: URLRequest) async throws -> WebPageFetchResult {
     try await withTaskCancellationHandler {
@@ -90,8 +116,18 @@ private final class FetchDelegate: NSObject, URLSessionDataDelegate, URLSessionT
   func urlSession(_: URLSession, task _: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping @Sendable (URLRequest?) -> Void) {
     redirects += 1
     guard redirects <= limits.redirects, let url = request.url else { finish(.failure(ManualLinkError.responseStatus)); completionHandler(nil); return }
-    do { try policy.validate(url); completionHandler(request) }
-    catch { finish(.failure(ManualLinkError.unsafeURL)); completionHandler(nil) }
+    // SSRF 门禁一字未改，只是不再在 delegate 回调线程上做阻塞解析：
+    // completionHandler 允许异步回调，重定向就在解析完成后才放行。
+    let policy = policy
+    Task { [weak self] in
+      do {
+        try await policy.validate(url)
+        completionHandler(request)
+      } catch {
+        self?.finish(.failure(ManualLinkError.unsafeURL))
+        completionHandler(nil)
+      }
+    }
   }
 
   func urlSession(_: URLSession, task _: URLSessionTask, didReceive challenge: URLAuthenticationChallenge, completionHandler: @escaping @Sendable (URLSession.AuthChallengeDisposition, URLCredential?) -> Void) {
@@ -118,7 +154,7 @@ private final class FetchDelegate: NSObject, URLSessionDataDelegate, URLSessionT
   }
 
   func urlSession(_: URLSession, dataTask _: URLSessionDataTask, didReceive data: Data) {
-    guard !finished else { return }
+    guard !isFinished else { return }
     self.data.append(data)
     if self.data.count > limits.responseBytes {
       activeTask?.cancel()
@@ -127,7 +163,7 @@ private final class FetchDelegate: NSObject, URLSessionDataDelegate, URLSessionT
   }
 
   func urlSession(_: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-    guard !finished else { return }
+    guard !isFinished else { return }
     activeTask = nil
     if let error {
       let ns = error as NSError
@@ -143,9 +179,12 @@ private final class FetchDelegate: NSObject, URLSessionDataDelegate, URLSessionT
   }
 
   private func finish(_ result: Result<WebPageFetchResult, Error>) {
-    guard !finished else { return }; finished = true
-    activeTask = nil
+    finishLock.lock()
+    guard !finished else { finishLock.unlock(); return }
+    finished = true
     let continuation = continuation; self.continuation = nil
+    finishLock.unlock()
+    activeTask = nil
     switch result { case let .success(value): continuation?.resume(returning: value); case let .failure(error): continuation?.resume(throwing: error) }
   }
 }

@@ -7,7 +7,6 @@ import LinkDigestCore
 /// numeric address. The original hostname remains TLS SNI/certificate name and
 /// HTTP Host, so binding the IP does not weaken HTTPS validation.
 public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceFetching, @unchecked Sendable {
-  private let resolvePeer: PublicWebURLPolicy.Resolver
   private let policy: PublicWebURLPolicy
   private let limits: URLSessionWebPageFetcher.Limits
   #if DEBUG
@@ -26,10 +25,22 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
   /// `allowsFakeIPPeers` 只给 TUN/透明代理这一种网络用：那里域名解析成
   /// fake-IP，系统没有 HTTP 代理设置，直连 fake-IP 才是唯一走得通的路径。
   /// 内网、回环、链路本地地址在任何情况下都仍旧拒绝。
-  public init(limits: URLSessionWebPageFetcher.Limits = .init(), allowsFakeIPPeers: Bool = false) {
-    let resolver = SystemHostResolver()
-    resolvePeer = resolver.resolve
-    policy = .init(resolver: resolver.resolve, allowsFakeIPPeers: allowsFakeIPPeers)
+  public convenience init(limits: URLSessionWebPageFetcher.Limits = .init(), allowsFakeIPPeers: Bool = false) {
+    self.init(
+      asyncResolver: SystemHostResolver.asyncResolver(),
+      limits: limits,
+      allowsFakeIPPeers: allowsFakeIPPeers
+    )
+  }
+
+  /// `ProxyAwareWebPageFetcher` 用这个入口把**同一个**带缓存的解析器传进来，
+  /// 一次抓取里路由判定和对端绑定因此共用同一份 DNS 答案。
+  init(
+    asyncResolver: @escaping AsyncHostResolver,
+    limits: URLSessionWebPageFetcher.Limits = .init(),
+    allowsFakeIPPeers: Bool = false
+  ) {
+    policy = .init(asyncResolver: asyncResolver, allowsFakeIPPeers: allowsFakeIPPeers)
     self.limits = limits
     #if DEBUG
     portForTesting = nil
@@ -45,10 +56,14 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
     limits: URLSessionWebPageFetcher.Limits,
     portForTesting: UInt16,
     trustAnchorsForTesting: [SecCertificate]? = nil,
-    eventSinkForTesting: @escaping @Sendable (String) -> Void = { _ in }
+    eventSinkForTesting: @escaping @Sendable (String) -> Void = { _ in },
+    resolverTimeoutSecondsForTesting: TimeInterval = HostResolution.defaultTimeoutSeconds
   ) {
-    resolvePeer = resolver
-    self.policy = .init(resolver: resolver, allowLoopbackForTesting: allowLoopbackForTesting)
+    self.policy = .init(
+      resolver: resolver,
+      allowLoopbackForTesting: allowLoopbackForTesting,
+      resolverTimeoutSeconds: resolverTimeoutSecondsForTesting
+    )
     self.limits = limits
     self.portForTesting = portForTesting
     self.trustAnchorsForTesting = trustAnchorsForTesting
@@ -57,15 +72,26 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
   #endif
 
   public func fetch(url: URL) async throws -> WebPageFetchResult {
+    AppLog.info(.capture, "webpage_fetch_started", ["host": AppLog.host(url), "via": "peer_bound"])
+    do {
+      let result = try await fetchBody(url: url)
+      AppLog.info(.capture, "webpage_fetch_succeeded", ["host": AppLog.host(result.url), "via": "peer_bound"])
+      return result
+    } catch {
+      AppLog.error(.capture, "webpage_fetch_failed", code: "FETCH_FAILED", ["host": AppLog.host(url), "via": "peer_bound"])
+      throw error
+    }
+  }
+
+  private func fetchBody(url: URL) async throws -> WebPageFetchResult {
     var current = url
     for redirect in 0...limits.redirects {
-      try policy.validate(current)
-      guard let rawHost = current.host,
-            let host = PublicWebURLPolicy.normalizedHost(rawHost),
-            let scheme = current.scheme?.lowercased()
-      else { throw ManualLinkError.unsafeURL }
-      let peers = try resolvePeer(host)
-      guard let peer = peers.first else { throw ManualLinkError.unsafeURL }
+      // 门禁与对端绑定共用同一次解析：判定过的地址就是待会儿连上去的那个，
+      // 中间不再留一个可以被改答案的窗口。
+      let admission = try await policy.validatedAdmission(for: current)
+      guard let scheme = current.scheme?.lowercased() else { throw ManualLinkError.unsafeURL }
+      let host = admission.host
+      guard let peer = admission.addresses.first else { throw ManualLinkError.unsafeURL }
       try policy.validatePeerAddress(peer)
       let result = try await fetchOnce(url: current, host: host, peer: peer, scheme: scheme)
       if Self.isFollowableRedirectStatus(result.status), let target = redirectTarget(result.headers, relativeTo: current) {
@@ -87,13 +113,10 @@ public final class PeerBoundNetworkWebPageFetcher: WebPageFetcher, SafeResourceF
     var method = request.method.uppercased() == "POST" ? "POST" : "GET"
     var body: Data? = method == "POST" ? request.body : nil
     for redirect in 0...limits.redirects {
-      try policy.validate(current)
-      guard let rawHost = current.host,
-            let host = PublicWebURLPolicy.normalizedHost(rawHost),
-            let scheme = current.scheme?.lowercased()
-      else { throw ManualLinkError.unsafeURL }
-      let peers = try resolvePeer(host)
-      guard let peer = peers.first else { throw ManualLinkError.unsafeURL }
+      let admission = try await policy.validatedAdmission(for: current)
+      guard let scheme = current.scheme?.lowercased() else { throw ManualLinkError.unsafeURL }
+      let host = admission.host
+      guard let peer = admission.addresses.first else { throw ManualLinkError.unsafeURL }
       try policy.validatePeerAddress(peer)
       let result = try await fetchOnce(
         url: current, host: host, peer: peer, scheme: scheme,

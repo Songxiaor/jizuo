@@ -13,6 +13,11 @@ public final class OpenAICompatibleAudioTranscriber: OnlineAudioTranscribing, @u
   /// 同时在飞的分片上传数。分片之间无依赖，但服务端普遍有速率限制，
   /// 无节制并发会被拒或更慢。
   private static let maximumConcurrentChunkUploads = 3
+  /// 单个分片最多尝试 3 次（首次 + 2 次重试）。429 与 5xx 是服务端的临时状态，
+  /// 以前一撞上整条转写就失败，用户只能整段重来。
+  private static let maximumUploadAttempts = 3
+  /// multipart 落盘时的拷贝块大小：音频不再整片进内存。
+  private static let uploadCopyBufferBytes = 1 << 20
   private static let browserUserAgent =
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     + "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
@@ -78,68 +83,53 @@ public final class OpenAICompatibleAudioTranscriber: OnlineAudioTranscribing, @u
           detail: String(format: "时长非法或超限（%.0fs / 上限 %.0fs）", duration, Self.maximumDurationSeconds)
         )
       }
-      // 先切好所有分片，再并发上传。
+      // 导出一片就上传一片，导出与上传重叠进行。
       //
-      // 原来是「导出一片 → 上传一片 → 等返回 → 再导出下一片」全串行：
-      // 13 分钟音频切 3 片，每片 ASR 几十秒，串起来就是几分钟，而分片之间
-      // 本来毫无依赖。导出针对的是已落地的本地文件，很快；真正的耗时在
-      // 逐片等服务端返回，所以并发这一段收益最大。
-      var plan: [(index: Int, url: URL)] = []
-      var start = 0.0
-      var index = 0
-      while start < duration {
-        try Task.checkCancellation()
-        let seconds = min(Self.chunkDurationSeconds, duration - start)
-        let chunkURL = workspace.appendingPathComponent("audio-\(index).m4a")
-        try await Self.exportAudioChunk(
-          asset: asset,
-          startSeconds: start,
-          durationSeconds: seconds,
-          outputURL: chunkURL
-        )
-        plan.append((index, chunkURL))
-        start += seconds
-        index += 1
-      }
-      let total = plan.count
-      progress?(0, total)
-
-      let ordered = try await withThrowingTaskGroup(
-        of: (Int, String).self
-      ) { group -> [Int: String] in
-        var results: [Int: String] = [:]
-        var next = 0
-        var completed = 0
-        // 限制在飞请求数：服务端普遍有速率限制，无节制并发反而更慢或被拒。
-        let limit = min(Self.maximumConcurrentChunkUploads, total)
-        func addTask(_ item: (index: Int, url: URL)) {
-          group.addTask {
-            let text = try await self.uploadChunk(
-              item.url,
-              endpoint: endpoint,
-              apiKey: credentials.apiKey,
-              model: trimmedModel,
-              language: language
-            )
-            try? FileManager.default.removeItem(at: item.url)
-            return (item.index, text)
+      // 原来是「所有分片先全部串行导出完，才进 TaskGroup 上传」：导出阶段
+      // 进度条一动不动，第一片明明已经就绪却干等最后一片切完。分片总数可以
+      // 直接由时长算出，所以进度条的分母从一开始就是准的，不必等导出结束。
+      let total = max(1, Int((duration / Self.chunkDurationSeconds).rounded(.up)))
+      let apiKey = credentials.apiKey
+      let ordered = try await AudioChunkPipeline.run(
+        total: total,
+        concurrencyLimit: Self.maximumConcurrentChunkUploads,
+        progress: progress,
+        export: { index in
+          let start = Double(index) * Self.chunkDurationSeconds
+          let seconds = max(0, min(Self.chunkDurationSeconds, duration - start))
+          let chunkURL = workspace.appendingPathComponent("audio-\(index).m4a")
+          try await Self.exportAudioChunk(
+            asset: asset,
+            startSeconds: start,
+            durationSeconds: seconds,
+            outputURL: chunkURL
+          )
+          return chunkURL
+        },
+        upload: { _, chunkURL in
+          defer { try? FileManager.default.removeItem(at: chunkURL) }
+          do {
+            return try await AudioChunkPipeline.retrying(
+              maximumAttempts: Self.maximumUploadAttempts,
+              isRetryable: { $0 is AudioChunkPipeline.RetryableFailure },
+              sleep: { seconds in
+                try await Task.sleep(nanoseconds: UInt64(max(0, seconds) * 1_000_000_000))
+              }
+            ) {
+              try await self.uploadChunk(
+                chunkURL,
+                endpoint: endpoint,
+                apiKey: apiKey,
+                model: trimmedModel,
+                language: language
+              )
+            }
+          } catch is AudioChunkPipeline.RetryableFailure {
+            // 重试耗尽后对外语义与以前完全一致，不新增对外可见的错误类型。
+            throw OnlineAudioTranscriptionError.responseRejected
           }
         }
-        while next < limit {
-          addTask(plan[next])
-          next += 1
-        }
-        while let (finishedIndex, text) = try await group.next() {
-          results[finishedIndex] = text
-          completed += 1
-          progress?(completed, total)
-          if next < total {
-            addTask(plan[next])
-            next += 1
-          }
-        }
-        return results
-      }
+      )
       // 结果按分片序号还原，绝不能用完成顺序——那会把文稿打乱。
       let texts = ordered.keys.sorted().compactMap { ordered[$0] }
       let combined = texts.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -170,8 +160,10 @@ public final class OpenAICompatibleAudioTranscriber: OnlineAudioTranscribing, @u
     model: String,
     language: String?
   ) async throws -> String {
-    let audio = try Data(contentsOf: fileURL, options: [.mappedIfSafe])
-    guard !audio.isEmpty, audio.count <= Self.maximumChunkBytes else {
+    // 只读文件大小属性，不再把整片音频读进内存（24MB × 并发 3 曾经翻倍占用）。
+    let attributes = try? FileManager.default.attributesOfItem(atPath: fileURL.path)
+    let audioBytes = (attributes?[.size] as? NSNumber)?.intValue ?? 0
+    guard audioBytes > 0, audioBytes <= Self.maximumChunkBytes else {
       throw OnlineAudioTranscriptionError.responseRejected
     }
     let boundary = "LinkDigest-\(UUID().uuidString)"
@@ -187,12 +179,25 @@ public final class OpenAICompatibleAudioTranscriber: OnlineAudioTranscribing, @u
     if let language = language?.trimmingCharacters(in: .whitespacesAndNewlines), !language.isEmpty {
       fields["language"] = language
     }
-    request.httpBody = Self.multipartBody(
-      boundary: boundary,
-      fields: fields,
-      audio: audio
-    )
-    let (data, response) = try await session.data(for: request)
+    // multipart 前缀 + 音频 + 后缀流式写到临时文件，再从磁盘上传。
+    let bodyURL = fileURL.deletingLastPathComponent()
+      .appendingPathComponent("upload-\(UUID().uuidString).multipart")
+    defer { try? FileManager.default.removeItem(at: bodyURL) }
+    do {
+      try Self.writeMultipartBody(
+        boundary: boundary,
+        fields: fields,
+        audioURL: fileURL,
+        outputURL: bodyURL
+      )
+    } catch {
+      // 落盘失败发生在本机，绝不能报成"服务拒绝"或"连接中断"。
+      let ns = error as NSError
+      throw OnlineAudioTranscriptionError.audioExtractionFailed(
+        detail: "上传体落盘失败 \(ns.domain) \(ns.code)"
+      )
+    }
+    let (data, response) = try await session.upload(for: request, fromFile: bodyURL)
     try Task.checkCancellation()
     guard let http = response as? HTTPURLResponse else {
       throw OnlineAudioTranscriptionError.networkInterrupted
@@ -203,6 +208,10 @@ public final class OpenAICompatibleAudioTranscriber: OnlineAudioTranscribing, @u
     if http.statusCode == 404 {
       throw OnlineAudioTranscriptionError.providerNotSupported
     }
+    // 429 限流和 5xx 是服务端的临时状态，交给重试；其余非 2xx 语义不变。
+    if http.statusCode == 429 || (500...599).contains(http.statusCode) {
+      throw AudioChunkPipeline.RetryableFailure(statusCode: http.statusCode)
+    }
     guard (200...299).contains(http.statusCode), data.count <= 10 * 1_024 * 1_024 else {
       throw OnlineAudioTranscriptionError.responseRejected
     }
@@ -212,21 +221,39 @@ public final class OpenAICompatibleAudioTranscriber: OnlineAudioTranscribing, @u
     return text
   }
 
-  private static func multipartBody(boundary: String, fields: [String: String], audio: Data) -> Data {
-    var body = Data()
+  /// 把 multipart 请求体流式写到磁盘：前缀、分块拷贝的音频、后缀。
+  /// 字节序列与原来的内存拼装完全一致，只是不再让整片音频驻留内存。
+  static func writeMultipartBody(
+    boundary: String,
+    fields: [String: String],
+    audioURL: URL,
+    outputURL: URL
+  ) throws {
+    var prefix = Data()
     for key in fields.keys.sorted() {
       guard let value = fields[key], !value.isEmpty else { continue }
-      body.append(Data("--\(boundary)\r\n".utf8))
-      body.append(Data("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n".utf8))
-      body.append(Data("\(value)\r\n".utf8))
+      prefix.append(Data("--\(boundary)\r\n".utf8))
+      prefix.append(Data("Content-Disposition: form-data; name=\"\(key)\"\r\n\r\n".utf8))
+      prefix.append(Data("\(value)\r\n".utf8))
     }
-    body.append(Data("--\(boundary)\r\n".utf8))
-    body.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".utf8))
-    body.append(Data("Content-Type: audio/mp4\r\n\r\n".utf8))
-    body.append(audio)
-    body.append(Data("\r\n".utf8))
-    body.append(Data("--\(boundary)--\r\n".utf8))
-    return body
+    prefix.append(Data("--\(boundary)\r\n".utf8))
+    prefix.append(Data("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".utf8))
+    prefix.append(Data("Content-Type: audio/mp4\r\n\r\n".utf8))
+    let suffix = Data("\r\n--\(boundary)--\r\n".utf8)
+
+    FileManager.default.createFile(atPath: outputURL.path, contents: nil)
+    let writer = try FileHandle(forWritingTo: outputURL)
+    defer { try? writer.close() }
+    let reader = try FileHandle(forReadingFrom: audioURL)
+    defer { try? reader.close() }
+    try writer.write(contentsOf: prefix)
+    while true {
+      guard let block = try reader.read(upToCount: Self.uploadCopyBufferBytes), !block.isEmpty else {
+        break
+      }
+      try writer.write(contentsOf: block)
+    }
+    try writer.write(contentsOf: suffix)
   }
 
   private static func remoteAsset(url: URL) -> AVURLAsset {
@@ -289,6 +316,89 @@ public final class OpenAICompatibleAudioTranscriber: OnlineAudioTranscribing, @u
   }
 
   private struct Response: Decodable { let text: String }
+}
+
+/// 分片流水线与上传重试的纯逻辑接缝。
+///
+/// 真实的 `transcribe()` 调用的就是这两个函数，测试通过注入假的
+/// export / upload / sleep 覆盖它们——不要在测试里另写一份等价逻辑，
+/// 那样测的是副本，改坏了生产代码测试照样绿。
+enum AudioChunkPipeline {
+  /// 服务端的临时状态（429 / 5xx）。只在模块内部流动，重试耗尽后由调用方
+  /// 翻译成对外的 `responseRejected`，不新增对外可见的错误类型。
+  struct RetryableFailure: Error, Sendable {
+    let statusCode: Int
+  }
+
+  /// 导出一片就上传一片：export 串行（同一个 AVAsset 并行导出没有收益），
+  /// upload 并发且在飞数不超过 `concurrencyLimit`，两者重叠进行。
+  /// 返回值以分片序号为键，调用方按序号还原，绝不能用完成顺序。
+  static func run(
+    total: Int,
+    concurrencyLimit: Int,
+    progress: (@Sendable (Int, Int) -> Void)?,
+    export: (Int) async throws -> URL,
+    upload: @escaping @Sendable (Int, URL) async throws -> String
+  ) async throws -> [Int: String] {
+    guard total > 0 else { return [:] }
+    let limit = max(1, min(concurrencyLimit, total))
+    // 分母一开始就是准的，第一片导出完进度条就能动。
+    progress?(0, total)
+    return try await withThrowingTaskGroup(of: (Int, String).self) { group in
+      var results: [Int: String] = [:]
+      var nextIndex = 0
+      var inFlight = 0
+      var completed = 0
+      while nextIndex < total || inFlight > 0 {
+        if nextIndex < total, inFlight < limit {
+          try Task.checkCancellation()
+          let index = nextIndex
+          let chunkURL = try await export(index)
+          group.addTask {
+            let text = try await upload(index, chunkURL)
+            return (index, text)
+          }
+          inFlight += 1
+          nextIndex += 1
+          continue
+        }
+        // 在飞数已满或全部导出完毕，先收一片再继续，天然形成背压。
+        guard let (finishedIndex, text) = try await group.next() else { break }
+        results[finishedIndex] = text
+        inFlight -= 1
+        completed += 1
+        progress?(completed, total)
+      }
+      return results
+    }
+  }
+
+  /// 指数退避 + 随机抖动的重试。`sleep` 可注入，测试传一个立即返回的实现，
+  /// 不要让测试真的等几秒。取消永远不重试。
+  static func retrying<Value>(
+    maximumAttempts: Int,
+    baseDelaySeconds: Double = 0.8,
+    isRetryable: (Error) -> Bool,
+    sleep: (Double) async throws -> Void,
+    operation: () async throws -> Value
+  ) async throws -> Value {
+    let attemptLimit = max(1, maximumAttempts)
+    var attempt = 1
+    while true {
+      do {
+        return try await operation()
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch {
+        guard attempt < attemptLimit, isRetryable(error) else { throw error }
+        try Task.checkCancellation()
+        // 抖动很关键：限流时几片同时醒来会再撞一次同样的墙。
+        let backoff = baseDelaySeconds * pow(2, Double(attempt - 1))
+        try await sleep(backoff + Double.random(in: 0...(backoff * 0.5)))
+        attempt += 1
+      }
+    }
+  }
 }
 
 private final class SameOriginAudioRedirectDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {

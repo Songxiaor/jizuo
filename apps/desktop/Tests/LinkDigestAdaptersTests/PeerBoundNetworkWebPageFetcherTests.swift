@@ -77,7 +77,10 @@ final class PeerBoundNetworkWebPageFetcherTests: XCTestCase {
 
     XCTAssertEqual(result.url, fixtureURL(host: "origin.test", path: "/final"))
     XCTAssertEqual(server.requestPaths, ["/start", "/final"])
-    XCTAssertEqual(recorder.hosts, ["origin.test", "origin.test", "origin.test", "origin.test"])
+    // 每一跳都重新过门禁，但同一跳里门禁判定和对端绑定共用**同一次**解析：
+    // 原来一跳查两遍（判定一遍、取对端再一遍），中间那个窗口正是 DNS rebinding
+    // 能钻的空子。两跳 = 两次解析。
+    XCTAssertEqual(recorder.hosts, ["origin.test", "origin.test"])
   }
 
   func testLocationOnNonRedirectResponseIsNotFollowed() async throws {
@@ -177,7 +180,7 @@ final class PeerBoundNetworkWebPageFetcherTests: XCTestCase {
 
     task.cancel()
     do {
-      _ = try await task.value
+      _ = try await raceWithFetchTimeout(seconds: 5) { try await task.value }
       XCTFail("cancelled fetch unexpectedly succeeded")
     } catch {
       XCTAssertTrue(error is CancellationError || (error as? ManualLinkError) != nil)

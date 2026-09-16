@@ -13,7 +13,7 @@ public final class SystemProxyWebPageFetcher: WebPageFetcher, SafeResourceFetchi
   private let trustAnchorsForTesting: [SecCertificate]
 
   public init(
-    policy: PublicWebURLPolicy = .init(resolver: SystemHostResolver().resolve),
+    policy: PublicWebURLPolicy = .init(asyncResolver: SystemHostResolver.asyncResolver()),
     limits: URLSessionWebPageFetcher.Limits = .init()
   ) {
     self.policy = policy
@@ -37,9 +37,16 @@ public final class SystemProxyWebPageFetcher: WebPageFetcher, SafeResourceFetchi
   #endif
 
   public func fetch(url: URL) async throws -> WebPageFetchResult {
-    let result = try await performFetch(url: url, headers: [:], byteLimit: limits.responseBytes, mode: .html)
-    guard case let .html(page) = result else { throw ManualLinkError.network }
-    return page
+    AppLog.info(.capture, "webpage_fetch_started", ["host": AppLog.host(url), "via": "system_proxy"])
+    do {
+      let result = try await performFetch(url: url, headers: [:], byteLimit: limits.responseBytes, mode: .html)
+      guard case let .html(page) = result else { throw ManualLinkError.network }
+      AppLog.info(.capture, "webpage_fetch_succeeded", ["host": AppLog.host(page.url), "via": "system_proxy"])
+      return page
+    } catch {
+      AppLog.error(.capture, "webpage_fetch_failed", code: "FETCH_FAILED", ["host": AppLog.host(url), "via": "system_proxy"])
+      throw error
+    }
   }
 
   public func fetchResource(_ request: SafeResourceRequest) async throws -> SafeResourceResponse {
@@ -61,7 +68,7 @@ public final class SystemProxyWebPageFetcher: WebPageFetcher, SafeResourceFetchi
     guard url.scheme?.lowercased() == "https" else {
       throw ManualLinkError.proxyHTTPSRequired
     }
-    _ = try policy.routingDecision(for: url)
+    _ = try await policy.routingDecision(for: url)
     let configuration = URLSessionConfiguration.ephemeral
     configuration.httpCookieStorage = nil
     configuration.httpShouldSetCookies = false
@@ -132,7 +139,10 @@ private final class SystemProxyFetchDelegate: NSObject, URLSessionDataDelegate, 
   private var redirects = 0
   private var continuation: CheckedContinuation<SystemProxyFetchOutcome, Error>?
   private var activeTask: URLSessionDataTask?
+  private let finishLock = NSLock()
   private var finished = false
+
+  private var isFinished: Bool { finishLock.withLock { finished } }
 
   init(
     policy: PublicWebURLPolicy,
@@ -177,14 +187,20 @@ private final class SystemProxyFetchDelegate: NSObject, URLSessionDataDelegate, 
       completionHandler(nil)
       return
     }
-    do {
-      try PeerBoundNetworkWebPageFetcher.validateRedirect(from: source, to: target)
-      guard allowsRedirectTarget(target) else { throw ManualLinkError.unsafeURL }
-      _ = try policy.routingDecision(for: target)
-      completionHandler(request)
-    } catch {
-      finish(.failure(ManualLinkError.unsafeURL))
-      completionHandler(nil)
+    // 重定向目标的门禁一字未改，只是把那次解析挪出 delegate 回调线程：
+    // URLSession 允许异步回 completionHandler，放行发生在解析完成之后。
+    let policy = policy
+    let allowsRedirectTarget = allowsRedirectTarget
+    Task { [weak self] in
+      do {
+        try PeerBoundNetworkWebPageFetcher.validateRedirect(from: source, to: target)
+        guard allowsRedirectTarget(target) else { throw ManualLinkError.unsafeURL }
+        _ = try await policy.routingDecision(for: target)
+        completionHandler(request)
+      } catch {
+        self?.finish(.failure(ManualLinkError.unsafeURL))
+        completionHandler(nil)
+      }
     }
   }
 
@@ -255,7 +271,7 @@ private final class SystemProxyFetchDelegate: NSObject, URLSessionDataDelegate, 
   }
 
   func urlSession(_: URLSession, dataTask _: URLSessionDataTask, didReceive chunk: Data) {
-    guard !finished else { return }
+    guard !isFinished else { return }
     data.append(chunk)
     if data.count > byteLimit {
       activeTask?.cancel()
@@ -264,7 +280,7 @@ private final class SystemProxyFetchDelegate: NSObject, URLSessionDataDelegate, 
   }
 
   func urlSession(_: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-    guard !finished else { return }
+    guard !isFinished else { return }
     activeTask = nil
     if let error {
       let ns = error as NSError
@@ -289,11 +305,13 @@ private final class SystemProxyFetchDelegate: NSObject, URLSessionDataDelegate, 
   }
 
   private func finish(_ result: Result<SystemProxyFetchOutcome, Error>) {
-    guard !finished else { return }
+    finishLock.lock()
+    guard !finished else { finishLock.unlock(); return }
     finished = true
-    activeTask = nil
     let continuation = continuation
     self.continuation = nil
+    finishLock.unlock()
+    activeTask = nil
     switch result {
     case let .success(value): continuation?.resume(returning: value)
     case let .failure(error): continuation?.resume(throwing: error)
