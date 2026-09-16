@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # LinkDigest read-only project health check. It reports problems but never fixes files.
-set -u
+set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)" || {
   echo "FAIL: cannot resolve project root" >&2

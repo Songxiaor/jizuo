@@ -138,6 +138,7 @@ INFO_PLIST_KEYS = {
     "LSMinimumSystemVersion",
     "NSHighResolutionCapable",
     "SUAutomaticallyUpdate",
+    "SUEnableAutomaticChecks",
     "SUFeedURL",
     "SUPublicEDKey",
 }
@@ -247,8 +248,8 @@ def load_app_config(root: Path | None = None) -> dict[str, Any]:
         "executable": "LinkDigestApp",
         "bundleIdentifier": "com.syc.linkdigest",
         "bundleIdentifierStatus": "engineering-candidate",
-        "shortVersion": "0.2.28",
-        "bundleVersion": "37",
+        "shortVersion": "0.2.29",
+        "bundleVersion": "38",
         "minimumMacOS": "15.0",
         "category": "public.app-category.productivity",
         "sparkleFeedURL": "https://github.com/Songxiaor/jizuo/releases/latest/download/appcast.xml",
@@ -1223,6 +1224,21 @@ def unsigned_signature_state(app: Path) -> dict[str, Any]:
     return {"mode": "unsigned", "teamID": None}
 
 
+def sparkle_info_keys(config: dict[str, Any], *, enable_automatic_checks: bool) -> dict[str, Any]:
+    """Sparkle keys shared by the release Info.plist and the debug-candidate overlay.
+
+    Release builds check for updates (`enable_automatic_checks=True`) but never
+    silently install (`SUAutomaticallyUpdate` stays false). Debug candidates
+    pass `False` so the first launch does not ask about update policy.
+    """
+    return {
+        "SUAutomaticallyUpdate": config["sparkleAutomaticallyUpdates"],
+        "SUEnableAutomaticChecks": enable_automatic_checks,
+        "SUFeedURL": config["sparkleFeedURL"],
+        "SUPublicEDKey": config["sparklePublicEDKey"],
+    }
+
+
 def info_plist(config: dict[str, Any]) -> dict[str, Any]:
     return {
         # App 的界面和文案以简体中文交付。显式声明支持语言，AppKit 的保存/打开
@@ -1247,9 +1263,7 @@ def info_plist(config: dict[str, Any]) -> dict[str, Any]:
         "LSApplicationCategoryType": config["category"],
         "LSMinimumSystemVersion": config["minimumMacOS"],
         "NSHighResolutionCapable": True,
-        "SUAutomaticallyUpdate": config["sparkleAutomaticallyUpdates"],
-        "SUFeedURL": config["sparkleFeedURL"],
-        "SUPublicEDKey": config["sparklePublicEDKey"],
+        **sparkle_info_keys(config, enable_automatic_checks=True),
     }
 
 

@@ -35,14 +35,14 @@
   → 详情展示：顶部属性、互动数据、正文和媒体都可见
 ```
 
-`extractCurrentPage` 与 `extractPageInIsolatedWorld` 是同一适配器的测试版和生产注入版，两份逻辑必须同步。只改其中一份，自动测试通过也不能算接入完成。
+生产注入走 `apps/browser-extension/entrypoints/extract-page.ts`，它直接调用同一份 `extractCurrentPage`。不要再维护一份 `extractPageInIsolatedWorld` 自包含拷贝：改抽取、清洗或平台分支，只改 `extractCurrentPage` 一处。
 
 ## 4. 每个平台的最低测试
 
 - 一个脱敏成功夹具：核心属性、正文、互动和媒体按预期交付。
 - 一个登录受限场景：给出可解释失败，不回退抓取整页外壳。
 - 一个平台变化场景：关键选择器缺失时省略未知字段，正文仍安全，不能串到相邻内容。
-- 测试版与生产注入版对同一夹具输出一致。
+- `extractCurrentPage` 对夹具的输出，就是生产注入会得到的输出。
 - 含图片的平台验证最佳图片 URL、CDN 请求头、本地缓存和详情展示；含视频的平台验证媒体分类与即时保存。
 
 ## 5. 真机完成条件

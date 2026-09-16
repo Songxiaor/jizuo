@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import base64
+import hashlib
 import importlib.util
 import os
 import plistlib
@@ -791,6 +792,14 @@ def main() -> int:
                     dmg, signing_identity, notary_keychain_profile
                 )
             outputs.append(dmg)
+
+    checksums = output_dir / "SHA256SUMS.txt"
+    checksum_lines = []
+    for artifact in sorted(outputs, key=lambda path: path.name):
+        digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+        checksum_lines.append(f"{digest}  {artifact.name}\n")
+    checksums.write_text("".join(checksum_lines), encoding="utf-8")
+    outputs.append(checksums)
 
     for artifact in outputs:
         size_mb = artifact.stat().st_size / 1024 / 1024

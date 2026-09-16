@@ -101,8 +101,8 @@ def main() -> int:
         "main must not read native-host.json with raw json.loads",
     )
     check(
-        'info["SUEnableAutomaticChecks"] = False' in source,
-        "debug candidate must suppress Sparkle's first-launch update-policy prompt",
+        "sparkle_info_keys(app_config, enable_automatic_checks=False)" in source,
+        "debug candidate must suppress Sparkle automatic checks via the shared helper",
     )
 
     print(f"build-debug-candidate-check: PASS ({TESTS} assertions)")

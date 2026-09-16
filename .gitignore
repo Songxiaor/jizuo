@@ -62,3 +62,9 @@ db-backups/
 # dev-suite 的本机运行状态（用量统计与知识库缓存），跟着工具生成，不进仓库
 .dev-suite-analytics/
 .kb-cache/
+
+# Empryo/agent 工作目录与本地记忆：工具状态，不是产品代码
+.empryo/
+.memory/
+# SwiftPM 偶发落在包根的编译产物
+*.swiftmodule

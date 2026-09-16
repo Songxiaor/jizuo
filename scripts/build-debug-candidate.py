@@ -234,7 +234,7 @@ def main() -> int:
         # Debug candidates are short-lived local verification artifacts. They
         # must not ask the tester to make a persistent update-policy choice or
         # contact the public release feed before the UI under test is visible.
-        info["SUEnableAutomaticChecks"] = False
+        info.update(release_unit.sparkle_info_keys(app_config, enable_automatic_checks=False))
         if args.isolated_data:
             info["LSEnvironment"] = {
                 "LINKDIGEST_SMOKE_APPLICATION_SUPPORT_ROOT": str(
