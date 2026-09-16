@@ -41,9 +41,10 @@ final class CreatorPersistenceTests: XCTestCase {
 
       let repository = try GRDBHistoryRepository.open(at: location)
       defer { try? repository.database.close() }
+      // 钉「跟着最新走」，不钉某个具体版本号——后者每加一次迁移就无谓地红一次。
       XCTAssertEqual(
         try repository.database.read { try Int.fetchOne($0, sql: "PRAGMA user_version") },
-        20
+        LocalDatabase.latestSchemaVersion
       )
       XCTAssertEqual(
         try repository.historyPage(limit: 10, after: nil).rows.map(\.canonicalURL),
@@ -215,6 +216,33 @@ final class CreatorPersistenceTests: XCTestCase {
       }
       XCTAssertEqual(try repository.navigationCounts().pinnedCreators.map(\.id), pinned)
       XCTAssertNil(try repository.creator(id: creator.id)?.pinnedRank)
+    }
+  }
+
+  func testDeletingCreatorKeepsSavedWorks() throws {
+    try withCreatorRepository { repository in
+      let creator = try repository.upsertCreator(creatorCommand(authorID: "MS4wLjABAAAA-rm", now: 1))
+      let saved = try repository.acceptCapture(.init(
+        envelope: capture(
+          requestID: "c-rm", key: "c-rm",
+          url: "https://www.douyin.com/video/7000000000000000300",
+          body: "rm body"
+        ),
+        receivedAtMilliseconds: 2
+      ))
+      try repository.attachCreatorWork(creatorID: creator.id, taskID: saved.taskID)
+      try repository.setCreatorPinned(creatorID: creator.id, pinned: true)
+      XCTAssertEqual(try repository.creator(id: creator.id)?.savedWorkCount, 1)
+
+      try repository.deleteCreator(creatorID: creator.id)
+
+      XCTAssertNil(try repository.creator(id: creator.id))
+      XCTAssertTrue(try repository.navigationCounts().pinnedCreators.isEmpty)
+      XCTAssertEqual(try repository.creatorPage(limit: 10, after: nil, searchText: "").rows.count, 0)
+      XCTAssertNotNil(try repository.detail(taskID: saved.taskID), "作品本身不能跟着博主一起没了")
+      XCTAssertThrowsError(try repository.deleteCreator(creatorID: creator.id)) { error in
+        XCTAssertEqual(error as? RepositoryFailure, .notFound)
+      }
     }
   }
 

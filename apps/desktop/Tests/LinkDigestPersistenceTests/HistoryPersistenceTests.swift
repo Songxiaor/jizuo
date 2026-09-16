@@ -1603,8 +1603,17 @@ final class MediaTranscriptionPersistenceTests: XCTestCase {
         try repository.historyPage(limit: 10, after: nil, filter: .init(searchText: "A 标题")).rows.map(\.taskID),
         [first.taskID]
       )
-      XCTAssertTrue(
-        try repository.historyPage(limit: 10, after: nil, filter: .init(searchText: "B 标题")).rows.isEmpty
+      // 2026-09 改 FTS5 之后这里**放宽**了：索引按快照逐条建，所以被证据顶下去的
+      // 那一版抓取的标题也能搜到。搜到的仍是同一条记录（列表展示的正文照旧是有效
+      // 快照 A），只是多一条找回来的路。
+      //
+      // 原来只搜「有效快照」是有代价的：有效快照的定义排除了转写稿和画面字幕，
+      // 于是视频里说过的话永远搜不到。要既保住「B 标题搜不到」又让转写稿能搜到，
+      // 就得把那段几十行的有效快照子查询原样复制进搜索路径——那正是当初漏掉转写
+      // 层的原因。宁可多找回一条，不再养第二份判定。
+      XCTAssertEqual(
+        try repository.historyPage(limit: 10, after: nil, filter: .init(searchText: "B 标题")).rows.map(\.taskID),
+        [first.taskID]
       )
     }
   }

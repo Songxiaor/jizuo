@@ -212,6 +212,8 @@ public struct FinishRunCommand: Sendable, Equatable {
 
 public protocol HistoryRepository: Sendable {
   var accessMode: HistoryRepositoryAccessMode { get }
+  /// 只读降级时给用户看的补充说明（升级失败时带备份路径）。可写时为 nil。
+  var readOnlyRecoveryHint: String? { get }
   func acceptCapture(_ command: AcceptCaptureCommand) throws -> AcceptCaptureResult
   func createRun(_ command: CreateRunCommand) throws -> CreateRunResult
   func markRunRunning(_ command: MarkRunRunningCommand) throws
@@ -231,6 +233,8 @@ public protocol HistoryRepository: Sendable {
   func attachCreatorWork(creatorID: CreatorID, taskID: TaskID) throws
   func attachCreatorWorks(creatorID: CreatorID, canonicalURLs: [String]) throws -> AttachCreatorWorksResult
   func setCreatorPinned(creatorID: CreatorID, pinned: Bool) throws
+  /// 只删博主本身和它与作品的关联；已保存的作品记录保留。
+  func deleteCreator(creatorID: CreatorID) throws
   func creatorPage(limit: Int, after cursor: CreatorPageCursor?, searchText: String) throws -> CreatorPage
   func creator(id: CreatorID) throws -> CreatorSummary?
   func detail(taskID: TaskID) throws -> HistoryDetailProjection
@@ -240,7 +244,29 @@ public protocol HistoryRepository: Sendable {
   func removeTag(normalizedName: String, from taskID: TaskID) throws
   func setFavorite(_ isFavorite: Bool, for taskID: TaskID) throws
   func deleteTask(taskID: TaskID) throws
+  /// **永久**删除：行、媒体文件和关联表一起清掉，不可撤销。
+  ///
+  /// 界面上的「删除」走 `moveToTrash`；这里是回收站里的「彻底删除」和 30 天
+  /// 自动清理用的那条路。
   func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult
+
+  // MARK: - 回收站
+
+  /// 放进回收站。记录还在，只是所有浏览、搜索、计数都看不到它了。
+  ///
+  /// 返回**真的被改动**的那些 id。请求集不等于完成集：已经在回收站里的、
+  /// 已经被 30 天清理掉的 id 都改不动 0 行，调用方把它们当成成功就会得到
+  /// 「行从界面消失、计数却没变、切走再回来它又出现」。
+  @discardableResult func moveToTrash(taskIDs: Set<TaskID>) throws -> [TaskID]
+  /// 从回收站拿回来。返回值语义同 `moveToTrash`。
+  @discardableResult func restoreFromTrash(taskIDs: Set<TaskID>) throws -> [TaskID]
+  /// 清掉进回收站超过 `olderThanDays` 天的记录，返回**永久删除**了几条。
+  ///
+  /// 内部复用 `deleteTasks`，媒体文件和关联表的清理逻辑因此只有一份——
+  /// 另写一条 `DELETE FROM tasks` 会留下一地没人认领的视频文件。
+  func purgeTrash(olderThanDays: Int) throws -> Int
+  /// 回收站里有几条。
+  func trashCount() throws -> Int
 
   func attachMedia(_ command: AttachMediaCommand) throws
   func mediaAsset(taskID: TaskID) throws -> MediaAsset?
@@ -264,6 +290,10 @@ public protocol HistoryRepository: Sendable {
   ) throws -> TranscriptionStatusUpdateResult
   func completeTaskTranscription(_ command: CompleteTaskTranscriptionCommand) throws -> CompleteTaskTranscriptionResult
   func isMediaContentReferenced(contentSHA256: String) throws -> Bool
+  /// `Media/` 目录治理用的只读清单：全库每个媒体文件一行，按「最近用到」升序。
+  ///
+  /// 孤儿扫描要拿它和目录里的文件做差集，容量淘汰要按它的顺序决定先删谁。
+  func mediaStorageInventory() throws -> [MediaStorageEntry]
   /// 用户手动校对后的转写文本原地写回该 snapshot；只允许修改正文，
   /// 不改 snapshot 身份、序号或来源标记。找不到匹配行时抛 `notFound`。
   func updateSnapshotBodyText(
@@ -367,6 +397,8 @@ public protocol HistoryRepository: Sendable {
 }
 
 public extension HistoryRepository {
+  var readOnlyRecoveryHint: String? { nil }
+
   /// Clipboard suggestions must fail closed when history cannot be queried.
   /// The production repository overrides this with an indexed exact lookup.
   func containsCanonicalURL(_: CanonicalURL) throws -> Bool { throw RepositoryFailure.unavailable }
@@ -390,6 +422,30 @@ public extension HistoryRepository {
     _ = taskIDs
     throw RepositoryFailure.unavailable
   }
+
+  /// 回收站是新增能力，旧测试替身不必被迫实现它。
+  ///
+  /// 写操作一律 throw 而不是静默成功：把「删除」当成功返回、实际什么都没发生，
+  /// 用户会以为东西已经进回收站了。
+  @discardableResult
+  func moveToTrash(taskIDs: Set<TaskID>) throws -> [TaskID] {
+    _ = taskIDs
+    throw RepositoryFailure.unavailable
+  }
+
+  @discardableResult
+  func restoreFromTrash(taskIDs: Set<TaskID>) throws -> [TaskID] {
+    _ = taskIDs
+    throw RepositoryFailure.unavailable
+  }
+
+  func purgeTrash(olderThanDays: Int) throws -> Int {
+    _ = olderThanDays
+    throw RepositoryFailure.unavailable
+  }
+
+  /// 读计数默认 0：回收站数字读不到时显示 0，比让整个侧边栏加载失败好。
+  func trashCount() throws -> Int { 0 }
 
   /// Read-only / unavailable repositories deliberately return an empty rail:
   /// navigation must never make an otherwise readable list fail to load.
@@ -415,6 +471,11 @@ public extension HistoryRepository {
   func setCreatorPinned(creatorID: CreatorID, pinned: Bool) throws {
     _ = creatorID
     _ = pinned
+    throw RepositoryFailure.unavailable
+  }
+
+  func deleteCreator(creatorID: CreatorID) throws {
+    _ = creatorID
     throw RepositoryFailure.unavailable
   }
 
@@ -450,6 +511,11 @@ public extension HistoryRepository {
     // 默认实现退回单条，保证未实现该方法的仓库不会静默漏删。
     try mediaAsset(taskID: taskID).map { [$0] } ?? []
   }
+
+  /// 默认空清单。返回空意味着「这个仓库不知道有哪些文件」，而孤儿判定是
+  /// 「目录里有、清单里没有」——所以调用方必须自己确认仓库真的实现了它，
+  /// 否则会把整个目录当成孤儿。`LocalMediaStore.scanOrphans` 因此要求显式传入清单。
+  func mediaStorageInventory() throws -> [MediaStorageEntry] { [] }
 
   func beginMediaTranscription(taskID: TaskID, mediaID: String) throws -> TranscriptionAttemptToken {
     _ = taskID

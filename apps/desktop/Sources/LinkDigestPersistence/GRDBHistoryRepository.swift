@@ -6,6 +6,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
   public let database: LocalDatabase
   private let fingerprinter: any CaptureFingerprinting
   public var accessMode: HistoryRepositoryAccessMode { database.accessMode }
+  public var readOnlyRecoveryHint: String? { database.readOnlyRecoveryHint }
 
   public init(database: LocalDatabase, fingerprinter: any CaptureFingerprinting = SHA256CaptureFingerprinter()) {
     self.database = database
@@ -47,13 +48,27 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
 
         let taskID: TaskID
         let taskWasCreated: Bool
-        if let raw: String = try String.fetchOne(db, sql: "SELECT id FROM tasks WHERE canonicalization_version = 1 AND canonical_url = ?", arguments: [canonical.value]) {
-          taskID = requiredID(raw); taskWasCreated = false
+        if let row = try Row.fetchOne(db, sql: "SELECT id, deleted_at_ms FROM tasks WHERE canonicalization_version = 1 AND canonical_url = ?", arguments: [canonical.value]) {
+          taskID = requiredID(row["id"]); taskWasCreated = false
+          // 同一条链接在回收站里又被抓一次 = 把它拿回来。
+          //
+          // `canonical_url` 上有 UNIQUE 约束，不能另建一行；而不复活的话，抓取
+          // 只会更新快照，记录仍然留在回收站里——用户看到的是「抓了，但什么都
+          // 没出现」，也不会知道它其实已经存在、只是被自己删过。
+          if row["deleted_at_ms"] != nil {
+            try db.execute(
+              sql: "UPDATE tasks SET deleted_at_ms = NULL, updated_at_ms = ? WHERE id = ?",
+              arguments: [command.receivedAtMilliseconds, taskID.rawValue]
+            )
+          }
         } else {
           taskID = TaskID(); taskWasCreated = true
           // Platform is first-class in the sidebar's 平台 section, so captures
           // no longer duplicate it as an automatic tag.
           try db.execute(sql: "INSERT INTO tasks (id, canonical_url, canonicalization_version, created_at_ms, updated_at_ms) VALUES (?, ?, 1, ?, ?)", arguments: [taskID.rawValue, canonical.value, command.receivedAtMilliseconds, command.receivedAtMilliseconds])
+          // `content_kind` / `normalized_host` 是从 canonical_url 派生的物化列，
+          // 建条目时必须跟着写；漏了这条记录就不会出现在侧边栏任何一格里。
+          try TaskClassificationSQL.refreshClassification(db, taskID: taskID.rawValue)
         }
 
         let snapshotID: ContentSnapshotID
@@ -128,9 +143,12 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     try database.read { db in
       // Do not page through history rows for clipboard dedupe: this is the
       // authoritative versioned canonical key and remains exact at any size.
+      //
+      // 回收站里的不算「已捕获」：否则用户删掉的内容会被当成已在库，剪贴板
+      // 重复检测静默跳过，重新抓取什么都不会发生。
       try Bool.fetchOne(
         db,
-        sql: "SELECT EXISTS(SELECT 1 FROM tasks WHERE canonicalization_version = ? AND canonical_url = ?)",
+        sql: "SELECT EXISTS(SELECT 1 FROM tasks WHERE canonicalization_version = ? AND canonical_url = ? AND deleted_at_ms IS NULL)",
         arguments: [CanonicalURL.version, canonicalURL.value]
       ) ?? false
     }
@@ -283,6 +301,27 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  /// 「这条有总结了吗」的**唯一**判据：存在一次 `summarize` 运行，跑完了，
+  /// 而且真的落下了产物。
+  ///
+  /// 三个条件缺一不可，而旧实现两处各缺一个，方向还相反：
+  ///
+  /// - 「待总结」原来问的是「有没有任何一次成功运行带产物」。翻译也是一次运行，
+  ///   所以**翻译过一次的条目就从「待总结」里消失了**——而它一句总结都没有。
+  ///   这是最难发现的一种：列表少了一条，没有任何提示。
+  /// - 行上的总结徽标原来问的是「有没有 summarize 跑完」，不看产物。跑完但产物
+  ///   为空（模型返回空、写入中断）时徽标照亮，点进去什么都没有。
+  ///
+  /// 收成一份，两处都指向它，口径不可能再分叉。
+  static let completedSummarySQL = """
+    SELECT 1
+    FROM runs summary_run
+    INNER JOIN artifacts summary_artifact ON summary_artifact.run_id = summary_run.id
+    WHERE summary_run.task_id = t.id
+      AND summary_run.kind = 'summarize'
+      AND summary_run.status = 'completed'
+    """
+
   public func historyPage(limit: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage {
     try historyPage(limit: limit, after: cursor, filter: .none)
   }
@@ -292,7 +331,19 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     return try database.read { db in
       var arguments: StatementArguments = []
       var predicates: [String] = []
-      let normalizedHost = normalizedTaskHostSQL(tableAlias: "t")
+      // 回收站是唯一「反过来看」的作用域：其余每一个都要求没被删。
+      //
+      // 判定放在最前面且**无条件**加进去，不跟着任何分支走：漏一条分支的表现是
+      // 「删掉的东西在某个筛选下又冒出来了」，而那种 bug 只有用户自己会撞上。
+      //
+      // 回收站按删除时间倒序。`moveToTrash` 会把 `updated_at_ms` 一并写成删除时刻，
+      // 所以这里沿用同一个 `updated_at_ms DESC` 排序和同一套游标，不需要第二种
+      // 分页逻辑——两个值在回收站里恒等。
+      if filter.scope.isTrashOnly {
+        predicates.append("t.deleted_at_ms IS NOT NULL")
+      } else {
+        predicates.append("t.deleted_at_ms IS NULL")
+      }
       if let cursor {
         predicates.append("(t.updated_at_ms < ? OR (t.updated_at_ms = ? AND t.id < ?))")
         arguments += [cursor.updatedAtMilliseconds, cursor.updatedAtMilliseconds, cursor.taskID.rawValue]
@@ -316,7 +367,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       }
       if !filter.hosts.isEmpty {
         let placeholders = Array(repeating: "?", count: filter.hosts.count).joined(separator: ", ")
-        predicates.append("\(normalizedHost) IN (\(placeholders))")
+        predicates.append("t.normalized_host IN (\(placeholders))")
         for host in filter.hosts { arguments += [host] }
       }
       if let creatorID = filter.creatorID {
@@ -333,48 +384,51 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       // 抓来的资料和自己写的东西混在一张列表里，找素材时会被自己的草稿打断，
       // 写东西时又要在一堆网页里翻。底层仍共用同一张表，所以标签、搜索、导出
       // 照常可用——分开的只是「看到什么」。
-      let notePredicate = "t.canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'"
+      //
+      // 判定改读 `tasks.content_kind`（Migration021 物化的列），语义与原来的前缀
+      // LIKE 逐条等价，但换成了索引可用的等值比较。
+      let notePredicate = "t.content_kind = '\(TaskClassificationSQL.noteKind)'"
       // 稿件是「过程」,比笔记藏得更深:除了 `.drafts` 自己,任何作用域都不显示它,
       // **搜索也不例外**。半成品被搜出来会和成品混在一起,而用户搜的是「我写过的
       // 那句话」,他要的是笔记或成品,不是某件创作中途的一版草稿。
-      let draftPredicate = "t.canonical_url LIKE '\(HistoryPlatformDisplay.draftURLPrefix)%'"
-      let workPredicate = "t.canonical_url LIKE '\(HistoryPlatformDisplay.workURLPrefix)%'"
-      if filter.scope.isDraftsOnly {
+      let draftPredicate = "t.content_kind = '\(TaskClassificationSQL.draftKind)'"
+      let workPredicate = "t.content_kind = '\(TaskClassificationSQL.workKind)'"
+      if filter.scope.isTrashOnly {
+        // 回收站不按内容类型分区：删掉的笔记、稿件、成品、抓取记录都在同一个
+        // 地方找回来。按类型再分一次，等于要求用户先想起「我删的那个是笔记还是
+        // 网页」——而他记得的只有「刚才手滑了」。
+      } else if filter.scope.isDraftsOnly {
         predicates.append(draftPredicate)
       } else if filter.scope.isWorksOnly {
         predicates.append(workPredicate)
       } else {
-        predicates.append("NOT (\(draftPredicate))")
+        predicates.append("t.content_kind <> '\(TaskClassificationSQL.draftKind)'")
         // 成品和笔记同样待遇:浏览时归自己那一区,搜索时可达——
         // 它是「我做出来的东西」,正是用户搜索时最想找到的。
         if filter.scope.isNotesOnly {
           predicates.append(notePredicate)
         } else if filter.searchText.isEmpty {
-          predicates.append("NOT (\(notePredicate))")
-          predicates.append("NOT (\(workPredicate))")
+          // 浏览态只剩「抓来的资料」，三条排除合成一条等值判定。
+          predicates.append("t.content_kind = '\(TaskClassificationSQL.captureKind)'")
         }
       }
       // 搜索时不排除笔记：分区是为了「浏览时互不打扰」，而搜索恰恰是用户
       // 想不起来东西在哪才用的。要求他先答对「这句话我是写在笔记里还是存的
       // 网页」才肯给结果，等于把搜索最该解决的问题反过来当成前提。
       switch filter.scope {
-      case .all, .notes, .drafts, .works:
+      case .all, .notes, .drafts, .works, .trash:
         break
       case .favorite:
         predicates.append("t.is_favorite = 1")
       case .recent:
-        predicates.append("t.updated_at_ms >= (unixepoch('now') - 604800) * 1000")
+        // 「最近」按**保存时间**算，不按更新时间。
+        //
+        // 原来用的是 `updated_at_ms`，而那个值会被总结、翻译、改标题、加标签、
+        // 收藏——甚至自动补标签——推到当下。结果是：去年存的一篇今天总结了一下，
+        // 它就出现在「最近」里，而用户心里的「最近」只有一个意思：最近存进来的。
+        predicates.append("t.created_at_ms >= (unixepoch('now') - 604800) * 1000")
       case .unsummarized:
-        predicates.append("""
-          NOT EXISTS (
-            SELECT 1
-            FROM runs successful_run
-            INNER JOIN artifacts successful_artifact ON successful_artifact.run_id = successful_run.id
-            WHERE successful_run.task_id = t.id
-              AND successful_run.status = 'completed'
-              AND length(successful_artifact.body_text) > 0
-          )
-          """)
+        predicates.append("NOT EXISTS (\(Self.completedSummarySQL))")
       }
       if !filter.searchText.isEmpty {
         let pattern = "%\(escapedLikePattern(filter.searchText))%"
@@ -384,17 +438,16 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         // 因为那篇标题里根本没有「盲派」。条目一多，搜不到正文等于搜索废掉。
         //
         // 作者不必单独加一列：抓取时写进正文 frontmatter 的 `author:` 行，
-        // 搜正文自然覆盖。多加一个 LIKE 只会多一次全表扫描而不多命中任何东西。
+        // 搜正文自然覆盖。多加一个判定只会多一次扫描而不多命中任何东西。
         //
-        // 用 LIKE 全扫而不是上 FTS：本机全部正文合计 185 KB，扫一遍是毫秒级。
-        // 涨到几十 MB 之前都不必引入虚拟表和它的索引维护。
-        predicates.append("""
-          (
-            t.canonical_url LIKE ? ESCAPE '\\'
-            OR COALESCE(es.title, '') LIKE ? ESCAPE '\\'
-            OR COALESCE(es.source_label, '') LIKE ? ESCAPE '\\'
-            OR COALESCE(es.body_text, '') LIKE ? ESCAPE '\\'
-            OR EXISTS (
+        // 正文和产物走 FTS5 trigram 索引（Migration022），不再对 5.3MB 文本逐字
+        // LIKE。trigram 的 MATCH 语义就是「包含这个子串」，和旧 LIKE 一致；三元组
+        // 建不起来的短词（1-2 个字）退回 LIKE 全扫。
+        //
+        // 覆盖面比旧实现**大一层**：旧查询只搜「有效快照」，而有效快照的定义排除了
+        // 转写稿和画面字幕，于是视频里说过的话永远搜不到。这里按快照逐条入索引。
+        let tagPredicate = """
+          EXISTS (
               SELECT 1 FROM task_tags stt
               INNER JOIN tags stg ON stg.id = stt.tag_id
               WHERE stt.task_id = t.id
@@ -403,20 +456,55 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
                   OR stg.normalized_name LIKE ? ESCAPE '\\'
                 )
             )
-            OR EXISTS (
-              -- 总结、翻译、整理稿也要能搜到：记住的常常是总结里的一句话，
-              -- 而不是原文的措辞。
-              --
-              -- 用 EXISTS 遍历这条目的全部产物，而不是复用外面那个 `a`——
-              -- 那个只 JOIN 最近一次运行，先总结后翻译时搜总结就会漏。
-              SELECT 1 FROM runs sr
-              INNER JOIN artifacts sa ON sa.run_id = sr.id
-              WHERE sr.task_id = t.id
-                AND sa.body_text LIKE ? ESCAPE '\\'
+          """
+        if filter.searchText.unicodeScalars.count >= Migration022.minimumTrigramLength {
+          // `IN (子查询)` 而不是相关子查询：FTS 只跑一次，结果物化成临时索引，
+          // 再和 tasks 对 id。写成 `EXISTS (... AND m.task_id = t.id)` 会退化成
+          // 每条 task 跑一次 MATCH。
+          predicates.append("""
+            (
+              t.canonical_url LIKE ? ESCAPE '\\'
+              OR t.id IN (
+                SELECT m.task_id
+                FROM task_search
+                INNER JOIN task_search_map m ON m.rowid_value = task_search.rowid
+                WHERE task_search MATCH ?
+              )
+              OR \(tagPredicate)
             )
-          )
-          """)
-        arguments += [pattern, pattern, pattern, pattern, pattern, pattern, pattern]
+            """)
+          arguments += [pattern, ftsSubstringPhrase(filter.searchText), pattern, pattern]
+        } else {
+          // 退回路径的覆盖面和 FTS 路径保持一致（同样按快照逐条看、同样包含
+          // 转写稿），否则「搜两个字」和「搜三个字」会给出口径不同的结果。
+          predicates.append("""
+            (
+              t.canonical_url LIKE ? ESCAPE '\\'
+              OR EXISTS (
+                SELECT 1 FROM content_snapshots ss
+                WHERE ss.task_id = t.id
+                  AND (
+                    COALESCE(ss.title, '') LIKE ? ESCAPE '\\'
+                    OR ss.source_label LIKE ? ESCAPE '\\'
+                    OR ss.body_text LIKE ? ESCAPE '\\'
+                  )
+              )
+              OR \(tagPredicate)
+              OR EXISTS (
+                -- 总结、翻译、整理稿也要能搜到：记住的常常是总结里的一句话，
+                -- 而不是原文的措辞。
+                --
+                -- 用 EXISTS 遍历这条目的全部产物，而不是复用外面那个 `a`——
+                -- 那个只 JOIN 最近一次运行，先总结后翻译时搜总结就会漏。
+                SELECT 1 FROM runs sr
+                INNER JOIN artifacts sa ON sa.run_id = sr.id
+                WHERE sr.task_id = t.id
+                  AND sa.body_text LIKE ? ESCAPE '\\'
+              )
+            )
+            """)
+          arguments += [pattern, pattern, pattern, pattern, pattern, pattern, pattern]
+        }
       }
       let predicate = predicates.isEmpty ? "" : "WHERE \(predicates.joined(separator: " AND "))"
       arguments += [bounded]
@@ -436,7 +524,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
             EXISTS(SELECT 1 FROM capture_deliveries cd WHERE cd.task_id = t.id AND cd.capture_contract_version = 2)
             OR EXISTS(SELECT 1 FROM media_assets ma WHERE ma.task_id = t.id)
           ) AS has_media,
-          EXISTS(SELECT 1 FROM runs sr WHERE sr.task_id = t.id AND sr.kind = 'summarize' AND sr.status = 'completed') AS has_summary,
+          EXISTS(\(Self.completedSummarySQL)) AS has_summary,
           EXISTS(SELECT 1 FROM task_mind_maps mm WHERE mm.task_id = t.id) AS has_mind_map
         FROM tasks t
         LEFT JOIN content_snapshots es ON es.task_id = t.id AND es.id = (
@@ -496,43 +584,42 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     try database.read { db in
       // 笔记是独立区域，所有"输入侧"的计数都要把它排除，否则「全部 10」里
       // 混着自己写的草稿，数字对不上用户在列表里看到的东西。
-      let isNote = "canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'"
-      let isDraft = "canonical_url LIKE '\(HistoryPlatformDisplay.draftURLPrefix)%'"
-      let isWork = "canonical_url LIKE '\(HistoryPlatformDisplay.workURLPrefix)%'"
-      // 「抓来的资料」= 既不是笔记也不是稿件。把这个判据合成一处,
-      // 而不是在每条计数后面各叠一次 AND NOT——那样加第三种内容时
-      // 又要逐条改,漏一条就是一个对不上的数字。
-      let isCaptured = "NOT (\(isNote)) AND NOT (\(isDraft)) AND NOT (\(isWork))"
+      //
+      // 判定全部落在 `tasks.content_kind` / `tasks.normalized_host` 上（Migration021
+      // 物化的两列）。以前这九条查询各自现算前缀 LIKE 和那个几百字符的 host CASE，
+      // 每开一次侧边栏就把 tasks 全表按行求值几十遍。
+      // 放进回收站的一律不计数：数字和列表必须说同一件事，否则「全部 10」点进去
+      // 只有 8 条，用户会以为列表坏了。
+      let isLive = "deleted_at_ms IS NULL"
+      let isNote = "\(isLive) AND content_kind = '\(TaskClassificationSQL.noteKind)'"
+      let isWork = "\(isLive) AND content_kind = '\(TaskClassificationSQL.workKind)'"
+      // 「抓来的资料」= 既不是笔记也不是稿件也不是成品。以前要三条 NOT 叠起来，
+      // 现在是一次等值比较，而且走 idx_tasks_kind_order。
+      let isCaptured = "\(isLive) AND content_kind = '\(TaskClassificationSQL.captureKind)'"
       let notes = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isNote)") ?? 0
       let works = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isWork)") ?? 0
       let all = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured)") ?? 0
+      // 「最近」= 最近 7 天**存进来的**，与列表同一口径（见 historyPage 里的注释）。
       let recent = try Int.fetchOne(
         db,
-        sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured) AND updated_at_ms >= (unixepoch('now') - 604800) * 1000"
+        sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured) AND created_at_ms >= (unixepoch('now') - 604800) * 1000"
       ) ?? 0
       let unsummarized = try Int.fetchOne(db, sql: """
         SELECT COUNT(*)
         FROM tasks t
-        WHERE NOT (t.\(isNote)) AND NOT (t.\(isDraft)) AND NOT (t.\(isWork)) AND NOT EXISTS (
-          SELECT 1
-          FROM runs successful_run
-          INNER JOIN artifacts successful_artifact ON successful_artifact.run_id = successful_run.id
-          WHERE successful_run.task_id = t.id
-            AND successful_run.status = 'completed'
-            AND length(successful_artifact.body_text) > 0
-        )
+        WHERE \(isCaptured) AND NOT EXISTS (\(Self.completedSummarySQL))
         """) ?? 0
       let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured) AND is_favorite = 1") ?? 0
+      let trash = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE deleted_at_ms IS NOT NULL") ?? 0
 
-      let hostExpression = normalizedTaskHostSQL(tableAlias: "t")
       let platforms = try Row.fetchAll(db, sql: """
-        SELECT \(hostExpression) AS host, COUNT(*) AS count
+        SELECT t.normalized_host AS host, COUNT(*) AS count
         FROM tasks t
-        WHERE \(hostExpression) <> '' AND NOT (t.\(isNote)) AND NOT (t.\(isDraft)) AND NOT (t.\(isWork))
-        GROUP BY \(hostExpression)
+        WHERE t.normalized_host <> '' AND \(isCaptured)
+        GROUP BY t.normalized_host
         ORDER BY count DESC, host COLLATE NOCASE ASC
         """).compactMap { row -> HistoryNavigationPlatform? in
-          let host: String = row["host"]
+          let host: String = row["host"] ?? ""
           let count: Int = row["count"]
           return host.isEmpty ? nil : .init(host: host, count: count)
         }
@@ -540,6 +627,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         SELECT tag.display_name, tag.normalized_name, COUNT(DISTINCT tt.task_id) AS count
         FROM tags tag
         INNER JOIN task_tags tt ON tt.tag_id = tag.id
+        INNER JOIN tasks tsk ON tsk.id = tt.task_id AND tsk.deleted_at_ms IS NULL
         GROUP BY tag.id, tag.display_name, tag.normalized_name
         ORDER BY count DESC, tag.normalized_name COLLATE NOCASE ASC
         """).compactMap { row -> HistoryNavigationTag? in
@@ -560,7 +648,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       )
       return .init(
         all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, notes: notes, works: works,
-        platforms: platforms, tags: tags, creatorCount: creatorCount, pinnedCreators: pinnedCreators
+        trash: trash, platforms: platforms, tags: tags, creatorCount: creatorCount, pinnedCreators: pinnedCreators
       )
     }
   }
@@ -757,6 +845,15 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  public func deleteCreator(creatorID: CreatorID) throws {
+    try database.write { db in
+      // creator_works 对 creators 是 ON DELETE CASCADE，关联随博主一起清掉；
+      // tasks 里的作品本身不动，用户仍能在资料库里找到它们。
+      try db.execute(sql: "DELETE FROM creators WHERE id = ?", arguments: [creatorID.rawValue])
+      guard db.changesCount > 0 else { throw RepositoryFailure.notFound }
+    }
+  }
+
   public func creator(id: CreatorID) throws -> CreatorSummary? {
     try database.read { db in
       try loadCreatorSummaries(
@@ -851,6 +948,84 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  // MARK: - 回收站
+
+  @discardableResult
+  public func moveToTrash(taskIDs: Set<TaskID>) throws -> [TaskID] {
+    guard !taskIDs.isEmpty else { throw RepositoryFailure.invalidInput }
+    let now = Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+    return try database.write { db in
+      var moved: [TaskID] = []
+      for taskID in taskIDs.sorted(by: { $0.rawValue < $1.rawValue }) {
+        // `updated_at_ms` 一并写成删除时刻，回收站因此可以沿用列表那套
+        // 「按 updated_at_ms 倒序 + 同一个游标」的分页，不需要第二种分页逻辑。
+        // 这也确实是一次修改，把它记成修改时间并不勉强。
+        //
+        // 已经在回收站里的不重新盖时间：重复调用不该把它的「删除时间」推到现在，
+        // 否则 30 天自动清理会被反复推迟。
+        try db.execute(
+          sql: """
+            UPDATE tasks SET deleted_at_ms = ?, updated_at_ms = ?
+            WHERE id = ? AND deleted_at_ms IS NULL
+            """,
+          arguments: [now, now, taskID.rawValue]
+        )
+        // 影响 0 行 = 它已经在回收站里，或已经被 30 天清理掉。两者都不是
+        // 「这次删掉了」，不能算进返回值：调用方看到的就是几行消失、计数却没变。
+        if db.changesCount > 0 { moved.append(taskID) }
+      }
+      return moved
+    }
+  }
+
+  @discardableResult
+  public func restoreFromTrash(taskIDs: Set<TaskID>) throws -> [TaskID] {
+    guard !taskIDs.isEmpty else { throw RepositoryFailure.invalidInput }
+    let now = Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+    return try database.write { db in
+      var restored: [TaskID] = []
+      for taskID in taskIDs.sorted(by: { $0.rawValue < $1.rawValue }) {
+        // 恢复后 `updated_at_ms` 记成此刻：刚捞回来的东西出现在列表最前面，
+        // 用户一眼就能确认「它回来了」。`created_at_ms`（保存时间）不动，
+        // 所以「最近」的口径不会被恢复动作污染。
+        try db.execute(
+          sql: """
+            UPDATE tasks SET deleted_at_ms = NULL, updated_at_ms = ?
+            WHERE id = ? AND deleted_at_ms IS NOT NULL
+            """,
+          arguments: [now, taskID.rawValue]
+        )
+        // 同上：已经不在回收站里的 id 改不动任何行，不能算成「已恢复」。
+        if db.changesCount > 0 { restored.append(taskID) }
+      }
+      return restored
+    }
+  }
+
+  public func purgeTrash(olderThanDays: Int) throws -> Int {
+    guard olderThanDays >= 0 else { throw RepositoryFailure.invalidInput }
+    let cutoff = Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+      - Int64(olderThanDays) * 86_400_000
+    let expired: [TaskID] = try database.read { db in
+      try String.fetchAll(
+        db,
+        sql: "SELECT id FROM tasks WHERE deleted_at_ms IS NOT NULL AND deleted_at_ms <= ?",
+        arguments: [cutoff]
+      ).compactMap(TaskID.init)
+    }
+    guard !expired.isEmpty else { return 0 }
+    // 复用 `deleteTasks` 而不是另写一条 DELETE：媒体文件的清理、关联表的
+    // CASCADE、孤儿标签的回收全挂在那条路径上。这里另起一条，磁盘上就会
+    // 慢慢堆起一批没人认领的视频文件，而且没有任何清扫器会再发现它们。
+    return try deleteTasks(taskIDs: Set(expired)).deletedTaskIDs.count
+  }
+
+  public func trashCount() throws -> Int {
+    try database.read { db in
+      try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE deleted_at_ms IS NOT NULL") ?? 0
+    }
+  }
+
   public func attachMedia(_ command: AttachMediaCommand) throws {
     let asset = command.asset
     guard asset.transcriptionStatus == .none else {
@@ -933,6 +1108,34 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
 
   /// 该任务名下**全部**媒体资产。删除任务时必须用它而不是 `mediaAsset(taskID:)`：
   /// 后者只取最新一条，其余文件会变成没人能发现的孤儿。
+  /// `Media/` 目录治理用的只读清单。
+  ///
+  /// 按「最近用到」升序返回：容量淘汰照这个顺序从头删，孤儿扫描只用到路径集合。
+  /// 库里没有单独的「最后播放时间」列，取资产落库时间和条目更新时间里较晚的那个
+  /// 当近似——打开、改标题、加标签、重新转写都会推 `tasks.updated_at_ms`。
+  public func mediaStorageInventory() throws -> [MediaStorageEntry] {
+    try database.read { db in
+      try Row.fetchAll(db, sql: """
+        SELECT m.id AS id, m.task_id AS task_id, m.relative_path AS relative_path,
+          m.byte_size AS byte_size,
+          (m.file_bookmark IS NOT NULL) AS uses_bookmark,
+          MAX(m.created_at_ms, t.updated_at_ms) AS last_used_ms
+        FROM media_assets m
+        INNER JOIN tasks t ON t.id = m.task_id
+        ORDER BY last_used_ms ASC, m.id ASC
+        """).map { row in
+        MediaStorageEntry(
+          mediaID: row["id"],
+          taskID: requiredID(row["task_id"]),
+          relativePath: row["relative_path"],
+          usesUserSelectedFile: (row["uses_bookmark"] as Int? ?? 0) != 0,
+          byteSize: row["byte_size"],
+          lastUsedMilliseconds: row["last_used_ms"]
+        )
+      }
+    }
+  }
+
   public func mediaAssets(taskID: TaskID) throws -> [MediaAsset] {
     try database.read { db in
       try Row.fetchAll(
@@ -1392,7 +1595,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     FROM tasks t
     INNER JOIN content_snapshots s ON s.task_id = t.id
       AND s.sequence = (SELECT MAX(sequence) FROM content_snapshots x WHERE x.task_id = t.id)
-    WHERE t.canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'
+    WHERE t.deleted_at_ms IS NULL
+      AND t.content_kind = '\(TaskClassificationSQL.noteKind)'
     """
 
   // MARK: - 工作台
@@ -1625,6 +1829,9 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         arguments: [workURL, finishedAtMilliseconds, taskID.rawValue]
       )
       guard db.changesCount == 1 else { throw RepositoryFailure.notFound }
+      // 换了 canonical_url 就换了内容类型：稿件在这一刻变成成品，派生列要同步，
+      // 否则它会继续以稿件身份被各处排除。
+      try TaskClassificationSQL.refreshClassification(db, taskID: taskID.rawValue)
       // snapshot 的来源标记也要跟着变,否则详情页仍按稿件渲染。
       try db.execute(sql: """
         UPDATE content_snapshots
@@ -1727,7 +1934,9 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
   public func recallMaterials(lane: TopicRecall.Lane, now: Int64) throws -> [PieceMaterial] {
     let range = TopicRecall.range(for: lane.window, now: now)
     return try database.read { db in
-      var conditions = ["t.updated_at_ms BETWEEN ? AND ?"]
+      // 放进回收站的不当素材：用户刚把它扔掉，第二天选题板又拿它来出题，
+      // 是那种「系统没在听」的体验。
+      var conditions = ["t.deleted_at_ms IS NULL", "t.updated_at_ms BETWEEN ? AND ?"]
       var arguments: [DatabaseValueConvertible] = [range.from, range.through]
 
       // 稿件和成品都不能当素材：它们是这套系统自己的产物，喂回去只会让模型
@@ -1741,10 +1950,12 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       // 前缀取自 `HistoryPlatformDisplay`，和历史列表判定笔记/稿件/成品用的是
       // 同一组常量；这里原来用 `CanonicalURL.draftScheme` 手工拼冒号，值虽相同
       // 却是第二个来源，改一处漏一处的经典形状。
-      conditions.append("t.canonical_url NOT LIKE ?")
-      arguments.append("\(HistoryPlatformDisplay.draftURLPrefix)%")
-      conditions.append("t.canonical_url NOT LIKE ?")
-      arguments.append("\(HistoryPlatformDisplay.workURLPrefix)%")
+      //
+      // 判定改读 `tasks.content_kind`（Migration021 物化的列）：同一组前缀规则，
+      // 换成索引可用的等值比较，不再对每行跑两次前缀 LIKE。
+      conditions.append("t.content_kind NOT IN (?, ?)")
+      arguments.append(TaskClassificationSQL.draftKind)
+      arguments.append(TaskClassificationSQL.workKind)
 
       if !lane.tags.isEmpty {
         let placeholders = lane.tags.map { _ in "?" }.joined(separator: ", ")
@@ -2174,7 +2385,12 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     c.id, c.platform, c.author_id, c.profile_url, c.display_name, c.avatar_url, c.pinned_rank,
     c.created_at_ms, c.updated_at_ms,
     (
-      SELECT COUNT(*) FROM creator_works w WHERE w.creator_id = c.id
+      -- 放进回收站的作品不计入「已保存 N 篇」：博主卡上的数字必须和点进去
+      -- 看到的列表一致。
+      SELECT COUNT(*)
+      FROM creator_works w
+      INNER JOIN tasks wt ON wt.id = w.task_id AND wt.deleted_at_ms IS NULL
+      WHERE w.creator_id = c.id
     ) AS saved_work_count
     """
 
@@ -2457,50 +2673,20 @@ private func boundedPreview(from data: Data, scalarLimit: Int) -> String {
   return ""
 }
 
+/// 把用户输入包成一个 FTS5 短语。
+///
+/// trigram 索引上的短语匹配就是子串匹配，所以整串引起来即可；内部的双引号按
+/// FTS5 的规矩翻倍转义。不引号的话 `-` `*` `:` 这些会被当成查询语法，用户搜
+/// 「a-b」会变成「a NOT b」这种他完全没想要的东西。
+func ftsSubstringPhrase(_ value: String) -> String {
+  "\"\(value.replacingOccurrences(of: "\"", with: "\"\""))\""
+}
+
 private func escapedLikePattern(_ value: String) -> String {
   value
     .replacingOccurrences(of: "\\", with: "\\\\")
     .replacingOccurrences(of: "%", with: "\\%")
     .replacingOccurrences(of: "_", with: "\\_")
-}
-
-/// SQLite has no URL-host function. URLs stored in `tasks` have already passed
-/// the public-web admission policy, so this expression only extracts and
-/// normalizes that durable canonical host for grouping/filtering; it never
-/// admits a URL or changes network policy.
-private func normalizedTaskHostSQL(tableAlias: String) -> String {
-  let raw = "lower(substr(substr(\(tableAlias).canonical_url, instr(\(tableAlias).canonical_url, '://') + 3), 1, instr(substr(\(tableAlias).canonical_url, instr(\(tableAlias).canonical_url, '://') + 3) || '/', '/') - 1))"
-  let normalized = """
-    CASE
-      WHEN \(tableAlias).canonical_url LIKE '\(HistoryPlatformDisplay.noteURLPrefix)%'
-        THEN '\(HistoryPlatformDisplay.noteHost)'
-      WHEN \(tableAlias).canonical_url LIKE '\(HistoryPlatformDisplay.draftURLPrefix)%'
-        THEN '\(HistoryPlatformDisplay.draftHost)'
-      WHEN \(tableAlias).canonical_url LIKE '\(HistoryPlatformDisplay.workURLPrefix)%'
-        THEN '\(HistoryPlatformDisplay.workHost)'
-      WHEN \(raw) LIKE 'www.%' THEN substr(\(raw), 5)
-      WHEN \(raw) LIKE 'www2.%' THEN substr(\(raw), 6)
-      WHEN \(raw) LIKE 'm.%' THEN substr(\(raw), 3)
-      WHEN \(raw) LIKE 'mobile.%' THEN substr(\(raw), 8)
-      WHEN \(raw) LIKE 'amp.%' THEN substr(\(raw), 5)
-      ELSE \(raw)
-    END
-    """
-  let cases = HistoryPlatformRegistry.platforms.flatMap { platform -> [String] in
-    var result: [String] = []
-    if !platform.exactHosts.isEmpty {
-      let hosts = platform.exactHosts
-        .map { "'\($0.replacingOccurrences(of: "'", with: "''"))'" }
-        .joined(separator: ", ")
-      result.append("WHEN \(normalized) IN (\(hosts)) THEN '\(platform.canonicalHost)'")
-    }
-    for suffix in platform.suffixHosts {
-      let safe = suffix.replacingOccurrences(of: "'", with: "''")
-      result.append("WHEN \(normalized) = '\(safe)' OR \(normalized) LIKE '%.\(safe)' THEN '\(platform.canonicalHost)'")
-    }
-    return result
-  }.joined(separator: "\n")
-  return "CASE\n\(cases)\nELSE \(normalized)\nEND"
 }
 
 private func requiredID<ID: HistoryIdentifier>(_ raw: String) -> ID { ID(raw)! }
@@ -2811,6 +2997,46 @@ extension GRDBHistoryRepository: TranscriptParagraphStoring {
   public func deleteTranscriptParagraphs(snapshotID: String) throws {
     try database.write { db in
       try db.execute(sql: "DELETE FROM transcript_paragraphs WHERE snapshot_id = ?", arguments: [snapshotID])
+    }
+  }
+}
+
+// MARK: - 阅读进度
+
+/// 「这篇读到哪了」从 UserDefaults 搬进库（Migration023）。
+///
+/// 搬家的三个理由都在 Migration023 的注释里；这里只补一条实现上的选择：
+/// 写入用 UPSERT 而不是先查后写。阅读位置是滚动时高频写的东西，两步操作在
+/// 多窗口下会互相覆盖，而 UPSERT 是单条语句、原子的。
+extension GRDBHistoryRepository: ReadingProgressStoring {
+  public func readingPosition(taskID: TaskID) throws -> Double? {
+    try database.read { db in
+      try Double.fetchOne(
+        db,
+        sql: "SELECT position FROM reading_progress WHERE task_id = ?",
+        arguments: [taskID.rawValue]
+      )
+    }
+  }
+
+  public func saveReadingPosition(_ position: Double, taskID: TaskID, updatedAtMilliseconds: Int64) throws {
+    let clamped = min(max(position, 0), 1)
+    try database.write { db in
+      // 外键指向 tasks：记录不在了就没有「读到哪」可言，静默跳过而不是报错——
+      // 这条路径是滚动时触发的，报错会变成一串没人处理的噪音。
+      guard try Int.fetchOne(db, sql: "SELECT 1 FROM tasks WHERE id = ?", arguments: [taskID.rawValue]) == 1 else {
+        return
+      }
+      try db.execute(
+        sql: """
+          INSERT INTO reading_progress (task_id, position, updated_at_ms)
+          VALUES (?, ?, ?)
+          ON CONFLICT(task_id) DO UPDATE SET
+            position = excluded.position,
+            updated_at_ms = excluded.updated_at_ms
+          """,
+        arguments: [taskID.rawValue, clamped, updatedAtMilliseconds]
+      )
     }
   }
 }

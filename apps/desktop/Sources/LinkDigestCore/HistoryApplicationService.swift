@@ -13,6 +13,7 @@ public struct HistoryApplicationService: Sendable {
   var repositoryAsMindMapStore: (any MindMapStoring)? { repository as? MindMapStoring }
   var repositoryAsTokenUsageStore: (any TokenUsageRecording)? { repository as? TokenUsageRecording }
   var repositoryAsAnnotationStore: (any AnnotationStoring)? { repository as? AnnotationStoring }
+  var repositoryAsReadingProgressStore: (any ReadingProgressStoring)? { repository as? ReadingProgressStoring }
 
   public func acceptCapture(_ command: AcceptCaptureCommand) throws -> AcceptCaptureResult {
     try repository.acceptCapture(command)
@@ -48,6 +49,9 @@ public struct HistoryApplicationService: Sendable {
   public func setCreatorPinned(creatorID: CreatorID, pinned: Bool) throws {
     try repository.setCreatorPinned(creatorID: creatorID, pinned: pinned)
   }
+  public func deleteCreator(creatorID: CreatorID) throws {
+    try repository.deleteCreator(creatorID: creatorID)
+  }
   public func creatorPage(limit: Int = 50, after cursor: CreatorPageCursor? = nil, searchText: String = "") throws -> CreatorPage {
     try repository.creatorPage(limit: limit, after: cursor, searchText: searchText)
   }
@@ -62,6 +66,27 @@ public struct HistoryApplicationService: Sendable {
   public func deleteTasks(taskIDs: Set<TaskID>) throws -> BatchDeleteResult {
     try repository.deleteTasks(taskIDs: taskIDs)
   }
+
+  // MARK: - 回收站
+
+  /// 返回真的被改动的 id：请求集里已经在回收站的、或已被清理掉的记录改不动，
+  /// 调用方必须按返回值判断，不能把请求当成结果。
+  @discardableResult
+  public func moveToTrash(taskIDs: Set<TaskID>) throws -> [TaskID] {
+    try repository.moveToTrash(taskIDs: taskIDs)
+  }
+
+  @discardableResult
+  public func restoreFromTrash(taskIDs: Set<TaskID>) throws -> [TaskID] {
+    try repository.restoreFromTrash(taskIDs: taskIDs)
+  }
+
+  @discardableResult
+  public func purgeTrash(olderThanDays: Int) throws -> Int {
+    try repository.purgeTrash(olderThanDays: olderThanDays)
+  }
+
+  public func trashCount() throws -> Int { try repository.trashCount() }
 
   public func attachMedia(_ command: AttachMediaCommand) throws { try repository.attachMedia(command) }
   public func updateSnapshotBodyText(
@@ -191,6 +216,11 @@ public struct HistoryApplicationService: Sendable {
   /// 删掉、磁盘文件却没人清，成为永久孤儿——而且没有任何清扫器会再发现它们。
   public func mediaRelativePaths(taskID: TaskID) throws -> [String] {
     try repository.mediaRelativePaths(taskID: taskID)
+  }
+
+  /// `Media/` 目录治理用的只读清单。设置页的「扫描孤儿文件」和容量淘汰都读它。
+  public func mediaStorageInventory() throws -> [MediaStorageEntry] {
+    try repository.mediaStorageInventory()
   }
 
   public func mediaAssets(taskID: TaskID) throws -> [MediaAsset] {

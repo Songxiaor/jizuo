@@ -45,12 +45,36 @@ public enum HistoryListScope: String, Sendable, Equatable, CaseIterable {
   /// 输出:已完成的作品。这是三个模块里的第三个,装的是「我做出来的东西」。
   case works
 
+  /// 回收站：被删掉、还没到期清掉的那些。
+  ///
+  /// 它和其它作用域是**反向**关系：其余每一个都要求「没被删」，只有这里要求
+  /// 「被删了」。所以它不是又一个筛选条件，而是同一张表的另一面。
+  ///
+  /// 排序按删除时间倒序（最近扔进去的在最上面），不按更新时间——用户来回收站
+  /// 是因为「刚才删错了」，他要找的东西一定在最前面。
+  case trash
+
+  /// 该作用域是否只看回收站。
+  public var isTrashOnly: Bool { self == .trash }
+
   /// 该作用域是否只看笔记。
   public var isNotesOnly: Bool { self == .notes }
   /// 该作用域是否只看稿件。
   public var isDraftsOnly: Bool { self == .drafts }
   /// 该作用域是否只看成品。
   public var isWorksOnly: Bool { self == .works }
+}
+
+/// 回收站保留多久。
+///
+/// 30 天：这个数字要同时满足两件事——足够长到「上周删的，这周发现还要用」还能
+/// 找回来，又足够短到回收站不会变成第二个永不清理的仓库。系统废纸篓、相册
+/// 「最近删除」用的也是同一量级，用户对它已经有直觉，不需要再解释一遍。
+///
+/// 收成常量而不是在启动那行里写 `30`：这个数字会同时出现在启动清理和界面文案
+/// 里，两处各写一个字面量就是「界面写着 30 天、实际按 7 天清」的来源。
+public enum HistoryTrashPolicy {
+  public static let retentionDays = 30
 }
 
 /// The small navigation rail is fed by database aggregation, not by a loaded
@@ -79,6 +103,8 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   public let notes: Int
   /// 已完成的作品数。
   public let works: Int
+  /// 回收站里还剩几条。0 时侧边栏可以整条不显示——空回收站没有信息量。
+  public let trash: Int
   public let platforms: [HistoryNavigationPlatform]
   /// 可变，好让调用方就地筛掉不想展示的标签。
   ///
@@ -97,6 +123,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     favorite: Int = 0,
     notes: Int = 0,
     works: Int = 0,
+    trash: Int = 0,
     platforms: [HistoryNavigationPlatform] = [],
     tags: [HistoryNavigationTag] = [],
     creatorCount: Int = 0,
@@ -108,6 +135,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     self.favorite = favorite
     self.notes = notes
     self.works = works
+    self.trash = trash
     self.platforms = platforms
     self.tags = tags
     self.creatorCount = creatorCount

@@ -1,16 +1,89 @@
 import AppKit
+import Foundation
+import LinkDigestCore
 import SwiftUI
 
 /// 阅读位置只保存 0...1 的比例，不依赖窗口尺寸或正文像素高度。
+///
+/// ## 它从 UserDefaults 搬进了数据库
+///
+/// 旧实现把每一条的阅读位置写在 `reading.position.v1.<id>` 这个键下。三个后果：
+/// 删掉记录那条键永远留着（没有任何一处会清，键单调堆积）；备份和导出都带不走
+/// 它（换台电脑，所有进度归零）；以及它和它描述的那条内容分属两个存储，谁也
+/// 保证不了一致。
+///
+/// 现在落在 `reading_progress` 表（Migration023），外键 `ON DELETE CASCADE`——
+/// 记录真删时进度跟着走，不再需要任何清扫器。
+///
+/// 对外的接口形状原样保留：调用方仍然只是 `progress(for:)` / `save(_:for:)`，
+/// 主界面那边一个字都不用改。
 enum ReadingPositionStore {
-  private static let prefix = "reading.position.v1."
+  static let legacyPrefix = "reading.position.v1."
 
-  static func progress(for identity: String, defaults: UserDefaults = .standard) -> Double {
-    min(max(defaults.double(forKey: prefix + identity), 0), 1)
+  /// 库还没就绪时（冷启动的头几百毫秒）退回这里。
+  ///
+  /// 不直接返回 0：那会让「打开得早一点」变成「进度被清零」——而清零之后
+  /// 用户滚一下，0 就被写回库里，旧位置真的没了。缓存住上次读到的值，
+  /// 库接上之前至少不制造错误数据。
+  @MainActor private static var pendingWrites: [TaskID: Double] = [:]
+
+  @MainActor private static var history: HistoryApplicationService?
+
+  /// 由 App 在历史就绪后接上。在此之前所有读写都留在内存里。
+  @MainActor static func configure(history: HistoryApplicationService?) {
+    self.history = history
+    guard let history else { return }
+    migrateLegacyDefaultsIfNeeded(history: history)
+    // 库接上之前攒下的写入补上去，别丢。
+    let pending = pendingWrites
+    pendingWrites.removeAll()
+    let now = Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+    for (taskID, value) in pending {
+      try? history.saveReadingPosition(value, taskID: taskID, updatedAtMilliseconds: now)
+    }
   }
 
-  static func save(_ progress: Double, for identity: String, defaults: UserDefaults = .standard) {
-    defaults.set(min(max(progress, 0), 1), forKey: prefix + identity)
+  @MainActor static func progress(for identity: String) -> Double {
+    guard let taskID = TaskID(identity) else { return 0 }
+    if let pending = pendingWrites[taskID] { return pending }
+    return history?.readingPosition(taskID: taskID) ?? 0
+  }
+
+  @MainActor static func save(_ progress: Double, for identity: String) {
+    guard let taskID = TaskID(identity) else { return }
+    let clamped = min(max(progress, 0), 1)
+    guard let history else {
+      pendingWrites[taskID] = clamped
+      return
+    }
+    let now = Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+    try? history.saveReadingPosition(clamped, taskID: taskID, updatedAtMilliseconds: now)
+  }
+
+  /// 首次接上库时，把 UserDefaults 里的旧进度一次性搬进来，然后删掉旧键。
+  ///
+  /// 搬完就删，不留双写：留着的话「哪一边是真的」就成了一个永远要回答的问题，
+  /// 而两边一旦不一致，用户看到的是进度自己跳回去。
+  ///
+  /// 单条搬迁失败（比如那条记录已经不在了）不影响其它条，也照样删键——那条
+  /// 键本来就是无主的，正是这次要清掉的东西。
+  @MainActor static func migrateLegacyDefaultsIfNeeded(
+    history: HistoryApplicationService,
+    defaults: UserDefaults = .standard
+  ) {
+    let legacyKeys = defaults.dictionaryRepresentation().keys.filter { $0.hasPrefix(legacyPrefix) }
+    guard !legacyKeys.isEmpty else { return }
+    let now = Int64((Date().timeIntervalSince1970 * 1_000).rounded())
+    for key in legacyKeys {
+      let identity = String(key.dropFirst(legacyPrefix.count))
+      if let taskID = TaskID(identity) {
+        let value = min(max(defaults.double(forKey: key), 0), 1)
+        if value > 0 {
+          try? history.saveReadingPosition(value, taskID: taskID, updatedAtMilliseconds: now)
+        }
+      }
+      defaults.removeObject(forKey: key)
+    }
   }
 }
 
