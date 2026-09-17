@@ -77,14 +77,24 @@ struct UIReadingHistoryRow: View {
       return DailyNoteTitleFormat.firstLinePreview(row.sourcePreview)
     }
     if cleanedArtifactPreview != nil {
-      return HistoryReadingTitle.listPreview(
+      // 译文、总结的预览里会带「## 配文」这类分层小标题和 Markdown 记号，列表里只要纯文字。
+      let preview = HistoryReadingTitle.listPreview(
         artifactPreview: cleanedArtifactPreview,
         primaryTitle: rowPrimaryTitle,
         authorFallback: nil
       )
+      guard let cleaned = HistoryRowProjection.sanitizedDirectoryPreview(preview, isSummary: true) else { return nil }
+      // 推文的译文开头就是标题那句话：只按「开头相同」去重，不去正文中间找。
+      return HistoryListFinding.sourcePreviewLine(title: rowPrimaryTitle, sourcePreview: cleaned, titleComesFromBody: false)
     }
     // 没总结过：露正文里紧接着的话，不再拿作者名充数（下面一行已经有作者）。
-    return HistoryListFinding.sourcePreviewLine(title: rowPrimaryTitle, sourcePreview: row.sourcePreview)
+    let titleComesFromBody = CapturedContentNaming.name(
+      title: row.title, body: row.sourcePreview, host: row.host,
+      author: row.author, published: row.published
+    ).origin == .caption
+    return HistoryListFinding.sourcePreviewLine(
+      title: rowPrimaryTitle, sourcePreview: row.sourcePreview, titleComesFromBody: titleComesFromBody
+    )
   }
 
   private var visibleTags: [String] {
@@ -163,7 +173,8 @@ struct UIReadingHistoryRow: View {
             .accessibilityHidden(true)
         }
         HStack(alignment: .center, spacing: DesignTokens.Space.xs) {
-          if showsAuthor {
+          // 笔记的「作者」就是「我的笔记」，在笔记分类里每行都写一遍没有意义。
+          if showsAuthor, !row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
             Text(rowSourceText)
               .themedFont(.subheadline)
               .foregroundStyle(.secondary)
@@ -179,12 +190,16 @@ struct UIReadingHistoryRow: View {
               .accessibilityHidden(true)
           }
           Spacer(minLength: 4)
-          Text(HistoryListFinding.compactSavedTime(savedAtMilliseconds: savedAtMilliseconds))
-            .themedFont(.subheadline)
-            .foregroundStyle(theme.secondaryText)
-            .lineLimit(1)
-            .fixedSize()
-            .help(savedTimeHelp)
+          let savedTime = HistoryListFinding.compactSavedTime(savedAtMilliseconds: savedAtMilliseconds)
+          // 按日期命名的笔记（「8月20日」）标题已经就是日期，右下角再写一遍是白占一行。
+          if savedTime != rowPrimaryTitle {
+            Text(savedTime)
+              .themedFont(.subheadline)
+              .foregroundStyle(theme.secondaryText)
+              .lineLimit(1)
+              .fixedSize()
+              .help(savedTimeHelp)
+          }
           // 转写状态是「待处理」信息，找东西时是噪音，不再占行尾；视频标记保留。
           HStack(spacing: 4) {
             if row.hasMedia == true || row.hasTranscript == true {

@@ -52,6 +52,20 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
     self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.createdAtMilliseconds = createdAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview; self.sourcePreview = sourcePreview; self.author = author; self.published = published; self.hasTranscript = hasTranscript; self.hasMedia = hasMedia; self.hasSummary = hasSummary; self.hasMindMap = hasMindMap; self.isFavorite = isFavorite; self.coverURL = coverURL; self.likes = likes; self.comments = comments; self.shares = shares; self.collects = collects; self.views = views; self.tagNames = tagNames
   }
 
+  /// 只换标题的副本：自动译标题后原地更新列表里那一行，不必整页重载。
+  public func replacingTitle(_ newTitle: String) -> HistoryRowProjection {
+    HistoryRowProjection(
+      taskID: taskID, title: newTitle, canonicalURL: canonicalURL, host: host, sourceLabel: sourceLabel,
+      latestRunKind: latestRunKind, latestRunStatus: latestRunStatus, latestModel: latestModel,
+      updatedAtMilliseconds: updatedAtMilliseconds, createdAtMilliseconds: createdAtMilliseconds,
+      latestRunAtMilliseconds: latestRunAtMilliseconds, usageCost: usageCost, artifactPreview: artifactPreview,
+      sourcePreview: sourcePreview, author: author, published: published, hasTranscript: hasTranscript,
+      hasMedia: hasMedia, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite,
+      coverURL: coverURL, likes: likes, comments: comments, shares: shares, collects: collects,
+      views: views, tagNames: tagNames
+    )
+  }
+
   /// Directory card text: summary preview, else capture body, else the title. Never empty.
   /// Display-only sanitization — does not change persisted source/export text.
   public func directoryCardPreview(fallbackTitle: String) -> String {

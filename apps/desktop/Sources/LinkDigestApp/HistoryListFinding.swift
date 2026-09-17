@@ -62,15 +62,21 @@ enum HistoryListFinding {
     now: Date = Date(),
     calendar: Calendar = .autoupdatingCurrent
   ) -> [Section] {
+    // 攒满一组再收：原来每加一行就把整组复制一遍，几百行落在同一组时是平方级。
     var result: [Section] = []
+    var currentGroup: DayGroup?
+    var currentEntries: [(index: Int, row: HistoryRowProjection)] = []
     for (index, row) in rows.enumerated() {
       let group = dayGroup(savedAtMilliseconds: savedAtMilliseconds(of: row), now: now, calendar: calendar)
-      if result.last?.group == group {
-        let last = result.removeLast()
-        result.append(Section(group: group, entries: last.entries + [(index, row)]))
-      } else {
-        result.append(Section(group: group, entries: [(index, row)]))
+      if group != currentGroup, let finished = currentGroup {
+        result.append(Section(group: finished, entries: currentEntries))
+        currentEntries = []
       }
+      currentGroup = group
+      currentEntries.append((index, row))
+    }
+    if let currentGroup {
+      result.append(Section(group: currentGroup, entries: currentEntries))
     }
     return result
   }
@@ -132,7 +138,7 @@ enum HistoryListFinding {
   ///
   /// 原来这一行在没有总结时拿作者名来填，和下面的作者行重复，等于白占一行。
   /// 取不到有用的文字就返回 nil，让这一行干脆不出现。
-  static func sourcePreviewLine(title: String, sourcePreview: String?) -> String? {
+  static func sourcePreviewLine(title: String, sourcePreview: String?, titleComesFromBody: Bool = true) -> String? {
     guard let cleaned = HistoryRowProjection.sanitizedDirectoryPreview(sourcePreview, isSummary: false) else {
       return nil
     }
@@ -140,7 +146,9 @@ enum HistoryListFinding {
     var text = cleaned.replacingOccurrences(of: #"https?://\S+"#, with: " ", options: .regularExpression)
       .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
     let head = title.hasSuffix("…") ? String(title.dropLast()) : title
-    if !head.isEmpty, let range = text.range(of: head), text[..<range.lowerBound].count <= 40 {
+    // 只有标题本来就是从正文截出来的，才去正文中间找它：文章自己的标题（比如「Claude」）
+    // 恰好出现在正文前几十个字里时，去掉它会把句子从中间截断。
+    if titleComesFromBody, !head.isEmpty, let range = text.range(of: head), text[..<range.lowerBound].count <= 40 {
       // 标题可能是跳过感叹句后取的第二句，所以前面允许有一小段。
       text = String(text[range.upperBound...])
     } else {

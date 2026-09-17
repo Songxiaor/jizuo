@@ -164,6 +164,12 @@ private extension CapturedContentNaming {
           index += 1
           continue
         }
+        // 「值得先看：1. 项目名」里的「1.」是列表序号，不是句号：
+        // 前面是空白或冒号、紧跟一两位数字的点，不在这里断句。
+        if character == ".", isListOrdinal(in: chars, at: index) {
+          index += 1
+          continue
+        }
         let nextIsBoundary = index + 1 >= chars.count || chars[index + 1].isWhitespace
         if nextIsBoundary {
           return String(chars[0...index]).trimmingCharacters(in: .whitespaces)
@@ -172,6 +178,16 @@ private extension CapturedContentNaming {
       index += 1
     }
     return trimmed
+  }
+
+  static func isListOrdinal(in chars: [Character], at index: Int) -> Bool {
+    var start = index
+    while start > 0, isASCIIDigit(chars[start - 1]) { start -= 1 }
+    let digits = index - start
+    guard (1...2).contains(digits) else { return false }
+    guard start == 0 || chars[start - 1].isWhitespace || "：:，,（(".contains(chars[start - 1]) else { return false }
+    // 序号后面要么没字了、要么是空格加正文。
+    return index + 1 >= chars.count || chars[index + 1].isWhitespace
   }
 
   static func isVersionDecimal(in chars: [Character], at index: Int) -> Bool {

@@ -588,6 +588,63 @@ public actor ProviderConfigurationService {
     return profiles
   }
 
+  /// 给同一个服务地址再加模型，**共用**已有那条模型配置的密钥记录，不在钥匙串里新建一条。
+  ///
+  /// 原来每保存一批就新建一条钥匙串记录，同一家服务商、同一把密钥存了好几份；
+  /// 钥匙串授权是按条问的，条数越多，打开 App 时连弹的授权框就越多。
+  /// 删除时 `deleteProfile` 只在最后一个用到这条记录的模型被删时才删密钥。
+  public func addProfiles(
+    baseURL: String,
+    models: [String],
+    sharingSecretOf profileID: String,
+    allowLoopbackHTTP: Bool = false
+  ) async throws -> [ProviderProfile] {
+    let normalizedModels = models.reduce(into: [String]()) { result, value in
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !trimmed.isEmpty, !result.contains(trimmed) { result.append(trimmed) }
+    }
+    guard !normalizedModels.isEmpty else { throw ProviderConfigurationError.modelRequired }
+    guard libraryStore != nil else { throw ProviderConfigurationError.profileStoreWriteFailed }
+    let mutation = try beginMutation()
+    defer { finishMutation(ifOwner: mutation) }
+
+    var library = try await loadLibraryForMutation()
+    guard let source = library.profiles.first(where: { $0.id == profileID }) else {
+      throw ProviderConfigurationError.configurationChanged
+    }
+    let profiles = try normalizedModels.map { model in
+      try ProviderProfile(
+        id: UUID().uuidString,
+        baseURL: baseURL,
+        model: model,
+        apiMode: source.apiMode,
+        secretReference: source.secretReference,
+        allowLoopbackHTTP: allowLoopbackHTTP
+      )
+    }
+    // 只允许共用同一个服务地址的密钥，不把密钥带到别的地址上。
+    guard profiles.allSatisfy({ $0.baseURL == source.baseURL }) else {
+      throw ProviderConfigurationError.apiKeyRequired
+    }
+    let becomesSummary = library.summaryProfileID == nil
+    library.profiles.append(contentsOf: profiles)
+    if becomesSummary {
+      library.summaryProfileID = profiles[0].id
+      do {
+        try await profileStore.save(profiles[0])
+      } catch {
+        throw ProviderConfigurationError.profileStoreWriteFailed
+      }
+    }
+    do {
+      try await saveLibraryForMutation(library)
+    } catch {
+      if becomesSummary { try? await profileStore.delete() }
+      throw error
+    }
+    return profiles
+  }
+
   /// Updates an existing entry in place. Passing `apiKey: nil` keeps the
   /// stored secret; passing a key rotates it exactly like the single-slot
   /// replacement flow.

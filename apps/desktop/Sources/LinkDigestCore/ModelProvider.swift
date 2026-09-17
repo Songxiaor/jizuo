@@ -67,6 +67,9 @@ public enum ModelProviderErrorCode: String, Codable, Sendable, Equatable {
   case modelNotFound = "MODEL_NOT_FOUND"
   case providerBillingLimited = "MODEL_PROVIDER_BILLING_LIMITED"
   case providerRequestRejected = "MODEL_PROVIDER_REQUEST_REJECTED"
+  /// 服务商的免费模型限定只能在它自家的客户端里用（opencode Zen：`FreeTierError`，HTTP 403）。
+  /// 换 Key、重试都没用，只能换模型。
+  case freeTierRestricted = "MODEL_FREE_TIER_RESTRICTED"
   case rateLimited = "MODEL_RATE_LIMITED"
   case providerUnavailable = "MODEL_PROVIDER_UNAVAILABLE"
   case networkInterrupted = "MODEL_NETWORK_INTERRUPTED"

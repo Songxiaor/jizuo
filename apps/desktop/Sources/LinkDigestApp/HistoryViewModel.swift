@@ -2809,6 +2809,12 @@ final class HistoryViewModel {
     titleBackfillCandidates = []
   }
 
+  private func finishTitleBackfillEarly() {
+    guard case let .running(done, _) = titleBackfillState else { return }
+    titleBackfillTaskIDs = []
+    titleBackfillState = .finished(localized: titleBackfillLocalizedCount, total: done)
+  }
+
   private func recordTitleBackfillProgress(taskID: TaskID, localized: Bool) {
     guard titleBackfillTaskIDs.remove(taskID) != nil,
           case let .running(done, total) = titleBackfillState else { return }
@@ -2823,9 +2829,15 @@ final class HistoryViewModel {
     guard autoTitleLocalizationTask == nil, !autoTitleLocalizationQueue.isEmpty else { return }
     autoTitleLocalizationTask = Task { [weak self] in
       guard let self else { return }
-      var pendingListRefresh = 0
+      var needsListReload = false
       while !Task.isCancelled, !self.autoTitleLocalizationQueue.isEmpty {
-        guard self.history != nil, self.titleLocalizer != nil else { break }
+        guard self.history != nil, self.titleLocalizer != nil else {
+          // 存储或模型被换掉：剩下的排队项作废，补翻译进度不能卡在「翻译中」。
+          self.autoTitleLocalizationQueue = []
+          self.autoTitleLocalizationQueuedTaskIDs = []
+          self.finishTitleBackfillEarly()
+          break
+        }
         var request = self.autoTitleLocalizationQueue.removeFirst()
         guard let detail = await self.waitForStoredDetail(taskID: request.taskID, timeoutSeconds: 15) else {
           if request.readAttempts < 5 {
@@ -2839,26 +2851,28 @@ final class HistoryViewModel {
           continue
         }
         self.autoTitleLocalizationQueuedTaskIDs.remove(request.taskID)
-        let localized = await self.localizeAndPersistTitle(
+        let newTitle = await self.localizeAndPersistTitle(
           detail: detail,
           outputLanguage: request.outputLanguage,
           model: request.model
         )
-        if localized {
-          pendingListRefresh += 1
+        if let newTitle {
+          // 原地换掉列表里那一行的标题。整页重载会把已经翻到的后几页丢掉、滚动位置跳回顶部——
+          // 补翻译几百条时列表每隔一会儿就被拽回第一页。
+          if let index = self.rows.firstIndex(where: { $0.taskID == request.taskID }) {
+            self.rows[index] = self.rows[index].replacingTitle(newTitle)
+          } else {
+            needsListReload = true
+          }
           if self.selectedTaskID == request.taskID {
             self.loadDetailForSelection()
           }
         }
-        self.recordTitleBackfillProgress(taskID: request.taskID, localized: localized)
-        // 批量抓取和补翻译会一次排几十上百条。每翻完一条就重载列表，
-        // 列表会一直跳回第一页；攒 10 条或队列清空时再刷新一次。
-        if pendingListRefresh >= 10 || (pendingListRefresh > 0 && self.autoTitleLocalizationQueue.isEmpty) {
-          pendingListRefresh = 0
-          self.reload(preservingCurrentSelection: true)
-        }
+        self.recordTitleBackfillProgress(taskID: request.taskID, localized: newTitle != nil)
       }
-      if pendingListRefresh > 0 { self.reload(preservingCurrentSelection: true) }
+      // 只有「翻好的那条还不在列表里」（比如刚抓进来还没出现）才需要重载，
+      // 而且只在用户还停在第一页时做，不打断往下翻的人。
+      if needsListReload, self.rows.count <= 50 { self.reload(preservingCurrentSelection: true) }
       self.autoTitleLocalizationTask = nil
       if !self.autoTitleLocalizationQueue.isEmpty { self.runAutoTitleLocalizationQueueIfNeeded() }
     }
@@ -3031,10 +3045,10 @@ final class HistoryViewModel {
     detail: HistoryDetailProjection,
     outputLanguage: String,
     model: String?
-  ) async -> Bool {
+  ) async -> String? {
     guard let history, let titleLocalizer, !isReadOnly,
           let snapshot = detail.snapshots.last
-    else { return false }
+    else { return nil }
     let originalTitle = snapshot.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     guard !originalTitle.isEmpty,
           CapturedTitleLocalization.needsLocalization(
@@ -3042,7 +3056,7 @@ final class HistoryViewModel {
             bodyText: snapshot.bodyText,
             outputLanguage: outputLanguage
           )
-    else { return false }
+    else { return nil }
     do {
       let localized = try await titleLocalizer.localize(
         title: originalTitle,
@@ -3051,7 +3065,7 @@ final class HistoryViewModel {
         model: model
       )
       let trimmed = CapturedTitleLocalization.sanitizedModelTitle(localized)
-      guard !trimmed.isEmpty, trimmed != originalTitle else { return false }
+      guard !trimmed.isEmpty, trimmed != originalTitle else { return nil }
       let body = CapturedTitleLocalization.bodyWithPreservedOriginal(
         bodyText: snapshot.bodyText,
         originalTitle: originalTitle
@@ -3064,15 +3078,15 @@ final class HistoryViewModel {
         bodyText: body,
         updatedAtMilliseconds: now
       )
-      guard case .success = bodyResult else { return false }
+      guard case .success = bodyResult else { return nil }
       try history.updateTaskTitle(
         taskID: detail.task.id,
         title: trimmed,
         updatedAtMilliseconds: now
       )
-      return true
+      return trimmed
     } catch {
-      return false
+      return nil
     }
   }
 

@@ -139,12 +139,17 @@ final class ProviderSettingsViewModel {
     let baseURL: URL
   }
 
+  /// 模型可用状态记录。测试可以注入独立实例。
+  let modelHealth: ModelHealthRegistry
+
   init(
     configurationService: ProviderConfigurationService,
     provider: any ModelProvider,
     modelCatalogLoader: (any ModelCatalogLoading)? = nil,
-    preferencesStore: any ModelPreferencesStore = InMemoryDefaultModelPreferencesStore()
+    preferencesStore: any ModelPreferencesStore = InMemoryDefaultModelPreferencesStore(),
+    modelHealth: ModelHealthRegistry? = nil
   ) {
+    self.modelHealth = modelHealth ?? .shared
     self.configurationService = configurationService
     self.provider = provider
     self.modelCatalogLoader = modelCatalogLoader ?? (provider as? any ModelCatalogLoading)
@@ -164,7 +169,27 @@ final class ProviderSettingsViewModel {
   }
 
   var shouldShowAPIKeyInput: Bool {
-    !hasConfiguredAPIKey || isReplacingAPIKey
+    if isReplacingAPIKey { return true }
+    // 编辑模型库里已有的一条：它的密钥一定存在钥匙串里。是否要求重新输入只看用户有没有点「更换」，
+    // 不看整体的 `state`——前面任何一次保存或请求失败都会把 `state` 变成 `.failed`，
+    // 原来就因此把输入框放出来，保存时还报「密钥还没填」，而密钥其实好好存着。
+    if isEditingLibraryEntry { return false }
+    return !hasConfiguredAPIKey && !isReusingProviderKey
+  }
+
+  /// 「拉取最新模型」：给已添加的服务商再加模型时，沿用那一家已保存的密钥。
+  ///
+  /// 只记是哪一条模型配置的密钥、它的服务地址；密钥本身只在读列表和保存那一刻从钥匙串里取。
+  private struct BorrowedProviderKey: Equatable {
+    let profileID: String
+    let baseURL: URL
+  }
+  private var borrowedProviderKey: BorrowedProviderKey?
+
+  /// 当前添加窗口是否在沿用已保存的密钥。服务地址被改掉就不再沿用，要求重新填。
+  var isReusingProviderKey: Bool {
+    guard editingProfileID == nil, let borrowedProviderKey else { return false }
+    return validatedCatalogBaseURL == borrowedProviderKey.baseURL
   }
 
   var canSaveConfiguration: Bool {
@@ -176,7 +201,7 @@ final class ProviderSettingsViewModel {
       && !isTestingConnection
       && (!hasConfiguredAPIKey || isReplacingAPIKey || isEditingLibraryEntry)
       && hasModelSelection
-      && (modelCatalogLoader == nil || hasConfiguredAPIKey || modelCatalogState == .loaded || isManualModelEntryEnabled)
+      && (modelCatalogLoader == nil || hasConfiguredAPIKey || isEditingLibraryEntry || modelCatalogState == .loaded || isManualModelEntryEnabled)
   }
 
   var isAddingModelBatch: Bool {
@@ -211,17 +236,17 @@ final class ProviderSettingsViewModel {
     !isConfigurationLoading
       && !isSaving
       && !isTestingConnection
-      && hasConfiguredAPIKey
+      && (hasConfiguredAPIKey || isEditingLibraryEntry)
       && !isReplacingAPIKey
       && !hasUnsavedIdentityChanges
   }
 
   var canBeginAPIKeyReplacement: Bool {
-    !isConfigurationLoading && hasConfiguredAPIKey && !isSaving && !isTestingConnection
+    !isConfigurationLoading && (hasConfiguredAPIKey || isReusingProviderKey || isEditingLibraryEntry) && !isSaving && !isTestingConnection
   }
 
   var apiKeyStatusText: String {
-    "✓ 已配置"
+    isReusingProviderKey || (isEditingLibraryEntry && !hasConfiguredAPIKey) ? "✓ 沿用已保存的密钥" : "✓ 已配置"
   }
 
   var runPreferences: ModelPreferences { savedPreferences }
@@ -431,6 +456,8 @@ final class ProviderSettingsViewModel {
       // The populated form belongs to the summary-assigned entry so an
       // immediate save updates it instead of appending a duplicate.
       editingProfileID = libraryProfiles.first(where: { $0.id == summaryAssignmentID })?.id
+      // 不在打开设置时自动对照模型列表：那要读每家服务商的密钥，签名不稳定时
+      // 会连弹好几个钥匙串授权框。对照改在用户点「检测可用性」时做。
     } catch let error as ProviderConfigurationError {
       state = .failed(code: error.rawValue)
     } catch {
@@ -442,6 +469,7 @@ final class ProviderSettingsViewModel {
 
   struct LibraryEntryDisplay: Identifiable, Equatable {
     let id: String
+    let baseURL: String
     let title: String
     let modelName: String
     let displayName: String
@@ -455,6 +483,7 @@ final class ProviderSettingsViewModel {
       let title = preset == .custom ? (profile.baseURL.host ?? "自定义") : preset.displayName
       return LibraryEntryDisplay(
         id: profile.id,
+        baseURL: profile.baseURL.absoluteString,
         title: title,
         modelName: profile.model,
         displayName: Self.friendlyModelName(profile.model),
@@ -519,13 +548,120 @@ final class ProviderSettingsViewModel {
     return words.isEmpty ? modelName : words.joined(separator: " ")
   }
 
+  /// 按模型名认语音转写模型。服务商的模型列表不说模型能干什么，只能靠名字。
+  ///
+  /// 除了 whisper / transcribe 这些通用词，也认国内外常见的语音识别模型名
+  /// （SenseVoice、Paraformer、Voxtral、FunASR……）。名字带 tts（语音合成）的排除：
+  /// 它是把文字念出来，方向正好相反。
   static func isTranscriptionModel(_ modelName: String) -> Bool {
     let normalized = modelName.lowercased()
-    return normalized.contains("whisper")
-      || normalized.contains("transcrib")
-      || normalized.contains("speech-to-text")
-      || normalized.contains("speech_to_text")
-      || normalized.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).contains("asr")
+    let tokens = normalized.split(whereSeparator: { !$0.isLetter && !$0.isNumber }).map(String.init)
+    if tokens.contains("tts") { return false }
+    let substrings = ["whisper", "transcrib", "speech-to-text", "speech_to_text", "sensevoice", "paraformer", "voxtral", "funasr"]
+    if substrings.contains(where: normalized.contains) { return true }
+    return tokens.contains("asr") || tokens.contains("stt")
+      || tokens.contains(where: { $0.hasSuffix("asr") && $0.count > 3 })
+  }
+
+  // MARK: - 在线备用转写
+
+  /// 在线转写实际用的是模型库里「转写」指派的那条配置（有自己的服务地址和密钥）。
+  /// 下拉显示和修改都落在这个指派上；旧版本单独存的模型名只在没有指派时作为当前值展示。
+  var onlineTranscriptionModelName: String {
+    if let assignmentID = transcriptionAssignmentID,
+       let profile = libraryProfiles.first(where: { $0.id == assignmentID }) {
+      return profile.model
+    }
+    return transcriptionModelName.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  func selectOnlineTranscriptionModel(_ name: String) async {
+    let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed.isEmpty {
+      await assignTranscriptionModel(nil)
+      transcriptionModelName = ""
+      return
+    }
+    guard let profile = libraryProfiles.first(where: { $0.model == trimmed && Self.isTranscriptionModel($0.model) }) else {
+      return
+    }
+    await assignTranscriptionModel(profile.id)
+    // 模型名以指派的那条配置为准，旧的单独模型名清掉，免得两处说法不一。
+    transcriptionModelName = ""
+  }
+
+  struct TranscriptionModelCandidate: Identifiable, Equatable {
+    let baseURL: URL
+    let providerTitle: String
+    let model: String
+    /// 共用这条配置的密钥来添加。
+    let sourceProfileID: String
+    var id: String { baseURL.absoluteString + "|" + model }
+  }
+
+  enum TranscriptionDiscoveryState: Equatable {
+    case idle
+    case searching
+    case found([TranscriptionModelCandidate])
+    /// 查了这么多家服务商，都没有语音模型。
+    case none(searchedProviders: Int)
+    case failed
+  }
+
+  private(set) var transcriptionDiscoveryState: TranscriptionDiscoveryState = .idle
+
+  /// 在已经添加的服务商里找语音转写模型：每家读一次模型列表（读列表不收费），按名字挑出来。
+  func discoverTranscriptionModels() async {
+    guard let modelCatalogLoader else {
+      transcriptionDiscoveryState = .failed
+      return
+    }
+    transcriptionDiscoveryState = .searching
+    var seen = Set<URL>()
+    var candidates: [TranscriptionModelCandidate] = []
+    var searched = 0
+    var anyListed = false
+    for profile in libraryProfiles where seen.insert(profile.baseURL).inserted {
+      guard let credentials = try? await configurationService.loadCredentials(profileID: profile.id),
+            let models = try? await modelCatalogLoader.listModels(baseURL: profile.baseURL, apiKey: credentials.apiKey)
+      else { continue }
+      searched += 1
+      anyListed = true
+      let preset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
+      let title = preset == .custom ? (profile.baseURL.host ?? "自定义") : preset.displayName
+      let existing = Set(libraryProfiles.filter { $0.baseURL == profile.baseURL }.map(\.model))
+      for model in models where Self.isTranscriptionModel(model) && !existing.contains(model) {
+        candidates.append(.init(baseURL: profile.baseURL, providerTitle: title, model: model, sourceProfileID: profile.id))
+      }
+    }
+    if !candidates.isEmpty {
+      transcriptionDiscoveryState = .found(candidates)
+    } else {
+      transcriptionDiscoveryState = anyListed ? .none(searchedProviders: searched) : .failed
+    }
+  }
+
+  /// 添加找到的语音模型（共用那家服务商已保存的密钥），并直接设为在线备用转写。
+  func addDiscoveredTranscriptionModel(_ candidate: TranscriptionModelCandidate) async {
+    do {
+      let added = try await configurationService.addProfiles(
+        baseURL: candidate.baseURL.absoluteString,
+        models: [candidate.model],
+        sharingSecretOf: candidate.sourceProfileID,
+        allowLoopbackHTTP: Self.isExactLoopbackHTTP(candidate.baseURL.absoluteString)
+      )
+      await refreshLibrary()
+      if let profile = added.first {
+        await assignTranscriptionModel(profile.id)
+        transcriptionModelName = ""
+      }
+      if case let .found(list) = transcriptionDiscoveryState {
+        let remaining = list.filter { $0.id != candidate.id }
+        transcriptionDiscoveryState = remaining.isEmpty ? .idle : .found(remaining)
+      }
+    } catch {
+      libraryErrorText = "没能添加这个语音模型，请稍后再试。"
+    }
   }
 
   func refreshLibrary() async {
@@ -542,6 +678,7 @@ final class ProviderSettingsViewModel {
 
   func beginAddModel() {
     guard !isSaving, !isTestingConnection, !isLoadingModels else { return }
+    borrowedProviderKey = nil
     editingProfileID = nil
     isEditorVisible = true
     baseURL = ""
@@ -557,10 +694,24 @@ final class ProviderSettingsViewModel {
     invalidateModelCatalog()
   }
 
+  /// 从某家已添加的服务商拉取最新模型列表：打开添加窗口、填好服务地址、沿用那家的密钥并立即读列表。
+  /// 已经添加过的模型在列表里标「已添加」，勾选新的保存即可。
+  func beginAddModelsFromProvider(profileID: String) async {
+    guard !isSaving, !isTestingConnection, !isLoadingModels,
+          let profile = libraryProfiles.first(where: { $0.id == profileID })
+    else { return }
+    beginAddModel()
+    baseURL = profile.baseURL.absoluteString
+    selectedPreset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
+    borrowedProviderKey = BorrowedProviderKey(profileID: profile.id, baseURL: profile.baseURL)
+    await loadModels()
+  }
+
   func beginEditModel(_ id: String) {
     guard !isSaving, !isTestingConnection, !isLoadingModels,
           let profile = libraryProfiles.first(where: { $0.id == id })
     else { return }
+    borrowedProviderKey = nil
     editingProfileID = id
     isEditorVisible = true
     baseURL = profile.baseURL.absoluteString
@@ -878,6 +1029,15 @@ final class ProviderSettingsViewModel {
                   $0.baseURL.absoluteString == base && submittedModels.contains($0.model)
                 }) {
         savedProfiles = [existing]
+      } else if isReusingProviderKey, apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                let borrowedProviderKey {
+        // 沿用已保存的密钥：直接共用那条钥匙串记录，连读都不用读。
+        savedProfiles = try await configurationService.addProfiles(
+          baseURL: submittedBaseURL,
+          models: freshModels,
+          sharingSecretOf: borrowedProviderKey.profileID,
+          allowLoopbackHTTP: Self.isExactLoopbackHTTP(submittedBaseURL)
+        )
       } else {
         savedProfiles = try await configurationService.addProfiles(
           baseURL: submittedBaseURL,
@@ -1033,6 +1193,12 @@ final class ProviderSettingsViewModel {
       let models = try await modelCatalogLoader.listModels(baseURL: request.baseURL, apiKey: key)
       guard canApplyCatalogResult(for: request) else { return }
       availableModels = Array(models.prefix(Self.modelCatalogLimit))
+      modelHealth.applyCatalog(
+        baseURL: request.baseURL.absoluteString,
+        catalog: models,
+        savedModels: libraryProfiles.filter { $0.baseURL == request.baseURL }.map(\.model),
+        isTruncated: models.count >= Self.modelCatalogLimit
+      )
       if modelName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         if let recommended = selectedPreset.recommendedChatModel,
            availableModels.contains(recommended) {
@@ -1061,9 +1227,233 @@ final class ProviderSettingsViewModel {
 
   /// Reads the key belonging to the entry open in the editor. Falls back to
   /// the single-slot credentials when the library is unsupported.
+  // MARK: - 模型可用性
+
+  func healthBadge(baseURL: String, model: String) -> ModelHealthBadge {
+    ModelHealthBadge(record: modelHealth.record(for: baseURL, model: model), nowMilliseconds: modelHealth.nowMilliseconds)
+  }
+
+  func healthRecord(baseURL: String, model: String) -> ModelHealthRecord? {
+    modelHealth.record(for: baseURL, model: model)
+  }
+
+  /// 编辑窗口里正在看的服务地址。
+  var editorHealthBaseURL: String? { validatedCatalogBaseURL?.absoluteString }
+
+  /// 下拉列表的顺序：能用的在前，确定用不了的沉底；同档保持服务商原顺序。
+  var healthSortedFilteredModels: [String] {
+    guard let base = editorHealthBaseURL else { return filteredModels }
+    return filteredModels.enumerated().sorted { lhs, rhs in
+      let left = rank(base: base, model: lhs.element)
+      let right = rank(base: base, model: rhs.element)
+      return left == right ? lhs.offset < rhs.offset : left < right
+    }.map(\.element)
+  }
+
+  private func rank(base: String, model: String) -> Int {
+    // 未检测排在「可用」和「暂时不可用」之间。
+    modelHealth.record(for: base, model: model)?.status.sortRank ?? 1
+  }
+
+  enum ModelProbeState: Equatable {
+    case idle
+    case running(done: Int, total: Int)
+    case finished(available: Int, total: Int)
+  }
+
+  /// 「检测可用性」要检测的一组模型，免费和付费分开，付费的要用户确认才发。
+  struct ModelProbePlan: Equatable {
+    let freeModels: [String]
+    let paidModels: [String]
+    var total: Int { freeModels.count + paidModels.count }
+  }
+
+  private(set) var modelProbeState: ModelProbeState = .idle
+  @ObservationIgnored private var modelProbeTask: Task<Void, Never>?
+  /// 每次检测一个编号：旧任务收尾时先确认「还是我这一次」，不去清掉或覆盖新一次的状态。
+  @ObservationIgnored private var modelProbeRunID = UUID()
+  /// 一次检测最多这么多个，免得一口气对上百个模型发请求。
+  static let modelProbeLimit = 40
+
+  /// 编辑窗口里读到的模型列表（受过滤词影响）。
+  var catalogProbePlan: ModelProbePlan {
+    Self.probePlan(for: Array(filteredModels.prefix(Self.modelProbeLimit)))
+  }
+
+  static func probePlan(for models: [String]) -> ModelProbePlan {
+    ModelProbePlan(
+      freeModels: models.filter(ModelHealthKey.looksFree),
+      paidModels: models.filter { !ModelHealthKey.looksFree($0) }
+    )
+  }
+
+  /// 对编辑窗口列表里的模型各发一条极短请求。`includesPaid` 为 false 时只测免费模型。
+  func probeCatalogModels(includesPaid: Bool, submittedAPIKey: String?) {
+    guard modelProbeTask == nil, let baseURL = validatedCatalogBaseURL else { return }
+    let plan = catalogProbePlan
+    let models = plan.freeModels + (includesPaid ? plan.paidModels : [])
+    guard !models.isEmpty else { return }
+    let allowLoopback = Self.isExactLoopbackHTTP(baseURL.absoluteString)
+    let runID = UUID()
+    modelProbeRunID = runID
+    // 用手填的密钥检测时，结论不能落到已保存的模型上：填错一个字，同一地址下好好的模型
+    // 就会被记成「密钥无效」。这种情况下只记和密钥无关的结论（下架、仅限官方客户端…）。
+    let usesTypedKey = submittedAPIKey?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    modelProbeTask = Task { [weak self] in
+      guard let self else { return }
+      defer { if self.modelProbeRunID == runID { self.modelProbeTask = nil } }
+      let credentials: (profile: ProviderProfile, apiKey: String)?
+      if let submittedAPIKey, !submittedAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        credentials = (try? ProviderProfile(
+          id: ModelHealthObservation.probeProfileID, baseURL: baseURL.absoluteString, model: models[0],
+          secretReference: SecretReference(rawValue: "model-probe"), allowLoopbackHTTP: allowLoopback
+        )).map { ($0, submittedAPIKey) }
+      } else {
+        credentials = try? await self.loadEditorCredentials()
+      }
+      guard let credentials, credentials.profile.baseURL == baseURL else {
+        self.modelProbeState = .idle
+        return
+      }
+      await self.runProbes(
+        models: models, template: credentials.profile, apiKey: credentials.apiKey,
+        runID: runID, recordsKeyDependentStates: !usesTypedKey
+      )
+    }
+  }
+
+  /// 检测已经添加到模型库里的全部模型（各自用自己的密钥）。
+  func probeLibraryModels(includesPaid: Bool) {
+    guard modelProbeTask == nil else { return }
+    let profiles = libraryProfiles.filter { includesPaid || ModelHealthKey.looksFree($0.model) }
+    guard !profiles.isEmpty else { return }
+    let runID = UUID()
+    modelProbeRunID = runID
+    modelProbeTask = Task { [weak self] in
+      guard let self else { return }
+      defer { if self.modelProbeRunID == runID { self.modelProbeTask = nil } }
+      let total = profiles.count
+      var done = 0
+      var available = 0
+      self.modelProbeState = .running(done: 0, total: total)
+      // 先对照一次模型列表（不收费），已下架的直接标出来。
+      await self.checkSavedModelsAgainstCatalogs()
+      for profile in profiles {
+        guard !Task.isCancelled, self.modelProbeRunID == runID else { return }
+        if let credentials = try? await self.configurationService.loadCredentials(profileID: profile.id) {
+          if await self.probeOnce(profile: credentials.profile, apiKey: credentials.apiKey) { available += 1 }
+        }
+        done += 1
+        guard self.modelProbeRunID == runID else { return }
+        self.modelProbeState = .running(done: done, total: total)
+        self.modelProbeProgress = (done, available)
+      }
+      guard !Task.isCancelled, self.modelProbeRunID == runID else { return }
+      self.modelProbeState = .finished(available: available, total: total)
+    }
+  }
+
+  var libraryProbePlan: ModelProbePlan {
+    Self.probePlan(for: libraryProfiles.map(\.model))
+  }
+
+  /// 已经测过几个、其中几个可用。停止时用它显示真实的结果。
+  @ObservationIgnored private var modelProbeProgress: (done: Int, available: Int) = (0, 0)
+
+  func cancelModelProbe() {
+    modelProbeTask?.cancel()
+    modelProbeTask = nil
+    // 换一个编号：旧任务收尾时发现不是自己，不再改状态。
+    modelProbeRunID = UUID()
+    if case .running = modelProbeState {
+      modelProbeState = .finished(available: modelProbeProgress.available, total: modelProbeProgress.done)
+    }
+    modelProbeProgress = (0, 0)
+  }
+
+  private func runProbes(
+    models: [String], template: ProviderProfile, apiKey: String,
+    runID: UUID, recordsKeyDependentStates: Bool
+  ) async {
+    let total = models.count
+    var done = 0
+    var available = 0
+    modelProbeProgress = (0, 0)
+    modelProbeState = .running(done: 0, total: total)
+    // 三个一组并发：够快，又不至于一口气把服务商的限流打满。
+    for chunk in stride(from: 0, to: models.count, by: 3).map({ Array(models[$0..<min($0 + 3, models.count)]) }) {
+      guard !Task.isCancelled, modelProbeRunID == runID else { return }
+      let results = await withTaskGroup(of: Bool.self) { group -> [Bool] in
+        for model in chunk {
+          guard let profile = try? ProviderProfile(
+            id: ModelHealthObservation.probeProfileID, baseURL: template.baseURL.absoluteString, model: model,
+            apiMode: template.apiMode, secretReference: template.secretReference,
+            allowLoopbackHTTP: Self.isExactLoopbackHTTP(template.baseURL.absoluteString)
+          ) else { continue }
+          group.addTask { await self.probeOnce(profile: profile, apiKey: apiKey, recordsKeyDependentStates: recordsKeyDependentStates) }
+        }
+        var collected: [Bool] = []
+        for await result in group { collected.append(result) }
+        return collected
+      }
+      done += chunk.count
+      available += results.filter { $0 }.count
+      guard modelProbeRunID == runID else { return }
+      modelProbeProgress = (done, available)
+      modelProbeState = .running(done: done, total: total)
+    }
+    guard !Task.isCancelled, modelProbeRunID == runID else { return }
+    modelProbeState = .finished(available: available, total: total)
+  }
+
+  /// 发一条「Reply with OK.」。结果通过适配层的旁路通知记进 modelHealth；
+  /// 这里再按来源为「检测」补记一次，覆盖掉旧的真实调用结论。
+  private func probeOnce(profile: ProviderProfile, apiKey: String, recordsKeyDependentStates: Bool = true) async -> Bool {
+    do {
+      for try await event in provider.stream(profile: profile, apiKey: apiKey, intent: .connectionTest) {
+        if case .completed = event { break }
+      }
+      modelHealth.record(baseURL: profile.baseURL.absoluteString, model: profile.model, status: .available, source: .probe)
+      return true
+    } catch let failure as ModelProviderFailure {
+      if let status = ModelHealthStatus(failure: failure.code),
+         recordsKeyDependentStates || !Self.isKeyDependent(status) {
+        modelHealth.record(baseURL: profile.baseURL.absoluteString, model: profile.model, status: status, source: .probe)
+      }
+      return false
+    } catch {
+      return false
+    }
+  }
+
+  /// 取决于用的是哪把密钥的结论（密钥无效、没开通、需充值）。
+  static func isKeyDependent(_ status: ModelHealthStatus) -> Bool {
+    status == .keyInvalid || status == .notEntitled || status == .billingLimited
+  }
+
+  /// 静默对照：每个服务地址读一次模型列表，找出已保存但已下架的模型。失败就算了，不打扰。
+  func checkSavedModelsAgainstCatalogs() async {
+    guard let modelCatalogLoader else { return }
+    var seen = Set<URL>()
+    for profile in libraryProfiles where seen.insert(profile.baseURL).inserted {
+      guard let credentials = try? await configurationService.loadCredentials(profileID: profile.id),
+            let models = try? await modelCatalogLoader.listModels(baseURL: profile.baseURL, apiKey: credentials.apiKey)
+      else { continue }
+      modelHealth.applyCatalog(
+        baseURL: profile.baseURL.absoluteString,
+        catalog: models,
+        savedModels: libraryProfiles.filter { $0.baseURL == profile.baseURL }.map(\.model),
+        isTruncated: models.count >= Self.modelCatalogLimit
+      )
+    }
+  }
+
   private func loadEditorCredentials() async throws -> (profile: ProviderProfile, apiKey: String)? {
     if configurationService.supportsModelLibrary, let editingProfileID {
       return try await configurationService.loadCredentials(profileID: editingProfileID)
+    }
+    if configurationService.supportsModelLibrary, isReusingProviderKey, let borrowedProviderKey {
+      return try await configurationService.loadCredentials(profileID: borrowedProviderKey.profileID)
     }
     return try await configurationService.loadCredentials()
   }

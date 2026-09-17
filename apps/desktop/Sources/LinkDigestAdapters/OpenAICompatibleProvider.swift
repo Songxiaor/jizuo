@@ -139,9 +139,11 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
             intent: intent,
             continuation: continuation
           )
+          ModelHealthObservation.reportSuccess(profile: profile)
         } catch is CancellationError {
           continuation.finish(throwing: CancellationError())
         } catch let failure as ModelProviderFailure {
+          ModelHealthObservation.reportFailure(profile: profile, code: failure.code)
           AppLog.error(.provider, "model_stream_failed", code: failure.code.rawValue, [
             "host": AppLog.host(profile.baseURL),
             "intent": intent.kind.rawValue,
@@ -869,6 +871,22 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: hadOutput)
     }
 
+    // 服务端给了结构化的错误类型时，以类型为准，状态码常常是错的：
+    // opencode Zen 对「模型已下架」返回 401、对「免费模型只能在自家客户端用」返回 403、
+    // 对「上游模型暂时不可用」返回 400。只看状态码，界面会分别让人去换 Key、
+    // 以为账号没开通、以为自己配置错了——三件事都不是真的原因。
+    if !(200..<300).contains(response.statusCode), let providerError {
+      if providerError.indicatesFreeTierRestriction {
+        throw ModelProviderFailure(code: .freeTierRestricted, retryable: false, hadOutput: hadOutput)
+      }
+      if providerError.indicatesUnsupportedModel {
+        throw ModelProviderFailure(code: .modelNotFound, retryable: false, hadOutput: hadOutput)
+      }
+      if providerError.indicatesUpstreamUnavailable, response.statusCode < 500 {
+        throw ModelProviderFailure(code: .providerUnavailable, retryable: true, hadOutput: hadOutput)
+      }
+    }
+
     switch response.statusCode {
     case 200..<300:
       break
@@ -1116,6 +1134,12 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     /// 归成「鉴权失败」，界面于是让用户去换 API Key——Key 换十次也没用，
     /// 该做的是充值。状态码在这里是错的，服务端自己给的类型才是对的。
     let indicatesBillingLimit: Bool
+    /// `FreeTierError`：免费模型只允许在服务商自家客户端里调用。
+    let indicatesFreeTierRestriction: Bool
+    /// `ModelError`：服务商不再支持这个模型（下架或改名）。
+    let indicatesUnsupportedModel: Bool
+    /// `server_error`：服务商转发给上游时失败，与请求本身无关。
+    let indicatesUpstreamUnavailable: Bool
 
     init?(data: Data) {
       guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -1141,6 +1165,10 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       indicatesMissingModel = Self.indicatesMissingModel(normalizedCode: normalizedCode)
       indicatesBillingLimit = Self.indicatesBillingLimit(normalizedCode: normalizedCode)
         || Self.indicatesBillingLimit(normalizedCode: normalizedType)
+      let compactType = normalizedType?.replacingOccurrences(of: "_", with: "")
+      indicatesFreeTierRestriction = compactType == "freetiererror"
+      indicatesUnsupportedModel = compactType == "modelerror"
+      indicatesUpstreamUnavailable = compactType == "servererror"
     }
 
     /// 覆盖各家常见写法：`CreditsError`、`insufficient_quota`、`billing_*`。

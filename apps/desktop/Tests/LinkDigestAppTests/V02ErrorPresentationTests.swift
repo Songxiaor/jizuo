@@ -6,7 +6,9 @@ final class V02ErrorPresentationTests: XCTestCase {
   func testEveryStableCodeHasMessageAndRecoveryAction() {
     // 2026-08-06 加了 MODEL_AUTH_FORBIDDEN（403）：原来 401 和 403 共用
     // MODEL_AUTH_INVALID，界面一律说「请更新 API Key」——403 换 Key 没有用。
-    XCTAssertEqual(V02ErrorCatalog.allStableCodes.count, 28)
+    // 2026-09-17 加了 MODEL_FREE_TIER_RESTRICTED：免费模型只许在服务商自家客户端里用，
+    // 原来被说成「账号没开通这个模型」。
+    XCTAssertEqual(V02ErrorCatalog.allStableCodes.count, 29)
 
     for code in V02ErrorCatalog.allStableCodes {
       let presentation = V02ErrorCatalog.presentation(for: code)

@@ -37,15 +37,20 @@ final class ModelChoicePresentationTests: XCTestCase {
     XCTAssertTrue(settings.contains(#"emptyOptionTitle: "不使用：只用 Apple 本机转写""#))
   }
 
-  /// 库里未必有想用的模型，自定义要保留——但它是例外路径，不是默认。
-  func testCustomEntryStaysAvailableBehindThePicker() throws {
+  /// 2026-09-17 改：只能从「模型服务」里已添加的模型中选，不再提供「自定义…」。
+  /// 手填的名字没有自己的服务地址和密钥，只能套用总结模型那家的配置，填错也看不出来。
+  /// 以前手填过的旧值仍显示成当前值（并提示不在模型服务里），不会凭空变成空白。
+  /// 没有可选模型时下拉变灰，并说明要先添加什么模型。
+  func testChoicesComeOnlyFromModelServices() throws {
     let settings = try source("ProviderSettingsView.swift")
-    // 下拉换成自绘的 `SettingsMenuPicker` 之后，自定义项仍靠哨兵值挂在最后一组里。
-    XCTAssertTrue(settings.contains("value: Self.customModelTag"))
-    XCTAssertTrue(settings.contains(#""自定义…""#))
-    XCTAssertTrue(
-      settings.contains("private static let customModelTag"),
-      "哨兵值要不可能与真实模型名撞车")
+    // 只看模型下拉那一段：输出语言的「自定义…」是另一回事，保留。
+    let start = try XCTUnwrap(settings.range(of: "private func modelChoiceSections("))
+    let end = try XCTUnwrap(settings.range(of: "private func isCustomModelName(", range: start.upperBound..<settings.endIndex))
+    let modelChoices = settings[start.lowerBound..<end.lowerBound]
+    XCTAssertFalse(modelChoices.contains(#""自定义…""#), "模型下拉的「自定义…」回来了")
+    XCTAssertTrue(settings.contains(#"subtitle: "不在模型服务里""#))
+    XCTAssertTrue(settings.contains("unavailableHint:"))
+    XCTAssertTrue(settings.contains(".disabled(options.isEmpty"))
   }
 
   /// 凡是留给用户打字的输入框，都必须有可见边框。

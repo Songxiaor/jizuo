@@ -94,3 +94,75 @@ public enum MediaSeekLink {
     return LeadingTimestamp(text: String(line[line.startIndex..<index]), seconds: seconds, endIndex: index)
   }
 }
+
+/// 转写稿「当文章读」的样子：去掉段首时间码，把一句一段的字幕合成正常段落。
+///
+/// 只改显示，不改存下来的正文。时间码对「对照视频」有用，对「当文章读」是噪音。
+public enum TranscriptReadingText {
+  /// 前面几十行里至少有两行以时间码开头，才算带时间码的转写稿。只扫开头，长稿也不费事。
+  public static func hasLeadingTimecodes(_ markdown: String, scanLines: Int = 40) -> Bool {
+    var hits = 0
+    for line in markdown.split(separator: "\n", omittingEmptySubsequences: true).prefix(scanLines) {
+      if MediaSeekLink.leadingTimestamp(in: String(line)) != nil {
+        hits += 1
+        if hits >= 2 { return true }
+      }
+    }
+    return false
+  }
+
+  /// - Parameters:
+  ///   - pauseSeconds: 相邻两句开始时间差这么多秒以上，另起一段（说话停顿、换话题）。
+  ///   - paragraphCharacters: 一段累计到这么长，遇到句末标点就另起一段，免得整篇一大坨。
+  public static func removingTimecodes(
+    from markdown: String,
+    pauseSeconds: Int = 12,
+    paragraphCharacters: Int = 280
+  ) -> String {
+    guard hasLeadingTimecodes(markdown) else { return markdown }
+    var output: [String] = []
+    var paragraph = ""
+    var lastSeconds: Int?
+
+    func flush() {
+      let trimmed = paragraph.trimmingCharacters(in: .whitespaces)
+      if !trimmed.isEmpty { output.append(trimmed) }
+      paragraph = ""
+    }
+
+    for rawLine in markdown.components(separatedBy: "\n") {
+      let line = rawLine.trimmingCharacters(in: .whitespaces)
+      if line.isEmpty { continue }
+      guard let stamp = MediaSeekLink.leadingTimestamp(in: line) else {
+        // 标题、说明这类不带时间码的行原样保留，自成一段。
+        flush()
+        output.append(line)
+        lastSeconds = nil
+        continue
+      }
+      let text = String(line[stamp.endIndex...]).trimmingCharacters(in: .whitespaces)
+      if let lastSeconds, stamp.seconds - lastSeconds >= pauseSeconds {
+        flush()
+      } else if paragraph.count >= paragraphCharacters, endsSentence(paragraph) {
+        flush()
+      }
+      lastSeconds = stamp.seconds
+      guard !text.isEmpty else { continue }
+      paragraph = joined(paragraph, text)
+    }
+    flush()
+    return output.joined(separator: "\n\n")
+  }
+
+  private static func endsSentence(_ text: String) -> Bool {
+    guard let last = text.trimmingCharacters(in: .whitespaces).last else { return false }
+    return "。！？.!?…」\"”".contains(last)
+  }
+
+  /// 中文句子之间不加空格，英文句子之间加一个。
+  private static func joined(_ head: String, _ tail: String) -> String {
+    guard let left = head.last, let right = tail.first else { return head + tail }
+    let isCJK: (Character) -> Bool = { $0.unicodeScalars.first.map { $0.value >= 0x2E80 } ?? false }
+    return isCJK(left) || isCJK(right) ? head + tail : head + " " + tail
+  }
+}

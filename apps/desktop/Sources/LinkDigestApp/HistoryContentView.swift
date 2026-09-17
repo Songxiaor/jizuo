@@ -875,7 +875,9 @@ struct HistoryContentView: View {
               isSelected: model.selectedTaskIDs.contains(row.taskID),
               faviconURL: model.faviconImageURL(for: row),
               theme: theme,
-              showsAuthor: !UIReadingHistoryRow.repeatsPreviousAuthor(in: model.rows, at: index),
+              // 分组的第一行总是写作者：上一行在另一个分组里，读者看不到它。
+              showsAuthor: index == section.entries.first?.index
+                || !UIReadingHistoryRow.repeatsPreviousAuthor(in: model.rows, at: index),
               onToggleFavorite: { model.toggleFavorite(taskID: row.taskID) },
               onSummarize: { summarizeSingle(row) },
               onActivate: { model.selectedTaskIDs = [row.taskID] },
@@ -934,7 +936,8 @@ struct HistoryContentView: View {
     }
     // 剪贴板提示改成浮层。原来它排在列表上面，出现和消失都会把整张列表
     // 往下推一截又弹回来——用户正在读的那一行会自己跑掉。
-    .overlay(alignment: .top) {
+    // 浮在列表**底部**：放在顶部会一直盖住列表第一条（通常正是刚选中、正在读的那条）。
+    .overlay(alignment: .bottom) {
       if let suggestion = manualLink.clipboardSuggestion {
         ClipboardSuggestionBanner(
           suggestion: suggestion,
@@ -948,8 +951,8 @@ struct HistoryContentView: View {
         )
         .designShadow(.floating, tint: theme.canvas)
         .padding(.horizontal, 10)
-        .padding(.top, 48)
-        .transition(historyBannerTransition(reduceMotion: reduceMotion))
+        .padding(.bottom, 12)
+        .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
       }
     }
     .animation(
@@ -2245,7 +2248,10 @@ struct HistoryContentView: View {
       let masonryIDs = entries.map(\.id)
       // 读这个状态让量完高度后重排一次；真实高度本身放在不触发重算的暂存处。
       let _ = creatorMasonryMeasuredRevision
-      let measured = creatorMasonryHeightBox.key == masonryKey ? creatorMasonryHeightBox.heights : [:]
+      // 卡片高度只跟列宽有关：换排序、换博主都不该清空已量好的高度，
+      // 否则位置和高度都没变的卡不会再上报，永远凑不齐「全部量完」。
+      let heightKey = "\(Int(columnWidth))"
+      let measured = creatorMasonryHeightBox.key == heightKey ? creatorMasonryHeightBox.heights : [:]
       let masonryHeights = entries.map {
         measured[$0.id] ?? CreatorWorkMasonry.estimatedHeight(
           text: $0.estimateText(savedRows: savedRows),
@@ -2284,7 +2290,7 @@ struct HistoryContentView: View {
                       ForEach(column, id: \.id) { entry in
                         creatorWorkMasonryCard(entry, savedRows: savedRows, likesThreshold: likesThreshold)
                           .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                            creatorMasonryHeightBox.record(height, for: entry.id, key: masonryKey) {
+                            creatorMasonryHeightBox.record(height, for: entry.id, key: heightKey) {
                               creatorMasonryMeasuredRevision += 1
                             }
                           }
@@ -2615,6 +2621,7 @@ struct HistoryContentView: View {
     } else {
       detailStateContent
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .overlay(alignment: .top) { ToolbarScrollFade(background: theme.card) }
         .background(theme.card.ignoresSafeArea(edges: .top))
     }
   }
@@ -3164,10 +3171,11 @@ struct HistoryWindowToolbarThemeModifier: ViewModifier {
     } else if #available(macOS 26.0, *) {
       // macOS 26 起工具栏是悬浮 Liquid Glass，不再有可着色的整条背景；
       // 自定义 toolbarBackground 反而会压掉系统的 scroll edge effect，
-      // 表现就是正文文字原样从悬浮图标底下穿过去。改用硬边 scroll edge：
-      // 滚动内容在工具栏下沿被截断遮挡，主题底色由列自身背景提供。
+      // 表现就是正文文字原样从悬浮图标底下穿过去。用系统的柔和 scroll edge：
+      // 内容滑到工具栏下方时渐变模糊淡出，图标保持清晰，又不像硬边那样一刀切。
+      // 原来是 `.hard`，实测在 macOS 27 上视频和正文仍从图标底下原样穿过。
       content
-        .scrollEdgeEffectStyle(.hard, for: .top)
+        .scrollEdgeEffectStyle(.soft, for: .top)
         .toolbarBackground(.hidden, for: .windowToolbar)
         .toolbarColorScheme(theme.isDark ? .dark : .light, for: .windowToolbar)
     } else {
@@ -3176,6 +3184,42 @@ struct HistoryWindowToolbarThemeModifier: ViewModifier {
         .toolbarBackground(.visible, for: .windowToolbar)
         .toolbarColorScheme(theme.isDark ? .dark : .light, for: .windowToolbar)
     }
+  }
+}
+
+/// 详情列顶部、工具栏那一条的渐变毛玻璃。
+///
+/// 系统的 scroll edge effect（`.hard` / `.soft`）在详情列实测都不生效：视频和正文
+/// 原样从星标、标签这些悬浮图标底下穿过，图标看不清。列表列没这个问题。
+/// 这里自己叠一层：毛玻璃 + 列底色，越往上越实，向下渐变到透明。
+/// 只盖工具栏那一条（安全区顶部再多一点），不接收点击，也不在工具栏按钮之上。
+struct ToolbarScrollFade: View {
+  let background: Color
+
+  var body: some View {
+    GeometryReader { proxy in
+      ZStack {
+        Rectangle().fill(.ultraThinMaterial)
+        background.opacity(0.6)
+      }
+      .mask(
+        LinearGradient(
+          stops: [
+            .init(color: .black, location: 0),
+            .init(color: .black, location: 0.5),
+            .init(color: .clear, location: 1),
+          ],
+          startPoint: .top,
+          endPoint: .bottom
+        )
+      )
+      // 只盖工具栏那一条（安全区），不往下多盖：再往下就压到吸顶表头和标题上沿了。
+      .frame(height: proxy.safeAreaInsets.top)
+      .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+      .ignoresSafeArea(edges: .top)
+    }
+    .allowsHitTesting(false)
+    .accessibilityHidden(true)
   }
 }
 
@@ -3338,6 +3382,8 @@ private struct HistoryDetailView: View, Equatable {
   @State private var derivedMemo = DetailDerivedMemo()
   /// 当前转写稿的分段时间，空数组表示这份正文没有可跳转的时间。
   @State private var transcriptParagraphs: [TranscriptParagraph] = []
+  /// 转写稿显示段首时间码。关掉时去掉时间码、把短句合成段落，当文章读；全局记住。
+  @AppStorage("reading-shows-transcript-timecodes") private var showsTranscriptTimecodes = true
   /// 分段属于哪一份 snapshot。切换条目时新分段还没读回来，旧分段会在这一帧
   /// 配上新正文——记住来源，对不上就不画锚点。
   @State private var transcriptParagraphsSnapshotID: ContentSnapshotID?
@@ -4240,6 +4286,11 @@ private struct HistoryDetailView: View, Equatable {
       .padding(.bottom, 48)
       .subtleScrollers()
     }
+    .popover(
+      isPresented: $isRegeneratePopoverPresented,
+      attachmentAnchor: .rect(.bounds),
+      arrowEdge: .top
+    ) { regeneratePopover }
     .coordinateSpace(name: HistoryDetailView.readingScrollSpace)
     // 表头滚出顶部就吸住；滚回来落回原位。一打开时顶部干干净净，只放信息。
     .onPreferenceChange(ReadingHeaderOffsetPreferenceKey.self) { minY in
@@ -5119,8 +5170,40 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   /// 表头右边的动作：只列**还没做**的。转写、总结、翻译三个动词并排，一种样子。
+  /// 当前页签看的是不是带时间码的转写稿（原文的转写 / 画面字幕层，或它们的译文）。
+  private var currentPaneHasTimecodes: Bool {
+    switch effectiveReadingPane {
+    case .source:
+      if !transcriptParagraphs.isEmpty { return true }
+      return activeSourceLayer == .transcript || activeSourceLayer == .subtitles
+    case .translation:
+      if activeTranslationLayer == .transcript || activeTranslationLayer == .subtitles { return true }
+      guard let body = translationArtifact?.bodyText else { return false }
+      return TranscriptReadingText.hasLeadingTimecodes(body)
+    case .summary:
+      return false
+    }
+  }
+
+  @ViewBuilder private var timecodeToggle: some View {
+    if currentPaneHasTimecodes {
+      Button {
+        showsTranscriptTimecodes.toggle()
+      } label: {
+        Image(systemName: showsTranscriptTimecodes ? "clock" : "text.alignleft")
+      }
+      .buttonStyle(.appIcon)
+      .help(showsTranscriptTimecodes
+        ? "隐藏时间码，合成段落当文章读"
+        : "显示时间码，可以点时间码跳到视频对应位置")
+      .accessibilityLabel(showsTranscriptTimecodes ? "隐藏时间码" : "显示时间码")
+      .accessibilityIdentifier("reading-timecode-toggle")
+    }
+  }
+
   private var readingVerbs: some View {
     HStack(spacing: DesignTokens.Space.sm) {
+      timecodeToggle
       transcribeVerb
       runVerb(.summarize)
       runVerb(.translate)
@@ -5514,8 +5597,8 @@ private struct HistoryDetailView: View, Equatable {
     .help("重做、脑图、整理与运行详情")
     .accessibilityLabel("更多处理")
     .accessibilityIdentifier("history-more-actions-menu")
-    // popover 锚在这个菜单上——它的入口「换个模型重跑…」就在这里面。
-    .popover(isPresented: $isRegeneratePopoverPresented) { regeneratePopover }
+    // popover 不挂在这里：这个菜单在原位表头和吸顶表头里各有一份，挂在这里就有两个
+    // popover 抢同一个开关，其中一个还锚在滚出屏幕的原位表头上。统一挂在正文区外层。
   }
 
   @ViewBuilder private func actionPill(
@@ -5800,6 +5883,9 @@ private struct HistoryDetailView: View, Equatable {
       statusText: appModel.runStatusText,
       isActive: appModel.runState.isActive,
       hasFailure: appModel.runHasFailure,
+      modelFixAction: ModelFailureFix(runState: appModel.runState).map { fix in
+        (title: fix.buttonTitle, action: { openSettings() })
+      },
       dangerColor: theme.danger,
       font: readingFont.nsFont(),
       color: NSColor(theme.primaryText),
@@ -5999,11 +6085,15 @@ private struct HistoryDetailView: View, Equatable {
         }
       }
       .padding(.top, DesignTokens.Space.xs)
+      // 自己写的笔记没有上面那个输入框，这一块就没有东西把它撑满宽度，
+      // 标签按钮会被挤到正中间。显式靠左、占满。
+      .frame(maxWidth: .infinity, alignment: .leading)
     } label: {
       Text("笔记 · 标签")
         .themedFont(.subheadline, weight: .medium)
         .foregroundStyle(theme.secondaryText)
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityIdentifier("history-note-tag-bar")
   }
 
@@ -6179,8 +6269,19 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
 
-  @ViewBuilder
+  /// 必须是**一个**视图：它放在 `mountedReadingPane` 的 ZStack 里，外面挂的 opacity、
+  /// 高度测量都按「一个面板」算。原来这里 `@ViewBuilder` 直接吐出「不完整提示 + 层切换 +
+  /// 正文」几个兄弟视图，在 ZStack 里各自成一层叠在同一个位置——翻译页的「配文 / 视频转写」
+  /// 和正文的「目录 · N 个模块」于是压在一起，面板高度也只量到其中一块。
   private func readingPaneBody(_ pane: ReadingPane) -> some View {
+    VStack(alignment: .leading, spacing: 0) {
+      readingPaneContent(pane)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  @ViewBuilder
+  private func readingPaneContent(_ pane: ReadingPane) -> some View {
     switch pane {
     case .summary, .translation:
       if showsLiveRunInReadingPane, liveRunReadingPane == pane {
@@ -6203,12 +6304,15 @@ private struct HistoryDetailView: View, Equatable {
         // 剥离与清理都是整篇扫描，走备忘缓存，正文没变不重付。
         // Summaries rarely carry images; still allow local map if present.
         MarkdownContentView(
-          source: displayedArtifactMarkdown(
-            ReadingRenderCache.paneBody(
-              // 分层时只喂当前那一层，元数据清理仍按整篇的规则走。
-              source: (pane == .translation ? activeTranslationBody : nil) ?? artifact.bodyText,
-              strippingEchoedMetadata: pane == .translation
-            )
+          source: translationTimecodesApplied(
+            displayedArtifactMarkdown(
+              ReadingRenderCache.paneBody(
+                // 分层时只喂当前那一层，元数据清理仍按整篇的规则走。
+                source: (pane == .translation ? activeTranslationBody : nil) ?? artifact.bodyText,
+                strippingEchoedMetadata: pane == .translation
+              )
+            ),
+            pane: pane
           ),
           sourceURL: URL(string: sourceURL),
           localImageURLs: localImageURLs,
@@ -6528,7 +6632,7 @@ private struct HistoryDetailView: View, Equatable {
             onFollowWikiLink: { title in model.followWikiLink(toTitle: title) },
             onRequestEdit: nil
           )
-        } else if !showsPlainText, !transcriptParagraphs.isEmpty,
+        } else if !showsPlainText, showsTranscriptTimecodes, !transcriptParagraphs.isEmpty,
                   snapshot.id == transcriptParagraphsSnapshotID {
           // 有分段时间的转写稿走时间线视图；纯文本模式仍回普通阅读区，那是
           // 「我只想看字」的入口，不该被锚点打断。
@@ -6546,7 +6650,9 @@ private struct HistoryDetailView: View, Equatable {
           MarkdownContentView(
             // 链接化放在**最外层**：先让 paneBody 做完它的清理，再把时间码变成
             // 链接，免得清理步骤把刚生成的链接语法拆掉。
-            source: timestampLinked(displayedSourceMarkdown(snapshot, bodyOverride: bodyOverride)),
+            source: showsTranscriptTimecodes
+              ? timestampLinked(displayedSourceMarkdown(snapshot, bodyOverride: bodyOverride))
+              : TranscriptReadingText.removingTimecodes(from: displayedSourceMarkdown(snapshot, bodyOverride: bodyOverride)),
             sourceURL: URL(string: sourceURL),
             localImageURLs: localImageURLs,
             localMediaFileURL: localMediaFileURL,
@@ -6593,6 +6699,12 @@ private struct HistoryDetailView: View, Equatable {
   /// 只会让人以为坏了。
   private var hasSeekableMedia: Bool {
     detail.media != nil || localMediaFileURL != nil
+  }
+
+  /// 译文里的转写稿同样受「时间码」开关控制；总结不动。
+  private func translationTimecodesApplied(_ text: String, pane: ReadingPane) -> String {
+    guard pane == .translation, !showsTranscriptTimecodes else { return text }
+    return TranscriptReadingText.removingTimecodes(from: text)
   }
 
   /// 有视频才把段首时间码变成可点击链接。
@@ -7321,11 +7433,40 @@ private struct PointingHandOnHover: ViewModifier {
 
 /// 生成中总结/翻译的叶子视图：观察 `LiveRunTextModel`，流式增长拍点只
 /// 重绘这里（见 HistoryDetailView.liveRunReadingBody）。
+/// 模型本身用不了（下架、仅限官方客户端、需充值、密钥无效…）导致的失败：给一个直达设置的出口。
+/// 暂时不可用、网络中断这类稍后重试就好的，不给这个按钮。
+struct ModelFailureFix: Equatable {
+  let status: ModelHealthStatus
+
+  init?(runState: RunState) {
+    let code: String
+    switch runState {
+    case let .failed(_, failureCode): code = failureCode
+    case let .incomplete(_, _, failureCode): code = failureCode
+    default: return nil
+    }
+    guard let providerCode = ModelProviderErrorCode(rawValue: code),
+          let status = ModelHealthStatus(failure: providerCode),
+          status != .temporarilyUnavailable, status != .available
+    else { return nil }
+    self.status = status
+  }
+
+  var buttonTitle: String {
+    switch status {
+    case .keyInvalid: "去更换密钥"
+    case .billingLimited: "去设置换模型或查看额度"
+    default: "去「模型与识别」换一个模型"
+    }
+  }
+}
+
 private struct LiveRunReadingBody: View {
   @ObservedObject var live: LiveRunTextModel
   let statusText: String
   let isActive: Bool
   let hasFailure: Bool
+  var modelFixAction: (title: String, action: () -> Void)? = nil
   let dangerColor: Color
   let font: NSFont
   let color: NSColor
@@ -7344,6 +7485,11 @@ private struct LiveRunReadingBody: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 24)
+        if hasFailure, let modelFixAction {
+          Button(modelFixAction.title, action: modelFixAction.action)
+            .controlSize(.regular)
+            .accessibilityIdentifier("run-failure-fix-model")
+        }
       } else {
         if hasFailure || !isActive {
           Text(statusText)

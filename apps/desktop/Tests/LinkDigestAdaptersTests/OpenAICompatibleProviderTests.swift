@@ -399,6 +399,42 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     XCTAssertFalse(String(describing: result.failure).contains("余额不足"))
   }
 
+  /// 实测 opencode Zen（2026-09-17）的三种回包：状态码和真实原因对不上，按正文 type 归类。
+  func testStructuredProviderErrorTypesOverrideMisleadingStatusCodes() async throws {
+    for (statusCode, body, expectedCode, retryable) in [
+      (401, #"{"type":"error","error":{"type":"ModelError","message":"Model longcat-2.0-free is not supported"}}"#,
+       ModelProviderErrorCode.modelNotFound, false),
+      (403, #"{"type":"error","error":{"type":"FreeTierError","message":"free tier can only be used from within OpenCode"}}"#,
+       ModelProviderErrorCode.freeTierRestricted, false),
+      (401, #"{"type":"error","error":{"type":"AuthError","message":"Invalid API key."}}"#,
+       ModelProviderErrorCode.authInvalid, false),
+    ] {
+      let key = "sentinel-\(UUID().uuidString)"
+      let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [
+        .init(statusCode: statusCode, contentType: "application/json", chunks: [.init(body)])
+      ])
+      let baseURL = try server.start()
+      let result = await collect(provider: makeProvider(), profile: try profile(baseURL), apiKey: key)
+      server.stop()
+      XCTAssertEqual(result.failure?.code, expectedCode, body)
+      XCTAssertEqual(result.failure?.retryable, retryable)
+    }
+  }
+
+  func testUpstreamServerErrorOn400IsTemporaryUnavailability() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let body = #"{"error":{"type":"server_error","message":"Upstream request failed: Model is unavailable."}}"#
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [
+      .init(statusCode: 400, contentType: "application/json", chunks: [.init(body)]),
+      .init(statusCode: 400, contentType: "application/json", chunks: [.init(body)]),
+      .init(statusCode: 400, contentType: "application/json", chunks: [.init(body)]),
+    ])
+    let baseURL = try server.start()
+    let result = await collect(provider: makeProvider(), profile: try profile(baseURL), apiKey: key)
+    server.stop()
+    XCTAssertEqual(result.failure?.code, .providerUnavailable)
+  }
+
   func test403And404And413MapToStableNonRetryableFailures() async throws {
     for (statusCode, expectedCode) in [
       // 403 与 401 分开：Key 有效但没有该模型的权限，换 Key 修不了。

@@ -346,7 +346,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       }
       // 回收站永远按删除时间（写在 updated_at_ms 上）排，见上。
       let ordersBySavedTime = filter.ordersBySavedTime && !filter.scope.isTrashOnly
-      let orderColumn = ordersBySavedTime ? "COALESCE(t.created_at_ms, t.updated_at_ms)" : "t.updated_at_ms"
+      // created_at_ms 在建表时就是 NOT NULL，不需要 COALESCE；包一层函数反而用不上索引。
+      let orderColumn = ordersBySavedTime ? "t.created_at_ms" : "t.updated_at_ms"
       if let cursor {
         let value = ordersBySavedTime ? (cursor.savedAtMilliseconds ?? cursor.updatedAtMilliseconds) : cursor.updatedAtMilliseconds
         predicates.append("(\(orderColumn) < ? OR (\(orderColumn) = ? AND t.id < ?))")

@@ -38,6 +38,7 @@ enum V02ErrorCatalog {
     ModelProviderErrorCode.modelNotFound.rawValue,
     ModelProviderErrorCode.providerBillingLimited.rawValue,
     ModelProviderErrorCode.providerRequestRejected.rawValue,
+    ModelProviderErrorCode.freeTierRestricted.rawValue,
     ModelProviderErrorCode.rateLimited.rawValue,
     ModelProviderErrorCode.providerUnavailable.rawValue,
     ModelProviderErrorCode.networkInterrupted.rawValue,
@@ -139,13 +140,18 @@ enum V02ErrorCatalog {
       )
     case ModelProviderErrorCode.modelNotFound.rawValue:
       .init(
-        message: "模型服务那边找不到你选的这个模型。",
-        recoveryAction: "你的内容没有受影响。请回到「模型与识别」点「读取模型列表」重新选一个，或确认这个模型在你的账号下已经开通。"
+        message: "模型服务那边找不到你选的这个模型，可能已经下架。",
+        recoveryAction: "密钥没问题，你的内容也没有受影响。请回到「模型与识别」点「读取模型列表」重新选一个还在的模型。"
       )
     case ModelProviderErrorCode.providerBillingLimited.rawValue:
       .init(
         message: "模型服务因为计费或配额限制挡下了这次请求。",
         recoveryAction: "没有产生这次的费用，你的内容也没有受影响。请去服务商控制台看看支付方式、余额或额度，再回来重试。"
+      )
+    case ModelProviderErrorCode.freeTierRestricted.rawValue:
+      .init(
+        message: "这个免费模型只能在服务商自家的工具里用。",
+        recoveryAction: "密钥没问题，你的内容也没有受影响。服务商把免费模型限定在自家客户端里，汲作调用不了。请在「模型与识别」换成付费模型，或换一家服务商的模型。"
       )
     case ModelProviderErrorCode.providerRequestRejected.rawValue:
       .init(

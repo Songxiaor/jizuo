@@ -366,6 +366,158 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertEqual(secretWrites, 1)
   }
 
+  func testFetchingLatestModelsForAddedProviderReusesItsSavedKey() async throws {
+    let secretStore = ViewModelSecretStore()
+    let configuration = ProviderConfigurationService(
+      profileStore: ViewModelProfileStore(),
+      secretStore: secretStore,
+      libraryStore: ViewModelLibraryStore()
+    )
+    let existing = try await configuration.addProfiles(
+      baseURL: "https://api.commandcode.ai/v1", models: ["model-a"], apiKey: "saved-key"
+    )
+    let model = ProviderSettingsViewModel(
+      configurationService: configuration,
+      provider: SettingsTestProvider(scripts: []),
+      modelCatalogLoader: SettingsCatalogLoader(result: .models(["model-a", "model-b", "model-c"]))
+    )
+    await model.load()
+
+    await model.beginAddModelsFromProvider(profileID: existing[0].id)
+
+    XCTAssertTrue(model.isEditorVisible)
+    XCTAssertNil(model.editingProfileID, "是添加，不是编辑原来那条")
+    XCTAssertTrue(model.isReusingProviderKey)
+    XCTAssertFalse(model.shouldShowAPIKeyInput, "不需要重新输入密钥")
+    XCTAssertEqual(model.modelCatalogState, .loaded, "打开就已经读好了最新列表")
+    XCTAssertTrue(model.isModelAlreadyInLibrary("model-a"))
+
+    model.toggleCatalogModel("model-b")
+    XCTAssertTrue(model.canSaveConfiguration)
+    let writesBefore = await secretStore.writeCount()
+    await model.save(apiKey: "")
+
+    XCTAssertEqual(model.libraryEntryDisplays.map(\.modelName), ["model-a", "model-b"])
+    let added = try XCTUnwrap(model.libraryProfiles.first { $0.model == "model-b" })
+    let credentials = try await configuration.loadCredentials(profileID: added.id)
+    XCTAssertEqual(credentials?.apiKey, "saved-key")
+    XCTAssertEqual(added.secretReference, existing[0].secretReference, "共用同一条钥匙串记录")
+    let writesAfter = await secretStore.writeCount()
+    XCTAssertEqual(writesAfter, writesBefore, "不在钥匙串里新建记录")
+
+    // 删掉原来那个模型，共用的密钥不能跟着被删。
+    _ = try await configuration.deleteProfile(id: existing[0].id)
+    let stillThere = try await configuration.loadCredentials(profileID: added.id)
+    XCTAssertEqual(stillThere?.apiKey, "saved-key")
+
+    // 改了服务地址就不再沿用那把密钥。
+    await model.refreshLibrary()
+    await model.beginAddModelsFromProvider(profileID: added.id)
+    model.baseURL = "https://other.example.test/v1"
+    XCTAssertFalse(model.isReusingProviderKey)
+    XCTAssertTrue(model.shouldShowAPIKeyInput)
+  }
+
+  func testEditingSavedModelNeverAsksForKeyAgainAfterAnEarlierFailure() async throws {
+    let configuration = ProviderConfigurationService(
+      profileStore: ViewModelProfileStore(),
+      secretStore: ViewModelSecretStore(),
+      libraryStore: ViewModelLibraryStore()
+    )
+    let saved = try await configuration.addProfiles(
+      baseURL: "https://api.commandcode.ai/provider/v1", models: ["deepseek/deepseek-v4.1-flash"], apiKey: "saved-key"
+    )
+    let model = ProviderSettingsViewModel(
+      configurationService: configuration,
+      provider: SettingsTestProvider(scripts: []),
+      modelCatalogLoader: SettingsCatalogLoader(result: .models(["deepseek/deepseek-v4.1-flash"]))
+    )
+    await model.load()
+    model.beginEditModel(saved[0].id)
+    XCTAssertFalse(model.shouldShowAPIKeyInput)
+
+    // 先让一次保存失败，把整体状态打成 .failed。
+    model.baseURL = "not a url"
+    await model.save(apiKey: "")
+    guard case .failed = model.state else { return XCTFail("前置条件：保存应当失败") }
+
+    model.baseURL = "https://api.commandcode.ai/provider/v1"
+    XCTAssertFalse(model.shouldShowAPIKeyInput, "失败过一次也不该要求重新输入已保存的密钥")
+    XCTAssertEqual(model.apiKeyStatusText, "✓ 沿用已保存的密钥")
+    await model.save(apiKey: "")
+    XCTAssertEqual(model.state, .configured)
+    let credentials = try await configuration.loadCredentials(profileID: saved[0].id)
+    XCTAssertEqual(credentials?.apiKey, "saved-key")
+
+    // 主动点「更换」才要求输入。
+    model.beginAPIKeyReplacement()
+    XCTAssertTrue(model.shouldShowAPIKeyInput)
+  }
+
+  func testRecognizesCommonSpeechModelNamesButNotTTS() {
+    for name in ["whisper-large-v3-turbo", "stepaudio-2.5-asr", "FunAudioLLM/SenseVoiceSmall", "paraformer-realtime-v2",
+                 "mistralai/voxtral-mini", "gpt-4o-transcribe", "nova-2-stt", "qwen3-asr-flash"] {
+      XCTAssertTrue(ProviderSettingsViewModel.isTranscriptionModel(name), name)
+    }
+    for name in ["deepseek-v4-flash", "stepaudio-2.5-tts", "nvidia/nemotron-3.5-lightning:free", "fastrouter"] {
+      XCTAssertFalse(ProviderSettingsViewModel.isTranscriptionModel(name), name)
+    }
+  }
+
+  func testDiscoversSpeechModelsAndAddingOneMakesOnlineTranscriptionWork() async throws {
+    let secretStore = ViewModelSecretStore()
+    let configuration = ProviderConfigurationService(
+      profileStore: ViewModelProfileStore(),
+      secretStore: secretStore,
+      libraryStore: ViewModelLibraryStore()
+    )
+    let chat = try await configuration.addProfiles(
+      baseURL: "https://api.stepfun.com/v1", models: ["step-3.7-flash"], apiKey: "step-key"
+    )
+    let model = ProviderSettingsViewModel(
+      configurationService: configuration,
+      provider: SettingsTestProvider(scripts: []),
+      modelCatalogLoader: SettingsCatalogLoader(result: .models(["step-3.7-flash", "stepaudio-2.5-asr", "stepaudio-2.5-tts"]))
+    )
+    await model.load()
+    XCTAssertTrue(model.transcriptionEntryDisplays.isEmpty)
+    XCTAssertEqual(model.onlineTranscriptionModelName, "")
+
+    await model.discoverTranscriptionModels()
+    guard case let .found(candidates) = model.transcriptionDiscoveryState else { return XCTFail("应当找到语音模型") }
+    XCTAssertEqual(candidates.map(\.model), ["stepaudio-2.5-asr"], "tts 不算，已添加的不重复列")
+
+    await model.addDiscoveredTranscriptionModel(candidates[0])
+    XCTAssertEqual(model.onlineTranscriptionModelName, "stepaudio-2.5-asr")
+    XCTAssertEqual(model.effectiveTranscriptionModelName, "stepaudio-2.5-asr", "在线转写真的会用它")
+    let credentials = try await configuration.loadTranscriptionCredentials()
+    XCTAssertEqual(credentials?.apiKey, "step-key", "共用那家已保存的密钥")
+    XCTAssertEqual(credentials?.profile.secretReference, chat[0].secretReference)
+
+    // 在下拉里选「不使用」，在线转写随之关闭。
+    await model.selectOnlineTranscriptionModel("")
+    XCTAssertNil(model.effectiveTranscriptionModelName)
+    await model.selectOnlineTranscriptionModel("stepaudio-2.5-asr")
+    XCTAssertEqual(model.effectiveTranscriptionModelName, "stepaudio-2.5-asr")
+  }
+
+  func testDiscoveryReportsWhenNoProviderHasSpeechModels() async throws {
+    let configuration = ProviderConfigurationService(
+      profileStore: ViewModelProfileStore(),
+      secretStore: ViewModelSecretStore(),
+      libraryStore: ViewModelLibraryStore()
+    )
+    _ = try await configuration.addProfiles(baseURL: "https://openrouter.ai/api/v1", models: ["a"], apiKey: "k")
+    let model = ProviderSettingsViewModel(
+      configurationService: configuration,
+      provider: SettingsTestProvider(scripts: []),
+      modelCatalogLoader: SettingsCatalogLoader(result: .models(["a", "b"]))
+    )
+    await model.load()
+    await model.discoverTranscriptionModels()
+    XCTAssertEqual(model.transcriptionDiscoveryState, .none(searchedProviders: 1))
+  }
+
   func testLibraryPresentationUsesFriendlyNamesAndFiltersTranscriptionModels() async throws {
     let configuration = ProviderConfigurationService(
       profileStore: ViewModelProfileStore(),

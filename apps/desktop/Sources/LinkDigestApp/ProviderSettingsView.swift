@@ -149,6 +149,14 @@ struct ProviderSettingsView: View {
   /// 哪一段属于谁。默认全部收起——归拢的意义就是先只看「有哪几家」。
   @State private var expandedLibraryProvider: String?
   @State private var activeAssignmentPicker: AssignmentPicker?
+  /// 「检测可用性」包含付费模型时的确认框：编辑窗口里的列表，或模型库。
+  @State private var pendingProbeScope: ModelProbeScope?
+
+  enum ModelProbeScope: Identifiable {
+    case catalog
+    case library
+    var id: Self { self }
+  }
   /// 「功能与模型」里哪几行的 ⓘ 展开着。按标题记，不给六行各开一个 Bool。
   @State private var expandedAssignmentDetails: Set<String> = []
   /// 编辑模型时是否展开服务商网格。默认折叠成一行，点「更换」才展开。
@@ -472,6 +480,7 @@ struct ProviderSettingsView: View {
         details: UISettingsPresentation.modelServicesDetails,
         controlWidth: .full,
         titleAccessory: {
+          modelProbeButton(scope: .library)
           Button("添加模型…") { model.beginAddModel() }
             .buttonStyle(.appProminent(settingsTheme.accent))
             .disabled(model.isSaving || model.isConfigurationLoading || model.isTestingConnection || model.isLoadingModels)
@@ -597,10 +606,26 @@ struct ProviderSettingsView: View {
             .foregroundStyle(.secondary)
             .settingsControlWidth()
         } else {
-          assignmentPickerButton(
-            kind: .summary,
-            selectedEntry: model.summaryEntryDisplays.first(where: { $0.id == model.summaryAssignmentID })
-          )
+          let summaryEntry = model.summaryEntryDisplays.first(where: { $0.id == model.summaryAssignmentID })
+          VStack(alignment: .trailing, spacing: 4) {
+            assignmentPickerButton(kind: .summary, selectedEntry: summaryEntry)
+            // 总结模型用不了时，翻译、校对（默认跟着它）也一起失败：就地说清楚，给出口。
+            if let summaryEntry,
+               let record = model.healthRecord(baseURL: summaryEntry.baseURL, model: summaryEntry.modelName),
+               record.status != .available, record.status != .temporarilyUnavailable {
+              let badge = model.healthBadge(baseURL: summaryEntry.baseURL, model: summaryEntry.modelName)
+              HStack(spacing: 6) {
+                Label("\(badge.text)：总结和翻译会失败", systemImage: badge.symbol)
+                  .themedFont(.caption, weight: .medium)
+                  .foregroundStyle(badge.color(theme: settingsTheme))
+                  .help(badge.detail)
+                Button("换一个模型") { activeAssignmentPicker = .summary }
+                  .buttonStyle(.appQuiet)
+                  .controlSize(.small)
+              }
+              .accessibilityIdentifier("summary-assignment-health-warning")
+            }
+          }
         }
       }
 
@@ -618,25 +643,45 @@ struct ProviderSettingsView: View {
         )
       }
 
-      assignmentRow(title: UISettingsPresentation.localTranscriptionTitle) {
-        assignmentPickerButton(
-          kind: .transcription,
-          selectedEntry: model.transcriptionEntryDisplays.first(where: { $0.id == model.transcriptionAssignmentID })
-        )
+      // 本地转写固定是 Apple 听写。原来这里也能选在线模型，和下面「在线备用转写」
+      // 管的是同一个设置，两行互相覆盖；在线模型只在下面那一行选。
+      assignmentRow(
+        title: UISettingsPresentation.localTranscriptionTitle,
+        details: "视频转文字默认用 Mac 自带的 Apple 听写，全程在本机完成，不联网、不花钱。"
+      ) {
+        VStack(alignment: .trailing, spacing: DesignTokens.Space.xxs) {
+          Text("Apple 听写 · 本机离线")
+            .themedFont(.body)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+          Text("本机离线，不需要配置")
+            .themedFont(.subheadline)
+            .foregroundStyle(.tertiary)
+            .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityIdentifier("transcription-assignment-picker")
       }
 
       assignmentRow(
         title: UISettingsPresentation.onlineTranscriptionTitle,
         details: "给超过 200MB、无法本机导入的视频用。"
       ) {
-        preferenceModelAssignmentControl(
-          title: UISettingsPresentation.onlineTranscriptionTitle,
-          emptyOptionTitle: "不使用：只用 Apple 本机转写",
-          options: model.transcriptionEntryDisplays,
-          text: $model.transcriptionModelName,
-          identifier: "transcription-model-name",
-          customPlaceholder: "例如 whisper-large-v3-turbo"
-        )
+        VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
+          preferenceModelAssignmentControl(
+            title: UISettingsPresentation.onlineTranscriptionTitle,
+            emptyOptionTitle: "不使用：只用 Apple 本机转写",
+            options: model.transcriptionEntryDisplays,
+            text: Binding(
+              get: { model.onlineTranscriptionModelName },
+              set: { name in Task { await model.selectOnlineTranscriptionModel(name) } }
+            ),
+            identifier: "transcription-model-name",
+            customPlaceholder: "例如 whisper-large-v3-turbo",
+            unavailableHint: "「模型服务」里还没有能转写语音的模型。"
+          )
+          transcriptionDiscoveryControls
+        }
       }
 
       assignmentRow(
@@ -674,6 +719,67 @@ struct ProviderSettingsView: View {
         }
         .accessibilityElement(children: .combine)
         .accessibilityIdentifier("image-text-assignment-picker")
+      }
+    }
+  }
+
+  /// 在已添加的服务商里找语音转写模型，找到就一键添加并使用。
+  @ViewBuilder private var transcriptionDiscoveryControls: some View {
+    switch model.transcriptionDiscoveryState {
+    case .idle:
+      Button("在已添加的服务商里查找") { Task { await model.discoverTranscriptionModels() } }
+        .buttonStyle(.appQuiet)
+        .controlSize(.small)
+        .disabled(model.libraryEntryDisplays.isEmpty)
+        .help("读取各家服务商的模型列表（不收费），挑出能转写语音的模型")
+        .accessibilityIdentifier("discover-transcription-models")
+    case .searching:
+      HStack(spacing: 6) {
+        ProgressView().controlSize(.small)
+        Text("正在查找…").themedFont(.caption).foregroundStyle(.secondary)
+      }
+    case let .found(candidates):
+      VStack(alignment: .trailing, spacing: 4) {
+        Text("找到 \(candidates.count) 个语音转写模型")
+          .themedFont(.caption, weight: .medium)
+          .foregroundStyle(.secondary)
+        ForEach(candidates.prefix(8)) { candidate in
+          HStack(spacing: 8) {
+            VStack(alignment: .trailing, spacing: 0) {
+              Text(candidate.model).themedFont(.caption).lineLimit(1).truncationMode(.middle)
+              Text(candidate.providerTitle).themedFont(.caption2).foregroundStyle(.tertiary)
+            }
+            Button("添加并使用") { Task { await model.addDiscoveredTranscriptionModel(candidate) } }
+              .buttonStyle(.appQuiet)
+              .controlSize(.small)
+              .accessibilityIdentifier("add-discovered-transcription-model")
+          }
+        }
+      }
+      .frame(maxWidth: 300, alignment: .trailing)
+    case let .none(searched):
+      VStack(alignment: .trailing, spacing: 2) {
+        Text("查了已添加的 \(searched) 家服务商，都没有语音转写模型。")
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.trailing)
+          .fixedSize(horizontal: false, vertical: true)
+        Text("需要另加一家提供语音转写的服务商，比如阶跃星辰、硅基流动、Groq。")
+          .themedFont(.caption2)
+          .foregroundStyle(.tertiary)
+          .multilineTextAlignment(.trailing)
+          .fixedSize(horizontal: false, vertical: true)
+        Button("重新查找") { Task { await model.discoverTranscriptionModels() } }
+          .buttonStyle(.appQuiet)
+          .controlSize(.small)
+      }
+      .frame(maxWidth: 300, alignment: .trailing)
+    case .failed:
+      HStack(spacing: 6) {
+        Text("没能读取服务商的模型列表").themedFont(.caption).foregroundStyle(appTheme.warning)
+        Button("重试") { Task { await model.discoverTranscriptionModels() } }
+          .buttonStyle(.appQuiet)
+          .controlSize(.small)
       }
     }
   }
@@ -722,13 +828,19 @@ struct ProviderSettingsView: View {
   }
 
   @ViewBuilder
+  /// 翻译 / 在线备用转写 / 校对的模型下拉。
+  ///
+  /// 只能从「模型服务」里已经添加的模型中选，不再有「自定义…」：手填的名字没有对应的
+  /// 服务地址和密钥，实际调用时只能套用总结模型那家的配置，名字填错了也看不出来。
+  /// 没有可选的模型时整个下拉变灰，并说明要先去添加什么样的模型。
   private func preferenceModelAssignmentControl(
     title: String,
     emptyOptionTitle: String,
     options: [ProviderSettingsViewModel.LibraryEntryDisplay],
     text: Binding<String>,
     identifier: String,
-    customPlaceholder: String
+    customPlaceholder _: String,
+    unavailableHint: String? = nil
   ) -> some View {
     VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
       modelChoicePicker(
@@ -738,18 +850,97 @@ struct ProviderSettingsView: View {
         text: text,
         identifier: identifier
       )
-      modelChoiceCustomField(
-        placeholder: customPlaceholder,
-        options: options,
-        text: text,
-        identifier: identifier
-      )
+      .disabled(options.isEmpty && text.wrappedValue.trimmingCharacters(in: .whitespaces).isEmpty)
+      if options.isEmpty, let unavailableHint {
+        Text(unavailableHint)
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.trailing)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: 260, alignment: .trailing)
+          .accessibilityIdentifier("\(identifier)-unavailable")
+      } else if isCustomModelName(text.wrappedValue, in: options) {
+        // 以前手填过、现在不在模型服务里的名字：照实说明，让用户换成列表里的模型。
+        Text("「\(text.wrappedValue.trimmingCharacters(in: .whitespaces))」不在模型服务里，请改选列表中的模型")
+          .themedFont(.caption)
+          .foregroundStyle(appTheme.warning)
+          .multilineTextAlignment(.trailing)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: 260, alignment: .trailing)
+          .accessibilityIdentifier("\(identifier)-legacy-custom")
+      }
     }
   }
 
   /// 总结 / 本地转写的选择按钮：和其它行的下拉同一宽度、同一描边，点开是分组 popover。
   ///
   /// 不用系统 `Picker`：选项要按服务商分组、每项带模型 ID 副标题，menu Picker 画不出来。
+  private func pickerLabel(for name: String) -> String {
+    guard let base = model.editorHealthBaseURL, model.healthRecord(baseURL: base, model: name) != nil else { return name }
+    return "\(name)　·　\(model.healthBadge(baseURL: base, model: name).text)"
+  }
+
+  /// 「检测可用性」：免费模型直接测；有付费模型时先问一句，因为每条会扣一点点费用。
+  @ViewBuilder
+  private func modelProbeButton(scope: ModelProbeScope) -> some View {
+    switch model.modelProbeState {
+    case let .running(done, total):
+      HStack(spacing: 6) {
+        ProgressView().controlSize(.small)
+        Text("检测中 \(done)/\(total)").themedFont(.caption).foregroundStyle(.secondary).monospacedDigit()
+        Button("停止") { model.cancelModelProbe() }.buttonStyle(.appQuiet).controlSize(.small)
+      }
+    default:
+      let plan = scope == .catalog ? model.catalogProbePlan : model.libraryProbePlan
+      HStack(spacing: 6) {
+        if case let .finished(available, total) = model.modelProbeState, total > 0 {
+          Text("\(available)/\(total) 可用").themedFont(.caption).foregroundStyle(.secondary).monospacedDigit()
+        }
+        Button("检测可用性") {
+          if plan.paidModels.isEmpty {
+            startProbe(scope: scope, includesPaid: false)
+          } else {
+            pendingProbeScope = scope
+          }
+        }
+        .buttonStyle(.appQuiet)
+        .disabled(plan.total == 0 || model.isSaving || model.isLoadingModels)
+        .help("对每个模型发一条「Reply with OK.」，看它现在能不能用。")
+        .accessibilityIdentifier(scope == .catalog ? "probe-catalog-models" : "probe-library-models")
+      }
+      .confirmationDialog(
+        probeConfirmationTitle(plan),
+        isPresented: Binding(
+          get: { pendingProbeScope == scope },
+          set: { if !$0, pendingProbeScope == scope { pendingProbeScope = nil } }
+        ),
+        titleVisibility: .visible
+      ) {
+        Button("全部检测（含 \(plan.paidModels.count) 个付费模型）") { startProbe(scope: scope, includesPaid: true) }
+        if !plan.freeModels.isEmpty {
+          Button("只检测 \(plan.freeModels.count) 个免费模型") { startProbe(scope: scope, includesPaid: false) }
+        }
+        Button("取消", role: .cancel) {}
+      } message: {
+        Text("每个模型只发一条「Reply with OK.」，付费模型每条会扣极少的额度。结果会显示在模型名旁边，一天后提示重新检测。")
+      }
+    }
+  }
+
+  private func probeConfirmationTitle(_ plan: ProviderSettingsViewModel.ModelProbePlan) -> String {
+    "检测 \(plan.total) 个模型的可用性？"
+  }
+
+  private func startProbe(scope: ModelProbeScope, includesPaid: Bool) {
+    pendingProbeScope = nil
+    switch scope {
+    case .catalog:
+      model.probeCatalogModels(includesPaid: includesPaid, submittedAPIKey: apiKeyInput.isEmpty ? nil : apiKeyInput)
+    case .library:
+      model.probeLibraryModels(includesPaid: includesPaid)
+    }
+  }
+
   private func assignmentPickerButton(
     kind: AssignmentPicker,
     selectedEntry: ProviderSettingsViewModel.LibraryEntryDisplay?
@@ -834,7 +1025,8 @@ struct ProviderSettingsView: View {
                 assignmentOptionRow(
                   title: entry.displayName,
                   detail: entry.modelName,
-                  isSelected: selectedAssignmentID(for: kind) == entry.id
+                  isSelected: selectedAssignmentID(for: kind) == entry.id,
+                  health: model.healthBadge(baseURL: entry.baseURL, model: entry.modelName)
                 ) {
                   activeAssignmentPicker = nil
                   Task {
@@ -876,6 +1068,7 @@ struct ProviderSettingsView: View {
     title: String,
     detail: String,
     isSelected: Bool,
+    health: ModelHealthBadge? = nil,
     action: @escaping () -> Void
   ) -> some View {
     Button(action: action) {
@@ -890,6 +1083,9 @@ struct ProviderSettingsView: View {
             .lineLimit(1)
         }
         Spacer(minLength: 12)
+        if let health {
+          ModelHealthBadgeView(badge: health, theme: settingsTheme)
+        }
         Image(systemName: "checkmark")
           .foregroundStyle(.tint)
           .opacity(isSelected ? 1 : 0)
@@ -972,9 +1168,28 @@ struct ProviderSettingsView: View {
       }
       .buttonStyle(.plain)
       .accessibilityIdentifier("library-provider-group")
+      // 给这家再加模型：沿用已保存的密钥，直接读最新列表，不用重新输密钥。
+      if let firstEntry = group.entries.first {
+        Button {
+          Task { await model.beginAddModelsFromProvider(profileID: firstEntry.id) }
+        } label: {
+          Image(systemName: "arrow.triangle.2.circlepath")
+        }
+        .buttonStyle(.appIcon)
+        .disabled(model.isSaving || model.isTestingConnection || model.isLoadingModels)
+        .help("拉取 \(group.id) 的最新模型列表，选新模型添加（沿用已保存的密钥）")
+        .accessibilityLabel("拉取 \(group.id) 的最新模型")
+        .accessibilityIdentifier("library-provider-fetch-models")
+      }
       // 整组删除收进组头的更多菜单：一家服务商十来个模型，一条条删太折腾。
       // 菜单自带的下拉小箭头隐藏掉：原来它被挤到行尾，看起来像第三个控件。
       Menu {
+        if let firstEntry = group.entries.first {
+          Button("拉取最新模型并添加…") {
+            Task { await model.beginAddModelsFromProvider(profileID: firstEntry.id) }
+          }
+          .accessibilityIdentifier("library-provider-fetch-models-menu")
+        }
         Button("删除这家的全部模型（\(group.entries.count) 个）", role: .destructive) {
           pendingGroupDeletion = group
         }
@@ -988,13 +1203,24 @@ struct ProviderSettingsView: View {
       .help("更多")
       .accessibilityLabel("这家服务商的更多操作")
       .accessibilityIdentifier("library-provider-more")
-      // 展开箭头放在行尾，和「更多」并排，整行点击才是展开动作。
-      Image(systemName: "chevron.down")
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(.secondary)
-        .rotationEffect(.degrees(expanded ? 0 : -90))
-        .frame(width: 16)
-        .accessibilityHidden(true)
+      // 展开箭头放在行尾，和「更多」并排。它也必须能点：原来只是一张图，
+      // 用户点箭头什么都不发生，只有点左边的名称才会展开。
+      Button {
+        withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+          expandedLibraryProvider = expanded ? nil : group.id
+        }
+      } label: {
+        Image(systemName: "chevron.down")
+          .font(.caption2.weight(.semibold))
+          .foregroundStyle(.secondary)
+          .rotationEffect(.degrees(expanded ? 0 : -90))
+          .frame(width: 28, height: 40)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help(expanded ? "收起" : "展开")
+      .accessibilityLabel(expanded ? "收起 \(group.id)" : "展开 \(group.id)")
+      .accessibilityIdentifier("library-provider-toggle")
     }
   }
 
@@ -1007,6 +1233,7 @@ struct ProviderSettingsView: View {
         Text(entry.modelName).themedFont(.subheadline).foregroundStyle(.secondary)
       }
       Spacer(minLength: 12)
+      ModelHealthBadgeView(badge: model.healthBadge(baseURL: entry.baseURL, model: entry.modelName), theme: settingsTheme)
       if model.summaryAssignmentID == entry.id {
         assignmentBadge("总结")
       }
@@ -1065,14 +1292,16 @@ struct ProviderSettingsView: View {
   }
 
   private var editorTitle: String {
-    if model.editingProfileID == nil { return "添加模型" }
+    if model.editingProfileID == nil {
+      return model.isReusingProviderKey ? "添加模型 · \(model.selectedPreset == .custom ? "沿用已保存的密钥" : model.selectedPreset.displayName)" : "添加模型"
+    }
     let name = model.libraryEntryDisplays.first(where: { $0.id == model.editingProfileID })?.displayName
     return name.map { "编辑模型 · \($0)" } ?? "编辑模型"
   }
 
   /// 添加流程没有已选服务商，直接展开网格；编辑流程默认折叠成一行，点「更换」才展开。
   private var showsPresetGrid: Bool {
-    model.editingProfileID == nil || isChoosingPreset
+    (model.editingProfileID == nil && !model.isReusingProviderKey) || isChoosingPreset
   }
 
   private var editorBusy: Bool {
@@ -1312,8 +1541,10 @@ struct ProviderSettingsView: View {
 
                 ScrollView {
                   LazyVStack(spacing: 0) {
-                    ForEach(model.filteredModels, id: \.self) { name in
+                    ForEach(model.healthSortedFilteredModels, id: \.self) { name in
                       let alreadyAdded = model.isModelAlreadyInLibrary(name)
+                      let health = model.editorHealthBaseURL.map { model.healthBadge(baseURL: $0, model: name) } ?? .unchecked
+                      let unusable = model.editorHealthBaseURL.flatMap { model.healthRecord(baseURL: $0, model: name) }?.status.isDefinitelyUnusable == true
                       Button {
                         model.toggleCatalogModel(name)
                       } label: {
@@ -1321,9 +1552,18 @@ struct ProviderSettingsView: View {
                           Image(systemName: alreadyAdded ? "checkmark.circle" : (model.selectedCatalogModels.contains(name) ? "checkmark.square.fill" : "square"))
                             .foregroundStyle(model.selectedCatalogModels.contains(name) ? settingsTheme.accent : .secondary)
                           Text(name)
-                            .foregroundStyle(alreadyAdded ? .secondary : .primary)
+                            .foregroundStyle(alreadyAdded || unusable ? .secondary : .primary)
                             .lineLimit(1)
                           Spacer()
+                          if ProviderSettingsViewModel.isTranscriptionModel(name) {
+                            Text("语音转写")
+                              .themedFont(.caption2, weight: .medium)
+                              .foregroundStyle(settingsTheme.accent)
+                              .padding(.horizontal, 6)
+                              .padding(.vertical, 2)
+                              .background(settingsTheme.badge, in: Capsule())
+                          }
+                          ModelHealthBadgeView(badge: health, theme: settingsTheme)
                           if alreadyAdded {
                             Text("已添加")
                               .font(.caption)
@@ -1337,7 +1577,7 @@ struct ProviderSettingsView: View {
                       .buttonStyle(.plain)
                       .disabled(alreadyAdded)
                       .accessibilityIdentifier("provider-model-option")
-                      if name != model.filteredModels.last {
+                      if name != model.healthSortedFilteredModels.last {
                         Divider().padding(.leading, 36)
                       }
                     }
@@ -1367,6 +1607,21 @@ struct ProviderSettingsView: View {
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("provider-model-catalog-status")
+
+        if model.modelCatalogState == .loaded, !model.availableModels.isEmpty {
+          HStack(spacing: DesignTokens.Space.sm) {
+            modelProbeButton(scope: .catalog)
+            if let base = model.editorHealthBaseURL, !model.modelName.isEmpty, !model.isAddingModelBatch {
+              let badge = model.healthBadge(baseURL: base, model: model.modelName)
+              ModelHealthBadgeView(badge: badge, theme: settingsTheme)
+              Text(badge.detail)
+                .themedFont(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+            }
+            Spacer(minLength: 0)
+          }
+        }
       }
       .padding(.vertical, DesignTokens.Space.md)
       .padding(.horizontal, DesignTokens.Space.lg)
@@ -1392,7 +1647,10 @@ struct ProviderSettingsView: View {
         } else if !model.availableModels.contains(selection.wrappedValue) {
           Text("当前：\(selection.wrappedValue)").tag(selection.wrappedValue)
         }
-        ForEach(model.filteredModels, id: \.self) { Text($0).tag($0) }
+        // 菜单里放不了彩色标记，用文字写在模型名后面；能用的排前面。
+        ForEach(model.healthSortedFilteredModels, id: \.self) { name in
+          Text(pickerLabel(for: name)).tag(name)
+        }
       }
       .labelsHidden()
       .frame(maxWidth: 260)
@@ -2113,10 +2371,9 @@ struct ProviderSettingsView: View {
         set: { selected in
           // 选「自定义…」时不清空已有值，否则改一次下拉就丢掉手填的名字；
           // 从预设切到自定义时先放一个空格占位，让输入框出现。
+          // 旧的手填名字只作为「当前值」展示，选它等于不变。
           if selected != Self.customModelTag {
             text.wrappedValue = selected
-          } else if !isCustomModelName(text.wrappedValue, in: options) {
-            text.wrappedValue = " "
           }
         }
       ),
@@ -2125,24 +2382,7 @@ struct ProviderSettingsView: View {
     .accessibilityLabel(label)
   }
 
-  /// 只在选了「自定义…」时出现。带边框——否则光标落在一片空白里，找不到该点哪。
-  @ViewBuilder
-  private func modelChoiceCustomField(
-    placeholder: String,
-    options: [ProviderSettingsViewModel.LibraryEntryDisplay],
-    text: Binding<String>,
-    identifier: String
-  ) -> some View {
-    if isCustomModelName(text.wrappedValue, in: options) {
-      TextField(placeholder, text: text)
-        .textFieldStyle(.roundedBorder)
-        .frame(maxWidth: 260)
-        .accessibilityIdentifier("\(identifier)-custom")
-    }
-  }
-
-  /// 下拉的三组：空值语义项、已添加的模型（带服务商副标题）、自定义。
-  /// 自定义项的标题就是当前手填的名字，标签上直接能看到，不是一个「自定义…」占位。
+  /// 下拉的分组：空值语义项、已添加的模型（带服务商副标题），以及以前手填、现在不在模型服务里的旧值。
   private func modelChoiceSections(
     emptyOptionTitle: String,
     options: [ProviderSettingsViewModel.LibraryEntryDisplay],
@@ -2153,14 +2393,11 @@ struct ProviderSettingsView: View {
     if !options.isEmpty {
       sections.append(options.map { .init(value: $0.modelName, title: $0.modelName, subtitle: $0.title) })
     }
+    // 不再提供「自定义…」。以前手填过的名字仍显示成当前值，免得下拉显示成空白。
     let customTitle = current.trimmingCharacters(in: .whitespaces)
-    sections.append([
-      .init(
-        value: Self.customModelTag,
-        title: isCustom && !customTitle.isEmpty ? customTitle : "自定义…",
-        subtitle: isCustom ? "自定义" : nil
-      ),
-    ])
+    if isCustom, !customTitle.isEmpty {
+      sections.append([.init(value: Self.customModelTag, title: customTitle, subtitle: "不在模型服务里")])
+    }
     return sections
   }
 

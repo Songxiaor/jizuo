@@ -1175,6 +1175,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   private let terminationSignalSource: DispatchSourceSignal
 
   init() {
+    // 每次模型调用的成败都记到「模型可用状态」里，设置页据此提示已下架等问题。
+    ModelHealthRegistry.installObservation()
     let appUpdateController = AppUpdateController()
     let applicationSupportRoot: AppComposition.ApplicationSupportRoot
     let imageCache: GitHubREADMEImageCache?
