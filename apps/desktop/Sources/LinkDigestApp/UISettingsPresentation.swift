@@ -22,7 +22,7 @@ enum UISettingsPresentation {
   /// 管线步骤标题：动词开头，顺序与执行链一致，不得重排。
   static func pipelineStepTitle(index: Int) -> String {
     switch index {
-    case 1: "译成中文标题"
+    case 1: "外文标题译成中文"
     case 2: "本机转写"
     case 3: "校对转写稿"
     case 4: "生成总结"

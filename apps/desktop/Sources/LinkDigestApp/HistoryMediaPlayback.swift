@@ -1181,8 +1181,6 @@ struct CurrentCaptureMediaPreviewCard: View {
   let taskID: TaskID
   let snapshotID: ContentSnapshotID
   var model: HistoryViewModel
-  let onlineTranscriptionModel: String?
-  let tidyModel: String?
   /// 与列表预热共享；卡片不 release，由 HistoryContentView 在离开可播上下文时释放。
   @ObservedObject var playback: RemotePreviewPlayerController
   /// 会话流失败时：清缓存并重新拉取可播档（避开 DV 等不可播编码）。
@@ -1282,8 +1280,8 @@ struct CurrentCaptureMediaPreviewCard: View {
 
   @ViewBuilder
   private func playableContent(url: URL, kind: MediaKind, companionAudioURL: URL?) -> some View {
-    // 核心操作放在视频上方。竖屏视频很高；放在播放器下方时，转写与校对会被
-    // 推出首屏，功能已经存在却看起来像不存在。
+    // 下载、清晰度、放大这些播放相关的操作放在视频上方。竖屏视频很高；放在
+    // 播放器下方时会被推出首屏，功能已经存在却看起来像不存在。
     HStack(spacing: 10) {
       if kind == .directFile {
         Button {
@@ -1310,19 +1308,7 @@ struct CurrentCaptureMediaPreviewCard: View {
       }
       favoriteStatus
       Spacer(minLength: 0)
-      if kind == .directFile {
-        remoteTranscriptionControl
-          .fixedSize()
-      } else {
-        Text("当前 Debug 暂不支持 HLS 转写")
-          .themedFont(.caption)
-          .foregroundStyle(.secondary)
-          .accessibilityIdentifier("remote-transcribe")
-      }
-      // 未转写时不占「整理文稿」灰位；完成后整理入口收进「改进转写」菜单。
-      if showsStandaloneRemoteTidy {
-        remoteTranscriptTidyControl
-      }
+      // 转写与整理文稿的入口在正文表头（和总结、翻译并排）；这里只留播放相关。
       qualityMenu
       if let player = playback.player, !isInCinema {
         Button {
@@ -1344,7 +1330,6 @@ struct CurrentCaptureMediaPreviewCard: View {
     }
 
     remoteTranscriptionStatus
-    remoteTranscriptTidyStatus
 
     switch playback.preparePhase {
     case let .failed(failure):
@@ -1477,105 +1462,6 @@ struct CurrentCaptureMediaPreviewCard: View {
 
   /// 菜单里禁用的「在线转写」必须自己说明为什么灰。
   /// 「没配模型」和「地址过期」的解法完全不同，只灰不说等于让用户猜。
-  private var onlineTranscribeTitle: String {
-    let trimmed = onlineTranscriptionModel?.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmed?.isEmpty != false {
-      return "在线转写（未配置模型，见 设置 → 模型与识别）"
-    }
-    return "在线转写"
-  }
-
-  private var remoteTidyMenuTitle: String {
-    if let reason = model.transcriptTidyUnavailableReason(taskID: taskID) {
-      return "整理文稿（\(reason)）"
-    }
-    return "整理文稿"
-  }
-
-  /// 独立「整理文稿」按钮只在「已有文稿、且不在改进菜单里」时出现。
-  /// 没有文稿时灰按钮只会占位；完成后入口已并进「改进转写」。
-  private var showsStandaloneRemoteTidy: Bool {
-    let state = model.transcriptionState(for: taskID)
-    if state == .completed { return false }
-    if model.transcriptTidyUnavailableReason(taskID: taskID) == "需先完成转写，才有文稿可整理" {
-      return false
-    }
-    return true
-  }
-
-  @ViewBuilder private var remoteTranscriptionControl: some View {
-    let state = model.transcriptionState(for: taskID)
-    let tidyBlockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
-    switch state {
-    case .preparingMedia, .checkingModel, .preparingModel, .extractingAudio, .transcribing:
-      Button("取消转写", role: .cancel, action: model.cancelTranscription)
-        .controlSize(.small)
-        .accessibilityIdentifier("remote-transcribe-cancel")
-    case .failed, .cancelled:
-      Menu("重试转写") {
-        Button("本机转写") { model.retryRemoteTranscription(descriptor, taskID: taskID) }
-        Button(onlineTranscribeTitle) {
-          model.requestOnlineTranscription(descriptor, taskID: taskID, model: onlineTranscriptionModel)
-        }
-        .disabled(!model.canTranscribeCurrentCaptureOnline(descriptor, taskID: taskID, model: onlineTranscriptionModel))
-      }
-      .controlSize(.small)
-      .accessibilityIdentifier("remote-transcribe-retry")
-    case .idle:
-      Menu {
-        Button("本机转写") { model.requestRemoteTranscription(descriptor, taskID: taskID) }
-          .disabled(!model.canTranscribeCurrentCapture(descriptor, taskID: taskID))
-        Button(onlineTranscribeTitle) {
-          model.requestOnlineTranscription(descriptor, taskID: taskID, model: onlineTranscriptionModel)
-        }
-        .disabled(!model.canTranscribeCurrentCaptureOnline(descriptor, taskID: taskID, model: onlineTranscriptionModel))
-      } label: {
-        Label("转写", systemImage: "waveform")
-      }
-      .controlSize(.small)
-      .accessibilityIdentifier("remote-transcribe")
-      .accessibilityLabel("转写")
-    case .completed:
-      Menu {
-        Button("重新本机转写") { model.requestRemoteTranscription(descriptor, taskID: taskID) }
-          .disabled(!model.canTranscribeCurrentCapture(descriptor, taskID: taskID))
-        Button(onlineTranscribeTitle) {
-          model.requestOnlineTranscription(descriptor, taskID: taskID, model: onlineTranscriptionModel)
-        }
-        .disabled(!model.canTranscribeCurrentCaptureOnline(descriptor, taskID: taskID, model: onlineTranscriptionModel))
-        Button(remoteTidyMenuTitle) {
-          model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
-        }
-        .disabled(tidyBlockedReason != nil)
-      } label: {
-        Label("改进转写", systemImage: "waveform")
-      }
-      .controlSize(.small)
-      .accessibilityIdentifier("remote-transcribe")
-      .accessibilityLabel("改进转写")
-    case .awaitingModelDownload:
-      Text("等待模型下载确认")
-        .themedFont(.caption)
-        .foregroundStyle(.secondary)
-        .accessibilityIdentifier("remote-transcribe-state")
-    }
-  }
-
-  @ViewBuilder private var remoteTranscriptTidyControl: some View {
-    let blockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
-    Button("整理文稿") {
-      model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
-    }
-    .controlSize(.small)
-    .disabled(blockedReason != nil)
-    .help(
-      blockedReason
-        ?? "把转写文字发送给聊天模型，一次做完校对和版面：修标点错别字、按语义重新分段、加上小标题。不发送视频或音频，原始转写保留在历史中。"
-    )
-    .accessibilityIdentifier("remote-transcript-tidy")
-    .accessibilityLabel("整理文稿")
-  }
-
   @ViewBuilder private var remoteTranscriptionStatus: some View {
     let state = model.transcriptionState(for: taskID)
     let preview = model.onlineTranscriptionPreview
@@ -1638,40 +1524,6 @@ struct CurrentCaptureMediaPreviewCard: View {
       .themedFont(.caption)
       .fixedSize(horizontal: false, vertical: true)
       .accessibilityIdentifier("remote-transcribe-state")
-    }
-  }
-
-  @ViewBuilder private var remoteTranscriptTidyStatus: some View {
-    let state = model.transcriptTidyState(for: taskID)
-    let blockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
-    // 「需先完成转写」不再单独占位——入口会在转写完成后出现在「改进转写」里。
-    let visibleBlockedReason = blockedReason == "需先完成转写，才有文稿可整理" ? nil : blockedReason
-    let showBlockedCaption = visibleBlockedReason != nil
-      && (showsStandaloneRemoteTidy || model.transcriptionState(for: taskID) == .completed)
-    if state != .idle || showBlockedCaption {
-      VStack(alignment: .leading, spacing: 6) {
-        switch state {
-        case .idle:
-          if showBlockedCaption, let visibleBlockedReason {
-            Text(visibleBlockedReason)
-              .foregroundStyle(.secondary)
-              .accessibilityIdentifier("remote-transcript-tidy-blocked-reason")
-          }
-        case .running:
-          HStack(spacing: 7) { ProgressView().controlSize(.small); Text("正在用模型校对转写稿…") }
-        case .completed:
-          let tokens = model.transcriptTidyTokenSummary(for: taskID)
-          Label(tokens.map { "校对稿已保存 · \($0)" } ?? "校对稿已保存为最新原文", systemImage: "checkmark.circle.fill")
-            .foregroundStyle(appTheme.success)
-        case .cancelled:
-          Text(TranscriptTidyError.cancelled.userMessage).foregroundStyle(.secondary)
-        case let .failed(message):
-          Text(message).foregroundStyle(appTheme.danger)
-        }
-      }
-      .themedFont(.caption)
-      .fixedSize(horizontal: false, vertical: true)
-      .accessibilityIdentifier("remote-transcript-tidy-state")
     }
   }
 
@@ -2397,8 +2249,6 @@ struct HistoryVideoPlayerCard: View {
   let media: MediaAsset?
   let taskID: TaskID
   var model: HistoryViewModel
-  let onlineTranscriptionModel: String?
-  let tidyModel: String?
   @State private var player: AVPlayer?
   @State private var surfaceGeometry: PlaybackSurfaceGeometry = .loading
   /// 既有版式按"有尺寸/没尺寸"分支，这里保持它的语义不变。
@@ -2423,8 +2273,9 @@ struct HistoryVideoPlayerCard: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      // 事实与转写入口仍在播放器上方：竖屏视频很高，工具沉到下方等于功能消失。
-      // 「另存一份」是文件操作，不跟转写抢同一行——挪到播放器旁的次要操作区。
+      // 这张卡只管播放和文件：时长、体积、播放器、另存一份、放大。
+      // 转写是「把内容交给模型换一份新文本」，和总结、翻译一起放在正文表头，
+      // 不再在视频旁边单独长一个按钮——同一类动作只在一个地方出现。
       HStack(spacing: 12) {
         if let durationSeconds = media?.durationSeconds, durationSeconds > 0 {
           Label(Self.formatDuration(durationSeconds), systemImage: "clock")
@@ -2444,31 +2295,6 @@ struct HistoryVideoPlayerCard: View {
             .foregroundStyle(appTheme.success)
             .accessibilityIdentifier("history-video-save-feedback")
         }
-      }
-
-      HStack(spacing: 10) {
-        // 转写入口是个下拉菜单：macOS 的 pop-up 按钮宽度可伸缩，和后面的 Spacer 抢空间
-        // 就会被拉成整条横杠、箭头飘到最右。fixedSize 让它只占自身宽度。
-        transcriptionControl
-          .fixedSize()
-        if model.isReadOnly {
-          Text("只读模式不能保存转写结果；恢复可写存储后可重试。")
-            .themedFont(.caption)
-            .foregroundStyle(appTheme.warning)
-            .accessibilityIdentifier("history-video-transcription-read-only")
-        } else {
-          transcriptionStatus
-          transcriptTidyStatus
-        }
-        Spacer(minLength: 0)
-      }
-
-      // 灰按钮必须自己说明为什么不能点；收进菜单后，菜单外仍留一行可见理由。
-      if let tidyBlockedReason = localTidyBlockedReasonForCaption {
-        Text(tidyBlockedReason)
-          .themedFont(.caption)
-          .foregroundStyle(.secondary)
-          .accessibilityIdentifier("history-transcript-tidy-blocked-reason")
       }
 
       playerSurface
@@ -2677,158 +2503,6 @@ struct HistoryVideoPlayerCard: View {
     }
   }
 
-  /// 菜单里禁用的「在线转写」必须自己说明为什么灰。
-  private var localOnlineTranscribeTitle: String {
-    let trimmed = onlineTranscriptionModel?.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmed?.isEmpty != false {
-      return "在线转写（未配置模型，见 设置 → 模型与识别）"
-    }
-    return "在线转写"
-  }
-
-  /// 已有文稿、整理仍不可用时，在菜单外留一行可见理由（不只靠悬停）。
-  private var localTidyBlockedReasonForCaption: String? {
-    let state = model.transcriptionState(for: taskID)
-    guard state == .completed || media?.transcriptionStatus == .completed else { return nil }
-    let reason = model.transcriptTidyUnavailableReason(taskID: taskID)
-    // 「需先完成转写」在已完成态不会出现；其它原因（只读、没配模型、进行中）要露出来。
-    guard let reason, reason != "需先完成转写，才有文稿可整理" else { return nil }
-    return reason
-  }
-
-  private var localTidyMenuTitle: String {
-    if let reason = model.transcriptTidyUnavailableReason(taskID: taskID),
-       reason != "需先完成转写，才有文稿可整理" {
-      return "整理文稿（\(reason)）"
-    }
-    return "整理文稿"
-  }
-
-  @ViewBuilder private var transcriptionControl: some View {
-    let state = model.transcriptionState(for: taskID)
-    let canOnline = model.canTranscribeLocalMediaOnline(
-      taskID: taskID,
-      model: onlineTranscriptionModel
-    )
-    let tidyBlockedReason = model.transcriptTidyUnavailableReason(taskID: taskID)
-    // 会话态回到 idle 后，仍以落库的 transcriptionStatus 判断「已经转写过」。
-    let hasCompletedTranscript = state == .completed
-      || media?.transcriptionStatus == .completed
-    switch state {
-    case .preparingMedia, .checkingModel, .preparingModel, .extractingAudio, .transcribing:
-      Button("取消", role: .cancel, action: model.cancelTranscription)
-        .controlSize(.small)
-        .accessibilityIdentifier("history-video-transcription-cancel")
-    case .failed, .cancelled:
-      Menu("重试转写") {
-        Button("本机转写", action: model.retryTranscription)
-          .disabled(!model.canTranscribeVideo)
-        Button(localOnlineTranscribeTitle) {
-          model.requestOnlineTranscriptionFromLocalMedia(
-            taskID: taskID,
-            model: onlineTranscriptionModel
-          )
-        }
-        .disabled(!canOnline)
-      }
-      .controlSize(.small)
-      .accessibilityIdentifier("history-video-transcription-retry")
-    case .completed:
-      improveTranscriptionMenu(
-        canOnline: canOnline,
-        tidyBlockedReason: tidyBlockedReason
-      )
-    case .idle, .awaitingModelDownload:
-      if hasCompletedTranscript {
-        improveTranscriptionMenu(
-          canOnline: canOnline,
-          tidyBlockedReason: tidyBlockedReason
-        )
-      } else {
-        Menu {
-          Button("本机转写", action: model.requestTranscription)
-            .disabled(!model.canTranscribeVideo || state == .awaitingModelDownload)
-          Button(localOnlineTranscribeTitle) {
-            model.requestOnlineTranscriptionFromLocalMedia(
-              taskID: taskID,
-              model: onlineTranscriptionModel
-            )
-          }
-          .disabled(!canOnline || state == .awaitingModelDownload)
-        } label: {
-          Label("转写", systemImage: "waveform")
-        }
-        .controlSize(.small)
-        .disabled(state == .awaitingModelDownload)
-        .accessibilityIdentifier("history-video-transcription-start")
-      .accessibilityLabel("转写")
-      }
-    }
-  }
-
-  @ViewBuilder
-  private func improveTranscriptionMenu(
-    canOnline: Bool,
-    tidyBlockedReason: String?
-  ) -> some View {
-    // 转写完成后不再平铺「重新 / 在线 / 整理」：收成一个次要入口，
-    // 主视觉只留状态，避免和上方总结/翻译抢注意力。
-    Menu {
-      Button("重新本机转写", action: model.requestTranscription)
-        .disabled(!model.canTranscribeVideo)
-      Button(localOnlineTranscribeTitle) {
-        model.requestOnlineTranscriptionFromLocalMedia(
-          taskID: taskID,
-          model: onlineTranscriptionModel
-        )
-      }
-      .disabled(!canOnline)
-      Button(localTidyMenuTitle) {
-        model.requestTranscriptTidy(taskID: taskID, model: tidyModel)
-      }
-      .disabled(tidyBlockedReason != nil)
-    } label: {
-      Label("改进转写", systemImage: "waveform")
-    }
-    .controlSize(.small)
-    .accessibilityIdentifier("history-video-transcription-improve")
-    .accessibilityLabel("改进转写")
-  }
-
-  @ViewBuilder private var transcriptTidyStatus: some View {
-    switch model.transcriptTidyState(for: taskID) {
-    case .idle: EmptyView()
-    case .running: ProgressView().controlSize(.small); Text("正在用模型校对转写稿…").themedFont(.caption)
-    case .completed:
-      let tokens = model.transcriptTidyTokenSummary(for: taskID)
-      Label(
-        tokens.map { "校对稿已保存 · \($0)" } ?? "校对稿已保存为最新原文",
-        systemImage: "checkmark.circle.fill"
-      )
-      .themedFont(.caption).foregroundStyle(appTheme.success)
-    case .cancelled: Text(TranscriptTidyError.cancelled.userMessage).themedFont(.caption).foregroundStyle(.secondary)
-    case let .failed(message): Text(message).themedFont(.caption).foregroundStyle(appTheme.danger).lineLimit(3)
-    }
-  }
-
-  @ViewBuilder private var transcriptionStatus: some View {
-    switch model.transcriptionState(for: taskID) {
-    case .idle:
-      if let status = media?.transcriptionStatus, status != .none {
-        Text(Self.transcriptionStatusText(status)).themedFont(.caption).foregroundStyle(.secondary)
-      }
-    case .preparingMedia: ProgressView().controlSize(.small); Text("正在准备临时媒体…").themedFont(.caption)
-    case .checkingModel: ProgressView().controlSize(.small); Text("正在检查中文离线模型…").themedFont(.caption)
-    case .awaitingModelDownload: Text("等待确认模型下载").themedFont(.caption).foregroundStyle(.secondary)
-    case .preparingModel: ProgressView().controlSize(.small); Text("正在准备中文离线模型…").themedFont(.caption)
-    case .extractingAudio: ProgressView().controlSize(.small); Text("正在从本机视频提取音频…").themedFont(.caption)
-    case .transcribing: ProgressView().controlSize(.small); Text("正在本机转写，音频不会上传…").themedFont(.caption)
-    case .completed: Label("转写已保存为最新原文", systemImage: "checkmark.circle.fill").themedFont(.caption).foregroundStyle(appTheme.success)
-    case .cancelled: Text(LocalVideoTranscriptionError.cancelled.userMessage).themedFont(.caption).foregroundStyle(.secondary)
-    case let .failed(message): Text(message).themedFont(.caption).foregroundStyle(appTheme.danger).lineLimit(3)
-    }
-  }
-
   /// 必须落到一个确定状态。旧实现在拿不到视频轨时直接 return，界面就永远停在
   /// "正在读取视频尺寸…"——纯音轨的媒体每次都会这样。
   private func loadVideoGeometry(_ url: URL) {
@@ -2853,16 +2527,6 @@ struct HistoryVideoPlayerCard: View {
 
   private static func formatByteSize(_ value: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
-  }
-
-  private static func transcriptionStatusText(_ status: TranscriptionStatus) -> String {
-    switch status {
-    case .none: "尚未转写"
-    case .pending: "等待本机转写"
-    case .running: "本机转写中"
-    case .completed: "已完成本机转写"
-    case .failed: "上次转写未完成"
-    }
   }
 
   private static func formatDuration(_ seconds: Double) -> String {

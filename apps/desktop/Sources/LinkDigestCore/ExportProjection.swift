@@ -3,7 +3,11 @@ import Foundation
 public struct HistoryPageCursor: Codable, Sendable, Equatable {
   public let updatedAtMilliseconds: Int64
   public let taskID: TaskID
-  public init(updatedAtMilliseconds: Int64, taskID: TaskID) { self.updatedAtMilliseconds = updatedAtMilliseconds; self.taskID = taskID }
+  /// 按存入时间排序的列表用这个值翻页；按更新时间排序的旧路径为 nil。
+  public let savedAtMilliseconds: Int64?
+  public init(updatedAtMilliseconds: Int64, taskID: TaskID, savedAtMilliseconds: Int64? = nil) {
+    self.updatedAtMilliseconds = updatedAtMilliseconds; self.taskID = taskID; self.savedAtMilliseconds = savedAtMilliseconds
+  }
 }
 
 public struct HistoryRowProjection: Codable, Sendable, Equatable {
@@ -42,8 +46,10 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
   public let shares: String?
   public let collects: String?
   public let views: String?
-  public init(taskID: TaskID, title: String?, canonicalURL: String, host: String, sourceLabel: String, latestRunKind: RunKind?, latestRunStatus: RunStatus?, latestModel: String?, updatedAtMilliseconds: Int64, createdAtMilliseconds: Int64? = nil, latestRunAtMilliseconds: Int64?, usageCost: RunUsageCost, artifactPreview: String?, sourcePreview: String? = nil, author: String? = nil, published: String? = nil, hasTranscript: Bool? = nil, hasMedia: Bool? = nil, hasSummary: Bool? = nil, hasMindMap: Bool? = nil, isFavorite: Bool? = nil, coverURL: String? = nil, likes: String? = nil, comments: String? = nil, shares: String? = nil, collects: String? = nil, views: String? = nil) {
-    self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.createdAtMilliseconds = createdAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview; self.sourcePreview = sourcePreview; self.author = author; self.published = published; self.hasTranscript = hasTranscript; self.hasMedia = hasMedia; self.hasSummary = hasSummary; self.hasMindMap = hasMindMap; self.isFavorite = isFavorite; self.coverURL = coverURL; self.likes = likes; self.comments = comments; self.shares = shares; self.collects = collects; self.views = views
+  /// 这条内容的标签显示名，列表行拿来做「找回线索」。可选以兼容旧序列化数据。
+  public let tagNames: [String]?
+  public init(taskID: TaskID, title: String?, canonicalURL: String, host: String, sourceLabel: String, latestRunKind: RunKind?, latestRunStatus: RunStatus?, latestModel: String?, updatedAtMilliseconds: Int64, createdAtMilliseconds: Int64? = nil, latestRunAtMilliseconds: Int64?, usageCost: RunUsageCost, artifactPreview: String?, sourcePreview: String? = nil, author: String? = nil, published: String? = nil, hasTranscript: Bool? = nil, hasMedia: Bool? = nil, hasSummary: Bool? = nil, hasMindMap: Bool? = nil, isFavorite: Bool? = nil, coverURL: String? = nil, likes: String? = nil, comments: String? = nil, shares: String? = nil, collects: String? = nil, views: String? = nil, tagNames: [String]? = nil) {
+    self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.createdAtMilliseconds = createdAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview; self.sourcePreview = sourcePreview; self.author = author; self.published = published; self.hasTranscript = hasTranscript; self.hasMedia = hasMedia; self.hasSummary = hasSummary; self.hasMindMap = hasMindMap; self.isFavorite = isFavorite; self.coverURL = coverURL; self.likes = likes; self.comments = comments; self.shares = shares; self.collects = collects; self.views = views; self.tagNames = tagNames
   }
 
   /// Directory card text: summary preview, else capture body, else the title. Never empty.

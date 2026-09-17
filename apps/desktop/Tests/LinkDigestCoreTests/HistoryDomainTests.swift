@@ -321,6 +321,29 @@ final class HistoryReadingTitleTests: XCTestCase {
     XCTAssertEqual(titles.original, "Este tipo explica cómo crear páginas")
   }
 
+  func testSubtitleHiddenWhenItIsJustTheOpeningSentence() {
+    let body = "\n\nI've been trying to use AI for knowledge work (course planning).  Here's what seems\nto work so far:\n\n1. Give each deliverable a wiki"
+    let titles = HistoryReadingTitle.detailTitles(
+      captured: "I've been trying to use AI for knowledge work (course planning). Here's what seems to work so far:",
+      product: "AI赋能课程规划：知识工作的实践心得",
+      preservedOriginalTitle: "I've been trying to use AI for knowledge work (course planning). Here's what seems to work so far:",
+      sourceBody: body
+    )
+    XCTAssertEqual(titles.primary, "AI赋能课程规划：知识工作的实践心得")
+    XCTAssertNil(titles.original)
+    // 截断过的标题同样算正文开头。
+    XCTAssertTrue(HistoryReadingTitle.isLeadingExcerpt("I've been trying to use AI…", of: body))
+  }
+
+  func testRealTitleSubtitleKeptWhenBodyStartsElsewhere() {
+    let titles = HistoryReadingTitle.detailTitles(
+      captured: "How to learn faster",
+      product: "如何更快学习",
+      sourceBody: "Most people read too much and practice too little."
+    )
+    XCTAssertEqual(titles.original, "How to learn faster")
+  }
+
   func testFallsBackToTranslationThenCaptured() {
     XCTAssertEqual(
       HistoryReadingTitle.productTitle(

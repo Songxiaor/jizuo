@@ -4,7 +4,7 @@ import XCTest
 /// 设置三页纯展示文案与结构约定（U1）。
 final class UISettingsPresentationTests: XCTestCase {
   func testPipelineStepTitlesStayVerbFirstAndOrdered() {
-    XCTAssertEqual(UISettingsPresentation.pipelineStepTitle(index: 1), "译成中文标题")
+    XCTAssertEqual(UISettingsPresentation.pipelineStepTitle(index: 1), "外文标题译成中文")
     XCTAssertEqual(UISettingsPresentation.pipelineStepTitle(index: 2), "本机转写")
     XCTAssertEqual(UISettingsPresentation.pipelineStepTitle(index: 3), "校对转写稿")
     XCTAssertEqual(UISettingsPresentation.pipelineStepTitle(index: 4), "生成总结")

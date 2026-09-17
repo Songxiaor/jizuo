@@ -468,6 +468,27 @@ final class HistoryTagPersistenceTests: XCTestCase {
     }
   }
 
+  func testMainListCanOrderBySavedTimeAndCarriesTagNames() throws {
+    try withRepository { repository, _ in
+      let oldest = try repository.acceptCapture(.init(envelope: capture(requestID: "saved-1", key: "saved-1", url: "https://example.test/saved-1", body: "one"), receivedAtMilliseconds: 10))
+      let middle = try repository.acceptCapture(.init(envelope: capture(requestID: "saved-2", key: "saved-2", url: "https://example.test/saved-2", body: "two"), receivedAtMilliseconds: 20))
+      let newest = try repository.acceptCapture(.init(envelope: capture(requestID: "saved-3", key: "saved-3", url: "https://example.test/saved-3", body: "three"), receivedAtMilliseconds: 30))
+      _ = try repository.addTags(["Swift", "AI"], to: oldest.taskID)
+      // 同一链接再抓一次会刷新更新时间：按更新时间排，最早存的那篇跳到最前面。
+      let recaptured = try repository.acceptCapture(.init(envelope: capture(requestID: "saved-1b", key: "saved-1b", url: "https://example.test/saved-1", body: "one again"), receivedAtMilliseconds: 40))
+      XCTAssertEqual(recaptured.taskID, oldest.taskID)
+      XCTAssertEqual(try repository.historyPage(limit: 20, after: nil).rows.first?.taskID, oldest.taskID)
+
+      let savedOrder = HistoryListFilter(ordersBySavedTime: true)
+      let firstPage = try repository.historyPage(limit: 2, after: nil, filter: savedOrder)
+      XCTAssertEqual(firstPage.rows.map(\.taskID), [newest.taskID, middle.taskID])
+      let secondPage = try repository.historyPage(limit: 2, after: firstPage.nextCursor, filter: savedOrder)
+      XCTAssertEqual(secondPage.rows.map(\.taskID), [oldest.taskID], "翻页游标也按存入时间走")
+      XCTAssertEqual(secondPage.rows.first?.tagNames, ["Swift", "AI"])
+      XCTAssertNil(firstPage.rows.first?.tagNames)
+    }
+  }
+
   func testSQLIntersectionFilteringAndTaskDeletionCleanAssociations() throws {
     try withRepository { repository, _ in
       let swiftAI = try repository.acceptCapture(.init(envelope: capture(requestID: "tag-one", key: "tag-one", url: "https://example.test/tag-one", body: "one"), receivedAtMilliseconds: 10))

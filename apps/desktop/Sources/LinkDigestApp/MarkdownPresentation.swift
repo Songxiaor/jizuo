@@ -477,12 +477,14 @@ enum MarkdownPresentation {
   static let bodyFontSize: CGFloat = 16.5
   /// 正文行间距（**行与行之间的空隙**，不是行高）。行高 = `bodyFontSize` + 这个值。
   ///
-  /// 13 → 行高 29.5pt → 1.79 倍字号。曾经是 11（1.67 倍）。中文字面方正、笔画比
-  /// 拉丁密，同样倍数下灰度更高，所以要比英文正文的 1.5–1.6 再松一档。
+  /// 10 → 行高 26.5pt → 1.61 倍字号。中文字面方正、笔画比拉丁密，要比英文正文略松。
+  ///
+  /// 曾经是 13（1.79 倍）：单看一段不挤，但段落间距只有 20pt，行距和段距差得太少，
+  /// 一段折成两行时看起来像两段话。行距必须明显小于段距，读者才分得出「换行」和「换段」。
   ///
   /// 改这里要连带想到 `SelectableReadingText`：那边的引用块、列表项各有自己的
   /// 行距常数，正文松了而它们没动，段落之间会显得节奏不齐。
-  static let bodyLineSpacing: CGFloat = 13
+  static let bodyLineSpacing: CGFloat = 10
 
   static func sanitized(_ source: String) -> String {
     var value = replacingHTMLLikeTokensPreservingCode(in: source)

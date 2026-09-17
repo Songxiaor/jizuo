@@ -32,6 +32,11 @@ struct HistoryContentView: View {
   @State private var creatorDirectoryScrollTarget: CreatorID?
   @State private var collapsedCreatorPlatforms: Set<String> = []
   @State private var creatorWorkSort: WorkSortOrder = .original
+  /// 瀑布流里每张卡钉在哪一列（键：卡片 id）。换博主、换排序、列数变化时整体重算。
+  @State private var creatorMasonryPins: [AnyHashable: Int] = [:]
+  @State private var creatorMasonryPinsKey = ""
+  @State private var creatorMasonryHeightBox = CreatorMasonryHeightBox()
+  @State private var creatorMasonryMeasuredRevision = 0
   @State private var creatorSortReferenceDate = Date()
   @State private var creatorWorkScrollTarget: TaskID?
   @State private var navigationCreatorsExpanded = true
@@ -55,6 +60,16 @@ struct HistoryContentView: View {
   /// 「跟随系统」靠 SwiftUI 的 colorScheme 环境值在系统翻转时刷新。
   @Environment(\.colorScheme) private var systemColorScheme
   private var theme: HistoryThemeTokens { appearanceTheme.tokens(systemColorScheme: systemColorScheme) }
+  /// 主列表的分组。标题为 nil 时不画组头（回收站：按删除时间排，按存入日分组会乱序）。
+  private var historyListSections: [HistoryListSectionModel] {
+    if model.selectedScope.isTrashOnly {
+      return [.init(title: nil, entries: Array(model.rows.enumerated()).map { ($0.offset, $0.element) })]
+    }
+    return HistoryListFinding.sections(for: model.rows).map {
+      .init(title: $0.group.title(), entries: $0.entries)
+    }
+  }
+
   private var ordinaryPendingCaptures: [ManualLinkViewModel.PendingCapture] {
     manualLink.pendingCaptures.filter { $0.profileImportBatchID == nil }
   }
@@ -851,7 +866,10 @@ struct HistoryContentView: View {
               Text("抓取队列").themedFont(.caption).foregroundStyle(.secondary)
             }
           }
-          ForEach(Array(model.rows.enumerated()), id: \.element.taskID) { index, row in
+          // 按存入时间分「今天 / 昨天 / 近 7 天 / 几月」。回收站按删除时间排，不分组。
+          ForEach(historyListSections) { section in
+          Section {
+          ForEach(section.entries, id: \.row.taskID) { index, row in
             UIReadingHistoryRow(
               row: row,
               isSelected: model.selectedTaskIDs.contains(row.taskID),
@@ -866,9 +884,20 @@ struct HistoryContentView: View {
               moreMenu: { AnyView(historyContextMenu(for: row)) }
             ).equatable().tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
               .listRowBackground(Color.clear)
-              .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
+              // 卡片之间留出 6pt，选中底色才读得出是一张张独立的卡。
+              .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
               .listRowSeparator(.hidden)
               .contextMenu { historyContextMenu(for: row) }
+          }
+          } header: {
+            if let title = section.title {
+              Text(title)
+                .themedFont(.caption, weight: .semibold)
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityIdentifier("history-list-day-group")
+            }
+          }
           }
           if model.isLoadingNextPage { HStack { Spacer(); ProgressView().controlSize(.small); Spacer() } }
           else if model.listErrorCode != nil, model.canRetryList {
@@ -970,9 +999,11 @@ struct HistoryContentView: View {
           }
           .accessibilityIdentifier("history-navigation-trash")
         }
-      } header: {
-        navigationSectionHeader("内容")
       }
+      // 第一组不给标题。它是打开 App 的默认落点，下面第一行就是「全部」——
+      // 标题不提供任何新信息。原本为了让四个标题长得一样才给它补了一个
+      // 「内容」，可笔记、来源平台、标签也都是内容的切面，这个词反倒把
+      // 层级讲反了：它们不是「内容」的并列项，是内容的不同切面。
 
       // 笔记自成一区，不混进上面那组，也不进「平台」。
       //
@@ -1190,6 +1221,8 @@ struct HistoryContentView: View {
     .listStyle(.sidebar)
     .scrollContentBackground(theme.isNative ? .automatic : .hidden)
     .background((theme.isNative ? Color.clear : theme.canvas).ignoresSafeArea(edges: .top))
+    // 第一组没有标题后，「全部」会直接贴住工具栏下沿；补回标题原本占的余白。
+    .contentMargins(.top, 8, for: .scrollContent)
     .contentMargins(.bottom, 20, for: .scrollContent)
     .accessibilityIdentifier("history-navigation-rail")
     .onAppear {
@@ -2196,67 +2229,84 @@ struct HistoryContentView: View {
           return nil
         }
       })
+      // 「高赞」只和这位博主自己的作品比：大 V 和小博主各用各的尺子。
+      let likesThreshold = CreatorWorkHighlight.likesThreshold(
+        model.rows.map(\.likes) + batches.flatMap { batch in
+          batch.items.compactMap { item -> String? in
+            if case let .completed(id) = item.phase, savedRows[id] != nil { return nil }
+            return item.seed.likes
+          }
+        }
+      )
+      let entries = creatorWorkEntries(batches: batches, savedRows: savedRows, reservedTaskIDs: reservedTaskIDs)
+      let columnCount = columns.count
+      let columnWidth = max(1, (geometry.size.width - 24 - CGFloat(columnCount - 1) * CreatorDirectoryChrome.xGridSpacing) / CGFloat(columnCount))
+      let masonryKey = "\(creator.id.rawValue)|\(creatorWorkSort.rawValue)|\(columnCount)|\(Int(columnWidth))"
+      let masonryIDs = entries.map(\.id)
+      // 读这个状态让量完高度后重排一次；真实高度本身放在不触发重算的暂存处。
+      let _ = creatorMasonryMeasuredRevision
+      let measured = creatorMasonryHeightBox.key == masonryKey ? creatorMasonryHeightBox.heights : [:]
+      let masonryHeights = entries.map {
+        measured[$0.id] ?? CreatorWorkMasonry.estimatedHeight(
+          text: $0.estimateText(savedRows: savedRows),
+          hasHeading: $0.estimateHasHeading(savedRows: savedRows),
+          hasCover: $0.estimateHasCover,
+          columnWidth: columnWidth
+        )
+      }
+      let allMeasured = masonryIDs.allSatisfy { measured[$0] != nil }
+      let masonryIndices = CreatorWorkMasonry.columns(
+        ids: masonryIDs,
+        heights: masonryHeights,
+        count: columnCount,
+        pinned: creatorMasonryPinsKey == masonryKey ? creatorMasonryPins : [:]
+      )
+      // 作品不多时先把已保存的作品全部读进来，再钉住分列：否则滑动途中翻页，
+      // 预留卡换成已保存卡（多出中文标题、换成原文），已钉住的列就高矮失衡。
+      let loadsAllWorksFirst = model.hasMoreListPages && model.rows.count < Self.creatorMasonryEagerLoadLimit
+      // 作品不多时整列一次性画出来（不用懒加载），每张卡都能量到真实高度。
+      let measuresAllCards = entries.count <= Self.creatorMasonryEagerLoadLimit
+      let masonryColumns = masonryIndices.map { $0.map { entries[$0] } }
+      // 把这次的分列记下来：之后同一张卡永远留在这一列。
+      let masonrySignature = "\(masonryKey)#\(masonryIDs.count)#\(masonryIDs.last.map { "\($0)" } ?? "")"
       ScrollViewReader { batchScroll in
         ScrollView {
           VStack(alignment: .leading, spacing: 14) {
             ForEach(batches) { batch in
               ProfileImportBatchHeader(batch: batch, manualLink: manualLink)
             }
-            LazyVGrid(columns: columns, spacing: CreatorDirectoryChrome.xGridSpacing) {
-              ForEach(batches.filter { !$0.isCollapsed }) { batch in
-                ForEach(creatorWorkSort.sorted(batch.items, likes: { item in
-                  if case let .completed(id) = item.phase { return savedRows[id]?.likes ?? item.seed.likes }
-                  return item.seed.likes
-                }, published: { item in
-                  if case let .completed(id) = item.phase { return savedRows[id]?.published ?? item.seed.publishedText }
-                  return item.seed.publishedText
-                }, referenceDate: creatorSortReferenceDate)) { item in
-                  ProfileImportBatchWorkCard(
-                    batchID: batch.id,
-                    item: item,
-                    savedRows: savedRows,
-                    localCover: { taskID, coverURL in
-                      await model.localCoverURL(for: taskID, matching: coverURL)
-                    },
-                    manualLink: manualLink,
-                    historyModel: model
-                  )
-                  .id(item.id)
+            // 瀑布流：每列一个 LazyVStack，各自往下排。见 CreatorWorkMasonry。
+            HStack(alignment: .top, spacing: CreatorDirectoryChrome.xGridSpacing) {
+              ForEach(Array(masonryColumns.enumerated()), id: \.offset) { _, column in
+                Group {
+                  if measuresAllCards {
+                    VStack(spacing: CreatorDirectoryChrome.xGridSpacing) {
+                      ForEach(column, id: \.id) { entry in
+                        creatorWorkMasonryCard(entry, savedRows: savedRows, likesThreshold: likesThreshold)
+                          .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                            creatorMasonryHeightBox.record(height, for: entry.id, key: masonryKey) {
+                              creatorMasonryMeasuredRevision += 1
+                            }
+                          }
+                      }
+                    }
+                  } else {
+                    LazyVStack(spacing: CreatorDirectoryChrome.xGridSpacing) {
+                      ForEach(column, id: \.id) { entry in
+                        creatorWorkMasonryCard(entry, savedRows: savedRows, likesThreshold: likesThreshold)
+                      }
+                    }
+                  }
                 }
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .top)
               }
-              ForEach(creatorWorkSort.sorted(model.rows.filter { !reservedTaskIDs.contains($0.taskID) },
-                likes: { $0.likes }, published: { $0.published }), id: \.taskID) { row in
-                Button {
-                  model.selectedTaskID = row.taskID
-                } label: {
-                  CreatorSavedWorkCard(
-                    row: row,
-                    theme: theme,
-                    localCover: { await model.localCoverURL(for: row.taskID, matching: $0) },
-                    showsAuthor: false
-                  )
-                }
-                .buttonStyle(.plain)
-                .accessibilityElement(children: .contain)
-                .accessibilityHint("打开作品")
-                .contextMenu { historyContextMenu(for: row) }
-                .overlay(alignment: .topTrailing) {
-                  CreatorWorkSelectionControl(
-                    isSelected: model.selectedTaskIDs.contains(row.taskID), theme: theme
-                  ) { model.toggleGallerySelection(row.taskID) }
-                  .accessibilityIdentifier("history-work-select-\(row.taskID.rawValue)")
-                  .padding(6)
-                }
-                .accessibilityIdentifier("history-creator-work-card-\(row.taskID.rawValue)")
-                .id(row.taskID)
-              }
-              // A completed batch can own rows.last and remove its saved card.
-              // This lazy footer still advances pagination at the visual end.
-              if let last = model.rows.last {
-                Color.clear.frame(height: 1)
-                  .id("creator-pagination-\(last.taskID.rawValue)")
-                  .onAppear { model.loadNextPageIfNeeded(after: last) }
-              }
+            }
+            // A completed batch can own rows.last and remove its saved card.
+            // This lazy footer still advances pagination at the visual end.
+            if let last = model.rows.last {
+              Color.clear.frame(height: 1)
+                .id("creator-pagination-\(last.taskID.rawValue)")
+                .onAppear { model.loadNextPageIfNeeded(after: last) }
             }
           }
           .padding(12)
@@ -2264,6 +2314,22 @@ struct HistoryContentView: View {
         .onAppear {
           scrollToProfileImportTarget(using: batchScroll)
           restoreCreatorWorkScroll(using: batchScroll, target: scrollTarget)
+        }
+        .task(id: "\(masonrySignature)#\(model.rows.count)#\(model.hasMoreListPages)#\(allMeasured)#\(creatorMasonryMeasuredRevision)") {
+          if loadsAllWorksFirst, let last = model.rows.last {
+            model.loadNextPageIfNeeded(after: last)
+            return
+          }
+          // 能量的都量完了再钉：按真实高度分好一次，之后不再换列。
+          if measuresAllCards, !allMeasured { return }
+          var pins = creatorMasonryPinsKey == masonryKey ? creatorMasonryPins : [:]
+          for (column, indices) in masonryIndices.enumerated() {
+            for index in indices where pins[masonryIDs[index]] == nil {
+              pins[masonryIDs[index]] = column
+            }
+          }
+          creatorMasonryPins = pins
+          creatorMasonryPinsKey = masonryKey
         }
         .onChange(of: model.profileImportScrollTarget) { _, _ in
           scrollToProfileImportTarget(using: batchScroll)
@@ -2286,6 +2352,129 @@ struct HistoryContentView: View {
       .background(theme.card)
     }
     .accessibilityIdentifier("history-creator-directory-works")
+  }
+
+  /// 已保存作品少于这个数时，打开博主页就一次读完再排瀑布流。
+  static let creatorMasonryEagerLoadLimit = 400
+
+  /// 作品页里的一张卡：抓取批次里的一项，或已保存的作品。
+  private enum CreatorWorkEntry {
+    case batch(batchID: UUID, item: ProfileImportBatchItem)
+    case saved(HistoryRowProjection)
+
+    var id: AnyHashable {
+      switch self {
+      case let .batch(_, item): AnyHashable(item.id)
+      case let .saved(row): AnyHashable(row.taskID)
+      }
+    }
+
+    /// 分列估高用卡片「最终会显示」的内容：已经保存且行已加载时按已保存卡估。
+    /// 估高后来变了也没关系——第一次分好的列会被钉住，见 creatorMasonryPins。
+    func estimateText(savedRows: [TaskID: HistoryRowProjection]) -> String? {
+      switch self {
+      case let .batch(_, item):
+        if case let .completed(id) = item.phase, let row = savedRows[id] { return row.sourcePreview }
+        return item.seed.previewText
+      case let .saved(row): return row.sourcePreview
+      }
+    }
+
+    func estimateHasHeading(savedRows: [TaskID: HistoryRowProjection]) -> Bool {
+      let row: HistoryRowProjection?
+      switch self {
+      case let .batch(_, item):
+        if case let .completed(id) = item.phase { row = savedRows[id] } else { row = nil }
+      case let .saved(saved): row = saved
+      }
+      guard let row else { return false }
+      return CapturedContentNaming.name(
+        title: row.title, body: row.sourcePreview, host: row.host,
+        author: row.author, published: row.published
+      ).origin == .sourceTitle
+    }
+
+    var estimateHasCover: Bool {
+      switch self {
+      case let .batch(_, item): item.seed.coverURL?.isEmpty == false
+      case let .saved(row): row.coverURL?.isEmpty == false || row.hasMedia == true
+      }
+    }
+  }
+
+  private func creatorWorkEntries(
+    batches: [ProfileImportBatch],
+    savedRows: [TaskID: HistoryRowProjection],
+    reservedTaskIDs: Set<TaskID>
+  ) -> [CreatorWorkEntry] {
+    var entries: [CreatorWorkEntry] = []
+    for batch in batches where !batch.isCollapsed {
+      let sorted = creatorWorkSort.sorted(batch.items, likes: { item in
+        if case let .completed(id) = item.phase { return savedRows[id]?.likes ?? item.seed.likes }
+        return item.seed.likes
+      }, published: { item in
+        if case let .completed(id) = item.phase { return savedRows[id]?.published ?? item.seed.publishedText }
+        return item.seed.publishedText
+      }, referenceDate: creatorSortReferenceDate)
+      entries += sorted.map { .batch(batchID: batch.id, item: $0) }
+    }
+    entries += creatorWorkSort.sorted(
+      model.rows.filter { !reservedTaskIDs.contains($0.taskID) },
+      likes: { $0.likes }, published: { $0.published }
+    ).map { .saved($0) }
+    return entries
+  }
+
+  @ViewBuilder
+  private func creatorWorkMasonryCard(
+    _ entry: CreatorWorkEntry,
+    savedRows: [TaskID: HistoryRowProjection],
+    likesThreshold: Double?
+  ) -> some View {
+    switch entry {
+    case let .batch(batchID, item):
+      ProfileImportBatchWorkCard(
+        batchID: batchID,
+        item: item,
+        savedRows: savedRows,
+        isHighlighted: CreatorWorkHighlight.isHighlighted({
+          if case let .completed(id) = item.phase { return savedRows[id]?.likes ?? item.seed.likes }
+          return item.seed.likes
+        }(), threshold: likesThreshold),
+        localCover: { taskID, coverURL in
+          await model.localCoverURL(for: taskID, matching: coverURL)
+        },
+        manualLink: manualLink,
+        historyModel: model
+      )
+      .id(item.id)
+    case let .saved(row):
+      CreatorWorkHoverSelection(alwaysVisible: !model.selectedTaskIDs.isEmpty) {
+        Button {
+          model.selectedTaskID = row.taskID
+        } label: {
+          CreatorSavedWorkCard(
+            row: row,
+            theme: theme,
+            localCover: { await model.localCoverURL(for: row.taskID, matching: $0) },
+            showsAuthor: false,
+            isHighlighted: CreatorWorkHighlight.isHighlighted(row.likes, threshold: likesThreshold)
+          )
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .contain)
+        .accessibilityHint("打开作品")
+        .contextMenu { historyContextMenu(for: row) }
+      } control: {
+        CreatorWorkSelectionControl(
+          isSelected: model.selectedTaskIDs.contains(row.taskID), theme: theme
+        ) { model.toggleGallerySelection(row.taskID) }
+        .accessibilityIdentifier("history-work-select-\(row.taskID.rawValue)")
+        .padding(6)
+      }
+      .accessibilityIdentifier("history-creator-work-card-\(row.taskID.rawValue)")
+      .id(row.taskID)
+    }
   }
 
   private func scrollToProfileImportTarget(using proxy: ScrollViewProxy) {
@@ -3091,6 +3280,7 @@ private struct HistoryDetailView: View, Equatable {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var isRegeneratePopoverPresented = false
   @State private var isRunPanelExpanded = false
+  @State private var isReadingHeaderPinned = false
   @State private var showsPlainText = false
   @State private var temporaryModel = ""
   /// Brief completion feedback after summarize/translate finishes.
@@ -3220,6 +3410,15 @@ private struct HistoryDetailView: View, Equatable {
       case .caption: LayeredSourceDocument.captionHeading
       case .subtitles: LayeredSourceDocument.subtitleHeading
       case .transcript: LayeredSourceDocument.transcriptHeading
+      }
+    }
+
+    /// 表头页签上的短名。`heading` 是文档里的小标题（「视频转写」），页签只放一个词。
+    var tabTitle: String {
+      switch self {
+      case .caption: "配文"
+      case .subtitles: "字幕"
+      case .transcript: "转写"
       }
     }
 
@@ -3416,12 +3615,6 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 只有一层时不出控件：一个没有选择余地的分段控件只是看起来像有。
   private var showsSourceLayerPicker: Bool { availableSourceLayers.count > 1 }
-  private var showsToolbarSourceLayerPicker: Bool {
-    !isOwnWriting && showsSourceLayerPicker && effectiveReadingPane == .source
-  }
-  private var showsToolbarTranslationLayerPicker: Bool {
-    !isOwnWriting && showsTranslationLayerPicker && effectiveReadingPane == .translation
-  }
 
   /// 译文拆出来的各层。
   ///
@@ -3552,7 +3745,8 @@ private struct HistoryDetailView: View, Equatable {
         summaryBody: summaryArtifact?.bodyText,
         translationBody: translationArtifact?.bodyText
       ),
-      preservedOriginalTitle: sourceFrontmatter.originalTitle
+      preservedOriginalTitle: sourceFrontmatter.originalTitle,
+      sourceBody: sourceFrontmatter.body
     )
   }
   private var readingPrimaryTitle: String { readingTitles.primary }
@@ -3722,20 +3916,16 @@ private struct HistoryDetailView: View, Equatable {
       markdown: snapshot.bodyText
     )
   }
-  /// 只列出真正有内容可读的面板，外加必要的空态落脚点。
+  /// 只列出真正有内容可读的面板。
   ///
-  /// 总结和翻译各自独立出现：两者都有就是三格，只有一个就仍是两格——所以这次改动
-  /// 不会给「只总结过」的条目凭空多出一个空的翻译页。
+  /// 页签是名词——「已经有的东西」。没跑过翻译就没有「翻译」页签；想要它，表头右边
+  /// 有个写着「翻译」的按钮（动词）。两者分开之后，页签不必再为空态留位置。
+  ///
+  /// 总结和翻译各自独立出现：两者都有就是两格，只有一个就是一格。
   private var availableReadingPanes: [ReadingPane] {
     var panes: [ReadingPane] = []
     if summaryArtifact != nil || liveRunReadingPane == .summary { panes.append(.summary) }
     if translationArtifact != nil || liveRunReadingPane == .translation { panes.append(.translation) }
-    // 一份结果都没有时保留一个总结格，「尚未生成总结」的空态提示才有地方落。
-    // 抖音例外：它在没有结果时本来就不显示结果格。
-    //
-    // 笔记也例外：给一条刚写的笔记留一个空的「总结」页签，等于在写作页面上摆一个
-    // 常驻的待办。没总结时它就只有正文一件东西，那就不该出现分段控件。
-    if panes.isEmpty, !isDouyinCapture, !isOwnWriting { panes.append(.summary) }
     if !isDouyinCapture || hasSourceBody || hasLiveTranscription || hasPresentableCaption {
       panes.append(.source)
     }
@@ -3842,12 +4032,10 @@ private struct HistoryDetailView: View, Equatable {
           .padding(.top, DesignTokens.Space.sm)
           .accessibilityIdentifier("history-unconfigured-model-banner")
         }
-        noteTagBar
-          .padding(.top, DesignTokens.Space.md)
-
-        // 抓取记录的生成入口并入阅读工具栏「AI 处理」菜单，避免与结果切换分两行。
-        // 笔记仍保持正文直达，整理排版留在正文之后。
-        if !isOwnWriting, showsReadingPanePicker || showsRunControls {
+        // 正文表头跟着正文走（见 readingSurface）：视频之后、正文之前。
+        // 只有没有任何正文可读、却还有事可做时（比如刚抓到、正文还没落库的当前抓取），
+        // 才退回标题下面这个位置——否则按钮没地方放。
+        if !isOwnWriting, !showsReadingSurface, showsRunControls {
           actionToolbar
             .padding(.top, DesignTokens.Space.lg)
           Divider().padding(.top, DesignTokens.Space.sm)
@@ -3867,9 +4055,7 @@ private struct HistoryDetailView: View, Equatable {
               fileURL: localMediaFileURL,
               media: detail.media,
               taskID: detail.task.id,
-              model: model,
-              onlineTranscriptionModel: providerSettings.effectiveTranscriptionModelName,
-              tidyModel: providerSettings.effectiveTidyModelName
+              model: model
             )
             .padding(.top, 14)
             .accessibilityIdentifier("history-video-player-card")
@@ -3887,8 +4073,6 @@ private struct HistoryDetailView: View, Equatable {
               taskID: capture.taskID,
               snapshotID: capture.snapshotID,
               model: model,
-              onlineTranscriptionModel: providerSettings.effectiveTranscriptionModelName,
-              tidyModel: providerSettings.effectiveTidyModelName,
               playback: remotePreviewPlayback,
               onRefreshStream: {
                 remotePreviewPlayback.release()
@@ -3938,8 +4122,6 @@ private struct HistoryDetailView: View, Equatable {
               taskID: detail.task.id,
               snapshotID: latestSourceSnapshot?.id ?? detail.snapshots.last?.id ?? ContentSnapshotID(),
               model: model,
-              onlineTranscriptionModel: providerSettings.effectiveTranscriptionModelName,
-              tidyModel: providerSettings.effectiveTidyModelName,
               playback: remotePreviewPlayback,
               onRefreshStream: {
                 remotePreviewPlayback.release()
@@ -4040,6 +4222,11 @@ private struct HistoryDetailView: View, Equatable {
             .padding(.top, 20)
             .id(ReadingAnchor.module("annotations"))
         }
+
+        // 笔记和标签是读完之后的产物：想法读完才有，主题标签总结完才自动打上。
+        // 放在标题下面等于开篇就催人手填，所以收在整页最后。
+        noteTagBar
+          .padding(.top, DesignTokens.Space.xl)
       }
       // 常规列表保留较宽上限；专注阅读收窄到约 760pt 并居中。
       .frame(
@@ -4052,6 +4239,17 @@ private struct HistoryDetailView: View, Equatable {
       .padding(.top, 16)
       .padding(.bottom, 48)
       .subtleScrollers()
+    }
+    .coordinateSpace(name: HistoryDetailView.readingScrollSpace)
+    // 表头滚出顶部就吸住；滚回来落回原位。一打开时顶部干干净净，只放信息。
+    .onPreferenceChange(ReadingHeaderOffsetPreferenceKey.self) { minY in
+      let pinned = minY < 0
+      if isReadingHeaderPinned != pinned { isReadingHeaderPinned = pinned }
+    }
+    .overlay(alignment: .top) {
+      if isReadingHeaderPinned, !isOwnWriting, showsReadingSurface {
+        pinnedReadingHeader
+      }
     }
     .background(
       ReadingScrollContinuity(
@@ -4306,10 +4504,8 @@ private struct HistoryDetailView: View, Equatable {
               Button("重新抓取原文…") { openRecapture(sourceURL) }
                 .accessibilityIdentifier("history-recapture-source")
             }
-            Button("重新生成…") { isRegeneratePopoverPresented = true }
-              .disabled(summarizeUnavailableReason != nil)
-              .help(summarizeUnavailableReason ?? "用本机已保存正文重新总结或翻译")
-              .accessibilityIdentifier("regenerate-history")
+            // 「换个模型重跑…」是对这条内容做的 AI 动作，和重新总结、重新翻译
+            // 一起收在正文表头的「⋯」里，不再和导出、删除混在窗口工具栏。
           }
           Section {
             Button(model.deletionConfirmationActionTitle, role: .destructive) {
@@ -4324,9 +4520,6 @@ private struct HistoryDetailView: View, Equatable {
         }
         .help("上一条／下一条（⌘↑ / ⌘↓）、复制、导出、重新处理或删除当前条目")
         .accessibilityLabel("更多")
-        // popover 锚在这个按钮上——原来它挂在独立的「重新生成」按钮上，
-        // 那个按钮现在没了，锚点得跟过来。
-        .popover(isPresented: $isRegeneratePopoverPresented) { regeneratePopover }
         .accessibilityIdentifier("export-history")
       }
     }
@@ -4596,69 +4789,6 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
 
-  /// 抓取记录：结果切换与 AI 处理同一行；生成进菜单，切换本身不触发生成。
-  private var readingToolsRow: some View {
-    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-      HStack(alignment: .center, spacing: DesignTokens.Space.sm) {
-        if showsReadingPanePicker {
-          readingPanePicker
-        }
-        if showsToolbarSourceLayerPicker {
-          sourceLayerPicker
-        }
-        if showsToolbarTranslationLayerPicker {
-          translationLayerPicker
-        }
-        // 左边一个切换都没有（比如还没总结的抖音作品）时，「AI 处理」不再独自
-        // 贴在最右边，留下一整行空白；直接靠左接在互动行下面。
-        if showsReadingPanePicker || showsToolbarSourceLayerPicker || showsToolbarTranslationLayerPicker {
-          Spacer(minLength: DesignTokens.Space.sm)
-        }
-        if showsVisibleRun {
-          if appModel.canStopVisibleRun(for: detail.task.id) {
-            Button("停止", role: .cancel) { Task { await appModel.stop() } }
-              .controlSize(.mini)
-              .help("停止当前生成")
-              .accessibilityLabel("停止当前生成")
-              .accessibilityIdentifier("stop-model-run")
-          }
-          if appModel.runState.isActive {
-            ProgressView()
-              .controlSize(.mini)
-          }
-          // 状态做成小圆点标签，和右边的「AI 处理」按钮分开——原来「已完成 · AI 处理 ▾」
-          // 是一段灰字接一个菜单，看起来像一句话。
-          HStack(spacing: DesignTokens.Space.xs) {
-            Circle()
-              .fill(appModel.runHasFailure ? theme.danger : (appModel.runState.isActive ? theme.info : theme.success))
-              .frame(width: 6, height: 6)
-              .accessibilityHidden(true)
-            // 正文区已经写着「模型思考中…」，胶囊只报一个词，不再整句重复。
-            Text(appModel.runState.isActive ? "生成中" : appModel.runStatusText)
-              .themedFont(.caption, weight: .medium)
-              .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
-              .lineLimit(1)
-          }
-          .padding(.horizontal, DesignTokens.Space.sm)
-          .padding(.vertical, 3)
-          .background(theme.badge, in: Capsule())
-          .accessibilityIdentifier("model-run-status")
-        }
-        if showsRunControls {
-          aiProcessingMenu
-        }
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .accessibilityIdentifier("history-action-toolbar")
-
-      if isRunPanelExpanded {
-        captureAndRunControlsExtras
-          .transition(historyBannerTransition(reduceMotion: reduceMotion))
-      }
-    }
-  }
-
   /// 笔记：整理排版直达，不挡正文；可选 AI 菜单不抢编辑焦点。
   private var noteActionToolbar: some View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
@@ -4827,9 +4957,565 @@ private struct HistoryDetailView: View, Equatable {
     .accessibilityIdentifier("history-ai-processing-menu")
   }
 
-  /// 生成动作与已有结果切换分开呈现（抓取记录已并入 readingToolsRow）。
+  /// 没有正文可读时的兜底位置用的还是同一个表头。
   private var actionToolbar: some View {
-    readingToolsRow
+    readingHeaderRow(pinned: false)
+  }
+
+  // MARK: - 正文表头：看什么 / 做什么
+
+  /// 表头左边的页签：这条内容**已经有**的每一份文字，全平级。
+  ///
+  /// 「配文」「转写」不再藏在「原文」下面当二级。用户看它们和看总结、翻译是同一个
+  /// 动作——换一份读——那就该是同一排、同一种样子。原文只有一层时仍叫「原文」。
+  private enum ReadingTab: Hashable, Identifiable {
+    case source(SourceLayer?)
+    case summary
+    case translation
+    var id: String {
+      switch self {
+      case let .source(layer): "source-\(layer?.rawValue ?? "single")"
+      case .summary: "summary"
+      case .translation: "translation"
+      }
+    }
+  }
+
+  /// 顺序：原文各层 → 总结 → 翻译。先是抓来的，再是模型做出来的。
+  private var readingTabs: [ReadingTab] {
+    var tabs: [ReadingTab] = []
+    if availableReadingPanes.contains(.source) {
+      if showsSourceLayerPicker {
+        tabs += availableSourceLayers.map { ReadingTab.source($0) }
+      } else {
+        tabs.append(.source(nil))
+      }
+    }
+    if availableReadingPanes.contains(.summary) { tabs.append(.summary) }
+    if availableReadingPanes.contains(.translation) { tabs.append(.translation) }
+    return tabs
+  }
+
+  private var activeReadingTab: ReadingTab {
+    switch effectiveReadingPane {
+    case .summary: .summary
+    case .translation: .translation
+    case .source: .source(showsSourceLayerPicker ? activeSourceLayer : nil)
+    }
+  }
+
+  private func readingTabTitle(_ tab: ReadingTab) -> String {
+    switch tab {
+    case let .source(layer): layer?.tabTitle ?? "原文"
+    case .summary: "总结"
+    case .translation: "翻译"
+    }
+  }
+
+  private func selectReadingTab(_ tab: ReadingTab) {
+    switch tab {
+    case let .source(layer):
+      readingPane = .source
+      selectedSourceLayer = layer
+    case .summary: readingPane = .summary
+    case .translation: readingPane = .translation
+    }
+  }
+
+  /// 表头在滚动坐标系里的纵向位置。没有表头时是 ∞，永远不吸顶。
+  private struct ReadingHeaderOffsetPreferenceKey: PreferenceKey {
+    static let defaultValue: CGFloat = .infinity
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+      value = min(value, nextValue())
+    }
+  }
+  static let readingScrollSpace = "history-reading-scroll"
+
+  /// 正文表头：左边「看哪一份」，右边「还能做什么」。
+  ///
+  /// 三条规则：动词归动词、名词归名词，各一组各一种样子；页签只列已经有的，
+  /// 按钮只列还能做的；做完一件事，按钮消失、页签出现——这就是状态，不另写
+  /// 一行「已完成 xx」。
+  ///
+  /// 位置在视频之后、正文之前：顶部留给标题、作者、视频这些信息，表头紧贴着它
+  /// 所控制的那段文字。滚过去以后由 `pinnedReadingHeader` 吸在正文区顶端，
+  /// 读到哪里都不用滚回来切换。
+  @ViewBuilder private func readingHeaderRow(pinned: Bool) -> some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+      HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+        readingTabStrip
+        if effectiveReadingPane == .source { reformatToggle }
+        Spacer(minLength: DesignTokens.Space.md)
+        readingVerbs
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      if !pinned {
+        readingHeaderStatusLines
+        if isRunPanelExpanded {
+          captureAndRunControlsExtras
+            .transition(historyBannerTransition(reduceMotion: reduceMotion))
+        }
+      }
+    }
+    .accessibilityIdentifier(pinned ? "history-action-toolbar-pinned" : "history-action-toolbar")
+  }
+
+  /// 滚过表头之后吸在正文区顶端的那份。只有页签和按钮，不带状态行和运行详情。
+  private var pinnedReadingHeader: some View {
+    readingHeaderRow(pinned: true)
+      .padding(.vertical, DesignTokens.Space.xs)
+      .frame(maxWidth: readingContentMaxWidth, alignment: .leading)
+      .frame(maxWidth: .infinity, alignment: .center)
+      .padding(.horizontal, DesignTokens.Layout.readingHorizontalInset)
+      .background(.bar)
+      .overlay(alignment: .bottom) { Divider() }
+      .accessibilityIdentifier("history-reading-header-pinned")
+  }
+
+  /// 页签用文字加下划线，不用分段控件——和右边的按钮一眼分得开：文字是「看」，
+  /// 框起来的是「做」。
+  private var readingTabStrip: some View {
+    HStack(spacing: DesignTokens.Space.md) {
+      ForEach(readingTabs) { tab in
+        let isActive = tab == activeReadingTab
+        let title = readingTabTitle(tab)
+        Button {
+          selectReadingTab(tab)
+        } label: {
+          Text(title)
+            .themedFont(.callout, weight: isActive ? .semibold : .regular)
+            .foregroundStyle(isActive ? theme.primaryText : theme.secondaryText)
+            .padding(.bottom, 3)
+            .overlay(alignment: .bottom) {
+              Rectangle()
+                .fill(isActive ? theme.accent : Color.clear)
+                .frame(height: 2)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(isActive ? "正在看\(title)" : "切换到\(title)")
+        .accessibilityAddTraits(isActive ? .isSelected : [])
+        .accessibilityIdentifier("history-reading-tab-\(tab.id)")
+      }
+    }
+    .accessibilityLabel("阅读内容")
+    .accessibilityIdentifier("history-reading-tabs")
+  }
+
+  /// 「原文 / 重排」是原文页上的显示切换，不是动作；生成重排稿的入口在「⋯」里。
+  @ViewBuilder private var reformatToggle: some View {
+    if model.reformatRecord != nil {
+      Picker("正文版面", selection: $model.showsReformattedBody) {
+        Text("原文").tag(false)
+        Text("重排").tag(true)
+      }
+      .pickerStyle(.segmented)
+      .controlSize(.small)
+      .labelsHidden()
+      .frame(maxWidth: 108)
+      .accessibilityIdentifier("history-reformat-toggle")
+    }
+  }
+
+  /// 表头右边的动作：只列**还没做**的。转写、总结、翻译三个动词并排，一种样子。
+  private var readingVerbs: some View {
+    HStack(spacing: DesignTokens.Space.sm) {
+      transcribeVerb
+      runVerb(.summarize)
+      runVerb(.translate)
+      moreActionsMenu
+    }
+    .controlSize(.small)
+  }
+
+  private func startRun(_ kind: RunKind) {
+    Task {
+      let started: Bool
+      switch kind {
+      case .summarize:
+        started = await appModel.summarize(historyDetail: detail, preferences: providerSettings.runPreferences)
+      case .translate:
+        started = await appModel.translate(historyDetail: detail, preferences: providerSettings.runPreferences)
+      }
+      engageReadingPane(pane(for: kind), started: started)
+    }
+  }
+
+  private func isRunning(_ kind: RunKind) -> Bool {
+    showsVisibleRun && appModel.runState.isActive && liveRunReadingPane == pane(for: kind)
+  }
+
+  /// 总结 / 翻译按钮。正在跑就变成进度和「停止」；已经有产物就不出现（重做在「⋯」）。
+  @ViewBuilder private func runVerb(_ kind: RunKind) -> some View {
+    let title = kind == .translate ? "翻译" : "总结"
+    let artifactExists = (kind == .translate ? translationArtifact : summaryArtifact) != nil
+    if isRunning(kind) {
+      HStack(spacing: DesignTokens.Space.xs) {
+        ProgressView().controlSize(.mini)
+        Text("\(title)中…")
+          .themedFont(.caption, weight: .medium)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+        if appModel.canStopVisibleRun(for: detail.task.id) {
+          Button("停止", role: .cancel) { Task { await appModel.stop() } }
+            .buttonStyle(.plain)
+            .themedFont(.caption)
+            .foregroundStyle(theme.accent)
+            .help("停止当前生成")
+            .accessibilityLabel("停止当前生成")
+            .accessibilityIdentifier("stop-model-run")
+        }
+      }
+      .accessibilityIdentifier("model-run-status")
+    } else if !artifactExists, showsRunControls {
+      let isQueued = appModel.isManualGenerationQueued(
+        taskID: detail.task.id,
+        kind: kind == .translate ? .translate : .summarize
+      )
+      let blockedReason = kind == .translate ? translateUnavailableReason : summarizeUnavailableReason
+      Button(isQueued ? "已排队\(title)" : title) { startRun(kind) }
+        .buttonStyle(.bordered)
+        .disabled(blockedReason != nil)
+        .help(
+          blockedReason ?? (kind == .translate
+            ? "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
+            : "让模型读完正文，写一份总结")
+        )
+        .accessibilityIdentifier(
+          kind == .translate
+            ? (showsCurrentCapture ? "translate-current-capture" : "translate-history-detail")
+            : (showsCurrentCapture ? "summarize-current-capture" : "summarize-history-detail")
+        )
+    }
+  }
+
+  /// 这条记录能不能转写、走哪条路。没有视频就是 nil，按钮整个不出现。
+  ///
+  /// 本地已存的视频走 `requestTranscription`；刚从扩展抓来、还没落盘的当前抓取
+  /// 走带 descriptor 的那组接口。两条路在这里合成一个按钮，视频卡上不再各放一个。
+  private struct TranscribeAction {
+    let canStart: Bool
+    let canStartOnline: Bool
+    let help: String
+    let start: () -> Void
+    let retry: () -> Void
+    let startOnline: () -> Void
+  }
+  private var transcribeAction: TranscribeAction? {
+    guard !isOwnWriting else { return nil }
+    let taskID = detail.task.id
+    let onlineModel = providerSettings.effectiveTranscriptionModelName
+    if let localMediaFileURL, LocalMediaExport.isSupportedLocalFile(localMediaFileURL) {
+      return .init(
+        canStart: model.canTranscribeVideo,
+        canStartOnline: model.canTranscribeLocalMediaOnline(taskID: taskID, model: onlineModel),
+        help: "在本机识别这段视频里说了什么，不联网、不花钱",
+        start: { model.requestTranscription() },
+        retry: { model.retryTranscription() },
+        startOnline: { model.requestOnlineTranscriptionFromLocalMedia(taskID: taskID, model: onlineModel) }
+      )
+    }
+    if localMediaFileURL == nil, showsCurrentCapture,
+       let capture = appModel.currentCapture,
+       let captureDescriptor = capture.mediaDescriptor {
+      let descriptor = sessionMediaPlayback.cachedDescriptor(for: capture.taskID) ?? captureDescriptor
+      // HLS 流拿不到整段音频，转写走不通；表头下面的状态行会说明。
+      guard descriptor.kind == .directFile else { return nil }
+      return .init(
+        canStart: model.canTranscribeCurrentCapture(descriptor, taskID: taskID),
+        canStartOnline: model.canTranscribeCurrentCaptureOnline(descriptor, taskID: taskID, model: onlineModel),
+        help: "先把视频拉到本机再识别，不联网、不花钱",
+        start: { model.requestRemoteTranscription(descriptor, taskID: taskID) },
+        retry: { model.retryRemoteTranscription(descriptor, taskID: taskID) },
+        startOnline: { model.requestOnlineTranscription(descriptor, taskID: taskID, model: onlineModel) }
+      )
+    }
+    return nil
+  }
+  private var showsRemoteCaptureCard: Bool {
+    localMediaFileURL == nil && showsCurrentCapture && appModel.currentCapture?.mediaDescriptor != nil
+  }
+  private var isCurrentCaptureHLS: Bool {
+    guard localMediaFileURL == nil, showsCurrentCapture,
+          let capture = appModel.currentCapture,
+          let captureDescriptor = capture.mediaDescriptor else { return false }
+    let descriptor = sessionMediaPlayback.cachedDescriptor(for: capture.taskID) ?? captureDescriptor
+    return descriptor.kind != .directFile
+  }
+  /// 会话态回到 idle 后，仍以落库的 transcriptionStatus 判断「已经转写过」。
+  private var hasCompletedTranscript: Bool {
+    latestTranscriptionSnapshot != nil
+      || model.transcriptionState(for: detail.task.id) == .completed
+      || detail.media?.transcriptionStatus == .completed
+  }
+  private var transcriptTidyBlockedReason: String? {
+    model.transcriptTidyUnavailableReason(taskID: detail.task.id)
+  }
+  /// 已有文稿、整理仍不可用时，在菜单外留一行可见理由（不只靠悬停）。
+  private var transcriptTidyVisibleBlockedReason: String? {
+    guard hasCompletedTranscript, let reason = transcriptTidyBlockedReason,
+          reason != "需先完成转写，才有文稿可整理" else { return nil }
+    return reason
+  }
+  /// 菜单里禁用的「在线转写」必须自己说明为什么灰。
+  private var onlineTranscribeMenuTitle: String {
+    let trimmed = providerSettings.effectiveTranscriptionModelName?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    if trimmed?.isEmpty != false {
+      return "在线转写（未配置模型，见 设置 → 模型与识别）"
+    }
+    return hasCompletedTranscript ? "重新转写（在线）" : "在线转写"
+  }
+  private func transcriptionPhaseText(_ state: TranscriptionUIState) -> String {
+    switch state {
+    case .preparingMedia: "准备媒体…"
+    case .checkingModel: "检查离线模型…"
+    case .preparingModel: "准备离线模型…"
+    case .extractingAudio: "提取音频…"
+    case .transcribing:
+      model.transcriptionUsesOnlineService
+        ? (model.onlineTranscriptionPhase ?? "在线转写中…")
+        : "转写中…"
+    default: ""
+    }
+  }
+
+  /// 转写按钮。和总结/翻译站在同一排：都是「把内容交给模型换一份新文本」。
+  @ViewBuilder private var transcribeVerb: some View {
+    if let action = transcribeAction {
+      let state = model.transcriptionState(for: detail.task.id)
+      switch state {
+      case .preparingMedia, .checkingModel, .preparingModel, .extractingAudio, .transcribing:
+        HStack(spacing: DesignTokens.Space.xs) {
+          ProgressView().controlSize(.mini)
+          Text(transcriptionPhaseText(state))
+            .themedFont(.caption, weight: .medium)
+            .foregroundStyle(.secondary)
+            .lineLimit(1)
+          Button("停止", role: .cancel) { model.cancelTranscription() }
+            .buttonStyle(.plain)
+            .themedFont(.caption)
+            .foregroundStyle(theme.accent)
+            .accessibilityIdentifier("history-video-transcription-cancel")
+        }
+        .accessibilityIdentifier("history-video-transcription-running")
+      case .awaitingModelDownload:
+        Text("等待确认模型下载")
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+          .accessibilityIdentifier("history-video-transcription-awaiting")
+      case .failed, .cancelled:
+        if !hasCompletedTranscript {
+          Button("重试转写", action: action.retry)
+            .buttonStyle(.bordered)
+            .disabled(!action.canStart)
+            .help(action.help)
+            .accessibilityIdentifier("history-video-transcription-retry")
+        }
+      case .idle, .completed:
+        if !hasCompletedTranscript {
+          Button("转写", action: action.start)
+            .buttonStyle(.bordered)
+            .disabled(!action.canStart)
+            .help(action.help)
+            .accessibilityIdentifier("history-video-transcription-start")
+        }
+      }
+    }
+  }
+
+  /// 表头下面的状态行：只在出了状况时出现（转写失败、整理进行中、只读、HLS）。
+  /// 顺利的时候什么都不显示——页签出现就是「完成」。
+  @ViewBuilder private var readingHeaderStatusLines: some View {
+    let taskID = detail.task.id
+    // 当前抓取的远程视频卡自己带一块转写状态（流式预览、计时、清理失败），
+    // 这两行只给本地视频用，免得同一句失败原因出现两次。
+    if !showsRemoteCaptureCard {
+      switch model.transcriptionState(for: taskID) {
+      case let .failed(message):
+        Text(message)
+          .themedFont(.caption)
+          .foregroundStyle(theme.danger)
+          .lineLimit(3)
+          .accessibilityIdentifier("history-video-transcription-failed")
+      case .cancelled:
+        Text(LocalVideoTranscriptionError.cancelled.userMessage)
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+      default:
+        EmptyView()
+      }
+    }
+    switch model.transcriptTidyState(for: taskID) {
+    case .running:
+      HStack(spacing: DesignTokens.Space.xs) {
+        ProgressView().controlSize(.mini)
+        Text("正在用模型校对转写稿…").themedFont(.caption).foregroundStyle(.secondary)
+      }
+      .accessibilityIdentifier("history-transcript-tidy-running")
+    case .completed:
+      let tokens = model.transcriptTidyTokenSummary(for: taskID)
+      Label(
+        tokens.map { "校对稿已保存 · \($0)" } ?? "校对稿已保存为最新原文",
+        systemImage: "checkmark.circle.fill"
+      )
+      .themedFont(.caption)
+      .foregroundStyle(theme.success)
+    case .cancelled:
+      Text(TranscriptTidyError.cancelled.userMessage).themedFont(.caption).foregroundStyle(.secondary)
+    case let .failed(message):
+      Text(message).themedFont(.caption).foregroundStyle(theme.danger).lineLimit(3)
+    case .idle:
+      EmptyView()
+    }
+    if case .running = model.reformatState(for: taskID) {
+      HStack(spacing: DesignTokens.Space.xs) {
+        ProgressView().controlSize(.mini)
+        Text("正在整理排版…").themedFont(.caption).foregroundStyle(.secondary)
+        Button("停止") { model.cancelArticleReformat() }
+          .buttonStyle(.plain)
+          .themedFont(.caption)
+          .foregroundStyle(theme.accent)
+      }
+      .accessibilityIdentifier("history-reformat-running")
+    }
+    if model.isReadOnly, transcribeAction != nil {
+      Text("只读模式不能保存转写结果；恢复可写存储后可重试。")
+        .themedFont(.caption)
+        .foregroundStyle(theme.warning)
+        .accessibilityIdentifier("history-video-transcription-read-only")
+    }
+    if isCurrentCaptureHLS {
+      Text("这段视频是流媒体（HLS），暂不支持转写")
+        .themedFont(.caption)
+        .foregroundStyle(.secondary)
+        .accessibilityIdentifier("history-video-transcription-hls")
+    }
+    if let reason = transcriptTidyVisibleBlockedReason {
+      Text(reason)
+        .themedFont(.caption)
+        .foregroundStyle(.secondary)
+        .accessibilityIdentifier("history-transcript-tidy-blocked-reason")
+    }
+  }
+
+  /// 表头右端的「⋯」：重做和次要动作。
+  ///
+  /// 主按钮只放还没做的事；已经做过的要重来，或者脑图、整理这类不常用的，收在这里。
+  private var moreActionsMenu: some View {
+    Menu {
+      Section {
+        if summaryArtifact != nil {
+          Button("重新总结") { startRun(.summarize) }
+            .disabled(summarizeUnavailableReason != nil)
+            .help(summarizeUnavailableReason ?? "用本机已保存的正文再总结一次")
+            .accessibilityIdentifier("history-more-resummarize")
+        }
+        if translationArtifact != nil {
+          Button("重新翻译") { startRun(.translate) }
+            .disabled(translateUnavailableReason != nil)
+            .help(translateUnavailableReason ?? "用本机已保存的正文再翻译一次")
+            .accessibilityIdentifier("history-more-retranslate")
+        }
+        if let action = transcribeAction {
+          if hasCompletedTranscript {
+            Button("重新转写（本机）", action: action.start)
+              .disabled(!action.canStart)
+              .help(action.help)
+              .accessibilityIdentifier("history-more-retranscribe")
+          }
+          Button(onlineTranscribeMenuTitle, action: action.startOnline)
+            .disabled(!action.canStartOnline)
+            .accessibilityIdentifier("history-more-online-transcribe")
+        }
+      }
+      Section {
+        if !isOwnWriting, model.mindMapRecord?.taskID != detail.task.id {
+          Button {
+            if appModel.canEnqueueManualGeneration(for: detail.task.id)
+              || appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) {
+              appModel.enqueueOrCancelMindMapGeneration(taskID: detail.task.id)
+            } else {
+              model.requestMindMapGeneration(taskID: detail.task.id)
+            }
+          } label: {
+            Text(appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) ? "已排队脑图" : "生成脑图")
+          }
+          .disabled(mindMapUnavailableReason != nil)
+          .help(
+            mindMapUnavailableReason
+              ?? (appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap)
+                ? "再点一次取消排队"
+                : "把正文发给模型提取结构")
+          )
+          .accessibilityIdentifier("mind-map-generate")
+        }
+        if hasCompletedTranscript {
+          Button(transcriptTidyBlockedReason.map { "整理文稿（\($0)）" } ?? "整理文稿") {
+            model.requestTranscriptTidy(taskID: detail.task.id, model: providerSettings.effectiveTidyModelName)
+          }
+          .disabled(transcriptTidyBlockedReason != nil)
+          .help("把转写文字校对一遍并重新分段，不改说了什么")
+          .accessibilityIdentifier("history-ai-transcript-tidy")
+        }
+        // 「整理排版」只对 2000 字以上、还没分节的长文可用。短帖看不到入口会以为
+        // 功能没了，这里留一条灰项说明原因，功能的存在感不随内容长短消失。
+        if !isOwnWriting, model.reformatRecord == nil, let snapshot = latestSnapshot {
+          let eligibility = reformatEligibility(snapshot)
+          if eligibility.canReformat {
+            Button("整理排版") {
+              model.requestArticleReformat(
+                taskID: detail.task.id,
+                bodyText: snapshot.bodyText,
+                model: providerSettings.effectiveTidyModelName
+              )
+            }
+            .disabled(model.reformatUnavailableReason(taskID: detail.task.id) != nil)
+            .help(model.reformatUnavailableReason(taskID: detail.task.id) ?? "给这篇长文分节、加上小标题；原文不会被改动，随时可以切回")
+            .accessibilityIdentifier("history-reformat-button")
+          } else if let message = eligibility.userMessage {
+            Button {} label: { Text("整理排版：\(message)") }
+              .disabled(true)
+              .accessibilityIdentifier("history-reformat-unavailable")
+          }
+        }
+        Button("换个模型重跑…") { isRegeneratePopoverPresented = true }
+          .disabled(summarizeUnavailableReason != nil && translateUnavailableReason != nil)
+          .help("用本机已保存的正文，临时换一个模型重新总结或翻译")
+          .accessibilityIdentifier("regenerate-history")
+      }
+      Section {
+        if let runActionBlockedReason { Text(runActionBlockedReason) }
+        if !providerSettings.arePreferencesReady {
+          Button("设置模型") { openSettings() }
+            .accessibilityIdentifier("history-open-model-settings")
+        } else if !showsVisibleRun {
+          let modelName = providerSettings.activeSummaryModelName.isEmpty
+            ? "模型未命名"
+            : "模型：\(providerSettings.activeSummaryModelName)"
+          Button(modelName) {}
+            .disabled(true)
+        }
+        if canRunHistory || showsCurrentCapture || isRunPanelExpanded || hasCollapsedRunMetadata {
+          Button(isRunPanelExpanded ? "收起运行详情" : "运行详情") {
+            withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isRunPanelExpanded.toggle() }
+          }
+          .accessibilityIdentifier("history-run-panel-toggle")
+        }
+      }
+    } label: {
+      Image(systemName: "ellipsis.circle")
+        .font(.system(size: DesignTokens.IconSize.control, weight: .regular))
+    }
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .help("重做、脑图、整理与运行详情")
+    .accessibilityLabel("更多处理")
+    .accessibilityIdentifier("history-more-actions-menu")
+    // popover 锚在这个菜单上——它的入口「换个模型重跑…」就在这里面。
+    .popover(isPresented: $isRegeneratePopoverPresented) { regeneratePopover }
   }
 
   @ViewBuilder private func actionPill(
@@ -4940,7 +5626,22 @@ private struct HistoryDetailView: View, Equatable {
 
   private var readingSurface: some View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-      if isOwnWriting, showsReadingPanePicker { readingPanePicker }
+      if isOwnWriting {
+        if showsReadingPanePicker { readingPanePicker }
+      } else {
+        // 表头就是正文的表头：标明「下面这段是哪一份」，紧贴着它控制的文字。
+        // 它在滚动坐标系里的位置上报给外层，滚出顶部后由吸顶副本接手。
+        readingHeaderRow(pinned: false)
+          .background(
+            GeometryReader { proxy in
+              Color.clear.preference(
+                key: ReadingHeaderOffsetPreferenceKey.self,
+                value: proxy.frame(in: .named(HistoryDetailView.readingScrollSpace)).minY
+              )
+            }
+          )
+        Divider()
+      }
       content
     }
     .animation(historyUIAnimation(reduceMotion: reduceMotion), value: showsLiveRunInReadingPane)
@@ -4952,20 +5653,6 @@ private struct HistoryDetailView: View, Equatable {
 
   private var showsReadingSurface: Bool {
     showsLiveRunInReadingPane || hasResultBody || hasSourceBody || isDouyinCapture
-  }
-
-  /// 原文里的层切换。
-  ///
-  /// 刻意和顶上「总结/翻译/原文」用同一种控件：两处是同一件事的两级——先选看
-  /// 哪种产物，再选看哪一份原文。换成别的样式只会让人以为它们不是一类东西。
-  private var sourceLayerPicker: some View {
-    layerPicker(
-      title: "原文层",
-      layers: availableSourceLayers,
-      active: activeSourceLayer,
-      identifier: "history-source-layer-picker",
-      select: { selectedSourceLayer = $0 }
-    )
   }
 
   /// 译文里的层切换。和原文用**同一个**控件，不是长得像的另一个。
@@ -4992,27 +5679,39 @@ private struct HistoryDetailView: View, Equatable {
     // 两边就都对得上了；闭包体里再补一道 assumeIsolated 说明它确实在主线程跑。
     select: @escaping @MainActor (SourceLayer) -> Void
   ) -> some View {
-    Picker(
-      title,
-      selection: Binding(
-        get: { active ?? layers.first ?? .transcript },
-        set: { layer in MainActor.assumeIsolated { select(layer) } }
-      )
-    ) {
-      ForEach(layers) { layer in
-        Text(layer.heading).tag(layer)
-      }
-    }
-    .pickerStyle(.segmented)
-    .controlSize(.small)
-    .labelsHidden()
-    .frame(maxWidth: 264)
-    // 居中写在这里、而不是交给各自的父容器。
+    // 二级切换用文字标签，不再用和一级同款的分段控件。
     //
-    // 原文页的父容器是 `VStack(alignment: .leading)`、翻译页的不是，于是同一个
-    // 控件在两处一个靠左一个居中——看起来像两个不同的东西。对齐属于「这个控件
-    // 长什么样」的一部分，放进构造里才不会再次跑偏。
-    .frame(maxWidth: .infinity, alignment: .center)
+    // 两者形状一样时，「总结 | 翻译 | 原文」和「配文 | 视频转写」看起来就是
+    // 并列的两组选择，可后者其实活在前者的「原文」里。轻一档的样式把这层
+    // 从属关系直接写在外观上，不用靠人去推。
+    //
+    // 对齐写在这里、而不是交给各自的父容器：原文页的父容器是
+    // `VStack(alignment: .leading)`、翻译页的不是，同一个控件在两处一个靠左
+    // 一个居中，看起来像两个不同的东西。
+    HStack(spacing: DesignTokens.Space.md) {
+      ForEach(layers) { layer in
+        let isActive = (active ?? layers.first) == layer
+        Button {
+          MainActor.assumeIsolated { select(layer) }
+        } label: {
+          Text(layer.heading)
+            .themedFont(.callout, weight: isActive ? .semibold : .regular)
+            .foregroundStyle(isActive ? theme.primaryText : theme.secondaryText)
+            .padding(.bottom, 3)
+            .overlay(alignment: .bottom) {
+              Rectangle()
+                .fill(isActive ? theme.accent : Color.clear)
+                .frame(height: 2)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(isActive ? "正在看\(layer.heading)" : "切换到\(layer.heading)")
+      }
+      Spacer(minLength: 0)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityLabel(title)
     .accessibilityIdentifier(identifier)
   }
 
@@ -5291,6 +5990,13 @@ private struct HistoryDetailView: View, Equatable {
         }
         HistoryTagEditor(tags: detail.tags, model: model)
           .id(ReadingAnchor.module("tags"))
+        // 标签以自动为主：总结完成后按主题打上，手动添加只是补充。
+        if detail.tags.isEmpty, !isOwnWriting {
+          Text("总结完成后会自动打上主题标签")
+            .themedFont(.caption)
+            .foregroundStyle(theme.secondaryText)
+            .accessibilityIdentifier("history-auto-tag-hint")
+        }
       }
       .padding(.top, DesignTokens.Space.xs)
     } label: {
@@ -5301,26 +6007,25 @@ private struct HistoryDetailView: View, Equatable {
     .accessibilityIdentifier("history-note-tag-bar")
   }
 
-  /// 同一组互动数据只显示一次。原来是个折叠组，展开后又画一遍同样的数字，
-  /// 只多一句「采集时快照」；现在一行到底，那句提示放在行尾和悬停里。
+  /// 同一组互动数据只显示一次，而且退到背景：点赞数对「读这篇」几乎没有帮助，
+  /// 原来和作者行一样显眼，视线要先跨过一排数字才落到正文。
+  /// 「采集时快照」不再占位置，只在悬停时说明。
   private func engagementDisclosure(_ note: MarkdownNoteFrontmatter) -> some View {
-    // 「采集时快照」跟在数字后面，作为同一排的最后一个标签；单独放在 HStack 尾部
-    // 会被流式布局挤到最右边缘，和数字隔着半屏空白。
-    engagementCompactChips(note, showsSnapshotHint: true)
-      .foregroundStyle(.secondary)
-      .themedFont(.caption)
+    engagementCompactChips(note)
+      .foregroundStyle(.tertiary)
+      .themedFont(.caption2)
+      .help("互动数据为采集时快照，不会随原帖更新")
       .accessibilityIdentifier("history-engagement-more")
   }
 
   @ViewBuilder
-  private func engagementCompactChips(_ note: MarkdownNoteFrontmatter, showsSnapshotHint: Bool = false) -> some View {
+  private func engagementCompactChips(_ note: MarkdownNoteFrontmatter) -> some View {
     let host = engagementHost
     let slots = CreatorWorkMetricLayout.visibleSlots(forHost: host) { $0.value(from: note) }
     if slots.isEmpty {
       EmptyView()
     } else {
       TagPillFlowLayout(spacing: DesignTokens.Space.sm) {
-        Text("互动").themedFont(.caption, weight: .medium)
         ForEach(slots, id: \.rawValue) { slot in
           let shown = CreatorWorkMetricLayout.displayValue(slot.value(from: note))
           Label("\(slot.title(forHost: host)) \(shown.visible)", systemImage: slot.systemImage)
@@ -5328,15 +6033,7 @@ private struct HistoryDetailView: View, Equatable {
             .accessibilityLabel(slot.title(forHost: host))
             .accessibilityValue(shown.accessibility)
         }
-        if showsSnapshotHint {
-          Text("采集时快照")
-            .themedFont(.caption2)
-            .foregroundStyle(.tertiary)
-            .help("互动数据为采集时快照，不会随原帖更新")
-            .accessibilityIdentifier("history-engagement-snapshot-note")
-        }
       }
-      .themedFont(.caption)
       .labelStyle(.titleAndIcon)
       .accessibilityIdentifier("history-engagement-stats")
     }
@@ -5496,7 +6193,7 @@ private struct HistoryDetailView: View, Equatable {
         }
         if pane == .summary { sourceCitationLinks }
         // 译文和原文一样，一次只显示一层。控件放在正文之上，位置与原文页一致。
-        if pane == .translation, showsTranslationLayerPicker, !showsToolbarTranslationLayerPicker {
+        if pane == .translation, showsTranslationLayerPicker {
           translationLayerPicker
             .padding(.bottom, 10)
         }
@@ -5569,7 +6266,7 @@ private struct HistoryDetailView: View, Equatable {
       .accessibilityIdentifier("history-reading-source")
     } else if showsLayeredSource {
       VStack(alignment: .leading, spacing: 14) {
-        if showsSourceLayerPicker, !showsToolbarSourceLayerPicker { sourceLayerPicker }
+        // 配文 / 字幕 / 转写各是表头上的一个页签（见 readingTabs），这里只画选中的那层。
         switch activeSourceLayer {
         case .caption:
           if let caption = latestSourceSnapshot {
@@ -6042,8 +6739,10 @@ private struct HistoryDetailView: View, Equatable {
       switch pane {
       case .summary, .translation:
         Text(pane == .translation ? "尚未生成翻译" : "尚未生成总结").foregroundStyle(.secondary)
+        // 这一格只在生成刚起步、还没有字的时候露面：页签只列已经有的东西，
+        // 生成入口是表头右边的按钮，这里不再重复放一个。
         if canRunHistory || showsCurrentCapture {
-          Text(pane == .translation ? "在「AI 处理」中生成翻译" : "在「AI 处理」中生成总结")
+          Text(pane == .translation ? "点表头右边的「翻译」生成" : "点表头右边的「总结」生成")
             .themedFont(.callout)
             .foregroundStyle(.tertiary)
         }
@@ -6147,8 +6846,8 @@ private struct HistoryDetailView: View, Equatable {
 
   private var regeneratePopover: some View {
     VStack(alignment: .leading, spacing: 12) {
-      Text("重新生成").themedFont(.headline)
-      Text("直接使用本机保存的正文，不会重新抓取网页。可只为本次运行临时换模型。")
+      Text("换个模型重跑").themedFont(.headline)
+      Text("直接使用本机保存的正文，不会重新抓取网页。这里选的模型只对这一次生效。")
         .themedFont(.caption).foregroundStyle(.secondary)
       // 从已添加的模型里选，不让人手打——模型名拼错不会当场报错，
       // 只会在真正调用时失败，而失败信息未必说得清是名字错了。
@@ -6770,4 +7469,10 @@ final class DetailDerivedMemo {
     entries[purpose] = value
     return value
   }
+}
+
+struct HistoryListSectionModel: Identifiable {
+  let title: String?
+  let entries: [(index: Int, row: HistoryRowProjection)]
+  var id: String { title ?? "all" }
 }

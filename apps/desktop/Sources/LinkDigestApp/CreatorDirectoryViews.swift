@@ -317,6 +317,8 @@ struct CreatorSavedWorkCard: View {
 
   /// 博主作品页整页都在讲同一个人，卡片上不再重复作者名。
   var showsAuthor: Bool = true
+  /// 在这位博主的作品里点赞排前 10%，只在博主作品页传。
+  var isHighlighted: Bool = false
   @State private var coverImage: NSImage?
   @State private var coverFailed = false
   @State private var coverLoading = false
@@ -443,7 +445,60 @@ struct CreatorSavedWorkCard: View {
     return Array(chips.prefix(2))
   }
 
+  /// 文字帖正文：优先原文，没有原文时退回卡片预览（总结或标题）。
+  private var textPostBody: String {
+    HistoryRowProjection.sanitizedDirectoryPreview(row.sourcePreview, isSummary: false) ?? preview
+  }
+
+  /// 标题是另取的（比如自动译成的中文标题）时，放在正文上面；标题就是正文开头时不重复。
+  private var textPostHeading: String? {
+    let name = CapturedContentNaming.name(
+      title: row.title, body: row.sourcePreview, host: row.host,
+      author: row.author, published: row.published
+    )
+    guard name.origin == .sourceTitle else { return nil }
+    let heading = name.text.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !heading.isEmpty, !textPostBody.hasPrefix(heading.replacingOccurrences(of: "…", with: "")) else { return nil }
+    return heading
+  }
+
   var body: some View {
+    if showsBodyPreview {
+      textPostCard
+    } else {
+      mediaCard
+    }
+  }
+
+  private var textPostCard: some View {
+    CreatorTextWorkCard(
+      theme: theme,
+      heading: textPostHeading,
+      text: textPostBody,
+      dateText: metaLine,
+      dateHelp: timestampText,
+      isHighlighted: isHighlighted,
+      host: row.host,
+      metricHelpSuffix: "保存时",
+      metric: { isWeChat ? nil : $0.value(from: row) }
+    ) {
+      if !statusChips.isEmpty {
+        HStack(spacing: DesignTokens.Space.xs) {
+          ForEach(statusChips, id: \.self) { chip in
+            Text(chip)
+              .themedFont(.caption2, weight: .medium)
+              .foregroundStyle(theme.secondaryText)
+              .padding(.horizontal, 6)
+              .padding(.vertical, 2)
+              .background(theme.badge, in: Capsule())
+          }
+        }
+      }
+    }
+    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+  }
+
+  private var mediaCard: some View {
     CreatorWorkCardShell(theme: theme) {
       CreatorWorkCardCoverSlot { cover }
         .overlay(alignment: .bottomLeading) {

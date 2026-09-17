@@ -575,7 +575,8 @@ public extension HistoryRepository {
   /// Existing test doubles and alternate repositories can retain their old
   /// paging implementation until they opt into local SQL filtering.
   func historyPage(limit: Int, after cursor: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage {
-    guard filter == .none else { throw RepositoryFailure.unavailable }
+    // 排序方式不是筛选条件：不支持按存入时间排的简易实现照旧按更新时间返回。
+    guard filter.ignoringOrder == .none else { throw RepositoryFailure.unavailable }
     return try historyPage(limit: limit, after: cursor)
   }
 

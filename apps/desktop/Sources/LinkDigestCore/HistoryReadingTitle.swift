@@ -22,10 +22,27 @@ public enum HistoryReadingTitle {
 
   /// 详情头：主标题 + 可选的原文副标题（仅当两者不同）。
   /// `preservedOriginalTitle` 来自 frontmatter `original_title`，优先于抓取标题。
+  ///
+  /// `sourceBody` 是原文正文。副标题只是正文开头那句话时不显示：X 这类帖子本身没有
+  /// 标题，抓取时截第一句充当标题；总结或翻译把主标题换掉后，这句原文就挂在主标题下，
+  /// 和紧接着的正文第一句重复。
   public static func detailTitles(
     captured: String,
     product: String?,
-    preservedOriginalTitle: String? = nil
+    preservedOriginalTitle: String? = nil,
+    sourceBody: String? = nil
+  ) -> (primary: String, original: String?) {
+    let titles = rawDetailTitles(captured: captured, product: product, preservedOriginalTitle: preservedOriginalTitle)
+    if let original = titles.original, let sourceBody, isLeadingExcerpt(original, of: sourceBody) {
+      return (titles.primary, nil)
+    }
+    return titles
+  }
+
+  private static func rawDetailTitles(
+    captured: String,
+    product: String?,
+    preservedOriginalTitle: String?
   ) -> (primary: String, original: String?) {
     let preserved = preservedOriginalTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
     if let product, !product.isEmpty, product != captured {
@@ -36,6 +53,22 @@ public enum HistoryReadingTitle {
       return (captured, preserved)
     }
     return (captured, nil)
+  }
+
+  /// 标题是不是正文开头截出来的。比较前折叠空白、去掉行首的 `#`，
+  /// 标题末尾的省略号表示截断，只比前面那段。
+  static func isLeadingExcerpt(_ title: String, of body: String) -> Bool {
+    func collapsed(_ value: String) -> String {
+      value.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
+    var head = collapsed(title)
+    for ellipsis in ["…", "..."] where head.hasSuffix(ellipsis) {
+      head = String(head.dropLast(ellipsis.count)).trimmingCharacters(in: .whitespaces)
+    }
+    guard !head.isEmpty else { return false }
+    var text = body.trimmingCharacters(in: .whitespacesAndNewlines)
+    while text.hasPrefix("#") { text.removeFirst() }
+    return collapsed(text).hasPrefix(head)
   }
 
   /// 列表预览：主标题已改用产物 `#` 时，去掉那一行，避免和主标题重复。

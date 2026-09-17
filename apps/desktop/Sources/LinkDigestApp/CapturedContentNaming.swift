@@ -62,6 +62,11 @@ enum CapturedContentNaming {
     derivedCaption(from: text, limit: limit)
   }
 
+  /// 正文开头第一句（按中英文句末标点或换行切）。
+  static func leadingSentence(from text: String) -> String {
+    firstSentence(from: text)
+  }
+
   /// 仅当配文名称就是去图片/合成标题后的全文时，阅读区才藏掉重复标题。
   static func hidesRepeatedHeading(name: Name, body: String) -> Bool {
     guard name.origin == .caption else { return false }
@@ -203,6 +208,12 @@ private extension CapturedContentNaming {
     let bodyText = cleanedBody.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !titleText.isEmpty, !bodyText.isEmpty else { return false }
     if bodyText.hasPrefix(titleText) { return true }
+    // 列表只拿到正文前 240 个字符。X 有的接口把整条推文当标题，标题比这段还长——
+    // 此时是「正文片段是标题的开头」，同样说明标题就是正文，应改取首句。
+    let flatTitle = normalizedWhitespace(titleText)
+    let flatBody = normalizedWhitespace(bodyText)
+    if flatBody.count >= 24, flatTitle.hasPrefix(flatBody) { return true }
+    if flatBody.hasPrefix(flatTitle) { return true }
     if titleText.hasSuffix("…") {
       let stem = String(titleText.dropLast())
       if !stem.isEmpty, bodyText.hasPrefix(stem) { return true }

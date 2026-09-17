@@ -305,6 +305,7 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     XCTAssertTrue(systemPrompt.contains("Copy unchanged every comment metadata line beginning with `- **`"))
     XCTAssertTrue(systemPrompt.contains("Translate only the prose body of each comment into 简体中文"))
     XCTAssertTrue(systemPrompt.contains("Never translate usernames or change comment nesting"))
+    XCTAssertTrue(systemPrompt.contains("Keep established technical terms in English"), "Agent、Skill 这类词不能被硬译成「代理」「技能」")
     let userPrompt = try XCTUnwrap(translationMessages.last?["content"])
     XCTAssertTrue(userPrompt.contains("## 评论（当前页面已加载 2 / 页面显示 2）"))
     XCTAssertTrue(userPrompt.contains("  - **u/reply** · score 2 · 回复层级 1"))

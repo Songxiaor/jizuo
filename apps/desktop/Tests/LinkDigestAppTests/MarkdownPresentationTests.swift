@@ -3,6 +3,7 @@ import CryptoKit
 import SwiftUI
 import XCTest
 @testable import LinkDigestApp
+import LinkDigestCore
 
 final class MarkdownPresentationTests: XCTestCase {
   func testPaperThemeUsesOfficialClaudePaletteAndEditorialTypographyOnly() throws {
@@ -1323,3 +1324,223 @@ final class LightboxPanBoundsTests: XCTestCase {
     XCTAssertLessThan(layoutElapsed, 1.0, "TextKit 全文排版回退到秒级")
   }
 }
+
+final class ReadingItemNoteLayoutTests: XCTestCase {
+  private func style(of fragment: String, in attributed: NSAttributedString) -> NSParagraphStyle? {
+    let range = (attributed.string as NSString).range(of: fragment)
+    guard range.location != NSNotFound else { return nil }
+    return attributed.attribute(.paragraphStyle, at: range.location, effectiveRange: nil) as? NSParagraphStyle
+  }
+
+  func testParentheticalNoteHangsUnderItsNumberedItem() {
+    let source = """
+    开头一句。
+
+    1. 为每个交付物建立维基
+
+    （对我来说，交付物就是一门课程）
+
+    2. 拆成可以并行的部分
+
+    这是普通段落。
+    """
+    let attributed = ReadingTextComposer.attributed(
+      blocks: MarkdownPresentation.blocks(from: source),
+      readingFont: .sans,
+      palette: .init(primary: .black, secondary: .darkGray, accent: .blue)
+    )
+    let item = style(of: "为每个交付物", in: attributed)
+    let note = style(of: "对我来说", in: attributed)
+    let secondItem = style(of: "拆成可以并行", in: attributed)
+    let body = style(of: "这是普通段落", in: attributed)
+    XCTAssertEqual(item?.paragraphSpacing, 3, "条目和它的说明之间只留一道细缝")
+    XCTAssertEqual(note?.headIndent, 26)
+    XCTAssertEqual(note?.firstLineHeadIndent, 26, "说明对齐到条目文字，而不是顶格")
+    XCTAssertEqual(note?.paragraphSpacing, 20, "说明之后才是组与组之间的间距")
+    XCTAssertEqual(secondItem?.paragraphSpacing, 8, "后面跟普通段落的条目保持原间距")
+    XCTAssertEqual(body?.firstLineHeadIndent, 0, "普通段落不受影响")
+    XCTAssertLessThan(MarkdownPresentation.bodyLineSpacing, body?.paragraphSpacing ?? 0, "行距必须明显小于段距")
+  }
+
+  func testCJKLatinBoundaryGetsVisualGapWithoutChangingText() {
+    let attributed = ReadingTextComposer.attributed(
+      blocks: MarkdownPresentation.blocks(from: "建立Karpathy风格的LLM维基，已有 space 的不加"),
+      readingFont: .sans,
+      palette: .init(primary: .black, secondary: .darkGray, accent: .blue)
+    )
+    let string = attributed.string as NSString
+    XCTAssertTrue(attributed.string.hasPrefix("建立Karpathy风格的LLM维基"), "只调字距，不插入字符")
+    func kern(at fragment: String) -> CGFloat? {
+      let range = string.range(of: fragment)
+      return attributed.attribute(.kern, at: range.location, effectiveRange: nil) as? CGFloat
+    }
+    XCTAssertNotNil(kern(at: "立K"), "中文后接英文")
+    XCTAssertNotNil(kern(at: "y风"), "英文后接中文")
+    XCTAssertNotNil(kern(at: "M维"))
+    XCTAssertNil(kern(at: "arpathy"), "英文单词内部不加")
+    XCTAssertNil(kern(at: "有 space"), "已有空格的地方不叠加")
+  }
+
+  func testParenthesesInsideOrdinaryParagraphAreNotNotes() {
+    XCTAssertFalse(ReadingTextComposer.isItemNote(.paragraph("（上）这里是正文，不是说明")))
+    XCTAssertTrue(ReadingTextComposer.isItemNote(.paragraph("(be generous, use a ton of subagents)")))
+    XCTAssertNil(ReadingTextComposer.itemNoteIndent(after: .paragraph("前一段")))
+  }
+}
+
+final class HistoryListFindingTests: XCTestCase {
+  private var calendar: Calendar {
+    var calendar = Calendar(identifier: .gregorian)
+    calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+    return calendar
+  }
+
+  private func milliseconds(_ year: Int, _ month: Int, _ day: Int, _ hour: Int = 12) -> Int64 {
+    let date = calendar.date(from: DateComponents(year: year, month: month, day: day, hour: hour))!
+    return Int64(date.timeIntervalSince1970 * 1_000)
+  }
+
+  func testGroupsBySavedCalendarDay() {
+    let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 16, hour: 9))!
+    func group(_ ms: Int64) -> HistoryListFinding.DayGroup {
+      HistoryListFinding.dayGroup(savedAtMilliseconds: ms, now: now, calendar: calendar)
+    }
+    XCTAssertEqual(group(milliseconds(2026, 9, 16, 8)), .today)
+    XCTAssertEqual(group(milliseconds(2026, 9, 15, 23)), .yesterday, "昨晚 23 点存的，今早看是昨天")
+    XCTAssertEqual(group(milliseconds(2026, 9, 10)), .lastWeek)
+    XCTAssertEqual(group(milliseconds(2026, 8, 20)), .month(year: 2026, month: 8))
+    XCTAssertEqual(HistoryListFinding.DayGroup.month(year: 2026, month: 8).title(now: now, calendar: calendar), "8 月")
+    XCTAssertEqual(HistoryListFinding.DayGroup.month(year: 2025, month: 12).title(now: now, calendar: calendar), "2025 年 12 月")
+    XCTAssertEqual(
+      HistoryListFinding.compactSavedTime(savedAtMilliseconds: milliseconds(2026, 9, 15, 18), now: now, calendar: calendar),
+      "18:00"
+    )
+    XCTAssertEqual(
+      HistoryListFinding.compactSavedTime(savedAtMilliseconds: milliseconds(2026, 9, 9), now: now, calendar: calendar),
+      "9月9日"
+    )
+  }
+
+  func testHookOpeningIsSkippedForTitle() {
+    XCTAssertEqual(
+      HistoryListFinding.informativeCaptionTitle(
+        caption: "卧槽！",
+        sourcePreview: "卧槽！！！ 刚挖到一个极其硬核的开源项目：Hypit。 它是专门给 Coding Agent 打造的"
+      ),
+      "刚挖到一个极其硬核的开源项目：Hypit。"
+    )
+    let meaningful = "想要成功，你需要有点妄想"
+    XCTAssertEqual(
+      HistoryListFinding.informativeCaptionTitle(caption: meaningful, sourcePreview: meaningful + "。告诉我"),
+      meaningful,
+      "本身有内容的首句不动"
+    )
+    XCTAssertEqual(HistoryListFinding.informativeCaptionTitle(caption: "绝了", sourcePreview: "绝了"), "绝了", "找不到更好的就保留原样")
+  }
+
+  func testPreviewShowsFollowingBodyInsteadOfRepeatingTitle() {
+    XCTAssertEqual(
+      HistoryListFinding.sourcePreviewLine(
+        title: "爽了，AI 做视频终于迎来了自己的 Harness 时代",
+        sourcePreview: "爽了，AI 做视频终于迎来了自己的 Harness 时代！ 刚挖到一个开源项目：Hypit"
+      ),
+      "刚挖到一个开源项目：Hypit"
+    )
+    XCTAssertNil(HistoryListFinding.sourcePreviewLine(title: "卧槽！", sourcePreview: "卧槽！"), "只剩标题本身时不出预览行")
+  }
+
+  func testPreviewHandlesWholeTweetTitlesAndBareLinks() {
+    let tweet = "You easily quit your goals because there's nothing on the line. You don't have a vision for a better life that is so clear that your current life feels like losing if you don't reach it. Secretly most people don't actually want to achieve their goals."
+    let preview = String(tweet.prefix(120))
+    XCTAssertNil(
+      HistoryListFinding.sourcePreviewLine(title: tweet, sourcePreview: preview),
+      "标题比预览还长时按公共开头去重，不再把同一句话显示两遍"
+    )
+    XCTAssertNil(
+      HistoryListFinding.sourcePreviewLine(
+        title: "7 more ideas and protocols on how to change:",
+        sourcePreview: "7 more ideas and protocols on how to change: https://letters.thedankoe.com/p/how-to-fix-your-entire-life-in-1"
+      ),
+      "去掉标题后只剩链接时不出预览行"
+    )
+    // 列表拿到的是截短的正文：整条推文当标题时，标题应改取首句。
+    let name = CapturedContentNaming.name(
+      title: tweet, body: preview, host: "x.com", author: "DAN KOE", published: nil
+    )
+    XCTAssertEqual(name.origin, .caption)
+    XCTAssertEqual(name.text, "You easily quit your goals because there's nothing on the line.")
+  }
+
+  func testTitleBackfillOnlyPicksForeignCapturedTitles() {
+    func row(_ title: String, url: String = "https://x.com/a/status/1") -> HistoryRowProjection {
+      HistoryRowProjection(
+        taskID: TaskID(UUID()), title: title, canonicalURL: url, host: "x.com", sourceLabel: "",
+        latestRunKind: nil, latestRunStatus: nil, latestModel: nil, updatedAtMilliseconds: 1,
+        latestRunAtMilliseconds: nil, usageCost: .unknown, artifactPreview: nil
+      )
+    }
+    XCTAssertTrue(HistoryViewModel.isTitleBackfillCandidate(row("You easily quit your goals because there is nothing on the line"), outputLanguage: "简体中文"))
+    XCTAssertFalse(HistoryViewModel.isTitleBackfillCandidate(row("想要成功，你需要有点妄想"), outputLanguage: "简体中文"))
+    XCTAssertFalse(
+      HistoryViewModel.isTitleBackfillCandidate(row("My English note title here", url: "linkdigest-note:abc"), outputLanguage: "简体中文"),
+      "自己写的笔记不算抓来的外文内容"
+    )
+  }
+}
+
+final class CreatorWorkHighlightTests: XCTestCase {
+  func testTopTenPercentByLikesWithinOneCreator() {
+    let likes: [String?] = ["100", "200", "300", "400", "500", "600", "700", "800", "900", "1000", "1.3万", nil, "0"]
+    let threshold = CreatorWorkHighlight.likesThreshold(likes)
+    XCTAssertNotNil(threshold)
+    XCTAssertTrue(CreatorWorkHighlight.isHighlighted("1.3万", threshold: threshold))
+    XCTAssertFalse(CreatorWorkHighlight.isHighlighted("500", threshold: threshold))
+    XCTAssertFalse(CreatorWorkHighlight.isHighlighted(nil, threshold: threshold))
+  }
+
+  func testTooFewWorksNeverHighlight() {
+    XCTAssertNil(CreatorWorkHighlight.likesThreshold(["1万", "2万", "3"]), "作品太少时不评高赞")
+    XCTAssertFalse(CreatorWorkHighlight.isHighlighted("2万", threshold: nil))
+  }
+}
+
+final class CreatorWorkMasonryTests: XCTestCase {
+  func testPlacesEachCardIntoShortestColumnInOrder() {
+    let columns = CreatorWorkMasonry.columns(heights: [300, 100, 100, 100, 100], count: 2)
+    XCTAssertEqual(columns, [[0, 4], [1, 2, 3]])
+  }
+
+  func testLoadingMoreWorksNeverMovesCardsAlreadyPlaced() {
+    let firstPage: [CGFloat] = [180, 120, 260, 90, 140, 200, 110]
+    let before = CreatorWorkMasonry.columns(heights: firstPage, count: 3)
+    let after = CreatorWorkMasonry.columns(heights: firstPage + [150, 80, 300, 120], count: 3)
+    for (column, indices) in before.enumerated() {
+      XCTAssertEqual(Array(after[column].prefix(indices.count)), indices, "翻页后已有卡片留在原列、原顺序")
+    }
+  }
+
+  func testPinnedCardsStayInTheirColumnWhenEstimatesChange() {
+    let ids: [AnyHashable] = ["a", "b", "c", "d"]
+    let first = CreatorWorkMasonry.columns(ids: ids, heights: [100, 100, 100, 100], count: 2)
+    var pins: [AnyHashable: Int] = [:]
+    for (column, indices) in first.enumerated() { for index in indices { pins[ids[index]] = column } }
+    // 卡片内容更新后估高大变，钉住的卡仍留在原列。
+    let later = CreatorWorkMasonry.columns(ids: ids, heights: [500, 20, 20, 500], count: 2, pinned: pins)
+    XCTAssertEqual(later, first)
+  }
+
+  func testChineseTextEstimatesTallerThanSameLengthEnglish() {
+    let chinese = CreatorWorkMasonry.estimatedHeight(text: String(repeating: "中", count: 60), hasCover: false, columnWidth: 300)
+    let english = CreatorWorkMasonry.estimatedHeight(text: String(repeating: "e", count: 60), hasCover: false, columnWidth: 300)
+    XCTAssertGreaterThan(chinese, english)
+  }
+
+  func testShortTextPostsEstimateShorterThanCoverCards() {
+    let short = CreatorWorkMasonry.estimatedHeight(text: "Short one.", hasCover: false, columnWidth: 300)
+    let long = CreatorWorkMasonry.estimatedHeight(text: String(repeating: "长", count: 400), hasCover: false, columnWidth: 300)
+    let cover = CreatorWorkMasonry.estimatedHeight(text: nil, hasCover: true, columnWidth: 300)
+    XCTAssertLessThan(short, long)
+    XCTAssertLessThan(short, cover)
+  }
+}
+

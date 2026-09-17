@@ -71,6 +71,7 @@ struct ProfileImportBatchWorkCard: View {
   let batchID: UUID
   let item: ProfileImportBatchItem
   let savedRows: [TaskID: HistoryRowProjection]
+  var isHighlighted: Bool = false
   let localCover: (TaskID, String?) async -> URL?
   @ObservedObject var manualLink: ManualLinkViewModel
   var historyModel: HistoryViewModel
@@ -90,7 +91,8 @@ struct ProfileImportBatchWorkCard: View {
             row: row,
             theme: theme,
             localCover: { await localCover(taskID, $0) },
-            showsAuthor: false
+            showsAuthor: false,
+            isHighlighted: isHighlighted
           )
         }
         .buttonStyle(.plain)
@@ -100,6 +102,7 @@ struct ProfileImportBatchWorkCard: View {
         ProfileImportReservedWorkCard(
           batchID: batchID,
           item: item,
+          isHighlighted: isHighlighted,
           manualLink: manualLink,
           historyModel: historyModel
         )
@@ -145,13 +148,60 @@ struct ProfileImportBatchGrid: View {
 private struct ProfileImportReservedWorkCard: View {
   let batchID: UUID
   let item: ProfileImportBatchItem
+  var isHighlighted: Bool = false
   @ObservedObject var manualLink: ManualLinkViewModel
   var historyModel: HistoryViewModel
   @Environment(\.appTheme) private var theme
 
   private var host: String { URL(string: item.seed.canonicalURL)?.host ?? "" }
 
+  /// 没有封面图的是文字帖：走文字卡，不再把正文塞进封面位再在标题里写一遍。
+  private var isTextPost: Bool {
+    item.seed.coverURL.flatMap(DouyinProfilePreviewResource.admittedURL) == nil
+      && HistoryRowProjection.sanitizedDirectoryPreview(item.seed.previewText, isSummary: false) != nil
+  }
+
   var body: some View {
+    Group {
+      if isTextPost { textPostCard } else { mediaCard }
+    }
+    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+    .onTapGesture {
+      guard case let .completed(taskID) = item.phase else { return }
+      historyModel.revealProfileImportResult(taskID: taskID, batchID: batchID, itemID: item.id)
+    }
+    .help(failureMessage)
+    .accessibilityValue(failureMessage)
+    .accessibilityIdentifier("profile-import-reserved-work-card")
+  }
+
+  private var textPostCard: some View {
+    CreatorTextWorkCard(
+      theme: theme,
+      text: HistoryRowProjection.sanitizedDirectoryPreview(item.seed.previewText, isSummary: false) ?? displayTitle,
+      dateText: nonempty(item.seed.publishedText) ?? "发布时间待获取",
+      isHighlighted: isHighlighted,
+      host: host,
+      metricHelpSuffix: "抓取前预览",
+      metric: metricValue
+    ) {
+      // 已保存是常态，不再每张卡都写一遍；排队、抓取中、失败才值得说。
+      if !isCompleted {
+        HStack(spacing: DesignTokens.Space.xs) {
+          statusBadge
+          Spacer(minLength: 0)
+          actionButton
+        }
+      }
+    }
+  }
+
+  private var isCompleted: Bool {
+    if case .completed = item.phase { return true }
+    return false
+  }
+
+  private var mediaCard: some View {
     CreatorWorkCardShell(theme: theme) {
       CreatorWorkCardCoverSlot {
         DouyinProfilePreviewImage(
@@ -171,14 +221,6 @@ private struct ProfileImportReservedWorkCard: View {
         CreatorWorkMetricStrip(host: host, theme: theme, values: metricValue, helpSuffix: "抓取前预览")
       }
     }
-    .contentShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
-    .onTapGesture {
-      guard case let .completed(taskID) = item.phase else { return }
-      historyModel.revealProfileImportResult(taskID: taskID, batchID: batchID, itemID: item.id)
-    }
-    .help(failureMessage)
-    .accessibilityValue(failureMessage)
-    .accessibilityIdentifier("profile-import-reserved-work-card")
   }
 
   @ViewBuilder private var statusBadge: some View {

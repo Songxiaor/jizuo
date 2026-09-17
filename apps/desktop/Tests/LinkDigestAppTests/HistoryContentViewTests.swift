@@ -414,6 +414,12 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("history-navigation-creators-all"))
     XCTAssertTrue(source.contains("history-navigation-creator-add"))
     XCTAssertTrue(source.contains("navigationSectionHeader(\"博主\", expanded: $navigationCreatorsExpanded"))
+    // 第一组不带标题：它是打开 App 的默认落点，下面第一行就是「全部」，
+    // 标题不提供任何新信息，反而把「笔记」「来源平台」衬成了非内容。
+    XCTAssertFalse(
+      source.contains("navigationSectionHeader(\"内容\")"),
+      "默认那一组不该再顶一个不表意、也点不动的「内容」标题"
+    )
     XCTAssertFalse(source.contains("Label(\"添加博主\", systemImage: \"plus\")"), "加号应在博主标题右侧，不在展开内容里")
     XCTAssertTrue(source.contains("!model.isCreatorDirectoryActive"), "全部博主目录打开时，全部不得同时选中")
     XCTAssertTrue(source.contains("history-creator-select-"))
@@ -612,7 +618,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(detail.contains("!isWeChatCapture && sourceFrontmatter.hasEngagementStats"))
     XCTAssertFalse(detail.contains("hasEngagementStats || isWeChatCapture"))
     XCTAssertTrue(detail.contains("history-engagement-stats"))
-    XCTAssertTrue(detail.contains("history-engagement-snapshot-note"))
+    XCTAssertFalse(detail.contains("history-engagement-snapshot-note"), "「采集时快照」只放悬停说明，不再占一个标签位")
     XCTAssertTrue(detail.contains("数据为采集时快照"))
     XCTAssertTrue(detail.contains("sourceByline"), "作者、日期、站点应收成一行，不再各占一列表单")
   }
@@ -1165,16 +1171,17 @@ final class HistoryContentViewTests: XCTestCase {
     let video = appSource("HistoryMediaPlayback.swift")
 
     let local = video.range(of: "已保存到本机")
-    let transcribe = video.range(of: "transcriptionControl")
     let player = video.range(of: "playerSurface")
     let save = video.range(of: "Button(\"另存一份\"")
-    let improve = video.range(of: "改进转写")
-    XCTAssertNotNil(local); XCTAssertNotNil(transcribe); XCTAssertNotNil(player); XCTAssertNotNil(save)
-    XCTAssertNotNil(improve, "转写完成后应收成「改进转写」菜单，而不是平铺三个按钮")
+    XCTAssertNotNil(local); XCTAssertNotNil(player); XCTAssertNotNil(save)
     XCTAssertLessThan(local!.lowerBound, player!.lowerBound)
-    XCTAssertLessThan(transcribe!.lowerBound, player!.lowerBound)
-    // 「另存一份」是文件操作，跟在播放器旁，不再和转写抢同一行。
+    // 「另存一份」是文件操作，跟在播放器旁。
     XCTAssertGreaterThan(save!.lowerBound, player!.lowerBound)
+    // 转写不再长在视频卡上。它和总结、翻译是同一类动作（把内容交给模型换一份
+    // 新文本），三个并排在正文表头；视频卡只管播放和文件。
+    XCTAssertFalse(video.contains("transcriptionControl"))
+    XCTAssertFalse(video.contains("改进转写"))
+    XCTAssertFalse(video.contains("history-video-transcription-improve"))
     XCTAssertTrue(video.contains("media?.byteSize"))
     // 作者不再出现在播放卡片的事实行：详情属性区已有「作者」一栏，
     // 卡片里重复一遍只会挤占时长/体积的空间。
@@ -1185,35 +1192,134 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(video.contains("preferredTransform"))
     XCTAssertFalse(video.contains(".frame(minHeight: 220, maxHeight: 360)"))
     XCTAssertTrue(video.contains("history-video-geometry-placeholder"))
-    XCTAssertTrue(video.contains("history-video-transcription-improve"))
   }
 
-  func testReadingLayersUseSecondLevelPickerInsteadOfStacking() {
+  func testSourceLayersAreTopLevelReadingTabs() {
     let source = historyContentViewSource()
     XCTAssertTrue(source.contains("history-translation-layer-picker"))
-    XCTAssertTrue(source.contains("history-source-layer-picker"))
     XCTAssertTrue(source.contains("showsTranslationLayerPicker"))
     XCTAssertTrue(source.contains("showsSourceLayerPicker"))
     XCTAssertTrue(source.contains("activeTranslationBody"))
     // 默认对准转写：有转写层时不要先停在配文。
     XCTAssertTrue(source.contains("if available.contains(.transcript) { return .transcript }"))
+
+    // 「配文」「转写」不再是原文下面的二级。看它们和看总结、翻译是同一个动作
+    // （换一份读），所以它们是表头上平级的页签，顺序：原文各层 → 总结 → 翻译。
+    let tabs = section(
+      in: source,
+      from: "private var readingTabs: [ReadingTab]",
+      to: "private var activeReadingTab"
+    )
+    XCTAssertTrue(tabs.contains("availableSourceLayers.map { ReadingTab.source($0) }"), "多层时每层一个页签")
+    XCTAssertTrue(tabs.contains("tabs.append(.source(nil))"), "单层时仍叫「原文」")
+    XCTAssertLessThan(
+      tabs.range(of: "availableSourceLayers")!.lowerBound,
+      tabs.range(of: "contains(.summary)")!.lowerBound,
+      "原文各层排在总结、翻译前面"
+    )
+    XCTAssertFalse(source.contains("private var sourceLayerPicker"), "原文页里不再有第二套层切换")
+    XCTAssertFalse(source.contains("history-source-layer-picker"))
+
+    // 页签用文字加下划线，不用分段控件——和右边框起来的动作按钮一眼分得开。
+    let strip = section(
+      in: source,
+      from: "private var readingTabStrip: some View",
+      to: "private var reformatToggle"
+    )
+    XCTAssertFalse(strip.contains(".pickerStyle(.segmented)"))
+    XCTAssertTrue(strip.contains("ForEach(readingTabs)"))
+
+    // 译文内部仍按层切换（翻译是整份文档一次翻完的），控件保持轻量。
+    let layerPicker = section(
+      in: source,
+      from: "private func layerPicker(",
+      to: "private var readingPanePicker"
+    )
+    XCTAssertFalse(layerPicker.contains(".pickerStyle(.segmented)"))
+    XCTAssertTrue(layerPicker.contains("ForEach(layers)"))
+  }
+
+  /// 正文表头：动词归动词、名词归名词。
+  ///
+  /// 「总结」「翻译」「转写」是动词——点了要跑模型、产出新东西；「配文」「转写」
+  /// 「总结」「翻译」页签是名词——点了只是换一份看。以前两者混在同一排、用同一种
+  /// 样子，转写还单独躲在视频旁边，怎么摆都别扭。
+  func testReadingHeaderSeparatesTabsFromVerbs() {
+    let source = historyContentViewSource()
+    let header = section(
+      in: source,
+      from: "@ViewBuilder private func readingHeaderRow(pinned: Bool)",
+      to: "private var pinnedReadingHeader"
+    )
+    XCTAssertTrue(header.contains("readingTabStrip"))
+    XCTAssertTrue(header.contains("readingVerbs"))
+    XCTAssertLessThan(
+      header.range(of: "readingTabStrip")!.lowerBound,
+      header.range(of: "readingVerbs")!.lowerBound,
+      "左边看，右边做"
+    )
+    // 转写和总结、翻译并排：同一类动作，同一个地方，同一种样子。
+    let verbs = section(in: source, from: "private var readingVerbs: some View", to: "private func startRun")
+    for name in ["transcribeVerb", "runVerb(.summarize)", "runVerb(.translate)", "moreActionsMenu"] {
+      XCTAssertTrue(verbs.contains(name), "missing \(name)")
+    }
+    // 动作按钮只列还没做的：产物一出现，按钮让位给页签——这就是状态。
+    let verb = section(
+      in: source,
+      from: "@ViewBuilder private func runVerb(_ kind: RunKind)",
+      to: "/// 这条记录能不能转写"
+    )
+    XCTAssertTrue(verb.contains("} else if !artifactExists, showsRunControls {"))
+    XCTAssertTrue(verb.contains(".buttonStyle(.bordered)"), "动作是框起来的按钮，和文字页签区分开")
+    // 重做和次要动作收在「⋯」里，不和主按钮抢位置。
+    let more = section(
+      in: source,
+      from: "private var moreActionsMenu: some View",
+      to: "@ViewBuilder private func actionPill("
+    )
+    for item in ["重新总结", "重新翻译", "重新转写（本机）", "整理文稿", "生成脑图", "换个模型重跑…", "运行详情"] {
+      XCTAssertTrue(more.contains(item), "missing \(item)")
+    }
+    // 表头在视频之后、正文之前（顶部留给信息），滚过去以后吸在正文区顶端。
+    let surface = section(in: source, from: "private var readingSurface: some View", to: "private var showsReadingSurface")
+    XCTAssertTrue(surface.contains("readingHeaderRow(pinned: false)"))
+    XCTAssertTrue(source.contains("private var pinnedReadingHeader: some View"))
+    XCTAssertTrue(source.contains(".coordinateSpace(name: HistoryDetailView.readingScrollSpace)"))
+    XCTAssertFalse(source.contains("private var readingToolsRow"), "旧的顶部工具行已经没有了")
+    XCTAssertFalse(source.contains("history-ai-processing-menu\")\n    .popover"), "")
   }
 
   func testRemotePreviewTranscriptionIsExplicitDirectOnlyAndExposesRecoveryIdentifiers() {
     let preview = appSource("HistoryMediaPlayback.swift")
+    // 远程视频卡只保留转写**状态**（流式预览、计时、清理失败）；转写动作在正文表头。
     for identifier in [
-      "remote-transcribe", "remote-transcribe-state",
-      "remote-transcribe-cancel", "remote-transcribe-retry",
+      "remote-transcribe-state",
       "remote-transcribe-cleanup-failure", "remote-transcribe-cleanup-retry",
     ] {
       XCTAssertTrue(preview.contains(identifier), "missing \(identifier)")
     }
-    XCTAssertTrue(preview.contains("当前 Debug 暂不支持 HLS 转写"))
-    XCTAssertTrue(preview.contains("model.requestRemoteTranscription"))
+    XCTAssertFalse(preview.contains("model.requestRemoteTranscription"), "转写动作不再长在视频卡上")
     XCTAssertFalse(preview.contains("TranscriptionTempStore"))
     XCTAssertFalse(preview.contains("fetchResource"))
     XCTAssertFalse(preview.contains("VideoMediaDownloader"))
     XCTAssertFalse(preview.contains("remote-transcribe-partial"), "streaming body belongs in the source pane")
+
+    // 表头上的转写按钮：本地视频和当前远程视频走各自的接口，HLS 明确说不支持。
+    let content = appSource("HistoryContentView.swift")
+    let action = section(
+      in: content,
+      from: "private var transcribeAction: TranscribeAction?",
+      to: "private var showsRemoteCaptureCard"
+    )
+    XCTAssertTrue(action.contains("model.requestTranscription()"))
+    XCTAssertTrue(action.contains("model.requestRemoteTranscription(descriptor, taskID: taskID)"))
+    XCTAssertTrue(action.contains("guard descriptor.kind == .directFile else { return nil }"))
+    for identifier in [
+      "history-video-transcription-start", "history-video-transcription-retry",
+      "history-video-transcription-cancel", "history-video-transcription-hls",
+    ] {
+      XCTAssertTrue(content.contains(identifier), "missing \(identifier)")
+    }
   }
 
   func testDetailPropertiesMetadataAndPrimaryActionsPrecedeVideoCard() {
@@ -1278,7 +1384,7 @@ final class HistoryContentViewTests: XCTestCase {
     let surface = section(
       in: source,
       from: "@ViewBuilder private var playerSurface: some View",
-      to: "@ViewBuilder private var transcriptionControl"
+      to: "private func loadVideoGeometry"
     )
     XCTAssertTrue(surface.contains("else if surfaceGeometry == .loading"))
     XCTAssertTrue(surface.contains("history-audio-only-player"))
@@ -1694,8 +1800,14 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("case translation"))
 
     // 两个格子各自按「自己那类产物存不存在」决定出现与否，而不是共享一个判据。
-    XCTAssertTrue(detail.contains("if summaryArtifact != nil || liveRunReadingPane == .summary { panes.append(.summary) }"))
-    XCTAssertTrue(detail.contains("if translationArtifact != nil || liveRunReadingPane == .translation { panes.append(.translation) }"))
+    // 钉判据本身、不钉那一行怎么写：两格改成常驻后判据被提成了变量，行为没变
+    // （谁有产物谁就一定在），写死整行只会假失败。
+    XCTAssertTrue(detail.contains("summaryArtifact != nil || liveRunReadingPane == .summary"))
+    XCTAssertTrue(detail.contains("translationArtifact != nil || liveRunReadingPane == .translation"))
+
+    // 页签只列已经有的：没跑过翻译就没有「翻译」页签。生成入口是表头右边的动词
+    // 按钮；名词和动词分开之后，页签不必再为空态留位置。
+    XCTAssertFalse(detail.contains("keepsResultPanes"))
 
     // 取产物必须按运行类型取最新一份，只取全局最新就等于回到老毛病。
     XCTAssertTrue(detail.contains("artifact(ofKind: .summarize)"))
@@ -1742,7 +1854,9 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("点击上方的『转写』开始"))
     XCTAssertTrue(detail.contains("history-reading-result-empty"))
     XCTAssertTrue(detail.contains("尚未生成总结"))
-    XCTAssertTrue(detail.contains("在「AI 处理」中生成总结"))
+    XCTAssertTrue(detail.contains("尚未生成翻译"))
+    // 空面板指向表头右边的动词按钮；页签本身只列已经有的东西。
+    XCTAssertTrue(detail.contains("点表头右边的「翻译」生成"))
     XCTAssertTrue(detail.contains("本条没有抓取到正文"))
     XCTAssertTrue(detail.contains("readingPane = defaultReadingPane"))
     XCTAssertTrue(
@@ -2145,18 +2259,18 @@ final class HistoryContentViewTests: XCTestCase {
       layered.contains("switch activeSourceLayer"),
       "分层分支应当按选中的层分发，而不是把几层顺序铺开"
     )
-    XCTAssertTrue(
+    XCTAssertFalse(
       layered.contains("sourceLayerPicker"),
-      "多于一层时要给出切换控件，否则另一层没有入口"
+      "层切换已经是表头页签，原文页里不再有第二套"
     )
-    // 切换控件本身：三层都要能选到，顺序与文档层次一致。
-    let picker = section(
+    // 页签本身：三层都要能选到，顺序与文档层次一致（来自 availableSourceLayers）。
+    let tabs = section(
       in: source,
-      from: "private var sourceLayerPicker: some View",
-      to: "private var readingPanePicker"
+      from: "private var readingTabs: [ReadingTab]",
+      to: "private var activeReadingTab"
     )
-    XCTAssertTrue(picker.contains("availableSourceLayers"), "可选项应当来自实际存在的层")
-    XCTAssertTrue(picker.contains("history-source-layer-picker"))
+    XCTAssertTrue(tabs.contains("availableSourceLayers"), "可选项应当来自实际存在的层")
+    XCTAssertTrue(source.contains("history-reading-tabs"))
   }
 
   /// 只有一层时不该出现分段控件——没有选择余地的控件只是看起来像有。
@@ -2446,6 +2560,14 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("accessibilityLabel(\"打开设置\")"))
     XCTAssertTrue(source.contains("history-unconfigured-model-banner"))
     XCTAssertTrue(source.contains("history-note-tag-bar"))
+    // 笔记 · 标签收在整页最后：排在摘录之后，而不是标题下面。
+    let annotations = source.range(of: "ReadingAnchor.module(\"annotations\")")
+    let noteTagBarUse = source.range(of: "noteTagBar\n          .padding(.top, DesignTokens.Space.xl)")
+    XCTAssertNotNil(noteTagBarUse)
+    if let annotations, let noteTagBarUse {
+      XCTAssertLessThan(annotations.lowerBound, noteTagBarUse.lowerBound)
+    }
+    XCTAssertEqual(source.components(separatedBy: "        noteTagBar\n").count - 1, 1)
     XCTAssertTrue(source.contains("移到回收站…"))
     XCTAssertTrue(source.contains("sourceLayer(heading: isOwnWriting ? nil : \"正文\""))
     XCTAssertTrue(source.contains("CreatorWorkMetricLayout.visibleSlots(forHost: host)"))
@@ -2461,30 +2583,32 @@ final class HistoryContentViewTests: XCTestCase {
 /// 实际收到过「一直没看到这个功能」的反馈，功能却一直都在。
 final class TranscriptTidyBlockedReasonTests: XCTestCase {
   func testDisabledButtonAlwaysCarriesAReason() throws {
+    // 整理文稿的入口和理由都在正文表头（HistoryContentView）；本地视频和当前远程
+    // 视频共用同一份，视频卡上不再各放一套。
     let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8
+    )
+    // 禁用状态与理由必须来自同一个来源，否则两者会各改各的、说法不一致。
+    XCTAssertTrue(source.contains("private var transcriptTidyBlockedReason: String? {"))
+    XCTAssertTrue(source.contains(".disabled(transcriptTidyBlockedReason != nil)"))
+    XCTAssertTrue(source.contains("Button(transcriptTidyBlockedReason.map"))
+    // 理由要显示出来，不能只放在悬停提示里——鼠标不停上去就看不到。
+    XCTAssertTrue(source.contains("history-transcript-tidy-blocked-reason"))
+    XCTAssertTrue(source.contains("transcriptTidyVisibleBlockedReason"))
+    // 没有文稿时菜单里根本不出现整理项，不平铺灰掉的「整理文稿」。
+    XCTAssertTrue(source.contains("if hasCompletedTranscript {"))
+
+    let playback = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Sources/LinkDigestApp/HistoryMediaPlayback.swift"),
       encoding: .utf8
     )
-    // 禁用状态与理由必须来自同一个来源，否则两者会各改各的、说法不一致。
-    XCTAssertTrue(source.contains("let tidyBlockedReason = model.transcriptTidyUnavailableReason("))
-    XCTAssertTrue(source.contains(".disabled(tidyBlockedReason != nil)"))
-    // 理由要显示出来，不能只放在悬停提示里——鼠标不停上去就看不到。
-    XCTAssertTrue(source.contains("history-transcript-tidy-blocked-reason"))
-    // 完成后收进菜单，未完成转写时不再平铺灰掉的「整理文稿」。
-    XCTAssertTrue(source.contains("改进转写"))
-    XCTAssertTrue(source.contains("localTidyBlockedReasonForCaption"))
-
-    let remote = section(
-      in: source,
-      from: "struct CurrentCaptureMediaPreviewCard: View",
-      to: "/// Top-of-detail video card"
-    )
-    XCTAssertTrue(remote.contains("let blockedReason = model.transcriptTidyUnavailableReason("))
-    XCTAssertTrue(remote.contains(".disabled(blockedReason != nil)"))
-    XCTAssertTrue(remote.contains("remote-transcript-tidy-blocked-reason"))
-    XCTAssertTrue(remote.contains("showsStandaloneRemoteTidy"))
+    XCTAssertFalse(playback.contains("requestTranscriptTidy"), "视频卡上不再有整理入口")
+    XCTAssertFalse(playback.contains("改进转写"))
   }
 
   func testCurrentRemoteVideoExposesManualTidyWithoutAutoTriggerOnTranscriptionComplete() throws {
@@ -2499,11 +2623,10 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
       from: "struct CurrentCaptureMediaPreviewCard: View",
       to: "/// Top-of-detail video card"
     )
-    XCTAssertTrue(remote.contains("let tidyModel: String?"))
     XCTAssertFalse(remote.contains("let autoTidyEnabled: Bool"))
-    XCTAssertTrue(remote.contains("model.requestTranscriptTidy(taskID: taskID, model: tidyModel)"))
+    XCTAssertFalse(remote.contains("requestTranscriptTidy"), "整理入口在正文表头，不在视频卡")
     XCTAssertFalse(
-      remote.contains("model.startTranscriptTidyAuto(taskID: taskID, model: tidyModel)"),
+      remote.contains("startTranscriptTidyAuto"),
       "视频卡不应在转写完成时自动校对，应交给设置里的自动管线或用户手动点按钮"
     )
     XCTAssertFalse(
@@ -2513,14 +2636,6 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
     XCTAssertTrue(
       remote.contains("if state != .idle || preview?.isEmpty == false || timings != nil || cleanupFailure != nil"),
       "空闲的转写状态不能留下一个会参与外层 spacing 的空 VStack"
-    )
-    XCTAssertTrue(
-      remote.contains("if state != .idle || showBlockedCaption"),
-      "空闲且可校对时不能留下一个会参与外层 spacing 的空 VStack"
-    )
-    XCTAssertTrue(
-      remote.contains("需先完成转写，才有文稿可整理") && remote.contains("showsStandaloneRemoteTidy"),
-      "没有文稿时不占独立「整理文稿」灰位"
     )
 
     let local = section(
@@ -2542,11 +2657,8 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
       from: "private func playableContent",
       to: "/// 清晰度切换"
     )
-    XCTAssertLessThan(
-      try XCTUnwrap(playable.range(of: "remoteTranscriptTidyControl")).lowerBound,
-      try XCTUnwrap(playable.range(of: "switch playback.preparePhase")).lowerBound,
-      "转写与模型校对必须在视频上方，不能再被高视频推出首屏"
-    )
+    XCTAssertFalse(playable.contains("remoteTranscriptTidyControl"), "校对入口已并入正文表头")
+    XCTAssertFalse(playable.contains("remoteTranscriptionControl"), "转写入口已并入正文表头")
 
     let contentSource = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
@@ -2554,10 +2666,9 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
         .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
       encoding: .utf8
     )
-    XCTAssertEqual(
-      contentSource.components(separatedBy: "tidyModel: providerSettings.effectiveTidyModelName").count - 1,
-      3,
-      "本机媒体与两种当前远程媒体入口都必须接入同一校对模型"
+    XCTAssertTrue(
+      contentSource.contains("model.requestTranscriptTidy(taskID: detail.task.id, model: providerSettings.effectiveTidyModelName)"),
+      "本机媒体与当前远程媒体共用表头上同一个校对入口、同一个校对模型"
     )
     XCTAssertTrue(
       contentSource.contains("tidy: settings.autoTidyTranscription"),

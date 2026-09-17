@@ -24,7 +24,10 @@ enum ReadingTextComposer {
     palette: Palette
   ) -> NSAttributedString {
     let result = NSMutableAttributedString()
-    for block in blocks {
+    for (index, block) in blocks.enumerated() {
+      let next = index + 1 < blocks.count ? blocks[index + 1] : nil
+      // 下一块是这一条的括号说明时，条目和说明之间几乎不留缝，让两者读成一组。
+      let lastItemSpacing: CGFloat = next.map(isItemNote) == true ? 3 : 8
       switch block {
       case let .heading(level, text):
         let size: CGFloat = [1: 23, 2: 19.5, 3: 17][level] ?? 16
@@ -33,24 +36,36 @@ enum ReadingTextComposer {
           spacingBefore: level == 1 ? 26 : 20, spacingAfter: 10, lineSpacing: 6
         ))
       case let .paragraph(text):
-        result.append(paragraph(
-          inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.primary),
-          spacingAfter: 20, lineSpacing: MarkdownPresentation.bodyLineSpacing
-        ))
+        if let indent = index > 0 ? itemNoteIndent(after: blocks[index - 1]) : nil, isItemNote(block) {
+          // 「1. 要点」空一行再跟「（解释）」是 X 长帖的常见写法。当成普通段落时，
+          // 说明和它的条目隔得跟两段话一样远，读者得自己猜哪句跟哪句是一组。
+          // 这里缩进到条目文字对齐处、用次要色，挂在条目下面。
+          result.append(paragraph(
+            inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary),
+            spacingAfter: 20, lineSpacing: 7, headIndent: indent, firstLineIndent: indent
+          ))
+        } else {
+          result.append(paragraph(
+            inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.primary),
+            spacingAfter: 20, lineSpacing: MarkdownPresentation.bodyLineSpacing
+          ))
+        }
       case let .list(items):
-        for item in items {
+        for (itemIndex, item) in items.enumerated() {
           // 深层用不同的记号，并跟着加缩进——选中复制出去时层级也不该丢。
           let marker = item.depth == 0 ? "•  " : String(repeating: "    ", count: item.depth) + "◦  "
           result.append(paragraph(
             bulletLine(marker, item.text, readingFont: readingFont, color: palette.primary),
-            spacingAfter: 8, lineSpacing: 6, headIndent: CGFloat(22 + item.depth * 18)
+            spacingAfter: itemIndex == items.count - 1 ? lastItemSpacing : 8,
+            lineSpacing: 6, headIndent: CGFloat(22 + item.depth * 18)
           ))
         }
       case let .orderedList(start, items):
-        for (index, item) in items.enumerated() {
+        for (itemIndex, item) in items.enumerated() {
           result.append(paragraph(
-            bulletLine("\(start + index).  ", item, readingFont: readingFont, color: palette.primary),
-            spacingAfter: 8, lineSpacing: 6, headIndent: 26
+            bulletLine("\(start + itemIndex).  ", item, readingFont: readingFont, color: palette.primary),
+            spacingAfter: itemIndex == items.count - 1 ? lastItemSpacing : 8,
+            lineSpacing: 6, headIndent: 26
           ))
         }
       case let .taskList(items):
@@ -109,6 +124,25 @@ enum ReadingTextComposer {
 
   // MARK: - helpers
 
+  /// 整段包在括号里的短说明，比如「（对我来说，交付物就是一门课程）」。
+  static func isItemNote(_ block: MarkdownPresentation.Block) -> Bool {
+    guard case let .paragraph(text) = block else { return false }
+    var trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    while let last = trimmed.last, "。.；;".contains(last) { trimmed.removeLast() }
+    guard !trimmed.contains("\n") else { return false }
+    return (trimmed.hasPrefix("（") && trimmed.hasSuffix("）"))
+      || (trimmed.hasPrefix("(") && trimmed.hasSuffix(")"))
+  }
+
+  /// 前一块是清单时，说明要对齐到的缩进；不是清单返回 nil。
+  static func itemNoteIndent(after block: MarkdownPresentation.Block) -> CGFloat? {
+    switch block {
+    case .orderedList: 26
+    case let .list(items): CGFloat(22 + (items.last?.depth ?? 0) * 18)
+    default: nil
+    }
+  }
+
   private static func stripMarkers(_ value: String) -> String {
     value
       .replacingOccurrences(of: "**", with: "")
@@ -151,7 +185,40 @@ enum ReadingTextComposer {
       parsed.addAttribute(.font, value: NSFont(descriptor: descriptor, size: baseSize) ?? NSFont.systemFont(ofSize: baseSize), range: range)
     }
     parsed.addAttribute(.foregroundColor, value: color, range: full)
+    addCJKLatinSpacing(to: parsed, baseSize: baseSize)
     return parsed
+  }
+
+  /// 中文紧挨英文或数字时（「Karpathy风格的LLM维基」），在交界处补约四分之一个字宽的空隙。
+  ///
+  /// 用字距而不是插入空格：文字本身一个字符都不变，复制、搜索、摘录定位
+  /// （`revealText` 按原文找位置）全都不受影响。原文已经有空格的地方不是交界，不会叠加。
+  static func addCJKLatinSpacing(to text: NSMutableAttributedString, baseSize: CGFloat) {
+    let string = text.string
+    let gap = (baseSize * 0.25).rounded()
+    var previous: (index: String.Index, isCJK: Bool, isLatin: Bool)?
+    for index in string.indices {
+      let character = string[index]
+      let isCJK = isCJKIdeograph(character)
+      let isLatin = character.isASCII && (character.isLetter || character.isNumber)
+      if let previous, (previous.isCJK && isLatin) || (previous.isLatin && isCJK) {
+        let range = NSRange(previous.index..<index, in: string)
+        text.addAttribute(.kern, value: gap, range: range)
+      }
+      previous = (index, isCJK, isLatin)
+    }
+  }
+
+  private static func isCJKIdeograph(_ character: Character) -> Bool {
+    guard let scalar = character.unicodeScalars.first else { return false }
+    switch scalar.value {
+    case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, // 汉字
+         0x3040...0x30FF, // 假名
+         0xAC00...0xD7AF: // 韩文
+      return true
+    default:
+      return false
+    }
   }
 
   private static func bulletLine(

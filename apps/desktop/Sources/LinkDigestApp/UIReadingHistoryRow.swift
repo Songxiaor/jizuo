@@ -52,10 +52,13 @@ struct UIReadingHistoryRow: View {
         CapturedDocumentTitle.display(row.title, for: row.canonicalURL)
       )
     }
-    return CapturedContentNaming.name(
+    let name = CapturedContentNaming.name(
       title: row.title, body: row.sourcePreview, host: row.host,
       author: row.author, published: row.published
-    ).text
+    )
+    guard name.origin == .caption else { return name.text }
+    // 推文首句常常只是「卧槽！」——列表里认不出是哪篇，往后取一句有内容的。
+    return HistoryListFinding.informativeCaptionTitle(caption: name.text, sourcePreview: row.sourcePreview)
   }
 
   private var cleanedArtifactPreview: String? {
@@ -73,35 +76,34 @@ struct UIReadingHistoryRow: View {
     if row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
       return DailyNoteTitleFormat.firstLinePreview(row.sourcePreview)
     }
-    return HistoryReadingTitle.listPreview(
-      artifactPreview: cleanedArtifactPreview,
-      primaryTitle: rowPrimaryTitle,
-      authorFallback: row.author
-    )
+    if cleanedArtifactPreview != nil {
+      return HistoryReadingTitle.listPreview(
+        artifactPreview: cleanedArtifactPreview,
+        primaryTitle: rowPrimaryTitle,
+        authorFallback: nil
+      )
+    }
+    // 没总结过：露正文里紧接着的话，不再拿作者名充数（下面一行已经有作者）。
+    return HistoryListFinding.sourcePreviewLine(title: rowPrimaryTitle, sourcePreview: row.sourcePreview)
   }
 
-  private var rowTimeText: String {
+  private var visibleTags: [String] {
+    Array((row.tagNames ?? []).prefix(HistoryListFinding.visibleTagLimit))
+  }
+
+  private var savedAtMilliseconds: Int64 { HistoryListFinding.savedAtMilliseconds(of: row) }
+
+  /// 列表按存入时间分组，行尾时间也说存入时间；原帖发布时间放悬停里。
+  private var savedTimeHelp: String {
+    var parts = ["存于 \(HistoryRelativeTime.text(savedAtMilliseconds))"]
     if let published = row.published?.trimmedNonEmpty {
-      return HistoryPublishedTimestampFormatter.text(published)
+      parts.append("原帖发布 \(HistoryPublishedTimestampFormatter.text(published))")
     }
-    return "存于 \(HistoryRelativeTime.text(row.createdAtMilliseconds ?? row.updatedAtMilliseconds))"
+    return parts.joined(separator: " · ")
   }
 
   private var rowSourceText: String {
     row.author?.trimmedNonEmpty ?? HistoryPlatformDisplay.name(forHost: row.host)
-  }
-
-  /// 日期列永远说清楚「这是哪个时间」。
-  ///
-  /// 原来只有回落到入库时间时才带「存于」，发布时间是光秃秃一个日期。同一列里
-  /// 一半带前缀一半不带，扫过去根本分不清哪条是原文发得早、哪条只是存得早。
-  private var compactTimeText: String {
-    if let published = row.published?.trimmedNonEmpty {
-      return "发布 " + HistoryPublishedTimestampFormatter.compactText(published)
-    }
-    return "存于 " + HistoryPublishedTimestampFormatter.compactDate(
-      Date(timeIntervalSince1970: Double(row.createdAtMilliseconds ?? row.updatedAtMilliseconds) / 1_000)
-    )
   }
 
   private var rowAccessibilityLabel: String { rowPrimaryTitle }
@@ -109,9 +111,10 @@ struct UIReadingHistoryRow: View {
   private var rowAccessibilityValue: String {
     var values = [
       "来源：\(rowSourceText)",
-      rowTimeText,
+      savedTimeHelp,
       isSummarized ? "已总结" : "未总结",
     ]
+    if !visibleTags.isEmpty { values.append("标签：\(visibleTags.joined(separator: "、"))") }
     if let preview = rowPreviewLine, preview.count < 40, preview != rowPrimaryTitle {
       values.insert(preview, at: 1)
     }
@@ -141,7 +144,8 @@ struct UIReadingHistoryRow: View {
       .frame(width: 18, height: 18)
       .padding(.trailing, 2)
       .padding(.bottom, 2)
-      VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+      // 三行之间留 4pt：标题、预览、作者原来只隔 2pt，扫读时几行糊成一团。
+      VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
         Text(rowPrimaryTitle)
           .themedFont(.body, weight: .semibold)
           .lineLimit(2)
@@ -159,28 +163,34 @@ struct UIReadingHistoryRow: View {
             .accessibilityHidden(true)
         }
         HStack(alignment: .center, spacing: DesignTokens.Space.xs) {
-          Text(showsAuthor ? rowSourceText : "")
-            .themedFont(.subheadline)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
+          if showsAuthor {
+            Text(rowSourceText)
+              .themedFont(.subheadline)
+              .foregroundStyle(.secondary)
+              .lineLimit(1)
+              .layoutPriority(1)
+          }
+          // 标签是总结后自动打的主题词，放在这里正好当找回的关键词。
+          ForEach(visibleTags, id: \.self) { tag in
+            Text("#\(tag)")
+              .themedFont(.caption)
+              .foregroundStyle(theme.secondaryText)
+              .lineLimit(1)
+              .accessibilityHidden(true)
+          }
           Spacer(minLength: 4)
-          Text(compactTimeText)
+          Text(HistoryListFinding.compactSavedTime(savedAtMilliseconds: savedAtMilliseconds))
             .themedFont(.subheadline)
             .foregroundStyle(theme.secondaryText)
             .lineLimit(1)
             .fixedSize()
-            .help(rowTimeText)
+            .help(savedTimeHelp)
+          // 转写状态是「待处理」信息，找东西时是噪音，不再占行尾；视频标记保留。
           HStack(spacing: 4) {
-            if row.hasTranscript == true {
-              Image(systemName: "waveform")
-                .help("已转写")
-                .accessibilityLabel("已转写")
-            } else if row.hasMedia == true {
-              Image(systemName: "waveform.slash")
-                .foregroundStyle(theme.warning)
-                .help("有视频，还没转写")
-                .accessibilityLabel("有视频，还没转写")
-                .accessibilityIdentifier("history-row-needs-transcript")
+            if row.hasMedia == true || row.hasTranscript == true {
+              Image(systemName: "play.rectangle")
+                .help("带视频")
+                .accessibilityLabel("带视频")
             }
             if row.hasMindMap == true {
               Image(systemName: "brain")
@@ -194,8 +204,8 @@ struct UIReadingHistoryRow: View {
         }
       }
     }
-    .padding(.horizontal, DesignTokens.Space.xs)
-    .padding(.vertical, DesignTokens.Space.xs)
+    .padding(.horizontal, DesignTokens.Space.sm)
+    .padding(.vertical, 10)
     .frame(minHeight: 44, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)

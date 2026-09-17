@@ -14,6 +14,8 @@ enum CreatorWorkCardLayout {
   static let textSpacing: CGFloat = 4
   static let metricGap: CGFloat = DesignTokens.Space.xs
   static let metricIconSpacing: CGFloat = DesignTokens.Space.xxs
+  /// 文字帖卡片正文最多几行：推文多数两三句，六行能完整放下绝大多数。
+  static let textPostLineLimit = 6
 }
 
 /// Cover is flush to the card top and side edges; callers pad only the text block.
@@ -158,5 +160,100 @@ struct CreatorWorkMetricStrip: View {
   private func helpText(_ slot: CreatorWorkMetricKind, shown: (visible: String, accessibility: String)) -> String {
     let suffix = helpSuffix.isEmpty ? "" : " · \(helpSuffix)"
     return "\(slot.title(forHost: host)) \(shown.accessibility)\(suffix)"
+  }
+}
+
+/// 没有封面、没有视频的作品（推文这类文字帖）专用卡片。
+///
+/// 视频卡的 16:9 封面位对文字帖是负资产：正文被塞进封面位当「图」，
+/// 标题又把同一段话写一遍，一半面积空着。这里正文就是主角，只出现一次，
+/// 高度跟着内容走，放在瀑布流里（见 CreatorWorkMasonry）。
+struct CreatorTextWorkCard<Status: View>: View {
+  let theme: HistoryThemeTokens
+  /// 译过的中文标题等「另取的标题」。和正文开头重复时不传。
+  var heading: String? = nil
+  let text: String
+  let dateText: String
+  var dateHelp: String? = nil
+  /// 在这位博主自己的作品里互动排前 10%。
+  var isHighlighted: Bool = false
+  var host: String
+  var metricHelpSuffix: String = ""
+  let metric: (CreatorWorkMetricKind) -> String?
+  @ViewBuilder var status: () -> Status
+
+  var body: some View {
+    CreatorWorkCardShell(theme: theme) {
+      EmptyView()
+    } text: {
+      VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+        if let heading, !heading.isEmpty {
+          Text(heading)
+            .themedFont(.callout, weight: .semibold)
+            .foregroundStyle(theme.primaryText)
+            .lineLimit(2)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        Text(text)
+          .themedFont(heading == nil ? .callout : .subheadline)
+          .foregroundStyle(heading == nil ? theme.primaryText : theme.secondaryText)
+          .lineLimit(CreatorWorkCardLayout.textPostLineLimit)
+          .multilineTextAlignment(.leading)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .help(text)
+        status()
+        // 互动数在左（自带弹性空白），日期贴右。「高赞」放在这一行最前面，
+        // 不单独占一行：翻页后门槛重算、标记出现或消失，卡片高度都不变。
+        HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
+          if isHighlighted {
+            Image(systemName: "flame.fill")
+              .themedFont(.caption2, weight: .semibold)
+              .foregroundStyle(theme.accent)
+              .help("高赞：在这位博主的作品里，点赞排前 10%")
+              .accessibilityLabel("高赞")
+          }
+          CreatorWorkMetricStrip(host: host, theme: theme, values: metric, helpSuffix: metricHelpSuffix)
+          Text(dateText)
+            .themedFont(.caption)
+            .foregroundStyle(theme.secondaryText)
+            .lineLimit(1)
+            .fixedSize()
+            .help(dateHelp ?? dateText)
+        }
+      }
+      .padding(.vertical, 2)
+    }
+  }
+}
+
+extension CreatorTextWorkCard where Status == EmptyView {
+  init(
+    theme: HistoryThemeTokens, heading: String? = nil, text: String, dateText: String,
+    dateHelp: String? = nil, isHighlighted: Bool = false, host: String,
+    metricHelpSuffix: String = "", metric: @escaping (CreatorWorkMetricKind) -> String?
+  ) {
+    self.init(
+      theme: theme, heading: heading, text: text, dateText: dateText, dateHelp: dateHelp,
+      isHighlighted: isHighlighted, host: host, metricHelpSuffix: metricHelpSuffix, metric: metric,
+      status: { EmptyView() }
+    )
+  }
+}
+
+enum CreatorWorkHighlight {
+  /// 少于这么多条时不评「高赞」：五条里挑一条前 10% 没有意义。
+  static let minimumSampleCount = 10
+
+  /// 点赞达到这个值就算高赞；样本不够或全是 0 时返回 nil。
+  static func likesThreshold(_ rawLikes: [String?]) -> Double? {
+    let values = rawLikes.compactMap { WorkSortOrder.metric($0) }.filter { $0 > 0 }.sorted()
+    guard values.count >= minimumSampleCount else { return nil }
+    let index = Int((Double(values.count) * 0.9).rounded(.down))
+    return values[min(index, values.count - 1)]
+  }
+
+  static func isHighlighted(_ rawLikes: String?, threshold: Double?) -> Bool {
+    guard let threshold, let value = WorkSortOrder.metric(rawLikes) else { return false }
+    return value >= threshold
   }
 }

@@ -129,6 +129,9 @@ struct ProviderSettingsView: View {
   @ObservedObject var knowledgeVault: KnowledgeVaultSettingsViewModel
   let updater: SPUUpdater
   @Bindable var companionSync: CompanionNoteSyncCoordinator
+  /// 「把已有外文标题译成中文」要读历史库；没传时不显示这一项。
+  var historyModel: HistoryViewModel? = nil
+  @State private var isTitleBackfillConfirmationPresented = false
   @State private var apiKeyInput = ""
   @State private var selectedTab: SettingsTab = .service
   @State private var isCustomOutputLanguage = false
@@ -1844,7 +1847,7 @@ struct ProviderSettingsView: View {
           pipelineStep(
             index: 1,
             title: UISettingsPresentation.pipelineStepTitle(index: 1),
-            trailingNote: "只发送标题",
+            trailingNote: "只发送标题 · 批量抓取也翻译",
             isOn: $model.autoLocalizeTitleNewCaptures,
             identifier: "auto-pipeline-localize-title"
           )
@@ -1888,6 +1891,10 @@ struct ProviderSettingsView: View {
           )
         }
         .padding(.top, DesignTokens.Space.xxs)
+
+        if let historyModel {
+          titleBackfillRow(historyModel)
+        }
 
         // 数据去向紧贴造成出网的开关；必须留在 DisclosureGroup 外面。
         SettingsCrossReference(
@@ -2166,6 +2173,76 @@ struct ProviderSettingsView: View {
   /// 下拉里代表「自定义…」的哨兵值。用一个不可能成为模型名的字符串，
   /// 避免和真实模型名撞车。
   private static let customModelTag = "__linkdigest_custom_model__"
+
+  /// 开关只管以后进来的新内容；开关上线前、或批量抓取时漏掉的旧标题在这里补。
+  /// 会调用模型，所以先数、再确认、再执行，全程可停。
+  @ViewBuilder
+  private func titleBackfillRow(_ history: HistoryViewModel) -> some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+      HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
+        VStack(alignment: .leading, spacing: 2) {
+          Text("已有内容的外文标题")
+          Text(titleBackfillCaption(history.titleBackfillState))
+            .themedFont(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        Spacer(minLength: 12)
+        switch history.titleBackfillState {
+        case .idle, .failed, .finished:
+          Button("检查") {
+            history.countTitleBackfillCandidates(outputLanguage: model.outputLanguage)
+          }
+          .accessibilityIdentifier("title-backfill-count")
+        case .counting:
+          ProgressView().controlSize(.small)
+        case let .ready(count):
+          if count > 0 {
+            Button("译成中文…") { isTitleBackfillConfirmationPresented = true }
+              .accessibilityIdentifier("title-backfill-start")
+          } else {
+            Button("完成") { history.resetTitleBackfill() }
+          }
+        case .running:
+          Button("停止") { history.cancelTitleBackfill() }
+            .accessibilityIdentifier("title-backfill-cancel")
+        }
+      }
+      if case let .running(done, total) = history.titleBackfillState {
+        ProgressView(value: Double(done), total: Double(max(total, 1)))
+      }
+    }
+    .padding(.top, DesignTokens.Space.xs)
+    .accessibilityIdentifier("title-backfill-row")
+    .confirmationDialog(
+      titleBackfillConfirmationTitle(history.titleBackfillState),
+      isPresented: $isTitleBackfillConfirmationPresented,
+      titleVisibility: .visible
+    ) {
+      Button("开始翻译") {
+        history.startTitleBackfill(outputLanguage: model.outputLanguage, model: model.activeSummaryModelName)
+      }
+      Button("取消", role: .cancel) {}
+    } message: {
+      Text("每条只把标题发给当前模型，一条一条排队翻译，随时可以停。原标题会保留，详情页仍能看到。会消耗少量模型额度。")
+    }
+  }
+
+  private func titleBackfillConfirmationTitle(_ state: HistoryViewModel.TitleBackfillState) -> String {
+    if case let .ready(count) = state { return "把 \(count) 条外文标题译成中文？" }
+    return "把外文标题译成中文？"
+  }
+
+  private func titleBackfillCaption(_ state: HistoryViewModel.TitleBackfillState) -> String {
+    switch state {
+    case .idle: "开关只影响以后抓取的内容。点「检查」看看库里还有多少条外文标题。"
+    case .counting: "正在检查…"
+    case let .ready(count): count > 0 ? "有 \(count) 条外文标题还没译成中文。" : "没有需要翻译的外文标题。"
+    case let .running(done, total): "正在翻译 \(done) / \(total)，可以关掉设置窗口，后台继续。"
+    case let .finished(localized, total): "已处理 \(total) 条，其中 \(localized) 条译成了中文。"
+    case .failed: "读取历史库失败，稍后再试。"
+    }
+  }
 
   /// 自动处理管线的一步。
   ///

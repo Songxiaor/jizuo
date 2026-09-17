@@ -1453,7 +1453,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         // 必须在 10 秒内 ACK 浏览器的路径。
         await knowledgeVaultSettingsModel.scheduleAutoSync()
         Task { @MainActor in
-          guard value.allowsAutomaticEnrichment else { return }
+          // 同上：译标题不受「跳过自动处理」影响。
           let preferences = (try? await preferencesStore.load()) ?? .default
           guard preferences.effectiveAutoLocalizeTitleNewCaptures else { return }
           historyModel.scheduleAutomaticTitleLocalization(
@@ -1712,7 +1712,9 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
                 }
                 await knowledgeVaultSettings.scheduleAutoSync()
                 Task { @MainActor in
-                  guard value.allowsAutomaticEnrichment else { return }
+                  // 译标题不看 allowsAutomaticEnrichment：批量抓取主页、重复链接再抓一次
+                  // 会关掉转写/总结这类重处理，但标题只发一句话，开关打开就该一视同仁。
+                  // 队列本身串行，一次抓几十条也只是排队慢慢翻。
                   guard providerSettings.autoLocalizeTitleNewCaptures else { return }
                   historyModel.scheduleAutomaticTitleLocalization(
                     taskID: value.taskID,
@@ -1794,7 +1796,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         mediaStorage: mediaStorageSettings,
         knowledgeVault: knowledgeVaultSettings,
         updater: appUpdateController.updaterController.updater,
-        companionSync: companionNoteSync
+        companionSync: companionNoteSync,
+        historyModel: historyModel
       )
         .background(SettingsWindowResizer())
         .appThemeEnvironment(appearanceThemeRaw, uiFontRawValue: uiFontRaw)

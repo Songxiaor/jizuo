@@ -794,6 +794,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
 
           Preserve meaning, structure, names, numbers, and links. Preserve Markdown syntax and indentation exactly.
 
+          Keep established technical terms in English when practitioners who read \(targetLanguage) normally leave them untranslated. For AI and software content this includes terms such as AI, LLM, Agent, subagent, Skill, prompt, token, context, MCP, API, SDK, and product or model names. A literal rendering such as 代理 for agent or 技能 for a Claude/Codex skill is wrong. Translate ordinary words normally; do not leave whole phrases in English.
+
           Layered source documents mark each layer with a fixed heading. Copy each of these three lines unchanged, including the `## ` prefix, even when they are not in \(targetLanguage). Translate only the prose under them:
           - `## \(LayeredSourceDocument.captionHeading)`
           - `## \(LayeredSourceDocument.subtitleHeading)`

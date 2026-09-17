@@ -1340,6 +1340,8 @@ final class HistoryViewModel {
   var historyService: HistoryApplicationService? { history }
   private var hasConfiguredHistory = false
   private var nextCursor: HistoryPageCursor?
+  /// 还有没加载的下一页。博主作品页的瀑布流要等数据齐了再分列。
+  var hasMoreListPages: Bool { nextCursor != nil }
   private var creatorNextCursor: CreatorPageCursor?
   @ObservationIgnored private var creatorPageTask: Task<Void, Never>?
   @ObservationIgnored private var creatorSearchTask: Task<Void, Never>?
@@ -1751,6 +1753,7 @@ final class HistoryViewModel {
     batchSummaryTask?.cancel(); batchSummaryTask = nil; batchSummaryProgress = nil
     autoTitleLocalizationTask?.cancel(); autoTitleLocalizationTask = nil
     autoTitleLocalizationQueue = []; autoTitleLocalizationQueuedTaskIDs = []
+    titleBackfillTaskIDs = []; titleBackfillCandidates = []; titleBackfillState = .idle
     batchTranslationTask?.cancel(); batchTranslationTask = nil; batchTranslationProgress = nil
     autoPipelineTask?.cancel(); autoPipelineTask = nil
     autoPipelineQueue = []; autoPipelineQueuedTaskIDs = []; autoPipelineHandledTaskIDs = []
@@ -2679,6 +2682,21 @@ final class HistoryViewModel {
   private var autoTitleLocalizationQueuedTaskIDs: Set<TaskID> = []
   private var autoTitleLocalizationQueue: [AutoTitleLocalizationRequest] = []
   @ObservationIgnored private var autoTitleLocalizationTask: Task<Void, Never>?
+
+  /// 设置页「把已有外文标题译成中文」的进度。
+  enum TitleBackfillState: Equatable {
+    case idle
+    case counting
+    /// 数完了，等用户确认。0 表示没有需要翻译的。
+    case ready(count: Int)
+    case running(done: Int, total: Int)
+    case finished(localized: Int, total: Int)
+    case failed
+  }
+  private(set) var titleBackfillState: TitleBackfillState = .idle
+  @ObservationIgnored private var titleBackfillCandidates: [TaskID] = []
+  @ObservationIgnored private var titleBackfillTaskIDs: Set<TaskID> = []
+  @ObservationIgnored private var titleBackfillLocalizedCount = 0
   private var requestedActionHandledTaskIDs: Set<TaskID> = []
   @ObservationIgnored private var requestedActionTask: Task<Void, Never>?
 
@@ -2724,10 +2742,88 @@ final class HistoryViewModel {
     runAutoTitleLocalizationQueueIfNeeded()
   }
 
+  /// 数一数库里还有多少条外文标题没译。只读，不出网。
+  func countTitleBackfillCandidates(outputLanguage: String) {
+    guard let history, !isReadOnly else { titleBackfillState = .failed; return }
+    if case .running = titleBackfillState { return }
+    titleBackfillState = .counting
+    Task { [weak self] in
+      let result = await Task.detached(priority: .utility) { () -> [TaskID]? in
+        var cursor: HistoryPageCursor?
+        var candidates: [TaskID] = []
+        repeat {
+          guard let page = try? history.historyPage(limit: 200, after: cursor, filter: .none) else { return nil }
+          for row in page.rows where Self.isTitleBackfillCandidate(row, outputLanguage: outputLanguage) {
+            candidates.append(row.taskID)
+          }
+          cursor = page.nextCursor
+        } while cursor != nil
+        return candidates
+      }.value
+      guard let self else { return }
+      guard let result else { self.titleBackfillState = .failed; return }
+      self.titleBackfillCandidates = result
+      self.titleBackfillState = .ready(count: result.count)
+    }
+  }
+
+  nonisolated static func isTitleBackfillCandidate(_ row: HistoryRowProjection, outputLanguage: String) -> Bool {
+    let url = row.canonicalURL
+    // 自己写的笔记、稿件、成品不是抓来的外文内容。
+    guard !url.hasPrefix(HistoryPlatformDisplay.noteURLPrefix),
+          !url.hasPrefix(HistoryPlatformDisplay.draftURLPrefix),
+          !url.hasPrefix(HistoryPlatformDisplay.workURLPrefix)
+    else { return false }
+    return CapturedTitleLocalization.shouldLocalizeIncoming(
+      title: row.title, body: row.sourcePreview, outputLanguage: outputLanguage
+    )
+  }
+
+  /// 用户确认后开始补翻译。沿用新内容的同一条串行队列：一次只发一个请求。
+  func startTitleBackfill(outputLanguage: String, model: String?) {
+    guard case .ready = titleBackfillState, !titleBackfillCandidates.isEmpty else { return }
+    titleBackfillTaskIDs = Set(titleBackfillCandidates)
+    titleBackfillLocalizedCount = 0
+    let total = titleBackfillTaskIDs.count
+    titleBackfillState = .running(done: 0, total: total)
+    for taskID in titleBackfillCandidates where !autoTitleLocalizationQueuedTaskIDs.contains(taskID) {
+      autoTitleLocalizationQueuedTaskIDs.insert(taskID)
+      autoTitleLocalizationQueue.append(.init(taskID: taskID, outputLanguage: outputLanguage, model: model))
+    }
+    titleBackfillCandidates = []
+    runAutoTitleLocalizationQueueIfNeeded()
+  }
+
+  func cancelTitleBackfill() {
+    guard case let .running(done, _) = titleBackfillState else { return }
+    autoTitleLocalizationQueue.removeAll { titleBackfillTaskIDs.contains($0.taskID) }
+    autoTitleLocalizationQueuedTaskIDs.subtract(titleBackfillTaskIDs)
+    titleBackfillTaskIDs = []
+    // 停下时只报已经处理过的条数；正在翻的那一条会照常写完。
+    titleBackfillState = .finished(localized: titleBackfillLocalizedCount, total: done)
+  }
+
+  func resetTitleBackfill() {
+    if case .running = titleBackfillState { return }
+    titleBackfillState = .idle
+    titleBackfillCandidates = []
+  }
+
+  private func recordTitleBackfillProgress(taskID: TaskID, localized: Bool) {
+    guard titleBackfillTaskIDs.remove(taskID) != nil,
+          case let .running(done, total) = titleBackfillState else { return }
+    if localized { titleBackfillLocalizedCount += 1 }
+    let next = done + 1
+    titleBackfillState = titleBackfillTaskIDs.isEmpty
+      ? .finished(localized: titleBackfillLocalizedCount, total: total)
+      : .running(done: next, total: total)
+  }
+
   private func runAutoTitleLocalizationQueueIfNeeded() {
     guard autoTitleLocalizationTask == nil, !autoTitleLocalizationQueue.isEmpty else { return }
     autoTitleLocalizationTask = Task { [weak self] in
       guard let self else { return }
+      var pendingListRefresh = 0
       while !Task.isCancelled, !self.autoTitleLocalizationQueue.isEmpty {
         guard self.history != nil, self.titleLocalizer != nil else { break }
         var request = self.autoTitleLocalizationQueue.removeFirst()
@@ -2738,21 +2834,31 @@ final class HistoryViewModel {
             try? await Task.sleep(for: .seconds(1))
           } else {
             self.autoTitleLocalizationQueuedTaskIDs.remove(request.taskID)
+            self.recordTitleBackfillProgress(taskID: request.taskID, localized: false)
           }
           continue
         }
         self.autoTitleLocalizationQueuedTaskIDs.remove(request.taskID)
-        if await self.localizeAndPersistTitle(
+        let localized = await self.localizeAndPersistTitle(
           detail: detail,
           outputLanguage: request.outputLanguage,
           model: request.model
-        ) {
-          self.reload()
+        )
+        if localized {
+          pendingListRefresh += 1
           if self.selectedTaskID == request.taskID {
             self.loadDetailForSelection()
           }
         }
+        self.recordTitleBackfillProgress(taskID: request.taskID, localized: localized)
+        // 批量抓取和补翻译会一次排几十上百条。每翻完一条就重载列表，
+        // 列表会一直跳回第一页；攒 10 条或队列清空时再刷新一次。
+        if pendingListRefresh >= 10 || (pendingListRefresh > 0 && self.autoTitleLocalizationQueue.isEmpty) {
+          pendingListRefresh = 0
+          self.reload(preservingCurrentSelection: true)
+        }
       }
+      if pendingListRefresh > 0 { self.reload(preservingCurrentSelection: true) }
       self.autoTitleLocalizationTask = nil
       if !self.autoTitleLocalizationQueue.isEmpty { self.runAutoTitleLocalizationQueueIfNeeded() }
     }
@@ -7172,7 +7278,8 @@ final class HistoryViewModel {
       hosts: selectedHosts.sorted(),
       scope: selectedScope,
       searchText: searchText,
-      creatorID: selectedCreatorID
+      creatorID: selectedCreatorID,
+      ordersBySavedTime: true
     )
   }
 

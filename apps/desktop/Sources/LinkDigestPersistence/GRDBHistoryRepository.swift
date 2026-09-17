@@ -344,9 +344,13 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       } else {
         predicates.append("t.deleted_at_ms IS NULL")
       }
+      // 回收站永远按删除时间（写在 updated_at_ms 上）排，见上。
+      let ordersBySavedTime = filter.ordersBySavedTime && !filter.scope.isTrashOnly
+      let orderColumn = ordersBySavedTime ? "COALESCE(t.created_at_ms, t.updated_at_ms)" : "t.updated_at_ms"
       if let cursor {
-        predicates.append("(t.updated_at_ms < ? OR (t.updated_at_ms = ? AND t.id < ?))")
-        arguments += [cursor.updatedAtMilliseconds, cursor.updatedAtMilliseconds, cursor.taskID.rawValue]
+        let value = ordersBySavedTime ? (cursor.savedAtMilliseconds ?? cursor.updatedAtMilliseconds) : cursor.updatedAtMilliseconds
+        predicates.append("(\(orderColumn) < ? OR (\(orderColumn) = ? AND t.id < ?))")
+        arguments += [value, value, cursor.taskID.rawValue]
       }
       if !filter.tagNormalizedNames.isEmpty {
         let placeholders = Array(repeating: "?", count: filter.tagNormalizedNames.count).joined(separator: ", ")
@@ -525,7 +529,15 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
             OR EXISTS(SELECT 1 FROM media_assets ma WHERE ma.task_id = t.id)
           ) AS has_media,
           EXISTS(\(Self.completedSummarySQL)) AS has_summary,
-          EXISTS(SELECT 1 FROM task_mind_maps mm WHERE mm.task_id = t.id) AS has_mind_map
+          EXISTS(SELECT 1 FROM task_mind_maps mm WHERE mm.task_id = t.id) AS has_mind_map,
+          (
+            SELECT group_concat(display_name, char(31)) FROM (
+              SELECT tag.display_name FROM task_tags tt
+              INNER JOIN tags tag ON tag.id = tt.tag_id
+              WHERE tt.task_id = t.id
+              ORDER BY tt.created_at_ms, tag.id
+            )
+          ) AS tag_names
         FROM tasks t
         LEFT JOIN content_snapshots es ON es.task_id = t.id AND es.id = (
           COALESCE(
@@ -572,10 +584,16 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         LEFT JOIN runs r ON r.id = (SELECT id FROM runs WHERE task_id = t.id ORDER BY created_at_ms DESC, id DESC LIMIT 1)
         LEFT JOIN artifacts a ON a.run_id = r.id
         \(predicate)
-        ORDER BY t.updated_at_ms DESC, t.id DESC LIMIT ?
+        ORDER BY \(orderColumn) DESC, t.id DESC LIMIT ?
         """, arguments: arguments)
       let projections = try rows.map(historyRow)
-      let next = projections.count == bounded ? projections.last.map { HistoryPageCursor(updatedAtMilliseconds: $0.updatedAtMilliseconds, taskID: $0.taskID) } : nil
+      let next = projections.count == bounded ? projections.last.map {
+        HistoryPageCursor(
+          updatedAtMilliseconds: $0.updatedAtMilliseconds,
+          taskID: $0.taskID,
+          savedAtMilliseconds: ordersBySavedTime ? ($0.createdAtMilliseconds ?? $0.updatedAtMilliseconds) : nil
+        )
+      } : nil
       return HistoryPage(rows: projections, nextCursor: next)
     }
   }
@@ -2489,7 +2507,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       URLComponents(string: canonical)?.host ?? ""
     }
     let sourcePreview = frontmatter.flatMap { MarkdownNoteFrontmatter.directorySourcePreview(fromBody: $0.body) }
-    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: host, sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, sourcePreview: sourcePreview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: hasTranscript, hasMedia: hasMedia, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite, coverURL: frontmatter?.previewCoverURL, likes: frontmatter?.likes, comments: frontmatter?.comments, shares: frontmatter?.shares, collects: frontmatter?.collects, views: frontmatter?.views)
+    let tagNames = (row["tag_names"] as String?)?.split(separator: "\u{1F}").map(String.init)
+    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: host, sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, sourcePreview: sourcePreview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: hasTranscript, hasMedia: hasMedia, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite, coverURL: frontmatter?.previewCoverURL, likes: frontmatter?.likes, comments: frontmatter?.comments, shares: frontmatter?.shares, collects: frontmatter?.collects, views: frontmatter?.views, tagNames: tagNames)
   }
 
   private func detail(db: Database, taskID: TaskID) throws -> HistoryDetailProjection {

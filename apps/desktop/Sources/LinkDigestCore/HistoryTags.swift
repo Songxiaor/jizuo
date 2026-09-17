@@ -286,13 +286,20 @@ public struct HistoryListFilter: Sendable, Equatable {
   public let scope: HistoryListScope
   public let searchText: String
   public let creatorID: CreatorID?
+  /// 主列表按**存入时间**排，而不是最后更新时间。
+  ///
+  /// 找东西时人记得的是「前两天存的」。按更新时间排，一篇上个月存的内容今天总结了
+  /// 一下就跳到最上面，和「今天 / 昨天」分组对不上。默认关：导出、知识库同步、MCP
+  /// 这些按更新时间增量翻页的调用方不受影响。
+  public let ordersBySavedTime: Bool
 
   public init(
     tagNames: [String] = [],
     hosts: [String] = [],
     scope: HistoryListScope = .all,
     searchText: String = "",
-    creatorID: CreatorID? = nil
+    creatorID: CreatorID? = nil,
+    ordersBySavedTime: Bool = false
   ) {
     var seen = Set<String>()
     tagNormalizedNames = tagNames.compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
@@ -303,9 +310,18 @@ public struct HistoryListFilter: Sendable, Equatable {
     self.scope = scope
     self.searchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     self.creatorID = creatorID
+    self.ordersBySavedTime = ordersBySavedTime
   }
 
   public static let none = HistoryListFilter()
+
+  /// 去掉排序偏好后的纯筛选条件。
+  public var ignoringOrder: HistoryListFilter {
+    HistoryListFilter(
+      tagNames: tagNormalizedNames, hosts: hosts, scope: scope,
+      searchText: searchText, creatorID: creatorID
+    )
+  }
 }
 
 public enum HistoryTagNormalizer {
