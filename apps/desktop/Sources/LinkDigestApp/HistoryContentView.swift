@@ -682,9 +682,11 @@ struct HistoryContentView: View {
       .frame(maxWidth: .infinity)
       .frame(height: 30)
       // 白底圆角搜索胶囊浮在暖色列表面板上，与参考稿的搜索框一致。
-      .background(theme.card, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
+      // 中间列已经是纸面色，搜索框改成浅一档的凹槽，不再是白框套白底。
+      .background(theme.primaryText.opacity(0.045), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
       .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(theme.hairline, lineWidth: 1))
-      .padding(.horizontal, 10).padding(.vertical, 10)
+      // 左右 10pt 和侧栏选中条、列表卡片外缘同一条线；顶上 5pt 和侧栏第一行、正文第一行同一高度。
+      .padding(.horizontal, 10).padding(.top, 5).padding(.bottom, 10)
         .accessibilityIdentifier("history-search")
         .background(ReleaseInitialSearchFocus().allowsHitTesting(false))
       if hasClearableListFilters {
@@ -887,15 +889,18 @@ struct HistoryContentView: View {
             ).equatable().tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
               .listRowBackground(Color.clear)
               // 卡片之间留出 6pt，选中底色才读得出是一张张独立的卡。
-              .listRowInsets(EdgeInsets(top: 3, leading: 8, bottom: 3, trailing: 8))
+              // 左右 -6：抵掉表格自带的 16pt，卡片外缘落在 10pt，和搜索框、侧栏选中条对齐。
+              .listRowInsets(EdgeInsets(top: 3, leading: -6, bottom: 3, trailing: -6))
               .listRowSeparator(.hidden)
               .contextMenu { historyContextMenu(for: row) }
           }
           } header: {
             if let title = section.title {
+              // 和侧栏分组标题同一种写法、同一条左边线（卡片里的图标）。
               Text(title)
-                .themedFont(.caption, weight: .semibold)
-                .foregroundStyle(.secondary)
+                .themedFont(.subheadline, weight: .medium)
+                .foregroundStyle(theme.secondaryText)
+                .padding(.leading, DesignTokens.Space.xs)
                 .accessibilityAddTraits(.isHeader)
                 .accessibilityIdentifier("history-list-day-group")
             }
@@ -962,7 +967,10 @@ struct HistoryContentView: View {
     .frame(maxWidth: .infinity)
     // 底色铺到窗口顶：工具栏自己不再着色（见 HistoryWindowToolbarThemeModifier），
     // 这一列头顶那段由它自己的颜色填满，列与列的分界因此在工具栏里也对得上。
-    .background(theme.listPane.opacity(theme.isNative ? 0 : 1).ignoresSafeArea(edges: .top))
+    //
+    // 列表和正文同用纸面色：原来侧栏、列表、正文三档底色，窗口被切成三块互不相干的板子。
+    // 现在侧栏一档、「列表 + 正文」一档，中间只靠一条细线分开，读起来是一组。
+    .background(theme.card.opacity(theme.isNative ? 0 : 1).ignoresSafeArea(edges: .top))
     .focusedSceneValue(\.focusHistorySearch, FocusHistorySearchAction { isSearchFocused = true })
     .focusedSceneValue(\.newNote, NewNoteAction { createNote() })
     .focusedSceneValue(\.todayNote, TodayNoteAction { openTodayNote() })
@@ -1348,7 +1356,8 @@ struct HistoryContentView: View {
     }
     .buttonStyle(.plain)
     // 选中态只留浅色底一种提示。原来同时有左侧色条、浅底、加粗三种，一个就够。
-    .padding(.vertical, DesignTokens.Space.xs)
+    // 上下 3pt：4pt 时侧栏每行比列表松一截，两栏疏密不一。
+    .padding(.vertical, 3)
     .padding(.horizontal, DesignTokens.Space.sm)
     .background(
       selected ? theme.accent.opacity(0.12) : .clear,
@@ -1486,9 +1495,11 @@ struct HistoryContentView: View {
       .padding(.horizontal, 9)
       .frame(maxWidth: .infinity)
       .frame(height: 30)
-      .background(theme.card, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
+      // 中间列已经是纸面色，搜索框改成浅一档的凹槽，不再是白框套白底。
+      .background(theme.primaryText.opacity(0.045), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
       .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(theme.hairline, lineWidth: 1))
-      .padding(.horizontal, 10).padding(.vertical, 10)
+      // 左右 10pt 和侧栏选中条、列表卡片外缘同一条线；顶上 5pt 和侧栏第一行、正文第一行同一高度。
+      .padding(.horizontal, 10).padding(.top, 5).padding(.bottom, 10)
       .accessibilityIdentifier("history-creator-search")
       if let notice = manualLink.captureNotice {
         captureNoticeBanner(notice)
@@ -1588,7 +1599,8 @@ struct HistoryContentView: View {
       }
     }
     .frame(maxWidth: .infinity)
-    .background(theme.listPane.opacity(theme.isNative ? 0 : 1).ignoresSafeArea(edges: .top))
+    // 和内容列表同一档纸面色，见 `sidebar` 的说明。
+    .background(theme.card.opacity(theme.isNative ? 0 : 1).ignoresSafeArea(edges: .top))
   }
 
   private func creatorDirectoryRow(_ creator: CreatorSummary) -> some View {
@@ -4281,8 +4293,8 @@ private struct HistoryDetailView: View, Equatable {
       )
       .frame(maxWidth: .infinity, alignment: .center)
       .padding(.horizontal, DesignTokens.Layout.readingHorizontalInset)
-      // 和中间列的搜索框大致齐平；原来 32pt 加上工具栏留白，标题位空出一大块。
-      .padding(.top, 16)
+      // 第一行和中间列搜索框、侧栏「全部」同一高度；原来 32pt 加上工具栏留白，标题位空出一大块。
+      .padding(.top, 4)
       .padding(.bottom, 48)
       .subtleScrollers()
     }

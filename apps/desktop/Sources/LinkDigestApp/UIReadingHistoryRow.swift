@@ -138,13 +138,14 @@ struct UIReadingHistoryRow: View {
   }
 
   var body: some View {
-    HStack(alignment: .center, spacing: DesignTokens.Space.sm) {
+    // 图标跟标题第一行对齐：居中时，两行标题的卡片里图标会飘在几行字中间。
+    HStack(alignment: .top, spacing: DesignTokens.Space.sm) {
       ZStack(alignment: .bottomTrailing) {
         favicon
         statusIndicator
           .frame(width: 7, height: 7)
           .background(
-            Circle().fill(theme.listPane).padding(-1.5)
+            Circle().fill(theme.card).padding(-1.5)
           )
           .offset(x: 1, y: 1)
           .help(isSummarized ? "已总结" : "未总结")
