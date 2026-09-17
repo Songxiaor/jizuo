@@ -72,7 +72,7 @@ struct UIReadingHistoryRow: View {
     HistoryReadingTitle.primaryTitle(captured: capturedTitle, artifactPreview: cleanedArtifactPreview)
   }
 
-  private var rowPreviewLine: String? {
+  private func rowPreviewLine(title rowPrimaryTitle: String) -> String? {
     if row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
       return DailyNoteTitleFormat.firstLinePreview(row.sourcePreview)
     }
@@ -116,16 +116,30 @@ struct UIReadingHistoryRow: View {
     row.author?.trimmedNonEmpty ?? HistoryPlatformDisplay.name(forHost: row.host)
   }
 
-  private var rowAccessibilityLabel: String { rowPrimaryTitle }
+  /// 一行里要显示的几段文字，每次 body 只算一遍。
+  ///
+  /// 标题要跑命名规则、预览要跑几遍正则去重，原来 body 里按属性各读各的：标题读了
+  /// 六七次，预览又在内部把标题再算一遍。行滑进屏幕时整份 body 都要求值，这些重复
+  /// 计算直接压在滑动的那一帧上。
+  private struct RowText {
+    let title: String
+    let preview: String?
+  }
 
-  private var rowAccessibilityValue: String {
+  private func makeRowText() -> RowText {
+    let title = rowPrimaryTitle
+    let preview = rowPreviewLine(title: title)
+    return RowText(title: title, preview: preview == title ? nil : preview)
+  }
+
+  private func rowAccessibilityValue(_ text: RowText) -> String {
     var values = [
       "来源：\(rowSourceText)",
       savedTimeHelp,
       isSummarized ? "已总结" : "未总结",
     ]
     if !visibleTags.isEmpty { values.append("标签：\(visibleTags.joined(separator: "、"))") }
-    if let preview = rowPreviewLine, preview.count < 40, preview != rowPrimaryTitle {
+    if let preview = text.preview, preview.count < 40 {
       values.insert(preview, at: 1)
     }
     if row.hasTranscript == true {
@@ -138,6 +152,10 @@ struct UIReadingHistoryRow: View {
   }
 
   var body: some View {
+    rowBody(makeRowText())
+  }
+
+  private func rowBody(_ text: RowText) -> some View {
     // 图标跟标题第一行对齐：居中时，两行标题的卡片里图标会飘在几行字中间。
     HStack(alignment: .top, spacing: DesignTokens.Space.sm) {
       ZStack(alignment: .bottomTrailing) {
@@ -148,7 +166,6 @@ struct UIReadingHistoryRow: View {
             Circle().fill(theme.card).padding(-1.5)
           )
           .offset(x: 1, y: 1)
-          .help(isSummarized ? "已总结" : "未总结")
           .accessibilityLabel("总结状态")
           .accessibilityValue(isSummarized ? "已总结" : "未总结")
       }
@@ -157,14 +174,14 @@ struct UIReadingHistoryRow: View {
       .padding(.bottom, 2)
       // 三行之间留 4pt：标题、预览、作者原来只隔 2pt，扫读时几行糊成一团。
       VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-        Text(rowPrimaryTitle)
+        Text(text.title)
           .themedFont(.body, weight: .semibold)
           .lineLimit(2)
           .multilineTextAlignment(.leading)
           .frame(maxWidth: .infinity, alignment: .leading)
         // 预览行原来只喂给 VoiceOver：算好了、骨架屏也给它留了位置，
         // 视觉上却从来没画出来——看得见的人反而比读屏的人知道得少。
-        if let preview = rowPreviewLine, preview != rowPrimaryTitle {
+        if let preview = text.preview {
           Text(preview)
             .themedFont(.subheadline)
             .foregroundStyle(theme.secondaryText)
@@ -193,24 +210,21 @@ struct UIReadingHistoryRow: View {
           Spacer(minLength: 4)
           let savedTime = HistoryListFinding.compactSavedTime(savedAtMilliseconds: savedAtMilliseconds)
           // 按日期命名的笔记（「8月20日」）标题已经就是日期，右下角再写一遍是白占一行。
-          if savedTime != rowPrimaryTitle {
+          if savedTime != text.title {
             Text(savedTime)
               .themedFont(.subheadline)
               .foregroundStyle(theme.secondaryText)
               .lineLimit(1)
               .fixedSize()
-              .help(savedTimeHelp)
           }
           // 转写状态是「待处理」信息，找东西时是噪音，不再占行尾；视频标记保留。
           HStack(spacing: 4) {
             if row.hasMedia == true || row.hasTranscript == true {
               Image(systemName: "play.rectangle")
-                .help("带视频")
                 .accessibilityLabel("带视频")
             }
             if row.hasMindMap == true {
               Image(systemName: "brain")
-                .help("已生成脑图")
                 .accessibilityLabel("已生成脑图")
             }
           }
@@ -234,17 +248,28 @@ struct UIReadingHistoryRow: View {
       value: isHovering
     )
     .onHover { isHovering = $0 }
+    // 整行只挂一个提示。原来状态点、时间、视频、脑图各挂一个：每个提示都是一块
+    // 鼠标感应区，滑动时它们跟着移动，窗口每一帧都要把整张列表的感应区重算一遍。
+    .help(rowHelp)
     .overlay(alignment: .trailing) { hoverActions }
     .fixedSize(horizontal: false, vertical: true)
     .id("\(row.taskID.rawValue)-\(row.updatedAtMilliseconds)")
     .accessibilityElement(children: .ignore)
-    .accessibilityLabel(rowAccessibilityLabel)
-    .accessibilityValue(rowAccessibilityValue)
+    .accessibilityLabel(text.title)
+    .accessibilityValue(rowAccessibilityValue(text))
     // 读屏和键盘都要能「打开这一条」。整行被合并成一个元素后，里面的
     // 选中手势对 VoiceOver 不可见，没有这条动作就只能念、不能进。
     .accessibilityAddTraits(.isButton)
     .accessibilityAction { onActivate?() }
     .accessibilityAction(named: Text("打开")) { onActivate?() }
+  }
+
+  /// 悬停提示：原来分散在四个小元素上的信息合成一句。
+  private var rowHelp: String {
+    var parts = [isSummarized ? "已总结" : "未总结", savedTimeHelp]
+    if row.hasMedia == true || row.hasTranscript == true { parts.append("带视频") }
+    if row.hasMindMap == true { parts.append("已生成脑图") }
+    return parts.joined(separator: " · ")
   }
 
   private var showsHoverActions: Bool {
@@ -358,12 +383,18 @@ extension UIReadingHistoryRow: Equatable {
 private struct UIReadingListSelectionStyle: NSViewRepresentable {
   var usesSystemSelection: Bool
 
-  func makeNSView(context: Context) -> SelectionView { SelectionView() }
+  func makeNSView(context: Context) -> SelectionView {
+    let view = SelectionView()
+    view.usesSystemSelection = usesSystemSelection
+    return view
+  }
 
   func updateNSView(_ view: SelectionView, context: Context) {
+    // 值没变就什么都不做：原来每次行更新都顺着父视图链找一遍表格，还再排一次异步任务。
+    // 挂进表格的那一刻由 `viewDidMoveToWindow` 负责。
+    guard view.usesSystemSelection != usesSystemSelection else { return }
     view.usesSystemSelection = usesSystemSelection
     view.applyStyle()
-    DispatchQueue.main.async { [weak view] in view?.applyStyle() }
   }
 
   final class SelectionView: NSView {

@@ -4304,11 +4304,6 @@ private struct HistoryDetailView: View, Equatable {
       arrowEdge: .top
     ) { regeneratePopover }
     .coordinateSpace(name: HistoryDetailView.readingScrollSpace)
-    // 表头滚出顶部就吸住；滚回来落回原位。一打开时顶部干干净净，只放信息。
-    .onPreferenceChange(ReadingHeaderOffsetPreferenceKey.self) { minY in
-      let pinned = minY < 0
-      if isReadingHeaderPinned != pinned { isReadingHeaderPinned = pinned }
-    }
     .overlay(alignment: .top) {
       if isReadingHeaderPinned, !isOwnWriting, showsReadingSurface {
         pinnedReadingHeader
@@ -5085,13 +5080,6 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
 
-  /// 表头在滚动坐标系里的纵向位置。没有表头时是 ∞，永远不吸顶。
-  private struct ReadingHeaderOffsetPreferenceKey: PreferenceKey {
-    static let defaultValue: CGFloat = .infinity
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-      value = min(value, nextValue())
-    }
-  }
   static let readingScrollSpace = "history-reading-scroll"
 
   /// 正文表头：左边「看哪一份」，右边「还能做什么」。
@@ -5726,15 +5714,16 @@ private struct HistoryDetailView: View, Equatable {
       } else {
         // 表头就是正文的表头：标明「下面这段是哪一份」，紧贴着它控制的文字。
         // 它在滚动坐标系里的位置上报给外层，滚出顶部后由吸顶副本接手。
+        //
+        // 表头滚出顶部就吸住；滚回来落回原位。只把「吸不吸」这一位交出去：原来是用
+        // preference 每帧上报纵坐标，滑动的每一帧都要沿整棵正文视图树传一遍值，
+        // 哪怕结论没变。`onGeometryChange` 只在这一位翻转时才回调。
         readingHeaderRow(pinned: false)
-          .background(
-            GeometryReader { proxy in
-              Color.clear.preference(
-                key: ReadingHeaderOffsetPreferenceKey.self,
-                value: proxy.frame(in: .named(HistoryDetailView.readingScrollSpace)).minY
-              )
-            }
-          )
+          .onGeometryChange(for: Bool.self) { proxy in
+            proxy.frame(in: .named(HistoryDetailView.readingScrollSpace)).minY < 0
+          } action: { pinned in
+            if isReadingHeaderPinned != pinned { isReadingHeaderPinned = pinned }
+          }
         Divider()
       }
       content
