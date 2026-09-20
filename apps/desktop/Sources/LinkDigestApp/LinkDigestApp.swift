@@ -78,6 +78,12 @@ final class AppViewModel {
     get { access(keyPath: \.runState); return runStateStorage }
     set { withMutation(keyPath: \.runState) { runStateStorage = newValue } }
   }
+  /// 本次运行的计时起点，非活动态为 nil；由 `setRunState` 独家维护。
+  ///
+  /// 这是被观察的普通属性，但只在状态真正切换时才会被写——而那一刻本来就要
+  /// 发观察通知，多这一次会在同一 runloop 里合并掉。流式纯增长的快路径绝不
+  /// 触碰它，否则等于把 `setRunState` 费劲绕开的通知又从这里放回来。
+  private(set) var runStartedAt: Date?
   /// 流式正文的热路径发布通道；与 runState 同步更新（见 setRunState）。
   let liveRunText = LiveRunTextModel()
   private(set) var activeRunTaskID: TaskID?
@@ -1054,16 +1060,26 @@ final class AppViewModel {
     // 观察通知等于让整棵历史窗口按 delta 速率重求值。实测一次
     // 翻译的思考阶段主线程 100% CPU、连续 23 秒几乎不出帧。
     guard state != runStateStorage else { return }
+    // 计时起点只落在「非活动 → 活动」那一刻。活动态之间（starting → thinking →
+    // streaming）不重置：读数要回答「我等了多久」，跟着阶段边界归零的话，思考
+    // 四十秒后一进入流式就跳回 0.0s，反而像是刚才白跑了一次。
+    let nextRunStartedAt: Date? = state.isActive
+      ? (runStateStorage.isActive ? runStartedAt : Date())
+      : nil
     if case let .streaming(intent, partialText) = state,
        case .streaming(let previousIntent, _) = runStateStorage,
        previousIntent == intent,
        !partialText.isEmpty {
       // 绕开 withMutation：值照常更新，但不通知。
+      // 这条快路径两端都是 streaming，起点必然没变，所以这里不写 runStartedAt——
+      // 它是被观察的属性，一次赋值就发一次通知，正是本路径要避开的东西。
       runStateStorage = state
       liveRunText.setText(partialText)
       return
     }
     withMutation(keyPath: \.runState) { runStateStorage = state }
+    // 同值不写：活动态之间切换时起点没变，多一次赋值就多一次无谓的观察通知。
+    if runStartedAt != nextRunStartedAt { runStartedAt = nextRunStartedAt }
     liveRunText.setText(state.outputText)
   }
 

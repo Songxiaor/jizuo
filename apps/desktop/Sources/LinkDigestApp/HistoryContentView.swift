@@ -4879,6 +4879,11 @@ private struct HistoryDetailView: View, Equatable {
             .foregroundStyle(appModel.runHasFailure ? theme.danger : Color.secondary)
             .lineLimit(1)
             .accessibilityIdentifier("model-run-status")
+          // 阅读区可能停在别的页签，那时这一行是唯一还看得见运行状态的地方。
+          if appModel.runState.isActive, let startedAt = appModel.runStartedAt {
+            RunElapsedLabel(startedAt: startedAt)
+              .themedFont(.caption, weight: .medium, monospacedDigit: true)
+          }
         }
         if canRunHistory || showsVisibleRun {
           aiProcessingMenu
@@ -5883,6 +5888,7 @@ private struct HistoryDetailView: View, Equatable {
       live: appModel.liveRunText,
       statusText: appModel.runStatusText,
       isActive: appModel.runState.isActive,
+      startedAt: appModel.runStartedAt,
       hasFailure: appModel.runHasFailure,
       modelFixAction: ModelFailureFix(runState: appModel.runState).map { fix in
         (title: fix.buttonTitle, action: { openSettings() })
@@ -7466,6 +7472,7 @@ private struct LiveRunReadingBody: View {
   @ObservedObject var live: LiveRunTextModel
   let statusText: String
   let isActive: Bool
+  let startedAt: Date?
   let hasFailure: Bool
   var modelFixAction: (title: String, action: () -> Void)? = nil
   let dangerColor: Color
@@ -7483,6 +7490,12 @@ private struct LiveRunReadingBody: View {
           Text(statusText)
             .themedFont(.body)
             .foregroundStyle(hasFailure ? dangerColor : Color.secondary)
+          // 这一屏是整个生成过程里最长的一段静止画面：思考阶段还没有正文可长，
+          // 转圈之外没有任何东西在动。读数放在这里最要紧。
+          if isActive, let startedAt {
+            RunElapsedLabel(startedAt: startedAt)
+              .themedFont(.body, monospacedDigit: true)
+          }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 24)

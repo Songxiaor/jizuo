@@ -314,6 +314,9 @@ private final class WholeModelObservationCounter {
       _ = model.lastBrowserCaptureAt
       _ = model.currentCapture
       _ = model.runState
+      // 一并纳入观察：`runStartedAt` 若被写在流式快路径上，通知总量就会重新
+      // 随 delta 数量增长，而那正是本计数器要拦住的回归。
+      _ = model.runStartedAt
       _ = model.activeRunTaskID
       _ = model.visibleRunTaskID
       _ = model.storageAvailability
@@ -1469,12 +1472,17 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(model.liveRunText.text, "第一段落")
     XCTAssertEqual(model.runResultText, "第一段落")
 
-    // 终态切换回到整体通知，叶子同步全文。这里只加 1：receiveRunState 在终态
-    // 还会清空同样可观察的 activeRunTaskID，但这条流程里它本来就是 nil，而
-    // Observation 对「写进去的值和原值相等」不发通知（@Published 时代会发，
-    // 所以当年这个数字是 4）。真正的状态切换——runState 进终态——照常通知。
+    // 终态切换加 2。一次是 runState 进终态，另一次是 runStartedAt 被清空——
+    // 已耗时读数必须在这一刻停住，否则界面会留着一个永远在涨的秒数。
+    //
+    // 两次都落在同一个真实状态切换上，SwiftUI 会在同一 runloop 合并，且次数
+    // 与 delta 数量无关（那才是卡顿的成因，由
+    // testWholeObjectNotificationsDoNotScaleWithDeltaCount 把守）。
+    //
+    // 另：receiveRunState 在终态还会清空同样可观察的 activeRunTaskID，但这条
+    // 流程里它本来就是 nil，而 Observation 对「写进去的值和原值相等」不发通知。
     model.receiveRunState(runID: runID, state: .completed(intent: .summarize, text: "第一段落。"))
-    XCTAssertEqual(notificationCounter.count, 3)
+    XCTAssertEqual(notificationCounter.count, 4)
     XCTAssertEqual(model.liveRunText.text, "第一段落。")
     XCTAssertEqual(model.runResultText, "第一段落。")
 
@@ -1511,6 +1519,62 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(model.liveRunText.text, "首段")
 
     notificationCounter.cancel()
+  }
+
+  /// 已耗时读数要回答的是「我等了多久」，所以计时起点必须跨越整个活动段。
+  /// 如果它跟着阶段边界重置，思考四十秒后一进入流式就跳回 0.0s，读数反而
+  /// 会被当成「刚才白跑了一次」。
+  func testRunStartedAtSpansTheWholeActiveRunAndClearsOnTerminal() {
+    let model = AppViewModel()
+    let runID = RunID()
+    XCTAssertNil(model.runStartedAt)
+
+    model.receiveRunState(runID: runID, state: .starting(intent: .translate))
+    let started = model.runStartedAt
+    XCTAssertNotNil(started)
+
+    // 活动态之间切换不重置：thinking、streaming 都还在同一次运行里。
+    model.receiveRunState(runID: runID, state: .thinking(intent: .translate))
+    XCTAssertEqual(model.runStartedAt, started)
+    model.receiveRunState(runID: runID, state: .streaming(intent: .translate, partialText: "第一"))
+    XCTAssertEqual(model.runStartedAt, started)
+    // 纯增长快路径同样不得动它。
+    model.receiveRunState(runID: runID, state: .streaming(intent: .translate, partialText: "第一段"))
+    XCTAssertEqual(model.runStartedAt, started)
+
+    model.receiveRunState(runID: runID, state: .completed(intent: .translate, text: "第一段。"))
+    XCTAssertNil(model.runStartedAt)
+  }
+
+  /// 失败和中断同样是终态：读数必须停下，否则界面会显示一个永远在涨的秒数，
+  /// 暗示「还在跑」，而运行其实已经结束了。
+  func testRunStartedAtClearsOnFailureAndRestartsOnNextRun() {
+    let model = AppViewModel()
+    let firstRun = RunID()
+    model.receiveRunState(runID: firstRun, state: .starting(intent: .summarize))
+    let firstStart = model.runStartedAt
+    XCTAssertNotNil(firstStart)
+
+    model.receiveRunState(runID: firstRun, state: .failed(intent: .summarize, code: "BOOM"))
+    XCTAssertNil(model.runStartedAt)
+
+    let secondRun = RunID()
+    model.receiveRunState(runID: secondRun, state: .starting(intent: .summarize))
+    XCTAssertNotNil(model.runStartedAt)
+    XCTAssertNotEqual(model.runStartedAt, firstStart)
+  }
+
+  /// 读数的两档格式：一分钟以内保留跳动的小数位（那正是活体证据），
+  /// 超过一分钟换成 m:ss，避免 `83.1s` 这种要心算的数字。
+  func testRunElapsedLabelFormatsBelowAndAboveOneMinute() {
+    XCTAssertEqual(RunElapsedLabel.format(0), "0.0s")
+    XCTAssertEqual(RunElapsedLabel.format(9.24), "9.2s")
+    XCTAssertEqual(RunElapsedLabel.format(59.94), "59.9s")
+    XCTAssertEqual(RunElapsedLabel.format(60), "1:00")
+    XCTAssertEqual(RunElapsedLabel.format(83.1), "1:23")
+    XCTAssertEqual(RunElapsedLabel.format(605), "10:05")
+    // 时钟回拨或起点晚于当前拍点时不出现负数读数。
+    XCTAssertEqual(RunElapsedLabel.format(-3), "0.0s")
   }
 
   /// 卡顿的形态是「整棵历史窗口按 delta 速率重求值」，所以真正要钉住的不是
