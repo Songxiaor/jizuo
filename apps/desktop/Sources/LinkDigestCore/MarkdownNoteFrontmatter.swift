@@ -16,6 +16,8 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
   public var collects: String?
   /// YouTube 观看数等播放量口径。
   public var views: String?
+  /// 标题本地化后保留的原文标题；UI 副行优先读它。
+  public var originalTitle: String?
   public var body: String
 
   public init(
@@ -29,6 +31,7 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     shares: String? = nil,
     collects: String? = nil,
     views: String? = nil,
+    originalTitle: String? = nil,
     body: String
   ) {
     self.accountName = accountName
@@ -41,6 +44,7 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     self.shares = shares
     self.collects = collects
     self.views = views
+    self.originalTitle = originalTitle
     self.body = body
   }
 
@@ -84,6 +88,7 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     var comments: String?
     var shares: String?
     var collects: String?
+    var originalTitle: String?
     for rawLine in yaml.split(separator: "\n", omittingEmptySubsequences: false) {
       let line = String(rawLine)
       guard let colon = line.firstIndex(of: ":") else { continue }
@@ -111,6 +116,7 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
         if shares == nil { shares = value }
       case "collects": collects = value
       case "views": views = value
+      case "original_title": originalTitle = value
       default: break
       }
     }
@@ -125,14 +131,44 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
       shares: shares,
       collects: collects,
       views: views,
+      originalTitle: originalTitle,
       body: body
     )
+  }
+
+  /// 把当前字段写回 `---` 头 + 正文。键顺序固定，便于 diff 与测试。
+  public func render() -> String {
+    func append(_ key: String, _ value: String?, to lines: inout [String]) {
+      guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else { return }
+      lines.append("\(key): \(Self.yamlQuoted(value))")
+    }
+    var lines: [String] = []
+    append("account_name", accountName, to: &lines)
+    append("author", author, to: &lines)
+    append("published", published, to: &lines)
+    append("cover_image", coverImage, to: &lines)
+    append("description", description, to: &lines)
+    append("original_title", originalTitle, to: &lines)
+    append("likes", likes, to: &lines)
+    append("comments", comments, to: &lines)
+    append("shares", shares, to: &lines)
+    append("collects", collects, to: &lines)
+    append("views", views, to: &lines)
+    guard !lines.isEmpty else { return body }
+    return "---\n\(lines.joined(separator: "\n"))\n---\n\n\(body)"
+  }
+
+  private static func yamlQuoted(_ value: String) -> String {
+    "\"" + value
+      .replacingOccurrences(of: "\\", with: "\\\\")
+      .replacingOccurrences(of: "\"", with: "\\\"")
+      .replacingOccurrences(of: "\n", with: " ") + "\""
   }
 
   /// 元数据块里会出现的键。回显判定用白名单而不是「长得像 YAML」：
   /// 正文里合法的水平分隔线之间夹着 `key: value` 样式文字并不罕见。
   private static let knownKeys: Set<String> = [
-    "account_name", "author", "published", "cover_image", "description",
+    "account_name", "author", "published", "cover_image", "description", "original_title",
     "likes", "comments", "replies", "shares", "reposts", "collects", "views"
   ]
 

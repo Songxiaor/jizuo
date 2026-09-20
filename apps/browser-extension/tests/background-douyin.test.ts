@@ -1589,6 +1589,70 @@ describe("background douyin item identity lock", () => {
     expect(page.usedCookie).toBe(true);
   });
 
+  it("recovers playback when DOM reports multiple_candidates for a locked aweme", async () => {
+    const id = "7670136159024041231";
+    const ambiguous = {
+      kind: "unsupported" as const,
+      platform: "douyin" as const,
+      pageURL: `https://www.douyin.com/video/${id}`,
+      canonicalURL: `https://www.douyin.com/video/${id}`,
+      transcriptionCapability: "unavailable" as const,
+      failureReason: "multiple_candidates" as const,
+      candidateCount: 3,
+      selectionReason: "ambiguous" as const,
+      playbackState: "unknown" as const,
+    };
+    const executeScript = vi.fn()
+      .mockResolvedValueOnce([{ result: {
+        awemeId: id,
+        title: "那些有辨识度的AI脸型是怎么做的！",
+        description: "正文",
+        mediaDescriptor: ambiguous,
+      } }])
+      .mockResolvedValueOnce([{ result: {
+        ok: true,
+        playbackURL: "https://v3.douyinvod.com/ai-face.mp4?token=from-state",
+        candidateCount: 1,
+      } }])
+      .mockResolvedValueOnce([{ result: { metadata: null, diagnostic: { exactHit: false } } }]);
+    vi.stubGlobal("browser", { scripting: { executeScript } });
+    vi.stubGlobal("defineBackground", (factory: unknown) => factory);
+    const {
+      captureDouyinSingleItem,
+      needsDouyinPlaybackRecovery,
+      upgradedDouyinSessionDescriptor,
+    } = await import("../src/entrypoints/background");
+
+    expect(needsDouyinPlaybackRecovery(ambiguous)).toBe(true);
+    expect(upgradedDouyinSessionDescriptor(id, ambiguous, {
+      ok: true,
+      playbackURL: "https://v3.douyinvod.com/ai-face.mp4?token=session",
+      candidateCount: 1,
+    })).toMatchObject({
+      kind: "directFile",
+      ephemeralPlaybackURL: "https://v3.douyinvod.com/ai-face.mp4?token=session",
+    });
+    expect(
+      upgradedDouyinSessionDescriptor(id, ambiguous, {
+        ok: true,
+        playbackURL: "https://v3.douyinvod.com/ai-face.mp4?token=session",
+        candidateCount: 1,
+      })?.failureReason,
+    ).toBeUndefined();
+
+    const page = await captureDouyinSingleItem(1, `https://www.douyin.com/video/${id}`);
+
+    expect(page.mediaDescriptor).toMatchObject({
+      kind: "directFile",
+      ephemeralPlaybackURL: "https://v3.douyinvod.com/ai-face.mp4?token=from-state",
+      transcriptionCapability: "supported",
+      candidateCount: 1,
+    });
+    expect(page.mediaDescriptor?.failureReason).toBeUndefined();
+    // __INITIAL_STATE__ recovery does not count as cookie use.
+    expect(page.usedCookie).toBeUndefined();
+  });
+
   it("keeps the locked blob descriptor and text when MAIN fallback fails or returns an evil host", async () => {
     const id = "7655224917603994914";
     const meta = {

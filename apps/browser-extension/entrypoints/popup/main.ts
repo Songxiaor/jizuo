@@ -143,6 +143,32 @@ if (tabId === undefined) {
   renderMeta([{ text: "请停在「书签/收藏」分页" }, { text: "先读列表，再挑要同步的" }]);
 
   let pickerItems: BookmarkPreviewItem[] = [];
+  let lastLibraryLookup: "ok" | "unavailable" = "unavailable";
+
+  const applyLibrarySummary = (): void => {
+    if (pickerItems.length === 0) return;
+    const inLibrary = pickerItems.filter((item) => item.alreadySynced).length;
+    const fresh = pickerItems.length - inLibrary;
+    status.textContent = `找到 ${pickerItems.length} 条收藏`;
+    if (lastLibraryLookup === "ok") {
+      if (fresh === 0) {
+        renderMeta([
+          { text: `全部 ${pickerItems.length} 条已在库` },
+          { text: "已在库的不会再抓" },
+        ]);
+      } else {
+        renderMeta([
+          { text: `未在库 ${fresh} 条 · 已在库 ${inLibrary} 条` },
+          { text: "勾选后点下方同步；已在库的默认不勾" },
+        ]);
+      }
+    } else {
+      renderMeta([
+        { text: `未同步约 ${fresh} 条（App 未连上，粗标）` },
+        { text: "勾选后点下方同步" },
+      ]);
+    }
+  };
 
   const selectedIDs = (): string[] =>
     Array.from(pickerList.querySelectorAll<HTMLInputElement>("input[type='checkbox']:checked"))
@@ -236,28 +262,9 @@ if (tabId === undefined) {
           : "尚未读取列表";
         return;
       }
-      const inLibrary = result.items.filter((item) => item.alreadySynced).length;
-      const fresh = result.items.length - inLibrary;
-      status.textContent = `找到 ${result.items.length} 条收藏`;
-      if (result.libraryLookup === "ok") {
-        if (fresh === 0) {
-          renderMeta([
-            { text: `全部 ${result.items.length} 条已在库` },
-            { text: "可点「全选」强制再同步" },
-          ]);
-        } else {
-          renderMeta([
-            { text: `未在库 ${fresh} 条 · 已在库 ${inLibrary} 条` },
-            { text: "勾选后点下方同步" },
-          ]);
-        }
-      } else {
-        renderMeta([
-          { text: `未同步约 ${fresh} 条（App 未连上，粗标）` },
-          { text: "勾选后点下方同步" },
-        ]);
-      }
+      lastLibraryLookup = result.libraryLookup;
       renderPicker(result.items, result.libraryLookup);
+      applyLibrarySummary();
       syncBookmarks.textContent = "重新读取列表";
       syncBookmarks.disabled = false;
     } catch {
@@ -278,6 +285,17 @@ if (tabId === undefined) {
     }
     if (ids.length === 0) {
       error.textContent = "请先勾选要同步的收藏。已在库的默认不勾，可点「全选」或「选未同步」。";
+      return;
+    }
+    if (
+      lastLibraryLookup === "ok"
+      && ids.every((id) => pickerItems.find((item) => item.id === id)?.alreadySynced === true)
+    ) {
+      const message = `${ids.length} 条已在库，不会再抓`;
+      syncSelected.textContent = "✓ " + message;
+      syncSelected.classList.add("done");
+      resultNotice.textContent = "✓ " + message;
+      resultNotice.hidden = false;
       return;
     }
     syncSelected.disabled = true;
@@ -313,7 +331,9 @@ if (tabId === undefined) {
             }
           }
         }
+        lastLibraryLookup = "ok";
         refreshPickerChrome();
+        applyLibrarySummary();
         syncBookmarks.disabled = false;
       } else {
         error.textContent = bookmarksErrorCopy[result.code] ?? "同步未完成，请重试。";

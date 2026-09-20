@@ -1109,6 +1109,56 @@ describe("page extraction", () => {
     }
   });
 
+  it("captures X article cover when it sits outside the read view", () => {
+    const cover = "https://pbs.twimg.com/media/OUTSIDE_COVER.jpg";
+    const readView = el(
+      "div",
+      [
+        el("div", [el("span", [text("文章标题")])], { "data-testid": "twitter-article-title" }),
+        el("div", [el("span", [text("第一段正文，用来证明封面被提到文首而不是丢掉。")])]),
+      ],
+      { "data-testid": "twitterArticleReadView" },
+    );
+    const article = el(
+      "article",
+      [
+        el("div", [el("img", [], { src: cover })], { "data-testid": "tweetPhoto" }),
+        readView,
+      ],
+      { "data-testid": "tweet" },
+    );
+    const result = extractCurrentPage(
+      makeDocument({
+        title: "X",
+        href: "https://x.com/thedankoe/status/2093051293078261973",
+        root: article,
+      }),
+    );
+    const body = result.text.replace(/^---[\s\S]*?---\n*/, "");
+    expect(body.indexOf(cover)).toBeGreaterThanOrEqual(0);
+    expect(body.indexOf(cover)).toBeLessThan(body.indexOf("文章标题"));
+  });
+
+  it("reads X photos from srcset when src is empty", () => {
+    const large = "https://pbs.twimg.com/media/SRCSET_ONLY?format=jpg&name=large";
+    const article = el(
+      "article",
+      [
+        el("div", [el("span", [text("只有一张图")])], { "data-testid": "tweetText" }),
+        el(
+          "div",
+          [el("img", [], { srcset: `${large} 1200w` })],
+          { "data-testid": "tweetPhoto" },
+        ),
+      ],
+      { "data-testid": "tweet" },
+    );
+    const result = extractCurrentPage(
+      makeDocument({ title: "X", href: "https://x.com/s/status/1", root: article }),
+    );
+    expect(result.text).toContain(large);
+  });
+
   it("X status without User-Name still captures tweetText and omits author", () => {
     const post = "只有正文没有作者壳的帖子";
     const article = el(

@@ -8,7 +8,53 @@ public final class LocalDatabase: @unchecked Sendable {
   /// 加一次迁移就只改这一行。之前生产代码和测试各自引用「最后那个 Migration0NN」，
   /// 于是每加一次迁移，迁移测试就整批变红——因为它们钉的是一个具体版本号，
   /// 而它们真正想表达的是「跟着最新走」。
-  public static let latestSchemaVersion = Migration019.schemaVersion
+  public static let latestSchemaVersion = SchemaMigration.latest.schemaVersion
+
+  /// Ordered after Migration001. Adding 021 requires a new `SchemaMigration`
+  /// case; a missing case cannot compile.
+  private enum SchemaMigration: Int, CaseIterable {
+    case v002 = 2, v003, v004, v005, v006, v007, v008, v009, v010
+    case v011, v012, v013, v014, v015, v016, v017, v018, v019, v020
+
+    var schemaVersion: Int { rawValue }
+
+    static var latest: SchemaMigration {
+      guard let value = allCases.max(by: { $0.rawValue < $1.rawValue }) else {
+        preconditionFailure("schema migrations must not be empty")
+      }
+      return value
+    }
+
+    func apply(to db: Database) throws {
+      switch self {
+      case .v002: try Migration002.apply(to: db)
+      case .v003: try Migration003.apply(to: db)
+      case .v004: try Migration004.apply(to: db)
+      case .v005: try Migration005.apply(to: db)
+      case .v006: try Migration006.apply(to: db)
+      case .v007: try Migration007.apply(to: db)
+      case .v008: try Migration008.apply(to: db)
+      case .v009: try Migration009.apply(to: db)
+      case .v010: try Migration010.apply(to: db)
+      case .v011: try Migration011.apply(to: db)
+      case .v012: try Migration012.apply(to: db)
+      case .v013: try Migration013.apply(to: db)
+      case .v014: try Migration014.apply(to: db)
+      case .v015: try Migration015.apply(to: db)
+      case .v016: try Migration016.apply(to: db)
+      case .v017: try Migration017.apply(to: db)
+      case .v018: try Migration018.apply(to: db)
+      case .v019: try Migration019.apply(to: db)
+      case .v020: try Migration020.apply(to: db)
+      }
+    }
+  }
+
+  private static func applySubsequentMigrations(from version: Int, to db: Database) throws {
+    for step in SchemaMigration.allCases where version < step.schemaVersion {
+      try step.apply(to: db)
+    }
+  }
 
   enum Backend { case writable(DatabasePool), readOnly(DatabaseQueue) }
 
@@ -54,60 +100,7 @@ public final class LocalDatabase: @unchecked Sendable {
             if version < Migration001.schemaVersion {
               try Migration001.apply(to: db, beforeCommit: dependencies.beforeMigrationCommit)
             }
-            if version < Migration002.schemaVersion {
-              try Migration002.apply(to: db)
-            }
-            if version < Migration003.schemaVersion {
-              try Migration003.apply(to: db)
-            }
-            if version < Migration004.schemaVersion {
-              try Migration004.apply(to: db)
-            }
-            if version < Migration005.schemaVersion {
-              try Migration005.apply(to: db)
-            }
-            if version < Migration006.schemaVersion {
-              try Migration006.apply(to: db)
-            }
-            if version < Migration007.schemaVersion {
-              try Migration007.apply(to: db)
-            }
-            if version < Migration008.schemaVersion {
-              try Migration008.apply(to: db)
-            }
-            if version < Migration009.schemaVersion {
-              try Migration009.apply(to: db)
-            }
-            if version < Migration010.schemaVersion {
-              try Migration010.apply(to: db)
-            }
-            if version < Migration011.schemaVersion {
-              try Migration011.apply(to: db)
-            }
-            if version < Migration012.schemaVersion {
-              try Migration012.apply(to: db)
-            }
-            if version < Migration013.schemaVersion {
-              try Migration013.apply(to: db)
-            }
-            if version < Migration014.schemaVersion {
-              try Migration014.apply(to: db)
-            }
-            if version < Migration015.schemaVersion {
-              try Migration015.apply(to: db)
-            }
-            if version < Migration016.schemaVersion {
-              try Migration016.apply(to: db)
-            }
-            if version < Migration017.schemaVersion {
-              try Migration017.apply(to: db)
-            }
-            if version < Migration018.schemaVersion {
-              try Migration018.apply(to: db)
-            }
-            if version < Migration019.schemaVersion {
-              try Migration019.apply(to: db)
-            }
+            try applySubsequentMigrations(from: version, to: db)
           }
         }
         return LocalDatabase(location: location, accessMode: .writable, dependencies: dependencies, backend: .writable(pool))
@@ -127,6 +120,15 @@ public final class LocalDatabase: @unchecked Sendable {
     case let .writable(pool): try pool.close()
     case let .readOnly(queue): try queue.close()
     }
+  }
+
+  /// Truncate the WAL then close. App terminate must call this so a second
+  /// instance does not inherit a dirty writer lock.
+  public func checkpointAndClose() throws {
+    if case .writable = backend {
+      _ = try? DatabaseMaintenance(database: self).truncateCheckpoint()
+    }
+    try close()
   }
 
   func read<T>(_ body: (Database) throws -> T) throws -> T {

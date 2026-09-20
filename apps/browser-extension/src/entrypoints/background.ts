@@ -5,6 +5,7 @@ import {
   extractDouyinSingleItemMetaInPage,
   type ExtractedPage,
 } from "../content/extract";
+import { captureSendBlockReason } from "../content/capture-send-gate";
 import { detectMediaInPage } from "../content/media-detection";
 import {
   buildYouTubeMarkdown,
@@ -345,12 +346,73 @@ export function mediaHitForLockedDouyinItem(
     : undefined;
 }
 
+/**
+ * DOM video selection can fail (multi-player feeds, not loaded yet) while the
+ * tab URL already locks a single aweme. Playback recovery from page state /
+ * same-origin detail is safe for these misses; DRM and unknown formats are not.
+ */
+const recoverableDouyinMediaFailures = new Set<NonNullable<MediaDescriptor["failureReason"]>>([
+  "blob_or_mse",
+  "multiple_candidates",
+  "video_not_loaded",
+  "no_transferable_source",
+  "browser_session_required",
+]);
+
+export function needsDouyinPlaybackRecovery(
+  descriptor: DouyinMediaHit | undefined,
+): boolean {
+  if (!descriptor) return true;
+  if (
+    (descriptor.kind === "directFile" || descriptor.kind === "hls")
+    && typeof descriptor.ephemeralPlaybackURL === "string"
+    && descriptor.ephemeralPlaybackURL.length > 0
+    && !descriptor.failureReason
+  ) {
+    return false;
+  }
+  return descriptor.failureReason != null
+    && recoverableDouyinMediaFailures.has(descriptor.failureReason);
+}
+
+export function buildDouyinPlaybackUpgrade(
+  lockedAwemeId: string,
+  lockedDescriptor: DouyinMediaHit | undefined,
+  playbackURL: string,
+  candidateCount: number,
+): DouyinMediaHit {
+  const canonicalURL = lockedDescriptor?.canonicalURL
+    ?? `https://www.douyin.com/video/${lockedAwemeId}`;
+  const pageURL = lockedDescriptor?.pageURL ?? canonicalURL;
+  const persistentDescriptor = lockedDescriptor
+    ? { ...lockedDescriptor }
+    : {
+        kind: "unsupported" as const,
+        pageURL,
+        canonicalURL,
+        platform: "douyin" as const,
+        transcriptionCapability: "unavailable" as const,
+      };
+  delete persistentDescriptor.failureReason;
+  return {
+    ...persistentDescriptor,
+    kind: "directFile",
+    pageURL,
+    canonicalURL,
+    platform: "douyin",
+    ephemeralPlaybackURL: playbackURL,
+    mimeType: "video/mp4",
+    transcriptionCapability: "supported",
+    candidateCount,
+  };
+}
+
 export function upgradedDouyinSessionDescriptor(
+  lockedAwemeId: string,
   lockedDescriptor: DouyinMediaHit | undefined,
   result: DouyinSessionDetailSuccess | undefined,
 ): DouyinMediaHit | undefined {
-  if (lockedDescriptor?.kind !== "browserSessionOnly"
-      || lockedDescriptor.failureReason !== "blob_or_mse"
+  if (!needsDouyinPlaybackRecovery(lockedDescriptor)
       || result?.ok !== true
       || !Number.isInteger(result.candidateCount)
       || result.candidateCount < 1
@@ -358,16 +420,12 @@ export function upgradedDouyinSessionDescriptor(
       || !isAllowedDouyinPlaybackURL(result.playbackURL)) {
     return undefined;
   }
-  const persistentDescriptor = { ...lockedDescriptor };
-  delete persistentDescriptor.failureReason;
-  return {
-    ...persistentDescriptor,
-    kind: "directFile",
-    ephemeralPlaybackURL: result.playbackURL,
-    mimeType: "video/mp4",
-    transcriptionCapability: "supported",
-    candidateCount: result.candidateCount,
-  };
+  return buildDouyinPlaybackUpgrade(
+    lockedAwemeId,
+    lockedDescriptor,
+    result.playbackURL,
+    result.candidateCount,
+  );
 }
 
 async function tryDouyinSessionDetail(
@@ -375,8 +433,7 @@ async function tryDouyinSessionDetail(
   lockedAwemeId: string,
   lockedDescriptor: DouyinMediaHit | undefined,
 ): Promise<{ media?: DouyinMediaHit; diagnostic?: DouyinSessionDiagnostic }> {
-  if (lockedDescriptor?.kind !== "browserSessionOnly"
-      || lockedDescriptor.failureReason !== "blob_or_mse") return {};
+  if (!needsDouyinPlaybackRecovery(lockedDescriptor)) return {};
   try {
     const results = await browser.scripting.executeScript({
       target: { tabId, frameIds: [0] },
@@ -388,7 +445,7 @@ async function tryDouyinSessionDetail(
     const diagnostic = safeDouyinSessionDiagnostic(result);
     if (diagnostic) return { diagnostic };
     if (result?.ok !== true) return { diagnostic: { code: "body_unavailable" } };
-    const media = upgradedDouyinSessionDescriptor(lockedDescriptor, result);
+    const media = upgradedDouyinSessionDescriptor(lockedAwemeId, lockedDescriptor, result);
     if (media) return { media };
     const blockedHost = safeBlockedHostFromURL(result.playbackURL);
     return {
@@ -761,8 +818,7 @@ async function tryDouyinInitialState(
   lockedAwemeId: string,
   lockedDescriptor: DouyinMediaHit | undefined,
 ): Promise<{ media?: DouyinMediaHit }> {
-  if (lockedDescriptor?.kind !== "browserSessionOnly"
-      || lockedDescriptor.failureReason !== "blob_or_mse") return {};
+  if (!needsDouyinPlaybackRecovery(lockedDescriptor)) return {};
   try {
     const results = await browser.scripting.executeScript({
       target: { tabId, frameIds: [0] },
@@ -773,17 +829,13 @@ async function tryDouyinInitialState(
     const result = results[0]?.result as { ok: true; playbackURL: string; candidateCount: number } | { ok: false } | undefined;
     if (!result?.ok) return {};
     if (!isAllowedDouyinPlaybackURL(result.playbackURL)) return {};
-    const persistentDescriptor = { ...lockedDescriptor };
-    delete persistentDescriptor.failureReason;
     return {
-      media: {
-        ...persistentDescriptor,
-        kind: "directFile",
-        ephemeralPlaybackURL: result.playbackURL,
-        mimeType: "video/mp4",
-        transcriptionCapability: "supported",
-        candidateCount: result.candidateCount,
-      },
+      media: buildDouyinPlaybackUpgrade(
+        lockedAwemeId,
+        lockedDescriptor,
+        result.playbackURL,
+        result.candidateCount,
+      ),
     };
   } catch {
     return {};
@@ -1185,10 +1237,17 @@ async function captureAttemptFromTab(
     });
     page = result[0]?.result as ExtractedPage;
     if (!page) throw new Error("CAPTURE_CONTENT_EMPTY");
-    // Quality failures never cross Native Messaging or enter local History.
-    // The page script returns a stable code so popup can explain the recovery
-    // without exposing any captured private text.
-    if (page.captureIssue) throw new Error(page.captureIssue);
+    // Soft-gate: selection / substantial body can still send on login-wall /
+    // SPA shells so a logged-in current tab remains usable. Hard failures still throw.
+    const blockReason = captureSendBlockReason(page);
+    if (blockReason) throw new Error(blockReason);
+    if (page.captureIssue) {
+      const { captureIssue: _ignored, ...rest } = page;
+      page = {
+        ...rest,
+        completeness: page.completeness ?? "visible_only",
+      };
+    }
     page = enrichXCaptureWithTitleFallback(page, tab?.title ?? null);
     const mediaResults = await browser.scripting.executeScript({
       target: { tabId },

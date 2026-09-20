@@ -65,6 +65,7 @@ final class ProviderSettingsViewModel: ObservableObject {
   @Published var transcriptionModelName = ""
   @Published var tidyModelName = ""
   @Published var autoTidyTranscription = false
+  @Published var autoLocalizeTitleNewCaptures = true
   @Published var autoTranscribeNewCaptures = false
   @Published var autoSummarizeNewCaptures = false
   @Published var autoMindMapNewCaptures = false
@@ -328,6 +329,7 @@ final class ProviderSettingsViewModel: ObservableObject {
       transcriptionModelName = preferences.transcriptionModel ?? ""
       tidyModelName = preferences.tidyModel ?? ""
       autoTidyTranscription = preferences.autoTidyTranscription == true
+      autoLocalizeTitleNewCaptures = preferences.effectiveAutoLocalizeTitleNewCaptures
       autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures == true
       autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
       autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
@@ -554,6 +556,7 @@ final class ProviderSettingsViewModel: ObservableObject {
         transcriptionModel: transcriptionModelName,
         tidyModel: tidyModelName,
         autoTidyTranscription: autoTidyTranscription,
+        autoLocalizeTitleNewCaptures: autoLocalizeTitleNewCaptures ? nil : false,
         autoTranscribeNewCaptures: autoTranscribeNewCaptures,
         autoSummarizeNewCaptures: autoSummarizeNewCaptures,
         autoMindMapNewCaptures: autoMindMapNewCaptures,
@@ -566,6 +569,7 @@ final class ProviderSettingsViewModel: ObservableObject {
       transcriptionModelName = preferences.transcriptionModel ?? ""
       tidyModelName = preferences.tidyModel ?? ""
       autoTidyTranscription = preferences.autoTidyTranscription == true
+      autoLocalizeTitleNewCaptures = preferences.effectiveAutoLocalizeTitleNewCaptures
       autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures == true
       autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures == true
       autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true

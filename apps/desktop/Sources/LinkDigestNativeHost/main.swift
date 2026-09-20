@@ -148,20 +148,27 @@ func deliverToApp(_ body: Data, requestId: String) -> NativeResponse {
 // 任何东西。需要排查时设 LINKDIGEST_HOST_DEBUG=1，只写计数/状态码（不含正文）。
 private let hostDebugEnabled = ProcessInfo.processInfo.environment["LINKDIGEST_HOST_DEBUG"] == "1"
 
+private func hostDebugLogURL() -> URL {
+  FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Logs/LinkDigest", isDirectory: true)
+    .appendingPathComponent("native-host-debug.log")
+}
+
 private func writeDebugLog(_ line: String) {
   guard hostDebugEnabled else { return }
   let timestamped = "\(Date().ISO8601Format()) \(line)\n"
-  let url = URL(fileURLWithPath: "/tmp/linkdigest-host-debug.log")
-  if let data = timestamped.data(using: .utf8) {
-    if FileManager.default.fileExists(atPath: url.path) {
-      if let handle = try? FileHandle(forWritingTo: url) {
-        defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: data)
-      }
-    } else {
-      try? data.write(to: url)
+  guard let data = timestamped.data(using: .utf8) else { return }
+  let url = hostDebugLogURL()
+  try? FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+  if FileManager.default.fileExists(atPath: url.path) {
+    if let handle = try? FileHandle(forWritingTo: url) {
+      defer { try? handle.close() }
+      _ = try? handle.seekToEnd()
+      try? handle.write(contentsOf: data)
     }
+  } else {
+    try? data.write(to: url, options: .completeFileProtectionUntilFirstUserAuthentication)
+    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
   }
 }
 
@@ -169,10 +176,6 @@ do {
   writeDebugLog("host_started")
   let body = try ChromiumFramer.readFrame(from: .standardInput, timeout: hostTimeout)
   writeDebugLog("frame_read_bytes=\(body.count)")
-  // 抓取正文含推文/文章全文，绝不默认落盘。仅在显式开启调试时留一份，供排查。
-  if hostDebugEnabled {
-    try? body.write(to: URL(fileURLWithPath: "/tmp/linkdigest-last-envelope.json"))
-  }
 
   do {
     if let openApp = try OpenAppRequest.decode(body) {

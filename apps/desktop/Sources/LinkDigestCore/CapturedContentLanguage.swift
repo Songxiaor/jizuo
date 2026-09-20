@@ -92,4 +92,5 @@ public enum CapturedContentLanguage: String, Sendable, Equatable {
     }
     return detected == target
   }
+
 }

@@ -2,6 +2,7 @@ import Foundation
 import XCTest
 import GRDB
 import LinkDigestCore
+import LinkDigestShared
 @testable import LinkDigestPersistence
 
 final class HistoryMigrationAndFaultTests: XCTestCase {
@@ -15,6 +16,33 @@ final class HistoryMigrationAndFaultTests: XCTestCase {
       }
       XCTAssertTrue(try repository.containsCanonicalURL(CanonicalURL("https://EXAMPLE.test/article#fragment")))
       XCTAssertFalse(try repository.containsCanonicalURL(CanonicalURL("https://example.test/article?different=1")))
+    }
+  }
+
+  func testExistingXTweetIDsMatchesHandleStatusAndIStatus() throws {
+    try withRepository { repository, _ in
+      try repository.database.write { db in
+        try db.execute(
+          sql: "INSERT INTO tasks (id, canonical_url, canonicalization_version, created_at_ms, updated_at_ms) VALUES (?, ?, ?, 1, 1)",
+          arguments: ["11111111-1111-1111-1111-111111111111", "https://x.com/alice/status/1234567890123", CanonicalURL.version]
+        )
+        try db.execute(
+          sql: "INSERT INTO tasks (id, canonical_url, canonicalization_version, created_at_ms, updated_at_ms) VALUES (?, ?, ?, 1, 1)",
+          arguments: ["22222222-2222-2222-2222-222222222222", "https://x.com/i/status/2080312096865271866", CanonicalURL.version]
+        )
+        try db.execute(
+          sql: "INSERT INTO tasks (id, canonical_url, canonicalization_version, created_at_ms, updated_at_ms) VALUES (?, ?, ?, 1, 1)",
+          arguments: ["33333333-3333-3333-3333-333333333333", "https://example.test/article", CanonicalURL.version]
+        )
+      }
+      XCTAssertEqual(
+        try repository.existingXTweetIDs(in: [
+          "1234567890123",
+          "2080312096865271866",
+          "9999999999999",
+        ]),
+        ["1234567890123", "2080312096865271866"]
+      )
     }
   }
 
@@ -2799,6 +2827,27 @@ final class DailyNoteIdempotencyTests: XCTestCase {
   }
 
   /// 标题要能被人一眼认出，也要能被搜索命中。
+  func testCompanionSyncExportIncludesNotesHiddenFromAllScope() throws {
+    try withRepository { repository, _ in
+      let note = try UserNoteDocument.make(title: "同步笔记", body: "这条笔记必须进入 Companion 导出。")
+      let link = CapturedDocument(
+        createdAt: "2026-09-11T00:00:00Z", origin: .manualLink,
+        url: "https://example.test/companion-link", title: "同步链接",
+        platform: "web", method: "fixture", text: "链接正文",
+        completeness: "complete", capturedAt: "2026-09-11T00:00:00Z", sourceLabel: "fixture"
+      )
+      _ = try repository.acceptCapture(.init(document: note, receivedAtMilliseconds: 1))
+      _ = try repository.acceptCapture(.init(document: link, receivedAtMilliseconds: 2))
+
+      let browsing = try repository.historyPage(limit: 50, after: nil, filter: .none)
+      XCTAssertFalse(browsing.rows.contains { $0.canonicalURL.hasPrefix("note:") })
+
+      let cards = try repository.companionSyncCards(pageSize: 20)
+      XCTAssertTrue(cards.contains { $0.title == "同步笔记" && $0.kind == .text })
+      XCTAssertTrue(cards.contains { $0.title == "同步链接" && $0.kind == .link })
+    }
+  }
+
   func testDailyTitleIsAReadableDate() {
     let day = Date(timeIntervalSince1970: 1_785_600_000)
     var calendar = Calendar(identifier: .gregorian)

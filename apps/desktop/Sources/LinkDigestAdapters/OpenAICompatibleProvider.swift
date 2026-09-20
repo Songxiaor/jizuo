@@ -1,5 +1,6 @@
 import Foundation
 import LinkDigestCore
+import LinkDigestShared
 
 public protocol RetrySleeper: Sendable {
   func sleep(for seconds: TimeInterval) async throws
@@ -32,44 +33,20 @@ public enum OpenAICompatibleEndpoint {
     suffix: String,
     rejectingCompletedChatEndpoint: Bool
   ) throws -> URL {
-    let normalizedPath = baseURL.path.split(separator: "/").map(String.init)
-    if rejectingCompletedChatEndpoint, normalizedPath.suffix(2) == ["chat", "completions"] {
-      throw ModelProviderFailure(
-        code: .baseURLInvalid,
-        retryable: false,
-        hadOutput: false
-      )
+    let kind: OpenAICompatibleAPI.EndpointKind
+    switch suffix {
+    case "/chat/completions": kind = .chatCompletions
+    case "/models": kind = .models
+    case "/audio/transcriptions": kind = .audioTranscriptions
+    default:
+      throw ModelProviderFailure(code: .baseURLInvalid, retryable: false, hadOutput: false)
     }
-
-    guard
-      var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false),
-      components.user == nil,
-      components.password == nil,
-      components.query == nil,
-      components.fragment == nil
-    else {
-      throw ModelProviderFailure(
-        code: .baseURLInvalid,
-        retryable: false,
-        hadOutput: false
-      )
+    _ = rejectingCompletedChatEndpoint
+    do {
+      return try OpenAICompatibleAPI.endpointURL(baseURL: baseURL, kind: kind)
+    } catch {
+      throw ModelProviderFailure(code: .baseURLInvalid, retryable: false, hadOutput: false)
     }
-
-    var path = components.percentEncodedPath
-    while path.count > 1 && path.hasSuffix("/") {
-      path.removeLast()
-    }
-    if path == "/" { path = "" }
-    components.percentEncodedPath = path + suffix
-
-    guard let url = components.url else {
-      throw ModelProviderFailure(
-        code: .baseURLInvalid,
-        retryable: false,
-        hadOutput: false
-      )
-    }
-    return url
   }
 }
 
@@ -242,6 +219,24 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
 
   /// One tidy pass over one transcript chunk. Non-streaming on purpose: the
   /// result replaces nothing until it is complete and persisted.
+  public func localizeTitle(
+    profile: ProviderProfile,
+    apiKey: String,
+    model: String,
+    title: String,
+    body: String?,
+    outputLanguage: String
+  ) async throws -> String {
+    let completion = try await nonStreamingChatCompletion(
+      profile: profile,
+      apiKey: apiKey,
+      model: model,
+      systemPrompt: TitleLocalizationPrompt.system(outputLanguage: outputLanguage),
+      userContent: CapturedTitleLocalization.modelInput(title: title, body: body)
+    )
+    return completion.content
+  }
+
   public func tidyTranscriptChunk(
     profile: ProviderProfile,
     apiKey: String,
@@ -813,7 +808,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   ///
   /// 所以这两类任务一律请求最低推理档。StepFun 官方文档的取值是 low/medium/high；
   /// 这也正是 OpenAI 的 `reasoning_effort` 参数名，兼容面足够宽。
-  static let lowReasoningEffort = "low"
+  static let lowReasoningEffort = OpenAICompatibleAPI.lowReasoningEffort
 
   /// 这个失败**可能**是「服务端不认识我们多发的那个参数」。
   ///

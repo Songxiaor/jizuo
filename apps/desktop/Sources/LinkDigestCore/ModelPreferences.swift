@@ -31,6 +31,8 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
   public let autoTidyTranscription: Bool?
   /// 自动处理管线：新内容到达后自动执行勾选的步骤。勾选即持久授权，
   /// 自动执行不再逐次弹确认。nil = false，旧 JSON 兼容。
+  /// `autoLocalizeTitleNewCaptures` 例外：nil 表示默认开启（兼容升级前始终译标题的行为）。
+  public let autoLocalizeTitleNewCaptures: Bool?
   public let autoTranscribeNewCaptures: Bool?
   public let autoSummarizeNewCaptures: Bool?
   public let autoMindMapNewCaptures: Bool?
@@ -51,6 +53,11 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     translationConcurrency ?? Self.defaultTranslationConcurrency
   }
 
+  /// nil 或未显式关闭都视为开启，避免升级后存量用户突然失去自动中文标题。
+  public var effectiveAutoLocalizeTitleNewCaptures: Bool {
+    autoLocalizeTitleNewCaptures != false
+  }
+
   public init(
     summaryPrompt: String = ModelPreferences.defaultSummaryPrompt,
     targetLanguage: String = ModelPreferences.defaultTargetLanguage,
@@ -58,6 +65,7 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     transcriptionModel: String? = nil,
     tidyModel: String? = nil,
     autoTidyTranscription: Bool? = nil,
+    autoLocalizeTitleNewCaptures: Bool? = nil,
     autoTranscribeNewCaptures: Bool? = nil,
     autoSummarizeNewCaptures: Bool? = nil,
     autoMindMapNewCaptures: Bool? = nil,
@@ -92,6 +100,7 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     self.transcriptionModel = trimmedTranscriptionModel?.isEmpty == true ? nil : trimmedTranscriptionModel
     self.tidyModel = trimmedTidyModel?.isEmpty == true ? nil : trimmedTidyModel
     self.autoTidyTranscription = autoTidyTranscription == true ? true : nil
+    self.autoLocalizeTitleNewCaptures = autoLocalizeTitleNewCaptures
     self.autoTranscribeNewCaptures = autoTranscribeNewCaptures == true ? true : nil
     self.autoSummarizeNewCaptures = autoSummarizeNewCaptures == true ? true : nil
     self.autoMindMapNewCaptures = autoMindMapNewCaptures == true ? true : nil
@@ -113,6 +122,7 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     transcriptionModel: String? = nil,
     tidyModel: String? = nil,
     autoTidyTranscription: Bool? = nil,
+    autoLocalizeTitleNewCaptures: Bool? = nil,
     autoTranscribeNewCaptures: Bool? = nil,
     autoSummarizeNewCaptures: Bool? = nil,
     autoMindMapNewCaptures: Bool? = nil,
@@ -125,6 +135,7 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
       transcriptionModel: transcriptionModel,
       tidyModel: tidyModel,
       autoTidyTranscription: autoTidyTranscription,
+      autoLocalizeTitleNewCaptures: autoLocalizeTitleNewCaptures,
       autoTranscribeNewCaptures: autoTranscribeNewCaptures,
       autoSummarizeNewCaptures: autoSummarizeNewCaptures,
       autoMindMapNewCaptures: autoMindMapNewCaptures,

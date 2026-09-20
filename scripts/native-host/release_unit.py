@@ -1453,6 +1453,12 @@ def build_app_bundle(
         excluded_names=set(),
         label="Release App executable",
     )
+    mcp_binary = app_binary.parent / "LinkDigestMCP"
+    if not mcp_binary.is_file() or not os.access(mcp_binary, os.X_OK):
+        reject("Release LinkDigestMCP is missing", ENVIRONMENT_BLOCKED)
+    copy_path_nofollow(app_binary.parent, Path("LinkDigestMCP"), macos / "LinkDigestMCP",
+                       excluded_names=set(), label="MCP executable")
+    os.chmod(macos / "LinkDigestMCP", 0o755)
     app_executable = macos / app_config["executable"]
     os.chmod(app_executable, 0o755)
     ensure_sparkle_runtime_rpath(app_executable)
@@ -1535,7 +1541,7 @@ def exact_app_paths(
         if {path.name for path in code_signature.iterdir()} != {"CodeResources"}:
             reject("signed App code-signature tree is not exact")
     macos = {path.name for path in (app / "Contents/MacOS").iterdir()}
-    if macos != {"LinkDigestApp"}:
+    if macos != {"LinkDigestApp", "LinkDigestMCP"}:
         reject("App MacOS tree is not exact")
     frameworks = {path.name for path in (app / "Contents/Frameworks").iterdir()}
     if frameworks != {SPARKLE_FRAMEWORK}:
@@ -1727,12 +1733,15 @@ def verify_app(
     host_executable = host_package / verified_host.config["entrypoint"]
     host_arch = macho_architectures(host_executable)
     host_minimum = macho_minimum_macos(host_executable)
+    mcp_executable = app / "Contents/MacOS/LinkDigestMCP"
+    mcp_arch = macho_architectures(mcp_executable)
+    mcp_minimum = macho_minimum_macos(mcp_executable)
     # 排序后比较：`lipo -archs` 不保证输出顺序与配置书写顺序一致。
     expected_arch = sorted(app_config["architectures"])
-    if sorted(app_arch) != expected_arch or sorted(host_arch) != expected_arch:
-        reject("App/Host Mach-O architecture does not match app release config")
-    if app_minimum != app_config["minimumMacOS"] or host_minimum != app_config["minimumMacOS"]:
-        reject("App/Host Mach-O minimum macOS does not match app release config")
+    if any(sorted(value) != expected_arch for value in (app_arch, host_arch, mcp_arch)):
+        reject("App/Host/MCP Mach-O architecture does not match app release config")
+    if any(value != app_config["minimumMacOS"] for value in (app_minimum, host_minimum, mcp_minimum)):
+        reject("App/Host/MCP Mach-O minimum macOS does not match app release config")
     records, tree_digest = release_tree_records(app)
     signing = unsigned_signature_state(app)
     result = {

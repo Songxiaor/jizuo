@@ -58,3 +58,17 @@ __pycache__/
 
 # 部署前的 history.sqlite 备份，装的是真实历史数据，只应留在本机
 db-backups/
+.empryo
+.cube
+
+# Agent 工具在项目目录里留下的本机产物，不属于项目源码
+.commandcode/
+.dev-suite-analytics/
+.kb-cache/
+.memory/
+
+# 规则文件的时间戳备份，只在本机留存
+*.backup-*
+
+# 模型能力试跑产物
+pelican-bicycle.html

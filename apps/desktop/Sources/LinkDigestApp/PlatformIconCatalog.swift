@@ -28,11 +28,80 @@ enum PlatformIconCatalog {
     HistoryPlatformRegistry.bundledAssetName(forHost: host)
   }
 
-  /// These brand marks are intentionally monochrome. Their bundled SVGs use a
-  /// near-black fill, which disappears on the ink theme unless AppKit treats
-  /// the rasterized image as a template and supplies the current text color.
+  /// All bundled platform marks render in monochrome, following the current
+  /// text color (AppKit template rendering). Brand-coloured marks turned the
+  /// sidebar and the list into a palette — ten hues in one column was the
+  /// single largest "not refined" signal. Recognition stays via each mark's
+  /// distinct silhouette.
+  ///
+  /// Coloured originals stay untouched on disk; the dark pixels are lifted
+  /// into a single near-black tint at load time (see `monochromed`), which
+  /// keeps multi-tone marks (douyin's PNG-in-SVG, bilibili's fills) legible
+  /// instead of collapsing them into solid blobs.
   static func usesTemplateRendering(forAssetName name: String) -> Bool {
-    name == "x.com" || name == "github"
+    true
+  }
+
+  /// Luma below this counts as "part of the mark" and is tinted; above it the
+  /// pixel fades out proportionally. Chosen so white backgrounds and brand
+  /// colours both vanish while dark strokes survive — the palette here spans
+  /// #0F1419 (x.com) through mid-saturated brand hues, none of which exceed
+  /// this luma except near-white decoration.
+  private static let monoLumaCutoff: Double = 0.92
+
+  /// Converts a coloured platform mark into an alpha-only silhouette tinted
+  /// near-black, suitable for template rendering. Runs once per asset; the
+  /// result is held by `rasterCache`, so the histogram walk never repeats.
+  private static func monochromed(_ source: NSImage) -> NSImage {
+    let pixel = Int(rasterPixelSize)
+    guard
+      let srcRep = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: pixel, pixelsHigh: pixel,
+        bitsPerSample: 8, samplesPerPixel: 4,
+        hasAlpha: true, isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: 0, bitsPerPixel: 0
+      )
+    else { return source }
+    NSGraphicsContext.saveGraphicsState()
+    if let context = NSGraphicsContext(bitmapImageRep: srcRep) {
+      NSGraphicsContext.current = context
+      context.imageInterpolation = .high
+      context.shouldAntialias = true
+      source.draw(
+        in: NSRect(origin: .zero, size: NSSize(width: pixel, height: pixel)),
+        from: .zero, operation: .sourceOver, fraction: 1.0
+      )
+    }
+    NSGraphicsContext.restoreGraphicsState()
+    guard let data = srcRep.bitmapData else { return source }
+
+    var peak: Double = 0
+    for i in stride(from: 0, to: pixel * pixel * 4, by: 4) {
+      let a = Double(data[i + 3]) / 255.0
+      guard a > 0.05 else { continue }
+      let luma = (0.2126 * Double(data[i]) + 0.7152 * Double(data[i + 1]) + 0.0722 * Double(data[i + 2])) / 255.0
+      peak = max(peak, (monoLumaCutoff - luma) * a)
+    }
+    guard peak > 0 else { return source }
+
+    for i in stride(from: 0, to: pixel * pixel * 4, by: 4) {
+      let a = Double(data[i + 3]) / 255.0
+      let luma = (0.2126 * Double(data[i]) + 0.7152 * Double(data[i + 1]) + 0.0722 * Double(data[i + 2])) / 255.0
+      let strength = min(1, max(0, (monoLumaCutoff - luma) * a / peak))
+      // 固定近黑墨色，与原本单色 SVG 的 #0F1419 一致；真正的主题色由
+      // template 渲染在绘制时统一供给，这里只负责留下「形状的深浅」。
+      data[i] = 0x1B
+      data[i + 1] = 0x1B
+      data[i + 2] = 0x1F
+      data[i + 3] = UInt8((strength * 255).rounded())
+    }
+
+    let image = NSImage(size: NSSize(width: displayPointSize, height: displayPointSize))
+    srcRep.size = NSSize(width: displayPointSize, height: displayPointSize)
+    image.addRepresentation(srcRep)
+    return image
   }
 
   /// Rasterizing an SVG is expensive and the history list re-renders every row
@@ -52,9 +121,10 @@ enum PlatformIconCatalog {
       .appendingPathComponent(assetDirectory, isDirectory: true)
       .appendingPathComponent(name + ".svg")
     guard let image = crispenedIcon(from: url) else { return nil }
-    image.isTemplate = usesTemplateRendering(forAssetName: name)
-    rasterCache.setObject(image, forKey: name as NSString)
-    return image
+    let resolved = monochromed(image)
+    resolved.isTemplate = usesTemplateRendering(forAssetName: name)
+    rasterCache.setObject(resolved, forKey: name as NSString)
+    return resolved
   }
 
   /// Stable, deterministic mark for any source without a bundled asset, so a
@@ -72,6 +142,17 @@ enum PlatformIconCatalog {
     var hash: UInt64 = 5_381
     for byte in value.utf8 { hash = (hash &* 33) &+ UInt64(byte) }
     return Color(hue: Double(hash % 360) / 360.0, saturation: 0.45, brightness: 0.72)
+  }
+
+  /// 历史侧栏与列表行的未知来源不再发随机彩色块——一列里每个未知来源一个
+  /// 随机色，正是「调色盘」观感的一部分。统一成主题无关的中性灰底，靠首字母
+  /// 区分来源。站点登录页仍用上面的彩色版（那里一行一个站点，不构成噪声）。
+  static func fallbackBadgeBackground(for host: String) -> Color {
+    Color.secondary.opacity(0.18)
+  }
+
+  static func fallbackBadgeForeground(for host: String) -> Color {
+    Color.primary.opacity(0.7)
   }
 
   /// Loads the SVG and returns a bitmap-backed `NSImage` sized for Retina list rows.
@@ -115,7 +196,7 @@ enum PlatformIconCatalog {
 
     let image = NSImage(size: NSSize(width: point, height: point))
     image.addRepresentation(rep)
-    image.isTemplate = false
+    // isTemplate 由调用方（`image(for:)`）在单色化之后统一设置。
     return image
   }
 }

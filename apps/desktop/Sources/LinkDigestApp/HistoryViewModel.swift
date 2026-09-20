@@ -1,5 +1,6 @@
 import Combine
 import Foundation
+import LinkDigestMCPKit
 import LinkDigestAdapters
 import LinkDigestCore
 
@@ -49,6 +50,8 @@ private enum DeleteResult: Sendable {
 private enum ExportResult: Sendable { case success(HistoryExportFile), failure }
 private enum TagsResult: Sendable { case success([HistoryTag]), failure }
 private enum NavigationCountsResult: Sendable { case success(HistoryNavigationCounts), failure }
+private enum CreatorPageResult: Sendable { case success(CreatorPage), failure }
+private enum CreatorPinResult: Sendable { case success, pinLimit, failure }
 private enum TagMutationResult: Sendable { case success, failure(StorageErrorCode) }
 private enum SnapshotEditResult: Sendable { case success, failure(StorageErrorCode) }
 private enum PiecesResult: Sendable { case success([PieceSummary]), failure }
@@ -115,6 +118,13 @@ private struct AutoPipelineRequest {
   var readAttempts = 0
 }
 
+private struct AutoTitleLocalizationRequest: Sendable {
+  let taskID: TaskID
+  let outputLanguage: String
+  let model: String?
+  var readAttempts = 0
+}
+
 /// 批量总结的实时进度。`skipped` 指执行期间才发现可跳过的条目（预检之后、
 /// 轮到它之前被别的路径总结掉了）。
 struct BatchSummaryProgress: Sendable, Equatable {
@@ -127,9 +137,39 @@ struct BatchSummaryProgress: Sendable, Equatable {
   var isStopping = false
 }
 
-/// 库里有没有落地成功的总结。与自动管线第 3 步同一判据。
+/// 批量翻译的预检结论。跳过原因与批量总结分开计数，确认弹窗里各自说明。
+struct BatchTranslationPlan: Sendable, Equatable {
+  struct Item: Sendable, Equatable {
+    let taskID: TaskID
+    let title: String
+    let estimatedInputTokens: Int
+  }
+  var pending: [Item] = []
+  var alreadyTranslated = 0
+  var withoutContent = 0
+  var unreadable = 0
+  var sameLanguage = 0
+
+  var estimatedInputTokens: Int { pending.reduce(0) { $0 + $1.estimatedInputTokens } }
+}
+
+enum BatchTranslationItemState: Sendable {
+  case needsTranslation(HistoryDetailProjection)
+  case alreadyTranslated
+  case withoutContent
+  case unreadable
+  case sameLanguage
+}
+
+typealias BatchTranslationProgress = BatchSummaryProgress
+
+/// 库里有没有落地成功的总结。与自动管线第 4 步同一判据。
 private func batchSummaryIsSummarized(_ detail: HistoryDetailProjection) -> Bool {
   detail.runs.contains { $0.run.kind == .summarize && $0.run.status == .completed }
+}
+
+private func batchTranslationIsTranslated(_ detail: HistoryDetailProjection) -> Bool {
+  detail.runs.contains { $0.run.kind == .translate && $0.run.status == .completed }
 }
 
 private func batchSummaryTitle(for detail: HistoryDetailProjection) -> String {
@@ -190,6 +230,34 @@ private actor HistoryRepositoryWorker {
   func navigationCounts(_ history: HistoryApplicationService) -> NavigationCountsResult {
     do { return .success(try history.navigationCounts()) }
     catch { return .failure }
+  }
+
+  func creatorPage(
+    _ history: HistoryApplicationService,
+    cursor: CreatorPageCursor?,
+    searchText: String
+  ) -> CreatorPageResult {
+    do { return .success(try history.creatorPage(limit: 50, after: cursor, searchText: searchText)) }
+    catch { return .failure }
+  }
+
+  func creator(_ history: HistoryApplicationService, id: CreatorID) -> CreatorSummary? {
+    try? history.creator(id: id)
+  }
+
+  func setCreatorPinned(
+    _ history: HistoryApplicationService,
+    creatorID: CreatorID,
+    pinned: Bool
+  ) -> CreatorPinResult {
+    do {
+      try history.setCreatorPinned(creatorID: creatorID, pinned: pinned)
+      return .success
+    } catch RepositoryFailure.invalidInput {
+      return .pinLimit
+    } catch {
+      return .failure
+    }
   }
 
   func addTag(_ history: HistoryApplicationService, rawName: String, taskID: TaskID) -> TagMutationResult {
@@ -751,6 +819,10 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var batchSummaryProgress: BatchSummaryProgress?
   @Published var isBatchSummaryOutcomePresented = false
   @Published private(set) var batchSummaryOutcomeMessage = ""
+  @Published var isBatchTranslationConfirmationPresented = false
+  @Published private(set) var batchTranslationProgress: BatchTranslationProgress?
+  @Published var isBatchTranslationOutcomePresented = false
+  @Published private(set) var batchTranslationOutcomeMessage = ""
   @Published private(set) var isPreparingExport = false
   @Published private(set) var exportFile: HistoryExportFile?
   @Published var isExportPanelPresented = false
@@ -765,7 +837,15 @@ final class HistoryViewModel: ObservableObject {
   @Published private(set) var selectedTagNormalizedNames: Set<String> = []
   @Published private(set) var navigationCounts = HistoryNavigationCounts()
   @Published private(set) var selectedHosts: Set<String> = []
-  @Published private(set) var selectedScope: HistoryListScope = .all
+  @Published private(set) var selectedScope: HistoryListScope = .unsummarized
+  @Published private(set) var selectedCreatorID: CreatorID?
+  @Published private(set) var selectedCreatorSnapshot: CreatorSummary?
+  @Published private(set) var isCreatorDirectoryActive = false
+  @Published private(set) var creatorDirectoryRows: [CreatorSummary] = []
+  @Published var creatorSearchText = "" { didSet { scheduleCreatorSearchReload() } }
+  @Published private(set) var creatorFailure: String?
+  @Published private(set) var isLoadingCreatorPage = false
+  @Published private(set) var creatorDirectoryLoadFailed = false
 
   // MARK: - 工作台
   //
@@ -804,6 +884,7 @@ final class HistoryViewModel: ObservableObject {
     // 任何终态都必须带走阶段文案，不能让「正在下载音频轨…」陪着失败提示常驻。
     didSet {
       if !transcriptionState.isActive {
+        mcpTranscriptionLease = nil
         onlineTranscriptionPhase = nil
         setOnlineTranscriptionPreview(nil)
       }
@@ -896,6 +977,7 @@ final class HistoryViewModel: ObservableObject {
   private let imageTextRecognizer: (any LocalImageTextRecognizing)?
   private let onlineAudioTranscriber: (any OnlineAudioTranscribing)?
   private let transcriptTidier: (any TranscriptTidying)?
+  private let titleLocalizer: (any TitleLocalizing)?
   /// 起草用的 Agent。没有就是没装 CLI,那一步的入口会说清楚缺什么。
   private let draftAgent: ClaudeCLIAgent?
   private let mindMapExtractor: (any MindMapExtracting)?
@@ -1105,6 +1187,9 @@ final class HistoryViewModel: ObservableObject {
   var historyService: HistoryApplicationService? { history }
   private var hasConfiguredHistory = false
   private var nextCursor: HistoryPageCursor?
+  private var creatorNextCursor: CreatorPageCursor?
+  private var creatorPageTask: Task<Void, Never>?
+  private var creatorSearchTask: Task<Void, Never>?
   private var configurationGeneration = UUID()
   private var listRequestID = UUID()
   private var detailRequestID = UUID()
@@ -1136,6 +1221,7 @@ final class HistoryViewModel: ObservableObject {
   private var pendingTranscriptTidyContext: PendingTranscriptTidyContext?
   private var cleanupRetryAttemptID: String?
   private var localMediaLease: SecurityScopedURLLease?
+  private var mcpTranscriptionLease: SecurityScopedURLLease?
 
   init(
     imageCache: GitHubREADMEImageCache? = nil,
@@ -1154,6 +1240,7 @@ final class HistoryViewModel: ObservableObject {
     imageTextRecognizer: (any LocalImageTextRecognizing)? = nil,
     onlineAudioTranscriber: (any OnlineAudioTranscribing)? = nil,
     transcriptTidier: (any TranscriptTidying)? = nil,
+    titleLocalizer: (any TitleLocalizing)? = nil,
     draftAgent: ClaudeCLIAgent? = nil,
     mindMapExtractor: (any MindMapExtracting)? = nil,
     transcriptionTempStore: TranscriptionTempStore? = nil,
@@ -1176,6 +1263,7 @@ final class HistoryViewModel: ObservableObject {
     self.imageTextRecognizer = imageTextRecognizer
     self.onlineAudioTranscriber = onlineAudioTranscriber
     self.transcriptTidier = transcriptTidier
+    self.titleLocalizer = titleLocalizer
     self.draftAgent = draftAgent
     self.mindMapExtractor = mindMapExtractor
     self.transcriptionTempStore = transcriptionTempStore
@@ -1186,7 +1274,7 @@ final class HistoryViewModel: ObservableObject {
     self.nowMilliseconds = nowMilliseconds
   }
 
-  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel(); batchSummaryTask?.cancel(); autoPipelineTask?.cancel(); requestedActionTask?.cancel() }
+  deinit { pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); exportTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); creatorPageTask?.cancel(); creatorSearchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); transcriptTidyTask?.cancel(); batchSummaryTask?.cancel(); batchTranslationTask?.cancel(); autoTitleLocalizationTask?.cancel(); autoPipelineTask?.cancel(); requestedActionTask?.cancel() }
 
   var canDelete: Bool { history != nil && !isReadOnly && !selectedTaskIDs.isEmpty && !isDeleting }
   var canExport: Bool { history != nil && selectedTaskID != nil && !isPreparingExport }
@@ -1356,9 +1444,30 @@ final class HistoryViewModel: ObservableObject {
     !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       || !selectedTagNormalizedNames.isEmpty
       || !selectedHosts.isEmpty
+      || selectedCreatorID != nil
       || selectedScope != .all
   }
-  var hasCategoryFilter: Bool { !selectedHosts.isEmpty || !selectedTagNormalizedNames.isEmpty }
+  var hasCategoryFilter: Bool {
+    !selectedHosts.isEmpty || !selectedTagNormalizedNames.isEmpty || selectedCreatorID != nil
+  }
+  var selectedCreator: CreatorSummary? { selectedCreatorSnapshot }
+  var showsCreatorNeverAddedEmpty: Bool {
+    isCreatorDirectoryActive
+      && creatorDirectoryRows.isEmpty
+      && !isLoadingCreatorPage
+      && !creatorDirectoryLoadFailed
+      && creatorSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+  var showsCreatorNoMatchEmpty: Bool {
+    isCreatorDirectoryActive
+      && creatorDirectoryRows.isEmpty
+      && !isLoadingCreatorPage
+      && !creatorDirectoryLoadFailed
+      && !creatorSearchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+  var showsCreatorDirectoryFailure: Bool {
+    isCreatorDirectoryActive && creatorDirectoryLoadFailed && creatorDirectoryRows.isEmpty
+  }
   func faviconImageURL(for row: HistoryRowProjection) -> URL? { faviconImageURLs[row.taskID] }
   func platformFavicon(forHost host: String) -> (url: URL, taskID: TaskID)? {
     let canonical = HistoryPlatformRegistry.canonicalHost(for: host)
@@ -1389,24 +1498,30 @@ final class HistoryViewModel: ObservableObject {
     }
     hasConfiguredHistory = true
     configurationGeneration = UUID()
-    pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; browserDeclaredFaviconTasks = [:]; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); invalidateExportPreparation()
+    pageTask?.cancel(); detailTask?.cancel(); imageBackfillTask?.cancel(); deleteTask?.cancel(); faviconTask?.cancel(); browserDeclaredFaviconTasks.values.forEach { $0.cancel() }; browserDeclaredFaviconTasks = [:]; tagsTask?.cancel(); navigationCountsTask?.cancel(); tagMutationTask?.cancel(); searchTask?.cancel(); creatorPageTask?.cancel(); creatorSearchTask?.cancel(); transcriptionTask?.cancel(); imageTextRecognitionTask?.cancel(); invalidateExportPreparation()
     imageBackfillAttemptedSnapshotIDs = []
     self.history = history; self.isReadOnly = isReadOnly
     historyReadOnlyReason = isReadOnly ? readOnlyReason : nil
     blockingErrorCode = unavailableCode
     rows = []; selectedTaskIDs = []; detail = nil; localImageURLs = []; localMediaFileURL = nil; localMediaLease = nil; localMediaResolutionFailure = nil; faviconImageURLs = [:]; nextCursor = nil
-    availableTags = []; navigationCounts = .init(); selectedTagNormalizedNames = []; selectedHosts = []; selectedScope = .all; showsAllNavigationTags = false; searchText = ""
+    availableTags = []; navigationCounts = .init(); selectedTagNormalizedNames = []; selectedHosts = []; selectedScope = .unsummarized; showsAllNavigationTags = false; searchText = ""
+    selectedCreatorID = nil; selectedCreatorSnapshot = nil; isCreatorDirectoryActive = false; creatorDirectoryRows = []; creatorSearchText = ""; creatorFailure = nil; creatorNextCursor = nil; isLoadingCreatorPage = false; creatorDirectoryLoadFailed = false
     listErrorCode = nil; detailErrorCode = nil; deleteErrorCode = nil; tagErrorCode = nil
     pendingDeletionTaskIDs = []; pendingProtectedDeletionTaskIDs = []
     isDeleteConfirmationPresented = false; isDeleteFailurePresented = false; isProtectedDeletionAlertPresented = false
     isDeleteOutcomePresented = false; deleteOutcomeMessage = ""
     isLoadingNextPage = false; isDeleting = false
     batchSummaryTask?.cancel(); batchSummaryTask = nil; batchSummaryProgress = nil
+    batchTranslationTask?.cancel(); batchTranslationTask = nil; batchTranslationProgress = nil
     autoPipelineTask?.cancel(); autoPipelineTask = nil
     autoPipelineQueue = []; autoPipelineQueuedTaskIDs = []; autoPipelineHandledTaskIDs = []
     pendingBatchSummaryPlan = nil; isPreparingBatchSummary = false
     isBatchSummaryConfirmationPresented = false; isBatchSummaryOutcomePresented = false
     batchSummaryOutcomeMessage = ""
+    pendingBatchTranslationPlan = nil; pendingBatchTranslationOutputLanguage = nil
+    isPreparingBatchTranslation = false
+    isBatchTranslationConfirmationPresented = false; isBatchTranslationOutcomePresented = false
+    batchTranslationOutcomeMessage = ""
     transcriptionRequestID = UUID()
     transcriptionState = .idle; setTranscriptionText(""); transcriptionTaskID = nil; isTranscriptionModelConfirmationPresented = false; pendingTranscriptionContext = nil
     transcriptionUsesOnlineService = false
@@ -1425,6 +1540,7 @@ final class HistoryViewModel: ObservableObject {
     // 侧栏那个「进行中 N」和列表右键的「加入工作台」都要用到这份列表，
     // 所以启动时就取一次，而不是等用户点进工作台。
     reloadPieces()
+    runAutoTitleLocalizationQueueIfNeeded()
   }
 
   func reload() {
@@ -1467,11 +1583,12 @@ final class HistoryViewModel: ObservableObject {
   /// 正被当前的标签、平台或搜索词滤在列表外，那样点进来会停在一个空列表上，
   /// 看着像链接坏了。
   func revealFromExternalLink(taskID: TaskID) {
-    if hasActiveFilter {
+    if hasActiveFilter || isCreatorDirectoryActive {
       searchText = ""
       selectedTagNormalizedNames = []
       selectedHosts = []
       selectedScope = .all
+      clearCreatorMode()
     }
     reveal(taskID: taskID)
   }
@@ -1496,6 +1613,21 @@ final class HistoryViewModel: ObservableObject {
   private func adjacentRowExists(offset: Int) -> Bool {
     guard let index = currentRowIndex else { return false }
     return rows.indices.contains(index + offset)
+  }
+
+  /// Agent requests use an explicit record and never replace an active transcription.
+  func startMCPTranscription(taskID: TaskID) throws {
+    guard !transcriptionState.isActive else { throw MCPFailure("busy", "已有转写任务正在执行") }
+    guard let history, let mediaStore else { throw MCPFailure("not_ready", "视频服务尚未就绪") }
+    let value = try history.detail(taskID: taskID)
+    guard let media = value.media else { throw MCPFailure("media_required", "请先下载该作品视频，再转写") }
+    let lease = try mediaStore.resolve(media)
+    // Keep the security-scoped lease alive throughout the asynchronous transcription.
+    mcpTranscriptionLease = lease
+    guard beginLocalTranscription(detail: value, fileURL: lease.url) else {
+      mcpTranscriptionLease = nil
+      throw MCPFailure("transcription_unavailable", "转写未启动，请在汲作检查模型和视频状态")
+    }
   }
 
   func requestTranscription() {
@@ -1996,6 +2128,9 @@ final class HistoryViewModel: ObservableObject {
   private var autoPipelineQueuedTaskIDs: Set<TaskID> = []
   private var autoPipelineQueue: [AutoPipelineRequest] = []
   private var autoPipelineTask: Task<Void, Never>?
+  private var autoTitleLocalizationQueuedTaskIDs: Set<TaskID> = []
+  private var autoTitleLocalizationQueue: [AutoTitleLocalizationRequest] = []
+  private var autoTitleLocalizationTask: Task<Void, Never>?
   private var requestedActionHandledTaskIDs: Set<TaskID> = []
   private var requestedActionTask: Task<Void, Never>?
 
@@ -2017,6 +2152,64 @@ final class HistoryViewModel: ObservableObject {
     }
   }
 
+  /// 新捕获入库后后台补中文标题；不写总结产物，也不把条目移出「待总结」。
+  func scheduleAutomaticTitleLocalization(
+    taskID: TaskID,
+    title: String?,
+    body: String?,
+    outputLanguage: String,
+    model: String?
+  ) {
+    guard !isReadOnly,
+          CapturedTitleLocalization.shouldLocalizeIncoming(
+            title: title,
+            body: body,
+            outputLanguage: outputLanguage
+          ),
+          !autoTitleLocalizationQueuedTaskIDs.contains(taskID) else { return }
+    autoTitleLocalizationQueuedTaskIDs.insert(taskID)
+    autoTitleLocalizationQueue.append(.init(
+      taskID: taskID,
+      outputLanguage: outputLanguage,
+      model: model
+    ))
+    runAutoTitleLocalizationQueueIfNeeded()
+  }
+
+  private func runAutoTitleLocalizationQueueIfNeeded() {
+    guard autoTitleLocalizationTask == nil, !autoTitleLocalizationQueue.isEmpty else { return }
+    autoTitleLocalizationTask = Task { [weak self] in
+      guard let self else { return }
+      while !Task.isCancelled, !self.autoTitleLocalizationQueue.isEmpty {
+        guard self.history != nil, self.titleLocalizer != nil else { break }
+        var request = self.autoTitleLocalizationQueue.removeFirst()
+        guard let detail = await self.waitForStoredDetail(taskID: request.taskID, timeoutSeconds: 15) else {
+          if request.readAttempts < 5 {
+            request.readAttempts += 1
+            self.autoTitleLocalizationQueue.insert(request, at: 0)
+            try? await Task.sleep(for: .seconds(1))
+          } else {
+            self.autoTitleLocalizationQueuedTaskIDs.remove(request.taskID)
+          }
+          continue
+        }
+        self.autoTitleLocalizationQueuedTaskIDs.remove(request.taskID)
+        if await self.localizeAndPersistTitle(
+          detail: detail,
+          outputLanguage: request.outputLanguage,
+          model: request.model
+        ) {
+          self.reload()
+          if self.selectedTaskID == request.taskID {
+            self.loadDetailForSelection()
+          }
+        }
+      }
+      self.autoTitleLocalizationTask = nil
+      if !self.autoTitleLocalizationQueue.isEmpty { self.runAutoTitleLocalizationQueueIfNeeded() }
+    }
+  }
+
   /// 新内容到达后按顺序执行勾选步骤：本机转写 → 整理 → 总结 → 脑图。
   /// 勾选即持久授权：整理/脑图跳过逐次确认；总结沿用数据去向 consent
   /// 存储（首次目的地仍确认一次）。用户切走当前条目时静默停止后续步骤。
@@ -2035,7 +2228,7 @@ final class HistoryViewModel: ObservableObject {
     // 批量总结会逐条改写 `currentCapture`，那不是「新内容到达」。早退必须发生在
     // 下面「标记已处理」之前——否则批量处理过的条目会被永久排除在自动管线之外，
     // 以后真的重新捕获也不会再自动处理，而且没有任何迹象。
-    guard batchSummaryProgress == nil else { return }
+    guard batchSummaryProgress == nil, batchTranslationProgress == nil else { return }
     guard !autoPipelineHandledTaskIDs.contains(taskID),
           !autoPipelineQueuedTaskIDs.contains(taskID) else { return }
     autoPipelineQueuedTaskIDs.insert(taskID)
@@ -2179,6 +2372,56 @@ final class HistoryViewModel: ObservableObject {
     return true
   }
 
+  @discardableResult
+  private func localizeAndPersistTitle(
+    detail: HistoryDetailProjection,
+    outputLanguage: String,
+    model: String?
+  ) async -> Bool {
+    guard let history, let titleLocalizer, !isReadOnly,
+          let snapshot = detail.snapshots.last
+    else { return false }
+    let originalTitle = snapshot.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !originalTitle.isEmpty,
+          CapturedTitleLocalization.needsLocalization(
+            title: originalTitle,
+            bodyText: snapshot.bodyText,
+            outputLanguage: outputLanguage
+          )
+    else { return false }
+    do {
+      let localized = try await titleLocalizer.localize(
+        title: originalTitle,
+        body: snapshot.bodyText,
+        outputLanguage: outputLanguage,
+        model: model
+      )
+      let trimmed = CapturedTitleLocalization.sanitizedModelTitle(localized)
+      guard !trimmed.isEmpty, trimmed != originalTitle else { return false }
+      let body = CapturedTitleLocalization.bodyWithPreservedOriginal(
+        bodyText: snapshot.bodyText,
+        originalTitle: originalTitle
+      )
+      let now = nowMilliseconds()
+      let bodyResult = await worker.updateSnapshotBodyText(
+        history,
+        taskID: detail.task.id,
+        snapshotID: snapshot.id,
+        bodyText: body,
+        updatedAtMilliseconds: now
+      )
+      guard case .success = bodyResult else { return false }
+      try history.updateTaskTitle(
+        taskID: detail.task.id,
+        title: trimmed,
+        updatedAtMilliseconds: now
+      )
+      return true
+    } catch {
+      return false
+    }
+  }
+
   private func loadStoredDetail(taskID: TaskID) async -> HistoryDetailProjection? {
     guard let history else { return nil }
     return await Task.detached(priority: .utility) {
@@ -2229,6 +2472,10 @@ final class HistoryViewModel: ObservableObject {
   private var pendingBatchSummaryPlan: BatchSummaryPlan?
   private var batchSummaryTask: Task<Void, Never>?
   private var isPreparingBatchSummary = false
+  private var pendingBatchTranslationPlan: BatchTranslationPlan?
+  private var pendingBatchTranslationOutputLanguage: String?
+  private var batchTranslationTask: Task<Void, Never>?
+  private var isPreparingBatchTranslation = false
 
   /// 发起之后等它占上通道的上限。超时即认定压根没启动。
   /// 可写只是为了让测试不必每条用例空转 20 秒，产品路径不改这个值。
@@ -2238,7 +2485,8 @@ final class HistoryViewModel: ObservableObject {
 
   var canBatchSummarize: Bool {
     history != nil && !isReadOnly && selectedTaskIDs.count > 1
-      && batchSummaryProgress == nil && !isPreparingBatchSummary && !isDeleting
+      && batchSummaryProgress == nil && batchTranslationProgress == nil
+      && !isPreparingBatchSummary && !isPreparingBatchTranslation && !isDeleting
   }
 
   var isBatchSummarizing: Bool { batchSummaryProgress != nil }
@@ -2254,9 +2502,12 @@ final class HistoryViewModel: ObservableObject {
   /// 预检：读每条 detail，分出要发的和跳过的，算出粗估 token 后才弹确认。
   /// 花钱的动作不能先斩后奏。
   func requestBatchSummary() {
-    guard canBatchSummarize, let history else { return }
-    let taskIDs = orderedSelectedTaskIDs()
-    guard !taskIDs.isEmpty else { return }
+    guard canBatchSummarize else { return }
+    beginBatchSummaryPlan(taskIDs: orderedSelectedTaskIDs())
+  }
+
+  private func beginBatchSummaryPlan(taskIDs: [TaskID]) {
+    guard let history, !taskIDs.isEmpty else { return }
     isPreparingBatchSummary = true
     let generation = configurationGeneration
     Task { [weak self] in
@@ -2513,6 +2764,256 @@ final class HistoryViewModel: ObservableObject {
     guard let progress = batchSummaryProgress else { return "" }
     if progress.isStopping { return "正在停止批量总结…" }
     return "正在总结 \(min(progress.finished + 1, progress.total))/\(progress.total)：\(progress.currentTitle)"
+  }
+
+  // MARK: - 批量翻译
+
+  var canBatchTranslate: Bool {
+    history != nil && !isReadOnly && selectedTaskIDs.count > 1
+      && batchSummaryProgress == nil && batchTranslationProgress == nil
+      && !isPreparingBatchSummary && !isPreparingBatchTranslation && !isDeleting
+  }
+
+  var isBatchTranslating: Bool { batchTranslationProgress != nil }
+
+  func requestBatchTranslation(outputLanguage: String) {
+    guard canBatchTranslate else { return }
+    beginBatchTranslationPlan(
+      taskIDs: orderedSelectedTaskIDs(),
+      outputLanguage: outputLanguage
+    )
+  }
+
+  private func beginBatchTranslationPlan(taskIDs: [TaskID], outputLanguage: String) {
+    guard let history, !taskIDs.isEmpty else { return }
+    isPreparingBatchTranslation = true
+    pendingBatchTranslationOutputLanguage = outputLanguage
+    let generation = configurationGeneration
+    Task { [weak self] in
+      let plan = await Task.detached(priority: .utility) {
+        Self.batchTranslationPlan(history, taskIDs: taskIDs, outputLanguage: outputLanguage)
+      }.value
+      self?.receiveBatchTranslationPlan(plan, generation: generation)
+    }
+  }
+
+  private func receiveBatchTranslationPlan(_ plan: BatchTranslationPlan, generation: UUID) {
+    guard generation == configurationGeneration else {
+      isPreparingBatchTranslation = false
+      pendingBatchTranslationOutputLanguage = nil
+      return
+    }
+    isPreparingBatchTranslation = false
+    guard !plan.pending.isEmpty else {
+      batchTranslationOutcomeMessage = Self.batchTranslationEmptyPlanMessage(plan)
+      isBatchTranslationOutcomePresented = true
+      pendingBatchTranslationOutputLanguage = nil
+      return
+    }
+    pendingBatchTranslationPlan = plan
+    isBatchTranslationConfirmationPresented = true
+  }
+
+  var batchTranslationConfirmationTitle: String {
+    let count = pendingBatchTranslationPlan?.pending.count ?? 0
+    let language = pendingBatchTranslationOutputLanguage ?? "目标语言"
+    return "对选中的 \(count) 条翻译为\(language)？"
+  }
+
+  var batchTranslationConfirmationMessage: String {
+    guard let plan = pendingBatchTranslationPlan else { return "" }
+    var message = "会按列表顺序逐条发送给模型，一次只发一条。"
+    message += "预计输入约 \(Self.tokenScaleText(plan.estimatedInputTokens)) tokens"
+    message += "（按字符粗估，不含模型返回部分；真实用量以每条详情里的台账为准）。"
+    var skipped: [String] = []
+    if plan.alreadyTranslated > 0 { skipped.append("\(plan.alreadyTranslated) 条已有翻译") }
+    if plan.sameLanguage > 0 { skipped.append("\(plan.sameLanguage) 条已是目标语言") }
+    if plan.withoutContent > 0 { skipped.append("\(plan.withoutContent) 条没有正文") }
+    if plan.unreadable > 0 { skipped.append("\(plan.unreadable) 条读不出本机记录") }
+    if !skipped.isEmpty {
+      message += " 另外跳过 " + skipped.joined(separator: "、") + "。"
+    }
+    message += " 过程中可以随时停止，已完成的条目会保留。"
+    return message
+  }
+
+  func cancelBatchTranslationRequest() {
+    pendingBatchTranslationPlan = nil
+    pendingBatchTranslationOutputLanguage = nil
+    isBatchTranslationConfirmationPresented = false
+  }
+
+  func dismissBatchTranslationOutcome() {
+    isBatchTranslationOutcomePresented = false
+    batchTranslationOutcomeMessage = ""
+  }
+
+  func stopBatchTranslation() {
+    guard batchTranslationProgress != nil else { return }
+    batchTranslationProgress?.isStopping = true
+    batchTranslationTask?.cancel()
+  }
+
+  func confirmBatchTranslation(
+    translate: @escaping @MainActor (HistoryDetailProjection) async -> Void,
+    isBusy: @escaping @MainActor () -> Bool
+  ) {
+    guard let plan = pendingBatchTranslationPlan,
+          let outputLanguage = pendingBatchTranslationOutputLanguage,
+          let history,
+          !isReadOnly else {
+      cancelBatchTranslationRequest()
+      return
+    }
+    pendingBatchTranslationPlan = nil
+    pendingBatchTranslationOutputLanguage = nil
+    isBatchTranslationConfirmationPresented = false
+    let generation = configurationGeneration
+    let items = plan.pending
+    batchTranslationProgress = BatchTranslationProgress(
+      total: items.count,
+      currentTitle: items.first?.title ?? ""
+    )
+    batchTranslationTask?.cancel()
+    batchTranslationTask = Task { [weak self] in
+      var succeeded = 0
+      var failed = 0
+      var skipped = 0
+      var stoppedEarly = false
+      var stoppedWithItemInFlight = false
+      var abortReason: String?
+
+      for (index, item) in items.enumerated() {
+        guard let self, generation == self.configurationGeneration else { return }
+        if Task.isCancelled {
+          stoppedEarly = true
+          break
+        }
+        self.batchTranslationProgress = BatchTranslationProgress(
+          total: items.count,
+          finished: index,
+          succeeded: succeeded,
+          failed: failed,
+          skipped: skipped,
+          currentTitle: item.title,
+          isStopping: false
+        )
+
+        let state = await Task.detached(priority: .utility) {
+          Self.batchTranslationState(history, taskID: item.taskID, outputLanguage: outputLanguage)
+        }.value
+        guard case let .needsTranslation(detail) = state else {
+          switch state {
+          case .unreadable: failed += 1
+          case .alreadyTranslated, .withoutContent, .sameLanguage: skipped += 1
+          case .needsTranslation: break
+          }
+          continue
+        }
+
+        await translate(detail)
+
+        let started = await self.waitFor(
+          timeoutSeconds: Self.batchSummaryStartTimeoutSeconds,
+          condition: { isBusy() }
+        )
+        var stopRequested = false
+        if Task.isCancelled {
+          stoppedEarly = true
+          stopRequested = true
+          stoppedWithItemInFlight = started
+        }
+        if !stopRequested, started {
+          let finished = await self.waitFor(
+            timeoutSeconds: Self.batchSummaryRunTimeoutSeconds,
+            condition: { !isBusy() }
+          )
+          if Task.isCancelled {
+            stoppedEarly = true
+            stopRequested = true
+            stoppedWithItemInFlight = !finished
+          } else if !finished {
+            abortReason = "上一条一直没有结束，剩下的没有发送。"
+          }
+        }
+
+        if !stoppedWithItemInFlight {
+          let after = await Task.detached(priority: .utility) {
+            Self.batchTranslationState(history, taskID: item.taskID, outputLanguage: outputLanguage)
+          }.value
+          if case .alreadyTranslated = after {
+            succeeded += 1
+          } else if !stopRequested {
+            failed += 1
+            if !started, abortReason == nil {
+              abortReason = "没能开始翻译（可能是模型未配置、本机存储不可写，或数据去向确认被取消）。剩下的没有发送。"
+            }
+          }
+        }
+        if stopRequested || abortReason != nil { break }
+      }
+
+      guard let self, generation == self.configurationGeneration else { return }
+      self.finishBatchTranslation(
+        total: items.count,
+        succeeded: succeeded,
+        failed: failed,
+        skipped: skipped,
+        stoppedEarly: stoppedEarly,
+        stoppedWithItemInFlight: stoppedWithItemInFlight,
+        abortReason: abortReason
+      )
+    }
+  }
+
+  private func finishBatchTranslation(
+    total: Int,
+    succeeded: Int,
+    failed: Int,
+    skipped: Int,
+    stoppedEarly: Bool,
+    stoppedWithItemInFlight: Bool,
+    abortReason: String?
+  ) {
+    batchTranslationProgress = nil
+    batchTranslationTask = nil
+    var parts: [String] = []
+    if succeeded > 0 { parts.append("成功 \(succeeded) 条") }
+    if failed > 0 { parts.append("失败 \(failed) 条") }
+    if skipped > 0 { parts.append("跳过 \(skipped) 条") }
+    let inFlight = stoppedWithItemInFlight ? 1 : 0
+    let remaining = total - succeeded - failed - skipped - inFlight
+    if remaining > 0 { parts.append("未处理 \(remaining) 条") }
+    var message = parts.isEmpty ? "没有条目被处理。" : parts.joined(separator: "，") + "。"
+    if stoppedEarly {
+      message += " 已按你的要求停止，剩下的没有发送。"
+      if stoppedWithItemInFlight {
+        message += " 已经发出的那 1 条仍在进行，完成后会自动出现在历史里。"
+      }
+    } else if let abortReason {
+      message += " " + abortReason
+    }
+    if failed > 0 { message += " 失败的条目没有产生翻译，可以单独重试。" }
+    batchTranslationOutcomeMessage = message
+    isBatchTranslationOutcomePresented = true
+    reload()
+    loadDetailForSelection()
+  }
+
+  private static func batchTranslationEmptyPlanMessage(_ plan: BatchTranslationPlan) -> String {
+    var reasons: [String] = []
+    if plan.alreadyTranslated > 0 { reasons.append("\(plan.alreadyTranslated) 条已有翻译") }
+    if plan.sameLanguage > 0 { reasons.append("\(plan.sameLanguage) 条已是目标语言") }
+    if plan.withoutContent > 0 { reasons.append("\(plan.withoutContent) 条没有正文可发送") }
+    if plan.unreadable > 0 { reasons.append("\(plan.unreadable) 条读不出本机记录") }
+    guard !reasons.isEmpty else { return "选中的条目里没有可以翻译的内容。" }
+    return "选中的条目都不需要发送：" + reasons.joined(separator: "，") + "。"
+  }
+
+  var batchTranslationProgressText: String {
+    guard let progress = batchTranslationProgress else { return "" }
+    if progress.isStopping { return "正在停止批量翻译…" }
+    return "正在翻译 \(min(progress.finished + 1, progress.total))/\(progress.total)：\(progress.currentTitle)"
   }
 
   // MARK: - 脑图
@@ -3804,6 +4305,8 @@ final class HistoryViewModel: ObservableObject {
       selectedTagNormalizedNames = [key]
     }
     selectedHosts = []
+    selectedCreatorID = nil
+    isCreatorDirectoryActive = false
     selectedScope = .all
     reload()
   }
@@ -3817,6 +4320,7 @@ final class HistoryViewModel: ObservableObject {
   func selectScope(_ scope: HistoryListScope) {
     // 点任何一个筛选项都意味着「回到看资料」，工作台该让位。
     isWorkbenchActive = false
+    clearCreatorMode()
     selectedScope = scope
     selectedHosts = []
     selectedTagNormalizedNames = []
@@ -3825,6 +4329,7 @@ final class HistoryViewModel: ObservableObject {
 
   func selectHost(_ host: String) {
     isWorkbenchActive = false
+    clearCreatorMode()
     let normalized = HistoryHostNormalizer.normalized(host)
     guard !normalized.isEmpty else { return }
     if selectedHosts == [normalized] {
@@ -3840,6 +4345,8 @@ final class HistoryViewModel: ObservableObject {
   /// 侧边栏"待分类"聚合：一次筛选全部非知名平台的杂项来源。
   /// 再次点击同一组合时取消筛选，与单平台的开关行为一致。
   func selectHosts(_ hosts: [String]) {
+    isWorkbenchActive = false
+    clearCreatorMode()
     let normalized = Set(hosts.map(HistoryHostNormalizer.normalized).filter { !$0.isEmpty })
     guard !normalized.isEmpty else { return }
     if selectedHosts == normalized {
@@ -3850,6 +4357,73 @@ final class HistoryViewModel: ObservableObject {
     selectedScope = .all
     selectedTagNormalizedNames = []
     reload()
+  }
+
+  func enterCreatorDirectory() {
+    isWorkbenchActive = false
+    isCreatorDirectoryActive = true
+    selectedCreatorID = nil
+    selectedCreatorSnapshot = nil
+    selectedHosts = []
+    selectedTagNormalizedNames = []
+    selectedScope = .all
+    searchText = ""
+    reloadCreators()
+  }
+
+  func selectCreator(_ id: CreatorID) {
+    isWorkbenchActive = false
+    isCreatorDirectoryActive = false
+    searchText = ""
+    if selectedCreatorID == id {
+      selectedCreatorID = nil
+      selectedCreatorSnapshot = nil
+    } else {
+      selectedCreatorID = id
+      selectedCreatorSnapshot = navigationCounts.pinnedCreators.first(where: { $0.id == id })
+        ?? creatorDirectoryRows.first(where: { $0.id == id })
+      refreshSelectedCreator()
+    }
+    selectedHosts = []
+    selectedTagNormalizedNames = []
+    selectedScope = .all
+    reload()
+  }
+
+  func handleCreatorAssociationChanged() {
+    reloadNavigationCounts()
+    refreshSelectedCreator()
+    if isCreatorDirectoryActive { reloadCreators() }
+    if selectedCreatorID != nil { reload() }
+  }
+
+  func setCreatorPinned(_ id: CreatorID, pinned: Bool) {
+    guard let history else { return }
+    let generation = configurationGeneration
+    Task { [weak self, worker] in
+      let result = await worker.setCreatorPinned(history, creatorID: id, pinned: pinned)
+      guard let self, generation == self.configurationGeneration else { return }
+      switch result {
+      case .success:
+        self.creatorFailure = nil
+        self.reloadNavigationCounts()
+        self.refreshSelectedCreator()
+        if self.isCreatorDirectoryActive { self.reloadCreators() }
+      case .pinLimit:
+        self.creatorFailure = "最多置顶 5 位博主，请先取消一位再置顶。"
+      case .failure:
+        self.creatorFailure = "无法更新置顶，请稍后重试。"
+      }
+    }
+  }
+
+  func dismissCreatorFailure() { creatorFailure = nil }
+
+  private func clearCreatorMode() {
+    selectedCreatorID = nil
+    selectedCreatorSnapshot = nil
+    isCreatorDirectoryActive = false
+    creatorNextCursor = nil
   }
 
   func addTag(_ rawName: String) {
@@ -4289,6 +4863,7 @@ final class HistoryViewModel: ObservableObject {
 
   func enterWorkbench() {
     isWorkbenchActive = true
+    clearCreatorMode()
     reloadPieces()
     reloadTopicCandidates()
     reloadWritingMethods()
@@ -5429,6 +6004,8 @@ final class HistoryViewModel: ObservableObject {
       }
       reloadAvailableTags()
       reloadNavigationCounts()
+      refreshSelectedCreator()
+      if isCreatorDirectoryActive { reloadCreators() }
     case let .failure(code): deleteErrorCode = code; isDeleteFailurePresented = true
     }
   }
@@ -5574,7 +6151,8 @@ final class HistoryViewModel: ObservableObject {
       tagNames: selectedTagNormalizedNames.sorted(),
       hosts: selectedHosts.sorted(),
       scope: selectedScope,
-      searchText: searchText
+      searchText: searchText,
+      creatorID: selectedCreatorID
     )
   }
 
@@ -5605,6 +6183,73 @@ final class HistoryViewModel: ObservableObject {
         generation: generation,
         reloadsListIfSelectedTagsDisappear: reloadsListIfSelectedTagsDisappear
       )
+    }
+  }
+
+  private func scheduleCreatorSearchReload() {
+    guard history != nil, isCreatorDirectoryActive else { return }
+    creatorSearchTask?.cancel()
+    let generation = configurationGeneration
+    creatorSearchTask = Task { [weak self] in
+      try? await Task.sleep(for: .milliseconds(200))
+      guard !Task.isCancelled, generation == self?.configurationGeneration else { return }
+      self?.reloadCreators()
+    }
+  }
+
+  func reloadCreators() {
+    guard let history, isCreatorDirectoryActive else { return }
+    let generation = configurationGeneration
+    let search = creatorSearchText
+    creatorPageTask?.cancel()
+    isLoadingCreatorPage = true
+    creatorDirectoryLoadFailed = false
+    creatorNextCursor = nil
+    creatorPageTask = Task { [weak self, worker] in
+      let result = await worker.creatorPage(history, cursor: nil, searchText: search)
+      guard let self, !Task.isCancelled, generation == self.configurationGeneration else { return }
+      self.isLoadingCreatorPage = false
+      if case let .success(page) = result {
+        self.creatorDirectoryLoadFailed = false
+        self.creatorDirectoryRows = page.rows
+        self.creatorNextCursor = page.nextCursor
+      } else {
+        self.creatorDirectoryLoadFailed = true
+        self.creatorFailure = "无法载入博主列表，请稍后重试。"
+      }
+    }
+  }
+
+  func refreshSelectedCreator() {
+    guard let history, let id = selectedCreatorID else {
+      selectedCreatorSnapshot = nil
+      return
+    }
+    let generation = configurationGeneration
+    Task { [weak self, worker] in
+      let summary = await worker.creator(history, id: id)
+      guard let self, generation == self.configurationGeneration, self.selectedCreatorID == id else { return }
+      if let summary { self.selectedCreatorSnapshot = summary }
+    }
+  }
+
+  func loadNextCreatorPageIfNeeded(after row: CreatorSummary) {
+    guard isCreatorDirectoryActive,
+          creatorDirectoryRows.last?.id == row.id,
+          let cursor = creatorNextCursor,
+          !isLoadingCreatorPage,
+          let history else { return }
+    let generation = configurationGeneration
+    let search = creatorSearchText
+    isLoadingCreatorPage = true
+    creatorPageTask = Task { [weak self, worker] in
+      let result = await worker.creatorPage(history, cursor: cursor, searchText: search)
+      guard let self, !Task.isCancelled, generation == self.configurationGeneration else { return }
+      self.isLoadingCreatorPage = false
+      if case let .success(page) = result {
+        self.creatorDirectoryRows.append(contentsOf: page.rows)
+        self.creatorNextCursor = page.nextCursor
+      }
     }
   }
 
@@ -5835,6 +6480,52 @@ final class HistoryViewModel: ObservableObject {
         plan.withoutContent += 1
       case .unreadable:
         plan.unreadable += 1
+      }
+    }
+    return plan
+  }
+
+  nonisolated static func batchTranslationState(
+    _ history: HistoryApplicationService,
+    taskID: TaskID,
+    outputLanguage: String
+  ) -> BatchTranslationItemState {
+    guard let detail = try? history.detail(taskID: taskID) else { return .unreadable }
+    if batchTranslationIsTranslated(detail) { return .alreadyTranslated }
+    let body = LayeredSourceDocument.modelInput(from: detail.snapshots)
+    guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      return .withoutContent
+    }
+    guard LayeredSourceDocument.needsTranslation(from: detail.snapshots, outputLanguage: outputLanguage) else {
+      return .sameLanguage
+    }
+    return .needsTranslation(detail)
+  }
+
+  nonisolated static func batchTranslationPlan(
+    _ history: HistoryApplicationService,
+    taskIDs: [TaskID],
+    outputLanguage: String
+  ) -> BatchTranslationPlan {
+    var plan = BatchTranslationPlan()
+    for taskID in taskIDs {
+      switch batchTranslationState(history, taskID: taskID, outputLanguage: outputLanguage) {
+      case let .needsTranslation(detail):
+        plan.pending.append(BatchTranslationPlan.Item(
+          taskID: taskID,
+          title: batchSummaryTitle(for: detail),
+          estimatedInputTokens: batchSummaryEstimatedTokens(
+            in: LayeredSourceDocument.modelInput(from: detail.snapshots)
+          )
+        ))
+      case .alreadyTranslated:
+        plan.alreadyTranslated += 1
+      case .withoutContent:
+        plan.withoutContent += 1
+      case .unreadable:
+        plan.unreadable += 1
+      case .sameLanguage:
+        plan.sameLanguage += 1
       }
     }
     return plan

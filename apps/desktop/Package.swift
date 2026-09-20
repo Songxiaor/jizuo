@@ -10,6 +10,7 @@ let package = Package(
     .library(name: "LinkDigestTransport", targets: ["LinkDigestTransport"]),
     .library(name: "LinkDigestPersistence", targets: ["LinkDigestPersistence"]),
     .executable(name: "LinkDigestApp", targets: ["LinkDigestApp"]),
+    .executable(name: "LinkDigestMCP", targets: ["LinkDigestMCP"]),
     .executable(name: "LinkDigestNativeHost", targets: ["LinkDigestNativeHost"]),
     .executable(name: "LinkDigestHistoryBenchmark", targets: ["LinkDigestHistoryBenchmark"]),
     .executable(name: "LinkDigestManualSampleVerifier", targets: ["LinkDigestManualSampleVerifier"]),
@@ -18,13 +19,23 @@ let package = Package(
   ],
   dependencies: [
     .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1"),
-    .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.5")
+    .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.5"),
+    .package(path: "../../packages/LinkDigestShared"),
   ],
   targets: [
-  .target(name: "LinkDigestCore", resources: [.copy("Resources")]),
+  .target(
+    name: "LinkDigestCore",
+    dependencies: [
+      .product(name: "LinkDigestShared", package: "LinkDigestShared"),
+    ],
+    resources: [.copy("Resources")]
+  ),
   .target(
     name: "LinkDigestAdapters",
-    dependencies: ["LinkDigestCore"],
+    dependencies: [
+      "LinkDigestCore",
+      .product(name: "LinkDigestShared", package: "LinkDigestShared"),
+    ],
     linkerSettings: [
       .linkedFramework("Security"),
       .linkedFramework("CFNetwork"),
@@ -35,20 +46,32 @@ let package = Package(
     ]
   ),
   .target(name: "LinkDigestTransport", dependencies: ["LinkDigestCore"]),
+  .target(name: "LinkDigestMCPKit"),
+  .executableTarget(name: "LinkDigestMCP", dependencies: ["LinkDigestMCPKit", "LinkDigestTransport"]),
+  .testTarget(name: "LinkDigestMCPKitTests", dependencies: ["LinkDigestMCPKit"]),
   .target(
     name: "LinkDigestPersistence",
-    dependencies: ["LinkDigestCore", .product(name: "GRDB", package: "GRDB.swift")]
+    dependencies: [
+      "LinkDigestCore",
+      .product(name: "GRDB", package: "GRDB.swift"),
+      .product(name: "LinkDigestShared", package: "LinkDigestShared"),
+    ]
   ),
   .executableTarget(
     name: "LinkDigestApp",
     dependencies: [
+      "LinkDigestMCPKit",
       "LinkDigestCore",
       "LinkDigestAdapters",
       "LinkDigestTransport",
       "LinkDigestPersistence",
+      .product(name: "LinkDigestShared", package: "LinkDigestShared"),
       .product(name: "Sparkle", package: "Sparkle"),
     ],
-    linkerSettings: [.linkedFramework("AVKit")]
+    linkerSettings: [
+      .linkedFramework("AVKit"),
+      .linkedFramework("CloudKit"),
+    ]
   ),
   .executableTarget(name: "LinkDigestNativeHost", dependencies: ["LinkDigestCore", "LinkDigestTransport"]),
   .executableTarget(
@@ -65,15 +88,15 @@ let package = Package(
     name: "LinkDigestLoopV1Verifier",
     dependencies: ["LinkDigestCore", "LinkDigestAdapters", "LinkDigestPersistence"]
   ),
-  .testTarget(name: "LinkDigestCoreTests", dependencies: ["LinkDigestCore"]),
+  .testTarget(name: "LinkDigestCoreTests", dependencies: ["LinkDigestCore", .product(name: "LinkDigestShared", package: "LinkDigestShared")]),
   .testTarget(
     name: "LinkDigestAdaptersTests",
     dependencies: ["LinkDigestAdapters"],
     resources: [.copy("Fixtures")],
     linkerSettings: [.linkedFramework("Network")]
   ),
-  .testTarget(name: "LinkDigestAppTests", dependencies: ["LinkDigestApp", "LinkDigestAdapters", "LinkDigestCore", "LinkDigestPersistence"]),
+  .testTarget(name: "LinkDigestAppTests", dependencies: ["LinkDigestApp", "LinkDigestAdapters", "LinkDigestCore", "LinkDigestPersistence", .product(name: "LinkDigestShared", package: "LinkDigestShared")]),
   .testTarget(name: "LinkDigestNativeHostTests", dependencies: ["LinkDigestNativeHost"]),
   .testTarget(name: "LinkDigestTransportTests", dependencies: ["LinkDigestTransport"]),
-  .testTarget(name: "LinkDigestPersistenceTests", dependencies: ["LinkDigestCore", "LinkDigestPersistence", .product(name: "GRDB", package: "GRDB.swift")])
+  .testTarget(name: "LinkDigestPersistenceTests", dependencies: ["LinkDigestCore", "LinkDigestPersistence", .product(name: "GRDB", package: "GRDB.swift"), .product(name: "LinkDigestShared", package: "LinkDigestShared")])
 ])

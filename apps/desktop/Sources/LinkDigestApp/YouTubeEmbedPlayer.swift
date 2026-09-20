@@ -114,7 +114,7 @@ struct YouTubeEmbedPlayerCard: View {
                   .accessibilityIdentifier("history-youtube-embed-diagnostic")
               }
             }
-            .onTapGesture(count: 2) { cinema.present(videoID: videoID) }
+            .onTapGesture(count: 2) { if !cinema.isPresented { cinema.present(videoID: videoID) } }
         }
       }
       .aspectRatio(16.0 / 9.0, contentMode: .fit)
@@ -264,23 +264,56 @@ private struct YouTubeEmbedPosterView: View {
   func dismiss() { content = nil }
 }
 
+/// 双击监视器注册方的身份：卡片层（双击放大）还是影院 overlay（双击关闭）。
+enum VideoCinemaDoubleClickRole {
+  case card
+  case cinema
+}
+
+/// 「这一次双击该不该由我响应」的判定。
+///
+/// 只看三件事：注册方身份、事件点击次数、影院当前是否已展开——不碰任何 AppKit
+/// 视图状态，所以「两层不会同时响应」这条不变量能直接用纯函数单测钉死。
+///
+/// 根因：影院打开后，卡片那一层虽被 overlay 盖住，却仍在视图树里活着，两层各自的
+/// 本地监视器都会命中同一次双击——一个把影院推上去、另一个又把它关掉。给每层一个
+/// role 后，card 只在影院未展开时响应（双击 = 放大），cinema 只在影院已展开时响应
+/// （双击 = 关闭），两者互斥。
+enum VideoCinemaDoubleClickDecision {
+  static func shouldRespond(
+    role: VideoCinemaDoubleClickRole,
+    clickCount: Int,
+    isCinemaPresented: Bool
+  ) -> Bool {
+    guard clickCount == 2 else { return false }
+    switch role {
+    case .card: return !isCinemaPresented
+    case .cinema: return isCinemaPresented
+    }
+  }
+}
+
 /// 不抢单击：AVPlayerView 的播放、进度条继续可用。
 /// 只在本视图范围内监听双击，用来进出影院。
 struct VideoCinemaDoubleClickCatcher: NSViewRepresentable {
   var action: () -> Void
+  var role: VideoCinemaDoubleClickRole = .card
 
   func makeNSView(context: Context) -> MonitorView {
     let view = MonitorView()
     view.action = action
+    view.role = role
     return view
   }
 
   func updateNSView(_ nsView: MonitorView, context: Context) {
     nsView.action = action
+    nsView.role = role
   }
 
   final class MonitorView: NSView {
     var action: (() -> Void)?
+    var role: VideoCinemaDoubleClickRole = .card
     private var monitor: Any?
 
     override var acceptsFirstResponder: Bool { false }
@@ -295,7 +328,11 @@ struct VideoCinemaDoubleClickCatcher: NSViewRepresentable {
       guard monitor == nil else { return }
       monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { [weak self] event in
         guard let self,
-              event.clickCount == 2,
+              VideoCinemaDoubleClickDecision.shouldRespond(
+                role: self.role,
+                clickCount: event.clickCount,
+                isCinemaPresented: VideoCinemaController.shared.isPresented
+              ),
               let window = self.window,
               event.window === window,
               self.bounds.width > 0,
@@ -318,9 +355,12 @@ struct VideoCinemaDoubleClickCatcher: NSViewRepresentable {
 }
 
 extension View {
-  func videoCinemaDoubleClick(_ action: @escaping () -> Void) -> some View {
+  func videoCinemaDoubleClick(
+    role: VideoCinemaDoubleClickRole = .card,
+    _ action: @escaping () -> Void
+  ) -> some View {
     background(
-      VideoCinemaDoubleClickCatcher(action: action).allowsHitTesting(false)
+      VideoCinemaDoubleClickCatcher(action: action, role: role).allowsHitTesting(false)
     )
   }
 }
@@ -393,7 +433,7 @@ struct VideoCinemaOverlay: View {
               case let .player(player, _):
                 VideoPlayer(player: player)
                   .linkDigestVideoSurface(player: player)
-                  .videoCinemaDoubleClick { cinema.dismiss() }
+                  .videoCinemaDoubleClick(role: .cinema) { cinema.dismiss() }
               }
             }
             .frame(width: fitted.width, height: fitted.height)

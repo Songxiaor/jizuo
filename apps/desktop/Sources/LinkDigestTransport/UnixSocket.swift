@@ -90,6 +90,14 @@ public final class UnixSocketServer: @unchecked Sendable {
     return FileHandle(fileDescriptor: client, closeOnDealloc: true)
   }
 
+  /// Same-uid local peer. Rejects other users on a shared Mac.
+  public static func peerIsCurrentUser(_ client: FileHandle) -> Bool {
+    var uid: uid_t = 0
+    var gid: gid_t = 0
+    guard getpeereid(client.fileDescriptor, &uid, &gid) == 0 else { return false }
+    return uid == geteuid()
+  }
+
   /// Idempotently closes this server and removes only its exact socket node.
   public func stop() {
     let owned = lock.withLock { () -> (Int32, Int32, SocketNodeIdentity?) in

@@ -1,7 +1,7 @@
 import Foundation
 
 public enum ManualLinkError: Error, Sendable, Equatable {
-  case invalidURL, unsafeURL, webHostNotAllowed, invalidPageResult, proxyHTTPSRequired, proxyAuthenticationRequired, fakeIPProxyUnavailable, proxyTLSValidation, responseStatus, unsupportedContentType, responseTooLarge, timedOut, emptyContent, loginRequired, verificationRequired, extensionCaptureRequired, githubRepositoryUnavailable, githubRateLimited, cancelled, network
+  case invalidURL, unsafeURL, webHostNotAllowed, invalidPageResult, proxyHTTPSRequired, proxyAuthenticationRequired, fakeIPProxyUnavailable, proxyTLSValidation, responseStatus, unsupportedContentType, responseTooLarge, timedOut, emptyContent, loginRequired, shareLinkExpired, verificationRequired, extensionCaptureRequired, githubRepositoryUnavailable, githubRateLimited, cancelled, network
 
   public var userMessage: String {
     switch self {
@@ -19,6 +19,7 @@ public enum ManualLinkError: Error, Sendable, Equatable {
     case .timedOut: "读取网页超时，请稍后重试或使用浏览器扩展。"
     case .emptyContent: "没有提取到可总结的正文，请尝试浏览器扩展。"
     case .loginRequired: "该页面需要已登录的浏览器内容，请使用浏览器扩展。"
+    case .shareLinkExpired: "这条分享链接已失效（小红书的 xsec_token 有时效），请在小红书 App 里重新复制分享链接。"
     case .verificationRequired: "该页面需要登录或人机验证，请使用浏览器扩展捕获。"
     case .extensionCaptureRequired: "请在浏览器打开后用扩展发送。"
     case .githubRepositoryUnavailable: "仓库不存在或不是公开仓库。"

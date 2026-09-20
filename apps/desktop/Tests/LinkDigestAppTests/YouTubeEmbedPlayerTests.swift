@@ -51,4 +51,33 @@ final class YouTubeEmbedPlayerTests: XCTestCase {
     // 封面点击是创建播放器的唯一卡内入口；影院入口同样是显式按钮手势。
     XCTAssertTrue(source.contains("YouTubeEmbedPosterView(videoID: videoID) { isPlayerRequested = true }"))
   }
+
+    /// 双层双击互斥：影院打开后卡片层仍在视图树里，两层各自的本地监视器会收到同一次
+    /// 双击——只有 role 与影院当前状态匹配的那一层才该响应，否则同一个双击会又开又关。
+    func testCinemaDoubleClickLayersAreMutuallyExclusive() {
+      // 影院未展开：卡片层响应（双击 = 放大），影院层不响应。
+      XCTAssertTrue(VideoCinemaDoubleClickDecision.shouldRespond(
+        role: .card, clickCount: 2, isCinemaPresented: false))
+      XCTAssertFalse(VideoCinemaDoubleClickDecision.shouldRespond(
+        role: .cinema, clickCount: 2, isCinemaPresented: false))
+      // 影院已展开：影院层响应（双击 = 关闭），卡片层不响应。
+      XCTAssertFalse(VideoCinemaDoubleClickDecision.shouldRespond(
+        role: .card, clickCount: 2, isCinemaPresented: true))
+      XCTAssertTrue(VideoCinemaDoubleClickDecision.shouldRespond(
+        role: .cinema, clickCount: 2, isCinemaPresented: true))
+      // 任意影院状态下，两层都「有且仅有一层」响应。
+      for presented in [false, true] {
+        let card = VideoCinemaDoubleClickDecision.shouldRespond(
+          role: .card, clickCount: 2, isCinemaPresented: presented)
+        let cinema = VideoCinemaDoubleClickDecision.shouldRespond(
+          role: .cinema, clickCount: 2, isCinemaPresented: presented)
+        XCTAssertFalse(card && cinema, "presented=\(presented) 时两层不应同时响应")
+        XCTAssertTrue(card || cinema, "presented=\(presented) 时应有且仅有一层响应")
+      }
+      // 非双击（单击/三击）一律不响应。
+      XCTAssertFalse(VideoCinemaDoubleClickDecision.shouldRespond(
+        role: .card, clickCount: 1, isCinemaPresented: false))
+      XCTAssertFalse(VideoCinemaDoubleClickDecision.shouldRespond(
+        role: .cinema, clickCount: 1, isCinemaPresented: true))
+    }
 }

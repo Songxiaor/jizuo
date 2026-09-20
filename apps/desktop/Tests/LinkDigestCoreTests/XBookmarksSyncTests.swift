@@ -69,6 +69,23 @@ final class XBookmarksSyncTests: XCTestCase {
     ))) { XCTAssertEqual($0 as? CaptureValidationError, .CAPTURE_SCHEMA_INVALID) }
   }
 
+  func testTweetIDTreatsIStatusAndHandleStatusAsTheSameTweet() {
+    XCTAssertEqual(
+      XBookmarksSyncRequest.tweetID(fromCanonicalURL: "https://x.com/i/status/1234567890123"),
+      "1234567890123"
+    )
+    XCTAssertEqual(
+      XBookmarksSyncRequest.tweetID(fromCanonicalURL: "https://x.com/alice/status/1234567890123"),
+      "1234567890123"
+    )
+    XCTAssertEqual(
+      XBookmarksSyncRequest.tweetID(fromCanonicalURL: "https://www.twitter.com/a/status/1234567890123?s=20"),
+      "1234567890123"
+    )
+    XCTAssertNil(XBookmarksSyncRequest.tweetID(fromCanonicalURL: "https://x.com/alice"))
+    XCTAssertNil(XBookmarksSyncRequest.tweetID(fromCanonicalURL: "https://example.com/a/status/1234567890123"))
+  }
+
   func testNativeResponseRoundTripsBookmarksLookup() throws {
     let response = NativeResponse.bookmarksLookup(
       version: 1,

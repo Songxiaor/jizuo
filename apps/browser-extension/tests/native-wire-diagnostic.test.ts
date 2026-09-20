@@ -72,9 +72,20 @@ describe("native wire excludes popup-only metadata diagnostics", () => {
       { name: "fresh-retry", text: "Fresh retry body" },
     ] as const;
     let captureIndex = 0;
-    const executeScript = vi.fn(async (injection: { world?: string }) => {
+    const executeScript = vi.fn(async (injection: { world?: string; func?: unknown }) => {
       const current = cases[captureIndex]!;
       if (injection.world === "MAIN") {
+        const source = String(injection.func ?? "");
+        // Playback recovery may now run when DOM media is missing. Keep these
+        // wire cases on their original V1/V2 envelopes by refusing recovery.
+        // Metadata MAIN injects also read __INITIAL_STATE__, so discriminate by
+        // playback-only markers instead of that shared token.
+        if (source.includes("/aweme/v1/web/aweme/detail/")) {
+          return [{ result: { ok: false } }];
+        }
+        if (source.includes("play_addr") && source.includes("bit_rate")) {
+          return [{ result: { ok: false } }];
+        }
         captureIndex += 1;
         return [{ result: { metadata: null, diagnostic: ssrDiagnostic() } }];
       }
@@ -121,6 +132,8 @@ describe("native wire excludes popup-only metadata diagnostics", () => {
         awemeId: id, title: "ordinary", author: null, description: oversized,
         pageURL: `https://www.douyin.com/video/${id}`, metadataDiagnostic: metadataDiagnostic(),
       } }])
+      .mockResolvedValueOnce([{ result: { ok: false } }])
+      .mockResolvedValueOnce([{ result: { ok: false } }])
       .mockResolvedValueOnce([{ result: { metadata: null, diagnostic: ssrDiagnostic() } }]);
     const sendNativeMessage = vi.fn();
     vi.stubGlobal("browser", {

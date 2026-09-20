@@ -1,8 +1,11 @@
 import Foundation
 import GRDB
 import LinkDigestCore
+import LinkDigestShared
 
 public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable {
+  /// Chinese substring search stays on LIKE until captured text exceeds this.
+  public static let searchFullScanByteBudget = 16 * 1024 * 1024
   public let database: LocalDatabase
   private let fingerprinter: any CaptureFingerprinting
   public var accessMode: HistoryRepositoryAccessMode { database.accessMode }
@@ -113,6 +116,17 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  public func taskID(forCanonicalURL canonicalURL: CanonicalURL) throws -> TaskID? {
+    try database.read { db in
+      guard let raw: String = try String.fetchOne(
+        db,
+        sql: "SELECT id FROM tasks WHERE canonicalization_version = 1 AND canonical_url = ?",
+        arguments: [canonicalURL.value]
+      ) else { return nil }
+      return requiredID(raw)
+    }
+  }
+
   public func containsCanonicalURL(_ canonicalURL: CanonicalURL) throws -> Bool {
     try database.read { db in
       // Do not page through history rows for clipboard dedupe: this is the
@@ -122,6 +136,25 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         sql: "SELECT EXISTS(SELECT 1 FROM tasks WHERE canonicalization_version = ? AND canonical_url = ?)",
         arguments: [CanonicalURL.version, canonicalURL.value]
       ) ?? false
+    }
+  }
+
+  public func existingXTweetIDs(in tweetIDs: Set<String>) throws -> Set<String> {
+    guard !tweetIDs.isEmpty else { return [] }
+    return try database.read { db in
+      let urls = try String.fetchAll(
+        db,
+        sql: """
+          SELECT canonical_url FROM tasks
+          WHERE canonicalization_version = ?
+            AND (
+              canonical_url LIKE 'https://x.com/%/status/%'
+              OR canonical_url LIKE 'https://twitter.com/%/status/%'
+            )
+          """,
+        arguments: [CanonicalURL.version]
+      )
+      return Set(urls.compactMap(XBookmarksSyncRequest.tweetID(fromCanonicalURL:))).intersection(tweetIDs)
     }
   }
 
@@ -241,6 +274,31 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  public func closeStorage() throws {
+    try database.checkpointAndClose()
+  }
+
+  public func companionSyncCards(pageSize: Int) throws -> [SyncNoteCard] {
+    let bounded = min(max(pageSize, 1), 200)
+    var cards: [SyncNoteCard] = []
+    var cursor: HistoryPageCursor?
+    repeat {
+      let page = try historyPage(limit: bounded, after: cursor, filter: .companionSyncable)
+      let ids = page.rows.map(\.taskID)
+      if !ids.isEmpty {
+        let batch = try database.read { db in
+          try ids.compactMap { id -> SyncNoteCard? in
+            let detail = try self.detail(db: db, taskID: id)
+            return HistorySyncNoteCardMapping.card(from: detail)
+          }
+        }
+        cards.append(contentsOf: batch)
+      }
+      cursor = page.nextCursor
+    } while cursor != nil
+    return cards
+  }
+
   public func historyPage(limit: Int, after cursor: HistoryPageCursor?) throws -> HistoryPage {
     try historyPage(limit: limit, after: cursor, filter: .none)
   }
@@ -277,6 +335,15 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         predicates.append("\(normalizedHost) IN (\(placeholders))")
         for host in filter.hosts { arguments += [host] }
       }
+      if let creatorID = filter.creatorID {
+        predicates.append("""
+          EXISTS (
+            SELECT 1 FROM creator_works cw
+            WHERE cw.task_id = t.id AND cw.creator_id = ?
+          )
+          """)
+        arguments += [creatorID.rawValue]
+      }
       // 笔记是独立区域：除了 `.notes` 自己，其余作用域一律把它排除。
       //
       // 抓来的资料和自己写的东西混在一张列表里，找素材时会被自己的草稿打断，
@@ -292,6 +359,9 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         predicates.append(draftPredicate)
       } else if filter.scope.isWorksOnly {
         predicates.append(workPredicate)
+      } else if filter.scope == .companionSync {
+        predicates.append("NOT (\(draftPredicate))")
+        predicates.append("NOT (\(workPredicate))")
       } else {
         predicates.append("NOT (\(draftPredicate))")
         // 成品和笔记同样待遇:浏览时归自己那一区,搜索时可达——
@@ -307,7 +377,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       // 想不起来东西在哪才用的。要求他先答对「这句话我是写在笔记里还是存的
       // 网页」才肯给结果，等于把搜索最该解决的问题反过来当成前提。
       switch filter.scope {
-      case .all, .notes, .drafts, .works:
+      case .all, .notes, .drafts, .works, .companionSync:
         break
       case .favorite:
         predicates.append("t.is_favorite = 1")
@@ -335,14 +405,25 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         // 作者不必单独加一列：抓取时写进正文 frontmatter 的 `author:` 行，
         // 搜正文自然覆盖。多加一个 LIKE 只会多一次全表扫描而不多命中任何东西。
         //
-        // 用 LIKE 全扫而不是上 FTS：本机全部正文合计 185 KB，扫一遍是毫秒级。
-        // 涨到几十 MB 之前都不必引入虚拟表和它的索引维护。
-        predicates.append("""
+        // 中文子串不能靠 FTS5 unicode61 替代。LIKE 全扫保留到
+        // `searchFullScanByteBudget`；超过预算时仍搜标题/URL/标签，
+        // 但不再扫全文和产物，避免按键搜索卡死。FTS 是后续迁移，不是现在。
+        let capturedBytes = (try Int.fetchOne(db, sql: "SELECT COALESCE(SUM(length(body_text)), 0) FROM content_snapshots") ?? 0)
+        let scanBodies = capturedBytes <= Self.searchFullScanByteBudget
+        var searchClause = """
           (
             t.canonical_url LIKE ? ESCAPE '\\'
             OR COALESCE(es.title, '') LIKE ? ESCAPE '\\'
             OR COALESCE(es.source_label, '') LIKE ? ESCAPE '\\'
+          """
+        arguments += [pattern, pattern, pattern]
+        if scanBodies {
+          searchClause += """
             OR COALESCE(es.body_text, '') LIKE ? ESCAPE '\\'
+          """
+          arguments += [pattern]
+        }
+        searchClause += """
             OR EXISTS (
               SELECT 1 FROM task_tags stt
               INNER JOIN tags stg ON stg.id = stt.tag_id
@@ -352,20 +433,23 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
                   OR stg.normalized_name LIKE ? ESCAPE '\\'
                 )
             )
+          """
+        arguments += [pattern, pattern]
+        if scanBodies {
+          searchClause += """
             OR EXISTS (
-              -- 总结、翻译、整理稿也要能搜到：记住的常常是总结里的一句话，
-              -- 而不是原文的措辞。
-              --
-              -- 用 EXISTS 遍历这条目的全部产物，而不是复用外面那个 `a`——
-              -- 那个只 JOIN 最近一次运行，先总结后翻译时搜总结就会漏。
               SELECT 1 FROM runs sr
               INNER JOIN artifacts sa ON sa.run_id = sr.id
               WHERE sr.task_id = t.id
                 AND sa.body_text LIKE ? ESCAPE '\\'
             )
+          """
+          arguments += [pattern]
+        }
+        searchClause += """
           )
-          """)
-        arguments += [pattern, pattern, pattern, pattern, pattern, pattern, pattern]
+          """
+        predicates.append(searchClause)
       }
       let predicate = predicates.isEmpty ? "" : "WHERE \(predicates.joined(separator: " AND "))"
       arguments += [bounded]
@@ -490,7 +574,227 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           let count: Int = row["count"]
           return .init(tag: tag, count: count)
         }
-      return .init(all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, notes: notes, works: works, platforms: platforms, tags: tags)
+      let creatorCount = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM creators") ?? 0
+      let pinnedCreators = try loadCreatorSummaries(
+        db: db,
+        sql: """
+          SELECT \(Self.creatorSelectSQL)
+          FROM creators c
+          WHERE c.pinned_rank IS NOT NULL
+          ORDER BY c.pinned_rank ASC, c.id ASC
+          """,
+        arguments: []
+      )
+      return .init(
+        all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, notes: notes, works: works,
+        platforms: platforms, tags: tags, creatorCount: creatorCount, pinnedCreators: pinnedCreators
+      )
+    }
+  }
+
+  public func upsertCreator(_ command: UpsertCreatorCommand) throws -> CreatorSummary {
+    try database.write { db in
+      let id = CreatorID()
+      try db.execute(
+        sql: """
+          INSERT INTO creators (
+            id, platform, author_id, profile_url, display_name, avatar_url, pinned_rank, created_at_ms, updated_at_ms
+          ) VALUES (?, ?, ?, ?, ?, ?, NULL, ?, ?)
+          ON CONFLICT(platform, author_id) DO UPDATE SET
+            display_name = CASE
+              WHEN excluded.display_name IS NOT NULL THEN excluded.display_name
+              ELSE creators.display_name
+            END,
+            avatar_url = CASE
+              WHEN excluded.avatar_url IS NOT NULL THEN excluded.avatar_url
+              ELSE creators.avatar_url
+            END,
+            profile_url = excluded.profile_url,
+            updated_at_ms = excluded.updated_at_ms
+          """,
+        arguments: [
+          id.rawValue,
+          command.identity.platform,
+          command.identity.authorID,
+          command.profileURL,
+          command.displayName,
+          command.avatarURL,
+          command.nowMilliseconds,
+          command.nowMilliseconds,
+        ]
+      )
+      guard let creator = try loadCreatorSummary(
+        db: db,
+        platform: command.identity.platform,
+        authorID: command.identity.authorID
+      ) else {
+        throw RepositoryFailure.integrityCheckFailed
+      }
+      return creator
+    }
+  }
+
+  public func attachCreatorWork(creatorID: CreatorID, taskID: TaskID) throws {
+    try database.write { db in
+      try attachCreatorWorkLocked(db: db, creatorID: creatorID, taskID: taskID)
+    }
+  }
+
+  public func attachCreatorWorks(creatorID: CreatorID, canonicalURLs: [String]) throws -> AttachCreatorWorksResult {
+    try database.write { db in
+      guard try Int.fetchOne(db, sql: "SELECT 1 FROM creators WHERE id = ?", arguments: [creatorID.rawValue]) == 1 else {
+        throw RepositoryFailure.notFound
+      }
+      var attached: [TaskID] = []
+      var unmatched: [String] = []
+      var seen = Set<String>()
+      for raw in canonicalURLs {
+        guard let canonical = try? CanonicalURL(raw) else {
+          unmatched.append(raw)
+          continue
+        }
+        guard seen.insert(canonical.value).inserted else { continue }
+        guard let rawID: String = try String.fetchOne(
+          db,
+          sql: "SELECT id FROM tasks WHERE canonicalization_version = 1 AND canonical_url = ?",
+          arguments: [canonical.value]
+        ), let taskID = TaskID(rawID) else {
+          unmatched.append(canonical.value)
+          continue
+        }
+        try attachCreatorWorkLocked(db: db, creatorID: creatorID, taskID: taskID)
+        attached.append(taskID)
+      }
+      return .init(attachedTaskIDs: attached, unmatchedCanonicalURLs: unmatched)
+    }
+  }
+
+  public func setCreatorPinned(creatorID: CreatorID, pinned: Bool) throws {
+    try database.write { db in
+      guard let row = try Row.fetchOne(
+        db,
+        sql: "SELECT pinned_rank FROM creators WHERE id = ?",
+        arguments: [creatorID.rawValue]
+      ) else {
+        throw RepositoryFailure.notFound
+      }
+      let currentRank: Int? = row["pinned_rank"]
+      if pinned {
+        if currentRank != nil { return }
+        let count = try Int.fetchOne(
+          db,
+          sql: "SELECT COUNT(*) FROM creators WHERE pinned_rank IS NOT NULL"
+        ) ?? 0
+        guard count < CreatorDisplay.maximumPinnedCount else { throw RepositoryFailure.invalidInput }
+        let used = Set(try Int.fetchAll(db, sql: "SELECT pinned_rank FROM creators WHERE pinned_rank IS NOT NULL"))
+        guard let rank = (1...CreatorDisplay.maximumPinnedCount).first(where: { !used.contains($0) }) else {
+          throw RepositoryFailure.invalidInput
+        }
+        try db.execute(
+          sql: "UPDATE creators SET pinned_rank = ? WHERE id = ?",
+          arguments: [rank, creatorID.rawValue]
+        )
+      } else if currentRank != nil {
+        try db.execute(
+          sql: "UPDATE creators SET pinned_rank = NULL WHERE id = ?",
+          arguments: [creatorID.rawValue]
+        )
+      }
+    }
+  }
+
+  public func creatorPage(limit: Int, after cursor: CreatorPageCursor?, searchText: String) throws -> CreatorPage {
+    let bounded = min(max(limit, 1), 200)
+    return try database.read { db in
+      var arguments: StatementArguments = []
+      var predicates: [String] = []
+      if let cursor {
+        let pinFlag = cursor.pinnedRank == nil ? 1 : 0
+        predicates.append("""
+          (
+            CASE WHEN c.pinned_rank IS NULL THEN 1 ELSE 0 END > ?
+            OR (
+              CASE WHEN c.pinned_rank IS NULL THEN 1 ELSE 0 END = ?
+              AND (
+                (
+                  c.pinned_rank IS NOT NULL AND ? IS NOT NULL AND (
+                    c.pinned_rank > ?
+                    OR (
+                      c.pinned_rank = ?
+                      AND (c.updated_at_ms < ? OR (c.updated_at_ms = ? AND c.id < ?))
+                    )
+                  )
+                )
+                OR (
+                  c.pinned_rank IS NULL AND ? IS NULL AND (
+                    c.updated_at_ms < ? OR (c.updated_at_ms = ? AND c.id < ?)
+                  )
+                )
+              )
+            )
+          )
+          """)
+        arguments += [
+          pinFlag,
+          pinFlag,
+          cursor.pinnedRank,
+          cursor.pinnedRank ?? 0,
+          cursor.pinnedRank ?? 0,
+          cursor.updatedAtMilliseconds,
+          cursor.updatedAtMilliseconds,
+          cursor.creatorID.rawValue,
+          cursor.pinnedRank,
+          cursor.updatedAtMilliseconds,
+          cursor.updatedAtMilliseconds,
+          cursor.creatorID.rawValue,
+        ]
+      }
+      let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+      if !query.isEmpty {
+        predicates.append("""
+          (
+            IFNULL(c.display_name, '') LIKE ? ESCAPE '\\'
+            OR c.author_id LIKE ? ESCAPE '\\'
+            OR c.profile_url LIKE ? ESCAPE '\\'
+          )
+          """)
+        let pattern = "%\(escapedLikePattern(query))%"
+        arguments += [pattern, pattern, pattern]
+      }
+      let whereSQL = predicates.isEmpty ? "" : "WHERE " + predicates.joined(separator: " AND ")
+      arguments += [bounded + 1]
+      let rows = try loadCreatorSummaries(
+        db: db,
+        sql: """
+          SELECT \(Self.creatorSelectSQL)
+          FROM creators c
+          \(whereSQL)
+          ORDER BY (c.pinned_rank IS NULL) ASC, c.pinned_rank ASC, c.updated_at_ms DESC, c.id DESC
+          LIMIT ?
+          """,
+        arguments: arguments
+      )
+      let page = Array(rows.prefix(bounded))
+      let next: CreatorPageCursor? = rows.count > bounded
+        ? page.last.map {
+          .init(pinnedRank: $0.pinnedRank, updatedAtMilliseconds: $0.updatedAtMilliseconds, creatorID: $0.id)
+        }
+        : nil
+      return .init(rows: page, nextCursor: next)
+    }
+  }
+
+  public func creator(id: CreatorID) throws -> CreatorSummary? {
+    try database.read { db in
+      try loadCreatorSummaries(
+        db: db,
+        sql: """
+          SELECT \(Self.creatorSelectSQL)
+          FROM creators c
+          WHERE c.id = ?
+          """,
+        arguments: [id.rawValue]
+      ).first
     }
   }
 
@@ -1891,6 +2195,76 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
     let joined = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     return joined.isEmpty ? nil : String(joined.prefix(240))
+  }
+
+  private static let creatorSelectSQL = """
+    c.id, c.platform, c.author_id, c.profile_url, c.display_name, c.avatar_url, c.pinned_rank,
+    c.created_at_ms, c.updated_at_ms,
+    (
+      SELECT COUNT(*) FROM creator_works w WHERE w.creator_id = c.id
+    ) AS saved_work_count
+    """
+
+  private func attachCreatorWorkLocked(db: Database, creatorID: CreatorID, taskID: TaskID) throws {
+    guard try Int.fetchOne(db, sql: "SELECT 1 FROM creators WHERE id = ?", arguments: [creatorID.rawValue]) == 1 else {
+      throw RepositoryFailure.notFound
+    }
+    guard try Int.fetchOne(db, sql: "SELECT 1 FROM tasks WHERE id = ?", arguments: [taskID.rawValue]) == 1 else {
+      throw RepositoryFailure.notFound
+    }
+    if let existing: String = try String.fetchOne(
+      db,
+      sql: "SELECT creator_id FROM creator_works WHERE task_id = ?",
+      arguments: [taskID.rawValue]
+    ) {
+      if existing == creatorID.rawValue { return }
+      throw RepositoryFailure.invalidInput
+    }
+    try db.execute(
+      sql: "INSERT INTO creator_works (creator_id, task_id) VALUES (?, ?)",
+      arguments: [creatorID.rawValue, taskID.rawValue]
+    )
+  }
+
+  private func loadCreatorSummary(db: Database, platform: String, authorID: String) throws -> CreatorSummary? {
+    try loadCreatorSummaries(
+      db: db,
+      sql: """
+        SELECT \(Self.creatorSelectSQL)
+        FROM creators c
+        WHERE c.platform = ? AND c.author_id = ?
+        """,
+      arguments: [platform, authorID]
+    ).first
+  }
+
+  private func loadCreatorSummaries(db: Database, sql: String, arguments: StatementArguments) throws -> [CreatorSummary] {
+    try Row.fetchAll(db, sql: sql, arguments: arguments).compactMap(makeCreatorSummary)
+  }
+
+  private func makeCreatorSummary(_ row: Row) -> CreatorSummary? {
+    let rawID: String = row["id"]
+    let platform: String = row["platform"]
+    let authorID: String = row["author_id"]
+    guard let id = CreatorID(rawID),
+          let identity = CreatorIdentity(platform: platform, authorID: authorID)
+    else { return nil }
+    let name: String? = row["display_name"]
+    let avatar: String? = row["avatar_url"]
+    let rank: Int? = row["pinned_rank"]
+    let saved: Int = row["saved_work_count"] ?? 0
+    let profileURL: String = row["profile_url"]
+    return .init(
+      id: id,
+      identity: identity,
+      profileURL: profileURL,
+      displayName: name,
+      avatarURL: avatar,
+      pinnedRank: rank,
+      savedWorkCount: saved,
+      createdAtMilliseconds: row["created_at_ms"],
+      updatedAtMilliseconds: row["updated_at_ms"]
+    )
   }
 
   private func historyRow(_ row: Row) throws -> HistoryRowProjection {

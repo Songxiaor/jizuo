@@ -159,7 +159,6 @@ struct InlineArticleImageView: View {
           .frame(maxWidth: 480)
           .frame(height: 180)
           .overlay(ProgressView().controlSize(.small))
-          .task { await load() }
       }
     }
     // 卡片收窄后与正文、标题共用同一条左边界，不在阅读流里飘。
@@ -167,19 +166,29 @@ struct InlineArticleImageView: View {
     // 画廊的行距由网格 spacing 统一给，格子自己不再加尾距。
     .padding(.bottom, layout == .gallery ? 0 : 18)
     .accessibilityIdentifier("history-content-inline-image")
+    // 详情切换时 SwiftUI 会按段落下标复用这个视图。只在 image == nil 时
+    // `.task` 会让上一篇的位图一直留在 @State 里——Warp 文里看到 JSON 文封面
+    // 就是这么来的。按 url 重载，并在换源时先清空，绝不展示错图。
+    .task(id: url) {
+      image = nil
+      await load()
+    }
   }
 
   private func load() async {
-    if let cached = InlineImageMemoryCache.image(for: url) {
+    let target = url
+    if let cached = InlineImageMemoryCache.image(for: target) {
       image = cached
       return
     }
-    let target = url
     let loaded = await Task.detached(priority: .userInitiated) {
       InlineImageMemoryCache.loadDownsampled(at: target)
     }.value
+    guard !Task.isCancelled else { return }
     guard let loaded else { return }
     InlineImageMemoryCache.store(loaded, for: target)
+    // 异步回来时可能已经切到另一条；只接受当前 url 的结果。
+    guard target == url else { return }
     image = loaded
   }
 }

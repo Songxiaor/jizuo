@@ -1,4 +1,5 @@
 import Foundation
+import LinkDigestShared
 
 public struct HistoryApplicationService: Sendable {
   private let repository: any HistoryRepository
@@ -26,9 +27,37 @@ public struct HistoryApplicationService: Sendable {
   public func finishRun(_ command: FinishRunCommand) throws { try repository.finishRun(command) }
   public func recoverInterruptedRuns(at milliseconds: Int64) throws -> Int { try repository.recoverInterruptedRuns(at: milliseconds) }
   public func containsCanonicalURL(_ canonicalURL: CanonicalURL) throws -> Bool { try repository.containsCanonicalURL(canonicalURL) }
+  public func taskID(forCanonicalURL canonicalURL: CanonicalURL) throws -> TaskID? {
+    try repository.taskID(forCanonicalURL: canonicalURL)
+  }
+  public func existingXTweetIDs(in tweetIDs: Set<String>) throws -> Set<String> {
+    try repository.existingXTweetIDs(in: tweetIDs)
+  }
   public func historyPage(limit: Int = 50, after cursor: HistoryPageCursor? = nil) throws -> HistoryPage { try repository.historyPage(limit: limit, after: cursor) }
   public func historyPage(limit: Int = 50, after cursor: HistoryPageCursor? = nil, filter: HistoryListFilter) throws -> HistoryPage { try repository.historyPage(limit: limit, after: cursor, filter: filter) }
+  public func companionSyncCards(pageSize: Int = 80) throws -> [SyncNoteCard] {
+    try repository.companionSyncCards(pageSize: pageSize)
+  }
+  public func closeStorage() throws {
+    try repository.closeStorage()
+  }
   public func navigationCounts() throws -> HistoryNavigationCounts { try repository.navigationCounts() }
+  public func upsertCreator(_ command: UpsertCreatorCommand) throws -> CreatorSummary {
+    try repository.upsertCreator(command)
+  }
+  public func attachCreatorWork(creatorID: CreatorID, taskID: TaskID) throws {
+    try repository.attachCreatorWork(creatorID: creatorID, taskID: taskID)
+  }
+  public func attachCreatorWorks(creatorID: CreatorID, canonicalURLs: [String]) throws -> AttachCreatorWorksResult {
+    try repository.attachCreatorWorks(creatorID: creatorID, canonicalURLs: canonicalURLs)
+  }
+  public func setCreatorPinned(creatorID: CreatorID, pinned: Bool) throws {
+    try repository.setCreatorPinned(creatorID: creatorID, pinned: pinned)
+  }
+  public func creatorPage(limit: Int = 50, after cursor: CreatorPageCursor? = nil, searchText: String = "") throws -> CreatorPage {
+    try repository.creatorPage(limit: limit, after: cursor, searchText: searchText)
+  }
+  public func creator(id: CreatorID) throws -> CreatorSummary? { try repository.creator(id: id) }
   public func detail(taskID: TaskID) throws -> HistoryDetailProjection { try repository.detail(taskID: taskID) }
   public func exportProjection(taskID: TaskID) throws -> HistoryExportProjection { try repository.exportProjection(taskID: taskID) }
   public func allTags() throws -> [HistoryTag] { try repository.allTags() }

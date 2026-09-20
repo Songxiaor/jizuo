@@ -432,6 +432,89 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(model.dataDestinationNotice, "捕获内容与输出语言相同，无需翻译。")
   }
 
+  func testHistoryTranslationUsesLatestTranscriptWhenCurrentCaptureStillHoldsChineseCaption() async throws {
+    let chinese = String(repeating: "这是中文正文。", count: 4)
+    let english = String(repeating: "This is English prose about building websites with AI. ", count: 4)
+    let original = historyDetail(body: chinese)
+    let caption = try XCTUnwrap(original.snapshots.first)
+    let transcript = ContentSnapshot(
+      id: ContentSnapshotID(),
+      taskID: original.task.id,
+      sequence: 2,
+      envelopeCreatedAtMilliseconds: caption.envelopeCreatedAtMilliseconds + 1,
+      capturedAtMilliseconds: caption.capturedAtMilliseconds + 1,
+      sourceKind: CapturedDocument.Origin.localTranscription.rawValue,
+      sourceURL: caption.sourceURL,
+      title: caption.title,
+      platform: caption.platform,
+      captureMethod: "speech_analyzer_local",
+      completeness: caption.completeness,
+      bodyText: english,
+      characterCount: english.unicodeScalars.count,
+      bodySHA256: String(repeating: "b", count: 64),
+      sourceLabel: "本机视频转写",
+      usedCookie: false
+    )
+    let detail = HistoryDetailProjection(
+      task: original.task,
+      snapshots: [caption, transcript],
+      runs: []
+    )
+    let provider = AppTestModelProvider(results: [.success([.delta("译文"), .completed])])
+    let model = try makeModel(provider: provider)
+    model.receive(
+      CurrentCapture(
+        envelope: capture(text: chinese),
+        taskID: original.task.id,
+        snapshotID: caption.id
+      )
+    )
+    let preferences = try ModelPreferences(outputLanguage: "简体中文")
+
+    XCTAssertFalse(
+      model.canTranslate(preferences: preferences),
+      "stale currentCapture is still the Chinese caption"
+    )
+    XCTAssertTrue(
+      model.canTranslate(from: detail, preferences: preferences),
+      "toolbar must key off the English transcript the user is reading"
+    )
+    XCTAssertNil(
+      model.translationUnavailableReason(text: english, outputLanguage: preferences.outputLanguage)
+    )
+
+    await model.translate(historyDetail: detail, preferences: preferences)
+    await waitUntil { model.runState == .completed(intent: .translate, text: "译文") }
+    XCTAssertEqual(
+      provider.intents.last,
+      .translate(
+        title: caption.title ?? "历史快照",
+        text: english.trimmingCharacters(in: .whitespacesAndNewlines),
+        targetLanguage: "简体中文"
+      )
+    )
+  }
+
+  func testHistoryTranslationReturnsFalseWithoutCallingProviderWhenLayersAlreadyMatchOutputLanguage() async throws {
+    let chinese = String(repeating: "这是中文正文。", count: 4)
+    let detail = historyDetail(body: chinese)
+    let provider = AppTestModelProvider(results: [.success([.delta("unexpected"), .completed])])
+    let model = try makeModel(provider: provider)
+    model.receive(
+      CurrentCapture(
+        envelope: capture(text: chinese),
+        taskID: detail.task.id,
+        snapshotID: detail.snapshots.last!.id
+      )
+    )
+    let preferences = try ModelPreferences(outputLanguage: "简体中文")
+
+    let started = await model.translate(historyDetail: detail, preferences: preferences)
+    XCTAssertFalse(started)
+    XCTAssertEqual(provider.callCount, 0)
+    XCTAssertEqual(model.dataDestinationNotice, "捕获内容与输出语言相同，无需翻译。")
+  }
+
   func testAmbiguousScriptCapturesRemainTranslatableThroughActionEntry() async throws {
     let cases: [(String, String)] = [
       (String(repeating: "中", count: 24) + String(repeating: "a", count: 20), "简体中文"),
@@ -1363,6 +1446,63 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(model.liveRunText.text, "首段")
 
     notificationCounter.cancel()
+  }
+
+  /// 已耗时读数要回答的是「我等了多久」，所以计时起点必须跨越整个活动段。
+  /// 如果它跟着阶段边界重置，思考 40 秒后一进入流式就跳回 0.0s，读数反而
+  /// 会被当成「刚刚重来了一次」。
+  func testRunStartedAtSpansTheWholeActiveRunAndClearsOnTerminal() {
+    let model = AppViewModel()
+    let runID = RunID()
+    XCTAssertNil(model.runStartedAt)
+
+    model.receiveRunState(runID: runID, state: .starting(intent: .translate))
+    let started = model.runStartedAt
+    XCTAssertNotNil(started)
+
+    // 活动态之间切换不重置：thinking、streaming 都还在同一次运行里。
+    model.receiveRunState(runID: runID, state: .thinking(intent: .translate))
+    XCTAssertEqual(model.runStartedAt, started)
+    model.receiveRunState(runID: runID, state: .streaming(intent: .translate, partialText: "第一"))
+    XCTAssertEqual(model.runStartedAt, started)
+    // 纯增长快路径同样不得动它。
+    model.receiveRunState(runID: runID, state: .streaming(intent: .translate, partialText: "第一段"))
+    XCTAssertEqual(model.runStartedAt, started)
+
+    model.receiveRunState(runID: runID, state: .completed(intent: .translate, text: "第一段。"))
+    XCTAssertNil(model.runStartedAt)
+  }
+
+  /// 失败和中断同样是终态：读数必须停下，否则界面会显示一个永远在涨的
+  /// 秒数，暗示「还在跑」，而运行其实已经结束了。
+  func testRunStartedAtClearsOnFailureAndRestartsOnNextRun() {
+    let model = AppViewModel()
+    let firstRun = RunID()
+    model.receiveRunState(runID: firstRun, state: .starting(intent: .summarize))
+    let firstStart = model.runStartedAt
+    XCTAssertNotNil(firstStart)
+
+    model.receiveRunState(runID: firstRun, state: .failed(intent: .summarize, code: "BOOM"))
+    XCTAssertNil(model.runStartedAt)
+
+    let secondRun = RunID()
+    model.receiveRunState(runID: secondRun, state: .starting(intent: .summarize))
+    let secondStart = model.runStartedAt
+    XCTAssertNotNil(secondStart)
+    XCTAssertNotEqual(secondStart, firstStart)
+  }
+
+  /// 读数的两档格式：一分钟以内保留跳动的小数位（那正是活体证据），
+  /// 超过一分钟换成 m:ss，避免 `83.1s` 这种要心算的数字。
+  func testRunElapsedLabelFormatsBelowAndAboveOneMinute() {
+    XCTAssertEqual(RunElapsedLabel.format(0), "0.0s")
+    XCTAssertEqual(RunElapsedLabel.format(9.24), "9.2s")
+    XCTAssertEqual(RunElapsedLabel.format(59.94), "59.9s")
+    XCTAssertEqual(RunElapsedLabel.format(60), "1:00")
+    XCTAssertEqual(RunElapsedLabel.format(83.1), "1:23")
+    XCTAssertEqual(RunElapsedLabel.format(605), "10:05")
+    // 时钟回拨或起点晚于当前拍点时不出现负数读数。
+    XCTAssertEqual(RunElapsedLabel.format(-3), "0.0s")
   }
 
   /// 卡顿的形态是「整棵历史窗口按 delta 速率重求值」，所以真正要钉住的不是

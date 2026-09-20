@@ -26,6 +26,7 @@ public actor UserDefaultsModelPreferencesStore: ModelPreferencesStore {
         transcriptionModel: dto.transcriptionModel,
         tidyModel: dto.tidyModel,
         autoTidyTranscription: dto.autoTidyTranscription,
+        autoLocalizeTitleNewCaptures: dto.autoLocalizeTitleNewCaptures,
         autoTranscribeNewCaptures: dto.autoTranscribeNewCaptures,
         autoSummarizeNewCaptures: dto.autoSummarizeNewCaptures,
         autoMindMapNewCaptures: dto.autoMindMapNewCaptures,
@@ -66,6 +67,7 @@ private struct ModelPreferencesDTO: Codable {
   /// 否则一次升级会让整份偏好读不出来（`readFailed`）。
   let tidyModel: String?
   let autoTidyTranscription: Bool?
+  let autoLocalizeTitleNewCaptures: Bool?
   let autoTranscribeNewCaptures: Bool?
   let autoSummarizeNewCaptures: Bool?
   let autoMindMapNewCaptures: Bool?
@@ -79,6 +81,7 @@ private struct ModelPreferencesDTO: Codable {
     transcriptionModel = preferences.transcriptionModel
     tidyModel = preferences.tidyModel
     autoTidyTranscription = preferences.autoTidyTranscription
+    autoLocalizeTitleNewCaptures = preferences.autoLocalizeTitleNewCaptures
     autoTranscribeNewCaptures = preferences.autoTranscribeNewCaptures
     autoSummarizeNewCaptures = preferences.autoSummarizeNewCaptures
     autoMindMapNewCaptures = preferences.autoMindMapNewCaptures

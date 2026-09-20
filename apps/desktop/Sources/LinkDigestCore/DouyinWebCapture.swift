@@ -61,6 +61,10 @@ public struct DouyinRenderedPage: Sendable, Equatable {
   public let coverURL: URL?
   public let durationSeconds: Double?
   public let imageURLs: [URL]
+  public let likes: String?
+  public let comments: String?
+  public let shares: String?
+  public let collects: String?
 
   public init(
     awemeID: String,
@@ -72,7 +76,11 @@ public struct DouyinRenderedPage: Sendable, Equatable {
     videoURL: URL? = nil,
     coverURL: URL? = nil,
     durationSeconds: Double? = nil,
-    imageURLs: [URL] = []
+    imageURLs: [URL] = [],
+    likes: String? = nil,
+    comments: String? = nil,
+    shares: String? = nil,
+    collects: String? = nil
   ) {
     self.awemeID = awemeID
     self.canonicalURL = canonicalURL
@@ -84,6 +92,10 @@ public struct DouyinRenderedPage: Sendable, Equatable {
     self.coverURL = coverURL
     self.durationSeconds = durationSeconds
     self.imageURLs = imageURLs
+    self.likes = likes
+    self.comments = comments
+    self.shares = shares
+    self.collects = collects
   }
 }
 
@@ -95,6 +107,8 @@ public enum DouyinWebCapturePolicy {
   public static let maximumTitleScalars = 4_096
   public static let maximumMetadataScalars = 4_096
   public static let maximumDescriptionScalars = CaptureValidator.maxTextScalars
+  public static let maximumHeadingTitleCharacters = 60
+  public static let maximumStatScalars = 16
 
   public enum NavigationDecision: Sendable, Equatable {
     case allow
@@ -238,6 +252,7 @@ public enum DouyinWebCapturePolicy {
       durationSeconds = nil
     }
 
+    let stats = validatedStats(dictionary["stats"])
     return DouyinRenderedPage(
       awemeID: awemeID,
       canonicalURL: canonicalURL,
@@ -248,8 +263,64 @@ public enum DouyinWebCapturePolicy {
       videoURL: videoURL,
       coverURL: coverURL,
       durationSeconds: durationSeconds,
-      imageURLs: imageURLs
+      imageURLs: imageURLs,
+      likes: stats.likes,
+      comments: stats.comments,
+      shares: stats.shares,
+      collects: stats.collects
     )
+  }
+
+  /// 隐藏 WebView 落库用的 markdown。长标题不当一级标题，避免整段文案被加粗。
+  public static func renderedDocumentMarkdown(from page: DouyinRenderedPage) -> String {
+    func yaml(_ value: String) -> String {
+      "\"" + value
+        .replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+        .replacingOccurrences(of: "\n", with: " ") + "\""
+    }
+    let isImagePost = !page.imageURLs.isEmpty
+    var metadata = ["aweme_id: \(yaml(page.awemeID))"]
+    if let author = page.author { metadata.insert("author: \(yaml(author))", at: 0) }
+    if let published = page.publishedAt { metadata.append("published: \(yaml(published))") }
+    if let likes = page.likes { metadata.append("likes: \(yaml(likes))") }
+    if let comments = page.comments { metadata.append("comments: \(yaml(comments))") }
+    if let shares = page.shares { metadata.append("shares: \(yaml(shares))") }
+    if let collects = page.collects { metadata.append("collects: \(yaml(collects))") }
+    if isImagePost { metadata.append("content_kind: images") }
+
+    var extra: String?
+    if let description = page.description,
+       description.caseInsensitiveCompare(page.title) != .orderedSame {
+      let suffix: String? = description.hasPrefix(page.title)
+        ? String(description.dropFirst(page.title.count))
+          .trimmingCharacters(in: .whitespacesAndNewlines)
+        : nil
+      let suffixIsOnlyTopics = suffix.map { value in
+        let parts = value.split(whereSeparator: \.isWhitespace)
+        return !parts.isEmpty && parts.allSatisfy { $0.hasPrefix("#") && $0.count > 1 }
+      } ?? false
+      extra = suffixIsOnlyTopics ? suffix! : description
+    }
+
+    var body: String
+    if page.title.count <= maximumHeadingTitleCharacters {
+      body = "# \(page.title)"
+      if let extra { body += "\n\n\(extra)" }
+    } else if let extra, !extra.isEmpty {
+      body = extra
+    } else {
+      body = page.title
+    }
+    if isImagePost {
+      let gallery = page.imageURLs
+        .map { "![](\($0.absoluteString))" }
+        .joined(separator: "\n\n")
+      if !gallery.isEmpty {
+        body += "\n\n\(gallery)"
+      }
+    }
+    return "---\n\(metadata.joined(separator: "\n"))\n---\n\n\(body)"
   }
 
   private static func validatedGalleryImageURLs(_ raw: Any?) throws -> [URL] {
@@ -286,6 +357,25 @@ public enum DouyinWebCapturePolicy {
       return true
     }
     return url.path.contains("tplv-dy-aweme-images")
+  }
+
+  /// 单项不合法就丢掉该项，不让整次抓取失败。
+  private static func validatedStats(
+    _ raw: Any?
+  ) -> (likes: String?, comments: String?, shares: String?, collects: String?) {
+    guard let dictionary = raw as? [String: Any] else {
+      return (nil, nil, nil, nil)
+    }
+    func item(_ key: String) -> String? {
+      guard let value = dictionary[key] as? String else { return nil }
+      let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !trimmed.isEmpty,
+            trimmed.count <= maximumStatScalars,
+            trimmed.range(of: #"^\d+(\.\d+)?\s*[万亿wWkK]?$"#, options: .regularExpression) != nil
+      else { return nil }
+      return trimmed.replacingOccurrences(of: #"\s+"#, with: "", options: .regularExpression)
+    }
+    return (item("likes"), item("comments"), item("shares"), item("collects"))
   }
 
   private static func optionalHTTPSURL(

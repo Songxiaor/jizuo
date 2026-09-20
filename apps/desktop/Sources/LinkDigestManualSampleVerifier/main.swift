@@ -70,6 +70,7 @@ func stableErrorCode(_ error: Error) -> String {
   case .timedOut: return "timedOut"
   case .emptyContent: return "emptyContent"
   case .loginRequired: return "loginRequired"
+  case .shareLinkExpired: return "shareLinkExpired"
   case .verificationRequired: return "verificationRequired"
   case .extensionCaptureRequired: return "extensionCaptureRequired"
   case .githubRepositoryUnavailable: return "githubRepositoryUnavailable"

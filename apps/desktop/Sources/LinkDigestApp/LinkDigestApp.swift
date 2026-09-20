@@ -55,6 +55,11 @@ enum BrowserReceiverState: Sendable, Equatable {
   /// 非 @Published：写入统一走 `setRunState`（见其注释）。读取方始终拿到
   /// 最新值；只有状态真正切换时才发 objectWillChange，流式纯增长拍点不发。
   private(set) var runState: RunState = .idle
+  /// 本次运行的计时起点，非活动态为 nil。
+  ///
+  /// 非 @Published，理由同 runState：它只在 `setRunState` 真正切换状态的那条
+  /// 分支里变，而那条分支已经发过 objectWillChange。
+  private(set) var runStartedAt: Date?
   /// 流式正文的热路径发布通道；与 runState 同步更新（见 setRunState）。
   let liveRunText = LiveRunTextModel()
   @Published private(set) var activeRunTaskID: TaskID?
@@ -209,13 +214,15 @@ enum BrowserReceiverState: Sendable, Equatable {
     await requestRun(intent: .translate, preferences: preferences, modelOverride: modelOverride)
   }
 
+  @discardableResult
   func summarize(
     historyDetail: HistoryDetailProjection,
     preferences: ModelPreferences,
     modelOverride: String? = nil
-  ) async {
-    guard prepareHistoryCapture(historyDetail) else { return }
-    await summarize(preferences: preferences, modelOverride: modelOverride)
+  ) async -> Bool {
+    guard prepareHistoryCapture(historyDetail) else { return false }
+    await requestRun(intent: .summarize, preferences: preferences, modelOverride: modelOverride)
+    return didEngageModelRun
   }
 
   /// 自动队列需要知道这次是否真的占上模型通道。普通 summarize 保持原来的
@@ -236,13 +243,31 @@ enum BrowserReceiverState: Sendable, Equatable {
       || isConfirmingDataDestinationDisclosure
   }
 
+  @discardableResult
   func translate(
     historyDetail: HistoryDetailProjection,
     preferences: ModelPreferences,
     modelOverride: String? = nil
-  ) async {
-    guard prepareHistoryCapture(historyDetail) else { return }
-    await translate(preferences: preferences, modelOverride: modelOverride)
+  ) async -> Bool {
+    guard prepareHistoryCapture(historyDetail) else { return false }
+    // 详情页门禁按分层快照判断；若这里仍用合并后的 currentCapture 正文，
+    // 中文转写 + 英文配文会被误判为「已是中文」，按钮可点但翻译静默退出。
+    guard LayeredSourceDocument.needsTranslation(
+      from: historyDetail.snapshots,
+      outputLanguage: preferences.outputLanguage
+    ) else {
+      dataDestinationNotice = "捕获内容与输出语言相同，无需翻译。"
+      return false
+    }
+    await requestRun(intent: .translate, preferences: preferences, modelOverride: modelOverride)
+    return didEngageModelRun
+  }
+
+  private var didEngageModelRun: Bool {
+    runState.isActive
+      || isDataDestinationDisclosurePresented
+      || isConfirmingDataDestinationDisclosure
+      || launchPendingRunID != nil
   }
 
   func canStartRun(from detail: HistoryDetailProjection) -> Bool {
@@ -256,8 +281,8 @@ enum BrowserReceiverState: Sendable, Equatable {
           launchPendingRunID == nil,
           preparationAttempt == nil
     else { return false }
-    return detail.snapshots.last?.bodyText
-      .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+    let text = LayeredSourceDocument.modelInput(from: detail.snapshots)
+    return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
   func canTranslate(preferences: ModelPreferences) -> Bool {
@@ -268,10 +293,11 @@ enum BrowserReceiverState: Sendable, Equatable {
   }
 
   func canTranslate(from detail: HistoryDetailProjection, preferences: ModelPreferences) -> Bool {
-    canStartRun(from: detail) && !isTranslationLanguageMatch(
-      text: detail.snapshots.last?.bodyText,
-      outputLanguage: preferences.outputLanguage
-    )
+    canStartRun(from: detail)
+      && LayeredSourceDocument.needsTranslation(
+        from: detail.snapshots,
+        outputLanguage: preferences.outputLanguage
+      )
   }
 
   func translationUnavailableReason(
@@ -281,6 +307,15 @@ enum BrowserReceiverState: Sendable, Equatable {
     isTranslationLanguageMatch(text: text, outputLanguage: outputLanguage)
       ? "捕获内容与输出语言相同，无需翻译。"
       : nil
+  }
+
+  func translationUnavailableReason(
+    snapshots: [ContentSnapshot],
+    outputLanguage: String
+  ) -> String? {
+    LayeredSourceDocument.needsTranslation(from: snapshots, outputLanguage: outputLanguage)
+      ? nil
+      : "捕获内容与输出语言相同，无需翻译。"
   }
 
   var isDataDestinationDisclosurePresented: Bool {
@@ -460,9 +495,13 @@ enum BrowserReceiverState: Sendable, Equatable {
     // 又把 T1 发给模型。用户改的字白改了，而界面上没有任何迹象。
     // 这直接违背「编辑转写」按钮说明里「保存后总结、翻译与导出都使用校对后的文本」
     // 那句承诺。
+    //
+    // 有配文 + 转写时发给模型的是分层拼装稿，不能只拿 snapshots.last。
+    let layeredText = LayeredSourceDocument.modelInput(from: detail.snapshots)
+    let text = layeredText.isEmpty ? snapshot.bodyText : layeredText
     if currentCapture?.taskID == detail.task.id,
        currentCapture?.snapshotID == snapshot.id,
-       currentCapture?.document.text == snapshot.bodyText {
+       currentCapture?.document.text == text {
       return true
     }
     let formatter = ISO8601DateFormatter()
@@ -477,8 +516,8 @@ enum BrowserReceiverState: Sendable, Equatable {
       title: snapshot.title,
       platform: snapshot.platform,
       method: snapshot.captureMethod,
-      text: snapshot.bodyText,
-      characterCount: snapshot.characterCount,
+      text: text,
+      characterCount: text.unicodeScalars.count,
       completeness: snapshot.completeness,
       capturedAt: formatter.string(
         from: Date(timeIntervalSince1970: Double(snapshot.capturedAtMilliseconds) / 1_000)
@@ -749,16 +788,22 @@ enum BrowserReceiverState: Sendable, Equatable {
     // objectWillChange 等于让整棵历史窗口按 delta 速率重求值。实测一次
     // 翻译的思考阶段主线程 100% CPU、连续 23 秒几乎不出帧。
     guard state != runState else { return }
+    // 计时起点只落在「非活动 → 活动」那一刻。活动态之间（starting → thinking →
+    // streaming）不重置，读数因此是整次运行已耗时，而不是当前阶段的停留时长——
+    // 用户想知道的是「我等了多久」，阶段边界是实现细节。
+    let nextRunStartedAt: Date? = state.isActive ? (runState.isActive ? runStartedAt : Date()) : nil
     if case let .streaming(intent, partialText) = state,
        case .streaming(let previousIntent, _) = runState,
        previousIntent == intent,
        !partialText.isEmpty {
+      // 这条快路径两端都是 streaming，起点必然没变，不必在无通知的路径上写它。
       runState = state
       liveRunText.setText(partialText)
       return
     }
     objectWillChange.send()
     runState = state
+    runStartedAt = nextRunStartedAt
     liveRunText.setText(state.outputText)
   }
 
@@ -850,6 +895,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   @StateObject private var browserSupport: BrowserSupportViewModel
   @StateObject private var mediaStorageSettings: MediaStorageSettingsViewModel
   @StateObject private var knowledgeVaultSettings: KnowledgeVaultSettingsViewModel
+  @StateObject private var companionNoteSync = CompanionNoteSyncCoordinator()
   @StateObject private var sessionMediaPlayback: SessionMediaPlaybackController
   @State private var didBootstrap = false
   /// 注入 `\.appTheme` 用。视图各自读 AppStorage 会重复三行样板，
@@ -863,6 +909,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   private let socketServerLifecycle: UnixSocketServerLifecycle
   private let applicationTerminationObserver: NSObjectProtocol
   private let terminationSignalSource: DispatchSourceSignal
+  private let historyShutdown = HistoryShutdownBox()
 
   init() {
     let appUpdateController = AppUpdateController()
@@ -1037,6 +1084,9 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       transcriptTidier: OpenAICompatibleTranscriptTidier(
         configurationService: configurationService
       ),
+      titleLocalizer: OpenAICompatibleTitleLocalizer(
+        configurationService: configurationService
+      ),
       // 起草用用户自己装的 Claude Code。没装的话构造出来也无妨——
       // 它的 locateExecutable() 会返回 nil,那一步的入口说清楚缺什么。
       draftAgent: ClaudeCLIAgent(),
@@ -1123,6 +1173,18 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         // 新素材进库后排一次同步。只是排队（默认 20 秒后跑），不占这条
         // 必须在 10 秒内 ACK 浏览器的路径。
         await knowledgeVaultSettingsModel.scheduleAutoSync()
+        Task { @MainActor in
+          guard value.allowsAutomaticEnrichment else { return }
+          let preferences = (try? await preferencesStore.load()) ?? .default
+          guard preferences.effectiveAutoLocalizeTitleNewCaptures else { return }
+          await historyModel.scheduleAutomaticTitleLocalization(
+            taskID: value.taskID,
+            title: value.document.title,
+            body: value.document.text,
+            outputLanguage: preferences.outputLanguage,
+            model: nil
+          )
+        }
         // Video download starts immediately so signed URLs are not kept for later.
         // It runs off the native-message ACK path (same fail-open pattern as images).
         if value.shouldAutomaticallyPersistLegacyMedia {
@@ -1139,7 +1201,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
               )
             }
           }
-        } else if mediaStoragePreference.autoSaveCapturedVideo,
+        } else if value.allowsAutomaticEnrichment,
+                  mediaStoragePreference.autoSaveCapturedVideo,
                   let descriptor = value.mediaDescriptor,
                   let media = CurrentCaptureMediaPreview.favoriteMedia(descriptor) {
           let taskID = value.taskID
@@ -1217,15 +1280,17 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       forName: NSApplication.willTerminateNotification,
       object: nil,
       queue: nil
-    ) { _ in
+    ) { [historyShutdown] _ in
       socketServerLifecycle.stop()
       try? transcriptionTempStore?.cleanupAll()
+      historyShutdown.close()
     }
     let terminationSignalSource = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .main)
     Darwin.signal(SIGTERM, SIG_IGN)
-    terminationSignalSource.setEventHandler {
+    terminationSignalSource.setEventHandler { [historyShutdown] in
       socketServerLifecycle.stop()
       try? transcriptionTempStore?.cleanupAll()
+      historyShutdown.close()
       Darwin.signal(SIGTERM, SIG_DFL)
       _ = Darwin.kill(getpid(), SIGTERM)
     }
@@ -1254,6 +1319,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       wrappedValue: MediaStorageSettingsViewModel(store: mediaStoragePreference)
     )
     _knowledgeVaultSettings = StateObject(wrappedValue: knowledgeVaultSettingsModel)
+    _companionNoteSync = StateObject(wrappedValue: CompanionNoteSyncCoordinator())
     _sessionMediaPlayback = StateObject(wrappedValue: sessionMediaPlaybackController)
   }
 
@@ -1267,6 +1333,9 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         browserSupport: browserSupport,
         sessionMediaPlayback: sessionMediaPlayback
       )
+        .onReceive(NotificationCenter.default.publisher(for: .companionNoteSyncDidFinish)) { _ in
+          historyModel.reload()
+        }
         .task {
           manualLink.handleScenePhase(scenePhase)
           guard !didBootstrap else { return }
@@ -1288,6 +1357,10 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
           )
           didConfigureHistory = true
           knowledgeVaultSettings.configure(history: result.history)
+          companionNoteSync.configure(history: result.history)
+          if result.availability.isWriteReady, result.history != nil, companionNoteSync.canSync {
+            Task { await companionNoteSync.synchronize() }
+          }
           // 历史就绪之后才接回链，冷启动时排队的那一个 URL 也在这里被消费。
           //
           // scheme 一注册，任何网页都能构造这样一个链接扔过来，所以这里只做
@@ -1306,6 +1379,17 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
                 await model.receive(value)
                 await historyModel.reveal(taskID: value.taskID)
                 await knowledgeVaultSettings.scheduleAutoSync()
+                Task { @MainActor in
+                  guard value.allowsAutomaticEnrichment else { return }
+                  guard providerSettings.autoLocalizeTitleNewCaptures else { return }
+                  await historyModel.scheduleAutomaticTitleLocalization(
+                    taskID: value.taskID,
+                    title: value.document.title,
+                    body: value.document.text,
+                    outputLanguage: providerSettings.outputLanguage,
+                    model: providerSettings.activeSummaryModelName
+                  )
+                }
               }
             )
           }
@@ -1324,6 +1408,9 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
             )
             model.installModelRunOrchestrator(orchestrator)
           }
+          historyShutdown.install(result.history)
+          MCPController.shared.configure(history: result.history, historyModel: historyModel, manual: manualLink,
+                                         appModel: model, preferences: providerSettings, writable: result.availability.isWriteReady)
           if !result.serverStarted {
             model.setConnection("接收服务启动失败")
           }
@@ -1366,7 +1453,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         appModel: model,
         browserSupport: browserSupport,
         mediaStorage: mediaStorageSettings,
-        knowledgeVault: knowledgeVaultSettings
+        knowledgeVault: knowledgeVaultSettings,
+        companionSync: companionNoteSync
       )
         .background(SettingsWindowResizer())
         .appThemeEnvironment(appearanceThemeRaw)
@@ -1394,6 +1482,27 @@ private struct SettingsWindowResizer: NSViewRepresentable {
   }
 
   func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+private final class HistoryShutdownBox: @unchecked Sendable {
+  private let lock = NSLock()
+  private var history: HistoryApplicationService?
+  private var closed = false
+
+  func install(_ history: HistoryApplicationService?) {
+    lock.lock()
+    defer { lock.unlock() }
+    self.history = history
+  }
+
+  func close() {
+    lock.lock()
+    defer { lock.unlock() }
+    guard !closed else { return }
+    closed = true
+    try? history?.closeStorage()
+    history = nil
+  }
 }
 
 #if DEBUG
