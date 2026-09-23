@@ -52,7 +52,11 @@ final class HistoryGalleryGeometryTests: XCTestCase {
       let frame = marker.convert(marker.bounds, to: host)
       XCTAssertGreaterThanOrEqual(frame.minX, -0.5, "gallery sidebar origin at width \(width)")
       XCTAssertLessThanOrEqual(frame.minX, 8.5, "gallery sidebar origin at width \(width)")
-      XCTAssertEqual(frame.width, DesignTokens.Layout.sidebarIdeal, accuracy: 1, "gallery sidebar width at width \(width)")
+      // 整栏外沿等于左栏宽度（和三栏页的分隔线同一位置），栏内列表让出两侧留白。
+      let split = try XCTUnwrap(findSplit(in: host))
+      let pane = try XCTUnwrap(split.arrangedSubviews.first { !$0.isHidden && $0.frame.width > 0 })
+      XCTAssertEqual(pane.frame.width, DesignTokens.Layout.sidebarIdeal, accuracy: 1, "gallery sidebar outer width at width \(width)")
+      XCTAssertEqual(frame.maxX, DesignTokens.Layout.sidebarIdeal - frame.minX, accuracy: 1, "gallery rail inset at width \(width)")
     }
   }
 
@@ -102,8 +106,7 @@ final class HistoryGalleryGeometryTests: XCTestCase {
     let split = try XCTUnwrap(findSplit(in: host))
     let panes = split.arrangedSubviews.filter { !$0.isHidden && $0.frame.width > 0 }
     XCTAssertEqual(panes.count, 2)
-    XCTAssertGreaterThanOrEqual(panes[0].frame.width, DesignTokens.Layout.sidebarIdeal - 1)
-    XCTAssertLessThanOrEqual(panes[0].frame.width, DesignTokens.Layout.sidebarIdeal + 16)
+    XCTAssertEqual(panes[0].frame.width, DesignTokens.Layout.sidebarIdeal, accuracy: 1)
   }
 
   private func findSplit(in root: NSView) -> NSSplitView? {

@@ -35,18 +35,102 @@ enum PlatformIconCatalog {
     name == "x.com" || name == "github"
   }
 
-  /// 侧栏单色模式下「外形本身就是标志」的 logo：直接取形状、用当前文字色填。
+  /// 侧栏单色模式下本身就是细线条的 logo：直接取形状、用当前文字色填。
   ///
   /// 和 `usesTemplateRendering` 分开：那条决定的是**所有地方**的位图是否是模板图，
-  /// 列表行里公众号、B 站、掘金仍要保留品牌色；这条只管侧栏的单色剪影（2026-09-23）。
+  /// 列表行里 B 站、掘金仍要保留品牌色；这条只管侧栏的单色剪影。
+  /// 其余 logo 在侧栏一律走 `sidebarOutlineImage` 的线框画法（2026-09-23）。
   static func usesGlyphSilhouette(forAssetName name: String) -> Bool {
-    ["x.com", "github", "bilibili", "wechat", "juejin"].contains(name)
+    ["x.com", "bilibili", "juejin"].contains(name)
   }
 
-  /// 深底白字型 logo（抖音：黑色圆角方块上的白色音符）。去色后仍是一块实心黑，
-  /// 和旁边的线条剪影不是一个重量；改用亮度当遮罩，只留白色音符，再用当前文字色填。
-  static func usesLuminanceMask(forAssetName name: String) -> Bool {
-    name == "douyin"
+  /// 深底白标型 logo（YouTube、抖音、知乎…）：线框之外还要保留底色块里的白色标志，
+  /// 否则只剩一个空框认不出是谁。GitHub、公众号这类本身是实心外形，只取外轮廓
+  /// （连同内部镂空的轮廓）就够。
+  static func keepsInnerMarkInOutline(forAssetName name: String) -> Bool {
+    !["github", "wechat"].contains(name)
+  }
+
+  nonisolated(unsafe) private static let outlineCache: NSCache<NSString, NSImage> = {
+    let cache = NSCache<NSString, NSImage>()
+    cache.countLimit = 64
+    return cache
+  }()
+
+  /// 侧栏用的线框版 logo：模板图，颜色由调用方的 foregroundStyle 给。
+  ///
+  /// 为什么要自动描边：侧栏一列平台图标里原来一半是实心块（公众号、GitHub、YouTube、
+  /// Reddit……），实测这一列的墨量是旁边平台名称的 3.5 倍、是「本机」区系统线条图标的
+  /// 2.5 倍，一眼看过去先看到一排色块（2026-09-23 Syc：「这一块很重」）。品牌方
+  /// 不提供线框版，这里把外形做一次腐蚀，用「外形 − 腐蚀后的外形」得到约 1pt 的轮廓，
+  /// 深底白标型再叠回里面的白色标志——外形和标志都还认得出，重量接近系统线条图标。
+  static func sidebarOutlineImage(forAssetName name: String) -> NSImage? {
+    if let cached = outlineCache.object(forKey: name as NSString) { return cached }
+    guard let root = Bundle.main.resourceURL,
+          let source = NSImage(contentsOf: root
+            .appendingPathComponent(assetDirectory, isDirectory: true)
+            .appendingPathComponent(name + ".svg"))
+    else { return nil }
+    guard let image = outlineImage(from: source, keepsInnerMark: keepsInnerMarkInOutline(forAssetName: name))
+    else { return nil }
+    outlineCache.setObject(image, forKey: name as NSString)
+    return image
+  }
+
+  /// 光栅 64px（16pt 的 4 倍），腐蚀半径 5px ≈ 显示时 1pt 线宽。
+  static func outlineImage(from source: NSImage, keepsInnerMark: Bool) -> NSImage? {
+    let size = 64, radius = 5
+    func makeRep() -> NSBitmapImageRep? {
+      NSBitmapImageRep(
+        bitmapDataPlanes: nil, pixelsWide: size, pixelsHigh: size, bitsPerSample: 8,
+        samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB,
+        bytesPerRow: size * 4, bitsPerPixel: 32
+      )
+    }
+    guard let input = makeRep(), let output = makeRep(),
+          let src = input.bitmapData, let dst = output.bitmapData else { return nil }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: input)
+    NSGraphicsContext.current?.imageInterpolation = .high
+    source.draw(in: NSRect(x: 0, y: 0, width: size, height: size))
+    NSGraphicsContext.restoreGraphicsState()
+
+    let count = size * size
+    var alpha = [Double](repeating: 0, count: count)
+    var mark = [Double](repeating: 0, count: count)
+    for index in 0..<count {
+      let a = Double(src[index * 4 + 3]) / 255
+      alpha[index] = a
+      guard keepsInnerMark, a > 0 else { continue }
+      // 预乘过的颜色先还原再算亮度；亮的部分就是底色块上的白色标志。
+      let luminance = (0.299 * Double(src[index * 4]) + 0.587 * Double(src[index * 4 + 1])
+        + 0.114 * Double(src[index * 4 + 2])) / 255 / a
+      mark[index] = min(1, max(0, (luminance - 0.55) / 0.3)) * a
+    }
+    var offsets: [(Int, Int)] = []
+    for dy in -radius...radius { for dx in -radius...radius where dx * dx + dy * dy <= radius * radius {
+      offsets.append((dx, dy))
+    } }
+    for y in 0..<size { for x in 0..<size {
+      let index = y * size + x
+      var eroded = alpha[index]
+      if eroded > 0 {
+        for (dx, dy) in offsets {
+          let xx = x + dx, yy = y + dy
+          let value = (xx < 0 || yy < 0 || xx >= size || yy >= size) ? 0 : alpha[yy * size + xx]
+          if value < eroded { eroded = value; if eroded == 0 { break } }
+        }
+      }
+      let coverage = min(1, max(0, alpha[index] - eroded) + mark[index])
+      let byte = UInt8((coverage * 255).rounded())
+      dst[index * 4] = byte; dst[index * 4 + 1] = byte; dst[index * 4 + 2] = byte
+      dst[index * 4 + 3] = byte
+    } }
+    output.size = NSSize(width: displayPointSize, height: displayPointSize)
+    let image = NSImage(size: NSSize(width: displayPointSize, height: displayPointSize))
+    image.addRepresentation(output)
+    image.isTemplate = true
+    return image
   }
 
   /// Rasterizing an SVG is expensive and the history list re-renders every row

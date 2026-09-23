@@ -176,4 +176,45 @@ final class MaterialScopeTests: XCTestCase {
     try repository.alignArchiveTaskTime(taskID: memo, originalMilliseconds: now)
     XCTAssertEqual(try repository.navigationCounts().recent, 1)
   }
+
+  /// 收件箱 + 已归档 = 全部资料；手动归档、已使用、旧档案都算已归档，移回收件箱即回来。
+  func testInboxAndArchiveAddUpToAllMaterials() throws {
+    let root = URL(fileURLWithPath: "/private/tmp/linkdigest-archive-scope-\(UUID().uuidString)", isDirectory: true)
+    let directory = root.appendingPathComponent("Application Support/LinkDigest", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: LocalDatabaseLocation(directoryURL: directory))
+    defer { try? repository.database.close() }
+    let now = Int64(Date().timeIntervalSince1970 * 1000)
+    func file(_ c: Character) throws -> TaskID {
+      try repository.acceptCapture(.init(
+        document: LocalImportDocument.file(
+          contentSHA256: String(repeating: c, count: 64), fileName: "\(c).md", text: "正文 \(c)",
+          completeness: "complete", method: "local_file_text", fileDate: nil
+        ),
+        receivedAtMilliseconds: now
+      )).taskID
+    }
+    let a = try file("a"), b = try file("b"), c = try file("c")
+    let memo = try repository.acceptCapture(.init(
+      document: LocalImportDocument.voiceMemo(recordingID: "M", title: "录音", recordedAt: nil, durationSeconds: 3),
+      receivedAtMilliseconds: now
+    )).taskID
+    _ = try repository.addTags([MaterialCatalog.archivedTagName], to: a)
+    _ = try repository.addTags([MaterialCatalog.usedTagName], to: b)
+
+    let counts = try repository.navigationCounts()
+    XCTAssertEqual(counts.all, 4)
+    XCTAssertEqual(counts.unused, 1)
+    XCTAssertEqual(counts.archived, 3)
+    XCTAssertEqual(counts.unused + counts.archived, counts.all)
+    XCTAssertEqual(try repository.historyPage(limit: 50, after: nil, filter: .init(scope: .unused)).rows.map(\.taskID), [c])
+    XCTAssertEqual(
+      Set(try repository.historyPage(limit: 50, after: nil, filter: .init(scope: .archived)).rows.map(\.taskID)),
+      [a, b, memo]
+    )
+
+    try repository.removeTag(normalizedName: MaterialCatalog.archivedTagNormalizedName, from: a)
+    XCTAssertEqual(try repository.navigationCounts().unused, 2, "移回收件箱")
+  }
 }

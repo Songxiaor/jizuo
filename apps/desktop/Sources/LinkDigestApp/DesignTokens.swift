@@ -164,9 +164,27 @@ extension DesignTokens {
     static let sidebarMin: CGFloat = 210
     static let sidebarIdeal: CGFloat = 220
     static let sidebarMax: CGFloat = 300
+    /// 用户拖出来的左侧栏宽度（整栏外沿，不是栏内列表的宽度）。三栏页和图库页
+    /// 共用这一个值：像「邮件」「备忘录」那样，拉到多宽就是多宽，切换分类不改变。
+    static let sidebarWidthStorageKey = "history.navigation.sidebar-width"
 
-    static let listMin: CGFloat = 280
-    static let listIdeal: CGFloat = 340
+    /// 用户拖出来的中间列表栏宽度；重启 App 后照旧（系统分栏只在本次运行里记得）。
+    static let listWidthStorageKey = "history.navigation.list-width"
+
+    /// 读回存下的宽度并夹在允许范围里；没存过就用 `sidebarIdeal`。
+    static func storedSidebarWidth(_ raw: Double) -> CGFloat {
+      raw > 0 ? min(max(CGFloat(raw), sidebarMin), sidebarMax) : sidebarIdeal
+    }
+
+    static func storedListWidth(_ raw: Double) -> CGFloat {
+      raw > 0 ? min(max(CGFloat(raw), listMin), listMax) : listIdeal
+    }
+
+    /// 2026-09-23 对标 Tolaria（实测列表栏 219pt，和侧栏一样宽）：原来默认 340 宽出
+    /// 一大截，右侧阅读区被挤窄。汲作每行多一个平台图标，260 时文字区约 190pt，
+    /// 与对标的文字区相当；最窄可拖到 220。
+    static let listMin: CGFloat = 220
+    static let listIdeal: CGFloat = 260
     static let listMax: CGFloat = 520
 
     static let detailMin: CGFloat = 420

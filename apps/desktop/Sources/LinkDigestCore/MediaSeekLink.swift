@@ -141,7 +141,11 @@ public enum TranscriptReadingText {
         continue
       }
       let text = String(line[stamp.endIndex...]).trimmingCharacters(in: .whitespaces)
-      if let lastSeconds, stamp.seconds - lastSeconds >= pauseSeconds {
+      // 带说话人的转写稿（`**说话人 1**：…`）：换人必须另起一段，否则和上一个人的话
+      // 拼成一整段，粗体标记也被拆散（2026-09-23）。
+      if text.hasPrefix("**"), SpeakerTranscript.speakerLabel(in: line) != nil {
+        flush()
+      } else if let lastSeconds, stamp.seconds - lastSeconds >= pauseSeconds {
         flush()
       } else if paragraph.count >= paragraphCharacters, endsSentence(paragraph) {
         flush()

@@ -192,7 +192,9 @@ struct UIReadingHistoryRow: View {
         // 用一段隐藏的两行文本撑高度，而不是写死磅值：字号跟随用户在设置里选的
         // UI 字体族和字号，硬编码会在换字体后失准。
         Text(text.title)
-          .themedFont(.body, weight: .semibold)
+          // 常规字重：对标实测同一行标题笔画墨量汲作多出约 24%（medium），整列读起来
+          // 发沉、也和选中项的强调抢分量。层级靠颜色深浅和字号区分（2026-09-23）。
+          .themedFont(.body)
           // reservesSpace 而不是普通的 lineLimit(2)：标题只有一行时也按两行占位，
           // 卡片高度不再随标题长短在两个值之间跳。字号跟随用户选的 UI 字体族，
           // 所以这里不能改成写死的 minHeight。
@@ -210,7 +212,8 @@ struct UIReadingHistoryRow: View {
             .foregroundStyle(theme.primaryText.opacity(0.66))
             // 不预留第二行：摘要只有一行的条目（多是本地文件）不该空出一截。
             .lineLimit(2)
-            .lineSpacing(2)
+            // 3pt：两行摘要贴得太紧时笔画挤成一团，对标的摘要行距更松。
+            .lineSpacing(3)
             .truncationMode(.tail)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityHidden(true)

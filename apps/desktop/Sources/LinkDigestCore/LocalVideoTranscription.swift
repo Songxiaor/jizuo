@@ -277,6 +277,9 @@ public enum LocalVideoTranscriptionEvent: Sendable, Equatable {
   case partial(String)
   case final(String)
   case finalParagraphs([TranscriptParagraph])
+  /// 定稿文字按短语拆开、各带时间（说话人留空）。本机分说话人直接拿它配人，
+  /// 不必为了取时间再把整段录音识别一遍（2026-09-23）。
+  case finalPhrases([SpeakerSegment])
 }
 
 public enum LocalVideoTranscriptionError: Error, Sendable, Equatable {

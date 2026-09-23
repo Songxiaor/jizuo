@@ -36,6 +36,16 @@ public enum MaterialCatalog {
     HistoryTagNormalizer.normalized(usedTagName)?.normalizedName ?? usedTagName
   }
 
+  /// 用户手动「归档」的资料带这个标签（2026-09-23）。
+  ///
+  /// 已归档 = 带「已使用」或「已归档」标签的资料，加上批量同步的旧档案（备忘录、语音备忘录）。
+  /// 收件箱 = 其余资料。两者合起来正好是「全部资料」，侧栏数字能加得上。
+  public static let archivedTagName = "已归档"
+
+  public static var archivedTagNormalizedName: String {
+    HistoryTagNormalizer.normalized(archivedTagName)?.normalizedName ?? archivedTagName
+  }
+
   public static var typeTagNames: [String] { MaterialType.allCases.map(\.tagName) }
 
   /// 记在条目笔记里的一行用途记录。标签只能说「用过」，这一行说「用在哪、哪天用的」。

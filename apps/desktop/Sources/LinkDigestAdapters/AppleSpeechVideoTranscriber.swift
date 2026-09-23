@@ -112,6 +112,9 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
           if !recognized.paragraphs.isEmpty {
             continuation.yield(.finalParagraphs(recognized.paragraphs))
           }
+          if !recognized.phrases.isEmpty {
+            continuation.yield(.finalPhrases(recognized.phrases))
+          }
           continuation.finish()
         } catch is CancellationError {
           continuation.finish(throwing: CancellationError())
@@ -166,6 +169,65 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
 
   /// Produces attempt-scoped M4A audio for local speech recognition. The
   /// caller owns `workspaceURL` and removes it on every terminal outcome.
+  /// 本机分说话人用：重新识别一遍，返回带时间的短语（每个定稿结果按 `audioTimeRange`
+  /// 拆成若干片）。存下来的转写分段太粗（常常一整段对话只有一个时间码），换人的位置
+  /// 落在段落中间就分不开；短语级的时间才能按说话人切开（2026-09-23）。
+  public func recognizeTimedPhrases(
+    fileURL: URL,
+    workspaceURL: URL,
+    localeIdentifier: String
+  ) async throws -> [SpeakerSegment] {
+    guard #available(macOS 26.0, *) else { throw LocalVideoTranscriptionError.unsupportedOS }
+    guard SpeechTranscriber.isAvailable else { throw LocalVideoTranscriptionError.speechUnavailable }
+    guard let locale = await SpeechTranscriber.supportedLocale(
+      equivalentTo: Locale(identifier: localeIdentifier)
+    ) else { throw LocalVideoTranscriptionError.chineseLocaleUnavailable }
+    let audioURL = fileURL.pathExtension.lowercased() == "m4a"
+      ? fileURL
+      : try await Self.extractAudio(from: fileURL, workspaceURL: workspaceURL)
+    let transcriber = SpeechTranscriber(
+      locale: locale, transcriptionOptions: [], reportingOptions: [], attributeOptions: [.audioTimeRange]
+    )
+    guard await AssetInventory.status(forModules: [transcriber]) == .installed else {
+      throw LocalVideoTranscriptionError.modelDownloadFailed
+    }
+    let audioFile: AVAudioFile
+    do { audioFile = try AVAudioFile(forReading: audioURL) }
+    catch { throw LocalVideoTranscriptionError.audioExtractionFailed }
+    let analyzer = SpeechAnalyzer(modules: [transcriber])
+    let collector = Task { () throws -> [SpeakerSegment] in
+      var phrases: [SpeakerSegment] = []
+      for try await result in transcriber.results where result.isFinal {
+        phrases += Self.timedPhrases(in: result)
+      }
+      return phrases
+    }
+    do {
+      try await analyzer.start(inputAudioFile: audioFile, finishAfterFile: true)
+      return try await collector.value
+    } catch {
+      collector.cancel()
+      await analyzer.cancelAndFinishNow()
+      throw LocalVideoTranscriptionError.recognitionFailed
+    }
+  }
+
+  /// 一条定稿结果按 `audioTimeRange` 拆成若干带时间的短语。
+  @available(macOS 26.0, *)
+  private static func timedPhrases(in result: SpeechTranscriber.Result) -> [SpeakerSegment] {
+    var phrases: [SpeakerSegment] = []
+    for run in result.text.runs {
+      let piece = String(result.text[run.range].characters)
+      guard !piece.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
+      let range = run.audioTimeRange ?? result.range
+      let start = CMTimeGetSeconds(range.start)
+      let end = CMTimeGetSeconds(CMTimeRangeGetEnd(range))
+      guard start.isFinite, end.isFinite else { continue }
+      phrases.append(SpeakerSegment(startSeconds: start, endSeconds: end, speaker: "", text: piece))
+    }
+    return phrases
+  }
+
   public static func extractAudio(from fileURL: URL, workspaceURL: URL) async throws -> URL {
     let asset = AVURLAsset(url: fileURL)
     guard !(try await asset.loadTracks(withMediaType: .audio)).isEmpty else {
@@ -317,7 +379,7 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
     audioURL: URL,
     localeIdentifier: String,
     continuation: AsyncThrowingStream<LocalVideoTranscriptionEvent, Error>.Continuation
-  ) async throws -> (text: String, paragraphs: [TranscriptParagraph]) {
+  ) async throws -> (text: String, paragraphs: [TranscriptParagraph], phrases: [SpeakerSegment]) {
     guard SpeechTranscriber.isAvailable else { throw LocalVideoTranscriptionError.speechUnavailable }
     guard let locale = await SpeechTranscriber.supportedLocale(
       equivalentTo: Locale(identifier: localeIdentifier)
@@ -331,8 +393,9 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
     do { audioFile = try AVAudioFile(forReading: audioURL) }
     catch { throw LocalVideoTranscriptionError.audioExtractionFailed }
     let analyzer = SpeechAnalyzer(modules: [transcriber])
-    let resultsTask = Task { () throws -> (text: String, paragraphs: [TranscriptParagraph]) in
+    let resultsTask = Task { () throws -> (text: String, paragraphs: [TranscriptParagraph], phrases: [SpeakerSegment]) in
       var accumulator = TimedTranscriptionAccumulator()
+      var phrases: [SpeakerSegment] = []
       // 文件分析比实时播放快得多，volatile 结果每秒可达几十条；逐条重算
       // 全文并推给 UI 会让长转写滚动卡顿。定稿必推，草稿节流到约 3 次/秒。
       var lastPartialYield = ContinuousClock.now - .seconds(1)
@@ -343,13 +406,14 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
           text: String(result.text.characters),
           isFinal: result.isFinal
         )
+        if result.isFinal { phrases += Self.timedPhrases(in: result) }
         let now = ContinuousClock.now
         if result.isFinal || now - lastPartialYield >= .milliseconds(300) {
           lastPartialYield = now
           continuation.yield(.partial(accumulator.displayText))
         }
       }
-      return (accumulator.finalText, accumulator.finalParagraphs)
+      return (accumulator.finalText, accumulator.finalParagraphs, phrases)
     }
 
     do {

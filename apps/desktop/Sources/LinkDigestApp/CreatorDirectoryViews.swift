@@ -69,14 +69,20 @@ struct CreatorDirectoryAvatar: View {
 
 /// Explicit desktop panes avoid NavigationSplitView's adaptive collapse when
 /// replacing a reader with a gallery. Kept separate for native geometry tests.
-/// Sidebar width is fixed to `sidebarIdeal` so platform gallery and ordinary
-/// list share the same navigation width without drag/AppStorage divergence.
+/// 左栏宽度取用户在三栏页拖出来的那个值（整栏外沿），图库页只跟随、不单独拖，
+/// 两种页面之间来回切换时左栏边界停在同一位置。
 struct HistoryGallerySplitView<Sidebar: View, Detail: View>: View {
   @Environment(\.appTheme) private var theme
+  let sidebarWidth: CGFloat
   let sidebar: Sidebar
   let detail: Detail
 
-  init(@ViewBuilder sidebar: () -> Sidebar, @ViewBuilder detail: () -> Detail) {
+  init(
+    sidebarWidth: CGFloat = DesignTokens.Layout.sidebarIdeal,
+    @ViewBuilder sidebar: () -> Sidebar,
+    @ViewBuilder detail: () -> Detail
+  ) {
+    self.sidebarWidth = sidebarWidth
     self.sidebar = sidebar()
     self.detail = detail()
   }
@@ -94,11 +100,14 @@ struct HistoryGallerySplitView<Sidebar: View, Detail: View>: View {
       // grows to every row and the window clips it with no internal scroll.
       // Fill the pane first, then overlay the rail so the List receives a
       // bounded height and can scroll to 其他 / 标签 at ~700pt.
+      // 外沿 = sidebarWidth：栏内列表让出两侧留白，和原生三栏里侧栏的内缩一致。
+      // 原来是列表本身 220 再加两侧 8pt，外沿 236，比三栏页宽出 16pt（2026-09-23 实测）。
+      let railWidth = sidebarWidth - nativeSidebarHorizontalInset * 2
       Color.clear
         .frame(
-          minWidth: DesignTokens.Layout.sidebarIdeal,
-          idealWidth: DesignTokens.Layout.sidebarIdeal,
-          maxWidth: DesignTokens.Layout.sidebarIdeal,
+          minWidth: railWidth,
+          idealWidth: railWidth,
+          maxWidth: railWidth,
           minHeight: 0,
           maxHeight: .infinity
         )

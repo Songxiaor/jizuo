@@ -76,7 +76,9 @@ private struct TranscriptTimelineRow: View {
       // 走阅读区同一套字体解析：转写稿和正文必须是同一种排版，否则同一页
       // 里两块文字长得不一样。
       Text(paragraph.text)
-        .font(readingFont.scaled(designSize: MarkdownPresentation.bodyFontSize))
+        // 用正文字号本身：原来按旧的 16.5 设计字号缩放，正文改成 15 后转写稿
+        // 反而比文章大一号（2026-09-23 实测）。
+        .font(readingFont.body())
         .lineSpacing(MarkdownPresentation.bodyLineSpacing)
         .foregroundStyle(primaryTextColor)
         .textSelection(.enabled)

@@ -31,6 +31,8 @@ public enum HistoryListScope: String, Sendable, Equatable, CaseIterable {
   case favorite
   /// 还没被创作系统用过的资料：不带「已使用」标签的抓取与导入内容。
   case unused
+  /// 已归档：用过的、手动归档的、批量同步的旧档案。与收件箱（.unused）互补。
+  case archived
   /// 用户自己写的笔记。
   ///
   /// 它是**独立区域**，不是一个筛选条件：除了 `.notes` 自己，其余所有作用域都把笔记
@@ -105,6 +107,8 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   public let unused: Int
   /// 贴了「已使用」的资料条数（含批量导入的旧档案）。默认 0，让既有构造点无需改动。
   public let used: Int
+  /// 已归档的资料条数；收件箱 + 已归档 = 全部资料。
+  public let archived: Int
   /// 用户自己写的笔记条数。默认 0，让既有构造点无需改动。
   public let notes: Int
   /// 已完成的作品数。
@@ -129,6 +133,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     favorite: Int = 0,
     unused: Int = 0,
     used: Int = 0,
+    archived: Int = 0,
     notes: Int = 0,
     works: Int = 0,
     trash: Int = 0,
@@ -142,6 +147,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     self.unsummarized = unsummarized
     self.favorite = favorite
     self.used = used
+    self.archived = archived
     self.unused = unused
     self.notes = notes
     self.works = works

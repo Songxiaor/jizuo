@@ -35,4 +35,12 @@ final class LocalImportPresentationTests: XCTestCase {
     XCTAssertEqual(heading, "图片里的文字")
     XCTAssertEqual(paragraph, "IP查询\n104.30.175.37\n152ms")
   }
+
+  /// 浅色音频条的时间显示：分:秒，超过一小时带小时，异常值归零。
+  func testLightAudioBarTimeFormat() {
+    XCTAssertEqual(LightAudioPlaybackBar.format(0), "0:00")
+    XCTAssertEqual(LightAudioPlaybackBar.format(946.7), "15:46")
+    XCTAssertEqual(LightAudioPlaybackBar.format(4_325), "1:12:05")
+    XCTAssertEqual(LightAudioPlaybackBar.format(.nan), "0:00")
+  }
 }

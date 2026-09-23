@@ -377,13 +377,13 @@ final class HistoryContentViewTests: XCTestCase {
 
     XCTAssertTrue(source.contains("NavigationSplitView(columnVisibility: $columnVisibility)"))
     XCTAssertTrue(source.contains("content: {"))
-    // Both navigation containers pin the same shared width to prevent platform
-    // switches from resizing the rail; the content list remains independently sized.
-    XCTAssertTrue(source.contains("min: DesignTokens.Layout.sidebarIdeal"))
-    XCTAssertTrue(source.contains("ideal: DesignTokens.Layout.sidebarIdeal"))
-    XCTAssertTrue(source.contains("max: DesignTokens.Layout.sidebarIdeal"))
+    // 左栏可拖，两种容器从同一个记下的宽度起步，切换分类不改变左栏宽度。
+    XCTAssertTrue(source.contains("min: DesignTokens.Layout.sidebarMin"))
+    XCTAssertTrue(source.contains("ideal: threeColumnWidths.sidebar"))
+    XCTAssertTrue(source.contains("max: DesignTokens.Layout.sidebarMax"))
+    XCTAssertTrue(source.contains("HistoryGallerySplitView(sidebarWidth: DesignTokens.Layout.storedSidebarWidth(storedSidebarWidth))"))
     XCTAssertTrue(source.contains("min: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMin : DesignTokens.Layout.listMin"))
-    XCTAssertTrue(source.contains("ideal: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnIdeal : DesignTokens.Layout.listIdeal"))
+    XCTAssertTrue(source.contains("ideal: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnIdeal : threeColumnWidths.list"))
     XCTAssertTrue(source.contains("CreatorDirectoryChrome.listColumnMin"), "博主目录中栏才缩窄，历史列表仍用 listMin")
     XCTAssertTrue(source.contains("互动数据为保存时快照"))
     XCTAssertTrue(source.contains(".modifier(HistoryWindowToolbarThemeModifier(theme: theme))"))
@@ -464,7 +464,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(source.contains("NavigationSplitView {"), "每个分栏容器都必须绑定共享的可见性状态")
     XCTAssertTrue(source.contains("showsPlatformGallerySurface || model.isCreatorDirectoryActive"))
     XCTAssertTrue(source.contains(".id(\"history-gallery-navigation\")"))
-    XCTAssertTrue(source.contains("HistoryGallerySplitView {"))
+    XCTAssertTrue(source.contains("HistoryGallerySplitView(sidebarWidth:"))
     XCTAssertTrue(source.contains("history-gallery-sidebar-toggle"))
     XCTAssertTrue(source.contains("themedBody\n      .frame(maxWidth: .infinity, maxHeight: .infinity)"))
     XCTAssertTrue(source.contains(".id(\"creator-pagination-\\(last.taskID.rawValue)\")"))
@@ -1707,16 +1707,17 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(PlatformIconCatalog.usesTemplateRendering(forAssetName: "github"))
     XCTAssertFalse(PlatformIconCatalog.usesTemplateRendering(forAssetName: "wechat"))
     XCTAssertFalse(PlatformIconCatalog.usesTemplateRendering(forAssetName: "youtube"))
-    XCTAssertTrue(PlatformIconCatalog.usesLuminanceMask(forAssetName: "douyin"))
-    // 侧栏剪影（2026-09-23）：字形型 logo 取外形，满底型走镂空，列表行的模板规则不受影响。
-    XCTAssertTrue(PlatformIconCatalog.usesGlyphSilhouette(forAssetName: "wechat"))
+    // 侧栏（2026-09-23 改线框）：细线条 logo 取外形，其余自动描轮廓；深底白标型保留内部标志。
     XCTAssertTrue(PlatformIconCatalog.usesGlyphSilhouette(forAssetName: "bilibili"))
+    XCTAssertFalse(PlatformIconCatalog.usesGlyphSilhouette(forAssetName: "wechat"))
     XCTAssertFalse(PlatformIconCatalog.usesGlyphSilhouette(forAssetName: "youtube"))
-    XCTAssertFalse(PlatformIconCatalog.usesLuminanceMask(forAssetName: "wechat"))
+    XCTAssertTrue(PlatformIconCatalog.keepsInnerMarkInOutline(forAssetName: "youtube"))
+    XCTAssertFalse(PlatformIconCatalog.keepsInnerMarkInOutline(forAssetName: "github"))
     let source = historyContentViewSource()
     let icon = section(in: source, from: "struct PlatformNavigationIcon: View", to: "private struct HistoryDetailView")
     XCTAssertTrue(icon.contains("} else if monochrome {"), "侧栏单色模式不能再拿站点 favicon 当平台图标，否则 Substack 一会儿头像一会儿字母")
-    XCTAssertTrue(icon.contains("luminanceToAlpha()"))
+    XCTAssertTrue(icon.contains("sidebarOutlineImage(forAssetName:"))
+    XCTAssertFalse(icon.contains("MonochromeKnockoutIcon"), "侧栏不能再出现实心镂空色块")
   }
 
   func testUnmappedHostStillGetsAStableNonEmptyMark() {

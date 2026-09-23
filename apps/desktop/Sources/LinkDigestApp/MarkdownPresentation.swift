@@ -484,7 +484,10 @@ enum MarkdownPresentation {
   ///
   /// 改这里要连带想到 `SelectableReadingText`：那边的引用块、列表项各有自己的
   /// 行距常数，正文松了而它们没动，段落之间会显得节奏不齐。
-  static let bodyLineSpacing: CGFloat = 10
+  ///
+  /// 2026-09-23 收到 6：正文改回苹方 15pt 后，苹方自带行高已约 1.4 倍，再加 10pt 行距到 2 倍，
+  /// 配上逐句分段，满屏都是空白，和紧凑的侧栏、列表不是一个节奏。6pt 约合 1.8 倍。
+  static let bodyLineSpacing: CGFloat = 6
 
   static func sanitized(_ source: String) -> String {
     var value = replacingHTMLLikeTokensPreservingCode(in: source)

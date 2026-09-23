@@ -429,10 +429,12 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         predicates.append("t.is_favorite = 1")
       case .unused:
         predicates.append("NOT EXISTS (\(Self.usedTagSQL))")
-        // 收件箱不收批量同步的旧档案（备忘录、语音备忘录），见 LocalImportSource.archiveHosts。
+        // 收件箱 = 全部资料减去已归档。MCP 的 unused_only 只看「已使用」（includesArchivesInScopes）。
         if !filter.includesArchivesInScopes {
-          predicates.append("t.normalized_host NOT IN (\(LocalImportSource.archiveHostsSQLList))")
+          predicates.append("NOT (\(Self.archivedSQL))")
         }
+      case .archived:
+        predicates.append("(\(Self.archivedSQL))")
       case .recent:
         // 「最近」按**保存时间**算，不按更新时间。
         //
@@ -613,6 +615,17 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
 
   /// 条目 `t` 是否带「已使用」标签。标签名是常量，直接内联，不占位置参数——
   /// `historyPage` 的谓词与参数按顺序拼接，在 switch 里插参数容易错位。
+  /// 条目 `t` 是否已归档：用过、手动归档，或属于批量同步的旧档案。
+  static var archivedSQL: String {
+    let archived = MaterialCatalog.archivedTagNormalizedName.replacingOccurrences(of: "'", with: "''")
+    return """
+      EXISTS (\(usedTagSQL)) OR EXISTS (
+        SELECT 1 FROM task_tags arc_tt INNER JOIN tags arc_tag ON arc_tag.id = arc_tt.tag_id
+        WHERE arc_tt.task_id = t.id AND arc_tag.normalized_name = '\(archived)'
+      ) OR t.normalized_host IN (\(LocalImportSource.archiveHostsSQLList))
+      """
+  }
+
   static var usedTagSQL: String {
     let name = MaterialCatalog.usedTagNormalizedName.replacingOccurrences(of: "'", with: "''")
     return """
@@ -653,7 +666,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           AND t.normalized_host NOT IN (\(LocalImportSource.archiveHostsSQLList))
         """) ?? 0
       let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured) AND is_favorite = 1") ?? 0
-      let unused = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks t WHERE \(isCaptured) AND NOT EXISTS (\(Self.usedTagSQL)) AND t.normalized_host NOT IN (\(LocalImportSource.archiveHostsSQLList))") ?? 0
+      let unused = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks t WHERE \(isCaptured) AND NOT (\(Self.archivedSQL))") ?? 0
+      let archived = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks t WHERE \(isCaptured) AND (\(Self.archivedSQL))") ?? 0
       // 「已使用」点进去是按标签筛选、带笔记的列表，计数同口径：资料 + 笔记。
       let used = try Int.fetchOne(db, sql: """
         SELECT COUNT(*) FROM tasks t
@@ -697,7 +711,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         arguments: []
       )
       return .init(
-        all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, unused: unused, used: used, notes: notes, works: works,
+        all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, unused: unused, used: used, archived: archived, notes: notes, works: works,
         trash: trash, platforms: platforms, tags: tags, creatorCount: creatorCount, pinnedCreators: pinnedCreators
       )
     }

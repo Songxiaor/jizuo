@@ -127,6 +127,7 @@ struct WindowColumnDividerInstaller: NSViewRepresentable {
     guard let window = probe.window, let contentView = window.contentView else { return }
     if let split = splitView(in: contentView) {
       applyIndependentColumnHoldingPriorities(split)
+      SidebarWidthRecorder.track(split)
     }
     guard let lineColor else {
       teardown(in: window)
@@ -202,6 +203,112 @@ struct WindowColumnDividerInstaller: NSViewRepresentable {
   }
 
 
+
+  /// 记下用户拖出来的栏宽，供重建的三栏和图库页复用；并保证「拖哪条线只动哪条线」。
+  /// 只认三栏 NavigationSplitView（由 NSSplitViewController 托管、至少三栏）；
+  /// 图库页的 HSplitView 左栏是跟随值，不回写，免得两边互相覆盖。
+  @MainActor
+  private enum SidebarWidthRecorder {
+    private static weak var tracked: NSSplitView?
+    private static var observer: NSObjectProtocol?
+    private static var pendingFinalRecord: DispatchWorkItem?
+    /// 最近一次确认的侧栏宽度（不在「拖第二条线」过程中时更新）。
+    private static var settledSidebarWidth: CGFloat?
+    /// 当前这次拖动抓的是哪条线：0 = 侧栏 | 列表，1 = 列表 | 正文。
+    private static var draggingDivider: Int?
+    private static var isRestoringSidebar = false
+
+    static func track(_ split: NSSplitView) {
+      guard split !== tracked else { return }
+      if let observer { NotificationCenter.default.removeObserver(observer) }
+      observer = nil
+      tracked = nil
+      settledSidebarWidth = nil
+      draggingDivider = nil
+      guard let controller = split.delegate as? NSSplitViewController,
+            controller.splitViewItems.count >= 3 else { return }
+      tracked = split
+      settledSidebarWidth = split.arrangedSubviews.first?.frame.width
+      observer = NotificationCenter.default.addObserver(
+        forName: NSSplitView.didResizeSubviewsNotification, object: split, queue: .main
+      ) { [weak split] _ in
+        MainActor.assumeIsolated {
+          guard let split else { return }
+          didResize(split)
+        }
+      }
+    }
+
+    private static func didResize(_ split: NSSplitView) {
+      guard !isRestoringSidebar else { return }
+      let columns = split.arrangedSubviews
+      guard columns.count >= 3 else { return }
+      // 只处理用户按住鼠标拖分隔线。启动、窗口缩放、切换页面时系统也会连发这条通知，
+      // 那些临时宽度记下来会把下次启动的起始宽度带偏（实测记成了最小值）。
+      guard NSEvent.pressedMouseButtons & 1 != 0 else {
+        settledSidebarWidth = columns[0].frame.width
+        return
+      }
+      if draggingDivider == nil {
+        // 鼠标离哪条线近，抓的就是哪条。
+        let mouseX = split.convert(split.window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil).x
+        let first = columns[0].frame.maxX, second = columns[1].frame.maxX
+        draggingDivider = abs(mouseX - second) < abs(mouseX - first) ? 1 : 0
+      }
+      // 拖第二条线时，列表一旦缩到下限，系统会接着压侧栏，看起来就是「拉右边这根线，
+      // 最左边那根也跟着动」（2026-09-23 Syc 反馈）。侧栏被带动了就放回原位：
+      // 列表停在最窄，侧栏不动。系统的「开始改尺寸」通知在这套分栏上不发，
+      // 只能事后纠正。
+      if draggingDivider == 1, let settled = settledSidebarWidth,
+         abs(columns[0].frame.width - settled) > 0.5 {
+        isRestoringSidebar = true
+        split.setPosition(settled, ofDividerAt: 0)
+        isRestoringSidebar = false
+      } else if draggingDivider == 0 {
+        settledSidebarWidth = columns[0].frame.width
+      }
+      saveColumns(split)
+      scheduleFinalRecord(split)
+    }
+
+    /// 松手后补记最终宽度（最后一下常在鼠标抬起之后才到，实测差 8pt），并结束本次拖动。
+    /// 按住不动也会一直等到真正松手。
+    private static func scheduleFinalRecord(_ split: NSSplitView) {
+      pendingFinalRecord?.cancel()
+      let work = DispatchWorkItem { [weak split] in
+        MainActor.assumeIsolated {
+          guard let split else { return }
+          saveColumns(split)
+          if NSEvent.pressedMouseButtons & 1 != 0 {
+            scheduleFinalRecord(split)
+          } else {
+            draggingDivider = nil
+            settledSidebarWidth = split.arrangedSubviews.first?.frame.width
+          }
+        }
+      }
+      pendingFinalRecord = work
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.3, execute: work)
+    }
+
+    private static func saveColumns(_ split: NSSplitView) {
+      let columns = split.arrangedSubviews
+      guard columns.count >= 3 else { return }
+      // 收起侧栏、窗口过渡时的临时宽度不记：只记落在允许范围里的值。
+      save(columns[0], key: DesignTokens.Layout.sidebarWidthStorageKey,
+           range: DesignTokens.Layout.sidebarMin...DesignTokens.Layout.sidebarMax)
+      save(columns[1], key: DesignTokens.Layout.listWidthStorageKey,
+           range: DesignTokens.Layout.listMin...DesignTokens.Layout.listMax)
+    }
+
+    private static func save(_ column: NSView, key: String, range: ClosedRange<CGFloat>) {
+      guard !column.isHidden else { return }
+      let width = column.frame.width.rounded()
+      guard width >= range.lowerBound - 1, width <= range.upperBound + 1 else { return }
+      let defaults = UserDefaults.standard
+      if defaults.double(forKey: key) != Double(width) { defaults.set(Double(width), forKey: key) }
+    }
+  }
 
   private static func splitView(in root: NSView) -> NSSplitView? {
     var queue: [NSView] = [root]

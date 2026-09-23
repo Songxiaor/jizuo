@@ -48,6 +48,11 @@ struct HistoryContentView: View {
   @AppStorage("history.navigation.creators-expanded") private var navigationCreatorsExpanded = false
   @AppStorage("history.navigation.platforms-expanded") private var navigationPlatformsExpanded = false
   @AppStorage("history.navigation.tags-expanded") private var navigationTagsExpanded = false
+  @State private var didRevealInitialNavigationPlatform = false
+  @AppStorage(DesignTokens.Layout.sidebarWidthStorageKey) private var storedSidebarWidth: Double = 0
+  /// 三栏的起始宽度只在三栏建立时取一次。直接绑 `storedSidebarWidth` 的话，拖动中
+  /// 每记一次，系统分栏就按新的 ideal 重新分配一次宽度，几栏会互相推挤。
+  @State private var threeColumnWidths = ThreeColumnWidths.stored()
   /// 列表列的搜索框平时收成列头的一个放大镜图标；点开、⌘F 或已有搜索词时才展开。
   @State private var isListSearchExpanded = false
   /// 点平台默认留在三栏列表里按平台筛选（2026-09-23），和侧栏其他入口一个样子；
@@ -301,7 +306,7 @@ struct HistoryContentView: View {
             // A gallery is a desktop split, not an adaptive navigation stack.
             // NavigationSplitView can collapse its own host to the reader's
             // intrinsic width when the detail swaps back to a ScrollViewReader.
-            HistoryGallerySplitView {
+            HistoryGallerySplitView(sidebarWidth: DesignTokens.Layout.storedSidebarWidth(storedSidebarWidth)) {
               navigationRail.modifier(HistoryWindowToolbarThemeModifier(theme: theme))
             } detail: {
               Group {
@@ -312,12 +317,16 @@ struct HistoryContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .id("history-gallery-navigation")
+            // 回到三栏时从图库页之前记下的宽度起步。
+            .onDisappear { threeColumnWidths = .stored() }
           } else {
             NavigationSplitView(columnVisibility: $columnVisibility) {
+              // 左侧栏可拖；拖出的宽度由 WindowColumnDividerInstaller 记下，
+              // 这里和图库页都从同一个值起步，切换分类不再各自一个宽度。
               navigationRail.navigationSplitViewColumnWidth(
-                min: DesignTokens.Layout.sidebarIdeal,
-                ideal: DesignTokens.Layout.sidebarIdeal,
-                max: DesignTokens.Layout.sidebarIdeal
+                min: DesignTokens.Layout.sidebarMin,
+                ideal: threeColumnWidths.sidebar,
+                max: DesignTokens.Layout.sidebarMax
               )
               .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
             } content: {
@@ -340,7 +349,7 @@ struct HistoryContentView: View {
               .toolbar { listColumnToolbar }
               .navigationSplitViewColumnWidth(
                 min: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMin : DesignTokens.Layout.listMin,
-                ideal: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnIdeal : DesignTokens.Layout.listIdeal,
+                ideal: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnIdeal : threeColumnWidths.list,
                 max: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMax : DesignTokens.Layout.listMax
               )
               .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
@@ -684,6 +693,7 @@ struct HistoryContentView: View {
     }
     switch model.selectedScope {
     case .unused: return "收件箱"
+    case .archived: return "已归档"
     case .all: return "全部资料"
     case .recent: return "最近 7 天"
     case .unsummarized: return "待总结"
@@ -1052,20 +1062,27 @@ struct HistoryContentView: View {
   private var navigationRail: some View {
     ScrollViewReader { proxy in
     List {
-      // 顶部四个入口按「处理进度」排：新来的 → 全部 → 用过的，再加自己写的笔记。
+      // 顶部三个入口是一条处理流程：收件箱 → 全部资料 → 已归档，数字满足 收件箱 + 已归档 = 全部。
       // 原来五个入口按时间、处理状态、标记、使用情况四种逻辑混排，看不出先看哪个。
       Section {
         // 收件箱就是「未使用」：还没被内容创作系统用过的资料，就是待处理的素材。
         navigationButton("收件箱", systemImage: "tray", count: model.navigationCounts.unused, selected: model.selectedScope == .unused && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.unused)
         }
-        .help("还没被内容创作系统用过的资料")
+        .help("新来的、还没处理的资料。看完点「归档」就会移出这里")
         .accessibilityIdentifier("history-navigation-unused")
         navigationButton("全部资料", systemImage: "square.stack", count: model.navigationCounts.all, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.all)
         }
         .accessibilityIdentifier("history-navigation-all")
-        usedMaterialsButton
+        navigationButton("已归档", systemImage: "archivebox", count: model.navigationCounts.archived, selected: model.selectedScope == .archived && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+          model.selectScope(.archived)
+        }
+        .help("用过的、手动归档的，以及备忘录、语音备忘录这类旧档案")
+        .accessibilityIdentifier("history-navigation-archived")
+      }
+      // 「我的笔记」是自己写的东西，和资料的处理进度（收件箱 → 已归档）不是一回事，单独一组。
+      Section {
         navigationButton(
           "我的笔记",
           systemImage: "square.and.pencil",
@@ -1115,7 +1132,7 @@ struct HistoryContentView: View {
 
       // 素材类型：给创作系统分拣素材用的预置标签（灵感、观点…），从标签云里单独拎出来。
       let materialItems = materialNavigationItems
-      if !materialItems.isEmpty {
+      if !materialItems.isEmpty || model.navigationCounts.used > 0 {
         Section {
           if navigationMaterialsExpanded {
             ForEach(materialItems, id: \.type) { item in
@@ -1129,6 +1146,7 @@ struct HistoryContentView: View {
               }
               .accessibilityIdentifier("history-navigation-material-\(item.type.tagName)")
             }
+            if model.navigationCounts.used > 0 { usedMaterialsButton }
           }
         } header: {
           navigationSectionHeader("素材类型", expanded: $navigationMaterialsExpanded)
@@ -1361,18 +1379,31 @@ struct HistoryContentView: View {
     .contentMargins(.bottom, 20, for: .scrollContent)
     .safeAreaInset(edge: .bottom, spacing: 0) { navigationFooter }
     .accessibilityIdentifier("history-navigation-rail")
+    // 只在启动时把「上次选中、但在侧栏下方看不到」的平台露出来一次。
+    // 原来每次选中平台都 scrollTo(.center)，分组展开 / 收起重建侧栏时也会触发，
+    // 结果是点哪一行、整列就跳到哪一行居中，侧栏像被钉在中间（2026-09-23 Syc 反馈）。
+    // 用户自己点的行本来就在眼前，不需要滚。
     .onAppear {
+      guard !didRevealInitialNavigationPlatform else { return }
+      didRevealInitialNavigationPlatform = true
       if let target = navigationPlatformScrollTarget(model.selectedHosts) {
         DispatchQueue.main.async { proxy.scrollTo(target, anchor: .center) }
       }
     }
-    .onChange(of: model.selectedHosts) { _, hosts in
-      if let target = navigationPlatformScrollTarget(hosts) {
-        proxy.scrollTo(target, anchor: .center)
-      }
-    }
     }
     .frame(minHeight: 0, maxHeight: .infinity)
+  }
+
+  struct ThreeColumnWidths: Equatable {
+    var sidebar: CGFloat
+    var list: CGFloat
+
+    static func stored(_ defaults: UserDefaults = .standard) -> Self {
+      Self(
+        sidebar: DesignTokens.Layout.storedSidebarWidth(defaults.double(forKey: DesignTokens.Layout.sidebarWidthStorageKey)),
+        list: DesignTokens.Layout.storedListWidth(defaults.double(forKey: DesignTokens.Layout.listWidthStorageKey))
+      )
+    }
   }
 
   static let localSourceHosts: [String] = [
@@ -1382,7 +1413,7 @@ struct HistoryContentView: View {
   /// 侧栏标签云里不显示的标签：素材类型与「已使用」有自己的入口；和来源平台重名的
   /// 标签（Twitter、YouTube…）只是重复平台信息。只在侧栏隐藏，标签本身不删。
   static let hiddenSidebarTagNames: Set<String> = Set(
-    (MaterialCatalog.MaterialType.allCases.map(\.tagName) + [MaterialCatalog.usedTagName]
+    (MaterialCatalog.MaterialType.allCases.map(\.tagName) + [MaterialCatalog.usedTagName, MaterialCatalog.archivedTagName]
       + ["Twitter", "X", "YouTube", "GitHub", "抖音", "公众号", "微信公众号", "B站", "哔哩哔哩", "bilibili", "小红书", "Reddit", "Substack"])
       .compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
   )
@@ -1903,7 +1934,8 @@ struct HistoryContentView: View {
     case .notes: return "搜索笔记标题、正文、标签"
     case .unsummarized: return "搜索待总结的标题、正文、标签"
     case .favorite: return "搜索收藏的标题、正文、总结、标签"
-    case .unused: return "搜索未使用的标题、正文、总结、标签"
+    case .unused: return "搜索收件箱的标题、正文、总结、标签"
+    case .archived: return "搜索已归档的标题、正文、总结、标签"
     case .recent: return "搜索最近 7 天的标题、正文、总结、标签"
     case .works: return "搜索作品标题、正文、标签"
     case .drafts: return "搜索稿件标题、正文、标签"
@@ -1915,7 +1947,7 @@ struct HistoryContentView: View {
   private var hasClearableListFilters: Bool {
     !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       || model.hasCategoryFilter
-      || ([HistoryListScope.recent, .unsummarized, .favorite, .unused].contains(model.selectedScope) && !model.isCreatorDirectoryActive)
+      || ([HistoryListScope.recent, .unsummarized, .favorite].contains(model.selectedScope) && !model.isCreatorDirectoryActive)
   }
 
   private var listScopeFilterTitle: String? {
@@ -1925,7 +1957,8 @@ struct HistoryContentView: View {
     case .recent: return "最近 7 天"
     case .unsummarized: return "待总结"
     case .favorite: return "收藏"
-    case .unused: return "未使用"
+    // 收件箱、已归档的名字已经写在列表标题上，不再重复成一个筛选胶囊。
+    case .unused, .archived: return nil
     case .trash: return "回收站"
     case .notes, .drafts, .works: return nil
     }
@@ -2088,6 +2121,22 @@ struct HistoryContentView: View {
     }
     .disabled(model.isReadOnly || model.isDeleting)
     .accessibilityIdentifier("history-context-material-used")
+    archiveButton(taskID: row.taskID, tagNames: row.tagNames ?? [], host: row.host)
+  }
+
+  /// 归档 / 移回收件箱。只对普通资料：旧档案（备忘录、录音）本来就在已归档里。
+  @ViewBuilder private func archiveButton(taskID: TaskID, tagNames: [String], host: String) -> some View {
+    let names = Set(tagNames.compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName })
+    let isArchived = names.contains(MaterialCatalog.archivedTagNormalizedName)
+    if !LocalImportSource.archiveHosts.contains(host) {
+      Button {
+        model.toggleMaterialTag(MaterialCatalog.archivedTagName, on: taskID, isOn: !isArchived)
+      } label: {
+        Label(isArchived ? "移回收件箱" : "归档", systemImage: isArchived ? "tray.and.arrow.up" : "archivebox")
+      }
+      .disabled(model.isReadOnly || model.isDeleting)
+      .accessibilityIdentifier("history-context-archive")
+    }
   }
 
   @ViewBuilder private func regularHistoryContextMenu(for row: HistoryRowProjection) -> some View {
@@ -3403,7 +3452,8 @@ private struct HistoryMultiSelectionPanel: View {
       case .recent: parts.append("最近 7 天")
       case .unsummarized: parts.append("待总结")
       case .favorite: parts.append("收藏")
-      case .unused: parts.append("未使用")
+      case .unused: parts.append("收件箱")
+      case .archived: parts.append("已归档")
       case .notes: parts.append("笔记")
       case .drafts: parts.append("稿件")
       case .works: parts.append("作品")
@@ -3511,36 +3561,31 @@ struct PlatformNavigationIcon: View {
       Image(systemName: "ellipsis.circle")
         .resizable()
         .scaledToFit()
-        .frame(width: 16, height: 16)
+        .frame(width: Self.monochromeSize, height: Self.monochromeSize)
     } else if let image = PlatformIconCatalog.image(for: host) {
       // 单色两种画法，同一颜色、同一 16pt 框（2026-09-23 统一）：
       // - 线条型 logo（X、GitHub、B 站、公众号、掘金）：直接取形状，模板渲染；
       // - 满底型 logo（YouTube、抖音、Reddit、小红书、知乎…）：实心底色块，把里面的
       //   白色标志镂空。原来这类是「去色 + 72% 透明」的灰块，和旁边的线条剪影不是一家。
+      // 侧栏单色图标只有两种画法，同一颜色、同一线宽（2026-09-23 统一成线框）：
+      // - 本身就是细线条的 logo（X、B 站、掘金）：直接取形状；
+      // - 其余 logo：自动描成约 1pt 的轮廓，深底白标型再保留里面的标志。
+      //   原来这些是实心块或镂空色块，一列里一半是色块，比文字重得多。
       if monochrome, let name = PlatformIconCatalog.assetName(for: host),
          PlatformIconCatalog.usesGlyphSilhouette(forAssetName: name) {
-        // 取 logo 的外形（透明度）用当前文字色填：公众号、B 站这类彩色字形也变成同色剪影。
         Rectangle()
           .fill(.foreground)
           .mask { Image(nsImage: image).resizable().scaledToFit() }
-          .frame(width: 16, height: 16)
-      } else if monochrome, let name = PlatformIconCatalog.assetName(for: host),
-                PlatformIconCatalog.usesLuminanceMask(forAssetName: name) {
-        // 抖音：只留白色音符当字形，和 X、GitHub 一样轻；镂空成实心块在一列线条图标里太重。
-        Rectangle()
-          .fill(.foreground)
-          .mask {
-            Image(nsImage: image)
-              .resizable().scaledToFit()
-              .luminanceToAlpha()
-          }
-          .frame(width: 16, height: 16)
+          .frame(width: Self.monochromeSize, height: Self.monochromeSize)
       } else if monochrome, PlatformIconCatalog.assetName(for: host) == "xiaohongshu" {
-        // 小红书的标志就是「小红书」三个字，缩到 16pt 镂空后看不清，改成单字徽标。
+        // 小红书的标志就是「小红书」三个字，缩到 14pt 描边后看不清，改成单字线框徽标。
         monochromeLetterBadge("红")
-      } else if monochrome {
-        MonochromeKnockoutIcon(image: image)
-          .frame(width: 16, height: 16)
+      } else if monochrome, let name = PlatformIconCatalog.assetName(for: host),
+                let outline = PlatformIconCatalog.sidebarOutlineImage(forAssetName: name) {
+        Image(nsImage: outline)
+          .renderingMode(.template)
+          .resizable().scaledToFit()
+          .frame(width: Self.monochromeSize, height: Self.monochromeSize)
       } else {
         Image(nsImage: image)
           .resizable().scaledToFit().frame(width: 16, height: 16)
@@ -3559,16 +3604,19 @@ struct PlatformNavigationIcon: View {
     }
   }
 
-  /// 单色字母徽标：当前文字色的圆角块，字镂空。字号 11、圆体，16pt 框里也认得清。
+  /// 侧栏单色图标的显示尺寸：比文字行略小一档，和「本机」区的系统线条图标同一重量。
+  static let monochromeSize: CGFloat = 14
+
+  /// 单色字母徽标：1pt 线框圆角方块，字用常规偏中等字重。原来是实心块、字镂空，
+  /// 一列三个小黑方块（Discourse、Substack、小红书）正是侧栏发重的来源之一。
   private func monochromeLetterBadge(_ letter: String) -> some View {
     ZStack {
-      RoundedRectangle(cornerRadius: 4, style: .continuous).fill(.foreground)
+      RoundedRectangle(cornerRadius: 3.5, style: .continuous)
+        .strokeBorder(.foreground, lineWidth: 1)
       Text(letter)
-        .font(.system(size: 11, weight: .bold, design: .rounded))
-        .blendMode(.destinationOut)
+        .font(.system(size: 9, weight: .medium, design: .rounded))
     }
-    .compositingGroup()
-    .frame(width: 16, height: 16)
+    .frame(width: Self.monochromeSize, height: Self.monochromeSize)
   }
 
   private var fallbackBadge: some View {
@@ -3577,30 +3625,6 @@ struct PlatformNavigationIcon: View {
       .foregroundStyle(PlatformIconCatalog.fallbackBadgeForeground(for: host))
       .frame(width: 16, height: 16)
       .background(PlatformIconCatalog.fallbackBadgeBackground(for: host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
-  }
-}
-
-/// 满底型品牌 logo 的单色版：logo 的外形用当前文字色填实，里面的白色标志镂空。
-///
-/// 镂空量用「去色 → 压暗 → 拉高对比 → 亮度转透明」求：白色标志得到完整透明度，
-/// 红、橙、黑这些底色被压到 0，不会把底色也挖掉一半。
-struct MonochromeKnockoutIcon: View {
-  let image: NSImage
-
-  var body: some View {
-    ZStack {
-      Rectangle()
-        .fill(.foreground)
-        .mask { Image(nsImage: image).resizable().scaledToFit() }
-      Image(nsImage: image)
-        .resizable().scaledToFit()
-        .saturation(0)
-        .brightness(-0.3)
-        .contrast(4)
-        .luminanceToAlpha()
-        .blendMode(.destinationOut)
-    }
-    .compositingGroup()
   }
 }
 
@@ -3668,6 +3692,9 @@ private struct HistoryDetailView: View, Equatable {
   @State private var isCaptionExpanded = false
   @State private var isTranscriptExpanded = false
   @State private var isImportedImageTextExpanded = false
+  @State private var renamingSpeaker: String?
+  @State private var speakerNameDraft = ""
+  @State private var isOnlineDiarizationConfirmPresented = false
   @State private var isSubtitleExpanded = false
   /// 收起长文后滚回该层顶部，避免停在空白处。
   @State private var sourceCollapseScrollTarget: String?
@@ -4239,6 +4266,11 @@ private struct HistoryDetailView: View, Equatable {
   private var isVideoNativeWork: Bool {
     let platform = latestSnapshot?.platform
     if platform == "douyin" || platform == "bilibili" || platform == "x" || platform == "youtube" {
+      return true
+    }
+    // 本机导入的录音 / 视频（语音备忘录、本地文件）主体也是媒体：播放器在上、转写在下。
+    // 不排除的话，十几分钟的转写一过 1200 字就被当成长文，播放器被挤到全文末尾。
+    if localMediaFileURL != nil, let platform, LocalImportSource(rawValue: platform) != nil {
       return true
     }
     return YouTubeWatchLink.videoID(from: sourceURL) != nil
@@ -4847,6 +4879,18 @@ private struct HistoryDetailView: View, Equatable {
               }
               .disabled(abs(readingFontSizeRaw - Double(ReadingFontSize.default)) < 0.01)
               .accessibilityIdentifier("reading-font-reset")
+            }
+          }
+          if model.canEditTags,
+             !LocalImportSource.archiveHosts.contains(URLComponents(string: detail.task.canonicalURL)?.host ?? "") {
+            let isArchived = detail.tags.contains { $0.normalizedName == MaterialCatalog.archivedTagNormalizedName }
+            Section {
+              Button {
+                model.toggleMaterialTag(MaterialCatalog.archivedTagName, on: detail.task.id, isOn: !isArchived)
+              } label: {
+                Label(isArchived ? "移回收件箱" : "归档", systemImage: isArchived ? "tray.and.arrow.up" : "archivebox")
+              }
+              .accessibilityIdentifier("history-detail-archive")
             }
           }
           Section("浏览") {
@@ -6761,6 +6805,7 @@ private struct HistoryDetailView: View, Equatable {
           }
         case .transcript:
           if let transcript = latestTranscriptionSnapshot {
+            speakerBar(transcript: transcript)
             collapsibleSourceSection(
               heading: displayHeading(LayeredSourceDocument.transcriptHeading),
               snapshot: transcript,
@@ -6777,6 +6822,7 @@ private struct HistoryDetailView: View, Equatable {
       ? latestTranscriptionSnapshot
       : latestSnapshot, !snapshot.bodyText.isEmpty {
       if snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue {
+        speakerBar(transcript: snapshot)
         collapsibleSourceSection(
           heading: displayHeading(LayeredSourceDocument.transcriptHeading),
           snapshot: snapshot,
@@ -7255,6 +7301,107 @@ private struct HistoryDetailView: View, Equatable {
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.vertical, 24)
     .accessibilityIdentifier(pane == .source ? "history-reading-source-empty" : "history-reading-result-empty")
+  }
+
+  /// 转写稿上方的「说话人」一行（2026-09-23）：还没分过就给两个入口（本机 / 在线），
+  /// 分过就列出说话人，点名字改名。只在有本机音频的条目上出现——分离要读录音本身。
+  @ViewBuilder private func speakerBar(transcript: ContentSnapshot) -> some View {
+    if localMediaFileURL != nil {
+      let speakers = SpeakerTranscript.speakers(in: transcript.bodyText)
+      let state = model.speakerDiarizationState(for: detail.task.id)
+      VStack(alignment: .leading, spacing: 6) {
+        HStack(spacing: DesignTokens.Space.sm) {
+          Image(systemName: "person.2")
+            .foregroundStyle(theme.secondaryText)
+          if case let .running(message) = state {
+            ProgressView().controlSize(.small)
+            Text(message).foregroundStyle(theme.secondaryText)
+          } else if speakers.isEmpty {
+            Text("区分说话人").foregroundStyle(theme.secondaryText)
+            speakerModeButton("本机", help: "免费，录音不离开这台 Mac") { model.diarizeSpeakers(detail: detail, mode: .local) }
+              .accessibilityIdentifier("history-diarize-local")
+            speakerModeButton("在线", help: "上传录音到你配置的在线服务，按时长计费，通常更准") { isOnlineDiarizationConfirmPresented = true }
+              .accessibilityIdentifier("history-diarize-online")
+          } else {
+            ForEach(speakers, id: \.self) { name in
+              Button {
+                speakerNameDraft = name
+                renamingSpeaker = name
+              } label: {
+                Text(name)
+                  .padding(.horizontal, 8).padding(.vertical, 2)
+                  .background(theme.primaryText.opacity(0.06), in: Capsule())
+              }
+              .buttonStyle(.plain)
+              .help("点击改名，比如改成「张总」")
+              .popover(isPresented: Binding(
+                get: { renamingSpeaker == name },
+                set: { if !$0 { renamingSpeaker = nil } }
+              )) {
+                HStack(spacing: 8) {
+                  TextField("名字", text: $speakerNameDraft)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 160)
+                    .onSubmit(commitSpeakerRename)
+                  Button("改名", action: commitSpeakerRename)
+                    .keyboardShortcut(.defaultAction)
+                }
+                .padding(12)
+              }
+              .accessibilityIdentifier("history-speaker-\(name)")
+            }
+            Spacer(minLength: 0)
+            Menu {
+              Button("本机重新区分") { model.diarizeSpeakers(detail: detail, mode: .local) }
+              Button("在线重新区分…") { isOnlineDiarizationConfirmPresented = true }
+            } label: {
+              Text("重新区分")
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .tint(theme.secondaryText)
+            .fixedSize()
+          }
+          Spacer(minLength: 0)
+        }
+        .themedFont(.callout)
+        if case let .failed(message) = state {
+          HStack(spacing: 8) {
+            Text(message).foregroundStyle(theme.danger)
+            Button("知道了") { model.dismissSpeakerDiarizationFailure() }
+              .buttonStyle(.plain)
+              .foregroundStyle(theme.secondaryText)
+          }
+          .themedFont(.caption)
+        }
+      }
+      .padding(.bottom, DesignTokens.Space.xs)
+      .accessibilityIdentifier("history-speaker-bar")
+      .alert("在线区分说话人", isPresented: $isOnlineDiarizationConfirmPresented) {
+        Button("取消", role: .cancel) {}
+        Button("上传并区分") { model.diarizeSpeakers(detail: detail, mode: .online) }
+      } message: {
+        Text("会把这段录音上传到你在「设置 → 模型」里配置的在线服务（模型名带 diarize 的那个），按录音时长计费。在线结果会替换当前的转写文字。")
+      }
+    }
+  }
+
+  private func speakerModeButton(_ title: String, help: String, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      Text(title)
+        .foregroundStyle(theme.accent)
+        .padding(.horizontal, 8).padding(.vertical, 2)
+        .background(theme.accent.opacity(0.08), in: Capsule())
+    }
+    .buttonStyle(.plain)
+    .help(help)
+    .disabled(model.isReadOnly)
+  }
+
+  private func commitSpeakerRename() {
+    guard let old = renamingSpeaker else { return }
+    model.renameSpeaker(detail: detail, from: old, to: speakerNameDraft)
+    renamingSpeaker = nil
   }
 
   private func isImportedImage(_ snapshot: ContentSnapshot) -> Bool {

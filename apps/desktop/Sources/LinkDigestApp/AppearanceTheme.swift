@@ -213,10 +213,14 @@ private enum ReadingPalette {
   static let sidebar = themeColor(0xF6, 0xF6, 0xF4)
   static let listPane = themeColor(0xFF, 0xFF, 0xFF)
   static let paper = themeColor(0xFF, 0xFF, 0xFF)
-  /// 正文墨色，对白底约 16.8:1。
-  static let ink = themeColor(0x1D, 0x1D, 0x1F)
-  /// 次要文字，对白底约 5.1:1、对侧栏约 4.7:1。
-  static let secondary = themeColor(0x6E, 0x6E, 0x73)
+  /// 正文墨色：暖调深灰，对白底约 12.3:1、对侧栏约 11.3:1。
+  ///
+  /// 2026-09-23 对标 Tolaria 实测改色（原 #1D1D1F，近纯黑冷色）。同为苹方，
+  /// 纯黑字压纯白底反差太硬，笔画边缘显粗；Tolaria 实际渲染出的字色是 #47443E
+  /// 一类暖深灰，读起来细而不发飘。仍远高于 AAA 的 7:1。
+  static let ink = themeColor(0x37, 0x35, 0x2F)
+  /// 次要文字：同一色相的暖灰，对白底约 5.1:1、对侧栏约 4.7:1（原冷灰 #6E6E73）。
+  static let secondary = themeColor(0x6F, 0x6E, 0x6A)
   /// 强调蓝，对白底约 4.9:1、对侧栏约 4.5:1。
   static let accent = themeColor(0x0A, 0x6C, 0xE6)
   /// 分隔线：一条浅而清楚的中性灰，不再带绿。
@@ -229,10 +233,10 @@ private enum InkPalette {
   static let sidebar = themeColor(0x1C, 0x1C, 0x1E)
   static let listPane = themeColor(0x20, 0x20, 0x22)
   static let paper = themeColor(0x23, 0x23, 0x26)
-  /// 正文，对画布约 14.5:1。
-  static let ink = themeColor(0xED, 0xED, 0xEF)
-  /// 次要文字，对画布约 6.1:1、对正文卡约 5.6:1。
-  static let secondary = themeColor(0x9A, 0x9A, 0xA0)
+  /// 正文：和浅色同一路暖调，不用接近纯白的冷灰，对正文卡约 12.1:1、对侧栏约 13.1:1。
+  static let ink = themeColor(0xE3, 0xE2, 0xDE)
+  /// 次要文字，对正文卡约 5.6:1、对侧栏约 6.0:1。
+  static let secondary = themeColor(0x9B, 0x9A, 0x96)
   /// 浅色强调蓝提亮后的版本，对画布约 6.5:1。
   static let accent = themeColor(0x5A, 0xA2, 0xFF)
   /// 压在强调色块上的文字：深蓝黑，对 accent 约 6.7:1。

@@ -1396,6 +1396,12 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       },
       startupTranscriptionCleanupFailure: startupTranscriptionCleanupFailure
     )
+    // 说话人分离：本机模型放在汲作自己的数据目录下，首次使用时下载。
+    historyModel.localSpeakerDiarizer = LocalSpeakerDiarizer(
+      modelsDirectory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        .appendingPathComponent("LinkDigest/Models/SpeakerDiarization", isDirectory: true)
+    )
+    historyModel.onlineSpeakerDiarizer = OnlineSpeakerDiarizer(configurationService: configurationService)
     var manualAdapters: [any SourceAdapting] = [douyinAdapter, xiaohongshuAdapter, bilibiliAdapter, githubAdapter]
     #if DEBUG
     if let fixtureRoot = ProfileImportBatchPipelineFixture.root {
@@ -1974,13 +1980,12 @@ private struct LinkDigestCommands: Commands {
       // 不再挂菜单快捷键，免得同一个组合键被触发两次。
       Button("快速记录（\(QuickCaptureController.shortcutDescription)）") { quickCapture.show() }
       Divider()
+      // 不跟 canImport 绑 disabled（2026-09-23）：菜单栏的启用状态在 SwiftUI Commands 里
+      // 不一定跟着刷新，实测启动后会一直灰着。改为常亮，未就绪时由控制器说明原因。
       Button("导入本地文件…") { localImport.chooseFiles() }
         .keyboardShortcut("i", modifiers: [.command, .shift])
-        .disabled(!localImport.canImport)
       Button("同步语音备忘录") { localImport.syncVoiceMemos() }
-        .disabled(!localImport.canImport)
       Button("同步备忘录") { localImport.syncAppleNotes() }
-        .disabled(!localImport.canImport)
     }
     CommandGroup(after: .textEditing) {
       Button("搜索历史") { focusHistorySearch?.run() }

@@ -1330,6 +1330,161 @@ final class HistoryViewModel {
   }
 
 
+  // MARK: - 说话人分离（2026-09-23）
+
+  enum SpeakerDiarizationMode: Equatable { case local, online }
+  enum SpeakerDiarizationState: Equatable {
+    case idle
+    case running(String)
+    case failed(String)
+  }
+
+  /// 本机与在线两种分离器，由 App 组合根注入；nil 表示这台机器上不可用。
+  var localSpeakerDiarizer: LocalSpeakerDiarizer?
+  var onlineSpeakerDiarizer: OnlineSpeakerDiarizer?
+  private(set) var speakerDiarizationState: SpeakerDiarizationState = .idle
+  private(set) var speakerDiarizationTaskID: TaskID?
+  private var speakerDiarizationTask: Task<Void, Never>?
+  /// 本机录音转写时并行跑的说话人分离，等详情重新载入（拿到新转写稿）后合并。
+  /// 「转写」用的是系统听写，本身分不出人；原来要另点一次「区分说话人 · 本机」，
+  /// 用户看不到那个入口，就以为装好的分离模型没生效（2026-09-23）。
+  private var pendingAutoDiarization: PreparedSpeakerDiarization?
+
+  struct PreparedSpeakerDiarization {
+    let taskID: TaskID
+    /// 转写时顺手记下的带时间短语；空表示没拿到，合并时退回重新识别。
+    let phrases: [SpeakerSegment]
+    let segments: Task<[SpeakerSegment], Error>
+  }
+
+  func speakerDiarizationState(for taskID: TaskID) -> SpeakerDiarizationState {
+    speakerDiarizationTaskID == taskID ? speakerDiarizationState : .idle
+  }
+
+  /// 给当前条目的转写稿标上说话人。本机：在已有转写分段上配说话人；
+  /// 在线：服务端连文字带说话人一起返回，整篇替换转写稿的文字。
+  func diarizeSpeakers(
+    detail: HistoryDetailProjection,
+    mode: SpeakerDiarizationMode,
+    prepared: PreparedSpeakerDiarization? = nil
+  ) {
+    guard let history, !isReadOnly, let audioURL = localMediaFileURL,
+          let transcript = LayeredSourceDocument.transcriptSnapshot(in: detail.snapshots)
+    else { return }
+    let taskID = detail.task.id
+    speakerDiarizationTask?.cancel()
+    speakerDiarizationTaskID = taskID
+    speakerDiarizationState = .running(
+      prepared != nil ? "正在区分说话人…"
+        : mode == .local ? "正在本机分辨说话人…（首次使用要下载约 20MB 的模型）"
+        : "正在上传录音，由在线服务分辨说话人…"
+    )
+    let local = localSpeakerDiarizer, online = onlineSpeakerDiarizer
+    let body = LayeredSourceDocument.body(of: transcript)
+    let locale = CapturedContentLanguage.speechLocaleIdentifier(in: body)
+    var paragraphs = transcriptParagraphs(snapshotID: transcript.id)
+    if paragraphs.isEmpty { paragraphs = SpeakerTranscript.paragraphs(fromTimestampedBody: body) }
+    paragraphs = SpeakerTranscript.strippingSpeakers(paragraphs, knownSpeakers: SpeakerTranscript.speakers(in: body))
+    let store = history.transcriptParagraphStore
+    speakerDiarizationTask = Task { [weak self] in
+      do {
+        let labeled: [(paragraph: TranscriptParagraph, speaker: String)]
+        switch mode {
+        case .local:
+          let segments: [SpeakerSegment]
+          if let prepared {
+            do { segments = try await prepared.segments.value }
+            catch let error as SpeakerDiarizationError { throw error }
+            catch { throw SpeakerDiarizationError.audioUnreadable }
+          } else {
+            guard let local else { throw SpeakerDiarizationError.modelUnavailable("") }
+            segments = try await local.diarize(audioURL: audioURL)
+          }
+          // 要短语级的时间：存下来的分段常常一整段对话只有一个时间码，换人落在段落
+          // 中间就分不开。转写时已经记下就直接用；没有才重新识别一遍；再不行按分段配。
+          var phrases = prepared?.phrases ?? []
+          if phrases.isEmpty {
+            let workspace = FileManager.default.temporaryDirectory
+              .appendingPathComponent("linkdigest-diarize-\(UUID().uuidString)", isDirectory: true)
+            try? FileManager.default.createDirectory(at: workspace, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: workspace) }
+            phrases = (try? await AppleSpeechVideoTranscriber().recognizeTimedPhrases(
+              fileURL: audioURL, workspaceURL: workspace, localeIdentifier: locale
+            )) ?? []
+          }
+          if !phrases.isEmpty {
+            labeled = SpeakerTranscript.paragraphs(
+              fromDiarizedSegments: SpeakerTranscript.labelPhrases(phrases, with: segments)
+            )
+          } else {
+            labeled = SpeakerTranscript.assignSpeakers(to: paragraphs, segments: segments)
+          }
+        case .online:
+          guard let online else { throw SpeakerDiarizationError.onlineNotConfigured }
+          let segments = try await online.diarize(audioURL: audioURL)
+          labeled = SpeakerTranscript.paragraphs(fromDiarizedSegments: segments)
+        }
+        guard !Task.isCancelled, !labeled.isEmpty else { return }
+        let rendered = SpeakerTranscript.render(labeled)
+        try history.updateSnapshotBodyText(
+          taskID: taskID, snapshotID: transcript.id, bodyText: rendered.body,
+          updatedAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1000)
+        )
+        try store?.saveTranscriptParagraphs(rendered.paragraphs, snapshotID: transcript.id.rawValue)
+        guard let self else { return }
+        self.speakerDiarizationState = .idle
+        self.refreshDetailAfterTranscription(taskID: taskID)
+      } catch let error as SpeakerDiarizationError {
+        self?.speakerDiarizationState = .failed(error.userMessage)
+      } catch {
+        self?.speakerDiarizationState = .failed("没能保存说话人结果，请重试。")
+      }
+    }
+  }
+
+  private func startPendingAutoDiarization(detail: HistoryDetailProjection) {
+    guard let prepared = pendingAutoDiarization, prepared.taskID == detail.task.id, localMediaFileURL != nil,
+          let transcript = LayeredSourceDocument.transcriptSnapshot(in: detail.snapshots)
+    else { return }
+    pendingAutoDiarization = nil
+    // 已经分过（比如手动点过）就不覆盖。
+    guard SpeakerTranscript.speakers(in: transcript.bodyText).isEmpty else {
+      prepared.segments.cancel()
+      return
+    }
+    diarizeSpeakers(detail: detail, mode: .local, prepared: prepared)
+  }
+
+  /// 在线分离是否可用（模型库里配了带 diarize 的模型）。
+  func isOnlineSpeakerDiarizationConfigured() async -> Bool {
+    await onlineSpeakerDiarizer?.configuredProfile() != nil
+  }
+
+  /// 说话人改名：正文和分段一起换。
+  func renameSpeaker(detail: HistoryDetailProjection, from old: String, to new: String) {
+    guard let history, !isReadOnly,
+          let transcript = LayeredSourceDocument.transcriptSnapshot(in: detail.snapshots) else { return }
+    let body = transcript.bodyText
+    let renamed = SpeakerTranscript.renaming(old, to: new, in: body)
+    guard renamed != body else { return }
+    do {
+      try history.updateSnapshotBodyText(
+        taskID: detail.task.id, snapshotID: transcript.id, bodyText: renamed,
+        updatedAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1000)
+      )
+      let paragraphs = SpeakerTranscript.renaming(old, to: new, in: transcriptParagraphs(snapshotID: transcript.id))
+      try history.transcriptParagraphStore?.saveTranscriptParagraphs(paragraphs, snapshotID: transcript.id.rawValue)
+      refreshDetailAfterTranscription(taskID: detail.task.id)
+    } catch {
+      speakerDiarizationTaskID = detail.task.id
+      speakerDiarizationState = .failed("没能保存新名字，请重试。")
+    }
+  }
+
+  func dismissSpeakerDiarizationFailure() {
+    if case .failed = speakerDiarizationState { speakerDiarizationState = .idle }
+  }
+
   func transcriptParagraphs(snapshotID: ContentSnapshotID) -> [TranscriptParagraph] {
     guard let store = history?.transcriptParagraphStore else { return [] }
     return (try? store.loadTranscriptParagraphs(snapshotID: snapshotID.rawValue)) ?? []
@@ -4926,7 +5081,7 @@ final class HistoryViewModel {
         case .transcribing: transcriptionState = .transcribing
         case let .partial(text): setTranscriptionText(text)
         case let .final(text): finalText = text; setTranscriptionText(text)
-        case .finalParagraphs: break
+        case .finalParagraphs, .finalPhrases: break
         }
       }
       try Task.checkCancellation()
@@ -5037,8 +5192,21 @@ final class HistoryViewModel {
       transcriptionState = .failed("无法更新本机转写状态，请检查历史存储后重试。")
       return
     }
+    // 本机导入的录音 / 视频（会议、对话多在这里）：转写和说话人分离同时开跑。
+    // 分离模型在神经网络引擎上跑，转写一结束两边结果直接合并，不再「转完一遍、
+    // 再为取时间重新识别一遍」（2026-09-23）。抓来的网络视频照旧手动分。
+    var speakerSegmentsTask: Task<[SpeakerSegment], Error>?
+    if let local = localSpeakerDiarizer,
+       let platform = context.detail.snapshots.last?.platform,
+       LocalImportSource(rawValue: platform) != nil {
+      let audioURL = context.fileURL
+      speakerSegmentsTask = Task.detached(priority: .userInitiated) { try await local.diarize(audioURL: audioURL) }
+    }
+    var handedOffSpeakerSegments = false
+    defer { if !handedOffSpeakerSegments { speakerSegmentsTask?.cancel() } }
     do {
       var finalText = ""
+      var finalPhrases: [SpeakerSegment] = []
       for try await event in transcriber.transcribe(fileURL: context.fileURL, workspaceURL: context.workspaceURL, localeIdentifier: context.localeIdentifier) {
         try Task.checkCancellation()
         guard transcriptionRequestID == requestID else { return }
@@ -5048,6 +5216,7 @@ final class HistoryViewModel {
         case let .partial(text): setTranscriptionText(text)
         case let .final(text): finalText = text; setTranscriptionText(text)
         case .finalParagraphs: break
+        case let .finalPhrases(phrases): finalPhrases = phrases
         }
       }
       try Task.checkCancellation()
@@ -5077,6 +5246,13 @@ final class HistoryViewModel {
       }
       transcriptionState = .completed
       pendingTranscriptionContext = nil
+      if let speakerSegmentsTask {
+        // 转写稿要等详情重新载入才拿得到快照 ID，合并放到那时做。
+        pendingAutoDiarization = PreparedSpeakerDiarization(
+          taskID: context.taskID, phrases: finalPhrases, segments: speakerSegmentsTask
+        )
+        handedOffSpeakerSegments = true
+      }
       refreshDetailAfterTranscription(taskID: context.taskID)
     } catch is CancellationError {
       guard transcriptionRequestID == requestID else { return }
@@ -6913,7 +7089,7 @@ final class HistoryViewModel {
               pendingPartial = nil
               lastPartialFlush = .now
             }
-          case .finalParagraphs: break
+          case .finalParagraphs, .finalPhrases: break
           case .final(let text):
             latest = text
           case .transcribing:
@@ -7053,6 +7229,7 @@ final class HistoryViewModel {
         localMediaFileURL = nil
         localMediaResolutionFailure = nil
       }
+      startPendingAutoDiarization(detail: value)
       mindMapRecord = sideload.mindMapRecord
       // 后台自动管线可能正在给另一条生成脑图。切换详情只应让当前条目看到
       // 自己的 idle 状态，不能把那条仍在运行的全局任务清掉并放开并发闸门。

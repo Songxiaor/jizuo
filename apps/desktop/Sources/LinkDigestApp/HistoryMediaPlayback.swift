@@ -2103,6 +2103,151 @@ extension View {
 /// 盖在 AVKit 片尾 overlay 上面：那颗系统「重新播放」在 SwiftUI `VideoPlayer`
 /// + 描边 overlay / AppKit 滚动器里经常点了没反应。这颗按钮走我们自己的
 /// seek+play，不依赖 AVKit 内部动作。
+/// 浅色音频播放条：播放 / 暂停、进度、时间、倍速。颜色全部来自主题令牌，深浅主题都成立。
+struct LightAudioPlaybackBar: View {
+  let player: AVPlayer?
+  let theme: HistoryThemeTokens
+  @Binding var isPlaybackEnded: Bool
+
+  @State private var isPlaying = false
+  @State private var current: Double = 0
+  @State private var duration: Double = 0
+  @State private var scrubValue: Double?
+  @State private var rate: Float = 1
+  @State private var timeObserver: Any?
+  @State private var observedPlayer: AVPlayer?
+
+  private static let rates: [Float] = [1, 1.25, 1.5, 2]
+
+  var body: some View {
+    HStack(spacing: DesignTokens.Space.md) {
+      Button(action: togglePlay) {
+        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+          .font(.system(size: 13, weight: .semibold))
+          .foregroundStyle(Color.white)
+          .frame(width: 32, height: 32)
+          .background(theme.accent, in: Circle())
+          .contentShape(Circle())
+      }
+      .buttonStyle(.plain)
+      .disabled(player == nil)
+      .help(isPlaying ? "暂停（空格）" : "播放（空格）")
+      .accessibilityLabel(isPlaying ? "暂停" : "播放")
+      .accessibilityIdentifier("history-audio-play-toggle")
+
+      Text(Self.format(scrubValue ?? current))
+        .themedFont(.caption, monospacedDigit: true)
+        .foregroundStyle(theme.secondaryText)
+        .frame(minWidth: 38, alignment: .trailing)
+
+      Slider(
+        value: Binding(
+          get: { scrubValue ?? current },
+          set: { scrubValue = $0 }
+        ),
+        in: 0...max(duration, 0.1),
+        onEditingChanged: { editing in
+          guard !editing, let target = scrubValue else { return }
+          player?.seek(to: CMTime(seconds: target, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+          current = target
+          scrubValue = nil
+          if isPlaybackEnded, target < duration - 0.5 { isPlaybackEnded = false }
+        }
+      )
+      .tint(theme.accent)
+      .controlSize(.small)
+      .disabled(duration <= 0)
+      .accessibilityLabel("播放进度")
+
+      Text(Self.format(duration))
+        .themedFont(.caption, monospacedDigit: true)
+        .foregroundStyle(theme.secondaryText)
+        .frame(minWidth: 38, alignment: .leading)
+
+      Button {
+        let index = (Self.rates.firstIndex(of: rate) ?? 0) + 1
+        rate = Self.rates[index % Self.rates.count]
+        if isPlaying { player?.rate = rate }
+      } label: {
+        Text(rate == 1 ? "1×" : String(format: "%g×", rate))
+          .themedFont(.caption, weight: .medium, monospacedDigit: true)
+          .foregroundStyle(rate == 1 ? theme.secondaryText : theme.accent)
+          .frame(minWidth: 34)
+          .padding(.vertical, 3)
+          .background(theme.primaryText.opacity(0.05), in: Capsule())
+      }
+      .buttonStyle(.plain)
+      .help("播放速度")
+      .accessibilityIdentifier("history-audio-rate")
+    }
+    .padding(.horizontal, DesignTokens.Space.md)
+    .padding(.vertical, DesignTokens.Space.sm)
+    .background(theme.primaryText.opacity(0.035), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+        .strokeBorder(theme.hairline, lineWidth: 1)
+    )
+    .onAppear { attach(player) }
+    .onChange(of: player) { _, next in attach(next) }
+    .onChange(of: isPlaybackEnded) { _, ended in if ended { isPlaying = false } }
+    .onDisappear { detach() }
+  }
+
+  private func togglePlay() {
+    guard let player else { return }
+    if isPlaying {
+      player.pause()
+    } else {
+      if isPlaybackEnded || (duration > 0 && current >= duration - 0.25) {
+        player.seek(to: .zero)
+        isPlaybackEnded = false
+      }
+      player.playImmediately(atRate: rate)
+    }
+  }
+
+  private func attach(_ next: AVPlayer?) {
+    guard next !== observedPlayer else { return }
+    detach()
+    observedPlayer = next
+    current = 0
+    duration = 0
+    guard let next else { return }
+    // 没点播放之前时间观察者不会报出总时长，右边会一直是 0:00；直接从音频文件读一次。
+    if let asset = next.currentItem?.asset {
+      Task { @MainActor in
+        if let total = try? await asset.load(.duration).seconds, total.isFinite, total > 0, observedPlayer === next {
+          duration = total
+        }
+      }
+    }
+    timeObserver = next.addPeriodicTimeObserver(
+      forInterval: CMTime(seconds: 0.25, preferredTimescale: 600), queue: .main
+    ) { time in
+      MainActor.assumeIsolated {
+        current = max(0, time.seconds.isFinite ? time.seconds : 0)
+        isPlaying = next.rate != 0
+        if let item = next.currentItem {
+          let total = item.duration.seconds
+          if total.isFinite, total > 0 { duration = total }
+        }
+      }
+    }
+  }
+
+  private func detach() {
+    if let timeObserver, let observedPlayer { observedPlayer.removeTimeObserver(timeObserver) }
+    timeObserver = nil
+    observedPlayer = nil
+  }
+
+  static func format(_ seconds: Double) -> String {
+    let total = max(0, Int(seconds.isFinite ? seconds.rounded(.down) : 0))
+    let hours = total / 3600, minutes = (total % 3600) / 60, rest = total % 60
+    return hours > 0 ? String(format: "%d:%02d:%02d", hours, minutes, rest) : String(format: "%d:%02d", minutes, rest)
+  }
+}
+
 private struct PlaybackReplayOverlay: View {
   let player: AVPlayer?
   @Binding var isPlaybackEnded: Bool
@@ -2482,19 +2627,10 @@ struct HistoryVideoPlayerCard: View {
             .themedFont(.callout)
             .foregroundStyle(.secondary)
         }
-        VideoPlayer(player: player)
-          .frame(height: 64)
-          .background(Color.black)
+        // 纯音频不用系统视频控件：那条 64pt 的黑底条在白色阅读页上是整页最重的一块
+        //（2026-09-23）。换成跟主题走的浅色播放条，播完直接回到可重播状态。
+        LightAudioPlaybackBar(player: player, theme: appTheme, isPlaybackEnded: $isPlaybackEnded)
           .background(spaceKeyToggle.allowsHitTesting(false))
-          .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
-          .overlay(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
-              .strokeBorder(Color.primary.opacity(0.08), lineWidth: 1)
-              .allowsHitTesting(false)
-          )
-          .overlay {
-            PlaybackReplayOverlay(player: player, isPlaybackEnded: $isPlaybackEnded)
-          }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .accessibilityIdentifier("history-audio-only-player")

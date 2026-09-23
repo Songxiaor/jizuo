@@ -266,7 +266,8 @@ enum ReadingFontSelection: Equatable {
 /// 阅读区正文字号偏好。
 enum ReadingFontSize {
   static let storageKey = "com.syc.linkdigest.reading-font-size"
-  static let `default`: CGFloat = 16.5
+  /// 15：比列表正文（13pt）大一档而不是两档，两栏并排时比例连贯（2026-09-23，原 16.5）。
+  static let `default`: CGFloat = 15
   static let minimum: CGFloat = 13
   static let maximum: CGFloat = 24
   static let step: CGFloat = 0.5

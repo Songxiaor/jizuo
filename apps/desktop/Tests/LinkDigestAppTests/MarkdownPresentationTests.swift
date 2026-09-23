@@ -14,8 +14,9 @@ final class MarkdownPresentationTests: XCTestCase {
     // 测试钉当前已验收外观，不为旧色板回退主题。
     assertColor(paper.canvas, red: 0xF6, green: 0xF6, blue: 0xF4)
     assertColor(paper.card, red: 0xFF, green: 0xFF, blue: 0xFF)
-    assertColor(paper.primaryText, red: 0x1D, green: 0x1D, blue: 0x1F)
-    assertColor(paper.secondaryText, red: 0x6E, green: 0x6E, blue: 0x73)
+    // 文字色同日再对标 Tolaria 实测改为暖深灰（原 #1D1D1F / #6E6E73 近纯黑冷灰）。
+    assertColor(paper.primaryText, red: 0x37, green: 0x35, blue: 0x2F)
+    assertColor(paper.secondaryText, red: 0x6F, green: 0x6E, blue: 0x6A)
     assertColor(paper.hairline, red: 0xE6, green: 0xE6, blue: 0xE3)
     assertColor(paper.accent, red: 0x0A, green: 0x6C, blue: 0xE6)
     XCTAssertGreaterThan(try contrastRatio(paper.primaryText, paper.canvas), 7)

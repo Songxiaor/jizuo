@@ -20,6 +20,9 @@ let package = Package(
   dependencies: [
     .package(url: "https://github.com/groue/GRDB.swift.git", exact: "7.11.1"),
     .package(url: "https://github.com/sparkle-project/Sparkle", exact: "2.9.5"),
+    // 本机说话人分离（2026-09-23 Syc 批准）。代码 Apache-2.0；分离模型 CC-BY-4.0，
+    // 首次使用时从 HuggingFace 下载到本机，之后离线运行，录音不出本机。
+    .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.16.1"),
     .package(path: "../../packages/LinkDigestShared"),
   ],
   targets: [
@@ -32,7 +35,7 @@ let package = Package(
   ),
   .target(
     name: "LinkDigestAdapters",
-    dependencies: ["LinkDigestCore"],
+    dependencies: ["LinkDigestCore", .product(name: "FluidAudio", package: "FluidAudio")],
     linkerSettings: [
       .linkedFramework("Security"),
       .linkedFramework("CFNetwork"),
