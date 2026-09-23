@@ -160,32 +160,54 @@ struct UIReadingHistoryRow: View {
     HStack(alignment: .top, spacing: DesignTokens.Space.sm) {
       ZStack(alignment: .bottomTrailing) {
         favicon
-        statusIndicator
-          .frame(width: 7, height: 7)
-          .background(
-            Circle().fill(theme.card).padding(-1.5)
-          )
-          .offset(x: 1, y: 1)
-          .accessibilityLabel("总结状态")
-          .accessibilityValue(isSummarized ? "已总结" : "未总结")
+        // 2026-09-23：彩色状态点不再叠在每一行的图标上。九成条目都是「未总结」，
+        // 满屏棕点只是噪点；状态仍在「待总结」筛选、悬停提示和读屏文本里。
+        // 只有按形状编码状态的主题（给色弱用户）才保留这个标记。
+        if theme.encodesStatusByShape {
+          statusIndicator
+            .frame(width: 7, height: 7)
+            .background(
+              Circle().fill(theme.card).padding(-1.5)
+            )
+            .offset(x: 1, y: 1)
+            .accessibilityLabel("总结状态")
+            .accessibilityValue(isSummarized ? "已总结" : "未总结")
+        }
       }
       .frame(width: 18, height: 18)
       .padding(.trailing, 2)
       .padding(.bottom, 2)
       // 三行之间留 4pt：标题、预览、作者原来只隔 2pt，扫读时几行糊成一团。
       VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+        // 标题固定占两行高度。
+        //
+        // 标题是 1 行还是 2 行取决于内容长度，卡片高度就跟着在两个值之间跳
+        // （实测差约 13pt）。一列扫下来每张卡片高矮不齐，眼睛找不到稳定的落点
+        // 节奏——这比间距差几 pt 更容易被看成「粗糙」，也是对标的三栏笔记类
+        // 应用看起来齐整的原因：它们每条的结构和高度是固定的。
+        //
+        // 用一段隐藏的两行文本撑高度，而不是写死磅值：字号跟随用户在设置里选的
+        // UI 字体族和字号，硬编码会在换字体后失准。
         Text(text.title)
           .themedFont(.body, weight: .semibold)
-          .lineLimit(2)
-          .multilineTextAlignment(.leading)
-          .frame(maxWidth: .infinity, alignment: .leading)
+          // reservesSpace 而不是普通的 lineLimit(2)：标题只有一行时也按两行占位，
+          // 卡片高度不再随标题长短在两个值之间跳。字号跟随用户选的 UI 字体族，
+          // 所以这里不能改成写死的 minHeight。
+          // 2026-09-23 对标调整：标题只占 1 行，腾出来的高度给摘要多露一行。
+          // 原来固定占两行，标题短时会空出一整行，列表里到处是空白。
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .frame(maxWidth: .infinity, alignment: .topLeading)
         // 预览行原来只喂给 VoiceOver：算好了、骨架屏也给它留了位置，
         // 视觉上却从来没画出来——看得见的人反而比读屏的人知道得少。
         if let preview = text.preview {
+          // 摘要两行、比来源和时间深一档：三级文字（标题／摘要／来源时间）各有明确分量。
           Text(preview)
-            .themedFont(.subheadline)
-            .foregroundStyle(theme.secondaryText)
-            .lineLimit(1)
+            .themedFont(.callout)
+            .foregroundStyle(theme.primaryText.opacity(0.66))
+            // 不预留第二行：摘要只有一行的条目（多是本地文件）不该空出一截。
+            .lineLimit(2)
+            .lineSpacing(2)
             .truncationMode(.tail)
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityHidden(true)
@@ -194,8 +216,8 @@ struct UIReadingHistoryRow: View {
           // 笔记的「作者」就是「我的笔记」，在笔记分类里每行都写一遍没有意义。
           if showsAuthor, !row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
             Text(rowSourceText)
-              .themedFont(.subheadline)
-              .foregroundStyle(.secondary)
+              .themedFont(.caption)
+              .foregroundStyle(theme.secondaryText.opacity(0.85))
               .lineLimit(1)
               .layoutPriority(1)
           }
@@ -212,8 +234,8 @@ struct UIReadingHistoryRow: View {
           // 按日期命名的笔记（「8月20日」）标题已经就是日期，右下角再写一遍是白占一行。
           if savedTime != text.title {
             Text(savedTime)
-              .themedFont(.subheadline)
-              .foregroundStyle(theme.secondaryText)
+              .themedFont(.caption, monospacedDigit: true)
+              .foregroundStyle(theme.secondaryText.opacity(0.85))
               .lineLimit(1)
               .fixedSize()
           }
@@ -235,6 +257,7 @@ struct UIReadingHistoryRow: View {
       }
     }
     .padding(.horizontal, DesignTokens.Space.sm)
+    // 上下 10pt：条目之间改由细分隔线分开，不再靠大留白。
     .padding(.vertical, 10)
     .frame(minHeight: 44, alignment: .leading)
     .background(
@@ -242,6 +265,19 @@ struct UIReadingHistoryRow: View {
         .fill(rowBackground)
     )
     .background(UIReadingListSelectionStyle(usesSystemSelection: theme.isNative))
+    // 条目之间一条细线（对标应用的分隔方式）；选中或悬停时由底色区分，线收起来。
+    .overlay(alignment: .bottom) {
+      if !isSelected && !isHovering {
+        // 1pt 而不是 0.5pt：半点线落在行高的小数位置上会被抗锯齿成一道 2px 的虚边，
+        // 看起来发糊。整点宽度配浅色，线是清楚的。
+        Rectangle()
+          .fill(theme.hairline)
+          .frame(height: 1)
+          .padding(.horizontal, DesignTokens.Space.sm)
+          .offset(y: 4)
+          .accessibilityHidden(true)
+      }
+    }
     .foregroundStyle(theme.primaryText)
     .animation(
       DesignTokens.Motion.resolved(DesignTokens.Motion.quick, reduceMotion: reduceMotion),
@@ -355,9 +391,9 @@ struct UIReadingHistoryRow: View {
   private var fallbackBadge: some View {
     Text(PlatformIconCatalog.fallbackInitial(for: row.host))
       .font(.system(size: BadgeTypography.size, weight: .bold))
-      .foregroundStyle(.white)
+      .foregroundStyle(PlatformIconCatalog.fallbackBadgeForeground(for: row.host))
       .frame(width: 18, height: 18)
-      .background(PlatformIconCatalog.fallbackColor(for: row.host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+      .background(PlatformIconCatalog.fallbackBadgeBackground(for: row.host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
       .accessibilityLabel("\(row.host) 图标")
   }
 }

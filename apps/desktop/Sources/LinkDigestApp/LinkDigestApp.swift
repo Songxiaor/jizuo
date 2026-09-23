@@ -776,6 +776,7 @@ final class AppViewModel {
       case CapturedDocument.Origin.manualLink.rawValue: return .manualLink
       case CapturedDocument.Origin.localTranscription.rawValue: return .localTranscription
       case CapturedDocument.Origin.burnedInSubtitles.rawValue: return .burnedInSubtitles
+      case CapturedDocument.Origin.localImport.rawValue: return .localImport
       default: return .browserCapture
       }
     }()
@@ -1174,6 +1175,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   @StateObject private var knowledgeVaultSettings: KnowledgeVaultSettingsViewModel
   @State private var companionNoteSync = CompanionNoteSyncCoordinator()
   @StateObject private var sessionMediaPlayback: SessionMediaPlaybackController
+  @StateObject private var localImport: LocalImportController
+  @StateObject private var quickCapture = QuickCaptureController()
   @State private var didBootstrap = false
   /// 注入 `\.appTheme` 用。视图各自读 AppStorage 会重复三行样板，
   /// 而设置页那几个子视图当初就是因为拿不到主题才写死了 `.red`。
@@ -1615,6 +1618,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       }
     }
     _manualLink = StateObject(wrappedValue: manualLink)
+    _localImport = StateObject(wrappedValue: LocalImportController(mediaStore: mediaStore, imageCache: imageCache))
     _providerSettings = State(
       initialValue: ProviderSettingsViewModel(
         configurationService: configurationService,
@@ -1651,6 +1655,11 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         browserSupport: browserSupport,
         sessionMediaPlayback: sessionMediaPlayback
       )
+        .environmentObject(localImport)
+        .localImportDropTarget(localImport)
+        .sheet(isPresented: $localImport.isPresented) {
+          LocalImportStatusSheet(controller: localImport)
+        }
         .onReceive(NotificationCenter.default.publisher(for: .companionNoteSyncDidFinish)) { _ in
           historyModel.reload()
         }
@@ -1744,6 +1753,10 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
                 }
               }
             )
+            // 必须排在 manualLink.configure 之后：导入与快速记录都经它的 ingestor
+            // 落库。先接上的话，菜单在那一刻读到「还不能导入」就一直灰着。
+            localImport.configure(history: history, manualLink: manualLink, historyModel: historyModel)
+            quickCapture.configure(history: history, manualLink: manualLink, historyModel: historyModel)
           }
           #if DEBUG
           if result.availability.isWriteReady {
@@ -1800,7 +1813,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
     // 整体漂到列表列上方。「汲作」两个字落在列表列顶上是这一取舍的代价。
     .windowToolbarStyle(.unified(showsTitle: true))
     .commands {
-      LinkDigestCommands(manualLink: manualLink)
+      LinkDigestCommands(manualLink: manualLink, localImport: localImport, quickCapture: quickCapture)
       AppUpdateCommands(updater: appUpdateController.updaterController.updater)
     }
 
@@ -1934,6 +1947,8 @@ private struct DebugVisualProvider: ModelProvider {
 /// creation act.
 private struct LinkDigestCommands: Commands {
   @ObservedObject var manualLink: ManualLinkViewModel
+  @ObservedObject var localImport: LocalImportController
+  @ObservedObject var quickCapture: QuickCaptureController
   /// 新建笔记的动作由承载列表的视图提供——只有它知道建完要选中哪一条。
   @FocusedValue(\.newNote) private var newNote
   @FocusedValue(\.todayNote) private var todayNote
@@ -1955,6 +1970,17 @@ private struct LinkDigestCommands: Commands {
       Button("今天的笔记") { todayNote?.run() }
         .keyboardShortcut("t", modifiers: [.command, .shift])
         .disabled(todayNote == nil)
+      // 快捷键是全局注册的（在别的 App 里也能按），这里只在标题里写出来，
+      // 不再挂菜单快捷键，免得同一个组合键被触发两次。
+      Button("快速记录（\(QuickCaptureController.shortcutDescription)）") { quickCapture.show() }
+      Divider()
+      Button("导入本地文件…") { localImport.chooseFiles() }
+        .keyboardShortcut("i", modifiers: [.command, .shift])
+        .disabled(!localImport.canImport)
+      Button("同步语音备忘录") { localImport.syncVoiceMemos() }
+        .disabled(!localImport.canImport)
+      Button("同步备忘录") { localImport.syncAppleNotes() }
+        .disabled(!localImport.canImport)
     }
     CommandGroup(after: .textEditing) {
       Button("搜索历史") { focusHistorySearch?.run() }

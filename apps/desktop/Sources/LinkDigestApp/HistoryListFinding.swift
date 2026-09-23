@@ -161,6 +161,7 @@ enum HistoryListFinding {
     return text
   }
 
-  /// 行里最多露几个标签：多了挤掉作者和时间，一两个就够当关键词。
-  static let visibleTagLimit = 2
+  /// 行里最多露几个标签：多了挤掉作者和时间，一个就够当关键词——
+  /// 找回有侧栏标签云和搜索两个入口，行内只是提示。
+  static let visibleTagLimit = 1
 }

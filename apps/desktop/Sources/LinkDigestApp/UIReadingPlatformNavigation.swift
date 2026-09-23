@@ -122,9 +122,10 @@ private struct UIReadingPlatformRow: View {
           .padding(.horizontal, 2)
       }
       .foregroundStyle(theme.primaryText)
-      .padding(.vertical, DesignTokens.Space.xs)
+      .padding(.vertical, DesignTokens.Space.xxs)
       .padding(.horizontal, DesignTokens.Space.sm)
-      .frame(minHeight: 28)
+      // 与主导航行同高（见 HistoryContentView.navigationButton）。
+      .frame(minHeight: 24)
       .frame(maxWidth: .infinity)
       .background(
         isSelected ? theme.accent.opacity(0.12) : hoverFill,

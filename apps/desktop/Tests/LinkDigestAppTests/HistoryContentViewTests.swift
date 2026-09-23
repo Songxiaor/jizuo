@@ -494,7 +494,8 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(source.contains("requestBatchSummaryForUnsummarized"))
     XCTAssertTrue(source.contains("history-unsummarized-empty"))
     XCTAssertTrue(source.contains("history-navigation-tags-all"))
-    XCTAssertTrue(source.contains("@State private var navigationTagsExpanded = false"))
+    // 2026-09-23：侧栏次要分组默认收起，展开状态跨启动记住。
+    XCTAssertTrue(source.contains("@AppStorage(\"history.navigation.tags-expanded\") private var navigationTagsExpanded = false"))
     XCTAssertTrue(source.contains("Array(ordered.prefix(6))"))
     let platforms = appSource("PlatformGridView.swift")
     XCTAssertTrue(platforms.contains("Text(name)"), "Platform names must remain visible without hover")
@@ -539,7 +540,8 @@ final class HistoryContentViewTests: XCTestCase {
       }
     )
     XCTAssertTrue(sidebar.contains("history-filter-empty"))
-    XCTAssertTrue(detail.contains("HistoryTagEditor(tags: detail.tags, model: model)"))
+    // 2026-09-23：正文底部的标签编辑器不再带素材类型那一排（另有下拉）。
+    XCTAssertTrue(detail.contains("HistoryTagEditor(tags: detail.tags, model: model, showsMaterialTypes: false)"))
     // Chips-first: composer is collapsed behind a toggle; no always-on heavy form.
     XCTAssertTrue(source.contains("history-tag-add-toggle"))
     XCTAssertTrue(source.contains("history-tag-add"))
@@ -1705,6 +1707,10 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(PlatformIconCatalog.usesTemplateRendering(forAssetName: "wechat"))
     XCTAssertFalse(PlatformIconCatalog.usesTemplateRendering(forAssetName: "youtube"))
     XCTAssertTrue(PlatformIconCatalog.usesLuminanceMask(forAssetName: "douyin"))
+    // 侧栏剪影（2026-09-23）：字形型 logo 取外形，满底型走镂空，列表行的模板规则不受影响。
+    XCTAssertTrue(PlatformIconCatalog.usesGlyphSilhouette(forAssetName: "wechat"))
+    XCTAssertTrue(PlatformIconCatalog.usesGlyphSilhouette(forAssetName: "bilibili"))
+    XCTAssertFalse(PlatformIconCatalog.usesGlyphSilhouette(forAssetName: "youtube"))
     XCTAssertFalse(PlatformIconCatalog.usesLuminanceMask(forAssetName: "wechat"))
     let source = historyContentViewSource()
     let icon = section(in: source, from: "struct PlatformNavigationIcon: View", to: "private struct HistoryDetailView")
@@ -2527,9 +2533,11 @@ final class HistoryContentViewTests: XCTestCase {
         && settings.contains("@AppStorage(ReadingFontSize.storageKey)"),
       "工具栏和设置滑块必须共用同一个存储键，否则改一处另一处不动，同步就是假的")
 
+    // 2026-09-23 字号控件从顶栏收进阅读区「更多」菜单，入口仍在。
     XCTAssertTrue(
-      history.contains(#"accessibilityIdentifier("reading-font-size-control")"#),
-      "阅读工具栏要有字号快捷控件")
+      history.contains(#"accessibilityIdentifier("reading-font-larger")"#)
+        && history.contains(#"accessibilityIdentifier("reading-font-smaller")"#),
+      "阅读区要有字号快捷控件")
 
     // 夹取：两端都收在合法区间内，别越过 ReadingFontSize 的上下限。
     XCTAssertTrue(history.contains("max(next, Double(ReadingFontSize.minimum))"))
@@ -2555,7 +2563,8 @@ final class HistoryContentViewTests: XCTestCase {
   func testDetailRemediationKeepsTrashTodayAndReadableMetrics() {
     let source = historyContentViewSource()
     XCTAssertTrue(source.contains("history-navigation-trash"))
-    XCTAssertTrue(source.contains("todayNoteButton"))
+    // 「今天」从侧栏移进「添加」菜单（2026-09-23），⌘⇧T 照旧。
+    XCTAssertTrue(source.contains("Button(\"今天的笔记\", action: openTodayNote)"))
     XCTAssertTrue(source.contains("rectangle.compress.vertical"))
     XCTAssertTrue(source.contains("accessibilityLabel(\"打开设置\")"))
     XCTAssertTrue(source.contains("history-unconfigured-model-banner"))
@@ -2569,7 +2578,8 @@ final class HistoryContentViewTests: XCTestCase {
     }
     XCTAssertEqual(source.components(separatedBy: "        noteTagBar\n").count - 1, 1)
     XCTAssertTrue(source.contains("移到回收站…"))
-    XCTAssertTrue(source.contains("sourceLayer(heading: isOwnWriting ? nil : \"正文\""))
+    // 导入的图片不挂「正文」标签（2026-09-23）：图本身就是内容。
+    XCTAssertTrue(source.contains("sourceLayer(heading: isOwnWriting || isImportedImage(snapshot) ? nil : \"正文\""))
     XCTAssertTrue(source.contains("CreatorWorkMetricLayout.visibleSlots(forHost: host)"))
     XCTAssertEqual(DailyNoteTitleFormat.display("2026-09-15"), "9月15日")
     XCTAssertEqual(DailyNoteTitleFormat.display("无标题笔记"), "无标题笔记")

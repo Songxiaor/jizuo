@@ -9,15 +9,15 @@ final class MarkdownPresentationTests: XCTestCase {
   func testPaperThemeUsesOfficialClaudePaletteAndEditorialTypographyOnly() throws {
     let paper = AppearanceTheme.paper.tokens
 
-    // 2026-09 UI 优化后，「浅色」是中性绿纸，不是旧 Claude 米黄。令牌收口在
-    // ReadingPalette：侧栏 #E4E5E2、正文卡 #FAFAF7、强调绿 #356046。
+    // 2026-09-23 按对标应用改色（Syc：「我不想要绿色」）：侧栏极浅中性灰 #F6F6F4、
+    // 列表与正文纯白、强调蓝 #0A6CE6。令牌收口在 ReadingPalette。
     // 测试钉当前已验收外观，不为旧色板回退主题。
-    assertColor(paper.canvas, red: 0xE4, green: 0xE5, blue: 0xE2)
-    assertColor(paper.card, red: 0xFA, green: 0xFA, blue: 0xF7)
-    assertColor(paper.primaryText, red: 0x27, green: 0x2D, blue: 0x28)
-    assertColor(paper.secondaryText, red: 0x60, green: 0x67, blue: 0x60)
-    assertColor(paper.hairline, red: 0xD6, green: 0xDA, blue: 0xD2)
-    assertColor(paper.accent, red: 0x35, green: 0x60, blue: 0x46)
+    assertColor(paper.canvas, red: 0xF6, green: 0xF6, blue: 0xF4)
+    assertColor(paper.card, red: 0xFF, green: 0xFF, blue: 0xFF)
+    assertColor(paper.primaryText, red: 0x1D, green: 0x1D, blue: 0x1F)
+    assertColor(paper.secondaryText, red: 0x6E, green: 0x6E, blue: 0x73)
+    assertColor(paper.hairline, red: 0xE6, green: 0xE6, blue: 0xE3)
+    assertColor(paper.accent, red: 0x0A, green: 0x6C, blue: 0xE6)
     XCTAssertGreaterThan(try contrastRatio(paper.primaryText, paper.canvas), 7)
     XCTAssertGreaterThan(try contrastRatio(paper.secondaryText, paper.canvas), 4.5)
     // 三套主题的阅读区默认都是无衬线；宋体在外观页作为一键选项由用户自己选。

@@ -136,6 +136,7 @@ INFO_PLIST_KEYS = {
     "CFBundleVersion",
     "LSApplicationCategoryType",
     "LSMinimumSystemVersion",
+    "NSAppleEventsUsageDescription",
     "NSHighResolutionCapable",
     "SUAutomaticallyUpdate",
     "SUEnableAutomaticChecks",
@@ -1262,6 +1263,9 @@ def info_plist(config: dict[str, Any]) -> dict[str, Any]:
         "CFBundleVersion": config["bundleVersion"],
         "LSApplicationCategoryType": config["category"],
         "LSMinimumSystemVersion": config["minimumMacOS"],
+        # 「同步备忘录」通过系统脚本接口只读备忘录。没有这条说明，macOS 会
+        # 直接拒绝 Apple 事件而不弹授权窗，用户只会看到一次无法解释的失败。
+        "NSAppleEventsUsageDescription": "汲作需要读取「备忘录」里的笔记，把它们导入为你的素材。汲作只读取，不会修改或删除任何备忘录。",
         "NSHighResolutionCapable": True,
         **sparkle_info_keys(config, enable_automatic_checks=True),
     }

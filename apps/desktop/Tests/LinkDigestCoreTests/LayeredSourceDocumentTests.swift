@@ -57,7 +57,8 @@ final class LayeredSourceDocumentTests: XCTestCase {
     taskID: TaskID,
     sequence: Int,
     sourceKind: String,
-    body: String
+    body: String,
+    captureMethod: String = "page"
   ) -> ContentSnapshot {
     ContentSnapshot(
       id: ContentSnapshotID(),
@@ -69,7 +70,7 @@ final class LayeredSourceDocumentTests: XCTestCase {
       sourceURL: "https://x.com/fixture/status/1",
       title: "fixture",
       platform: "x",
-      captureMethod: "page",
+      captureMethod: captureMethod,
       completeness: "complete",
       bodyText: body,
       characterCount: body.unicodeScalars.count,
@@ -270,5 +271,27 @@ final class LayeredSourceDocumentTests: XCTestCase {
       layers.dropFirst().map(\.heading),
       [LayeredSourceDocument.captionHeading, LayeredSourceDocument.transcriptHeading]
     )
+  }
+
+  /// 本机导入的录音在转写前只有「点转写」的占位说明；转写完成后它不该再作为配文出现。
+  func testLocalImportPlaceholderDropsOutOnceTranscribed() {
+    let taskID = TaskID()
+    let placeholder = snapshot(
+      taskID: taskID, sequence: 1,
+      sourceKind: CapturedDocument.Origin.localImport.rawValue,
+      body: "从本机导入的音频：a.m4a\n\n点「转写」即可在本机把声音转成文字。",
+      captureMethod: "local_file_audio"
+    )
+    XCTAssertTrue(LayeredSourceDocument.modelInput(from: [placeholder]).contains("点「转写」"))
+    XCTAssertFalse(LayeredSourceDocument.isSupersededPlaceholder(placeholder, in: [placeholder]))
+
+    let transcript = snapshot(
+      taskID: taskID, sequence: 2,
+      sourceKind: CapturedDocument.Origin.localTranscription.rawValue,
+      body: "00:00 这是录音。"
+    )
+    let all = [placeholder, transcript]
+    XCTAssertTrue(LayeredSourceDocument.isSupersededPlaceholder(placeholder, in: all))
+    XCTAssertEqual(LayeredSourceDocument.modelInput(from: all), "00:00 这是录音。")
   }
 }

@@ -213,7 +213,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     // 漏掉这一行的后果不是报错信息不好看——是 default 分支直接 return false，
     // 落库以 stateConflict 失败，而 UI 上只表现为「点新建没有任何反应」。
     case (.manualLink, 1), (.localTranscription, 1), (.userNote, 1), (.pieceDraft, 1), (.work, 1),
-         (.burnedInSubtitles, 1):
+         (.burnedInSubtitles, 1), (.localImport, 1):
       expectedKey = "manual:v1:\(suffix)"
     default: return false
     }
@@ -412,6 +412,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         // 它是「我做出来的东西」,正是用户搜索时最想找到的。
         if filter.scope.isNotesOnly {
           predicates.append(notePredicate)
+        } else if filter.searchText.isEmpty && filter.includesNotes {
+          predicates.append("t.content_kind IN ('\(TaskClassificationSQL.captureKind)', '\(TaskClassificationSQL.noteKind)')")
         } else if filter.searchText.isEmpty {
           // 浏览态只剩「抓来的资料」，三条排除合成一条等值判定。
           predicates.append("t.content_kind = '\(TaskClassificationSQL.captureKind)'")
@@ -425,6 +427,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         break
       case .favorite:
         predicates.append("t.is_favorite = 1")
+      case .unused:
+        predicates.append("NOT EXISTS (\(Self.usedTagSQL))")
       case .recent:
         // 「最近」按**保存时间**算，不按更新时间。
         //
@@ -599,6 +603,17 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  /// 条目 `t` 是否带「已使用」标签。标签名是常量，直接内联，不占位置参数——
+  /// `historyPage` 的谓词与参数按顺序拼接，在 switch 里插参数容易错位。
+  static var usedTagSQL: String {
+    let name = MaterialCatalog.usedTagNormalizedName.replacingOccurrences(of: "'", with: "''")
+    return """
+      SELECT 1 FROM task_tags used_tt
+      INNER JOIN tags used_tag ON used_tag.id = used_tt.tag_id
+      WHERE used_tt.task_id = t.id AND used_tag.normalized_name = '\(name)'
+      """
+  }
+
   public func navigationCounts() throws -> HistoryNavigationCounts {
     try database.read { db in
       // 笔记是独立区域，所有"输入侧"的计数都要把它排除，否则「全部 10」里
@@ -629,6 +644,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         WHERE \(isCaptured) AND NOT EXISTS (\(Self.completedSummarySQL))
         """) ?? 0
       let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured) AND is_favorite = 1") ?? 0
+      let unused = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks t WHERE \(isCaptured) AND NOT EXISTS (\(Self.usedTagSQL))") ?? 0
       let trash = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE deleted_at_ms IS NOT NULL") ?? 0
 
       let platforms = try Row.fetchAll(db, sql: """
@@ -666,7 +682,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         arguments: []
       )
       return .init(
-        all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, notes: notes, works: works,
+        all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, unused: unused, notes: notes, works: works,
         trash: trash, platforms: platforms, tags: tags, creatorCount: creatorCount, pinnedCreators: pinnedCreators
       )
     }

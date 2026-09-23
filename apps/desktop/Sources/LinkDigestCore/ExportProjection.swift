@@ -108,13 +108,13 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
     text = text.replacingOccurrences(of: #"<<<+|>>>+"#, with: " ", options: .regularExpression)
     // Section labels like "## 配文" / "# 原文" are scaffolding, not body.
     text = text.replacingOccurrences(
-      of: #"(?m)^#{1,6}\s*(配文|原文|正文|内容|Caption|Tweet|Post)\s*$"#,
+      of: #"(?m)^#{1,6}\s*(配文|原文|正文|内容|图片里的文字|Caption|Tweet|Post)\s*$"#,
       with: "",
       options: [.regularExpression, .caseInsensitive]
     )
     // Collapsed previews: leading "## 配文 " is no longer alone on a line.
     text = text.replacingOccurrences(
-      of: #"^(?:#{1,6}\s*(?:配文|原文|正文|内容|Caption|Tweet|Post)\s+)+"#,
+      of: #"^(?:#{1,6}\s*(?:配文|原文|正文|内容|图片里的文字|Caption|Tweet|Post)\s+)+"#,
       with: "",
       options: [.regularExpression, .caseInsensitive]
     )
@@ -138,7 +138,7 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
     text = text.replacingOccurrences(of: #"(?m)^#{1,6}\s+"#, with: "", options: .regularExpression)
     // Orphan label left after stripping "## " from a collapsed "## 配文 body" string.
     text = text.replacingOccurrences(
-      of: #"^(?:配文|原文|正文|内容|Caption|Tweet|Post)\s+"#,
+      of: #"^(?:配文|原文|正文|内容|图片里的文字|Caption|Tweet|Post)\s+"#,
       with: "",
       options: [.regularExpression, .caseInsensitive]
     )

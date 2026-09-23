@@ -39,7 +39,8 @@ struct HistorySkeletonRow: View {
       }
     }
     .padding(.horizontal, DesignTokens.Space.xs)
-    .padding(.vertical, DesignTokens.Space.xs)
+    // 与真实行的 12pt 上下留白一致，内容落位时行高不跳。
+    .padding(.vertical, 12)
     .frame(minHeight: 44, alignment: .leading)
     .opacity(reduceMotion ? 0.6 : (isBreathing ? 0.45 : 0.85))
     .animation(

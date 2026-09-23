@@ -163,7 +163,7 @@ final class MCPController: ObservableObject {
       return d
     }
     switch name {
-    case "jizuo_status": return ["connected": true, "writable": writable, "allows_changes": allowsChanges, "allows_processing": allowsProcessing, "creator_platforms": ProfileImportPlatform.allCases.map(\.rawValue), "transcription": "local_downloaded_video", "jobs_lifetime": "current_app_process"]
+    case "jizuo_status": return ["material_types": MaterialCatalog.typeTagNames, "used_tag": MaterialCatalog.usedTagName, "connected": true, "writable": writable, "allows_changes": allowsChanges, "allows_processing": allowsProcessing, "creator_platforms": ProfileImportPlatform.allCases.map(\.rawValue), "transcription": "local_downloaded_video", "jobs_lifetime": "current_app_process"]
     case "jizuo_statistics":
       let counts = try history.navigationCounts()
       var grouped: [String: Int] = [:]
@@ -190,8 +190,20 @@ final class MCPController: ObservableObject {
       if let raw = a["creator_id"] as? String {
         guard let id = CreatorID(raw) else { throw MCPFailure("invalid_creator", "博主ID无效") }; creator = id
       }
-      let page = try history.historyPage(limit: a["limit"] as? Int ?? 20, after: cursor, filter: .init(searchText: a["query"] as? String ?? "", creatorID: creator))
-      return ["items": page.rows.map { ["task_id": $0.taskID.rawValue, "title": $0.title ?? "", "url": $0.canonicalURL, "source_host": $0.host, "platform": Self.platformKey($0.host), "platform_name": HistoryPlatformDisplay.name(forHost: Self.platformKey($0.host))] }, "next_cursor": try page.nextCursor.map { try JSONEncoder().encode($0).base64EncodedString() } as Any? ?? NSNull()]
+      var tagNames: [String] = []
+      if let raw = a["material_type"] as? String {
+        guard let type = MaterialCatalog.MaterialType(rawValue: raw.trimmingCharacters(in: .whitespaces)) else {
+          throw MCPFailure("invalid_material_type", "素材类型只能是：\(MaterialCatalog.typeTagNames.joined(separator: "、"))")
+        }
+        tagNames = [type.tagName]
+      }
+      let scope: HistoryListScope = (a["unused_only"] as? Bool ?? false) ? .unused : .all
+      let page = try history.historyPage(limit: a["limit"] as? Int ?? 20, after: cursor, filter: .init(tagNames: tagNames, scope: scope, searchText: a["query"] as? String ?? "", creatorID: creator, includesNotes: !tagNames.isEmpty))
+      return ["items": page.rows.map { row -> [String: Any] in
+        let tags = row.tagNames ?? []
+        let used = tags.contains { HistoryTagNormalizer.normalized($0)?.normalizedName == MaterialCatalog.usedTagNormalizedName }
+        return ["task_id": row.taskID.rawValue, "title": row.title ?? "", "url": row.canonicalURL, "source_host": row.host, "platform": Self.platformKey(row.host), "platform_name": HistoryPlatformDisplay.name(forHost: Self.platformKey(row.host)), "tags": tags, "used": used]
+      }, "next_cursor": try page.nextCursor.map { try JSONEncoder().encode($0).base64EncodedString() } as Any? ?? NSNull()]
     case "jizuo_read":
       let d = try history.detail(taskID: taskID())
       let text = d.snapshots.last?.bodyText ?? ""
@@ -264,6 +276,16 @@ final class MCPController: ObservableObject {
     case "jizuo_add_tags":
       let id = try taskID(); let tags = try history.addTags(a["tags"] as! [String], to: id)
       historyModel.reload(); return ["tags": tags.map(\.name)]
+    case "jizuo_mark_used":
+      let id = try taskID()
+      let tags = try history.addTags([MaterialCatalog.usedTagName], to: id)
+      let line = MaterialCatalog.usageLine(usedIn: a["used_in"] as? String)
+      if let store = history.annotationStore {
+        let note = MaterialCatalog.appendingUsage(line, to: try store.loadNote(taskID: id))
+        try store.saveNote(taskID: id, body: note, updatedAtMilliseconds: Int64(Date().timeIntervalSince1970 * 1000))
+      }
+      historyModel.reload()
+      return ["task_id": id.rawValue, "used": true, "tags": tags.map(\.name), "recorded": line]
     case "jizuo_set_favorite":
       let id = try taskID(); try history.setFavorite(a["favorite"] as! Bool, for: id)
       historyModel.reload(); return ["updated": true]

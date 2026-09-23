@@ -1741,7 +1741,7 @@ struct ProviderSettingsView: View {
     .accessibilityIdentifier("settings-tab-\(tab.rawValue)")
     .buttonStyle(.plain)
     // 与主界面侧栏共用同一档间距和浅色选中态，两个窗口切换时不会像两套组件。
-    .padding(.vertical, DesignTokens.Space.xs)
+    .padding(.vertical, DesignTokens.Space.xxs)
     .padding(.horizontal, DesignTokens.Space.sm)
     .background {
       if isSelected {

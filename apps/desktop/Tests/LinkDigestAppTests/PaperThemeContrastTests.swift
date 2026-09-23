@@ -59,17 +59,19 @@ final class PaperThemeContrastTests: XCTestCase {
   // 用 CIE L*（感知明度）而不是 RGB 差值：同样的 RGB 差在暗处和亮处看起来
   // 完全不是一回事，而这两个色都在极亮端。
   func testAuxiliaryAndReadingSurfacesAreDistinctButRelated() {
+    // 2026-09-23 按对标应用改成两档：侧栏只比纯白暗约 3 L*（对标实测约 2.6），
+    // 靠 1pt 细线分栏而不是靠大块色差。下限随之从 7 降到 2.5。
     let delta = lightness(tokens.card) - lightness(tokens.canvas)
-    XCTAssertGreaterThan(delta, 7, "辅助区和正文区的明度差太小，三栏会糊成一片")
+    XCTAssertGreaterThan(delta, 2.5, "辅助区和正文区的明度差太小，侧栏和正文会糊成一片")
     XCTAssertLessThan(delta, 12, "辅助区和正文区的明度差太大，像三个 App 拼在一起")
   }
 
-  // 三栏三档：侧栏最沉、列表居中、正文卡最亮。列表列必须落在两者之间——
-  // 之前的一版三档把方向做反了（列表比侧栏还沉），这里把方向也钉住。
+  // 侧栏最沉；列表可以和正文卡同为纯白（2026-09-23 两档设计），但不能比正文卡还亮，
+  // 也不能比侧栏沉——之前的一版把方向做反了（列表比侧栏还沉），这里把方向钉住。
   func testListPaneSitsBetweenCanvasAndCard() {
     let canvasL = lightness(tokens.canvas), paneL = lightness(tokens.listPane), cardL = lightness(tokens.card)
     XCTAssertGreaterThan(paneL, canvasL, "列表列要比侧栏亮")
-    XCTAssertLessThan(paneL, cardL, "列表列要比正文卡暗")
+    XCTAssertLessThanOrEqual(paneL, cardL, "列表列不能比正文卡亮")
   }
 
   // MARK: - 色度
@@ -166,8 +168,9 @@ final class PaperThemeContrastTests: XCTestCase {
       // 三栏三档：侧栏最沉、列表居中、正文卡最亮（深色主题方向相反）。
       // 列表列必须落在画布和正文卡之间，否则侧栏和列表黏成一大块。
       let canvasL = lightness(t.canvas), paneL = lightness(t.listPane), cardL = lightness(t.card)
+      // 列表可以与正文卡同明度（浅色两档），但必须和侧栏分开。
       XCTAssertTrue(
-        (canvasL < paneL && paneL < cardL) || (canvasL > paneL && paneL > cardL),
+        (canvasL < paneL && paneL <= cardL) || (canvasL > paneL && paneL >= cardL),
         "\(name)：列表列的明度 \(paneL) 不在侧栏 \(canvasL) 和正文卡 \(cardL) 之间")
     }
   }

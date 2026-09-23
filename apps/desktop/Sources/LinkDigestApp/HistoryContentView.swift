@@ -13,6 +13,7 @@ struct HistoryContentView: View {
   var providerSettings: ProviderSettingsViewModel
   @ObservedObject var browserSupport: BrowserSupportViewModel
   @ObservedObject var sessionMediaPlayback: SessionMediaPlaybackController
+  @EnvironmentObject private var localImport: LocalImportController
   @Environment(\.openSettings) private var openSettings
   @Environment(\.openWindow) private var openWindow
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -39,12 +40,14 @@ struct HistoryContentView: View {
   @State private var creatorMasonryMeasuredRevision = 0
   @State private var creatorSortReferenceDate = Date()
   @State private var creatorWorkScrollTarget: TaskID?
-  @State private var navigationCreatorsExpanded = true
-  // 来源平台沿用分区标题折叠，不改 selectedHosts。
-  @State private var navigationPlatformsExpanded = true
-  // 标签是低频筛选，不该在每次启动时抢走半个导航栏。需要时再展开，
-  // 当前已选标签仍由 ViewModel 保留，不会因为折叠而丢失筛选状态。
-  @State private var navigationTagsExpanded = false
+  // 2026-09-23 侧栏分层（对标应用）：顶部四个固定入口常驻，视图 / 博主 / 来源平台 / 标签
+  // 这些次要分组默认收起，展开状态跨启动记住。折叠只影响显示，不改任何筛选状态。
+  @AppStorage("history.navigation.views-expanded") private var navigationViewsExpanded = false
+  @AppStorage("history.navigation.creators-expanded") private var navigationCreatorsExpanded = false
+  @AppStorage("history.navigation.platforms-expanded") private var navigationPlatformsExpanded = false
+  @AppStorage("history.navigation.tags-expanded") private var navigationTagsExpanded = false
+  /// 列表列的搜索框平时收成列头的一个放大镜图标；点开、⌘F 或已有搜索词时才展开。
+  @State private var isListSearchExpanded = false
   @FocusState private var isSearchFocused: Bool
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
   @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchUserEnabled = false
@@ -327,6 +330,8 @@ struct HistoryContentView: View {
                   sidebar
                 }
               }
+              .navigationTitle(listColumnTitle)
+              .toolbar { listColumnToolbar }
               .navigationSplitViewColumnWidth(
                 min: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMin : DesignTokens.Layout.listMin,
                 ideal: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnIdeal : DesignTokens.Layout.listIdeal,
@@ -514,20 +519,8 @@ struct HistoryContentView: View {
         }
       }
       ToolbarItemGroup(placement: .primaryAction) {
-        // 专注阅读：只留详情列，侧栏与列表用现成 columnVisibility 藏起，退出即恢复。
-        Button {
-          columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
-        } label: {
-          Label(
-            columnVisibility == .detailOnly ? "退出专注阅读" : "专注阅读",
-            systemImage: columnVisibility == .detailOnly
-              ? "rectangle.expand.vertical"
-              : "rectangle.compress.vertical"
-          )
-        }
-        .help(columnVisibility == .detailOnly ? "恢复侧栏与列表" : "隐藏侧栏与列表，只留阅读区")
-        .accessibilityLabel(columnVisibility == .detailOnly ? "退出专注阅读" : "专注阅读")
-        .accessibilityIdentifier("history-focus-reading-toggle")
+        // 专注阅读、设置、添加 2026-09-23 移走：专注阅读进阅读区「更多」，设置去侧栏底部，
+        // 添加去列表列头。顶栏只留「当前这一条」的操作。
         // 批量总结进行中：进度和停止按钮必须一直可见，否则「跑了十几分钟、
         // 现在到哪了、能不能停」全靠猜。
         if model.isBatchSummarizing {
@@ -568,29 +561,9 @@ struct HistoryContentView: View {
           .accessibilityLabel(model.selectedScope == .trash ? "彻底删除选中项" : "移到回收站")
           .accessibilityIdentifier("delete-selected-history")
         }
-        ControlGroup {
-          Button(action: { openSettings() }) {
-            Label("打开设置", systemImage: "gearshape")
-          }
-          .help("打开设置")
-          .accessibilityLabel("打开设置")
-          .accessibilityIdentifier("open-provider-settings")
-          // 新建笔记并进「添加」菜单：它和添加链接、添加博主都是「往库里放东西」，
-          // 单独占一个工具栏位只是让右上角多一个图标。⌘⇧N 仍走菜单命令。
-          Menu {
-            Button("添加链接", action: manualLink.open)
-            Button("从剪贴板添加链接", action: manualLink.readClipboardAndOpen)
-            Button("添加博主主页") { presentDouyinProfileImport() }
-            Divider()
-            Button("新建笔记", action: createNote)
-              .accessibilityIdentifier("create-user-note")
-          } label: {
-            Label("添加", systemImage: "plus")
-          }
-          .disabled(!manualLink.canOpen)
-          .help("添加链接、博主主页或新建笔记")
-          .accessibilityLabel("添加")
-          .accessibilityIdentifier("manual-link-add-toolbar")
+        // 图库 / 博主目录只有两栏，没有列表列头可放「添加」，退回顶栏。
+        if showsPlatformGallerySurface || model.isCreatorDirectoryActive {
+          addMenu
         }
       }
     }
@@ -662,8 +635,82 @@ struct HistoryContentView: View {
     return result
   }
 
+  /// 「往库里放东西」的入口：链接、博主主页、本地文件、笔记。放在列表列头——
+  /// 它作用于列表，和对标应用的「＋」同一个位置。
+  private var addMenu: some View {
+    Menu {
+      Button("添加链接", action: manualLink.open)
+      Button("从剪贴板添加链接", action: manualLink.readClipboardAndOpen)
+      Button("添加博主主页") { presentDouyinProfileImport() }
+      Divider()
+      Button("导入本地文件…") { localImport.chooseFiles() }
+        .disabled(!localImport.canImport)
+        .accessibilityIdentifier("import-local-files")
+      Button("同步语音备忘录") { localImport.syncVoiceMemos() }
+        .disabled(!localImport.canImport)
+        .accessibilityIdentifier("sync-voice-memos")
+      Button("同步备忘录") { localImport.syncAppleNotes() }
+        .disabled(!localImport.canImport)
+        .accessibilityIdentifier("sync-apple-notes")
+      Divider()
+      Button("新建笔记", action: createNote)
+        .accessibilityIdentifier("create-user-note")
+      // 原来侧栏里的「今天」：它是一个动作不是筛选项，收进这里；⌘⇧T 照旧。
+      Button("今天的笔记", action: openTodayNote)
+        .accessibilityIdentifier("history-navigation-today-note")
+    } label: {
+      Label("添加", systemImage: "plus")
+    }
+    // 工具栏菜单不带下拉小箭头：「图标 + ⌄」挤在一排是顶栏拥挤感的主要来源。
+    .menuIndicator(.hidden)
+    .disabled(!manualLink.canOpen)
+    .help("添加链接、博主主页、本地文件、语音备忘录、备忘录或新建笔记")
+    .accessibilityLabel("添加")
+    .accessibilityIdentifier("manual-link-add-toolbar")
+  }
+
+  /// 列表列标题：当前看的是哪一处。原来窗口标题固定写「汲作」，不提供任何信息。
+  private var listColumnTitle: String {
+    if let creator = model.selectedCreator { return creator.directoryDisplayName }
+    if model.selectedTagNormalizedNames == [MaterialCatalog.usedTagNormalizedName] { return "已使用" }
+    if model.selectedHosts.count == 1, let host = model.selectedHosts.first {
+      return HistoryPlatformDisplay.name(forHost: host)
+    }
+    switch model.selectedScope {
+    case .unused: return "收件箱"
+    case .all: return "全部资料"
+    case .recent: return "最近 7 天"
+    case .unsummarized: return "待总结"
+    case .favorite: return "收藏"
+    case .notes: return "我的笔记"
+    case .trash: return "回收站"
+    case .works: return "作品"
+    case .drafts: return "稿件"
+    }
+  }
+
+  private var showsListSearchField: Bool {
+    isListSearchExpanded || isSearchFocused
+      || !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  @ToolbarContentBuilder private var listColumnToolbar: some ToolbarContent {
+    ToolbarItemGroup(placement: .automatic) {
+      Button {
+        isListSearchExpanded = true
+        DispatchQueue.main.async { isSearchFocused = true }
+      } label: {
+        Label("搜索", systemImage: "magnifyingglass")
+      }
+      .help("搜索标题、正文、总结、标签（⌘F）")
+      .accessibilityIdentifier("history-search-toggle")
+      addMenu
+    }
+  }
+
   private var sidebar: some View {
     VStack(spacing: 0) {
+      if showsListSearchField {
       HStack(spacing: 6) {
         Image(systemName: "magnifyingglass")
           .foregroundStyle(.secondary)
@@ -689,6 +736,7 @@ struct HistoryContentView: View {
       .padding(.horizontal, 10).padding(.top, 5).padding(.bottom, 10)
         .accessibilityIdentifier("history-search")
         .background(ReleaseInitialSearchFocus().allowsHitTesting(false))
+      }
       if hasClearableListFilters {
         activeFilterBar
       }
@@ -888,9 +936,9 @@ struct HistoryContentView: View {
               moreMenu: { AnyView(historyContextMenu(for: row)) }
             ).equatable().tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
               .listRowBackground(Color.clear)
-              // 卡片之间留出 6pt，选中底色才读得出是一张张独立的卡。
+              // 卡片之间留出 8pt，选中底色才读得出是一张张独立的卡。
               // 左右 -6：抵掉表格自带的 16pt，卡片外缘落在 10pt，和搜索框、侧栏选中条对齐。
-              .listRowInsets(EdgeInsets(top: 3, leading: -6, bottom: 3, trailing: -6))
+              .listRowInsets(EdgeInsets(top: 4, leading: -6, bottom: 4, trailing: -6))
               .listRowSeparator(.hidden)
               .contextMenu { historyContextMenu(for: row) }
           }
@@ -971,56 +1019,37 @@ struct HistoryContentView: View {
     // 列表和正文同用纸面色：原来侧栏、列表、正文三档底色，窗口被切成三块互不相干的板子。
     // 现在侧栏一档、「列表 + 正文」一档，中间只靠一条细线分开，读起来是一组。
     .background(theme.card.opacity(theme.isNative ? 0 : 1).ignoresSafeArea(edges: .top))
-    .focusedSceneValue(\.focusHistorySearch, FocusHistorySearchAction { isSearchFocused = true })
+    .focusedSceneValue(\.focusHistorySearch, FocusHistorySearchAction {
+      isListSearchExpanded = true
+      DispatchQueue.main.async { isSearchFocused = true }
+    })
     .focusedSceneValue(\.newNote, NewNoteAction { createNote() })
     .focusedSceneValue(\.todayNote, TodayNoteAction { openTodayNote() })
+    // 搜索框失焦且没有搜索词时收回成列头图标，列表多出一行。
+    .onChange(of: isSearchFocused) { _, focused in
+      if !focused, model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        isListSearchExpanded = false
+      }
+    }
   }
 
   private var navigationRail: some View {
     ScrollViewReader { proxy in
     List {
+      // 顶部四个入口按「处理进度」排：新来的 → 全部 → 用过的，再加自己写的笔记。
+      // 原来五个入口按时间、处理状态、标记、使用情况四种逻辑混排，看不出先看哪个。
       Section {
-        navigationButton("全部", systemImage: "tray", count: model.navigationCounts.all, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+        // 收件箱就是「未使用」：还没被内容创作系统用过的资料，就是待处理的素材。
+        navigationButton("收件箱", systemImage: "tray", count: model.navigationCounts.unused, selected: model.selectedScope == .unused && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+          model.selectScope(.unused)
+        }
+        .help("还没被内容创作系统用过的资料")
+        .accessibilityIdentifier("history-navigation-unused")
+        navigationButton("全部资料", systemImage: "square.stack", count: model.navigationCounts.all, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.all)
         }
         .accessibilityIdentifier("history-navigation-all")
-        // 「最近」说不清是多近。标签直接写出口径，省得每个人自己猜一个。
-        navigationButton("最近 7 天", systemImage: "clock", count: model.navigationCounts.recent, selected: model.selectedScope == .recent) {
-          model.selectScope(.recent)
-        }
-        .accessibilityIdentifier("history-navigation-recent")
-        // 计数不再强调底色：「待总结」是一个会一直涨的数，把它染成醒目色等于
-        // 常驻一个永远消不掉的红点，看久了只会被忽略，还顺带让人焦虑。
-        navigationButton("待总结", systemImage: "doc.plaintext", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
-          model.selectScope(.unsummarized)
-        }
-        .accessibilityIdentifier("history-navigation-unsummarized")
-        navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite) {
-          model.selectScope(.favorite)
-        }
-        .accessibilityIdentifier("history-navigation-favorite")
-        if model.navigationCounts.trash > 0 {
-          navigationButton(
-            "回收站",
-            systemImage: "trash",
-            count: model.navigationCounts.trash,
-            selected: model.selectedScope == .trash
-          ) {
-            model.selectScope(.trash)
-          }
-          .accessibilityIdentifier("history-navigation-trash")
-        }
-      }
-      // 第一组不给标题。它是打开 App 的默认落点，下面第一行就是「全部」——
-      // 标题不提供任何新信息。原本为了让四个标题长得一样才给它补了一个
-      // 「内容」，可笔记、来源平台、标签也都是内容的切面，这个词反倒把
-      // 层级讲反了：它们不是「内容」的并列项，是内容的不同切面。
-
-      // 笔记自成一区，不混进上面那组，也不进「平台」。
-      //
-      // 上面几项都是在看**抓来的资料**的不同切面；笔记是自己写的东西，是另一种
-      // 材料。放在一起会让「全部」这个词失真，也会让找素材和写东西互相打断。
-      Section {
+        usedMaterialsButton
         navigationButton(
           "我的笔记",
           systemImage: "square.and.pencil",
@@ -1030,12 +1059,42 @@ struct HistoryContentView: View {
           model.selectScope(.notes)
         }
         .accessibilityIdentifier("history-navigation-notes")
-        // 「今天」不是一个筛选项，是一个动作——点它直接进今天那条笔记。
-        // 随手记东西最大的摩擦是「这条该记去哪」，给每天一个默认容器就没这个决定了。
-        todayNoteButton
-          .accessibilityIdentifier("history-navigation-today-note")
+      }
+      // 第一组不给标题。它是打开 App 的默认落点，标题不提供任何新信息。
+
+      // 视图：同一批资料换个角度看。以后的自定义视图也放这里。
+      Section {
+        if navigationViewsExpanded {
+          // 「最近」说不清是多近。标签直接写出口径，省得每个人自己猜一个。
+          navigationButton("最近 7 天", systemImage: "clock", count: model.navigationCounts.recent, selected: model.selectedScope == .recent) {
+            model.selectScope(.recent)
+          }
+          .accessibilityIdentifier("history-navigation-recent")
+          // 计数不强调底色：「待总结」是一个会一直涨的数，染成醒目色等于常驻一个
+          // 永远消不掉的红点，看久了只会被忽略，还顺带让人焦虑。
+          navigationButton("待总结", systemImage: "doc.plaintext", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
+            model.selectScope(.unsummarized)
+          }
+          .accessibilityIdentifier("history-navigation-unsummarized")
+          navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite) {
+            model.selectScope(.favorite)
+          }
+          .accessibilityIdentifier("history-navigation-favorite")
+          if model.navigationCounts.trash > 0 {
+            navigationButton(
+              "回收站",
+              systemImage: "trash",
+              count: model.navigationCounts.trash,
+              selected: model.selectedScope == .trash
+            ) {
+              model.selectScope(.trash)
+            }
+            .accessibilityIdentifier("history-navigation-trash")
+          }
+        }
       } header: {
-        navigationSectionHeader("笔记")
+        navigationSectionHeader("视图", expanded: $navigationViewsExpanded)
+          .accessibilityIdentifier("history-navigation-views-header")
       }
 
       Section {
@@ -1230,11 +1289,18 @@ struct HistoryContentView: View {
       }
     }
     .listStyle(.sidebar)
+    // 分组展开 / 收起时整张侧栏重建一次。macOS 侧栏 List 对「启动时为空的分组」
+    // 后来插入的行不刷新显示（2026-09-23 实测：点开「视图」「来源平台」箭头转了、
+    // 行却不出现）。侧栏只有几十行，重建没有可感的开销。
+    .id(navigationSectionsLayoutKey)
+    // 系统侧栏的默认最小行高会把 28pt 的行再撑高一截。
+    .environment(\.defaultMinListRowHeight, 24)
     .scrollContentBackground(theme.isNative ? .automatic : .hidden)
     .background((theme.isNative ? Color.clear : theme.canvas).ignoresSafeArea(edges: .top))
     // 第一组没有标题后，「全部」会直接贴住工具栏下沿；补回标题原本占的余白。
     .contentMargins(.top, 8, for: .scrollContent)
     .contentMargins(.bottom, 20, for: .scrollContent)
+    .safeAreaInset(edge: .bottom, spacing: 0) { navigationFooter }
     .accessibilityIdentifier("history-navigation-rail")
     .onAppear {
       if let target = navigationPlatformScrollTarget(model.selectedHosts) {
@@ -1248,6 +1314,11 @@ struct HistoryContentView: View {
     }
     }
     .frame(minHeight: 0, maxHeight: .infinity)
+  }
+
+  private var navigationSectionsLayoutKey: String {
+    [navigationViewsExpanded, navigationCreatorsExpanded, navigationPlatformsExpanded, navigationTagsExpanded]
+      .map { $0 ? "1" : "0" }.joined()
   }
 
   private func navigationPlatformScrollTarget(_ hosts: Set<String>) -> String? {
@@ -1273,9 +1344,16 @@ struct HistoryContentView: View {
     HStack(spacing: 8) {
       if let expanded {
         Button { expanded.wrappedValue.toggle() } label: {
-          Text(title)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(Rectangle())
+          // 2026-09-23：分组默认收起后必须看得出「能点开」，补一个转向的小箭头（对标应用同款）。
+          HStack(spacing: 4) {
+            Image(systemName: "chevron.right")
+              .font(.system(size: 9, weight: .semibold))
+              .rotationEffect(.degrees(expanded.wrappedValue ? 90 : 0))
+              .frame(width: 10)
+            Text(title)
+          }
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(expanded.wrappedValue ? "点击折叠" : "点击展开")
@@ -1292,29 +1370,46 @@ struct HistoryContentView: View {
     .textCase(nil)
   }
 
-  private var todayNoteButton: some View {
-    Button(action: openTodayNote) {
-      HStack(spacing: 8) {
-        Image(systemName: "plus")
-          .font(.system(size: DesignTokens.IconSize.control, weight: .medium))
-          .foregroundStyle(theme.accent)
-          .frame(width: 18)
-        Text("今天")
-          .themedFont(.body)
-          .lineLimit(1)
-        Spacer(minLength: DesignTokens.Space.xs)
-      }
-      .frame(minHeight: 20)
-      .contentShape(Rectangle())
+  /// 「已使用」不是一个新的列表范围，就是按「已使用」这个素材标签筛选——
+  /// 标签由右键「标为已使用」和 MCP 的 jizuo_mark_used 写入，复用现成的标签筛选。
+  private var usedMaterialsButton: some View {
+    let usedTag = model.navigationCounts.tags.first { $0.tag.normalizedName == MaterialCatalog.usedTagNormalizedName }
+    let selected = model.selectedScope == .all
+      && model.selectedTagNormalizedNames == [MaterialCatalog.usedTagNormalizedName]
+      && model.selectedHosts.isEmpty && !model.isCreatorDirectoryActive
+    // 计数和「收件箱」同一口径：只算资料、不算笔记（笔记也可能被贴上「已使用」，
+    // 但点进来列的是资料，数字必须和列表对得上）。全部资料 = 收件箱 + 已使用。
+    let usedMaterials = max(0, model.navigationCounts.all - model.navigationCounts.unused)
+    return navigationButton("已使用", systemImage: "checkmark.circle", count: usedMaterials, selected: selected) {
+      if let usedTag, !selected { model.toggleTag(usedTag.tag, additive: false) }
     }
-    .buttonStyle(.plain)
-    .padding(.vertical, DesignTokens.Space.xs)
-    .padding(.horizontal, DesignTokens.Space.sm)
-    .foregroundStyle(theme.primaryText)
-    .padding(.horizontal, -6)
-    .help("打开今天的笔记；还没有就新建一条")
-    .accessibilityLabel("今天")
-    .accessibilityHint("打开今天的笔记，没有则新建")
+    .disabled(usedTag == nil)
+    .help("已经被内容创作系统用过的资料")
+    .accessibilityIdentifier("history-navigation-used")
+  }
+
+  /// 侧栏底部：设置。它是整个 App 的偶尔操作，不该和「当前这一条」的收藏、标签挤在顶栏。
+  private var navigationFooter: some View {
+    HStack(spacing: 8) {
+      Button(action: { openSettings() }) {
+        Label("设置", systemImage: "gearshape")
+          .labelStyle(.titleAndIcon)
+          .themedFont(.callout)
+          .foregroundStyle(theme.secondaryText)
+          .contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .help("打开设置")
+      .accessibilityLabel("打开设置")
+      .accessibilityIdentifier("open-provider-settings")
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, DesignTokens.Space.lg)
+    .padding(.vertical, DesignTokens.Space.sm)
+    .overlay(alignment: .top) {
+      Rectangle().fill(theme.hairline).frame(height: 1)
+    }
+    .background(theme.isNative ? Color.clear : theme.canvas)
   }
 
   private func navigationButton(
@@ -1337,11 +1432,13 @@ struct HistoryContentView: View {
         // 图标统一 14pt、medium 字重、单色：未选中次要灰，选中强调色。
         // 原来各符号按默认字重各画各的，粗细不一，是「像拼凑的」最直接来源。
         Image(systemName: systemImage)
-          .font(.system(size: DesignTokens.IconSize.control, weight: .medium))
+          // regular 而不是 medium：线条细一档，和对标应用的侧栏图标同一重量（2026-09-23）。
+          .font(.system(size: DesignTokens.IconSize.control, weight: .regular))
           .foregroundStyle(selected ? theme.accent : theme.secondaryText)
           .frame(width: 18)
         Text(title)
           .themedFont(.body)
+          .foregroundStyle(selected ? theme.accent : theme.primaryText)
           .lineLimit(2)
           .multilineTextAlignment(.leading)
           .fixedSize(horizontal: false, vertical: true)
@@ -1356,8 +1453,17 @@ struct HistoryContentView: View {
     }
     .buttonStyle(.plain)
     // 选中态只留浅色底一种提示。原来同时有左侧色条、浅底、加粗三种，一个就够。
-    // 上下 3pt：4pt 时侧栏每行比列表松一截，两栏疏密不一。
-    .padding(.vertical, 3)
+    //
+    // 上下 8pt、最小 28pt：之前是 3pt / 20pt，理由写的是「4pt 时侧栏每行比列表
+    // 松一截」。但把两栏量到一起才看出方向反了——列表行是 padding 8pt、
+    // minHeight 60pt，侧栏 22pt 只有它的三分之一，一直是侧栏更紧。
+    //
+    // 28pt 同时是 macOS Source List 的常规行高下限（系统在 28–32pt 之间）。
+    // 行高不够时整列导航项会糊成一片，用户的说法是「挤」，但缺的不是留白总量，
+    // 是每一行的呼吸空间。改完仍不到列表行的一半，不会反过来显得松。
+    // 2026-09-23 对标收紧：上下 2pt、内容 20pt，加上侧栏自带的行距实测约 32pt，
+    // 与「来源平台」行同高。原来 8pt / 28pt 让主导航每行约 52pt，是对标应用的两倍。
+    .padding(.vertical, DesignTokens.Space.xxs)
     .padding(.horizontal, DesignTokens.Space.sm)
     .background(
       selected ? theme.accent.opacity(0.12) : .clear,
@@ -1674,13 +1780,18 @@ struct HistoryContentView: View {
   /// 计数只是一个数字，用次要灰的等宽数字直接右对齐；不再套灰底胶囊——
   /// 一整列胶囊比左边的文字还重，看起来像一排按钮。只有需要提醒的那一项
   /// （待总结）保留一个浅色胶囊。
+  /// 选中项的计数反白成主题色小胶囊（对标应用的做法），一眼能看出「当前在哪、有几条」；
+  /// 其余仍是不带底色的灰数字，整列不会变成一排按钮。
   private func countBadge(_ count: Int, selected: Bool, emphasized: Bool = false) -> some View {
     Text("\(count)")
-      .themedFont(.subheadline, monospacedDigit: true)
-      .foregroundStyle(selected ? theme.accent : theme.secondaryText)
-      .padding(.horizontal, emphasized ? 6 : 2)
-      .padding(.vertical, emphasized ? 1 : 0)
-      .background(emphasized ? theme.accent.opacity(0.12) : Color.clear, in: Capsule())
+      .themedFont(.subheadline, weight: selected ? .semibold : .regular, monospacedDigit: true)
+      .foregroundStyle(selected ? Color.white : theme.secondaryText)
+      .padding(.horizontal, selected || emphasized ? 6 : 2)
+      .padding(.vertical, selected || emphasized ? 1 : 0)
+      .background(
+        selected ? theme.accent : (emphasized ? theme.accent.opacity(0.12) : Color.clear),
+        in: Capsule()
+      )
   }
 
   private var listSearchPlaceholder: String {
@@ -1691,6 +1802,7 @@ struct HistoryContentView: View {
     case .notes: return "搜索笔记标题、正文、标签"
     case .unsummarized: return "搜索待总结的标题、正文、标签"
     case .favorite: return "搜索收藏的标题、正文、总结、标签"
+    case .unused: return "搜索未使用的标题、正文、总结、标签"
     case .recent: return "搜索最近 7 天的标题、正文、总结、标签"
     case .works: return "搜索作品标题、正文、标签"
     case .drafts: return "搜索稿件标题、正文、标签"
@@ -1702,7 +1814,7 @@ struct HistoryContentView: View {
   private var hasClearableListFilters: Bool {
     !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       || model.hasCategoryFilter
-      || ([HistoryListScope.recent, .unsummarized, .favorite].contains(model.selectedScope) && !model.isCreatorDirectoryActive)
+      || ([HistoryListScope.recent, .unsummarized, .favorite, .unused].contains(model.selectedScope) && !model.isCreatorDirectoryActive)
   }
 
   private var listScopeFilterTitle: String? {
@@ -1712,6 +1824,7 @@ struct HistoryContentView: View {
     case .recent: return "最近 7 天"
     case .unsummarized: return "待总结"
     case .favorite: return "收藏"
+    case .unused: return "未使用"
     case .trash: return "回收站"
     case .notes, .drafts, .works: return nil
     }
@@ -1848,6 +1961,34 @@ struct HistoryContentView: View {
     }
   }
 
+  /// 素材类型与「已使用」。勾选状态读列表行自带的标签名，不必先打开详情。
+  @ViewBuilder private func materialContextMenu(for row: HistoryRowProjection) -> some View {
+    let names = Set((row.tagNames ?? []).compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName })
+    let isUsed = names.contains(MaterialCatalog.usedTagNormalizedName)
+    Menu {
+      ForEach(MaterialCatalog.MaterialType.allCases, id: \.self) { type in
+        let normalized = HistoryTagNormalizer.normalized(type.tagName)?.normalizedName ?? type.tagName
+        let isOn = names.contains(normalized)
+        Button {
+          model.toggleMaterialTag(type.tagName, on: row.taskID, isOn: !isOn)
+        } label: {
+          Label(type.tagName, systemImage: isOn ? "checkmark" : type.systemImage)
+        }
+      }
+    } label: {
+      Label("素材类型", systemImage: "square.grid.2x2")
+    }
+    .disabled(model.isReadOnly || model.isDeleting)
+    .accessibilityIdentifier("history-context-material-type")
+    Button {
+      model.toggleMaterialTag(MaterialCatalog.usedTagName, on: row.taskID, isOn: !isUsed)
+    } label: {
+      Label(isUsed ? "标为未使用" : "标为已使用", systemImage: isUsed ? "arrow.uturn.backward.circle" : "checkmark.circle")
+    }
+    .disabled(model.isReadOnly || model.isDeleting)
+    .accessibilityIdentifier("history-context-material-used")
+  }
+
   @ViewBuilder private func regularHistoryContextMenu(for row: HistoryRowProjection) -> some View {
     Button { openHistoryURL(row.canonicalURL) } label: {
       Label("在浏览器中打开", systemImage: "safari")
@@ -1881,6 +2022,7 @@ struct HistoryContentView: View {
     }
     .disabled(model.isReadOnly || model.isDeleting)
     .accessibilityIdentifier("history-context-add-tag")
+    materialContextMenu(for: row)
     Button { summarizeSingle(row) } label: {
       Label(row.hasSummary == true ? "重新生成总结" : "总结", systemImage: "text.badge.checkmark")
     }
@@ -2695,6 +2837,7 @@ struct HistoryContentView: View {
         localImageURLs: model.localImageURLs,
         localMediaFileURL: model.localMediaFileURL,
         isFocusReading: columnVisibility == .detailOnly,
+        toggleFocusReading: { columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly },
         openSettings: { openSettings() },
         openRecapture: { manualLink.openForRecapture($0) },
         remotePreviewPlayback: remotePreviewPlayback,
@@ -3146,6 +3289,7 @@ private struct HistoryMultiSelectionPanel: View {
       case .recent: parts.append("最近 7 天")
       case .unsummarized: parts.append("待总结")
       case .favorite: parts.append("收藏")
+      case .unused: parts.append("未使用")
       case .notes: parts.append("笔记")
       case .drafts: parts.append("稿件")
       case .works: parts.append("作品")
@@ -3254,35 +3398,36 @@ struct PlatformNavigationIcon: View {
         .scaledToFit()
         .frame(width: 16, height: 16)
     } else if let image = PlatformIconCatalog.image(for: host) {
-      // 单色分两种：线条型 logo（X、GitHub）走模板渲染，颜色由调用方给；
-      // 满底型 logo（抖音、B 站、公众号）模板渲染会变成一块实心方块，改为去色。
+      // 单色两种画法，同一颜色、同一 16pt 框（2026-09-23 统一）：
+      // - 线条型 logo（X、GitHub、B 站、公众号、掘金）：直接取形状，模板渲染；
+      // - 满底型 logo（YouTube、抖音、Reddit、小红书、知乎…）：实心底色块，把里面的
+      //   白色标志镂空。原来这类是「去色 + 72% 透明」的灰块，和旁边的线条剪影不是一家。
       if monochrome, let name = PlatformIconCatalog.assetName(for: host),
-         PlatformIconCatalog.usesTemplateRendering(forAssetName: name) {
-        Image(nsImage: image)
-          .renderingMode(.template)
-          .resizable().scaledToFit().frame(width: 16, height: 16)
-      } else if monochrome, let name = PlatformIconCatalog.assetName(for: host),
-                PlatformIconCatalog.usesLuminanceMask(forAssetName: name) {
-        // 深底 logo：亮部（白色音符）变成遮罩，用当前文字色填，和 X、GitHub 同一重量。
+         PlatformIconCatalog.usesGlyphSilhouette(forAssetName: name) {
+        // 取 logo 的外形（透明度）用当前文字色填：公众号、B 站这类彩色字形也变成同色剪影。
         Rectangle()
           .fill(.foreground)
-          .mask {
-            Image(nsImage: image)
-              .resizable().scaledToFit()
-              .luminanceToAlpha()
-          }
+          .mask { Image(nsImage: image).resizable().scaledToFit() }
+          .frame(width: 16, height: 16)
+      } else if monochrome {
+        MonochromeKnockoutIcon(image: image)
           .frame(width: 16, height: 16)
       } else {
         Image(nsImage: image)
           .resizable().scaledToFit().frame(width: 16, height: 16)
-          .saturation(monochrome ? 0 : 1)
-          .opacity(monochrome ? 0.72 : 1)
       }
     } else if monochrome {
       // 侧栏不用站点 favicon：Substack 这类没有内置 logo 的平台，favicon 取自某一条
-      // 记录的刊物头像，换一条记录图标就换一张，看起来像在闪。降级仍用稳定首字母，
-      // 但换成和列表行同一枚实心 16×16 圆角徽标——原来那圈细描边夹在满底 logo 里像空白。
-      fallbackBadge
+      // 记录的刊物头像，换一条记录图标就换一张，看起来像在闪。降级用稳定首字母，
+      // 画法和满底型 logo 一致：当前文字色的圆角块，字母镂空。
+      ZStack {
+        RoundedRectangle(cornerRadius: 4, style: .continuous).fill(.foreground)
+        Text(PlatformIconCatalog.fallbackInitial(for: host))
+          .font(.system(size: 10, weight: .bold))
+          .blendMode(.destinationOut)
+      }
+      .compositingGroup()
+      .frame(width: 15, height: 15)
     } else if let faviconURL, let faviconTaskID {
       HistoryFaviconDiskImage(url: faviconURL, host: host, taskID: faviconTaskID) {
         fallbackBadge
@@ -3295,9 +3440,33 @@ struct PlatformNavigationIcon: View {
   private var fallbackBadge: some View {
     Text(PlatformIconCatalog.fallbackInitial(for: host))
       .font(.system(size: BadgeTypography.size, weight: .bold))
-      .foregroundStyle(.white)
+      .foregroundStyle(PlatformIconCatalog.fallbackBadgeForeground(for: host))
       .frame(width: 16, height: 16)
-      .background(PlatformIconCatalog.fallbackColor(for: host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+      .background(PlatformIconCatalog.fallbackBadgeBackground(for: host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+  }
+}
+
+/// 满底型品牌 logo 的单色版：logo 的外形用当前文字色填实，里面的白色标志镂空。
+///
+/// 镂空量用「去色 → 压暗 → 拉高对比 → 亮度转透明」求：白色标志得到完整透明度，
+/// 红、橙、黑这些底色被压到 0，不会把底色也挖掉一半。
+struct MonochromeKnockoutIcon: View {
+  let image: NSImage
+
+  var body: some View {
+    ZStack {
+      Rectangle()
+        .fill(.foreground)
+        .mask { Image(nsImage: image).resizable().scaledToFit() }
+      Image(nsImage: image)
+        .resizable().scaledToFit()
+        .saturation(0)
+        .brightness(-0.3)
+        .contrast(4)
+        .luminanceToAlpha()
+        .blendMode(.destinationOut)
+    }
+    .compositingGroup()
   }
 }
 
@@ -3328,6 +3497,8 @@ private struct HistoryDetailView: View, Equatable {
   let localMediaFileURL: URL?
   /// 主界面「专注阅读」：隐藏侧栏后正文收窄居中，约 760pt。
   let isFocusReading: Bool
+  /// 专注阅读开关。2026-09-23 从窗口顶栏收进阅读区「更多」菜单。
+  let toggleFocusReading: () -> Void
   let openSettings: () -> Void
   let openRecapture: (String) -> Void
   /// 与列表预热共享：选中当前抓取时已开始 prepare，详情卡复用同一 controller。
@@ -3362,6 +3533,7 @@ private struct HistoryDetailView: View, Equatable {
   /// 长配文 / 长转写默认收起，避免把「重新转写」顶出一屏。
   @State private var isCaptionExpanded = false
   @State private var isTranscriptExpanded = false
+  @State private var isImportedImageTextExpanded = false
   @State private var isSubtitleExpanded = false
   /// 收起长文后滚回该层顶部，避免停在空白处。
   @State private var sourceCollapseScrollTarget: String?
@@ -3421,7 +3593,9 @@ private struct HistoryDetailView: View, Equatable {
   private var readingFontSizeRaw = Double(ReadingFontSize.default)
   /// 工具栏快捷打标签的浮层。
   @State private var isTagPopoverPresented = false
-  @State private var isNoteTagBarExpanded = true
+  /// 点了「添加笔记」才出现输入框；已经写过笔记的条目直接显示。
+  @State private var isInlineNoteRequested = false
+  @FocusState private var isInlineNoteFocused: Bool
   @State private var noteLastSavedAt: Date?
   private var theme: HistoryThemeTokens { appearanceTheme.tokens }
   /// 工具栏「小／大」按步进调字号，夹在合法区间内。改的是与设置页同一个
@@ -3645,8 +3819,18 @@ private struct HistoryDetailView: View, Equatable {
   }
   /// 配文层：抓取正文非空就呈现。抖音即使配文与标题相同也要能读，不能藏掉。
   private var hasPresentableCaption: Bool {
-    guard let snapshot = latestSourceSnapshot else { return false }
+    guard let snapshot = latestSourceSnapshot,
+          !LayeredSourceDocument.isSupersededPlaceholder(snapshot, in: detail.snapshots) else { return false }
     return !LayeredSourceDocument.body(of: snapshot).isEmpty
+  }
+  /// 原文层在阅读页上显示的小标题。本机导入的录音、音频没有画面，转写层叫「视频转写」
+  /// 会让人以为弄错了条目；发给模型和翻译拆层用的仍是原标题，这里只改显示。
+  private func displayHeading(_ heading: String) -> String {
+    guard heading == LayeredSourceDocument.transcriptHeading else { return heading }
+    let audioOnlyMethods: Set<String> = ["voice_memos_import", "local_file_audio"]
+    return latestSourceSnapshot.map { audioOnlyMethods.contains($0.captureMethod) } == true
+      ? "录音转写"
+      : heading
   }
   /// 这条记录有哪几层原文可选。
   ///
@@ -4262,7 +4446,12 @@ private struct HistoryDetailView: View, Equatable {
             .id(ReadingAnchor.module("mindmap"))
         }
 
-        if !localImageURLs.isEmpty {
+        // 导入的图片在落库时已经识别过：不再挂识别卡，改成一条收起的文字小节。
+        if let snapshot = latestSourceSnapshot, isImportedImage(snapshot),
+           let text = LocalImportDocument.splitImageBody(snapshot.bodyText).recognizedText {
+          importedImageTextSection(text)
+            .padding(.top, 16)
+        } else if !localImageURLs.isEmpty, latestSourceSnapshot.map(isImportedImage) != true {
           imageTextRecognitionCard
             .padding(.top, 16)
             .id(ReadingAnchor.module("images"))
@@ -4348,6 +4537,8 @@ private struct HistoryDetailView: View, Equatable {
       pendingRunPane = nil
       isCaptionExpanded = false
       isTranscriptExpanded = false
+      isImportedImageTextExpanded = false
+      isInlineNoteRequested = false
       isSubtitleExpanded = false
       selectedSourceLayer = nil
       selectedTranslationLayer = nil
@@ -4433,37 +4624,7 @@ private struct HistoryDetailView: View, Equatable {
         // 上一条／下一条原来是工具栏最前面的两个按钮。工具栏一排九个图标分不清
         // 主次，而它们有 ⌘↑ / ⌘↓，鼠标入口收进「更多」菜单就够了。
 
-        // 阅读区字号收进「阅读设置」菜单，保留加减与边界禁用。
-        if hasReadableBody {
-          Menu {
-            Text("当前 \(Self.readingFontSizeLabel(readingFontSizeRaw))")
-            Button {
-              adjustReadingFontSize(by: -ReadingFontSize.step)
-            } label: {
-              Label("缩小正文字号", systemImage: "textformat.size.smaller")
-            }
-            .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
-            .accessibilityIdentifier("reading-font-smaller")
-            Button {
-              adjustReadingFontSize(by: ReadingFontSize.step)
-            } label: {
-              Label("放大正文字号", systemImage: "textformat.size.larger")
-            }
-            .disabled(readingFontSizeRaw >= Double(ReadingFontSize.maximum))
-            .accessibilityIdentifier("reading-font-larger")
-            Button("恢复默认") {
-              readingFontSizeRaw = Double(ReadingFontSize.default)
-            }
-            .disabled(abs(readingFontSizeRaw - Double(ReadingFontSize.default)) < 0.01)
-            .accessibilityIdentifier("reading-font-reset")
-          } label: {
-            Label("阅读设置", systemImage: "textformat.size")
-          }
-          .help("阅读设置：调整正文字号")
-          .accessibilityLabel("阅读设置")
-          .accessibilityIdentifier("reading-font-size-control")
-        }
-
+        // 阅读设置（字号）和专注阅读 2026-09-23 收进下面的「更多」：顶栏只留收藏、标签、更多。
         if model.canToggleFavorite || model.canEditTags {
           ControlGroup {
             if model.canToggleFavorite {
@@ -4524,6 +4685,36 @@ private struct HistoryDetailView: View, Equatable {
               }
             }
           }
+          Section("阅读") {
+            Button(action: toggleFocusReading) {
+              Label(
+                isFocusReading ? "退出专注阅读" : "专注阅读",
+                systemImage: isFocusReading ? "rectangle.expand.vertical" : "rectangle.compress.vertical"
+              )
+            }
+            .accessibilityIdentifier("history-focus-reading-toggle")
+            if hasReadableBody {
+              Button {
+                adjustReadingFontSize(by: ReadingFontSize.step)
+              } label: {
+                Label("放大正文字号", systemImage: "textformat.size.larger")
+              }
+              .disabled(readingFontSizeRaw >= Double(ReadingFontSize.maximum))
+              .accessibilityIdentifier("reading-font-larger")
+              Button {
+                adjustReadingFontSize(by: -ReadingFontSize.step)
+              } label: {
+                Label("缩小正文字号", systemImage: "textformat.size.smaller")
+              }
+              .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
+              .accessibilityIdentifier("reading-font-smaller")
+              Button("恢复默认字号（当前 \(Self.readingFontSizeLabel(readingFontSizeRaw))）") {
+                readingFontSizeRaw = Double(ReadingFontSize.default)
+              }
+              .disabled(abs(readingFontSizeRaw - Double(ReadingFontSize.default)) < 0.01)
+              .accessibilityIdentifier("reading-font-reset")
+            }
+          }
           Section("浏览") {
             Button {
               model.selectAdjacent(offset: -1)
@@ -4576,7 +4767,8 @@ private struct HistoryDetailView: View, Equatable {
         } label: {
           Label("更多", systemImage: "ellipsis")
         }
-        .help("上一条／下一条（⌘↑ / ⌘↓）、复制、导出、重新处理或删除当前条目")
+        .menuIndicator(.hidden)
+        .help("专注阅读、正文字号、上一条／下一条（⌘↑ / ⌘↓）、复制、导出、重新处理或删除当前条目")
         .accessibilityLabel("更多")
         .accessibilityIdentifier("export-history")
       }
@@ -6065,43 +6257,90 @@ private struct HistoryDetailView: View, Equatable {
     return String(format: "%d:%02d", total / 60, total % 60)
   }
 
+  private var showsInlineNote: Bool {
+    !isOwnWriting && (isInlineNoteRequested || !model.taskNoteDraft.isEmpty)
+  }
+
+  /// 正文底部的笔记、素材类型、标签收成一行（2026-09-23 功能区分层第二批）。
+  ///
+  /// 原来是一整块常驻展开的表单：笔记输入框、7 个素材类型按钮、标签、一行提示，
+  /// 不用也一直占着地方。现在只露三个入口，点了才展开；已经写过的笔记和已有标签照常显示。
   @ViewBuilder private var noteTagBar: some View {
-    DisclosureGroup(isExpanded: $isNoteTagBarExpanded) {
-      VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-        if !isOwnWriting {
-          TextField("这篇内容的笔记", text: $model.taskNoteDraft, axis: .vertical)
-            .textFieldStyle(.plain)
-            .themedFont(.callout)
-            .lineLimit(2...6)
-            .padding(8)
-            .background(theme.badge, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
-            .onChange(of: model.taskNoteDraft) { _, _ in
-              model.scheduleNoteSave(taskID: detail.task.id)
-            }
-            .accessibilityLabel("这篇内容的笔记")
-            .accessibilityIdentifier("history-inline-note")
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.lg) {
+        if !isOwnWriting, !showsInlineNote {
+          Button {
+            isInlineNoteRequested = true
+            DispatchQueue.main.async { isInlineNoteFocused = true }
+          } label: {
+            Label("添加笔记", systemImage: "square.and.pencil")
+          }
+          .buttonStyle(.plain)
+          .accessibilityIdentifier("history-inline-note-add")
         }
-        HistoryTagEditor(tags: detail.tags, model: model)
+        if model.canEditTags {
+          materialTypeMenu
+        }
+        HistoryTagEditor(tags: detail.tags, model: model, showsMaterialTypes: false)
           .id(ReadingAnchor.module("tags"))
-        // 标签以自动为主：总结完成后按主题打上，手动添加只是补充。
-        if detail.tags.isEmpty, !isOwnWriting {
-          Text("总结完成后会自动打上主题标签")
-            .themedFont(.caption)
-            .foregroundStyle(theme.secondaryText)
-            .accessibilityIdentifier("history-auto-tag-hint")
-        }
+          .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .padding(.top, DesignTokens.Space.xs)
-      // 自己写的笔记没有上面那个输入框，这一块就没有东西把它撑满宽度，
-      // 标签按钮会被挤到正中间。显式靠左、占满。
-      .frame(maxWidth: .infinity, alignment: .leading)
-    } label: {
-      Text("笔记 · 标签")
-        .themedFont(.subheadline, weight: .medium)
-        .foregroundStyle(theme.secondaryText)
+      .themedFont(.callout)
+      .foregroundStyle(theme.secondaryText)
+      if showsInlineNote {
+        TextField("这篇内容的笔记", text: $model.taskNoteDraft, axis: .vertical)
+          .textFieldStyle(.plain)
+          .themedFont(.callout)
+          .lineLimit(2...6)
+          .padding(8)
+          .background(theme.badge, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+          .focused($isInlineNoteFocused)
+          .onChange(of: model.taskNoteDraft) { _, _ in
+            model.scheduleNoteSave(taskID: detail.task.id)
+          }
+          .accessibilityLabel("这篇内容的笔记")
+          .accessibilityIdentifier("history-inline-note")
+      }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .accessibilityIdentifier("history-note-tag-bar")
+  }
+
+  /// 素材类型收成一个下拉：贴了哪些就直接写在按钮上，没贴时只显示「素材类型」。
+  /// 预置名字就是普通标签，侧栏筛选、搜索、MCP 读到的都是同一回事。
+  private var materialTypeMenu: some View {
+    let present = Set(detail.tags.map(\.normalizedName))
+    let entries = MaterialCatalog.MaterialType.allCases.map { ($0.tagName, $0.systemImage) }
+      + [(MaterialCatalog.usedTagName, "checkmark.circle")]
+    let chosen = entries.map(\.0).filter { name in
+      present.contains(HistoryTagNormalizer.normalized(name)?.normalizedName ?? name)
+    }
+    return Menu {
+      ForEach(entries, id: \.0) { name, symbol in
+        let normalized = HistoryTagNormalizer.normalized(name)?.normalizedName ?? name
+        let isOn = present.contains(normalized)
+        if name == MaterialCatalog.usedTagName { Divider() }
+        Button {
+          if isOn, let tag = detail.tags.first(where: { $0.normalizedName == normalized }) {
+            model.removeTag(tag)
+          } else {
+            model.addTag(name)
+          }
+        } label: {
+          Label(name, systemImage: isOn ? "checkmark" : symbol)
+        }
+        .disabled(!isOn && detail.tags.count >= HistoryTagNormalizer.maximumTagsPerTask)
+        .accessibilityIdentifier("history-material-\(name)")
+      }
+    } label: {
+      Label(chosen.isEmpty ? "素材类型" : chosen.joined(separator: "、"), systemImage: "square.grid.2x2")
+    }
+    .menuStyle(.borderlessButton)
+    // 无边框菜单默认用强调色画成蓝字；和同一行的「添加笔记」「添加标签」统一成次要灰。
+    .tint(theme.secondaryText)
+    .fixedSize()
+    .help("标记素材类型或「已使用」")
+    .accessibilityIdentifier("history-material-types")
   }
 
   /// 同一组互动数据只显示一次，而且退到背景：点赞数对「读这篇」几乎没有帮助，
@@ -6122,18 +6361,27 @@ private struct HistoryDetailView: View, Equatable {
     if slots.isEmpty {
       EmptyView()
     } else {
-      TagPillFlowLayout(spacing: DesignTokens.Space.sm) {
-        ForEach(slots, id: \.rawValue) { slot in
-          let shown = CreatorWorkMetricLayout.displayValue(slot.value(from: note))
-          Label("\(slot.title(forHost: host)) \(shown.visible)", systemImage: slot.systemImage)
-            .help("\(slot.title(forHost: host)) \(shown.accessibility)")
-            .accessibilityLabel(slot.title(forHost: host))
-            .accessibilityValue(shown.accessibility)
-        }
-      }
-      .labelStyle(.titleAndIcon)
-      .accessibilityIdentifier("history-engagement-stats")
+      // 互动数据对「理解内容」是次级信息：收成一行弱化纯文本，不再让带图标的
+      // 指标在正文上方争注意力。整行作为一个无障碍值读出。
+      Text(engagementSummaryText(slots: slots, host: host, note: note))
+        .themedFont(.footnote)
+        .foregroundStyle(.tertiary)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("互动数据")
+        .accessibilityValue(engagementSummaryText(slots: slots, host: host, note: note))
+        .accessibilityIdentifier("history-engagement-stats")
     }
+  }
+
+  /// 互动数据的一行式文本：只呈现抓到的指标，沿用原有胶囊的顺序与文案。
+  private func engagementSummaryText(
+    slots: [CreatorWorkMetricKind],
+    host: String,
+    note: MarkdownNoteFrontmatter
+  ) -> String {
+    slots
+      .map { slot in "\(slot.title(forHost: host)) \(CreatorWorkMetricLayout.displayValue(slot.value(from: note)).visible)" }
+      .joined(separator: "  ·  ")
   }
 
   private var engagementHost: String {
@@ -6148,39 +6396,21 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   /// 互动数单独一行。作者/发布/公众号已经收进 byline，这里不再重复。
+  /// 弱化为一行小字，不再让带图标的指标在正文上方争注意力。
   @ViewBuilder
   private func notePropertiesStrip(_ note: MarkdownNoteFrontmatter) -> some View {
-    HStack(spacing: DesignTokens.Space.md) {
-      if let likes = note.likes {
-        Label(likes, systemImage: "heart")
-          .help("点赞 \(likes)")
-          .accessibilityIdentifier("history-stats-likes")
-      }
-      if let comments = note.comments {
-        Label(comments, systemImage: "bubble.right")
-          .help("评论 \(comments)")
-          .accessibilityIdentifier("history-stats-comments")
-      }
-      if let shares = note.shares {
-        Label(shares, systemImage: "arrowshape.turn.up.right")
-          .help("转发 \(shares)")
-          .accessibilityIdentifier("history-stats-shares")
-      }
-      if let collects = note.collects {
-        Label(collects, systemImage: "bookmark")
-          .help("收藏 \(collects)")
-          .accessibilityIdentifier("history-stats-collects")
-      }
-      if let views = note.views {
-        Label(views, systemImage: "eye")
-          .help("浏览 \(views)")
-          .accessibilityIdentifier("history-stats-views")
-      }
+    let host = engagementHost
+    let slots = CreatorWorkMetricLayout.visibleSlots(forHost: host) { $0.value(from: note) }
+    if !slots.isEmpty {
+      Text(engagementSummaryText(slots: slots, host: host, note: note))
+        .themedFont(.footnote)
+        .foregroundStyle(.tertiary)
+        .lineLimit(1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("互动数据")
+        .accessibilityValue(engagementSummaryText(slots: slots, host: host, note: note))
+        .accessibilityIdentifier("history-engagement-stats")
     }
-    .themedFont(.callout)
-    .foregroundStyle(.secondary)
-    .lineLimit(1)
-    .accessibilityIdentifier("history-engagement-stats")
   }
 
   private func localImageURL(forRemoteURL remoteURL: String) -> URL? {
@@ -6365,7 +6595,7 @@ private struct HistoryDetailView: View, Equatable {
             isExpanded: $isSubtitleExpanded
           )
         }
-        sourceLayerHeading(LayeredSourceDocument.transcriptHeading)
+        sourceLayerHeading(displayHeading(LayeredSourceDocument.transcriptHeading))
         LiveTranscriptionReadingBody(
           live: model.liveTranscriptionText,
           font: readingFont.nsFont(),
@@ -6398,7 +6628,7 @@ private struct HistoryDetailView: View, Equatable {
         case .transcript:
           if let transcript = latestTranscriptionSnapshot {
             collapsibleSourceSection(
-              heading: LayeredSourceDocument.transcriptHeading,
+              heading: displayHeading(LayeredSourceDocument.transcriptHeading),
               snapshot: transcript,
               isExpanded: $isTranscriptExpanded
             )
@@ -6414,7 +6644,7 @@ private struct HistoryDetailView: View, Equatable {
       : latestSnapshot, !snapshot.bodyText.isEmpty {
       if snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue {
         collapsibleSourceSection(
-          heading: LayeredSourceDocument.transcriptHeading,
+          heading: displayHeading(LayeredSourceDocument.transcriptHeading),
           snapshot: snapshot,
           isExpanded: $isTranscriptExpanded
         )
@@ -6429,7 +6659,7 @@ private struct HistoryDetailView: View, Equatable {
         )
           .accessibilityIdentifier("history-reading-source")
       } else {
-        sourceLayer(heading: isOwnWriting ? nil : "正文", snapshot: snapshot)
+        sourceLayer(heading: isOwnWriting || isImportedImage(snapshot) ? nil : "正文", snapshot: snapshot)
           .accessibilityIdentifier("history-reading-source")
       }
     } else {
@@ -6528,10 +6758,12 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 阅读卡里不再重复印标题。笔记是用户自己写的，开头的标题要留着。
   private func displayedSourceMarkdown(_ snapshot: ContentSnapshot, bodyOverride: String?) -> String {
-    let cleaned = bodyOverride ?? ReadingRenderCache.paneBody(
+    var cleaned = bodyOverride ?? ReadingRenderCache.paneBody(
       source: snapshot.bodyText,
       strippingEchoedMetadata: false
     )
+    // 导入的图片：正文只放图，识别出的文字在下面单独一条可展开的小节里。
+    if isImportedImage(snapshot) { cleaned = LocalImportDocument.splitImageBody(cleaned).image }
     guard !isOwnWriting else { return cleaned }
     let style: CapturedSourceBodyPresentation.EchoedOpeningStyle =
       .stripSyntheticTitleHeadingOnly
@@ -6883,6 +7115,53 @@ private struct HistoryDetailView: View, Equatable {
     .accessibilityIdentifier(pane == .source ? "history-reading-source-empty" : "history-reading-result-empty")
   }
 
+  private func isImportedImage(_ snapshot: ContentSnapshot) -> Bool {
+    snapshot.captureMethod == "local_file_image"
+  }
+
+  /// 导入图片识别出的文字。图本身才是素材，文字是用来搜索、复制的附属信息，
+  /// 默认收起成一行，不和图片抢版面。
+  private func importedImageTextSection(_ text: String) -> some View {
+    let lineCount = text.split(separator: "\n", omittingEmptySubsequences: true).count
+    return VStack(alignment: .leading, spacing: 10) {
+      HStack(spacing: 8) {
+        Button {
+          withAnimation(.easeInOut(duration: 0.15)) { isImportedImageTextExpanded.toggle() }
+        } label: {
+          HStack(spacing: 6) {
+            Image(systemName: "chevron.right")
+              .font(.system(size: 10, weight: .semibold))
+              .rotationEffect(.degrees(isImportedImageTextExpanded ? 90 : 0))
+            Image(systemName: "text.viewfinder")
+            Text("图片里的文字")
+            Text("\(lineCount) 行").foregroundStyle(.tertiary)
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityIdentifier("imported-image-text-toggle")
+        Spacer(minLength: 0)
+        Button("复制文字") { CopyFeedbackController.shared.copy(text) }
+          .buttonStyle(.plain)
+          .foregroundStyle(theme.secondaryText)
+      }
+      .themedFont(.callout)
+      .foregroundStyle(.secondary)
+      if isImportedImageTextExpanded {
+        Text(text)
+          .themedFont(.callout)
+          .foregroundStyle(theme.secondaryText)
+          .lineSpacing(4)
+          .textSelection(.enabled)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityIdentifier("imported-image-text")
+      }
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 10)
+    .background(Color.primary.opacity(0.035), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+  }
+
   private var imageTextRecognitionCard: some View {
     let recognitionState = model.imageTextRecognitionState(for: detail.task.id)
     let recognizedText = model.recognizedImageText(for: detail.task.id)
@@ -7098,6 +7377,8 @@ private struct HistoryTagEditor: View {
   @Bindable var model: HistoryViewModel
   /// 从工具栏快捷入口打开时直接展开输入框，点开即可打字；内联在详情里时保持收起。
   var autoExpandComposer = false
+  /// 正文底部那一行已经有独立的「素材类型」下拉，这里不再重复一排按钮；标签弹窗里照旧显示。
+  var showsMaterialTypes = true
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var input = ""
   @State private var isComposerExpanded = false
@@ -7182,6 +7463,10 @@ private struct HistoryTagEditor: View {
         }
       }
 
+      if model.canEditTags, showsMaterialTypes {
+        materialTypeRow
+      }
+
       if model.tagErrorCode != nil {
         Text("无法更新标签；历史记录未发生更改。")
           .themedFont(.caption).foregroundStyle(.secondary)
@@ -7192,6 +7477,44 @@ private struct HistoryTagEditor: View {
     .onAppear {
       if autoExpandComposer && canOpenComposer { isComposerExpanded = true }
     }
+  }
+
+  /// 一排素材类型 + 「已使用」：点一下贴上，再点一下摘掉。
+  /// 预置名字就是普通标签，所以侧栏筛选、搜索、MCP 读到的都是同一回事。
+  private var materialTypeRow: some View {
+    let present = Set(tags.map(\.normalizedName))
+    let entries = MaterialCatalog.MaterialType.allCases.map { ($0.tagName, $0.systemImage) }
+      + [(MaterialCatalog.usedTagName, "checkmark.circle")]
+    // 换行排列而不是横向滚动：标签弹窗很窄，横排时后几个类型被挤出可视区，
+    // 用户根本不知道还有「数据」「选题」「已使用」。
+    return VStack(alignment: .leading, spacing: 4) {
+      Text("素材类型").themedFont(.caption).foregroundStyle(.secondary)
+      LazyVGrid(columns: [GridItem(.adaptive(minimum: 68), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) {
+        ForEach(entries, id: \.0) { name, symbol in
+          let normalized = HistoryTagNormalizer.normalized(name)?.normalizedName ?? name
+          let isOn = present.contains(normalized)
+          Button {
+            if isOn, let tag = tags.first(where: { $0.normalizedName == normalized }) {
+              model.removeTag(tag)
+            } else {
+              model.addTag(name)
+            }
+          } label: {
+            Label(name, systemImage: isOn ? "checkmark" : symbol)
+              .labelStyle(.titleAndIcon)
+              .themedFont(.caption)
+              .lineLimit(1)
+              .padding(.horizontal, 8).padding(.vertical, 3)
+              .background(isOn ? AnyShapeStyle(.tint.opacity(0.18)) : AnyShapeStyle(.quaternary.opacity(0.6)), in: Capsule())
+          }
+          .buttonStyle(.plain)
+          .disabled(!isOn && tags.count >= HistoryTagNormalizer.maximumTagsPerTask)
+          .help(isOn ? "取消「\(name)」" : "标为「\(name)」")
+          .accessibilityIdentifier("history-material-\(name)")
+        }
+      }
+    }
+    .accessibilityIdentifier("history-material-types")
   }
 
   @ViewBuilder private var addTagControl: some View {

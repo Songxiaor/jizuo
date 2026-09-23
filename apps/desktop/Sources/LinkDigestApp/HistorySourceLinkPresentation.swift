@@ -1,7 +1,12 @@
 import Foundation
+import LinkDigestCore
 
 enum HistorySourceLinkPresentation {
   static func host(_ rawURL: String) -> String? {
+    // 本机导入的素材没有网站，来源行显示「语音备忘录」「本地文件」而不是内部 host。
+    if let source = (try? CanonicalURL(rawURL))?.localImportSource {
+      return HistoryPlatformDisplay.name(forHost: source)
+    }
     guard let components = URLComponents(string: rawURL),
           var host = components.host?.lowercased(),
           !host.isEmpty

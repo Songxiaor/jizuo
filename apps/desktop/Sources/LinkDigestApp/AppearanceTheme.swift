@@ -3,6 +3,9 @@ import SwiftUI
 
 /// 用户可选外观：跟随系统、浅色、深色。
 ///
+/// 2026-09-23 按对标应用改色：去掉带绿的中性色和墨绿强调（Syc：「我不想要绿色」），
+/// 浅色改成接近纯白的中性底 + 一支鲜亮的蓝，深色同一色相推出来。
+///
 /// 2026-09-10 从六套收成三套。石楠、珊瑚、高对比各自另起一套底色和强调色，
 /// 和浅色不是一家（Syc 的原话是「土」）；深色原来用橙色强调，也和浅色的墨绿
 /// 不是一家。现在只有一套设计：浅色是它的白天，深色是从同一组色相推出来的夜晚，
@@ -147,17 +150,18 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
         // 和 macOS 自家应用同一套。这是「Mac 味」最直接的来源。
         // 用户在设置里指定的界面字体优先于这里。
         typography: .system,
-        // 三档底色：侧栏最沉、列表居中、正文纸面最亮，视线自然从左往右走。
-        canvas: ReadingPalette.sidebar,     // #E4E5E2  侧栏
-        listPane: ReadingPalette.listPane,  // #EFF0ED  列表列
-        card: ReadingPalette.paper,         // #FAFAF7  阅读区 / 设置卡
-        selectionFill: ReadingPalette.green,
+        // 两档底色：侧栏一层极浅的中性灰，列表与正文同为纯白，只靠一条 1pt 细线分开。
+        // 原来三档带绿的灰（#E4E5E2 / #EFF0ED / #FAFAF7）整体发闷，是「不够细腻」的主因。
+        canvas: ReadingPalette.sidebar,     // #F6F6F4  侧栏
+        listPane: ReadingPalette.listPane,  // #FFFFFF  列表列
+        card: ReadingPalette.paper,         // #FFFFFF  阅读区 / 设置卡
+        selectionFill: ReadingPalette.accent,
         selectionText: ReadingPalette.paper,
         hairline: ReadingPalette.rule,
         badge: ReadingPalette.badge,
         primaryText: ReadingPalette.ink,
         secondaryText: ReadingPalette.secondary,
-        accent: ReadingPalette.green,
+        accent: ReadingPalette.accent,
         // 纸底上的状态色统一降饱和，并按 AA 压深到 4.5:1 以上（两个面都验过）。
         success: themeColor(0x48, 0x6E, 0x4A),
         warning: themeColor(0x83, 0x5E, 0x2A),
@@ -166,22 +170,21 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
         encodesStatusByShape: false
       )
     case .ink:
-      // 从浅色派生：同一组带绿的中性色相，只把明度翻过来。
-      // 强调色是浅色墨绿提亮后的版本，明暗切换时像同一个产品的白天和夜晚。
+      // 从浅色派生：同一组中性灰，只把明度翻过来；强调色是浅色那支蓝提亮后的版本。
       return HistoryThemeTokens(
         identity: "ink",
         isNative: false,
         typography: .system,
-        canvas: InkPalette.sidebar,     // #1F2321  侧栏
-        listPane: InkPalette.listPane,  // #252927  列表列
-        card: InkPalette.paper,         // #2A2E2B  阅读区 / 设置卡
-        selectionFill: InkPalette.green,
-        selectionText: InkPalette.onGreen,
+        canvas: InkPalette.sidebar,     // #1C1C1E  侧栏
+        listPane: InkPalette.listPane,  // #202022  列表列
+        card: InkPalette.paper,         // #232326  阅读区 / 设置卡
+        selectionFill: InkPalette.accent,
+        selectionText: InkPalette.onAccent,
         hairline: Color.white.opacity(0.08),
         badge: Color.white.opacity(0.10),
         primaryText: InkPalette.ink,
         secondaryText: InkPalette.secondary,
-        accent: InkPalette.green,
+        accent: InkPalette.accent,
         // 深底要把状态色提亮，否则暗绿暗红在深灰上糊成一团；
         // 四支对画布和正文卡都在 4.5:1 以上。
         success: themeColor(0x86, 0xB9, 0x8F),
@@ -204,32 +207,36 @@ private func themeColor(_ red: Int, _ green: Int, _ blue: Int) -> Color {
   ))
 }
 
-/// 汲作阅读主题（浅色）：中性纸面、清晰墨色、少量绿色强调。
+/// 汲作阅读主题（浅色）：接近纯白的中性底、清晰墨色、一支鲜亮的蓝做强调。
 private enum ReadingPalette {
-  static let sidebar = themeColor(0xE4, 0xE5, 0xE2)
-  /// 列表列：比侧栏亮、比纸面暗的中间档。对侧栏 L* 差约 4，对纸面约 4。
-  static let listPane = themeColor(0xEF, 0xF0, 0xED)
-  static let paper = themeColor(0xFA, 0xFA, 0xF7)
-  static let ink = themeColor(0x27, 0x2D, 0x28)
-  static let secondary = themeColor(0x60, 0x67, 0x60)
-  static let green = themeColor(0x35, 0x60, 0x46)
-  static let rule = themeColor(0xD6, 0xDA, 0xD2)
-  static let badge = themeColor(0xDD, 0xE3, 0xD9)
+  /// 侧栏：极浅的中性灰，只比白色暗一点点，用来和列表分层。
+  static let sidebar = themeColor(0xF6, 0xF6, 0xF4)
+  static let listPane = themeColor(0xFF, 0xFF, 0xFF)
+  static let paper = themeColor(0xFF, 0xFF, 0xFF)
+  /// 正文墨色，对白底约 16.8:1。
+  static let ink = themeColor(0x1D, 0x1D, 0x1F)
+  /// 次要文字，对白底约 5.1:1、对侧栏约 4.7:1。
+  static let secondary = themeColor(0x6E, 0x6E, 0x73)
+  /// 强调蓝，对白底约 4.9:1、对侧栏约 4.5:1。
+  static let accent = themeColor(0x0A, 0x6C, 0xE6)
+  /// 分隔线：一条浅而清楚的中性灰，不再带绿。
+  static let rule = themeColor(0xE6, 0xE6, 0xE3)
+  static let badge = themeColor(0xED, 0xED, 0xEB)
 }
 
-/// 深色主题：浅色同一组色相的夜晚版。
+/// 深色主题：浅色同一组中性色的夜晚版。
 private enum InkPalette {
-  static let sidebar = themeColor(0x1F, 0x23, 0x21)
-  static let listPane = themeColor(0x25, 0x29, 0x27)
-  static let paper = themeColor(0x2A, 0x2E, 0x2B)
-  /// 暖白正文，对画布约 12:1。
-  static let ink = themeColor(0xE8, 0xEA, 0xE6)
-  /// 次要文字，对画布约 6:1、对正文卡约 5:1。
-  static let secondary = themeColor(0x9A, 0xA0, 0x9B)
-  /// 浅色墨绿 #35 60 46 提亮后的版本，对画布约 6.5:1。
-  static let green = themeColor(0x7F, 0xB0, 0x8A)
-  /// 压在强调色块上的文字：深绿黑，对 green 约 7:1。
-  static let onGreen = themeColor(0x14, 0x1E, 0x18)
+  static let sidebar = themeColor(0x1C, 0x1C, 0x1E)
+  static let listPane = themeColor(0x20, 0x20, 0x22)
+  static let paper = themeColor(0x23, 0x23, 0x26)
+  /// 正文，对画布约 14.5:1。
+  static let ink = themeColor(0xED, 0xED, 0xEF)
+  /// 次要文字，对画布约 6.1:1、对正文卡约 5.6:1。
+  static let secondary = themeColor(0x9A, 0x9A, 0xA0)
+  /// 浅色强调蓝提亮后的版本，对画布约 6.5:1。
+  static let accent = themeColor(0x5A, 0xA2, 0xFF)
+  /// 压在强调色块上的文字：深蓝黑，对 accent 约 6.7:1。
+  static let onAccent = themeColor(0x0F, 0x1A, 0x2B)
 }
 
 // Equatable：列表行按值输入决定是否重算（HistoryRowView ==），主题令牌是输入之一。

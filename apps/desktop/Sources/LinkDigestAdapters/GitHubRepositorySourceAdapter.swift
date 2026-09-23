@@ -409,6 +409,22 @@ public final class GitHubREADMEImageCache: @unchecked Sendable {
   }
 
   public func discardStaged(captureID: String) { try? remove(stagingDirectory(captureID)) }
+
+  /// 用户从本机导入的图片。不走网络，直接放进该快照的图片目录。
+  ///
+  /// 文件名按 `reference` 的哈希取——与远程配图用 URL 哈希是同一条规则，正文里写
+  /// `![原图](reference)`，阅读页就会在那个位置显示这张图，不必另开一套显示逻辑。
+  public func storeLocalImage(_ data: Data, reference: String, taskID: TaskID, snapshotID: ContentSnapshotID) throws {
+    let directory = snapshotDirectory(taskID: taskID, snapshotID: snapshotID)
+    try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
+    let filename = Self.filename(forRemote: reference)
+    try data.write(to: directory.appendingPathComponent(filename, isDirectory: false), options: .atomic)
+    let manifestURL = directory.appendingPathComponent("manifest.json")
+    var entries = (try? Data(contentsOf: manifestURL))
+      .flatMap { try? JSONDecoder().decode(Manifest.self, from: $0) }?.entries ?? []
+    if !entries.contains(where: { $0.filename == filename }) { entries.append(.init(filename: filename)) }
+    try JSONEncoder().encode(Manifest(entries: entries)).write(to: manifestURL, options: .atomic)
+  }
   public func delete(taskID: TaskID) { try? remove(root.appendingPathComponent(taskID.rawValue, isDirectory: true)) }
 
   public func localImageURLs(taskID: TaskID, snapshotID: ContentSnapshotID) -> [URL] {

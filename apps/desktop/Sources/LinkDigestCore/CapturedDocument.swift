@@ -22,6 +22,9 @@ public struct CapturedDocument: Sendable, Equatable {
     case pieceDraft = "piece_draft"
     /// 已完成的作品。它离开工作台进入输出,是「我做出来的东西」。
     case work = "work"
+    /// 从本机导入的素材（语音备忘录、本地文件）。唯一允许使用
+    /// `CanonicalURL.localImportScheme` 建条目的来源。
+    case localImport = "local_import"
   }
 
   public let requestID: String
@@ -250,7 +253,17 @@ public enum CapturedDocumentValidator {
       guard (try? CanonicalURL(document.url))?.isWork == true else {
         throw CapturedDocumentValidationError.invalidURL
       }
+    case .localImport:
+      guard (try? CanonicalURL(document.url))?.isLocalImport == true else {
+        throw CapturedDocumentValidationError.invalidURL
+      }
     default:
+      // 本机导入的录音/视频转写后，转写稿挂回同一条目，URL 就是导入时的本机地址。
+      // 只放行「派生稿」这两种 origin，浏览器与手动链接仍然只认 http(s)。
+      if document.origin == .localTranscription || document.origin == .burnedInSubtitles,
+         (try? CanonicalURL(document.url))?.isLocalImport == true {
+        break
+      }
       guard URL(string: document.url) != nil,
             ["http", "https"].contains(URL(string: document.url)?.scheme?.lowercased())
       else { throw CapturedDocumentValidationError.invalidURL }

@@ -29,6 +29,8 @@ public enum HistoryListScope: String, Sendable, Equatable, CaseIterable {
   case recent
   case unsummarized
   case favorite
+  /// 还没被创作系统用过的资料：不带「已使用」标签的抓取与导入内容。
+  case unused
   /// 用户自己写的笔记。
   ///
   /// 它是**独立区域**，不是一个筛选条件：除了 `.notes` 自己，其余所有作用域都把笔记
@@ -99,6 +101,8 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   public let recent: Int
   public let unsummarized: Int
   public let favorite: Int
+  /// 还没被用过的资料条数，口径同 `.unused`。
+  public let unused: Int
   /// 用户自己写的笔记条数。默认 0，让既有构造点无需改动。
   public let notes: Int
   /// 已完成的作品数。
@@ -121,6 +125,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     recent: Int = 0,
     unsummarized: Int = 0,
     favorite: Int = 0,
+    unused: Int = 0,
     notes: Int = 0,
     works: Int = 0,
     trash: Int = 0,
@@ -133,6 +138,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     self.recent = recent
     self.unsummarized = unsummarized
     self.favorite = favorite
+    self.unused = unused
     self.notes = notes
     self.works = works
     self.trash = trash
@@ -195,6 +201,10 @@ public enum HistoryPlatformRegistry {
     .init(canonicalHost: "discourse", displayName: "Discourse", exactHosts: ["linux.do", "uscardforum.com"]),
     .init(canonicalHost: "lemmy.world", displayName: "Lemmy", exactHosts: ["lemmy.world"]),
     .init(canonicalHost: "mastodon.social", displayName: "Mastodon", exactHosts: ["mastodon.social"]),
+    // 本机来源。host 来自 `linkdigest-local://<source>/…`，不是真实域名。
+    .init(canonicalHost: LocalImportSource.voiceMemos.rawValue, displayName: "语音备忘录", exactHosts: [LocalImportSource.voiceMemos.rawValue]),
+    .init(canonicalHost: LocalImportSource.files.rawValue, displayName: "本地文件", exactHosts: [LocalImportSource.files.rawValue]),
+    .init(canonicalHost: LocalImportSource.appleNotes.rawValue, displayName: "备忘录", exactHosts: [LocalImportSource.appleNotes.rawValue]),
   ]
 
   public static func descriptor(forHost rawHost: String) -> HistoryPlatformDescriptor? {
@@ -292,6 +302,9 @@ public struct HistoryListFilter: Sendable, Equatable {
   /// 一下就跳到最上面，和「今天 / 昨天」分组对不上。默认关：导出、知识库同步、MCP
   /// 这些按更新时间增量翻页的调用方不受影响。
   public let ordersBySavedTime: Bool
+  /// 浏览（无搜索词）时也带上「我的笔记」。默认关：侧栏的资料区只看抓来的东西。
+  /// MCP 按素材类型取素材时打开——快速记录的灵感就存在笔记里，找灵感不该漏掉它们。
+  public let includesNotes: Bool
 
   public init(
     tagNames: [String] = [],
@@ -299,7 +312,8 @@ public struct HistoryListFilter: Sendable, Equatable {
     scope: HistoryListScope = .all,
     searchText: String = "",
     creatorID: CreatorID? = nil,
-    ordersBySavedTime: Bool = false
+    ordersBySavedTime: Bool = false,
+    includesNotes: Bool = false
   ) {
     var seen = Set<String>()
     tagNormalizedNames = tagNames.compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
@@ -311,6 +325,7 @@ public struct HistoryListFilter: Sendable, Equatable {
     self.searchText = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     self.creatorID = creatorID
     self.ordersBySavedTime = ordersBySavedTime
+    self.includesNotes = includesNotes
   }
 
   public static let none = HistoryListFilter()
@@ -319,7 +334,7 @@ public struct HistoryListFilter: Sendable, Equatable {
   public var ignoringOrder: HistoryListFilter {
     HistoryListFilter(
       tagNames: tagNormalizedNames, hosts: hosts, scope: scope,
-      searchText: searchText, creatorID: creatorID
+      searchText: searchText, creatorID: creatorID, includesNotes: includesNotes
     )
   }
 }

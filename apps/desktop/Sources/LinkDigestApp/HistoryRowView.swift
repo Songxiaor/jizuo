@@ -247,9 +247,9 @@ struct HistoryRowView: View {
   private var fallbackBadge: some View {
     Text(PlatformIconCatalog.fallbackInitial(for: row.host))
       .font(.system(size: BadgeTypography.size, weight: .bold))
-      .foregroundStyle(.white)
+      .foregroundStyle(PlatformIconCatalog.fallbackBadgeForeground(for: row.host))
       .frame(width: 16, height: 16)
-      .background(PlatformIconCatalog.fallbackColor(for: row.host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
+      .background(PlatformIconCatalog.fallbackBadgeBackground(for: row.host), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.sm, style: .continuous))
       .padding(.top, 1)
       .accessibilityLabel("\(row.host) 图标")
   }

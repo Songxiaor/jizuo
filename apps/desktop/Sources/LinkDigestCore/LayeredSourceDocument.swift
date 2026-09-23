@@ -19,6 +19,17 @@ public enum LayeredSourceDocument {
     CapturedDocument.Origin.burnedInSubtitles.rawValue
   ]
 
+  /// 本机导入的录音、音视频在转写前只有一段「点转写」的占位说明，不是真正的配文。
+  public static let placeholderCaptionMethods: Set<String> = [
+    "voice_memos_import", "local_file_audio", "local_file_video"
+  ]
+
+  /// 已经有了转写或字幕，这段占位说明就过时了：不再作为「配文」层显示，也不喂给模型。
+  public static func isSupersededPlaceholder(_ caption: ContentSnapshot, in snapshots: [ContentSnapshot]) -> Bool {
+    placeholderCaptionMethods.contains(caption.captureMethod)
+      && (transcriptSnapshot(in: snapshots) != nil || subtitleSnapshot(in: snapshots) != nil)
+  }
+
   public static func captionSnapshot(in snapshots: [ContentSnapshot]) -> ContentSnapshot? {
     snapshots.reversed().first {
       !derivedKinds.contains($0.sourceKind)
@@ -105,7 +116,7 @@ public enum LayeredSourceDocument {
   /// 按固定顺序取出所有非空的层。
   static func orderedLayers(from snapshots: [ContentSnapshot]) -> [(heading: String, body: String)] {
     let candidates: [(String, ContentSnapshot?)] = [
-      (captionHeading, captionSnapshot(in: snapshots)),
+      (captionHeading, captionSnapshot(in: snapshots).flatMap { isSupersededPlaceholder($0, in: snapshots) ? nil : $0 }),
       (subtitleHeading, subtitleSnapshot(in: snapshots)),
       (transcriptHeading, transcriptSnapshot(in: snapshots))
     ]

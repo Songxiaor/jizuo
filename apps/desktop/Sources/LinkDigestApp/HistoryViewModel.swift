@@ -5412,6 +5412,32 @@ final class HistoryViewModel {
     }
   }
 
+  /// 素材类型与「已使用」的开关：有就摘掉，没有就贴上。
+  ///
+  /// 和行内加标签走同一条 worker 通道；成功后整表重载而不是只刷计数——在「未使用」
+  /// 里把一条标成已使用，它应当立刻从列表里消失。
+  func toggleMaterialTag(_ rawName: String, on taskID: TaskID, isOn: Bool) {
+    guard
+      let history, !isReadOnly, !isDeleting,
+      let tag = HistoryTagNormalizer.normalized(rawName)
+    else { return }
+    let generation = configurationGeneration
+    tagMutationTask?.cancel(); tagErrorCode = nil
+    tagMutationTask = Task { [weak self, worker] in
+      let result = isOn
+        ? await worker.addTag(history, rawName: rawName, taskID: taskID)
+        : await worker.removeTag(history, normalizedName: tag.normalizedName, taskID: taskID)
+      guard !Task.isCancelled, let self, generation == self.configurationGeneration else { return }
+      switch result {
+      case .success:
+        self.reloadAvailableTags()
+        self.reload()
+      case let .failure(code):
+        self.tagErrorCode = code
+      }
+    }
+  }
+
   func removeTag(_ tag: HistoryTag) {
     guard let history, let taskID = selectedTaskID, canEditTags else { return }
     let generation = configurationGeneration

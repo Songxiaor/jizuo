@@ -35,6 +35,14 @@ enum PlatformIconCatalog {
     name == "x.com" || name == "github"
   }
 
+  /// 侧栏单色模式下「外形本身就是标志」的 logo：直接取形状、用当前文字色填。
+  ///
+  /// 和 `usesTemplateRendering` 分开：那条决定的是**所有地方**的位图是否是模板图，
+  /// 列表行里公众号、B 站、掘金仍要保留品牌色；这条只管侧栏的单色剪影（2026-09-23）。
+  static func usesGlyphSilhouette(forAssetName name: String) -> Bool {
+    ["x.com", "github", "bilibili", "wechat", "juejin"].contains(name)
+  }
+
   /// 深底白字型 logo（抖音：黑色圆角方块上的白色音符）。去色后仍是一块实心黑，
   /// 和旁边的线条剪影不是一个重量；改用亮度当遮罩，只留白色音符，再用当前文字色填。
   static func usesLuminanceMask(forAssetName name: String) -> Bool {
@@ -50,7 +58,22 @@ enum PlatformIconCatalog {
     return cache
   }()
 
+  /// 本机来源没有品牌图标，用系统符号：比首字母徽标（V、L）更能一眼认出是什么。
+  static func localSourceSymbolName(for host: String) -> String? {
+    switch normalizedHost(host) {
+    case LocalImportSource.voiceMemos.rawValue: "waveform"
+    case LocalImportSource.files.rawValue: "doc"
+    case LocalImportSource.appleNotes.rawValue: "note.text"
+    default: nil
+    }
+  }
+
   static func image(for host: String) -> NSImage? {
+    if let symbol = localSourceSymbolName(for: host) {
+      let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+      image?.isTemplate = true
+      return image
+    }
     guard let name = assetName(for: host) else { return nil }
     if let cached = rasterCache.object(forKey: name as NSString) { return cached }
     guard let root = Bundle.main.resourceURL else { return nil }
@@ -72,12 +95,24 @@ enum PlatformIconCatalog {
   }
 
   /// Hue derived from the host so the same source keeps the same colour across
-  /// launches without persisting anything.
+  /// launches without persisting anything. Kept for the site-login settings
+  /// list; the history sidebar and rows went neutral (see below).
   static func fallbackColor(for host: String) -> Color {
     let value = normalizedHost(host)
     var hash: UInt64 = 5_381
     for byte in value.utf8 { hash = (hash &* 33) &+ UInt64(byte) }
     return Color(hue: Double(hash % 360) / 360.0, saturation: 0.45, brightness: 0.72)
+  }
+
+  /// 历史侧栏与列表行的未知来源不再发随机彩色块——一列里每个未知来源一个
+  /// 随机色，正是「调色盘」观感的一部分。统一成主题无关的中性灰底，靠首字母
+  /// 区分来源。站点登录页仍用上面的彩色版（那里一行一个站点，不构成噪声）。
+  static func fallbackBadgeBackground(for host: String) -> Color {
+    Color.secondary.opacity(0.18)
+  }
+
+  static func fallbackBadgeForeground(for host: String) -> Color {
+    Color.primary.opacity(0.7)
   }
 
   /// Loads the SVG and returns a bitmap-backed `NSImage` sized for Retina list rows.
