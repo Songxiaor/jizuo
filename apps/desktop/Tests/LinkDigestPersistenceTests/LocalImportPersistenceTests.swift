@@ -175,12 +175,15 @@ final class MaterialScopeTests: XCTestCase {
       let videoFile = try file(repository, "d", text: LocalImportDocument.mediaPlaceholder(fileName: "d.mov", durationSeconds: 3, hasVideo: true), now: now)
       let recording = try memo(repository, now: now)
       let note = try repository.acceptCapture(.init(document: UserNoteDocument.make(title: "笔记", body: "自己写的"), receivedAtMilliseconds: now)).taskID
+      // 旧版图片导入第一份快照只有识别文字；同一文件重新导入后按最新一份算图片。
+      let reimported = try file(repository, "e", text: "旧版识别文字", now: now)
+      XCTAssertEqual(try file(repository, "e", text: LocalImportDocument.imageBody(fileName: "e.png", reference: "linkdigest-local://localfiles/e", recognizedText: nil), now: now + 1), reimported)
 
       func form(_ value: ContentForm) throws -> Set<TaskID> {
         try ids(repository, .init(scope: .all, includesNotes: true, form: value))
       }
       XCTAssertEqual(try form(.document), [doc])
-      XCTAssertEqual(try form(.image), [image])
+      XCTAssertEqual(try form(.image), [image, reimported])
       XCTAssertEqual(try form(.audio), [audioFile, recording])
       XCTAssertEqual(try form(.video), [videoFile])
       XCTAssertEqual(try form(.note), [note])

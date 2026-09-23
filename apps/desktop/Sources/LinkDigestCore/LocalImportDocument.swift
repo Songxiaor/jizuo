@@ -9,7 +9,7 @@ public enum LocalImportSource: String, Sendable, CaseIterable {
   case appleNotes = "applenotes"
 
   /// 批量同步进来的「旧档案」：一次同步就是几百条过去写的东西，不是「新来待处理的素材」。
-  /// 它们不进收件箱、不进待总结，存入时间用原本的创建 / 录制时间（2026-09-23）。
+  /// 它们不进待总结，存入时间用原本的创建 / 录制时间（2026-09-23；收件箱已于 09-24 撤下）。
   /// 手动拖进来的单个文件是用户主动收的素材，不算。
   public static let archiveHosts: [String] = [LocalImportSource.voiceMemos.rawValue, LocalImportSource.appleNotes.rawValue]
 

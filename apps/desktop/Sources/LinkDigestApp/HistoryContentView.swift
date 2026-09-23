@@ -1355,10 +1355,6 @@ struct HistoryContentView: View {
     }
   }
 
-  static let localSourceHosts: [String] = [
-    LocalImportSource.appleNotes.rawValue, LocalImportSource.voiceMemos.rawValue, LocalImportSource.files.rawValue,
-  ]
-
   /// 侧栏标签云里不显示的标签：归属的两个保留标签（「自有」「外部」本身就是顶部入口）、
   /// 旧版「已使用 / 已归档」留下的标签（界面已撤，2026-09-24）；和来源平台重名的
   /// 标签（Twitter、YouTube…）只是重复平台信息。只在侧栏隐藏，标签本身不删。

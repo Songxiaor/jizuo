@@ -104,15 +104,17 @@ public enum TaskClassificationSQL {
   /// 条目的形式（`ContentForm.rawValue`）。按抓取时已有的信息判定，顺序即优先级：
   /// 作品 → 笔记（含备忘录）→ 录音 → 视频 → 图片 → 文档（其余本地文件）→ 图文（其余网页）。
   ///
-  /// 本地文件的音频 / 视频 / 图片靠导入时写下的第一份快照开头区分（`LocalImportDocument`
-  /// 固定写「从本机导入的音频/视频：」，图片正文以 `![` 开头）；网页视频沿用列表行
+  /// 本地文件的音频 / 视频 / 图片靠最新一份本机导入快照的开头区分（`LocalImportDocument`
+  /// 固定写「从本机导入的音频/视频：」，图片正文以 `![` 开头）。取最新而不是第一份：
+  /// 同一文件重新导入会写入新格式的快照（旧版图片导入第一份是纯识别文字）。
+  /// 转写稿是另一种快照（`local_transcription`），不影响判定。网页视频沿用列表行
   /// `has_media` 的同一信号。
   public static func formSQL(tableAlias t: String) -> String {
     let local = LocalImportSource.files.rawValue
     let firstLocalBody = """
       (SELECT substr(fcs.body_text, 1, 12) FROM content_snapshots fcs
         WHERE fcs.task_id = \(t).id AND fcs.source_kind = 'local_import'
-        ORDER BY fcs.sequence ASC LIMIT 1)
+        ORDER BY fcs.sequence DESC LIMIT 1)
       """
     return """
       CASE
