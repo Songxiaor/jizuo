@@ -104,9 +104,14 @@ final class MaterialScopeTests: XCTestCase {
     let repository = try GRDBHistoryRepository.open(at: LocalDatabaseLocation(directoryURL: directory))
     defer { try? repository.database.close() }
     let now = Int64(Date().timeIntervalSince1970 * 1000)
+    // 用手动导入的本地文件做样例：语音备忘录、备忘录是批量同步的旧档案，按设计不进收件箱。
     func add(_ id: String) throws -> TaskID {
-      try repository.acceptCapture(.init(
-        document: LocalImportDocument.voiceMemo(recordingID: id, title: id, recordedAt: nil, durationSeconds: nil),
+      let sha = String(repeating: id.lowercased() == "a" ? "a" : "b", count: 64)
+      return try repository.acceptCapture(.init(
+        document: LocalImportDocument.file(
+          contentSHA256: sha, fileName: "\(id).md", text: "正文 \(id)", completeness: "complete",
+          method: "local_file_text", fileDate: nil
+        ),
         receivedAtMilliseconds: now
       )).taskID
     }
@@ -127,5 +132,48 @@ final class MaterialScopeTests: XCTestCase {
     XCTAssertEqual(quotes, [a])
     // 组合：未使用的金句——a 已用过，所以为空。
     XCTAssertTrue(try repository.historyPage(limit: 50, after: nil, filter: .init(tagNames: ["金句"], scope: .unused)).rows.isEmpty)
+  }
+
+  /// 批量同步的旧档案（语音备忘录、备忘录）不进收件箱和待总结；MCP 取素材时照常包含；
+  /// 存入时间可以挪回原始日期，但只往前挪。
+  func testArchiveImportsStayOutOfInboxAndCanBeBackdated() throws {
+    let root = URL(fileURLWithPath: "/private/tmp/linkdigest-archive-tests-\(UUID().uuidString)", isDirectory: true)
+    let directory = root.appendingPathComponent("Application Support/LinkDigest", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let repository = try GRDBHistoryRepository.open(at: LocalDatabaseLocation(directoryURL: directory))
+    defer { try? repository.database.close() }
+    let now = Int64(Date().timeIntervalSince1970 * 1000)
+    let memo = try repository.acceptCapture(.init(
+      document: LocalImportDocument.voiceMemo(recordingID: "M", title: "录音", recordedAt: nil, durationSeconds: 3),
+      receivedAtMilliseconds: now
+    )).taskID
+    let file = try repository.acceptCapture(.init(
+      document: LocalImportDocument.file(
+        contentSHA256: String(repeating: "c", count: 64), fileName: "a.md", text: "正文",
+        completeness: "complete", method: "local_file_text", fileDate: nil
+      ),
+      receivedAtMilliseconds: now
+    )).taskID
+
+    let counts = try repository.navigationCounts()
+    XCTAssertEqual(counts.all, 2)
+    XCTAssertEqual(counts.unused, 1)
+    XCTAssertEqual(counts.unsummarized, 1)
+    XCTAssertEqual(try repository.historyPage(limit: 50, after: nil, filter: .init(scope: .unused)).rows.map(\.taskID), [file])
+    XCTAssertEqual(
+      Set(try repository.historyPage(limit: 50, after: nil, filter: .init(scope: .unused, includesArchivesInScopes: true)).rows.map(\.taskID)),
+      [memo, file]
+    )
+
+    _ = try repository.addTags([MaterialCatalog.usedTagName], to: memo)
+    XCTAssertEqual(try repository.navigationCounts().used, 1)
+
+    let original = now - 400 * 86_400_000
+    try repository.alignArchiveTaskTime(taskID: memo, originalMilliseconds: original)
+    XCTAssertEqual(try repository.navigationCounts().recent, 1, "挪回一年前后，不再算「最近 7 天」")
+    // 只往前挪：再给一个更晚的时间不会把它推回来。
+    try repository.alignArchiveTaskTime(taskID: memo, originalMilliseconds: now)
+    XCTAssertEqual(try repository.navigationCounts().recent, 1)
   }
 }

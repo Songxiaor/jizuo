@@ -194,6 +194,9 @@ public struct HistoryApplicationService: Sendable {
     try repository.notesLinking(toTitle: title)
   }
   public func noteTitles() throws -> [String] { try repository.noteTitles() }
+  public func alignArchiveTaskTime(taskID: TaskID, originalMilliseconds: Int64) throws {
+    try repository.alignArchiveTaskTime(taskID: taskID, originalMilliseconds: originalMilliseconds)
+  }
   public func updateTaskTitle(
     taskID: TaskID,
     title: String,

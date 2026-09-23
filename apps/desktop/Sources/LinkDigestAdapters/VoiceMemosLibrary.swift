@@ -19,8 +19,20 @@ public struct VoiceMemoRecording: Sendable, Equatable {
     self.fileURL = fileURL
   }
 
+  /// 录音本体在不在这台 Mac 上。
+  ///
+  /// 只看文件存不存在不够：iCloud 录音没下载时，本机留的是几百字节的占位文件
+  /// （2026-09-23 实测：347 秒的录音只有 726 字节），读出来会被误报成「没有声音」。
+  /// 任何真实编码每秒都远超 1 KB，所以文件小于「时长 × 1 KB」就当作还在云端。
   public var isDownloaded: Bool {
-    FileManager.default.fileExists(atPath: fileURL.path)
+    guard FileManager.default.fileExists(atPath: fileURL.path) else { return false }
+    let size = (try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize
+    return Self.looksDownloaded(fileSize: size, durationSeconds: durationSeconds)
+  }
+
+  static func looksDownloaded(fileSize: Int?, durationSeconds: Double?) -> Bool {
+    guard let fileSize, let durationSeconds, durationSeconds > 2 else { return true }
+    return Double(fileSize) >= durationSeconds * 1_000
   }
 }
 
@@ -143,7 +155,9 @@ public struct VoiceMemosLibrary: Sendable {
 
     let columns = Self.columns(in: "ZCLOUDRECORDING", db: db)
     guard columns.contains("ZPATH") else { return nil }
-    let titleColumns = ["ZCUSTOMLABEL", "ZENCRYPTEDTITLE", "ZCUSTOMLABELFORSORTING"].filter(columns.contains)
+    // 真正的标题在 ZENCRYPTEDTITLE（「录音 3」「滨文路」）。新系统的 ZCUSTOMLABEL 存的是
+    // 录制时间的 ISO 串（2026-09-23 实测），排在前面会让每条录音都叫「2021-06-22T14:37:55Z」。
+    let titleColumns = ["ZENCRYPTEDTITLE", "ZCUSTOMLABELFORSORTING", "ZCUSTOMLABEL"].filter(columns.contains)
     let select = [
       columns.contains("ZUNIQUEID") ? "ZUNIQUEID" : "NULL",
       "ZPATH",

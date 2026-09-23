@@ -429,6 +429,10 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         predicates.append("t.is_favorite = 1")
       case .unused:
         predicates.append("NOT EXISTS (\(Self.usedTagSQL))")
+        // 收件箱不收批量同步的旧档案（备忘录、语音备忘录），见 LocalImportSource.archiveHosts。
+        if !filter.includesArchivesInScopes {
+          predicates.append("t.normalized_host NOT IN (\(LocalImportSource.archiveHostsSQLList))")
+        }
       case .recent:
         // 「最近」按**保存时间**算，不按更新时间。
         //
@@ -438,6 +442,10 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         predicates.append("t.created_at_ms >= (unixepoch('now') - 604800) * 1000")
       case .unsummarized:
         predicates.append("NOT EXISTS (\(Self.completedSummarySQL))")
+        // 自己写的备忘录、录音不是「待总结的文章」。
+        if !filter.includesArchivesInScopes {
+          predicates.append("t.normalized_host NOT IN (\(LocalImportSource.archiveHostsSQLList))")
+        }
       }
       if !filter.searchText.isEmpty {
         let pattern = "%\(escapedLikePattern(filter.searchText))%"
@@ -642,9 +650,16 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         SELECT COUNT(*)
         FROM tasks t
         WHERE \(isCaptured) AND NOT EXISTS (\(Self.completedSummarySQL))
+          AND t.normalized_host NOT IN (\(LocalImportSource.archiveHostsSQLList))
         """) ?? 0
       let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured) AND is_favorite = 1") ?? 0
-      let unused = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks t WHERE \(isCaptured) AND NOT EXISTS (\(Self.usedTagSQL))") ?? 0
+      let unused = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks t WHERE \(isCaptured) AND NOT EXISTS (\(Self.usedTagSQL)) AND t.normalized_host NOT IN (\(LocalImportSource.archiveHostsSQLList))") ?? 0
+      // 「已使用」点进去是按标签筛选、带笔记的列表，计数同口径：资料 + 笔记。
+      let used = try Int.fetchOne(db, sql: """
+        SELECT COUNT(*) FROM tasks t
+        WHERE \(isLive) AND content_kind IN ('\(TaskClassificationSQL.captureKind)', '\(TaskClassificationSQL.noteKind)')
+          AND EXISTS (\(Self.usedTagSQL))
+        """) ?? 0
       let trash = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE deleted_at_ms IS NOT NULL") ?? 0
 
       let platforms = try Row.fetchAll(db, sql: """
@@ -682,7 +697,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         arguments: []
       )
       return .init(
-        all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, unused: unused, notes: notes, works: works,
+        all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, unused: unused, used: used, notes: notes, works: works,
         trash: trash, platforms: platforms, tags: tags, creatorCount: creatorCount, pinnedCreators: pinnedCreators
       )
     }
@@ -2304,6 +2319,20 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       let id: TaskID = requiredID(row["id"])
       let title: String = row["title"] ?? ""
       return NoteBacklink(id: id, title: title.isEmpty ? UserNoteDocument.untitledTitle : title)
+    }
+  }
+
+  public func alignArchiveTaskTime(taskID: TaskID, originalMilliseconds: Int64) throws {
+    try database.write { db in
+      // 只往前挪：已经是原始时间（或更早）的不动；之后的总结等会照常把 updated_at 推到当下。
+      try db.execute(
+        sql: """
+          UPDATE tasks
+          SET created_at_ms = MIN(created_at_ms, ?), updated_at_ms = MIN(updated_at_ms, ?)
+          WHERE id = ? AND created_at_ms > ?
+          """,
+        arguments: [originalMilliseconds, originalMilliseconds, taskID.rawValue, originalMilliseconds]
+      )
     }
   }
 

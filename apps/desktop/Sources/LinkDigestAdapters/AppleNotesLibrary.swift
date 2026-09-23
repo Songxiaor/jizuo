@@ -202,13 +202,60 @@ public enum AppleNoteHTML {
     // 空粗体（`****`）来自只加粗了换行的段落。
     text = text.replacingOccurrences(of: "****", with: "")
     let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-      .map { $0.trimmingCharacters(in: .whitespaces) }
+      .map { balancedBold(String($0).trimmingCharacters(in: .whitespaces)) }
+      // 只剩星号的行是跨行加粗留下的空壳；空标题（「#」）同理。
+      .filter { !$0.isEmpty ? !isMarkupOnly($0) : true }
     var result: [String] = []
-    for line in lines {
+    for line in mergingFragmentedHeadings(lines) {
       if line.isEmpty, result.last?.isEmpty ?? true { continue }
       result.append(line)
     }
     return result.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private static func isMarkupOnly(_ line: String) -> Bool {
+    line.range(of: #"^[#*\s]+$"#, options: .regularExpression) != nil
+  }
+
+  /// 一行里 `**` 配不上对（加粗跨了行），去掉落单的那个，免得正文里露出星号。
+  static func balancedBold(_ line: String) -> String {
+    let count = line.components(separatedBy: "**").count - 1
+    guard count % 2 == 1 else { return line }
+    if line.hasSuffix("**") { return String(line.dropLast(2)).trimmingCharacters(in: .whitespaces) }
+    if line.hasPrefix("**") { return String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces) }
+    return line
+  }
+
+  /// 备忘录会把一行标题按格式段拆成很多个 `<h1>`（2026-09-23 实测：「美食」「账号，」「在家」
+  /// 各成一个标题）。连续 3 个以上、每段都很短的同级标题，合并回一行。
+  static func mergingFragmentedHeadings(_ lines: [String]) -> [String] {
+    func heading(_ line: String) -> (level: String, text: String)? {
+      guard let range = line.range(of: #"^#{1,3} "#, options: .regularExpression) else { return nil }
+      return (String(line[..<range.upperBound]), String(line[range.upperBound...]))
+    }
+    var output: [String] = []
+    var index = 0
+    while index < lines.count {
+      guard let first = heading(lines[index]) else { output.append(lines[index]); index += 1; continue }
+      var parts = [first.text]
+      var cursor = index + 1
+      var lastHeading = index
+      while cursor < lines.count {
+        if lines[cursor].isEmpty { cursor += 1; continue }
+        guard let next = heading(lines[cursor]), next.level == first.level else { break }
+        parts.append(next.text)
+        lastHeading = cursor
+        cursor += 1
+      }
+      if parts.count >= 3, parts.allSatisfy({ $0.count <= 6 }) {
+        output.append(first.level + parts.joined())
+        index = lastHeading + 1
+      } else {
+        output.append(lines[index])
+        index += 1
+      }
+    }
+    return output
   }
 
   private static func replace(_ pattern: String, in text: String, with template: String) -> String {
@@ -237,6 +284,12 @@ public enum AppleNoteHTML {
         value.replaceSubrange(whole, with: String(Character(scalar)))
       }
     }
-    return value.replacingOccurrences(of: "&amp;", with: "&")
+    value = value.replacingOccurrences(of: "&amp;", with: "&")
+    // 备忘录里粘贴进来的文字常带「少了分号」的实体（`&quot你&quot`），浏览器能容错显示，
+    // 我们的替换认不出来，正文里就露出 `&quot`（2026-09-23 实测 92 条）。只补这几个常见的。
+    for (entity, character) in [("&quot", "\""), ("&lt", "<"), ("&gt", ">"), ("&nbsp", " "), ("&apos", "'")] {
+      value = value.replacingOccurrences(of: entity, with: character)
+    }
+    return value
   }
 }

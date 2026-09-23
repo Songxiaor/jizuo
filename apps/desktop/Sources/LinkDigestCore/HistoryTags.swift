@@ -103,6 +103,8 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   public let favorite: Int
   /// 还没被用过的资料条数，口径同 `.unused`。
   public let unused: Int
+  /// 贴了「已使用」的资料条数（含批量导入的旧档案）。默认 0，让既有构造点无需改动。
+  public let used: Int
   /// 用户自己写的笔记条数。默认 0，让既有构造点无需改动。
   public let notes: Int
   /// 已完成的作品数。
@@ -126,6 +128,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     unsummarized: Int = 0,
     favorite: Int = 0,
     unused: Int = 0,
+    used: Int = 0,
     notes: Int = 0,
     works: Int = 0,
     trash: Int = 0,
@@ -138,6 +141,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     self.recent = recent
     self.unsummarized = unsummarized
     self.favorite = favorite
+    self.used = used
     self.unused = unused
     self.notes = notes
     self.works = works
@@ -305,6 +309,9 @@ public struct HistoryListFilter: Sendable, Equatable {
   /// 浏览（无搜索词）时也带上「我的笔记」。默认关：侧栏的资料区只看抓来的东西。
   /// MCP 按素材类型取素材时打开——快速记录的灵感就存在笔记里，找灵感不该漏掉它们。
   public let includesNotes: Bool
+  /// 「未使用」「待总结」是否也算批量导入的旧档案（备忘录、语音备忘录）。
+  /// 界面的收件箱默认不算（不被几百条旧笔记淹没）；MCP 给创作系统取素材时要算上。
+  public let includesArchivesInScopes: Bool
 
   public init(
     tagNames: [String] = [],
@@ -313,7 +320,8 @@ public struct HistoryListFilter: Sendable, Equatable {
     searchText: String = "",
     creatorID: CreatorID? = nil,
     ordersBySavedTime: Bool = false,
-    includesNotes: Bool = false
+    includesNotes: Bool = false,
+    includesArchivesInScopes: Bool = false
   ) {
     var seen = Set<String>()
     tagNormalizedNames = tagNames.compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
@@ -326,6 +334,7 @@ public struct HistoryListFilter: Sendable, Equatable {
     self.creatorID = creatorID
     self.ordersBySavedTime = ordersBySavedTime
     self.includesNotes = includesNotes
+    self.includesArchivesInScopes = includesArchivesInScopes
   }
 
   public static let none = HistoryListFilter()
@@ -334,7 +343,8 @@ public struct HistoryListFilter: Sendable, Equatable {
   public var ignoringOrder: HistoryListFilter {
     HistoryListFilter(
       tagNames: tagNormalizedNames, hosts: hosts, scope: scope,
-      searchText: searchText, creatorID: creatorID, includesNotes: includesNotes
+      searchText: searchText, creatorID: creatorID, includesNotes: includesNotes,
+      includesArchivesInScopes: includesArchivesInScopes
     )
   }
 }

@@ -198,8 +198,12 @@ final class MCPController: ObservableObject {
         tagNames = [type.tagName]
       }
       let scope: HistoryListScope = (a["unused_only"] as? Bool ?? false) ? .unused : .all
-      let page = try history.historyPage(limit: a["limit"] as? Int ?? 20, after: cursor, filter: .init(tagNames: tagNames, scope: scope, searchText: a["query"] as? String ?? "", creatorID: creator, includesNotes: !tagNames.isEmpty))
-      return ["items": page.rows.map { row -> [String: Any] in
+      let page = try history.historyPage(limit: a["limit"] as? Int ?? 20, after: cursor, filter: .init(tagNames: tagNames, scope: scope, searchText: a["query"] as? String ?? "", creatorID: creator, includesNotes: !tagNames.isEmpty, includesArchivesInScopes: true))
+      // 疑似含密钥 / 账号密码的条目不交给 AI 工具（2026-09-23）：连标题也不露。
+      let visibleRows = page.rows.filter { row in
+        !SensitiveContent.looksSensitive((row.title ?? "") + "\n" + (row.sourcePreview ?? ""))
+      }
+      return ["items": visibleRows.map { row -> [String: Any] in
         let tags = row.tagNames ?? []
         let used = tags.contains { HistoryTagNormalizer.normalized($0)?.normalizedName == MaterialCatalog.usedTagNormalizedName }
         return ["task_id": row.taskID.rawValue, "title": row.title ?? "", "url": row.canonicalURL, "source_host": row.host, "platform": Self.platformKey(row.host), "platform_name": HistoryPlatformDisplay.name(forHost: Self.platformKey(row.host)), "tags": tags, "used": used]
@@ -207,6 +211,9 @@ final class MCPController: ObservableObject {
     case "jizuo_read":
       let d = try history.detail(taskID: taskID())
       let text = d.snapshots.last?.bodyText ?? ""
+      if SensitiveContent.looksSensitive(text) {
+        throw MCPFailure("sensitive_content", "这条内容疑似含密钥或账号密码，不提供给 AI 工具。请在汲作里直接查看。")
+      }
       let offset = a["offset"] as? Int ?? 0, limit = a["limit"] as? Int ?? 10000
       let part = String(text.dropFirst(offset).prefix(limit))
       return ["task_id": d.task.id.rawValue, "title": d.snapshots.last?.title ?? "", "body": part, "total_characters": text.count, "next_offset": offset + part.count < text.count ? offset + part.count : -1,

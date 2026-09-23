@@ -1696,8 +1696,9 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(grid.contains(".accessibilityHidden(true)"))
     XCTAssertTrue(icon.contains("HistoryFaviconDiskImage"))
     XCTAssertTrue(icon.contains("fallbackBadge"))
-    XCTAssertTrue(icon.contains("Image(systemName: \"tray\")"))
-    XCTAssertTrue(icon.contains(".resizable()"), "杂项托盘图标必须按 16 框缩放，不能被 List 字号撑到 18 后裁切")
+    // 2026-09-23：「其他」不再用托盘（托盘是收件箱的图标）。
+    XCTAssertTrue(icon.contains("Image(systemName: \"ellipsis.circle\")"))
+    XCTAssertTrue(icon.contains(".resizable()"), "杂项图标必须按 16 框缩放，不能被 List 字号撑到 18 后裁切")
     XCTAssertFalse(icon.contains("DesignTokens.IconSize.control"))
   }
 

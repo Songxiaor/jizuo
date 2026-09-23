@@ -2476,14 +2476,12 @@ struct HistoryVideoPlayerCard: View {
       // 没有画面可显示时给一条可播放的音频条，而不是继续转圈。转写照常可用，
       // 它本来就只需要声音。
       VStack(alignment: .leading, spacing: 8) {
-        Label(
-          surfaceGeometry == .audioOnly
-            ? "这条媒体只有声音，没有画面"
-            : "读不出画面，仅按声音播放",
-          systemImage: "waveform"
-        )
-        .themedFont(.callout)
-        .foregroundStyle(.secondary)
+        // 本来就是录音时不必解释「没有画面」（2026-09-23）；只有读不出画面的视频才说明一句。
+        if surfaceGeometry != .audioOnly {
+          Label("读不出画面，仅按声音播放", systemImage: "waveform")
+            .themedFont(.callout)
+            .foregroundStyle(.secondary)
+        }
         VideoPlayer(player: player)
           .frame(height: 64)
           .background(Color.black)

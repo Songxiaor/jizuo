@@ -23,8 +23,9 @@ final class LocalImportAdaptersTests: XCTestCase {
   func testReadsRecordingsFromDatabaseNewestFirstAndSkipsRecentlyDeleted() throws {
     let recordings = workspace.appendingPathComponent("Recordings", isDirectory: true)
     try FileManager.default.createDirectory(at: recordings, withIntermediateDirectories: true)
+    // 文件大小要像真的录音（每秒远超 1 KB），否则会被当成 iCloud 占位文件。
     for name in ["old.m4a", "new.m4a", "deleted.m4a"] {
-      try Data([0]).write(to: recordings.appendingPathComponent(name))
+      try Data(count: 64_000).write(to: recordings.appendingPathComponent(name))
     }
     try makeDatabase(at: recordings.appendingPathComponent("CloudRecordings.db"), rows: [
       ("ID-OLD", "/private/var/old.m4a", "旧录音", 100, 10, nil),
@@ -170,5 +171,15 @@ final class LocalImportAdaptersTests: XCTestCase {
       }
     }
     try file.write(from: buffer)
+  }
+
+  /// iCloud 上没下载的录音在本机只留几百字节的占位文件，不能当成「已下载、没声音」。
+  func testCloudPlaceholderRecordingIsNotTreatedAsDownloaded() {
+    XCTAssertFalse(VoiceMemoRecording.looksDownloaded(fileSize: 726, durationSeconds: 347.5))
+    XCTAssertFalse(VoiceMemoRecording.looksDownloaded(fileSize: 12_415, durationSeconds: 1_761))
+    XCTAssertTrue(VoiceMemoRecording.looksDownloaded(fileSize: 1_400_000, durationSeconds: 178))
+    // 极短录音不按大小判断：0.8 秒的文件本来就只有一两 KB。
+    XCTAssertTrue(VoiceMemoRecording.looksDownloaded(fileSize: 1_075, durationSeconds: 0.8))
+    XCTAssertTrue(VoiceMemoRecording.looksDownloaded(fileSize: nil, durationSeconds: 60))
   }
 }

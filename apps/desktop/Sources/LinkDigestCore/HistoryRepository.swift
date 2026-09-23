@@ -394,6 +394,9 @@ public protocol HistoryRepository: Sendable {
     title: String,
     updatedAtMilliseconds: Int64
   ) throws
+
+  /// 把批量导入的旧档案的存入时间挪回它原本的创建 / 录制时间。只往前挪，不往后挪。
+  func alignArchiveTaskTime(taskID: TaskID, originalMilliseconds: Int64) throws
 }
 
 public extension HistoryRepository {
@@ -598,6 +601,10 @@ public extension HistoryRepository {
     title _: String,
     updatedAtMilliseconds _: Int64
   ) throws { throw RepositoryFailure.unavailable }
+
+  func alignArchiveTaskTime(taskID _: TaskID, originalMilliseconds _: Int64) throws {
+    throw RepositoryFailure.unavailable
+  }
 
   /// 双链在旧测试替身上一律「找不到」而不是抛错：链接指不到东西是正常状态，
   /// 不该让整个视图进入错误分支。

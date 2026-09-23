@@ -49,11 +49,13 @@ struct CaptureIngestService: Sendable {
     _ document: CapturedDocument,
     requestedAction: CaptureRequestedAction? = nil,
     suppressesAutomaticEnrichment: Bool = false,
-    navigationIntent: CaptureNavigationIntent = .reveal
+    navigationIntent: CaptureNavigationIntent = .reveal,
+    receivedAtMilliseconds: Int64? = nil
   ) async throws -> CurrentCapture {
+    // 批量导入的旧档案带原本的创建 / 录制时间进来，列表按那个时间归组，不堆在「今天」。
     let command = try AcceptCaptureCommand(
       document: document,
-      receivedAtMilliseconds: nowMilliseconds()
+      receivedAtMilliseconds: receivedAtMilliseconds ?? nowMilliseconds()
     )
     return try await commitAndPublish(command: command, document: document) { accepted in
       CurrentCapture(

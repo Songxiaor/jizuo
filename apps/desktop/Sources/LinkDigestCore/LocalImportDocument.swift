@@ -7,6 +7,16 @@ public enum LocalImportSource: String, Sendable, CaseIterable {
   case voiceMemos = "voicememos"
   case files = "localfiles"
   case appleNotes = "applenotes"
+
+  /// 批量同步进来的「旧档案」：一次同步就是几百条过去写的东西，不是「新来待处理的素材」。
+  /// 它们不进收件箱、不进待总结，存入时间用原本的创建 / 录制时间（2026-09-23）。
+  /// 手动拖进来的单个文件是用户主动收的素材，不算。
+  public static let archiveHosts: [String] = [LocalImportSource.voiceMemos.rawValue, LocalImportSource.appleNotes.rawValue]
+
+  /// SQL 里 `t.normalized_host NOT IN (...)` 用的字面量列表。
+  public static var archiveHostsSQLList: String {
+    archiveHosts.map { "'\($0)'" }.joined(separator: ", ")
+  }
 }
 
 /// 本机导入素材的条目组装。
@@ -34,6 +44,26 @@ public enum LocalImportDocument {
     return lines.joined(separator: "\n\n")
   }
 
+  /// 列表行里，录音 / 音视频占位说明换成一句状态：88 行重复「这是一条语音备忘录，还没有转写…」
+  /// 只是噪音。不是占位说明时返回 nil。
+  public static func placeholderRowSummary(_ preview: String?, hasTranscript: Bool) -> String? {
+    guard let preview = preview?.trimmingCharacters(in: .whitespacesAndNewlines),
+          preview.hasPrefix("这是一条语音备忘录，还没有转写") || preview.hasPrefix("从本机导入的音频")
+            || preview.hasPrefix("从本机导入的视频")
+    else { return nil }
+    var parts = [hasTranscript ? "已转写" : "还没转写"]
+    if let range = preview.range(of: #"时长：\s*([0-9:]+)"#, options: .regularExpression) {
+      parts.append(String(preview[range]).replacingOccurrences(of: "时长：", with: "").trimmingCharacters(in: .whitespaces))
+    }
+    return parts.joined(separator: " · ")
+  }
+
+  /// 这一行是不是纯音频（语音备忘录、导入的音频文件）。
+  public static func isAudioOnly(host: String, preview: String?) -> Bool {
+    host == LocalImportSource.voiceMemos.rawValue
+      || preview?.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("从本机导入的音频") == true
+  }
+
   public static func voiceMemo(
     recordingID: String,
     title: String?,
@@ -45,7 +75,7 @@ public enum LocalImportDocument {
       source: LocalImportSource.voiceMemos.rawValue,
       identifier: stableIdentifier(recordingID)
     )
-    let resolvedTitle = cleanedTitle(title)
+    let resolvedTitle = cleanedTitle(title).flatMap { isMachineTimestamp($0) ? nil : $0 }
       ?? recordedAt.map { "语音备忘录 \(dateTitle($0))" }
       ?? "语音备忘录"
     return make(
@@ -60,6 +90,11 @@ public enum LocalImportDocument {
       sourceLabel: "语音备忘录",
       now: now
     )
+  }
+
+  /// 「2021-06-22T14:37:55Z」这种机器时间串不是给人看的标题。
+  public static func isMachineTimestamp(_ title: String) -> Bool {
+    title.range(of: #"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z$"#, options: .regularExpression) != nil
   }
 
   /// `contentSHA256` 既是 URL 身份也是去重键：同一份文件拖两次只会有一条。
@@ -165,12 +200,18 @@ public enum LocalImportDocument {
       title: cleanedTitle(title) ?? "无标题备忘录",
       source: .appleNotes,
       method: "apple_notes_import",
-      text: withProperties(body, author: folder, published: createdAt),
+      // 系统默认文件夹（英文系统叫 Notes）不是有信息量的归属，不当作来源显示。
+      text: withProperties(body, author: isDefaultNotesFolder(folder) ? nil : folder, published: createdAt),
       completeness: "complete",
       capturedAt: createdAt ?? now,
       sourceLabel: "备忘录",
       now: now
     )
+  }
+
+  static func isDefaultNotesFolder(_ folder: String?) -> Bool {
+    guard let folder = folder?.trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+    return ["notes", "备忘录"].contains(folder.lowercased())
   }
 
   /// 备忘录 ID 形如 `x-coredata://<库>/ICNote/p123`，含 `/` 与 `:`，不能直接当 URL 段；

@@ -128,4 +128,24 @@ final class LocalImportDocumentTests: XCTestCase {
     let bare = LocalImportDocument.imageBody(fileName: "b.png", reference: "linkdigest-local://localfiles/b", recognizedText: nil)
     XCTAssertNil(LocalImportDocument.splitImageBody(bare).recognizedText)
   }
+
+  /// 新系统语音备忘录库里有一列存的是录制时间串；它不能成为标题。
+  func testVoiceMemoIgnoresMachineTimestampTitle() throws {
+    XCTAssertTrue(LocalImportDocument.isMachineTimestamp("2021-06-22T14:37:55Z"))
+    XCTAssertFalse(LocalImportDocument.isMachineTimestamp("录音 3"))
+    let recordedAt = Date(timeIntervalSince1970: 1_624_372_675)
+    let doc = try LocalImportDocument.voiceMemo(
+      recordingID: "a", title: "2021-06-22T14:37:55Z", recordedAt: recordedAt, durationSeconds: 178
+    )
+    XCTAssertTrue(doc.title?.hasPrefix("语音备忘录 2021-06-2") == true)
+    let named = try LocalImportDocument.voiceMemo(recordingID: "b", title: "滨文路", recordedAt: recordedAt, durationSeconds: 3)
+    XCTAssertEqual(named.title, "滨文路")
+  }
+
+  func testDefaultNotesFolderIsNotShownAsSource() throws {
+    let doc = try LocalImportDocument.appleNote(noteID: "x", title: "t", folder: "Notes", createdAt: nil, text: "正文")
+    XCTAssertFalse(doc.text.contains("author:"))
+    let named = try LocalImportDocument.appleNote(noteID: "y", title: "t", folder: "工作与项目", createdAt: nil, text: "正文")
+    XCTAssertTrue(named.text.contains("工作与项目"))
+  }
 }

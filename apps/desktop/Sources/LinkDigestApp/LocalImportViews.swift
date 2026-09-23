@@ -127,7 +127,7 @@ struct LocalImportStatusSheet: View {
 
   private func summaryText(_ summary: LocalImportController.Summary) -> String {
     if summary.added == 0, summary.updated == 0, summary.skipped == 0, summary.notDownloaded == 0,
-       summary.locked == 0, summary.failures.isEmpty {
+       summary.locked == 0, summary.sensitiveSkipped == 0, summary.failures.isEmpty {
       return "没有找到可导入的内容。"
     }
     var parts: [String] = []
@@ -135,6 +135,11 @@ struct LocalImportStatusSheet: View {
     if summary.updated > 0 { parts.append("更新 \(summary.updated) 条有改动的内容") }
     if summary.skipped > 0 { parts.append("\(summary.skipped) 条之前已导入且没有变化，已跳过") }
     if summary.locked > 0 { parts.append("\(summary.locked) 条加了密码的备忘录读不到，已跳过") }
+    if summary.sensitiveSkipped > 0 {
+      var text = "\(summary.sensitiveSkipped) 条在敏感文件夹里或疑似含密钥、账号密码，没有导入汲作"
+      if summary.sensitivePurged > 0 { text += "（其中 \(summary.sensitivePurged) 条之前导入的副本已从汲作彻底删除，备忘录里的原件不受影响）" }
+      parts.append(text)
+    }
     if parts.isEmpty { return "这次没有新增内容。" }
     let tail = summary.added > 0 ? "。新导入的素材不会自动转写或总结，需要时在条目里点「转写」或「总结」。" : "。"
     return parts.joined(separator: "，") + tail

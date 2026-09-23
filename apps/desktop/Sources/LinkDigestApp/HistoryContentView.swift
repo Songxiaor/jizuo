@@ -43,11 +43,16 @@ struct HistoryContentView: View {
   // 2026-09-23 侧栏分层（对标应用）：顶部四个固定入口常驻，视图 / 博主 / 来源平台 / 标签
   // 这些次要分组默认收起，展开状态跨启动记住。折叠只影响显示，不改任何筛选状态。
   @AppStorage("history.navigation.views-expanded") private var navigationViewsExpanded = false
+  @AppStorage("history.navigation.materials-expanded") private var navigationMaterialsExpanded = false
+  @AppStorage("history.navigation.local-expanded") private var navigationLocalExpanded = false
   @AppStorage("history.navigation.creators-expanded") private var navigationCreatorsExpanded = false
   @AppStorage("history.navigation.platforms-expanded") private var navigationPlatformsExpanded = false
   @AppStorage("history.navigation.tags-expanded") private var navigationTagsExpanded = false
   /// 列表列的搜索框平时收成列头的一个放大镜图标；点开、⌘F 或已有搜索词时才展开。
   @State private var isListSearchExpanded = false
+  /// 点平台默认留在三栏列表里按平台筛选（2026-09-23），和侧栏其他入口一个样子；
+  /// 想看卡片墙时从列头「卡片视图」进。换平台或返回后自动回到列表。
+  @State private var isPlatformGalleryRequested = false
   @FocusState private var isSearchFocused: Bool
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
   @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchUserEnabled = false
@@ -225,6 +230,7 @@ struct HistoryContentView: View {
   private var showsPlatformGallerySurface: Bool {
     !model.isCreatorDirectoryActive && !model.isWorkbenchActive
       && PlatformHistoryGalleryPresentation.showsGallery(for: model.selectedHosts)
+      && isPlatformGalleryRequested
   }
 
   private var platformGalleryAccessibilityPrefix: String {
@@ -704,6 +710,15 @@ struct HistoryContentView: View {
       }
       .help("搜索标题、正文、总结、标签（⌘F）")
       .accessibilityIdentifier("history-search-toggle")
+      if !model.selectedHosts.isEmpty {
+        Button {
+          isPlatformGalleryRequested = true
+        } label: {
+          Label("卡片视图", systemImage: "square.grid.2x2")
+        }
+        .help("以卡片墙查看这个来源的全部内容")
+        .accessibilityIdentifier("history-platform-gallery-open")
+      }
       addMenu
     }
   }
@@ -1025,6 +1040,7 @@ struct HistoryContentView: View {
     })
     .focusedSceneValue(\.newNote, NewNoteAction { createNote() })
     .focusedSceneValue(\.todayNote, TodayNoteAction { openTodayNote() })
+    .onChange(of: model.selectedHosts) { _, _ in isPlatformGalleryRequested = false }
     // 搜索框失焦且没有搜索词时收回成列头图标，列表多出一行。
     .onChange(of: isSearchFocused) { _, focused in
       if !focused, model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1095,6 +1111,50 @@ struct HistoryContentView: View {
       } header: {
         navigationSectionHeader("视图", expanded: $navigationViewsExpanded)
           .accessibilityIdentifier("history-navigation-views-header")
+      }
+
+      // 素材类型：给创作系统分拣素材用的预置标签（灵感、观点…），从标签云里单独拎出来。
+      let materialItems = materialNavigationItems
+      if !materialItems.isEmpty {
+        Section {
+          if navigationMaterialsExpanded {
+            ForEach(materialItems, id: \.type) { item in
+              navigationButton(
+                item.type.tagName,
+                systemImage: item.type.systemImage,
+                count: item.count,
+                selected: model.selectedScope == .all && model.selectedTagNormalizedNames == [item.tag.normalizedName]
+              ) {
+                model.toggleTag(item.tag, additive: false)
+              }
+              .accessibilityIdentifier("history-navigation-material-\(item.type.tagName)")
+            }
+          }
+        } header: {
+          navigationSectionHeader("素材类型", expanded: $navigationMaterialsExpanded)
+            .accessibilityIdentifier("history-navigation-materials-header")
+        }
+      }
+
+      // 本机：备忘录、语音备忘录、本地文件。它们是自己的东西，不和外部平台混在一起排。
+      let localItems = localSourceNavigationItems
+      if !localItems.isEmpty {
+        Section {
+          if navigationLocalExpanded {
+            UIReadingPlatformNavigation(
+              items: localItems,
+              theme: theme,
+              isSelected: { model.selectedHosts.contains($0) },
+              onSelect: { host in
+                isReadingPlatformGalleryItem = false
+                model.selectHost(host)
+              }
+            )
+          }
+        } header: {
+          navigationSectionHeader("本机", expanded: $navigationLocalExpanded)
+            .accessibilityIdentifier("history-navigation-local-header")
+        }
       }
 
       Section {
@@ -1172,7 +1232,9 @@ struct HistoryContentView: View {
 
       if !model.navigationCounts.platforms.isEmpty {
         // 公共平台各占一行；杂项来源聚合进"待分类"，避免侧栏被长域名占满。
-        let knownPlatforms = model.navigationCounts.platforms.filter { HistoryPlatformDisplay.isWellKnown(host: $0.host) }
+        let knownPlatforms = model.navigationCounts.platforms.filter {
+          HistoryPlatformDisplay.isWellKnown(host: $0.host) && !Self.localSourceHosts.contains($0.host)
+        }
         let miscPlatforms = model.navigationCounts.platforms.filter { !HistoryPlatformDisplay.isWellKnown(host: $0.host) }
         // 分区标题同样要显式给字体：`Section("平台")` 那种字符串写法的标题是 List
         // 自己渲染的，和行内容一样收不到环境字体。
@@ -1236,7 +1298,9 @@ struct HistoryContentView: View {
           if navigationTagsExpanded {
             // 标签是跨内容的分类关键词：按引用数降序的药丸云，
             // 大类自然浮到最前。
-            let ordered = model.navigationCounts.tags.sorted { $0.count > $1.count }
+            let ordered = model.navigationCounts.tags
+              .filter { !Self.hiddenSidebarTagNames.contains($0.tag.normalizedName) }
+              .sorted { $0.count > $1.count }
             let tags = model.showsAllNavigationTags ? ordered : Array(ordered.prefix(6))
             TagPillFlowLayout(spacing: 6) {
               ForEach(tags) { item in
@@ -1253,15 +1317,10 @@ struct HistoryContentView: View {
                   }
                   .themedFont(.caption)
                   .padding(.vertical, 4).padding(.horizontal, 9)
+                  // 无描边的浅底胶囊：带边框的药丸在侧栏里像一排按钮，比左边的文字还重。
                   .background(
-                    selected ? AnyShapeStyle(theme.selectionFill) : AnyShapeStyle(theme.primaryText.opacity(0.06)),
+                    selected ? AnyShapeStyle(theme.selectionFill) : AnyShapeStyle(theme.primaryText.opacity(0.05)),
                     in: Capsule()
-                  )
-                  .overlay(
-                    Capsule().strokeBorder(
-                      selected ? Color.clear : theme.primaryText.opacity(0.12),
-                      lineWidth: 1
-                    )
                   )
                   .foregroundStyle(selected ? theme.selectionText : theme.primaryText)
                   .contentShape(Capsule())
@@ -1272,12 +1331,12 @@ struct HistoryContentView: View {
               }
             }
             .padding(.vertical, 2)
-            if !model.showsAllNavigationTags, model.navigationCounts.tags.count > 6 {
-              Button("全部标签…") { model.showsAllNavigationTags = true }
+            if !model.showsAllNavigationTags, ordered.count > 6 {
+              sidebarTextAction("全部标签 · \(ordered.count)") { model.showsAllNavigationTags = true }
                 .accessibilityIdentifier("history-navigation-tags-all")
             }
             if !model.selectedTagNormalizedNames.isEmpty {
-              Button("清空标签筛选（\(model.selectedTagNormalizedNames.count)）") { model.clearTagSelection() }
+              sidebarTextAction("清空标签筛选（\(model.selectedTagNormalizedNames.count)）") { model.clearTagSelection() }
                 .accessibilityIdentifier("history-navigation-tags-clear")
             }
           }
@@ -1316,8 +1375,51 @@ struct HistoryContentView: View {
     .frame(minHeight: 0, maxHeight: .infinity)
   }
 
+  static let localSourceHosts: [String] = [
+    LocalImportSource.appleNotes.rawValue, LocalImportSource.voiceMemos.rawValue, LocalImportSource.files.rawValue,
+  ]
+
+  /// 侧栏标签云里不显示的标签：素材类型与「已使用」有自己的入口；和来源平台重名的
+  /// 标签（Twitter、YouTube…）只是重复平台信息。只在侧栏隐藏，标签本身不删。
+  static let hiddenSidebarTagNames: Set<String> = Set(
+    (MaterialCatalog.MaterialType.allCases.map(\.tagName) + [MaterialCatalog.usedTagName]
+      + ["Twitter", "X", "YouTube", "GitHub", "抖音", "公众号", "微信公众号", "B站", "哔哩哔哩", "bilibili", "小红书", "Reddit", "Substack"])
+      .compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
+  )
+
+  private struct MaterialNavigationItem { let type: MaterialCatalog.MaterialType; let tag: HistoryTag; let count: Int }
+
+  private var materialNavigationItems: [MaterialNavigationItem] {
+    MaterialCatalog.MaterialType.allCases.compactMap { type in
+      let normalized = HistoryTagNormalizer.normalized(type.tagName)?.normalizedName ?? type.tagName
+      guard let item = model.navigationCounts.tags.first(where: { $0.tag.normalizedName == normalized }) else { return nil }
+      return MaterialNavigationItem(type: type, tag: item.tag, count: item.count)
+    }
+  }
+
+  private var localSourceNavigationItems: [UIReadingPlatformNavigation.Item] {
+    Self.localSourceHosts.compactMap { host in
+      guard let platform = model.navigationCounts.platforms.first(where: { $0.host == host }) else { return nil }
+      return .init(host: host, count: platform.count, faviconURL: nil, faviconTaskID: nil)
+    }
+  }
+
+  /// 侧栏里的次要文字动作（「全部标签」「清空筛选」）：和「更多平台」同一种样子，不用系统按钮。
+  private func sidebarTextAction(_ title: String, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      Text(title)
+        .themedFont(.subheadline)
+        .foregroundStyle(theme.secondaryText)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, DesignTokens.Space.xs)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+  }
+
   private var navigationSectionsLayoutKey: String {
-    [navigationViewsExpanded, navigationCreatorsExpanded, navigationPlatformsExpanded, navigationTagsExpanded]
+    [navigationViewsExpanded, navigationMaterialsExpanded, navigationLocalExpanded,
+     navigationCreatorsExpanded, navigationPlatformsExpanded, navigationTagsExpanded]
       .map { $0 ? "1" : "0" }.joined()
   }
 
@@ -1377,9 +1479,8 @@ struct HistoryContentView: View {
     let selected = model.selectedScope == .all
       && model.selectedTagNormalizedNames == [MaterialCatalog.usedTagNormalizedName]
       && model.selectedHosts.isEmpty && !model.isCreatorDirectoryActive
-    // 计数和「收件箱」同一口径：只算资料、不算笔记（笔记也可能被贴上「已使用」，
-    // 但点进来列的是资料，数字必须和列表对得上）。全部资料 = 收件箱 + 已使用。
-    let usedMaterials = max(0, model.navigationCounts.all - model.navigationCounts.unused)
+    // 计数和点进来的列表同一口径：只算资料、不算笔记（笔记也可能被贴上「已使用」）。
+    let usedMaterials = model.navigationCounts.used
     return navigationButton("已使用", systemImage: "checkmark.circle", count: usedMaterials, selected: selected) {
       if let usedTag, !selected { model.toggleTag(usedTag.tag, additive: false) }
     }
@@ -2870,6 +2971,19 @@ struct HistoryContentView: View {
         .accessibilityIdentifier("history-creator-zero-works-detail")
       )
     }
+    // 列表里有内容、只是还没选中时，不能说「没有符合条件的内容」（2026-09-23 实测：
+    // 点侧栏「语音备忘录」列出 88 条，右侧却提示筛选为空）。
+    if model.hasActiveFilter, !model.rows.isEmpty {
+      return AnyView(
+        HistoryInlineState(
+          symbol: "sidebar.left",
+          title: "从左边选一条内容",
+          message: "点列表里的任意一条，就会在这里打开。"
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .accessibilityIdentifier("history-select-item-detail")
+      )
+    }
     if model.hasActiveFilter {
       return AnyView(
         filterEmptyState
@@ -3393,7 +3507,8 @@ struct PlatformNavigationIcon: View {
       // 杂项来源没有 logo 可取，用收件盘符号——它表达的正是「还没归类」。
       // List 会盖掉环境字号；resizable + 16 框避免 SF Symbol 按 18pt 被裁。
       // 颜色由调用方给，和其它平台剪影一致。
-      Image(systemName: "tray")
+      // 不用托盘：托盘已经是「收件箱」的图标，两处同图会被当成同一个东西。
+      Image(systemName: "ellipsis.circle")
         .resizable()
         .scaledToFit()
         .frame(width: 16, height: 16)
@@ -3409,6 +3524,20 @@ struct PlatformNavigationIcon: View {
           .fill(.foreground)
           .mask { Image(nsImage: image).resizable().scaledToFit() }
           .frame(width: 16, height: 16)
+      } else if monochrome, let name = PlatformIconCatalog.assetName(for: host),
+                PlatformIconCatalog.usesLuminanceMask(forAssetName: name) {
+        // 抖音：只留白色音符当字形，和 X、GitHub 一样轻；镂空成实心块在一列线条图标里太重。
+        Rectangle()
+          .fill(.foreground)
+          .mask {
+            Image(nsImage: image)
+              .resizable().scaledToFit()
+              .luminanceToAlpha()
+          }
+          .frame(width: 16, height: 16)
+      } else if monochrome, PlatformIconCatalog.assetName(for: host) == "xiaohongshu" {
+        // 小红书的标志就是「小红书」三个字，缩到 16pt 镂空后看不清，改成单字徽标。
+        monochromeLetterBadge("红")
       } else if monochrome {
         MonochromeKnockoutIcon(image: image)
           .frame(width: 16, height: 16)
@@ -3420,14 +3549,7 @@ struct PlatformNavigationIcon: View {
       // 侧栏不用站点 favicon：Substack 这类没有内置 logo 的平台，favicon 取自某一条
       // 记录的刊物头像，换一条记录图标就换一张，看起来像在闪。降级用稳定首字母，
       // 画法和满底型 logo 一致：当前文字色的圆角块，字母镂空。
-      ZStack {
-        RoundedRectangle(cornerRadius: 4, style: .continuous).fill(.foreground)
-        Text(PlatformIconCatalog.fallbackInitial(for: host))
-          .font(.system(size: 10, weight: .bold))
-          .blendMode(.destinationOut)
-      }
-      .compositingGroup()
-      .frame(width: 15, height: 15)
+      monochromeLetterBadge(PlatformIconCatalog.fallbackInitial(for: host))
     } else if let faviconURL, let faviconTaskID {
       HistoryFaviconDiskImage(url: faviconURL, host: host, taskID: faviconTaskID) {
         fallbackBadge
@@ -3435,6 +3557,18 @@ struct PlatformNavigationIcon: View {
     } else {
       fallbackBadge
     }
+  }
+
+  /// 单色字母徽标：当前文字色的圆角块，字镂空。字号 11、圆体，16pt 框里也认得清。
+  private func monochromeLetterBadge(_ letter: String) -> some View {
+    ZStack {
+      RoundedRectangle(cornerRadius: 4, style: .continuous).fill(.foreground)
+      Text(letter)
+        .font(.system(size: 11, weight: .bold, design: .rounded))
+        .blendMode(.destinationOut)
+    }
+    .compositingGroup()
+    .frame(width: 16, height: 16)
   }
 
   private var fallbackBadge: some View {
@@ -6658,6 +6792,14 @@ private struct HistoryDetailView: View, Equatable {
           isExpanded: $isSubtitleExpanded
         )
           .accessibilityIdentifier("history-reading-source")
+      } else if LayeredSourceDocument.placeholderCaptionMethods.contains(snapshot.captureMethod),
+                latestTranscriptionSnapshot == nil {
+        // 还没转写的录音：那段「点转写…」只是占位说明，不当正文大字印出来。
+        Label("还没有转写。点右上角「转写」，在本机把录音转成文字。", systemImage: "waveform")
+          .themedFont(.callout)
+          .foregroundStyle(theme.secondaryText)
+          .padding(.vertical, DesignTokens.Space.sm)
+          .accessibilityIdentifier("history-reading-source-untranscribed")
       } else {
         sourceLayer(heading: isOwnWriting || isImportedImage(snapshot) ? nil : "正文", snapshot: snapshot)
           .accessibilityIdentifier("history-reading-source")

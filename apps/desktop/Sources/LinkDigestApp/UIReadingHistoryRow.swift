@@ -73,6 +73,9 @@ struct UIReadingHistoryRow: View {
   }
 
   private func rowPreviewLine(title rowPrimaryTitle: String) -> String? {
+    if let status = LocalImportDocument.placeholderRowSummary(row.sourcePreview, hasTranscript: row.hasTranscript == true) {
+      return status
+    }
     if row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
       return DailyNoteTitleFormat.firstLinePreview(row.sourcePreview)
     }
@@ -242,8 +245,9 @@ struct UIReadingHistoryRow: View {
           // 转写状态是「待处理」信息，找东西时是噪音，不再占行尾；视频标记保留。
           HStack(spacing: 4) {
             if row.hasMedia == true || row.hasTranscript == true {
-              Image(systemName: "play.rectangle")
-                .accessibilityLabel("带视频")
+              let isAudio = LocalImportDocument.isAudioOnly(host: row.host, preview: row.sourcePreview)
+              Image(systemName: isAudio ? "waveform" : "play.rectangle")
+                .accessibilityLabel(isAudio ? "带录音" : "带视频")
             }
             if row.hasMindMap == true {
               Image(systemName: "brain")

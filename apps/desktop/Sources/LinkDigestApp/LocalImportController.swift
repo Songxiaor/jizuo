@@ -19,6 +19,10 @@ final class LocalImportController: ObservableObject {
     var updated = 0
     /// 加了密码、读不到正文的备忘录。
     var locked = 0
+    /// 在敏感文件夹里、或看起来含密钥 / 账号密码的备忘录：不导入汲作。
+    var sensitiveSkipped = 0
+    /// 其中之前已经导入过、这次从汲作里彻底删掉的条数（备忘录 App 里的原件不动）。
+    var sensitivePurged = 0
     var failures: [String] = []
   }
 
@@ -121,8 +125,19 @@ final class LocalImportController: ObservableObject {
         durationSeconds: recording.durationSeconds
       )
       // 已经收过的录音不再读音频、不再转码——同步第二次只拉新录音。
-      if try history.taskID(forCanonicalURL: CanonicalURL(document.url)) != nil {
-        summary.skipped += 1
+      if let existing = try history.taskID(forCanonicalURL: CanonicalURL(document.url)) {
+        if let recordedAt = recording.recordedAt {
+          try? history.alignArchiveTaskTime(taskID: existing, originalMilliseconds: Self.milliseconds(recordedAt))
+        }
+        // 早期版本把录制时间串当成了标题；再同步一次就更正过来。只改这种标题，
+        // 列表时间传 0 不动（updated_at 取较大值），不会把几十条旧录音顶到最前面。
+        let current = try history.detail(taskID: existing).snapshots.last?.title ?? ""
+        if LocalImportDocument.isMachineTimestamp(current), let title = document.title, current != title {
+          try history.updateTaskTitle(taskID: existing, title: title, updatedAtMilliseconds: 0)
+          summary.updated += 1
+        } else {
+          summary.skipped += 1
+        }
         return
       }
       guard recording.isDownloaded else {
@@ -132,7 +147,10 @@ final class LocalImportController: ObservableObject {
       let reader = reader
       let content = try await Task.detached { try await reader.readAudio(recording.fileURL) }.value
       guard case let .media(data, duration, _) = content else { throw LocalFileImportError.noAudio }
-      try await store(document: document, media: data, durationSeconds: recording.durationSeconds ?? duration, platform: .voiceMemos)
+      try await store(
+        document: document, media: data, durationSeconds: recording.durationSeconds ?? duration, platform: .voiceMemos,
+        receivedAt: recording.recordedAt.map(Self.milliseconds)
+      )
       summary.added += 1
     } catch {
       summary.failures.append("\(recording.title ?? recording.id)：\(Self.message(for: error))")
@@ -158,19 +176,25 @@ final class LocalImportController: ObservableObject {
         return
       }
       var summary = Summary()
+      var purge: Set<TaskID> = []
       for (index, note) in notes.enumerated() {
         if Task.isCancelled { break }
         if index % 10 == 0 {
           phase = .running(title: title, done: index, total: notes.count, step: "正在导入「\(note.name ?? "备忘录")」…")
           await Task.yield()
         }
-        await importAppleNote(note, summary: &summary)
+        await importAppleNote(note, summary: &summary, purge: &purge)
+      }
+      // 敏感备忘录之前已导入的副本：从汲作彻底删除（不进回收站），备忘录 App 里的原件不动。
+      if let history, !purge.isEmpty {
+        let removed = (try? history.deleteTasks(taskIDs: purge).deletedTaskIDs.count) ?? 0
+        summary.sensitivePurged = removed
       }
       finish(title: title, summary: summary, host: LocalImportSource.appleNotes.rawValue)
     }
   }
 
-  private func importAppleNote(_ note: AppleNote, summary: inout Summary) async {
+  private func importAppleNote(_ note: AppleNote, summary: inout Summary, purge: inout Set<TaskID>) async {
     guard let history else { return }
     guard !note.locked, let html = note.body else {
       summary.locked += 1
@@ -183,6 +207,17 @@ final class LocalImportController: ObservableObject {
       )
       let identity = try CanonicalURL(document.url)
       let existing = try history.taskID(forCanonicalURL: identity)
+      // 敏感内容不进素材库：素材会被检索、总结、交给 MCP 那头的 AI 工具。
+      let extraExcluded = UserDefaults.standard.stringArray(forKey: SensitiveContent.excludedFoldersDefaultsKey) ?? []
+      if SensitiveContent.isExcludedNotesFolder(note.folder, extra: extraExcluded)
+        || SensitiveContent.looksSensitive((note.name ?? "") + "\n" + text) {
+        summary.sensitiveSkipped += 1
+        if let existing { purge.insert(existing) }
+        return
+      }
+      if let existing, let createdAt = note.createdAt {
+        try? history.alignArchiveTaskTime(taskID: existing, originalMilliseconds: Self.milliseconds(createdAt))
+      }
       // 在汲作里删掉（移到回收站）的备忘录，下次同步不悄悄带回来。
       if existing != nil, try !history.containsCanonicalURL(identity) {
         summary.skipped += 1
@@ -193,7 +228,7 @@ final class LocalImportController: ObservableObject {
         summary.skipped += 1
         return
       }
-      _ = try await ingest(document)
+      _ = try await ingest(document, receivedAt: note.createdAt.map(Self.milliseconds))
       if existing == nil { summary.added += 1 } else { summary.updated += 1 }
     } catch {
       summary.failures.append("\(note.name ?? "无标题备忘录")：\(Self.message(for: error))")
@@ -332,14 +367,19 @@ final class LocalImportController: ObservableObject {
 
   // MARK: 落库
 
-  private func ingest(_ document: CapturedDocument) async throws -> CurrentCapture {
+  private static func milliseconds(_ date: Date) -> Int64 {
+    Int64((date.timeIntervalSince1970 * 1_000).rounded())
+  }
+
+  private func ingest(_ document: CapturedDocument, receivedAt: Int64? = nil) async throws -> CurrentCapture {
     guard let ingestor = manualLink?.ingestor else { throw RepositoryFailure.unavailable }
     // 导入是「收素材」，不是「读完就要结果」：不自动总结、不自动转写，也不抢走
     // 用户当前正在看的那条。花不花模型费用由用户在条目里自己决定。
     return try await ingestor.ingest(
       document,
       suppressesAutomaticEnrichment: true,
-      navigationIntent: .keepCurrent
+      navigationIntent: .keepCurrent,
+      receivedAtMilliseconds: receivedAt
     )
   }
 
@@ -349,10 +389,11 @@ final class LocalImportController: ObservableObject {
     document: CapturedDocument,
     media data: Data,
     durationSeconds: Double?,
-    platform: LocalImportSource
+    platform: LocalImportSource,
+    receivedAt: Int64? = nil
   ) async throws -> TaskID {
     guard let history, let mediaStore else { throw RepositoryFailure.unavailable }
-    let capture = try await ingest(document)
+    let capture = try await ingest(document, receivedAt: receivedAt)
     let stored = try await Task.detached {
       try mediaStore.storeDetailed(data: data, preferredExtension: "mp4")
     }.value

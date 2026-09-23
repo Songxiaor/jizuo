@@ -75,4 +75,31 @@ final class AppleNotesLibraryTests: XCTestCase {
     XCTAssertEqual(urls.count, 1)
     XCTAssertEqual(cache.firstLocalImageURL(taskID: task), urls.first)
   }
+
+  /// 备忘录把一行标题按格式段拆成多个 h1；合并回一行，且不留空标题。
+  func testFragmentedTitleHeadingsMergeIntoOneLine() {
+    let html = "<div><h1>美食</h1></div><div><h1>账号，</h1></div><div><h1>在家</h1></div><div><h1>探店</h1></div><div><h1><br></h1></div><div>粉丝群体</div>"
+    let markdown = AppleNoteHTML.markdown(from: html)
+    XCTAssertTrue(markdown.hasPrefix("# 美食账号，在家探店\n"))
+    XCTAssertTrue(markdown.hasSuffix("粉丝群体"))
+    XCTAssertEqual(markdown.components(separatedBy: "#").count - 1, 1, "只剩一个标题，也没有空标题")
+  }
+
+  /// 真正的多个小节标题（中间有正文）不合并。
+  func testSeparateSectionHeadingsStayApart() {
+    let html = "<h2>一</h2><div>正文</div><h2>二</h2><div>正文</div>"
+    let lines = AppleNoteHTML.markdown(from: html).components(separatedBy: "\n")
+    XCTAssertTrue(lines.contains("## 一"))
+    XCTAssertTrue(lines.contains("## 二"))
+  }
+
+  /// 跨行的加粗会留下落单的 `**`，不能露在正文里。
+  func testUnbalancedBoldAcrossLinesIsRemoved() {
+    XCTAssertEqual(AppleNoteHTML.balancedBold("按标准格式输出。**"), "按标准格式输出。")
+    XCTAssertEqual(AppleNoteHTML.balancedBold("**重点**"), "**重点**")
+  }
+
+  func testEntitiesMissingSemicolonAreDecoded() {
+    XCTAssertEqual(AppleNoteHTML.markdown(from: "<div>&quot你好&quot 和 &lt系统&gt</div>"), "\"你好\" 和 <系统>")
+  }
 }

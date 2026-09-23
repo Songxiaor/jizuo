@@ -7319,7 +7319,10 @@ final class HistoryViewModel {
       scope: selectedScope,
       searchText: searchText,
       creatorID: selectedCreatorID,
-      ordersBySavedTime: true
+      ordersBySavedTime: true,
+      // 按标签筛选时带上笔记：标签计数本来就包含笔记（快速记录的「灵感」存在笔记里），
+      // 点进来却看不到，数字和列表就对不上（2026-09-23）。
+      includesNotes: !selectedTagNormalizedNames.isEmpty && selectedScope == .all
     )
   }
 

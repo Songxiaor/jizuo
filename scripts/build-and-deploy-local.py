@@ -94,7 +94,17 @@ def atomic_replace(staged: Path, destination: Path) -> None:
     shutil.rmtree(previous)
 
 
-def sign_ad_hoc(path: Path, identifier: str, *, bundle: bool) -> None:
+# 本机日用 App 的签名身份。默认 ad-hoc（"-"）；设置 LINKDIGEST_CODESIGN_IDENTITY 为钥匙串里
+# 已有的开发证书（`security find-identity -v -p codesigning` 可查）后，App 与 MCP 用它签。
+#
+# 为什么要：ad-hoc 签名的「指纹」每次构建都变，macOS 的「完全磁盘访问」「自动化」
+# 授权按指纹认 App，于是每部署一次都要重新授权（2026-09-23 实测，重授权还会登记到
+# 同 bundle id 的旧副本上）。证书签名后授权认的是「这张证书签的汲作」，跨构建不变。
+# Native Host 仍走 ad-hoc：它先签后封进 SHA256SUMS，改身份会连带扩展的校验。
+APP_SIGN_IDENTITY = os.environ.get("LINKDIGEST_CODESIGN_IDENTITY", "").strip() or "-"
+
+
+def sign_ad_hoc(path: Path, identifier: str, *, bundle: bool, identity: str = "-") -> None:
     # The local product is a development artifact. This is not Developer ID
     # signing and never performs notarization or public release work.
     #
@@ -106,7 +116,7 @@ def sign_ad_hoc(path: Path, identifier: str, *, bundle: bool) -> None:
         "/usr/bin/codesign",
         "--force",
         "--sign",
-        "-",
+        identity,
         "--timestamp=none",
         "--identifier",
         identifier,
@@ -222,8 +232,8 @@ def main() -> int:
         # assembly (the public release pipeline signs in a later sealed step).
         # Verify that exact layout first, then ad-hoc sign the local copy.
         release_unit.verify_app(staged_app, None, ROOT, app_config)
-        sign_ad_hoc(staged_app / "Contents/MacOS/LinkDigestMCP", "com.syc.linkdigest.mcp", bundle=False)
-        sign_ad_hoc(staged_app, app_config["bundleIdentifier"], bundle=True)
+        sign_ad_hoc(staged_app / "Contents/MacOS/LinkDigestMCP", "com.syc.linkdigest.mcp", bundle=False, identity=APP_SIGN_IDENTITY)
+        sign_ad_hoc(staged_app, app_config["bundleIdentifier"], bundle=True, identity=APP_SIGN_IDENTITY)
         embedded_host_package = staged_app / "Contents/Resources/NativeHost" / host_package.name
         # The outer App signature must not mutate or invalidate the already
         # sealed Host package.
