@@ -406,11 +406,12 @@ final class HistoryContentViewTests: XCTestCase {
     guard
       let todayIndex = source.range(of: "history-navigation-today-note")?.lowerBound,
       let creatorsIndex = source.range(of: "history-navigation-creators")?.lowerBound,
-      let platformsIndex = source.range(of: "navigationSectionHeader(\"来源平台\"")?.lowerBound
+      let platformsIndex = source.range(of: "navigationSectionHeader(\"来源\"")?.lowerBound
     else {
-      return XCTFail("侧栏必须同时有今天、博主和平台")
+      return XCTFail("侧栏必须同时有今天、博主和来源")
     }
-    XCTAssertTrue(todayIndex < creatorsIndex && creatorsIndex < platformsIndex, "博主分区必须在今天和平台之间")
+    // 2026-09-24：来源（本机 + 平台）在前，博主是来源下面的第二层，紧跟其后。
+    XCTAssertTrue(todayIndex < platformsIndex && platformsIndex < creatorsIndex, "博主分区必须紧跟在来源之后")
     XCTAssertTrue(source.contains("history-navigation-creators-all"))
     XCTAssertTrue(source.contains("history-navigation-creator-add"))
     XCTAssertTrue(source.contains("navigationSectionHeader(\"博主\", expanded: $navigationCreatorsExpanded"))

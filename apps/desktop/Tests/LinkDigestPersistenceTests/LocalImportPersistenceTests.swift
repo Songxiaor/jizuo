@@ -94,127 +94,133 @@ final class LocalImportPersistenceTests: XCTestCase {
   }
 }
 
-/// 「未使用」= 没带「已使用」标签的资料；素材类型就是普通标签，能按标签筛。
+/// 侧栏按「谁说的」（自有 / 外部）和「是什么」（形式）分类（2026-09-24）；
+/// 素材类型仍是普通标签；「已使用」只留给 MCP 的 unused_only。
 final class MaterialScopeTests: XCTestCase {
-  func testUnusedScopeAndCountFollowTheUsedTag() throws {
+  private func withRepository(_ body: (GRDBHistoryRepository, Int64) throws -> Void) throws {
     let root = URL(fileURLWithPath: "/private/tmp/linkdigest-material-tests-\(UUID().uuidString)", isDirectory: true)
     let directory = root.appendingPathComponent("Application Support/LinkDigest", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     defer { try? FileManager.default.removeItem(at: root) }
     let repository = try GRDBHistoryRepository.open(at: LocalDatabaseLocation(directoryURL: directory))
     defer { try? repository.database.close() }
-    let now = Int64(Date().timeIntervalSince1970 * 1000)
-    // 用手动导入的本地文件做样例：语音备忘录、备忘录是批量同步的旧档案，按设计不进收件箱。
-    func add(_ id: String) throws -> TaskID {
-      let sha = String(repeating: id.lowercased() == "a" ? "a" : "b", count: 64)
-      return try repository.acceptCapture(.init(
-        document: LocalImportDocument.file(
-          contentSHA256: sha, fileName: "\(id).md", text: "正文 \(id)", completeness: "complete",
-          method: "local_file_text", fileDate: nil
-        ),
-        receivedAtMilliseconds: now
-      )).taskID
-    }
-    let a = try add("A"), b = try add("B")
-    let note = try repository.acceptCapture(.init(document: UserNoteDocument.make(title: "笔记", body: "不算资料"), receivedAtMilliseconds: now)).taskID
-    _ = try repository.addTags(["灵感"], to: note)
-    // 侧栏浏览不含笔记；MCP 按素材类型取灵感时要带上笔记。
-    XCTAssertTrue(try repository.historyPage(limit: 50, after: nil, filter: .init(tagNames: ["灵感"])).rows.isEmpty)
-    XCTAssertEqual(try repository.historyPage(limit: 50, after: nil, filter: .init(tagNames: ["灵感"], includesNotes: true)).rows.map(\.taskID), [note])
-    XCTAssertEqual(try repository.navigationCounts().unused, 2)
-
-    _ = try repository.addTags([MaterialCatalog.usedTagName, "金句"], to: a)
-    let unused = try repository.historyPage(limit: 50, after: nil, filter: .init(scope: .unused)).rows.map(\.taskID)
-    XCTAssertEqual(unused, [b])
-    XCTAssertEqual(try repository.navigationCounts().unused, 1)
-
-    let quotes = try repository.historyPage(limit: 50, after: nil, filter: .init(tagNames: ["金句"])).rows.map(\.taskID)
-    XCTAssertEqual(quotes, [a])
-    // 组合：未使用的金句——a 已用过，所以为空。
-    XCTAssertTrue(try repository.historyPage(limit: 50, after: nil, filter: .init(tagNames: ["金句"], scope: .unused)).rows.isEmpty)
+    try body(repository, Int64(Date().timeIntervalSince1970 * 1000))
   }
 
-  /// 批量同步的旧档案（语音备忘录、备忘录）不进收件箱和待总结；MCP 取素材时照常包含；
-  /// 存入时间可以挪回原始日期，但只往前挪。
-  func testArchiveImportsStayOutOfInboxAndCanBeBackdated() throws {
-    let root = URL(fileURLWithPath: "/private/tmp/linkdigest-archive-tests-\(UUID().uuidString)", isDirectory: true)
-    let directory = root.appendingPathComponent("Application Support/LinkDigest", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let repository = try GRDBHistoryRepository.open(at: LocalDatabaseLocation(directoryURL: directory))
-    defer { try? repository.database.close() }
-    let now = Int64(Date().timeIntervalSince1970 * 1000)
-    let memo = try repository.acceptCapture(.init(
-      document: LocalImportDocument.voiceMemo(recordingID: "M", title: "录音", recordedAt: nil, durationSeconds: 3),
-      receivedAtMilliseconds: now
-    )).taskID
-    let file = try repository.acceptCapture(.init(
+  private func file(_ repository: GRDBHistoryRepository, _ c: Character, text: String? = nil, now: Int64) throws -> TaskID {
+    try repository.acceptCapture(.init(
       document: LocalImportDocument.file(
-        contentSHA256: String(repeating: "c", count: 64), fileName: "a.md", text: "正文",
+        contentSHA256: String(repeating: c, count: 64), fileName: "\(c).md", text: text ?? "正文 \(c)",
         completeness: "complete", method: "local_file_text", fileDate: nil
       ),
       receivedAtMilliseconds: now
     )).taskID
-
-    let counts = try repository.navigationCounts()
-    XCTAssertEqual(counts.all, 2)
-    XCTAssertEqual(counts.unused, 1)
-    XCTAssertEqual(counts.unsummarized, 1)
-    XCTAssertEqual(try repository.historyPage(limit: 50, after: nil, filter: .init(scope: .unused)).rows.map(\.taskID), [file])
-    XCTAssertEqual(
-      Set(try repository.historyPage(limit: 50, after: nil, filter: .init(scope: .unused, includesArchivesInScopes: true)).rows.map(\.taskID)),
-      [memo, file]
-    )
-
-    _ = try repository.addTags([MaterialCatalog.usedTagName], to: memo)
-    XCTAssertEqual(try repository.navigationCounts().used, 1)
-
-    let original = now - 400 * 86_400_000
-    try repository.alignArchiveTaskTime(taskID: memo, originalMilliseconds: original)
-    XCTAssertEqual(try repository.navigationCounts().recent, 1, "挪回一年前后，不再算「最近 7 天」")
-    // 只往前挪：再给一个更晚的时间不会把它推回来。
-    try repository.alignArchiveTaskTime(taskID: memo, originalMilliseconds: now)
-    XCTAssertEqual(try repository.navigationCounts().recent, 1)
   }
 
-  /// 收件箱 + 已归档 = 全部资料；手动归档、已使用、旧档案都算已归档，移回收件箱即回来。
-  func testInboxAndArchiveAddUpToAllMaterials() throws {
-    let root = URL(fileURLWithPath: "/private/tmp/linkdigest-archive-scope-\(UUID().uuidString)", isDirectory: true)
-    let directory = root.appendingPathComponent("Application Support/LinkDigest", isDirectory: true)
-    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-    defer { try? FileManager.default.removeItem(at: root) }
-    let repository = try GRDBHistoryRepository.open(at: LocalDatabaseLocation(directoryURL: directory))
-    defer { try? repository.database.close() }
-    let now = Int64(Date().timeIntervalSince1970 * 1000)
-    func file(_ c: Character) throws -> TaskID {
-      try repository.acceptCapture(.init(
-        document: LocalImportDocument.file(
-          contentSHA256: String(repeating: c, count: 64), fileName: "\(c).md", text: "正文 \(c)",
-          completeness: "complete", method: "local_file_text", fileDate: nil
-        ),
-        receivedAtMilliseconds: now
-      )).taskID
-    }
-    let a = try file("a"), b = try file("b"), c = try file("c")
-    let memo = try repository.acceptCapture(.init(
+  private func memo(_ repository: GRDBHistoryRepository, now: Int64) throws -> TaskID {
+    try repository.acceptCapture(.init(
       document: LocalImportDocument.voiceMemo(recordingID: "M", title: "录音", recordedAt: nil, durationSeconds: 3),
       receivedAtMilliseconds: now
     )).taskID
-    _ = try repository.addTags([MaterialCatalog.archivedTagName], to: a)
-    _ = try repository.addTags([MaterialCatalog.usedTagName], to: b)
+  }
 
-    let counts = try repository.navigationCounts()
-    XCTAssertEqual(counts.all, 4)
-    XCTAssertEqual(counts.unused, 1)
-    XCTAssertEqual(counts.archived, 3)
-    XCTAssertEqual(counts.unused + counts.archived, counts.all)
-    XCTAssertEqual(try repository.historyPage(limit: 50, after: nil, filter: .init(scope: .unused)).rows.map(\.taskID), [c])
-    XCTAssertEqual(
-      Set(try repository.historyPage(limit: 50, after: nil, filter: .init(scope: .archived)).rows.map(\.taskID)),
-      [a, b, memo]
-    )
+  private func ids(_ repository: GRDBHistoryRepository, _ filter: HistoryListFilter) throws -> Set<TaskID> {
+    Set(try repository.historyPage(limit: 50, after: nil, filter: filter).rows.map(\.taskID))
+  }
 
-    try repository.removeTag(normalizedName: MaterialCatalog.archivedTagNormalizedName, from: a)
-    XCTAssertEqual(try repository.navigationCounts().unused, 2, "移回收件箱")
+  /// 默认规则：笔记、语音备忘录算自有，拖进来的文件算外部；自有 + 外部 = 全部。
+  func testOwnershipDefaultsAddUpToTotal() throws {
+    try withRepository { repository, now in
+      let doc = try file(repository, "a", now: now)
+      let recording = try memo(repository, now: now)
+      let note = try repository.acceptCapture(.init(document: UserNoteDocument.make(title: "笔记", body: "自己写的"), receivedAtMilliseconds: now)).taskID
+
+      let counts = try repository.navigationCounts()
+      XCTAssertEqual(counts.total, 3)
+      XCTAssertEqual(counts.own, 2)
+      XCTAssertEqual(counts.external, 1)
+      XCTAssertEqual(counts.own + counts.external, counts.total)
+      XCTAssertEqual(counts.all, 2, "MCP 统计的 all 仍只数抓来的资料，不含笔记")
+      XCTAssertEqual(try ids(repository, .init(scope: .own, includesNotes: true)), [recording, note])
+      XCTAssertEqual(try ids(repository, .init(scope: .external, includesNotes: true)), [doc])
+      XCTAssertEqual(try ids(repository, .init(scope: .all, includesNotes: true)), [doc, recording, note])
+    }
+  }
+
+  /// 手动改归属落在两个保留标签上，优先于默认规则；和默认一致时两个标签都摘掉。
+  func testManualOwnershipOverridesTheDefault() throws {
+    try withRepository { repository, now in
+      let doc = try file(repository, "a", now: now)
+      let recording = try memo(repository, now: now)
+
+      _ = try repository.addTags([ContentOwnership.ownTagName], to: doc)
+      _ = try repository.addTags([ContentOwnership.externalTagName], to: recording)
+      XCTAssertEqual(try ids(repository, .init(scope: .own, includesNotes: true)), [doc])
+      XCTAssertEqual(try ids(repository, .init(scope: .external, includesNotes: true)), [recording])
+      let counts = try repository.navigationCounts()
+      XCTAssertEqual(counts.own, 1)
+      XCTAssertEqual(counts.external, 1)
+
+      try repository.removeTag(normalizedName: ContentOwnership.ownTagNormalizedName, from: doc)
+      XCTAssertEqual(try ids(repository, .init(scope: .external, includesNotes: true)), [doc, recording])
+    }
+  }
+
+  /// 形式按抓取时已有的信息判定：录音、文档、图片、音频文件、笔记。
+  func testFormsAreDerivedByRules() throws {
+    try withRepository { repository, now in
+      let doc = try file(repository, "a", now: now)
+      let image = try file(repository, "b", text: LocalImportDocument.imageBody(fileName: "b.png", reference: "linkdigest-local://localfiles/b", recognizedText: nil), now: now)
+      let audioFile = try file(repository, "c", text: LocalImportDocument.mediaPlaceholder(fileName: "c.m4a", durationSeconds: 3, hasVideo: false), now: now)
+      let videoFile = try file(repository, "d", text: LocalImportDocument.mediaPlaceholder(fileName: "d.mov", durationSeconds: 3, hasVideo: true), now: now)
+      let recording = try memo(repository, now: now)
+      let note = try repository.acceptCapture(.init(document: UserNoteDocument.make(title: "笔记", body: "自己写的"), receivedAtMilliseconds: now)).taskID
+
+      func form(_ value: ContentForm) throws -> Set<TaskID> {
+        try ids(repository, .init(scope: .all, includesNotes: true, form: value))
+      }
+      XCTAssertEqual(try form(.document), [doc])
+      XCTAssertEqual(try form(.image), [image])
+      XCTAssertEqual(try form(.audio), [audioFile, recording])
+      XCTAssertEqual(try form(.video), [videoFile])
+      XCTAssertEqual(try form(.note), [note])
+      XCTAssertEqual(try form(.article), [])
+
+      let counts = try repository.navigationCounts().forms
+      XCTAssertEqual(counts.map(\.form), [.video, .audio, .image, .document, .note], "只列有内容的形式，顺序同 ContentForm")
+      XCTAssertEqual(counts.first { $0.form == .audio }?.count, 2)
+      XCTAssertEqual(counts.reduce(0) { $0 + $1.count }, try repository.navigationCounts().total)
+    }
+  }
+
+  /// 素材类型仍是普通标签；MCP 的 unused_only 仍按「已使用」排除。
+  func testMaterialTagsAndMCPUnusedFilter() throws {
+    try withRepository { repository, now in
+      let a = try file(repository, "a", now: now), b = try file(repository, "b", now: now)
+      let note = try repository.acceptCapture(.init(document: UserNoteDocument.make(title: "笔记", body: "不算资料"), receivedAtMilliseconds: now)).taskID
+      _ = try repository.addTags(["灵感"], to: note)
+      XCTAssertTrue(try repository.historyPage(limit: 50, after: nil, filter: .init(tagNames: ["灵感"])).rows.isEmpty)
+      XCTAssertEqual(try ids(repository, .init(tagNames: ["灵感"], includesNotes: true)), [note])
+
+      _ = try repository.addTags([MaterialCatalog.usedTagName, "金句"], to: a)
+      XCTAssertEqual(try ids(repository, .init(excludesUsed: true)), [b])
+      XCTAssertEqual(try ids(repository, .init(tagNames: ["金句"])), [a])
+      XCTAssertTrue(try ids(repository, .init(tagNames: ["金句"], excludesUsed: true)).isEmpty)
+    }
+  }
+
+  /// 旧档案（语音备忘录、备忘录）不进待总结；存入时间可以挪回原始日期，但只往前挪。
+  func testArchiveImportsStayOutOfUnsummarizedAndCanBeBackdated() throws {
+    try withRepository { repository, now in
+      let recording = try memo(repository, now: now)
+      _ = try file(repository, "c", now: now)
+      XCTAssertEqual(try repository.navigationCounts().unsummarized, 1)
+
+      let original = now - 400 * 86_400_000
+      try repository.alignArchiveTaskTime(taskID: recording, originalMilliseconds: original)
+      XCTAssertEqual(try repository.navigationCounts().recent, 1, "挪回一年前后，不再算「最近 7 天」")
+      try repository.alignArchiveTaskTime(taskID: recording, originalMilliseconds: now)
+      XCTAssertEqual(try repository.navigationCounts().recent, 1)
+    }
   }
 }

@@ -29,10 +29,11 @@ public enum HistoryListScope: String, Sendable, Equatable, CaseIterable {
   case recent
   case unsummarized
   case favorite
-  /// 还没被创作系统用过的资料：不带「已使用」标签的抓取与导入内容。
-  case unused
-  /// 已归档：用过的、手动归档的、批量同步的旧档案。与收件箱（.unused）互补。
-  case archived
+  /// 自有：以用户自己为说话主体的内容——笔记、作品、备忘录、语音备忘录，
+  /// 以及被手动改成「自有」的资料。与 `.external` 互补，两者之和 = 全部。
+  case own
+  /// 外部：别人说的内容。规则见 `ContentOwnership`。
+  case external
   /// 用户自己写的笔记。
   ///
   /// 它是**独立区域**，不是一个筛选条件：除了 `.notes` 自己，其余所有作用域都把笔记
@@ -98,17 +99,27 @@ public struct HistoryNavigationTag: Sendable, Equatable, Identifiable {
   public init(tag: HistoryTag, count: Int) { self.tag = tag; self.count = count }
 }
 
+public struct HistoryNavigationForm: Sendable, Equatable, Identifiable {
+  public let form: ContentForm
+  public let count: Int
+  public var id: String { form.rawValue }
+  public init(form: ContentForm, count: Int) { self.form = form; self.count = count }
+}
+
 public struct HistoryNavigationCounts: Sendable, Equatable {
   public let all: Int
   public let recent: Int
   public let unsummarized: Int
   public let favorite: Int
-  /// 还没被用过的资料条数，口径同 `.unused`。
-  public let unused: Int
-  /// 贴了「已使用」的资料条数（含批量导入的旧档案）。默认 0，让既有构造点无需改动。
-  public let used: Int
-  /// 已归档的资料条数；收件箱 + 已归档 = 全部资料。
-  public let archived: Int
+  /// 侧栏「全部」：资料 + 笔记 + 作品（稿件是过程，不算）。`all` 仍只数抓来的资料，
+  /// 给 MCP 统计等既有口径用。
+  public let total: Int
+  /// 自有条数；自有 + 外部 = `total`。
+  public let own: Int
+  /// 外部条数。
+  public let external: Int
+  /// 每种形式的条数，只含数量大于 0 的，顺序同 `ContentForm.allCases`。
+  public let forms: [HistoryNavigationForm]
   /// 用户自己写的笔记条数。默认 0，让既有构造点无需改动。
   public let notes: Int
   /// 已完成的作品数。
@@ -131,9 +142,10 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     recent: Int = 0,
     unsummarized: Int = 0,
     favorite: Int = 0,
-    unused: Int = 0,
-    used: Int = 0,
-    archived: Int = 0,
+    total: Int = 0,
+    own: Int = 0,
+    external: Int = 0,
+    forms: [HistoryNavigationForm] = [],
     notes: Int = 0,
     works: Int = 0,
     trash: Int = 0,
@@ -146,9 +158,10 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     self.recent = recent
     self.unsummarized = unsummarized
     self.favorite = favorite
-    self.used = used
-    self.archived = archived
-    self.unused = unused
+    self.total = total
+    self.own = own
+    self.external = external
+    self.forms = forms
     self.notes = notes
     self.works = works
     self.trash = trash
@@ -315,9 +328,13 @@ public struct HistoryListFilter: Sendable, Equatable {
   /// 浏览（无搜索词）时也带上「我的笔记」。默认关：侧栏的资料区只看抓来的东西。
   /// MCP 按素材类型取素材时打开——快速记录的灵感就存在笔记里，找灵感不该漏掉它们。
   public let includesNotes: Bool
-  /// 「未使用」「待总结」是否也算批量导入的旧档案（备忘录、语音备忘录）。
-  /// 界面的收件箱默认不算（不被几百条旧笔记淹没）；MCP 给创作系统取素材时要算上。
+  /// 「待总结」是否也算批量导入的旧档案（备忘录、语音备忘录）。
+  /// 界面默认不算（不被几百条旧笔记淹没）；MCP 给创作系统取素材时要算上。
   public let includesArchivesInScopes: Bool
+  /// 只看这一种形式（视频、录音……）。nil = 不限。
+  public let form: ContentForm?
+  /// 排除带「已使用」标签的条目。只给 MCP 的 `unused_only` 兼容用，界面不再有「已使用」。
+  public let excludesUsed: Bool
 
   public init(
     tagNames: [String] = [],
@@ -327,7 +344,9 @@ public struct HistoryListFilter: Sendable, Equatable {
     creatorID: CreatorID? = nil,
     ordersBySavedTime: Bool = false,
     includesNotes: Bool = false,
-    includesArchivesInScopes: Bool = false
+    includesArchivesInScopes: Bool = false,
+    form: ContentForm? = nil,
+    excludesUsed: Bool = false
   ) {
     var seen = Set<String>()
     tagNormalizedNames = tagNames.compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
@@ -341,6 +360,8 @@ public struct HistoryListFilter: Sendable, Equatable {
     self.ordersBySavedTime = ordersBySavedTime
     self.includesNotes = includesNotes
     self.includesArchivesInScopes = includesArchivesInScopes
+    self.form = form
+    self.excludesUsed = excludesUsed
   }
 
   public static let none = HistoryListFilter()
@@ -350,7 +371,7 @@ public struct HistoryListFilter: Sendable, Equatable {
     HistoryListFilter(
       tagNames: tagNormalizedNames, hosts: hosts, scope: scope,
       searchText: searchText, creatorID: creatorID, includesNotes: includesNotes,
-      includesArchivesInScopes: includesArchivesInScopes
+      includesArchivesInScopes: includesArchivesInScopes, form: form, excludesUsed: excludesUsed
     )
   }
 }

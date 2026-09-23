@@ -991,6 +991,8 @@ final class HistoryViewModel {
   private(set) var navigationCounts = HistoryNavigationCounts()
   private(set) var selectedHosts: Set<String> = []
   private(set) var selectedScope: HistoryListScope = .all
+  /// 侧栏「形式」选中的那一种（视频、录音……）。和作用域、平台、标签互斥，选中时作用域回到全部。
+  private(set) var selectedForm: ContentForm?
   private(set) var selectedCreatorID: CreatorID?
   private(set) var selectedCreatorSnapshot: CreatorSummary?
   private(set) var isCreatorDirectoryActive = false
@@ -1791,9 +1793,10 @@ final class HistoryViewModel {
       || !selectedHosts.isEmpty
       || selectedCreatorID != nil
       || selectedScope != .all
+      || selectedForm != nil
   }
   var hasCategoryFilter: Bool {
-    !selectedHosts.isEmpty || !selectedTagNormalizedNames.isEmpty || selectedCreatorID != nil
+    !selectedHosts.isEmpty || !selectedTagNormalizedNames.isEmpty || selectedCreatorID != nil || selectedForm != nil
   }
   var selectedCreator: CreatorSummary? { selectedCreatorSnapshot }
   var showsCreatorNeverAddedEmpty: Bool {
@@ -1898,7 +1901,7 @@ final class HistoryViewModel {
     historyReadOnlyRecoveryHint = isReadOnly ? readOnlyRecoveryHint : nil
     blockingErrorCode = unavailableCode
     rows = []; selectedTaskIDs = []; detail = nil; localImageURLs = []; localMediaFileURL = nil; localMediaLease = nil; localMediaResolutionFailure = nil; faviconImageURLs = [:]; nextCursor = nil
-    availableTags = []; navigationCounts = .init(); selectedTagNormalizedNames = []; selectedHosts = []; selectedScope = .all; showsAllNavigationTags = false; searchText = ""
+    availableTags = []; navigationCounts = .init(); selectedTagNormalizedNames = []; selectedHosts = []; selectedScope = .all; selectedForm = nil; showsAllNavigationTags = false; searchText = ""
     selectedCreatorID = nil; selectedCreatorSnapshot = nil; isCreatorDirectoryActive = false; isReadingCreatorWorkInDirectory = false; sessionDirectoryCreatorID = nil; creatorDirectoryRows = []; creatorSearchText = ""; creatorFailure = nil; creatorNextCursor = nil; isLoadingCreatorPage = false; creatorDirectoryLoadFailed = false
     listErrorCode = nil; detailErrorCode = nil; deleteErrorCode = nil; tagErrorCode = nil
     pendingDeletionTaskIDs = []; pendingProtectedDeletionTaskIDs = []; pendingDeletionIsPermanent = false
@@ -2063,6 +2066,7 @@ final class HistoryViewModel {
       selectedTagNormalizedNames = []
       selectedHosts = []
       selectedScope = .all
+      selectedForm = nil
       clearCreatorMode()
     }
     reveal(taskID: taskID)
@@ -5317,6 +5321,7 @@ final class HistoryViewModel {
     selectedCreatorID = nil
     isCreatorDirectoryActive = false
     selectedScope = .all
+    selectedForm = nil
     reload()
   }
 
@@ -5347,11 +5352,38 @@ final class HistoryViewModel {
       abandonPlatformGalleryReadingStash()
     }
     selectedScope = scope
+    selectedForm = nil
     selectedHosts = []
     selectedTagNormalizedNames = []
     if leavingPlatformGallery {
       discardVisibleList(state: .loading)
     }
+    reload()
+  }
+
+  /// 侧栏「形式」：只看视频、录音……再点一次同一项取消（`toggles: false` 时保持选中，
+  /// 给「新建笔记后跳到笔记」这类定位用）。
+  func selectForm(_ form: ContentForm, toggles: Bool = true) {
+    isWorkbenchActive = false
+    stopRunningBatchJobsForNavigation()
+    clearCreatorMode()
+    let leavingPlatformGallery = !selectedHosts.isEmpty
+    if leavingPlatformGallery {
+      abandonPlatformGalleryReadingStash()
+    }
+    selectedForm = toggles && selectedForm == form && selectedScope == .all ? nil : form
+    selectedScope = .all
+    selectedHosts = []
+    selectedTagNormalizedNames = []
+    if leavingPlatformGallery {
+      discardVisibleList(state: .loading)
+    }
+    reload()
+  }
+
+  func clearFormSelection() {
+    guard selectedForm != nil else { return }
+    selectedForm = nil
     reload()
   }
 
@@ -5390,6 +5422,7 @@ final class HistoryViewModel {
       && !isWorkbenchActive
       && !isCreatorDirectoryActive
       && selectedScope == .all
+      && selectedForm == nil
     if alreadyInSameGallery { return }
 
     abandonPlatformGalleryReadingStash()
@@ -5399,6 +5432,7 @@ final class HistoryViewModel {
     let hostsChanged = previousHosts != hosts
     selectedHosts = hosts
     selectedScope = .all
+    selectedForm = nil
     selectedTagNormalizedNames = []
     // 跨平台不遗留上个平台的搜索词，避免隐形查询。
     if hostsChanged, !searchText.isEmpty {
@@ -5416,6 +5450,7 @@ final class HistoryViewModel {
     selectedHosts = []
     selectedTagNormalizedNames = []
     selectedScope = .all
+    selectedForm = nil
     searchText = ""
     discardVisibleList(state: .loading)
     if let remembered = sessionDirectoryCreatorID {
@@ -5451,6 +5486,7 @@ final class HistoryViewModel {
     selectedHosts = []
     selectedTagNormalizedNames = []
     selectedScope = .all
+    selectedForm = nil
     reload()
   }
 
@@ -5472,6 +5508,7 @@ final class HistoryViewModel {
     selectedHosts = []
     selectedTagNormalizedNames = []
     selectedScope = .all
+    selectedForm = nil
     isReadingCreatorWorkInDirectory = false
     if switching {
       discardVisibleList(state: .loading)
@@ -5611,6 +5648,31 @@ final class HistoryViewModel {
       case let .failure(code):
         self.tagErrorCode = code
       }
+    }
+  }
+
+  /// 把一条内容改成「自有」或「外部」。和默认规则一致时两个保留标签都摘掉，
+  /// 否则贴目标、摘另一个（`ContentOwnership.tagChanges`）。成功后整表重载：
+  /// 在「自有」里改成外部，它应当立刻从列表里消失。
+  func setOwnership(_ target: ContentOwnership, taskID: TaskID, canonicalURL: String, host: String) {
+    guard let history, !isReadOnly, !isDeleting else { return }
+    let changes = ContentOwnership.tagChanges(to: target, canonicalURL: canonicalURL, host: host)
+    let removals = changes.remove.compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
+    let generation = configurationGeneration
+    tagMutationTask?.cancel(); tagErrorCode = nil
+    tagMutationTask = Task { [weak self, worker] in
+      var failure: StorageErrorCode?
+      for name in removals {
+        if case let .failure(code) = await worker.removeTag(history, normalizedName: name, taskID: taskID) { failure = code }
+      }
+      for name in changes.add where failure == nil {
+        if case let .failure(code) = await worker.addTag(history, rawName: name, taskID: taskID) { failure = code }
+      }
+      guard !Task.isCancelled, let self, generation == self.configurationGeneration else { return }
+      if let failure { self.tagErrorCode = failure }
+      self.reloadAvailableTags()
+      self.reload()
+      if self.selectedTaskID == taskID { self.loadDetailForSelection() }
     }
   }
 
@@ -6977,8 +7039,8 @@ final class HistoryViewModel {
         snapshotEditFailure = "还没有叫「\(title)」的笔记。"
         return
       }
-      // 先切到笔记区再选中：目标不在当前作用域里时，选中会被列表刷新清掉。
-      if !selectedScope.isNotesOnly { selectScope(.notes) }
+      // 先切到笔记再选中：目标不在当前列表里时，选中会被列表刷新清掉。
+      if selectedForm != .note || selectedScope != .all { selectForm(.note, toggles: false) }
       reveal(taskID: target)
     } catch {
       snapshotEditFailure = "无法打开链接的笔记，请稍后重试。"
@@ -7497,9 +7559,10 @@ final class HistoryViewModel {
       searchText: searchText,
       creatorID: selectedCreatorID,
       ordersBySavedTime: true,
-      // 按标签筛选时带上笔记：标签计数本来就包含笔记（快速记录的「灵感」存在笔记里），
-      // 点进来却看不到，数字和列表就对不上（2026-09-23）。
-      includesNotes: !selectedTagNormalizedNames.isEmpty && selectedScope == .all
+      // 「全部 / 自有 / 外部」和按标签、形式筛选都带上笔记与作品：侧栏这几处的计数
+      // 本来就包含它们，点进来却看不到，数字和列表就对不上（2026-09-23 / 09-24）。
+      includesNotes: [HistoryListScope.all, .own, .external].contains(selectedScope),
+      form: selectedForm
     )
   }
 

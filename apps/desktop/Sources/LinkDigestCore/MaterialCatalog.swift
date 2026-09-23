@@ -29,17 +29,18 @@ public enum MaterialCatalog {
     }
   }
 
-  /// 被创作系统用过的素材带这个标签。「未使用」就是没带它的资料。
+  /// 被创作系统用过的素材带这个标签。只由 MCP 的 `jizuo_mark_used` 写入、`unused_only` 读取，
+  /// 界面不再有「已使用 / 收件箱」（2026-09-24）。
   public static let usedTagName = "已使用"
 
   public static var usedTagNormalizedName: String {
     HistoryTagNormalizer.normalized(usedTagName)?.normalizedName ?? usedTagName
   }
 
-  /// 用户手动「归档」的资料带这个标签（2026-09-23）。
+  /// 旧版「归档」按钮留下的标签（2026-09-23 引入，2026-09-24 随收件箱 / 已归档一起撤下）。
   ///
-  /// 已归档 = 带「已使用」或「已归档」标签的资料，加上批量同步的旧档案（备忘录、语音备忘录）。
-  /// 收件箱 = 其余资料。两者合起来正好是「全部资料」，侧栏数字能加得上。
+  /// 界面不再提供归档，也不再按它分区；已贴上的标签不删（资料本身不受影响），
+  /// 只在侧栏标签云里隐藏。
   public static let archivedTagName = "已归档"
 
   public static var archivedTagNormalizedName: String {

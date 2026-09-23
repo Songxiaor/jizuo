@@ -579,7 +579,9 @@ public extension HistoryRepository {
   /// paging implementation until they opt into local SQL filtering.
   func historyPage(limit: Int, after cursor: HistoryPageCursor?, filter: HistoryListFilter) throws -> HistoryPage {
     // 排序方式不是筛选条件：不支持按存入时间排的简易实现照旧按更新时间返回。
-    guard filter.ignoringOrder == .none else { throw RepositoryFailure.unavailable }
+    // 「带上笔记」也不是：简易实现本来就不区分笔记和资料，侧栏「全部」默认就带（2026-09-24）。
+    let plain = filter.ignoringOrder
+    guard plain == .none || plain == HistoryListFilter(includesNotes: true) else { throw RepositoryFailure.unavailable }
     return try historyPage(limit: limit, after: cursor)
   }
 

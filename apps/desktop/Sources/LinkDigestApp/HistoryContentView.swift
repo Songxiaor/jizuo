@@ -43,8 +43,8 @@ struct HistoryContentView: View {
   // 2026-09-23 侧栏分层（对标应用）：顶部四个固定入口常驻，视图 / 博主 / 来源平台 / 标签
   // 这些次要分组默认收起，展开状态跨启动记住。折叠只影响显示，不改任何筛选状态。
   @AppStorage("history.navigation.views-expanded") private var navigationViewsExpanded = false
-  @AppStorage("history.navigation.materials-expanded") private var navigationMaterialsExpanded = false
-  @AppStorage("history.navigation.local-expanded") private var navigationLocalExpanded = false
+  // 「形式」是 2026-09-24 新加的分组，默认展开：新分类维度第一次出现时要让人看见。
+  @AppStorage("history.navigation.forms-expanded") private var navigationFormsExpanded = true
   @AppStorage("history.navigation.creators-expanded") private var navigationCreatorsExpanded = false
   @AppStorage("history.navigation.platforms-expanded") private var navigationPlatformsExpanded = false
   @AppStorage("history.navigation.tags-expanded") private var navigationTagsExpanded = false
@@ -687,14 +687,14 @@ struct HistoryContentView: View {
   /// 列表列标题：当前看的是哪一处。原来窗口标题固定写「汲作」，不提供任何信息。
   private var listColumnTitle: String {
     if let creator = model.selectedCreator { return creator.directoryDisplayName }
-    if model.selectedTagNormalizedNames == [MaterialCatalog.usedTagNormalizedName] { return "已使用" }
+    if let form = model.selectedForm { return form.rawValue }
     if model.selectedHosts.count == 1, let host = model.selectedHosts.first {
       return HistoryPlatformDisplay.name(forHost: host)
     }
     switch model.selectedScope {
-    case .unused: return "收件箱"
-    case .archived: return "已归档"
-    case .all: return "全部资料"
+    case .own: return "自有"
+    case .external: return "外部"
+    case .all: return "全部"
     case .recent: return "最近 7 天"
     case .unsummarized: return "待总结"
     case .favorite: return "收藏"
@@ -1062,196 +1062,33 @@ struct HistoryContentView: View {
   private var navigationRail: some View {
     ScrollViewReader { proxy in
     List {
-      // 顶部三个入口是一条处理流程：收件箱 → 全部资料 → 已归档，数字满足 收件箱 + 已归档 = 全部。
-      // 原来五个入口按时间、处理状态、标记、使用情况四种逻辑混排，看不出先看哪个。
+      // 顶部三个入口按「这条内容是谁说的」切（2026-09-24）：全部 = 自有 + 外部，数字加得上。
+      // 汲作是记录平台，不是待办清单：原来的收件箱 / 已归档 / 已使用记的是「处理到哪了」，
+      // 那是外部 Agent 或用户自己工作流的事，不占侧栏最显眼的位置。
       Section {
-        // 收件箱就是「未使用」：还没被内容创作系统用过的资料，就是待处理的素材。
-        navigationButton("收件箱", systemImage: "tray", count: model.navigationCounts.unused, selected: model.selectedScope == .unused && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
-          model.selectScope(.unused)
-        }
-        .help("新来的、还没处理的资料。看完点「归档」就会移出这里")
-        .accessibilityIdentifier("history-navigation-unused")
-        navigationButton("全部资料", systemImage: "square.stack", count: model.navigationCounts.all, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+        navigationButton("全部", systemImage: "square.stack", count: model.navigationCounts.total, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.all)
         }
+        .help("所有记录：收集来的外部内容，和自己的笔记、作品、备忘录、录音")
         .accessibilityIdentifier("history-navigation-all")
-        navigationButton("已归档", systemImage: "archivebox", count: model.navigationCounts.archived, selected: model.selectedScope == .archived && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
-          model.selectScope(.archived)
+        navigationButton("自有", systemImage: "person.crop.circle", count: model.navigationCounts.own, selected: model.selectedScope == .own && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+          model.selectScope(.own)
         }
-        .help("用过的、手动归档的，以及备忘录、语音备忘录这类旧档案")
-        .accessibilityIdentifier("history-navigation-archived")
-      }
-      // 「我的笔记」是自己写的东西，和资料的处理进度（收件箱 → 已归档）不是一回事，单独一组。
-      Section {
-        navigationButton(
-          "我的笔记",
-          systemImage: "square.and.pencil",
-          count: model.navigationCounts.notes,
-          selected: model.selectedScope == .notes
-        ) {
-          model.selectScope(.notes)
+        .help("自己说的：笔记、作品、备忘录、语音备忘录。判断错了可以右键改成「外部」")
+        .accessibilityIdentifier("history-navigation-own")
+        navigationButton("外部", systemImage: "globe", count: model.navigationCounts.external, selected: model.selectedScope == .external && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+          model.selectScope(.external)
         }
-        .accessibilityIdentifier("history-navigation-notes")
+        .help("别人的内容：抓来的帖子、文章、视频，拖进来的文件。判断错了可以右键改成「自有」")
+        .accessibilityIdentifier("history-navigation-external")
       }
       // 第一组不给标题。它是打开 App 的默认落点，标题不提供任何新信息。
 
-      // 视图：同一批资料换个角度看。以后的自定义视图也放这里。
-      Section {
-        if navigationViewsExpanded {
-          // 「最近」说不清是多近。标签直接写出口径，省得每个人自己猜一个。
-          navigationButton("最近 7 天", systemImage: "clock", count: model.navigationCounts.recent, selected: model.selectedScope == .recent) {
-            model.selectScope(.recent)
-          }
-          .accessibilityIdentifier("history-navigation-recent")
-          // 计数不强调底色：「待总结」是一个会一直涨的数，染成醒目色等于常驻一个
-          // 永远消不掉的红点，看久了只会被忽略，还顺带让人焦虑。
-          navigationButton("待总结", systemImage: "doc.plaintext", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
-            model.selectScope(.unsummarized)
-          }
-          .accessibilityIdentifier("history-navigation-unsummarized")
-          navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite) {
-            model.selectScope(.favorite)
-          }
-          .accessibilityIdentifier("history-navigation-favorite")
-          if model.navigationCounts.trash > 0 {
-            navigationButton(
-              "回收站",
-              systemImage: "trash",
-              count: model.navigationCounts.trash,
-              selected: model.selectedScope == .trash
-            ) {
-              model.selectScope(.trash)
-            }
-            .accessibilityIdentifier("history-navigation-trash")
-          }
-        }
-      } header: {
-        navigationSectionHeader("视图", expanded: $navigationViewsExpanded)
-          .accessibilityIdentifier("history-navigation-views-header")
-      }
-
-      // 素材类型：给创作系统分拣素材用的预置标签（灵感、观点…），从标签云里单独拎出来。
-      let materialItems = materialNavigationItems
-      if !materialItems.isEmpty || model.navigationCounts.used > 0 {
-        Section {
-          if navigationMaterialsExpanded {
-            ForEach(materialItems, id: \.type) { item in
-              navigationButton(
-                item.type.tagName,
-                systemImage: item.type.systemImage,
-                count: item.count,
-                selected: model.selectedScope == .all && model.selectedTagNormalizedNames == [item.tag.normalizedName]
-              ) {
-                model.toggleTag(item.tag, additive: false)
-              }
-              .accessibilityIdentifier("history-navigation-material-\(item.type.tagName)")
-            }
-            if model.navigationCounts.used > 0 { usedMaterialsButton }
-          }
-        } header: {
-          navigationSectionHeader("素材类型", expanded: $navigationMaterialsExpanded)
-            .accessibilityIdentifier("history-navigation-materials-header")
-        }
-      }
-
-      // 本机：备忘录、语音备忘录、本地文件。它们是自己的东西，不和外部平台混在一起排。
-      let localItems = localSourceNavigationItems
-      if !localItems.isEmpty {
-        Section {
-          if navigationLocalExpanded {
-            UIReadingPlatformNavigation(
-              items: localItems,
-              theme: theme,
-              isSelected: { model.selectedHosts.contains($0) },
-              onSelect: { host in
-                isReadingPlatformGalleryItem = false
-                model.selectHost(host)
-              }
-            )
-          }
-        } header: {
-          navigationSectionHeader("本机", expanded: $navigationLocalExpanded)
-            .accessibilityIdentifier("history-navigation-local-header")
-        }
-      }
-
-      Section {
-        if navigationCreatorsExpanded {
-          navigationButton(
-            "全部博主",
-            systemImage: "person",
-            count: model.navigationCounts.creatorCount,
-            selected: model.isCreatorDirectoryActive
-          ) {
-            showsCreatorDirectoryCatalog = true
-            creatorWorkScrollTarget = nil
-            creatorDirectoryScrollTarget = model.selectedCreatorID
-            model.enterCreatorDirectory()
-          }
-          .accessibilityIdentifier("history-navigation-creators-all")
-          ForEach(model.navigationCounts.pinnedCreators) { creator in
-            creatorPinRow(creator)
-              .padding(.leading, 14)
-          }
-          // 「导入博主」是个动作不是去处，不再常驻侧栏；入口放在「全部博主」页标题右侧，
-          // 列表为空时空状态里也有同一个按钮。
-        }
-      } header: {
-        navigationSectionHeader("博主", expanded: $navigationCreatorsExpanded)
-      }
-      .accessibilityIdentifier("history-navigation-creators")
-
-      // 输出:已完成的作品。三个模块里的第三个。
-      //
-      // 它和「我的笔记」并列而不是嵌在工作台里:作品做完就离开车间了,
-      // 你回头找它是因为想看「我做过什么」,不是想回到那件创作的过程。
-      if model.navigationCounts.works > 0 {
-        Section {
-          navigationButton(
-            "我的作品",
-            systemImage: "checkmark.seal",
-            count: model.navigationCounts.works,
-            selected: model.selectedScope == .works
-          ) {
-            model.selectScope(.works)
-          }
-          .accessibilityIdentifier("history-navigation-works")
-        }
-      }
-
-      // 工作台是第三种东西:上面是「抓来的资料」,笔记是「随手写的」,
-      // 这里是「正在做的作品」。它的单位是一件创作,不是一条记录,
-      // 所以自成一节而不是混进上面的筛选项。
-      //
-      // v1 默认藏起来(设置→实验室里可开):它的正文现在直接存成一条笔记,
-      // 三模块切开后这个模型要改。默认开放等于给自己攒一堆将来必须迁移的
-      // 数据,而当前它还没接 AI,手动建创作的价值抵不上迁移成本。
-      if isWorkbenchVisible {
-      Section {
-        Button { model.enterWorkbench() } label: {
-          HStack(spacing: 8) {
-            Image(systemName: "hammer")
-              .frame(width: 18)
-            Text("工作台")
-              .themedFont(.body)
-            Spacer()
-            let active = model.pieces.filter { !$0.isFinished }.count
-            if active > 0 {
-              countBadge(active, selected: model.isWorkbenchActive)
-            }
-          }
-          .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(model.isWorkbenchActive ? Color.accentColor : Color.primary)
-        .accessibilityIdentifier("history-navigation-workbench")
-      }
-      }
-
       if !model.navigationCounts.platforms.isEmpty {
         // 公共平台各占一行；杂项来源聚合进"待分类"，避免侧栏被长域名占满。
+        // 本机来源（备忘录、语音备忘录、本地文件）和外部平台同属「从哪来」，合在一组按条数排。
         let knownPlatforms = model.navigationCounts.platforms.filter {
-          HistoryPlatformDisplay.isWellKnown(host: $0.host) && !Self.localSourceHosts.contains($0.host)
+          HistoryPlatformDisplay.isWellKnown(host: $0.host)
         }
         let miscPlatforms = model.navigationCounts.platforms.filter { !HistoryPlatformDisplay.isWellKnown(host: $0.host) }
         // 分区标题同样要显式给字体：`Section("平台")` 那种字符串写法的标题是 List
@@ -1297,7 +1134,55 @@ struct HistoryContentView: View {
             )
           }
         } header: {
-          navigationSectionHeader("来源平台", expanded: $navigationPlatformsExpanded)
+          navigationSectionHeader("来源", expanded: $navigationPlatformsExpanded)
+        }
+      }
+
+      Section {
+        if navigationCreatorsExpanded {
+          navigationButton(
+            "全部博主",
+            systemImage: "person",
+            count: model.navigationCounts.creatorCount,
+            selected: model.isCreatorDirectoryActive
+          ) {
+            showsCreatorDirectoryCatalog = true
+            creatorWorkScrollTarget = nil
+            creatorDirectoryScrollTarget = model.selectedCreatorID
+            model.enterCreatorDirectory()
+          }
+          .accessibilityIdentifier("history-navigation-creators-all")
+          ForEach(model.navigationCounts.pinnedCreators) { creator in
+            creatorPinRow(creator)
+              .padding(.leading, 14)
+          }
+          // 「导入博主」是个动作不是去处，不再常驻侧栏；入口放在「全部博主」页标题右侧，
+          // 列表为空时空状态里也有同一个按钮。
+        }
+      } header: {
+        navigationSectionHeader("博主", expanded: $navigationCreatorsExpanded)
+      }
+      .accessibilityIdentifier("history-navigation-creators")
+
+      // 形式：这条内容「是什么」。抓取时按规则判定（`ContentForm`），不需要 AI。
+      if !model.navigationCounts.forms.isEmpty {
+        Section {
+          if navigationFormsExpanded {
+            ForEach(model.navigationCounts.forms) { item in
+              navigationButton(
+                item.form.rawValue,
+                systemImage: item.form.systemImage,
+                count: item.count,
+                selected: model.selectedForm == item.form && !model.isCreatorDirectoryActive
+              ) {
+                model.selectForm(item.form)
+              }
+              .accessibilityIdentifier("history-navigation-form-\(item.form.rawValue)")
+            }
+          }
+        } header: {
+          navigationSectionHeader("形式", expanded: $navigationFormsExpanded)
+            .accessibilityIdentifier("history-navigation-forms-header")
         }
       }
 
@@ -1364,6 +1249,70 @@ struct HistoryContentView: View {
         }
         .id("history-navigation-tags")
       }
+      // 视图：同一批资料换个角度看。以后的自定义视图也放这里。
+      Section {
+        if navigationViewsExpanded {
+          // 「最近」说不清是多近。标签直接写出口径，省得每个人自己猜一个。
+          navigationButton("最近 7 天", systemImage: "clock", count: model.navigationCounts.recent, selected: model.selectedScope == .recent) {
+            model.selectScope(.recent)
+          }
+          .accessibilityIdentifier("history-navigation-recent")
+          // 计数不强调底色：「待总结」是一个会一直涨的数，染成醒目色等于常驻一个
+          // 永远消不掉的红点，看久了只会被忽略，还顺带让人焦虑。
+          navigationButton("待总结", systemImage: "doc.plaintext", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
+            model.selectScope(.unsummarized)
+          }
+          .accessibilityIdentifier("history-navigation-unsummarized")
+          navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite) {
+            model.selectScope(.favorite)
+          }
+          .accessibilityIdentifier("history-navigation-favorite")
+          if model.navigationCounts.trash > 0 {
+            navigationButton(
+              "回收站",
+              systemImage: "trash",
+              count: model.navigationCounts.trash,
+              selected: model.selectedScope == .trash
+            ) {
+              model.selectScope(.trash)
+            }
+            .accessibilityIdentifier("history-navigation-trash")
+          }
+        }
+      } header: {
+        navigationSectionHeader("视图", expanded: $navigationViewsExpanded)
+          .accessibilityIdentifier("history-navigation-views-header")
+      }
+
+      // 工作台是第三种东西:上面是「抓来的资料」,笔记是「随手写的」,
+      // 这里是「正在做的作品」。它的单位是一件创作,不是一条记录,
+      // 所以自成一节而不是混进上面的筛选项。
+      //
+      // v1 默认藏起来(设置→实验室里可开):它的正文现在直接存成一条笔记,
+      // 三模块切开后这个模型要改。默认开放等于给自己攒一堆将来必须迁移的
+      // 数据,而当前它还没接 AI,手动建创作的价值抵不上迁移成本。
+      if isWorkbenchVisible {
+      Section {
+        Button { model.enterWorkbench() } label: {
+          HStack(spacing: 8) {
+            Image(systemName: "hammer")
+              .frame(width: 18)
+            Text("工作台")
+              .themedFont(.body)
+            Spacer()
+            let active = model.pieces.filter { !$0.isFinished }.count
+            if active > 0 {
+              countBadge(active, selected: model.isWorkbenchActive)
+            }
+          }
+          .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(model.isWorkbenchActive ? Color.accentColor : Color.primary)
+        .accessibilityIdentifier("history-navigation-workbench")
+      }
+      }
+
     }
     .listStyle(.sidebar)
     // 分组展开 / 收起时整张侧栏重建一次。macOS 侧栏 List 对「启动时为空的分组」
@@ -1410,30 +1359,15 @@ struct HistoryContentView: View {
     LocalImportSource.appleNotes.rawValue, LocalImportSource.voiceMemos.rawValue, LocalImportSource.files.rawValue,
   ]
 
-  /// 侧栏标签云里不显示的标签：素材类型与「已使用」有自己的入口；和来源平台重名的
+  /// 侧栏标签云里不显示的标签：归属的两个保留标签（「自有」「外部」本身就是顶部入口）、
+  /// 旧版「已使用 / 已归档」留下的标签（界面已撤，2026-09-24）；和来源平台重名的
   /// 标签（Twitter、YouTube…）只是重复平台信息。只在侧栏隐藏，标签本身不删。
+  /// 素材类型（灵感、观点…）不再单独成组，就在标签云里按条数排。
   static let hiddenSidebarTagNames: Set<String> = Set(
-    (MaterialCatalog.MaterialType.allCases.map(\.tagName) + [MaterialCatalog.usedTagName, MaterialCatalog.archivedTagName]
+    ([ContentOwnership.ownTagName, ContentOwnership.externalTagName, MaterialCatalog.usedTagName, MaterialCatalog.archivedTagName]
       + ["Twitter", "X", "YouTube", "GitHub", "抖音", "公众号", "微信公众号", "B站", "哔哩哔哩", "bilibili", "小红书", "Reddit", "Substack"])
       .compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
   )
-
-  private struct MaterialNavigationItem { let type: MaterialCatalog.MaterialType; let tag: HistoryTag; let count: Int }
-
-  private var materialNavigationItems: [MaterialNavigationItem] {
-    MaterialCatalog.MaterialType.allCases.compactMap { type in
-      let normalized = HistoryTagNormalizer.normalized(type.tagName)?.normalizedName ?? type.tagName
-      guard let item = model.navigationCounts.tags.first(where: { $0.tag.normalizedName == normalized }) else { return nil }
-      return MaterialNavigationItem(type: type, tag: item.tag, count: item.count)
-    }
-  }
-
-  private var localSourceNavigationItems: [UIReadingPlatformNavigation.Item] {
-    Self.localSourceHosts.compactMap { host in
-      guard let platform = model.navigationCounts.platforms.first(where: { $0.host == host }) else { return nil }
-      return .init(host: host, count: platform.count, faviconURL: nil, faviconTaskID: nil)
-    }
-  }
 
   /// 侧栏里的次要文字动作（「全部标签」「清空筛选」）：和「更多平台」同一种样子，不用系统按钮。
   private func sidebarTextAction(_ title: String, action: @escaping () -> Void) -> some View {
@@ -1449,7 +1383,7 @@ struct HistoryContentView: View {
   }
 
   private var navigationSectionsLayoutKey: String {
-    [navigationViewsExpanded, navigationMaterialsExpanded, navigationLocalExpanded,
+    [navigationViewsExpanded, navigationFormsExpanded,
      navigationCreatorsExpanded, navigationPlatformsExpanded, navigationTagsExpanded]
       .map { $0 ? "1" : "0" }.joined()
   }
@@ -1501,23 +1435,6 @@ struct HistoryContentView: View {
     .padding(.leading, DesignTokens.Space.xs)
     .frame(height: 24)
     .textCase(nil)
-  }
-
-  /// 「已使用」不是一个新的列表范围，就是按「已使用」这个素材标签筛选——
-  /// 标签由右键「标为已使用」和 MCP 的 jizuo_mark_used 写入，复用现成的标签筛选。
-  private var usedMaterialsButton: some View {
-    let usedTag = model.navigationCounts.tags.first { $0.tag.normalizedName == MaterialCatalog.usedTagNormalizedName }
-    let selected = model.selectedScope == .all
-      && model.selectedTagNormalizedNames == [MaterialCatalog.usedTagNormalizedName]
-      && model.selectedHosts.isEmpty && !model.isCreatorDirectoryActive
-    // 计数和点进来的列表同一口径：只算资料、不算笔记（笔记也可能被贴上「已使用」）。
-    let usedMaterials = model.navigationCounts.used
-    return navigationButton("已使用", systemImage: "checkmark.circle", count: usedMaterials, selected: selected) {
-      if let usedTag, !selected { model.toggleTag(usedTag.tag, additive: false) }
-    }
-    .disabled(usedTag == nil)
-    .help("已经被内容创作系统用过的资料")
-    .accessibilityIdentifier("history-navigation-used")
   }
 
   /// 侧栏底部：设置。它是整个 App 的偶尔操作，不该和「当前这一条」的收藏、标签挤在顶栏。
@@ -1934,8 +1851,8 @@ struct HistoryContentView: View {
     case .notes: return "搜索笔记标题、正文、标签"
     case .unsummarized: return "搜索待总结的标题、正文、标签"
     case .favorite: return "搜索收藏的标题、正文、总结、标签"
-    case .unused: return "搜索收件箱的标题、正文、总结、标签"
-    case .archived: return "搜索已归档的标题、正文、总结、标签"
+    case .own: return "搜索自有内容的标题、正文、总结、标签"
+    case .external: return "搜索外部内容的标题、正文、总结、标签"
     case .recent: return "搜索最近 7 天的标题、正文、总结、标签"
     case .works: return "搜索作品标题、正文、标签"
     case .drafts: return "搜索稿件标题、正文、标签"
@@ -1957,8 +1874,8 @@ struct HistoryContentView: View {
     case .recent: return "最近 7 天"
     case .unsummarized: return "待总结"
     case .favorite: return "收藏"
-    // 收件箱、已归档的名字已经写在列表标题上，不再重复成一个筛选胶囊。
-    case .unused, .archived: return nil
+    // 自有、外部的名字已经写在列表标题上，不再重复成一个筛选胶囊。
+    case .own, .external: return nil
     case .trash: return "回收站"
     case .notes, .drafts, .works: return nil
     }
@@ -1970,6 +1887,7 @@ struct HistoryContentView: View {
     if !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { count += 1 }
     if listScopeFilterTitle != nil { count += 1 }
     if model.selectedCreator != nil { count += 1 }
+    if model.selectedForm != nil { count += 1 }
     count += model.selectedHosts.count
     count += activeFilterTags.count
     return count
@@ -1978,7 +1896,7 @@ struct HistoryContentView: View {
   private func clearListFilters() {
     let scope = model.selectedScope
     model.searchText = ""
-    model.selectScope([HistoryListScope.notes, .drafts, .works].contains(scope) ? scope : .all)
+    model.selectScope([HistoryListScope.notes, .drafts, .works, .own, .external].contains(scope) ? scope : .all)
   }
 
   private func removeHostFilter(_ host: String) {
@@ -1998,6 +1916,9 @@ struct HistoryContentView: View {
           }
           if let scopeTitle = listScopeFilterTitle {
             filterChip(scopeTitle) { model.selectScope(.all) }
+          }
+          if let form = model.selectedForm {
+            filterChip(form.rawValue) { model.clearFormSelection() }
           }
           if let creator = model.selectedCreator {
             filterChip(creator.listingTitle) { model.selectCreator(creator.id) }
@@ -2095,10 +2016,9 @@ struct HistoryContentView: View {
     }
   }
 
-  /// 素材类型与「已使用」。勾选状态读列表行自带的标签名，不必先打开详情。
+  /// 素材类型与归属。勾选状态读列表行自带的标签名，不必先打开详情。
   @ViewBuilder private func materialContextMenu(for row: HistoryRowProjection) -> some View {
     let names = Set((row.tagNames ?? []).compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName })
-    let isUsed = names.contains(MaterialCatalog.usedTagNormalizedName)
     Menu {
       ForEach(MaterialCatalog.MaterialType.allCases, id: \.self) { type in
         let normalized = HistoryTagNormalizer.normalized(type.tagName)?.normalizedName ?? type.tagName
@@ -2114,29 +2034,12 @@ struct HistoryContentView: View {
     }
     .disabled(model.isReadOnly || model.isDeleting)
     .accessibilityIdentifier("history-context-material-type")
-    Button {
-      model.toggleMaterialTag(MaterialCatalog.usedTagName, on: row.taskID, isOn: !isUsed)
-    } label: {
-      Label(isUsed ? "标为未使用" : "标为已使用", systemImage: isUsed ? "arrow.uturn.backward.circle" : "checkmark.circle")
-    }
-    .disabled(model.isReadOnly || model.isDeleting)
-    .accessibilityIdentifier("history-context-material-used")
-    archiveButton(taskID: row.taskID, tagNames: row.tagNames ?? [], host: row.host)
+    ownershipButton(taskID: row.taskID, canonicalURL: row.canonicalURL, host: row.host, tagNames: row.tagNames ?? [])
   }
 
-  /// 归档 / 移回收件箱。只对普通资料：旧档案（备忘录、录音）本来就在已归档里。
-  @ViewBuilder private func archiveButton(taskID: TaskID, tagNames: [String], host: String) -> some View {
-    let names = Set(tagNames.compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName })
-    let isArchived = names.contains(MaterialCatalog.archivedTagNormalizedName)
-    if !LocalImportSource.archiveHosts.contains(host) {
-      Button {
-        model.toggleMaterialTag(MaterialCatalog.archivedTagName, on: taskID, isOn: !isArchived)
-      } label: {
-        Label(isArchived ? "移回收件箱" : "归档", systemImage: isArchived ? "tray.and.arrow.up" : "archivebox")
-      }
-      .disabled(model.isReadOnly || model.isDeleting)
-      .accessibilityIdentifier("history-context-archive")
-    }
+  /// 「改为自有 / 改为外部」：默认规则判错时的手动开关（`ContentOwnership`）。
+  private func ownershipButton(taskID: TaskID, canonicalURL: String, host: String, tagNames: [String]) -> some View {
+    OwnershipToggleButton(model: model, taskID: taskID, canonicalURL: canonicalURL, host: host, tagNames: tagNames)
   }
 
   @ViewBuilder private func regularHistoryContextMenu(for row: HistoryRowProjection) -> some View {
@@ -3068,7 +2971,8 @@ struct HistoryContentView: View {
   private func createNote() {
     manualLink.createNote(
       onCreated: { taskID in
-        model.selectScope(.notes)
+        // 「我的笔记」已并入侧栏「形式 → 笔记」（2026-09-24），落到同一处，侧栏能看到选中。
+        model.selectForm(.note, toggles: false)
         model.reveal(taskID: taskID)
       },
       onFailure: { message in
@@ -3082,7 +2986,8 @@ struct HistoryContentView: View {
   private func openTodayNote() {
     manualLink.openTodayNote(
       onOpened: { taskID in
-        model.selectScope(.notes)
+        // 「我的笔记」已并入侧栏「形式 → 笔记」（2026-09-24），落到同一处，侧栏能看到选中。
+        model.selectForm(.note, toggles: false)
         model.reveal(taskID: taskID)
       },
       onFailure: { model.reportFailure($0) }
@@ -3452,13 +3357,16 @@ private struct HistoryMultiSelectionPanel: View {
       case .recent: parts.append("最近 7 天")
       case .unsummarized: parts.append("待总结")
       case .favorite: parts.append("收藏")
-      case .unused: parts.append("收件箱")
-      case .archived: parts.append("已归档")
+      case .own: parts.append("自有")
+      case .external: parts.append("外部")
       case .notes: parts.append("笔记")
       case .drafts: parts.append("稿件")
       case .works: parts.append("作品")
       case .trash: parts.append("回收站")
       }
+    }
+    if let form = model.selectedForm {
+      parts.append(form.rawValue)
     }
     if !model.selectedHosts.isEmpty {
       parts.append("\(model.selectedHosts.count) 个平台")
@@ -4881,16 +4789,15 @@ private struct HistoryDetailView: View, Equatable {
               .accessibilityIdentifier("reading-font-reset")
             }
           }
-          if model.canEditTags,
-             !LocalImportSource.archiveHosts.contains(URLComponents(string: detail.task.canonicalURL)?.host ?? "") {
-            let isArchived = detail.tags.contains { $0.normalizedName == MaterialCatalog.archivedTagNormalizedName }
+          if model.canEditTags {
             Section {
-              Button {
-                model.toggleMaterialTag(MaterialCatalog.archivedTagName, on: detail.task.id, isOn: !isArchived)
-              } label: {
-                Label(isArchived ? "移回收件箱" : "归档", systemImage: isArchived ? "tray.and.arrow.up" : "archivebox")
-              }
-              .accessibilityIdentifier("history-detail-archive")
+              OwnershipToggleButton(
+                model: model,
+                taskID: detail.task.id,
+                canonicalURL: detail.task.canonicalURL,
+                host: HistoryPlatformRegistry.canonicalHost(for: URLComponents(string: detail.task.canonicalURL)?.host ?? ""),
+                tagNames: detail.tags.map(\.name)
+              )
             }
           }
           Section("浏览") {
@@ -6489,7 +6396,6 @@ private struct HistoryDetailView: View, Equatable {
   private var materialTypeMenu: some View {
     let present = Set(detail.tags.map(\.normalizedName))
     let entries = MaterialCatalog.MaterialType.allCases.map { ($0.tagName, $0.systemImage) }
-      + [(MaterialCatalog.usedTagName, "checkmark.circle")]
     let chosen = entries.map(\.0).filter { name in
       present.contains(HistoryTagNormalizer.normalized(name)?.normalizedName ?? name)
     }
@@ -6497,7 +6403,6 @@ private struct HistoryDetailView: View, Equatable {
       ForEach(entries, id: \.0) { name, symbol in
         let normalized = HistoryTagNormalizer.normalized(name)?.normalizedName ?? name
         let isOn = present.contains(normalized)
-        if name == MaterialCatalog.usedTagName { Divider() }
         Button {
           if isOn, let tag = detail.tags.first(where: { $0.normalizedName == normalized }) {
             model.removeTag(tag)
@@ -7768,14 +7673,13 @@ private struct HistoryTagEditor: View {
     }
   }
 
-  /// 一排素材类型 + 「已使用」：点一下贴上，再点一下摘掉。
+  /// 一排素材类型：点一下贴上，再点一下摘掉。
   /// 预置名字就是普通标签，所以侧栏筛选、搜索、MCP 读到的都是同一回事。
   private var materialTypeRow: some View {
     let present = Set(tags.map(\.normalizedName))
     let entries = MaterialCatalog.MaterialType.allCases.map { ($0.tagName, $0.systemImage) }
-      + [(MaterialCatalog.usedTagName, "checkmark.circle")]
     // 换行排列而不是横向滚动：标签弹窗很窄，横排时后几个类型被挤出可视区，
-    // 用户根本不知道还有「数据」「选题」「已使用」。
+    // 用户根本不知道还有「数据」「选题」。
     return VStack(alignment: .leading, spacing: 4) {
       Text("素材类型").themedFont(.caption).foregroundStyle(.secondary)
       LazyVGrid(columns: [GridItem(.adaptive(minimum: 68), spacing: 6, alignment: .leading)], alignment: .leading, spacing: 6) {
@@ -8247,4 +8151,26 @@ struct HistoryListSectionModel: Identifiable {
   let title: String?
   let entries: [(index: Int, row: HistoryRowProjection)]
   var id: String { title ?? "all" }
+}
+
+/// 「改为自有 / 改为外部」：列表右键与阅读区「更多」共用。
+private struct OwnershipToggleButton: View {
+  @Bindable var model: HistoryViewModel
+  let taskID: TaskID
+  let canonicalURL: String
+  let host: String
+  let tagNames: [String]
+
+  var body: some View {
+    let current = ContentOwnership.resolve(canonicalURL: canonicalURL, host: host, tagNames: tagNames)
+    let target: ContentOwnership = current == .own ? .external : .own
+    Button {
+      model.setOwnership(target, taskID: taskID, canonicalURL: canonicalURL, host: host)
+    } label: {
+      Label("改为\(target.rawValue)", systemImage: target == .own ? "person.crop.circle" : "globe")
+    }
+    .disabled(model.isReadOnly || model.isDeleting)
+    .help("现在算「\(current.rawValue)」")
+    .accessibilityIdentifier("history-context-ownership")
+  }
 }

@@ -163,7 +163,7 @@ final class MCPController: ObservableObject {
       return d
     }
     switch name {
-    case "jizuo_status": return ["material_types": MaterialCatalog.typeTagNames, "used_tag": MaterialCatalog.usedTagName, "connected": true, "writable": writable, "allows_changes": allowsChanges, "allows_processing": allowsProcessing, "creator_platforms": ProfileImportPlatform.allCases.map(\.rawValue), "transcription": "local_downloaded_video", "jobs_lifetime": "current_app_process"]
+    case "jizuo_status": return ["material_types": MaterialCatalog.typeTagNames, "used_tag": MaterialCatalog.usedTagName, "ownerships": ContentOwnership.allCases.map(\.rawValue), "forms": ContentForm.allCases.map(\.rawValue), "connected": true, "writable": writable, "allows_changes": allowsChanges, "allows_processing": allowsProcessing, "creator_platforms": ProfileImportPlatform.allCases.map(\.rawValue), "transcription": "local_downloaded_video", "jobs_lifetime": "current_app_process"]
     case "jizuo_statistics":
       let counts = try history.navigationCounts()
       var grouped: [String: Int] = [:]
@@ -197,8 +197,22 @@ final class MCPController: ObservableObject {
         }
         tagNames = [type.tagName]
       }
-      let scope: HistoryListScope = (a["unused_only"] as? Bool ?? false) ? .unused : .all
-      let page = try history.historyPage(limit: a["limit"] as? Int ?? 20, after: cursor, filter: .init(tagNames: tagNames, scope: scope, searchText: a["query"] as? String ?? "", creatorID: creator, includesNotes: !tagNames.isEmpty, includesArchivesInScopes: true))
+      var scope: HistoryListScope = .all
+      if let raw = a["ownership"] as? String {
+        switch raw.trimmingCharacters(in: .whitespaces) {
+        case ContentOwnership.own.rawValue: scope = .own
+        case ContentOwnership.external.rawValue: scope = .external
+        default: throw MCPFailure("invalid_ownership", "归属只能是：自有、外部")
+        }
+      }
+      var form: ContentForm?
+      if let raw = a["form"] as? String {
+        guard let value = ContentForm(rawValue: raw.trimmingCharacters(in: .whitespaces)) else {
+          throw MCPFailure("invalid_form", "形式只能是：\(ContentForm.allCases.map(\.rawValue).joined(separator: "、"))")
+        }
+        form = value
+      }
+      let page = try history.historyPage(limit: a["limit"] as? Int ?? 20, after: cursor, filter: .init(tagNames: tagNames, scope: scope, searchText: a["query"] as? String ?? "", creatorID: creator, includesNotes: !tagNames.isEmpty || scope != .all || form != nil, includesArchivesInScopes: true, form: form, excludesUsed: a["unused_only"] as? Bool ?? false))
       // 疑似含密钥 / 账号密码的条目不交给 AI 工具（2026-09-23）：连标题也不露。
       let visibleRows = page.rows.filter { row in
         !SensitiveContent.looksSensitive((row.title ?? "") + "\n" + (row.sourcePreview ?? ""))
@@ -206,7 +220,7 @@ final class MCPController: ObservableObject {
       return ["items": visibleRows.map { row -> [String: Any] in
         let tags = row.tagNames ?? []
         let used = tags.contains { HistoryTagNormalizer.normalized($0)?.normalizedName == MaterialCatalog.usedTagNormalizedName }
-        return ["task_id": row.taskID.rawValue, "title": row.title ?? "", "url": row.canonicalURL, "source_host": row.host, "platform": Self.platformKey(row.host), "platform_name": HistoryPlatformDisplay.name(forHost: Self.platformKey(row.host)), "tags": tags, "used": used]
+        return ["task_id": row.taskID.rawValue, "title": row.title ?? "", "url": row.canonicalURL, "source_host": row.host, "platform": Self.platformKey(row.host), "platform_name": HistoryPlatformDisplay.name(forHost: Self.platformKey(row.host)), "tags": tags, "used": used, "ownership": ContentOwnership.resolve(canonicalURL: row.canonicalURL, host: row.host, tagNames: tags).rawValue]
       }, "next_cursor": try page.nextCursor.map { try JSONEncoder().encode($0).base64EncodedString() } as Any? ?? NSNull()]
     case "jizuo_read":
       let d = try history.detail(taskID: taskID())

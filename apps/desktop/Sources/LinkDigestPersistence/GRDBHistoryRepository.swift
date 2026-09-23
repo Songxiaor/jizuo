@@ -413,7 +413,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         if filter.scope.isNotesOnly {
           predicates.append(notePredicate)
         } else if filter.searchText.isEmpty && filter.includesNotes {
-          predicates.append("t.content_kind IN ('\(TaskClassificationSQL.captureKind)', '\(TaskClassificationSQL.noteKind)')")
+          // 「全部 / 自有 / 外部」和按标签、形式筛选都要看到笔记与作品：它们也是记录。
+          predicates.append("t.content_kind IN ('\(TaskClassificationSQL.captureKind)', '\(TaskClassificationSQL.noteKind)', '\(TaskClassificationSQL.workKind)')")
         } else if filter.searchText.isEmpty {
           // 浏览态只剩「抓来的资料」，三条排除合成一条等值判定。
           predicates.append("t.content_kind = '\(TaskClassificationSQL.captureKind)'")
@@ -427,14 +428,10 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         break
       case .favorite:
         predicates.append("t.is_favorite = 1")
-      case .unused:
-        predicates.append("NOT EXISTS (\(Self.usedTagSQL))")
-        // 收件箱 = 全部资料减去已归档。MCP 的 unused_only 只看「已使用」（includesArchivesInScopes）。
-        if !filter.includesArchivesInScopes {
-          predicates.append("NOT (\(Self.archivedSQL))")
-        }
-      case .archived:
-        predicates.append("(\(Self.archivedSQL))")
+      case .own:
+        predicates.append(TaskClassificationSQL.ownSQL(tableAlias: "t"))
+      case .external:
+        predicates.append("NOT \(TaskClassificationSQL.ownSQL(tableAlias: "t"))")
       case .recent:
         // 「最近」按**保存时间**算，不按更新时间。
         //
@@ -448,6 +445,13 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         if !filter.includesArchivesInScopes {
           predicates.append("t.normalized_host NOT IN (\(LocalImportSource.archiveHostsSQLList))")
         }
+      }
+      if let form = filter.form {
+        // 形式名是枚举常量，直接内联，不占位置参数（理由同 usedTagSQL）。
+        predicates.append("(\(TaskClassificationSQL.formSQL(tableAlias: "t"))) = '\(form.rawValue)'")
+      }
+      if filter.excludesUsed {
+        predicates.append("NOT EXISTS (\(Self.usedTagSQL))")
       }
       if !filter.searchText.isEmpty {
         let pattern = "%\(escapedLikePattern(filter.searchText))%"
@@ -615,17 +619,6 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
 
   /// 条目 `t` 是否带「已使用」标签。标签名是常量，直接内联，不占位置参数——
   /// `historyPage` 的谓词与参数按顺序拼接，在 switch 里插参数容易错位。
-  /// 条目 `t` 是否已归档：用过、手动归档，或属于批量同步的旧档案。
-  static var archivedSQL: String {
-    let archived = MaterialCatalog.archivedTagNormalizedName.replacingOccurrences(of: "'", with: "''")
-    return """
-      EXISTS (\(usedTagSQL)) OR EXISTS (
-        SELECT 1 FROM task_tags arc_tt INNER JOIN tags arc_tag ON arc_tag.id = arc_tt.tag_id
-        WHERE arc_tt.task_id = t.id AND arc_tag.normalized_name = '\(archived)'
-      ) OR t.normalized_host IN (\(LocalImportSource.archiveHostsSQLList))
-      """
-  }
-
   static var usedTagSQL: String {
     let name = MaterialCatalog.usedTagNormalizedName.replacingOccurrences(of: "'", with: "''")
     return """
@@ -666,14 +659,24 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           AND t.normalized_host NOT IN (\(LocalImportSource.archiveHostsSQLList))
         """) ?? 0
       let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured) AND is_favorite = 1") ?? 0
-      let unused = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks t WHERE \(isCaptured) AND NOT (\(Self.archivedSQL))") ?? 0
-      let archived = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks t WHERE \(isCaptured) AND (\(Self.archivedSQL))") ?? 0
-      // 「已使用」点进去是按标签筛选、带笔记的列表，计数同口径：资料 + 笔记。
-      let used = try Int.fetchOne(db, sql: """
-        SELECT COUNT(*) FROM tasks t
-        WHERE \(isLive) AND content_kind IN ('\(TaskClassificationSQL.captureKind)', '\(TaskClassificationSQL.noteKind)')
-          AND EXISTS (\(Self.usedTagSQL))
-        """) ?? 0
+      // 「全部」= 资料 + 笔记 + 作品；自有 + 外部 = 全部，数字能加得上。
+      let isRecord = "t.deleted_at_ms IS NULL AND t.content_kind IN ('\(TaskClassificationSQL.captureKind)', '\(TaskClassificationSQL.noteKind)', '\(TaskClassificationSQL.workKind)')"
+      let total = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks t WHERE \(isRecord)") ?? 0
+      let own = try Int.fetchOne(
+        db,
+        sql: "SELECT COUNT(*) FROM tasks t WHERE \(isRecord) AND \(TaskClassificationSQL.ownSQL(tableAlias: "t"))"
+      ) ?? 0
+      let formCounts = try Row.fetchAll(db, sql: """
+        SELECT \(TaskClassificationSQL.formSQL(tableAlias: "t")) AS form, COUNT(*) AS count
+        FROM tasks t WHERE \(isRecord) GROUP BY form
+        """).reduce(into: [String: Int]()) { result, row in
+          let form: String = row["form"] ?? ""
+          result[form] = row["count"]
+        }
+      let forms = ContentForm.allCases.compactMap { form -> HistoryNavigationForm? in
+        guard let count = formCounts[form.rawValue], count > 0 else { return nil }
+        return .init(form: form, count: count)
+      }
       let trash = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE deleted_at_ms IS NOT NULL") ?? 0
 
       let platforms = try Row.fetchAll(db, sql: """
@@ -711,7 +714,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         arguments: []
       )
       return .init(
-        all: all, recent: recent, unsummarized: unsummarized, favorite: favorite, unused: unused, used: used, archived: archived, notes: notes, works: works,
+        all: all, recent: recent, unsummarized: unsummarized, favorite: favorite,
+        total: total, own: own, external: total - own, forms: forms, notes: notes, works: works,
         trash: trash, platforms: platforms, tags: tags, creatorCount: creatorCount, pinnedCreators: pinnedCreators
       )
     }

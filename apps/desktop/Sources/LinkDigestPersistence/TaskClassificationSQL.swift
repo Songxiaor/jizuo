@@ -75,6 +75,63 @@ public enum TaskClassificationSQL {
     return "CASE\n\(cases)\nELSE \(normalized)\nEND"
   }
 
+  /// 条目是否「自有」（2026-09-24）。手动标签优先，其次按默认规则：
+  /// 笔记 / 稿件 / 作品，以及备忘录、语音备忘录算自有。与 `ContentOwnership` 同一口径。
+  public static func ownSQL(tableAlias t: String) -> String {
+    let own = ContentOwnership.ownTagNormalizedName.replacingOccurrences(of: "'", with: "''")
+    let external = ContentOwnership.externalTagNormalizedName.replacingOccurrences(of: "'", with: "''")
+    let hosts = ContentOwnership.ownLocalHosts.map { "'\($0)'" }.joined(separator: ", ")
+    return """
+      (
+        EXISTS (
+          SELECT 1 FROM task_tags own_tt INNER JOIN tags own_tag ON own_tag.id = own_tt.tag_id
+          WHERE own_tt.task_id = \(t).id AND own_tag.normalized_name = '\(own)'
+        )
+        OR (
+          NOT EXISTS (
+            SELECT 1 FROM task_tags ext_tt INNER JOIN tags ext_tag ON ext_tag.id = ext_tt.tag_id
+            WHERE ext_tt.task_id = \(t).id AND ext_tag.normalized_name = '\(external)'
+          )
+          AND (
+            \(t).content_kind IN ('\(noteKind)', '\(draftKind)', '\(workKind)')
+            OR \(t).normalized_host IN (\(hosts))
+          )
+        )
+      )
+      """
+  }
+
+  /// 条目的形式（`ContentForm.rawValue`）。按抓取时已有的信息判定，顺序即优先级：
+  /// 作品 → 笔记（含备忘录）→ 录音 → 视频 → 图片 → 文档（其余本地文件）→ 图文（其余网页）。
+  ///
+  /// 本地文件的音频 / 视频 / 图片靠导入时写下的第一份快照开头区分（`LocalImportDocument`
+  /// 固定写「从本机导入的音频/视频：」，图片正文以 `![` 开头）；网页视频沿用列表行
+  /// `has_media` 的同一信号。
+  public static func formSQL(tableAlias t: String) -> String {
+    let local = LocalImportSource.files.rawValue
+    let firstLocalBody = """
+      (SELECT substr(fcs.body_text, 1, 12) FROM content_snapshots fcs
+        WHERE fcs.task_id = \(t).id AND fcs.source_kind = 'local_import'
+        ORDER BY fcs.sequence ASC LIMIT 1)
+      """
+    return """
+      CASE
+        WHEN \(t).content_kind = '\(workKind)' THEN '\(ContentForm.work.rawValue)'
+        WHEN \(t).content_kind IN ('\(noteKind)', '\(draftKind)') OR \(t).normalized_host = '\(LocalImportSource.appleNotes.rawValue)'
+          THEN '\(ContentForm.note.rawValue)'
+        WHEN \(t).normalized_host = '\(LocalImportSource.voiceMemos.rawValue)' THEN '\(ContentForm.audio.rawValue)'
+        WHEN \(t).normalized_host = '\(local)' AND \(firstLocalBody) LIKE '从本机导入的音频%' THEN '\(ContentForm.audio.rawValue)'
+        WHEN \(t).normalized_host = '\(local)' AND \(firstLocalBody) LIKE '从本机导入的视频%' THEN '\(ContentForm.video.rawValue)'
+        WHEN \(t).normalized_host = '\(local)' AND \(firstLocalBody) LIKE '![%' THEN '\(ContentForm.image.rawValue)'
+        WHEN \(t).normalized_host = '\(local)' THEN '\(ContentForm.document.rawValue)'
+        WHEN EXISTS(SELECT 1 FROM capture_deliveries fcd WHERE fcd.task_id = \(t).id AND fcd.capture_contract_version = 2)
+          OR EXISTS(SELECT 1 FROM media_assets fma WHERE fma.task_id = \(t).id)
+          THEN '\(ContentForm.video.rawValue)'
+        ELSE '\(ContentForm.article.rawValue)'
+      END
+      """
+  }
+
   /// 注册表指纹。存的是「用哪段表达式算出来的」，不是版本号——版本号要人记得改，
   /// 表达式自己就会变。
   public static var hostExpressionSignature: String { normalizedHost(tableAlias: "t") }
