@@ -111,10 +111,17 @@ public enum TaskClassificationSQL {
   /// `has_media` 的同一信号。
   public static func formSQL(tableAlias t: String) -> String {
     let local = LocalImportSource.files.rawValue
-    let firstLocalBody = """
-      (SELECT substr(fcs.body_text, 1, 12) FROM content_snapshots fcs
-        WHERE fcs.task_id = \(t).id AND fcs.source_kind = 'local_import'
-        ORDER BY fcs.sequence DESC LIMIT 1)
+    // 本地文件只查一次最新快照的开头（原来音频 / 视频 / 图片三个分支各查一遍）。
+    let localForm = """
+      (SELECT CASE
+          WHEN fcs.head LIKE '从本机导入的音频%' THEN '\(ContentForm.audio.rawValue)'
+          WHEN fcs.head LIKE '从本机导入的视频%' THEN '\(ContentForm.video.rawValue)'
+          WHEN fcs.head LIKE '![%' THEN '\(ContentForm.image.rawValue)'
+          ELSE '\(ContentForm.document.rawValue)'
+        END
+        FROM (SELECT substr(cs.body_text, 1, 12) AS head FROM content_snapshots cs
+          WHERE cs.task_id = \(t).id AND cs.source_kind = 'local_import'
+          ORDER BY cs.sequence DESC LIMIT 1) fcs)
       """
     return """
       CASE
@@ -122,10 +129,7 @@ public enum TaskClassificationSQL {
         WHEN \(t).content_kind IN ('\(noteKind)', '\(draftKind)') OR \(t).normalized_host = '\(LocalImportSource.appleNotes.rawValue)'
           THEN '\(ContentForm.note.rawValue)'
         WHEN \(t).normalized_host = '\(LocalImportSource.voiceMemos.rawValue)' THEN '\(ContentForm.audio.rawValue)'
-        WHEN \(t).normalized_host = '\(local)' AND \(firstLocalBody) LIKE '从本机导入的音频%' THEN '\(ContentForm.audio.rawValue)'
-        WHEN \(t).normalized_host = '\(local)' AND \(firstLocalBody) LIKE '从本机导入的视频%' THEN '\(ContentForm.video.rawValue)'
-        WHEN \(t).normalized_host = '\(local)' AND \(firstLocalBody) LIKE '![%' THEN '\(ContentForm.image.rawValue)'
-        WHEN \(t).normalized_host = '\(local)' THEN '\(ContentForm.document.rawValue)'
+        WHEN \(t).normalized_host = '\(local)' THEN COALESCE(\(localForm), '\(ContentForm.document.rawValue)')
         WHEN EXISTS(SELECT 1 FROM capture_deliveries fcd WHERE fcd.task_id = \(t).id AND fcd.capture_contract_version = 2)
           OR EXISTS(SELECT 1 FROM media_assets fma WHERE fma.task_id = \(t).id)
           THEN '\(ContentForm.video.rawValue)'
@@ -133,6 +137,7 @@ public enum TaskClassificationSQL {
       END
       """
   }
+
 
   /// 注册表指纹。存的是「用哪段表达式算出来的」，不是版本号——版本号要人记得改，
   /// 表达式自己就会变。

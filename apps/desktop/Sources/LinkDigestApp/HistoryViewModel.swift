@@ -5589,7 +5589,8 @@ final class HistoryViewModel {
       let history,
       let taskID = selectedTaskID,
       canEditTags,
-      HistoryTagNormalizer.normalized(rawName) != nil
+      let normalized = HistoryTagNormalizer.normalized(rawName),
+      !Self.isReservedTagName(normalized.normalizedName)
     else { return }
     let generation = configurationGeneration
     tagMutationTask?.cancel(); tagErrorCode = nil
@@ -5600,6 +5601,12 @@ final class HistoryViewModel {
     }
   }
 
+  /// 「自有」「外部」「已使用」「已归档」是系统标记：界面上不当标签显示，也不让手动当标签贴——
+  /// 贴上了看不见、摘不掉。归属走「改为自有 / 外部」，已使用只由 MCP 写。
+  static func isReservedTagName(_ normalizedName: String) -> Bool {
+    MaterialCatalog.systemTagNormalizedNames.contains(normalizedName)
+  }
+
   /// 行内加标签：右键菜单要能给任意一行贴标签，而不是先打开它再贴。
   ///
   /// 写入走和 `addTag(_:)` 完全相同的 worker 调用；差别只在成功之后——
@@ -5607,7 +5614,8 @@ final class HistoryViewModel {
   func addTag(_ rawName: String, to taskID: TaskID) {
     guard
       let history, !isReadOnly, !isDeleting,
-      HistoryTagNormalizer.normalized(rawName) != nil
+      let normalized = HistoryTagNormalizer.normalized(rawName),
+      !Self.isReservedTagName(normalized.normalizedName)
     else { return }
     let generation = configurationGeneration
     tagMutationTask?.cancel(); tagErrorCode = nil
@@ -7561,7 +7569,9 @@ final class HistoryViewModel {
       ordersBySavedTime: true,
       // 「全部 / 自有 / 外部」和按标签、形式筛选都带上笔记与作品：侧栏这几处的计数
       // 本来就包含它们，点进来却看不到，数字和列表就对不上（2026-09-23 / 09-24）。
-      includesNotes: [HistoryListScope.all, .own, .external].contains(selectedScope),
+      // 选了平台或博主时笔记本来就进不来，保持原来的等值条件，走更好的索引。
+      includesNotes: [HistoryListScope.all, .own, .external].contains(selectedScope)
+        && selectedHosts.isEmpty && selectedCreatorID == nil,
       form: selectedForm
     )
   }

@@ -179,7 +179,9 @@ final class MCPController: ObservableObject {
               "category_count": platforms.count, "known_platform_count": platforms.filter { $0.key != HistoryPlatformDisplay.miscHost }.count,
               "platforms": platforms.map { ["platform": $0.key, "platform_name": HistoryPlatformDisplay.name(forHost: $0.key), "count": $0.value] as [String: Any] },
               "notes": counts.notes, "works": counts.works, "creators": counts.creatorCount,
-              "favorite": counts.favorite, "unsummarized": counts.unsummarized]
+              "favorite": counts.favorite, "unsummarized": counts.unsummarized,
+              "all_records": counts.total, "own": counts.own, "external": counts.external,
+              "forms": Dictionary(uniqueKeysWithValues: counts.forms.map { ($0.form.rawValue, $0.count) })]
     case "jizuo_search":
       var cursor: HistoryPageCursor?
       if let raw = a["cursor"] as? String {

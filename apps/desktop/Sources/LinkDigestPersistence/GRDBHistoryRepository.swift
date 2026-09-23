@@ -695,6 +695,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         FROM tags tag
         INNER JOIN task_tags tt ON tt.tag_id = tag.id
         INNER JOIN tasks tsk ON tsk.id = tt.task_id AND tsk.deleted_at_ms IS NULL
+          AND tsk.content_kind <> '\(TaskClassificationSQL.draftKind)'
         GROUP BY tag.id, tag.display_name, tag.normalized_name
         ORDER BY count DESC, tag.normalized_name COLLATE NOCASE ASC
         """).compactMap { row -> HistoryNavigationTag? in
