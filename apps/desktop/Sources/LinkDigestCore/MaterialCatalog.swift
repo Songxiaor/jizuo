@@ -49,6 +49,13 @@ public enum MaterialCatalog {
 
   public static var typeTagNames: [String] { MaterialType.allCases.map(\.tagName) }
 
+  /// 系统用的标记，不是「讲什么」的主题标签：归属的两个保留标签、MCP 的「已使用」、
+  /// 旧版「已归档」。界面上不当作标签胶囊显示（2026-09-24），数据照留、MCP 照常读写。
+  public static var systemTagNormalizedNames: Set<String> {
+    [usedTagNormalizedName, archivedTagNormalizedName,
+     ContentOwnership.ownTagNormalizedName, ContentOwnership.externalTagNormalizedName]
+  }
+
   /// 记在条目笔记里的一行用途记录。标签只能说「用过」，这一行说「用在哪、哪天用的」。
   public static func usageLine(usedIn: String?, at date: Date = Date(), calendar: Calendar = .current) -> String {
     let day = UserNoteDocument.dailyTitle(for: date, calendar: calendar)

@@ -1359,9 +1359,8 @@ struct HistoryContentView: View {
   /// 旧版「已使用 / 已归档」留下的标签（界面已撤，2026-09-24）；和来源平台重名的
   /// 标签（Twitter、YouTube…）只是重复平台信息。只在侧栏隐藏，标签本身不删。
   /// 素材类型（灵感、观点…）不再单独成组，就在标签云里按条数排。
-  static let hiddenSidebarTagNames: Set<String> = Set(
-    ([ContentOwnership.ownTagName, ContentOwnership.externalTagName, MaterialCatalog.usedTagName, MaterialCatalog.archivedTagName]
-      + ["Twitter", "X", "YouTube", "GitHub", "抖音", "公众号", "微信公众号", "B站", "哔哩哔哩", "bilibili", "小红书", "Reddit", "Substack"])
+  static let hiddenSidebarTagNames: Set<String> = MaterialCatalog.systemTagNormalizedNames.union(
+    (["Twitter", "X", "YouTube", "GitHub", "抖音", "公众号", "微信公众号", "B站", "哔哩哔哩", "bilibili", "小红书", "Reddit", "Substack"])
       .compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
   )
 
@@ -7586,10 +7585,12 @@ private struct HistoryTagEditor: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       // Chips-first: tags sit on the metadata density row, not a heavy form.
-      if !tags.isEmpty {
+      // 系统标记（已使用、自有…）不是主题标签，不画成胶囊（2026-09-24）。
+      let chipTags = tags.filter { !MaterialCatalog.systemTagNormalizedNames.contains($0.normalizedName) }
+      if !chipTags.isEmpty {
         ScrollView(.horizontal, showsIndicators: false) {
           HStack(spacing: 6) {
-            ForEach(tags) { tag in
+            ForEach(chipTags) { tag in
               HStack(spacing: 4) {
                 Text(tag.name).lineLimit(1)
                 if model.canEditTags {

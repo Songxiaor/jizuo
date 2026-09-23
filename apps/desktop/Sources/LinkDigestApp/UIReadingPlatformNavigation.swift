@@ -22,7 +22,9 @@ struct UIReadingPlatformNavigation: View {
   var isExpanded: Binding<Bool> = .constant(true)
 
   private var orderedItems: [Item] {
-    let order = ["X", "抖音", "微信公众号", "哔哩哔哩", "GitHub", "YouTube", "Discourse", "Reddit", "Substack", "小红书", "待分类"]
+    // 本机来源（2026-09-24 并入「来源」）排在外部平台之后、「待分类」之前：杂项永远垫底。
+    let order = ["X", "抖音", "微信公众号", "哔哩哔哩", "GitHub", "YouTube", "Discourse", "Reddit", "Substack", "小红书",
+                 "备忘录", "语音备忘录", "本地文件", "待分类"]
     return items.sorted {
       let left = order.firstIndex(of: HistoryPlatformDisplay.name(forHost: $0.host)) ?? order.count
       let right = order.firstIndex(of: HistoryPlatformDisplay.name(forHost: $1.host)) ?? order.count

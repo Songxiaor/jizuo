@@ -101,7 +101,11 @@ struct UIReadingHistoryRow: View {
   }
 
   private var visibleTags: [String] {
-    Array((row.tagNames ?? []).prefix(HistoryListFinding.visibleTagLimit))
+    // 系统标记（已使用、自有…）不是主题标签，不在行里显示（2026-09-24）。
+    let topics = (row.tagNames ?? []).filter { name in
+      !MaterialCatalog.systemTagNormalizedNames.contains(HistoryTagNormalizer.normalized(name)?.normalizedName ?? name)
+    }
+    return Array(topics.prefix(HistoryListFinding.visibleTagLimit))
   }
 
   private var savedAtMilliseconds: Int64 { HistoryListFinding.savedAtMilliseconds(of: row) }
