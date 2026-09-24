@@ -7821,21 +7821,23 @@ private struct HistoryTagEditor: View {
     .accessibilityIdentifier("history-material-types")
   }
 
+  /// 输入框展开后就不再显示：旁边已有「取消」，原来「× 收起」和「取消」两个按钮做同一件事（2026-09-24 走查）。
   @ViewBuilder private var addTagControl: some View {
-    Button {
-      withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
-        isComposerExpanded.toggle()
-        if !isComposerExpanded { input = "" }
+    if !isComposerExpanded {
+      Button {
+        withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
+          isComposerExpanded = true
+        }
+      } label: {
+        // 和上面「为这篇内容添加笔记」同一级：同样的字号、同样的强调色，
+        // 原来一个大字带笔、一个小灰字带加号，看起来像两类东西。
+        Label("添加标签", systemImage: "tag")
+          .themedFont(.callout)
+          .labelStyle(.titleAndIcon)
       }
-    } label: {
-      // 和上面「为这篇内容添加笔记」同一级：同样的字号、同样的强调色，
-      // 原来一个大字带笔、一个小灰字带加号，看起来像两类东西。
-      Label(isComposerExpanded ? "收起" : "添加标签", systemImage: isComposerExpanded ? "xmark" : "tag")
-        .themedFont(.callout)
-        .labelStyle(.titleAndIcon)
+      .buttonStyle(.borderless)
+      .accessibilityIdentifier("history-tag-add-toggle")
     }
-    .buttonStyle(.borderless)
-    .accessibilityIdentifier("history-tag-add-toggle")
   }
 
   private func add() {
