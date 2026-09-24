@@ -242,6 +242,12 @@ public protocol HistoryRepository: Sendable {
   func allTags() throws -> [HistoryTag]
   func addTags(_ rawNames: [String], to taskID: TaskID) throws -> [HistoryTag]
   func removeTag(normalizedName: String, from taskID: TaskID) throws
+  /// 标签管理（2026-09-24）：改名。新名字已被另一个标签占用时等同于合并进去。
+  func renameTag(normalizedName: String, to rawName: String) throws -> HistoryTag
+  /// 把若干标签合并成一个：挂过任何一个来源标签的条目都改挂目标标签，来源标签删除。
+  func mergeTags(_ sourceNormalizedNames: [String], into rawTarget: String) throws -> HistoryTag
+  /// 从所有条目上摘掉这个标签并删除它。资料本身不动。返回受影响的条目数。
+  func deleteTagEverywhere(normalizedName: String) throws -> Int
   func setFavorite(_ isFavorite: Bool, for taskID: TaskID) throws
   func deleteTask(taskID: TaskID) throws
   /// **永久**删除：行、媒体文件和关联表一起清掉，不可撤销。
@@ -588,6 +594,9 @@ public extension HistoryRepository {
   func allTags() throws -> [HistoryTag] { [] }
   func addTags(_: [String], to _: TaskID) throws -> [HistoryTag] { throw RepositoryFailure.unavailable }
   func removeTag(normalizedName _: String, from _: TaskID) throws { throw RepositoryFailure.unavailable }
+  func renameTag(normalizedName _: String, to _: String) throws -> HistoryTag { throw RepositoryFailure.unavailable }
+  func mergeTags(_: [String], into _: String) throws -> HistoryTag { throw RepositoryFailure.unavailable }
+  func deleteTagEverywhere(normalizedName _: String) throws -> Int { throw RepositoryFailure.unavailable }
   func setFavorite(_: Bool, for _: TaskID) throws { throw RepositoryFailure.unavailable }
 
   /// 转写校对编辑需要真实持久化支持；旧测试替身默认视为不可用。

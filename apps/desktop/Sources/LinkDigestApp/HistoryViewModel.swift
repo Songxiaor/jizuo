@@ -322,6 +322,21 @@ private actor HistoryRepositoryWorker {
     catch { return .failure(HistoryViewModel.storageCode(for: error, context: .write)) }
   }
 
+  func renameTag(_ history: HistoryApplicationService, normalizedName: String, to rawName: String) -> TagMutationResult {
+    do { _ = try history.renameTag(normalizedName: normalizedName, to: rawName); return .success }
+    catch { return .failure(HistoryViewModel.storageCode(for: error, context: .write)) }
+  }
+
+  func mergeTags(_ history: HistoryApplicationService, sources: [String], into rawTarget: String) -> TagMutationResult {
+    do { _ = try history.mergeTags(sources, into: rawTarget); return .success }
+    catch { return .failure(HistoryViewModel.storageCode(for: error, context: .write)) }
+  }
+
+  func deleteTagEverywhere(_ history: HistoryApplicationService, normalizedName: String) -> TagMutationResult {
+    do { _ = try history.deleteTagEverywhere(normalizedName: normalizedName); return .success }
+    catch { return .failure(HistoryViewModel.storageCode(for: error, context: .write)) }
+  }
+
   func setFavorite(_ history: HistoryApplicationService, isFavorite: Bool, taskID: TaskID) -> TagMutationResult {
     do { try history.setFavorite(isFavorite, for: taskID); return .success }
     catch { return .failure(HistoryViewModel.storageCode(for: error, context: .write)) }
@@ -1040,6 +1055,10 @@ final class HistoryViewModel {
   /// 上一次试跑的结论。改配方时唯一能立刻验证的东西。
   var topicDryRunResult: String?
   var showsAllNavigationTags = false
+  /// 标签管理窗（2026-09-24）。
+  var isTagManagerPresented = false
+  /// 标签管理最近一次操作的结果，给窗里那一行提示用；失败时写明原因。
+  private(set) var tagManagementMessage: String?
   private(set) var tagErrorCode: StorageErrorCode?
   private(set) var transcriptionState: TranscriptionUIState = .idle {
     // 任何终态都必须带走阶段文案，不能让「正在下载音频轨…」陪着失败提示常驻。
@@ -5788,7 +5807,92 @@ final class HistoryViewModel {
     let assignedNames = Set(assigned.map(\.normalizedName))
     return availableTags.filter {
       !assignedNames.contains($0.normalizedName)
+        && !Self.isReservedTagName($0.normalizedName)
         && (needle.isEmpty || $0.name.lowercased().contains(needle))
+    }
+  }
+
+  // MARK: - 标签管理（2026-09-24）
+
+  /// 标签管理里列出的标签：带条数，系统标记不列（它们不是「讲什么」）。
+  var manageableTags: [HistoryNavigationTag] {
+    navigationCounts.tags.filter { !Self.isReservedTagName($0.tag.normalizedName) }
+  }
+
+  func renameTag(_ tag: HistoryTag, to rawName: String) {
+    guard let target = HistoryTagNormalizer.normalized(rawName) else {
+      tagManagementMessage = "标签名需要 1–\(HistoryTagNormalizer.maximumCharacterCount) 个字，且不能只有符号。"
+      return
+    }
+    guard !Self.isReservedTagName(target.normalizedName) else {
+      tagManagementMessage = "「\(target.name)」是系统保留的名字，换一个吧。"
+      return
+    }
+    let mergesIntoExisting = target.normalizedName != tag.normalizedName
+      && navigationCounts.tags.contains { $0.tag.normalizedName == target.normalizedName }
+    runTagManagement(
+      affected: [tag.normalizedName],
+      success: mergesIntoExisting ? "「\(tag.name)」已并入「\(target.name)」" : "已改名为「\(target.name)」",
+      operation: .rename(tag.normalizedName, target.name)
+    )
+  }
+
+  func mergeTags(_ tags: [HistoryTag], into rawTarget: String) {
+    guard tags.count >= 2 || (tags.count == 1 && tags[0].normalizedName != HistoryTagNormalizer.normalized(rawTarget)?.normalizedName) else {
+      tagManagementMessage = "至少选两个标签再合并。"
+      return
+    }
+    guard let target = HistoryTagNormalizer.normalized(rawTarget), !Self.isReservedTagName(target.normalizedName) else {
+      tagManagementMessage = "合并后的名字不可用，换一个吧。"
+      return
+    }
+    let names = tags.map(\.normalizedName)
+    runTagManagement(affected: names, success: "已把 \(tags.count) 个标签合并为「\(target.name)」", operation: .merge(names, target.name))
+  }
+
+  func deleteTagEverywhere(_ tag: HistoryTag) {
+    runTagManagement(affected: [tag.normalizedName], success: "已删除标签「\(tag.name)」，资料都还在", operation: .delete(tag.normalizedName))
+  }
+
+  func clearTagManagementMessage() { tagManagementMessage = nil }
+
+  private enum TagManagementOperation: Sendable {
+    case rename(String, String)
+    case merge([String], String)
+    case delete(String)
+  }
+
+  private func runTagManagement(affected: [String], success: String, operation: TagManagementOperation) {
+    guard let history, !isReadOnly, !isDeleting else {
+      tagManagementMessage = "当前是只读状态，不能修改标签。"
+      return
+    }
+    let generation = configurationGeneration
+    tagMutationTask?.cancel(); tagErrorCode = nil
+    tagMutationTask = Task { [weak self, worker] in
+      let result: TagMutationResult
+      switch operation {
+      case let .rename(source, target): result = await worker.renameTag(history, normalizedName: source, to: target)
+      case let .merge(sources, target): result = await worker.mergeTags(history, sources: sources, into: target)
+      case let .delete(name): result = await worker.deleteTagEverywhere(history, normalizedName: name)
+      }
+      guard !Task.isCancelled, let self, generation == self.configurationGeneration else { return }
+      switch result {
+      case .success:
+        self.tagManagementMessage = success
+        // 被改名 / 合并 / 删除的标签不再存在，正在按它筛选就会停在空列表上。
+        let gone = Set(affected)
+        if !self.selectedTagNormalizedNames.isDisjoint(with: gone) {
+          self.selectedTagNormalizedNames.subtract(gone)
+        }
+        self.reloadAvailableTags()
+        self.reloadNavigationCounts()
+        self.reload()
+        if self.selectedTaskID != nil { self.loadDetailForSelection() }
+      case let .failure(code):
+        self.tagErrorCode = code
+        self.tagManagementMessage = "没有改成功，请稍后再试。"
+      }
     }
   }
   func requestExport(_ format: HistoryExportFormat) {

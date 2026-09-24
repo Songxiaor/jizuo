@@ -398,6 +398,7 @@ struct HistoryContentView: View {
             Button("好") { model.dismissDeleteOutcome() }
           } message: { Text(model.deleteOutcomeMessage) }
           .sheet(isPresented: $isNewSparkPresented) { newSparkSheet }
+          .sheet(isPresented: $model.isTagManagerPresented) { TagManagerView(model: model) }
           .alert("工作台", isPresented: Binding(
             get: { model.workbenchFailure != nil },
             set: { if !$0 { model.dismissWorkbenchFailure() } }
@@ -1238,6 +1239,8 @@ struct HistoryContentView: View {
               sidebarTextAction("全部标签 · \(ordered.count)") { model.showsAllNavigationTags = true }
                 .accessibilityIdentifier("history-navigation-tags-all")
             }
+            sidebarTextAction("管理标签…") { model.isTagManagerPresented = true }
+              .accessibilityIdentifier("history-navigation-tags-manage")
             if !model.selectedTagNormalizedNames.isEmpty {
               sidebarTextAction("清空标签筛选（\(model.selectedTagNormalizedNames.count)）") { model.clearTagSelection() }
                 .accessibilityIdentifier("history-navigation-tags-clear")

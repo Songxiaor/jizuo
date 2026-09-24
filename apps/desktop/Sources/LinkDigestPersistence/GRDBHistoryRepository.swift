@@ -980,6 +980,102 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
   }
 
+  // MARK: - 标签管理（2026-09-24）
+  //
+  // 系统标记（已使用、已归档、自有、外部）有各自的语义，MCP 与归属判断依赖它们，
+  // 不允许在这里改名、合并或删除；也不允许把别的标签改成这些名字。
+
+  private static func isSystemTag(_ normalizedName: String) -> Bool {
+    MaterialCatalog.systemTagNormalizedNames.contains(normalizedName.lowercased())
+      || MaterialCatalog.systemTagNormalizedNames.contains(normalizedName)
+  }
+
+  public func renameTag(normalizedName: String, to rawName: String) throws -> HistoryTag {
+    guard
+      let source = HistoryTagNormalizer.normalized(normalizedName),
+      let target = HistoryTagNormalizer.normalized(rawName),
+      !Self.isSystemTag(source.normalizedName), !Self.isSystemTag(target.normalizedName)
+    else { throw RepositoryFailure.invalidInput }
+    return try database.write { db in
+      guard let sourceID = try Int64.fetchOne(db, sql: "SELECT id FROM tags WHERE normalized_name = ? COLLATE NOCASE", arguments: [source.normalizedName]) else {
+        throw RepositoryFailure.notFound
+      }
+      let occupied = try Int64.fetchOne(db, sql: "SELECT id FROM tags WHERE normalized_name = ? COLLATE NOCASE", arguments: [target.normalizedName])
+      if let occupied, occupied != sourceID {
+        // 新名字已经是另一个标签：改名就是合并进去。
+        try Self.moveTaskTags(from: sourceID, to: occupied, db: db)
+        return try Self.tag(id: occupied, db: db)
+      }
+      // 同一个标签只改写法（大小写、空格）或换成全新的名字。
+      try db.execute(
+        sql: "UPDATE tags SET normalized_name = ?, display_name = ? WHERE id = ?",
+        arguments: [target.normalizedName, target.name, sourceID]
+      )
+      return target
+    }
+  }
+
+  public func mergeTags(_ sourceNormalizedNames: [String], into rawTarget: String) throws -> HistoryTag {
+    guard
+      let target = HistoryTagNormalizer.normalized(rawTarget), !Self.isSystemTag(target.normalizedName)
+    else { throw RepositoryFailure.invalidInput }
+    let sources = sourceNormalizedNames.compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
+    guard !sources.isEmpty, !sources.contains(where: Self.isSystemTag) else { throw RepositoryFailure.invalidInput }
+    return try database.write { db in
+      let now = Int64(Date().timeIntervalSince1970 * 1_000)
+      let targetID: Int64
+      if let existing = try Int64.fetchOne(db, sql: "SELECT id FROM tags WHERE normalized_name = ? COLLATE NOCASE", arguments: [target.normalizedName]) {
+        targetID = existing
+      } else {
+        try db.execute(
+          sql: "INSERT INTO tags (normalized_name, display_name, created_at_ms) VALUES (?, ?, ?)",
+          arguments: [target.normalizedName, target.name, now]
+        )
+        targetID = db.lastInsertedRowID
+      }
+      for source in sources {
+        guard let sourceID = try Int64.fetchOne(db, sql: "SELECT id FROM tags WHERE normalized_name = ? COLLATE NOCASE", arguments: [source]),
+              sourceID != targetID else { continue }
+        try Self.moveTaskTags(from: sourceID, to: targetID, db: db)
+      }
+      try db.execute(sql: "DELETE FROM tags WHERE NOT EXISTS (SELECT 1 FROM task_tags WHERE task_tags.tag_id = tags.id)")
+      return try Self.tag(id: targetID, db: db)
+    }
+  }
+
+  public func deleteTagEverywhere(normalizedName: String) throws -> Int {
+    guard let tag = HistoryTagNormalizer.normalized(normalizedName), !Self.isSystemTag(tag.normalizedName) else {
+      throw RepositoryFailure.invalidInput
+    }
+    return try database.write { db in
+      guard let tagID = try Int64.fetchOne(db, sql: "SELECT id FROM tags WHERE normalized_name = ? COLLATE NOCASE", arguments: [tag.normalizedName]) else {
+        throw RepositoryFailure.notFound
+      }
+      try db.execute(sql: "DELETE FROM task_tags WHERE tag_id = ?", arguments: [tagID])
+      let affected = db.changesCount
+      try db.execute(sql: "DELETE FROM tags WHERE id = ?", arguments: [tagID])
+      return affected
+    }
+  }
+
+  /// 把挂在 `source` 上的条目改挂到 `target`（已挂着的不重复），再删掉 `source`。
+  /// 换挂不会让条目的标签数变多，所以不受每条 10 个标签的上限影响。
+  private static func moveTaskTags(from source: Int64, to target: Int64, db: Database) throws {
+    try db.execute(sql: """
+      INSERT OR IGNORE INTO task_tags (task_id, tag_id, created_at_ms)
+      SELECT task_id, ?, created_at_ms FROM task_tags WHERE tag_id = ?
+      """, arguments: [target, source])
+    try db.execute(sql: "DELETE FROM task_tags WHERE tag_id = ?", arguments: [source])
+    try db.execute(sql: "DELETE FROM tags WHERE id = ?", arguments: [source])
+  }
+
+  private static func tag(id: Int64, db: Database) throws -> HistoryTag {
+    guard let row = try Row.fetchOne(db, sql: "SELECT display_name, normalized_name FROM tags WHERE id = ?", arguments: [id]) else {
+      throw RepositoryFailure.notFound
+    }
+    return HistoryTag(name: row["display_name"], normalizedName: row["normalized_name"])
+  }
+
   public func setFavorite(_ isFavorite: Bool, for taskID: TaskID) throws {
     try database.write { db in
       try db.execute(

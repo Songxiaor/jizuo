@@ -226,4 +226,43 @@ final class MaterialScopeTests: XCTestCase {
       XCTAssertEqual(try repository.navigationCounts().recent, 1)
     }
   }
+
+  /// 标签管理：改名、改成已有名字即合并、多选合并、删除只摘标签；系统标记不可动。
+  func testTagManagementRenameMergeAndDelete() throws {
+    try withRepository { repository, now in
+      let a = try file(repository, "a", now: now), b = try file(repository, "b", now: now), c = try file(repository, "c", now: now)
+      _ = try repository.addTags(["AI 编程", "开源"], to: a)
+      _ = try repository.addTags(["AI编程"], to: b)
+      _ = try repository.addTags(["AI编程", "AI 编程", "工具"], to: c)
+      func names(_ id: TaskID) throws -> Set<String> { Set(try repository.detail(taskID: id).tags.map(\.name)) }
+
+      // 改成已有的名字 = 合并；两个都挂着的条目只留一个。
+      XCTAssertEqual(try repository.renameTag(normalizedName: "ai 编程", to: "AI编程").name, "AI编程")
+      XCTAssertEqual(try names(a), ["AI编程", "开源"])
+      XCTAssertEqual(try names(c), ["AI编程", "工具"])
+      XCTAssertEqual(try repository.historyPage(limit: 50, after: nil, filter: .init(tagNames: ["AI编程"])).rows.count, 3)
+
+      // 纯改名。
+      XCTAssertEqual(try repository.renameTag(normalizedName: "开源", to: "开源项目").name, "开源项目")
+      XCTAssertEqual(try names(a), ["AI编程", "开源项目"])
+
+      // 多选合并到一个新名字。
+      _ = try repository.mergeTags(["开源项目", "工具"], into: "开源工具")
+      XCTAssertEqual(try names(a), ["AI编程", "开源工具"])
+      XCTAssertEqual(try names(c), ["AI编程", "开源工具"])
+      XCTAssertFalse(try repository.allTags().map(\.name).contains("工具"))
+
+      // 删除只摘标签，资料都在。
+      XCTAssertEqual(try repository.deleteTagEverywhere(normalizedName: "ai编程"), 3)
+      XCTAssertEqual(try names(b), [])
+      XCTAssertEqual(try repository.navigationCounts().total, 3)
+
+      // 系统标记不能改名、合并、删除，也不能被改成。
+      _ = try repository.addTags([MaterialCatalog.usedTagName], to: b)
+      XCTAssertThrowsError(try repository.deleteTagEverywhere(normalizedName: MaterialCatalog.usedTagNormalizedName))
+      XCTAssertThrowsError(try repository.renameTag(normalizedName: "开源工具", to: "自有"))
+      XCTAssertThrowsError(try repository.mergeTags([MaterialCatalog.usedTagNormalizedName], into: "开源工具"))
+      XCTAssertEqual(try names(b), [MaterialCatalog.usedTagName])
+    }
+  }
 }
