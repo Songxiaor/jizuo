@@ -2431,6 +2431,24 @@ final class HistoryViewModel {
     return true
   }
 
+  /// 下载确认里写明是哪种语言：原来一律写「会按视频配文判断中文或英文」，
+  /// 用户不知道这次要下的是哪个模型、为什么要下（2026-09-24）。
+  var transcriptionModelDownloadMessage: String {
+    let locale = pendingTranscriptionContext?.localeIdentifier ?? pendingRemoteTranscriptionContext?.localeIdentifier
+    let name = locale.map(Self.speechLanguageDisplayName(forLocaleIdentifier:)) ?? "所需语言"
+    return "这段音频听起来是\(name)，需要先下载 Apple 的\(name)离线听写模型（占用一些本机空间）。模型准备好后，音频只在这台 Mac 上处理，不会上传。"
+  }
+
+  static func speechLanguageDisplayName(forLocaleIdentifier locale: String) -> String {
+    switch CapturedContentLanguage.speechLanguageCode(forLocaleIdentifier: locale) {
+    case "zh": "中文"
+    case "en": "英文"
+    case "ja": "日文"
+    case "ko": "韩文"
+    default: locale
+    }
+  }
+
   func requestRemoteTranscription(_ descriptor: MediaDescriptor, taskID: TaskID) {
     transcriptionUsesOnlineService = false
     guard let history, let videoTranscriber, let tempStore = transcriptionTempStore,

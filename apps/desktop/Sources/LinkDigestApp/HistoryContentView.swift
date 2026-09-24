@@ -487,7 +487,7 @@ struct HistoryContentView: View {
             Button("取消", role: .cancel) { model.cancelModelDownloadConfirmation() }
             Button("下载并转写") { model.confirmModelDownloadAndTranscribe() }
           } message: {
-            Text("Apple 离线听写模型可能需要下载并占用本机空间。会按视频配文判断中文或英文。模型准备完成后，视频音频只在这台 Mac 上处理，不会上传。")
+            Text(model.transcriptionModelDownloadMessage)
           }
           .alert("将视频音频发送到在线转写服务？", isPresented: $model.isOnlineTranscriptionConfirmationPresented) {
             Button("取消", role: .cancel) { model.cancelOnlineTranscriptionConfirmation() }

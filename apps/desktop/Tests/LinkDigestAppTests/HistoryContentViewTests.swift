@@ -1535,7 +1535,12 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("需要下载 Apple 离线听写模型"))
     XCTAssertTrue(source.contains("Button(\"下载并转写\")"))
     XCTAssertTrue(source.contains("model.confirmModelDownloadAndTranscribe()"))
-    XCTAssertTrue(source.contains("视频音频只在这台 Mac 上处理，不会上传"))
+    // 2026-09-24：文案移到 view model，写明是哪种语言；「不上传」的承诺必须还在。
+    XCTAssertTrue(source.contains("Text(model.transcriptionModelDownloadMessage)"))
+    let viewModel = (try? String(contentsOf: URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+      .appendingPathComponent("Sources/LinkDigestApp/HistoryViewModel.swift"), encoding: .utf8)) ?? ""
+    XCTAssertTrue(viewModel.contains("音频只在这台 Mac 上处理，不会上传"))
     XCTAssertTrue(source.contains("只读模式不能保存转写结果"))
   }
 

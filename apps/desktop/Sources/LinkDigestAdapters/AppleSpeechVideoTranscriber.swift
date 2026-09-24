@@ -286,6 +286,7 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
     }
     defer { try? FileManager.default.removeItem(at: probeURL) }
 
+    var rejectedSamples: [String] = []
     for candidate in candidates {
       if Task.isCancelled { return preferred }
       guard await Self.isModelInstalled(candidate) else { continue }
@@ -295,11 +296,33 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
       if CapturedContentLanguage.isPlausibleTranscript(sample, forLocaleIdentifier: candidate) {
         return candidate
       }
+      rejectedSamples.append(sample)
+    }
+
+    // 听过的都对不上，但某次听写**本身**已经露出了真实语种（例：中文模型听英文讲座，
+    // 吐的是一串拉丁字母碎片），而那个语种的模型还没装——就选它，交给调用方现成的
+    // 「需要下载模型」确认。原来这里悄悄退回猜测值：没装英文模型的机器上，英文视频
+    // 一律按中文转写，整篇乱码一路流到翻译（2026-09-24 实库 9 月 1 日的记录即此）。
+    // 下载仍由用户确认，这里不触发任何下载。
+    if let hinted = Self.installableHint(from: rejectedSamples, candidates: candidates),
+       !(await Self.isModelInstalled(hinted)) {
+      return hinted
     }
 
     // 一个都说不通（可能是纯音乐、无人声、或候选之外的语种）。回到猜测值，
     // 结果不会比没有探测更差。
     return preferred
+  }
+
+  /// 被判「对不上」的听写里，若主体文字清楚指向某个候选语种，返回它。
+  /// 空输出、判不出主体文字的，不作数——纯音乐不该把人引去下载模型。
+  static func installableHint(from rejectedSamples: [String], candidates: [String]) -> String? {
+    for sample in rejectedSamples {
+      guard CapturedContentLanguage.detect(in: sample) != nil else { continue }
+      let hinted = CapturedContentLanguage.speechLocaleIdentifier(in: sample)
+      if candidates.contains(hinted) { return hinted }
+    }
+    return nil
   }
 
   /// 开头一小段音频，只服务于探测。与正片的 `extracted-audio.m4a` 分开命名，
