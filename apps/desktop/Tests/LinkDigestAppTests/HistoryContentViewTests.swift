@@ -412,6 +412,12 @@ final class HistoryContentViewTests: XCTestCase {
     }
     // 2026-09-24：来源（本机 + 平台）在前，博主是来源下面的第二层，紧跟其后。
     XCTAssertTrue(todayIndex < platformsIndex && platformsIndex < creatorsIndex, "博主分区必须紧跟在来源之后")
+    // 2026-09-24 Syc：短而常用的在上，长而会增长的在下——视图 → 形式 → 来源 → 博主 → 标签。
+    let order = ["navigationSectionHeader(\"视图\"", "navigationSectionHeader(\"形式\"", "navigationSectionHeader(\"来源\"",
+                 "navigationSectionHeader(\"博主\"", "navigationSectionHeader(\"标签\", expanded"]
+      .compactMap { source.range(of: $0)?.lowerBound }
+    XCTAssertEqual(order.count, 5)
+    XCTAssertEqual(order, order.sorted(), "侧栏分组顺序应为 视图 → 形式 → 来源 → 博主 → 标签")
     XCTAssertTrue(source.contains("history-navigation-creators-all"))
     XCTAssertTrue(source.contains("history-navigation-creator-add"))
     XCTAssertTrue(source.contains("navigationSectionHeader(\"博主\", expanded: $navigationCreatorsExpanded"))

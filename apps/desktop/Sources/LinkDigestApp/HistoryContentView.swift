@@ -1085,6 +1085,63 @@ struct HistoryContentView: View {
       }
       // 第一组不给标题。它是打开 App 的默认落点，标题不提供任何新信息。
 
+      // 视图：同一批资料换个角度看。以后的自定义视图也放这里。
+      Section {
+        if navigationViewsExpanded {
+          // 「最近」说不清是多近。标签直接写出口径，省得每个人自己猜一个。
+          navigationButton("最近 7 天", systemImage: "clock", count: model.navigationCounts.recent, selected: model.selectedScope == .recent) {
+            model.selectScope(.recent)
+          }
+          .accessibilityIdentifier("history-navigation-recent")
+          // 计数不强调底色：「待总结」是一个会一直涨的数，染成醒目色等于常驻一个
+          // 永远消不掉的红点，看久了只会被忽略，还顺带让人焦虑。
+          navigationButton("待总结", systemImage: "doc.plaintext", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
+            model.selectScope(.unsummarized)
+          }
+          .accessibilityIdentifier("history-navigation-unsummarized")
+          navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite) {
+            model.selectScope(.favorite)
+          }
+          .accessibilityIdentifier("history-navigation-favorite")
+          if model.navigationCounts.trash > 0 {
+            navigationButton(
+              "回收站",
+              systemImage: "trash",
+              count: model.navigationCounts.trash,
+              selected: model.selectedScope == .trash
+            ) {
+              model.selectScope(.trash)
+            }
+            .accessibilityIdentifier("history-navigation-trash")
+          }
+        }
+      } header: {
+        navigationSectionHeader("视图", expanded: $navigationViewsExpanded)
+          .accessibilityIdentifier("history-navigation-views-header")
+      }
+
+      // 形式：这条内容「是什么」。抓取时按规则判定（`ContentForm`），不需要 AI。
+      if !model.navigationCounts.forms.isEmpty {
+        Section {
+          if navigationFormsExpanded {
+            ForEach(model.navigationCounts.forms) { item in
+              navigationButton(
+                item.form.rawValue,
+                systemImage: item.form.systemImage,
+                count: item.count,
+                selected: model.selectedForm == item.form && !model.isCreatorDirectoryActive
+              ) {
+                model.selectForm(item.form)
+              }
+              .accessibilityIdentifier("history-navigation-form-\(item.form.rawValue)")
+            }
+          }
+        } header: {
+          navigationSectionHeader("形式", expanded: $navigationFormsExpanded)
+            .accessibilityIdentifier("history-navigation-forms-header")
+        }
+      }
+
       if !model.navigationCounts.platforms.isEmpty {
         // 公共平台各占一行；杂项来源聚合进"待分类"，避免侧栏被长域名占满。
         // 本机来源（备忘录、语音备忘录、本地文件）和外部平台同属「从哪来」，合在一组按条数排。
@@ -1165,28 +1222,6 @@ struct HistoryContentView: View {
       }
       .accessibilityIdentifier("history-navigation-creators")
 
-      // 形式：这条内容「是什么」。抓取时按规则判定（`ContentForm`），不需要 AI。
-      if !model.navigationCounts.forms.isEmpty {
-        Section {
-          if navigationFormsExpanded {
-            ForEach(model.navigationCounts.forms) { item in
-              navigationButton(
-                item.form.rawValue,
-                systemImage: item.form.systemImage,
-                count: item.count,
-                selected: model.selectedForm == item.form && !model.isCreatorDirectoryActive
-              ) {
-                model.selectForm(item.form)
-              }
-              .accessibilityIdentifier("history-navigation-form-\(item.form.rawValue)")
-            }
-          }
-        } header: {
-          navigationSectionHeader("形式", expanded: $navigationFormsExpanded)
-            .accessibilityIdentifier("history-navigation-forms-header")
-        }
-      }
-
       if model.navigationCounts.tags.isEmpty {
         // 标签是"内容讲什么"：总结后由模型生成，也可在详情里手动添加。
         // 空态保留区块存在感，而不是让整块消失。
@@ -1252,41 +1287,6 @@ struct HistoryContentView: View {
         }
         .id("history-navigation-tags")
       }
-      // 视图：同一批资料换个角度看。以后的自定义视图也放这里。
-      Section {
-        if navigationViewsExpanded {
-          // 「最近」说不清是多近。标签直接写出口径，省得每个人自己猜一个。
-          navigationButton("最近 7 天", systemImage: "clock", count: model.navigationCounts.recent, selected: model.selectedScope == .recent) {
-            model.selectScope(.recent)
-          }
-          .accessibilityIdentifier("history-navigation-recent")
-          // 计数不强调底色：「待总结」是一个会一直涨的数，染成醒目色等于常驻一个
-          // 永远消不掉的红点，看久了只会被忽略，还顺带让人焦虑。
-          navigationButton("待总结", systemImage: "doc.plaintext", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
-            model.selectScope(.unsummarized)
-          }
-          .accessibilityIdentifier("history-navigation-unsummarized")
-          navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite) {
-            model.selectScope(.favorite)
-          }
-          .accessibilityIdentifier("history-navigation-favorite")
-          if model.navigationCounts.trash > 0 {
-            navigationButton(
-              "回收站",
-              systemImage: "trash",
-              count: model.navigationCounts.trash,
-              selected: model.selectedScope == .trash
-            ) {
-              model.selectScope(.trash)
-            }
-            .accessibilityIdentifier("history-navigation-trash")
-          }
-        }
-      } header: {
-        navigationSectionHeader("视图", expanded: $navigationViewsExpanded)
-          .accessibilityIdentifier("history-navigation-views-header")
-      }
-
       // 工作台是第三种东西:上面是「抓来的资料」,笔记是「随手写的」,
       // 这里是「正在做的作品」。它的单位是一件创作,不是一条记录,
       // 所以自成一节而不是混进上面的筛选项。
