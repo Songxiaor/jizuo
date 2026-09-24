@@ -264,4 +264,34 @@ private final class ConnectionSpy: @unchecked Sendable {
     lock.withLock { seen += 1 }
     try? handle.close()
   }
+
+  /// 2026-09-24：MCP 客户端先断开时，服务端写回复不能让进程吃 SIGPIPE 退出
+  /// （实测汲作退出码 141）。写失败必须变成一个可捕获的错误，进程照常活着。
+  func testWritingToDisconnectedClientThrowsInsteadOfKillingProcess() async throws {
+    let path = "/tmp/linkdigest-sigpipe-\(UUID().uuidString).sock"
+    let server = UnixSocketServer(path: path)
+    try server.start()
+    defer { server.stop() }
+    let accepted = Task.detached { try server.accept(timeout: 2) }
+    // 一个「连上就走」的客户端。
+    let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+    var address = sockaddr_un()
+    address.sun_family = sa_family_t(AF_UNIX)
+    path.withCString { ptr in
+      withUnsafeMutableBytes(of: &address.sun_path) { raw in
+        _ = strlcpy(raw.baseAddress!.assumingMemoryBound(to: CChar.self), ptr, raw.count)
+      }
+    }
+    let connected = withUnsafePointer(to: &address) {
+      $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+    }
+    XCTAssertEqual(connected, 0)
+    let handle = try await accepted.value
+    close(fd)
+    var sawError = false
+    for _ in 0..<20 {
+      do { try ChromiumFramer.writeFrame(Data(repeating: 0x7B, count: 64 * 1024), to: handle) } catch { sawError = true; break }
+    }
+    XCTAssertTrue(sawError, "对端已断开，写入应抛错而不是静默成功或让进程退出")
+  }
 }

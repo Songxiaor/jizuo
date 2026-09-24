@@ -271,6 +271,11 @@ private func applyTimeout(_ fd: Int32, _ timeout: TimeInterval) {
   )
   setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeValue, socklen_t(MemoryLayout<timeval>.size))
   setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeValue, socklen_t(MemoryLayout<timeval>.size))
+  // 对端先断开时，往这条连接写回复会触发 SIGPIPE，而 App 进程没有忽略它——
+  // 结果是整个汲作直接退出（2026-09-24 实测退出码 141：Agent 的 MCP 客户端
+  // 一关，App 就没了）。设了 SO_NOSIGPIPE，写失败只抛 EPIPE，由调用方当普通错误处理。
+  var noSigPipe: Int32 = 1
+  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, socklen_t(MemoryLayout<Int32>.size))
 }
 
 private func connectUnix(_ fd: Int32, path: String) -> Int32 {

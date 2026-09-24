@@ -1810,6 +1810,10 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
         .appThemeEnvironment(appearanceThemeRaw, uiFontRawValue: uiFontRaw)
     }
     .defaultSize(width: 1200, height: 760)
+    // 启动时一定打开主窗口：资料库、浏览器接收服务、MCP 都在这个窗口的启动任务里接上。
+    // 上次关掉窗口再退出时，系统会「恢复成没有窗口」，App 进程在、服务却一个都没起——
+    // 外部 Agent 连 MCP 只拿到「未开启」（2026-09-24 实测）。
+    .defaultLaunchBehavior(.presented)
     // 明确声明这个场景不接任何外部事件。不写这一条，SwiftUI 会把每个进来的
     // `linkdigest://` 当成「再开一个窗口」的请求自己消化掉，URL 根本到不了
     // AppDelegate——表现就是点一次回链多一个汲作窗口。
