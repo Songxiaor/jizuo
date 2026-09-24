@@ -235,6 +235,9 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
       let lower = trimmed.lowercased()
       if lower.hasPrefix("captured title") || lower.hasPrefix("captured content") { return false }
       if trimmed.hasPrefix("捕获的标题") || trimmed.hasPrefix("捕获的内容") { return false }
+      // 半译的包装行：「captured 标题：」「captured 内容：」（2026-09-24 实库出现）。
+      // 只认「整行就是这个标签」，正文里顺口提到 captured 的句子不受影响。
+      if Self.isHalfTranslatedEnvelopeLabel(lower) { return false }
       return true
     }
     var result: [String] = []
@@ -245,6 +248,12 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     }
     while result.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { result.removeFirst() }
     return result.joined(separator: "\n")
+  }
+
+  static func isHalfTranslatedEnvelopeLabel(_ lowercasedLine: String) -> Bool {
+    let compact = lowercasedLine.replacingOccurrences(of: " ", with: "")
+    return ["captured标题：", "captured标题:", "captured内容：", "captured内容:", "captured标题", "captured内容"]
+      .contains(compact)
   }
 
   public static func strippingEchoedMetadataBlock(from markdown: String) -> String {

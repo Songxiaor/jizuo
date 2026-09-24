@@ -5805,10 +5805,21 @@ final class HistoryViewModel {
   func suggestedTags(matching input: String, excluding assigned: [HistoryTag]) -> [HistoryTag] {
     let needle = input.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     let assignedNames = Set(assigned.map(\.normalizedName))
+    // 按用过的次数排：常用的在前；同样次数时名字以输入开头的在前，再按名字。
+    let usage = Dictionary(navigationCounts.tags.map { ($0.tag.normalizedName, $0.count) }, uniquingKeysWith: max)
     return availableTags.filter {
       !assignedNames.contains($0.normalizedName)
         && !Self.isReservedTagName($0.normalizedName)
         && (needle.isEmpty || $0.name.lowercased().contains(needle))
+    }
+    .sorted { lhs, rhs in
+      let left = usage[lhs.normalizedName] ?? 0, right = usage[rhs.normalizedName] ?? 0
+      if left != right { return left > right }
+      if !needle.isEmpty {
+        let lp = lhs.name.lowercased().hasPrefix(needle), rp = rhs.name.lowercased().hasPrefix(needle)
+        if lp != rp { return lp }
+      }
+      return lhs.name < rhs.name
     }
   }
 

@@ -580,11 +580,28 @@ final class ManualLinkViewModel: ObservableObject {
       }
       clipboardSuggestion = candidate
       pendingClipboardSuggestion = nil
+      scheduleClipboardSuggestionAutoDismiss(for: candidate.canonicalURL)
     } catch {
       // History errors fail closed. Clipboard contents must not surface as an
       // error or be retained while storage availability is uncertain.
       pendingClipboardSuggestion = nil
       clipboardSuggestion = nil
+    }
+  }
+
+  /// 剪贴板提示停留多久后自动收起（2026-09-24 Syc 走查：一直挂在列表底部，挡住最后一条）。
+  static let clipboardSuggestionLifetime: Duration = .seconds(12)
+  private var clipboardAutoDismissTask: Task<Void, Never>?
+
+  /// 到时间还没点「抓取 / 忽略」就收起。只算「这次看过了」：同一条链接不再冒出来，
+  /// 但不写进永久忽略名单——复制一条新链接照常提示。
+  private func scheduleClipboardSuggestionAutoDismiss(for canonicalURL: String) {
+    clipboardAutoDismissTask?.cancel()
+    clipboardAutoDismissTask = Task { [weak self] in
+      try? await Task.sleep(for: Self.clipboardSuggestionLifetime)
+      guard !Task.isCancelled, let self, self.clipboardSuggestion?.canonicalURL == canonicalURL else { return }
+      self.lastHandledClipboardCanonicalURL = canonicalURL
+      self.clipboardSuggestion = nil
     }
   }
 

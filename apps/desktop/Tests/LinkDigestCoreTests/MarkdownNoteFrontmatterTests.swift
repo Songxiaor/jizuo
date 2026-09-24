@@ -308,4 +308,14 @@ final class MarkdownNoteFrontmatterTests: XCTestCase {
       XCTAssertEqual(MarkdownNoteFrontmatter.parse(source).body, source)
     }
   }
+
+  /// 2026-09-24 实库：译文开头出现半译的「captured 标题：」「captured 内容：」包装行。
+  func testStripsHalfTranslatedEnvelopeLabels() {
+    let source = " captured 标题：\n今晚别刷Netflix了。\n\ncaptured 内容：\n<<<\n## 配文\n\n正文里提到 captured 这个词不删。"
+    let cleaned = MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: source)
+    XCTAssertFalse(cleaned.contains("captured 标题"))
+    XCTAssertFalse(cleaned.contains("captured 内容"))
+    XCTAssertTrue(cleaned.hasPrefix("今晚别刷Netflix了。"))
+    XCTAssertTrue(cleaned.contains("正文里提到 captured 这个词不删。"))
+  }
 }

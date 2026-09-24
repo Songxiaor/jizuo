@@ -1278,7 +1278,8 @@ final class HistoryContentViewTests: XCTestCase {
       from: "@ViewBuilder private func runVerb(_ kind: RunKind)",
       to: "/// 这条记录能不能转写"
     )
-    XCTAssertTrue(verb.contains("} else if !artifactExists, showsRunControls {"))
+    XCTAssertTrue(verb.contains("} else if !artifactExists, showsRunControls, !(kind == .translate && translationNotNeeded) {"),
+                  "已是输出语言时不再留一颗永远灰着的「翻译」（2026-09-24）")
     XCTAssertTrue(verb.contains(".buttonStyle(.bordered)"), "动作是框起来的按钮，和文字页签区分开")
     // 重做和次要动作收在「⋯」里，不和主按钮抢位置。
     let more = section(
@@ -2578,14 +2579,20 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("accessibilityLabel(\"打开设置\")"))
     XCTAssertTrue(source.contains("history-unconfigured-model-banner"))
     XCTAssertTrue(source.contains("history-note-tag-bar"))
-    // 笔记 · 标签收在整页最后：排在摘录之后，而不是标题下面。
+    // 2026-09-24：笔记输入框仍收在整页最后（摘录之后）；分类（归属 · 素材类型 · 标签）移到标题下。
     let annotations = source.range(of: "ReadingAnchor.module(\"annotations\")")
-    let noteTagBarUse = source.range(of: "noteTagBar\n          .padding(.top, DesignTokens.Space.xl)")
-    XCTAssertNotNil(noteTagBarUse)
-    if let annotations, let noteTagBarUse {
-      XCTAssertLessThan(annotations.lowerBound, noteTagBarUse.lowerBound)
+    let noteBarUse = source.range(of: "noteBar\n            .padding(.top, DesignTokens.Space.xl)")
+    XCTAssertNotNil(noteBarUse)
+    if let annotations, let noteBarUse {
+      XCTAssertLessThan(annotations.lowerBound, noteBarUse.lowerBound)
     }
-    XCTAssertEqual(source.components(separatedBy: "        noteTagBar\n").count - 1, 1)
+    let classification = source.range(of: "        classificationBar\n")
+    let titleUse = source.range(of: "        titleView\n")
+    XCTAssertNotNil(classification)
+    if let classification, let titleUse, let annotations {
+      XCTAssertLessThan(titleUse.lowerBound, classification.lowerBound)
+      XCTAssertLessThan(classification.lowerBound, annotations.lowerBound, "分类要在正文之前，不在页尾")
+    }
     XCTAssertTrue(source.contains("移到回收站…"))
     // 导入的图片不挂「正文」标签（2026-09-23）：图本身就是内容。
     XCTAssertTrue(source.contains("sourceLayer(heading: isOwnWriting || isImportedImage(snapshot) ? nil : \"正文\""))

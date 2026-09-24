@@ -50,6 +50,12 @@ struct TagManagerView: View {
       List(filteredTags, selection: $selection) { item in
         HStack {
           Text(item.tag.name).lineLimit(1)
+          if HistoryContentView.hiddenSidebarTagNames.contains(item.tag.normalizedName) {
+            // 说明侧栏和这里数字为什么差几个。
+            Text("和来源重名，侧栏不显示")
+              .themedFont(.caption)
+              .foregroundStyle(.tertiary)
+          }
           Spacer()
           Text("\(item.count)")
             .themedFont(.caption, monospacedDigit: true)
