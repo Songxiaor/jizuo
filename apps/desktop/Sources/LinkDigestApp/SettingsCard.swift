@@ -633,12 +633,15 @@ struct SettingsMenuLabel: View {
         .foregroundStyle(.primary)
         .lineLimit(1)
         .truncationMode(.middle)
+        // 模型名优先完整显示，服务商名让位（2026-09-24 走查：「DeepSe….1 Flash  Command Code」
+        // 把真正要看的模型名截成了半截，服务商名却完整）。
+        .layoutPriority(1)
       if let subtitle, !subtitle.isEmpty {
         Text(subtitle)
           .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .lineLimit(1)
-          .truncationMode(.middle)
+          .truncationMode(.tail)
       }
       Spacer(minLength: 0)
       Image(systemName: "chevron.up.chevron.down")

@@ -11,7 +11,7 @@ final class SubtleScroller: NSScroller {
   override class var isCompatibleWithOverlayScrollers: Bool { true }
 
   /// 条子总宽。knob 还会在此基础上左右各缩 `knobInset`，所以实际可见宽度更细。
-  private static let trackWidth: CGFloat = 11
+  static let trackWidth: CGFloat = 11
   private static let knobInset: CGFloat = 3.5
 
   override class func scrollerWidth(

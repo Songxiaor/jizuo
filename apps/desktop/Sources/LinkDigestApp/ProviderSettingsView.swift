@@ -47,8 +47,10 @@ struct ProviderSettingsView: View {
       case .generation: "text.badge.checkmark"
       case .appearance: "paintpalette"
       case .mediaStorage: "externaldrive"
-      case .knowledgeVault: "folder.badge.gearshape"
-      case .dataBackup: "externaldrive.badge.timemachine"
+      // 2026-09-24 走查：原来是 folder.badge.gearshape / externaldrive.badge.timemachine，
+      // 带角标的符号比 18pt 图标框宽，溢出后顶到文字上，和上下几行对不齐。
+      case .knowledgeVault: "books.vertical"
+      case .dataBackup: "clock.arrow.circlepath"
       case .companionSync: "iphone.and.arrow.forward"
       case .siteLogin: "person.crop.circle.badge.checkmark"
       case .browserSupport: "puzzlepiece.extension"
@@ -93,7 +95,7 @@ struct ProviderSettingsView: View {
 
     var title: String {
       switch self {
-      case .aiAndProcessing: "AI与处理"
+      case .aiAndProcessing: "AI 与处理"
       case .readingAndAppearance: "阅读与外观"
       case .connection: "连接"
       case .dataAndStorage: "数据与存储"
@@ -650,11 +652,12 @@ struct ProviderSettingsView: View {
         details: "视频转文字默认用 Mac 自带的 Apple 听写，全程在本机完成，不联网、不花钱。"
       ) {
         VStack(alignment: .trailing, spacing: DesignTokens.Space.xxs) {
-          Text("Apple 听写 · 本机离线")
+          Text("Apple 听写")
             .themedFont(.body)
             .foregroundStyle(.secondary)
             .lineLimit(1)
-          Text("本机离线，不需要配置")
+          // 原来两行都写「本机离线」（2026-09-24 走查），第二行只补上第一行没说的。
+          Text("本机离线 · 不需要配置")
             .themedFont(.subheadline)
             .foregroundStyle(.tertiary)
             .lineLimit(1)
@@ -708,11 +711,12 @@ struct ProviderSettingsView: View {
         details: "读图片里的文字（包括视频画面上的字幕）固定用 Mac 自带的识别能力，全程在本机完成，不会把图片发出去，也不消耗任何额度。所以这一项没有可选项。"
       ) {
         VStack(alignment: .trailing, spacing: DesignTokens.Space.xxs) {
-          Text("Apple Vision · 本机离线")
+          Text("Apple Vision")
             .themedFont(.body)
             .foregroundStyle(.secondary)
             .lineLimit(1)
-          Text("本机离线，不需要配置")
+          // 原来两行都写「本机离线」（2026-09-24 走查），第二行只补上第一行没说的。
+          Text("本机离线 · 不需要配置")
             .themedFont(.subheadline)
             .foregroundStyle(.tertiary)
             .lineLimit(1)

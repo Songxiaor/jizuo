@@ -15,7 +15,7 @@ struct KnowledgeVaultSettingsView: View {
     SettingsPlainPage {
       SettingsPageHeader(
         title: "知识库同步",
-        symbol: "folder.badge.gearshape",
+        symbol: "books.vertical",
         caption: "把历史里抓到的内容导出成 Markdown，同步进你自己的知识库文件夹。",
         fill: SettingsCategoryChip.fill(for: "knowledgeVault", theme: appTheme)
       )
@@ -34,15 +34,18 @@ struct KnowledgeVaultSettingsView: View {
         VStack(alignment: .leading, spacing: 12) {
           HStack(alignment: .firstTextBaseline, spacing: 8) {
             Text("当前文件夹").foregroundStyle(.secondary)
-            Text(model.directoryPath ?? "尚未选择")
+            // 记住过文件夹、但现在找不到了（被移动或删除）时，不能写「尚未选择」——
+            // 下面同时在报「文件夹不存在」，两句话互相矛盾（2026-09-24 走查）。
+            Text(model.directoryPath ?? (model.hasDirectory ? "原文件夹找不到了" : "尚未选择"))
               .themedFont(.body)
+              .foregroundStyle(model.directoryPath == nil && model.hasDirectory ? appTheme.danger : .primary)
               .lineLimit(1)
               .truncationMode(.middle)
               .textSelection(.enabled)
               .frame(maxWidth: .infinity, alignment: .leading)
               .help(model.directoryPath ?? "尚未选择")
               .accessibilityIdentifier("knowledge-vault-directory")
-            Button(model.hasDirectory ? "更改文件夹" : "选择文件夹", action: chooseDirectory)
+            Button(model.directoryPath != nil ? "更改文件夹" : (model.hasDirectory ? "重新选择" : "选择文件夹"), action: chooseDirectory)
               .buttonStyle(.appNormal)
               .accessibilityIdentifier("knowledge-vault-choose")
             // 危险动作：文字按钮 + 危险色，和「更改文件夹」拉开层级，并二次确认。

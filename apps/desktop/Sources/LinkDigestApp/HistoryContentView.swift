@@ -345,6 +345,9 @@ struct HistoryContentView: View {
                   sidebar
                 }
               }
+              // 列表滚动时行文字原样从「全部」标题和搜索、「＋」图标底下穿过（2026-09-24
+              // 走查实测；系统 scroll edge 在这一列同样不生效）。和详情列同一层渐隐遮罩。
+              .overlay(alignment: .top) { ToolbarScrollFade(background: theme.card) }
               .navigationTitle(listColumnTitle)
               .toolbar { listColumnToolbar }
               .navigationSplitViewColumnWidth(
@@ -1334,6 +1337,10 @@ struct HistoryContentView: View {
     .environment(\.defaultMinListRowHeight, 24)
     .scrollContentBackground(theme.isNative ? .automatic : .hidden)
     .background((theme.isNative ? Color.clear : theme.canvas).ignoresSafeArea(edges: .top))
+    // 侧栏滚下去时，行会从红绿灯按钮底下穿过（2026-09-24 走查）。同一层渐隐。
+    .overlay(alignment: .top) {
+      if !theme.isNative { ToolbarScrollFade(background: theme.canvas) }
+    }
     // 第一组没有标题后，「全部」会直接贴住工具栏下沿；补回标题原本占的余白。
     .contentMargins(.top, 8, for: .scrollContent)
     .contentMargins(.bottom, 20, for: .scrollContent)
@@ -5453,6 +5460,9 @@ private struct HistoryDetailView: View, Equatable {
       .frame(maxWidth: readingContentMaxWidth, alignment: .leading)
       .frame(maxWidth: .infinity, alignment: .center)
       .padding(.horizontal, DesignTokens.Layout.readingHorizontalInset)
+      // 吸顶表头叠在滚动区外面，而正文那份在滚动区里面——常驻滚动条占着右边 11pt。
+      // 不扣掉这一条，表头一吸顶右边的按钮就往右跳 11pt（2026-09-24 走查）。
+      .padding(.trailing, SubtleScroller.trackWidth)
       .background(.bar)
       .overlay(alignment: .bottom) { Divider() }
       .accessibilityIdentifier("history-reading-header-pinned")

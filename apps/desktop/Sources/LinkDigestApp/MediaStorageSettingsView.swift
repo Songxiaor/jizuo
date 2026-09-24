@@ -103,9 +103,10 @@ struct MediaStorageSettingsView: View {
                 .buttonStyle(.appNormal)
                 .accessibilityIdentifier("media-storage-choose")
               // 恢复默认会改掉之后视频的落盘位置，属于「重置」类动作：危险色 + 先问一句。
+              // 已经是默认位置时整个不显示：原来是一颗灰掉的粉红字按钮，看着像出错（2026-09-24 走查）。
+              if model.usesCustomDirectory {
               Button("恢复默认") { isRestoreDefaultConfirmationPresented = true }
                 .buttonStyle(.appDestructive(appTheme.danger))
-                .disabled(!model.usesCustomDirectory)
                 .accessibilityIdentifier("media-storage-default")
                 .confirmationDialog(
                   "把保存位置改回汲作自己的文件夹？",
@@ -118,6 +119,7 @@ struct MediaStorageSettingsView: View {
                 } message: {
                   Text("你现在这个文件夹里的视频一个都不会动，只是以后新下载的视频改存到汲作自己的文件夹。随时可以再选回来。")
                 }
+              }
             }
           }
 

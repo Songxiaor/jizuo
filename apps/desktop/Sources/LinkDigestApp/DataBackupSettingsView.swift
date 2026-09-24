@@ -147,7 +147,7 @@ struct DataBackupSettingsView: View {
     SettingsPlainPage {
       SettingsPageHeader(
         title: "数据与备份",
-        symbol: "externaldrive.badge.timemachine",
+        symbol: "clock.arrow.circlepath",
         caption: "汲作的资料都存在这台电脑上。这里可以随时存一份，或者把资料换回之前的某一份。",
         fill: SettingsCategoryChip.fill(for: "dataBackup", theme: appTheme)
       )
