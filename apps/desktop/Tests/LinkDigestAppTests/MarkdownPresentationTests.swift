@@ -287,14 +287,16 @@ final class MarkdownPresentationTests: XCTestCase {
     let plain = MarkdownPresentation.plainTextPresentation(source)
     let rich = String(MarkdownPresentation.attributed(source).characters)
 
+    // 2026-09-24 对齐 Tolaria：图片标签换成图片，脚本连内容静默去掉——都不再留占位。
     for visible in [plain, rich] {
       XCTAssertFalse(visible.contains("<strong>"))
       XCTAssertFalse(visible.contains("</strong>"))
       XCTAssertFalse(visible.contains("<img"))
       XCTAssertFalse(visible.contains("<script>"))
+      XCTAssertFalse(visible.contains("alert(1)"))
       XCTAssertTrue(visible.contains("**bold**") || visible.contains("bold"))
-      XCTAssertTrue(visible.contains(MarkdownPresentation.omittedHTML))
     }
+    XCTAssertTrue(plain.contains("![](https://example.test/image.png)"))
   }
 
   func testAttributeQuotedDelimiterNeverLeaksIntoRichOrPlainPresentation() {
@@ -830,6 +832,13 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(items.map(\.text), ["顶层", "第二层", "第三层", "另一个顶层"])
   }
 
+  /// 原文列表项自带的「•」不再和列表圆点叠成两个；只有一个圆点字符的项保留原样。
+  func testListItemDropsItsOwnLeadingBulletGlyph() {
+    let blocks = MarkdownPresentation.blocks(from: "- • 虚拟影响者的信息更有用\n- ● 第二条\n- 普通一条\n- •")
+    guard case let .list(items) = blocks[0] else { return XCTFail("应当是列表") }
+    XCTAssertEqual(items.map(\.text), ["虚拟影响者的信息更有用", "第二条", "普通一条", "•"])
+  }
+
   /// 缩进再深也封顶：正文宽度装不下，更深的多半是原站排版噪声。
   func testListDepthIsCapped() {
     let blocks = MarkdownPresentation.blocks(from: "- 顶层\n" + String(repeating: " ", count: 20) + "- 很深")
@@ -860,7 +869,7 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertTrue(plain.contains("<task>"))
     XCTAssertTrue(plain.contains("</task>"))
     XCTAssertFalse(plain.contains("<script>"))
-    XCTAssertTrue(plain.contains(MarkdownPresentation.omittedHTML))
+    XCTAssertFalse(plain.contains("alert(1)"))
 
     let blocks = MarkdownPresentation.blocks(from: source)
     XCTAssertEqual(blocks.count, 3)
@@ -871,16 +880,16 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertTrue(content.contains("<task>"))
     XCTAssertTrue(content.contains("</task>"))
     guard case let .paragraph(after) = blocks[2] else { return XCTFail("expected trailing paragraph") }
-    XCTAssertTrue(after.contains(MarkdownPresentation.omittedHTML))
     XCTAssertFalse(after.contains("<script>"))
+    XCTAssertFalse(after.contains("alert(1)"))
   }
 
   /// 没闭合的围栏不能整段当代码，否则截断的 `<script>` 会漏到屏幕上。
   func testUnclosedFenceStillOmitsHTMLLikeTokens() {
     let source = "```\n<script>alert(1)</script>\n还在围栏里"
     let plain = MarkdownPresentation.plainTextPresentation(source)
-    XCTAssertTrue(plain.contains(MarkdownPresentation.omittedHTML))
     XCTAssertFalse(plain.contains("<script>"))
+    XCTAssertFalse(plain.contains("alert(1)"))
   }
 
   func testGFMTableBecomesItsOwnBlock() {
@@ -914,7 +923,7 @@ final class MarkdownPresentationTests: XCTestCase {
     > 不要把密钥写进仓库。
     """)
     XCTAssertEqual(callout.count, 1)
-    guard case let .callout(kind, text) = callout[0] else { return XCTFail("expected callout \(callout[0])") }
+    guard case let .callout(kind, _, text, _) = callout[0] else { return XCTFail("expected callout \(callout[0])") }
     XCTAssertEqual(kind, "warning")
     XCTAssertTrue(text.contains("不要把密钥写进仓库"))
 

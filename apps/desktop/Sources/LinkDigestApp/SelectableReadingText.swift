@@ -93,9 +93,9 @@ enum ReadingTextComposer {
           inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary),
           spacingAfter: 20, lineSpacing: 8, headIndent: 18, firstLineIndent: 18
         ))
-      case let .callout(kind, text):
-        let label = MarkdownPresentation.calloutLabel(kind)
-        let body = text.isEmpty ? label : "\(label)  \(text)"
+      case let .callout(kind, title, text, _):
+        let label = title.isEmpty ? MarkdownPresentation.calloutLabel(kind) : title
+        let body = text.isEmpty ? label : "**\(label)**  \(text)"
         result.append(paragraph(
           inline(body, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary),
           spacingAfter: 20, lineSpacing: 8, headIndent: 18, firstLineIndent: 18
@@ -166,27 +166,62 @@ enum ReadingTextComposer {
     bold: Bool = false,
     color: NSColor
   ) -> NSAttributedString {
-    let parsed = NSMutableAttributedString(attributedString: NSAttributedString(MarkdownPresentation.inlineAttributed(text)))
+    let parsed = NSMutableAttributedString(attributedString: NSAttributedString(MarkdownPresentation.inlineAttributed(text, marksMath: true)))
     let full = NSRange(location: 0, length: parsed.length)
     guard full.length > 0 else { return parsed }
-    parsed.enumerateAttribute(.font, in: full) { value, range, _ in
-      let traits = (value as? NSFont)?.fontDescriptor.symbolicTraits ?? []
+    parsed.enumerateAttributes(in: full) { attributes, range, _ in
+      let traits = (attributes[.font] as? NSFont)?.fontDescriptor.symbolicTraits ?? []
       if traits.contains(.monoSpace) {
         parsed.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: baseSize - 2.5, weight: .regular), range: range)
         return
       }
-      var descriptor = readingFont.nsFontDescriptor(size: baseSize)
+      // 上下标（`H~2~O`、`<sup>`）：解析层只给了基线偏移，字号在这里按正文缩小。
+      let isScript = ((attributes[.baselineOffset] as? NSNumber)?.doubleValue ?? 0) != 0
+      let size = isScript ? (baseSize * MarkdownPresentation.ScriptMarker.scale).rounded() : baseSize
+      var descriptor = readingFont.nsFontDescriptor(size: size)
       if bold || traits.contains(.bold) {
         descriptor = descriptor.withSymbolicTraits([descriptor.symbolicTraits, .bold])
       }
       if traits.contains(.italic) {
         descriptor = descriptor.withSymbolicTraits([descriptor.symbolicTraits, .italic])
       }
-      parsed.addAttribute(.font, value: NSFont(descriptor: descriptor, size: baseSize) ?? NSFont.systemFont(ofSize: baseSize), range: range)
+      parsed.addAttribute(.font, value: NSFont(descriptor: descriptor, size: size) ?? NSFont.systemFont(ofSize: size), range: range)
     }
     parsed.addAttribute(.foregroundColor, value: color, range: full)
+    replaceInlineMath(in: parsed, baseSize: baseSize, color: color)
     addCJKLatinSpacing(to: parsed, baseSize: baseSize)
     return parsed
+  }
+
+  /// 行内公式记号换成公式图片（文本附件）；还没排好或排不出来时，先显示 TeX 原文。
+  private static func replaceInlineMath(in text: NSMutableAttributedString, baseSize: CGFloat, color: NSColor) {
+    guard text.string.contains(InlineMath.open) else { return }
+    // 组装总在主线程（阅读渲染缓存是 @MainActor）；这里只是把这一点告诉编译器。
+    nonisolated(unsafe) let text = text
+    MainActor.assumeIsolated {
+      while let openRange = text.string.range(of: String(InlineMath.open)),
+            let closeRange = text.string.range(of: String(InlineMath.close), range: openRange.upperBound..<text.string.endIndex) {
+        let tex = InlineMath.decode(text.string[openRange.upperBound..<closeRange.lowerBound])
+        let whole = NSRange(openRange.lowerBound..<closeRange.upperBound, in: text.string)
+        let attributes = text.attributes(at: whole.location, effectiveRange: nil)
+        let request = ReadingWebRenderer.Request(
+          kind: .inlineMath, source: tex, color: color.readingHex, fontSize: baseSize, isDark: false, width: 0
+        )
+        switch ReadingWebRenderer.shared.outcome(for: request) {
+        case let .rendered(result):
+          let attachment = NSTextAttachment()
+          attachment.image = result.image
+          attachment.bounds = CGRect(x: 0, y: -result.descent, width: result.size.width, height: result.size.height)
+          let replacement = NSMutableAttributedString(attachment: attachment)
+          replacement.addAttributes(attributes.filter { $0.key != .attachment }, range: NSRange(location: 0, length: replacement.length))
+          text.replaceCharacters(in: whole, with: replacement)
+        case .failed, .none:
+          var fallback = attributes
+          fallback[.font] = NSFont.monospacedSystemFont(ofSize: baseSize - 2.5, weight: .regular)
+          text.replaceCharacters(in: whole, with: NSAttributedString(string: "$\(tex)$", attributes: fallback))
+        }
+      }
+    }
   }
 
   /// 中文紧挨英文或数字时（「Karpathy风格的LLM维基」），在交界处补约四分之一个字宽的空隙。

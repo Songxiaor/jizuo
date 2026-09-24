@@ -1,0 +1,115 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<!-- 只加载同目录下随 App 打包的脚本和样式，禁止任何网络请求。 -->
+<!-- 本地文件的来源是 null，'self' 匹配不上：字体会被拦下，公式退回普通字体、积分号和求和号全空。
+     所以明确写 file:；http / https 一律不在允许之列。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src file: 'unsafe-inline' 'unsafe-eval'; style-src file: 'unsafe-inline'; font-src file: data:; img-src file: data:">
+<link rel="stylesheet" href="katex.min.css">
+<style>
+  html, body { margin: 0; padding: 0; background: transparent; }
+  #stage { position: absolute; left: 0; top: 0; display: inline-block; padding: 2px 3px; }
+  #stage.block { padding: 6px 4px; }
+  .katex { font-size: var(--size, 17px); color: var(--color, #222); }
+  #stage.block .katex-display { margin: 0; }
+</style>
+<script src="katex.min.js"></script>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+  // 汲作阅读区的离屏排版页：原生侧逐个请求，把公式 / 流程图排进 #stage，量好尺寸，
+  // 再由原生侧对这块区域截图。页面本身不联网、不接收用户输入。
+  const stage = document.getElementById('stage');
+  let mermaidReady = null;
+  // 公式字体是 font-display:block（加载完之前字形不可见），而浏览器要到排版用到时才开始下载。
+  // 页面一打开就把全部公式字体加载好，每次排版前等它，截图才不会少积分号、求和号。
+  const katexFonts = ['KaTeX_Main', 'KaTeX_Math', 'KaTeX_AMS', 'KaTeX_Size1', 'KaTeX_Size2', 'KaTeX_Size3',
+    'KaTeX_Size4', 'KaTeX_Caligraphic', 'KaTeX_Fraktur', 'KaTeX_SansSerif', 'KaTeX_Script', 'KaTeX_Typewriter'];
+  const fontsReady = Promise.all(katexFonts.flatMap(function (family) {
+    return ['normal', 'italic', 'bold'].map(function (style) {
+      const spec = (style === 'bold' ? 'bold ' : style === 'italic' ? 'italic ' : '') + '16px ' + family;
+      return document.fonts.load(spec).catch(function () {});
+    });
+  }));
+
+  function measure() {
+    const rect = stage.getBoundingClientRect();
+    return { width: Math.ceil(rect.width), height: Math.ceil(rect.height) };
+  }
+
+  window.renderMath = async function (tex, display, color, size) {
+    stage.className = display ? 'block' : '';
+    stage.style.setProperty('--color', color);
+    stage.style.setProperty('--size', size + 'px');
+    stage.innerHTML = '';
+    try {
+      katex.render(tex, stage, { displayMode: display, throwOnError: true, output: 'html', strict: 'ignore' });
+    } catch (error) {
+      return { error: String(error && error.message || error) };
+    }
+    // 先等预加载，再强制排一次版、等这次排版用到的字体。
+    await fontsReady;
+    stage.getBoundingClientRect();
+    await document.fonts.ready;
+    // 基线：在公式后面放一个零高度的行内块，它的底边就是基线。
+    const marker = document.createElement('span');
+    marker.style.cssText = 'display:inline-block;width:0;height:0;vertical-align:baseline';
+    (stage.querySelector('.katex-html') || stage).appendChild(marker);
+    const result = measure();
+    const rect = stage.getBoundingClientRect();
+    result.descent = display ? 0 : Math.max(0, rect.bottom - marker.getBoundingClientRect().bottom);
+    marker.remove();
+    return result;
+  };
+
+  function loadMermaid() {
+    if (!mermaidReady) {
+      mermaidReady = new Promise(function (resolve, reject) {
+        const script = document.createElement('script');
+        script.src = 'mermaid.min.js';
+        script.onload = function () { resolve(window.mermaid); };
+        script.onerror = function () { reject(new Error('mermaid 加载失败')); };
+        document.head.appendChild(script);
+      });
+    }
+    return mermaidReady;
+  }
+
+  let diagramSeq = 0;
+  window.renderMermaid = async function (source, dark, fontFamily) {
+    stage.className = 'block';
+    await document.fonts.ready;
+    stage.innerHTML = '';
+    try {
+      const mermaid = await loadMermaid();
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: dark ? 'dark' : 'neutral',
+        fontFamily: fontFamily,
+        flowchart: { htmlLabels: false },
+      });
+      diagramSeq += 1;
+      const { svg } = await mermaid.render('diagram' + diagramSeq, source);
+      stage.innerHTML = svg;
+      const svgElement = stage.querySelector('svg');
+      if (svgElement) {
+        svgElement.style.maxWidth = 'none';
+        const box = svgElement.getBBox();
+        const viewBox = svgElement.viewBox && svgElement.viewBox.baseVal;
+        const width = viewBox && viewBox.width ? viewBox.width : box.width;
+        const height = viewBox && viewBox.height ? viewBox.height : box.height;
+        svgElement.setAttribute('width', Math.ceil(width));
+        svgElement.setAttribute('height', Math.ceil(height));
+      }
+      return measure();
+    } catch (error) {
+      stage.innerHTML = '';
+      return { error: String(error && error.message || error) };
+    }
+  };
+</script>
+</body>
+</html>

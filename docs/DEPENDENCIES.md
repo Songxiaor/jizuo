@@ -29,6 +29,8 @@ WXT、TypeScript、ESLint 与 Vitest 只服务于构建和测试。扩展使用 
 | Swift / SwiftUI / AppKit | Swift 6.3.3；V0.1 Swift Package 已建立 | macOS APP、原生 UI 和平台桥接 | 随 Apple SDK/System Framework |
 | SQLite / GRDB | 系统 SQLite + GRDB 7.11.1 exact | 正式 `LinkDigestPersistence` migration 001、Repository、WAL 与 Online Backup；不进入 Core/View | SQLite public domain；GRDB MIT，分发时保留 notice |
 | Sparkle | 2.9.5 exact | v0.2.9 起提供应用内检查更新、Ed25519 更新包验签与用户确认后的安装 | MIT，`Sparkle.framework` 与 notice 进入 App；发布私钥只在本机 Keychain |
+| KaTeX | 0.18.9（`dist/katex.min.js`、`katex.min.css`、20 个 woff2 字体） | 2026-09-24 起阅读区数学公式排版（离屏排成图片，对齐 Tolaria） | MIT，文件与 notice 在 `LinkDigestCore/Resources/reading-web/`，副本在 `licenses/KaTeX-LICENSE.txt`；只本地加载，页面 CSP 禁止联网 |
+| Mermaid | 12.0.0（`dist/mermaid.min.js`，5.5MB） | 2026-09-24 起阅读区流程图排版（同上） | MIT，同上，`licenses/Mermaid-LICENSE.txt`；`securityLevel: strict` |
 
 当前第三方 Swift Package 为 GRDB 7.11.1 与 Sparkle 2.9.5，均使用 exact pin；`Package.resolved` 分别锁定 revision `b83108d10f42680d78f23fe4d4d80fc88dab3212` 与 `79bc9e872948e47877e76f194cb0c8e0412b0b90`。本机 resolved graph 没有其它传递 package。`bash scripts/check-swift-licenses` 独立检查两项 pin、revision、零传递 package 与 MIT notice，不能用 pnpm license check 替代。
 

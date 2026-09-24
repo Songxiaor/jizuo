@@ -56,9 +56,26 @@ enum ReadingRenderCache {
     /// 语义色（.primary 等）的解析结果随外观翻转，色值指纹抓不到这种
     /// 变化，所以外观名也是键的一部分。
     let appearance: String
+    /// 正文带 `$` 时（可能有行内公式）跟着离屏排版的进度变：公式排好后要换成图片。
+    let mathGeneration: Int
   }
 
   private static var attributedStore = LRUStore<AttributedKey, NSAttributedString>()
+
+  /// 去掉末尾换行的同一份文本。按原对象缓存，重绘时拿回同一个实例（NSTextView 靠实例同一性短路）。
+  @MainActor
+  static func trimmingTrailingNewline(_ text: NSAttributedString) -> NSAttributedString {
+    let key = ObjectIdentifier(text)
+    if let cached = trimmed[key], cached.source === text { return cached.result }
+    var result = text
+    if text.string.hasSuffix("\n") {
+      result = text.attributedSubstring(from: NSRange(location: 0, length: text.length - 1))
+    }
+    if trimmed.count > 128 { trimmed.removeAll() }
+    trimmed[key] = (text, result)
+    return result
+  }
+  @MainActor private static var trimmed: [ObjectIdentifier: (source: NSAttributedString, result: NSAttributedString)] = [:]
 
   static func attributed(
     blocks: [MarkdownPresentation.Block],
@@ -69,7 +86,8 @@ enum ReadingRenderCache {
       blocks: blocks,
       font: readingFont,
       paletteKey: palette.fingerprint,
-      appearance: NSApp.effectiveAppearance.name.rawValue
+      appearance: NSApp.effectiveAppearance.name.rawValue,
+      mathGeneration: InlineMath.mayContainMath(blocks) ? ReadingWebRenderer.shared.generation : 0
     )
     if let cached = attributedStore.lookup(key) { return cached }
     let composed = ReadingTextComposer.attributed(

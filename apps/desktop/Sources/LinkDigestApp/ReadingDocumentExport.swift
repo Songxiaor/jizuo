@@ -153,8 +153,8 @@ enum ReadingDocumentExport {
           color: .secondaryLabelColor,
           spacingBefore: 6, spacingAfter: 6, headIndent: 18, firstLineIndent: 18
         ))
-      case let .callout(kind, text):
-        let label = MarkdownPresentation.calloutLabel(kind)
+      case let .callout(kind, title, text, _):
+        let label = title.isEmpty ? MarkdownPresentation.calloutLabel(kind) : title
         result.append(styledParagraph(
           plain(text.isEmpty ? label : "\(label)  \(text)"),
           font: font(readingFont, size: bodySize, weight: .regular),

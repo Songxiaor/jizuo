@@ -109,7 +109,7 @@ expected_key="$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1]))["
 [ "$automatic_updates" = "false" ] || fail "SUAutomaticallyUpdate must remain false"
 
 LICENSES="$APP/Contents/Resources/ThirdPartyLicenses"
-for license in GRDB-LICENSE.txt Sparkle-LICENSE.txt; do
+for license in GRDB-LICENSE.txt Sparkle-LICENSE.txt KaTeX-LICENSE.txt Mermaid-LICENSE.txt; do
   [ -f "$LICENSES/$license" ] || fail "missing third-party license: $license"
   /usr/bin/cmp -s "$LICENSES/$license" "$ROOT/licenses/$license" \
     || fail "embedded third-party license drifted: $license"

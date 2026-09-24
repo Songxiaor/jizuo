@@ -65,6 +65,9 @@ THIRD_PARTY_LICENSES_DIRECTORY = "ThirdPartyLicenses"
 THIRD_PARTY_LICENSE_HASHES = {
     "GRDB-LICENSE.txt": "9853f9dce81365fcc1d9b46004633354450164b8d17904e92e80c444545f7e87",
     "Sparkle-LICENSE.txt": SPARKLE_LICENSE_SHA256,
+    # 2026-09-24 阅读区公式与流程图（随 LinkDigestCore 资源包分发，见 docs/DEPENDENCIES.md）。
+    "KaTeX-LICENSE.txt": "766ccc1f306c885aa45542a9846bbd0a505b27a0374f146778171c2254ce18e3",
+    "Mermaid-LICENSE.txt": "ec9fb67dcb25eccc416ed56e1aab819222c805a2a4bfe4cb19e7556bf2ffde80",
 }
 SPARKLE_FRAMEWORK_SYMLINKS = {
     "Autoupdate": "Versions/Current/Autoupdate",

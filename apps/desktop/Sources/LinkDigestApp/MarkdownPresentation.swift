@@ -501,17 +501,19 @@ enum MarkdownPresentation {
 
   /// Inline-only Markdown (bold/italic/code/links). Used inside structural blocks
   /// so SwiftUI view-level `.font` never has to paint the whole document at once.
-  static func inlineAttributed(_ source: String) -> AttributedString {
+  /// - Parameter marksMath: 把 `$…$` 行内公式换成内部记号，交给阅读排版层换成公式图片。
+  ///   只有阅读区（`SelectableReadingText`）打开它；导出、界面文字保留 `$…$` 原样。
+  static func inlineAttributed(_ source: String, marksMath: Bool = false) -> AttributedString {
     let options = AttributedString.MarkdownParsingOptions(
       allowsExtendedAttributes: false,
       interpretedSyntax: .inlineOnlyPreservingWhitespace,
       failurePolicy: .returnPartiallyParsedIfPossible
     )
-    let withWiki = rewritingWikiLinksAsMarkdown(source)
+    let withWiki = rewritingWikiLinksAsMarkdown(marksMath ? InlineMath.marking(source) : source)
     let normalized = normalizingCJKEmphasis(withWiki)
     let parsed = (try? AttributedString(markdown: normalized, options: options))
       ?? AttributedString(normalized)
-    return applyingHighlights(parsed)
+    return applyingScripts(applyingHighlights(parsed))
   }
 
   /// 把 `==高亮==` 变成带背景色的片段。
@@ -531,6 +533,9 @@ enum MarkdownPresentation {
       let inner = opening.upperBound..<closing.lowerBound
       if isHighlightPair(value, opening: opening, closing: closing, inner: inner) {
         value[inner].backgroundColor = Self.highlightMarkerColor
+        // 阅读区走 NSTextView：SwiftUI 的颜色属性转成系统文本时会丢，高亮底色原来
+        // 一直没显示出来（2026-09-24 目检）。系统文本认的颜色另写一份。
+        value[inner].appKit.backgroundColor = NSColor.systemYellow.withAlphaComponent(0.32)
         value.removeSubrange(closing)
         value.removeSubrange(opening)
         searchStart = value.startIndex
@@ -667,25 +672,85 @@ enum MarkdownPresentation {
   /// projection as rich mode. It differs only in Markdown interpretation, not
   /// in what untrusted persisted source may become visible on screen.
   static func plainTextPresentation(_ source: String) -> String {
-    sanitized(source)
+    removingInlineMarkers(sanitized(source))
+  }
+
+  /// 去掉上下标等内部记号（私用区字符），给纯文本、复制、导出用。
+  static func removingInlineMarkers(_ text: String) -> String {
+    guard text.unicodeScalars.contains(where: { (0xF8F0...0xF8F7).contains($0.value) }) else { return text }
+    return String(String.UnicodeScalarView(text.unicodeScalars.filter { !(0xF8F0...0xF8F7).contains($0.value) }))
+  }
+
+  /// 提示框类型：Obsidian 与 GitHub 的写法都认，别名归到同一类。
+  static func calloutFamily(_ kind: String) -> String {
+    switch kind {
+    case "abstract", "summary", "tldr": return "abstract"
+    case "info": return "info"
+    case "todo": return "todo"
+    case "tip", "hint": return "tip"
+    case "important": return "important"
+    case "success", "check", "done": return "success"
+    case "question", "help", "faq": return "question"
+    case "warning", "caution", "attention": return "warning"
+    case "failure", "fail", "missing": return "failure"
+    case "danger", "error": return "danger"
+    case "bug": return "bug"
+    case "example": return "example"
+    case "quote", "cite": return "quote"
+    case "details": return "details"
+    default: return "note"
+    }
   }
 
   static func calloutLabel(_ kind: String) -> String {
-    switch kind {
-    case "warning", "caution": return "注意"
-    case "danger": return "危险"
-    case "tip", "hint": return "提示"
+    switch calloutFamily(kind) {
+    case "abstract": return "摘要"
+    case "info": return "信息"
+    case "todo": return "待办"
+    case "tip": return "提示"
     case "important": return "重要"
     case "success": return "完成"
+    case "question": return "问题"
+    case "warning": return "注意"
+    case "failure": return "失败"
+    case "danger": return "危险"
+    case "bug": return "缺陷"
+    case "example": return "示例"
+    case "quote": return "引用"
+    case "details": return "详细信息"
     default: return "说明"
     }
   }
 
+  static func calloutSymbol(_ kind: String) -> String {
+    switch calloutFamily(kind) {
+    case "abstract": return "list.bullet.clipboard"
+    case "info": return "info.circle"
+    case "todo": return "checkmark.circle"
+    case "tip": return "lightbulb"
+    case "important": return "exclamationmark.bubble"
+    case "success": return "checkmark.seal"
+    case "question": return "questionmark.circle"
+    case "warning": return "exclamationmark.triangle"
+    case "failure": return "xmark.octagon"
+    case "danger": return "bolt.trianglebadge.exclamationmark"
+    case "bug": return "ladybug"
+    case "example": return "list.number"
+    case "quote": return "quote.opening"
+    case "details": return "text.alignleft"
+    default: return "pencil"
+    }
+  }
+
   static func calloutColor(_ kind: String, accent: Color) -> Color {
-    switch kind {
-    case "warning", "caution": return Color.orange
-    case "danger": return Color.red
-    case "success": return Color.green
+    switch calloutFamily(kind) {
+    case "warning": return Color.orange
+    case "danger", "failure", "bug": return Color.red
+    case "success", "todo": return Color.green
+    case "tip", "abstract": return Color.teal
+    case "important", "example": return Color.purple
+    case "question": return Color.yellow
+    case "quote", "details": return Color.gray
     default: return accent
     }
   }
@@ -713,7 +778,8 @@ enum MarkdownPresentation {
     /// 引用框里就会裸露出一个 `>` 记号。
     case quote(depth: Int, text: String)
     /// Obsidian 风格 `> [!WARNING]`。没有独立告示组件时，至少不要把标记当正文。
-    case callout(kind: String, text: String)
+    /// `title` 为空表示用类型的默认名；`fold` 对应 `[!TIP]-`（默认收起）/ `[!TIP]+`（可收起、默认展开）。
+    case callout(kind: String, title: String, text: String, fold: CalloutFold)
     case code(language: String?, content: String)
     case table(headers: [String], rows: [[String]], alignments: [ColumnAlignment])
     /// `---` 之类的分隔线。不单独成块的话它会掉进段落，显示成一行光秃秃的横杠。
@@ -740,6 +806,10 @@ enum MarkdownPresentation {
       case .trailing: .trailing
       }
     }
+  }
+
+  enum CalloutFold: Equatable, Hashable {
+    case none, expanded, collapsed
   }
 
   struct ListItem: Equatable, Hashable {
@@ -806,7 +876,7 @@ enum MarkdownPresentation {
   /// real spacing, heading sizes and list chrome — independent of AttributedString
   /// presentation intents that SwiftUI often flattens under `.font(...)`.
   static func blocks(from source: String) -> [Block] {
-    let lines = sanitized(source)
+    let lines = resolvingFootnotes(sanitized(source))
       .replacingOccurrences(of: "\r\n", with: "\n")
       .replacingOccurrences(of: "\r", with: "\n")
       .components(separatedBy: "\n")
@@ -861,6 +931,33 @@ enum MarkdownPresentation {
         blocks.append(.heading(level: heading.level, text: heading.text))
         index += 1
         continue
+      }
+
+      // 整段公式 `$$ … $$`（单行或多行），当作 math 代码块交给公式排版。
+      if trimmed.hasPrefix("$$") {
+        var body = String(trimmed.dropFirst(2))
+        if body.hasSuffix("$$"), body.count >= 2 {
+          blocks.append(.code(language: "math", content: String(body.dropLast(2)).trimmingCharacters(in: .whitespaces)))
+          index += 1
+          continue
+        }
+        var cursor = index + 1
+        var closed = false
+        while cursor < lines.count {
+          let line = lines[cursor].trimmingCharacters(in: .whitespaces)
+          if line.hasSuffix("$$") {
+            body += "\n" + String(line.dropLast(2))
+            closed = true
+            break
+          }
+          body += "\n" + lines[cursor]
+          cursor += 1
+        }
+        if closed {
+          blocks.append(.code(language: "math", content: body.trimmingCharacters(in: .whitespacesAndNewlines)))
+          index = cursor + 1
+          continue
+        }
       }
 
       if trimmed.hasPrefix("> ") || trimmed == ">" {
@@ -1247,9 +1344,19 @@ enum MarkdownPresentation {
 
   private static func listItemText(_ line: String) -> String {
     if line.hasPrefix("- ") || line.hasPrefix("* ") || line.hasPrefix("+ ") {
-      return String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+      let text = String(line.dropFirst(2)).trimmingCharacters(in: .whitespaces)
+      return droppingLeadingBulletGlyph(text)
     }
     return line
+  }
+
+  /// 网页原文的列表项常常自带一个「•」字符，抓取、翻译后变成 `- • 文字`，
+  /// 阅读区于是画出两个圆点（2026-09-24 实库：论文译文的「亮点」列表）。
+  /// 列表自己会画圆点，这里只去掉紧跟在列表记号后面的那一个装饰字符；存的原文不动。
+  static func droppingLeadingBulletGlyph(_ text: String) -> String {
+    guard let first = text.first, "•·▪◦●‣⁃".contains(first) else { return text }
+    let rest = text.dropFirst().trimmingCharacters(in: .whitespaces)
+    return rest.isEmpty ? text : rest
   }
 
   private struct Fence {
@@ -1373,6 +1480,9 @@ enum MarkdownPresentation {
 
   /// 代码里的 `<task>` 是字面量。整篇扫描会把开发文洗成「已省略 HTML 片段」。
   private static func replacingHTMLLikeTokensPreservingCode(in source: String) -> String {
+    // 折叠块先按整段处理：它常常把代码块包在里面（GitHub 说明文档的常见写法），
+    // 按「代码 / 非代码」切开以后开头和结尾落在两边，就再也配不上对了。
+    let source = convertingDetailsBlocks(source)
     var result = ""
     var index = source.startIndex
     while index < source.endIndex {
@@ -1387,7 +1497,8 @@ enum MarkdownPresentation {
         continue
       }
       let next = nextPreservedCodeStart(from: index, in: source)
-      result.append(replacingHTMLLikeTokens(in: String(source[index..<next])))
+      let segment = preprocessingHTMLBlocks(String(source[index..<next]))
+      result.append(convertingScriptSyntax(in: replacingHTMLLikeTokens(in: segment)))
       index = next
     }
     return result
@@ -1522,7 +1633,8 @@ enum MarkdownPresentation {
     guard let cells = tableCells(line) else { return false }
     return cells.allSatisfy { cell in
       cell.allSatisfy { $0 == "-" || $0 == ":" || $0 == " " }
-        && cell.filter { $0 == "-" }.count >= 3
+        // GFM 只要求至少一个短横线；`| :-- | --: |` 这类短写法原来整表失效。
+        && cell.contains("-")
     }
   }
 
@@ -1556,23 +1668,26 @@ enum MarkdownPresentation {
     let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
     guard let first = lines.first else { return nil }
     let firstLine = String(first)
-    guard let expression = try? NSRegularExpression(pattern: #"^\[!([A-Za-z]{2,16})\](?:\s+(.*))?$"#),
+    guard let expression = try? NSRegularExpression(pattern: #"^\[!([A-Za-z]{2,16})\]([+-])?(?:\s+(.*))?$"#),
           let match = expression.firstMatch(
             in: firstLine,
             range: NSRange(firstLine.startIndex..., in: firstLine)
           ),
-          match.numberOfRanges > 1,
           let kindRange = Range(match.range(at: 1), in: firstLine)
     else { return nil }
     let kind = String(firstLine[kindRange]).lowercased()
-    var body: [String] = []
-    if match.numberOfRanges > 2, let rest = Range(match.range(at: 2), in: firstLine) {
-      let trailing = String(firstLine[rest]).trimmingCharacters(in: .whitespaces)
-      if !trailing.isEmpty { body.append(trailing) }
+    var fold = CalloutFold.none
+    if let foldRange = Range(match.range(at: 2), in: firstLine) {
+      fold = firstLine[foldRange] == "-" ? .collapsed : .expanded
     }
-    body.append(contentsOf: lines.dropFirst().map(String.init))
-    let joined = body.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-    return .callout(kind: kind, text: joined)
+    // 标记后面那段是标题（Obsidian / Tolaria 的写法），不是正文第一句。
+    var title = ""
+    if let rest = Range(match.range(at: 3), in: firstLine) {
+      title = String(firstLine[rest]).trimmingCharacters(in: .whitespaces)
+    }
+    let body = lines.dropFirst().map(String.init)
+      .joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+    return .callout(kind: kind, title: title, text: body, fold: fold)
   }
 
   /// Splits HTML-like input in one pass rather than treating the first `>` as
@@ -1616,9 +1731,20 @@ enum MarkdownPresentation {
         cursor = source.index(after: cursor)
       }
 
+      // 没有闭合的 `<` 不是标签，是正文里的小于号（`a<b`、`x<10`）。原来这里
+      // 放一个占位符然后 `break`——那一个字符之后的整篇正文都被吞掉了。
       guard closed else {
-        result.append(contentsOf: omittedHTML)
-        break
+        // 例外：看起来是被截断的真标签（已知标签名后跟属性，如结尾残留的
+        // `<img src="…`），这一行剩下的都是标签残片，换成一个占位，不漏网址碎片。
+        if looksLikeTruncatedTag(source[next...]) {
+          result.append(contentsOf: omittedHTML)
+          let lineEnd = source[next...].firstIndex(of: "\n") ?? source.endIndex
+          index = lineEnd
+          continue
+        }
+        result.append(source[index])
+        index = next
+        continue
       }
       result.append(contentsOf: replacement(forHTMLLikeToken: String(source[tokenStart..<cursor])))
       index = cursor
@@ -1626,34 +1752,245 @@ enum MarkdownPresentation {
     return result
   }
 
+  private static func looksLikeTruncatedTag(_ rest: Substring) -> Bool {
+    let line = rest.prefix { $0 != "\n" }
+    let name = line.prefix { $0.isLetter || $0.isNumber }.lowercased()
+    guard HTMLTokenPolicy.knownTags.contains(name) else { return false }
+    let afterName = line.dropFirst(name.count)
+    return afterName.first?.isWhitespace == true && afterName.contains("=")
+  }
+
   private static func beginsHTMLLikeToken(_ character: Character) -> Bool {
     character == "/" || character == "!" || character == "?" || character.isLetter
   }
 
+  /// 脚注（2026-09-24 对齐 Tolaria）：正文里的 `[^名字]` 换成上标编号，
+  /// `[^名字]: 说明` 这些定义从原位置拿走，按被引用的先后编号，统一排到正文末尾。
+  ///
+  /// 没被引用的定义照样列出（排在后面），不丢内容；引用了却没定义的保持原样。
+  /// 代码块里的方括号不动。
+  static func resolvingFootnotes(_ source: String) -> String {
+    guard source.contains("[^") else { return source }
+    var definitions: [(id: String, text: String)] = []
+    var bodyLines: [String] = []
+    var inFence = false
+    var lastDefinition: Int?
+    let definitionPattern = try? NSRegularExpression(pattern: #"^\s{0,3}\[\^([^\]\s]+)\]:\s?(.*)$"#)
+    for line in source.components(separatedBy: "\n") {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { inFence.toggle() }
+      if !inFence, let definitionPattern,
+         let match = definitionPattern.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+         let idRange = Range(match.range(at: 1), in: line),
+         let textRange = Range(match.range(at: 2), in: line) {
+        definitions.append((String(line[idRange]), String(line[textRange])))
+        lastDefinition = definitions.count - 1
+        continue
+      }
+      // 定义下面缩进的续行属于这条定义。
+      if !inFence, let current = lastDefinition, line.hasPrefix("    ") || line.hasPrefix("\t"), !trimmed.isEmpty {
+        definitions[current].text += " " + trimmed
+        continue
+      }
+      if !trimmed.isEmpty { lastDefinition = nil }
+      bodyLines.append(line)
+    }
+    guard !definitions.isEmpty else { return source }
+    let known = Set(definitions.map(\.id))
+    var numbers: [String: Int] = [:]
+    var body = ""
+    inFence = false
+    let referencePattern = try? NSRegularExpression(pattern: #"\[\^([^\]\s]+)\]"#)
+    for (offset, line) in bodyLines.enumerated() {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") { inFence.toggle() }
+      var output = line
+      if !inFence, let referencePattern {
+        let ns = line as NSString
+        var rebuilt = ""
+        var cursor = 0
+        for match in referencePattern.matches(in: line, range: NSRange(location: 0, length: ns.length)) {
+          let id = ns.substring(with: match.range(at: 1))
+          guard known.contains(id) else { continue }
+          let number = numbers[id] ?? {
+            let next = numbers.count + 1
+            numbers[id] = next
+            return next
+          }()
+          rebuilt += ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+          rebuilt += String(ScriptMarker.supOpen) + "\(number)" + String(ScriptMarker.supClose)
+          cursor = match.range.location + match.range.length
+        }
+        rebuilt += ns.substring(from: cursor)
+        output = rebuilt
+      }
+      body += output
+      if offset < bodyLines.count - 1 { body += "\n" }
+    }
+    let ordered = definitions.sorted { (numbers[$0.id] ?? Int.max) < (numbers[$1.id] ?? Int.max) }
+    var notes = "\n\n---\n\n"
+    for (index, definition) in ordered.enumerated() {
+      notes += "\(index + 1). \(definition.text)\n"
+    }
+    // 列表序号与正文上标一致：按引用先后排，没被引用的接在后面。
+    return body.trimmingCharacters(in: .whitespacesAndNewlines) + notes
+  }
+
+  /// 标签怎么换（2026-09-24 对齐 Tolaria 正文显示）。
+  ///
+  /// 原来只认 br、p、b/strong、i/em、code 这几个，其余一律换成「此处内容无法显示」。
+  /// 实库里真正受害的是讲提示词的文章：`<instructions>`、`<system>`、`<context>`
+  /// 本身就是正文，被整段吞掉。现在分三类：
+  /// - 排版标签：换成对应的 Markdown 或内部记号，照格式显示；
+  /// - 网页结构标签（div、span、表格零件…）：拆掉标签、留下文字；
+  /// - 不认识的标签：多半是正文里写的尖括号，按原样显示。
+  /// 注释、脚本、样式、表单控件这些网页杂质在 `preprocessingHTMLBlocks` 里连内容一起去掉。
   private static func replacement(forHTMLLikeToken token: String) -> String {
     let body = String(token.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !body.isEmpty else { return omittedHTML }
+    guard !body.isEmpty else { return literalHTMLToken(token) }
+    // `<!doctype>`、`<?xml ?>`、残留注释：网页壳子，不是正文。
+    if body.hasPrefix("!") || body.hasPrefix("?") { return "" }
 
     let isClosing = body.first == "/"
     let nameAndSuffix = String(isClosing ? body.dropFirst() : Substring(body))
       .trimmingCharacters(in: .whitespacesAndNewlines)
-    let name = nameAndSuffix.prefix { $0.isLetter || $0.isNumber || $0 == "-" }.lowercased()
-    guard !name.isEmpty else { return omittedHTML }
+    let name = nameAndSuffix.prefix { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" || $0 == ":" }.lowercased()
+    guard !name.isEmpty else { return literalHTMLToken(token) }
+    let suffix = String(nameAndSuffix.dropFirst(name.count))
 
-    let suffix = nameAndSuffix.dropFirst(name.count)
-      .trimmingCharacters(in: .whitespacesAndNewlines)
-    if isClosing && !suffix.isEmpty {
-      return omittedHTML
-    }
+    guard HTMLTokenPolicy.knownTags.contains(name) else { return literalHTMLToken(token) }
 
     switch (name, isClosing) {
-    case ("br", false): return "\n"
-    case ("p", false), ("p", true): return "\n\n"
-    case ("strong", false), ("b", false), ("strong", true), ("b", true): return "**"
-    case ("em", false), ("i", false), ("em", true), ("i", true): return "*"
-    case ("code", false), ("code", true): return "`"
-    default: return omittedHTML
+    case ("br", _): return "\n"
+    case ("hr", false): return "\n\n---\n\n"
+    case ("p", _): return "\n\n"
+    case ("strong", _), ("b", _): return "**"
+    case ("em", _), ("i", _), ("cite", _), ("dfn", _), ("var", _): return "*"
+    case ("code", _), ("kbd", _), ("samp", _), ("tt", _): return "`"
+    case ("s", _), ("del", _), ("strike", _): return "~~"
+    case ("mark", _): return "=="
+    case ("sup", false): return String(ScriptMarker.supOpen)
+    case ("sup", true): return String(ScriptMarker.supClose)
+    case ("sub", false): return String(ScriptMarker.subOpen)
+    case ("sub", true): return String(ScriptMarker.subClose)
+    case let (heading, false) where HTMLTokenPolicy.headingLevel(heading) != nil:
+      return "\n\n" + String(repeating: "#", count: HTMLTokenPolicy.headingLevel(heading)!) + " "
+    case let (heading, true) where HTMLTokenPolicy.headingLevel(heading) != nil:
+      return "\n\n"
+    case ("li", false): return "\n- "
+    case ("li", true): return ""
+    case ("img", false):
+      guard let src = HTMLTokenPolicy.attribute("src", in: suffix), !src.isEmpty else { return "" }
+      let alt = HTMLTokenPolicy.attribute("alt", in: suffix) ?? ""
+      return "\n\n![\(alt)](\(src))\n\n"
+    default:
+      return HTMLTokenPolicy.blockTags.contains(name) ? "\n" : ""
     }
+  }
+
+  /// 按原样显示一个认不出的尖括号片段。反斜杠转义让 Markdown 解析器把它当普通文字。
+  private static func literalHTMLToken(_ token: String) -> String {
+    "\\" + token
+  }
+
+  /// 标签之外、成块出现的网页片段。在逐个标签替换之前处理：
+  /// - 注释 `<!-- -->`：直接去掉（实库 83 篇带注释，原来每处都显示「无法显示」）；
+  /// - 脚本、样式、表单控件、内嵌框架：连内容一起去掉，里面没有给人读的正文；
+  /// - `<details><summary>标题</summary>内容</details>`：转成默认收起的提示框，
+  ///   和 `> [!NOTE]-` 走同一个折叠组件。
+  static func preprocessingHTMLBlocks(_ source: String) -> String {
+    guard source.contains("<") else { return source }
+    var value = replacing(#"<!--[\s\S]*?-->"#, in: source, with: "")
+    // 不给人读的：连内容一起静默去掉。
+    value = replacing(
+      #"(?is)<(script|style|noscript|template|select|textarea|head|button)\b[^>]*>.*?</\1\s*>"#,
+      in: value,
+      with: ""
+    )
+    // 带画面的内嵌内容：显示不了，但要让读者知道这里原本有东西。
+    value = replacing(
+      #"(?is)<(iframe|object|embed|svg|canvas|audio|video)\b[^>]*>(?:.*?</\1\s*>)?"#,
+      in: value,
+      with: omittedHTML
+    )
+    return value
+  }
+
+  private static func convertingDetailsBlocks(_ source: String) -> String {
+    guard source.range(of: "<details", options: .caseInsensitive) != nil,
+          let expression = try? NSRegularExpression(
+            pattern: #"(?is)<details\b([^>]*)>\s*(?:<summary\b[^>]*>(.*?)</summary\s*>)?(.*?)</details\s*>"#
+          )
+    else { return source }
+    let nsSource = source as NSString
+    var result = ""
+    var cursor = 0
+    let codeRanges = preservedCodeRanges(in: source).map { NSRange($0, in: source) }
+    for match in expression.matches(in: source, range: NSRange(location: 0, length: nsSource.length)) {
+      // 代码里示范 `<details>` 写法的，是代码，不动。
+      if codeRanges.contains(where: { NSLocationInRange(match.range.location, $0) }) { continue }
+      result += nsSource.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+      let attributes = match.range(at: 1).location != NSNotFound ? nsSource.substring(with: match.range(at: 1)) : ""
+      let summaryRaw = match.range(at: 2).location != NSNotFound ? nsSource.substring(with: match.range(at: 2)) : ""
+      let bodyRaw = match.range(at: 3).location != NSNotFound ? nsSource.substring(with: match.range(at: 3)) : ""
+      let title = replacingHTMLLikeTokens(in: summaryRaw)
+        .replacingOccurrences(of: "\n", with: " ")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+      let bodyLines = replacingHTMLLikeTokensPreservingCode(in: bodyRaw)
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .components(separatedBy: "\n")
+      let fold = attributes.range(of: "open", options: .caseInsensitive) == nil ? "-" : "+"
+      var block = "\n\n> [!DETAILS]\(fold) \(title.isEmpty ? "详细信息" : title)"
+      for line in bodyLines { block += "\n> " + line }
+      result += block + "\n\n"
+      cursor = match.range.location + match.range.length
+    }
+    result += nsSource.substring(from: cursor)
+    return result
+  }
+
+  /// `H~2~O`、`x^2^` 这类上下标写法，换成内部记号，解析完再排成上下标。
+  ///
+  /// 必须在交给系统解析器之前换：它把单个波浪线也当删除线，`H~2~O` 会变成
+  /// 「H2O」且 2 带删除线。双波浪线 `~~删除~~` 不动。
+  static func convertingScriptSyntax(in source: String) -> String {
+    guard source.contains("~") || source.contains("^") else { return source }
+    var value = replacing(#"(?<![~\\])~(?!~)([^\s~]{1,30})(?<!~)~(?!~)"#, in: source, with: String(ScriptMarker.subOpen) + "$1" + String(ScriptMarker.subClose))
+    value = replacing(#"(?<![\^\\])\^([^\s^\[\]]{1,30})\^"#, in: value, with: String(ScriptMarker.supOpen) + "$1" + String(ScriptMarker.supClose))
+    return value
+  }
+
+  /// 上下标的内部记号：私用区字符，正文里不会自然出现。
+  enum ScriptMarker {
+    static let supOpen: Character = "\u{F8F0}"
+    static let supClose: Character = "\u{F8F1}"
+    static let subOpen: Character = "\u{F8F2}"
+    static let subClose: Character = "\u{F8F3}"
+    static let superscriptOffset: CGFloat = 5
+    static let subscriptOffset: CGFloat = 3
+    /// 上下标字号相对正文的比例。
+    static let scale: CGFloat = 0.72
+  }
+
+  /// 把上下标记号换成基线偏移。字号由阅读排版层按偏移缩小（见 `SelectableReadingText.inline`）。
+  static func applyingScripts(_ source: AttributedString) -> AttributedString {
+    var value = source
+    for (open, close, offset) in [
+      (ScriptMarker.supOpen, ScriptMarker.supClose, ScriptMarker.superscriptOffset),
+      (ScriptMarker.subOpen, ScriptMarker.subClose, -ScriptMarker.subscriptOffset),
+    ] {
+      while let opening = value.characters.firstIndex(of: open) {
+        let afterOpen = value.characters.index(after: opening)
+        guard let closing = value.characters[afterOpen...].firstIndex(of: close) else {
+          value.removeSubrange(opening..<afterOpen)
+          continue
+        }
+        value[afterOpen..<closing].appKit.baselineOffset = offset
+        value.removeSubrange(closing..<value.characters.index(after: closing))
+        value.removeSubrange(opening..<afterOpen)
+      }
+    }
+    return value
   }
 
   private static func replacing(_ pattern: String, in value: String, with replacement: String) -> String {
@@ -1735,12 +2072,19 @@ struct MarkdownContentView: View {
   @State private var rejectedLink = false
   @State private var showsOutlinePopover = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.colorScheme) private var colorScheme
+  /// 公式 / 流程图排好一批就会变；观察它，正文才会把占位换成图片。
+  @ObservedObject private var webRenderer = ReadingWebRenderer.shared
+  /// 打开了源码的流程图、打开了预览的 html 代码块（按内容区分）。
+  @State private var toggledCodeBlocks: Set<String> = []
 
   /// 正文章节。
   ///
   /// 缓存在 state 里而不是每次 body 求值现算：解析全文的成本随正文长度线性增长，
   /// 库里最长那条 73432 字，跟着每次重绘重算会肉眼可见地卡。按 source 重算一次。
   @State private var outlineEntries: [MarkdownOutline.Entry] = []
+  /// 收起的章节（按全文标题序号）。只改显示，不写回正文；换条目清空。
+  @State private var collapsedHeadings: Set<Int> = []
 
   /// 少于 3 条不显示入口——一两个标题直接滚更快，摆个按钮只是噪音。
   private var showsOutlineEntry: Bool {
@@ -1958,6 +2302,12 @@ struct MarkdownContentView: View {
           // 子视图。把图片路径编进 id，强制按文件身份重建。
           id: \.offset
         ) { segmentIndex, segment in
+          let folding = SectionFolding(entries: outlineEntries, collapsed: collapsedHeadings)
+          // 图片、视频这些段夹在章节里：所在章节收起时一起藏。文字段自己按章节处理。
+          let isMedia: Bool = { if case .text = segment { return false } else { return true } }()
+          if isMedia, folding.isContentHidden(after: headingOffsets[segmentIndex] - 1) {
+            EmptyView()
+          } else {
           switch segment {
           case let .text(chunk):
             if !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1985,6 +2335,7 @@ struct MarkdownContentView: View {
               onOpenURL: { _ = openValidated($0) }
             )
           }
+          }
         }
         .accessibilityIdentifier("history-content-markdown")
       }
@@ -1999,6 +2350,7 @@ struct MarkdownContentView: View {
     }
     // 换条目就重算一次目录；同一条正文内的重绘不再解析。
     .task(id: source) {
+      collapsedHeadings = []
       outlineEntries = MarkdownOutline.entries(
         from: ReadingRenderCache.blocks(from: MarkdownPresentation.sanitized(source))
       )
@@ -2025,15 +2377,22 @@ struct MarkdownContentView: View {
   }
 
   /// Block-first reading layout: air before headings, body leading ~1.65, clear lists.
-  private func structuredMarkdown(_ value: String, headingOffset: Int = 0, segmentIndex: Int = 0) -> some View {
+  private func structuredMarkdown(
+    _ value: String,
+    headingOffset: Int = 0,
+    segmentIndex: Int = 0,
+    foldsSections: Bool = true
+  ) -> some View {
     // 相邻文本块合成一个 NSTextView 段（跨段连续选择）；代码块保持
     // SwiftUI 卡片独立渲染，复制按钮不丢。
     // 解析走备忘缓存：这个 body 每次重新求值都会路过这里，正文没变就不再重新解析。
     let blocks = ReadingRenderCache.blocks(from: value)
     let localHeadings = MarkdownOutline.entries(from: blocks)
-    let anchorable = MarkdownOutline.shouldPresent(outlineEntries)
+    // 提示框里的正文不参与目录和章节折叠：它的标题不在全文目录的序号里。
+    let anchorable = foldsSections && MarkdownOutline.shouldPresent(outlineEntries)
     func resolvedBlockIndex(_ localIndex: Int) -> Int {
-      if let ordinal = localHeadings.firstIndex(where: { $0.blockIndex == localIndex }),
+      if foldsSections,
+         let ordinal = localHeadings.firstIndex(where: { $0.blockIndex == localIndex }),
          outlineEntries.indices.contains(headingOffset + ordinal) {
         return outlineEntries[headingOffset + ordinal].blockIndex
       }
@@ -2056,6 +2415,8 @@ struct MarkdownContentView: View {
         runs.append((index, .table(headers: headers, rows: rows, alignments: alignments)))
       } else if case let .comments(section) = block {
         runs.append((index, .comments(section)))
+      } else if case let .callout(kind, title, text, fold) = block {
+        runs.append((index, .callout(kind: kind, title: title, text: text, fold: fold)))
       } else if !startsSection, case var .text(accumulated) = runs.last?.run {
         accumulated.append(block)
         runs[runs.count - 1].run = .text(accumulated)
@@ -2063,37 +2424,98 @@ struct MarkdownContentView: View {
         runs.append((index, .text([block])))
       }
     }
+    let folding = SectionFolding(entries: outlineEntries, collapsed: collapsedHeadings)
+    /// 某个块属于全文第几个标题之下（含它自己是标题的情况）；在第一个标题之前为 nil。
+    func owningHeading(_ localIndex: Int) -> Int? {
+      let count = localHeadings.filter { $0.blockIndex <= localIndex }.count
+      if count > 0 { return headingOffset + count - 1 }
+      return headingOffset > 0 ? headingOffset - 1 : nil
+    }
     return VStack(alignment: .leading, spacing: 0) {
-        ForEach(Array(runs.enumerated()), id: \.offset) { _, entry in
-          runView(entry.run)
-            .id(ScopedReadingAnchor(scope: anchorScope, block: resolvedBlockIndex(entry.anchor)))
+        ForEach(Array(runs.enumerated()), id: \.offset) { position, entry in
+          let owner = foldsSections ? owningHeading(entry.anchor) : nil
+          // 文字段后面紧跟代码 / 表格 / 提示框时，文字末尾那一行空行会把两者撑得很开；
+          // 去掉它，改由后面的块自己留一点上边距。文字段之间的节奏不变。
+          let nextIsCard = position + 1 < runs.count && !runs[position + 1].run.isText
+          let followsText = position > 0 && runs[position - 1].run.isText
+          let headingLevel: Int? = {
+            guard anchorable,
+                  let local = localHeadings.first(where: { $0.blockIndex == entry.anchor }) else { return nil }
+            return local.level
+          }()
+          if let level = headingLevel, let heading = owner {
+            // 章节开头：标题旁放收起 / 展开的小三角（对齐 Tolaria）。
+            if !folding.isHeadingHidden(heading) {
+              let collapsed = folding.isCollapsed(heading)
+              runView(collapsed ? entry.run.headingOnly : entry.run, trimsTrailingLine: nextIsCard && !collapsed, followsText: followsText)
+                .overlay(alignment: .topLeading) {
+                  SectionFoldToggle(isCollapsed: collapsed, level: level, tint: secondaryTextColor) {
+                    if collapsedHeadings.contains(heading) {
+                      collapsedHeadings.remove(heading)
+                    } else {
+                      collapsedHeadings.insert(heading)
+                    }
+                  }
+                }
+                .id(ScopedReadingAnchor(scope: anchorScope, block: resolvedBlockIndex(entry.anchor)))
+            }
+          } else if !folding.isContentHidden(after: owner ?? -1) {
+            runView(entry.run, trimsTrailingLine: nextIsCard, followsText: followsText)
+              .id(ScopedReadingAnchor(scope: anchorScope, block: resolvedBlockIndex(entry.anchor)))
+          }
         }
     }
   }
 
   @ViewBuilder
-  private func runView(_ run: StructuredRun) -> some View {
+  private func runView(_ run: StructuredRun, trimsTrailingLine: Bool = false, followsText: Bool = false) -> some View {
+    if case .text = run {
+      runContent(run, trimsTrailingLine: trimsTrailingLine)
+    } else {
+      runContent(run, trimsTrailingLine: false)
+        .padding(.top, followsText ? 10 : 0)
+    }
+  }
+
+  @ViewBuilder
+  private func runContent(_ run: StructuredRun, trimsTrailingLine: Bool) -> some View {
     switch run {
     case let .text(textBlocks):
+      let composed = ReadingRenderCache.attributed(
+        blocks: textBlocks,
+        readingFont: readingFont,
+        palette: .init(
+          primary: NSColor(primaryTextColor),
+          secondary: NSColor(secondaryTextColor),
+          accent: NSColor(accentColor)
+        )
+      )
       SelectableReadingTextView(
         // 组装走备忘缓存：内容、字体、配色没变时拿回同一个实例，
         // NSTextView 侧靠实例同一性直接短路（连深比较都不用做）。
-        attributed: ReadingRenderCache.attributed(
-          blocks: textBlocks,
-          readingFont: readingFont,
-          palette: .init(
-            primary: NSColor(primaryTextColor),
-            secondary: NSColor(secondaryTextColor),
-            accent: NSColor(accentColor)
-          )
-        ),
+        attributed: trimsTrailingLine ? ReadingRenderCache.trimmingTrailingNewline(composed) : composed,
         accent: NSColor(accentColor),
         onOpenLink: { url in _ = openValidated(url) },
         revealText: revealText,
         onRequestEdit: onRequestEdit
       )
+    case let .callout(kind, title, text, fold):
+      ReadingCalloutCard(
+        kind: kind,
+        title: title,
+        fold: fold,
+        accentColor: accentColor,
+        secondaryTextColor: secondaryTextColor
+      ) {
+        if !text.isEmpty {
+          // 按完整正文排：提示框 / 折叠块里常有代码、表格，只用文字视图会把它们丢掉。
+          // AnyView 断开「结构化正文里套结构化正文」的类型递归。
+          AnyView(structuredMarkdown(text, segmentIndex: 900_000 + text.utf8.count % 99_999, foldsSections: false))
+        }
+      }
+      .padding(.bottom, 20)
     case let .code(language, content):
-      codeBlock(language: language, content: content)
+      specialCodeBlock(language: language, content: content)
         .padding(.bottom, 20)
     case let .table(headers, rows, alignments):
       markdownTable(headers: headers, rows: rows, alignments: alignments)
@@ -2116,6 +2538,18 @@ struct MarkdownContentView: View {
     case code(language: String?, content: String)
     case table(headers: [String], rows: [[String]], alignments: [MarkdownPresentation.ColumnAlignment])
     case comments(MarkdownPresentation.CommentSection)
+    case callout(kind: String, title: String, text: String, fold: MarkdownPresentation.CalloutFold)
+
+    var isText: Bool {
+      if case .text = self { return true }
+      return false
+    }
+
+    /// 章节收起时只留标题那一块。
+    var headingOnly: StructuredRun {
+      guard case let .text(blocks) = self, let first = blocks.first else { return self }
+      return .text([first])
+    }
   }
 
   @ViewBuilder
@@ -2241,9 +2675,9 @@ struct MarkdownContentView: View {
         // 内层引用整体右移，层级一眼可见。
         .padding(.leading, CGFloat(depth) * 20)
         .padding(.bottom, 20)
-    case let .callout(kind, text):
+    case let .callout(kind, title, text, _):
       VStack(alignment: .leading, spacing: 6) {
-        Text(MarkdownPresentation.calloutLabel(kind))
+        Text(title.isEmpty ? MarkdownPresentation.calloutLabel(kind) : title)
           .themedFont(.caption, weight: .semibold)
           .foregroundStyle(MarkdownPresentation.calloutColor(kind, accent: accentColor))
         if !text.isEmpty {
@@ -2296,8 +2730,89 @@ struct MarkdownContentView: View {
     return Text(attributed).textSelection(.enabled)
   }
 
+  /// 代码块按语言分流：公式、流程图排成图片；html 可切换预览；其余照常显示代码。
+  @ViewBuilder
+  private func specialCodeBlock(language: String?, content: String) -> some View {
+    switch ReadingSpecialCode.kind(of: language) {
+    case .math:
+      ReadingRenderedBlock(
+        request: webRequest(.blockMath, content),
+        alignment: .center,
+        failureTitle: "公式没有排出来，下面是原文"
+      ) {
+        codeBlock(language: language, content: content)
+      }
+    case .mermaid:
+      let key = "mermaid|" + content
+      let showsSource = toggledCodeBlocks.contains(key)
+      VStack(alignment: .leading, spacing: 6) {
+        specialBlockToolbar(title: "流程图", toggleTitle: showsSource ? "看图" : "看源码", key: key)
+        if showsSource {
+          codeBlock(language: language, content: content)
+        } else {
+          ReadingRenderedBlock(
+            request: webRequest(.mermaid, content),
+            alignment: .center,
+            failureTitle: "流程图没有画出来，下面是原文"
+          ) {
+            codeBlock(language: language, content: content)
+          }
+        }
+      }
+    case .html:
+      let key = "html|" + content
+      let previews = toggledCodeBlocks.contains(key)
+      VStack(alignment: .leading, spacing: 6) {
+        specialBlockToolbar(title: "HTML", toggleTitle: previews ? "看代码" : "预览", key: key)
+        if previews {
+          ReadingRenderedBlock(
+            request: webRequest(.html, content, width: 640),
+            alignment: .leading,
+            failureTitle: "预览失败，下面是代码"
+          ) {
+            codeBlock(language: language, content: content)
+          }
+          .overlay(
+            RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+              .strokeBorder(primaryTextColor.opacity(0.1), lineWidth: 1)
+          )
+        } else {
+          codeBlock(language: language, content: content)
+        }
+      }
+    case .none:
+      codeBlock(language: language, content: content)
+    }
+  }
+
+  private func specialBlockToolbar(title: String, toggleTitle: String, key: String) -> some View {
+    HStack(spacing: 8) {
+      Text(title)
+        .themedFont(.caption, weight: .semibold)
+        .foregroundStyle(secondaryTextColor)
+      Spacer(minLength: 0)
+      Button(toggleTitle) {
+        if toggledCodeBlocks.contains(key) { toggledCodeBlocks.remove(key) } else { toggledCodeBlocks.insert(key) }
+      }
+      .buttonStyle(.link)
+      .themedFont(.caption)
+    }
+  }
+
+  private func webRequest(_ kind: ReadingWebRenderer.Kind, _ source: String, width: CGFloat = 0) -> ReadingWebRenderer.Request {
+    ReadingWebRenderer.Request(
+      kind: kind,
+      source: source,
+      color: NSColor(primaryTextColor).readingHex,
+      fontSize: (readingFont.bodySize * (kind == .blockMath ? 1.15 : 1)).rounded(),
+      isDark: colorScheme == .dark,
+      width: width
+    )
+  }
+
   private func codeBlock(language: String?, content: String) -> some View {
-    VStack(alignment: .leading, spacing: 0) {
+    let lineCount = content.reduce(into: 1) { count, character in if character == "\n" { count += 1 } }
+    return VStack(alignment: .leading, spacing: 0) {
       HStack(spacing: 8) {
         Text(language?.isEmpty == false ? language! : "代码")
           .font(.system(.subheadline, design: .monospaced).weight(.semibold))
@@ -2309,13 +2824,30 @@ struct MarkdownContentView: View {
       .frame(height: 32)
       .background(primaryTextColor.opacity(0.055))
 
-      ScrollView(.horizontal, showsIndicators: true) {
-        Text(content)
-          .font(.system(.body, design: .monospaced))
-          .lineSpacing(4)
-          .textSelection(.enabled)
-          .fixedSize(horizontal: true, vertical: false)
-          .padding(12)
+      // 行号和代码分两列：行号只是阅读辅助，不跟代码一起被选中、复制（对齐 Tolaria）。
+      // 代码不折行，两列逐行对齐。
+      HStack(alignment: .top, spacing: 0) {
+        if lineCount > 1 {
+          Text((1...lineCount).map(String.init).joined(separator: "\n"))
+            .font(.system(.body, design: .monospaced))
+            .lineSpacing(4)
+            .fixedSize()
+            .multilineTextAlignment(.trailing)
+            .foregroundStyle(secondaryTextColor.opacity(0.55))
+            .padding(.vertical, 12)
+            .padding(.leading, 12)
+            .padding(.trailing, 10)
+            .accessibilityHidden(true)
+        }
+        ScrollView(.horizontal, showsIndicators: true) {
+          Text(CodeSyntaxHighlighter.highlighted(content, language: language))
+            .font(.system(.body, design: .monospaced))
+            .lineSpacing(4)
+            .textSelection(.enabled)
+            .fixedSize()
+            .padding(12)
+        }
+        .fixedSize(horizontal: false, vertical: true)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(primaryTextColor.opacity(0.025))
@@ -2595,4 +3127,310 @@ enum MarkdownInlineImageActions {
        data[8...11].elementsEqual([0x57, 0x45, 0x42, 0x50]) { return "webp" }
     return "png"
   }
+}
+
+/// 网页标签的分类（见 `MarkdownPresentation.replacement(forHTMLLikeToken:)`）。
+enum HTMLTokenPolicy {
+  /// 标准 HTML 标签。不在这里的一律当正文里的尖括号原样显示。
+  static let knownTags: Set<String> = [
+    "a", "abbr", "address", "article", "aside", "audio", "b", "bdi", "bdo", "big", "blockquote", "body",
+    "br", "caption", "center", "cite", "code", "col", "colgroup", "data", "dd", "del", "details", "dfn",
+    "div", "dl", "dt", "em", "figcaption", "figure", "font", "footer", "form", "h1", "h2", "h3", "h4",
+    "h5", "h6", "header", "hr", "html", "i", "img", "input", "ins", "kbd", "label", "legend", "li", "link",
+    "main", "mark", "meta", "nav", "ol", "optgroup", "option", "p", "picture", "pre", "q", "s", "samp",
+    "section", "small", "source", "span", "strike", "strong", "sub", "summary", "sup", "table", "tbody",
+    "td", "tfoot", "th", "thead", "time", "title", "tr", "tt", "u", "ul", "var", "video", "wbr", "fieldset",
+    "track", "hgroup", "menu", "ruby", "rt", "rp",
+  ]
+
+  /// 拆掉后要留一个换行的块级标签，免得前后两段文字粘在一起。
+  static let blockTags: Set<String> = [
+    "address", "article", "aside", "blockquote", "body", "caption", "center", "dd", "div", "dl", "dt",
+    "figcaption", "figure", "footer", "form", "header", "hgroup", "html", "legend", "main", "menu", "nav",
+    "ol", "pre", "section", "table", "tbody", "tfoot", "thead", "tr", "ul", "fieldset", "details", "summary",
+  ]
+
+  static func headingLevel(_ name: String) -> Int? {
+    guard name.count == 2, name.first == "h", let level = Int(String(name.last!)), (1...6).contains(level) else { return nil }
+    return level
+  }
+
+  /// 读一个属性值：`src="…"`、`src='…'` 或不带引号。
+  static func attribute(_ name: String, in text: String) -> String? {
+    let pattern = #"(?i)\b"# + name + #"\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))"#
+    guard let expression = try? NSRegularExpression(pattern: pattern) else { return nil }
+    let ns = text as NSString
+    guard let match = expression.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)) else { return nil }
+    for group in 1...3 where match.range(at: group).location != NSNotFound {
+      return ns.substring(with: match.range(at: group))
+    }
+    return nil
+  }
+}
+
+/// 提示框卡片（对齐 Tolaria 的 callout）：左侧色条、浅底、图标和标题；
+/// 带折叠标记的可以点标题收起 / 展开。正文仍是可选中的阅读文本。
+struct ReadingCalloutCard<Content: View>: View {
+  let kind: String
+  let title: String
+  let fold: MarkdownPresentation.CalloutFold
+  let accentColor: Color
+  let secondaryTextColor: Color
+  let content: () -> Content
+  @State private var isExpanded: Bool
+
+  init(
+    kind: String,
+    title: String,
+    fold: MarkdownPresentation.CalloutFold,
+    accentColor: Color,
+    secondaryTextColor: Color,
+    @ViewBuilder content: @escaping () -> Content
+  ) {
+    self.kind = kind
+    self.title = title
+    self.fold = fold
+    self.accentColor = accentColor
+    self.secondaryTextColor = secondaryTextColor
+    self.content = content
+    _isExpanded = State(initialValue: fold != .collapsed)
+  }
+
+  private var tint: Color { MarkdownPresentation.calloutColor(kind, accent: accentColor) }
+  private var heading: String { title.isEmpty ? MarkdownPresentation.calloutLabel(kind) : title }
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      header
+      if isExpanded {
+        content()
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.vertical, 10)
+    .padding(.leading, 16)
+    .padding(.trailing, 14)
+    .background(tint.opacity(0.07), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+    .overlay(alignment: .leading) {
+      UnevenRoundedRectangle(
+        topLeadingRadius: 10, bottomLeadingRadius: 10, bottomTrailingRadius: 0, topTrailingRadius: 0,
+        style: .continuous
+      )
+      .fill(tint.opacity(0.85))
+      .frame(width: 3)
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("history-content-markdown-callout")
+  }
+
+  private var label: some View {
+    HStack(spacing: 6) {
+      Image(systemName: MarkdownPresentation.calloutSymbol(kind))
+        .foregroundStyle(tint)
+      Text(heading)
+        .themedFont(.subheadline, weight: .semibold)
+        .foregroundStyle(tint)
+        .multilineTextAlignment(.leading)
+      if fold != .none {
+        Image(systemName: "chevron.right")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(secondaryTextColor)
+          .rotationEffect(.degrees(isExpanded ? 90 : 0))
+      }
+      Spacer(minLength: 0)
+    }
+  }
+
+  @ViewBuilder private var header: some View {
+    if fold == .none {
+      label
+    } else {
+      Button {
+        withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() }
+      } label: {
+        label.contentShape(Rectangle())
+      }
+      .buttonStyle(.plain)
+      .accessibilityLabel(isExpanded ? "收起\(heading)" : "展开\(heading)")
+    }
+  }
+}
+
+/// 章节折叠的判定（2026-09-24 对齐 Tolaria：标题可收起下面的内容，直到下一个同级或更高级标题）。
+struct SectionFolding {
+  private var headingHidden: [Bool] = []
+  private var contentHidden: [Bool] = []
+  private let collapsed: Set<Int>
+
+  init(entries: [MarkdownOutline.Entry], collapsed: Set<Int>) {
+    self.collapsed = collapsed
+    guard !collapsed.isEmpty else { return }
+    var activeLevel: Int?
+    for (ordinal, entry) in entries.enumerated() {
+      if let active = activeLevel, entry.level <= active { activeLevel = nil }
+      headingHidden.append(activeLevel != nil)
+      if activeLevel == nil, collapsed.contains(ordinal) { activeLevel = entry.level }
+      contentHidden.append(activeLevel != nil)
+    }
+  }
+
+  func isCollapsed(_ ordinal: Int) -> Bool { collapsed.contains(ordinal) }
+
+  func isHeadingHidden(_ ordinal: Int) -> Bool {
+    headingHidden.indices.contains(ordinal) && headingHidden[ordinal]
+  }
+
+  /// 第 `ordinal` 个标题之后的正文是否被收起（-1 表示第一个标题之前，永远可见）。
+  func isContentHidden(after ordinal: Int) -> Bool {
+    contentHidden.indices.contains(ordinal) && contentHidden[ordinal]
+  }
+}
+
+/// 标题左侧的收起 / 展开按钮。平时淡，悬停到这一节才明显，不给正文添噪点。
+struct SectionFoldToggle: View {
+  let isCollapsed: Bool
+  let level: Int
+  let tint: Color
+  let action: () -> Void
+  @State private var isHovering = false
+
+  /// 按 `SelectableReadingText` 里标题的字号，让三角落在标题第一行中间。
+  /// 章节总是从标题起一段新的文本视图，段首的段前距不生效，这里不计。
+  private var topInset: CGFloat {
+    let size: CGFloat = [1: 23, 2: 19.5, 3: 17][level] ?? 16
+    return size * 0.68 - 8
+  }
+
+  var body: some View {
+    Button(action: action) {
+      Image(systemName: "chevron.right")
+        .font(.system(size: 10, weight: .semibold))
+        .rotationEffect(.degrees(isCollapsed ? 0 : 90))
+        .frame(width: 16, height: 16)
+        .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(tint.opacity(isCollapsed || isHovering ? 0.9 : 0.35))
+    .onHover { isHovering = $0 }
+    .offset(x: -20, y: topInset)
+    .help(isCollapsed ? "展开这一节" : "收起这一节")
+    .accessibilityLabel(isCollapsed ? "展开这一节" : "收起这一节")
+  }
+}
+
+/// 需要特殊显示的代码块语言。
+enum ReadingSpecialCode {
+  enum Kind { case math, mermaid, html }
+
+  static func kind(of language: String?) -> Kind? {
+    switch language?.lowercased().trimmingCharacters(in: .whitespaces) {
+    case "math", "latex", "tex", "katex": return .math
+    case "mermaid": return .mermaid
+    case "html", "htm": return .html
+    default: return nil
+    }
+  }
+}
+
+/// 离屏排好的图片；没排好时占位，排失败时显示说明和原文。
+struct ReadingRenderedBlock<Fallback: View>: View {
+  let request: ReadingWebRenderer.Request
+  let alignment: HorizontalAlignment
+  let failureTitle: String
+  @ViewBuilder let fallback: () -> Fallback
+  @ObservedObject private var renderer = ReadingWebRenderer.shared
+
+  var body: some View {
+    let _ = renderer.generation
+    switch renderer.outcome(for: request) {
+    case let .rendered(result):
+      // 按排版时的原尺寸显示（缩放会让公式里的小字糊掉）；比正文还宽的图可以横向拖动。
+      let image = Image(nsImage: result.image)
+        .frame(width: result.size.width, height: result.size.height)
+        .accessibilityLabel(request.kind == .mermaid ? "流程图" : "公式")
+      if result.size.width > ReadingRenderedBlockLayout.maximumInlineWidth {
+        ScrollView(.horizontal, showsIndicators: true) { image }
+          .frame(height: result.size.height + 14)
+      } else {
+        image.frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
+      }
+    case let .failed(message):
+      VStack(alignment: .leading, spacing: 6) {
+        Text("\(failureTitle)（\(message)）")
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+        fallback()
+      }
+    case .none:
+      HStack(spacing: 8) {
+        ProgressView().controlSize(.small)
+        Text(request.kind == .mermaid ? "正在画流程图…" : "正在排版…")
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, minHeight: 36, alignment: Alignment(horizontal: alignment, vertical: .center))
+    }
+  }
+}
+
+/// 行内公式 `$…$`（2026-09-24 对齐 Tolaria）。
+///
+/// 解析前把公式换成「记号 + 十六进制」：TeX 里的 `_`、`*`、`\` 会被 Markdown 当成强调或
+/// 转义，编码后原样穿过解析，排版层再解码、换成公式图片。
+///
+/// 认公式的规则取自 Pandoc：开头 `$` 后面不能是空白，结尾 `$` 前面不能是空白、后面不能
+/// 紧跟数字——「价格 $5 到 $10」不会被当成公式。行内代码里的 `$` 不动。
+enum InlineMath {
+  static let open: Character = "\u{F8F6}"
+  static let close: Character = "\u{F8F7}"
+
+  private static let pattern = try? NSRegularExpression(
+    pattern: #"(`+[^`]*`+)|(?<![\\$0-9A-Za-z])\$(?![\s$])([^$\n]{1,300}?)(?<![\s\\])\$(?![0-9A-Za-z$])"#
+  )
+
+  static func marking(_ source: String) -> String {
+    guard source.contains("$"), let pattern else { return source }
+    let ns = source as NSString
+    var result = ""
+    var cursor = 0
+    for match in pattern.matches(in: source, range: NSRange(location: 0, length: ns.length)) {
+      guard match.range(at: 2).location != NSNotFound else { continue }
+      result += ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+      let tex = ns.substring(with: match.range(at: 2))
+      result += String(open) + tex.utf8.map { String(format: "%02x", $0) }.joined() + String(close)
+      cursor = match.range.location + match.range.length
+    }
+    guard cursor > 0 else { return source }
+    result += ns.substring(from: cursor)
+    return result
+  }
+
+  static func decode(_ hex: Substring) -> String {
+    var bytes: [UInt8] = []
+    var index = hex.startIndex
+    while index < hex.endIndex, let next = hex.index(index, offsetBy: 2, limitedBy: hex.endIndex) {
+      if let byte = UInt8(hex[index..<next], radix: 16) { bytes.append(byte) }
+      index = next
+    }
+    return String(decoding: bytes, as: UTF8.self)
+  }
+
+  /// 这些块里可能有行内公式（粗筛：有没有 `$`）。
+  static func mayContainMath(_ blocks: [MarkdownPresentation.Block]) -> Bool {
+    blocks.contains { block in
+      switch block {
+      case let .paragraph(text), let .heading(_, text), let .quote(_, text): return text.contains("$")
+      case let .callout(_, title, text, _): return text.contains("$") || title.contains("$")
+      case let .list(items): return items.contains { $0.text.contains("$") }
+      case let .orderedList(_, items): return items.contains { $0.contains("$") }
+      case let .taskList(items): return items.contains { $0.text.contains("$") }
+      default: return false
+      }
+    }
+  }
+}
+
+enum ReadingRenderedBlockLayout {
+  /// 阅读列大约这么宽；更宽的图改成可横向拖动。
+  static let maximumInlineWidth: CGFloat = 660
 }
