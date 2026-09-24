@@ -31,6 +31,9 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
   private let store: UserDefaultsKnowledgeVaultStore
   private var history: HistoryApplicationService?
   private var autoSyncTask: Task<Void, Never>?
+  /// 同一时刻只允许一次同步写目录（手动或自动）；后来的排队等前一次写完。
+  private var isSyncing = false
+  private var syncWaiters: [CheckedContinuation<Void, Never>] = []
   static var autoSyncDelaySeconds: Double = 20
 
   init(store: UserDefaultsKnowledgeVaultStore) {
@@ -94,9 +97,9 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
 
   /// 把历史里所有抓取到的内容同步进知识库目录。
   ///
-  /// 全程在主 actor 上跑：当前量级（几十条）下读库加渲染是毫秒级，为它引入
-  /// 后台线程和一套 Sendable 约束不划算。条目涨到几千条时这里要改成后台执行，
-  /// 判据是同步过程中窗口是否肉眼可见地卡住。
+  /// 读库、渲染、扫目录、写文件都在后台线程跑（2026-09-24）。原来全程在主 actor 上：
+  /// 库里有一千三百多条时，每抓一条新内容 20 秒后都要在主线程上把整库导出一遍、
+  /// 再把目录里每个文件读一遍，这期间滑动和点击都会卡。主 actor 上只留状态更新。
   func sync() async {
     await performSync(reportingToUI: true)
   }
@@ -119,7 +122,10 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
   ///   行为，不改写手动同步的进度卡，但失败必须留下可见、可重试的状态。
   private func performSync(reportingToUI: Bool) async {
     // 手动同步进行中就让开：两个同步同时写一个目录，冲突判定会互相打架。
-    if !reportingToUI, isRunning { return }
+    if !reportingToUI, isRunning || isSyncing { return }
+    // 手动同步撞上正在跑的自动同步：等它写完再开始，不并发写同一个目录。
+    await acquireSyncSlot()
+    defer { releaseSyncSlot() }
     guard let history else {
       reportFailure("历史还没准备好，请稍后重试。", reportingToUI: reportingToUI)
       return
@@ -148,43 +154,25 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
 
     if reportingToUI { state = .running(done: 0, total: 0) }
 
-    let taskIDs: [TaskID]
-    do { taskIDs = try allTaskIDs(history) } catch {
-      reportFailure("读取历史失败：\(error.localizedDescription)", reportingToUI: reportingToUI)
-      return
-    }
-
-    var documents: [KnowledgeVaultDocument] = []
-    var failures: [KnowledgeVaultFailureEntry] = []
-    for (index, taskID) in taskIDs.enumerated() {
-      do {
-        let projection = try history.exportProjection(taskID: taskID)
-        // 笔记、稿件、成品留在汲作里，不进知识库。
-        guard KnowledgeVaultRenderer.isSyncable(projection) else { continue }
-        documents.append(KnowledgeVaultRenderer.render(projection))
-      } catch {
-        failures.append(
-          .init(filename: taskID.rawValue, message: "读取失败：\(error.localizedDescription)")
-        )
-      }
-      if index % 10 == 0 {
-        if reportingToUI { state = .running(done: index, total: taskIDs.count) }
-        await Task.yield()
+    let progress: @Sendable (Int, Int) -> Void = { [weak self] done, total in
+      guard reportingToUI else { return }
+      Task { @MainActor [weak self] in
+        guard let self, case .running = self.state else { return }
+        self.state = .running(done: done, total: total)
       }
     }
+    let outcome = await Task.detached(priority: reportingToUI ? .userInitiated : .utility) {
+      Self.runSync(history: history, directory: lease.url, progress: progress)
+    }.value
 
-    let existing: [KnowledgeVaultExistingFile]
-    do { existing = try KnowledgeVaultWriter.scan(directory: lease.url) } catch {
-      reportFailure(
-        "无法读取知识库文件夹的现有文件：\(error.localizedDescription)",
-        reportingToUI: reportingToUI
-      )
+    let report: KnowledgeVaultSyncReport
+    switch outcome {
+    case let .failure(message):
+      reportFailure(message, reportingToUI: reportingToUI)
       return
+    case let .success(value):
+      report = value
     }
-
-    let plan = KnowledgeVaultSync.plan(documents: documents, existing: existing)
-    var report = KnowledgeVaultWriter.apply(plan, in: lease.url)
-    report.failures.append(contentsOf: failures)
 
     // 自动同步没写任何东西时不更新「上次同步」时间：那一行是给用户看
     // 「我的素材新到什么时候」的，被一次没有产出的后台跑刷新掉就没意义了。
@@ -203,6 +191,20 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
     }
   }
 
+  private func acquireSyncSlot() async {
+    while isSyncing {
+      await withCheckedContinuation { syncWaiters.append($0) }
+    }
+    isSyncing = true
+  }
+
+  private func releaseSyncSlot() {
+    isSyncing = false
+    let waiters = syncWaiters
+    syncWaiters.removeAll()
+    waiters.forEach { $0.resume() }
+  }
+
   private func reportFailure(_ message: String, reportingToUI: Bool) {
     if reportingToUI {
       state = .failed(message)
@@ -211,7 +213,50 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
     }
   }
 
-  private func allTaskIDs(_ history: HistoryApplicationService) throws -> [TaskID] {
+  private enum SyncOutcome: Sendable {
+    case success(KnowledgeVaultSyncReport)
+    case failure(String)
+  }
+
+  /// 同步的重活：整库导出、渲染、扫目录、写文件。不碰任何界面状态，在后台线程跑。
+  nonisolated private static func runSync(
+    history: HistoryApplicationService,
+    directory: URL,
+    progress: @Sendable (Int, Int) -> Void
+  ) -> SyncOutcome {
+    let taskIDs: [TaskID]
+    do { taskIDs = try allTaskIDs(history) } catch {
+      return .failure("读取历史失败：\(error.localizedDescription)")
+    }
+
+    var documents: [KnowledgeVaultDocument] = []
+    var failures: [KnowledgeVaultFailureEntry] = []
+    for (index, taskID) in taskIDs.enumerated() {
+      do {
+        let projection = try history.exportProjection(taskID: taskID)
+        // 笔记、稿件、成品留在汲作里，不进知识库。
+        guard KnowledgeVaultRenderer.isSyncable(projection) else { continue }
+        documents.append(KnowledgeVaultRenderer.render(projection))
+      } catch {
+        failures.append(
+          .init(filename: taskID.rawValue, message: "读取失败：\(error.localizedDescription)")
+        )
+      }
+      if index % 20 == 0 { progress(index, taskIDs.count) }
+    }
+
+    let existing: [KnowledgeVaultExistingFile]
+    do { existing = try KnowledgeVaultWriter.scan(directory: directory) } catch {
+      return .failure("无法读取知识库文件夹的现有文件：\(error.localizedDescription)")
+    }
+
+    let plan = KnowledgeVaultSync.plan(documents: documents, existing: existing)
+    var report = KnowledgeVaultWriter.apply(plan, in: directory)
+    report.failures.append(contentsOf: failures)
+    return .success(report)
+  }
+
+  nonisolated private static func allTaskIDs(_ history: HistoryApplicationService) throws -> [TaskID] {
     var ids: [TaskID] = []
     var cursor: HistoryPageCursor?
     // 分页读完整个历史。上限只是防御：真出现环状游标时不至于转不出来。

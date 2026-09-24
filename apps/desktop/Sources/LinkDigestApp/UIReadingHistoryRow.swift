@@ -111,10 +111,10 @@ struct UIReadingHistoryRow: View {
   private var savedAtMilliseconds: Int64 { HistoryListFinding.savedAtMilliseconds(of: row) }
 
   /// 列表按存入时间分组，行尾时间也说存入时间；原帖发布时间放悬停里。
-  private var savedTimeHelp: String {
+  private func savedTimeHelp(_ text: RowText) -> String {
     var parts = ["存于 \(HistoryRelativeTime.text(savedAtMilliseconds))"]
-    if let published = row.published?.trimmedNonEmpty {
-      parts.append("原帖发布 \(HistoryPublishedTimestampFormatter.text(published))")
+    if let published = text.publishedText {
+      parts.append("原帖发布 \(published)")
     }
     return parts.joined(separator: " · ")
   }
@@ -128,24 +128,44 @@ struct UIReadingHistoryRow: View {
   /// 标题要跑命名规则、预览要跑几遍正则去重，原来 body 里按属性各读各的：标题读了
   /// 六七次，预览又在内部把标题再算一遍。行滑进屏幕时整份 body 都要求值，这些重复
   /// 计算直接压在滑动的那一帧上。
-  private struct RowText {
+  ///
+  /// 这些文字只取决于这一行的数据，所以按行备忘：同一行滑出屏幕再滑回来、
+  /// 鼠标移上移下（悬停会重求值 body），都直接取上次的结果。2026-09-24 实测
+  /// 列表滚动时主线程最耗时的就是这里的正则清洗和发布时间解析。
+  /// 跟「现在几点」有关的文字（几天前、行尾时间）不进备忘，每次现算，本来就便宜。
+  struct RowText: Equatable {
     let title: String
     let preview: String?
+    let visibleTags: [String]
+    /// 原帖发布时间的展示文字；没有发布时间为 nil。
+    let publishedText: String?
+    let sourceText: String
+    let isAudioOnly: Bool
   }
 
   private func makeRowText() -> RowText {
+    if let cached = UIReadingRowTextMemo.text(for: row) { return cached }
     let title = rowPrimaryTitle
     let preview = rowPreviewLine(title: title)
-    return RowText(title: title, preview: preview == title ? nil : preview)
+    let text = RowText(
+      title: title,
+      preview: preview == title ? nil : preview,
+      visibleTags: visibleTags,
+      publishedText: row.published?.trimmedNonEmpty.map { HistoryPublishedTimestampFormatter.text($0) },
+      sourceText: rowSourceText,
+      isAudioOnly: LocalImportDocument.isAudioOnly(host: row.host, preview: row.sourcePreview)
+    )
+    UIReadingRowTextMemo.store(text, for: row)
+    return text
   }
 
   private func rowAccessibilityValue(_ text: RowText) -> String {
     var values = [
-      "来源：\(rowSourceText)",
-      savedTimeHelp,
+      "来源：\(text.sourceText)",
+      savedTimeHelp(text),
       isSummarized ? "已总结" : "未总结",
     ]
-    if !visibleTags.isEmpty { values.append("标签：\(visibleTags.joined(separator: "、"))") }
+    if !text.visibleTags.isEmpty { values.append("标签：\(text.visibleTags.joined(separator: "、"))") }
     if let preview = text.preview, preview.count < 40 {
       values.insert(preview, at: 1)
     }
@@ -225,14 +245,14 @@ struct UIReadingHistoryRow: View {
         HStack(alignment: .center, spacing: DesignTokens.Space.xs) {
           // 笔记的「作者」就是「我的笔记」，在笔记分类里每行都写一遍没有意义。
           if showsAuthor, !row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
-            Text(rowSourceText)
+            Text(text.sourceText)
               .themedFont(.caption)
               .foregroundStyle(theme.secondaryText.opacity(0.85))
               .lineLimit(1)
               .layoutPriority(1)
           }
           // 标签是总结后自动打的主题词，放在这里正好当找回的关键词。
-          ForEach(visibleTags, id: \.self) { tag in
+          ForEach(text.visibleTags, id: \.self) { tag in
             Text("#\(tag)")
               .themedFont(.caption)
               .foregroundStyle(theme.secondaryText)
@@ -252,9 +272,8 @@ struct UIReadingHistoryRow: View {
           // 转写状态是「待处理」信息，找东西时是噪音，不再占行尾；视频标记保留。
           HStack(spacing: 4) {
             if row.hasMedia == true || row.hasTranscript == true {
-              let isAudio = LocalImportDocument.isAudioOnly(host: row.host, preview: row.sourcePreview)
-              Image(systemName: isAudio ? "waveform" : "play.rectangle")
-                .accessibilityLabel(isAudio ? "带录音" : "带视频")
+              Image(systemName: text.isAudioOnly ? "waveform" : "play.rectangle")
+                .accessibilityLabel(text.isAudioOnly ? "带录音" : "带视频")
             }
             if row.hasMindMap == true {
               Image(systemName: "brain")
@@ -297,7 +316,7 @@ struct UIReadingHistoryRow: View {
     .onHover { isHovering = $0 }
     // 整行只挂一个提示。原来状态点、时间、视频、脑图各挂一个：每个提示都是一块
     // 鼠标感应区，滑动时它们跟着移动，窗口每一帧都要把整张列表的感应区重算一遍。
-    .help(rowHelp)
+    .help(rowHelp(text))
     .overlay(alignment: .trailing) { hoverActions }
     .fixedSize(horizontal: false, vertical: true)
     .id("\(row.taskID.rawValue)-\(row.updatedAtMilliseconds)")
@@ -312,8 +331,8 @@ struct UIReadingHistoryRow: View {
   }
 
   /// 悬停提示：原来分散在四个小元素上的信息合成一句。
-  private var rowHelp: String {
-    var parts = [isSummarized ? "已总结" : "未总结", savedTimeHelp]
+  private func rowHelp(_ text: RowText) -> String {
+    var parts = [isSummarized ? "已总结" : "未总结", savedTimeHelp(text)]
     if row.hasMedia == true || row.hasTranscript == true { parts.append("带视频") }
     if row.hasMindMap == true { parts.append("已生成脑图") }
     return parts.joined(separator: " · ")
@@ -424,6 +443,28 @@ extension UIReadingHistoryRow: Equatable {
     return previous.author?.trimmedNonEmpty == author
       && HistoryPlatformRegistry.canonicalHost(for: previous.host) == HistoryPlatformRegistry.canonicalHost(for: rows[index].host)
   }
+}
+
+/// 列表行文字的备忘（见 `UIReadingHistoryRow.RowText`）。
+///
+/// 以整行数据做校验：行数据任何一处变了（改标题、打标签、总结完成）就当没算过。
+/// 条目数上千也只是几千个短字符串；超过上限整个清掉重来，不做淘汰策略。
+@MainActor
+enum UIReadingRowTextMemo {
+  private static var entries: [TaskID: (row: HistoryRowProjection, text: UIReadingHistoryRow.RowText)] = [:]
+  static let capacity = 4_000
+
+  static func text(for row: HistoryRowProjection) -> UIReadingHistoryRow.RowText? {
+    guard let entry = entries[row.taskID], entry.row == row else { return nil }
+    return entry.text
+  }
+
+  static func store(_ text: UIReadingHistoryRow.RowText, for row: HistoryRowProjection) {
+    if entries.count >= capacity { entries.removeAll(keepingCapacity: true) }
+    entries[row.taskID] = (row, text)
+  }
+
+  static func removeAll() { entries.removeAll() }
 }
 
 /// 与 `HistoryRowView` 相同：关掉系统选中底，主题色由行自己画。

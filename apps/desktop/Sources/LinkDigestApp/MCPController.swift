@@ -154,9 +154,17 @@ final class MCPController: ObservableObject {
         throw MCPFailure("permission_required", "请在设置 → MCP 连接开启对应的抓取整理或转写总结权限。")
       }
     }
+    // 判断「记录在不在」本身就要读一次完整详情；读到的留着，同一次调用里要详情时
+    // 直接用，不再从库里读第二遍（Agent 轮询 processing_status 时每次都要走这里）。
+    var checkedDetail: HistoryDetailProjection?
     func taskID() throws -> TaskID {
-      guard let raw = a["task_id"] as? String, let id = TaskID(raw), (try? history.detail(taskID: id)) != nil else { throw MCPFailure("not_found", "记录不存在") }
+      guard let raw = a["task_id"] as? String, let id = TaskID(raw), let detail = try? history.detail(taskID: id) else { throw MCPFailure("not_found", "记录不存在") }
+      checkedDetail = detail
       return id
+    }
+    func detail(_ id: TaskID) throws -> HistoryDetailProjection {
+      if let checkedDetail, checkedDetail.task.id == id { return checkedDetail }
+      return try history.detail(taskID: id)
     }
     func job() throws -> MCPDiscovery {
       guard let d = discovery, a["job_id"] as? String == d.id else { throw MCPFailure("job_not_found", "发现任务不存在或 App 已重启；请重新发现。") }
@@ -287,11 +295,11 @@ final class MCPController: ObservableObject {
       try historyModel.startMCPTranscription(taskID: id)
       return ["task_id": id.rawValue, "status": "submitted", "next": "jizuo_processing_status"]
     case "jizuo_processing_status":
-      let id = try taskID(), d = try history.detail(taskID: id)
+      let id = try taskID(), d = try detail(id)
       return ["task_id": id.rawValue, "transcription": Self.transcriptionStatus(historyModel.transcriptionState(for: id), persisted: d.media?.transcriptionStatus), "persisted_transcription": d.media?.transcriptionStatus.rawValue ?? "no_local_media", "runs": d.runs.suffix(10).map { ["run_id": $0.run.id.rawValue, "kind": $0.run.kind.rawValue, "status": $0.run.status.rawValue, "is_terminal": $0.run.status.isTerminal, "has_result": $0.artifact != nil] as [String: Any] }]
     case "jizuo_summarize":
       guard let appModel, let preferences, !appModel.runState.isActive, !summaryStarting else { throw MCPFailure("busy", "模型正在处理其他任务") }
-      let id = try taskID(), d = try history.detail(taskID: id)
+      let id = try taskID(), d = try detail(id)
       summaryStarting = true
       defer { summaryStarting = false }
       let engaged = await appModel.summarize(historyDetail: d, preferences: preferences.runPreferences, modelOverride: preferences.activeSummaryModelName)

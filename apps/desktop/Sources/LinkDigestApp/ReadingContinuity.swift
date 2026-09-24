@@ -147,6 +147,11 @@ struct ReadingScrollContinuity: NSViewRepresentable {
     context.coordinator.attach(from: view)
   }
 
+  /// 视图拆掉（关掉详情、关窗口）时，最后一次位置不能丢在防抖里。
+  static func dismantleNSView(_ view: ProbeView, coordinator: Coordinator) {
+    coordinator.flushPendingSave()
+  }
+
   @MainActor final class ProbeView: NSView {
     weak var coordinator: Coordinator?
     override func viewDidMoveToSuperview() {
@@ -166,10 +171,32 @@ struct ReadingScrollContinuity: NSViewRepresentable {
     /// 上次持久化的整数百分比：写入按显示粒度量化，一整页滚动最多百来次，
     /// 而不是每个滚动事件都写一次 UserDefaults。
     private var lastPersistedPercent: Int?
+    /// 还没落库的位置。滚动中只记下来，停下约半秒再写一次：写库是主线程上的
+    /// 同步事务，后台正在导入或同步时它要排队，原来每滚过 1% 就写一次，滑动会
+    /// 被这些等待卡住。
+    private var pendingSave: (identity: String, value: Double)?
+    private var pendingSaveWork: DispatchWorkItem?
+    static let saveDebounce: TimeInterval = 0.5
 
     init(parent: ReadingScrollContinuity) { self.parent = parent }
 
     deinit { NotificationCenter.default.removeObserver(self) }
+
+    private func scheduleSave(_ value: Double) {
+      pendingSave = (parent.identity, value)
+      pendingSaveWork?.cancel()
+      let work = DispatchWorkItem { [weak self] in self?.flushPendingSave() }
+      pendingSaveWork = work
+      DispatchQueue.main.asyncAfter(deadline: .now() + Self.saveDebounce, execute: work)
+    }
+
+    func flushPendingSave() {
+      pendingSaveWork?.cancel()
+      pendingSaveWork = nil
+      guard let pending = pendingSave else { return }
+      pendingSave = nil
+      ReadingPositionStore.save(pending.value, for: pending.identity)
+    }
 
     func attach(from view: NSView) {
       var ancestor = view.superview
@@ -187,6 +214,8 @@ struct ReadingScrollContinuity: NSViewRepresentable {
         )
       }
       guard activeIdentity != parent.identity else { return }
+      // 换到另一条之前，把上一条还没落库的位置写掉。
+      flushPendingSave()
       activeIdentity = parent.identity
       lastPersistedPercent = nil
       restore(in: scroll)
@@ -218,7 +247,7 @@ struct ReadingScrollContinuity: NSViewRepresentable {
       parent.progress.setPercent(percent)
       guard percent != lastPersistedPercent else { return }
       lastPersistedPercent = percent
-      ReadingPositionStore.save(value, for: parent.identity)
+      scheduleSave(value)
     }
   }
 }

@@ -389,7 +389,11 @@ extension View {
 /// 做成 ViewModifier 而不是直接 `environment(...)`：「跟随系统」要在系统明暗翻转时
 /// 换令牌，而翻转唯一可靠的信号是 `@Environment(\.colorScheme)`——只有 View /
 /// ViewModifier 能读它。
-private struct AppThemeInjector: ViewModifier {
+///
+/// 不能是 private：它在主窗口根视图的类型里，SwiftUI 用这个类型名当侧栏、列表宽度
+/// 的保存键。private 类型的名字带「编译地址」，每装一次新版本键就变一次——用户
+/// 调好的栏宽每次更新都被重置，旧键还一直留在偏好文件里（2026-09-24 查到 351 条）。
+struct AppThemeInjector: ViewModifier {
   let rawValue: String
   let uiFontRawValue: String
   @Environment(\.colorScheme) private var systemColorScheme

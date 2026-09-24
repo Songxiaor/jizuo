@@ -21,7 +21,7 @@ struct RunElapsedLabel: View {
   let startedAt: Date
 
   var body: some View {
-    TimelineView(.periodic(from: startedAt, by: 0.1)) { context in
+    TimelineView(RunElapsedSchedule(startedAt: startedAt)) { context in
       Text(Self.format(context.date.timeIntervalSince(startedAt)))
         .foregroundStyle(.tertiary)
         // 对读屏隐藏：每 0.1 秒播报一次数字会把状态文字完全淹没。运行状态由
@@ -42,5 +42,29 @@ struct RunElapsedLabel: View {
     }
     let total = Int(seconds)
     return String(format: "%d:%02d", total / 60, total % 60)
+  }
+}
+
+/// 读数的刷新节拍：一分钟内每 0.1 秒一拍，之后每整秒一拍。
+///
+/// 原来整场运行都是每秒 10 拍；超过一分钟后读数是 `m:ss`，一秒只变一次，另外
+/// 九拍只是白白把这一行重画一遍（长转写、长总结一跑就是几分钟）。系统要求低频
+/// 刷新时（窗口不在前台等）也按整秒走。
+struct RunElapsedSchedule: TimelineSchedule {
+  let startedAt: Date
+
+  func entries(from start: Date, mode: TimelineScheduleMode) -> AnyIterator<Date> {
+    var next = start
+    return AnyIterator {
+      let current = next
+      let elapsed = current.timeIntervalSince(startedAt)
+      if elapsed < 60, mode != .lowFrequency {
+        next = current.addingTimeInterval(0.1)
+      } else {
+        // 对齐到「开始后第几整秒」，读数恰好在跳秒的时刻刷新。
+        next = startedAt.addingTimeInterval(max(elapsed, 0).rounded(.down) + 1)
+      }
+      return current
+    }
   }
 }

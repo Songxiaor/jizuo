@@ -192,6 +192,7 @@ struct YouTubeEmbedPlayerCard: View {
       // 否则池持有的 webview 会让音频在后台继续播放。
       if isInCinema { cinema.dismiss() }
       YouTubeEmbedWebViewPool.shared.release(videoID: videoID)
+      YouTubeEmbedPrewarmer.shared.scheduleCoolDown()
     }
   }
 }
@@ -534,9 +535,14 @@ struct VideoCinemaOverlay: View {
   static let shared = YouTubeEmbedPrewarmer()
 
   private var webView: WKWebView?
+  private var coolDownWork: DispatchWorkItem?
+  /// 没有 YouTube 卡片在屏幕上多久之后放掉预热页（秒）。
+  static let idleLifetime: TimeInterval = 120
 
-  /// 幂等：整个 App 生命周期只预热一次。
+  /// 幂等：已经热着就不重复建。
   func warm() {
+    coolDownWork?.cancel()
+    coolDownWork = nil
     guard webView == nil else { return }
     // 身份数据（Cookie / localStorage）由启动路径统一清，不在这里做：
     // removeData 是异步落地，而用户可能在几百毫秒后就点开视频，那时它会撞上
@@ -555,6 +561,23 @@ struct VideoCinemaOverlay: View {
     """
     view.loadHTMLString(html, baseURL: URL(string: "https://www.youtube-nocookie.com"))
     webView = view
+  }
+
+  /// YouTube 卡片离开屏幕后，过一段时间把预热页放掉。
+  ///
+  /// 原来预热一次就挂到 App 退出：看过一次 YouTube，WebKit 的内容、网络、GPU 三个
+  /// 进程就一直常驻（2026-09-24 后台占用排查）。回到 YouTube 条目会重新预热。
+  func scheduleCoolDown() {
+    coolDownWork?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      MainActor.assumeIsolated {
+        self?.webView?.stopLoading()
+        self?.webView = nil
+        self?.coolDownWork = nil
+      }
+    }
+    coolDownWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + Self.idleLifetime, execute: work)
   }
 }
 
@@ -596,6 +619,10 @@ struct VideoCinemaOverlay: View {
   /// 这里不能用 `allWebsiteDataTypes()`：那会把磁盘缓存一起清掉，等于把上面
   /// 那 1～2 秒又还回去了。
   static func wipeEmbedIdentityData() async {
+    // 上次清过之后没再用过嵌入播放器，就没有身份数据可清。不碰数据存储：一调
+    // removeData，WebKit 就要为此起一个网络进程常驻，而大多数时候根本没看 YouTube
+    // （2026-09-24 后台占用排查）。
+    guard identityDataMayExist else { return }
     let identityTypes: Set<String> = [
       WKWebsiteDataTypeCookies,
       WKWebsiteDataTypeLocalStorage,
@@ -616,10 +643,21 @@ struct VideoCinemaOverlay: View {
         embedDataStore.httpCookieStore.delete(cookie) { continuation.resume() }
       }
     }
+    identityDataMayExist = false
+  }
+
+  /// 嵌入播放器的存储里可能有身份数据（上次清理之后建过播放器或预热页）。
+  /// 键不存在时按「可能有」处理：升级上来的第一次启动照旧清一遍。
+  static let identityDirtyKey = "youtube-embed-identity-may-exist"
+  static var identityDataMayExist: Bool {
+    get { UserDefaults.standard.object(forKey: identityDirtyKey) as? Bool ?? true }
+    set { UserDefaults.standard.set(newValue, forKey: identityDirtyKey) }
   }
 
   /// 播放器与预热器共用同一份配置，否则「预热」预的是另一个进程。
   static func makeConfiguration() -> WKWebViewConfiguration {
+    // 预热页和播放器都从这里拿配置：一旦用上，下次启动就要清身份数据。
+    identityDataMayExist = true
     let configuration = WKWebViewConfiguration()
     configuration.websiteDataStore = embedDataStore
     // 空集合 = 允许 autoplay；用户手势那道门在封面层（isPlayerRequested），

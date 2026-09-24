@@ -9,7 +9,8 @@ extension View {
   }
 }
 
-private struct LocalImportDropTarget: ViewModifier {
+/// 不能是 private：理由同 `AppThemeInjector`（它也在主窗口根视图的类型里）。
+struct LocalImportDropTarget: ViewModifier {
   @ObservedObject var controller: LocalImportController
   @State private var isTargeted = false
   @Environment(\.appTheme) private var theme

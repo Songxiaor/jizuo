@@ -589,6 +589,26 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertEqual(model.selectedCreatorID, first.id)
   }
 
+  /// 外部链接 / MCP 打开的那条不在已加载的第一页里，也要停在它上面，不能跳回第一条。
+  func testRevealKeepsATargetOutsideTheFirstPage() async {
+    let first = makeRow(title: "第一页", updatedAt: 30)
+    let older = makeRow(title: "一个月前", updatedAt: 20)
+    let repository = HistoryScreenRepository(
+      firstPage: .init(rows: [first], nextCursor: cursor(for: first)),
+      remainingPages: [first.taskID.rawValue: .init(rows: [older], nextCursor: nil)],
+      details: [first.taskID: makeDetail(for: first), older.taskID: makeDetail(for: older)]
+    )
+    let model = HistoryViewModel()
+    model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { model.listState == .loaded }
+
+    model.revealFromExternalLink(taskID: older.taskID)
+    await waitUntil { model.listState == .loaded && model.detail?.task.id == older.taskID }
+    try? await Task.sleep(for: .milliseconds(50))
+    XCTAssertEqual(model.selectedTaskID, older.taskID, "目标不在第一页也不能被改选成第一条")
+    XCTAssertEqual(model.detail?.task.id, older.taskID)
+  }
+
   func testEnterCreatorDirectoryIgnoresInFlightAllMaterialsPage() async {
     let first = makeRow(title: "第一页", updatedAt: 30)
     let second = makeRow(title: "下一页", updatedAt: 20)

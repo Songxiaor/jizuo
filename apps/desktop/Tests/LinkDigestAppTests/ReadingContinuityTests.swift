@@ -125,3 +125,20 @@ final class ReadingContinuityTests: XCTestCase {
     )).taskID
   }
 }
+
+final class SettingsWindowCenteringTests: XCTestCase {
+  @MainActor
+  func testSettingsWindowCentersOnTheMainWindowAndStaysOnScreen() {
+    let main = NSRect(x: 156, y: 100, width: 1200, height: 760)
+    let origin = SettingsWindowCentering.centeredOrigin(for: NSSize(width: 900, height: 588), over: main, on: nil)
+    XCTAssertEqual(origin.x, 156 + 150)
+    XCTAssertEqual(origin.y, 100 + 86)
+    // 主窗口贴着屏幕左下角时，设置窗口不能被推出屏幕。
+    let offscreen = SettingsWindowCentering.centeredOrigin(
+      for: NSSize(width: 900, height: 588), over: NSRect(x: -400, y: -300, width: 600, height: 400), on: nil
+    )
+    let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    XCTAssertGreaterThanOrEqual(offscreen.x, visible.minX)
+    XCTAssertGreaterThanOrEqual(offscreen.y, visible.minY)
+  }
+}

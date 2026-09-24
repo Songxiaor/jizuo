@@ -289,6 +289,8 @@ final class RemotePreviewPlayerController: ObservableObject {
   static var singleTrackPrepareTimeoutSeconds: TimeInterval = 12
   /// 已就绪播放器驻留条数：切换历史再回来可秒开，不必黑屏重连。
   static var parkedPlayerCapacity = 4
+  /// 驻留播放器最长保留多久（秒）。切回来秒开的价值集中在几分钟内。
+  static var parkedPlayerLifetime: TimeInterval = 180
 
   // 切换文章会反复调用 `release()`，把这两项写回同一个空值。`@Published` 不比较
   // 新旧值就发通知，而整棵历史视图树都在观察这个对象——没有视频的文章也要为此
@@ -326,6 +328,7 @@ final class RemotePreviewPlayerController: ObservableObject {
   private var dualTrackTempDirectory: URL?
   /// 最近若干条已就绪播放器（MRU 在末尾）；切走时 park，切回时 restore。
   private var parkedPlayers: [ParkedRemotePlayback] = []
+  private var parkedExpiryWork: DispatchWorkItem?
 
   var hasPlayer: Bool { player != nil }
 
@@ -400,6 +403,8 @@ final class RemotePreviewPlayerController: ObservableObject {
       currentCookieHeader = parked.cookieHeader ?? cookieHeader
       currentDurationSeconds = durationSeconds
       usedLegacyPath = parked.usedLegacyPath
+      // 驻留时压低了预读，恢复成系统自动。
+      parked.player.currentItem?.preferredForwardBufferDuration = 0
       player = parked.player
       preparePhase = .ready
       return
@@ -832,6 +837,8 @@ final class RemotePreviewPlayerController: ObservableObject {
       disposePlayer(slot.player)
     }
     parkedPlayers.removeAll()
+    parkedExpiryWork?.cancel()
+    parkedExpiryWork = nil
     currentURL = nil
     currentCompanionAudioURL = nil
     currentCookieHeader = nil
@@ -1002,11 +1009,7 @@ final class RemotePreviewPlayerController: ObservableObject {
       if retained.player !== newPlayer {
         retained.player.pause()
         removeParked(url: retained.url, companionAudioURL: retained.companionAudioURL)
-        parkedPlayers.append(retained)
-        while parkedPlayers.count > Self.parkedPlayerCapacity {
-          let evicted = parkedPlayers.removeFirst()
-          disposePlayer(evicted.player)
-        }
+        appendParked(retained)
       }
     } else if player !== newPlayer {
       disposePlayer(player)
@@ -1075,7 +1078,7 @@ final class RemotePreviewPlayerController: ObservableObject {
     player.pause()
     // 同 key 只保留一份最新。
     removeParked(url: url, companionAudioURL: currentCompanionAudioURL)
-    parkedPlayers.append(
+    appendParked(
       ParkedRemotePlayback(
         url: url,
         companionAudioURL: currentCompanionAudioURL,
@@ -1084,16 +1087,53 @@ final class RemotePreviewPlayerController: ObservableObject {
         usedLegacyPath: usedLegacyPath
       )
     )
-    while parkedPlayers.count > Self.parkedPlayerCapacity {
-      let evicted = parkedPlayers.removeFirst()
-      disposePlayer(evicted.player)
-    }
     self.player = nil
     currentURL = nil
     currentCompanionAudioURL = nil
     currentCookieHeader = nil
     usedLegacyPath = false
     preparePhase = .idle
+  }
+
+  /// 驻留一个已就绪的播放器。
+  ///
+  /// 驻留是为了切回来秒开，不是为了一直占着网络和内存：暂停的播放器仍会按系统
+  /// 默认继续往后预读，四个一起挂着就是四条连接和几十兆缓冲，App 在后台也不停
+  /// （2026-09-24 后台占用排查）。所以驻留时把预读压到 1 秒，超过
+  /// `parkedPlayerLifetime` 没被切回来就释放。
+  private func appendParked(_ slot: ParkedRemotePlayback) {
+    slot.player.currentItem?.preferredForwardBufferDuration = 1
+    var slot = slot
+    slot.parkedAt = Date()
+    parkedPlayers.append(slot)
+    while parkedPlayers.count > Self.parkedPlayerCapacity {
+      let evicted = parkedPlayers.removeFirst()
+      disposePlayer(evicted.player)
+    }
+    scheduleParkedExpiry()
+  }
+
+  private func scheduleParkedExpiry() {
+    parkedExpiryWork?.cancel()
+    guard let oldest = parkedPlayers.map(\.parkedAt).min() else {
+      parkedExpiryWork = nil
+      return
+    }
+    let delay = max(1, oldest.addingTimeInterval(Self.parkedPlayerLifetime).timeIntervalSinceNow)
+    let work = DispatchWorkItem { [weak self] in
+      MainActor.assumeIsolated { self?.releaseExpiredParkedPlayers() }
+    }
+    parkedExpiryWork = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+  }
+
+  private func releaseExpiredParkedPlayers(now: Date = Date()) {
+    parkedPlayers.removeAll { slot in
+      guard now.timeIntervalSince(slot.parkedAt) >= Self.parkedPlayerLifetime else { return false }
+      disposePlayer(slot.player)
+      return true
+    }
+    scheduleParkedExpiry()
   }
 
   private func takeParked(url: URL, companionAudioURL: URL?) -> ParkedRemotePlayback? {
@@ -1153,6 +1193,8 @@ private struct ParkedRemotePlayback {
   let cookieHeader: String?
   let player: AVPlayer
   let usedLegacyPath: Bool
+  /// 进驻留表的时间，超过 `parkedPlayerLifetime` 就释放。
+  var parkedAt = Date()
 }
 
 /// 在线转写流式预览的叶子视图：partial 拍点只重绘这一小块
@@ -2881,6 +2923,13 @@ private struct HistoryStreamingMediaCard: View {
     // 不再在 ready 稳态下每 300ms 唤醒主线程。
     playerStatusTask = Task { @MainActor in
       while !Task.isCancelled {
+        // 准备阶段就失败时 player 一直是 nil：原来这里会每 50ms 醒一次、只要卡片
+        // 还在屏幕上就永远醒下去（空闲时主线程每秒 20 次唤醒），界面也一直停在
+        // 加载态。和详情卡同一个判断：失败就停，并把失败说出来。
+        if case .failed = playback.preparePhase {
+          playbackFailed = true
+          return
+        }
         guard let item = playback.player?.currentItem else {
           try? await Task.sleep(nanoseconds: 50_000_000)
           continue

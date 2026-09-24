@@ -1163,7 +1163,29 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   }
 }
 
+/// 开机或登录后系统恢复窗口时，有可能只恢复了「设置」窗口（2026-09-24 实测重启后
+/// 就是这样）。资料库、浏览器接收、MCP 都挂在主窗口的启动任务上，主窗口不出来，
+/// 这些服务就一个都没起，外部 Agent 和浏览器插件全部连不上。设置窗口在启动后
+/// 几秒内出现、而主窗口还没做过启动时，替用户把主窗口打开。只管启动那一刻：
+/// 之后用户自己关掉主窗口再开设置，不去打扰。
+struct MainWindowLaunchGuard: ViewModifier {
+  let isBootstrapped: () -> Bool
+  @Environment(\.openWindow) private var openWindow
+  static let processStart = Date()
+  static let launchWindowSeconds: TimeInterval = 20
+
+  func body(content: Content) -> some View {
+    content.task {
+      guard Date().timeIntervalSince(Self.processStart) < Self.launchWindowSeconds else { return }
+      try? await Task.sleep(for: .seconds(1.5))
+      guard !Task.isCancelled, !isBootstrapped() else { return }
+      openWindow(id: LinkDigestApp.mainWindowID)
+    }
+  }
+}
+
 @main struct LinkDigestApp: App {
+  static let mainWindowID = "main"
   @NSApplicationDelegateAdaptor(LinkDigestAppDelegate.self) private var appDelegate
   @Environment(\.scenePhase) private var scenePhase
   @State private var model: AppViewModel
@@ -1194,6 +1216,8 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   private let terminationSignalSource: DispatchSourceSignal
 
   init() {
+    // 记下进程启动时刻：`MainWindowLaunchGuard` 只在启动后那一小段时间里补开主窗口。
+    _ = MainWindowLaunchGuard.processStart
     // 每次模型调用的成败都记到「模型可用状态」里，设置页据此提示已下架等问题。
     ModelHealthRegistry.installObservation()
     let appUpdateController = AppUpdateController()
@@ -1652,7 +1676,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   }
 
   var body: some Scene {
-    WindowGroup(ProductDisplay.name) {
+    WindowGroup(ProductDisplay.name, id: LinkDigestApp.mainWindowID) {
       HistoryContentView(
         model: historyModel,
         appModel: model,
@@ -1842,6 +1866,7 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       )
         .background(SettingsWindowResizer())
         .appThemeEnvironment(appearanceThemeRaw, uiFontRawValue: uiFontRaw)
+        .modifier(MainWindowLaunchGuard(isBootstrapped: { didBootstrap }))
     }
     .windowResizability(.contentMinSize)
     // Hiding the toolbar outright also takes the titlebar (and the traffic
@@ -1855,17 +1880,70 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
 /// and the window is pinned to its content size. Put the flag back on and lift
 /// the size ceiling; the floor still comes from the SwiftUI content frame.
 private struct SettingsWindowResizer: NSViewRepresentable {
+  func makeCoordinator() -> SettingsWindowCentering { SettingsWindowCentering() }
+
   func makeNSView(context: Context) -> NSView {
     let probe = NSView(frame: .zero)
+    let centering = context.coordinator
     DispatchQueue.main.async {
       guard let window = probe.window else { return }
       window.styleMask.insert(.resizable)
       window.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+      centering.attach(to: window)
     }
     return probe
   }
 
   func updateNSView(_ nsView: NSView, context: Context) {}
+}
+
+/// 设置窗口每次打开都落在主窗口正中。
+///
+/// 系统会记住设置窗口上次的位置，而那个位置停在屏幕左上角（2026-09-24 Syc 反馈：
+/// 每次点左下角「设置」都弹在最左上方，而不是在主页居中）。打开期间用户自己拖到
+/// 别处就尊重他的位置，关掉再开才重新居中。
+@MainActor
+final class SettingsWindowCentering: NSObject {
+  private weak var window: NSWindow?
+  private var needsCentering = true
+
+  func attach(to window: NSWindow) {
+    guard self.window !== window else { return }
+    self.window = window
+    let center = NotificationCenter.default
+    center.addObserver(self, selector: #selector(windowDidBecomeKey(_:)), name: NSWindow.didBecomeKeyNotification, object: window)
+    center.addObserver(self, selector: #selector(windowWillClose(_:)), name: NSWindow.willCloseNotification, object: window)
+    centerIfNeeded()
+  }
+
+  deinit { NotificationCenter.default.removeObserver(self) }
+
+  @objc private func windowDidBecomeKey(_: Notification) { centerIfNeeded() }
+  @objc private func windowWillClose(_: Notification) { needsCentering = true }
+
+  private func centerIfNeeded() {
+    guard needsCentering, let window, window.isVisible else { return }
+    needsCentering = false
+    // 主窗口可能在外接屏上：按主窗口所在的屏幕收边，而不是设置窗口上次待的那块屏。
+    let main = Self.mainWindow(excluding: window)
+    window.setFrameOrigin(Self.centeredOrigin(for: window.frame.size, over: main?.frame, on: main?.screen ?? window.screen))
+  }
+
+  private static func mainWindow(excluding settings: NSWindow) -> NSWindow? {
+    NSApp.windows.first {
+      $0 !== settings && $0.isVisible && $0.canBecomeMain && $0.frame.height > 300
+    }
+  }
+
+  /// 以主窗口中心为准；没有主窗口就以屏幕中心为准。结果收在屏幕可用区域内。
+  static func centeredOrigin(for size: NSSize, over anchor: NSRect?, on screen: NSScreen?) -> NSPoint {
+    let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    let reference = anchor ?? visible
+    var origin = NSPoint(x: reference.midX - size.width / 2, y: reference.midY - size.height / 2)
+    origin.x = min(max(origin.x, visible.minX), max(visible.minX, visible.maxX - size.width))
+    origin.y = min(max(origin.y, visible.minY), max(visible.minY, visible.maxY - size.height))
+    return NSPoint(x: origin.x.rounded(), y: origin.y.rounded())
+  }
 }
 
 #if DEBUG

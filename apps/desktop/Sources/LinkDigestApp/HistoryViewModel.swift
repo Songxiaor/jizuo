@@ -2015,17 +2015,63 @@ final class HistoryViewModel {
     }
   }
 
+  /// 离列表末尾还剩几条时就开始读下一页。原来要等最后一条露出来才读，滑到底
+  /// 总要停下来看一圈转圈。
+  static let nextPagePrefetchDistance = 12
+
   func loadNextPageIfNeeded(after row: HistoryRowProjection) {
-    guard rows.last?.taskID == row.taskID, let cursor = nextCursor, !isLoadingNextPage, let history else { return }
+    guard rows.suffix(Self.nextPagePrefetchDistance).contains(where: { $0.taskID == row.taskID }),
+          let cursor = nextCursor, !isLoadingNextPage, let history else { return }
     let generation = configurationGeneration, requestID = listRequestID, filter = listFilter
     isLoadingNextPage = true; listErrorCode = nil
     pageTask = Task { [weak self] in
       let result = await Task.detached(priority: .userInitiated) {
         Self.pageResult(history, cursor: cursor, filter: filter)
       }.value
-      guard !Task.isCancelled else { return }
-      self?.receiveNextPage(result, generation: generation, requestID: requestID)
+      guard !Task.isCancelled, let self else { return }
+      if self.isListScrolling {
+        self.deferNextPage(result, generation: generation, requestID: requestID)
+      } else {
+        self.receiveNextPage(result, generation: generation, requestID: requestID)
+      }
     }
+  }
+
+  // MARK: 滑动中不并入下一页
+
+  /// 列表正在滑动。由列表的滚动阶段回调写入；不参与观察，改它不重绘任何视图。
+  @ObservationIgnored private var isListScrolling = false
+  @ObservationIgnored private var deferredNextPage: (result: PageResult, generation: UUID, requestID: UUID)?
+  @ObservationIgnored private var deferredNextPageFlush: Task<Void, Never>?
+  /// 滑动一直不停时最多压这么久，免得末尾一直转圈。
+  static let deferredNextPageMaximumDelay: Duration = .milliseconds(1_500)
+
+  /// 下一页并进列表时，系统列表要把整张表重新比对一遍、给新行量高度，实测每次
+  /// 卡 150ms 左右，而且几乎全是系统列表自己的开销（2026-09-24 采样：汲作代码只占
+  /// 约 4ms）。放在滑动中间就是一下明显的顿挫，所以读回来的页先压着，等手停下来
+  /// 再并进去。
+  func setListScrolling(_ scrolling: Bool) {
+    guard isListScrolling != scrolling else { return }
+    isListScrolling = scrolling
+    if !scrolling { flushDeferredNextPage() }
+  }
+
+  private func deferNextPage(_ result: PageResult, generation: UUID, requestID: UUID) {
+    deferredNextPage = (result, generation, requestID)
+    deferredNextPageFlush?.cancel()
+    deferredNextPageFlush = Task { [weak self] in
+      try? await Task.sleep(for: Self.deferredNextPageMaximumDelay)
+      guard !Task.isCancelled else { return }
+      self?.flushDeferredNextPage()
+    }
+  }
+
+  private func flushDeferredNextPage() {
+    deferredNextPageFlush?.cancel()
+    deferredNextPageFlush = nil
+    guard let pending = deferredNextPage else { return }
+    deferredNextPage = nil
+    receiveNextPage(pending.result, generation: pending.generation, requestID: pending.requestID)
   }
 
   /// Initial list failure reloads from scratch. Pagination failure retries only the
@@ -2043,7 +2089,11 @@ final class HistoryViewModel {
     reload()
   }
   func retryDetail() { loadDetailForSelection() }
-  func reveal(taskID: TaskID) { selectedTaskID = taskID; reload() }
+  /// 打开指定的一条。选中要保住：原来重载列表第一页后，按「选中项必须在已加载的
+  /// 行里」求交集，目标不在第一页（比如一个月前的记录）就被丢掉、改选第一条——
+  /// `linkdigest://digest/<id>` 和 MCP 的 `jizuo_open` 都因此跳错（2026-09-24）。
+  /// 详情按选中项直接读，不依赖它在不在列表已加载的那一段里。
+  func reveal(taskID: TaskID) { selectedTaskID = taskID; reload(preservingCurrentSelection: true) }
 
   func revealProfileImportResult(taskID: TaskID, batchID: UUID, itemID: UUID) {
     profileImportReturnTarget = .init(taskID: taskID, batchID: batchID, itemID: itemID)
@@ -2499,7 +2549,14 @@ final class HistoryViewModel {
         return
       }
       do {
-        let temp = try await tempStore.prepare(descriptor: descriptor)
+        // 和在线转写同一条规则：整段合流的 descriptor 没有独立音轨时，先要一次只含
+        // 音轨的地址。本机转写原来直接下整段视频（B 站实测 61.6MB 对音轨约 7MB），
+        // 下载占了转写等待的大头。取不到音轨地址时照旧下整段。
+        var overrideAudioURL: String?
+        if descriptor.companionAudioURL == nil, let resolve = self.transcriptionAudioTrackURL {
+          overrideAudioURL = await resolve(descriptor.platform, descriptor.pageURL)
+        }
+        let temp = try await tempStore.prepare(descriptor: descriptor, overrideAudioURL: overrideAudioURL)
         // Keep the larger download strictly attempt-scoped, then hand the
         // lightweight M4A to Apple's local transcriber. If an unusual
         // container cannot export, the transcriber receives the original

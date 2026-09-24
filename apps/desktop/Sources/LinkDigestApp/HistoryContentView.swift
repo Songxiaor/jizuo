@@ -269,7 +269,7 @@ struct HistoryContentView: View {
           model.beginPlatformGalleryReading(taskID: taskID)
           isReadingPlatformGalleryItem = true
         },
-        contextMenu: { row in AnyView(historyContextMenu(for: row)) },
+        contextMenu: { row in AnyView(DeferredMenuContent { historyContextMenu(for: row) }) },
         accessibilityPrefix: platformGalleryAccessibilityPrefix
       )
     }
@@ -962,14 +962,14 @@ struct HistoryContentView: View {
               onActivate: { model.selectedTaskIDs = [row.taskID] },
               // 「更多」和右键是同一份菜单。原来列表内联写了一份、画廊调另一份，
               // 两边已经开始漂移；现在只有 `historyContextMenu` 一处。
-              moreMenu: { AnyView(historyContextMenu(for: row)) }
+              moreMenu: { AnyView(DeferredMenuContent { historyContextMenu(for: row) }) }
             ).equatable().tag(row.taskID).onAppear { model.loadNextPageIfNeeded(after: row) }
               .listRowBackground(Color.clear)
               // 卡片之间留出 8pt，选中底色才读得出是一张张独立的卡。
               // 左右 -6：抵掉表格自带的 16pt，卡片外缘落在 10pt，和搜索框、侧栏选中条对齐。
               .listRowInsets(EdgeInsets(top: 4, leading: -6, bottom: 4, trailing: -6))
               .listRowSeparator(.hidden)
-              .contextMenu { historyContextMenu(for: row) }
+              .contextMenu { DeferredMenuContent { historyContextMenu(for: row) } }
           }
           } header: {
             if let title = section.title {
@@ -1001,6 +1001,8 @@ struct HistoryContentView: View {
           .accessibilityLabel("内容列表")
           .accessibilityIdentifier("history-content-list")
           .scrollContentBackground(.hidden)
+          // 滑动中读回来的下一页等手停了再并入（见 `HistoryViewModel.setListScrolling`）。
+          .onScrollPhaseChange { _, phase in model.setListScrolling(phase.isScrolling) }
           .onDeleteCommand { model.requestDeletion(protectedTaskIDs: protectedTaskIDs) }
           // macOS List 对插入行沿用估算行高，新到卡片被压扁；初始构建
           // 的测量始终正确，因此新条目登顶时整表重建（新行本就在顶部，
@@ -2715,7 +2717,7 @@ struct HistoryContentView: View {
         .buttonStyle(.plain)
         .accessibilityElement(children: .contain)
         .accessibilityHint("打开作品")
-        .contextMenu { historyContextMenu(for: row) }
+        .contextMenu { DeferredMenuContent { historyContextMenu(for: row) } }
       } control: {
         CreatorWorkSelectionControl(
           isSelected: model.selectedTaskIDs.contains(row.taskID), theme: theme
@@ -3633,7 +3635,12 @@ private struct HistoryDetailView: View, Equatable {
   @State private var pendingRunPane: ReadingPane?
   /// 阅读进度独立小模型：进度若放进本视图的 @State，每个滚动事件都会
   /// 重求值整个详情页——那是长文滚动掉帧的来源（见 ReadingProgressModel）。
-  @StateObject private var readingProgressModel = ReadingProgressModel()
+  ///
+  /// 用 @State 而不是 @StateObject：@StateObject 会让本视图订阅它的
+  /// objectWillChange，进度每变 1% 整个详情页照样重求值一遍，独立模型等于白拆
+  /// （2026-09-24 实测：九万字长文滚到底要重算约百次）。只有真正显示进度的叶子
+  /// 视图才该观察它。
+  @State private var readingProgressModel = ReadingProgressModel()
   /// 已访问过的阅读面板（见 content 的注释）：保活的折叠集合。
   @State private var visitedReadingPanes: Set<ReadingPane> = []
   /// 各阅读面板的实测高度：ZStack 容器按「当前活动面板的高度」定高，
@@ -4860,24 +4867,7 @@ private struct HistoryDetailView: View, Equatable {
               )
             }
           }
-          Section("浏览") {
-            Button {
-              model.selectAdjacent(offset: -1)
-            } label: {
-              Label("上一条", systemImage: "chevron.up")
-            }
-            .disabled(!model.canSelectPrevious)
-            .keyboardShortcut(.upArrow, modifiers: .command)
-            .accessibilityIdentifier("reading-previous-item")
-            Button {
-              model.selectAdjacent(offset: 1)
-            } label: {
-              Label("下一条", systemImage: "chevron.down")
-            }
-            .disabled(!model.canSelectNext)
-            .keyboardShortcut(.downArrow, modifiers: .command)
-            .accessibilityIdentifier("reading-next-item")
-          }
+          AdjacentItemMenuSection(model: model)
           Section("复制") {
             Button("拷贝全文") { copyFullArticle() }
               .accessibilityIdentifier("history-copy-full-text")
@@ -6662,7 +6652,9 @@ private struct HistoryDetailView: View, Equatable {
       mountedReadingPane(.source)
     }
     .frame(height: paneHeights[effectiveReadingPane], alignment: .top)
-    .clipped()
+    // 只在上下方向裁：左右各放出一条边，标题左侧的收起三角（`SectionFoldToggle`）
+    // 画在正文左边界外，原来的 `.clipped()` 会把它整个裁掉。
+    .clipShape(HorizontalBleedClip(bleed: 32))
     // 初始面板由 `pane == effectiveReadingPane` 条件挂载（visited 起始为空，
     // 惰性成立）；这里只负责把后续切换过的面板记入保活集合。
     .onChange(of: effectiveReadingPane) { _, pane in
@@ -8197,6 +8189,37 @@ private struct LiveTranscriptionReadingBody: View {
   }
 }
 
+/// 阅读区「更多」里的「上一条 / 下一条」。
+///
+/// 单独成一个视图：能不能往前后翻要在列表 `rows` 里找当前条目的位置，这个读取
+/// 若写在详情页 body 里，详情页就订阅了整张列表——列表往下滚一次加载下一页，
+/// 整个详情页（长文要排版九万字）跟着重算一遍，正是 2026-09-24 实测列表滚动里
+/// 几百毫秒卡顿的来源之一。放在这里，列表变化只重算这两个按钮。
+private struct AdjacentItemMenuSection: View {
+  let model: HistoryViewModel
+
+  var body: some View {
+    Section("浏览") {
+      Button {
+        model.selectAdjacent(offset: -1)
+      } label: {
+        Label("上一条", systemImage: "chevron.up")
+      }
+      .disabled(!model.canSelectPrevious)
+      .keyboardShortcut(.upArrow, modifiers: .command)
+      .accessibilityIdentifier("reading-previous-item")
+      Button {
+        model.selectAdjacent(offset: 1)
+      } label: {
+        Label("下一条", systemImage: "chevron.down")
+      }
+      .disabled(!model.canSelectNext)
+      .keyboardShortcut(.downArrow, modifiers: .command)
+      .accessibilityIdentifier("reading-next-item")
+    }
+  }
+}
+
 /// 阅读进度标签的叶子视图：观察 ReadingProgressModel，滚动事件只重绘
 /// 这一小块（见 ReadingProgressModel 的注释）。
 private struct ReadingProgressBadge: View {
@@ -8253,21 +8276,47 @@ struct DebouncedSearchField: View {
 
 /// 详情页派生值备忘。键 = 用途 + 快照 id + 正文字节数；换条目自然失效，
 /// 同一条目上界面其它状态变化时直接命中。
+///
+/// 同一次 body 里会先后用到两份快照（原文快照和最新快照——带转写、字幕的条目
+/// 两者不同）。原来只记一份快照的结果，换一份就整个清空，两边轮流把对方清掉，
+/// 这类条目每次重绘都从头扫全文，备忘一次都命不中。现在按快照分别保存，
+/// 只保留最近用到的几份。
 final class DetailDerivedMemo {
   private var entries: [String: Any] = [:]
-  private var snapshotKey: String?
+  private var recentSnapshotKeys: [String] = []
+  static let snapshotCapacity = 4
 
   func value<T>(_ purpose: String, snapshot: ContentSnapshot?, compute: () -> T) -> T {
-    let key = "\(snapshot?.id.rawValue ?? "-")|\(snapshot?.bodyText.utf8.count ?? 0)"
-    if key != snapshotKey {
-      entries.removeAll(keepingCapacity: true)
-      snapshotKey = key
+    let snapshotKey = "\(snapshot?.id.rawValue ?? "-")|\(snapshot?.bodyText.utf8.count ?? 0)"
+    let key = "\(snapshotKey)|\(purpose)"
+    if let cached = entries[key] as? T { return cached }
+    if !recentSnapshotKeys.contains(snapshotKey) {
+      recentSnapshotKeys.append(snapshotKey)
+      if recentSnapshotKeys.count > Self.snapshotCapacity {
+        let evicted = recentSnapshotKeys.removeFirst() + "|"
+        entries = entries.filter { !$0.key.hasPrefix(evicted) }
+      }
     }
-    if let cached = entries[purpose] as? T { return cached }
     let value = compute()
-    entries[purpose] = value
+    entries[key] = value
     return value
   }
+}
+
+/// 把菜单内容推迟到真正显示时再求值。
+///
+/// `.contextMenu { … }` 和 `Menu { … }` 的内容闭包在挂修饰符那一刻就会执行：列表
+/// 每一行、每次重绘都把整份右键菜单（标签归一化、查稿件、判断能不能总结）算一遍，
+/// 哪怕从来没人右键。2026-09-24 列表滚动采样里它就在主线程热点上。包进一个视图后，
+/// 闭包只在这个视图的 body 被求值——也就是菜单弹出时——才执行。
+struct DeferredMenuContent<Content: View>: View {
+  let build: () -> Content
+
+  init(@ViewBuilder _ build: @escaping () -> Content) {
+    self.build = build
+  }
+
+  var body: some View { build() }
 }
 
 struct HistoryListSectionModel: Identifiable {
@@ -8295,5 +8344,14 @@ private struct OwnershipToggleButton: View {
     .disabled(model.isReadOnly || model.isDeleting)
     .help("现在算「\(current.rawValue)」")
     .accessibilityIdentifier("history-context-ownership")
+  }
+}
+
+/// 竖直方向按框裁、水平方向向两边多留 `bleed` 的裁剪形状。
+struct HorizontalBleedClip: Shape {
+  let bleed: CGFloat
+
+  func path(in rect: CGRect) -> Path {
+    Path(rect.insetBy(dx: -bleed, dy: 0))
   }
 }
