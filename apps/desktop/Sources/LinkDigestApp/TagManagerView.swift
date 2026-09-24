@@ -121,7 +121,8 @@ struct TagManagerView: View {
           }
         }
       }
-      .frame(maxHeight: 120)
+      // 按组数给高度：固定 120 时只有一两组也会留下一大块空白；组多了再滚动。
+      .frame(height: min(CGFloat(similarGroups.count) * 34, 136))
     }
     .accessibilityIdentifier("tag-manager-similar")
   }
