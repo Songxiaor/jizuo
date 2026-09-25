@@ -237,7 +237,7 @@ def verify_display_wiring(root: Path) -> None:
             "version_name: appRelease.shortVersion",
         ],
         "apps/browser-extension/entrypoints/popup/main.ts": ["browser.runtime.getManifest()", "manifest.name"],
-        "apps/desktop/Sources/LinkDigestApp/LinkDigestApp.swift": ["WindowGroup(ProductDisplay.name)"],
+        "apps/desktop/Sources/LinkDigestApp/LinkDigestApp.swift": ["WindowGroup(ProductDisplay.name"],
         "apps/desktop/Sources/LinkDigestApp/HistoryContentView.swift": ["ProductDisplay.extensionName"],
     }
     for relative, markers in expected_references.items():
