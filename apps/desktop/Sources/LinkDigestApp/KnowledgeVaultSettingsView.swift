@@ -11,6 +11,14 @@ struct KnowledgeVaultSettingsView: View {
   /// 「清除」不可逆（要重新选一次文件夹并重新授权），先问一句。
   @State private var isClearConfirmationPresented = false
 
+  /// 当前文件夹那一行：丢了就写出丢的是哪个路径，而不只是「找不到了」。
+  private var directoryLine: String {
+    if model.isDirectoryMissing {
+      return "找不到了：" + (model.missingDirectoryPath ?? "原来的文件夹")
+    }
+    return model.directoryPath ?? "尚未选择"
+  }
+
   var body: some View {
     SettingsPlainPage {
       SettingsPageHeader(
@@ -36,14 +44,14 @@ struct KnowledgeVaultSettingsView: View {
             Text("当前文件夹").foregroundStyle(.secondary)
             // 记住过文件夹、但现在找不到了（被移动或删除）时，不能写「尚未选择」——
             // 下面同时在报「文件夹不存在」，两句话互相矛盾（2026-09-24 走查）。
-            Text(model.directoryPath ?? (model.hasDirectory ? "原文件夹找不到了" : "尚未选择"))
+            Text(directoryLine)
               .themedFont(.body)
-              .foregroundStyle(model.directoryPath == nil && model.hasDirectory ? appTheme.danger : .primary)
+              .foregroundStyle(model.isDirectoryMissing ? appTheme.danger : .primary)
               .lineLimit(1)
               .truncationMode(.middle)
               .textSelection(.enabled)
               .frame(maxWidth: .infinity, alignment: .leading)
-              .help(model.directoryPath ?? "尚未选择")
+              .help(model.missingDirectoryPath ?? model.directoryPath ?? "尚未选择")
               .accessibilityIdentifier("knowledge-vault-directory")
             Button(model.directoryPath != nil ? "更改文件夹" : (model.hasDirectory ? "重新选择" : "选择文件夹"), action: chooseDirectory)
               .buttonStyle(.appNormal)
@@ -114,6 +122,13 @@ struct KnowledgeVaultSettingsView: View {
               .themedFont(.subheadline)
               .foregroundStyle(appTheme.danger)
               .accessibilityIdentifier("knowledge-vault-auto-sync-error")
+          }
+
+          if model.isDirectoryMissing {
+            Label("这个文件夹被移动、改名或删除了，同步已暂停。点「重新选择」指定新位置后自动恢复。", systemImage: "pause.circle")
+              .themedFont(.subheadline)
+              .foregroundStyle(.secondary)
+              .accessibilityIdentifier("knowledge-vault-missing-hint")
           }
 
           if !model.hasDirectory {

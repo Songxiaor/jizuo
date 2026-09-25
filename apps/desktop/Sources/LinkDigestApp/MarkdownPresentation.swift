@@ -492,7 +492,32 @@ enum MarkdownPresentation {
   static func sanitized(_ source: String) -> String {
     var value = replacingHTMLLikeTokensPreservingCode(in: source)
     value = replacing(#"(?:（此处内容无法显示）\s*){2,}"#, in: value, with: omittedHTML + "\n")
+    value = collapsingCJKAdjacentSpaces(value)
     return value
+  }
+
+  /// 中文字旁边连着的两个以上空格压成一个（2026-09-25 走查：译文里「谈  tokenization」）。
+  /// 只动紧贴汉字或中文标点的那一段，行首缩进和行尾两空格换行都不碰。
+  /// 代码块、行内代码原样保留：目录树这类内容靠空格对齐。
+  static func collapsingCJKAdjacentSpaces(_ text: String) -> String {
+    guard text.contains("  ") else { return text }
+    var inFence = false
+    let lines = text.components(separatedBy: "\n").map { line -> String in
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+        inFence.toggle()
+        return line
+      }
+      guard !inFence, line.contains("  ") else { return line }
+      // 反引号切开：偶数段是正文，奇数段是行内代码。
+      return line.components(separatedBy: "`").enumerated().map { index, part in
+        guard index.isMultiple(of: 2) else { return part }
+        var value = replacing(#"(?<=[\p{Han}，。、；：！？）」』])[ \u00A0]{2,}(?=\S)"#, in: part, with: " ")
+        value = replacing(#"(?<=\S)[ \u00A0]{2,}(?=[\p{Han}（「『])"#, in: value, with: " ")
+        return value
+      }.joined(separator: "`")
+    }
+    return lines.joined(separator: "\n")
   }
 
   static func attributed(_ source: String) -> AttributedString {
@@ -2781,8 +2806,34 @@ struct MarkdownContentView: View {
         }
       }
     case .none:
-      codeBlock(language: language, content: content)
+      if ReadingSpecialCode.isProse(language: language, content: content) {
+        proseBlock(content)
+      } else {
+        codeBlock(language: language, content: content)
+      }
     }
+  }
+
+  /// 装的是文字而不是代码的「代码块」（提示词、说明、txt / markdown）：用正文字体、
+  /// 自动换行、不编行号。原来整块等宽字体加行号，和左边列表、上下文正文像两个软件
+  /// （2026-09-24 Syc 对照 Tolaria 指出一体感差）。
+  private func proseBlock(_ content: String) -> some View {
+    Text(content)
+      .font(readingFont.font(size: readingFont.bodySize - 1))
+      .foregroundStyle(primaryTextColor.opacity(0.88))
+      .lineSpacing(6)
+      .textSelection(.enabled)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.vertical, 14)
+      .padding(.leading, 16)
+      .padding(.trailing, 40)
+      .background(primaryTextColor.opacity(0.035), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+      .overlay(alignment: .topTrailing) {
+        CodeCopyButton(content: content)
+          .padding(8)
+      }
+      .accessibilityIdentifier("history-content-prose-block")
   }
 
   private func specialBlockToolbar(title: String, toggleTitle: String, key: String) -> some View {
@@ -2829,7 +2880,7 @@ struct MarkdownContentView: View {
       HStack(alignment: .top, spacing: 0) {
         if lineCount > 1 {
           Text((1...lineCount).map(String.init).joined(separator: "\n"))
-            .font(.system(.body, design: .monospaced))
+            .font(.system(size: readingFont.bodySize - 2, design: .monospaced))
             .lineSpacing(4)
             .fixedSize()
             .multilineTextAlignment(.trailing)
@@ -2841,7 +2892,7 @@ struct MarkdownContentView: View {
         }
         ScrollView(.horizontal, showsIndicators: true) {
           Text(CodeSyntaxHighlighter.highlighted(content, language: language))
-            .font(.system(.body, design: .monospaced))
+            .font(.system(size: readingFont.bodySize - 2, design: .monospaced))
             .lineSpacing(4)
             .textSelection(.enabled)
             .fixedSize()
@@ -3321,6 +3372,24 @@ struct SectionFoldToggle: View {
 /// 需要特殊显示的代码块语言。
 enum ReadingSpecialCode {
   enum Kind { case math, mermaid, html }
+
+  /// 这个代码块装的是文字而不是代码。
+  /// 语言写明是纯文本 / Markdown / 提示词的算；没写语言时，中文占到字母数字三成以上也算。
+  static func isProse(language: String?, content: String) -> Bool {
+    let normalized = language?.lowercased().trimmingCharacters(in: .whitespaces) ?? ""
+    if ["txt", "text", "plain", "plaintext", "markdown", "md", "prompt"].contains(normalized) { return true }
+    guard normalized.isEmpty else { return false }
+    var cjk = 0
+    var alphanumeric = 0
+    for scalar in content.unicodeScalars.prefix(4_000) {
+      if (0x4E00...0x9FFF).contains(scalar.value) || (0x3400...0x4DBF).contains(scalar.value) {
+        cjk += 1
+      } else if CharacterSet.alphanumerics.contains(scalar) {
+        alphanumeric += 1
+      }
+    }
+    return cjk > 0 && Double(cjk) / Double(cjk + alphanumeric) >= 0.3
+  }
 
   static func kind(of language: String?) -> Kind? {
     switch language?.lowercased().trimmingCharacters(in: .whitespaces) {

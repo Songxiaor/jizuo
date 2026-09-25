@@ -841,8 +841,10 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   }
 
   private func capturedContent(title: String?, text: String) -> String {
-    let titleLine = title.map { "Captured title:\n\($0)\n\n" } ?? ""
-    return "\(titleLine)Captured content:\n<<<\n\(text)\n>>>"
+    // 标签用中性的 Title / Content：原来叫 Captured title / Captured content，模型会把「捕获」
+    // 带进总结开头，写成「捕获网页标题为…」（2026-09-25）。
+    let titleLine = title.map { "Title:\n\($0)\n\n" } ?? ""
+    return "\(titleLine)Content:\n<<<\n\(text)\n>>>"
   }
 
   private func validate(

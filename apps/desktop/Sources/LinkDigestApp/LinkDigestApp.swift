@@ -2041,6 +2041,8 @@ private struct LinkDigestCommands: Commands {
   @FocusedValue(\.newNote) private var newNote
   @FocusedValue(\.todayNote) private var todayNote
   @FocusedValue(\.focusHistorySearch) private var focusHistorySearch
+  @FocusedValue(\.toggleFavorite) private var toggleFavorite
+  @AppStorage(ReadingFontSize.storageKey) private var readingFontSizeRaw = Double(ReadingFontSize.default)
 
   var body: some Commands {
     CommandGroup(replacing: .newItem) {
@@ -2074,6 +2076,27 @@ private struct LinkDigestCommands: Commands {
         .keyboardShortcut("f", modifiers: .command)
         .disabled(focusHistorySearch == nil)
     }
+    // 阅读快捷键对齐 Tolaria：⌘D 收藏，⌘+ / ⌘− / ⌘0 调正文字号（2026-09-25）。
+    // 字号直接写偏好，不依赖焦点：光标在侧栏时按也生效。
+    CommandGroup(after: .toolbar) {
+      Button("收藏 / 取消收藏") { toggleFavorite?.run() }
+        .keyboardShortcut("d", modifiers: .command)
+        .disabled(toggleFavorite == nil)
+      Divider()
+      Button("放大正文字号") { setReadingFontSize(readingFontSizeRaw + Double(ReadingFontSize.step)) }
+        .keyboardShortcut("=", modifiers: .command)
+        .disabled(readingFontSizeRaw >= Double(ReadingFontSize.maximum))
+      Button("缩小正文字号") { setReadingFontSize(readingFontSizeRaw - Double(ReadingFontSize.step)) }
+        .keyboardShortcut("-", modifiers: .command)
+        .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
+      Button("恢复默认字号") { readingFontSizeRaw = Double(ReadingFontSize.default) }
+        .keyboardShortcut("0", modifiers: .command)
+      Divider()
+    }
+  }
+
+  private func setReadingFontSize(_ value: Double) {
+    readingFontSizeRaw = min(max(value, Double(ReadingFontSize.minimum)), Double(ReadingFontSize.maximum))
   }
 }
 

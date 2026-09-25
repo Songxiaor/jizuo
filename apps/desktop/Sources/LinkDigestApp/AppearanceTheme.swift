@@ -403,6 +403,10 @@ struct AppThemeInjector: ViewModifier {
       .tokens(systemColorScheme: systemColorScheme)
     let typography = UIFontSelection(storedValue: uiFontRawValue)
       .resolved(themeDefault: tokens.typography)
-    return content.environment(\.appTheme, tokens.withTypography(typography))
+    // 强调色一并下发：主窗口自己设了 tint，设置窗口没有，开关打开时是灰的，
+    // 开和关几乎分不清（2026-09-25 走查）。在注入处统一给，所有窗口都一致。
+    return content
+      .environment(\.appTheme, tokens.withTypography(typography))
+      .tint(tokens.accent)
   }
 }

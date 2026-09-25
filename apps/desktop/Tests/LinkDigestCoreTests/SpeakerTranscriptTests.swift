@@ -16,7 +16,7 @@ final class SpeakerTranscriptTests: XCTestCase {
       SpeakerSegment(startSeconds: 20.4, endSeconds: 27, speaker: "S1"),
     ]
     let labeled = SpeakerTranscript.assignSpeakers(to: paragraphs, segments: segments)
-    XCTAssertEqual(labeled.map(\.speaker), ["说话人 1", "说话人 2", "说话人 1", "说话人 2"])
+    XCTAssertEqual(labeled.map(\.speaker), ["说话人 01", "说话人 02", "说话人 01", "说话人 02"])
   }
 
   func testParagraphWithoutOverlapTakesNearestSpeaker() {
@@ -24,7 +24,7 @@ final class SpeakerTranscriptTests: XCTestCase {
       to: [p(30, 31, "尾巴")],
       segments: [SpeakerSegment(startSeconds: 0, endSeconds: 5, speaker: "A"), SpeakerSegment(startSeconds: 25, endSeconds: 29, speaker: "B")]
     )
-    XCTAssertEqual(labeled.first?.speaker, "说话人 2")
+    XCTAssertEqual(labeled.first?.speaker, "说话人 02")
   }
 
   func testRenderLabelsOnlyOnSpeakerChangeAndKeepsLeadingTimestamp() {
@@ -64,7 +64,7 @@ final class SpeakerTranscriptTests: XCTestCase {
       SpeakerSegment(startSeconds: 2.3, endSeconds: 4, speaker: "A", text: "开始吧。"),
       SpeakerSegment(startSeconds: 4.5, endSeconds: 6, speaker: "B", text: "好的。"),
     ])
-    XCTAssertEqual(labeled.map(\.speaker), ["说话人 1", "说话人 2"])
+    XCTAssertEqual(labeled.map(\.speaker), ["说话人 01", "说话人 02"])
     XCTAssertEqual(labeled.first?.paragraph.text, "大家好，开始吧。")
   }
 
@@ -81,7 +81,7 @@ final class SpeakerTranscriptTests: XCTestCase {
       SpeakerSegment(startSeconds: 13.7, endSeconds: 19.2, speaker: "S2"),
     ]
     let labeled = SpeakerTranscript.paragraphs(fromDiarizedSegments: SpeakerTranscript.labelPhrases(phrases, with: segments))
-    XCTAssertEqual(labeled.map(\.speaker), ["说话人 1", "说话人 2", "说话人 1"])
+    XCTAssertEqual(labeled.map(\.speaker), ["说话人 01", "说话人 02", "说话人 01"])
     XCTAssertEqual(labeled[1].paragraph.text, "我建议推迟一周。")
   }
 
@@ -91,6 +91,22 @@ final class SpeakerTranscriptTests: XCTestCase {
       SpeakerSegment(startSeconds: 7, endSeconds: 12, speaker: "B", text: "的，我建议推迟。"),
     ])
     XCTAssertEqual(labeled.map(\.paragraph.text), ["先说说时间安排。", "好的，我建议推迟。"])
+  }
+
+  /// 阅读页按一轮轮发言排：名字、时间单独拿出来，同一人连着的几行归进同一轮。
+  func testTurnsGroupConsecutiveLinesUnderOneSpeaker() {
+    let body = "00:00 **说话人 01**：先说安排。\n\n01:07 **说话人 02**：好的。\n\n01:09 我补充一句。"
+    let turns = SpeakerTranscript.turns(in: body)
+    XCTAssertEqual(turns.map(\.speaker), ["说话人 01", "说话人 02"])
+    XCTAssertEqual(turns.map(\.startLabel), ["00:00", "01:07"])
+    XCTAssertEqual(turns[1].paragraphs, ["好的。", "我补充一句。"])
+    XCTAssertEqual(turns[1].startSeconds, 67)
+    XCTAssertEqual(SpeakerTranscript.turns(in: "00:00 没分过说话人。\n\n00:05 第二段。"), [])
+  }
+
+  func testDefaultSpeakerNamesUseTwoDigits() {
+    XCTAssertEqual(SpeakerTranscript.defaultName(1), "说话人 01")
+    XCTAssertEqual(SpeakerTranscript.defaultName(12), "说话人 12")
   }
 
   /// 关掉时间码阅读时，每次换人仍然另起一段，粗体完整。

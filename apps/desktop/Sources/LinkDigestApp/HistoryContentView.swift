@@ -270,7 +270,8 @@ struct HistoryContentView: View {
           isReadingPlatformGalleryItem = true
         },
         contextMenu: { row in AnyView(DeferredMenuContent { historyContextMenu(for: row) }) },
-        accessibilityPrefix: platformGalleryAccessibilityPrefix
+        accessibilityPrefix: platformGalleryAccessibilityPrefix,
+        onBack: isPlatformGalleryRequested ? { isPlatformGalleryRequested = false } : nil
       )
     }
   }
@@ -317,6 +318,12 @@ struct HistoryContentView: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .id("history-gallery-navigation")
+            // 窗口名跟着页面走；工具栏里不重复画标题——页面自己的页头已经写着「X · 已保存…」「全部博主」。
+            // 原来这里没有标题，工具栏左上角落成 App 名「汲作」（2026-09-25 走查）。
+            .navigationTitle(showsPlatformGallerySurface
+              ? PlatformHistoryGalleryPresentation.platformDisplayName(for: model.selectedHosts)
+              : "博主")
+            .toolbar(removing: .title)
             // 回到三栏时从图库页之前记下的宽度起步。
             .onDisappear { threeColumnWidths = .stored() }
           } else {
@@ -349,6 +356,7 @@ struct HistoryContentView: View {
               // 走查实测；系统 scroll edge 在这一列同样不生效）。和详情列同一层渐隐遮罩。
               .overlay(alignment: .top) { ToolbarScrollFade(background: theme.card) }
               .navigationTitle(listColumnTitle)
+              .toolbar(removing: .title)
               .toolbar { listColumnToolbar }
               .navigationSplitViewColumnWidth(
                 min: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMin : DesignTokens.Layout.listMin,
@@ -537,6 +545,16 @@ struct HistoryContentView: View {
           .accessibilityIdentifier("history-gallery-sidebar-toggle")
         }
       }
+      // 卡片墙的出口放在工具栏左上，和系统「返回」同一个位置；原来是页面里的一行字。
+      ToolbarItem(placement: .navigation) {
+        if showsPlatformGallerySurface {
+          Button { isPlatformGalleryRequested = false } label: {
+            Label("返回列表", systemImage: "chevron.left")
+          }
+          .help("回到左中右三栏的内容列表")
+          .accessibilityIdentifier("\(platformGalleryAccessibilityPrefix)-toolbar-back")
+        }
+      }
       ToolbarItemGroup(placement: .primaryAction) {
         // 专注阅读、设置、添加 2026-09-23 移走：专注阅读进阅读区「更多」，设置去侧栏底部，
         // 添加去列表列头。顶栏只留「当前这一条」的操作。
@@ -657,25 +675,27 @@ struct HistoryContentView: View {
   /// 「往库里放东西」的入口：链接、博主主页、本地文件、笔记。放在列表列头——
   /// 它作用于列表，和对标应用的「＋」同一个位置。
   private var addMenu: some View {
+    // 每项带图标，和窗口顶栏「更多」菜单同一种样子（2026-09-25 走查：一个有图标一个没有）。
+    // 快捷键写在菜单栏「文件」里；这里不再挂一份，免得同一组合键在两处各触发一次。
     Menu {
-      Button("添加链接", action: manualLink.open)
-      Button("从剪贴板添加链接", action: manualLink.readClipboardAndOpen)
-      Button("添加博主主页") { presentDouyinProfileImport() }
+      Button(action: manualLink.open) { Label("添加链接（⌘N）", systemImage: "link") }
+      Button(action: manualLink.readClipboardAndOpen) { Label("从剪贴板添加链接（⇧⌘V）", systemImage: "doc.on.clipboard") }
+      Button { presentDouyinProfileImport() } label: { Label("添加博主主页", systemImage: "person.crop.circle.badge.plus") }
       Divider()
-      Button("导入本地文件…") { localImport.chooseFiles() }
+      Button { localImport.chooseFiles() } label: { Label("导入本地文件…（⇧⌘I）", systemImage: "folder.badge.plus") }
         .disabled(!localImport.canImport)
         .accessibilityIdentifier("import-local-files")
-      Button("同步语音备忘录") { localImport.syncVoiceMemos() }
+      Button { localImport.syncVoiceMemos() } label: { Label("同步语音备忘录", systemImage: "waveform") }
         .disabled(!localImport.canImport)
         .accessibilityIdentifier("sync-voice-memos")
-      Button("同步备忘录") { localImport.syncAppleNotes() }
+      Button { localImport.syncAppleNotes() } label: { Label("同步备忘录", systemImage: "note.text") }
         .disabled(!localImport.canImport)
         .accessibilityIdentifier("sync-apple-notes")
       Divider()
-      Button("新建笔记", action: createNote)
+      Button(action: createNote) { Label("新建笔记（⇧⌘N）", systemImage: "square.and.pencil") }
         .accessibilityIdentifier("create-user-note")
       // 原来侧栏里的「今天」：它是一个动作不是筛选项，收进这里；⌘⇧T 照旧。
-      Button("今天的笔记", action: openTodayNote)
+      Button(action: openTodayNote) { Label("今天的笔记（⇧⌘T）", systemImage: "calendar") }
         .accessibilityIdentifier("history-navigation-today-note")
     } label: {
       Label("添加", systemImage: "plus")
@@ -692,8 +712,9 @@ struct HistoryContentView: View {
   private var listColumnTitle: String {
     if let creator = model.selectedCreator { return creator.directoryDisplayName }
     if let form = model.selectedForm { return form.rawValue }
-    if model.selectedHosts.count == 1, let host = model.selectedHosts.first {
-      return HistoryPlatformDisplay.name(forHost: host)
+    // 和侧栏行同名（「公众号」「B站」），「其他」一次选中多个小众来源，也要叫「其他」而不是落回「全部」。
+    if !model.selectedHosts.isEmpty {
+      return PlatformHistoryGalleryPresentation.platformDisplayName(for: model.selectedHosts)
     }
     switch model.selectedScope {
     case .own: return "自有"
@@ -715,6 +736,23 @@ struct HistoryContentView: View {
   }
 
   @ToolbarContentBuilder private var listColumnToolbar: some ToolbarContent {
+    // 列标题自己画，不用系统标题：系统标题在列表列工具栏里预留一段固定宽度，
+    // 列宽 260pt 时只剩两个按钮的位置。来源页多一个「卡片视图」就放不下，系统把
+    // 整组按钮往右推，「＋」压在分栏线上，还在线右边多出一条分段线（2026-09-24 实测）。
+    ToolbarItem(placement: .navigation) {
+      Text(listColumnTitle)
+        .font(.system(size: 15, weight: .bold))
+        .lineLimit(1)
+        .truncationMode(.tail)
+        // 博主名可能很长：列宽 220pt 时，标题超过约 96pt 就会把三个按钮重新挤上分栏线。
+        .frame(maxWidth: 96, alignment: .leading)
+        .help(listColumnTitle)
+        .accessibilityAddTraits(.isHeader)
+    }
+    // 标题不再是弹性项，按钮会贴着标题排；用弹性空白把它们推回列的右缘。
+    if #available(macOS 26.0, *) {
+      ToolbarSpacer(.flexible)
+    }
     ToolbarItemGroup(placement: .automatic) {
       Button {
         isListSearchExpanded = true
@@ -1056,6 +1094,7 @@ struct HistoryContentView: View {
     })
     .focusedSceneValue(\.newNote, NewNoteAction { createNote() })
     .focusedSceneValue(\.todayNote, TodayNoteAction { openTodayNote() })
+    .focusedSceneValue(\.toggleFavorite, model.canToggleFavorite ? ToggleFavoriteAction { model.toggleFavorite() } : nil)
     .onChange(of: model.selectedHosts) { _, _ in isPlatformGalleryRequested = false }
     // 搜索框失焦且没有搜索词时收回成列头图标，列表多出一行。
     .onChange(of: isSearchFocused) { _, focused in
@@ -2894,7 +2933,15 @@ struct HistoryContentView: View {
       // 成功路径总是先写 detail 再翻 .loaded，走不到这里；只为 switch 穷尽。
       EmptyView()
     case .idle:
-      emptyDetail
+      Group {
+        // 换来源时列表先清空再重载：这一瞬间没有选中项，但也不是「库是空的」。
+        // 原来直接落到 emptyDetail，闪一下「还没有保存页面」（2026-09-25 走查）。
+        if model.listState == .loading && model.rows.isEmpty {
+          Color.clear.frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else {
+          emptyDetail
+        }
+      }
         // 没选中任何一条时，阅读区那三颗按钮（收藏、标签、更多）整个消失，macOS 会把
         // 列表列头的搜索、「＋」挤到窗口最右边（2026-09-24 走查）。留三颗灰着的占位，
         // 工具栏布局就和选中时一致；灰着也如实说明「现在没东西可操作」。
@@ -4855,6 +4902,9 @@ private struct HistoryDetailView: View, Equatable {
               .disabled(abs(readingFontSizeRaw - Double(ReadingFontSize.default)) < 0.01)
               .accessibilityIdentifier("reading-font-reset")
             }
+            // 纯文本是「怎么看」，不是「怎么复制」：原来放在「复制」一组里，找不到（2026-09-25 走查）。
+            Toggle("以纯文本查看正文", isOn: $showsPlainText)
+              .accessibilityIdentifier("history-content-plain-text-toggle")
           }
           if model.canEditTags {
             Section {
@@ -4871,8 +4921,6 @@ private struct HistoryDetailView: View, Equatable {
           Section("复制") {
             Button("拷贝全文") { copyFullArticle() }
               .accessibilityIdentifier("history-copy-full-text")
-            Toggle("以纯文本查看正文", isOn: $showsPlainText)
-              .accessibilityIdentifier("history-content-plain-text-toggle")
           }
           Section("导出") {
             Button("导出 Markdown (.md)") { exportCleanText(.markdown) }
@@ -4883,13 +4931,14 @@ private struct HistoryDetailView: View, Equatable {
               .accessibilityIdentifier("history-export-docx")
             Button("导出完整数据 (.json)") { model.requestExport(.json) }
           }
-          Section("重新处理") {
-            if canRecaptureSource {
+          // 「换个模型重跑…」是对这条内容做的 AI 动作，和重新总结、重新翻译
+          // 一起收在正文表头的「处理」菜单里，不再和导出、删除混在窗口工具栏。
+          // 只有能重抓时才出这一组：原来无条件画分组标题，本地文件上只剩一行灰字标题（2026-09-25）。
+          if canRecaptureSource {
+            Section("重新处理") {
               Button("重新抓取原文…") { openRecapture(sourceURL) }
                 .accessibilityIdentifier("history-recapture-source")
             }
-            // 「换个模型重跑…」是对这条内容做的 AI 动作，和重新总结、重新翻译
-            // 一起收在正文表头的「⋯」里，不再和导出、删除混在窗口工具栏。
           }
           Section {
             Button(model.deletionConfirmationActionTitle, role: .destructive) {
@@ -5923,14 +5972,17 @@ private struct HistoryDetailView: View, Equatable {
         }
       }
     } label: {
-      Image(systemName: "ellipsis.circle")
-        .font(.system(size: DesignTokens.IconSize.control, weight: .regular))
+      // 写出「处理」两个字：原来是一个「⋯」圆圈，和窗口顶栏的「更多」同形同名，
+      // 分不出一个管导出删除、一个管重做脑图（2026-09-25 走查）。
+      Label("处理", systemImage: "wand.and.stars")
+        .labelStyle(.titleAndIcon)
+        .themedFont(.callout)
     }
     .menuStyle(.borderlessButton)
     .menuIndicator(.hidden)
     .fixedSize()
-    .help("重做、脑图、整理与运行详情")
-    .accessibilityLabel("更多处理")
+    .help("重新转写、生成脑图、整理文稿、换个模型重跑、运行详情")
+    .accessibilityLabel("处理")
     .accessibilityIdentifier("history-more-actions-menu")
     // popover 不挂在这里：这个菜单在原位表头和吸顶表头里各有一份，挂在这里就有两个
     // popover 抢同一个开关，其中一个还锚在滚出屏幕的原位表头上。统一挂在正文区外层。
@@ -6425,7 +6477,7 @@ private struct HistoryDetailView: View, Equatable {
       if model.canEditTags {
         materialTypeMenu
       }
-      HistoryTagEditor(tags: detail.tags, model: model, showsMaterialTypes: false)
+      HistoryTagEditor(tags: detail.tags, model: model, showsMaterialTypes: false, composerInPopover: true)
         .id(ReadingAnchor.module("tags"))
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -6813,11 +6865,11 @@ private struct HistoryDetailView: View, Equatable {
           }
         case .transcript:
           if let transcript = latestTranscriptionSnapshot {
-            speakerBar(transcript: transcript)
             collapsibleSourceSection(
               heading: displayHeading(LayeredSourceDocument.transcriptHeading),
               snapshot: transcript,
-              isExpanded: $isTranscriptExpanded
+              isExpanded: $isTranscriptExpanded,
+              showsSpeakerBar: true
             )
           }
         case nil:
@@ -6830,11 +6882,11 @@ private struct HistoryDetailView: View, Equatable {
       ? latestTranscriptionSnapshot
       : latestSnapshot, !snapshot.bodyText.isEmpty {
       if snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue {
-        speakerBar(transcript: snapshot)
         collapsibleSourceSection(
           heading: displayHeading(LayeredSourceDocument.transcriptHeading),
           snapshot: snapshot,
-          isExpanded: $isTranscriptExpanded
+          isExpanded: $isTranscriptExpanded,
+          showsSpeakerBar: true
         )
           .accessibilityIdentifier("history-reading-source")
       } else if snapshot.sourceKind == CapturedDocument.Origin.burnedInSubtitles.rawValue {
@@ -6855,7 +6907,9 @@ private struct HistoryDetailView: View, Equatable {
           .padding(.vertical, DesignTokens.Space.sm)
           .accessibilityIdentifier("history-reading-source-untranscribed")
       } else {
-        sourceLayer(heading: isOwnWriting || isImportedImage(snapshot) ? nil : "正文", snapshot: snapshot)
+        // 单层网页正文不再挂「正文」小标题：页签上已经写着「原文」，同一件事说两遍（2026-09-25 走查）。
+        // 有多层（配文 / 字幕 / 转写）时各层仍带自己的名字。
+        sourceLayer(heading: nil, snapshot: snapshot)
           .accessibilityIdentifier("history-reading-source")
       }
     } else {
@@ -6883,7 +6937,8 @@ private struct HistoryDetailView: View, Equatable {
   private func collapsibleSourceSection(
     heading: String,
     snapshot: ContentSnapshot,
-    isExpanded: Binding<Bool>
+    isExpanded: Binding<Bool>,
+    showsSpeakerBar: Bool = false
   ) -> some View {
     let body = LayeredSourceDocument.body(of: snapshot)
     let long = isLongSource(snapshot)
@@ -6897,6 +6952,10 @@ private struct HistoryDetailView: View, Equatable {
     VStack(alignment: .leading, spacing: 8) {
       if showsHeading {
         sourceLayerHeading(heading)
+      }
+      // 说话人一栏属于这份转写，排在「录音转写」小标题之下；原来排在上面，小标题像是夹在两块中间。
+      if showsSpeakerBar {
+        speakerBar(transcript: snapshot)
       }
       if collapsed {
         sourceSnapshotReader(snapshot, bodyOverride: sourcePreview(body))
@@ -6974,6 +7033,15 @@ private struct HistoryDetailView: View, Equatable {
             .foregroundStyle(.secondary)
             .padding(.bottom, 6)
             .accessibilityIdentifier("capture-truncated-notice")
+        }
+        // 浏览器扩展那条路不经过「添加链接」的报错页拦截，报错页会被原样存下来
+        // （2026-09-25 走查：一条 GitHub 记录正文是「Uh oh! There was an error while loading」）。
+        // 读的时候至少说清楚，并给出路。
+        if bodyOverride == nil, capturedErrorPageNotice(snapshot) != nil {
+          Label(capturedErrorPageNotice(snapshot) ?? "", systemImage: "exclamationmark.triangle")
+            .foregroundStyle(theme.warning)
+            .padding(.bottom, 6)
+            .accessibilityIdentifier("capture-error-page-notice")
         }
         // 可写正文：本机转写、笔记、稿、作品。网页捕获保持只读。
         // 默认看排版，单击进源码；新建空笔记直接进入编辑。
@@ -7066,6 +7134,19 @@ private struct HistoryDetailView: View, Equatable {
             revealText: pendingSourceCitation,
             onFollowWikiLink: { title in model.followWikiLink(toTitle: title) },
             onRequestEdit: nil
+          )
+        } else if !showsPlainText,
+                  case let turns = SpeakerTranscript.turns(in: displayedSourceMarkdown(snapshot, bodyOverride: bodyOverride)),
+                  !turns.isEmpty {
+          // 分过说话人：按一轮轮发言排，名字和时间单独一行（时间码开关照常生效）。
+          SpeakerTranscriptView(
+            turns: turns,
+            readingFont: readingFont,
+            primaryTextColor: theme.primaryText,
+            secondaryTextColor: theme.secondaryText,
+            accentColor: theme.accent,
+            showsTimecodes: showsTranscriptTimecodes,
+            onSeek: { seconds in model.requestMediaSeek(toSeconds: seconds) }
           )
         } else if !showsPlainText, showsTranscriptTimecodes, !transcriptParagraphs.isEmpty,
                   snapshot.id == transcriptParagraphsSnapshotID {
@@ -7598,6 +7679,18 @@ private struct HistoryDetailView: View, Equatable {
     .frame(width: 340)
   }
 
+  private func capturedErrorPageNotice(_ snapshot: ContentSnapshot) -> String? {
+    guard let url = URL(string: snapshot.sourceURL) else { return nil }
+    let head = String(snapshot.bodyText.prefix(2_000))
+    if GitHubErrorPagePolicy.matches(url: url, extractedText: head) {
+      return "这次存下来的是 GitHub 的报错页，不是文件内容。点右上角「更多 → 重新抓取原文」再抓一次。"
+    }
+    if VerificationPagePolicy.matches(url: url, extractedText: head) {
+      return "这次存下来的是网站的验证页，不是正文。在浏览器里完成验证后，点「更多 → 重新抓取原文」。"
+    }
+    return nil
+  }
+
   private func captureCompletenessNotice(_ completeness: String) -> String? {
     switch completeness.lowercased() {
     case "visible_only":
@@ -7678,6 +7771,8 @@ private struct HistoryTagEditor: View {
   var autoExpandComposer = false
   /// 正文底部那一行已经有独立的「素材类型」下拉，这里不再重复一排按钮；标签弹窗里照旧显示。
   var showsMaterialTypes = true
+  /// 详情页头里用弹出小窗装输入框：原来在原地展开，整页正文往下跳一截（2026-09-25 走查）。
+  var composerInPopover = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var input = ""
   @State private var isComposerExpanded = false
@@ -7701,19 +7796,7 @@ private struct HistoryTagEditor: View {
         // 换行排而不是横向滚动：弹窗很窄，横排时第 4、5 个标签被截断或整个看不见（2026-09-24 走查）。
         TagPillFlowLayout(spacing: 6) {
             ForEach(chipTags) { tag in
-              HStack(spacing: 4) {
-                Text(tag.name).lineLimit(1)
-                if model.canEditTags {
-                  Button { model.removeTag(tag) } label: {
-                    Image(systemName: "xmark.circle.fill").imageScale(.small)
-                  }
-                  .buttonStyle(.plain)
-                  .accessibilityLabel("移除标签 \(tag.name)")
-                }
-              }
-              .themedFont(.caption)
-              .padding(.horizontal, 8).padding(.vertical, 3)
-              .background(.quaternary, in: Capsule())
+              HistoryTagChip(tag: tag, canRemove: model.canEditTags) { model.removeTag(tag) }
             }
             if canOpenComposer {
               addTagControl
@@ -7730,44 +7813,8 @@ private struct HistoryTagEditor: View {
         .accessibilityIdentifier("history-tag-empty-hint")
       }
 
-      if isComposerExpanded && model.canEditTags {
-        HStack(spacing: 8) {
-          TextField("标签名", text: $input)
-            .textFieldStyle(.roundedBorder)
-            .frame(maxWidth: 220)
-            .onSubmit(add)
-            .accessibilityIdentifier("history-tag-input")
-          Button("添加", action: add)
-            .disabled(!canAdd)
-            .accessibilityIdentifier("history-tag-add")
-          Button("取消") {
-            isComposerExpanded = false
-            input = ""
-          }
-          .buttonStyle(.borderless)
-        }
-        // 推荐按用得多少排、名字不截断：原来按字母排，空输入时只看到「Agent / Agent Fram…」
-        // 这类半截名字，而不是自己常用的标签（2026-09-24 走查）。
-        let suggestions = model.suggestedTags(matching: input, excluding: tags)
-        if !suggestions.isEmpty {
-          VStack(alignment: .leading, spacing: 4) {
-            Text(input.trimmingCharacters(in: .whitespaces).isEmpty ? "常用标签" : "已有标签")
-              .themedFont(.caption).foregroundStyle(.secondary)
-            TagPillFlowLayout(spacing: 6) {
-              ForEach(suggestions.prefix(8)) { tag in
-                Button(tag.name) {
-                  input = tag.name
-                  add()
-                }
-                .buttonStyle(.link)
-                .themedFont(.caption)
-                .fixedSize()
-                .accessibilityIdentifier("history-tag-suggestion-\(tag.normalizedName)")
-              }
-            }
-          }
-          .accessibilityIdentifier("history-tag-suggestions")
-        }
+      if isComposerExpanded && model.canEditTags && !composerInPopover {
+        composer
       }
 
       if model.canEditTags, showsMaterialTypes {
@@ -7783,6 +7830,54 @@ private struct HistoryTagEditor: View {
     .accessibilityIdentifier("history-tag-editor")
     .onAppear {
       if autoExpandComposer && canOpenComposer { isComposerExpanded = true }
+    }
+  }
+
+  /// 输入框 + 常用标签。原地展开或装进弹出小窗，两处共用。
+  @ViewBuilder private var composer: some View {
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 8) {
+        TextField("标签名", text: $input)
+          .textFieldStyle(.roundedBorder)
+          .frame(maxWidth: 220)
+          .onSubmit(add)
+          .accessibilityIdentifier("history-tag-input")
+        Button("添加", action: add)
+          .disabled(!canAdd)
+          .accessibilityIdentifier("history-tag-add")
+        Button("取消") {
+          isComposerExpanded = false
+          input = ""
+        }
+        .buttonStyle(.borderless)
+      }
+      // 推荐按用得多少排、名字不截断：原来按字母排，空输入时只看到「Agent / Agent Fram…」
+      // 这类半截名字，而不是自己常用的标签（2026-09-24 走查）。
+      let suggestions = model.suggestedTags(matching: input, excluding: tags)
+      if !suggestions.isEmpty {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(input.trimmingCharacters(in: .whitespaces).isEmpty ? "常用标签" : "已有标签")
+            .themedFont(.caption).foregroundStyle(.secondary)
+          TagPillFlowLayout(spacing: 6) {
+            ForEach(suggestions.prefix(8)) { tag in
+              // 做成可点的小胶囊：原来是一排链接样式的小字，看不出能点（2026-09-25 走查）。
+              Button {
+                input = tag.name
+                add()
+              } label: {
+                Text(tag.name)
+                  .themedFont(.caption)
+                  .padding(.horizontal, 8).padding(.vertical, 3)
+                  .background(.quaternary.opacity(0.6), in: Capsule())
+              }
+              .buttonStyle(.plain)
+              .fixedSize()
+              .accessibilityIdentifier("history-tag-suggestion-\(tag.normalizedName)")
+            }
+          }
+        }
+        .accessibilityIdentifier("history-tag-suggestions")
+      }
     }
   }
 
@@ -7825,7 +7920,20 @@ private struct HistoryTagEditor: View {
 
   /// 输入框展开后就不再显示：旁边已有「取消」，原来「× 收起」和「取消」两个按钮做同一件事（2026-09-24 走查）。
   @ViewBuilder private var addTagControl: some View {
-    if !isComposerExpanded {
+    if composerInPopover {
+      Button { isComposerExpanded = true } label: {
+        Label("添加标签", systemImage: "tag")
+          .themedFont(.callout)
+          .labelStyle(.titleAndIcon)
+      }
+      .buttonStyle(.borderless)
+      .accessibilityIdentifier("history-tag-add-toggle")
+      .popover(isPresented: $isComposerExpanded, arrowEdge: .bottom) {
+        composer
+          .padding(DesignTokens.Space.lg)
+          .frame(width: 300, alignment: .leading)
+      }
+    } else if !isComposerExpanded {
       Button {
         withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
           isComposerExpanded = true
@@ -7847,6 +7955,35 @@ private struct HistoryTagEditor: View {
     model.addTag(input)
     input = ""
     isComposerExpanded = false
+  }
+}
+
+/// 详情里的一个标签胶囊。× 只在鼠标移上去时出现：一排五个标签各带一个常亮的 ×，
+/// 页头满是删除按钮，也容易误点（2026-09-25 走查）。键盘和旁白用户仍可从无障碍动作里删。
+private struct HistoryTagChip: View {
+  let tag: HistoryTag
+  let canRemove: Bool
+  let remove: () -> Void
+  @State private var isHovering = false
+
+  var body: some View {
+    HStack(spacing: 4) {
+      Text(tag.name).lineLimit(1)
+      if canRemove {
+        Button(action: remove) {
+          Image(systemName: "xmark.circle.fill").imageScale(.small)
+        }
+        .buttonStyle(.plain)
+        .opacity(isHovering ? 1 : 0)
+        .accessibilityLabel("移除标签 \(tag.name)")
+      }
+    }
+    .themedFont(.caption)
+    .padding(.horizontal, 8).padding(.vertical, 3)
+    .background(.quaternary, in: Capsule())
+    .onHover { isHovering = $0 }
+    .accessibilityElement(children: .combine)
+    .accessibilityAction(named: "移除标签") { if canRemove { remove() } }
   }
 }
 
@@ -8037,6 +8174,14 @@ struct TodayNoteAction: Equatable {
 
 struct TodayNoteKey: FocusedValueKey { typealias Value = TodayNoteAction }
 
+/// 菜单命令句柄：收藏 / 取消收藏当前条目（⌘D，与 Tolaria 一致）。
+struct ToggleFavoriteAction: Equatable {
+  static func == (lhs: Self, rhs: Self) -> Bool { true }
+  let run: () -> Void
+}
+
+struct ToggleFavoriteKey: FocusedValueKey { typealias Value = ToggleFavoriteAction }
+
 extension FocusedValues {
   var newNote: NewNoteAction? {
     get { self[NewNoteKey.self] }
@@ -8045,6 +8190,10 @@ extension FocusedValues {
   var todayNote: TodayNoteAction? {
     get { self[TodayNoteKey.self] }
     set { self[TodayNoteKey.self] = newValue }
+  }
+  var toggleFavorite: ToggleFavoriteAction? {
+    get { self[ToggleFavoriteKey.self] }
+    set { self[ToggleFavoriteKey.self] = newValue }
   }
 }
 

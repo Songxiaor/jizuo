@@ -186,22 +186,30 @@ public final class UserDefaultsMediaStoragePreferenceStore: @unchecked Sendable 
     return lease
   }
 
+  /// 和知识库目录同一个坑（2026-09-25）：App 不跑沙盒，security-scoped 书签绑签名，
+  /// 本机每次重新打包签名后就解析不出来，被当成「文件夹/文件不见了」。改用普通书签。
   private static func liveCreateBookmark(_ url: URL) throws -> Data {
     try url.bookmarkData(
-      options: [.withSecurityScope],
+      options: [],
       includingResourceValuesForKeys: [.isDirectoryKey, .isRegularFileKey],
       relativeTo: nil
     )
   }
 
+  /// 先按普通书签解析；存量 security-scoped 书签再按老方式试一次。
   private static func liveResolveBookmark(_ data: Data) throws -> (url: URL, isStale: Bool) {
     var stale = false
-    let url = try URL(
-      resolvingBookmarkData: data,
-      options: [.withSecurityScope, .withoutUI],
-      relativeTo: nil,
-      bookmarkDataIsStale: &stale
-    )
-    return (url, stale)
+    do {
+      let url = try URL(resolvingBookmarkData: data, options: [.withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
+      return (url, stale)
+    } catch {
+      let url = try URL(
+        resolvingBookmarkData: data,
+        options: [.withSecurityScope, .withoutUI],
+        relativeTo: nil,
+        bookmarkDataIsStale: &stale
+      )
+      return (url, stale)
+    }
   }
 }

@@ -411,18 +411,18 @@ public enum HistoryTagNormalizer {
 
     // When the whole response is a bullet/numbered list, treat each line as a tag.
     if rawLines.count >= 2, rawLines.allSatisfy(looksLikeListItem) {
-      let fromBullets = normalizedTags(strippedLines, limit: maximumAutomaticTags)
+      let fromBullets = normalizedTags(strippedLines, limit: maximumAutomaticTags, rejectingInstructionResidue: true)
       if !fromBullets.isEmpty { return fromBullets }
     }
 
     let firstLine = stripListMarker(rawLines.first ?? trimmed)
-    let fromFirstLine = normalizedTags(splitTagCandidates(firstLine), limit: maximumAutomaticTags)
+    let fromFirstLine = normalizedTags(splitTagCandidates(firstLine), limit: maximumAutomaticTags, rejectingInstructionResidue: true)
     if !fromFirstLine.isEmpty { return fromFirstLine }
 
-    let fromWhole = normalizedTags(splitTagCandidates(trimmed), limit: maximumAutomaticTags)
+    let fromWhole = normalizedTags(splitTagCandidates(trimmed), limit: maximumAutomaticTags, rejectingInstructionResidue: true)
     if !fromWhole.isEmpty { return fromWhole }
 
-    return normalizedTags(strippedLines, limit: maximumAutomaticTags)
+    return normalizedTags(strippedLines, limit: maximumAutomaticTags, rejectingInstructionResidue: true)
   }
 
   /// Platform names that used to be attached as automatic tags. The sidebar
@@ -456,16 +456,39 @@ public enum HistoryTagNormalizer {
     return normalizedTags(raw, limit: limit)
   }
 
-  public static func normalizedTags(_ rawValues: [String], limit: Int = maximumTagsPerTask) -> [HistoryTag] {
+  public static func normalizedTags(
+    _ rawValues: [String],
+    limit: Int = maximumTagsPerTask,
+    rejectingInstructionResidue: Bool = false
+  ) -> [HistoryTag] {
     guard limit > 0 else { return [] }
     var seen = Set<String>()
     var result: [HistoryTag] = []
     for rawValue in rawValues {
+      if rejectingInstructionResidue, looksLikeInstructionResidue(rawValue) { continue }
       guard let tag = normalized(rawValue), seen.insert(tag.normalizedName).inserted else { continue }
       result.append(tag)
       if result.count == limit { break }
     }
     return result
+  }
+
+  /// 模型把指令原样吐回来的残渣，不是主题词（2026-09-25：库里有「separated by commas.」这种标签，
+  /// 300 个标签里 271 个只用过一次）。只挡明显的：句末标点、冒号、指令用词、四个词以上的英文短语。
+  static func looksLikeInstructionResidue(_ rawValue: String) -> Bool {
+    let value = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !value.isEmpty else { return false }
+    if let last = value.last, ".。!！?？:：".contains(last) { return true }
+    if value.contains(":") || value.contains("：") { return true }
+    let lower = value.lowercased()
+    // 只收只会出现在指令里的词；「标签」「摘要」「Output」这类也可能是真实主题（如「译文标签」「Structured Output」）。
+    let instructionWords = [
+      "separated", "comma", "tag1", "e.g.", "instruction", "reply with",
+      "逗号", "分隔", "主题词",
+    ]
+    if instructionWords.contains(where: { lower.contains($0) }) { return true }
+    let asciiWords = value.split(whereSeparator: { $0.isWhitespace }).filter { $0.allSatisfy(\.isASCII) }
+    return asciiWords.count >= 4
   }
 
   private static func splitTagCandidates(_ value: String) -> [String] {

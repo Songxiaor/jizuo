@@ -123,22 +123,38 @@ public final class UserDefaultsKnowledgeVaultStore: @unchecked Sendable {
     return (try? resolveBookmark(bookmark))?.url.path
   }
 
+  /// 书签里记着的原路径——目录已经不在了也读得出来，用来告诉用户「丢的是哪个」。
+  public func bookmarkedPath() -> String? {
+    guard let bookmark = defaults.data(forKey: key) else { return nil }
+    return URL.resourceValues(forKeys: [.pathKey], fromBookmarkData: bookmark)?.path
+  }
+
+  /// 汲作不跑沙盒（entitlements 里 app-sandbox = false），用普通书签就够了。
+  ///
+  /// 原来建的是 security-scoped 书签：它绑着 App 的签名，本机每重新打包签名一次，
+  /// 解析就报「格式不对」，被当成「文件夹不见了」（2026-09-25 实测）。
   private static func liveCreateBookmark(_ url: URL) throws -> Data {
     try url.bookmarkData(
-      options: [.withSecurityScope],
+      options: [],
       includingResourceValuesForKeys: [.isDirectoryKey],
       relativeTo: nil
     )
   }
 
+  /// 先按普通书签解析；存量的 security-scoped 书签解析失败时再按老方式试一次。
   private static func liveResolveBookmark(_ data: Data) throws -> (url: URL, isStale: Bool) {
     var stale = false
-    let url = try URL(
-      resolvingBookmarkData: data,
-      options: [.withSecurityScope, .withoutUI],
-      relativeTo: nil,
-      bookmarkDataIsStale: &stale
-    )
-    return (url, stale)
+    do {
+      let url = try URL(resolvingBookmarkData: data, options: [.withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
+      return (url, stale)
+    } catch {
+      let url = try URL(
+        resolvingBookmarkData: data,
+        options: [.withSecurityScope, .withoutUI],
+        relativeTo: nil,
+        bookmarkDataIsStale: &stale
+      )
+      return (url, stale)
+    }
   }
 }

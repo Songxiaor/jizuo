@@ -99,6 +99,9 @@ struct PlatformHistoryGallery: View {
   let onOpen: (TaskID) -> Void
   let contextMenu: (HistoryRowProjection) -> AnyView
   var accessibilityPrefix: String = "platform-gallery"
+  /// 返回三栏列表。传了就只收起卡片墙、保留当前来源；不传（独立的来源页）才清空来源选择。
+  /// 原来一律清空，从 X 的卡片墙返回会落到「全部」（2026-09-25 走查）。
+  var onBack: (() -> Void)? = nil
   /// 页头右端的排序：只排已加载的卡，不改后台分页顺序。`.original` 即「最近更新」。
   @State private var sortOrder: WorkSortOrder = .original
 
@@ -121,6 +124,10 @@ struct PlatformHistoryGallery: View {
     )
   }
 
+  private func goBack() {
+    if let onBack { onBack() } else { model.clearHostSelection() }
+  }
+
   private var searchActive: Bool {
     !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
@@ -132,14 +139,15 @@ struct PlatformHistoryGallery: View {
       HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.md) {
         // 图库是一条独立的路：进来之后原本没有出口，只能靠侧栏再点一次。
         // 和博主作品页的「返回」同一个位置、同一个样式。
-        Button(PlatformHistoryGalleryPresentation.backToListTitle) {
-          model.clearHostSelection()
+        // 三栏里打开的卡片墙把「返回」放在工具栏（onBack）；独立来源页仍用页内按钮。
+        if onBack == nil {
+          Button(PlatformHistoryGalleryPresentation.backToListTitle, action: goBack)
+            .buttonStyle(.appQuiet)
+            .controlSize(.small)
+            .help("回到左中右三栏的内容列表")
+            .accessibilityLabel(PlatformHistoryGalleryPresentation.backToListTitle)
+            .accessibilityIdentifier("\(accessibilityPrefix)-back-to-list")
         }
-        .buttonStyle(.appQuiet)
-        .controlSize(.small)
-        .help("回到左中右三栏的内容列表")
-        .accessibilityLabel(PlatformHistoryGalleryPresentation.backToListTitle)
-        .accessibilityIdentifier("\(accessibilityPrefix)-back-to-list")
         Text(titleText)
           .themedFont(.title3, weight: .semibold)
           .foregroundStyle(theme.primaryText)
@@ -252,7 +260,7 @@ struct PlatformHistoryGallery: View {
           ),
           message: PlatformHistoryGalleryPresentation.emptyHint,
           actionTitle: PlatformHistoryGalleryPresentation.backToListTitle,
-          action: { model.clearHostSelection() }
+          action: goBack
         )
         .padding()
         .accessibilityIdentifier("\(accessibilityPrefix)-empty")

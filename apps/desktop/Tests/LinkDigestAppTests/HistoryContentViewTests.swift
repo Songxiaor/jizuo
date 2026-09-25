@@ -314,8 +314,8 @@ final class HistoryContentViewTests: XCTestCase {
 
     XCTAssertTrue(root.contains(".toolbar {"))
     XCTAssertTrue(root.contains("ToolbarItemGroup(placement: .primaryAction)"))
-    XCTAssertTrue(root.contains("Button(\"添加链接\", action: manualLink.open)"))
-    XCTAssertTrue(root.contains("Button(\"从剪贴板添加链接\", action: manualLink.readClipboardAndOpen)"))
+    XCTAssertTrue(root.contains("Button(action: manualLink.open) { Label(\"添加链接（⌘N）\""))
+    XCTAssertTrue(root.contains("Button(action: manualLink.readClipboardAndOpen) { Label(\"从剪贴板添加链接"))
     XCTAssertTrue(root.contains(".disabled(!manualLink.canOpen)"))
     XCTAssertTrue(root.contains(".accessibilityIdentifier(\"manual-link-add-toolbar\")"))
   }
@@ -548,7 +548,7 @@ final class HistoryContentViewTests: XCTestCase {
     )
     XCTAssertTrue(sidebar.contains("history-filter-empty"))
     // 2026-09-23：正文底部的标签编辑器不再带素材类型那一排（另有下拉）。
-    XCTAssertTrue(detail.contains("HistoryTagEditor(tags: detail.tags, model: model, showsMaterialTypes: false)"))
+    XCTAssertTrue(detail.contains("HistoryTagEditor(tags: detail.tags, model: model, showsMaterialTypes: false, composerInPopover: true)"))
     // Chips-first: composer is collapsed behind a toggle; no always-on heavy form.
     XCTAssertTrue(source.contains("history-tag-add-toggle"))
     XCTAssertTrue(source.contains("history-tag-add"))
@@ -2579,7 +2579,7 @@ final class HistoryContentViewTests: XCTestCase {
     let source = historyContentViewSource()
     XCTAssertTrue(source.contains("history-navigation-trash"))
     // 「今天」从侧栏移进「添加」菜单（2026-09-23），⌘⇧T 照旧。
-    XCTAssertTrue(source.contains("Button(\"今天的笔记\", action: openTodayNote)"))
+    XCTAssertTrue(source.contains("Button(action: openTodayNote) { Label(\"今天的笔记"))
     XCTAssertTrue(source.contains("rectangle.compress.vertical"))
     XCTAssertTrue(source.contains("accessibilityLabel(\"打开设置\")"))
     XCTAssertTrue(source.contains("history-unconfigured-model-banner"))
@@ -2599,8 +2599,8 @@ final class HistoryContentViewTests: XCTestCase {
       XCTAssertLessThan(classification.lowerBound, annotations.lowerBound, "分类要在正文之前，不在页尾")
     }
     XCTAssertTrue(source.contains("移到回收站…"))
-    // 导入的图片不挂「正文」标签（2026-09-23）：图本身就是内容。
-    XCTAssertTrue(source.contains("sourceLayer(heading: isOwnWriting || isImportedImage(snapshot) ? nil : \"正文\""))
+    // 单层正文不挂「正文」小标题（2026-09-25）：页签上已写着「原文」；导入的图片同样不挂。
+    XCTAssertTrue(source.contains("sourceLayer(heading: nil, snapshot: snapshot)"))
     XCTAssertTrue(source.contains("CreatorWorkMetricLayout.visibleSlots(forHost: host)"))
     XCTAssertEqual(DailyNoteTitleFormat.display("2026-09-15"), "9月15日")
     XCTAssertEqual(DailyNoteTitleFormat.display("无标题笔记"), "无标题笔记")

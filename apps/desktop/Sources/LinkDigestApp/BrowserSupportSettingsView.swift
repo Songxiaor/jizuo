@@ -94,7 +94,7 @@ struct BrowserSupportSettingsView: View {
             Spacer()
             if model.isLoading { ProgressView().controlSize(.small) }
             Button("重新检查") { Task { await model.load() } }
-              .buttonStyle(.appQuiet)
+              .buttonStyle(.appNormal)
               .disabled(model.isLoading || model.activeBrowser != nil)
           }
           // Grid 而不是 VStack：浏览器名长度不同，用 HStack 排状态词的起点就会参差

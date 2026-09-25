@@ -277,7 +277,7 @@ struct SiteLoginSettingsView: View {
         Button(session.isLoggedIn ? "重新登录…" : "登录…") {
           presentLogin(platform)
         }
-        .buttonStyle(session.isLoggedIn ? .appQuiet : .appNormal)
+        .buttonStyle(.appNormal)
         .accessibilityIdentifier("site-login-\(id)-login")
 
         Menu {
@@ -290,6 +290,8 @@ struct SiteLoginSettingsView: View {
           Image(systemName: "ellipsis.circle")
         }
         .menuStyle(.borderlessButton)
+        // 和窗口里其它「⋯」菜单一样不带下拉小箭头。
+        .menuIndicator(.hidden)
         .fixedSize()
         .help("更多")
         .accessibilityLabel("\(platform.displayName)更多操作")

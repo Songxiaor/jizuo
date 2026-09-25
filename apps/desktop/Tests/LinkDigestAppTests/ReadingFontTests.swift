@@ -50,8 +50,14 @@ final class ReadingFontTests: XCTestCase {
         usesEditorialReadingTypography: editorial,
         bodySize: ReadingFontSize.default
       )
+      // 无衬线走系统字体（2026-09-24）：西文 SF Pro、中文由系统级联到苹方，和界面同一套字。
+      // 裂缝问题只出在 serif design（New York 没有中文字形），所以衬线仍必须是具名中文字体。
+      if !editorial {
+        XCTAssertEqual(resolved.face, .sans)
+        continue
+      }
       guard case let .named(family) = resolved.face else {
-        return XCTFail("跟随主题必须落到具名中文字体，而不是 system design")
+        return XCTFail("衬线的跟随主题必须落到具名中文字体，而不是 system serif design")
       }
       XCTAssertTrue(ReadingFontCatalog.supportsCJK(family), "\(family) 没有中文字形")
     }

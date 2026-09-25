@@ -190,4 +190,24 @@ final class ReadingRichDisplayTests: XCTestCase {
     XCTAssertLessThan(htmlSize.height, 300, "按内容量高度，不是整个网页视图的高度")
     guard case .failed = renderer.outcome(for: broken) else { return XCTFail("错误的公式应当报失败，而不是画出东西") }
   }
+
+  func testProseLikeCodeBlocksUseReadingTypography() {
+    XCTAssertTrue(ReadingSpecialCode.isProse(language: "txt", content: "我希望你重构我的 AGENTS.md"))
+    XCTAssertTrue(ReadingSpecialCode.isProse(language: "markdown", content: "# 标题"))
+    XCTAssertTrue(ReadingSpecialCode.isProse(language: nil, content: "请按以下步骤操作：找出矛盾，确定核心内容"))
+    XCTAssertFalse(ReadingSpecialCode.isProse(language: nil, content: "let x = 1\nprint(x) // 打印"))
+    XCTAssertFalse(ReadingSpecialCode.isProse(language: "swift", content: "// 全是中文的注释说明"))
+  }
+
+  func testInlineCodeGetsAChipBackgroundInReadingText() {
+    let composed = ReadingTextComposer.attributed(
+      blocks: [.paragraph("如果你的 `AGENTS.md` 说")],
+      readingFont: .sans,
+      palette: .init(primary: .labelColor, secondary: .secondaryLabelColor, accent: .controlAccentColor)
+    )
+    let range = (composed.string as NSString).range(of: "AGENTS.md")
+    XCTAssertNotNil(composed.attribute(.readingInlineCodeChip, at: range.location, effectiveRange: nil), "行内代码要有底色")
+    let font = composed.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+    XCTAssertTrue(font?.fontDescriptor.symbolicTraits.contains(.monoSpace) == true)
+  }
 }

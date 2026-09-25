@@ -6,6 +6,15 @@ import XCTest
 import LinkDigestCore
 
 final class MarkdownPresentationTests: XCTestCase {
+  /// 译文里中文旁的双空格压成一个；代码块、行内代码和行尾换行空格不动。
+  func testCollapsesDoubleSpacesNextToChineseOutsideCode() {
+    XCTAssertEqual(MarkdownPresentation.collapsingCJKAdjacentSpaces("我不想谈  tokenization  这个"), "我不想谈 tokenization 这个")
+    XCTAssertEqual(MarkdownPresentation.collapsingCJKAdjacentSpaces("第一行  \n第二行"), "第一行  \n第二行")
+    XCTAssertEqual(MarkdownPresentation.collapsingCJKAdjacentSpaces("看 `文档  说明` 这里"), "看 `文档  说明` 这里")
+    let fenced = "```\n├── 文档/    说明\n```"
+    XCTAssertEqual(MarkdownPresentation.collapsingCJKAdjacentSpaces(fenced), fenced)
+  }
+
   func testPaperThemeUsesOfficialClaudePaletteAndEditorialTypographyOnly() throws {
     let paper = AppearanceTheme.paper.tokens
 
@@ -138,7 +147,7 @@ final class MarkdownPresentationTests: XCTestCase {
     )
     XCTAssertEqual(
       ReadingFontSelection.theme.resolved(usesEditorialReadingTypography: false, bodySize: 16.5),
-      ResolvedReadingFont(face: .named("PingFang SC"), bodySize: 16.5)
+      ResolvedReadingFont(face: .sans, bodySize: 16.5)
     )
     XCTAssertEqual(
       ReadingFontSelection.family("Kaiti SC").resolved(usesEditorialReadingTypography: true, bodySize: 18),
@@ -1384,10 +1393,15 @@ final class ReadingItemNoteLayoutTests: XCTestCase {
       let range = string.range(of: fragment)
       return attributed.attribute(.kern, at: range.location, effectiveRange: nil) as? CGFloat
     }
+    XCTAssertNil(kern(at: "arpathy"), "英文单词内部不加")
+    // 系统排版已自带中英间距（macOS 27）时不再叠加，否则全角标点挤压会把空隙堆成两格宽。
+    guard !ReadingTextComposer.systemAddsCJKLatinSpacing else {
+      XCTAssertNil(kern(at: "立K"), "系统已自带间距时不再叠加")
+      return
+    }
     XCTAssertNotNil(kern(at: "立K"), "中文后接英文")
     XCTAssertNotNil(kern(at: "y风"), "英文后接中文")
     XCTAssertNotNil(kern(at: "M维"))
-    XCTAssertNil(kern(at: "arpathy"), "英文单词内部不加")
     XCTAssertNil(kern(at: "有 space"), "已有空格的地方不叠加")
   }
 

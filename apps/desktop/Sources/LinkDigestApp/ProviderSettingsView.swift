@@ -731,8 +731,9 @@ struct ProviderSettingsView: View {
   @ViewBuilder private var transcriptionDiscoveryControls: some View {
     switch model.transcriptionDiscoveryState {
     case .idle:
+      // 用有边框的普通按钮：quiet 样式平时没有底也没有边，看上去就是一行说明文字（2026-09-25 走查）。
       Button("在已添加的服务商里查找") { Task { await model.discoverTranscriptionModels() } }
-        .buttonStyle(.appQuiet)
+        .buttonStyle(.appNormal)
         .controlSize(.small)
         .disabled(model.libraryEntryDisplays.isEmpty)
         .help("读取各家服务商的模型列表（不收费），挑出能转写语音的模型")
@@ -769,12 +770,12 @@ struct ProviderSettingsView: View {
           .multilineTextAlignment(.trailing)
           .fixedSize(horizontal: false, vertical: true)
         Text("需要另加一家提供语音转写的服务商，比如阶跃星辰、硅基流动、Groq。")
-          .themedFont(.caption2)
-          .foregroundStyle(.tertiary)
+          .themedFont(.caption)
+          .foregroundStyle(.secondary)
           .multilineTextAlignment(.trailing)
           .fixedSize(horizontal: false, vertical: true)
         Button("重新查找") { Task { await model.discoverTranscriptionModels() } }
-          .buttonStyle(.appQuiet)
+          .buttonStyle(.appNormal)
           .controlSize(.small)
       }
       .frame(maxWidth: 300, alignment: .trailing)
@@ -782,7 +783,7 @@ struct ProviderSettingsView: View {
       HStack(spacing: 6) {
         Text("没能读取服务商的模型列表").themedFont(.caption).foregroundStyle(appTheme.warning)
         Button("重试") { Task { await model.discoverTranscriptionModels() } }
-          .buttonStyle(.appQuiet)
+          .buttonStyle(.appNormal)
           .controlSize(.small)
       }
     }
@@ -907,7 +908,7 @@ struct ProviderSettingsView: View {
             pendingProbeScope = scope
           }
         }
-        .buttonStyle(.appQuiet)
+        .buttonStyle(.appNormal)
         .disabled(plan.total == 0 || model.isSaving || model.isLoadingModels)
         .help("对每个模型发一条「Reply with OK.」，看它现在能不能用。")
         .accessibilityIdentifier(scope == .catalog ? "probe-catalog-models" : "probe-library-models")
@@ -1353,7 +1354,7 @@ struct ProviderSettingsView: View {
         statusIdentifier: "provider-settings-status"
       ) {
         Button("测试连接") { Task { await model.testConnection() } }
-          .buttonStyle(.appQuiet)
+          .buttonStyle(.appNormal)
           .disabled(!model.canTestConnection || !apiKeyInput.isEmpty)
           .help(testConnectionBlocked ? unsavedChangesText : "发送极短提示验证当前已保存配置")
           .accessibilityIdentifier("test-provider-connection")
@@ -2542,9 +2543,10 @@ struct ProviderSettingsView: View {
             .foregroundStyle(appTheme.warning)
             .fixedSize(horizontal: false, vertical: true)
         } else {
+          // caption2 + tertiary 在浅色主题上几乎看不见；和别的说明文字同一档。
           Text(trailingNote)
-            .themedFont(.caption2)
-            .foregroundStyle(.tertiary)
+            .themedFont(.caption)
+            .foregroundStyle(.secondary)
         }
       }
       .padding(.bottom, isLast ? 0 : 8)

@@ -171,8 +171,17 @@ enum ReadingTextComposer {
     guard full.length > 0 else { return parsed }
     parsed.enumerateAttributes(in: full) { attributes, range, _ in
       let traits = (attributes[.font] as? NSFont)?.fontDescriptor.symbolicTraits ?? []
-      if traits.contains(.monoSpace) {
-        parsed.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: baseSize - 2.5, weight: .regular), range: range)
+      // 行内代码：解析器只打「这是代码」的标记，等宽字是系统画字时自己换的，
+      // 字体属性里看不出来——按标记认。
+      let intent = (attributes[.inlinePresentationIntent] as? NSNumber)?.uintValue ?? 0
+      let isInlineCode = intent & InlinePresentationIntent.code.rawValue != 0
+      if traits.contains(.monoSpace) || isInlineCode {
+        // 等宽字的字面比中文小，只小 1.5 号，放进句子里看起来和正文一样大。
+        parsed.addAttribute(.font, value: NSFont.monospacedSystemFont(ofSize: baseSize - 1.5, weight: .regular), range: range)
+        // 行内代码垫一个贴字的圆角浅底（对齐 Tolaria）：等宽字直接夹在中文句子里很突兀，
+        // 有底才读得出是「一个词」。用系统的背景色属性会铺满整行高度，所以由
+        // `ReadingLayoutManager` 按字高自己画。
+        parsed.addAttribute(.readingInlineCodeChip, value: true, range: range)
         return
       }
       // 上下标（`H~2~O`、`<sup>`）：解析层只给了基线偏移，字号在这里按正文缩小。
@@ -224,13 +233,21 @@ enum ReadingTextComposer {
     }
   }
 
-  /// 中文紧挨英文或数字时（「Karpathy风格的LLM维基」），在交界处补约四分之一个字宽的空隙。
+  /// 中文紧挨英文或数字时（「Karpathy风格的LLM维基」），在交界处补一点空隙。
   ///
   /// 用字距而不是插入空格：文字本身一个字符都不变，复制、搜索、摘录定位
   /// （`revealText` 按原文找位置）全都不受影响。原文已经有空格的地方不是交界，不会叠加。
+  ///
+  /// 宽度取八分之一个字宽，和 CSS `text-autospace` 的标准一致（2026-09-25）。原来是四分之一：
+  /// 汉字自带左右留白，再叠四分之一字宽，看上去像两个空格（「谈  tokenization」）。
+  ///
+  /// 系统自己会加时就不再叠一层（2026-09-25 实测 macOS 27）：TextKit 已在汉字和字母之间留
+  /// 约 1/8 字宽；我们再加的字距会被全角标点挤压「接走」——「机器人，谈tokenization」里
+  /// 逗号被压窄，省下的宽度全堆到「谈」后面，看上去像空了两格。
   static func addCJKLatinSpacing(to text: NSMutableAttributedString, baseSize: CGFloat) {
+    guard !systemAddsCJKLatinSpacing else { return }
     let string = text.string
-    let gap = (baseSize * 0.25).rounded()
+    let gap = baseSize * 0.125
     var previous: (index: String.Index, isCJK: Bool, isLatin: Bool)?
     for index in string.indices {
       let character = string[index]
@@ -243,6 +260,21 @@ enum ReadingTextComposer {
       previous = (index, isCJK, isLatin)
     }
   }
+
+  /// 量一次：「中A」在排版后的宽度比两字各自宽度之和多出来，就是系统自带了中英间距。
+  static let systemAddsCJKLatinSpacing: Bool = {
+    let font = NSFont.systemFont(ofSize: 20)
+    let attributes: [NSAttributedString.Key: Any] = [.font: font]
+    let storage = NSTextStorage(string: "中A", attributes: attributes)
+    let layout = NSLayoutManager()
+    let container = NSTextContainer(size: NSSize(width: 1000, height: 100))
+    layout.addTextContainer(container)
+    storage.addLayoutManager(layout)
+    layout.ensureLayout(for: container)
+    let letterX = layout.boundingRect(forGlyphRange: NSRange(location: 1, length: 1), in: container).minX
+    let hanWidth = ("中" as NSString).size(withAttributes: attributes).width
+    return letterX - hanWidth > 1
+  }()
 
   private static func isCJKIdeograph(_ character: Character) -> Bool {
     guard let scalar = character.unicodeScalars.first else { return false }
@@ -310,6 +342,7 @@ struct SelectableReadingTextView: NSViewRepresentable {
 
   func makeNSView(context: Context) -> SelfSizingTextView {
     let view = SelfSizingTextView(frame: .zero)
+    view.textContainer?.replaceLayoutManager(ReadingLayoutManager())
     view.isEditable = false
     view.isSelectable = true
     view.drawsBackground = false
@@ -709,4 +742,38 @@ enum ReadingEditLocator {
 @MainActor final class ReadingSelectionRouter {
   static let shared = ReadingSelectionRouter()
   var formatter: ((String) -> String)?
+}
+
+extension NSAttributedString.Key {
+  /// 行内代码的底色标记（由 `ReadingLayoutManager` 画）。
+  static let readingInlineCodeChip = NSAttributedString.Key("jizuo.readingInlineCodeChip")
+}
+
+/// 阅读区的排版器：给行内代码画贴字的圆角浅底。
+///
+/// 系统的背景色属性按整行高度铺（含行距），15pt 正文上是一块 28pt 高的灰条，
+/// 很笨重。这里按字体的上下沿、上下各留 2pt 画，每行各画一段。
+final class ReadingLayoutManager: NSLayoutManager {
+  override func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+    super.drawBackground(forGlyphRange: glyphsToShow, at: origin)
+    guard let textStorage, let container = textContainers.first else { return }
+    let characters = characterRange(forGlyphRange: glyphsToShow, actualGlyphRange: nil)
+    textStorage.enumerateAttribute(.readingInlineCodeChip, in: characters) { value, range, _ in
+      guard value != nil else { return }
+      let font = textStorage.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
+        ?? NSFont.systemFont(ofSize: 14)
+      let glyphs = glyphRange(forCharacterRange: range, actualCharacterRange: nil)
+      NSColor.labelColor.withAlphaComponent(0.07).setFill()
+      enumerateLineFragments(forGlyphRange: glyphs) { lineRect, _, _, lineGlyphs, _ in
+        let piece = NSIntersectionRange(glyphs, lineGlyphs)
+        guard piece.length > 0 else { return }
+        var bounds = self.boundingRect(forGlyphRange: piece, in: container)
+        let baseline = lineRect.minY + self.location(forGlyphAt: piece.location).y
+        bounds.origin.y = baseline - font.ascender - 2
+        bounds.size.height = font.ascender - font.descender + 4
+        bounds = bounds.insetBy(dx: -3, dy: 0).offsetBy(dx: origin.x, dy: origin.y)
+        NSBezierPath(roundedRect: bounds, xRadius: 4, yRadius: 4).fill()
+      }
+    }
+  }
 }

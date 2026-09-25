@@ -87,3 +87,57 @@ private struct TranscriptTimelineRow: View {
     }
   }
 }
+
+/// 分过说话人的转写稿（2026-09-24）：会议纪要的排法。
+///
+/// 每一轮发言上面一行小字写「谁 · 几分几秒」，下面是说的话；正文和文章正文同一套字体字号。
+/// 原来把 `**说话人 1**：` 粗体塞在句首，名字和正文抢同一行，换人处全靠粗体认，读起来像一堆标签。
+struct SpeakerTranscriptView: View {
+  let turns: [SpeakerTurn]
+  let readingFont: ResolvedReadingFont
+  let primaryTextColor: Color
+  let secondaryTextColor: Color
+  let accentColor: Color
+  let showsTimecodes: Bool
+  let onSeek: (Double) -> Void
+
+  var body: some View {
+    LazyVStack(alignment: .leading, spacing: 20) {
+      ForEach(Array(turns.enumerated()), id: \.offset) { index, turn in
+        VStack(alignment: .leading, spacing: 4) {
+          if turn.speaker != nil || (showsTimecodes && turn.startSeconds != nil) {
+            HStack(spacing: 8) {
+              if let speaker = turn.speaker {
+                Text(speaker)
+                  .font(readingFont.font(size: readingFont.bodySize - 2, weight: .semibold))
+                  .foregroundStyle(secondaryTextColor)
+              }
+              if showsTimecodes, let label = turn.startLabel, let seconds = turn.startSeconds {
+                Button { onSeek(seconds) } label: {
+                  Text(label)
+                    .font(readingFont.font(size: readingFont.bodySize - 3))
+                    .monospacedDigit()
+                    .foregroundStyle(accentColor)
+                }
+                .buttonStyle(.plain)
+                .help("跳到 \(label)")
+                .accessibilityLabel("跳到 \(label)")
+                .accessibilityIdentifier("speaker-turn-seek-\(index)")
+              }
+            }
+          }
+          ForEach(Array(turn.paragraphs.enumerated()), id: \.offset) { _, paragraph in
+            Text(paragraph)
+              .font(readingFont.body())
+              .lineSpacing(MarkdownPresentation.bodyLineSpacing)
+              .foregroundStyle(primaryTextColor)
+              .textSelection(.enabled)
+              .frame(maxWidth: .infinity, alignment: .leading)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+      }
+    }
+    .accessibilityIdentifier("speaker-transcript")
+  }
+}

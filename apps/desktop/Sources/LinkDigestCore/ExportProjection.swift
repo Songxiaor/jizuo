@@ -100,6 +100,22 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
   /// Card-only cleanup: strip wrapping markers and label headings, keep body/code/link labels.
   /// Handles both multiline fixtures and real `directorySourcePreview` values (newlines already
   /// collapsed to spaces). Display-only — never mutates persisted source/export text.
+  /// 旧提示词让模型在总结开头交代来源：「根据捕获的网页内容，」「捕获内容摘要：」
+  /// （2026-09-25 库里 40 多条）。列表预览只露结论，跳过这段开场白；存的原文不动。
+  public static func strippingSummaryPreamble(_ text: String) -> String {
+    var value = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    let patterns = [
+      #"^(?:以下是)?(?:根据|基于)(?:所|已)?(?:捕获|抓取)(?:到)?的?[^，,：:。\n]{0,16}?内容(?:的总结)?[，,：:]\s*"#,
+      #"^(?:捕获|抓取)(?:的|到的)?(?:网页)?内容(?:摘要|总结|显示)[^，,：:\n]{0,16}[，,：:]\s*"#,
+      #"^(?:捕获|抓取)(?:的|到的)?(?:网页)?内容(?:摘要|总结)\s*(?:[（(][^）)\n]{0,20}[）)])?\s*[：:]?\s*"#,
+      #"^(?:总结|核心(?:结论|要点)|要点)如下[：:]\s*"#,
+    ]
+    for pattern in patterns {
+      value = value.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+    }
+    return value.isEmpty ? text : value
+  }
+
   public static func sanitizedDirectoryPreview(_ raw: String?, isSummary: Bool) -> String? {
     guard var text = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
     // Drop common capture wrappers that leak into X/source previews.
@@ -108,16 +124,17 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
     text = text.replacingOccurrences(of: #"<<<+|>>>+"#, with: " ", options: .regularExpression)
     // Section labels like "## 配文" / "# 原文" are scaffolding, not body.
     text = text.replacingOccurrences(
-      of: #"(?m)^#{1,6}\s*(配文|原文|正文|内容|图片里的文字|Caption|Tweet|Post)\s*$"#,
+      of: #"(?m)^#{1,6}\s*(配文|原文|正文|内容|图片里的文字|画面字幕|字幕|视频转写|录音转写|转写|Caption|Tweet|Post)\s*$"#,
       with: "",
       options: [.regularExpression, .caseInsensitive]
     )
     // Collapsed previews: leading "## 配文 " is no longer alone on a line.
     text = text.replacingOccurrences(
-      of: #"^(?:#{1,6}\s*(?:配文|原文|正文|内容|图片里的文字|Caption|Tweet|Post)\s+)+"#,
+      of: #"^(?:#{1,6}\s*(?:配文|原文|正文|内容|图片里的文字|画面字幕|字幕|视频转写|录音转写|转写|Caption|Tweet|Post)\s+)+"#,
       with: "",
       options: [.regularExpression, .caseInsensitive]
     )
+    if isSummary { text = strippingSummaryPreamble(text) }
     // 卡片预览是纯文字：加粗的 ** / __ 和行首 # 原样露出来只是噪音。
     text = text.replacingOccurrences(of: #"\*\*|__"#, with: "", options: .regularExpression)
     text = text.replacingOccurrences(of: #"(?m)^#{1,6}\s+"#, with: "", options: .regularExpression)
@@ -138,7 +155,7 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
     text = text.replacingOccurrences(of: #"(?m)^#{1,6}\s+"#, with: "", options: .regularExpression)
     // Orphan label left after stripping "## " from a collapsed "## 配文 body" string.
     text = text.replacingOccurrences(
-      of: #"^(?:配文|原文|正文|内容|图片里的文字|Caption|Tweet|Post)\s+"#,
+      of: #"^(?:配文|原文|正文|内容|图片里的文字|画面字幕|字幕|视频转写|录音转写|转写|Caption|Tweet|Post)\s+"#,
       with: "",
       options: [.regularExpression, .caseInsensitive]
     )

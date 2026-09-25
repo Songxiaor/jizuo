@@ -12,6 +12,17 @@ final class HistoryDomainTests: XCTestCase {
     XCTAssertFalse(names.contains("swift"))
   }
 
+  /// 列表预览跳过旧总结的开场白，只露结论。
+  func testSummaryPreviewSkipsCapturePreamble() {
+    XCTAssertEqual(HistoryRowProjection.strippingSummaryPreamble("根据捕获的网页内容，作者认为 Codex 最强。"), "作者认为 Codex 最强。")
+    XCTAssertEqual(HistoryRowProjection.strippingSummaryPreamble("根据捕获的内容，总结如下： 核心结论是 A。"), "核心结论是 A。")
+    XCTAssertEqual(HistoryRowProjection.strippingSummaryPreamble("捕获内容摘要：这是一篇教程。"), "这是一篇教程。")
+    XCTAssertEqual(HistoryRowProjection.strippingSummaryPreamble("捕获内容总结（基于网页文字内容） 一、背景与培训概况"), "一、背景与培训概况")
+    XCTAssertEqual(HistoryRowProjection.strippingSummaryPreamble("本文介绍了 AI 新职业。"), "本文介绍了 AI 新职业。")
+    // 译文分层小标题「## 字幕」折叠成一行后不该留在预览开头。
+    XCTAssertEqual(HistoryRowProjection.sanitizedDirectoryPreview("## 字幕 现在每个人都在努力。", isSummary: true), "现在每个人都在努力。")
+  }
+
   func testTagNormalizationAndAutomaticFirstLineLimit() {
     XCTAssertNil(HistoryTag(rawValue: "   "))
     XCTAssertNil(HistoryTag(rawValue: String(repeating: "长", count: 21)))
@@ -28,6 +39,15 @@ final class HistoryDomainTests: XCTestCase {
     XCTAssertEqual(
       HistoryTagNormalizer.automaticTags(from: "- 产品\n- 设计\n- 工程").map(\.name),
       ["产品", "设计", "工程"]
+    )
+    // 模型把指令吐回来的残渣不当标签（库里真有「separated by commas.」）。
+    XCTAssertEqual(
+      HistoryTagNormalizer.automaticTags(from: "AI Agent, separated by commas., 输出标签：, Claude Code").map(\.name),
+      ["AI Agent", "Claude Code"]
+    )
+    XCTAssertEqual(
+      HistoryTagNormalizer.automaticTags(from: "a list of reusable topic tags, 开发工具").map(\.name),
+      ["开发工具"]
     )
     XCTAssertEqual(
       HistoryTagNormalizer.fallbackTags(from: "该页面是微信公众平台的验证页面，提示环境异常。").map(\.name),

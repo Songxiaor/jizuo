@@ -4,7 +4,7 @@ import Foundation
 public struct SpeakerSegment: Sendable, Equatable {
   public let startSeconds: Double
   public let endSeconds: Double
-  /// 引擎给的原始编号（"S1"、"A"、"speaker_0"……），展示前会统一换成「说话人 N」。
+  /// 引擎给的原始编号（"S1"、"A"、"speaker_0"……），展示前会统一换成「说话人 01」这样的两位编号。
   public let speaker: String
   public let text: String?
 
@@ -16,21 +16,45 @@ public struct SpeakerSegment: Sendable, Equatable {
   }
 }
 
+/// 一轮发言：谁、从几分几秒开始、说了哪几段。
+public struct SpeakerTurn: Sendable, Equatable {
+  /// 分离之前就有的开头几行没有说话人。
+  public let speaker: String?
+  /// 「00:12」这样的时间码；正文没带时间码时为空。
+  public let startLabel: String?
+  public var paragraphs: [String]
+
+  public init(speaker: String?, startLabel: String?, paragraphs: [String]) {
+    self.speaker = speaker
+    self.startLabel = startLabel
+    self.paragraphs = paragraphs
+  }
+
+  /// 时间码换算成秒，给「点时间跳转」用。
+  public var startSeconds: Double? {
+    guard let startLabel else { return nil }
+    let parts = startLabel.split(separator: ":").compactMap { Int($0) }
+    guard !parts.isEmpty else { return nil }
+    return Double(parts.reduce(0) { $0 * 60 + $1 })
+  }
+}
+
 /// 带说话人的转写稿（2026-09-23）。
 ///
 /// 正文格式沿用转写稿的「行首时间码」，说话人跟在时间码后面、只在换人时出现：
 ///
-///     00:12 **说话人 1**：先说一下这次的安排……
+///     00:12 **说话人 01**：先说一下这次的安排……
 ///
-///     00:31 **说话人 2**：好的，我这边……
+///     00:31 **说话人 02**：好的，我这边……
 ///
-///     00:45 补充一点……            ← 还是说话人 2，不重复标
+///     00:45 补充一点……            ← 还是说话人 02，不重复标
 ///
 /// 时间码仍在行首，点击跳转照常可用（`MediaSeekLink`）；导出的 Markdown 也是人能读的样子。
 public enum SpeakerTranscript {
-  public static func defaultName(_ index: Int) -> String { "说话人 \(index)" }
+  /// 两位编号（「说话人 01」）：对齐常见会议纪要的写法，十人以内的列表也整齐。
+  public static func defaultName(_ index: Int) -> String { String(format: "说话人 %02d", index) }
 
-  /// 引擎的原始编号 → 「说话人 1、2……」，按首次出现的先后编号。
+  /// 引擎的原始编号 → 「说话人 01、02……」，按首次出现的先后编号。
   public static func displayNames(for segments: [SpeakerSegment]) -> [String: String] {
     var names: [String: String] = [:]
     for segment in segments.sorted(by: { $0.startSeconds < $1.startSeconds }) where names[segment.speaker] == nil {
@@ -260,6 +284,30 @@ public enum SpeakerTranscript {
       let end = index + 1 < starts.count ? starts[index + 1].0 : item.0 + 5_000
       return TranscriptParagraph(startMilliseconds: item.0, endMilliseconds: max(item.0, end), text: item.1)
     }
+  }
+
+  /// 阅读用：把分过说话人的正文拆成一轮一轮的发言。没分过说话人时返回空，照常走 Markdown。
+  ///
+  /// 正文里同一个人连着说的几行（`00:20 再补一句。`）归进上一轮，各自仍是一段。
+  public static func turns(in body: String) -> [SpeakerTurn] {
+    guard isDiarized(body) else { return [] }
+    var turns: [SpeakerTurn] = []
+    for raw in body.components(separatedBy: "\n") {
+      let line = raw.trimmingCharacters(in: .whitespaces)
+      guard !line.isEmpty else { continue }
+      let clockRange = line.range(of: #"^(\d{1,2}:)?\d{1,2}:\d{2}\s+"#, options: .regularExpression)
+      let clock = clockRange.map { line[$0].trimmingCharacters(in: .whitespaces) }
+      var text = clockRange.map { String(line[$0.upperBound...]) } ?? line
+      if let name = speakerLabel(in: line) {
+        text = String(text.dropFirst(name.count + 5))
+        turns.append(SpeakerTurn(speaker: name, startLabel: clock, paragraphs: []))
+      } else if turns.isEmpty {
+        turns.append(SpeakerTurn(speaker: nil, startLabel: clock, paragraphs: []))
+      }
+      let trimmed = text.trimmingCharacters(in: .whitespaces)
+      if !trimmed.isEmpty { turns[turns.count - 1].paragraphs.append(trimmed) }
+    }
+    return turns.filter { !$0.paragraphs.isEmpty }
   }
 
   static func speakerLabel(in line: String) -> String? {

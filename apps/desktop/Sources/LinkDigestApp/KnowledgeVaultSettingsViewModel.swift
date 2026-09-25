@@ -16,6 +16,11 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
   @Published private(set) var state: State = .idle
   @Published private(set) var lastSyncText: String?
   @Published private(set) var lastAutoSyncFailureMessage: String?
+  /// 记住过的文件夹现在找不到了（被移动、改名或删除）。此时同步按钮和自动同步都停下，
+  /// 只在「当前文件夹」那一行说一次，写出丢的是哪个路径（2026-09-25 走查：原来按钮照常可点、
+  /// 自动同步照开，同一句错误还在两个地方各报一遍）。
+  @Published private(set) var isDirectoryMissing = false
+  @Published private(set) var missingDirectoryPath: String?
 
   @Published var isAutoSyncEnabled: Bool = true {
     didSet {
@@ -50,7 +55,7 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
     return false
   }
 
-  var canSync: Bool { history != nil && hasDirectory && !isRunning }
+  var canSync: Bool { history != nil && hasDirectory && !isDirectoryMissing && !isRunning }
 
   /// 历史服务要等 App bootstrap 完才有，和别的设置页一样后接。
   func configure(history: HistoryApplicationService?) {
@@ -62,9 +67,15 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
     lastSyncText = store.lastSyncMilliseconds.map(Self.formatted(milliseconds:))
     // 上次选的目录还在不在，要现场问一次。目录被删或被搬走时，这里就该
     // 报出来，而不是等用户点了同步才失败。
+    isDirectoryMissing = false
+    missingDirectoryPath = nil
     if store.hasDirectory {
       do {
         _ = try store.directoryLease()
+      } catch KnowledgeVaultError.missingDirectory, KnowledgeVaultError.staleBookmark {
+        isDirectoryMissing = true
+        missingDirectoryPath = store.bookmarkedPath()
+        if case .failed = state { state = .idle }
       } catch let error as KnowledgeVaultError {
         state = .failed(error.userMessage)
       } catch {
@@ -78,6 +89,8 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
     do {
       try store.saveDirectory(url)
       directoryPath = url.path
+      isDirectoryMissing = false
+      missingDirectoryPath = nil
       lastAutoSyncFailureMessage = nil
       state = .idle
     } catch let error as KnowledgeVaultError {
@@ -90,6 +103,8 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
   func clearDirectory() {
     store.clearDirectory()
     directoryPath = nil
+    isDirectoryMissing = false
+    missingDirectoryPath = nil
     lastSyncText = nil
     lastAutoSyncFailureMessage = nil
     state = .idle
@@ -109,7 +124,7 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
   /// 延迟合并：抓一批内容会连着触发很多次，每次都同步等于把整个目录反复扫。
   /// 等安静下来再跑一次，抓 10 条和抓 1 条的代价一样。
   func scheduleAutoSync() {
-    guard isAutoSyncEnabled, store.hasDirectory else { return }
+    guard isAutoSyncEnabled, store.hasDirectory, !isDirectoryMissing else { return }
     autoSyncTask?.cancel()
     autoSyncTask = Task { [weak self] in
       try? await Task.sleep(for: .seconds(Self.autoSyncDelaySeconds))

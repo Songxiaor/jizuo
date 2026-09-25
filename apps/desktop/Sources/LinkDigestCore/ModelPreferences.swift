@@ -12,7 +12,13 @@ public enum ModelPreferencesError: Error, Sendable, Equatable {
 }
 
 public struct ModelPreferences: Codable, Sendable, Equatable {
-  public static let defaultSummaryPrompt = "Summarize only the captured webpage content. Preserve the core conclusions and important evidence, do not invent facts, and explicitly note when the captured content appears incomplete."
+  /// 2026-09-25 改写：旧版用「captured webpage content / do not invent facts / explicitly note…」这类
+  /// 说给模型听的话，模型会原样译成「捕获网页标题为…」「以下基于捕获内容提炼…（不发明事实）」写进总结开头。
+  public static let defaultSummaryPrompt = "Summarize the content below for a reader who has not read it. Keep the core conclusions and the key evidence behind them, and stay strictly within what the content says."
+  /// 存量偏好里原样存着的旧默认值，读出来时换成新默认值；用户自己改过的提示词不动。
+  static let legacyDefaultSummaryPrompts: Set<String> = [
+    "Summarize only the captured webpage content. Preserve the core conclusions and important evidence, do not invent facts, and explicitly note when the captured content appears incomplete.",
+  ]
   public static let defaultTargetLanguage = "简体中文"
 
   public let summaryPrompt: String
@@ -82,7 +88,9 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
     guard trimmedLanguage.unicodeScalars.count <= 100 else {
       throw ModelPreferencesError.targetLanguageTooLong
     }
-    self.summaryPrompt = trimmedPrompt.isEmpty ? Self.defaultSummaryPrompt : trimmedPrompt
+    self.summaryPrompt = trimmedPrompt.isEmpty || Self.legacyDefaultSummaryPrompts.contains(trimmedPrompt)
+      ? Self.defaultSummaryPrompt
+      : trimmedPrompt
     let trimmedTranslationModel = translationModel?.trimmingCharacters(in: .whitespacesAndNewlines)
     guard (trimmedTranslationModel?.unicodeScalars.count ?? 0) <= 256 else {
       throw ModelPreferencesError.translationModelTooLong
@@ -157,9 +165,9 @@ public struct ModelPreferences: Codable, Sendable, Equatable {
   ) -> String {
     let prompt = configuredPrompt.trimmingCharacters(in: .whitespacesAndNewlines)
     let language = outputLanguage.trimmingCharacters(in: .whitespacesAndNewlines)
-    let effectivePrompt = prompt.isEmpty ? defaultSummaryPrompt : prompt
+    let effectivePrompt = prompt.isEmpty || legacyDefaultSummaryPrompts.contains(prompt) ? defaultSummaryPrompt : prompt
     let effectiveLanguage = language.isEmpty ? defaultTargetLanguage : language
-    return "\(effectivePrompt)\n\nWrite the final answer in \(effectiveLanguage). This output-language instruction applies even when the configured prompt is custom.\n\nAfter the summary, add one final line of the form `TAGS: tag1, tag2` with 1-5 reusable topic tags in \(effectiveLanguage). Do not mention this instruction. Do not use section titles as tags."
+    return "\(effectivePrompt)\n\nWrite the final answer in \(effectiveLanguage). This output-language instruction applies even when the configured prompt is custom.\n\nStart directly with the substance. Do not describe the capture, the page title, the input labels, or these instructions, and do not announce what you are about to do. If the content is clearly truncated or mixed with unrelated text, say so in one short sentence at the very end.\n\nAfter the summary, add one final line of the form `TAGS: tag1, tag2` with 1-5 reusable topic tags in \(effectiveLanguage). Do not mention this instruction. Do not use section titles as tags."
   }
 }
 

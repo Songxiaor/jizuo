@@ -239,8 +239,12 @@ enum ReadingFontSelection: Equatable {
 
   /// 解析为具体渲染面。
   ///
-  /// 「跟随主题」在纸质主题下给中文衬线，其余给中文无衬线（PingFang）。
-  /// 两者都自带中文字形，所以默认组合不会再出现标点裂缝。
+  /// 「跟随主题」在纸质主题下给中文衬线，其余给系统无衬线：西文数字走 SF Pro，
+  /// 中文由系统级联到苹方，和侧栏、列表是同一套字。
+  ///
+  /// 不再写死 `"PingFang SC"`（2026-09-24）：具名苹方连西文和数字也用它自己的那套，
+  /// 字面更宽、更圆，和界面的 SF Pro 一眼就不是一个 App。系统字体的中文仍是苹方，
+  /// 标点挤压由系统级联负责，不会回到 New York 那种逗号裂缝。
   /// 衬线具体落到哪个家族见 `ReadingFontCatalog.editorialSerifFamily`——它会
   /// 在思源宋体缺席的机器上自己退回 Songti SC。
   func resolved(
@@ -250,11 +254,9 @@ enum ReadingFontSelection: Equatable {
     switch self {
     case .theme:
       return ResolvedReadingFont(
-        face: .named(
-          usesEditorialReadingTypography
-            ? ReadingFontCatalog.editorialSerifFamily
-            : "PingFang SC"
-        ),
+        face: usesEditorialReadingTypography
+          ? .named(ReadingFontCatalog.editorialSerifFamily)
+          : .sans,
         bodySize: bodySize
       )
     case let .family(name):
