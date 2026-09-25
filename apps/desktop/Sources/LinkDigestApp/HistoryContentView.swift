@@ -26,7 +26,8 @@ struct HistoryContentView: View {
   @State private var creatorPendingDeletion: CreatorSummary?
   @AppStorage(ProfileImportQueuePresentation.dismissedKey) private var dismissedImportNotices = ""
   /// 来源平台是否全部展开。默认只露出条数最多的 5 家。
-  @AppStorage("history.navigation.platforms-show-all") private var navigationPlatformsShowsAll = false
+  // v2（2026-09-25）：来源默认只露前 5 家。旧键里记着「全部展开」，换键让所有人回到默认折叠。
+  @AppStorage("history.navigation.platforms-show-all.v2") private var navigationPlatformsShowsAll = false
   @State private var isReadingPlatformGalleryItem = false
   @State private var platformGalleryScrollTarget: TaskID?
   @State private var showsCreatorDirectoryCatalog = true
@@ -246,19 +247,9 @@ struct HistoryContentView: View {
 
   @ViewBuilder private var platformGallerySurface: some View {
     if isReadingPlatformGalleryItem {
-      VStack(spacing: 0) {
-        HStack {
-          Button(platformGalleryBackTitle) {
-            platformGalleryScrollTarget = model.endPlatformGalleryReading()
-            isReadingPlatformGalleryItem = false
-          }
-          .accessibilityIdentifier(platformGalleryBackIdentifier)
-          Spacer()
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 8)
-        detailColumn
-      }
+      // 返回键只留工具栏左上那一个（2026-09-25）：原来这里另有一行「返回 YouTube」，
+      // 和工具栏的「<」两个返回键做的事还不一样。
+      detailColumn
     } else {
       PlatformHistoryGallery(
         model: model,
@@ -273,6 +264,40 @@ struct HistoryContentView: View {
         accessibilityPrefix: platformGalleryAccessibilityPrefix,
         onBack: isPlatformGalleryRequested ? { isPlatformGalleryRequested = false } : nil
       )
+    }
+  }
+
+  /// 博主页一层一层退：读作品 → 作品列表（或抓取批次）；作品列表 → 全部博主。
+  private var creatorDirectoryBackTitle: String? {
+    guard model.isCreatorDirectoryActive else { return nil }
+    if model.isReadingCreatorWorkInDirectory {
+      return model.profileImportReturnTarget == nil ? "返回作品" : "返回抓取批次"
+    }
+    if model.selectedCreator != nil, !showsCreatorDirectoryCatalog { return "返回全部博主" }
+    return nil
+  }
+
+  private func creatorDirectoryGoBack() {
+    if model.isReadingCreatorWorkInDirectory {
+      if model.profileImportReturnTarget != nil {
+        creatorWorkScrollTarget = nil
+        model.returnToProfileImportBatch()
+        columnVisibility = .all
+      } else {
+        creatorWorkScrollTarget = model.selectedTaskID
+        model.leaveCreatorWorkReading()
+      }
+    } else {
+      returnToCreatorDirectory()
+    }
+  }
+
+  private func platformGalleryGoBack() {
+    if isReadingPlatformGalleryItem {
+      platformGalleryScrollTarget = model.endPlatformGalleryReading()
+      isReadingPlatformGalleryItem = false
+    } else {
+      isPlatformGalleryRequested = false
     }
   }
 
@@ -546,13 +571,34 @@ struct HistoryContentView: View {
         }
       }
       // 卡片墙的出口放在工具栏左上，和系统「返回」同一个位置；原来是页面里的一行字。
+      // 一层一层退：在读卡片墙里的一条 → 回卡片墙；在卡片墙 → 回三栏列表。
       ToolbarItem(placement: .navigation) {
         if showsPlatformGallerySurface {
-          Button { isPlatformGalleryRequested = false } label: {
-            Label("返回列表", systemImage: "chevron.left")
+          Button(action: platformGalleryGoBack) {
+            Label(isReadingPlatformGalleryItem ? platformGalleryBackTitle : "返回列表", systemImage: "chevron.left")
           }
-          .help("回到左中右三栏的内容列表")
-          .accessibilityIdentifier("\(platformGalleryAccessibilityPrefix)-toolbar-back")
+          .help(isReadingPlatformGalleryItem ? platformGalleryBackTitle : "回到左中右三栏的内容列表")
+          .accessibilityIdentifier(isReadingPlatformGalleryItem
+            ? platformGalleryBackIdentifier
+            : "\(platformGalleryAccessibilityPrefix)-toolbar-back")
+        }
+      }
+      ToolbarItem(placement: .navigation) {
+        if let title = creatorDirectoryBackTitle {
+          Button(action: creatorDirectoryGoBack) {
+            Label(title, systemImage: "chevron.left")
+          }
+          .help(title)
+          .accessibilityIdentifier(model.isReadingCreatorWorkInDirectory
+            ? "history-creator-directory-back"
+            : "history-creator-directory-back-to-catalog")
+        }
+      }
+      // 卡片墙和博主页不是三栏布局，没有详情列把「收藏 / 标签 / ⋯」顶到右边，
+      // 它们会挤在左上角、压着侧栏分界线（2026-09-25 Syc 截图）。用弹性空白推回右侧。
+      if showsPlatformGallerySurface || model.isCreatorDirectoryActive {
+        if #available(macOS 26.0, *) {
+          ToolbarSpacer(.flexible)
         }
       }
       ToolbarItemGroup(placement: .primaryAction) {
@@ -723,7 +769,7 @@ struct HistoryContentView: View {
     case .recent: return "最近 7 天"
     case .unsummarized: return "待总结"
     case .favorite: return "收藏"
-    case .notes: return "我的笔记"
+    case .notes: return "笔记"
     case .trash: return "回收站"
     case .works: return "作品"
     case .drafts: return "稿件"
@@ -762,6 +808,14 @@ struct HistoryContentView: View {
       }
       .help("搜索标题、正文、总结、标签（⌘F）")
       .accessibilityIdentifier("history-search-toggle")
+      // 在「笔记」里时，新建笔记直接一键，不用再进「+」菜单找。
+      if model.selectedScope == .notes {
+        Button(action: createNote) {
+          Label("新建笔记", systemImage: "square.and.pencil")
+        }
+        .help("新建笔记（⇧⌘N）")
+        .accessibilityIdentifier("history-notes-create-toolbar")
+      }
       if !model.selectedHosts.isEmpty {
         Button {
           isPlatformGalleryRequested = true
@@ -1104,6 +1158,25 @@ struct HistoryContentView: View {
     }
   }
 
+  /// 「自有 / 外部」下面缩进的本机来源行。没有条目的来源不出行。
+  @ViewBuilder private func localSourceRows(_ hosts: [String]) -> some View {
+    let items = hosts.compactMap { host in
+      model.navigationCounts.platforms.first { $0.host == host }
+    }.filter { $0.count > 0 }
+    if !items.isEmpty {
+      UIReadingPlatformNavigation(
+        items: items.map { .init(host: $0.host, count: $0.count, faviconURL: nil, faviconTaskID: nil) },
+        theme: theme,
+        isSelected: { model.selectedHosts.contains($0) },
+        onSelect: { host in
+          isReadingPlatformGalleryItem = false
+          model.selectHost(host)
+        }
+      )
+      .padding(.leading, 16)
+    }
+  }
+
   private var navigationRail: some View {
     ScrollViewReader { proxy in
     List {
@@ -1111,21 +1184,32 @@ struct HistoryContentView: View {
       // 汲作是记录平台，不是待办清单：原来的收件箱 / 已归档 / 已使用记的是「处理到哪了」，
       // 那是外部 Agent 或用户自己工作流的事，不占侧栏最显眼的位置。
       Section {
-        navigationButton("全部", systemImage: "square.stack", count: model.navigationCounts.total, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+        navigationButton("全部", systemImage: "tray.full", count: model.navigationCounts.total, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.all)
         }
         .help("所有记录：收集来的外部内容，和自己的笔记、作品、备忘录、录音")
         .accessibilityIdentifier("history-navigation-all")
-        navigationButton("自有", systemImage: "person.crop.circle", count: model.navigationCounts.own, selected: model.selectedScope == .own && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+        navigationButton("自有", systemImage: OwnershipIcon.own, count: model.navigationCounts.own, selected: model.selectedScope == .own && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.own)
         }
         .help("自己说的：笔记、作品、备忘录、语音备忘录。判断错了可以右键改成「外部」")
         .accessibilityIdentifier("history-navigation-own")
-        navigationButton("外部", systemImage: "globe", count: model.navigationCounts.external, selected: model.selectedScope == .external && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+        // 「笔记」放回来（2026-09-25 Syc：新建笔记找不到了）：09-24 改版撤掉「我的笔记」后，
+        // 自己写的笔记只能从「形式 → 笔记」里和 740 条备忘录混着找，新建也只剩「+」菜单。
+        // 它是自己写的，排在「自有」下面第一个。
+        navigationButton("笔记", systemImage: "square.and.pencil", count: model.navigationCounts.notes, selected: model.selectedScope == .notes) {
+          model.selectScope(.notes)
+        }
+        .padding(.leading, 16)
+        .help("自己在汲作里写的笔记（⇧⌘N 新建）")
+        .accessibilityIdentifier("history-navigation-notes")
+        localSourceRows([LocalImportSource.appleNotes.rawValue, LocalImportSource.voiceMemos.rawValue])
+        navigationButton("外部", systemImage: OwnershipIcon.external, count: model.navigationCounts.external, selected: model.selectedScope == .external && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.external)
         }
         .help("别人的内容：抓来的帖子、文章、视频，拖进来的文件。判断错了可以右键改成「自有」")
         .accessibilityIdentifier("history-navigation-external")
+        localSourceRows([LocalImportSource.files.rawValue])
       }
       // 第一组不给标题。它是打开 App 的默认落点，标题不提供任何新信息。
 
@@ -1133,13 +1217,13 @@ struct HistoryContentView: View {
       Section {
         if navigationViewsExpanded {
           // 「最近」说不清是多近。标签直接写出口径，省得每个人自己猜一个。
-          navigationButton("最近 7 天", systemImage: "clock", count: model.navigationCounts.recent, selected: model.selectedScope == .recent) {
+          navigationButton("最近 7 天", systemImage: "clock.arrow.circlepath", count: model.navigationCounts.recent, selected: model.selectedScope == .recent) {
             model.selectScope(.recent)
           }
           .accessibilityIdentifier("history-navigation-recent")
           // 计数不强调底色：「待总结」是一个会一直涨的数，染成醒目色等于常驻一个
           // 永远消不掉的红点，看久了只会被忽略，还顺带让人焦虑。
-          navigationButton("待总结", systemImage: "doc.plaintext", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
+          navigationButton("待总结", systemImage: "sparkles", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
             model.selectScope(.unsummarized)
           }
           .accessibilityIdentifier("history-navigation-unsummarized")
@@ -1189,8 +1273,10 @@ struct HistoryContentView: View {
       if !model.navigationCounts.platforms.isEmpty {
         // 公共平台各占一行；杂项来源聚合进"待分类"，避免侧栏被长域名占满。
         // 本机来源（备忘录、语音备忘录、本地文件）和外部平台同属「从哪来」，合在一组按条数排。
+        // 本机来源（2026-09-25）挪到「自有 / 外部」下面：备忘录、语音备忘录是自己说的，
+        // 拖进来的本地文件算外部。「来源」只讲外面的平台。
         let knownPlatforms = model.navigationCounts.platforms.filter {
-          HistoryPlatformDisplay.isWellKnown(host: $0.host)
+          HistoryPlatformDisplay.isWellKnown(host: $0.host) && LocalImportSource(rawValue: $0.host) == nil
         }
         let miscPlatforms = model.navigationCounts.platforms.filter { !HistoryPlatformDisplay.isWellKnown(host: $0.host) }
         // 分区标题同样要显式给字体：`Section("平台")` 那种字符串写法的标题是 List
@@ -1244,7 +1330,7 @@ struct HistoryContentView: View {
         if navigationCreatorsExpanded {
           navigationButton(
             "全部博主",
-            systemImage: "person",
+            systemImage: "person.2",
             count: model.navigationCounts.creatorCount,
             selected: model.isCreatorDirectoryActive
           ) {
@@ -1549,7 +1635,10 @@ struct HistoryContentView: View {
         // 原来各符号按默认字重各画各的，粗细不一，是「像拼凑的」最直接来源。
         Image(systemName: systemImage)
           // regular 而不是 medium：线条细一档，和对标应用的侧栏图标同一重量（2026-09-23）。
-          .font(.system(size: DesignTokens.IconSize.control, weight: .regular))
+          // 比正文小一号（2026-09-25）：原来 14pt 图标配 13pt 文字，图标压过字，一列看下去偏重。
+          // 选中行换实心：和 Tolaria、备忘录一样，靠形状而不只靠颜色认出当前位置。
+          .font(.system(size: DesignTokens.IconSize.sidebar, weight: .regular))
+          .symbolVariant(selected ? .fill : .none)
           .foregroundStyle(selected ? theme.accent : theme.secondaryText)
           .frame(width: 18)
         Text(title)
@@ -2385,18 +2474,8 @@ struct HistoryContentView: View {
 
   private var creatorDirectoryReader: some View {
     VStack(spacing: 0) {
+      // 返回键在工具栏左上（creatorDirectoryBack），这一行只留「抓取作品」。
       HStack(spacing: 10) {
-        Button(model.profileImportReturnTarget == nil ? "返回作品" : "返回抓取批次") {
-          if model.profileImportReturnTarget != nil {
-            creatorWorkScrollTarget = nil
-            model.returnToProfileImportBatch()
-            columnVisibility = .all
-          } else {
-            creatorWorkScrollTarget = model.selectedTaskID
-            model.leaveCreatorWorkReading()
-          }
-        }
-          .accessibilityIdentifier("history-creator-directory-back")
         Spacer(minLength: 8)
         if let creator = model.selectedCreator {
           Button("抓取作品") {
@@ -2416,14 +2495,6 @@ struct HistoryContentView: View {
     let canCapture = ProfileImportPlatform.parse(creator.profileURL) != nil
     let batches = manualLink.profileImportBatches.filter { $0.creatorID == creator.id }
     return VStack(spacing: 0) {
-      HStack {
-        Button("返回全部博主") { returnToCreatorDirectory() }
-          .accessibilityIdentifier("history-creator-directory-back-to-catalog")
-        Spacer()
-      }
-      .padding(.horizontal, 14)
-      .padding(.top, 8)
-      .padding(.bottom, 2)
       HStack(alignment: .center, spacing: 10) {
         CreatorDirectoryAvatar(creator: creator, size: 36, theme: theme) {
           presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
@@ -3567,6 +3638,11 @@ struct PlatformNavigationIcon: View {
         .resizable()
         .scaledToFit()
         .frame(width: Self.monochromeSize, height: Self.monochromeSize)
+    } else if monochrome, let glyph = PlatformIconCatalog.sidebarGlyph(for: host) {
+      Image(nsImage: glyph)
+        .renderingMode(.template)
+        .resizable().scaledToFit()
+        .frame(width: Self.monochromeSize, height: Self.monochromeSize)
     } else if let image = PlatformIconCatalog.image(for: host) {
       // 单色两种画法，同一颜色、同一 16pt 框（2026-09-23 统一）：
       // - 线条型 logo（X、GitHub、B 站、公众号、掘金）：直接取形状，模板渲染；
@@ -3610,7 +3686,8 @@ struct PlatformNavigationIcon: View {
   }
 
   /// 侧栏单色图标的显示尺寸：比文字行略小一档，和「本机」区的系统线条图标同一重量。
-  static let monochromeSize: CGFloat = 14
+  /// 13：和侧栏系统图标（`IconSize.sidebar`）同一大小（2026-09-25，原 14）。
+  static let monochromeSize: CGFloat = 13
 
   /// 单色字母徽标：1pt 线框圆角方块，字用常规偏中等字重。原来是实心块、字镂空，
   /// 一列三个小黑方块（Discourse、Substack、小红书）正是侧栏发重的来源之一。
@@ -5976,9 +6053,11 @@ private struct HistoryDetailView: View, Equatable {
       // 分不出一个管导出删除、一个管重做脑图（2026-09-25 走查）。
       Label("处理", systemImage: "wand.and.stars")
         .labelStyle(.titleAndIcon)
-        .themedFont(.callout)
     }
-    .menuStyle(.borderlessButton)
+    // 和旁边的「总结」「翻译」同一种有边框按钮（2026-09-25）：原来一个是框、一个是蓝字，
+    // 同一排动作两种长相。
+    .menuStyle(.button)
+    .buttonStyle(.bordered)
     .menuIndicator(.hidden)
     .fixedSize()
     .help("重新转写、生成脑图、整理文稿、换个模型重跑、运行详情")
@@ -6499,11 +6578,13 @@ private struct HistoryDetailView: View, Equatable {
         host: host, tagNames: detail.tags.map(\.name)
       )
     } label: {
-      Label(current.rawValue, systemImage: current == .own ? "person.crop.circle" : "globe")
+      Label(current.rawValue, systemImage: current == .own ? OwnershipIcon.own : OwnershipIcon.external)
         .labelStyle(.titleAndIcon)
     }
     .menuStyle(.borderlessButton)
     .menuIndicator(.hidden)
+    // 和同一行的「素材类型」「添加标签」同色：它是一个属性，不是这一页的主操作（2026-09-25）。
+    .tint(theme.secondaryText)
     .fixedSize()
     .disabled(!model.canEditTags)
     .help("这条算「\(current.rawValue)」，点一下可以改")
@@ -8174,6 +8255,13 @@ struct TodayNoteAction: Equatable {
 
 struct TodayNoteKey: FocusedValueKey { typealias Value = TodayNoteAction }
 
+/// 「自有 / 外部」在侧栏、详情页头、右键菜单里用同一对图标（2026-09-25）：
+/// 「外部」是收进来的，和「全部」的收纳盒同一个画法；「自有」是一个人，和「博主」的两个人同一套。
+enum OwnershipIcon {
+  static let own = "person"
+  static let external = "tray.and.arrow.down"
+}
+
 /// 菜单命令句柄：收藏 / 取消收藏当前条目（⌘D，与 Tolaria 一致）。
 struct ToggleFavoriteAction: Equatable {
   static func == (lhs: Self, rhs: Self) -> Bool { true }
@@ -8488,7 +8576,7 @@ private struct OwnershipToggleButton: View {
     Button {
       model.setOwnership(target, taskID: taskID, canonicalURL: canonicalURL, host: host)
     } label: {
-      Label("改为\(target.rawValue)", systemImage: target == .own ? "person.crop.circle" : "globe")
+      Label("改为\(target.rawValue)", systemImage: target == .own ? OwnershipIcon.own : OwnershipIcon.external)
     }
     .disabled(model.isReadOnly || model.isDeleting)
     .help("现在算「\(current.rawValue)」")

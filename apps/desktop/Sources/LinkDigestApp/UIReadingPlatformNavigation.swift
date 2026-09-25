@@ -38,7 +38,9 @@ struct UIReadingPlatformNavigation: View {
     guard let collapsedLimit, !isExpanded.wrappedValue, orderedItems.count > collapsedLimit + 1 else {
       return orderedItems
     }
-    let top = Set(orderedItems.sorted { $0.count > $1.count }.prefix(collapsedLimit).map(\.host))
+    // 「其他」是杂项汇总，条数再多也不算常用平台，一律收进「更多」（2026-09-25）。
+    let top = Set(orderedItems.filter { $0.host != HistoryPlatformDisplay.miscHost }
+      .sorted { $0.count > $1.count }.prefix(collapsedLimit).map(\.host))
     return orderedItems.filter { top.contains($0.host) || isSelected($0.host) }
   }
 
@@ -58,10 +60,11 @@ struct UIReadingPlatformNavigation: View {
       Button {
         isExpanded.wrappedValue.toggle()
       } label: {
-        HStack(spacing: DesignTokens.Space.xs) {
+        // 箭头放在图标那一列、文字和平台名对齐（和平台行同样 8pt / 18pt）。
+        HStack(spacing: 8) {
           Image(systemName: isExpanded.wrappedValue ? "chevron.up" : "chevron.down")
             .font(.system(size: 9, weight: .semibold))
-            .frame(width: 16, height: 16)
+            .frame(width: 18, height: 16)
           Text(isExpanded.wrappedValue ? "收起" : "更多平台 · \(hiddenCount)")
             .themedFont(.subheadline)
           Spacer(minLength: 0)
@@ -101,15 +104,18 @@ private struct UIReadingPlatformRow: View {
 
   var body: some View {
     Button(action: onSelect) {
-      HStack(spacing: DesignTokens.Space.xs) {
+      // 间距、图标框和主导航行一致（8pt / 18pt 宽）：原来 4pt / 16pt，
+      // 来源这一组的文字比上面几组往左缩了一截（2026-09-25 走查）。
+      HStack(spacing: 8) {
         PlatformNavigationIcon(
           host: item.host,
           faviconURL: item.faviconURL,
           faviconTaskID: item.faviconTaskID,
           monochrome: true
         )
-        .foregroundStyle(isSelected ? theme.accent : theme.secondaryText)
-        .frame(width: 16, height: 16)
+        // 选中时显示平台自己的颜色；黑色系品牌用正文色，免得深色主题下看不见。
+        .foregroundStyle(isSelected ? (PlatformIconCatalog.sidebarBrandColor(for: item.host) ?? theme.primaryText) : theme.secondaryText)
+        .frame(width: 18, height: 16)
         .accessibilityHidden(true)
         Text(name)
           .themedFont(.body)

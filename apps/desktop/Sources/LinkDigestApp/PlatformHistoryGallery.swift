@@ -112,6 +112,13 @@ struct PlatformHistoryGallery: View {
     return sortOrder.sorted(filtered, likes: { $0.likes }, published: { $0.published })
   }
 
+  /// 这一页都是同一个作者（常见于抖音按博主抓的一批）时，每张卡再写一遍作者名只是噪音。
+  /// 和列表「同一作者连续只写一次」同一个道理（2026-09-25）。
+  private var rowsShareOneAuthor: Bool {
+    let authors = Set(rows.compactMap { $0.author?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
+    return rows.count > 1 && authors.count == 1
+  }
+
   private func sortTitle(_ order: WorkSortOrder) -> String {
     order == .original ? "最近更新" : order.title
   }
@@ -209,6 +216,7 @@ struct PlatformHistoryGallery: View {
                   isSelected: model.selectedTaskIDs.contains(row.taskID),
                   selectionActive: !model.selectedTaskIDs.isEmpty,
                   accessibilityPrefix: accessibilityPrefix,
+                  showsAuthor: !rowsShareOneAuthor,
                   localCover: { await model.localCoverURL(for: row.taskID, matching: $0) },
                   onOpen: { onOpen(row.taskID) },
                   onToggleSelection: { model.toggleGallerySelection(row.taskID) },
@@ -302,6 +310,7 @@ private struct PlatformGalleryCell<Menu: View>: View {
   let isSelected: Bool
   let selectionActive: Bool
   let accessibilityPrefix: String
+  var showsAuthor: Bool = true
   let localCover: (String?) async -> URL?
   let onOpen: () -> Void
   let onToggleSelection: () -> Void
@@ -312,7 +321,11 @@ private struct PlatformGalleryCell<Menu: View>: View {
 
   var body: some View {
     Button(action: onOpen) {
-      CreatorSavedWorkCard(row: row, theme: theme, localCover: localCover)
+      CreatorSavedWorkCard(
+        row: row, theme: theme, localCover: localCover,
+        showsAuthor: showsAuthor,
+        showsPrimaryMetricOnly: true
+      )
     }
     .buttonStyle(.plain)
     .accessibilityElement(children: .combine)

@@ -143,6 +143,8 @@ extension DesignTokens {
     static let inline: CGFloat = 11
     /// 14 — 工具栏、按钮。
     static let control: CGFloat = 14
+    /// 13 — 侧栏导航行，比 13pt 正文不再大一号。
+    static let sidebar: CGFloat = 13
     /// 17 — 区块标题旁。
     static let section: CGFloat = 17
     /// 32 — 空状态主图。

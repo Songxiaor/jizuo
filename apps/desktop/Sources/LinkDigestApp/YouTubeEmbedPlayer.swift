@@ -34,14 +34,20 @@ enum YouTubeWatchLink {
   /// Same `i.ytimg.com/vi/<id>/hqdefault.jpg` shape as the extension
   /// `youTubeThumbnailURL` and the detail poster fallback. Does not rewrite
   /// markdown, frontmatter, or the capture envelope.
-  static func galleryThumbnailURL(fromCanonicalURL urlString: String) -> URL? {
+  /// 卡片墙封面。优先 1280×720 的 maxresdefault（2026-09-25）：hqdefault 只有 480×360、
+  /// 上下还带黑边，放进卡片发糊。少数老视频没有 maxres，卡片加载失败时退回 hqdefault。
+  static func galleryThumbnailURL(fromCanonicalURL urlString: String, quality: String = "maxresdefault") -> URL? {
     guard let videoID = videoID(from: urlString) else { return nil }
-    let raw = "https://i.ytimg.com/vi/\(videoID)/hqdefault.jpg"
+    let raw = "https://i.ytimg.com/vi/\(videoID)/\(quality).jpg"
     guard let admitted = GalleryCoverAdmission.admittedURL(raw),
           admitted.host?.lowercased() == "i.ytimg.com",
-          admitted.path == "/vi/\(videoID)/hqdefault.jpg"
+          admitted.path == "/vi/\(videoID)/\(quality).jpg"
     else { return nil }
     return admitted
+  }
+
+  static func galleryThumbnailFallbackURL(fromCanonicalURL urlString: String) -> URL? {
+    galleryThumbnailURL(fromCanonicalURL: urlString, quality: "hqdefault")
   }
 }
 

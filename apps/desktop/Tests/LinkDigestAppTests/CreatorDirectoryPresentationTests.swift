@@ -758,8 +758,11 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
     // 2026-09-10 媒体区统一 16:9：竖版视频和公众号封面在 2.35 的窄条里只剩中间一截。
     XCTAssertTrue(layout.contains("static let coverAspect: CGFloat = 16.0 / 9.0"))
     XCTAssertTrue(layout.contains("scaledToFill()"))
-    // 竖版封面走「模糊底 + 完整缩略图」，所以 layout 里允许 scaledToFit；横版仍铺满。
-    XCTAssertTrue(layout.contains("isPortrait"))
+    // 图与框比例差得多时走「模糊底 + 完整缩略图」，所以 layout 里允许 scaledToFit；比例接近仍铺满。
+    XCTAssertTrue(layout.contains("mismatch > 1.3"))
+    // 2026-09-25：抖音、小红书用 3:4 竖卡。
+    XCTAssertEqual(CreatorWorkCardLayout.coverAspect(forHost: "douyin.com"), 3.0 / 4.0)
+    XCTAssertEqual(CreatorWorkCardLayout.coverAspect(forHost: "x.com"), 16.0 / 9.0)
     XCTAssertTrue(saved.contains("CreatorWorkCardCoverSlot"))
     XCTAssertTrue(saved.contains("CreatorWorkCardFillImage"))
     XCTAssertTrue(saved.contains("CreatorWorkMetricStrip"))

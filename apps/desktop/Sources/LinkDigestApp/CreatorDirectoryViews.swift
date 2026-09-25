@@ -328,6 +328,8 @@ struct CreatorSavedWorkCard: View {
   var showsAuthor: Bool = true
   /// 在这位博主的作品里点赞排前 10%，只在博主作品页传。
   var isHighlighted: Bool = false
+  /// 卡片墙样式（2026-09-25）：互动数据只露点赞，其余放悬停提示。
+  var showsPrimaryMetricOnly: Bool = false
   @State private var coverImage: NSImage?
   @State private var coverFailed = false
   @State private var coverLoading = false
@@ -437,6 +439,9 @@ struct CreatorSavedWorkCard: View {
     HistoryPlatformRegistry.canonicalHost(for: row.host) == "mp.weixin.qq.com"
   }
   private var hasCoverURL: Bool { displayCoverURL != nil }
+  /// 封面宽不到这个像素数算「小图」：3:4 竖卡在 Retina 上约 390px 宽，360px 的图要放大还带压缩噪点。
+  static let sharpCoverMinimumWidth = 500
+
   private var coverLoadIdentity: String {
     "\(row.taskID.rawValue)#\(displayCoverURL ?? "")#media:\(row.hasMedia == true)"
   }
@@ -489,7 +494,8 @@ struct CreatorSavedWorkCard: View {
       isHighlighted: isHighlighted,
       host: row.host,
       metricHelpSuffix: "保存时",
-      metric: { isWeChat ? nil : $0.value(from: row) }
+      metric: { isWeChat ? nil : $0.value(from: row) },
+      showsPrimaryMetricOnly: showsPrimaryMetricOnly
     ) {
       if !statusChips.isEmpty {
         HStack(spacing: DesignTokens.Space.xs) {
@@ -509,7 +515,7 @@ struct CreatorSavedWorkCard: View {
 
   private var mediaCard: some View {
     CreatorWorkCardShell(theme: theme) {
-      CreatorWorkCardCoverSlot { cover }
+      CreatorWorkCardCoverSlot(aspect: CreatorWorkCardLayout.coverAspect(forHost: row.host)) { cover }
         .overlay(alignment: .bottomLeading) {
           if showsVideoBadge {
             Image(systemName: "play.fill")
@@ -557,7 +563,7 @@ struct CreatorSavedWorkCard: View {
           if !isWeChat {
             CreatorWorkMetricStrip(host: row.host, theme: theme, values: { slot in
               slot.value(from: row)
-            }, helpSuffix: "保存时")
+            }, helpSuffix: "保存时", showsPrimaryOnly: showsPrimaryMetricOnly)
           }
           Spacer(minLength: 0)
         }
@@ -578,10 +584,24 @@ struct CreatorSavedWorkCard: View {
         let admitted = WeChatArticleLayout.coverURL(cover)
           ?? GalleryCoverAdmission.admittedURL(cover)
           ?? (local != nil ? URL(string: cover) : nil)
-        if let admitted {
+        // YouTube 的 maxres 封面少数视频没有，失败时再试一次 hqdefault。
+        let candidates = [admitted, YouTubeWatchLink.galleryThumbnailFallbackURL(fromCanonicalURL: row.canonicalURL)]
+          .compactMap { $0 }
+        for candidate in candidates where coverImage == nil {
           do {
-            let thumbnail = try await WorkThumbnailLoader.shared.image(url: admitted, localURL: local)
+            let thumbnail = try await WorkThumbnailLoader.shared.image(url: candidate, localURL: local)
             guard !Task.isCancelled else { return }
+            // 一片纯色的封面等于没有：往下走视频首帧，再不行就用文字摘录。
+            guard !CoverBlankness.isNearlyUniform(thumbnail.image) else { break }
+            // 抖音静态封面最大只给 360×640（2026-09-25 实测接口），卡片里发糊。
+            // 本机存了视频（通常 1080p）就改用视频里的画面。
+            if thumbnail.image.width < Self.sharpCoverMinimumWidth, row.hasMedia == true,
+               let file = await localCover(nil),
+               let sharp = try? await WorkThumbnailLoader.shared.videoPoster(fileURL: file, pixels: 1_024) {
+              guard !Task.isCancelled else { return }
+              coverImage = NSImage(cgImage: sharp.image, size: .zero)
+              return
+            }
             coverImage = NSImage(cgImage: thumbnail.image, size: .zero)
             return
           } catch {
@@ -591,7 +611,8 @@ struct CreatorSavedWorkCard: View {
       }
       if row.hasMedia == true, let file = await localCover(nil) {
         do {
-          let thumbnail = try await WorkThumbnailLoader.shared.videoPoster(fileURL: file)
+          // 1024：竖卡在 Retina 上约 390×520px，默认 640 放大后发软（2026-09-25）。
+          let thumbnail = try await WorkThumbnailLoader.shared.videoPoster(fileURL: file, pixels: 1_024)
           guard !Task.isCancelled else { return }
           coverImage = NSImage(cgImage: thumbnail.image, size: .zero)
           return
@@ -624,15 +645,33 @@ struct CreatorSavedWorkCard: View {
   }
 
   /// 没有封面时媒体区放正文摘录：不再印「原文预览」标签，摘录按句读收尾。
+  ///
+  /// 像一张便签（2026-09-25）：大字、正文色，从标题之后的那句读起，不把下面的标题再抄一遍；
+  /// 原来是左上角一小段灰字，一整格封面位大半空着。
   private var textPreviewCover: some View {
-    Text(CreatorDirectoryCardCopy.excerpt(preview))
-      .themedFont(.caption)
-      .foregroundStyle(theme.secondaryText)
-      .lineLimit(6)
-      .multilineTextAlignment(.leading)
-      .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-      .padding(10)
-      .background(theme.badge)
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      Image(systemName: "quote.opening")
+        .font(.system(size: DesignTokens.IconSize.control, weight: .semibold))
+        .foregroundStyle(theme.secondaryText.opacity(0.6))
+      Text(noteExcerpt)
+        .themedFont(.body, weight: .medium)
+        .foregroundStyle(theme.primaryText.opacity(0.85))
+        .lineSpacing(3)
+        .multilineTextAlignment(.leading)
+        .lineLimit(nil)
+    }
+    .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    .padding(14)
+    .background(theme.badge)
+    .clipped()
+  }
+
+  private var noteExcerpt: String {
+    let excerpt = CreatorDirectoryCardCopy.excerpt(preview)
+    let title = displayTitle.replacingOccurrences(of: "…", with: "").trimmingCharacters(in: .whitespaces)
+    guard !title.isEmpty, excerpt.hasPrefix(title) else { return excerpt }
+    let rest = String(excerpt.dropFirst(title.count)).trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+    return rest.count >= 12 ? rest : excerpt
   }
 
   /// 图还没到、或取不到时的占位：纯色底 + 平台图标，不写「封面加载失败」这种字。

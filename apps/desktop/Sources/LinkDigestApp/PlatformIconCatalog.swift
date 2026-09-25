@@ -51,6 +51,63 @@ enum PlatformIconCatalog {
     !["github", "wechat"].contains(name)
   }
 
+  /// 侧栏「来源」的单色剪影（2026-09-25，Simple Icons，CC0）。
+  ///
+  /// 原来侧栏把彩色 logo 自动腐蚀成线框：公众号、B 站糊成一团，YouTube 只剩一个播放框
+  /// （和「形式 → 视频」同图），Discourse、Substack 只能退成字母方块。改成各平台官方
+  /// 单色剪影，和侧栏系统图标同一大小；选中时着品牌色（`sidebarBrandColor`）。
+  static let sidebarGlyphs: [String: String] = [
+    "x.com": "glyph-x",
+    "douyin.com": "glyph-douyin",
+    "mp.weixin.qq.com": "glyph-wechat",
+    "bilibili.com": "glyph-bilibili",
+    "github.com": "glyph-github",
+    "youtube.com": "glyph-youtube",
+    "discourse": "glyph-discourse",
+    "reddit.com": "glyph-reddit",
+    "substack.com": "glyph-substack",
+    "xiaohongshu.com": "glyph-xiaohongshu",
+  ]
+
+  /// 品牌色；黑色系品牌（X、抖音、GitHub、Discourse）返回 nil，由调用方用正文色，
+  /// 否则深色主题下选中后反而看不见。
+  static let sidebarBrandHex: [String: UInt32] = [
+    "mp.weixin.qq.com": 0x07C160,
+    "bilibili.com": 0x00A1D6,
+    "youtube.com": 0xFF0000,
+    "reddit.com": 0xFF4500,
+    "substack.com": 0xFF6719,
+    "xiaohongshu.com": 0xFF2442,
+  ]
+
+  static func sidebarBrandColor(for host: String) -> Color? {
+    guard let hex = sidebarBrandHex[normalizedHost(host)] else { return nil }
+    return Color(
+      red: Double((hex >> 16) & 0xFF) / 255,
+      green: Double((hex >> 8) & 0xFF) / 255,
+      blue: Double(hex & 0xFF) / 255
+    )
+  }
+
+  nonisolated(unsafe) private static let glyphCache: NSCache<NSString, NSImage> = {
+    let cache = NSCache<NSString, NSImage>()
+    cache.countLimit = 32
+    return cache
+  }()
+
+  static func sidebarGlyph(for host: String) -> NSImage? {
+    guard let name = sidebarGlyphs[normalizedHost(host)] else { return nil }
+    if let cached = glyphCache.object(forKey: name as NSString) { return cached }
+    guard let root = Bundle.main.resourceURL,
+          let image = NSImage(contentsOf: root
+            .appendingPathComponent(assetDirectory, isDirectory: true)
+            .appendingPathComponent(name + ".svg"))
+    else { return nil }
+    image.isTemplate = true
+    glyphCache.setObject(image, forKey: name as NSString)
+    return image
+  }
+
   nonisolated(unsafe) private static let outlineCache: NSCache<NSString, NSImage> = {
     let cache = NSCache<NSString, NSImage>()
     cache.countLimit = 64

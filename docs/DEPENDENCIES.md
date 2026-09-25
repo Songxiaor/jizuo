@@ -80,3 +80,10 @@ pnpm install --frozen-lockfile
 2. 使用精确版本更新 `package.json`，由 pnpm 更新 `pnpm-lock.yaml`。
 3. 运行 lint、typecheck、tests、license check 和 doctor。
 4. 只有安全修复或明确功能需要才升级；不为“版本号更新”本身扩大任务范围。
+
+## Simple Icons（侧栏平台剪影，2026-09-25）
+
+- 来源：`simple-icons@16.32.0`（https://github.com/simple-icons/simple-icons），许可 CC0-1.0，无署名要求。
+- 文件：`apps/desktop/Assets/PlatformIcons/glyph-*.svg`（x、douyin=TikTok 同标、wechat、bilibili、github、youtube、discourse、reddit、substack、xiaohongshu），仅去掉 `<title>` 并补宽高。
+- 用途：侧栏「来源」单色剪影，选中时着品牌色；列表行的彩色标志仍用原来那套。
+- 品牌标志本身受各平台商标规范约束，只作来源识别用，不改形、不做装饰。

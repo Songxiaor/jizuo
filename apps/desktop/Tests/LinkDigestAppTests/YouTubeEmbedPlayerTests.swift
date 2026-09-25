@@ -18,15 +18,20 @@ final class YouTubeEmbedPlayerTests: XCTestCase {
     let watch = "https://www.youtube.com/watch?v=Qk8rSlDR8z4"
     XCTAssertEqual(
       YouTubeWatchLink.galleryThumbnailURL(fromCanonicalURL: watch)?.absoluteString,
-      "https://i.ytimg.com/vi/Qk8rSlDR8z4/hqdefault.jpg"
+      "https://i.ytimg.com/vi/Qk8rSlDR8z4/maxresdefault.jpg"
     )
     XCTAssertEqual(
       YouTubeWatchLink.galleryThumbnailURL(fromCanonicalURL: "https://youtu.be/ZIaOBAjvc38?t=10")?.absoluteString,
-      "https://i.ytimg.com/vi/ZIaOBAjvc38/hqdefault.jpg"
+      "https://i.ytimg.com/vi/ZIaOBAjvc38/maxresdefault.jpg"
     )
     XCTAssertEqual(
       YouTubeWatchLink.galleryThumbnailURL(fromCanonicalURL: "https://www.youtube.com/shorts/JBKYwV4WsVA")?.absoluteString,
-      "https://i.ytimg.com/vi/JBKYwV4WsVA/hqdefault.jpg"
+      "https://i.ytimg.com/vi/JBKYwV4WsVA/maxresdefault.jpg"
+    )
+    // 2026-09-25：优先 1280×720 的 maxres，没有时卡片退回 hqdefault。
+    XCTAssertEqual(
+      YouTubeWatchLink.galleryThumbnailFallbackURL(fromCanonicalURL: watch)?.absoluteString,
+      "https://i.ytimg.com/vi/Qk8rSlDR8z4/hqdefault.jpg"
     )
     XCTAssertNotNil(GalleryCoverAdmission.admittedURL("https://i.ytimg.com/vi/Qk8rSlDR8z4/hqdefault.jpg"))
     XCTAssertNil(YouTubeWatchLink.galleryThumbnailURL(fromCanonicalURL: "https://example.com/watch?v=Qk8rSlDR8z4"))
