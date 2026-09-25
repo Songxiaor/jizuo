@@ -3839,6 +3839,7 @@ private struct HistoryDetailView: View, Equatable {
   private var readingFontRaw = ReadingFontSelection.defaultStoredValue
   @AppStorage(ReadingFontSize.storageKey)
   private var readingFontSizeRaw = Double(ReadingFontSize.default)
+  @AppStorage(ReadingLayoutWidth.storageKey) private var readingUsesWideLayout = false
   /// 工具栏快捷打标签的浮层。
   @State private var isTagPopoverPresented = false
   /// 点了「添加笔记」才出现输入框；已经写过笔记的条目直接显示。
@@ -4242,8 +4243,11 @@ private struct HistoryDetailView: View, Equatable {
   private var readingPrimaryTitle: String { readingTitles.primary }
   private var readingOriginalSubtitle: String? { readingTitles.original }
   /// 专注阅读约 760pt；常规模式仍用字号联动的绝对上限。
+  /// 「加宽正文」（2026-09-25，对齐 Tolaria 的 Normal / Wide）去掉上限，铺满可用宽度，
+  /// 给宽表格、流程图、代码用。三栏并排时正文列本来就比上限窄，效果在专注阅读和宽窗口里才看得出。
   private static let focusReadingMaxWidth: CGFloat = 760
   private var readingContentMaxWidth: CGFloat {
+    if readingUsesWideLayout { return .infinity }
     let scaled = DesignTokens.Layout.readingAbsoluteMaxWidth(bodySize: readingFont.bodySize)
     return isFocusReading ? min(Self.focusReadingMaxWidth, scaled) : scaled
   }
@@ -4981,6 +4985,8 @@ private struct HistoryDetailView: View, Equatable {
               .disabled(abs(readingFontSizeRaw - Double(ReadingFontSize.default)) < 0.01)
               .accessibilityIdentifier("reading-font-reset")
             }
+            Toggle(isOn: $readingUsesWideLayout) { Label("加宽正文（⌥⌘\\）", systemImage: "arrow.left.and.right") }
+              .accessibilityIdentifier("reading-wide-layout-toggle")
             // 纯文本是「怎么看」，不是「怎么复制」：原来放在「复制」一组里，找不到（2026-09-25 走查）。
             Toggle(isOn: $showsPlainText) { Label("以纯文本查看正文", systemImage: "text.alignleft") }
               .accessibilityIdentifier("history-content-plain-text-toggle")
@@ -8264,6 +8270,11 @@ struct TodayNoteAction: Equatable {
 }
 
 struct TodayNoteKey: FocusedValueKey { typealias Value = TodayNoteAction }
+
+/// 正文宽度偏好：标准（有可读上限）/ 加宽（铺满可用宽度）。
+enum ReadingLayoutWidth {
+  static let storageKey = "com.syc.linkdigest.reading-wide-layout"
+}
 
 /// 菜单图标（2026-09-25）：顶栏「更多」、正文「处理」、列表右键三个菜单里，同一个动作用同一个图标，
 /// 每一项都带图标——原来一半有、一半只有字，同一件事（总结）在两个菜单里还是两种图。

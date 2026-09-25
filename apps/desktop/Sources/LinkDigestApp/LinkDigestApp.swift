@@ -2043,6 +2043,7 @@ private struct LinkDigestCommands: Commands {
   @FocusedValue(\.focusHistorySearch) private var focusHistorySearch
   @FocusedValue(\.toggleFavorite) private var toggleFavorite
   @AppStorage(ReadingFontSize.storageKey) private var readingFontSizeRaw = Double(ReadingFontSize.default)
+  @AppStorage(ReadingLayoutWidth.storageKey) private var readingUsesWideLayout = false
 
   var body: some Commands {
     CommandGroup(replacing: .newItem) {
@@ -2091,6 +2092,9 @@ private struct LinkDigestCommands: Commands {
         .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
       Button("恢复默认字号") { readingFontSizeRaw = Double(ReadingFontSize.default) }
         .keyboardShortcut("0", modifiers: .command)
+      // ⌥⌘\\：⌥⌘W 是系统「全部关闭」，按下去整个窗口没了（2026-09-25 实测）。
+      Toggle("加宽正文", isOn: $readingUsesWideLayout)
+        .keyboardShortcut("\\", modifiers: [.command, .option])
       Divider()
     }
   }
