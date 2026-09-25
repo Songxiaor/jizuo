@@ -24,7 +24,7 @@ struct MCPSettingsView: View {
       SettingsRowGroup {
         SettingsRow(
           title: "允许 AI 助手连接",
-          caption: model.enabled ? nil : "关着的时候，任何助手都连不上。",
+          caption: model.enabled ? "本机的 AI 助手可以读写你在汲作里保存的内容。" : "关着的时候，任何助手都连不上。",
           details: "开启后，这台 Mac 上用同一个账户运行的助手可以读写你在汲作里保存的内容。只把连接配置交给你信任的助手；它读到的正文可能会被发送给它自己用的模型。关掉之后新的调用会被拒绝，已经提交的保存和转写仍由汲作做完。"
         ) {
           Toggle("", isOn: $model.enabled)

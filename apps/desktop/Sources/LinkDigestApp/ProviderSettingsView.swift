@@ -82,43 +82,21 @@ struct ProviderSettingsView: View {
     }
   }
 
-  /// 侧栏分组：把分类按「做什么」归成五组，而不是让人从头到尾扫一条平列表。
+  /// 侧栏顺序：平铺一列，不再分组。
   ///
-  /// 分组本身不控制可见性——那仍然只由 `SettingsTab.visibleCases` 一处判据决定；
-  /// 这里只负责「同一批分类摆在哪个标题下面」。
-  private enum SettingsTabGroup: CaseIterable, Hashable {
-    case aiAndProcessing
-    case readingAndAppearance
-    case connection
-    case dataAndStorage
-    case aboutAndUpdates
+  /// 2026-09-25 对照 Tolaria 设置页：原来十项分五组，其中两组各只有一项，组标题
+  /// 比内容还显眼；十项平铺一眼扫得完。按「AI → 外观 → 连接 → 数据 → 版本」排。
+  /// 可见性仍只由 `SettingsTab.visibleCases` 一处判据决定。
+  private static let sidebarOrder: [SettingsTab] = [
+    .service, .generation, .appearance, .labs,
+    .mcp, .browserSupport, .siteLogin,
+    .mediaStorage, .dataBackup, .knowledgeVault, .companionSync,
+    .updates,
+  ]
 
-    var title: String {
-      switch self {
-      case .aiAndProcessing: "AI 与处理"
-      case .readingAndAppearance: "阅读与外观"
-      case .connection: "连接"
-      case .dataAndStorage: "数据与存储"
-      case .aboutAndUpdates: "关于与更新"
-      }
-    }
-
-    var tabs: [SettingsTab] {
-      switch self {
-      case .aiAndProcessing: [.service, .generation]
-      case .readingAndAppearance: [.appearance, .labs]
-      case .connection: [.mcp, .browserSupport, .siteLogin]
-      case .dataAndStorage: [.mediaStorage, .dataBackup, .knowledgeVault, .companionSync]
-      case .aboutAndUpdates: [.updates]
-      }
-    }
-
-    /// 按当前可见性过滤后的分类。目前只有「实验室」会被过滤掉，
-    /// 但判据统一走 `SettingsTab.visibleCases`，不在这里另写一份。
-    var visibleTabs: [SettingsTab] {
-      let visible = SettingsTab.visibleCases
-      return tabs.filter { visible.contains($0) }
-    }
+  private static var sidebarTabs: [SettingsTab] {
+    let visible = SettingsTab.visibleCases
+    return sidebarOrder.filter { visible.contains($0) }
   }
 
   private static let outputLanguagePresets = ["简体中文", "繁體中文", "English", "日本語", "한국어", "Español", "Français", "Deutsch"]
@@ -346,24 +324,17 @@ struct ProviderSettingsView: View {
           paperSidebar
         } else {
           List(selection: $selectedTab) {
-            ForEach(SettingsTabGroup.allCases, id: \.self) { group in
-              let tabs = group.visibleTabs
-              if !tabs.isEmpty {
-                Section(group.title) {
-                  ForEach(tabs) { tab in
-                    Label {
-                      Text(tab.title)
-                    } icon: {
-                      SettingsSidebarChip(symbol: tab.symbol, fill: sidebarChipFill(tab))
-                    }
-                    // 只防换行，不防截断：撑宽是下面 `.frame(minWidth:)` 的职责，
-                    // 行内视图的 ideal 宽度传不出 List。
-                    .lineLimit(1)
-                    .tag(tab)
-                    .padding(.vertical, DesignTokens.Space.xs)
-                  }
-                }
+            ForEach(Self.sidebarTabs) { tab in
+              Label {
+                Text(tab.title)
+              } icon: {
+                SettingsSidebarChip(symbol: tab.symbol, fill: sidebarChipFill(tab))
               }
+              // 只防换行，不防截断：撑宽是下面 `.frame(minWidth:)` 的职责，
+              // 行内视图的 ideal 宽度传不出 List。
+              .lineLimit(1)
+              .tag(tab)
+              .padding(.vertical, DesignTokens.Space.xs)
             }
           }
           .listStyle(.sidebar)
@@ -467,7 +438,7 @@ struct ProviderSettingsView: View {
       // 而且脚注和下一张卡的脚注讲的是同一句话。
       settingCard(
         title: "功能与模型",
-        summary: "翻译和校对默认跟随总结模型；本地转写和图片识别默认本机离线。",
+        summary: "每项功能各自用哪个模型；改完即时生效。",
         details: "本地转写默认 Apple 听写、不出网。在线备用转写只用于超过 200MB、无法本机导入的视频。校对会根据标题和配文还原听写错词并补标点，看不懂的句子原样保留。图片识别固定用本机 Vision。",
         controlWidth: .full
       ) {
@@ -598,6 +569,7 @@ struct ProviderSettingsView: View {
     VStack(alignment: .leading, spacing: 0) {
       assignmentRow(
         title: UISettingsPresentation.summaryAssignmentTitle,
+        caption: "写总结用；翻译、校对没单独选时也跟着它。",
         // 这一行是整页的中心，原来却是六行里唯一没有 ⓘ 的：用户看不出「总结模型」
         // 到底管到哪儿，也不知道翻译和校对为什么会跟着它变。
         details: "把内容写成总结时用这个模型。翻译和校对如果没单独指定，也跟着它走。换成别的模型只影响以后生成的总结，已经生成的不会变。"
@@ -633,7 +605,7 @@ struct ProviderSettingsView: View {
 
       assignmentRow(
         title: UISettingsPresentation.translationAssignmentTitle,
-        details: UISettingsPresentation.translationFollowsSummaryHint
+        caption: UISettingsPresentation.translationFollowsSummaryHint
       ) {
         preferenceModelAssignmentControl(
           title: UISettingsPresentation.translationAssignmentTitle,
@@ -647,28 +619,22 @@ struct ProviderSettingsView: View {
 
       // 本地转写固定是 Apple 听写。原来这里也能选在线模型，和下面「在线备用转写」
       // 管的是同一个设置，两行互相覆盖；在线模型只在下面那一行选。
+      // 只读行：「本机离线、不需要配置」挪到左边常显说明里，右边只剩一个值，
+      // 不再是右侧叠两行灰字（2026-09-25 对照 Tolaria：一行一个控件/值）。
       assignmentRow(
         title: UISettingsPresentation.localTranscriptionTitle,
-        details: "视频转文字默认用 Mac 自带的 Apple 听写，全程在本机完成，不联网、不花钱。"
+        caption: "视频转文字，本机离线，不联网、不花钱。"
       ) {
-        VStack(alignment: .trailing, spacing: DesignTokens.Space.xxs) {
-          Text("Apple 听写")
-            .themedFont(.body)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-          // 原来两行都写「本机离线」（2026-09-24 走查），第二行只补上第一行没说的。
-          Text("本机离线 · 不需要配置")
-            .themedFont(.subheadline)
-            .foregroundStyle(.tertiary)
-            .lineLimit(1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("transcription-assignment-picker")
+        Text("Apple 听写")
+          .themedFont(.body)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .accessibilityIdentifier("transcription-assignment-picker")
       }
 
       assignmentRow(
         title: UISettingsPresentation.onlineTranscriptionTitle,
-        details: "给超过 200MB、无法本机导入的视频用。"
+        caption: "给超过 200MB、无法本机导入的视频用。"
       ) {
         VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
           preferenceModelAssignmentControl(
@@ -689,6 +655,7 @@ struct ProviderSettingsView: View {
 
       assignmentRow(
         title: UISettingsPresentation.tidyAssignmentTitle,
+        caption: "还原转写稿里听错的词，补上标点。",
         details: "根据标题和配文还原听写错词并补标点；看不懂的句子原样保留。"
       ) {
         preferenceModelAssignmentControl(
@@ -708,21 +675,14 @@ struct ProviderSettingsView: View {
       // 现在明确成只读：灰字、不占控件槽位、右对齐贴边，并说清楚为什么没得选。
       assignmentRow(
         title: UISettingsPresentation.imageRecognitionTitle,
-        details: "读图片里的文字（包括视频画面上的字幕）固定用 Mac 自带的识别能力，全程在本机完成，不会把图片发出去，也不消耗任何额度。所以这一项没有可选项。"
+        caption: "读图片和视频画面里的文字，本机离线、不需要配置。",
+        details: "固定用 Mac 自带的识别能力，全程在本机完成，不会把图片发出去，也不消耗任何额度。所以这一项没有可选项。"
       ) {
-        VStack(alignment: .trailing, spacing: DesignTokens.Space.xxs) {
-          Text("Apple Vision")
-            .themedFont(.body)
-            .foregroundStyle(.secondary)
-            .lineLimit(1)
-          // 原来两行都写「本机离线」（2026-09-24 走查），第二行只补上第一行没说的。
-          Text("本机离线 · 不需要配置")
-            .themedFont(.subheadline)
-            .foregroundStyle(.tertiary)
-            .lineLimit(1)
-        }
-        .accessibilityElement(children: .combine)
-        .accessibilityIdentifier("image-text-assignment-picker")
+        Text("Apple Vision")
+          .themedFont(.body)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .accessibilityIdentifier("image-text-assignment-picker")
       }
     }
   }
@@ -789,34 +749,44 @@ struct ProviderSettingsView: View {
     }
   }
 
-  /// 「功能与模型」里的一行：标签 + 可展开的 ⓘ 在左，控件靠右。
+  /// 「功能与模型」里的一行：标签 + 常显一句说明在左（长解释收进 ⓘ），控件靠右。
   ///
   /// 不复用 `SettingsRow`：它自带左右 16pt 内距，而这里已经在卡片内，再套一层
   /// 会让六行比卡片标题往里缩一截。
+  ///
+  /// 2026-09-25 对照 Tolaria：原来六行都只有标题 + ⓘ，一句说明都看不到，
+  /// 要挨个点开才知道每行管什么。现在每行常显一句，ⓘ 只留给补充细节。
   @ViewBuilder
   private func assignmentRow<Control: View>(
     title: String,
+    caption: String,
     details: String? = nil,
     @ViewBuilder control: () -> Control
   ) -> some View {
     let isExpanded = expandedAssignmentDetails.contains(title)
     VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
       HStack(alignment: .center, spacing: DesignTokens.Space.md) {
-        HStack(spacing: DesignTokens.Space.sm) {
-          Text(title).themedFont(.body)
-          if details != nil {
-            Button {
-              withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
-                if isExpanded { expandedAssignmentDetails.remove(title) } else { expandedAssignmentDetails.insert(title) }
+        VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+          HStack(spacing: DesignTokens.Space.sm) {
+            Text(title).themedFont(.body)
+            if details != nil {
+              Button {
+                withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+                  if isExpanded { expandedAssignmentDetails.remove(title) } else { expandedAssignmentDetails.insert(title) }
+                }
+              } label: {
+                Image(systemName: "info.circle")
               }
-            } label: {
-              Image(systemName: "info.circle")
+              .buttonStyle(.borderless)
+              .foregroundStyle(.secondary)
+              .help("查看\(title)说明")
+              .accessibilityLabel("\(title)详细说明")
             }
-            .buttonStyle(.borderless)
-            .foregroundStyle(.secondary)
-            .help("查看\(title)说明")
-            .accessibilityLabel("\(title)详细说明")
           }
+          Text(caption)
+            .themedFont(.footnote)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
         }
         Spacer(minLength: DesignTokens.Space.md)
         control()
@@ -1687,21 +1657,8 @@ struct ProviderSettingsView: View {
   /// 纸质主题的设置侧栏：画布底色 + 主窗口同款橙色选中样式。
   private var paperSidebar: some View {
     List {
-      ForEach(SettingsTabGroup.allCases, id: \.self) { group in
-        let tabs = group.visibleTabs
-        if !tabs.isEmpty {
-          Section {
-            ForEach(tabs) { tab in
-              paperSidebarRow(tab)
-            }
-          } header: {
-            // 和主窗侧栏同一个坑：这是 `List` 的分区标题，收不到窗口根部注入的
-            // 环境字体，必须显式给。
-            Text(group.title)
-              .themedFont(.caption, weight: .semibold)
-              .foregroundStyle(.secondary)
-          }
-        }
+      ForEach(Self.sidebarTabs) { tab in
+        paperSidebarRow(tab)
       }
     }
     // 别改成 `.plain` 想去掉那圈浮动面板阴影——实测无效（面板 inset 仍是 8pt、
@@ -2061,6 +2018,7 @@ struct ProviderSettingsView: View {
       SettingsRowGroup {
           SettingsRow(
             title: "输出语言",
+            caption: "总结、翻译等生成结果统一用这个语言。",
             details: "总结、翻译等生成结果统一用这个语言输出。生成时会把这条语言指令追加到提示词；模型分配仍在「模型与识别」。"
           ) {
             VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {

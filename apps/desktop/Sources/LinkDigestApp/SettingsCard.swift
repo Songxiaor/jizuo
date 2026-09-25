@@ -75,11 +75,14 @@ struct SettingsSidebarChip: View {
   }
 }
 
-/// 详情页页头：分类 chip + 页名 + 一句话说明。替代「直接怼卡片」的开场。
+/// 详情页页头：小图标 + 页名一行，下面一句话说明。
 ///
 /// 直接坐进 `SettingsPlainPage` 内容 `VStack` 的第一个元素，贴画布渲染，
-/// 不进任何卡片容器——原来专门给它准备的 `SettingsPageHeaderSection`（借用
-/// Form Section 的 header 槽位实现同样效果）已经随 Form 一起撤掉。
+/// 不进任何卡片容器。
+///
+/// 2026-09-25 对照 Tolaria：原来左边是一块 44pt 带底色的大图标方块，和侧栏已选中
+/// 的同一个图标重复，还占掉首屏一截高度。改成和 Tolaria 分区标题一样的
+/// 「行内小图标 + 标题」，图标只起提示作用。
 struct SettingsPageHeader: View {
   let title: String
   let symbol: String
@@ -88,26 +91,21 @@ struct SettingsPageHeader: View {
   var captionIdentifier: String? = nil
 
   var body: some View {
-    HStack(alignment: .center, spacing: DesignTokens.Space.md) {
-      SettingsSidebarChip(
-        symbol: symbol,
-        fill: fill,
-        edge: DesignTokens.IconSize.empty,
-        showsBackground: true
-      )
-      VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+      HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
+        Image(systemName: symbol)
+          .themedFont(.body, weight: .medium)
+          .foregroundStyle(fill)
+          .accessibilityHidden(true)
         Text(title)
-          // 跟随系统字号：原来写死 `.font(.system(size: 18, weight: .semibold))`，
-          // 放大界面字号之后正文涨了、页头没涨，标题反而比它下面的说明还小。
-          // `.title3` 在默认档位上就是 18pt 左右，同时随主题字体和辅助功能字号缩放。
+          // 跟随系统字号：写死 pt 的话放大界面字号之后正文涨了、页头没涨。
           .themedFont(.title3, weight: .semibold)
           .foregroundStyle(.primary)
-        captionText
       }
-      Spacer(minLength: 0)
+      captionText
     }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.vertical, DesignTokens.Space.xs)
+    .padding(.vertical, DesignTokens.Space.xxs)
   }
 
   @ViewBuilder private var captionText: some View {
@@ -183,6 +181,10 @@ struct SettingsCardGroup<Content: View>: View {
 ///
 /// 简单开关、下拉、按钮走这一行，再由 `SettingsRowGroup` 收进一张卡。
 /// 复杂块（模型网格、主题色卡、单选组）继续用 `SettingsCard`。
+///
+/// 说明规则（2026-09-25 对照 Tolaria）：每行标题下**常显一句**灰字说明，
+/// 更长的解释才收进 ⓘ。只给了 `details` 没给 `caption` 时，`details` 就是那一句，
+/// 直接常显、不再藏在 ⓘ 后面——原来这种行只有一个标题和一个 ⓘ，要逐个点开才知道管什么。
 struct SettingsRow<Control: View>: View {
   let title: String
   var caption: String? = nil
@@ -192,11 +194,20 @@ struct SettingsRow<Control: View>: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var isDetailsPresented = false
 
+  private static var labelIdealWidth: CGFloat { 220 }
+
+  private var visibleCaption: String? { caption ?? details }
+  private var expandableDetails: String? { caption == nil ? nil : details }
+
   var body: some View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
       ViewThatFits(in: .horizontal) {
         HStack(alignment: .center, spacing: DesignTokens.Space.lg) {
+          // 说明常显后会比较长：`ViewThatFits` 按「说明排成一整行」的理想宽度判断放不放得下，
+          // 结果控件被挤到下一行（2026-09-25「输出语言」实测）。这里把标签的理想宽度
+          // 报成一个下限，实际排版时说明在剩余宽度里自动折行，控件留在右边。
           rowLabel
+            .frame(idealWidth: Self.labelIdealWidth, maxWidth: .infinity, alignment: .leading)
           Spacer(minLength: DesignTokens.Space.md)
           control().fixedSize(horizontal: true, vertical: false)
         }
@@ -205,7 +216,7 @@ struct SettingsRow<Control: View>: View {
           control()
         }
       }
-      if isDetailsPresented, let details {
+      if isDetailsPresented, let details = expandableDetails {
         Text(details)
           .themedFont(.subheadline)
           .foregroundStyle(.secondary)
@@ -226,7 +237,7 @@ struct SettingsRow<Control: View>: View {
         Text(title)
           .themedFont(.body)
           .fixedSize(horizontal: false, vertical: true)
-        if details != nil {
+        if expandableDetails != nil {
           settingsInfoButton(
             title: title,
             isExpanded: $isDetailsPresented,
@@ -234,7 +245,7 @@ struct SettingsRow<Control: View>: View {
           )
         }
       }
-      if let caption {
+      if let caption = visibleCaption {
         Text(caption)
           .themedFont(.footnote)
           .foregroundStyle(.secondary)

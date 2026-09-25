@@ -90,6 +90,7 @@ struct MediaStorageSettingsView: View {
           // 路径和按钮放进控件列：标签在左，路径+按钮贴右，与其它行同一套对齐。
           SettingsRow(
             title: "当前文件夹",
+            caption: "保存到本地的视频放在这里，播放时优先读这里。",
             details: "手动保存和自动保存都受单个视频上限与磁盘空间预检约束。已保存视频优先从该文件夹播放；在历史里删除条目不会删除用户文件夹中的视频。"
           ) {
             HStack(spacing: DesignTokens.Space.sm) {
