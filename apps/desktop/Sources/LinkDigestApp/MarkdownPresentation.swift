@@ -2461,7 +2461,9 @@ struct MarkdownContentView: View {
           let owner = foldsSections ? owningHeading(entry.anchor) : nil
           // 文字段后面紧跟代码 / 表格 / 提示框时，文字末尾那一行空行会把两者撑得很开；
           // 去掉它，改由后面的块自己留一点上边距。文字段之间的节奏不变。
-          let nextIsCard = position + 1 < runs.count && !runs[position + 1].run.isText
+          // 提示框里的最后一段也去掉末尾空行（2026-09-25 并排对比）：否则框底多出两行高的空白。
+          let isLastInEmbedded = !foldsSections && position == runs.count - 1
+          let nextIsCard = (position + 1 < runs.count && !runs[position + 1].run.isText) || isLastInEmbedded
           let followsText = position > 0 && runs[position - 1].run.isText
           let headingLevel: Int? = {
             guard anchorable,
@@ -3417,11 +3419,23 @@ struct ReadingRenderedBlock<Fallback: View>: View {
       let image = Image(nsImage: result.image)
         .frame(width: result.size.width, height: result.size.height)
         .accessibilityLabel(request.kind == .mermaid ? "流程图" : "公式")
-      if result.size.width > ReadingRenderedBlockLayout.maximumInlineWidth {
-        ScrollView(.horizontal, showsIndicators: true) { image }
-          .frame(height: result.size.height + 14)
+      // 按正文列的实际宽度判断放不放得下（2026-09-25）：原来和固定的 660 比，正文列更窄时
+      // 640 宽的流程图既没换成可拖动、也放不下，右边一截被裁掉。
+      if request.kind == .mermaid {
+        // 流程图比正文宽时整张等比缩进正文宽度（和 Tolaria 一样）：横向拖动只能看到半张图。
+        // 公式不缩，缩小后上下标会糊，仍然走下面的横向拖动。
+        Image(nsImage: result.image)
+          .resizable()
+          .aspectRatio(result.size.width / max(1, result.size.height), contentMode: .fit)
+          .frame(maxWidth: result.size.width)
+          .frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
+          .accessibilityLabel("流程图")
       } else {
-        image.frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
+        ViewThatFits(in: .horizontal) {
+          image.frame(maxWidth: .infinity, alignment: Alignment(horizontal: alignment, vertical: .center))
+          ScrollView(.horizontal, showsIndicators: true) { image }
+            .frame(height: result.size.height + 14)
+        }
       }
     case let .failed(message):
       VStack(alignment: .leading, spacing: 6) {
@@ -3499,7 +3513,3 @@ enum InlineMath {
   }
 }
 
-enum ReadingRenderedBlockLayout {
-  /// 阅读列大约这么宽；更宽的图改成可横向拖动。
-  static let maximumInlineWidth: CGFloat = 660
-}

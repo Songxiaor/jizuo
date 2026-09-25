@@ -97,10 +97,18 @@
       const svgElement = stage.querySelector('svg');
       if (svgElement) {
         svgElement.style.maxWidth = 'none';
+        // 按实际画出来的内容定画布（2026-09-25）：mermaid 给的 viewBox 按它自己量的字宽算，
+        // 实际字体更宽时最右一个节点会落到 viewBox 外被裁掉（「Publish」只剩半个框）。
+        // 取 viewBox 与内容外框的并集，四周再留 4px。
         const box = svgElement.getBBox();
-        const viewBox = svgElement.viewBox && svgElement.viewBox.baseVal;
-        const width = viewBox && viewBox.width ? viewBox.width : box.width;
-        const height = viewBox && viewBox.height ? viewBox.height : box.height;
+        const vb = svgElement.viewBox && svgElement.viewBox.baseVal;
+        const left = Math.min(box.x, vb && vb.width ? vb.x : box.x) - 4;
+        const top = Math.min(box.y, vb && vb.height ? vb.y : box.y) - 4;
+        const right = Math.max(box.x + box.width, vb && vb.width ? vb.x + vb.width : 0) + 4;
+        const bottom = Math.max(box.y + box.height, vb && vb.height ? vb.y + vb.height : 0) + 4;
+        const width = right - left;
+        const height = bottom - top;
+        svgElement.setAttribute('viewBox', left + ' ' + top + ' ' + width + ' ' + height);
         svgElement.setAttribute('width', Math.ceil(width));
         svgElement.setAttribute('height', Math.ceil(height));
       }

@@ -627,7 +627,7 @@ struct HistoryContentView: View {
         }
         if model.selectedTaskCount > 1 {
           Button { model.requestBatchSummary() } label: {
-            Label("总结选中项", systemImage: "text.badge.checkmark")
+            Label("总结选中项", systemImage: MenuIcon.summarize)
           }
           .disabled(!model.canBatchSummarize)
           .help("总结选中的历史条目")
@@ -2237,7 +2237,7 @@ struct HistoryContentView: View {
         }
         Divider()
       }
-      Button("打开并新建标签…") { model.selectedTaskIDs = [row.taskID] }
+      Button { model.selectedTaskIDs = [row.taskID] } label: { Label("打开并新建标签…", systemImage: "plus") }
     } label: {
       Label("添加标签", systemImage: "tag")
     }
@@ -2245,7 +2245,7 @@ struct HistoryContentView: View {
     .accessibilityIdentifier("history-context-add-tag")
     materialContextMenu(for: row)
     Button { summarizeSingle(row) } label: {
-      Label(row.hasSummary == true ? "重新生成总结" : "总结", systemImage: "text.badge.checkmark")
+      Label(row.hasSummary == true ? "重新生成总结" : "总结", systemImage: MenuIcon.summarize)
     }
     .disabled(singleSummaryUnavailableReason != nil)
     .help(singleSummaryUnavailableReason ?? "用本机已保存的正文生成总结")
@@ -2253,14 +2253,14 @@ struct HistoryContentView: View {
     if model.selectedTaskIDs.contains(row.taskID), model.selectedTaskCount > 1 {
       Divider()
       Button { model.requestBatchSummary() } label: {
-        Label("总结选中的 \(model.selectedTaskCount) 条…", systemImage: "text.badge.checkmark")
+        Label("总结选中的 \(model.selectedTaskCount) 条…", systemImage: MenuIcon.summarize)
       }
       .disabled(!model.canBatchSummarize || !providerSettings.arePreferencesReady)
       .accessibilityIdentifier("batch-summarize-history-context")
       Button {
         model.requestBatchTranslation(outputLanguage: providerSettings.outputLanguage)
       } label: {
-        Label("翻译选中的 \(model.selectedTaskCount) 条…", systemImage: "character.book.closed")
+        Label("翻译选中的 \(model.selectedTaskCount) 条…", systemImage: MenuIcon.translate)
       }
       .disabled(!model.canBatchTranslate || !providerSettings.arePreferencesReady)
       .accessibilityIdentifier("batch-translate-history-context")
@@ -3465,7 +3465,7 @@ private struct HistoryMultiSelectionPanel: View {
           Button {
             model.requestBatchSummary()
           } label: {
-            Label("总结选中项", systemImage: "text.badge.checkmark")
+            Label("总结选中项", systemImage: MenuIcon.summarize)
               .frame(maxWidth: .infinity)
           }
           .buttonStyle(AppButtonStyle(emphasis: .prominent, accent: theme.accent))
@@ -3475,7 +3475,7 @@ private struct HistoryMultiSelectionPanel: View {
           Button {
             model.requestBatchTranslation(outputLanguage: providerSettings.outputLanguage)
           } label: {
-            Label("翻译选中项", systemImage: "character.book.closed")
+            Label("翻译选中项", systemImage: MenuIcon.translate)
               .frame(maxWidth: .infinity)
           }
           .buttonStyle(AppButtonStyle(emphasis: .normal))
@@ -4973,14 +4973,16 @@ private struct HistoryDetailView: View, Equatable {
               }
               .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
               .accessibilityIdentifier("reading-font-smaller")
-              Button("恢复默认字号（当前 \(Self.readingFontSizeLabel(readingFontSizeRaw))）") {
+              Button {
                 readingFontSizeRaw = Double(ReadingFontSize.default)
+              } label: {
+                Label("恢复默认字号（当前 \(Self.readingFontSizeLabel(readingFontSizeRaw))）", systemImage: "textformat.size")
               }
               .disabled(abs(readingFontSizeRaw - Double(ReadingFontSize.default)) < 0.01)
               .accessibilityIdentifier("reading-font-reset")
             }
             // 纯文本是「怎么看」，不是「怎么复制」：原来放在「复制」一组里，找不到（2026-09-25 走查）。
-            Toggle("以纯文本查看正文", isOn: $showsPlainText)
+            Toggle(isOn: $showsPlainText) { Label("以纯文本查看正文", systemImage: "text.alignleft") }
               .accessibilityIdentifier("history-content-plain-text-toggle")
           }
           if model.canEditTags {
@@ -4996,30 +4998,32 @@ private struct HistoryDetailView: View, Equatable {
           }
           AdjacentItemMenuSection(model: model)
           Section("复制") {
-            Button("拷贝全文") { copyFullArticle() }
+            Button { copyFullArticle() } label: { Label("拷贝全文", systemImage: MenuIcon.copy) }
               .accessibilityIdentifier("history-copy-full-text")
           }
           Section("导出") {
-            Button("导出 Markdown (.md)") { exportCleanText(.markdown) }
-            Button("导出纯文本 (.txt)") { exportCleanText(.plainText) }
-            Button("导出 PDF (.pdf)") { exportStyledDocument(.pdf) }
+            Button { exportCleanText(.markdown) } label: { Label("导出 Markdown (.md)", systemImage: MenuIcon.export) }
+            Button { exportCleanText(.plainText) } label: { Label("导出纯文本 (.txt)", systemImage: MenuIcon.export) }
+            Button { exportStyledDocument(.pdf) } label: { Label("导出 PDF (.pdf)", systemImage: MenuIcon.export) }
               .accessibilityIdentifier("history-export-pdf")
-            Button("导出 Word (.docx)") { exportStyledDocument(.docx) }
+            Button { exportStyledDocument(.docx) } label: { Label("导出 Word (.docx)", systemImage: MenuIcon.export) }
               .accessibilityIdentifier("history-export-docx")
-            Button("导出完整数据 (.json)") { model.requestExport(.json) }
+            Button { model.requestExport(.json) } label: { Label("导出完整数据 (.json)", systemImage: MenuIcon.export) }
           }
           // 「换个模型重跑…」是对这条内容做的 AI 动作，和重新总结、重新翻译
           // 一起收在正文表头的「处理」菜单里，不再和导出、删除混在窗口工具栏。
           // 只有能重抓时才出这一组：原来无条件画分组标题，本地文件上只剩一行灰字标题（2026-09-25）。
           if canRecaptureSource {
             Section("重新处理") {
-              Button("重新抓取原文…") { openRecapture(sourceURL) }
+              Button { openRecapture(sourceURL) } label: { Label("重新抓取原文…", systemImage: MenuIcon.recapture) }
                 .accessibilityIdentifier("history-recapture-source")
             }
           }
           Section {
-            Button(model.deletionConfirmationActionTitle, role: .destructive) {
+            Button(role: .destructive) {
               model.requestDeletion(protectedTaskIDs: protectedTaskIDs)
+            } label: {
+              Label(model.deletionConfirmationActionTitle, systemImage: MenuIcon.trash)
             }
             .disabled(!model.canDelete(protectedTaskIDs: protectedTaskIDs))
             .foregroundStyle(theme.danger)
@@ -5439,7 +5443,7 @@ private struct HistoryDetailView: View, Equatable {
       if let runActionBlockedReason { Text(runActionBlockedReason) }
 
       if !providerSettings.arePreferencesReady {
-        Button("设置模型") { openSettings() }
+        Button { openSettings() } label: { Label("设置模型", systemImage: MenuIcon.settings) }
           .accessibilityIdentifier("history-open-model-settings")
       } else if !showsVisibleRun {
         let modelName = providerSettings.activeSummaryModelName.isEmpty
@@ -5951,25 +5955,25 @@ private struct HistoryDetailView: View, Equatable {
     Menu {
       Section {
         if summaryArtifact != nil {
-          Button("重新总结") { startRun(.summarize) }
+          Button { startRun(.summarize) } label: { Label("重新总结", systemImage: MenuIcon.summarize) }
             .disabled(summarizeUnavailableReason != nil)
             .help(summarizeUnavailableReason ?? "用本机已保存的正文再总结一次")
             .accessibilityIdentifier("history-more-resummarize")
         }
         if translationArtifact != nil {
-          Button("重新翻译") { startRun(.translate) }
+          Button { startRun(.translate) } label: { Label("重新翻译", systemImage: MenuIcon.translate) }
             .disabled(translateUnavailableReason != nil)
             .help(translateUnavailableReason ?? "用本机已保存的正文再翻译一次")
             .accessibilityIdentifier("history-more-retranslate")
         }
         if let action = transcribeAction {
           if hasCompletedTranscript {
-            Button("重新转写（本机）", action: action.start)
+            Button(action: action.start) { Label("重新转写（本机）", systemImage: MenuIcon.transcribe) }
               .disabled(!action.canStart)
               .help(action.help)
               .accessibilityIdentifier("history-more-retranscribe")
           }
-          Button(onlineTranscribeMenuTitle, action: action.startOnline)
+          Button(action: action.startOnline) { Label(onlineTranscribeMenuTitle, systemImage: MenuIcon.transcribeOnline) }
             .disabled(!action.canStartOnline)
             .accessibilityIdentifier("history-more-online-transcribe")
         }
@@ -5984,7 +5988,7 @@ private struct HistoryDetailView: View, Equatable {
               model.requestMindMapGeneration(taskID: detail.task.id)
             }
           } label: {
-            Text(appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) ? "已排队脑图" : "生成脑图")
+            Label(appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) ? "已排队脑图" : "生成脑图", systemImage: MenuIcon.mindMap)
           }
           .disabled(mindMapUnavailableReason != nil)
           .help(
@@ -5996,8 +6000,10 @@ private struct HistoryDetailView: View, Equatable {
           .accessibilityIdentifier("mind-map-generate")
         }
         if hasCompletedTranscript {
-          Button(transcriptTidyBlockedReason.map { "整理文稿（\($0)）" } ?? "整理文稿") {
+          Button {
             model.requestTranscriptTidy(taskID: detail.task.id, model: providerSettings.effectiveTidyModelName)
+          } label: {
+            Label(transcriptTidyBlockedReason.map { "整理文稿（\($0)）" } ?? "整理文稿", systemImage: MenuIcon.tidy)
           }
           .disabled(transcriptTidyBlockedReason != nil)
           .help("把转写文字校对一遍并重新分段，不改说了什么")
@@ -6008,23 +6014,25 @@ private struct HistoryDetailView: View, Equatable {
         if !isOwnWriting, model.reformatRecord == nil, let snapshot = latestSnapshot {
           let eligibility = reformatEligibility(snapshot)
           if eligibility.canReformat {
-            Button("整理排版") {
+            Button {
               model.requestArticleReformat(
                 taskID: detail.task.id,
                 bodyText: snapshot.bodyText,
                 model: providerSettings.effectiveTidyModelName
               )
+            } label: {
+              Label("整理排版", systemImage: MenuIcon.reformat)
             }
             .disabled(model.reformatUnavailableReason(taskID: detail.task.id) != nil)
             .help(model.reformatUnavailableReason(taskID: detail.task.id) ?? "给这篇长文分节、加上小标题；原文不会被改动，随时可以切回")
             .accessibilityIdentifier("history-reformat-button")
           } else if let message = eligibility.userMessage {
-            Button {} label: { Text("整理排版：\(message)") }
+            Button {} label: { Label("整理排版：\(message)", systemImage: MenuIcon.reformat) }
               .disabled(true)
               .accessibilityIdentifier("history-reformat-unavailable")
           }
         }
-        Button("换个模型重跑…") { isRegeneratePopoverPresented = true }
+        Button { isRegeneratePopoverPresented = true } label: { Label("换个模型重跑…", systemImage: MenuIcon.rerun) }
           .disabled(summarizeUnavailableReason != nil && translateUnavailableReason != nil)
           .help("用本机已保存的正文，临时换一个模型重新总结或翻译")
           .accessibilityIdentifier("regenerate-history")
@@ -6038,12 +6046,14 @@ private struct HistoryDetailView: View, Equatable {
           let modelName = providerSettings.activeSummaryModelName.isEmpty
             ? "模型未命名"
             : "模型：\(providerSettings.activeSummaryModelName)"
-          Button(modelName) {}
+          Button {} label: { Label(modelName, systemImage: MenuIcon.model) }
             .disabled(true)
         }
         if canRunHistory || showsCurrentCapture || isRunPanelExpanded || hasCollapsedRunMetadata {
-          Button(isRunPanelExpanded ? "收起运行详情" : "运行详情") {
+          Button {
             withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isRunPanelExpanded.toggle() }
+          } label: {
+            Label(isRunPanelExpanded ? "收起运行详情" : "运行详情", systemImage: MenuIcon.runDetails)
           }
           .accessibilityIdentifier("history-run-panel-toggle")
         }
@@ -8254,6 +8264,26 @@ struct TodayNoteAction: Equatable {
 }
 
 struct TodayNoteKey: FocusedValueKey { typealias Value = TodayNoteAction }
+
+/// 菜单图标（2026-09-25）：顶栏「更多」、正文「处理」、列表右键三个菜单里，同一个动作用同一个图标，
+/// 每一项都带图标——原来一半有、一半只有字，同一件事（总结）在两个菜单里还是两种图。
+enum MenuIcon {
+  static let summarize = "text.badge.checkmark"
+  static let translate = "character.book.closed"
+  static let transcribe = "waveform"
+  static let transcribeOnline = "network"
+  static let mindMap = "brain"
+  static let tidy = "text.redaction"
+  static let reformat = "text.alignleft"
+  static let rerun = "arrow.triangle.2.circlepath"
+  static let settings = "gearshape"
+  static let model = "cpu"
+  static let runDetails = "info.circle"
+  static let copy = "doc.on.doc"
+  static let export = "square.and.arrow.up"
+  static let recapture = "arrow.clockwise"
+  static let trash = "trash"
+}
 
 /// 「自有 / 外部」在侧栏、详情页头、右键菜单里用同一对图标（2026-09-25）：
 /// 「外部」是收进来的，和「全部」的收纳盒同一个画法；「自有」是一个人，和「博主」的两个人同一套。

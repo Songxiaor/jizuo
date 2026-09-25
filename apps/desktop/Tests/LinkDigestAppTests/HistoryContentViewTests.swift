@@ -345,7 +345,7 @@ final class HistoryContentViewTests: XCTestCase {
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
 
     XCTAssertTrue(root.contains("openRecapture: { manualLink.openForRecapture($0) }"))
-    XCTAssertTrue(detail.contains("Button(\"重新抓取原文…\") { openRecapture(sourceURL) }"))
+    XCTAssertTrue(detail.contains("Button { openRecapture(sourceURL) } label: { Label(\"重新抓取原文…\""))
     XCTAssertTrue(detail.contains(".accessibilityIdentifier(\"history-recapture-source\")"))
     XCTAssertTrue(detail.contains("guard !isOwnWriting"))
   }
@@ -2625,7 +2625,7 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
     // 禁用状态与理由必须来自同一个来源，否则两者会各改各的、说法不一致。
     XCTAssertTrue(source.contains("private var transcriptTidyBlockedReason: String? {"))
     XCTAssertTrue(source.contains(".disabled(transcriptTidyBlockedReason != nil)"))
-    XCTAssertTrue(source.contains("Button(transcriptTidyBlockedReason.map"))
+    XCTAssertTrue(source.contains("Label(transcriptTidyBlockedReason.map"))
     // 理由要显示出来，不能只放在悬停提示里——鼠标不停上去就看不到。
     XCTAssertTrue(source.contains("history-transcript-tidy-blocked-reason"))
     XCTAssertTrue(source.contains("transcriptTidyVisibleBlockedReason"))
