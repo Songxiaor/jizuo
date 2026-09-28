@@ -2833,8 +2833,9 @@ final class HistoryViewModel {
   ) -> TranscriptTidyUIState {
     guard outcome.isPartial else { return .completed }
     let verb = style == .note ? "整理" : "校对"
+    let reason = outcome.failureReason.map { "（\($0)，已自动重试 \(OpenAICompatibleTranscriptTidier.chunkRetryAttempts) 次）" } ?? ""
     return .failed(
-      "\(verb)未完整完成：\(outcome.chunkCount) 段中有 \(outcome.failedChunkCount) 段失败；"
+      "\(verb)未完整完成：\(outcome.chunkCount) 段中有 \(outcome.failedChunkCount) 段失败\(reason)；"
         + "已完成部分已保存，失败段保留原文。请重试。"
     )
   }

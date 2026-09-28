@@ -1489,8 +1489,15 @@ describe("background douyin item identity lock", () => {
     }
     expect(sessionDetail.match(/\/aweme\/v1\/web\/aweme\/detail\//gu)).toHaveLength(1);
     expect(sessionDetail).toMatch(/credentials\s*:\s*["']same-origin["']/u);
-    for (const source of [background, extraction, sessionDetail]) {
+    // 抖音签名 SDK 只给 credentials: "include" 的请求签名（2026-09-28 实测，不签就 403）。
+    // 只允许这个同源详情请求这样写一次，而且必须 redirect: "error"，不会被带去别的站；
+    // 带出去的 Cookie 和 "same-origin" 完全一样，都只有抖音自己的。
+    expect(sessionDetail.match(/credentials\s*:\s*["']include["']/gu)).toHaveLength(1);
+    expect(sessionDetail).toMatch(/redirect\s*:\s*["']error["']/u);
+    for (const source of [background, extraction]) {
       expect(source).not.toMatch(/credentials\s*:\s*["']include["']/u);
+    }
+    for (const source of [background, extraction, sessionDetail]) {
       expect(source).not.toMatch(/document\.cookie|chrome\.cookies|browser\.cookies|localStorage|sessionStorage|performance\.getEntries/gu);
     }
     const config = readFileSync(new URL("../wxt.config.ts", import.meta.url), "utf8");

@@ -5958,6 +5958,17 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
 
+  /// 校对提示条的第二行：有分段进度就报进度，长稿大约要几分钟。
+  private var tidyRunningDetail: String {
+    let progress = model.transcriptTidyProgress.map { "\($0) · " } ?? ""
+    return "\(progress)通常 1–5 分钟，完成后自动替换成校对稿，不用刷新。"
+  }
+
+  /// 校对进行中、正在看的是原文：原稿调淡，一眼看出这还不是最终版。
+  private var isShowingUntidiedTranscript: Bool {
+    model.transcriptTidyState(for: detail.task.id) == .running && effectiveReadingPane == .source
+  }
+
   /// 表头下面的状态行：只在出了状况时出现（转写失败、整理进行中、只读、HLS）。
   /// 顺利的时候什么都不显示——页签出现就是「完成」。
   @ViewBuilder private var readingHeaderStatusLines: some View {
@@ -5982,10 +5993,25 @@ private struct HistoryDetailView: View, Equatable {
     }
     switch model.transcriptTidyState(for: taskID) {
     case .running:
-      HStack(spacing: DesignTokens.Space.xs) {
-        ProgressView().controlSize(.mini)
-        Text("正在用模型校对转写稿…").themedFont(.caption).foregroundStyle(.secondary)
+      // 校对要几分钟，期间铺在下面的是机器原稿：标点少、有听错的词。只放一行小灰字，
+      // 用户会把原稿当成最终结果（2026-09-28 反馈），所以用一条醒目的提示条说清楚。
+      HStack(alignment: .top, spacing: DesignTokens.Space.sm) {
+        ProgressView().controlSize(.small)
+        VStack(alignment: .leading, spacing: 2) {
+          Text("下面是机器原稿，模型正在补标点、改错字")
+            .themedFont(.subheadline)
+            .foregroundStyle(.primary)
+          Text(tidyRunningDetail)
+            .themedFont(.caption)
+            .foregroundStyle(.secondary)
+        }
+        Spacer(minLength: 0)
       }
+      .padding(.vertical, 10)
+      .padding(.horizontal, 12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(theme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
+      .accessibilityElement(children: .combine)
       .accessibilityIdentifier("history-transcript-tidy-running")
     case .completed:
       let tokens = model.transcriptTidyTokenSummary(for: taskID)
@@ -6295,6 +6321,7 @@ private struct HistoryDetailView: View, Equatable {
         Divider()
       }
       content
+        .opacity(isShowingUntidiedTranscript ? 0.6 : 1)
     }
     .animation(historyUIAnimation(reduceMotion: reduceMotion), value: showsLiveRunInReadingPane)
     .frame(maxWidth: .infinity, alignment: .leading)

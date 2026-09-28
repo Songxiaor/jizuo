@@ -2448,6 +2448,13 @@ final class HistoryViewModelTests: XCTestCase {
       HistoryViewModel.tidyStateAfterSaving(outcome, style: .note),
       .failed("整理未完整完成：2 段中有 1 段失败；已完成部分已保存，失败段保留原文。请重试。")
     )
+    let withReason = TranscriptTidyOutcome(
+      text: outcome.text, failedChunkCount: 1, chunkCount: 7, failureReason: "网络中断或请求超时"
+    )
+    XCTAssertEqual(
+      HistoryViewModel.tidyStateAfterSaving(withReason, style: .transcript),
+      .failed("校对未完整完成：7 段中有 1 段失败（网络中断或请求超时，已自动重试 2 次）；已完成部分已保存，失败段保留原文。请重试。")
+    )
   }
 
   /// 笔记的整理排版走的是另一条路：改自己的正文，不产生转写快照。

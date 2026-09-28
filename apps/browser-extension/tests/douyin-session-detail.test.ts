@@ -43,7 +43,7 @@ afterEach(() => {
 });
 
 describe("Douyin MAIN-world session detail fallback", () => {
-  it("uses one exact same-origin request and returns only the best safe URL", async () => {
+  it("uses one exact same-origin request (page fetch, signed by Douyin's SDK) and returns only the best safe URL", async () => {
     stubLocation();
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse(detailPayload()));
     vi.stubGlobal("fetch", fetchMock);
@@ -67,12 +67,29 @@ describe("Douyin MAIN-world session detail fallback", () => {
     expect(options).toMatchObject({
       method: "GET",
       headers: { Accept: "application/json, text/plain, */*" },
-      credentials: "same-origin",
-      mode: "same-origin",
+      credentials: "include",
       redirect: "error",
       cache: "no-store",
     });
+    expect(options.mode).toBeUndefined();
     expect(options.signal).toBeInstanceOf(AbortSignal);
+  });
+
+  it("falls back to the pristine iframe fetch when the page fetch returns an unsigned empty body", async () => {
+    stubLocation();
+    const pageFetch = vi.fn().mockResolvedValue(new Response("", { status: 200 }));
+    const frameFetch = Object.assign(vi.fn().mockResolvedValue(jsonResponse(detailPayload())), {
+      toString: () => "function fetch() { [native code] }",
+    });
+    const frame = { style: {}, setAttribute: vi.fn(), remove: vi.fn(), contentWindow: { fetch: frameFetch } };
+    vi.stubGlobal("fetch", pageFetch);
+    vi.stubGlobal("document", { createElement: () => frame, body: { appendChild: vi.fn() }, documentElement: {} });
+
+    await expect(fetchDouyinSessionDetailInMainWorld(awemeId)).resolves.toMatchObject({ ok: true, playbackURL: highURL });
+    expect(pageFetch).toHaveBeenCalledTimes(1);
+    expect(frameFetch).toHaveBeenCalledTimes(1);
+    expect((frameFetch.mock.calls[0] as [string, RequestInit])[1]).toMatchObject({ credentials: "same-origin", mode: "same-origin" });
+    expect(frame.remove).toHaveBeenCalled();
   });
 
   it("aborts after five seconds and returns no error detail", async () => {

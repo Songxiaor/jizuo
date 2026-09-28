@@ -18,6 +18,17 @@ final class TranscriptTidierParallelTests: XCTestCase {
   ]
   private static var transcript: String { paragraphs.joined(separator: "\n\n") }
 
+  override func setUp() {
+    super.setUp()
+    // 失败段补跑之间的等待在测试里归零，不白等几秒。
+    OpenAICompatibleTranscriptTidier.chunkRetryBaseDelaySeconds = 0
+  }
+
+  override func tearDown() {
+    OpenAICompatibleTranscriptTidier.chunkRetryBaseDelaySeconds = 3
+    super.tearDown()
+  }
+
   private static let tidiedJSON = #"""
   {"choices":[{"message":{"content":"已整理。"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}
   """#
@@ -100,6 +111,52 @@ final class TranscriptTidierParallelTests: XCTestCase {
       originalsKept += 1
     }
     XCTAssertEqual(originalsKept, 1)
+  }
+
+  /// 一段偶发失败（限流、超时）：并发跑完后单独补跑，补跑成功就不算失败。
+  func testFailedChunkIsRetriedAndRecovers() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let success = FakeOpenAICompatibleServer.ResponseScript(
+      contentType: "application/json",
+      chunks: [.init(Self.tidiedJSON)]
+    )
+    // 第三个到达的请求 500，之后（也就是补跑）成功。
+    let server = FakeOpenAICompatibleServer(
+      expectedAPIKey: key,
+      scripts: [success, success, .init(statusCode: 500), success]
+    )
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let tidier = try await makeTidier(baseURL: baseURL, apiKey: key)
+
+    let outcome = try await tidier.tidy(text: Self.transcript, model: nil, style: .transcript)
+
+    XCTAssertEqual(outcome.failedChunkCount, 0)
+    XCTAssertNil(outcome.failureReason)
+    XCTAssertEqual(outcome.text, "已整理。\n\n已整理。\n\n已整理。")
+    XCTAssertEqual(server.attemptCount, 4)
+  }
+
+  /// 补跑也失败时，说出原因，而且只补跑规定的次数。
+  func testChunkThatKeepsFailingReportsWhyAfterBoundedRetries() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let success = FakeOpenAICompatibleServer.ResponseScript(
+      contentType: "application/json",
+      chunks: [.init(Self.tidiedJSON)]
+    )
+    let server = FakeOpenAICompatibleServer(
+      expectedAPIKey: key,
+      scripts: [success, success, .init(statusCode: 429)]
+    )
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let tidier = try await makeTidier(baseURL: baseURL, apiKey: key)
+
+    let outcome = try await tidier.tidy(text: Self.transcript, model: nil, style: .transcript)
+
+    XCTAssertEqual(outcome.failedChunkCount, 1)
+    XCTAssertEqual(outcome.failureReason, "服务繁忙被限流")
+    XCTAssertEqual(server.attemptCount, 3 + OpenAICompatibleTranscriptTidier.chunkRetryAttempts)
   }
 
   /// 全片失败是配置/服务故障，不是部分结果：必须整体报错，

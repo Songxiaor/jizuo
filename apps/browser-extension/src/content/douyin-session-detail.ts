@@ -116,12 +116,19 @@ export async function fetchDouyinSessionDetailInMainWorld(
     endpoint.searchParams.set("device_platform", "webapp");
     endpoint.searchParams.set("version_name", "23.5.0");
     endpoint.searchParams.set("os_name", "mac");
-    // Douyin's own APM SDK (Slardar / ibytedapm) monkey-patches window.fetch on
-    // the page and rejects this same-origin detail request with a synthetic
-    // "Failed to fetch". Borrow a pristine, un-hooked fetch from a same-origin
-    // about:blank iframe so the request leaves untouched — still same-origin, so
-    // session cookies are sent. Falls back to the page fetch if unavailable.
-    let pageFetch: typeof fetch = fetch;
+    // 两条路，按顺序试（2026-09-28 实测）：
+    // 1. 页面自己的 fetch。抖音的 SDK 改写了它，会给详情请求补上签名参数；现在不带签名的
+    //    请求一律 403。但它只给凭据模式为 include 的请求签名——写 same-origin 会得到 200 空响应，
+    //    再加 mode: "same-origin" 更会被它直接拒成 "Failed to fetch"。地址是同源的，
+    //    "include" 带的也只是抖音自己的 Cookie；redirect: "error" 保证不会被带去别的站。
+    // 2. 同源 about:blank iframe 里没被改写的 fetch（原来的唯一做法），签名要求放松时仍可用。
+    let pageFetch: typeof fetch | undefined;
+    try {
+      pageFetch = typeof globalThis.fetch === "function" ? globalThis.fetch.bind(globalThis) : undefined;
+    } catch {
+      pageFetch = undefined;
+    }
+    let pristineFetch: typeof fetch | undefined;
     try {
       helperFrame = document.createElement("iframe");
       helperFrame.style.display = "none";
@@ -129,53 +136,78 @@ export async function fetchDouyinSessionDetailInMainWorld(
       (document.body ?? document.documentElement).appendChild(helperFrame);
       const frameFetch = helperFrame.contentWindow?.fetch;
       if (typeof frameFetch === "function" && frameFetch.toString().includes("[native code]")) {
-        pageFetch = frameFetch.bind(helperFrame.contentWindow);
+        pristineFetch = frameFetch.bind(helperFrame.contentWindow);
       }
     } catch {
-      // Keep the page fetch when the helper iframe cannot be created.
+      // Keep only the page fetch when the helper iframe cannot be created.
     }
-    let response: Response;
-    try {
-      response = await pageFetch(endpoint.href, {
-        method: "GET",
-        headers: { Accept: "application/json, text/plain, */*" },
-        credentials: "same-origin",
-        mode: "same-origin",
-        redirect: "error",
-        cache: "no-store",
-        signal: controller.signal,
-      });
-    } catch {
-      return failure(controller.signal.aborted ? "main_fetch_timeout" : "main_fetch_network");
+    const attempts: Array<{ run: typeof fetch; init: RequestInit }> = [];
+    const baseInit: RequestInit = {
+      method: "GET",
+      headers: { Accept: "application/json, text/plain, */*" },
+      redirect: "error",
+      cache: "no-store",
+      signal: controller.signal,
+    };
+    if (pageFetch) attempts.push({ run: pageFetch, init: { ...baseInit, credentials: "include" } });
+    if (pristineFetch) {
+      attempts.push({ run: pristineFetch, init: { ...baseInit, credentials: "same-origin", mode: "same-origin" } });
     }
-    const afterFetchState = currentURLState();
-    if (afterFetchState !== "ok") return failure("id_before_after");
-    if (response.status === 403) return failure("http_403");
-    if (response.status === 429) return failure("http_429");
-    if (response.status !== 200) return failure("http_other");
-    const declaredLength = response.headers.get("content-length");
-    if (declaredLength !== null) {
-      if (!/^\d+$/u.test(declaredLength)) return failure("body_unavailable");
-      if (Number(declaredLength) > maximumBodyBytes) return failure("body_too_large");
-    }
-    const reader = response.body?.getReader();
-    if (!reader) return failure("body_unavailable");
-    const chunks: Uint8Array[] = [];
-    let byteCount = 0;
-    try {
-      while (true) {
-        const next = await reader.read();
-        if (next.done) break;
-        byteCount += next.value.byteLength;
-        if (byteCount > maximumBodyBytes) {
-          await reader.cancel();
-          return failure("body_too_large");
+
+    let lastFailure: DouyinSessionDetailFailure = failure("main_fetch_network");
+    let body: { bytes: Uint8Array[]; byteCount: number } | undefined;
+    for (const attempt of attempts) {
+      if (controller.signal.aborted) break;
+      let response: Response;
+      try {
+        response = await attempt.run(endpoint.href, attempt.init);
+      } catch {
+        lastFailure = failure(controller.signal.aborted ? "main_fetch_timeout" : "main_fetch_network");
+        continue;
+      }
+      if (currentURLState() !== "ok") return failure("id_before_after");
+      if (response.status !== 200) {
+        lastFailure = failure(response.status === 403 ? "http_403" : response.status === 429 ? "http_429" : "http_other");
+        continue;
+      }
+      const declaredLength = response.headers.get("content-length");
+      if (declaredLength !== null) {
+        if (!/^\d+$/u.test(declaredLength)) return failure("body_unavailable");
+        if (Number(declaredLength) > maximumBodyBytes) return failure("body_too_large");
+      }
+      const reader = response.body?.getReader();
+      if (!reader) {
+        lastFailure = failure("body_unavailable");
+        continue;
+      }
+      const chunks: Uint8Array[] = [];
+      let count = 0;
+      try {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          count += next.value.byteLength;
+          if (count > maximumBodyBytes) {
+            await reader.cancel();
+            return failure("body_too_large");
+          }
+          chunks.push(next.value);
         }
-        chunks.push(next.value);
+      } catch {
+        lastFailure = failure(controller.signal.aborted ? "main_fetch_timeout" : "body_unavailable");
+        continue;
       }
-    } catch {
-      return failure(controller.signal.aborted ? "main_fetch_timeout" : "body_unavailable");
+      // 200 空响应就是没签上名，换下一条路。
+      if (count === 0) {
+        lastFailure = failure("body_unavailable");
+        continue;
+      }
+      body = { bytes: chunks, byteCount: count };
+      break;
     }
+    if (!body) return lastFailure;
+    const chunks = body.bytes;
+    const byteCount = body.byteCount;
     if (currentURLState() !== "ok") return failure("id_before_after");
     const bytes = new Uint8Array(byteCount);
     let offset = 0;

@@ -111,27 +111,29 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
 
     // 分片并发执行，结果按分片序号还原——绝不能按完成顺序，那会把文稿打乱。
     // 单片失败不拖垮整体（该片保留原文），但取消必须立刻贯穿全部在飞请求。
-    let results = try await withThrowingTaskGroup(
+    let requestChunk: @Sendable (Int) async throws -> TranscriptTidyOutcome = { [provider, credentials, effectiveModel, style, context] index in
+      // 笔记不带上下文头：它本来就是自己写的，标题配文帮不上忙。
+      // 听写稿和字幕稿都需要——专有名词全靠上下文才认得回来。
+      let payload = style == .note
+        ? chunks[index]
+        : TranscriptTidyPrompt.userMessage(chunk: chunks[index], context: context)
+      return try await provider.tidyTranscriptChunk(
+        profile: credentials.profile,
+        apiKey: credentials.apiKey,
+        model: effectiveModel,
+        text: payload,
+        systemPrompt: style.systemPrompt
+      )
+    }
+    var results = try await withThrowingTaskGroup(
       of: (Int, Result<TranscriptTidyOutcome, Error>).self
     ) { group -> [Int: Result<TranscriptTidyOutcome, Error>] in
       var collected: [Int: Result<TranscriptTidyOutcome, Error>] = [:]
       var next = 0
       func launch(_ index: Int) {
-        group.addTask { [provider, credentials, effectiveModel, style, context] in
+        group.addTask {
           do {
-            // 笔记不带上下文头：它本来就是自己写的，标题配文帮不上忙。
-            // 听写稿和字幕稿都需要——专有名词全靠上下文才认得回来。
-            let payload = style == .note
-              ? chunks[index]
-              : TranscriptTidyPrompt.userMessage(chunk: chunks[index], context: context)
-            let outcome = try await provider.tidyTranscriptChunk(
-              profile: credentials.profile,
-              apiKey: credentials.apiKey,
-              model: effectiveModel,
-              text: payload,
-              systemPrompt: style.systemPrompt
-            )
-            return (index, .success(outcome))
+            return (index, .success(try await requestChunk(index)))
           } catch is CancellationError {
             // 让取消走 TaskGroup 的抛出路径，而不是被计成“这片失败了”。
             throw TranscriptTidyError.cancelled
@@ -160,6 +162,28 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
       }
       return collected
     }
+
+    // 失败段补跑：一波并发里偶尔有一段撞上限流或超时，其余都成功（2026-09-28 实测
+    // 7 段里第 6 段失败，原文回填）。并发跑完后逐段重试，一次只发一个请求、先等几秒，
+    // 不再和别的请求抢配额。Key 无效、没权限这类重试没用的错误不重试。
+    for index in chunks.indices {
+      guard case let .failure(error)? = results[index], Self.isRetryable(error) else { continue }
+      for attempt in 1...Self.chunkRetryAttempts {
+        try Task.checkCancellation()
+        try? await Task.sleep(for: .seconds(Double(attempt) * Self.chunkRetryBaseDelaySeconds))
+        try Task.checkCancellation()
+        do {
+          results[index] = .success(try await requestChunk(index))
+          break
+        } catch is CancellationError {
+          throw TranscriptTidyError.cancelled
+        } catch {
+          results[index] = .failure(error)
+          guard Self.isRetryable(error) else { break }
+        }
+      }
+    }
+    progress?(chunks.count, chunks.count)
 
     var outputs: [String] = []
     var failedChunkCount = 0
@@ -209,8 +233,40 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
       completionTokens: completionTokens,
       totalTokens: totalTokens,
       failedChunkCount: failedChunkCount,
-      chunkCount: chunks.count
+      chunkCount: chunks.count,
+      failureReason: failedChunkCount > 0 ? firstFailure.map(Self.failureReason) : nil
     )
+  }
+
+  /// 失败段补跑的次数与间隔（第 n 次先等 n × 间隔秒）。
+  public static let chunkRetryAttempts = 2
+  nonisolated(unsafe) static var chunkRetryBaseDelaySeconds: Double = 3
+
+  static func isRetryable(_ error: Error) -> Bool {
+    if error is CancellationError { return false }
+    guard let failure = error as? ModelProviderFailure else { return true }
+    switch failure.code {
+    case .authInvalid, .authForbidden, .baseURLInvalid, .endpointNotFound, .modelNotFound,
+         .providerBillingLimited, .freeTierRestricted, .inputTooLarge:
+      return false
+    default:
+      return true
+    }
+  }
+
+  /// 给界面看的失败原因，只用错误类别，不带服务商原文。
+  static func failureReason(_ error: Error) -> String {
+    guard let failure = error as? ModelProviderFailure else { return "请求出错" }
+    switch failure.code {
+    case .rateLimited: return "服务繁忙被限流"
+    case .networkInterrupted: return "网络中断或请求超时"
+    case .providerUnavailable: return "模型服务暂时不可用"
+    case .inputTooLarge: return "这一段超出了模型的长度限制"
+    case .providerBillingLimited: return "账户额度不足"
+    case .authInvalid, .authForbidden: return "API Key 无效或没有权限"
+    case .streamMalformed, .protocolIncompatible: return "模型返回的格式异常"
+    default: return "模型服务拒绝了请求"
+    }
   }
 
   /// nil 表示服务商没报用量；只要有一片报了就累计，不把 nil 当 0。

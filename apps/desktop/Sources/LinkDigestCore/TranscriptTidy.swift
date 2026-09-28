@@ -114,6 +114,8 @@ public struct TranscriptTidyOutcome: Sendable, Equatable {
   public let failedChunkCount: Int
   /// 总分片数，用来说清「N 段里有 M 段没整理成」。
   public let chunkCount: Int
+  /// 失败段的原因（大白话），只在有失败段时给出，让用户知道是超时、限流还是别的。
+  public let failureReason: String?
 
   public var isPartial: Bool { failedChunkCount > 0 }
 
@@ -123,7 +125,8 @@ public struct TranscriptTidyOutcome: Sendable, Equatable {
     completionTokens: Int? = nil,
     totalTokens: Int? = nil,
     failedChunkCount: Int = 0,
-    chunkCount: Int = 1
+    chunkCount: Int = 1,
+    failureReason: String? = nil
   ) {
     self.text = text
     self.promptTokens = promptTokens
@@ -131,6 +134,7 @@ public struct TranscriptTidyOutcome: Sendable, Equatable {
     self.totalTokens = totalTokens
     self.failedChunkCount = failedChunkCount
     self.chunkCount = chunkCount
+    self.failureReason = failureReason
   }
 }
 
