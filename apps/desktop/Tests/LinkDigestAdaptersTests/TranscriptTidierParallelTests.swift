@@ -20,8 +20,9 @@ final class TranscriptTidierParallelTests: XCTestCase {
 
   override func setUp() {
     super.setUp()
-    // 失败段补跑之间的等待在测试里归零，不白等几秒。
+    // 失败段补跑之间的等待在测试里归零，不白等几秒；诊断日志不写到真实目录。
     OpenAICompatibleTranscriptTidier.chunkRetryBaseDelaySeconds = 0
+    OpenAICompatibleTranscriptTidier.diagnosticsLogURL = nil
   }
 
   override func tearDown() {
@@ -29,7 +30,12 @@ final class TranscriptTidierParallelTests: XCTestCase {
     super.tearDown()
   }
 
-  private static let tidiedJSON = #"""
+  /// 校对稿和原段字数相当（整理器会核对字数，差太多当成错配）。
+  private static let tidiedText = String(repeating: "整", count: 5_900)
+  private static let tidiedJSON = #"{"choices":[{"message":{"content":""# + tidiedText
+    + #""}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#
+  /// 字数只有原段零头：像是回了别的东西，必须当失败。
+  private static let mismatchedJSON = #"""
   {"choices":[{"message":{"content":"已整理。"}}],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}
   """#
 
@@ -72,7 +78,7 @@ final class TranscriptTidierParallelTests: XCTestCase {
 
     XCTAssertEqual(server.attemptCount, 3)
     XCTAssertLessThan(elapsed, .seconds(2), "三片各延迟 0.8s，串行 ≥2.4s——超过 2s 说明退回了串行")
-    XCTAssertEqual(outcome.text, "已整理。\n\n已整理。\n\n已整理。")
+    XCTAssertEqual(outcome.text, [Self.tidiedText, Self.tidiedText, Self.tidiedText].joined(separator: "\n\n"))
     XCTAssertEqual(outcome.failedChunkCount, 0)
     XCTAssertEqual(outcome.chunkCount, 3)
     XCTAssertEqual(outcome.promptTokens, 30)
@@ -106,7 +112,7 @@ final class TranscriptTidierParallelTests: XCTestCase {
     XCTAssertEqual(parts.count, 3)
     var originalsKept = 0
     for (index, part) in parts.enumerated() {
-      if part == "已整理。" { continue }
+      if part == Self.tidiedText { continue }
       XCTAssertEqual(part, Self.paragraphs[index], "失败片的原文必须留在它自己的位置")
       originalsKept += 1
     }
@@ -133,7 +139,7 @@ final class TranscriptTidierParallelTests: XCTestCase {
 
     XCTAssertEqual(outcome.failedChunkCount, 0)
     XCTAssertNil(outcome.failureReason)
-    XCTAssertEqual(outcome.text, "已整理。\n\n已整理。\n\n已整理。")
+    XCTAssertEqual(outcome.text, [Self.tidiedText, Self.tidiedText, Self.tidiedText].joined(separator: "\n\n"))
     XCTAssertEqual(server.attemptCount, 4)
   }
 
@@ -157,6 +163,58 @@ final class TranscriptTidierParallelTests: XCTestCase {
     XCTAssertEqual(outcome.failedChunkCount, 1)
     XCTAssertEqual(outcome.failureReason, "服务繁忙被限流")
     XCTAssertEqual(server.attemptCount, 3 + OpenAICompatibleTranscriptTidier.chunkRetryAttempts)
+  }
+
+  /// 回的不是这一段（字数、时间戳对不上）：当失败、保留原文、说明原因，绝不放进稿子。
+  func testMismatchedReplyIsRejectedAndOriginalKept() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let success = FakeOpenAICompatibleServer.ResponseScript(contentType: "application/json", chunks: [.init(Self.tidiedJSON)])
+    let mismatch = FakeOpenAICompatibleServer.ResponseScript(contentType: "application/json", chunks: [.init(Self.mismatchedJSON)])
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [success, success, mismatch])
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let tidier = try await makeTidier(baseURL: baseURL, apiKey: key)
+
+    let outcome = try await tidier.tidy(text: Self.transcript, model: nil, style: .transcript)
+
+    XCTAssertEqual(outcome.failedChunkCount, 1)
+    XCTAssertEqual(outcome.failureReason, "模型返回的内容和这一段对不上")
+    XCTAssertFalse(outcome.text.contains("已整理。"))
+    XCTAssertEqual(outcome.text.components(separatedBy: "\n\n").filter { Self.paragraphs.contains($0) }.count, 1)
+  }
+
+  /// 真实形状：带时间戳的长稿切成多段，完成顺序和段序相反，每段回显自己收到的内容。
+  /// 拼出来必须和原稿段落顺序一致（2026-09-28 实测第 1 段位置出现了最后一段的内容）。
+  func testEchoedChunksReassembleInOriginalOrderWhenCompletionOrderIsReversed() async throws {
+    let paragraphs = (0..<50).map { index in
+      String(format: "%02d:%02d ", index / 2, (index % 2) * 30) + String(repeating: "字", count: 200) + "第\(index)段"
+    }
+    let transcript = paragraphs.joined(separator: "\n\n")
+    let key = "sentinel-\(UUID().uuidString)"
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: []) { body in
+      let data = Data(body.utf8)
+      let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+      let messages = object?["messages"] as? [[String: Any]] ?? []
+      let chunk = messages.last?["content"] as? String ?? ""
+      // 越靠前的段回得越慢：完成顺序和段序相反。
+      let first = TranscriptTidyChunkCheck.timestamps(in: chunk).first ?? "00:00"
+      let minutes = Double(first.prefix(2)) ?? 0
+      let delay = max(0, 0.6 - minutes * 0.03)
+      let reply = try? JSONSerialization.data(withJSONObject: [
+        "choices": [["message": ["content": chunk]]],
+        "usage": ["prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2],
+      ])
+      return .init(contentType: "application/json", chunks: [.init(String(decoding: reply ?? Data(), as: UTF8.self), delay: delay)])
+    }
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let tidier = try await makeTidier(baseURL: baseURL, apiKey: key)
+
+    let outcome = try await tidier.tidy(text: transcript, model: nil, style: .transcript)
+
+    XCTAssertGreaterThan(outcome.chunkCount, 3)
+    XCTAssertEqual(outcome.failedChunkCount, 0)
+    XCTAssertEqual(outcome.text.components(separatedBy: "\n\n"), paragraphs)
   }
 
   /// 全片失败是配置/服务故障，不是部分结果：必须整体报错，

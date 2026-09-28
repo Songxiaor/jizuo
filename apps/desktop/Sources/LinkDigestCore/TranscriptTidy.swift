@@ -327,6 +327,38 @@ public enum TranscriptTidyNormalizer {
   }
 }
 
+/// 核对模型回的是不是**这一段**的校对稿。
+///
+/// 2026-09-28 实测：7 段里第 1 段的位置拿到了第 7 段内容的校对稿，照单全收后
+/// 开头 4 分钟从稿子里消失、结尾重复一遍。校对只改字和标点，所以两条硬指标就够认出错配：
+/// 段首时间戳必须原样保留、输出里不能出现这一段没有的时间戳；字数不能差太多。
+public enum TranscriptTidyChunkCheck {
+  public static let minimumLengthRatio = 0.6
+  public static let maximumLengthRatio = 1.6
+
+  public static func belongs(output: String, to chunk: String) -> Bool {
+    let input = chunk.trimmingCharacters(in: .whitespacesAndNewlines)
+    let result = output.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !input.isEmpty, !result.isEmpty else { return false }
+    let ratio = Double(result.count) / Double(input.count)
+    guard ratio >= minimumLengthRatio, ratio <= maximumLengthRatio else { return false }
+    let inputStamps = timestamps(in: input)
+    guard let first = inputStamps.first else { return true }
+    let outputStamps = timestamps(in: result)
+    guard outputStamps.first == first else { return false }
+    return Set(outputStamps).isSubset(of: Set(inputStamps))
+  }
+
+  /// 段首时间戳（`12:34 ` 或 `1:02:03 `），按出现顺序。
+  public static func timestamps(in text: String) -> [String] {
+    guard let pattern = try? NSRegularExpression(pattern: #"(?m)^(\d{1,2}:\d{2}(?::\d{2})?)(?=\s)"#) else { return [] }
+    let range = NSRange(text.startIndex..., in: text)
+    return pattern.matches(in: text, range: range).compactMap { match in
+      Range(match.range(at: 1), in: text).map { String(text[$0]) }
+    }
+  }
+}
+
 /// Splits a transcript at paragraph boundaries and packs the pieces greedily.
 /// A single over-long paragraph stays whole: sending a mid-sentence cut to the
 /// model invites rewriting, which the prompt forbids.

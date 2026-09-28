@@ -60,9 +60,13 @@ final class FakeOpenAICompatibleServer: @unchecked Sendable {
   private var readyPort: NWEndpoint.Port?
   private var startupFailed = false
 
-  init(expectedAPIKey: String, scripts: [ResponseScript]) {
+  /// 按请求体现场生成回复（例如原样回显）。设置后优先于 `scripts`。
+  private let responder: (@Sendable (String) -> ResponseScript)?
+
+  init(expectedAPIKey: String, scripts: [ResponseScript], responder: (@Sendable (String) -> ResponseScript)? = nil) {
     self.expectedAuthorization = "Bearer \(expectedAPIKey)"
     self.scripts = scripts
+    self.responder = responder
   }
 
   var attemptCount: Int {
@@ -202,6 +206,7 @@ final class FakeOpenAICompatibleServer: @unchecked Sendable {
         accept: request.headers["accept"],
         body: request.body
       ))
+      if let responder { return responder(request.body) }
       if scripts.count > 1 {
         return scripts.removeFirst()
       }

@@ -4401,7 +4401,19 @@ final class HistoryViewModel {
       if !text.isEmpty { return text }
     }
     guard let detail, detail.task.id == taskID else { return nil }
-    return Self.latestTranscriptText(in: detail)
+    return Self.machineTranscriptText(in: detail) ?? Self.latestTranscriptText(in: detail)
+  }
+
+  /// 重新校对的底稿：最近一份**机器听写稿**，而不是上次的校对稿。
+  ///
+  /// 拿校对稿再校对，上一次的错（某段没校成、某段被错配覆盖）会一路带下去：2026-09-28
+  /// 一次错配把开头 4 分钟换成了结尾的内容，再点「校对转写稿」也补不回来。
+  private static func machineTranscriptText(in detail: HistoryDetailProjection) -> String? {
+    let text = detail.snapshots.last(where: {
+      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+        && $0.captureMethod != "openai_compatible_chat_tidy"
+    })?.bodyText.trimmingCharacters(in: .whitespacesAndNewlines)
+    return text?.isEmpty == false ? text : nil
   }
 
   /// 「整理排版」为什么现在不能点。可用时返回 nil。

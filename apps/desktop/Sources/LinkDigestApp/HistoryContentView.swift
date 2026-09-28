@@ -6121,7 +6121,9 @@ private struct HistoryDetailView: View, Equatable {
           Button {
             model.requestTranscriptTidy(taskID: detail.task.id, model: providerSettings.effectiveTidyModelName)
           } label: {
-            Label(transcriptTidyBlockedReason.map { "整理文稿（\($0)）" } ?? "整理文稿", systemImage: MenuIcon.tidy)
+            // 叫「校对」，和进度提示「正在用模型校对」同一个词；「整理文稿」是给长文加小标题的
+            // 另一个功能，两个同名时用户找不到重新校对的入口（2026-09-28 反馈）。
+            Label(transcriptTidyBlockedReason.map { "校对转写稿（\($0)）" } ?? "校对转写稿", systemImage: MenuIcon.tidy)
           }
           .disabled(transcriptTidyBlockedReason != nil)
           .help("把转写文字校对一遍并重新分段，不改说了什么")
@@ -6188,7 +6190,7 @@ private struct HistoryDetailView: View, Equatable {
     .buttonStyle(.bordered)
     .menuIndicator(.hidden)
     .fixedSize()
-    .help("重新转写、生成脑图、整理文稿、换个模型重跑、运行详情")
+    .help("重新转写、校对转写稿、生成脑图、整理排版、换个模型重跑、运行详情")
     .accessibilityLabel("处理")
     .accessibilityIdentifier("history-more-actions-menu")
     // popover 不挂在这里：这个菜单在原位表头和吸顶表头里各有一份，挂在这里就有两个

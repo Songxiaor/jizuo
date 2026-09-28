@@ -1287,7 +1287,7 @@ final class HistoryContentViewTests: XCTestCase {
       from: "private var moreActionsMenu: some View",
       to: "@ViewBuilder private func actionPill("
     )
-    for item in ["重新总结", "重新翻译", "重新转写（本机）", "整理文稿", "生成脑图", "换个模型重跑…", "运行详情"] {
+    for item in ["重新总结", "重新翻译", "重新转写（本机）", "校对转写稿", "生成脑图", "换个模型重跑…", "运行详情"] {
       XCTAssertTrue(more.contains(item), "missing \(item)")
     }
     // 表头在视频之后、正文之前（顶部留给信息），滚过去以后吸在正文区顶端。
