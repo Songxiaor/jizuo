@@ -125,7 +125,7 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
         : TranscriptTidyPrompt.userMessage(chunk: chunks[index], context: context)
       let started = Date()
       let inputStamp = TranscriptTidyChunkCheck.timestamps(in: chunks[index]).first ?? "-"
-      let head = "run=\(runID) chunk=\(index + 1)/\(chunks.count) attempt=\(attempt) in=\(chunks[index].count) ts=\(inputStamp)"
+      let head = "run=\(runID) model=\(effectiveModel) chunk=\(index + 1)/\(chunks.count) attempt=\(attempt) in=\(chunks[index].count) ts=\(inputStamp)"
       do {
         let outcome = try await provider.tidyTranscriptChunk(
           profile: credentials.profile,
@@ -146,7 +146,13 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
             throw TranscriptTidyChunkMismatch()
           }
         }
-        Self.logDiagnostic("\(head) result=ok out=\(outcome.text.count) ms=\(elapsed)")
+        // 思考占多少、每秒出多少 token：换模型时靠这两项比较快慢。
+        let completion = outcome.completionTokens.map(String.init) ?? "-"
+        let reasoning = outcome.reasoningTokens.map(String.init) ?? "-"
+        let rate = outcome.completionTokens.map { elapsed > 0 ? String($0 * 1_000 / elapsed) : "-" } ?? "-"
+        Self.logDiagnostic(
+          "\(head) result=ok out=\(outcome.text.count) ms=\(elapsed) completionTok=\(completion) reasoningTok=\(reasoning) tokPerSec=\(rate) \(outcome.requestNote ?? "")"
+        )
         return outcome
       } catch let error as TranscriptTidyChunkMismatch {
         throw error

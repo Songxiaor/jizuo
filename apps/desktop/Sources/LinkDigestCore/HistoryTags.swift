@@ -28,6 +28,8 @@ public enum HistoryListScope: String, Sendable, Equatable, CaseIterable {
   case all
   case recent
   case unsummarized
+  /// 待校对：有本机转写、还没用模型校对过（2026-09-28 工序印：缺「校」这枚章）。
+  case untidied
   case favorite
   /// 自有：以用户自己为说话主体的内容——笔记、作品、备忘录、语音备忘录，
   /// 以及被手动改成「自有」的资料。与 `.external` 互补，两者之和 = 全部。
@@ -110,6 +112,8 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   public let all: Int
   public let recent: Int
   public let unsummarized: Int
+  /// 有转写、还没校对的条数（侧栏「待校对」）。
+  public let untidied: Int
   public let favorite: Int
   /// 侧栏「全部」：资料 + 笔记 + 作品（稿件是过程，不算）。`all` 仍只数抓来的资料，
   /// 给 MCP 统计等既有口径用。
@@ -141,6 +145,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     all: Int = 0,
     recent: Int = 0,
     unsummarized: Int = 0,
+    untidied: Int = 0,
     favorite: Int = 0,
     total: Int = 0,
     own: Int = 0,
@@ -157,6 +162,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     self.all = all
     self.recent = recent
     self.unsummarized = unsummarized
+    self.untidied = untidied
     self.favorite = favorite
     self.total = total
     self.own = own

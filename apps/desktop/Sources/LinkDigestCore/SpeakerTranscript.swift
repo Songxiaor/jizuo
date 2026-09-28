@@ -295,6 +295,8 @@ public enum SpeakerTranscript {
     for raw in body.components(separatedBy: "\n") {
       let line = raw.trimmingCharacters(in: .whitespaces)
       guard !line.isEmpty else { continue }
+      // 校对时加的小标题（`## …`）不是谁说的话，不能并进上一轮发言里。
+      guard !TranscriptTidyNormalizer.isHeading(line) else { continue }
       let clockRange = line.range(of: #"^(\d{1,2}:)?\d{1,2}:\d{2}\s+"#, options: .regularExpression)
       let clock = clockRange.map { line[$0].trimmingCharacters(in: .whitespaces) }
       var text = clockRange.map { String(line[$0.upperBound...]) } ?? line

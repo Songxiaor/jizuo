@@ -152,23 +152,93 @@ const requestId = () => crypto.randomUUID();
 // ---------------------------------------------------------------------------
 // 评论：条数来自 App 设置页，收集结果按标签页缓存，发送时只写勾选的那些。
 
-/** 读 App 设置页的「评论抓取数量」。旧版 App/Host 不认识这条消息时退回默认值。 */
-export async function commentLimitPreference(): Promise<number> {
+const COMMENT_PLATFORMS: readonly CommentPlatform[] = [
+  "reddit", "community", "x", "youtube", "bilibili", "zhihu", "douyin", "xiaohongshu",
+];
+
+/**
+ * App 设置页「评 · 评论」里的抓取偏好。
+ * - `commentLimit`：默认条数（10..100）。
+ * - `commentLimits`：按平台覆盖；0 = 这个平台不抓评论，没写的平台跟随默认条数。
+ * - `autoSaveComments`：true = 不弹勾选，保存时自动带上前 N 条。
+ */
+export type CapturePreferences = {
+  commentLimit: number;
+  commentLimits: Partial<Record<CommentPlatform, number>>;
+  autoSaveComments: boolean;
+};
+
+export const DEFAULT_CAPTURE_PREFERENCES: CapturePreferences = {
+  commentLimit: COMMENT_LIMIT_DEFAULT,
+  commentLimits: {},
+  autoSaveComments: false,
+};
+
+/** 读 App 设置页的评论偏好。旧版 App/Host 不认识这条消息或没带新字段时退回默认值（今天的行为）。 */
+export async function capturePreferences(): Promise<CapturePreferences> {
   const message = { kind: "getCapturePreferences", version: 1, requestId: requestId() };
   try {
     const response: unknown = await withTimeout(browser.runtime.sendNativeMessage(HOST_NAME, message), 4_000);
-    return parseCapturePreferencesLimit(response, message.requestId) ?? COMMENT_LIMIT_DEFAULT;
+    return parseCapturePreferences(response, message.requestId) ?? DEFAULT_CAPTURE_PREFERENCES;
   } catch {
-    return COMMENT_LIMIT_DEFAULT;
+    return DEFAULT_CAPTURE_PREFERENCES;
   }
 }
 
-export function parseCapturePreferencesLimit(response: unknown, expectedRequestId: string): number | undefined {
+/** 读 App 设置页的「评论抓取数量」（默认条数）。 */
+export async function commentLimitPreference(): Promise<number> {
+  return (await capturePreferences()).commentLimit;
+}
+
+export function parseCapturePreferences(response: unknown, expectedRequestId: string): CapturePreferences | undefined {
   if (!response || typeof response !== "object") return undefined;
-  const row = response as { kind?: unknown; version?: unknown; requestId?: unknown; commentLimit?: unknown };
+  const row = response as {
+    kind?: unknown; version?: unknown; requestId?: unknown;
+    commentLimit?: unknown; commentLimits?: unknown; autoSaveComments?: unknown;
+  };
   if (row.kind !== "capturePreferences" || row.version !== 1 || row.requestId !== expectedRequestId) return undefined;
-  if (typeof row.commentLimit !== "number" || !Number.isInteger(row.commentLimit)) return undefined;
-  return clampCommentLimit(row.commentLimit);
+  const commentLimit = typeof row.commentLimit === "number" && Number.isInteger(row.commentLimit)
+    ? clampCommentLimit(row.commentLimit)
+    : COMMENT_LIMIT_DEFAULT;
+  const commentLimits: Partial<Record<CommentPlatform, number>> = {};
+  if (row.commentLimits && typeof row.commentLimits === "object" && !Array.isArray(row.commentLimits)) {
+    const raw = row.commentLimits as Record<string, unknown>;
+    for (const platform of COMMENT_PLATFORMS) {
+      if (!Object.prototype.hasOwnProperty.call(raw, platform)) continue;
+      const value = raw[platform];
+      if (typeof value !== "number" || !Number.isInteger(value)) continue;
+      commentLimits[platform] = value <= 0 ? 0 : clampCommentLimit(value);
+    }
+  }
+  return { commentLimit, commentLimits, autoSaveComments: row.autoSaveComments === true };
+}
+
+export function parseCapturePreferencesLimit(response: unknown, expectedRequestId: string): number | undefined {
+  const preferences = parseCapturePreferences(response, expectedRequestId);
+  return preferences ? preferences.commentLimit : undefined;
+}
+
+/** 这个平台实际用的条数：平台单独设过就用它，否则跟随默认条数。0 = 不抓。 */
+export function effectiveCommentLimit(preferences: CapturePreferences, platform: CommentPlatform): number {
+  return preferences.commentLimits[platform] ?? preferences.commentLimit;
+}
+
+/**
+ * 弹窗转交给发送的评论处理方式（来自 collect-comments 的结果）：
+ * - disabled：这个平台设为不抓，连提取器自带的评论段也去掉；
+ * - auto：保存时现读前 `limit` 条，不经勾选。
+ * 没有这个字段时保持原来的勾选流程。
+ */
+export type CommentSendMode = { kind: "disabled" } | { kind: "auto"; limit: number };
+
+export function parseCommentSendMode(value: unknown): CommentSendMode | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const row = value as { kind?: unknown; limit?: unknown };
+  if (row.kind === "disabled") return { kind: "disabled" };
+  if (row.kind === "auto" && typeof row.limit === "number" && Number.isInteger(row.limit) && row.limit > 0) {
+    return { kind: "auto", limit: clampCommentLimit(row.limit) };
+  }
+  return undefined;
 }
 
 type CachedComments = { url: string; collection: CommentCollection };
@@ -240,7 +310,11 @@ export type CommentPickerItem = {
 
 export type CommentCollectResult =
   | { ok: true; platform: CommentPlatform; limit: number; expectedCount?: number; loginRequired?: boolean; items: CommentPickerItem[] }
-  | { ok: false; code: "unsupported" | "empty" | "failed"; limit?: number };
+  | { ok: false; code: "unsupported" | "empty" | "failed"; limit?: number }
+  /** 这个平台在汲作设置里设为不抓评论：不注入收集脚本。 */
+  | { ok: false; code: "disabled"; platform: CommentPlatform }
+  /** 自动保存前 N 条：弹窗不显示勾选，保存时再读。 */
+  | { ok: false; code: "auto"; platform: CommentPlatform; limit: number };
 
 export function commentPickerItems(comments: CapturedComment[]): CommentPickerItem[] {
   return comments.map((comment) => ({
@@ -255,8 +329,19 @@ export function commentPickerItems(comments: CapturedComment[]): CommentPickerIt
 export async function collectCommentsForPicker(tabId: number): Promise<CommentCollectResult> {
   const tab = await browser.tabs.get(tabId).catch(() => undefined);
   const tabURL = tab?.url ?? "";
-  if (!commentPlatformForURL(tabURL)) return { ok: false, code: "unsupported" };
-  const limit = await commentLimitPreference();
+  const platform = commentPlatformForURL(tabURL);
+  if (!platform) return { ok: false, code: "unsupported" };
+  const preferences = await capturePreferences();
+  const limit = effectiveCommentLimit(preferences, platform);
+  if (limit === 0) {
+    await writeCommentCache(tabId, undefined);
+    return { ok: false, code: "disabled", platform };
+  }
+  if (preferences.autoSaveComments) {
+    // 旧的勾选缓存不能混进自动保存：保存时按当前条数重新读。
+    await writeCommentCache(tabId, undefined);
+    return { ok: false, code: "auto", platform, limit };
+  }
   try {
     const collection = await withTimeout(collectCommentsInTab(tabId, limit), 25_000);
     if (!collection) return { ok: false, code: "failed", limit };
@@ -300,16 +385,34 @@ export function pageWithComments(
   };
 }
 
+/** 这个平台设为不抓评论：连提取器自带的评论段（Reddit/论坛）也去掉。 */
+export function pageWithoutComments(page: ExtractedPage): ExtractedPage {
+  const text = stripEmbeddedCommentSection(page.text);
+  if (text === page.text) return page;
+  return { ...page, text, characterCount: [...text].length };
+}
+
 /**
- * 只用弹窗 collect-comments 读好的那份：发送不再临时滚页面补读，
+ * 勾选模式只用弹窗 collect-comments 读好的那份：发送不再临时滚页面补读，
  * 没经过弹窗（或读失败）的发送保持原样，由提取器自带的评论段兜底。
+ * 自动保存模式在这里现读前 N 条；读失败只保存正文，绝不阻断。
  */
 async function attachComments(
   tabId: number,
   tabURL: string,
   page: ExtractedPage,
   selectedIDs: readonly string[] | undefined,
+  mode: CommentSendMode | undefined,
 ): Promise<ExtractedPage> {
+  if (mode?.kind === "disabled") return pageWithoutComments(page);
+  if (mode?.kind === "auto") {
+    try {
+      const collection = await withTimeout(collectCommentsInTab(tabId, mode.limit), 25_000);
+      return pageWithComments(page, collection, undefined);
+    } catch {
+      return page;
+    }
+  }
   const cached = await readCommentCache(tabId);
   if (!cached || !sameContentURL(cached.url, tabURL)) return page;
   return pageWithComments(page, cached.collection, selectedIDs);
@@ -1400,7 +1503,9 @@ async function upgradeBrowserSessionMedia(
   return page;
 }
 
-type CaptureCommentOptions = { include: false } | { include: true; selectedIDs?: readonly string[] | undefined };
+type CaptureCommentOptions =
+  | { include: false }
+  | { include: true; selectedIDs?: readonly string[] | undefined; mode?: CommentSendMode | undefined };
 
 async function captureAttemptFromTab(
   tabId: number,
@@ -1462,7 +1567,7 @@ async function captureAttemptFromTab(
 
   if (!page?.text) throw new Error("CAPTURE_CONTENT_EMPTY");
   if (commentOptions.include) {
-    page = await attachComments(tabId, tabURL, page, commentOptions.selectedIDs);
+    page = await attachComments(tabId, tabURL, page, commentOptions.selectedIDs, commentOptions.mode);
   }
 
   return {
@@ -1487,8 +1592,9 @@ export async function sendCapture(
   tabId: number,
   requestedAction: CaptureRequestedAction = "save",
   selectedCommentIDs?: readonly string[],
+  commentMode?: CommentSendMode,
 ): Promise<ExtensionSendResult> {
-  const attempt = await captureAttemptFromTab(tabId, { include: true, selectedIDs: selectedCommentIDs });
+  const attempt = await captureAttemptFromTab(tabId, { include: true, selectedIDs: selectedCommentIDs, mode: commentMode });
   const { envelope, mediaDiagnostic, metadataDiagnostic } = attempt;
   // V2-first strategy: validate the V2 envelope (which carries the media
   // descriptor). Only if V2 validation actually fails do we downgrade to V1.
@@ -1872,6 +1978,7 @@ export default defineBackground(() => {
       tweetIDs?: string[];
       requestedAction?: CaptureRequestedAction;
       selectedCommentIDs?: string[];
+      commentMode?: unknown;
     },
   ) => {
     // 时间线注入按钮发来的单条同步：只需要 tweetID，不涉及 tabId。
@@ -1887,7 +1994,12 @@ export default defineBackground(() => {
       const selected = Array.isArray(message.selectedCommentIDs)
         ? message.selectedCommentIDs.filter((id): id is string => typeof id === "string")
         : undefined;
-      return sendCapture(message.tabId, action === "summarize" || action === "translate" ? action : "save", selected);
+      return sendCapture(
+        message.tabId,
+        action === "summarize" || action === "translate" ? action : "save",
+        selected,
+        parseCommentSendMode(message.commentMode),
+      );
     }
     if (message.type === "collect-x-bookmarks") return collectXBookmarks(message.tabId);
     if (message.type === "collect-x-profile") return collectXProfile(message.tabId);

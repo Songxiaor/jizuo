@@ -1,6 +1,6 @@
 import Foundation
 
-/// 抓取偏好：目前只有「评论抓取数量」。
+/// 抓取偏好：评论抓几条（默认、按平台）、要不要自动保存。
 ///
 /// 设置页写、Native Host 读。Host 是浏览器拉起的独立进程，读不到 App 的
 /// `@AppStorage`，所以落一份小 JSON 到 Application Support，与
@@ -28,25 +28,68 @@ public struct CapturePreferencesStore: Sendable {
     min(commentLimitRange.upperBound, max(commentLimitRange.lowerBound, value))
   }
 
-  public var commentLimit: Int {
-    guard
-      let data = try? Data(contentsOf: fileURL),
-      let stored = try? JSONDecoder().decode(Stored.self, from: data)
-    else { return Self.defaultCommentLimit }
-    return Self.clampedCommentLimit(stored.commentLimit)
+  /// 扩展认识的评论平台（键名与扩展 `CommentPlatform` 一致）和设置页上的名字。
+  public static let commentPlatforms: [(key: String, title: String)] = [
+    ("douyin", "抖音"), ("xiaohongshu", "小红书"), ("zhihu", "知乎"), ("bilibili", "B 站"),
+    ("x", "X"), ("youtube", "YouTube"), ("reddit", "Reddit"), ("community", "论坛"),
+  ]
+  /// 按平台设成这个值表示「不抓评论」。
+  public static let commentsDisabled = 0
+
+  /// 默认条数：没有单独设的平台都按它。
+  public var commentLimit: Int { Self.clampedCommentLimit(stored?.commentLimit ?? Self.defaultCommentLimit) }
+
+  /// 按平台单独设的条数（2026-09-28 设置按工序重组）：没有的键跟随默认；0 表示不抓。
+  public var commentLimitsByPlatform: [String: Int] {
+    (stored?.commentLimits ?? [:]).compactMapValues { value in
+      value == Self.commentsDisabled ? value : Self.clampedCommentLimit(value)
+    }
   }
 
+  /// 抓取时直接保存前几条，不在扩展里逐条勾选。旧文件没有这一项时按「每次勾选」。
+  public var autoSaveComments: Bool { stored?.autoSaveComments ?? false }
+
   public func setCommentLimit(_ value: Int) throws {
+    try update { $0.commentLimit = Self.clampedCommentLimit(value) }
+  }
+
+  /// `value` 为 nil 表示这个平台改回「跟随默认」。
+  public func setCommentLimit(_ value: Int?, forPlatform platform: String) throws {
+    try update { stored in
+      var limits = stored.commentLimits ?? [:]
+      if let value {
+        limits[platform] = value == Self.commentsDisabled ? value : Self.clampedCommentLimit(value)
+      } else {
+        limits.removeValue(forKey: platform)
+      }
+      stored.commentLimits = limits.isEmpty ? nil : limits
+    }
+  }
+
+  public func setAutoSaveComments(_ value: Bool) throws {
+    try update { $0.autoSaveComments = value }
+  }
+
+  private var stored: Stored? {
+    guard let data = try? Data(contentsOf: fileURL) else { return nil }
+    return try? JSONDecoder().decode(Stored.self, from: data)
+  }
+
+  private func update(_ change: (inout Stored) -> Void) throws {
     try FileManager.default.createDirectory(
       at: fileURL.deletingLastPathComponent(),
       withIntermediateDirectories: true
     )
-    let data = try JSONEncoder().encode(Stored(commentLimit: Self.clampedCommentLimit(value)))
-    try data.write(to: fileURL, options: .atomic)
+    var value = stored ?? Stored(commentLimit: Self.defaultCommentLimit)
+    change(&value)
+    try JSONEncoder().encode(value).write(to: fileURL, options: .atomic)
   }
 
+  /// 新字段都是可选的：旧版写的文件只有 commentLimit，照样读得出。
   private struct Stored: Codable {
-    let commentLimit: Int
+    var commentLimit: Int
+    var commentLimits: [String: Int]?
+    var autoSaveComments: Bool?
   }
 }
 

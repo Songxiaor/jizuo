@@ -202,9 +202,15 @@ extension DesignTokens {
     /// 当死上限——窗口拉宽后正文应跟着变宽。
     static let readingMaxWidth: CGFloat = 748
 
-    /// 可读性绝对上限（默认字号）：再宽长行伤阅读。约 58 个汉字一行。
+    /// 可读性绝对上限（默认字号）：再宽长行伤阅读。
     /// 4K 全屏也停在这里，两侧继续留白。
-    static let readingAbsoluteMaxWidth: CGFloat = 960
+    ///
+    /// 2026-09-28 正文排版样稿：960（全屏一行 60 多字）收到 800。正文段落自己再收到约 36 字
+    /// （`readingTextMeasure`），多出来的宽度留给视频、图片和转写的页边（时间码、朱批）。
+    static let readingAbsoluteMaxWidth: CGFloat = 800
+
+    /// 正文段落的版心：约 36 个字宽（按字号算，em）。中文长文读着舒服的行长在 30–40 字之间。
+    static let readingTextMeasureEm: CGFloat = 36
 
     /// 详情列正文左右内边距。列宽计算要扣掉两侧，和 `.padding(.horizontal, …)` 同源。
     static let readingHorizontalInset: CGFloat = 40

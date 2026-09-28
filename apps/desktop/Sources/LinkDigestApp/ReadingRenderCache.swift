@@ -58,6 +58,7 @@ enum ReadingRenderCache {
     let appearance: String
     /// 正文带 `$` 时（可能有行内公式）跟着离屏排版的进度变：公式排好后要换成图片。
     let mathGeneration: Int
+    let emphasizesLede: Bool
   }
 
   private static var attributedStore = LRUStore<AttributedKey, NSAttributedString>()
@@ -80,18 +81,20 @@ enum ReadingRenderCache {
   static func attributed(
     blocks: [MarkdownPresentation.Block],
     readingFont: ResolvedReadingFont,
-    palette: ReadingTextComposer.Palette
+    palette: ReadingTextComposer.Palette,
+    emphasizesLede: Bool = false
   ) -> NSAttributedString {
     let key = AttributedKey(
       blocks: blocks,
       font: readingFont,
       paletteKey: palette.fingerprint,
       appearance: NSApp.effectiveAppearance.name.rawValue,
-      mathGeneration: InlineMath.mayContainMath(blocks) ? ReadingWebRenderer.shared.generation : 0
+      mathGeneration: InlineMath.mayContainMath(blocks) ? ReadingWebRenderer.shared.generation : 0,
+      emphasizesLede: emphasizesLede
     )
     if let cached = attributedStore.lookup(key) { return cached }
     let composed = ReadingTextComposer.attributed(
-      blocks: blocks, readingFont: readingFont, palette: palette
+      blocks: blocks, readingFont: readingFont, palette: palette, emphasizesLede: emphasizesLede
     )
     attributedStore.remember(composed, forKey: key, capacity: capacity)
     return composed

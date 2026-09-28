@@ -57,6 +57,21 @@ final class TranscriptTidyTests: XCTestCase {
     XCTAssertEqual(TranscriptTidyNormalizer.normalize("  \n\n "), "")
   }
 
+  /// 2026-09-28 转写分节：小标题只隔一个单换行时也要自成一段，不能和正文拼成一行。
+  func testHeadingLineStaysItsOwnParagraph() {
+    XCTAssertEqual(
+      TranscriptTidyNormalizer.normalize("## 文案会越来越不重要\n00:00 短视频有一个趋势。\n\n00:39 就我看到"),
+      "## 文案会越来越不重要\n\n00:00 短视频有一个趋势。\n\n00:39 就我看到"
+    )
+  }
+
+  func testTidyPromptAsksForSectionHeadingsWithoutTimestamps() {
+    let prompt = TranscriptTidyPrompt.system
+    XCTAssertTrue(prompt.contains("## "))
+    XCTAssertTrue(prompt.contains("小标题行不写时间戳"))
+    XCTAssertTrue(prompt.contains("拆出来的后续段落开头不写时间戳"))
+  }
+
   // MARK: - Prompt contract
 
   func testTidyPromptRestoresSpeechWithoutInventingAnArticle() {
@@ -65,6 +80,15 @@ final class TranscriptTidyTests: XCTestCase {
       XCTAssertTrue(prompt.contains(constraint), "prompt 缺少约束词: \(constraint)")
     }
     XCTAssertTrue(prompt.contains("不是润色成一篇新文章"))
+  }
+
+  /// 人名没有出处就不许猜：2026-09-28 听写稿「政和员」（正确是「政和元」，只差一字），
+  /// 校对模型按读音改成了一个像名字的「郑浩源」，比原样保留更误导人。
+  func testTidyPromptOnlyFixesNamesThatAppearInTitleOrCaption() {
+    let prompt = TranscriptTidyPrompt.system
+    XCTAssertTrue(prompt.contains("人名"))
+    XCTAssertTrue(prompt.contains("标题和配文里没有出现的，一律保留听写稿原样"))
+    XCTAssertFalse(prompt.contains("专有名词和术语听写错误"), "不能再笼统地让模型纠正专有名词")
   }
 
   func testUserMessageWrapsTitleAndCaptionAndEmptyContextIsPassthrough() {

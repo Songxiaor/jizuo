@@ -52,4 +52,37 @@ final class CapturePreferencesTests: XCTestCase {
     XCTAssertEqual(try JSONDecoder().decode(NativeResponse.self, from: encoded), response)
     XCTAssertFalse(response.isSuccessfulBrowserDelivery)
   }
+
+  /// 2026-09-28 按平台条数和自动保存：旧文件照读，新字段可选。
+  func testPerPlatformLimitsAndAutoSave() throws {
+    let url = root.appendingPathComponent("Library/Application Support/LinkDigest/capture-preferences-v1.json")
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try Data(#"{"commentLimit":30}"#.utf8).write(to: url)
+    let store = CapturePreferencesStore(root: root)
+    XCTAssertEqual(store.commentLimit, 30, "旧版文件只有 commentLimit")
+    XCTAssertEqual(store.commentLimitsByPlatform, [:])
+    XCTAssertFalse(store.autoSaveComments)
+
+    try store.setCommentLimit(50, forPlatform: "douyin")
+    try store.setCommentLimit(0, forPlatform: "reddit")
+    try store.setCommentLimit(500, forPlatform: "x")
+    try store.setAutoSaveComments(true)
+    XCTAssertEqual(store.commentLimit, 30, "改平台不动默认")
+    XCTAssertEqual(store.commentLimitsByPlatform, ["douyin": 50, "reddit": 0, "x": 100])
+    XCTAssertTrue(store.autoSaveComments)
+
+    try store.setCommentLimit(nil, forPlatform: "douyin")
+    XCTAssertEqual(store.commentLimitsByPlatform, ["reddit": 0, "x": 100], "nil = 改回跟随默认")
+  }
+
+  func testResponseCarriesPlatformLimitsOnlyWhenSet() throws {
+    let plain = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+      NativeResponse.capturePreferences(version: 1, requestId: "r", commentLimit: 20)
+    )) as? [String: Any]
+    XCTAssertNil(plain?["commentLimits"], "没设就不发，旧扩展看到的和原来一模一样")
+    XCTAssertNil(plain?["autoSaveComments"])
+    let full = NativeResponse.capturePreferences(version: 1, requestId: "r", commentLimit: 20, commentLimits: ["douyin": 50, "reddit": 0], autoSaveComments: true)
+    let encoded = try JSONEncoder().encode(full)
+    XCTAssertEqual(try JSONDecoder().decode(NativeResponse.self, from: encoded), full)
+  }
 }

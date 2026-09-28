@@ -15,19 +15,4 @@ enum UISettingsPresentation {
   static let onlineTranscriptionTitle = "在线备用转写"
   static let tidyAssignmentTitle = "校对模型"
   static let imageRecognitionTitle = "图片识别"
-  static let newCaptureAutoProcessTitle = "新内容自动处理"
-  static let newCaptureAutoProcessCaption =
-    "新内容进来后，按编号顺序依次执行已开启的步骤。正文翻译仍需手动点。"
-
-  /// 管线步骤标题：动词开头，顺序与执行链一致，不得重排。
-  static func pipelineStepTitle(index: Int) -> String {
-    switch index {
-    case 1: "外文标题译成中文"
-    case 2: "本机转写"
-    case 3: "校对转写稿"
-    case 4: "生成总结"
-    case 5: "生成脑图"
-    default: "步骤 \(index)"
-    }
-  }
 }

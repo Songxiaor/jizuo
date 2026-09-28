@@ -46,9 +46,11 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
     }
   }
 
-  /// 阅读区默认字体是否走宋体。三套主题都不走：长文默认无衬线，宋体在外观页
-  /// 作为一键选项提供，由用户自己选。
-  var usesEditorialReadingTypography: Bool { false }
+  /// 阅读区默认字体是否走宋体。
+  ///
+  /// 2026-09-28 自有风格（第四版样稿，Syc 认可）：读的用宋，点的用黑。逐字稿和长文
+  /// 默认宋体；用户在外观页自己选过阅读字体时仍以用户为准。
+  var usesEditorialReadingTypography: Bool { true }
 
   /// 色卡预览的底色。
   var swatchBase: Color { tokens.canvas }
@@ -162,6 +164,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
         primaryText: ReadingPalette.ink,
         secondaryText: ReadingPalette.secondary,
         accent: ReadingPalette.accent,
+        seal: ReadingPalette.seal,
         // 纸底上的状态色统一降饱和，并按 AA 压深到 4.5:1 以上（两个面都验过）。
         success: themeColor(0x48, 0x6E, 0x4A),
         warning: themeColor(0x83, 0x5E, 0x2A),
@@ -185,6 +188,7 @@ enum AppearanceTheme: String, CaseIterable, Identifiable {
         primaryText: InkPalette.ink,
         secondaryText: InkPalette.secondary,
         accent: InkPalette.accent,
+        seal: InkPalette.seal,
         // 深底要把状态色提亮，否则暗绿暗红在深灰上糊成一团；
         // 四支对画布和正文卡都在 4.5:1 以上。
         success: themeColor(0x86, 0xB9, 0x8F),
@@ -221,8 +225,11 @@ private enum ReadingPalette {
   static let ink = themeColor(0x37, 0x35, 0x2F)
   /// 次要文字：同一色相的暖灰，对白底约 5.1:1、对侧栏约 4.7:1（原冷灰 #6E6E73）。
   static let secondary = themeColor(0x6F, 0x6E, 0x6A)
-  /// 强调蓝，对白底约 4.9:1、对侧栏约 4.5:1。
-  static let accent = themeColor(0x0A, 0x6C, 0xE6)
+  /// 靛青：选中、链接、焦点。2026-09-28 自有风格取代系统亮蓝（#0A6CE6），
+  /// 对白底约 8.6:1、对侧栏约 8.1:1。
+  static let accent = themeColor(0x2B, 0x4C, 0x7E)
+  /// 朱：只给「汲 / 作」两方印和朱批用，不当报错色。对白底约 6.0:1。
+  static let seal = themeColor(0xB8, 0x32, 0x1C)
   /// 分隔线：一条浅而清楚的中性灰，不再带绿。
   static let rule = themeColor(0xE6, 0xE6, 0xE3)
   static let badge = themeColor(0xED, 0xED, 0xEB)
@@ -237,10 +244,12 @@ private enum InkPalette {
   static let ink = themeColor(0xE3, 0xE2, 0xDE)
   /// 次要文字，对正文卡约 5.6:1、对侧栏约 6.0:1。
   static let secondary = themeColor(0x9B, 0x9A, 0x96)
-  /// 浅色强调蓝提亮后的版本，对画布约 6.5:1。
-  static let accent = themeColor(0x5A, 0xA2, 0xFF)
-  /// 压在强调色块上的文字：深蓝黑，对 accent 约 6.7:1。
+  /// 靛青在深底上的提亮版，对画布约 7:1。
+  static let accent = themeColor(0x8E, 0xA8, 0xD6)
+  /// 压在强调色块上的文字：深蓝黑，对 accent 约 7:1。
   static let onAccent = themeColor(0x0F, 0x1A, 0x2B)
+  /// 朱的深底版：提亮一档，对正文卡约 5:1。
+  static let seal = themeColor(0xE0, 0x7A, 0x66)
 }
 
 // Equatable：列表行按值输入决定是否重算（HistoryRowView ==），主题令牌是输入之一。
@@ -295,6 +304,8 @@ struct HistoryThemeTokens: Equatable {
   let primaryText: Color
   let secondaryText: Color
   let accent: Color
+  /// 朱：「汲 / 作」两方印与朱批专用色。
+  let seal: Color
   /// 状态语义色。
   ///
   /// 补这一层的理由：这些颜色原本以 `.green` / `.orange` / `.red` 的形式直接写在

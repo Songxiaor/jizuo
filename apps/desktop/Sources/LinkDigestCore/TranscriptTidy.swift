@@ -116,6 +116,9 @@ public struct TranscriptTidyOutcome: Sendable, Equatable {
   public let chunkCount: Int
   /// 失败段的原因（大白话），只在有失败段时给出，让用户知道是超时、限流还是别的。
   public let failureReason: String?
+  /// 单段请求的思考 token 与实际发出的推理参数，只进诊断日志。
+  public let reasoningTokens: Int?
+  public let requestNote: String?
 
   public var isPartial: Bool { failedChunkCount > 0 }
 
@@ -126,7 +129,9 @@ public struct TranscriptTidyOutcome: Sendable, Equatable {
     totalTokens: Int? = nil,
     failedChunkCount: Int = 0,
     chunkCount: Int = 1,
-    failureReason: String? = nil
+    failureReason: String? = nil,
+    reasoningTokens: Int? = nil,
+    requestNote: String? = nil
   ) {
     self.text = text
     self.promptTokens = promptTokens
@@ -135,6 +140,8 @@ public struct TranscriptTidyOutcome: Sendable, Equatable {
     self.failedChunkCount = failedChunkCount
     self.chunkCount = chunkCount
     self.failureReason = failureReason
+    self.reasoningTokens = reasoningTokens
+    self.requestNote = requestNote
   }
 }
 
@@ -181,15 +188,20 @@ public enum TranscriptTidyPrompt {
 
   public static let system = """
     你是听写还原器。把机器听写稿还原成说话人更可能说的那句话，不是润色成一篇新文章。
-    可以做：根据标题、配文和前后句，纠正同音、近音、专有名词和术语听写错误；补齐标点；按语义分段。
+    可以做：根据标题、配文和前后句，纠正同音、近音的常用词和术语听写错误；补齐标点；按语义分段。
+    人名、昵称、账号名、品牌名、机构名只能照着标题或配文里出现过的写法改；\
+    标题和配文里没有出现的，一律保留听写稿原样，不要按读音猜一个更像名字的写法。
     必须保留原有时间戳（例如 21:15 或 1:02:03）及其相对位置，不要改时间、不要删除时间戳。
     排版规则：一个段落写成连续的一行，段落内部绝不换行；段落之间用一个空行分隔；\
     中文标点后不加空格。
-    严格禁止：编造听写稿里完全看不出的内容；翻译；概括压缩；评论；添加任何前后缀说明。
+    分段：一个带时间戳的段落超过四五句时，按语义拆成两到三段；拆出来的后续段落开头不写时间戳。
+    分节：在话题明显转折处插入一行 Markdown 小标题（以「## 」开头，6 到 14 个字，从它下面几段的原文里提炼），\
+    单独成段，紧挨着放在某个带时间戳的段落上方；小标题行不写时间戳。每个片段插 0 到 2 个，片段很短或没有明显转折就不插。
+    严格禁止：编造听写稿里完全看不出的内容；翻译；概括压缩；评论；添加小标题以外的任何前后缀说明。
     某一句已经不像人话、无法从上下文可靠还原时，原样保留该句，不要改写成通顺的新句。
     输入可能附带标题和配文作为上下文；它们只用来帮助还原听写错误，不要写进输出。
     输入是同一份转写稿的一个连续片段，可能从句中开始或结束；保持片段边界原样，不要补全句子。
-    只输出还原后的正文纯文本。
+    只输出还原后的正文（含小标题行），不要代码块。
     """
 
   /// 画面字幕的校对契约。
@@ -291,8 +303,25 @@ public enum TranscriptTidyNormalizer {
       ? lines.split(whereSeparator: { $0.trimmingCharacters(in: .whitespaces).isEmpty }).map(Array.init)
       // 只有单换行：按“每行一段”处理，宁可段落略碎也不能折叠成空格。
       : lines.map { [$0] }
+    // 小标题行（`## …`）自成一段：模型偶尔只用单换行把它和下一段隔开，
+    // 按 hard wrap 拼回去会变成「## 标题00:39 正文」，标题和时间戳都坏掉。
+    let separated: [[String]] = paragraphs.flatMap { group -> [[String]] in
+      var pieces: [[String]] = []
+      var current: [String] = []
+      for line in group {
+        if isHeading(line) {
+          if !current.isEmpty { pieces.append(current) }
+          pieces.append([line])
+          current = []
+        } else {
+          current.append(line)
+        }
+      }
+      if !current.isEmpty { pieces.append(current) }
+      return pieces
+    }
 
-    let joined = paragraphs.compactMap { paragraphLines -> String? in
+    let joined = separated.compactMap { paragraphLines -> String? in
       var merged = ""
       for line in paragraphLines {
         let trimmedLine = line.trimmingCharacters(in: .whitespaces)
@@ -316,6 +345,10 @@ public enum TranscriptTidyNormalizer {
       )
     }
     return joined.joined(separator: "\n\n")
+  }
+
+  static func isHeading(_ line: String) -> Bool {
+    line.trimmingCharacters(in: .whitespaces).range(of: #"^#{1,6}\s"#, options: .regularExpression) != nil
   }
 
   private static func isCJK(_ character: Character) -> Bool {

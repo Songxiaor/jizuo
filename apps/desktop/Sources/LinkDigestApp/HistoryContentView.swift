@@ -768,6 +768,7 @@ struct HistoryContentView: View {
     case .all: return "全部"
     case .recent: return "最近 7 天"
     case .unsummarized: return "待总结"
+    case .untidied: return "待校对"
     case .favorite: return "收藏"
     case .notes: return "笔记"
     case .trash: return "回收站"
@@ -925,10 +926,23 @@ struct HistoryContentView: View {
             title: "没有待总结的内容",
             message: "新抓取的链接会出现在这里。也可切到「全部」浏览已有内容。",
             actionTitle: "查看全部",
-            action: { model.selectScope(.all) }
+            action: { model.selectScope(.all) },
+            seal: (.summary, theme.seal.opacity(0.75))
           )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-unsummarized-empty")
+        } else if model.selectedScope == .untidied, !model.hasCategoryFilter,
+                  model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          HistoryInlineState(
+            symbol: "checkmark.seal",
+            title: "都校对过了",
+            message: "新的转写还没校对时，会出现在这里。",
+            actionTitle: "查看全部",
+            action: { model.selectScope(.all) },
+            seal: (.proof, theme.seal.opacity(0.75))
+          )
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityIdentifier("history-untidied-empty")
         } else if model.selectedScope == .notes, !model.hasCategoryFilter,
                   model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           HistoryInlineState(
@@ -975,7 +989,8 @@ struct HistoryContentView: View {
           HistoryInlineState(
             symbol: "tray",
             title: "还没有保存的内容",
-            message: "粘贴一条公开链接，或用浏览器扩展保存当前页面后，会显示在这里。"
+            message: "粘贴一条公开链接，或用浏览器扩展保存当前页面后，会显示在这里。",
+            seal: (.external, theme.seal.opacity(0.75))
           )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-empty")
@@ -1049,6 +1064,7 @@ struct HistoryContentView: View {
               // 分组的第一行总是写作者：上一行在另一个分组里，读者看不到它。
               showsAuthor: index == section.entries.first?.index
                 || !UIReadingHistoryRow.repeatsPreviousAuthor(in: model.rows, at: index),
+              showsOwnSeal: showsOwnSealInList,
               onToggleFavorite: { model.toggleFavorite(taskID: row.taskID) },
               onSummarize: { summarizeSingle(row) },
               onActivate: { model.selectedTaskIDs = [row.taskID] },
@@ -1184,12 +1200,12 @@ struct HistoryContentView: View {
       // 汲作是记录平台，不是待办清单：原来的收件箱 / 已归档 / 已使用记的是「处理到哪了」，
       // 那是外部 Agent 或用户自己工作流的事，不占侧栏最显眼的位置。
       Section {
-        navigationButton("全部", systemImage: "tray.full", count: model.navigationCounts.total, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+        navigationButton("全部", systemImage: "line.3.horizontal", count: model.navigationCounts.total, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.all)
         }
         .help("所有记录：收集来的外部内容，和自己的笔记、作品、备忘录、录音")
         .accessibilityIdentifier("history-navigation-all")
-        navigationButton("自有", systemImage: OwnershipIcon.own, count: model.navigationCounts.own, selected: model.selectedScope == .own && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+        navigationButton("自有", systemImage: OwnershipIcon.own, seal: .own, count: model.navigationCounts.own, selected: model.selectedScope == .own && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.own)
         }
         .help("自己说的：笔记、作品、备忘录、语音备忘录。判断错了可以右键改成「外部」")
@@ -1204,7 +1220,7 @@ struct HistoryContentView: View {
         .help("自己在汲作里写的笔记（⇧⌘N 新建）")
         .accessibilityIdentifier("history-navigation-notes")
         localSourceRows([LocalImportSource.appleNotes.rawValue, LocalImportSource.voiceMemos.rawValue])
-        navigationButton("外部", systemImage: OwnershipIcon.external, count: model.navigationCounts.external, selected: model.selectedScope == .external && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+        navigationButton("外部", systemImage: OwnershipIcon.external, seal: .external, count: model.navigationCounts.external, selected: model.selectedScope == .external && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.external)
         }
         .help("别人的内容：抓来的帖子、文章、视频，拖进来的文件。判断错了可以右键改成「自有」")
@@ -1227,6 +1243,14 @@ struct HistoryContentView: View {
             model.selectScope(.unsummarized)
           }
           .accessibilityIdentifier("history-navigation-unsummarized")
+          // 待校对：有转写还没校对的（缺「校」这枚章），批量补做用。清空了就不占一行。
+          if model.navigationCounts.untidied > 0 || model.selectedScope == .untidied {
+            navigationButton("待校对", systemImage: "checkmark.seal", count: model.navigationCounts.untidied, selected: model.selectedScope == .untidied) {
+              model.selectScope(.untidied)
+            }
+            .help("有转写、还没用模型校对过的内容")
+            .accessibilityIdentifier("history-navigation-untidied")
+          }
           navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite) {
             model.selectScope(.favorite)
           }
@@ -1617,6 +1641,7 @@ struct HistoryContentView: View {
   private func navigationButton(
     _ title: String,
     systemImage: String,
+    seal: SealMark.Glyph? = nil,
     count: Int?,
     selected: Bool,
     emphasizesCount: Bool = false,
@@ -1633,14 +1658,18 @@ struct HistoryContentView: View {
         //
         // 图标统一 14pt、medium 字重、单色：未选中次要灰，选中强调色。
         // 原来各符号按默认字重各画各的，粗细不一，是「像拼凑的」最直接来源。
-        Image(systemName: systemImage)
-          // regular 而不是 medium：线条细一档，和对标应用的侧栏图标同一重量（2026-09-23）。
-          // 比正文小一号（2026-09-25）：原来 14pt 图标配 13pt 文字，图标压过字，一列看下去偏重。
-          // 选中行换实心：和 Tolaria、备忘录一样，靠形状而不只靠颜色认出当前位置。
-          .font(.system(size: DesignTokens.IconSize.sidebar, weight: .regular))
-          .symbolVariant(selected ? .fill : .none)
-          .foregroundStyle(selected ? theme.accent : theme.secondaryText)
-          .frame(width: 18)
+        // 「自有 / 外部」用「作 / 汲」两方印的墨线稿（2026-09-28 自有风格），导航和
+        // 列表、题跋里的印是同一套语言；其余一律线性图标，选中也不换实心。
+        if let seal {
+          SealMark(glyph: seal, size: 16, color: selected ? theme.accent : theme.secondaryText, showsInnerFrame: false)
+            .frame(width: 18)
+        } else {
+          Image(systemName: systemImage)
+            // regular：线条细一档，和其余图标同一重量；比正文小一号，不压过字。
+            .font(.system(size: DesignTokens.IconSize.sidebar, weight: .regular))
+            .foregroundStyle(selected ? theme.accent : theme.secondaryText)
+            .frame(width: 18)
+        }
         Text(title)
           .themedFont(.body)
           .foregroundStyle(selected ? theme.accent : theme.primaryText)
@@ -1676,7 +1705,7 @@ struct HistoryContentView: View {
     )
     .foregroundStyle(theme.primaryText)
     .padding(.horizontal, -6)
-    .fontWeight(selected ? .semibold : .regular)
+    .fontWeight(selected ? .medium : .regular)
     .help(title)
     .accessibilityLabel(title)
     .accessibilityValue(count.map(String.init) ?? "")
@@ -1988,15 +2017,23 @@ struct HistoryContentView: View {
   /// 选中项的计数反白成主题色小胶囊（对标应用的做法），一眼能看出「当前在哪、有几条」；
   /// 其余仍是不带底色的灰数字，整列不会变成一排按钮。
   private func countBadge(_ count: Int, selected: Bool, emphasized: Bool = false) -> some View {
+    // 2026-09-28 自有风格：选中项不再反白成蓝色胶囊（那是对标应用的画法），
+    // 只把数字换成靛青、中等字重；需要提醒的计数仍留一层极淡的底。
     Text("\(count)")
-      .themedFont(.subheadline, weight: selected ? .semibold : .regular, monospacedDigit: true)
-      .foregroundStyle(selected ? Color.white : theme.secondaryText)
-      .padding(.horizontal, selected || emphasized ? 6 : 2)
-      .padding(.vertical, selected || emphasized ? 1 : 0)
-      .background(
-        selected ? theme.accent : (emphasized ? theme.accent.opacity(0.12) : Color.clear),
-        in: Capsule()
-      )
+      .themedFont(.subheadline, weight: selected ? .medium : .regular, monospacedDigit: true)
+      .foregroundStyle(selected ? theme.accent : theme.secondaryText)
+      .padding(.horizontal, emphasized ? 6 : 2)
+      .padding(.vertical, emphasized ? 1 : 0)
+      .background(emphasized ? theme.accent.opacity(0.12) : Color.clear, in: Capsule())
+  }
+
+  /// 列表里要不要给自有内容盖「作」印：只在混排的视图里盖。按自有、外部、笔记，
+  /// 或只选了备忘录 / 语音备忘录这类自有来源时，每行归属都一样，盖了只是重复。
+  private var showsOwnSealInList: Bool {
+    if [.own, .external, .notes].contains(model.selectedScope) { return false }
+    let hosts = model.selectedHosts
+    if !hosts.isEmpty, hosts.isSubset(of: Set(ContentOwnership.ownLocalHosts)) { return false }
+    return true
   }
 
   private var listSearchPlaceholder: String {
@@ -2006,6 +2043,7 @@ struct HistoryContentView: View {
     switch model.selectedScope {
     case .notes: return "搜索笔记标题、正文、标签"
     case .unsummarized: return "搜索待总结的标题、正文、标签"
+    case .untidied: return "搜索待校对的标题、正文、标签"
     case .favorite: return "搜索收藏的标题、正文、总结、标签"
     case .own: return "搜索自有内容的标题、正文、总结、标签"
     case .external: return "搜索外部内容的标题、正文、总结、标签"
@@ -2020,7 +2058,7 @@ struct HistoryContentView: View {
   private var hasClearableListFilters: Bool {
     !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       || model.hasCategoryFilter
-      || ([HistoryListScope.recent, .unsummarized, .favorite].contains(model.selectedScope) && !model.isCreatorDirectoryActive)
+      || ([HistoryListScope.recent, .unsummarized, .untidied, .favorite].contains(model.selectedScope) && !model.isCreatorDirectoryActive)
   }
 
   private var listScopeFilterTitle: String? {
@@ -2029,6 +2067,7 @@ struct HistoryContentView: View {
     case .all: return nil
     case .recent: return "最近 7 天"
     case .unsummarized: return "待总结"
+    case .untidied: return "待校对"
     case .favorite: return "收藏"
     // 自有、外部的名字已经写在列表标题上，不再重复成一个筛选胶囊。
     case .own, .external: return nil
@@ -3524,6 +3563,7 @@ private struct HistoryMultiSelectionPanel: View {
       case .all: parts.append("全部内容")
       case .recent: parts.append("最近 7 天")
       case .unsummarized: parts.append("待总结")
+      case .untidied: parts.append("待校对")
       case .favorite: parts.append("收藏")
       case .own: parts.append("自有")
       case .external: parts.append("外部")
@@ -3712,6 +3752,11 @@ struct PlatformNavigationIcon: View {
 
 /// The detail header needs a recognizable source, not a wire-format URL.
 /// Opening and copying still use the untouched value; this is display-only.
+/// 导出文件是白纸：印一律用浅色主题的朱。
+private enum ReadingPaletteExport {
+  static let seal = Color(red: 0xB8 / 255, green: 0x32 / 255, blue: 0x1C / 255)
+}
+
 private struct HistoryDetailView: View, Equatable {
   /// 父视图重求值一次，就会新造一个 `HistoryDetailView` 结构体。里面带着两个闭包，
   /// SwiftUI 因此永远判定「变了」，于是整棵详情树连同 `MarkdownContentView` 重画一遍。
@@ -3751,6 +3796,15 @@ private struct HistoryDetailView: View, Equatable {
   @State private var isRunPanelExpanded = false
   @State private var isReadingHeaderPinned = false
   @State private var showsPlainText = false
+  /// 逐字稿看哪一份：校对稿（默认）、朱批（校对稿 + 改动）、原稿（机器听写）。
+  @State private var manuscriptMode: TranscriptManuscript.Mode = .revised
+  /// 「处理」面板（2026-09-28 工序印）：原来是系统菜单，只能放单色小图标，放不下印。
+  @State private var isProcessPanelPresented = false
+  /// 盖章那一刻：记下这一条已经做过哪些工序，新多出来的那道就盖一下。
+  @State private var stampBaseline: (taskID: TaskID, steps: [ProcessStep: Double])?
+  @State private var stampingStep: ProcessStep?
+  /// 点页尾的「图」要滚到脑图模块。
+  @State private var moduleScrollTarget: ReadingAnchor?
   @State private var temporaryModel = ""
   /// Brief completion feedback after summarize/translate finishes.
   @State private var completionBanner: String?
@@ -4509,7 +4563,24 @@ private struct HistoryDetailView: View, Equatable {
           )
             .padding(.bottom, 16)
         }
-        if let completionBanner {
+        if let stampingStep {
+          // 工序做完那一刻：对应的章盖下来（2026-09-28 工序印）。
+          HStack(spacing: 12) {
+            SealStampView(glyph: stampingStep.glyph, size: 32, color: theme.seal, rotation: stampingStep.rotation)
+            VStack(alignment: .leading, spacing: 2) {
+              Text(stampingStep.completionMessage)
+                .themedFont(.callout, weight: .medium)
+                .foregroundStyle(theme.primaryText)
+              if let note = completedStepRecords.first(where: { $0.step == stampingStep })?.note, !note.isEmpty {
+                Text(note).themedFont(.caption).foregroundStyle(theme.secondaryText)
+              }
+            }
+          }
+          .padding(.bottom, 12)
+          .accessibilityElement(children: .combine)
+          .accessibilityIdentifier("history-step-stamp-banner")
+          .transition(historyBannerTransition(reduceMotion: reduceMotion))
+        } else if let completionBanner {
           Label(completionBanner, systemImage: "checkmark.circle.fill")
             .themedFont(.callout, weight: .medium)
             .foregroundStyle(theme.success)
@@ -4519,7 +4590,7 @@ private struct HistoryDetailView: View, Equatable {
         }
         // 成功有横幅，失败和中断原来什么都不显示——状态只落在详情下方一个被动的
         // 元数据字段上。关 App 时被打断的那次翻译，表现就是「点了没反应」。
-        if completionBanner == nil, let notice = UnfinishedRunNotice.latest(in: detail.runs) {
+        if completionBanner == nil, stampingStep == nil, let notice = UnfinishedRunNotice.latest(in: detail.runs) {
           HStack(spacing: 8) {
             Label(notice.message, systemImage: "exclamationmark.arrow.circlepath")
               .themedFont(.callout, weight: .medium)
@@ -4813,6 +4884,16 @@ private struct HistoryDetailView: View, Equatable {
         if !isOwnWriting {
           noteBar
             .padding(.top, DesignTokens.Space.xl)
+          ColophonView(
+            text: colophonText,
+            glyph: colophonGlyph,
+            records: completedStepRecords,
+            readingFont: readingFont,
+            secondaryTextColor: theme.secondaryText,
+            sealColor: theme.seal,
+            hairline: theme.hairline,
+            onSelect: { step in openStep(step) }
+          )
         }
       }
       // 常规列表保留较宽上限；专注阅读收窄到约 760pt 并居中。
@@ -4870,6 +4951,12 @@ private struct HistoryDetailView: View, Equatable {
       editingNote = nil
       isRunPanelExpanded = false
       showsPlainText = false
+      // 换一条就回到校对稿：朱批是偶尔核对用的，不该带到下一条。
+      manuscriptMode = .revised
+      // 换条目：记下这一条已有的工序当底数，之后新做完的才盖章。
+      stampBaseline = (detail.task.id, completedStepStamps)
+      stampingStep = nil
+      isProcessPanelPresented = false
       loadTranscriptParagraphs()
       refreshReadingFormat()
       model.loadReformat(taskID: detail.task.id)
@@ -5131,6 +5218,16 @@ private struct HistoryDetailView: View, Equatable {
       }
       sourceCollapseScrollTarget = nil
     }
+    .onChange(of: moduleScrollTarget) { _, target in
+      guard let target else { return }
+      withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
+        scrollProxy.scrollTo(target, anchor: .top)
+      }
+      moduleScrollTarget = nil
+    }
+    .onChange(of: completedStepStamps) { _, steps in
+      noteCompletedSteps(steps)
+    }
     } // ScrollViewReader
   }
 
@@ -5176,7 +5273,9 @@ private struct HistoryDetailView: View, Equatable {
       content = composed.markdown
       ext = "md"
     }
-    guard let data = content.data(using: .utf8), !data.isEmpty else { model.failExportSave(); return }
+    // 题跋跟着文件走：何时从哪里来、做过哪些工序（2026-09-28 工序印）。
+    let finalContent = exportColophonLine.map { content + "\n\n---\n\n" + $0 + "\n" } ?? content
+    guard let data = finalContent.data(using: .utf8), !data.isEmpty else { model.failExportSave(); return }
     let panel = NSSavePanel()
     panel.canCreateDirectories = true
     panel.nameFieldStringValue = "\(composed.baseFilename).\(ext)"
@@ -5187,11 +5286,13 @@ private struct HistoryDetailView: View, Equatable {
   private func exportStyledDocument(_ kind: StyledExportKind) {
     guard let composed = model.composeExportMarkdown() else { return }
     let body = MarkdownNoteFrontmatter.parse(composed.markdown).body
-    let attributed = ReadingDocumentExport.attributedDocument(
+    let document = NSMutableAttributedString(attributedString: ReadingDocumentExport.attributedDocument(
       markdown: body.isEmpty ? composed.markdown : body,
       readingFont: readingFont,
       localImageURLs: localImageURLs
-    )
+    ))
+    if let colophon = exportColophonAttributed() { document.append(colophon) }
+    let attributed: NSAttributedString = document
     let data: Data?
     switch kind {
     case .pdf: data = ReadingDocumentExport.pdfData(from: attributed)
@@ -5215,9 +5316,13 @@ private struct HistoryDetailView: View, Equatable {
   /// overflow is recovered via「展开标题 / 收起标题」instead of an in-title scroller.
   /// Note titles keep the existing editable field (22pt bold).
   private static let noteTitleFontSize: CGFloat = 22
-  private static let captureTitleFontSize: CGFloat = 22
-  private static let captureTitleLineHeight: CGFloat = 28
-  private static var captureTitleMaximumHeight: CGFloat { captureTitleLineHeight * 3 }
+  /// 26pt：自有风格下标题用阅读字体（默认宋体），比正文大出一截，页头才立得住。
+  private static let captureTitleFontSize: CGFloat = 26
+  /// 26pt 宋体 / 苹方半粗的实测行高（NSLayoutManager.defaultLineHeight）是 37。
+  /// 原来写 28（22pt 时代的值），三行标题实高超线，没被截断也会冒出「展开标题」。
+  private static let captureTitleLineHeight: CGFloat = 37
+  /// 多留半行余量，吸收不同字体行高的小差异；四行（148）仍稳稳超线。
+  private static var captureTitleMaximumHeight: CGFloat { captureTitleLineHeight * 3.5 }
 
   private var titleExceedsCollapsedLimit: Bool {
     measuredTitleHeight > Self.captureTitleMaximumHeight
@@ -5644,7 +5749,7 @@ private struct HistoryDetailView: View, Equatable {
         readingTabStrip
         if effectiveReadingPane == .source { reformatToggle }
         Spacer(minLength: DesignTokens.Space.md)
-        readingVerbs
+        readingVerbs(pinned: pinned)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
       if !pinned {
@@ -5751,13 +5856,13 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
 
-  private var readingVerbs: some View {
+  private func readingVerbs(pinned: Bool) -> some View {
     HStack(spacing: DesignTokens.Space.sm) {
       timecodeToggle
       transcribeVerb
       runVerb(.summarize)
       runVerb(.translate)
-      moreActionsMenu
+      processButton(pinned: pinned)
     }
     .controlSize(.small)
   }
@@ -6059,142 +6164,375 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
 
-  /// 表头右端的「⋯」：重做和次要动作。
+  /// 表头右端的「处理」：工序和次要动作（2026-09-28 工序印）。
   ///
-  /// 主按钮只放还没做的事；已经做过的要重来，或者脑图、整理这类不常用的，收在这里。
-  private var moreActionsMenu: some View {
-    Menu {
-      if commentSourceURL != nil {
-        Section {
-          Button { isCommentPickerPresented = true } label: { Label("抓取评论…", systemImage: MenuIcon.comments) }
-            .help("打开原文读取前几条评论，勾选后写进正文末尾")
-            .accessibilityIdentifier("history-fetch-comments")
-        }
-      }
-      Section {
-        if summaryArtifact != nil {
-          Button { startRun(.summarize) } label: { Label("重新总结", systemImage: MenuIcon.summarize) }
-            .disabled(summarizeUnavailableReason != nil)
-            .help(summarizeUnavailableReason ?? "用本机已保存的正文再总结一次")
-            .accessibilityIdentifier("history-more-resummarize")
-        }
-        if translationArtifact != nil {
-          Button { startRun(.translate) } label: { Label("重新翻译", systemImage: MenuIcon.translate) }
-            .disabled(translateUnavailableReason != nil)
-            .help(translateUnavailableReason ?? "用本机已保存的正文再翻译一次")
-            .accessibilityIdentifier("history-more-retranslate")
-        }
-        if let action = transcribeAction {
-          if hasCompletedTranscript {
-            Button(action: action.start) { Label("重新转写（本机）", systemImage: MenuIcon.transcribe) }
-              .disabled(!action.canStart)
-              .help(action.help)
-              .accessibilityIdentifier("history-more-retranscribe")
-          }
-          Button(action: action.startOnline) { Label(onlineTranscribeMenuTitle, systemImage: MenuIcon.transcribeOnline) }
-            .disabled(!action.canStartOnline)
-            .accessibilityIdentifier("history-more-online-transcribe")
-        }
-      }
-      Section {
-        if !isOwnWriting, model.mindMapRecord?.taskID != detail.task.id {
-          Button {
-            if appModel.canEnqueueManualGeneration(for: detail.task.id)
-              || appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) {
-              appModel.enqueueOrCancelMindMapGeneration(taskID: detail.task.id)
-            } else {
-              model.requestMindMapGeneration(taskID: detail.task.id)
-            }
-          } label: {
-            Label(appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) ? "已排队脑图" : "生成脑图", systemImage: MenuIcon.mindMap)
-          }
-          .disabled(mindMapUnavailableReason != nil)
-          .help(
-            mindMapUnavailableReason
-              ?? (appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap)
-                ? "再点一次取消排队"
-                : "把正文发给模型提取结构")
-          )
-          .accessibilityIdentifier("mind-map-generate")
-        }
-        if hasCompletedTranscript {
-          Button {
-            model.requestTranscriptTidy(taskID: detail.task.id, model: providerSettings.effectiveTidyModelName)
-          } label: {
-            // 叫「校对」，和进度提示「正在用模型校对」同一个词；「整理文稿」是给长文加小标题的
-            // 另一个功能，两个同名时用户找不到重新校对的入口（2026-09-28 反馈）。
-            Label(transcriptTidyBlockedReason.map { "校对转写稿（\($0)）" } ?? "校对转写稿", systemImage: MenuIcon.tidy)
-          }
-          .disabled(transcriptTidyBlockedReason != nil)
-          .help("把转写文字校对一遍并重新分段，不改说了什么")
-          .accessibilityIdentifier("history-ai-transcript-tidy")
-        }
-        // 「整理排版」只对 2000 字以上、还没分节的长文可用。短帖看不到入口会以为
-        // 功能没了，这里留一条灰项说明原因，功能的存在感不随内容长短消失。
-        if !isOwnWriting, model.reformatRecord == nil, let snapshot = latestSnapshot {
-          let eligibility = reformatEligibility(snapshot)
-          if eligibility.canReformat {
-            Button {
-              model.requestArticleReformat(
-                taskID: detail.task.id,
-                bodyText: snapshot.bodyText,
-                model: providerSettings.effectiveTidyModelName
-              )
-            } label: {
-              Label("整理排版", systemImage: MenuIcon.reformat)
-            }
-            .disabled(model.reformatUnavailableReason(taskID: detail.task.id) != nil)
-            .help(model.reformatUnavailableReason(taskID: detail.task.id) ?? "给这篇长文分节、加上小标题；原文不会被改动，随时可以切回")
-            .accessibilityIdentifier("history-reformat-button")
-          } else if let message = eligibility.userMessage {
-            Button {} label: { Label("整理排版：\(message)", systemImage: MenuIcon.reformat) }
-              .disabled(true)
-              .accessibilityIdentifier("history-reformat-unavailable")
-          }
-        }
-        Button { isRegeneratePopoverPresented = true } label: { Label("换个模型重跑…", systemImage: MenuIcon.rerun) }
-          .disabled(summarizeUnavailableReason != nil && translateUnavailableReason != nil)
-          .help("用本机已保存的正文，临时换一个模型重新总结或翻译")
-          .accessibilityIdentifier("regenerate-history")
-      }
-      Section {
-        if let runActionBlockedReason { Text(runActionBlockedReason) }
-        if !providerSettings.arePreferencesReady {
-          Button("设置模型") { openSettings() }
-            .accessibilityIdentifier("history-open-model-settings")
-        } else if !showsVisibleRun {
-          let modelName = providerSettings.activeSummaryModelName.isEmpty
-            ? "模型未命名"
-            : "模型：\(providerSettings.activeSummaryModelName)"
-          Button {} label: { Label(modelName, systemImage: MenuIcon.model) }
-            .disabled(true)
-        }
-        if canRunHistory || showsCurrentCapture || isRunPanelExpanded || hasCollapsedRunMetadata {
-          Button {
-            withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isRunPanelExpanded.toggle() }
-          } label: {
-            Label(isRunPanelExpanded ? "收起运行详情" : "运行详情", systemImage: MenuIcon.runDetails)
-          }
-          .accessibilityIdentifier("history-run-panel-toggle")
-        }
-      }
+  /// 原来是系统菜单，只能放单色小图标；现在是自己画的面板，每道工序前面一枚印：
+  /// 没做的是印位（虚线框、空心字）写「去做」，做过的是盖好的章写时间，正在做写进度，
+  /// 上次失败写原因。分隔线下面是不算工序的动作：在线转写、整理排版、换模型重跑、运行详情。
+  ///
+  /// 表头在原位和吸顶各有一份；面板只挂在当前看得见的那一份上，不会两个抢一个开关。
+  private func processButton(pinned: Bool) -> some View {
+    Button {
+      isProcessPanelPresented.toggle()
     } label: {
-      // 写出「处理」两个字：原来是一个「⋯」圆圈，和窗口顶栏的「更多」同形同名，
-      // 分不出一个管导出删除、一个管重做脑图（2026-09-25 走查）。
       Label("处理", systemImage: "wand.and.stars")
         .labelStyle(.titleAndIcon)
     }
-    // 和旁边的「总结」「翻译」同一种有边框按钮（2026-09-25）：原来一个是框、一个是蓝字，
-    // 同一排动作两种长相。
-    .menuStyle(.button)
+    // 和旁边的「总结」「翻译」同一种有边框按钮（2026-09-25）。
     .buttonStyle(.bordered)
-    .menuIndicator(.hidden)
     .fixedSize()
-    .help("重新转写、校对转写稿、生成脑图、整理排版、换个模型重跑、运行详情")
+    .help("转写、校对、评论、总结、翻译、脑图，以及整理排版、换个模型重跑、运行详情")
     .accessibilityLabel("处理")
     .accessibilityIdentifier("history-more-actions-menu")
-    // popover 不挂在这里：这个菜单在原位表头和吸顶表头里各有一份，挂在这里就有两个
-    // popover 抢同一个开关，其中一个还锚在滚出屏幕的原位表头上。统一挂在正文区外层。
+    .popover(
+      isPresented: Binding(
+        get: { isProcessPanelPresented && pinned == isReadingHeaderPinned },
+        set: { if !$0 { isProcessPanelPresented = false } }
+      ),
+      arrowEdge: .bottom
+    ) {
+      processPanel
+    }
+  }
+
+  /// 面板里点了会弹出另一个窗口的动作（抓评论、换模型重跑），先把面板收起再弹，免得两个浮层叠在一起。
+  private func closeProcessPanel(then action: @escaping () -> Void) {
+    isProcessPanelPresented = false
+    Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 180_000_000)
+      action()
+    }
+  }
+
+  private var processPanel: some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text("工序")
+        .themedFont(.caption)
+        .tracking(2)
+        .foregroundStyle(theme.secondaryText)
+        .padding(.horizontal, 10)
+        .padding(.top, 4)
+        .padding(.bottom, 2)
+      ForEach(processStepRows, id: \.step) { row in
+        ProcessStepRow(
+          step: row.step, title: row.title, state: row.state, isEnabled: row.isEnabled, help: row.help,
+          sealColor: theme.seal, primaryText: theme.primaryText, secondaryText: theme.secondaryText,
+          identifier: row.identifier, action: row.action
+        )
+      }
+      processPanelExtras
+    }
+    .padding(6)
+    .frame(width: 320)
+    .accessibilityIdentifier("history-process-panel")
+  }
+
+  private struct ProcessStepRowModel {
+    let step: ProcessStep
+    let title: String
+    let state: ProcessStepRow.State
+    let isEnabled: Bool
+    let help: String
+    let identifier: String
+    let action: () -> Void
+  }
+
+  /// 这一条能做的工序，按「录 校 评 摘 译 图」排。做不了的（没有视频、没有评论源）不列。
+  private var processStepRows: [ProcessStepRowModel] {
+    let taskID = detail.task.id
+    let records = Dictionary(uniqueKeysWithValues: completedStepRecords.map { ($0.step, $0) })
+    func doneText(_ step: ProcessStep) -> String {
+      records[step]?.date.map { ProcessStepRecord.shortFormat($0) } ?? "已做"
+    }
+    var rows: [ProcessStepRowModel] = []
+
+    if let action = transcribeAction {
+      let state: ProcessStepRow.State = {
+        let ui = model.transcriptionState(for: taskID)
+        if ui.isActive { return .running("转写中…") }
+        if case let .failed(reason) = ui { return .failed(reason) }
+        return hasCompletedTranscript ? .done(doneText(.record)) : .pending
+      }()
+      rows.append(.init(
+        step: .record,
+        title: hasCompletedTranscript ? "重新转写（本机）" : "转写（本机）",
+        state: state,
+        isEnabled: action.canStart && !model.transcriptionState(for: taskID).isActive,
+        help: action.help,
+        identifier: hasCompletedTranscript ? "history-more-retranscribe" : "history-process-transcribe",
+        action: { isProcessPanelPresented = false; action.start() }
+      ))
+    }
+
+    if hasCompletedTranscript {
+      let tidy = model.transcriptTidyState(for: taskID)
+      let done = records[.proof] != nil
+      let state: ProcessStepRow.State = {
+        if tidy.isActive { return .running(model.transcriptTidyProgress ?? "校对中…") }
+        if case let .failed(reason) = tidy { return .failed(reason) }
+        return done ? .done(doneText(.proof)) : .pending
+      }()
+      rows.append(.init(
+        step: .proof,
+        // 叫「校对」，和进度提示「正在用模型校对」同一个词（2026-09-28 反馈）。
+        title: transcriptTidyBlockedReason.map { "校对转写稿（\($0)）" } ?? (done ? "重新校对转写稿" : "校对转写稿"),
+        state: state,
+        isEnabled: transcriptTidyBlockedReason == nil && !tidy.isActive,
+        help: "把转写文字校对一遍并重新分段，不改说了什么",
+        identifier: "history-ai-transcript-tidy",
+        action: {
+          isProcessPanelPresented = false
+          model.requestTranscriptTidy(taskID: taskID, model: providerSettings.effectiveTidyModelName)
+        }
+      ))
+    }
+
+    if commentSourceURL != nil {
+      let done = records[.comments] != nil
+      rows.append(.init(
+        step: .comments,
+        title: done ? "重新抓取评论…" : "抓取评论…",
+        state: done ? .done(doneText(.comments)) : .pending,
+        isEnabled: true,
+        help: "打开原文读取前几条评论，勾选后写进正文末尾",
+        identifier: "history-fetch-comments",
+        action: { closeProcessPanel { isCommentPickerPresented = true } }
+      ))
+    }
+
+    for (step, kind) in [(ProcessStep.summary, RunKind.summarize), (.translation, .translate)] {
+      if kind == .translate, translationNotNeeded, translationArtifact == nil { continue }
+      let done = (kind == .translate ? translationArtifact : summaryArtifact) != nil
+      let blocked = kind == .translate ? translateUnavailableReason : summarizeUnavailableReason
+      let queued = appModel.isManualGenerationQueued(taskID: taskID, kind: kind == .translate ? .translate : .summarize)
+      let state: ProcessStepRow.State = {
+        if isRunning(kind) { return .running("\(step.title)中…") }
+        if queued { return .running("已排队") }
+        if !done, let notice = UnfinishedRunNotice.latest(in: detail.runs), notice.kind == kind {
+          return .failed(notice.message)
+        }
+        return done ? .done(doneText(step)) : .pending
+      }()
+      rows.append(.init(
+        step: step,
+        title: done ? "重新\(step.title)" : step.title,
+        state: state,
+        isEnabled: blocked == nil && !isRunning(kind),
+        help: blocked ?? (done ? "用本机已保存的正文再\(step.title)一次" : (kind == .translate
+          ? "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
+          : "让模型读完正文，写一份总结")),
+        identifier: kind == .translate
+          ? (done ? "history-more-retranslate" : "history-process-translate")
+          : (done ? "history-more-resummarize" : "history-process-summarize"),
+        action: { isProcessPanelPresented = false; startRun(kind) }
+      ))
+    }
+
+    if !isOwnWriting {
+      let done = model.mindMapRecord?.taskID == taskID
+      let queued = appModel.isManualGenerationQueued(taskID: taskID, kind: .mindMap)
+      let state: ProcessStepRow.State = {
+        if model.mindMapState(for: taskID).isActive { return .running("生成中…") }
+        if queued { return .running("已排队") }
+        if case let .failed(reason) = model.mindMapState(for: taskID) { return .failed(reason) }
+        return done ? .done(doneText(.mindMap)) : .pending
+      }()
+      rows.append(.init(
+        step: .mindMap,
+        title: done ? "重新生成脑图" : "生成脑图",
+        state: state,
+        isEnabled: mindMapUnavailableReason == nil,
+        help: mindMapUnavailableReason ?? (queued ? "再点一次取消排队" : "把正文发给模型提取结构"),
+        identifier: "mind-map-generate",
+        action: {
+          isProcessPanelPresented = false
+          if appModel.canEnqueueManualGeneration(for: taskID) || queued {
+            appModel.enqueueOrCancelMindMapGeneration(taskID: taskID)
+          } else {
+            model.requestMindMapGeneration(taskID: taskID)
+          }
+        }
+      ))
+    }
+    return rows
+  }
+
+  /// 分隔线下面：不算工序的动作，沿用线性图标。
+  @ViewBuilder private var processPanelExtras: some View {
+    Divider().padding(.horizontal, 8).padding(.vertical, 4)
+    VStack(alignment: .leading, spacing: 0) {
+      if let action = transcribeAction {
+        processExtraButton(onlineTranscribeMenuTitle, systemImage: MenuIcon.transcribeOnline, identifier: "history-more-online-transcribe", enabled: action.canStartOnline) {
+          isProcessPanelPresented = false
+          action.startOnline()
+        }
+      }
+      // 「整理排版」只对 2000 字以上、还没分节的长文可用；短帖留一条灰项说明原因。
+      if !isOwnWriting, model.reformatRecord == nil, let snapshot = latestSnapshot {
+        let eligibility = reformatEligibility(snapshot)
+        if eligibility.canReformat {
+          processExtraButton("整理排版", systemImage: MenuIcon.reformat, identifier: "history-reformat-button",
+                             enabled: model.reformatUnavailableReason(taskID: detail.task.id) == nil,
+                             help: model.reformatUnavailableReason(taskID: detail.task.id) ?? "给这篇长文分节、加上小标题；原文不会被改动，随时可以切回") {
+            isProcessPanelPresented = false
+            model.requestArticleReformat(taskID: detail.task.id, bodyText: snapshot.bodyText, model: providerSettings.effectiveTidyModelName)
+          }
+        } else if let message = eligibility.userMessage {
+          processExtraButton("整理排版：\(message)", systemImage: MenuIcon.reformat, identifier: "history-reformat-unavailable", enabled: false) {}
+        }
+      }
+      processExtraButton("换个模型重跑…", systemImage: MenuIcon.rerun, identifier: "regenerate-history",
+                         enabled: !(summarizeUnavailableReason != nil && translateUnavailableReason != nil),
+                         help: "用本机已保存的正文，临时换一个模型重新总结或翻译") {
+        closeProcessPanel { isRegeneratePopoverPresented = true }
+      }
+      if let runActionBlockedReason {
+        Text(runActionBlockedReason).themedFont(.caption).foregroundStyle(theme.secondaryText).padding(.horizontal, 10).padding(.vertical, 4)
+      }
+      if !providerSettings.arePreferencesReady {
+        processExtraButton("设置模型", systemImage: MenuIcon.model, identifier: "history-open-model-settings") {
+          isProcessPanelPresented = false
+          openSettings()
+        }
+      } else if !showsVisibleRun {
+        let modelName = providerSettings.activeSummaryModelName.isEmpty ? "模型未命名" : "模型：\(providerSettings.activeSummaryModelName)"
+        processExtraButton(modelName, systemImage: MenuIcon.model, identifier: "history-process-model", enabled: false) {}
+      }
+      if canRunHistory || showsCurrentCapture || isRunPanelExpanded || hasCollapsedRunMetadata {
+        processExtraButton(isRunPanelExpanded ? "收起运行详情" : "运行详情", systemImage: MenuIcon.runDetails, identifier: "history-run-panel-toggle") {
+          isProcessPanelPresented = false
+          withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isRunPanelExpanded.toggle() }
+        }
+      }
+    }
+  }
+
+  private func processExtraButton(
+    _ title: String, systemImage: String, identifier: String, enabled: Bool = true, help: String? = nil,
+    action: @escaping () -> Void
+  ) -> some View {
+    Button(action: action) {
+      HStack(spacing: 10) {
+        Image(systemName: systemImage)
+          .font(.system(size: 13))
+          .foregroundStyle(theme.secondaryText)
+          .frame(width: 28)
+        Text(title).themedFont(.body).foregroundStyle(theme.primaryText).lineLimit(1)
+        Spacer(minLength: 0)
+      }
+      .padding(.horizontal, 10)
+      .padding(.vertical, 5)
+      .contentShape(Rectangle())
+    }
+    .buttonStyle(.plain)
+    .disabled(!enabled)
+    .opacity(enabled ? 1 : 0.5)
+    .help(help ?? title)
+    .accessibilityIdentifier(identifier)
+  }
+
+  // MARK: - 工序印
+
+  /// 这一条做过的工序，按「录 校 评 摘 译 图」排；有记录的写上时间和模型，没有的不编。
+  private var completedStepRecords: [ProcessStepRecord] {
+    func date(_ milliseconds: Int64) -> Date { Date(timeIntervalSince1970: Double(milliseconds) / 1_000) }
+    let transcriptKind = CapturedDocument.Origin.localTranscription.rawValue
+    var records: [ProcessStepRecord] = []
+    // 取最近一次：重新转写、重新抓评论后时间跟着变，盖章那一刻也靠它认出「刚重做完」。
+    if let machine = detail.snapshots.last(where: { $0.sourceKind == transcriptKind && $0.captureMethod != Self.tidyCaptureMethod }) {
+      records.append(.init(step: .record, date: date(machine.capturedAtMilliseconds), note: nil))
+    }
+    if let tidy = detail.snapshots.last(where: { $0.captureMethod == Self.tidyCaptureMethod }) {
+      records.append(.init(step: .proof, date: date(tidy.capturedAtMilliseconds), note: nil))
+    }
+    if let withComments = detail.snapshots.last(where: { $0.bodyText.contains("\n## 评论") }) {
+      records.append(.init(step: .comments, date: date(withComments.capturedAtMilliseconds), note: nil))
+    }
+    for (step, kind) in [(ProcessStep.summary, RunKind.summarize), (.translation, .translate)] {
+      if let latest = detail.runs.reversed().first(where: { $0.run.kind == kind && !($0.artifact?.bodyText.isEmpty ?? true) }),
+         let artifact = latest.artifact {
+        records.append(.init(step: step, date: date(artifact.updatedAtMilliseconds), note: latest.run.model))
+      }
+    }
+    if let mindMap = model.mindMapRecord, mindMap.taskID == detail.task.id {
+      records.append(.init(step: .mindMap, date: date(mindMap.createdAtMilliseconds), note: mindMap.model))
+    }
+    return records
+  }
+
+  /// 导出文件末尾的题跋文字：「九月二十八日汲自抖音　录 · 校 · 评 · 摘」。笔记不加。
+  private var exportColophonLine: String? {
+    guard !isOwnWriting else { return nil }
+    let glyphs = completedStepRecords.map(\.step.glyph.rawValue)
+    return glyphs.isEmpty ? colophonText : colophonText + "　" + glyphs.joined(separator: " · ")
+  }
+
+  /// PDF / Word 末尾的题跋：右对齐一行小字，后面画出真的章（渲染成图片放进去）。
+  @MainActor
+  private func exportColophonAttributed() -> NSAttributedString? {
+    guard !isOwnWriting else { return nil }
+    let style = NSMutableParagraphStyle()
+    style.alignment = .right
+    style.paragraphSpacingBefore = 28
+    let result = NSMutableAttributedString(string: "\n" + colophonText + "  ", attributes: [
+      .font: NSFont(descriptor: readingFont.nsFontDescriptor(size: 11), size: 11) ?? NSFont.systemFont(ofSize: 11),
+      .foregroundColor: NSColor.secondaryLabelColor,
+      .paragraphStyle: style,
+    ])
+    let seals = HStack(spacing: 5) {
+      ForEach(completedStepRecords) { record in
+        SealMark(glyph: record.step.glyph, size: 22, color: ReadingPaletteExport.seal, style: .stamped, rotation: record.step.rotation)
+      }
+      SealMark(glyph: colophonGlyph, size: 30, color: ReadingPaletteExport.seal, style: .stamped, rotation: -0.8)
+    }
+    .padding(2)
+    let renderer = ImageRenderer(content: seals)
+    renderer.scale = 3
+    if let image = renderer.nsImage {
+      let attachment = NSTextAttachment()
+      attachment.image = image
+      attachment.bounds = CGRect(x: 0, y: -9, width: image.size.width, height: image.size.height)
+      let attached = NSMutableAttributedString(attachment: attachment)
+      attached.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: attached.length))
+      result.append(attached)
+    } else if let line = exportColophonLine {
+      return NSAttributedString(string: "\n" + line, attributes: [.paragraphStyle: style])
+    }
+    return result
+  }
+
+  /// 点页尾的章：跳到那份内容。
+  private func openStep(_ step: ProcessStep) {
+    switch step {
+    case .record, .proof, .comments:
+      readingPane = .source
+    case .summary:
+      readingPane = .summary
+    case .translation:
+      readingPane = .translation
+    case .mindMap:
+      moduleScrollTarget = ReadingAnchor.module("mindmap")
+    }
+  }
+
+  /// 每道做过的工序和它的完成时间（秒）；没有时间记录的记 0。
+  private var completedStepStamps: [ProcessStep: Double] {
+    Dictionary(uniqueKeysWithValues: completedStepRecords.map { ($0.step, $0.date?.timeIntervalSince1970 ?? 0) })
+  }
+
+  /// 看着这一条时，某道工序新做完（或重做完、完成时间变新）就盖一下；换条目只更新底数，不盖。
+  private func noteCompletedSteps(_ steps: [ProcessStep: Double]) {
+    defer { stampBaseline = (detail.task.id, steps) }
+    guard let baseline = stampBaseline, baseline.taskID == detail.task.id else { return }
+    let refreshed = steps.filter { step, time in baseline.steps[step].map { time > $0 } ?? true }
+    guard let step = ProcessStep.allCases.first(where: { refreshed[$0] != nil }) else { return }
+    withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { stampingStep = step }
+    Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 2_600_000_000)
+      withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
+        if stampingStep == step { stampingStep = nil }
+      }
+    }
   }
 
   @ViewBuilder private func actionPill(
@@ -6992,13 +7330,13 @@ private struct HistoryDetailView: View, Equatable {
         // Summaries rarely carry images; still allow local map if present.
         MarkdownContentView(
           source: translationTimecodesApplied(
-            displayedArtifactMarkdown(
+            (pane == .summary ? MarkdownPresentation.strippingSummaryPreamble : { $0 })(displayedArtifactMarkdown(
               ReadingRenderCache.paneBody(
                 // 分层时只喂当前那一层，元数据清理仍按整篇的规则走。
                 source: (pane == .translation ? activeTranslationBody : nil) ?? artifact.bodyText,
                 strippingEchoedMetadata: pane == .translation
               )
-            ),
+            )),
             pane: pane
           ),
           sourceURL: URL(string: sourceURL),
@@ -7145,6 +7483,17 @@ private struct HistoryDetailView: View, Equatable {
     return prefix.trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
+  /// 转写稿的时间码挂在左页边（44pt 宽 + 14pt 间距），「展开全文 / 收起」跟正文栏对齐，
+  /// 不要缩在页边的时间码底下。
+  private func sourceGutterInset(_ snapshot: ContentSnapshot) -> CGFloat {
+    guard !showsPlainText, showsTranscriptTimecodes,
+          snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue else { return 0 }
+    // 没有时间码的转写走普通阅读区，没有页边。
+    let body = displayedSourceMarkdown(snapshot, bodyOverride: nil)
+    guard TranscriptManuscript.looksLikeTranscript(body) || !SpeakerTranscript.turns(in: body).isEmpty else { return 0 }
+    return 58
+  }
+
   @ViewBuilder
   private func collapsibleSourceSection(
     heading: String,
@@ -7175,6 +7524,7 @@ private struct HistoryDetailView: View, Equatable {
           .buttonStyle(.link)
           .themedFont(.callout, weight: .medium)
           .padding(.top, 4)
+          .padding(.leading, sourceGutterInset(snapshot))
           .accessibilityIdentifier("history-source-expand-inline")
       } else {
         sourceSnapshotReader(snapshot)
@@ -7186,6 +7536,7 @@ private struct HistoryDetailView: View, Equatable {
           .buttonStyle(.link)
           .themedFont(.callout, weight: .medium)
           .padding(.top, 4)
+          .padding(.leading, sourceGutterInset(snapshot))
           .accessibilityIdentifier("history-source-collapse-inline")
         }
       }
@@ -7221,6 +7572,141 @@ private struct HistoryDetailView: View, Equatable {
     return CapturedSourceBodyPresentation.strippingEchoedOpening(
       title: readingPrimaryTitle, from: body, style: .stripSyntheticTitleHeadingOnly
     )
+  }
+
+  /// 机器听写的那份转写稿（校对前）。朱批和「原稿」都拿它当底。
+  private var machineTranscriptSnapshot: ContentSnapshot? {
+    detail.snapshots.last {
+      $0.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+        && $0.captureMethod != Self.tidyCaptureMethod
+    }
+  }
+
+  private static let tidyCaptureMethod = "openai_compatible_chat_tidy"
+
+  @ViewBuilder
+  private func transcriptManuscript(snapshot: ContentSnapshot, body fullBody: String, previewLimit: Int?) -> some View {
+    let split = TranscriptManuscript.splittingComments(fullBody)
+    let body = split.transcript
+    let machine = snapshot.captureMethod == Self.tidyCaptureMethod ? machineTranscriptSnapshot : nil
+    let mode = machine == nil ? TranscriptManuscript.Mode.revised : manuscriptMode
+    let machineBody = machine.map { TranscriptManuscript.splittingComments(displayedSourceMarkdown($0, bodyOverride: nil)).transcript }
+    // 朱批开关上要写改了几处，所以只要有机器原稿就算一遍（按快照缓存，只算一次）。
+    let revision: TranscriptRevision.Result? = {
+      guard let machine, let machineBody else { return nil }
+      return TranscriptManuscript.revision(
+        originalKey: machine.id.rawValue, original: machineBody,
+        revisedKey: snapshot.id.rawValue, revised: body
+      )
+    }()
+    let shown = mode == .original ? (machineBody ?? body) : body
+    VStack(alignment: .leading, spacing: 18) {
+      if machine != nil {
+        manuscriptModePicker(current: mode, revision: revision)
+      }
+      TranscriptManuscriptView(
+        paragraphs: TranscriptManuscript.paragraphs(of: shown, revision: mode == .marked ? revision : nil)
+          .filter { previewLimit == nil || $0.offset < previewLimit! },
+        showsTimecodes: showsTranscriptTimecodes,
+        showsNotes: mode == .marked,
+        readingFont: sourcePaneReadingFont(snapshot),
+        primaryTextColor: mode == .original ? theme.primaryText.opacity(0.8) : theme.primaryText,
+        secondaryTextColor: theme.secondaryText,
+        sealColor: theme.seal,
+        onSeek: hasSeekableMedia ? { seconds in model.requestMediaSeek(toSeconds: seconds) } : nil
+      )
+      .simultaneousGesture(
+        TapGesture().onEnded {
+          // 只有看的就是这份正文时才进编辑：朱批和原稿里点一下不该改到校对稿。
+          guard mode == .revised, canEditSource(snapshot), !model.isReadOnly else { return }
+          beginSourceEditing(snapshot, displayedSnippet: nil)
+        }
+      )
+      // 评论单独成一节，用评论组件排；折叠预览时不露（它在全文最后）。
+      if previewLimit == nil, mode != .original, let comments = split.comments {
+        MarkdownContentView(
+          source: comments,
+          sourceURL: URL(string: sourceURL),
+          localImageURLs: localImageURLs,
+          localMediaFileURL: nil,
+          readingFont: sourcePaneReadingFont(snapshot),
+          primaryTextColor: theme.primaryText,
+          secondaryTextColor: theme.secondaryText,
+          accentColor: theme.accent,
+          showsPlainText: .constant(false),
+          showsInlinePlainTextToggle: false,
+          anchorScope: anchorScope(for: .source) + ".comments"
+        )
+        .padding(.leading, showsTranscriptTimecodes ? 58 : 0)
+        .accessibilityIdentifier("transcript-comments")
+      }
+    }
+  }
+
+  /// 「校对稿 / 原稿」两个选项，右边一个「朱批」开关（2026-09-28 Syc 选定）。
+  ///
+  /// 朱批是同一篇校对稿加上批改记号，不单独成一页：平时读干净的，想核对时点开。
+  private func manuscriptModePicker(current: TranscriptManuscript.Mode, revision: TranscriptRevision.Result?) -> some View {
+    let showsOriginal = current == .original
+    return HStack(spacing: DesignTokens.Space.lg) {
+      ForEach([TranscriptManuscript.Mode.revised, .original]) { mode in
+        let selected = (mode == .original) == showsOriginal
+        Button { manuscriptMode = mode } label: {
+          Text(mode.title)
+            .themedFont(.callout, weight: selected ? .medium : .regular)
+            .foregroundStyle(selected ? theme.primaryText : theme.secondaryText)
+            .padding(.bottom, 5)
+            .overlay(alignment: .bottom) {
+              Rectangle().fill(selected ? theme.accent : Color.clear).frame(height: 1.5)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(selected ? .isSelected : [])
+        .accessibilityIdentifier("transcript-manuscript-mode-\(mode.rawValue)")
+      }
+      Spacer(minLength: 0)
+      if showsOriginal {
+        Text("Apple 本机听写原样")
+          .themedFont(.caption)
+          .foregroundStyle(theme.secondaryText)
+      } else {
+        Button {
+          manuscriptMode = current == .marked ? .revised : .marked
+        } label: {
+          Text(current == .marked ? "收起朱批" : manuscriptSummary(revision))
+            .themedFont(.caption, weight: .medium)
+            .foregroundStyle(theme.seal)
+        }
+        .buttonStyle(.plain)
+        .help(current == .marked ? "收起批改记号" : "显示模型相对 Apple 听写改了哪些字")
+        .accessibilityIdentifier("transcript-manuscript-mode-marked")
+      }
+    }
+    .accessibilityIdentifier("transcript-manuscript-modes")
+  }
+
+  private func manuscriptSummary(_ revision: TranscriptRevision.Result?) -> String {
+    let changes = revision?.changes.count ?? 0
+    let deletions = revision?.deletions.count ?? 0
+    if changes == 0, deletions == 0 { return "朱批 · 只补了标点" }
+    return deletions > 0 ? "朱批 · 改字 \(changes) 处 · 删去 \(deletions) 处" : "朱批 · 改字 \(changes) 处"
+  }
+
+  /// 题跋：何时从哪里汲来（或自己记下）、经过哪些加工。
+  private var colophonText: String {
+    let date = ColophonView.chineseDate(Date(timeIntervalSince1970: Double(detail.task.createdAtMilliseconds) / 1_000))
+    let host = HistoryPlatformRegistry.canonicalHost(for: URLComponents(string: detail.task.canonicalURL)?.host ?? "")
+    let platform = HistoryPlatformDisplay.name(forHost: host)
+    // 做过哪些工序由后面那排章来说，文字只记何时从哪里来。
+    return colophonGlyph == .external ? "\(date)汲自\(platform)" : "\(date)记"
+  }
+
+  private var colophonGlyph: SealMark.Glyph {
+    let host = HistoryPlatformRegistry.canonicalHost(for: URLComponents(string: detail.task.canonicalURL)?.host ?? "")
+    let ownership = ContentOwnership.resolve(
+      canonicalURL: detail.task.canonicalURL, host: host, tagNames: detail.tags.map(\.name)
+    )
+    return ownership == .own ? .own : .external
   }
 
   /// 阅读卡里不再重复印标题。笔记是用户自己写的，开头的标题要留着。
@@ -7360,6 +7846,13 @@ private struct HistoryDetailView: View, Equatable {
             showsTimecodes: showsTranscriptTimecodes,
             onSeek: { seconds in model.requestMediaSeek(toSeconds: seconds) }
           )
+        } else if !showsPlainText,
+                  snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue,
+                  case let manuscriptBody = displayedSourceMarkdown(snapshot, bodyOverride: nil),
+                  TranscriptManuscript.looksLikeTranscript(manuscriptBody) {
+          // 逐字稿按书排：时间码挂左页边；有校对稿时可看朱批（2026-09-28 自有风格）。
+          // 长稿折叠时只排预览长度以内的段落；朱批位置照旧按整篇算，不会错位。
+          transcriptManuscript(snapshot: snapshot, body: manuscriptBody, previewLimit: bodyOverride?.count)
         } else if !showsPlainText, showsTranscriptTimecodes, !transcriptParagraphs.isEmpty,
                   snapshot.id == transcriptParagraphsSnapshotID {
           // 有分段时间的转写稿走时间线视图；纯文本模式仍回普通阅读区，那是

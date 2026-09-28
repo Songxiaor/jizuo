@@ -487,7 +487,9 @@ enum MarkdownPresentation {
   ///
   /// 2026-09-23 收到 6：正文改回苹方 15pt 后，苹方自带行高已约 1.4 倍，再加 10pt 行距到 2 倍，
   /// 配上逐句分段，满屏都是空白，和紧凑的侧栏、列表不是一个节奏。6pt 约合 1.8 倍。
-  static let bodyLineSpacing: CGFloat = 6
+  ///
+  /// 2026-09-28 正文排版样稿：默认改宋体 16 号后调到 7，约 1.85 倍行高。
+  static let bodyLineSpacing: CGFloat = 7
 
   static func sanitized(_ source: String) -> String {
     var value = replacingHTMLLikeTokensPreservingCode(in: source)
@@ -679,18 +681,59 @@ enum MarkdownPresentation {
     return result
   }
 
+  /// 按「从左往右一对一对」找强调标记，只改够不上 CommonMark flanking 规则的那几对。
+  ///
+  /// 2026-09-28 修：原来用一条正则直接找「标点 + 闭合标记 + 汉字」，不认配对——
+  /// `**核心结论**：……小团队：**Codex……**。` 里，第一对的**闭合**标记被当成了
+  /// 开头，一直吃到第二对的开头，结果两对都拆坏，星号露在正文里。
   private static func rewritingEmphasis(_ value: String, marker: String) -> String {
-    let escaped = NSRegularExpression.escapedPattern(for: marker)
+    let m = NSRegularExpression.escapedPattern(for: marker)
     let single = NSRegularExpression.escapedPattern(for: String(marker.first!))
-    // 内容里不含标记字符本身与换行；结尾一个标点；闭合标记后面既不是空白也不是标点。
-    let pattern =
-      "\(escaped)([^\(single)\\n]*?)([\\p{P}\\p{S}])\(escaped)(?![\(single)])(?=[^\\s\\p{P}\\p{S}])"
+    // 单字符标记不能是双字符标记的一半。
+    let pattern = marker.count == 1
+      ? "(?<!\(single))\(m)(?!\(single))([^\(single)\\n]+?)(?<!\(single))\(m)(?!\(single))"
+      : "\(m)([^\(single)\\n]+?)\(m)"
     guard let regex = try? NSRegularExpression(pattern: pattern) else { return value }
-    return regex.stringByReplacingMatches(
-      in: value,
-      range: NSRange(value.startIndex..., in: value),
-      withTemplate: "\(marker)$1\(marker)$2"
-    )
+    let ns = value as NSString
+    var result = ""
+    var cursor = 0
+    func isPunct(_ c: Character) -> Bool { c.isPunctuation || c.isSymbol }
+    for match in regex.matches(in: value, range: NSRange(location: 0, length: ns.length)) {
+      result += ns.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+      cursor = match.range.location + match.range.length
+      var inner = ns.substring(with: match.range(at: 1))
+      var before = ""
+      var after = ""
+      let previous = match.range.location > 0
+        ? Character(ns.substring(with: NSRange(location: match.range.location - 1, length: 1))) : nil
+      let following = cursor < ns.length ? Character(ns.substring(with: NSRange(location: cursor, length: 1))) : nil
+      // 闭合标记前是标点、后面紧跟文字：把末尾标点移到标记外面。
+      if let last = inner.last, isPunct(last), inner.count > 1,
+         let following, !following.isWhitespace, !isPunct(following) {
+        inner.removeLast()
+        after = String(last)
+      }
+      // 开头标记后是标点、前面紧挨文字：把开头标点移到标记前面。
+      if let first = inner.first, isPunct(first), inner.count > 1,
+         let previous, !previous.isWhitespace, !isPunct(previous) {
+        inner.removeFirst()
+        before = String(first)
+      }
+      result += before + marker + inner + marker + after
+    }
+    result += ns.substring(from: cursor)
+    return result
+  }
+
+  /// 总结开头的套话（「根据捕获的内容，总结如下：」）只在显示时去掉，存档原样保留。
+  /// 只认第一段、且整段就是一句以冒号结尾的开场白，正文里的同类句子不动。
+  static func strippingSummaryPreamble(_ markdown: String) -> String {
+    let trimmed = markdown.drop(while: { $0.isWhitespace || $0.isNewline })
+    guard let lineEnd = trimmed.firstIndex(of: "\n") else { return markdown }
+    let first = trimmed[..<lineEnd].trimmingCharacters(in: .whitespaces)
+    let pattern = #"^(根据|基于|以下是|下面是|这是|好的[，,]?)[^\n。]{0,24}(总结|摘要|要点|概括|梳理)[^\n。]{0,8}[：:]$"#
+    guard first.count <= 40, first.range(of: pattern, options: .regularExpression) != nil else { return markdown }
+    return String(trimmed[lineEnd...]).trimmingCharacters(in: .newlines)
   }
 
   /// Plain-text mode intentionally shares the same HTML-safe presentation
@@ -2501,7 +2544,11 @@ struct MarkdownContentView: View {
                 .id(ScopedReadingAnchor(scope: anchorScope, block: resolvedBlockIndex(entry.anchor)))
             }
           } else if !folding.isContentHidden(after: owner ?? -1) {
-            runView(entry.run, trimsTrailingLine: nextIsCard, followsText: followsText)
+            runView(
+              entry.run, trimsTrailingLine: nextIsCard, followsText: followsText,
+              // 全文第一段文字（不在提示框里）才当导语。
+              emphasizesLede: foldsSections && segmentIndex == 0 && entry.anchor == 0
+            )
               .id(ScopedReadingAnchor(scope: anchorScope, block: resolvedBlockIndex(entry.anchor)))
           }
         }
@@ -2509,9 +2556,11 @@ struct MarkdownContentView: View {
   }
 
   @ViewBuilder
-  private func runView(_ run: StructuredRun, trimsTrailingLine: Bool = false, followsText: Bool = false) -> some View {
+  private func runView(
+    _ run: StructuredRun, trimsTrailingLine: Bool = false, followsText: Bool = false, emphasizesLede: Bool = false
+  ) -> some View {
     if case .text = run {
-      runContent(run, trimsTrailingLine: trimsTrailingLine)
+      runContent(run, trimsTrailingLine: trimsTrailingLine, emphasizesLede: emphasizesLede)
     } else {
       runContent(run, trimsTrailingLine: false)
         .padding(.top, followsText ? 10 : 0)
@@ -2519,7 +2568,7 @@ struct MarkdownContentView: View {
   }
 
   @ViewBuilder
-  private func runContent(_ run: StructuredRun, trimsTrailingLine: Bool) -> some View {
+  private func runContent(_ run: StructuredRun, trimsTrailingLine: Bool, emphasizesLede: Bool = false) -> some View {
     switch run {
     case let .text(textBlocks):
       let composed = ReadingRenderCache.attributed(
@@ -2529,7 +2578,8 @@ struct MarkdownContentView: View {
           primary: NSColor(primaryTextColor),
           secondary: NSColor(secondaryTextColor),
           accent: NSColor(accentColor)
-        )
+        ),
+        emphasizesLede: emphasizesLede
       )
       SelectableReadingTextView(
         // 组装走备忘缓存：内容、字体、配色没变时拿回同一个实例，
@@ -2540,6 +2590,9 @@ struct MarkdownContentView: View {
         revealText: revealText,
         onRequestEdit: onRequestEdit
       )
+      // 文字收在约 36 字的版心里；图片、代码、表格这些卡片仍用整栏宽（2026-09-28 样稿）。
+      .frame(maxWidth: readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm, alignment: .leading)
+      .frame(maxWidth: .infinity, alignment: .leading)
     case let .callout(kind, title, text, fold):
       ReadingCalloutCard(
         kind: kind,

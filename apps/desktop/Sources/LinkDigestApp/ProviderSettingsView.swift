@@ -23,12 +23,50 @@ struct ProviderSettingsView: View {
   // 在高对比主题上又不够黑。
   @Environment(\.appTheme) private var appTheme
   private enum SettingsTab: String, Hashable, CaseIterable, Identifiable {
+    // 原始值不改：别处用 `SettingsNavigationRequest` 按字符串跳到某一页（例如 "service"、"generation"）。
+    // 2026-09-28 按工序重组：generation 成了「工序总览」，service 成了「模型服务」，新增七道工序页。
     case service, generation, appearance, mediaStorage, knowledgeVault, dataBackup, companionSync, siteLogin, browserSupport, mcp, updates, labs
+    case capture, record, proof, comments, summary, translation, mindMap
     var id: String { rawValue }
+
+    /// 工序页对应的那一道工序；通用设置是 nil。
+    var step: SettingsProcessStep? {
+      switch self {
+      case .capture: .capture
+      case .record: .record
+      case .proof: .proof
+      case .comments: .comments
+      case .summary: .summary
+      case .translation: .translation
+      case .mindMap: .mindMap
+      default: nil
+      }
+    }
+
+    /// 挂在某道工序下面的子页（侧栏缩进一格）。
+    var parent: SettingsTab? {
+      switch self {
+      case .browserSupport, .siteLogin: .capture
+      case .mediaStorage: .record
+      default: nil
+      }
+    }
+
     var title: String {
+      if let step { return step.title }
+      switch self {
+      case .service: return "模型服务"
+      case .generation: return "工序总览"
+      default: break
+      }
+      return legacyTitle
+    }
+
+    private var legacyTitle: String {
       switch self {
       case .service: "模型与识别"
       case .generation: "生成偏好"
+      case .capture, .record, .proof, .comments, .summary, .translation, .mindMap: ""
       case .appearance: "外观"
       case .mediaStorage: "视频存储"
       case .knowledgeVault: "知识库同步"
@@ -44,7 +82,8 @@ struct ProviderSettingsView: View {
     var symbol: String {
       switch self {
       case .service: "sparkles.rectangle.stack"
-      case .generation: "text.badge.checkmark"
+      case .generation: "arrow.right.circle"
+      case .capture, .record, .proof, .comments, .summary, .translation, .mindMap: "seal"
       case .appearance: "paintpalette"
       case .mediaStorage: "externaldrive"
       // 2026-09-24 走查：原来是 folder.badge.gearshape / externaldrive.badge.timemachine，
@@ -87,16 +126,25 @@ struct ProviderSettingsView: View {
   /// 2026-09-25 对照 Tolaria 设置页：原来十项分五组，其中两组各只有一项，组标题
   /// 比内容还显眼；十项平铺一眼扫得完。按「AI → 外观 → 连接 → 数据 → 版本」排。
   /// 可见性仍只由 `SettingsTab.visibleCases` 一处判据决定。
-  private static let sidebarOrder: [SettingsTab] = [
-    .service, .generation, .appearance, .labs,
-    .mcp, .browserSupport, .siteLogin,
-    .mediaStorage, .dataBackup, .knowledgeVault, .companionSync,
-    .updates,
+  ///
+  /// 2026-09-28 按工序重组：总览在最上；「工序」一组七页（汲 录 校 评 摘 译 图），
+  /// 浏览器扩展、站点登录挂在「汲」下，视频存储挂在「录」下；其余归「通用」。
+  private static let sidebarSections: [(title: String?, tabs: [SettingsTab])] = [
+    (nil, [.generation]),
+    ("工序", [.capture, .browserSupport, .siteLogin, .record, .mediaStorage, .proof, .comments, .summary, .translation, .mindMap]),
+    ("通用", [.service, .appearance, .dataBackup, .knowledgeVault, .companionSync, .mcp, .updates, .labs]),
   ]
+
+  private static var sidebarOrder: [SettingsTab] { sidebarSections.flatMap(\.tabs) }
 
   private static var sidebarTabs: [SettingsTab] {
     let visible = SettingsTab.visibleCases
     return sidebarOrder.filter { visible.contains($0) }
+  }
+
+  private static func visibleTabs(in section: [SettingsTab]) -> [SettingsTab] {
+    let visible = SettingsTab.visibleCases
+    return section.filter { visible.contains($0) }
   }
 
   private static let outputLanguagePresets = ["简体中文", "繁體中文", "English", "日本語", "한국어", "Español", "Français", "Deutsch"]
@@ -113,7 +161,7 @@ struct ProviderSettingsView: View {
   var historyModel: HistoryViewModel? = nil
   @State private var isTitleBackfillConfirmationPresented = false
   @State private var apiKeyInput = ""
-  @State private var selectedTab: SettingsTab = .service
+  @State private var selectedTab: SettingsTab = .generation
   @State private var isCustomOutputLanguage = false
   @State private var translationModelSearchQuery = ""
   @State private var pendingDeletionID: String?
@@ -160,6 +208,8 @@ struct ProviderSettingsView: View {
   /// 那是另一个进程，只能读 `CapturePreferencesStore` 落的那份文件。
   @State private var commentLimit = CapturePreferencesStore.standard().commentLimit
   @State private var commentLimitSaveFailed = false
+  @State private var commentLimitsByPlatform = CapturePreferencesStore.standard().commentLimitsByPlatform
+  @State private var autoSaveComments = CapturePreferencesStore.standard().autoSaveComments
 
   private var commentLimitSelection: Binding<Int> {
     Binding(
@@ -344,17 +394,24 @@ struct ProviderSettingsView: View {
           paperSidebar
         } else {
           List(selection: $selectedTab) {
-            ForEach(Self.sidebarTabs) { tab in
-              Label {
-                Text(tab.title)
-              } icon: {
-                SettingsSidebarChip(symbol: tab.symbol, fill: sidebarChipFill(tab))
+            ForEach(Array(Self.sidebarSections.enumerated()), id: \.offset) { _, section in
+              Section {
+                ForEach(Self.visibleTabs(in: section.tabs)) { tab in
+                  Label {
+                    Text(tab.title)
+                  } icon: {
+                    sidebarIcon(tab, selected: selectedTab == tab)
+                  }
+                  // 只防换行，不防截断：撑宽是下面 `.frame(minWidth:)` 的职责，
+                  // 行内视图的 ideal 宽度传不出 List。
+                  .lineLimit(1)
+                  .tag(tab)
+                  .padding(.vertical, DesignTokens.Space.xs)
+                  .padding(.leading, tab.parent == nil ? 0 : 18)
+                }
+              } header: {
+                if let title = section.title { Text(title) }
               }
-              // 只防换行，不防截断：撑宽是下面 `.frame(minWidth:)` 的职责，
-              // 行内视图的 ideal 宽度传不出 List。
-              .lineLimit(1)
-              .tag(tab)
-              .padding(.vertical, DesignTokens.Space.xs)
             }
           }
           .listStyle(.sidebar)
@@ -385,7 +442,14 @@ struct ProviderSettingsView: View {
         switch selectedTab {
         case .mcp: MCPSettingsView(model: MCPController.shared)
         case .service: serviceTab
-        case .generation: generationTab
+        case .generation: overviewTab
+        case .capture: captureTab
+        case .record: recordTab
+        case .proof: proofTab
+        case .comments: commentsTab
+        case .summary: summaryTab
+        case .translation: translationTab
+        case .mindMap: mindMapTab
         case .appearance: appearanceTab
         case .labs: labsTab
         case .mediaStorage:
@@ -456,13 +520,9 @@ struct ProviderSettingsView: View {
       // 这张卡只剩「标签 + 控件」六行：说明全部收进各行的 ⓘ，卡片脚注也删掉——
       // 原来每行下面一段灰字、卡底再一句脚注，六个控件配了五段说明，控件密度极低，
       // 而且脚注和下一张卡的脚注讲的是同一句话。
-      settingCard(
-        title: "功能与模型",
-        summary: "每项功能各自用哪个模型；改完即时生效。",
-        details: "本地转写默认 Apple 听写、不出网。在线备用转写只用于超过 200MB、无法本机导入的视频。校对会根据标题和配文还原听写错词并补标点，看不懂的句子原样保留。图片识别固定用本机 Vision。",
-        controlWidth: .full
-      ) {
-        capabilityAssignmentRows
+      // 各功能用哪个模型，搬到了对应的工序页（摘、译、录、校）；这里只留图片识别。
+      SettingsRowGroup {
+        imageRecognitionRow
       }
 
       // 「添加模型…」放标题行右端：它是这张卡唯一的主动作，原来孤零零缩在
@@ -585,126 +645,136 @@ struct ProviderSettingsView: View {
   //
   // 标题用「总结模型」而不是「总结与翻译」：翻译另有独立配置，
   // 合并标题会让人以为这里已经管了翻译。
-  @ViewBuilder private var capabilityAssignmentRows: some View {
-    VStack(alignment: .leading, spacing: 0) {
-      assignmentRow(
-        title: UISettingsPresentation.summaryAssignmentTitle,
-        caption: "写总结用；翻译、校对没单独选时也跟着它。",
-        // 这一行是整页的中心，原来却是六行里唯一没有 ⓘ 的：用户看不出「总结模型」
-        // 到底管到哪儿，也不知道翻译和校对为什么会跟着它变。
-        details: "把内容写成总结时用这个模型。翻译和校对如果没单独指定，也跟着它走。换成别的模型只影响以后生成的总结，已经生成的不会变。"
-      ) {
-        if model.libraryEntryDisplays.isEmpty {
-          Text("先在下方添加模型")
-            .themedFont(.body)
-            .foregroundStyle(.secondary)
-            .settingsControlWidth()
-        } else {
-          let summaryEntry = model.summaryEntryDisplays.first(where: { $0.id == model.summaryAssignmentID })
-          VStack(alignment: .trailing, spacing: 4) {
-            assignmentPickerButton(kind: .summary, selectedEntry: summaryEntry)
-            // 总结模型用不了时，翻译、校对（默认跟着它）也一起失败：就地说清楚，给出口。
-            if let summaryEntry,
-               let record = model.healthRecord(baseURL: summaryEntry.baseURL, model: summaryEntry.modelName),
-               record.status != .available, record.status != .temporarilyUnavailable {
-              let badge = model.healthBadge(baseURL: summaryEntry.baseURL, model: summaryEntry.modelName)
-              HStack(spacing: 6) {
-                Label("\(badge.text)：总结和翻译会失败", systemImage: badge.symbol)
-                  .themedFont(.caption, weight: .medium)
-                  .foregroundStyle(badge.color(theme: settingsTheme))
-                  .help(badge.detail)
-                Button("换一个模型") { activeAssignmentPicker = .summary }
-                  .buttonStyle(.appQuiet)
-                  .controlSize(.small)
-              }
-              .accessibilityIdentifier("summary-assignment-health-warning")
-            }
+  //
+  // 2026-09-28 设置按工序重组：六行拆开，各自放进「摘 / 译 / 录 / 校」页和「模型服务」页。
+  @ViewBuilder private var summaryAssignmentRow: some View {
+  assignmentRow(
+    title: UISettingsPresentation.summaryAssignmentTitle,
+    caption: "写总结用；翻译、校对没单独选时也跟着它。",
+    // 这一行是整页的中心，原来却是六行里唯一没有 ⓘ 的：用户看不出「总结模型」
+    // 到底管到哪儿，也不知道翻译和校对为什么会跟着它变。
+    details: "把内容写成总结时用这个模型。翻译和校对如果没单独指定，也跟着它走。换成别的模型只影响以后生成的总结，已经生成的不会变。"
+  ) {
+    if model.libraryEntryDisplays.isEmpty {
+      Text("先在下方添加模型")
+        .themedFont(.body)
+        .foregroundStyle(.secondary)
+        .settingsControlWidth()
+    } else {
+      let summaryEntry = model.summaryEntryDisplays.first(where: { $0.id == model.summaryAssignmentID })
+      VStack(alignment: .trailing, spacing: 4) {
+        assignmentPickerButton(kind: .summary, selectedEntry: summaryEntry)
+        // 总结模型用不了时，翻译、校对（默认跟着它）也一起失败：就地说清楚，给出口。
+        if let summaryEntry,
+           let record = model.healthRecord(baseURL: summaryEntry.baseURL, model: summaryEntry.modelName),
+           record.status != .available, record.status != .temporarilyUnavailable {
+          let badge = model.healthBadge(baseURL: summaryEntry.baseURL, model: summaryEntry.modelName)
+          HStack(spacing: 6) {
+            Label("\(badge.text)：总结和翻译会失败", systemImage: badge.symbol)
+              .themedFont(.caption, weight: .medium)
+              .foregroundStyle(badge.color(theme: settingsTheme))
+              .help(badge.detail)
+            Button("换一个模型") { activeAssignmentPicker = .summary }
+              .buttonStyle(.appQuiet)
+              .controlSize(.small)
           }
+          .accessibilityIdentifier("summary-assignment-health-warning")
         }
-      }
-
-      assignmentRow(
-        title: UISettingsPresentation.translationAssignmentTitle,
-        caption: UISettingsPresentation.translationFollowsSummaryHint
-      ) {
-        preferenceModelAssignmentControl(
-          title: UISettingsPresentation.translationAssignmentTitle,
-          emptyOptionTitle: "跟随总结模型",
-          options: model.summaryEntryDisplays,
-          text: $model.translationModelName,
-          identifier: "translation-model-name",
-          customPlaceholder: "模型名称"
-        )
-      }
-
-      // 本地转写固定是 Apple 听写。原来这里也能选在线模型，和下面「在线备用转写」
-      // 管的是同一个设置，两行互相覆盖；在线模型只在下面那一行选。
-      // 只读行：「本机离线、不需要配置」挪到左边常显说明里，右边只剩一个值，
-      // 不再是右侧叠两行灰字（2026-09-25 对照 Tolaria：一行一个控件/值）。
-      assignmentRow(
-        title: UISettingsPresentation.localTranscriptionTitle,
-        caption: "视频转文字，本机离线，不联网、不花钱。"
-      ) {
-        Text("Apple 听写")
-          .themedFont(.body)
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
-          .accessibilityIdentifier("transcription-assignment-picker")
-      }
-
-      assignmentRow(
-        title: UISettingsPresentation.onlineTranscriptionTitle,
-        caption: "给超过 200MB、无法本机导入的视频用。"
-      ) {
-        VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
-          preferenceModelAssignmentControl(
-            title: UISettingsPresentation.onlineTranscriptionTitle,
-            emptyOptionTitle: "不使用：只用 Apple 本机转写",
-            options: model.transcriptionEntryDisplays,
-            text: Binding(
-              get: { model.onlineTranscriptionModelName },
-              set: { name in Task { await model.selectOnlineTranscriptionModel(name) } }
-            ),
-            identifier: "transcription-model-name",
-            customPlaceholder: "例如 whisper-large-v3-turbo",
-            unavailableHint: "「模型服务」里还没有能转写语音的模型。"
-          )
-          transcriptionDiscoveryControls
-        }
-      }
-
-      assignmentRow(
-        title: UISettingsPresentation.tidyAssignmentTitle,
-        caption: "还原转写稿里听错的词，补上标点。",
-        details: "根据标题和配文还原听写错词并补标点；看不懂的句子原样保留。"
-      ) {
-        preferenceModelAssignmentControl(
-          title: UISettingsPresentation.tidyAssignmentTitle,
-          emptyOptionTitle: "跟随总结模型",
-          options: model.summaryEntryDisplays,
-          text: $model.tidyModelName,
-          identifier: "tidy-model-name",
-          customPlaceholder: "模型名称"
-        )
-      }
-
-      // 这一行不可改，所以要一眼看出它不是控件。
-      //
-      // 前五行的控件都是 240pt 的描边下拉；这一行原来同宽同位地摆一段灰字，
-      // 于是看起来像一个点不开的下拉——「为什么别的能选，这个点不动」。
-      // 现在明确成只读：灰字、不占控件槽位、右对齐贴边，并说清楚为什么没得选。
-      assignmentRow(
-        title: UISettingsPresentation.imageRecognitionTitle,
-        caption: "读图片和视频画面里的文字，本机离线、不需要配置。",
-        details: "固定用 Mac 自带的识别能力，全程在本机完成，不会把图片发出去，也不消耗任何额度。所以这一项没有可选项。"
-      ) {
-        Text("Apple Vision")
-          .themedFont(.body)
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
-          .accessibilityIdentifier("image-text-assignment-picker")
       }
     }
+  }
+  }
+
+  @ViewBuilder private var translationAssignmentRow: some View {
+  assignmentRow(
+    title: UISettingsPresentation.translationAssignmentTitle,
+    caption: UISettingsPresentation.translationFollowsSummaryHint
+  ) {
+    preferenceModelAssignmentControl(
+      title: UISettingsPresentation.translationAssignmentTitle,
+      emptyOptionTitle: "跟随总结模型",
+      options: model.summaryEntryDisplays,
+      text: $model.translationModelName,
+      identifier: "translation-model-name",
+      customPlaceholder: "模型名称"
+    )
+  }
+  }
+
+  @ViewBuilder private var localTranscriptionRow: some View {
+  // 本地转写固定是 Apple 听写。原来这里也能选在线模型，和下面「在线备用转写」
+  // 管的是同一个设置，两行互相覆盖；在线模型只在下面那一行选。
+  // 只读行：「本机离线、不需要配置」挪到左边常显说明里，右边只剩一个值，
+  // 不再是右侧叠两行灰字（2026-09-25 对照 Tolaria：一行一个控件/值）。
+  assignmentRow(
+    title: UISettingsPresentation.localTranscriptionTitle,
+    caption: "视频转文字，本机离线，不联网、不花钱。"
+  ) {
+    Text("Apple 听写")
+      .themedFont(.body)
+      .foregroundStyle(.secondary)
+      .lineLimit(1)
+      .accessibilityIdentifier("transcription-assignment-picker")
+  }
+  }
+
+  @ViewBuilder private var onlineTranscriptionRow: some View {
+  assignmentRow(
+    title: UISettingsPresentation.onlineTranscriptionTitle,
+    caption: "给超过 200MB、无法本机导入的视频用。"
+  ) {
+    VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
+      preferenceModelAssignmentControl(
+        title: UISettingsPresentation.onlineTranscriptionTitle,
+        emptyOptionTitle: "不使用：只用 Apple 本机转写",
+        options: model.transcriptionEntryDisplays,
+        text: Binding(
+          get: { model.onlineTranscriptionModelName },
+          set: { name in Task { await model.selectOnlineTranscriptionModel(name) } }
+        ),
+        identifier: "transcription-model-name",
+        customPlaceholder: "例如 whisper-large-v3-turbo",
+        unavailableHint: "「模型服务」里还没有能转写语音的模型。"
+      )
+      transcriptionDiscoveryControls
+    }
+  }
+  }
+
+  @ViewBuilder private var tidyAssignmentRow: some View {
+  assignmentRow(
+    title: UISettingsPresentation.tidyAssignmentTitle,
+    caption: "还原转写稿里听错的词，补上标点。",
+    details: "根据标题和配文还原听写错词并补标点；看不懂的句子原样保留。"
+  ) {
+    preferenceModelAssignmentControl(
+      title: UISettingsPresentation.tidyAssignmentTitle,
+      emptyOptionTitle: "跟随总结模型",
+      options: model.summaryEntryDisplays,
+      text: $model.tidyModelName,
+      identifier: "tidy-model-name",
+      customPlaceholder: "模型名称"
+    )
+  }
+  }
+
+  @ViewBuilder private var imageRecognitionRow: some View {
+  // 这一行不可改，所以要一眼看出它不是控件。
+  //
+  // 前五行的控件都是 240pt 的描边下拉；这一行原来同宽同位地摆一段灰字，
+  // 于是看起来像一个点不开的下拉——「为什么别的能选，这个点不动」。
+  // 现在明确成只读：灰字、不占控件槽位、右对齐贴边，并说清楚为什么没得选。
+  assignmentRow(
+    title: UISettingsPresentation.imageRecognitionTitle,
+    caption: "读图片和视频画面里的文字，本机离线、不需要配置。",
+    details: "固定用 Mac 自带的识别能力，全程在本机完成，不会把图片发出去，也不消耗任何额度。所以这一项没有可选项。"
+  ) {
+    Text("Apple Vision")
+      .themedFont(.body)
+      .foregroundStyle(.secondary)
+      .lineLimit(1)
+      .accessibilityIdentifier("image-text-assignment-picker")
+  }
   }
 
   /// 在已添加的服务商里找语音转写模型，找到就一键添加并使用。
@@ -820,6 +890,8 @@ struct ProviderSettingsView: View {
       }
     }
     .padding(.vertical, DesignTokens.Space.sm)
+    // 2026-09-28 起这些行都放在 `SettingsRowGroup` 里（工序页），左右边距和 `SettingsRow` 一致。
+    .padding(.horizontal, DesignTokens.Space.lg)
   }
 
   @ViewBuilder
@@ -1677,8 +1749,21 @@ struct ProviderSettingsView: View {
   /// 纸质主题的设置侧栏：画布底色 + 主窗口同款橙色选中样式。
   private var paperSidebar: some View {
     List {
-      ForEach(Self.sidebarTabs) { tab in
-        paperSidebarRow(tab)
+      ForEach(Array(Self.sidebarSections.enumerated()), id: \.offset) { _, section in
+        if let title = section.title {
+          Text(title)
+            .themedFont(.caption)
+            .tracking(2)
+            .foregroundStyle(settingsTheme.secondaryText)
+            .padding(.top, DesignTokens.Space.md)
+            .padding(.horizontal, DesignTokens.Space.sm)
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .accessibilityAddTraits(.isHeader)
+        }
+        ForEach(Self.visibleTabs(in: section.tabs)) { tab in
+          paperSidebarRow(tab)
+        }
       }
     }
     // 别改成 `.plain` 想去掉那圈浮动面板阴影——实测无效（面板 inset 仍是 8pt、
@@ -1710,13 +1795,11 @@ struct ProviderSettingsView: View {
         Text(tab.title)
           .themedFont(.body)
       } icon: {
-        SettingsSidebarChip(
-          symbol: tab.symbol,
-          fill: isSelected ? settingsTheme.accent : settingsTheme.secondaryText
-        )
+        sidebarIcon(tab, selected: isSelected)
       }
       .lineLimit(1)
       .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.leading, tab.parent == nil ? 0 : 18)
       .contentShape(Rectangle())
     }
     .accessibilityLabel(tab.title)
@@ -1744,6 +1827,45 @@ struct ProviderSettingsView: View {
   @Environment(\.colorScheme) private var systemColorScheme
   private var settingsTheme: HistoryThemeTokens {
     (AppearanceTheme(rawValue: appearanceThemeRaw) ?? .glass).tokens(systemColorScheme: systemColorScheme)
+  }
+
+  /// 侧栏图标：工序页是印（自动做 = 盖好的章，手动 = 印位），其余是线性图标。
+  @ViewBuilder private func sidebarIcon(_ tab: SettingsTab, selected: Bool) -> some View {
+    if let step = tab.step {
+      SettingsStepSeal(step: step, isAuto: isAuto(step), size: 20, color: settingsTheme.seal)
+        .frame(width: 22, height: 22)
+    } else if let glyph = InkSealMark.settingsGlyphs[tab.title] {
+      // 不是工序的页：灰色墨线闲章（朱色只给工序）。选中时换靛青，和文字同色。
+      InkSealMark(character: glyph, size: 19, color: selected ? settingsTheme.accent : settingsTheme.secondaryText)
+        .frame(width: 22, height: 22)
+    } else {
+      SettingsSidebarChip(symbol: tab.symbol, fill: selected ? settingsTheme.accent : settingsTheme.secondaryText)
+    }
+  }
+
+  /// 这一道工序新内容进来会不会自动做。
+  private func isAuto(_ step: SettingsProcessStep) -> Bool {
+    autoBinding(step)?.wrappedValue ?? true
+  }
+
+  /// 工序页右上「自动」开关绑的是哪个偏好。收集一直开着，没有开关。
+  private func autoBinding(_ step: SettingsProcessStep) -> Binding<Bool>? {
+    switch step {
+    case .capture: nil
+    case .record: $model.autoTranscribeNewCaptures
+    case .proof: $model.autoTidyTranscription
+    case .comments: autoSaveCommentsBinding
+    case .summary: $model.autoSummarizeNewCaptures
+    case .translation: $model.autoLocalizeTitleNewCaptures
+    case .mindMap: $model.autoMindMapNewCaptures
+    }
+  }
+
+  private func stepHeader(_ step: SettingsProcessStep, caption: String, autoLabel: String = "自动") -> some View {
+    SettingsStepHeader(
+      step: step, caption: caption, isAuto: autoBinding(step), autoLabel: autoLabel,
+      sealColor: settingsTheme.seal, secondaryText: settingsTheme.secondaryText, hairline: settingsTheme.hairline
+    )
   }
 
   /// 侧栏 chip 的底色。两条侧栏分支共用同一份取色逻辑，避免图标换了颜色却漏了一处。
@@ -2025,281 +2147,395 @@ struct ProviderSettingsView: View {
     return ("将发送到 \(destination.provider) · \(destination.model)", "arrow.up.doc")
   }
 
-  private var generationTab: some View {
-    SettingsPlainPage {
-      pageHeader(for: .generation, caption: "控制总结、翻译输出，以及新内容进来后自动跑哪些步骤。改完即时生效，无需保存。")
+  // MARK: - 工序总览与七道工序页（2026-09-28 设置按工序重组）
 
-      // 常用默认在前：大多数人打开这页只改语言。
-      // 并发、长提示词收进「高级」卡；发送授权并进管线卡底部，不再独占一张卡。
-      //
-      // 这一页原来有一条底部固定的「保存生成偏好」条，而外观页写着「切换即时生效」，
-      // 模型页又是每个模型各自保存——三页三种保存模型。现在统一即时生效，状态只
-      // 在保存失败时以一行提示条露出来。
+  private var overviewTab: some View {
+    SettingsPlainPage {
+      pageHeader(for: .generation, caption: "新内容进来后，从左到右依次执行。实心的章会自动做，空心的印位要你在「处理」里手动点。点任意一枚进入它的设置。")
+      SettingsProcessChain(
+        isAuto: isAuto,
+        sealColor: settingsTheme.seal,
+        primaryText: settingsTheme.primaryText,
+        secondaryText: settingsTheme.secondaryText,
+        onSelect: { step in
+          withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
+            selectedTab = SettingsTab.allCases.first { $0.step == step } ?? .generation
+          }
+        }
+      )
+      .padding(.vertical, DesignTokens.Space.sm)
+      sendAuthorizationSection
+      preferencesStatusNotice
+    }
+  }
+
+  private var captureTab: some View {
+    SettingsPlainPage {
+      stepHeader(.capture, caption: "从浏览器、链接、本地文件收进汲作。这一步一直开着。")
       SettingsRowGroup {
-          SettingsRow(
-            title: "输出语言",
-            caption: "总结、翻译等生成结果统一用这个语言。",
-            details: "总结、翻译等生成结果统一用这个语言输出。生成时会把这条语言指令追加到提示词；模型分配仍在「模型与识别」。"
+        clipboardDetectionRow
+        SettingsRow(title: "浏览器支持", caption: "装好浏览器扩展，在网页上一键保存，并能抓评论。") {
+          Button("去设置") { selectedTab = .browserSupport }
+            .buttonStyle(.appQuiet)
+            .accessibilityIdentifier("settings-capture-open-browser")
+        }
+        SettingsRow(title: "站点登录", caption: "需要登录才能看的网站（知乎、小红书等）在这里登录。") {
+          Button("去设置") { selectedTab = .siteLogin }
+            .buttonStyle(.appQuiet)
+            .accessibilityIdentifier("settings-capture-open-login")
+        }
+      }
+    }
+  }
+
+  private var recordTab: some View {
+    SettingsPlainPage {
+      stepHeader(.record, caption: "新内容带视频或录音时，自动在本机转写成文字。不联网、不花钱。")
+      SettingsRowGroup {
+        localTranscriptionRow
+        onlineTranscriptionRow
+        SettingsRow(title: "视频存储", caption: "转写完的视频留多久、存在哪里。") {
+          Button("去设置") { selectedTab = .mediaStorage }
+            .buttonStyle(.appQuiet)
+            .accessibilityIdentifier("settings-record-open-media")
+        }
+      }
+      preferencesStatusNotice
+    }
+  }
+
+  private var proofTab: some View {
+    SettingsPlainPage {
+      stepHeader(.proof, caption: "转写完后自动用模型校对：还原听错的词、补标点、加小标题。只发送文字。")
+      if model.autoTidyTranscription, !model.autoTranscribeNewCaptures {
+        SettingsInlineNotice(message: "「录 · 转写」没设成自动，新内容进来时没有转写稿可校对；手动转写后仍可在「处理」里点校对。", tone: .warning)
+      }
+      SettingsRowGroup {
+        tidyAssignmentRow
+      }
+      preferencesStatusNotice
+    }
+  }
+
+  private var commentsTab: some View {
+    SettingsPlainPage {
+      stepHeader(.comments, caption: "保存网页时，一并存下前几条评论。打开「自动保存」就不用在扩展里逐条勾选。", autoLabel: "自动保存")
+      SettingsRowGroup {
+        SettingsRow(
+          title: "默认抓前",
+          caption: commentLimitSaveFailed
+            ? "保存失败，请重试；这次仍按之前的条数抓取。"
+            : "下面没有单独设的平台都按这个数。",
+          details: "适用于 Reddit、论坛、X、YouTube、B 站、知乎、抖音、小红书。评论不够时扩展会往下翻评论区加载，凑够或到底就停，并把页面滚回原位置。"
+        ) {
+          SettingsMenuPicker(
+            sections: [CapturePreferencesStore.commentLimitChoices.map { .init(value: $0, title: "\($0) 条") }],
+            selection: commentLimitSelection,
+            identifier: "capture-comment-limit"
+          )
+          .accessibilityLabel("默认评论抓取数量")
+        }
+      }
+      Text("按平台")
+        .themedFont(.caption)
+        .tracking(2)
+        .foregroundStyle(settingsTheme.secondaryText)
+        .padding(.top, DesignTokens.Space.sm)
+      SettingsRowGroup {
+        ForEach(CapturePreferencesStore.commentPlatforms, id: \.key) { platform in
+          SettingsRow(title: platform.title) {
+            SettingsMenuPicker(
+              sections: [
+                [.init(value: Self.followDefaultCommentLimit, title: "跟随默认"), .init(value: CapturePreferencesStore.commentsDisabled, title: "不抓")],
+                CapturePreferencesStore.commentLimitChoices.map { .init(value: $0, title: "\($0) 条") },
+              ],
+              selection: platformCommentLimitSelection(platform.key),
+              identifier: "capture-comment-limit-\(platform.key)"
+            )
+            .accessibilityLabel("\(platform.title)评论抓取数量")
+          }
+        }
+      }
+    }
+  }
+
+  private var summaryTab: some View {
+    SettingsPlainPage {
+      stepHeader(.summary, caption: "新内容进来后自动写一份总结。读原文，不读译文。")
+      SettingsRowGroup {
+        summaryAssignmentRow
+        outputLanguageRow
+      }
+      advancedCard(title: "高级：总结提示词") { summaryPromptSection }
+      preferencesStatusNotice
+    }
+  }
+
+  private var translationTab: some View {
+    SettingsPlainPage {
+      stepHeader(.translation, caption: "新内容的外文标题自动译成中文（只发送标题）。正文翻译仍在「处理」里点。", autoLabel: "自动译标题")
+      SettingsRowGroup {
+        translationAssignmentRow
+      }
+      if let historyModel {
+        titleBackfillRow(historyModel)
+          .padding(.vertical, DesignTokens.Space.sm)
+          .padding(.horizontal, DesignTokens.Space.lg)
+          .modifier(SettingsThemedCardChrome())
+      }
+      advancedCard(title: "高级：翻译并发") { translationConcurrencyRow }
+      preferencesStatusNotice
+    }
+  }
+
+  private var mindMapTab: some View {
+    SettingsPlainPage {
+      stepHeader(.mindMap, caption: "新内容进来后自动生成脑图。优先读总结，没有总结时读原文。")
+      if model.autoMindMapNewCaptures, !model.autoSummarizeNewCaptures {
+        SettingsInlineNotice(message: "「摘 · 总结」没设成自动：脑图将直接读原文生成，质量通常不如先总结。", tone: .warning)
+      }
+      preferencesStatusNotice
+    }
+  }
+
+  private func advancedCard<Content: View>(title: String, @ViewBuilder content: () -> Content) -> some View {
+    let body = content()
+    return VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      DisclosureGroup(title) {
+        body
+          .padding(.top, DesignTokens.Space.md)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      .themedFont(.headline)
+    }
+    .padding(.vertical, DesignTokens.Space.md)
+    .padding(.horizontal, DesignTokens.Space.lg)
+    .modifier(SettingsThemedCardChrome())
+  }
+
+  /// 按平台下拉里代表「跟随默认」的哨兵值（真实条数是 0 或 10–100）。
+  private static let followDefaultCommentLimit = -1
+
+  private func platformCommentLimitSelection(_ platform: String) -> Binding<Int> {
+    Binding(
+      get: { commentLimitsByPlatform[platform] ?? Self.followDefaultCommentLimit },
+      set: { value in
+        let stored: Int? = value == Self.followDefaultCommentLimit ? nil : value
+        if let stored { commentLimitsByPlatform[platform] = stored } else { commentLimitsByPlatform.removeValue(forKey: platform) }
+        do {
+          try CapturePreferencesStore.standard().setCommentLimit(stored, forPlatform: platform)
+          commentLimitSaveFailed = false
+        } catch {
+          commentLimitSaveFailed = true
+        }
+      }
+    )
+  }
+
+  private var autoSaveCommentsBinding: Binding<Bool> {
+    Binding(
+      get: { autoSaveComments },
+      set: { value in
+        autoSaveComments = value
+        do {
+          try CapturePreferencesStore.standard().setAutoSaveComments(value)
+          commentLimitSaveFailed = false
+        } catch {
+          commentLimitSaveFailed = true
+        }
+      }
+    )
+  }
+
+  // MARK: - 从「生成偏好」拆出来的部件（2026-09-28 设置按工序重组，各页复用）
+
+  private var outputLanguageRow: some View {
+    SettingsRow(
+      title: "输出语言",
+      caption: "总结、翻译等生成结果统一用这个语言。",
+      details: "总结、翻译等生成结果统一用这个语言输出。生成时会把这条语言指令追加到提示词；模型分配仍在「模型与识别」。"
+    ) {
+      VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
+        SettingsMenuPicker(
+          sections: [
+            Self.outputLanguagePresets.map { .init(value: $0, title: $0) },
+            [.init(value: Self.customOutputLanguageTag, title: "自定义…")],
+          ],
+          selection: outputLanguageSelection,
+          identifier: "output-language"
+        )
+        .accessibilityLabel("输出语言")
+        if showsCustomOutputLanguageField {
+          TextField("例如：Italiano", text: $model.targetLanguage)
+            .textFieldStyle(.roundedBorder)
+            .settingsControlWidth()
+            .accessibilityLabel("自定义语言")
+            .accessibilityIdentifier("output-language-custom")
+        }
+      }
+    }
+
+  }
+
+  private var clipboardDetectionRow: some View {
+    SettingsRow(
+      title: "切回汲作时检测剪贴板里的链接",
+      caption: "在别处复制了一条链接，切回汲作就直接问你要不要保存。",
+      details: "只在汲作重新变成当前窗口的那一刻看一眼剪贴板，而且只认链接；剪贴板里的其它内容不读、不留、也不发出去。关掉之后仍然可以自己粘贴链接添加。"
+    ) {
+      Toggle("", isOn: $isClipboardLinkDetectionEnabled)
+        .toggleStyle(.switch)
+        .labelsHidden()
+        .accessibilityLabel("切回汲作时检测剪贴板里的链接")
+        .accessibilityIdentifier("capture-clipboard-link-detection")
+    }
+
+  }
+
+  /// 数据去向与已记住的发送授权：讲的是「自动处理会把内容发出去」这件事，放在工序总览底部。
+  @ViewBuilder private var sendAuthorizationSection: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      // 数据去向紧贴造成出网的开关；必须留在 DisclosureGroup 外面。
+      SettingsCrossReference(
+        message: dataDestinationLine.message,
+        systemImage: dataDestinationLine.symbol
+      )
+      .accessibilityIdentifier("data-destination-card")
+
+      DisclosureGroup("了解更多") {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+          Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；中文标题/校对/总结/脑图只发送文字。手动转写完成后请点「模型校对」。")
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+          if let identity = model.dataDestinationCard {
+            LabeledContent("服务地址", value: identity.normalizedBaseURL)
+          }
+        }
+        .themedFont(.subheadline)
+        .foregroundStyle(.secondary)
+        .padding(.top, DesignTokens.Space.xs)
+      }
+      .themedFont(.subheadline)
+
+      Rectangle().fill(settingsTheme.hairline).frame(height: 1)
+        .padding(.vertical, DesignTokens.Space.xs)
+
+      // 发送授权并进这张卡的底部：它讲的就是「自动处理会把内容发出去」这件事的
+      // 另一面。只提供「清除已记住记录」，不虚构逐项撤销。
+      HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+          Text("已记住的发送授权").themedFont(.body)
+          Text(consentRevokeNotice ?? "首次把内容发往某个服务商、或首次使用在线转写、校对、脑图时会各告知一次，之后不再重复询问。")
+            .themedFont(.subheadline)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        Spacer(minLength: DesignTokens.Space.md)
+        // 清除之后每一项都会重新问一遍，是一次会改变后续行为的重置动作：危险色 +
+        // 先问一句。清除本身没有可见效果，所以结果仍然用左边那行反馈。
+        Button("清除授权记录") { isConsentRevokeConfirmationPresented = true }
+          .buttonStyle(.appDestructive(appTheme.danger))
+          .accessibilityIdentifier("revoke-remembered-consents")
+          .confirmationDialog(
+            "清除已经记住的发送授权？",
+            isPresented: $isConsentRevokeConfirmationPresented,
+            titleVisibility: .visible
           ) {
-            VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
-              SettingsMenuPicker(
-                sections: [
-                  Self.outputLanguagePresets.map { .init(value: $0, title: $0) },
-                  [.init(value: Self.customOutputLanguageTag, title: "自定义…")],
-                ],
-                selection: outputLanguageSelection,
-                identifier: "output-language"
-              )
-              .accessibilityLabel("输出语言")
-              if showsCustomOutputLanguageField {
-                TextField("例如：Italiano", text: $model.targetLanguage)
-                  .textFieldStyle(.roundedBorder)
-                  .settingsControlWidth()
-                  .accessibilityLabel("自定义语言")
-                  .accessibilityIdentifier("output-language-custom")
+            Button("清除授权记录", role: .destructive) {
+              Task {
+                let cleared = await appModel.revokeRememberedConsents()
+                consentRevokeNotice = cleared
+                  ? "已清除。下一次发送会重新问你一遍。"
+                  : "没能清除：这条记录没写进去，授权还是原来那样。请再点一次。"
               }
             }
-          }
-
-          // 和「输出语言」同组：两条都是「新内容进来之前」的偏好，而下面那张卡
-          // 讲的是「进来之后跑什么」。
-          SettingsRow(
-            title: "切回汲作时检测剪贴板里的链接",
-            caption: "在别处复制了一条链接，切回汲作就直接问你要不要保存。",
-            details: "只在汲作重新变成当前窗口的那一刻看一眼剪贴板，而且只认链接；剪贴板里的其它内容不读、不留、也不发出去。关掉之后仍然可以自己粘贴链接添加。"
-          ) {
-            Toggle("", isOn: $isClipboardLinkDetectionEnabled)
-              .toggleStyle(.switch)
-              .labelsHidden()
-              .accessibilityLabel("切回汲作时检测剪贴板里的链接")
-              .accessibilityIdentifier("capture-clipboard-link-detection")
-          }
-
-          SettingsRow(
-            title: "评论抓取数量",
-            caption: commentLimitSaveFailed
-              ? "保存失败，请重试；这次仍按之前的条数抓取。"
-              : "带评论区的内容，抓取时一并读取前几条评论，发送前可在扩展里勾选。",
-            details: "适用于 Reddit、论坛、X、YouTube、B 站、知乎、抖音、小红书。评论不够时扩展会往下翻评论区加载，凑够或到底就停，并把页面滚回原位置；只保存你勾选的评论。"
-          ) {
-            SettingsMenuPicker(
-              sections: [CapturePreferencesStore.commentLimitChoices.map { .init(value: $0, title: "前 \($0) 条") }],
-              selection: commentLimitSelection,
-              identifier: "capture-comment-limit"
-            )
-            .accessibilityLabel("评论抓取数量")
+            .accessibilityIdentifier("revoke-remembered-consents-confirm")
+            Button("取消", role: .cancel) {}
+          } message: {
+            Text("会忘掉「你已经同意过把内容发给哪些服务商、用过哪些在线功能」这些记录，之后每一项都会重新问你一次。你保存的内容、模型配置和密钥都不受影响。")
           }
       }
+    }
+    .padding(.vertical, DesignTokens.Space.md)
+    .padding(.horizontal, DesignTokens.Space.lg)
+    .modifier(SettingsThemedCardChrome())
+  }
 
-      // 这条链在代码里严格串行且有依赖，所以画成有序链条而不是四个平级开关。
-      VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-        Text(UISettingsPresentation.newCaptureAutoProcessTitle).themedFont(.headline)
-        Text(UISettingsPresentation.newCaptureAutoProcessCaption)
+  private var translationConcurrencyRow: some View {
+    HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+      VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+        Text("翻译并发")
+          .themedFont(.body)
+        Text("长文翻译会切成多段同时发送，段数越多越快。只对超过约 8000 字的正文生效；免费或有速率限制的服务商调高后可能被限流。")
           .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
-
-        VStack(alignment: .leading, spacing: 0) {
-          pipelineStep(
-            index: 1,
-            title: UISettingsPresentation.pipelineStepTitle(index: 1),
-            trailingNote: "只发送标题 · 批量抓取也翻译",
-            isOn: $model.autoLocalizeTitleNewCaptures,
-            identifier: "auto-pipeline-localize-title"
-          )
-          pipelineStep(
-            index: 2,
-            title: UISettingsPresentation.pipelineStepTitle(index: 2),
-            trailingNote: "不出网",
-            isOn: $model.autoTranscribeNewCaptures,
-            identifier: "auto-pipeline-transcribe"
-          )
-          pipelineStep(
-            index: 3,
-            title: UISettingsPresentation.pipelineStepTitle(index: 3),
-            trailingNote: "只发送文字",
-            requirementUnmet: model.autoTranscribeNewCaptures
-              ? nil
-              : "仅影响自动进来的新内容：② 未开启就没有转写稿可整理",
-            isOn: $model.autoTidyTranscription,
-            identifier: "auto-tidy-transcription"
-          )
-          pipelineStep(
-            index: 4,
-            title: UISettingsPresentation.pipelineStepTitle(index: 4),
-            trailingNote: "读原文，不读译文",
-            isOn: $model.autoSummarizeNewCaptures,
-            identifier: "auto-pipeline-summarize"
-          )
-          pipelineStep(
-            index: 5,
-            title: UISettingsPresentation.pipelineStepTitle(index: 5),
-            trailingNote: "优先用总结产物",
-            isLast: true,
-            // 脑图未开启时不展示前置条件警告，避免关掉时仍被无关提示打扰。
-            requirementUnmet: model.autoSummarizeNewCaptures
-              ? nil
-              : (model.autoMindMapNewCaptures
-                ? "④ 未开启：将直接读原文生成，质量通常不如先总结"
-                : nil),
-            isOn: $model.autoMindMapNewCaptures,
-            identifier: "auto-pipeline-mindmap"
-          )
+      }
+      Spacer(minLength: DesignTokens.Space.md)
+      Picker("翻译并发", selection: $model.translationConcurrency) {
+        ForEach(
+          Array(ModelPreferences.translationConcurrencyRange),
+          id: \.self
+        ) { value in
+          Text(value == 1 ? "不并发" : "\(value) 段").tag(value)
         }
-        .padding(.top, DesignTokens.Space.xxs)
+      }
+      .labelsHidden()
+      .frame(width: 120)
+      .accessibilityIdentifier("translation-concurrency")
+    }
 
-        if let historyModel {
-          titleBackfillRow(historyModel)
-        }
+  }
 
-        // 数据去向紧贴造成出网的开关；必须留在 DisclosureGroup 外面。
-        SettingsCrossReference(
-          message: dataDestinationLine.message,
-          systemImage: dataDestinationLine.symbol
-        )
-        .accessibilityIdentifier("data-destination-card")
-
-        DisclosureGroup("了解更多") {
-          VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-            Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；中文标题/校对/总结/脑图只发送文字。手动转写完成后请点「模型校对」。")
-              .fixedSize(horizontal: false, vertical: true)
-              .frame(maxWidth: .infinity, alignment: .leading)
-            if let identity = model.dataDestinationCard {
-              LabeledContent("服务地址", value: identity.normalizedBaseURL)
-            }
-          }
-          .themedFont(.subheadline)
-          .foregroundStyle(.secondary)
-          .padding(.top, DesignTokens.Space.xs)
-        }
+  private var summaryPromptSection: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+      Text("总结提示词")
+        .themedFont(.body)
+      Text("无论用内置还是自定义提示词，\(ProductDisplay.name) 都会追加输出语言指令。提示词保存在本机；生成时会随正文发送给所选模型。")
         .themedFont(.subheadline)
-
-        Rectangle().fill(settingsTheme.hairline).frame(height: 1)
-          .padding(.vertical, DesignTokens.Space.xs)
-
-        // 发送授权并进这张卡的底部：它讲的就是「自动处理会把内容发出去」这件事的
-        // 另一面。只提供「清除已记住记录」，不虚构逐项撤销。
-        HStack(alignment: .center, spacing: DesignTokens.Space.md) {
-          VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
-            Text("已记住的发送授权").themedFont(.body)
-            Text(consentRevokeNotice ?? "首次把内容发往某个服务商、或首次使用在线转写、校对、脑图时会各告知一次，之后不再重复询问。")
-              .themedFont(.subheadline)
-              .foregroundStyle(.secondary)
-              .fixedSize(horizontal: false, vertical: true)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      TextEditor(text: $model.summaryPrompt)
+        .themedFont(.callout)
+        .scrollContentBackground(.hidden)
+        .frame(minHeight: 96, maxHeight: 140)
+        .padding(DesignTokens.Space.sm)
+        .background(settingsTheme.isNative ? Color(nsColor: .textBackgroundColor) : settingsTheme.listPane)
+        .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(settingsTheme.hairline, lineWidth: 1))
+        .accessibilityIdentifier("summary-prompt")
+      HStack {
+        Spacer(minLength: 0)
+        // 重置会把用户自己写的提示词整段覆盖掉，而且没有撤销——这一栏里
+        // 唯一不可逆的动作，必须先问一句，并且不能和「了解更多」一样低调。
+        Button("重置为默认提示词") { isPromptResetConfirmationPresented = true }
+          .buttonStyle(.appDestructive(appTheme.danger))
+          .disabled(model.preferencesState == .saving)
+          .accessibilityIdentifier("reset-summary-prompt")
+          .confirmationDialog(
+            "把总结提示词换回默认的？",
+            isPresented: $isPromptResetConfirmationPresented,
+            titleVisibility: .visible
+          ) {
+            Button("重置为默认提示词", role: .destructive) { model.resetSummaryPrompt() }
+              .accessibilityIdentifier("reset-summary-prompt-confirm")
+            Button("取消", role: .cancel) {}
+          } message: {
+            Text("你写的提示词会被覆盖，不能撤销——需要的话先把上面这段文字复制出来。已经生成好的总结不会变，只影响以后生成的。")
           }
-          Spacer(minLength: DesignTokens.Space.md)
-          // 清除之后每一项都会重新问一遍，是一次会改变后续行为的重置动作：危险色 +
-          // 先问一句。清除本身没有可见效果，所以结果仍然用左边那行反馈。
-          Button("清除授权记录") { isConsentRevokeConfirmationPresented = true }
-            .buttonStyle(.appDestructive(appTheme.danger))
-            .accessibilityIdentifier("revoke-remembered-consents")
-            .confirmationDialog(
-              "清除已经记住的发送授权？",
-              isPresented: $isConsentRevokeConfirmationPresented,
-              titleVisibility: .visible
-            ) {
-              Button("清除授权记录", role: .destructive) {
-                Task {
-                  let cleared = await appModel.revokeRememberedConsents()
-                  consentRevokeNotice = cleared
-                    ? "已清除。下一次发送会重新问你一遍。"
-                    : "没能清除：这条记录没写进去，授权还是原来那样。请再点一次。"
-                }
-              }
-              .accessibilityIdentifier("revoke-remembered-consents-confirm")
-              Button("取消", role: .cancel) {}
-            } message: {
-              Text("会忘掉「你已经同意过把内容发给哪些服务商、用过哪些在线功能」这些记录，之后每一项都会重新问你一次。你保存的内容、模型配置和密钥都不受影响。")
-            }
-        }
       }
-      .padding(.vertical, DesignTokens.Space.md)
-      .padding(.horizontal, DesignTokens.Space.lg)
-      .modifier(SettingsThemedCardChrome())
+    }
+  }
 
-      // 高级项收成一张可折叠的卡，不再裸露在两张卡之间。
-      VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-        DisclosureGroup("高级：翻译并发与总结提示词") {
-          VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
-            HStack(alignment: .center, spacing: DesignTokens.Space.md) {
-              VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
-                Text("翻译并发")
-                  .themedFont(.body)
-                Text("长文翻译会切成多段同时发送，段数越多越快。只对超过约 8000 字的正文生效；免费或有速率限制的服务商调高后可能被限流。")
-                  .themedFont(.subheadline)
-                  .foregroundStyle(.secondary)
-                  .fixedSize(horizontal: false, vertical: true)
-              }
-              Spacer(minLength: DesignTokens.Space.md)
-              Picker("翻译并发", selection: $model.translationConcurrency) {
-                ForEach(
-                  Array(ModelPreferences.translationConcurrencyRange),
-                  id: \.self
-                ) { value in
-                  Text(value == 1 ? "不并发" : "\(value) 段").tag(value)
-                }
-              }
-              .labelsHidden()
-              .frame(width: 120)
-              .accessibilityIdentifier("translation-concurrency")
-            }
-
-            VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-              Text("总结提示词")
-                .themedFont(.body)
-              Text("无论用内置还是自定义提示词，\(ProductDisplay.name) 都会追加输出语言指令。提示词保存在本机；生成时会随正文发送给所选模型。")
-                .themedFont(.subheadline)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-              TextEditor(text: $model.summaryPrompt)
-                .themedFont(.callout)
-                .scrollContentBackground(.hidden)
-                .frame(minHeight: 96, maxHeight: 140)
-                .padding(DesignTokens.Space.sm)
-                .background(settingsTheme.isNative ? Color(nsColor: .textBackgroundColor) : settingsTheme.listPane)
-                .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(settingsTheme.hairline, lineWidth: 1))
-                .accessibilityIdentifier("summary-prompt")
-              HStack {
-                Spacer(minLength: 0)
-                // 重置会把用户自己写的提示词整段覆盖掉，而且没有撤销——这一栏里
-                // 唯一不可逆的动作，必须先问一句，并且不能和「了解更多」一样低调。
-                Button("重置为默认提示词") { isPromptResetConfirmationPresented = true }
-                  .buttonStyle(.appDestructive(appTheme.danger))
-                  .disabled(model.preferencesState == .saving)
-                  .accessibilityIdentifier("reset-summary-prompt")
-                  .confirmationDialog(
-                    "把总结提示词换回默认的？",
-                    isPresented: $isPromptResetConfirmationPresented,
-                    titleVisibility: .visible
-                  ) {
-                    Button("重置为默认提示词", role: .destructive) { model.resetSummaryPrompt() }
-                      .accessibilityIdentifier("reset-summary-prompt-confirm")
-                    Button("取消", role: .cancel) {}
-                  } message: {
-                    Text("你写的提示词会被覆盖，不能撤销——需要的话先把上面这段文字复制出来。已经生成好的总结不会变，只影响以后生成的。")
-                  }
-              }
-            }
-          }
-          .padding(.top, DesignTokens.Space.md)
-          .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .themedFont(.headline)
-      }
-      .padding(.vertical, DesignTokens.Space.md)
-      .padding(.horizontal, DesignTokens.Space.lg)
-      .modifier(SettingsThemedCardChrome())
-
-      // 即时生效，正常时安静；只有保存失败才需要一行说明。
-      if case .failed = model.preferencesState {
-        SettingsInlineNotice(message: model.preferencesStatusText, tone: .danger)
-          .accessibilityIdentifier("model-preferences-status")
-      } else if model.preferencesState == .saving {
-        Text(model.preferencesStatusText)
-          .themedFont(.subheadline)
-          .foregroundStyle(.secondary)
-          .accessibilityIdentifier("model-preferences-status")
-      }
+  @ViewBuilder private var preferencesStatusNotice: some View {
+    // 即时生效，正常时安静；只有保存失败才需要一行说明。
+    if case .failed = model.preferencesState {
+      SettingsInlineNotice(message: model.preferencesStatusText, tone: .danger)
+        .accessibilityIdentifier("model-preferences-status")
+    } else if model.preferencesState == .saving {
+      Text(model.preferencesStatusText)
+        .themedFont(.subheadline)
+        .foregroundStyle(.secondary)
+        .accessibilityIdentifier("model-preferences-status")
     }
   }
 
@@ -2476,73 +2712,6 @@ struct ProviderSettingsView: View {
     case let .running(done, total): "正在翻译 \(done) / \(total)，可以关掉设置窗口，后台继续。"
     case let .finished(localized, total): "已处理 \(total) 条，其中 \(localized) 条译成了中文。"
     case .failed: "读取历史库失败，稍后再试。"
-    }
-  }
-
-  /// 自动处理管线的一步。
-  ///
-  /// 这条链在代码里是**严格串行且有依赖**的：整理要吃转写产物，脑图要吃总结产物。
-  /// 原来 UI 是四个平级、无序、互不相关的开关，顺序只在 footer 用一句话交代——
-  /// 于是「只勾整理、不勾转写」这种基本不会生效的组合，界面完全不拦也不提示。
-  ///
-  /// - Parameter requirementUnmet: 上游没开时的原因。只在标题下用提示说明，
-  ///   **不禁用、也不把开关画淡**：淡了会看起来像坏掉或点不了，其实还能开。
-  ///   重新抓取一条早先转写过的条目时，整理确实能独立生效，硬禁用会砍掉这个可用组合。
-  @ViewBuilder
-  private func pipelineStep(
-    index: Int,
-    title: String,
-    trailingNote: String,
-    isLast: Bool = false,
-    requirementUnmet: String? = nil,
-    isOn: Binding<Bool>,
-    identifier: String
-  ) -> some View {
-    HStack(alignment: .top, spacing: 10) {
-      VStack(spacing: 0) {
-        Text("\(index)")
-          .themedFont(.caption2, weight: .bold, monospacedDigit: true)
-          .foregroundStyle(isOn.wrappedValue ? settingsTheme.accent : Color.secondary)
-          .frame(width: 18, height: 18)
-          .background(
-            Circle().fill(
-              (isOn.wrappedValue ? settingsTheme.accent : Color.secondary).opacity(0.15)
-            )
-          )
-        // 连线让「这是一条链」成为结构而不是文案。
-        if !isLast {
-          Rectangle()
-            .fill(Color.secondary.opacity(0.25))
-            .frame(width: 1.5)
-            .frame(maxHeight: .infinity)
-        }
-      }
-      .frame(minHeight: isLast ? 18 : 44)
-
-      VStack(alignment: .leading, spacing: 3) {
-        // 手排页里默认 Toggle 是勾选框；管线各步的开关统一拨杆靠右。
-        HStack {
-          Text(title)
-          Spacer(minLength: 12)
-          Toggle("", isOn: isOn)
-            .toggleStyle(.switch)
-            .labelsHidden()
-            .accessibilityLabel(title)
-            .accessibilityIdentifier(identifier)
-        }
-        if let requirementUnmet {
-          Label(requirementUnmet, systemImage: "arrow.turn.left.up")
-            .themedFont(.caption2)
-            .foregroundStyle(appTheme.warning)
-            .fixedSize(horizontal: false, vertical: true)
-        } else {
-          // caption2 + tertiary 在浅色主题上几乎看不见；和别的说明文字同一档。
-          Text(trailingNote)
-            .themedFont(.caption)
-            .foregroundStyle(.secondary)
-        }
-      }
-      .padding(.bottom, isLast ? 0 : 8)
     }
   }
 

@@ -1044,22 +1044,26 @@ final class ReasoningEffortRejectionMemoryTests: XCTestCase {
     let provider = makeProvider()
     let profile = try profile(baseURL)
 
-    // 第一次：none 被拒 → 降到 low 重发并成功。
+    // 第一次：带「关闭思考」开关的请求被拒 → 先去掉开关、同一档 none 重发并成功。
+    // （拒绝更可能来自多出来的开关字段；none 本身已被大多数服务端接受。）
     let first = try await provider.tidyTranscriptChunk(
       profile: profile, apiKey: key, model: "fixture-model", text: "待校对"
     )
     XCTAssertEqual(first.text, "校对后的文字")
-    XCTAssertEqual(server.requests.count, 2, "首轮应为 none 被拒 + low 重发")
+    XCTAssertEqual(server.requests.count, 2, "首轮应为带开关被拒 + 去掉开关重发")
     XCTAssertEqual(reasoningEffort(in: server.requests[0]), "none")
-    XCTAssertEqual(reasoningEffort(in: server.requests[1]), "low")
+    XCTAssertEqual(reasoningEffort(in: server.requests[1]), "none")
+    XCTAssertTrue(server.requests[0].body.contains("\"thinking\""))
+    XCTAssertFalse(server.requests[1].body.contains("\"thinking\""))
 
-    // 第二片：记忆跨请求，直接从 low 起，只发一次。校对会把长稿切十几片，
+    // 第二片：记忆跨请求，不再带开关，只发一次。校对会把长稿切十几片，
     // 每片都重试一遍等于把一半请求浪费在同一个已知答案上。
     _ = try await provider.tidyTranscriptChunk(
       profile: profile, apiKey: key, model: "fixture-model", text: "第二片"
     )
     XCTAssertEqual(server.requests.count, 3, "记住拒绝后，第二片只应发 1 个请求")
-    XCTAssertEqual(reasoningEffort(in: server.requests[2]), "low")
+    XCTAssertEqual(reasoningEffort(in: server.requests[2]), "none")
+    XCTAssertFalse(server.requests[2].body.contains("\"thinking\""))
   }
 
   private func bodyHasReasoningEffort(_ request: FakeOpenAICompatibleServer.RecordedRequest) -> Bool {

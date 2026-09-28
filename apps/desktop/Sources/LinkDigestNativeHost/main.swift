@@ -185,10 +185,13 @@ do {
   do {
     if let preferences = try CapturePreferencesRequest.decode(body) {
       writeDebugLog("capture_preferences requestId=\(preferences.requestId)")
+      let store = CapturePreferencesStore.standard()
       let result = NativeResponse.capturePreferences(
         version: 1,
         requestId: preferences.requestId,
-        commentLimit: CapturePreferencesStore.standard().commentLimit
+        commentLimit: store.commentLimit,
+        commentLimits: store.commentLimitsByPlatform,
+        autoSaveComments: store.autoSaveComments
       )
       try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
       exit(0)

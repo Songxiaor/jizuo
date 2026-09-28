@@ -365,11 +365,13 @@ public enum NativeResponse: Codable, Sendable, Equatable {
   /// 打开 App：成功时带上 Host 支持的协议版本，扩展用它判断要不要提示升级。
   case openAppAccepted(version: Int, requestId: String, supportedVersions: [Int])
   /// 抓取偏好：扩展据此决定评论读几条（10–100）。
-  case capturePreferences(version: Int, requestId: String, commentLimit: Int)
+  /// `commentLimits` 按平台单独设（0 = 不抓），`autoSaveComments` 为真时不弹勾选、直接存前几条。
+  /// 两者是 v1 上新增的可选字段：旧扩展不认识也不影响。
+  case capturePreferences(version: Int, requestId: String, commentLimit: Int, commentLimits: [String: Int] = [:], autoSaveComments: Bool = false)
   case error(AppError)
 
   enum CodingKeys: String, CodingKey {
-    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, acceptedCount, supportedVersions, commentLimit, error
+    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, acceptedCount, supportedVersions, commentLimit, commentLimits, autoSaveComments, error
   }
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -441,7 +443,9 @@ public enum NativeResponse: Codable, Sendable, Equatable {
       self = .capturePreferences(
         version: version,
         requestId: try c.decode(String.self, forKey: .requestId),
-        commentLimit: try c.decode(Int.self, forKey: .commentLimit)
+        commentLimit: try c.decode(Int.self, forKey: .commentLimit),
+        commentLimits: try c.decodeIfPresent([String: Int].self, forKey: .commentLimits) ?? [:],
+        autoSaveComments: try c.decodeIfPresent(Bool.self, forKey: .autoSaveComments) ?? false
       )
     case "error":
       let error = try c.decode(AppError.self, forKey: .error)
@@ -472,9 +476,11 @@ public enum NativeResponse: Codable, Sendable, Equatable {
     case let .openAppAccepted(v, r, supported):
       try c.encode("openAppAccepted", forKey: .kind); try c.encode(v, forKey: .version)
       try c.encode(r, forKey: .requestId); try c.encode(supported, forKey: .supportedVersions)
-    case let .capturePreferences(v, r, limit):
+    case let .capturePreferences(v, r, limit, limits, autoSave):
       try c.encode("capturePreferences", forKey: .kind); try c.encode(v, forKey: .version)
       try c.encode(r, forKey: .requestId); try c.encode(limit, forKey: .commentLimit)
+      if !limits.isEmpty { try c.encode(limits, forKey: .commentLimits) }
+      if autoSave { try c.encode(autoSave, forKey: .autoSaveComments) }
     case let .error(e):
       try c.encode("error", forKey: .kind); try c.encode(e, forKey: .error)
     }

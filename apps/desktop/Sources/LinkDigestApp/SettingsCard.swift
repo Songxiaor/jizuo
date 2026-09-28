@@ -91,21 +91,43 @@ struct SettingsPageHeader: View {
   var captionIdentifier: String? = nil
 
   var body: some View {
-    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-      HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
-        Image(systemName: symbol)
-          .themedFont(.body, weight: .medium)
-          .foregroundStyle(fill)
-          .accessibilityHidden(true)
-        Text(title)
-          // 跟随系统字号：写死 pt 的话放大界面字号之后正文涨了、页头没涨。
-          .themedFont(.title3, weight: .semibold)
-          .foregroundStyle(.primary)
+    if let glyph = InkSealMark.settingsGlyphs[title] {
+      // 2026-09-28 设置按工序重组：通用页的页头和工序页同一种排法——左边一方印（这里是
+      // 灰色墨线闲章），右边宋体标题加一句话，下面一道细线。
+      VStack(alignment: .leading, spacing: 0) {
+        HStack(alignment: .center, spacing: 16) {
+          InkSealMark(character: glyph, size: 44, color: .secondary)
+            .frame(width: 56, height: 56)
+          VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+              .font(.custom(ReadingFontCatalog.editorialSerifFamily, size: 22).weight(.semibold))
+              .foregroundStyle(.primary)
+              .accessibilityAddTraits(.isHeader)
+            captionText
+          }
+          Spacer(minLength: 0)
+        }
+        .padding(.bottom, 18)
+        Rectangle().fill(Color.secondary.opacity(0.18)).frame(height: 1)
       }
-      captionText
+      .frame(maxWidth: .infinity, alignment: .leading)
+    } else {
+      VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+        HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
+          Image(systemName: symbol)
+            .themedFont(.body, weight: .medium)
+            .foregroundStyle(fill)
+            .accessibilityHidden(true)
+          Text(title)
+            // 跟随系统字号：写死 pt 的话放大界面字号之后正文涨了、页头没涨。
+            .themedFont(.title3, weight: .semibold)
+            .foregroundStyle(.primary)
+        }
+        captionText
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.vertical, DesignTokens.Space.xxs)
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.vertical, DesignTokens.Space.xxs)
   }
 
   @ViewBuilder private var captionText: some View {

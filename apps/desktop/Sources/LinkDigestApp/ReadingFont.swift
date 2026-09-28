@@ -247,17 +247,21 @@ enum ReadingFontSelection: Equatable {
   /// 标点挤压由系统级联负责，不会回到 New York 那种逗号裂缝。
   /// 衬线具体落到哪个家族见 `ReadingFontCatalog.editorialSerifFamily`——它会
   /// 在思源宋体缺席的机器上自己退回 Songti SC。
+  static let serifOpticalScale: CGFloat = 16.0 / 15.0
+
   func resolved(
     usesEditorialReadingTypography: Bool,
     bodySize: CGFloat
   ) -> ResolvedReadingFont {
     switch self {
     case .theme:
+      // 宋体字面比苹方小一圈，同号看上去小一号：跟随主题走宋体时按 16/15 补偿，
+      // 默认 15 号实际排 16 号（2026-09-28 正文排版样稿）。字号偏好本身不改，⌘+ / ⌘− 照常一档一档调。
       return ResolvedReadingFont(
         face: usesEditorialReadingTypography
           ? .named(ReadingFontCatalog.editorialSerifFamily)
           : .sans,
-        bodySize: bodySize
+        bodySize: usesEditorialReadingTypography ? bodySize * Self.serifOpticalScale : bodySize
       )
     case let .family(name):
       return ResolvedReadingFont(face: .named(name), bodySize: bodySize)

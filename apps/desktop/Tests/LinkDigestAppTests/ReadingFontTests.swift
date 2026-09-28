@@ -135,7 +135,8 @@ final class ReadingFontTests: XCTestCase {
     )
 
     // 窗口明显拉宽：超过旧 680 后继续涨。
-    let wideDetail: CGFloat = 952
+    // 2026-09-28 上限从 960 收到 800：取一个落在「旧偏好宽度」和新上限之间的窗口。
+    let wideDetail: CGFloat = 860
     let wideColumn = DesignTokens.Layout.readingColumnMaxWidth(availableWidth: wideDetail, bodySize: body)
     XCTAssertEqual(wideColumn, wideDetail - inset, accuracy: 0.001)
     XCTAssertGreaterThan(wideColumn, preferred, "拉宽后正文必须可感知地宽于旧固定上限")

@@ -943,6 +943,37 @@ final class HistoryRepositoryRunTests: XCTestCase {
     }
   }
 
+  /// 「待校对」（2026-09-28 工序印）：有机器转写、还没有模型校对稿的才算。
+  func testUntidiedScopeListsTranscriptsWithoutTidySnapshot() throws {
+    try withRepository { repository, _ in
+      func insertSnapshot(_ taskID: TaskID, sequence: Int, kind: String, method: String) throws {
+        try repository.database.write { db in
+          let body = "转写正文\(sequence)"
+          try db.execute(sql: """
+            INSERT INTO content_snapshots (
+              id, task_id, sequence, envelope_created_at_ms, captured_at_ms, source_kind, source_url, title,
+              platform, capture_method, completeness, body_text, character_count, body_sha256, source_label,
+              used_cookie, used_cookie_v2
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, '转写', 'douyin', ?, 'complete', CAST(? AS TEXT), ?, ?, '本机视频转写', 0, 0)
+            """, arguments: [ContentSnapshotID().rawValue, taskID.rawValue, sequence, sequence, sequence, kind, "https://example.test/a", method, Data(body.utf8), body.unicodeScalars.count, SHA256CaptureFingerprinter().bodySHA256(body)])
+        }
+      }
+      let pending = try repository.acceptCapture(.init(envelope: capture(requestID: "tidy-a", key: "tidy-a", url: "https://example.test/a"), receivedAtMilliseconds: 1))
+      let tidied = try repository.acceptCapture(.init(envelope: capture(requestID: "tidy-b", key: "tidy-b", url: "https://example.test/b"), receivedAtMilliseconds: 2))
+      _ = try repository.acceptCapture(.init(envelope: capture(requestID: "tidy-c", key: "tidy-c", url: "https://example.test/c"), receivedAtMilliseconds: 3))
+      try insertSnapshot(pending.taskID, sequence: 2, kind: "local_transcription", method: "speech_analyzer_local")
+      try insertSnapshot(tidied.taskID, sequence: 2, kind: "local_transcription", method: "speech_analyzer_local")
+      try insertSnapshot(tidied.taskID, sequence: 3, kind: "local_transcription", method: "openai_compatible_chat_tidy")
+
+      XCTAssertEqual(try repository.navigationCounts().untidied, 1)
+      XCTAssertEqual(
+        try repository.historyPage(limit: 20, after: nil, filter: .init(scope: .untidied)).rows.map(\.taskID),
+        [pending.taskID],
+        "校对过的、没有转写的都不算待校对"
+      )
+    }
+  }
+
   func testTwoPoolsPreserveRunConflictSemanticsUnderRace() throws {
     try withTemporaryLocation { location in
       let first = try GRDBHistoryRepository.open(at: location)

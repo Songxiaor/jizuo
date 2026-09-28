@@ -11,6 +11,9 @@ struct UIReadingHistoryRow: View {
   let theme: HistoryThemeTokens
   /// 同一博主连续多条时，从第二条起副标题只留日期，不再每行重复作者名。
   var showsAuthor: Bool = true
+  /// 混排视图（全部、标签、搜索）里给自有内容盖一方「作」印，一眼分出哪些是自己的。
+  /// 已经按「自有」筛过的视图里每行都是自己的，再盖就是重复，由父层关掉。
+  var showsOwnSeal: Bool = false
   /// 悬停动作与「按下」动作由父层注入：行只收值，不认识 ViewModel。
   ///
   /// 闭包不参与下面的 `Equatable`——它们捕获的是引用型 model 和这一行固定不变的
@@ -29,6 +32,10 @@ struct UIReadingHistoryRow: View {
   /// 翻译、脑图同样会写进去，于是只翻译过、从没总结过的内容也被标成绿点，
   /// 而侧栏「待总结」仍然把它算在内：同一条内容两处说法相反。
   private var isSummarized: Bool { row.hasSummary == true }
+
+  private var isOwnContent: Bool {
+    ContentOwnership.resolve(canonicalURL: row.canonicalURL, host: row.host, tagNames: row.tagNames ?? []) == .own
+  }
 
   @ViewBuilder private var statusIndicator: some View {
     if theme.encodesStatusByShape {
@@ -260,6 +267,10 @@ struct UIReadingHistoryRow: View {
               .accessibilityHidden(true)
           }
           Spacer(minLength: 4)
+          if showsOwnSeal, isOwnContent {
+            SealMark(glyph: .own, size: 16, color: theme.seal, showsInnerFrame: false)
+              .help("自有：你自己的内容")
+          }
           let savedTime = HistoryListFinding.compactSavedTime(savedAtMilliseconds: savedAtMilliseconds)
           // 按日期命名的笔记（「8月20日」）标题已经就是日期，右下角再写一遍是白占一行。
           if savedTime != text.title {
@@ -435,6 +446,7 @@ extension UIReadingHistoryRow: Equatable {
       && lhs.faviconURL == rhs.faviconURL
       && lhs.theme == rhs.theme
       && lhs.showsAuthor == rhs.showsAuthor
+      && lhs.showsOwnSeal == rhs.showsOwnSeal
   }
 
   static func repeatsPreviousAuthor(in rows: [HistoryRowProjection], at index: Int) -> Bool {

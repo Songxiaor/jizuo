@@ -18,22 +18,35 @@ enum ReadingTextComposer {
   }
 
   /// 与 MarkdownPresentation 的阅读排版同一套字号体系。
+  /// 段后间距：约半行（2026-09-28 正文排版样稿）。行距 7，行和行的缝明显小于段和段的缝。
+  static let paragraphSpacing: CGFloat = 15
+  /// 连续短句段（每段不到一行，公众号一句一段的写法）之间的缝：读成一组，不再句句空一行。
+  static let shortRunSpacing: CGFloat = 3
+
+  /// - Parameter emphasizesLede: 这一段文字是全文开头时为 true：第一段大一号当导语。
   static func attributed(
     blocks: [MarkdownPresentation.Block],
     readingFont: ResolvedReadingFont,
-    palette: Palette
+    palette: Palette,
+    emphasizesLede: Bool = false
   ) -> NSAttributedString {
     let result = NSMutableAttributedString()
+    // 短帖（三百字以内）不设导语：一共两三句话，第一句放大只会显得突兀。
+    let ledeAllowed = emphasizesLede && blocks.count >= 3 && blocks.reduce(0) { total, block in
+      if case let .paragraph(text) = block { return total + text.count }
+      return total
+    } > 300
     for (index, block) in blocks.enumerated() {
       let next = index + 1 < blocks.count ? blocks[index + 1] : nil
       // 下一块是这一条的括号说明时，条目和说明之间几乎不留缝，让两者读成一组。
-      let lastItemSpacing: CGFloat = next.map(isItemNote) == true ? 3 : 8
+      let lastItemSpacing: CGFloat = next.map(isItemNote) == true ? 3 : 10
       switch block {
       case let .heading(level, text):
-        let size: CGFloat = [1: 23, 2: 19.5, 3: 17][level] ?? 16
+        // 标题随正文字号等比缩放；上方留出明显的空白，一眼看出「换了一节」（2026-09-28 样稿）。
+        let size = readingFont.scaledSize([1: 23, 2: 19.5, 3: 17][level] ?? 16)
         result.append(paragraph(
           inline(stripMarkers(text), readingFont: readingFont, baseSize: size, bold: true, color: palette.primary),
-          spacingBefore: level == 1 ? 26 : 20, spacingAfter: 10, lineSpacing: 6
+          spacingBefore: level <= 2 ? 30 : 22, spacingAfter: 8, lineSpacing: 6
         ))
       case let .paragraph(text):
         if let indent = index > 0 ? itemNoteIndent(after: blocks[index - 1]) : nil, isItemNote(block) {
@@ -42,30 +55,54 @@ enum ReadingTextComposer {
           // 这里缩进到条目文字对齐处、用次要色，挂在条目下面。
           result.append(paragraph(
             inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary),
-            spacingAfter: 20, lineSpacing: 7, headIndent: indent, firstLineIndent: indent
+            spacingAfter: Self.paragraphSpacing, lineSpacing: 7, headIndent: indent, firstLineIndent: indent
           ))
-        } else {
+        } else if let label = leadingLabel(of: text) {
+          // 「**核心结论**：……」：标签单独一行，靛青小字；正文另起（2026-09-28 样稿）。
+          // 总结、笔记里最常见的结构，原来混在句子里，扫读时找不到。
           result.append(paragraph(
-            inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.primary),
-            spacingAfter: 20, lineSpacing: MarkdownPresentation.bodyLineSpacing
+            labelLine(label.label, readingFont: readingFont, color: palette.accent),
+            spacingBefore: index == 0 ? 0 : 10, spacingAfter: 4, lineSpacing: 2
+          ))
+          if !label.rest.isEmpty {
+            result.append(paragraph(
+              inline(label.rest, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.primary),
+              spacingAfter: Self.paragraphSpacing, lineSpacing: MarkdownPresentation.bodyLineSpacing
+            ))
+          }
+        } else {
+          let isLede = ledeAllowed && index == 0 && isLedeCandidate(text)
+          // 连着的短句段收成一组：这一段和下一段都不满一行时，只留一道细缝。
+          let tightensToNext = isShortLine(text) && next.map(isShortLineParagraph) == true
+          result.append(paragraph(
+            inline(
+              text, readingFont: readingFont,
+              baseSize: isLede ? readingFont.bodySize + 1 : readingFont.bodySize,
+              color: palette.primary
+            ),
+            spacingAfter: tightensToNext ? Self.shortRunSpacing : Self.paragraphSpacing,
+            lineSpacing: MarkdownPresentation.bodyLineSpacing
           ))
         }
       case let .list(items):
         for (itemIndex, item) in items.enumerated() {
           // 深层用不同的记号，并跟着加缩进——选中复制出去时层级也不该丢。
-          let marker = item.depth == 0 ? "•  " : String(repeating: "    ", count: item.depth) + "◦  "
+          // 记号用靛青、Tab 对齐到悬挂缩进处：折行后的第二行和第一行文字齐（2026-09-28 样稿）。
+          let indent = CGFloat(22 + item.depth * 18)
+          let marker = (item.depth == 0 ? "•" : "◦") + "\t"
           result.append(paragraph(
-            bulletLine(marker, item.text, readingFont: readingFont, color: palette.primary),
-            spacingAfter: itemIndex == items.count - 1 ? lastItemSpacing : 8,
-            lineSpacing: 6, headIndent: CGFloat(22 + item.depth * 18)
+            bulletLine(marker, item.text, readingFont: readingFont, color: palette.primary, markerColor: palette.accent),
+            spacingAfter: itemIndex == items.count - 1 ? lastItemSpacing : 6,
+            lineSpacing: MarkdownPresentation.bodyLineSpacing, headIndent: indent,
+            firstLineIndent: indent - 14, tabStop: indent
           ))
         }
       case let .orderedList(start, items):
         for (itemIndex, item) in items.enumerated() {
           result.append(paragraph(
-            bulletLine("\(start + itemIndex).  ", item, readingFont: readingFont, color: palette.primary),
-            spacingAfter: itemIndex == items.count - 1 ? lastItemSpacing : 8,
-            lineSpacing: 6, headIndent: 26
+            bulletLine("\(start + itemIndex).\t", item, readingFont: readingFont, color: palette.primary, markerColor: palette.accent),
+            spacingAfter: itemIndex == items.count - 1 ? lastItemSpacing : 6,
+            lineSpacing: MarkdownPresentation.bodyLineSpacing, headIndent: 26, tabStop: 26
           ))
         }
       case let .taskList(items):
@@ -91,14 +128,14 @@ enum ReadingTextComposer {
       case let .quote(_, text):
         result.append(paragraph(
           inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary),
-          spacingAfter: 20, lineSpacing: 8, headIndent: 18, firstLineIndent: 18
+          spacingAfter: Self.paragraphSpacing, lineSpacing: 8, headIndent: 18, firstLineIndent: 18
         ))
       case let .callout(kind, title, text, _):
         let label = title.isEmpty ? MarkdownPresentation.calloutLabel(kind) : title
         let body = text.isEmpty ? label : "**\(label)**  \(text)"
         result.append(paragraph(
           inline(body, readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary),
-          spacingAfter: 20, lineSpacing: 8, headIndent: 18, firstLineIndent: 18
+          spacingAfter: Self.paragraphSpacing, lineSpacing: 8, headIndent: 18, firstLineIndent: 18
         ))
       case .code, .table, .comments:
         // 代码卡、表格和评论树由 SwiftUI 独立渲染；不应进入本合成器。
@@ -132,6 +169,45 @@ enum ReadingTextComposer {
     guard !trimmed.contains("\n") else { return false }
     return (trimmed.hasPrefix("（") && trimmed.hasSuffix("）"))
       || (trimmed.hasPrefix("(") && trimmed.hasSuffix(")"))
+  }
+
+  /// 段首「**标签**：正文」。标签限 14 字以内，太长的粗体更像强调句，不拆。
+  static func leadingLabel(of text: String) -> (label: String, rest: String)? {
+    let pattern = #"^(\*\*|__)([^*_\n]{1,14}?)\1\s*[：:]\s*"#
+    guard let regex = try? NSRegularExpression(pattern: pattern),
+          let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..., in: text)),
+          let labelRange = Range(match.range(at: 2), in: text),
+          let whole = Range(match.range, in: text) else { return nil }
+    let label = text[labelRange].trimmingCharacters(in: .whitespaces)
+    guard !label.isEmpty else { return nil }
+    return (label, String(text[whole.upperBound...]).trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+
+  /// 不满一行的短段：中文按一字一格、西文按半格估算，约 36 字一行的版心里 ≤ 28 格。
+  static func isShortLine(_ text: String) -> Bool {
+    guard !text.contains("\n") else { return false }
+    let width = text.reduce(0.0) { $0 + ($1.isASCII ? 0.55 : 1) }
+    return width > 0 && width <= 28
+  }
+
+  static func isShortLineParagraph(_ block: MarkdownPresentation.Block) -> Bool {
+    guard case let .paragraph(text) = block else { return false }
+    return leadingLabel(of: text) == nil && !isItemNote(block) && isShortLine(text)
+  }
+
+  /// 导语：一段完整的话（不是图片、标签或一个短标题似的句子）。
+  static func isLedeCandidate(_ text: String) -> Bool {
+    guard leadingLabel(of: text) == nil, !text.hasPrefix("!["), !text.contains("\n") else { return false }
+    return (12...220).contains(text.count)
+  }
+
+  private static func labelLine(_ label: String, readingFont: ResolvedReadingFont, color: NSColor) -> NSAttributedString {
+    let size = (readingFont.bodySize * 0.8).rounded()
+    return NSAttributedString(string: label, attributes: [
+      .font: NSFont.systemFont(ofSize: size, weight: .medium),
+      .foregroundColor: color,
+      .kern: 2,
+    ])
   }
 
   /// 前一块是清单时，说明要对齐到的缩进；不是清单返回 nil。
@@ -292,11 +368,16 @@ enum ReadingTextComposer {
     _ prefix: String,
     _ text: String,
     readingFont: ResolvedReadingFont,
-    color: NSColor
+    color: NSColor,
+    markerColor: NSColor? = nil
   ) -> NSAttributedString {
+    // 圆点用系统字体：宋体里的「•」又小又细，靛青也显不出来。
+    let markerFont = markerColor != nil && (prefix.hasPrefix("•") || prefix.hasPrefix("◦"))
+      ? NSFont.systemFont(ofSize: readingFont.bodySize, weight: .bold)
+      : font(readingFont, size: readingFont.bodySize)
     let line = NSMutableAttributedString(string: prefix, attributes: [
-      .font: font(readingFont, size: readingFont.bodySize),
-      .foregroundColor: color,
+      .font: markerFont,
+      .foregroundColor: markerColor ?? color,
     ])
     line.append(inline(text, readingFont: readingFont, baseSize: readingFont.bodySize, color: color))
     return line
@@ -308,7 +389,8 @@ enum ReadingTextComposer {
     spacingAfter: CGFloat,
     lineSpacing: CGFloat,
     headIndent: CGFloat = 0,
-    firstLineIndent: CGFloat = 0
+    firstLineIndent: CGFloat = 0,
+    tabStop: CGFloat? = nil
   ) -> NSAttributedString {
     let mutable = NSMutableAttributedString(attributedString: content)
     // A Markdown hard break stays inside the same paragraph. Cocoa treats LF
@@ -323,6 +405,10 @@ enum ReadingTextComposer {
     style.lineSpacing = lineSpacing
     style.headIndent = headIndent
     style.firstLineHeadIndent = firstLineIndent
+    if let tabStop {
+      style.tabStops = [NSTextTab(textAlignment: .left, location: tabStop)]
+      style.defaultTabInterval = tabStop
+    }
     mutable.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: mutable.length))
     return mutable
   }

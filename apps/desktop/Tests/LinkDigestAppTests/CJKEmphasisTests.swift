@@ -64,6 +64,23 @@ final class CJKEmphasisTests: XCTestCase {
     )
   }
 
+  /// 2026-09-28 真实总结：两对加粗在同一段里，旧规则把第一对的结尾当成第二对的开头。
+  func testTwoBoldPairsInOneParagraphStayPaired() {
+    let source = "**核心结论**：作者认为是由两个AI组成的小团队：**Codex担任产品经理，ChatGPT担任高级程序员**。这套组合更稳。"
+    XCTAssertEqual(MarkdownPresentation.normalizingCJKEmphasis(source), source, "两对都合规，不该改动")
+    let output = plain(source)
+    XCTAssertFalse(output.contains("*"), "星号不能露在正文里")
+    XCTAssertTrue(output.contains("小团队：Codex担任"))
+  }
+
+  func testLeadingPunctuationMovesOutWhenPrecededByText() {
+    XCTAssertEqual(
+      MarkdownPresentation.normalizingCJKEmphasis("他说**「这很重要」**然后走了"),
+      "他说「**这很重要**」然后走了"
+    )
+    XCTAssertFalse(plain("他说**「这很重要」**然后走了").contains("*"))
+  }
+
   func testPlainTextWithoutEmphasisMarkersShortCircuits() {
     let source = "完全没有强调标记的一段中文。"
     XCTAssertEqual(MarkdownPresentation.normalizingCJKEmphasis(source), source)

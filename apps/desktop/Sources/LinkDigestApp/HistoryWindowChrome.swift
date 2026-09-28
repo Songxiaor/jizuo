@@ -8,14 +8,22 @@ struct HistoryInlineState: View {
   let message: String
   var actionTitle: String?
   var action: (() -> Void)?
+  /// 工序相关的空状态画一枚大印位代替图标（2026-09-28 工序印）：「待校对」是空的，
+  /// 就是「校」这枚章都盖齐了、这里没有等着盖的。
+  var seal: (glyph: SealMark.Glyph, color: Color)? = nil
 
   var body: some View {
     VStack(spacing: 10) {
-      Image(systemName: symbol)
-        .font(.system(size: DesignTokens.IconSize.empty, weight: .medium))
-        .foregroundStyle(.secondary)
-        .frame(width: 58, height: 58)
-        .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
+      if let seal {
+        SealMark(glyph: seal.glyph, size: 52, color: seal.color, style: .pending)
+          .frame(width: 58, height: 58)
+      } else {
+        Image(systemName: symbol)
+          .font(.system(size: DesignTokens.IconSize.empty, weight: .medium))
+          .foregroundStyle(.secondary)
+          .frame(width: 58, height: 58)
+          .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
+      }
       Text(title).themedFont(.headline)
       Text(message)
         .themedFont(.callout)

@@ -1,15 +1,14 @@
 import XCTest
+@testable import LinkDigestApp
 
-/// 「生成偏好」这页的排版约定。
+/// 设置按工序重组后（2026-09-28）的排版约定。
 ///
-/// 改这页之前有两处会误导：
-/// - 每个设置项是「Section header + 控件 + 卡片外的长 footer」，说明离它控制的
-///   控件隔着一整块间距，读的时候对不上号，四五行密字还把页面撑满。
-/// - 自动处理管线在代码里是**严格串行且有依赖**的链（整理吃转写产物、脑图吃总结
-///   产物），UI 却画成四个平级、无序、互不相关的开关，顺序只在 footer 用一句话
-///   交代。于是「只开整理、不开转写」这种基本不会生效的组合，界面完全不拦。
-///
-/// 这类偏差不报错、不崩溃，只是让人按错误的预期配置，所以用测试钉住。
+/// 原来的「生成偏好」页拆成了「工序总览」和七道工序页（汲 录 校 评 摘 译 图）。
+/// 这里守的仍是那几条老约定，只是换了承载方式：
+/// - 自动处理是**严格串行且有依赖**的链，顺序要是结构（总览链按工序顺序画），不能只写在说明里；
+/// - 上游没开时下游当场说明原因，但不禁用、不画淡开关；
+/// - 说明贴着控件，不回到卡片外的 footer；
+/// - 空值是下拉里的一个选项，不靠 placeholder。
 final class GenerationSettingsPresentationTests: XCTestCase {
   private func source() throws -> String {
     try String(
@@ -19,153 +18,86 @@ final class GenerationSettingsPresentationTests: XCTestCase {
       encoding: .utf8)
   }
 
-  /// 切出「生成偏好」那一段源码。
-  ///
-  /// 原来这里在切不出来时 `throw XCTSkip`——于是只要有人改了 `generationTab` 的
-  /// 名字或那条 MARK 注释，这个文件里**全部七条**断言就一起变成跳过，绿灯照常，
-  /// 而它们守的每一条约定都失去了看守。切不出来本身就是「视图结构变了、断言必须
-  /// 跟着改」的信号，应当是失败，不是跳过。
-  private func generationTab(in source: String) throws -> String {
+  /// 切出工序页那一段；切不出来就是结构变了，断言必须跟着改（失败，不跳过）。
+  private func stepPages(in source: String) throws -> String {
     let start = try XCTUnwrap(
-      source.range(of: "private var generationTab: some View"),
-      "找不到 generationTab：生成偏好页的结构变了，这个文件里的断言需要同步更新")
+      source.range(of: "private var overviewTab: some View"),
+      "找不到 overviewTab：工序页的结构变了，这个文件里的断言需要同步更新")
     let end = try XCTUnwrap(
-      source.range(of: "// MARK: - 设置卡片零件"),
-      "找不到「设置卡片零件」这条 MARK：切不出生成偏好那一段，断言需要同步更新")
+      source.range(of: "// MARK: - 从「生成偏好」拆出来的部件"),
+      "找不到部件区的 MARK，断言需要同步更新")
     return String(source[start.lowerBound..<end.lowerBound])
   }
 
-  /// 管线必须是有编号的链条，不是四个平级开关。
-  func testAutoPipelineIsRenderedAsAnOrderedChain() throws {
-    let tab = try generationTab(in: try source())
-    for index in 1...5 {
-      XCTAssertTrue(
-        tab.contains("index: \(index)"),
-        "管线第 \(index) 步必须带编号——顺序要是结构，不能只写在说明文字里")
-    }
-    XCTAssertTrue(
-      tab.contains("pipelineStep("),
-      "五个步骤要走同一个构件，各写各的迟早漂移")
-    XCTAssertFalse(
-      tab.contains("Toggle(\"自动转写（本机）\""),
-      "平级 Toggle 的写法回来了，链条结构就没了")
-    XCTAssertTrue(
-      tab.contains("auto-pipeline-localize-title"),
-      "中文标题必须是管线第一步且可单独关闭")
-    XCTAssertTrue(
-      tab.contains("读原文，不读译文"),
-      "总结吃的是原文，必须写在步骤上"
-    )
+  private func page(_ name: String, in pages: String) -> String {
+    guard let start = pages.range(of: "private var \(name): some View") else { return "" }
+    let rest = pages[start.upperBound...]
+    let end = rest.range(of: "\n  private ")?.lowerBound ?? rest.endIndex
+    return String(rest[..<end])
   }
 
-  /// 上游没开时，下游必须当场说明为什么，而不是让人事后发现没生效。
-  func testDownstreamStepsExplainUnmetUpstreamRequirement() throws {
-    let tab = try generationTab(in: try source())
-    XCTAssertTrue(
-      tab.contains("requirementUnmet: model.autoTranscribeNewCaptures"),
-      "整理依赖转写产物，转写没开时必须说明")
-    XCTAssertTrue(
-      tab.contains("requirementUnmet: model.autoSummarizeNewCaptures"),
-      "脑图优先吃总结产物，总结没开时必须说明")
+  /// 工序的顺序是结构：总览链按枚举顺序画，顺序和执行链一致。
+  func testProcessChainIsOrderedByStructure() throws {
+    XCTAssertEqual(SettingsProcessStep.allCases, [.capture, .record, .proof, .comments, .summary, .translation, .mindMap])
+    XCTAssertEqual(SettingsProcessStep.allCases.map(\.glyph.rawValue), ["汲", "录", "校", "评", "摘", "译", "图"])
+    let pages = try stepPages(in: try source())
+    XCTAssertTrue(pages.contains("SettingsProcessChain("), "总览页必须画出工序链")
+    XCTAssertTrue(page("summaryTab", in: pages).contains("读原文，不读译文"), "总结吃的是原文，必须写在页头说明上")
   }
 
-  /// 依赖用标题下的提示说明，不禁用开关，也不把开关画淡。
-  ///
-  /// 重新抓取一条早先转写过的条目时，整理确实能独立生效（`tidySourceReady` 也认
-  /// 历史转写稿）。硬禁用会砍掉这个真实可用的组合；整行变淡会让人以为点不了。
-  func testDependencyExplainsWithoutDimmingOrDisablingToggles() throws {
+  /// 每道工序的「自动」开关绑到原来那条管线偏好上，一个都不能漏。
+  func testAutoSwitchesBindToThePipelinePreferences() throws {
     let text = try source()
-    guard let start = text.range(of: "private func pipelineStep(") else {
-      return XCTFail("pipelineStep 不见了")
+    for binding in [
+      "case .record: $model.autoTranscribeNewCaptures",
+      "case .proof: $model.autoTidyTranscription",
+      "case .summary: $model.autoSummarizeNewCaptures",
+      "case .translation: $model.autoLocalizeTitleNewCaptures",
+      "case .mindMap: $model.autoMindMapNewCaptures",
+      "case .comments: autoSaveCommentsBinding",
+    ] {
+      XCTAssertTrue(text.contains(binding), "缺少开关绑定：\(binding)")
     }
-    let step = String(text[start.lowerBound...].prefix(2_200))
-    XCTAssertTrue(
-      step.contains("if let requirementUnmet"),
-      "上游没开时必须在步骤里给出原因")
-    XCTAssertFalse(
-      step.contains("opacity(requirementUnmet"),
-      "开关画淡会看起来像坏掉或点不了")
-    XCTAssertFalse(
-      step.contains(".disabled(requirementUnmet"),
-      "硬禁用会砍掉「重抓已有转写稿的条目时只整理」这个可用组合")
   }
 
-  /// 说明必须在卡片内，不能再堆回卡片外的 footer。
-  ///
-  /// 2026-09 生成偏好改成行组卡（`SettingsRowGroup` + `SettingsThemedCardChrome`），
-  /// 不再走旧的 `settingCard(`。要守的是：说明贴着控件，不回到 Form Section footer。
+  /// 上游没开时，下游当场说明为什么；只提示，不禁用、不画淡。
+  func testDownstreamStepsExplainUnmetUpstreamRequirement() throws {
+    let pages = try stepPages(in: try source())
+    let proof = page("proofTab", in: pages)
+    XCTAssertTrue(proof.contains("model.autoTidyTranscription, !model.autoTranscribeNewCaptures"), "校对依赖转写产物，转写没开时必须说明")
+    let mindMap = page("mindMapTab", in: pages)
+    XCTAssertTrue(mindMap.contains("model.autoMindMapNewCaptures, !model.autoSummarizeNewCaptures"), "脑图优先吃总结，总结没开时必须说明；脑图没开时不打扰")
+    XCTAssertFalse(pages.contains(".disabled(!model.autoTranscribeNewCaptures"), "硬禁用会砍掉「重抓已有转写稿的条目时只校对」这个可用组合")
+  }
+
+  /// 说明必须在卡片内；数据去向的详细说明默认收起但一条都不能删。
   func testExplanationsLiveInsideCards() throws {
-    let tab = try generationTab(in: try source())
-    XCTAssertTrue(tab.contains("SettingsRowGroup"), "设置项要收进行组卡，不能散落成无容器的控件")
-    XCTAssertTrue(tab.contains("SettingsThemedCardChrome()"), "行组必须带主题卡面")
-    XCTAssertTrue(tab.contains("details:"), "每行自己的详细说明要跟控件走，不能只靠页脚")
-    XCTAssertTrue(
-      tab.contains("DisclosureGroup(\"了解更多\")"),
-      "管线的详细说明默认收起，但一条都不能删")
-    XCTAssertFalse(
-      tab.contains("在线视频转文字\")\n      } footer: {"),
-      "说明回到 footer 就又和控件分家了")
+    let text = try source()
+    let pages = try stepPages(in: text)
+    XCTAssertTrue(pages.contains("SettingsRowGroup"), "设置项要收进行组卡")
+    XCTAssertTrue(page("commentsTab", in: pages).contains("details:"), "行自己的详细说明要跟控件走")
+    XCTAssertTrue(page("overviewTab", in: pages).contains("sendAuthorizationSection"), "发送授权留在总览页")
+    let consent = try XCTUnwrap(text.range(of: "@ViewBuilder private var sendAuthorizationSection: some View").map { String(text[$0.lowerBound...].prefix(3_000)) })
+    XCTAssertTrue(consent.contains("DisclosureGroup(\"了解更多\")"))
+    XCTAssertTrue(consent.contains("SettingsThemedCardChrome()"))
   }
 
-  /// 「留空时…」不能只写在 placeholder 里。
-  ///
-  /// 右对齐的 placeholder 看起来像已经配好的值——截图里「留空时使用总结模型」
-  /// 就被当成了当前设置。
+  /// 空值是下拉里的一个选项，不靠 placeholder。
   func testEmptyModelFieldsStateWhatActuallyApplies() throws {
     let text = try source()
-    // 模型分配集中在「模型与识别」；空值仍必须说清实际生效的是什么。
     XCTAssertTrue(text.contains("emptyOptionTitle: \"不使用：只用 Apple 本机转写\""))
     XCTAssertTrue(text.contains("emptyOptionTitle: \"跟随总结模型\""))
-    XCTAssertFalse(
-      text.contains("TextField(\"留空时使用总结模型\""),
-      "语义不能只靠 placeholder 承载")
-    let tab = try generationTab(in: text)
-    XCTAssertFalse(
-      tab.contains("emptyOptionTitle:"),
-      "生成偏好不再承载模型下拉")
+    XCTAssertFalse(text.contains("TextField(\"留空时使用总结模型\""), "语义不能只靠 placeholder 承载")
+    XCTAssertFalse(text.contains("Label(emptyOptionTitle, systemImage:"), "下拉已经显示当前值了，下面不必再画一行重复它")
+    XCTAssertFalse(text.contains("留空时只使用 Apple 本机转写"), "已经没有「留空」这个操作了")
+    XCTAssertFalse(text.contains("Toggle(\"翻译使用不同模型\""), "翻译模型不再用开关承载")
   }
 
-  /// 空值只说一遍。
-  ///
-  /// 下拉里已经显示着「不使用：只用 Apple 本机转写」，卡片里再画一行虚线圆圈重复同一句，
-  /// 读起来像两个不同的状态。是把自由文本改成下拉时漏删的旧行。
-  func testEmptyStateIsNotRepeatedBelowThePicker() throws {
-    let text = try source()
-    XCTAssertFalse(
-      text.contains("Label(emptyOptionTitle, systemImage:"),
-      "下拉已经显示当前值了，下面不必再画一行重复它")
-  }
-
-  /// 主控件必须和自己的标签同一行：标签是什么、控件就答什么。
-  ///
-  /// 「翻译模型」原来是个开关，2026-08-06 换成了和「转写稿整理」同一个下拉
-  /// （第一项「跟随总结模型」）——这一页每一项都该是一个下拉直接答完，
-  /// 而不是先开一个开关、再长出一个选择器。
-  ///
-  /// 2026-08-13 行式重建后，承载方式从「卡片标题行 `} control: {`」换成
-  /// `SettingsRow`（标签左、控件右、同一行）——意图相同，机制换了。
-  func testPrimaryControlsUseTheCardTitleAsTheirLabel() throws {
-    let text = try source()
-    let tab = try generationTab(in: text)
-    XCTAssertFalse(
-      tab.contains("Toggle(\"翻译使用不同模型\""),
-      "翻译模型不再用开关承载")
-    XCTAssertTrue(
-      text.contains("emptyOptionTitle: \"跟随总结模型\""),
-      "空值要是下拉里的一个选项，而不是一个需要先关掉的开关")
-    XCTAssertTrue(
-      tab.contains("SettingsRow("),
-      "生成偏好主控件要和标签同一行（行式布局），不能落回孤零零的卡内控件")
-  }
-
-  /// 说明文字要跟着承载方式一起改。
-  ///
-  /// 空值从「把输入框留空」变成下拉里的一个选项之后，还写「留空时…」就是在描述
-  /// 一个界面上已经不存在的操作。
-  func testCopyMatchesHowEmptyIsActuallySelected() throws {
-    let tab = try generationTab(in: try source())
-    XCTAssertFalse(
-      tab.contains("留空时只使用 Apple 本机转写"),
-      "已经没有「留空」这个操作了，说明要跟着改")
+  /// 评论按平台：「跟随默认」「不抓」都是下拉里的选项。
+  func testCommentPlatformsOfferFollowDefaultAndOff() throws {
+    let comments = page("commentsTab", in: try stepPages(in: try source()))
+    XCTAssertTrue(comments.contains("title: \"跟随默认\""))
+    XCTAssertTrue(comments.contains("title: \"不抓\""))
+    XCTAssertTrue(comments.contains("CapturePreferencesStore.commentPlatforms"))
   }
 }

@@ -1268,8 +1268,8 @@ final class HistoryContentViewTests: XCTestCase {
       "左边看，右边做"
     )
     // 转写和总结、翻译并排：同一类动作，同一个地方，同一种样子。
-    let verbs = section(in: source, from: "private var readingVerbs: some View", to: "private func startRun")
-    for name in ["transcribeVerb", "runVerb(.summarize)", "runVerb(.translate)", "moreActionsMenu"] {
+    let verbs = section(in: source, from: "private func readingVerbs(pinned: Bool) -> some View", to: "private func startRun")
+    for name in ["transcribeVerb", "runVerb(.summarize)", "runVerb(.translate)", "processButton(pinned: pinned)"] {
       XCTAssertTrue(verbs.contains(name), "missing \(name)")
     }
     // 动作按钮只列还没做的：产物一出现，按钮让位给页签——这就是状态。
@@ -1281,13 +1281,13 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(verb.contains("} else if !artifactExists, showsRunControls, !(kind == .translate && translationNotNeeded) {"),
                   "已是输出语言时不再留一颗永远灰着的「翻译」（2026-09-24）")
     XCTAssertTrue(verb.contains(".buttonStyle(.bordered)"), "动作是框起来的按钮，和文字页签区分开")
-    // 重做和次要动作收在「⋯」里，不和主按钮抢位置。
+    // 重做和次要动作收在「处理」面板里，不和主按钮抢位置（2026-09-28 起是带工序印的自绘面板）。
     let more = section(
       in: source,
-      from: "private var moreActionsMenu: some View",
-      to: "@ViewBuilder private func actionPill("
+      from: "private var processStepRows: [ProcessStepRowModel]",
+      to: "private func processExtraButton("
     )
-    for item in ["重新总结", "重新翻译", "重新转写（本机）", "校对转写稿", "生成脑图", "换个模型重跑…", "运行详情"] {
+    for item in ["重新\\(step.title)", "重新转写（本机）", "校对转写稿", "生成脑图", "抓取评论…", "换个模型重跑…", "运行详情"] {
       XCTAssertTrue(more.contains(item), "missing \(item)")
     }
     // 表头在视频之后、正文之前（顶部留给信息），滚过去以后吸在正文区顶端。

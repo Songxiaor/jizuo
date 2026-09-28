@@ -27,13 +27,17 @@ final class MarkdownPresentationTests: XCTestCase {
     assertColor(paper.primaryText, red: 0x37, green: 0x35, blue: 0x2F)
     assertColor(paper.secondaryText, red: 0x6F, green: 0x6E, blue: 0x6A)
     assertColor(paper.hairline, red: 0xE6, green: 0xE6, blue: 0xE3)
-    assertColor(paper.accent, red: 0x0A, green: 0x6C, blue: 0xE6)
+    // 2026-09-28 自有风格：强调色换成靛青 #2B4C7E，新增朱 #B8321C（只给印与朱批）。
+    assertColor(paper.accent, red: 0x2B, green: 0x4C, blue: 0x7E)
+    assertColor(paper.seal, red: 0xB8, green: 0x32, blue: 0x1C)
+    XCTAssertGreaterThan(try contrastRatio(paper.accent, paper.canvas), 4.5)
+    XCTAssertGreaterThan(try contrastRatio(paper.seal, paper.card), 4.5)
     XCTAssertGreaterThan(try contrastRatio(paper.primaryText, paper.canvas), 7)
     XCTAssertGreaterThan(try contrastRatio(paper.secondaryText, paper.canvas), 4.5)
-    // 三套主题的阅读区默认都是无衬线；宋体在外观页作为一键选项由用户自己选。
-    XCTAssertFalse(AppearanceTheme.paper.usesEditorialReadingTypography)
-    XCTAssertFalse(AppearanceTheme.glass.usesEditorialReadingTypography)
-    XCTAssertFalse(AppearanceTheme.ink.usesEditorialReadingTypography)
+    // 自有风格：读的用宋。三套主题阅读区默认宋体，用户选过的阅读字体优先。
+    XCTAssertTrue(AppearanceTheme.paper.usesEditorialReadingTypography)
+    XCTAssertTrue(AppearanceTheme.glass.usesEditorialReadingTypography)
+    XCTAssertTrue(AppearanceTheme.ink.usesEditorialReadingTypography)
   }
 
   /// 自绘主题必须真的有底色。
@@ -143,7 +147,8 @@ final class MarkdownPresentationTests: XCTestCase {
       : "思源宋体 VF"
     XCTAssertEqual(
       ReadingFontSelection.theme.resolved(usesEditorialReadingTypography: true, bodySize: 16.5),
-      ResolvedReadingFont(face: .named(expectedEditorialFamily), bodySize: 16.5)
+      // 宋体字面小，跟随主题走宋体时按 16/15 补偿（2026-09-28 正文排版样稿）。
+      ResolvedReadingFont(face: .named(expectedEditorialFamily), bodySize: 16.5 * ReadingFontSelection.serifOpticalScale)
     )
     XCTAssertEqual(
       ReadingFontSelection.theme.resolved(usesEditorialReadingTypography: false, bodySize: 16.5),
@@ -1406,10 +1411,63 @@ final class ReadingItemNoteLayoutTests: XCTestCase {
     XCTAssertEqual(item?.paragraphSpacing, 3, "条目和它的说明之间只留一道细缝")
     XCTAssertEqual(note?.headIndent, 26)
     XCTAssertEqual(note?.firstLineHeadIndent, 26, "说明对齐到条目文字，而不是顶格")
-    XCTAssertEqual(note?.paragraphSpacing, 20, "说明之后才是组与组之间的间距")
-    XCTAssertEqual(secondItem?.paragraphSpacing, 8, "后面跟普通段落的条目保持原间距")
+    XCTAssertEqual(note?.paragraphSpacing, ReadingTextComposer.paragraphSpacing, "说明之后才是组与组之间的间距")
+    XCTAssertEqual(secondItem?.paragraphSpacing, 10, "清单最后一条后面跟普通段落，留一道比条目间稍宽的缝")
     XCTAssertEqual(body?.firstLineHeadIndent, 0, "普通段落不受影响")
     XCTAssertLessThan(MarkdownPresentation.bodyLineSpacing, body?.paragraphSpacing ?? 0, "行距必须明显小于段距")
+  }
+
+  // MARK: - 2026-09-28 正文排版样稿
+
+  private func composed(_ source: String, lede: Bool = false) -> NSAttributedString {
+    ReadingTextComposer.attributed(
+      blocks: MarkdownPresentation.blocks(from: source),
+      readingFont: .sans,
+      palette: .init(primary: .black, secondary: .darkGray, accent: .blue),
+      emphasizesLede: lede
+    )
+  }
+
+  func testLeadingBoldLabelBecomesItsOwnAccentLine() {
+    let text = composed("**核心结论**：作者认为最强的编程 Agent 是两个 AI 组成的小团队。\n\n**关键证据与细节**：\n\n- 第一条")
+    XCTAssertFalse(text.string.contains("核心结论："), "标签和正文要分成两行，冒号去掉")
+    XCTAssertTrue(text.string.contains("核心结论\n作者认为"))
+    let labelRange = (text.string as NSString).range(of: "核心结论")
+    XCTAssertEqual(text.attribute(.foregroundColor, at: labelRange.location, effectiveRange: nil) as? NSColor, .blue)
+    XCTAssertTrue(text.string.contains("关键证据与细节\n"), "只有标签没有正文时只留标签行")
+  }
+
+  func testLongBoldSentenceIsNotTreatedAsLabel() {
+    XCTAssertNil(ReadingTextComposer.leadingLabel(of: "**这是一整句被作者加粗强调的长句子**：后文"))
+    XCTAssertNil(ReadingTextComposer.leadingLabel(of: "普通段落：没有加粗"))
+  }
+
+  func testConsecutiveShortLinesAreGroupedTightly() {
+    let text = composed("它是一支由两个 AI 组成的小团队：\n\nCodex 当产品经理、Tech Lead 和 QA；\n\nChatGPT 里的 Pro 模式，当高级程序员。\n\n除了前端和审美类编程任务，这套组合是我目前处理复杂工程问题时用过最稳、代码质量最高的一套工作流。")
+    XCTAssertEqual(style(of: "它是一支", in: text)?.paragraphSpacing, ReadingTextComposer.shortRunSpacing)
+    XCTAssertEqual(style(of: "Codex 当", in: text)?.paragraphSpacing, ReadingTextComposer.shortRunSpacing)
+    XCTAssertEqual(style(of: "ChatGPT 里", in: text)?.paragraphSpacing, ReadingTextComposer.paragraphSpacing, "组的最后一句后面照常空")
+  }
+
+  func testLedeIsLargerOnlyAtDocumentStartOfLongText() {
+    let long = "今天告诉大家一个秘密：我目前用过最强的编程 Agent，可能根本不是某一个 Agent。\n\n" + String(repeating: "这是后面的正文段落，内容足够长。", count: 12) + "\n\n最后一段。"
+    func size(_ text: NSAttributedString, _ needle: String) -> CGFloat? {
+      let range = (text.string as NSString).range(of: needle)
+      return (text.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)?.pointSize
+    }
+    let body = ResolvedReadingFont.sans.bodySize
+    XCTAssertEqual(size(composed(long, lede: true), "今天告诉"), body + 1)
+    XCTAssertEqual(size(composed(long, lede: false), "今天告诉"), body)
+    XCTAssertEqual(size(composed("短帖第一句。\n\n第二句。\n\n第三句。", lede: true), "短帖"), body, "三百字以内的短帖不设导语")
+  }
+
+  func testSummaryPreambleIsHiddenButRealFirstParagraphStays() {
+    XCTAssertEqual(
+      MarkdownPresentation.strippingSummaryPreamble("根据捕获的内容，总结如下：\n\n**核心结论**：正文"),
+      "**核心结论**：正文"
+    )
+    let real = "根据作者的说法，这套组合更稳：它把写代码和验收拆开。\n\n第二段"
+    XCTAssertEqual(MarkdownPresentation.strippingSummaryPreamble(real), real)
   }
 
   func testCJKLatinBoundaryGetsVisualGapWithoutChangingText() {

@@ -33,6 +33,9 @@
     --radius-control: 8px;
     --radius-small: 6px;
     --radius-pill: 999px;
+    /* 「汲」收藏印：朱底 + 纸色字（白文），与 App 印章同色。 */
+    --seal: #B8321C;
+    --seal-paper: #FCFCFB;
   }
   @media (prefers-color-scheme: dark) {
     :root {
@@ -54,6 +57,8 @@
       --info:    #7FA9BF;  --info-tint: rgba(127,169,191,.14);
       --disabled-fill: rgba(255,255,255,.08); --disabled-text: #6E6D6A;
       --shadow-soft: none;
+      --seal: #E07A66;
+      --seal-paper: #1D1E21;
     }
   }
   * { box-sizing: border-box; }
@@ -218,6 +223,23 @@
   .action-option input:focus-visible + span { outline: 2px solid var(--accent-line); outline-offset: 1px; }
   #action-detail { margin: 2px 8px 4px; color: var(--secondary); font-size: 11.5px; line-height: 1.45; }
   #result { margin: 0; padding: 8px 12px; border-radius: var(--radius-control); background: var(--success-tint); color: var(--success); font-size: 12px; line-height: 1.45; }
+  #result { display: flex; align-items: center; gap: 10px; }
+  /* 保存成功时盖下的「汲」印：从大、透明压到略小再回弹到原大。 */
+  .collector-seal {
+    flex-shrink: 0; width: 40px; height: 40px; display: inline-block;
+    color: var(--seal); transform: rotate(-1deg);
+    animation: collector-seal-press 0.32s cubic-bezier(.2,.9,.3,1.2) both;
+  }
+  .collector-seal svg { display: block; }
+  @keyframes collector-seal-press {
+    from { transform: rotate(-1deg) scale(1.35); opacity: 0; }
+    55%  { transform: rotate(-1deg) scale(.94); opacity: 1; }
+    to   { transform: rotate(-1deg) scale(1); opacity: 1; }
+  }
+  /* 减弱动效：不压印，章直接出现在最终位置。 */
+  @media (prefers-reduced-motion: reduce) {
+    .collector-seal { animation: none; }
+  }
 
   #error {
     margin: 0; padding: 0 2px; font-size: 12px; line-height: 1.45; color: var(--danger);

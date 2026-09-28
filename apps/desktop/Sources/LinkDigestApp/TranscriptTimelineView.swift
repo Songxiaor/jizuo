@@ -52,16 +52,12 @@ private struct TranscriptTimelineRow: View {
       Button {
         onSeek(paragraph.startMilliseconds)
       } label: {
+        // 2026-09-28 自有风格：时间码挂在页边，灰色等宽小字；悬停时换成靛青提示可点。
         Text(paragraph.startLabel)
-          .font(.system(size: 12, weight: .medium, design: .monospaced))
+          .font(.system(size: 11, weight: .regular, design: .monospaced))
           .monospacedDigit()
-          .foregroundStyle(accentColor)
-          .padding(.horizontal, 6)
-          .padding(.vertical, 2)
-          .background(
-            RoundedRectangle(cornerRadius: DesignTokens.Radius.sm)
-              .fill(accentColor.opacity(isHovered ? 0.16 : 0.08))
-          )
+          .foregroundStyle(isHovered ? accentColor : Color.secondary.opacity(0.8))
+          .frame(width: 44, alignment: .trailing)
       }
       .buttonStyle(.plain)
       .help("跳到 \(paragraph.startLabel)")
@@ -82,6 +78,7 @@ private struct TranscriptTimelineRow: View {
         .lineSpacing(MarkdownPresentation.bodyLineSpacing)
         .foregroundStyle(primaryTextColor)
         .textSelection(.enabled)
+        .frame(maxWidth: readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm, alignment: .leading)
         .frame(maxWidth: .infinity, alignment: .leading)
         .fixedSize(horizontal: false, vertical: true)
     }
@@ -102,42 +99,67 @@ struct SpeakerTranscriptView: View {
   let onSeek: (Double) -> Void
 
   var body: some View {
+    // 2026-09-28 自有风格：和逐字稿同一种版式——时间码挂左页边（灰色等宽小字，
+    // 悬停变靛青），说话人名字留在正文栏里、压在这一轮发言上面。
     LazyVStack(alignment: .leading, spacing: 20) {
       ForEach(Array(turns.enumerated()), id: \.offset) { index, turn in
-        VStack(alignment: .leading, spacing: 4) {
-          if turn.speaker != nil || (showsTimecodes && turn.startSeconds != nil) {
-            HStack(spacing: 8) {
-              if let speaker = turn.speaker {
-                Text(speaker)
-                  .font(readingFont.font(size: readingFont.bodySize - 2, weight: .semibold))
-                  .foregroundStyle(secondaryTextColor)
-              }
-              if showsTimecodes, let label = turn.startLabel, let seconds = turn.startSeconds {
-                Button { onSeek(seconds) } label: {
-                  Text(label)
-                    .font(readingFont.font(size: readingFont.bodySize - 3))
-                    .monospacedDigit()
-                    .foregroundStyle(accentColor)
-                }
-                .buttonStyle(.plain)
-                .help("跳到 \(label)")
-                .accessibilityLabel("跳到 \(label)")
-                .accessibilityIdentifier("speaker-turn-seek-\(index)")
-              }
-            }
+        HStack(alignment: .top, spacing: 14) {
+          if showsTimecodes {
+            SpeakerTurnTimecode(index: index, turn: turn, accentColor: accentColor, onSeek: onSeek)
+              .frame(width: 44, alignment: .trailing)
+              // 和名字那一行（或没有名字时正文第一行）对齐。
+              .padding(.top, turn.speaker == nil ? max(0, readingFont.bodySize - 11) * 0.55 + 2 : 3)
           }
-          ForEach(Array(turn.paragraphs.enumerated()), id: \.offset) { _, paragraph in
-            Text(paragraph)
-              .font(readingFont.body())
-              .lineSpacing(MarkdownPresentation.bodyLineSpacing)
-              .foregroundStyle(primaryTextColor)
-              .textSelection(.enabled)
-              .frame(maxWidth: .infinity, alignment: .leading)
-              .fixedSize(horizontal: false, vertical: true)
+          VStack(alignment: .leading, spacing: 4) {
+            if let speaker = turn.speaker {
+              Text(speaker)
+                .font(readingFont.font(size: readingFont.bodySize - 2, weight: .semibold))
+                .foregroundStyle(secondaryTextColor)
+            }
+            ForEach(Array(turn.paragraphs.enumerated()), id: \.offset) { _, paragraph in
+              Text(paragraph)
+                .font(readingFont.body())
+                .lineSpacing(MarkdownPresentation.bodyLineSpacing)
+                .foregroundStyle(primaryTextColor)
+                .textSelection(.enabled)
+                .frame(maxWidth: readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            }
           }
         }
       }
     }
     .accessibilityIdentifier("speaker-transcript")
+  }
+}
+
+private struct SpeakerTurnTimecode: View {
+  let index: Int
+  let turn: SpeakerTurn
+  let accentColor: Color
+  let onSeek: (Double) -> Void
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var isHovered = false
+
+  var body: some View {
+    if let label = turn.startLabel, let seconds = turn.startSeconds {
+      Button { onSeek(seconds) } label: {
+        Text(label)
+          .font(.system(size: 11, weight: .regular, design: .monospaced))
+          .monospacedDigit()
+          .foregroundStyle(isHovered ? accentColor : Color.secondary.opacity(0.8))
+      }
+      .buttonStyle(.plain)
+      .help("跳到 \(label)")
+      .accessibilityLabel("跳到 \(label)")
+      .accessibilityIdentifier("speaker-turn-seek-\(index)")
+      .onHover { hovering in
+        withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isHovered = hovering }
+      }
+    } else {
+      Color.clear.frame(height: 1)
+    }
   }
 }

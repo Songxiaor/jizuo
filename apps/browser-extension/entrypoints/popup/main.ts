@@ -13,10 +13,11 @@ import {
   type SafeMediaPreview,
   type PopupCaptureAction,
 } from "../../src/popup-presentation";
+import { savedNoticeMarkup } from "../../src/collector-seal";
 import type { DouyinSessionDiagnostic } from "../../src/content/douyin-session-detail";
 import type { DouyinMetadataDiagnostic } from "../../src/content/douyin-metadata-diagnostic";
 import { bookmarksSyncMessage, isXBookmarksURL, type BookmarkPreviewItem, type BookmarksSyncOutcome } from "../../src/content/x-bookmarks";
-import type { CommentCollectResult } from "../../src/entrypoints/background";
+import type { CommentCollectResult, CommentSendMode } from "../../src/entrypoints/background";
 import {
   isXProfileURL,
   profileCollectFailureCopy,
@@ -416,12 +417,24 @@ if (tabId === undefined) {
   /** undefined = 没有勾选结果（未支持、没读到或失败），由 background 按设置条数处理。 */
   let selectedCommentIDs: () => string[] | undefined = () => undefined;
   let commentsLoading: Promise<void> | null = null;
+  /** 汲作设置里「不抓」或「自动保存前 N 条」时由 background 告知；undefined = 勾选流程。 */
+  let commentMode: CommentSendMode | undefined;
 
   const renderCommentPicker = (result: CommentCollectResult): void => {
     commentsList.replaceChildren();
     if (!result.ok) {
       if (result.code === "unsupported") {
         commentsPicker.hidden = true;
+        return;
+      }
+      if (result.code === "disabled" || result.code === "auto") {
+        commentMode = result.code === "disabled" ? { kind: "disabled" } : { kind: "auto", limit: result.limit };
+        commentsCount.textContent = "评论";
+        commentsNote.textContent = result.code === "disabled"
+          ? "这个平台设为不抓评论（可在汲作设置 → 评 · 评论 里改）"
+          : `将自动保存前 ${result.limit} 条评论`;
+        commentsSelectAll.hidden = true;
+        commentsSelectNone.hidden = true;
         return;
       }
       commentsCount.textContent = result.code === "empty" ? "没有读到评论" : "评论读取失败";
@@ -554,12 +567,13 @@ if (tabId === undefined) {
         send.textContent = "等评论读取完…";
         await commentsLoading;
       }
-      send.textContent = "正在发送…";
+      send.textContent = commentMode?.kind === "auto" ? "正在读取评论并发送…" : "正在发送…";
       const result = await browser.runtime.sendMessage({
         type: "send-current-page",
         tabId,
         requestedAction: selectedAction,
         selectedCommentIDs: selectedCommentIDs(),
+        ...(commentMode ? { commentMode } : {}),
       }) as SafeExtensionSendResult;
       commentsPicker.hidden = true;
       renderMetadataDiagnostic(result.metadataDiagnostic);
@@ -578,7 +592,8 @@ if (tabId === undefined) {
       } else {
         actionCard.hidden = true;
         send.hidden = true;
-        resultNotice.textContent = "✓ " + popupActionPresentation(selectedAction).success;
+        // 保存成功：盖一枚「汲」印代替 ✓，文案不变。
+        resultNotice.innerHTML = savedNoticeMarkup(popupActionPresentation(selectedAction).success);
         resultNotice.hidden = false;
         openApp.textContent = "打开汲作查看";
         openApp.hidden = false;

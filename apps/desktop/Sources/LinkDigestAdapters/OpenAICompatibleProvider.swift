@@ -100,6 +100,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
   private var reasoningNoneRejectedDestinations: Set<String> = []
   /// 这个目的地用 `low` 仍会先想很久。下次直接从 `none` 起。
   private var reasoningStallDestinations: Set<String> = []
+  /// 不认「关闭思考」开关（`thinking` / `enable_thinking`）的目的地。
+  private var thinkingSwitchRejectedDestinations: Set<String> = []
 
   /// 只出思考、不出正文超过这个时间，就改用不思考再打一次。
   /// 测试可改小；产品路径 8 秒——正常首字中位约 5 秒，超过即明确在想。
@@ -285,7 +287,9 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       text: completion.content,
       promptTokens: completion.promptTokens,
       completionTokens: completion.completionTokens,
-      totalTokens: completion.totalTokens
+      totalTokens: completion.totalTokens,
+      reasoningTokens: completion.reasoningTokens,
+      requestNote: completion.requestNote
     )
   }
 
@@ -309,6 +313,10 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     let promptTokens: Int?
     let completionTokens: Int?
     let totalTokens: Int?
+    /// 服务端报的思考 token（`completion_tokens_details.reasoning_tokens`），没报是 nil。
+    var reasoningTokens: Int? = nil
+    /// 这次实际发出的推理参数，写进诊断日志：`effort=none thinkingOff=1`。
+    var requestNote: String? = nil
   }
 
   private func nonStreamingChatCompletion(
@@ -343,13 +351,23 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       : url
     // 降级链和重试记忆完全复用流式那套：`none` 被拒就降 `low`，再被拒就不发。
     var effort = usesAnthropicMessages ? StreamReasoningEffort.omitted : preferredReasoningEffort(profile)
+    // 「关闭思考」开关：`reasoning_effort` 之外，DeepSeek/GLM/MiMo 一类认 `thinking`，
+    // 通义/SiliconFlow 一类认 `enable_thinking`。只发 `reasoning_effort: none` 时实测
+    // 校对仍有约六成 token 是思考（2026-09-28，11 段 30,691 completion 里正文约 1.1 万字）。
+    // 不认就去掉开关重发并记住这个目的地，其余照旧走 effort 降级链。
+    var sendsThinkingOff = !usesAnthropicMessages && !thinkingSwitchRejected(profile)
     while true {
       do {
         return try await performNonStreamingChatCompletion(
           url: requestURL, apiKey: apiKey, model: model,
           systemPrompt: systemPrompt, userContent: userContent, effort: effort,
-          usesAnthropicMessages: usesAnthropicMessages
+          usesAnthropicMessages: usesAnthropicMessages,
+          thinkingOff: sendsThinkingOff
         )
+      } catch let failure as ModelProviderFailure
+      where sendsThinkingOff && Self.mayRejectUnknownParameter(failure) {
+        rememberThinkingSwitchRejected(profile)
+        sendsThinkingOff = false
       } catch let failure as ModelProviderFailure
       where !usesAnthropicMessages
         && Self.mayRejectUnknownParameter(failure)
@@ -370,7 +388,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     systemPrompt: String,
     userContent: String,
     effort: StreamReasoningEffort,
-    usesAnthropicMessages: Bool
+    usesAnthropicMessages: Bool,
+    thinkingOff: Bool = false
   ) async throws -> NonStreamingChatResult {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
@@ -397,9 +416,12 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         ],
         stream: false,
         maxTokens: nil,
-        reasoningEffort: effort.jsonValue
+        reasoningEffort: effort.jsonValue,
+        thinking: thinkingOff ? .init(type: "disabled") : nil,
+        enableThinking: thinkingOff ? false : nil
       ))
     }
+    let requestNote = "effort=\(effort.logLabel) thinkingOff=\(thinkingOff ? 1 : 0)"
 
     do {
       let (bytes, response) = try await session.bytes(for: request)
@@ -423,7 +445,9 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         content: decoded?.choices.first?.message.content ?? "",
         promptTokens: decoded?.usage?.promptTokens,
         completionTokens: decoded?.usage?.completionTokens,
-        totalTokens: decoded?.usage?.totalTokens
+        totalTokens: decoded?.usage?.totalTokens,
+        reasoningTokens: decoded?.usage?.completionTokensDetails?.reasoningTokens,
+        requestNote: requestNote
       )
     } catch let failure as ModelProviderFailure {
       throw failure
@@ -1023,11 +1047,18 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     /// 推理深度。nil 时整个字段不出现在 JSON 里——不认识它的服务端不该因为我们
     /// 多发了一个键就拒绝请求。
     var reasoningEffort: String?
+    /// 关闭思考的两种常见写法，只在非流式（校对、脑图、整理）上发；nil 时不出现。
+    var thinking: ThinkingSwitch? = nil
+    var enableThinking: Bool? = nil
+
+    struct ThinkingSwitch: Encodable { let type: String }
 
     enum CodingKeys: String, CodingKey {
       case model, messages, stream
       case maxTokens = "max_tokens"
       case reasoningEffort = "reasoning_effort"
+      case thinking
+      case enableThinking = "enable_thinking"
     }
   }
 
@@ -1074,6 +1105,16 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     }
   }
 
+  private func thinkingSwitchRejected(_ profile: ProviderProfile) -> Bool {
+    let key = Self.reasoningEffortDestinationKey(profile)
+    return reasoningEffortLock.withLock { thinkingSwitchRejectedDestinations.contains(key) }
+  }
+
+  private func rememberThinkingSwitchRejected(_ profile: ProviderProfile) {
+    let key = Self.reasoningEffortDestinationKey(profile)
+    reasoningEffortLock.withLock { _ = thinkingSwitchRejectedDestinations.insert(key) }
+  }
+
   private func rememberThinkingStall(_ profile: ProviderProfile) {
     let key = Self.reasoningEffortDestinationKey(profile)
     reasoningEffortLock.withLock { _ = reasoningStallDestinations.insert(key) }
@@ -1100,14 +1141,20 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       let message: ResponseMessage
     }
     struct Usage: Decodable {
+      struct CompletionDetails: Decodable {
+        let reasoningTokens: Int?
+        enum CodingKeys: String, CodingKey { case reasoningTokens = "reasoning_tokens" }
+      }
       let promptTokens: Int?
       let completionTokens: Int?
       let totalTokens: Int?
+      let completionTokensDetails: CompletionDetails?
 
       enum CodingKeys: String, CodingKey {
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
         case totalTokens = "total_tokens"
+        case completionTokensDetails = "completion_tokens_details"
       }
     }
     let choices: [Choice]

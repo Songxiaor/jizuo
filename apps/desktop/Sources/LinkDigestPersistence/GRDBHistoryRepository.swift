@@ -313,6 +313,15 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
   ///   为空（模型返回空、写入中断）时徽标照亮，点进去什么都没有。
   ///
   /// 收成一份，两处都指向它，口径不可能再分叉。
+
+  /// 有本机转写（机器听写稿）、还没有模型校对稿的条目。两张子查询都走 content_snapshots 的 task_id 索引。
+  static let untidiedTranscriptSQL = """
+    EXISTS (SELECT 1 FROM content_snapshots s WHERE s.task_id = t.id
+      AND s.source_kind = 'local_transcription' AND s.capture_method <> 'openai_compatible_chat_tidy')
+    AND NOT EXISTS (SELECT 1 FROM content_snapshots s2 WHERE s2.task_id = t.id
+      AND s2.capture_method = 'openai_compatible_chat_tidy')
+    """
+
   static let completedSummarySQL = """
     SELECT 1
     FROM runs summary_run
@@ -439,6 +448,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         // 收藏——甚至自动补标签——推到当下。结果是：去年存的一篇今天总结了一下，
         // 它就出现在「最近」里，而用户心里的「最近」只有一个意思：最近存进来的。
         predicates.append("t.created_at_ms >= (unixepoch('now') - 604800) * 1000")
+      case .untidied:
+        predicates.append(Self.untidiedTranscriptSQL)
       case .unsummarized:
         predicates.append("NOT EXISTS (\(Self.completedSummarySQL))")
         // 自己写的备忘录、录音不是「待总结的文章」。
@@ -658,6 +669,10 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         WHERE \(isCaptured) AND NOT EXISTS (\(Self.completedSummarySQL))
           AND t.normalized_host NOT IN (\(LocalImportSource.archiveHostsSQLList))
         """) ?? 0
+      let untidied = try Int.fetchOne(db, sql: """
+        SELECT COUNT(*) FROM tasks t
+        WHERE t.deleted_at_ms IS NULL AND t.content_kind = '\(TaskClassificationSQL.captureKind)' AND \(Self.untidiedTranscriptSQL)
+        """) ?? 0
       let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured) AND is_favorite = 1") ?? 0
       // 「全部」= 资料 + 笔记 + 作品；自有 + 外部 = 全部，数字能加得上。
       let isRecord = "t.deleted_at_ms IS NULL AND t.content_kind IN ('\(TaskClassificationSQL.captureKind)', '\(TaskClassificationSQL.noteKind)', '\(TaskClassificationSQL.workKind)')"
@@ -715,7 +730,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         arguments: []
       )
       return .init(
-        all: all, recent: recent, unsummarized: unsummarized, favorite: favorite,
+        all: all, recent: recent, unsummarized: unsummarized, untidied: untidied, favorite: favorite,
         total: total, own: own, external: total - own, forms: forms, notes: notes, works: works,
         trash: trash, platforms: platforms, tags: tags, creatorCount: creatorCount, pinnedCreators: pinnedCreators
       )
