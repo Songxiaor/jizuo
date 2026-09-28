@@ -156,6 +156,26 @@ struct ProviderSettingsView: View {
   /// 读它的地方按同一个键读 `UserDefaults.standard` 即可。
   @AppStorage(Self.clipboardLinkDetectionKey) private var isClipboardLinkDetectionEnabled = true
 
+  /// 评论抓取数量。不走 `@AppStorage`：读它的是浏览器拉起的 Native Host，
+  /// 那是另一个进程，只能读 `CapturePreferencesStore` 落的那份文件。
+  @State private var commentLimit = CapturePreferencesStore.standard().commentLimit
+  @State private var commentLimitSaveFailed = false
+
+  private var commentLimitSelection: Binding<Int> {
+    Binding(
+      get: { commentLimit },
+      set: { value in
+        commentLimit = value
+        do {
+          try CapturePreferencesStore.standard().setCommentLimit(value)
+          commentLimitSaveFailed = false
+        } catch {
+          commentLimitSaveFailed = true
+        }
+      }
+    )
+  }
+
   /// 剪贴板链接检测的偏好键。读取方按同一个键读 `UserDefaults.standard`。
   static let clipboardLinkDetectionKey = "capture.clipboardLinkDetectionEnabled"
 
@@ -2053,6 +2073,21 @@ struct ProviderSettingsView: View {
               .labelsHidden()
               .accessibilityLabel("切回汲作时检测剪贴板里的链接")
               .accessibilityIdentifier("capture-clipboard-link-detection")
+          }
+
+          SettingsRow(
+            title: "评论抓取数量",
+            caption: commentLimitSaveFailed
+              ? "保存失败，请重试；这次仍按之前的条数抓取。"
+              : "带评论区的内容，抓取时一并读取前几条评论，发送前可在扩展里勾选。",
+            details: "适用于 Reddit、论坛、X、YouTube、B 站、知乎、抖音、小红书。评论不够时扩展会往下翻评论区加载，凑够或到底就停，并把页面滚回原位置；只保存你勾选的评论。"
+          ) {
+            SettingsMenuPicker(
+              sections: [CapturePreferencesStore.commentLimitChoices.map { .init(value: $0, title: "前 \($0) 条") }],
+              selection: commentLimitSelection,
+              identifier: "capture-comment-limit"
+            )
+            .accessibilityLabel("评论抓取数量")
           }
       }
 

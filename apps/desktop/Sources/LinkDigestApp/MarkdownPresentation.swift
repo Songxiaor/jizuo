@@ -857,6 +857,8 @@ enum MarkdownPresentation {
     let loadedCount: Int?
     let expectedCount: Int?
     let isCapped: Bool
+    /// 标题写的是「已保存 N 条」：用户勾选后的结果，不是页面加载进度。
+    var isSelection: Bool = false
     let items: [CommentItem]
 
     var countTitle: String {
@@ -867,6 +869,11 @@ enum MarkdownPresentation {
 
     var progressLabel: String? {
       guard let loadedCount else { return nil }
+      // 勾选保存的评论段（扩展与 App「抓取评论」）：说「已保存」，不说「已加载」。
+      if isSelection {
+        guard let expectedCount, expectedCount > loadedCount else { return "已保存 \(loadedCount) 条" }
+        return "已保存 \(loadedCount) 条 · 共约 \(expectedCount) 条"
+      }
       guard let expectedCount, expectedCount > 0 else { return "已加载 \(loadedCount) 条" }
       if loadedCount >= expectedCount { return "已加载全部" }
       return "已加载 \(Int((Double(loadedCount) / Double(expectedCount) * 100).rounded()))%"
@@ -879,6 +886,8 @@ enum MarkdownPresentation {
     let author: String
     let parentAuthor: String?
     let score: String?
+    /// 点赞数（X、B 站、抖音等），原样保留平台写法如「1.2万」。
+    var likes: String? = nil
     let published: String?
     let permalink: URL?
     let body: String
@@ -1208,6 +1217,7 @@ enum MarkdownPresentation {
         author: author,
         parentAuthor: parentAuthor,
         score: details.score,
+        likes: details.likes,
         published: details.published,
         permalink: details.permalink,
         body: body,
@@ -1223,6 +1233,7 @@ enum MarkdownPresentation {
         loadedCount: loadedCount,
         expectedCount: expectedCount,
         isCapped: metadata.contains("仅保留前"),
+        isSelection: metadata.contains("已保存"),
         items: items
       ),
       cursor
@@ -1298,8 +1309,9 @@ enum MarkdownPresentation {
 
   private static func commentDetails(
     from raw: String
-  ) -> (score: String?, published: String?, permalink: URL?, explicitDepth: Int?) {
+  ) -> (score: String?, likes: String?, published: String?, permalink: URL?, explicitDepth: Int?) {
     var score: String?
+    var likes: String?
     var published: [String] = []
     var permalink: URL?
     var explicitDepth: Int?
@@ -1307,6 +1319,8 @@ enum MarkdownPresentation {
       let value = part.trimmingCharacters(in: .whitespaces)
       if value.hasPrefix("score ") {
         score = String(value.dropFirst("score ".count)).trimmingCharacters(in: .whitespaces)
+      } else if value.hasPrefix("赞 ") {
+        likes = String(value.dropFirst("赞 ".count)).trimmingCharacters(in: .whitespaces)
       } else if value.hasPrefix("[原评论]("), value.hasSuffix(")") {
         permalink = URL(string: String(value.dropFirst("[原评论](".count).dropLast()))
       } else if value.hasPrefix("回复层级 ") {
@@ -1315,7 +1329,7 @@ enum MarkdownPresentation {
         published.append(value)
       }
     }
-    return (score, published.isEmpty ? nil : published.joined(separator: " · "), permalink, explicitDepth)
+    return (score, likes, published.isEmpty ? nil : published.joined(separator: " · "), permalink, explicitDepth)
   }
 
   private static func integers(in text: String) -> [Int] {

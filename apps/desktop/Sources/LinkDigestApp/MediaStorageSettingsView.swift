@@ -205,6 +205,60 @@ struct MediaStorageSettingsView: View {
           }
       }
 
+      // 转写后清理：视频是最占空间的部分，文字转出来之后可以不留。默认保留；
+      // 改成会删文件的规则时，先报「现在就会删多少」再等确认。
+      SettingsCard(
+        title: "转写后清理视频",
+        summary: "只删视频文件本身。转写文字、评论、笔记、标签和封面都保留，历史里这条内容还在。",
+        details: "只清理已经转写过的视频，没转写的视频不会被删。\n天数从视频保存到本机那天算起，每次打开汲作和每次转写完成时检查一次。\n只清理汲作自己的视频文件夹；你自己选的文件夹里的视频不会动。删掉的视频不进废纸篓，没法撤销。",
+        summaryPlacement: .aboveControl,
+        controlWidth: .full
+      ) {
+        VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
+          SettingsChoiceList(
+            choices: MediaStorageSettingsViewModel.TranscribedCleanupMode.allCases.map {
+              .init(value: $0, title: $0.title, explanation: $0.explanation)
+            },
+            selection: Binding(get: { model.cleanupMode }, set: { model.selectCleanupMode($0) }),
+            identifierPrefix: "media-storage-transcribed-cleanup"
+          )
+          if model.cleanupMode == .afterDays {
+            HStack(spacing: DesignTokens.Space.sm) {
+              Text("视频保存满")
+              SettingsMenuPicker(
+                sections: [MediaStorageSettingsViewModel.cleanupDayChoices.map { .init(value: $0, title: "\($0) 天") }],
+                selection: Binding(get: { model.cleanupDays }, set: { model.selectCleanupDays($0) }),
+                identifier: "media-storage-transcribed-cleanup-days"
+              )
+              .accessibilityLabel("保存天数")
+              Text("后清理")
+            }
+            .foregroundStyle(.secondary)
+            .padding(.leading, 26)
+          }
+          if let status = model.cleanupStatus {
+            Text(status)
+              .themedFont(.subheadline)
+              .foregroundStyle(.secondary)
+              .accessibilityIdentifier("media-storage-transcribed-cleanup-status")
+          }
+        }
+      }
+      .confirmationDialog(
+        cleanupConfirmationTitle,
+        isPresented: Binding(
+          get: { model.pendingCleanupConfirmation != nil },
+          set: { if !$0 { model.cancelPendingCleanup() } }
+        ),
+        titleVisibility: .visible
+      ) {
+        Button("清理这些视频", role: .destructive) { model.confirmPendingCleanup() }
+          .accessibilityIdentifier("media-storage-transcribed-cleanup-confirm")
+        Button("取消", role: .cancel) { model.cancelPendingCleanup() }
+      } message: {
+        Text(cleanupConfirmationMessage)
+      }
+
       if case let .failed(message) = model.state {
         Text(message)
           .foregroundStyle(appTheme.danger)
@@ -214,6 +268,16 @@ struct MediaStorageSettingsView: View {
       }
     }
     .onAppear(perform: model.load)
+  }
+
+  private var cleanupConfirmationTitle: String {
+    guard let pending = model.pendingCleanupConfirmation else { return "" }
+    return "现在就会清理 \(pending.count) 个已转写的视频"
+  }
+
+  private var cleanupConfirmationMessage: String {
+    guard let pending = model.pendingCleanupConfirmation else { return "" }
+    return "按新规则，已经符合条件的 \(pending.count) 个视频（共 \(MediaStorageSettingsViewModel.formattedBytes(pending.bytes))）会马上从磁盘删掉，不进废纸篓。它们的转写文字、评论和笔记都保留。以后符合条件的视频也会自动清理。"
   }
 
   /// 扫描结果直接写在说明行里：用户要先看见"多少个、多大"，才谈得上确认删除。

@@ -4,102 +4,131 @@
 <meta charset="utf-8">
 <title>浏览器扩展</title>
 <style>
+  /*
+    2026-09-28 重构：配色、圆角、间距对齐 App（AppearanceTheme.swift / DesignTokens.swift）。
+    原来的米色底 + 橙色主按钮是旧版 App 的「石楠」主题，App 已在 09-23 改为
+    中性白底 + 一支蓝，弹窗跟着换成同一套令牌。颜色只在下面两组变量里写。
+  */
   :root {
     color-scheme: light dark;
+    --canvas: #F6F6F4;        /* App 侧栏底 */
+    --card: #FFFFFF;          /* App 阅读区 / 设置卡 */
+    --hairline: #E6E6E3;
+    --badge: #EDEDEB;
+    --ink: #37352F;
+    --secondary: #6F6E6A;
+    --accent: #0A6CE6;
+    --accent-hover: #095FCB;
+    --accent-pressed: #0852B0;
+    --on-accent: #FFFFFF;
+    --accent-tint: rgba(10,108,230,.08);
+    --accent-line: rgba(10,108,230,.30);
+    --success: #486E4A;  --success-tint: rgba(72,110,74,.12);
+    --warning: #835E2A;  --warning-tint: rgba(131,94,42,.12);
+    --danger:  #A14B42;
+    --info:    #416B7B;  --info-tint: rgba(65,107,123,.12);
+    --disabled-fill: #EDEDEB; --disabled-text: #A5A4A0;
+    --shadow-soft: 0 1px 2px rgba(0,0,0,.05);
     --radius-card: 12px;
-    --radius-control: 10px;
-    --radius-small: 8px;
+    --radius-control: 8px;
+    --radius-small: 6px;
     --radius-pill: 999px;
   }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --canvas: #1C1C1E;
+      --card: #232326;
+      --hairline: rgba(255,255,255,.08);
+      --badge: rgba(255,255,255,.10);
+      --ink: #E3E2DE;
+      --secondary: #9B9A96;
+      --accent: #5AA2FF;
+      --accent-hover: #6DAEFF;
+      --accent-pressed: #4A92EE;
+      --on-accent: #0F1A2B;
+      --accent-tint: rgba(90,162,255,.12);
+      --accent-line: rgba(90,162,255,.35);
+      --success: #86B98F;  --success-tint: rgba(134,185,143,.14);
+      --warning: #D9B36A;  --warning-tint: rgba(217,179,106,.14);
+      --danger:  #D98070;
+      --info:    #7FA9BF;  --info-tint: rgba(127,169,191,.14);
+      --disabled-fill: rgba(255,255,255,.08); --disabled-text: #6E6D6A;
+      --shadow-soft: none;
+    }
+  }
   * { box-sizing: border-box; }
-  html { background: transparent; }
+  html { background: var(--canvas); }
 
   /*
     `hidden` 必须真的能藏住东西。
     浏览器给 `[hidden]` 的 `display:none` 来自 UA 样式表，优先级低于任何 id 选择器——
     而下面 `#send` 和 `#availability` 都设了 display，于是 `element.hidden = true`
-    在这两个元素上完全无效。X 收藏夹页面就是这么多出一个「准备中…」大灰块的：
-    代码明明把它藏了。
+    在这两个元素上完全无效。
   */
   [hidden] { display: none !important; }
 
   body {
     margin: 0;
     width: 340px;
-    padding: 6px;
-    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", sans-serif;
-    background: transparent;
-    color: #2e2925;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+    font-size: 13px;
+    background: var(--canvas);
+    color: var(--ink);
     -webkit-font-smoothing: antialiased;
   }
   /* 表单控件默认不继承字体，漏掉这一行的表现是「按钮和正文不是一套字」。 */
   button, input, select, textarea { font-family: inherit; }
 
-  main {
-    padding: 14px; display: flex; flex-direction: column; gap: 10px;
-    background: #f4f0e8;
-    border: 1px solid rgba(93,77,62,.12);
-    border-radius: 16px;
-    overflow: hidden;
-    box-shadow: 0 6px 22px rgba(46,41,37,.14);
-  }
+  main { padding: 12px; display: flex; flex-direction: column; gap: 8px; background: var(--canvas); }
 
   /* 顶部：品牌 + 可用性徽章 */
-  .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-  .brand { display: flex; align-items: center; gap: 7px; font-size: 12px; font-weight: 600; color: #86868b; }
-  /* 用真图标而不是渐变方块里放个字母：弹窗、工具栏、App 三处才是同一个标志。 */
-  .brand .logo { width: 18px; height: 18px; display: block; }
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px; }
+  .brand { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--secondary); }
+  /* 用真图标：弹窗、工具栏、App 三处是同一个标志。 */
+  .brand .logo { width: 16px; height: 16px; display: block; }
   #availability {
     display: inline-flex; align-items: center; gap: 5px;
-    font-size: 10.5px; font-weight: 600; padding: 3px 9px; border-radius: var(--radius-pill); white-space: nowrap;
+    font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-pill); white-space: nowrap;
   }
-  #availability::before { content: ""; width: 6px; height: 6px; border-radius: 50%; }
-  #availability[data-tone="ready"]   { background: rgba(48,209,88,0.15); color: #248a3d; }
-  #availability[data-tone="ready"]::before { background: #34c759; }
-  #availability[data-tone="video"]   { background: rgba(10,132,255,0.15); color: #0060df; }
-  #availability[data-tone="video"]::before { background: #0a84ff; }
-  #availability[data-tone="warn"]    { background: rgba(255,159,10,0.18); color: #b25000; }
-  #availability[data-tone="warn"]::before { background: #ff9f0a; }
-  #availability[data-tone="blocked"] { background: rgba(142,142,147,0.18); color: #6e6e73; }
-  #availability[data-tone="blocked"]::before { background: #8e8e93; }
+  #availability::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  #availability[data-tone="ready"]   { background: var(--success-tint); color: var(--success); }
+  #availability[data-tone="video"]   { background: var(--accent-tint); color: var(--accent); }
+  #availability[data-tone="warn"]    { background: var(--warning-tint); color: var(--warning); }
+  #availability[data-tone="blocked"] { background: var(--badge); color: var(--secondary); }
 
-  /* 内容卡：圆角白卡浮在灰底上 */
+  /* 内容卡：与 App 设置卡同一套——白底、1px 细线、12pt 圆角。 */
   .card {
-    background: #fffdf8; border: 1px solid rgba(93,77,62,0.10); border-radius: var(--radius-card); padding: 13px 14px;
-    display: flex; flex-direction: column; gap: 7px;
-    box-shadow: 0 1px 1px rgba(46,41,37,0.035);
+    background: var(--card); border: 1px solid var(--hairline); border-radius: var(--radius-card); padding: 12px;
+    display: flex; flex-direction: column; gap: 6px; box-shadow: var(--shadow-soft);
   }
-  #platform { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: #86868b; }
+  #platform { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--secondary); }
   #status {
-    margin: 0; font-size: 15px; line-height: 1.4; font-weight: 700; letter-spacing: -0.1px;
+    margin: 0; font-size: 14px; line-height: 1.4; font-weight: 600;
     overflow-wrap: anywhere;
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
   }
-  #meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  #meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   #meta:empty { display: none; }
   #meta .chip {
     display: inline-flex; align-items: center; gap: 4px;
-    font-size: 11.5px; color: #86868b;
-    background: #f2f2f7; padding: 3px 8px; border-radius: var(--radius-small);
+    font-size: 11px; color: var(--secondary);
+    background: var(--badge); padding: 2px 7px; border-radius: var(--radius-small);
   }
-  #meta .chip.video { background: rgba(10,132,255,0.1); color: #0060df; }
+  #meta .chip.video { background: var(--accent-tint); color: var(--accent); }
 
-  /*
-    两个按钮是**互斥**的（普通页面用 #send，X 收藏夹页面用 #sync-bookmarks），
-    所以它们是同一个角色，共用一套样式。原来只给 #send 写了样式，
-    #sync-bookmarks 是个裸 button，于是收藏夹页面上主操作反而长得像次要按钮。
-  */
+  /* 主操作（互斥出现，同一个角色）：App 的强调蓝。 */
   #send, #sync-bookmarks, #sync-selected, #read-x-profile, #recovery-action, #open-app {
-    appearance: none; border: 0; border-radius: var(--radius-control); padding: 10px 12px; min-height: 44px;
-    font-size: 13.5px; font-weight: 650; background: #c56f49; color: #ffffff;
-    cursor: pointer; transition: background 0.15s ease;
+    appearance: none; border: 0; border-radius: var(--radius-control); padding: 8px 12px; min-height: 36px;
+    font-size: 13px; font-weight: 600; background: var(--accent); color: var(--on-accent);
+    cursor: pointer; transition: background 0.12s ease;
     display: flex; align-items: center; justify-content: center; gap: 6px;
-    text-align: center; line-height: 1.35; text-decoration: none;
+    text-align: center; line-height: 1.35; text-decoration: none; flex-shrink: 0;
   }
-  #send:hover, #sync-bookmarks:hover, #sync-selected:hover, #read-x-profile:hover, #recovery-action:hover, #open-app:hover { background: #ae5d3c; }
-  #send:active, #sync-bookmarks:active, #sync-selected:active, #read-x-profile:active, #recovery-action:active, #open-app:active { background: #934a31; }
-  #send:disabled, #sync-bookmarks:disabled, #sync-selected:disabled, #read-x-profile:disabled { background: #d1d1d6; color: #8e8e93; cursor: default; }
-  #send.done, #sync-bookmarks.done, #sync-selected.done, #read-x-profile.done { background: rgba(48,209,88,0.16); color: #248a3d; }
+  #send:hover, #sync-bookmarks:hover, #sync-selected:hover, #read-x-profile:hover, #recovery-action:hover, #open-app:hover { background: var(--accent-hover); }
+  #send:active, #sync-bookmarks:active, #sync-selected:active, #read-x-profile:active, #recovery-action:active, #open-app:active { background: var(--accent-pressed); }
+  #send:disabled, #sync-bookmarks:disabled, #sync-selected:disabled, #read-x-profile:disabled { background: var(--disabled-fill); color: var(--disabled-text); cursor: default; }
+  #send.done, #sync-bookmarks.done, #sync-selected.done, #read-x-profile.done { background: var(--success-tint); color: var(--success); }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
 
   /*
     收藏页必须一开始就按 Chromium 弹窗上限开满。只在读完列表后加高，
@@ -112,142 +141,106 @@
     max-height: 600px;
     overflow: hidden;
   }
-  html.bookmarks-popup body {
-    display: flex;
-  }
+  html.bookmarks-popup body { display: flex; }
   html.bookmarks-popup main {
-    flex: 1 1 auto;
-    min-height: 0;
-    max-height: none;
-    overflow: hidden;
-    gap: 8px;
-    padding: 12px;
+    flex: 1 1 auto; min-height: 0; max-height: none; overflow: hidden; gap: 8px; padding: 12px;
   }
   html.bookmarks-popup .diag { display: none; }
-  html.bookmarks-popup #error {
-    flex-shrink: 0;
-    order: 5;
-  }
+  html.bookmarks-popup #error { flex-shrink: 0; order: 5; }
   html.bookmarks-popup #result { flex-shrink: 0; order: 6; }
   html.bookmarks-popup #sync-bookmarks { flex-shrink: 0; }
   html.bookmarks-popup #sync-selected { flex-shrink: 0; order: 7; }
   html.bookmarks-popup #bookmarks-picker { order: 4; }
-  #bookmarks-picker {
-    display: flex; flex-direction: column; gap: 8px;
-    background: #fffdf8; border: 1px solid rgba(93,77,62,0.10); border-radius: var(--radius-card);
-    padding: 10px; min-height: 0; flex: 1 1 auto; overflow: hidden;
+
+  /* 勾选列表（收藏夹与评论共用）：白卡内平铺行，勾选行用强调色淡底。 */
+  #bookmarks-picker, #comments-picker {
+    display: flex; flex-direction: column; gap: 6px;
+    background: var(--card); border: 1px solid var(--hairline); border-radius: var(--radius-card);
+    padding: 8px; min-height: 0; box-shadow: var(--shadow-soft);
   }
-  .picker-toolbar {
-    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-    flex-shrink: 0;
-  }
-  #picker-count { flex: 1; font-size: 11.5px; color: #746b63; font-weight: 600; min-width: 90px; }
+  #bookmarks-picker { flex: 1 1 auto; overflow: hidden; }
+  .picker-toolbar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; flex-shrink: 0; padding: 0 4px; }
+  #picker-count, #comments-count { flex: 1; font-size: 12px; color: var(--ink); font-weight: 600; min-width: 90px; }
   .picker-toolbar button {
-    appearance: none; border: 0; border-radius: 8px; padding: 5px 8px;
-    font-size: 11.5px; font-weight: 650; background: #f2eee7; color: #746b63; cursor: pointer;
+    appearance: none; border: 0; border-radius: var(--radius-small); padding: 3px 8px;
+    font-size: 11.5px; font-weight: 500; background: transparent; color: var(--accent); cursor: pointer;
   }
-  .picker-toolbar button:hover { background: #e8e0d4; }
-  #picker-list {
-    overflow: auto; display: flex; flex-direction: column; gap: 6px;
-    max-height: none; flex: 1 1 auto; min-height: 0; padding-right: 2px;
+  .picker-toolbar button:hover { background: var(--accent-tint); }
+  #picker-list, #comments-list {
+    overflow: auto; display: flex; flex-direction: column; gap: 2px;
+    min-height: 0; padding-right: 2px;
   }
+  #picker-list { flex: 1 1 auto; max-height: none; }
+  /* 弹窗最高 600px：评论列表再高，「保存」按钮就被挤出可视区。 */
+  #comments-list { max-height: 196px; }
+  #comments-list:empty { display: none; }
   #sync-selected { flex-shrink: 0; }
   .bookmark-card {
-    display: grid; grid-template-columns: 18px 1fr; gap: 8px; align-items: start;
-    padding: 8px 9px; border-radius: 10px; background: #f7f3ec;
+    display: grid; grid-template-columns: 16px 1fr; gap: 8px; align-items: start;
+    padding: 7px 8px; border-radius: var(--radius-control);
     border: 1px solid transparent; cursor: pointer;
   }
-  .bookmark-card:hover { border-color: rgba(197,111,73,.25); }
-  .bookmark-card.is-checked { background: #fff7f2; border-color: rgba(197,111,73,.35); }
-  .bookmark-card.is-synced { opacity: 0.72; }
-  .bookmark-card input { margin-top: 2px; accent-color: #c56f49; }
+  .bookmark-card:hover { background: var(--badge); }
+  .bookmark-card.is-checked { background: var(--accent-tint); }
+  .bookmark-card.is-synced { opacity: 0.7; }
+  .bookmark-card input { margin: 2px 0 0; accent-color: var(--accent); }
   .bookmark-card .author {
-    font-size: 11.5px; font-weight: 700; color: #2e2925;
+    font-size: 12px; font-weight: 600; color: var(--ink);
     display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
   }
   .bookmark-card .badge {
-    font-size: 10px; font-weight: 650; padding: 1px 6px; border-radius: 999px;
-    background: rgba(142,142,147,.18); color: #6e6e73;
+    font-size: 10px; font-weight: 600; padding: 1px 6px; border-radius: var(--radius-pill);
+    background: var(--badge); color: var(--secondary);
   }
   .bookmark-card .snippet {
-    margin: 3px 0 0; font-size: 12px; line-height: 1.4; color: #746b63;
+    margin: 2px 0 0; font-size: 12px; line-height: 1.45; color: var(--secondary);
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
   }
+  #comments-list .bookmark-card.is-reply { margin-left: 16px; }
+  #comments-list .likes { font-weight: 500; color: var(--secondary); font-size: 11px; }
+  #comments-note { margin: 0; padding: 0 4px; font-size: 11px; line-height: 1.45; color: var(--secondary); }
+  #comments-note:empty { display: none; }
 
-  .action-card { padding: 5px; gap: 6px; }
+  /* 发送后操作：macOS 分段控件样式。 */
+  .action-card { padding: 4px; gap: 4px; }
   .action-options {
     display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px;
-    padding: 3px; border-radius: 11px; background: #f2eee7;
+    padding: 2px; border-radius: var(--radius-control); background: var(--badge);
   }
   .action-option { position: relative; }
   .action-option input { position: absolute; opacity: 0; pointer-events: none; }
   .action-option span {
     display: flex; align-items: center; justify-content: center;
-    min-height: 36px; padding: 6px 5px; border-radius: var(--radius-small); text-align: center;
-    color: #746b63; font-size: 12px; font-weight: 650; cursor: pointer;
+    min-height: 26px; padding: 3px 5px; border-radius: var(--radius-small); text-align: center;
+    color: var(--secondary); font-size: 12px; font-weight: 500; cursor: pointer;
   }
-  .action-option input:checked + span {
-    color: #934a31; background: #fffdf8;
-    box-shadow: 0 1px 3px rgba(46,41,37,.08), inset 0 0 0 1px rgba(197,111,73,.16);
-  }
-  .action-option input:focus-visible + span { outline: 2px solid rgba(197,111,73,.55); outline-offset: 1px; }
-  #action-detail { margin: 2px 8px 5px; color: #746b63; font-size: 11.5px; line-height: 1.45; }
-  #result { margin: 0; padding: 10px 12px; border-radius: 11px; background: #edf6ed; color: #28713b; font-size: 12px; line-height: 1.45; }
+  .action-option input:checked + span { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,.10); font-weight: 600; }
+  .action-option input:focus-visible + span { outline: 2px solid var(--accent-line); outline-offset: 1px; }
+  #action-detail { margin: 2px 8px 4px; color: var(--secondary); font-size: 11.5px; line-height: 1.45; }
+  #result { margin: 0; padding: 8px 12px; border-radius: var(--radius-control); background: var(--success-tint); color: var(--success); font-size: 12px; line-height: 1.45; }
 
   #error {
-    margin: 0; font-size: 12px; line-height: 1.45; color: #d70015;
+    margin: 0; padding: 0 2px; font-size: 12px; line-height: 1.45; color: var(--danger);
     white-space: pre-wrap; overflow-wrap: anywhere; font-family: inherit;
   }
   #error:empty { display: none; }
 
   /* 诊断：默认折叠，仅调试用 */
   .diag > summary {
-    list-style: none; cursor: pointer; font-size: 10.5px; color: #aeaeb2;
+    list-style: none; cursor: pointer; font-size: 10.5px; color: var(--secondary);
     display: inline-flex; align-items: center; gap: 4px; padding-left: 2px;
   }
   .diag > summary::-webkit-details-marker { display: none; }
   .diag > summary::before { content: "\25B8"; font-size: 8px; }
   .diag[open] > summary::before { content: "\25BE"; }
   #metadata-diagnostic {
-    margin: 8px 0 0; padding: 9px 11px;
+    margin: 8px 0 0; padding: 8px 10px;
     font: 10.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace;
-    color: #6e6e73; background: #ffffff; border-radius: 9px;
+    color: var(--secondary); background: var(--card); border: 1px solid var(--hairline); border-radius: var(--radius-control);
     max-height: 120px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere;
   }
   #metadata-diagnostic:empty { display: none; }
-  #build-label { margin: 6px 0 0; font-size: 10px; color: #aeaeb2; padding-left: 2px; }
-
-  @media (prefers-color-scheme: dark) {
-    body { background: transparent; color: #f5f0e9; }
-    main { background: #211e1b; border-color: rgba(255,255,255,.08); box-shadow: 0 6px 22px rgba(0,0,0,.34); }
-    .brand { color: #98989d; }
-    .card { background: #2d2925; border-color: rgba(255,255,255,.06); box-shadow: none; }
-    #platform { color: #98989d; }
-    #meta .chip { background: #3a3a3c; color: #aeaeb2; }
-    #send, #sync-bookmarks, #sync-selected, #read-x-profile, #recovery-action, #open-app { background: #d77b55; color: #fff; }
-    #send:hover, #sync-bookmarks:hover, #sync-selected:hover, #read-x-profile:hover, #recovery-action:hover, #open-app:hover { background: #e48a63; }
-    #send:disabled, #sync-bookmarks:disabled, #sync-selected:disabled, #read-x-profile:disabled { background: #3a3a3c; color: #8e8e93; }
-    #send.done, #sync-bookmarks.done, #sync-selected.done, #read-x-profile.done { background: rgba(48,209,88,0.2); color: #30d158; }
-    #bookmarks-picker { background: #2d2925; border-color: rgba(255,255,255,.06); }
-    .picker-toolbar button { background: #3a3a3c; color: #aeaeb2; }
-    .picker-toolbar button:hover { background: #48484a; }
-    #picker-count { color: #aaa19a; }
-    .bookmark-card { background: #39332e; }
-    .bookmark-card.is-checked { background: #453830; border-color: rgba(215,123,85,.35); }
-    .bookmark-card .author { color: #f5f0e9; }
-    .bookmark-card .snippet { color: #aaa19a; }
-    .bookmark-card .badge { background: rgba(142,142,147,.22); color: #aeaeb2; }
-    #metadata-diagnostic { color: #98989d; background: #1c1c1e; }
-    #build-label { color: #636366; }
-    .action-options { background: #24211e; }
-    .action-option span { color: #aaa19a; }
-    .action-option input:checked + span {
-      color: #f1b196; background: #39332e;
-      box-shadow: 0 1px 3px rgba(0,0,0,.22), inset 0 0 0 1px rgba(215,123,85,.18);
-    }
-    #action-detail { color: #aaa19a; }
-    #result { background: rgba(48,209,88,.13); color: #65d47c; }
-  }
+  #build-label { margin: 6px 0 0; font-size: 10px; color: var(--secondary); padding-left: 2px; }
 </style>
 </head>
 <body>
@@ -277,6 +270,15 @@
     挂上。抖音的 session detail 最长 5s、YouTube 还要切字幕轨，这几秒里按钮是可点的
     但没有任何监听者——用户点下去不变灰、不报错、不发送，只能以为是自己没点中。
   -->
+  <section id="comments-picker" hidden>
+    <div class="picker-toolbar">
+      <span id="comments-count">正在加载评论…</span>
+      <button type="button" id="comments-select-all">全选</button>
+      <button type="button" id="comments-select-none">清空</button>
+    </div>
+    <div id="comments-list"></div>
+    <p id="comments-note"></p>
+  </section>
   <button id="send" disabled>准备中…</button>
   <button id="sync-bookmarks" hidden>读取收藏列表</button>
   <section id="bookmarks-picker" hidden>

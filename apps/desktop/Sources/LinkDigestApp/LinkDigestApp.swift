@@ -1209,6 +1209,8 @@ struct MainWindowLaunchGuard: ViewModifier {
   private let configurationService: ProviderConfigurationService
   private let provider: any ModelProvider
   private let mediaInventory: LateBoundMediaInventory
+  /// 启动后按「转写后清理视频」规则扫一次用。
+  private let mediaStore: LocalMediaStore?
   private let composition: AppComposition
   private let appUpdateController: AppUpdateController
   private let socketServerLifecycle: UnixSocketServerLifecycle
@@ -1343,6 +1345,7 @@ struct MainWindowLaunchGuard: ViewModifier {
     let mediaInventory = LateBoundMediaInventory()
     mediaStore?.setInventoryProvider { try mediaInventory.inventory() }
     self.mediaInventory = mediaInventory
+    self.mediaStore = mediaStore
     // Video downloads need a longer timeout than HTML capture (signed CDN objects).
     let mediaResourceFetcher = ProxyAwareWebPageFetcher(
       limits: .init(redirects: 4, responseBytes: LocalMediaStore.maxBytes, timeout: 120)
@@ -1746,6 +1749,12 @@ struct MainWindowLaunchGuard: ViewModifier {
           if result.availability.isWriteReady, let history = result.history {
             Task.detached(priority: .background) {
               try? history.purgeTrash(olderThanDays: HistoryTrashPolicy.retentionDays)
+            }
+          }
+          // 「转写后清理视频」按天数的规则也是以天计：每次启动扫一次。规则是「保留」时什么都不删。
+          if result.availability.isWriteReady, result.history != nil, let mediaStore {
+            Task.detached(priority: .background) {
+              await TranscribedVideoCleaner.shared.run(mediaStore: mediaStore)
             }
           }
           // 历史就绪之后才接回链，冷启动时排队的那一个 URL 也在这里被消费。

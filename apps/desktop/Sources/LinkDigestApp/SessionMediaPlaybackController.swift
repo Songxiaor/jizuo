@@ -240,6 +240,28 @@ final class SessionMediaPlaybackController: ObservableObject {
     }
   }
 
+  /// 直接拿一次新的播放描述（「重新下载视频」用）：和 `requestRefresh` 同一个服务、同一个超时，
+  /// 但把结果交给调用方，不改卡片的刷新状态。拿到的描述也放进缓存，本次运行里可以直接播。
+  func fetchDescriptor(
+    taskID: TaskID,
+    platform: String?,
+    sourceURL: String,
+    author: String?
+  ) async throws -> MediaDescriptor {
+    let service = refreshService
+    let quality = chosenQuality[taskID]
+    let descriptor: MediaDescriptor
+    do {
+      descriptor = try await Self.withTimeout(seconds: Self.refreshTimeoutSeconds) {
+        try await service.refresh(platform: platform, sourceURL: sourceURL, author: author, qualityOverride: quality)
+      }
+    } catch is RefreshTimedOut {
+      throw SessionMediaRefreshError.networkOrParse
+    }
+    cache.insert(descriptor, for: taskID)
+    return descriptor
+  }
+
   /// Drop a cached stream (e.g. unplayable Dolby Vision dual-track) and re-fetch
   /// with the latest quality / codec selection rules.
   func invalidateAndRefresh(

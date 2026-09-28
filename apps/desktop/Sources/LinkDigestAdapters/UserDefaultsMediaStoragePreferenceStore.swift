@@ -126,6 +126,38 @@ public final class UserDefaultsMediaStoragePreferenceStore: @unchecked Sendable 
     set { defaults.set(newValue, forKey: autoSaveCapturedVideoKey) }
   }
 
+  private var transcribedCleanupModeKey: String { key + ".transcribed-cleanup-mode" }
+  private var transcribedCleanupDaysKey: String { key + ".transcribed-cleanup-days" }
+
+  /// 转写后视频清理规则。未设置 = 保留，升级后不会有任何文件被悄悄删掉。
+  /// 模式和天数分开存：切回「保留」再切回来时，上次选的天数还在。
+  public var transcribedVideoCleanup: TranscribedVideoCleanupPolicy {
+    get {
+      switch defaults.string(forKey: transcribedCleanupModeKey) {
+      case "after-transcription": return .afterTranscription
+      case "after-days": return .afterDays(transcribedCleanupDays)
+      default: return .keep
+      }
+    }
+    set {
+      switch newValue {
+      case .keep:
+        defaults.removeObject(forKey: transcribedCleanupModeKey)
+      case .afterTranscription:
+        defaults.set("after-transcription", forKey: transcribedCleanupModeKey)
+      case let .afterDays(days):
+        defaults.set("after-days", forKey: transcribedCleanupModeKey)
+        defaults.set(TranscribedVideoCleanupPolicy.clampedDays(days), forKey: transcribedCleanupDaysKey)
+      }
+    }
+  }
+
+  /// 「保存 N 天后清理」上次选的天数（1–30，默认 30）。
+  public var transcribedCleanupDays: Int {
+    let stored = defaults.integer(forKey: transcribedCleanupDaysKey)
+    return stored > 0 ? TranscribedVideoCleanupPolicy.clampedDays(stored) : TranscribedVideoCleanupPolicy.defaultDays
+  }
+
   private var sessionMediaRestoreModeKey: String { key + ".session-media-restore-mode" }
 
   /// How history recovers streaming playback after the in-memory descriptor is gone.

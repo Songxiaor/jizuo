@@ -1228,9 +1228,12 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
                 byte_size = ?,
                 duration_seconds = ?,
                 platform = ?,
-                author = ?
+                author = ?,
+                created_at_ms = MAX(created_at_ms, ?)
             WHERE task_id = ? AND content_sha256 = ?
             """,
+          // 重新保存同一个文件（比如清理后又下载回来）算一次新的保存：保存时间往后推，
+          // 「转写后清理」才不会按老时间把刚要回来的视频再删掉。只往后推，不往前改。
           arguments: [
             asset.snapshotID?.rawValue,
             asset.relativePath,
@@ -1239,6 +1242,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
             asset.durationSeconds,
             asset.platform,
             asset.author,
+            asset.createdAtMilliseconds,
             asset.taskID.rawValue,
             asset.contentSHA256,
           ]
@@ -1284,7 +1288,20 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         SELECT m.id AS id, m.task_id AS task_id, m.relative_path AS relative_path,
           m.byte_size AS byte_size,
           (m.file_bookmark IS NOT NULL) AS uses_bookmark,
-          MAX(m.created_at_ms, t.updated_at_ms) AS last_used_ms
+          MAX(m.created_at_ms, t.updated_at_ms) AS last_used_ms,
+          m.created_at_ms AS created_at_ms,
+          (m.transcription_status = 'completed' OR EXISTS (
+            SELECT 1 FROM content_snapshots s
+            WHERE s.task_id = m.task_id AND s.source_kind = 'local_transcription'
+          )) AS is_transcribed,
+          (EXISTS (
+            SELECT 1 FROM media_transcription_evidence e
+            WHERE e.media_id = m.id AND e.completed_at_ms >= m.created_at_ms
+          ) OR EXISTS (
+            SELECT 1 FROM content_snapshots s
+            WHERE s.task_id = m.task_id AND s.source_kind = 'local_transcription'
+              AND s.captured_at_ms >= m.created_at_ms
+          )) AS transcribed_after_saving
         FROM media_assets m
         INNER JOIN tasks t ON t.id = m.task_id
         ORDER BY last_used_ms ASC, m.id ASC
@@ -1295,7 +1312,10 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           relativePath: row["relative_path"],
           usesUserSelectedFile: (row["uses_bookmark"] as Int? ?? 0) != 0,
           byteSize: row["byte_size"],
-          lastUsedMilliseconds: row["last_used_ms"]
+          lastUsedMilliseconds: row["last_used_ms"],
+          createdAtMilliseconds: row["created_at_ms"],
+          isTranscribed: (row["is_transcribed"] as Int? ?? 0) != 0,
+          transcribedAfterSaving: (row["transcribed_after_saving"] as Int? ?? 0) != 0
         )
       }
     }

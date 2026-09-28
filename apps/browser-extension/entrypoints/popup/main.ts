@@ -16,6 +16,7 @@ import {
 import type { DouyinSessionDiagnostic } from "../../src/content/douyin-session-detail";
 import type { DouyinMetadataDiagnostic } from "../../src/content/douyin-metadata-diagnostic";
 import { bookmarksSyncMessage, isXBookmarksURL, type BookmarkPreviewItem, type BookmarksSyncOutcome } from "../../src/content/x-bookmarks";
+import type { CommentCollectResult } from "../../src/entrypoints/background";
 import {
   isXProfileURL,
   profileCollectFailureCopy,
@@ -78,6 +79,12 @@ const actionInputs = Array.from(document.querySelectorAll<HTMLInputElement>('inp
 const resultNotice = document.querySelector<HTMLParagraphElement>("#result")!;
 const recoveryAction = document.querySelector<HTMLButtonElement>("#recovery-action")!;
 const openApp = document.querySelector<HTMLAnchorElement>("#open-app")!;
+const commentsPicker = document.querySelector<HTMLElement>("#comments-picker")!;
+const commentsCount = document.querySelector<HTMLSpanElement>("#comments-count")!;
+const commentsList = document.querySelector<HTMLDivElement>("#comments-list")!;
+const commentsNote = document.querySelector<HTMLParagraphElement>("#comments-note")!;
+const commentsSelectAll = document.querySelector<HTMLButtonElement>("#comments-select-all")!;
+const commentsSelectNone = document.querySelector<HTMLButtonElement>("#comments-select-none")!;
 
 let selectedAction: PopupCaptureAction = "save";
 let recoveryMode: "retry" | "reload" | null = null;
@@ -406,6 +413,93 @@ if (tabId === undefined) {
     void browser.runtime.sendMessage({ type: "open-app" });
   });
 } else {
+  /** undefined = 没有勾选结果（未支持、没读到或失败），由 background 按设置条数处理。 */
+  let selectedCommentIDs: () => string[] | undefined = () => undefined;
+  let commentsLoading: Promise<void> | null = null;
+
+  const renderCommentPicker = (result: CommentCollectResult): void => {
+    commentsList.replaceChildren();
+    if (!result.ok) {
+      if (result.code === "unsupported") {
+        commentsPicker.hidden = true;
+        return;
+      }
+      commentsCount.textContent = result.code === "empty" ? "没有读到评论" : "评论读取失败";
+      commentsNote.textContent = result.code === "empty"
+        ? "这条内容暂时没有可见评论，发送时只保存正文。"
+        : "这次只保存正文。可以刷新页面后重新打开扩展再试。";
+      commentsSelectAll.hidden = true;
+      commentsSelectNone.hidden = true;
+      return;
+    }
+    const refresh = (): void => {
+      const boxes = Array.from(commentsList.querySelectorAll<HTMLInputElement>("input[type='checkbox']"));
+      const checked = boxes.filter((box) => box.checked).length;
+      commentsCount.textContent = `评论 · 已选 ${checked}/${boxes.length}`;
+      for (const box of boxes) box.closest(".bookmark-card")?.classList.toggle("is-checked", box.checked);
+    };
+    for (const item of result.items) {
+      const label = document.createElement("label");
+      label.className = "bookmark-card" + (item.depth > 0 ? " is-reply" : "");
+      const box = document.createElement("input");
+      box.type = "checkbox";
+      box.value = item.id;
+      box.checked = true;
+      box.addEventListener("change", refresh);
+      const body = document.createElement("div");
+      const author = document.createElement("div");
+      author.className = "author";
+      author.textContent = item.author;
+      if (item.likes) {
+        const likes = document.createElement("span");
+        likes.className = "likes";
+        likes.textContent = `赞 ${item.likes}`;
+        author.append(likes);
+      }
+      const snippet = document.createElement("p");
+      snippet.className = "snippet";
+      snippet.textContent = item.excerpt || "（无文字）";
+      body.append(author, snippet);
+      label.append(box, body);
+      commentsList.append(label);
+    }
+    const setAll = (checked: boolean): void => {
+      commentsList.querySelectorAll<HTMLInputElement>("input[type='checkbox']").forEach((box) => { box.checked = checked; });
+      refresh();
+    };
+    commentsSelectAll.hidden = false;
+    commentsSelectNone.hidden = false;
+    commentsSelectAll.onclick = () => setAll(true);
+    commentsSelectNone.onclick = () => setAll(false);
+    const expected = result.expectedCount && result.expectedCount > result.items.length
+      ? `页面共约 ${result.expectedCount} 条，`
+      : "";
+    commentsNote.textContent = result.loginRequired
+      ? `${expected}这个网站要登录后才显示全部评论，现在只读到未登录可见的 ${result.items.length} 条。登录后重新打开扩展即可读满 ${result.limit} 条。`
+      : `${expected}按设置读取前 ${result.limit} 条。只保存勾选的评论；条数可在汲作设置里改。`;
+    selectedCommentIDs = () => Array.from(commentsList.querySelectorAll<HTMLInputElement>("input[type='checkbox']:checked"))
+      .map((box) => box.value);
+    refresh();
+  };
+
+  const startCommentPicker = (): void => {
+    commentsPicker.hidden = false;
+    commentsCount.textContent = "正在读取评论…";
+    commentsNote.textContent = "会自动往下翻评论区加载评论，读完后页面回到原位置。";
+    commentsSelectAll.hidden = true;
+    commentsSelectNone.hidden = true;
+    commentsLoading = (async () => {
+      let result: CommentCollectResult;
+      try {
+        result = await browser.runtime.sendMessage({ type: "collect-comments", tabId }) as CommentCollectResult;
+      } catch {
+        result = { ok: false, code: "failed" };
+      }
+      renderCommentPicker(result ?? { ok: false, code: "failed" });
+      commentsLoading = null;
+    })();
+  };
+
   try {
     const preview = await browser.runtime.sendMessage({
       type: "preview-current-page",
@@ -425,6 +519,7 @@ if (tabId === undefined) {
       // 顶层 await 之后才挂上，提前可点等于点了没反应。
       send.textContent = popupActionPresentation(selectedAction).button;
       send.disabled = false;
+      startCommentPicker();
     }
   } catch (cause) {
     status.textContent = "当前页面不可捕获";
@@ -455,11 +550,18 @@ if (tabId === undefined) {
     openApp.hidden = true;
     renderMetadataDiagnostic(undefined);
     try {
+      if (commentsLoading) {
+        send.textContent = "等评论读取完…";
+        await commentsLoading;
+      }
+      send.textContent = "正在发送…";
       const result = await browser.runtime.sendMessage({
         type: "send-current-page",
         tabId,
         requestedAction: selectedAction,
+        selectedCommentIDs: selectedCommentIDs(),
       }) as SafeExtensionSendResult;
+      commentsPicker.hidden = true;
       renderMetadataDiagnostic(result.metadataDiagnostic);
       const recovery = popupRecoveryForSendResult(result);
       if (recovery) {

@@ -181,6 +181,28 @@ do {
     try? body.write(to: URL(fileURLWithPath: "/tmp/linkdigest-last-envelope.json"))
   }
 
+  // 抓取偏好：Host 直接读设置文件作答，不唤起 App，弹窗打开时不会把 App 拉到前台。
+  do {
+    if let preferences = try CapturePreferencesRequest.decode(body) {
+      writeDebugLog("capture_preferences requestId=\(preferences.requestId)")
+      let result = NativeResponse.capturePreferences(
+        version: 1,
+        requestId: preferences.requestId,
+        commentLimit: CapturePreferencesStore.standard().commentLimit
+      )
+      try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
+      exit(0)
+    }
+  } catch let issue as CaptureValidationError {
+    try ChromiumFramer.writeFrame(
+      try JSONEncoder().encode(
+        errorResponse(issue.rawValue, requestId: NativeRequestIdentity.requestId(from: body) ?? "native-host")
+      ),
+      to: .standardOutput
+    )
+    exit(0)
+  }
+
   do {
     if let openApp = try OpenAppRequest.decode(body) {
       writeDebugLog("open_app requestId=\(openApp.requestId)")

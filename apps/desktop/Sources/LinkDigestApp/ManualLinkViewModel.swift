@@ -254,6 +254,9 @@ final class ManualLinkViewModel: ObservableObject {
     let creatorID: CreatorID?
     let profileImportBatchID: UUID?
     let profileImportSeed: ProfileImportCandidateSeed?
+    /// 保存后按设置条数读评论写进正文（博主批量保存的「同时抓取评论」）。
+    /// 不进批次持久化：App 中途重启后续抓的条目只保存正文。
+    var includesComments: Bool = false
 
     init(
       id: UUID,
@@ -277,6 +280,9 @@ final class ManualLinkViewModel: ObservableObject {
       self.profileImportSeed = profileImportSeed
     }
   }
+
+  /// 博主导入面板「同时抓取评论」的当前选择；入队时未显式传参就用它。
+  var profileImportIncludesComments = false
 
   private(set) var captureDownloadStatuses: [String: String] = [:]
   private(set) var completedCaptureIDs: [String: TaskID] = [:]
@@ -772,7 +778,8 @@ final class ManualLinkViewModel: ObservableObject {
   func enqueueProfileImport(
     canonicalURLs: [String],
     downloadsVideo: Bool,
-    creatorID: CreatorID? = nil
+    creatorID: CreatorID? = nil,
+    includesComments: Bool? = nil
   ) -> ProfileImportEnqueueOutcome {
     enqueueProfileImport(
       candidates: canonicalURLs.map { rawURL in
@@ -785,7 +792,32 @@ final class ManualLinkViewModel: ObservableObject {
         )
       },
       downloadsVideo: downloadsVideo,
-      creatorID: creatorID
+      creatorID: creatorID,
+      includesComments: includesComments
+    )
+  }
+
+  /// 作品已入库后补评论：读不到只记一句提示，不把整条抓取判失败。
+  private func attachComments(pageURL: String, taskID: TaskID, snapshotID: ContentSnapshotID) async {
+    guard let url = URL(string: pageURL), CommentCapture.platform(for: url) != nil, let history else { return }
+    let limit = CapturePreferencesStore.standard().commentLimit
+    guard let collection = try? await CommentFetchService().fetch(url: url, limit: limit),
+          !collection.comments.isEmpty,
+          let snapshot = try? history.detail(taskID: taskID).snapshots.first(where: { $0.id == snapshotID })
+    else {
+      captureNotice = "作品已保存，但有的评论没读到。可以打开该条目，用「处理 → 抓取评论…」重试。"
+      return
+    }
+    let body = CommentCapture.replacingComments(
+      in: snapshot.bodyText,
+      expectedCount: collection.expectedCount,
+      selected: Array(collection.comments.prefix(limit))
+    )
+    try? history.updateSnapshotBodyText(
+      taskID: taskID,
+      snapshotID: snapshotID,
+      bodyText: body,
+      updatedAtMilliseconds: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
     )
   }
 
@@ -795,8 +827,10 @@ final class ManualLinkViewModel: ObservableObject {
   func enqueueProfileImport(
     candidates: [ProfileImportCandidateSeed],
     downloadsVideo: Bool,
-    creatorID: CreatorID? = nil
+    creatorID: CreatorID? = nil,
+    includesComments: Bool? = nil
   ) -> ProfileImportEnqueueOutcome {
+    let includesComments = includesComments ?? profileImportIncludesComments
     guard ingestor != nil else { return .init(queued: 0, skipped: candidates.count) }
     var queued = 0
     var skipped = 0
@@ -850,7 +884,7 @@ final class ManualLinkViewModel: ObservableObject {
       )
       let itemID = UUID()
       items.append(.init(id: itemID, seed: normalized, phase: .queued))
-      pending.append(PendingCapture(
+      var capture = PendingCapture(
         id: itemID,
         urlString: captureURL,
         phase: .queued,
@@ -860,7 +894,9 @@ final class ManualLinkViewModel: ObservableObject {
         creatorID: creatorID,
         profileImportBatchID: batchID,
         profileImportSeed: normalized
-      ))
+      )
+      capture.includesComments = includesComments
+      pending.append(capture)
       queued += 1
     }
     if !items.isEmpty {
@@ -1208,7 +1244,8 @@ final class ManualLinkViewModel: ObservableObject {
             downloadsVideo: next.downloadsVideo,
             suppressesAutomaticEnrichment: next.suppressesAutomaticEnrichment,
             creatorID: next.creatorID,
-            navigationIntent: next.profileImportBatchID == nil ? .reveal : .keepCurrent
+            navigationIntent: next.profileImportBatchID == nil ? .reveal : .keepCurrent,
+            includesComments: next.includesComments
           )
         }
         self.activeCaptureTask = work
@@ -1248,7 +1285,8 @@ final class ManualLinkViewModel: ObservableObject {
     downloadsVideo: Bool,
     suppressesAutomaticEnrichment: Bool,
     creatorID: CreatorID? = nil,
-    navigationIntent: CaptureNavigationIntent = .reveal
+    navigationIntent: CaptureNavigationIntent = .reveal,
+    includesComments: Bool = false
   ) async throws -> CurrentCapture {
     guard let ingestor else { throw ManualLinkError.network }
     var capturedDocument: CapturedDocument?
@@ -1342,6 +1380,9 @@ final class ManualLinkViewModel: ObservableObject {
         await onMediaCaptured(media, accepted.taskID, accepted.snapshotID, document.url)
         let stored = try? history?.detail(taskID: accepted.taskID).media
         captureDownloadStatuses[value] = stored?.snapshotID == accepted.snapshotID ? "completed" : "failed"
+      }
+      if includesComments {
+        await attachComments(pageURL: value, taskID: accepted.taskID, snapshotID: accepted.snapshotID)
       }
       return accepted
     } catch {

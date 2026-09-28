@@ -84,6 +84,11 @@ actor WorkThumbnailLoader {
   func videoPoster(fileURL: URL, pixels: Int = 640) async throws -> WorkThumbnail {
     try Task.checkCancellation()
     guard let contained = Self.containedInternalVideoFile(fileURL) else {
+      // 视频已按「转写后清理」删掉：用清理前存下的那张封面。
+      if let saved = Self.savedPosterFileURL(forVideo: fileURL),
+         let data = try? Data(contentsOf: saved), !data.isEmpty {
+        return try Self.decode(data, pixels: min(1_024, max(64, pixels)))
+      }
       throw CocoaError(.fileReadNoSuchFile)
     }
     let size = min(1_024, max(64, pixels))
@@ -208,6 +213,33 @@ actor WorkThumbnailLoader {
 
   /// Gallery posters only accept this task's hashed `Media/` file: 64 hex
   /// chars, mp4/mov, regular file, never a symlink or an escaped path.
+  /// 清理视频前留下的封面：`Thumbnails/video-poster-{sha}.jpg`。只认 App 自己的哈希文件名。
+  nonisolated static func savedPosterFileURL(forVideo fileURL: URL, directory: URL? = defaultDiskDirectory()) -> URL? {
+    let name = fileURL.lastPathComponent
+    guard let directory,
+          name.range(of: #"^[0-9a-f]{64}\.(mp4|mov)$"#, options: .regularExpression) != nil
+    else { return nil }
+    let stem = (name as NSString).deletingPathExtension
+    let url = directory.appendingPathComponent("video-poster-\(stem).jpg", isDirectory: false)
+    return FileManager.default.fileExists(atPath: url.path) ? url : nil
+  }
+
+  /// 删视频前把首帧封面存成 jpg，删后卡片照样有图。取不到画面（黑场、坏文件）就不存，
+  /// 卡片退回平台图标或文字预览，和原来没封面的条目一样。
+  nonisolated static func preservePoster(forVideo fileURL: URL, directory: URL? = defaultDiskDirectory()) async {
+    guard let directory, let contained = containedInternalVideoFile(fileURL) else { return }
+    let stem = (contained.lastPathComponent as NSString).deletingPathExtension
+    let target = directory.appendingPathComponent("video-poster-\(stem).jpg", isDirectory: false)
+    if FileManager.default.fileExists(atPath: target.path) { return }
+    guard let poster = try? await decodeVideoPoster(fileURL: contained, pixels: 1_024) else { return }
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let data = NSMutableData()
+    guard let destination = CGImageDestinationCreateWithData(data, "public.jpeg" as CFString, 1, nil) else { return }
+    CGImageDestinationAddImage(destination, poster.image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+    guard CGImageDestinationFinalize(destination) else { return }
+    try? (data as Data).write(to: target, options: .atomic)
+  }
+
   nonisolated static func containedInternalVideoFile(_ fileURL: URL) -> URL? {
     guard fileURL.isFileURL else { return nil }
     let name = fileURL.lastPathComponent

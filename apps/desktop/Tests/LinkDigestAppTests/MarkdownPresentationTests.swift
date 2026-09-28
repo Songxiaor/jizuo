@@ -436,6 +436,37 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertTrue(section.items[3].body.contains("正文仍应保留"))
   }
 
+  /// 扩展 comments.ts 的 `commentsMarkdown` 输出（见 tests/comments.test.ts 同一段）：
+  /// 非 Reddit 作者名靠「回复层级」认成评论头，点赞走「赞 N」。
+  func testExtensionCommentSectionFromAnyPlatformParsesLikesAndDepth() throws {
+    let source = """
+    正文。
+
+    ## 评论（已保存 3 条 / 页面显示 88）
+
+    - **小明** · 赞 1.2万 · 2026-09-20 · 回复层级 0
+      第一条评论
+      第二行
+      - **作者本人** · [原评论](https://x.com/u/status/2) · 回复层级 1
+        回复一下
+    - **u/redditor** · score 42 · 回复层级 0
+      reddit body
+    """
+    let blocks = MarkdownPresentation.blocks(from: source)
+    guard case let .comments(section) = try XCTUnwrap(blocks.last) else {
+      return XCTFail("评论区应成为独立结构块，实际是 \(blocks)")
+    }
+    XCTAssertEqual(section.countTitle, "评论 3/88")
+    XCTAssertEqual(section.items.map(\.author), ["小明", "作者本人", "u/redditor"])
+    XCTAssertEqual(section.items.map(\.depth), [0, 1, 0])
+    XCTAssertEqual(section.items.map(\.likes), ["1.2万", nil, nil])
+    XCTAssertEqual(section.items[0].published, "2026-09-20")
+    XCTAssertEqual(section.items[0].body, "第一条评论\n第二行")
+    XCTAssertEqual(section.items[1].parentAuthor, "小明")
+    XCTAssertEqual(section.items[1].permalink, URL(string: "https://x.com/u/status/2"))
+    XCTAssertEqual(section.items[2].score, "42")
+  }
+
   func testTranslatedRedditCommentBodiesRemainACommentTree() {
     let translated = """
     已翻译正文。

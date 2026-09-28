@@ -364,10 +364,12 @@ public enum NativeResponse: Codable, Sendable, Equatable {
   case profileCandidatesPresented(version: Int, requestId: String, acceptedCount: Int)
   /// 打开 App：成功时带上 Host 支持的协议版本，扩展用它判断要不要提示升级。
   case openAppAccepted(version: Int, requestId: String, supportedVersions: [Int])
+  /// 抓取偏好：扩展据此决定评论读几条（10–100）。
+  case capturePreferences(version: Int, requestId: String, commentLimit: Int)
   case error(AppError)
 
   enum CodingKeys: String, CodingKey {
-    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, acceptedCount, supportedVersions, error
+    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, acceptedCount, supportedVersions, commentLimit, error
   }
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -431,6 +433,16 @@ public enum NativeResponse: Codable, Sendable, Equatable {
         requestId: try c.decode(String.self, forKey: .requestId),
         supportedVersions: supported
       )
+    case "capturePreferences":
+      let version = try c.decode(Int.self, forKey: .version)
+      guard version == 1 else {
+        throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "Unsupported NativeResponse version")
+      }
+      self = .capturePreferences(
+        version: version,
+        requestId: try c.decode(String.self, forKey: .requestId),
+        commentLimit: try c.decode(Int.self, forKey: .commentLimit)
+      )
     case "error":
       let error = try c.decode(AppError.self, forKey: .error)
       guard error.version == 1 else {
@@ -460,6 +472,9 @@ public enum NativeResponse: Codable, Sendable, Equatable {
     case let .openAppAccepted(v, r, supported):
       try c.encode("openAppAccepted", forKey: .kind); try c.encode(v, forKey: .version)
       try c.encode(r, forKey: .requestId); try c.encode(supported, forKey: .supportedVersions)
+    case let .capturePreferences(v, r, limit):
+      try c.encode("capturePreferences", forKey: .kind); try c.encode(v, forKey: .version)
+      try c.encode(r, forKey: .requestId); try c.encode(limit, forKey: .commentLimit)
     case let .error(e):
       try c.encode("error", forKey: .kind); try c.encode(e, forKey: .error)
     }
@@ -471,7 +486,7 @@ public enum NativeResponse: Codable, Sendable, Equatable {
     switch self {
     case .taskAccepted, .bookmarksAccepted, .bookmarksLookup, .profileCandidatesPresented:
       return true
-    case .openAppAccepted, .error:
+    case .openAppAccepted, .capturePreferences, .error:
       return false
     }
   }

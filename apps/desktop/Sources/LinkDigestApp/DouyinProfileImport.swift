@@ -670,6 +670,11 @@ final class DouyinProfileImportViewModel: ObservableObject {
   @Published private(set) var navigationRequestID = 0
   @Published private(set) var scanRequestID = 0
   @Published var downloadsVideo = false
+  /// 「同时抓取评论」：每条作品保存后按设置条数读评论。记住上次的选择。
+  @Published var includesComments = UserDefaults.standard.bool(forKey: DouyinProfileImportViewModel.includesCommentsKey) {
+    didSet { UserDefaults.standard.set(includesComments, forKey: Self.includesCommentsKey) }
+  }
+  static let includesCommentsKey = "com.syc.linkdigest.profile-import-includes-comments"
   @Published private(set) var saveMessage: String?
   @Published private(set) var resolvedPlatform: ProfileImportPlatform?
   @Published private(set) var discoverySource: DiscoverySource = .embeddedWebKit
@@ -693,6 +698,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
   private let alreadySaved: (String) -> Bool
   private let enqueue: ([String], Bool, CreatorID?) -> ManualLinkViewModel.ProfileImportEnqueueOutcome
   private let enqueueCandidates: (([ProfileImportCandidateSeed], Bool, CreatorID?) -> ManualLinkViewModel.ProfileImportEnqueueOutcome)?
+  private let setIncludesComments: (Bool) -> Void
   private let ensureCreator: (String, String, String?) -> CreatorID?
   private let refreshCreatorName: (CreatorID, String?, String?) -> Void
   private let attachExisting: (CreatorID, [String]) -> Void
@@ -714,8 +720,10 @@ final class DouyinProfileImportViewModel: ObservableObject {
     enqueueCandidates: (([ProfileImportCandidateSeed], Bool, CreatorID?) -> ManualLinkViewModel.ProfileImportEnqueueOutcome)? = nil,
     ensureCreator: @escaping (String, String, String?) -> CreatorID? = { _, _, _ in nil },
     refreshCreatorName: @escaping (CreatorID, String?, String?) -> Void = { _, _, _ in },
-    attachExisting: @escaping (CreatorID, [String]) -> Void = { _, _ in }
+    attachExisting: @escaping (CreatorID, [String]) -> Void = { _, _ in },
+    setIncludesComments: @escaping (Bool) -> Void = { _ in }
   ) {
+    self.setIncludesComments = setIncludesComments
     self.alreadySaved = alreadySaved
     self.enqueue = enqueue
     self.enqueueCandidates = enqueueCandidates
@@ -741,7 +749,8 @@ final class DouyinProfileImportViewModel: ObservableObject {
       },
       attachExisting: { id, urls in
         manualLink.attachExistingCreatorWorks(creatorID: id, canonicalURLs: urls)
-      }
+      },
+      setIncludesComments: { manualLink.profileImportIncludesComments = $0 }
     )
   }
 
@@ -1105,6 +1114,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
     let selected = candidates.filter { selectedIDs.contains($0.id) && !$0.wasAlreadySaved }
     guard !selected.isEmpty else { return 0 }
     if discoverySource == .browserExtension { bindCreatorIfNeeded() }
+    setIncludesComments(includesComments)
     let outcome: ManualLinkViewModel.ProfileImportEnqueueOutcome
     if let enqueueCandidates {
       let seeds = selected.map { candidate in
@@ -2235,6 +2245,10 @@ struct DouyinProfileImportSheet: View {
     HStack(spacing: DesignTokens.Space.sm) {
       Toggle("同时下载视频", isOn: $model.downloadsVideo)
         .toggleStyle(.checkbox)
+      Toggle("同时抓取评论", isOn: $model.includesComments)
+        .toggleStyle(.checkbox)
+        .help("每条作品保存后，按「设置 → 生成偏好 → 评论抓取数量」读前几条评论写进正文。要逐条挑选，可在保存后打开作品用「处理 → 抓取评论…」。")
+        .accessibilityIdentifier("profile-import-includes-comments")
       Button("保存所选 \(model.selectedCount) 条") {
         guard model.saveSelected() > 0, let creatorID = model.creatorID else { return }
         stopReading()

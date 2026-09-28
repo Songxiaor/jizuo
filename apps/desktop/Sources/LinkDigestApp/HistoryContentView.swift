@@ -3746,6 +3746,8 @@ private struct HistoryDetailView: View, Equatable {
   @ObservedObject var sessionMediaPlayback: SessionMediaPlaybackController
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var isRegeneratePopoverPresented = false
+  /// 「处理 → 抓取评论…」面板。
+  @State private var isCommentPickerPresented = false
   @State private var isRunPanelExpanded = false
   @State private var isReadingHeaderPinned = false
   @State private var showsPlainText = false
@@ -3956,6 +3958,21 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
   private var latestSnapshot: ContentSnapshot? { detail.snapshots.last }
+
+  /// 有评论读取器的外部来源才给「抓取评论…」；自己写的笔记、本机文件没有评论区。
+  private var commentSourceURL: URL? {
+    guard !isOwnWriting, latestSnapshot != nil, let url = URL(string: sourceURL),
+          CommentCapture.platform(for: url) != nil else { return nil }
+    return url
+  }
+
+  /// 勾选结果替换正文末尾的评论段，走与校对正文同一条原地保存通道。
+  private func saveSelectedComments(_ selected: [CapturedComment], expectedCount: Int?) {
+    guard let snapshot = latestSnapshot else { return }
+    let body = CommentCapture.replacingComments(in: snapshot.bodyText, expectedCount: expectedCount, selected: selected)
+    guard body != snapshot.bodyText else { return }
+    model.saveEditedSnapshotText(taskID: detail.task.id, snapshotID: snapshot.id, bodyText: body)
+  }
   /// 这条记录是用户自己写的笔记，而非抓取来的网页。
   private var isUserNote: Bool {
     detail.snapshots.last?.sourceKind == CapturedDocument.Origin.userNote.rawValue
@@ -4610,6 +4627,60 @@ private struct HistoryDetailView: View, Equatable {
             streamSelectionDiagnostic
           } else if let youTubeVideoID = YouTubeWatchLink.videoID(from: detail.task.canonicalURL) {
             youTubeCard(videoID: youTubeVideoID)
+          } else if model.localMediaCleared, detail.media != nil {
+            // 按「转写后清理」删掉的视频：只是说明一下，不是出错。原链接一直在，
+            // 需要时用它换一个新的播放地址，再走「保存到本地」下回来。
+            VStack(alignment: .leading, spacing: 10) {
+              Label("视频文件已按设置清理，转写文字、评论和笔记都保留着。", systemImage: "checkmark.circle")
+                .themedFont(.caption)
+                .foregroundStyle(.secondary)
+              HStack(spacing: DesignTokens.Space.sm) {
+                Button {
+                  let taskID = detail.task.id
+                  let platform = latestSourceSnapshot?.platform ?? detail.snapshots.last?.platform
+                  let author = sourceFrontmatter.author
+                  let source = sourceURL
+                  model.redownloadClearedVideo(
+                    taskID: taskID,
+                    snapshotID: latestSourceSnapshot?.id ?? detail.snapshots.last?.id ?? ContentSnapshotID()
+                  ) {
+                    try await sessionMediaPlayback.fetchDescriptor(
+                      taskID: taskID, platform: platform, sourceURL: source, author: author
+                    )
+                  }
+                } label: {
+                  if model.clearedVideoRedownloadState == .running {
+                    HStack(spacing: 6) {
+                      ProgressView().controlSize(.small)
+                      Text("正在重新下载…")
+                    }
+                  } else {
+                    Label("重新下载视频", systemImage: "arrow.down.circle")
+                  }
+                }
+                .buttonStyle(.appNormal)
+                .disabled(model.clearedVideoRedownloadState == .running || model.isReadOnly)
+                .accessibilityIdentifier("history-video-local-cleared-redownload")
+                if let url = URL(string: sourceURL), url.scheme?.hasPrefix("http") == true {
+                  Link("在浏览器打开原页面", destination: url)
+                    .themedFont(.caption)
+                    .accessibilityIdentifier("history-video-local-cleared-open-source")
+                }
+              }
+              if case let .failed(message) = model.clearedVideoRedownloadState {
+                Text(message)
+                  .themedFont(.caption)
+                  .foregroundStyle(theme.warning)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(theme.primaryText.opacity(0.045), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
+            .padding(.top, 14)
+            // 容器自己的标识不能盖掉里面按钮的标识。
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("history-video-local-cleared")
           } else if let failure = model.localMediaResolutionFailure {
             VStack(alignment: .leading, spacing: 8) {
               Label(failure, systemImage: "externaldrive.badge.exclamationmark")
@@ -5045,6 +5116,14 @@ private struct HistoryDetailView: View, Equatable {
       }
     }
     .accessibilityIdentifier("history-detail")
+    .sheet(isPresented: $isCommentPickerPresented) {
+      if let url = commentSourceURL {
+        CommentPickerSheet(url: url, title: title, onSave: { selected, expected in
+          saveSelectedComments(selected, expectedCount: expected)
+          isCommentPickerPresented = false
+        }, onCancel: { isCommentPickerPresented = false })
+      }
+    }
     .onChange(of: sourceCollapseScrollTarget) { _, target in
       guard let target else { return }
       withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) {
@@ -5959,6 +6038,13 @@ private struct HistoryDetailView: View, Equatable {
   /// 主按钮只放还没做的事；已经做过的要重来，或者脑图、整理这类不常用的，收在这里。
   private var moreActionsMenu: some View {
     Menu {
+      if commentSourceURL != nil {
+        Section {
+          Button { isCommentPickerPresented = true } label: { Label("抓取评论…", systemImage: MenuIcon.comments) }
+            .help("打开原文读取前几条评论，勾选后写进正文末尾")
+            .accessibilityIdentifier("history-fetch-comments")
+        }
+      }
       Section {
         if summaryArtifact != nil {
           Button { startRun(.summarize) } label: { Label("重新总结", systemImage: MenuIcon.summarize) }
@@ -8279,6 +8365,7 @@ enum ReadingLayoutWidth {
 /// 菜单图标（2026-09-25）：顶栏「更多」、正文「处理」、列表右键三个菜单里，同一个动作用同一个图标，
 /// 每一项都带图标——原来一半有、一半只有字，同一件事（总结）在两个菜单里还是两种图。
 enum MenuIcon {
+  static let comments = "text.bubble"
   static let summarize = "text.badge.checkmark"
   static let translate = "character.book.closed"
   static let transcribe = "waveform"

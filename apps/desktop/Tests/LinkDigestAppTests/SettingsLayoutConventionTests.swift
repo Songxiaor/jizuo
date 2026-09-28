@@ -126,8 +126,8 @@ final class SettingsLayoutConventionTests: XCTestCase {
   func testChoiceCardsPlaceSummaryAboveTheOptions() throws {
     let media = try source("MediaStorageSettingsView")
     XCTAssertEqual(
-      occurrences(of: "summaryPlacement: .aboveControl", in: media), 2,
-      "「历史在线播放」和「B 站清晰度」两张卡的控件都自带逐项解释，说明必须前置")
+      occurrences(of: "summaryPlacement: .aboveControl", in: media), 3,
+      "「历史在线播放」「B 站清晰度」「转写后清理视频」三张卡的控件都自带逐项解释，说明必须前置")
 
     let shared = try source("SettingsCard")
     XCTAssertTrue(

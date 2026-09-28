@@ -6,6 +6,17 @@ import {
   type ExtractedPage,
 } from "../content/extract";
 import { captureSendBlockReason } from "../content/capture-send-gate";
+import {
+  clampCommentLimit,
+  commentPlatformForURL,
+  commentsMarkdown,
+  COMMENT_LIMIT_DEFAULT,
+  selectComments,
+  stripEmbeddedCommentSection,
+  type CapturedComment,
+  type CommentCollection,
+  type CommentPlatform,
+} from "../content/comments";
 import { detectMediaInPage } from "../content/media-detection";
 import {
   buildYouTubeMarkdown,
@@ -137,6 +148,172 @@ export function mergeDefinedDouyinStats(
 
 const HOST_NAME = "com.syc.linkdigest.v01";
 const requestId = () => crypto.randomUUID();
+
+// ---------------------------------------------------------------------------
+// 评论：条数来自 App 设置页，收集结果按标签页缓存，发送时只写勾选的那些。
+
+/** 读 App 设置页的「评论抓取数量」。旧版 App/Host 不认识这条消息时退回默认值。 */
+export async function commentLimitPreference(): Promise<number> {
+  const message = { kind: "getCapturePreferences", version: 1, requestId: requestId() };
+  try {
+    const response: unknown = await withTimeout(browser.runtime.sendNativeMessage(HOST_NAME, message), 4_000);
+    return parseCapturePreferencesLimit(response, message.requestId) ?? COMMENT_LIMIT_DEFAULT;
+  } catch {
+    return COMMENT_LIMIT_DEFAULT;
+  }
+}
+
+export function parseCapturePreferencesLimit(response: unknown, expectedRequestId: string): number | undefined {
+  if (!response || typeof response !== "object") return undefined;
+  const row = response as { kind?: unknown; version?: unknown; requestId?: unknown; commentLimit?: unknown };
+  if (row.kind !== "capturePreferences" || row.version !== 1 || row.requestId !== expectedRequestId) return undefined;
+  if (typeof row.commentLimit !== "number" || !Number.isInteger(row.commentLimit)) return undefined;
+  return clampCommentLimit(row.commentLimit);
+}
+
+type CachedComments = { url: string; collection: CommentCollection };
+
+/**
+ * 勾选期间 MV3 后台闲置 30 秒就会被浏览器回收，内存里的评论会丢。
+ * 放进 `storage.session`：后台重启仍在，关浏览器才清空，不落盘。
+ */
+const commentCacheKey = (tabId: number) => `comments:${tabId}`;
+
+async function readCommentCache(tabId: number): Promise<CachedComments | undefined> {
+  try {
+    const stored = await browser.storage.session.get(commentCacheKey(tabId));
+    return stored[commentCacheKey(tabId)] as CachedComments | undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function writeCommentCache(tabId: number, value: CachedComments | undefined): Promise<void> {
+  try {
+    if (value) await browser.storage.session.set({ [commentCacheKey(tabId)]: value });
+    else await browser.storage.session.remove(commentCacheKey(tabId));
+  } catch {
+    // 存不进去只影响勾选结果，发送时退回提取器自带的评论段。
+  }
+}
+
+/** 只比「是不是同一条内容」：B 站等会在地址栏悄悄改 spm/vd_source 之类的跟踪参数。 */
+export function sameContentURL(left: string, right: string): boolean {
+  const key = (raw: string): string => {
+    try {
+      const url = new URL(raw);
+      const kept = ["v", "id", "modal_id", "p", "item"]
+        .filter((name) => url.searchParams.has(name))
+        .map((name) => `${name}=${url.searchParams.get(name)}`);
+      return `${url.origin}${url.pathname.replace(/\/+$/u, "")}?${kept.join("&")}`;
+    } catch {
+      return raw.split("#")[0] ?? raw;
+    }
+  };
+  return key(left) === key(right);
+}
+
+async function collectCommentsInTab(tabId: number, limit: number): Promise<CommentCollection | undefined> {
+  // `files` 注入带不了参数：先把条数写进同一隔离世界，再注入收集脚本。
+  await browser.scripting.executeScript({
+    target: { tabId },
+    func: (value: number) => {
+      (globalThis as { __linkdigestCommentLimit?: number }).__linkdigestCommentLimit = value;
+    },
+    args: [limit],
+  });
+  const results = await browser.scripting.executeScript({
+    target: { tabId },
+    files: ["/extract-comments.js"],
+  });
+  const collection = results[0]?.result as CommentCollection | null | undefined;
+  return collection && Array.isArray(collection.comments) ? collection : undefined;
+}
+
+export type CommentPickerItem = {
+  id: string;
+  author: string;
+  excerpt: string;
+  depth: number;
+  likes?: string;
+};
+
+export type CommentCollectResult =
+  | { ok: true; platform: CommentPlatform; limit: number; expectedCount?: number; loginRequired?: boolean; items: CommentPickerItem[] }
+  | { ok: false; code: "unsupported" | "empty" | "failed"; limit?: number };
+
+export function commentPickerItems(comments: CapturedComment[]): CommentPickerItem[] {
+  return comments.map((comment) => ({
+    id: comment.id,
+    author: comment.author.replace(/^u\//u, ""),
+    excerpt: comment.body.replace(/!\[[^\]]*\]\([^)]*\)/gu, "[图片]").replace(/\s+/gu, " ").trim().slice(0, 160),
+    depth: comment.depth,
+    ...(comment.likes ? { likes: comment.likes } : comment.score ? { likes: comment.score } : {}),
+  }));
+}
+
+export async function collectCommentsForPicker(tabId: number): Promise<CommentCollectResult> {
+  const tab = await browser.tabs.get(tabId).catch(() => undefined);
+  const tabURL = tab?.url ?? "";
+  if (!commentPlatformForURL(tabURL)) return { ok: false, code: "unsupported" };
+  const limit = await commentLimitPreference();
+  try {
+    const collection = await withTimeout(collectCommentsInTab(tabId, limit), 25_000);
+    if (!collection) return { ok: false, code: "failed", limit };
+    await writeCommentCache(tabId, { url: tabURL, collection });
+    if (!collection.comments.length) return { ok: false, code: "empty", limit };
+    return {
+      ok: true,
+      platform: collection.platform,
+      limit: collection.limit,
+      ...(collection.expectedCount !== undefined ? { expectedCount: collection.expectedCount } : {}),
+      ...(collection.loginRequired ? { loginRequired: true } : {}),
+      items: commentPickerItems(collection.comments),
+    };
+  } catch {
+    return { ok: false, code: "failed", limit };
+  }
+}
+
+/**
+ * 把评论写进正文末尾。`selectedIDs` 为 undefined 表示没经过弹窗勾选（直接发送），
+ * 按设置条数取前 N；传空数组表示用户一条都不要。评论收集失败绝不阻断正文抓取。
+ */
+export function pageWithComments(
+  page: ExtractedPage,
+  collection: CommentCollection | undefined,
+  selectedIDs: readonly string[] | undefined,
+): ExtractedPage {
+  if (!collection) return page;
+  const chosen = selectComments(collection.comments, selectedIDs, collection.limit);
+  // 收集器一条都没读到、用户也没表态时，保留提取器自带的评论段，不做减法。
+  if (!collection.comments.length && selectedIDs === undefined) return page;
+  const base = stripEmbeddedCommentSection(page.text);
+  const section = commentsMarkdown(collection, chosen);
+  const text = section ? `${base}\n\n${section}` : base;
+  const replacedPartialRedditComments = collection.platform === "reddit" && page.completeness === "visible_only";
+  return {
+    ...page,
+    text,
+    characterCount: [...text].length,
+    ...(replacedPartialRedditComments ? { completeness: "full_article" as const } : {}),
+  };
+}
+
+/**
+ * 只用弹窗 collect-comments 读好的那份：发送不再临时滚页面补读，
+ * 没经过弹窗（或读失败）的发送保持原样，由提取器自带的评论段兜底。
+ */
+async function attachComments(
+  tabId: number,
+  tabURL: string,
+  page: ExtractedPage,
+  selectedIDs: readonly string[] | undefined,
+): Promise<ExtractedPage> {
+  const cached = await readCommentCache(tabId);
+  if (!cached || !sameContentURL(cached.url, tabURL)) return page;
+  return pageWithComments(page, cached.collection, selectedIDs);
+}
 
 export type DouyinMediaHit = MediaDescriptor;
 export type SafeCapturePreview = {
@@ -1223,8 +1400,11 @@ async function upgradeBrowserSessionMedia(
   return page;
 }
 
+type CaptureCommentOptions = { include: false } | { include: true; selectedIDs?: readonly string[] | undefined };
+
 async function captureAttemptFromTab(
   tabId: number,
+  commentOptions: CaptureCommentOptions = { include: true },
 ): Promise<{
   envelope: CaptureEnvelope;
   mediaDiagnostic?: DouyinSessionDiagnostic;
@@ -1281,6 +1461,9 @@ async function captureAttemptFromTab(
   }
 
   if (!page?.text) throw new Error("CAPTURE_CONTENT_EMPTY");
+  if (commentOptions.include) {
+    page = await attachComments(tabId, tabURL, page, commentOptions.selectedIDs);
+  }
 
   return {
     envelope: captureEnvelopeForPage(
@@ -1303,8 +1486,9 @@ export async function captureFromTab(tabId: number): Promise<CaptureEnvelope> {
 export async function sendCapture(
   tabId: number,
   requestedAction: CaptureRequestedAction = "save",
+  selectedCommentIDs?: readonly string[],
 ): Promise<ExtensionSendResult> {
-  const attempt = await captureAttemptFromTab(tabId);
+  const attempt = await captureAttemptFromTab(tabId, { include: true, selectedIDs: selectedCommentIDs });
   const { envelope, mediaDiagnostic, metadataDiagnostic } = attempt;
   // V2-first strategy: validate the V2 envelope (which carries the media
   // descriptor). Only if V2 validation actually fails do we downgrade to V1.
@@ -1381,7 +1565,9 @@ export async function sendCapture(
 }
 
 export async function previewCurrentPage(tabId: number): Promise<SafeCapturePreview> {
-  const attempt = await captureAttemptFromTab(tabId);
+  // 预览要快：评论另走 collect-comments，边显示预览边往下翻评论区。
+  await writeCommentCache(tabId, undefined);
+  const attempt = await captureAttemptFromTab(tabId, { include: false });
   return safePreviewForCapture(
     attempt.envelope,
     attempt.mediaDiagnostic,
@@ -1685,6 +1871,7 @@ export default defineBackground(() => {
       tweetID?: string;
       tweetIDs?: string[];
       requestedAction?: CaptureRequestedAction;
+      selectedCommentIDs?: string[];
     },
   ) => {
     // 时间线注入按钮发来的单条同步：只需要 tweetID，不涉及 tabId。
@@ -1694,9 +1881,13 @@ export default defineBackground(() => {
     if (message.type === "enqueue-x-bookmarks") return enqueueXBookmarkIDs(message.tweetIDs);
     if (typeof message.tabId !== "number") return undefined;
     if (message.type === "preview-current-page") return previewCurrentPage(message.tabId);
+    if (message.type === "collect-comments") return collectCommentsForPicker(message.tabId);
     if (message.type === "send-current-page") {
       const action = message.requestedAction;
-      return sendCapture(message.tabId, action === "summarize" || action === "translate" ? action : "save");
+      const selected = Array.isArray(message.selectedCommentIDs)
+        ? message.selectedCommentIDs.filter((id): id is string => typeof id === "string")
+        : undefined;
+      return sendCapture(message.tabId, action === "summarize" || action === "translate" ? action : "save", selected);
     }
     if (message.type === "collect-x-bookmarks") return collectXBookmarks(message.tabId);
     if (message.type === "collect-x-profile") return collectXProfile(message.tabId);

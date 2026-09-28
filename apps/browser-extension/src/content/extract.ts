@@ -1763,7 +1763,7 @@ function pickContentRoot(documentLike: Document): Element {
   return documentLike.body ?? documentLike.documentElement;
 }
 
-function scrubNoise(root: Element): void {
+export function scrubNoise(root: Element): void {
   root.querySelectorAll(NOISE_SELECTOR).forEach((node) => node.remove());
 }
 
@@ -2177,7 +2177,7 @@ function firstXVideoCoverURL(root: Element | null, baseHref: string): string | u
   return undefined;
 }
 
-function absoluteUrl(href: string, baseHref: string): string | null {
+export function absoluteUrl(href: string, baseHref: string): string | null {
   try {
     if (!href || href.startsWith("data:") || href.startsWith("file:") || href.startsWith("javascript:")) {
       return null;
@@ -2369,7 +2369,7 @@ export function isMediumProfileChromeImageURL(href: string): boolean {
   }
 }
 
-function htmlElementToMarkdown(root: Element, baseHref: string): string {
+export function htmlElementToMarkdown(root: Element, baseHref: string): string {
   const TEXT_NODE = 3;
   const ELEMENT_NODE = 1;
   const walk = (node: {

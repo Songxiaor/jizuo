@@ -1367,7 +1367,8 @@ final class MediaTranscriptionPersistenceTests: XCTestCase {
       XCTAssertEqual(stored.platform, repaired.platform)
       XCTAssertEqual(stored.author, repaired.author)
       XCTAssertEqual(stored.transcriptionStatus, .completed)
-      XCTAssertEqual(stored.createdAtMilliseconds, original.createdAtMilliseconds)
+      // 重新保存算一次新的保存：保存时间只往后推（「转写后清理」按它判断），身份不变。
+      XCTAssertEqual(stored.createdAtMilliseconds, repaired.createdAtMilliseconds)
       XCTAssertEqual(try repository.database.read {
         try Int.fetchOne(
           $0,
@@ -1550,6 +1551,49 @@ final class MediaTranscriptionPersistenceTests: XCTestCase {
       XCTAssertEqual(try reopened.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: oldAttempt, status: .failed), .stale)
       XCTAssertEqual(try reopened.mediaAsset(taskID: accepted.taskID)?.transcriptionStatus, .completed)
       XCTAssertEqual(try reopened.detail(taskID: accepted.taskID).snapshots.last?.bodyText, "新 owner 正文")
+    }
+  }
+
+  /// 「转写后清理」要分清：转写晚于保存的视频可以删；转写之后才重新下载回来的不能立刻删。
+  func testMediaInventoryTellsTranscribedAfterSavingApartFromRedownloads() throws {
+    try withRepository { repository, _ in
+      let accepted = try repository.acceptCapture(.init(envelope: capture(), receivedAtMilliseconds: 1))
+      try repository.attachMedia(.init(asset: media(taskID: accepted.taskID, snapshotID: accepted.snapshotID)))
+      let attempt = try begin(repository, taskID: accepted.taskID)
+      XCTAssertEqual(try repository.updateMediaTranscriptionStatus(taskID: accepted.taskID, attempt: attempt, status: .running), .applied)
+      _ = try acceptedResult(repository.completeMediaTranscription(.init(
+        taskID: accepted.taskID,
+        attempt: attempt,
+        document: transcription(url: "https://example.test/article"),
+        evidence: completionEvidence(completedAtMilliseconds: 100),
+        receivedAtMilliseconds: 100
+      )))
+      let original = try XCTUnwrap(try repository.mediaStorageInventory().first)
+      XCTAssertTrue(original.isTranscribed)
+      XCTAssertTrue(original.transcribedAfterSaving)
+
+      // 清理后从原链接重新下载：CDN 给的文件不同，新的一行保存时间晚于转写
+      // （转写快照的时间取自文档 createdAt 2026-07-19，下载时间要比它晚）。
+      let later: Int64 = 1_900_000_000_000
+      let sha = String(repeating: "c", count: 64)
+      try repository.attachMedia(.init(asset: MediaAsset(
+        taskID: accepted.taskID,
+        snapshotID: accepted.snapshotID,
+        relativePath: "\(sha).mp4",
+        contentSHA256: sha,
+        byteSize: 4_096,
+        platform: "douyin",
+        createdAtMilliseconds: later
+      )))
+      let redownloaded = try XCTUnwrap(try repository.mediaStorageInventory().first { $0.relativePath == "\(sha).mp4" })
+      XCTAssertTrue(redownloaded.isTranscribed)
+      XCTAssertFalse(redownloaded.transcribedAfterSaving)
+
+      // 下回来的是同一个文件：沿用原来那行，但保存时间推到现在，同样不算「转写后」。
+      try repository.attachMedia(.init(asset: media(taskID: accepted.taskID, snapshotID: accepted.snapshotID, createdAt: later + 100)))
+      let same = try XCTUnwrap(try repository.mediaStorageInventory().first { $0.mediaID == original.mediaID })
+      XCTAssertEqual(same.createdAtMilliseconds, later + 100)
+      XCTAssertFalse(same.transcribedAfterSaving)
     }
   }
 
@@ -1896,7 +1940,7 @@ final class MediaTranscriptionPersistenceTests: XCTestCase {
     }
   }
 
-  private func media(taskID: TaskID, snapshotID: ContentSnapshotID) -> MediaAsset {
+  private func media(taskID: TaskID, snapshotID: ContentSnapshotID, createdAt: Int64 = 2) -> MediaAsset {
     MediaAsset(
       taskID: taskID,
       snapshotID: snapshotID,
@@ -1904,7 +1948,7 @@ final class MediaTranscriptionPersistenceTests: XCTestCase {
       contentSHA256: String(repeating: "b", count: 64),
       byteSize: 2_048,
       platform: "douyin",
-      createdAtMilliseconds: 2
+      createdAtMilliseconds: createdAt
     )
   }
 

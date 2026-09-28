@@ -249,6 +249,13 @@ struct CommentThreadSectionView: View {
           .foregroundStyle(secondaryTextColor)
           .lineLimit(1)
       }
+      if let likes = item.likes {
+        Label(likes, systemImage: "hand.thumbsup")
+          .labelStyle(.titleAndIcon)
+          .themedFont(.caption)
+          .foregroundStyle(secondaryTextColor)
+          .lineLimit(1)
+      }
       if let published = item.published {
         Text(CommentPublishedTime.relativeLabel(published))
           .themedFont(.caption)
@@ -273,6 +280,7 @@ struct CommentThreadSectionView: View {
     var parts = ["第 \(item.depth + 1) 层评论", item.displayAuthor]
     if let parentAuthor = item.parentAuthor { parts.append("回复 \(parentAuthor)") }
     if let score = item.score { parts.append("\(score) 分") }
+    if let likes = item.likes { parts.append("\(likes) 赞") }
     if let published = item.published { parts.append(CommentPublishedTime.relativeLabel(published)) }
     return parts.joined(separator: "，")
   }

@@ -162,6 +162,123 @@ final class MediaStorageSettingsViewModel: ObservableObject {
     }
   }
 
+  // MARK: - 转写后清理视频
+
+  enum TranscribedCleanupMode: String, CaseIterable, Hashable {
+    case keep, afterTranscription, afterDays
+
+    var title: String {
+      switch self {
+      case .keep: "保留视频"
+      case .afterTranscription: "转写完成后清理"
+      case .afterDays: "保存满一定天数后清理"
+      }
+    }
+
+    var explanation: String {
+      switch self {
+      case .keep: "默认。转写完视频也一直留在本机。"
+      case .afterTranscription: "转写文字存好后就删掉视频文件，最省空间。"
+      case .afterDays: "视频保存满所选天数、并且已经转写过，才删掉视频文件。"
+      }
+    }
+  }
+
+  /// 改规则前先算一遍「现在就会删多少」，有要删的就停在这里等用户确认。
+  struct CleanupConfirmation: Equatable {
+    let policy: TranscribedVideoCleanupPolicy
+    let count: Int
+    let bytes: Int64
+  }
+
+  @Published private(set) var cleanupMode: TranscribedCleanupMode = .keep
+  @Published private(set) var cleanupDays = TranscribedVideoCleanupPolicy.defaultDays
+  @Published var pendingCleanupConfirmation: CleanupConfirmation?
+  @Published private(set) var cleanupStatus: String?
+
+  static let cleanupDayChoices = Array(TranscribedVideoCleanupPolicy.minimumDays...TranscribedVideoCleanupPolicy.maximumDays)
+
+  private static func policy(mode: TranscribedCleanupMode, days: Int) -> TranscribedVideoCleanupPolicy {
+    switch mode {
+    case .keep: .keep
+    case .afterTranscription: .afterTranscription
+    case .afterDays: .afterDays(days)
+    }
+  }
+
+  func selectCleanupMode(_ mode: TranscribedCleanupMode) {
+    guard mode != cleanupMode else { return }
+    propose(Self.policy(mode: mode, days: cleanupDays))
+  }
+
+  func selectCleanupDays(_ days: Int) {
+    let clamped = TranscribedVideoCleanupPolicy.clampedDays(days)
+    guard clamped != cleanupDays else { return }
+    propose(.afterDays(clamped))
+  }
+
+  /// 「保留」和「现在没有要删的」直接生效；否则先弹确认，写明数量和体积。
+  private func propose(_ policy: TranscribedVideoCleanupPolicy) {
+    guard policy != .keep, let mediaStore else {
+      apply(policy)
+      return
+    }
+    Task { [mediaStore] in
+      let candidates = await Task.detached { mediaStore.transcribedCleanupCandidates(policy: policy) }.value
+      guard let candidates else {
+        cleanupStatus = "现在读不到你保存的内容清单，规则没有改。重新打开汲作后再试。"
+        return
+      }
+      if candidates.isEmpty {
+        apply(policy)
+      } else {
+        pendingCleanupConfirmation = .init(
+          policy: policy,
+          count: candidates.count,
+          bytes: candidates.reduce(0) { $0 + $1.byteSize }
+        )
+      }
+    }
+  }
+
+  func confirmPendingCleanup() {
+    guard let pending = pendingCleanupConfirmation else { return }
+    pendingCleanupConfirmation = nil
+    apply(pending.policy)
+  }
+
+  func cancelPendingCleanup() {
+    pendingCleanupConfirmation = nil
+  }
+
+  private func apply(_ policy: TranscribedVideoCleanupPolicy) {
+    store.transcribedVideoCleanup = policy
+    loadCleanupPolicy()
+    state = .saved
+    cleanupStatus = nil
+    guard policy != .keep, let mediaStore else { return }
+    Task { [mediaStore] in
+      guard let report = await TranscribedVideoCleaner.shared.run(mediaStore: mediaStore) else { return }
+      if !report.deleted.isEmpty {
+        cleanupStatus = "已清理 \(report.deleted.count) 个视频，释放 \(Self.formattedBytes(report.deletedBytes))。"
+      }
+      if !report.refused.isEmpty {
+        cleanupStatus = (cleanupStatus ?? "") + "有 \(report.refused.count) 个文件没能删掉，原样留着，下次打开汲作会再试。"
+      }
+    }
+  }
+
+  private func loadCleanupPolicy() {
+    cleanupDays = store.transcribedCleanupDays
+    switch store.transcribedVideoCleanup {
+    case .keep: cleanupMode = .keep
+    case .afterTranscription: cleanupMode = .afterTranscription
+    case let .afterDays(days):
+      cleanupMode = .afterDays
+      cleanupDays = days
+    }
+  }
+
   private let store: UserDefaultsMediaStoragePreferenceStore
   private let mediaStore: LocalMediaStore?
   private let inventory: (@Sendable () throws -> [MediaStorageEntry])?
@@ -211,6 +328,7 @@ final class MediaStorageSettingsViewModel: ObservableObject {
         _totalCapacityGigabytes = Published(initialValue: gigabytes)
       }
     }
+    loadCleanupPolicy()
     if mediaStore != nil, inventory != nil {
       if orphanState == .unavailable { orphanState = .idle }
     } else {

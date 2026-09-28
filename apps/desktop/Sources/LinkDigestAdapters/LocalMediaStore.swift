@@ -474,6 +474,52 @@ public final class LocalMediaStore: @unchecked Sendable {
     return sizes
   }
 
+  /// 转写后清理的计划：纯函数，便于单测。
+  ///
+  /// - 只删 App 自己目录里的文件；用户自选文件夹里的永远不动。
+  /// - 内容寻址：同一个文件可能被多条记录引用，**每一条**都已转写且都到期才删，
+  ///   免得一条已转写的记录把另一条还没转写的视频一起带走。
+  /// - 只算磁盘上确实还在的文件。
+  public static func transcribedCleanupPlan(
+    inventory: [MediaStorageEntry],
+    fileSizes: [String: Int64],
+    policy: TranscribedVideoCleanupPolicy,
+    now: Date
+  ) -> [MediaFile] {
+    guard let cutoff = policy.cutoffMilliseconds(now: now) else { return [] }
+    var eligible: [String: Bool] = [:]
+    var order: [String] = []
+    for entry in inventory {
+      // 「转写完成后清理」只删转写晚于保存的视频；转写之后才下载回来的，留给用户用。
+      let transcribed = policy == .afterTranscription ? entry.transcribedAfterSaving : entry.isTranscribed
+      let ok = !entry.usesUserSelectedFile && transcribed && entry.createdAtMilliseconds <= cutoff
+      if eligible[entry.relativePath] == nil { order.append(entry.relativePath) }
+      eligible[entry.relativePath] = (eligible[entry.relativePath] ?? true) && ok
+    }
+    return order.compactMap { path in
+      guard eligible[path] == true, let size = fileSizes[path] else { return nil }
+      return MediaFile(relativePath: path, byteSize: size)
+    }
+  }
+
+  /// 按当前清理规则算出要删哪些文件（不删）。清单读不到时返回 nil：
+  /// 「查不到」和「没有可删的」必须分开，前者绝不能当成后者去删。
+  public func transcribedCleanupCandidates(now: Date = Date()) -> [MediaFile]? {
+    let policy = storagePreference?.transcribedVideoCleanup ?? .keep
+    return transcribedCleanupCandidates(policy: policy, now: now)
+  }
+
+  public func transcribedCleanupCandidates(policy: TranscribedVideoCleanupPolicy, now: Date = Date()) -> [MediaFile]? {
+    guard policy != .keep else { return [] }
+    guard let inventory = currentInventory() else { return nil }
+    return Self.transcribedCleanupPlan(inventory: inventory, fileSizes: fileSizesInRoot(), policy: policy, now: now)
+  }
+
+  /// 删掉清理计划里的文件：只删文件，记录、文字、评论都留着。
+  public func deleteTranscribedVideos(_ files: [MediaFile]) -> DeletionReport {
+    deleteContainedFiles(files)
+  }
+
   public func deleteFileIfUnreferenced(asset: MediaAsset, stillReferenced: Bool) {
     // User-selected files are user-owned. Deleting History only removes the DB
     // relationship; legacy internal media keeps its previous cleanup behavior.

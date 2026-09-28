@@ -234,6 +234,13 @@ public struct MediaStorageEntry: Sendable, Equatable {
   /// 库里没有单独的「最后播放时间」列。条目的 `updated_at_ms` 是现有信号里最贴近
   /// 「用户最近碰过它」的一个——打开、改标题、加标签、重新转写都会推它。
   public let lastUsedMilliseconds: Int64
+  /// 视频落库（保存到本机）的时间，「保存 N 天后清理」按它算。
+  public let createdAtMilliseconds: Int64
+  /// 这条内容已经有转写文字（本机转写或在线转写）。只有它为真才允许按转写清理规则删视频。
+  public let isTranscribed: Bool
+  /// 转写发生在这个视频文件保存**之后**。「转写完成后清理」只看它：
+  /// 转写之后才重新下载回来的视频（用户手动要回来的）不会被立刻再删一次。
+  public let transcribedAfterSaving: Bool
 
   public init(
     mediaID: String,
@@ -241,7 +248,10 @@ public struct MediaStorageEntry: Sendable, Equatable {
     relativePath: String,
     usesUserSelectedFile: Bool,
     byteSize: Int64,
-    lastUsedMilliseconds: Int64
+    lastUsedMilliseconds: Int64,
+    createdAtMilliseconds: Int64 = 0,
+    isTranscribed: Bool = false,
+    transcribedAfterSaving: Bool? = nil
   ) {
     self.mediaID = mediaID
     self.taskID = taskID
@@ -249,5 +259,36 @@ public struct MediaStorageEntry: Sendable, Equatable {
     self.usesUserSelectedFile = usesUserSelectedFile
     self.byteSize = byteSize
     self.lastUsedMilliseconds = lastUsedMilliseconds
+    self.createdAtMilliseconds = createdAtMilliseconds
+    self.isTranscribed = isTranscribed
+    self.transcribedAfterSaving = transcribedAfterSaving ?? isTranscribed
+  }
+}
+
+/// 转写完成后怎么处理本机视频。默认保留：删用户已保存的文件必须是用户自己选的。
+public enum TranscribedVideoCleanupPolicy: Sendable, Equatable {
+  case keep
+  /// 转写一完成就删视频文件。
+  case afterTranscription
+  /// 视频保存满 N 天（1–30）且已转写时删。
+  case afterDays(Int)
+
+  public static let minimumDays = 1
+  public static let maximumDays = 30
+  public static let defaultDays = 30
+
+  public static func clampedDays(_ days: Int) -> Int {
+    min(max(days, minimumDays), maximumDays)
+  }
+
+  /// 保存时间早于这个时刻的已转写视频可以删；nil 表示这项规则不删任何东西。
+  public func cutoffMilliseconds(now: Date) -> Int64? {
+    let nowMilliseconds = Int64((now.timeIntervalSince1970 * 1_000).rounded(.down))
+    switch self {
+    case .keep: return nil
+    case .afterTranscription: return .max
+    case let .afterDays(days):
+      return nowMilliseconds - Int64(Self.clampedDays(days)) * 86_400_000
+    }
   }
 }

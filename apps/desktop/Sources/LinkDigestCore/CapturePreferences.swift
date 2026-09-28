@@ -1,0 +1,72 @@
+import Foundation
+
+/// 抓取偏好：目前只有「评论抓取数量」。
+///
+/// 设置页写、Native Host 读。Host 是浏览器拉起的独立进程，读不到 App 的
+/// `@AppStorage`，所以落一份小 JSON 到 Application Support，与
+/// `BrowserDeliveryLog` 同一目录约定。文件缺失或损坏时一律按默认值。
+public struct CapturePreferencesStore: Sendable {
+  public static let commentLimitRange = 10...100
+  public static let defaultCommentLimit = 20
+  /// 设置页可选的档位。
+  public static let commentLimitChoices = [10, 20, 30, 40, 50, 60, 70, 80, 90, 100]
+
+  private let fileURL: URL
+
+  /// `root` 可注入：测试写 `/private/tmp` 的干净目录，不碰真人的设置。
+  public init(root: URL) {
+    self.fileURL = root
+      .appendingPathComponent("Library/Application Support/LinkDigest", isDirectory: true)
+      .appendingPathComponent("capture-preferences-v1.json", isDirectory: false)
+  }
+
+  public static func standard() -> CapturePreferencesStore {
+    .init(root: FileManager.default.homeDirectoryForCurrentUser)
+  }
+
+  public static func clampedCommentLimit(_ value: Int) -> Int {
+    min(commentLimitRange.upperBound, max(commentLimitRange.lowerBound, value))
+  }
+
+  public var commentLimit: Int {
+    guard
+      let data = try? Data(contentsOf: fileURL),
+      let stored = try? JSONDecoder().decode(Stored.self, from: data)
+    else { return Self.defaultCommentLimit }
+    return Self.clampedCommentLimit(stored.commentLimit)
+  }
+
+  public func setCommentLimit(_ value: Int) throws {
+    try FileManager.default.createDirectory(
+      at: fileURL.deletingLastPathComponent(),
+      withIntermediateDirectories: true
+    )
+    let data = try JSONEncoder().encode(Stored(commentLimit: Self.clampedCommentLimit(value)))
+    try data.write(to: fileURL, options: .atomic)
+  }
+
+  private struct Stored: Codable {
+    let commentLimit: Int
+  }
+}
+
+/// 扩展弹窗打开时问一次「评论抓几条」。Host 自己读偏好文件作答，不需要 App 在运行。
+public struct CapturePreferencesRequest: Sendable, Equatable {
+  public let requestId: String
+
+  /// 返回 nil 表示「不是这类消息」，调用方继续按其它消息解析；抛错表示是但不合法。
+  public static func decode(_ data: Data) throws -> CapturePreferencesRequest? {
+    guard
+      let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let kind = object["kind"] as? String,
+      kind == "getCapturePreferences"
+    else { return nil }
+    guard (object["version"] as? NSNumber)?.intValue == 1 else {
+      throw CaptureValidationError.PROTOCOL_VERSION_UNSUPPORTED
+    }
+    guard let requestId = object["requestId"] as? String,
+          !requestId.isEmpty, requestId.count <= 128
+    else { throw CaptureValidationError.CAPTURE_SCHEMA_INVALID }
+    return CapturePreferencesRequest(requestId: requestId)
+  }
+}

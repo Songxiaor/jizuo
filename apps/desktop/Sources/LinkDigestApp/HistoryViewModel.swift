@@ -995,6 +995,17 @@ final class HistoryViewModel {
   private(set) var localImageURLs: [URL] = []
   private(set) var localMediaFileURL: URL?
   private(set) var localMediaResolutionFailure: String?
+  /// 这条的本机视频已按「转写后清理」删掉（App 自己目录里的文件不在了）。
+  /// 阅读页据此显示「视频已清理」而不是「文件不见了」的警告。
+  private(set) var localMediaCleared = false
+  @ObservationIgnored private var transcribedVideoCleanupTask: Task<Void, Never>?
+  /// 「视频已清理」卡片上的重新下载进度。
+  enum ClearedVideoRedownloadState: Equatable {
+    case idle
+    case running
+    case failed(String)
+  }
+  private(set) var clearedVideoRedownloadState: ClearedVideoRedownloadState = .idle
   private(set) var faviconImageURLs: [TaskID: URL] = [:]
   var searchText = "" {
     didSet {
@@ -1476,6 +1487,73 @@ final class HistoryViewModel {
     diarizeSpeakers(detail: detail, mode: .local, prepared: prepared)
   }
 
+  /// 转写完成后按「设置 → 视频存储」的规则清理已转写视频（规则是「保留」时什么都不删）。
+  ///
+  /// 转写之后可能紧接着要用视频分辨说话人，所以先等这些后续步骤结束（最多 3 分钟），
+  /// 再交给 `TranscribedVideoCleaner`。当前打开的条目如果被清理，阅读页随即换成「视频已清理」。
+  func requestTranscribedVideoCleanup() {
+    guard let mediaStore, !isReadOnly else { return }
+    transcribedVideoCleanupTask?.cancel()
+    transcribedVideoCleanupTask = Task { [weak self] in
+      for _ in 0..<180 {
+        guard let self, !Task.isCancelled else { return }
+        let diarizing: Bool
+        if case .running = self.speakerDiarizationState { diarizing = true } else { diarizing = false }
+        if self.pendingAutoDiarization == nil, !diarizing, !self.transcriptionState.isActive { break }
+        try? await Task.sleep(for: .seconds(1))
+      }
+      guard !Task.isCancelled else { return }
+      guard let report = await TranscribedVideoCleaner.shared.run(mediaStore: mediaStore),
+            !report.deleted.isEmpty, let self else { return }
+      let removed = Set(report.deleted.map(\.relativePath))
+      if let media = self.detail?.media, media.fileBookmark == nil, removed.contains(media.relativePath) {
+        self.localMediaLease = nil
+        self.localMediaFileURL = nil
+        self.localMediaResolutionFailure = nil
+        self.localMediaCleared = true
+      }
+    }
+  }
+
+  /// 被清理的视频从原链接重新下载回本机：先换一个新的临时播放地址，再走「保存到本地」。
+  /// 下载回来的视频比转写晚，「转写完成后清理」不会立刻再删它（见 `transcribedAfterSaving`）。
+  func redownloadClearedVideo(
+    taskID: TaskID,
+    snapshotID: ContentSnapshotID,
+    fetchDescriptor: @escaping @MainActor () async throws -> MediaDescriptor
+  ) {
+    guard localMediaCleared, detail?.task.id == taskID, clearedVideoRedownloadState != .running else { return }
+    clearedVideoRedownloadState = .running
+    if remoteMediaFavoriteState != .saving { remoteMediaFavoriteState = .idle }
+    Task { [weak self] in
+      let descriptor: MediaDescriptor
+      do {
+        descriptor = try await fetchDescriptor()
+      } catch let error as SessionMediaRefreshError {
+        guard let self, self.detail?.task.id == taskID else { return }
+        self.clearedVideoRedownloadState = .failed(error.userMessage)
+        return
+      } catch {
+        guard let self, self.detail?.task.id == taskID else { return }
+        self.clearedVideoRedownloadState = .failed(SessionMediaRefreshError.networkOrParse.userMessage)
+        return
+      }
+      guard let self, self.detail?.task.id == taskID else { return }
+      await self.favoriteCurrentCaptureMedia(descriptor, taskID: taskID, snapshotID: snapshotID)
+      guard self.detail?.task.id == taskID else { return }
+      switch self.remoteMediaFavoriteState {
+      case .saved:
+        self.clearedVideoRedownloadState = .idle
+      case let .failed(message):
+        self.clearedVideoRedownloadState = .failed(message)
+      default:
+        self.clearedVideoRedownloadState = self.localMediaFileURL != nil
+          ? .idle
+          : .failed("没能下载回来，请稍后再试，或在浏览器打开原页面。")
+      }
+    }
+  }
+
   /// 在线分离是否可用（模型库里配了带 diarize 的模型）。
   func isOnlineSpeakerDiarizationConfigured() async -> Bool {
     await onlineSpeakerDiarizer?.configuredProfile() != nil
@@ -1859,7 +1937,10 @@ final class HistoryViewModel {
     // 网格每张卡上屏都走这里；查库放到仓储 worker，不在主线程同步读。
     guard let history, let mediaStore else { return nil }
     guard let asset = await worker.mediaAsset(history, taskID: taskID), asset.fileBookmark == nil else { return nil }
-    return mediaStore.containedInternalMediaURL(relativePath: asset.relativePath)
+    if let url = mediaStore.containedInternalMediaURL(relativePath: asset.relativePath) { return url }
+    // 视频已被清理：交出原路径，`WorkThumbnailLoader.videoPoster` 会改读清理前存下的封面。
+    let expected = mediaStore.absoluteURL(relativePath: asset.relativePath)
+    return WorkThumbnailLoader.savedPosterFileURL(forVideo: expected) != nil ? expected : nil
   }
 
   /// Poster source for video rows that never stored `cover_image`. Only this
@@ -4864,6 +4945,7 @@ final class HistoryViewModel {
         case .applied:
           self.transcriptionState = .completed
           self.refreshDetailAfterTranscription(taskID: context.taskID)
+          self.requestTranscribedVideoCleanup()
         case .replay, .stale:
           self.transcriptionState = .failed("这次在线转写已被更新的请求替代，请重试。")
         case .failure:
@@ -5203,6 +5285,7 @@ final class HistoryViewModel {
         transcriptionState = .completed
         pendingRemoteTranscriptionContext = nil
         refreshDetailAfterTranscription(taskID: context.taskID)
+        requestTranscribedVideoCleanup()
       case .replay, .stale:
         onDiscardedTranscriptionAttempt()
         transcriptionState = .failed("这次转写已被更新的请求替代，请重试。")
@@ -5352,6 +5435,7 @@ final class HistoryViewModel {
         handedOffSpeakerSegments = true
       }
       refreshDetailAfterTranscription(taskID: context.taskID)
+      requestTranscribedVideoCleanup()
     } catch is CancellationError {
       guard transcriptionRequestID == requestID else { return }
       _ = await worker.updateTranscriptionStatus(history, taskID: context.taskID, attempt: context.attempt, status: .none)
@@ -7399,6 +7483,7 @@ final class HistoryViewModel {
         self.livePlaybackStopContinuation = nil
         self.transcriptionState = .completed
         self.refreshDetailAfterTranscription(taskID: taskID)
+        self.requestTranscribedVideoCleanup()
       } catch is CancellationError {
         _ = await worker.updateTaskTranscriptionStatus(
           history, taskID: taskID, attempt: attempt, status: .cancelled,
@@ -7469,12 +7554,20 @@ final class HistoryViewModel {
           generation: generation
         )
       }
+      localMediaCleared = false
+      clearedVideoRedownloadState = .idle
       if let media = value.media, let mediaStore {
         do {
           let lease = try mediaStore.resolve(media)
           localMediaLease = lease
           localMediaFileURL = lease.url
           localMediaResolutionFailure = nil
+        } catch MediaStoragePreferenceError.missingResource where media.fileBookmark == nil {
+          // App 自己目录里的视频只会被清理规则或容量上限删掉，不是「文件被挪走了」。
+          localMediaLease = nil
+          localMediaFileURL = nil
+          localMediaResolutionFailure = nil
+          localMediaCleared = true
         } catch let error as MediaStoragePreferenceError {
           localMediaLease = nil
           localMediaFileURL = nil
@@ -7721,6 +7814,7 @@ final class HistoryViewModel {
         localMediaLease = lease
         localMediaFileURL = lease.url
         localMediaResolutionFailure = nil
+        localMediaCleared = false
       }
       loadDetailForSelection()
     } else {
