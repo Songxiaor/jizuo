@@ -40,7 +40,7 @@ struct AutomaticModelCallDisclosure: Equatable {
       parts.append("如果链接包含视频并完成自动转写，文稿整理还会额外产生 1 次模型调用。")
     }
     guard !parts.isEmpty else { return nil }
-    parts.append("可在设置的「生成偏好」里关闭。")
+    parts.append("可在设置的「工序总览」里关闭。")
     return parts.joined()
   }
 }

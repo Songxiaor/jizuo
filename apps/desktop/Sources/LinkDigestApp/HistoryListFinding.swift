@@ -139,7 +139,7 @@ enum HistoryListFinding {
   /// 原来这一行在没有总结时拿作者名来填，和下面的作者行重复，等于白占一行。
   /// 取不到有用的文字就返回 nil，让这一行干脆不出现。
   static func sourcePreviewLine(title: String, sourcePreview: String?, titleComesFromBody: Bool = true) -> String? {
-    guard let cleaned = HistoryRowProjection.sanitizedDirectoryPreview(sourcePreview, isSummary: false) else {
+    guard let cleaned = HistoryRowProjection.sanitizedDirectoryPreview(withoutCommentSection(sourcePreview), isSummary: false) else {
       return nil
     }
     // 裸网址不是「讲了什么」：「7 more ideas…」那种推文去掉标题后只剩一个链接。
@@ -159,6 +159,13 @@ enum HistoryListFinding {
     text = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
     guard text.filter({ $0.isLetter || $0.isNumber }).count >= 4 else { return nil }
     return text
+  }
+
+  /// 评论区不是正文：抖音这类配文只有一行标题，后面紧跟「## 评论」，
+  /// 列表摘要原来露出的是「评论（已保存 20 条 / 页面显示 31）- 山丘 · 赞 1」（2026-09-29 走查）。
+  static func withoutCommentSection(_ text: String?) -> String? {
+    guard let text, let range = text.range(of: #"(?m)^#{1,6}\s*评论"#, options: .regularExpression) else { return text }
+    return String(text[..<range.lowerBound])
   }
 
   /// 行里最多露几个标签：多了挤掉作者和时间，一个就够当关键词——

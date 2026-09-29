@@ -3143,9 +3143,11 @@ struct HistoryContentView: View {
         .accessibilityIdentifier("history-select-item-detail")
       )
     }
+    // 筛选/搜索没结果时，提示和「清除筛选」只在列表里说一次；详情区留白，
+    // 不再把同一句话和同一个按钮并排显示两遍（2026-09-29 发布前走查）。
     if model.hasActiveFilter {
       return AnyView(
-        filterEmptyState
+        Color.clear
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-filter-empty-detail")
       )
@@ -4418,7 +4420,10 @@ private struct HistoryDetailView: View, Equatable {
   /// 抖音、小红书这类作品的短配文不是文章：一句话用 20pt 宋体排成正文开头很怪。
   /// 300 字以内的配文改用界面无衬线字、不超过 15pt；长文仍走用户选的阅读字体。
   private func sourcePaneReadingFont(_ snapshot: ContentSnapshot) -> ResolvedReadingFont {
-    guard CreatorWorkMetricLayout.usesAdaptiveWorkGrid(URL(string: sourceURL)?.host ?? ""),
+    // 「短正文用黑体」是给社交短帖的；自己写的笔记、作品和标题同一套阅读字体
+    // （2026-09-29 走查：笔记标题宋体、正文黑体，同一页两种字）。
+    guard !isOwnWriting,
+          CreatorWorkMetricLayout.usesAdaptiveWorkGrid(URL(string: sourceURL)?.host ?? ""),
           !hasLiveTranscription,
           !showsLayeredSource || activeSourceLayer == .caption
     else { return readingFont }
@@ -5650,7 +5655,8 @@ private struct HistoryDetailView: View, Equatable {
         .accessibilityIdentifier("history-run-panel-toggle")
       }
     } label: {
-      Label("AI 处理", systemImage: "sparkles")
+      // 和文章页右上的「处理」同名同图标（2026-09-29 走查：原来这里叫「AI 处理」，两处叫法不一）。
+      Label("处理", systemImage: "wand.and.stars")
         .themedFont(.callout, weight: .medium)
         .padding(.horizontal, DesignTokens.Space.sm)
         .padding(.vertical, 3)
@@ -5663,7 +5669,7 @@ private struct HistoryDetailView: View, Equatable {
     .controlSize(.small)
     .fixedSize()
     .help("总结、翻译与脑图")
-    .accessibilityLabel("AI 处理")
+    .accessibilityLabel("处理")
     .accessibilityIdentifier("history-ai-processing-menu")
   }
 
@@ -6001,7 +6007,7 @@ private struct HistoryDetailView: View, Equatable {
     let trimmed = providerSettings.effectiveTranscriptionModelName?
       .trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed?.isEmpty != false {
-      return "在线转写（未配置模型，见 设置 → 模型与识别）"
+      return "在线转写（未配置模型，见 设置 → 录 · 转写）"
     }
     return hasCompletedTranscript ? "重新转写（在线）" : "在线转写"
   }
@@ -7521,8 +7527,10 @@ private struct HistoryDetailView: View, Equatable {
       if collapsed {
         sourceSnapshotReader(snapshot, bodyOverride: sourcePreview(body))
         Button("展开全文") { isExpanded.wrappedValue = true }
-          .buttonStyle(.link)
+          .buttonStyle(.plain)
           .themedFont(.callout, weight: .medium)
+          // 可点的文字统一用靛青（2026-09-29 走查：原来是正文色粗体，看不出能点）。
+          .foregroundStyle(theme.accent)
           .padding(.top, 4)
           .padding(.leading, sourceGutterInset(snapshot))
           .accessibilityIdentifier("history-source-expand-inline")
@@ -7533,8 +7541,10 @@ private struct HistoryDetailView: View, Equatable {
             isExpanded.wrappedValue = false
             sourceCollapseScrollTarget = collapseAnchor
           }
-          .buttonStyle(.link)
+          .buttonStyle(.plain)
           .themedFont(.callout, weight: .medium)
+          // 可点的文字统一用靛青（2026-09-29 走查：原来是正文色粗体，看不出能点）。
+          .foregroundStyle(theme.accent)
           .padding(.top, 4)
           .padding(.leading, sourceGutterInset(snapshot))
           .accessibilityIdentifier("history-source-collapse-inline")
@@ -8981,7 +8991,7 @@ struct ModelFailureFix: Equatable {
     switch status {
     case .keyInvalid: "去更换密钥"
     case .billingLimited: "去设置换模型或查看额度"
-    default: "去「模型与识别」换一个模型"
+    default: "去「模型服务」换一个模型"
     }
   }
 }

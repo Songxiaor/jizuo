@@ -69,6 +69,12 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
   /// dropped so a cover-only body does not become the preview.
   public static func directorySourcePreview(fromBody body: String, scalarLimit: Int = 240) -> String? {
     var text = body
+    // 评论区不是正文：抖音这类配文只有一行标题，后面紧跟「## 评论」，列表摘要原来露出的是
+    // 「评论（已保存 20 条 / 页面显示 31）- 山丘 · 赞 1」（2026-09-29 发布前走查）。
+    // 必须在下面把空白压成一行之前切，压完就认不出小标题了。
+    if let comments = text.range(of: #"(?m)^#{1,6}[ \t]*评论"#, options: .regularExpression) {
+      text = String(text[..<comments.lowerBound])
+    }
     while let start = text.range(of: "![") {
       guard let altEnd = text.range(of: "](", range: start.upperBound..<text.endIndex),
             let close = text[altEnd.upperBound...].firstIndex(of: ")")

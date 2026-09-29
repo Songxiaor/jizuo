@@ -11,6 +11,7 @@ struct HistoryInlineState: View {
   /// 工序相关的空状态画一枚大印位代替图标（2026-09-28 工序印）：「待校对」是空的，
   /// 就是「校」这枚章都盖齐了、这里没有等着盖的。
   var seal: (glyph: SealMark.Glyph, color: Color)? = nil
+  @Environment(\.appTheme) private var theme
 
   var body: some View {
     VStack(spacing: 10) {
@@ -31,7 +32,11 @@ struct HistoryInlineState: View {
         .multilineTextAlignment(.center)
         .frame(maxWidth: 330)
       if let actionTitle, let action {
-        Button(actionTitle, action: action).buttonStyle(.borderedProminent)
+        // 和设置、详情里的主按钮同一套样式；系统 borderedProminent 在这里字贴边
+        // （2026-09-29 发布前走查）。
+        Button(actionTitle, action: action)
+          .buttonStyle(.appProminent(theme.accent))
+          .padding(.top, 4)
       }
     }
     .padding(20)

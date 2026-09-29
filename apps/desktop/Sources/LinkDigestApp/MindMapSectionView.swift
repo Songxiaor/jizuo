@@ -85,67 +85,95 @@ struct MindMapSectionView: View {
     }
   }
 
+  @ViewBuilder private func themePicker(_ record: TaskMindMapRecord) -> some View {
+    Picker("主题", selection: Binding(
+      get: { record.themeID },
+      set: { model.updateMindMapTheme(taskID: taskID, themeID: $0) }
+    )) {
+      ForEach(MindMapTheme.all, id: \.id) { theme in
+        Text(theme.displayName).tag(theme.id)
+      }
+    }
+    .pickerStyle(.segmented)
+    .frame(width: 200)
+    .labelsHidden()
+    // 只读时拨了也不会落库，让它可拨等于无声丢弃。ViewModel 那边有兜底闸，
+    // 这里灰掉是为了让「改不了」看得见。
+    .disabled(model.isReadOnly)
+    .accessibilityLabel("脑图主题")
+  }
+
+  @ViewBuilder private func mapActions() -> some View {
+    Button("重新生成") { model.requestMindMapGeneration(taskID: taskID) }
+      .controlSize(.small)
+      .disabled(model.mindMapUnavailableReason(taskID: taskID) != nil)
+      .help(model.mindMapUnavailableReason(taskID: taskID) ?? "重新把文字发送给模型提取脑图结构；会覆盖当前脑图（含手动编辑）。")
+      .accessibilityLabel("重新生成脑图")
+      .accessibilityIdentifier("mind-map-regenerate")
+    if let reason = model.mindMapUnavailableReason(taskID: taskID) {
+      Text(reason)
+        .themedFont(.caption)
+        .foregroundStyle(.secondary)
+        .accessibilityIdentifier("mind-map-blocked-reason")
+    }
+    Button("编辑") { isEditorPresented = true }
+      .controlSize(.small)
+      .fixedSize()
+      .disabled(model.isReadOnly)
+      .help(model.isReadOnly ? "这份历史当前只能浏览" : "编辑脑图结构")
+      .accessibilityLabel("编辑脑图")
+      .accessibilityIdentifier("mind-map-edit")
+    Menu {
+      Button("导出脑图 SVG") {
+        if let svg = model.mindMapSVG() {
+          svgExport = MindMapExportFile(text: svg)
+        }
+      }
+      Button("导出脑图 + 原文 (HTML)") {
+        if let html = model.mindMapCombinedExportHTML() {
+          htmlExport = MindMapExportFile(text: html)
+        }
+      }
+    } label: {
+      Label("导出", systemImage: "square.and.arrow.up")
+    }
+    .controlSize(.small)
+    .menuStyle(.borderlessButton)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .help("导出脑图")
+    .accessibilityLabel("导出脑图")
+    .accessibilityIdentifier("mind-map-export")
+  }
+
   @ViewBuilder private func mapCard(_ record: TaskMindMapRecord) -> some View {
     VStack(alignment: .leading, spacing: 10) {
-      HStack(spacing: 10) {
-        Text("脑图").themedFont(.headline)
-        if record.userEdited {
-          Text("已编辑").themedFont(.caption2).foregroundStyle(.secondary)
-        }
-        Spacer(minLength: 0)
-        Picker("主题", selection: Binding(
-          get: { record.themeID },
-          set: { model.updateMindMapTheme(taskID: taskID, themeID: $0) }
-        )) {
-          ForEach(MindMapTheme.all, id: \.id) { theme in
-            Text(theme.displayName).tag(theme.id)
+      // 窄窗口（笔记本分屏 ~900pt）一行放不下时，按钮整排折到标题下面，
+      // 不再把「脑图」挤成竖排两行（2026-09-29 发布前走查）。
+      ViewThatFits(in: .horizontal) {
+        HStack(spacing: 10) {
+          Text("脑图").themedFont(.headline).fixedSize()
+          if record.userEdited {
+            Text("已编辑").themedFont(.caption2).foregroundStyle(.secondary).fixedSize()
           }
+          Spacer(minLength: 0)
+          themePicker(record)
+          mapActions()
         }
-        .pickerStyle(.segmented)
-        .frame(width: 200)
-        .labelsHidden()
-        // 只读时拨了也不会落库，让它可拨等于无声丢弃。ViewModel 那边有兜底闸，
-        // 这里灰掉是为了让「改不了」看得见。
-        .disabled(model.isReadOnly)
-        .accessibilityLabel("脑图主题")
-        Button("重新生成") { model.requestMindMapGeneration(taskID: taskID) }
-          .controlSize(.small)
-          .disabled(model.mindMapUnavailableReason(taskID: taskID) != nil)
-          .help(model.mindMapUnavailableReason(taskID: taskID) ?? "重新把文字发送给模型提取脑图结构；会覆盖当前脑图（含手动编辑）。")
-          .accessibilityLabel("重新生成脑图")
-          .accessibilityIdentifier("mind-map-regenerate")
-        if let reason = model.mindMapUnavailableReason(taskID: taskID) {
-          Text(reason)
-            .themedFont(.caption)
-            .foregroundStyle(.secondary)
-            .accessibilityIdentifier("mind-map-blocked-reason")
-        }
-        Button("编辑") { isEditorPresented = true }
-          .controlSize(.small)
-          .disabled(model.isReadOnly)
-          .help(model.isReadOnly ? "这份历史当前只能浏览" : "编辑脑图结构")
-          .accessibilityLabel("编辑脑图")
-          .accessibilityIdentifier("mind-map-edit")
-        Menu {
-          Button("导出脑图 SVG") {
-            if let svg = model.mindMapSVG() {
-              svgExport = MindMapExportFile(text: svg)
+        VStack(alignment: .leading, spacing: 8) {
+          HStack(spacing: 10) {
+            Text("脑图").themedFont(.headline).fixedSize()
+            if record.userEdited {
+              Text("已编辑").themedFont(.caption2).foregroundStyle(.secondary).fixedSize()
             }
+            Spacer(minLength: 0)
+            themePicker(record)
           }
-          Button("导出脑图 + 原文 (HTML)") {
-            if let html = model.mindMapCombinedExportHTML() {
-              htmlExport = MindMapExportFile(text: html)
-            }
+          HStack(spacing: 10) {
+            Spacer(minLength: 0)
+            mapActions()
           }
-        } label: {
-          Label("导出", systemImage: "square.and.arrow.up")
         }
-        .controlSize(.small)
-        .menuStyle(.borderlessButton)
-        .frame(width: 84)
-        .help("导出脑图")
-        .accessibilityLabel("导出脑图")
-        .accessibilityIdentifier("mind-map-export")
       }
       if let svg = model.mindMapSVG() {
         MindMapCanvasView(
@@ -155,11 +183,10 @@ struct MindMapSectionView: View {
           outlineText: Self.outlinePlainText(record.outline)
         )
       }
+      // 用量是给排障看的，不常驻：原来卡底一直挂着「993 tokens（输入 576 / 输出 417）」，
+      // 读者看不懂也用不上（2026-09-29 发布前走查）。挪到卡片的悬停说明里。
       HStack(spacing: 12) {
         stateText
-        if let tokens = model.mindMapTokenSummary {
-          Text(tokens).themedFont(.caption).foregroundStyle(.secondary)
-        }
         Spacer(minLength: 0)
       }
     }
@@ -168,6 +195,7 @@ struct MindMapSectionView: View {
       RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
         .strokeBorder(Color.secondary.opacity(0.15), lineWidth: 1)
     )
+    .help(model.mindMapTokenSummary.map { "生成用量：\($0)" } ?? "")
     .accessibilityIdentifier("mind-map-card")
   }
 

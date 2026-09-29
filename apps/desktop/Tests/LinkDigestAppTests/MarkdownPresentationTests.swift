@@ -1562,6 +1562,13 @@ final class HistoryListFindingTests: XCTestCase {
     XCTAssertNil(HistoryListFinding.sourcePreviewLine(title: "卧槽！", sourcePreview: "卧槽！"), "只剩标题本身时不出预览行")
   }
 
+  /// 2026-09-29：抖音配文只有标题，后面紧跟评论区——评论不能当摘要露出来。
+  func testPreviewNeverShowsTheCommentSection() {
+    let preview = "# 短视频未来两年趋势 vlog还是口播？\n\n## 评论（已保存 20 条 / 页面显示 50）\n\n- **早安 晚安** · 赞 1\n  表达者与受众通过视频，达成共识"
+    XCTAssertNil(HistoryListFinding.sourcePreviewLine(title: "短视频未来两年趋势 vlog还是口播？", sourcePreview: preview, titleComesFromBody: false))
+    XCTAssertEqual(HistoryListFinding.withoutCommentSection("正文一句。\n\n## 评论\n\n- 甲"), "正文一句。\n\n")
+  }
+
   func testPreviewHandlesWholeTweetTitlesAndBareLinks() {
     let tweet = "You easily quit your goals because there's nothing on the line. You don't have a vision for a better life that is so clear that your current life feels like losing if you don't reach it. Secretly most people don't actually want to achieve their goals."
     let preview = String(tweet.prefix(120))

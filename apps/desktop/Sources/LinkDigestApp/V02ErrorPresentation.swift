@@ -65,7 +65,7 @@ enum V02ErrorCatalog {
     case ProviderConfigurationError.baseURLRequired.rawValue:
       .init(
         message: "服务地址还没填。",
-        recoveryAction: "已保存的配置没有变化。请在「模型与识别 → 添加模型」里填上以 https:// 开头的服务地址后再保存。"
+        recoveryAction: "已保存的配置没有变化。请在「模型服务 → 添加模型」里填上以 https:// 开头的服务地址后再保存。"
       )
     case ProviderConfigurationError.baseURLInvalid.rawValue,
          ModelProviderErrorCode.baseURLInvalid.rawValue:
@@ -116,17 +116,17 @@ enum V02ErrorCatalog {
     case "SECRET_STORE_DELETE_FAILED":
       .init(
         message: "旧密钥没能从钥匙串里清干净。",
-        recoveryAction: "当前配置照常能用，也没有任何内容因此发错地方。请到「模型与识别」把这个模型删掉再重新添加一次，残留就会一起清掉。"
+        recoveryAction: "当前配置照常能用，也没有任何内容因此发错地方。请到「模型服务」把这个模型删掉再重新添加一次，残留就会一起清掉。"
       )
     case ModelRunErrorCode.modelNotConfigured.rawValue:
       .init(
         message: "还没配置可用的模型。",
-        recoveryAction: "你的内容都还在，只是这一步跑不了。请到「模型与识别 → 添加模型」，填好服务地址、密钥并选一个模型。"
+        recoveryAction: "你的内容都还在，只是这一步跑不了。请到「模型服务 → 添加模型」，填好服务地址、密钥并选一个模型。"
       )
     case ModelProviderErrorCode.authInvalid.rawValue:
       .init(
         message: "模型服务不认这个密钥。",
-        recoveryAction: "你的内容没有受影响。请到「模型与识别」更新密钥后再试一次。"
+        recoveryAction: "你的内容没有受影响。请到「模型服务」更新密钥后再试一次。"
       )
     case ModelProviderErrorCode.authForbidden.rawValue:
       .init(
@@ -136,12 +136,12 @@ enum V02ErrorCatalog {
     case ModelProviderErrorCode.endpointNotFound.rawValue:
       .init(
         message: "这个服务地址上没有汲作要调用的接口。",
-        recoveryAction: "你的内容没有受影响。请回到「模型与识别」核对服务地址，照服务商文档里给的那一行填。"
+        recoveryAction: "你的内容没有受影响。请回到「模型服务」核对服务地址，照服务商文档里给的那一行填。"
       )
     case ModelProviderErrorCode.modelNotFound.rawValue:
       .init(
         message: "模型服务那边找不到你选的这个模型，可能已经下架。",
-        recoveryAction: "密钥没问题，你的内容也没有受影响。请回到「模型与识别」点「读取模型列表」重新选一个还在的模型。"
+        recoveryAction: "密钥没问题，你的内容也没有受影响。请回到「模型服务」点「读取模型列表」重新选一个还在的模型。"
       )
     case ModelProviderErrorCode.providerBillingLimited.rawValue:
       .init(
@@ -151,12 +151,12 @@ enum V02ErrorCatalog {
     case ModelProviderErrorCode.freeTierRestricted.rawValue:
       .init(
         message: "这个免费模型只能在服务商自家的工具里用。",
-        recoveryAction: "密钥没问题，你的内容也没有受影响。服务商把免费模型限定在自家客户端里，汲作调用不了。请在「模型与识别」换成付费模型，或换一家服务商的模型。"
+        recoveryAction: "密钥没问题，你的内容也没有受影响。服务商把免费模型限定在自家客户端里，汲作调用不了。请在「模型服务」换成付费模型，或换一家服务商的模型。"
       )
     case ModelProviderErrorCode.providerRequestRejected.rawValue:
       .init(
         message: "模型服务拒绝了这次请求。",
-        recoveryAction: "你的内容没有受影响。请回到「模型与识别」核对这个模型的配置，或换一个模型再试。"
+        recoveryAction: "你的内容没有受影响。请回到「模型服务」核对这个模型的配置，或换一个模型再试。"
       )
     case ModelProviderErrorCode.rateLimited.rawValue:
       .init(
@@ -176,7 +176,7 @@ enum V02ErrorCatalog {
     case ModelProviderErrorCode.protocolIncompatible.rawValue:
       .init(
         message: "模型服务返回的东西汲作看不懂。",
-        recoveryAction: "你的内容没有受影响。请回到「模型与识别」核对服务地址，照服务商文档里给的那一行填；确认无误还是这样，就换一个模型服务。"
+        recoveryAction: "你的内容没有受影响。请回到「模型服务」核对服务地址，照服务商文档里给的那一行填；确认无误还是这样，就换一个模型服务。"
       )
     case ModelProviderErrorCode.streamMalformed.rawValue:
       .init(
@@ -201,12 +201,12 @@ enum V02ErrorCatalog {
     case ModelRunErrorCode.runFailed.rawValue:
       .init(
         message: "这次生成没能开始。",
-        recoveryAction: "你的内容没有受影响。请检查网络和「模型与识别」里的配置后再点一次。"
+        recoveryAction: "你的内容没有受影响。请检查网络和「模型服务」里的配置后再点一次。"
       )
     default:
       .init(
         message: "这次操作没做完。",
-        recoveryAction: "你的内容没有受影响。请检查网络和「模型与识别」里的配置后再试一次。"
+        recoveryAction: "你的内容没有受影响。请检查网络和「模型服务」里的配置后再试一次。"
       )
     }
     return presentation

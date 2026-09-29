@@ -367,14 +367,14 @@ final class ProviderSettingsViewModel {
   var preferencesStatusText: String {
     switch preferencesState {
     case .loading:
-      return "正在读取生成偏好…"
+      return "正在读取设置…"
     case .saving:
-      return "正在保存生成偏好…"
+      return "正在保存设置…"
     case let .failed(message):
       return message
     case .idle, .saved:
       if hasUnsavedPreferences { return "有未保存的修改" }
-      return preferencesState == .saved ? "生成偏好已保存" : "使用已保存的生成偏好"
+      return preferencesState == .saved ? "设置已保存" : "使用已保存的设置"
     }
   }
 
@@ -434,7 +434,7 @@ final class ProviderSettingsViewModel {
       applyLoadedPreferences(preferences)
       preferencesState = .idle
     } catch {
-      preferencesState = .failed("无法读取生成偏好，当前使用默认值。")
+      preferencesState = .failed("无法读取设置，当前使用默认值。")
     }
 
     do {
@@ -849,7 +849,7 @@ final class ProviderSettingsViewModel {
         applyPreferencesSaveFailure(error)
         return
       } catch {
-        preferencesState = .failed("无法保存生成偏好，请稍后重试。")
+        preferencesState = .failed("无法保存设置，请稍后重试。")
         return
       }
       if pipelineFlagSnapshot != snapshot {
@@ -924,7 +924,7 @@ final class ProviderSettingsViewModel {
     case .tidyModelTooLong:
       preferencesState = .failed("校对模型名不能超过 256 个字符。")
     case .readFailed, .writeFailed:
-      preferencesState = .failed("无法保存生成偏好，请稍后重试。")
+      preferencesState = .failed("无法保存设置，请稍后重试。")
     }
   }
 

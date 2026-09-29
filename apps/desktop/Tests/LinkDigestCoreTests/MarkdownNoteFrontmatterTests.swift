@@ -318,4 +318,11 @@ final class MarkdownNoteFrontmatterTests: XCTestCase {
     XCTAssertTrue(cleaned.hasPrefix("今晚别刷Netflix了。"))
     XCTAssertTrue(cleaned.contains("正文里提到 captured 这个词不删。"))
   }
+
+  /// 2026-09-29：评论区不进列表摘要。
+  func testDirectoryPreviewStopsAtCommentSection() {
+    let body = "# 短视频未来两年趋势\n\n## 评论（已保存 20 条 / 页面显示 50）\n\n- **早安 晚安** · 赞 1\n  表达者"
+    XCTAssertEqual(MarkdownNoteFrontmatter.directorySourcePreview(fromBody: body), "# 短视频未来两年趋势")
+    XCTAssertNil(MarkdownNoteFrontmatter.directorySourcePreview(fromBody: "## 评论\n\n- 甲"))
+  }
 }

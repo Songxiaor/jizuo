@@ -42,7 +42,7 @@ final class GenerationSettingsPresentationTests: XCTestCase {
     XCTAssertEqual(SettingsProcessStep.allCases.map(\.glyph.rawValue), ["汲", "录", "校", "评", "摘", "译", "图"])
     let pages = try stepPages(in: try source())
     XCTAssertTrue(pages.contains("SettingsProcessChain("), "总览页必须画出工序链")
-    XCTAssertTrue(page("summaryTab", in: pages).contains("读原文，不读译文"), "总结吃的是原文，必须写在页头说明上")
+    XCTAssertTrue(page("summaryTab", in: pages).contains("读原文、不读译文"), "总结吃的是原文，必须写在页头说明上")
   }
 
   /// 每道工序的「自动」开关绑到原来那条管线偏好上，一个都不能漏。

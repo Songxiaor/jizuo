@@ -75,7 +75,7 @@ final class ModelHealthTests: XCTestCase {
   func testOnlyModelProblemsOfferTheFixButton() {
     XCTAssertEqual(
       ModelFailureFix(runState: .failed(intent: .translate, code: ModelProviderErrorCode.modelNotFound.rawValue))?.buttonTitle,
-      "去「模型与识别」换一个模型"
+      "去「模型服务」换一个模型"
     )
     XCTAssertEqual(
       ModelFailureFix(runState: .failed(intent: .translate, code: ModelProviderErrorCode.authInvalid.rawValue))?.buttonTitle,

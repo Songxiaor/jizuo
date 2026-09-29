@@ -55,6 +55,18 @@ struct SealMark: View {
   /// 手盖的章总有一点歪。
   var rotation: Double = 0
 
+  @Environment(\.colorScheme) private var colorScheme
+
+  /// 深色主题下的朱砂：主题里的朱（E07A66）是为了红字在深底上读得清而提亮的，
+  /// 整块铺成章就成了粉色瓷砖（2026-09-29 走查）。章本身用沉一些的朱砂，红字不受影响。
+  static let darkCinnabar = Color(red: 0xC8 / 255, green: 0x48 / 255, blue: 0x30 / 255)
+
+  /// 盖好的章、印位用的颜色：深色主题换成朱砂，保留调用方给的透明度层级（印位更淡）。
+  private var sealColor: Color {
+    guard colorScheme == .dark, style != .line else { return color }
+    return style == .pending ? Self.darkCinnabar.opacity(0.85) : Self.darkCinnabar
+  }
+
   var body: some View {
     Group {
       switch style {
@@ -97,11 +109,11 @@ struct SealMark: View {
       let frameWidth = max(2.4 * unit, 0.8)
       context.stroke(
         SealGeometry.frame(inset: 0, unit: unit),
-        with: .color(color),
+        with: .color(sealColor),
         style: StrokeStyle(lineWidth: frameWidth, lineJoin: .round, dash: [7 * unit, 5 * unit])
       )
       if let glyphPath = SealGeometry.glyphPath(glyph.rawValue, unit: unit) {
-        context.stroke(glyphPath, with: .color(color), style: StrokeStyle(lineWidth: max(1.4 * unit, 0.55), lineJoin: .round))
+        context.stroke(glyphPath, with: .color(sealColor), style: StrokeStyle(lineWidth: max(1.4 * unit, 0.55), lineJoin: .round))
       }
     }
   }
@@ -112,9 +124,9 @@ struct SealMark: View {
     Canvas { context, canvasSize in
       let unit = canvasSize.width / 100
       // 整方朱底。
-      context.fill(SealGeometry.frame(inset: 0, unit: unit), with: .color(color))
+      context.fill(SealGeometry.frame(inset: 0, unit: unit), with: .color(sealColor))
       context.stroke(
-        SealGeometry.frame(inset: 0, unit: unit), with: .color(color),
+        SealGeometry.frame(inset: 0, unit: unit), with: .color(sealColor),
         style: StrokeStyle(lineWidth: max(5 * unit, 0.9), lineJoin: .round)
       )
       // 字、内框、纹样都是「刻掉」的：镂空见底色，深浅主题都对。

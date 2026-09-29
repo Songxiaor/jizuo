@@ -1160,6 +1160,21 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
       return
     }
     for url in urls { handler(url) }
+    reopenMainWindowIfClosed()
+  }
+
+  /// 主窗口被关掉后，点知识库里的回链原来「没反应」：定位做了，可是没有窗口可看
+  /// （2026-09-29 发布前走查）。这时替用户把主窗口叫回来——等同于点一下 Dock 图标，
+  /// SwiftUI 收到 reopen 会重建主窗口，新窗口读到的就是刚定位好的那一条。
+  private func reopenMainWindowIfClosed() {
+    let hasMainWindow = NSApp.windows.contains { window in
+      window.isVisible && (window.identifier?.rawValue.hasPrefix(LinkDigestApp.mainWindowID) ?? false)
+    }
+    guard !hasMainWindow else {
+      NSApp.activate()
+      return
+    }
+    NSWorkspace.shared.openApplication(at: Bundle.main.bundleURL, configuration: NSWorkspace.OpenConfiguration())
   }
 }
 

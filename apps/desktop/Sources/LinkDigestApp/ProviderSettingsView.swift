@@ -317,24 +317,35 @@ struct ProviderSettingsView: View {
     recommended: [String],
     identifier: String
   ) -> some View {
-    Picker(title, selection: selection) {
-      Text(themeLabel).tag(themeTag)
-      Divider()
-      Section("推荐") {
-        // 每一项用它自己的字形显示，选之前就能看出长什么样。
-        ForEach(recommended, id: \.self) { family in
-          Text(family).font(.custom(family, size: 13)).tag(family)
+    // 外壳用设置里通用的灰色下拉样式（系统弹出菜单是蓝箭头，和其它页不统一，
+    // 2026-09-29 发布前走查）；菜单本身仍是系统菜单，每一项用自己的字形显示。
+    Menu {
+      Picker(title, selection: selection) {
+        Text(themeLabel).tag(themeTag)
+        Divider()
+        Section("推荐") {
+          // 每一项用它自己的字形显示，选之前就能看出长什么样。
+          ForEach(recommended, id: \.self) { family in
+            Text(family).font(.custom(family, size: 13)).tag(family)
+          }
+        }
+        Section("其它") {
+          ForEach(RecommendedFonts.others(excluding: recommended), id: \.self) { family in
+            Text(family).font(.custom(family, size: 13)).tag(family)
+          }
         }
       }
-      Section("其它") {
-        ForEach(RecommendedFonts.others(excluding: recommended), id: \.self) { family in
-          Text(family).font(.custom(family, size: 13)).tag(family)
-        }
-      }
+      .pickerStyle(.inline)
+      .labelsHidden()
+    } label: {
+      SettingsMenuLabel(title: selection.wrappedValue == themeTag ? themeLabel : selection.wrappedValue)
     }
-    .pickerStyle(.menu)
-    .labelsHidden()
-    .settingsControlWidth()
+    .menuStyle(.button)
+    .buttonStyle(.plain)
+    .menuIndicator(.hidden)
+    .fixedSize()
+    .accessibilityLabel(title)
+    .accessibilityValue(selection.wrappedValue == themeTag ? themeLabel : selection.wrappedValue)
     .accessibilityIdentifier(identifier)
   }
 
@@ -515,7 +526,7 @@ struct ProviderSettingsView: View {
 
   private var serviceTab: some View {
     SettingsPlainPage {
-      pageHeader(for: .service, caption: "配置总结、翻译、转写、校对和图片识别各自要用的模型。")
+      pageHeader(for: .service, caption: "添加和管理模型服务商。每道工序用哪个模型，到对应的工序页里选。")
 
       // 这张卡只剩「标签 + 控件」六行：说明全部收进各行的 ⓘ，卡片脚注也删掉——
       // 原来每行下面一段灰字、卡底再一句脚注，六个控件配了五段说明，控件密度极低，
@@ -2015,7 +2026,7 @@ struct ProviderSettingsView: View {
 
       settingCard(
         title: "主题",
-        summary: "选择界面明暗与阅读纸色；切换即时生效。",
+        summary: "选择界面明暗与阅读纸色。",
         details: "浅色和深色是同一套配色的白天和夜晚：同一组带绿的中性色、同一个墨绿强调色。「跟随系统」在两者之间自动切换。界面字体默认跟随系统（英文数字 SF Pro、中文 PingFang），下面两项可以各自覆盖。",
         controlWidth: .full
       ) {
@@ -2190,7 +2201,7 @@ struct ProviderSettingsView: View {
 
   private var recordTab: some View {
     SettingsPlainPage {
-      stepHeader(.record, caption: "新内容带视频或录音时，自动在本机转写成文字。不联网、不花钱。")
+      stepHeader(.record, caption: "把视频和录音在本机转写成文字，不联网、不花钱。打开「自动」后，带音视频的新内容一进来就转。")
       SettingsRowGroup {
         localTranscriptionRow
         onlineTranscriptionRow
@@ -2206,7 +2217,7 @@ struct ProviderSettingsView: View {
 
   private var proofTab: some View {
     SettingsPlainPage {
-      stepHeader(.proof, caption: "转写完后自动用模型校对：还原听错的词、补标点、加小标题。只发送文字。")
+      stepHeader(.proof, caption: "用模型校对转写稿：还原听错的词、补标点、加小标题，只发送文字。打开「自动」后转写完就接着校。")
       if model.autoTidyTranscription, !model.autoTranscribeNewCaptures {
         SettingsInlineNotice(message: "「录 · 转写」没设成自动，新内容进来时没有转写稿可校对；手动转写后仍可在「处理」里点校对。", tone: .warning)
       }
@@ -2261,7 +2272,7 @@ struct ProviderSettingsView: View {
 
   private var summaryTab: some View {
     SettingsPlainPage {
-      stepHeader(.summary, caption: "新内容进来后自动写一份总结。读原文，不读译文。")
+      stepHeader(.summary, caption: "给内容写一份总结，读原文、不读译文。打开「自动」后新内容一进来就写。")
       SettingsRowGroup {
         summaryAssignmentRow
         outputLanguageRow
@@ -2290,7 +2301,7 @@ struct ProviderSettingsView: View {
 
   private var mindMapTab: some View {
     SettingsPlainPage {
-      stepHeader(.mindMap, caption: "新内容进来后自动生成脑图。优先读总结，没有总结时读原文。")
+      stepHeader(.mindMap, caption: "把内容整理成脑图，优先读总结，没有总结时读原文。打开「自动」后新内容一进来就生成。")
       if model.autoMindMapNewCaptures, !model.autoSummarizeNewCaptures {
         SettingsInlineNotice(message: "「摘 · 总结」没设成自动：脑图将直接读原文生成，质量通常不如先总结。", tone: .warning)
       }
@@ -2353,7 +2364,7 @@ struct ProviderSettingsView: View {
     SettingsRow(
       title: "输出语言",
       caption: "总结、翻译等生成结果统一用这个语言。",
-      details: "总结、翻译等生成结果统一用这个语言输出。生成时会把这条语言指令追加到提示词；模型分配仍在「模型与识别」。"
+      details: "总结、翻译等生成结果统一用这个语言输出。生成时会把这条语言指令追加到提示词；总结用哪个模型在上面「总结模型」里选。"
     ) {
       VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
         SettingsMenuPicker(
