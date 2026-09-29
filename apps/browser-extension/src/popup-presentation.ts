@@ -114,6 +114,24 @@ export function popupPreviewFailure(rawMessage: string): PopupPreviewFailure {
   };
 }
 
+/**
+ * 浏览器自己的页面（设置、扩展、新标签页、ego:// 之类）扩展根本读不了，刷新也没用：
+ * 直接说清楚，不给「重新读取」（2026-09-29 真机走查：原来会叫人刷新重试）。
+ * 不是这类页面时返回 null。
+ */
+export function popupBrowserPageFailure(url: string | undefined): PopupPreviewFailure | null {
+  if (!url) return null;
+  let scheme = "";
+  try { scheme = new URL(url).protocol; } catch { return null; }
+  if (scheme === "http:" || scheme === "https:") return null;
+  return {
+    title: "浏览器自己的页面读不了",
+    message: "设置、扩展、新标签页这类浏览器自带页面，不允许扩展读取内容。",
+    steps: ["换到一篇文章、一条帖子或视频页", "再点一次「汲」图标"],
+    canReload: false,
+  };
+}
+
 export function popupRecoveryForSendResult(result: SafeExtensionSendResult): PopupRecovery | null {
   if (result.response.kind !== "error") return null;
   const message = popupMessageForResponse(result.response) ?? "操作未完成。";
@@ -339,6 +357,7 @@ export type PopupStat = { value: string; label: string };
  */
 export function popupStats(preview: {
   characterCount: number;
+  wordCount?: number;
   completeness: Completeness;
   version: 1 | 2;
   platform?: CapturePlatform;
@@ -357,12 +376,19 @@ export function popupStats(preview: {
     if (stats.length < 4 && preview.characterCount > 0) stats.push({ value: roundCount(preview.characterCount), label: "字正文" });
     return stats.slice(0, 4);
   }
-  if (preview.characterCount > 0) {
-    stats.push({ value: roundCount(preview.characterCount), label: preview.completeness === "selection_only" ? "字（选中）" : "字" });
+  // 图文只配了一两句话时，「8 字 · 1 分钟读完」没有意义：让位给图数和互动。
+  const countsText = preview.characterCount > 0 && !(preview.imageCount && preview.imageCount > 0 && preview.characterCount < 40);
+  // 英文按词：约每分钟 230 词；中文按字：约每分钟 400 字。
+  const words = preview.wordCount && preview.wordCount > 0 ? preview.wordCount : undefined;
+  if (countsText) {
+    stats.push(words
+      ? { value: roundCount(words), label: "词" }
+      : { value: roundCount(preview.characterCount), label: preview.completeness === "selection_only" ? "字（选中）" : "字" });
   }
   if (preview.imageCount && preview.imageCount > 0) stats.push({ value: String(preview.imageCount), label: "张图" });
-  if (preview.characterCount > 0 && preview.completeness !== "selection_only") {
-    stats.push({ value: `${Math.max(1, Math.round(preview.characterCount / 400))} 分钟`, label: "读完" });
+  if (countsText && preview.completeness !== "selection_only") {
+    const minutes = Math.max(1, Math.round(words ? words / 230 : preview.characterCount / 400));
+    stats.push({ value: `${minutes} 分钟`, label: "读完" });
   }
   // 读完整了就不占格子（顶部状态已经说了「可以保存」），把位置让给赞和评论。
   if (preview.completeness !== "full_article" || engagement.length === 0) {
@@ -375,7 +401,19 @@ export function popupStats(preview: {
 function engagementStats(engagement: Partial<Record<"likes" | "comments" | "shares" | "collects" | "views", string>> | undefined): PopupStat[] {
   if (!engagement) return [];
   const labels = [["likes", "赞"], ["comments", "评论"], ["collects", "收藏"], ["shares", "转发"], ["views", "浏览"]] as const;
-  return labels.flatMap(([key, label]) => (engagement[key] ? [{ value: engagement[key]!, label }] : []));
+  return labels.flatMap(([key, label]) => (engagement[key] ? [{ value: popupCountLabel(engagement[key]!), label }] : []));
+}
+
+/** 「24543329」→「2454万」、「563472」→「56.3万」；平台已写好的「1.2万」「3k」原样。 */
+export function popupCountLabel(raw: string): string {
+  const digits = raw.replace(/[,，\s]/gu, "");
+  if (!/^\d+$/u.test(digits)) return raw;
+  const n = Number(digits);
+  const trim = (value: number) => value.toFixed(1).replace(/\.0$/u, "");
+  if (n >= 100_000_000) return `${trim(n / 100_000_000)}亿`;
+  if (n >= 1_000_000) return `${Math.round(n / 10_000)}万`;
+  if (n >= 10_000) return `${trim(n / 10_000)}万`;
+  return digits;
 }
 
 /**
@@ -391,6 +429,17 @@ export function popupBylineText(author: string | undefined, published: string | 
 }
 
 export function popupPublishedLabel(published: string, now = new Date()): string {
+  // B 站、抖音给的是不带时区的「2026-09-27 18:54:11」：按原样的墙上时间改写，和 ISO 的显示一致。
+  // 知乎在后面带 IP 属地：「2026-01-07 21:53・北京」，属地照留。
+  const wall = /^(\d{4})-(\d{2})-(\d{2})(?:[ T](\d{2}):(\d{2})(?::\d{2})?)?(?:\s*[・·]\s*(\S.*))?$/u.exec(published.trim());
+  if (wall) {
+    const [, year, month, dayOfMonth, hour, minute, place] = wall;
+    const day = `${Number(month)}月${Number(dayOfMonth)}日`;
+    const when = Number(year) !== now.getFullYear()
+      ? `${year}年${day}`
+      : hour !== undefined ? `${day} ${Number(hour)}:${minute}` : day;
+    return place ? `${when} · ${place}` : when;
+  }
   if (!/^\d{4}-\d{2}-\d{2}T/u.test(published)) return published;
   const date = new Date(published);
   if (Number.isNaN(date.getTime())) return published;
@@ -431,7 +480,14 @@ export function popupDuration(seconds: number): string {
 
 /** 来源行：「X · 文章 · x.com」。 */
 export function popupSourceLine(platform: CapturePlatform, version: 1 | 2, imageCount?: number, host?: string): string {
-  const label = popupPlatformLabel(platform, version, imageCount);
+  let label = popupPlatformLabel(platform, version, imageCount);
+  // 「文章」只对真正的文章成立：X 上是一条帖子，知乎问答页是一个回答（专栏才是文章）。
+  if (label.endsWith(" · 文章")) {
+    if (platform === "x") label = label.replace(/文章$/u, "帖子");
+    // YouTube 走字幕抓取，信封是 v1，但它是一条视频。
+    else if (platform === "youtube") label = label.replace(/文章$/u, "视频");
+    else if (platform === "zhihu" && host && host !== "zhuanlan.zhihu.com") label = label.replace(/文章$/u, "回答");
+  }
   return host ? `${label} · ${host}` : label;
 }
 
@@ -600,16 +656,21 @@ export type CommentPlan = "auto" | "picker" | "disabled" | "unsupported" | "unkn
 
 export function popupStepChain(input: {
   autoSteps?: readonly string[] | undefined;
-  hasVideo: boolean;
+  /** undefined = 页面还没读完：先别说「无视频」，YouTube 要读十几秒。 */
+  hasVideo: boolean | undefined;
+  /** 直接用平台字幕（YouTube）：不用转写，也就不用校对。 */
+  usesCaptions?: boolean;
   comments: CommentPlan;
   selectedAction: PopupCaptureAction;
 }): ChainSeal[] {
   const auto = new Set(input.autoSteps ?? []);
   const chain: ChainSeal[] = [{ key: "ji", style: "stamped", label: "收集" }];
-  chain.push(input.hasVideo
+  if (input.hasVideo === undefined) {
+    chain.push({ key: "record", style: "na", label: "待确认" }, { key: "proof", style: "na", label: "待确认" });
+  } else chain.push(input.hasVideo
     ? { key: "record", style: auto.has("record") ? "stamped" : "pending", label: "转写" }
-    : { key: "record", style: "na", label: "无视频" });
-  chain.push(input.hasVideo
+    : { key: "record", style: "na", label: input.usesCaptions ? "用字幕" : "无视频" });
+  if (input.hasVideo !== undefined) chain.push(input.hasVideo
     ? { key: "proof", style: auto.has("proof") && auto.has("record") ? "stamped" : "pending", label: "校对" }
     : { key: "proof", style: "na", label: "无需" });
   switch (input.comments) {
@@ -640,16 +701,17 @@ export function popupChainSummary(chain: readonly ChainSeal[], knowsSettings: bo
 export type StepProgressRow = {
   key: ProcessKey;
   title: string;
-  state: "done" | "running" | "failed" | "waiting" | "manual";
+  state: "done" | "running" | "failed" | "waiting" | "manual" | "na";
   text: string;
 };
 
 /**
  * 「做到哪了」列表。`expected` 是这次会做的工序（自动开着的 + 这次请求的）：没状态时写「等着做」；
- * 其余没做的写「还没做」。用不上的转写 / 校对不列。
+ * 其余没做的写「还没做」。用不上的转写 / 校对不列。App 说翻译用不上（原文已是中文）时写灰字，
+ * 但视频还没转写时不信它：B 站常见中文标题配外语原声，转写出来才知道要不要译。
  */
 export function popupStepProgress(input: {
-  steps: readonly { step: string; state: "done" | "running" | "failed"; detail?: string }[];
+  steps: readonly { step: string; state: "done" | "running" | "failed" | "notNeeded"; detail?: string }[];
   expected: ReadonlySet<string>;
   hasVideo: boolean;
 }): StepProgressRow[] {
@@ -662,6 +724,9 @@ export function popupStepProgress(input: {
     if (status?.state === "done") rows.push({ key, title, state: "done", text: status.detail ?? "已完成" });
     else if (status?.state === "running") rows.push({ key, title, state: "running", text: status.detail ?? "进行中" });
     else if (status?.state === "failed") rows.push({ key, title, state: "failed", text: status.detail ?? "没做完" });
+    else if (status?.state === "notNeeded" && !(input.hasVideo && byKey.get("record")?.state !== "done")) {
+      rows.push({ key, title, state: "na", text: `${status.detail ?? "这条"} · 用不上` });
+    }
     else if (input.expected.has(key)) rows.push({ key, title, state: "waiting", text: "等着做" });
     else rows.push({ key, title, state: "manual", text: "还没做 · 在汲作里点" });
   }
@@ -678,4 +743,20 @@ export function popupSavedAtLabel(milliseconds: number | undefined, now = new Da
   if (sameDay) return `今天 ${time} 存的`;
   const day = `${date.getMonth() + 1}月${date.getDate()}日`;
   return date.getFullYear() === now.getFullYear() ? `${day} ${time} 存的` : `${date.getFullYear()}年${day}存的`;
+}
+
+/**
+ * X 主页弹窗的标题：「数字生命卡兹克 (@Khazix0918) / X」→ 名字 + 账号。
+ * 标签页标题读不出来时退回地址里的账号。
+ */
+export function popupXProfileHeading(tabTitle: string | undefined, rawURL: string | undefined): { name: string; handle: string } {
+  let handle = "";
+  try {
+    handle = new URL(rawURL ?? "").pathname.split("/").filter(Boolean)[0] ?? "";
+  } catch {
+    // 没有地址时只用标题。
+  }
+  const match = /^(?:\(\d+\)\s*)?(.+?)\s*\((@[A-Za-z0-9_]{1,15})\)\s*\/\s*(?:X|Twitter)\s*$/u.exec(tabTitle ?? "");
+  if (match) return { name: match[1]!.trim(), handle: match[2]! };
+  return { name: handle ? `@${handle}` : "这个博主", handle: handle ? `@${handle}` : "" };
 }

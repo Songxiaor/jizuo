@@ -1629,7 +1629,9 @@ struct MainWindowLaunchGuard: ViewModifier {
       },
       // 扩展弹窗查重与看进度：只读历史和此刻的运行状态。
       pageStatusSink: { request in
-        await historyModel.pageStatus(url: request.url)
+        let outputLanguage = (try? await preferencesStore.load())?.outputLanguage
+          ?? ModelPreferences.default.outputLanguage
+        return await historyModel.pageStatus(url: request.url, outputLanguage: outputLanguage)
       }
     ))
 

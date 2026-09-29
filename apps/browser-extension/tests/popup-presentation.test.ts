@@ -336,7 +336,10 @@ describe("popup source card (2026-09-29 重构)", () => {
   it("formats durations and the source line", () => {
     expect(popupDuration(56)).toBe("0:56");
     expect(popupDuration(3725)).toBe("1:02:05");
-    expect(popupSourceLine("x", 1, undefined, "x.com")).toBe("X · 文章 · x.com");
+    expect(popupSourceLine("x", 1, undefined, "x.com")).toBe("X · 帖子 · x.com");
+    expect(popupSourceLine("x", 2, undefined, "x.com")).toBe("X · 视频 · x.com");
+    expect(popupSourceLine("zhihu", 1, undefined, "zhihu.com")).toBe("知乎 · 回答 · zhihu.com");
+    expect(popupSourceLine("zhihu", 1, undefined, "zhuanlan.zhihu.com")).toBe("知乎 · 文章 · zhuanlan.zhihu.com");
     expect(popupSourceLine("douyin", 2)).toBe("抖音 · 视频");
   });
 });
@@ -345,9 +348,13 @@ describe("popup byline and engagement (2026-09-29 frontmatter)", () => {
   it("writes ISO publish time as a local month-day and keeps other formats", async () => {
     const { popupBylineText, popupPublishedLabel } = await import("../src/popup-presentation");
     const now = new Date("2026-09-29T10:00:00");
-    expect(popupPublishedLabel("2026-01-07 21:53・北京", now)).toBe("2026-01-07 21:53・北京");
+    expect(popupPublishedLabel("2026-01-07 21:53・北京", now)).toBe("1月7日 21:53 · 北京");
+    expect(popupPublishedLabel("发布于 3 天前", now)).toBe("发布于 3 天前");
     expect(popupPublishedLabel(new Date(2026, 8, 28, 20, 53).toISOString(), now)).toBe("9月28日 20:53");
     expect(popupPublishedLabel(new Date(2025, 0, 2, 8, 0).toISOString(), now)).toBe("2025年1月2日");
+    expect(popupPublishedLabel("2026-09-27 18:54:11", now)).toBe("9月27日 18:54");
+    expect(popupPublishedLabel("2026-09-27 06:00", now)).toBe("9月27日 6:00");
+    expect(popupPublishedLabel("2025-03-01", now)).toBe("2025年3月1日");
     expect(popupBylineText("卡兹克", undefined)).toBe("卡兹克");
     expect(popupBylineText(undefined, undefined)).toBe("");
   });
@@ -409,5 +416,66 @@ describe("process seal chain (2026-09-29 第二批)", () => {
     expect(popupSavedAtLabel(new Date(2026, 8, 29, 9, 5).getTime(), now)).toBe("今天 9:05 存的");
     expect(popupSavedAtLabel(new Date(2026, 8, 27, 20, 39).getTime(), now)).toBe("9月27日 20:39 存的");
     expect(popupSavedAtLabel(undefined, now)).toBe("");
+  });
+});
+
+describe("image posts with little text (2026-09-29)", () => {
+  it("drops the word count and reading time when an image post has only a line or two", () => {
+    const stats = popupStats({ characterCount: 4, completeness: "full_article", version: 2, imageCount: 4, engagement: { likes: "135", comments: "3" } });
+    expect(stats.map((stat) => stat.label)).toEqual(["张图", "赞", "评论"]);
+  });
+});
+
+describe("youtube and big numbers (2026-09-29)", () => {
+  it("calls a YouTube capture a video that uses captions, and shortens big counts", async () => {
+    const { popupCountLabel, popupStepChain } = await import("../src/popup-presentation");
+    expect(popupSourceLine("youtube", 1, undefined, "youtube.com")).toBe("YouTube · 视频 · youtube.com");
+    const chain = popupStepChain({ hasVideo: false, usesCaptions: true, comments: "auto", selectedAction: "save" });
+    expect(chain.find((seal) => seal.key === "record")?.label).toBe("用字幕");
+    const loading = popupStepChain({ hasVideo: undefined, comments: "unknown", selectedAction: "save" });
+    expect(loading.filter((seal) => seal.key === "record" || seal.key === "proof").map((seal) => seal.label)).toEqual(["待确认", "待确认"]);
+    expect(popupCountLabel("563472")).toBe("56.3万");
+    expect(popupCountLabel("24543329")).toBe("2454万");
+    expect(popupCountLabel("120000000")).toBe("1.2亿");
+    expect(popupCountLabel("8853")).toBe("8853");
+    expect(popupCountLabel("1.2万")).toBe("1.2万");
+  });
+});
+
+describe("x profile heading (2026-09-29)", () => {
+  it("names whose profile it is from the tab title", async () => {
+    const { popupXProfileHeading } = await import("../src/popup-presentation");
+    expect(popupXProfileHeading("(1) 数字生命卡兹克 (@Khazix0918) / X", "https://x.com/Khazix0918")).toEqual({ name: "数字生命卡兹克", handle: "@Khazix0918" });
+    expect(popupXProfileHeading("X", "https://x.com/Khazix0918")).toEqual({ name: "@Khazix0918", handle: "@Khazix0918" });
+  });
+});
+
+describe("english word counts (2026-09-29)", () => {
+  it("shows words and an English reading pace instead of characters", () => {
+    const stats = popupStats({ characterCount: 48_000, wordCount: 8_100, completeness: "full_article", version: 1 });
+    expect(stats.slice(0, 2)).toEqual([{ value: "8.1k", label: "词" }, { value: "35 分钟", label: "读完" }]);
+  });
+});
+
+describe("translation not needed (2026-09-29)", () => {
+  it("greys out translation for Chinese items, but not for videos still waiting for a transcript", async () => {
+    const { popupStepProgress } = await import("../src/popup-presentation");
+    const steps = [{ step: "translation", state: "notNeeded" as const, detail: "原文已是中文" }];
+    const article = popupStepProgress({ steps, expected: new Set(), hasVideo: false });
+    expect(article.find((row) => row.key === "translation")).toMatchObject({ state: "na", text: "原文已是中文 · 用不上" });
+    const untranscribed = popupStepProgress({ steps, expected: new Set(), hasVideo: true });
+    expect(untranscribed.find((row) => row.key === "translation")?.state).toBe("manual");
+    const transcribed = popupStepProgress({ steps: [{ step: "record", state: "done" }, ...steps], expected: new Set(), hasVideo: true });
+    expect(transcribed.find((row) => row.key === "translation")?.state).toBe("na");
+  });
+});
+
+describe("browser-internal pages (2026-09-29)", () => {
+  it("explains browser pages without offering a pointless reload", async () => {
+    const { popupBrowserPageFailure } = await import("../src/popup-presentation");
+    expect(popupBrowserPageFailure("ego://version")).toMatchObject({ title: "浏览器自己的页面读不了", canReload: false });
+    expect(popupBrowserPageFailure("chrome://extensions")?.steps).toHaveLength(2);
+    expect(popupBrowserPageFailure("https://x.com/a")).toBeNull();
+    expect(popupBrowserPageFailure(undefined)).toBeNull();
   });
 });

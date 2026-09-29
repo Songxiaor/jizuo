@@ -3449,7 +3449,7 @@ final class HistoryViewModel {
 
   /// 扩展弹窗问「这页存过没有、做到哪了」（2026-09-29 弹窗重构）。只读：做过的工序
   /// 与题跋同一套判断，正在做 / 失败取这台机器上此刻的运行状态。
-  func pageStatus(url: String) async -> PageStatusPayload {
+  func pageStatus(url: String, outputLanguage: String = ModelPreferences.default.outputLanguage) async -> PageStatusPayload {
     guard let history, let canonical = try? CanonicalURL(url) else { return .notFound }
     let taskID = await Task.detached(priority: .utility) {
       try? history.taskID(matchingCanonicalURL: canonical)
@@ -3491,6 +3491,12 @@ final class HistoryViewModel {
           break
         }
       }
+    }
+    // 与详情页翻译按钮同一道门禁：原文已是输出语言时，弹窗不该催用户去点翻译。
+    if steps[ProcessStep.translation.rawValue] == nil,
+       !LayeredSourceDocument.needsTranslation(from: detail.snapshots, outputLanguage: outputLanguage) {
+      let note = CapturedContentLanguage.outputLanguage(outputLanguage) == .chinese ? "原文已是中文" : "原文已是输出语言"
+      steps[ProcessStep.translation.rawValue] = PageStepStatus(step: ProcessStep.translation.rawValue, state: .notNeeded, detail: note)
     }
     return PageStatusPayload(
       found: true,

@@ -129,4 +129,22 @@ final class SpeechLocalePlausibilityTests: XCTestCase {
     // 连字符写法和大小写不能改变判断。
     XCTAssertEqual(CapturedContentLanguage.expectedScript(forLocaleIdentifier: "en-GB"), .latin)
   }
+
+  /// 中文帖子不能因为评论里的假名、链接地址、引用标记被当成「需要翻译」（2026-09-29）。
+  func testOutputLanguageMatchIgnoresCommentsLinksAndMarkers() {
+    let prose = String(repeating: "这个月活百万的热点站正式开源了。", count: 3)
+    let post = """
+    \(prose)
+    开源地址：https://github.com/KKKKhazix/AIHOT-with-a-very-long-english-path-name-here
+    ![](https://p3.example.test/aweme-images/abcdefghijklmnopqrstuvwxyz.webp?x-signature=abcdefghijklmnop)
+    <!--LDQUOTE author="someone" url="https://x.com/someone/status/1234567890" -->
+
+    ## 评论（已保存 2 条）
+
+    - 最高のビデオですね、ありがとう
+    """
+    XCTAssertTrue(CapturedContentLanguage.isSameOutputLanguage(content: post, outputLanguage: "简体中文"))
+    let english = String(repeating: "Seals were used in China for official documents. ", count: 4)
+    XCTAssertFalse(CapturedContentLanguage.isSameOutputLanguage(content: english, outputLanguage: "简体中文"))
+  }
 }

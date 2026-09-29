@@ -171,7 +171,8 @@
   */
   #send:not([hidden]) {
     position: sticky; bottom: 12px; z-index: 1;
-    box-shadow: 0 0 0 12px var(--canvas);
+    /* 往下盖 12px（底边留白），往上只盖 8px：比卡片与按钮之间 10px 的间距窄，内容放得下时不吃掉上面卡片的下边框。 */
+    box-shadow: 0 2px 0 10px var(--canvas);
   }
   button:focus-visible, a:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
 
@@ -289,7 +290,8 @@
   .step-row .state { font-size: 11px; color: var(--secondary); text-align: right; }
   .step-row.running .state { color: var(--accent); }
   .step-row.failed .state { color: var(--danger); }
-  .step-row.waiting, .step-row.manual { color: var(--secondary); }
+  .step-row.waiting, .step-row.manual, .step-row.na { color: var(--secondary); }
+  .step-row.na .seal-img { opacity: .3; filter: grayscale(1); }
   #saved-steps { align-self: stretch; text-align: left; border-top: 1px solid var(--hairline); padding-top: 12px; margin-top: 2px; }
   #dup-view { padding: 12px 14px; gap: 10px; }
   #dup-title { color: var(--accent); }

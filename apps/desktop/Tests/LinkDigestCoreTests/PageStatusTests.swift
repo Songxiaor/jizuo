@@ -21,6 +21,7 @@ final class PageStatusTests: XCTestCase {
         PageStepStatus(step: "record", state: .done),
         PageStepStatus(step: "comments", state: .done, detail: "存了 20 条"),
         PageStepStatus(step: "summary", state: .running, detail: "总结中"),
+        PageStepStatus(step: "translation", state: .notNeeded, detail: "原文已是中文"),
       ]
     ))
     let data = try JSONEncoder().encode(response)
@@ -30,6 +31,9 @@ final class PageStatusTests: XCTestCase {
     XCTAssertEqual(object["kind"] as? String, "pageStatus")
     let status = try XCTUnwrap(object["status"] as? [String: Any])
     XCTAssertEqual(status["found"] as? Bool, true)
+    // 扩展按字面值 "notNeeded" 认这一态。
+    let steps = try XCTUnwrap(status["steps"] as? [[String: Any]])
+    XCTAssertEqual(steps.last?["state"] as? String, "notNeeded")
   }
 
   func testNotFoundCarriesNoTask() throws {

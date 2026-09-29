@@ -167,8 +167,16 @@ function canonicalNoteDetailDocument(caption: string, url = "https://www.douyin.
     textContent: "发布时间：2026-08-14 18:48:32",
     parentElement: publishWrapper,
   };
+  const stat = (text: string) => [{ textContent: text }];
   const detail = {
-    querySelectorAll: (selector: string) => selector === "span,time" ? [publishNode] : [],
+    querySelectorAll: (selector: string) => {
+      if (selector === "span,time") return [publishNode];
+      if (selector === "[data-e2e='video-player-digg']") return stat("136");
+      if (selector === "[data-e2e='video-player-collect']") return stat("6");
+      // 推荐列表里也有一个同名节点：不唯一，就不能信。
+      if (selector === "[data-e2e='video-player-share']") return [...stat("4"), ...stat("999")];
+      return [];
+    },
   };
   return {
     location: { href: url },
@@ -177,6 +185,41 @@ function canonicalNoteDetailDocument(caption: string, url = "https://www.douyin.
     activeElement: null,
     querySelector: (selector: string) => selector === "[data-e2e='note-detail']" ? detail : null,
     querySelectorAll: () => [],
+  } as unknown as Document;
+}
+
+/** 2026-09 视频详情页 /video/{id}：两个 <video>，作者卡片在 related-video 顶部。 */
+function canonicalVideoDetailDocument(options: { url?: string; owners?: string[] } = {}): Document {
+  const id = "7689872724293963058";
+  const owners = options.owners ?? ["//www.douyin.com/user/MS4wFixture", "//www.douyin.com/user/MS4wFixture"];
+  const authorLinks = owners.flatMap((href) => [
+    { textContent: "", getAttribute: (name: string) => name === "href" ? href : null },
+    { textContent: "亲爱的安先生", getAttribute: (name: string) => name === "href" ? href : null },
+  ]);
+  const makeVideo = (left: number) => ({
+    currentSrc: "", src: "", paused: false, ended: false, readyState: 4, mediaKeys: null, duration: 1441.776,
+    currentTime: 3, parentElement: null, tagName: "VIDEO",
+    querySelector: () => null, querySelectorAll: () => [], getAttribute: () => null,
+    contains: () => false, getBoundingClientRect: () => ({ left, top: 0, right: left + 400, bottom: 300 }),
+  });
+  const videos = [makeVideo(0), makeVideo(0)];
+  const detail = {
+    querySelector: (selector: string) => selector === "[data-e2e='detail-video-publish-time']"
+      ? { textContent: "发布时间：2026-09-27 06:00" }
+      : null,
+    querySelectorAll: (selector: string) => selector === "[data-e2e='player-container'] video" ? videos : [],
+  };
+  return {
+    location: { href: options.url ?? `https://www.douyin.com/video/${id}` },
+    title: "短视频未来两年趋势 vlog还是口播？ - 抖音",
+    defaultView: { innerWidth: 1_000, innerHeight: 800 },
+    activeElement: null,
+    querySelector: (selector: string) => selector === "[data-e2e='video-detail']" ? detail : null,
+    querySelectorAll: (selector: string) => {
+      if (selector === "video") return videos;
+      if (selector === "[data-e2e='user-info'] a[href*='/user/']") return authorLinks;
+      return [];
+    },
   } as unknown as Document;
 }
 
@@ -277,6 +320,20 @@ function scriptDocument(scripts: Record<string, { textContent: string; tagName?:
 }
 
 describe("background douyin item identity lock", () => {
+  it("reads author, publish time and duration from the canonical video detail page", () => {
+    vi.stubGlobal("document", canonicalVideoDetailDocument());
+    const meta = extractDouyinSingleItemMetaInPage();
+    expect(meta).toMatchObject({ author: "亲爱的安先生", publishedAt: "2026-09-27 06:00" });
+    expect(meta?.mediaDescriptor?.durationSeconds).toBeCloseTo(1441.776);
+  });
+
+  it("does not trust the video-detail author when the author cards disagree or the route names another item", () => {
+    vi.stubGlobal("document", canonicalVideoDetailDocument({ owners: ["//www.douyin.com/user/a", "//www.douyin.com/user/b"] }));
+    expect(extractDouyinSingleItemMetaInPage()?.author).not.toBe("亲爱的安先生");
+    vi.stubGlobal("document", canonicalVideoDetailDocument({ url: "https://www.douyin.com/video/7689872724293963058?modal_id=7123456789012345678" }));
+    expect(extractDouyinSingleItemMetaInPage()?.publishedAt).toBeUndefined();
+  });
+
   it("captures the full caption from the canonical note detail beside its publish time", () => {
     const caption = "非常推荐git上这个讲Harness的课程《learn Harness Engineering》除了表面上是在讲什么是Harness，更多的是在讲世界上最聪明的一群人是如何教一个最聪明的大脑变得靠谱的#Codex #Deepseek #Harness #Claude #个人成长";
     vi.stubGlobal("document", canonicalNoteDetailDocument(caption));
@@ -288,6 +345,20 @@ describe("background douyin item identity lock", () => {
       author: "呜呼bomb",
       publishedAt: "2026-08-14 18:48:32",
     });
+  });
+
+  it("keeps author and publish time for an image post with no caption", () => {
+    vi.stubGlobal("document", canonicalNoteDetailDocument(""));
+    const meta = extractDouyinSingleItemMetaInPage();
+    expect(meta).toMatchObject({
+      author: "呜呼bomb",
+      publishedAt: "2026-08-14 18:48:32",
+    });
+    expect(meta?.stats).toEqual({ likes: "136", collects: "6" });
+    const placeholder = canonicalNoteDetailDocument("") as unknown as { title: string };
+    placeholder.title = "呜呼bomb在抖音记录美好生活20260814 - 抖音";
+    vi.stubGlobal("document", placeholder);
+    expect(extractDouyinSingleItemMetaInPage()?.title).toBe("呜呼bomb的抖音作品");
   });
 
   it("does not use note-detail text when the canonical route conflicts with another item id", () => {
@@ -1394,6 +1465,29 @@ describe("background douyin item identity lock", () => {
     }, page.url, page.title, "2026-07-20T00:00:00Z", "v2").version).toBe(2);
   });
 
+  it("counts only readable words for the popup, not frontmatter or image links", async () => {
+    vi.stubGlobal("defineBackground", (factory: unknown) => factory);
+    const { readableCharacterCount } = await import("../src/entrypoints/background");
+    const note = [
+      "---", "author: \"its蕙\"", "published: \"2026-09-18 09:21\"", "---", "",
+      "# 抖音图文", "", "![](https://p3.example.test/a.webp?x-signature=abc)", "",
+      "![](https://p3.example.test/b.webp?x-signature=def)",
+    ].join("\n");
+    expect(readableCharacterCount(note)).toBe(4);
+    expect(readableCharacterCount("第一段 文字。\n\n## 评论（已保存 2 条）\n- a")).toBe(6);
+  });
+
+  it("strips links whose address has parentheses and counts English by words", async () => {
+    vi.stubGlobal("defineBackground", (factory: unknown) => factory);
+    const { previewExcerpt, readableLatinWordCount } = await import("../src/entrypoints/background");
+    const wiki = "(Redirected from [Seal (East Asia)](https://en.wikipedia.org/w/index.php?title=Seal_(East_Asia)&redirect=no)) Seals are used.";
+    expect(previewExcerpt(wiki, "Seals")).toBe("(Redirected from Seal (East Asia)) Seals are used.");
+    const english = Array.from({ length: 60 }, () => "Seals were used in China.").join(" ");
+    expect(readableLatinWordCount(english)).toBe(300);
+    expect(readableLatinWordCount("中文正文".repeat(100))).toBeUndefined();
+    expect(previewExcerpt("# Title\n\n## 字幕\n\n第一句话。", "Title")).toBe("第一句话。");
+  });
+
   it("builds an allowlisted popup preview without body or media URLs", async () => {
     vi.stubGlobal("defineBackground", (factory: unknown) => factory);
     const { safePreviewForCapture } = await import("../src/entrypoints/background");
@@ -1421,7 +1515,8 @@ describe("background douyin item identity lock", () => {
     // 正文只以一小段开头出现（excerpt，≤120 字）；播放与封面地址仍不出后台。
     expect(preview).toEqual({
       title: "Preview title",
-      characterCount: 21,
+      // 弹窗只数读得到的字：「private body sentinel」去掉空格是 19。
+      characterCount: 19,
       version: 2,
       platform: "generic",
       completeness: "full_article",

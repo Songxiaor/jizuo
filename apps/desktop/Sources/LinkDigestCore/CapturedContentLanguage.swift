@@ -87,10 +87,29 @@ public enum CapturedContentLanguage: String, Sendable, Equatable {
   }
 
   public static func isSameOutputLanguage(content: String, outputLanguage value: String) -> Bool {
-    guard let detected = detect(in: content), let target = outputLanguage(value) else {
+    guard let detected = detect(in: proseSample(of: content)), let target = outputLanguage(value) else {
       return false
     }
     return detected == target
+  }
+
+  /// 判断「原文是什么语言」只看正文（2026-09-29 弹窗实测）：评论区里一个日文假名、
+  /// 链接和图片地址里的字母、引用块的内部标记，都会让中文帖子被判成「看不出」而一直提供翻译。
+  public static func proseSample(of markdown: String) -> String {
+    var text = markdown
+    if let comments = text.range(of: #"(?m)^## 评论"#, options: .regularExpression) {
+      text = String(text[..<comments.lowerBound])
+    }
+    let patterns = [
+      #"<!--[\s\S]*?-->"#,
+      #"!\[[^\]]*\]\([^)]*\)"#,
+      #"\]\([^)]*\)"#,
+      #"https?://\S+"#
+    ]
+    for pattern in patterns {
+      text = text.replacingOccurrences(of: pattern, with: " ", options: .regularExpression)
+    }
+    return text
   }
 
   /// 本机听写要的 locale。跟「想看什么语言」无关，只猜视频在说什么。

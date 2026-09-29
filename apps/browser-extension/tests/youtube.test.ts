@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   buildYouTubeMarkdown,
   isYouTubeWatchURL,
@@ -29,6 +29,14 @@ describe("youtube capture", () => {
     const en = { baseUrl: "https://yt.test/en", languageCode: "en" };
     expect(pickCaptionTrack([en, zhASR, zhAuthored])).toBe(zhAuthored);
     expect(pickCaptionTrack([en, zhASR])).toBe(zhASR);
+    const hant = { baseUrl: "https://example.test/hant", languageCode: "zh-Hant" };
+    const hans = { baseUrl: "https://example.test/hans", languageCode: "zh-Hans" };
+    expect(pickCaptionTrack([hant, en, hans])).toBe(hans);
+    expect(pickCaptionTrack([en, hant])).toBe(hant);
+    const bare = { baseUrl: "https://example.test/zh", languageCode: "zh" };
+    const cn = { baseUrl: "https://example.test/cn", languageCode: "zh-CN" };
+    expect(pickCaptionTrack([en, bare, hant, cn])).toBe(cn);
+    expect(pickCaptionTrack([en, hant, bare])).toBe(bare);
     expect(pickCaptionTrack([en])).toBe(en);
     expect(pickCaptionTrack([])).toBeUndefined();
     expect(pickCaptionTrack([{ baseUrl: "", languageCode: "zh" }])).toBeUndefined();
@@ -154,5 +162,72 @@ describe("transcript panel fallback", () => {
     expect(transcriptFromPanelSegments(segments)).toBe(
       "OPENAI FOR SEVERAL YEARS. SO I'VE SEEN. OF THE\n\nCOMPANIES THAT ARE LEADING",
     );
+  });
+});
+
+describe("transcript panel language (2026-09-29)", () => {
+  it("picks the wanted language in the panel menu before reading", async () => {
+    const { collectYouTubeTranscriptFromPanelInPage } = await import("../src/content/youtube");
+    let lines = ["這是一個 3"];
+    const segment = (text: string) => ({
+      querySelector: (selector: string) => selector === ".segment-timestamp" ? { textContent: "0:04" } : selector === ".segment-text" ? { textContent: text } : null,
+    });
+    let closed = 0;
+    const item = (label: string, next: string[]) => ({
+      textContent: label,
+      getAttribute: () => null,
+      click: () => { lines = next; },
+    });
+    const items = [item("中文", ["這是一個 3"]), item("英语", ["This is a 3."]), item("中文（中国）", ["这是一个 3"])];
+    vi.stubGlobal("document", {
+      querySelector: (selector: string) => selector.endsWith("#visibility-button button") ? { click: () => { closed += 1; } } : null,
+      querySelectorAll: (selector: string) => {
+        if (selector === "transcript-segment-view-model") return [];
+        if (selector === "ytd-transcript-segment-renderer") return lines.map(segment);
+        if (selector.endsWith("ytd-transcript-footer-renderer tp-yt-paper-item")) return items;
+        return [];
+      },
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = collectYouTubeTranscriptFromPanelInPage({ name: "中文（中国）", occurrence: 0 });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(await pending).toEqual([{ time: "0:04", text: "这是一个 3" }]);
+      // 面板本来就开着（有内容），读完不替用户关。
+      expect(closed).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("transcript text without translation-extension overlays (2026-09-29)", () => {
+  it("keeps only YouTube's own words when a page translator injects <xt-trans>", async () => {
+    const { collectYouTubeTranscriptFromPanelInPage } = await import("../src/content/youtube");
+    const text = (value: string) => ({ nodeType: 3, textContent: value });
+    const el = (tag: string, attrs: Record<string, string>, children: unknown[]) => ({
+      nodeType: 1, tagName: tag.toUpperCase(), childNodes: children,
+      getAttribute: (name: string) => attrs[name] ?? null,
+      textContent: children.map((child) => (child as { textContent: string }).textContent).join(""),
+    });
+    const bilingual = el("yt-formatted-string", {}, [el("xt-trans", { "xt-origin": "hi everyone" }, [text("大家好")]), text("hi everyone")]);
+    const replaced = el("yt-formatted-string", {}, [el("xt-trans", { "xt-origin": "這是一個 3" }, [text("这是一个 3")])]);
+    const rows = [bilingual, replaced].map((node, index) => ({
+      querySelector: (selector: string) => selector === ".segment-timestamp" ? { textContent: `0:0${index}` } : selector === ".segment-text" ? node : null,
+    }));
+    vi.stubGlobal("document", {
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => selector === "ytd-transcript-segment-renderer" ? rows : [],
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = collectYouTubeTranscriptFromPanelInPage();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect((await pending).map((segment) => segment.text)).toEqual(["hi everyone", "這是一個 3"]);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
   });
 });

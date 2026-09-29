@@ -456,6 +456,8 @@ export type DouyinMediaHit = MediaDescriptor;
 export type SafeCapturePreview = {
   title: string;
   characterCount: number;
+  /** 英文等拉丁文字为主的正文：按词数显示。 */
+  wordCount?: number;
   version: 1 | 2;
   platform: CapturePlatform;
   completeness: "full_article" | "visible_only" | "selection_only" | "unknown";
@@ -608,18 +610,45 @@ export function splitCaptureFrontmatter(text: string): { fields: Partial<Record<
  * 弹窗里的正文开头：去掉 Markdown 标记、与标题重复的首行和评论段，压成一行，最多 120 字。
  * 只有这一小段离开后台；全文仍然只随保存发给 App。
  */
-export function previewExcerpt(text: string, title: string | null | undefined): string | undefined {
-  const normalizedTitle = (title ?? "").replace(/\s+/gu, " ").trim();
-  const body = stripEmbeddedCommentSection(splitCaptureFrontmatter(text).body)
+function readableBodyLines(text: string, options: { skipHeadings?: boolean } = {}): string[] {
+  return stripEmbeddedCommentSection(splitCaptureFrontmatter(text).body)
     .split("\n")
+    // 开头摘录不要「## 字幕」「## 简介」这类小节名，读起来像正文第一个词。
+    .filter((line) => !options.skipHeadings || !/^\s{0,3}#{2,6}\s/u.test(line))
     .map((line) => line
-      .replace(/!\[[^\]]*\]\([^)]*\)/gu, "")
-      .replace(/\[([^\]]*)\]\([^)]*\)/gu, "$1")
+      // 地址里可以带一层括号（维基百科的 Seal_(East_Asia)）：按一层嵌套配平，不然会留下「&redirect=no))」。
+      .replace(/!\[[^\]]*\]\((?:[^()\s]|\([^()\s]*\))*(?:\s+"[^"]*")?\)/gu, "")
+      .replace(/\[([^\]]*)\]\((?:[^()\s]|\([^()\s]*\))*(?:\s+"[^"]*")?\)/gu, "$1")
       .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/u, "")
       .replace(/[*_`~]+/gu, "")
       .replace(/\s+/gu, " ")
       .trim())
     .filter((line) => line.length > 0 && !/^\[?\d{1,2}:\d{2}(:\d{2})?\]?$/u.test(line));
+}
+
+/**
+ * 弹窗「字 / 读完」按读者真能读到的字算：不数开头的元数据块、图片链接、Markdown 记号和空白。
+ * 抓取信封里的 characterCount 是整份文本的长度（含图片地址），给不配文字的图文算出「1.2k 字」。
+ */
+export function readableCharacterCount(text: string): number {
+  return readableBodyLines(text).reduce((sum, line) => sum + [...line.replace(/\s+/gu, "")].length, 0);
+}
+
+/**
+ * 以拉丁字母为主的正文按词算（「48k 字 · 119 分钟」对英文没有意义）。中文、日文等返回 undefined，
+ * 仍按字算。
+ */
+export function readableLatinWordCount(text: string): number | undefined {
+  const body = readableBodyLines(text).join(" ");
+  const latin = body.match(/[A-Za-z]/gu)?.length ?? 0;
+  const han = body.match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/gu)?.length ?? 0;
+  if (latin < 200 || han * 10 > latin) return undefined;
+  return body.match(/[A-Za-z0-9][A-Za-z0-9'’-]*/gu)?.length;
+}
+
+export function previewExcerpt(text: string, title: string | null | undefined): string | undefined {
+  const normalizedTitle = (title ?? "").replace(/\s+/gu, " ").trim();
+  const body = readableBodyLines(text, { skipHeadings: true });
   if (body[0] && normalizedTitle && body[0] === normalizedTitle) body.shift();
   let joined = body.join(" ").trim();
   // X 这类没有标题的帖子，标题就是正文第一句：开头再出现一遍就去掉。
@@ -645,7 +674,10 @@ export function safePreviewForCapture(
 ): SafeCapturePreview {
   const preview: SafeCapturePreview = {
     title: envelope.source.title || "当前页面",
-    characterCount: envelope.capture.characterCount,
+    // 只用于弹窗显示，见 `readableCharacterCount`。
+    characterCount: envelope.capture.completeness === "selection_only"
+      ? envelope.capture.characterCount
+      : readableCharacterCount(envelope.capture.text),
     version: envelope.version,
     platform: envelope.source.platform,
     completeness: envelope.capture.completeness,
@@ -653,6 +685,10 @@ export function safePreviewForCapture(
   };
   const excerpt = previewExcerpt(envelope.capture.text, envelope.source.title);
   if (excerpt) preview.excerpt = excerpt;
+  if (envelope.capture.completeness !== "selection_only") {
+    const words = readableLatinWordCount(envelope.capture.text);
+    if (words) preview.wordCount = words;
+  }
   const host = safeBlockedHostFromURL(envelope.source.url);
   if (host) preview.host = host.replace(/^www\./u, "");
   if (/^https?:\/\//u.test(envelope.source.url)) preview.pageURL = envelope.source.url;
@@ -1336,6 +1372,12 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
   const usedCookie = usedSessionDetail;
 
   if (mediaHit?.author) author = mediaHit.author;
+  // 换成 SSR / 接口拿到的播放信息后，页面上已读到的时长不能丢（2026-09-29 弹窗实测：
+  // 抖音视频卡片没有时长）。
+  const domDuration = meta?.mediaDescriptor?.durationSeconds;
+  if (mediaHit && !mediaHit.durationSeconds && typeof domDuration === "number" && domDuration > 0) {
+    mediaHit = { ...mediaHit, durationSeconds: domDuration };
+  }
 
   // Extract exact-item metadata from __INITIAL_STATE__ independently of media
   // state. Its defined fields override DOM; missing fields retain DOM values.
@@ -1361,8 +1403,9 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
     const safeSSRDiagnostic = safeSSRMetadataDiagnostic(ssrAttempt?.diagnostic);
     if (safeSSRDiagnostic) ssrDiagnostic = safeSSRDiagnostic;
     const ssr = ssrAttempt?.metadata;
-    if (ssr?.author !== undefined) author = ssr.author;
-    if (ssr?.publishedAt !== undefined) publishedAt = ssr.publishedAt;
+    // 空字符串不算「有」：SSR 缺作者时回空串，曾把 DOM 读到的作者盖成空白，弹窗与存档都没了作者。
+    if (typeof ssr?.author === "string" && ssr.author.trim()) author = ssr.author;
+    if (typeof ssr?.publishedAt === "string" && ssr.publishedAt.trim()) publishedAt = ssr.publishedAt;
     stats = mergeDefinedDouyinStats(stats, ssr?.stats);
     // 只保留 https 的 douyinpic 图片；App 侧下载已带 douyin Referer。
     if (imageURLs.length === 0 && Array.isArray(ssr?.imageURLs)) {
@@ -1417,7 +1460,7 @@ export async function captureDouyinSingleItemAttempt(tabId: number, tabURL: stri
   // 与 App 都把这条当成"受限视频"，把图集正文挤到视频占位符后面。
   const isImagePost = imageURLs.length > 0;
   if (mediaHit && !isImagePost) {
-    const mediaAuthor = cleanDouyinAuthorText(author ?? mediaHit.author);
+    const mediaAuthor = cleanDouyinAuthorText(author || mediaHit.author);
     page.mediaDescriptor = {
       ...mediaHit,
       canonicalURL,
@@ -1512,9 +1555,15 @@ export async function captureYouTubeSingleVideo(tabId: number, tabURL: string): 
     const previousState = previousResults?.[0]?.result as
       | { previousLanguage?: string; previousTranslation?: string; wasOff: boolean }
       | undefined;
+    // 面板有自己的语言菜单，要按挑中的轨去点（同名轨按第几个区分）。
+    const tracks = snapshot.captionTracks ?? [];
+    const wanted = track.name
+      ? { name: track.name, occurrence: tracks.slice(0, tracks.indexOf(track)).filter((other) => other.name === track.name).length }
+      : undefined;
     const panelResults = await browser.scripting.executeScript({
       target: { tabId },
       func: collectYouTubeTranscriptFromPanelInPage,
+      args: wanted ? [wanted] : [],
     }).catch(() => undefined);
     if (previousState) {
       await browser.scripting.executeScript({
@@ -2078,7 +2127,7 @@ function nativeFailureCode(response: unknown): "upgrade_app" | "native_error" {
   return "native_error";
 }
 
-export type PageStepState = { step: ProcessStepKey; state: "done" | "running" | "failed"; detail?: string };
+export type PageStepState = { step: ProcessStepKey; state: "done" | "running" | "failed" | "notNeeded"; detail?: string };
 export type PageStatusResult =
   | { kind: "found"; taskID: string; savedAt?: number; steps: PageStepState[] }
   | { kind: "notFound" }
@@ -2099,7 +2148,7 @@ export function parsePageStatus(response: unknown, expectedRequestId: string): P
   for (const raw of Array.isArray(status.steps) ? status.steps : []) {
     const item = raw as { step?: unknown; state?: unknown; detail?: unknown };
     if (!PROCESS_STEP_KEYS.includes(item.step as ProcessStepKey)) continue;
-    if (item.state !== "done" && item.state !== "running" && item.state !== "failed") continue;
+    if (item.state !== "done" && item.state !== "running" && item.state !== "failed" && item.state !== "notNeeded") continue;
     steps.push({
       step: item.step as ProcessStepKey,
       state: item.state,

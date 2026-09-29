@@ -34,7 +34,8 @@ public struct PageStatusRequest: Sendable, Equatable {
 /// 一道工序在这条内容上的状态。没列出来的工序 = 还没做。
 public struct PageStepStatus: Codable, Sendable, Equatable {
   public enum State: String, Codable, Sendable {
-    case done, running, failed
+    /// notNeeded：这一步对这条内容没有意义（原文已是输出语言，翻译用不上）。
+    case done, running, failed, notNeeded
   }
 
   /// 与 `CapturePreferencesStore.processStepKeys` 同一套键名。

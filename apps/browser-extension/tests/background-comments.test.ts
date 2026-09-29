@@ -325,12 +325,17 @@ describe("page status and pipeline preferences from the App (2026-09-29)", () =>
           { step: "bogus", state: "done" },
           { step: "summary", state: "weird" },
           { step: "comments", state: "done", detail: "存了 20 条" },
+          { step: "translation", state: "notNeeded", detail: "原文已是中文" },
         ],
       },
     }, "r");
     expect(found).toEqual({
       kind: "found", taskID: "40847250-39d8-4983-a3b6-e44c9bd8122c", savedAt: 1,
-      steps: [{ step: "record", state: "done" }, { step: "comments", state: "done", detail: "存了 20 条" }],
+      steps: [
+        { step: "record", state: "done" },
+        { step: "comments", state: "done", detail: "存了 20 条" },
+        { step: "translation", state: "notNeeded", detail: "原文已是中文" },
+      ],
     });
     expect(parsePageStatus({ kind: "pageStatus", version: 1, requestId: "r", status: { found: false } }, "r")).toEqual({ kind: "notFound" });
     expect(parsePageStatus({ kind: "pageStatus", version: 1, requestId: "other", status: { found: false } }, "r")).toEqual({ kind: "unavailable" });

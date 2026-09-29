@@ -3087,7 +3087,9 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
         const caption = (captionNode.textContent ?? "")
           .replace(/(?:…|\.{3})?\s*展开\s*$/u, "")
           .trim();
-        if (caption.length >= 2 && caption.length <= 5_000 && !/发布时间[:：]/u.test(caption)) {
+        // 不配文字的图文（2026-09-29 实测 /note/7686679401953826553）：文案节点在但是空的。
+        // 作者和发布时间照样可信，不能因为没有文案连它们一起丢掉。
+        if ((caption.length === 0 || caption.length >= 2) && caption.length <= 5_000 && !/发布时间[:：]/u.test(caption)) {
           const authorBlock = node.parentElement?.parentElement?.parentElement?.previousElementSibling;
           const authorLinks = authorBlock?.querySelectorAll("a[href*='/user/']") ?? [];
           let author = "";
@@ -3108,6 +3110,49 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
       // Keep the established active-player and metadata fallbacks below.
     }
     return null;
+  })();
+  // 视频详情页 /video/{id}（2026-09-29 弹窗实测）：播放器、文案、发布时间都在
+  // `video-detail` 面板里，作者卡片在右侧 `related-video` 顶部的 `user-info`。页面上有两个
+  // <video>，按播放候选选不出唯一一条，作者、时间、时长因此全丢。只在精确的规范路由上启用，
+  // 作者要求页面上所有 `user-info` 指向同一个人，避免把推荐视频的作者安到这条上。
+  const dedicatedVideoMetadata = (() => {
+    try {
+      const url = new URL(href);
+      const host = url.hostname.toLowerCase();
+      if (host !== "douyin.com" && !host.endsWith(".douyin.com")) return null;
+      if (url.pathname !== `/video/${awemeId}` && url.pathname !== `/video/${awemeId}/`) return null;
+      const recognizedItemValues = ["modal_id", "aweme_id", "item_id", "video_id", "group_id"]
+        .flatMap((key) => url.searchParams.getAll(key));
+      if (recognizedItemValues.some((value) => value !== awemeId)) return null;
+      const detail = document.querySelector("[data-e2e='video-detail']");
+      if (!detail) return null;
+      const timeText = detail.querySelector("[data-e2e='detail-video-publish-time']")?.textContent?.trim() ?? "";
+      const publishedRaw = /^发布时间[:：]\s*\d/u.test(timeText) ? timeText.replace(/^发布时间[:：]\s*/u, "").trim() : "";
+      const authorLinks = Array.from(document.querySelectorAll("[data-e2e='user-info'] a[href*='/user/']"));
+      let author = "";
+      if (authorLinks.length > 0 && authorLinks.length <= 8) {
+        const owners = new Set(authorLinks.map((link) => (link.getAttribute("href") ?? "").split("?")[0]));
+        if (owners.size === 1) {
+          for (const link of authorLinks) {
+            const candidate = link.textContent?.replace(/\s+/gu, " ").trim() ?? "";
+            if (candidate) { author = candidate; break; }
+          }
+        }
+      }
+      const durations = Array.from(detail.querySelectorAll("[data-e2e='player-container'] video"))
+        .map((node) => (node as HTMLVideoElement).duration)
+        .filter((value) => Number.isFinite(value) && value > 0);
+      const durationSeconds = durations.length > 0 && durations.every((value) => Math.abs(value - durations[0]!) < 1)
+        ? durations[0]
+        : undefined;
+      return {
+        ...(author ? { author } : {}),
+        ...(publishedRaw ? { publishedRaw } : {}),
+        ...(durationSeconds ? { durationSeconds } : {}),
+      };
+    } catch {
+      return null;
+    }
   })();
   const ogTitle = document.querySelector("meta[property='og:title']")?.getAttribute("content")?.trim();
   const ogDesc = document.querySelector("meta[property='og:description']")?.getAttribute("content")?.trim();
@@ -3296,7 +3341,7 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
     }
   }
   const metadataScopes: ParentNode[] = [...safeItemScopes, ...dedicatedMetadataScopes];
-  const author = dedicatedNoteMetadata?.author || (() => {
+  const author = dedicatedNoteMetadata?.author || dedicatedVideoMetadata?.author || (() => {
     // The nickname element also carries screen-reader-only badge labels
     // ("认证徽章" and friends) as real text nodes, so textContent alone yields
     // "王自如AI认证徽章". Prefer the element's own direct text nodes — the
@@ -3363,6 +3408,13 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
   };
   const title = stripTrailingHashtags((() => {
     if (!unprefixedTitle) return "抖音视频";
+    // 没写文案的作品，抖音拿「{作者}在抖音记录美好生活{日期}」当标题（2026-09-29 实测）。
+    // 这句没有信息量，换成谁的作品；作者和日期另有字段。
+    const placeholder = /^\s*@?(.*?)\s*在抖音[,，]?记录美好生活\s*\d{0,8}\s*$/u.exec(unprefixedTitle);
+    if (placeholder) {
+      const owner = (author || placeholder[1] || "").trim();
+      return owner ? `${owner}的抖音作品` : "抖音作品";
+    }
     if (!author) return unprefixedTitle;
     const escapedAuthor = author.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
     const authorPrefix = new RegExp(`^\\s*@?${escapedAuthor.replace(/^@/u, "@?")}\\s*`, "u");
@@ -3422,6 +3474,7 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
   };
   const publishedAt = (() => {
     if (dedicatedNoteMetadata?.publishedRaw) return normalizePublished(dedicatedNoteMetadata.publishedRaw);
+    if (dedicatedVideoMetadata?.publishedRaw) return normalizePublished(dedicatedVideoMetadata.publishedRaw);
     for (const scope of metadataScopes) {
       const datetimeNode = scope.querySelector("time[datetime]");
       if (datetimeNode) publishedSelectorHit = true;
@@ -3646,17 +3699,28 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
         ...(author ? { author } : {}),
         transcriptionCapability,
         ...(failureReason ? { failureReason } : {}),
+        ...(Number.isFinite(video.duration) && video.duration > 0 ? { durationSeconds: video.duration } : {}),
         candidateCount: candidates.length,
         selectionReason,
         playbackState: selected.playbackState,
       };
     }
   }
+  if (mediaDescriptor && !mediaDescriptor.durationSeconds && dedicatedVideoMetadata?.durationSeconds) {
+    mediaDescriptor = { ...mediaDescriptor, durationSeconds: dedicatedVideoMetadata.durationSeconds };
+  }
 
   // DOM-based stats extraction (fallback for when __INITIAL_STATE__ is unavailable).
   // Multi-video feeds must stay scoped to the active item's identity container;
   // never fill missing fields from the whole document, even with one <video>.
   const statScopes: ParentNode[] = metadataScopes;
+  const dedicatedStatPanel: ParentNode | null = statScopes.length > 0
+    ? null
+    : dedicatedNoteMetadata
+      ? document.querySelector("[data-e2e='note-detail']")
+      : dedicatedVideoMetadata
+        ? document.querySelector("[data-e2e='video-detail']")
+        : null;
   let statSelectorHitMask = 0;
   const countFrom = (raw: string): string | undefined => {
     const match = raw.trim().match(/[\d][\d,.]*(?:\s*[万亿wWkKmM])?/u);
@@ -3679,6 +3743,17 @@ export function extractDouyinSingleItemMetaInPage(): DouyinSingleItemMeta | null
         candidate.getAttribute("class") ?? "",
       ].join(" ")));
     };
+    // 规范详情页（/note/{id}、/video/{id}，上面两段已验过路由与条目号）没有带身份的 scope，
+    // 但互动栏就在详情面板里。面板也装着推荐列表，所以同一个选择器在面板里只能命中一个节点。
+    if (dedicatedStatPanel) {
+      for (const selector of selectors) {
+        const nodes = dedicatedStatPanel.querySelectorAll(selector);
+        if (nodes.length !== 1) continue;
+        statSelectorHitMask |= bit;
+        const value = countFrom(nodes[0]!.textContent ?? "");
+        if (value) return value;
+      }
+    }
     for (const scope of statScopes) {
       for (const selector of selectors) {
         const node = scope.querySelector(selector);

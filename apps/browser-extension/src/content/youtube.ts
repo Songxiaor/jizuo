@@ -72,6 +72,8 @@ export type YouTubeCaptionTrack = {
   languageCode: string;
   /** "asr" marks auto-generated speech recognition tracks. */
   kind?: string;
+  /** 播放器里显示的名字，如「中文（中国）」：文字记录面板的语言菜单按它认轨。 */
+  name?: string;
 };
 
 /**
@@ -84,7 +86,11 @@ export function pickCaptionTrack(tracks: YouTubeCaptionTrack[]): YouTubeCaptionT
   const rank = (track: YouTubeCaptionTrack): number => {
     const language = (track.languageCode || "").toLowerCase();
     const authored = track.kind !== "asr" ? 0 : 1;
-    if (language.startsWith("zh")) return 0 + authored;
+    // 简体在前：繁体字幕存进来还得再转一道（2026-09-29 实测 3Blue1Brown 选中了 zh-Hant）。
+    // 不带地区的「zh」可能是繁体（3Blue1Brown 就是），明确的简体轨排它前面。
+    if (/^zh-(?:hans|cn|sg)$/u.test(language)) return 0 + authored;
+    if (language === "zh") return 2 + authored;
+    if (language.startsWith("zh")) return 4 + authored;
     if (language.startsWith("en")) return 10 + authored;
     return 20 + authored;
   };
@@ -222,7 +228,12 @@ export function readYouTubePlayerSnapshotInMainWorld(): YouTubePlayerSnapshot | 
         };
         captions?: {
           playerCaptionsTracklistRenderer?: {
-            captionTracks?: Array<{ baseUrl?: string; languageCode?: string; kind?: string }>;
+            captionTracks?: Array<{
+              baseUrl?: string;
+              languageCode?: string;
+              kind?: string;
+              name?: { simpleText?: string; runs?: Array<{ text?: string }> };
+            }>;
           };
         };
       }
@@ -264,11 +275,15 @@ export function readYouTubePlayerSnapshotInMainWorld(): YouTubePlayerSnapshot | 
     ...(thumbnailURL ? { thumbnailURL } : {}),
     captionTracks: tracks
       .filter((track) => typeof track.baseUrl === "string")
-      .map((track) => ({
-        baseUrl: track.baseUrl as string,
-        languageCode: track.languageCode ?? "",
-        ...(track.kind ? { kind: track.kind } : {}),
-      })),
+      .map((track) => {
+        const name = (track.name?.simpleText ?? track.name?.runs?.map((run) => run.text ?? "").join("") ?? "").trim();
+        return {
+          baseUrl: track.baseUrl as string,
+          languageCode: track.languageCode ?? "",
+          ...(track.kind ? { kind: track.kind } : {}),
+          ...(name ? { name } : {}),
+        };
+      }),
   };
 }
 
@@ -369,9 +384,40 @@ export type YouTubePanelSegment = { time: string; text: string };
  * 自己的「文字记录」面板：点开 → 等 segment 渲染 → 读文本 → 关面板。
  * 全程使用页面自身机制与用户会话，只读当前视频的可见内容。
  */
-export async function collectYouTubeTranscriptFromPanelInPage(): Promise<YouTubePanelSegment[]> {
+export async function collectYouTubeTranscriptFromPanelInPage(
+  wanted?: { name: string; occurrence: number },
+): Promise<YouTubePanelSegment[]> {
   const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
   const panelSelector = 'ytd-engagement-panel-section-list-renderer[target-id*="transcript"]';
+
+  /**
+   * 只取 YouTube 自己的字。网页翻译扩展会往字幕行里插译文（2026-09-29 实测 EGO 里的 `<xt-trans>`：
+   * 双语模式是「译文 + 原文」，替换模式只把原文留在 `xt-origin` 属性里），直接读 textContent
+   * 会把机器译文混进存档。跳过这类外来标签；原文被整个换掉时从 `xt-origin` 取回。
+   */
+  const ownText = (root: Element | null | undefined): string => {
+    if (!root) return "";
+    if (!root.childNodes) return root.textContent ?? "";
+    let own = "";
+    const origins: string[] = [];
+    const walk = (node: Node): void => {
+      for (const child of Array.from(node.childNodes)) {
+        if (child.nodeType === 3) { own += child.textContent ?? ""; continue; }
+        if (child.nodeType !== 1) continue;
+        const element = child as Element;
+        const tag = element.tagName.toLowerCase();
+        const origin = element.getAttribute("xt-origin");
+        const foreign = origin !== null
+          || (tag.includes("-") && !/^(?:yt|ytd|tp-yt)-/u.test(tag))
+          || /immersive-translate/u.test(element.getAttribute("class") ?? "");
+        if (!foreign) { walk(element); continue; }
+        if (origin) origins.push(origin);
+      }
+    };
+    walk(root);
+    const text = own.replace(/\s+/g, " ").trim();
+    return text || origins.join(" ").replace(/\s+/g, " ").trim();
+  };
 
   const readSegments = (): YouTubePanelSegment[] => {
     // 2025 UI 使用 transcript-segment-view-model；旧 UI 是 ytd-transcript-segment-renderer。
@@ -380,51 +426,81 @@ export async function collectYouTubeTranscriptFromPanelInPage(): Promise<YouTube
       return modern.map((el) => ({
         time:
           el.querySelector('div[class*="Timestamp"]:not([class*="A11y"])')?.textContent?.trim() ?? "",
-        text: el.querySelector("span")?.textContent?.replace(/\s+/g, " ").trim() ?? "",
+        text: ownText(el.querySelector("span")),
       }));
     }
     return [...document.querySelectorAll("ytd-transcript-segment-renderer")].map((el) => ({
       time: el.querySelector(".segment-timestamp")?.textContent?.trim() ?? "",
-      text: el.querySelector(".segment-text")?.textContent?.replace(/\s+/g, " ").trim() ?? "",
+      text: ownText(el.querySelector(".segment-text")),
     }));
   };
+  const fingerprintOf = (segments: YouTubePanelSegment[]) => segments.map((segment) => segment.text).join("\u0001");
 
-  const alreadyOpen = readSegments();
-  if (alreadyOpen.some((segment) => segment.text)) return alreadyOpen;
+  /**
+   * 面板默认显示的语言不跟播放器字幕走（2026-09-29 实测 3Blue1Brown：播放器切到 zh-CN / en，
+   * 面板仍是繁体「中文」）。面板底部有自己的语言菜单，选项和 captionTracks 同名同序；
+   * 按名字（同名时按第几个）点中挑好的那条轨，等内容换掉再读。菜单不在或找不到就读默认。
+   */
+  const selectWantedLanguage = async (): Promise<void> => {
+    if (!wanted?.name) return;
+    const items = [...document.querySelectorAll(`${panelSelector} ytd-transcript-footer-renderer tp-yt-paper-item`)]
+      .filter((item) => item.textContent?.replace(/\s+/g, " ").trim() === wanted.name) as HTMLElement[];
+    const item = items[wanted.occurrence] ?? items[0];
+    if (!item || item.getAttribute("aria-selected") === "true") return;
+    const before = fingerprintOf(readSegments());
+    item.click();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await sleep(500);
+      const now = fingerprintOf(readSegments());
+      if (now && now !== before) return;
+    }
+  };
 
-  const findButton = (): HTMLElement | null =>
-    (document.querySelector("ytd-video-description-transcript-section-renderer button") as HTMLElement | null) ??
-    (document.querySelector('button[aria-label*="transcript" i]') as HTMLElement | null) ??
-    (document.querySelector('button[aria-label*="文字记录"]') as HTMLElement | null) ??
-    (document.querySelector('button[aria-label*="转写"]') as HTMLElement | null);
+  let segments = readSegments();
+  const wasOpen = segments.some((segment) => segment.text);
+  if (!wasOpen) {
+    const findButton = (): HTMLElement | null =>
+      (document.querySelector("ytd-video-description-transcript-section-renderer button") as HTMLElement | null) ??
+      (document.querySelector('button[aria-label*="transcript" i]') as HTMLElement | null) ??
+      (document.querySelector('button[aria-label*="文字记录"]') as HTMLElement | null) ??
+      (document.querySelector('button[aria-label*="转写"]') as HTMLElement | null);
 
-  let button = findButton();
-  if (!button) {
-    (document.querySelector("#description-inline-expander #expand") as HTMLElement | null)?.click();
-    await sleep(600);
-    button = findButton();
+    let button = findButton();
+    if (!button) {
+      (document.querySelector("#description-inline-expander #expand") as HTMLElement | null)?.click();
+      await sleep(600);
+      button = findButton();
+    }
+    if (!button) return [];
+    button.click();
+    for (let attempt = 0; attempt < 24; attempt += 1) {
+      await sleep(500);
+      if (readSegments().some((segment) => segment.text)) break;
+    }
   }
-  if (!button) return [];
-  button.click();
 
-  let segments: YouTubePanelSegment[] = [];
+  await selectWantedLanguage();
+
   let previousFingerprint = "";
   for (let attempt = 0; attempt < 24; attempt += 1) {
-    await sleep(500);
     segments = readSegments();
-    if (!segments.some((segment) => segment.text)) continue;
-    // YouTube 会渐进套用自动翻译；等两次读取完全一致再收，
-    // 避免抓到"前半已翻译、后半还是原文"的中间态。
-    const fingerprint = segments.map((segment) => segment.text).join("\u0001");
-    if (fingerprint === previousFingerprint) break;
-    previousFingerprint = fingerprint;
+    if (segments.some((segment) => segment.text)) {
+      // YouTube 会渐进套用自动翻译；等两次读取完全一致再收，
+      // 避免抓到"前半已翻译、后半还是原文"的中间态。
+      const fingerprint = fingerprintOf(segments);
+      if (fingerprint === previousFingerprint) break;
+      previousFingerprint = fingerprint;
+    }
+    await sleep(500);
   }
 
-  // 面板是抓取的副作用，读完即还原用户界面。
-  const closeButton = document.querySelector(
-    `${panelSelector} #visibility-button button`,
-  ) as HTMLElement | null;
-  closeButton?.click();
+  // 面板是抓取的副作用，读完即还原用户界面；用户本来开着的不替他关。
+  if (!wasOpen) {
+    const closeButton = document.querySelector(
+      `${panelSelector} #visibility-button button`,
+    ) as HTMLElement | null;
+    closeButton?.click();
+  }
 
   return segments.filter((segment) => segment.text);
 }

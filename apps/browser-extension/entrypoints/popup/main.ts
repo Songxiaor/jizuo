@@ -6,12 +6,14 @@ import {
   popupRecoveryForSendResult,
   popupMetadataDiagnostic,
   popupPreviewFailure,
+  popupBrowserPageFailure,
   popupCaughtFailure,
   popupSourceLine,
   popupStats,
   popupDuration,
   popupBylineText,
   popupStepChain,
+  popupXProfileHeading,
   popupChainSummary,
   popupStepProgress,
   popupSavedAtLabel,
@@ -57,6 +59,7 @@ type Completeness = "full_article" | "visible_only" | "selection_only" | "unknow
 type SafeCapturePreview = {
   title: string;
   characterCount: number;
+  wordCount?: number;
   version: 1 | 2;
   platform: CapturePlatform;
   completeness: Completeness;
@@ -142,6 +145,8 @@ let recoveryMode: "retry" | "reload" | null = null;
 /** 工序链的输入：App 的自动设置、这页有没有视频、评论怎么存。齐了就重画。 */
 let autoSteps: readonly string[] | undefined;
 let pageHasVideo = false;
+let previewLoaded = false;
+let pagePlatform: CapturePlatform | undefined;
 let commentPlan: CommentPlan = "unknown";
 /** 这条在汲作里的 id：查重找到或保存后轮询到，「在汲作里打开」直接跳过去。 */
 let knownTaskID: string | undefined;
@@ -172,7 +177,7 @@ function sealPicture(key: ChainKey, stamped: boolean): HTMLElement {
 }
 
 function renderStepChain(): void {
-  const chain = popupStepChain({ autoSteps, hasVideo: pageHasVideo, comments: commentPlan, selectedAction });
+  const chain = popupStepChain({ autoSteps, hasVideo: previewLoaded ? pageHasVideo : undefined, usesCaptions: pagePlatform === "youtube", comments: commentPlan, selectedAction });
   stepChain.replaceChildren();
   for (const seal of chain) {
     const item = document.createElement(seal.toggles ? "button" : "div") as HTMLElement;
@@ -517,8 +522,14 @@ if (tabId === undefined) {
   readXProfile.disabled = false;
   setAvailability("ready", "可读取");
   renderPlatform("X · 主页作品");
-  status.textContent = "读取后到汲作勾选";
-  renderMeta([{ text: "请停在「帖子」分页" }, { text: "不会自动保存或总结" }]);
+  // 标题说这是谁的主页，说明放进正文位置（只在「帖子」分页上才会走到这里，不用再提示分页）。
+  const profile = popupXProfileHeading(tab?.title, tab?.url);
+  status.textContent = `${profile.name}的主页`;
+  author.textContent = profile.handle !== profile.name ? profile.handle : "";
+  author.hidden = author.textContent.length === 0;
+  excerpt.textContent = "往下翻读出本人发的帖子，交给汲作列出来，你在汲作里勾选要存哪些。不会自动保存或总结。";
+  excerpt.hidden = false;
+  renderMeta([]);
   readXProfile.onclick = async () => {
     readXProfile.disabled = true;
     readXProfile.classList.remove("done");
@@ -825,6 +836,8 @@ if (tabId === undefined) {
     renderStats(popupStats(preview));
     sourceNote.hidden = preview.usedCookie !== true;
     pageHasVideo = isVideo;
+    previewLoaded = true;
+    pagePlatform = preview.platform;
     previewPageURL = preview.pageURL;
     renderStepChain();
     void checkDuplicate();
@@ -851,7 +864,9 @@ if (tabId === undefined) {
     // 把真实 message 亮出来：CAPTURE_CONTENT_EMPTY 是抓到了页面但没有正文，
     // "Cannot access contents of url…" 是注入被拒，两者的修法完全不同。
     const message = cause instanceof Error ? cause.message : String(cause);
-    const failure = popupPreviewFailure(message);
+    const browserPage = popupBrowserPageFailure(tab?.url);
+    const failure = browserPage ?? popupPreviewFailure(message);
+    if (browserPage) renderPlatform("浏览器页面");
     actionCard.hidden = true;
     failureTitle.textContent = failure.title;
     failureMessage.textContent = failure.message;
