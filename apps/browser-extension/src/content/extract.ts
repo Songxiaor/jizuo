@@ -1253,7 +1253,9 @@ export function collectXStatusBlocksInOrder(root: Element, baseHref: string): st
     if (testId === "tweetPhoto" || testId === "videoPlayer") emitMedia(node);
   }
 
-  if (!textChunks.length) {
+  // 帖子还没渲染出来时 root 是整个文档：刮下来只有导航、推荐和 <head> 里的样式，
+  // 不如交给调用方退回标签页标题。
+  if (!textChunks.length && root.tagName.toLowerCase() !== "html") {
     const scrubbed = scrubXArticleChrome(root.cloneNode(true) as Element);
     const scrubProse = formatXPostProse(extractXTextWithBreaks(scrubbed));
     const scrubKey = scrubProse.replace(/\s+/g, " ").trim();
@@ -1348,6 +1350,8 @@ export function extractXTextWithBreaks(root: Element): string {
       return;
     }
     if (tag === "img" || tag === "svg" || tag === "button" || tag === "time") return;
+    // 不给人看的节点：样式表、脚本等的文字是代码（2026-09-29 X 帖子摘录出现 `input::placeholder {…}`）。
+    if (tag === "style" || tag === "script" || tag === "noscript" || tag === "template" || tag === "head") return;
     const block = tag === "p" || tag === "div" || tag === "li" || tag === "blockquote" || /^h[1-6]$/.test(tag);
     if (block) parts.push("\n");
     Array.from(el.childNodes).forEach((child) => walk(child));

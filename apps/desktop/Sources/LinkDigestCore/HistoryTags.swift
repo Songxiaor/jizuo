@@ -341,6 +341,8 @@ public struct HistoryListFilter: Sendable, Equatable {
   public let form: ContentForm?
   /// 排除带「已使用」标签的条目。只给 MCP 的 `unused_only` 兼容用，界面不再有「已使用」。
   public let excludesUsed: Bool
+  /// 只在这些条目里查（「按意思搜」先按向量挑出候选，再套用当前筛选）。nil = 不限；空数组 = 一条也不要。
+  public let onlyTaskIDs: [TaskID]?
 
   public init(
     tagNames: [String] = [],
@@ -352,7 +354,8 @@ public struct HistoryListFilter: Sendable, Equatable {
     includesNotes: Bool = false,
     includesArchivesInScopes: Bool = false,
     form: ContentForm? = nil,
-    excludesUsed: Bool = false
+    excludesUsed: Bool = false,
+    onlyTaskIDs: [TaskID]? = nil
   ) {
     var seen = Set<String>()
     tagNormalizedNames = tagNames.compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
@@ -368,6 +371,7 @@ public struct HistoryListFilter: Sendable, Equatable {
     self.includesArchivesInScopes = includesArchivesInScopes
     self.form = form
     self.excludesUsed = excludesUsed
+    self.onlyTaskIDs = onlyTaskIDs
   }
 
   public static let none = HistoryListFilter()
@@ -377,7 +381,18 @@ public struct HistoryListFilter: Sendable, Equatable {
     HistoryListFilter(
       tagNames: tagNormalizedNames, hosts: hosts, scope: scope,
       searchText: searchText, creatorID: creatorID, includesNotes: includesNotes,
-      includesArchivesInScopes: includesArchivesInScopes, form: form, excludesUsed: excludesUsed
+      includesArchivesInScopes: includesArchivesInScopes, form: form, excludesUsed: excludesUsed,
+      onlyTaskIDs: onlyTaskIDs
+    )
+  }
+
+  /// 同样的筛选，但不按关键词、只在给定条目里查：「意思相近」用它套用当前的平台、归属等条件。
+  public func restricted(to taskIDs: [TaskID]) -> HistoryListFilter {
+    HistoryListFilter(
+      tagNames: tagNormalizedNames, hosts: hosts, scope: scope,
+      searchText: "", creatorID: creatorID, ordersBySavedTime: ordersBySavedTime, includesNotes: includesNotes,
+      includesArchivesInScopes: includesArchivesInScopes, form: form, excludesUsed: excludesUsed,
+      onlyTaskIDs: taskIDs
     )
   }
 }

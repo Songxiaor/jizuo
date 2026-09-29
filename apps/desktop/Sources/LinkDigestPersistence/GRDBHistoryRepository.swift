@@ -464,6 +464,14 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       if filter.excludesUsed {
         predicates.append("NOT EXISTS (\(Self.usedTagSQL))")
       }
+      if let only = filter.onlyTaskIDs {
+        if only.isEmpty {
+          predicates.append("0")
+        } else {
+          predicates.append("t.id IN (\(Array(repeating: "?", count: only.count).joined(separator: ",")))")
+          for id in only { arguments += [id.rawValue] }
+        }
+      }
       if !filter.searchText.isEmpty {
         let pattern = "%\(escapedLikePattern(filter.searchText))%"
         // 正文与标签也要能搜到。

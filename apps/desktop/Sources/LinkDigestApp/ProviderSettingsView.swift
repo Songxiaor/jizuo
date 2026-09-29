@@ -26,6 +26,7 @@ struct ProviderSettingsView: View {
     // 原始值不改：别处用 `SettingsNavigationRequest` 按字符串跳到某一页（例如 "service"、"generation"）。
     // 2026-09-28 按工序重组：generation 成了「工序总览」，service 成了「模型服务」，新增七道工序页。
     case service, generation, appearance, mediaStorage, knowledgeVault, dataBackup, companionSync, siteLogin, browserSupport, mcp, updates, labs
+    case semanticSearch
     case capture, record, proof, comments, summary, translation, mindMap
     var id: String { rawValue }
 
@@ -70,6 +71,7 @@ struct ProviderSettingsView: View {
       case .appearance: "外观"
       case .mediaStorage: "视频存储"
       case .knowledgeVault: "知识库同步"
+      case .semanticSearch: "按意思搜"
       case .dataBackup: "数据与备份"
       case .companionSync: "手机同步"
       case .siteLogin: "站点登录"
@@ -89,6 +91,7 @@ struct ProviderSettingsView: View {
       // 2026-09-24 走查：原来是 folder.badge.gearshape / externaldrive.badge.timemachine，
       // 带角标的符号比 18pt 图标框宽，溢出后顶到文字上，和上下几行对不齐。
       case .knowledgeVault: "books.vertical"
+      case .semanticSearch: "text.magnifyingglass"
       case .dataBackup: "clock.arrow.circlepath"
       case .companionSync: "iphone.and.arrow.forward"
       case .siteLogin: "person.crop.circle.badge.checkmark"
@@ -132,7 +135,7 @@ struct ProviderSettingsView: View {
   private static let sidebarSections: [(title: String?, tabs: [SettingsTab])] = [
     (nil, [.generation]),
     ("工序", [.capture, .browserSupport, .siteLogin, .record, .mediaStorage, .proof, .comments, .summary, .translation, .mindMap]),
-    ("通用", [.service, .appearance, .dataBackup, .knowledgeVault, .companionSync, .mcp, .updates, .labs]),
+    ("通用", [.service, .appearance, .dataBackup, .knowledgeVault, .semanticSearch, .companionSync, .mcp, .updates, .labs]),
   ]
 
   private static var sidebarOrder: [SettingsTab] { sidebarSections.flatMap(\.tabs) }
@@ -469,6 +472,10 @@ struct ProviderSettingsView: View {
           KnowledgeVaultSettingsView(model: knowledgeVault)
         case .dataBackup:
           DataBackupSettingsView()
+        case .semanticSearch:
+          if let service = historyModel?.semanticSearch {
+            SemanticSearchSettingsView(service: service)
+          }
         case .companionSync:
           CompanionNoteSyncSettingsView(model: companionSync)
         case .siteLogin:

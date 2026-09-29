@@ -1418,6 +1418,16 @@ describe("page extraction", () => {
     expect(iB).toBeLessThan(i2);
   });
 
+  it("never scrapes style sheets or the whole page when an X post has not rendered yet", () => {
+    const css = "input::placeholder { user-select: none; -webkit-user-select: none; }";
+    const shell = el("div", [el("style", [text(css)]), el("nav", [text("主页 探索 通知 聊天 发帖")])]);
+    const doc = makeDocument({ title: "(1) X 上的 WY：“项目放到github上开源了” / X", href: "https://x.com/akokoi1/status/2104771886236553568", root: shell }) as unknown as { documentElement: unknown; body: unknown };
+    doc.documentElement = el("html", [el("head", [el("style", [text(css)])]), doc.body as FakeNode]);
+    const result = extractCurrentPage(doc as unknown as Document);
+    expect(result.text).not.toContain("placeholder");
+    expect(result.text).not.toContain("探索 通知");
+  });
+
   it("keeps X long-form headings, code blocks, prose, and photos in read-view DOM order", () => {
     const title = "99% 的人没看出来的数字人口播实战攻略";
     const intro =

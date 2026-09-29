@@ -222,16 +222,39 @@ final class MCPController: ObservableObject {
         }
         form = value
       }
-      let page = try history.historyPage(limit: a["limit"] as? Int ?? 20, after: cursor, filter: .init(tagNames: tagNames, scope: scope, searchText: a["query"] as? String ?? "", creatorID: creator, includesNotes: !tagNames.isEmpty || scope != .all || form != nil, includesArchivesInScopes: true, form: form, excludesUsed: a["unused_only"] as? Bool ?? false))
+      let query = a["query"] as? String ?? ""
+      let filter = HistoryListFilter(tagNames: tagNames, scope: scope, searchText: query, creatorID: creator, includesNotes: !tagNames.isEmpty || scope != .all || form != nil, includesArchivesInScopes: true, form: form, excludesUsed: a["unused_only"] as? Bool ?? false)
+      let page = try history.historyPage(limit: a["limit"] as? Int ?? 20, after: cursor, filter: filter)
       // 疑似含密钥 / 账号密码的条目不交给 AI 工具（2026-09-23）：连标题也不露。
-      let visibleRows = page.rows.filter { row in
+      let isVisible = { (row: HistoryRowProjection) in
         !SensitiveContent.looksSensitive((row.title ?? "") + "\n" + (row.sourcePreview ?? ""))
       }
-      return ["items": visibleRows.map { row -> [String: Any] in
+      let visibleRows = page.rows.filter(isVisible)
+      let item = { (row: HistoryRowProjection) -> [String: Any] in
         let tags = row.tagNames ?? []
         let used = tags.contains { HistoryTagNormalizer.normalized($0)?.normalizedName == MaterialCatalog.usedTagNormalizedName }
         return ["task_id": row.taskID.rawValue, "title": row.title ?? "", "url": row.canonicalURL, "source_host": row.host, "platform": Self.platformKey(row.host), "platform_name": HistoryPlatformDisplay.name(forHost: Self.platformKey(row.host)), "tags": tags, "used": used, "ownership": ContentOwnership.resolve(canonicalURL: row.canonicalURL, host: row.host, tagNames: tags).rawValue]
-      }, "next_cursor": try page.nextCursor.map { try JSONEncoder().encode($0).base64EncodedString() } as Any? ?? NSNull()]
+      }
+      var result: [String: Any] = ["items": visibleRows.map(item), "next_cursor": try page.nextCursor.map { try JSONEncoder().encode($0).base64EncodedString() } as Any? ?? NSNull()]
+      // 按意思搜（2026-09-29）：第一页附上意思相近、但不含搜索词的条目，同样套用筛选。
+      // 设置里没打开时不带这个字段，已接入的 Agent 看到的结果不变。
+      if cursor == nil, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+         let semantic = historyModel.semanticSearch, semantic.isReady {
+        let ranked = await semantic.search(query)
+        let keywordIDs = Set(page.rows.map(\.taskID))
+        let candidates = ranked.map(\.taskID).filter { !keywordIDs.contains($0) }
+        let score = Dictionary(uniqueKeysWithValues: ranked.map { ($0.taskID, $0.score) })
+        let rows = candidates.isEmpty ? [] : try history.historyPage(limit: SemanticSearchService.candidateLimit, after: nil, filter: filter.restricted(to: candidates)).rows
+        result["related"] = rows.filter(isVisible)
+          .sorted { (score[$0.taskID] ?? 0) > (score[$1.taskID] ?? 0) }
+          .prefix(HistoryViewModel.relatedRowLimit)
+          .map { row -> [String: Any] in
+            var value = item(row)
+            value["similarity"] = (Double(score[row.taskID] ?? 0) * 1000).rounded() / 1000
+            return value
+          }
+      }
+      return result
     case "jizuo_read":
       let d = try history.detail(taskID: taskID())
       let text = d.snapshots.last?.bodyText ?? ""

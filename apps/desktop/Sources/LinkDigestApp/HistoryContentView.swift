@@ -918,7 +918,8 @@ struct HistoryContentView: View {
         HistorySkeletonList(theme: theme)
       case .loading where model.rows.isEmpty:
         HistorySkeletonList(theme: theme)
-      case .empty:
+      // 关键词一条没搜到、但有意思相近的：直接显示那一组，不说「没有符合条件的内容」。
+      case .empty where model.visibleRelatedRows.isEmpty:
         if model.selectedScope == .unsummarized, !model.hasCategoryFilter,
            model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           HistoryInlineState(
@@ -1022,7 +1023,7 @@ struct HistoryContentView: View {
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-list-failed")
         }
-      case .loaded, .loading, .failed, .idle:
+      case .loaded, .loading, .failed, .idle, .empty:
         ScrollViewReader { batchScroll in
           List(selection: $model.selectedTaskIDs) {
           if !visibleProfileImportBatches.isEmpty {
@@ -1090,6 +1091,9 @@ struct HistoryContentView: View {
                 .accessibilityIdentifier("history-list-day-group")
             }
           }
+          }
+          if !model.visibleRelatedRows.isEmpty {
+            relatedRowsSection
           }
           if model.isLoadingNextPage { HStack { Spacer(); ProgressView().controlSize(.small); Spacer() } }
           else if model.listErrorCode != nil, model.canRetryList {
@@ -3159,6 +3163,43 @@ struct HistoryContentView: View {
       return AnyView(emptyTrashDetail)
     }
     return AnyView(emptyCaptureDetail)
+  }
+
+  /// 「按意思搜」补充的一组：不含搜索词、但讲的是相近的事（2026-09-29）。
+  /// 行的样子和上面的列表完全一样，只多一个组标题说明它们为什么出现。
+  private var relatedRowsSection: some View {
+    Section {
+      ForEach(model.visibleRelatedRows, id: \.taskID) { row in
+        UIReadingHistoryRow(
+          row: row,
+          isSelected: model.selectedTaskIDs.contains(row.taskID),
+          faviconURL: model.faviconImageURL(for: row),
+          theme: theme,
+          showsAuthor: true,
+          showsOwnSeal: showsOwnSealInList,
+          onToggleFavorite: { model.toggleFavorite(taskID: row.taskID) },
+          onSummarize: { summarizeSingle(row) },
+          onActivate: { model.selectedTaskIDs = [row.taskID] },
+          moreMenu: { AnyView(DeferredMenuContent { historyContextMenu(for: row) }) }
+        ).equatable().tag(row.taskID)
+          .listRowBackground(Color.clear)
+          .listRowInsets(EdgeInsets(top: 4, leading: -6, bottom: 4, trailing: -6))
+          .listRowSeparator(.hidden)
+          .contextMenu { DeferredMenuContent { historyContextMenu(for: row) } }
+      }
+    } header: {
+      VStack(alignment: .leading, spacing: 2) {
+        Text("意思相近")
+          .themedFont(.subheadline, weight: .medium)
+          .foregroundStyle(theme.secondaryText)
+          .accessibilityAddTraits(.isHeader)
+        Text("没有这几个字，但讲的是相近的内容")
+          .themedFont(.caption)
+          .foregroundStyle(theme.secondaryText.opacity(0.8))
+      }
+      .padding(.leading, DesignTokens.Space.xs)
+      .accessibilityIdentifier("history-list-related-group")
+    }
   }
 
   private var filterEmptyState: some View {

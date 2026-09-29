@@ -867,6 +867,12 @@ final class HistoryViewModel {
   }
 
   private(set) var rows: [HistoryRowProjection] = []
+  /// 搜索时「意思相近」的那一组（2026-09-29）：按相似度排，套用当前筛选。
+  /// 关键词已经搜到的不在这里重复，见 `visibleRelatedRows`。
+  private(set) var relatedRows: [HistoryRowProjection] = []
+  /// 由 App 注入；没开「按意思搜」或还没就绪时，搜索照旧只按关键词。
+  @ObservationIgnored var semanticSearch: SemanticSearchService?
+  @ObservationIgnored private var relatedTask: Task<Void, Never>?
   private var isSelectingGalleryItems = false
   var selectedTaskIDs: Set<TaskID> = [] {
     didSet {
@@ -6365,6 +6371,7 @@ final class HistoryViewModel {
     case let .success(page):
       rows = page.rows; nextCursor = page.nextCursor; listState = page.rows.isEmpty ? .empty : .loaded
       loadFavicons(for: page.rows, generation: generation)
+      refreshRelatedRows()
       if let preservedSelection {
         selectedTaskIDs = preservedSelection
         if preservedSelection.isEmpty {
@@ -7934,6 +7941,43 @@ final class HistoryViewModel {
 
   private static func singleSelection(in taskIDs: Set<TaskID>) -> TaskID? {
     taskIDs.count == 1 ? taskIDs.first : nil
+  }
+
+  /// 「意思相近」里要显示的：关键词结果全部加载完才出现，且不重复关键词已搜到的。
+  var visibleRelatedRows: [HistoryRowProjection] {
+    guard !hasMoreListPages, !relatedRows.isEmpty else { return [] }
+    let shown = Set(rows.map(\.taskID))
+    return Array(relatedRows.filter { !shown.contains($0.taskID) }.prefix(Self.relatedRowLimit))
+  }
+
+  static let relatedRowLimit = 10
+
+  /// 按当前搜索词找意思相近的条目，再用当前筛选（平台、归属、形式……）过一遍。
+  private func refreshRelatedRows() {
+    relatedTask?.cancel()
+    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !query.isEmpty, let semanticSearch, semanticSearch.isReady, let history, selectedScope != .trash else {
+      if !relatedRows.isEmpty { relatedRows = [] }
+      return
+    }
+    let filter = listFilter
+    let generation = configurationGeneration
+    relatedTask = Task { [weak self] in
+      let ranked = await semanticSearch.search(query)
+      guard !Task.isCancelled, !ranked.isEmpty else {
+        if !Task.isCancelled { self?.relatedRows = [] }
+        return
+      }
+      let order = Dictionary(uniqueKeysWithValues: ranked.enumerated().map { ($1.taskID, $0) })
+      let rows = await Task.detached(priority: .userInitiated) {
+        (try? history.historyPage(limit: SemanticSearchService.candidateLimit, after: nil, filter: filter.restricted(to: ranked.map(\.taskID))))?.rows ?? []
+      }.value
+      guard let self, !Task.isCancelled, generation == self.configurationGeneration,
+            self.searchText.trimmingCharacters(in: .whitespacesAndNewlines) == query
+      else { return }
+      self.relatedRows = rows.sorted { (order[$0.taskID] ?? .max) < (order[$1.taskID] ?? .max) }
+      self.loadFavicons(for: self.relatedRows, generation: generation)
+    }
   }
 
   private func scheduleSearchReload() {

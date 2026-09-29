@@ -209,6 +209,12 @@ final class MaterialScopeTests: XCTestCase {
       XCTAssertEqual(try ids(repository, .init(excludesUsed: true)), [b])
       XCTAssertEqual(try ids(repository, .init(tagNames: ["金句"])), [a])
       XCTAssertTrue(try ids(repository, .init(tagNames: ["金句"], excludesUsed: true)).isEmpty)
+
+      // 「按意思搜」的候选：只在给定条目里查，同时仍套用其它筛选（2026-09-29）。
+      XCTAssertEqual(try ids(repository, .init(onlyTaskIDs: [a])), [a])
+      XCTAssertEqual(try ids(repository, HistoryListFilter(excludesUsed: true).restricted(to: [a, b])), [b])
+      XCTAssertTrue(try ids(repository, .init(onlyTaskIDs: [])).isEmpty)
+      XCTAssertEqual(try ids(repository, HistoryListFilter(searchText: "不会命中的词").restricted(to: [a])), [a], "restricted 去掉关键词")
     }
   }
 

@@ -68,6 +68,7 @@ THIRD_PARTY_LICENSE_HASHES = {
     # 2026-09-24 阅读区公式与流程图（随 LinkDigestCore 资源包分发，见 docs/DEPENDENCIES.md）。
     "KaTeX-LICENSE.txt": "766ccc1f306c885aa45542a9846bbd0a505b27a0374f146778171c2254ce18e3",
     "Mermaid-LICENSE.txt": "ec9fb67dcb25eccc416ed56e1aab819222c805a2a4bfe4cb19e7556bf2ffde80",
+    "bge-small-zh-LICENSE.txt": "2b1f78b8d0b372c8f02b945e1cf46e16f9b9c273cbfce6db10949c249ff614df",
 }
 SPARKLE_FRAMEWORK_SYMLINKS = {
     "Autoupdate": "Versions/Current/Autoupdate",

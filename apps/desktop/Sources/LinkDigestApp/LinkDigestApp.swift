@@ -1659,6 +1659,8 @@ struct MainWindowLaunchGuard: ViewModifier {
     self.terminationSignalSource = terminationSignalSource
     self.appUpdateController = appUpdateController
     _model = State(initialValue: model)
+    // 按意思搜：没打开时只是一个空壳，不下载也不读库。
+    historyModel.semanticSearch = SemanticSearchService()
     _historyModel = State(initialValue: historyModel)
     if let transcriptionTempStore {
       Task.detached(priority: .background) {
@@ -1741,6 +1743,7 @@ struct MainWindowLaunchGuard: ViewModifier {
             readOnlyRecoveryHint: result.historyReadOnlyRecoveryHint
           )
           didConfigureHistory = true
+          historyModel.semanticSearch?.configure(history: result.history)
           await settingsLoad.value
           knowledgeVaultSettings.configure(history: result.history)
           mediaInventory.bind(result.history)
