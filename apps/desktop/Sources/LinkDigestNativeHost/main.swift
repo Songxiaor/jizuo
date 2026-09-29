@@ -151,6 +151,17 @@ func deliverToApp(_ body: Data, requestId: String) -> NativeResponse {
   return errorResponse(lastCode, requestId: requestId)
 }
 
+/// 只问正在运行的 App：一次短连接，连不上就如实回「App 没开」，不冷启动。
+/// 弹窗查重和看进度都是顺手的信息，不值得为它把 App 拉到前台。
+func deliverToRunningApp(_ body: Data, requestId: String) -> NativeResponse {
+  do {
+    let response = try UnixSocketClient.send(body, path: socketPath, timeout: 3)
+    return decodeResponse(response, requestId: requestId)
+  } catch {
+    return errorResponse(isOfflineTransport(error) ? "APP_UNAVAILABLE" : transportErrorCode(error), requestId: requestId)
+  }
+}
+
 // 诊断写入默认关闭：host 会经手用户抓取的正文，不能默认往世界可读的 /tmp 落
 // 任何东西。需要排查时设 LINKDIGEST_HOST_DEBUG=1，只写计数/状态码（不含正文）。
 private let hostDebugEnabled = ProcessInfo.processInfo.environment["LINKDIGEST_HOST_DEBUG"] == "1"
@@ -191,8 +202,26 @@ do {
         requestId: preferences.requestId,
         commentLimit: store.commentLimit,
         commentLimits: store.commentLimitsByPlatform,
-        autoSaveComments: store.autoSaveComments
+        autoSaveComments: store.autoSaveComments,
+        autoSteps: store.autoSteps
       )
+      try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
+      exit(0)
+    }
+  } catch let issue as CaptureValidationError {
+    try ChromiumFramer.writeFrame(
+      try JSONEncoder().encode(
+        errorResponse(issue.rawValue, requestId: NativeRequestIdentity.requestId(from: body) ?? "native-host")
+      ),
+      to: .standardOutput
+    )
+    exit(0)
+  }
+
+  do {
+    if let status = try PageStatusRequest.decode(body) {
+      writeDebugLog("page_status requestId=\(status.requestId)")
+      let result = deliverToRunningApp(body, requestId: status.requestId)
       try ChromiumFramer.writeFrame(try JSONEncoder().encode(result), to: .standardOutput)
       exit(0)
     }
@@ -209,8 +238,10 @@ do {
   do {
     if let openApp = try OpenAppRequest.decode(body) {
       writeDebugLog("open_app requestId=\(openApp.requestId)")
+      let deepLink = openApp.deepLink
       let opened = AppColdStart.openPeerApp(
         hostExecutable: hostExecutableURL(),
+        launcher: { try AppColdStart.launchWithOpen($0, deepLink: deepLink) },
         log: AppColdStart.logToStderr
       )
       let result: NativeResponse = opened

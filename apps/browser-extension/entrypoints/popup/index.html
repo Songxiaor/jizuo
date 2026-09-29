@@ -17,12 +17,13 @@
     --badge: #EDEDEB;
     --ink: #37352F;
     --secondary: #6F6E6A;
-    --accent: #0A6CE6;
-    --accent-hover: #095FCB;
-    --accent-pressed: #0852B0;
+    /* 靛青：2026-09-28 App 自有风格取代系统亮蓝，弹窗跟着换（AppearanceTheme.swift ReadingPalette.accent）。 */
+    --accent: #2B4C7E;
+    --accent-hover: #24416D;
+    --accent-pressed: #1E375C;
     --on-accent: #FFFFFF;
-    --accent-tint: rgba(10,108,230,.08);
-    --accent-line: rgba(10,108,230,.30);
+    --accent-tint: rgba(43,76,126,.08);
+    --accent-line: rgba(43,76,126,.30);
     --success: #486E4A;  --success-tint: rgba(72,110,74,.12);
     --warning: #835E2A;  --warning-tint: rgba(131,94,42,.12);
     --danger:  #A14B42;
@@ -45,12 +46,12 @@
       --badge: rgba(255,255,255,.10);
       --ink: #E3E2DE;
       --secondary: #9B9A96;
-      --accent: #5AA2FF;
-      --accent-hover: #6DAEFF;
-      --accent-pressed: #4A92EE;
+      --accent: #8EA8D6;
+      --accent-hover: #9DB4DD;
+      --accent-pressed: #7F9BCC;
       --on-accent: #0F1A2B;
-      --accent-tint: rgba(90,162,255,.12);
-      --accent-line: rgba(90,162,255,.35);
+      --accent-tint: rgba(142,168,214,.12);
+      --accent-line: rgba(142,168,214,.35);
       --success: #86B98F;  --success-tint: rgba(134,185,143,.14);
       --warning: #D9B36A;  --warning-tint: rgba(217,179,106,.14);
       --danger:  #D98070;
@@ -74,7 +75,7 @@
 
   body {
     margin: 0;
-    width: 340px;
+    width: 380px;
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
     font-size: 13px;
     background: var(--canvas);
@@ -84,34 +85,65 @@
   /* 表单控件默认不继承字体，漏掉这一行的表现是「按钮和正文不是一套字」。 */
   button, input, select, textarea { font-family: inherit; }
 
-  main { padding: 12px; display: flex; flex-direction: column; gap: 8px; background: var(--canvas); }
+  main { padding: 12px; display: flex; flex-direction: column; gap: 10px; background: var(--canvas); }
 
   /* 顶部：品牌 + 可用性徽章 */
   .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 2px; }
-  .brand { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--secondary); }
+  .brand { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; color: var(--ink); }
   /* 用真图标：弹窗、工具栏、App 三处是同一个标志。 */
   .brand .logo { width: 16px; height: 16px; display: block; }
+  /* 顶部状态：一个小点 + 一句话，不再是彩色胶囊（App 的配色里没有绿色）。 */
   #availability {
     display: inline-flex; align-items: center; gap: 5px;
-    font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: var(--radius-pill); white-space: nowrap;
+    font-size: 11px; color: var(--secondary); white-space: nowrap;
   }
-  #availability::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
-  #availability[data-tone="ready"]   { background: var(--success-tint); color: var(--success); }
-  #availability[data-tone="video"]   { background: var(--accent-tint); color: var(--accent); }
-  #availability[data-tone="warn"]    { background: var(--warning-tint); color: var(--warning); }
-  #availability[data-tone="blocked"] { background: var(--badge); color: var(--secondary); }
+  #availability::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-sizing: border-box; }
+  #availability[data-tone="warn"]::before    { background: var(--warning); }
+  #availability[data-tone="blocked"]::before { background: transparent; border: 1px solid var(--secondary); }
 
   /* 内容卡：与 App 设置卡同一套——白底、1px 细线、12pt 圆角。 */
   .card {
     background: var(--card); border: 1px solid var(--hairline); border-radius: var(--radius-card); padding: 12px;
     display: flex; flex-direction: column; gap: 6px; box-shadow: var(--shadow-soft);
   }
-  #platform { display: flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; color: var(--secondary); }
+  /* 标题与正文开头用宋体，和 App 阅读区同一种字（2026-09-29 弹窗重构）。 */
+  .serif { font-family: "Songti SC", "STSong", "Noto Serif CJK SC", serif; }
+  #platform { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--secondary); }
   #status {
-    margin: 0; font-size: 14px; line-height: 1.4; font-weight: 600;
+    margin: 0; font-size: 16px; line-height: 1.45; font-weight: 600;
     overflow-wrap: anywhere;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
   }
+  #source-card { padding: 14px; gap: 8px; }
+  .source-head { display: flex; gap: 12px; align-items: flex-start; }
+  .source-text { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+  /* 视频卡左侧的竖版块：封面地址不出后台，这里只放时长。 */
+  #video-thumb {
+    width: 64px; height: 86px; flex-shrink: 0; border-radius: var(--radius-control);
+    background: #2A2A2C; position: relative; display: flex; align-items: center; justify-content: center;
+  }
+  #video-thumb svg { display: block; }
+  #video-duration {
+    position: absolute; right: 4px; bottom: 4px; font-size: 10px; color: #FFFFFF;
+    background: rgba(0,0,0,.55); padding: 1px 4px; border-radius: 4px;
+  }
+  #video-duration:empty { display: none; }
+  #author { font-size: 12px; color: var(--ink); }
+  #excerpt {
+    margin: 0; font-size: 13px; line-height: 1.7; color: var(--secondary);
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  #stats {
+    display: grid; grid-template-columns: repeat(var(--stat-count, 4), minmax(0, 1fr)); gap: 6px;
+    border-top: 1px solid var(--hairline); padding-top: 10px; margin-top: 2px;
+  }
+  #stats:empty { display: none; }
+  #stats[data-count="2"] { --stat-count: 2; }
+  #stats[data-count="3"] { --stat-count: 3; }
+  #stats .stat { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  #stats .stat b { font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #stats .stat span { font-size: 11px; color: var(--secondary); }
+  #source-note { margin: 0; font-size: 11px; color: var(--secondary); }
   #meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   #meta:empty { display: none; }
   #meta .chip {
@@ -133,6 +165,14 @@
   #send:active, #sync-bookmarks:active, #sync-selected:active, #read-x-profile:active, #recovery-action:active, #open-app:active { background: var(--accent-pressed); }
   #send:disabled, #sync-bookmarks:disabled, #sync-selected:disabled, #read-x-profile:disabled { background: var(--disabled-fill); color: var(--disabled-text); cursor: default; }
   #send.done, #sync-bookmarks.done, #sync-selected.done, #read-x-profile.done { background: var(--success-tint); color: var(--success); }
+  /*
+    保存按钮钉在弹窗底部：来源卡、评论预览加起来会超过 Chromium 弹窗 600px 的上限，
+    主操作不能跟着滚出视线（2026-09-29 实测视频页要往下滚才看得到「保存」）。
+  */
+  #send:not([hidden]) {
+    position: sticky; bottom: 12px; z-index: 1;
+    box-shadow: 0 0 0 12px var(--canvas);
+  }
   button:focus-visible, a:focus-visible { outline: 2px solid var(--accent-line); outline-offset: 2px; }
 
   /*
@@ -206,8 +246,11 @@
   #comments-note { margin: 0; padding: 0 4px; font-size: 11px; line-height: 1.45; color: var(--secondary); }
   #comments-note:empty { display: none; }
 
-  /* 发送后操作：macOS 分段控件样式。 */
-  .action-card { padding: 4px; gap: 4px; }
+  /* 保存后：分段控件，选中的一段用靛青实底（和 App 设置里的分段一致）。 */
+  .section-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 0 2px; }
+  .section-head h2 { margin: 0; font-size: 12px; font-weight: 600; color: var(--ink); }
+  .section-head .hint { font-size: 11px; color: var(--secondary); }
+  .action-card { padding: 12px 14px; gap: 8px; }
   .action-options {
     display: grid; grid-template-columns: repeat(3, 1fr); gap: 2px;
     padding: 2px; border-radius: var(--radius-control); background: var(--badge);
@@ -216,12 +259,80 @@
   .action-option input { position: absolute; opacity: 0; pointer-events: none; }
   .action-option span {
     display: flex; align-items: center; justify-content: center;
-    min-height: 26px; padding: 3px 5px; border-radius: var(--radius-small); text-align: center;
-    color: var(--secondary); font-size: 12px; font-weight: 500; cursor: pointer;
+    min-height: 28px; padding: 3px 5px; border-radius: var(--radius-small); text-align: center;
+    color: var(--ink); font-size: 12px; font-weight: 500; cursor: pointer;
   }
-  .action-option input:checked + span { color: var(--ink); background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,.10); font-weight: 600; }
+  .action-option input:checked + span { color: var(--on-accent); background: var(--accent); font-weight: 600; }
   .action-option input:focus-visible + span { outline: 2px solid var(--accent-line); outline-offset: 1px; }
-  #action-detail { margin: 2px 8px 4px; color: var(--secondary); font-size: 11.5px; line-height: 1.45; }
+  #action-detail { margin: 0; color: var(--secondary); font-size: 12px; line-height: 1.5; }
+
+  /*
+    工序印：图片由 App 的 SealMark 渲染导出（public/seals，见 ExtensionSealAssetTests），
+    和 App 同一套画法，小印不另画简化版。
+  */
+  .seal-img { display: block; width: 34px; height: 34px; }
+  .seal-img img { display: block; width: 100%; height: 100%; }
+  #step-chain { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
+  .chain-seal {
+    appearance: none; border: 0; background: transparent; padding: 2px 0; margin: 0;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    font: inherit; font-size: 11px; color: var(--ink); border-radius: var(--radius-small);
+  }
+  button.chain-seal { cursor: pointer; }
+  button.chain-seal:hover { background: var(--accent-tint); }
+  .chain-seal.pending { color: var(--secondary); }
+  .chain-seal.na { color: var(--secondary); }
+  .chain-seal.na .seal-img { opacity: .3; filter: grayscale(1); }
+  .step-rows { display: flex; flex-direction: column; gap: 8px; }
+  .step-row { display: grid; grid-template-columns: 24px 1fr auto; gap: 10px; align-items: center; font-size: 12px; }
+  .step-row .seal-img { width: 24px; height: 24px; }
+  .step-row .state { font-size: 11px; color: var(--secondary); text-align: right; }
+  .step-row.running .state { color: var(--accent); }
+  .step-row.failed .state { color: var(--danger); }
+  .step-row.waiting, .step-row.manual { color: var(--secondary); }
+  #saved-steps { align-self: stretch; text-align: left; border-top: 1px solid var(--hairline); padding-top: 12px; margin-top: 2px; }
+  #dup-view { padding: 12px 14px; gap: 10px; }
+  #dup-title { color: var(--accent); }
+  #save-again {
+    appearance: none; border: 1px solid var(--hairline); border-radius: var(--radius-control); min-height: 36px;
+    font-size: 13px; background: var(--card); color: var(--ink); cursor: pointer;
+  }
+  #save-again:hover { background: var(--badge); }
+
+  /* 评论卡：自动保存时只读预览前几条；勾选模式是带复选框的列表。 */
+  #comments-picker .comments-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; padding: 0 4px; }
+  #comments-mode {
+    appearance: none; border: 0; background: transparent; padding: 0; cursor: pointer;
+    font-size: 11px; color: var(--accent);
+  }
+  .comment-preview { display: flex; flex-direction: column; gap: 2px; padding: 4px 4px 2px; }
+  .comment-preview .who { display: flex; justify-content: space-between; gap: 8px; font-size: 11px; color: var(--secondary); }
+  .comment-preview .what {
+    font-size: 12px; line-height: 1.5; color: var(--ink);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  #comments-more { margin: 0; padding: 0 4px; font-size: 11px; color: var(--secondary); }
+  #comments-more:empty { display: none; }
+
+  /* 保存成功 / 读不到：各自一张结果卡，替换掉来源卡下面的内容。 */
+  #saved-view { align-items: center; text-align: center; padding: 20px 14px 16px; gap: 10px; }
+  #saved-view .collector-seal { width: 56px; height: 56px; }
+  #saved-title { margin: 0; font-size: 16px; font-weight: 600; line-height: 1.45; overflow-wrap: anywhere; }
+  #saved-detail { margin: 0; font-size: 12px; line-height: 1.6; color: var(--secondary); white-space: pre-line; }
+  #failure-view { padding: 14px; gap: 6px; }
+  #failure-title { margin: 0; font-size: 13px; font-weight: 600; color: var(--ink); }
+  #failure-message { margin: 0; font-size: 12px; line-height: 1.6; color: var(--secondary); }
+  #failure-steps { margin: 6px 0 0; padding: 0; list-style: none; counter-reset: step; display: flex; flex-direction: column; gap: 6px; }
+  #failure-steps li { counter-increment: step; display: grid; grid-template-columns: 14px 1fr; gap: 8px; font-size: 12px; line-height: 1.5; }
+  #failure-steps li::before { content: counter(step); color: var(--secondary); }
+  #failure-steps:empty { display: none; }
+  .button-row { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
+  .button-row > [hidden] { display: none !important; }
+  #close-popup {
+    appearance: none; border: 1px solid var(--hairline); border-radius: var(--radius-control); min-height: 36px;
+    font-size: 13px; background: var(--card); color: var(--ink); cursor: pointer;
+  }
+  #close-popup:hover { background: var(--badge); }
   #result { margin: 0; padding: 8px 12px; border-radius: var(--radius-control); background: var(--success-tint); color: var(--success); font-size: 12px; line-height: 1.45; }
   #result { display: flex; align-items: center; gap: 10px; }
   /* 保存成功时盖下的「汲」印：从大、透明压到略小再回弹到原大。 */
@@ -274,18 +385,42 @@
     </header>
     <span id="availability" data-tone="ready" hidden></span>
   </div>
-  <div class="card">
-    <div id="platform"></div>
-    <h1 id="status">读取当前页面…</h1>
-    <div id="meta"></div>
-  </div>
-  <section class="card action-card" id="action-card">
-    <div class="action-options" role="radiogroup" aria-label="发送后操作">
-      <label class="action-option"><input type="radio" name="capture-action" value="save" checked><span>仅保存</span></label>
-      <label class="action-option"><input type="radio" name="capture-action" value="summarize"><span>总结</span></label>
-      <label class="action-option"><input type="radio" name="capture-action" value="translate"><span>翻译</span></label>
+  <section class="card" id="source-card">
+    <div class="source-head">
+      <div id="video-thumb" hidden>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M8 5.5v13l10.5-6.5z"/></svg>
+        <span id="video-duration"></span>
+      </div>
+      <div class="source-text">
+        <div id="platform"></div>
+        <h1 id="status" class="serif">读取当前页面…</h1>
+        <div id="author" hidden></div>
+      </div>
     </div>
-    <p id="action-detail">保留原文与来源，稍后再处理</p>
+    <p id="excerpt" class="serif" hidden></p>
+    <div id="meta"></div>
+    <div id="stats"></div>
+    <p id="source-note" hidden>用了浏览器里的登录状态读取</p>
+  </section>
+  <section class="card" id="dup-view" hidden>
+    <div class="section-head"><h2 id="dup-title">这一页已经在汲作里</h2><span class="hint" id="dup-date"></span></div>
+    <div class="step-rows" id="dup-steps"></div>
+  </section>
+  <section class="card action-card" id="action-card">
+    <div class="section-head"><h2>保存后</h2></div>
+    <div id="step-chain" role="group" aria-label="保存后的工序"></div>
+    <p id="action-detail"></p>
+  </section>
+  <section class="card" id="saved-view" hidden>
+    <span id="saved-seal"></span>
+    <h1 id="saved-title" class="serif"></h1>
+    <p id="saved-detail"></p>
+    <div class="step-rows" id="saved-steps" hidden></div>
+  </section>
+  <section class="card" id="failure-view" hidden>
+    <h2 id="failure-title"></h2>
+    <p id="failure-message"></p>
+    <ol id="failure-steps"></ol>
   </section>
   <!--
     初始必须 disabled：main.ts 用顶层 await 等预览返回，`send.onclick` 在那之后才
@@ -295,13 +430,19 @@
   <section id="comments-picker" hidden>
     <div class="picker-toolbar">
       <span id="comments-count">正在加载评论…</span>
+      <button type="button" id="comments-mode" hidden>逐条挑选</button>
       <button type="button" id="comments-select-all">全选</button>
       <button type="button" id="comments-select-none">清空</button>
     </div>
     <div id="comments-list"></div>
+    <p id="comments-more"></p>
     <p id="comments-note"></p>
   </section>
   <button id="send" disabled>准备中…</button>
+  <div class="button-row" id="result-actions" hidden>
+    <button type="button" id="close-popup">关闭</button>
+    <button type="button" id="save-again" hidden>再存一份</button>
+  </div>
   <button id="sync-bookmarks" hidden>读取收藏列表</button>
   <section id="bookmarks-picker" hidden>
     <div class="picker-toolbar">

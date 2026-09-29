@@ -166,7 +166,12 @@ export type CapturePreferences = {
   commentLimit: number;
   commentLimits: Partial<Record<CommentPlatform, number>>;
   autoSaveComments: boolean;
+  /** 新内容进来会自动做的工序；undefined = 旧版 App/Host 没告诉（2026-09-29 弹窗重构）。 */
+  autoSteps?: ProcessStepKey[];
 };
+
+export const PROCESS_STEP_KEYS = ["record", "proof", "comments", "summary", "translation", "mindMap"] as const;
+export type ProcessStepKey = (typeof PROCESS_STEP_KEYS)[number];
 
 export const DEFAULT_CAPTURE_PREFERENCES: CapturePreferences = {
   commentLimit: COMMENT_LIMIT_DEFAULT,
@@ -194,7 +199,7 @@ export function parseCapturePreferences(response: unknown, expectedRequestId: st
   if (!response || typeof response !== "object") return undefined;
   const row = response as {
     kind?: unknown; version?: unknown; requestId?: unknown;
-    commentLimit?: unknown; commentLimits?: unknown; autoSaveComments?: unknown;
+    commentLimit?: unknown; commentLimits?: unknown; autoSaveComments?: unknown; autoSteps?: unknown;
   };
   if (row.kind !== "capturePreferences" || row.version !== 1 || row.requestId !== expectedRequestId) return undefined;
   const commentLimit = typeof row.commentLimit === "number" && Number.isInteger(row.commentLimit)
@@ -210,7 +215,13 @@ export function parseCapturePreferences(response: unknown, expectedRequestId: st
       commentLimits[platform] = value <= 0 ? 0 : clampCommentLimit(value);
     }
   }
-  return { commentLimit, commentLimits, autoSaveComments: row.autoSaveComments === true };
+  const autoSteps = Array.isArray(row.autoSteps)
+    ? PROCESS_STEP_KEYS.filter((key) => (row.autoSteps as unknown[]).includes(key))
+    : undefined;
+  return {
+    commentLimit, commentLimits, autoSaveComments: row.autoSaveComments === true,
+    ...(autoSteps ? { autoSteps } : {}),
+  };
 }
 
 export function parseCapturePreferencesLimit(response: unknown, expectedRequestId: string): number | undefined {
@@ -313,8 +324,11 @@ export type CommentCollectResult =
   | { ok: false; code: "unsupported" | "empty" | "failed"; limit?: number }
   /** 这个平台在汲作设置里设为不抓评论：不注入收集脚本。 */
   | { ok: false; code: "disabled"; platform: CommentPlatform }
-  /** 自动保存前 N 条：弹窗不显示勾选，保存时再读。 */
-  | { ok: false; code: "auto"; platform: CommentPlatform; limit: number };
+  /**
+   * 自动保存前 N 条：弹窗不给勾选，只预览读到的前几条（2026-09-29 弹窗重构）。
+   * 读到的这份写进缓存，保存时直接用，不再滚第二遍；没读到时 items 缺省，保存时再读。
+   */
+  | { ok: false; code: "auto"; platform: CommentPlatform; limit: number; expectedCount?: number; items?: CommentPickerItem[] };
 
 export function commentPickerItems(comments: CapturedComment[]): CommentPickerItem[] {
   return comments.map((comment) => ({
@@ -338,8 +352,24 @@ export async function collectCommentsForPicker(tabId: number): Promise<CommentCo
     return { ok: false, code: "disabled", platform };
   }
   if (preferences.autoSaveComments) {
-    // 旧的勾选缓存不能混进自动保存：保存时按当前条数重新读。
+    // 按当前条数现读一份给弹窗预览，并缓存给保存用；读失败不影响保存（保存时再读）。
     await writeCommentCache(tabId, undefined);
+    try {
+      const collection = await withTimeout(collectCommentsInTab(tabId, limit), 25_000);
+      if (collection) {
+        await writeCommentCache(tabId, { url: tabURL, collection });
+        return {
+          ok: false,
+          code: "auto",
+          platform,
+          limit,
+          ...(collection.expectedCount !== undefined ? { expectedCount: collection.expectedCount } : {}),
+          items: commentPickerItems(collection.comments),
+        };
+      }
+    } catch {
+      // 落到下面：只告诉弹窗「自动存前 N 条」。
+    }
     return { ok: false, code: "auto", platform, limit };
   }
   try {
@@ -406,6 +436,10 @@ async function attachComments(
 ): Promise<ExtractedPage> {
   if (mode?.kind === "disabled") return pageWithoutComments(page);
   if (mode?.kind === "auto") {
+    const cached = await readCommentCache(tabId);
+    if (cached && sameContentURL(cached.url, tabURL) && cached.collection.limit === mode.limit) {
+      return pageWithComments(page, cached.collection, undefined);
+    }
     try {
       const collection = await withTimeout(collectCommentsInTab(tabId, mode.limit), 25_000);
       return pageWithComments(page, collection, undefined);
@@ -433,7 +467,24 @@ export type SafeCapturePreview = {
   metadataDiagnostic?: DouyinMetadataDiagnostic;
   /** 抖音图文帖的图片张数；非图文帖不带。 */
   imageCount?: number;
+  /** 正文开头一小段（最多 120 字，压成一行），让用户确认读对了内容。不带全文。 */
+  excerpt?: string;
+  /** 页面域名，只有主机名。 */
+  host?: string;
+  /** 这次抓取认定的页面地址（抖音弹层会换成视频详情页）；弹窗拿它问 App 存过没有。 */
+  pageURL?: string;
+  /** 读取时用了浏览器里的登录状态。 */
+  usedCookie?: boolean;
+  /** 视频时长与作者：页面上本来就看得见的元数据；播放和封面地址仍然不出后台。 */
+  mediaDurationSeconds?: number;
+  mediaAuthor?: string;
+  /** 抓取头部元数据（`---` 块）里的作者、发布时间和互动数，原样的短字符串。 */
+  sourceAuthor?: string;
+  published?: string;
+  engagement?: PreviewEngagement;
 };
+
+export type PreviewEngagement = Partial<Record<"likes" | "comments" | "shares" | "collects" | "views", string>>;
 
 export type ExtensionSendErrorStage = "extension_validation" | "native_response" | "native_transport";
 export type ExtensionSendResult = {
@@ -524,9 +575,67 @@ function safeDiagnosticCopy(value: unknown): DouyinSessionDiagnostic | undefined
   return safeDouyinSessionDiagnostic({ ...(value as Record<string, unknown>), ok: false });
 }
 
+const EXCERPT_LIMIT = 120;
+const FRONTMATTER_KEYS = ["author", "published", "likes", "comments", "shares", "collects", "views"] as const;
+
+/**
+ * 抓取正文开头的 `---` 元数据块（extract.ts buildCaptureFrontmatter 写的，值是 JSON 字符串）。
+ * 只认那几项已知字段，其余忽略；块不完整时当作没有。
+ */
+export function splitCaptureFrontmatter(text: string): { fields: Partial<Record<(typeof FRONTMATTER_KEYS)[number], string>>; body: string } {
+  const match = /^---\n([\s\S]*?)\n---\n?/u.exec(text.replace(/^\uFEFF/u, ""));
+  if (!match) return { fields: {}, body: text };
+  const fields: Partial<Record<(typeof FRONTMATTER_KEYS)[number], string>> = {};
+  for (const line of (match[1] ?? "").split("\n")) {
+    const pair = /^([a-z_]+):\s*(.+)$/u.exec(line.trim());
+    if (!pair) continue;
+    const key = pair[1] as (typeof FRONTMATTER_KEYS)[number];
+    if (!FRONTMATTER_KEYS.includes(key)) continue;
+    let value = pair[2] ?? "";
+    try {
+      const parsed: unknown = JSON.parse(value);
+      value = typeof parsed === "string" || typeof parsed === "number" ? String(parsed) : "";
+    } catch {
+      value = value.replace(/^["']|["']$/gu, "");
+    }
+    value = value.replace(/\s+/gu, " ").trim();
+    if (value) fields[key] = [...value].slice(0, key === "author" ? 60 : 32).join("");
+  }
+  return { fields, body: text.slice(match[0].length) };
+}
+
+/**
+ * 弹窗里的正文开头：去掉 Markdown 标记、与标题重复的首行和评论段，压成一行，最多 120 字。
+ * 只有这一小段离开后台；全文仍然只随保存发给 App。
+ */
+export function previewExcerpt(text: string, title: string | null | undefined): string | undefined {
+  const normalizedTitle = (title ?? "").replace(/\s+/gu, " ").trim();
+  const body = stripEmbeddedCommentSection(splitCaptureFrontmatter(text).body)
+    .split("\n")
+    .map((line) => line
+      .replace(/!\[[^\]]*\]\([^)]*\)/gu, "")
+      .replace(/\[([^\]]*)\]\([^)]*\)/gu, "$1")
+      .replace(/^\s{0,3}(#{1,6}|>|[-*+]|\d+\.)\s+/u, "")
+      .replace(/[*_`~]+/gu, "")
+      .replace(/\s+/gu, " ")
+      .trim())
+    .filter((line) => line.length > 0 && !/^\[?\d{1,2}:\d{2}(:\d{2})?\]?$/u.test(line));
+  if (body[0] && normalizedTitle && body[0] === normalizedTitle) body.shift();
+  let joined = body.join(" ").trim();
+  // X 这类没有标题的帖子，标题就是正文第一句：开头再出现一遍就去掉。
+  const titleStem = normalizedTitle.replace(/[。．.！!？?…]+$/u, "");
+  if (titleStem.length >= 4 && joined.startsWith(titleStem)) {
+    joined = joined.slice(titleStem.length).replace(/^[。．.！!？?…，,：:;；\s]+/u, "");
+  }
+  if (!joined) return undefined;
+  const chars = [...joined];
+  return chars.length > EXCERPT_LIMIT ? `${chars.slice(0, EXCERPT_LIMIT).join("")}…` : joined;
+}
+
 /**
  * Popup preview is deliberately an allowlist. In particular, process-only
- * playback/poster URLs and captured text never cross this message boundary.
+ * playback/poster URLs and the full captured text never cross this message
+ * boundary; only a bounded excerpt does (see `previewExcerpt`).
  */
 export function safePreviewForCapture(
   envelope: CaptureEnvelope,
@@ -542,6 +651,28 @@ export function safePreviewForCapture(
     completeness: envelope.capture.completeness,
     ...(typeof imageCount === "number" && imageCount > 0 ? { imageCount } : {}),
   };
+  const excerpt = previewExcerpt(envelope.capture.text, envelope.source.title);
+  if (excerpt) preview.excerpt = excerpt;
+  const host = safeBlockedHostFromURL(envelope.source.url);
+  if (host) preview.host = host.replace(/^www\./u, "");
+  if (/^https?:\/\//u.test(envelope.source.url)) preview.pageURL = envelope.source.url;
+  if (envelope.evidence.usedCookie) preview.usedCookie = true;
+  const { fields } = splitCaptureFrontmatter(envelope.capture.text);
+  if (fields.author) preview.sourceAuthor = fields.author;
+  if (fields.published) preview.published = fields.published;
+  const engagement: PreviewEngagement = {};
+  for (const key of ["likes", "comments", "shares", "collects", "views"] as const) {
+    if (fields[key]) engagement[key] = fields[key];
+  }
+  if (Object.keys(engagement).length > 0) preview.engagement = engagement;
+  if (envelope.version === 2) {
+    const duration = envelope.media.durationSeconds;
+    if (typeof duration === "number" && Number.isFinite(duration) && duration > 0) {
+      preview.mediaDurationSeconds = Math.round(duration);
+    }
+    const author = envelope.media.author?.replace(/\s+/gu, " ").trim().slice(0, 60);
+    if (author) preview.mediaAuthor = author;
+  }
   if (envelope.version === 2) {
     preview.media = {
       kind: envelope.media.kind,
@@ -1947,8 +2078,59 @@ function nativeFailureCode(response: unknown): "upgrade_app" | "native_error" {
   return "native_error";
 }
 
-export async function openPeerApp(): Promise<{ ok: true } | { ok: false; code: "native_error" | "upgrade_app" }> {
-  const message = { kind: "openApp", version: 1, requestId: requestId() };
+export type PageStepState = { step: ProcessStepKey; state: "done" | "running" | "failed"; detail?: string };
+export type PageStatusResult =
+  | { kind: "found"; taskID: string; savedAt?: number; steps: PageStepState[] }
+  | { kind: "notFound" }
+  /** App 没开、旧版本或读失败：弹窗不显示查重，按平常保存。 */
+  | { kind: "unavailable" };
+
+const TASK_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u;
+
+export function parsePageStatus(response: unknown, expectedRequestId: string): PageStatusResult {
+  if (!response || typeof response !== "object") return { kind: "unavailable" };
+  const row = response as { kind?: unknown; version?: unknown; requestId?: unknown; status?: unknown };
+  if (row.kind !== "pageStatus" || row.version !== 1 || row.requestId !== expectedRequestId) return { kind: "unavailable" };
+  const status = row.status as { found?: unknown; taskID?: unknown; savedAtMilliseconds?: unknown; steps?: unknown } | undefined;
+  if (!status || typeof status !== "object") return { kind: "unavailable" };
+  if (status.found !== true) return { kind: "notFound" };
+  if (typeof status.taskID !== "string" || !TASK_ID_PATTERN.test(status.taskID)) return { kind: "unavailable" };
+  const steps: PageStepState[] = [];
+  for (const raw of Array.isArray(status.steps) ? status.steps : []) {
+    const item = raw as { step?: unknown; state?: unknown; detail?: unknown };
+    if (!PROCESS_STEP_KEYS.includes(item.step as ProcessStepKey)) continue;
+    if (item.state !== "done" && item.state !== "running" && item.state !== "failed") continue;
+    steps.push({
+      step: item.step as ProcessStepKey,
+      state: item.state,
+      ...(typeof item.detail === "string" && item.detail.trim() ? { detail: [...item.detail.trim()].slice(0, 40).join("") } : {}),
+    });
+  }
+  return {
+    kind: "found",
+    taskID: status.taskID,
+    ...(typeof status.savedAtMilliseconds === "number" ? { savedAt: status.savedAtMilliseconds } : {}),
+    steps,
+  };
+}
+
+/** 问 App「这一页存过没有、做到哪了」。Host 只找正在运行的 App，不会把它拉起来。 */
+export async function lookupPageStatus(url: unknown): Promise<PageStatusResult> {
+  if (typeof url !== "string" || !/^https?:\/\//u.test(url) || url.length > 4_096) return { kind: "unavailable" };
+  const message = { kind: "pageStatus", version: 1, requestId: requestId(), url };
+  try {
+    const response: unknown = await withTimeout(browser.runtime.sendNativeMessage(HOST_NAME, message), 5_000);
+    return parsePageStatus(response, message.requestId);
+  } catch {
+    return { kind: "unavailable" };
+  }
+}
+
+export async function openPeerApp(taskID?: unknown): Promise<{ ok: true } | { ok: false; code: "native_error" | "upgrade_app" }> {
+  const message = {
+    kind: "openApp", version: 1, requestId: requestId(),
+    ...(typeof taskID === "string" && TASK_ID_PATTERN.test(taskID) ? { taskID } : {}),
+  };
   try {
     const response: unknown = await withTimeout(
       browser.runtime.sendNativeMessage(HOST_NAME, message),
@@ -1979,11 +2161,15 @@ export default defineBackground(() => {
       requestedAction?: CaptureRequestedAction;
       selectedCommentIDs?: string[];
       commentMode?: unknown;
+      taskID?: unknown;
+      url?: unknown;
     },
   ) => {
     // 时间线注入按钮发来的单条同步：只需要 tweetID，不涉及 tabId。
     if (message.type === "sync-single-tweet") return syncSingleTweet(message.tweetID);
-    if (message.type === "open-app") return openPeerApp();
+    if (message.type === "open-app") return openPeerApp(message.taskID);
+    if (message.type === "page-status") return lookupPageStatus(message.url);
+    if (message.type === "pipeline-preferences") return capturePreferences();
     // 勾选后提交：只交 id 列表，不再依赖当前 tab 滚动。
     if (message.type === "enqueue-x-bookmarks") return enqueueXBookmarkIDs(message.tweetIDs);
     if (typeof message.tabId !== "number") return undefined;

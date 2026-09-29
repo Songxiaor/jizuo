@@ -870,6 +870,35 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertEqual(model.runPreferences.summaryPrompt, ModelPreferences.defaultSummaryPrompt)
   }
 
+  /// 自动工序抄给浏览器扩展（2026-09-29）：加载时抄一次，改了再抄；没设镜像的实例不写。
+  func testAutoStepsAreMirroredForTheBrowserOnlyWhenAMirrorIsSet() async throws {
+    let root = URL(fileURLWithPath: "/private/tmp/linkdigest-mirror-\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let mirror = CapturePreferencesStore(root: root)
+    let store = ViewModelPreferencesStore(try ModelPreferences(autoTidyTranscription: true, autoTranscribeNewCaptures: true))
+    let model = ProviderSettingsViewModel(
+      configurationService: ProviderConfigurationService(profileStore: ViewModelProfileStore(), secretStore: ViewModelSecretStore()),
+      provider: SettingsTestProvider(scripts: []),
+      preferencesStore: store
+    )
+    model.browserPreferencesMirror = mirror
+    await model.load()
+    XCTAssertEqual(mirror.autoSteps, ["record", "proof", "translation"])
+    model.autoMindMapNewCaptures = true
+    await model.savePreferences()
+    XCTAssertEqual(mirror.autoSteps, ["record", "proof", "translation", "mindMap"])
+
+    let untouchedRoot = URL(fileURLWithPath: "/private/tmp/linkdigest-mirror-\(UUID().uuidString)", isDirectory: true)
+    let plain = ProviderSettingsViewModel(
+      configurationService: ProviderConfigurationService(profileStore: ViewModelProfileStore(), secretStore: ViewModelSecretStore()),
+      provider: SettingsTestProvider(scripts: []),
+      preferencesStore: store
+    )
+    await plain.load()
+    XCTAssertNil(plain.browserPreferencesMirror)
+    XCTAssertNil(CapturePreferencesStore(root: untouchedRoot).autoSteps)
+  }
+
   func testAutoPipelineTogglePersistsWithoutClickingSaveAndSurvivesRestart() async throws {
     let allOn = try ModelPreferences(
       autoTidyTranscription: true,

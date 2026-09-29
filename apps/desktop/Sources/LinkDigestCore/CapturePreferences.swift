@@ -70,6 +70,21 @@ public struct CapturePreferencesStore: Sendable {
     try update { $0.autoSaveComments = value }
   }
 
+  /// 新内容进来后会自动做的工序（`record` `proof` `comments` `summary` `translation` `mindMap`）。
+  /// App 在设置变化时写进来，Host 读给扩展弹窗点亮工序印（2026-09-29 弹窗重构）。
+  /// nil 表示 App 还没写过（旧版本），扩展按「不知道」处理。
+  public var autoSteps: [String]? { stored?.autoSteps }
+
+  public func setAutoSteps(_ steps: [String]) throws {
+    let known = Set(Self.processStepKeys)
+    let cleaned = Self.processStepKeys.filter { steps.contains($0) && known.contains($0) }
+    guard cleaned != autoSteps else { return }
+    try update { $0.autoSteps = cleaned }
+  }
+
+  /// 工序键名，和扩展、App 的 ProcessStep.rawValue 一致。
+  public static let processStepKeys = ["record", "proof", "comments", "summary", "translation", "mindMap"]
+
   private var stored: Stored? {
     guard let data = try? Data(contentsOf: fileURL) else { return nil }
     return try? JSONDecoder().decode(Stored.self, from: data)
@@ -90,6 +105,7 @@ public struct CapturePreferencesStore: Sendable {
     var commentLimit: Int
     var commentLimits: [String: Int]?
     var autoSaveComments: Bool?
+    var autoSteps: [String]?
   }
 }
 

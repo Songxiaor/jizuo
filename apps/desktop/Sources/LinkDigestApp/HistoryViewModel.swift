@@ -3447,6 +3447,59 @@ final class HistoryViewModel {
     return nil
   }
 
+  /// 扩展弹窗问「这页存过没有、做到哪了」（2026-09-29 弹窗重构）。只读：做过的工序
+  /// 与题跋同一套判断，正在做 / 失败取这台机器上此刻的运行状态。
+  func pageStatus(url: String) async -> PageStatusPayload {
+    guard let history, let canonical = try? CanonicalURL(url) else { return .notFound }
+    let taskID = await Task.detached(priority: .utility) {
+      try? history.taskID(matchingCanonicalURL: canonical)
+    }.value
+    guard let taskID, let detail = await loadStoredDetail(taskID: taskID) else { return .notFound }
+    let mindMap = await storedMindMap(taskID: taskID)
+    var steps: [String: PageStepStatus] = [:]
+    for record in ProcessStepRecord.completed(in: detail, mindMap: mindMap) {
+      steps[record.step.rawValue] = PageStepStatus(step: record.step.rawValue, state: .done, detail: record.note)
+    }
+    func overlay(_ step: ProcessStep, running: Bool, failure: String?, detail: String) {
+      if running {
+        steps[step.rawValue] = PageStepStatus(step: step.rawValue, state: .running, detail: detail)
+      } else if let failure, steps[step.rawValue] == nil {
+        steps[step.rawValue] = PageStepStatus(step: step.rawValue, state: .failed, detail: failure)
+      }
+    }
+    let transcription = transcriptionState(for: taskID)
+    if case let .failed(reason) = transcription {
+      overlay(.record, running: false, failure: reason, detail: "")
+    } else {
+      overlay(.record, running: transcription.isActive, failure: nil, detail: "转写中")
+    }
+    for (step, state) in [(ProcessStep.proof, transcriptTidyState(for: taskID)), (.mindMap, mindMapState(for: taskID))] {
+      if case let .failed(reason) = state {
+        overlay(step, running: false, failure: reason, detail: "")
+      } else {
+        overlay(step, running: state.isActive, failure: nil, detail: "\(step.title)中")
+      }
+    }
+    for (step, kind) in [(ProcessStep.summary, RunKind.summarize), (.translation, .translate)] {
+      if let latest = detail.runs.last(where: { $0.run.kind == kind }) {
+        switch latest.run.status {
+        case .queued, .running:
+          overlay(step, running: true, failure: nil, detail: "\(step.title)中")
+        case .failed, .interrupted:
+          overlay(step, running: false, failure: "上次没做完", detail: "")
+        default:
+          break
+        }
+      }
+    }
+    return PageStatusPayload(
+      found: true,
+      taskID: taskID.rawValue,
+      savedAtMilliseconds: detail.task.createdAtMilliseconds,
+      steps: ProcessStep.allCases.compactMap { steps[$0.rawValue] }
+    )
+  }
+
   private func storedMindMap(taskID: TaskID) async -> TaskMindMapRecord? {
     guard let store = history?.mindMapStore else { return nil }
     return await Task.detached(priority: .utility) {

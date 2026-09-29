@@ -216,11 +216,12 @@ describe("collectCommentsForPicker with App preferences", () => {
     expect(executeScript).not.toHaveBeenCalled();
   });
 
-  it("skips the picker when auto-save is on and reports the effective limit", async () => {
+  it("reads a preview with the effective limit when auto-save is on, without a picker", async () => {
     const { background, executeScript } = await loadWith({ commentLimit: 20, commentLimits: { reddit: 40 }, autoSaveComments: true });
-    await expect(background.collectCommentsForPicker(1))
-      .resolves.toEqual({ ok: false, code: "auto", platform: "reddit", limit: 40 });
-    expect(executeScript).not.toHaveBeenCalled();
+    const result = await background.collectCommentsForPicker(1);
+    expect(result).toMatchObject({ ok: false, code: "auto", platform: "reddit", limit: 40 });
+    expect(executeScript.mock.calls[0]?.[0]).toMatchObject({ args: [40] });
+    expect(result.ok === false && result.code === "auto" && Array.isArray(result.items)).toBe(true);
   });
 
   it("collects with the platform's own limit in picker mode", async () => {
@@ -308,5 +309,40 @@ describe("sendCapture comment modes", () => {
     const { sent, executeScript } = await sendWith(undefined);
     expect(sent[0]!.capture.text).toContain("u/old");
     expect(executeScript.mock.calls.some((call) => (call[0] as { files?: string[] }).files?.includes("/extract-comments.js"))).toBe(false);
+  });
+});
+
+describe("page status and pipeline preferences from the App (2026-09-29)", () => {
+  it("parses a found page, keeps only known steps and bounds details", async () => {
+    vi.stubGlobal("defineBackground", (factory: unknown) => factory);
+    const { parsePageStatus } = await import("../src/entrypoints/background");
+    const found = parsePageStatus({
+      kind: "pageStatus", version: 1, requestId: "r",
+      status: {
+        found: true, taskID: "40847250-39d8-4983-a3b6-e44c9bd8122c", savedAtMilliseconds: 1,
+        steps: [
+          { step: "record", state: "done" },
+          { step: "bogus", state: "done" },
+          { step: "summary", state: "weird" },
+          { step: "comments", state: "done", detail: "存了 20 条" },
+        ],
+      },
+    }, "r");
+    expect(found).toEqual({
+      kind: "found", taskID: "40847250-39d8-4983-a3b6-e44c9bd8122c", savedAt: 1,
+      steps: [{ step: "record", state: "done" }, { step: "comments", state: "done", detail: "存了 20 条" }],
+    });
+    expect(parsePageStatus({ kind: "pageStatus", version: 1, requestId: "r", status: { found: false } }, "r")).toEqual({ kind: "notFound" });
+    expect(parsePageStatus({ kind: "pageStatus", version: 1, requestId: "other", status: { found: false } }, "r")).toEqual({ kind: "unavailable" });
+    expect(parsePageStatus({ kind: "pageStatus", version: 1, requestId: "r", status: { found: true, taskID: "../x" } }, "r")).toEqual({ kind: "unavailable" });
+    expect(parsePageStatus({ kind: "error" }, "r")).toEqual({ kind: "unavailable" });
+  });
+
+  it("reads auto steps when the App sends them and leaves them unknown otherwise", async () => {
+    vi.stubGlobal("defineBackground", (factory: unknown) => factory);
+    const { parseCapturePreferences } = await import("../src/entrypoints/background");
+    expect(parseCapturePreferences({ kind: "capturePreferences", version: 1, requestId: "r", commentLimit: 20, autoSteps: ["mindMap", "record", "nope"] }, "r")?.autoSteps)
+      .toEqual(["record", "mindMap"]);
+    expect(parseCapturePreferences({ kind: "capturePreferences", version: 1, requestId: "r", commentLimit: 20 }, "r")?.autoSteps).toBeUndefined();
   });
 });

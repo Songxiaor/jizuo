@@ -1,4 +1,5 @@
 import SwiftUI
+import LinkDigestCore
 
 /// 汲作的六道工序。每道一枚印（2026-09-28 工序印样稿第五版）。
 enum ProcessStep: String, CaseIterable, Identifiable, Hashable {
@@ -74,6 +75,43 @@ struct ProcessStepRecord: Equatable, Identifiable {
     if let note, !note.isEmpty { parts.append(note) }
     if date == nil, note == nil { parts.append("已做") }
     return parts.joined(separator: " · ")
+  }
+
+  /// 这条内容做过的工序，按先后。题跋上的章和扩展弹窗的「做到哪了」共用这一处判断。
+  static func completed(in detail: HistoryDetailProjection, mindMap: TaskMindMapRecord?) -> [ProcessStepRecord] {
+    func date(_ milliseconds: Int64) -> Date { Date(timeIntervalSince1970: Double(milliseconds) / 1_000) }
+    let transcriptKind = CapturedDocument.Origin.localTranscription.rawValue
+    var records: [ProcessStepRecord] = []
+    // 取最近一次：重新转写、重新抓评论后时间跟着变，盖章那一刻也靠它认出「刚重做完」。
+    if let machine = detail.snapshots.last(where: { $0.sourceKind == transcriptKind && $0.captureMethod != tidyCaptureMethod }) {
+      records.append(.init(step: .record, date: date(machine.capturedAtMilliseconds), note: nil))
+    }
+    if let tidy = detail.snapshots.last(where: { $0.captureMethod == tidyCaptureMethod }) {
+      records.append(.init(step: .proof, date: date(tidy.capturedAtMilliseconds), note: nil))
+    }
+    if let withComments = detail.snapshots.last(where: { $0.bodyText.contains("\n## 评论") }) {
+      records.append(.init(step: .comments, date: date(withComments.capturedAtMilliseconds), note: savedCommentsNote(withComments.bodyText)))
+    }
+    for (step, kind) in [(ProcessStep.summary, RunKind.summarize), (.translation, .translate)] {
+      if let latest = detail.runs.reversed().first(where: { $0.run.kind == kind && !($0.artifact?.bodyText.isEmpty ?? true) }),
+         let artifact = latest.artifact {
+        records.append(.init(step: step, date: date(artifact.updatedAtMilliseconds), note: latest.run.model))
+      }
+    }
+    if let mindMap, mindMap.taskID == detail.task.id {
+      records.append(.init(step: .mindMap, date: date(mindMap.createdAtMilliseconds), note: mindMap.model))
+    }
+    return records
+  }
+
+  /// 转写整理产物的 captureMethod：有它就算「校」过。
+  static let tidyCaptureMethod = "openai_compatible_chat_tidy"
+
+  /// 「## 评论（已保存 20 条 / 页面显示 46）」→「存了 20 条」。
+  static func savedCommentsNote(_ body: String) -> String? {
+    guard let range = body.range(of: #"## 评论（已保存 (\d+) 条"#, options: .regularExpression) else { return nil }
+    let digits = body[range].filter(\.isNumber)
+    return digits.isEmpty ? nil : "存了 \(digits) 条"
   }
 
   static func format(_ date: Date, calendar: Calendar = .current) -> String {

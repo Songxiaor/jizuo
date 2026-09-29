@@ -34,6 +34,7 @@ actor AppComposition {
     /// 此时扩展会收到「请升级 App」而不是静默丢弃这批 id。
     let bookmarksSink: CaptureReceiver.BookmarksSink?
     let profileCandidatesSink: CaptureReceiver.ProfileCandidatesSink?
+    let pageStatusSink: CaptureReceiver.PageStatusSink?
 
     init(
       applicationSupportRoot: @escaping ApplicationSupportRoot,
@@ -43,7 +44,8 @@ actor AppComposition {
       availabilitySink: @escaping AvailabilitySink,
       captureSink: @escaping CaptureReceiver.CaptureSink,
       bookmarksSink: CaptureReceiver.BookmarksSink? = nil,
-      profileCandidatesSink: CaptureReceiver.ProfileCandidatesSink? = nil
+      profileCandidatesSink: CaptureReceiver.ProfileCandidatesSink? = nil,
+      pageStatusSink: CaptureReceiver.PageStatusSink? = nil
     ) {
       self.applicationSupportRoot = applicationSupportRoot
       self.repositoryFactory = repositoryFactory
@@ -53,6 +55,7 @@ actor AppComposition {
       self.captureSink = captureSink
       self.bookmarksSink = bookmarksSink
       self.profileCandidatesSink = profileCandidatesSink
+      self.pageStatusSink = pageStatusSink
     }
   }
 
@@ -125,7 +128,8 @@ actor AppComposition {
           nowMilliseconds: dependencies.nowMilliseconds,
           captureSink: dependencies.captureSink,
           bookmarksSink: dependencies.bookmarksSink,
-          profileCandidatesSink: dependencies.profileCandidatesSink
+          profileCandidatesSink: dependencies.profileCandidatesSink,
+          pageStatusSink: dependencies.pageStatusSink
         )
         let started = startServer(receiver, using: dependencies.serverStarter)
         return .init(
@@ -168,7 +172,8 @@ actor AppComposition {
         nowMilliseconds: dependencies.nowMilliseconds,
         captureSink: dependencies.captureSink,
         bookmarksSink: dependencies.bookmarksSink,
-        profileCandidatesSink: dependencies.profileCandidatesSink
+        profileCandidatesSink: dependencies.profileCandidatesSink,
+        pageStatusSink: dependencies.pageStatusSink
       )
       return .init(
         availability: availability,

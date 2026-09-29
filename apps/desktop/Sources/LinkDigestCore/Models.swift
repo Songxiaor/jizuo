@@ -367,11 +367,13 @@ public enum NativeResponse: Codable, Sendable, Equatable {
   /// 抓取偏好：扩展据此决定评论读几条（10–100）。
   /// `commentLimits` 按平台单独设（0 = 不抓），`autoSaveComments` 为真时不弹勾选、直接存前几条。
   /// 两者是 v1 上新增的可选字段：旧扩展不认识也不影响。
-  case capturePreferences(version: Int, requestId: String, commentLimit: Int, commentLimits: [String: Int] = [:], autoSaveComments: Bool = false)
+  case capturePreferences(version: Int, requestId: String, commentLimit: Int, commentLimits: [String: Int] = [:], autoSaveComments: Bool = false, autoSteps: [String]? = nil)
+  /// 这一页存过没有、各道工序做到哪了（`PageStatusRequest`）。只读，不算送达。
+  case pageStatus(version: Int, requestId: String, status: PageStatusPayload)
   case error(AppError)
 
   enum CodingKeys: String, CodingKey {
-    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, acceptedCount, supportedVersions, commentLimit, commentLimits, autoSaveComments, error
+    case kind, version, requestId, characterCount, queuedCount, skippedCount, existingIDs, acceptedCount, supportedVersions, commentLimit, commentLimits, autoSaveComments, autoSteps, status, error
   }
   public init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -445,7 +447,18 @@ public enum NativeResponse: Codable, Sendable, Equatable {
         requestId: try c.decode(String.self, forKey: .requestId),
         commentLimit: try c.decode(Int.self, forKey: .commentLimit),
         commentLimits: try c.decodeIfPresent([String: Int].self, forKey: .commentLimits) ?? [:],
-        autoSaveComments: try c.decodeIfPresent(Bool.self, forKey: .autoSaveComments) ?? false
+        autoSaveComments: try c.decodeIfPresent(Bool.self, forKey: .autoSaveComments) ?? false,
+        autoSteps: try c.decodeIfPresent([String].self, forKey: .autoSteps)
+      )
+    case "pageStatus":
+      let version = try c.decode(Int.self, forKey: .version)
+      guard version == 1 else {
+        throw DecodingError.dataCorruptedError(forKey: .version, in: c, debugDescription: "Unsupported NativeResponse version")
+      }
+      self = .pageStatus(
+        version: version,
+        requestId: try c.decode(String.self, forKey: .requestId),
+        status: try c.decode(PageStatusPayload.self, forKey: .status)
       )
     case "error":
       let error = try c.decode(AppError.self, forKey: .error)
@@ -476,11 +489,15 @@ public enum NativeResponse: Codable, Sendable, Equatable {
     case let .openAppAccepted(v, r, supported):
       try c.encode("openAppAccepted", forKey: .kind); try c.encode(v, forKey: .version)
       try c.encode(r, forKey: .requestId); try c.encode(supported, forKey: .supportedVersions)
-    case let .capturePreferences(v, r, limit, limits, autoSave):
+    case let .capturePreferences(v, r, limit, limits, autoSave, autoSteps):
       try c.encode("capturePreferences", forKey: .kind); try c.encode(v, forKey: .version)
       try c.encode(r, forKey: .requestId); try c.encode(limit, forKey: .commentLimit)
       if !limits.isEmpty { try c.encode(limits, forKey: .commentLimits) }
       if autoSave { try c.encode(autoSave, forKey: .autoSaveComments) }
+      if let autoSteps { try c.encode(autoSteps, forKey: .autoSteps) }
+    case let .pageStatus(v, r, status):
+      try c.encode("pageStatus", forKey: .kind); try c.encode(v, forKey: .version)
+      try c.encode(r, forKey: .requestId); try c.encode(status, forKey: .status)
     case let .error(e):
       try c.encode("error", forKey: .kind); try c.encode(e, forKey: .error)
     }
@@ -492,7 +509,7 @@ public enum NativeResponse: Codable, Sendable, Equatable {
     switch self {
     case .taskAccepted, .bookmarksAccepted, .bookmarksLookup, .profileCandidatesPresented:
       return true
-    case .openAppAccepted, .capturePreferences, .error:
+    case .openAppAccepted, .capturePreferences, .pageStatus, .error:
       return false
     }
   }

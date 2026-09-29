@@ -18,20 +18,20 @@ const actionPresentation: Readonly<Record<PopupCaptureAction, {
   success: string;
 }>> = {
   save: {
-    title: "仅保存",
-    detail: "保留原文与来源，稍后再处理",
+    title: "只保存",
+    detail: "保留原文与来源，稍后再处理。",
     button: "保存到汲作",
     success: "已保存到汲作",
   },
   summarize: {
     title: "总结",
-    detail: "保存后立即使用当前模型生成总结",
+    detail: "保存后马上用当前模型写一份总结。",
     button: "保存并总结",
     success: "已保存，正在汲作中准备总结",
   },
   translate: {
     title: "翻译",
-    detail: "保存后立即翻译为设置中的输出语言",
+    detail: "保存后马上翻译成设置里的输出语言。",
     button: "保存并翻译",
     success: "已保存，正在汲作中准备翻译",
   },
@@ -48,7 +48,11 @@ export type PopupRecovery = {
 };
 
 export type PopupPreviewFailure = {
+  /** 失败卡片的标题：一句话说清读到了什么。 */
+  title: string;
   message: string;
+  /** 「可以这样做」：按先后给出的办法。 */
+  steps: string[];
   canReload: boolean;
 };
 
@@ -56,42 +60,56 @@ export type PopupPreviewFailure = {
 export function popupPreviewFailure(rawMessage: string): PopupPreviewFailure {
   if (rawMessage.includes("CAPTURE_APP_SHELL")) {
     return {
+      title: "这是网页应用的界面，不是一篇文章",
+      steps: ["打开具体的一篇文章或一条内容再点扩展", "或者先选中要保存的文字，再点扩展"],
       message: "当前页面是已登录的网页应用界面，不是独立文章。请选中需要保存的正文后再打开扩展。",
       canReload: false,
     };
   }
   if (rawMessage.includes("CAPTURE_PAGE_LOAD_FAILED")) {
     return {
+      title: "正文还没加载出来",
+      steps: ["等页面内容完全出现", "点下面「重新读取」"],
       message: "正文尚未加载成功。请刷新页面，等待文件内容出现后重新读取。",
       canReload: true,
     };
   }
   if (rawMessage.includes("CAPTURE_LOGIN_WALL")) {
     return {
+      title: "页面挡了一层登录",
+      steps: ["在这个网页上登录，打开具体内容后再点扩展", "或在汲作「设置 → 站点登录」里登录一次，以后添加链接也能读全文"],
       message: "当前只读取到了登录页。请先完成登录，再打开具体内容。",
       canReload: false,
     };
   }
   if (rawMessage.includes("CAPTURE_SECURITY_CHALLENGE")) {
     return {
+      title: "页面要先做安全验证",
+      steps: ["在网页上完成验证，等内容显示出来", "点下面「重新读取」"],
       message: "当前只读取到了网站的安全验证或限流页面。请在浏览器中完成验证，确认具体内容已显示后再读取。",
       canReload: true,
     };
   }
   if (rawMessage.includes("CAPTURE_NAVIGATION_ONLY")) {
     return {
+      title: "这一页只有导航，没有正文",
+      steps: ["打开具体的一篇文章再点扩展", "或者先选中要保存的文字，再点扩展"],
       message: "当前只读取到了导航内容。请打开具体文章，或选中需要保存的文字。",
       canReload: false,
     };
   }
   if (rawMessage.includes("CAPTURE_CONTENT_EMPTY")) {
     return {
+      title: "没读到正文",
+      steps: ["等页面加载完", "点下面「重新读取」"],
       message: "当前页面没有读到可保存的正文。请等待页面加载完成后重新读取。",
       canReload: true,
     };
   }
   return {
+    title: "这一页暂时读不了",
     message: "当前页面暂时不可读取。请刷新页面后再试。",
+    steps: ["刷新页面，等内容加载完", "点下面「重新读取」"],
     canReload: true,
   };
 }
@@ -225,27 +243,27 @@ export function popupAvailability(preview: {
     return { tone: "blocked", label: "暂不支持此平台" };
   }
   if (preview.imageCount !== undefined && preview.imageCount > 0) {
-    return { tone: "ready", label: `可捕获 · 图文 ${preview.imageCount} 张` };
+    return { tone: "ready", label: `可以保存 · 图文 ${preview.imageCount} 张` };
   }
   if (resolvesVideoAfterSending(preview.platform, preview.media)) {
-    return { tone: "video", label: "可捕获 · 视频由 App 获取" };
+    return { tone: "video", label: "可以保存 · 视频由汲作获取" };
   }
   if (preview.media) {
     if (!preview.media.failureReason
         && (preview.media.kind === "directFile" || preview.media.kind === "hls")) {
-      return { tone: "video", label: "可捕获 · 含可下载视频" };
+      return { tone: "video", label: "可以保存 · 含视频" };
     }
     if (preview.media.failureReason) {
-      return { tone: "warn", label: "可捕获正文 · 视频受限" };
+      return { tone: "warn", label: "只能存正文 · 视频受限" };
     }
   }
   if (preview.completeness === "selection_only") {
-    return { tone: "ready", label: "可捕获选中内容" };
+    return { tone: "ready", label: "可以保存选中内容" };
   }
   if (preview.completeness === "visible_only") {
-    return { tone: "warn", label: "可捕获 · 仅可见部分" };
+    return { tone: "warn", label: "只读到可见部分" };
   }
-  return { tone: "ready", label: "可捕获" };
+  return { tone: "ready", label: "可以保存" };
 }
 
 export function popupPlatformLabel(
@@ -311,6 +329,110 @@ function popupVideoChip(media: SafeMediaPreview | undefined): PopupMetaChip | nu
   if (media.kind === "directFile" || media.kind === "hls") return { text: "🎬 可下载视频", tone: "video" };
   if (media.kind === "embed") return { text: "🎬 嵌入视频", tone: "video" };
   return null;
+}
+
+export type PopupStat = { value: string; label: string };
+
+/**
+ * 来源卡底部那一排数字（2026-09-29 弹窗重构）：文章给字数 / 图 / 读完时长 / 读取范围，
+ * 视频给时长 / 视频状态 / 字数。最多四格。
+ */
+export function popupStats(preview: {
+  characterCount: number;
+  completeness: Completeness;
+  version: 1 | 2;
+  platform?: CapturePlatform;
+  media?: SafeMediaPreview;
+  imageCount?: number;
+  mediaDurationSeconds?: number;
+  engagement?: Partial<Record<"likes" | "comments" | "shares" | "collects" | "views", string>>;
+}): PopupStat[] {
+  const stats: PopupStat[] = [];
+  const engagement = engagementStats(preview.engagement);
+  const isVideo = preview.version === 2 && !(preview.imageCount && preview.imageCount > 0);
+  if (isVideo) {
+    if (preview.mediaDurationSeconds) stats.push({ value: popupDuration(preview.mediaDurationSeconds), label: "视频时长" });
+    stats.push(popupVideoStat(preview.platform, preview.media));
+    stats.push(...engagement);
+    if (stats.length < 4 && preview.characterCount > 0) stats.push({ value: roundCount(preview.characterCount), label: "字正文" });
+    return stats.slice(0, 4);
+  }
+  if (preview.characterCount > 0) {
+    stats.push({ value: roundCount(preview.characterCount), label: preview.completeness === "selection_only" ? "字（选中）" : "字" });
+  }
+  if (preview.imageCount && preview.imageCount > 0) stats.push({ value: String(preview.imageCount), label: "张图" });
+  if (preview.characterCount > 0 && preview.completeness !== "selection_only") {
+    stats.push({ value: `${Math.max(1, Math.round(preview.characterCount / 400))} 分钟`, label: "读完" });
+  }
+  // 读完整了就不占格子（顶部状态已经说了「可以保存」），把位置让给赞和评论。
+  if (preview.completeness !== "full_article" || engagement.length === 0) {
+    stats.push({ value: completenessValue(preview.completeness), label: "读取" });
+  }
+  stats.push(...engagement);
+  return stats.slice(0, 4);
+}
+
+function engagementStats(engagement: Partial<Record<"likes" | "comments" | "shares" | "collects" | "views", string>> | undefined): PopupStat[] {
+  if (!engagement) return [];
+  const labels = [["likes", "赞"], ["comments", "评论"], ["collects", "收藏"], ["shares", "转发"], ["views", "浏览"]] as const;
+  return labels.flatMap(([key, label]) => (engagement[key] ? [{ value: engagement[key]!, label }] : []));
+}
+
+/**
+ * 作者行：「数字生命卡兹克 (@Khazix0918) · 9月28日 20:53」。ISO 时间按本地时区写成月日，
+ * 其它写法（「2026-01-07 21:53・北京」）原样保留。
+ */
+export function popupBylineText(author: string | undefined, published: string | undefined, now = new Date()): string {
+  const parts: string[] = [];
+  // X 的作者写成「名字 (@账号)」，括号去掉读起来更顺。
+  if (author) parts.push(author.replace(/\s*\((@[^)]+)\)/u, " $1"));
+  if (published) parts.push(popupPublishedLabel(published, now));
+  return parts.join(" · ");
+}
+
+export function popupPublishedLabel(published: string, now = new Date()): string {
+  if (!/^\d{4}-\d{2}-\d{2}T/u.test(published)) return published;
+  const date = new Date(published);
+  if (Number.isNaN(date.getTime())) return published;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const time = `${date.getHours()}:${pad(date.getMinutes())}`;
+  const day = `${date.getMonth() + 1}月${date.getDate()}日`;
+  return date.getFullYear() === now.getFullYear() ? `${day} ${time}` : `${date.getFullYear()}年${day}`;
+}
+
+function completenessValue(completeness: Completeness): string {
+  switch (completeness) {
+    case "full_article": return "完整";
+    case "visible_only": return "可见部分";
+    case "selection_only": return "选中";
+    default: return "已读取";
+  }
+}
+
+function popupVideoStat(platform: CapturePlatform | undefined, media: SafeMediaPreview | undefined): PopupStat {
+  if (resolvesVideoAfterSending(platform, media)) return { value: "汲作获取", label: "视频" };
+  if (!media) return { value: "无", label: "视频" };
+  if (media.failureReason === "browser_session_required") return { value: "仅浏览器可播", label: "视频" };
+  if (media.failureReason === "drm_or_encrypted") return { value: "受保护", label: "视频" };
+  if (media.failureReason) return { value: "受限", label: "视频" };
+  if (media.kind === "directFile" || media.kind === "hls") return { value: "可转写", label: "视频" };
+  if (media.kind === "embed") return { value: "嵌入", label: "视频" };
+  return { value: "无", label: "视频" };
+}
+
+/** 秒 → 「4:12」「1:02:05」。 */
+export function popupDuration(seconds: number): string {
+  const total = Math.max(0, Math.round(seconds));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = String(total % 60).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${sec}` : `${m}:${sec}`;
+}
+
+/** 来源行：「X · 文章 · x.com」。 */
+export function popupSourceLine(platform: CapturePlatform, version: 1 | 2, imageCount?: number, host?: string): string {
+  const label = popupPlatformLabel(platform, version, imageCount);
+  return host ? `${label} · ${host}` : label;
 }
 
 function roundCount(n: number): string {
@@ -448,4 +570,112 @@ export function popupMetadataDiagnostic(diagnostic: DouyinMetadataDiagnostic | u
     `DOM：时间命中 ${diagnostic.dom.dom.publishedSelectorHit ? "是" : "否"}；统计命中 ${diagnostic.dom.dom.statSelectorHitMask}；统计接受 ${diagnostic.dom.dom.statAcceptedCount}`,
     `SSR：存在 ${diagnostic.ssr.fixedRootPresent}；可解析 ${diagnostic.ssr.fixedRootParseable}；精确命中 ${diagnostic.ssr.exactHit ? "是" : "否"}；${ssrReject}；限制 ${ssrLimit}`,
   ].join("\n");
+}
+
+// ── 工序印（2026-09-29 弹窗重构第二批）──────────────────────────────────────────
+
+export type ProcessKey = "record" | "proof" | "comments" | "summary" | "translation" | "mindMap";
+export type ChainKey = "ji" | ProcessKey;
+
+const stepTitles: Readonly<Record<ProcessKey, string>> = {
+  record: "转写", proof: "校对", comments: "评论", summary: "总结", translation: "翻译", mindMap: "脑图",
+};
+const stepGlyphs: Readonly<Record<ChainKey, string>> = {
+  ji: "汲", record: "录", proof: "校", comments: "评", summary: "摘", translation: "译", mindMap: "图",
+};
+
+export function popupStepTitle(key: ProcessKey): string { return stepTitles[key]; }
+export function popupStepGlyph(key: ChainKey): string { return stepGlyphs[key]; }
+
+/** 一枚链上的印：盖好（会自动做 / 这次做）、印位（手动）、灰（这页用不上）。 */
+export type ChainSeal = {
+  key: ChainKey;
+  style: "stamped" | "pending" | "na";
+  label: string;
+  /** 点一下切换「这次也做」：只有总结和翻译能随保存一起请求。 */
+  toggles?: PopupCaptureAction;
+};
+
+export type CommentPlan = "auto" | "picker" | "disabled" | "unsupported" | "unknown";
+
+export function popupStepChain(input: {
+  autoSteps?: readonly string[] | undefined;
+  hasVideo: boolean;
+  comments: CommentPlan;
+  selectedAction: PopupCaptureAction;
+}): ChainSeal[] {
+  const auto = new Set(input.autoSteps ?? []);
+  const chain: ChainSeal[] = [{ key: "ji", style: "stamped", label: "收集" }];
+  chain.push(input.hasVideo
+    ? { key: "record", style: auto.has("record") ? "stamped" : "pending", label: "转写" }
+    : { key: "record", style: "na", label: "无视频" });
+  chain.push(input.hasVideo
+    ? { key: "proof", style: auto.has("proof") && auto.has("record") ? "stamped" : "pending", label: "校对" }
+    : { key: "proof", style: "na", label: "无需" });
+  switch (input.comments) {
+    case "unsupported": chain.push({ key: "comments", style: "na", label: "无评论区" }); break;
+    case "disabled": chain.push({ key: "comments", style: "pending", label: "不存" }); break;
+    case "auto": chain.push({ key: "comments", style: "stamped", label: "评论" }); break;
+    case "picker": chain.push({ key: "comments", style: "stamped", label: "手挑" }); break;
+    default: chain.push({ key: "comments", style: "pending", label: "评论" });
+  }
+  if (auto.has("summary")) chain.push({ key: "summary", style: "stamped", label: "总结" });
+  else if (input.selectedAction === "summarize") chain.push({ key: "summary", style: "stamped", label: "这次做", toggles: "summarize" });
+  else chain.push({ key: "summary", style: "pending", label: "总结", toggles: "summarize" });
+  if (input.selectedAction === "translate") chain.push({ key: "translation", style: "stamped", label: "译全文", toggles: "translate" });
+  else if (auto.has("translation")) chain.push({ key: "translation", style: "stamped", label: "译标题", toggles: "translate" });
+  else chain.push({ key: "translation", style: "pending", label: "翻译", toggles: "translate" });
+  chain.push({ key: "mindMap", style: auto.has("mindMap") ? "stamped" : "pending", label: "脑图" });
+  return chain;
+}
+
+/** 链下面那一句：说清这次保存后会自动做什么。 */
+export function popupChainSummary(chain: readonly ChainSeal[], knowsSettings: boolean): string {
+  if (!knowsSettings) return "盖好的章会自动做。点「摘」「译」，这次也做（汲作更新后会显示你的自动设置）。";
+  const doing = chain.filter((seal) => seal.key !== "ji" && seal.style === "stamped").map((seal) => (seal.key === "ji" ? "" : seal.label));
+  const text = doing.length > 0 ? `保存后自动：${doing.join("、")}。` : "保存后只存原文。";
+  return `${text}点空心的「摘」「译」，这次也做。`;
+}
+
+export type StepProgressRow = {
+  key: ProcessKey;
+  title: string;
+  state: "done" | "running" | "failed" | "waiting" | "manual";
+  text: string;
+};
+
+/**
+ * 「做到哪了」列表。`expected` 是这次会做的工序（自动开着的 + 这次请求的）：没状态时写「等着做」；
+ * 其余没做的写「还没做」。用不上的转写 / 校对不列。
+ */
+export function popupStepProgress(input: {
+  steps: readonly { step: string; state: "done" | "running" | "failed"; detail?: string }[];
+  expected: ReadonlySet<string>;
+  hasVideo: boolean;
+}): StepProgressRow[] {
+  const byKey = new Map(input.steps.map((row) => [row.step, row]));
+  const rows: StepProgressRow[] = [];
+  for (const key of ["record", "proof", "comments", "summary", "translation", "mindMap"] as const) {
+    const status = byKey.get(key);
+    if (!status && (key === "record" || key === "proof") && !input.hasVideo) continue;
+    const title = stepTitles[key];
+    if (status?.state === "done") rows.push({ key, title, state: "done", text: status.detail ?? "已完成" });
+    else if (status?.state === "running") rows.push({ key, title, state: "running", text: status.detail ?? "进行中" });
+    else if (status?.state === "failed") rows.push({ key, title, state: "failed", text: status.detail ?? "没做完" });
+    else if (input.expected.has(key)) rows.push({ key, title, state: "waiting", text: "等着做" });
+    else rows.push({ key, title, state: "manual", text: "还没做 · 在汲作里点" });
+  }
+  return rows;
+}
+
+/** 「9月27日 20:39 存的」。 */
+export function popupSavedAtLabel(milliseconds: number | undefined, now = new Date()): string {
+  if (!milliseconds) return "";
+  const date = new Date(milliseconds);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const time = `${date.getHours()}:${pad(date.getMinutes())}`;
+  const sameDay = date.toDateString() === now.toDateString();
+  if (sameDay) return `今天 ${time} 存的`;
+  const day = `${date.getMonth() + 1}月${date.getDate()}日`;
+  return date.getFullYear() === now.getFullYear() ? `${day} ${time} 存的` : `${date.getFullYear()}年${day}存的`;
 }

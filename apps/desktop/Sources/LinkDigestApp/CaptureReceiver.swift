@@ -127,6 +127,8 @@ struct CaptureReceiver: Sendable {
     let acceptedCount: Int
   }
   typealias ProfileCandidatesSink = @Sendable (XProfileCandidatesRequest) async -> ProfileCandidatesOutcome
+  /// 扩展弹窗查「这页存过没有、做到哪了」。nil 时回错，扩展按「不知道」显示。
+  typealias PageStatusSink = @Sendable (PageStatusRequest) async -> PageStatusPayload
 
   private let history: HistoryApplicationService?
   private let storageWriteGate: StorageWriteGate
@@ -134,6 +136,7 @@ struct CaptureReceiver: Sendable {
   private let captureSink: CaptureSink
   private let bookmarksSink: BookmarksSink?
   private let profileCandidatesSink: ProfileCandidatesSink?
+  private let pageStatusSink: PageStatusSink?
 
   init(
     history: HistoryApplicationService?,
@@ -141,7 +144,8 @@ struct CaptureReceiver: Sendable {
     nowMilliseconds: @escaping @Sendable () -> Int64,
     captureSink: @escaping CaptureSink,
     bookmarksSink: BookmarksSink? = nil,
-    profileCandidatesSink: ProfileCandidatesSink? = nil
+    profileCandidatesSink: ProfileCandidatesSink? = nil,
+    pageStatusSink: PageStatusSink? = nil
   ) {
     self.history = history
     self.storageWriteGate = storageWriteGate
@@ -149,12 +153,25 @@ struct CaptureReceiver: Sendable {
     self.captureSink = captureSink
     self.bookmarksSink = bookmarksSink
     self.profileCandidatesSink = profileCandidatesSink
+    self.pageStatusSink = pageStatusSink
   }
 
   func process(_ data: Data) async -> NativeResponse {
     // 收藏夹同步走独立消息：它带的只是一串推文 id，不是一次页面捕获，
     // 因此不经过 capture envelope 的 schema（那套契约保持冻结）。
     do {
+      if let request = try PageStatusRequest.decode(data) {
+        guard let pageStatusSink else {
+          return .error(appError(
+            requestID: request.requestId,
+            category: "storage",
+            code: StorageErrorCode.unavailable.rawValue,
+            retryable: true,
+            action: "open_app"
+          ))
+        }
+        return .pageStatus(version: 1, requestId: request.requestId, status: await pageStatusSink(request))
+      }
       if let lookup = try XBookmarksLookupRequest.decode(data) {
         // 勾选前查重：只读历史，不入队。按推文 id 认，不拿 /i/status 整串去比。
         // history 缺失或查询失败时回空列表（扩展可降级到游标粗标）。

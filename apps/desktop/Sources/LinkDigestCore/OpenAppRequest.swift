@@ -11,10 +11,18 @@ public struct OpenAppRequest: Sendable, Equatable {
 
   public let version: Int
   public let requestId: String
+  /// 可选：打开后直接跳到这一条（扩展弹窗「在汲作里打开」，2026-09-29）。只收合法的任务 id。
+  public let taskID: String?
 
-  public init(version: Int, requestId: String) {
+  public init(version: Int, requestId: String, taskID: String? = nil) {
     self.version = version
     self.requestId = requestId
+    self.taskID = taskID
+  }
+
+  /// 跳到这一条的深链；没有 taskID 时为 nil。
+  public var deepLink: URL? {
+    taskID.flatMap { URL(string: "linkdigest://digest/\($0)") }
   }
 
   /// 返回 nil 表示「这不是打开 App 的消息」，调用方应继续按其它消息解析。
@@ -32,6 +40,13 @@ public struct OpenAppRequest: Sendable, Equatable {
     guard let requestId = object["requestId"] as? String,
           !requestId.isEmpty, requestId.count <= 128
     else { throw CaptureValidationError.CAPTURE_SCHEMA_INVALID }
-    return OpenAppRequest(version: 1, requestId: requestId)
+    var taskID: String?
+    if let raw = object["taskID"] {
+      guard let text = raw as? String, let id = TaskID(text.lowercased()) else {
+        throw CaptureValidationError.CAPTURE_SCHEMA_INVALID
+      }
+      taskID = id.rawValue
+    }
+    return OpenAppRequest(version: 1, requestId: requestId, taskID: taskID)
   }
 }

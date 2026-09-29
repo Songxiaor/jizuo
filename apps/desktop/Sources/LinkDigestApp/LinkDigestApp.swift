@@ -1626,6 +1626,10 @@ struct MainWindowLaunchGuard: ViewModifier {
       profileCandidatesSink: { request in
         let accepted = await MainActor.run { manualLink.presentProfileCandidates(request) }
         return .init(acceptedCount: accepted)
+      },
+      // 扩展弹窗查重与看进度：只读历史和此刻的运行状态。
+      pageStatusSink: { request in
+        await historyModel.pageStatus(url: request.url)
       }
     ))
 
@@ -1667,13 +1671,14 @@ struct MainWindowLaunchGuard: ViewModifier {
     }
     _manualLink = StateObject(wrappedValue: manualLink)
     _localImport = StateObject(wrappedValue: LocalImportController(mediaStore: mediaStore, imageCache: imageCache))
-    _providerSettings = State(
-      initialValue: ProviderSettingsViewModel(
-        configurationService: configurationService,
-        provider: provider,
-        preferencesStore: preferencesStore
-      )
+    let providerSettings = ProviderSettingsViewModel(
+      configurationService: configurationService,
+      provider: provider,
+      preferencesStore: preferencesStore
     )
+    // 自动工序抄一份给浏览器扩展（Host 读）；只有 App 真身这样做。
+    providerSettings.browserPreferencesMirror = .standard()
+    _providerSettings = State(initialValue: providerSettings)
     _browserSupport = StateObject(
       wrappedValue: BrowserSupportViewModel(
         installer: try? BrowserSupportInstaller.appBundled(),

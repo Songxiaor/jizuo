@@ -3,17 +3,26 @@ import {
   popupAvailability,
   popupActionPresentation,
   popupBuildLabel,
-  popupMetaChips,
   popupRecoveryForSendResult,
   popupMetadataDiagnostic,
-  popupPlatformLabel,
   popupPreviewFailure,
   popupCaughtFailure,
+  popupSourceLine,
+  popupStats,
+  popupDuration,
+  popupBylineText,
+  popupStepChain,
+  popupChainSummary,
+  popupStepProgress,
+  popupSavedAtLabel,
+  type ChainKey,
+  type CommentPlan,
+  type StepProgressRow,
   type SafeExtensionSendResult,
   type SafeMediaPreview,
   type PopupCaptureAction,
 } from "../../src/popup-presentation";
-import { savedNoticeMarkup } from "../../src/collector-seal";
+import { stampedSealMarkup } from "../../src/collector-seal";
 import type { DouyinSessionDiagnostic } from "../../src/content/douyin-session-detail";
 import type { DouyinMetadataDiagnostic } from "../../src/content/douyin-metadata-diagnostic";
 import { bookmarksSyncMessage, isXBookmarksURL, type BookmarkPreviewItem, type BookmarksSyncOutcome } from "../../src/content/x-bookmarks";
@@ -55,7 +64,21 @@ type SafeCapturePreview = {
   mediaDiagnostic?: DouyinSessionDiagnostic;
   metadataDiagnostic?: DouyinMetadataDiagnostic;
   imageCount?: number;
+  excerpt?: string;
+  host?: string;
+  usedCookie?: boolean;
+  mediaDurationSeconds?: number;
+  mediaAuthor?: string;
+  sourceAuthor?: string;
+  published?: string;
+  engagement?: Partial<Record<"likes" | "comments" | "shares" | "collects" | "views", string>>;
+  pageURL?: string;
 };
+
+type PageStatus =
+  | { kind: "found"; taskID: string; savedAt?: number; steps: { step: string; state: "done" | "running" | "failed"; detail?: string }[] }
+  | { kind: "notFound" }
+  | { kind: "unavailable" };
 
 const availability = document.querySelector<HTMLSpanElement>("#availability")!;
 const platform = document.querySelector<HTMLDivElement>("#platform")!;
@@ -86,15 +109,114 @@ const commentsList = document.querySelector<HTMLDivElement>("#comments-list")!;
 const commentsNote = document.querySelector<HTMLParagraphElement>("#comments-note")!;
 const commentsSelectAll = document.querySelector<HTMLButtonElement>("#comments-select-all")!;
 const commentsSelectNone = document.querySelector<HTMLButtonElement>("#comments-select-none")!;
+const commentsMode = document.querySelector<HTMLButtonElement>("#comments-mode")!;
+const commentsMore = document.querySelector<HTMLParagraphElement>("#comments-more")!;
+const sourceCard = document.querySelector<HTMLElement>("#source-card")!;
+const videoThumb = document.querySelector<HTMLElement>("#video-thumb")!;
+const videoDuration = document.querySelector<HTMLSpanElement>("#video-duration")!;
+const author = document.querySelector<HTMLDivElement>("#author")!;
+const excerpt = document.querySelector<HTMLParagraphElement>("#excerpt")!;
+const stats = document.querySelector<HTMLDivElement>("#stats")!;
+const sourceNote = document.querySelector<HTMLParagraphElement>("#source-note")!;
+const savedView = document.querySelector<HTMLElement>("#saved-view")!;
+const savedSeal = document.querySelector<HTMLSpanElement>("#saved-seal")!;
+const savedTitle = document.querySelector<HTMLHeadingElement>("#saved-title")!;
+const savedDetail = document.querySelector<HTMLParagraphElement>("#saved-detail")!;
+const failureView = document.querySelector<HTMLElement>("#failure-view")!;
+const failureTitle = document.querySelector<HTMLHeadingElement>("#failure-title")!;
+const failureMessage = document.querySelector<HTMLParagraphElement>("#failure-message")!;
+const failureSteps = document.querySelector<HTMLOListElement>("#failure-steps")!;
+const resultActions = document.querySelector<HTMLDivElement>("#result-actions")!;
+const stepChain = document.querySelector<HTMLDivElement>("#step-chain")!;
+const dupView = document.querySelector<HTMLElement>("#dup-view")!;
+const dupDate = document.querySelector<HTMLSpanElement>("#dup-date")!;
+const dupSteps = document.querySelector<HTMLDivElement>("#dup-steps")!;
+const savedSteps = document.querySelector<HTMLDivElement>("#saved-steps")!;
+const saveAgain = document.querySelector<HTMLButtonElement>("#save-again")!;
+const closePopup = document.querySelector<HTMLButtonElement>("#close-popup")!;
+closePopup.addEventListener("click", () => window.close());
 
 let selectedAction: PopupCaptureAction = "save";
 let recoveryMode: "retry" | "reload" | null = null;
 
+/** 工序链的输入：App 的自动设置、这页有没有视频、评论怎么存。齐了就重画。 */
+let autoSteps: readonly string[] | undefined;
+let pageHasVideo = false;
+let commentPlan: CommentPlan = "unknown";
+/** 这条在汲作里的 id：查重找到或保存后轮询到，「在汲作里打开」直接跳过去。 */
+let knownTaskID: string | undefined;
+
 function applySelectedAction(action: PopupCaptureAction): void {
   selectedAction = action;
   const presentation = popupActionPresentation(action);
-  actionDetail.textContent = presentation.detail;
   if (!send.disabled && !send.classList.contains("done")) send.textContent = presentation.button;
+  renderStepChain();
+}
+
+/** 一枚印的图：App 导出的 PNG，深浅色各一张。 */
+function sealPicture(key: ChainKey, stamped: boolean): HTMLElement {
+  const holder = document.createElement("span");
+  holder.className = "seal-img";
+  const picture = document.createElement("picture");
+  const style = stamped ? "stamped" : "pending";
+  const name = key === "ji" ? "ji" : key;
+  const dark = document.createElement("source");
+  dark.media = "(prefers-color-scheme: dark)";
+  dark.srcset = `/seals/${name}-${style}-dark.png`;
+  const img = document.createElement("img");
+  img.src = `/seals/${name}-${style}-light.png`;
+  img.alt = "";
+  picture.append(dark, img);
+  holder.append(picture);
+  return holder;
+}
+
+function renderStepChain(): void {
+  const chain = popupStepChain({ autoSteps, hasVideo: pageHasVideo, comments: commentPlan, selectedAction });
+  stepChain.replaceChildren();
+  for (const seal of chain) {
+    const item = document.createElement(seal.toggles ? "button" : "div") as HTMLElement;
+    item.className = `chain-seal ${seal.style}`;
+    if (seal.toggles) {
+      (item as HTMLButtonElement).type = "button";
+      const target = seal.toggles;
+      item.title = selectedAction === target ? "点一下取消" : "这次也做";
+      item.addEventListener("click", () => applySelectedAction(selectedAction === target ? "save" : target));
+    }
+    const label = document.createElement("span");
+    label.textContent = seal.label;
+    item.append(sealPicture(seal.key, seal.style === "stamped"), label);
+    stepChain.append(item);
+  }
+  actionDetail.textContent = popupChainSummary(chain, autoSteps !== undefined);
+}
+
+function renderStepRows(target: HTMLElement, rows: StepProgressRow[]): void {
+  target.replaceChildren();
+  for (const row of rows) {
+    const line = document.createElement("div");
+    line.className = `step-row ${row.state}`;
+    const name = document.createElement("span");
+    name.textContent = row.title;
+    const state = document.createElement("span");
+    state.className = "state";
+    state.textContent = row.text;
+    line.append(sealPicture(row.key, row.state === "done"), name, state);
+    target.append(line);
+  }
+}
+
+/** 这次保存会做的工序：自动开着的 + 这次点了的 + 自动存的评论。 */
+function expectedSteps(): Set<string> {
+  const expected = new Set(autoSteps ?? []);
+  // 自动的「译」只翻标题，App 不单独记这一步：不算「等着做」，否则会一直等下去。
+  expected.delete("translation");
+  if (!pageHasVideo) { expected.delete("record"); expected.delete("proof"); }
+  if (commentPlan === "auto" || commentPlan === "picker") expected.add("comments");
+  else expected.delete("comments");
+  if (selectedAction === "summarize") expected.add("summary");
+  if (selectedAction === "translate") expected.add("translation");
+  return expected;
 }
 
 for (const input of actionInputs) {
@@ -129,6 +251,31 @@ function renderMeta(chips: { text: string; tone?: "video" }[]): void {
   }
 }
 
+function renderStats(cells: { value: string; label: string }[]): void {
+  stats.replaceChildren();
+  stats.dataset.count = String(cells.length);
+  for (const cell of cells) {
+    const box = document.createElement("div");
+    box.className = "stat";
+    const value = document.createElement("b");
+    value.textContent = cell.value;
+    const label = document.createElement("span");
+    label.textContent = cell.label;
+    box.append(value, label);
+    stats.append(box);
+  }
+}
+
+/** 结果行：左「关闭」，右边放这一刻的主操作（在汲作里打开 / 重新读取）。 */
+function showResultActions(primary: HTMLElement | null): void {
+  resultActions.replaceChildren(closePopup);
+  if (primary) {
+    primary.hidden = false;
+    resultActions.append(primary);
+  }
+  resultActions.hidden = false;
+}
+
 function renderMetadataDiagnostic(diagnostic: DouyinMetadataDiagnostic | undefined): void {
   const rendered = popupMetadataDiagnostic(diagnostic);
   metadataDiagnostic.textContent = rendered ?? "";
@@ -141,6 +288,7 @@ const tabId = tab?.id;
 if (tabId === undefined) {
   status.textContent = "无法读取当前标签页";
   send.disabled = true;
+  actionCard.hidden = true;
 } else if (isXBookmarksURL(tab?.url)) {
   // 历史/收藏页：先读列表再勾选同步。普通「发送」在这里只会抓到列表外壳。
   send.hidden = true;
@@ -414,6 +562,32 @@ if (tabId === undefined) {
     void browser.runtime.sendMessage({ type: "open-app" });
   });
 } else {
+  let previewTitle = "";
+  let previewPageURL: string | undefined;
+  // App 的自动设置：和预览并行读，读到就重画工序链。旧版 App/Host 没有这项时按「不知道」显示。
+  void (async () => {
+    try {
+      const prefs = await browser.runtime.sendMessage({ type: "pipeline-preferences" }) as { autoSteps?: string[] } | undefined;
+      if (prefs && Array.isArray(prefs.autoSteps)) {
+        autoSteps = prefs.autoSteps;
+        renderStepChain();
+      }
+    } catch {
+      // 保持「不知道」。
+    }
+  })();
+  /** 自动保存评论时弹窗已读到的条数；没读到时按设置条数说。 */
+  let autoCommentCount: number | undefined;
+  /** 保存成功卡上的评论一句话：勾了几条 / 自动存前几条 / 不存。 */
+  const savedCommentsLine = (): string => {
+    if (commentMode?.kind === "disabled") return "";
+    if (commentMode?.kind === "auto") {
+      return autoCommentCount !== undefined ? `评论存了 ${autoCommentCount} 条` : `评论按设置存前 ${commentMode.limit} 条`;
+    }
+    const picked = selectedCommentIDs();
+    if (picked === undefined) return "";
+    return picked.length > 0 ? `评论存了 ${picked.length} 条` : "没有存评论";
+  };
   /** undefined = 没有勾选结果（未支持、没读到或失败），由 background 按设置条数处理。 */
   let selectedCommentIDs: () => string[] | undefined = () => undefined;
   let commentsLoading: Promise<void> | null = null;
@@ -422,19 +596,72 @@ if (tabId === undefined) {
 
   const renderCommentPicker = (result: CommentCollectResult): void => {
     commentsList.replaceChildren();
+    commentsMore.textContent = "";
     if (!result.ok) {
       if (result.code === "unsupported") {
         commentsPicker.hidden = true;
+        commentPlan = "unsupported";
+        renderStepChain();
         return;
       }
-      if (result.code === "disabled" || result.code === "auto") {
-        commentMode = result.code === "disabled" ? { kind: "disabled" } : { kind: "auto", limit: result.limit };
+      if (result.code === "disabled") {
+        commentMode = { kind: "disabled" };
+        commentPlan = "disabled";
+        renderStepChain();
         commentsCount.textContent = "评论";
-        commentsNote.textContent = result.code === "disabled"
-          ? "这个平台设为不抓评论（可在汲作设置 → 评 · 评论 里改）"
-          : `将自动保存前 ${result.limit} 条评论`;
+        commentsNote.textContent = "这个平台设为不存评论（可在汲作设置 → 评 · 评论 里改）";
         commentsSelectAll.hidden = true;
         commentsSelectNone.hidden = true;
+        return;
+      }
+      if (result.code === "auto") {
+        commentMode = { kind: "auto", limit: result.limit };
+        commentPlan = "auto";
+        renderStepChain();
+        commentsSelectAll.hidden = true;
+        commentsSelectNone.hidden = true;
+        const items = result.items ?? [];
+        if (items.length === 0) {
+          commentsCount.textContent = `评论 · 将存前 ${result.limit} 条`;
+          commentsNote.textContent = "保存时读取评论区。";
+          return;
+        }
+        // 自动保存：只读预览前三条，要挑的话切到勾选列表（用同一份已读好的评论）。
+        commentsCount.textContent = `评论 · 将存前 ${Math.min(result.limit, items.length)} 条`;
+        autoCommentCount = Math.min(result.limit, items.length);
+        const previewed = items.filter((row) => row.depth === 0).slice(0, 2);
+        for (const item of previewed) {
+          const row = document.createElement("div");
+          row.className = "comment-preview";
+          const who = document.createElement("div");
+          who.className = "who";
+          const name = document.createElement("span");
+          name.textContent = item.author;
+          who.append(name);
+          if (item.likes) {
+            const likes = document.createElement("span");
+            likes.textContent = `赞 ${item.likes}`;
+            who.append(likes);
+          }
+          const what = document.createElement("div");
+          what.className = "what";
+          what.textContent = item.excerpt || "（无文字）";
+          row.append(who, what);
+          commentsList.append(row);
+        }
+        const rest = items.length - previewed.length;
+        const pageTotal = result.expectedCount && result.expectedCount > items.length
+          ? `页面共约 ${result.expectedCount} 条`
+          : "";
+        commentsMore.textContent = [rest > 0 ? `还有 ${rest} 条` : "", pageTotal].filter(Boolean).join(" · ");
+        commentsNote.textContent = "";
+        commentsMode.hidden = false;
+        commentsMode.onclick = () => {
+          commentsMode.hidden = true;
+          commentsMore.textContent = "";
+          commentMode = undefined;
+          renderCommentPicker({ ok: true, platform: result.platform, limit: result.limit, items });
+        };
         return;
       }
       commentsCount.textContent = result.code === "empty" ? "没有读到评论" : "评论读取失败";
@@ -445,6 +672,8 @@ if (tabId === undefined) {
       commentsSelectNone.hidden = true;
       return;
     }
+    commentPlan = "picker";
+    renderStepChain();
     const refresh = (): void => {
       const boxes = Array.from(commentsList.querySelectorAll<HTMLInputElement>("input[type='checkbox']"));
       const checked = boxes.filter((box) => box.checked).length;
@@ -489,10 +718,71 @@ if (tabId === undefined) {
       : "";
     commentsNote.textContent = result.loginRequired
       ? `${expected}这个网站要登录后才显示全部评论，现在只读到未登录可见的 ${result.items.length} 条。登录后重新打开扩展即可读满 ${result.limit} 条。`
-      : `${expected}按设置读取前 ${result.limit} 条。只保存勾选的评论；条数可在汲作设置里改。`;
+      : `${expected}只保存勾选的评论；条数可在汲作设置里改。`;
     selectedCommentIDs = () => Array.from(commentsList.querySelectorAll<HTMLInputElement>("input[type='checkbox']:checked"))
       .map((box) => box.value);
     refresh();
+  };
+
+  const fetchPageStatus = async (): Promise<PageStatus> => {
+    if (!previewPageURL) return { kind: "unavailable" };
+    try {
+      return (await browser.runtime.sendMessage({ type: "page-status", url: previewPageURL }) as PageStatus | undefined)
+        ?? { kind: "unavailable" };
+    } catch {
+      return { kind: "unavailable" };
+    }
+  };
+
+  /** 打开弹窗时查重：存过就先给「做到哪了」，保存区收起来，要再存一份点按钮。 */
+  const checkDuplicate = async (): Promise<void> => {
+    const status = await fetchPageStatus();
+    if (status.kind !== "found" || !savedView.hidden) return;
+    knownTaskID = status.taskID;
+    setAvailability("ready", "已存过");
+    dupDate.textContent = popupSavedAtLabel(status.savedAt);
+    renderStepRows(dupSteps, popupStepProgress({ steps: status.steps, expected: new Set(), hasVideo: pageHasVideo }));
+    dupView.hidden = false;
+    actionCard.hidden = true;
+    commentsPicker.hidden = true;
+    send.hidden = true;
+    openApp.textContent = "在汲作里打开";
+    saveAgain.hidden = false;
+    saveAgain.onclick = () => {
+      dupView.hidden = true;
+      actionCard.hidden = false;
+      commentsPicker.hidden = commentPlan === "unsupported";
+      send.hidden = false;
+      resultActions.hidden = true;
+      setAvailability("ready", "再存一份");
+    };
+    resultActions.replaceChildren(closePopup, saveAgain, openApp);
+    openApp.hidden = false;
+    resultActions.hidden = false;
+  };
+
+  /** 保存后看进度：每 1.5 秒问一次，都做完（没有等着做 / 进行中）或 2 分钟后停。 */
+  const followProgress = (): void => {
+    const expected = expectedSteps();
+    let rounds = 0;
+    const tick = async (): Promise<void> => {
+      rounds += 1;
+      const status = await fetchPageStatus();
+      if (status.kind === "found") {
+        knownTaskID = status.taskID;
+        const rows = popupStepProgress({ steps: status.steps, expected, hasVideo: pageHasVideo })
+          .filter((row) => row.state !== "manual" || row.key === "summary" || row.key === "mindMap");
+        renderStepRows(savedSteps, rows);
+        savedSteps.hidden = rows.length === 0;
+        // 评论条数以 App 记下的为准，上面那句不再单独说。
+        if (rows.length > 0) savedDetail.textContent = popupActionPresentation(selectedAction).success;
+        if (!rows.some((row) => row.state === "waiting" || row.state === "running")) return;
+      } else if (status.kind === "unavailable" && rounds > 2) {
+        return;
+      }
+      if (rounds < 80) setTimeout(() => { void tick(); }, 1_500);
+    };
+    void tick();
   };
 
   const startCommentPicker = (): void => {
@@ -520,9 +810,24 @@ if (tabId === undefined) {
     }) as SafeCapturePreview;
     const avail = popupAvailability(preview);
     setAvailability(avail.tone, avail.label);
-    renderPlatform(popupPlatformLabel(preview.platform, preview.version, preview.imageCount));
+    previewTitle = preview.title;
+    renderPlatform(popupSourceLine(preview.platform, preview.version, preview.imageCount, preview.host));
     status.textContent = preview.title;
-    renderMeta(popupMetaChips(preview));
+    renderMeta([]);
+    const isVideo = preview.version === 2 && !(preview.imageCount && preview.imageCount > 0);
+    videoThumb.hidden = !isVideo;
+    videoDuration.textContent = isVideo && preview.mediaDurationSeconds ? popupDuration(preview.mediaDurationSeconds) : "";
+    const byline = popupBylineText(preview.mediaAuthor ?? preview.sourceAuthor, preview.published);
+    author.textContent = byline;
+    author.hidden = byline.length === 0;
+    excerpt.textContent = preview.excerpt ?? "";
+    excerpt.hidden = !preview.excerpt;
+    renderStats(popupStats(preview));
+    sourceNote.hidden = preview.usedCookie !== true;
+    pageHasVideo = isVideo;
+    previewPageURL = preview.pageURL;
+    renderStepChain();
+    void checkDuplicate();
     renderMetadataDiagnostic(preview.metadataDiagnostic);
     if (avail.tone === "blocked") {
       send.disabled = true;
@@ -535,22 +840,38 @@ if (tabId === undefined) {
       startCommentPicker();
     }
   } catch (cause) {
-    status.textContent = "当前页面不可捕获";
-    setAvailability("blocked", "不可捕获");
+    status.textContent = tab?.title || "当前页面";
+    try {
+      if (tab?.url) renderPlatform(new URL(tab.url).hostname.replace(/^www\./u, ""));
+    } catch {
+      // 没有可读地址时不显示来源行。
+    }
+    setAvailability("blocked", "读不到正文");
     // 这里原本把原因整个吞掉，界面上只剩一句没有信息量的提示，排查时等于没有线索。
     // 把真实 message 亮出来：CAPTURE_CONTENT_EMPTY 是抓到了页面但没有正文，
     // "Cannot access contents of url…" 是注入被拒，两者的修法完全不同。
     const message = cause instanceof Error ? cause.message : String(cause);
     const failure = popupPreviewFailure(message);
-    error.textContent = failure.message;
+    actionCard.hidden = true;
+    failureTitle.textContent = failure.title;
+    failureMessage.textContent = failure.message;
+    failureSteps.replaceChildren();
+    for (const step of failure.steps) {
+      const li = document.createElement("li");
+      li.textContent = step;
+      failureSteps.append(li);
+    }
+    failureView.hidden = false;
     send.hidden = true;
     if (failure.canReload) {
       recoveryMode = "reload";
-      recoveryAction.textContent = "重新读取页面";
-      recoveryAction.hidden = false;
+      recoveryAction.textContent = "重新读取";
+      showResultActions(recoveryAction);
     } else {
       recoveryMode = null;
       recoveryAction.hidden = true;
+      openApp.textContent = "打开汲作";
+      showResultActions(message.includes("CAPTURE_LOGIN_WALL") ? openApp : null);
     }
   }
 
@@ -590,13 +911,21 @@ if (tabId === undefined) {
           recoveryAction.hidden = false;
         }
       } else {
+        // 保存成功：来源卡换成一张结果卡，盖一枚「汲」印（2026-09-29 弹窗重构）。
         actionCard.hidden = true;
+        sourceCard.hidden = true;
         send.hidden = true;
-        // 保存成功：盖一枚「汲」印代替 ✓，文案不变。
-        resultNotice.innerHTML = savedNoticeMarkup(popupActionPresentation(selectedAction).success);
-        resultNotice.hidden = false;
-        openApp.textContent = "打开汲作查看";
-        openApp.hidden = false;
+        savedSeal.innerHTML = stampedSealMarkup(56);
+        savedTitle.textContent = previewTitle || "已保存";
+        savedDetail.textContent = [
+          popupActionPresentation(selectedAction).success,
+          savedCommentsLine(),
+        ].filter(Boolean).join("\n");
+        savedView.hidden = false;
+        setAvailability("ready", "已保存");
+        openApp.textContent = "在汲作里打开";
+        showResultActions(openApp);
+        followProgress();
       }
     } catch (cause) {
       renderMetadataDiagnostic(undefined);
@@ -617,8 +946,9 @@ if (tabId === undefined) {
   };
   openApp.addEventListener("click", (event) => {
     // 不能靠 <a href="linkdigest://open">：Launch Services 的默认 scheme 绑定
-    // 在本机上会打到过期声明，正在跑的汲作不会到前台。走 Host 用同包路径 open。
+    // 在本机上会打到过期声明，正在跑的汲作不会到前台。走 Host 用同包路径 open；
+    // 知道是哪一条时带上 id，汲作直接打开它。
     event.preventDefault();
-    void browser.runtime.sendMessage({ type: "open-app" });
+    void browser.runtime.sendMessage({ type: "open-app", ...(knownTaskID ? { taskID: knownTaskID } : {}) });
   });
 }

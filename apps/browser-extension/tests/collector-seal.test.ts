@@ -86,7 +86,7 @@ describe("collector seal styles", () => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("popup capture success", () => {
-  it("stamps the 汲 seal before the existing success copy", async () => {
+  it("stamps the 汲 seal on the saved card above the success copy", async () => {
     const element = (): FakeElement => {
       const classes = new Set<string>();
       return {
@@ -126,12 +126,12 @@ describe("popup capture success", () => {
     await import("../entrypoints/popup/main");
     await elements.get("#send")!.onclick!();
 
-    const result = elements.get("#result")!;
+    const seal = elements.get("#saved-seal")!;
     expect(elements.get("#error")!.textContent).toBe("");
-    expect(result.hidden).toBe(false);
-    expect(result.innerHTML).toContain('aria-label="汲"');
-    expect(result.innerHTML).toContain('data-seal="汲"');
-    expect(result.innerHTML).toContain("<svg");
-    expect(result.innerHTML.indexOf("collector-seal")).toBeLessThan(result.innerHTML.indexOf("已保存到汲作"));
+    expect(elements.get("#saved-view")!.hidden).toBe(false);
+    expect(seal.innerHTML).toContain('aria-label="汲"');
+    expect(seal.innerHTML).toContain('data-seal="汲"');
+    expect(seal.innerHTML).toContain("<svg");
+    expect(elements.get("#saved-detail")!.textContent).toContain("已保存到汲作");
   });
 });

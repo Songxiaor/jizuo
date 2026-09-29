@@ -45,6 +45,14 @@ function popupDOM(): Record<string, FakeElement> {
     "#picker-select-all": element(), "#picker-select-none": element(), "#picker-select-new": element(),
     "#action-card": element(), "#action-detail": element(),
     "#result": element(), "#recovery-action": element(), "#open-app": element(),
+    ...Object.fromEntries([
+    "#comments-mode", "#comments-more", "#source-card", "#video-thumb", "#video-duration", "#author",
+    "#excerpt", "#stats", "#source-note", "#saved-view", "#saved-seal", "#saved-title", "#saved-detail",
+    "#failure-view", "#failure-title", "#failure-message", "#failure-steps", "#result-actions", "#close-popup",
+      "#comments-picker", "#comments-count", "#comments-list", "#comments-note",
+      "#comments-select-all", "#comments-select-none",
+    "#step-chain", "#dup-view", "#dup-date", "#dup-steps", "#saved-steps", "#save-again",
+    ].map((id) => [id, element()])),
   };
 }
 
@@ -56,17 +64,22 @@ describe("popup metadata diagnostic fresh-send lifecycle", () => {
     elements["#diag"]!.hidden = true;
     let rejectSend: ((reason?: unknown) => void) | undefined;
     const pendingSend = new Promise<never>((_resolve, reject) => { rejectSend = reject; });
-    const sendMessage = vi.fn()
-      .mockResolvedValueOnce({
-        title: "预览", characterCount: 2, version: 1,
-        platform: "generic", completeness: "full_article", metadataDiagnostic: diagnostic,
-      })
-      .mockReturnValueOnce(pendingSend);
+    // 按消息类型作答：弹窗还会并行问自动设置、查重和评论，不能按调用次序喂。
+    const sendMessage = vi.fn(async (message: { type: string }) => {
+      if (message.type === "preview-current-page") {
+        return {
+          title: "预览", characterCount: 2, version: 1,
+          platform: "generic", completeness: "full_article", metadataDiagnostic: diagnostic,
+        };
+      }
+      if (message.type === "send-current-page") return pendingSend;
+      return undefined;
+    });
     vi.stubGlobal("document", {
       title: "",
       querySelector: (selector: string) => elements[selector] ?? null,
       querySelectorAll: () => [],
-      createElement: () => ({ className: "", textContent: "", append: () => {} }),
+      createElement: () => ({ className: "", textContent: "", type: "", value: "", checked: false, title: "", media: "", srcset: "", src: "", alt: "", append: () => {}, addEventListener: () => {} }),
       createTextNode: (text: string) => ({ textContent: text }),
     });
     vi.stubGlobal("browser", {

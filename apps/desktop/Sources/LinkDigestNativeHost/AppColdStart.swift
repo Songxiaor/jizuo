@@ -65,12 +65,18 @@ enum AppColdStart {
 
   /// Uses `/usr/bin/open` so Launch Services reuses a running instance when possible.
   static func launchWithOpen(_ appBundle: URL) throws {
+    try launchWithOpen(appBundle, deepLink: nil)
+  }
+
+  /// 带深链时由同一个 .app 接住（`open -a <app> <url>`），不经 Launch Services 的 scheme 绑定，
+  /// 避免打到过期的注册（见扩展 main.ts 里 `linkdigest://open` 的教训）。
+  static func launchWithOpen(_ appBundle: URL, deepLink: URL?) throws {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
     // Absolute .app path only — never a free-form name that could resolve elsewhere.
     // Bring the app forward so cold-start is visible (users previously reported "flash quit"
     // when the window never appeared in front).
-    process.arguments = ["-a", appBundle.path]
+    process.arguments = ["-a", appBundle.path] + (deepLink.map { [$0.absoluteString] } ?? [])
     process.standardOutput = FileHandle.nullDevice
     process.standardError = FileHandle.nullDevice
     try process.run()

@@ -35,6 +35,10 @@ function popupDOM(): Record<string, FakeElement> {
     "#picker-select-new", "#action-card", "#action-detail", "#result", "#recovery-action", "#open-app",
     "#comments-picker", "#comments-count", "#comments-list", "#comments-note",
     "#comments-select-all", "#comments-select-none",
+    "#comments-mode", "#comments-more", "#source-card", "#video-thumb", "#video-duration", "#author",
+    "#excerpt", "#stats", "#source-note", "#saved-view", "#saved-seal", "#saved-title", "#saved-detail",
+    "#failure-view", "#failure-title", "#failure-message", "#failure-steps", "#result-actions", "#close-popup",
+    "#step-chain", "#dup-view", "#dup-date", "#dup-steps", "#saved-steps", "#save-again",
   ];
   return Object.fromEntries(ids.map((id) => [id, element()]));
 }
@@ -59,7 +63,7 @@ async function openPopup(collectResult: unknown) {
     title: "",
     querySelector: (selector: string) => elements[selector] ?? null,
     querySelectorAll: () => [],
-    createElement: () => ({ className: "", textContent: "", append: () => {} }),
+    createElement: () => ({ className: "", textContent: "", type: "", value: "", checked: false, title: "", media: "", srcset: "", src: "", alt: "", append: () => {}, addEventListener: () => {} }),
     createTextNode: (text: string) => ({ textContent: text }),
   });
   vi.stubGlobal("browser", {
@@ -74,25 +78,47 @@ async function openPopup(collectResult: unknown) {
 }
 
 describe("popup comment modes", () => {
-  it("auto-save shows a one-line status, no checklist, and sends the auto mode", async () => {
+  it("auto-save without a preview shows a one-line status, no checklist, and sends the auto mode", async () => {
     const { elements, messages } = await openPopup({ ok: false, code: "auto", platform: "reddit", limit: 20 });
-    expect(elements["#comments-note"]!.textContent).toBe("将自动保存前 20 条评论");
+    expect(elements["#comments-count"]!.textContent).toBe("评论 · 将存前 20 条");
+    expect(elements["#comments-note"]!.textContent).toBe("保存时读取评论区。");
     expect(elements["#comments-list"]!.children).toHaveLength(0);
     expect(elements["#comments-select-all"]!.hidden).toBe(true);
     await elements["#send"]!.onclick!();
     const send = messages.find((message) => message.type === "send-current-page")!;
     expect(send.commentMode).toEqual({ kind: "auto", limit: 20 });
     expect(send.selectedCommentIDs).toBeUndefined();
-    expect(elements["#result"]!.hidden).toBe(false);
+    expect(elements["#saved-view"]!.hidden).toBe(false);
+  });
+
+  it("auto-save previews the first two top-level comments and can switch to picking", async () => {
+    const items = [
+      { id: "a", author: "甲", excerpt: "一", depth: 0, likes: "12" },
+      { id: "a1", author: "乙", excerpt: "回复", depth: 1 },
+      { id: "b", author: "丙", excerpt: "二", depth: 0 },
+      { id: "c", author: "丁", excerpt: "三", depth: 0 },
+      { id: "d", author: "戊", excerpt: "四", depth: 0 },
+    ];
+    const { elements, messages } = await openPopup({ ok: false, code: "auto", platform: "reddit", limit: 20, items });
+    expect(elements["#comments-count"]!.textContent).toBe("评论 · 将存前 5 条");
+    expect(elements["#comments-list"]!.children).toHaveLength(2);
+    expect(elements["#comments-more"]!.textContent).toBe("还有 3 条");
+    expect(elements["#comments-mode"]!.hidden).toBe(false);
+    await elements["#comments-mode"]!.onclick!();
+    expect(elements["#comments-list"]!.children).toHaveLength(5);
+    await elements["#send"]!.onclick!();
+    const send = messages.find((message) => message.type === "send-current-page")!;
+    expect(send).not.toHaveProperty("commentMode");
+    expect(send.selectedCommentIDs).toEqual([]);
   });
 
   it("不抓 shows the neutral note and still saves the page", async () => {
     const { elements, messages } = await openPopup({ ok: false, code: "disabled", platform: "reddit" });
-    expect(elements["#comments-note"]!.textContent).toBe("这个平台设为不抓评论（可在汲作设置 → 评 · 评论 里改）");
+    expect(elements["#comments-note"]!.textContent).toBe("这个平台设为不存评论（可在汲作设置 → 评 · 评论 里改）");
     await elements["#send"]!.onclick!();
     const send = messages.find((message) => message.type === "send-current-page")!;
     expect(send.commentMode).toEqual({ kind: "disabled" });
-    expect(elements["#result"]!.hidden).toBe(false);
+    expect(elements["#saved-view"]!.hidden).toBe(false);
   });
 
   it("old flow (failed read) sends no comment mode", async () => {

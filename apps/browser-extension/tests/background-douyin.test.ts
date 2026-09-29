@@ -1418,18 +1418,44 @@ describe("background douyin item identity lock", () => {
       },
     }, { code: "no_allowed_host", blockedHost: "blocked.example" });
 
+    // 正文只以一小段开头出现（excerpt，≤120 字）；播放与封面地址仍不出后台。
     expect(preview).toEqual({
       title: "Preview title",
       characterCount: 21,
       version: 2,
       platform: "generic",
       completeness: "full_article",
+      excerpt: "private body sentinel",
+      host: "example.test",
+      pageURL: "https://example.test/video",
       media: { kind: "directFile", candidateCount: 2, selectionReason: "playing", playbackState: "playing" },
       mediaDiagnostic: { code: "no_allowed_host", blockedHost: "blocked.example" },
     });
-    expect(JSON.stringify(preview)).not.toContain("sentinel");
-    expect(JSON.stringify(preview)).not.toContain("poster");
-    expect(JSON.stringify(preview)).not.toContain("private body");
+    const withoutExcerpt = JSON.stringify({ ...preview, excerpt: undefined });
+    expect(withoutExcerpt).not.toContain("sentinel");
+    expect(withoutExcerpt).not.toContain("poster");
+    expect(withoutExcerpt).not.toContain("private body");
+  });
+
+  it("bounds the popup excerpt and strips markdown, the repeated title and comments", async () => {
+    vi.stubGlobal("defineBackground", (factory: unknown) => factory);
+    const { previewExcerpt } = await import("../src/entrypoints/background");
+    const long = "字".repeat(300);
+    expect([...(previewExcerpt(long, "t") ?? "")].length).toBe(121);
+    expect(previewExcerpt("# 标题\n\n**第一段** [链接](https://a.test)\n![图](https://b.test/x.png)", "标题"))
+      .toBe("第一段 链接");
+    expect(previewExcerpt("   \n", "t")).toBeUndefined();
+  });
+
+  it("reads the capture frontmatter into byline and engagement, never into the excerpt", async () => {
+    vi.stubGlobal("defineBackground", (factory: unknown) => factory);
+    const { previewExcerpt, splitCaptureFrontmatter } = await import("../src/entrypoints/background");
+    const text = '---\nauthor: "数字生命卡兹克 (@Khazix0918)"\npublished: "2026-09-28T12:53:38.000Z"\nlikes: "437"\ncomments: "100"\nshares: "71"\n---\n\n# 在重写完之后，做了一个小小的决定\n\n在重写完之后，做了一个小小的决定。\n这个月活百万的AI热点站 AIHOT，正式开源了。';
+    expect(splitCaptureFrontmatter(text).fields).toEqual({
+      author: "数字生命卡兹克 (@Khazix0918)", published: "2026-09-28T12:53:38.000Z",
+      likes: "437", comments: "100", shares: "71",
+    });
+    expect(previewExcerpt(text, "在重写完之后，做了一个小小的决定")).toBe("这个月活百万的AI热点站 AIHOT，正式开源了。");
   });
 
   it("sanitizes untrusted MAIN-world diagnostics before popup use", async () => {

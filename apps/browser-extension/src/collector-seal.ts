@@ -72,6 +72,10 @@ export function collectorSealSVG(size = 40): string {
  * 动画与减弱动效的处理在 index.html 的 .collector-seal 样式里。
  */
 export function savedNoticeMarkup(message: string): string {
-  return `<span class="collector-seal" role="img" aria-label="汲" data-seal="汲">${collectorSealSVG(40)}</span>`
-    + `<span class="result-text">${escapeHTML(message)}</span>`;
+  return stampedSealMarkup(40) + `<span class="result-text">${escapeHTML(message)}</span>`;
+}
+
+/** 单独一枚盖下的「汲」印（保存成功卡用大号）。 */
+export function stampedSealMarkup(size: number): string {
+  return `<span class="collector-seal" role="img" aria-label="汲" data-seal="汲">${collectorSealSVG(size)}</span>`;
 }

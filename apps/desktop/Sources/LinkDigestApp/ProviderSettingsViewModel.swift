@@ -845,6 +845,7 @@ final class ProviderSettingsViewModel {
       do {
         preferences = try currentDraftPreferences()
         try await preferencesStore.save(preferences)
+        mirrorAutoStepsForBrowser(preferences)
       } catch let error as ModelPreferencesError {
         applyPreferencesSaveFailure(error)
         return
@@ -907,6 +908,23 @@ final class ProviderSettingsViewModel {
     autoMindMapNewCaptures = preferences.autoMindMapNewCaptures == true
     translationConcurrency = preferences.effectiveTranslationConcurrency
     savedPreferences = preferences
+    mirrorAutoStepsForBrowser(preferences)
+  }
+
+  /// 把「新内容进来自动做哪几步」抄一份到抓取偏好文件：Host 不启动 App 也能读给扩展弹窗，
+  /// 点亮那排工序印（2026-09-29 弹窗重构）。评论的自动保存本来就在那个文件里，不重复写。
+  /// 抄到哪个偏好文件。nil = 不抄：只有 App 真身设它，单元测试建的实例不会碰用户的文件。
+  var browserPreferencesMirror: CapturePreferencesStore?
+
+  private func mirrorAutoStepsForBrowser(_ preferences: ModelPreferences) {
+    guard let browserPreferencesMirror else { return }
+    var steps: [String] = []
+    if preferences.autoTranscribeNewCaptures == true { steps.append("record") }
+    if preferences.autoTidyTranscription == true { steps.append("proof") }
+    if preferences.autoSummarizeNewCaptures == true { steps.append("summary") }
+    if preferences.effectiveAutoLocalizeTitleNewCaptures { steps.append("translation") }
+    if preferences.autoMindMapNewCaptures == true { steps.append("mindMap") }
+    try? browserPreferencesMirror.setAutoSteps(steps)
   }
 
   private func applyPreferencesSaveFailure(_ error: ModelPreferencesError) {

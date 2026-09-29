@@ -34,6 +34,19 @@ final class CapturePreferencesTests: XCTestCase {
     XCTAssertEqual(CapturePreferencesStore(root: root).commentLimit, 20)
   }
 
+  /// App 写下自动工序，Host 原样读给扩展；未知键和重复被丢掉，顺序固定。
+  func testAutoStepsRoundTripInProcessOrder() throws {
+    let store = CapturePreferencesStore(root: root)
+    XCTAssertNil(store.autoSteps)
+    try store.setAutoSteps(["mindMap", "record", "bogus", "record"])
+    XCTAssertEqual(CapturePreferencesStore(root: root).autoSteps, ["record", "mindMap"])
+    try store.setCommentLimit(40)
+    XCTAssertEqual(store.autoSteps, ["record", "mindMap"], "改评论条数不能冲掉自动工序")
+    let response = NativeResponse.capturePreferences(version: 1, requestId: "r", commentLimit: 40, autoSteps: store.autoSteps)
+    let decoded = try JSONDecoder().decode(NativeResponse.self, from: JSONEncoder().encode(response))
+    XCTAssertEqual(decoded, response)
+  }
+
   func testRequestDecodingClaimsOnlyItsOwnKind() throws {
     XCTAssertNil(try CapturePreferencesRequest.decode(Data(#"{"kind":"openApp","version":1,"requestId":"r"}"#.utf8)))
     XCTAssertNil(try CapturePreferencesRequest.decode(Data("not json".utf8)))

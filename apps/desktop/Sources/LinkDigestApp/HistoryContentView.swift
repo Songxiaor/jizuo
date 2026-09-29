@@ -6441,29 +6441,8 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 这一条做过的工序，按「录 校 评 摘 译 图」排；有记录的写上时间和模型，没有的不编。
   private var completedStepRecords: [ProcessStepRecord] {
-    func date(_ milliseconds: Int64) -> Date { Date(timeIntervalSince1970: Double(milliseconds) / 1_000) }
-    let transcriptKind = CapturedDocument.Origin.localTranscription.rawValue
-    var records: [ProcessStepRecord] = []
-    // 取最近一次：重新转写、重新抓评论后时间跟着变，盖章那一刻也靠它认出「刚重做完」。
-    if let machine = detail.snapshots.last(where: { $0.sourceKind == transcriptKind && $0.captureMethod != Self.tidyCaptureMethod }) {
-      records.append(.init(step: .record, date: date(machine.capturedAtMilliseconds), note: nil))
-    }
-    if let tidy = detail.snapshots.last(where: { $0.captureMethod == Self.tidyCaptureMethod }) {
-      records.append(.init(step: .proof, date: date(tidy.capturedAtMilliseconds), note: nil))
-    }
-    if let withComments = detail.snapshots.last(where: { $0.bodyText.contains("\n## 评论") }) {
-      records.append(.init(step: .comments, date: date(withComments.capturedAtMilliseconds), note: nil))
-    }
-    for (step, kind) in [(ProcessStep.summary, RunKind.summarize), (.translation, .translate)] {
-      if let latest = detail.runs.reversed().first(where: { $0.run.kind == kind && !($0.artifact?.bodyText.isEmpty ?? true) }),
-         let artifact = latest.artifact {
-        records.append(.init(step: step, date: date(artifact.updatedAtMilliseconds), note: latest.run.model))
-      }
-    }
-    if let mindMap = model.mindMapRecord, mindMap.taskID == detail.task.id {
-      records.append(.init(step: .mindMap, date: date(mindMap.createdAtMilliseconds), note: mindMap.model))
-    }
-    return records
+    let mindMap = model.mindMapRecord.flatMap { $0.taskID == detail.task.id ? $0 : nil }
+    return ProcessStepRecord.completed(in: detail, mindMap: mindMap)
   }
 
   /// 导出文件末尾的题跋文字：「九月二十八日汲自抖音　录 · 校 · 评 · 摘」。笔记不加。
@@ -7592,7 +7571,7 @@ private struct HistoryDetailView: View, Equatable {
     }
   }
 
-  private static let tidyCaptureMethod = "openai_compatible_chat_tidy"
+  private static let tidyCaptureMethod = ProcessStepRecord.tidyCaptureMethod
 
   @ViewBuilder
   private func transcriptManuscript(snapshot: ContentSnapshot, body fullBody: String, previewLimit: Int?) -> some View {

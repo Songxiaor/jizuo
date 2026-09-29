@@ -12,6 +12,9 @@ import {
   popupRecoveryForSendResult,
   popupMetaChips,
   popupPlatformLabel,
+  popupStats,
+  popupDuration,
+  popupSourceLine,
   popupScaleLabel,
 } from "../src/popup-presentation";
 import type { DouyinSessionDiagnosticCode } from "../src/content/douyin-session-detail";
@@ -29,9 +32,13 @@ const knownCodes = [
 describe("popup error presentation", () => {
   it("explains pre-envelope quality failures without exposing page text", () => {
     expect(popupPreviewFailure("Error: CAPTURE_APP_SHELL")).toEqual({
+      title: "这是网页应用的界面，不是一篇文章",
       message: "当前页面是已登录的网页应用界面，不是独立文章。请选中需要保存的正文后再打开扩展。",
+      steps: ["打开具体的一篇文章或一条内容再点扩展", "或者先选中要保存的文字，再点扩展"],
       canReload: false,
     });
+    expect(popupPreviewFailure("CAPTURE_LOGIN_WALL").steps.join("")).toContain("站点登录");
+    expect(popupPreviewFailure("unknown").steps.length).toBeGreaterThan(0);
     expect(popupPreviewFailure("CAPTURE_PAGE_LOAD_FAILED")).toMatchObject({ canReload: true });
     expect(popupPreviewFailure("CAPTURE_LOGIN_WALL").message).toContain("登录页");
     expect(popupPreviewFailure("CAPTURE_SECURITY_CHALLENGE").message).toContain("安全验证");
@@ -43,7 +50,7 @@ describe("popup error presentation", () => {
 
   it("maps every action to explicit outcome copy", () => {
     expect(popupActionPresentation("save").button).toBe("保存到汲作");
-    expect(popupActionPresentation("summarize").detail).toContain("生成总结");
+    expect(popupActionPresentation("summarize").detail).toContain("写一份总结");
     expect(popupActionPresentation("translate").success).toContain("准备翻译");
   });
 
@@ -262,7 +269,7 @@ describe("X videos resolved by the desktop app", () => {
       completeness: "full_article" as const,
       media: { kind: "browserSessionOnly" as const, failureReason: "blob_or_mse" as const },
     };
-    expect(popupAvailability(preview)).toEqual({ tone: "video", label: "可捕获 · 视频由 App 获取" });
+    expect(popupAvailability(preview)).toEqual({ tone: "video", label: "可以保存 · 视频由汲作获取" });
     const chips = popupMetaChips({ ...preview, characterCount: 525, version: 2 });
     expect(chips.at(-1)).toEqual({ text: "🎬 视频由 App 获取", tone: "video" });
     expect(chips.some((chip) => chip.text.includes("受限"))).toBe(false);
@@ -273,12 +280,12 @@ describe("X videos resolved by the desktop app", () => {
     expect(popupAvailability({
       platform: "douyin", completeness: "full_article",
       media: { kind: "browserSessionOnly", failureReason: "blob_or_mse" },
-    })).toEqual({ tone: "warn", label: "可捕获正文 · 视频受限" });
+    })).toEqual({ tone: "warn", label: "只能存正文 · 视频受限" });
     // X 的其它失败原因（如 DRM）不在补救范围内。
     expect(popupAvailability({
       platform: "x", completeness: "full_article",
       media: { kind: "unsupported", failureReason: "drm_or_encrypted" },
-    })).toEqual({ tone: "warn", label: "可捕获正文 · 视频受限" });
+    })).toEqual({ tone: "warn", label: "只能存正文 · 视频受限" });
   });
 });
 
@@ -297,6 +304,110 @@ describe("douyin image posts (图文帖)", () => {
       media: { kind: "browserSessionOnly", failureReason: "blob_or_mse" },
       imageCount: 4,
     });
-    expect(availability).toEqual({ tone: "ready", label: "可捕获 · 图文 4 张" });
+    expect(availability).toEqual({ tone: "ready", label: "可以保存 · 图文 4 张" });
+  });
+});
+
+describe("popup source card (2026-09-29 重构)", () => {
+  it("lists article stats: characters, images, reading time and completeness", () => {
+    expect(popupStats({ characterCount: 778, completeness: "full_article", version: 1, imageCount: 3 })).toEqual([
+      { value: "778", label: "字" },
+      { value: "3", label: "张图" },
+      { value: "2 分钟", label: "读完" },
+      { value: "完整", label: "读取" },
+    ]);
+    expect(popupStats({ characterCount: 500, completeness: "selection_only", version: 1 })).toEqual([
+      { value: "500", label: "字（选中）" },
+      { value: "选中", label: "读取" },
+    ]);
+  });
+
+  it("lists video stats: duration, video state and text", () => {
+    expect(popupStats({
+      characterCount: 312, completeness: "full_article", version: 2, platform: "douyin",
+      media: { kind: "directFile" }, mediaDurationSeconds: 252,
+    })).toEqual([
+      { value: "4:12", label: "视频时长" },
+      { value: "可转写", label: "视频" },
+      { value: "312", label: "字正文" },
+    ]);
+  });
+
+  it("formats durations and the source line", () => {
+    expect(popupDuration(56)).toBe("0:56");
+    expect(popupDuration(3725)).toBe("1:02:05");
+    expect(popupSourceLine("x", 1, undefined, "x.com")).toBe("X · 文章 · x.com");
+    expect(popupSourceLine("douyin", 2)).toBe("抖音 · 视频");
+  });
+});
+
+describe("popup byline and engagement (2026-09-29 frontmatter)", () => {
+  it("writes ISO publish time as a local month-day and keeps other formats", async () => {
+    const { popupBylineText, popupPublishedLabel } = await import("../src/popup-presentation");
+    const now = new Date("2026-09-29T10:00:00");
+    expect(popupPublishedLabel("2026-01-07 21:53・北京", now)).toBe("2026-01-07 21:53・北京");
+    expect(popupPublishedLabel(new Date(2026, 8, 28, 20, 53).toISOString(), now)).toBe("9月28日 20:53");
+    expect(popupPublishedLabel(new Date(2025, 0, 2, 8, 0).toISOString(), now)).toBe("2025年1月2日");
+    expect(popupBylineText("卡兹克", undefined)).toBe("卡兹克");
+    expect(popupBylineText(undefined, undefined)).toBe("");
+  });
+
+  it("gives likes and comments the completeness cell when the read was complete", () => {
+    expect(popupStats({
+      characterCount: 779, completeness: "full_article", version: 1,
+      engagement: { likes: "437", comments: "100", shares: "71" },
+    })).toEqual([
+      { value: "779", label: "字" },
+      { value: "2 分钟", label: "读完" },
+      { value: "437", label: "赞" },
+      { value: "100", label: "评论" },
+    ]);
+  });
+});
+
+describe("process seal chain (2026-09-29 第二批)", () => {
+  it("lights the steps the App runs automatically and greys out what this page cannot use", async () => {
+    const { popupStepChain, popupChainSummary } = await import("../src/popup-presentation");
+    const chain = popupStepChain({ autoSteps: ["record", "summary", "translation"], hasVideo: false, comments: "auto", selectedAction: "save" });
+    expect(chain.map((seal) => [seal.key, seal.style, seal.label])).toEqual([
+      ["ji", "stamped", "收集"],
+      ["record", "na", "无视频"],
+      ["proof", "na", "无需"],
+      ["comments", "stamped", "评论"],
+      ["summary", "stamped", "总结"],
+      ["translation", "stamped", "译标题"],
+      ["mindMap", "pending", "脑图"],
+    ]);
+    expect(popupChainSummary(chain, true)).toBe("保存后自动：评论、总结、译标题。点空心的「摘」「译」，这次也做。");
+  });
+
+  it("lets 摘 and 译 be requested for this save only", async () => {
+    const { popupStepChain } = await import("../src/popup-presentation");
+    const summarize = popupStepChain({ hasVideo: true, comments: "unsupported", selectedAction: "summarize" });
+    expect(summarize.find((seal) => seal.key === "summary")).toEqual({ key: "summary", style: "stamped", label: "这次做", toggles: "summarize" });
+    expect(summarize.find((seal) => seal.key === "record")?.style).toBe("pending");
+    expect(summarize.find((seal) => seal.key === "comments")?.style).toBe("na");
+    const translate = popupStepChain({ autoSteps: ["translation"], hasVideo: true, comments: "picker", selectedAction: "translate" });
+    expect(translate.find((seal) => seal.key === "translation")?.label).toBe("译全文");
+    expect(translate.find((seal) => seal.key === "comments")?.label).toBe("手挑");
+  });
+
+  it("lists progress with waiting and manual steps, skipping transcription without video", async () => {
+    const { popupStepProgress, popupSavedAtLabel } = await import("../src/popup-presentation");
+    const rows = popupStepProgress({
+      steps: [{ step: "comments", state: "done", detail: "存了 20 条" }, { step: "summary", state: "running" }],
+      expected: new Set(["comments", "summary", "translation"]),
+      hasVideo: false,
+    });
+    expect(rows.map((row) => [row.key, row.state, row.text])).toEqual([
+      ["comments", "done", "存了 20 条"],
+      ["summary", "running", "进行中"],
+      ["translation", "waiting", "等着做"],
+      ["mindMap", "manual", "还没做 · 在汲作里点"],
+    ]);
+    const now = new Date(2026, 8, 29, 12, 0);
+    expect(popupSavedAtLabel(new Date(2026, 8, 29, 9, 5).getTime(), now)).toBe("今天 9:05 存的");
+    expect(popupSavedAtLabel(new Date(2026, 8, 27, 20, 39).getTime(), now)).toBe("9月27日 20:39 存的");
+    expect(popupSavedAtLabel(undefined, now)).toBe("");
   });
 });
