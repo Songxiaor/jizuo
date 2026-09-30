@@ -210,12 +210,12 @@ enum CodeSyntaxHighlighter {
         cursor = code.index(cursor, offsetBy: 2, limitedBy: code.endIndex) ?? code.endIndex
         continue
       }
-      if character == quote { return code.index(after: cursor) }
+      if character == quote { return code.index(after: cursor) }  // secret-hygiene:reviewed 代码片段本身，非服务商文本
       // 普通引号字符串不跨行：没闭合就收在行尾，免得一个撇号把后面整段都染成字符串。
       if character == "\n", quote != "`" { return cursor }
       cursor = code.index(after: cursor)
     }
-    return code.endIndex
+    return code.endIndex  // secret-hygiene:reviewed 代码片段本身，非服务商文本
   }
 
   private static func isJSONKey(_ code: String, after end: String.Index) -> Bool {
@@ -257,7 +257,7 @@ enum CodeSyntaxHighlighter {
   /// 着色后的代码。按「语言 + 内容」缓存：阅读区重绘时代码卡的 body 会被反复求值。
   @MainActor
   static func highlighted(_ code: String, language raw: String?) -> AttributedString {
-    let key = "\(raw ?? "")\u{0}\(code)"
+    let key = "\(raw ?? "")\u{0}\(code)"  // secret-hygiene:reviewed 代码片段本身，非服务商文本
     if let cached = cache[key] { return cached }
     var result = AttributedString(code)
     if let language = language(for: raw), code.utf8.count <= maximumHighlightedBytes {

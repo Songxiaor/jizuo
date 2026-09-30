@@ -1450,7 +1450,7 @@ final class ReadingItemNoteLayoutTests: XCTestCase {
   }
 
   func testLedeIsLargerOnlyAtDocumentStartOfLongText() {
-    let long = "今天告诉大家一个秘密：我目前用过最强的编程 Agent，可能根本不是某一个 Agent。\n\n" + String(repeating: "这是后面的正文段落，内容足够长。", count: 12) + "\n\n最后一段。"
+    let long = "今天告诉大家一个秘密：我目前用过最强的编程 Agent，可能根本不是某一个 Agent。\n\n" + String(repeating: "这是后面的正文段落，内容足够长。", count: 24) + "\n\n最后一段。"
     func size(_ text: NSAttributedString, _ needle: String) -> CGFloat? {
       let range = (text.string as NSString).range(of: needle)
       return (text.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont)?.pointSize

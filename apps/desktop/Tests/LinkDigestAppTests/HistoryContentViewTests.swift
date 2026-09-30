@@ -1191,7 +1191,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(video.contains("transcriptionControl"))
     XCTAssertFalse(video.contains("改进转写"))
     XCTAssertFalse(video.contains("history-video-transcription-improve"))
-    XCTAssertTrue(video.contains("media?.byteSize"))
+    XCTAssertTrue(video.contains("media.byteSize > 0"))
     // 作者不再出现在播放卡片的事实行：详情属性区已有「作者」一栏，
     // 卡片里重复一遍只会挤占时长/体积的空间。
     XCTAssertFalse(video.contains("media?.author"))
@@ -2624,8 +2624,9 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
     )
     // 禁用状态与理由必须来自同一个来源，否则两者会各改各的、说法不一致。
     XCTAssertTrue(source.contains("private var transcriptTidyBlockedReason: String? {"))
-    XCTAssertTrue(source.contains(".disabled(transcriptTidyBlockedReason != nil)"))
-    XCTAssertTrue(source.contains("Label(transcriptTidyBlockedReason.map"))
+    // 09-28「处理」改为自绘面板：禁用与理由同出一处，理由直接写进这一项的标题。
+    XCTAssertTrue(source.contains("isEnabled: transcriptTidyBlockedReason == nil"))
+    XCTAssertTrue(source.contains("title: transcriptTidyBlockedReason.map"))
     // 理由要显示出来，不能只放在悬停提示里——鼠标不停上去就看不到。
     XCTAssertTrue(source.contains("history-transcript-tidy-blocked-reason"))
     XCTAssertTrue(source.contains("transcriptTidyVisibleBlockedReason"))
@@ -2698,7 +2699,7 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
       encoding: .utf8
     )
     XCTAssertTrue(
-      contentSource.contains("model.requestTranscriptTidy(taskID: detail.task.id, model: providerSettings.effectiveTidyModelName)"),
+      contentSource.contains("model.requestTranscriptTidy(taskID: taskID, model: providerSettings.effectiveTidyModelName)"),
       "本机媒体与当前远程媒体共用表头上同一个校对入口、同一个校对模型"
     )
     XCTAssertTrue(
@@ -2745,8 +2746,9 @@ final class AutoPipelineTidyHintTests: XCTestCase {
         .appendingPathComponent("Sources/LinkDigestApp/ProviderSettingsView.swift"),
       encoding: .utf8
     )
-    XCTAssertTrue(settings.contains("仅影响自动进来的新内容"))
-    XCTAssertTrue(settings.contains("手动转写完成后请点「模型校对」"))
+    // 09-28 设置按工序重组后，提示改成指向现在的按钮名（「模型校对」已改名「校对转写稿」）。
+    XCTAssertTrue(settings.contains("手动转写完成后请点「校对转写稿」"))
+    XCTAssertFalse(settings.contains("手动转写完成后请点「模型校对」"))
     XCTAssertFalse(settings.contains("你手动点「转写」时，本步照常生效"))
   }
 

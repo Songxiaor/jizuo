@@ -54,7 +54,7 @@ final class LocalTranscriptionOfflineTests: XCTestCase {
 
   func testRecognitionRefusesWhenTheModelIsMissingInsteadOfFetchingIt() throws {
     let text = try source()
-    guard let start = text.range(of: "private static func recognize") else {
+    guard let start = text.range(of: "private static func recognize(") else {
       return XCTFail("recognize 不存在了，断网不变式需要重新确认")
     }
     let rest = text[start.upperBound...]

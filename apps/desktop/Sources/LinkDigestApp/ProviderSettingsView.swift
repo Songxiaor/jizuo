@@ -2422,7 +2422,7 @@ struct ProviderSettingsView: View {
 
       DisclosureGroup("了解更多") {
         VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-          Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；中文标题/校对/总结/脑图只发送文字。手动转写完成后请点「模型校对」。")
+          Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；中文标题/校对/总结/脑图只发送文字。手动转写完成后请点「校对转写稿」。")
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
           if let identity = model.dataDestinationCard {
