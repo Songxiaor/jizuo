@@ -52,6 +52,12 @@ APP_NAME = "汲作"
 APP_BUNDLE = f"{APP_NAME}.app"
 RESOURCE_BUNDLE = "LinkDigest_LinkDigestCore.bundle"
 APP_ICON_FILE = "AppIcon.icns"
+# macOS 26 起，只有编进资产目录（Assets.car）并用 CFBundleIconName 声明的图标才按自己的形状铺满；
+# 只有 .icns 的 App 会被系统套进一块灰色圆角底板（2026-09-30 部署后在 Dock 里看到）。
+# Assets.car 由 apps/desktop/Assets/AppIcon.icon（Icon Composer 格式，系统据此加玻璃高光）
+# 用 actool 预先编好、随源码提交；.icns 是同一次编译产出的旧系统兜底。
+APP_ICON_NAME = "AppIcon"
+APP_ICON_ASSET_CATALOG = "Assets.car"
 PLATFORM_ICONS_DIRECTORY = "PlatformIcons"
 PLATFORM_ICON_FILES = ("bilibili.svg", "douban.svg", "douyin.svg", "github.svg", "glyph-bilibili.svg", "glyph-discourse.svg", "glyph-douyin.svg", "glyph-github.svg", "glyph-reddit.svg", "glyph-substack.svg", "glyph-wechat.svg", "glyph-x.svg", "glyph-xiaohongshu.svg", "glyph-youtube.svg", "juejin.svg", "medium.svg", "reddit.svg", "toutiao.svg", "wechat.svg", "weibo.svg", "x.com.svg", "xiaohongshu.svg", "youtube.svg", "zhihu.svg")
 PROVIDER_ICONS_DIRECTORY = "ProviderIcons"
@@ -131,6 +137,7 @@ INFO_PLIST_KEYS = {
     "CFBundleDisplayName",
     "CFBundleExecutable",
     "CFBundleIconFile",
+    "CFBundleIconName",
     "CFBundleIdentifier",
     "CFBundleInfoDictionaryVersion",
     "CFBundleName",
@@ -1253,6 +1260,7 @@ def info_plist(config: dict[str, Any]) -> dict[str, Any]:
         "CFBundleDisplayName": config["appDisplayName"],
         "CFBundleExecutable": config["executable"],
         "CFBundleIconFile": Path(config["iconFile"]).stem,
+        "CFBundleIconName": APP_ICON_NAME,
         "CFBundleIdentifier": config["bundleIdentifier"],
         "CFBundleInfoDictionaryVersion": "6.0",
         "CFBundleName": config["appDisplayName"],
@@ -1501,6 +1509,13 @@ def build_app_bundle(
     )
     copy_path_nofollow(
         source_root,
+        Path("apps/desktop/Assets") / APP_ICON_ASSET_CATALOG,
+        resources / APP_ICON_ASSET_CATALOG,
+        excluded_names=set(),
+        label="App icon asset catalog",
+    )
+    copy_path_nofollow(
+        source_root,
         Path("apps/desktop/Assets") / PLATFORM_ICONS_DIRECTORY,
         resources / PLATFORM_ICONS_DIRECTORY,
         excluded_names=set(),
@@ -1575,6 +1590,7 @@ def exact_app_paths(
         RESOURCE_BUNDLE,
         "NativeHost",
         icon_file,
+        APP_ICON_ASSET_CATALOG,
         PLATFORM_ICONS_DIRECTORY,
         PROVIDER_ICONS_DIRECTORY,
         THIRD_PARTY_LICENSES_DIRECTORY,
@@ -1622,6 +1638,14 @@ def verify_app_icon(app: Path, source_root: Path, app_config: dict[str, Any]) ->
         or int.from_bytes(icon_bytes[4:8], byteorder="big") != len(icon_bytes)
     ):
         reject("embedded App icon is not a complete ICNS container")
+    embedded_catalog = app / "Contents/Resources" / APP_ICON_ASSET_CATALOG
+    source_catalog = source_root / "apps/desktop/Assets" / APP_ICON_ASSET_CATALOG
+    for path, label in ((embedded_catalog, "embedded App icon catalog"), (source_catalog, "source App icon catalog")):
+        info = path.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            reject(f"{label} must be a single-link regular file")
+    if sha256_file(embedded_catalog) != sha256_file(source_catalog):
+        reject("embedded App icon catalog hash drifted from frozen source asset")
     return {
         "file": icon_file,
         "hash": embedded_hash,

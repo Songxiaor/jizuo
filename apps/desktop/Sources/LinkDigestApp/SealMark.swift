@@ -9,8 +9,8 @@ import SwiftUI
 /// - **工序印**「录 校 评 摘 译 图」：一道加工一枚（2026-09-28 Syc 认可工序印样稿第五版）。
 ///
 /// 一枚印的三个样子：
-/// - `.pending` 印位：虚线细框、空心字，没有纹样也没有印泥——这道工序还没做。
-/// - `.stamped` 盖好：白文（朱底、字和纹样镂空见底色）、双框、寓意纹样、印泥颗粒。
+/// - `.pending` 印位：虚线细框、空心字——这道工序还没做。
+/// - `.stamped` 盖好：「汲」圆朱文，其余白文（朱底、字镂空见底色）。印文是《说文》小篆。
 /// - 盖下的那一刻由 `SealStampAnimation` 负责。
 struct SealMark: View {
   enum Glyph: String, CaseIterable {
@@ -55,16 +55,18 @@ struct SealMark: View {
   /// 手盖的章总有一点歪。
   var rotation: Double = 0
 
-  @Environment(\.colorScheme) private var colorScheme
+  /// 印泥色（2026-09-30 Syc 定稿 B · 朱砂）：取自赵孟頫印蜕实拍的印泥，整体压沉一档。
+  /// 比界面文字用的朱（theme.seal）亮：那个是为了红字读得清压暗的，铺成整方印就像漆面（09-30 对照实拍）。
+  /// 深浅主题同一个颜色：真印泥不随灯光换色。
+  static let stampInk = Color(red: 0xDA / 255, green: 0x4F / 255, blue: 0x34 / 255)
 
-  /// 深色主题下的朱砂：主题里的朱（E07A66）是为了红字在深底上读得清而提亮的，
-  /// 整块铺成章就成了粉色瓷砖（2026-09-29 走查）。章本身用沉一些的朱砂，红字不受影响。
-  static let darkCinnabar = Color(red: 0xC8 / 255, green: 0x48 / 255, blue: 0x30 / 255)
-
-  /// 盖好的章、印位用的颜色：深色主题换成朱砂，保留调用方给的透明度层级（印位更淡）。
+  /// 盖好的章、印位用印泥色，印位淡一些；墨线稿仍用调用方给的颜色（侧栏选中、未选中的灰）。
   private var sealColor: Color {
-    guard colorScheme == .dark, style != .line else { return color }
-    return style == .pending ? Self.darkCinnabar.opacity(0.85) : Self.darkCinnabar
+    switch style {
+    case .line: color
+    case .pending: Self.stampInk.opacity(0.7)
+    case .stamped: Self.stampInk
+    }
   }
 
   var body: some View {
@@ -112,51 +114,36 @@ struct SealMark: View {
         with: .color(sealColor),
         style: StrokeStyle(lineWidth: frameWidth, lineJoin: .round, dash: [7 * unit, 5 * unit])
       )
-      if let glyphPath = SealGeometry.glyphPath(glyph.rawValue, unit: unit) {
-        context.stroke(glyphPath, with: .color(sealColor), style: StrokeStyle(lineWidth: max(1.4 * unit, 0.55), lineJoin: .round))
+      if let glyphPath = SealGeometry.glyphPath(glyph, unit: unit) {
+        context.stroke(glyphPath, with: .color(sealColor), style: StrokeStyle(lineWidth: max(1.2 * unit, 0.5), lineJoin: .round))
       }
     }
   }
 
-  // MARK: - 盖好的白文印
+  // MARK: - 盖好的印
 
+  /// 「汲」是鉴藏印，圆朱文：朱色细框、朱色字，其余见纸。其余七枚是白文：整方朱底，字镂空见纸。
+  /// 2026-09-30 Syc 定稿：明代文人印式、新盖的真印不做旧，所以不再有纹样和印泥颗粒。
   private var stampedSeal: some View {
     Canvas { context, canvasSize in
       let unit = canvasSize.width / 100
-      // 整方朱底。
-      context.fill(SealGeometry.frame(inset: 0, unit: unit), with: .color(sealColor))
-      context.stroke(
-        SealGeometry.frame(inset: 0, unit: unit), with: .color(sealColor),
-        style: StrokeStyle(lineWidth: max(5 * unit, 0.9), lineJoin: .round)
-      )
-      // 字、内框、纹样都是「刻掉」的：镂空见底色，深浅主题都对。
-      context.blendMode = .destinationOut
-      context.stroke(
-        SealGeometry.frame(inset: 9, unit: unit),
-        with: .color(.black.opacity(0.55)),
-        lineWidth: max(0.6 * max(2.2 * unit, 0.55), 0.4)
-      )
-      let motifWidth = max(2.2 * unit, 0.55)
-      for element in SealMotifs.elements(for: glyph) {
-        let path = element.path(unit: unit)
-        switch element.paint {
-        case .stroke: context.stroke(path, with: .color(.black), style: StrokeStyle(lineWidth: motifWidth, lineCap: .round, lineJoin: .round))
-        case .faint:
-          let dash = (element.dash ?? []).map { $0 * unit }
-          context.stroke(path, with: .color(.black.opacity(0.45)), style: StrokeStyle(lineWidth: motifWidth, lineCap: .round, lineJoin: .round, dash: dash))
-        case .fill: context.fill(path, with: .color(.black))
-        }
-      }
-      if let glyphPath = SealGeometry.glyphPath(glyph.rawValue, unit: unit) {
-        context.fill(glyphPath, with: .color(.black))
-      }
-      // 印泥不匀：按字定下的一把随机小点，把朱色啄掉一些；边缘多啄几下，像手盖的毛边。
-      for speck in SealGeometry.specks(seed: glyph.rawValue.unicodeScalars.first?.value ?? 1) {
-        let rect = CGRect(
-          x: speck.x * unit - speck.r * unit, y: speck.y * unit - speck.r * unit,
-          width: speck.r * 2 * unit, height: speck.r * 2 * unit
+      if glyph == .external {
+        context.stroke(
+          SealGeometry.frame(inset: 1.2, unit: unit), with: .color(sealColor),
+          style: StrokeStyle(lineWidth: max(2.6 * unit, 0.7), lineJoin: .round)
         )
-        context.fill(Path(ellipseIn: rect), with: .color(.black.opacity(speck.alpha)))
+        if let glyphPath = SealGeometry.glyphPath(glyph, unit: unit) {
+          context.fill(glyphPath, with: .color(sealColor))
+          context.stroke(glyphPath, with: .color(sealColor), style: StrokeStyle(lineWidth: max(0.5 * unit, 0.25), lineJoin: .round))
+        }
+        return
+      }
+      context.fill(SealGeometry.frame(inset: 0, unit: unit), with: .color(sealColor))
+      // 字是「刻掉」的：镂空见底色，深浅主题都对。
+      context.blendMode = .destinationOut
+      if let glyphPath = SealGeometry.glyphPath(glyph, unit: unit) {
+        context.fill(glyphPath, with: .color(.black))
+        context.stroke(glyphPath, with: .color(.black), style: StrokeStyle(lineWidth: 1.1 * unit, lineJoin: .round))
       }
     }
     // 镂空只作用在印自己这一层，不把背后的界面也掏空。
@@ -195,174 +182,60 @@ enum SealGeometry {
     return path
   }
 
-  /// 印文的字形轮廓（宋体半粗），居中放进 100 格里约 50 格高。
-  static func glyphPath(_ text: String, unit: CGFloat) -> Path? {
-    guard let base = unitGlyphPath(text) else { return nil }
-    return base.applying(CGAffineTransform(scaleX: unit, y: unit))
+  /// 印文：《说文》小篆字形，已按印面排好（`SealGlyphData`）。
+  static func glyphPath(_ glyph: SealMark.Glyph, unit: CGFloat) -> Path? {
+    unitPath(glyph.rawValue)?.applying(CGAffineTransform(scaleX: unit, y: unit))
   }
 
-  // 字形轮廓只在主线程画印时取；NSCache 本身线程安全。
+  // 字形只在主线程画印时取；NSCache 本身线程安全。
   nonisolated(unsafe) private static let glyphCache = NSCache<NSString, GlyphBox>()
   private final class GlyphBox { let path: Path; init(_ path: Path) { self.path = path } }
 
-  static func unitGlyphPath(_ text: String) -> Path? {
-    let key = "\(ReadingFontCatalog.editorialSerifFamily)|\(text)" as NSString
-    if let hit = glyphCache.object(forKey: key) { return hit.path }
-    let descriptor = NSFontDescriptor(fontAttributes: [.family: ReadingFontCatalog.editorialSerifFamily])
-      .addingAttributes([.traits: [NSFontDescriptor.TraitKey.weight: NSFont.Weight.semibold]])
-    let font = NSFont(descriptor: descriptor, size: 100) ?? NSFont.systemFont(ofSize: 100, weight: .semibold)
-    let ctFont = font as CTFont
-    let characters = Array(text.utf16)
-    var glyphs = [CGGlyph](repeating: 0, count: characters.count)
-    guard CTFontGetGlyphsForCharacters(ctFont, characters, &glyphs, characters.count),
-          let first = glyphs.first,
-          let cgPath = CTFontCreatePathForGlyph(ctFont, first, nil) else { return nil }
-    // 字形坐标 y 朝上，翻过来；按外框居中、缩到 54 格高。
-    var flip = CGAffineTransform(scaleX: 1, y: -1)
-    guard let flipped = cgPath.copy(using: &flip) else { return nil }
-    let bounds = flipped.boundingBoxOfPath
-    guard bounds.width > 0, bounds.height > 0 else { return nil }
-    let scale = 50 / max(bounds.width, bounds.height)
-    let transform = CGAffineTransform(translationX: 50, y: 50)
-      .scaledBy(x: scale, y: scale)
-      .translatedBy(x: -bounds.midX, y: -bounds.midY)
-    let path = Path(flipped).applying(transform)
-    glyphCache.setObject(GlyphBox(path), forKey: key)
+  /// 100 格坐标里的一块印文；`key` 是单字印的字，或两字印的 `brand-zuo` / `brand-ji`。
+  static func unitPath(_ key: String) -> Path? {
+    if let hit = glyphCache.object(forKey: key as NSString) { return hit.path }
+    guard let d = SealGlyphData.paths[key] else { return nil }
+    let path = SVGPath.parse(d)
+    glyphCache.setObject(GlyphBox(path), forKey: key as NSString)
     return path
-  }
-
-  struct Speck { let x: CGFloat; let y: CGFloat; let r: CGFloat; let alpha: Double }
-
-  /// 同一个字每次撒的点都一样（按字取种子），不会一刷新就变样。
-  static func specks(seed: UInt32) -> [Speck] {
-    var state = UInt64(seed) &* 6364136223846793005 &+ 1442695040888963407
-    func next() -> CGFloat {
-      state = state &* 6364136223846793005 &+ 1442695040888963407
-      return CGFloat((state >> 33) & 0xFFFFFF) / CGFloat(0xFFFFFF)
-    }
-    var result: [Speck] = []
-    // 满版细点：印泥不匀。点要细而密，稀疏的大点看上去像下雪。
-    for _ in 0..<420 {
-      result.append(Speck(x: 3 + next() * 94, y: 3 + next() * 94, r: 0.22 + next() * 0.45, alpha: 0.25 + Double(next()) * 0.5))
-    }
-    // 几处印泥没吃透的浅斑。
-    for _ in 0..<6 {
-      result.append(Speck(x: 8 + next() * 84, y: 8 + next() * 84, r: 2 + next() * 3, alpha: 0.12))
-    }
-    // 边缘缺口：毛边。
-    for _ in 0..<22 {
-      let t = next() * 94 + 3
-      let side = Int(next() * 4)
-      let (x, y): (CGFloat, CGFloat) = switch side {
-      case 0: (t, 3 + next() * 2)
-      case 1: (97 - next() * 2, t)
-      case 2: (t, 97 - next() * 2)
-      default: (3 + next() * 2, t)
-      }
-      result.append(Speck(x: x, y: y, r: 0.6 + next() * 1.2, alpha: 0.9))
-    }
-    return result
   }
 }
 
-/// 每枚印的寓意纹样，画在字和边框之间的留白里（100 格坐标，和样稿同一套数据）。
-enum SealMotifs {
-  enum Paint { case stroke, faint, fill }
+/// 「汲作」两字印（2026-09-30 Syc 定稿丙，朱砂）：右「汲」朱文、左「作」白文，古法右起读。
+/// 白文「作」是自有，朱文「汲」是外部，一方印里两类都在。用在侧栏顶部。
+struct BrandSealMark: View {
+  var size: CGFloat = 36
 
-  struct Element {
-    let d: String?
-    let circle: (x: CGFloat, y: CGFloat, r: CGFloat)?
-    let paint: Paint
-    var dash: [CGFloat]? = nil
-
-    static func path(_ d: String, _ paint: Paint = .stroke, dash: [CGFloat]? = nil) -> Element {
-      Element(d: d, circle: nil, paint: paint, dash: dash)
-    }
-    static func dot(_ x: CGFloat, _ y: CGFloat, _ r: CGFloat, filled: Bool = true) -> Element {
-      Element(d: nil, circle: (x, y, r), paint: filled ? .fill : .stroke)
-    }
-
-    func path(unit: CGFloat) -> Path {
-      if let circle {
-        return Path(ellipseIn: CGRect(
-          x: (circle.x - circle.r) * unit, y: (circle.y - circle.r) * unit,
-          width: circle.r * 2 * unit, height: circle.r * 2 * unit
-        ))
+  var body: some View {
+    Canvas { context, canvasSize in
+      let unit = canvasSize.width / 100
+      let ink = SealMark.stampInk
+      // 左半：朱底，「作」镂空。
+      var left = Path()
+      left.addRoundedRect(in: CGRect(x: 3.5 * unit, y: 3.5 * unit, width: 47.1 * unit, height: 93 * unit), cornerSize: CGSize(width: 1.5 * unit, height: 1.5 * unit))
+      context.drawLayer { layer in
+        layer.fill(left, with: .color(ink))
+        layer.blendMode = .destinationOut
+        if let zuo = SealGeometry.unitPath("brand-zuo")?.applying(CGAffineTransform(scaleX: unit, y: unit)) {
+          layer.fill(zuo, with: .color(.black))
+          layer.stroke(zuo, with: .color(.black), style: StrokeStyle(lineWidth: 1.4 * unit, lineJoin: .round))
+        }
       }
-      return SVGPath.parse(d ?? "").applying(CGAffineTransform(scaleX: unit, y: unit))
+      // 右半：朱框，「汲」朱文。
+      var right = Path()
+      right.move(to: CGPoint(x: 50.6 * unit, y: 5.2 * unit))
+      right.addLine(to: CGPoint(x: 94.8 * unit, y: 5.2 * unit))
+      right.addLine(to: CGPoint(x: 94.8 * unit, y: 94.8 * unit))
+      right.addLine(to: CGPoint(x: 50.6 * unit, y: 94.8 * unit))
+      context.stroke(right, with: .color(ink), style: StrokeStyle(lineWidth: 3.4 * unit, lineJoin: .round))
+      if let ji = SealGeometry.unitPath("brand-ji")?.applying(CGAffineTransform(scaleX: unit, y: unit)) {
+        context.fill(ji, with: .color(ink))
+        context.stroke(ji, with: .color(ink), style: StrokeStyle(lineWidth: 0.84 * unit, lineJoin: .round))
+      }
     }
-  }
-
-  static func elements(for glyph: SealMark.Glyph) -> [Element] {
-    switch glyph {
-    // 录 · 声纹：右下角一圈圈声波，左上角一小段波形。
-    case .record:
-      return [
-        .path("M80 89 A9 9 0 0 1 89 80 M73 89 A16 16 0 0 1 89 73 M66 89 A23 23 0 0 1 89 66"),
-        .path("M11 18 V14 M15 21 V11 M19 19 V13 M23 22 V10 M27 18 V14"),
-        .dot(89, 89, 2.2),
-      ]
-    // 校 · 田字格加一个勾：校稿用的格子，改完打勾。
-    case .proof:
-      return [
-        .path("M50 9 V91 M9 50 H91", .faint, dash: [3, 4]),
-        .path("M74 83 L80 89 L91 75"),
-        .path("M9 22 H16 M22 9 V16", .faint),
-      ]
-    // 评 · 云纹：众人议论。
-    case .comments:
-      return [.path(cloud(70, 18, 1)), .path(cloud(30, 84, -1))]
-    // 摘 · 折枝：摘下的一枝。
-    case .summary:
-      return [
-        .path("M9 91 Q17 82 27 76"),
-        .path("M17 84 q-9 -1 -9 -9 q8 1 9 9 Z M22 80 q1 -9 9 -9 q-1 8 -9 9 Z", .fill),
-        .path("M91 9 Q86 16 79 20"),
-        .path("M85 15 q7 1 7 7 q-6 -1 -7 -7 Z", .fill),
-      ]
-    // 译 · 回纹：一来一回，两种语言之间往返。
-    case .translation:
-      return [.path(meander(11, flip: false)), .path(meander(89, flip: true))]
-    // 图 · 河图点：黑白圆点连成线。
-    case .mindMap:
-      return [
-        .path("M13 13 H23 V23 M77 87 H87 V77 M13 87 L22 80"),
-        .dot(13, 13, 3), .dot(23, 13, 3, filled: false), .dot(23, 23, 3),
-        .dot(87, 87, 3), .dot(77, 87, 3, filled: false), .dot(87, 77, 3),
-        .dot(13, 87, 3, filled: false), .dot(22, 80, 2.2),
-      ]
-    // 汲 · 水纹：井里打上来的水。
-    case .external:
-      var front = ""
-      var x: CGFloat = 10
-      while x < 88 { front += "M\(x) 90 q6.5 -8 13 0 "; x += 13 }
-      var back = ""
-      var x2: CGFloat = 16.5
-      while x2 < 82 { back += "M\(x2) 83 q6.5 -7 13 0 "; x2 += 13 }
-      return [.path(front), .path(back, .faint)]
-    // 作 · 卷草：自己生长出来的东西。
-    case .own:
-      return [
-        .path("M11 15 c5 -7 12 -7 15 -1 s10 7 15 1 s10 -7 15 -1 s10 7 15 1 s9 -6 14 -1"),
-        .path("M11 15 c-2 3 1 6 4 4 M89 15 c2 3 -1 6 -4 4"),
-      ]
-    }
-  }
-
-  private static func cloud(_ x: CGFloat, _ y: CGFloat, _ k: CGFloat) -> String {
-    "M\(x) \(y) c\(5 * k) -6 \(14 * k) -3 \(13 * k) 4 c\(-1 * k) 5 \(-7 * k) 5 \(-8 * k) 1 c\(-1 * k) -3 \(2 * k) -4 \(3 * k) -2 "
-      + "M\(x) \(y) c\(-4 * k) 3 \(-8 * k) 2 \(-10 * k) 6"
-  }
-
-  private static func meander(_ y: CGFloat, flip: Bool) -> String {
-    let d: CGFloat = flip ? -1 : 1
-    var out = ""
-    var x: CGFloat = 11
-    while x <= 79 {
-      out += "M\(x) \(y + 6 * d) V\(y) H\(x + 10) V\(y + 6 * d) H\(x + 4) V\(y + 3 * d) H\(x + 7) "
-      x += 14
-    }
-    return out
+    .frame(width: size, height: size)
+    .compositingGroup()
+    .accessibilityHidden(true)
   }
 }
 

@@ -1310,11 +1310,15 @@ struct HistoryContentView: View {
   private var navigationRail: some View {
     ScrollViewReader { proxy in
     List {
-      // 侧栏顶上是宋体「汲作」字标（2026-09-29 方案 C2）：印留给页头那条缝，这里只写名字。
-      Text("汲作")
-        .font(.custom(ReadingFontCatalog.editorialSerifFamily, size: 16).weight(.semibold))
-        .tracking(4)
-        .foregroundStyle(theme.primaryText)
+      // 侧栏顶上：「汲作」两字印 + 宋体名字（2026-09-30 Syc 定稿丙：朱白相间、古法右起）。
+      // 只写中文名，英文工程名不给用户看。
+      HStack(spacing: 10) {
+        BrandSealMark(size: 34)
+        Text("汲作")
+          .font(.custom(ReadingFontCatalog.editorialSerifFamily, size: 16).weight(.semibold))
+          .tracking(4)
+          .foregroundStyle(theme.primaryText)
+      }
         .padding(.horizontal, DesignTokens.Space.sm)
         .padding(.bottom, DesignTokens.Space.xs)
         .listRowSeparator(.hidden)
