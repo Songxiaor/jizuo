@@ -422,7 +422,7 @@ AD_HOC_INSTALL_NOTE_TEMPLATE = """{name} 安装说明
 
 5. 需要配置模型才能用总结/翻译
 
-   打开「设置 → 模型与识别」，填入任一 OpenAI 兼容服务的
+   打开「设置 → 模型服务」，填入任一 OpenAI 兼容服务的
    Base URL、模型名和 API Key（DeepSeek、Kimi 等都可以）。
 
    视频转文字和图片文字识别在本机处理，不需要联网。
@@ -439,7 +439,7 @@ DISTRIBUTION_INSTALL_NOTE_TEMPLATE = """{name} 安装说明
 3. 浏览器扩展是可选功能。需要保存登录后才能看到的页面时，再打开
    「设置 → 浏览器支持」，按页面指引安装。
 
-4. 使用总结、翻译、脑图等 AI 功能前，在「设置 → 模型与识别」中配置
+4. 使用总结、翻译、脑图等 AI 功能前，在「设置 → 模型服务」中配置
    你自己的 OpenAI-compatible 服务。
 
 如果系统仍提示无法验证开发者，请停止安装并在 GitHub Issues 反馈；
