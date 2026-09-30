@@ -78,6 +78,11 @@ final class TranscriptManuscriptTests: XCTestCase {
     var calendar = Calendar(identifier: .gregorian)
     calendar.timeZone = TimeZone(identifier: "Asia/Shanghai")!
     let date = calendar.date(from: DateComponents(year: 2026, month: 9, day: 28, hour: 8))!
-    XCTAssertEqual(ColophonView.chineseDate(date, calendar: calendar), "九月二十八日")
+    XCTAssertEqual(ColophonView.chineseDate(date, calendar: calendar), "丙午年九月廿八日")
+    XCTAssertEqual(ColophonView.ganzhiYear(2026), "丙午")
+    XCTAssertEqual(ColophonView.ganzhiYear(1984), "甲子")
+    XCTAssertEqual(ColophonView.ganzhiYear(2027), "丁未")
+    XCTAssertEqual(["初一", "初九", "初十", "十一", "二十", "廿一", "廿九", "三十", "卅一"],
+                   [1, 9, 10, 11, 20, 21, 29, 30, 31].map { ColophonView.chineseDay($0) })
   }
 }

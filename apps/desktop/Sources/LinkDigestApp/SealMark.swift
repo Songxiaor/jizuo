@@ -86,20 +86,23 @@ struct SealMark: View {
   // MARK: - 墨线稿
 
   private var lineSeal: some View {
-    ZStack {
-      SealFrame(inset: 0)
-        .stroke(color, style: StrokeStyle(lineWidth: max(0.9, size * 0.05), lineJoin: .round))
+    // 和盖好的章同一套《说文》篆字（2026-09-30）：原来的宋体、系统黑体字标和篆书印并排，一眼不像一家人。
+    Canvas { context, canvasSize in
+      let unit = canvasSize.width / 100
+      context.stroke(
+        SealGeometry.frame(inset: 0, unit: unit), with: .color(color),
+        style: StrokeStyle(lineWidth: max(0.9, size * 0.05), lineJoin: .round)
+      )
       if showsInnerFrame {
-        SealFrame(inset: size * 0.1)
-          .stroke(color.opacity(0.28), lineWidth: 0.5)
+        context.stroke(SealGeometry.frame(inset: 9, unit: unit), with: .color(color.opacity(0.28)), lineWidth: 0.5)
       }
-      Text(glyph.rawValue)
-        // 20pt 以下宋体笔画太细、字认不出，小印改用系统黑体半粗；大印才用宋体。
-        .font(size < 20
-          ? .system(size: size * 0.62, weight: .semibold)
-          : .custom(ReadingFontCatalog.editorialSerifFamily, size: size * 0.56).weight(.semibold))
-        .foregroundStyle(color)
-        .offset(y: -size * 0.02)
+      if let glyphPath = SealGeometry.glyphPath(glyph, unit: unit) {
+        context.fill(glyphPath, with: .color(color))
+        // 大印描一圈让笔画饱满；20pt 以下只填字形，描边会把「汲」的三道水纹糊成一块（2026-09-30 走查）。
+        if size >= 20 {
+          context.stroke(glyphPath, with: .color(color), style: StrokeStyle(lineWidth: 1.6 * unit, lineJoin: .round))
+        }
+      }
     }
   }
 
@@ -143,7 +146,8 @@ struct SealMark: View {
       context.blendMode = .destinationOut
       if let glyphPath = SealGeometry.glyphPath(glyph, unit: unit) {
         context.fill(glyphPath, with: .color(.black))
-        context.stroke(glyphPath, with: .color(.black), style: StrokeStyle(lineWidth: 1.1 * unit, lineJoin: .round))
+        // 白文笔画在朱底上显细，整体加粗一档；「作」笔画最少，再加一档（2026-09-30 走查：小尺寸认不出）。
+        context.stroke(glyphPath, with: .color(.black), style: StrokeStyle(lineWidth: (glyph == .own ? 3.0 : 2.0) * unit, lineJoin: .round))
       }
     }
     // 镂空只作用在印自己这一层，不把背后的界面也掏空。

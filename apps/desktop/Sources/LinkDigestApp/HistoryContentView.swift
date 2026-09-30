@@ -1115,7 +1115,6 @@ struct HistoryContentView: View {
               // 分组的第一行总是写作者：上一行在另一个分组里，读者看不到它。
               showsAuthor: index == section.entries.first?.index
                 || !UIReadingHistoryRow.repeatsPreviousAuthor(in: model.rows, at: index),
-              showsOwnSeal: showsOwnSealInList,
               onToggleFavorite: { model.toggleFavorite(taskID: row.taskID) },
               onSummarize: { summarizeSingle(row) },
               onActivate: { model.selectedTaskIDs = [row.taskID] },
@@ -1807,7 +1806,7 @@ struct HistoryContentView: View {
         // 列表、题跋里的印是同一套语言；其余一律线性图标，选中也不换实心。
         if let seal {
           // 选中时上朱：导航里唯一一处朱色，和列表的「作」、页头的主印连成一套（2026-09-29）。
-          SealMark(glyph: seal, size: 16, color: selected ? theme.seal : theme.secondaryText, showsInnerFrame: false)
+          SealMark(glyph: seal, size: 16, color: selected ? SealMark.stampInk : theme.secondaryText, showsInnerFrame: false)
             .frame(width: 18)
         } else {
           Image(systemName: systemImage)
@@ -2171,17 +2170,6 @@ struct HistoryContentView: View {
       .padding(.horizontal, emphasized ? 6 : 2)
       .padding(.vertical, emphasized ? 1 : 0)
       .background(emphasized ? theme.accent.opacity(0.12) : Color.clear, in: Capsule())
-  }
-
-  /// 列表里要不要给自有内容盖「作」印：只在混排的视图里盖。按自有、外部、笔记，
-  /// 或只选了备忘录 / 语音备忘录这类自有来源时，每行归属都一样，盖了只是重复。
-  private var showsOwnSealInList: Bool {
-    if [.own, .external, .notes].contains(model.selectedScope) { return false }
-    let hosts = model.selectedHosts
-    // 只看备忘录、语音备忘录时整列都是自有，行尾的「作」印是噪音；本地文件自有、外部混着，照常标。
-    let alwaysOwnHosts: Set<String> = [LocalImportSource.appleNotes.rawValue, LocalImportSource.voiceMemos.rawValue]
-    if !hosts.isEmpty, hosts.isSubset(of: alwaysOwnHosts) { return false }
-    return true
   }
 
   private var listSearchPlaceholder: String {
@@ -3404,7 +3392,6 @@ struct HistoryContentView: View {
           faviconURL: model.faviconImageURL(for: row),
           theme: theme,
           showsAuthor: true,
-          showsOwnSeal: showsOwnSealInList,
           onToggleFavorite: { model.toggleFavorite(taskID: row.taskID) },
           onSummarize: { summarizeSingle(row) },
           onActivate: { model.selectedTaskIDs = [row.taskID] },
@@ -5224,7 +5211,6 @@ private struct HistoryDetailView: View, Equatable {
             .padding(.top, DesignTokens.Space.xl)
           ColophonView(
             text: colophonText,
-            glyph: colophonGlyph,
             link: colophonDownloadSource?.link,
             records: completedStepRecords,
             readingFont: readingFont,
@@ -6443,9 +6429,10 @@ private struct HistoryDetailView: View, Equatable {
     if !showsRemoteCaptureCard {
       switch model.transcriptionState(for: taskID) {
       case let .failed(message):
+        // 转写失败多是「视频里没人声」这类提醒，不用红：红挨着页边的朱印，像印出了错（2026-09-30 走查）。
         Text(message)
           .themedFont(.caption)
-          .foregroundStyle(theme.danger)
+          .foregroundStyle(theme.warning)
           .lineLimit(3)
           .accessibilityIdentifier("history-video-transcription-failed")
       case .cancelled:
@@ -6799,7 +6786,7 @@ private struct HistoryDetailView: View, Equatable {
     return ProcessStepRecord.completed(in: detail, mindMap: mindMap)
   }
 
-  /// 导出文件末尾的题跋文字：「九月二十八日汲自抖音　录 · 校 · 评 · 摘」。笔记不加。
+  /// 导出文件末尾的题跋文字：「丙午年九月廿八日　汲录自抖音　录 · 校 · 评 · 摘」。笔记不加。
   private var exportColophonLine: String? {
     guard !isOwnWriting else { return nil }
     let glyphs = completedStepRecords.map(\.step.glyph.rawValue)
@@ -8057,10 +8044,11 @@ private struct HistoryDetailView: View, Equatable {
   private var colophonText: String {
     let date = ColophonView.chineseDate(Date(timeIntervalSince1970: Double(detail.task.createdAtMilliseconds) / 1_000))
     let host = HistoryPlatformRegistry.canonicalHost(for: URLComponents(string: detail.task.canonicalURL)?.host ?? "")
-    // 下载来的本地文件写它从哪个 App 来：「九月二十九日汲自微信」（来源在导入时记进了 source_label）。
+    // 下载来的本地文件写它从哪个 App 来：「丙午年九月廿九日　汲录自微信」（来源在导入时记进了 source_label）。
+    // 日期和动作之间隔一个全角空格，照款识写法（2026-09-30）。
     let platform = colophonDownloadSource?.displaySourceName ?? HistoryPlatformDisplay.name(forHost: host)
     // 做过哪些工序由后面那排章来说，文字只记何时从哪里来。
-    return colophonGlyph == .external ? LocalFileProvenance.joined("\(date)汲自", platform) : "\(date)记"
+    return colophonGlyph == .external ? LocalFileProvenance.joined("\(date)　汲录自", platform) : "\(date)　记"
   }
 
   /// 本地文件导入时读到的下载来源（没有下载标记、或不是本地文件时为 nil）。有网址时题跋可以点开。

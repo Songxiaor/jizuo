@@ -297,7 +297,7 @@ struct LocalImportOwnershipList: View {
 
   private func row(_ item: LocalImportController.OwnershipItem) -> some View {
     HStack(spacing: DesignTokens.Space.sm) {
-      SealMark(glyph: item.ownership == .own ? .own : .external, size: 16, color: theme.seal, showsInnerFrame: false)
+      SealMark(glyph: item.ownership == .own ? .own : .external, size: 16, color: SealMark.stampInk, showsInnerFrame: false)
         .frame(width: 18)
       Text(item.name)
         .themedFont(.caption)

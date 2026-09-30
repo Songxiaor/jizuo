@@ -367,12 +367,11 @@ struct TranscriptManuscriptView: View {
   }
 }
 
-/// 题跋：详情末尾一行小号宋体，记下何时从哪里汲来；后面按先后钤上做过的工序章，
-/// 最后是收藏主印「汲 / 作」（2026-09-28 工序印样稿）。
+/// 题跋：详情末尾一行小号宋体，记下何时从哪里汲来；后面按先后钤上做过的工序章。
+/// 归属印「汲 / 作」只在页头骑缝盖一方，这里不再重复（2026-09-30）。
 /// 每枚章悬停看来历，点一下跳到那份内容。
 struct ColophonView: View {
   let text: String
-  let glyph: SealMark.Glyph
   /// 下载来的本地文件记着来源网址时，题跋文字可以点开它（2026-09-29）。
   var link: URL? = nil
   var records: [ProcessStepRecord] = []
@@ -414,9 +413,7 @@ struct ColophonView: View {
             }
           }
         }
-        SealMark(glyph: glyph, size: 36, color: sealColor, style: .stamped, rotation: -0.8)
-          .padding(.leading, 4)
-          .help(glyph == .external ? "汲 · 外部内容" : "作 · 自有内容")
+        // 归属印只在页头骑缝盖一方（2026-09-30 Syc：一页只留一处印），题跋只写落款文字。
       }
     }
     .padding(.top, 32)
@@ -424,10 +421,28 @@ struct ColophonView: View {
     .accessibilityIdentifier("history-colophon")
   }
 
-  /// 「九月二十八日」这样的中文日期。
+  /// 落款日期「丙午年九月廿八日」（2026-09-30 Syc 定）：年用干支，日按款识写法（初一…初十、廿、卅）。
+  /// 月日仍是公历：换成农历，用户会以为日期写错了。
   static func chineseDate(_ date: Date, calendar: Calendar = .current) -> String {
-    let parts = calendar.dateComponents([.month, .day], from: date)
-    return "\(chineseNumber(parts.month ?? 1))月\(chineseNumber(parts.day ?? 1))日"
+    let parts = calendar.dateComponents([.year, .month, .day], from: date)
+    return "\(ganzhiYear(parts.year ?? 2026))年\(chineseNumber(parts.month ?? 1))月\(chineseDay(parts.day ?? 1))日"
+  }
+
+  /// 公历年对应的干支（按公历年粗算，不管立春）：2026 → 丙午。
+  static func ganzhiYear(_ year: Int) -> String {
+    let stems = Array("甲乙丙丁戊己庚辛壬癸"), branches = Array("子丑寅卯辰巳午未申酉戌亥")
+    let offset = ((year - 4) % 60 + 60) % 60
+    return String(stems[offset % 10]) + String(branches[offset % 12])
+  }
+
+  /// 款识里的日子：初一到初十、十一到十九、二十、廿一到廿九、三十、卅一。
+  static func chineseDay(_ day: Int) -> String {
+    switch day {
+    case 1...10: return "初" + (day == 10 ? "十" : chineseNumber(day))
+    case 21...29: return "廿" + chineseNumber(day - 20)
+    case 31: return "卅一"
+    default: return chineseNumber(day)
+    }
   }
 
   static func chineseNumber(_ value: Int) -> String {
