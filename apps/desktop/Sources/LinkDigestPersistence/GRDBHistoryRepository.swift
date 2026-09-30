@@ -322,6 +322,14 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       AND s2.capture_method = 'openai_compatible_chat_tidy')
     """
 
+  /// 带音视频、还没有任何文字稿（本机或在线转写都算）的条目（侧栏「待转写」）。
+  /// 看的是有没有转写快照，不看 media_assets 的状态字段：旧数据里有转写好了状态仍是 none 的。
+  static let untranscribedMediaSQL = """
+    EXISTS (SELECT 1 FROM media_assets m WHERE m.task_id = t.id)
+    AND NOT EXISTS (SELECT 1 FROM content_snapshots s WHERE s.task_id = t.id
+      AND s.source_kind = 'local_transcription')
+    """
+
   static let completedSummarySQL = """
     SELECT 1
     FROM runs summary_run
@@ -353,15 +361,33 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       } else {
         predicates.append("t.deleted_at_ms IS NULL")
       }
+      // 合集（Migration024）：只看这个合集里的，按合集里的顺序排，不按时间。
+      // 合集 id 是校验过的 UUID，直接内联进 JOIN——JOIN 写在 WHERE 之前，占位参数
+      // 却是按谓词顺序拼的，放参数会错位（理由同 usedTagSQL）。
+      let collectionID = filter.collectionID
       // 回收站永远按删除时间（写在 updated_at_ms 上）排，见上。
-      let ordersBySavedTime = filter.ordersBySavedTime && !filter.scope.isTrashOnly
+      let ordersBySavedTime = filter.ordersBySavedTime && !filter.scope.isTrashOnly && collectionID == nil
       // created_at_ms 在建表时就是 NOT NULL，不需要 COALESCE；包一层函数反而用不上索引。
       let orderColumn = ordersBySavedTime ? "t.created_at_ms" : "t.updated_at_ms"
       if let cursor {
-        let value = ordersBySavedTime ? (cursor.savedAtMilliseconds ?? cursor.updatedAtMilliseconds) : cursor.updatedAtMilliseconds
-        predicates.append("(\(orderColumn) < ? OR (\(orderColumn) = ? AND t.id < ?))")
-        arguments += [value, value, cursor.taskID.rawValue]
+        if collectionID != nil {
+          // 合集按位置翻页；拿别的列表的游标来翻合集，位置对不上，按无效输入拒绝。
+          guard let position = cursor.collectionPosition else { throw RepositoryFailure.invalidInput }
+          predicates.append("(ci.position > ? OR (ci.position = ? AND t.id > ?))")
+          arguments += [position, position, cursor.taskID.rawValue]
+        } else {
+          let value = ordersBySavedTime ? (cursor.savedAtMilliseconds ?? cursor.updatedAtMilliseconds) : cursor.updatedAtMilliseconds
+          predicates.append("(\(orderColumn) < ? OR (\(orderColumn) = ? AND t.id < ?))")
+          arguments += [value, value, cursor.taskID.rawValue]
+        }
       }
+      let collectionJoin = collectionID.map {
+        "INNER JOIN collection_items ci ON ci.task_id = t.id AND ci.collection_id = '\($0.rawValue)'"
+      } ?? ""
+      let collectionPositionColumn = collectionID == nil ? "" : "ci.position AS collection_position,"
+      let orderClause = collectionID == nil
+        ? "\(orderColumn) DESC, t.id DESC"
+        : "ci.position ASC, t.id ASC"
       if !filter.tagNormalizedNames.isEmpty {
         let placeholders = Array(repeating: "?", count: filter.tagNormalizedNames.count).joined(separator: ", ")
         predicates.append("""
@@ -450,6 +476,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         predicates.append("t.created_at_ms >= (unixepoch('now') - 604800) * 1000")
       case .untidied:
         predicates.append(Self.untidiedTranscriptSQL)
+      case .untranscribed:
+        predicates.append(Self.untranscribedMediaSQL)
       case .unsummarized:
         predicates.append("NOT EXISTS (\(Self.completedSummarySQL))")
         // 自己写的备忘录、录音不是「待总结的文章」。
@@ -552,6 +580,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       arguments += [bounded]
       let rows = try Row.fetchAll(db, sql: """
         SELECT t.id, t.canonical_url, t.updated_at_ms, t.created_at_ms, t.is_favorite,
+          \(collectionPositionColumn)
           es.title AS title,
           es.source_label AS source_label,
           CASE WHEN es.body_text IS NULL THEN NULL ELSE substr(CAST(es.body_text AS BLOB), 1, 8192) END AS source_body_utf8,
@@ -566,6 +595,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
             EXISTS(SELECT 1 FROM capture_deliveries cd WHERE cd.task_id = t.id AND cd.capture_contract_version = 2)
             OR EXISTS(SELECT 1 FROM media_assets ma WHERE ma.task_id = t.id)
           ) AS has_media,
+          EXISTS(SELECT 1 FROM media_assets fm WHERE fm.task_id = t.id AND fm.transcription_status = 'failed') AS transcription_failed,
           EXISTS(\(Self.completedSummarySQL)) AS has_summary,
           EXISTS(SELECT 1 FROM task_mind_maps mm WHERE mm.task_id = t.id) AS has_mind_map,
           (
@@ -577,6 +607,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
             )
           ) AS tag_names
         FROM tasks t
+        \(collectionJoin)
         LEFT JOIN content_snapshots es ON es.task_id = t.id AND es.id = (
           COALESCE(
             (
@@ -622,14 +653,16 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         LEFT JOIN runs r ON r.id = (SELECT id FROM runs WHERE task_id = t.id ORDER BY created_at_ms DESC, id DESC LIMIT 1)
         LEFT JOIN artifacts a ON a.run_id = r.id
         \(predicate)
-        ORDER BY \(orderColumn) DESC, t.id DESC LIMIT ?
+        ORDER BY \(orderClause) LIMIT ?
         """, arguments: arguments)
       let projections = try rows.map(historyRow)
+      let lastPosition: Int64? = collectionID == nil ? nil : rows.last?["collection_position"]
       let next = projections.count == bounded ? projections.last.map {
         HistoryPageCursor(
           updatedAtMilliseconds: $0.updatedAtMilliseconds,
           taskID: $0.taskID,
-          savedAtMilliseconds: ordersBySavedTime ? ($0.createdAtMilliseconds ?? $0.updatedAtMilliseconds) : nil
+          savedAtMilliseconds: ordersBySavedTime ? ($0.createdAtMilliseconds ?? $0.updatedAtMilliseconds) : nil,
+          collectionPosition: lastPosition
         )
       } : nil
       return HistoryPage(rows: projections, nextCursor: next)
@@ -681,6 +714,17 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         SELECT COUNT(*) FROM tasks t
         WHERE t.deleted_at_ms IS NULL AND t.content_kind = '\(TaskClassificationSQL.captureKind)' AND \(Self.untidiedTranscriptSQL)
         """) ?? 0
+      let untranscribedRow = try Row.fetchOne(db, sql: """
+        SELECT COUNT(*) AS n,
+          COALESCE(SUM(CASE WHEN failed THEN 0 ELSE (SELECT MAX(m.duration_seconds) FROM media_assets m WHERE m.task_id = t.id) END), 0) AS seconds,
+          COALESCE(SUM(failed), 0) AS failed
+        FROM (SELECT t.*, EXISTS(SELECT 1 FROM media_assets fm WHERE fm.task_id = t.id AND fm.transcription_status = 'failed') AS failed
+              FROM tasks t) t
+        WHERE t.deleted_at_ms IS NULL AND t.content_kind = '\(TaskClassificationSQL.captureKind)' AND \(Self.untranscribedMediaSQL)
+        """)
+      let untranscribed: Int = untranscribedRow?["n"] ?? 0
+      let untranscribedSeconds: Double = untranscribedRow?["seconds"] ?? 0
+      let untranscribedFailed: Int = untranscribedRow?["failed"] ?? 0
       let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured) AND is_favorite = 1") ?? 0
       // 「全部」= 资料 + 笔记 + 作品；自有 + 外部 = 全部，数字能加得上。
       let isRecord = "t.deleted_at_ms IS NULL AND t.content_kind IN ('\(TaskClassificationSQL.captureKind)', '\(TaskClassificationSQL.noteKind)', '\(TaskClassificationSQL.workKind)')"
@@ -738,7 +782,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         arguments: []
       )
       return .init(
-        all: all, recent: recent, unsummarized: unsummarized, untidied: untidied, favorite: favorite,
+        all: all, recent: recent, unsummarized: unsummarized, untidied: untidied, untranscribed: untranscribed, untranscribedSeconds: untranscribedSeconds, untranscribedFailed: untranscribedFailed, favorite: favorite,
         total: total, own: own, external: total - own, forms: forms, notes: notes, works: works,
         trash: trash, platforms: platforms, tags: tags, creatorCount: creatorCount, pinnedCreators: pinnedCreators
       )
@@ -2695,6 +2739,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
     let hasTranscript = (row["has_transcript"] as Int64? ?? 0) == 1
     let hasMedia = (row["has_media"] as Int64? ?? 0) == 1
+    // 转写过的就不算失败了（先失败、后来换方式转好了的）。
+    let transcriptionFailed: Bool? = !hasTranscript && (row["transcription_failed"] as Int64? ?? 0) == 1 ? true : nil
     let hasSummary = (row["has_summary"] as Int64? ?? 0) == 1
     let hasMindMap = (row["has_mind_map"] as Int64? ?? 0) == 1
     let isFavorite = (row["is_favorite"] as Int64? ?? 0) == 1
@@ -2712,7 +2758,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
     }
     let sourcePreview = frontmatter.flatMap { MarkdownNoteFrontmatter.directorySourcePreview(fromBody: $0.body) }
     let tagNames = (row["tag_names"] as String?)?.split(separator: "\u{1F}").map(String.init)
-    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: host, sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, sourcePreview: sourcePreview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: hasTranscript, hasMedia: hasMedia, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite, coverURL: frontmatter?.previewCoverURL, likes: frontmatter?.likes, comments: frontmatter?.comments, shares: frontmatter?.shares, collects: frontmatter?.collects, views: frontmatter?.views, tagNames: tagNames)
+    return HistoryRowProjection(taskID: requiredID(row["id"]), title: row["title"], canonicalURL: canonical, host: host, sourceLabel: row["source_label"] ?? "", latestRunKind: kindRaw.flatMap(RunKind.init), latestRunStatus: statusRaw.flatMap(RunStatus.init), latestModel: row["model"], updatedAtMilliseconds: row["updated_at_ms"], createdAtMilliseconds: row["created_at_ms"], latestRunAtMilliseconds: row["latest_run_at_ms"], usageCost: try usage(row), artifactPreview: preview, sourcePreview: sourcePreview, author: frontmatter?.author, published: frontmatter?.published, hasTranscript: hasTranscript, hasMedia: hasMedia, transcriptionFailed: transcriptionFailed, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite, coverURL: frontmatter?.previewCoverURL, likes: frontmatter?.likes, comments: frontmatter?.comments, shares: frontmatter?.shares, collects: frontmatter?.collects, views: frontmatter?.views, tagNames: tagNames)
   }
 
   private func detail(db: Database, taskID: TaskID) throws -> HistoryDetailProjection {

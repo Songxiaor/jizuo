@@ -3,11 +3,15 @@ import Foundation
 import LinkDigestAdapters
 import LinkDigestCore
 
-/// 本机素材导入：同步语音备忘录、导入拖进来的文件。
+/// 本机素材导入：同步语音备忘录、导入拖进来的文件和文件夹。
 ///
 /// 落库复用 `CaptureIngestService`（与手动链接、笔记同一条通道），媒体复用
 /// `LocalMediaStore` + `attachMedia`（与抖音/B 站视频同一条通道）。这里只负责
 /// 「从本机读出来」和把结果讲清楚，不另开写入口。
+///
+/// 2026-09-29 起拖进来的音视频**只引用原文件**，不复制进 App 的数据目录（见
+/// `LocalMediaStore.externalReferenceAsset`）；文件夹递归展开、导入前先确认；
+/// 可以勾「导入后转写」，导入完逐个本机转写；下载来的文件按来源标记判为外部。
 @MainActor
 final class LocalImportController: ObservableObject {
   struct Summary: Equatable {
@@ -24,14 +28,58 @@ final class LocalImportController: ObservableObject {
     /// 其中之前已经导入过、这次从汲作里彻底删掉的条数（备忘录 App 里的原件不动）。
     var sensitivePurged = 0
     var failures: [String] = []
+    /// 本地文件逐个的归属判断（这次新收进来的）。每条都能在结果里「改」。
+    var ownership: [OwnershipItem] = []
+    /// 勾了「导入后转写」、排进本机转写队列的音视频条数。
+    var queuedForTranscription = 0
+  }
+
+  /// 导入结果里的一行：这个文件判成了自有还是外部、依据是什么。
+  struct OwnershipItem: Equatable, Identifiable {
+    let id: TaskID
+    let name: String
+    let canonicalURL: String
+    var ownership: ContentOwnership
+    /// 「微信下载」这类来源说明；没有下载标记时为 nil（按自有算）。
+    let source: String?
+  }
+
+  /// 导入前的确认：找到了哪些文件、要不要导入后转写。
+  struct ImportPlan: Equatable {
+    let scan: LocalImportScan
+    var offersTranscription: Bool { scan.mediaCount > 0 }
   }
 
   enum Phase: Equatable {
     case idle
     case running(title: String, done: Int, total: Int, step: String?)
+    case confirming(ImportPlan)
     case finished(title: String, summary: Summary, revealHost: String?)
     case failed(title: String, message: String, settingsLink: SettingsLink?)
   }
+
+  /// 「导入后转写」队列的进度：窗口右下角那条小胶囊显示它，关掉结果窗口也照常往下转。
+  struct TranscriptionQueueStatus: Equatable {
+    var total = 0
+    /// 已经处理完（成功、失败、已有转写都算）的条数。
+    var finished = 0
+    var succeeded = 0
+    var alreadyTranscribed = 0
+    var currentName: String?
+    var failures: [String] = []
+    var isRunning = false
+    var wasStopped = false
+    /// 「转写中 3/12」里的 3。
+    var position: Int { min(finished + 1, max(total, 1)) }
+  }
+
+  /// 给「合集」的挂钩：每个被导入的顶层文件夹处理完调用一次，taskIDs 按文件夹内的自然排序
+  /// （含之前已导入、这次去重命中的条目，不含失败的）。默认 nil；由总控集成时接线。
+  var onFolderImported: ((_ folderName: String, _ folderURL: URL, _ orderedTaskIDs: [TaskID]) -> Void)?
+
+  @Published private(set) var transcriptionQueue: TranscriptionQueueStatus?
+  private var transcriptionBacklog: [(taskID: TaskID, name: String)] = []
+  private var transcriptionQueueTask: Task<Void, Never>?
 
   @Published private(set) var phase: Phase = .idle
   var isPresented: Bool {
@@ -71,6 +119,14 @@ final class LocalImportController: ObservableObject {
     self.history = history
     self.manualLink = manualLink
     self.historyModel = historyModel
+    // 原文件被移动、改名后书签会「过期」但仍找得到：把新书签写回媒体记录，下次直接命中。
+    if let history {
+      mediaStore?.setExternalReferenceRefresher { asset in
+        Task.detached(priority: .utility) { try? history.attachMedia(.init(asset: asset)) }
+      }
+    } else {
+      mediaStore?.setExternalReferenceRefresher(nil)
+    }
     // `canImport` 是算出来的，不是 @Published：接上资料库之后要主动通知一次，
     // 否则菜单停留在启动那一刻的「不可用」。
     objectWillChange.send()
@@ -264,31 +320,97 @@ final class LocalImportController: ObservableObject {
     let panel = NSOpenPanel()
     panel.title = "导入本地文件"
     panel.prompt = "导入"
-    panel.message = "支持文档（PDF、Word、TXT、Markdown）、图片（自动识别文字）、音频与视频（可在本机转写）。"
+    panel.message = "可以选文件或整个文件夹（会连子文件夹一起导入）。支持文档（PDF、Word、TXT、Markdown）、图片（自动识别文字）、音频与视频（可在本机转写）。音视频只记住原文件的位置，不会复制一份。"
     panel.allowsMultipleSelection = true
-    panel.canChooseDirectories = false
+    panel.canChooseDirectories = true
     panel.canChooseFiles = true
     guard panel.runModal() == .OK else { return }
     importFiles(panel.urls)
   }
 
-  /// 拖放和「导入本地文件…」共用。不支持的文件不拦截整批，逐个说明。
+  /// 拖放和「导入本地文件…」共用。先把文件夹展开成清单；有文件夹、有多个文件或有音视频时
+  /// 先确认（顺便问要不要导入后转写），只拖进一个文档就直接导入。
+  /// 不支持的文件不拦截整批，逐个说明。
   func importFiles(_ urls: [URL]) {
     let files = urls.filter(\.isFileURL)
     guard canImport, !files.isEmpty else { return }
-    let title = files.count == 1 ? "导入「\(files[0].lastPathComponent)」" : "导入 \(files.count) 个文件"
-    phase = .running(title: title, done: 0, total: files.count, step: nil)
+    let title = "导入本地文件"
+    phase = .running(title: title, done: 0, total: 0, step: "正在查找可以导入的文件…")
+    task = Task { [weak self] in
+      let scan = await Task.detached(priority: .userInitiated) { LocalFileImportReader.scanForImport(files) }.value
+      guard let self else { return }
+      guard !Task.isCancelled else {
+        phase = .idle
+        return
+      }
+      let plan = ImportPlan(scan: scan)
+      if scan.entries.isEmpty {
+        finish(title: title, summary: Self.skippedSummary(plan), host: LocalImportSource.files.rawValue)
+      } else if Self.needsConfirmation(plan) {
+        phase = .confirming(plan)
+      } else {
+        startImport(plan, transcribe: false)
+      }
+    }
+  }
+
+  /// 只拖进一个文档（或图片）时照旧直接导入、直接打开；其余都先让用户看一眼规模。
+  static func needsConfirmation(_ plan: ImportPlan) -> Bool {
+    !plan.scan.folders.isEmpty || plan.scan.entries.count > 1 || plan.offersTranscription || plan.scan.truncated
+  }
+
+  func confirmImport(transcribe: Bool) {
+    guard case let .confirming(plan) = phase else { return }
+    startImport(plan, transcribe: transcribe && plan.offersTranscription)
+  }
+
+  func cancelConfirmation() {
+    if case .confirming = phase { phase = .idle }
+  }
+
+  private func startImport(_ plan: ImportPlan, transcribe: Bool) {
+    let entries = plan.scan.entries
+    let title = entries.count == 1 ? "导入「\(entries[0].url.lastPathComponent)」" : "导入 \(entries.count) 个文件"
+    phase = .running(title: title, done: 0, total: entries.count, step: nil)
     task = Task { [weak self] in
       guard let self else { return }
-      var summary = Summary()
+      var summary = Self.skippedSummary(plan)
       var lastTaskID: TaskID?
-      for (index, url) in files.enumerated() {
+      var folderTaskIDs: [Int: [TaskID]] = [:]
+      var toTranscribe: [(taskID: TaskID, name: String)] = []
+      var processed = 0
+      for (index, entry) in entries.enumerated() {
         if Task.isCancelled { break }
-        setStep(Self.step(for: url), title: title, done: index, total: files.count)
-        if let taskID = await importFile(url, summary: &summary) { lastTaskID = taskID }
+        processed += 1
+        setStep(Self.step(for: entry.url), title: title, done: index, total: entries.count)
+        if let taskID = await importFile(entry, summary: &summary) {
+          lastTaskID = taskID
+          if let folder = entry.folderIndex, !(folderTaskIDs[folder] ?? []).contains(taskID) {
+            folderTaskIDs[folder, default: []].append(taskID)
+          }
+          if transcribe, entry.kind == .video || entry.kind == .audio,
+             !toTranscribe.contains(where: { $0.taskID == taskID }) {
+            toTranscribe.append((taskID, entry.url.lastPathComponent))
+          }
+        }
+        // 同一个顶层文件夹的文件在清单里是连着的：下一项换了文件夹（或到头了）就算这个文件夹导完。
+        if let folder = entry.folderIndex, index + 1 == entries.count || entries[index + 1].folderIndex != folder,
+           let ordered = folderTaskIDs[folder], !ordered.isEmpty, plan.scan.folders.indices.contains(folder) {
+          let info = plan.scan.folders[folder]
+          onFolderImported?(info.name, info.url, ordered)
+        }
+      }
+      if processed < entries.count {
+        summary.failures.append("导入被停止了，还有 \(entries.count - processed) 个文件没有处理。")
+        // 点了「停止」就都停：已经导入的也不再排队转写，需要时在条目里点「转写」。
+        toTranscribe.removeAll()
+      }
+      if !toTranscribe.isEmpty {
+        enqueueTranscription(toTranscribe)
+        summary.queuedForTranscription = toTranscribe.count
       }
       // 只导入一个文件时直接打开它；一批文件则落到「本地文件」分组里看全貌。
-      if files.count == 1, let lastTaskID, summary.failures.isEmpty {
+      if entries.count == 1, let lastTaskID, summary.failures.isEmpty {
         historyModel?.reveal(taskID: lastTaskID)
         phase = .idle
         return
@@ -297,15 +419,27 @@ final class LocalImportController: ObservableObject {
     }
   }
 
-  private func importFile(_ url: URL, summary: inout Summary) async -> TaskID? {
-    guard let history else { return nil }
-    let name = url.lastPathComponent
-    guard LocalFileImportReader.isSupported(url) else {
-      summary.failures.append("\(name)：\(LocalFileImportError.unsupportedType(url.pathExtension.lowercased()).userMessage)")
-      return nil
+  /// 扫描时就知道导入不了的文件（格式不支持、读不出来、太多没收），先写进结果。
+  private static func skippedSummary(_ plan: ImportPlan) -> Summary {
+    var summary = Summary()
+    summary.failures = plan.scan.skipped.map { "\($0.displayName)：\($0.reason)" }
+    let unlisted = plan.scan.skippedCount - plan.scan.skipped.count
+    if unlisted > 0 { summary.failures.append("另有 \(unlisted) 个文件同样不支持，没有逐个列出。") }
+    if plan.scan.truncated {
+      summary.failures.append("文件太多：这次只导入了按顺序的前 \(LocalFileImportReader.scanFileLimit) 个，其余请分批导入。")
     }
+    return summary
+  }
+
+  private func importFile(_ entry: LocalImportScan.Entry, summary: inout Summary) async -> TaskID? {
+    guard let history else { return nil }
+    let url = entry.url
+    let name = url.lastPathComponent
     do {
-      let sha = try await Task.detached { try LocalFileImportReader.contentSHA256(of: url) }.value
+      // 算哈希要把整个文件读一遍（几 GB 的视频也一样），和读来源标记一起放到后台。
+      let (sha, provenance) = try await Task.detached(priority: .userInitiated) {
+        (try LocalFileImportReader.contentSHA256(of: url), LocalFileImportReader.provenance(of: url))
+      }.value
       let fileDate = (try? url.resourceValues(forKeys: [.creationDateKey]))?.creationDate
       let identity = try CanonicalURL.localImport(source: LocalImportSource.files.rawValue, identifier: sha)
       // 回收站里的不算已导入：用户把删掉的文件再拖进来，就是想把它拿回来，
@@ -321,17 +455,17 @@ final class LocalImportController: ObservableObject {
           return existing
         }
       }
+      let sourceLabel = provenance?.sourceLabel ?? LocalFileProvenance.plainSourceLabel
       let reader = reader
       let content = try await Task.detached { try await reader.read(url) }.value
+      let taskID: TaskID
       switch content {
       case let .text(text, method, completeness):
         let document = try LocalImportDocument.file(
           contentSHA256: sha, fileName: name, text: text,
           completeness: completeness, method: method, fileDate: fileDate
         )
-        let capture = try await ingest(document)
-        summary.added += 1
-        return capture.taskID
+        taskID = try await ingest(document.withSourceLabel(sourceLabel)).taskID
       case let .image(data, recognized):
         let reference = identity.value
         let body = LocalImportDocument.imageBody(fileName: name, reference: reference, recognizedText: recognized)
@@ -339,37 +473,136 @@ final class LocalImportController: ObservableObject {
           contentSHA256: sha, fileName: name, text: body,
           completeness: "partial", method: "local_file_image", fileDate: fileDate
         )
-        let capture = try await ingest(document)
+        let capture = try await ingest(document.withSourceLabel(sourceLabel))
         guard let imageCache else { throw RepositoryFailure.unavailable }
+        // 图片仍在图片缓存里留一份用于显示：阅读页从缓存里读图，不经过媒体记录。
         try imageCache.storeLocalImage(data, reference: reference, taskID: capture.taskID, snapshotID: capture.snapshotID)
-        summary.added += 1
-        return capture.taskID
-      case let .media(data, duration, hasVideo):
+        taskID = capture.taskID
+      case let .mediaFile(duration, hasVideo):
         let document = try LocalImportDocument.file(
           contentSHA256: sha, fileName: name,
           text: LocalImportDocument.mediaPlaceholder(fileName: name, durationSeconds: duration, hasVideo: hasVideo),
           completeness: "partial", method: hasVideo ? "local_file_video" : "local_file_audio", fileDate: fileDate
         )
-        let taskID = try await store(document: document, media: data, durationSeconds: duration, platform: .files)
-        summary.added += 1
-        return taskID
+        taskID = try await storeReference(
+          document: document.withSourceLabel(sourceLabel), fileURL: url, contentSHA256: sha, durationSeconds: duration
+        )
+      case let .media(data, duration, hasVideo):
+        // 本地文件不再走这条（音视频只引用原文件）；留着只为读取器将来返回拷贝时不至于丢数据。
+        let document = try LocalImportDocument.file(
+          contentSHA256: sha, fileName: name,
+          text: LocalImportDocument.mediaPlaceholder(fileName: name, durationSeconds: duration, hasVideo: hasVideo),
+          completeness: "partial", method: hasVideo ? "local_file_video" : "local_file_audio", fileDate: fileDate
+        )
+        taskID = try await store(document: document.withSourceLabel(sourceLabel), media: data, durationSeconds: duration, platform: .files)
       }
+      summary.added += 1
+      summary.ownership.append(applyOwnership(provenance, taskID: taskID, canonicalURL: identity.value, name: entry.displayName))
+      return taskID
     } catch {
-      summary.failures.append("\(name)：\(Self.message(for: error))")
+      summary.failures.append("\(entry.displayName)：\(Self.message(for: error))")
       return nil
     }
+  }
+
+  /// 下载来的文件（带 quarantine 标记）贴上保留标签「外部」，其余按本地文件的默认规则算自有、不贴标签。
+  private func applyOwnership(_ provenance: LocalFileProvenance?, taskID: TaskID, canonicalURL: String, name: String) -> OwnershipItem {
+    let host = LocalImportSource.files.rawValue
+    let target: ContentOwnership = provenance == nil ? .own : .external
+    if let history, provenance != nil {
+      let changes = ContentOwnership.tagChanges(to: target, canonicalURL: canonicalURL, host: host)
+      for raw in changes.remove {
+        if let normalized = HistoryTagNormalizer.normalized(raw)?.normalizedName {
+          try? history.removeTag(normalizedName: normalized, from: taskID)
+        }
+      }
+      if !changes.add.isEmpty { _ = try? history.addTags(changes.add, to: taskID) }
+    }
+    return OwnershipItem(id: taskID, name: name, canonicalURL: canonicalURL, ownership: target, source: provenance?.summaryLabel)
+  }
+
+  /// 结果里的「改」：自有 ⇄ 外部。走阅读页同一个改归属入口（`setOwnership`）。
+  func toggleOwnership(_ id: TaskID) {
+    guard case .finished(let title, var summary, let host) = phase,
+          let index = summary.ownership.firstIndex(where: { $0.id == id })
+    else { return }
+    let target: ContentOwnership = summary.ownership[index].ownership == .own ? .external : .own
+    historyModel?.setOwnership(target, taskID: id, canonicalURL: summary.ownership[index].canonicalURL, host: LocalImportSource.files.rawValue)
+    summary.ownership[index].ownership = target
+    phase = .finished(title: title, summary: summary, revealHost: host)
+  }
+
+  // MARK: 导入后转写
+
+  /// 「待转写」的「全部转写」：以前导入、同步来的音视频补转写，和导入后转写排同一条队列、
+  /// 用同一个右下角进度。已经在排的不重复排。
+  func transcribeBacklog(_ items: [(taskID: TaskID, name: String)]) {
+    let queued = Set(transcriptionBacklog.map(\.taskID))
+    enqueueTranscription(items.filter { !queued.contains($0.taskID) })
+  }
+
+  var isTranscriptionQueueRunning: Bool { transcriptionQueue?.isRunning == true }
+
+  /// 排进本机转写队列。队列在跑就接到后面，总数跟着涨。
+  private func enqueueTranscription(_ items: [(taskID: TaskID, name: String)]) {
+    guard !items.isEmpty else { return }
+    var status = transcriptionQueue?.isRunning == true ? (transcriptionQueue ?? .init()) : .init()
+    status.total += items.count
+    status.isRunning = true
+    status.wasStopped = false
+    transcriptionBacklog.append(contentsOf: items)
+    transcriptionQueue = status
+    guard transcriptionQueueTask == nil else { return }
+    transcriptionQueueTask = Task { [weak self] in await self?.runTranscriptionQueue() }
+  }
+
+  /// 一条一条地转：本机转写同一时刻只有一个通道。单条失败记下原因接着转下一条。
+  private func runTranscriptionQueue() async {
+    while !Task.isCancelled, !transcriptionBacklog.isEmpty, let historyModel {
+      let item = transcriptionBacklog.removeFirst()
+      transcriptionQueue?.currentName = item.name
+      let outcome = await historyModel.transcribeImportedMedia(taskID: item.taskID)
+      switch outcome {
+      case .completed:
+        transcriptionQueue?.succeeded += 1
+        // 正看着「待转写」时，转好一条就从列表里拿掉、侧栏数字跟着减。
+        historyModel.refreshAfterBacklogTranscription()
+      case .alreadyTranscribed: transcriptionQueue?.alreadyTranscribed += 1
+      case let .failed(message): transcriptionQueue?.failures.append("\(item.name)：\(message)")
+      case .cancelled:
+        if !Task.isCancelled { transcriptionQueue?.failures.append("\(item.name)：转写被取消了。") }
+      }
+      if !(Task.isCancelled && outcome == .cancelled) { transcriptionQueue?.finished += 1 }
+    }
+    let stopped = Task.isCancelled
+    if stopped { transcriptionBacklog.removeAll() }
+    transcriptionQueue?.isRunning = false
+    transcriptionQueue?.wasStopped = stopped
+    transcriptionQueue?.currentName = nil
+    transcriptionQueueTask = nil
+    historyModel?.reload()
+  }
+
+  /// 胶囊上的「停止」：停掉正在转的这一条，后面排着的都不转了。已经转好的留着。
+  func stopTranscriptionQueue() {
+    transcriptionQueueTask?.cancel()
+  }
+
+  func dismissTranscriptionQueue() {
+    guard transcriptionQueue?.isRunning != true else { return }
+    transcriptionQueue = nil
   }
 
   private func setStep(_ step: String, title: String, done: Int, total: Int) {
     phase = .running(title: title, done: done, total: total, step: step)
   }
 
-  /// 进度里写清楚正在做哪一步：识图、转码可能要十几秒，只有一条进度条会被当成卡死。
+  /// 进度里写清楚正在做哪一步：识图、核对大文件可能要十几秒，只有一条进度条会被当成卡死。
   private static func step(for url: URL) -> String {
     let ext = url.pathExtension.lowercased()
     let name = url.lastPathComponent
     if LocalFileImportReader.imageExtensions.contains(ext) { return "正在识别「\(name)」里的文字…" }
-    if LocalFileImportReader.audioExtensions.contains(ext) { return "正在转换「\(name)」的音频…" }
+    if LocalFileImportReader.audioExtensions.contains(ext) { return "正在读取音频「\(name)」…" }
     if LocalFileImportReader.videoExtensions.contains(ext) { return "正在读取视频「\(name)」…" }
     return "正在读取「\(name)」…"
   }
@@ -426,6 +659,38 @@ final class LocalImportController: ObservableObject {
     return capture.taskID
   }
 
+  /// 拖进来的音视频：先落条目，再挂一条「引用原文件」的媒体记录（书签），原文件一个字节都不复制。
+  private func storeReference(
+    document: CapturedDocument,
+    fileURL: URL,
+    contentSHA256: String,
+    durationSeconds: Double?
+  ) async throws -> TaskID {
+    guard let history, let mediaStore else { throw RepositoryFailure.unavailable }
+    let capture = try await ingest(document)
+    // 回收站里复活的旧条目：当初复制进 Media/ 的那份还在就原样保留（旧条目不迁移）。
+    if let existing = try? history.mediaAsset(taskID: capture.taskID),
+       existing.contentSHA256 == contentSHA256,
+       !ExternalMediaReference.isExternal(existing),
+       (try? mediaStore.resolve(existing)) != nil {
+      return capture.taskID
+    }
+    let size = Int64((try? fileURL.resourceValues(forKeys: [.fileSizeKey]))?.fileSize ?? 0)
+    guard size > 0 else { throw LocalFileImportError.unreadable }
+    let asset = try mediaStore.externalReferenceAsset(
+      fileURL: fileURL,
+      taskID: capture.taskID,
+      snapshotID: capture.snapshotID,
+      contentSHA256: contentSHA256,
+      byteSize: size,
+      durationSeconds: durationSeconds,
+      platform: LocalImportSource.files.rawValue,
+      createdAtMilliseconds: Self.milliseconds(Date())
+    )
+    try history.attachMedia(.init(asset: asset))
+    return capture.taskID
+  }
+
   private func finish(title: String, summary: Summary, host: String) {
     historyModel?.reload()
     phase = .finished(title: title, summary: summary, revealHost: summary.added + summary.skipped > 0 ? host : nil)
@@ -455,11 +720,36 @@ final class LocalImportController: ObservableObject {
   private static func message(for error: Error) -> String {
     switch error {
     case let error as LocalFileImportError: return error.userMessage
+    case let error as ExternalMediaReferenceError: return error.userMessage
     case let error as MediaDownloadError: return error.userMessage
     case let error as VoiceMemosLibraryError: return error.userMessage
     case let error as AppleNotesLibraryError: return error.userMessage
     case is StorageWriteGateFailure, is RepositoryFailure: return "写入本地资料库失败，请检查存储状态后重试。"
     default: return "导入失败，请重试。"
     }
+  }
+}
+
+private extension CapturedDocument {
+  /// 同一份文档换一个来源标签：下载来的本地文件把「下载自哪个 App / 网址」记在这里（不改表）。
+  func withSourceLabel(_ label: String) -> CapturedDocument {
+    guard label != sourceLabel else { return self }
+    return CapturedDocument(
+      requestID: requestID,
+      createdAt: createdAt,
+      idempotencyKey: idempotencyKey,
+      origin: origin,
+      url: url,
+      title: title,
+      platform: platform,
+      method: method,
+      text: text,
+      characterCount: characterCount,
+      completeness: completeness,
+      capturedAt: capturedAt,
+      sourceLabel: label,
+      usedCookie: usedCookie,
+      media: media
+    )
   }
 }

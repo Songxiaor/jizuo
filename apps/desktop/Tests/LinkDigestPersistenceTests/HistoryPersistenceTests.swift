@@ -974,6 +974,48 @@ final class HistoryRepositoryRunTests: XCTestCase {
     }
   }
 
+  /// 「待转写」（2026-09-30）：带音视频、还没有任何转写稿的才算；时长加总给确认框用。
+  func testUntranscribedScopeListsMediaWithoutTranscript() throws {
+    try withRepository { repository, _ in
+      func insertMedia(_ taskID: TaskID, seconds: Double, status: String) throws {
+        try repository.database.write { db in
+          try db.execute(sql: """
+            INSERT INTO media_assets (id, task_id, relative_path, content_sha256, byte_size, duration_seconds, platform, transcription_status, created_at_ms)
+            VALUES (?, ?, 'a.mp4', ?, 10, ?, 'douyin', ?, 1)
+            """, arguments: [UUID().uuidString.lowercased(), taskID.rawValue, String(repeating: "a", count: 64), seconds, status])
+        }
+      }
+      let pending = try repository.acceptCapture(.init(envelope: capture(requestID: "tr-a", key: "tr-a", url: "https://example.test/a"), receivedAtMilliseconds: 1))
+      let done = try repository.acceptCapture(.init(envelope: capture(requestID: "tr-b", key: "tr-b", url: "https://example.test/b"), receivedAtMilliseconds: 2))
+      _ = try repository.acceptCapture(.init(envelope: capture(requestID: "tr-c", key: "tr-c", url: "https://example.test/c"), receivedAtMilliseconds: 3))
+      let failed = try repository.acceptCapture(.init(envelope: capture(requestID: "tr-d", key: "tr-d", url: "https://example.test/d"), receivedAtMilliseconds: 4))
+      try insertMedia(pending.taskID, seconds: 90, status: "none")
+      // 上次转写失败的（多半没有中文人声）：仍在待转写里，但单独计数、时长不算。
+      try insertMedia(failed.taskID, seconds: 3_600, status: "failed")
+      // 状态字段还是 none、但已经有转写稿的旧数据：按转写稿算，不算待转写。
+      try insertMedia(done.taskID, seconds: 600, status: "none")
+      try repository.database.write { db in
+        let body = "转写正文"
+        try db.execute(sql: """
+          INSERT INTO content_snapshots (
+            id, task_id, sequence, envelope_created_at_ms, captured_at_ms, source_kind, source_url, title,
+            platform, capture_method, completeness, body_text, character_count, body_sha256, source_label,
+            used_cookie, used_cookie_v2
+          ) VALUES (?, ?, 2, 2, 2, 'local_transcription', ?, '转写', 'douyin', 'speech_analyzer_local', 'complete', CAST(? AS TEXT), ?, ?, '本机视频转写', 0, 0)
+          """, arguments: [ContentSnapshotID().rawValue, done.taskID.rawValue, "https://example.test/b", Data(body.utf8), body.unicodeScalars.count, SHA256CaptureFingerprinter().bodySHA256(body)])
+      }
+
+      let counts = try repository.navigationCounts()
+      XCTAssertEqual(counts.untranscribed, 2)
+      XCTAssertEqual(counts.untranscribedFailed, 1)
+      XCTAssertEqual(counts.untranscribedSeconds, 90, accuracy: 0.001)
+      let rows = try repository.historyPage(limit: 20, after: nil, filter: .init(scope: .untranscribed)).rows
+      XCTAssertEqual(Set(rows.map(\.taskID)), [pending.taskID, failed.taskID], "转写过的、没有音视频的都不算待转写；转写失败的要算")
+      XCTAssertEqual(rows.first { $0.taskID == failed.taskID }?.transcriptionFailed, true)
+      XCTAssertNil(rows.first { $0.taskID == pending.taskID }?.transcriptionFailed)
+    }
+  }
+
   func testTwoPoolsPreserveRunConflictSemanticsUnderRace() throws {
     try withTemporaryLocation { location in
       let first = try GRDBHistoryRepository.open(at: location)

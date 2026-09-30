@@ -14,6 +14,7 @@ public struct HistoryApplicationService: Sendable {
   var repositoryAsTokenUsageStore: (any TokenUsageRecording)? { repository as? TokenUsageRecording }
   var repositoryAsAnnotationStore: (any AnnotationStoring)? { repository as? AnnotationStoring }
   var repositoryAsReadingProgressStore: (any ReadingProgressStoring)? { repository as? ReadingProgressStoring }
+  var repositoryAsCollectionStore: (any CollectionStoring)? { repository as? CollectionStoring }
 
   public func acceptCapture(_ command: AcceptCaptureCommand) throws -> AcceptCaptureResult {
     try repository.acceptCapture(command)

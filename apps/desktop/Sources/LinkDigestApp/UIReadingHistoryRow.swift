@@ -178,6 +178,8 @@ struct UIReadingHistoryRow: View {
     }
     if row.hasTranscript == true {
       values.append("已转写")
+    } else if row.transcriptionFailed == true {
+      values.append("上次转写没成功")
     } else if row.hasMedia == true {
       values.append("有视频，还没转写")
     }
@@ -282,7 +284,14 @@ struct UIReadingHistoryRow: View {
           }
           // 转写状态是「待处理」信息，找东西时是噪音，不再占行尾；视频标记保留。
           HStack(spacing: 4) {
-            if row.hasMedia == true || row.hasTranscript == true {
+            if row.transcriptionFailed == true {
+              // 同一个位置、同样的淡色，只换个图形：不给失败条目加醒目标记，
+              // 多半只是没有中文人声（英文、纯音乐），「全部转写」会跳过它。
+              Image(systemName: "waveform.slash")
+                .help("上次转写没成功，常见原因是没有中文人声；「全部转写」会跳过它，可以点开单独重试")
+                .accessibilityLabel("上次转写没成功")
+                .accessibilityIdentifier("history-row-transcription-failed")
+            } else if row.hasMedia == true || row.hasTranscript == true {
               Image(systemName: text.isAudioOnly ? "waveform" : "play.rectangle")
                 .accessibilityLabel(text.isAudioOnly ? "带录音" : "带视频")
             }

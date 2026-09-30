@@ -202,6 +202,7 @@ struct CommentThreadSectionView: View {
         case let .quotedTweet(quote):
           QuotedTweetCardView(
             quote: quote,
+            readingFont: readingFont,
             accentColor: accentColor,
             onOpenURL: onOpenURL
           )

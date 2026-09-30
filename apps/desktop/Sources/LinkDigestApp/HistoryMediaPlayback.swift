@@ -2469,10 +2469,17 @@ struct HistoryVideoPlayerCard: View {
             .themedFont(.caption, monospacedDigit: true)
             .foregroundStyle(.secondary)
         }
-        if let byteSize = media?.byteSize, byteSize > 0 {
-          Label("已保存到本机 · \(Self.formatByteSize(byteSize))", systemImage: "internaldrive.fill")
+        if let media, media.byteSize > 0 {
+          // 导入的本机文件只记了位置（有书签），没复制进汲作：说「引用本机文件」，
+          // 免得以为又占了一份硬盘。抓来的视频才是真存了一份。
+          let isReference = media.fileBookmark != nil
+          Label(
+            "\(isReference ? "引用本机文件" : "已保存到本机") · \(Self.formatByteSize(media.byteSize))",
+            systemImage: isReference ? "link" : "internaldrive.fill"
+          )
             .themedFont(.caption)
             .foregroundStyle(.secondary)
+            .help(isReference ? "播放和转写都直接读原文件，汲作里没有另存一份" : "这段视频已存进汲作的资料目录")
             .accessibilityIdentifier("history-video-local-size")
         }
         Spacer(minLength: 0)
@@ -2962,11 +2969,18 @@ private struct HistoryStreamingMediaCard: View {
 
 /// Copies an already-cached local video to a user-selected destination. This
 /// component deliberately has no remote URL or downloader responsibility.
+///
+/// 本机导入的音视频引用的是原文件（2026-09-29），后缀不再只有 mp4/mov：
+/// mp3、wav、m4v… 也要能播、能转写、能另存一份。
 enum LocalMediaExport {
-  private static let allowedExtensions: Set<String> = ["mp4", "mov"]
+  private static let allowedExtensions: Set<String> = LocalFileImportReader.mediaExtensions.union(["mp4", "mov", "m4a"])
 
   static func contentType(for url: URL) -> UTType {
-    url.pathExtension.lowercased() == "mov" ? .quickTimeMovie : .mpeg4Movie
+    switch url.pathExtension.lowercased() {
+    case "mov": .quickTimeMovie
+    case "mp4": .mpeg4Movie
+    case let ext: UTType(filenameExtension: ext) ?? .data
+    }
   }
 
   static func isSupportedLocalFile(

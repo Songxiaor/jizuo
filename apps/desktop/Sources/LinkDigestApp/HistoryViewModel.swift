@@ -268,6 +268,32 @@ private actor HistoryRepositoryWorker {
     catch { return .failure }
   }
 
+  /// 「待转写」里的全部条目，不止界面已经载入的那一页；按列表顺序（新存的在前）。
+  /// 上次转写失败的跳过：多半没有中文人声，再排一遍也是白跑。
+  func untranscribedBacklog(_ history: HistoryApplicationService) -> [(taskID: TaskID, name: String)]? {
+    let filter = HistoryListFilter(scope: .untranscribed, ordersBySavedTime: true)
+    var items: [(taskID: TaskID, name: String)] = []
+    var cursor: HistoryPageCursor?
+    repeat {
+      guard let page = try? history.historyPage(limit: 200, after: cursor, filter: filter) else { return nil }
+      items += page.rows.filter { $0.transcriptionFailed != true }.map { row in
+        let title = row.title?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return (row.taskID, title.isEmpty ? row.sourceLabel : title)
+      }
+      cursor = page.nextCursor
+    } while cursor != nil
+    return items
+  }
+
+  /// 合集的读写（2026-09-29）走同一条串行边界，不在主线程碰 SQLite。
+  func collectionOperation<T: Sendable>(
+    _ history: HistoryApplicationService,
+    _ body: @Sendable (any CollectionStoring) throws -> T
+  ) -> Result<T, Error> {
+    do { return .success(try body(history.requireCollectionStore())) }
+    catch { return .failure(error) }
+  }
+
   func creatorPage(
     _ history: HistoryApplicationService,
     cursor: CreatorPageCursor?,
@@ -279,6 +305,11 @@ private actor HistoryRepositoryWorker {
 
   func creator(_ history: HistoryApplicationService, id: CreatorID) -> CreatorSummary? {
     try? history.creator(id: id)
+  }
+
+  /// 重新定位原文件后写回新书签。
+  func attachRelocatedMedia(_ history: HistoryApplicationService, asset: MediaAsset) -> Bool {
+    (try? history.attachMedia(.init(asset: asset))) != nil
   }
 
   func mediaAsset(_ history: HistoryApplicationService, taskID: TaskID) -> MediaAsset? {
@@ -791,6 +822,9 @@ private struct TranscriptionContext {
   let workspaceURL: URL
   let attempt: TranscriptionAttemptToken
   let localeIdentifier: String
+  /// 本机导入的录音转写时顺带在本机分说话人。批量转写关掉：没人打开那条时，
+  /// 分出来的结果接不上（要等详情载入才合并），只会和下一条转写抢神经网络引擎。
+  var autoDiarize = true
 }
 
 private struct RemoteTranscriptionContext {
@@ -887,6 +921,7 @@ final class HistoryViewModel {
         }
         remoteMediaFavoriteState = .idle
         loadDetailForSelection()
+        refreshSelectedTaskCollections()
       }
     }
   }
@@ -1001,6 +1036,20 @@ final class HistoryViewModel {
   private(set) var localImageURLs: [URL] = []
   private(set) var localMediaFileURL: URL?
   private(set) var localMediaResolutionFailure: String?
+  /// 本机导入的音视频引用的原文件找不到了（2026-09-29 起不复制原文件）。阅读页据此
+  /// 说明原因、给出「重新定位…」；转写文字、总结和笔记都不受影响。
+  private(set) var localMediaOriginalMissing: MissingOriginalMedia?
+  private(set) var originalRelocationState: OriginalRelocationState = .idle
+  struct MissingOriginalMedia: Equatable {
+    let taskID: TaskID
+    let fileName: String?
+    let lastKnownPath: String?
+  }
+  enum OriginalRelocationState: Equatable {
+    case idle
+    case verifying
+    case failed(String)
+  }
   /// 这条的本机视频已按「转写后清理」删掉（App 自己目录里的文件不在了）。
   /// 阅读页据此显示「视频已清理」而不是「文件不见了」的警告。
   private(set) var localMediaCleared = false
@@ -1025,6 +1074,24 @@ final class HistoryViewModel {
   private(set) var selectedScope: HistoryListScope = .all
   /// 侧栏「形式」选中的那一种（视频、录音……）。和作用域、平台、标签互斥，选中时作用域回到全部。
   private(set) var selectedForm: ContentForm?
+  // MARK: 合集（2026-09-29）
+  /// 侧栏「合集」分组：全部合集和各自看得见的条数。
+  private(set) var collections: [HistoryCollectionSummary] = []
+  /// 正在看的合集。和作用域、形式、平台、标签、博主互斥；选中时列表按合集顺序排、不按日期分组。
+  private(set) var selectedCollectionID: CollectionID?
+  /// 当前单选那一条在哪些合集里，给「加入合集」菜单打勾。
+  private(set) var selectedTaskCollectionIDs: Set<CollectionID> = []
+  /// 每条内容在哪些合集里（只含至少在一个合集里的），随侧栏合集一起刷新。
+  private(set) var collectionMembership: [TaskID: Set<CollectionID>] = [:]
+  /// 新建 / 改名 / 删除合集的弹窗；nil = 没有弹窗。
+  var collectionPrompt: CollectionPrompt?
+  /// 新建、改名弹窗里输入框的内容。
+  var collectionNameDraft = ""
+  /// 加入 / 移出合集之后浮在窗口底部的一句话。
+  private(set) var collectionFeedback: String?
+  @ObservationIgnored private var collectionsTask: Task<Void, Never>?
+  @ObservationIgnored private var selectedTaskCollectionsTask: Task<Void, Never>?
+  @ObservationIgnored private var collectionFeedbackTask: Task<Void, Never>?
   private(set) var selectedCreatorID: CreatorID?
   private(set) var selectedCreatorSnapshot: CreatorSummary?
   private(set) var isCreatorDirectoryActive = false
@@ -1897,9 +1964,11 @@ final class HistoryViewModel {
       || selectedCreatorID != nil
       || selectedScope != .all
       || selectedForm != nil
+      || selectedCollectionID != nil
   }
   var hasCategoryFilter: Bool {
     !selectedHosts.isEmpty || !selectedTagNormalizedNames.isEmpty || selectedCreatorID != nil || selectedForm != nil
+      || selectedCollectionID != nil
   }
   var selectedCreator: CreatorSummary? { selectedCreatorSnapshot }
   var showsCreatorNeverAddedEmpty: Bool {
@@ -1942,7 +2011,16 @@ final class HistoryViewModel {
     }
     // 网格每张卡上屏都走这里；查库放到仓储 worker，不在主线程同步读。
     guard let history, let mediaStore else { return nil }
-    guard let asset = await worker.mediaAsset(history, taskID: taskID), asset.fileBookmark == nil else { return nil }
+    guard let asset = await worker.mediaAsset(history, taskID: taskID) else { return nil }
+    // 本机导入的视频引用原文件：从书签找到它，登记后交给封面加载器取首帧。
+    if ExternalMediaReference.isExternal(asset) {
+      guard let url = try? mediaStore.resolveExternalReference(asset).url,
+            LocalFileImportReader.videoExtensions.contains(url.pathExtension.lowercased())
+      else { return nil }
+      WorkThumbnailLoader.admitReferencedVideo(url)
+      return url
+    }
+    guard asset.fileBookmark == nil else { return nil }
     if let url = mediaStore.containedInternalMediaURL(relativePath: asset.relativePath) { return url }
     // 视频已被清理：交出原路径，`WorkThumbnailLoader.videoPoster` 会改读清理前存下的封面。
     let expected = mediaStore.absoluteURL(relativePath: asset.relativePath)
@@ -2006,8 +2084,10 @@ final class HistoryViewModel {
     historyReadOnlyReason = isReadOnly ? readOnlyReason : nil
     historyReadOnlyRecoveryHint = isReadOnly ? readOnlyRecoveryHint : nil
     blockingErrorCode = unavailableCode
-    rows = []; selectedTaskIDs = []; detail = nil; localImageURLs = []; localMediaFileURL = nil; localMediaLease = nil; localMediaResolutionFailure = nil; faviconImageURLs = [:]; nextCursor = nil
+    rows = []; selectedTaskIDs = []; detail = nil; localImageURLs = []; localMediaFileURL = nil; localMediaLease = nil; localMediaResolutionFailure = nil; localMediaOriginalMissing = nil; originalRelocationState = .idle; faviconImageURLs = [:]; nextCursor = nil
     availableTags = []; navigationCounts = .init(); selectedTagNormalizedNames = []; selectedHosts = []; selectedScope = .all; selectedForm = nil; showsAllNavigationTags = false; searchText = ""
+    collectionsTask?.cancel(); selectedTaskCollectionsTask?.cancel()
+    collections = []; selectedCollectionID = nil; selectedTaskCollectionIDs = []; collectionMembership = [:]; collectionPrompt = nil; collectionFeedback = nil
     selectedCreatorID = nil; selectedCreatorSnapshot = nil; isCreatorDirectoryActive = false; isReadingCreatorWorkInDirectory = false; sessionDirectoryCreatorID = nil; creatorDirectoryRows = []; creatorSearchText = ""; creatorFailure = nil; creatorNextCursor = nil; isLoadingCreatorPage = false; creatorDirectoryLoadFailed = false
     listErrorCode = nil; detailErrorCode = nil; deleteErrorCode = nil; tagErrorCode = nil
     pendingDeletionTaskIDs = []; pendingProtectedDeletionTaskIDs = []; pendingDeletionIsPermanent = false
@@ -2070,6 +2150,15 @@ final class HistoryViewModel {
 
   func reload() {
     reload(preservingCurrentSelection: false)
+  }
+
+  /// 排队转写转好一条之后：看着「待转写」就重读列表（转好的那条自然消失），其它列表只刷新侧栏数字。
+  func refreshAfterBacklogTranscription() {
+    if selectedScope == .untranscribed {
+      reload(preservingCurrentSelection: true)
+    } else {
+      reloadNavigationCounts()
+    }
   }
 
   private func reload(preservingCurrentSelection: Bool, refreshesAggregates: Bool = true) {
@@ -2223,6 +2312,7 @@ final class HistoryViewModel {
       selectedHosts = []
       selectedScope = .all
       selectedForm = nil
+      selectedCollectionID = nil
       clearCreatorMode()
     }
     reveal(taskID: taskID)
@@ -2462,12 +2552,106 @@ final class HistoryViewModel {
     _ = beginLocalTranscription(detail: detail, fileURL: fileURL)
   }
 
+  // MARK: 本机导入后批量转写
+
+  enum ImportedMediaTranscriptionOutcome: Equatable {
+    case completed
+    /// 之前已经转写过，这次跳过。
+    case alreadyTranscribed
+    case failed(String)
+    case cancelled
+  }
+
+  /// 「导入后转写」队列里的一条：和手动点「转写」走同一条本机转写（Apple 听写，免费、不上传）
+  /// 状态机，不另造转写器，也不会调用任何在线或付费模型、不自动总结。
+  ///
+  /// 转写通道同一时刻只有一条：通道忙（用户正在手动转写别的）就等它空出来。
+  /// 等「下载听写模型」确认时一直等用户选，不替用户做决定。调用方取消（点「停止」）时，
+  /// 只停自己这一条，不碰别人发起的转写。
+  func transcribeImportedMedia(taskID: TaskID) async -> ImportedMediaTranscriptionOutcome {
+    guard history != nil, let mediaStore, videoTranscriber != nil else {
+      return .failed("本机转写现在用不了（需要 macOS 26 的本机听写）。")
+    }
+    guard !isReadOnly else { return .failed("历史记录当前为只读模式，不能保存转写结果。") }
+    guard let detail = await loadStoredDetail(taskID: taskID) else { return .failed("找不到这条记录。") }
+    if Self.latestTranscriptText(in: detail) != nil { return .alreadyTranscribed }
+    guard let media = detail.media else { return .failed("这条没有可转写的音视频。") }
+    let lease: SecurityScopedURLLease
+    do {
+      lease = try mediaStore.resolve(media)
+    } catch let error as ExternalMediaReferenceError {
+      return .failed(error.userMessage)
+    } catch {
+      return .failed("找不到这条的音视频文件。")
+    }
+    // 通道被别的转写占着：等它结束。
+    _ = await waitFor(timeoutSeconds: 24 * 60 * 60) { !self.transcriptionState.isActive }
+    if Task.isCancelled { return .cancelled }
+    guard beginLocalTranscription(detail: detail, fileURL: lease.url, autoDiarize: false) else {
+      if case let .failed(message) = transcriptionState { return .failed(message) }
+      return .failed("转写没能开始，请在条目里重试。")
+    }
+    // 转写全程读的是原文件，租约要活到这一条结束。
+    defer { withExtendedLifetime(lease) {} }
+    _ = await waitFor(timeoutSeconds: 24 * 60 * 60) {
+      self.transcriptionTaskID != taskID || !self.transcriptionState.isActive
+    }
+    if Task.isCancelled, transcriptionTaskID == taskID, transcriptionState.isActive {
+      if transcriptionState == .awaitingModelDownload {
+        cancelModelDownloadConfirmation()
+      } else {
+        cancelTranscription()
+      }
+      return .cancelled
+    }
+    guard transcriptionTaskID == taskID else { return .failed("被另一次转写打断了，可以在条目里重新转写。") }
+    switch transcriptionState {
+    case .completed: return .completed
+    case let .failed(message): return .failed(message)
+    case .cancelled: return .cancelled
+    default: return Task.isCancelled ? .cancelled : .failed("转写没有完成，请在条目里重试。")
+    }
+  }
+
+  // MARK: 重新定位原文件
+
+  /// 阅读页「重新定位…」选好新位置后调用：核对是同一份内容，再把新书签写回媒体记录
+  /// （同一 task + 内容哈希走 UPDATE，转写状态、转写文字都不动），然后重新载入这条。
+  func relocateOriginalMedia(to fileURL: URL) {
+    guard let history, let mediaStore, !isReadOnly,
+          let detail, let media = detail.media, ExternalMediaReference.isExternal(media)
+    else { return }
+    let taskID = detail.task.id
+    originalRelocationState = .verifying
+    Task { [weak self, worker] in
+      let result: Result<MediaAsset, ExternalMediaReferenceError> = await Task.detached(priority: .userInitiated) {
+        do { return .success(try mediaStore.relocatedExternalReference(media, to: fileURL)) }
+        catch let error as ExternalMediaReferenceError { return .failure(error) }
+        catch { return .failure(.unreadable) }
+      }.value
+      guard let self else { return }
+      switch result {
+      case let .success(updated):
+        let saved = await worker.attachRelocatedMedia(history, asset: updated)
+        guard saved else {
+          self.originalRelocationState = .failed("新位置没能保存到资料库，请检查存储后重试。")
+          return
+        }
+        self.originalRelocationState = .idle
+        if self.selectedTaskID == taskID { self.loadDetailForSelection() }
+      case let .failure(error):
+        self.originalRelocationState = .failed(error.userMessage)
+      }
+    }
+  }
+
   /// 手动按钮和自动队列共用同一条本机转写状态机。输入显式带 detail/fileURL，
   /// 后台处理另一条任务时不需要篡改用户当前选中的详情。
   @discardableResult
   private func beginLocalTranscription(
     detail: HistoryDetailProjection,
-    fileURL: URL
+    fileURL: URL,
+    autoDiarize: Bool = true
   ) -> Bool {
     transcriptionUsesOnlineService = false
     guard let history, let videoTranscriber else {
@@ -2508,6 +2692,11 @@ final class HistoryViewModel {
       let workspaceURL = FileManager.default.temporaryDirectory
         .appendingPathComponent("linkdigest-transcription-\(UUID().uuidString)", isDirectory: true)
       try? FileManager.default.createDirectory(at: workspaceURL, withIntermediateDirectories: true)
+      // 临时目录里会有抽出来的音轨。只有「等用户确认下载模型」这一条路把它交给
+      // `pendingTranscriptionContext` 带走（确认后 runTranscription 的 defer 删、取消时
+      // cancelModelDownloadConfirmation 删）；其余每条提前退出都在这里删掉。
+      var handsOffWorkspace = false
+      defer { if !handsOffWorkspace { try? FileManager.default.removeItem(at: workspaceURL) } }
       // 先听开头一小段确认语言。配文猜错时，Apple 的听写不是「差一点」而是
       // 整篇报废，且报废的稿子会一路流到翻译，看起来像是翻译坏了。
       let localeIdentifier = await videoTranscriber.detectLocale(
@@ -2516,7 +2705,7 @@ final class HistoryViewModel {
         preferred: Self.speechLocaleIdentifier(for: detail),
         fallbacks: Self.speechLocaleProbeFallbacks
       )
-      let context = TranscriptionContext(
+      var context = TranscriptionContext(
         taskID: detail.task.id,
         detail: detail,
         fileURL: fileURL,
@@ -2524,6 +2713,7 @@ final class HistoryViewModel {
         attempt: attempt,
         localeIdentifier: localeIdentifier
       )
+      context.autoDiarize = autoDiarize
       guard !Task.isCancelled, self?.transcriptionRequestID == requestID else {
         _ = await worker.updateTranscriptionStatus(
           history,
@@ -2548,9 +2738,12 @@ final class HistoryViewModel {
       }
       switch modelState {
       case .ready:
+        // runTranscription 自己的 defer 负责删。
+        handsOffWorkspace = true
         await self?.runTranscription(context: context, history: history, transcriber: videoTranscriber, requestID: requestID)
       case .requiresDownload:
         guard !Task.isCancelled, self?.transcriptionRequestID == requestID else { return }
+        handsOffWorkspace = true
         self?.transcriptionState = .awaitingModelDownload
         self?.isTranscriptionModelConfirmationPresented = true
       case let .unavailable(error):
@@ -5139,6 +5332,8 @@ final class HistoryViewModel {
     transcriptionTask?.cancel()
     transcriptionState = .preparingModel
     transcriptionTask = Task { [weak self, worker] in
+      // 下载失败或被取消时 runTranscription 不会跑到，临时目录在这里兜底删（删两次无害）。
+      defer { try? FileManager.default.removeItem(at: context.workspaceURL) }
       do {
         try await videoTranscriber.downloadModel(localeIdentifier: context.localeIdentifier)
         try Task.checkCancellation()
@@ -5186,6 +5381,9 @@ final class HistoryViewModel {
       transcriptionState = .idle
       return
     }
+    // 不下载就不转写：等确认期间留着的临时目录（探测语言时抽过音轨）现在删掉。
+    pendingTranscriptionContext = nil
+    try? FileManager.default.removeItem(at: context.workspaceURL)
     let requestID = transcriptionRequestID
     transcriptionTask = Task { [weak self, worker] in
       guard self?.transcriptionRequestID == requestID else { return }
@@ -5455,7 +5653,8 @@ final class HistoryViewModel {
     // 分离模型在神经网络引擎上跑，转写一结束两边结果直接合并，不再「转完一遍、
     // 再为取时间重新识别一遍」（2026-09-23）。抓来的网络视频照旧手动分。
     var speakerSegmentsTask: Task<[SpeakerSegment], Error>?
-    if let local = localSpeakerDiarizer,
+    if context.autoDiarize,
+       let local = localSpeakerDiarizer,
        let platform = context.detail.snapshots.last?.platform,
        LocalImportSource(rawValue: platform) != nil {
       let audioURL = context.fileURL
@@ -5578,6 +5777,7 @@ final class HistoryViewModel {
     isCreatorDirectoryActive = false
     selectedScope = .all
     selectedForm = nil
+    selectedCollectionID = nil
     reload()
   }
 
@@ -5609,6 +5809,7 @@ final class HistoryViewModel {
     }
     selectedScope = scope
     selectedForm = nil
+    selectedCollectionID = nil
     selectedHosts = []
     selectedTagNormalizedNames = []
     if leavingPlatformGallery {
@@ -5629,6 +5830,7 @@ final class HistoryViewModel {
     }
     selectedForm = toggles && selectedForm == form && selectedScope == .all ? nil : form
     selectedScope = .all
+    selectedCollectionID = nil
     selectedHosts = []
     selectedTagNormalizedNames = []
     if leavingPlatformGallery {
@@ -5679,6 +5881,7 @@ final class HistoryViewModel {
       && !isCreatorDirectoryActive
       && selectedScope == .all
       && selectedForm == nil
+      && selectedCollectionID == nil
     if alreadyInSameGallery { return }
 
     abandonPlatformGalleryReadingStash()
@@ -5689,6 +5892,7 @@ final class HistoryViewModel {
     selectedHosts = hosts
     selectedScope = .all
     selectedForm = nil
+    selectedCollectionID = nil
     selectedTagNormalizedNames = []
     // 跨平台不遗留上个平台的搜索词，避免隐形查询。
     if hostsChanged, !searchText.isEmpty {
@@ -5707,6 +5911,7 @@ final class HistoryViewModel {
     selectedTagNormalizedNames = []
     selectedScope = .all
     selectedForm = nil
+    selectedCollectionID = nil
     searchText = ""
     discardVisibleList(state: .loading)
     if let remembered = sessionDirectoryCreatorID {
@@ -5743,6 +5948,7 @@ final class HistoryViewModel {
     selectedTagNormalizedNames = []
     selectedScope = .all
     selectedForm = nil
+    selectedCollectionID = nil
     reload()
   }
 
@@ -5765,6 +5971,7 @@ final class HistoryViewModel {
     selectedTagNormalizedNames = []
     selectedScope = .all
     selectedForm = nil
+    selectedCollectionID = nil
     isReadingCreatorWorkInDirectory = false
     if switching {
       discardVisibleList(state: .loading)
@@ -6010,7 +6217,7 @@ final class HistoryViewModel {
       latestRunAtMilliseconds: old.latestRunAtMilliseconds, usageCost: old.usageCost,
       artifactPreview: old.artifactPreview, sourcePreview: old.sourcePreview,
       author: old.author, published: old.published, hasTranscript: old.hasTranscript,
-      hasMedia: old.hasMedia, hasSummary: old.hasSummary, hasMindMap: old.hasMindMap,
+      hasMedia: old.hasMedia, transcriptionFailed: old.transcriptionFailed, hasSummary: old.hasSummary, hasMindMap: old.hasMindMap,
       isFavorite: isFavorite, coverURL: old.coverURL, likes: old.likes,
       comments: old.comments, shares: old.shares, collects: old.collects, views: old.views)
   }
@@ -6436,6 +6643,7 @@ final class HistoryViewModel {
       localMediaLease = nil
       localMediaFileURL = nil
       localMediaResolutionFailure = nil
+      localMediaOriginalMissing = nil
       detail = nil
       localImageURLs = []
       setDetailState(.idle)
@@ -6541,6 +6749,334 @@ final class HistoryViewModel {
       hadMediaDescriptor: current.hadMediaDescriptor,
       isFavorite: current.isFavorite
     )
+  }
+
+  // MARK: - 合集操作（2026-09-29）
+  //
+  // 合集 = 一组要放在一起看、有顺序的内容（像歌单）。这里只做手动和导入挂钩；
+  // 数据读写全在 `CollectionStoring`，这里负责「点了之后界面怎么跟着变」。
+
+  var selectedCollection: HistoryCollectionSummary? {
+    guard let selectedCollectionID else { return nil }
+    return collections.first { $0.id == selectedCollectionID }
+  }
+
+  var isBrowsingCollection: Bool { selectedCollectionID != nil }
+
+  var canEditCollections: Bool { history != nil && !isReadOnly }
+
+  /// 只有在合集里、没有搜索词、列表已经读出来时才能拖动排序：搜索结果是合集的一部分，
+  /// 在一部分里拖动，挪到的位置没法对应回整个合集。
+  var canReorderSelectedCollection: Bool {
+    selectedCollectionID != nil && canEditCollections
+      && searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      && listState == .loaded
+  }
+
+  func reloadCollections() {
+    guard let history else { return }
+    let generation = configurationGeneration
+    collectionsTask?.cancel()
+    collectionsTask = Task { [weak self, worker] in
+      // 顺带读出每条在哪些合集里：右键的那条常常不是正在读的那条，菜单也要能打勾。
+      // 合集是人手建的，条数有限，全读一遍比右键时再去库里查省事，也不会让菜单等。
+      let result = await worker.collectionOperation(history) { store -> ([HistoryCollectionSummary], [TaskID: Set<CollectionID>]) in
+        let list = try store.collections()
+        var membership: [TaskID: Set<CollectionID>] = [:]
+        for collection in list {
+          for item in try store.collectionItems(id: collection.id) {
+            membership[item.taskID, default: []].insert(collection.id)
+          }
+        }
+        return (list, membership)
+      }
+      guard !Task.isCancelled, let self, generation == self.configurationGeneration else { return }
+      guard case let .success((list, membership)) = result else { return }
+      if list != self.collections { self.collections = list }
+      if membership != self.collectionMembership { self.collectionMembership = membership }
+      if let selected = self.selectedCollectionID, !list.contains(where: { $0.id == selected }) {
+        // 看着的合集没了（被删、或恢复了一份旧备份）：回到「全部」，不停在一张说不清的空列表上。
+        self.selectScope(.all)
+      }
+      self.refreshSelectedTaskCollections()
+    }
+  }
+
+  func selectCollection(_ id: CollectionID) {
+    isWorkbenchActive = false
+    stopRunningBatchJobsForNavigation()
+    clearCreatorMode()
+    let leavingPlatformGallery = !selectedHosts.isEmpty
+    if leavingPlatformGallery {
+      abandonPlatformGalleryReadingStash()
+    }
+    selectedCollectionID = id
+    selectedScope = .all
+    selectedForm = nil
+    selectedHosts = []
+    selectedTagNormalizedNames = []
+    if leavingPlatformGallery {
+      discardVisibleList(state: .loading)
+    }
+    reload()
+  }
+
+  /// 「待转写」一键转写要排的全部条目。读不出来时返回 nil。
+  func loadUntranscribedBacklog() async -> [(taskID: TaskID, name: String)]? {
+    guard let history else { return nil }
+    return await worker.untranscribedBacklog(history)
+  }
+
+  /// 这一批内容全都在里面的合集：「加入合集」菜单给它们打勾、置灰。
+  /// 正在读的那条以单独查到的结果为准（刚加完、侧栏还没刷新时也对）。
+  func collectionIDs(containingAll taskIDs: [TaskID]) -> Set<CollectionID> {
+    guard let first = taskIDs.first else { return [] }
+    func members(_ id: TaskID) -> Set<CollectionID> {
+      let known = collectionMembership[id] ?? []
+      return id == selectedTaskID ? known.union(selectedTaskCollectionIDs) : known
+    }
+    return taskIDs.dropFirst().reduce(members(first)) { $0.intersection(members($1)) }
+  }
+
+  /// 右键菜单要作用的那一批：右键的这条在多选里时是整批，否则只是它自己。
+  ///
+  /// 顺序：在合集里按列表从上往下（就是合集顺序）；其它列表都是新的在上，而一套教程
+  /// 通常是按顺序存的，所以按存入时间先后加，先存的排前面。加完还能拖动调整。
+  func collectionTargets(for taskID: TaskID) -> [TaskID] {
+    guard selectedTaskIDs.contains(taskID), selectedTaskIDs.count > 1 else { return [taskID] }
+    let ordered = orderedSelectedTaskIDs()
+    if isBrowsingCollection { return ordered }
+    let savedAt = Dictionary(
+      rows.map { ($0.taskID, $0.createdAtMilliseconds ?? $0.updatedAtMilliseconds) },
+      uniquingKeysWith: { first, _ in first }
+    )
+    return ordered.enumerated().sorted { lhs, rhs in
+      let left = savedAt[lhs.element] ?? .max, right = savedAt[rhs.element] ?? .max
+      return left != right ? left < right : lhs.offset < rhs.offset
+    }.map(\.element)
+  }
+
+  func addToCollection(_ id: CollectionID, taskIDs: [TaskID]) {
+    guard let history, canEditCollections, !taskIDs.isEmpty else { return }
+    let generation = configurationGeneration
+    let name = collections.first { $0.id == id }?.name ?? "合集"
+    Task { [weak self, worker] in
+      let result = await worker.collectionOperation(history) { try $0.addTasks(taskIDs, toCollection: id) }
+      guard let self, generation == self.configurationGeneration else { return }
+      switch result {
+      case let .success(added):
+        let existing = Set(taskIDs).count - added
+        if added == 0 {
+          self.showCollectionFeedback(taskIDs.count == 1 ? "已经在「\(name)」里了" : "这些都已经在「\(name)」里了")
+        } else if existing > 0 {
+          self.showCollectionFeedback("已把 \(added) 条加入「\(name)」，另有 \(existing) 条本来就在")
+        } else {
+          self.showCollectionFeedback(added == 1 ? "已加入「\(name)」" : "已把 \(added) 条加入「\(name)」")
+        }
+        self.afterCollectionContentChanged(id)
+      case .failure:
+        self.showCollectionFeedback("没能加入合集，请稍后重试。")
+        self.reloadCollections()
+      }
+    }
+  }
+
+  /// 「从此合集移出」：只在正看着某个合集时出现。内容本身不删。
+  func removeFromSelectedCollection(taskIDs: [TaskID]) {
+    guard let history, let id = selectedCollectionID, canEditCollections, !taskIDs.isEmpty else { return }
+    let generation = configurationGeneration
+    let name = selectedCollection?.name ?? "合集"
+    let removing = Set(taskIDs)
+    // 先从眼前拿掉，库里的结果回来后再按真实数据重读一遍。
+    rows.removeAll { removing.contains($0.taskID) }
+    if rows.isEmpty { listState = .empty }
+    Task { [weak self, worker] in
+      let result = await worker.collectionOperation(history) { try $0.removeTasks(taskIDs, fromCollection: id) }
+      guard let self, generation == self.configurationGeneration else { return }
+      switch result {
+      case let .success(removed):
+        self.showCollectionFeedback(removed <= 1 ? "已从「\(name)」移出，内容本身还在" : "已从「\(name)」移出 \(removed) 条，内容本身还在")
+      case .failure:
+        self.showCollectionFeedback("没能移出，请稍后重试。")
+      }
+      self.afterCollectionContentChanged(id, preservingSelection: false)
+    }
+  }
+
+  /// 列表里拖动调整顺序（`onMove` 的两个参数原样传进来）。
+  ///
+  /// 存的是「挪到谁后面」：列表是分页读的，手里只有前几页，交不出整个合集的顺序。
+  func moveCollectionRows(fromOffsets source: IndexSet, toOffset destination: Int) {
+    guard let history, let id = selectedCollectionID, canReorderSelectedCollection else { return }
+    let valid = source.filter { rows.indices.contains($0) }
+    guard !valid.isEmpty else { return }
+    let moving = valid.sorted().map { rows[$0] }
+    var reordered = rows.enumerated().filter { !valid.contains($0.offset) }.map(\.element)
+    let insertion = max(0, min(destination - valid.filter { $0 < destination }.count, reordered.count))
+    reordered.insert(contentsOf: moving, at: insertion)
+    guard reordered.map(\.taskID) != rows.map(\.taskID) else { return }
+    let anchor = insertion == 0 ? nil : reordered[insertion - 1].taskID
+    let movingIDs = moving.map(\.taskID)
+    rows = reordered
+    let generation = configurationGeneration
+    Task { [weak self, worker] in
+      let result = await worker.collectionOperation(history) {
+        try $0.moveTasks(movingIDs, inCollection: id, after: anchor)
+      }
+      guard let self, generation == self.configurationGeneration else { return }
+      if case .failure = result {
+        self.showCollectionFeedback("没能保存新的顺序，已恢复原来的顺序。")
+        self.reload(preservingCurrentSelection: true, refreshesAggregates: false)
+      }
+    }
+  }
+
+  func requestNewCollection(adding taskIDs: [TaskID] = []) {
+    guard canEditCollections else { return }
+    collectionNameDraft = ""
+    collectionPrompt = .create(adding: taskIDs)
+  }
+
+  func requestRenameCollection(_ collection: HistoryCollectionSummary) {
+    guard canEditCollections else { return }
+    collectionNameDraft = collection.name
+    collectionPrompt = .rename(collection)
+  }
+
+  func requestDeleteCollection(_ collection: HistoryCollectionSummary) {
+    guard canEditCollections else { return }
+    collectionPrompt = .delete(collection)
+  }
+
+  func cancelCollectionPrompt() {
+    collectionPrompt = nil
+  }
+
+  func confirmCollectionPrompt() {
+    guard let prompt = collectionPrompt else { return }
+    collectionPrompt = nil
+    guard let history, canEditCollections else { return }
+    let generation = configurationGeneration
+    switch prompt {
+    case let .create(taskIDs):
+      guard let name = HistoryCollectionNaming.normalized(collectionNameDraft) else {
+        showCollectionFeedback("合集要有个名字。")
+        return
+      }
+      Task { [weak self, worker] in
+        let result = await worker.collectionOperation(history) { store -> HistoryCollectionSummary in
+          let created = try store.createCollection(name: name)
+          guard !taskIDs.isEmpty else { return created }
+          try store.addTasks(taskIDs, toCollection: created.id)
+          return try store.collection(id: created.id) ?? created
+        }
+        guard let self, generation == self.configurationGeneration else { return }
+        switch result {
+        case let .success(created):
+          // 先把新合集放进侧栏，不等整张表重读完：否则点了「新建」侧栏要空一拍，像没点上。
+          if !self.collections.contains(where: { $0.id == created.id }) { self.collections.append(created) }
+          if taskIDs.isEmpty {
+            // 从侧栏「＋」新建的：直接进去，空状态会说明怎么往里放东西。
+            self.showCollectionFeedback("已新建合集「\(created.name)」")
+            self.selectCollection(created.id)
+          } else {
+            self.showCollectionFeedback(
+              created.itemCount <= 1 ? "已新建合集「\(created.name)」并加入" : "已新建合集「\(created.name)」，放进 \(created.itemCount) 条"
+            )
+          }
+          self.reloadCollections()
+        case .failure:
+          self.showCollectionFeedback("没能新建合集，请稍后重试。")
+        }
+      }
+    case let .rename(collection):
+      guard let name = HistoryCollectionNaming.normalized(collectionNameDraft) else {
+        showCollectionFeedback("合集要有个名字。")
+        return
+      }
+      guard name != collection.name else { return }
+      Task { [weak self, worker] in
+        let result = await worker.collectionOperation(history) { try $0.renameCollection(id: collection.id, to: name) }
+        guard let self, generation == self.configurationGeneration else { return }
+        if case .failure = result { self.showCollectionFeedback("没能改名，请稍后重试。") }
+        self.reloadCollections()
+      }
+    case let .delete(collection):
+      Task { [weak self, worker] in
+        let result = await worker.collectionOperation(history) { store -> Bool in
+          do { try store.deleteCollection(id: collection.id); return true }
+          catch RepositoryFailure.notFound { return true }
+        }
+        guard let self, generation == self.configurationGeneration else { return }
+        switch result {
+        case .success:
+          self.collections.removeAll { $0.id == collection.id }
+          self.showCollectionFeedback("已删除合集「\(collection.name)」，里面的内容都还在")
+          if self.selectedCollectionID == collection.id { self.selectScope(.all) }
+        case .failure:
+          self.showCollectionFeedback("没能删除合集，请稍后重试。")
+        }
+        self.reloadCollections()
+      }
+    }
+  }
+
+  /// 总控集成入口：导入流程导入完一个文件夹时调用。
+  ///
+  /// 同一个文件夹路径再次导入时更新同一个合集（已有顺序不动，新条目追加在后）；
+  /// 否则新建。不跳转、不抢当前阅读焦点。
+  func handleImportedFolder(folderName: String, folderURL: URL, orderedTaskIDs: [TaskID]) {
+    Task { [weak self] in
+      await self?.applyImportedFolder(folderName: folderName, folderURL: folderURL, orderedTaskIDs: orderedTaskIDs)
+    }
+  }
+
+  /// `handleImportedFolder` 的可等待版本，测试和需要结果的调用方用它。
+  @discardableResult
+  func applyImportedFolder(folderName: String, folderURL: URL, orderedTaskIDs: [TaskID]) async -> HistoryCollectionSummary? {
+    guard let history, canEditCollections else { return nil }
+    let generation = configurationGeneration
+    let path = HistoryCollectionNaming.folderKey(folderURL)
+    let trimmed = folderName.trimmingCharacters(in: .whitespacesAndNewlines)
+    let name = trimmed.isEmpty ? folderURL.lastPathComponent : trimmed
+    let result = await worker.collectionOperation(history) {
+      try $0.createOrUpdateImportedFolderCollection(name: name, folderPath: path, orderedTaskIDs: orderedTaskIDs)
+    }
+    guard generation == configurationGeneration, case let .success(summary?) = result else { return nil }
+    afterCollectionContentChanged(summary.id)
+    return summary
+  }
+
+  /// 合集内容变了之后：刷新侧栏条数、当前这条的「所在合集」，正在看这个合集时重读列表。
+  private func afterCollectionContentChanged(_ id: CollectionID, preservingSelection: Bool = true) {
+    reloadCollections()
+    if selectedCollectionID == id {
+      reload(preservingCurrentSelection: preservingSelection, refreshesAggregates: false)
+    }
+  }
+
+  private func refreshSelectedTaskCollections() {
+    selectedTaskCollectionsTask?.cancel()
+    guard let history, let taskID = selectedTaskID, !collections.isEmpty else {
+      if !selectedTaskCollectionIDs.isEmpty { selectedTaskCollectionIDs = [] }
+      return
+    }
+    selectedTaskCollectionsTask = Task { [weak self, worker] in
+      let result = await worker.collectionOperation(history) { try $0.collections(containing: taskID) }
+      guard !Task.isCancelled, let self, self.selectedTaskID == taskID, case let .success(list) = result else { return }
+      let ids = Set(list.map(\.id))
+      if ids != self.selectedTaskCollectionIDs { self.selectedTaskCollectionIDs = ids }
+    }
+  }
+
+  private func showCollectionFeedback(_ text: String) {
+    collectionFeedbackTask?.cancel()
+    collectionFeedback = text
+    collectionFeedbackTask = Task { [weak self] in
+      try? await Task.sleep(for: .milliseconds(2_200))
+      guard !Task.isCancelled else { return }
+      self?.collectionFeedback = nil
+    }
   }
 
   // MARK: - 工作台操作
@@ -7635,12 +8171,24 @@ final class HistoryViewModel {
       }
       localMediaCleared = false
       clearedVideoRedownloadState = .idle
+      localMediaOriginalMissing = nil
+      if originalRelocationState != .verifying { originalRelocationState = .idle }
       if let media = value.media, let mediaStore {
         do {
           let lease = try mediaStore.resolve(media)
           localMediaLease = lease
           localMediaFileURL = lease.url
           localMediaResolutionFailure = nil
+        } catch let ExternalMediaReferenceError.originalMissing(lastKnownPath) {
+          // 原文件被删、被挪到别的盘或者移动硬盘没接：不是出错，是「去哪找」的问题。
+          localMediaLease = nil
+          localMediaFileURL = nil
+          localMediaResolutionFailure = nil
+          localMediaOriginalMissing = .init(
+            taskID: value.task.id,
+            fileName: lastKnownPath.map { ($0 as NSString).lastPathComponent },
+            lastKnownPath: lastKnownPath
+          )
         } catch MediaStoragePreferenceError.missingResource where media.fileBookmark == nil {
           // App 自己目录里的视频只会被清理规则或容量上限删掉，不是「文件被挪走了」。
           localMediaLease = nil
@@ -7688,6 +8236,7 @@ final class HistoryViewModel {
       localMediaFileURL = nil
       localMediaLease = nil
       localMediaResolutionFailure = nil
+      localMediaOriginalMissing = nil
       mindMapRecord = nil
       ledgerTokenTotals = nil
       detailErrorCode = code
@@ -7935,7 +8484,8 @@ final class HistoryViewModel {
       // 选了平台或博主时笔记本来就进不来，保持原来的等值条件，走更好的索引。
       includesNotes: [HistoryListScope.all, .own, .external].contains(selectedScope)
         && selectedHosts.isEmpty && selectedCreatorID == nil,
-      form: selectedForm
+      form: selectedForm,
+      collectionID: selectedCollectionID
     )
   }
 
@@ -8112,6 +8662,8 @@ final class HistoryViewModel {
   }
 
   private func reloadNavigationCounts() {
+    // 合集的条数跟着内容变（删进回收站、恢复、导入）：和侧栏其它计数一起刷新。
+    reloadCollections()
     guard let history else { return }
     let generation = configurationGeneration
     navigationCountsTask?.cancel()

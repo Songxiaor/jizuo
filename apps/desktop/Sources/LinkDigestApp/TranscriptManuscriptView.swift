@@ -373,6 +373,8 @@ struct TranscriptManuscriptView: View {
 struct ColophonView: View {
   let text: String
   let glyph: SealMark.Glyph
+  /// 下载来的本地文件记着来源网址时，题跋文字可以点开它（2026-09-29）。
+  var link: URL? = nil
   var records: [ProcessStepRecord] = []
   let readingFont: ResolvedReadingFont
   let secondaryTextColor: Color
@@ -385,7 +387,16 @@ struct ColophonView: View {
       Rectangle().fill(hairline).frame(height: 1)
       HStack(spacing: 12) {
         Spacer(minLength: 0)
-        Text(text)
+        Group {
+          if let link {
+            Link(destination: link) {
+              Text(text).underline(true, color: secondaryTextColor.opacity(0.4))
+            }
+            .help(link.absoluteString)
+          } else {
+            Text(text)
+          }
+        }
           .font(readingFont.font(size: max(12, readingFont.bodySize - 3)))
           .tracking(1)
           .foregroundStyle(secondaryTextColor)

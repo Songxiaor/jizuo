@@ -129,9 +129,12 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
     }
   }
 
-  private static func validateLocalMedia(_ fileURL: URL) throws {
+  /// 媒体库里的 mp4/mov、临时抽出的 m4a，以及本机导入时直接引用的原文件（mp3、wav、m4v…，
+  /// 2026-09-29 起不再复制转码进媒体库）。转写只读它、把声音抽到调用方给的临时目录里。
+  static func validateLocalMedia(_ fileURL: URL) throws {
+    let accepted = LocalFileImportReader.mediaExtensions.union(["mp4", "mov", "m4a"])
     guard fileURL.isFileURL,
-          ["mp4", "mov", "m4a"].contains(fileURL.pathExtension.lowercased()),
+          accepted.contains(fileURL.pathExtension.lowercased()),
           FileManager.default.fileExists(atPath: fileURL.path)
     else { throw LocalVideoTranscriptionError.invalidLocalFile }
   }

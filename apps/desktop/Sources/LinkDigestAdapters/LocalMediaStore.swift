@@ -52,6 +52,8 @@ public final class LocalMediaStore: @unchecked Sendable {
   private let storagePreference: UserDefaultsMediaStoragePreferenceStore?
   private let inventoryLock = NSLock()
   private var inventoryProvider: (@Sendable () throws -> [MediaStorageEntry])?
+  private var externalRefresher: (@Sendable (MediaAsset) -> Void)?
+  private let externalBookmarks: ExternalMediaReference.Bookmarks
 
   public init(
     applicationSupportRoot: URL,
@@ -61,6 +63,17 @@ public final class LocalMediaStore: @unchecked Sendable {
     root = applicationSupportRoot.appendingPathComponent("LinkDigest/Media", isDirectory: true)
     self.fileManager = fileManager
     self.storagePreference = storagePreference
+    externalBookmarks = .live
+  }
+
+  init(
+    applicationSupportRoot: URL,
+    externalBookmarks: ExternalMediaReference.Bookmarks
+  ) {
+    root = applicationSupportRoot.appendingPathComponent("LinkDigest/Media", isDirectory: true)
+    fileManager = .default
+    storagePreference = nil
+    self.externalBookmarks = externalBookmarks
   }
 
   public var mediaRoot: URL { root }
@@ -226,6 +239,10 @@ public final class LocalMediaStore: @unchecked Sendable {
   }
 
   public func resolve(_ asset: MediaAsset) throws -> SecurityScopedURLLease {
+    // 本机导入的音视频引用的是原文件，不在 Media/ 也不在自选视频目录里。
+    if ExternalMediaReference.isExternal(asset) {
+      return try resolveExternalReference(asset)
+    }
     if let bookmark = asset.fileBookmark {
       guard let storagePreference else { throw MediaStoragePreferenceError.missingResource }
       return try storagePreference.fileLease(bookmark: bookmark)
@@ -527,6 +544,94 @@ public final class LocalMediaStore: @unchecked Sendable {
     deleteFileIfUnreferenced(relativePath: asset.relativePath, stillReferenced: stillReferenced)
   }
 
+  // MARK: - 引用原文件（本机导入，2026-09-29）
+
+  /// 给拖进来的原文件建一条「只引用、不复制」的媒体记录。
+  ///
+  /// 存法沿用 `media_assets` 现有两列，不改表：
+  /// - `relative_path`：`{sha256}.mp4`（原文件是 .mov 时为 `.mov`）。只是满足既有校验的占位名，
+  ///   `Media/` 里**没有**这个文件；
+  /// - `file_bookmark`：`ExternalMediaReference` 前缀 + 原文件的普通书签。书签认的是文件本身，
+  ///   同一块盘里移动、改名之后照样找得到。
+  /// 因为 `file_bookmark` 非空，它天然享有「用户自己的文件」那套保护：删条目、容量淘汰、
+  /// 转写后清理都不会动它。
+  public func externalReferenceAsset(
+    fileURL: URL,
+    taskID: TaskID,
+    snapshotID: ContentSnapshotID?,
+    contentSHA256: String,
+    byteSize: Int64,
+    durationSeconds: Double?,
+    platform: String,
+    createdAtMilliseconds: Int64
+  ) throws -> MediaAsset {
+    let bookmark: Data
+    do { bookmark = try externalBookmarks.create(fileURL) }
+    catch { throw ExternalMediaReferenceError.unreadable }
+    return MediaAsset(
+      taskID: taskID,
+      snapshotID: snapshotID,
+      relativePath: ExternalMediaReference.placeholderRelativePath(
+        contentSHA256: contentSHA256, fileExtension: fileURL.pathExtension
+      ),
+      fileBookmark: ExternalMediaReference.encode(bookmark: bookmark),
+      contentSHA256: contentSHA256,
+      byteSize: byteSize,
+      durationSeconds: durationSeconds,
+      platform: platform,
+      createdAtMilliseconds: createdAtMilliseconds
+    )
+  }
+
+  /// 找原文件。书签「过期」（文件被移动或改名）时仍用它找到的新位置，并交给
+  /// `externalReferenceRefresher` 把新书签写回库里，下次直接命中。
+  /// 找不到时抛 `originalMissing`，带上最后知道的位置，阅读页据此说明并提供「重新定位…」。
+  public func resolveExternalReference(_ asset: MediaAsset) throws -> SecurityScopedURLLease {
+    guard let bookmark = ExternalMediaReference.bookmark(from: asset.fileBookmark) else {
+      throw ExternalMediaReferenceError.originalMissing(lastKnownPath: nil)
+    }
+    let missing = ExternalMediaReferenceError.originalMissing(
+      lastKnownPath: ExternalMediaReference.lastKnownPath(bookmark: bookmark)
+    )
+    let resolved: (url: URL, isStale: Bool)
+    do { resolved = try externalBookmarks.resolve(bookmark) }
+    catch { throw missing }
+    let values = try? resolved.url.resourceValues(forKeys: [.isRegularFileKey])
+    guard resolved.url.isFileURL, values?.isRegularFile == true else { throw missing }
+    if resolved.isStale, let fresh = try? externalBookmarks.create(resolved.url) {
+      externalReferenceRefresher()?(asset.replacingFileBookmark(ExternalMediaReference.encode(bookmark: fresh)))
+    }
+    return SecurityScopedURLLease(url: resolved.url)
+  }
+
+  /// 「重新定位…」：用户选了一个新位置。只接受和当初导入**同一份内容**的文件（按 SHA-256 核对），
+  /// 条目的身份就是这份内容；换成别的文件等于悄悄把条目换了个芯。
+  /// 要把整个文件读一遍，调用方放到后台线程。
+  public func relocatedExternalReference(_ asset: MediaAsset, to fileURL: URL) throws -> MediaAsset {
+    let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey])
+    guard fileURL.isFileURL, values?.isRegularFile == true else { throw ExternalMediaReferenceError.unreadable }
+    guard Int64(values?.fileSize ?? -1) == asset.byteSize,
+          (try? LocalFileImportReader.contentSHA256(of: fileURL)) == asset.contentSHA256
+    else { throw ExternalMediaReferenceError.contentMismatch }
+    let bookmark: Data
+    do { bookmark = try externalBookmarks.create(fileURL) }
+    catch { throw ExternalMediaReferenceError.unreadable }
+    return asset.replacingFileBookmark(ExternalMediaReference.encode(bookmark: bookmark))
+  }
+
+  /// 书签过期后要把新书签写回库里，但这个 store 不认识仓库：由组装方（本机导入）接进来。
+  public func setExternalReferenceRefresher(_ refresher: (@Sendable (MediaAsset) -> Void)?) {
+    inventoryLock.lock()
+    defer { inventoryLock.unlock() }
+    externalRefresher = refresher
+  }
+
+  private func externalReferenceRefresher() -> (@Sendable (MediaAsset) -> Void)? {
+    inventoryLock.lock()
+    defer { inventoryLock.unlock() }
+    return externalRefresher
+  }
+
   /// ISO BMFF / QuickTime: `ftyp` box within the first 12 bytes (size + 'ftyp').
   private static func isISOBaseMedia(_ data: Data) -> Bool {
     guard data.count >= 12 else { return false }
@@ -542,6 +647,105 @@ public final class LocalMediaStore: @unchecked Sendable {
       }
     }
     return false
+  }
+}
+
+public enum ExternalMediaReferenceError: Error, Sendable, Equatable {
+  /// 书签解析不出来或指向的东西不是文件：被删、被挪到别的盘、所在的移动硬盘没接上。
+  case originalMissing(lastKnownPath: String?)
+  /// 「重新定位」选的文件和当初导入的不是同一份内容。
+  case contentMismatch
+  /// 选的文件读不出来，或者给它建不了书签。
+  case unreadable
+
+  public var userMessage: String {
+    switch self {
+    case .originalMissing:
+      return "找不到原文件：它可能被删除、移到了别的磁盘，或者所在的移动硬盘没有连接。"
+    case .contentMismatch:
+      return "选的文件和当初导入的不是同一份内容（可能被剪辑、转码过，或者选错了文件）。想收新版本的话，直接把它拖进汲作导入成新条目。"
+    case .unreadable:
+      return "这个文件读不出来，可能已损坏或没有读取权限。"
+    }
+  }
+}
+
+/// `media_assets.file_bookmark` 里「引用原文件」的写法：固定前缀 + 普通书签。
+///
+/// 前缀把它和「设置 → 视频存储」自选目录里那种书签分开：那种书签指向汲作自己存的
+/// `{sha}.mp4`，丢了该去设置里重选目录；这种指向用户的原文件，丢了该「重新定位」。
+public enum ExternalMediaReference {
+  static let magic = Data("linkdigest-original-file:v1\n".utf8)
+
+  public static func encode(bookmark: Data) -> Data { magic + bookmark }
+
+  /// 不是这种写法（旧条目、自选目录）时返回 nil。
+  public static func bookmark(from stored: Data?) -> Data? {
+    guard let stored, stored.count > magic.count, stored.starts(with: magic) else { return nil }
+    return Data(stored.dropFirst(magic.count))
+  }
+
+  public static func isExternal(_ asset: MediaAsset) -> Bool { bookmark(from: asset.fileBookmark) != nil }
+
+  /// 书签里记着的最后位置。文件不在了也读得出来，用来告诉用户「原来在哪」。
+  public static func lastKnownPath(of asset: MediaAsset) -> String? {
+    bookmark(from: asset.fileBookmark).flatMap(lastKnownPath(bookmark:))
+  }
+
+  static func lastKnownPath(bookmark: Data) -> String? {
+    URL.resourceValues(forKeys: [.pathKey], fromBookmarkData: bookmark)?.path
+  }
+
+  /// `relative_path` 的占位名：满足既有校验（64 位 sha + .mp4/.mov），Media/ 里没有这个文件。
+  public static func placeholderRelativePath(contentSHA256: String, fileExtension: String) -> String {
+    "\(contentSHA256.lowercased()).\(fileExtension.lowercased() == "mov" ? "mov" : "mp4")"
+  }
+
+  /// 建书签与解析书签。可替换只为测试；线上始终是 `live`。
+  struct Bookmarks: Sendable {
+    let create: @Sendable (URL) throws -> Data
+    let resolve: @Sendable (Data) throws -> (url: URL, isStale: Bool)
+
+    /// 普通书签，不带 security scope：App 不跑沙盒，带 scope 的书签绑签名，每次重新打包
+    /// 签名后就解析不出来（和知识库目录、自选视频目录同一个坑，2026-09-25）。
+    /// 解析时不弹窗、不自动挂载网络盘——详情页打开时不能卡在「正在连接服务器」上；
+    /// 移动硬盘没接上就是「找不到原文件」，接上之后重新打开这条即可。
+    static let live = Bookmarks(
+      create: { url in
+        try url.bookmarkData(options: [], includingResourceValuesForKeys: [.fileSizeKey], relativeTo: nil)
+      },
+      resolve: { data in
+        var stale = false
+        let url = try URL(
+          resolvingBookmarkData: data,
+          options: [.withoutUI, .withoutMounting],
+          relativeTo: nil,
+          bookmarkDataIsStale: &stale
+        )
+        return (url, stale)
+      }
+    )
+  }
+}
+
+extension MediaAsset {
+  /// 换一个书签，其余原样。转写状态写成 `.none` 只是为了过 `attachMedia` 的入口校验：
+  /// 同一 (task, sha) 已有记录时走的是 UPDATE，那条路径不碰转写状态。
+  public func replacingFileBookmark(_ bookmark: Data) -> MediaAsset {
+    MediaAsset(
+      id: id,
+      taskID: taskID,
+      snapshotID: snapshotID,
+      relativePath: relativePath,
+      fileBookmark: bookmark,
+      contentSHA256: contentSHA256,
+      byteSize: byteSize,
+      durationSeconds: durationSeconds,
+      platform: platform,
+      author: author,
+      transcriptionStatus: .none,
+      createdAtMilliseconds: createdAtMilliseconds
+    )
   }
 }
 

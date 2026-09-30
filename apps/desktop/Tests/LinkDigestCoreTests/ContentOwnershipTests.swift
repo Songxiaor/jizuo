@@ -7,8 +7,22 @@ final class ContentOwnershipTests: XCTestCase {
     XCTAssertEqual(ContentOwnership.defaultOwnership(canonicalURL: "linkdigest-work:abc", host: "work"), .own)
     XCTAssertEqual(ContentOwnership.defaultOwnership(canonicalURL: "linkdigest-local://voicememos/x", host: "voicememos"), .own)
     XCTAssertEqual(ContentOwnership.defaultOwnership(canonicalURL: "linkdigest-local://applenotes/x", host: "applenotes"), .own)
-    XCTAssertEqual(ContentOwnership.defaultOwnership(canonicalURL: "linkdigest-local://localfiles/x", host: "localfiles"), .external)
+    // 2026-09-29 起本地文件默认算自有；下载来的由导入时贴的「外部」标签判为外部。
+    XCTAssertEqual(ContentOwnership.defaultOwnership(canonicalURL: "linkdigest-local://localfiles/x", host: "localfiles"), .own)
     XCTAssertEqual(ContentOwnership.defaultOwnership(canonicalURL: "https://x.com/a/status/1", host: "x.com"), .external)
+  }
+
+  /// 下载来的本地文件：导入时按 `tagChanges` 贴「外部」，改回自有时两个保留标签都摘掉。
+  func testDownloadedLocalFileIsTaggedExternalAndCanBeFlippedBack() {
+    let file = "linkdigest-local://localfiles/abc"
+    let toExternal = ContentOwnership.tagChanges(to: .external, canonicalURL: file, host: "localfiles")
+    XCTAssertEqual(toExternal.add, ["外部"])
+    XCTAssertEqual(toExternal.remove, ["自有"])
+    XCTAssertEqual(ContentOwnership.resolve(canonicalURL: file, host: "localfiles", tagNames: toExternal.add), .external)
+    XCTAssertEqual(ContentOwnership.resolve(canonicalURL: file, host: "localfiles", tagNames: []), .own)
+    let back = ContentOwnership.tagChanges(to: .own, canonicalURL: file, host: "localfiles")
+    XCTAssertEqual(back.add, [])
+    XCTAssertEqual(Set(back.remove), ["自有", "外部"])
   }
 
   func testManualTagWinsOverTheDefault() {

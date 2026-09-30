@@ -128,22 +128,25 @@ final class MaterialScopeTests: XCTestCase {
     Set(try repository.historyPage(limit: 50, after: nil, filter: filter).rows.map(\.taskID))
   }
 
-  /// 默认规则：笔记、语音备忘录算自有，拖进来的文件算外部；自有 + 外部 = 全部。
+  /// 默认规则：笔记、语音备忘录、拖进来的本地文件算自有（本地文件自 2026-09-29 起）；
+  /// 下载来的本地文件在导入时贴「外部」。自有 + 外部 = 全部。
   func testOwnershipDefaultsAddUpToTotal() throws {
     try withRepository { repository, now in
       let doc = try file(repository, "a", now: now)
+      let downloaded = try file(repository, "b", now: now)
+      _ = try repository.addTags([ContentOwnership.externalTagName], to: downloaded)
       let recording = try memo(repository, now: now)
       let note = try repository.acceptCapture(.init(document: UserNoteDocument.make(title: "笔记", body: "自己写的"), receivedAtMilliseconds: now)).taskID
 
       let counts = try repository.navigationCounts()
-      XCTAssertEqual(counts.total, 3)
-      XCTAssertEqual(counts.own, 2)
+      XCTAssertEqual(counts.total, 4)
+      XCTAssertEqual(counts.own, 3)
       XCTAssertEqual(counts.external, 1)
       XCTAssertEqual(counts.own + counts.external, counts.total)
-      XCTAssertEqual(counts.all, 2, "MCP 统计的 all 仍只数抓来的资料，不含笔记")
-      XCTAssertEqual(try ids(repository, .init(scope: .own, includesNotes: true)), [recording, note])
-      XCTAssertEqual(try ids(repository, .init(scope: .external, includesNotes: true)), [doc])
-      XCTAssertEqual(try ids(repository, .init(scope: .all, includesNotes: true)), [doc, recording, note])
+      XCTAssertEqual(counts.all, 3, "MCP 统计的 all 仍只数抓来的资料，不含笔记")
+      XCTAssertEqual(try ids(repository, .init(scope: .own, includesNotes: true)), [doc, recording, note])
+      XCTAssertEqual(try ids(repository, .init(scope: .external, includesNotes: true)), [downloaded])
+      XCTAssertEqual(try ids(repository, .init(scope: .all, includesNotes: true)), [doc, downloaded, recording, note])
     }
   }
 
@@ -153,16 +156,20 @@ final class MaterialScopeTests: XCTestCase {
       let doc = try file(repository, "a", now: now)
       let recording = try memo(repository, now: now)
 
-      _ = try repository.addTags([ContentOwnership.ownTagName], to: doc)
+      _ = try repository.addTags([ContentOwnership.externalTagName], to: doc)
       _ = try repository.addTags([ContentOwnership.externalTagName], to: recording)
+      XCTAssertEqual(try ids(repository, .init(scope: .own, includesNotes: true)), [])
+      XCTAssertEqual(try ids(repository, .init(scope: .external, includesNotes: true)), [doc, recording])
+      var counts = try repository.navigationCounts()
+      XCTAssertEqual(counts.own, 0)
+      XCTAssertEqual(counts.external, 2)
+
+      try repository.removeTag(normalizedName: ContentOwnership.externalTagNormalizedName, from: doc)
       XCTAssertEqual(try ids(repository, .init(scope: .own, includesNotes: true)), [doc])
       XCTAssertEqual(try ids(repository, .init(scope: .external, includesNotes: true)), [recording])
-      let counts = try repository.navigationCounts()
+      counts = try repository.navigationCounts()
       XCTAssertEqual(counts.own, 1)
       XCTAssertEqual(counts.external, 1)
-
-      try repository.removeTag(normalizedName: ContentOwnership.ownTagNormalizedName, from: doc)
-      XCTAssertEqual(try ids(repository, .init(scope: .external, includesNotes: true)), [doc, recording])
     }
   }
 

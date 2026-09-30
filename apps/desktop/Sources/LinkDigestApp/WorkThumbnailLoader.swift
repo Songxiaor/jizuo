@@ -83,7 +83,7 @@ actor WorkThumbnailLoader {
 
   func videoPoster(fileURL: URL, pixels: Int = 640) async throws -> WorkThumbnail {
     try Task.checkCancellation()
-    guard let contained = Self.containedInternalVideoFile(fileURL) else {
+    guard let contained = Self.containedInternalVideoFile(fileURL) ?? Self.admittedReferencedVideoFile(fileURL) else {
       // 视频已按「转写后清理」删掉：用清理前存下的那张封面。
       if let saved = Self.savedPosterFileURL(forVideo: fileURL),
          let data = try? Data(contentsOf: saved), !data.isEmpty {
@@ -251,6 +251,26 @@ actor WorkThumbnailLoader {
     guard values?.isRegularFile == true, values?.isSymbolicLink != true else { return nil }
     return url
   }
+
+  /// 本机导入的视频引用的是用户的原文件（2026-09-29），名字不是哈希，过不了上面那道关。
+  /// 由 `HistoryViewModel.localCoverURL` 从媒体库记录（书签）解析出路径后登记；只有登记过的
+  /// 原文件才会被取首帧，卡片数据里的任意路径字符串仍然进不来。只读，不在原文件旁边写任何东西。
+  nonisolated static func admitReferencedVideo(_ fileURL: URL) {
+    let path = fileURL.standardizedFileURL.path
+    referencedVideoLock.withLock { _ = referencedVideoPaths.insert(path) }
+  }
+
+  nonisolated static func admittedReferencedVideoFile(_ fileURL: URL) -> URL? {
+    guard fileURL.isFileURL else { return nil }
+    let url = fileURL.standardizedFileURL
+    guard referencedVideoLock.withLock({ referencedVideoPaths.contains(url.path) }) else { return nil }
+    let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+    guard values?.isRegularFile == true, values?.isSymbolicLink != true else { return nil }
+    return url
+  }
+
+  private static let referencedVideoLock = NSLock()
+  nonisolated(unsafe) private static var referencedVideoPaths = Set<String>()
 
   /// 视频首帧常常是黑场（片头、转场），整排卡片就会出现一格纯黑。
   /// 0.05s 取到全黑时往后再试两个时间点；都黑就报 `blankPoster`，由卡片换成

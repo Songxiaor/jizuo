@@ -2137,6 +2137,11 @@ struct MarkdownContentView: View {
   var secondaryTextColor: Color = .secondary
   var accentColor: Color = .accentColor
   @Binding var showsPlainText: Bool
+
+  /// 文字版心：约 36 字宽。正文、代码块、引用推文共用，右边缘对齐成一条线。
+  private var readingTextMeasure: CGFloat {
+    readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm
+  }
   var showsInlinePlainTextToggle: Bool = true
   /// 正文下方的模块（脑图 / 图片 / 标注 / 标签…）。由详情页按实际存在的模块传入——
   /// 这里不知道页面上有什么，硬猜只会列出点了跳不到的死链接。
@@ -2408,7 +2413,14 @@ struct MarkdownContentView: View {
             InlineArticleGalleryView(urls: urls)
               .id(urls.map(\.path).joined(separator: "|"))
           case let .quotedTweet(quote):
-            QuotedTweetCardView(quote: quote, accentColor: accentColor, onOpenURL: { _ = openValidated($0) })
+            QuotedTweetCardView(
+              quote: quote,
+              readingFont: readingFont,
+              accentColor: accentColor,
+              onOpenURL: { _ = openValidated($0) }
+            )
+            .frame(maxWidth: readingTextMeasure, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
           case let .video(video):
             ArticleInlineVideoCard(
               video: video,
@@ -2590,8 +2602,9 @@ struct MarkdownContentView: View {
         revealText: revealText,
         onRequestEdit: onRequestEdit
       )
-      // 文字收在约 36 字的版心里；图片、代码、表格这些卡片仍用整栏宽（2026-09-28 样稿）。
-      .frame(maxWidth: readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm, alignment: .leading)
+      // 文字收在约 36 字的版心里；代码块、引用推文跟文字同一版心（2026-09-29 走查：
+      // 正文早早换行、代码卡却撑满整栏，右边缘参差）。图片、视频、表格仍用整栏宽。
+      .frame(maxWidth: readingTextMeasure, alignment: .leading)
       .frame(maxWidth: .infinity, alignment: .leading)
     case let .callout(kind, title, text, fold):
       ReadingCalloutCard(
@@ -2610,6 +2623,8 @@ struct MarkdownContentView: View {
       .padding(.bottom, 20)
     case let .code(language, content):
       specialCodeBlock(language: language, content: content)
+        .frame(maxWidth: readingTextMeasure, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.bottom, 20)
     case let .table(headers, rows, alignments):
       markdownTable(headers: headers, rows: rows, alignments: alignments)
@@ -3108,62 +3123,81 @@ struct MarkdownContentView: View {
 
 /// 仿 X 原生引用卡：带边框圆角框，顶部被引作者（加粗），正文正常颜色，图片在
 /// 卡内，底部「查看原推」。整体作为一个视觉整体，区别于作者本人的正文。
+/// 引用推文：左侧一条淡墨细线的引文，不再是灰底圆角卡（2026-09-29：卡片像表单框，
+/// 末尾还挂着折成两行的 t.co 短链）。作者和「查看原推」并成一行小字，正文比正文小一档、略淡。
 struct QuotedTweetCardView: View {
   let quote: LocalMarkdownImageLayout.QuotedTweet
+  /// 引用推文跟正文同一套阅读字体，字号小一档（原来是界面黑体，和宋体正文并排像两本书）。
+  var readingFont: ResolvedReadingFont = .sans
   var accentColor: Color = .accentColor
   let onOpenURL: (URL) -> Void
 
   private var paragraphs: [String] {
     quote.text
       .components(separatedBy: "\n\n")
-      .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+      .map { Self.strippingTrailingShortLinks($0).trimmingCharacters(in: .whitespacesAndNewlines) }
       .filter { !$0.isEmpty }
   }
 
+  /// 去掉段尾的 t.co 短链：那是 X 给配图 / 视频自动加的跳转，读者点了也只是回到原推，
+  /// 而且一长串折成「https://」和「t.co/…」两行。句中的链接不动；原推入口在作者行右边。
+  static func strippingTrailingShortLinks(_ text: String) -> String {
+    text.replacingOccurrences(
+      of: #"(?:[ \t\u00A0]*https?://t\.co/[A-Za-z0-9]+)+\s*$"#,
+      with: "",
+      options: .regularExpression
+    )
+  }
+
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
-      if let author = quote.author, !author.isEmpty {
-        Text(author)
-          .themedFont(.body, weight: .semibold)
-          .foregroundStyle(.primary)
+    VStack(alignment: .leading, spacing: 8) {
+      if quote.author?.isEmpty == false || quote.url != nil {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          if let author = quote.author, !author.isEmpty {
+            Text(author)
+              .font(readingFont.scaled(designSize: 13.5, weight: .medium))
+              .foregroundStyle(.secondary)
+              .lineLimit(1)
+          }
+          Spacer(minLength: 8)
+          if let url = quote.url {
+            Button {
+              onOpenURL(url)
+            } label: {
+              HStack(spacing: 3) {
+                Image(systemName: "arrow.up.right").font(.system(size: DesignTokens.IconSize.inline - 2, weight: .medium))
+                Text("查看原推").themedFont(.caption)
+              }
+              .foregroundStyle(.secondary)
+              .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("在浏览器打开被引用的这条推文")
+          }
+        }
       }
       ForEach(Array(paragraphs.enumerated()), id: \.offset) { _, paragraph in
-        // Text 的 markdown 解析会把 t.co 等裸链接自动做成可点链接。
+        // Text 的 markdown 解析会把句中的裸链接自动做成可点链接。
         Text(LocalizedStringKey(paragraph))
-          .themedFont(.title3)
-          .foregroundStyle(.primary)
+          .font(readingFont.scaled(designSize: 15.5))
+          .foregroundStyle(Color.primary.opacity(0.8))
           .tint(accentColor)
-          .lineSpacing(5)
+          .lineSpacing(6)
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
       }
       ForEach(Array(quote.images.enumerated()), id: \.offset) { _, url in
         InlineArticleImageView(url: url, layout: .gallery)
       }
-      if let url = quote.url {
-        Button {
-          onOpenURL(url)
-        } label: {
-          HStack(spacing: 4) {
-            Image(systemName: "arrow.up.right.square").font(.system(size: DesignTokens.IconSize.inline))
-            Text("查看原推").themedFont(.callout)
-          }
-          .foregroundStyle(.secondary)
-        }
-        .buttonStyle(.plain)
-        .padding(.top, 2)
-      }
     }
-    .padding(14)
+    .padding(.leading, 16)
+    .padding(.vertical, 2)
+    .overlay(alignment: .leading) {
+      Capsule()
+        .fill(Color.primary.opacity(0.16))
+        .frame(width: 2)
+    }
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
-        .fill(Color.primary.opacity(0.03))
-    )
-    .overlay(
-      RoundedRectangle(cornerRadius: DesignTokens.Radius.xl, style: .continuous)
-        .stroke(Color.primary.opacity(0.14), lineWidth: 1)
-    )
     .padding(.bottom, 20)
     .accessibilityIdentifier("history-quoted-tweet-card")
   }

@@ -6,8 +6,8 @@ import Foundation
 /// 这一刀按**说话主体**切，不按渠道切——本机导入的 PDF 可能是别人的研报，
 /// 从 X 抓来的帖子也可能是自己发的。
 ///
-/// 默认按规则判断，不需要 AI：笔记、稿件、作品、备忘录、语音备忘录算自有，
-/// 其余（抓来的网页、帖子、视频，拖进来的文件）算外部。规则判错时用户手动改，
+/// 默认按规则判断，不需要 AI：笔记、稿件、作品、备忘录、语音备忘录、本地文件算自有，
+/// 其余（抓来的网页、帖子、视频）算外部。规则判错时用户手动改，
 /// 改动落在两个保留标签上，和素材类型一样不另建表。
 public enum ContentOwnership: String, Sendable, CaseIterable {
   case own = "自有"
@@ -27,8 +27,16 @@ public enum ContentOwnership: String, Sendable, CaseIterable {
   }
 
   /// 默认算自有的本机来源：备忘录、语音备忘录是用户自己写的、自己录的。
-  /// 本地文件不算——拖进来的文件多半是别人的资料。
-  public static let ownLocalHosts: [String] = [LocalImportSource.appleNotes.rawValue, LocalImportSource.voiceMemos.rawValue]
+  ///
+  /// 本地文件也默认算自有（2026-09-29 Syc 的新规则）：拖进汲作的多是自己的录音、课件、
+  /// 稿子。从外部下载来的文件由导入时的来源标记判为外部——macOS 给下载文件打的
+  /// `com.apple.quarantine`（见 `LocalFileProvenance`）——导入那一刻贴上保留标签「外部」，
+  /// 不靠这里的默认规则。没有下载标记的，按这里算自有。
+  public static let ownLocalHosts: [String] = [
+    LocalImportSource.appleNotes.rawValue,
+    LocalImportSource.voiceMemos.rawValue,
+    LocalImportSource.files.rawValue,
+  ]
 
   /// 不看手动标签时，按内容本身判断出的归属。
   public static func defaultOwnership(canonicalURL: String, host: String) -> ContentOwnership {

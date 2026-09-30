@@ -8,7 +8,7 @@ public final class LocalDatabase: @unchecked Sendable {
   /// 加一次迁移就只改这一行。之前生产代码和测试各自引用「最后那个 Migration0NN」，
   /// 于是每加一次迁移，迁移测试就整批变红——因为它们钉的是一个具体版本号，
   /// 而它们真正想表达的是「跟着最新走」。
-  public static let latestSchemaVersion = Migration023.schemaVersion
+  public static let latestSchemaVersion = Migration024.schemaVersion
 
   enum Backend { case writable(DatabasePool), readOnly(DatabaseQueue) }
 
@@ -170,6 +170,9 @@ public final class LocalDatabase: @unchecked Sendable {
             }
             if version < Migration023.schemaVersion {
               try Migration023.apply(to: db)
+            }
+            if version < Migration024.schemaVersion {
+              try Migration024.apply(to: db)
             }
           }
           // 升级成功了，旧备份就只剩「万一」的价值：留最近 3 份，更早的删掉。

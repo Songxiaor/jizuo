@@ -21,6 +21,9 @@ struct HistoryContentView: View {
   /// 「记一个新灵感」的输入框。
   @State private var isNewSparkPresented = false
   @State private var newSparkText = ""
+  /// 「待转写 → 全部转写」确认前读出的全部条目；非 nil 时弹确认框。
+  @State private var untranscribedBacklogToConfirm: [(taskID: TaskID, name: String)]?
+  @State private var isLoadingUntranscribedBacklog = false
   @State private var douyinProfileImportRequest: DouyinProfileImportRequest?
   /// 有作品的博主删除前先确认；没作品的直接删。
   @State private var creatorPendingDeletion: CreatorSummary?
@@ -49,6 +52,8 @@ struct HistoryContentView: View {
   @AppStorage("history.navigation.creators-expanded") private var navigationCreatorsExpanded = false
   @AppStorage("history.navigation.platforms-expanded") private var navigationPlatformsExpanded = false
   @AppStorage("history.navigation.tags-expanded") private var navigationTagsExpanded = false
+  // 「合集」2026-09-29 新加，默认展开：新分组第一次出现时要让人看见（同「形式」）。
+  @AppStorage("history.navigation.collections-expanded") private var navigationCollectionsExpanded = true
   @State private var didRevealInitialNavigationPlatform = false
   @AppStorage(DesignTokens.Layout.sidebarWidthStorageKey) private var storedSidebarWidth: Double = 0
   /// 三栏的起始宽度只在三栏建立时取一次。直接绑 `storedSidebarWidth` 的话，拖动中
@@ -76,7 +81,8 @@ struct HistoryContentView: View {
   private var theme: HistoryThemeTokens { appearanceTheme.tokens(systemColorScheme: systemColorScheme) }
   /// 主列表的分组。标题为 nil 时不画组头（回收站：按删除时间排，按存入日分组会乱序）。
   private var historyListSections: [HistoryListSectionModel] {
-    if model.selectedScope.isTrashOnly {
+    // 合集按合集里的顺序排，按存入日分组会把顺序切碎。
+    if model.selectedScope.isTrashOnly || model.isBrowsingCollection {
       return [.init(title: nil, entries: Array(model.rows.enumerated()).map { ($0.offset, $0.element) })]
     }
     return HistoryListFinding.sections(for: model.rows).map {
@@ -137,6 +143,8 @@ struct HistoryContentView: View {
       .overlay { InlineImageLightboxOverlay() }
       // 「已复制」药丸浮层：任何复制动作的统一视觉确认。
       .overlay { CopyFeedbackOverlay() }
+      // 合集：新建 / 改名 / 删除的弹窗，和加入、移出之后的一句提示（2026-09-29）。
+      .modifier(CollectionPromptsModifier(model: model))
       // 视频影院放大 overlay（任何来源）：自己的框，替代坑多的原生全屏。
       .overlay { VideoCinemaOverlay() }
       .foregroundStyle(theme.primaryText)
@@ -468,6 +476,20 @@ struct HistoryContentView: View {
               )
             }
           } message: { Text(model.batchSummaryConfirmationMessage) }
+          .alert(
+            "转写 \(untranscribedBacklogToConfirm?.count ?? 0) 条音视频？",
+            isPresented: Binding(
+              get: { untranscribedBacklogToConfirm != nil },
+              set: { if !$0 { untranscribedBacklogToConfirm = nil } }
+            )
+          ) {
+            Button("取消", role: .cancel) { untranscribedBacklogToConfirm = nil }
+            Button("开始转写") {
+              if let items = untranscribedBacklogToConfirm { localImport.transcribeBacklog(items) }
+              untranscribedBacklogToConfirm = nil
+            }
+            .accessibilityIdentifier("untranscribed-bulk-confirm")
+          } message: { Text(untranscribedConfirmationMessage) }
           .alert("批量总结结果", isPresented: $model.isBatchSummaryOutcomePresented) {
             Button("好") { model.dismissBatchSummaryOutcome() }
             if model.batchSummaryOutcomeMessage.contains("失败") {
@@ -756,6 +778,7 @@ struct HistoryContentView: View {
 
   /// 列表列标题：当前看的是哪一处。原来窗口标题固定写「汲作」，不提供任何信息。
   private var listColumnTitle: String {
+    if let collection = model.selectedCollection { return collection.name }
     if let creator = model.selectedCreator { return creator.directoryDisplayName }
     if let form = model.selectedForm { return form.rawValue }
     // 和侧栏行同名（「公众号」「B站」），「其他」一次选中多个小众来源，也要叫「其他」而不是落回「全部」。
@@ -769,6 +792,7 @@ struct HistoryContentView: View {
     case .recent: return "最近 7 天"
     case .unsummarized: return "待总结"
     case .untidied: return "待校对"
+    case .untranscribed: return "待转写"
     case .favorite: return "收藏"
     case .notes: return "笔记"
     case .trash: return "回收站"
@@ -913,6 +937,9 @@ struct HistoryContentView: View {
       if model.selectedScope == .unsummarized, !providerSettings.autoSummarizeNewCaptures {
         unsummarizedAutoSummaryBanner
       }
+      if model.selectedScope == .untranscribed, model.navigationCounts.untranscribed > 0 {
+        untranscribedBulkBanner
+      }
       switch model.listState {
       case .idle where model.rows.isEmpty:
         HistorySkeletonList(theme: theme)
@@ -944,6 +971,18 @@ struct HistoryContentView: View {
           )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-untidied-empty")
+        } else if model.selectedScope == .untranscribed, !model.hasCategoryFilter,
+                  model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          HistoryInlineState(
+            symbol: "waveform",
+            title: "都转写过了",
+            message: "新导入、新同步的音视频还没转成文字时，会出现在这里。",
+            actionTitle: "查看全部",
+            action: { model.selectScope(.all) },
+            seal: (.record, theme.seal.opacity(0.75))
+          )
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityIdentifier("history-untranscribed-empty")
         } else if model.selectedScope == .notes, !model.hasCategoryFilter,
                   model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           HistoryInlineState(
@@ -966,6 +1005,17 @@ struct HistoryContentView: View {
           )
           .frame(maxWidth: .infinity, maxHeight: .infinity)
           .accessibilityIdentifier("history-trash-empty")
+        } else if let collection = model.selectedCollection,
+                  model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+          HistoryInlineState(
+            symbol: CollectionIcon.collection,
+            title: "「\(collection.name)」还是空的",
+            message: "在列表里右键一条内容，选「加入合集」，就会按加入的先后排在这里；多选后可以一起加入。进来之后可以拖动调整顺序。",
+            actionTitle: "去全部里挑",
+            action: { model.selectScope(.all) }
+          )
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityIdentifier("history-collection-empty")
         } else if model.showsCreatorZeroWorks {
           HistoryInlineState(
             symbol: "tray",
@@ -1080,6 +1130,8 @@ struct HistoryContentView: View {
               .listRowSeparator(.hidden)
               .contextMenu { DeferredMenuContent { historyContextMenu(for: row) } }
           }
+          // 合集里可以拖动调整顺序；其它列表按时间排，没有「顺序」可调。
+          .onMove(perform: model.canReorderSelectedCollection ? { model.moveCollectionRows(fromOffsets: $0, toOffset: $1) } : nil)
           } header: {
             if let title = section.title {
               // 和侧栏分组标题同一种写法、同一条左边线（卡片里的图标）。
@@ -1169,6 +1221,7 @@ struct HistoryContentView: View {
     .focusedSceneValue(\.newNote, NewNoteAction { createNote() })
     .focusedSceneValue(\.todayNote, TodayNoteAction { openTodayNote() })
     .focusedSceneValue(\.toggleFavorite, model.canToggleFavorite ? ToggleFavoriteAction { model.toggleFavorite() } : nil)
+    .focusedSceneValue(\.newCollection, model.canEditCollections ? NewCollectionAction { model.requestNewCollection() } : nil)
     .onChange(of: model.selectedHosts) { _, _ in isPlatformGalleryRequested = false }
     // 搜索框失焦且没有搜索词时收回成列头图标，列表多出一行。
     .onChange(of: isSearchFocused) { _, focused in
@@ -1197,9 +1250,76 @@ struct HistoryContentView: View {
     }
   }
 
+  /// 侧栏「合集」（2026-09-29）：一组要按顺序一起看的内容，例如一套教程。放在「视图」之后；
+  /// 每个合集一行（名称 + 条数），标题右侧「＋」新建，右键改名、删除。
+  @ViewBuilder private var collectionsNavigationSection: some View {
+    Section {
+      if navigationCollectionsExpanded {
+        if model.collections.isEmpty {
+          Text("把要按顺序一起看的内容放在一起，例如一套教程。点右边的 ＋ 新建。")
+            .themedFont(.caption)
+            .foregroundStyle(.tertiary)
+            .fixedSize(horizontal: false, vertical: true)
+            .accessibilityIdentifier("history-navigation-collections-empty")
+        } else {
+          ForEach(model.collections) { collection in
+            navigationButton(
+              collection.name,
+              systemImage: CollectionIcon.collection,
+              count: collection.itemCount,
+              selected: model.selectedCollectionID == collection.id && !model.isCreatorDirectoryActive
+            ) {
+              isReadingPlatformGalleryItem = false
+              model.selectCollection(collection.id)
+            }
+            .contextMenu {
+              Button { model.requestRenameCollection(collection) } label: {
+                Label("重命名…", systemImage: "pencil")
+              }
+              .disabled(!model.canEditCollections)
+              Divider()
+              Button(role: .destructive) { model.requestDeleteCollection(collection) } label: {
+                Label("删除合集…", systemImage: "trash")
+              }
+              .disabled(!model.canEditCollections)
+            }
+            .accessibilityIdentifier("history-navigation-collection-\(collection.id.rawValue)")
+          }
+        }
+      }
+    } header: {
+      HStack(spacing: DesignTokens.Space.xs) {
+        navigationSectionHeader("合集", expanded: $navigationCollectionsExpanded)
+          .accessibilityIdentifier("history-navigation-collections-header")
+        Button { model.requestNewCollection() } label: {
+          Image(systemName: "plus")
+            .font(.system(size: DesignTokens.IconSize.inline, weight: .semibold))
+            .foregroundStyle(theme.secondaryText)
+            .frame(width: 20, height: 20)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!model.canEditCollections)
+        .help("新建合集")
+        .accessibilityLabel("新建合集")
+        .accessibilityIdentifier("history-navigation-collection-add")
+      }
+    }
+  }
+
   private var navigationRail: some View {
     ScrollViewReader { proxy in
     List {
+      // 侧栏顶上是宋体「汲作」字标（2026-09-29 方案 C2）：印留给页头那条缝，这里只写名字。
+      Text("汲作")
+        .font(.custom(ReadingFontCatalog.editorialSerifFamily, size: 16).weight(.semibold))
+        .tracking(4)
+        .foregroundStyle(theme.primaryText)
+        .padding(.horizontal, DesignTokens.Space.sm)
+        .padding(.bottom, DesignTokens.Space.xs)
+        .listRowSeparator(.hidden)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityIdentifier("history-sidebar-wordmark")
       // 顶部三个入口按「这条内容是谁说的」切（2026-09-24）：全部 = 自有 + 外部，数字加得上。
       // 汲作是记录平台，不是待办清单：原来的收件箱 / 已归档 / 已使用记的是「处理到哪了」，
       // 那是外部 Agent 或用户自己工作流的事，不占侧栏最显眼的位置。
@@ -1227,9 +1347,8 @@ struct HistoryContentView: View {
         navigationButton("外部", systemImage: OwnershipIcon.external, seal: .external, count: model.navigationCounts.external, selected: model.selectedScope == .external && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.external)
         }
-        .help("别人的内容：抓来的帖子、文章、视频，拖进来的文件。判断错了可以右键改成「自有」")
+        .help("别人的内容：抓来的帖子、文章、视频，从微信、浏览器下载后拖进来的文件。判断错了可以右键改成「自有」")
         .accessibilityIdentifier("history-navigation-external")
-        localSourceRows([LocalImportSource.files.rawValue])
       }
       // 第一组不给标题。它是打开 App 的默认落点，标题不提供任何新信息。
 
@@ -1255,6 +1374,14 @@ struct HistoryContentView: View {
             .help("有转写、还没用模型校对过的内容")
             .accessibilityIdentifier("history-navigation-untidied")
           }
+          // 待转写：带音视频、还没文字稿的，一键排队本机转写（2026-09-30）。清空了就不占一行。
+          if model.navigationCounts.untranscribed > 0 || model.selectedScope == .untranscribed {
+            navigationButton("待转写", systemImage: "waveform", count: model.navigationCounts.untranscribed, selected: model.selectedScope == .untranscribed) {
+              model.selectScope(.untranscribed)
+            }
+            .help("带音视频、还没转成文字的内容")
+            .accessibilityIdentifier("history-navigation-untranscribed")
+          }
           navigationButton("收藏", systemImage: "star", count: model.navigationCounts.favorite, selected: model.selectedScope == .favorite) {
             model.selectScope(.favorite)
           }
@@ -1275,6 +1402,8 @@ struct HistoryContentView: View {
         navigationSectionHeader("视图", expanded: $navigationViewsExpanded)
           .accessibilityIdentifier("history-navigation-views-header")
       }
+
+      collectionsNavigationSection
 
       // 形式：这条内容「是什么」。抓取时按规则判定（`ContentForm`），不需要 AI。
       if !model.navigationCounts.forms.isEmpty {
@@ -1301,12 +1430,17 @@ struct HistoryContentView: View {
       if !model.navigationCounts.platforms.isEmpty {
         // 公共平台各占一行；杂项来源聚合进"待分类"，避免侧栏被长域名占满。
         // 本机来源（备忘录、语音备忘录、本地文件）和外部平台同属「从哪来」，合在一组按条数排。
-        // 本机来源（2026-09-25）挪到「自有 / 外部」下面：备忘录、语音备忘录是自己说的，
-        // 拖进来的本地文件算外部。「来源」只讲外面的平台。
+        // 本机来源（2026-09-25）挪到「自有 / 外部」下面：备忘录、语音备忘录是自己说的。
+        // 本地文件（2026-09-29）回到「来源」：它说的是「从哪个渠道进来」，每一份按下载标记
+        // 各自归自有或外部，不整组挂在任何一边下面。
+        let filesHost = LocalImportSource.files.rawValue
         let knownPlatforms = model.navigationCounts.platforms.filter {
-          HistoryPlatformDisplay.isWellKnown(host: $0.host) && LocalImportSource(rawValue: $0.host) == nil
+          $0.host == filesHost
+            || (HistoryPlatformDisplay.isWellKnown(host: $0.host) && LocalImportSource(rawValue: $0.host) == nil)
         }
-        let miscPlatforms = model.navigationCounts.platforms.filter { !HistoryPlatformDisplay.isWellKnown(host: $0.host) }
+        let miscPlatforms = model.navigationCounts.platforms.filter {
+          $0.host != filesHost && !HistoryPlatformDisplay.isWellKnown(host: $0.host)
+        }
         // 分区标题同样要显式给字体：`Section("平台")` 那种字符串写法的标题是 List
         // 自己渲染的，和行内容一样收不到环境字体。
         Section {
@@ -1565,8 +1699,11 @@ struct HistoryContentView: View {
 
   private var navigationSectionsLayoutKey: String {
     [navigationViewsExpanded, navigationFormsExpanded,
-     navigationCreatorsExpanded, navigationPlatformsExpanded, navigationTagsExpanded]
+     navigationCreatorsExpanded, navigationPlatformsExpanded, navigationTagsExpanded,
+     navigationCollectionsExpanded]
       .map { $0 ? "1" : "0" }.joined()
+      // 合集从无到有（第一个合集建出来）时，分组里后插入的行同样不刷新，跟着重建一次。
+      + "-\(model.collections.count)"
   }
 
   private func navigationPlatformScrollTarget(_ hosts: Set<String>) -> String? {
@@ -1665,7 +1802,8 @@ struct HistoryContentView: View {
         // 「自有 / 外部」用「作 / 汲」两方印的墨线稿（2026-09-28 自有风格），导航和
         // 列表、题跋里的印是同一套语言；其余一律线性图标，选中也不换实心。
         if let seal {
-          SealMark(glyph: seal, size: 16, color: selected ? theme.accent : theme.secondaryText, showsInnerFrame: false)
+          // 选中时上朱：导航里唯一一处朱色，和列表的「作」、页头的主印连成一套（2026-09-29）。
+          SealMark(glyph: seal, size: 16, color: selected ? theme.seal : theme.secondaryText, showsInnerFrame: false)
             .frame(width: 18)
         } else {
           Image(systemName: systemImage)
@@ -2036,11 +2174,16 @@ struct HistoryContentView: View {
   private var showsOwnSealInList: Bool {
     if [.own, .external, .notes].contains(model.selectedScope) { return false }
     let hosts = model.selectedHosts
-    if !hosts.isEmpty, hosts.isSubset(of: Set(ContentOwnership.ownLocalHosts)) { return false }
+    // 只看备忘录、语音备忘录时整列都是自有，行尾的「作」印是噪音；本地文件自有、外部混着，照常标。
+    let alwaysOwnHosts: Set<String> = [LocalImportSource.appleNotes.rawValue, LocalImportSource.voiceMemos.rawValue]
+    if !hosts.isEmpty, hosts.isSubset(of: alwaysOwnHosts) { return false }
     return true
   }
 
   private var listSearchPlaceholder: String {
+    if model.selectedCollection != nil {
+      return "在这个合集里搜标题、正文、总结、标签"
+    }
     if model.selectedCreator != nil {
       return "搜索该博主的标题、正文、总结、标签"
     }
@@ -2048,6 +2191,7 @@ struct HistoryContentView: View {
     case .notes: return "搜索笔记标题、正文、标签"
     case .unsummarized: return "搜索待总结的标题、正文、标签"
     case .untidied: return "搜索待校对的标题、正文、标签"
+    case .untranscribed: return "搜索待转写的标题、正文、标签"
     case .favorite: return "搜索收藏的标题、正文、总结、标签"
     case .own: return "搜索自有内容的标题、正文、总结、标签"
     case .external: return "搜索外部内容的标题、正文、总结、标签"
@@ -2062,7 +2206,7 @@ struct HistoryContentView: View {
   private var hasClearableListFilters: Bool {
     !model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       || model.hasCategoryFilter
-      || ([HistoryListScope.recent, .unsummarized, .untidied, .favorite].contains(model.selectedScope) && !model.isCreatorDirectoryActive)
+      || ([HistoryListScope.recent, .unsummarized, .untidied, .untranscribed, .favorite].contains(model.selectedScope) && !model.isCreatorDirectoryActive)
   }
 
   private var listScopeFilterTitle: String? {
@@ -2072,6 +2216,7 @@ struct HistoryContentView: View {
     case .recent: return "最近 7 天"
     case .unsummarized: return "待总结"
     case .untidied: return "待校对"
+    case .untranscribed: return "待转写"
     case .favorite: return "收藏"
     // 自有、外部的名字已经写在列表标题上，不再重复成一个筛选胶囊。
     case .own, .external: return nil
@@ -2087,6 +2232,7 @@ struct HistoryContentView: View {
     if listScopeFilterTitle != nil { count += 1 }
     if model.selectedCreator != nil { count += 1 }
     if model.selectedForm != nil { count += 1 }
+    if model.selectedCollection != nil { count += 1 }
     count += model.selectedHosts.count
     count += activeFilterTags.count
     return count
@@ -2095,6 +2241,8 @@ struct HistoryContentView: View {
   private func clearListFilters() {
     let scope = model.selectedScope
     model.searchText = ""
+    // 在合集里只清搜索词，人还留在这个合集；要离开点侧栏或合集那枚筛选片的 ✕。
+    if model.isBrowsingCollection { return }
     model.selectScope([HistoryListScope.notes, .drafts, .works, .own, .external].contains(scope) ? scope : .all)
   }
 
@@ -2127,6 +2275,9 @@ struct HistoryContentView: View {
           }
           if let form = model.selectedForm {
             filterChip(form.rawValue) { model.clearFormSelection() }
+          }
+          if let collection = model.selectedCollection {
+            filterChip(collection.name) { model.selectScope(.all) }
           }
           if let creator = model.selectedCreator {
             filterChip(creator.listingTitle) { model.selectCreator(creator.id) }
@@ -2287,6 +2438,7 @@ struct HistoryContentView: View {
     .disabled(model.isReadOnly || model.isDeleting)
     .accessibilityIdentifier("history-context-add-tag")
     materialContextMenu(for: row)
+    CollectionMenuItems(model: model, taskIDs: model.collectionTargets(for: row.taskID))
     Button { summarizeSingle(row) } label: {
       Label(row.hasSummary == true ? "重新生成总结" : "总结", systemImage: MenuIcon.summarize)
     }
@@ -2362,6 +2514,76 @@ struct HistoryContentView: View {
   /// 造成的后果旁边。
   private var unsummarizedBulkCandidates: [TaskID] {
     Array(model.rows.prefix(20)).map(\.taskID)
+  }
+
+  /// 「待转写」列表顶上：一共多少条、多长，一键全部排队本机转写。
+  @ViewBuilder private var untranscribedBulkBanner: some View {
+    let count = model.navigationCounts.untranscribed - model.navigationCounts.untranscribedFailed
+    let failed = model.navigationCounts.untranscribedFailed
+    let isRunning = localImport.isTranscriptionQueueRunning
+    // 列表这一栏很窄：数字和按钮占第一行，说明另起一行，不和按钮挤在同一排。
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(spacing: DesignTokens.Space.xs) {
+        Image(systemName: "waveform")
+          .foregroundStyle(theme.info)
+          .accessibilityHidden(true)
+        Text(untranscribedSummaryText(count: count))
+          .themedFont(.caption, weight: .semibold)
+          .lineLimit(1)
+          .minimumScaleFactor(0.85)
+        Spacer(minLength: DesignTokens.Space.xs)
+        Button(isLoadingUntranscribedBacklog ? "正在清点…" : "全部转写…") {
+          isLoadingUntranscribedBacklog = true
+          Task {
+            let items = await model.loadUntranscribedBacklog()
+            isLoadingUntranscribedBacklog = false
+            if let items, !items.isEmpty { untranscribedBacklogToConfirm = items }
+          }
+        }
+        .buttonStyle(.borderless)
+        .themedFont(.caption, weight: .medium)
+        .fixedSize()
+        .disabled(count <= 0 || isRunning || isLoadingUntranscribedBacklog || model.isReadOnly)
+        .help(isRunning ? "已经在转写了，进度在窗口右下角" : "把这里的全部音视频排队转写；开始前会先确认条数和总时长")
+        .accessibilityIdentifier("untranscribed-bulk-transcribe")
+      }
+      Text(untranscribedBannerDetail(isRunning: isRunning, failed: failed))
+        .themedFont(.caption2)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+    }
+    .padding(.horizontal, DesignTokens.Space.sm)
+    .padding(.vertical, DesignTokens.Space.sm)
+    .background(theme.info.opacity(0.10), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
+    .padding(.horizontal, 10)
+    .padding(.bottom, 8)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("untranscribed-bulk-banner")
+  }
+
+  private func untranscribedBannerDetail(isRunning: Bool, failed: Int) -> String {
+    let base = isRunning ? "正在排队转写，进度在窗口右下角，转好的会从这里消失。" : "本机听写，免费、不上传；一条一条转，随时可以停。"
+    guard failed > 0 else { return base }
+    return base + "另有 \(failed) 条上次没转成（多半没有中文人声），会跳过。"
+  }
+
+  private func untranscribedSummaryText(count: Int) -> String {
+    let duration = Self.roughDuration(model.navigationCounts.untranscribedSeconds)
+    return duration.map { "可转 \(count) 条 · 约 \($0)" } ?? "可转 \(count) 条"
+  }
+
+  private var untranscribedConfirmationMessage: String {
+    let duration = Self.roughDuration(model.navigationCounts.untranscribedSeconds)
+    let length = duration.map { "加起来约 \($0)。" } ?? ""
+    return "\(length)用本机听写逐条转写，免费、不上传，不会自动总结。时长越长越久，期间电脑会比较忙；可以随时在窗口右下角停止，已经转好的会留着。"
+  }
+
+  /// 「约 56 小时」「约 40 分钟」；没有时长时返回 nil。
+  static func roughDuration(_ seconds: Double) -> String? {
+    guard seconds >= 60 else { return nil }
+    let hours = seconds / 3600
+    if hours >= 1 { return "\(Int(hours.rounded())) 小时" }
+    return "\(Int((seconds / 60).rounded())) 分钟"
   }
 
   @ViewBuilder private var unsummarizedAutoSummaryBanner: some View {
@@ -3141,7 +3363,9 @@ struct HistoryContentView: View {
         HistoryInlineState(
           symbol: "sidebar.left",
           title: "从左边选一条内容",
-          message: "点列表里的任意一条，就会在这里打开。"
+          message: "点列表里的任意一条，就会在这里打开。",
+          // 每次打开 App 最先看到的就是这一屏：一枚等着盖的「汲」印位，不用通用侧栏图标。
+          seal: (.external, theme.seal.opacity(0.75))
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("history-select-item-detail")
@@ -3607,6 +3831,7 @@ private struct HistoryMultiSelectionPanel: View {
       case .recent: parts.append("最近 7 天")
       case .unsummarized: parts.append("待总结")
       case .untidied: parts.append("待校对")
+      case .untranscribed: parts.append("待转写")
       case .favorite: parts.append("收藏")
       case .own: parts.append("自有")
       case .external: parts.append("外部")
@@ -4458,8 +4683,9 @@ private struct HistoryDetailView: View, Equatable {
       LocalMarkdownImageLayout.firstVideoMarkerRange(in: snapshot.bodyText) != nil
     }
   }
-  /// 抖音、小红书这类作品的短配文不是文章：一句话用 20pt 宋体排成正文开头很怪。
-  /// 300 字以内的配文改用界面无衬线字、不超过 15pt；长文仍走用户选的阅读字体。
+  /// 抖音、小红书这类作品的短配文不是文章：一句话用大号正文字排在开头很怪。
+  /// 300 字以内的配文字号不超过 15pt；长文仍走用户选的阅读字号。
+  /// 字体跟阅读字体走（2026-09-29 走查：小红书配文黑体、X 帖子宋体，换一条字体就变）。
   private func sourcePaneReadingFont(_ snapshot: ContentSnapshot) -> ResolvedReadingFont {
     // 「短正文用黑体」是给社交短帖的；自己写的笔记、作品和标题同一套阅读字体
     // （2026-09-29 走查：笔记标题宋体、正文黑体，同一页两种字）。
@@ -4474,7 +4700,7 @@ private struct HistoryDetailView: View, Equatable {
       LayeredSourceDocument.body(of: snapshot).trimmingCharacters(in: .whitespacesAndNewlines)
     }
     guard !body.isEmpty, body.count <= 300 else { return readingFont }
-    return ResolvedReadingFont(face: .sans, bodySize: min(readingFont.bodySize, 15))
+    return ResolvedReadingFont(face: readingFont.face, bodySize: min(readingFont.bodySize, 15))
   }
 
   private var isVideoNativeWork: Bool {
@@ -4798,6 +5024,67 @@ private struct HistoryDetailView: View, Equatable {
             // 容器自己的标识不能盖掉里面按钮的标识。
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier("history-video-local-cleared")
+          } else if let missing = model.localMediaOriginalMissing, missing.taskID == detail.task.id {
+            // 本机导入的音视频只引用原文件（2026-09-29）：原文件不在了就说清楚去哪找、怎么接回来。
+            VStack(alignment: .leading, spacing: 8) {
+              Label(
+                missing.fileName.map { "找不到原文件「\($0)」" } ?? "找不到原文件",
+                systemImage: "questionmark.folder"
+              )
+              .foregroundStyle(theme.warning)
+              Text("它可能被删除、移到了别的磁盘，或者所在的移动硬盘没有连接。转写文字、总结和笔记都还在，不受影响。接上硬盘后重新打开这条即可；文件换了位置就点「重新定位…」找到它。")
+                .themedFont(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+              if let path = missing.lastKnownPath {
+                Text("原来的位置：\(path)")
+                  .themedFont(.caption)
+                  .foregroundStyle(.tertiary)
+                  .lineLimit(2)
+                  .truncationMode(.middle)
+                  .textSelection(.enabled)
+              }
+              HStack(spacing: DesignTokens.Space.sm) {
+                Button {
+                  let panel = NSOpenPanel()
+                  panel.title = "重新定位原文件"
+                  panel.prompt = "就是它"
+                  panel.message = "找到「\(missing.fileName ?? "原文件")」现在的位置。只接受和当初导入的同一份文件。"
+                  panel.allowsMultipleSelection = false
+                  panel.canChooseDirectories = false
+                  panel.canChooseFiles = true
+                  if let path = missing.lastKnownPath {
+                    panel.directoryURL = URL(fileURLWithPath: (path as NSString).deletingLastPathComponent, isDirectory: true)
+                  }
+                  guard panel.runModal() == .OK, let url = panel.url else { return }
+                  model.relocateOriginalMedia(to: url)
+                } label: {
+                  if model.originalRelocationState == .verifying {
+                    HStack(spacing: 6) {
+                      ProgressView().controlSize(.small)
+                      Text("正在核对…")
+                    }
+                  } else {
+                    Label("重新定位…", systemImage: "scope")
+                  }
+                }
+                .buttonStyle(.appNormal)
+                .disabled(model.originalRelocationState == .verifying || model.isReadOnly)
+                .accessibilityIdentifier("history-media-original-relocate")
+              }
+              if case let .failed(message) = model.originalRelocationState {
+                Text(message)
+                  .themedFont(.caption)
+                  .foregroundStyle(theme.warning)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
+            }
+            .padding(14)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(theme.warning.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
+            .padding(.top, 14)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier("history-media-original-missing")
           } else if let failure = model.localMediaResolutionFailure {
             VStack(alignment: .leading, spacing: 8) {
               Label(failure, systemImage: "externaldrive.badge.exclamationmark")
@@ -4919,7 +5206,8 @@ private struct HistoryDetailView: View, Equatable {
 
         // 摘录是「读别人的东西时把话摘出来」。在自己写的东西下面再挂一个
         // 可写的框，等于同一页里两个地方都能写，谁也说不清该写哪个。
-        if !isOwnWriting {
+        // 没有摘录时整块不挂：空的 VStack 也吃掉上边距，正文和「添加笔记」之间就空出一大段。
+        if !isOwnWriting, !model.taskExcerpts.isEmpty || model.annotationFailureMessage != nil {
           AnnotationSectionView(taskID: detail.task.id, model: model, showsNoteEditor: false)
             .padding(.top, 20)
             .id(ReadingAnchor.module("annotations"))
@@ -4933,6 +5221,7 @@ private struct HistoryDetailView: View, Equatable {
           ColophonView(
             text: colophonText,
             glyph: colophonGlyph,
+            link: colophonDownloadSource?.link,
             records: completedStepRecords,
             readingFont: readingFont,
             secondaryTextColor: theme.secondaryText,
@@ -5204,6 +5493,12 @@ private struct HistoryDetailView: View, Equatable {
                 host: HistoryPlatformRegistry.canonicalHost(for: URLComponents(string: detail.task.canonicalURL)?.host ?? ""),
                 tagNames: detail.tags.map(\.name)
               )
+            }
+          }
+          // 合集：「加入合集 ▸」和（正在看某个合集时）「从此合集移出」，和列表右键同一份。
+          if model.canEditCollections, model.selectedScope != .trash {
+            Section {
+              CollectionMenuItems(model: model, taskIDs: [detail.task.id])
             }
           }
           AdjacentItemMenuSection(model: model)
@@ -5820,7 +6115,19 @@ private struct HistoryDetailView: View, Equatable {
       // 吸顶表头叠在滚动区外面，而正文那份在滚动区里面——常驻滚动条占着右边 11pt。
       // 不扣掉这一条，表头一吸顶右边的按钮就往右跳 11pt（2026-09-24 走查）。
       .padding(.trailing, SubtleScroller.trackWidth)
-      .background(.bar)
+      // 实底，不用 `.bar`：半透明材质下正文从页签底下透出来，被切成半行（2026-09-29 走查）。
+      // 底色一直铺到窗口顶、盖住工具栏那段：只铺表头自己时，工具栏的半透明渐变和实底
+      // 表头之间露出一条缝，封面大图滚上去会被夹成一条彩色碎片（2026-09-29 Syc 截图）。
+      .background {
+        Group {
+          if theme.isNative {
+            Rectangle().fill(.background)
+          } else {
+            theme.card
+          }
+        }
+        .ignoresSafeArea(edges: .top)
+      }
       .overlay(alignment: .bottom) { Divider() }
       .accessibilityIdentifier("history-reading-header-pinned")
   }
@@ -5959,7 +6266,9 @@ private struct HistoryDetailView: View, Equatable {
         kind: kind == .translate ? .translate : .summarize
       )
       let blockedReason = kind == .translate ? translateUnavailableReason : summarizeUnavailableReason
-      Button(isQueued ? "已排队\(title)" : title) { startRun(kind) }
+      // 按钮写成「生成总结」而不是「总结」：它紧挨着页签，只写两个字像是切到「总结」页，
+      // 一点却开始调用模型、花 token（2026-09-29 走查误点过）。
+      Button(isQueued ? "已排队\(title)" : "生成\(title)") { startRun(kind) }
         .buttonStyle(.bordered)
         .disabled(blockedReason != nil)
         .help(
@@ -6685,6 +6994,7 @@ private struct HistoryDetailView: View, Equatable {
             if isReadingHeaderPinned != pinned { isReadingHeaderPinned = pinned }
           }
         Divider()
+          .overlay(alignment: .leading) { readingSeamSeal }
       }
       content
         .opacity(isShowingUntidiedTranscript ? 0.6 : 1)
@@ -6694,6 +7004,23 @@ private struct HistoryDetailView: View, Equatable {
     .padding(.top, 0)
     .padding(.bottom, DesignTokens.Space.lg)
     .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// 骑缝章（2026-09-29 Syc 选定方案 C2）：一枚「汲 / 作」压在页头和正文之间那条缝的起头，
+  /// 挂进左页边，分隔线从印身后接出去。页签、按钮都不让位；左页边本来就是挂东西的地方
+  /// （逐字稿的时间码也挂在这里）。整页只这一枚归属印，工序印仍在处理面板和页尾题跋。
+  private var readingSeamSeal: some View {
+    let size: CGFloat = 28
+    let gap: CGFloat = 8
+    return HStack(spacing: 0) {
+      SealMark(glyph: colophonGlyph, size: size, color: theme.seal, style: .stamped, rotation: -4)
+      Rectangle()
+        .fill(Color(nsColor: .separatorColor))
+        .frame(width: gap, height: 1)
+    }
+    .offset(x: -(size + gap))
+    .help(colophonGlyph == .own ? "作：自己写下的" : "汲：从外面收来的")
+    .accessibilityIdentifier("history-reading-seam-seal")
   }
 
   private var showsReadingSurface: Bool {
@@ -7726,9 +8053,18 @@ private struct HistoryDetailView: View, Equatable {
   private var colophonText: String {
     let date = ColophonView.chineseDate(Date(timeIntervalSince1970: Double(detail.task.createdAtMilliseconds) / 1_000))
     let host = HistoryPlatformRegistry.canonicalHost(for: URLComponents(string: detail.task.canonicalURL)?.host ?? "")
-    let platform = HistoryPlatformDisplay.name(forHost: host)
+    // 下载来的本地文件写它从哪个 App 来：「九月二十九日汲自微信」（来源在导入时记进了 source_label）。
+    let platform = colophonDownloadSource?.displaySourceName ?? HistoryPlatformDisplay.name(forHost: host)
     // 做过哪些工序由后面那排章来说，文字只记何时从哪里来。
-    return colophonGlyph == .external ? "\(date)汲自\(platform)" : "\(date)记"
+    return colophonGlyph == .external ? LocalFileProvenance.joined("\(date)汲自", platform) : "\(date)记"
+  }
+
+  /// 本地文件导入时读到的下载来源（没有下载标记、或不是本地文件时为 nil）。有网址时题跋可以点开。
+  private var colophonDownloadSource: LocalFileProvenance? {
+    guard colophonGlyph == .external,
+          let label = detail.snapshots.first(where: { $0.platform == LocalImportSource.files.rawValue })?.sourceLabel
+    else { return nil }
+    return LocalFileProvenance.parse(sourceLabel: label)
   }
 
   private var colophonGlyph: SealMark.Glyph {
@@ -8950,6 +9286,15 @@ struct ToggleFavoriteAction: Equatable {
 
 struct ToggleFavoriteKey: FocusedValueKey { typealias Value = ToggleFavoriteAction }
 
+/// 菜单命令句柄：新建合集（文件菜单）。侧栏的「＋」挂在分组标题里，辅助功能会把它并进标题，
+/// 读屏和自动化按不到；菜单项给它们一个能直接按的入口。
+struct NewCollectionAction: Equatable {
+  static func == (lhs: Self, rhs: Self) -> Bool { true }
+  let run: () -> Void
+}
+
+struct NewCollectionKey: FocusedValueKey { typealias Value = NewCollectionAction }
+
 extension FocusedValues {
   var newNote: NewNoteAction? {
     get { self[NewNoteKey.self] }
@@ -8962,6 +9307,10 @@ extension FocusedValues {
   var toggleFavorite: ToggleFavoriteAction? {
     get { self[ToggleFavoriteKey.self] }
     set { self[ToggleFavoriteKey.self] = newValue }
+  }
+  var newCollection: NewCollectionAction? {
+    get { self[NewCollectionKey.self] }
+    set { self[NewCollectionKey.self] = newValue }
   }
 }
 

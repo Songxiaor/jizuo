@@ -1820,6 +1820,12 @@ struct MainWindowLaunchGuard: ViewModifier {
             // 必须排在 manualLink.configure 之后：导入与快速记录都经它的 ingestor
             // 落库。先接上的话，菜单在那一刻读到「还不能导入」就一直灰着。
             localImport.configure(history: history, manualLink: manualLink, historyModel: historyModel)
+            // 拖进一个文件夹：导完后按文件顺序自动建（或更新）同名合集（2026-09-29 合集第一期）。
+            localImport.onFolderImported = { [weak historyModel] folderName, folderURL, orderedTaskIDs in
+              historyModel?.handleImportedFolder(
+                folderName: folderName, folderURL: folderURL, orderedTaskIDs: orderedTaskIDs
+              )
+            }
             quickCapture.configure(history: history, manualLink: manualLink, historyModel: historyModel)
           }
           #if DEBUG
@@ -2076,6 +2082,7 @@ private struct LinkDigestCommands: Commands {
   @FocusedValue(\.todayNote) private var todayNote
   @FocusedValue(\.focusHistorySearch) private var focusHistorySearch
   @FocusedValue(\.toggleFavorite) private var toggleFavorite
+  @FocusedValue(\.newCollection) private var newCollection
   @AppStorage(ReadingFontSize.storageKey) private var readingFontSizeRaw = Double(ReadingFontSize.default)
   @AppStorage(ReadingLayoutWidth.storageKey) private var readingUsesWideLayout = false
 
@@ -2103,6 +2110,8 @@ private struct LinkDigestCommands: Commands {
       // 不一定跟着刷新，实测启动后会一直灰着。改为常亮，未就绪时由控制器说明原因。
       Button("导入本地文件…") { localImport.chooseFiles() }
         .keyboardShortcut("i", modifiers: [.command, .shift])
+      Button("新建合集…") { newCollection?.run() }
+        .disabled(newCollection == nil)
       Button("同步语音备忘录") { localImport.syncVoiceMemos() }
       Button("同步备忘录") { localImport.syncAppleNotes() }
     }

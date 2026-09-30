@@ -30,6 +30,9 @@ public enum HistoryListScope: String, Sendable, Equatable, CaseIterable {
   case unsummarized
   /// 待校对：有本机转写、还没用模型校对过（2026-09-28 工序印：缺「校」这枚章）。
   case untidied
+  /// 待转写：带音视频、还没有文字稿的（2026-09-30）。以前导入的、同步来的语音备忘录、
+  /// 抓来没转的视频都在这里，可以一键排队本机转写。
+  case untranscribed
   case favorite
   /// 自有：以用户自己为说话主体的内容——笔记、作品、备忘录、语音备忘录，
   /// 以及被手动改成「自有」的资料。与 `.external` 互补，两者之和 = 全部。
@@ -114,6 +117,12 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   public let unsummarized: Int
   /// 有转写、还没校对的条数（侧栏「待校对」）。
   public let untidied: Int
+  /// 带音视频、还没转写的条数（侧栏「待转写」）。
+  public let untranscribed: Int
+  /// 这些待转写音视频加起来多长（秒），给「全部转写」前说清要转多久；没记时长的不算。
+  public let untranscribedSeconds: Double
+  /// 其中上次本机转写失败的条数（多半没有中文人声）。「全部转写」默认跳过它们，时长也不算。
+  public let untranscribedFailed: Int
   public let favorite: Int
   /// 侧栏「全部」：资料 + 笔记 + 作品（稿件是过程，不算）。`all` 仍只数抓来的资料，
   /// 给 MCP 统计等既有口径用。
@@ -146,6 +155,9 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     recent: Int = 0,
     unsummarized: Int = 0,
     untidied: Int = 0,
+    untranscribed: Int = 0,
+    untranscribedSeconds: Double = 0,
+    untranscribedFailed: Int = 0,
     favorite: Int = 0,
     total: Int = 0,
     own: Int = 0,
@@ -163,6 +175,9 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     self.recent = recent
     self.unsummarized = unsummarized
     self.untidied = untidied
+    self.untranscribed = untranscribed
+    self.untranscribedSeconds = untranscribedSeconds
+    self.untranscribedFailed = untranscribedFailed
     self.favorite = favorite
     self.total = total
     self.own = own
@@ -343,6 +358,8 @@ public struct HistoryListFilter: Sendable, Equatable {
   public let excludesUsed: Bool
   /// 只在这些条目里查（「按意思搜」先按向量挑出候选，再套用当前筛选）。nil = 不限；空数组 = 一条也不要。
   public let onlyTaskIDs: [TaskID]?
+  /// 只看这个合集里的内容，并按合集里的顺序排（不按时间）。nil = 不限。
+  public let collectionID: CollectionID?
 
   public init(
     tagNames: [String] = [],
@@ -355,7 +372,8 @@ public struct HistoryListFilter: Sendable, Equatable {
     includesArchivesInScopes: Bool = false,
     form: ContentForm? = nil,
     excludesUsed: Bool = false,
-    onlyTaskIDs: [TaskID]? = nil
+    onlyTaskIDs: [TaskID]? = nil,
+    collectionID: CollectionID? = nil
   ) {
     var seen = Set<String>()
     tagNormalizedNames = tagNames.compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName }
@@ -372,6 +390,7 @@ public struct HistoryListFilter: Sendable, Equatable {
     self.form = form
     self.excludesUsed = excludesUsed
     self.onlyTaskIDs = onlyTaskIDs
+    self.collectionID = collectionID
   }
 
   public static let none = HistoryListFilter()
@@ -382,7 +401,7 @@ public struct HistoryListFilter: Sendable, Equatable {
       tagNames: tagNormalizedNames, hosts: hosts, scope: scope,
       searchText: searchText, creatorID: creatorID, includesNotes: includesNotes,
       includesArchivesInScopes: includesArchivesInScopes, form: form, excludesUsed: excludesUsed,
-      onlyTaskIDs: onlyTaskIDs
+      onlyTaskIDs: onlyTaskIDs, collectionID: collectionID
     )
   }
 
@@ -392,7 +411,7 @@ public struct HistoryListFilter: Sendable, Equatable {
       tagNames: tagNormalizedNames, hosts: hosts, scope: scope,
       searchText: "", creatorID: creatorID, ordersBySavedTime: ordersBySavedTime, includesNotes: includesNotes,
       includesArchivesInScopes: includesArchivesInScopes, form: form, excludesUsed: excludesUsed,
-      onlyTaskIDs: taskIDs
+      onlyTaskIDs: taskIDs, collectionID: collectionID
     )
   }
 }

@@ -109,15 +109,38 @@ final class LocalImportAdaptersTests: XCTestCase {
     }
   }
 
-  /// WAV 这类非 MPEG-4 音频要转成 M4A，媒体库、播放器和转写才认。
+  /// 语音备忘录这类要复制进媒体库的录音，统一转成 M4A，媒体库、播放器和转写才认。
   func testAudioIsNormalizedToMPEG4Audio() async throws {
     let url = workspace.appendingPathComponent("录音.wav")
     try makeWAV(at: url, seconds: 1)
-    let content = try await LocalFileImportReader().read(url)
+    let content = try await LocalFileImportReader().readAudio(url)
     guard case let .media(data, duration, hasVideo) = content else { return XCTFail("应当读成媒体") }
     XCTAssertFalse(hasVideo)
     XCTAssertEqual(String(decoding: data[4..<8], as: UTF8.self), "ftyp")
     XCTAssertEqual(try XCTUnwrap(duration), 1, accuracy: 0.2)
+  }
+
+  /// 拖进来的音视频只引用原文件（2026-09-29）：读出时长和有没有画面，不读字节、不转码。
+  func testDroppedAudioIsProbedWithoutCopying() async throws {
+    let url = workspace.appendingPathComponent("讲座.wav")
+    try makeWAV(at: url, seconds: 1)
+    let before = try FileManager.default.contentsOfDirectory(atPath: workspace.path)
+    let content = try await LocalFileImportReader().read(url)
+    guard case let .mediaFile(duration, hasVideo) = content else { return XCTFail("应当只探测、不复制") }
+    XCTAssertFalse(hasVideo)
+    XCTAssertEqual(try XCTUnwrap(duration), 1, accuracy: 0.2)
+    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: workspace.path), before, "不应该在旁边多写任何文件")
+  }
+
+  func testBrokenMediaIsExplainedAsUnreadable() async throws {
+    let url = workspace.appendingPathComponent("坏的.mp4")
+    try Data("not a movie".utf8).write(to: url)
+    do {
+      _ = try await LocalFileImportReader().read(url)
+      XCTFail("坏文件不该导入")
+    } catch {
+      XCTAssertEqual(error as? LocalFileImportError, .unreadable)
+    }
   }
 
   func testContentHashIsStableAcrossNames() throws {

@@ -5,8 +5,11 @@ public struct HistoryPageCursor: Codable, Sendable, Equatable {
   public let taskID: TaskID
   /// 按存入时间排序的列表用这个值翻页；按更新时间排序的旧路径为 nil。
   public let savedAtMilliseconds: Int64?
-  public init(updatedAtMilliseconds: Int64, taskID: TaskID, savedAtMilliseconds: Int64? = nil) {
+  /// 在合集里按顺序翻页时用：上一页最后一条在合集里的位置。其余列表为 nil。
+  public let collectionPosition: Int64?
+  public init(updatedAtMilliseconds: Int64, taskID: TaskID, savedAtMilliseconds: Int64? = nil, collectionPosition: Int64? = nil) {
     self.updatedAtMilliseconds = updatedAtMilliseconds; self.taskID = taskID; self.savedAtMilliseconds = savedAtMilliseconds
+    self.collectionPosition = collectionPosition
   }
 }
 
@@ -35,6 +38,9 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
   /// 抓进来时带没带视频。用来标出「有视频但还没转写」——那种条目正文往往只有
   /// 一百来字的站点描述，在列表里和长文长得一模一样。
   public let hasMedia: Bool?
+  /// 带音视频、还没文字稿、上次本机转写失败了（常见是没有中文人声）。只在为 true 时写出，
+  /// 其余一律 nil，旧的序列化数据和对外输出都不多一个字段。
+  public let transcriptionFailed: Bool?
   public let hasSummary: Bool?
   public let hasMindMap: Bool?
   /// 用户是否收藏。可选以兼容旧序列化数据（缺失=未收藏，不显示星标）。
@@ -48,8 +54,8 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
   public let views: String?
   /// 这条内容的标签显示名，列表行拿来做「找回线索」。可选以兼容旧序列化数据。
   public let tagNames: [String]?
-  public init(taskID: TaskID, title: String?, canonicalURL: String, host: String, sourceLabel: String, latestRunKind: RunKind?, latestRunStatus: RunStatus?, latestModel: String?, updatedAtMilliseconds: Int64, createdAtMilliseconds: Int64? = nil, latestRunAtMilliseconds: Int64?, usageCost: RunUsageCost, artifactPreview: String?, sourcePreview: String? = nil, author: String? = nil, published: String? = nil, hasTranscript: Bool? = nil, hasMedia: Bool? = nil, hasSummary: Bool? = nil, hasMindMap: Bool? = nil, isFavorite: Bool? = nil, coverURL: String? = nil, likes: String? = nil, comments: String? = nil, shares: String? = nil, collects: String? = nil, views: String? = nil, tagNames: [String]? = nil) {
-    self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.createdAtMilliseconds = createdAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview; self.sourcePreview = sourcePreview; self.author = author; self.published = published; self.hasTranscript = hasTranscript; self.hasMedia = hasMedia; self.hasSummary = hasSummary; self.hasMindMap = hasMindMap; self.isFavorite = isFavorite; self.coverURL = coverURL; self.likes = likes; self.comments = comments; self.shares = shares; self.collects = collects; self.views = views; self.tagNames = tagNames
+  public init(taskID: TaskID, title: String?, canonicalURL: String, host: String, sourceLabel: String, latestRunKind: RunKind?, latestRunStatus: RunStatus?, latestModel: String?, updatedAtMilliseconds: Int64, createdAtMilliseconds: Int64? = nil, latestRunAtMilliseconds: Int64?, usageCost: RunUsageCost, artifactPreview: String?, sourcePreview: String? = nil, author: String? = nil, published: String? = nil, hasTranscript: Bool? = nil, hasMedia: Bool? = nil, transcriptionFailed: Bool? = nil, hasSummary: Bool? = nil, hasMindMap: Bool? = nil, isFavorite: Bool? = nil, coverURL: String? = nil, likes: String? = nil, comments: String? = nil, shares: String? = nil, collects: String? = nil, views: String? = nil, tagNames: [String]? = nil) {
+    self.taskID = taskID; self.title = title; self.canonicalURL = canonicalURL; self.host = host; self.sourceLabel = sourceLabel; self.latestRunKind = latestRunKind; self.latestRunStatus = latestRunStatus; self.latestModel = latestModel; self.updatedAtMilliseconds = updatedAtMilliseconds; self.createdAtMilliseconds = createdAtMilliseconds; self.latestRunAtMilliseconds = latestRunAtMilliseconds; self.usageCost = usageCost; self.artifactPreview = artifactPreview; self.sourcePreview = sourcePreview; self.author = author; self.published = published; self.hasTranscript = hasTranscript; self.hasMedia = hasMedia; self.transcriptionFailed = transcriptionFailed; self.hasSummary = hasSummary; self.hasMindMap = hasMindMap; self.isFavorite = isFavorite; self.coverURL = coverURL; self.likes = likes; self.comments = comments; self.shares = shares; self.collects = collects; self.views = views; self.tagNames = tagNames
   }
 
   /// 只换标题的副本：自动译标题后原地更新列表里那一行，不必整页重载。
@@ -60,7 +66,7 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
       updatedAtMilliseconds: updatedAtMilliseconds, createdAtMilliseconds: createdAtMilliseconds,
       latestRunAtMilliseconds: latestRunAtMilliseconds, usageCost: usageCost, artifactPreview: artifactPreview,
       sourcePreview: sourcePreview, author: author, published: published, hasTranscript: hasTranscript,
-      hasMedia: hasMedia, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite,
+      hasMedia: hasMedia, transcriptionFailed: transcriptionFailed, hasSummary: hasSummary, hasMindMap: hasMindMap, isFavorite: isFavorite,
       coverURL: coverURL, likes: likes, comments: comments, shares: shares, collects: collects,
       views: views, tagNames: tagNames
     )

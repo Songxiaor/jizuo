@@ -17,7 +17,7 @@ final class MigrationMatrixTests: XCTestCase {
   ///
   /// v20 是这条矩阵的下界：再往前的库在 Migration021 之前就已经没有已知安装了，
   /// 而每加一个版本都要多跑一整条链。
-  private static let originVersions = [20, 21, 22, 23]
+  private static let originVersions = [20, 21, 22, 23, 24]
 
   private struct Fixture {
     let taskIDs: [String]
@@ -261,6 +261,9 @@ final class MigrationMatrixTests: XCTestCase {
         try repository.restoreFromTrash(taskIDs: [anyTask])
         try repository.saveReadingPosition(0.42, taskID: anyTask, updatedAtMilliseconds: 1)
         XCTAssertEqual(try repository.readingPosition(taskID: anyTask), 0.42)
+        let collection = try repository.createCollection(name: "升级后的合集")
+        XCTAssertEqual(try repository.addTasks([anyTask], toCollection: collection.id), 1)
+        XCTAssertEqual(try repository.collectionItems(id: collection.id).map(\.taskID), [anyTask])
       }
     }
   }

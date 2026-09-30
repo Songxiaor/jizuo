@@ -301,7 +301,7 @@ public enum LocalVideoTranscriptionError: Error, Sendable, Equatable {
     case .speechUnavailable: "这台 Mac 当前无法使用 Apple 本机语音识别。"
     case .chineseLocaleUnavailable: "Apple 本机语音识别当前不支持所选语言。"
     case .modelDownloadFailed: "无法准备 Apple 离线听写模型。请检查网络和磁盘空间后重试。"
-    case .invalidLocalFile: "找不到可读取的本机 MP4 或 MOV 视频。"
+    case .invalidLocalFile: "找不到可读取的本机音视频文件。"
     case .noAudioTrack: "这个视频没有可转写的音轨。"
     case .audioExtractionFailed: "无法从视频中提取音频；原视频没有被改动。"
     case .recognitionFailed: "本机语音识别未完成，请重试。音频没有上传。"
