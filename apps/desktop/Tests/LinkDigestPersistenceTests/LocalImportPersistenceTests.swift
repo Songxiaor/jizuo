@@ -143,6 +143,11 @@ final class MaterialScopeTests: XCTestCase {
       XCTAssertEqual(counts.own, 3)
       XCTAssertEqual(counts.external, 1)
       XCTAssertEqual(counts.own + counts.external, counts.total)
+      XCTAssertEqual(counts.ownLocalFiles, 1, "「自有」下的本地文件只数归自有的，下载来的那份不算")
+      XCTAssertEqual(
+        try ids(repository, .init(hosts: [LocalImportSource.files.rawValue], scope: .own)), [doc],
+        "点「自有 → 本地文件」看到的条数要和那一行的数字一致"
+      )
       XCTAssertEqual(counts.all, 3, "MCP 统计的 all 仍只数抓来的资料，不含笔记")
       XCTAssertEqual(try ids(repository, .init(scope: .own, includesNotes: true)), [doc, recording, note])
       XCTAssertEqual(try ids(repository, .init(scope: .external, includesNotes: true)), [downloaded])

@@ -48,6 +48,11 @@ struct UIReadingHistoryRow: View {
       return original
     }
     if row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
+      // 没起过标题的笔记用正文第一行（2026-10-01）：满屏「无标题笔记」认不出哪条是哪条。
+      // 笔记的 artifactPreview 是正文开头、保留换行（见 GRDBHistoryRepository.notePreview）。
+      if let derived = UserNoteDocument.displayTitle(stored: row.title, body: row.artifactPreview ?? "") {
+        return derived
+      }
       return DailyNoteTitleFormat.display(
         CapturedDocumentTitle.display(row.title, for: row.canonicalURL)
       )
@@ -77,7 +82,8 @@ struct UIReadingHistoryRow: View {
       return status
     }
     if row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
-      return DailyNoteTitleFormat.firstLinePreview(row.sourcePreview)
+      return DailyNoteTitleFormat.previewAfterTitle(row.artifactPreview, title: rowPrimaryTitle)
+        ?? DailyNoteTitleFormat.firstLinePreview(row.sourcePreview)
     }
     if cleanedArtifactPreview != nil {
       // 译文、总结的预览里会带「## 配文」这类分层小标题和 Markdown 记号，列表里只要纯文字。
@@ -136,6 +142,8 @@ struct UIReadingHistoryRow: View {
   struct RowText: Equatable {
     let title: String
     let preview: String?
+    /// 预览是总结、译文这类模型写的，不是原文。列表里加个小记号区分（2026-10-01）。
+    let previewIsGenerated: Bool
     let visibleTags: [String]
     /// 原帖发布时间的展示文字；没有发布时间为 nil。
     let publishedText: String?
@@ -150,6 +158,9 @@ struct UIReadingHistoryRow: View {
     let text = RowText(
       title: title,
       preview: preview == title ? nil : preview,
+      previewIsGenerated: !row.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix)
+        && LocalImportDocument.placeholderRowSummary(row.sourcePreview, hasTranscript: row.hasTranscript == true) == nil
+        && cleanedArtifactPreview != nil,
       visibleTags: visibleTags,
       publishedText: row.published?.trimmedNonEmpty.map { HistoryPublishedTimestampFormatter.text($0) },
       sourceText: rowSourceText,
@@ -226,18 +237,25 @@ struct UIReadingHistoryRow: View {
           // 所以这里不能改成写死的 minHeight。
           // 2026-09-23 对标调整：标题只占 1 行，腾出来的高度给摘要多露一行。
           // 原来固定占两行，标题短时会空出一整行，列表里到处是空白。
-          .lineLimit(1)
+          // 2026-10-01 Syc 走查：一行标题在默认列宽下只剩十来个字（「AI Agent 技能装得太…」），
+          // 扫列表时认不出是哪篇。改回最多两行，摘要让出一行，整张卡片高度基本不变。
+          .lineLimit(2)
           .truncationMode(.tail)
+          .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .topLeading)
         // 预览行原来只喂给 VoiceOver：算好了、骨架屏也给它留了位置，
         // 视觉上却从来没画出来——看得见的人反而比读屏的人知道得少。
         if let preview = text.preview {
           // 摘要两行、比来源和时间深一档：三级文字（标题／摘要／来源时间）各有明确分量。
-          Text(preview)
+          // 模型写的摘要前面加一个 ✦：原来 AI 总结、原文开头长得一样，读的人分不清
+          // 「该内容介绍了…」是作者说的还是模型说的。
+          (text.previewIsGenerated
+            ? Text(Image(systemName: "sparkle")).foregroundStyle(theme.secondaryText) + Text(" ") + Text(preview)
+            : Text(preview))
             .themedFont(.callout)
             .foregroundStyle(theme.primaryText.opacity(0.66))
-            // 不预留第二行：摘要只有一行的条目（多是本地文件）不该空出一截。
-            .lineLimit(2)
+            // 标题放宽到两行后摘要收成一行，卡片总高度不跟着长。
+            .lineLimit(1)
             // 3pt：两行摘要贴得太紧时笔画挤成一团，对标的摘要行距更松。
             .lineSpacing(3)
             .truncationMode(.tail)
@@ -254,13 +272,22 @@ struct UIReadingHistoryRow: View {
               .layoutPriority(1)
           }
           // 标签是总结后自动打的主题词，放在这里正好当找回的关键词。
-          ForEach(text.visibleTags, id: \.self) { tag in
-            Text("#\(tag)")
-              .themedFont(.caption)
-              .foregroundStyle(theme.secondaryText)
-              .lineLimit(1)
-              .accessibilityHidden(true)
+          // 放不下就整枚不显示：原来被挤成一两个像素宽，看着像作者名后面多了个乱码符号
+          // （2026-10-01 走查「AI超元域 (@AISup… ꜝ」）。
+          ViewThatFits(in: .horizontal) {
+            ForEach(Array(stride(from: text.visibleTags.count, through: 0, by: -1)), id: \.self) { count in
+              HStack(spacing: DesignTokens.Space.xs) {
+                ForEach(text.visibleTags.prefix(count), id: \.self) { tag in
+                  Text("#\(tag)")
+                    .themedFont(.caption)
+                    .foregroundStyle(theme.secondaryText)
+                    .lineLimit(1)
+                    .fixedSize()
+                }
+              }
+            }
           }
+          .accessibilityHidden(true)
           Spacer(minLength: 4)
           let savedTime = HistoryListFinding.compactSavedTime(savedAtMilliseconds: savedAtMilliseconds)
           // 按日期命名的笔记（「8月20日」）标题已经就是日期，右下角再写一遍是白占一行。
@@ -342,7 +369,13 @@ struct UIReadingHistoryRow: View {
   /// 悬停提示：原来分散在四个小元素上的信息合成一句。
   private func rowHelp(_ text: RowText) -> String {
     var parts = [isSummarized ? "已总结" : "未总结", savedTimeHelp(text)]
-    if row.hasMedia == true || row.hasTranscript == true { parts.append("带视频") }
+    if text.previewIsGenerated { parts.append("✦ 摘要由模型生成") }
+    // 和行尾小图标一一对应：图标本身不挂提示（见上面「整行只挂一个提示」），说明都在这里。
+    if row.transcriptionFailed == true {
+      parts.append("上次转写没成功")
+    } else if row.hasMedia == true || row.hasTranscript == true {
+      parts.append(text.isAudioOnly ? "带录音" : "带视频")
+    }
     if row.hasMindMap == true { parts.append("已生成脑图") }
     return parts.joined(separator: " · ")
   }
@@ -533,6 +566,24 @@ enum DailyNoteTitleFormat {
 
   static func isISODateTitle(_ stored: String) -> Bool {
     display(stored) != stored
+  }
+
+  /// 笔记标题取自正文第一行时，预览从下一行起，不把标题再念一遍。
+  /// `#` 记号去掉、几行并成一行：列表只露一行纯文字。
+  static func previewAfterTitle(_ body: String?, title: String) -> String? {
+    guard let body else { return nil }
+    let cleaned = MarkdownNoteFrontmatter.parse(body).body
+    var lines: [String] = []
+    for raw in cleaned.split(whereSeparator: \.isNewline) {
+      var line = raw.trimmingCharacters(in: .whitespaces)
+      while line.hasPrefix("#") { line.removeFirst() }
+      line = line.trimmingCharacters(in: .whitespaces)
+      if line.isEmpty || line == UserNoteDocument.placeholderBody { continue }
+      if lines.isEmpty, line == title { continue }
+      lines.append(line)
+    }
+    guard !lines.isEmpty else { return nil }
+    return String(lines.joined(separator: " ").prefix(240))
   }
 
   static func firstLinePreview(_ body: String?) -> String? {

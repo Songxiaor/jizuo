@@ -131,6 +131,9 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
   public let own: Int
   /// 外部条数。
   public let external: Int
+  /// 算作自有的本地文件条数（侧栏「自有」下的「本地文件」）。本地文件按下载标记各归
+  /// 自有或外部，「来源」里那行是两边合计，放在「自有」下面得用这个数，否则子项加不上。
+  public let ownLocalFiles: Int
   /// 每种形式的条数，只含数量大于 0 的，顺序同 `ContentForm.allCases`。
   public let forms: [HistoryNavigationForm]
   /// 用户自己写的笔记条数。默认 0，让既有构造点无需改动。
@@ -162,6 +165,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     total: Int = 0,
     own: Int = 0,
     external: Int = 0,
+    ownLocalFiles: Int = 0,
     forms: [HistoryNavigationForm] = [],
     notes: Int = 0,
     works: Int = 0,
@@ -182,6 +186,7 @@ public struct HistoryNavigationCounts: Sendable, Equatable {
     self.total = total
     self.own = own
     self.external = external
+    self.ownLocalFiles = ownLocalFiles
     self.forms = forms
     self.notes = notes
     self.works = works

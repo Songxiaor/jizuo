@@ -1178,6 +1178,29 @@ struct HistoryContentView: View {
             }
             model.consumeProfileImportScrollTarget()
           }
+          // reveal 之后列表要重载，目标行可能还没进 rows：等它出现再滚。
+          // 一页 50 条，稍早一点的内容（实测第 53 条）就不在第一页——不在就接着读下一页，
+          // 最多多读 6 页；再往前的不追，详情照样打开，只是列表留在原处。
+          .task(id: model.revealScrollTarget) {
+            guard let target = model.revealScrollTarget else { return }
+            var extraPages = 0
+            for _ in 0..<60 {
+              if model.rows.contains(where: { $0.taskID == target }) {
+                try? await Task.sleep(for: .milliseconds(50))
+                batchScroll.scrollTo(target, anchor: .center)
+                break
+              }
+              if model.listState != .loading, !model.isLoadingNextPage, extraPages < 6,
+                 let last = model.rows.last {
+                let before = model.rows.count
+                model.loadNextPageIfNeeded(after: last)
+                if model.isLoadingNextPage || model.rows.count != before { extraPages += 1 }
+              }
+              try? await Task.sleep(for: .milliseconds(100))
+              if Task.isCancelled { return }
+            }
+            model.consumeRevealScrollTarget()
+          }
         }
       }
     }
@@ -1246,6 +1269,23 @@ struct HistoryContentView: View {
         }
       )
       .padding(.leading, 16)
+    }
+  }
+
+  @ViewBuilder private var ownLocalFilesRow: some View {
+    let host = LocalImportSource.files.rawValue
+    if model.navigationCounts.ownLocalFiles > 0 {
+      UIReadingPlatformNavigation(
+        items: [.init(host: host, count: model.navigationCounts.ownLocalFiles, faviconURL: nil, faviconTaskID: nil)],
+        theme: theme,
+        isSelected: { model.selectedHosts == [$0] && model.selectedScope == .own },
+        onSelect: { host in
+          isReadingPlatformGalleryItem = false
+          model.selectHost(host, scope: .own)
+        }
+      )
+      .padding(.leading, 16)
+      .accessibilityIdentifier("history-navigation-own-local-files")
     }
   }
 
@@ -1347,6 +1387,9 @@ struct HistoryContentView: View {
         .help("自己在汲作里写的笔记（⇧⌘N 新建）")
         .accessibilityIdentifier("history-navigation-notes")
         localSourceRows([LocalImportSource.appleNotes.rawValue, LocalImportSource.voiceMemos.rawValue])
+        // 自有的本地文件（2026-10-01）：缺了这行，「自有」下面几项加起来比「自有」少，
+        // 看着像丢了数据。只数归自有的那部分，点进去也只看自有的，和「来源」里那行合计不同。
+        ownLocalFilesRow
         navigationButton("外部", systemImage: OwnershipIcon.external, seal: .external, count: model.navigationCounts.external, selected: model.selectedScope == .external && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
           model.selectScope(.external)
         }
@@ -1472,7 +1515,8 @@ struct HistoryContentView: View {
               isSelected: { host in
                 host == HistoryPlatformDisplay.miscHost
                   ? model.selectedHosts == Set(miscPlatforms.map(\.host))
-                  : model.selectedHosts.contains(host)
+                  // 「自有」下的本地文件也选中这个 host，但那时这里不该一起亮。
+                  : model.selectedHosts.contains(host) && model.selectedScope == .all
               },
               onSelect: { host in
                 isReadingPlatformGalleryItem = false
@@ -1482,7 +1526,8 @@ struct HistoryContentView: View {
                   model.selectHost(host)
                 }
               },
-              collapsedLimit: 5,
+              // 4 家：侧栏分组多，平台再多露一行，最下面几项就得滚动才看得到（2026-10-01）。
+              collapsedLimit: 4,
               isExpanded: $navigationPlatformsShowsAll
             )
           }
@@ -1779,7 +1824,10 @@ struct HistoryContentView: View {
     .overlay(alignment: .top) {
       Rectangle().fill(theme.hairline).frame(height: 1)
     }
-    .background(theme.isNative ? Color.clear : theme.canvas)
+    // 系统主题原来是透明底，侧栏滚到底时最后几行从「设置」字底下透出来（2026-10-01 走查）。
+    .background {
+      if theme.isNative { Rectangle().fill(.bar) } else { theme.canvas }
+    }
   }
 
   private func navigationButton(
@@ -3270,13 +3318,13 @@ struct HistoryContentView: View {
           emptyDetail
         }
       }
-        // 没选中任何一条时，阅读区那三颗按钮（收藏、标签、更多）整个消失，macOS 会把
-        // 列表列头的搜索、「＋」挤到窗口最右边（2026-09-24 走查）。留三颗灰着的占位，
+        // 没选中任何一条时，阅读区那几颗按钮（收藏、更多）整个消失，macOS 会把
+        // 列表列头的搜索、「＋」挤到窗口最右边（2026-09-24 走查）。留灰着的占位，
         // 工具栏布局就和选中时一致；灰着也如实说明「现在没东西可操作」。
+        // 选中时的标签按钮 2026-10-01 撤掉了，这里跟着去掉，两种状态的图标一一对应。
         .toolbar {
           ToolbarItemGroup(placement: .primaryAction) {
             Button {} label: { Label("收藏", systemImage: "star") }.disabled(true)
-            Button {} label: { Label("标签", systemImage: "tag") }.disabled(true)
             Button {} label: { Label("更多", systemImage: "ellipsis") }.disabled(true)
           }
         }
@@ -3895,13 +3943,15 @@ struct ToolbarScrollFade: View {
     GeometryReader { proxy in
       ZStack {
         Rectangle().fill(.ultraThinMaterial)
-        background.opacity(0.6)
+        // 0.92 而不是 0.6：0.6 时列表行滚到「全部」和搜索、「＋」底下还能读出字
+        // （2026-10-01 Syc 走查截图）。实色段也从上半截拉到 75%，只留底边一小段渐隐。
+        background.opacity(0.92)
       }
       .mask(
         LinearGradient(
           stops: [
             .init(color: .black, location: 0),
-            .init(color: .black, location: 0.5),
+            .init(color: .black, location: 0.75),
             .init(color: .clear, location: 1),
           ],
           startPoint: .top,
@@ -4155,8 +4205,6 @@ private struct HistoryDetailView: View, Equatable {
   @AppStorage(ReadingFontSize.storageKey)
   private var readingFontSizeRaw = Double(ReadingFontSize.default)
   @AppStorage(ReadingLayoutWidth.storageKey) private var readingUsesWideLayout = false
-  /// 工具栏快捷打标签的浮层。
-  @State private var isTagPopoverPresented = false
   /// 点了「添加笔记」才出现输入框；已经写过笔记的条目直接显示。
   @State private var isInlineNoteRequested = false
   @FocusState private var isInlineNoteFocused: Bool
@@ -5315,6 +5363,13 @@ private struct HistoryDetailView: View, Equatable {
         if body.isEmpty { isEditingTranscription = true }
       }
       noteTitleDraft = DailyNoteTitleFormat.display(title)
+      // 没起过标题的笔记，标题栏先显示正文第一行（2026-10-01 Syc 走查：正文开头明明是
+      // 「Claude 的使用和付费指南」，标题却一直是「无标题笔记」）。只填进输入框，不落库；
+      // 用户点进标题改过、或保存正文时，才按原来的路径写回。
+      if isUserNote, let snapshot = latestSnapshot,
+         let derived = UserNoteDocument.displayTitle(stored: title, body: storedNoteBody(snapshot)) {
+        noteTitleDraft = derived
+      }
       // 清洗规则是后加的，早先存下的标题里还留着 U+FFFC 那类显示成方块的字符。
       // 打开时顺手修掉：它们不是内容，用户也删不掉（光标跳过去像没东西）。
       if isOwnWriting {
@@ -5377,32 +5432,18 @@ private struct HistoryDetailView: View, Equatable {
         // 主次，而它们有 ⌘↑ / ⌘↓，鼠标入口收进「更多」菜单就够了。
 
         // 阅读设置（字号）和专注阅读 2026-09-23 收进下面的「更多」：顶栏只留收藏、标签、更多。
-        if model.canToggleFavorite || model.canEditTags {
+        // 标签按钮（2026-10-01）撤掉：标题下面那行已经有「添加标签」，两处做同一件事。
+        if model.canToggleFavorite {
           ControlGroup {
-            if model.canToggleFavorite {
-              let favorited = model.isSelectedFavorite
-              Button { model.toggleFavorite() } label: {
-                Label(
-                  favorited ? "取消收藏" : "收藏",
-                  systemImage: favorited ? "star.fill" : "star")
-              }
-              .help(favorited ? "取消收藏" : "收藏")
-              .accessibilityLabel(favorited ? "取消收藏" : "收藏")
-              .accessibilityIdentifier("reading-toggle-favorite")
+            let favorited = model.isSelectedFavorite
+            Button { model.toggleFavorite() } label: {
+              Label(
+                favorited ? "取消收藏" : "收藏",
+                systemImage: favorited ? "star.fill" : "star")
             }
-            if model.canEditTags {
-              Button { isTagPopoverPresented = true } label: {
-                Label("标签", systemImage: "tag")
-              }
-              .help("添加标签")
-              .accessibilityLabel("标签")
-              .accessibilityIdentifier("reading-quick-tag")
-              .popover(isPresented: $isTagPopoverPresented, arrowEdge: .bottom) {
-                HistoryTagEditor(tags: detail.tags, model: model, autoExpandComposer: true)
-                  .padding(DesignTokens.Space.lg)
-                  .frame(width: 320)
-              }
-            }
+            .help(favorited ? "取消收藏" : "收藏")
+            .accessibilityLabel(favorited ? "取消收藏" : "收藏")
+            .accessibilityIdentifier("reading-toggle-favorite")
           }
         }
 
@@ -5415,25 +5456,16 @@ private struct HistoryDetailView: View, Equatable {
         // 导出那一组直接平铺进来，不做二级菜单：它们本来就属于「对这条做点
         // 什么」，多一层嵌套只是多一次点击。
         Menu {
-          if model.canToggleFavorite || model.canEditTags {
+          if model.canToggleFavorite {
             Section {
-              if model.canToggleFavorite {
-                let favorited = model.isSelectedFavorite
-                Button {
-                  model.toggleFavorite()
-                } label: {
-                  Label(
-                    favorited ? "取消收藏" : "收藏",
-                    systemImage: favorited ? "star.slash" : "star"
-                  )
-                }
-              }
-              if model.canEditTags {
-                Button {
-                  isTagPopoverPresented = true
-                } label: {
-                  Label("标签", systemImage: "tag")
-                }
+              let favorited = model.isSelectedFavorite
+              Button {
+                model.toggleFavorite()
+              } label: {
+                Label(
+                  favorited ? "取消收藏" : "收藏",
+                  systemImage: favorited ? "star.slash" : "star"
+                )
               }
             }
           }
@@ -7463,11 +7495,13 @@ private struct HistoryDetailView: View, Equatable {
         .accessibilityIdentifier("history-material-\(name)")
       }
     } label: {
-      Label(chosen.isEmpty ? "素材类型" : chosen.joined(separator: "、"), systemImage: "square.grid.2x2")
+      // 没选时写明「未设置」并调淡：原来只写「素材类型」四个字，看着像已经选了一个
+      // 叫「素材类型」的值（2026-10-01 走查）。
+      Label(chosen.isEmpty ? "素材类型：未设置" : chosen.joined(separator: "、"), systemImage: "square.grid.2x2")
     }
     .menuStyle(.borderlessButton)
     // 无边框菜单默认用强调色画成蓝字；和同一行的「添加笔记」「添加标签」统一成次要灰。
-    .tint(theme.secondaryText)
+    .tint(chosen.isEmpty ? theme.secondaryText.opacity(0.6) : theme.secondaryText)
     .fixedSize()
     .help("标记素材类型或「已使用」")
     .accessibilityIdentifier("history-material-types")
@@ -8387,6 +8421,8 @@ private struct HistoryDetailView: View, Equatable {
       // 存过之后这条笔记的「库里那份」就是刚写的内容了，切走时不该再存一遍。
       editingNote = (detail.task.id, snapshot.id, savedDraft)
       // 标题还是默认值时，用正文首个一级标题补上：写笔记的人极少先想标题。
+      // 写回库只认一级标题（derivedTitle），不用显示时那套宽规则：自动保存发生在打字中途，
+      // 拿第一行当标题会把刚敲下的半句话钉成标题。
       if title == UserNoteDocument.untitledTitle,
          let derived = UserNoteDocument.derivedTitle(fromBody: savedDraft) {
         model.renameNote(taskID: detail.task.id, title: derived)

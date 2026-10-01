@@ -2605,6 +2605,13 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertEqual(DailyNoteTitleFormat.display("2026-09-15"), "9月15日")
     XCTAssertEqual(DailyNoteTitleFormat.display("无标题笔记"), "无标题笔记")
     XCTAssertEqual(DailyNoteTitleFormat.firstLinePreview("第一行\n第二行"), "第一行")
+    // 标题取自正文第一行时，预览从下一行起，`#` 去掉、几行并成一行。
+    XCTAssertEqual(
+      DailyNoteTitleFormat.previewAfterTitle("# 指南\n\n分享一下\n## 插曲\n后来", title: "指南"),
+      "分享一下 插曲 后来"
+    )
+    XCTAssertEqual(DailyNoteTitleFormat.previewAfterTitle("另一句\n正文", title: "我起的标题"), "另一句 正文")
+    XCTAssertNil(DailyNoteTitleFormat.previewAfterTitle("# 指南", title: "指南"))
   }
 }
 

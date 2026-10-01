@@ -56,6 +56,28 @@ public enum UserNoteDocument {
     return nil
   }
 
+  /// 标题还是默认值时，给界面显示用的标题；不写回库。
+  ///
+  /// 比 `derivedTitle` 宽：任意级别的 `#` 标题、没有标题时的第一行文字都算。
+  /// 导入或粘贴进来的笔记从没走过「编辑保存」，库里一直是「无标题笔记」，
+  /// 列表和详情头却该显示用户一眼认得出的那句话（2026-10-01 Syc 走查）。
+  /// 用户改过标题（不再是默认值）就原样返回，不替他做主。
+  public static func displayTitle(stored: String?, body: String) -> String? {
+    let trimmed = stored?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard trimmed.isEmpty || trimmed == untitledTitle else { return nil }
+    let text = MarkdownNoteFrontmatter.parse(body).body
+    for rawLine in text.split(separator: "\n", omittingEmptySubsequences: false) {
+      var line = rawLine.trimmingCharacters(in: .whitespaces)
+      if line.isEmpty { continue }
+      if line == placeholderBody { return nil }
+      while line.hasPrefix("#") { line.removeFirst() }
+      let title = sanitizedTitle(line)
+      if title.isEmpty { continue }
+      return title.count > 120 ? String(title.prefix(120)) + "…" : title
+    }
+    return nil
+  }
+
   /// 「今天」这条笔记的标题。
   ///
   /// 每日笔记不是一个新功能，是**取消一个决定**：随手记东西时最大的摩擦不是打字，

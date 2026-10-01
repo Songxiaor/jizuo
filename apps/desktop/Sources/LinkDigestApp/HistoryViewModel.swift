@@ -1097,6 +1097,9 @@ final class HistoryViewModel {
   private(set) var isCreatorDirectoryActive = false
   private(set) var profileImportReturnTarget: ProfileImportReturnTarget?
   private(set) var profileImportScrollTarget: UUID?
+  /// 从别处（链接、MCP、笔记互链、新建）打开一条时，中栏要滚到它那一行。
+  /// 原来详情换了，列表停在原处，看不出正在读的是列表里哪一条（2026-10-01 走查）。
+  private(set) var revealScrollTarget: TaskID?
   /// Directory browsing shows the creator's works in the detail column.
   /// Selecting a work turns this on so the reader appears; it must not follow
   /// the list's usual auto-select-first-row behavior.
@@ -2269,7 +2272,13 @@ final class HistoryViewModel {
   /// 行里」求交集，目标不在第一页（比如一个月前的记录）就被丢掉、改选第一条——
   /// `linkdigest://digest/<id>` 和 MCP 的 `jizuo_open` 都因此跳错（2026-09-24）。
   /// 详情按选中项直接读，不依赖它在不在列表已加载的那一段里。
-  func reveal(taskID: TaskID) { selectedTaskID = taskID; reload(preservingCurrentSelection: true) }
+  func reveal(taskID: TaskID) {
+    selectedTaskID = taskID
+    revealScrollTarget = taskID
+    reload(preservingCurrentSelection: true)
+  }
+
+  func consumeRevealScrollTarget() { revealScrollTarget = nil }
 
   func revealProfileImportResult(taskID: TaskID, batchID: UUID, itemID: UUID) {
     profileImportReturnTarget = .init(taskID: taskID, batchID: batchID, itemID: itemID)
@@ -5845,10 +5854,11 @@ final class HistoryViewModel {
     reload()
   }
 
-  func selectHost(_ host: String) {
+  /// `scope` 默认「全部」；侧栏「自有」下的本地文件传 `.own`，只看归自有的那部分。
+  func selectHost(_ host: String, scope: HistoryListScope = .all) {
     let normalized = HistoryPlatformRegistry.canonicalHost(for: host)
     guard !normalized.isEmpty else { return }
-    applyPlatformHosts([normalized])
+    applyPlatformHosts([normalized], scope: scope)
   }
 
   /// 侧边栏「其他/待分类」聚合：一次筛选全部非知名平台的杂项来源。
@@ -5871,7 +5881,7 @@ final class HistoryViewModel {
     reload()
   }
 
-  private func applyPlatformHosts(_ hosts: Set<String>) {
+  private func applyPlatformHosts(_ hosts: Set<String>, scope: HistoryListScope = .all) {
     stopRunningBatchJobsForNavigation()
     // Idempotent only when already browsing the same platform gallery surface.
     // Same host while workbench/creator/non-all scope is active must still enter gallery.
@@ -5879,7 +5889,7 @@ final class HistoryViewModel {
       hosts == selectedHosts
       && !isWorkbenchActive
       && !isCreatorDirectoryActive
-      && selectedScope == .all
+      && selectedScope == scope
       && selectedForm == nil
       && selectedCollectionID == nil
     if alreadyInSameGallery { return }
@@ -5890,7 +5900,7 @@ final class HistoryViewModel {
     let previousHosts = selectedHosts
     let hostsChanged = previousHosts != hosts
     selectedHosts = hosts
-    selectedScope = .all
+    selectedScope = scope
     selectedForm = nil
     selectedCollectionID = nil
     selectedTagNormalizedNames = []

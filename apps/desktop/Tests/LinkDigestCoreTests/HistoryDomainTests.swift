@@ -290,6 +290,20 @@ final class UserNoteDocumentTests: XCTestCase {
     XCTAssertEqual(UserNoteDocument.derivedTitle(fromBody: "# \u{FFFC}带方块的标题"), "带方块的标题")
   }
 
+  /// 没起过标题的笔记显示正文第一行：任意级别的 `#` 都去掉，没有标题就用第一句话。
+  /// 用户自己起过标题就不动（2026-10-01）。
+  func testDisplayTitleFallsBackToFirstLineOnlyForDefaultTitle() {
+    XCTAssertEqual(
+      UserNoteDocument.displayTitle(stored: UserNoteDocument.untitledTitle, body: "# Claude 的使用和付费指南\n\n正文"),
+      "Claude 的使用和付费指南"
+    )
+    XCTAssertEqual(UserNoteDocument.displayTitle(stored: UserNoteDocument.untitledTitle, body: "\n## 二级标题\n正文"), "二级标题")
+    XCTAssertEqual(UserNoteDocument.displayTitle(stored: nil, body: "先写了一句正文\n# 后面"), "先写了一句正文")
+    XCTAssertNil(UserNoteDocument.displayTitle(stored: "我起的标题", body: "# 别的"))
+    XCTAssertNil(UserNoteDocument.displayTitle(stored: UserNoteDocument.untitledTitle, body: UserNoteDocument.placeholderBody))
+    XCTAssertNil(UserNoteDocument.displayTitle(stored: UserNoteDocument.untitledTitle, body: "#\n  \n"))
+  }
+
   /// 超长标题要截断：列表一行放不下，整条记录就没有抓手了。
   func testOverlongDerivedTitleIsTruncated() {
     let long = String(repeating: "长", count: 200)

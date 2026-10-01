@@ -733,6 +733,10 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         db,
         sql: "SELECT COUNT(*) FROM tasks t WHERE \(isRecord) AND \(TaskClassificationSQL.ownSQL(tableAlias: "t"))"
       ) ?? 0
+      let ownLocalFiles = try Int.fetchOne(
+        db,
+        sql: "SELECT COUNT(*) FROM tasks t WHERE \(isRecord) AND t.normalized_host = '\(LocalImportSource.files.rawValue)' AND \(TaskClassificationSQL.ownSQL(tableAlias: "t"))"
+      ) ?? 0
       let formCounts = try Row.fetchAll(db, sql: """
         SELECT \(TaskClassificationSQL.formSQL(tableAlias: "t")) AS form, COUNT(*) AS count
         FROM tasks t WHERE \(isRecord) GROUP BY form
@@ -783,7 +787,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       )
       return .init(
         all: all, recent: recent, unsummarized: unsummarized, untidied: untidied, untranscribed: untranscribed, untranscribedSeconds: untranscribedSeconds, untranscribedFailed: untranscribedFailed, favorite: favorite,
-        total: total, own: own, external: total - own, forms: forms, notes: notes, works: works,
+        total: total, own: own, external: total - own, ownLocalFiles: ownLocalFiles, forms: forms, notes: notes, works: works,
         trash: trash, platforms: platforms, tags: tags, creatorCount: creatorCount, pinnedCreators: pinnedCreators
       )
     }
