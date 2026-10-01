@@ -91,12 +91,13 @@ export function bookmarksSyncMessage(
   collected: number,
   reachedKnown: boolean,
 ): string {
-  if (collected === 0) return "没有找到可同步的收藏。请确认已打开历史页的「书签/收藏」分页。";
+  if (collected === 0) return "没有找到可保存的收藏。请确认已打开历史页的「书签/收藏」分页。";
   const parts: string[] = [];
-  if (outcome.queued > 0) parts.push(`新增 ${outcome.queued} 条正在抓取`);
+  // 2026-10-01 弹窗统一用词：这一步是交给汲作去保存，说「正在保存」，不说「抓取 / 同步」。
+  if (outcome.queued > 0) parts.push(`新增 ${outcome.queued} 条正在保存`);
   if (outcome.skipped > 0) parts.push(`${outcome.skipped} 条已在库`);
   const head = parts.length > 0 ? parts.join("，") : "本次没有新增";
-  const tail = reachedKnown ? "（已同步到上次的位置）" : "";
+  const tail = reachedKnown ? "（已读到上次保存的位置）" : "";
   return `${head}${tail}`;
 }
 

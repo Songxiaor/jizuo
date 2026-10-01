@@ -2247,7 +2247,7 @@ struct DouyinProfileImportSheet: View {
         .toggleStyle(.checkbox)
       Toggle("同时抓取评论", isOn: $model.includesComments)
         .toggleStyle(.checkbox)
-        .help("每条作品保存后，按「设置 → 评 · 评论」里的条数读前几条评论写进正文。要逐条挑选，可在保存后打开作品用「处理 → 抓取评论…」。")
+        .help("每条作品保存后，按「设置 → 收集 · 汲 → 评论」里的条数读前几条评论写进正文。要逐条挑选，可在保存后打开作品用「处理 → 抓取评论…」。")
         .accessibilityIdentifier("profile-import-includes-comments")
       Button("保存所选 \(model.selectedCount) 条") {
         guard model.saveSelected() > 0, let creatorID = model.creatorID else { return }

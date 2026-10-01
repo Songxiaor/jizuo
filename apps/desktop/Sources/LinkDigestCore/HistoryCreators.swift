@@ -73,11 +73,14 @@ public struct CreatorSummary: Sendable, Equatable, Identifiable {
     CreatorDisplay.isResolvedDisplayName(displayName, authorID: identity.authorID)
   }
 
-  /// Directory copy: a real display name, or 待获取. Never an @handle.
+  /// Directory copy: a real display name, or 平台名 + 主页地址. Never a bare @handle.
+  ///
+  /// 2026-10-01 走查：没名字的博主卡原来写「待获取」，一排卡片全是同一个词，分不出谁是谁，
+  /// 也不知道要等什么。改成「抖音 · douyin.com/user/MS4w…」：认得出是哪个平台、哪个主页。
   public var directoryDisplayName: String {
     hasResolvedDisplayName
       ? displayName!.trimmingCharacters(in: .whitespacesAndNewlines)
-      : "待获取"
+      : CreatorDisplay.unnamedDirectoryTitle(platform: identity.platform, profileURL: profileURL)
   }
 
   public var isPinned: Bool { pinnedRank != nil }
@@ -91,6 +94,22 @@ public enum CreatorDisplay {
     case "douyin.com": return "未命名抖音博主"
     default: return "未命名博主"
     }
+  }
+
+  /// 没有真名时的目录标题：平台名 · 去掉协议和 www 的主页地址（过长截断）。
+  public static func unnamedDirectoryTitle(platform: String, profileURL: String, maxAddressLength: Int = 28) -> String {
+    let platformName = HistoryPlatformDisplay.name(forHost: platform)
+    guard let components = URLComponents(string: profileURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+          var host = components.host?.lowercased(), !host.isEmpty
+    else { return platformName }
+    if host.hasPrefix("www.") { host.removeFirst(4) }
+    var path = components.path
+    while path.hasSuffix("/") { path.removeLast() }
+    var address = host + path
+    if address.count > maxAddressLength {
+      address = String(address.prefix(maxAddressLength - 1)) + "…"
+    }
+    return "\(platformName) · \(address)"
   }
 
   public static func isResolvedDisplayName(_ raw: String?, authorID: String) -> Bool {

@@ -25,6 +25,15 @@ import {
   type PopupCaptureAction,
 } from "../../src/popup-presentation";
 import { stampedSealMarkup } from "../../src/collector-seal";
+import {
+  connectionCopy,
+  isNativeCodeConnectionFailure,
+  nativeCodeRetryVerdict,
+  openAppThenRetry,
+  sendRetryVerdict,
+  withConnectionRetry,
+  type OpenAppResult,
+} from "../../src/popup-connection";
 import type { DouyinSessionDiagnostic } from "../../src/content/douyin-session-detail";
 import type { DouyinMetadataDiagnostic } from "../../src/content/douyin-metadata-diagnostic";
 import { bookmarksSyncMessage, isXBookmarksURL, type BookmarkPreviewItem, type BookmarksSyncOutcome } from "../../src/content/x-bookmarks";
@@ -41,14 +50,18 @@ type BookmarksCollectResult =
 
 type BookmarksSyncResult =
   | { ok: true; outcome: BookmarksSyncOutcome; collected: number; reachedKnown: boolean }
-  | { ok: false; code: "not_bookmarks" | "empty" | "native_error" | "injection_failed" | "upgrade_app" };
+  | { ok: false; code: "not_bookmarks" | "empty" | "native_error" | "injection_failed" | "upgrade_app"; transient?: true };
+
+type ProfilePresentResult =
+  | { ok: true; acceptedCount: number }
+  | { ok: false; code: string; transient?: true };
 
 const bookmarksErrorCopy: Readonly<Record<string, string>> = {
-  not_bookmarks: "请在 X 的「历史」页打开，并切到「书签/收藏」分页后再同步（地址栏是 x.com/i/history）。",
-  empty: "没有找到可同步的收藏。请确认已切到「书签/收藏」分页，并向下滚动加载列表。",
-  native_error: "无法连接汲作，或本次同步未被受理。如果汲作已经打开，请完全退出后重新打开，再重试。",
-  injection_failed: "读取收藏列表失败，请刷新页面后重试。",
-  upgrade_app: "扩展与汲作版本不兼容。请打开汲作检查更新。",
+  not_bookmarks: "请在 X 的「历史」页打开，并切到「书签/收藏」分页后再读取列表（地址栏是 x.com/i/history）。",
+  empty: "没有找到可保存的收藏。请确认已切到「书签/收藏」分页，并向下滚动加载列表。",
+  native_error: connectionCopy.needsApp,
+  injection_failed: "读取列表失败，请刷新页面后重试。",
+  upgrade_app: connectionCopy.upgrade,
 };
 
 type CapturePlatform =
@@ -140,7 +153,7 @@ const closePopup = document.querySelector<HTMLButtonElement>("#close-popup")!;
 closePopup.addEventListener("click", () => window.close());
 
 let selectedAction: PopupCaptureAction = "save";
-let recoveryMode: "retry" | "reload" | null = null;
+let recoveryMode: "retry" | "reload" | "open_app_retry" | null = null;
 
 /** 工序链的输入：App 的自动设置、这页有没有视频、评论怎么存。齐了就重画。 */
 let autoSteps: readonly string[] | undefined;
@@ -288,6 +301,32 @@ function renderMetadataDiagnostic(diagnostic: DouyinMetadataDiagnostic | undefin
   diag.hidden = rendered === null;
 }
 
+/** 让 Host 把汲作拉到前台（不带 taskID：这里只为接上通道）。 */
+function requestOpenApp(): Promise<OpenAppResult | undefined> {
+  return browser.runtime.sendMessage({ type: "open-app" }) as Promise<OpenAppResult | undefined>;
+}
+
+/**
+ * 收藏页、主页两种流程连不上汲作时的「打开汲作并重试」（2026-10-01）。
+ * 单页保存走 recoveryMode，因为那里的 recoveryAction 还兼管「重试保存 / 重新读取」。
+ */
+function offerOpenAndRetry(run: () => Promise<void>): void {
+  recoveryAction.textContent = connectionCopy.openRetryLabel;
+  recoveryAction.disabled = false;
+  recoveryAction.hidden = false;
+  recoveryAction.onclick = async () => {
+    recoveryAction.disabled = true;
+    recoveryAction.textContent = connectionCopy.opening;
+    error.textContent = "";
+    try {
+      await run();
+    } finally {
+      recoveryAction.disabled = false;
+      recoveryAction.textContent = connectionCopy.openRetryLabel;
+    }
+  };
+}
+
 const [tab] = await browser.tabs.query({ active: true, currentWindow: true });
 const tabId = tab?.id;
 if (tabId === undefined) {
@@ -308,8 +347,8 @@ if (tabId === undefined) {
   pickerCount.textContent = "尚未读取列表";
   setAvailability("ready", "可勾选");
   renderPlatform("X · 历史收藏");
-  status.textContent = "勾选后同步到汲作";
-  renderMeta([{ text: "请停在「书签/收藏」分页" }, { text: "先读列表，再挑要同步的" }]);
+  status.textContent = "勾选后保存到汲作";
+  renderMeta([{ text: "请停在「书签/收藏」分页" }, { text: "先读取列表，再挑要保存的" }]);
 
   let pickerItems: BookmarkPreviewItem[] = [];
   let lastLibraryLookup: "ok" | "unavailable" = "unavailable";
@@ -323,18 +362,18 @@ if (tabId === undefined) {
       if (fresh === 0) {
         renderMeta([
           { text: `全部 ${pickerItems.length} 条已在库` },
-          { text: "已在库的不会再抓" },
+          { text: "已在库的不会重复保存" },
         ]);
       } else {
         renderMeta([
           { text: `未在库 ${fresh} 条 · 已在库 ${inLibrary} 条` },
-          { text: "勾选后点下方同步；已在库的默认不勾" },
+          { text: "勾选后点「保存所选」；已在库的默认不勾" },
         ]);
       }
     } else {
       renderMeta([
-        { text: `未同步约 ${fresh} 条（App 未连上，粗标）` },
-        { text: "勾选后点下方同步" },
+        { text: `未保存约 ${fresh} 条（没连上汲作，按本机记录估计）` },
+        { text: "勾选后点「保存所选」" },
       ]);
     }
   };
@@ -349,7 +388,7 @@ if (tabId === undefined) {
     pickerCount.textContent = `已选 ${selected} / ${total}`;
     // 0 条时仍可点：给出「请先勾选」反馈，避免底部按钮像坏了一样没反应。
     syncSelected.disabled = false;
-    syncSelected.textContent = selected > 0 ? `同步所选 ${selected} 条到汲作` : "同步所选到汲作";
+    syncSelected.textContent = selected > 0 ? `保存所选 ${selected} 条` : "批量保存";
     for (const card of pickerList.querySelectorAll<HTMLElement>(".bookmark-card")) {
       const box = card.querySelector<HTMLInputElement>("input[type='checkbox']");
       card.classList.toggle("is-checked", box?.checked === true);
@@ -413,8 +452,8 @@ if (tabId === undefined) {
     error.textContent = "";
     resultNotice.hidden = true;
     pickerCount.textContent = "正在读取…";
-    syncBookmarks.textContent = "正在滚动收集收藏…";
-    status.textContent = "正在读取收藏列表";
+    syncBookmarks.textContent = "正在读取列表…";
+    status.textContent = "正在读取列表";
     renderMeta([{ text: "请保持页面打开，不要切换标签" }]);
     try {
       const result = await browser.runtime.sendMessage({
@@ -423,9 +462,9 @@ if (tabId === undefined) {
       }) as BookmarksCollectResult;
       if (!result.ok) {
         error.textContent = bookmarksErrorCopy[result.code] ?? "读取未完成，请重试。";
-        syncBookmarks.textContent = "读取收藏列表";
+        syncBookmarks.textContent = "读取列表";
         syncBookmarks.disabled = false;
-        status.textContent = "勾选后同步到汲作";
+        status.textContent = "勾选后保存到汲作";
         pickerCount.textContent = pickerItems.length > 0
           ? `已选 ${selectedIDs().length} / ${pickerItems.length}`
           : "尚未读取列表";
@@ -438,7 +477,7 @@ if (tabId === undefined) {
       syncBookmarks.disabled = false;
     } catch (cause) {
       error.textContent = popupCaughtFailure(cause, "读取失败，请重试。");
-      syncBookmarks.textContent = "读取收藏列表";
+      syncBookmarks.textContent = "读取列表";
       syncBookmarks.disabled = false;
       pickerCount.textContent = pickerItems.length > 0
         ? `已选 ${selectedIDs().length} / ${pickerItems.length}`
@@ -446,21 +485,83 @@ if (tabId === undefined) {
     }
   };
 
+  const enqueueSelected = (ids: string[]): Promise<BookmarksSyncResult> =>
+    browser.runtime.sendMessage({ type: "enqueue-x-bookmarks", tweetIDs: ids }) as Promise<BookmarksSyncResult>;
+
+  /** 一次保存的结果落到界面上；afterOpen = 已经点过「打开汲作并重试」，再失败就给最后的说明。 */
+  const applySyncResult = (ids: string[], result: BookmarksSyncResult, afterOpen: boolean): void => {
+    if (result.ok) {
+      recoveryAction.hidden = true;
+      const message = bookmarksSyncMessage(result.outcome, result.collected, result.reachedKnown);
+      syncSelected.textContent = "✓ " + message;
+      syncSelected.classList.add("done");
+      resultNotice.textContent = "✓ " + message;
+      resultNotice.hidden = false;
+      // 勾掉已提交的，避免重复点。
+      for (const box of pickerList.querySelectorAll<HTMLInputElement>("input[type='checkbox']")) {
+        if (ids.includes(box.value)) {
+          box.checked = false;
+          const item = pickerItems.find((row) => row.id === box.value);
+          if (item) item.alreadySynced = true;
+          const card = box.closest(".bookmark-card");
+          card?.classList.add("is-synced");
+          const authorRow = card?.querySelector(".author");
+          if (authorRow && !authorRow.querySelector(".badge")) {
+            const badge = document.createElement("span");
+            badge.className = "badge";
+            badge.textContent = "已在库";
+            authorRow.append(badge);
+          }
+        }
+      }
+      lastLibraryLookup = "ok";
+      refreshPickerChrome();
+      applyLibrarySummary();
+      syncBookmarks.disabled = false;
+      return;
+    }
+    if (isNativeCodeConnectionFailure(result)) {
+      error.textContent = afterOpen ? connectionCopy.gaveUp : connectionCopy.needsApp;
+      offerOpenAndRetry(async () => {
+        syncSelected.disabled = true;
+        syncBookmarks.disabled = true;
+        syncSelected.textContent = `正在保存 ${ids.length} 条…`;
+        try {
+          const outcome = await openAppThenRetry(requestOpenApp, () => enqueueSelected(ids));
+          if (outcome.kind === "retried") {
+            applySyncResult(ids, outcome.result, true);
+            return;
+          }
+          error.textContent = outcome.kind === "upgrade" ? connectionCopy.upgrade : connectionCopy.gaveUp;
+        } catch (cause) {
+          error.textContent = popupCaughtFailure(cause, "保存失败，请重试。");
+        }
+        refreshPickerChrome();
+        syncBookmarks.disabled = false;
+      });
+    } else {
+      recoveryAction.hidden = true;
+      error.textContent = bookmarksErrorCopy[result.code] ?? "保存未完成，请重试。";
+    }
+    refreshPickerChrome();
+    syncBookmarks.disabled = false;
+  };
+
   syncSelected.onclick = async () => {
     const ids = selectedIDs();
     if (pickerItems.length === 0) {
-      error.textContent = "请先点上方「读取收藏列表」。";
+      error.textContent = "请先点上方「读取列表」。";
       return;
     }
     if (ids.length === 0) {
-      error.textContent = "请先勾选要同步的收藏。已在库的默认不勾，可点「全选」或「选未同步」。";
+      error.textContent = "请先勾选要保存的收藏。已在库的默认不勾，可点「全选」或「选未保存」。";
       return;
     }
     if (
       lastLibraryLookup === "ok"
       && ids.every((id) => pickerItems.find((item) => item.id === id)?.alreadySynced === true)
     ) {
-      const message = `${ids.length} 条已在库，不会再抓`;
+      const message = `${ids.length} 条已在库，不会重复保存`;
       syncSelected.textContent = "✓ " + message;
       syncSelected.classList.add("done");
       resultNotice.textContent = "✓ " + message;
@@ -471,46 +572,15 @@ if (tabId === undefined) {
     syncBookmarks.disabled = true;
     syncSelected.classList.remove("done");
     error.textContent = "";
-    syncSelected.textContent = `正在同步 ${ids.length} 条…`;
+    recoveryAction.hidden = true;
+    syncSelected.textContent = `正在保存 ${ids.length} 条…`;
     try {
-      const result = await browser.runtime.sendMessage({
-        type: "enqueue-x-bookmarks",
-        tweetIDs: ids,
-      }) as BookmarksSyncResult;
-      if (result.ok) {
-        const message = bookmarksSyncMessage(result.outcome, result.collected, result.reachedKnown);
-        syncSelected.textContent = "✓ " + message;
-        syncSelected.classList.add("done");
-        resultNotice.textContent = "✓ " + message;
-        resultNotice.hidden = false;
-        // 勾掉已提交的，避免重复点。
-        for (const box of pickerList.querySelectorAll<HTMLInputElement>("input[type='checkbox']")) {
-          if (ids.includes(box.value)) {
-            box.checked = false;
-            const item = pickerItems.find((row) => row.id === box.value);
-            if (item) item.alreadySynced = true;
-            const card = box.closest(".bookmark-card");
-            card?.classList.add("is-synced");
-            const authorRow = card?.querySelector(".author");
-            if (authorRow && !authorRow.querySelector(".badge")) {
-              const badge = document.createElement("span");
-              badge.className = "badge";
-              badge.textContent = "已在库";
-              authorRow.append(badge);
-            }
-          }
-        }
-        lastLibraryLookup = "ok";
-        refreshPickerChrome();
-        applyLibrarySummary();
-        syncBookmarks.disabled = false;
-      } else {
-        error.textContent = bookmarksErrorCopy[result.code] ?? "同步未完成，请重试。";
-        refreshPickerChrome();
-        syncBookmarks.disabled = false;
-      }
+      const result = await withConnectionRetry(() => enqueueSelected(ids), nativeCodeRetryVerdict, {
+        onRetry: () => { syncSelected.textContent = connectionCopy.connecting; },
+      });
+      applySyncResult(ids, result, false);
     } catch (cause) {
-      error.textContent = popupCaughtFailure(cause, "同步失败，请重试。");
+      error.textContent = popupCaughtFailure(cause, "保存失败，请重试。");
       refreshPickerChrome();
       syncBookmarks.disabled = false;
     }
@@ -527,44 +597,80 @@ if (tabId === undefined) {
   status.textContent = `${profile.name}的主页`;
   author.textContent = profile.handle !== profile.name ? profile.handle : "";
   author.hidden = author.textContent.length === 0;
-  excerpt.textContent = "往下翻读出本人发的帖子，交给汲作列出来，你在汲作里勾选要存哪些。不会自动保存或总结。";
+  excerpt.textContent = "往下翻读出本人发的帖子，把列表交给汲作，你在汲作里勾选要保存哪些。不会自动保存或总结。";
   excerpt.hidden = false;
   renderMeta([]);
+  // 这里只是「读取列表」：真正保存要到汲作里勾选，按钮不能写成「保存」（2026-10-01 统一用词）。
+  const readLabel = "读取列表，到汲作勾选";
+  readXProfile.textContent = readLabel;
+  const presentCandidates = (): Promise<ProfilePresentResult> =>
+    browser.runtime.sendMessage({ type: "present-x-profile-candidates", tabId }) as Promise<ProfilePresentResult>;
+
+  const applyProfileResult = (result: ProfilePresentResult, afterOpen: boolean): void => {
+    if (result.ok) {
+      recoveryAction.hidden = true;
+      const message = profilePresentedMessage(result.acceptedCount);
+      readXProfile.textContent = "✓ 列表已交给汲作";
+      readXProfile.classList.add("done");
+      resultNotice.textContent = "✓ " + message;
+      resultNotice.hidden = false;
+      status.textContent = "请到汲作勾选要保存的作品";
+      renderMeta([{ text: `候选 ${result.acceptedCount} 条` }, { text: "尚未保存" }]);
+      openApp.textContent = "打开汲作勾选";
+      openApp.hidden = false;
+      return;
+    }
+    readXProfile.textContent = readLabel;
+    readXProfile.disabled = false;
+    if (isNativeCodeConnectionFailure(result)) {
+      openApp.hidden = true;
+      error.textContent = afterOpen ? connectionCopy.gaveUp : connectionCopy.needsApp;
+      offerOpenAndRetry(async () => {
+        readXProfile.disabled = true;
+        readXProfile.textContent = "正在读取列表…";
+        try {
+          const outcome = await openAppThenRetry(requestOpenApp, presentCandidates);
+          if (outcome.kind === "retried") {
+            applyProfileResult(outcome.result, true);
+            return;
+          }
+          error.textContent = outcome.kind === "upgrade" ? connectionCopy.upgrade : connectionCopy.gaveUp;
+        } catch (cause) {
+          error.textContent = popupCaughtFailure(cause, connectionCopy.gaveUp);
+        }
+        readXProfile.textContent = readLabel;
+        readXProfile.disabled = false;
+      });
+      return;
+    }
+    recoveryAction.hidden = true;
+    error.textContent = profileCollectFailureCopy(result.code);
+    if (result.code === "upgrade_app") {
+      openApp.textContent = "打开汲作检查更新";
+      openApp.hidden = false;
+    }
+  };
+
   readXProfile.onclick = async () => {
     readXProfile.disabled = true;
     readXProfile.classList.remove("done");
     error.textContent = "";
     resultNotice.hidden = true;
-    readXProfile.textContent = "正在读取主页作品…";
-    status.textContent = "正在读取主页作品";
+    recoveryAction.hidden = true;
+    readXProfile.textContent = "正在读取列表…";
+    status.textContent = "正在读取主页作品列表";
     renderMeta([{ text: "请保持页面打开，不要切换标签" }]);
     try {
-      const result = await browser.runtime.sendMessage({
-        type: "present-x-profile-candidates",
-        tabId,
-      }) as { ok: true; acceptedCount: number } | { ok: false; code: string };
-      if (result.ok) {
-        const message = profilePresentedMessage(result.acceptedCount);
-        readXProfile.textContent = "✓ 已交给汲作选择";
-        readXProfile.classList.add("done");
-        resultNotice.textContent = "✓ " + message;
-        resultNotice.hidden = false;
-        status.textContent = "请到汲作勾选要保存的作品";
-        renderMeta([{ text: `候选 ${result.acceptedCount} 条` }, { text: "尚未入库" }]);
-        openApp.textContent = "打开汲作勾选";
-        openApp.hidden = false;
-      } else {
-        error.textContent = profileCollectFailureCopy(result.code);
-        readXProfile.textContent = "读取主页作品到汲作";
-        readXProfile.disabled = false;
-        if (result.code === "native_error" || result.code === "upgrade_app") {
-          openApp.textContent = result.code === "upgrade_app" ? "打开汲作检查更新" : "打开汲作";
-          openApp.hidden = false;
-        }
-      }
+      // 每次重试都会重新往下翻一遍主页，所以只在 background 标了 transient（很快断开）时自动再试，
+      // 不再按耗时判断：翻页本身就要好几秒。
+      const result = await withConnectionRetry(presentCandidates, nativeCodeRetryVerdict, {
+        fastFailureMs: Number.POSITIVE_INFINITY,
+        onRetry: () => { readXProfile.textContent = connectionCopy.connecting; },
+      });
+      applyProfileResult(result, false);
     } catch (cause) {
-      error.textContent = popupCaughtFailure(cause, profileCollectFailureCopy("native_error"));
-      readXProfile.textContent = "读取主页作品到汲作";
+      error.textContent = popupCaughtFailure(cause, connectionCopy.needsApp);
+      readXProfile.textContent = readLabel;
       readXProfile.disabled = false;
     }
   };
@@ -620,7 +726,7 @@ if (tabId === undefined) {
         commentPlan = "disabled";
         renderStepChain();
         commentsCount.textContent = "评论";
-        commentsNote.textContent = "这个平台设为不存评论（可在汲作设置 → 评 · 评论 里改）";
+        commentsNote.textContent = "这个平台设为不存评论（可在汲作「设置 → 收集 · 汲 → 评论」里改）";
         commentsSelectAll.hidden = true;
         commentsSelectNone.hidden = true;
         return;
@@ -677,7 +783,7 @@ if (tabId === undefined) {
       }
       commentsCount.textContent = result.code === "empty" ? "没有读到评论" : "评论读取失败";
       commentsNote.textContent = result.code === "empty"
-        ? "这条内容暂时没有可见评论，发送时只保存正文。"
+        ? "这条内容暂时没有可见评论，这次只保存正文。"
         : "这次只保存正文。可以刷新页面后重新打开扩展再试。";
       commentsSelectAll.hidden = true;
       commentsSelectNone.hidden = true;
@@ -890,6 +996,59 @@ if (tabId === undefined) {
     }
   }
 
+  const sendOnce = (): Promise<SafeExtensionSendResult> => browser.runtime.sendMessage({
+    type: "send-current-page",
+    tabId,
+    requestedAction: selectedAction,
+    selectedCommentIDs: selectedCommentIDs(),
+    ...(commentMode ? { commentMode } : {}),
+  }) as Promise<SafeExtensionSendResult>;
+
+  /** 一次保存的结果落到界面上；afterOpen = 已经点过「打开汲作并重试」，再连不上就给最后的说明。 */
+  const applySendResult = (result: SafeExtensionSendResult, afterOpen: boolean): void => {
+    commentsPicker.hidden = true;
+    renderMetadataDiagnostic(result.metadataDiagnostic);
+    const recovery = popupRecoveryForSendResult(result);
+    if (recovery) {
+      error.textContent = afterOpen && recovery.action === "open_app_retry" ? connectionCopy.gaveUp : recovery.message;
+      send.hidden = true;
+      if (recovery.action === "open_app" || recovery.action === "open_settings") {
+        openApp.textContent = recovery.label;
+        openApp.hidden = false;
+      } else if (recovery.action === "retry" || recovery.action === "reload" || recovery.action === "open_app_retry") {
+        recoveryMode = recovery.action;
+        recoveryAction.textContent = recovery.label;
+        recoveryAction.hidden = false;
+      }
+    } else {
+      // 保存成功：来源卡换成一张结果卡，盖一枚「汲」印（2026-09-29 弹窗重构）。
+      recoveryAction.hidden = true;
+      actionCard.hidden = true;
+      sourceCard.hidden = true;
+      send.hidden = true;
+      savedSeal.innerHTML = stampedSealMarkup(56);
+      savedTitle.textContent = previewTitle || "已保存";
+      savedDetail.textContent = [
+        popupActionPresentation(selectedAction).success,
+        savedCommentsLine(),
+      ].filter(Boolean).join("\n");
+      savedView.hidden = false;
+      setAvailability("ready", "已保存");
+      openApp.textContent = "在汲作里打开";
+      showResultActions(openApp);
+      followProgress();
+    }
+  };
+
+  const showSendCaught = (cause: unknown): void => {
+    renderMetadataDiagnostic(undefined);
+    error.textContent = popupCaughtFailure(cause, "保存失败，请重试。");
+    send.hidden = true;
+    recoveryMode = "retry";
+    recoveryAction.textContent = "重试保存";
+    recoveryAction.hidden = false;
+  };
+
   const submit = async () => {
     send.disabled = true;
     send.classList.remove("done");
@@ -903,57 +1062,40 @@ if (tabId === undefined) {
         send.textContent = "等评论读取完…";
         await commentsLoading;
       }
-      send.textContent = commentMode?.kind === "auto" ? "正在读取评论并发送…" : "正在发送…";
-      const result = await browser.runtime.sendMessage({
-        type: "send-current-page",
-        tabId,
-        requestedAction: selectedAction,
-        selectedCommentIDs: selectedCommentIDs(),
-        ...(commentMode ? { commentMode } : {}),
-      }) as SafeExtensionSendResult;
-      commentsPicker.hidden = true;
-      renderMetadataDiagnostic(result.metadataDiagnostic);
-      const recovery = popupRecoveryForSendResult(result);
-      if (recovery) {
-        error.textContent = recovery.message;
-        send.hidden = true;
-        if (recovery.action === "open_app" || recovery.action === "open_settings") {
-          openApp.textContent = recovery.label;
-          openApp.hidden = false;
-        } else if (recovery.action === "retry" || recovery.action === "reload") {
-          recoveryMode = recovery.action;
-          recoveryAction.textContent = recovery.label;
-          recoveryAction.hidden = false;
-        }
+      send.textContent = commentMode?.kind === "auto" ? "正在读取评论并保存…" : "正在保存…";
+      // 只有确定没送到汲作的快速失败才自动再试（见 popup-connection.ts），超时不重发，免得存两份。
+      const result = await withConnectionRetry(sendOnce, sendRetryVerdict, {
+        onRetry: () => { send.textContent = connectionCopy.connecting; },
+      });
+      applySendResult(result, false);
+    } catch (cause) {
+      showSendCaught(cause);
+    }
+  };
+
+  /** 「打开汲作并重试」：让 Host 拉起汲作，稍等再保存一次。 */
+  const openAppAndResend = async (): Promise<void> => {
+    recoveryAction.disabled = true;
+    recoveryAction.textContent = connectionCopy.opening;
+    error.textContent = "";
+    try {
+      const outcome = await openAppThenRetry(requestOpenApp, sendOnce);
+      if (outcome.kind === "retried") {
+        applySendResult(outcome.result, true);
       } else {
-        // 保存成功：来源卡换成一张结果卡，盖一枚「汲」印（2026-09-29 弹窗重构）。
-        actionCard.hidden = true;
-        sourceCard.hidden = true;
-        send.hidden = true;
-        savedSeal.innerHTML = stampedSealMarkup(56);
-        savedTitle.textContent = previewTitle || "已保存";
-        savedDetail.textContent = [
-          popupActionPresentation(selectedAction).success,
-          savedCommentsLine(),
-        ].filter(Boolean).join("\n");
-        savedView.hidden = false;
-        setAvailability("ready", "已保存");
-        openApp.textContent = "在汲作里打开";
-        showResultActions(openApp);
-        followProgress();
+        error.textContent = outcome.kind === "upgrade" ? connectionCopy.upgrade : connectionCopy.gaveUp;
+        recoveryAction.textContent = connectionCopy.openRetryLabel;
       }
     } catch (cause) {
-      renderMetadataDiagnostic(undefined);
-      error.textContent = popupCaughtFailure(cause, "发送失败，请重试。");
-      send.hidden = true;
-      recoveryMode = "retry";
-      recoveryAction.textContent = "重试发送";
-      recoveryAction.hidden = false;
+      showSendCaught(cause);
+    } finally {
+      recoveryAction.disabled = false;
     }
   };
   send.onclick = submit;
   recoveryAction.onclick = () => {
     if (recoveryMode === "reload") window.location.reload();
+    else if (recoveryMode === "open_app_retry") void openAppAndResend();
     else {
       send.hidden = false;
       void submit();

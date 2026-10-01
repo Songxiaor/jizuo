@@ -172,7 +172,11 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
 public struct HistoryPage: Codable, Sendable, Equatable {
   public let rows: [HistoryRowProjection]
   public let nextCursor: HistoryPageCursor?
-  public init(rows: [HistoryRowProjection], nextCursor: HistoryPageCursor?) { self.rows = rows; self.nextCursor = nextCursor }
+  /// 搜索时第一页顺带给出的命中总数（列表头「搜索 · N 条」）。其余情况为 nil。
+  public let totalCount: Int?
+  public init(rows: [HistoryRowProjection], nextCursor: HistoryPageCursor?, totalCount: Int? = nil) {
+    self.rows = rows; self.nextCursor = nextCursor; self.totalCount = totalCount
+  }
 }
 
 public struct HistoryDetailProjection: Codable, Sendable, Equatable {

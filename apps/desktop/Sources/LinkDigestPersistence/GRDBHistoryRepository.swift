@@ -360,6 +360,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         predicates.append("t.deleted_at_ms IS NOT NULL")
       } else {
         predicates.append("t.deleted_at_ms IS NULL")
+        // 过去没写字的每日笔记只在显示层藏起来，数据不动（见 hiddenEmptyDailyNoteSQL）。
+        predicates.append("NOT \(Self.hiddenEmptyDailyNoteSQL(tableAlias: "t"))")
       }
       // 合集（Migration024）：只看这个合集里的，按合集里的顺序排，不按时间。
       // 合集 id 是校验过的 UUID，直接内联进 JOIN——JOIN 写在 WHERE 之前，占位参数
@@ -577,6 +579,11 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         }
       }
       let predicate = predicates.isEmpty ? "" : "WHERE \(predicates.joined(separator: " AND "))"
+      // 搜索的第一页顺带数一次命中总数：谓词只引用 t 和子查询，和下面同一套条件。
+      // 只在搜索时数——浏览时侧栏已有计数，不必每次翻列表都多扫一遍。
+      let totalCount: Int? = (cursor == nil && !filter.searchText.isEmpty)
+        ? try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks t \(collectionJoin) \(predicate)", arguments: arguments)
+        : nil
       arguments += [bounded]
       let rows = try Row.fetchAll(db, sql: """
         SELECT t.id, t.canonical_url, t.updated_at_ms, t.created_at_ms, t.is_favorite,
@@ -665,7 +672,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
           collectionPosition: lastPosition
         )
       } : nil
-      return HistoryPage(rows: projections, nextCursor: next)
+      return HistoryPage(rows: projections, nextCursor: next, totalCount: totalCount)
     }
   }
 
@@ -691,7 +698,8 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       // 放进回收站的一律不计数：数字和列表必须说同一件事，否则「全部 10」点进去
       // 只有 8 条，用户会以为列表坏了。
       let isLive = "deleted_at_ms IS NULL"
-      let isNote = "\(isLive) AND content_kind = '\(TaskClassificationSQL.noteKind)'"
+      // 过去没写字的每日笔记，列表不显示，计数也不算（和 historyPage 同一条判定）。
+      let isNote = "\(isLive) AND content_kind = '\(TaskClassificationSQL.noteKind)' AND NOT \(Self.hiddenEmptyDailyNoteSQL(tableAlias: "tasks"))"
       let isWork = "\(isLive) AND content_kind = '\(TaskClassificationSQL.workKind)'"
       // 「抓来的资料」= 既不是笔记也不是稿件也不是成品。以前要三条 NOT 叠起来，
       // 现在是一次等值比较，而且走 idx_tasks_kind_order。
@@ -727,7 +735,7 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
       let untranscribedFailed: Int = untranscribedRow?["failed"] ?? 0
       let favorite = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks WHERE \(isCaptured) AND is_favorite = 1") ?? 0
       // 「全部」= 资料 + 笔记 + 作品；自有 + 外部 = 全部，数字能加得上。
-      let isRecord = "t.deleted_at_ms IS NULL AND t.content_kind IN ('\(TaskClassificationSQL.captureKind)', '\(TaskClassificationSQL.noteKind)', '\(TaskClassificationSQL.workKind)')"
+      let isRecord = "t.deleted_at_ms IS NULL AND t.content_kind IN ('\(TaskClassificationSQL.captureKind)', '\(TaskClassificationSQL.noteKind)', '\(TaskClassificationSQL.workKind)') AND NOT \(Self.hiddenEmptyDailyNoteSQL(tableAlias: "t"))"
       let total = try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM tasks t WHERE \(isRecord)") ?? 0
       let own = try Int.fetchOne(
         db,
@@ -1842,6 +1850,32 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
         arguments: [updatedAtMilliseconds, taskID.rawValue]
       )
     }
+  }
+
+  /// 「过去的空每日笔记」：今天以外、正文仍是占位句（或空）、标题仍是日期、没打标签的每日笔记。
+  ///
+  /// 2026-10-01 走查：「笔记 7」里 5 条是点了「今天的笔记」却一个字没写的空壳，标题是日期、
+  /// 正文是「在这里写下你的想法…」。只在显示层藏起来，数据不删——列表（historyPage）和
+  /// 侧栏计数（navigationCounts 的笔记 / 全部 / 自有 / 形式）用同一条判定，点进去条数对得上。
+  /// 今天那条不藏：它是刚打开、正准备写的。打过标签的不藏：标签计数里还数着它。
+  /// 今天的日期按调用时的本地日历算，每次查询现算，跨午夜不会把今天的藏掉。
+  static func hiddenEmptyDailyNoteSQL(tableAlias alias: String, now: Date = Date()) -> String {
+    let prefix = "\(CanonicalURL.noteScheme):daily-"
+    let today = (try? UserNoteDocument.dailyURL(for: now).value) ?? ""
+    let placeholder = UserNoteDocument.placeholderBody.replacingOccurrences(of: "'", with: "''")
+    return """
+      (\(alias).content_kind = '\(TaskClassificationSQL.noteKind)'
+        AND \(alias).canonical_url LIKE '\(prefix)%'
+        AND \(alias).canonical_url <> '\(today)'
+        AND NOT EXISTS (SELECT 1 FROM task_tags htt WHERE htt.task_id = \(alias).id)
+        AND COALESCE((
+          SELECT TRIM(CAST(hs.body_text AS TEXT), ' ' || char(9) || char(10) || char(13)) IN ('', '\(placeholder)')
+            AND hs.title = substr(\(alias).canonical_url, \(prefix.count + 1))
+          FROM content_snapshots hs
+          WHERE hs.task_id = \(alias).id
+          ORDER BY hs.sequence DESC LIMIT 1
+        ), 0) = 1)
+      """
   }
 
   /// 笔记的最新 snapshot：标题和正文都挂在它上面。

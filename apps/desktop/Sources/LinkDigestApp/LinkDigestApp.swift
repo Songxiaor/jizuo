@@ -528,6 +528,8 @@ final class AppViewModel {
     ) ? nil : "捕获内容与输出语言相同，无需翻译。"
   }
 
+  static let untranscribedRunReason = "还没转写：先点「转写」，有了文字稿再总结或翻译"
+
   /// `canStartRun` 的人话版。顺序按用户最可能先撞上的拦下来。
   func runStartUnavailableReason(
     usingCurrentCapture: Bool,
@@ -536,6 +538,9 @@ final class AppViewModel {
     if !usingCurrentCapture {
       guard let detail else { return "还没有可发送的内容" }
       if detail.snapshots.isEmpty { return "这条没有可发送的正文" }
+      if let body = detail.snapshots.last?.bodyText, LocalImportDocument.isUntranscribedPlaceholder(body) {
+        return Self.untranscribedRunReason
+      }
       if currentCapture?.taskID == detail.task.id {
         return runStartUnavailableReason(usingCurrentCapture: true, detail: nil)
       }

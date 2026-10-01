@@ -304,6 +304,17 @@ final class UserNoteDocumentTests: XCTestCase {
     XCTAssertNil(UserNoteDocument.displayTitle(stored: UserNoteDocument.untitledTitle, body: "#\n  \n"))
   }
 
+  /// 还没转写的录音、音视频只有占位说明，不能拿去总结、翻译（2026-10-01）。
+  func testUntranscribedPlaceholderIsDetected() {
+    let memo = "---\npublished: \"2025-09-09T09:09:43Z\"\n---\n\n" + LocalImportDocument.voiceMemoPlaceholder(durationSeconds: 132)
+    XCTAssertTrue(LocalImportDocument.isUntranscribedPlaceholder(memo))
+    XCTAssertTrue(LocalImportDocument.isUntranscribedPlaceholder(
+      LocalImportDocument.mediaPlaceholder(fileName: "a.m4a", durationSeconds: 6, hasVideo: false)
+    ))
+    XCTAssertFalse(LocalImportDocument.isUntranscribedPlaceholder("00:00 第三集补充这是一段音频"))
+    XCTAssertFalse(LocalImportDocument.isUntranscribedPlaceholder("一篇普通文章"))
+  }
+
   /// 超长标题要截断：列表一行放不下，整条记录就没有抓手了。
   func testOverlongDerivedTitleIsTruncated() {
     let long = String(repeating: "长", count: 200)

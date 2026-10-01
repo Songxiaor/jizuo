@@ -58,8 +58,21 @@ describe("popup error presentation", () => {
     const openApp = popupRecoveryForSendResult({
       response: { kind: "error", error: makeAppError("req", "network", "APP_UNAVAILABLE", true, "open_app") },
     });
-    expect(openApp).toMatchObject({ action: "open_app", label: "前往汲作处理" });
-    expect(openApp?.message).toContain("完全退出后重新打开");
+    // 连不上汲作：自动重试用完后给「打开汲作并重试」，不再叫用户自己完全退出重开（2026-10-01）。
+    expect(openApp).toMatchObject({ action: "open_app_retry", label: "打开汲作并重试" });
+    expect(openApp?.message).not.toContain("完全退出");
+
+    const appAsks = popupRecoveryForSendResult({
+      response: { kind: "error", error: makeAppError("req", "storage", "STORAGE_UNAVAILABLE", true, "open_app") },
+    });
+    expect(appAsks).toMatchObject({ action: "open_app", label: "前往汲作处理" });
+
+    for (const code of ["NATIVE_MESSAGE_FAILED", "NATIVE_MESSAGE_TIMEOUT"]) {
+      const transport = popupRecoveryForSendResult({
+        response: { kind: "error", error: makeAppError("req", "network", code, true, "retry") },
+      });
+      expect(transport).toMatchObject({ action: "open_app_retry" });
+    }
 
     const install = popupRecoveryForSendResult({
       response: { kind: "error", error: makeAppError("req", "network", "NATIVE_HOST_NOT_FOUND", false, "open_install_guide") },

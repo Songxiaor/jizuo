@@ -43,6 +43,20 @@ final class SourceCaptionPresentationTests: XCTestCase {
     XCTAssertEqual(CapturedSourceBodyPresentation.preservingCaptionParagraphs(source, platform: "github"), source)
   }
 
+  /// 「• 要点」写的列表转成 Markdown 列表，每条一行；推文也保留作者的换行（2026-10-01）。
+  func testSymbolBulletsBecomeListItems() {
+    let source = "它只做推荐：\n\n• 两阶段过滤：先筛描述\n• 安全隔离：独立运行\n· 低成本\n\n张三 · 李四"
+    let displayed = CapturedSourceBodyPresentation.preservingCaptionParagraphs(source, platform: "x")
+    XCTAssertTrue(displayed.contains("- 两阶段过滤：先筛描述\n- 安全隔离：独立运行\n- 低成本"))
+    XCTAssertTrue(displayed.contains("张三 · 李四"), "行中间的间隔号不动")
+    XCTAssertEqual(
+      CapturedSourceBodyPresentation.preservingCaptionParagraphs("• 一\n• 二", platform: "github"),
+      "- 一\n- 二"
+    )
+    XCTAssertNil(CapturedSourceBodyPresentation.symbolBulletItem("•"))
+    XCTAssertNil(CapturedSourceBodyPresentation.symbolBulletItem("```•"))
+  }
+
   func testCaptionFormattingKeepsCodeAndImagesIntact() {
     let source = "配文\n```text\nline one\nline two\n```\n![](https://example.test/image.jpg)"
     let displayed = CapturedSourceBodyPresentation.preservingCaptionParagraphs(source, platform: "douyin")

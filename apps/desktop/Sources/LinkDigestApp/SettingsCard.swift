@@ -91,7 +91,7 @@ struct SettingsPageHeader: View {
   var captionIdentifier: String? = nil
 
   var body: some View {
-    if let glyph = InkSealMark.settingsGlyphs[title] {
+    if let glyph = InkSealMark.settingsGlyph(for: title) {
       // 2026-09-28 设置按工序重组：通用页的页头和工序页同一种排法——左边一方印（这里是
       // 灰色墨线闲章），右边宋体标题加一句话，下面一道细线。
       VStack(alignment: .leading, spacing: 0) {
@@ -770,5 +770,13 @@ struct SettingsMenuPicker<Value: Hashable>: View {
       .frame(width: 320)
       .frame(maxHeight: 420)
     }
+  }
+}
+
+extension InkSealMark {
+  /// 设置页的闲章字：`settingsGlyphs` 之外，补上 2026-10-01 从工序降成「收集」子页的评论。
+  /// 侧栏和页头都从这里取，免得两处各写一份。
+  static func settingsGlyph(for title: String) -> String? {
+    settingsGlyphs[title] ?? ["评论": "评"][title]
   }
 }

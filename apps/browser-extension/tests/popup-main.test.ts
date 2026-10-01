@@ -104,6 +104,6 @@ describe("popup metadata diagnostic fresh-send lifecycle", () => {
     await click;
     expect(diag.hidden).toBe(true);
     expect(pre.textContent).toBe("");
-    expect(elements["#error"]!.textContent).toBe("发送失败，请重试。");
+    expect(elements["#error"]!.textContent).toBe("保存失败，请重试。");
   });
 });

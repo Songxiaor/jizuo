@@ -5,7 +5,8 @@ enum CapturedSourceBodyPresentation {
   /// Social captions use author-entered line breaks, not prose line wrapping.
   /// Mark those lines as Markdown hard breaks; fenced code remains byte-for-byte intact.
   static func preservingCaptionParagraphs(_ markdown: String, platform: String) -> String {
-    guard ["xiaohongshu", "douyin", "bilibili"].contains(platform) else { return markdown }
+    // 推文（2026-10-01 加入）：作者按行写的要点，Markdown 会把单换行并成一段。
+    let keepsLineBreaks = ["xiaohongshu", "douyin", "bilibili", "x"].contains(platform)
     var fence: String?
     var result: [String] = []
     for line in markdown.components(separatedBy: "\n") {
@@ -20,9 +21,26 @@ enum CapturedSourceBodyPresentation {
         result.append(line)
         continue
       }
-      result.append(trimmed.isEmpty ? line : line + "  ")
+      // 「• 两阶段过滤」这类用符号写的要点不是 Markdown 列表，几行会被并成一段、
+      // 符号夹在句子中间（2026-10-01 走查）。转成真正的列表项，每条一行。
+      if let item = Self.symbolBulletItem(trimmed) {
+        result.append("- " + item)
+        continue
+      }
+      result.append(keepsLineBreaks && !trimmed.isEmpty ? line + "  " : line)
     }
     return result.joined(separator: "\n")
+  }
+
+  private static let bulletSymbols: [Character] = ["•", "·", "●", "▪", "◦", "‧", "・"]
+
+  /// 以要点符号开头、后面跟着文字的行，返回去掉符号的文字。
+  static func symbolBulletItem(_ trimmedLine: String) -> String? {
+    guard let first = trimmedLine.first, bulletSymbols.contains(first) else { return nil }
+    let rest = trimmedLine.dropFirst().trimmingCharacters(in: .whitespaces)
+    // 「·」也用作间隔号（「张三 · 李四」），但那种不会出现在行首；行首只有一个符号、
+    // 后面没字的（分隔线）不算。
+    return rest.isEmpty ? nil : rest
   }
 
   /// 阅读卡如何处理「正文开头又把标题印一遍」。

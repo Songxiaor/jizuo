@@ -1,4 +1,5 @@
 import type { MediaDescriptor, NativeResponse } from "./contract";
+import { connectionCopy, isSendConnectionFailure } from "./popup-connection";
 import type { DouyinSessionDiagnostic, DouyinSessionDiagnosticCode } from "./content/douyin-session-detail";
 import type {
   DouyinMetadataDiagnostic,
@@ -43,7 +44,8 @@ export function popupActionPresentation(action: PopupCaptureAction) {
 
 export type PopupRecovery = {
   message: string;
-  action: "retry" | "open_app" | "open_settings" | "reload" | "none";
+  /** open_app_retry：连不上汲作，自动重试已用完，给「打开汲作并重试」（2026-10-01）。 */
+  action: "retry" | "open_app" | "open_app_retry" | "open_settings" | "reload" | "none";
   label: string;
 };
 
@@ -136,6 +138,10 @@ export function popupRecoveryForSendResult(result: SafeExtensionSendResult): Pop
   if (result.response.kind !== "error") return null;
   const message = popupMessageForResponse(result.response) ?? "操作未完成。";
   const requested = result.response.error.action;
+  // 连接类失败先于 Host 给的 open_app：只打开汲作不再试，用户还得回来再点一次。
+  if (isSendConnectionFailure(result)) {
+    return { message, action: "open_app_retry", label: connectionCopy.openRetryLabel };
+  }
   if (requested === "upgrade_app") return { message, action: "open_app", label: "打开汲作检查更新" };
   if (requested === "open_app") return { message, action: "open_app", label: "前往汲作处理" };
   if (requested === "open_install_guide") {
@@ -145,7 +151,7 @@ export function popupRecoveryForSendResult(result: SafeExtensionSendResult): Pop
     return { message, action: "reload", label: "重新读取页面" };
   }
   if (result.response.error.retryable || requested === "retry") {
-    return { message, action: "retry", label: "重试发送" };
+    return { message, action: "retry", label: "重试保存" };
   }
   return { message, action: "none", label: "" };
 }
@@ -154,26 +160,27 @@ const knownErrorMessages: Readonly<Record<string, string>> = {
   PROTOCOL_VERSION_UNSUPPORTED: "扩展与汲作版本不兼容。请打开汲作检查更新。",
   CAPTURE_SCHEMA_INVALID: "当前页面数据格式无效，请刷新页面后重试。",
   CAPTURE_URL_UNSUPPORTED: "当前页面地址不受支持，请打开 HTTP 或 HTTPS 页面。",
-  CAPTURE_CONTENT_EMPTY: "当前页面没有可发送的内容。",
-  CAPTURE_DOUYIN_NO_SINGLE_ITEM: "没有定位到具体的抖音视频。请打开视频详情页，或在精选里点开弹层后再发送。",
+  CAPTURE_CONTENT_EMPTY: "当前页面没有可保存的内容。",
+  CAPTURE_DOUYIN_NO_SINGLE_ITEM: "没有定位到具体的抖音视频。请打开视频详情页，或在精选里点开弹层后再保存。",
   PLATFORM_NOT_SUPPORTED: "暂不支持该平台的智能抓取（小红书 / B站适配开发中）。可先在浏览器打开，或复制链接到桌面 App。",
-  CAPTURE_PAYLOAD_TOO_LARGE: "当前页面内容过大，无法发送。",
+  CAPTURE_PAYLOAD_TOO_LARGE: "当前页面内容过大，无法保存。",
   CAPTURE_COUNT_MISMATCH: "当前页面内容校验失败，请重新捕获。",
-  NATIVE_RESPONSE_INVALID: "LinkDigest 返回了无效响应，请重启 App 后重试。",
-  STORAGE_UNAVAILABLE: "本地存储暂时不可用，请打开 LinkDigest 后重试。",
+  NATIVE_RESPONSE_INVALID: "汲作返回了无效响应，请重启汲作后重试。",
+  STORAGE_UNAVAILABLE: "本地存储暂时不可用，请打开汲作后重试。",
   STORAGE_WRITE_FAILED: "本地历史保存失败，请稍后重试。",
-  STORAGE_FUTURE_SCHEMA: "本地历史由更新版本创建，请升级 LinkDigest。",
-  STORAGE_MIGRATION_FAILED: "本地历史升级未完成，请重新打开 LinkDigest。",
+  STORAGE_FUTURE_SCHEMA: "本地历史由更新版本创建，请升级汲作。",
+  STORAGE_MIGRATION_FAILED: "本地历史升级未完成，请重新打开汲作。",
   STORAGE_READ_ONLY: "本地历史当前只读，无法保存新内容。",
   STORAGE_INTEGRITY_FAILED: "本地历史完整性检查失败，请停止写入。",
-  STORAGE_STATE_CONFLICT: "本地历史状态已变化，请重新发送。",
-  CAPTURE_IDEMPOTENCY_CONFLICT: "本次页面传输与原请求不一致，请重新发送。",
+  STORAGE_STATE_CONFLICT: "本地历史状态已变化，请重新保存。",
+  CAPTURE_IDEMPOTENCY_CONFLICT: "本次页面传输与原请求不一致，请重新保存。",
   RUN_IDEMPOTENCY_CONFLICT: "本次运行与原请求不一致，请重新操作。",
-  APP_UNAVAILABLE: "无法连接汲作。如果汲作已经打开，请完全退出后重新打开，再回到这里重试发送。",
-  NATIVE_HOST_NOT_FOUND: "未找到浏览器支持组件，请在 LinkDigest 设置里安装浏览器支持。",
+  // 连接类三条只在自动重试用完后才出现，下面有「打开汲作并重试」按钮，不再叫用户自己排查（2026-10-01）。
+  APP_UNAVAILABLE: connectionCopy.needsApp,
+  NATIVE_HOST_NOT_FOUND: "未找到浏览器支持组件，请在汲作设置里安装浏览器支持。",
   NATIVE_HOST_START_FAILED: "浏览器支持组件启动失败，请重新安装浏览器支持或重启浏览器。",
-  NATIVE_MESSAGE_TIMEOUT: "发送超时。如果汲作已经打开但持续超时，请完全退出后重新打开，再重试发送。",
-  NATIVE_MESSAGE_FAILED: "与汲作通信失败。请先打开汲作；若已经打开，请完全退出后重新打开，再重试发送。",
+  NATIVE_MESSAGE_TIMEOUT: "汲作这次没有及时回应。点「打开汲作并重试」再试一次。",
+  NATIVE_MESSAGE_FAILED: connectionCopy.needsApp,
 };
 
 export function popupMessageForResponse(response: NativeResponse): string | null {

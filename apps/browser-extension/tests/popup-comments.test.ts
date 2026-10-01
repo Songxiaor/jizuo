@@ -114,7 +114,7 @@ describe("popup comment modes", () => {
 
   it("不抓 shows the neutral note and still saves the page", async () => {
     const { elements, messages } = await openPopup({ ok: false, code: "disabled", platform: "reddit" });
-    expect(elements["#comments-note"]!.textContent).toBe("这个平台设为不存评论（可在汲作设置 → 评 · 评论 里改）");
+    expect(elements["#comments-note"]!.textContent).toBe("这个平台设为不存评论（可在汲作「设置 → 收集 · 汲 → 评论」里改）");
     await elements["#send"]!.onclick!();
     const send = messages.find((message) => message.type === "send-current-page")!;
     expect(send.commentMode).toEqual({ kind: "disabled" });

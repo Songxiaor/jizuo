@@ -442,8 +442,11 @@ final class ProviderSettingsViewModel {
         savedIdentity = nil
         state = .unconfigured
         await refreshLibrary()
-        isEditorVisible = libraryProfiles.isEmpty
+        // 2026-10-01 不再一打开「模型服务」就自动弹出添加窗口：新手先要看到「推荐服务商」
+        // （去哪拿密钥、大概花多少），弹窗会把这些整块盖住。添加从「填入」或「添加模型…」进。
+        isEditorVisible = false
         editingProfileID = nil
+        await applyNewUserDefaultsIfFreshInstall()
         return
       }
       baseURL = profile.baseURL.absoluteString
@@ -463,6 +466,28 @@ final class ProviderSettingsViewModel {
     } catch {
       state = .failed(code: ProviderConfigurationError.profileStoreReadFailed.rawValue)
     }
+  }
+
+  /// 新装用户的默认值（2026-10-01）：自动译标题默认关。
+  ///
+  /// 翻译要调用模型、按用量花钱，新用户还没弄清这些就默认在后台自动译，不合适。
+  /// 但 `autoLocalizeTitleNewCaptures` 存成 nil 一直表示「开」（老版本始终译标题），
+  /// 不能改 nil 的含义，否则所有没碰过这个开关的老用户会被悄悄关掉。
+  /// 所以只认「全新安装」：一个模型都没有、偏好也全是出厂值，此时把「关」显式写下去；
+  /// 之后再配模型也不会变回开。已经有模型的用户（老用户）一律不动。
+  /// 没有模型的老用户本来就译不了标题，写下「关」对他们没有可见变化。
+  private func applyNewUserDefaultsIfFreshInstall() async {
+    guard libraryProfiles.isEmpty,
+          preferencesState == .idle,
+          savedPreferences == .default,
+          savedPreferences.autoLocalizeTitleNewCaptures == nil
+    else { return }
+    isApplyingLoadedPreferences = true
+    autoLocalizeTitleNewCaptures = false
+    isApplyingLoadedPreferences = false
+    await savePreferences()
+    // 这次写盘不是用户操作，不在页面上冒一句「已保存」。
+    if preferencesState == .saved { preferencesState = .idle }
   }
 
   // MARK: - 模型库
@@ -918,6 +943,11 @@ final class ProviderSettingsViewModel {
 
   private func mirrorAutoStepsForBrowser(_ preferences: ModelPreferences) {
     guard let browserPreferencesMirror else { return }
+    #if DEBUG
+    // 冒烟/走查用空白数据目录启动的调试版，偏好是一份全新的；抄过去会把真人浏览器扩展
+    // 弹窗里那排工序印改成调试版的状态（那个文件不随数据目录走）。2026-10-01
+    if ProcessInfo.processInfo.environment[AppApplicationSupportRoot.smokeOverrideEnvironmentKey] != nil { return }
+    #endif
     var steps: [String] = []
     if preferences.autoTranscribeNewCaptures == true { steps.append("record") }
     if preferences.autoTidyTranscription == true { steps.append("proof") }

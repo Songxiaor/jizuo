@@ -289,36 +289,12 @@ struct UIReadingHistoryRow: View {
           }
           .accessibilityHidden(true)
           Spacer(minLength: 4)
-          let savedTime = HistoryListFinding.compactSavedTime(savedAtMilliseconds: savedAtMilliseconds)
-          // 按日期命名的笔记（「8月20日」）标题已经就是日期，右下角再写一遍是白占一行。
-          if savedTime != text.title {
-            Text(savedTime)
-              .themedFont(.caption, monospacedDigit: true)
-              .foregroundStyle(theme.secondaryText.opacity(0.85))
-              .lineLimit(1)
-              .fixedSize()
-          }
-          // 转写状态是「待处理」信息，找东西时是噪音，不再占行尾；视频标记保留。
-          HStack(spacing: 4) {
-            if row.transcriptionFailed == true {
-              // 同一个位置、同样的淡色，只换个图形：不给失败条目加醒目标记，
-              // 多半只是没有中文人声（英文、纯音乐），「全部转写」会跳过它。
-              Image(systemName: "waveform.slash")
-                .help("上次转写没成功，常见原因是没有中文人声；「全部转写」会跳过它，可以点开单独重试")
-                .accessibilityLabel("上次转写没成功")
-                .accessibilityIdentifier("history-row-transcription-failed")
-            } else if row.hasMedia == true || row.hasTranscript == true {
-              Image(systemName: text.isAudioOnly ? "waveform" : "play.rectangle")
-                .accessibilityLabel(text.isAudioOnly ? "带录音" : "带视频")
-            }
-            if row.hasMindMap == true {
-              Image(systemName: "brain")
-                .accessibilityLabel("已生成脑图")
-            }
-          }
-          .font(.system(size: BadgeTypography.size))
-          .foregroundStyle(.tertiary)
-          .accessibilityIdentifier("history-row-status-badges")
+          // 行尾的日期和小图标：悬停时让位给收藏 / 总结 / 更多（2026-10-01 走查：三个按钮
+          // 原来浮在整行右侧，盖住两行标题的末尾）。只把透明度归零、位置还占着，再把按钮
+          // 叠在同一处，行高和左边文字一点都不动。
+          trailingMeta(text)
+            .opacity(showsHoverActions ? 0 : 1)
+            .overlay(alignment: .trailing) { hoverActions }
         }
       }
     }
@@ -353,7 +329,6 @@ struct UIReadingHistoryRow: View {
     // 整行只挂一个提示。原来状态点、时间、视频、脑图各挂一个：每个提示都是一块
     // 鼠标感应区，滑动时它们跟着移动，窗口每一帧都要把整张列表的感应区重算一遍。
     .help(rowHelp(text))
-    .overlay(alignment: .trailing) { hoverActions }
     .fixedSize(horizontal: false, vertical: true)
     .id("\(row.taskID.rawValue)-\(row.updatedAtMilliseconds)")
     .accessibilityElement(children: .ignore)
@@ -366,10 +341,46 @@ struct UIReadingHistoryRow: View {
     .accessibilityAction(named: Text("打开")) { onActivate?() }
   }
 
+  /// 行尾：存入时间 + 视频 / 脑图等小图标。
+  @ViewBuilder private func trailingMeta(_ text: RowText) -> some View {
+    HStack(alignment: .center, spacing: DesignTokens.Space.xs) {
+      let savedTime = HistoryListFinding.compactSavedTime(savedAtMilliseconds: savedAtMilliseconds)
+      // 按日期命名的笔记（「8月20日」）标题已经就是日期，右下角再写一遍是白占一行。
+      if savedTime != text.title {
+        Text(savedTime)
+          .themedFont(.caption, monospacedDigit: true)
+          .foregroundStyle(theme.secondaryText.opacity(0.85))
+          .lineLimit(1)
+          .fixedSize()
+      }
+      // 转写状态是「待处理」信息，找东西时是噪音，不再占行尾；视频标记保留。
+      HStack(spacing: 4) {
+        if row.transcriptionFailed == true {
+          // 同一个位置、同样的淡色，只换个图形：不给失败条目加醒目标记，
+          // 多半只是没有中文人声（英文、纯音乐），「全部转写」会跳过它。
+          Image(systemName: "waveform.slash")
+            .help("上次转写没成功，常见原因是没有中文人声；「全部转写」会跳过它，可以点开单独重试")
+            .accessibilityLabel("上次转写没成功")
+            .accessibilityIdentifier("history-row-transcription-failed")
+        } else if row.hasMedia == true || row.hasTranscript == true {
+          Image(systemName: text.isAudioOnly ? "waveform" : "play.rectangle")
+            .accessibilityLabel(text.isAudioOnly ? "带录音" : "带视频")
+        }
+        if row.hasMindMap == true {
+          Image(systemName: "brain")
+            .accessibilityLabel("已生成脑图")
+        }
+      }
+      .font(.system(size: BadgeTypography.size))
+      .foregroundStyle(.tertiary)
+      .accessibilityIdentifier("history-row-status-badges")
+    }
+  }
+
   /// 悬停提示：原来分散在四个小元素上的信息合成一句。
   private func rowHelp(_ text: RowText) -> String {
     var parts = [isSummarized ? "已总结" : "未总结", savedTimeHelp(text)]
-    if text.previewIsGenerated { parts.append("✦ 摘要由模型生成") }
+    if text.previewIsGenerated { parts.append("✦ 由模型生成（总结或翻译）") }
     // 和行尾小图标一一对应：图标本身不挂提示（见上面「整行只挂一个提示」），说明都在这里。
     if row.transcriptionFailed == true {
       parts.append("上次转写没成功")
@@ -388,6 +399,7 @@ struct UIReadingHistoryRow: View {
   ///
   /// 常驻会让每一行右侧都挂三个图标，扫标题时全是噪声；完全藏起来又等于没有——
   /// 所以用 overlay 而不是塞进行内布局：显示和隐藏都不改变行的高度与文字位置。
+  /// 位置在最底那行（作者 / 日期）的右端，替下日期（2026-10-01），不再盖标题。
   @ViewBuilder private var hoverActions: some View {
     if showsHoverActions {
       HStack(spacing: DesignTokens.Space.xxs) {
@@ -427,10 +439,11 @@ struct UIReadingHistoryRow: View {
       .font(.system(size: DesignTokens.IconSize.control, weight: .medium))
       .foregroundStyle(theme.secondaryText)
       .padding(.horizontal, DesignTokens.Space.xs)
-      .padding(.vertical, DesignTokens.Space.xxs)
       .background(theme.card, in: Capsule())
       .overlay(Capsule().strokeBorder(theme.hairline, lineWidth: 1))
-      .padding(.trailing, DesignTokens.Space.xs)
+      // 叠在行尾日期那一格上：日期再窄也按自身宽度画，不被压扁。只有 20pt 高，
+      // 落在行上下 10pt 的留白里，行高不变。
+      .fixedSize()
       .accessibilityElement(children: .contain)
     }
   }
@@ -584,6 +597,20 @@ enum DailyNoteTitleFormat {
     }
     guard !lines.isEmpty else { return nil }
     return String(lines.joined(separator: " ").prefix(240))
+  }
+
+  /// 首个非空行是与 `title` 相同的 `#` 标题时去掉它。
+  static func strippingLeadingHeading(_ body: String, matching title: String) -> String {
+    let target = title.trimmingCharacters(in: .whitespaces)
+    guard !target.isEmpty else { return body }
+    var lines = body.split(separator: "\n", omittingEmptySubsequences: false)
+    guard let index = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else { return body }
+    var heading = lines[index].trimmingCharacters(in: .whitespaces)
+    guard heading.hasPrefix("#") else { return body }
+    while heading.hasPrefix("#") { heading.removeFirst() }
+    guard heading.trimmingCharacters(in: .whitespaces) == target else { return body }
+    lines.removeSubrange(lines.startIndex...index)
+    return lines.joined(separator: "\n").trimmingCharacters(in: .newlines)
   }
 
   static func firstLinePreview(_ body: String?) -> String? {

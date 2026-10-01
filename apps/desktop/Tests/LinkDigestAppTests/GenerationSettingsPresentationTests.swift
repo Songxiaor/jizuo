@@ -3,7 +3,8 @@ import XCTest
 
 /// 设置按工序重组后（2026-09-28）的排版约定。
 ///
-/// 原来的「生成偏好」页拆成了「工序总览」和七道工序页（汲 录 校 评 摘 译 图）。
+/// 原来的「生成偏好」页拆成了「工序总览」和各工序页（汲之后录 校 摘 译 图五道；
+/// 2026-10-01 评论降成「收集」的子页）。
 /// 这里守的仍是那几条老约定，只是换了承载方式：
 /// - 自动处理是**严格串行且有依赖**的链，顺序要是结构（总览链按工序顺序画），不能只写在说明里；
 /// - 上游没开时下游当场说明原因，但不禁用、不画淡开关；
@@ -38,8 +39,10 @@ final class GenerationSettingsPresentationTests: XCTestCase {
 
   /// 工序的顺序是结构：总览链按枚举顺序画，顺序和执行链一致。
   func testProcessChainIsOrderedByStructure() throws {
-    XCTAssertEqual(SettingsProcessStep.allCases, [.capture, .record, .proof, .comments, .summary, .translation, .mindMap])
-    XCTAssertEqual(SettingsProcessStep.allCases.map(\.glyph.rawValue), ["汲", "录", "校", "评", "摘", "译", "图"])
+    XCTAssertEqual(SettingsProcessStep.allCases, [.capture, .record, .proof, .summary, .translation, .mindMap])
+    XCTAssertEqual(SettingsProcessStep.allCases.map(\.glyph.rawValue), ["汲", "录", "校", "摘", "译", "图"])
+    // 功能名在前、印名在后：新手先认得功能。
+    XCTAssertEqual(SettingsProcessStep.allCases.map(\.title), ["收集 · 汲", "转写 · 录", "校对 · 校", "总结 · 摘", "翻译 · 译", "脑图 · 图"])
     let pages = try stepPages(in: try source())
     XCTAssertTrue(pages.contains("SettingsProcessChain("), "总览页必须画出工序链")
     XCTAssertTrue(page("summaryTab", in: pages).contains("读原文、不读译文"), "总结吃的是原文，必须写在页头说明上")
@@ -54,7 +57,7 @@ final class GenerationSettingsPresentationTests: XCTestCase {
       "case .summary: $model.autoSummarizeNewCaptures",
       "case .translation: $model.autoLocalizeTitleNewCaptures",
       "case .mindMap: $model.autoMindMapNewCaptures",
-      "case .comments: autoSaveCommentsBinding",
+      "Toggle(\"\", isOn: autoSaveCommentsBinding)",
     ] {
       XCTAssertTrue(text.contains(binding), "缺少开关绑定：\(binding)")
     }
@@ -99,5 +102,33 @@ final class GenerationSettingsPresentationTests: XCTestCase {
     XCTAssertTrue(comments.contains("title: \"跟随默认\""))
     XCTAssertTrue(comments.contains("title: \"不抓\""))
     XCTAssertTrue(comments.contains("CapturePreferencesStore.commentPlatforms"))
+  }
+
+  /// 评论是收集的子页，不是工序：侧栏挂在收集下面，工序链里没有它。
+  func testCommentsLiveUnderCaptureNotInTheChain() throws {
+    let text = try source()
+    XCTAssertTrue(text.contains("case .browserSupport, .siteLogin, .comments: .capture"))
+    XCTAssertFalse(text.contains("stepHeader(.comments"))
+    XCTAssertTrue(text.contains("(\"高级\", [.companionSync, .labs])"), "低频页收进「高级」")
+  }
+
+  /// 总览上的「自动 / 手动」可以直接点，做不了时说原因而不是静默不动。
+  func testChainTogglesWriteTheSameSettingAndExplainBlocks() throws {
+    let text = try source()
+    XCTAssertTrue(text.contains("onToggleAuto: toggleAutoFromChain"))
+    let toggle = try XCTUnwrap(text.range(of: "private func toggleAutoFromChain").map { String(text[$0.lowerBound...].prefix(600)) })
+    XCTAssertTrue(toggle.contains("autoBinding(step)"), "必须和工序页开关写同一份设置")
+    XCTAssertTrue(toggle.contains("chainAutoNotice = reason"), "做不了时要给出原因")
+  }
+
+  /// 推荐服务商的链接只放官方 https 地址，三家都有价格页。
+  func testRecommendedProvidersUseOfficialHTTPSLinks() {
+    XCTAssertEqual(RecommendedProvider.all.map(\.preset), [.deepSeek, .dashScope, .siliconFlow])
+    for provider in RecommendedProvider.all {
+      XCTAssertEqual(provider.keyPageURL.scheme, "https")
+      XCTAssertEqual(provider.pricingURL.scheme, "https")
+      XCTAssertFalse(provider.preset.baseURLTemplate.isEmpty, "「填入」要能预填服务地址")
+    }
+    XCTAssertFalse(UISettingsPresentation.recommendedProvidersCostNote.contains("元"), "不写会过期的人民币数字")
   }
 }

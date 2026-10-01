@@ -47,8 +47,9 @@ struct HistoryContentView: View {
   // 2026-09-23 侧栏分层（对标应用）：顶部四个固定入口常驻，视图 / 博主 / 来源平台 / 标签
   // 这些次要分组默认收起，展开状态跨启动记住。折叠只影响显示，不改任何筛选状态。
   @AppStorage("history.navigation.views-expanded") private var navigationViewsExpanded = false
-  // 「形式」是 2026-09-24 新加的分组，默认展开：新分类维度第一次出现时要让人看见。
-  @AppStorage("history.navigation.forms-expanded") private var navigationFormsExpanded = true
+  // 「形式」2026-09-24 新加时默认展开；2026-10-01 走查：侧栏七组看同一批资料，一打开全摊开
+  // 太多，改回和「标签」「来源」一样默认收起。用户展开过就按 AppStorage 记住的来。
+  @AppStorage("history.navigation.forms-expanded") private var navigationFormsExpanded = false
   @AppStorage("history.navigation.creators-expanded") private var navigationCreatorsExpanded = false
   @AppStorage("history.navigation.platforms-expanded") private var navigationPlatformsExpanded = false
   @AppStorage("history.navigation.tags-expanded") private var navigationTagsExpanded = false
@@ -69,6 +70,8 @@ struct HistoryContentView: View {
   @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchUserEnabled = false
   @AppStorage(VoiceSettings.storageKey) private var voiceSettingsRaw = ""
   @AppStorage("onboarding.capture-v1.dismissed") private var isCaptureOnboardingDismissed = false
+  /// 三步卡「看个示例」打开的只读示例（2026-10-01）。
+  @State private var isSamplePreviewPresented = false
   /// 灯箱打开时窗口级分栏细线需要让位，避免画在放大的图片上。
   @ObservedObject private var inlineImageLightbox = InlineImageLightboxController.shared
   @ObservedObject private var videoCinema = VideoCinemaController.shared
@@ -569,7 +572,7 @@ struct HistoryContentView: View {
             isPresented: $model.isExportPanelPresented,
             document: model.exportFile.map(HistoryExportDocument.init),
             contentType: uniformType(for: model.exportFile?.format ?? .plainText),
-            defaultFilename: model.exportFile?.suggestedFilename ?? "\(ProductDisplay.name) 历史.txt"
+            defaultFilename: model.exportFile?.suggestedFilename ?? "\(ProductDisplay.name)历史.txt"
           ) { result in
             switch result {
             case .success: model.completeExportSave()
@@ -753,12 +756,8 @@ struct HistoryContentView: View {
       Button { localImport.chooseFiles() } label: { Label("导入本地文件…（⇧⌘I）", systemImage: "folder.badge.plus") }
         .disabled(!localImport.canImport)
         .accessibilityIdentifier("import-local-files")
-      Button { localImport.syncVoiceMemos() } label: { Label("同步语音备忘录", systemImage: "waveform") }
-        .disabled(!localImport.canImport)
-        .accessibilityIdentifier("sync-voice-memos")
-      Button { localImport.syncAppleNotes() } label: { Label("同步备忘录", systemImage: "note.text") }
-        .disabled(!localImport.canImport)
-        .accessibilityIdentifier("sync-apple-notes")
+      // 「同步语音备忘录」「同步备忘录」不放这里（2026-10-01 走查：八项里混着两个同步，
+      // 「添加」变成了杂物抽屉）。它们是偶尔做一次的批量同步，入口在菜单栏「文件」里。
       Divider()
       Button(action: createNote) { Label("新建笔记（⇧⌘N）", systemImage: "square.and.pencil") }
         .accessibilityIdentifier("create-user-note")
@@ -771,13 +770,17 @@ struct HistoryContentView: View {
     // 工具栏菜单不带下拉小箭头：「图标 + ⌄」挤在一排是顶栏拥挤感的主要来源。
     .menuIndicator(.hidden)
     .disabled(!manualLink.canOpen)
-    .help("添加链接、博主主页、本地文件、语音备忘录、备忘录或新建笔记")
+    .help("添加链接、博主主页、本地文件或新建笔记")
     .accessibilityLabel("添加")
     .accessibilityIdentifier("manual-link-add-toolbar")
   }
 
   /// 列表列标题：当前看的是哪一处。原来窗口标题固定写「汲作」，不提供任何信息。
+  static let listTopAnchor = "history-list-top"
+
   private var listColumnTitle: String {
+    // 搜索时标题说清搜到多少条；原来仍写「全部」，看不出是搜索结果、有多少。
+    if !model.searchText.isEmpty, let count = model.searchResultCount { return "搜索 · \(count) 条" }
     if let collection = model.selectedCollection { return collection.name }
     if let creator = model.selectedCreator { return creator.directoryDisplayName }
     if let form = model.selectedForm { return form.rawValue }
@@ -790,7 +793,7 @@ struct HistoryContentView: View {
     case .external: return "外部"
     case .all: return "全部"
     case .recent: return "最近 7 天"
-    case .unsummarized: return "待总结"
+    case .unsummarized: return "未总结"
     case .untidied: return "待校对"
     case .untranscribed: return "待转写"
     case .favorite: return "收藏"
@@ -951,7 +954,7 @@ struct HistoryContentView: View {
            model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           HistoryInlineState(
             symbol: "checkmark.circle",
-            title: "没有待总结的内容",
+            title: "没有未总结的内容",
             message: "新抓取的链接会出现在这里。也可切到「全部」浏览已有内容。",
             actionTitle: "查看全部",
             action: { model.selectScope(.all) },
@@ -1036,14 +1039,16 @@ struct HistoryContentView: View {
             .accessibilityIdentifier("history-filter-empty")
         } else {
           // 没有任何内容时也要说话：纯空白分不清「扫完了没有」和「还没加载」。
-          // 完整的三步引导在详情列，这里只给一句轻量状态。
-          HistoryInlineState(
-            symbol: "tray",
-            title: "还没有保存的内容",
-            message: "粘贴一条公开链接，或用浏览器扩展保存当前页面后，会显示在这里。",
-            seal: (.external, theme.seal.opacity(0.75))
-          )
+          // 完整的三步引导在详情列，这里只留一句（2026-10-01 走查：中栏、三步卡、
+          // 下面一块各说一遍同一件事，三个入口只留三步卡）。
+          VStack(spacing: 10) {
+            SealMark(glyph: .external, size: 52, color: theme.seal.opacity(0.75), style: .pending)
+              .frame(width: 58, height: 58)
+            Text("还没有保存的内容").themedFont(.headline)
+          }
+          .padding(24)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .accessibilityElement(children: .combine)
           .accessibilityIdentifier("history-empty")
         }
       case .failed where model.rows.isEmpty:
@@ -1076,6 +1081,13 @@ struct HistoryContentView: View {
       case .loaded, .loading, .failed, .idle, .empty:
         ScrollViewReader { batchScroll in
           List(selection: $model.selectedTaskIDs) {
+          // 列表顶端的定位点：要「回到最上面」时滚到它，分组标题跟着一起露出来。
+          Color.clear.frame(height: 1)
+            .id(Self.listTopAnchor)
+            .listRowInsets(EdgeInsets())
+            .listRowSeparator(.hidden)
+            .listRowBackground(Color.clear)
+            .accessibilityHidden(true)
           if !visibleProfileImportBatches.isEmpty {
             Section {
               ProfileImportBatchStack(
@@ -1170,7 +1182,9 @@ struct HistoryContentView: View {
           // macOS List 对插入行沿用估算行高，新到卡片被压扁；初始构建
           // 的测量始终正确，因此新条目登顶时整表重建（新行本就在顶部，
           // 不损失滚动位置），行高恢复按真实内容计算。
-          .id(model.rows.first?.taskID)
+          // 搜索结果换了也整表重建：从最上面开始，连「昨天」这类分组标题一起露出来。
+          // 用 scrollTo 第一行会把它上面的分组标题顶出视野（2026-10-01 自查）。
+          .id("\(model.rows.first?.taskID.rawValue ?? "")|\(model.searchScrollToTopToken)")
           .onChange(of: model.profileImportScrollTarget) { _, target in
             guard let target else { return }
             withAnimation(historyUIAnimation(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) {
@@ -1178,25 +1192,41 @@ struct HistoryContentView: View {
             }
             model.consumeProfileImportScrollTarget()
           }
+          // 搜索、从博主页回来：等新列表落地再滚到顶。只靠整表重建不够——实测从博主页
+          // 回到「全部」，列表仍停在 9 月 8 日那段（2026-10-01 自查）。
+          .task(id: model.searchScrollToTopToken) {
+            guard model.searchScrollToTopToken > 0 else { return }
+            for _ in 0..<40 where model.listState == .loading {
+              try? await Task.sleep(for: .milliseconds(50))
+            }
+            // 列表落地后还会因选中项、整表重建再挪一次位置：隔一会儿再滚一次，以最后一次为准。
+            for delay in [150, 450, 900] {
+              try? await Task.sleep(for: .milliseconds(delay == 150 ? 150 : delay - 150))
+              if Task.isCancelled { return }
+              batchScroll.scrollTo(Self.listTopAnchor, anchor: .top)
+            }
+          }
           // reveal 之后列表要重载，目标行可能还没进 rows：等它出现再滚。
-          // 一页 50 条，稍早一点的内容（实测第 53 条）就不在第一页——不在就接着读下一页，
-          // 最多多读 6 页；再往前的不追，详情照样打开，只是列表留在原处。
+          // 一页 50 条，较早的内容不在第一页——不在就接着读下一页。上限 40 页（2000 条）：
+          // 原来只追 6 页，实测第 833 条的录音、第 300 多条的公众号文章都跟不过去
+          // （2026-10-01 走查）。再往前的不追，详情照样打开，只是列表留在原处。
           .task(id: model.revealScrollTarget) {
             guard let target = model.revealScrollTarget else { return }
             var extraPages = 0
-            for _ in 0..<60 {
-              if model.rows.contains(where: { $0.taskID == target }) {
+            for _ in 0..<400 {
+              // 先等 reveal 触发的重载落地：重载前的旧列表里可能正好有这一行，
+              // 这时滚过去，随后第一页换上来，位置就偏了十来行（2026-10-01 自查）。
+              if model.listState != .loading, model.rows.contains(where: { $0.taskID == target }) {
                 try? await Task.sleep(for: .milliseconds(50))
                 batchScroll.scrollTo(target, anchor: .center)
                 break
               }
-              if model.listState != .loading, !model.isLoadingNextPage, extraPages < 6,
-                 let last = model.rows.last {
-                let before = model.rows.count
+              if model.listState != .loading, !model.isLoadingNextPage, let last = model.rows.last {
+                guard extraPages < 40, model.hasMorePages else { break }
                 model.loadNextPageIfNeeded(after: last)
-                if model.isLoadingNextPage || model.rows.count != before { extraPages += 1 }
+                extraPages += 1
               }
-              try? await Task.sleep(for: .milliseconds(100))
+              try? await Task.sleep(for: .milliseconds(50))
               if Task.isCancelled { return }
             }
             model.consumeRevealScrollTarget()
@@ -1276,7 +1306,14 @@ struct HistoryContentView: View {
     let host = LocalImportSource.files.rawValue
     if model.navigationCounts.ownLocalFiles > 0 {
       UIReadingPlatformNavigation(
-        items: [.init(host: host, count: model.navigationCounts.ownLocalFiles, faviconURL: nil, faviconTaskID: nil)],
+        // 悬停说清和「来源」那行的差别（2026-10-01）：两行同名、数字不同，不说明像算错了。
+        items: [.init(
+          host: host,
+          count: model.navigationCounts.ownLocalFiles,
+          faviconURL: nil,
+          faviconTaskID: nil,
+          helpText: "本地文件（\(model.navigationCounts.ownLocalFiles) 条），只含归自有的"
+        )],
         theme: theme,
         isSelected: { model.selectedHosts == [$0] && model.selectedScope == .own },
         onSelect: { host in
@@ -1295,22 +1332,31 @@ struct HistoryContentView: View {
     Section {
       if navigationCollectionsExpanded {
         if model.collections.isEmpty {
-          Text("把要按顺序一起看的内容放在一起，例如一套教程。点右边的 ＋ 新建。")
+          // 2026-10-01 走查：原来两句话在侧栏里被截成「例…」。精简成一句放得下的，
+          // 仍允许换行，窄侧栏或大字号时不再截断。
+          Text("点 ＋ 把一组内容按顺序放一起")
             .themedFont(.caption)
             .foregroundStyle(.tertiary)
+            .lineLimit(nil)
+            .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityIdentifier("history-navigation-collections-empty")
         } else {
           ForEach(model.collections) { collection in
+            // 合集名一行：博主页、图库页的侧栏行宽略窄，两行时同一个名字在不同页面
+            // 一会儿一行一会儿两行（2026-10-01 走查）。全名在悬停提示里。
             navigationButton(
               collection.name,
               systemImage: CollectionIcon.collection,
               count: collection.itemCount,
-              selected: model.selectedCollectionID == collection.id && !model.isCreatorDirectoryActive
+              selected: model.selectedCollectionID == collection.id && !model.isCreatorDirectoryActive,
+              titleLineLimit: 1
             ) {
               isReadingPlatformGalleryItem = false
               model.selectCollection(collection.id)
             }
+            .help(collection.name)
             .contextMenu {
               Button { model.requestRenameCollection(collection) } label: {
                 Label("重命名…", systemImage: "pencil")
@@ -1406,12 +1452,6 @@ struct HistoryContentView: View {
             model.selectScope(.recent)
           }
           .accessibilityIdentifier("history-navigation-recent")
-          // 计数不强调底色：「待总结」是一个会一直涨的数，染成醒目色等于常驻一个
-          // 永远消不掉的红点，看久了只会被忽略，还顺带让人焦虑。
-          navigationButton("待总结", systemImage: "sparkles", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
-            model.selectScope(.unsummarized)
-          }
-          .accessibilityIdentifier("history-navigation-unsummarized")
           // 待校对：有转写还没校对的（缺「校」这枚章），批量补做用。清空了就不占一行。
           if model.navigationCounts.untidied > 0 || model.selectedScope == .untidied {
             navigationButton("待校对", systemImage: "checkmark.seal", count: model.navigationCounts.untidied, selected: model.selectedScope == .untidied) {
@@ -1432,6 +1472,17 @@ struct HistoryContentView: View {
             model.selectScope(.favorite)
           }
           .accessibilityIdentifier("history-navigation-favorite")
+          // 「未总结」（2026-10-01 走查：原名「待总结 475」像一份做不完的作业）：只陈述状态，
+          // 挪到「视图」最后、回收站之前。自动总结开着时新内容会自己总结，这一行就不占位；
+          // 正选中它时仍留着，免得选中项凭空消失。计数不强调底色，理由同上：会一直涨的数
+          // 染成醒目色等于常驻一个消不掉的红点。
+          if !providerSettings.autoSummarizeNewCaptures || model.selectedScope == .unsummarized {
+            navigationButton("未总结", systemImage: "sparkles", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
+              model.selectScope(.unsummarized)
+            }
+            .help("还没有生成总结的内容")
+            .accessibilityIdentifier("history-navigation-unsummarized")
+          }
           if model.navigationCounts.trash > 0 {
             navigationButton(
               "回收站",
@@ -1496,11 +1547,16 @@ struct HistoryContentView: View {
             UIReadingPlatformNavigation(
               items: knownPlatforms.map { platform in
                 let favicon = model.platformFavicon(forHost: platform.host)
+                // 「来源」里的本地文件是合计，「自有」下那行只数自有的；差出来的就是外部文件。
+                let externalFiles = platform.count - model.navigationCounts.ownLocalFiles
                 return .init(
                   host: platform.host,
                   count: platform.count,
                   faviconURL: favicon?.url,
-                  faviconTaskID: favicon?.taskID
+                  faviconTaskID: favicon?.taskID,
+                  helpText: platform.host == filesHost && externalFiles > 0
+                    ? "本地文件（\(platform.count) 条），含 \(externalFiles) 条外部文件"
+                    : nil
                 )
               }
                 + (miscPlatforms.isEmpty ? [] : [
@@ -1837,6 +1893,7 @@ struct HistoryContentView: View {
     count: Int?,
     selected: Bool,
     emphasizesCount: Bool = false,
+    titleLineLimit: Int = 2,
     action: @escaping () -> Void
   ) -> some View {
     Button(action: action) {
@@ -1866,7 +1923,9 @@ struct HistoryContentView: View {
         Text(title)
           .themedFont(.body)
           .foregroundStyle(selected ? theme.accent : theme.primaryText)
-          .lineLimit(2)
+          .lineLimit(titleLineLimit)
+          // 一行时截中间：「汲作验收…0929」比「汲作验收素材…」更认得出是哪一个。
+          .truncationMode(titleLineLimit == 1 ? .middle : .tail)
           .multilineTextAlignment(.leading)
           .fixedSize(horizontal: false, vertical: true)
           .layoutPriority(1)
@@ -2229,7 +2288,7 @@ struct HistoryContentView: View {
     }
     switch model.selectedScope {
     case .notes: return "搜索笔记标题、正文、标签"
-    case .unsummarized: return "搜索待总结的标题、正文、标签"
+    case .unsummarized: return "搜索未总结的标题、正文、标签"
     case .untidied: return "搜索待校对的标题、正文、标签"
     case .untranscribed: return "搜索待转写的标题、正文、标签"
     case .favorite: return "搜索收藏的标题、正文、总结、标签"
@@ -2254,7 +2313,7 @@ struct HistoryContentView: View {
     switch model.selectedScope {
     case .all: return nil
     case .recent: return "最近 7 天"
-    case .unsummarized: return "待总结"
+    case .unsummarized: return "未总结"
     case .untidied: return "待校对"
     case .untranscribed: return "待转写"
     case .favorite: return "收藏"
@@ -2628,19 +2687,20 @@ struct HistoryContentView: View {
 
   @ViewBuilder private var unsummarizedAutoSummaryBanner: some View {
     let count = unsummarizedBulkCandidates.count
-    HStack(spacing: DesignTokens.Space.sm) {
-      Image(systemName: "sparkles")
-        .foregroundStyle(theme.info)
-        .accessibilityHidden(true)
-      VStack(alignment: .leading, spacing: 1) {
+    // 上下排：说明一段、按钮一行。原来左右并排，列表列只有两百多点宽，
+    // 说明被挤成五六行、按钮被截成「总结前 20 条…」的半截（2026-10-01 走查）。
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+      HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.xs) {
+        Image(systemName: "sparkles")
+          .foregroundStyle(theme.info)
+          .accessibilityHidden(true)
         Text("自动总结当前已关闭")
           .themedFont(.caption, weight: .semibold)
-        Text("新抓到的内容不会自动生成总结，会一直留在这张列表里。")
-          .themedFont(.caption2)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
       }
-      Spacer(minLength: DesignTokens.Space.xs)
+      Text("新抓到的内容不会自动生成总结，会一直留在这张列表里。")
+        .themedFont(.caption2)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
       Button("总结前 \(count) 条…") {
         model.requestBatchSummary(
           taskIDs: unsummarizedBulkCandidates,
@@ -2648,11 +2708,14 @@ struct HistoryContentView: View {
         )
       }
       .buttonStyle(.borderless)
-      .themedFont(.caption)
+      .themedFont(.caption, weight: .medium)
+      // 主题色：单独一行的黑字看着像说明的最后一句，不像能点（2026-10-01 自查）。
+      .foregroundStyle(theme.accent)
       .disabled(count == 0 || !model.canRunBatchSummary || !providerSettings.arePreferencesReady)
       .help(singleSummaryUnavailableReason ?? "按列表顺序逐条生成总结；开始前会先确认条数、模型和用量")
       .accessibilityIdentifier("unsummarized-bulk-summarize")
     }
+    .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.horizontal, DesignTokens.Space.sm)
     .padding(.vertical, DesignTokens.Space.sm)
     .background(theme.info.opacity(0.10), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous))
@@ -2777,23 +2840,15 @@ struct HistoryContentView: View {
     }
   }
 
+  /// 读一条作品：和主阅读区同一张纸面。
+  ///
+  /// 原来顶上单独一行挂着「抓取作品」，看着像从工具栏掉下来的按钮；读一条作品时
+  /// 它也不是要做的事——作品墙那一层（左上角返回一步）就有。底色原来是画布灰，
+  /// 和主阅读区的白纸面不像同一个 App（2026-10-01 走查）。
   private var creatorDirectoryReader: some View {
-    VStack(spacing: 0) {
-      // 返回键在工具栏左上（creatorDirectoryBack），这一行只留「抓取作品」。
-      HStack(spacing: 10) {
-        Spacer(minLength: 8)
-        if let creator = model.selectedCreator {
-          Button("抓取作品") {
-            presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
-          }
-          .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
-          .accessibilityIdentifier("history-creator-capture-selected")
-        }
-      }
-      .padding(.horizontal, 14)
-      .padding(.vertical, 8)
-      detailStateContent
-    }
+    detailStateContent
+      .frame(maxWidth: .infinity, maxHeight: .infinity)
+      .background((theme.isNative ? Color(nsColor: .textBackgroundColor) : theme.card).ignoresSafeArea(edges: .top))
   }
 
   private func creatorDirectoryWorks(_ creator: CreatorSummary) -> some View {
@@ -3008,12 +3063,15 @@ struct HistoryContentView: View {
       // 「各组内仅排序已加载作品」是实现细节，收进下拉的悬停提示；这一行不再铺深色底。
       HStack {
         Spacer()
+        // 默认那一档在博主页的真实含义（2026-10-01 核对 creatorWorkEntries）：已存的作品按
+        // 存进来的先后、新的在前（列表 ordersBySavedTime）；本次正在抓的那批仍按主页上的顺序。
+        // 原名「发现顺序」说不清是谁发现的，这里叫「保存顺序」。
         Picker("排序", selection: $creatorWorkSort) {
-          ForEach(WorkSortOrder.allCases) { Text($0.title).tag($0) }
+          ForEach(WorkSortOrder.allCases) { Text($0 == .original ? "保存顺序" : $0.title).tag($0) }
         }
         .frame(width: 220)
         .accessibilityIdentifier("creator-work-sort")
-        .help("只排序已加载的作品；本次抓取和已有作品分别排序，缺失值排最后；不改变后台抓取顺序。")
+        .help("「保存顺序」：已存的作品按存进来的先后，新的在前；本次抓取的按主页上的顺序。只排序已加载的作品，缺失值排最后。")
       }
       .padding(.horizontal, 14)
       .padding(.vertical, 8)
@@ -3546,11 +3604,22 @@ struct HistoryContentView: View {
   }
 
   private var emptyCaptureDetail: some View {
-    VStack(spacing: 0) {
-      if !isCaptureOnboardingDismissed {
+    // 三步卡在时只放三步卡（2026-10-01 走查）：下面那块「直接添加公开链接」+ 两个按钮和
+    // 三步卡第 ① 步是同一件事，同屏三个入口反而不知道点哪个。卡关掉以后才露出这块。
+    if !isCaptureOnboardingDismissed {
+      return AnyView(
         firstCaptureCard
-          .padding(.bottom, 20)
-      }
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .sheet(isPresented: $isSamplePreviewPresented) {
+            SampleReadingPreviewSheet(theme: theme)
+          }
+      )
+    }
+    return AnyView(emptyCaptureFallback)
+  }
+
+  private var emptyCaptureFallback: some View {
+    VStack(spacing: 0) {
       // 图标放进软底圆角瓦片，参考稿里 Browse channels 卡片的图形语言。
       Image(systemName: "doc.text.magnifyingglass")
         .font(.system(size: DesignTokens.IconSize.empty, weight: .medium))
@@ -3559,10 +3628,10 @@ struct HistoryContentView: View {
         .background(theme.badge, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.xl))
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.xl).stroke(theme.hairline, lineWidth: 1))
         .padding(.bottom, 18)
-      Text(isCaptureOnboardingDismissed ? "还没有保存页面" : "直接添加公开链接")
+      Text("还没有保存页面")
         .themedFont(.title2, weight: .semibold)
         .padding(.bottom, 6)
-      Text("粘贴公开网页链接，或从 \(ProductDisplay.extensionName) 接收已打开的页面后，可在这里总结或翻译。")
+      Text("粘贴公开网页链接，或用浏览器扩展保存已打开的页面后，可在这里总结或翻译。")
         .themedFont(.callout)
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
@@ -3627,17 +3696,33 @@ struct HistoryContentView: View {
         SettingsNavigationRequest.request("service")
         openSettings()
       }
+      // 第 ③ 步的按钮名固定写「生成总结」（2026-10-01 走查：原来没链接时写「先添加链接」
+      // 像报错）。前两步没做完就灰掉，悬停说明原因；做完了点它打开第一条未总结的内容，
+      // 详情顶上的「完成首次设置」条里就是同一个「生成总结」。
       onboardingStep(
         number: 3,
         title: "生成第一份总结",
         completed: model.rows.contains { $0.hasSummary == true },
-        actionTitle: model.rows.isEmpty ? "先添加链接" : "打开内容"
+        actionTitle: "生成总结",
+        isEnabled: firstSummaryPrerequisitesMet,
+        disabledHelp: "先完成前两步：添加链接、配置模型"
       ) {
         if let row = model.rows.first(where: { $0.hasSummary != true }) ?? model.rows.first {
           model.selectedTaskIDs = [row.taskID]
-        } else {
-          manualLink.open()
         }
+      }
+      // 新用户面对空库只看得到空壳（2026-10-01 走查）：给一个只读示例，看保存后长什么样。
+      // 示例内容内置在 App 里，不写入资料库。
+      HStack {
+        Spacer()
+        Button {
+          isSamplePreviewPresented = true
+        } label: {
+          Label("看个示例", systemImage: "eye")
+        }
+        .buttonStyle(.borderless)
+        .help("看一条保存好的内容长什么样：原文和总结。只是示例，不会存进资料库")
+        .accessibilityIdentifier("first-capture-sample")
       }
       Divider()
       HStack(spacing: 10) {
@@ -3704,11 +3789,17 @@ struct HistoryContentView: View {
     return providerSettings.hasConfiguredAPIKey ? "生成总结" : "配置模型"
   }
 
+  private var firstSummaryPrerequisitesMet: Bool {
+    !model.rows.isEmpty && providerSettings.hasConfiguredAPIKey
+  }
+
   private func onboardingStep(
     number: Int,
     title: String,
     completed: Bool,
     actionTitle: String,
+    isEnabled: Bool = true,
+    disabledHelp: String? = nil,
     action: @escaping () -> Void
   ) -> some View {
     HStack(spacing: 12) {
@@ -3718,16 +3809,25 @@ struct HistoryContentView: View {
       Text(title).themedFont(.callout, weight: .medium)
       Spacer()
       if !completed {
-        Button(actionTitle, action: action).buttonStyle(.borderless)
+        Button(actionTitle, action: action)
+          .buttonStyle(.borderless)
+          .disabled(!isEnabled)
+          // 窗口统一染了正文色，borderless 按钮灰掉时看不出来（2026-10-01 实测），这里自己淡下去。
+          .opacity(isEnabled ? 1 : 0.4)
+          // 灰掉的按钮自己收不到悬停，提示挂在外层才看得到。
+          .help(isEnabled ? "" : (disabledHelp ?? ""))
+          .accessibilityHint(isEnabled ? "" : (disabledHelp ?? ""))
       }
     }
+    .contentShape(Rectangle())
+    .help(!completed && !isEnabled ? (disabledHelp ?? "") : "")
   }
 
   private var blockingError: some View {
     HistoryInlineState(
       symbol: "externaldrive.badge.exclamationmark",
       title: "无法打开历史记录",
-      message: "本机的历史库这次打不开。\(ProductDisplay.name) 没有对数据做任何写入，已保存的内容仍在原处。请检查本机存储后重新启动 \(ProductDisplay.name)；仍然不行时，可在「数据与备份」里从备份恢复。",
+      message: "本机的历史库这次打不开。\(ProductDisplay.name)没有对数据做任何写入，已保存的内容仍在原处。请检查本机存储后重新启动\(ProductDisplay.name)；仍然不行时，可在「数据与备份」里从备份恢复。",
       actionTitle: "查看备份说明",
       action: {
         SettingsNavigationRequest.request("dataBackup")
@@ -3868,7 +3968,7 @@ private struct HistoryMultiSelectionPanel: View {
       switch model.selectedScope {
       case .all: parts.append("全部内容")
       case .recent: parts.append("最近 7 天")
-      case .unsummarized: parts.append("待总结")
+      case .unsummarized: parts.append("未总结")
       case .untidied: parts.append("待校对")
       case .untranscribed: parts.append("待转写")
       case .favorite: parts.append("收藏")
@@ -4593,11 +4693,12 @@ private struct HistoryDetailView: View, Equatable {
     guard !isOwnWriting,
           readingPrimaryTitle == contentName.text,
           readingOriginalSubtitle == nil, let source = latestSourceSnapshot else { return false }
-    // 推文这类没有独立标题的内容，标题是从正文首句合成的：原文页不显示，
-    // 切到总结页也不该突然冒出一个大标题，两页保持一致，只留作者行。
-    if contentName.origin == .caption { return true }
+    // 只有正文首句就在眼前时才藏标题，免得同一句话连着出现两次。
+    // 推文、抖音这类标题从配文首句合成的，原来所有页签一律不显示标题：切到「总结」
+    // 或抖音的「转写」后，整页没有任何地方写着这是哪一条（2026-10-01 走查）。
     guard effectiveReadingPane == .source,
           !showsLayeredSource || activeSourceLayer == .caption else { return false }
+    if contentName.origin == .caption { return true }
     let name = contentName
     return derivedMemo.value("hidesRepeatedHeading|\(name.text)|\(name.origin)", snapshot: source) {
       CapturedContentNaming.hidesRepeatedHeading(
@@ -4639,6 +4740,10 @@ private struct HistoryDetailView: View, Equatable {
   private var showsCurrentCapture: Bool { appModel.currentCapture?.taskID == detail.task.id }
   private var showsVisibleRun: Bool { appModel.showsVisibleRun(for: detail.task.id) }
   private var canRunHistory: Bool { appModel.canStartRun(from: detail) }
+  private var isUntranscribedMedia: Bool {
+    guard let body = detail.snapshots.last?.bodyText else { return false }
+    return LocalImportDocument.isUntranscribedPlaceholder(body)
+  }
   private var summarizeUnavailableReason: String? {
     if appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .summarize) {
       return nil
@@ -4648,6 +4753,8 @@ private struct HistoryDetailView: View, Equatable {
       detail: detail,
       preferencesReady: providerSettings.arePreferencesReady
     )
+    // 还没转写不是「通道忙」，排队等多久都不会变成能总结。
+    if isUntranscribedMedia { return AppViewModel.untranscribedRunReason }
     if reason != nil, appModel.canEnqueueManualGeneration(for: detail.task.id) {
       return nil
     }
@@ -4663,6 +4770,7 @@ private struct HistoryDetailView: View, Equatable {
       preferences: providerSettings.runPreferences,
       preferencesReady: providerSettings.arePreferencesReady
     )
+    if isUntranscribedMedia { return AppViewModel.untranscribedRunReason }
     if reason != nil, appModel.canEnqueueManualGeneration(for: detail.task.id) {
       return nil
     }
@@ -4951,7 +5059,9 @@ private struct HistoryDetailView: View, Equatable {
 
         if presentsArticleBeforeMedia, showsReadingSurface {
           readingSurface
-            .padding(.top, isOwnWriting ? DesignTokens.Space.sm : 18)
+            // 笔记 16：首行标题藏掉后（见 displayedSourceMarkdown），正文第一段直接贴着分类行，
+            // 原来那段间距是标题自带的上边距（2026-10-01 自查）。
+            .padding(.top, isOwnWriting ? DesignTokens.Space.lg : 18)
         }
 
         if !suppressesEmbeddedMedia {
@@ -5207,7 +5317,9 @@ private struct HistoryDetailView: View, Equatable {
         // Substantive WeChat articles already rendered the reading surface above.
         if !presentsArticleBeforeMedia, showsReadingSurface {
           readingSurface
-            .padding(.top, isOwnWriting ? DesignTokens.Space.sm : 18)
+            // 笔记 16：首行标题藏掉后（见 displayedSourceMarkdown），正文第一段直接贴着分类行，
+            // 原来那段间距是标题自带的上边距（2026-10-01 自查）。
+            .padding(.top, isOwnWriting ? DesignTokens.Space.lg : 18)
         }
 
         if isOwnWriting, showsRunControls,
@@ -5267,6 +5379,9 @@ private struct HistoryDetailView: View, Equatable {
             hairline: theme.hairline,
             onSelect: { step in openStep(step) }
           )
+          // 落款「丙午年九月初八日」很多人看不懂（2026-10-01 走查）：样式不动，悬停给公历日期。
+          // 落款的月日本来就是公历月日，只是写成了款识数字；印章、下载来源链接各有自己的提示，优先显示它们的。
+          .help(colophonGregorianHelp)
         }
       }
       // 常规列表保留较宽上限；专注阅读收窄到约 760pt 并居中。
@@ -6243,6 +6358,17 @@ private struct HistoryDetailView: View, Equatable {
     .controlSize(.small)
   }
 
+  /// 表头上唯一露出来的「下一步」（2026-10-01 走查：原来「生成总结」「生成翻译」「转写」
+  /// 和「处理」面板里的同名项各出现两次）。没转写的媒体 → 转写；有正文没总结 → 生成总结；
+  /// 都做了 → 不露。其余（翻译、脑图、重做）只在「处理」里，「处理」也不再重复这一项。
+  private enum PrimaryReadingVerb { case transcribe, summarize }
+
+  private var primaryReadingVerb: PrimaryReadingVerb? {
+    if transcribeAction != nil, !hasCompletedTranscript { return .transcribe }
+    if summaryArtifact == nil, showsRunControls { return .summarize }
+    return nil
+  }
+
   private func startRun(_ kind: RunKind) {
     Task {
       let started: Bool
@@ -6282,7 +6408,8 @@ private struct HistoryDetailView: View, Equatable {
         }
       }
       .accessibilityIdentifier("model-run-status")
-    } else if !artifactExists, showsRunControls, !(kind == .translate && translationNotNeeded) {
+    } else if !artifactExists, kind == .summarize, primaryReadingVerb == .summarize {
+      // 翻译不再在表头露按钮，只在跑的时候显示进度和「停止」（上面那支）；入口在「处理」里。
       let isQueued = appModel.isManualGenerationQueued(
         taskID: detail.task.id,
         kind: kind == .translate ? .translate : .summarize
@@ -6379,7 +6506,7 @@ private struct HistoryDetailView: View, Equatable {
     let trimmed = providerSettings.effectiveTranscriptionModelName?
       .trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed?.isEmpty != false {
-      return "在线转写（未配置模型，见 设置 → 录 · 转写）"
+      return "在线转写（未配置模型，见「设置 → 转写 · 录」）"
     }
     return hasCompletedTranscript ? "重新转写（在线）" : "在线转写"
   }
@@ -6625,7 +6752,9 @@ private struct HistoryDetailView: View, Equatable {
     }
     var rows: [ProcessStepRowModel] = []
 
-    if let action = transcribeAction {
+    // 表头上已经露着的那一步（转写 / 生成总结）不在面板里再列一遍。
+    let primary = primaryReadingVerb
+    if let action = transcribeAction, primary != .transcribe {
       let state: ProcessStepRow.State = {
         let ui = model.transcriptionState(for: taskID)
         if ui.isActive { return .running("转写中…") }
@@ -6681,6 +6810,7 @@ private struct HistoryDetailView: View, Equatable {
 
     for (step, kind) in [(ProcessStep.summary, RunKind.summarize), (.translation, .translate)] {
       if kind == .translate, translationNotNeeded, translationArtifact == nil { continue }
+      if kind == .summarize, primary == .summarize { continue }
       let done = (kind == .translate ? translationArtifact : summaryArtifact) != nil
       let blocked = kind == .translate ? translateUnavailableReason : summarizeUnavailableReason
       let queued = appModel.isManualGenerationQueued(taskID: taskID, kind: kind == .translate ? .translate : .summarize)
@@ -8085,6 +8215,13 @@ private struct HistoryDetailView: View, Equatable {
     return colophonGlyph == .external ? LocalFileProvenance.joined("\(date)　汲录自", platform) : "\(date)　记"
   }
 
+  /// 落款日期的公历写法，给悬停提示用。
+  private var colophonGregorianHelp: String {
+    let date = Date(timeIntervalSince1970: Double(detail.task.createdAtMilliseconds) / 1_000)
+    let parts = Calendar.current.dateComponents([.year, .month, .day], from: date)
+    return "公历\(parts.year ?? 0)年\(parts.month ?? 0)月\(parts.day ?? 0)日"
+  }
+
   /// 本地文件导入时读到的下载来源（没有下载标记、或不是本地文件时为 nil）。有网址时题跋可以点开。
   private var colophonDownloadSource: LocalFileProvenance? {
     guard colophonGlyph == .external,
@@ -8109,6 +8246,9 @@ private struct HistoryDetailView: View, Equatable {
     )
     // 导入的图片：正文只放图，识别出的文字在下面单独一条可展开的小节里。
     if isImportedImage(snapshot) { cleaned = LocalImportDocument.splitImageBody(cleaned).image }
+    // 笔记正文首行的 `# 标题` 和上面的标题框是同一句话：读的时候藏掉这一行，编辑时照常在。
+    // 标题从正文首行派生后，页面顶上原来连着两个一样的大标题（2026-10-01 走查）。
+    if isUserNote { return DailyNoteTitleFormat.strippingLeadingHeading(cleaned, matching: noteTitleDraft) }
     guard !isOwnWriting else { return cleaned }
     let style: CapturedSourceBodyPresentation.EchoedOpeningStyle =
       .stripSyntheticTitleHeadingOnly
@@ -8886,6 +9026,10 @@ private struct HistoryTagEditor: View {
     model.canEditTags && tags.count < HistoryTagNormalizer.maximumTagsPerTask
   }
 
+  private var hasChipTags: Bool {
+    tags.contains { !MaterialCatalog.systemTagNormalizedNames.contains($0.normalizedName) }
+  }
+
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
       // Chips-first: tags sit on the metadata density row, not a heavy form.
@@ -9021,11 +9165,22 @@ private struct HistoryTagEditor: View {
   @ViewBuilder private var addTagControl: some View {
     if composerInPopover {
       Button { isComposerExpanded = true } label: {
-        Label("添加标签", systemImage: "tag")
-          .themedFont(.callout)
-          .labelStyle(.titleAndIcon)
+        // 已经有标签时只留一个「＋」：四五个标签加上「添加标签」四个字放不下一行，
+        // 这四个字常常单独掉到第二行（2026-10-01 走查）。没有标签时照旧写全，告诉人这里能加。
+        if hasChipTags {
+          Image(systemName: "plus")
+            .font(.system(size: DesignTokens.IconSize.inline, weight: .semibold))
+            .frame(width: 22, height: 20)
+            .contentShape(Rectangle())
+        } else {
+          Label("添加标签", systemImage: "tag")
+            .themedFont(.callout)
+            .labelStyle(.titleAndIcon)
+        }
       }
       .buttonStyle(.borderless)
+      .help("添加标签")
+      .accessibilityLabel("添加标签")
       .accessibilityIdentifier("history-tag-add-toggle")
       .popover(isPresented: $isComposerExpanded, arrowEdge: .bottom) {
         composer
@@ -9647,5 +9802,112 @@ struct HorizontalBleedClip: Shape {
 
   func path(in rect: CGRect) -> Path {
     Path(rect.insetBy(dx: -bleed, dy: 0))
+  }
+}
+
+/// 三步卡「看个示例」打开的只读示例（2026-10-01 走查：新用户打开空库只看得到空壳，
+/// 不知道保存之后会得到什么）。原文、总结都内置在这里，用阅读页同一个
+/// `MarkdownContentView` 渲染；不建任务、不写资料库，关掉就没了。
+struct SampleReadingPreviewSheet: View {
+  enum Layer: String, CaseIterable, Identifiable {
+    case summary = "总结"
+    case source = "原文"
+    var id: String { rawValue }
+  }
+
+  let theme: HistoryThemeTokens
+  @State private var layer: Layer = .summary
+  @State private var showsPlainText = false
+  @Environment(\.dismiss) private var dismiss
+
+  static let sampleTitle = "为什么写下来的东西更容易记住"
+
+  static let sampleSource = """
+  很多人读完一篇文章，过两天就只剩一个模糊的印象。不是记性不好，而是读的时候只做了「输入」。
+
+  ## 输入和提取
+
+  记忆研究里有个反复被验证的结论：主动回想比反复阅读更能留住东西。读完合上书，试着用自己的话说一遍，哪怕说得磕磕绊绊，留下来的也比再读一遍多。
+
+  ## 写下来为什么有用
+
+  写作逼着人把模糊的感觉变成具体的句子。写不出来的地方，往往就是没真正懂的地方。
+
+  - 用自己的话复述一遍要点；
+  - 记下一个能用上的场景；
+  - 过几天再翻出来看一眼。
+
+  > 读过的东西，要经过自己的手，才算真正收进来。
+  """
+
+  static let sampleSummary = """
+  **一句话**：主动回想和动笔复述，比反复阅读更能记住读过的东西。
+
+  ## 要点
+
+  1. 只读不想只是「输入」，几天后多半只剩模糊印象。
+  2. 主动回想（合上书用自己的话说一遍）比再读一遍更有效。
+  3. 写作能暴露没弄懂的地方：写不出来的，往往就是没懂的。
+
+  ## 可以怎么做
+
+  - 读完用两三句话复述要点；
+  - 记下一个自己能用上的场景；
+  - 隔几天回看一次。
+  """
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 0) {
+      HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
+        VStack(alignment: .leading, spacing: 3) {
+          Text("示例").themedFont(.caption, weight: .semibold).foregroundStyle(theme.secondaryText)
+          Text(Self.sampleTitle).themedFont(.title3, weight: .semibold)
+        }
+        Spacer(minLength: 0)
+        Picker("查看", selection: $layer) {
+          ForEach(Layer.allCases) { Text($0.rawValue).tag($0) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .fixedSize()
+        .accessibilityIdentifier("sample-preview-layer")
+      }
+      .padding(.horizontal, 24)
+      .padding(.top, 20)
+      .padding(.bottom, 12)
+      Divider()
+      ScrollView {
+        MarkdownContentView(
+          source: layer == .summary ? Self.sampleSummary : Self.sampleSource,
+          primaryTextColor: theme.primaryText,
+          secondaryTextColor: theme.secondaryText,
+          accentColor: theme.accent,
+          showsPlainText: $showsPlainText,
+          showsInlinePlainTextToggle: false,
+          anchorScope: "sample-preview"
+        )
+        .padding(.horizontal, 28)
+        .padding(.vertical, 20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      Divider()
+      HStack {
+        Text("这只是示例，不会存进资料库。保存自己的链接后，原文、总结会以同样的样子出现在右侧。")
+          .themedFont(.caption)
+          .foregroundStyle(theme.secondaryText)
+          .fixedSize(horizontal: false, vertical: true)
+        Spacer(minLength: DesignTokens.Space.sm)
+        Button("关闭") { dismiss() }
+          .keyboardShortcut(.cancelAction)
+          .accessibilityIdentifier("sample-preview-close")
+      }
+      .padding(.horizontal, 24)
+      .padding(.vertical, 14)
+    }
+    .frame(width: 620, height: 600)
+    .background(theme.card)
+    .foregroundStyle(theme.primaryText)
+    .environment(\.appTheme, theme)
+    .accessibilityIdentifier("sample-preview-sheet")
   }
 }

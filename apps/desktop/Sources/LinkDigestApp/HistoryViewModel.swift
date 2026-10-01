@@ -1100,6 +1100,12 @@ final class HistoryViewModel {
   /// 从别处（链接、MCP、笔记互链、新建）打开一条时，中栏要滚到它那一行。
   /// 原来详情换了，列表停在原处，看不出正在读的是列表里哪一条（2026-10-01 走查）。
   private(set) var revealScrollTarget: TaskID?
+  /// 搜索命中总数（列表头「搜索 · N 条」）；不在搜索时为 nil。
+  private(set) var searchResultCount: Int?
+  /// 搜索词变了、新结果到了、从博主页回来时加一：列表整表重建、回到最上面。
+  /// 原来沿用之前的滚动位置，第一眼看到的是一个月前的（2026-10-01 走查）。
+  private(set) var searchScrollToTopToken = 0
+  private var lastReceivedSearchText = ""
   /// Directory browsing shows the creator's works in the detail column.
   /// Selecting a work turns this on so the reader appears; it must not follow
   /// the list's usual auto-select-first-row behavior.
@@ -2279,6 +2285,9 @@ final class HistoryViewModel {
   }
 
   func consumeRevealScrollTarget() { revealScrollTarget = nil }
+
+  /// 列表后面还有没读的页（reveal 追目标行时用）。
+  var hasMorePages: Bool { nextCursor != nil }
 
   func revealProfileImportResult(taskID: TaskID, batchID: UUID, itemID: UUID) {
     profileImportReturnTarget = .init(taskID: taskID, batchID: batchID, itemID: itemID)
@@ -4367,6 +4376,10 @@ final class HistoryViewModel {
     if mindMapExtractor == nil { return "需先在设置里配置聊天模型" }
     if mindMapState(for: taskID).isActive { return "正在生成脑图…" }
     if mindMapSourceText() == nil { return "还没有可用来生成脑图的文字" }
+    // 和总结、翻译同一道闸：只有占位说明时，脑图只会画出「还没有转写」几个字（2026-10-01 自查）。
+    if let body = detail.snapshots.last?.bodyText, LocalImportDocument.isUntranscribedPlaceholder(body) {
+      return "还没转写：先点「转写」，有了文字稿再生成脑图"
+    }
     return nil
   }
 
@@ -6050,6 +6063,14 @@ final class HistoryViewModel {
   }
 
   private func clearCreatorMode() {
+    // 从博主页回到普通列表：列表整表重建、从最上面开始。原来沿用博主作品那段的
+    // 滚动位置，详情已自动接住第一条，列表却停在一个月前（2026-10-01 走查）。
+    // 选中项也清掉：博主页里正在读的那条也在「全部」里，列表会先滚去它那里（实测停在 9 月 8 日），
+    // 再被自动选中的第一条换掉，位置却留在原处。清掉后新列表自己接住第一条。
+    if isCreatorDirectoryActive {
+      searchScrollToTopToken += 1
+      selectedTaskIDs = []
+    }
     selectedCreatorID = nil
     selectedCreatorSnapshot = nil
     isCreatorDirectoryActive = false
@@ -6587,6 +6608,11 @@ final class HistoryViewModel {
     switch result {
     case let .success(page):
       rows = page.rows; nextCursor = page.nextCursor; listState = page.rows.isEmpty ? .empty : .loaded
+      searchResultCount = searchText.isEmpty ? nil : page.totalCount
+      if searchText != lastReceivedSearchText {
+        lastReceivedSearchText = searchText
+        searchScrollToTopToken += 1
+      }
       loadFavicons(for: page.rows, generation: generation)
       refreshRelatedRows()
       if let preservedSelection {
@@ -8120,7 +8146,7 @@ final class HistoryViewModel {
           history, taskID: taskID, attempt: attempt, status: .cancelled,
           updatedAtMilliseconds: self.nowMilliseconds()
         )
-        self.transcriptionState = .failed("已弹出「录屏与系统录音」授权。请在系统对话框或“系统设置 → 隐私与安全性 → 录屏与系统录音”中打开 \(ProductDisplay.name) Debug，然后退出并重开 App，再点「实时转写」。")
+        self.transcriptionState = .failed("已弹出「录屏与系统录音」授权。请在系统对话框或“系统设置 → 隐私与安全性 → 录屏与系统录音”中打开「\(ProductDisplay.name) Debug」，然后退出并重开 App，再点「实时转写」。")
       } catch {
         guard self.transcriptionRequestID == requestID else { return }
         _ = await worker.updateTaskTranscriptionStatus(
@@ -8873,7 +8899,10 @@ final class HistoryViewModel {
     guard let detail = try? history.detail(taskID: taskID) else { return .unreadable }
     if batchSummaryIsSummarized(detail) { return .alreadySummarized }
     let body = detail.snapshots.last?.bodyText ?? ""
-    guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    // 还没转写的录音只有占位说明，算「没有正文」，不进这一批。
+    guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          !LocalImportDocument.isUntranscribedPlaceholder(body)
+    else {
       return .withoutContent
     }
     return .needsSummary(detail)
@@ -8915,7 +8944,9 @@ final class HistoryViewModel {
     guard let detail = try? history.detail(taskID: taskID) else { return .unreadable }
     if batchTranslationIsTranslated(detail) { return .alreadyTranslated }
     let body = LayeredSourceDocument.modelInput(from: detail.snapshots)
-    guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    guard !body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          !LocalImportDocument.isUntranscribedPlaceholder(detail.snapshots.last?.bodyText ?? "")
+    else {
       return .withoutContent
     }
     guard LayeredSourceDocument.needsTranslation(from: detail.snapshots, outputLanguage: outputLanguage) else {

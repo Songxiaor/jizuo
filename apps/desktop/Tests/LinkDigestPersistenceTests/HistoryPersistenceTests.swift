@@ -2672,6 +2672,44 @@ final class UserNoteIngestTests: XCTestCase {
     }
   }
 
+  /// 过去没写字的每日笔记只在显示层藏起来：列表和侧栏计数同一口径，数据不删（2026-10-01）。
+  func testEmptyPastDailyNotesAreHiddenFromListAndCountsButKept() throws {
+    try withTemporaryLocation { location in
+      let repository = try GRDBHistoryRepository.open(at: location)
+      defer { try? repository.database.close() }
+
+      let day: TimeInterval = 86_400
+      let emptyPast = try UserNoteDocument.makeDaily(date: Date().addingTimeInterval(-3 * day))
+      let writtenPast = try UserNoteDocument.makeDaily(date: Date().addingTimeInterval(-2 * day), body: "那天读完的一点想法")
+      let emptyToday = try UserNoteDocument.makeDaily()
+      let ordinary = try UserNoteDocument.make(title: "灵感", body: "先写一句")
+      for (index, document) in [emptyPast, writtenPast, emptyToday, ordinary].enumerated() {
+        _ = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1_760_000_000_000 + Int64(index)))
+      }
+
+      let notes = try repository.historyPage(limit: 10, after: nil as HistoryPageCursor?, filter: HistoryListFilter(scope: .notes))
+      XCTAssertEqual(notes.rows.count, 3, "过去的空每日笔记不显示；今天那条、写了字的、普通笔记都在")
+      XCTAssertFalse(notes.rows.contains { $0.canonicalURL == emptyPast.url })
+      let all = try repository.historyPage(
+        limit: 10, after: nil as HistoryPageCursor?, filter: HistoryListFilter(scope: .all, includesNotes: true)
+      )
+      XCTAssertEqual(all.rows.count, 3)
+      let own = try repository.historyPage(
+        limit: 10, after: nil as HistoryPageCursor?, filter: HistoryListFilter(scope: .own, includesNotes: true)
+      )
+
+      let counts = try repository.navigationCounts()
+      XCTAssertEqual(counts.notes, notes.rows.count, "侧栏数字点进去条数要对得上")
+      XCTAssertEqual(counts.total, all.rows.count)
+      XCTAssertEqual(counts.own, own.rows.count)
+      XCTAssertEqual(counts.forms.first { $0.form == .note }?.count ?? 0, 3)
+
+      // 只是不显示：那条记录还在库里，回收站也没有它。
+      XCTAssertNotNil(try repository.taskID(matchingCanonicalURL: try CanonicalURL(emptyPast.url)))
+      XCTAssertEqual(counts.trash, 0)
+    }
+  }
+
   /// 搜索要能找到笔记，哪怕当前不在「我的笔记」区。
   ///
   /// 分区是为了浏览时互不打扰；搜索是「我想不起来它在哪」，此时还要求用户先
@@ -2917,6 +2955,7 @@ final class UserNoteIngestTests: XCTestCase {
 /// 应用层先查一次再决定——那在竞态下会产生两条；而是靠同一天解析出同一个
 /// canonical URL，让 tasks 的 UNIQUE 约束来保证。
 final class DailyNoteIdempotencyTests: XCTestCase {
+  // 正文写一句：过去日期的空每日笔记在列表里不显示（2026-10-01），这里测的是幂等，不是空笔记。
   func testSameDayAlwaysResolvesToOneNote() throws {
     try withTemporaryLocation { location in
       let repository = try GRDBHistoryRepository.open(at: location)
@@ -2925,14 +2964,14 @@ final class DailyNoteIdempotencyTests: XCTestCase {
       let day = Date(timeIntervalSince1970: 1_785_600_000)
       let first = try repository.acceptCapture(
         try AcceptCaptureCommand(
-          document: try UserNoteDocument.makeDaily(date: day),
+          document: try UserNoteDocument.makeDaily(date: day, body: "记一句"),
           receivedAtMilliseconds: 1_785_600_000_000
         )
       )
       // 同一天再点一次——必须回到同一条，而不是新建。
       let second = try repository.acceptCapture(
         try AcceptCaptureCommand(
-          document: try UserNoteDocument.makeDaily(date: day),
+          document: try UserNoteDocument.makeDaily(date: day, body: "记一句"),
           receivedAtMilliseconds: 1_785_600_100_000
         )
       )
@@ -2954,9 +2993,9 @@ final class DailyNoteIdempotencyTests: XCTestCase {
       let day = Date(timeIntervalSince1970: 1_785_600_000)
       let nextDay = day.addingTimeInterval(86_400)
       _ = try repository.acceptCapture(try AcceptCaptureCommand(
-        document: try UserNoteDocument.makeDaily(date: day), receivedAtMilliseconds: 1))
+        document: try UserNoteDocument.makeDaily(date: day, body: "记一句"), receivedAtMilliseconds: 1))
       _ = try repository.acceptCapture(try AcceptCaptureCommand(
-        document: try UserNoteDocument.makeDaily(date: nextDay), receivedAtMilliseconds: 2))
+        document: try UserNoteDocument.makeDaily(date: nextDay, body: "记一句"), receivedAtMilliseconds: 2))
 
       let notes = try repository.historyPage(
         limit: 10, after: nil as HistoryPageCursor?,

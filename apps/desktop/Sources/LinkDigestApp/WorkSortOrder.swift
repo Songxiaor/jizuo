@@ -5,9 +5,10 @@ enum WorkSortOrder: String, CaseIterable, Identifiable {
   var id: String { rawValue }
   var title: String {
     switch self {
-    // 「抓取顺序」会被读成「按我抓的那次排」；这一档其实是内容被发现的先后，
-    // 和后台分页拿回来的顺序一致，所以叫「发现顺序」。
-    case .original: "发现顺序"
+    // 「抓取顺序」会被读成「按我抓的那次排」；这一档其实是后台分页从博主主页拿回来的
+    // 先后。「发现顺序」说不清是谁发现的（2026-10-01 走查），直说「主页顺序」。
+    // 博主页、来源卡片墙里这一档含义不同，各自在调用处改叫「保存顺序」「最近更新」。
+    case .original: "主页顺序"
     case .newest: "发布时间 · 新到旧"
     case .oldest: "发布时间 · 旧到新"
     case .mostLiked: "点赞 · 高到低"

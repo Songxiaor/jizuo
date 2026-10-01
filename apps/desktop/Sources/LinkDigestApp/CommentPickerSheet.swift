@@ -180,7 +180,7 @@ struct CommentPickerSheet: View {
             .foregroundStyle(theme.warning)
             .fixedSize(horizontal: false, vertical: true)
         }
-        Text("保存后会替换这条内容原有的评论段；条数在「设置 → 评 · 评论」里改。")
+        Text("保存后会替换这条内容原有的评论段；条数在「设置 → 收集 · 汲 → 评论」里改。")
           .themedFont(.caption)
           .foregroundStyle(.secondary)
       }

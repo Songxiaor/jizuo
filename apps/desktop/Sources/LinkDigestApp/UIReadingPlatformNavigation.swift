@@ -9,6 +9,8 @@ struct UIReadingPlatformNavigation: View {
     let count: Int
     let faviconURL: URL?
     let faviconTaskID: TaskID?
+    /// 悬停说明；nil 时用默认的「平台（N 条）」。同名两行口径不同时由调用方写清楚（2026-10-01）。
+    var helpText: String? = nil
     var id: String { host }
   }
 
@@ -150,7 +152,7 @@ private struct UIReadingPlatformRow: View {
     )
     .animation(reduceMotion ? nil : DesignTokens.Motion.instant, value: isSelected)
     .onHover { isHovering = $0 }
-    .help("\(fullName)（\(item.count) 条）")
+    .help(item.helpText ?? "\(fullName)（\(item.count) 条）")
     .accessibilityLabel(fullName)
     .accessibilityValue("\(item.count) 条")
     .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)

@@ -233,10 +233,21 @@ struct CreatorDirectoryCard: View {
           .lineLimit(1)
           .truncationMode(.tail)
         HStack(spacing: DesignTokens.Space.xs) {
-          Text(subtitle)
-            .themedFont(.subheadline)
-            .foregroundStyle(theme.secondaryText)
-            .lineLimit(1)
+          // 还没抓过的博主：第二行直接是「去抓取」。原来按钮挂在名字右边，卡片又窄，
+          // 名字被挤成「哔哩哔…」，看不出是谁（2026-10-01 复查）。
+          if isEmpty, let captureAction {
+            Button("去抓取", action: captureAction)
+              .buttonStyle(.plain)
+              .themedFont(.subheadline, weight: .medium)
+              .foregroundStyle(theme.accent)
+              .help("打开这位博主的主页，挑要保存的内容")
+              .accessibilityHidden(true)
+          } else {
+            Text(subtitle)
+              .themedFont(.subheadline)
+              .foregroundStyle(theme.secondaryText)
+              .lineLimit(1)
+          }
           if creator.isPinned {
             Image(systemName: "pin.fill")
               .font(.system(size: DesignTokens.IconSize.inline - 2, weight: .semibold))
@@ -246,14 +257,6 @@ struct CreatorDirectoryCard: View {
         }
       }
       Spacer(minLength: 0)
-      // 0 条作品的卡点进去只有一个空页面，出口还在里面。直接在卡上给一步。
-      if isEmpty, let captureAction {
-        Button("去抓取", action: captureAction)
-          .buttonStyle(.appQuiet)
-          .controlSize(.small)
-          .help("打开这位博主的主页，挑要保存的内容")
-          .accessibilityHidden(true)
-      }
       // 卡片能点进去看作品，右端给一个轻的箭头作暗示。
       Image(systemName: "chevron.right")
         .font(.system(size: DesignTokens.IconSize.inline, weight: .semibold))

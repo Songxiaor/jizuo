@@ -298,8 +298,12 @@ final class CollectionPersistenceTests: XCTestCase {
       _ = outsider
       let searched = HistoryListFilter(searchText: "正文", includesNotes: true, collectionID: collection.id)
       XCTAssertEqual(try listed(repository, searched), [ids[2], ids[0], ids[4], ids[1], ids[3]])
+      // 搜索第一页带命中总数（列表头「搜索 · N 条」），翻页和浏览时不数。
+      XCTAssertEqual(try repository.historyPage(limit: 2, after: nil, filter: searched).totalCount, 5)
+      XCTAssertNil(try repository.historyPage(limit: 2, after: nil, filter: filter).totalCount)
       let noMatch = HistoryListFilter(searchText: "藏青", includesNotes: true, collectionID: collection.id)
       XCTAssertEqual(try listed(repository, noMatch), [])
+      XCTAssertEqual(try repository.historyPage(limit: 2, after: nil, filter: noMatch).totalCount, 0)
 
       // 「意思相近」套用当前筛选时也不能跑出合集。
       XCTAssertEqual(try listed(repository, filter.restricted(to: [outsider, ids[4]])), [ids[4]])

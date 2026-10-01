@@ -163,7 +163,7 @@
   }
   #send:hover, #sync-bookmarks:hover, #sync-selected:hover, #read-x-profile:hover, #recovery-action:hover, #open-app:hover { background: var(--accent-hover); }
   #send:active, #sync-bookmarks:active, #sync-selected:active, #read-x-profile:active, #recovery-action:active, #open-app:active { background: var(--accent-pressed); }
-  #send:disabled, #sync-bookmarks:disabled, #sync-selected:disabled, #read-x-profile:disabled { background: var(--disabled-fill); color: var(--disabled-text); cursor: default; }
+  #send:disabled, #sync-bookmarks:disabled, #sync-selected:disabled, #read-x-profile:disabled, #recovery-action:disabled { background: var(--disabled-fill); color: var(--disabled-text); cursor: default; }
   #send.done, #sync-bookmarks.done, #sync-selected.done, #read-x-profile.done { background: var(--success-tint); color: var(--success); }
   /*
     保存按钮钉在弹窗底部：来源卡、评论预览加起来会超过 Chromium 弹窗 600px 的上限，
@@ -178,7 +178,7 @@
 
   /*
     收藏页必须一开始就按 Chromium 弹窗上限开满。只在读完列表后加高，
-    窗口往往不再长高，底部「同步所选」会被裁掉，点了也看不见报错。
+    窗口往往不再长高，底部「保存所选」会被裁掉，点了也看不见报错。
   */
   html.bookmarks-popup,
   html.bookmarks-popup body {
@@ -196,6 +196,8 @@
   html.bookmarks-popup #result { flex-shrink: 0; order: 6; }
   html.bookmarks-popup #sync-bookmarks { flex-shrink: 0; }
   html.bookmarks-popup #sync-selected { flex-shrink: 0; order: 7; }
+  /* 连不上汲作时的「打开汲作并重试」：跟在保存按钮下面，不能按默认 order 0 跑到列表上方（2026-10-01）。 */
+  html.bookmarks-popup #recovery-action { flex-shrink: 0; order: 8; }
   html.bookmarks-popup #bookmarks-picker { order: 4; }
 
   /* 勾选列表（收藏夹与评论共用）：白卡内平铺行，勾选行用强调色淡底。 */
@@ -445,18 +447,18 @@
     <button type="button" id="close-popup">关闭</button>
     <button type="button" id="save-again" hidden>再存一份</button>
   </div>
-  <button id="sync-bookmarks" hidden>读取收藏列表</button>
+  <button id="sync-bookmarks" hidden>读取列表</button>
   <section id="bookmarks-picker" hidden>
     <div class="picker-toolbar">
       <span id="picker-count">已选 0 / 0</span>
-      <button type="button" id="picker-select-new">选未同步</button>
+      <button type="button" id="picker-select-new">选未保存</button>
       <button type="button" id="picker-select-all">全选</button>
       <button type="button" id="picker-select-none">清空</button>
     </div>
     <div id="picker-list"></div>
   </section>
-  <button id="sync-selected" hidden disabled>同步所选到汲作</button>
-  <button id="read-x-profile" hidden>读取主页作品到汲作</button>
+  <button id="sync-selected" hidden disabled>批量保存</button>
+  <button id="read-x-profile" hidden>读取列表，到汲作勾选</button>
   <p id="result" hidden></p>
   <button id="recovery-action" hidden></button>
   <a id="open-app" href="linkdigest://open" hidden>打开汲作查看</a>

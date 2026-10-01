@@ -75,11 +75,11 @@ describe("bookmarks native response parsing", () => {
 describe("sync result copy", () => {
   it("summarizes queued and skipped, noting when it caught up", () => {
     expect(bookmarksSyncMessage({ queued: 12, skipped: 3 }, 15, true))
-      .toBe("新增 12 条正在抓取，3 条已在库（已同步到上次的位置）");
+      .toBe("新增 12 条正在保存，3 条已在库（已读到上次保存的位置）");
     expect(bookmarksSyncMessage({ queued: 4, skipped: 0 }, 4, false))
-      .toBe("新增 4 条正在抓取");
+      .toBe("新增 4 条正在保存");
     expect(bookmarksSyncMessage({ queued: 0, skipped: 8 }, 8, true))
-      .toBe("8 条已在库（已同步到上次的位置）");
+      .toBe("8 条已在库（已读到上次保存的位置）");
     expect(bookmarksSyncMessage({ queued: 0, skipped: 0 }, 0, false))
       .toContain("没有找到");
   });

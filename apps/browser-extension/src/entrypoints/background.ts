@@ -157,7 +157,7 @@ const COMMENT_PLATFORMS: readonly CommentPlatform[] = [
 ];
 
 /**
- * App 设置页「评 · 评论」里的抓取偏好。
+ * App 设置页「收集 · 汲 → 评论」里的抓取偏好。
  * - `commentLimit`：默认条数（10..100）。
  * - `commentLimits`：按平台覆盖；0 = 这个平台不抓评论，没写的平台跟随默认条数。
  * - `autoSaveComments`：true = 不弹勾选，保存时自动带上前 N 条。
@@ -1877,7 +1877,20 @@ export type BookmarksCollectResult =
 
 export type BookmarksSyncResult =
   | { ok: true; outcome: BookmarksSyncOutcome; collected: number; reachedKnown: boolean }
-  | { ok: false; code: "not_bookmarks" | "empty" | "native_error" | "injection_failed" | "upgrade_app" };
+  | { ok: false; code: "not_bookmarks" | "empty" | "injection_failed" | "upgrade_app" }
+  | NativeErrorResult;
+
+/**
+ * 连不上汲作。transient = 浏览器那一层很快就断了（不是超时、不是 Host 冷启动等满），
+ * 弹窗据此自动重试；其余直接给「打开汲作并重试」（2026-10-01）。
+ */
+export type NativeErrorResult = { ok: false; code: "native_error"; transient?: true };
+
+function nativeTransportFailure(error: unknown): NativeErrorResult {
+  return mapNativeFailure(error, "popup").code === "NATIVE_MESSAGE_FAILED"
+    ? { ok: false, code: "native_error", transient: true }
+    : { ok: false, code: "native_error" };
+}
 
 async function loadBookmarksCursor(): Promise<string[]> {
   // 游标必须存**一批** id，不能只存一条。
@@ -1994,8 +2007,8 @@ export async function enqueueXBookmarkIDs(tweetIDs: unknown): Promise<BookmarksS
   let response: unknown;
   try {
     response = await withTimeout(browser.runtime.sendNativeMessage(HOST_NAME, message), 30_000);
-  } catch {
-    return { ok: false, code: "native_error" };
+  } catch (error) {
+    return nativeTransportFailure(error);
   }
   const outcome = parseBookmarksAccepted(response);
   if (!outcome) return { ok: false, code: nativeFailureCode(response) };
@@ -2041,7 +2054,8 @@ export type ProfileCollectResult =
 
 export type ProfilePresentResult =
   | { ok: true; acceptedCount: number }
-  | { ok: false; code: "not_profile" | "empty" | "login" | "injection_failed" | "native_error" | "upgrade_app" };
+  | { ok: false; code: "not_profile" | "empty" | "login" | "injection_failed" | "upgrade_app" }
+  | NativeErrorResult;
 
 export async function collectXProfile(tabId: number): Promise<ProfileCollectResult> {
   const tab = await browser.tabs.get(tabId).catch(() => undefined);
@@ -2097,8 +2111,8 @@ export async function presentXProfileCandidates(tabId: number): Promise<ProfileP
   let response: unknown;
   try {
     response = await withTimeout(browser.runtime.sendNativeMessage(HOST_NAME, message), 30_000);
-  } catch {
-    return { ok: false, code: "native_error" };
+  } catch (error) {
+    return nativeTransportFailure(error);
   }
   if (response && typeof response === "object") {
     const row = response as { kind?: string; error?: { code?: string; action?: string } };

@@ -81,7 +81,8 @@ struct ManualLinkSheet: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       Text("添加网页链接").themedFont(.title3, weight: .semibold)
-      Text("只读取你主动提交的公开 HTML 页面；登录页面请使用 \(ProductDisplay.extensionName)。")
+      // 2026-10-01 走查：原文「公开 HTML 页面」是技术词，扩展名两侧还多出空格。说人话。
+      Text("粘贴网页或视频链接。需要登录才能看的页面，用浏览器扩展保存。")
         .themedFont(.callout).foregroundStyle(.secondary)
       TextField("https://example.com/article", text: $model.input)
         .textFieldStyle(.roundedBorder).focused($focusURL)
@@ -209,13 +210,13 @@ struct ReadOnlyHistoryCallout: View {
   private var message: String {
     let base: String = switch reason {
     case .futureSchema:
-      "这份历史由较新版本创建，当前仅可浏览。原数据未修改；请使用较新版本的 \(ProductDisplay.name) 后再编辑或删除。"
+      "这份历史由较新版本创建，当前仅可浏览。原数据未修改；请使用较新版本的\(ProductDisplay.name)后再编辑或删除。"
     case .migrationFailed:
-      "这份历史的迁移未完成，当前仅可浏览。原数据未修改；请在恢复后重新启动 \(ProductDisplay.name)，再编辑或删除。"
+      "这份历史的迁移未完成，当前仅可浏览。原数据未修改；请在恢复后重新启动\(ProductDisplay.name)，再编辑或删除。"
     case .storageUnavailable:
-      "本地历史暂时无法以可写方式打开，当前仅可浏览。原数据未修改；请检查本机存储后重新启动 \(ProductDisplay.name)，再编辑或删除。"
+      "本地历史暂时无法以可写方式打开，当前仅可浏览。原数据未修改；请检查本机存储后重新启动\(ProductDisplay.name)，再编辑或删除。"
     case nil:
-      "本地历史当前仅可浏览。原数据未修改；请在恢复后重新启动 \(ProductDisplay.name)，再编辑或删除。"
+      "本地历史当前仅可浏览。原数据未修改；请在恢复后重新启动\(ProductDisplay.name)，再编辑或删除。"
     }
     if let recoveryHint, !recoveryHint.isEmpty {
       return base + "\n" + recoveryHint

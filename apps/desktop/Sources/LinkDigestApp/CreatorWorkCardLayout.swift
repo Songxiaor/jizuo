@@ -144,46 +144,59 @@ struct CreatorWorkMetricStrip: View {
   var showsPrimaryOnly: Bool = false
 
   var body: some View {
-    Group {
-      if showsPrimaryOnly, let slot = visibleSlots.first(where: { $0 == .likes }) ?? visibleSlots.first {
+    if showsPrimaryOnly {
+      primaryStrip
+    } else if !visibleSlots.isEmpty {
+      // 五个数字放不下时退成只显示一个：原来 fixedSize 的数字把整列撑出窗口，
+      // 卡片墙最右一列被切掉半张（2026-10-01 走查，「52.4万」只剩「52.4」）。
+      ViewThatFits(in: .horizontal) {
+        fullStrip
+        primaryStrip
+      }
+    }
+  }
+
+  @ViewBuilder private var primaryStrip: some View {
+    if let slot = visibleSlots.first(where: { $0 == .likes }) ?? visibleSlots.first {
+      let shown = CreatorWorkMetricLayout.displayValue(values(slot))
+      HStack(alignment: .firstTextBaseline, spacing: CreatorWorkCardLayout.metricIconSpacing) {
+        Image(systemName: slot.systemImage)
+        Text(shown.visible).monospacedDigit().fixedSize(horizontal: true, vertical: false)
+        Spacer(minLength: 0)
+      }
+      .lineLimit(1)
+      .themedFont(.caption2)
+      .foregroundStyle(theme.secondaryText)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .contentShape(Rectangle())
+      .help(visibleSlots.map { helpText($0, shown: CreatorWorkMetricLayout.displayValue(values($0))) }.joined(separator: "\n"))
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(slot.title(forHost: host))
+      .accessibilityValue(shown.accessibility)
+    }
+  }
+
+  private var fullStrip: some View {
+    HStack(alignment: .firstTextBaseline, spacing: CreatorWorkCardLayout.metricGap) {
+      ForEach(visibleSlots, id: \.rawValue) { slot in
         let shown = CreatorWorkMetricLayout.displayValue(values(slot))
         HStack(alignment: .firstTextBaseline, spacing: CreatorWorkCardLayout.metricIconSpacing) {
           Image(systemName: slot.systemImage)
-          Text(shown.visible).monospacedDigit().fixedSize(horizontal: true, vertical: false)
-          Spacer(minLength: 0)
+          Text(shown.visible)
+            .monospacedDigit()
+            .fixedSize(horizontal: true, vertical: false)
         }
         .lineLimit(1)
-        .themedFont(.caption2)
-        .foregroundStyle(theme.secondaryText)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .help(visibleSlots.map { helpText($0, shown: CreatorWorkMetricLayout.displayValue(values($0))) }.joined(separator: "\n"))
+        .help(helpText(slot, shown: shown))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(slot.title(forHost: host))
         .accessibilityValue(shown.accessibility)
-      } else if !visibleSlots.isEmpty {
-        HStack(alignment: .firstTextBaseline, spacing: CreatorWorkCardLayout.metricGap) {
-          ForEach(visibleSlots, id: \.rawValue) { slot in
-            let shown = CreatorWorkMetricLayout.displayValue(values(slot))
-            HStack(alignment: .firstTextBaseline, spacing: CreatorWorkCardLayout.metricIconSpacing) {
-              Image(systemName: slot.systemImage)
-              Text(shown.visible)
-                .monospacedDigit()
-                .fixedSize(horizontal: true, vertical: false)
-            }
-            .lineLimit(1)
-            .help(helpText(slot, shown: shown))
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(slot.title(forHost: host))
-            .accessibilityValue(shown.accessibility)
-          }
-          Spacer(minLength: 0)
-        }
-        .themedFont(.caption2)
-        .foregroundStyle(theme.secondaryText)
-        .frame(maxWidth: .infinity, alignment: .leading)
       }
+      Spacer(minLength: 0)
     }
+    .themedFont(.caption2)
+    .foregroundStyle(theme.secondaryText)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   private var visibleSlots: [CreatorWorkMetricKind] {

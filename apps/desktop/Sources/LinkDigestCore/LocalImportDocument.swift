@@ -58,6 +58,13 @@ public enum LocalImportDocument {
     return parts.joined(separator: " · ")
   }
 
+  /// 正文还是录音 / 音视频的占位说明，也就是还没转写。转写后文字稿另存一版，
+  /// 所以只看最新一版正文。拿占位说明去总结、翻译，模型只会复述「还没有转写」
+  /// 这几句话，还白花一次调用（2026-10-01 走查）。
+  public static func isUntranscribedPlaceholder(_ body: String) -> Bool {
+    placeholderRowSummary(MarkdownNoteFrontmatter.parse(body).body, hasTranscript: false) != nil
+  }
+
   /// 这一行是不是纯音频（语音备忘录、导入的音频文件）。
   public static func isAudioOnly(host: String, preview: String?) -> Bool {
     host == LocalImportSource.voiceMemos.rawValue

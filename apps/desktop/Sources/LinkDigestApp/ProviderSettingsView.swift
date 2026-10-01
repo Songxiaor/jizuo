@@ -24,7 +24,7 @@ struct ProviderSettingsView: View {
   @Environment(\.appTheme) private var appTheme
   private enum SettingsTab: String, Hashable, CaseIterable, Identifiable {
     // 原始值不改：别处用 `SettingsNavigationRequest` 按字符串跳到某一页（例如 "service"、"generation"）。
-    // 2026-09-28 按工序重组：generation 成了「工序总览」，service 成了「模型服务」，新增七道工序页。
+    // 2026-09-28 按工序重组：generation 成了「工序总览」，service 成了「模型服务」，新增各工序页（2026-10-01 评论降为「收集」子页，收集之后五道）。
     case service, generation, appearance, mediaStorage, knowledgeVault, dataBackup, companionSync, siteLogin, browserSupport, mcp, updates, labs
     case semanticSearch
     case capture, record, proof, comments, summary, translation, mindMap
@@ -36,7 +36,6 @@ struct ProviderSettingsView: View {
       case .capture: .capture
       case .record: .record
       case .proof: .proof
-      case .comments: .comments
       case .summary: .summary
       case .translation: .translation
       case .mindMap: .mindMap
@@ -47,7 +46,8 @@ struct ProviderSettingsView: View {
     /// 挂在某道工序下面的子页（侧栏缩进一格）。
     var parent: SettingsTab? {
       switch self {
-      case .browserSupport, .siteLogin: .capture
+      // 2026-10-01 评论不再是一道工序：它是收集时顺带存的内容，挂在「收集」下面。
+      case .browserSupport, .siteLogin, .comments: .capture
       case .mediaStorage: .record
       default: nil
       }
@@ -67,7 +67,8 @@ struct ProviderSettingsView: View {
       switch self {
       case .service: "模型与识别"
       case .generation: "生成偏好"
-      case .capture, .record, .proof, .comments, .summary, .translation, .mindMap: ""
+      case .capture, .record, .proof, .summary, .translation, .mindMap: ""
+      case .comments: "评论"
       case .appearance: "外观"
       case .mediaStorage: "视频存储"
       case .knowledgeVault: "知识库同步"
@@ -85,7 +86,8 @@ struct ProviderSettingsView: View {
       switch self {
       case .service: "sparkles.rectangle.stack"
       case .generation: "arrow.right.circle"
-      case .capture, .record, .proof, .comments, .summary, .translation, .mindMap: "seal"
+      case .capture, .record, .proof, .summary, .translation, .mindMap: "seal"
+      case .comments: "text.bubble"
       case .appearance: "paintpalette"
       case .mediaStorage: "externaldrive"
       // 2026-09-24 走查：原来是 folder.badge.gearshape / externaldrive.badge.timemachine，
@@ -130,13 +132,23 @@ struct ProviderSettingsView: View {
   /// 比内容还显眼；十项平铺一眼扫得完。按「AI → 外观 → 连接 → 数据 → 版本」排。
   /// 可见性仍只由 `SettingsTab.visibleCases` 一处判据决定。
   ///
-  /// 2026-09-28 按工序重组：总览在最上；「工序」一组七页（汲 录 校 评 摘 译 图），
+  /// 2026-09-28 按工序重组：总览在最上；「工序」一组，
   /// 浏览器扩展、站点登录挂在「汲」下，视频存储挂在「录」下；其余归「通用」。
+  ///
+  /// 2026-10-01：评论挪到「收集」下面作子页（工序剩收集之后五道）；手机同步、实验室这类
+  /// 少数人才用、还在成型的页收进「高级」，「通用」只留常用的。AI 助手接入是对外卖点，
+  /// 留在「通用」。
   private static let sidebarSections: [(title: String?, tabs: [SettingsTab])] = [
     (nil, [.generation]),
-    ("工序", [.capture, .browserSupport, .siteLogin, .record, .mediaStorage, .proof, .comments, .summary, .translation, .mindMap]),
-    ("通用", [.service, .appearance, .dataBackup, .knowledgeVault, .semanticSearch, .companionSync, .mcp, .updates, .labs]),
+    ("工序", [.capture, .browserSupport, .siteLogin, .comments, .record, .mediaStorage, .proof, .summary, .translation, .mindMap]),
+    ("通用", [.service, .appearance, .dataBackup, .knowledgeVault, .semanticSearch, .mcp, .updates]),
+    ("高级", [.companionSync, .labs]),
   ]
+
+  /// 有可见页的分组。「高级」里两页这一版都可能不给看，整组为空时连组标题一起不画。
+  private static var visibleSidebarSections: [(title: String?, tabs: [SettingsTab])] {
+    sidebarSections.filter { !visibleTabs(in: $0.tabs).isEmpty }
+  }
 
   private static var sidebarOrder: [SettingsTab] { sidebarSections.flatMap(\.tabs) }
 
@@ -192,6 +204,13 @@ struct ProviderSettingsView: View {
   @State private var expandedAssignmentDetails: Set<String> = []
   /// 编辑模型时是否展开服务商网格。默认折叠成一行，点「更换」才展开。
   @State private var isChoosingPreset = false
+  /// 总览上点「自动」却做不了时的那句原因。点别的、或切换成功后清掉。
+  @State private var chainAutoNotice: String?
+  /// 「推荐服务商 → 填入」后把光标放进密钥框。
+  @FocusState private var isAPIKeyFieldFocused: Bool
+  /// 从「推荐服务商 → 填入」打开的添加窗口：服务商已经选好，网格折成一行，
+  /// 密钥框留在首屏（展开的网格有 600pt 高，会把密钥框挤到下面看不见）。
+  @State private var isPresetPrefilled = false
   /// 自绘侧栏选中高亮的滑动锚点。见 `paperSidebarRow`。
   @Namespace private var sidebarSelectionNamespace
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -408,7 +427,7 @@ struct ProviderSettingsView: View {
           paperSidebar
         } else {
           List(selection: $selectedTab) {
-            ForEach(Array(Self.sidebarSections.enumerated()), id: \.offset) { _, section in
+            ForEach(Array(Self.visibleSidebarSections.enumerated()), id: \.offset) { _, section in
               Section {
                 ForEach(Self.visibleTabs(in: section.tabs)) { tab in
                   Label {
@@ -535,6 +554,12 @@ struct ProviderSettingsView: View {
     SettingsPlainPage {
       pageHeader(for: .service, caption: "添加和管理模型服务商。每道工序用哪个模型，到对应的工序页里选。")
 
+      // 还没配模型时，先告诉新手去哪拿密钥、大概花多少、不配也能用什么（2026-10-01）。
+      // 配过之后推荐挪到页底，不再占首屏。
+      if model.libraryEntryDisplays.isEmpty, !model.isConfigurationLoading {
+        recommendedProvidersSection
+      }
+
       // 这张卡只剩「标签 + 控件」六行：说明全部收进各行的 ⓘ，卡片脚注也删掉——
       // 原来每行下面一段灰字、卡底再一句脚注，六个控件配了五段说明，控件密度极低，
       // 而且脚注和下一张卡的脚注讲的是同一句话。
@@ -592,6 +617,10 @@ struct ProviderSettingsView: View {
           }
         }
       }
+
+      if !model.libraryEntryDisplays.isEmpty {
+        recommendedProvidersSection
+      }
     }
     .controlSize(.regular)
     .onChange(of: apiKeyInput) { oldValue, newValue in
@@ -600,7 +629,7 @@ struct ProviderSettingsView: View {
     .onChange(of: model.isEditorVisible) { _, visible in
       // 每次打开编辑器都从「已选服务商折叠成一行」开始；添加流程本来就没有
       // 已选项，会直接展开网格（见 `showsPresetGrid`）。
-      if visible { isChoosingPreset = false }
+      if visible { isChoosingPreset = false } else { isPresetPrefilled = false }
     }
     // 编辑表单改成 Sheet：原来它长在列表底下，只有一行小灰字「编辑模型：服务商」
     // 提示这是编辑区，和「模型服务」列表之间没有任何分隔，用户分不清哪些字段
@@ -644,6 +673,81 @@ struct ProviderSettingsView: View {
     } message: {
       Text("这家服务商的密钥会一并从本机钥匙串里删掉，删了没法撤销。你保存的内容一条都不会少；正在用这些模型的功能会回到「未配置」或改用本机处理。")
     }
+  }
+
+  // MARK: - 推荐服务商（2026-10-01）
+
+  /// 每家一行：图标 + 名字 + 适合谁，右边「去注册拿密钥」「填入」。
+  /// 「填入」= 打开添加窗口、选好这家服务商（服务地址自动填上），光标放进密钥框。
+  private var recommendedProvidersSection: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
+        Text(UISettingsPresentation.recommendedProvidersTitle)
+          .themedFont(.headline)
+          .accessibilityAddTraits(.isHeader)
+        Text(UISettingsPresentation.recommendedProvidersSummary)
+          .themedFont(.subheadline)
+          .foregroundStyle(settingsTheme.secondaryText)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      SettingsRowGroup {
+        ForEach(RecommendedProvider.all) { provider in
+          recommendedProviderRow(provider)
+        }
+      }
+      // 费用：只说怎么计、去哪看，不写会过期的数字。
+      Text(UISettingsPresentation.recommendedProvidersCostNote)
+        .themedFont(.subheadline)
+        .foregroundStyle(settingsTheme.secondaryText)
+        .fixedSize(horizontal: false, vertical: true)
+      HStack(spacing: DesignTokens.Space.md) {
+        Text("价格页：").foregroundStyle(settingsTheme.secondaryText)
+        ForEach(RecommendedProvider.all) { provider in
+          Link(provider.name, destination: provider.pricingURL)
+            .accessibilityIdentifier("recommended-provider-pricing-\(provider.id)")
+        }
+      }
+      .themedFont(.subheadline)
+      if model.libraryEntryDisplays.isEmpty {
+        SettingsInlineNotice(message: UISettingsPresentation.noModelCapabilitiesNote, tone: .info)
+          .accessibilityIdentifier("no-model-capabilities-note")
+      }
+    }
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("recommended-providers")
+  }
+
+  private func recommendedProviderRow(_ provider: RecommendedProvider) -> some View {
+    HStack(alignment: .center, spacing: DesignTokens.Space.md) {
+      providerIcon(provider.preset)
+      VStack(alignment: .leading, spacing: 2) {
+        Text(provider.name)
+          .themedFont(.body, weight: .semibold)
+        Text(provider.audience)
+          .themedFont(.subheadline)
+          .foregroundStyle(settingsTheme.secondaryText)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+      Spacer(minLength: DesignTokens.Space.md)
+      Button("去注册拿密钥") { NSWorkspace.shared.open(provider.keyPageURL) }
+        .buttonStyle(.appQuiet)
+        .help(provider.keyPageURL.absoluteString)
+        .accessibilityIdentifier("recommended-provider-signup-\(provider.id)")
+      Button("填入") { fillRecommendedProvider(provider) }
+        .buttonStyle(.appNormal)
+        .disabled(editorBusy)
+        .help("打开添加窗口，填好 \(provider.name) 的服务地址")
+        .accessibilityIdentifier("recommended-provider-fill-\(provider.id)")
+    }
+    .padding(.vertical, DesignTokens.Space.sm)
+    .padding(.horizontal, DesignTokens.Space.lg)
+  }
+
+  private func fillRecommendedProvider(_ provider: RecommendedProvider) {
+    model.beginAddModel()
+    model.selectPreset(provider.preset)
+    isPresetPrefilled = true
+    apiKeyInput = ""
   }
 
   // MARK: - 功能与模型指派
@@ -1386,7 +1490,7 @@ struct ProviderSettingsView: View {
 
   /// 添加流程没有已选服务商，直接展开网格；编辑流程默认折叠成一行，点「更换」才展开。
   private var showsPresetGrid: Bool {
-    (model.editingProfileID == nil && !model.isReusingProviderKey) || isChoosingPreset
+    (model.editingProfileID == nil && !model.isReusingProviderKey && !isPresetPrefilled) || isChoosingPreset
   }
 
   private var editorBusy: Bool {
@@ -1470,6 +1574,14 @@ struct ProviderSettingsView: View {
     .foregroundStyle(settingsTheme.primaryText)
     .tint(settingsTheme.accent)
     .accessibilityIdentifier("model-editor-sheet")
+    .modifier(PrefilledAPIKeyFocus(isOn: isPresetPrefilled, focus: $isAPIKeyFieldFocused))
+    .task {
+      // 从「填入」进来时光标放进密钥框。Sheet 出场时 AppKit 会把第一个输入框（服务地址）
+      // 设成第一响应者，所以出场落定后再补一次，否则会被它盖掉。
+      guard isPresetPrefilled else { return }
+      try? await Task.sleep(for: .milliseconds(800))
+      isAPIKeyFieldFocused = true
+    }
   }
 
   /// 状态只留一行：保存状态优先，有连接测试结果时接在后面。
@@ -1570,6 +1682,7 @@ struct ProviderSettingsView: View {
             if model.shouldShowAPIKeyInput {
               SecureField("", text: $apiKeyInput, prompt: Text("输入密钥"))
                 .labelsHidden()
+                .focused($isAPIKeyFieldFocused)
                 .accessibilityLabel("密钥")
                 .disabled(model.isSaving || model.isConfigurationLoading || model.isLoadingModels)
                 .accessibilityIdentifier("provider-api-key")
@@ -1767,7 +1880,7 @@ struct ProviderSettingsView: View {
   /// 纸质主题的设置侧栏：画布底色 + 主窗口同款橙色选中样式。
   private var paperSidebar: some View {
     List {
-      ForEach(Array(Self.sidebarSections.enumerated()), id: \.offset) { _, section in
+      ForEach(Array(Self.visibleSidebarSections.enumerated()), id: \.offset) { _, section in
         if let title = section.title {
           Text(title)
             .themedFont(.caption)
@@ -1852,7 +1965,7 @@ struct ProviderSettingsView: View {
     if let step = tab.step {
       SettingsStepSeal(step: step, isAuto: isAuto(step), size: 20, color: settingsTheme.seal)
         .frame(width: 22, height: 22)
-    } else if let glyph = InkSealMark.settingsGlyphs[tab.title] {
+    } else if let glyph = InkSealMark.settingsGlyph(for: tab.title) {
       // 不是工序的页：灰色墨线闲章（朱色只给工序）。选中时换靛青，和文字同色。
       InkSealMark(character: glyph, size: 19, color: selected ? settingsTheme.accent : settingsTheme.secondaryText)
         .frame(width: 22, height: 22)
@@ -1872,11 +1985,36 @@ struct ProviderSettingsView: View {
     case .capture: nil
     case .record: $model.autoTranscribeNewCaptures
     case .proof: $model.autoTidyTranscription
-    case .comments: autoSaveCommentsBinding
     case .summary: $model.autoSummarizeNewCaptures
     case .translation: $model.autoLocalizeTitleNewCaptures
     case .mindMap: $model.autoMindMapNewCaptures
     }
+  }
+
+  /// 这道工序现在不能设成自动的原因；nil = 可以。
+  ///
+  /// 校、摘、译、图都要调用模型：一个能写字的模型都没配时设成自动，新内容进来每一步都会失败，
+  /// 而失败发生在后台、用户看不到为什么。录是本机 Apple 听写，不需要模型。
+  private func autoBlockReason(_ step: SettingsProcessStep) -> String? {
+    switch step {
+    case .capture, .record:
+      return nil
+    case .proof, .summary, .translation, .mindMap:
+      guard !model.isConfigurationLoading, model.summaryEntryDisplays.isEmpty else { return nil }
+      return "「\(step.title)」要调用模型，现在还没配模型，设成自动也做不了。先到「模型服务」添加一个。"
+    }
+  }
+
+  /// 总览上点「自动 / 手动」：和工序页右上的开关写同一份设置（2026-10-01）。
+  /// 关掉随时可以；打开时有前提没满足就说原因，不静默不动。
+  private func toggleAutoFromChain(_ step: SettingsProcessStep) {
+    guard let binding = autoBinding(step) else { return }
+    if !binding.wrappedValue, let reason = autoBlockReason(step) {
+      chainAutoNotice = reason
+      return
+    }
+    chainAutoNotice = nil
+    binding.wrappedValue.toggle()
   }
 
   private func stepHeader(_ step: SettingsProcessStep, caption: String, autoLabel: String = "自动") -> some View {
@@ -2165,11 +2303,11 @@ struct ProviderSettingsView: View {
     return ("将发送到 \(destination.provider) · \(destination.model)", "arrow.up.doc")
   }
 
-  // MARK: - 工序总览与七道工序页（2026-09-28 设置按工序重组）
+  // MARK: - 工序总览与各工序页（2026-09-28 设置按工序重组；2026-10-01 收集之后五道）
 
   private var overviewTab: some View {
     SettingsPlainPage {
-      pageHeader(for: .generation, caption: "新内容进来后，从左到右依次执行。实心的章会自动做，空心的印位要你在「处理」里手动点。点任意一枚进入它的设置。")
+      pageHeader(for: .generation, caption: "新内容进来后，从左到右依次执行。实心的章会自动做，空心的印位要你在「处理」里手动点。点印进入它的设置，点下面的「自动 / 手动」直接切换。")
       SettingsProcessChain(
         isAuto: isAuto,
         sealColor: settingsTheme.seal,
@@ -2179,9 +2317,23 @@ struct ProviderSettingsView: View {
           withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
             selectedTab = SettingsTab.allCases.first { $0.step == step } ?? .generation
           }
-        }
+        },
+        onToggleAuto: toggleAutoFromChain
       )
       .padding(.vertical, DesignTokens.Space.sm)
+      if let chainAutoNotice {
+        HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
+          SettingsInlineNotice(message: chainAutoNotice, tone: .warning)
+          Button("去添加模型") {
+            self.chainAutoNotice = nil
+            selectedTab = .service
+          }
+          .buttonStyle(.appQuiet)
+          .accessibilityIdentifier("settings-chain-open-service")
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("settings-chain-auto-notice")
+      }
       sendAuthorizationSection
       preferencesStatusNotice
     }
@@ -2201,6 +2353,11 @@ struct ProviderSettingsView: View {
           Button("去设置") { selectedTab = .siteLogin }
             .buttonStyle(.appQuiet)
             .accessibilityIdentifier("settings-capture-open-login")
+        }
+        SettingsRow(title: "评论", caption: "收集时顺带存几条评论、要不要逐条勾选。") {
+          Button("去设置") { selectedTab = .comments }
+            .buttonStyle(.appQuiet)
+            .accessibilityIdentifier("settings-capture-open-comments")
         }
       }
     }
@@ -2226,7 +2383,7 @@ struct ProviderSettingsView: View {
     SettingsPlainPage {
       stepHeader(.proof, caption: "用模型校对转写稿：还原听错的词、补标点、加小标题，只发送文字。打开「自动」后转写完就接着校。")
       if model.autoTidyTranscription, !model.autoTranscribeNewCaptures {
-        SettingsInlineNotice(message: "「录 · 转写」没设成自动，新内容进来时没有转写稿可校对；手动转写后仍可在「处理」里点校对。", tone: .warning)
+        SettingsInlineNotice(message: "「转写 · 录」没设成自动，新内容进来时没有转写稿可校对；手动转写后仍可在「处理」里点校对。", tone: .warning)
       }
       SettingsRowGroup {
         tidyAssignmentRow
@@ -2237,8 +2394,18 @@ struct ProviderSettingsView: View {
 
   private var commentsTab: some View {
     SettingsPlainPage {
-      stepHeader(.comments, caption: "保存网页时，一并存下前几条评论。打开「自动保存」就不用在扩展里逐条勾选。", autoLabel: "自动保存")
+      pageHeader(for: .comments, caption: "收集网页时顺带存下前几条评论。只是抓取，不调用模型、不花钱。")
       SettingsRowGroup {
+        SettingsRow(
+          title: "自动保存",
+          caption: "打开后抓取时直接存前几条，不用在扩展里逐条勾选。"
+        ) {
+          Toggle("", isOn: autoSaveCommentsBinding)
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .accessibilityLabel("自动保存评论")
+            .accessibilityIdentifier("settings-comments-auto-save")
+        }
         SettingsRow(
           title: "默认抓前",
           caption: commentLimitSaveFailed
@@ -2310,7 +2477,7 @@ struct ProviderSettingsView: View {
     SettingsPlainPage {
       stepHeader(.mindMap, caption: "把内容整理成脑图，优先读总结，没有总结时读原文。打开「自动」后新内容一进来就生成。")
       if model.autoMindMapNewCaptures, !model.autoSummarizeNewCaptures {
-        SettingsInlineNotice(message: "「摘 · 总结」没设成自动：脑图将直接读原文生成，质量通常不如先总结。", tone: .warning)
+        SettingsInlineNotice(message: "「总结 · 摘」没设成自动：脑图将直接读原文生成，质量通常不如先总结。", tone: .warning)
       }
       preferencesStatusNotice
     }
@@ -3024,5 +3191,20 @@ private struct ThemeSwatchPicker: View {
         .strokeBorder(isSelected ? appTheme.accent : .clear, lineWidth: 2)
     }
     .contentShape(Rectangle())
+  }
+}
+
+/// 「推荐服务商 → 填入」打开的添加窗口：默认焦点给密钥框（服务地址已经填好了）。
+/// 其它入口不改默认焦点。
+private struct PrefilledAPIKeyFocus: ViewModifier {
+  let isOn: Bool
+  let focus: FocusState<Bool>.Binding
+
+  @ViewBuilder func body(content: Content) -> some View {
+    if isOn {
+      content.defaultFocus(focus, true)
+    } else {
+      content
+    }
   }
 }

@@ -402,7 +402,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("history-navigation-all"))
     XCTAssertTrue(source.contains("history-navigation-recent"))
     XCTAssertTrue(source.contains("history-navigation-unsummarized"))
-    XCTAssertTrue(source.contains("navigationButton(\"待总结\""), "侧栏文案应是待总结")
+    XCTAssertTrue(source.contains("navigationButton(\"未总结\""), "侧栏文案应是未总结")
     guard
       let todayIndex = source.range(of: "history-navigation-today-note")?.lowerBound,
       let creatorsIndex = source.range(of: "history-navigation-creators")?.lowerBound,
@@ -1278,8 +1278,13 @@ final class HistoryContentViewTests: XCTestCase {
       from: "@ViewBuilder private func runVerb(_ kind: RunKind)",
       to: "/// 这条记录能不能转写"
     )
-    XCTAssertTrue(verb.contains("} else if !artifactExists, showsRunControls, !(kind == .translate && translationNotNeeded) {"),
-                  "已是输出语言时不再留一颗永远灰着的「翻译」（2026-09-24）")
+    // 2026-10-01：表头只露「下一步」那一个主按钮（没转写 → 转写；没总结 → 生成总结），
+    // 翻译只在「处理」里；「处理」里不再重复主按钮那一项。
+    XCTAssertTrue(verb.contains("} else if !artifactExists, kind == .summarize, primaryReadingVerb == .summarize {"),
+                  "表头只露生成总结这一个主按钮，翻译不再并排")
+    let primary = section(in: source, from: "private var primaryReadingVerb: PrimaryReadingVerb?", to: "private func startRun")
+    XCTAssertTrue(primary.contains("if transcribeAction != nil, !hasCompletedTranscript { return .transcribe }"))
+    XCTAssertTrue(primary.contains("if summaryArtifact == nil, showsRunControls { return .summarize }"))
     XCTAssertTrue(verb.contains(".buttonStyle(.bordered)"), "动作是框起来的按钮，和文字页签区分开")
     // 重做和次要动作收在「处理」面板里，不和主按钮抢位置（2026-09-28 起是带工序印的自绘面板）。
     let more = section(
@@ -1290,6 +1295,9 @@ final class HistoryContentViewTests: XCTestCase {
     for item in ["重新\\(step.title)", "重新转写（本机）", "校对转写稿", "生成脑图", "抓取评论…", "换个模型重跑…", "运行详情"] {
       XCTAssertTrue(more.contains(item), "missing \(item)")
     }
+    XCTAssertTrue(more.contains("if let action = transcribeAction, primary != .transcribe {"), "主按钮是转写时面板不再列转写")
+    XCTAssertTrue(more.contains("if kind == .summarize, primary == .summarize { continue }"), "主按钮是生成总结时面板不再列总结")
+    XCTAssertTrue(more.contains("if kind == .translate, translationNotNeeded, translationArtifact == nil { continue }"), "不需要翻译时翻译不出现")
     // 表头在视频之后、正文之前（顶部留给信息），滚过去以后吸在正文区顶端。
     let surface = section(in: source, from: "private var readingSurface: some View", to: "private var showsReadingSurface")
     XCTAssertTrue(surface.contains("readingHeaderRow(pinned: false)"))
@@ -2165,6 +2173,58 @@ final class HistoryContentViewTests: XCTestCase {
   }
 
 
+  /// 2026-10-01 主窗口设计走查（13–20、25、26）的源码约束。
+  func testMainWindowDesignAuditFixes() {
+    let source = historyContentViewSource()
+    // 13：空库只留三步卡；中栏一句话；三步卡在时不再有「直接添加公开链接」那块。
+    XCTAssertFalse(source.contains("Text(\"直接添加公开链接\")") || source.contains("\"直接添加公开链接\" :"))
+    XCTAssertFalse(source.contains("粘贴一条公开链接，或用浏览器扩展保存当前页面后"))
+    let emptyDetail = section(in: source, from: "private var emptyCaptureDetail: some View", to: "private var emptyCaptureFallback")
+    XCTAssertTrue(emptyDetail.contains("if !isCaptureOnboardingDismissed {"))
+    XCTAssertFalse(emptyDetail.contains("manual-link-clipboard"))
+    // 14：第 ③ 步按钮名不随状态变成另一句话，前置没完成就灰掉并说明。
+    XCTAssertFalse(source.contains("\"先添加链接\""))
+    XCTAssertTrue(source.contains("isEnabled: firstSummaryPrerequisitesMet"))
+    XCTAssertTrue(source.contains("disabledHelp: \"先完成前两步：添加链接、配置模型\""))
+    // 17：示例只读，不写资料库。
+    XCTAssertTrue(source.contains("first-capture-sample"))
+    let sample = section(in: source, from: "struct SampleReadingPreviewSheet: View", to: "\n}\n")
+    XCTAssertFalse(sample.contains("ingest"), "示例不能写进资料库")
+    XCTAssertFalse(sample.contains("manualLink"), "示例不能走添加链接")
+    // 16：合集空态一句话、允许换行。
+    XCTAssertTrue(source.contains("Text(\"点 ＋ 把一组内容按顺序放一起\")"))
+    // 18：标签、形式默认收起，展开状态记在 AppStorage。
+    XCTAssertTrue(source.contains("@AppStorage(\"history.navigation.forms-expanded\") private var navigationFormsExpanded = false"))
+    // 19：同名两行「本地文件」各有悬停说明。
+    XCTAssertTrue(source.contains("只含归自有的"))
+    XCTAssertTrue(source.contains("条外部文件"))
+    // 20：「未总结」在视图最后（回收站之前），自动总结开着时不占位。
+    guard
+      let favorite = source.range(of: "history-navigation-favorite\")"),
+      let unsummarized = source.range(of: "navigationButton(\"未总结\""),
+      let trash = source.range(of: "history-navigation-trash\")")
+    else { return XCTFail("视图分组结构变了") }
+    XCTAssertLessThan(favorite.lowerBound, unsummarized.lowerBound)
+    XCTAssertLessThan(unsummarized.lowerBound, trash.lowerBound)
+    XCTAssertTrue(source.contains("if !providerSettings.autoSummarizeNewCaptures || model.selectedScope == .unsummarized {"))
+    XCTAssertFalse(source.contains("\"待总结\""))
+    // 25：「+」里不再有两个同步；菜单栏「文件」里有。
+    let addMenu = section(in: source, from: "private var addMenu: some View", to: ".accessibilityIdentifier(\"manual-link-add-toolbar\")")
+    XCTAssertFalse(addMenu.contains("syncVoiceMemos"))
+    XCTAssertFalse(addMenu.contains("syncAppleNotes"))
+    let app = appSource("LinkDigestApp.swift")
+    XCTAssertTrue(app.contains("Button(\"同步语音备忘录\") { localImport.syncVoiceMemos() }"))
+    XCTAssertTrue(app.contains("Button(\"同步备忘录\") { localImport.syncAppleNotes() }"))
+    // 26：悬停动作叠在行尾日期那一格上，不再浮在整行右侧盖标题。
+    let row = appSource("UIReadingHistoryRow.swift")
+    XCTAssertTrue(row.contains(".opacity(showsHoverActions ? 0 : 1)\n            .overlay(alignment: .trailing) { hoverActions }"))
+    XCTAssertFalse(row.contains(".help(rowHelp(text))\n    .overlay(alignment: .trailing) { hoverActions }"))
+    // 15：添加链接弹窗不再写技术词，也不再有扩展名两侧的空格。
+    let chrome = appSource("HistoryWindowChrome.swift")
+    XCTAssertFalse(chrome.contains("Text(\"只读取你主动提交的公开 HTML"))
+    XCTAssertTrue(chrome.contains("粘贴网页或视频链接。需要登录才能看的页面，用浏览器扩展保存。"))
+  }
+
   private func appSource(_ fileName: String) -> String {
     let sourceURL = URL(fileURLWithPath: #filePath)
       .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -2612,6 +2672,11 @@ final class HistoryContentViewTests: XCTestCase {
     )
     XCTAssertEqual(DailyNoteTitleFormat.previewAfterTitle("另一句\n正文", title: "我起的标题"), "另一句 正文")
     XCTAssertNil(DailyNoteTitleFormat.previewAfterTitle("# 指南", title: "指南"))
+    // 阅读笔记时藏掉和标题框同一句的首行标题，别的标题不动。
+    XCTAssertEqual(DailyNoteTitleFormat.strippingLeadingHeading("\n# 指南\n\n正文", matching: "指南"), "正文")
+    XCTAssertEqual(DailyNoteTitleFormat.strippingLeadingHeading("## 指南\n正文", matching: "指南"), "正文")
+    XCTAssertEqual(DailyNoteTitleFormat.strippingLeadingHeading("# 别的\n正文", matching: "指南"), "# 别的\n正文")
+    XCTAssertEqual(DailyNoteTitleFormat.strippingLeadingHeading("指南\n正文", matching: "指南"), "指南\n正文")
   }
 }
 

@@ -4,8 +4,12 @@ import SwiftUI
 ///
 /// 实心章 = 新内容进来会自动做这一步；印位（虚线框空心字）= 要在「处理」里手动点。
 /// 每道工序页右上一个「自动」开关，打开时那枚章当场盖下来。
+///
+/// 2026-10-01 收集之后改成五道（录 校 摘 译 图）：评论是抓取时顺带
+/// 保存的内容，不是一道独立的加工工序，设置里挪到「收集 · 汲」下面作子页。
+/// 主窗口「处理」面板的 `ProcessStep` 仍保留评论那一枚（那里是「这条内容做过什么」）。
 enum SettingsProcessStep: String, CaseIterable, Identifiable {
-  case capture, record, proof, comments, summary, translation, mindMap
+  case capture, record, proof, summary, translation, mindMap
 
   var id: String { rawValue }
 
@@ -14,7 +18,6 @@ enum SettingsProcessStep: String, CaseIterable, Identifiable {
     case .capture: .external
     case .record: .record
     case .proof: .proof
-    case .comments: .comments
     case .summary: .summary
     case .translation: .translation
     case .mindMap: .mindMap
@@ -26,22 +29,23 @@ enum SettingsProcessStep: String, CaseIterable, Identifiable {
     case .capture: "收集"
     case .record: "转写"
     case .proof: "校对"
-    case .comments: "评论"
     case .summary: "总结"
     case .translation: "翻译"
     case .mindMap: "脑图"
     }
   }
 
-  /// 侧栏和页头上的标题：「摘 · 总结」。
-  var title: String { "\(glyph.rawValue) · \(name)" }
+  /// 侧栏和页头上的标题：「总结 · 摘」。
+  ///
+  /// 2026-10-01 功能名在前、印名在后：新用户先认得「总结」，印名「摘」是后学的；
+  /// 原来「汲 · 收集」「录 · 转写」要先学会这套字才知道点进去是什么。
+  var title: String { "\(name) · \(glyph.rawValue)" }
 
   var rotation: Double {
     switch self {
     case .capture: -0.8
     case .record: -1.5
     case .proof: 1.2
-    case .comments: -0.6
     case .summary: 1.8
     case .translation: -1.1
     case .mindMap: 0.8
@@ -65,7 +69,7 @@ struct SettingsStepSeal: View {
   }
 }
 
-/// 工序页页头：大印 + 「摘 · 总结」+ 一句话 + 右上「自动」开关。
+/// 工序页页头：大印 + 「总结 · 摘」+ 一句话 + 右上「自动」开关。
 struct SettingsStepHeader: View {
   let step: SettingsProcessStep
   let caption: String
@@ -123,16 +127,18 @@ struct SettingsStepHeader: View {
   }
 }
 
-/// 工序总览：「汲 → 录 → 校 → 评 → 摘 → 译 → 图」，点哪枚进哪页。
+/// 工序总览：「汲 → 录 → 校 → 摘 → 译 → 图」，点印进那一页，点下面的「自动 / 手动」当场切换。
 struct SettingsProcessChain: View {
   let isAuto: (SettingsProcessStep) -> Bool
   let sealColor: Color
   let primaryText: Color
   let secondaryText: Color
   let onSelect: (SettingsProcessStep) -> Void
+  /// 点「自动 / 手动」时调用；写的是和工序页开关同一份设置。收集没有这个按钮。
+  var onToggleAuto: ((SettingsProcessStep) -> Void)? = nil
 
   var body: some View {
-    // 七枚一行放不下时换行，不横向滚动。
+    // 一行放不下时换行，不横向滚动。
     FlowChainLayout(spacing: 2, rowSpacing: 14) {
       ForEach(Array(SettingsProcessStep.allCases.enumerated()), id: \.element) { index, step in
         HStack(alignment: .top, spacing: 2) {
@@ -143,29 +149,65 @@ struct SettingsProcessChain: View {
               .padding(.top, 18)
               .accessibilityHidden(true)
           }
-          Button { onSelect(step) } label: {
-            VStack(spacing: 7) {
-              SettingsStepSeal(step: step, isAuto: isAuto(step), size: 44, color: sealColor)
-                .frame(width: 48, height: 48)
-              Text(step.title)
-                .themedFont(.subheadline)
-                .foregroundStyle(primaryText)
-              Text(stateText(step))
-                .themedFont(.caption)
-                .foregroundStyle(isAuto(step) ? sealColor : secondaryText)
+          VStack(spacing: 4) {
+            Button { onSelect(step) } label: {
+              VStack(spacing: 7) {
+                SettingsStepSeal(step: step, isAuto: isAuto(step), size: 44, color: sealColor)
+                  .frame(width: 48, height: 48)
+                Text(step.title)
+                  .themedFont(.subheadline)
+                  .foregroundStyle(primaryText)
+                  .lineLimit(1)
+                  .fixedSize()
+              }
+              .frame(minWidth: 72)
+              .padding(.top, 6)
+              .contentShape(Rectangle())
             }
-            .frame(width: 66)
-            .padding(.vertical, 6)
-            .contentShape(Rectangle())
+            .buttonStyle(.plain)
+            .help("进入「\(step.title)」的设置")
+            .accessibilityLabel("\(step.title)，\(stateText(step))")
+            .accessibilityIdentifier("settings-chain-\(step.rawValue)")
+            stateControl(step)
           }
-          .buttonStyle(.plain)
-          .accessibilityLabel("\(step.title)，\(stateText(step))")
-          .accessibilityIdentifier("settings-chain-\(step.rawValue)")
+          .padding(.bottom, 6)
         }
       }
     }
     .accessibilityElement(children: .contain)
     .accessibilityIdentifier("settings-process-chain")
+  }
+
+  /// 印下面那一小格：收集是一句「一直开着」；其余是可点的「自动 / 手动」小签。
+  /// 做成带描边的小签而不是纯文字，是为了让人看出它能点（2026-10-01）。
+  @ViewBuilder private func stateControl(_ step: SettingsProcessStep) -> some View {
+    let auto = isAuto(step)
+    if step == .capture || onToggleAuto == nil {
+      Text(stateText(step))
+        .themedFont(.caption)
+        .foregroundStyle(auto ? sealColor : secondaryText)
+        .padding(.vertical, 2)
+    } else {
+      Button { onToggleAuto?(step) } label: {
+        Text(stateText(step))
+          .themedFont(.caption)
+          .foregroundStyle(auto ? sealColor : secondaryText)
+          .padding(.horizontal, 8)
+          .padding(.vertical, 2)
+          .background(
+            Capsule().fill(auto ? sealColor.opacity(0.10) : Color.clear)
+          )
+          .overlay(
+            Capsule().strokeBorder(auto ? sealColor.opacity(0.45) : secondaryText.opacity(0.35), lineWidth: 1)
+          )
+          .contentShape(Capsule())
+      }
+      .buttonStyle(.plain)
+      .help(auto ? "现在新内容进来会自动做；点一下改成手动" : "现在要在「处理」里手动点；点一下改成自动")
+      .accessibilityLabel("\(step.title)：\(stateText(step))")
+      .accessibilityHint(auto ? "改成手动" : "改成自动")
+      .accessibilityIdentifier("settings-chain-toggle-\(step.rawValue)")
+    }
   }
 
   private func stateText(_ step: SettingsProcessStep) -> String {

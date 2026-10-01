@@ -28,7 +28,7 @@ final class HistoryCreatorsTests: XCTestCase {
     )
     XCTAssertEqual(summary.listingTitle, "未命名抖音博主")
     XCTAssertFalse(summary.hasResolvedDisplayName)
-    XCTAssertEqual(summary.directoryDisplayName, "待获取")
+    XCTAssertEqual(summary.directoryDisplayName, "抖音 · douyin.com/user/MS4wLjABAAA…")
   }
 
   func testDirectoryNameRejectsHandleAndKeepsRealDisplayName() {
@@ -44,7 +44,7 @@ final class HistoryCreatorsTests: XCTestCase {
       updatedAtMilliseconds: 1
     )
     XCTAssertFalse(handle.hasResolvedDisplayName)
-    XCTAssertEqual(handle.directoryDisplayName, "待获取")
+    XCTAssertEqual(handle.directoryDisplayName, "X · x.com/thedankoe")
     let named = CreatorSummary(
       id: CreatorID(),
       identity: identity,

@@ -146,7 +146,7 @@ final class WorkThumbnailAndSortTests: XCTestCase {
   }
 
   func testOriginalSortTitleIsDiscoveryOrder() {
-    XCTAssertEqual(WorkSortOrder.original.title, "发现顺序")
+    XCTAssertEqual(WorkSortOrder.original.title, "主页顺序")
     XCTAssertFalse(WorkSortOrder.original.title.contains("抓取"))
   }
 
