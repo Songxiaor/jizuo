@@ -181,12 +181,17 @@ public final class StepAudioStreamingTranscriber: StreamingOnlineAudioTranscribi
     } catch is CancellationError {
       throw OnlineAudioTranscriptionError.cancelled
     } catch let error as OnlineAudioTranscriptionError {
+      // 细节只进日志，界面文案不再拼原始错误（2026-10-01）。
+      if let detail = error.diagnosticDetail {
+        AppLog.error(.media, "step_transcription_failed", code: "ONLINE_STT_FAILED", ["detail": detail])
+      }
       throw error
     } catch let error as URLError {
-      _ = error
+      AppLog.error(.media, "step_transcription_network_failed", code: "ONLINE_STT_NETWORK", ["urlError": "\(error.code.rawValue)"])
       throw OnlineAudioTranscriptionError.networkInterrupted
     } catch {
       let ns = error as NSError
+      AppLog.error(.media, "step_transcription_failed", code: "ONLINE_STT_FAILED", ["detail": "\(ns.domain) \(ns.code)"])
       throw OnlineAudioTranscriptionError.audioExtractionFailed(detail: "\(ns.domain) \(ns.code)")
     }
   }

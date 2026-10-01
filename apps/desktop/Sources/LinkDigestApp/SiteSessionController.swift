@@ -34,6 +34,8 @@ final class SiteSessionController: ObservableObject {
   /// 自己的网络层送到站点。清晰度上不去时，必须先分清是「会话没被服务端认可」
   /// 还是「选流逻辑挑错了」，否则只能靠猜。
   @Published private(set) var verificationLabel: String?
+  /// 校验是否通过。失败时界面换警告图标，不能和成功共用打勾（2026-10-01）。
+  @Published private(set) var verificationSucceeded = false
   @Published private(set) var isVerifying = false
 
   /// 每次读取 cookie 的实测记录。只放数量和 cookie **名**，绝不放值。
@@ -131,16 +133,20 @@ final class SiteSessionController: ObservableObject {
   /// 走同一条链路才有意义：如果 Cookie 在我们自己的网络层被丢掉，这里就会显示未认可。
   func verifySession() async {
     guard let verifier = profile.verifier else {
-      verificationLabel = "该站点没有可用的登录态校验接口"
+      verificationLabel = "这个网站暂时没法校验登录状态。"
+      verificationSucceeded = false
       return
     }
     isVerifying = true
     defer { isVerifying = false }
     guard let cookie = await cookieHeader() else {
-      verificationLabel = "本机没有可用的登录 Cookie"
+      verificationLabel = "本机还没有这个网站的登录，请先点「登录」。"
+      verificationSucceeded = false
       return
     }
-    verificationLabel = await verifier(cookie)
+    let result = await verifier(cookie)
+    verificationLabel = result.message
+    verificationSucceeded = result.isValid
   }
 
   func clear() async {
@@ -162,6 +168,7 @@ final class SiteSessionController: ObservableObject {
     statusLabel = "未登录"
     accountDetail = nil
     verificationLabel = nil
+    verificationSucceeded = false
     lastError = nil
   }
 

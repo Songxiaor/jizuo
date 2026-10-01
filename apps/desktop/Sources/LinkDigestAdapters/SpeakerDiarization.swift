@@ -14,15 +14,17 @@ public enum SpeakerDiarizationError: Error, Sendable, Equatable {
 
   public var userMessage: String {
     switch self {
-    case let .modelUnavailable(detail):
-      return "本机说话人分离模型没能准备好（首次使用需要联网下载一次）。\(detail)"
+    case .modelUnavailable:
+      // 原始报错在抛出处已写进日志，界面只说下一步（2026-10-01）。
+      return "本机说话人分离模型没能准备好（第一次使用要联网下载一次）。请检查网络后重试。"
     case .audioUnreadable: return "录音读不出来，可能文件已损坏。"
     case .noSpeech: return "没有从录音里分出说话的人。"
     case .onlineNotConfigured:
-      return "还没有配置在线说话人分离。请在「设置 → 模型」里添加一个 OpenAI 服务，模型填 gpt-4o-transcribe-diarize。"
-    case .fileTooLarge: return "录音超过在线服务单次上传的上限（25MB，约 50 分钟），请改用本机分离。"
-    case .authInvalid: return "在线服务拒绝了这个 API Key，请在设置里检查。"
-    case let .rejected(code): return "在线服务没有接受这次请求（HTTP \(code)）。"
+      return "还没有设置在线说话人分离。请在「设置 → 模型服务」里添加 OpenAI，模型填 gpt-4o-transcribe-diarize。"
+    case .fileTooLarge: return "录音超过在线服务单次上传的上限（25 MB，约 50 分钟），请改用本机分离。"
+    case .authInvalid: return "在线服务不认这个密钥，请到设置的「模型服务」里检查。"
+    case .rejected:
+      return "在线服务没有接受这次请求，请检查模型名和账户余额后重试。"
     case .network: return "网络中断，请稍后重试。"
     }
   }
@@ -74,6 +76,7 @@ public final class LocalSpeakerDiarizer: @unchecked Sendable {
       try FileManager.default.createDirectory(at: modelsDirectory, withIntermediateDirectories: true)
       try await created.prepareModels(directory: modelsDirectory)
     } catch {
+      AppLog.error(.media, "diarization_model_unavailable", code: "DIARIZATION_MODEL_UNAVAILABLE", ["error": String(describing: error)])
       throw SpeakerDiarizationError.modelUnavailable((error as NSError).localizedDescription)
     }
     lock.withLock { manager = created }
@@ -157,7 +160,10 @@ public final class OnlineSpeakerDiarizer: @unchecked Sendable {
     }
     guard let http = response as? HTTPURLResponse else { throw SpeakerDiarizationError.network }
     if http.statusCode == 401 || http.statusCode == 403 { throw SpeakerDiarizationError.authInvalid }
-    guard (200...299).contains(http.statusCode) else { throw SpeakerDiarizationError.rejected(http.statusCode) }
+    guard (200...299).contains(http.statusCode) else {
+      AppLog.error(.provider, "diarization_rejected", code: "DIARIZATION_REJECTED", ["status": "\(http.statusCode)"])
+      throw SpeakerDiarizationError.rejected(http.statusCode)
+    }
     let segments = try Self.parseDiarizedJSON(data)
     guard !segments.isEmpty else { throw SpeakerDiarizationError.noSpeech }
     return segments

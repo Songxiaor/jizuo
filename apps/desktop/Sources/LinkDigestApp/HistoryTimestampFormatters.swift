@@ -91,7 +91,8 @@ enum HistoryPublishedTimestampFormatter {
     formatter.locale = Locale(identifier: "zh_CN")
     formatter.calendar = .autoupdatingCurrent
     formatter.timeZone = .autoupdatingCurrent
-    formatter.dateFormat = "yyyy/M/d"
+    // 和同年的「1月3日」同一种写法；原来隔年是「2025/12/30」，一屏两种格式（2026-10-01 走查）。
+    formatter.dateFormat = "yyyy年M月d日"
     return formatter
   }()
   private static let directoryDateTime: DateFormatter = {

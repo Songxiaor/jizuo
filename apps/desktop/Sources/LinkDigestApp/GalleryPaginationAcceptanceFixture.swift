@@ -74,6 +74,7 @@ final class GalleryPaginationAcceptanceState {
     guard !started else { return }
     started = true
     model.configure(history: HistoryApplicationService(repository: repository), isReadOnly: true, unavailableCode: nil)
+    model.isPlatformCardViewActive = true
     model.selectHost("fixture.invalid")
   }
   func record() {

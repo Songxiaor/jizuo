@@ -24,7 +24,7 @@ final class HistoryExportRendererTests: XCTestCase {
 
     ## 最近原文
 
-    - 捕获时间（UTC）：1970-01-01T00:00:02.000Z
+    - 保存时间（UTC）：1970-01-01T00:00:02.000Z
     - 来源标签：网页
     - 完整性：complete
 
@@ -59,7 +59,7 @@ final class HistoryExportRendererTests: XCTestCase {
     最近更新时间（UTC）: 1970-01-01T00:00:04.000Z
 
     最近原文:
-    捕获时间（UTC）: 1970-01-01T00:00:02.000Z
+    保存时间（UTC）: 1970-01-01T00:00:02.000Z
     来源标签: 网页
     完整性: complete
     原文
@@ -160,7 +160,7 @@ final class HistoryExportRendererTests: XCTestCase {
     XCTAssertFalse(safe.hasPrefix("."))
     XCTAssertLessThanOrEqual(safe.utf8.count, 20)
     XCTAssertEqual(HistoryExportRenderer.safeFilenameComponent(". .hidden"), "hidden")
-    XCTAssertEqual(HistoryExportRenderer.safeFilenameComponent(".../\u{0000}"), "LinkDigest 历史")
+    XCTAssertEqual(HistoryExportRenderer.safeFilenameComponent(".../\u{0000}"), "\(ProductDisplay.name)资料")
 
     let emojiProjection = fixture(title: String(repeating: "😀", count: 72))
     for format in HistoryExportFormat.allCases {
@@ -177,7 +177,7 @@ final class HistoryExportRendererTests: XCTestCase {
     XCTAssertLessThanOrEqual(fallbackFilename.utf8.count, 255)
     XCTAssertTrue(fallbackFilename.hasSuffix(".json"))
     XCTAssertFalse(fallbackFilename.hasPrefix("."))
-    XCTAssertTrue(fallbackFilename.hasPrefix("LinkDigest 历史"))
+    XCTAssertTrue(fallbackFilename.hasPrefix("\(ProductDisplay.name)资料"))
   }
 
   func testPartialUsageShowsInputOutputAndSafelyDerivedTotal() throws {
@@ -300,7 +300,7 @@ final class HistoryExportRendererTests: XCTestCase {
     XCTAssertFalse(markdown.contains("source:"))
     XCTAssertFalse(markdown.contains("- 来源："))
     // 笔记没有被捕获过，这些字段对它都不成立。
-    XCTAssertFalse(markdown.contains("捕获时间"))
+    XCTAssertFalse(markdown.contains("保存时间"))
     XCTAssertFalse(markdown.contains("完整性"))
     XCTAssertTrue(markdown.contains("## 正文"), "笔记的正文不是「原文」")
     XCTAssertTrue(markdown.contains("我写的想法"))

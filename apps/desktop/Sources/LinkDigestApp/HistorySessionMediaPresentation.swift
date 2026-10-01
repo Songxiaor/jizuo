@@ -92,13 +92,14 @@ enum HistorySessionMediaPresentation {
     )
   }
 
-  static let title = "此处暂不可播"
+  static let title = "播放地址过期了"
   static let explanation =
-    "临时播放地址只在抓取当次有效，从不写入历史。这是设计行为，不是故障；换到其它条目后，这里不能继续在线播放。"
+    "播放地址只在抓取当时有效，不会存进资料库。这不是故障：换到别的内容再回来，这里就没法接着在线播放，点「重新获取播放」即可再取一次。"
   /// 卡片正面一句话：直说这件事的机制，而不是只报「没拿到」。
-  /// 详细原理仍收在「技术说明」里，不占正面。
+  /// 详细原理仍收在「播放详情」里，不占正面。
   static let compactSummary = "在线播放地址每次打开都要重新取一次，不会保存到本机。"
-  static let openSourceActionTitle = "回到原页面"
+  static let openSourceActionTitle = "在浏览器中打开"
   static let refreshActionTitle = "重新获取播放"
-  static let technicalDetailsTitle = "技术说明"
+  // 与设置里的说法对齐成同一个名字（2026-10-01）。
+  static let technicalDetailsTitle = "播放详情"
 }

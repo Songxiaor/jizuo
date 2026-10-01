@@ -356,18 +356,22 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     // 校对仍有约六成 token 是思考（2026-09-28，11 段 30,691 completion 里正文约 1.1 万字）。
     // 不认就去掉开关重发并记住这个目的地，其余照旧走 effort 降级链。
     var sendsThinkingOff = !usesAnthropicMessages && !thinkingSwitchRejected(profile)
+    var thinkingDropPending = false
     while true {
       do {
-        return try await performNonStreamingChatCompletion(
+        let result = try await performNonStreamingChatCompletion(
           url: requestURL, apiKey: apiKey, model: model,
           systemPrompt: systemPrompt, userContent: userContent, effort: effort,
           usesAnthropicMessages: usesAnthropicMessages,
           thinkingOff: sendsThinkingOff
         )
+        // 去掉开关后成功了，才坐实「不认这个开关」（理由同流式那条，2026-10-01）。
+        if thinkingDropPending { rememberThinkingSwitchRejected(profile) }
+        return result
       } catch let failure as ModelProviderFailure
       where sendsThinkingOff && Self.mayRejectUnknownParameter(failure) {
-        rememberThinkingSwitchRejected(profile)
         sendsThinkingOff = false
+        thinkingDropPending = true
       } catch let failure as ModelProviderFailure
       where !usesAnthropicMessages
         && Self.mayRejectUnknownParameter(failure)
@@ -562,9 +566,15 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       model: profile.model
     )
     var effort = usesAnthropicMessages ? StreamReasoningEffort.omitted : preferredReasoningEffort(profile)
+    // 「关闭思考」开关，和校对（非流式）那条路同一套：MiMo/DeepSeek/GLM 认 `thinking`，
+    // 通义/SiliconFlow 认 `enable_thinking`，只发 reasoning_effort 它们照样先想半天。
+    // 原来流式（总结、翻译）漏了这一对：2026-10-01 实测 MiMo 翻译一条推文首字等了 24.7 秒，
+    // 输出只有 295 token。不认这个开关的目的地去掉重发，并记住。
+    var sendsThinkingOff = !usesAnthropicMessages && !thinkingSwitchRejected(profile)
+    var thinkingDropPending = false
     var request = try makeRequest(
       profile: profile, apiKey: apiKey, intent: intent,
-      reasoningEffort: effort
+      reasoningEffort: effort, thinkingOff: sendsThinkingOff
     )
     var retryCount = 0
     var didRetryThinkingStall = false
@@ -655,6 +665,11 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
                     )
                   }
                 }
+                if thinkingDropPending {
+                  thinkingDropPending = false
+                  rememberThinkingSwitchRejected(profile)
+                  forgetReasoningEffortRejections(for: profile)
+                }
                 watch.markDelta()
                 receivedDelta = true
                 continuation.yield(event)
@@ -703,7 +718,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         effort = .none
         request = try makeRequest(
           profile: profile, apiKey: apiKey, intent: intent,
-          reasoningEffort: effort
+          reasoningEffort: effort, thinkingOff: sendsThinkingOff
         )
         continue
       } catch let failure as ModelProviderFailure {
@@ -716,7 +731,22 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
           effort = next
           request = try makeRequest(
             profile: profile, apiKey: apiKey, intent: intent,
-            reasoningEffort: effort
+            reasoningEffort: effort, thinkingOff: sendsThinkingOff
+          )
+          continue
+        }
+        // 档位已经退到不发、仍被拒：再怀疑「关闭思考」那对开关。服务端报错不说是哪个键，
+        // 所以先走档位梯子（大多数目的地拒的是 reasoning_effort 的某个取值），走完才轮到它。
+        // 去掉开关后档位从头再试一遍——前面那几次拒绝可能都是开关惹的，不能冤枉档位。
+        // 先不记：这次被拒也可能是正文超长、被审核拦下，和开关无关。去掉开关重发，
+        // **真出字了**才算坐实「不认这个开关」（见 .delta 那里），再记住、并把前面冤枉档位的
+        // 记忆清掉；去掉开关仍被拒就说明不是它的事，原样报错，开关下次照发（2026-10-01 体检）。
+        if sendsThinkingOff, !failure.hadOutput, Self.mayRejectUnknownParameter(failure) {
+          sendsThinkingOff = false
+          thinkingDropPending = true
+          request = try makeRequest(
+            profile: profile, apiKey: apiKey, intent: intent,
+            reasoningEffort: effort, thinkingOff: false
           )
           continue
         }
@@ -757,7 +787,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     profile: ProviderProfile,
     apiKey: String,
     intent: RunIntent,
-    reasoningEffort: StreamReasoningEffort = .none
+    reasoningEffort: StreamReasoningEffort = .none,
+    thinkingOff: Bool = false
   ) throws -> URLRequest {
     // 仪表：只记长度和模型名，绝不记 Key 本身。
     //
@@ -858,7 +889,9 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         messages: messages,
         stream: true,
         maxTokens: nil,
-        reasoningEffort: reasoningEffort.jsonValue
+        reasoningEffort: reasoningEffort.jsonValue,
+        thinking: thinkingOff ? .init(type: "disabled") : nil,
+        enableThinking: thinkingOff ? false : nil
       ))
     }
     return request
@@ -945,6 +978,9 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       throw ModelProviderFailure(code: .rateLimited, retryable: true, hadOutput: hadOutput)
     case 500...599:
       throw ModelProviderFailure(code: .providerUnavailable, retryable: true, hadOutput: hadOutput)
+    case 400..<500 where providerError?.indicatesInputTooLarge == true:
+      // 「超出上下文长度」是结构化 code，不是参数问题：直接报超长，不走降级重试。
+      throw ModelProviderFailure(code: .inputTooLarge, retryable: false, hadOutput: hadOutput)
     case 400..<500:
       throw ModelProviderFailure(
         code: .providerRequestRejected,
@@ -1105,6 +1141,14 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     }
   }
 
+  private func forgetReasoningEffortRejections(for profile: ProviderProfile) {
+    let key = Self.reasoningEffortDestinationKey(profile)
+    reasoningEffortLock.withLock {
+      reasoningNoneRejectedDestinations.remove(key)
+      reasoningEffortRejectedDestinations.remove(key)
+    }
+  }
+
   private func thinkingSwitchRejected(_ profile: ProviderProfile) -> Bool {
     let key = Self.reasoningEffortDestinationKey(profile)
     return reasoningEffortLock.withLock { thinkingSwitchRejectedDestinations.contains(key) }
@@ -1189,6 +1233,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     let indicatesUnsupportedModel: Bool
     /// `server_error`：服务商转发给上游时失败，与请求本身无关。
     let indicatesUpstreamUnavailable: Bool
+    /// `context_length_exceeded` 一类：正文超出模型上下文。
+    let indicatesInputTooLarge: Bool
 
     init?(data: Data) {
       guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
@@ -1218,6 +1264,9 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
       indicatesFreeTierRestriction = compactType == "freetiererror"
       indicatesUnsupportedModel = compactType == "modelerror"
       indicatesUpstreamUnavailable = compactType == "servererror"
+      indicatesInputTooLarge = normalizedCode.map {
+        $0.contains("context_length") || $0.contains("too_long") || $0.contains("tokens_exceeded")
+      } ?? false
     }
 
     /// 覆盖各家常见写法：`CreditsError`、`insufficient_quota`、`billing_*`。

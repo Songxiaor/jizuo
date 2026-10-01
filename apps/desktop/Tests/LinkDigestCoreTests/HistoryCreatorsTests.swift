@@ -28,7 +28,15 @@ final class HistoryCreatorsTests: XCTestCase {
     )
     XCTAssertEqual(summary.listingTitle, "未命名抖音博主")
     XCTAssertFalse(summary.hasResolvedDisplayName)
-    XCTAssertEqual(summary.directoryDisplayName, "抖音 · douyin.com/user/MS4wLjABAAA…")
+    XCTAssertEqual(summary.directoryDisplayName, "未命名抖音博主")
+  }
+
+  func testUnnamedDirectoryTitleUsesAccountSegment() {
+    XCTAssertEqual(CreatorDisplay.unnamedDirectoryTitle(platform: "bilibili.com", profileURL: "https://space.bilibili.com/12345/video"), "未命名 B 站博主")
+    XCTAssertEqual(CreatorDisplay.unnamedDirectoryTitle(platform: "reddit.com", profileURL: "https://www.reddit.com/user/spez/"), "Reddit 博主 spez")
+    XCTAssertEqual(CreatorDisplay.unnamedDirectoryTitle(platform: "youtube.com", profileURL: "https://www.youtube.com/@someone/videos"), "@someone")
+    XCTAssertEqual(CreatorDisplay.unnamedDirectoryTitle(platform: "x.com", profileURL: "https://x.com/thedankoe"), "@thedankoe")
+    XCTAssertEqual(CreatorDisplay.unnamedDirectoryTitle(platform: "douyin.com", profileURL: "https://www.douyin.com/user/MS4wLjABAAAA-x"), "未命名抖音博主")
   }
 
   func testDirectoryNameRejectsHandleAndKeepsRealDisplayName() {
@@ -44,7 +52,7 @@ final class HistoryCreatorsTests: XCTestCase {
       updatedAtMilliseconds: 1
     )
     XCTAssertFalse(handle.hasResolvedDisplayName)
-    XCTAssertEqual(handle.directoryDisplayName, "X · x.com/thedankoe")
+    XCTAssertEqual(handle.directoryDisplayName, "@thedankoe")
     let named = CreatorSummary(
       id: CreatorID(),
       identity: identity,

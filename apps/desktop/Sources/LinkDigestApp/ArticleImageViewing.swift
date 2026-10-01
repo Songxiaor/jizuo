@@ -25,8 +25,24 @@ enum InlineImageMemoryCache {
 
   static func store(_ image: NSImage, for url: URL, maxPixelSize: CGFloat = 1600) {
     let cost = Int(image.size.width * image.size.height * 4)
-    cache.setObject(image, forKey: cacheKey(url, maxPixelSize), cost: cost)
+    let key = cacheKey(url, maxPixelSize)
+    cache.setObject(image, forKey: key, cost: cost)
+    sizeLock.lock()
+    knownSizes[key as String] = image.size
+    sizeLock.unlock()
   }
+
+  /// 解码过的图有多大。位图会被 NSCache 驱逐，尺寸不会：再滚回来时先按它占好
+  /// 位置，图片到了不再「180pt 灰块 → 实际高度」地跳一下（2026-10-01 体检）。
+  /// 一条只有两个数，几千张图也不到 100KB，不设上限。
+  static func knownSize(for url: URL, maxPixelSize: CGFloat = 1600) -> CGSize? {
+    sizeLock.lock()
+    defer { sizeLock.unlock() }
+    return knownSizes[cacheKey(url, maxPixelSize) as String]
+  }
+
+  private static let sizeLock = NSLock()
+  nonisolated(unsafe) private static var knownSizes: [String: CGSize] = [:]
 
   /// CGImageSource 缩略下采样：解码成本与目标尺寸挂钩，而不是原图分辨率。
   static func loadDownsampled(at url: URL, maxPixelSize: CGFloat = 1600) -> NSImage? {
@@ -93,6 +109,25 @@ struct InlineArticleImageView: View {
   let url: URL
   var layout: Layout = .standalone
   @State private var image: NSImage?
+  /// `image` 是哪个 url 的。视图会被按段落下标复用，只认和当前 url 对得上的位图。
+  @State private var imageURL: URL?
+
+  private var maxPixelSize: CGFloat {
+    // 画廊格子最小列宽 240pt，按 640px 解码足够清晰；原来和整幅插图一样按 1600px，
+    // 26 图的文章一次就把 256MB 缓存打满，来回滚动反复驱逐重解码。
+    layout == .gallery ? 640 : 1600
+  }
+
+  /// 要画的那张图：先认 @State 里属于当前 url 的，再同步查一次内存缓存。
+  ///
+  /// 为什么在 body 里同步查（2026-10-01 体检）：原来一律等 `.task` 回来才显示，
+  /// 哪怕缓存里早就有——LazyVStack 滚回来、切回同一篇时，每张图都先闪一下
+  /// 180pt 灰块再跳成实际高度，整页跟着上下蹦。NSCache 查询是一次字典读，放在
+  /// body 里不花什么。
+  private var displayedImage: NSImage? {
+    if let image, imageURL == url { return image }
+    return InlineImageMemoryCache.image(for: url, maxPixelSize: maxPixelSize)
+  }
 
   /// 竖图（9:16）按这个高度算出的宽度约 315，在阅读区里看得清又不占满一屏。
   private static let maximumHeight: CGFloat = 560
@@ -101,7 +136,11 @@ struct InlineArticleImageView: View {
   /// 整块可用宽度都占住，竖图右边那片空白就是这么来的。`aspectRatio` 让视图自带
   /// 比例，宽高上限只做封顶，横图仍旧被阅读区宽度约束、表现不变。
   private static func aspectRatio(of image: NSImage) -> CGFloat {
-    let ratio = image.size.width / max(image.size.height, 1)
+    aspectRatio(of: image.size)
+  }
+
+  private static func aspectRatio(of size: CGSize) -> CGFloat {
+    let ratio = size.width / max(size.height, 1)
     return ratio.isFinite && ratio > 0 ? ratio : 1
   }
 
@@ -114,9 +153,13 @@ struct InlineArticleImageView: View {
   /// 判据是「图片自身有多大」而不是「它是不是表情」：按 URL 或域名识别表情要
   /// 一个站一个站加，而且换个图床就失效；尺寸是图片自带的事实。
   private static func standaloneMaximumWidth(of image: NSImage) -> CGFloat {
-    let ratio = aspectRatio(of: image)
+    standaloneMaximumWidth(of: image.size)
+  }
+
+  private static func standaloneMaximumWidth(of size: CGSize) -> CGFloat {
+    let ratio = aspectRatio(of: size)
     let byHeight = maximumHeight * ratio
-    let intrinsic = image.size.width
+    let intrinsic = size.width
     guard intrinsic.isFinite, intrinsic > 0 else { return byHeight }
     return min(byHeight, intrinsic)
   }
@@ -128,7 +171,7 @@ struct InlineArticleImageView: View {
 
   var body: some View {
     Group {
-      if let image {
+      if let image = displayedImage {
         let ratio = Self.aspectRatio(of: image)
         Image(nsImage: image)
           .resizable()
@@ -157,6 +200,16 @@ struct InlineArticleImageView: View {
             } label: { Label("拷贝图片", systemImage: "doc.on.doc") }
           }
           .help("双击放大查看")
+      } else if let size = InlineImageMemoryCache.knownSize(for: url, maxPixelSize: maxPixelSize) {
+        // 解码过、位图被驱逐了：按记下的尺寸占位，和图片到达后的框一模一样，不跳。
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+          .fill(Color.primary.opacity(0.05))
+          .aspectRatio(Self.aspectRatio(of: size), contentMode: .fit)
+          .frame(
+            maxWidth: layout == .gallery ? .infinity : Self.standaloneMaximumWidth(of: size),
+            maxHeight: layout == .gallery ? nil : min(Self.maximumHeight, size.height)
+          )
+          .overlay(ProgressView().controlSize(.small))
       } else {
         RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
           .fill(Color.primary.opacity(0.05))
@@ -173,21 +226,24 @@ struct InlineArticleImageView: View {
     // 详情切换时 SwiftUI 会按段落下标复用这个视图。只在 image == nil 时
     // `.task` 会让上一篇的位图一直留在 @State 里——Warp 文里看到 JSON 文封面
     // 就是这么来的。按 url 重载，并在换源时先清空，绝不展示错图。
+    //
+    // 显示时还会核对 imageURL，所以这里缓存命中时直接换上，不先清空——先清空
+    // 会让本来能直接显示的图多闪一帧占位。
     .task(id: url) {
-      image = nil
       await load()
     }
   }
 
   private func load() async {
     let target = url
-    // 画廊格子最小列宽 240pt，按 640px 解码足够清晰；原来和整幅插图一样按 1600px，
-    // 26 图的文章一次就把 256MB 缓存打满，来回滚动反复驱逐重解码。
-    let maxPixelSize: CGFloat = layout == .gallery ? 640 : 1600
+    let maxPixelSize = maxPixelSize
     if let cached = InlineImageMemoryCache.image(for: target, maxPixelSize: maxPixelSize) {
       image = cached
+      imageURL = target
       return
     }
+    image = nil
+    imageURL = nil
     let loaded = await Task.detached(priority: .userInitiated) {
       InlineImageMemoryCache.loadDownsampled(at: target, maxPixelSize: maxPixelSize)
     }.value
@@ -197,6 +253,7 @@ struct InlineArticleImageView: View {
     // 异步回来时可能已经切到另一条；只接受当前 url 的结果。
     guard target == url else { return }
     image = loaded
+    imageURL = target
   }
 }
 

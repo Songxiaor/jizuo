@@ -1,3 +1,4 @@
+import LinkDigestCore
 import SwiftUI
 
 /// AI 助手接入页：三张卡——开关与权限、连接助手、状态。
@@ -17,7 +18,7 @@ struct MCPSettingsView: View {
       SettingsPageHeader(
         title: "AI 助手接入",
         symbol: "point.3.connected.trianglepath.dotted",
-        caption: "让 Claude Code、Codex 这类助手直接读写你的内容。连接程序随 App 一起装好，不用另外安装什么。",
+        caption: "让 Claude Code、Codex 这类助手直接读写你的内容。连接程序随\(ProductDisplay.name)一起装好，不用另外安装什么。",
         fill: theme.accent
       )
 
@@ -72,7 +73,7 @@ struct MCPSettingsView: View {
             }
             if !model.helperAvailable {
               SettingsInlineNotice(
-                message: "这一版 App 里没带连接程序，助手暂时连不上。你保存的内容不受影响。请换成完整版安装包重新安装。",
+                message: "这一版\(ProductDisplay.name)里没带连接程序，助手暂时连不上。你保存的内容不受影响。请换成完整版安装包重新安装。",
                 tone: .warning
               )
             }

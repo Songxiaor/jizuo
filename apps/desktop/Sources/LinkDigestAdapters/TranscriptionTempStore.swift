@@ -37,7 +37,7 @@ public enum TranscriptionTempStoreError: Error, Sendable, Equatable {
     case .insufficientDiskSpace:
       "本机磁盘空间不足，无法准备最多 2GB 的临时转写媒体。请释放空间后重试。"
     case .cleanupFailed:
-      "转写已结束，但临时媒体清理失败。请点击“重试清理”，避免文件继续占用空间。"
+      "转写已结束，但临时媒体清理失败。请点「重试清理」，避免文件继续占用空间。"
     }
   }
 }

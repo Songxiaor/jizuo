@@ -159,8 +159,13 @@ final class SemanticSearchService {
   private static func message(for error: Error) -> String {
     switch error as? EmbeddingModelInstaller.InstallError {
     case .checksumMismatch?: return "下载的模型文件校验不通过，已删除。点「重试」重新下载。"
-    case let .downloadFailed(reason)?: return "模型没下载下来（\(reason)）。检查网络后点「重试」。"
-    case nil: return "模型没下载下来：\(error.localizedDescription)"
+    // 原因（服务器状态码、系统错误）只进日志，界面只给下一步（2026-10-01）。
+    case let .downloadFailed(reason)?:
+      AppLog.error(.storage, "embedding_model_download_failed", code: "EMBEDDING_DOWNLOAD_FAILED", ["reason": reason])
+      return "模型没下载下来。检查网络后点「重试」。"
+    case nil:
+      AppLog.error(.storage, "embedding_model_install_failed", code: "EMBEDDING_INSTALL_FAILED", ["error": String(describing: error)])
+      return "模型没下载下来。检查网络和磁盘空间后点「重试」。"
     }
   }
 }

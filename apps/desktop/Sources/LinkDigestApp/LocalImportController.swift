@@ -310,7 +310,7 @@ final class LocalImportController: ObservableObject {
   private func explainNotReady(_ title: String) -> Bool {
     guard !canImport else { return false }
     if !isRunning {
-      phase = .failed(title: title, message: "资料库还在准备或处于只读状态，请稍等几秒再试。", settingsLink: nil)
+      phase = .failed(title: title, message: "资料库还在打开，或者现在只能看、不能改。请稍等几秒再试；一直不行就重新打开\(ProductDisplay.name)。", settingsLink: nil)
     }
     return true
   }
@@ -724,8 +724,11 @@ final class LocalImportController: ObservableObject {
     case let error as MediaDownloadError: return error.userMessage
     case let error as VoiceMemosLibraryError: return error.userMessage
     case let error as AppleNotesLibraryError: return error.userMessage
-    case is StorageWriteGateFailure, is RepositoryFailure: return "写入本地资料库失败，请检查存储状态后重试。"
-    default: return "导入失败，请重试。"
+    case is StorageWriteGateFailure, is RepositoryFailure: return "这次没能写进资料库，请确认磁盘空间够后重试。"
+    default:
+      // 未归类的原始错误只进日志，界面只给下一步（2026-10-01）。
+      AppLog.error(.storage, "local_import_failed", code: "LOCAL_IMPORT_FAILED", ["error": String(describing: error)])
+      return "导入没有完成，请重试。"
     }
   }
 }

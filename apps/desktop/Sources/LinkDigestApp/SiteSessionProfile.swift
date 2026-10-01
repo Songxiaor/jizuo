@@ -39,9 +39,11 @@ struct SiteSessionProfile: Sendable {
   /// 用与业务请求完全相同的网络层打一次登录态接口，确认服务端是否认可这个会话。
   ///
   /// 可选：不是每个站点都有稳定的公开登录态接口，没有就只依赖本机 cookie 判定。
-  /// 入参是 Cookie 头，返回值是直接显示给人看的一行字。实现方**不得**把 Cookie
-  /// 写进返回值或日志。
-  let verifier: (@Sendable (String) async -> String)?
+  /// 入参是 Cookie 头，返回值是直接显示给人看的一行字和「是否确认有效」。
+  /// 实现方**不得**把 Cookie 写进返回值或日志。
+  ///
+  /// 带上 `isValid` 是因为失败也曾配着打勾图标显示，用户会误以为校验通过（2026-10-01）。
+  let verifier: (@Sendable (String) async -> SiteSessionVerification)?
 
   /// WebView 与业务请求共用的 UA。
   ///
@@ -70,4 +72,10 @@ struct SiteSessionProfile: Sendable {
   func looksLoggedIn(_ cookieNames: Set<String>) -> Bool {
     loginCookieGroups.contains { !$0.isEmpty && $0.isSubset(of: cookieNames) }
   }
+}
+
+/// 登录态校验结果：给人看的一句话，加上它算不算「服务端认可」。
+struct SiteSessionVerification: Equatable, Sendable {
+  let message: String
+  let isValid: Bool
 }

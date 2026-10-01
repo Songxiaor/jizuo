@@ -7,6 +7,9 @@ struct AnnotationSectionView: View {
   @Environment(\.appTheme) private var appTheme
   @State private var isNoteEditorPresented = false
   @FocusState private var isNoteEditorFocused: Bool
+  /// 等待确认删除的摘录。摘录是用户亲手挑的句子，误点小叉号就没了又找不回，
+  /// 所以先问一句（2026-10-01）。
+  @State private var pendingExcerptDeletion: TaskExcerpt?
   let taskID: TaskID
   @Bindable var model: HistoryViewModel
   /// 详情顶部已经有「笔记 · 标签」栏时关掉这里的笔记编辑器，避免两处抢同一份草稿。
@@ -19,7 +22,7 @@ struct AnnotationSectionView: View {
         ForEach(model.taskExcerpts) { excerpt in
           HStack(alignment: .top, spacing: 8) {
             Rectangle()
-              .fill(Color.accentColor.opacity(0.6))
+              .fill(appTheme.accent.opacity(0.6))
               .frame(width: 3)
               .clipShape(Capsule())
             Text(excerpt.excerpt)
@@ -27,7 +30,7 @@ struct AnnotationSectionView: View {
               .textSelection(.enabled)
             Spacer(minLength: 4)
             Button {
-              model.deleteExcerpt(excerpt)
+              pendingExcerptDeletion = excerpt
             } label: {
               Image(systemName: "xmark.circle.fill")
                 .foregroundStyle(.tertiary)
@@ -96,6 +99,25 @@ struct AnnotationSectionView: View {
       ExcerptCaptureRouter.shared.handler = { model.addExcerpt($0, taskID: newTaskID) }
     }
     .onDisappear { ExcerptCaptureRouter.shared.handler = nil }
+    .confirmationDialog(
+      "删除这条摘录？",
+      isPresented: Binding(
+        get: { pendingExcerptDeletion != nil },
+        set: { if !$0 { pendingExcerptDeletion = nil } }
+      ),
+      titleVisibility: .visible
+    ) {
+      Button("删除这条摘录", role: .destructive) {
+        if let excerpt = pendingExcerptDeletion {
+          pendingExcerptDeletion = nil
+          model.deleteExcerpt(excerpt)
+        }
+      }
+      .accessibilityIdentifier("annotation-excerpt-delete-confirm")
+      Button("取消", role: .cancel) { pendingExcerptDeletion = nil }
+    } message: {
+      Text("删了没法撤销，原文不受影响，之后可以重新选中再添加。")
+    }
     .accessibilityIdentifier("annotation-section")
   }
 }

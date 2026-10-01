@@ -57,15 +57,16 @@ struct KnowledgeVaultSettingsView: View {
               .buttonStyle(.appNormal)
               .accessibilityIdentifier("knowledge-vault-choose")
             // 危险动作：文字按钮 + 危险色，和「更改文件夹」拉开层级，并二次确认。
-            Button("清除") { isClearConfirmationPresented = true }
+            Button("停止同步") { isClearConfirmationPresented = true }
               .buttonStyle(.appDestructive(appTheme.danger))
               .disabled(!model.hasDirectory)
               .accessibilityIdentifier("knowledge-vault-clear")
               .confirmationDialog(
-                "清除知识库文件夹？",
+                // 说清后果：是「不再往这里同步」，不是删文件（2026-10-01）。
+                "不再同步到这个文件夹？",
                 isPresented: $isClearConfirmationPresented
               ) {
-                Button("清除", role: .destructive) { model.clearDirectory() }
+                Button("停止同步", role: .destructive) { model.clearDirectory() }
                 Button("取消", role: .cancel) {}
               } message: {
                 Text("只清除汲作记住的位置和访问权限，不会删除文件夹里的任何文件。")

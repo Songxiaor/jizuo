@@ -170,9 +170,9 @@ final class AppViewModel {
   var storageStatusText: String {
     switch storageAvailability {
     case .bootstrapping:
-      "正在准备本地历史…"
+      "正在准备资料库…"
     case .writable:
-      "本地历史可用"
+      "资料库可用"
     case let .unavailable(code):
       StorageErrorCatalog.presentation(for: code).visibleText
     }
@@ -247,7 +247,7 @@ final class AppViewModel {
       text: currentCapture?.document.text,
       outputLanguage: preferences.outputLanguage
     ) else {
-      dataDestinationNotice = "捕获内容与输出语言相同，无需翻译。"
+      dataDestinationNotice = "原文已经是输出语言，不用翻译。"
       return
     }
     await requestRun(intent: .translate, preferences: preferences, modelOverride: modelOverride)
@@ -311,7 +311,7 @@ final class AppViewModel {
       from: historyDetail.snapshots,
       outputLanguage: preferences.outputLanguage
     ) else {
-      dataDestinationNotice = "捕获内容与输出语言相同，无需翻译。"
+      dataDestinationNotice = "原文已经是输出语言，不用翻译。"
       return false
     }
     await requestRun(intent: .translate, preferences: preferences, modelOverride: modelOverride)
@@ -393,7 +393,7 @@ final class AppViewModel {
         text: currentCapture?.document.text,
         outputLanguage: next.preferences.outputLanguage
       ) {
-        dataDestinationNotice = "捕获内容与输出语言相同，无需翻译。"
+        dataDestinationNotice = "原文已经是输出语言，不用翻译。"
         await startNextQueuedGenerationIfIdle()
         return
       }
@@ -476,7 +476,7 @@ final class AppViewModel {
     outputLanguage: String
   ) -> String? {
     isTranslationLanguageMatch(text: text, outputLanguage: outputLanguage)
-      ? "捕获内容与输出语言相同，无需翻译。"
+      ? "原文已经是输出语言，不用翻译。"
       : nil
   }
 
@@ -486,7 +486,7 @@ final class AppViewModel {
   ) -> String? {
     LayeredSourceDocument.needsTranslation(from: snapshots, outputLanguage: outputLanguage)
       ? nil
-      : "捕获内容与输出语言相同，无需翻译。"
+      : "原文已经是输出语言，不用翻译。"
   }
 
   /// 总结为什么现在不能点。可用时返回 nil。
@@ -525,7 +525,7 @@ final class AppViewModel {
     return LayeredSourceDocument.needsTranslation(
       from: detail.snapshots,
       outputLanguage: preferences.outputLanguage
-    ) ? nil : "捕获内容与输出语言相同，无需翻译。"
+    ) ? nil : "原文已经是输出语言，不用翻译。"
   }
 
   static let untranscribedRunReason = "还没转写：先点「转写」，有了文字稿再总结或翻译"
@@ -550,7 +550,7 @@ final class AppViewModel {
     case .writable:
       break
     case .bootstrapping:
-      return "正在准备本地历史…"
+      return "正在准备资料库…"
     case .unavailable:
       return storageStatusText
     }
@@ -807,7 +807,7 @@ final class AppViewModel {
       taskID: detail.task.id,
       snapshotID: snapshot.id
     )
-    connection = "本地历史"
+    connection = "资料库"
     return true
   }
 
@@ -2088,6 +2088,7 @@ private struct LinkDigestCommands: Commands {
   @FocusedValue(\.focusHistorySearch) private var focusHistorySearch
   @FocusedValue(\.toggleFavorite) private var toggleFavorite
   @FocusedValue(\.newCollection) private var newCollection
+  @FocusedValue(\.goBack) private var goBack
   @AppStorage(ReadingFontSize.storageKey) private var readingFontSizeRaw = Double(ReadingFontSize.default)
   @AppStorage(ReadingLayoutWidth.storageKey) private var readingUsesWideLayout = false
 
@@ -2128,6 +2129,11 @@ private struct LinkDigestCommands: Commands {
     // 阅读快捷键对齐 Tolaria：⌘D 收藏，⌘+ / ⌘− / ⌘0 调正文字号（2026-09-25）。
     // 字号直接写偏好，不依赖焦点：光标在侧栏时按也生效。
     CommandGroup(after: .toolbar) {
+      // 卡片墙、博主页、专注阅读的「返回」原来只能用鼠标点左上角（2026-10-01 走查）。
+      Button("返回") { goBack?.run() }
+        .keyboardShortcut("[", modifiers: .command)
+        .disabled(goBack == nil)
+      Divider()
       Button("收藏 / 取消收藏") { toggleFavorite?.run() }
         .keyboardShortcut("d", modifiers: .command)
         .disabled(toggleFavorite == nil)

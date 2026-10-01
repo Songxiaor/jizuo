@@ -56,8 +56,8 @@ enum CurrentCaptureMediaPreview {
             url.scheme?.lowercased() == "https" else {
         return .degraded(.init(
           kindLabel: kindLabel(descriptor.kind),
-          message: "没有可安全移交给 APP 的播放地址。",
-          nextAction: "请回到浏览器重新发送当前视频。"
+          message: "播放地址过期了。",
+          nextAction: "请回到浏览器重新保存这个视频，重新获取播放地址。"
         ))
       }
       // B 站 DASH 等拆轨源：画面在 ephemeralPlaybackURL，声音在 companionAudioURL。
@@ -71,8 +71,8 @@ enum CurrentCaptureMediaPreview {
     case .embed:
       return .degraded(.init(
         kindLabel: kindLabel(descriptor.kind),
-        message: "这是嵌入式视频。本轮只显示承接容器，不在 APP 内加载网页播放器。",
-        nextAction: "请返回原浏览器继续观看。"
+        message: "这个视频只能在原网页里看。",
+        nextAction: "点「在浏览器中打开」去原网页观看。"
       ))
     case .browserSessionOnly, .unsupported:
       return .degraded(failurePresentation(for: descriptor))
@@ -99,20 +99,21 @@ enum CurrentCaptureMediaPreview {
 
   static func favoriteUnavailableMessage(_ descriptor: MediaDescriptor) -> String {
     switch descriptor.kind {
-    case .hls: "暂不支持把 HLS 下载到本机；你仍可在当前会话中速览。"
-    case .embed: "嵌入式视频暂不支持下载到本机。"
-    case .browserSessionOnly: "该视频只能在原浏览器会话观看，不能下载到本机。"
-    case .unsupported: "该视频当前不能下载到本机。"
-    case .directFile: "当前直连视频地址不可用，请回到浏览器重新发送。"
+    // 工程词（HLS、会话、直连）换成用户能懂的三类说法（2026-10-01）。
+    case .hls: "这种在线视频流暂时不能存到本机，现在可以先在这里看。"
+    case .embed: "这个视频只能在原网页里看，不能存到本机。"
+    case .browserSessionOnly: "这个视频只能在原网页里看，不能存到本机。"
+    case .unsupported: "这个视频暂时不能存到本机。"
+    case .directFile: "播放地址过期了，请回到浏览器重新保存这个视频。"
     }
   }
 
   static func kindLabel(_ kind: MediaKind) -> String {
     switch kind {
-    case .directFile: "直连视频"
-    case .hls: "HLS 串流"
-    case .embed: "嵌入式视频"
-    case .browserSessionOnly: "浏览器会话视频"
+    case .directFile: "视频文件"
+    case .hls: "在线视频流"
+    case .embed: "网页内嵌视频"
+    case .browserSessionOnly: "只能在原网页看"
     case .unsupported: "暂不支持的视频"
     }
   }
@@ -144,36 +145,37 @@ enum CurrentCaptureMediaPreview {
     // 这段空窗正是「刚抓进来那几秒显示受限、刷新后才正常」的由来。
     if descriptor.platform == "x", descriptor.failureReason == .blobOrMSE {
       return .init(
-        kindLabel: "浏览器会话视频",
+        kindLabel: kindLabel(.browserSessionOnly),
         message: "正在为这条帖子获取视频…",
         nextAction: "获取完成后会自动出现在这里；若稍后仍是这条提示，说明这条视频没能取到。"
       )
     }
     switch descriptor.failureReason ?? .unknown {
+    // 只留三类说法：只能在原网页看 / 播放地址过期 / 有版权保护（2026-10-01）。
     case .blobOrMSE:
-      message = "这个视频使用 blob/MSE，只能在原浏览器会话观看。"
-      nextAction = "请返回原浏览器继续观看。"
+      message = "这个视频只能在原网页里看。"
+      nextAction = "点「在浏览器中打开」去原网页观看。"
     case .drmOrEncrypted:
-      message = "这个视频受 DRM 或加密保护，APP 不能接管播放。"
-      nextAction = "请返回提供内容的原浏览器页面观看。"
+      message = "这个视频有版权保护，\(ProductDisplay.name)不能播放。"
+      nextAction = "点「在浏览器中打开」去原网页观看。"
     case .multipleCandidates:
-      message = "页面上有多个视频，暂时无法唯一确定你要观看的那一个。"
-      nextAction = "请在浏览器中播放目标视频后重新发送。"
+      message = "页面上有好几个视频，\(ProductDisplay.name)分不清你要的是哪一个。"
+      nextAction = "请在浏览器里先播放想要的那个视频，再重新保存。"
     case .videoNotLoaded:
-      message = "视频尚未加载，浏览器还没有可移交的媒体源。"
-      nextAction = "请先在浏览器中播放视频，再重新发送。"
+      message = "视频还没加载出来，\(ProductDisplay.name)拿不到它。"
+      nextAction = "请先在浏览器里播放一下视频，再重新保存。"
     case .browserSessionRequired:
-      message = "播放依赖原浏览器登录会话，APP 不会读取或转移 Cookie。"
-      nextAction = "请返回原浏览器继续观看。"
+      message = "这个视频只能在原网页里看（要用浏览器里的登录）。"
+      nextAction = "点「在浏览器中打开」去原网页观看。"
     case .noTransferableSource:
-      message = "浏览器没有找到可安全移交给 APP 的媒体源。"
-      nextAction = "请回到浏览器确认视频已播放后重新发送。"
+      message = "这个视频只能在原网页里看。"
+      nextAction = "确认视频在浏览器里能播放后再重新保存；也可以点「在浏览器中打开」去原网页观看。"
     case .unsupportedMediaType:
-      message = "当前媒体格式不受 APP 播放器支持。"
-      nextAction = "请返回原浏览器继续观看。"
+      message = "这个视频的格式\(ProductDisplay.name)播放不了，只能在原网页里看。"
+      nextAction = "点「在浏览器中打开」去原网页观看。"
     case .unknown:
-      message = "当前视频无法安全移交给 APP。"
-      nextAction = "请返回原浏览器继续观看，或稍后重新发送。"
+      message = "这个视频只能在原网页里看。"
+      nextAction = "点「在浏览器中打开」去原网页观看，或稍后重新保存。"
     }
     return .init(kindLabel: kindLabel(descriptor.kind), message: message, nextAction: nextAction)
   }
@@ -1255,8 +1257,8 @@ struct CurrentCaptureMediaPreviewCard: View {
         Text(CurrentCaptureMediaPreview.kindLabel(descriptor.kind))
           .themedFont(.caption, weight: .medium)
           .foregroundStyle(.secondary)
-          .padding(.horizontal, 7)
-          .padding(.vertical, 3)
+          .padding(.horizontal, DesignTokens.Space.sm)
+          .padding(.vertical, DesignTokens.Space.xxs)
           .background(Color.secondary.opacity(0.1), in: Capsule())
         // 真正在播的那一档。标题写「4K」不代表播的是 4K——
         // 拿不到会员档时会退到公开档，不显示出来根本无从判断。
@@ -1265,16 +1267,16 @@ struct CurrentCaptureMediaPreviewCard: View {
         Text(descriptor.companionAudioURL == nil ? "整段" : "双轨")
           .themedFont(.caption, weight: .medium)
           .foregroundStyle(.secondary)
-          .padding(.horizontal, 7)
-          .padding(.vertical, 3)
+          .padding(.horizontal, DesignTokens.Space.sm)
+          .padding(.vertical, DesignTokens.Space.xxs)
           .background(Color.secondary.opacity(0.1), in: Capsule())
           .accessibilityIdentifier("history-video-preview-track-mode")
         if let videoPixelHeight {
-          Text("\(videoPixelHeight)P")
+          Text("\(videoPixelHeight)p")
             .themedFont(.caption, weight: .medium)
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
+            .padding(.horizontal, DesignTokens.Space.sm)
+            .padding(.vertical, DesignTokens.Space.xxs)
             .background(Color.secondary.opacity(0.1), in: Capsule())
             .accessibilityIdentifier("history-video-preview-resolution")
         }
@@ -1286,8 +1288,8 @@ struct CurrentCaptureMediaPreviewCard: View {
         playableContent(url: url, kind: kind, companionAudioURL: companionAudioURL)
       case .expired:
         degradationContent(
-          message: "播放地址已过期，请回到浏览器重新发送。",
-          nextAction: "APP 不会在后台静默重新解析播放地址。",
+          message: "播放地址过期了。",
+          nextAction: "请回到浏览器重新保存这个视频，重新获取播放地址。",
           identifier: "history-video-preview-expired"
         )
       case let .degraded(presentation):
@@ -2560,7 +2562,7 @@ struct HistoryVideoPlayerCard: View {
       saveFeedbackTask = nil
     }
     .alert("无法保存视频", isPresented: $isSaveFailurePresented) {
-      Button("好", role: .cancel) {}
+      Button("知道了", role: .cancel) {}
     } message: {
       Text("原本机视频没有被改动。请检查保存位置的权限或可用空间后重试。")
     }
@@ -2781,7 +2783,7 @@ private struct HistoryStreamingMediaCard: View {
 
       if playbackFailed {
         VStack(alignment: .leading, spacing: 6) {
-          Label("远程播放失败，地址可能已失效。", systemImage: "exclamationmark.triangle.fill")
+          Label("没能播放，播放地址可能过期了。", systemImage: "exclamationmark.triangle.fill")
             .themedFont(.caption, weight: .medium)
             .foregroundStyle(appTheme.warning)
           HStack(spacing: 8) {
@@ -2789,7 +2791,7 @@ private struct HistoryStreamingMediaCard: View {
               .buttonStyle(.borderedProminent)
               .controlSize(.small)
             DisclosureGroup(HistorySessionMediaPresentation.technicalDetailsTitle) {
-              Text("临时播放地址不会写入历史；APP 重启或地址过期后，请回到浏览器重新同步。")
+              Text("播放地址只在保存当时有效，不会存进资料库；重新打开\(ProductDisplay.name)或地址过期后，请回到浏览器重新保存。")
                 .themedFont(.caption2)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -35,7 +35,7 @@ final class UnfinishedRunNoticeTests: XCTestCase {
     XCTAssertEqual(notice?.kind, .translate)
     XCTAssertEqual(notice?.status, .interrupted)
     // 说清是「被打断」而不是「出错」——用户才知道重试大概率会成功。
-    XCTAssertEqual(notice?.message, "上次翻译在 App 退出时中断，没有结果。")
+    XCTAssertEqual(notice?.message, "上次翻译在\(ProductDisplay.name)退出时中断，没有结果，重新点一次就行。")
   }
 
   /// 断过一次然后重跑成功是常态，不该再打扰。

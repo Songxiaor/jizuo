@@ -662,7 +662,9 @@ struct StreamingReadingTextView: NSViewRepresentable {
     view.minSize = .zero
     view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: .greatestFiniteMagnitude)
     view.isAutomaticLinkDetectionEnabled = false
-    view.textStorage?.setAttributedString(attributed(text))
+    let initial = styledDocument(text)
+    view.textStorage?.setAttributedString(initial.text)
+    context.coordinator.openLineStart = initial.openLineStart
     scroll.documentView = view
 
     context.coordinator.lastText = text
@@ -684,20 +686,24 @@ struct StreamingReadingTextView: NSViewRepresentable {
         previous: context.coordinator.lastText,
         next: text
        ) {
-      if !suffix.isEmpty {
-        let start = (view.string as NSString).length
-        view.textStorage?.beginEditing()
-        view.textStorage?.append(attributed(suffix))
-        view.textStorage?.endEditing()
-        let added = (suffix as NSString).length
+      if !suffix.isEmpty, let storage = view.textStorage {
+        let restyleFrom = context.coordinator.openLineStart
+        storage.beginEditing()
+        storage.append(attributed(suffix))
+        context.coordinator.openLineStart = finishCompletedLines(in: storage, from: restyleFrom)
+        storage.endEditing()
+        let length = storage.length
+        let from = min(restyleFrom, length)
         view.layoutManager?.ensureLayout(
-          forCharacterRange: NSRange(location: start, length: added)
+          forCharacterRange: NSRange(location: from, length: length - from)
         )
       }
     } else {
       let selection = view.selectedRange()
-      view.textStorage?.setAttributedString(attributed(text))
-      let length = (text as NSString).length
+      let document = styledDocument(text)
+      view.textStorage?.setAttributedString(document.text)
+      context.coordinator.openLineStart = document.openLineStart
+      let length = document.text.length
       view.setSelectedRange(NSRange(
         location: min(selection.location, length),
         length: min(selection.length, max(0, length - min(selection.location, length)))
@@ -736,6 +742,74 @@ struct StreamingReadingTextView: NSViewRepresentable {
   final class Coordinator {
     var lastText = ""
     var lastStyle: StyleKey?
+    /// 还没写完的那一行在文本里从哪开始；它之前的行都已经收成排版样式。
+    var openLineStart = 0
+  }
+
+  // MARK: 流式阶段的轻量排版
+  //
+  // 原来流式时整段是纯文本，`## 小标题`、`**重点**`、`- 列表` 的符号原样露着，生成一结束
+  // 换成正式排版，符号消失、标题变大，整页往上一跳（2026-10-02 走查）。每写完一行就把这一行
+  // 收成接近最终的样子；还在长的那一行保持原样，不在半个 `**` 上猜。
+
+  func styledDocument(_ value: String) -> (text: NSAttributedString, openLineStart: Int) {
+    let result = NSMutableAttributedString(attributedString: attributed(value))
+    let openLineStart = finishCompletedLines(in: result, from: 0)
+    return (result, openLineStart)
+  }
+
+  private func finishCompletedLines(in storage: NSMutableAttributedString, from start: Int) -> Int {
+    var lineStart = min(start, storage.length)
+    while true {
+      let string = storage.string as NSString
+      let newline = string.range(of: "\n", options: [], range: NSRange(location: lineStart, length: string.length - lineStart))
+      guard newline.location != NSNotFound else { return lineStart }
+      let lineRange = NSRange(location: lineStart, length: newline.location - lineStart)
+      let styled = styledLine(string.substring(with: lineRange))
+      storage.replaceCharacters(in: lineRange, with: styled)
+      lineStart += styled.length + 1
+    }
+  }
+
+  private func styledLine(_ raw: String) -> NSAttributedString {
+    let trimmed = raw.trimmingCharacters(in: .whitespaces)
+    if trimmed.count >= 3, Set(trimmed).isSubset(of: ["-", "*", "_"]) {
+      return NSAttributedString(string: "")
+    }
+    var line = raw
+    var lineFont = font
+    var lineColor = color
+    if let match = line.range(of: "^#{1,6}\\s+", options: .regularExpression) {
+      let level = line[match].filter { $0 == "#" }.count
+      line.removeSubrange(match)
+      let grow: CGFloat = level == 1 ? 6 : (level == 2 ? 3 : 1)
+      lineFont = NSFontManager.shared.convert(
+        NSFont(descriptor: font.fontDescriptor, size: font.pointSize + grow) ?? font,
+        toHaveTrait: .boldFontMask
+      )
+    } else if let match = line.range(of: "^>\\s?", options: .regularExpression) {
+      line.removeSubrange(match)
+      lineColor = color.withAlphaComponent(0.7)
+    } else if let match = line.range(of: "^(\\s*)[-*+]\\s+", options: .regularExpression) {
+      let indent = String(line[match].prefix { $0 == " " || $0 == "\t" })
+      line.replaceSubrange(match, with: indent + "•  ")
+    }
+    line = line.replacingOccurrences(of: "`", with: "")
+    let base = attributed(line)
+    let result = NSMutableAttributedString(attributedString: base)
+    result.addAttributes([.font: lineFont, .foregroundColor: lineColor], range: NSRange(location: 0, length: result.length))
+    // **粗体**：去掉星号，中间加粗。
+    let bold = NSFontManager.shared.convert(lineFont, toHaveTrait: .boldFontMask)
+    while let open = result.string.range(of: "**"),
+          let close = result.string.range(of: "**", range: open.upperBound..<result.string.endIndex) {
+      let openRange = NSRange(open, in: result.string)
+      let closeRange = NSRange(close, in: result.string)
+      let inner = NSRange(location: openRange.upperBound, length: closeRange.location - openRange.upperBound)
+      result.addAttribute(.font, value: bold, range: inner)
+      result.deleteCharacters(in: closeRange)
+      result.deleteCharacters(in: openRange)
+    }
+    return result
   }
 
   struct StyleKey: Equatable {

@@ -133,7 +133,9 @@ describe("popup error presentation", () => {
     })!;
     expect(message).toContain("PLATFORM_NOT_SUPPORTED");
     expect(message).toContain("暂不支持");
-    expect(message).toContain("小红书");
+    // 小红书、B 站早已支持，提示里不能再说它们「开发中」（2026-10-01）。
+    expect(message).not.toContain("小红书");
+    expect(message).toContain("添加链接");
   });
 
   it("does not echo an unknown wire code", () => {
@@ -190,8 +192,8 @@ describe("popup media preview", () => {
 describe("popup build label", () => {
   it("prefers version_name and falls back to stable version", () => {
     expect(popupBuildLabel({ version: "0.2.0", version_name: "0.2.0-session-diagnostic-r1" }))
-      .toBe("构建 0.2.0-session-diagnostic-r1");
-    expect(popupBuildLabel({ version: "0.2.0" })).toBe("构建 0.2.0");
+      .toBe("版本 0.2.0-session-diagnostic-r1");
+    expect(popupBuildLabel({ version: "0.2.0" })).toBe("版本 0.2.0");
   });
 });
 
@@ -235,7 +237,7 @@ describe("popup scale label", () => {
 
 describe("popup platform label", () => {
   it("names the platform and content kind", () => {
-    expect(popupPlatformLabel("wechat", 1)).toBe("微信公众号 · 文章");
+    expect(popupPlatformLabel("wechat", 1)).toBe("公众号 · 文章");
     expect(popupPlatformLabel("douyin", 2)).toBe("抖音 · 视频");
     expect(popupPlatformLabel("generic", 1)).toBe("网页 · 文章");
   });
@@ -284,7 +286,7 @@ describe("X videos resolved by the desktop app", () => {
     };
     expect(popupAvailability(preview)).toEqual({ tone: "video", label: "可以保存 · 视频由汲作获取" });
     const chips = popupMetaChips({ ...preview, characterCount: 525, version: 2 });
-    expect(chips.at(-1)).toEqual({ text: "🎬 视频由 App 获取", tone: "video" });
+    expect(chips.at(-1)).toEqual({ text: "🎬 视频由汲作获取", tone: "video" });
     expect(chips.some((chip) => chip.text.includes("受限"))).toBe(false);
   });
 
@@ -490,5 +492,9 @@ describe("browser-internal pages (2026-09-29)", () => {
     expect(popupBrowserPageFailure("chrome://extensions")?.steps).toHaveLength(2);
     expect(popupBrowserPageFailure("https://x.com/a")).toBeNull();
     expect(popupBrowserPageFailure(undefined)).toBeNull();
+    // 拿不到网址时靠注入失败的原话认出浏览器页面，不叫人刷新重试。
+    expect(popupPreviewFailure("Cannot access a chrome:// URL")).toMatchObject({ title: "浏览器自己的页面读不了", canReload: false });
+    expect(popupPreviewFailure("The extensions gallery cannot be scripted.").canReload).toBe(false);
+    expect(popupPreviewFailure("unknown").message).not.toContain("刷新");
   });
 });

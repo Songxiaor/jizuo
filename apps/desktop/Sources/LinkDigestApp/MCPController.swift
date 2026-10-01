@@ -104,7 +104,7 @@ final class MCPController: ObservableObject {
   func handle(_ data: Data) async -> Data {
     let output: [String: Any]
     do {
-      guard enabled else { throw MCPFailure("disabled", "MCP 已关闭") }
+      guard enabled else { throw MCPFailure("disabled", "汲作里的「允许 AI 助手连接」已关闭，请在「设置 → AI 助手接入」里打开。") }
       guard data.count <= 1_048_576, let request = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             let name = request["name"] as? String else { throw MCPFailure("invalid_request", "请求无效") }
       guard request["arguments"] == nil || request["arguments"] is [String: Any] else { throw MCPFailure("invalid_arguments", "参数必须是对象") }
@@ -147,7 +147,7 @@ final class MCPController: ObservableObject {
       switch persisted {
       case .completed: phase = "completed"; terminal = true
       case .failed: phase = "failed"; terminal = true
-      case .pending, .running: phase = "interrupted"; terminal = true; attention = true; message = "没有活动转写任务，之前处理未完成，请在App检查后重试。"
+      case .pending, .running: phase = "interrupted"; terminal = true; attention = true; message = "这条内容之前的转写没有完成，请在汲作里打开它重试。"
       case Optional.none: phase = "no_local_media"
       case .some(.none): phase = "not_started"
       }
@@ -165,13 +165,13 @@ final class MCPController: ObservableObject {
   }
 
   private func call(_ name: String, _ a: [String: Any]) async throws -> [String: Any] {
-    guard let history, let historyModel, let manual else { throw MCPFailure("not_ready", "本地资料库尚未就绪") }
+    guard let history, let historyModel, let manual else { throw MCPFailure("not_ready", "资料库还在打开，请稍后再试。") }
     let readOnly = ["jizuo_status", "jizuo_statistics", "jizuo_search", "jizuo_collections", "jizuo_read", "jizuo_capture_status", "jizuo_creators", "jizuo_discovery_status", "jizuo_processing_status", "jizuo_open"]
     let processing = ["jizuo_transcribe", "jizuo_summarize"]
     if !readOnly.contains(name) {
-      guard writable else { throw MCPFailure("read_only", "资料库当前不可写") }
+      guard writable else { throw MCPFailure("read_only", "资料库现在只能看、不能改；重新打开汲作通常就能恢复。") }
       guard processing.contains(name) ? allowsProcessing : allowsChanges else {
-        throw MCPFailure("permission_required", "请在设置 → MCP 连接开启对应的抓取整理或转写总结权限。")
+        throw MCPFailure("permission_required", "请在汲作的「设置 → AI 助手接入」里打开「允许抓取与整理」或「允许转写与总结」。")
       }
     }
     // 判断「记录在不在」本身就要读一次完整详情；读到的留着，同一次调用里要详情时
@@ -187,7 +187,7 @@ final class MCPController: ObservableObject {
       return try history.detail(taskID: id)
     }
     func job() throws -> MCPDiscovery {
-      guard let d = discovery, a["job_id"] as? String == d.id else { throw MCPFailure("job_not_found", "发现任务不存在或 App 已重启；请重新发现。") }
+      guard let d = discovery, a["job_id"] as? String == d.id else { throw MCPFailure("job_not_found", "找作品的任务已经不在了（可能汲作重启过），请重新找作品。") }
       return d
     }
     switch name {
@@ -331,7 +331,7 @@ final class MCPController: ObservableObject {
       let page = try history.creatorPage(limit: a["limit"] as? Int ?? 20, searchText: a["query"] as? String ?? "")
       return ["items": page.rows.map { ["creator_id": $0.id.rawValue, "name": $0.listingTitle, "url": $0.profileURL, "saved_count": $0.savedWorkCount] as [String: Any] }]
     case "jizuo_discover_creator":
-      guard discovery?.isActive != true else { throw MCPFailure("busy", "已有发现任务，请查询或停止后再添加下一个博主。") }
+      guard discovery?.isActive != true else { throw MCPFailure("busy", "正在为另一个博主找作品，请查询或停止后再添加下一个博主。") }
       let raw = a["url"] as! String
       guard ProfileImportPlatform.parse(raw) != nil else { throw MCPFailure("unsupported_profile", "支持抖音、小红书、X 和 B 站主页或分享文案，以及抖音、xhslink、b23.tv 分享短链。") }
       discovery?.stop()
@@ -361,7 +361,7 @@ final class MCPController: ObservableObject {
       summaryStarting = true
       defer { summaryStarting = false }
       let engaged = await appModel.summarize(historyDetail: d, preferences: preferences.runPreferences, modelOverride: preferences.activeSummaryModelName)
-      return ["task_id": id.rawValue, "status": engaged ? "submitted" : "needs_attention", "message": engaged ? "请查询processing_status确认终态" : "请在汲作查看模型配置或数据发送授权提示"]
+      return ["task_id": id.rawValue, "status": engaged ? "submitted" : "needs_attention", "message": engaged ? "请查询 processing_status 确认结果" : "请在汲作里查看模型设置，或确认是否允许发送数据。"]
     case "jizuo_add_tags":
       let id = try taskID(); let tags = try history.addTags(a["tags"] as! [String], to: id)
       historyModel.reload(); return ["tags": tags.map(\.name)]
@@ -444,7 +444,8 @@ private final class MCPDiscovery {
     let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 960, height: 640), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
     window.title = "汲作 · MCP 博主发现"
     window.isReleasedWhenClosed = false
-    window.contentView = NSHostingView(rootView: MCPDiscoveryView(model: model))
+    // 自建窗口不经过场景根，主题要单独注入（2026-10-01）。
+    window.contentView = NSHostingView(rootView: ThemedWindowRoot { [model] in MCPDiscoveryView(model: model) })
     self.window = window; window.center(); window.makeKeyAndOrderFront(nil)
     model.start(); observe()
   }
@@ -487,13 +488,16 @@ private final class MCPDiscovery {
 
 private struct MCPDiscoveryView: View {
   @ObservedObject var model: DouyinProfileImportViewModel
+  @Environment(\.appTheme) private var theme
   var body: some View {
-    VStack(alignment: .leading) {
-      Text("Agent 正在发现博主作品").font(.headline)
+    VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
+      Text("Agent 正在发现博主作品").themedFont(.headline).foregroundStyle(theme.primaryText)
       Text("已发现 \(model.candidates.count) 条。需要登录或验证时，请在下方页面完成，再让 Agent 继续。")
-        .font(.callout).foregroundStyle(.secondary)
+        .themedFont(.callout).foregroundStyle(theme.secondaryText)
       DouyinProfileImportWebView(model: model, dataStore: model.dataStore)
         .id(model.platform)
-    }.padding(16)
+    }
+    .padding(DesignTokens.Space.lg)
+    .background(theme.card)
   }
 }

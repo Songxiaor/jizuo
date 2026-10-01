@@ -5,7 +5,7 @@ describe("syncResultTip", () => {
   it("排队成功与已在库分开报，不把「没排队」说成失败", () => {
     expect(syncResultTip({ ok: true, outcome: { queued: 1, skipped: 0 } }, true)).toEqual({
       state: "done",
-      text: "已发送到 App",
+      text: "已保存到汲作",
     });
     expect(syncResultTip({ ok: true, outcome: { queued: 0, skipped: 1 } }, true)).toEqual({
       state: "done",

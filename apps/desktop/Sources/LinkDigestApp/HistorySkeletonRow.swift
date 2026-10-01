@@ -71,6 +71,10 @@ struct HistorySkeletonRow: View {
 struct HistorySkeletonList: View {
   let theme: HistoryThemeTokens
   @State private var isBreathing = false
+  /// 切侧栏时这一页通常一两百毫秒就到：占位一出现就被换掉，看着是一下灰闪
+  /// （2026-10-01 走查）。等一会儿还没到才淡入；快的时候直接从空白换成内容。
+  @State private var isRevealed = false
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
@@ -82,7 +86,13 @@ struct HistorySkeletonList: View {
     .padding(.horizontal, 10)
     .padding(.top, 6)
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    .opacity(isRevealed ? 1 : 0)
     .onAppear { isBreathing = true }
-    .accessibilityLabel("正在载入历史记录")
+    .task {
+      try? await Task.sleep(for: .milliseconds(250))
+      guard !Task.isCancelled else { return }
+      withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { isRevealed = true }
+    }
+    .accessibilityLabel("正在载入资料库")
   }
 }

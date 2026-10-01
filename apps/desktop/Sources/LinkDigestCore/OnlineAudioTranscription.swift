@@ -23,18 +23,28 @@ public enum OnlineAudioTranscriptionError: Error, Sendable, Equatable {
 
   public var userMessage: String {
     switch self {
-    case .modelNotConfigured: "请先在设置中保存模型服务，并填写在线转写模型。"
-    case .providerNotSupported: "这个服务没有兼容的 /audio/transcriptions 接口。请切换 OpenAI、Groq、OpenRouter 或兼容端点。"
-    case .mediaURLInvalid: "在线转写地址已失效，请回到浏览器重新发送。"
-    case .authInvalid: "在线转写 API Key 无效或没有权限。"
-    case .responseRejected: "在线转写服务拒绝了请求，请检查模型名和账户额度。"
-    case .emptyTranscript: "在线服务没有返回可保存的文字。"
-    case .networkInterrupted: "在线转写连接中断，请稍后重试。"
-    case let .audioExtractionFailed(detail):
-      "本机提取音频失败（还未发送任何数据）：\(detail)"
-    case let .providerRejected(detail):
-      "在线转写服务拒绝了请求：\(detail)"
+    case .modelNotConfigured: "请先在设置的「模型服务」里保存服务商，并填好在线转写模型。"
+    case .providerNotSupported: "这个服务商不支持在线转写。可以换成 OpenAI、Groq、OpenRouter，或其他支持语音转文字的服务商。"
+    case .mediaURLInvalid: "视频的播放地址过期了，请回到浏览器重新保存这个页面。"
+    case .authInvalid: "在线转写的密钥无效或没有权限，请到设置的「模型服务」里检查密钥。"
+    case .responseRejected: "在线转写服务拒绝了请求，请检查模型名和账户余额。"
+    case .emptyTranscript: "在线转写服务没有返回文字，可以稍后再试，或改用本机转写。"
+    case .networkInterrupted: "在线转写的连接断了，请检查网络后重试。"
+    // 阶段与错误码、服务端原话只进日志（见 `diagnosticDetail`），界面只说人话和下一步（2026-10-01）。
+    case .audioExtractionFailed:
+      "没能从视频里取出声音（还没发送任何数据）。请稍后重试；一直不行可以改用本机转写。"
+    case .providerRejected:
+      "在线转写服务拒绝了请求，常见原因是模型名填错或账户余额不足，请到设置的「模型服务」里检查。"
     case .cancelled: "已取消在线转写。"
+    }
+  }
+
+  /// 给日志用的原始细节。界面不再拼接它：用户看不懂错误域和错误码，
+  /// 但我们排查时离不开，所以留在错误值里、由调用方写进 AppLog（2026-10-01）。
+  public var diagnosticDetail: String? {
+    switch self {
+    case let .audioExtractionFailed(detail), let .providerRejected(detail): detail
+    default: nil
     }
   }
 }

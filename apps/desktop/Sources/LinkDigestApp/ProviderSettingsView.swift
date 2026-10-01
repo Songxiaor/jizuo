@@ -386,7 +386,7 @@ struct ProviderSettingsView: View {
         // 预览要验证的是字形在 10pt 上立不立得住，示例词同样能验证。
         Text("示例标题　示例分类 12　其他 9")
           .themedFont(.subheadline)
-        Text("2026-08-17 19:24 · 示例说明文字 · 19.6 MB")
+        Text("8月17日 19:24 · 示例说明文字 · 19.6 MB")
           .themedFont(.subheadline)
           .foregroundStyle(.secondary)
       }
@@ -507,6 +507,10 @@ struct ProviderSettingsView: View {
         }
       }
       .frame(maxWidth: .infinity, maxHeight: .infinity)
+      // 往上滚时页面文字从「设置」标题后面透出来（2026-10-01 走查）；和主窗口同一层渐隐遮罩。
+      .overlay(alignment: .top) {
+        if !isNativeTheme { ToolbarScrollFade(background: settingsTheme.canvas) }
+      }
       // 窗口标题恒为「设置」，不跟着 selectedTab 变。原来这里写
       // `selectedTab.title`，和页内页头（`SettingsPageHeader` 的大标题）说的是
       // 同一件事，两处同时写着「视频存储」「站点登录」是重复；当前分类已经由
@@ -644,7 +648,7 @@ struct ProviderSettingsView: View {
         set: { if !$0 { pendingDeletionID = nil } }
       )
     ) {
-      Button("删除", role: .destructive) {
+      Button("删除并清掉密钥", role: .destructive) {
         if let id = pendingDeletionID {
           pendingDeletionID = nil
           Task { await model.deleteModel(id) }
@@ -703,8 +707,14 @@ struct ProviderSettingsView: View {
       HStack(spacing: DesignTokens.Space.md) {
         Text("价格页：").foregroundStyle(settingsTheme.secondaryText)
         ForEach(RecommendedProvider.all) { provider in
-          Link(provider.name, destination: provider.pricingURL)
-            .accessibilityIdentifier("recommended-provider-pricing-\(provider.id)")
+          // 带「↗」和强调色：原来是三个黑字，看不出能点（2026-10-01 走查）。
+          Link(destination: provider.pricingURL) {
+            Label(provider.name, systemImage: "arrow.up.right")
+              .labelStyle(TrailingIconLabelStyle())
+          }
+          .foregroundStyle(settingsTheme.accent)
+          .help(provider.pricingURL.absoluteString)
+          .accessibilityIdentifier("recommended-provider-pricing-\(provider.id)")
         }
       }
       .themedFont(.subheadline)
@@ -832,7 +842,7 @@ struct ProviderSettingsView: View {
     title: UISettingsPresentation.localTranscriptionTitle,
     caption: "视频转文字，本机离线，不联网、不花钱。"
   ) {
-    Text("Apple 听写")
+    Text("Mac 自带的语音识别")
       .themedFont(.body)
       .foregroundStyle(.secondary)
       .lineLimit(1)
@@ -848,7 +858,7 @@ struct ProviderSettingsView: View {
     VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
       preferenceModelAssignmentControl(
         title: UISettingsPresentation.onlineTranscriptionTitle,
-        emptyOptionTitle: "不使用：只用 Apple 本机转写",
+        emptyOptionTitle: "不使用：只用本机转写",
         options: model.transcriptionEntryDisplays,
         text: Binding(
           get: { model.onlineTranscriptionModelName },
@@ -1094,7 +1104,7 @@ struct ProviderSettingsView: View {
         }
         .buttonStyle(.appNormal)
         .disabled(plan.total == 0 || model.isSaving || model.isLoadingModels)
-        .help("对每个模型发一条「Reply with OK.」，看它现在能不能用。")
+        .help("对每个模型发一句很短的测试消息，看它现在能不能用。")
         .accessibilityIdentifier(scope == .catalog ? "probe-catalog-models" : "probe-library-models")
       }
       .confirmationDialog(
@@ -1111,7 +1121,7 @@ struct ProviderSettingsView: View {
         }
         Button("取消", role: .cancel) {}
       } message: {
-        Text("每个模型只发一条「Reply with OK.」，付费模型每条会扣极少的额度。结果会显示在模型名旁边，一天后提示重新检测。")
+        Text("每个模型只发一句很短的测试消息，付费模型每条只花极少的额度。结果会显示在模型名旁边，一天后提示重新检测。")
       }
     }
   }
@@ -1164,7 +1174,7 @@ struct ProviderSettingsView: View {
     entry: ProviderSettingsViewModel.LibraryEntryDisplay?
   ) -> String {
     if let entry { return entry.displayName }
-    return kind == .transcription ? "Apple 听写" : "未指派"
+    return kind == .transcription ? "Mac 自带的语音识别" : "未指派"
   }
 
   private func assignmentDetail(
@@ -1178,7 +1188,7 @@ struct ProviderSettingsView: View {
   private func assignmentPickerPopover(_ kind: AssignmentPicker) -> some View {
     let entries = kind == .transcription ? model.transcriptionEntryDisplays : model.summaryEntryDisplays
     return VStack(alignment: .leading, spacing: 0) {
-      Text(kind == .transcription ? "选择本地/在线转写模型" : "选择总结模型")
+      Text(kind == .transcription ? "选择转写方式" : "选择总结模型")
         .themedFont(.headline)
         .padding(.horizontal, 16)
         .padding(.top, 14)
@@ -1191,7 +1201,7 @@ struct ProviderSettingsView: View {
           if kind == .transcription {
             assignmentSectionTitle("本机")
             assignmentOptionRow(
-              title: "Apple 听写",
+              title: "本机转写（用 Mac 自带的语音识别）",
               detail: "离线处理，不发送音频",
               isSelected: model.transcriptionAssignmentID == nil
             ) {
@@ -1825,7 +1835,7 @@ struct ProviderSettingsView: View {
       .padding(.horizontal, DesignTokens.Space.lg)
       .modifier(SettingsThemedCardChrome())
 
-      Text("测试只发送“Reply with OK.”的极短提示；不会创建历史记录或保存回复内容。")
+      Text("测试只发一句很短的消息，不会在资料库里留下记录，也不保存回复内容。")
         .themedFont(.subheadline)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -2051,7 +2061,7 @@ struct ProviderSettingsView: View {
       // 原来那句范围说明是一张独立的 info 卡；页头的一句话就是它，标识跟着文案走。
       pageHeader(
         for: .labs,
-        caption: "这一页的功能都还在成型，可能在后续版本里变化或调整。",
+        caption: "这一页的功能还在打磨，关掉不会删数据。",
         captionIdentifier: "labs-scope-note"
       )
 
@@ -2062,7 +2072,7 @@ struct ProviderSettingsView: View {
         SettingsRow(
           title: "工作台",
           caption: "把素材和灵感加工成作品的地方。打开后侧边栏会出现「工作台」。",
-          details: "目前只能手动建创作、加素材、推进阶段——还没有接 AI。数据结构在后续版本会调整，关掉不会删数据，你建过的东西下次打开还在。"
+          details: "目前只能手动建创作、加素材、推进阶段，还没有接 AI。关掉不会删数据，你建过的东西下次打开还在。"
         ) {
           Toggle("", isOn: $isWorkbenchEnabled)
             .toggleStyle(.switch)
@@ -2084,8 +2094,8 @@ struct ProviderSettingsView: View {
 
         SettingsRow(
           title: "每天自动出选题",
-          caption: "App 开着的时候，到点跑一次，从素材库里出几条不同角度的选题。",
-          details: "错过那一分钟也没关系：判据是「今天的触发点已经过了、今天还没跑过」，所以十点才开电脑照样会跑。自动跑会花掉订阅额度，所以默认关着。"
+          caption: "\(ProductDisplay.name)开着的时候，到点出一次，从素材库里出几条不同角度的选题。",
+          details: "错过那一分钟也没关系：只要今天的时间点已经过了、今天还没出过，就会补出一次，所以十点才开电脑照样会出。自动出选题会花掉订阅额度，所以默认关着。"
         ) {
           VStack(alignment: .trailing, spacing: DesignTokens.Space.sm) {
             Toggle("每天自动出选题", isOn: scheduleBinding(\.isEnabled))
@@ -2589,7 +2599,7 @@ struct ProviderSettingsView: View {
 
       DisclosureGroup("了解更多") {
         VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-          Text("开启即视为持久授权，自动执行时不再逐次弹出发送确认；首次使用某个模型服务时仍会按数据去向流程确认一次。本机转写不出网；中文标题/校对/总结/脑图只发送文字。手动转写完成后请点「校对转写稿」。")
+          Text("打开后会自动执行，不再每次弹出发送确认；第一次用某个服务商时仍会问你一次。本机转写不联网；中文标题、校对、总结、脑图只发送文字。手动转写完成后请点「校对转写稿」。")
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
           if let identity = model.dataDestinationCard {
@@ -2896,7 +2906,7 @@ struct ProviderSettingsView: View {
     case let .ready(count): count > 0 ? "有 \(count) 条外文标题还没译成中文。" : "没有需要翻译的外文标题。"
     case let .running(done, total): "正在翻译 \(done) / \(total)，可以关掉设置窗口，后台继续。"
     case let .finished(localized, total): "已处理 \(total) 条，其中 \(localized) 条译成了中文。"
-    case .failed: "读取历史库失败，稍后再试。"
+    case .failed: "没能读取资料库，请稍后再试。"
     }
   }
 
@@ -3205,6 +3215,16 @@ private struct PrefilledAPIKeyFocus: ViewModifier {
       content.defaultFocus(focus, true)
     } else {
       content
+    }
+  }
+}
+
+/// 文字在前、小图标在后：外链的「名字 ↗」。
+private struct TrailingIconLabelStyle: LabelStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    HStack(spacing: 2) {
+      configuration.title
+      configuration.icon.imageScale(.small)
     }
   }
 }

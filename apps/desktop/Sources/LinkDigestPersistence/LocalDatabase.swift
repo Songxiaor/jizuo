@@ -28,14 +28,14 @@ public final class LocalDatabase: @unchecked Sendable {
     guard case let .readOnly(reason) = accessMode else { return nil }
     switch reason {
     case .futureSchema:
-      return "这个资料库是更新版本的汲作写的，当前版本只能查看，不能改动。升级到最新版即可恢复。"
+      return "资料库现在只能看、不能改：它是更新版本的汲作写的。升级到最新版即可恢复。"
     case .migrationFailed:
       if let migrationBackupURL {
-        return "升级资料库时出错，已按只读方式打开。升级前的完整备份保存在：\(migrationBackupURL.path)"
+        return "资料库现在只能看、不能改：升级资料库时出错了。升级前的完整备份保存在：\(migrationBackupURL.path)。重新打开汲作会再试一次。"
       }
-      return "升级资料库时出错，已按只读方式打开。"
+      return "资料库现在只能看、不能改：升级资料库时出错了。重新打开汲作会再试一次。"
     case .storageUnavailable:
-      return "资料库暂时打不开，已按只读方式打开可读的部分。"
+      return "资料库现在只能看、不能改：这次只打开了能读的部分。确认磁盘空间够后重新打开汲作。"
     }
   }
 
@@ -64,9 +64,7 @@ public final class LocalDatabase: @unchecked Sendable {
     if exists {
       let version: Int
       do {
-        let probe = try dependencies.openReadOnly(location.databaseURL.path, readOnlyConfiguration())
-        version = try probe.read { try Int.fetchOne($0, sql: "PRAGMA user_version") ?? 0 }
-        try probe.close()
+        version = try probeSchemaVersion(at: location, dependencies: dependencies)
       } catch let failure as RepositoryFailure { throw failure }
       catch { throw RepositoryFailure.unavailable }
       if version > Self.latestSchemaVersion {
@@ -344,6 +342,29 @@ public final class LocalDatabase: @unchecked Sendable {
       // 收敛而不是继续猜。
     }
     return configuration
+  }
+
+  /// 只读读出库的版本号。
+  ///
+  /// WAL 库只读打开时需要旁边那个 -shm 文件；只拷了 history.sqlite 的库（时间机器、
+  /// 换电脑时常见）没有它，只读探测直接失败，用户看到「无法打开历史记录」
+  /// （2026-10-01 自查）。这时先用普通连接读一次版本号——SQLite 会顺手建出 -shm，
+  /// 不改任何表——再走只读探测。
+  private static func probeSchemaVersion(at location: LocalDatabaseLocation, dependencies: PersistenceDependencies) throws -> Int {
+    func readOnlyVersion() throws -> Int {
+      let probe = try dependencies.openReadOnly(location.databaseURL.path, readOnlyConfiguration())
+      defer { try? probe.close() }
+      return try probe.read { try Int.fetchOne($0, sql: "PRAGMA user_version") ?? 0 }
+    }
+    do {
+      return try readOnlyVersion()
+    } catch {
+      guard !FileManager.default.fileExists(atPath: location.sharedMemoryURL.path) else { throw error }
+      let primer = try DatabaseQueue(path: location.databaseURL.path)
+      _ = try primer.read { try Int.fetchOne($0, sql: "PRAGMA user_version") }
+      try primer.close()
+      return try readOnlyVersion()
+    }
   }
 
   private static func readOnlyConfiguration() -> Configuration {

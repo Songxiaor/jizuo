@@ -22,6 +22,29 @@ final class DatabasePragmaTests: XCTestCase {
     try body(LocalDatabaseLocation(directoryURL: directory))
   }
 
+  /// 只拷了 history.sqlite、没带 -shm 的 WAL 库（从时间机器或另一台电脑拷来的常见形态）
+  /// 原来在只读探测这一步就打不开，用户看到「无法打开历史记录」（2026-10-01 自查）。
+  func testOpensCopiedWALDatabaseWithoutSharedMemoryFile() throws {
+    try withTemporaryDirectory { location in
+      let first = try LocalDatabase.open(at: location)
+      try first.close()
+      let copy = location.directoryURL.appendingPathComponent("copy", isDirectory: true)
+      try FileManager.default.createDirectory(at: copy, withIntermediateDirectories: true)
+      let copiedLocation = LocalDatabaseLocation(directoryURL: copy)
+      let source = try DatabaseQueue(path: location.databaseURL.path)
+      let destination = try DatabaseQueue(path: copiedLocation.databaseURL.path)
+      try source.backup(to: destination)
+      try destination.writeWithoutTransaction { db in _ = try String.fetchOne(db, sql: "PRAGMA journal_mode = WAL") }
+      try destination.close(); try source.close()
+      try? FileManager.default.removeItem(at: copiedLocation.sharedMemoryURL)
+      try? FileManager.default.removeItem(at: copiedLocation.walURL)
+      XCTAssertFalse(FileManager.default.fileExists(atPath: copiedLocation.sharedMemoryURL.path))
+      let reopened = try LocalDatabase.open(at: copiedLocation)
+      defer { try? reopened.close() }
+      XCTAssertEqual(reopened.accessMode, .writable)
+    }
+  }
+
   func testWritableConnectionsUseSynchronousNormal() throws {
     try withTemporaryDirectory { location in
       let database = try LocalDatabase.open(at: location)

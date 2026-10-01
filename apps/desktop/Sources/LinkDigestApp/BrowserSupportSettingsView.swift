@@ -50,7 +50,7 @@ struct BrowserSupportSettingsView: View {
       SettingsPageHeader(
         title: "浏览器支持",
         symbol: "puzzlepiece.extension",
-        caption: "在浏览器里装一次扩展，之后打开的页面就能一键同步到本机。",
+        caption: "在浏览器里装一次扩展，之后打开的页面就能一键保存到\(ProductDisplay.name)。",
         fill: SettingsCategoryChip.fill(for: "browserSupport", theme: appTheme)
       )
 
@@ -59,8 +59,8 @@ struct BrowserSupportSettingsView: View {
       // 从上往下读：先做什么 → 各浏览器状态 → 接收状态收成一行。
       SettingsCard(
         title: "连接浏览器",
-        summary: "扩展只在你点同步时连接，不常驻。",
-        details: "加载扩展后，首次同步成功会在下方显示送达时间。安装位置改变后需要重新连接一次，浏览器里的扩展不用重装。",
+        summary: "扩展只在你点保存时连接，不常驻。",
+        details: "装好扩展后，第一次保存成功会在下方显示送达时间。\(ProductDisplay.name)换了安装位置后需要重新连接一次，浏览器里的扩展不用重装。",
         controlWidth: .full
       ) {
         VStack(alignment: .leading, spacing: 16) {
@@ -137,7 +137,7 @@ struct BrowserSupportSettingsView: View {
             .compactMap { $0 }
             .joined(separator: "\n\n")
         ),
-        dismissButton: .default(Text("好"))
+        dismissButton: .default(Text("知道了"))
       )
     }
     // 断开只动汲作自己写进浏览器的那个连接文件，浏览器里的扩展和你保存的内容都不动，
@@ -159,7 +159,7 @@ struct BrowserSupportSettingsView: View {
       .accessibilityIdentifier("browser-support-disconnect-confirm")
       Button("取消", role: .cancel) { pendingDisconnect = nil }
     } message: {
-      Text("断开后，这个浏览器再点同步就送不进汲作了。你已经保存的内容一条都不会少，浏览器里的扩展也不会被删。想用的时候点「连接」就能接回来。")
+      Text("断开后，这个浏览器再点保存就存不进汲作了。你已经保存的内容一条都不会少，浏览器里的扩展也不会被删。想用的时候点「连接」就能接回来。")
     }
     .task { await model.load() }
     // 送达随时会发生：你在浏览器里点一次同步，这一行就得跟着变。原来只在切进这一页时
@@ -189,21 +189,21 @@ struct BrowserSupportSettingsView: View {
         case .installed, .repaired:
           Alert(
             title: Text(result.kind == .installed ? "已连接这个浏览器" : "已重新连接这个浏览器"),
-            message: Text("下一步：1. 点“打开扩展文件夹”；2. 在浏览器的扩展管理页开启开发者模式；3. 选择“加载已解压的扩展程序”，再选 Finder 里刚刚选中的“汲作浏览器扩展”。"),
+            message: Text("下一步：1. 点「打开扩展文件夹」；2. 在浏览器的扩展管理页打开「开发者模式」；3. 点「加载已解压的扩展程序」，再选访达里刚刚选中的「汲作浏览器扩展」。"),
             primaryButton: .default(Text("打开 \(result.browser.displayName)")) { openBrowser(result.browser) },
             secondaryButton: .default(Text("打开扩展文件夹")) { revealExtensionFiles() }
           )
         case .uninstalled:
-          Alert(title: Text("已断开连接"), message: Text("\(ProductDisplay.name) 只删掉了自己写进这个浏览器的连接文件。浏览器里的扩展还在，你保存的内容也一条没少。想用的时候点「连接」就能接回来。"), dismissButton: .default(Text("好")))
+          Alert(title: Text("已断开连接"), message: Text("\(ProductDisplay.name) 只删掉了自己写进这个浏览器的连接文件。浏览器里的扩展还在，你保存的内容也一条没少。想用的时候点「连接」就能接回来。"), dismissButton: .default(Text("知道了")))
         case .restored:
-          Alert(title: Text("已还原成接管前的样子"), message: Text("这个浏览器的连接文件已经还原成汲作接管之前的那一份。"), dismissButton: .default(Text("好")))
+          Alert(title: Text("已还原成接管前的样子"), message: Text("这个浏览器的连接文件已经还原成汲作接管之前的那一份。"), dismissButton: .default(Text("知道了")))
         }
       // 这不是报错，是还差一步——所以标题问的是「允许吗」，不是「失败了」。文案只说要做
       // 什么、以及为什么必须由你来点：文件夹已经定位好，用户不需要知道 TCC 是什么。
       case let .accessRequest(request):
         Alert(
           title: Text("允许 \(ProductDisplay.name) 访问 \(request.browser.displayName) 的文件夹"),
-          message: Text("macOS 不允许 App 自行打开其它 App 的文件夹，必须由你选一次。点「选择文件夹」，在打开的窗口里直接点右下角的按钮就行——文件夹已经定位好，不用自己找。"),
+          message: Text("macOS 不允许\(ProductDisplay.name)自己打开浏览器的文件夹，必须由你选一次。点「选择文件夹」，在打开的窗口里直接点右下角的按钮就行——文件夹已经定位好，不用自己找。"),
           primaryButton: .default(Text("选择文件夹")) { chooseAccessDirectory(request) },
           secondaryButton: .cancel(Text("以后再说")) { model.cancelPendingAccessRequest() }
         )
@@ -238,12 +238,13 @@ struct BrowserSupportSettingsView: View {
   /// 「现在能不能收」。本次运行内确实收到过时补一句，并明说范围是「这次打开之后」。
   private var receiverLineText: String {
     if appModel.browserReceiverState == .ready, let date = appModel.lastBrowserCaptureAt {
-      return "接收服务已就绪 · 这次打开汲作后，最近一次收到内容是 \(date.formatted(date: .omitted, time: .standard))"
+      return "汲作已准备好接收 · 这次打开汲作后，最近一次收到内容是 \(date.formatted(date: .omitted, time: .standard))"
     }
     return switch appModel.browserReceiverState {
-    case .starting: "正在启动接收服务…"
-    case .ready: "接收服务已就绪，随时可以接收浏览器发来的内容"
-    case .unavailable: "接收服务正在恢复；如果一直这样，请完全退出汲作再重新打开"
+    // 用户只需要认识「浏览器扩展」「连接」，不需要知道背后有个接收服务（2026-10-01）。
+    case .starting: "汲作正在准备接收…"
+    case .ready: "汲作已准备好接收，随时可以从浏览器保存内容"
+    case .unavailable: "汲作暂时收不到浏览器的内容；如果一直这样，请完全退出汲作再重新打开"
     }
   }
 
@@ -540,9 +541,11 @@ struct BrowserSupportSettingsView: View {
         NSWorkspace.shared.activateFileViewerSelecting([delivered])
         return
       } catch {
+        // 系统原始报错只进日志（2026-10-01）。
+        AppLog.error(.browserExtension, "extension_folder_export_failed", code: "EXTENSION_EXPORT_FAILED", ["error": String(describing: error)])
         revealFailure = ExtensionFolderMiss(
           searched: candidates,
-          detail: "扩展就在 App 里，但这次没能把它导出到硬盘上：\(error.localizedDescription)\n浏览器和你保存的内容都没有受影响。磁盘空间够的话再点一次「打开扩展文件夹」。"
+          detail: "扩展就在\(ProductDisplay.name)里，但这次没能把它放到硬盘上。\n浏览器和你保存的内容都没有受影响。磁盘空间够的话再点一次「打开扩展文件夹」。"
         )
         return
       }

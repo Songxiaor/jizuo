@@ -48,14 +48,7 @@ private struct PlatformNavigationRow: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var fullName: String { HistoryPlatformDisplay.name(forHost: item.host) }
-  private var name: String {
-    switch fullName {
-    case "微信公众号": "公众号"
-    case "哔哩哔哩": "B站"
-    case "待分类": "其他"
-    default: fullName
-    }
-  }
+  private var name: String { HistoryPlatformDisplay.shortName(forHost: item.host) }
 
   var body: some View {
     Button(action: onSelect) {

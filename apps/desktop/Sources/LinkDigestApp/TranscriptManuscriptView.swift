@@ -50,12 +50,28 @@ enum TranscriptManuscript {
   }
 
   /// 正文里至少有一段以时间码开头，才按逐字稿排；否则交回普通阅读区。
+  ///
+  /// 阅读区每次重画都会问一遍（2026-10-01 体检）：原来每段都整段展开成字符数组，
+  /// 只为看段首那十来个字是不是时间码，长稿一次重画就是几万字的分配。现在只展开
+  /// 段首、并按内容记住答案。
   static func looksLikeTranscript(_ text: String) -> Bool {
-    paragraphTexts(of: text).contains { TranscriptRevision.stampAt(Array($0.text), 0) != nil }
+    if let hit = looksLikeMemo.value(for: text) { return hit }
+    let result = paragraphTexts(of: text).contains {
+      // 时间码最长「12:34:56」8 个字，后面还要跟一个空白；多给一点余量。
+      TranscriptRevision.stampAt(Array($0.text.prefix(12)), 0) != nil
+    }
+    looksLikeMemo.store(result, for: text)
+    return result
   }
 
+  /// 同一份正文、同一份比对结果只排一次：阅读区每次重画都会走到这里，而切段、
+  /// 挂朱批、估时间码都是整篇遍历（2026-10-01 体检：滚动、悬停都会触发重画）。
   static func paragraphs(of text: String, revision: TranscriptRevision.Result? = nil) -> [Paragraph] {
-    withSectionsAndEstimatedStamps(rawParagraphs(of: text, revision: revision))
+    let key = ParagraphsKey(text: text, revision: revision)
+    if let hit = paragraphsMemo.value(for: key) { return hit }
+    let result = withSectionsAndEstimatedStamps(rawParagraphs(of: text, revision: revision))
+    paragraphsMemo.store(result, for: key)
+    return result
   }
 
   /// 小标题段认成标题；没有时间戳的正文段按前后两个时间戳之间的字数比例估一个时间，
@@ -171,7 +187,17 @@ enum TranscriptManuscript {
   }
 
   /// 按空行切段，同时记下每段在整篇里的 Character 偏移——朱批的位置是按整篇算的。
+  ///
+  /// 偏移要按 Character 算，所以整篇展开成数组省不掉；能省的是重复展开——
+  /// 判断是不是逐字稿和真正排版都要切一次，按内容记住结果（2026-10-01 体检）。
   static func paragraphTexts(of text: String) -> [(offset: Int, text: String)] {
+    if let hit = paragraphTextsMemo.value(for: text) { return hit }
+    let result = splitParagraphTexts(text)
+    paragraphTextsMemo.store(result, for: text)
+    return result
+  }
+
+  private static func splitParagraphTexts(_ text: String) -> [(offset: Int, text: String)] {
     let characters = Array(text)
     var result: [(Int, String)] = []
     var start = 0
@@ -212,8 +238,11 @@ enum TranscriptManuscript {
   nonisolated(unsafe) private static var cache: [String: TranscriptRevision.Result] = [:]
 
   /// 同一对快照只算一次：阅读区每次重画都会走到这里。
+  ///
+  /// 键里的长度用 utf8.count 而不是 count（2026-10-01 体检）：String.count 要逐个
+  /// 字形簇数一遍，几万字的稿子每次重画都白数两遍；utf8.count 对原生字符串是现成的。
   static func revision(originalKey: String, original: String, revisedKey: String, revised: String) -> TranscriptRevision.Result {
-    let key = "\(originalKey)|\(revisedKey)|\(original.count)|\(revised.count)"
+    let key = "\(originalKey)|\(revisedKey)|\(original.utf8.count)|\(revised.utf8.count)"
     cacheLock.lock()
     if let hit = cache[key] { cacheLock.unlock(); return hit }
     cacheLock.unlock()
@@ -223,6 +252,45 @@ enum TranscriptManuscript {
     cache[key] = result
     cacheLock.unlock()
     return result
+  }
+
+  private struct ParagraphsKey: Equatable {
+    let text: String
+    let revision: TranscriptRevision.Result?
+  }
+
+  private static let looksLikeMemo = ContentMemo<String, Bool>()
+  private static let paragraphsMemo = ContentMemo<ParagraphsKey, [Paragraph]>()
+  private static let paragraphTextsMemo = ContentMemo<String, [(offset: Int, text: String)]>()
+}
+
+/// 按内容记住最近几次的计算结果。
+///
+/// 只留几条、线性比对：阅读区同一时刻最多就是原稿、校对稿、朱批这几份正文，
+/// 条目多了反而占着几万字的副本不放。比对先比长度再比内容，同一份字符串（同一
+/// 块存储）判等几乎不花时间。
+final class ContentMemo<Key: Equatable, Value>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var entries: [(key: Key, value: Value)] = []
+  private let capacity: Int
+
+  init(capacity: Int = 6) { self.capacity = capacity }
+
+  func value(for key: Key) -> Value? {
+    lock.lock()
+    defer { lock.unlock() }
+    guard let index = entries.firstIndex(where: { $0.key == key }) else { return nil }
+    let entry = entries.remove(at: index)
+    entries.append(entry)
+    return entry.value
+  }
+
+  func store(_ value: Value, for key: Key) {
+    lock.lock()
+    defer { lock.unlock() }
+    entries.removeAll { $0.key == key }
+    entries.append((key, value))
+    if entries.count > capacity { entries.removeFirst(entries.count - capacity) }
   }
 }
 

@@ -317,6 +317,18 @@ public enum HistoryPlatformDisplay {
     return HistoryPlatformRegistry.displayName(forHost: host) ?? (host.isEmpty ? rawHost : host)
   }
 
+  /// 界面上显示的短名：侧栏、卡片墙页头、博主分组、无名博主都用这一个。
+  /// 原来各处自己翻译，同一个平台出现了「B站」「B 站」「哔哩哔哩」三种写法（2026-10-01 走查）。
+  /// `name(forHost:)` 的全名还被当作查找键用，不能直接改。
+  public static func shortName(forHost rawHost: String) -> String {
+    switch name(forHost: rawHost) {
+    case "微信公众号": return "公众号"
+    case "哔哩哔哩": return "B 站"
+    case "待分类": return "其他"
+    case let full: return full
+    }
+  }
+
   /// 命中品牌映射的算公共平台；其余杂项来源在侧边栏聚合为"待分类"。
   public static func isWellKnown(host rawHost: String) -> Bool {
     let normalized = HistoryHostNormalizer.normalized(rawHost)

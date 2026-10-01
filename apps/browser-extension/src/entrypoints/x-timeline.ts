@@ -98,7 +98,7 @@ export function syncResultTip(result: unknown, contextAlive: boolean): SyncTip {
   if (parsed?.ok) {
     return {
       state: "done",
-      text: parsed.outcome.queued > 0 ? "已发送到 App" : "已在库",
+      text: parsed.outcome.queued > 0 ? "已保存到汲作" : "已在库",
     };
   }
   if (parsed === undefined || parsed === null) {

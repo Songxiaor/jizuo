@@ -24,7 +24,14 @@ struct CreatorDirectoryAvatar: View {
       if let image {
         Image(nsImage: image).resizable().scaledToFill()
       } else if admittedURL != nil, !failed {
+        // 头像要从 X / 抖音拉，慢的时候一排空灰圆分不出谁是谁（2026-10-01 自查）。
+        // 先放名字首字，图到了再换。
         Circle().fill(theme.badge)
+          .overlay {
+            Text(String(creator.directoryDisplayName.prefix(1)))
+              .font(.system(size: size * 0.42, weight: .medium))
+              .foregroundStyle(theme.secondaryText)
+          }
       } else {
         Button(action: retryLoad) {
           Image(systemName: "person.crop.circle.badge.questionmark")
@@ -87,10 +94,14 @@ struct HistoryGallerySplitView<Sidebar: View, Detail: View>: View {
     self.detail = detail()
   }
 
+  static var toolbarOverhang: CGFloat { 10 }
+
   private var nativeSidebarHorizontalInset: CGFloat {
     // Tahoe's NavigationSplitView places the fixed-width rail inside an
     // 8pt horizontal inset. Match the container, not the row content width.
-    if #available(macOS 26.0, *) { return DesignTokens.Space.sm }
+    // 只有系统玻璃主题的侧栏是浮起来的、带这圈内缩；汲作自己的主题里侧栏贴边，
+    // 这里也留 8pt 的话，一进卡片墙整个左栏往里一缩、合集名被截断（2026-10-01 走查）。
+    if #available(macOS 26.0, *), theme.isNative { return DesignTokens.Space.sm }
     return 0
   }
 
@@ -113,6 +124,9 @@ struct HistoryGallerySplitView<Sidebar: View, Detail: View>: View {
         )
         .overlay {
           sidebar.frame(maxWidth: .infinity, maxHeight: .infinity)
+            // 三栏里的侧栏是整列窗口高、顶上只让出标题栏；这里它让出的是整条工具栏，
+            // 实测「汲作」和「全部」比三栏页低 10pt，切卡片墙时整列往下一跳（2026-10-01 走查）。
+            .padding(.top, theme.isNative ? 0 : -Self.toolbarOverhang)
         }
         .clipped()
         .padding(.horizontal, nativeSidebarHorizontalInset)
@@ -167,7 +181,7 @@ struct CreatorDirectoryPlatformSection<Content: View>: View {
         HStack(spacing: DesignTokens.Space.sm) {
           PlatformNavigationIcon(host: platform, monochrome: true)
             .foregroundStyle(theme.secondaryText)
-          Text(HistoryPlatformDisplay.name(forHost: platform))
+          Text(HistoryPlatformDisplay.shortName(forHost: platform))
             .themedFont(.subheadline, weight: .semibold)
             .foregroundStyle(theme.primaryText)
           Text("\(count)")
@@ -393,9 +407,14 @@ struct CreatorSavedWorkCard: View {
       title: row.title, body: row.sourcePreview, host: row.host,
       author: row.author, published: row.published
     )
-    if name.origin == .caption { return name.text }
+    // 首句只是「卧槽！」时往后取一句有内容的：和列表、详情同一个取法（2026-10-01 走查）。
+    if name.origin == .caption {
+      return HistoryListFinding.informativeCaptionTitle(caption: name.text, sourcePreview: row.sourcePreview)
+    }
     // 标题和正文开头对不上（抓取端另取过标题）时，直接从预览文字取首句兜底。
-    return CapturedContentNaming.captionTitle(from: row.sourcePreview ?? preview)
+    return CapturedContentNaming.captionTitle(from: row.sourcePreview ?? preview).map {
+      HistoryListFinding.informativeCaptionTitle(caption: $0, sourcePreview: row.sourcePreview)
+    }
   }
 
   /// 标题行：独立标题优先；没有独立标题时用作者名顶上，卡片高度不变。
@@ -417,9 +436,16 @@ struct CreatorSavedWorkCard: View {
   /// 「作者 · 9月8日」。作者已经在标题行时只剩日期。完整时间留给详情页和悬停提示。
   private var metaLine: String {
     var parts: [String] = []
-    if showsAuthor, !titleShowsAuthor, let author, !author.isEmpty { parts.append(author) }
+    if showsAuthor, !titleShowsAuthor, let author, !author.isEmpty { parts.append(Self.compactAuthor(author)) }
     parts.append(shortDateText)
     return parts.joined(separator: " · ")
+  }
+
+  /// 卡片底行很窄：「Avid (@Av1dlive)」被从中间截成「Avid (@A…ive)」（2026-10-01 走查）。
+  /// 有名字时只留名字，@账号在悬停提示里。
+  static func compactAuthor(_ author: String) -> String {
+    guard let range = author.range(of: " (@"), range.lowerBound > author.startIndex else { return author }
+    return String(author[..<range.lowerBound])
   }
 
   private var shortDateText: String {
@@ -493,7 +519,7 @@ struct CreatorSavedWorkCard: View {
       heading: textPostHeading,
       text: textPostBody,
       dateText: metaLine,
-      dateHelp: timestampText,
+      dateHelp: [author, timestampText].compactMap { $0 }.joined(separator: " · "),
       isHighlighted: isHighlighted,
       host: row.host,
       metricHelpSuffix: "保存时",
@@ -519,6 +545,22 @@ struct CreatorSavedWorkCard: View {
   private var mediaCard: some View {
     CreatorWorkCardShell(theme: theme) {
       CreatorWorkCardCoverSlot(aspect: CreatorWorkCardLayout.coverAspect(forHost: row.host)) { cover }
+        .overlay(alignment: .topLeading) {
+          if !statusChips.isEmpty {
+            HStack(spacing: DesignTokens.Space.xs) {
+              ForEach(statusChips, id: \.self) { chip in
+                Text(chip)
+                  .themedFont(.caption2, weight: .medium)
+                  .foregroundStyle(.white)
+                  .padding(.horizontal, 6)
+                  .padding(.vertical, 2)
+                  .background(Color.black.opacity(0.55), in: Capsule())
+                  .fixedSize()
+              }
+            }
+            .padding(8)
+          }
+        }
         .overlay(alignment: .bottomLeading) {
           if showsVideoBadge {
             Image(systemName: "play.fill")
@@ -541,34 +583,29 @@ struct CreatorSavedWorkCard: View {
           .frame(maxWidth: .infinity, alignment: .leading)
           .help(capturedTitle == CapturedDocumentTitle.missing ? displayTitle : capturedTitle)
 
-        HStack(alignment: .center, spacing: DesignTokens.Space.sm) {
+        // 和纯文字卡同一种底行：互动数在左、作者和日期贴右。原来带图的卡把日期单独
+        // 放一行、点赞再放一行，同一面墙上两种排法（2026-10-01 走查）。状态标签挪到封面上。
+        HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
+          if isHighlighted {
+            Image(systemName: "flame.fill")
+              .themedFont(.caption2, weight: .semibold)
+              .foregroundStyle(theme.accent)
+              .help("高赞：在这位博主的作品里，点赞排前 10%")
+              .accessibilityLabel("高赞")
+          }
+          if isWeChat {
+            Spacer(minLength: 0)
+          } else {
+            CreatorWorkMetricStrip(host: row.host, theme: theme, values: { slot in
+              slot.value(from: row)
+            }, helpSuffix: "保存时", showsPrimaryOnly: showsPrimaryMetricOnly)
+          }
           Text(metaLine)
             .themedFont(.caption)
             .foregroundStyle(theme.secondaryText)
             .lineLimit(1)
             .truncationMode(.middle)
-            .help(timestampText)
-          Spacer(minLength: DesignTokens.Space.xs)
-          ForEach(statusChips, id: \.self) { chip in
-            Text(chip)
-              .themedFont(.caption2, weight: .medium)
-              .foregroundStyle(chip == "待转写" ? theme.warning : theme.secondaryText)
-              .padding(.horizontal, 6)
-              .padding(.vertical, 2)
-              .background(theme.badge, in: Capsule())
-              .fixedSize()
-          }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-
-        // 互动行固定高度：公众号这类没有指标的卡也占同一行，整排才等高。
-        HStack(spacing: 0) {
-          if !isWeChat {
-            CreatorWorkMetricStrip(host: row.host, theme: theme, values: { slot in
-              slot.value(from: row)
-            }, helpSuffix: "保存时", showsPrimaryOnly: showsPrimaryMetricOnly)
-          }
-          Spacer(minLength: 0)
+            .help([author, timestampText].compactMap { $0 }.joined(separator: " · "))
         }
         .frame(height: CreatorWorkCardLayout.metricRowHeight, alignment: .leading)
       }

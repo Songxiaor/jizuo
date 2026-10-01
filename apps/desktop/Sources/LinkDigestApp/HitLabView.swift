@@ -23,7 +23,7 @@ struct HitLabView: View {
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
       Text("爆款实验室")
-        .font(.caption2.weight(.semibold))
+        .themedFont(.caption, weight: .semibold)
         .foregroundStyle(.tertiary)
         .textCase(.uppercase)
         .tracking(0.6)
@@ -37,12 +37,12 @@ struct HitLabView: View {
       // 单看一次预测什么都说明不了——爆没爆很大程度上是运气。
       // 十次里有七次高估，那才是一个关于你自己的稳定事实。
       Text(model.hitCalibration.summary)
-        .font(.system(size: 10.5))
+        .themedFont(.caption)
         .foregroundStyle(.tertiary)
         .fixedSize(horizontal: false, vertical: true)
         .accessibilityIdentifier("hit-lab-calibration")
     }
-    .padding(10)
+    .padding(DesignTokens.Space.md)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
@@ -55,7 +55,7 @@ struct HitLabView: View {
   private var composer: some View {
     VStack(alignment: .leading, spacing: 6) {
       Text("发出去之前，先猜一下。")
-        .font(.system(size: 11.5))
+        .themedFont(.callout)
         .foregroundStyle(.secondary)
 
       tierPicker(selection: $predicted)
@@ -64,7 +64,7 @@ struct HitLabView: View {
       // 「我以为这个话题正热」是两种完全不同的误判，只看档位分不出来。
       TextField("为什么这么猜？", text: $reasoning)
         .textFieldStyle(.roundedBorder)
-        .font(.system(size: 11.5))
+        .themedFont(.callout)
         .accessibilityIdentifier("hit-lab-reasoning")
 
       HStack {
@@ -74,7 +74,7 @@ struct HitLabView: View {
             pieceID: piece.id, predicted: predicted, reasoning: reasoning
           )
         }
-        .font(.subheadline)
+        .themedFont(.subheadline)
         .disabled(reasoning.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         .help("记下之后不能改——整个功能靠的就是这个")
         .accessibilityIdentifier("hit-lab-record")
@@ -87,18 +87,18 @@ struct HitLabView: View {
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 6) {
         Text("你猜：\(prediction.predicted.displayName)")
-          .font(.system(size: 11.5, weight: .medium))
+          .themedFont(.callout, weight: .medium)
         if let actual = prediction.actual {
           Image(systemName: "arrow.right").font(.system(size: 9)).foregroundStyle(.tertiary)
           Text("实际：\(actual.displayName)")
-            .font(.system(size: 11.5, weight: .medium))
+            .themedFont(.callout, weight: .medium)
             .foregroundStyle(prediction.isAccurate ? Color.secondary : appTheme.warning)
         }
         Spacer(minLength: 0)
       }
       if !prediction.reasoning.isEmpty {
         Text(prediction.reasoning)
-          .font(.subheadline)
+          .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
@@ -107,26 +107,26 @@ struct HitLabView: View {
         if !prediction.review.isEmpty {
           Divider()
           Text(prediction.review)
-            .font(.subheadline)
+            .themedFont(.subheadline)
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
         }
       } else {
         Divider()
         Text("发出去几天之后，回来填真实结果。")
-          .font(.subheadline)
+          .themedFont(.subheadline)
           .foregroundStyle(.tertiary)
         tierPicker(selection: $actual)
         TextField("和你想的差在哪？", text: $review)
           .textFieldStyle(.roundedBorder)
-          .font(.system(size: 11.5))
+          .themedFont(.callout)
           .accessibilityIdentifier("hit-lab-review")
         HStack {
           Spacer(minLength: 0)
           Button("填结果") {
             model.settleHitPrediction(id: prediction.id, actual: actual, review: review)
           }
-          .font(.subheadline)
+          .themedFont(.subheadline)
           .accessibilityIdentifier("hit-lab-settle")
         }
       }

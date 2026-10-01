@@ -106,7 +106,7 @@ final class ReadingWebRenderer: NSObject, ObservableObject {
   // MARK: - 公式与流程图
 
   private func renderInMathPage(_ request: Request) async -> Outcome {
-    guard let view = await readyMathView() else { return .failed("排版组件没有加载成功") }
+    guard let view = await readyMathView() else { return .failed("排版组件没加载成功，关掉这条内容再打开试试") }
     let script: String
     let arguments: [String: Any]
     switch request.kind {
@@ -126,16 +126,22 @@ final class ReadingWebRenderer: NSObject, ObservableObject {
     do {
       value = try await view.callAsyncJavaScript(script, arguments: arguments, contentWorld: .page)
     } catch {
-      return .failed(error.localizedDescription)
+      // 系统原始报错只进日志；括号里给人看的只说原因和下一步（2026-10-01）。
+      AppLog.error(.media, "reading_render_script_failed", code: "READING_RENDER_FAILED", ["error": String(describing: error)])
+      return .failed("排版组件出错了，关掉这条内容再打开试试")
     }
-    guard let metrics = value as? [String: Any] else { return .failed("排版没有返回结果") }
-    if let message = metrics["error"] as? String { return .failed(message) }
+    guard let metrics = value as? [String: Any] else { return .failed("排版组件没有回应，关掉这条内容再打开试试") }
+    if let message = metrics["error"] as? String {
+      // 公式/流程图库的原始报错是英文解析信息，进日志；界面只提示检查写法。
+      AppLog.notice(.media, "reading_render_source_rejected", ["error": message])
+      return .failed("有写法没认出来，请检查原文")
+    }
     let width = (metrics["width"] as? Double) ?? 0
     let height = (metrics["height"] as? Double) ?? 0
-    guard width > 0, height > 0 else { return .failed("内容为空") }
+    guard width > 0, height > 0 else { return .failed("里面没有内容") }
     let descent = (metrics["descent"] as? Double) ?? 0
     guard let image = await snapshot(view, size: CGSize(width: width, height: height)) else {
-      return .failed("截图失败")
+      return .failed("没能生成图片，关掉这条内容再打开试试")
     }
     return .rendered(Rendered(image: image, size: CGSize(width: width, height: height), descent: descent))
   }
@@ -176,7 +182,7 @@ final class ReadingWebRenderer: NSObject, ObservableObject {
     )) as? Double ?? 0
     let clamped = min(max(height, 40), 2_400)
     guard let image = await snapshot(view, size: CGSize(width: request.width, height: clamped)) else {
-      return .failed("截图失败")
+      return .failed("没能生成图片，关掉这条内容再打开试试")
     }
     return .rendered(Rendered(image: image, size: CGSize(width: request.width, height: clamped), descent: 0))
   }

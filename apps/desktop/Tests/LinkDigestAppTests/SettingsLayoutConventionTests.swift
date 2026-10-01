@@ -245,7 +245,6 @@ final class SettingsLayoutConventionTests: XCTestCase {
   private static let destructiveActions: [(page: String, confirmIdentifier: String)] = [
     ("SiteLoginSettingsView", "site-login-clear-confirm"),
     ("MediaStorageSettingsView", "media-storage-delete-orphans-confirm"),
-    ("MediaStorageSettingsView", "media-storage-default-confirm"),
     ("ProviderSettingsView", "revoke-remembered-consents-confirm"),
     ("ProviderSettingsView", "reset-summary-prompt-confirm"),
     ("BrowserSupportSettingsView", "browser-support-disconnect-confirm"),
@@ -276,7 +275,7 @@ final class SettingsLayoutConventionTests: XCTestCase {
   /// 主题走，暖褐主题和高对比主题的红不是同一个红。
   func testDestructiveSettingsButtonsCarryTheDangerColour() throws {
     let minimum = [
-      "MediaStorageSettingsView": 2,  // 删除这 N 个文件、恢复默认
+      "MediaStorageSettingsView": 1,  // 删除这 N 个文件（「改回汲作的文件夹」不是危险动作，2026-10-01）
       "ProviderSettingsView": 2,      // 清除授权记录、重置为默认提示词
       "BrowserSupportSettingsView": 1,  // 断开
       "KnowledgeVaultSettingsView": 1,  // 清除知识库文件夹
@@ -350,7 +349,7 @@ final class SettingsLayoutConventionTests: XCTestCase {
       code.contains("还没收到过同步"),
       "接收状态行不该再报「收没收到过」——它读的是只活一次运行的计时")
     XCTAssertTrue(
-      code.contains("接收服务已就绪"),
+      code.contains("汲作已准备好接收"),
       "接收状态行只回答「现在能不能收」")
   }
 

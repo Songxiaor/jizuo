@@ -215,7 +215,7 @@ struct DataBackupSettingsView: View {
       titleVisibility: .visible,
       presenting: model.pendingRestore
     ) { file in
-      Button("恢复", role: .destructive) {
+      Button("用这份备份替换当前资料", role: .destructive) {
         model.pendingRestore = nil
         model.restore(from: file)
       }

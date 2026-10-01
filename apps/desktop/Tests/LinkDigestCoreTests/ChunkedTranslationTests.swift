@@ -283,3 +283,150 @@ private final class OrderScrambledProvider: ModelProvider, @unchecked Sendable {
   }
 
 }
+
+/// 片级重试（2026-10-01 体检）。
+///
+/// 原来只有 429 会在片内重试，一片网络抖一下整篇作废；而 429 又和服务商那层的
+/// Retry-After 重试叠在一起，一片最多发 9 个请求。这里钉住：断网/服务不可用在片内
+/// 重试、限流交给服务商不再叠、已经吐过字的片不重试、取消后不再重试。
+final class ChunkedTranslationRetryTests: XCTestCase {
+  private static func profile() throws -> ProviderProfile {
+    try ProviderProfile(
+      baseURL: "https://example.test/v1",
+      model: "fixture-model",
+      secretReference: SecretReference(rawValue: "fixture-reference")
+    )
+  }
+
+  private static let text = (0..<4)
+    .map { "[[\($0)]]" + String(repeating: "字", count: 3_000) }
+    .joined(separator: "\n\n")
+
+  private func run(_ provider: ScriptedFailureProvider) async throws -> String {
+    let streamer = ChunkedTranslationStreamer(provider: provider, concurrency: 2, retryBaseDelay: .zero)
+    var output = ""
+    for try await event in streamer.stream(
+      profile: try Self.profile(), apiKey: "fixture-key", title: nil, text: Self.text, targetLanguage: "简体中文"
+    ) {
+      if case let .delta(delta) = event { output += delta }
+    }
+    return output
+  }
+
+  func testNetworkInterruptedChunkIsRetriedInsteadOfFailingTheWholeRun() async throws {
+    let provider = ScriptedFailureProvider(failingChunk: 2, failures: [
+      ModelProviderFailure(code: .networkInterrupted, retryable: true, hadOutput: false),
+      ModelProviderFailure(code: .networkInterrupted, retryable: true, hadOutput: false),
+    ])
+    let output = try await run(provider)
+    XCTAssertTrue(output.contains("[[2]]"), "第 2 片重试成功后必须出现在译文里")
+    XCTAssertEqual(provider.attempts(forChunk: 2), 3, "断网给 2 次重试")
+  }
+
+  func testProviderUnavailableIsRetriedOnceOnTopOfProviderRetries() async throws {
+    let provider = ScriptedFailureProvider(failingChunk: 1, failures: [
+      ModelProviderFailure(code: .providerUnavailable, retryable: true, hadOutput: false),
+    ])
+    _ = try await run(provider)
+    XCTAssertEqual(provider.attempts(forChunk: 1), 2)
+
+    let stubborn = ScriptedFailureProvider(failingChunk: 1, failures: Array(repeating:
+      ModelProviderFailure(code: .providerUnavailable, retryable: true, hadOutput: false), count: 5))
+    do {
+      _ = try await run(stubborn)
+      XCTFail("一直不可用时应当报错，而不是无限重试")
+    } catch let failure as ModelProviderFailure {
+      XCTAssertEqual(failure.code, .providerUnavailable)
+    }
+    XCTAssertEqual(stubborn.attempts(forChunk: 1), 2, "服务商那层已重试过，这里只补 1 次")
+  }
+
+  func testRateLimitIsNotRetriedAgainOnTopOfTheProvider() async throws {
+    let provider = ScriptedFailureProvider(failingChunk: 0, failures: [
+      ModelProviderFailure(code: .rateLimited, retryable: true, hadOutput: false),
+    ])
+    do {
+      _ = try await run(provider)
+      XCTFail("限流由服务商那层按 Retry-After 重试；这一层不该再叠")
+    } catch let failure as ModelProviderFailure {
+      XCTAssertEqual(failure.code, .rateLimited)
+    }
+    XCTAssertEqual(provider.attempts(forChunk: 0), 1)
+  }
+
+  func testChunkThatAlreadyEmittedTextIsNotRetried() async throws {
+    let provider = ScriptedFailureProvider(failingChunk: 1, failures: [
+      ModelProviderFailure(code: .networkInterrupted, retryable: true, hadOutput: true),
+    ])
+    do {
+      _ = try await run(provider)
+      XCTFail("已经吐过字的片重跑会让译文重复")
+    } catch let failure as ModelProviderFailure {
+      XCTAssertEqual(failure.code, .networkInterrupted)
+    }
+    XCTAssertEqual(provider.attempts(forChunk: 1), 1)
+  }
+
+  func testCancellationStopsRetrying() async throws {
+    let provider = ScriptedFailureProvider(failingChunk: 0, failures: [
+      ModelProviderFailure(code: .networkInterrupted, retryable: true, hadOutput: false),
+      ModelProviderFailure(code: .networkInterrupted, retryable: true, hadOutput: false),
+    ])
+    // 退避等 5 秒：取消必须打断这段等待，不能等完再发下一次。
+    let streamer = ChunkedTranslationStreamer(provider: provider, concurrency: 1, retryBaseDelay: .seconds(5))
+    let consumer = Task {
+      for try await _ in streamer.stream(
+        profile: try Self.profile(), apiKey: "fixture-key", title: nil, text: Self.text, targetLanguage: "简体中文"
+      ) {}
+    }
+    while provider.attempts(forChunk: 0) < 1 { try await Task.sleep(for: .milliseconds(10)) }
+    try await Task.sleep(for: .milliseconds(50))
+    let clock = ContinuousClock()
+    let started = clock.now
+    consumer.cancel()
+    _ = await consumer.result
+    XCTAssertLessThan(clock.now - started, .seconds(2), "取消后应立刻停下，不等退避结束")
+    try await Task.sleep(for: .milliseconds(100))
+    XCTAssertEqual(provider.attempts(forChunk: 0), 1, "取消后不该再发重试请求")
+  }
+}
+
+/// 指定的那一片按脚本先失败几次，其余片原样回声。
+private final class ScriptedFailureProvider: ModelProvider, @unchecked Sendable {
+  private let lock = NSLock()
+  private let failingChunk: Int
+  private var failures: [ModelProviderFailure]
+  private var attemptsByChunk: [Int: Int] = [:]
+
+  init(failingChunk: Int, failures: [ModelProviderFailure]) {
+    self.failingChunk = failingChunk
+    self.failures = failures
+  }
+
+  func attempts(forChunk index: Int) -> Int { lock.withLock { attemptsByChunk[index, default: 0] } }
+
+  func stream(profile _: ProviderProfile, apiKey _: String, intent: RunIntent) -> AsyncThrowingStream<ModelStreamEvent, Error> {
+    guard case let .translate(_, text, _) = intent else { return AsyncThrowingStream { $0.finish() } }
+    let index: Int = {
+      guard let open = text.range(of: "[["), let close = text.range(of: "]]") else { return -1 }
+      return Int(text[open.upperBound..<close.lowerBound]) ?? -1
+    }()
+    let failure: ModelProviderFailure? = lock.withLock {
+      attemptsByChunk[index, default: 0] += 1
+      guard index == failingChunk, !failures.isEmpty else { return nil }
+      return failures.removeFirst()
+    }
+    return AsyncThrowingStream { continuation in
+      if let failure {
+        if failure.hadOutput { continuation.yield(.delta("半句")) }
+        continuation.finish(throwing: failure)
+        return
+      }
+      continuation.yield(.delta(text))
+      continuation.yield(.completed)
+      continuation.finish()
+    }
+  }
+
+  func cancelActiveStreams() {}
+}

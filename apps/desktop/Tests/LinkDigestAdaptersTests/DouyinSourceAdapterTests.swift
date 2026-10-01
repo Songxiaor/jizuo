@@ -233,7 +233,7 @@ final class DouyinSourceAdapterTests: XCTestCase {
       XCTFail("expected extensionCaptureRequired")
     } catch let error as ManualLinkError {
       XCTAssertEqual(error, .extensionCaptureRequired)
-      XCTAssertTrue(error.userMessage.contains("扩展发送"))
+      XCTAssertTrue(error.userMessage.contains("扩展保存"))
     } catch {
       XCTFail("unexpected \(error)")
     }

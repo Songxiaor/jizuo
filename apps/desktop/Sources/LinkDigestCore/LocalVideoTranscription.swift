@@ -297,16 +297,17 @@ public enum LocalVideoTranscriptionError: Error, Sendable, Equatable {
 
   public var userMessage: String {
     switch self {
-    case .unsupportedOS: "本机系统版本不支持 Apple 本机转写；需要 macOS 26 或更高版本。"
-    case .speechUnavailable: "这台 Mac 当前无法使用 Apple 本机语音识别。"
-    case .chineseLocaleUnavailable: "Apple 本机语音识别当前不支持所选语言。"
-    case .modelDownloadFailed: "无法准备 Apple 离线听写模型。请检查网络和磁盘空间后重试。"
+    // 功能统一叫「本机转写」，必要时括注它用的是 Mac 自带的语音识别（2026-10-01）。
+    case .unsupportedOS: "这台 Mac 的系统版本用不了本机转写，需要 macOS 26 或更高版本。"
+    case .speechUnavailable: "这台 Mac 现在用不了自带的语音识别，本机转写暂时不可用。"
+    case .chineseLocaleUnavailable: "Mac 自带的语音识别暂不支持所选语言。"
+    case .modelDownloadFailed: "本机转写要用的语音识别模型没准备好。请检查网络和磁盘空间后重试。"
     case .invalidLocalFile: "找不到可读取的本机音视频文件。"
-    case .noAudioTrack: "这个视频没有可转写的音轨。"
+    case .noAudioTrack: "这个视频里没有音轨（没有声音），没法转写。"
     case .audioExtractionFailed: "无法从视频中提取音频；原视频没有被改动。"
-    case .recognitionFailed: "本机语音识别未完成，请重试。音频没有上传。"
+    case .recognitionFailed: "本机转写没有完成，请重试。音频没有上传。"
     case .emptyTranscript: "没有识别到可保存的中文内容，请确认视频中有人声后重试。"
-    case .mediaTooLong: "视频超过 120 分钟上限，当前不能进行本机转写。"
+    case .mediaTooLong: "视频超过 120 分钟上限，暂时不能本机转写。"
     case .cancelled: "已取消本机转写。"
     }
   }

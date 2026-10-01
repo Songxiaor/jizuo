@@ -480,7 +480,7 @@ final class AppViewModelTests: XCTestCase {
         preferences: preferences,
         preferencesReady: true
       ),
-      "捕获内容与输出语言相同，无需翻译。"
+      "原文已经是输出语言，不用翻译。"
     )
     XCTAssertNil(
       model.summarizeUnavailableReason(
@@ -493,7 +493,7 @@ final class AppViewModelTests: XCTestCase {
     await model.translate(preferences: preferences)
 
     XCTAssertEqual(provider.callCount, 0)
-    XCTAssertEqual(model.dataDestinationNotice, "捕获内容与输出语言相同，无需翻译。")
+    XCTAssertEqual(model.dataDestinationNotice, "原文已经是输出语言，不用翻译。")
   }
 
   func testHistoryTranslationUsesLatestTranscriptWhenCurrentCaptureStillHoldsChineseCaption() async throws {
@@ -577,7 +577,7 @@ final class AppViewModelTests: XCTestCase {
     let started = await model.translate(historyDetail: detail, preferences: preferences)
     XCTAssertFalse(started)
     XCTAssertEqual(provider.callCount, 0)
-    XCTAssertEqual(model.dataDestinationNotice, "捕获内容与输出语言相同，无需翻译。")
+    XCTAssertEqual(model.dataDestinationNotice, "原文已经是输出语言，不用翻译。")
   }
 
   func testAmbiguousScriptCapturesRemainTranslatableThroughActionEntry() async throws {
@@ -1294,7 +1294,7 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertFalse(cold.canStartRun)
     XCTAssertEqual(
       cold.runStartUnavailableReason(usingCurrentCapture: true, detail: nil),
-      "正在准备本地历史…"
+      "正在准备资料库…"
     )
 
     let readOnly = try makeModel(provider: provider)
@@ -1302,7 +1302,7 @@ final class AppViewModelTests: XCTestCase {
     readOnly.setStorageAvailability(.unavailable(.futureSchema))
     XCTAssertNotNil(readOnly.currentCapture)
     XCTAssertFalse(readOnly.canStartRun)
-    XCTAssertTrue(readOnly.storageStatusText.contains("本地历史"))
+    XCTAssertTrue(readOnly.storageStatusText.contains("资料库"))
   }
 
   func testProviderFailureDoesNotPolluteGlobalStorageState() async throws {
@@ -1315,7 +1315,7 @@ final class AppViewModelTests: XCTestCase {
     await model.summarize()
     await waitUntil { if case .failed = model.runState { true } else { false } }
     XCTAssertEqual(model.storageAvailability, .writable)
-    XCTAssertEqual(model.storageStatusText, "本地历史可用")
+    XCTAssertEqual(model.storageStatusText, "资料库可用")
     XCTAssertTrue(model.runStatusText.contains("模型服务不认这个密钥"))
   }
 
@@ -1614,7 +1614,7 @@ final class AppViewModelTests: XCTestCase {
       for forbidden in ["provider", "api key", "base url", "网络"] {
         XCTAssertFalse(text.contains(forbidden), "\(code) leaked provider recovery language")
       }
-      XCTAssertTrue(text.contains("本地") || text.contains("页面") || text.contains("运行"))
+      XCTAssertTrue(text.contains("资料库") || text.contains("页面") || text.contains("生成"))
     }
   }
 

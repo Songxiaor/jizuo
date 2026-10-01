@@ -51,6 +51,7 @@ final class GalleryPaginationAcceptanceTests: XCTestCase {
     fixture.start()
     try await waitUntil { model.listState == .loaded && model.rows.count == 4 }
     model.searchText = "previous platform query"
+    model.isPlatformCardViewActive = true
     model.selectHost("example.test")
     try await waitUntil { model.listState == .loaded && model.rows.count == 4 }
     XCTAssertEqual(model.searchText, "")

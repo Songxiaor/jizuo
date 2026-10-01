@@ -11,7 +11,7 @@ public enum SessionMediaRefreshError: Error, Equatable, Sendable {
   public var userMessage: String {
     switch self {
     case .unsupportedPlatform:
-      return "当前平台还不能在 App 内重新获取播放地址。"
+      return "这个平台的视频还不能在\(ProductDisplay.name)里重新获取播放地址，可以点「在浏览器中打开」去原网页观看。"
     case .youtubeUsesEmbed:
       return "YouTube 使用官方嵌入播放，打开详情即可观看。"
     case .networkOrParse:

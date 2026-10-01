@@ -183,10 +183,15 @@ struct SettingsProcessChain: View {
   @ViewBuilder private func stateControl(_ step: SettingsProcessStep) -> some View {
     let auto = isAuto(step)
     if step == .capture || onToggleAuto == nil {
+      // 和可点的小签同一个外形，只是不能点：原来「一直开着」是一行没框的红字，
+      // 夹在一排小签中间像一句报错（2026-10-01 走查）。
       Text(stateText(step))
         .themedFont(.caption)
         .foregroundStyle(auto ? sealColor : secondaryText)
+        .padding(.horizontal, 8)
         .padding(.vertical, 2)
+        .background(Capsule().fill(auto ? sealColor.opacity(0.10) : Color.clear))
+        .overlay(Capsule().strokeBorder(auto ? sealColor.opacity(0.45) : secondaryText.opacity(0.35), lineWidth: 1))
     } else {
       Button { onToggleAuto?(step) } label: {
         Text(stateText(step))

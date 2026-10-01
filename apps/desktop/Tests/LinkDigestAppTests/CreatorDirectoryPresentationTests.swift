@@ -818,7 +818,7 @@ final class CreatorDirectoryPresentationTests: XCTestCase {
     XCTAssertTrue(gallery.contains("scrollTarget"))
     XCTAssertTrue(gallery.contains("contextMenu(row)"))
     XCTAssertTrue(gallery.contains("toggleGallerySelection"))
-    XCTAssertTrue(gallery.contains("最近更新"), "排序入口要保留「最近更新」这一档")
+    XCTAssertTrue(gallery.contains("最近保存"), "排序入口要保留「最近保存」这一档")
     XCTAssertTrue(gallery.contains("WorkSortOrder"), "平台图库要提供排序下拉")
     XCTAssertTrue(gallery.contains("isLoadingNextPage"))
     XCTAssertFalse(gallery.contains("scrollTarget = row.taskID"), "打开详情时不应提前消耗返回锚点")

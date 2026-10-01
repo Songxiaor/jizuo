@@ -810,15 +810,19 @@ enum MarkdownPresentation {
     }
   }
 
-  static func calloutColor(_ kind: String, accent: Color) -> Color {
+  /// 提示块的色条与标题色。
+  ///
+  /// 2026-10-01 视觉一致性：原来直接用系统橙、红、绿、青、紫、黄、灰七种色。
+  /// 它们不跟主题走，压在纸白和深灰底上都是全屏最跳的一块，黄色在浅底上还几乎
+  /// 看不见。现在只有四种语气有自己的颜色，取主题的状态色（各主题按自身底色调过
+  /// 对比度）；其余回到强调色，引用和折叠说明这类「不表态」的用次要文字色。
+  static func calloutColor(_ kind: String, theme: HistoryThemeTokens, accent: Color) -> Color {
     switch calloutFamily(kind) {
-    case "warning": return Color.orange
-    case "danger", "failure", "bug": return Color.red
-    case "success", "todo": return Color.green
-    case "tip", "abstract": return Color.teal
-    case "important", "example": return Color.purple
-    case "question": return Color.yellow
-    case "quote", "details": return Color.gray
+    case "warning": return theme.warning
+    case "danger", "failure", "bug": return theme.danger
+    case "success", "todo": return theme.success
+    case "info": return theme.info
+    case "quote", "details": return theme.secondaryText
     default: return accent
     }
   }
@@ -2137,6 +2141,8 @@ struct MarkdownContentView: View {
   var secondaryTextColor: Color = .secondary
   var accentColor: Color = .accentColor
   @Binding var showsPlainText: Bool
+  /// 提示块按主题状态色着色（`calloutColor`）。
+  @Environment(\.appTheme) private var appTheme
 
   /// 文字版心：约 36 字宽。正文、代码块、引用推文共用，右边缘对齐成一条线。
   private var readingTextMeasure: CGFloat {
@@ -2438,9 +2444,9 @@ struct MarkdownContentView: View {
       openValidated(url)
     })
     .alert("无法打开链接", isPresented: $rejectedLink) {
-      Button("好", role: .cancel) {}
+      Button("知道了", role: .cancel) {}
     } message: {
-      Text("该链接未通过安全校验。")
+      Text("这个链接没有通过安全检查，\(ProductDisplay.name)不会打开它。")
     }
     // 换条目就重算一次目录；同一条正文内的重绘不再解析。
     .task(id: source) {
@@ -2788,7 +2794,7 @@ struct MarkdownContentView: View {
       VStack(alignment: .leading, spacing: 6) {
         Text(title.isEmpty ? MarkdownPresentation.calloutLabel(kind) : title)
           .themedFont(.caption, weight: .semibold)
-          .foregroundStyle(MarkdownPresentation.calloutColor(kind, accent: accentColor))
+          .foregroundStyle(MarkdownPresentation.calloutColor(kind, theme: appTheme, accent: accentColor))
         if !text.isEmpty {
           inlineBody(text, baseSize: 15.5)
             .foregroundStyle(secondaryTextColor)
@@ -2807,7 +2813,7 @@ struct MarkdownContentView: View {
           topTrailingRadius: 0,
           style: .continuous
         )
-        .fill(MarkdownPresentation.calloutColor(kind, accent: accentColor).opacity(0.85))
+        .fill(MarkdownPresentation.calloutColor(kind, theme: appTheme, accent: accentColor).opacity(0.85))
         .frame(width: 3)
       }
       .padding(.bottom, 20)
@@ -3172,7 +3178,7 @@ struct QuotedTweetCardView: View {
               .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .help("在浏览器打开被引用的这条推文")
+            .help("在浏览器中打开被引用的这条推文")
           }
         }
       }
@@ -3244,7 +3250,9 @@ enum MarkdownInlineImageActions {
     do {
       try data.write(to: destination)
     } catch {
-      presentFailure("图片没能保存到所选位置：\(error.localizedDescription)")
+      // 系统原始报错只进日志，提示只说下一步（2026-10-01）。
+      AppLog.error(.media, "image_save_failed", code: "IMAGE_SAVE_FAILED", ["error": String(describing: error)])
+      presentFailure("图片没能保存到所选位置。请确认磁盘空间够、这个文件夹可以写入，或换个位置再存。")
     }
   }
 
@@ -3254,7 +3262,7 @@ enum MarkdownInlineImageActions {
     alert.alertStyle = .warning
     alert.messageText = "保存图片失败"
     alert.informativeText = message
-    alert.addButton(withTitle: "好")
+    alert.addButton(withTitle: "知道了")
     alert.runModal()
   }
 
@@ -3332,6 +3340,7 @@ struct ReadingCalloutCard<Content: View>: View {
   let secondaryTextColor: Color
   let content: () -> Content
   @State private var isExpanded: Bool
+  @Environment(\.appTheme) private var appTheme
 
   init(
     kind: String,
@@ -3350,7 +3359,7 @@ struct ReadingCalloutCard<Content: View>: View {
     _isExpanded = State(initialValue: fold != .collapsed)
   }
 
-  private var tint: Color { MarkdownPresentation.calloutColor(kind, accent: accentColor) }
+  private var tint: Color { MarkdownPresentation.calloutColor(kind, theme: appTheme, accent: accentColor) }
   private var heading: String { title.isEmpty ? MarkdownPresentation.calloutLabel(kind) : title }
 
   var body: some View {

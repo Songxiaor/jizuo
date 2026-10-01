@@ -17,6 +17,8 @@ public struct ChunkedTranslationStreamer: Sendable {
   private let provider: any ModelProvider
   private let concurrency: Int
   private let chunkCharacterLimit: Int
+  /// 片级重试第 n 次先等 n × 这个时长。测试里传 0，不白等。
+  private let retryBaseDelay: Duration
 
   /// 低于这个长度不分片：一片的开销（额外请求、边界损失）换不回收益。
   public static let minimumCharactersToChunk = 8_000
@@ -51,11 +53,13 @@ public struct ChunkedTranslationStreamer: Sendable {
   public init(
     provider: any ModelProvider,
     concurrency: Int,
-    chunkCharacterLimit: Int = TranscriptTidyChunker.defaultChunkCharacterLimit
+    chunkCharacterLimit: Int = TranscriptTidyChunker.defaultChunkCharacterLimit,
+    retryBaseDelay: Duration = .seconds(2)
   ) {
     self.provider = provider
     self.concurrency = max(1, concurrency)
     self.chunkCharacterLimit = chunkCharacterLimit
+    self.retryBaseDelay = retryBaseDelay
   }
 
   /// 这段正文值不值得分片。
@@ -80,6 +84,7 @@ public struct ChunkedTranslationStreamer: Sendable {
     let chunks = TranscriptTidyChunker.chunks(of: text, limit: limit)
     let provider = provider
     let concurrency = concurrency
+    let retryBaseDelay = retryBaseDelay
 
     return AsyncThrowingStream { continuation in
       let work = Task {
@@ -99,7 +104,9 @@ public struct ChunkedTranslationStreamer: Sendable {
               let index = nextToLaunch
               nextToLaunch += 1
               running += 1
-              group.addTask {
+              // 段号显式捕获成常量：嵌套函数里的局部变量被子任务闭包捕获，Release 下
+              // 出现过段号错位（见 OpenAICompatibleTranscriptTidier 2026-09-28 的记录）。
+              group.addTask { [index] in
                 try await Self.runChunk(
                   provider: provider,
                   profile: profile,
@@ -109,6 +116,7 @@ public struct ChunkedTranslationStreamer: Sendable {
                   text: chunks[index],
                   targetLanguage: targetLanguage,
                   index: index,
+                  retryBaseDelay: retryBaseDelay,
                   assembler: assembler,
                   continuation: continuation
                 )
@@ -135,9 +143,32 @@ public struct ChunkedTranslationStreamer: Sendable {
     }
   }
 
-  /// 跑一片。速率限制单独退避重试——免费档端点在并发下最常见的失败就是 429，
-  /// 而它是暂时的：整条运行因为一片被限流就失败，用户看到的是"翻译失败"，
-  /// 而真相只是"刚才挤了一下"。
+  /// 跑一片。还没吐出任何内容的片遇到暂时性故障就在片内重试，而不是让整篇作废。
+  ///
+  /// 为什么在这里重试：分片走的是 TaskGroup，一片抛错整组取消——9 片里第 7 片
+  /// 网络抖了一下，前面已经译好的 6 片跟着作废，用户看到的是「翻译失败」，而真相
+  /// 只是「刚才断了一下」。
+  ///
+  /// 重试什么（2026-10-01 体检）：
+  /// - `.networkInterrupted`：服务商那层**不重试**它（OpenAICompatibleProvider
+  ///   的 shouldRetry 只认 429/5xx），这一层是它唯一的补救，给 2 次。
+  /// - `.providerUnavailable`：服务商那层已经按 1 秒间隔快速重试过 2 次，再在这里
+  ///   给 2 次会叠成 9 个请求。只补 1 次、等得更久，专接「网关抖了好几秒」这一种。
+  /// - `.rateLimited`：**不再在这里重试**。服务商那层已经按 Retry-After 重试 2 次，
+  ///   这里原先再叠 2 次，一片最多发 9 个请求、在限流时反而把配额挤得更死。
+  ///   选在这一层去掉而不是去掉服务商那层：服务商那层读得到 Retry-After，等多久
+  ///   更准；它也服务总结等不分片的请求，动它影响面大得多。
+  ///
+  /// 只重试还没吐出任何内容的片：已经放行过文字的片再跑一遍会重复。
+  static func chunkRetryBudget(for failure: ModelProviderFailure) -> Int {
+    guard !failure.hadOutput else { return 0 }
+    switch failure.code {
+    case .networkInterrupted: return 2
+    case .providerUnavailable: return 1
+    default: return 0
+    }
+  }
+
   private static func runChunk(
     provider: any ModelProvider,
     profile: ProviderProfile,
@@ -146,11 +177,13 @@ public struct ChunkedTranslationStreamer: Sendable {
     text: String,
     targetLanguage: String,
     index: Int,
+    retryBaseDelay: Duration,
     assembler: TranslationChunkAssembler,
     continuation: AsyncThrowingStream<ModelStreamEvent, Error>.Continuation
   ) async throws -> RunUsageCost {
     var attempt = 0
     while true {
+      try Task.checkCancellation()
       do {
         return try await sendChunk(
           provider: provider,
@@ -163,10 +196,9 @@ public struct ChunkedTranslationStreamer: Sendable {
           assembler: assembler,
           continuation: continuation
         )
-      } catch let failure as ModelProviderFailure where failure.code == .rateLimited && !failure.hadOutput && attempt < 2 {
-        // 只重试还没吐出任何内容的片：已经放行过文字的片再跑一遍会重复。
+      } catch let failure as ModelProviderFailure where attempt < chunkRetryBudget(for: failure) {
         attempt += 1
-        try await Task.sleep(nanoseconds: UInt64(attempt) * 2_000_000_000)
+        try await Task.sleep(for: retryBaseDelay * attempt)
         try Task.checkCancellation()
       }
     }

@@ -78,9 +78,10 @@ public enum ArticleReformatEligibility: Sendable, Equatable {
   public var userMessage: String? {
     switch self {
     case .eligible: nil
-    case .alreadyStructured: "这篇已经有小标题，不需要重排。"
-    case .tooShort: "正文太短，重排没有意义。"
-    case .notProse: "这类内容不适合重排版面。"
+    // 统一叫「整理排版」（2026-10-01）。
+    case .alreadyStructured: "这篇已经有小标题，不需要整理排版。"
+    case .tooShort: "正文太短，不需要整理排版。"
+    case .notProse: "这类内容不适合整理排版。"
     }
   }
 

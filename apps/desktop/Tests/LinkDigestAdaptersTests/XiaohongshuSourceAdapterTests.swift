@@ -192,7 +192,7 @@ final class XiaohongshuSourceAdapterTests: XCTestCase {
       XCTAssertEqual(error, .shareLinkExpired)
       XCTAssertEqual(
         error.userMessage,
-        "这条分享链接已失效（小红书的 xsec_token 有时效），请在小红书 App 里重新复制分享链接。"
+        "这条分享链接已失效（小红书的分享链接有时效），请在小红书 App 里重新复制分享链接。"
       )
     } catch {
       XCTFail("应当抛 ManualLinkError，实际是 \(error)")

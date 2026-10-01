@@ -264,10 +264,13 @@ enum CreatorDirectoryCardCopy {
   /// 全是同一句。名字按卡面第一行的取法来：独立标题 → 正文首句 → 作者 → 内容类型，
   /// 一律取已有事实，不编造。
   static func accessibilityTitle(row: HistoryRowProjection) -> String {
-    let name = CapturedContentNaming.name(
+    let captured = CapturedContentNaming.name(
       title: row.title, body: row.sourcePreview, host: row.host,
       author: row.author, published: row.published
-    ).text.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+    let name = (captured.origin == .caption
+      ? HistoryListFinding.informativeCaptionTitle(caption: captured.text, sourcePreview: row.sourcePreview)
+      : captured.text).trimmingCharacters(in: .whitespacesAndNewlines)
     if !name.isEmpty, name != CapturedDocumentTitle.missing { return name }
     if let author = row.author?.trimmingCharacters(in: .whitespacesAndNewlines),
        !author.isEmpty, !isPlaceholderAuthor(author) {

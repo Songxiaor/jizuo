@@ -93,7 +93,16 @@ public enum HistoryReadingTitle {
     guard let body else { return nil }
     let markdown = MarkdownNoteFrontmatter.parse(body).body
     let source = markdown.isEmpty ? body : markdown
-    return UserNoteDocument.derivedTitle(fromBody: source)
+    return UserNoteDocument.derivedTitle(fromBody: source).map(tidiedProductTitle)
+  }
+
+  /// 模型把英文标题译成中文时常把句点留着：「我们给 Jev 打了 2029 通真实电话.」
+  /// （2026-10-02 实测）。中文结尾的半角句点去掉；英文标题不动。
+  static func tidiedProductTitle(_ title: String) -> String {
+    guard title.count > 1, title.hasSuffix("."), !title.hasSuffix("..."),
+          let previous = title.dropLast().unicodeScalars.last, previous.value >= 0x2E80
+    else { return title }
+    return String(title.dropLast())
   }
 
   private static func strippingLeadingHeading(from body: String, matching title: String) -> String? {
@@ -106,7 +115,7 @@ public enum HistoryReadingTitle {
         continue
       }
       guard trimmed.hasPrefix("# ") else { break }
-      let heading = UserNoteDocument.sanitizedTitle(String(trimmed.dropFirst(2)))
+      let heading = tidiedProductTitle(UserNoteDocument.sanitizedTitle(String(trimmed.dropFirst(2))))
       let matchesExact = heading == title
       let matchesTruncated = title.hasSuffix("…") && heading.hasPrefix(String(title.dropLast()))
       guard matchesExact || matchesTruncated else { break }

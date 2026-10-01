@@ -448,4 +448,10 @@ final class UserNoteAcceptCommandTests: XCTestCase {
       "笔记无法组装成落库命令——这正是「点了没反应」的来源"
     )
   }
+
+  func testTranslatedChineseTitleDropsTrailingASCIIPeriod() {
+    XCTAssertEqual(HistoryReadingTitle.productTitle(summaryBody: nil, translationBody: "# 我们给Jev打了2029通真实电话.\n\n正文"), "我们给Jev打了2029通真实电话")
+    XCTAssertEqual(HistoryReadingTitle.productTitle(summaryBody: nil, translationBody: "# We called Jev.\n\nBody"), "We called Jev.")
+  }
+
 }

@@ -521,7 +521,7 @@ final class DouyinProfileImportTests: XCTestCase {
     model.acceptNavigation(URL(string: "https://www.douyin.com/passport/login")!)
     XCTAssertEqual(model.phase, .loading)
     model.acceptNavigation(URL(string: "https://www.douyin.com/video/7000000000000000001")!)
-    XCTAssertEqual(model.phase, .failed("这是单条作品链接，请改用单条保存入口，不能当作博主主页导入。"))
+    XCTAssertEqual(model.phase, .failed("这是单条作品链接，请改用单条保存入口，不能当作博主主页添加。"))
   }
 
   func testCancelledAndOldNavigationCallbacksCannotStopOrRebindCurrentRequest() throws {

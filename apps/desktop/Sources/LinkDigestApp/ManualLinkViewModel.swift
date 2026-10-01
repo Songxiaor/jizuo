@@ -376,7 +376,7 @@ final class ManualLinkViewModel: ObservableObject {
     onFailure: (@MainActor (String) -> Void)? = nil
   ) {
     guard let ingestor else {
-      onFailure?("历史存储尚未就绪，请稍后再试。")
+      onFailure?("资料库还在打开，请稍等几秒再试。")
       return
     }
     Task {
@@ -390,7 +390,9 @@ final class ManualLinkViewModel: ObservableObject {
         let capture = try await ingestor.ingest(document)
         await MainActor.run { onOpened?(capture.taskID) }
       } catch {
-        await MainActor.run { onFailure?("打开今天的笔记失败：\(String(describing: error))") }
+        // 原始错误只进日志，界面只说人话与下一步（2026-10-01）。
+        AppLog.error(.storage, "open_today_note_failed", code: "NOTE_OPEN_FAILED", ["error": String(describing: error)])
+        await MainActor.run { onFailure?("今天的笔记没能打开，请稍后再试；一直不行就重新打开\(ProductDisplay.name)。") }
       }
     }
   }
@@ -414,7 +416,7 @@ final class ManualLinkViewModel: ObservableObject {
     onFailure: (@MainActor (String) -> Void)? = nil
   ) {
     guard let ingestor else {
-      onFailure?("历史存储尚未就绪，请稍后再试。")
+      onFailure?("资料库还在打开，请稍等几秒再试。")
       return
     }
     Task {
@@ -423,8 +425,9 @@ final class ManualLinkViewModel: ObservableObject {
         let capture = try await ingestor.ingest(document)
         await MainActor.run { onCreated?(capture.taskID) }
       } catch {
+        AppLog.error(.storage, "create_note_failed", code: "NOTE_CREATE_FAILED", ["error": String(describing: error)])
         await MainActor.run {
-          onFailure?("新建笔记失败：\(String(describing: error))")
+          onFailure?("笔记没能新建，请稍后再试；一直不行就重新打开\(ProductDisplay.name)。")
         }
       }
     }
@@ -439,7 +442,7 @@ final class ManualLinkViewModel: ObservableObject {
     onFailure: (@MainActor (String) -> Void)? = nil
   ) {
     guard let ingestor else {
-      onFailure?("历史存储尚未就绪，请稍后再试。")
+      onFailure?("资料库还在打开，请稍等几秒再试。")
       return
     }
     Task {
@@ -448,8 +451,9 @@ final class ManualLinkViewModel: ObservableObject {
         let capture = try await ingestor.ingest(document)
         await MainActor.run { onCreated?(capture.taskID) }
       } catch {
+        AppLog.error(.storage, "create_piece_draft_failed", code: "PIECE_CREATE_FAILED", ["error": String(describing: error)])
         await MainActor.run {
-          onFailure?("新建稿件失败：\(String(describing: error))")
+          onFailure?("稿件没能新建，请稍后再试；一直不行就重新打开\(ProductDisplay.name)。")
         }
       }
     }
@@ -1269,7 +1273,7 @@ final class ManualLinkViewModel: ObservableObject {
           }
           self.pendingCaptures.removeAll { $0.id == next.id }
         } catch {
-          self.updatePendingPhase(next.id, .failed("无法保存这条链接，本地历史未发生变更。"))
+          self.updatePendingPhase(next.id, .failed("这条链接没能保存，资料库没有任何改动，可以再试一次。"))
         }
         self.activeCaptureID = nil
         self.activeCaptureTask = nil

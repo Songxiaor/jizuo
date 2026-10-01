@@ -221,6 +221,8 @@ struct ReadingScrollContinuity: NSViewRepresentable {
       restore(in: scroll)
     }
 
+    static let snapToTopThreshold: CGFloat = 120
+
     private func restore(in scroll: NSScrollView) {
       let stored = ReadingPositionStore.progress(for: parent.identity)
       let percent = Int((stored * 100).rounded())
@@ -230,7 +232,11 @@ struct ReadingScrollContinuity: NSViewRepresentable {
       DispatchQueue.main.async { [weak self, weak scroll] in
         guard let self, let scroll, let document = scroll.documentView else { return }
         let maximum = max(0, document.bounds.height - scroll.contentView.bounds.height)
-        scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: stored * maximum))
+        // 只往下看了一点点（标题还没完全滚走）就当没读：按比例恢复会停在标题被
+        // 切掉半截的位置，像排版错了（2026-10-01 走查，窄窗口更明显）。
+        var target = stored * maximum
+        if target < Self.snapToTopThreshold { target = 0 }
+        scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: target))
         scroll.reflectScrolledClipView(scroll.contentView)
         self.isRestoring = false
       }

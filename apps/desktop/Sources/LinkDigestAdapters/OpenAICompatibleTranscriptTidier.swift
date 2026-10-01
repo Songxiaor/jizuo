@@ -19,7 +19,7 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
   /// 界面显示「已保存」而错字一个没改，比慢得多更糟。
   ///
   /// 3 是实测能稳定跑完的值。真要更快，该换更快的模型，而不是加并发。
-  private static let maximumConcurrentChunkRequests = 3
+  public static let maximumConcurrentChunkRequests = 3
 
   /// 单片最多这么多字。
   ///
@@ -86,6 +86,18 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     context: TranscriptTidyContext,
     progress: (@Sendable (Int, Int) -> Void)?
   ) async throws -> TranscriptTidyOutcome {
+    // 老接口只认两个数：补跑阶段没法表达，照旧只报成功段数。
+    var phase: (@Sendable (TranscriptTidyPhase) -> Void)?
+    if let progress {
+      phase = { value in
+        if case let .tidying(succeeded, total) = value { progress(succeeded, total) }
+      }
+    }
+    return try await tidy(text: text, model: model, style: style, context: context, phase: phase)
+  }
+
+  /// 这份稿子会被切成几段。估时和真正执行用同一份切法，免得界面说的段数和实际对不上。
+  static func chunks(for text: String) -> [String] {
     // 片长按并发反算，让片数落在并发的整数倍上。
     //
     // 耗时 ≈ ⌈片数 ÷ 并发⌉ × 单片耗时。片数不是并发整数倍时，最后一波多数通道
@@ -107,7 +119,37 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
           concurrency: Self.maximumConcurrentChunkRequests,
           maximum: Self.maximumChunkCharacters
         ))
-    let chunks = TranscriptTidyChunker.chunks(of: text, limit: chunkLimit)
+    return TranscriptTidyChunker.chunks(of: text, limit: chunkLimit)
+  }
+
+  /// 预计要跑多久（秒）：⌈段数 ÷ 并发⌉ 波 × 每波约 50 秒。
+  ///
+  /// 为什么给这个（2026-10-01 体检）：界面原来写死「通常 1–5 分钟」，一小时的
+  /// 听写稿切出 30 多段、要跑十来分钟，用户等到第 6 分钟就以为卡死了。每段 1200 字
+  /// 实测 40–65 秒（见 maximumChunkCharacters），取 50 秒做中位估计；补跑不计入，
+  /// 它只在出错时发生，算进去会让每次都报得偏长。
+  public static func estimatedSeconds(forText text: String) -> Int {
+    estimatedSeconds(chunkCount: chunks(for: text).count)
+  }
+
+  public static func estimatedSeconds(
+    chunkCount: Int,
+    concurrency: Int = maximumConcurrentChunkRequests,
+    secondsPerWave: Int = 50
+  ) -> Int {
+    guard chunkCount > 0 else { return 0 }
+    let waves = (chunkCount + max(1, concurrency) - 1) / max(1, concurrency)
+    return waves * secondsPerWave
+  }
+
+  public func tidy(
+    text: String,
+    model: String?,
+    style: TidyStyle,
+    context: TranscriptTidyContext,
+    phase: (@Sendable (TranscriptTidyPhase) -> Void)?
+  ) async throws -> TranscriptTidyOutcome {
+    let chunks = Self.chunks(for: text)
     guard !chunks.isEmpty else { throw TranscriptTidyError.emptyTranscript }
 
     let credentials = try await Self.loadCredentials(from: configurationService)
@@ -158,6 +200,10 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
         throw error
       } catch is CancellationError {
         throw CancellationError()
+      } catch where Task.isCancelled {
+        // 取消时服务商那层可能把被掐断的请求报成「网络中断」。按失败记下就会
+        // 被补跑——用户点了停止，后台却又发出新请求（2026-10-01 体检）。
+        throw CancellationError()
       } catch {
         let elapsed = Int(Date().timeIntervalSince(started) * 1_000)
         let code = (error as? ModelProviderFailure)?.code.rawValue ?? String(describing: type(of: error))
@@ -169,6 +215,7 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
       of: (Int, Result<TranscriptTidyOutcome, Error>).self
     ) { group -> [Int: Result<TranscriptTidyOutcome, Error>] in
       var collected: [Int: Result<TranscriptTidyOutcome, Error>] = [:]
+      var succeeded = 0
       var next = 0
       // 段号由子任务自己带回（显式捕获成常量），不经嵌套函数的参数转一手：
       // 2026-09-28 正式版里第 7 段的结果被记到了第 1 段名下，调试版测试复现不出，
@@ -199,9 +246,15 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
             Self.logDiagnostic("run=\(runID) duplicate-result chunk=\(index + 1)/\(chunks.count)")
           }
           collected[index] = result
-          // 每落地一片就报一次。分片是并发跑的，完成顺序不定，所以按**已完成
-          // 片数**报进度，而不是按 index——否则进度会来回跳。
-          progress?(collected.count, chunks.count)
+          if case .success = result { succeeded += 1 }
+          // 每落地一片就报一次。分片是并发跑的，完成顺序不定，所以按**片数**报
+          // 进度，而不是按 index——否则进度会来回跳。
+          //
+          // 只数**成功**的片（2026-10-01 体检）：原来失败片也算「已完成」，一波里
+          // 有几段失败时界面照样走到「N/N」，接着补跑十几分钟一动不动。
+          phase?(.tidying(succeeded: succeeded, total: chunks.count))
+          // 取消后不再发新片：已在飞的会被 TaskGroup 一起取消。
+          if Task.isCancelled { throw TranscriptTidyError.cancelled }
           if next < chunks.count {
             launch(next)
             next += 1
@@ -216,24 +269,37 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     // 失败段补跑：一波并发里偶尔有一段撞上限流或超时，其余都成功（2026-09-28 实测
     // 7 段里第 6 段失败，原文回填）。并发跑完后逐段重试，一次只发一个请求、先等几秒，
     // 不再和别的请求抢配额。Key 无效、没权限这类重试没用的错误不重试。
-    for index in chunks.indices {
-      guard case let .failure(error)? = results[index], Self.isRetryable(error) else { continue }
+    //
+    // 补跑时报「正在补跑第 k 段（共 m 段）」，并且每一步都先看是否已取消：用户点了
+    // 停止就立刻抛出，不再发下一次补跑（2026-10-01 体检）。
+    let retryIndices = chunks.indices.filter { index in
+      guard case let .failure(error)? = results[index] else { return false }
+      return Self.isRetryable(error)
+    }
+    var succeededCount = 0
+    for result in results.values { if case .success = result { succeededCount += 1 } }
+    for (position, index) in retryIndices.enumerated() {
+      guard !Task.isCancelled else { throw TranscriptTidyError.cancelled }
+      phase?(.retrying(attempt: position + 1, failed: retryIndices.count, total: chunks.count))
       for attempt in 1...Self.chunkRetryAttempts {
-        try Task.checkCancellation()
-        try? await Task.sleep(for: .seconds(Double(attempt) * Self.chunkRetryBaseDelaySeconds))
-        try Task.checkCancellation()
         do {
+          try await Task.sleep(for: .seconds(Double(attempt) * Self.chunkRetryBaseDelaySeconds))
           results[index] = .success(try await requestChunk(index, attempt))
+          succeededCount += 1
           break
         } catch is CancellationError {
           throw TranscriptTidyError.cancelled
         } catch {
+          if Task.isCancelled { throw TranscriptTidyError.cancelled }
           results[index] = .failure(error)
           guard Self.isRetryable(error) else { break }
         }
       }
     }
-    progress?(chunks.count, chunks.count)
+    if !retryIndices.isEmpty {
+      phase?(.tidying(succeeded: succeededCount, total: chunks.count))
+    }
+    if Task.isCancelled { throw TranscriptTidyError.cancelled }
 
     var outputs: [String] = []
     var failedChunkCount = 0
@@ -355,12 +421,12 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     switch failure.code {
     case .rateLimited: return "服务繁忙被限流"
     case .networkInterrupted: return "网络中断或请求超时"
-    case .providerUnavailable: return "模型服务暂时不可用"
+    case .providerUnavailable: return "服务商暂时不可用"
     case .inputTooLarge: return "这一段超出了模型的长度限制"
-    case .providerBillingLimited: return "账户额度不足"
-    case .authInvalid, .authForbidden: return "API Key 无效或没有权限"
+    case .providerBillingLimited: return "账户余额不足"
+    case .authInvalid, .authForbidden: return "密钥无效或没有权限"
     case .streamMalformed, .protocolIncompatible: return "模型返回的格式异常"
-    default: return "模型服务拒绝了请求"
+    default: return "服务商拒绝了请求"
     }
   }
 

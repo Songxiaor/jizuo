@@ -47,7 +47,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(CurrentCaptureMediaPreview.isFavoriteEligible(hls))
     XCTAssertEqual(
       CurrentCaptureMediaPreview.favoriteUnavailableMessage(hls),
-      "暂不支持把 HLS 下载到本机；你仍可在当前会话中速览。"
+      "这种在线视频流暂时不能存到本机，现在可以先在这里看。"
     )
   }
 
@@ -69,10 +69,10 @@ final class HistoryContentViewTests: XCTestCase {
 
   func testCurrentCapturePreviewMapsBrowserAndUnsupportedFailuresToStableChinese() {
     let cases: [(MediaKind, MediaFailureReason, String)] = [
-      (.browserSessionOnly, .blobOrMSE, "只能在原浏览器会话观看"),
-      (.unsupported, .drmOrEncrypted, "DRM"),
-      (.unsupported, .multipleCandidates, "多个视频"),
-      (.unsupported, .videoNotLoaded, "尚未加载"),
+      (.browserSessionOnly, .blobOrMSE, "只能在原网页里看"),
+      (.unsupported, .drmOrEncrypted, "版权保护"),
+      (.unsupported, .multipleCandidates, "好几个视频"),
+      (.unsupported, .videoNotLoaded, "还没加载出来"),
     ]
 
     for (kind, reason, expectedText) in cases {
@@ -385,7 +385,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("min: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnMin : DesignTokens.Layout.listMin"))
     XCTAssertTrue(source.contains("ideal: model.isCreatorDirectoryActive ? CreatorDirectoryChrome.listColumnIdeal : threeColumnWidths.list"))
     XCTAssertTrue(source.contains("CreatorDirectoryChrome.listColumnMin"), "博主目录中栏才缩窄，历史列表仍用 listMin")
-    XCTAssertTrue(source.contains("互动数据为保存时快照"))
+    XCTAssertTrue(source.contains("互动数据是保存时的数字"))
     XCTAssertTrue(source.contains(".modifier(HistoryWindowToolbarThemeModifier(theme: theme))"))
     // 工具栏背景必须逐列挂载：根部那一份对 macOS 分栏窗口不生效，表现是
     // 详情列滚动时标题从工具栏图标底下原样穿过。详情列用正文色当挡板。
@@ -473,11 +473,11 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains(".id(\"history-gallery-navigation\")"))
     XCTAssertTrue(source.contains("HistoryGallerySplitView(sidebarWidth:"))
     XCTAssertTrue(source.contains("history-gallery-sidebar-toggle"))
-    XCTAssertTrue(source.contains("themedBody\n      .frame(maxWidth: .infinity, maxHeight: .infinity)"))
+    XCTAssertTrue(source.contains("withMenuCommands(themedBody)\n      .frame(maxWidth: .infinity, maxHeight: .infinity)"))
     XCTAssertTrue(source.contains(".id(\"creator-pagination-\\(last.taskID.rawValue)\")"))
     XCTAssertTrue(source.contains("model.loadNextPageIfNeeded(after: last)"), "分页不能依赖被展开批次替换的末条卡片")
     XCTAssertTrue(source.contains("model.toggleGallerySelection(row.taskID)"))
-    XCTAssertTrue(source.contains("canonicalHost(for: creator.identity.platform) != \"mp.weixin.qq.com\""))
+    XCTAssertTrue(source.contains("canonicalHost(for: creator.identity.platform) == \"mp.weixin.qq.com\""))
     XCTAssertTrue(source.contains("PlatformHistoryGalleryPresentation.showsGallery"))
     XCTAssertTrue(source.contains("PlatformHistoryGallery("))
     XCTAssertTrue(source.contains("isReadingPlatformGalleryItem"))
@@ -628,7 +628,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(detail.contains("hasEngagementStats || isWeChatCapture"))
     XCTAssertTrue(detail.contains("history-engagement-stats"))
     XCTAssertFalse(detail.contains("history-engagement-snapshot-note"), "「采集时快照」只放悬停说明，不再占一个标签位")
-    XCTAssertTrue(detail.contains("数据为采集时快照"))
+    XCTAssertTrue(detail.contains("互动数据是保存时的数字"))
     XCTAssertTrue(detail.contains("sourceByline"), "作者、日期、站点应收成一行，不再各占一列表单")
   }
 
@@ -1141,11 +1141,11 @@ final class HistoryContentViewTests: XCTestCase {
       )
     )
 
-    XCTAssertEqual(HistorySessionMediaPresentation.title, "此处暂不可播")
-    XCTAssertTrue(HistorySessionMediaPresentation.explanation.contains("只在抓取当次有效"))
+    XCTAssertEqual(HistorySessionMediaPresentation.title, "播放地址过期了")
+    XCTAssertTrue(HistorySessionMediaPresentation.explanation.contains("只在抓取当时有效"))
     XCTAssertFalse(HistorySessionMediaPresentation.explanation.contains("加载失败"))
     XCTAssertFalse(HistorySessionMediaPresentation.explanation.contains("地址已失效"))
-    XCTAssertEqual(HistorySessionMediaPresentation.openSourceActionTitle, "回到原页面")
+    XCTAssertEqual(HistorySessionMediaPresentation.openSourceActionTitle, "在浏览器中打开")
     XCTAssertEqual(HistorySessionMediaPresentation.refreshActionTitle, "重新获取播放")
   }
 
@@ -1292,7 +1292,7 @@ final class HistoryContentViewTests: XCTestCase {
       from: "private var processStepRows: [ProcessStepRowModel]",
       to: "private func processExtraButton("
     )
-    for item in ["重新\\(step.title)", "重新转写（本机）", "校对转写稿", "生成脑图", "抓取评论…", "换个模型重跑…", "运行详情"] {
+    for item in ["重新\\(step.title)", "重新转写（本机）", "校对转写稿", "生成脑图", "抓取评论…", "换个模型重跑…", "生成记录"] {
       XCTAssertTrue(more.contains(item), "missing \(item)")
     }
     XCTAssertTrue(more.contains("if let action = transcribeAction, primary != .transcribe {"), "主按钮是转写时面板不再列转写")
@@ -1880,7 +1880,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("availableReadingPanes"))
     XCTAssertTrue(detail.contains("ForEach(availableReadingPanes)"))
     XCTAssertTrue(detail.contains("尚未转写"))
-    XCTAssertTrue(detail.contains("点击上方的『转写』开始"))
+    XCTAssertTrue(detail.contains("点上方的「转写」开始"))
     XCTAssertTrue(detail.contains("history-reading-result-empty"))
     XCTAssertTrue(detail.contains("尚未生成总结"))
     XCTAssertTrue(detail.contains("尚未生成翻译"))
@@ -2148,13 +2148,13 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(now, now: now), "今天")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(yesterday, now: now), "昨天")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(earlier, now: now), "8月20日")
-    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(previousYear, now: now), "2025/8/20")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactDate(previousYear, now: now), "2025年8月20日")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("5天前", now: now), "5天前")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026-08-20 15:21", now: now), "8月20日")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026-08-20", now: now), "8月20日")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026年8月20日 17:54", now: now), "8月20日")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026年9月5日", now: now), "昨天")
-    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2025-08-20 15:21:07", now: now), "2025/8/20")
+    XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2025-08-20 15:21:07", now: now), "2025年8月20日")
     XCTAssertEqual(HistoryPublishedTimestampFormatter.compactText("2026-08-20T12:00:00Z", now: now),
                    HistoryPublishedTimestampFormatter.compactText("2026-08-20T12:00:00.000Z", now: now))
   }

@@ -31,7 +31,9 @@ final class OnlineTranscriptionChunkOrderTests: XCTestCase {
     // 「连接中断」曾罩住本机提取失败，连续三轮掩盖真实缺陷。
     let extraction = OnlineAudioTranscriptionError.audioExtractionFailed(detail: "export 失败 X -11838")
     XCTAssertNotEqual(extraction.userMessage, OnlineAudioTranscriptionError.networkInterrupted.userMessage)
-    XCTAssertTrue(extraction.userMessage.contains("-11838"))
-    XCTAssertTrue(extraction.userMessage.contains("还未发送"))
+    // 错误码只进日志，界面不再显示（2026-10-01）。
+    XCTAssertFalse(extraction.userMessage.contains("-11838"))
+    XCTAssertEqual(extraction.diagnosticDetail, "export 失败 X -11838")
+    XCTAssertTrue(extraction.userMessage.contains("还没发送"))
   }
 }

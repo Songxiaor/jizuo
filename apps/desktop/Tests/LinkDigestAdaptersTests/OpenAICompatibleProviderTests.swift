@@ -1070,6 +1070,60 @@ final class ReasoningEffortRejectionMemoryTests: XCTestCase {
     reasoningEffort(in: request) != nil
   }
 
+  /// 总结、翻译（流式）也要带「关闭思考」开关；档位梯子走完仍被拒才去掉它，
+  /// 去掉后档位从头再试（2026-10-01：MiMo 只认这个开关，漏了它翻译首字等 24 秒）。
+  func testStreamSendsThinkingOffAndDropsItOnlyAfterEffortLadder() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let ok = FakeOpenAICompatibleServer.ResponseScript(chunks: [
+      .init("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"),
+      .init("data: [DONE]\n\n"),
+    ])
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [ok])
+    let baseURL = try server.start()
+    defer { server.stop() }
+    _ = await collect(provider: makeProvider(), profile: try profile(baseURL), apiKey: key)
+    XCTAssertEqual(server.requests.count, 1)
+    let body = try XCTUnwrap(server.requests.first?.body.data(using: .utf8))
+    let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+    XCTAssertEqual((json["thinking"] as? [String: Any])?["type"] as? String, "disabled")
+    XCTAssertEqual(json["enable_thinking"] as? Bool, false)
+
+    // 不认开关的目的地：none、low、不发 三次都被拒，第四次去掉开关成功；
+    // 坐实后下一次请求不带开关、档位清掉冤枉记录回到 none。
+    let key2 = "sentinel-\(UUID().uuidString)"
+    let reject = FakeOpenAICompatibleServer.ResponseScript(statusCode: 400, contentType: "application/json")
+    let server2 = FakeOpenAICompatibleServer(expectedAPIKey: key2, scripts: [reject, reject, reject, ok, ok])
+    let baseURL2 = try server2.start()
+    defer { server2.stop() }
+    let provider2 = makeProvider()
+    let profile2 = try profile(baseURL2)
+    _ = await collect(provider: provider2, profile: profile2, apiKey: key2)
+    XCTAssertEqual(server2.requests.count, 4)
+    let fourth = try XCTUnwrap(server2.requests[3].body.data(using: .utf8))
+    let fourthJSON = try XCTUnwrap(try JSONSerialization.jsonObject(with: fourth) as? [String: Any])
+    XCTAssertNil(fourthJSON["thinking"])
+    _ = await collect(provider: provider2, profile: profile2, apiKey: key2)
+    XCTAssertEqual(server2.requests.count, 5)
+    let fifth = try XCTUnwrap(server2.requests[4].body.data(using: .utf8))
+    let fifthJSON = try XCTUnwrap(try JSONSerialization.jsonObject(with: fifth) as? [String: Any])
+    XCTAssertNil(fifthJSON["thinking"])
+    XCTAssertEqual(fifthJSON["reasoning_effort"] as? String, "none")
+
+    // 不是开关的事（正文超长、审核拦下）：去掉开关仍被拒 → 报错，开关下次照发。
+    let key3 = "sentinel-\(UUID().uuidString)"
+    let server3 = FakeOpenAICompatibleServer(expectedAPIKey: key3, scripts: [reject, reject, reject, reject, ok])
+    let baseURL3 = try server3.start()
+    defer { server3.stop() }
+    let provider3 = makeProvider()
+    let profile3 = try profile(baseURL3)
+    _ = await collect(provider: provider3, profile: profile3, apiKey: key3)
+    XCTAssertEqual(server3.requests.count, 4)
+    _ = await collect(provider: provider3, profile: profile3, apiKey: key3)
+    let next = try XCTUnwrap(server3.requests.last?.body.data(using: .utf8))
+    let nextJSON = try XCTUnwrap(try JSONSerialization.jsonObject(with: next) as? [String: Any])
+    XCTAssertEqual((nextJSON["thinking"] as? [String: Any])?["type"] as? String, "disabled")
+  }
+
   private func reasoningEffort(in request: FakeOpenAICompatibleServer.RecordedRequest) -> String? {
     guard let data = request.body.data(using: .utf8),
           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]

@@ -22,7 +22,7 @@ final class KnowledgeVaultRendererTests: XCTestCase {
     XCTAssertTrue(
       document.text.contains("> 回链：linkdigest://digest/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
     )
-    XCTAssertTrue(document.text.contains("## 摘要\n\n总结结果"))
+    XCTAssertTrue(document.text.contains("## 总结\n\n总结结果"))
     XCTAssertTrue(document.text.contains("## 原文\n\n原文"))
   }
 
@@ -73,7 +73,7 @@ final class KnowledgeVaultRendererTests: XCTestCase {
     let text = KnowledgeVaultRenderer.render(fixture(status: .failed), timeZone: fixtureTimeZone).text
 
     XCTAssertTrue(text.contains("has_summary: false"))
-    XCTAssertFalse(text.contains("## 摘要"))
+    XCTAssertFalse(text.contains("## 总结"))
     XCTAssertTrue(text.contains("## 原文"))
   }
 

@@ -217,6 +217,105 @@ final class TranscriptTidierParallelTests: XCTestCase {
     XCTAssertEqual(outcome.text.components(separatedBy: "\n\n"), paragraphs)
   }
 
+  /// 进度只数成功段，补跑时报「正在补跑第 k 段（共 m 段）」（2026-10-01 体检）。
+  ///
+  /// 原来失败段也算「已完成」，界面停在「已校对 3/3 段」，背后补跑还要十几分钟。
+  func testProgressCountsOnlySuccessesAndReportsRetryPhase() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let success = FakeOpenAICompatibleServer.ResponseScript(contentType: "application/json", chunks: [.init(Self.tidiedJSON)])
+    let server = FakeOpenAICompatibleServer(
+      expectedAPIKey: key,
+      scripts: [success, success, .init(statusCode: 500), success]
+    )
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let tidier = try await makeTidier(baseURL: baseURL, apiKey: key)
+    let phases = PhaseRecorder()
+
+    let outcome = try await tidier.tidy(
+      text: Self.transcript, model: nil, style: .transcript, context: .empty,
+      phase: { phases.append($0) }
+    )
+
+    XCTAssertEqual(outcome.failedChunkCount, 0)
+    let recorded = phases.values
+    let tidyingCounts = recorded.compactMap { phase -> Int? in
+      if case let .tidying(succeeded, _) = phase { return succeeded }
+      return nil
+    }
+    XCTAssertFalse(tidyingCounts.prefix(3).contains(3), "并发那一波只有 2 段成功，不能报 3/3：\(recorded)")
+    XCTAssertTrue(recorded.contains(.retrying(attempt: 1, failed: 1, total: 3)), "补跑时要报阶段：\(recorded)")
+    XCTAssertEqual(recorded.last, .tidying(succeeded: 3, total: 3), "补跑成功后回到 3/3")
+  }
+
+  /// 老的两数进度接口也只数成功段，补跑阶段不混进来。
+  func testLegacyProgressNeverReportsFailedChunksAsDone() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let success = FakeOpenAICompatibleServer.ResponseScript(contentType: "application/json", chunks: [.init(Self.tidiedJSON)])
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [success, success, .init(statusCode: 401)])
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let tidier = try await makeTidier(baseURL: baseURL, apiKey: key)
+    let reports = PhaseRecorder()
+
+    let outcome = try await tidier.tidy(
+      text: Self.transcript, model: nil, style: .transcript, context: .empty,
+      progress: { done, total in reports.append(.tidying(succeeded: done, total: total)) }
+    )
+
+    XCTAssertEqual(outcome.failedChunkCount, 1)
+    XCTAssertEqual(reports.values.last, .tidying(succeeded: 2, total: 3))
+  }
+
+  /// 补跑期间取消：立刻停下、抛「已取消」，不再发补跑请求。
+  func testCancellationDuringRetryStopsWithoutFurtherRequests() async throws {
+    // 补跑前要等 5 秒：取消必须打断这段等待。
+    OpenAICompatibleTranscriptTidier.chunkRetryBaseDelaySeconds = 5
+    let key = "sentinel-\(UUID().uuidString)"
+    let success = FakeOpenAICompatibleServer.ResponseScript(contentType: "application/json", chunks: [.init(Self.tidiedJSON)])
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [success, success, .init(statusCode: 500), success])
+    let baseURL = try server.start()
+    defer { server.stop() }
+    let tidier = try await makeTidier(baseURL: baseURL, apiKey: key)
+    let phases = PhaseRecorder()
+
+    let work = Task {
+      try await tidier.tidy(
+        text: Self.transcript, model: nil, style: .transcript, context: .empty,
+        phase: { phases.append($0) }
+      )
+    }
+    let deadline = ContinuousClock.now + .seconds(10)
+    while !phases.values.contains(where: { if case .retrying = $0 { true } else { false } }) {
+      guard ContinuousClock.now < deadline else { return XCTFail("没有进入补跑阶段") }
+      try await Task.sleep(for: .milliseconds(20))
+    }
+    let started = ContinuousClock.now
+    work.cancel()
+    do {
+      _ = try await work.value
+      XCTFail("取消后不该拿到结果")
+    } catch let error as TranscriptTidyError {
+      XCTAssertEqual(error, .cancelled)
+    }
+    XCTAssertLessThan(ContinuousClock.now - started, .seconds(2), "取消要打断补跑前的等待")
+    XCTAssertEqual(server.attemptCount, 3, "取消后不该再发补跑请求")
+  }
+
+  /// 估时：⌈段数 ÷ 并发⌉ 波 × 50 秒。
+  func testEstimatedDurationScalesWithChunkWaves() {
+    XCTAssertEqual(OpenAICompatibleTranscriptTidier.estimatedSeconds(chunkCount: 0), 0)
+    XCTAssertEqual(OpenAICompatibleTranscriptTidier.estimatedSeconds(chunkCount: 1), 50)
+    XCTAssertEqual(OpenAICompatibleTranscriptTidier.estimatedSeconds(chunkCount: 3), 50)
+    XCTAssertEqual(OpenAICompatibleTranscriptTidier.estimatedSeconds(chunkCount: 7), 150)
+    // 用和执行同一份切法：3 段各 5900 字的稿子，估出来就是这几段的波数。
+    let chunks = OpenAICompatibleTranscriptTidier.chunks(for: Self.transcript).count
+    XCTAssertEqual(
+      OpenAICompatibleTranscriptTidier.estimatedSeconds(forText: Self.transcript),
+      OpenAICompatibleTranscriptTidier.estimatedSeconds(chunkCount: chunks)
+    )
+  }
+
   /// 全片失败是配置/服务故障，不是部分结果：必须整体报错，
   /// 不能把原文原样返回冒充成功。
   func testAllChunksFailingSurfacesTheFailure() async throws {
@@ -233,6 +332,13 @@ final class TranscriptTidierParallelTests: XCTestCase {
       XCTAssertEqual(error, .responseRejected)
     }
   }
+}
+
+private final class PhaseRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var stored: [TranscriptTidyPhase] = []
+  func append(_ phase: TranscriptTidyPhase) { lock.withLock { stored.append(phase) } }
+  var values: [TranscriptTidyPhase] { lock.withLock { stored } }
 }
 
 private actor TidyProfileStore: ProviderProfileStore {

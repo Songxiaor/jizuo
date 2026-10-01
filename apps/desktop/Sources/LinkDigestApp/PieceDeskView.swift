@@ -17,6 +17,7 @@ struct PieceDeskView: View {
   let onDraft: (PieceID) -> Void
   let onRewrite: (PieceID, RewritePrompt.Intensity) -> Void
   @AppStorage(ExperimentalFeatures.hitLabKey) private var isHitLabEnabled = false
+  @Environment(\.appTheme) private var appTheme
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -45,12 +46,12 @@ struct PieceDeskView: View {
     VStack(alignment: .leading, spacing: 12) {
       VStack(alignment: .leading, spacing: 4) {
         Text("灵感")
-          .font(.caption2.weight(.semibold))
+          .themedFont(.caption, weight: .semibold)
           .foregroundStyle(.tertiary)
           .textCase(.uppercase)
           .tracking(0.6)
         Text(piece.spark)
-          .font(.title3.weight(.medium))
+          .themedFont(.title3, weight: .medium)
           .fixedSize(horizontal: false, vertical: true)
           .textSelection(.enabled)
       }
@@ -77,12 +78,12 @@ struct PieceDeskView: View {
   @ViewBuilder private var finishControl: some View {
     if piece.isFinished {
       Button("重新打开") { model.setStage(nil, for: piece.id) }
-        .font(.subheadline)
+        .themedFont(.subheadline)
     } else {
       // 一个字都没写就能标记完成,产出的是一份内容为占位符的「作品」。
       // 置灰而不是藏起来:藏起来会让人以为这个功能不存在。
       Button("标记已发出") { model.finishPiece(id: piece.id) }
-        .font(.subheadline)
+        .themedFont(.subheadline)
         .disabled(piece.bodyLength == 0)
         .help(piece.bodyLength == 0 ? "还没写正文" : "把这篇收进「我的作品」")
         .accessibilityIdentifier("piece-mark-done")
@@ -98,24 +99,23 @@ struct PieceDeskView: View {
   private var emptyMaterialsRow: some View {
     HStack(spacing: 7) {
       Text("素材")
-        .font(.caption2.weight(.semibold))
+        .themedFont(.caption, weight: .semibold)
         .foregroundStyle(.tertiary)
         .textCase(.uppercase)
         .tracking(0.6)
       Text("0")
-        .font(.caption2)
+        .themedFont(.caption, monospacedDigit: true)
         .foregroundStyle(.tertiary)
-        .monospacedDigit()
       Text("·")
-        .font(.caption2)
+        .themedFont(.caption)
         .foregroundStyle(.quaternary)
       Text("在任意列表里右键条目，选「加入工作台」。")
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(.secondary)
       Spacer(minLength: 0)
     }
     .padding(.horizontal, 20)
-    .padding(.vertical, 9)
+    .padding(.vertical, DesignTokens.Space.sm)
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
@@ -125,15 +125,14 @@ struct PieceDeskView: View {
     VStack(alignment: .leading, spacing: 8) {
       HStack {
         Text("素材")
-          .font(.caption2.weight(.semibold))
+          .themedFont(.caption, weight: .semibold)
           .foregroundStyle(.tertiary)
           .textCase(.uppercase)
           .tracking(0.6)
         Spacer()
         Text("\(piece.materialCount)")
-          .font(.caption2)
+          .themedFont(.caption, monospacedDigit: true)
           .foregroundStyle(.tertiary)
-          .monospacedDigit()
       }
 
       ScrollView {
@@ -147,7 +146,7 @@ struct PieceDeskView: View {
 
       Spacer(minLength: 0)
     }
-    .padding(14)
+    .padding(DesignTokens.Space.md)
     .frame(maxHeight: .infinity, alignment: .top)
   }
 
@@ -160,17 +159,17 @@ struct PieceDeskView: View {
         Image(systemName: material.host == HistoryPlatformDisplay.noteHost ? "square.and.pencil" : "doc.text")
           .font(.system(size: 10))
           .foregroundStyle(.tertiary)
-          .padding(.top, 2)
+          .padding(.top, DesignTokens.Space.xxs)
         Text(material.title)
-          .font(.callout)
+          .themedFont(.callout)
           .lineLimit(2)
           .multilineTextAlignment(.leading)
           .foregroundStyle(material.isAvailable ? Color.primary : Color.secondary)
           .strikethrough(!material.isAvailable)
         Spacer(minLength: 0)
       }
-      .padding(.vertical, 5)
-      .padding(.horizontal, 8)
+      .padding(.vertical, DesignTokens.Space.xs)
+      .padding(.horizontal, DesignTokens.Space.sm)
       .frame(maxWidth: .infinity, alignment: .leading)
       .background(
         RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
@@ -202,15 +201,14 @@ struct PieceDeskView: View {
     VStack(alignment: .leading, spacing: 10) {
       HStack {
         Text("稿子")
-          .font(.caption2.weight(.semibold))
+          .themedFont(.caption, weight: .semibold)
           .foregroundStyle(.tertiary)
           .textCase(.uppercase)
           .tracking(0.6)
         Spacer()
         Text("\(piece.bodyLength) 字")
-          .font(.caption2)
+          .themedFont(.caption, monospacedDigit: true)
           .foregroundStyle(.tertiary)
-          .monospacedDigit()
       }
 
       // 稿子就是一条笔记，所以不在这里再做一个编辑器——那会变成两个能写的地方，
@@ -224,17 +222,17 @@ struct PieceDeskView: View {
           Spacer(minLength: 0)
           Image(systemName: "chevron.right").font(.system(size: 10)).foregroundStyle(.tertiary)
         }
-        .font(.system(size: 13, weight: .medium))
-        .padding(.horizontal, 14)
-        .padding(.vertical, 11)
+        .themedFont(.body, weight: .medium)
+        .padding(.horizontal, DesignTokens.Space.md)
+        .padding(.vertical, DesignTokens.Space.md)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
           RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-            .fill(Color.accentColor.opacity(0.10))
+            .fill(appTheme.accent.opacity(0.10))
         )
         .overlay(
           RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-            .strokeBorder(Color.accentColor.opacity(0.25))
+            .strokeBorder(appTheme.accent.opacity(0.25))
         )
         .contentShape(Rectangle())
       }
@@ -246,7 +244,7 @@ struct PieceDeskView: View {
       }
 
       Text(nextStepHint)
-        .font(.caption)
+        .themedFont(.caption)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
@@ -256,7 +254,7 @@ struct PieceDeskView: View {
       // 传播效果，猜的是一个还不存在的东西。
       if isHitLabEnabled, piece.stage == .polish || piece.stage == .done {
         HitLabView(model: model, piece: piece)
-          .padding(.top, 4)
+          .padding(.top, DesignTokens.Space.xs)
       }
 
     }
@@ -274,24 +272,24 @@ struct PieceDeskView: View {
     VStack(alignment: .leading, spacing: 6) {
       HStack(spacing: 7) {
         ProgressView().controlSize(.small)
-        Text("正在起草…").font(.callout.weight(.medium))
+        Text("正在起草…").themedFont(.callout, weight: .medium)
         Spacer(minLength: 0)
-        Button("停止") { model.cancelDrafting() }.font(.subheadline)
+        Button("停止") { model.cancelDrafting() }.themedFont(.subheadline)
       }
       if !model.draftingText.isEmpty {
         Text(model.draftingText.suffix(300))
-          .font(.system(size: 11.5))
+          .themedFont(.callout)
           .foregroundStyle(.secondary)
           .lineLimit(6)
           .frame(maxWidth: .infinity, alignment: .leading)
           .fixedSize(horizontal: false, vertical: true)
       }
     }
-    .padding(11)
+    .padding(DesignTokens.Space.md)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
-        .fill(Color.accentColor.opacity(0.08))
+        .fill(appTheme.accent.opacity(0.08))
     )
   }
 
@@ -307,7 +305,7 @@ struct PieceDeskView: View {
     if !tools.isEmpty {
       VStack(alignment: .leading, spacing: 6) {
         Text("这一步可以")
-          .font(.caption2.weight(.semibold))
+          .themedFont(.caption, weight: .semibold)
           .foregroundStyle(.tertiary)
           .textCase(.uppercase)
           .tracking(0.6)
@@ -315,11 +313,11 @@ struct PieceDeskView: View {
           Button(action: tool.action) {
             HStack(spacing: 7) {
               Image(systemName: tool.icon).font(.system(size: DesignTokens.IconSize.inline)).frame(width: 14)
-              Text(tool.title).font(.system(size: 12.5))
+              Text(tool.title).themedFont(.callout)
               Spacer(minLength: 0)
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 7)
+            .padding(.horizontal, DesignTokens.Space.md)
+            .padding(.vertical, DesignTokens.Space.sm)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
               RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
@@ -332,7 +330,7 @@ struct PieceDeskView: View {
           .help(tool.hint)
         }
       }
-      .padding(.top, 4)
+      .padding(.top, DesignTokens.Space.xs)
     }
   }
 
@@ -356,13 +354,14 @@ struct PieceDeskView: View {
         StageTool(
           title: model.pieceMaterials.isEmpty ? "就着灵感起草" : "把素材写成初稿",
           icon: "sparkles",
-          hint: model.draftUnavailableReason(for: piece.id) ?? "读完素材写一篇,直接写进稿子",
+          hint: model.draftUnavailableReason(for: piece.id) ?? "读完素材写一篇，直接写进稿子",
           isDisabled: !model.canDraft(for: piece.id)
         ) { onDraft(piece.id) },
       ] + (model.pieceMaterials.isEmpty ? [] : [
         StageTool(
           title: "总结这些素材",
-          icon: "text.alignleft",
+          // 「总结」全 App 一个图标（2026-10-01），和详情页、右键菜单的「总结」认成同一个动作。
+          icon: MenuIcon.summarize,
           hint: "对每份素材各跑一次总结，长素材不用逐字读",
           isDisabled: model.pieceMaterials.isEmpty
         ) {
@@ -375,7 +374,7 @@ struct PieceDeskView: View {
       [
         StageTool(
           title: "生成脑图理骨架",
-          icon: "circle.hexagongrid",
+          icon: MenuIcon.mindMap,
           hint: model.mindMapUnavailableReason(taskID: piece.noteTaskID)
             ?? "把已写的内容画成结构，看哪一节缺东西",
           isDisabled: !model.canGenerateMindMap(taskID: piece.noteTaskID)
@@ -401,7 +400,7 @@ struct PieceDeskView: View {
         ) { onRewrite(piece.id, .polish) },
         StageTool(
           title: "整理排版",
-          icon: "wand.and.stars",
+          icon: MenuIcon.reformat,
           hint: model.noteTidyUnavailableReason(taskID: piece.noteTaskID)
             ?? "重排段落、列表与标题层级；不改文字内容",
           isDisabled: !model.canTidyNote(taskID: piece.noteTaskID)

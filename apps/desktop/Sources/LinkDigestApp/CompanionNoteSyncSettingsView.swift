@@ -17,7 +17,7 @@ struct CompanionNoteSyncSettingsView: View {
 
       SettingsCard(
         title: "与 iPhone 同步",
-        summary: "本机历史里的「我的笔记」和链接会投影成笔记卡，经 iCloud 私有库与手机互相同步。",
+        summary: "资料库里的「我的笔记」和链接会做成笔记卡，通过你自己的 iCloud 和手机互相同步。",
         details: """
         同步走你自己的 iCloud 私人空间：本机先导出，和 iCloud 上的合并，再写回本机。两边都只有你自己看得到。
         在一边删掉的，另一边也会跟着删；稿件和成品不参与同步。

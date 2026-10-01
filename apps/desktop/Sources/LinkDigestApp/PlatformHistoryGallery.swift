@@ -24,7 +24,7 @@ enum PlatformHistoryGalleryPresentation {
   }
 
   static func sortCaption(searchActive: Bool) -> String {
-    searchActive ? "匹配结果按最近更新排列" : "按最近更新排列"
+    searchActive ? "匹配结果按保存时间排列，新的在前" : "按保存时间排列，新的在前"
   }
 
   static func emptyMessage(selectedHosts: Set<String>, searchActive: Bool) -> String {
@@ -60,13 +60,7 @@ enum PlatformHistoryGalleryPresentation {
 
   static func platformDisplayName(for selectedHosts: Set<String>) -> String {
     if selectedHosts.count == 1, let host = selectedHosts.first {
-      let full = HistoryPlatformDisplay.name(forHost: host)
-      switch full {
-      case "微信公众号": return "公众号"
-      case "哔哩哔哩": return "B站"
-      case "待分类": return "其他"
-      default: return full
-      }
+      return HistoryPlatformDisplay.shortName(forHost: host)
     }
     if !selectedHosts.isEmpty,
        selectedHosts.allSatisfy({ !HistoryPlatformDisplay.isWellKnown(host: $0) }) {
@@ -102,8 +96,16 @@ struct PlatformHistoryGallery: View {
   /// 返回三栏列表。传了就只收起卡片墙、保留当前来源；不传（独立的来源页）才清空来源选择。
   /// 原来一律清空，从 X 的卡片墙返回会落到「全部」（2026-09-25 走查）。
   var onBack: (() -> Void)? = nil
-  /// 页头右端的排序：只排已加载的卡，不改后台分页顺序。`.original` 即「最近更新」。
-  @State private var sortOrder: WorkSortOrder = .original
+  /// 多选后「移到回收站」：走三栏同一套确认弹窗。不传就不显示这个按钮。
+  var onDeleteSelection: (() -> Void)? = nil
+  /// 页头右端的排序：只排已加载的卡，不改后台分页顺序。`.original` 是后台的顺序——
+  /// 按**保存时间**新到旧（listFilter 的 ordersBySavedTime），和三栏列表的「今天 / 昨天」一致。
+  /// 原来叫「最近更新」，名不副实；选过的排序也每次进来都被重置（2026-10-01 走查）。
+  @AppStorage("platformGallerySortOrder") private var sortOrderRaw = WorkSortOrder.original.rawValue
+  private var sortOrder: WorkSortOrder {
+    get { WorkSortOrder(rawValue: sortOrderRaw) ?? .original }
+    nonmutating set { sortOrderRaw = newValue.rawValue }
+  }
 
   private var selectedHosts: Set<String> { model.selectedHosts }
 
@@ -120,7 +122,7 @@ struct PlatformHistoryGallery: View {
   }
 
   private func sortTitle(_ order: WorkSortOrder) -> String {
-    order == .original ? "最近更新" : order.title
+    order == .original ? "最近保存" : order.title
   }
 
   private var titleText: String {
@@ -161,7 +163,21 @@ struct PlatformHistoryGallery: View {
           .lineLimit(1)
           .accessibilityIdentifier("\(accessibilityPrefix)-title")
         Spacer(minLength: 0)
-        Picker("排序", selection: $sortOrder) {
+        // 从三栏列头的「卡片视图」进来时，回去的开关就放在同一页的同一类位置：
+        // 「列表 / 卡片」两段，当前在「卡片」。原来只有工具栏左上一个不写字的「<」，
+        // 要找半天才知道怎么回去（2026-10-01 Syc 反馈）。
+        if onBack != nil {
+          Picker("显示方式", selection: Binding(get: { 1 }, set: { if $0 == 0 { goBack() } })) {
+            Label("列表", systemImage: "list.bullet").tag(0)
+            Label("卡片", systemImage: "square.grid.2x2").tag(1)
+          }
+          .pickerStyle(.segmented)
+          .labelsHidden()
+          .fixedSize()
+          .help("切回左中右三栏的列表")
+          .accessibilityIdentifier("\(accessibilityPrefix)-view-mode")
+        }
+        Picker("排序", selection: Binding(get: { sortOrder }, set: { sortOrder = $0 })) {
           ForEach(WorkSortOrder.allCases) { order in
             Text(sortTitle(order)).tag(order)
           }
@@ -175,22 +191,16 @@ struct PlatformHistoryGallery: View {
         .accessibilityLabel("排序")
         .accessibilityIdentifier("\(accessibilityPrefix)-sort")
       }
-      .padding(.horizontal, 14)
+      .padding(.horizontal, DesignTokens.Layout.columnInset)
       .padding(.top, 12)
 
-      HStack(spacing: 6) {
-        Image(systemName: "magnifyingglass")
-          .foregroundStyle(theme.secondaryText)
+      // 和三栏列表、博主目录同一个搜索框；原来这里是白底、左右缩进 12，切过来会「跳」（2026-10-01）。
+      ThemedSearchField {
         DebouncedSearchField(placeholder: "搜索标题、正文、总结、标签", committed: model.searchText,
                              onChange: { model.searchText = $0 })
           .focused(searchFocused)
       }
-      .padding(.horizontal, 9)
-      .frame(maxWidth: .infinity)
-      .frame(height: 30)
-      .background(theme.card, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
-      .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(theme.hairline, lineWidth: 1))
-      .padding(.horizontal, 12)
+      .padding(.horizontal, DesignTokens.Layout.columnInset)
       .padding(.vertical, 10)
       .accessibilityIdentifier("\(accessibilityPrefix)-search")
 
@@ -240,13 +250,55 @@ struct PlatformHistoryGallery: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(theme.canvas)
+    // 卡片墙没有详情列，三栏里多选时的批量面板到不了这里：原来勾了几张卡之后，
+    // 既看不到选了几张，也没有「取消选择」，只能一张张再点掉（2026-10-01 走查）。
+    .overlay(alignment: .bottom) {
+      if !model.selectedTaskIDs.isEmpty {
+        selectionBar
+          .padding(.bottom, 16)
+          .transition(.move(edge: .bottom).combined(with: .opacity))
+      }
+    }
+    .animation(.easeOut(duration: 0.18), value: model.selectedTaskIDs.isEmpty)
+    .onChange(of: rows.map(\.taskID), initial: true) { _, order in
+      model.galleryDisplayOrder = sortOrder == .original ? nil : order
+    }
     .accessibilityIdentifier(accessibilityPrefix)
+  }
+
+  private var selectionBar: some View {
+    HStack(spacing: DesignTokens.Space.md) {
+      Text("已选择 \(model.selectedTaskIDs.count) 项")
+        .themedFont(.callout, weight: .semibold)
+        .foregroundStyle(theme.primaryText)
+        .monospacedDigit()
+      if let onDeleteSelection {
+        Button(action: onDeleteSelection) {
+          Label("移到回收站", systemImage: "trash")
+        }
+        .buttonStyle(.appQuiet)
+        .accessibilityIdentifier("\(accessibilityPrefix)-delete-selection")
+      }
+      Button("取消选择") { model.selectedTaskIDs = [] }
+        .buttonStyle(.appQuiet)
+        .help("取消选择（Esc）")
+        .accessibilityIdentifier("\(accessibilityPrefix)-clear-selection")
+    }
+    // 按钮文字整句显示：浮条自己按内容定宽，原来被挤成「移到…」（2026-10-02 自测）。
+    .fixedSize()
+    .padding(.horizontal, 16)
+    .padding(.vertical, 10)
+    .background(theme.card, in: Capsule())
+    .overlay(Capsule().strokeBorder(theme.hairline))
+    .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier("\(accessibilityPrefix)-selection-bar")
   }
 
   @ViewBuilder private var galleryFooter: some View {
     if rows.isEmpty {
       if model.listState == .loading || model.listState == .idle {
-        ProgressView(PlatformHistoryGalleryPresentation.loadingMessage(selectedHosts: selectedHosts))
+        InlineLoadingLabel(PlatformHistoryGalleryPresentation.loadingMessage(selectedHosts: selectedHosts))
           .padding()
           .accessibilityIdentifier("\(accessibilityPrefix)-loading")
       } else if model.listState == .failed {
@@ -320,7 +372,16 @@ private struct PlatformGalleryCell<Menu: View>: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
-    Button(action: onOpen) {
+    // 多选原来只有悬停才露出的右上角小框，键盘、读屏和没想到要悬停的人都用不上
+    // （2026-10-01 走查）。和访达一样：⌘ 点卡片就是勾选；已经在多选时，单击也是勾选，
+    // 不会一不小心打开一张、把选好的几张丢掉。
+    Button {
+      if selectionActive || NSEvent.modifierFlags.contains(.command) {
+        onToggleSelection()
+      } else {
+        onOpen()
+      }
+    } label: {
       CreatorSavedWorkCard(
         row: row, theme: theme, localCover: localCover,
         showsAuthor: showsAuthor,
@@ -333,6 +394,9 @@ private struct PlatformGalleryCell<Menu: View>: View {
     // 「按钮，打开内容」，一屏几十张卡全一样。名字改用这条内容的标题。
     .accessibilityLabel(CreatorDirectoryCardCopy.accessibilityTitle(row: row))
     .accessibilityIdentifier("\(accessibilityPrefix)-card-\(row.taskID.rawValue)")
+    .accessibilityAddTraits(isSelected ? .isSelected : [])
+    .accessibilityAction(named: isSelected ? "取消选择" : "选择") { onToggleSelection() }
+    .help(selectionActive ? "单击勾选或取消；按 Esc 取消全部选择" : "单击打开；⌘ 单击可多选")
     .contextMenu { contextMenu() }
     .overlay(alignment: .topTrailing) {
       CreatorWorkSelectionControl(isSelected: isSelected, theme: theme, onToggle: onToggleSelection)

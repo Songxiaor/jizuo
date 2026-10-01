@@ -229,15 +229,25 @@ public final class UserDefaultsMediaStoragePreferenceStore: @unchecked Sendable 
   }
 
   /// 先按普通书签解析；存量 security-scoped 书签再按老方式试一次。
+  ///
+  /// 两次都不自动挂载（2026-10-01 体检，和 LocalMediaStore.Bookmarks.live 同一条规则）：
+  /// 自选文件夹在没接上的移动硬盘或网络盘上时，原来解析会去挂载、在主线程上卡到
+  /// 「正在连接服务器」超时；第一次失败后换 security scope 再试，又挂一遍。没接上就
+  /// 是「找不到文件夹」，接上之后重新打开即可。
   private static func liveResolveBookmark(_ data: Data) throws -> (url: URL, isStale: Bool) {
     var stale = false
     do {
-      let url = try URL(resolvingBookmarkData: data, options: [.withoutUI], relativeTo: nil, bookmarkDataIsStale: &stale)
+      let url = try URL(
+        resolvingBookmarkData: data,
+        options: [.withoutUI, .withoutMounting],
+        relativeTo: nil,
+        bookmarkDataIsStale: &stale
+      )
       return (url, stale)
     } catch {
       let url = try URL(
         resolvingBookmarkData: data,
-        options: [.withSecurityScope, .withoutUI],
+        options: [.withSecurityScope, .withoutUI, .withoutMounting],
         relativeTo: nil,
         bookmarkDataIsStale: &stale
       )

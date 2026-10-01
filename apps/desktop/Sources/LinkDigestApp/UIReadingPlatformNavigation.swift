@@ -64,8 +64,11 @@ struct UIReadingPlatformNavigation: View {
       } label: {
         // 箭头放在图标那一列、文字和平台名对齐（和平台行同样 8pt / 18pt）。
         HStack(spacing: 8) {
-          Image(systemName: isExpanded.wrappedValue ? "chevron.up" : "chevron.down")
+          // 展开/收起统一 chevron.right 转 90°（2026-10-01）；chevron.up/down 只留给翻条目，
+          // 否则侧栏里这颗箭头和详情页「上一条/下一条」长得一样。
+          Image(systemName: "chevron.right")
             .font(.system(size: 9, weight: .semibold))
+            .rotationEffect(.degrees(isExpanded.wrappedValue ? 90 : 0))
             .frame(width: 18, height: 16)
           Text(isExpanded.wrappedValue ? "收起" : "更多平台 · \(hiddenCount)")
             .themedFont(.subheadline)
@@ -95,14 +98,7 @@ private struct UIReadingPlatformRow: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   private var fullName: String { HistoryPlatformDisplay.name(forHost: item.host) }
-  private var name: String {
-    switch fullName {
-    case "微信公众号": "公众号"
-    case "哔哩哔哩": "B站"
-    case "待分类": "其他"
-    default: fullName
-    }
-  }
+  private var name: String { HistoryPlatformDisplay.shortName(forHost: item.host) }
 
   var body: some View {
     Button(action: onSelect) {

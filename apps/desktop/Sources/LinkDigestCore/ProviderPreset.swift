@@ -39,7 +39,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .zhipu: "智谱 BigModel"
     case .stepFun: "阶跃星辰"
     case .ollama: "Ollama（本地）"
-    case .custom: "自定义"
+    case .custom: "其他服务商（自填地址）"
     }
   }
   public var baseURLTemplate: String {
@@ -131,18 +131,19 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
   /// 是官方端点还是国内直连，也能在配错时对得上。
   public var endpointHost: String {
     switch self {
-    case .ollama: "本机 11434 端口"
-    case .custom: "自己填端点"
+    case .ollama: "本机服务（11434 端口）"
+    case .custom: "自己填服务地址"
     default:
       URL(string: baseURLTemplate)?.host ?? baseURLTemplate
     }
   }
   public var documentationHint: String {
     switch self {
-    case .commandCode: "支持 GOAT、Pro、Max、Team 套餐额度及 Provider 按量付费；Go 套餐不支持 API。请在官网 Studio 创建 API Key，模型权限与额度以你的套餐为准。Claude 自动使用 Messages 接口，其他模型使用 Chat Completions；不支持在线语音转写。"
-    case .ollama: "本地端点：请确认 Ollama 正在运行，并查看其本机 API 文档。"
-    case .custom: "请输入 OpenAI-compatible Chat Completions API root。"
-    default: "请在 \(displayName) 控制台查看 API 文档与模型可用性。"
+    // 对用户说「服务商」「密钥」「服务地址」，不说 Provider / API Key / 端点（2026-10-01）。
+    case .commandCode: "支持 GOAT、Pro、Max、Team 套餐额度及按量付费；Go 套餐不支持 API。请在官网 Studio 创建密钥，模型权限与额度以你的套餐为准。不支持在线转写。"
+    case .ollama: "本机服务：请确认 Ollama 正在运行。"
+    case .custom: "填服务商文档里给的接口地址，一般以 https:// 开头、以 /v1 结尾。"
+    default: "模型名和可用额度，请到 \(displayName) 官网的控制台查看。"
     }
   }
 }

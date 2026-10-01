@@ -14,6 +14,7 @@ struct PieceStageTrack: View {
   /// 不传就是纯指示。列表卡片走的是这条——那里点击应该落到卡片上打开创作，
   /// 一张卡里再嵌四个可点的小目标，等于让人在两种点击之间猜。
   var onSelect: ((PieceStage?) -> Void)?
+  @Environment(\.appTheme) private var appTheme
 
   private var isInteractive: Bool { onSelect != nil }
 
@@ -23,12 +24,12 @@ struct PieceStageTrack: View {
   }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 4) {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
       HStack(spacing: 0) {
         ForEach(Array(PieceStage.track.enumerated()), id: \.offset) { index, item in
           if index > 0 {
             Rectangle()
-              .fill(index <= currentIndex ? Color.accentColor : Color.secondary.opacity(0.25))
+              .fill(index <= currentIndex ? appTheme.accent : Color.secondary.opacity(0.25))
               .frame(height: 1.5)
           }
           dot(index: index, item: item)
@@ -55,18 +56,18 @@ struct PieceStageTrack: View {
   @ViewBuilder private func dot(index: Int, item: PieceStage) -> some View {
     let isFilled = index <= currentIndex
     let visual = Circle()
-      .fill(isFilled ? Color.accentColor : Color.clear)
+      .fill(isFilled ? appTheme.accent : Color.clear)
       .frame(width: 8, height: 8)
       .overlay(
         Circle().strokeBorder(
-          isFilled ? Color.accentColor : Color.secondary.opacity(0.45),
+          isFilled ? appTheme.accent : Color.secondary.opacity(0.45),
           lineWidth: 1.5
         )
       )
       // 当前那一格加一圈光晕，扫一眼就知道停在哪。
       .background(
         Circle()
-          .fill(Color.accentColor.opacity(index == currentIndex ? 0.18 : 0))
+          .fill(appTheme.accent.opacity(index == currentIndex ? 0.18 : 0))
           .frame(width: 16, height: 16)
       )
 
@@ -90,9 +91,8 @@ struct PieceStageTrack: View {
     let alignment: Alignment =
       index == 0 ? .leading : (index == PieceStage.track.count - 1 ? .trailing : .center)
     let text = Text(item.displayName)
-      .font(.caption2)
-      .foregroundStyle(index == currentIndex ? Color.accentColor : Color.secondary.opacity(0.6))
-      .fontWeight(index == currentIndex ? .semibold : .regular)
+      .themedFont(.caption, weight: index == currentIndex ? .semibold : .regular)
+      .foregroundStyle(index == currentIndex ? appTheme.accent : Color.secondary.opacity(0.6))
 
     if isInteractive {
       Button { onSelect?(stage == item ? nil : item) } label: {
@@ -117,7 +117,7 @@ struct PieceCard: View {
   private var stageColor: Color {
     switch piece.stage {
     case .done: .secondary
-    case .draft, .polish: .accentColor
+    case .draft, .polish: appTheme.accent
     default: .secondary
     }
   }
@@ -126,13 +126,14 @@ struct PieceCard: View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 8) {
         Text(piece.stage.displayName)
-          .font(.subheadline.weight(.semibold))
+          .themedFont(.subheadline, weight: .semibold)
           .foregroundStyle(piece.stage == .done ? Color.secondary : appTheme.selectionText)
-          .padding(.horizontal, 8)
-          .padding(.vertical, 2)
+          .padding(.horizontal, DesignTokens.Space.sm)
+          .padding(.vertical, DesignTokens.Space.xxs)
           .background(
-            // selectionFill 与 selectionText 是配对令牌：ink 主题的 accent
-            // 是亮橙，压白字对比只有约 1.9:1，selectionFill 才是给填充用的深档。
+            // selectionFill 与 selectionText 是配对令牌，填充和字必须成对取：深色主题的
+            // 强调色是提亮的浅靛蓝（#8EA8D6），压白字对比不到 2:1，它配的字是深蓝黑。
+            // （2026-10-01 更正：原注释写「ink 主题 accent 是亮橙」，那是 09-10 以前的配色。）
             Capsule().fill(piece.stage == .done ? Color.clear : appTheme.selectionFill)
           )
           .overlay(
@@ -142,7 +143,7 @@ struct PieceCard: View {
           )
         Text(piece.title)
           // 卡片标题原为 14pt；.subheadline（11pt）缩得太狠，.body（13pt）最接近。
-          .font(.body.weight(.semibold))
+          .themedFont(.body, weight: .semibold)
           .lineLimit(2)
           .multilineTextAlignment(.leading)
         Spacer(minLength: 0)
@@ -153,7 +154,7 @@ struct PieceCard: View {
         PieceStageTrack(stage: piece.stage)
       }
 
-      HStack(spacing: 6) {
+      HStack(spacing: DesignTokens.Space.xs) {
         if piece.materialCount > 0 {
           Text("素材 \(piece.materialCount)")
         }
@@ -166,20 +167,19 @@ struct PieceCard: View {
         }
         Spacer(minLength: 0)
       }
-      .font(.subheadline)
+      .themedFont(.subheadline, monospacedDigit: true)
       .foregroundStyle(.tertiary)
-      .monospacedDigit()
     }
-    .padding(12)
+    .padding(DesignTokens.Space.md)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
-        .fill(isSelected ? Color.accentColor.opacity(0.12) : appTheme.card)
+        .fill(isSelected ? appTheme.accent.opacity(0.12) : appTheme.card)
     )
     .overlay(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
         .strokeBorder(
-          isSelected ? Color.accentColor.opacity(0.5) : Color.primary.opacity(0.06),
+          isSelected ? appTheme.accent.opacity(0.5) : Color.primary.opacity(0.06),
           lineWidth: 1
         )
     )
@@ -192,6 +192,11 @@ struct WorkbenchListView: View {
   var model: HistoryViewModel
   let onNewSpark: () -> Void
   let onTakeTopic: (TopicCandidate) -> Void
+
+  /// 右键「删除」后先停在这里等确认。删掉的是一件创作的进度与素材关联，
+  /// 稿子那条笔记留着；但阶段、素材这些攒了几天的东西点错一下就没了，
+  /// 而右键菜单里「删除」和其它项挨得很近（2026-10-01）。
+  @State private var pendingDeletion: PieceSummary?
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -209,21 +214,20 @@ struct WorkbenchListView: View {
           Divider()
           HStack {
             Text("在做的")
-              .font(.body.weight(.semibold))
+              .themedFont(.body, weight: .semibold)
               .foregroundStyle(.secondary)
             Spacer()
-              Text(activeCountLabel)
-              .font(.subheadline)
+            Text(activeCountLabel)
+              .themedFont(.subheadline, monospacedDigit: true)
               .foregroundStyle(.tertiary)
-              .monospacedDigit()
           }
-          .padding(.horizontal, 14)
-          .padding(.vertical, 10)
+          .padding(.horizontal, DesignTokens.Layout.columnInset)
+          .padding(.vertical, DesignTokens.Space.sm)
 
           if model.pieces.isEmpty {
             emptyState
           } else {
-            LazyVStack(spacing: 8) {
+            LazyVStack(spacing: DesignTokens.Space.sm) {
               ForEach(model.pieces) { piece in
                 Button {
                   model.selectedPieceID = piece.id
@@ -233,13 +237,13 @@ struct WorkbenchListView: View {
                 .buttonStyle(.plain)
                 .contextMenu {
                   Button("删除这件创作（保留稿子）", role: .destructive) {
-                    model.deletePiece(id: piece.id)
+                    pendingDeletion = piece
                   }
                 }
               }
             }
-            .padding(.horizontal, 12)
-            .padding(.bottom, 12)
+            .padding(.horizontal, DesignTokens.Layout.columnInset)
+            .padding(.bottom, DesignTokens.Space.md)
           }
 
           Divider()
@@ -252,19 +256,36 @@ struct WorkbenchListView: View {
       // 滚到底才能记的灵感，多半已经忘了。
       Divider()
       Button(action: onNewSpark) {
-        HStack(spacing: 6) {
+        HStack(spacing: DesignTokens.Space.sm) {
           Image(systemName: "plus.circle")
           Text("记一个新灵感")
           Spacer(minLength: 0)
         }
-        .font(.body)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
+        .themedFont(.body)
+        .padding(.horizontal, DesignTokens.Layout.columnInset)
+        .padding(.vertical, DesignTokens.Space.md)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .foregroundStyle(.secondary)
       .accessibilityIdentifier("workbench-new-spark")
+    }
+    .confirmationDialog(
+      "删除「\(pendingDeletion?.title ?? "")」？",
+      isPresented: Binding(
+        get: { pendingDeletion != nil },
+        set: { if !$0 { pendingDeletion = nil } }
+      ),
+      titleVisibility: .visible,
+      presenting: pendingDeletion
+    ) { piece in
+      Button("删除这件创作", role: .destructive) {
+        model.deletePiece(id: piece.id)
+        pendingDeletion = nil
+      }
+      Button("取消", role: .cancel) { pendingDeletion = nil }
+    } message: { _ in
+      Text("阶段和素材清单会一起删掉；稿子和素材本身都还在。")
     }
   }
 
@@ -288,6 +309,6 @@ struct WorkbenchListView: View {
     // 在滚动容器里不能要 maxHeight: .infinity——那是「我要所有剩下的高度」，
     // 而滚动区没有「剩下的高度」这个概念。给一个够站得住的最小高度就行。
     .frame(maxWidth: .infinity, minHeight: 160)
-    .padding(24)
+    .padding(DesignTokens.Space.xl)
   }
 }

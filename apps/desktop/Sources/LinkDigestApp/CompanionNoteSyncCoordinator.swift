@@ -67,7 +67,7 @@ final class CompanionNoteSyncCoordinator {
     guard let history else {
       status = NoteSyncStatus(
         phase: .failed,
-        lastErrorMessage: "历史存储尚未就绪。"
+        lastErrorMessage: "资料库还在打开，请稍后再同步。"
       )
       return
     }
@@ -121,7 +121,7 @@ final class CompanionNoteSyncCoordinator {
           lastSuccessAtMilliseconds: syncResult.lastSuccessAtMilliseconds
             ?? SyncNoteCardFactory.nowMilliseconds(),
           lastErrorMessage: syncResult.lastErrorMessage
-            ?? "已为 \(queuedTranscription) 条手机请求导入转写队列（请在历史中完成本机转写）。"
+            ?? "手机上有 \(queuedTranscription) 条要转写的内容，已排进本机转写，请到对应内容里完成。"
         )
       }
       // 成功写回后刷新列表，让手机新建的笔记立刻可见。
@@ -129,9 +129,15 @@ final class CompanionNoteSyncCoordinator {
     } catch {
       status = NoteSyncStatus(
         phase: .failed,
-        lastErrorMessage: "同步失败：\(error.localizedDescription)"
+        // 原始报错只进日志，界面只说人话和下一步（2026-10-01）。
+        lastErrorMessage: Self.logFailure(error)
       )
     }
+  }
+
+  private static func logFailure(_ error: Error) -> String {
+    AppLog.error(.storage, "companion_note_sync_failed", code: "COMPANION_SYNC_FAILED", ["error": String(describing: error)])
+    return "这次没同步成功，已有笔记都没有改动。请确认 iCloud 已登录、网络正常后再试。"
   }
 }
 

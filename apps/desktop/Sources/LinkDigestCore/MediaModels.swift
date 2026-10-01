@@ -201,13 +201,13 @@ public enum MediaDownloadError: Error, Sendable, Equatable {
 
   public var userMessage: String {
     switch self {
-    case .invalidURL: "视频地址无效。"
-    case .unsafeURL: "为保护本机网络，LinkDigest 不能下载这个视频地址。"
+    case .invalidURL: "视频地址无效，请回到网页重新保存一次。"
+    case .unsafeURL: "为保护本机网络，\(ProductDisplay.name)不能下载这个视频地址。可以在浏览器中打开原网页观看。"
     case .responseStatus: "视频暂时无法下载，请稍后重试。"
-    case .unsupportedContainer: "只支持 mp4 / mov 视频容器。"
-    case .responseTooLarge: "视频超过 200MB 上限，暂不导入。"
-    case .insufficientDiskSpace: "本机磁盘空间不足，无法保存视频。"
-    case .emptyBody: "视频内容为空。"
+    case .unsupportedContainer: "只能保存 mp4 或 mov 格式的视频，这个视频可以在浏览器中打开原网页观看。"
+    case .responseTooLarge: "视频超过 200 MB 上限，没有保存。可以在浏览器中打开原网页观看。"
+    case .insufficientDiskSpace: "磁盘空间不足，视频没有保存。清理一些空间后再试。"
+    case .emptyBody: "下载到的视频是空的，请稍后重试。"
     case .timedOut: "下载视频超时，请稍后重试。"
     case .network: "无法下载视频，请检查网络后重试。"
     case .cancelled: "已取消视频下载。"

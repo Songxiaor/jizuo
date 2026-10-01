@@ -10,25 +10,25 @@ struct MediaStorageSettingsView: View {
   /// 删除扫出来的那份清单前先问一句：这些是已经落在本机磁盘上的视频文件，删了就没了。
   @State private var isUnusedDeletionConfirmationPresented = false
   /// 「恢复默认」会让之后的视频改存到 App 自己的目录，是一次会改变落盘位置的动作。
-  @State private var isRestoreDefaultConfirmationPresented = false
 
   var body: some View {
     SettingsPlainPage {
       SettingsPageHeader(
         title: "视频存储",
         symbol: "externaldrive",
-        caption: "决定历史里的视频怎么在线播、清晰度上限，以及要不要留一份在本机。",
+        caption: "决定资料库里的视频怎么在线播、清晰度上限，以及要不要留一份在本机。",
         fill: SettingsCategoryChip.fill(for: "mediaStorage", theme: appTheme)
       )
 
       // 原来「历史在线播放」和「B 站清晰度」挤在同一个 Section，footer 还把
       // 播放缓存、清晰度、登录依赖三件事混成一段。拆成各自的卡。
       SettingsCard(
-        title: "历史在线播放",
+        title: "在线播放",
         // 签名播放地址会过期、从不入库，所以历史里的视频要在线播就得现去换一个。
         // 这两个选项决定的只是「什么时候去换」。
-        summary: "历史里的视频要在线播，必须现去平台换一个临时地址。这里决定打开条目时是自动去换，还是等你点。",
-        details: "临时播放地址从不写入历史。同一次运行里，最近取过的 10 条会留在内存里，来回切换不会重复请求；退出 App 即清空。\n只有「当前打开的那一条」会触发，打开列表或启动 App 都不会批量刷新。同时最多一个请求在飞，切到别的条目会真正中止上一个——包括抖音那个后台页面，不会堆积。\n本地已保存的视频、刚抓取的当前条目和 YouTube 不走这条路，不受此项影响。",
+        summary: "已保存的视频要在线播，必须现去平台换一个临时播放地址。这里决定打开一条内容时是自动去换，还是等你点。",
+        // 去掉「运行」「请求在飞」「App」这类开发口吻（2026-10-01）。
+        details: "播放地址不会存进资料库。\(ProductDisplay.name)开着的时候，最近取过的 10 条会记在内存里，来回切换不会重复去取；退出\(ProductDisplay.name)就清空。\n只有「当前打开的那一条」会去取，打开列表或启动\(ProductDisplay.name)都不会批量去取。同一时间只取一条，切到别的内容会停掉上一条，不会越积越多。\n已存到本机的视频、刚抓取的那一条和 YouTube 不受这一项影响。",
         summaryPlacement: .aboveControl,
         controlWidth: .full
       ) {
@@ -50,12 +50,12 @@ struct MediaStorageSettingsView: View {
         title: "B 站重新获取清晰度",
         summary: "「重新获取播放」时请求的清晰度上限。档位越高，起播越慢。",
         details: model.bilibiliStreamQuality.settingsExplanation
-          + "\n公开接口一般只到 720P；4K 与会员专属档需要你自己的账号权限。实际拿到哪一档，可以看播放器下方那行选流诊断——它会写明接口返回了哪些档、最后选了哪条。",
+          + "\n不登录一般只到 720p；4K 与大会员专属档需要你自己的账号权限。实际拿到哪一档，看播放器上方标出的清晰度（例如 1080p）。",
         summaryPlacement: .aboveControl,
         control: {
           // 跨页依赖必须给出去处：只说「依赖本机会话」，读者还得自己找那一页。
           SettingsCrossReference(
-            message: "高清需先在「站点登录 → B 站」登录；未登录时回退公开接口。"
+            message: "高清需先在「站点登录 → B 站」登录；没登录时按公开清晰度播放。"
           )
           .accessibilityIdentifier("media-storage-bilibili-login-hint")
         },
@@ -78,7 +78,7 @@ struct MediaStorageSettingsView: View {
           // 整行 Toggle：标签在左、开关贴右边缘，就是系统设置里那种标准行。
           SettingsRow(
             title: "抓取视频后自动保存到本地",
-            caption: "自动保存默认关闭：抓取后的视频只在线速览、不落盘，需要长期保留时点「保存到本地」。"
+            caption: "自动保存默认关闭：抓取后的视频只在线看、不存到硬盘，需要长期保留时点「保存到本地」。"
           ) {
             Toggle("", isOn: $model.autoSaveCapturedVideo)
               .toggleStyle(.switch)
@@ -91,7 +91,7 @@ struct MediaStorageSettingsView: View {
           SettingsRow(
             title: "当前文件夹",
             caption: "保存到本地的视频放在这里，播放时优先读这里。",
-            details: "手动保存和自动保存都受单个视频上限与磁盘空间预检约束。已保存视频优先从该文件夹播放；在历史里删除条目不会删除用户文件夹中的视频。"
+            details: "手动保存和自动保存都受单个视频上限和磁盘空间限制。已保存的视频优先从这个文件夹播放；在汲作里删除内容，不会删掉这个文件夹里的视频。"
           ) {
             HStack(spacing: DesignTokens.Space.sm) {
               Text(model.directoryPath)
@@ -103,23 +103,13 @@ struct MediaStorageSettingsView: View {
               Button(model.usesCustomDirectory ? "更改文件夹" : "选择文件夹", action: chooseDirectory)
                 .buttonStyle(.appNormal)
                 .accessibilityIdentifier("media-storage-choose")
-              // 恢复默认会改掉之后视频的落盘位置，属于「重置」类动作：危险色 + 先问一句。
               // 已经是默认位置时整个不显示：原来是一颗灰掉的粉红字按钮，看着像出错（2026-09-24 走查）。
               if model.usesCustomDirectory {
-              Button("恢复默认") { isRestoreDefaultConfirmationPresented = true }
-                .buttonStyle(.appDestructive(appTheme.danger))
+              // 改回默认只影响以后新下载的视频放哪，旧文件一个不动、随时能再选回来，
+              // 不是危险动作：用普通按钮、直接执行，不再弹确认框（2026-10-01）。
+              Button("改回汲作的文件夹") { model.restoreDefault() }
+                .buttonStyle(.appNormal)
                 .accessibilityIdentifier("media-storage-default")
-                .confirmationDialog(
-                  "把保存位置改回汲作自己的文件夹？",
-                  isPresented: $isRestoreDefaultConfirmationPresented,
-                  titleVisibility: .visible
-                ) {
-                  Button("恢复默认", role: .destructive) { model.restoreDefault() }
-                    .accessibilityIdentifier("media-storage-default-confirm")
-                  Button("取消", role: .cancel) {}
-                } message: {
-                  Text("你现在这个文件夹里的视频一个都不会动，只是以后新下载的视频改存到汲作自己的文件夹。随时可以再选回来。")
-                }
               }
             }
           }
@@ -148,7 +138,7 @@ struct MediaStorageSettingsView: View {
           SettingsRow(
             title: "本地视频总容量上限",
             caption: "关闭时不限制。开启后，新下载写入前会自动删掉最久没碰过的本地视频文件。",
-            details: "被删掉的只是文件，历史记录还在——那条记录会回到「暂不可播 / 重新获取」的状态，随时能再下一次。\n只清理 App 自己的视频目录；你自己选的文件夹里的视频永远不动。"
+            details: "被删掉的只是视频文件，资料库里的那条内容还在，点「重新获取播放」随时能再取一次。\n只清理\(ProductDisplay.name)自己的视频文件夹；你自己选的文件夹里的视频永远不动。"
           ) {
             HStack(spacing: DesignTokens.Space.sm) {
               Toggle("", isOn: $model.totalCapacityEnabled)
@@ -198,7 +188,7 @@ struct MediaStorageSettingsView: View {
                       .accessibilityIdentifier("media-storage-delete-orphans-confirm")
                     Button("取消", role: .cancel) {}
                   } message: {
-                    Text("会从磁盘上删掉这 \(count) 个文件，共 \(MediaStorageSettingsViewModel.formattedBytes(bytes))，不进废纸篓，删了没法撤销。你保存的内容和历史记录一条都不会少，只删这次扫出来的这份清单。")
+                    Text("会从磁盘上删掉这 \(count) 个文件，共 \(MediaStorageSettingsViewModel.formattedBytes(bytes))，不进废纸篓，删了没法撤销。你保存的内容一条都不会少，只删这次扫出来的这份清单。")
                   }
               }
             }
@@ -209,7 +199,7 @@ struct MediaStorageSettingsView: View {
       // 改成会删文件的规则时，先报「现在就会删多少」再等确认。
       SettingsCard(
         title: "转写后清理视频",
-        summary: "只删视频文件本身。转写文字、评论、笔记、标签和封面都保留，历史里这条内容还在。",
+        summary: "只删视频文件本身。转写稿、评论、笔记、标签和封面都保留，资料库里这条内容还在。",
         details: "只清理已经转写过的视频，没转写的视频不会被删。\n天数从视频保存到本机那天算起，每次打开汲作和每次转写完成时检查一次。\n只清理汲作自己的视频文件夹；你自己选的文件夹里的视频不会动。删掉的视频不进废纸篓，没法撤销。",
         summaryPlacement: .aboveControl,
         controlWidth: .full
@@ -277,7 +267,7 @@ struct MediaStorageSettingsView: View {
 
   private var cleanupConfirmationMessage: String {
     guard let pending = model.pendingCleanupConfirmation else { return "" }
-    return "按新规则，已经符合条件的 \(pending.count) 个视频（共 \(MediaStorageSettingsViewModel.formattedBytes(pending.bytes))）会马上从磁盘删掉，不进废纸篓。它们的转写文字、评论和笔记都保留。以后符合条件的视频也会自动清理。"
+    return "按新规则，已经符合条件的 \(pending.count) 个视频（共 \(MediaStorageSettingsViewModel.formattedBytes(pending.bytes))）会马上从磁盘删掉，不进废纸篓。它们的转写稿、评论和笔记都保留。以后符合条件的视频也会自动清理。"
   }
 
   /// 扫描结果直接写在说明行里：用户要先看见"多少个、多大"，才谈得上确认删除。

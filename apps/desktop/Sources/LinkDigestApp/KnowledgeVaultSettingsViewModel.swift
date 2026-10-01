@@ -202,7 +202,7 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
     } else if report.failures.isEmpty {
       lastAutoSyncFailureMessage = nil
     } else {
-      lastAutoSyncFailureMessage = "自动同步有 \(report.failures.count) 条内容未能写入；请点“同步到知识库”查看详情并重试。"
+      lastAutoSyncFailureMessage = "自动同步有 \(report.failures.count) 条内容未能写入；请点「同步到知识库」查看详情并重试。"
     }
   }
 
@@ -241,7 +241,9 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
   ) -> SyncOutcome {
     let taskIDs: [TaskID]
     do { taskIDs = try allTaskIDs(history) } catch {
-      return .failure("读取历史失败：\(error.localizedDescription)")
+      // 系统原始报错只进日志，界面只说人话和下一步（2026-10-01）。
+      AppLog.error(.storage, "vault_sync_list_failed", code: "VAULT_SYNC_READ_FAILED", ["error": String(describing: error)])
+      return .failure("没能读取资料库，这次没有写入任何文件。请稍后再点「同步到知识库」。")
     }
 
     var documents: [KnowledgeVaultDocument] = []
@@ -253,8 +255,9 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
         guard KnowledgeVaultRenderer.isSyncable(projection) else { continue }
         documents.append(KnowledgeVaultRenderer.render(projection))
       } catch {
+        AppLog.error(.storage, "vault_sync_item_read_failed", code: "VAULT_SYNC_ITEM_READ_FAILED", ["error": String(describing: error)])
         failures.append(
-          .init(filename: taskID.rawValue, message: "读取失败：\(error.localizedDescription)")
+          .init(filename: taskID.rawValue, message: "这条没能从资料库读出来，下次同步会再试。")
         )
       }
       if index % 20 == 0 { progress(index, taskIDs.count) }
@@ -262,7 +265,8 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
 
     let existing: [KnowledgeVaultExistingFile]
     do { existing = try KnowledgeVaultWriter.scan(directory: directory) } catch {
-      return .failure("无法读取知识库文件夹的现有文件：\(error.localizedDescription)")
+      AppLog.error(.storage, "vault_sync_scan_failed", code: "VAULT_SYNC_SCAN_FAILED", ["error": String(describing: error)])
+      return .failure("没能读取知识库文件夹里的文件。请确认这个文件夹还在、汲作有权限访问，必要时重新选择文件夹。")
     }
 
     let plan = KnowledgeVaultSync.plan(documents: documents, existing: existing)

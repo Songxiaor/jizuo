@@ -40,9 +40,11 @@ extension SiteSessionProfile {
 }
 
 /// 只读取 `isLogin` 与会员等级，不把 Cookie 写进返回值或日志。
-private func verifyBilibiliSession(cookieHeader: String) async -> String {
+private func verifyBilibiliSession(cookieHeader: String) async -> SiteSessionVerification {
+  // 界面只说人话和下一步；HTTP 状态码、业务码、系统错误写进日志（2026-10-01）。
+  let retryHint = "B 站这次没回应，请稍后再点「校验会话」。"
   guard let endpoint = URL(string: "https://api.bilibili.com/x/web-interface/nav") else {
-    return "校验端点不可用"
+    return .init(message: retryHint, isValid: false)
   }
   let fetcher = ProxyAwareWebPageFetcher()
   do {
@@ -63,7 +65,8 @@ private func verifyBilibiliSession(cookieHeader: String) async -> String {
       )
     )
     guard let root = try? JSONSerialization.jsonObject(with: response.body) as? [String: Any] else {
-      return "无法解析返回内容（HTTP \(response.statusCode)）"
+      AppLog.error(.capture, "bilibili_verify_unparseable", code: "BILIBILI_VERIFY_UNPARSEABLE", ["status": "\(response.statusCode)"])
+      return .init(message: retryHint, isValid: false)
     }
     let data = root["data"] as? [String: Any]
     guard (data?["isLogin"] as? Bool) ?? false else {
@@ -71,13 +74,15 @@ private func verifyBilibiliSession(cookieHeader: String) async -> String {
       let code = root["code"] as? Int ?? -1
       // secret-hygiene:reviewed code 是 B 站 API 的业务错误码整数（如 -101 未登录），
       // 由上一行从 JSON 的 "code" 字段取出并 ?? -1 兜底，不含任何凭据文本。
-      return "服务端不认可这个会话（code \(code)）——高清档不会解锁"  // secret-hygiene:reviewed
+      AppLog.notice(.capture, "bilibili_verify_rejected", ["code": "\(code)"])  // secret-hygiene:reviewed
+      return .init(message: "B 站没认这次登录，高清档不会解锁。请点「清除登录」后重新登录。", isValid: false)
     }
     let vipStatus = (data?["vipStatus"] as? Int) ?? 0
     let vipType = ((data?["vip"] as? [String: Any])?["type"] as? Int) ?? 0
     let vip = vipStatus == 1 ? (vipType >= 2 ? "年度大会员" : "大会员") : "非大会员"
-    return "服务端已认可 · \(vip)"
+    return .init(message: "B 站已确认登录 · \(vip)", isValid: true)
   } catch {
-    return "校验请求失败：\(error)"
+    AppLog.error(.capture, "bilibili_verify_failed", code: "BILIBILI_VERIFY_FAILED", ["error": String(describing: error)])
+    return .init(message: "没连上 B 站，请检查网络后再点「校验会话」。", isValid: false)
   }
 }

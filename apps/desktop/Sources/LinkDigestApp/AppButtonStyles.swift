@@ -76,18 +76,24 @@ struct AppIconButtonStyle: ButtonStyle {
 /// 强度，以及和设计 token 对齐的圆角。
 struct AppButtonStyle: ButtonStyle {
   enum Emphasis {
-    /// 主动作：accent 填充 + 白字。一屏最多一个。
+    /// 主动作：主题的 selectionFill 填充 + selectionText 字。一屏最多一个。
     case prominent
     /// 次要动作：描边。
     case normal
     /// 辅助动作：无背景无描边，只有 hover 时浮出底色。
     case quiet
-    /// 危险动作：和 quiet 同形，但字用危险色（传进 `accent`）。清除、删除、断开走这一档。
+    /// 危险动作：和 quiet 同形，但字用危险色（传进 `accent`，不传取主题 danger）。
+    /// 清除、删除、断开走这一档。
     case destructive
   }
 
   var emphasis: Emphasis = .normal
-  var accent: Color = .accentColor
+  /// 不传就从环境里的主题取（prominent 取 selectionFill、destructive 取 danger）。
+  ///
+  /// 2026-10-01 视觉一致性：原来默认值是 `Color.accentColor`，那是 App 级强调色
+  /// （默认系统蓝），不跟主题走——漏传一次就会冒出一块系统蓝。改成可选、缺省读主题，
+  /// 既去掉了这条退路，又不必改动现有调用点。
+  var accent: Color? = nil
 
   func makeBody(configuration: Configuration) -> some View {
     LabeledBody(configuration: configuration, emphasis: emphasis, accent: accent)
@@ -96,9 +102,10 @@ struct AppButtonStyle: ButtonStyle {
   private struct LabeledBody: View {
     let configuration: Configuration
     let emphasis: Emphasis
-    let accent: Color
+    let accent: Color?
 
     @State private var isHovering = false
+    @Environment(\.appTheme) private var theme
     @Environment(\.isEnabled) private var isEnabled
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -126,11 +133,19 @@ struct AppButtonStyle: ButtonStyle {
         .onHover { isHovering = isEnabled && $0 }
     }
 
+    /// 主动作的底色。调用方都传 `theme.accent`，它在浅色、深色主题里都等于
+    /// `selectionFill`；字色必须和底色成对取，所以字一律用 `selectionText`。
+    private var fill: Color { accent ?? theme.selectionFill }
+    private var danger: Color { accent ?? theme.danger }
+
     private var foreground: Color {
       switch emphasis {
-      case .prominent: .white
+      // 2026-10-01：原来写死 `.white`。深色主题的强调色是提亮过的浅靛蓝（#8EA8D6），
+      // 白字压在上面对比不到 2:1，按钮字发虚；selectionText 是给它配好的深蓝黑（约 7:1）。
+      // 浅色主题的 selectionText 就是白，外观不变。
+      case .prominent: theme.selectionText
       case .normal, .quiet: .primary
-      case .destructive: accent
+      case .destructive: danger
       }
     }
 
@@ -138,13 +153,13 @@ struct AppButtonStyle: ButtonStyle {
       switch emphasis {
       case .prominent:
         // 按下比悬停更深一档，让「已经按下去了」和「只是划过」区分得开。
-        accent.opacity(configuration.isPressed ? 0.82 : (isHovering ? 0.92 : 1))
+        fill.opacity(configuration.isPressed ? 0.82 : (isHovering ? 0.92 : 1))
       case .normal:
         Color.primary.opacity(configuration.isPressed ? 0.08 : (isHovering ? 0.05 : 0))
       case .quiet:
         Color.primary.opacity(configuration.isPressed ? 0.08 : (isHovering ? 0.05 : 0))
       case .destructive:
-        accent.opacity(configuration.isPressed ? 0.14 : (isHovering ? 0.08 : 0))
+        danger.opacity(configuration.isPressed ? 0.14 : (isHovering ? 0.08 : 0))
       }
     }
 

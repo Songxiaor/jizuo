@@ -19,9 +19,45 @@ public protocol TranscriptTidying: Sendable {
     context: TranscriptTidyContext,
     progress: (@Sendable (Int, Int) -> Void)?
   ) async throws -> TranscriptTidyOutcome
+
+  /// 带阶段的进度：除了「已校对几段」，还报「正在补跑第几段」。
+  ///
+  /// 为什么要多一个阶段（2026-10-01 体检）：失败段补跑发生在并发那一波之后，
+  /// 只有 (已完成, 总数) 两个数时，界面会停在「已校对 N/N 段」十几分钟——看起来
+  /// 已经做完却迟迟不保存，用户只能猜它卡死了。
+  func tidy(
+    text: String,
+    model: String?,
+    style: TidyStyle,
+    context: TranscriptTidyContext,
+    phase: (@Sendable (TranscriptTidyPhase) -> Void)?
+  ) async throws -> TranscriptTidyOutcome
+}
+
+/// 校对进行到哪一步。
+public enum TranscriptTidyPhase: Sendable, Equatable {
+  /// 并发校对中：`succeeded` 只数**成功**的段，失败段不算完成。
+  case tidying(succeeded: Int, total: Int)
+  /// 并发那一波跑完后，逐段补跑失败段：第 `attempt` 段（从 1 起），共 `failed` 段要补。
+  case retrying(attempt: Int, failed: Int, total: Int)
 }
 
 public extension TranscriptTidying {
+  /// 不认识阶段的实现（测试替身等）退回老的两数进度；补跑阶段它们本来也没有。
+  func tidy(
+    text: String,
+    model: String?,
+    style: TidyStyle,
+    context: TranscriptTidyContext,
+    phase: (@Sendable (TranscriptTidyPhase) -> Void)?
+  ) async throws -> TranscriptTidyOutcome {
+    var progress: (@Sendable (Int, Int) -> Void)?
+    if let phase {
+      progress = { done, total in phase(.tidying(succeeded: done, total: total)) }
+    }
+    return try await tidy(text: text, model: model, style: style, context: context, progress: progress)
+  }
+
   func tidy(
     text: String,
     model: String?,
@@ -161,12 +197,12 @@ public enum TranscriptTidyError: Error, Sendable, Equatable {
 
   public var userMessage: String {
     switch self {
-    case .modelNotConfigured: "请先在设置中保存文本模型后再校对转写稿。"
-    case .credentialsUnavailable: "这次没能读出模型配置（钥匙串读取失败或超时），请重试。配置本身没有问题。"
-    case .emptyTranscript: "没有可整理的转写文字。"
-    case .authInvalid: "模型校对使用的 API Key 无效或没有权限。"
-    case .responseRejected: "模型服务拒绝了校对请求，请检查模型名和账户额度。"
-    case .networkInterrupted: "模型校对连接中断，请稍后重试。原始转写稿未受影响。"
+    case .modelNotConfigured: "请先在设置的「模型服务」里添加模型，再校对转写稿。"
+    case .credentialsUnavailable: "这次没能读出模型设置（钥匙串没有及时回应），请重试。设置本身没有问题。"
+    case .emptyTranscript: "没有可校对的转写稿。"
+    case .authInvalid: "校对用的密钥无效或没有权限，请到设置的「模型服务」里检查。"
+    case .responseRejected: "服务商拒绝了校对请求，请检查模型名和账户余额。"
+    case .networkInterrupted: "校对时连接断了，请稍后重试。原来的转写稿没有受影响。"
     case .cancelled: "已取消模型校对。"
     }
   }

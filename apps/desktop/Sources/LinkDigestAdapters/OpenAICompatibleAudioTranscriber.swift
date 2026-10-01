@@ -138,19 +138,28 @@ public final class OpenAICompatibleAudioTranscriber: OnlineAudioTranscribing, @u
     } catch is CancellationError {
       throw OnlineAudioTranscriptionError.cancelled
     } catch let error as OnlineAudioTranscriptionError {
+      Self.logDiagnostic(error)
       throw error
     } catch let error as URLError {
       // 只有真正的传输错误才配叫"连接中断"。
-      _ = error
+      AppLog.error(.media, "online_transcription_network_failed", code: "ONLINE_STT_NETWORK", ["urlError": "\(error.code.rawValue)"])
       throw OnlineAudioTranscriptionError.networkInterrupted
     } catch {
       // 其余都发生在本机提取阶段（loadTracks / duration 等 AVFoundation 错误），
       // 之前被折叠成"连接中断"，连续掩盖了取错轨和缺 MIME 两个真实缺陷。
       let ns = error as NSError
-      throw OnlineAudioTranscriptionError.audioExtractionFailed(
+      let failure = OnlineAudioTranscriptionError.audioExtractionFailed(
         detail: "\(ns.domain) \(ns.code)"
       )
+      Self.logDiagnostic(failure)
+      throw failure
     }
+  }
+
+  /// 界面只显示人话；阶段、错误域、错误码写进日志，排查时靠它（2026-10-01）。
+  private static func logDiagnostic(_ error: OnlineAudioTranscriptionError) {
+    guard let detail = error.diagnosticDetail else { return }
+    AppLog.error(.media, "online_transcription_failed", code: "ONLINE_STT_FAILED", ["detail": detail])
   }
 
   private func uploadChunk(

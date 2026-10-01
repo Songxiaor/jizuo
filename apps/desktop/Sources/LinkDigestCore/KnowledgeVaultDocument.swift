@@ -104,7 +104,9 @@ public enum KnowledgeVaultRenderer {
 
     if let summary {
       let bounded = truncated(summary, withinUTF8ByteCount: maximumSummaryUTF8ByteCount)
-      head += "\n## 摘要\n\n" + bounded.text + (bounded.didTruncate ? "\n\n\(truncationNotice)" : "") + "\n"
+      // 小标题与界面统一叫「总结」。改了之后下次同步会把已有文件按「有变化」重写一遍，
+      // 这是一次性的，内容不丢（2026-10-01）。
+      head += "\n## 总结\n\n" + bounded.text + (bounded.didTruncate ? "\n\n\(truncationNotice)" : "") + "\n"
     }
 
     // 正文要带上**所有**层。原来只导出 `snapshots.last`：有听写稿时配文就丢了，

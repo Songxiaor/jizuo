@@ -104,6 +104,12 @@ struct TagManagerView: View {
       Spacer()
       Button("完成") { dismiss() }
         .keyboardShortcut(.defaultAction)
+      // Esc 也能关：「完成」占了回车，原来按 Esc 没反应（2026-10-01 走查）。
+      Button("") { dismiss() }
+        .keyboardShortcut(.cancelAction)
+        .frame(width: 0, height: 0)
+        .opacity(0)
+        .accessibilityHidden(true)
     }
   }
 

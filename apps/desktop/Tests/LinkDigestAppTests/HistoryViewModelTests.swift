@@ -410,6 +410,7 @@ final class HistoryViewModelTests: XCTestCase {
     let model = HistoryViewModel()
     model.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
     await waitUntil { model.listState == .loaded }
+    model.isPlatformCardViewActive = true
     model.selectHost("x.com")
     await waitUntil { model.listState == .loaded && model.selectedHosts == ["x.com"] }
     XCTAssertTrue(model.selectedTaskIDs.isEmpty)
@@ -467,12 +468,15 @@ final class HistoryViewModelTests: XCTestCase {
     await waitUntil { model.listState == .loaded }
     XCTAssertFalse(model.selectedTaskIDs.isEmpty, "普通列表仍可自动选中首条")
 
+    model.isPlatformCardViewActive = true
     model.selectHost("x.com")
     await waitUntil { model.listState == .loaded && model.selectedHosts == ["x.com"] }
     XCTAssertTrue(model.isBrowsingPlatformGallery)
-    XCTAssertTrue(model.selectedTaskIDs.isEmpty, "进入来源平台图库不应自动勾选")
-    XCTAssertNil(model.detail)
+    XCTAssertTrue(model.selectedTaskIDs.isEmpty, "卡片墙上不应自动勾选")
     XCTAssertFalse(model.rows.isEmpty)
+
+    model.isPlatformCardViewActive = false
+    XCTAssertEqual(model.selectedTaskIDs.count, 1, "回到列表模式接住第一条，和「全部」一致")
   }
 
   func testGalleryMultiSelectionDoesNotEnterCreatorReader() {
@@ -1009,7 +1013,8 @@ final class HistoryViewModelTests: XCTestCase {
     model.cancelDeletion(); XCTAssertEqual(repository.deletedTaskIDs, [])
     model.requestDeletion(); model.confirmDeletion()
     await waitUntil { repository.deletedTaskIDs == [first.taskID] && model.rows.count == 1 }
-    XCTAssertTrue(model.selectedTaskIDs.isEmpty)
+    // 删完接住相邻那条（2026-10-01），不再清成未选中。
+    XCTAssertEqual(model.selectedTaskID, model.rows.first?.taskID)
     model.selectedTaskID = second.taskID
     model.requestDeletion(); model.confirmDeletion()
     await waitUntil { repository.deletedTaskIDs == [first.taskID, second.taskID] && model.listState == .empty }
@@ -1148,7 +1153,7 @@ final class HistoryViewModelTests: XCTestCase {
     model.confirmDeletion()
     await waitUntil { repository.deletedTaskIDs == [first.taskID] }
     XCTAssertEqual(model.rows.map(\.taskID), [second.taskID])
-    XCTAssertTrue(model.selectedTaskIDs.isEmpty)
+    XCTAssertEqual(model.selectedTaskID, second.taskID)
   }
 
   func testBatchDeletionConfirmationReportsCountAndSkipsRunningTask() async {
@@ -1174,7 +1179,7 @@ final class HistoryViewModelTests: XCTestCase {
     await waitUntil { repository.deletedTaskIDs == [second.taskID] }
 
     XCTAssertEqual(model.rows.map(\.taskID), [first.taskID])
-    XCTAssertTrue(model.selectedTaskIDs.isEmpty)
+    XCTAssertEqual(model.selectedTaskID, first.taskID)
     XCTAssertEqual(model.deleteOutcomeMessage, "已移到回收站 1 条，1 条正在生成，已跳过。")
   }
 
@@ -2416,7 +2421,7 @@ final class HistoryViewModelTests: XCTestCase {
     XCTAssertEqual(sentContext, TranscriptTidyContext(title: "评测视频", caption: "占位正文"))
     XCTAssertEqual(
       model.transcriptTidyTokenSummary(for: accepted.taskID),
-      "1200 tokens（输入 1000 / 输出 200）"
+      "用量 1200（输入 1000 / 输出 200）"
     )
 
     let after = try repository.detail(taskID: accepted.taskID)

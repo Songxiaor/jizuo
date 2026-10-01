@@ -97,7 +97,10 @@ final class QuickCaptureController: ObservableObject {
     panel.hidesOnDeactivate = false
     panel.isReleasedWhenClosed = false
     panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-    panel.contentViewController = NSHostingController(rootView: QuickCaptureView(controller: self))
+    // 小窗自己 new 出来，不经过主窗口的场景根，得单独注入主题（2026-10-01）。
+    panel.contentViewController = NSHostingController(
+      rootView: ThemedWindowRoot { QuickCaptureView(controller: self) }
+    )
     return panel
   }
 
@@ -139,44 +142,53 @@ final class QuickCaptureController: ObservableObject {
 private struct QuickCaptureView: View {
   @ObservedObject var controller: QuickCaptureController
   @FocusState private var focused: Bool
+  @Environment(\.appTheme) private var theme
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 10) {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
       TextEditor(text: $controller.text)
-        .font(.body)
+        .themedFont(.body)
         .focused($focused)
         .scrollContentBackground(.hidden)
-        .padding(8)
-        .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8))
+        .padding(DesignTokens.Space.sm)
+        .background(
+          theme.primaryText.opacity(0.05),
+          in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+        )
         .overlay(alignment: .topLeading) {
           if controller.text.isEmpty {
             Text("记下一个灵感、一句金句、一个选题…")
+              .themedFont(.body)
               .foregroundStyle(.tertiary)
               .padding(.horizontal, 13).padding(.vertical, 8)
               .allowsHitTesting(false)
           }
         }
         .accessibilityIdentifier("quick-capture-text")
-      HStack(spacing: 6) {
+      HStack(spacing: DesignTokens.Space.sm) {
         ForEach(MaterialCatalog.MaterialType.allCases, id: \.self) { type in
           Button {
             controller.type = type
           } label: {
             Label(type.tagName, systemImage: type.systemImage)
-              .font(.caption)
-              .padding(.horizontal, 8).padding(.vertical, 3)
-              .background(controller.type == type ? AnyShapeStyle(.tint.opacity(0.2)) : AnyShapeStyle(.quaternary.opacity(0.6)), in: Capsule())
+              .themedFont(.caption)
+              .padding(.horizontal, DesignTokens.Space.sm).padding(.vertical, DesignTokens.Space.xs)
+              // 选中用主题强调色；原来是系统 `.tint`，这个窗口没注入主题时就是系统蓝。
+              .background(
+                controller.type == type ? AnyShapeStyle(theme.accent.opacity(0.2)) : AnyShapeStyle(theme.badge),
+                in: Capsule()
+              )
           }
           .buttonStyle(.plain)
           .accessibilityIdentifier("quick-capture-type-\(type.tagName)")
         }
       }
       if let error = controller.errorMessage {
-        Text(error).font(.caption).foregroundStyle(.red)
+        Text(error).themedFont(.caption).foregroundStyle(theme.danger)
       }
       HStack {
         Text("存到「我的笔记」，全局快捷键 \(QuickCaptureController.shortcutDescription)")
-          .font(.caption).foregroundStyle(.secondary)
+          .themedFont(.caption).foregroundStyle(theme.secondaryText)
         Spacer()
         Button("取消") { controller.close() }
           .keyboardShortcut(.cancelAction)
@@ -186,9 +198,10 @@ private struct QuickCaptureView: View {
           .accessibilityIdentifier("quick-capture-save")
       }
     }
-    .padding(.horizontal, 16)
-    .padding(.top, 30)
-    .padding(.bottom, 14)
+    .padding(.horizontal, DesignTokens.Space.lg)
+    // 顶部让出透明标题栏的高度。
+    .padding(.top, DesignTokens.Space.xxl)
+    .padding(.bottom, DesignTokens.Space.lg)
     .frame(minWidth: 460, minHeight: 240)
     .onAppear { focused = true }
   }

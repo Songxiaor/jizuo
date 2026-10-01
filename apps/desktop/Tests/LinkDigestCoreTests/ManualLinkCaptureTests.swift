@@ -277,7 +277,7 @@ final class ManualLinkCaptureTests: XCTestCase {
       XCTFail("verification interstitial must not create a document")
     } catch let error as ManualLinkError {
       XCTAssertEqual(error, .verificationRequired)
-      XCTAssertEqual(error.userMessage, "该页面需要登录或人机验证，请使用浏览器扩展捕获。")
+      XCTAssertEqual(error.userMessage, "该页面需要登录或人机验证，请使用浏览器扩展保存。")
     }
 
     // Real WeChat mobile captcha uses a compound path segment, not bare /captcha.

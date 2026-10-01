@@ -1,4 +1,5 @@
 import Foundation
+import LinkDigestCore
 
 /// 系统「备忘录」里的一条笔记。
 public struct AppleNote: Sendable, Equatable, Decodable {
@@ -36,8 +37,9 @@ public enum AppleNotesLibraryError: Error, Sendable, Equatable {
       return "汲作还没有读取备忘录的权限。请在「系统设置 → 隐私与安全性 → 自动化」里找到汲作，打开其中的「备忘录」，然后回来再同步一次。"
     case .timedOut:
       return "「备忘录」没有及时响应。第一次同步时，系统会弹窗询问是否允许汲作访问备忘录——弹窗可能被其它窗口挡住，请找到它并点「好」，再同步一次。如果之前点过「不允许」，请在「系统设置 → 隐私与安全性 → 自动化」里打开汲作下面的「备忘录」。"
-    case let .failed(detail):
-      return "读取备忘录失败：\(detail)。请确认「备忘录」App 能正常打开后重试。"
+    case .failed:
+      // 脚本的原始报错在 `failed` 构造处写进日志，界面只给下一步（2026-10-01）。
+      return "没能读取备忘录。请确认「备忘录」App 能正常打开后重试。"
     }
   }
 }
@@ -156,7 +158,9 @@ public struct AppleNotesLibrary: Sendable {
     // -1712：Apple 事件超时。首次使用时它几乎总是意味着授权弹窗还在等用户。
     if text.contains("-1712") { return .timedOut }
     let line = text.split(separator: "\n").last.map(String.init)?.trimmingCharacters(in: .whitespaces) ?? ""
-    return .failed(line.isEmpty ? "未知错误" : String(line.prefix(120)))
+    let detail = line.isEmpty ? "未知错误" : String(line.prefix(120))
+    AppLog.error(.capture, "apple_notes_script_failed", code: "APPLE_NOTES_FAILED", ["detail": detail])
+    return .failed(detail)
   }
 }
 

@@ -65,6 +65,7 @@ struct HistoryContentView: View {
   /// 点平台默认留在三栏列表里按平台筛选（2026-09-23），和侧栏其他入口一个样子；
   /// 想看卡片墙时从列头「卡片视图」进。换平台或返回后自动回到列表。
   @State private var isPlatformGalleryRequested = false
+  @State private var isEmptyTrashConfirmPresented = false
   @FocusState private var isSearchFocused: Bool
   @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
   @AppStorage(ExperimentalFeatures.workbenchKey) private var isWorkbenchUserEnabled = false
@@ -139,7 +140,8 @@ struct HistoryContentView: View {
   }
 
   var body: some View {
-    themedBody
+    // 菜单命令（⌘F、⇧⌘N、⌘D、⌘[、Esc）挂在最外层，见 `withMenuCommands`。
+    withMenuCommands(themedBody)
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       .modifier(HistoryWindowToolbarThemeModifier(theme: theme))
       // 图片灯箱盖在整个窗口内容之上；点击图外区域或 Esc 退出。
@@ -273,7 +275,9 @@ struct HistoryContentView: View {
         },
         contextMenu: { row in AnyView(DeferredMenuContent { historyContextMenu(for: row) }) },
         accessibilityPrefix: platformGalleryAccessibilityPrefix,
-        onBack: isPlatformGalleryRequested ? { isPlatformGalleryRequested = false } : nil
+        onBack: isPlatformGalleryRequested ? { isPlatformGalleryRequested = false } : nil,
+        onDeleteSelection: model.canDelete(protectedTaskIDs: protectedTaskIDs)
+          ? { model.requestDeletion(protectedTaskIDs: protectedTaskIDs) } : nil
       )
     }
   }
@@ -303,7 +307,49 @@ struct HistoryContentView: View {
     }
   }
 
+  /// 菜单命令挂在根上，不挂在中间列表上：卡片墙、博主页、专注阅读里中间列表不渲染，
+  /// 原来 ⌘F、⇧⌘N、⌘D 在这几处整排变灰、没有说明（2026-10-01 走查）。
+  /// 单独成函数：直接接在根视图那串修饰符后面，编译器类型推断超时。
+  private func withMenuCommands<Content: View>(_ content: Content) -> some View {
+    content
+      .focusedSceneValue(\.focusHistorySearch, FocusHistorySearchAction {
+        if columnVisibility == .detailOnly { columnVisibility = .all }
+        if !showsPlatformGallerySurface, !model.isCreatorDirectoryActive { isListSearchExpanded = true }
+        DispatchQueue.main.async { isSearchFocused = true }
+      })
+      .focusedSceneValue(\.newNote, NewNoteAction { createNote() })
+      .focusedSceneValue(\.todayNote, TodayNoteAction { openTodayNote() })
+      .focusedSceneValue(\.toggleFavorite, model.canToggleFavorite ? ToggleFavoriteAction { model.toggleFavorite() } : nil)
+      .focusedSceneValue(\.newCollection, model.canEditCollections ? NewCollectionAction { model.requestNewCollection() } : nil)
+      .focusedSceneValue(\.goBack, canGoBack ? GoBackAction { goBack() } : nil)
+      // Esc 和 ⌘[ 是同一件事：退一层。专注阅读里原来没有任何出口（只在「更多」菜单里，
+      // 删掉正在读的那条后「更多」也灰了，只能退出 App）。
+      .onExitCommand { if canGoBack { goBack() } }
+      .onChange(of: model.selectedHosts) { _, _ in isPlatformGalleryRequested = false }
+      .onChange(of: isPlatformGalleryRequested) { _, requested in model.isPlatformCardViewActive = requested }
+  }
+
+  /// 现在能不能「退一层」：专注阅读、卡片墙（含读其中一条）、博主页各自的上一层。
+  private var canGoBack: Bool {
+    columnVisibility == .detailOnly || showsPlatformGallerySurface || creatorDirectoryBackTitle != nil
+  }
+
+  private func goBack() {
+    if columnVisibility == .detailOnly {
+      columnVisibility = .all
+    } else if showsPlatformGallerySurface {
+      platformGalleryGoBack()
+    } else if creatorDirectoryBackTitle != nil {
+      creatorDirectoryGoBack()
+    }
+  }
+
   private func platformGalleryGoBack() {
+    // 卡片墙里勾着几张时，Esc / ⌘[ 先取消选择，再按一次才离开。
+    if !isReadingPlatformGalleryItem, !model.selectedTaskIDs.isEmpty {
+      model.selectedTaskIDs = []
+      return
+    }
     if isReadingPlatformGalleryItem {
       platformGalleryScrollTarget = model.endPlatformGalleryReading()
       isReadingPlatformGalleryItem = false
@@ -314,7 +360,9 @@ struct HistoryContentView: View {
 
   private var platformGalleryBackTitle: String {
     let name = PlatformHistoryGalleryPresentation.platformDisplayName(for: model.selectedHosts)
-    return "返回\(name)"
+    // 中文后接英文名要空一格：「返回 X」「返回 YouTube」，「返回抖音」照旧。
+    let needsSpace = name.unicodeScalars.first.map { $0.isASCII } ?? false
+    return needsSpace ? "返回 \(name)" : "返回\(name)"
   }
 
   private var platformGalleryBackIdentifier: String {
@@ -417,8 +465,14 @@ struct HistoryContentView: View {
               model.confirmDeletion(protectedTaskIDs: protectedTaskIDs)
             }
           } message: { Text(model.deletionConfirmationMessage) }
+          .alert("清空回收站？", isPresented: $isEmptyTrashConfirmPresented) {
+            Button("取消", role: .cancel) {}
+            Button("彻底删除 \(model.navigationCounts.trash) 条", role: .destructive) {
+              model.purgeTrash(olderThanDays: 0)
+            }
+          } message: { Text("回收站里的内容和它们的视频、图片会从这台电脑上彻底删除，不能撤销。") }
           .alert("正在生成结果", isPresented: $model.isProtectedDeletionAlertPresented) {
-            Button("好") { model.dismissProtectedDeletionAlert() }
+            Button("知道了") { model.dismissProtectedDeletionAlert() }
           } message: {
             Text("选中的记录正在执行生成、转写或识别任务。请先取消对应任务，再删除记录。")
           }
@@ -436,13 +490,13 @@ struct HistoryContentView: View {
               creatorPendingDeletion = nil
             }
           } message: { creator in
-            Text("只删除博主本身和它在博主列表里的位置。已保存的 \(creator.savedWorkCount) 条作品会留在内容库里，不会被删除。")
+            Text("只删除博主本身和它在博主列表里的位置。已保存的 \(creator.savedWorkCount) 条作品会留在资料库里，不会被删除。")
           }
           .alert("无法删除这条历史记录", isPresented: $model.isDeleteFailurePresented) {
-            Button("好") { model.dismissDeleteFailure() }
-          } message: { Text("本地历史未发生删除，请稍后重试。") }
+            Button("知道了") { model.dismissDeleteFailure() }
+          } message: { Text("资料库里什么都没删，请稍后重试。") }
           .alert("删除结果", isPresented: $model.isDeleteOutcomePresented) {
-            Button("好") { model.dismissDeleteOutcome() }
+            Button("知道了") { model.dismissDeleteOutcome() }
           } message: { Text(model.deleteOutcomeMessage) }
           .sheet(isPresented: $isNewSparkPresented) { newSparkSheet }
           .sheet(isPresented: $model.isTagManagerPresented) { TagManagerView(model: model) }
@@ -450,7 +504,7 @@ struct HistoryContentView: View {
             get: { model.workbenchFailure != nil },
             set: { if !$0 { model.dismissWorkbenchFailure() } }
           )) {
-            Button("好") { model.dismissWorkbenchFailure() }
+            Button("知道了") { model.dismissWorkbenchFailure() }
           } message: { Text(model.workbenchFailure ?? "") }
           // 批量总结要花钱，确认弹窗里先给出粗估 token 量级再让用户点。
           .alert(
@@ -494,7 +548,7 @@ struct HistoryContentView: View {
             .accessibilityIdentifier("untranscribed-bulk-confirm")
           } message: { Text(untranscribedConfirmationMessage) }
           .alert("批量总结结果", isPresented: $model.isBatchSummaryOutcomePresented) {
-            Button("好") { model.dismissBatchSummaryOutcome() }
+            Button("知道了") { model.dismissBatchSummaryOutcome() }
             if model.batchSummaryOutcomeMessage.contains("失败") {
               Button("重试选中项") {
                 model.dismissBatchSummaryOutcome()
@@ -527,7 +581,7 @@ struct HistoryContentView: View {
             }
           } message: { Text(model.batchTranslationConfirmationMessage) }
           .alert("批量翻译结果", isPresented: $model.isBatchTranslationOutcomePresented) {
-            Button("好") { model.dismissBatchTranslationOutcome() }
+            Button("知道了") { model.dismissBatchTranslationOutcome() }
             if model.batchTranslationOutcomeMessage.contains("失败") {
               Button("重试选中项") {
                 model.dismissBatchTranslationOutcome()
@@ -536,13 +590,13 @@ struct HistoryContentView: View {
             }
           } message: { Text(model.batchTranslationOutcomeMessage) }
           .alert("无法准备导出", isPresented: $model.isExportPreparationFailurePresented) {
-            Button("好") { model.dismissExportPreparationFailure() }
+            Button("知道了") { model.dismissExportPreparationFailure() }
           } message: { Text("无法准备导出，请检查历史记录后重试。") }
           .alert("无法保存导出文件", isPresented: $model.isExportSaveFailurePresented) {
-            Button("好") { model.dismissExportSaveFailure() }
+            Button("知道了") { model.dismissExportSaveFailure() }
           } message: { Text("请检查所选文件夹的权限后重试。") }
           .alert("视频自动保存失败", isPresented: $model.isCapturedMediaAutoSaveFailurePresented) {
-            Button("好") { model.dismissCapturedMediaAutoSaveFailure() }
+            Button("知道了") { model.dismissCapturedMediaAutoSaveFailure() }
           } message: { Text(model.capturedMediaAutoSaveFailureMessage) }
           .alert("需要下载 Apple 离线听写模型", isPresented: $model.isTranscriptionModelConfirmationPresented) {
             Button("取消", role: .cancel) { model.cancelModelDownloadConfirmation() }
@@ -554,7 +608,7 @@ struct HistoryContentView: View {
             Button("取消", role: .cancel) { model.cancelOnlineTranscriptionConfirmation() }
             Button("同意并在线转写") { model.confirmOnlineTranscription() }
           } message: {
-            Text("App 会在本机从视频流提取短音频分片，再发送到你配置的 /audio/transcriptions 服务。完整视频和带签名的视频 URL 不会交给模型商家；文字会保存到本机历史。")
+            Text("汲作会在本机从视频里取出声音、切成小段，发给你设置的在线转写服务商。完整视频和视频地址不会交给服务商；转写稿保存在资料库里。")
           }
           .alert("将转写文字发送给聊天模型校对？", isPresented: $model.isTranscriptTidyConfirmationPresented) {
             Button("取消", role: .cancel) { model.cancelTranscriptTidyConfirmation() }
@@ -566,7 +620,7 @@ struct HistoryContentView: View {
             Button("取消", role: .cancel) { model.cancelReformatConfirmation() }
             Button("同意并整理") { model.confirmArticleReformat() }
           } message: {
-            Text("App 只发送正文文字，用于在段落之间插入小标题，不改动正文一个字。重排稿与原文并存，随时可以切回原文。")
+            Text("汲作只发送正文文字，用来在段落之间加小标题，不改正文一个字。整理排版后的版本和原文并存，随时可以切回原文。")
           }
           .fileExporter(
             isPresented: $model.isExportPanelPresented,
@@ -584,7 +638,7 @@ struct HistoryContentView: View {
     }
     .toolbar {
       ToolbarItem(placement: .navigation) {
-        if showsPlatformGallerySurface || model.isCreatorDirectoryActive {
+        if showsPlatformGallerySurface || model.isCreatorDirectoryActive || columnVisibility == .detailOnly {
           Button {
             columnVisibility = columnVisibility == .detailOnly ? .all : .detailOnly
           } label: {
@@ -601,22 +655,27 @@ struct HistoryContentView: View {
         if showsPlatformGallerySurface {
           Button(action: platformGalleryGoBack) {
             Label(isReadingPlatformGalleryItem ? platformGalleryBackTitle : "返回列表", systemImage: "chevron.left")
+              // 工具栏默认只画图标：一个光秃秃的「<」看不出是返回、返回到哪（2026-10-01）。
+              .labelStyle(.titleAndIcon)
           }
           .help(isReadingPlatformGalleryItem ? platformGalleryBackTitle : "回到左中右三栏的内容列表")
           .accessibilityIdentifier(isReadingPlatformGalleryItem
             ? platformGalleryBackIdentifier
             : "\(platformGalleryAccessibilityPrefix)-toolbar-back")
+          .modifier(ToolbarContentEdgeAlignment(sidebarWidth: DesignTokens.Layout.storedSidebarWidth(storedSidebarWidth)))
         }
       }
       ToolbarItem(placement: .navigation) {
         if let title = creatorDirectoryBackTitle {
           Button(action: creatorDirectoryGoBack) {
             Label(title, systemImage: "chevron.left")
+              .labelStyle(.titleAndIcon)
           }
           .help(title)
           .accessibilityIdentifier(model.isReadingCreatorWorkInDirectory
             ? "history-creator-directory-back"
             : "history-creator-directory-back-to-catalog")
+          .modifier(ToolbarContentEdgeAlignment(sidebarWidth: DesignTokens.Layout.storedSidebarWidth(storedSidebarWidth)))
         }
       }
       // 卡片墙和博主页不是三栏布局，没有详情列把「收藏 / 标签 / ⋯」顶到右边，
@@ -776,7 +835,19 @@ struct HistoryContentView: View {
   }
 
   /// 列表列标题：当前看的是哪一处。原来窗口标题固定写「汲作」，不提供任何信息。
-  static let listTopAnchor = "history-list-top"
+  // 「回到最上面」滚到列表里第一个真实的东西。原来顶上垫一行 0 高的定位行，
+  // 它自成一组，侧栏样式在它和「今天」之间加了一段组间距，列头下空出一大截
+  // （2026-10-01 Syc 截图）。
+  static let listTopBatchesID = "history-list-top-batches"
+  static let listTopPendingID = "history-list-top-pending"
+  static func listSectionHeaderID(_ sectionID: String) -> String { "history-list-section-\(sectionID)" }
+  private var listTopScrollID: AnyHashable? {
+    if !visibleProfileImportBatches.isEmpty { return Self.listTopBatchesID }
+    if !ordinaryPendingCaptures.isEmpty { return Self.listTopPendingID }
+    guard let first = historyListSections.first else { return nil }
+    if first.title != nil { return Self.listSectionHeaderID(first.id) }
+    return first.entries.first.map { AnyHashable($0.row.taskID) }
+  }
 
   private var listColumnTitle: String {
     // 搜索时标题说清搜到多少条；原来仍写「全部」，看不出是搜索结果、有多少。
@@ -814,8 +885,9 @@ struct HistoryContentView: View {
     // 列宽 260pt 时只剩两个按钮的位置。来源页多一个「卡片视图」就放不下，系统把
     // 整组按钮往右推，「＋」压在分栏线上，还在线右边多出一条分段线（2026-09-24 实测）。
     ToolbarItem(placement: .navigation) {
+      // 跟设置里的界面字号走（原来写死 15pt，调大字号后列标题不变，2026-10-01 体检）。
       Text(listColumnTitle)
-        .font(.system(size: 15, weight: .bold))
+        .themedFont(.headline, weight: .bold)
         .lineLimit(1)
         .truncationMode(.tail)
         // 博主名可能很长：列宽 220pt 时，标题超过约 96pt 就会把三个按钮重新挤上分栏线。
@@ -850,7 +922,7 @@ struct HistoryContentView: View {
         } label: {
           Label("卡片视图", systemImage: "square.grid.2x2")
         }
-        .help("以卡片墙查看这个来源的全部内容")
+        .help("以卡片墙查看这个来源的全部内容；卡片页右上角的「列表 / 卡片」可以切回来")
         .accessibilityIdentifier("history-platform-gallery-open")
       }
       addMenu
@@ -860,29 +932,15 @@ struct HistoryContentView: View {
   private var sidebar: some View {
     VStack(spacing: 0) {
       if showsListSearchField {
-      HStack(spacing: 6) {
-        Image(systemName: "magnifyingglass")
-          .foregroundStyle(.secondary)
+      // 三处搜索框同一个组件（2026-10-01 视觉一致性）。
+      ThemedSearchField {
         // 提示语要说清搜的范围。写「搜索历史」时用户不会想到能搜正文，
-        // 于是有了这个能力也用不上。
-        //
-        // 「总结」必须留在这里：能搜总结是仓库里最刻意实现的一条能力
-        // （见 GRDBHistoryRepository 里遍历全部 artifacts 的那段 EXISTS），
-        // 而这行占位文字是它唯一的曝光入口。要缩短就砍「作者」——作者没有
-        // 独立列，本来就只是搜正文时顺带覆盖到的。
+        // 于是有了这个能力也用不上。「总结」必须留：能搜总结是刻意实现的能力。
         DebouncedSearchField(placeholder: listSearchPlaceholder, committed: model.searchText,
                              onChange: { model.searchText = $0 })
           .focused($isSearchFocused)
       }
-      .padding(.horizontal, 9)
-      .frame(maxWidth: .infinity)
-      .frame(height: 30)
-      // 白底圆角搜索胶囊浮在暖色列表面板上，与参考稿的搜索框一致。
-      // 中间列已经是纸面色，搜索框改成浅一档的凹槽，不再是白框套白底。
-      .background(theme.primaryText.opacity(0.045), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
-      .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(theme.hairline, lineWidth: 1))
-      // 左右 10pt 和侧栏选中条、列表卡片外缘同一条线；顶上 5pt 和侧栏第一行、正文第一行同一高度。
-      .padding(.horizontal, 10).padding(.top, 5).padding(.bottom, 10)
+      .padding(.horizontal, DesignTokens.Layout.columnInset).padding(.top, 5).padding(.bottom, 10)
         .accessibilityIdentifier("history-search")
         .background(ReleaseInitialSearchFocus().allowsHitTesting(false))
       }
@@ -899,42 +957,68 @@ struct HistoryContentView: View {
           .padding(.horizontal, 10).padding(.bottom, 8)
           .accessibilityIdentifier("history-read-only-banner")
       }
+      if model.selectedScope == .trash, !model.rows.isEmpty {
+        // 回收站原来没有任何说明：不知道会不会自动清、也没有一键清空，
+        // 恢复只藏在右键菜单里（2026-10-01 走查）。
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          Text("放满 \(HistoryTrashPolicy.retentionDays) 天自动删除")
+            .themedFont(.caption)
+            .foregroundStyle(theme.secondaryText)
+            .fixedSize(horizontal: false, vertical: true)
+          Spacer(minLength: 4)
+          Button("清空") { isEmptyTrashConfirmPresented = true }
+            .buttonStyle(.appQuiet)
+            .controlSize(.small)
+            .disabled(model.isReadOnly)
+            .accessibilityIdentifier("history-trash-empty")
+        }
+        .padding(.horizontal, DesignTokens.Layout.columnInset + 4)
+        .padding(.bottom, 8)
+        .accessibilityIdentifier("history-trash-banner")
+      }
       if let notice = manualLink.captureNotice {
         captureNoticeBanner(notice)
       }
       if let failure = model.creatorFailure {
         HStack {
-          Text(failure).themedFont(.caption)
+          Label(failure, systemImage: "exclamationmark.triangle")
+            .themedFont(.caption)
+            .foregroundStyle(theme.danger)
           Spacer()
           Button("知道了", action: model.dismissCreatorFailure)
         }
-        .padding(.horizontal, 12).padding(.bottom, 8)
+        // 10：和搜索框、列表卡片外缘同一条线（原来 12，往里缩 2pt，2026-10-01 体检）。
+        .padding(.horizontal, 10).padding(.bottom, 8)
       }
       if let creator = model.selectedCreator {
-        HStack(spacing: 8) {
+        // 名字一行、按钮一行：列宽 220–260 时同一行放名字加两个按钮，名字被挤成三四个字一折
+        // （2026-10-01 体检）。
+        VStack(alignment: .leading, spacing: 6) {
           Text(creator.directoryDisplayName)
             .themedFont(.headline)
             .lineLimit(2)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
-          Spacer()
-          Button("更新资料") {
-            presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
+          HStack(spacing: 8) {
+            Button("更新资料") {
+              presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
+            }
+            .buttonStyle(.appQuiet)
+            .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
+            .help("只刷新姓名和头像，不必保存新作品")
+            .accessibilityIdentifier("history-creator-refresh-selected")
+            // 一主一次：抓取作品是这一页的主动作。
+            Button("抓取作品") {
+              presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
+            }
+            .buttonStyle(.appProminent(theme.accent))
+            .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
+            .help(ProfileImportPlatform.parse(creator.profileURL) != nil ? "打开主页并选择作品" : "暂不支持此平台主页")
+            .accessibilityIdentifier("history-creator-capture-selected")
           }
-          .buttonStyle(.appQuiet)
-          .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
-          .help("只刷新姓名和头像，不必保存新作品")
-          .accessibilityIdentifier("history-creator-refresh-selected")
-          // 一主一次：抓取作品是这一页的主动作。
-          Button("抓取作品") {
-            presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
-          }
-          .buttonStyle(.appProminent(theme.accent))
-          .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
-          .help(ProfileImportPlatform.parse(creator.profileURL) != nil ? "打开主页并选择作品" : "暂不支持此平台主页")
-          .accessibilityIdentifier("history-creator-capture-selected")
         }
-        .padding(.horizontal, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 10)
         .padding(.bottom, 8)
       }
       if model.selectedScope == .unsummarized, !providerSettings.autoSummarizeNewCaptures {
@@ -1068,7 +1152,7 @@ struct HistoryContentView: View {
           HistoryInlineState(
             symbol: "exclamationmark.triangle",
             title: "无法载入历史记录",
-            message: "本机历史当前打不开。已保存的内容都还在，这期间也不会写入任何变更。退出并重新打开\(ProductDisplay.name)通常能恢复；仍然不行时，可在「数据与备份」里从备份恢复。",
+            message: "资料库这次打不开。已保存的内容都还在，这期间也不会写入任何变更。退出并重新打开\(ProductDisplay.name)通常能恢复；仍然不行时，可在「数据与备份」里从备份恢复。",
             actionTitle: "查看备份说明",
             action: {
               SettingsNavigationRequest.request("dataBackup")
@@ -1081,13 +1165,6 @@ struct HistoryContentView: View {
       case .loaded, .loading, .failed, .idle, .empty:
         ScrollViewReader { batchScroll in
           List(selection: $model.selectedTaskIDs) {
-          // 列表顶端的定位点：要「回到最上面」时滚到它，分组标题跟着一起露出来。
-          Color.clear.frame(height: 1)
-            .id(Self.listTopAnchor)
-            .listRowInsets(EdgeInsets())
-            .listRowSeparator(.hidden)
-            .listRowBackground(Color.clear)
-            .accessibilityHidden(true)
           if !visibleProfileImportBatches.isEmpty {
             Section {
               ProfileImportBatchStack(
@@ -1098,9 +1175,10 @@ struct HistoryContentView: View {
               .listRowBackground(Color.clear)
               .listRowInsets(EdgeInsets(top: 2, leading: 8, bottom: 2, trailing: 8))
               .listRowSeparator(.hidden)
+              .id(Self.listTopBatchesID)
             } header: {
               if hasInProgressProfileImportBatch {
-                Text("主页抓取批次").themedFont(.caption).foregroundStyle(.secondary)
+                listSectionHeader("主页抓取批次")
               }
             }
           }
@@ -1112,7 +1190,7 @@ struct HistoryContentView: View {
                 PendingCaptureRow(pending: pending, model: manualLink)
               }
             } header: {
-              Text("抓取队列").themedFont(.caption).foregroundStyle(.secondary)
+              listSectionHeader("抓取队列").id(Self.listTopPendingID)
             }
           }
           // 按存入时间分「今天 / 昨天 / 近 7 天 / 几月」。回收站按删除时间排，不分组。
@@ -1146,11 +1224,8 @@ struct HistoryContentView: View {
           } header: {
             if let title = section.title {
               // 和侧栏分组标题同一种写法、同一条左边线（卡片里的图标）。
-              Text(title)
-                .themedFont(.subheadline, weight: .medium)
-                .foregroundStyle(theme.secondaryText)
-                .padding(.leading, DesignTokens.Space.xs)
-                .accessibilityAddTraits(.isHeader)
+              listSectionHeader(title)
+                .id(Self.listSectionHeaderID(section.id))
                 .accessibilityIdentifier("history-list-day-group")
             }
           }
@@ -1171,6 +1246,13 @@ struct HistoryContentView: View {
             }
           }
         }.listStyle(.sidebar)
+          // 顶端定位行要真的是 0 高：List 默认给每行一个最小行高，那一行原来白占了一整行，
+          // 列表顶上空出一大截（2026-10-01 Syc 截图）。内容行自己有 minHeight 44，不受影响。
+          .environment(\.defaultMinListRowHeight, 0)
+          // 分组标题默认最小高度和列表顶部内边距叠起来，「今天」离列头空出约 60pt，
+          // 比左栏、正文都低一截（2026-10-01 Syc 截图）。收到和侧栏同一档。
+          .environment(\.defaultMinListHeaderHeight, 22)
+          .contentMargins(.top, 0, for: .scrollContent)
           // `.listStyle(.sidebar)` 只是外观，读屏却会把这一列念成「边栏」——
           // 而真正的边栏在它左边。显式命名成它实际装的东西。
           .accessibilityLabel("内容列表")
@@ -1203,7 +1285,7 @@ struct HistoryContentView: View {
             for delay in [150, 450, 900] {
               try? await Task.sleep(for: .milliseconds(delay == 150 ? 150 : delay - 150))
               if Task.isCancelled { return }
-              batchScroll.scrollTo(Self.listTopAnchor, anchor: .top)
+              if let top = listTopScrollID { batchScroll.scrollTo(top, anchor: .top) }
             }
           }
           // reveal 之后列表要重载，目标行可能还没进 rows：等它出现再滚。
@@ -1266,18 +1348,16 @@ struct HistoryContentView: View {
     // 列表和正文同用纸面色：原来侧栏、列表、正文三档底色，窗口被切成三块互不相干的板子。
     // 现在侧栏一档、「列表 + 正文」一档，中间只靠一条细线分开，读起来是一组。
     .background(theme.card.opacity(theme.isNative ? 0 : 1).ignoresSafeArea(edges: .top))
-    .focusedSceneValue(\.focusHistorySearch, FocusHistorySearchAction {
-      isListSearchExpanded = true
-      DispatchQueue.main.async { isSearchFocused = true }
-    })
-    .focusedSceneValue(\.newNote, NewNoteAction { createNote() })
-    .focusedSceneValue(\.todayNote, TodayNoteAction { openTodayNote() })
-    .focusedSceneValue(\.toggleFavorite, model.canToggleFavorite ? ToggleFavoriteAction { model.toggleFavorite() } : nil)
-    .focusedSceneValue(\.newCollection, model.canEditCollections ? NewCollectionAction { model.requestNewCollection() } : nil)
-    .onChange(of: model.selectedHosts) { _, _ in isPlatformGalleryRequested = false }
     // 搜索框失焦且没有搜索词时收回成列头图标，列表多出一行。
     .onChange(of: isSearchFocused) { _, focused in
       if !focused, model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        isListSearchExpanded = false
+      }
+    }
+    // 用筛选条上的 × 清掉搜索词时，搜索框并没有焦点，上面那条收回规则碰不到——
+    // 空的搜索框就一直占着列头下面一行（2026-10-01 Syc 截图）。词清空且不在输入时一并收回。
+    .onChange(of: model.searchText) { _, text in
+      if !isSearchFocused, text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         isListSearchExpanded = false
       }
     }
@@ -1413,12 +1493,12 @@ struct HistoryContentView: View {
       // 汲作是记录平台，不是待办清单：原来的收件箱 / 已归档 / 已使用记的是「处理到哪了」，
       // 那是外部 Agent 或用户自己工作流的事，不占侧栏最显眼的位置。
       Section {
-        navigationButton("全部", systemImage: "line.3.horizontal", count: model.navigationCounts.total, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+        navigationButton("全部", systemImage: "line.3.horizontal", count: model.navigationCounts.total, selected: model.selectedScope == .all && !model.hasCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
           model.selectScope(.all)
         }
         .help("所有记录：收集来的外部内容，和自己的笔记、作品、备忘录、录音")
         .accessibilityIdentifier("history-navigation-all")
-        navigationButton("自有", systemImage: OwnershipIcon.own, seal: .own, count: model.navigationCounts.own, selected: model.selectedScope == .own && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+        navigationButton("自有", systemImage: OwnershipIcon.own, seal: .own, count: model.navigationCounts.own, selected: model.selectedScope == .own && !model.hasCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
           model.selectScope(.own)
         }
         .help("自己说的：笔记、作品、备忘录、语音备忘录。判断错了可以右键改成「外部」")
@@ -1436,7 +1516,7 @@ struct HistoryContentView: View {
         // 自有的本地文件（2026-10-01）：缺了这行，「自有」下面几项加起来比「自有」少，
         // 看着像丢了数据。只数归自有的那部分，点进去也只看自有的，和「来源」里那行合计不同。
         ownLocalFilesRow
-        navigationButton("外部", systemImage: OwnershipIcon.external, seal: .external, count: model.navigationCounts.external, selected: model.selectedScope == .external && !model.hasCategoryFilter && !model.isCreatorDirectoryActive) {
+        navigationButton("外部", systemImage: OwnershipIcon.external, seal: .external, count: model.navigationCounts.external, selected: model.selectedScope == .external && !model.hasCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
           model.selectScope(.external)
         }
         .help("别人的内容：抓来的帖子、文章、视频，从微信、浏览器下载后拖进来的文件。判断错了可以右键改成「自有」")
@@ -1477,13 +1557,14 @@ struct HistoryContentView: View {
           // 正选中它时仍留着，免得选中项凭空消失。计数不强调底色，理由同上：会一直涨的数
           // 染成醒目色等于常驻一个消不掉的红点。
           if !providerSettings.autoSummarizeNewCaptures || model.selectedScope == .unsummarized {
-            navigationButton("未总结", systemImage: "sparkles", count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
+            navigationButton("未总结", systemImage: MenuIcon.summarize, count: model.navigationCounts.unsummarized, selected: model.selectedScope == .unsummarized) {
               model.selectScope(.unsummarized)
             }
             .help("还没有生成总结的内容")
             .accessibilityIdentifier("history-navigation-unsummarized")
           }
-          if model.navigationCounts.trash > 0 {
+          // 回收站清空后正停在回收站里：行不能凭空消失，否则侧栏一个高亮都没有（2026-10-01 体检）。
+          if model.navigationCounts.trash > 0 || model.selectedScope == .trash {
             navigationButton(
               "回收站",
               systemImage: "trash",
@@ -1598,7 +1679,9 @@ struct HistoryContentView: View {
             "全部博主",
             systemImage: "person.2",
             count: model.navigationCounts.creatorCount,
+            // 正在看某位置顶博主时只亮那一行，不和「全部博主」一起亮（2026-10-01 体检）。
             selected: model.isCreatorDirectoryActive
+              && !model.navigationCounts.pinnedCreators.contains { isPinnedCreatorHighlighted($0.id) }
           ) {
             showsCreatorDirectoryCatalog = true
             creatorWorkScrollTarget = nil
@@ -1700,22 +1783,13 @@ struct HistoryContentView: View {
       // 数据,而当前它还没接 AI,手动建创作的价值抵不上迁移成本。
       if isWorkbenchVisible {
       Section {
-        Button { model.enterWorkbench() } label: {
-          HStack(spacing: 8) {
-            Image(systemName: "hammer")
-              .frame(width: 18)
-            Text("工作台")
-              .themedFont(.body)
-            Spacer()
-            let active = model.pieces.filter { !$0.isFinished }.count
-            if active > 0 {
-              countBadge(active, selected: model.isWorkbenchActive)
-            }
-          }
-          .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(model.isWorkbenchActive ? Color.accentColor : Color.primary)
+        // 和其它导航行同一个组件：原来手写，图标颜色、选中色（系统蓝）都和别的行不一样（2026-10-01 体检）。
+        navigationButton(
+          "工作台",
+          systemImage: "hammer",
+          count: { let active = model.pieces.filter { !$0.isFinished }.count; return active > 0 ? active : nil }(),
+          selected: model.isWorkbenchActive
+        ) { model.enterWorkbench() }
         .accessibilityIdentifier("history-navigation-workbench")
       }
       }
@@ -1794,7 +1868,7 @@ struct HistoryContentView: View {
       Label(title, systemImage: systemImage)
         .labelStyle(.titleAndIcon)
         .themedFont(.subheadline)
-        .foregroundStyle(Color.accentColor)
+        .foregroundStyle(theme.accent)
         .padding(.vertical, DesignTokens.Space.xs)
         .contentShape(Rectangle())
     }
@@ -1998,8 +2072,29 @@ struct HistoryContentView: View {
     .accessibilityIdentifier("history-creator-association-notice")
   }
 
+  /// 列表里的小节标题（「今天」「抓取队列」「主页抓取批次」）同一种写法：原来三种字号、
+  /// 两种颜色、缩进差 4pt（2026-10-01 体检）。
+  private func listSectionHeader(_ title: String) -> some View {
+    Text(title)
+      .themedFont(.subheadline, weight: .medium)
+      .foregroundStyle(theme.secondaryText)
+      .padding(.leading, DesignTokens.Space.xs)
+      .accessibilityAddTraits(.isHeader)
+  }
+
+  private func isPinnedCreatorHighlighted(_ id: CreatorID) -> Bool {
+    model.isCreatorDirectoryActive && !showsCreatorDirectoryCatalog && model.selectedCreatorID == id
+  }
+
   private func creatorPinRow(_ creator: CreatorSummary) -> some View {
-    Button { model.selectCreator(creator.id) } label: {
+    // 和「全部博主」里点同一位走同一条路：进这位博主的作品页。原来侧栏置顶行是
+    // 「三栏列表 + 按博主筛选」，同一个博主两处点进去长得完全不一样（2026-10-01 体检）。
+    Button {
+      showsCreatorDirectoryCatalog = false
+      creatorDirectoryScrollTarget = nil
+      creatorWorkScrollTarget = nil
+      model.focusCreatorInDirectory(creator.id)
+    } label: {
       HStack(spacing: 8) {
         CreatorDirectoryAvatar(creator: creator, size: 22, theme: theme)
         VStack(alignment: .leading, spacing: 1) {
@@ -2024,7 +2119,7 @@ struct HistoryContentView: View {
     }
     .buttonStyle(.plain)
     .background(
-      model.selectedCreatorID == creator.id ? theme.accent.opacity(0.12) : .clear,
+      isPinnedCreatorHighlighted(creator.id) ? theme.accent.opacity(0.12) : .clear,
       in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
     )
     .accessibilityIdentifier("history-navigation-creator-\(creator.id.rawValue)")
@@ -2070,7 +2165,7 @@ struct HistoryContentView: View {
         Button {
           presentDouyinProfileImport()
         } label: {
-          Label("导入博主", systemImage: "person.crop.circle.badge.plus")
+          Label("添加博主", systemImage: "person.crop.circle.badge.plus")
         }
         .help("粘贴抖音、小红书、X 或 B 站博主主页。")
         .accessibilityIdentifier("history-navigation-creator-add")
@@ -2078,31 +2173,21 @@ struct HistoryContentView: View {
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 14)
       .padding(.top, 12)
-      HStack(spacing: 6) {
-        Image(systemName: "magnifyingglass")
-          .foregroundStyle(theme.secondaryText)
-        TextField("搜索博主名称、主页或作者 ID", text: $model.creatorSearchText)
-          .textFieldStyle(.plain)
-      }
-      .padding(.horizontal, 9)
-      .frame(maxWidth: .infinity)
-      .frame(height: 30)
-      // 中间列已经是纸面色，搜索框改成浅一档的凹槽，不再是白框套白底。
-      .background(theme.primaryText.opacity(0.045), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
-      .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(theme.hairline, lineWidth: 1))
-      // 左右 10pt 和侧栏选中条、列表卡片外缘同一条线；顶上 5pt 和侧栏第一行、正文第一行同一高度。
-      .padding(.horizontal, 10).padding(.top, 5).padding(.bottom, 10)
+      ThemedSearchField("搜索博主名称、主页或作者 ID", text: $model.creatorSearchText)
+      .padding(.horizontal, DesignTokens.Layout.columnInset).padding(.top, 5).padding(.bottom, 10)
       .accessibilityIdentifier("history-creator-search")
       if let notice = manualLink.captureNotice {
         captureNoticeBanner(notice)
       }
       if let failure = model.creatorFailure {
         HStack {
-          Text(failure).themedFont(.caption).foregroundStyle(theme.secondaryText)
+          Label(failure, systemImage: "exclamationmark.triangle")
+            .themedFont(.caption)
+            .foregroundStyle(theme.danger)
           Spacer()
           Button("知道了", action: model.dismissCreatorFailure)
         }
-        .padding(.horizontal, 12).padding(.bottom, 8)
+        .padding(.horizontal, 10).padding(.bottom, 8)
       }
       if model.showsCreatorDirectoryFailure {
         HistoryInlineState(
@@ -2274,7 +2359,7 @@ struct HistoryContentView: View {
     Text("\(count)")
       .themedFont(.subheadline, weight: selected ? .medium : .regular, monospacedDigit: true)
       .foregroundStyle(selected ? theme.accent : theme.secondaryText)
-      .padding(.horizontal, emphasized ? 6 : 2)
+      .padding(.horizontal, 6)
       .padding(.vertical, emphasized ? 1 : 0)
       .background(emphasized ? theme.accent.opacity(0.12) : Color.clear, in: Capsule())
   }
@@ -2818,7 +2903,7 @@ struct HistoryContentView: View {
     } else if let creator = model.selectedCreator {
       creatorDirectoryWorks(creator)
     } else if model.isLoadingCreatorPage {
-      ProgressView("正在载入博主…")
+      InlineLoadingLabel("正在载入博主…")
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     } else {
       creatorDirectoryPlaceholder
@@ -2864,7 +2949,11 @@ struct HistoryContentView: View {
             .themedFont(.headline)
             .foregroundStyle(theme.primaryText)
             .lineLimit(2)
-          Text(creatorDirectorySubtitle(creator))
+          // 「互动数据是保存时的数字」并进这一行：原来单独一行顶格在头像下面，
+          // 和名字不在一条线上（2026-10-01 走查）。公众号没有互动数据，不写。
+          Text(HistoryPlatformRegistry.canonicalHost(for: creator.identity.platform) == "mp.weixin.qq.com"
+            ? creatorDirectorySubtitle(creator)
+            : "\(creatorDirectorySubtitle(creator)) · 互动数据是保存时的数字")
             .themedFont(.caption)
             .foregroundStyle(theme.secondaryText)
         }
@@ -2888,21 +2977,13 @@ struct HistoryContentView: View {
       }
       .padding(.horizontal, 14)
       .padding(.top, 10)
-      if HistoryPlatformRegistry.canonicalHost(for: creator.identity.platform) != "mp.weixin.qq.com" {
-        Text("互动数据为保存时快照")
-          .themedFont(.caption2)
-          .foregroundStyle(theme.secondaryText)
-          .frame(maxWidth: .infinity, alignment: .leading)
-          .padding(.horizontal, 14)
-          .padding(.top, 2)
-          .padding(.bottom, 8)
-      }
+      .padding(.bottom, 8)
       if !batches.isEmpty {
         creatorWorksGridSurface(creator: creator, batches: batches, scrollTarget: $creatorWorkScrollTarget)
       } else {
         switch model.listState {
       case .idle where model.rows.isEmpty, .loading where model.rows.isEmpty:
-        ProgressView("正在载入作品…")
+        InlineLoadingLabel("正在载入作品…")
           .frame(maxWidth: .infinity, maxHeight: .infinity)
       case .failed where model.rows.isEmpty:
         HistoryInlineState(
@@ -3359,10 +3440,21 @@ struct HistoryContentView: View {
     } else {
       switch model.detailState {
     case .loading:
-      ProgressView("正在载入详情…").frame(maxWidth: .infinity, maxHeight: .infinity)
+      // 载入中也要留住占位按钮：否则这一瞬间列表的「搜索」「＋」被挤到窗口最右边，
+      // 详情一出来又跳回去（2026-10-01 走查，同 .idle 那段）。
+      InlineLoadingLabel("正在载入详情…").frame(maxWidth: .infinity, maxHeight: .infinity)
+        .modifier(PlaceholderDetailToolbar())
     case .failed:
-      VStack(spacing: 12) { Image(systemName: "exclamationmark.triangle").font(.title2); Text("无法载入这条记录").themedFont(.headline); Button("重试", action: model.retryDetail) }
+      // 和列表、空状态同一个组件；原来只有一个三角和「重试」，不说为什么、还能做什么（2026-10-01 体检）。
+      HistoryInlineState(
+        symbol: "exclamationmark.triangle",
+        title: "这条内容没能打开",
+        message: "可能刚被移到回收站，或资料库暂时读不了。点「重试」再读一次；不行就在左边选别的一条。",
+        actionTitle: "重试",
+        action: model.retryDetail
+      )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .modifier(PlaceholderDetailToolbar())
     case .loaded:
       // 成功路径总是先写 detail 再翻 .loaded，走不到这里；只为 switch 穷尽。
       EmptyView()
@@ -3409,7 +3501,26 @@ struct HistoryContentView: View {
         .padding(.vertical, 8)
         .background(theme.badge)
       }
-      if !isCaptureOnboardingDismissed && !firstCaptureIsComplete {
+      if model.selectedScope == .trash {
+        // 打开回收站里的一条，原来和正常内容看着一模一样（2026-10-01 走查）。
+        HStack(spacing: 10) {
+          Image(systemName: "trash")
+            .foregroundStyle(theme.secondaryText)
+          Text("这条在回收站里，\(HistoryTrashPolicy.retentionDays) 天后自动删除。")
+            .themedFont(.callout)
+            .foregroundStyle(theme.primaryText)
+          Spacer(minLength: 0)
+          Button("恢复") { model.restoreFromTrash(taskIDs: [detail.task.id]) }
+            .buttonStyle(.appProminent(theme.accent))
+            .controlSize(.small)
+            .disabled(model.isReadOnly)
+            .accessibilityIdentifier("history-trash-restore-detail")
+        }
+        .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(theme.badge)
+        .overlay(alignment: .bottom) { Rectangle().fill(theme.hairline).frame(height: 1) }
+        .accessibilityIdentifier("history-trash-detail-banner")
+      } else if !isCaptureOnboardingDismissed && !firstCaptureIsComplete {
         firstCaptureNextStepBanner(detail: detail)
       }
       HistoryDetailView(
@@ -3827,7 +3938,7 @@ struct HistoryContentView: View {
     HistoryInlineState(
       symbol: "externaldrive.badge.exclamationmark",
       title: "无法打开历史记录",
-      message: "本机的历史库这次打不开。\(ProductDisplay.name)没有对数据做任何写入，已保存的内容仍在原处。请检查本机存储后重新启动\(ProductDisplay.name)；仍然不行时，可在「数据与备份」里从备份恢复。",
+      message: "资料库这次打不开。\(ProductDisplay.name)没有对数据做任何写入，已保存的内容仍在原处。请检查本机存储后重新启动\(ProductDisplay.name)；仍然不行时，可在「数据与备份」里从备份恢复。",
       actionTitle: "查看备份说明",
       action: {
         SettingsNavigationRequest.request("dataBackup")
@@ -4681,12 +4792,18 @@ private struct HistoryDetailView: View, Equatable {
     let frontmatter = sourceFrontmatter
     let host = URL(string: sourceURL)?.host ?? ""
     return derivedMemo.value("contentName|\(host)|\(title)", snapshot: latestSourceSnapshot) {
-      CapturedContentNaming.name(
+      let body = latestSourceSnapshot.map { LayeredSourceDocument.body(of: $0) }
+      let name = CapturedContentNaming.name(
         title: latestSourceSnapshot?.title,
-        body: latestSourceSnapshot.map { LayeredSourceDocument.body(of: $0) },
+        body: body,
         host: host,
         author: frontmatter.author, published: frontmatter.published
       )
+      // 和列表行同一个取法：首句只是「啊啊啊啊😮😮！」时往后取一句有内容的。
+      // 原来列表叫「感受一下 Muse 直出的视频！」，点开详情却叫「啊啊啊啊😮😮！」（2026-10-01 走查）。
+      guard name.origin == .caption else { return name }
+      let preview = body.map { MarkdownNoteFrontmatter.parse($0).body }
+      return .init(text: HistoryListFinding.informativeCaptionTitle(caption: name.text, sourcePreview: preview), origin: .caption)
     }
   }
   private var hidesRepeatedCaptureHeading: Bool {
@@ -4698,6 +4815,9 @@ private struct HistoryDetailView: View, Equatable {
     // 或抖音的「转写」后，整页没有任何地方写着这是哪一条（2026-10-01 走查）。
     guard effectiveReadingPane == .source,
           !showsLayeredSource || activeSourceLayer == .caption else { return false }
+    // 标题和正文之间夹着视频时，正文首句被挤到一屏以外：藏了标题，整页看不出是哪一条
+    // （2026-10-01 走查：一条竖版视频推文，头部只剩作者行）。
+    if localMediaFileURL != nil || detail.media != nil { return false }
     if contentName.origin == .caption { return true }
     let name = contentName
     return derivedMemo.value("hidesRepeatedHeading|\(name.text)|\(name.origin)", snapshot: source) {
@@ -4764,12 +4884,29 @@ private struct HistoryDetailView: View, Equatable {
     if appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .translate) {
       return nil
     }
-    let reason = appModel.translateUnavailableReason(
-      usingCurrentCapture: showsCurrentCapture,
-      detail: detail,
-      preferences: providerSettings.runPreferences,
-      preferencesReady: providerSettings.arePreferencesReady
-    )
+    let reason: String?
+    if showsCurrentCapture {
+      reason = appModel.translateUnavailableReason(
+        usingCurrentCapture: true,
+        detail: detail,
+        preferences: providerSettings.runPreferences,
+        preferencesReady: providerSettings.arePreferencesReady
+      )
+    } else if let blocked = appModel.summarizeUnavailableReason(
+      usingCurrentCapture: false, detail: detail, preferencesReady: providerSettings.arePreferencesReady
+    ) {
+      reason = blocked
+    } else {
+      // 「要不要翻译」要对全文跑几遍正则数字母；这个属性一次重绘被读四五遍，长转写稿
+      // 每次重绘都卡（2026-10-01 体检）。按这份正文 + 输出语言只算一次。
+      let language = providerSettings.runPreferences.outputLanguage
+      let needed = derivedMemo.value(
+        "needsTranslation|\(detail.snapshots.count)|\(language)", snapshot: latestSnapshot
+      ) {
+        LayeredSourceDocument.needsTranslation(from: detail.snapshots, outputLanguage: language)
+      }
+      reason = needed ? nil : "原文已经是输出语言，不用翻译。"
+    }
     if isUntranscribedMedia { return AppViewModel.untranscribedRunReason }
     if reason != nil, appModel.canEnqueueManualGeneration(for: detail.task.id) {
       return nil
@@ -5154,7 +5291,7 @@ private struct HistoryDetailView: View, Equatable {
                 .disabled(model.clearedVideoRedownloadState == .running || model.isReadOnly)
                 .accessibilityIdentifier("history-video-local-cleared-redownload")
                 if let url = URL(string: sourceURL), url.scheme?.hasPrefix("http") == true {
-                  Link("在浏览器打开原页面", destination: url)
+                  Link("在浏览器中打开原页面", destination: url)
                     .themedFont(.caption)
                     .accessibilityIdentifier("history-video-local-cleared-open-source")
                 }
@@ -5238,7 +5375,7 @@ private struct HistoryDetailView: View, Equatable {
             VStack(alignment: .leading, spacing: 8) {
               Label(failure, systemImage: "externaldrive.badge.exclamationmark")
                 .foregroundStyle(theme.warning)
-              Text("请在“设置 → 视频存储”重新选择文件夹，或把已保存的视频移回原位置。")
+              Text("请在「设置 → 视频存储」重新选择文件夹，或把已保存的视频移回原位置。")
                 .themedFont(.caption)
                 .foregroundStyle(.secondary)
             }
@@ -5519,7 +5656,7 @@ private struct HistoryDetailView: View, Equatable {
       get: { model.snapshotEditFailure != nil },
       set: { if !$0 { model.dismissSnapshotEditFailure() } }
     )) {
-      Button("好") { model.dismissSnapshotEditFailure() }
+      Button("知道了") { model.dismissSnapshotEditFailure() }
     } message: { Text(model.snapshotEditFailure ?? "") }
     .onChange(of: hasResultBody) { _, hasResult in
       // Prefer the fresh result when a run lands, but keep 原文 one tap away.
@@ -5640,7 +5777,7 @@ private struct HistoryDetailView: View, Equatable {
           }
           AdjacentItemMenuSection(model: model)
           Section("复制") {
-            Button { copyFullArticle() } label: { Label("拷贝全文", systemImage: MenuIcon.copy) }
+            Button { copyFullArticle() } label: { Label("复制全文", systemImage: MenuIcon.copy) }
               .accessibilityIdentifier("history-copy-full-text")
           }
           Section("导出") {
@@ -5978,14 +6115,14 @@ private struct HistoryDetailView: View, Equatable {
       HStack(spacing: DesignTokens.Space.sm) {
         actionPill(
           title: "整理排版",
-          systemImage: "text.alignleft",
+          systemImage: MenuIcon.reformat,
           prominent: true,
           disabled: !model.canTidyNote(taskID: detail.task.id),
           identifier: "tidy-note"
         ) {
           model.requestNoteTidy(taskID: detail.task.id, model: providerSettings.effectiveTidyModelName)
         }
-        .help(model.noteTidyUnavailableReason(taskID: detail.task.id) ?? "把段落、列表与标题层级重排一遍；不改文字内容")
+        .help(model.noteTidyUnavailableReason(taskID: detail.task.id) ?? "把段落、列表和标题层级整理一遍，不改文字内容")
         noteTidyStatus
         Spacer(minLength: DesignTokens.Space.sm)
         if showsVisibleRun {
@@ -6042,7 +6179,7 @@ private struct HistoryDetailView: View, Equatable {
         Label(
           appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .summarize)
             ? "已排队总结" : (summaryArtifact == nil ? "生成总结" : "重新生成总结"),
-          systemImage: "text.alignleft"
+          systemImage: MenuIcon.summarize
         )
       }
       .disabled(summarizeUnavailableReason != nil)
@@ -6101,7 +6238,7 @@ private struct HistoryDetailView: View, Equatable {
       if !isOwnWriting, let snapshot = detail.snapshots.last {
         let eligibility = reformatEligibility(snapshot)
         if !eligibility.canReformat, let message = eligibility.userMessage {
-          Button {} label: { Label("整理文稿：\(message)", systemImage: "text.append") }
+          Button {} label: { Label("整理排版：\(message)", systemImage: "text.append") }
             .disabled(true)
             .accessibilityIdentifier("history-reformat-unavailable")
         }
@@ -6122,7 +6259,7 @@ private struct HistoryDetailView: View, Equatable {
       }
 
       if canRunHistory || showsCurrentCapture || isRunPanelExpanded || hasCollapsedRunMetadata {
-        Button(isRunPanelExpanded ? "收起运行详情" : "运行详情") {
+        Button(isRunPanelExpanded ? "收起生成记录" : "生成记录") {
           withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isRunPanelExpanded.toggle() }
         }
         .accessibilityIdentifier("history-run-panel-toggle")
@@ -6305,7 +6442,7 @@ private struct HistoryDetailView: View, Equatable {
     if model.reformatRecord != nil {
       Picker("正文版面", selection: $model.showsReformattedBody) {
         Text("原文").tag(false)
-        Text("重排").tag(true)
+        Text("整理排版").tag(true)
       }
       .pickerStyle(.segmented)
       .controlSize(.small)
@@ -6506,7 +6643,8 @@ private struct HistoryDetailView: View, Equatable {
     let trimmed = providerSettings.effectiveTranscriptionModelName?
       .trimmingCharacters(in: .whitespacesAndNewlines)
     if trimmed?.isEmpty != false {
-      return "在线转写（未配置模型，见「设置 → 转写 · 录」）"
+      // 面板只有 320 宽，整句写进来被截成「见「设置 → 转…」（2026-10-02 自测）；去哪设在悬停提示里。
+      return "在线转写（未配置模型）"
     }
     return hasCompletedTranscript ? "重新转写（在线）" : "在线转写"
   }
@@ -6571,7 +6709,11 @@ private struct HistoryDetailView: View, Equatable {
   /// 校对提示条的第二行：有分段进度就报进度，长稿大约要几分钟。
   private var tidyRunningDetail: String {
     let progress = model.transcriptTidyProgress.map { "\($0) · " } ?? ""
-    return "\(progress)通常 1–5 分钟，完成后自动替换成校对稿，不用刷新。"
+    let estimate: String = {
+      guard let seconds = model.transcriptTidyEstimatedSeconds else { return "" }
+      return seconds < 90 ? "全部约 1 分钟，" : "全部约 \(Int((Double(seconds) / 60).rounded())) 分钟，"
+    }()
+    return "\(progress)\(estimate)完成后自动替换成校对稿，不用刷新。"
   }
 
   /// 校对进行中、正在看的是原文：原稿调淡，一眼看出这还不是最终版。
@@ -6617,6 +6759,12 @@ private struct HistoryDetailView: View, Equatable {
             .foregroundStyle(.secondary)
         }
         Spacer(minLength: 0)
+        Button("停止") { model.cancelTranscriptTidy() }
+          .buttonStyle(.plain)
+          .themedFont(.caption)
+          .foregroundStyle(theme.accent)
+          .help("停下这次校对，保留原来的转写稿")
+          .accessibilityIdentifier("history-transcript-tidy-cancel")
       }
       .padding(.vertical, 10)
       .padding(.horizontal, 12)
@@ -6687,7 +6835,7 @@ private struct HistoryDetailView: View, Equatable {
     // 和旁边的「总结」「翻译」同一种有边框按钮（2026-09-25）。
     .buttonStyle(.bordered)
     .fixedSize()
-    .help("转写、校对、评论、总结、翻译、脑图，以及整理排版、换个模型重跑、运行详情")
+    .help("转写、校对、评论、总结、翻译、脑图，以及整理排版、换个模型重跑、生成记录")
     .accessibilityLabel("处理")
     .accessibilityIdentifier("history-more-actions-menu")
     .popover(
@@ -6871,7 +7019,8 @@ private struct HistoryDetailView: View, Equatable {
     Divider().padding(.horizontal, 8).padding(.vertical, 4)
     VStack(alignment: .leading, spacing: 0) {
       if let action = transcribeAction {
-        processExtraButton(onlineTranscribeMenuTitle, systemImage: MenuIcon.transcribeOnline, identifier: "history-more-online-transcribe", enabled: action.canStartOnline) {
+        processExtraButton(onlineTranscribeMenuTitle, systemImage: MenuIcon.transcribeOnline, identifier: "history-more-online-transcribe", enabled: action.canStartOnline,
+                           help: action.canStartOnline ? nil : "在「设置 → 转写 · 录」里选一个在线转写模型") {
           isProcessPanelPresented = false
           action.startOnline()
         }
@@ -6908,7 +7057,7 @@ private struct HistoryDetailView: View, Equatable {
         processExtraButton(modelName, systemImage: MenuIcon.model, identifier: "history-process-model", enabled: false) {}
       }
       if canRunHistory || showsCurrentCapture || isRunPanelExpanded || hasCollapsedRunMetadata {
-        processExtraButton(isRunPanelExpanded ? "收起运行详情" : "运行详情", systemImage: MenuIcon.runDetails, identifier: "history-run-panel-toggle") {
+        processExtraButton(isRunPanelExpanded ? "收起生成记录" : "生成记录", systemImage: MenuIcon.runDetails, identifier: "history-run-panel-toggle") {
           isProcessPanelPresented = false
           withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isRunPanelExpanded.toggle() }
         }
@@ -7055,7 +7204,7 @@ private struct HistoryDetailView: View, Equatable {
       if showsCurrentCapture {
         currentCaptureExtras
       } else if canRunHistory {
-        Text("使用本机已保存正文生成；结果作为新运行保存。")
+        Text("用本机已保存的正文生成；另存一份新结果，旧的保留。")
           .themedFont(.caption)
           .foregroundStyle(.secondary)
         HStack(spacing: 10) {
@@ -7275,7 +7424,7 @@ private struct HistoryDetailView: View, Equatable {
       // 已有产物：给切换，不再重复提供生成入口。
       Picker("正文版面", selection: $model.showsReformattedBody) {
         Text("原文").tag(false)
-        Text("重排").tag(true)
+        Text("整理排版").tag(true)
       }
       .pickerStyle(.segmented)
       .controlSize(.small)
@@ -7299,7 +7448,7 @@ private struct HistoryDetailView: View, Equatable {
           model: providerSettings.effectiveTidyModelName
         )
       } label: {
-        Label("整理文稿", systemImage: "text.append")
+        Label("整理排版", systemImage: "text.append")
           .font(.caption)
       }
       .buttonStyle(.plain)
@@ -7644,7 +7793,7 @@ private struct HistoryDetailView: View, Equatable {
     engagementCompactChips(note)
       .foregroundStyle(.tertiary)
       .themedFont(.caption2)
-      .help("互动数据为采集时快照，不会随原帖更新")
+      .help("互动数据是保存时的数字，不会随原帖更新")
       .accessibilityIdentifier("history-engagement-more")
   }
 
@@ -8190,7 +8339,7 @@ private struct HistoryDetailView: View, Equatable {
             .foregroundStyle(theme.seal)
         }
         .buttonStyle(.plain)
-        .help(current == .marked ? "收起批改记号" : "显示模型相对 Apple 听写改了哪些字")
+        .help(current == .marked ? "收起批改记号" : "显示模型相对本机转写改了哪些字")
         .accessibilityIdentifier("transcript-manuscript-mode-marked")
       }
     }
@@ -8620,7 +8769,7 @@ private struct HistoryDetailView: View, Equatable {
            model.canTranscribeVideo || (showsCurrentCapture && appModel.currentCapture?.mediaDescriptor.map {
              model.canTranscribeCurrentCapture($0, taskID: detail.task.id)
            } == true) {
-          Text("点击上方的『转写』开始")
+          Text("点上方的「转写」开始")
             .themedFont(.callout)
             .foregroundStyle(.tertiary)
         }
@@ -9038,11 +9187,18 @@ private struct HistoryTagEditor: View {
       if !chipTags.isEmpty {
         // 换行排而不是横向滚动：弹窗很窄，横排时第 4、5 个标签被截断或整个看不见（2026-09-24 走查）。
         TagPillFlowLayout(spacing: 6) {
-            ForEach(chipTags) { tag in
+            ForEach(chipTags.dropLast()) { tag in
               HistoryTagChip(tag: tag, canRemove: model.canEditTags) { model.removeTag(tag) }
             }
-            if canOpenComposer {
-              addTagControl
+            // 「＋」和最后一个标签绑成一组换行：标签刚好排满一行时，「＋」原来
+            // 孤零零掉到第二行开头（2026-10-01 走查）。
+            if let last = chipTags.last {
+              HStack(spacing: 6) {
+                HistoryTagChip(tag: last, canRemove: model.canEditTags) { model.removeTag(last) }
+                if canOpenComposer {
+                  addTagControl
+                }
+              }
             }
         }
         .accessibilityIdentifier("history-tag-chips")
@@ -9302,7 +9458,7 @@ private struct DataDestinationDisclosureView: View {
     let verb = disclosure.intent == .translate ? "翻译" : "总结"
     // 本机端点必须如实标出——`http://127.0.0.1` 发出去的正文没有离开这台机器，
     // 和发往第三方服务是两件事，不标会让人以为一样。
-    let suffix = disclosure.identity.isLocalEndpoint ? Text("（本机端点）").foregroundStyle(.secondary) : Text("")
+    let suffix = disclosure.identity.isLocalEndpoint ? Text("（本机服务）").foregroundStyle(.secondary) : Text("")
     return Text("\(verb)正文将发送到 ")
       + Text(disclosure.identity.host).bold()
       + Text(" 的 ")
@@ -9403,6 +9559,21 @@ struct FocusHistorySearchAction: Equatable {
 }
 
 struct FocusHistorySearchKey: FocusedValueKey { typealias Value = FocusHistorySearchAction }
+
+/// 菜单命令句柄：返回上一层（⌘[ / Esc）。没有上一层时为 nil，菜单项灰掉。
+struct GoBackAction: Equatable {
+  static func == (lhs: Self, rhs: Self) -> Bool { true }
+  let run: () -> Void
+}
+
+struct GoBackKey: FocusedValueKey { typealias Value = GoBackAction }
+
+extension FocusedValues {
+  var goBack: GoBackAction? {
+    get { self[GoBackKey.self] }
+    set { self[GoBackKey.self] = newValue }
+  }
+}
 
 extension FocusedValues {
   var focusHistorySearch: FocusHistorySearchAction? {
@@ -9909,5 +10080,73 @@ struct SampleReadingPreviewSheet: View {
     .foregroundStyle(theme.primaryText)
     .environment(\.appTheme, theme)
     .accessibilityIdentifier("sample-preview-sheet")
+  }
+}
+
+extension View {
+  /// 把一段修饰符交给函数处理，用来拆开过长的修饰符链（编译器类型推断会超时）。
+  func apply<Transformed: View>(@ViewBuilder _ transform: (Self) -> Transformed) -> Transformed {
+    transform(self)
+  }
+}
+
+/// 卡片墙、博主页的工具栏是整窗一条，返回键紧跟在侧栏开关后面，落在左栏上方；
+/// 「返回全部博主」这种长一点的字，左栏和内容的分隔线正好从按钮中间穿过（2026-10-01 走查）。
+/// 在按钮前垫一段空白，让它从内容区左缘起排——和三栏里列头标题同一条线。
+private struct ToolbarContentEdgeAlignment: ViewModifier {
+  let sidebarWidth: CGFloat
+  @State private var originX: CGFloat = 0
+
+  func body(content: Content) -> some View {
+    HStack(spacing: 0) {
+      Color.clear.frame(width: max(0, sidebarWidth + DesignTokens.Layout.columnInset - originX), height: 1)
+      content
+    }
+    // 工具栏项各自挂在单独的宿主视图里，SwiftUI 的 .global 量出来不是窗口坐标；
+    // 用 AppKit 直接量这段在窗口里的横坐标。
+    .background(WindowOriginXReader { originX = $0 })
+  }
+}
+
+private struct WindowOriginXReader: NSViewRepresentable {
+  let onChange: (CGFloat) -> Void
+
+  func makeNSView(context: Context) -> ReaderView {
+    let view = ReaderView()
+    view.onChange = onChange
+    return view
+  }
+
+  func updateNSView(_ view: ReaderView, context: Context) {
+    view.onChange = onChange
+    view.report()
+  }
+
+  final class ReaderView: NSView {
+    var onChange: ((CGFloat) -> Void)?
+    private var last: CGFloat = .nan
+
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); report() }
+    override func layout() { super.layout(); report() }
+
+    func report() {
+      guard window != nil else { return }
+      let x = convert(bounds, to: nil).minX
+      guard x != last else { return }
+      last = x
+      DispatchQueue.main.async { [weak self] in self?.onChange?(x) }
+    }
+  }
+}
+
+/// 详情还没内容时（载入中、出错）工具栏里留灰着的「收藏」「更多」，布局和有内容时一致。
+private struct PlaceholderDetailToolbar: ViewModifier {
+  func body(content: Content) -> some View {
+    content.toolbar {
+      ToolbarItemGroup(placement: .primaryAction) {
+        Button {} label: { Label("收藏", systemImage: "star") }.disabled(true)
+        Button {} label: { Label("更多", systemImage: "ellipsis") }.disabled(true)
+      }
+    }
   }
 }

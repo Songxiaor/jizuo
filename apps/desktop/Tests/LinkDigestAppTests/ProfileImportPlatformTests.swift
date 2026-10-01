@@ -986,7 +986,7 @@ final class ProfileImportPlatformTests: XCTestCase {
     work.start()
     XCTAssertEqual(work.platform, .bilibili)
     work.acceptNavigation(URL(string: "https://www.bilibili.com/video/BV1234567890")!)
-    XCTAssertEqual(work.phase, .failed("这是单条作品链接，请改用单条保存入口，不能当作博主主页导入。"))
+    XCTAssertEqual(work.phase, .failed("这是单条作品链接，请改用单条保存入口，不能当作博主主页添加。"))
 
     let illegal = DouyinProfileImportViewModel(alreadySaved: { _ in false },
       enqueue: { _, _, _ in .init(queued: 0, skipped: 0) })

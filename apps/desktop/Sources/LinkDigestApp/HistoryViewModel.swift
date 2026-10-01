@@ -1089,6 +1089,12 @@ final class HistoryViewModel {
   var collectionNameDraft = ""
   /// 加入 / 移出合集之后浮在窗口底部的一句话。
   private(set) var collectionFeedback: String?
+  private(set) var collectionFeedbackSymbol: String = CollectionIcon.collection
+  @ObservationIgnored private var feedbackUndoTaskIDs: Set<TaskID>? {
+    didSet { canUndoFeedbackObserved = feedbackUndoTaskIDs?.isEmpty == false }
+  }
+  /// 视图读这个决定要不要画「撤销」（上面那个存储不参与观察）。
+  private(set) var canUndoFeedbackObserved = false
   @ObservationIgnored private var collectionsTask: Task<Void, Never>?
   @ObservationIgnored private var selectedTaskCollectionsTask: Task<Void, Never>?
   @ObservationIgnored private var collectionFeedbackTask: Task<Void, Never>?
@@ -1105,6 +1111,8 @@ final class HistoryViewModel {
   /// 搜索词变了、新结果到了、从博主页回来时加一：列表整表重建、回到最上面。
   /// 原来沿用之前的滚动位置，第一眼看到的是一个月前的（2026-10-01 走查）。
   private(set) var searchScrollToTopToken = 0
+  /// 选中项离开列表后要接住的那一条（见 `reloadKeepingNeighbor`）。
+  @ObservationIgnored private var fallbackSelectionTaskID: TaskID?
   private var lastReceivedSearchText = ""
   /// Directory browsing shows the creator's works in the detail column.
   /// Selecting a work turns this on so the reader appears; it must not follow
@@ -1308,7 +1316,7 @@ final class HistoryViewModel {
     reformatRecord = (try? history?.reformatStore?.loadReformat(taskID: taskID)) ?? nil
     showsReformattedBody = false
     reformatPartialNotice = reformatRecord?.isPartial == true
-      ? "有几段没能重排，那几段保持原文。" : nil
+      ? "有几段没能整理排版，那几段保持原文。" : nil
     if reformatTaskID != taskID { reformatState = .idle }
   }
 
@@ -1323,9 +1331,9 @@ final class HistoryViewModel {
   }
 
   func reformatUnavailableReason(taskID: TaskID) -> String? {
-    if isReadOnly { return "历史库当前只读，无法保存重排结果。" }
+    if isReadOnly { return "资料库现在只能看、不能改，整理排版的结果没法保存。重新打开汲作通常就能恢复。" }
     if transcriptTidier == nil { return "需先在设置里配置聊天模型" }
-    if reformatState(for: taskID).isActive { return "正在重排…" }
+    if reformatState(for: taskID).isActive { return "正在整理排版…" }
     return nil
   }
 
@@ -1340,7 +1348,7 @@ final class HistoryViewModel {
     }
     let source = MarkdownNoteFrontmatter.parse(bodyText).body
     guard !source.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      reformatState = .failed("没有可重排的正文。")
+      reformatState = .failed("没有可整理排版的正文。")
       return
     }
     reformatTask?.cancel()
@@ -1374,7 +1382,7 @@ final class HistoryViewModel {
         do {
           try history.reformatStore?.saveReformat(record)
         } catch {
-          self.reformatState = .failed("重排完成但没能保存；原文没有改动。")
+          self.reformatState = .failed("整理排版完成但没能保存，原文没有改动。")
           return
         }
         guard self.reformatRequestID == requestID else { return }
@@ -1382,7 +1390,7 @@ final class HistoryViewModel {
         self.showsReformattedBody = true
         self.reformatState = .completed
         self.reformatPartialNotice = outcome.isPartial
-          ? "\(outcome.chunkCount) 段里有 \(outcome.failedChunkCount) 段没能重排，那几段保持原文。"
+          ? "\(outcome.chunkCount) 段里有 \(outcome.failedChunkCount) 段没能整理排版，那几段保持原文。"
           : nil
         await self.recordTokenUsage(
           taskID: taskID, operation: "article_reformat",
@@ -1395,7 +1403,7 @@ final class HistoryViewModel {
       } catch {
         guard self.reformatRequestID == requestID else { return }
         let message = (error as? TranscriptTidyError)?.userMessage
-          ?? "重排失败，原文没有改动。"
+          ?? "整理排版没成功，原文没有改动。"
         self.reformatState = .failed(message)
       }
     }
@@ -1631,7 +1639,7 @@ final class HistoryViewModel {
       default:
         self.clearedVideoRedownloadState = self.localMediaFileURL != nil
           ? .idle
-          : .failed("没能下载回来，请稍后再试，或在浏览器打开原页面。")
+          : .failed("没能下载回来，请稍后再试，或在浏览器中打开原页面。")
       }
     }
   }
@@ -2004,6 +2012,22 @@ final class HistoryViewModel {
   var isBrowsingPlatformGallery: Bool {
     !selectedHosts.isEmpty && !isCreatorDirectoryActive && !isWorkbenchActive
   }
+  /// 来源页现在默认是三栏列表，卡片墙要点工具栏才进。只有真在卡片墙上时才不自动选中首条
+  /// （卡片墙里选中 = 打勾批量）；列表模式和「全部」一样接住第一条。原来来源页一律不选，
+  /// 进「X」右边是「从左边选一条内容」，进「全部」却直接打开（2026-10-01 走查）。由视图同步。
+  var isPlatformCardViewActive = false {
+    didSet {
+      guard isPlatformCardViewActive != oldValue, isBrowsingPlatformGallery else { return }
+      if isPlatformCardViewActive {
+        if selectedTaskIDs.count == 1 { selectedTaskIDs = [] }
+      } else if selectedTaskIDs.isEmpty, let first = rows.first?.taskID {
+        selectedTaskID = first
+      }
+    }
+  }
+  private var suppressesAutomaticSelection: Bool {
+    isBrowsingCreatorDirectory || (isBrowsingPlatformGallery && isPlatformCardViewActive)
+  }
   /// Creator filter with no works — not a failed load and not a search miss.
   var showsCreatorZeroWorks: Bool {
     selectedCreatorID != nil
@@ -2181,6 +2205,7 @@ final class HistoryViewModel {
     let preservedSelection = preservingCurrentSelection ? selectedTaskIDs : nil
     listRequestID = requestID; pageTask?.cancel(); isLoadingNextPage = false
     listState = .loading; listErrorCode = nil; nextCursor = nil
+    if refreshesAggregates { aggregatesRefreshPending = true }
     pageTask = Task { [weak self] in
       let result = await Task.detached(priority: .userInitiated) {
         Self.pageResult(history, cursor: nil, filter: filter)
@@ -2192,13 +2217,17 @@ final class HistoryViewModel {
         requestID: requestID,
         preservedSelection: preservedSelection
       )
-    }
-    // 导航计数和标签清单只随数据变化，不随搜索词变化；搜索路径不重算。
-    if refreshesAggregates {
-      reloadAvailableTags(reloadsListIfSelectedTagsDisappear: false)
-      reloadNavigationCounts()
+      // 导航计数和标签清单等这一页到手再读：原来和这一页同时开读，十几条 COUNT
+      // 抢同一个库，点一下侧栏要等的那一页被拖慢好几倍（2026-10-01 实测）。
+      // 用标记而不是捕获的参数：这次被下一次（比如搜索）取消时，欠下的那次刷新留给下一页补上。
+      if let self, self.aggregatesRefreshPending {
+        self.aggregatesRefreshPending = false
+        self.reloadAvailableTags(reloadsListIfSelectedTagsDisappear: false)
+        self.reloadNavigationCounts()
+      }
     }
   }
+  @ObservationIgnored private var aggregatesRefreshPending = false
 
   /// 离列表末尾还剩几条时就开始读下一页。原来要等最后一条露出来才读，滑到底
   /// 总要停下来看一圈转圈。
@@ -2339,23 +2368,35 @@ final class HistoryViewModel {
   /// 在当前可见列表里前后移动选中项，不用回左栏。offset -1 上一条、+1 下一条。
   /// 设 `selectedTaskID` 会经 didSet 自动加载详情，无需 reload。
   func selectAdjacent(offset: Int) {
-    guard let index = currentRowIndex else { return }
+    let order = navigationOrder
+    guard let index = currentRowIndex(in: order) else { return }
     let target = index + offset
-    guard rows.indices.contains(target) else { return }
-    selectedTaskID = rows[target].taskID
+    guard order.indices.contains(target) else { return }
+    selectedTaskID = order[target]
   }
 
   var canSelectPrevious: Bool { adjacentRowExists(offset: -1) }
   var canSelectNext: Bool { adjacentRowExists(offset: 1) }
 
-  private var currentRowIndex: Int? {
+  /// 卡片墙按点赞、发布时间重排过时，屏幕上的顺序和 rows 不同：
+  /// 「下一条」得按看到的顺序走，原来按点赞排完再按 ⌘↓ 会跳来跳去（2026-10-01 走查）。
+  /// 由卡片墙写入；离开来源时清掉。
+  @ObservationIgnored var galleryDisplayOrder: [TaskID]?
+
+  private var navigationOrder: [TaskID] {
+    if isBrowsingPlatformGallery, let galleryDisplayOrder { return galleryDisplayOrder }
+    return rows.map(\.taskID)
+  }
+
+  private func currentRowIndex(in order: [TaskID]) -> Int? {
     guard let current = selectedTaskID else { return nil }
-    return rows.firstIndex { $0.taskID == current }
+    return order.firstIndex(of: current)
   }
 
   private func adjacentRowExists(offset: Int) -> Bool {
-    guard let index = currentRowIndex else { return false }
-    return rows.indices.contains(index + offset)
+    let order = navigationOrder
+    guard let index = currentRowIndex(in: order) else { return false }
+    return order.indices.contains(index + offset)
   }
 
   /// 实时流攒够多少字才做语种判断。
@@ -2423,6 +2464,17 @@ final class HistoryViewModel {
   /// 校对进度文案，例如「已校对 3/18 段」。长稿要跑几分钟，没有它界面上
   /// 只有一句「正在整理…」，看不出是在跑还是卡住了。
   private(set) var transcriptTidyProgress: String?
+  /// 这次校对大约要多少秒（按段数估），给提示条用。
+  private(set) var transcriptTidyEstimatedSeconds: Int?
+
+  /// 校对进行中的「停止」：原来长稿一旦开始就停不下来（2026-10-01 体检）。
+  /// 取消后校对器尽快停，已发出的那几段不再等结果；原稿不受影响。
+  func cancelTranscriptTidy() {
+    guard transcriptTidyState.isActive else { return }
+    transcriptTidyTask?.cancel()
+    transcriptTidyState = .cancelled
+    transcriptTidyProgress = nil
+  }
 
   /// 字幕和听写各自一条状态。共用一条会让「读字幕」把听写按钮也变成进行中，
   /// 而它们本就是两条独立来源，可以先后跑、也可以只跑其中一条。
@@ -2523,7 +2575,9 @@ final class HistoryViewModel {
           // 这里原本无论什么错都报「库里可能已存在同样的字幕」——那是一句猜测，
           // 而真实原因是新来源没登记进落库的 origin 白名单，字幕一条都没存进去。
           // 猜测式的错误文案比没有文案更糟：它把人引向完全错误的方向。
-          self.subtitleState = .failed("字幕没有保存：\(error)")
+          // 真实错误进日志，界面只说人话（2026-10-01：原来把 \(error) 原样拼进界面）。
+          AppLog.error(.storage, "subtitle_save_failed", code: "SUBTITLE_SAVE_FAILED", ["error": String(describing: error)])
+          self.subtitleState = .failed("字幕没有保存，请重试。")
           return
         }
         self.subtitleProgress = nil
@@ -2704,7 +2758,7 @@ final class HistoryViewModel {
       )
       guard case let .success(attempt) = began else {
         guard !Task.isCancelled, self?.transcriptionRequestID == requestID else { return }
-        self?.transcriptionState = .failed("无法更新本机转写状态，请检查历史存储后重试。")
+        self?.transcriptionState = .failed("本机转写的进度没能更新，请稍后重试；一直不行就重新打开汲作。")
         return
       }
       let workspaceURL = FileManager.default.temporaryDirectory
@@ -2810,7 +2864,7 @@ final class HistoryViewModel {
     }
     guard canTranscribeCurrentCapture(descriptor, taskID: taskID) else {
       if descriptor.kind == .hls {
-        transcriptionState = .failed("当前 Debug 暂不支持 HLS 转写；请使用直连 MP4/MOV。")
+        transcriptionState = .failed("这种在线视频流暂时不能转写，可以先把视频保存到本机再转写。")
       } else if descriptor.durationSeconds.map({ $0 > TranscriptionTempStore.maximumDurationSeconds }) == true {
         transcriptionState = .failed(LocalVideoTranscriptionError.mediaTooLong.userMessage)
       } else {
@@ -3036,7 +3090,7 @@ final class HistoryViewModel {
       return partial.isEmpty ? nil : String(partial.dropFirst())
     }
     if let prompt = outcome.promptTokens, let completion = outcome.completionTokens {
-      return "\(total) tokens（输入 \(prompt) / 输出 \(completion)）\(partial)"
+      return "用量 \(total)（输入 \(prompt) / 输出 \(completion)）\(partial)"
     }
     return "\(total) tokens\(partial)"
   }
@@ -3100,7 +3154,7 @@ final class HistoryViewModel {
     switch outcome {
     case .failure:
       guard selectedTaskID == taskID else { return }
-      annotationFailureMessage = "这次的用量没能记进台账，处理结果本身已经保存。下面的用量合计会少算这一次，可在设置里核对模型商家的账单。"
+      annotationFailureMessage = "这次的用量没能记进用量记录，处理结果本身已经保存。下面的合计会少算这一次，可以到服务商的账单里核对。"
     case let .success(totals):
       guard selectedTaskID == taskID, let totals else { return }
       ledgerTokenTotals = totals
@@ -3847,7 +3901,7 @@ final class HistoryViewModel {
     }
     message += "会按列表顺序逐条发送给模型，一次只发一条。"
     message += "预计输入约 \(Self.tokenScaleText(plan.estimatedInputTokens)) tokens"
-    message += "（按字符粗估，不含模型返回部分；真实用量以每条详情里的台账为准）。"
+    message += "（按字数粗估，不含模型返回的部分；实际用量以每条详情里的用量记录为准）。"
     var skipped: [String] = []
     if plan.alreadySummarized > 0 { skipped.append("\(plan.alreadySummarized) 条已有总结") }
     if plan.withoutContent > 0 { skipped.append("\(plan.withoutContent) 条没有正文") }
@@ -4129,7 +4183,7 @@ final class HistoryViewModel {
     guard let plan = pendingBatchTranslationPlan else { return "" }
     var message = "会按列表顺序逐条发送给模型，一次只发一条。"
     message += "预计输入约 \(Self.tokenScaleText(plan.estimatedInputTokens)) tokens"
-    message += "（按字符粗估，不含模型返回部分；真实用量以每条详情里的台账为准）。"
+    message += "（按字数粗估，不含模型返回的部分；实际用量以每条详情里的用量记录为准）。"
     var skipped: [String] = []
     if plan.alreadyTranslated > 0 { skipped.append("\(plan.alreadyTranslated) 条已有翻译") }
     if plan.sameLanguage > 0 { skipped.append("\(plan.sameLanguage) 条已是目标语言") }
@@ -4333,7 +4387,7 @@ final class HistoryViewModel {
   var mindMapTokenSummary: String? {
     guard let record = mindMapRecord, let total = record.totalTokens else { return nil }
     if let prompt = record.promptTokens, let completion = record.completionTokens {
-      return "\(total) tokens（输入 \(prompt) / 输出 \(completion)）"
+      return "用量 \(total)（输入 \(prompt) / 输出 \(completion)）"
     }
     return "\(total) tokens"
   }
@@ -4420,6 +4474,19 @@ final class HistoryViewModel {
     }
   }
 
+  /// 生成脑图的开始时间：状态行显示「已等 N 秒」（原来最长三分钟只有一句「生成中…」）。
+  private(set) var mindMapStartedAt: Date?
+  @ObservationIgnored private var mindMapGenerationTask: Task<Void, Never>?
+
+  /// 脑图生成的「停止」（2026-10-01 体检：原来点了就只能等）。
+  func cancelMindMapGeneration() {
+    guard mindMapState.isActive else { return }
+    mindMapGenerationTask?.cancel()
+    mindMapGenerationTask = nil
+    mindMapState = .cancelled
+    mindMapStartedAt = nil
+  }
+
   func confirmMindMapGeneration() {
     CapabilityConsent.grant(.mindMap, defaults: capabilityConsentDefaults)
     isMindMapConfirmationPresented = false
@@ -4471,7 +4538,8 @@ final class HistoryViewModel {
         ? MindMapTheme.darkCode.id
         : MindMapTheme.minimalLight.id)
     let createdAt = existingRecord?.createdAtMilliseconds ?? nowMilliseconds()
-    Task { [weak self] in
+    mindMapStartedAt = Date()
+    mindMapGenerationTask = Task { [weak self] in
       guard let self else { return }
       do {
         let outcome = try await mindMapExtractor.extractOutline(text: text, model: nil)
@@ -4928,6 +4996,8 @@ final class HistoryViewModel {
     transcriptTidyTaskID = context.taskID
     transcriptTidyState = .running
     transcriptTidyTokenSummary = nil
+    // 按真正会切出的段数估时（原来写死「通常 1–5 分钟」，十万字长稿实际要二三十分钟）。
+    transcriptTidyEstimatedSeconds = OpenAICompatibleTranscriptTidier.estimatedSeconds(forText: context.text)
     transcriptTidyTask = Task { [weak self, worker] in
       guard let self, self.transcriptTidyRequestID == requestID else { return }
       let began = await worker.beginTaskTranscription(
@@ -4955,11 +5025,17 @@ final class HistoryViewModel {
         return
       }
       do {
-        let reportTidyProgress: @Sendable (Int, Int) -> Void = { [weak self] done, total in
+        // 进度只数成功的段；失败段补跑时单独说「正在补跑」，不再停在「N/N」等十几分钟（2026-10-01）。
+        let reportTidyPhase: @Sendable (TranscriptTidyPhase) -> Void = { [weak self] phase in
           Task { @MainActor in
             guard let self, self.transcriptTidyRequestID == requestID else { return }
-            // 只有一片时不报——「已校对 1/1 段」没有信息量。
-            self.transcriptTidyProgress = total > 1 ? "已校对 \(done)/\(total) 段" : nil
+            switch phase {
+            case let .tidying(succeeded, total):
+              // 只有一片时不报——「已校对 1/1 段」没有信息量。
+              self.transcriptTidyProgress = total > 1 ? "已校对 \(succeeded)/\(total) 段" : nil
+            case let .retrying(attempt, failed, _):
+              self.transcriptTidyProgress = "正在补跑第 \(attempt) 段（共 \(failed) 段没成功）"
+            }
           }
         }
         let outcome = try await transcriptTidier.tidy(
@@ -4967,7 +5043,7 @@ final class HistoryViewModel {
           model: context.model,
           style: context.style,
           context: context.tidyContext,
-          progress: reportTidyProgress
+          phase: reportTidyPhase
         )
         try Task.checkCancellation()
         guard self.transcriptTidyRequestID == requestID else { return }
@@ -4999,7 +5075,7 @@ final class HistoryViewModel {
             )
             self.refreshDetailAfterTranscription(taskID: context.taskID)
           case .failure:
-            self.transcriptTidyState = .failed("校对结果未能保存到本机历史，请重试。原始字幕未受影响。")
+            self.transcriptTidyState = .failed("校对结果没能保存到资料库，请重试。原来的字幕没有受影响。")
           }
           return
         }
@@ -5027,7 +5103,7 @@ final class HistoryViewModel {
         case .replay, .stale:
           self.transcriptTidyState = .failed("这次整理已被更新的请求替代，请重试。")
         case .failure:
-          self.transcriptTidyState = .failed("整理结果未能保存到本机历史，请重试。原始转写稿未受影响。")
+          self.transcriptTidyState = .failed("校对结果没能保存到资料库，请重试。原来的转写稿没有受影响。")
         }
       } catch {
         let cancelled = error is CancellationError || (error as? TranscriptTidyError) == .cancelled
@@ -5242,7 +5318,7 @@ final class HistoryViewModel {
         case .replay, .stale:
           self.transcriptionState = .failed("这次在线转写已被更新的请求替代，请重试。")
         case .failure:
-          self.transcriptionState = .failed("在线转写文字未能保存到本机历史，请重试。")
+          self.transcriptionState = .failed("转写稿没能保存到资料库，请重试。")
         }
       } catch {
         let failedAt = clock.now
@@ -5478,7 +5554,7 @@ final class HistoryViewModel {
       remoteMediaFavoriteState = .failed(error.userMessage)
     } catch {
       guard selectedTaskID == taskID else { return }
-      remoteMediaFavoriteState = .failed("保存失败。本地历史没有附加视频，请检查视频存储设置后重试。")
+      remoteMediaFavoriteState = .failed("保存失败：资料库里这条没有关联视频，请检查视频存储设置后重试。")
     }
   }
 
@@ -5544,7 +5620,7 @@ final class HistoryViewModel {
       return
     }
     guard case .applied = running else {
-      transcriptionState = .failed("无法更新本机转写状态，请检查历史存储后重试。")
+      transcriptionState = .failed("本机转写的进度没能更新，请稍后重试；一直不行就重新打开汲作。")
       cleanupRemoteTranscription(context)
       return
     }
@@ -5613,7 +5689,7 @@ final class HistoryViewModel {
       } else if let local = error as? LocalVideoTranscriptionError {
         transcriptionState = .failed(local.userMessage)
       } else {
-        transcriptionState = .failed("转写文字未能保存到本机历史，请检查存储后重试。")
+        transcriptionState = .failed("转写稿没能保存到资料库，请重试。")
       }
       cleanupRemoteTranscription(context)
     }
@@ -5668,7 +5744,7 @@ final class HistoryViewModel {
       return
     }
     guard case .applied = running else {
-      transcriptionState = .failed("无法更新本机转写状态，请检查历史存储后重试。")
+      transcriptionState = .failed("本机转写的进度没能更新，请稍后重试；一直不行就重新打开汲作。")
       return
     }
     // 本机导入的录音 / 视频（会议、对话多在这里）：转写和说话人分离同时开跑。
@@ -5750,7 +5826,7 @@ final class HistoryViewModel {
       guard transcriptionRequestID == requestID else { return }
       _ = await worker.updateTranscriptionStatus(history, taskID: context.taskID, attempt: context.attempt, status: .failed)
       guard transcriptionRequestID == requestID else { return }
-      transcriptionState = .failed("转写文字未能保存到本机历史，请检查存储后重试。")
+      transcriptionState = .failed("转写稿没能保存到资料库，请重试。")
     }
   }
 
@@ -5794,6 +5870,8 @@ final class HistoryViewModel {
     } else {
       selectedTagNormalizedNames = [key]
     }
+    // 在工作台里点标签：原来标签亮了、右边不变（2026-10-01 体检）。和其它筛选一样先离开工作台。
+    isWorkbenchActive = false
     selectedHosts = []
     selectedCreatorID = nil
     isCreatorDirectoryActive = false
@@ -5836,8 +5914,19 @@ final class HistoryViewModel {
     selectedTagNormalizedNames = []
     if leavingPlatformGallery {
       discardVisibleList(state: .loading)
+    } else {
+      clearRowsForNavigation()
     }
     reload()
+  }
+
+  /// 切侧栏时先把旧列表撤下：新一页一两百毫秒才到，这期间标题已经是「待校对」，
+  /// 下面却还是「笔记」那几条，看着像筛错了（2026-10-01 走查）。详情先留着，
+  /// 新列表到了会接住第一条；占位骨架 250ms 内不出现，快的时候就是一下空白换内容。
+  private func clearRowsForNavigation() {
+    rows = []
+    nextCursor = nil
+    listState = .loading
   }
 
   /// 侧栏「形式」：只看视频、录音……再点一次同一项取消（`toggles: false` 时保持选中，
@@ -5856,7 +5945,8 @@ final class HistoryViewModel {
     selectedHosts = []
     selectedTagNormalizedNames = []
     if leavingPlatformGallery {
-      discardVisibleList(state: .loading)
+      discardVisibleList(state: .loading)    } else {
+      clearRowsForNavigation()
     }
     reload()
   }
@@ -5910,6 +6000,7 @@ final class HistoryViewModel {
     abandonPlatformGalleryReadingStash()
     isWorkbenchActive = false
     clearCreatorMode()
+    galleryDisplayOrder = nil
     let previousHosts = selectedHosts
     let hostsChanged = previousHosts != hosts
     selectedHosts = hosts
@@ -6062,7 +6153,7 @@ final class HistoryViewModel {
     }
   }
 
-  private func clearCreatorMode() {
+  private func clearCreatorMode(clearsRows: Bool = true) {
     // 从博主页回到普通列表：列表整表重建、从最上面开始。原来沿用博主作品那段的
     // 滚动位置，详情已自动接住第一条，列表却停在一个月前（2026-10-01 走查）。
     // 选中项也清掉：博主页里正在读的那条也在「全部」里，列表会先滚去它那里（实测停在 9 月 8 日），
@@ -6070,6 +6161,13 @@ final class HistoryViewModel {
     if isCreatorDirectoryActive {
       searchScrollToTopToken += 1
       selectedTaskIDs = []
+      // 博主作品还留在 rows 里：新列表落地前那一秒，「全部」下面只剩这位博主的两三条，
+      // 阅读区还落到「还没有保存页面」（2026-10-01 自查）。先清空并标成载入中，
+      // 列表和阅读区都按「正在换列表」显示。
+      if clearsRows {
+        rows = []
+        listState = .loading
+      }
     }
     selectedCreatorID = nil
     selectedCreatorSnapshot = nil
@@ -6173,7 +6271,7 @@ final class HistoryViewModel {
       guard !Task.isCancelled, let self, generation == self.configurationGeneration else { return }
       if let failure { self.tagErrorCode = failure }
       self.reloadAvailableTags()
-      self.reload()
+      self.reloadKeepingNeighbor(of: taskID)
       if self.selectedTaskID == taskID { self.loadDetailForSelection() }
     }
   }
@@ -6250,7 +6348,8 @@ final class HistoryViewModel {
       author: old.author, published: old.published, hasTranscript: old.hasTranscript,
       hasMedia: old.hasMedia, transcriptionFailed: old.transcriptionFailed, hasSummary: old.hasSummary, hasMindMap: old.hasMindMap,
       isFavorite: isFavorite, coverURL: old.coverURL, likes: old.likes,
-      comments: old.comments, shares: old.shares, collects: old.collects, views: old.views)
+      comments: old.comments, shares: old.shares, collects: old.collects, views: old.views,
+      tagNames: old.tagNames)
   }
 
   private func receiveFavoriteMutation(
@@ -6261,20 +6360,27 @@ final class HistoryViewModel {
     case .success:
       // 就地翻转详情里的收藏位，工具栏星标立刻更新——不重载整条详情，避免
       // 「正在载入详情」闪屏（翻一个 bool 没必要把快照、运行、媒体全拉一遍）。
-      if let d = detail, d.task.id == taskID {
-        detail = HistoryDetailProjection(
-          task: d.task, snapshots: d.snapshots, runs: d.runs,
-          tags: d.tags, media: d.media, hadMediaDescriptor: d.hadMediaDescriptor,
-          isFavorite: isFavorite)
-      }
+      // 详情和列表行一起翻：原来只改详情，行上的星和右键菜单还是旧状态（2026-10-01 体检）。
+      applyFavoriteLocally(taskID: taskID, isFavorite: isFavorite)
       // 侧栏「收藏」计数刷新。
       reloadNavigationCounts()
       // 只有正在看「收藏」筛选时，列表才需要整表重载（行要进/出列表）；
       // 其它筛选下列表不受影响，重载只会平白闪一下。
-      if selectedScope == .favorite { reload() }
+      if selectedScope == .favorite { reloadKeepingNeighbor(of: taskID) }
     case let .failure(code):
       tagErrorCode = code
     }
+  }
+
+  /// 这一条马上要离开当前列表（取消收藏、改归属）：重载后接住它的相邻那条，
+  /// 而不是跳回列表第一条（2026-10-01 体检）。
+  func reloadKeepingNeighbor(of taskID: TaskID) {
+    if let index = rows.firstIndex(where: { $0.taskID == taskID }) {
+      let neighbor = rows.indices.contains(index + 1) ? rows[index + 1].taskID
+        : (index > 0 ? rows[index - 1].taskID : nil)
+      fallbackSelectionTaskID = neighbor
+    }
+    reload()
   }
 
   func suggestedTags(matching input: String, excluding assigned: [HistoryTag]) -> [HistoryTag] {
@@ -6607,6 +6713,7 @@ final class HistoryViewModel {
     guard generation == configurationGeneration, requestID == listRequestID else { return }
     switch result {
     case let .success(page):
+      defer { fallbackSelectionTaskID = nil }
       rows = page.rows; nextCursor = page.nextCursor; listState = page.rows.isEmpty ? .empty : .loaded
       searchResultCount = searchText.isEmpty ? nil : page.totalCount
       if searchText != lastReceivedSearchText {
@@ -6628,7 +6735,7 @@ final class HistoryViewModel {
       if page.rows.isEmpty {
         selectedTaskIDs = []; detail = nil; setDetailState(.idle)
       } else if selectedTaskIDs.isEmpty {
-        if isBrowsingCreatorDirectory || isBrowsingPlatformGallery {
+        if suppressesAutomaticSelection {
           // 图库/博主作品：阅读点选与批量勾选分开，进入时不自动打勾首条。
           detail = nil
           setDetailState(.idle)
@@ -6642,14 +6749,18 @@ final class HistoryViewModel {
         // 空白，会让用户误以为「没有搜索结果」。自动接住第一条可见结果。
         // 博主目录与来源平台图库除外：右侧应先列出卡片，点进后再读。
         if selectedTaskIDs.isEmpty {
-          if isBrowsingCreatorDirectory || isBrowsingPlatformGallery {
+          if suppressesAutomaticSelection {
             detail = nil
             setDetailState(.idle)
+          } else if let fallback = fallbackSelectionTaskID, visible.contains(fallback) {
+            selectedTaskID = fallback
           } else {
             selectedTaskID = rows.first?.taskID
           }
         } else if selectedTaskID != nil {
-          loadDetailForSelection()
+          // 选中的还是同一条、详情已在屏幕上：不重读。原来搜索框每停一下就整条详情重读重画，
+          // 打字卡、右栏闪（2026-10-01 体检）。
+          if detail?.task.id != selectedTaskID { loadDetailForSelection() }
         } else {
           // 多选仍保留批量语义，不擅自收窄成第一条。
           detail = nil
@@ -6740,7 +6851,7 @@ final class HistoryViewModel {
           history, noteTaskID: taskID, bodyText: bodyText, nowMilliseconds: updatedAt
         )
       case .failure:
-        self.snapshotEditFailure = "无法保存修改，请检查历史存储后重试。"
+        self.snapshotEditFailure = "修改没能保存，请稍后重试；一直不行就重新打开汲作。"
       }
     }
   }
@@ -6852,7 +6963,8 @@ final class HistoryViewModel {
     selectedHosts = []
     selectedTagNormalizedNames = []
     if leavingPlatformGallery {
-      discardVisibleList(state: .loading)
+      discardVisibleList(state: .loading)    } else {
+      clearRowsForNavigation()
     }
     reload()
   }
@@ -7105,13 +7217,41 @@ final class HistoryViewModel {
     }
   }
 
-  private func showCollectionFeedback(_ text: String) {
+  private func showCollectionFeedback(_ text: String, symbol: String = CollectionIcon.collection, undoRestoring: Set<TaskID>? = nil) {
     collectionFeedbackTask?.cancel()
     collectionFeedback = text
+    collectionFeedbackSymbol = symbol
+    feedbackUndoTaskIDs = undoRestoring
+    // 带「撤销」的多停一会儿，给人反应的时间。
+    let duration = undoRestoring == nil ? 2_200 : 6_000
     collectionFeedbackTask = Task { [weak self] in
-      try? await Task.sleep(for: .milliseconds(2_200))
+      try? await Task.sleep(for: .milliseconds(duration))
       guard !Task.isCancelled else { return }
       self?.collectionFeedback = nil
+      self?.feedbackUndoTaskIDs = nil
+    }
+  }
+
+  var canUndoFeedback: Bool { canUndoFeedbackObserved }
+
+  /// 底部提示里的「撤销」：把刚移到回收站的那几条放回来。
+  func undoFeedbackAction() {
+    guard let ids = feedbackUndoTaskIDs, !ids.isEmpty else { return }
+    collectionFeedbackTask?.cancel()
+    collectionFeedback = nil
+    feedbackUndoTaskIDs = nil
+    guard let history, !isReadOnly else { return }
+    let generation = configurationGeneration
+    Task { [weak self, worker] in
+      let result = await worker.restoreFromTrash(history, taskIDs: ids)
+      guard let self, generation == self.configurationGeneration else { return }
+      if case let .failure(code) = result {
+        self.deleteErrorCode = code; self.isDeleteFailurePresented = true
+        return
+      }
+      self.reloadNavigationCounts()
+      self.reloadAvailableTags()
+      if let first = ids.first { self.reveal(taskID: first) } else { self.reload() }
     }
   }
 
@@ -7119,7 +7259,7 @@ final class HistoryViewModel {
 
   func enterWorkbench() {
     isWorkbenchActive = true
-    clearCreatorMode()
+    clearCreatorMode(clearsRows: false)
     reloadPieces()
     reloadTopicCandidates()
     reloadWritingMethods()
@@ -7146,7 +7286,7 @@ final class HistoryViewModel {
           self.selectedPieceID = nil
         }
       case .failure:
-        self.workbenchFailure = "无法读取工作台，请检查历史存储后重试。"
+        self.workbenchFailure = "工作台没能读出来，请稍后重试；一直不行就重新打开汲作。"
       }
     }
   }
@@ -7298,7 +7438,7 @@ final class HistoryViewModel {
   var distilledCandidates: [String] = []
 
   func distillUnavailableReason() -> String? {
-    if history == nil { return "历史存储不可用。" }
+    if history == nil { return "资料库还在打开。" }
     if isReadOnly { return "这份历史当前只能浏览。" }
     if draftAgent == nil { return "需要先安装 Claude Code。" }
     if isDistilling { return "正在提炼…" }
@@ -7452,7 +7592,7 @@ final class HistoryViewModel {
   }
 
   func topicUnavailableReason() -> String? {
-    if history == nil { return "历史存储不可用。" }
+    if history == nil { return "资料库还在打开。" }
     if isReadOnly { return "这份历史当前只能浏览。" }
     if draftAgent == nil { return "需要先安装 Claude Code。" }
     if isGeneratingTopics { return "正在出选题…" }
@@ -7866,7 +8006,7 @@ final class HistoryViewModel {
     }
     switch failure {
     case .notInstalled:
-      return "没有找到 Claude Code。装好之后再试一次。"
+      return "没有找到 Claude Code。装好之后再试一次。安装说明：https://code.claude.com/docs/en/setup"
     case .notLoggedIn:
       return "Claude Code 还没登录。在终端跑一次 claude 完成登录。"
     case let .rateLimited(resetsAt):
@@ -8012,7 +8152,7 @@ final class HistoryViewModel {
       refreshDetailAfterTranscription(taskID: taskID)
       reload()
     } catch {
-      snapshotEditFailure = "无法保存标题，请检查历史存储后重试。"
+      snapshotEditFailure = "标题没能保存，请稍后重试；一直不行就重新打开汲作。"
     }
   }
 
@@ -8146,7 +8286,7 @@ final class HistoryViewModel {
           history, taskID: taskID, attempt: attempt, status: .cancelled,
           updatedAtMilliseconds: self.nowMilliseconds()
         )
-        self.transcriptionState = .failed("已弹出「录屏与系统录音」授权。请在系统对话框或“系统设置 → 隐私与安全性 → 录屏与系统录音”中打开「\(ProductDisplay.name) Debug」，然后退出并重开 App，再点「实时转写」。")
+        self.transcriptionState = .failed("已弹出「录屏与系统录音」授权。请在系统对话框或「系统设置 → 隐私与安全性 → 录屏与系统录音」中打开「\(ProductDisplay.name)」，然后退出并重新打开\(ProductDisplay.name)，再点「转写」。")
       } catch {
         guard self.transcriptionRequestID == requestID else { return }
         _ = await worker.updateTaskTranscriptionStatus(
@@ -8340,8 +8480,14 @@ final class HistoryViewModel {
       if removedPermanently {
         batch.deletedTaskIDs.forEach { imageCache?.delete(taskID: $0) }
       }
+      // 删完接住相邻那条，而不是把右侧清成「未选中」：连删几条不用反复回去点（2026-10-01 体检）。
+      let firstRemovedIndex = rows.firstIndex { deleted.contains($0.taskID) }
       rows.removeAll { deleted.contains($0.taskID) }
-      selectedTaskIDs = []
+      if let firstRemovedIndex, !rows.isEmpty, !suppressesAutomaticSelection {
+        selectedTaskID = rows[min(firstRemovedIndex, rows.count - 1)].taskID
+      } else {
+        selectedTaskIDs = []
+      }
       if rows.isEmpty {
         listState = .empty
         detail = nil
@@ -8354,6 +8500,16 @@ final class HistoryViewModel {
       // 而恢复的失败集以前恒为空，于是那条「已恢复」永远走不到——用户点完恢复
       // 既不报成功也不报错，只能自己去列表里猜。
       let restoredFromTrash = selectedScope == .trash && !removedPermanently
+      // 普通「移到回收站」全部成功：底部一句短提示带「撤销」，不弹窗打断。
+      // 原来成功时什么都不说，删掉的东西去哪了也看不到。
+      if failedCount == 0, protectedCount == 0, !removedPermanently, selectedScope != .trash,
+         !batch.deletedTaskIDs.isEmpty {
+        showCollectionFeedback(
+          "已移到回收站 \(batch.deletedTaskIDs.count) 条",
+          symbol: "trash",
+          undoRestoring: Set(batch.deletedTaskIDs)
+        )
+      }
       if failedCount > 0 || protectedCount > 0 || restoredFromTrash {
         let verb = removedPermanently ? "已删除" : (selectedScope == .trash ? "已恢复" : "已移到回收站")
         var parts = ["\(verb) \(batch.deletedTaskIDs.count) 条"]
@@ -8421,7 +8577,7 @@ final class HistoryViewModel {
       receiveCapturedMediaAutoSaveFailure(error.userMessage, taskID: taskID)
     } catch {
       receiveCapturedMediaAutoSaveFailure(
-        "保存失败。本地历史没有附加视频，请检查视频存储设置后重试。",
+        "保存失败：资料库里这条没有关联视频，请检查视频存储设置后重试。",
         taskID: taskID
       )
     }
@@ -8748,53 +8904,100 @@ final class HistoryViewModel {
     }
   }
 
+  /// 每个站点取一次图标，取到后分给这个站点名下所有行。
+  ///
+  /// 原来按行排队：同一站点的 50 条各取一遍；而且翻下一页时把上一页还没取完的整批取消，
+  /// 那几行的图标一直空着（2026-10-02 走查）。现在按站点去重、记住取过的站点，
+  /// 新一批只补上一批没覆盖的站点，不打断正在取的。
   private func loadFavicons(for rows: [HistoryRowProjection], generation: UUID) {
     guard let faviconCache, let faviconResources else { return }
-    let candidates = rows.filter {
+    if faviconGeneration != generation {
+      faviconTask?.cancel()
+      faviconTask = nil
+      faviconHostURLs = [:]
+      faviconHostsInFlight = []
+      faviconGeneration = generation
+    }
+    let needing = rows.filter {
       PlatformIconCatalog.assetName(for: $0.host) == nil && faviconImageURLs[$0.taskID] == nil
     }
-    guard !candidates.isEmpty else { return }
-    faviconTask?.cancel()
+    guard !needing.isEmpty else { return }
+    // 已经取到的站点直接用上。
+    var known: [TaskID: URL] = [:]
+    for row in needing { if let url = faviconHostURLs[row.host] { known[row.taskID] = url } }
+    if !known.isEmpty { receiveFavicons(known, generation: generation) }
+    var hostSources: [(host: String, url: URL)] = []
+    var seen = Set<String>()
+    for row in needing where faviconHostURLs[row.host] == nil && !faviconHostsInFlight.contains(row.host) {
+      guard seen.insert(row.host).inserted, let url = URL(string: row.canonicalURL) else { continue }
+      hostSources.append((row.host, url))
+    }
+    guard !hostSources.isEmpty else { return }
+    faviconHostsInFlight.formUnion(hostSources.map(\.host))
+    // 和上一批并行，不取消它：上一批取的站点不在这批里。换库（generation 变）时整组取消。
+    let previous = faviconTask
     faviconTask = Task { [weak self, faviconCache, faviconResources] in
-      // 攒批发布：faviconImageURLs 是 @Published，逐个到货逐个赋值会让
-      // 整棵界面树每个图标刷一次（首屏 50 行就是 50 次全表重算）。
-      // 这里攒住，间隔到了或全部结束才合并发布一次。
-      var pending: [TaskID: URL] = [:]
-      var lastFlush = ContinuousClock.now
-      await withTaskGroup(of: (TaskID, URL?).self) { group in
-        var next = candidates.makeIterator()
-
-        func enqueueNext() {
-          guard let row = next.next(), let sourceURL = URL(string: row.canonicalURL) else { return }
-          group.addTask {
-            guard !Task.isCancelled else { return (row.taskID, nil) }
-            let localURL = await faviconCache.localImageURL(
-              fetchingIfNeededFor: sourceURL,
-              resources: faviconResources
-            )
-            return (row.taskID, localURL)
-          }
-        }
-
-        for _ in 0..<6 { enqueueNext() }
-        while let (taskID, localURL) = await group.next() {
-          guard !Task.isCancelled else {
-            group.cancelAll()
-            break
-          }
-          if let localURL { pending[taskID] = localURL }
-          if !pending.isEmpty, ContinuousClock.now - lastFlush > .milliseconds(250) {
-            self?.receiveFavicons(pending, generation: generation)
-            pending = [:]
-            lastFlush = .now
-          }
-          enqueueNext()
-        }
-      }
-      if !pending.isEmpty {
-        self?.receiveFavicons(pending, generation: generation)
+      await withTaskCancellationHandler {
+        await self?.fetchHostFavicons(hostSources, cache: faviconCache, resources: faviconResources, generation: generation)
+      } onCancel: {
+        previous?.cancel()
       }
     }
+  }
+
+  private func fetchHostFavicons(
+    _ hostSources: [(host: String, url: URL)],
+    cache faviconCache: WebsiteFaviconCache,
+    resources faviconResources: any SafeResourceFetching,
+    generation: UUID
+  ) async {
+    // 攒批发布：逐个到货逐个赋值会让整棵界面树每个图标刷一次。
+    var pending: [String: URL] = [:]
+    var lastFlush = ContinuousClock.now
+    await withTaskGroup(of: (String, URL?).self) { group in
+      var next = hostSources.makeIterator()
+      func enqueueNext() {
+        guard let source = next.next() else { return }
+        group.addTask {
+          guard !Task.isCancelled else { return (source.host, nil) }
+          let localURL = await faviconCache.localImageURL(
+            fetchingIfNeededFor: source.url,
+            resources: faviconResources
+          )
+          return (source.host, localURL)
+        }
+      }
+      for _ in 0..<6 { enqueueNext() }
+      while let (host, localURL) = await group.next() {
+        guard !Task.isCancelled else {
+          group.cancelAll()
+          break
+        }
+        if let localURL { pending[host] = localURL }
+        if !pending.isEmpty, ContinuousClock.now - lastFlush > .milliseconds(250) {
+          self.receiveHostFavicons(pending, generation: generation)
+          pending = [:]
+          lastFlush = .now
+        }
+        enqueueNext()
+      }
+    }
+    if !pending.isEmpty {
+      self.receiveHostFavicons(pending, generation: generation)
+    }
+  }
+
+  @ObservationIgnored private var faviconHostURLs: [String: URL] = [:]
+  @ObservationIgnored private var faviconHostsInFlight: Set<String> = []
+  @ObservationIgnored private var faviconGeneration: UUID?
+
+  private func receiveHostFavicons(_ urls: [String: URL], generation: UUID) {
+    guard generation == configurationGeneration else { return }
+    faviconHostURLs.merge(urls) { _, new in new }
+    faviconHostsInFlight.subtract(urls.keys)
+    var byTask: [TaskID: URL] = [:]
+    for row in rows { if let url = urls[row.host] { byTask[row.taskID] = url } }
+    receiveFavicons(byTask, generation: generation)
   }
 
   /// Uses the exact `<link rel="icon">` that the browser saw on the captured

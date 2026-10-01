@@ -121,7 +121,8 @@ struct LocalImportStatusSheet: View {
         }
         HStack {
           Spacer()
-          Button("关闭") { controller.isPresented = false }
+          Button("知道了") { controller.isPresented = false }
+            .keyboardShortcut(.cancelAction)
           if let revealHost {
             Button("查看") { controller.reveal(host: revealHost) }
               .keyboardShortcut(.defaultAction)
@@ -140,7 +141,8 @@ struct LocalImportStatusSheet: View {
         }
         HStack {
           Spacer()
-          Button("关闭") { controller.isPresented = false }
+          Button("知道了") { controller.isPresented = false }
+            .keyboardShortcut(.cancelAction)
           if let settingsLink {
             Button("打开系统设置") { controller.open(settingsLink) }
               .keyboardShortcut(.defaultAction)
@@ -217,7 +219,7 @@ struct LocalImportConfirmationView: View {
         Toggle(isOn: $transcribe) {
           VStack(alignment: .leading, spacing: 2) {
             Text("导入后转写")
-            Text("用本机听写把 \(plan.scan.mediaCount) 个音视频逐个转成文字，免费、不上传，不会自动总结。")
+            Text("用本机转写（Mac 自带的语音识别）把 \(plan.scan.mediaCount) 个音视频逐个转成转写稿，免费、不上传，不会自动总结。")
               .themedFont(.caption)
               .foregroundStyle(.secondary)
               .fixedSize(horizontal: false, vertical: true)

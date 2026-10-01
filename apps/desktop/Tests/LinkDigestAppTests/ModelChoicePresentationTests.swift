@@ -34,7 +34,7 @@ final class ModelChoicePresentationTests: XCTestCase {
   func testEmptyValueIsAFirstClassOption() throws {
     let settings = try source("ProviderSettingsView.swift")
     XCTAssertTrue(settings.contains(#"emptyOptionTitle: "跟随总结模型""#))
-    XCTAssertTrue(settings.contains(#"emptyOptionTitle: "不使用：只用 Apple 本机转写""#))
+    XCTAssertTrue(settings.contains(#"emptyOptionTitle: "不使用：只用本机转写""#))
   }
 
   /// 2026-09-17 改：只能从「模型服务」里已添加的模型中选，不再提供「自定义…」。

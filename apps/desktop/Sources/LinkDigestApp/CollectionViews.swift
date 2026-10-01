@@ -106,15 +106,26 @@ struct CollectionPromptsModifier: ViewModifier {
       }
       .overlay(alignment: .bottom) {
         if let feedback = model.collectionFeedback {
-          Label(feedback, systemImage: CollectionIcon.collection)
+          // 带「撤销」的提示（删除后）要能点，其余提示仍然不挡鼠标（2026-10-01）。
+          HStack(spacing: 12) {
+            Label(feedback, systemImage: model.collectionFeedbackSymbol)
+              .lineLimit(2)
+            if model.canUndoFeedback {
+              Button("撤销") { model.undoFeedbackAction() }
+                .buttonStyle(.plain)
+                .themedFont(.callout, weight: .semibold)
+                .foregroundStyle(.tint)
+                .keyboardShortcut("z", modifiers: .command)
+                .accessibilityIdentifier("history-feedback-undo")
+            }
+          }
             .themedFont(.callout, weight: .medium)
-            .lineLimit(2)
             .padding(.vertical, 8).padding(.horizontal, 16)
             .background(.regularMaterial, in: Capsule())
             .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.2), lineWidth: 1))
             .padding(.bottom, 28)
             .transition(reduceMotion ? .opacity : .opacity.combined(with: .move(edge: .bottom)))
-            .allowsHitTesting(false)
+            .allowsHitTesting(model.canUndoFeedback)
             .accessibilityIdentifier("history-collection-feedback")
         }
       }

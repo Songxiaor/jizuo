@@ -251,10 +251,10 @@ private struct ProfileImportReservedWorkCard: View {
     }
     .themedFont(.caption2, weight: .medium)
     .foregroundStyle(statusColor)
-    .padding(.horizontal, 7)
-    .padding(.vertical, 5)
+    .padding(.horizontal, DesignTokens.Space.sm)
+    .padding(.vertical, DesignTokens.Space.xs)
     .background(.ultraThinMaterial, in: Capsule())
-    .padding(6)
+    .padding(DesignTokens.Space.sm)
   }
 
   @ViewBuilder private var actionButton: some View {

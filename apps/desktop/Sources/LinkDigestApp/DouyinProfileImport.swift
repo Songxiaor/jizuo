@@ -567,12 +567,12 @@ final class DouyinProfileMetricsReader: NSObject, ObservableObject, WKNavigation
           case "login":
             if request == self.generation { receive(metrics) }
             result = nil
-            message = "作品需要登录，请在“查看主页”登录后重试"
+            message = "作品需要登录，请在「查看主页」里登录后重试"
             self.accessLimit = "login"
           case "verification":
             if request == self.generation { receive(metrics) }
             result = nil
-            message = "作品需要验证，请在“查看主页”完成后重试"
+            message = "作品需要验证，请在「查看主页」里完成验证后重试"
             self.accessLimit = "verification"
           case "rate_limit":
             if request == self.generation { receive(metrics) }
@@ -635,9 +635,9 @@ enum DouyinProfileImportStopReason: Equatable {
     case .loginRequired:
       return "当前平台需要登录。可点「登录」使用本机会话，完成后会继续当前主页，不必重新粘贴。"
     case .verificationRequired:
-      return "请点击“查看主页”完成人机验证，再继续加载。"
+      return "请点「查看主页」完成人机验证，再继续加载。"
     case .worksTabRequired:
-      return "请点击“查看主页”，切换到本人作品／投稿列表后继续加载。"
+      return "请点「查看主页」，切换到本人作品／投稿列表后继续加载。"
     case .platformChanged:
       return "等待后仍未识别到主页作品列表，平台页面结构可能已变化。请重试或使用浏览器扩展保存单条作品。"
     case .navigationFailed:
@@ -832,7 +832,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
         return
       }
       if ProfileImportPlatform.fromWorkURL(url) != nil {
-        phase = .failed("这是单条作品链接，请改用单条保存入口，不能当作博主主页导入。")
+        phase = .failed("这是单条作品链接，请改用单条保存入口，不能当作博主主页添加。")
       }
       return
     }
@@ -869,7 +869,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
     switch phase {
     case .loading, .scanning, .stopped(.loginRequired), .stopped(.verificationRequired), .stopped(.worksTabRequired):
       if let url, ProfileImportPlatform.fromWorkURL(url) != nil {
-        phase = .failed("这是单条作品链接，请改用单条保存入口，不能当作博主主页导入。")
+        phase = .failed("这是单条作品链接，请改用单条保存入口，不能当作博主主页添加。")
       } else {
         phase = .failed("打开后的地址离开了当前平台，已停止。")
       }
@@ -1783,13 +1783,13 @@ struct DouyinProfileImportSheet: View {
 
   private var stageTitle: String {
     if model.sourceURL == nil { return "1. 输入主页" }
-    if model.candidates.isEmpty { return "2. 发现作品" }
+    if model.candidates.isEmpty { return "2. 找作品" }
     return "3. 选择作品"
   }
 
   /// 发现阶段头部只保留一行状态：阶段 · 条数 · 当前进展。
   private var stageSummary: String {
-    var parts = [stageTitle, "已发现 \(model.candidates.count) 条作品"]
+    var parts = [stageTitle, "已找到 \(model.candidates.count) 条作品"]
     if model.isScanning { parts.append("正在加载更多…") }
     else if model.phase == .loading { parts.append("正在打开主页…") }
     else if case let .stopped(reason) = model.phase { parts.append(reason.message) }
@@ -1807,7 +1807,8 @@ struct DouyinProfileImportSheet: View {
   private var header: some View {
     HStack(alignment: .top, spacing: DesignTokens.Space.md) {
       VStack(alignment: .leading, spacing: DesignTokens.Space.xxs) {
-        Text("导入博主内容")
+        // 入口统一叫「添加博主」，第一步「找作品」，最后「保存选中的 N 条」（2026-10-01）。
+        Text("添加博主")
           .themedFont(.headline)
         Text(stageTitle)
           .themedFont(.callout, weight: .medium)
@@ -1857,7 +1858,7 @@ struct DouyinProfileImportSheet: View {
             .accessibilityIdentifier("profile-import-browser-start")
         }
         Spacer(minLength: 0)
-        Button("发现作品") { model.start() }
+        Button("找作品") { model.start() }
           .buttonStyle(.borderedProminent)
           .disabled(!model.canStart)
           .accessibilityIdentifier("douyin-profile-import-start")
@@ -1908,7 +1909,7 @@ struct DouyinProfileImportSheet: View {
   @ViewBuilder
   private var sessionStatusRow: some View {
     if model.isBrowserSourced {
-      Text("来源：浏览器扩展 · 已收到作品清单；浏览器登录与 App 内登录独立。")
+      Text("来源：浏览器扩展 · 已收到作品清单；浏览器里的登录和\(ProductDisplay.name)里的登录互不影响。")
         .themedFont(.caption).foregroundStyle(theme.secondaryText)
         .accessibilityIdentifier("profile-import-browser-source")
     } else if let platform = sessionPlatform {
@@ -1966,7 +1967,7 @@ struct DouyinProfileImportSheet: View {
           .lineLimit(1)
       }
       if model.discoverySource == .browserExtension {
-        Button("在浏览器打开当前主页", action: model.openCurrentProfileInBrowser)
+        Button("在浏览器中打开当前主页", action: model.openCurrentProfileInBrowser)
           .accessibilityIdentifier("douyin-profile-import-open-browser")
         Button("继续加载", action: model.continueLoading)
       } else {
@@ -1998,17 +1999,17 @@ struct DouyinProfileImportSheet: View {
           Image(systemName: "square.grid.2x2")
             .font(.system(size: DesignTokens.IconSize.empty, weight: .medium))
           if model.phase == .loading || model.isScanning {
-            Text("正在发现作品")
+            Text("正在找作品")
               .themedFont(.headline)
             Text("作品出现后会显示在这里。")
               .themedFont(.callout)
           } else if case .failed = model.phase {
-            Text("发现失败")
+            Text("没找到作品")
               .themedFont(.headline)
             Text("请查看上方说明，或打开主页后重试。")
               .themedFont(.callout)
           } else {
-            Text("还没有发现作品")
+            Text("还没找到作品")
               .themedFont(.headline)
             Text("如需登录或验证，请点击上方「查看主页」。")
               .themedFont(.callout)
@@ -2249,7 +2250,7 @@ struct DouyinProfileImportSheet: View {
         .toggleStyle(.checkbox)
         .help("每条作品保存后，按「设置 → 收集 · 汲 → 评论」里的条数读前几条评论写进正文。要逐条挑选，可在保存后打开作品用「处理 → 抓取评论…」。")
         .accessibilityIdentifier("profile-import-includes-comments")
-      Button("保存所选 \(model.selectedCount) 条") {
+      Button("保存选中的 \(model.selectedCount) 条") {
         guard model.saveSelected() > 0, let creatorID = model.creatorID else { return }
         stopReading()
         model.stop()

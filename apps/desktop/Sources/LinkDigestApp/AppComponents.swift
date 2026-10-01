@@ -145,3 +145,79 @@ struct AppSectionHeader: View {
       .padding(.bottom, DesignTokens.Space.xxs)
   }
 }
+
+/// 栏内的小空状态：一行标题、一句说明、一个文字按钮。
+///
+/// 2026-10-01 视觉一致性：方法库、选题板的空状态原来只有一行淡灰字，
+/// 和同一栏「在做的」那块带图标、带按钮的空态差了一个重量级，用户读不出
+/// 「这里空着、下一步点哪」。这两块都嵌在一条长滚动栏里，套大号
+/// `HistoryInlineState` 会把整栏撑散，所以单做一个靠左、紧凑的版本。
+struct CompactEmptyState: View {
+  let title: String
+  let message: String
+  var actionTitle: String?
+  var isActionEnabled = true
+  var action: (() -> Void)?
+  @Environment(\.appTheme) private var theme
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+      Text(title)
+        .themedFont(.callout, weight: .medium)
+        .foregroundStyle(theme.primaryText)
+      Text(message)
+        .themedFont(.caption)
+        .foregroundStyle(theme.secondaryText)
+        .fixedSize(horizontal: false, vertical: true)
+      if let actionTitle, let action {
+        Button(actionTitle, action: action)
+          .buttonStyle(.plain)
+          .themedFont(.caption, weight: .semibold)
+          .foregroundStyle(isActionEnabled ? theme.accent : theme.secondaryText)
+          .disabled(!isActionEnabled)
+          .padding(.top, DesignTokens.Space.xxs)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+}
+
+/// 「正在载入…」的统一写法：小号转圈 + 一行说明。
+///
+/// 2026-10-01 视觉一致性：原来有的写 `ProgressView("正在载入…")`（系统默认大号转圈、
+/// 系统字体、文字压在圈下面），有的只转圈不说话，有的自己拼 HStack，字号各不相同。
+/// 加载是最常见的过渡态，长相不统一会让每次切换都像换了个 App。
+struct InlineLoadingLabel: View {
+  let message: String
+  @Environment(\.appTheme) private var theme
+
+  init(_ message: String) {
+    self.message = message
+  }
+
+  var body: some View {
+    HStack(spacing: DesignTokens.Space.sm) {
+      ProgressView().controlSize(.small)
+      Text(message)
+        .themedFont(.caption)
+        .foregroundStyle(theme.secondaryText)
+    }
+    .accessibilityElement(children: .combine)
+  }
+}
+
+/// 独立小窗（快速记录、MCP 博主发现这类自己 new 出来的 NSPanel / NSWindow）的根视图。
+///
+/// 2026-10-01 视觉一致性：主窗口和设置窗口在 SwiftUI 场景根上注入了主题，而 AppKit
+/// 直接建的窗口不经过那条路——里面读到的 `appTheme` 是缺省值，强调色是系统蓝、字体
+/// 不跟用户选的界面字体。在这里把同一份偏好读出来再注入一次，窗口里就和主窗口一致。
+struct ThemedWindowRoot<Content: View>: View {
+  @AppStorage(AppearanceTheme.storageKey) private var appearanceThemeRaw = AppearanceTheme.glass.rawValue
+  @AppStorage(UIFontSelection.storageKey) private var uiFontRaw = UIFontSelection.defaultStoredValue
+  @ViewBuilder var content: () -> Content
+
+  var body: some View {
+    content()
+      .appThemeEnvironment(appearanceThemeRaw, uiFontRawValue: uiFontRaw)
+  }
+}

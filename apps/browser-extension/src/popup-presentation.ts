@@ -108,13 +108,27 @@ export function popupPreviewFailure(rawMessage: string): PopupPreviewFailure {
       canReload: true,
     };
   }
+  // 浏览器不让扩展进这一页（设置页、扩展商店、PDF 预览这类）。拿不到网址时
+  // popupBrowserPageFailure 认不出来，只能看注入失败的原话；原来落到下面的通用文案，
+  // 叫人刷新重试，刷多少次都没用（2026-10-02 自测）。
+  if (/cannot access|cannot be scripted|extensions gallery|chrome:\/\/|edge:\/\/|chrome-extension:\/\//iu.test(rawMessage)) {
+    return popupBrowserPageCopy;
+  }
+  // 标题、说明、步骤原来把「刷新」说了三遍；说明只讲可能的原因，怎么做交给步骤。
   return {
     title: "这一页暂时读不了",
-    message: "当前页面暂时不可读取。请刷新页面后再试。",
+    message: "可能是页面还没加载完，或网站临时挡住了读取。",
     steps: ["刷新页面，等内容加载完", "点下面「重新读取」"],
     canReload: true,
   };
 }
+
+const popupBrowserPageCopy: PopupPreviewFailure = {
+  title: "浏览器自己的页面读不了",
+  message: "设置、扩展、新标签页这类浏览器自带页面，不允许扩展读取内容。",
+  steps: ["换到一篇文章、一条帖子或视频页", "再点一次「汲」图标"],
+  canReload: false,
+};
 
 /**
  * 浏览器自己的页面（设置、扩展、新标签页、ego:// 之类）扩展根本读不了，刷新也没用：
@@ -126,12 +140,7 @@ export function popupBrowserPageFailure(url: string | undefined): PopupPreviewFa
   let scheme = "";
   try { scheme = new URL(url).protocol; } catch { return null; }
   if (scheme === "http:" || scheme === "https:") return null;
-  return {
-    title: "浏览器自己的页面读不了",
-    message: "设置、扩展、新标签页这类浏览器自带页面，不允许扩展读取内容。",
-    steps: ["换到一篇文章、一条帖子或视频页", "再点一次「汲」图标"],
-    canReload: false,
-  };
+  return popupBrowserPageCopy;
 }
 
 export function popupRecoveryForSendResult(result: SafeExtensionSendResult): PopupRecovery | null {
@@ -144,6 +153,12 @@ export function popupRecoveryForSendResult(result: SafeExtensionSendResult): Pop
   }
   if (requested === "upgrade_app") return { message, action: "open_app", label: "打开汲作检查更新" };
   if (requested === "open_app") return { message, action: "open_app", label: "前往汲作处理" };
+  // 资料库要在汲作里处理的几种情况，直接给「打开汲作」（2026-10-01）。
+  const code = result.response.error.code;
+  if (code === "STORAGE_INTEGRITY_FAILED" || code === "STORAGE_READ_ONLY"
+      || code === "STORAGE_MIGRATION_FAILED" || code === "STORAGE_UNAVAILABLE") {
+    return { message, action: "open_app", label: "打开汲作" };
+  }
   if (requested === "open_install_guide") {
     return { message, action: "open_settings", label: "打开汲作安装浏览器支持" };
   }
@@ -158,23 +173,24 @@ export function popupRecoveryForSendResult(result: SafeExtensionSendResult): Pop
 
 const knownErrorMessages: Readonly<Record<string, string>> = {
   PROTOCOL_VERSION_UNSUPPORTED: "扩展与汲作版本不兼容。请打开汲作检查更新。",
-  CAPTURE_SCHEMA_INVALID: "当前页面数据格式无效，请刷新页面后重试。",
-  CAPTURE_URL_UNSUPPORTED: "当前页面地址不受支持，请打开 HTTP 或 HTTPS 页面。",
+  // 每条都给出路；资料库、平台名、「保存」的叫法与桌面端统一（2026-10-01）。
+  CAPTURE_SCHEMA_INVALID: "这一页的内容没认出来。请刷新网页，等内容加载完再点扩展。",
+  CAPTURE_URL_UNSUPPORTED: "这一页不是普通网页，扩展读不了。请换到一篇文章、一条帖子或视频页再试。",
   CAPTURE_CONTENT_EMPTY: "当前页面没有可保存的内容。",
   CAPTURE_DOUYIN_NO_SINGLE_ITEM: "没有定位到具体的抖音视频。请打开视频详情页，或在精选里点开弹层后再保存。",
-  PLATFORM_NOT_SUPPORTED: "暂不支持该平台的智能抓取（小红书 / B站适配开发中）。可先在浏览器打开，或复制链接到桌面 App。",
-  CAPTURE_PAYLOAD_TOO_LARGE: "当前页面内容过大，无法保存。",
-  CAPTURE_COUNT_MISMATCH: "当前页面内容校验失败，请重新捕获。",
-  NATIVE_RESPONSE_INVALID: "汲作返回了无效响应，请重启汲作后重试。",
-  STORAGE_UNAVAILABLE: "本地存储暂时不可用，请打开汲作后重试。",
-  STORAGE_WRITE_FAILED: "本地历史保存失败，请稍后重试。",
-  STORAGE_FUTURE_SCHEMA: "本地历史由更新版本创建，请升级汲作。",
-  STORAGE_MIGRATION_FAILED: "本地历史升级未完成，请重新打开汲作。",
-  STORAGE_READ_ONLY: "本地历史当前只读，无法保存新内容。",
-  STORAGE_INTEGRITY_FAILED: "本地历史完整性检查失败，请停止写入。",
-  STORAGE_STATE_CONFLICT: "本地历史状态已变化，请重新保存。",
-  CAPTURE_IDEMPOTENCY_CONFLICT: "本次页面传输与原请求不一致，请重新保存。",
-  RUN_IDEMPOTENCY_CONFLICT: "本次运行与原请求不一致，请重新操作。",
+  PLATFORM_NOT_SUPPORTED: "暂不支持保存这个网站的内容。可以复制链接，到汲作里用「添加链接」试试。",
+  CAPTURE_PAYLOAD_TOO_LARGE: "这一页内容太多，一次存不下。请先选中想要的一段，再点扩展保存。",
+  CAPTURE_COUNT_MISMATCH: "这一页的内容没读完整。请刷新网页，等内容加载完再保存。",
+  NATIVE_RESPONSE_INVALID: "汲作的回应没认出来，请重新打开汲作后重试。",
+  STORAGE_UNAVAILABLE: "资料库暂时打不开，请打开汲作后重试。",
+  STORAGE_WRITE_FAILED: "这次没能写进资料库，请稍后重试。",
+  STORAGE_FUTURE_SCHEMA: "资料库是更新版本的汲作建的，请升级汲作。",
+  STORAGE_MIGRATION_FAILED: "资料库升级没有完成，请重新打开汲作。",
+  STORAGE_READ_ONLY: "资料库现在只能看、不能改，这一页没有保存。重新打开汲作通常就能恢复。",
+  STORAGE_INTEGRITY_FAILED: "资料库的完整性检查没有通过，汲作已暂停保存。请打开汲作，按里面的提示先备份再处理。",
+  STORAGE_STATE_CONFLICT: "资料库里的这条内容刚刚变过，请重新保存。",
+  CAPTURE_IDEMPOTENCY_CONFLICT: "这次保存跟原来的请求对不上，请重新保存。",
+  RUN_IDEMPOTENCY_CONFLICT: "这次生成跟原来的请求对不上，请在汲作里重新点总结或翻译。",
   // 连接类三条只在自动重试用完后才出现，下面有「打开汲作并重试」按钮，不再叫用户自己排查（2026-10-01）。
   APP_UNAVAILABLE: connectionCopy.needsApp,
   NATIVE_HOST_NOT_FOUND: "未找到浏览器支持组件，请在汲作设置里安装浏览器支持。",
@@ -222,7 +238,7 @@ export function popupMessageForSendResult(result: SafeExtensionSendResult): stri
 }
 
 export function popupBuildLabel(manifest: { version: string; version_name?: string | undefined }): string {
-  return `构建 ${manifest.version_name || manifest.version}`;
+  return `版本 ${manifest.version_name || manifest.version}`;
 }
 
 type CapturePlatform =
@@ -231,8 +247,8 @@ type CapturePlatform =
 type Completeness = "full_article" | "visible_only" | "selection_only" | "unknown";
 
 const platformLabels: Readonly<Record<CapturePlatform, string>> = {
-  generic: "网页", x: "X", youtube: "YouTube", wechat: "微信公众号",
-  xiaohongshu: "小红书", douyin: "抖音", bilibili: "B站", github: "GitHub",
+  generic: "网页", x: "X", youtube: "YouTube", wechat: "公众号",
+  xiaohongshu: "小红书", douyin: "抖音", bilibili: "B 站", github: "GitHub",
   zhihu: "知乎", medium: "Medium", substack: "Substack", toutiao: "今日头条",
 };
 
@@ -336,7 +352,7 @@ export function popupMetaChips(preview: {
     return chips;
   }
   if (resolvesVideoAfterSending(preview.platform, preview.media)) {
-    chips.push({ text: "🎬 视频由 App 获取", tone: "video" });
+    chips.push({ text: "🎬 视频由汲作获取", tone: "video" });
     return chips;
   }
   const videoChip = popupVideoChip(preview.media);

@@ -177,6 +177,11 @@ struct ProcessStepRow: View {
   let action: () -> Void
 
   @SwiftUI.State private var isHovered = false
+  /// 「去做」和失败原因的颜色从主题取，不从调用方传进来的 `sealColor` 借。
+  ///
+  /// 2026-10-01 视觉一致性：朱只给印章和朱批。原来「去做」、失败原因、悬停底
+  /// 全用朱，一屏里朱色既表示「盖过的章」又表示「去点」和「出错了」，印反而不醒目。
+  @Environment(\.appTheme) private var appTheme
 
   var body: some View {
     Button(action: action) {
@@ -194,8 +199,9 @@ struct ProcessStepRow: View {
       .padding(.vertical, 5)
       .contentShape(Rectangle())
       .background(
-        RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(isHovered && isEnabled ? sealColor.opacity(0.07) : .clear)
+        RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
+          // 悬停只是「这里能点」的提示，用中性底，和 AppButtonStyle 的 quiet 档同一强度。
+          .fill(isHovered && isEnabled ? primaryText.opacity(0.05) : .clear)
       )
     }
     .buttonStyle(.plain)
@@ -203,7 +209,22 @@ struct ProcessStepRow: View {
     .opacity(isEnabled ? 1 : 0.5)
     .onHover { isHovered = $0 }
     .help(help)
+    // 印章本身也带名字，合并朗读成「翻译、翻译、去做」（2026-10-02 自测）。整行只念一次。
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(title)
+    .accessibilityValue(accessibilityState)
+    .accessibilityAddTraits(.isButton)
+    .accessibilityAction { if isEnabled { action() } }
     .accessibilityIdentifier(identifier)
+  }
+
+  private var accessibilityState: String {
+    switch state {
+    case .pending: "去做"
+    case let .running(text): text
+    case let .failed(reason): "上次失败：\(reason)"
+    case let .done(when): "已完成，\(when)"
+    }
   }
 
   private var isDone: Bool { if case .done = state { true } else { false } }
@@ -219,14 +240,14 @@ struct ProcessStepRow: View {
   @ViewBuilder private var trailing: some View {
     switch state {
     case .pending:
-      Text("去做").themedFont(.caption).foregroundStyle(sealColor)
+      Text("去做").themedFont(.caption).foregroundStyle(appTheme.accent)
     case let .running(text):
       HStack(spacing: 6) {
         ProgressView().controlSize(.mini)
         Text(text).themedFont(.caption).foregroundStyle(secondaryText).lineLimit(1)
       }
     case let .failed(reason):
-      Text(reason).themedFont(.caption).foregroundStyle(sealColor).lineLimit(1).truncationMode(.tail)
+      Text(reason).themedFont(.caption).foregroundStyle(appTheme.danger).lineLimit(1).truncationMode(.tail)
         .frame(maxWidth: 150, alignment: .trailing)
     case let .done(when):
       Text(when).themedFont(.caption, monospacedDigit: true).foregroundStyle(secondaryText)

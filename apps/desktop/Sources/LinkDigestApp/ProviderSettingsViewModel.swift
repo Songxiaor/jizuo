@@ -505,7 +505,7 @@ final class ProviderSettingsViewModel {
   var libraryEntryDisplays: [LibraryEntryDisplay] {
     libraryProfiles.map { profile in
       let preset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
-      let title = preset == .custom ? (profile.baseURL.host ?? "自定义") : preset.displayName
+      let title = preset == .custom ? (profile.baseURL.host ?? "其他服务商") : preset.displayName
       return LibraryEntryDisplay(
         id: profile.id,
         baseURL: profile.baseURL.absoluteString,
@@ -653,7 +653,7 @@ final class ProviderSettingsViewModel {
       searched += 1
       anyListed = true
       let preset = ProviderPreset.allCases.first(where: { $0.baseURLTemplate == profile.baseURL.absoluteString }) ?? .custom
-      let title = preset == .custom ? (profile.baseURL.host ?? "自定义") : preset.displayName
+      let title = preset == .custom ? (profile.baseURL.host ?? "其他服务商") : preset.displayName
       let existing = Set(libraryProfiles.filter { $0.baseURL == profile.baseURL }.map(\.model))
       for model in models where Self.isTranscriptionModel(model) && !existing.contains(model) {
         candidates.append(.init(baseURL: profile.baseURL, providerTitle: title, model: model, sourceProfileID: profile.id))

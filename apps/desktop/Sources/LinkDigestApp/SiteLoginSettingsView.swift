@@ -162,7 +162,7 @@ struct SiteLoginSettingsView: View {
         Text("尚无浏览器送达记录。请先在「浏览器支持」连接扩展，再从 X 主页发送一次作品清单。")
           .themedFont(.subheadline)
       }
-      Text("送达记录不代表浏览器当前在线，也不代表 X 登录仍有效；与上方 App 内登录分别保存。")
+      Text("送达记录不代表浏览器当前在线，也不代表 X 登录仍有效；和上方汲作里的登录分开保存。")
         .themedFont(.caption2)
         .foregroundStyle(.secondary)
       if let browserOpenError {
@@ -386,7 +386,10 @@ struct SiteLoginSettingsView: View {
           // 校验结果是点了按钮之后的真实反馈，不是说明文字——它必须留着，
           // 否则「校验会话」点完没有任何回音。
           if let verification = bilibiliSession.verificationLabel {
-            Label(verification, systemImage: "checkmark.seal")
+            Label(
+              verification,
+              systemImage: bilibiliSession.verificationSucceeded ? "checkmark.seal" : "exclamationmark.triangle"
+            )
               .themedFont(.subheadline)
               .foregroundStyle(.secondary)
               .textSelection(.enabled)

@@ -86,3 +86,41 @@ final class TranscriptManuscriptTests: XCTestCase {
                    [1, 9, 10, 11, 20, 21, 29, 30, 31].map { ColophonView.chineseDay($0) })
   }
 }
+
+/// 阅读区重画时的缓存（2026-10-01 体检）：命中要和现算一模一样，内容一变就得重算。
+final class ManuscriptRedrawCacheTests: XCTestCase {
+  func testCachedParagraphsMatchFreshComputationAndFollowContentChanges() {
+    let first = "00:01 第一段\n\n00:05 第二段"
+    XCTAssertEqual(TranscriptManuscript.paragraphs(of: first), TranscriptManuscript.paragraphs(of: first))
+    XCTAssertEqual(TranscriptManuscript.paragraphs(of: first).count, 2)
+    // 同样长度、不同内容：不能拿到上一份的结果。
+    let second = "00:01 第一段\n\n00:05 第三段"
+    XCTAssertEqual(TranscriptManuscript.paragraphs(of: second).last?.text, "第三段")
+    XCTAssertTrue(TranscriptManuscript.looksLikeTranscript(first))
+    XCTAssertFalse(TranscriptManuscript.looksLikeTranscript("第一段\n\n第二段"))
+    // 段首很长的时间码之外的正文不影响判断。
+    XCTAssertTrue(TranscriptManuscript.looksLikeTranscript("1:02:03 " + String(repeating: "字", count: 5_000)))
+  }
+
+  func testContentMemoEvictsOldestBeyondCapacity() {
+    let memo = ContentMemo<String, Int>(capacity: 2)
+    memo.store(1, for: "a")
+    memo.store(2, for: "b")
+    _ = memo.value(for: "a")  // a 变成最近用过
+    memo.store(3, for: "c")
+    XCTAssertEqual(memo.value(for: "a"), 1)
+    XCTAssertNil(memo.value(for: "b"))
+    XCTAssertEqual(memo.value(for: "c"), 3)
+  }
+
+  func testMindMapPlaceholderHeightComesFromTheSVGItself() {
+    let svg = MindMapSVGRenderer.render(
+      outline: MindMapOutline(title: "中心", subtitle: nil, branches: [.init(title: "分支", leaves: ["要点"])]),
+      theme: .minimalLight
+    )
+    let declared = MindMapSectionView.declaredHeight(of: svg)
+    XCTAssertNotNil(declared)
+    XCTAssertGreaterThan(declared ?? 0, 0)
+    XCTAssertNil(MindMapSectionView.declaredHeight(of: "<p>不是 svg</p>"))
+  }
+}

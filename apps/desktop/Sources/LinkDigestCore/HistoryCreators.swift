@@ -96,20 +96,35 @@ public enum CreatorDisplay {
     }
   }
 
-  /// 没有真名时的目录标题：平台名 · 去掉协议和 www 的主页地址（过长截断）。
-  public static func unnamedDirectoryTitle(platform: String, profileURL: String, maxAddressLength: Int = 28) -> String {
-    let platformName = HistoryPlatformDisplay.name(forHost: platform)
-    guard let components = URLComponents(string: profileURL.trimmingCharacters(in: .whitespacesAndNewlines)),
-          var host = components.host?.lowercased(), !host.isEmpty
-    else { return platformName }
-    if host.hasPrefix("www.") { host.removeFirst(4) }
-    var path = components.path
-    while path.hasSuffix("/") { path.removeLast() }
-    var address = host + path
-    if address.count > maxAddressLength {
-      address = String(address.prefix(maxAddressLength - 1)) + "…"
+  /// 没有真名时的目录标题。
+  ///
+  /// 原来是「平台名 · 主页地址」，卡片里只放得下「哔哩哔哩 · space.bi…」，截掉的
+  /// 正好是能认出这个人的那一段（2026-10-01 走查）。现在只取主页地址最后一段：
+  /// 短的当账号显示（X 写成 @账号，其它平台写「平台博主 账号」）；抖音那种几十位的
+  /// 加密 ID、B 站的纯数字 UID 人认不出来，直接说「未命名…博主」。
+  public static func unnamedDirectoryTitle(platform: String, profileURL: String, maxAccountLength: Int = 12) -> String {
+    let platformName = HistoryPlatformDisplay.shortName(forHost: platform)
+    let host = HistoryPlatformRegistry.canonicalHost(for: platform)
+    if host == "douyin.com" { return placeholderName(platform: platform) }
+    // 中英文之间空一格：「未命名 B 站博主」「Reddit 博主 spez」。
+    let creatorLabel = platformName.unicodeScalars.last?.isASCII == true ? "\(platformName) 博主" : "\(platformName)博主"
+    let fallback = platformName.unicodeScalars.first?.isASCII == true ? "未命名 \(creatorLabel)" : "未命名\(creatorLabel)"
+    guard let components = URLComponents(string: profileURL.trimmingCharacters(in: .whitespacesAndNewlines))
+    else { return fallback }
+    // 取第一段像账号的：B 站主页常是 space.bilibili.com/12345/video，取最后一段会得到
+    // 「video」；YouTube 是 /@name/videos。前缀段（user、channel…）跳过。
+    let generic: Set<String> = ["user", "u", "space", "profile", "people", "channel", "c", "home"]
+    let account = components.path.split(separator: "/").map(String.init)
+      .first { !generic.contains($0.lowercased()) } ?? ""
+    let readable = account.unicodeScalars.allSatisfy {
+      CharacterSet.alphanumerics.contains($0) || "_-.@".unicodeScalars.contains($0)
     }
-    return "\(platformName) · \(address)"
+    // 纯数字的 UID（B 站常见）人认不出，卡片里还会被截断，不如直说没拿到名字。
+    let isNumericID = account.allSatisfy(\.isNumber)
+    guard !account.isEmpty, account.count <= maxAccountLength, readable, !isNumericID else { return fallback }
+    if host == "x.com", !account.hasPrefix("@") { return "@\(account)" }
+    if account.hasPrefix("@") { return account }
+    return "\(creatorLabel) \(account)"
   }
 
   public static func isResolvedDisplayName(_ raw: String?, authorID: String) -> Bool {

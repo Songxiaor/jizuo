@@ -48,7 +48,7 @@ enum UnfinishedRunNotice {
     case .interrupted:
       // APP_INTERRUPTED 是「App 退出时被打断」，不是模型或网络出错——
       // 说清这一点，用户才知道重试大概率会成功。
-      return "上次\(name)在 App 退出时中断，没有结果。"
+      return "上次\(name)在\(ProductDisplay.name)退出时中断，没有结果，重新点一次就行。"
     default:
       return "上次\(name)没有完成。"
     }

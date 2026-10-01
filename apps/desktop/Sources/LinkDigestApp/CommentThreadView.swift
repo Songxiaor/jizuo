@@ -261,7 +261,7 @@ struct CommentThreadSectionView: View {
         }
         .buttonStyle(.plain)
         .help(permalink.absoluteString)
-        .accessibilityLabel("在浏览器打开 \(item.displayAuthor) 的原评论")
+        .accessibilityLabel("在浏览器中打开 \(item.displayAuthor) 的原评论")
       }
     }
   }

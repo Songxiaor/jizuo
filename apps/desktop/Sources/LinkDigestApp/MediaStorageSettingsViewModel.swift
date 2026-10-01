@@ -7,7 +7,7 @@ import LinkDigestCore
 final class MediaStorageSettingsViewModel: ObservableObject {
   enum State: Equatable { case idle, saved, failed(String) }
 
-  @Published private(set) var directoryPath = "默认（App 本地数据目录）"
+  @Published private(set) var directoryPath = "默认（\(ProductDisplay.name)自己的文件夹）"
   @Published private(set) var usesCustomDirectory = false
   @Published private(set) var state: State = .idle
   @Published var autoSaveCapturedVideo = false {
@@ -178,7 +178,7 @@ final class MediaStorageSettingsViewModel: ObservableObject {
     var explanation: String {
       switch self {
       case .keep: "默认。转写完视频也一直留在本机。"
-      case .afterTranscription: "转写文字存好后就删掉视频文件，最省空间。"
+      case .afterTranscription: "转写稿存好后就删掉视频文件，最省空间。"
       case .afterDays: "视频保存满所选天数、并且已经转写过，才删掉视频文件。"
       }
     }
@@ -340,7 +340,7 @@ final class MediaStorageSettingsViewModel: ObservableObject {
         directoryPath = url.path
         usesCustomDirectory = true
       } else {
-        directoryPath = "默认（App 本地数据目录）"
+        directoryPath = "默认（\(ProductDisplay.name)自己的文件夹）"
         usesCustomDirectory = false
       }
       state = .idle
@@ -370,7 +370,7 @@ final class MediaStorageSettingsViewModel: ObservableObject {
 
   func restoreDefault() {
     store.clearDirectory()
-    directoryPath = "默认（App 本地数据目录）"
+    directoryPath = "默认（\(ProductDisplay.name)自己的文件夹）"
     usesCustomDirectory = false
     state = .saved
   }

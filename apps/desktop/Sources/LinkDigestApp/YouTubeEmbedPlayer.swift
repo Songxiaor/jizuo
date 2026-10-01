@@ -81,7 +81,7 @@ struct YouTubeEmbedPlayerCard: View {
           .themedFont(.caption)
           .foregroundStyle(.secondary)
         Spacer()
-        Button("在浏览器打开") {
+        Button("在浏览器中打开") {
           if let url = URL(string: "https://www.youtube.com/watch?v=\(videoID)") {
             NSWorkspace.shared.open(url)
           }
@@ -225,20 +225,17 @@ private struct YouTubeEmbedPosterView: View {
           }
         }
         .overlay {
-          VStack(spacing: 8) {
-            Image(systemName: "play.circle.fill")
-              .font(.system(size: 52))
-              .foregroundStyle(.white.opacity(0.92))
-              .shadow(color: .black.opacity(0.45), radius: 10)
-            Text("点击加载播放器")
-              .themedFont(.caption)
-              .foregroundStyle(.white.opacity(0.85))
-              .shadow(color: .black.opacity(0.5), radius: 4)
-          }
+          // 只放播放键：底下那行「点击加载播放器」压在封面字上，读不清也多余——
+          // 卡片标题行已经写了「联网播放」（2026-10-01 走查）。说明留在悬停提示里。
+          Image(systemName: "play.circle.fill")
+            .font(.system(size: 52))
+            .foregroundStyle(.white.opacity(0.92))
+            .shadow(color: .black.opacity(0.45), radius: 10)
         }
         .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
+    .help("点击加载 YouTube 播放器（需要联网）")
     .accessibilityLabel("播放视频")
     .accessibilityIdentifier("history-youtube-poster")
     .task(id: videoID) {

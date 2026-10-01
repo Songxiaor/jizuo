@@ -47,6 +47,7 @@ struct ClipboardSuggestionBanner: View {
   let suggestion: ClipboardLinkSuggestion
   let capture: () -> Void
   let ignore: () -> Void
+  @Environment(\.appTheme) private var theme
 
   var body: some View {
     VStack(alignment: .leading, spacing: 6) {
@@ -66,7 +67,8 @@ struct ClipboardSuggestionBanner: View {
     }
     .padding(10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
+    // 主题强调色，不是 App 级 `Color.accentColor`（默认系统蓝，不跟主题走）。2026-10-01
+    .background(theme.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
     .accessibilityIdentifier("history-clipboard-suggestion")
   }
 }
@@ -103,7 +105,7 @@ struct ManualLinkSheet: View {
           .themedFont(.callout).foregroundStyle(appTheme.danger).accessibilityIdentifier("manual-link-error")
       }
       if model.isFetching { ProgressView(model.fetchingMessage).accessibilityIdentifier("manual-link-fetching") }
-      if model.isSaving { ProgressView("正在保存到本机历史…").accessibilityIdentifier("manual-link-saving") }
+      if model.isSaving { ProgressView("正在保存到资料库…").accessibilityIdentifier("manual-link-saving") }
       HStack {
         Button("取消") { model.dismiss() }
           .keyboardShortcut(.cancelAction)
@@ -125,7 +127,7 @@ struct ManualLinkSheet: View {
       Button("取消", role: .cancel) { model.cancelDuplicateSubmit() }
       Button("仍要重新抓取") { model.confirmDuplicateSubmit() }
     } message: {
-      Text("重复添加不会产生新条目：重新抓取的内容会并入原条目成为最新快照。若只想查看，请直接在列表中打开。")
+      Text("重复添加不会多出一条：重新抓取的内容会并入原来那条，成为最新的版本。只想查看的话，直接在列表里打开就行。")
     }
   }
 }
@@ -210,13 +212,13 @@ struct ReadOnlyHistoryCallout: View {
   private var message: String {
     let base: String = switch reason {
     case .futureSchema:
-      "这份历史由较新版本创建，当前仅可浏览。原数据未修改；请使用较新版本的\(ProductDisplay.name)后再编辑或删除。"
+      "资料库现在只能看、不能改：它是更新版本的\(ProductDisplay.name)建的。原数据没有改动；升级到最新版\(ProductDisplay.name)就能恢复。"
     case .migrationFailed:
-      "这份历史的迁移未完成，当前仅可浏览。原数据未修改；请在恢复后重新启动\(ProductDisplay.name)，再编辑或删除。"
+      "资料库现在只能看、不能改：上次升级资料库没有完成。原数据没有改动；重新打开\(ProductDisplay.name)会再试一次。"
     case .storageUnavailable:
-      "本地历史暂时无法以可写方式打开，当前仅可浏览。原数据未修改；请检查本机存储后重新启动\(ProductDisplay.name)，再编辑或删除。"
+      "资料库现在只能看、不能改：这次没能以可写方式打开。原数据没有改动；确认磁盘空间够后重新打开\(ProductDisplay.name)。"
     case nil:
-      "本地历史当前仅可浏览。原数据未修改；请在恢复后重新启动\(ProductDisplay.name)，再编辑或删除。"
+      "资料库现在只能看、不能改。原数据没有改动；重新打开\(ProductDisplay.name)通常就能恢复。"
     }
     if let recoveryHint, !recoveryHint.isEmpty {
       return base + "\n" + recoveryHint

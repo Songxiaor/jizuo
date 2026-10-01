@@ -56,7 +56,7 @@ public enum HistoryExportRenderer {
     let suffix = ".\(format.fileExtension)"
     let maximumBaseUTF8ByteCount = maximumSuggestedFilenameUTF8ByteCount - suffix.utf8.count
     let base = safeFilenameComponent(
-      rawTitle?.isEmpty == false ? rawTitle! : "LinkDigest 历史",
+      rawTitle?.isEmpty == false ? rawTitle! : fallbackFilenameBase,
       maximumUTF8ByteCount: maximumBaseUTF8ByteCount
     )
     return "\(base)\(suffix)"
@@ -75,8 +75,11 @@ public enum HistoryExportRenderer {
     }
     let bounded = prefix(result, withinUTF8ByteCount: maximumUTF8ByteCount)
     if !bounded.isEmpty { return bounded }
-    return prefix("LinkDigest 历史", withinUTF8ByteCount: maximumUTF8ByteCount)
+    return prefix(fallbackFilenameBase, withinUTF8ByteCount: maximumUTF8ByteCount)
   }
+
+  /// 没有标题时的文件名。用户看到的是产品名「汲作」，不再出现旧名 LinkDigest（2026-10-01）。
+  static var fallbackFilenameBase: String { "\(ProductDisplay.name)资料" }
 
   /// Iterate Swift Characters so an extended grapheme cluster is either kept
   /// whole or omitted. If the first Character alone exceeds the budget, skip
@@ -138,7 +141,7 @@ public enum HistoryExportRenderer {
       // 抓取的捕获时间、来源标签、完整性对笔记都不成立：它没有被捕获过。
       if !isUserNote {
         lines += [
-          "- 捕获时间（UTC）：\(timestamp(snapshot.capturedAtMilliseconds))",
+          "- 保存时间（UTC）：\(timestamp(snapshot.capturedAtMilliseconds))",
           "- 来源标签：\(snapshot.sourceLabel)",
           "- 完整性：\(snapshot.completeness)",
           "",
@@ -178,7 +181,7 @@ public enum HistoryExportRenderer {
     lines += ["标签: \(tagLine(projection.tags))", "导出版本: \(projection.formatVersion)", "创建时间（UTC）: \(timestamp(projection.task.createdAtMilliseconds))", "最近更新时间（UTC）: \(timestamp(projection.task.updatedAtMilliseconds))", "", isUserNote ? "正文:" : "最近原文:"]
     if let snapshot = projection.snapshots.last {
       if !isUserNote {
-        lines += ["捕获时间（UTC）: \(timestamp(snapshot.capturedAtMilliseconds))", "来源标签: \(snapshot.sourceLabel)", "完整性: \(snapshot.completeness)"]
+        lines += ["保存时间（UTC）: \(timestamp(snapshot.capturedAtMilliseconds))", "来源标签: \(snapshot.sourceLabel)", "完整性: \(snapshot.completeness)"]
       }
       lines.append(snapshot.bodyText.isEmpty ? (isUserNote ? "（笔记为空）" : "（原文为空）") : snapshot.bodyText)
     } else { lines.append(isUserNote ? "（笔记为空）" : "（没有保存的原文）") }

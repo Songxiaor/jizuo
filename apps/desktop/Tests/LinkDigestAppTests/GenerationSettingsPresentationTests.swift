@@ -88,7 +88,7 @@ final class GenerationSettingsPresentationTests: XCTestCase {
   /// 空值是下拉里的一个选项，不靠 placeholder。
   func testEmptyModelFieldsStateWhatActuallyApplies() throws {
     let text = try source()
-    XCTAssertTrue(text.contains("emptyOptionTitle: \"不使用：只用 Apple 本机转写\""))
+    XCTAssertTrue(text.contains("emptyOptionTitle: \"不使用：只用本机转写\""))
     XCTAssertTrue(text.contains("emptyOptionTitle: \"跟随总结模型\""))
     XCTAssertFalse(text.contains("TextField(\"留空时使用总结模型\""), "语义不能只靠 placeholder 承载")
     XCTAssertFalse(text.contains("Label(emptyOptionTitle, systemImage:"), "下拉已经显示当前值了，下面不必再画一行重复它")

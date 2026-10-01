@@ -175,7 +175,7 @@ struct MindMapSectionView: View {
           }
         }
       }
-      if let svg = model.mindMapSVG() {
+      if let svg = Self.renderedSVG(record) {
         MindMapCanvasView(
           svg: svg,
           taskID: taskID,
@@ -199,12 +199,54 @@ struct MindMapSectionView: View {
     .accessibilityIdentifier("mind-map-card")
   }
 
+  /// 同一份大纲、同一个主题只渲染一次 SVG。
+  ///
+  /// 原来每次重画都调 `model.mindMapSVG()`（2026-10-01 体检）：排版 + 拼几十 KB 的
+  /// SVG 字符串，而详情页的悬停、滚动、进度刷新都会让这里重画；新字符串又会让下面
+  /// 画布的 `.task(id: svg)` 判等一遍全文。按大纲 + 主题记住结果，改了大纲或换了
+  /// 主题键就变，自然重渲。
+  private static let svgMemo = ContentMemo<SVGKey, String>(capacity: 4)
+
+  private struct SVGKey: Equatable {
+    let outline: MindMapOutline
+    let themeID: String
+  }
+
+  static func renderedSVG(_ record: TaskMindMapRecord) -> String? {
+    let key = SVGKey(outline: record.outline, themeID: record.themeID)
+    if let hit = svgMemo.value(for: key) { return hit }
+    let svg = MindMapSVGRenderer.render(outline: record.outline, theme: MindMapTheme.named(record.themeID))
+    svgMemo.store(svg, for: key)
+    return svg
+  }
+
+  /// SVG 根节点上的 height="…"。渲染器总会写；读不到就交回默认占位。
+  static func declaredHeight(of svg: String) -> CGFloat? {
+    guard let open = svg.range(of: "<svg"),
+          let close = svg[open.upperBound...].firstIndex(of: ">") else { return nil }
+    let header = svg[open.upperBound..<close]
+    guard let attribute = header.range(of: #"\sheight="([0-9.]+)""#, options: .regularExpression) else { return nil }
+    let digits = header[attribute].drop { $0 != "\"" }.dropFirst().prefix { $0 != "\"" }
+    return Double(digits).map { CGFloat($0) }
+  }
+
   @ViewBuilder private var stateText: some View {
     switch model.mindMapState(for: taskID) {
     case .idle: EmptyView()
     case .running:
       ProgressView().controlSize(.small)
-      Text("正在生成脑图…").themedFont(.caption)
+      // 已等秒数 + 停止：最长要等三分钟，原来只有一句「生成中…」也停不下来（2026-10-01）。
+      TimelineView(.periodic(from: .now, by: 1)) { context in
+        let waited = Int(context.date.timeIntervalSince(model.mindMapStartedAt ?? context.date))
+        Text(waited >= 3 ? "正在生成脑图… 已等 \(waited) 秒" : "正在生成脑图…")
+          .themedFont(.caption)
+          .monospacedDigit()
+      }
+      Button("停止") { model.cancelMindMapGeneration() }
+        .buttonStyle(.plain)
+        .themedFont(.caption)
+        .foregroundStyle(appTheme.accent)
+        .accessibilityIdentifier("mind-map-cancel")
     case .completed:
       Label("脑图已保存", systemImage: "checkmark.circle.fill")
         .themedFont(.caption).foregroundStyle(appTheme.success)
@@ -254,14 +296,25 @@ private struct MindMapCanvasView: View {
         }
       }
     }
-    .frame(height: image.map { min(Self.viewportHeight, max(160, $0.size.height)) } ?? 200)
+    // 高度直接按 SVG 自己声明的尺寸定，不等解码：原来先占 200pt、图到了再跳成
+    // 实际高度，下面整篇正文跟着往下一蹦（2026-10-01 体检）。
+    .frame(height: min(Self.viewportHeight, max(160, (image?.size.height ?? MindMapSectionView.declaredHeight(of: svg)) ?? 200)))
     .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
         .strokeBorder(Color.secondary.opacity(0.25), lineWidth: 1)
     )
     .accessibilityIdentifier("mind-map-canvas")
-    .task(id: svg) { image = NSImage(data: Data(svg.utf8)) }
+    .task(id: svg) {
+      // SVG 解析放到后台（2026-10-01 体检）：NSImage(data:) 对 SVG 是同步解析整份
+      // 文档，大脑图在主线程上要卡一下。只把字节送出去、在后台建好图再交回来。
+      let data = Data(svg.utf8)
+      let decoded = await Task.detached(priority: .userInitiated) {
+        SendableImage(NSImage(data: data))
+      }.value
+      guard !Task.isCancelled else { return }
+      image = decoded.image
+    }
   }
 
   private func presentLightbox() {
@@ -294,6 +347,12 @@ private struct MindMapCanvasView: View {
     do { try data.write(to: url, options: .atomic) } catch { return nil }
     return url
   }
+}
+
+/// 把后台建好的 NSImage 交回主线程。建好后不再改它，只读地交出去是安全的。
+private struct SendableImage: @unchecked Sendable {
+  let image: NSImage?
+  init(_ image: NSImage?) { self.image = image }
 }
 
 /// 纯文本导出载体：SVG 与 HTML 共用。

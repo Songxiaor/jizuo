@@ -14,6 +14,7 @@ struct MethodLibraryView: View {
   @State private var isExpanded = false
   @State private var draft = ""
   @State private var rejection: MethodAdmission.Rejection?
+  @FocusState private var isComposerFocused: Bool
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
@@ -30,8 +31,8 @@ struct MethodLibraryView: View {
             }
           }
         }
-        .padding(.horizontal, 12)
-        .padding(.bottom, 10)
+        .padding(.horizontal, DesignTokens.Layout.columnInset)
+        .padding(.bottom, DesignTokens.Space.md)
       }
     }
   }
@@ -41,21 +42,22 @@ struct MethodLibraryView: View {
       isExpanded.toggle()
     } label: {
       HStack(spacing: 5) {
-        Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+        // 展开箭头统一成 chevron.right 转 90°，和选题板、侧栏「更多平台」一致（2026-10-01）。
+        Image(systemName: "chevron.right")
           .font(.system(size: 9, weight: .semibold))
+          .rotationEffect(.degrees(isExpanded ? 90 : 0))
         Text("方法库")
-          .font(.body.weight(.semibold))
+          .themedFont(.body, weight: .semibold)
         Spacer(minLength: 0)
         if !model.writingMethods.isEmpty {
           Text("\(model.enabledMethodBodies.count) 条在用")
-            .font(.subheadline)
+            .themedFont(.subheadline, monospacedDigit: true)
             .foregroundStyle(.tertiary)
-            .monospacedDigit()
         }
       }
       .foregroundStyle(.secondary)
-      .padding(.horizontal, 14)
-      .padding(.vertical, 10)
+      .padding(.horizontal, DesignTokens.Layout.columnInset)
+      .padding(.vertical, DesignTokens.Space.sm)
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
@@ -67,18 +69,19 @@ struct MethodLibraryView: View {
       HStack(spacing: 6) {
         TextField("先给一个反直觉的数据，再解释为什么反直觉", text: $draft)
           .textFieldStyle(.roundedBorder)
-          .font(.callout)
+          .themedFont(.callout)
+          .focused($isComposerFocused)
           .onSubmit(commit)
           .accessibilityIdentifier("method-library-input")
         Button("加入", action: commit)
-          .font(.subheadline)
+          .themedFont(.subheadline)
           .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
       }
       // 拒绝的理由要能照着改。「不符合规范」等于没说——用户不知道改什么，
       // 下次还是写一样的东西。
       if let rejection {
         Text(rejection.message)
-          .font(.system(size: 10.5))
+          .themedFont(.caption)
           .foregroundStyle(appTheme.warning)
           .fixedSize(horizontal: false, vertical: true)
           .accessibilityIdentifier("method-library-rejection")
@@ -95,19 +98,19 @@ struct MethodLibraryView: View {
       if model.isDistilling {
         ProgressView().controlSize(.small)
         Text("正在从你的修改里找规律…")
-          .font(.system(size: 10.5))
+          .themedFont(.caption)
           .foregroundStyle(.secondary)
       } else {
         Button("从我的修改里提炼") { model.distillMethods() }
-          .font(.subheadline)
+          .themedFont(.subheadline)
           .buttonStyle(.plain)
-          .foregroundStyle(model.canDistill ? Color.accentColor : Color.secondary)
+          .foregroundStyle(model.canDistill ? appTheme.accent : Color.secondary)
           .disabled(!model.canDistill)
           .help(model.distillUnavailableReason() ?? "对照几篇 AI 写的和你改完的，找出反复出现的差异")
           .accessibilityIdentifier("method-library-distill")
         if let reason = model.distillUnavailableReason(), !model.canDistill {
           Text(reason)
-            .font(.caption2)
+            .themedFont(.caption)
             .foregroundStyle(.tertiary)
             .lineLimit(1)
         }
@@ -120,9 +123,9 @@ struct MethodLibraryView: View {
         Image(systemName: "sparkles")
           .font(.system(size: 9))
           .foregroundStyle(appTheme.warning)
-          .padding(.top, 2)
+          .padding(.top, DesignTokens.Space.xxs)
         Text(candidate)
-          .font(.system(size: 11.5))
+          .themedFont(.callout)
           .fixedSize(horizontal: false, vertical: true)
           .multilineTextAlignment(.leading)
         Spacer(minLength: 0)
@@ -145,9 +148,9 @@ struct MethodLibraryView: View {
         .help("不要这条")
         .accessibilityLabel("不要「\(candidate)」")
       }
-      .font(.system(size: 11))
-      .padding(.horizontal, 8)
-      .padding(.vertical, 5)
+      .font(.system(size: DesignTokens.IconSize.inline))
+      .padding(.horizontal, DesignTokens.Space.sm)
+      .padding(.vertical, DesignTokens.Space.xs)
       .background(
         RoundedRectangle(cornerRadius: DesignTokens.Radius.md, style: .continuous)
           .fill(appTheme.warning.opacity(0.08))
@@ -179,13 +182,13 @@ struct MethodLibraryView: View {
 
       VStack(alignment: .leading, spacing: 1) {
         Text(method.body)
-          .font(.system(size: 11.5))
+          .themedFont(.callout)
           .foregroundStyle(method.isEnabled ? Color.primary : Color.secondary)
           .fixedSize(horizontal: false, vertical: true)
           .multilineTextAlignment(.leading)
         if method.origin == .distilled {
           Text("从你的修改里提炼")
-            .font(.system(size: 9.5))
+            .themedFont(.caption)
             .foregroundStyle(.tertiary)
         }
       }
@@ -198,9 +201,14 @@ struct MethodLibraryView: View {
   }
 
   private var emptyState: some View {
-    Text("还没有方法。写下一条能照着做的动作，起草时会一起交给 AI。")
-      .font(.subheadline)
-      .foregroundStyle(.tertiary)
-      .fixedSize(horizontal: false, vertical: true)
+    // 和选题板共用一个小空状态（2026-10-01）。动作把光标送进上面那个输入框——
+    // 原来只有一行淡灰字，用户读完不知道「写一条」该写在哪。
+    CompactEmptyState(
+      title: "还没有方法",
+      message: "写下一条能照着做的动作，起草时会一起交给 AI。",
+      actionTitle: "写第一条",
+      action: { isComposerFocused = true }
+    )
+    .padding(.top, DesignTokens.Space.xs)
   }
 }
