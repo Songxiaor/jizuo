@@ -28,12 +28,17 @@
 <meta name="twitter:image" content="https://songxiaor.github.io/jizuo/assets/og.jpg">
 
 <link rel="stylesheet" href="styles.css">
+<script src="js/site.js" defer></script>
 <!--
-  零外部资源：没有 Web 字体、没有 CDN、没有统计、没有脚本（整页不含一行 JavaScript）。
+  零第三方资源：没有 Web 字体、没有 CDN、没有统计。脚本只有本站的 js/site.js。
   这个产品主打「资料留在本机」，官网向第三方发一次请求，就把访问者的 IP 交了出去。
-  隐私政策页写明了「本官网不加载任何第三方脚本、字体或统计代码」，加任何外链之前先改那句话。
 
-  首页不写死版本号：下载一律指向 releases/latest，版本只出现在 GitHub 发布页。
+  唯一的例外（2026-10-01）：下载按钮向 GitHub 公开接口问一次最新版本，好让按钮直接给出对应芯片的 dmg。
+  旧做法是跳到 GitHub 发布页让人自己挑，结果 dmg 下载 0 次——人到了发布页不知道点哪个。
+  这个请求不带 Cookie、不带 Referer，失败或关掉 JavaScript 时按钮仍指向 releases/latest。
+  隐私政策页如实写了这一条，改动这里之前先改那句话。
+
+  首页不写死版本号：版本号由脚本从 releases/latest 读出来再写进按钮，HTML 里只有 releases/latest。
   印章是 body 开头印章块里的 symbol，字形来自 App 的 SealGlyphData.swift，用 tools/update-sprite.py 同步。
 -->
 </head>
@@ -48,12 +53,13 @@
       <span>汲作</span>
     </a>
     <nav class="nav" aria-label="主导航">
-      <a class="opt" href="#yin">两方印</a>
-      <a class="opt" href="#gongxu">六道工序</a>
+      <a class="opt" href="#gongneng">功能</a>
+      <a class="opt" href="#yanshi">演示</a>
+      <a class="opt" href="#gongxu">五道工序</a>
       <a class="opt" href="#install">安装</a>
       <a class="opt" href="#faq">常见问题</a>
       <a href="https://github.com/Songxiaor/jizuo">GitHub</a>
-      <a class="btn sm" href="https://github.com/Songxiaor/jizuo/releases/latest">下载</a>
+      <a class="btn sm" data-dl="short" href="https://github.com/Songxiaor/jizuo/releases/latest">下载</a>
     </nav>
   </div>
 </header>
@@ -63,17 +69,22 @@
 <section class="hero">
   <div class="wrap">
     <div class="hero-top">
-    <div class="hero-copy">
-      <p class="eyebrow"><span>macOS 15 及以上</span><span>开源免费</span><span>资料存在你自己的电脑上</span></p>
-      <h1>汲于外<br>作于己</h1>
-      <p class="lede">网上读到的文章、视频、帖子，<b>汲</b>回来，转写、校对、总结、翻译，真的读完；自己写下的笔记和想法，是你<b>作</b>的，和它们放在一处。</p>
-      <div class="cta">
-        <a class="btn" href="https://github.com/Songxiaor/jizuo/releases/latest">下载 macOS 版</a>
-        <a class="btn ghost" href="#gongxu">看它怎么加工</a>
-        <p class="cta-note">无需注册、没有账号。总结和翻译用你自己的模型服务，按用量直接付给服务商。</p>
+      <div class="hero-copy">
+        <p class="eyebrow"><span>macOS 15 及以上</span><span>开源免费</span><span>资料存在你自己的电脑上</span></p>
+        <h1>把收藏的文章和视频，<br>变成读得完、找得回的资料</h1>
+        <p class="lede">汲作是 Mac 上的个人资料库。浏览器里点一下，正文、作者和出处就存下来；视频在本机转写成文字，再用你自己的模型校对、总结、翻译。自己写的笔记也放在一处。</p>
+        <div class="cta">
+          <a class="btn" data-dl="full" href="https://github.com/Songxiaor/jizuo/releases/latest">下载 macOS 版</a>
+          <a class="btn ghost" href="#yanshi">看一遍怎么用</a>
+          <p class="dl-alt" data-dl-alt hidden></p>
+          <p class="cta-note">无需注册、没有账号。总结和翻译用你自己的模型服务，按用量直接付给服务商。</p>
+        </div>
       </div>
-    </div>
-    <svg class="seal hero-seal" viewBox="0 0 100 100" aria-hidden="true"><use href="#s-brand"/></svg>
+      <!-- 落款：口号从主标题退下来，竖排题在右边，下面盖一方两字印。窄屏改成一行小字放在标题上面。 -->
+      <div class="hero-sign">
+        <p class="sign-text">汲于外<span>，</span>作于己</p>
+        <svg class="seal" viewBox="0 0 100 100" aria-hidden="true"><use href="#s-brand"/></svg>
+      </div>
     </div>
 
     <figure class="frame hero-shot" aria-label="汲作的界面示意（示例内容）">
@@ -104,10 +115,9 @@
         <article class="app-read">
           <h2 class="read-title">宋体为什么又叫明朝体</h2>
           <p class="read-meta">2026 年 9 月 29 日 · mp.weixin.qq.com · 约 2,400 字</p>
-          <div class="steps-row" aria-label="这一条做过的工序：评论、总结、脑图">
+          <div class="steps-row" aria-label="这一条做过的工序：总结、脑图">
             <span class="off"><i class="stamp"><svg class="seal p" viewBox="0 0 100 100"><use href="#p-lu"/></svg></i>转写</span>
             <span class="off"><i class="stamp"><svg class="seal p" viewBox="0 0 100 100"><use href="#p-jiao"/></svg></i>校对</span>
-            <span><i class="stamp"><svg class="seal p" viewBox="0 0 100 100"><use href="#p-ping"/></svg><svg class="seal s" viewBox="0 0 100 100"><use href="#s-ping"/></svg></i>评论</span>
             <span><i class="stamp"><svg class="seal p" viewBox="0 0 100 100"><use href="#p-zhai"/></svg><svg class="seal s" viewBox="0 0 100 100"><use href="#s-zhai"/></svg></i>总结</span>
             <span class="off"><i class="stamp"><svg class="seal p" viewBox="0 0 100 100"><use href="#p-yi"/></svg></i>翻译</span>
             <span><i class="stamp"><svg class="seal p" viewBox="0 0 100 100"><use href="#p-tu"/></svg><svg class="seal s" viewBox="0 0 100 100"><use href="#s-tu"/></svg></i>脑图</span>
@@ -122,6 +132,142 @@
         </article>
       </div>
     </figure>
+  </div>
+</section>
+
+<section class="section" id="gongneng">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="kicker">能做什么</p>
+      <h2>收得进来，读得完，找得回，带得走</h2>
+      <p>收藏很容易，读完很难：文章散在各个网站，视频没法很快看文字，过一阵连存在哪都忘了。汲作把保存、读懂、找回、带走接成一条线，全在你自己的 Mac 上。</p>
+    </div>
+    <div class="feats">
+      <div class="feat"><h3>一键保存</h3><p>在 Chrome、Edge、Brave 里点扩展，存下正文、作者和出处；打开弹窗就知道这页存过没有。也可以把链接直接贴进 App。</p></div>
+      <div class="feat"><h3>视频变文字</h3><p>视频和音频在本机听写成文字，时间码挂在页边，点一下跳回那一秒。声音不传给任何人。</p></div>
+      <div class="feat"><h3>总结与翻译</h3><p>用你自己的模型校对听写稿、写总结、逐段对照翻译，还能把总结画成脑图。</p></div>
+      <div class="feat"><h3>按意思搜</h3><p>记不清原文怎么说的也能找到：关键词结果后面附一组「意思相近」。模型在本机运行，第一次打开时下载一次（约 96 MB）。</p></div>
+      <div class="feat"><h3>合集</h3><p>把相关的内容收成一册，拖动排序。整个文件夹拖进来，会自动建一个同名合集。</p></div>
+      <div class="feat"><h3>本地导入</h3><p>音频、视频只记住原文件的位置，不复制第二份；文件挪了地方也能找回。导入时可以顺手排队转写。</p></div>
+      <div class="feat"><h3>博主与批量</h3><p>添加一位博主，列出全部作品，挑几条一起保存，评论也能一起带上。</p></div>
+      <div class="feat"><h3>AI 助手接入</h3><p>让 Claude Code、Codex 这类助手直接读写你的资料库。连接程序随 App 装好，权限逐项开关。</p></div>
+      <div class="feat"><h3>知识库同步</h3><p>把资料导出成 Markdown，放进你自己的知识库文件夹，在后台安静进行。</p></div>
+      <div class="feat"><h3>导出与备份</h3><p>单条导出成 Markdown、纯文本、PDF、Word 或 JSON；整个资料库可以随时备份一份、换回某一份。</p></div>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="yanshi">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="kicker">演示</p>
+      <h2>从点一下，到读完一条视频</h2>
+      <p>一段二十来秒的示意：在浏览器里保存一条视频，汲作在本机转写、校对，最后写好总结。画面里的内容是编的。</p>
+    </div>
+    <!-- 演示（2026-10-01）：没有录屏，用纯 HTML/CSS 画出几帧，js/site.js 按时间切 data-step。
+         默认（无 JS、或系统设置了减弱动态效果）停在最后一帧，所以不管脚本跑没跑，看到的都是完整结果。 -->
+    <div class="demo" data-step="8" data-cap="4" aria-label="操作演示：浏览器里点扩展保存一条视频，汲作列表出现这一条，转写稿出现，最后写好总结并盖印" role="img">
+      <div class="demo-stage" aria-hidden="true">
+        <!-- 第一幕：浏览器 -->
+        <div class="d-browser">
+          <div class="d-chrome">
+            <span class="app-lights"><i></i><i></i><i></i></span>
+            <span class="d-url">www.bilibili.com/video/…</span>
+            <span class="d-ext"><svg class="seal" viewBox="0 0 100 100"><use href="#s-brand"/></svg></span>
+          </div>
+          <div class="d-page">
+            <div class="d-video"><span class="d-play"></span><span class="d-dur">18:42</span></div>
+            <div class="d-ptitle">雕版印刷的一天</div>
+            <div class="d-pmeta">刻书坊的老周 · 3.2 万次播放</div>
+            <div class="d-bars"><i></i><i></i><i></i></div>
+          </div>
+          <div class="d-pop">
+            <div class="d-pop-head"><svg class="seal" viewBox="0 0 100 100"><use href="#s-brand"/></svg>保存到汲作</div>
+            <b>雕版印刷的一天</b>
+            <small>哔哩哔哩 · 刻书坊的老周 · 18:42</small>
+            <label class="d-check"><i></i>带上评论（前 20 条）</label>
+            <span class="d-save"><em class="a">保存</em><em class="b">已保存 · 正在交给汲作</em></span>
+          </div>
+          <span class="d-cursor"></span>
+        </div>
+        <!-- 第二幕：汲作 -->
+        <div class="d-app">
+          <div class="d-list">
+            <div class="list-head">外部</div>
+            <div class="list-day">今天</div>
+            <div class="item d-new on"><b>雕版印刷的一天</b><small><span class="d-st1">哔哩哔哩 · 转写中…</span><span class="d-st2">哔哩哔哩 · 已转写 18:42</span></small></div>
+            <div class="item"><b>宋体为什么又叫明朝体</b><small>微信公众号 · 09:41</small></div>
+            <div class="item"><b>How the Gutenberg press actually worked</b><small>YouTube · 已翻译</small></div>
+          </div>
+          <div class="d-read">
+            <div class="read-title">雕版印刷的一天</div>
+            <p class="read-meta">哔哩哔哩 · 刻书坊的老周 · 18:42</p>
+            <div class="steps-row">
+              <span class="k-lu"><i class="stamp"><svg class="seal p" viewBox="0 0 100 100"><use href="#p-lu"/></svg><svg class="seal s" viewBox="0 0 100 100"><use href="#s-lu"/></svg></i>转写</span>
+              <span class="k-jiao"><i class="stamp"><svg class="seal p" viewBox="0 0 100 100"><use href="#p-jiao"/></svg><svg class="seal s" viewBox="0 0 100 100"><use href="#s-jiao"/></svg></i>校对</span>
+              <span class="k-zhai"><i class="stamp"><svg class="seal p" viewBox="0 0 100 100"><use href="#p-zhai"/></svg><svg class="seal s" viewBox="0 0 100 100"><use href="#s-zhai"/></svg></i>总结</span>
+            </div>
+            <div class="seam"><svg class="seal" viewBox="0 0 100 100"><use href="#s-ji"/></svg></div>
+            <div class="d-sum">
+              <b>总结</b>
+              <ul>
+                <li>雕版印书分三步：写样、上版刻字、刷印。</li>
+                <li>写好的样纸反贴在梨木板上，刻工照着透过来的字下刀。</li>
+                <li>一块版能反复刷印，一页书就这样一张张印出来。</li>
+              </ul>
+            </div>
+            <div class="d-trans">
+              <p><span class="tc">00:12</span>今天去看一位刻工师傅，怎么把一页书刻成一块版。</p>
+              <p><span class="tc">00:31</span>先把写好样的薄纸反贴在<span class="d-fix"><span class="w1">离木</span><span class="w2">梨木</span></span>板上，字迹透过来，就照着下刀。</p>
+              <p><span class="tc">02:07</span>刻好以后刷墨、铺纸，用棕刷一抹，一页就印成了。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+      <ol class="demo-caps" aria-hidden="true">
+        <li data-cap="1">在浏览器里点扩展，保存</li>
+        <li data-cap="2">汲作列表多出这一条</li>
+        <li data-cap="3">本机转写，模型校对</li>
+        <li data-cap="4">写好总结，盖上印</li>
+      </ol>
+      <button class="demo-toggle" type="button" hidden>暂停</button>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="laiyuan">
+  <div class="wrap">
+    <div class="sec-head">
+      <p class="kicker">支持的来源</p>
+      <h2>常见来源都能抓，评论也能带上</h2>
+      <p>汲来的东西，保存时就记下出处和作者。普通网页都能收；下面这些站点另外做了识别或专门抓取。</p>
+    </div>
+    <div class="sources">
+      <ul class="chips">
+        <li>微信公众号</li><li>哔哩哔哩</li><li>抖音</li><li>小红书</li><li>知乎</li><li>微博</li><li>今日头条</li><li>掘金</li><li>豆瓣</li><li>X</li><li>YouTube</li><li>Reddit</li><li>Medium</li><li>Substack</li><li>GitHub</li><li>论坛类网站</li><li>普通网页</li>
+      </ul>
+      <p>需要登录才能看的站点（知乎、小红书等），在 App 自带的登录窗口里登录一次即可。</p>
+    </div>
+    <div class="comments">
+      <h3>评论，随收集一起留下</h3>
+      <p>在 B 站、抖音、X、YouTube、知乎、小红书、Reddit 和论坛类网站保存时，可以顺带抓下评论区：十条到一百条，在设置里调，先勾选要哪几条再存。博主页批量保存时也能一起抓。有时候评论比正文更值得留。</p>
+    </div>
+  </div>
+</section>
+
+<section class="section" id="local">
+  <div class="wrap local">
+    <div>
+      <p class="kicker">隐私</p>
+      <p class="local-big">资料库是你电脑上的一个文件。<em>没有账号，也没有我们的服务器</em>——谁在用、存了什么，我们从技术上就看不到。</p>
+    </div>
+    <ul class="facts">
+      <li><b>本机听写</b>：视频和音频的转写默认在这台 Mac 上完成，不上传。</li>
+      <li><b>用你自己的模型</b>：总结、翻译、校对只把需要的文字发给你配置的服务商，发送前告诉你去向；密钥存在 macOS 钥匙串里。</li>
+      <li><b>不含额度、不抽成</b>：软件免费开源，用多少模型，直接和服务商结算。</li>
+      <li><b>随时带走</b>：单条导出、整库备份、同步到你自己的知识库文件夹。</li>
+      <li class="more"><a href="privacy.html">隐私政策全文</a>列出了每一种由你触发的联网请求。</li>
+    </ul>
   </div>
 </section>
 
@@ -145,8 +291,8 @@
         <svg class="seal" viewBox="0 0 100 100" role="img" aria-label="汲"><use href="#s-ji"/></svg>
         <div>
           <h3>汲<small>外部 · 朱文鉴藏印</small></h3>
-          <p>从网上收来的：文章、视频、帖子、别人的博主页。保存时就记下出处和作者，落款写明从哪里汲来。</p>
-          <ul><li>网页文章</li><li>视频与播客</li><li>社交帖子</li><li>下载来的文件</li></ul>
+          <p>从网上收来的：文章、视频、帖子、别人的博主页，连同你勾选的评论。保存时就记下出处和作者，落款写明从哪里汲来。</p>
+          <ul><li>网页文章</li><li>视频与播客</li><li>社交帖子</li><li>评论区</li><li>下载来的文件</li></ul>
         </div>
       </div>
     </div>
@@ -157,9 +303,9 @@
 <section class="section" id="gongxu">
   <div class="wrap">
     <div class="sec-head">
-      <p class="kicker">六道工序</p>
+      <p class="kicker">五道工序</p>
       <h2>一道加工，一方印</h2>
-      <p>收进来的东西要读完，得经过几道手。每道工序有一方篆书印：还没做是虚线印位，做完就盖上。哪道自动做、哪道手动点，在设置里一眼看清。</p>
+      <p>汲进来的东西要读完，还得经过几道手。每道工序有一方篆书印：还没做是虚线印位，做完就盖上。哪道自动做、哪道手动点，在设置里一眼看清。</p>
     </div>
     <div class="steps">
       <div class="step">
@@ -171,19 +317,15 @@
         <p>模型逐段校对听写稿，补标点、改错字、加小标题。改了哪些字用朱批标在页边，随时切回原稿。</p>
       </div>
       <div class="step">
-        <div class="step-top"><span class="step-seals"><svg class="seal p" viewBox="0 0 100 100" aria-hidden="true"><use href="#p-ping"/></svg><svg class="seal s" viewBox="0 0 100 100" role="img" aria-label="评"><use href="#s-ping"/></svg></span><h3>评<small>第三道 · 评论</small></h3></div>
-        <p>保存时带上评论区，十条到一百条，先勾选要哪几条。有时候评论比正文更值得留。</p>
-      </div>
-      <div class="step">
-        <div class="step-top"><span class="step-seals"><svg class="seal p" viewBox="0 0 100 100" aria-hidden="true"><use href="#p-zhai"/></svg><svg class="seal s" viewBox="0 0 100 100" role="img" aria-label="摘"><use href="#s-zhai"/></svg></span><h3>摘<small>第四道 · 总结</small></h3></div>
+        <div class="step-top"><span class="step-seals"><svg class="seal p" viewBox="0 0 100 100" aria-hidden="true"><use href="#p-zhai"/></svg><svg class="seal s" viewBox="0 0 100 100" role="img" aria-label="摘"><use href="#s-zhai"/></svg></span><h3>摘<small>第三道 · 总结</small></h3></div>
         <p>用你自己的模型写总结：核心结论在前，证据和细节在后。长文拆段并行，不必干等。</p>
       </div>
       <div class="step">
-        <div class="step-top"><span class="step-seals"><svg class="seal p" viewBox="0 0 100 100" aria-hidden="true"><use href="#p-yi"/></svg><svg class="seal s" viewBox="0 0 100 100" role="img" aria-label="译"><use href="#s-yi"/></svg></span><h3>译<small>第五道 · 翻译</small></h3></div>
+        <div class="step-top"><span class="step-seals"><svg class="seal p" viewBox="0 0 100 100" aria-hidden="true"><use href="#p-yi"/></svg><svg class="seal s" viewBox="0 0 100 100" role="img" aria-label="译"><use href="#s-yi"/></svg></span><h3>译<small>第四道 · 翻译</small></h3></div>
         <p>外文逐段译成中文，和原文对照着读。是中文的内容，这一道自动跳过。</p>
       </div>
       <div class="step">
-        <div class="step-top"><span class="step-seals"><svg class="seal p" viewBox="0 0 100 100" aria-hidden="true"><use href="#p-tu"/></svg><svg class="seal s" viewBox="0 0 100 100" role="img" aria-label="图"><use href="#s-tu"/></svg></span><h3>图<small>第六道 · 脑图</small></h3></div>
+        <div class="step-top"><span class="step-seals"><svg class="seal p" viewBox="0 0 100 100" aria-hidden="true"><use href="#p-tu"/></svg><svg class="seal s" viewBox="0 0 100 100" role="img" aria-label="图"><use href="#s-tu"/></svg></span><h3>图<small>第五道 · 脑图</small></h3></div>
         <p>把总结变成一张结构图，可以改、可以换样式，导出成 SVG 带走，不再额外消耗额度。</p>
       </div>
     </div>
@@ -220,44 +362,6 @@
   </div>
 </section>
 
-<section class="section" id="more">
-  <div class="wrap">
-    <div class="sec-head">
-      <p class="kicker">其余本事</p>
-      <h2>收得进来，找得回去，带得走</h2>
-    </div>
-    <div class="feats">
-      <div class="feat"><h3>按意思搜</h3><p>记不清原文怎么说的也能找到：关键词结果后面附一组「意思相近」。模型在本机运行，第一次打开时下载一次（约 96 MB）。</p></div>
-      <div class="feat"><h3>合集</h3><p>把相关的内容收成一册，拖动排序。整个文件夹拖进来，会自动建一个同名合集。</p></div>
-      <div class="feat"><h3>本地导入</h3><p>音频、视频只记住原文件的位置，不复制第二份；文件挪了地方也能找回。导入时可以顺手排队转写。</p></div>
-      <div class="feat"><h3>浏览器扩展</h3><p>在网页上点一下就保存。打开弹窗就知道这页存过没有，存过的直接跳到汲作里那一条。</p></div>
-      <div class="feat"><h3>博主与批量</h3><p>添加一位博主，列出全部作品，挑几条一起保存，评论也能一起带上。</p></div>
-      <div class="feat"><h3>AI 助手接入</h3><p>让 Claude Code、Codex 这类助手直接读写你的资料库。连接程序随 App 装好，权限逐项开关。</p></div>
-      <div class="feat"><h3>知识库同步</h3><p>把资料导出成 Markdown，放进你自己的知识库文件夹，在后台安静进行。</p></div>
-      <div class="feat"><h3>导出与备份</h3><p>单条导出成 Markdown、纯文本、PDF、Word 或 JSON；整个资料库可以随时备份一份、换回某一份。</p></div>
-    </div>
-    <div class="sources">
-      <h3>常见来源都能抓</h3>
-      <ul class="chips">
-        <li>微信公众号</li><li>哔哩哔哩</li><li>抖音</li><li>小红书</li><li>知乎</li><li>微博</li><li>今日头条</li><li>掘金</li><li>豆瓣</li><li>X</li><li>YouTube</li><li>Reddit</li><li>Medium</li><li>Substack</li><li>GitHub</li><li>论坛类网站</li><li>普通网页</li>
-      </ul>
-      <p>需要登录才能看的站点（知乎、小红书等），在 App 自带的登录窗口里登录一次即可。</p>
-    </div>
-  </div>
-</section>
-
-<section class="section" id="local">
-  <div class="wrap local">
-    <p class="local-big">资料库是你电脑上的一个文件。<em>没有账号，也没有我们的服务器</em>——谁在用、存了什么，我们从技术上就看不到。</p>
-    <ul class="facts">
-      <li><b>本机听写</b>：视频和音频的转写默认在这台 Mac 上完成，不上传。</li>
-      <li><b>用你自己的模型</b>：总结、翻译、校对只把需要的文字发给你配置的服务商，发送前告诉你去向；密钥存在 macOS 钥匙串里。</li>
-      <li><b>不含额度、不抽成</b>：软件免费开源，用多少模型，直接和服务商结算。</li>
-      <li><b>随时带走</b>：单条导出、整库备份、同步到你自己的知识库文件夹。</li>
-    </ul>
-  </div>
-</section>
-
 <section class="section" id="install">
   <div class="wrap">
     <div class="sec-head">
@@ -269,14 +373,15 @@
       <div class="ins">
         <p class="ins-no">第一步</p>
         <div>
-          <h3>选一个安装包</h3>
-          <p>不确定自己是什么芯片？点屏幕左上角的苹果标志 → <b>关于本机</b>，看「芯片」那一行。</p>
+          <h3>下载安装包</h3>
+          <p>页面会按你的电脑猜一个合适的版本。想自己确认芯片：点屏幕左上角的苹果标志 → <b>关于本机</b>，看「芯片」那一行。</p>
+          <div class="cta"><a class="btn sm" data-dl="full" href="https://github.com/Songxiaor/jizuo/releases/latest">下载 macOS 版</a></div>
           <div class="pkgs">
-            <div class="pkg"><b>Apple 芯片</b><span>M1、M2、M3、M4 等，2020 年后的 Mac 基本都是</span><code>…macOS-Apple-Silicon.dmg</code></div>
-            <div class="pkg"><b>Intel 芯片</b><span>更早的 Mac，「关于本机」里写着 Intel</span><code>…macOS-Intel.dmg</code></div>
-            <div class="pkg"><b>都不确定</b><span>两种芯片通用，体积大一些</span><code>…macOS-Universal.zip</code></div>
+            <a class="pkg" data-pkg="arm" href="https://github.com/Songxiaor/jizuo/releases/latest"><b>Apple 芯片</b><span>M1、M2、M3、M4 等，2020 年后的 Mac 基本都是</span><code>…macOS-Apple-Silicon.dmg</code></a>
+            <a class="pkg" data-pkg="intel" href="https://github.com/Songxiaor/jizuo/releases/latest"><b>Intel 芯片</b><span>更早的 Mac，「关于本机」里写着 Intel</span><code>…macOS-Intel.dmg</code></a>
+            <a class="pkg" data-pkg="universal" href="https://github.com/Songxiaor/jizuo/releases/latest"><b>都不确定</b><span>两种芯片通用，体积大一些</span><code>…macOS-Universal.zip</code></a>
           </div>
-          <div class="cta"><a class="btn sm" href="https://github.com/Songxiaor/jizuo/releases/latest">前往下载页</a></div>
+          <p class="aside">每个安装包的校验值和更新说明在 <a href="https://github.com/Songxiaor/jizuo/releases/latest">GitHub 发布页</a>。</p>
         </div>
       </div>
       <div class="ins">
@@ -288,7 +393,7 @@
             <li>打开 <b>系统设置 → 隐私与安全性</b>，滚到最下面的「安全性」。</li>
             <li>看到「已阻止使用汲作」，点右边的<b>仍要打开</b>，再确认一次。以后正常双击即可。</li>
           </ol>
-          <p class="aside">网上常见的「右键点图标选打开」在 macOS 15 之后已被苹果移除，请按上面的系统设置操作。只从本页指向的 GitHub 发布页下载。</p>
+          <p class="aside">网上常见的「右键点图标选打开」在 macOS 15 之后已被苹果移除，请按上面的系统设置操作。只从本页或 GitHub 发布页下载。</p>
         </div>
       </div>
       <div class="ins">
@@ -325,9 +430,13 @@
       <h2>先回答几个常被问到的</h2>
     </div>
     <div class="faq">
+      <details><summary>和 Cubox、Readwise、Notion 这类工具有什么不同？</summary><div><p>这几款工具各有长处，适合的人也不一样，用得顺手就好。汲作的不同主要在四点：</p><ul><li><b>资料存在本机</b>：资料库就是你 Mac 上的一个文件，没有账号，也没有我们的服务器。</li><li><b>开源免费</b>：代码公开，软件不收费、不设会员。</li><li><b>自带本机转写和校对</b>：视频、音频先在本机变成文字，再由模型校对，改动用朱批标出来。</li><li><b>用你自己的模型</b>：总结、翻译接你选的服务商，按用量直接付给对方，不经过汲作。</li></ul><p>反过来，如果你最看重多设备云同步、团队协作或网页版，汲作目前都不提供。</p></div></details>
+      <details><summary>要花钱吗？</summary><div><p>软件本身免费开源。用到总结、翻译、校对时，你向自己选的模型服务商付费，按实际用量计，与汲作无关。抓取、本机转写和按意思搜都不花钱。</p></div></details>
+      <details><summary>每月大概要付给模型服务商多少钱？</summary><div><p>取决于你选哪家、用多少，可以这样估：</p><ul><li>模型按 token 计费，token 是模型切分文字的单位。中文大致一个汉字算一到两个 token，各家算法不同。</li><li>一篇约 3,000 字的中文文章，原文送进去大约是几千 token；加上提示词和写出来的总结，一次总结一般在一万 token 以内。翻译、校对的输出和原文差不多长，用量大约翻倍。</li><li>每月花费 ≈ 每月处理的篇数 × 每篇 token 数 × 服务商单价。单价请看你所选服务商的价格页，通常按「每百万 token」标价，输入和输出分开算。</li></ul><p>本机转写、抓取和按意思搜不调用模型，不产生这笔费用。</p></div></details>
+      <details><summary>支持哪些浏览器？</summary><div><p>浏览器扩展支持 Chrome、Edge、Brave 等 Chromium 内核的浏览器。Safari 和 Firefox 暂不支持扩展；用这两个浏览器时，可以把链接直接粘贴进汲作保存。</p></div></details>
+      <details><summary>手机上能看吗？</summary><div><p>目前只有 macOS 版，没有手机 App。想在手机上看，可以用「知识库同步」把资料导出成 Markdown，放进你自己的知识库文件夹，再用你平时的同步方式在手机上打开。</p></div></details>
       <details><summary>为什么提示「无法验证开发者」？安全吗？</summary><div><p>因为当前版本还没有用 Developer ID 签名、也没有提交苹果公证。这个提示只说明系统无法验证开发者身份，不能单独证明软件安全或不安全。请只从官方发布页下载；源代码公开，你也可以自己查看或编译。</p></div></details>
       <details><summary>我的资料会被上传吗？</summary><div><p>链接、正文、生成结果和历史默认保存在你的电脑上，我们没有开发者服务器。只有你触发抓取、模型、在线转写、模型下载或检查更新时，App 才会直接连接原网站、你选的服务商、Hugging Face 或 GitHub。完整范围见<a href="privacy.html">隐私政策</a>。</p></div></details>
-      <details><summary>要花钱吗？</summary><div><p>软件本身免费开源。用到总结、翻译、校对时，你向自己选的模型服务商付费，按实际用量计，与汲作无关。抓取、本机转写和按意思搜都不花钱。</p></div></details>
       <details><summary>为什么转写视频要屏幕录制权限？</summary><div><p>转写播放中的视频需要采集系统声音，而 macOS 把「录制系统音频」归在屏幕录制权限里。弹窗措辞是苹果定的。不做视频转写就不需要这个权限。</p></div></details>
       <details><summary>支持 Intel 芯片和 Windows 吗？</summary><div><p>Intel 芯片的 Mac 支持，发布页有 Intel 专用包和通用包，系统需要 macOS 15 或更新。Windows 暂不支持。</p></div></details>
       <details><summary>数据存在哪？换电脑怎么办？</summary><div><p>存在本机的资料库文件里。「设置 → 数据与备份」可以随时存一份备份、换回某一份；单条内容能导出成 Markdown、纯文本、PDF、Word 或 JSON；「知识库同步」能把资料导出成 Markdown 放进你自己的文件夹。</p></div></details>
@@ -342,8 +451,9 @@
     <h2>先拿收藏夹里最旧的那条试试</h2>
     <p>免费开源，无需注册。装上，把那条放了半年的链接交给它。</p>
     <div class="cta">
-      <a class="btn" href="https://github.com/Songxiaor/jizuo/releases/latest">下载 macOS 版</a>
+      <a class="btn" data-dl="full" href="https://github.com/Songxiaor/jizuo/releases/latest">下载 macOS 版</a>
       <a class="btn ghost" href="https://github.com/Songxiaor/jizuo">在 GitHub 上看源码</a>
+      <p class="dl-alt" data-dl-alt hidden></p>
     </div>
   </div>
 </section>
