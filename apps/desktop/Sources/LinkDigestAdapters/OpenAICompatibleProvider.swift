@@ -975,6 +975,11 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     case 413:
       throw ModelProviderFailure(code: .inputTooLarge, retryable: false, hadOutput: hadOutput)
     case 429:
+      // OpenAI 余额用完回的也是 429（`insufficient_quota`）。按限流处理会白重试两次，
+      // 再让用户「稍后再试」——等多久都没用，该去充值（2026-10-02 发布前错误态检查）。
+      if providerError?.indicatesBillingLimit == true {
+        throw ModelProviderFailure(code: .providerBillingLimited, retryable: false, hadOutput: hadOutput)
+      }
       throw ModelProviderFailure(code: .rateLimited, retryable: true, hadOutput: hadOutput)
     case 500...599:
       throw ModelProviderFailure(code: .providerUnavailable, retryable: true, hadOutput: hadOutput)

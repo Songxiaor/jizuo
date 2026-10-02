@@ -2103,7 +2103,25 @@ private struct LinkDigestCommands: Commands {
   @AppStorage(ReadingFontSize.storageKey) private var readingFontSizeRaw = Double(ReadingFontSize.default)
   @AppStorage(ReadingLayoutWidth.storageKey) private var readingUsesWideLayout = false
 
+  @Environment(\.openSettings) private var openSettings
+
   var body: some Commands {
+    // 「关于汲作」原来是系统默认面板：只有图标和版本号，没有一句话介绍、没有官网（2026-10-02 发布前检查）。
+    CommandGroup(replacing: .appInfo) {
+      Button("关于\(ProductDisplay.name)") { AppAboutPanel.show() }
+    }
+    // 「帮助」原来只有系统默认的一项，点了提示找不到帮助（App 没有帮助手册）。
+    // 指向官网的使用说明，反馈走设置里已有的「写邮件 + 导出诊断信息」。
+    CommandGroup(replacing: .help) {
+      Button("\(ProductDisplay.name)使用说明") { NSWorkspace.shared.open(AppAboutPanel.guideURL) }
+      Button("常见问题") { NSWorkspace.shared.open(AppAboutPanel.faqURL) }
+      Divider()
+      Button("反馈问题…") {
+        SettingsNavigationRequest.request("updates")
+        openSettings()
+      }
+      Button("隐私说明") { NSWorkspace.shared.open(AppAboutPanel.privacyURL) }
+    }
     CommandGroup(replacing: .newItem) {
       Button("添加链接…") { manualLink.open() }
         .keyboardShortcut("n", modifiers: .command)
@@ -2194,5 +2212,35 @@ final class LateBoundMediaInventory: @unchecked Sendable {
     lock.lock(); let service = history; lock.unlock()
     guard let service else { throw RepositoryFailure.unavailable }
     return try service.mediaStorageInventory()
+  }
+}
+
+/// 「关于汲作」面板和帮助菜单用到的官网地址。
+enum AppAboutPanel {
+  static let siteURL = URL(string: "https://songxiaor.github.io/jizuo/")!
+  static let guideURL = URL(string: "https://songxiaor.github.io/jizuo/#install")!
+  static let faqURL = URL(string: "https://songxiaor.github.io/jizuo/#faq")!
+  static let privacyURL = URL(string: "https://songxiaor.github.io/jizuo/privacy.html")!
+
+  @MainActor static func show() {
+    let body = NSMutableAttributedString(
+      string: "读过的、看过的、自己写的，\n都收进本机的一个资料库；\n总结、翻译、转写都在这里完成。\n\n",
+      attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.secondaryLabelColor]
+    )
+    let links: [(String, URL)] = [("官网", siteURL), ("使用说明", guideURL), ("隐私说明", privacyURL)]
+    for (index, link) in links.enumerated() {
+      if index > 0 {
+        body.append(NSAttributedString(string: "  ·  ", attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: NSColor.tertiaryLabelColor]))
+      }
+      body.append(NSAttributedString(string: link.0, attributes: [.font: NSFont.systemFont(ofSize: 11), .link: link.1]))
+    }
+    let centered = NSMutableParagraphStyle()
+    centered.alignment = .center
+    body.addAttribute(.paragraphStyle, value: centered, range: NSRange(location: 0, length: body.length))
+    NSApp.activate(ignoringOtherApps: true)
+    NSApp.orderFrontStandardAboutPanel(options: [
+      .credits: body,
+      NSApplication.AboutPanelOptionKey(rawValue: "Copyright"): "资料只存在这台电脑上",
+    ])
   }
 }

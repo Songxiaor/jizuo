@@ -399,6 +399,26 @@ final class OpenAICompatibleProviderTests: XCTestCase {
     XCTAssertFalse(String(describing: result.failure).contains("余额不足"))
   }
 
+  /// OpenAI 余额用完回 429 + `insufficient_quota`：不是限流，不重试，报余额不足。
+  func test429WithInsufficientQuotaIsBillingWithoutRetry() async throws {
+    let key = "sentinel-\(UUID().uuidString)"
+    let server = FakeOpenAICompatibleServer(expectedAPIKey: key, scripts: [
+      .init(
+        statusCode: 429,
+        contentType: "application/json",
+        chunks: [.init(#"{"error":{"message":"You exceeded your current quota.","type":"insufficient_quota","code":"insufficient_quota"}}"#)]
+      )
+    ])
+    let baseURL = try server.start()
+    defer { server.stop() }
+
+    let result = await collect(provider: makeProvider(), profile: try profile(baseURL), apiKey: key)
+
+    XCTAssertEqual(server.attemptCount, 1)
+    XCTAssertEqual(result.failure?.code, .providerBillingLimited)
+    XCTAssertEqual(result.failure?.retryable, false)
+  }
+
   /// 实测 opencode Zen（2026-09-17）的三种回包：状态码和真实原因对不上，按正文 type 归类。
   func testStructuredProviderErrorTypesOverrideMisleadingStatusCodes() async throws {
     for (statusCode, body, expectedCode, retryable) in [
