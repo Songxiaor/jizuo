@@ -6711,6 +6711,19 @@ final class HistoryViewModel {
 
   func trashCount() -> Int { navigationCounts.trash }
 
+  /// 换列表后自动接住第一条：等新列表先画出来再选。
+  ///
+  /// 原来行和选中在同一拍里一起改，列表、选中高亮、详情头一起重排，点侧栏要等
+  /// 三四百毫秒才看到新列表（2026-10-02 实测）。拆成两拍，列表先出来，详情紧跟着换。
+  private func selectFirstRowAfterListPaint() {
+    let generation = configurationGeneration, requestID = listRequestID
+    DispatchQueue.main.async { [weak self] in
+      guard let self, generation == self.configurationGeneration, requestID == self.listRequestID,
+            self.selectedTaskIDs.isEmpty, let first = self.rows.first?.taskID else { return }
+      self.selectedTaskID = first
+    }
+  }
+
   private func receiveInitialPage(
     _ result: PageResult,
     generation: UUID,
@@ -6751,7 +6764,7 @@ final class HistoryViewModel {
           detail = nil
           setDetailState(.idle)
         } else {
-          selectedTaskID = rows.first?.taskID
+          selectFirstRowAfterListPaint()
         }
       } else {
         let visible = Set(rows.map(\.taskID))
@@ -6766,7 +6779,7 @@ final class HistoryViewModel {
           } else if let fallback = fallbackSelectionTaskID, visible.contains(fallback) {
             selectedTaskID = fallback
           } else {
-            selectedTaskID = rows.first?.taskID
+            selectFirstRowAfterListPaint()
           }
         } else if selectedTaskID != nil {
           // 选中的还是同一条、详情已在屏幕上：不重读。原来搜索框每停一下就整条详情重读重画，
@@ -9198,4 +9211,5 @@ final class HistoryViewModel {
     return plan
   }
 }
+
 
