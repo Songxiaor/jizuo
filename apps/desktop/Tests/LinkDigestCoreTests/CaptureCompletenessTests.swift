@@ -155,6 +155,15 @@ final class CaptureCompletenessTests: XCTestCase {
     )
   }
 
+  /// 小红书事后补读评论打不开原笔记（访问码会过期、不落库）：说清原因和出路，不让人以为要重新登录。
+  func testXiaohongshuCommentRefetchExplainsTheMissingShareCode() {
+    let note = URL(string: "https://www.xiaohongshu.com/explore/6a97752700000000120026e8")!
+    let message = CaptureRouteGuidance.commentsUnavailableMessage(for: note)
+    XCTAssertTrue(message?.contains("访问码") == true)
+    XCTAssertTrue(message?.contains("浏览器扩展") == true)
+    XCTAssertNil(CaptureRouteGuidance.commentsUnavailableMessage(for: URL(string: "https://www.zhihu.com/question/1/answer/2")!))
+  }
+
   func testYouTubeWatchPagesUseTheVideoScript() {
     XCTAssertTrue(RenderedPageExtraction.isYouTubeWatch(URL(string: "https://www.youtube.com/watch?v=aircAruvnKk")!))
     XCTAssertTrue(RenderedPageExtraction.isYouTubeWatch(URL(string: "https://youtu.be/aircAruvnKk")!))

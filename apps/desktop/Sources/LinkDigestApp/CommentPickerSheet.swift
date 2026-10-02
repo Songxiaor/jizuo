@@ -41,13 +41,15 @@ final class CommentPickerModel: ObservableObject {
         loginRequired = collection.loginRequired == true
         selectedIDs = Set(collection.comments.map(\.id))
         phase = collection.comments.isEmpty
-          ? .failed(CommentFetchService.FetchError.unreadable.errorDescription ?? "没有读到评论。")
+          ? .failed(CaptureRouteGuidance.commentsUnavailableMessage(for: url)
+            ?? CommentFetchService.FetchError.unreadable.errorDescription ?? "没有读到评论。")
           : .loaded
       } catch is CancellationError {
         return
       } catch {
         guard !Task.isCancelled else { return }
-        phase = .failed((error as? LocalizedError)?.errorDescription ?? "读取评论失败，可重试。")
+        phase = .failed(CaptureRouteGuidance.commentsUnavailableMessage(for: url)
+          ?? (error as? LocalizedError)?.errorDescription ?? "读取评论失败，可重试。")
       }
     }
   }
