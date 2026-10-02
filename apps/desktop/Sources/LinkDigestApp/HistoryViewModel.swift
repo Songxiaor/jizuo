@@ -1111,6 +1111,13 @@ final class HistoryViewModel {
   /// 搜索词变了、新结果到了、从博主页回来时加一：列表整表重建、回到最上面。
   /// 原来沿用之前的滚动位置，第一眼看到的是一个月前的（2026-10-01 走查）。
   private(set) var searchScrollToTopToken = 0
+  /// 列表整表重建的信号：只在同一个列表里顶上冒出新条目时加一。
+  ///
+  /// macOS List 给插入的行用估算行高，新到的卡片会被压扁；整表重建能按真实内容量高。
+  /// 原来拿「第一行是谁」当重建标记，切一次侧栏就整表拆掉重建两次（清空一次、新页一次），
+  /// 每次 150ms 以上，点侧栏要等半秒（2026-10-02 实测）。切换列表时行是从空表装进来的，
+  /// 没有这个问题，不需要重建。
+  private(set) var listRebuildToken = 0
   /// 选中项离开列表后要接住的那一条（见 `reloadKeepingNeighbor`）。
   @ObservationIgnored private var fallbackSelectionTaskID: TaskID?
   private var lastReceivedSearchText = ""
@@ -6714,6 +6721,10 @@ final class HistoryViewModel {
     switch result {
     case let .success(page):
       defer { fallbackSelectionTaskID = nil }
+      if let newTop = page.rows.first?.taskID, !rows.isEmpty,
+         newTop != rows.first?.taskID, !rows.contains(where: { $0.taskID == newTop }) {
+        listRebuildToken += 1
+      }
       rows = page.rows; nextCursor = page.nextCursor; listState = page.rows.isEmpty ? .empty : .loaded
       searchResultCount = searchText.isEmpty ? nil : page.totalCount
       if searchText != lastReceivedSearchText {
@@ -9187,3 +9198,4 @@ final class HistoryViewModel {
     return plan
   }
 }
+

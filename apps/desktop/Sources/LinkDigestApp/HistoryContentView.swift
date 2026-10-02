@@ -1033,7 +1033,10 @@ struct HistoryContentView: View {
       case .loading where model.rows.isEmpty:
         HistorySkeletonList(theme: theme)
       // 关键词一条没搜到、但有意思相近的：直接显示那一组，不说「没有符合条件的内容」。
-      case .empty where model.visibleRelatedRows.isEmpty:
+      // 抓取队列里有东西时照样显示列表：队列那一行在列表里。原来空库加第一条链接，
+      // 抓取那几秒中间只写着「还没有保存的内容」，像没点上（2026-10-02 新用户走查）。
+      case .empty where model.visibleRelatedRows.isEmpty
+        && ordinaryPendingCaptures.isEmpty && visibleProfileImportBatches.isEmpty:
         if model.selectedScope == .unsummarized, !model.hasCategoryFilter,
            model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
           HistoryInlineState(
@@ -1266,7 +1269,7 @@ struct HistoryContentView: View {
           // 不损失滚动位置），行高恢复按真实内容计算。
           // 搜索结果换了也整表重建：从最上面开始，连「昨天」这类分组标题一起露出来。
           // 用 scrollTo 第一行会把它上面的分组标题顶出视野（2026-10-01 自查）。
-          .id("\(model.rows.first?.taskID.rawValue ?? "")|\(model.searchScrollToTopToken)")
+          .id("\(model.listRebuildToken)|\(model.searchScrollToTopToken)")
           .onChange(of: model.profileImportScrollTarget) { _, target in
             guard let target else { return }
             withAnimation(historyUIAnimation(reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion)) {
@@ -1350,7 +1353,9 @@ struct HistoryContentView: View {
     .background(theme.card.opacity(theme.isNative ? 0 : 1).ignoresSafeArea(edges: .top))
     // 搜索框失焦且没有搜索词时收回成列头图标，列表多出一行。
     .onChange(of: isSearchFocused) { _, focused in
-      if !focused, model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+      // 只在 App 在前台时按失焦收起：从后台点放大镜那一下，焦点还没进来就先「失焦」了，
+      // 搜索框弹出又立刻收回（2026-10-02 自查）。切到别的 App 时也不该把用户展开的框收掉。
+      if !focused, NSApp.isActive, model.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         isListSearchExpanded = false
       }
     }
@@ -1922,7 +1927,11 @@ struct HistoryContentView: View {
         .help(expanded.wrappedValue ? "点击折叠" : "点击展开")
         .accessibilityValue(expanded.wrappedValue ? "已展开" : "已折叠")
       } else {
-        Text(title)
+        // 不能折叠的标题也空出箭头那一格：空库时「标签」比「视图」「合集」往左凸出一截（2026-10-02 走查）。
+        HStack(spacing: 4) {
+          Color.clear.frame(width: 10, height: 1)
+          Text(title)
+        }
         Spacer(minLength: 0)
       }
     }
@@ -4278,6 +4287,7 @@ private enum ReadingPaletteExport {
 }
 
 private struct HistoryDetailView: View, Equatable {
+  @AppStorage("onboarding.capture-v1.dismissed") private var isCaptureOnboardingDismissed = false
   /// 父视图重求值一次，就会新造一个 `HistoryDetailView` 结构体。里面带着两个闭包，
   /// SwiftUI 因此永远判定「变了」，于是整棵详情树连同 `MarkdownContentView` 重画一遍。
   /// 这里只比较真正决定画面的值输入，闭包按「行为不随实例变化」处理，不参与比较。
@@ -5108,6 +5118,13 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   var body: some View {
+    // 菜单栏「内容」里的生成总结 / 翻译：原来这两个核心动作只能用鼠标点（2026-10-02 键盘走查）。
+    scrollBody
+      .focusedSceneValue(\.summarizeCurrent, isOwnWriting ? nil : RunCurrentAction { startRun(.summarize) })
+      .focusedSceneValue(\.translateCurrent, isOwnWriting ? nil : RunCurrentAction { startRun(.translate) })
+  }
+
+  private var scrollBody: some View {
     ScrollViewReader { scrollProxy in
       ScrollView {
       // Title → URL → run/capture metadata (top) → action toolbar → reading → tags.
@@ -5176,7 +5193,8 @@ private struct HistoryDetailView: View, Equatable {
         // 才能看到、改到（2026-09-24 走查）。笔记输入框仍在页尾——想法是读完才有的。
         classificationBar
           .padding(.top, DesignTokens.Space.sm)
-        if !providerSettings.hasConfiguredAPIKey {
+        // 首次设置横条还在时它已经说了「配置模型」，这里不再说第二遍（2026-10-02 新用户走查）。
+        if !providerSettings.hasConfiguredAPIKey, isCaptureOnboardingDismissed {
           Button(action: openSettings) {
             Label("还没配置模型 · 去配置", systemImage: "sparkles")
               .themedFont(.callout, weight: .medium)
@@ -6507,6 +6525,13 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   private func startRun(_ kind: RunKind) {
+    // 还没配模型：直接带去「模型服务」。原来会去试一次，失败说明写在一块收起的面板里，
+    // 用户只看到按钮闪一下、什么都没发生（2026-10-02 新用户走查）。
+    guard providerSettings.hasConfiguredAPIKey else {
+      SettingsNavigationRequest.request("service")
+      openSettings()
+      return
+    }
     Task {
       let started: Bool
       switch kind {
@@ -6558,9 +6583,11 @@ private struct HistoryDetailView: View, Equatable {
         .buttonStyle(.bordered)
         .disabled(blockedReason != nil)
         .help(
-          blockedReason ?? (kind == .translate
-            ? "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
-            : "让模型读完正文，写一份总结")
+          blockedReason ?? (!providerSettings.hasConfiguredAPIKey
+            ? "还没配置模型：点一下去配置"
+            : (kind == .translate
+              ? "把当前正文翻译为\(providerSettings.runPreferences.outputLanguage)"
+              : "让模型读完正文，写一份总结"))
         )
         .accessibilityIdentifier(
           kind == .translate
@@ -9567,6 +9594,24 @@ struct GoBackAction: Equatable {
 }
 
 struct GoBackKey: FocusedValueKey { typealias Value = GoBackAction }
+
+struct RunCurrentAction: Equatable {
+  static func == (lhs: Self, rhs: Self) -> Bool { true }
+  let run: () -> Void
+}
+struct SummarizeCurrentKey: FocusedValueKey { typealias Value = RunCurrentAction }
+struct TranslateCurrentKey: FocusedValueKey { typealias Value = RunCurrentAction }
+
+extension FocusedValues {
+  var summarizeCurrent: RunCurrentAction? {
+    get { self[SummarizeCurrentKey.self] }
+    set { self[SummarizeCurrentKey.self] = newValue }
+  }
+  var translateCurrent: RunCurrentAction? {
+    get { self[TranslateCurrentKey.self] }
+    set { self[TranslateCurrentKey.self] = newValue }
+  }
+}
 
 extension FocusedValues {
   var goBack: GoBackAction? {

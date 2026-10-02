@@ -140,7 +140,7 @@ enum DiagnosticsReport {
     generatedAt: Date = Date()
   ) -> String {
     var lines: [String] = []
-    lines.append("汲作 诊断信息")
+    lines.append("汲作诊断信息")
     lines.append("这份文件不包含你保存的正文、网址、密钥或 Cookie。")
     lines.append("")
     lines.append("生成时间：\(ISO8601DateFormatter().string(from: generatedAt))")

@@ -551,14 +551,22 @@ private struct UIReadingListSelectionStyle: NSViewRepresentable {
       super.viewDidMoveToSuperview()
       applyStyle()
     }
+    /// 只改这一行自己的选中样式，不碰整张表。
+    ///
+    /// 原来改的是表格的 `selectionHighlightStyle`：SwiftUI 每次换列表都把它改回默认，
+    /// 这里再改掉，AppKit 就整表重载一遍（`_reloadTableForStyleDataChange`），实测每次
+    /// 190ms，点侧栏要等近半秒（2026-10-02 采样）。行视图自己也有这个属性，改它只重画一行。
     func applyStyle() {
       var ancestor = superview
       while let view = ancestor {
-        if let table = view as? NSTableView {
-          let style: NSTableView.SelectionHighlightStyle = usesSystemSelection ? .regular : .none
-          if table.selectionHighlightStyle != style { table.selectionHighlightStyle = style }
+        if let row = view as? NSTableRowView {
+          // 系统主题用表格自己的样式（行视图会被复用，切主题时要还原）。
+          let desired: NSTableView.SelectionHighlightStyle = usesSystemSelection
+            ? ((row.superview as? NSTableView)?.selectionHighlightStyle ?? .sourceList) : .none
+          if row.selectionHighlightStyle != desired { row.selectionHighlightStyle = desired }
           return
         }
+        if view is NSTableView { return }
         ancestor = view.superview
       }
     }

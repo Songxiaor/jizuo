@@ -2,6 +2,20 @@ import XCTest
 @testable import LinkDigestCore
 
 final class ManualLinkCaptureTests: XCTestCase {
+  /// 拿表格排版的老网页：正文不能变成 Markdown 表，段落和换行要保住。
+  func testLayoutTablePageKeepsParagraphs() throws {
+    let html = """
+    <html><head><title>How to Do Great Work</title></head><body>
+    <table><tr><td><img src="a.gif"></td><td><table><tr><td>
+    <font>July 2023<br /><br />If you collected lists of techniques for doing great work in a lot of different fields, what would the intersection look like?<br /><br />Partly my goal was to create a guide that could be used by someone working in any field.<br /><br />The following recipe assumes you're very ambitious.</font>
+    </td></tr></table></td></tr></table></body></html>
+    """
+    let page = try MinimalHTMLExtractor().extract(html: html)
+    XCTAssertFalse(page.text.contains("|"), page.text)
+    XCTAssertTrue(page.text.contains("any field.\n"), page.text)
+    XCTAssertTrue(page.text.contains("The following recipe"), page.text)
+  }
+
   func testURLPolicyRejectsPrivateRangesAndOnlyTestPolicyAllowsLoopback() async throws {
     let resolver: PublicWebURLPolicy.Resolver = { host in
       ["private.test": "10.0.0.1", "reserved.test": "192.0.2.1", "public.test": "8.8.8.8"][host].map { [$0] } ?? []

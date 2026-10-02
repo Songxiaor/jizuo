@@ -39,7 +39,7 @@ public enum ProviderPreset: String, CaseIterable, Codable, Sendable, Equatable, 
     case .zhipu: "智谱 BigModel"
     case .stepFun: "阶跃星辰"
     case .ollama: "Ollama（本地）"
-    case .custom: "其他服务商（自填地址）"
+    case .custom: "其他服务商"
     }
   }
   public var baseURLTemplate: String {

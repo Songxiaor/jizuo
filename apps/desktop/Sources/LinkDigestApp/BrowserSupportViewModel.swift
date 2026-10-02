@@ -119,7 +119,7 @@ final class BrowserSupportViewModel: ObservableObject {
       errorText = """
         你已经授权过了，但 macOS 还是不让汲作打开这个文件夹：\(deniedPath)。\
         浏览器和你保存的内容都没有受影响。\
-        请到「系统设置 › 隐私与安全性 › 完全磁盘访问权限」里把 \(ProductDisplay.name) 加进去，再回来点一次「连接」。
+        请到「系统设置 › 隐私与安全性 › 完全磁盘访问权限」里把\(ProductDisplay.name)加进去，再回来点一次「连接」。
         """
       return
     }
@@ -305,15 +305,15 @@ final class BrowserSupportViewModel: ObservableObject {
     case .confirmationStale:
       "刚才那份连接配置在你确认期间变了，为安全起见没有覆盖。什么都没有被改动。请点「重新检查」看一下最新状态，再连一次。"
     case .uninstallRefused:
-      "这个浏览器里的连接文件不是 \(ProductDisplay.name) 装的，所以没有删它。现有文件原样保留。请在浏览器里自行确认后再处理。"
+      "这个浏览器里的连接文件不是\(ProductDisplay.name)装的，所以没有删它。现有文件原样保留。请在浏览器里自行确认后再处理。"
     case .restoreRefused:
-      "现在这个连接文件确认不了是 \(ProductDisplay.name) 的，所以没有覆盖它。文件原样保留。请在浏览器里自行确认后再处理。"
+      "现在这个连接文件确认不了是\(ProductDisplay.name)的，所以没有覆盖它。文件原样保留。请在浏览器里自行确认后再处理。"
     case .unsafeFilesystemState:
       "这次检查发现文件夹状态不安全，汲作一个字都没往浏览器目录里写。你的内容和浏览器数据都没被动过。请重新打开汲作后再点「连接」。"
     // 这条不该出现在错误栏里——它有对应的动作（选一次目录授权），走 `.accessRequest`
     // 那条路。留在这里只是兜底，防止哪天新加的入口忘了处理。
     case .directoryAccessDenied:
-      "macOS 没让 \(ProductDisplay.name) 打开这个浏览器的文件夹，所以没连上。什么都没有被改动。请重新点「连接」，按提示授权一次。"
+      "macOS 没让\(ProductDisplay.name)打开这个浏览器的文件夹，所以没连上。什么都没有被改动。请重新点「连接」，按提示授权一次。"
     case .transactionFailed, .none:
       "这次连接没做完。现有文件已经保持原样或还原回去了，浏览器和你保存的内容都没受影响。请点「重新检查」后再试一次。"
     }

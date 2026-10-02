@@ -228,7 +228,7 @@ final class ProviderSettingsViewModel {
 
   /// Multi-profile editing keeps the stored secret, so saving endpoint/model
   /// changes without re-entering the key is only offered with library support.
-  private var isEditingLibraryEntry: Bool {
+  var isEditingLibraryEntry: Bool {
     configurationService.supportsModelLibrary && editingProfileID != nil
   }
 
@@ -391,7 +391,7 @@ final class ProviderSettingsViewModel {
     case .unconfigured:
       selectedPreset == .commandCode
         ? "先读取模型列表并选择模型，再保存；套餐权限需通过测试连接确认。"
-        : "先读取模型列表并选一个模型，再保存；出于安全，\(ProductDisplay.name) 不会把已存的密钥显示出来。"
+        : "先读取模型列表并选一个模型，再保存；出于安全，\(ProductDisplay.name)不会把已存的密钥显示出来。"
     case .saving:
       "正在安全保存…"
     case .configured:

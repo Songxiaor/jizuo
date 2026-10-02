@@ -297,7 +297,7 @@ struct MediaStorageSettingsView: View {
     panel.allowsMultipleSelection = false
     panel.canCreateDirectories = true
     panel.prompt = "选择"
-    panel.message = "选择 \(ProductDisplay.name) 保存视频的文件夹"
+    panel.message = "选择\(ProductDisplay.name)保存视频的文件夹"
     guard panel.runModal() == .OK else { return }
     model.applySelection(panel.url)
   }

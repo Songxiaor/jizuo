@@ -1547,11 +1547,16 @@ struct ProviderSettingsView: View {
         showsProgress: model.isSaving || model.isTestingConnection,
         statusIdentifier: "provider-settings-status"
       ) {
-        Button("测试连接") { Task { await model.testConnection() } }
-          .buttonStyle(.appNormal)
-          .disabled(!model.canTestConnection || !apiKeyInput.isEmpty)
-          .help(testConnectionBlocked ? unsavedChangesText : "发送极短提示验证当前已保存配置")
-          .accessibilityIdentifier("test-provider-connection")
+        // 新建时「验证并保存」本身就会测一次；这里只给已保存的配置用。
+        // 原来新建时它一直灰着、提示「请先保存再测试」，新用户第一眼就是一个点不了的按钮
+        // （2026-10-02 新用户走查）。
+        if model.hasConfiguredAPIKey || model.isEditingLibraryEntry {
+          Button("测试连接") { Task { await model.testConnection() } }
+            .buttonStyle(.appNormal)
+            .disabled(!model.canTestConnection || !apiKeyInput.isEmpty)
+            .help(testConnectionBlocked ? unsavedChangesText : "发送极短提示验证当前已保存配置")
+            .accessibilityIdentifier("test-provider-connection")
+        }
         if !model.isAddingModelBatch {
           Button("仅保存") {
             let submittedKey = apiKeyInput
@@ -2686,7 +2691,7 @@ struct ProviderSettingsView: View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
       Text("总结提示词")
         .themedFont(.body)
-      Text("无论用内置还是自定义提示词，\(ProductDisplay.name) 都会追加输出语言指令。提示词保存在本机；生成时会随正文发送给所选模型。")
+      Text("无论用内置还是自定义提示词，\(ProductDisplay.name)都会追加输出语言指令。提示词保存在本机；生成时会随正文发送给所选模型。")
         .themedFont(.subheadline)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)

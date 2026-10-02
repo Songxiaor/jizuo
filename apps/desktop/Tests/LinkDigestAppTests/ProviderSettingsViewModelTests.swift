@@ -962,7 +962,7 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertEqual(model.state, .unconfigured)
     XCTAssertTrue(model.shouldShowAPIKeyInput)
     XCTAssertFalse(model.isReplacingAPIKey)
-    XCTAssertEqual(model.statusText, "先读取模型列表并选一个模型，再保存；出于安全，\(ProductDisplay.name) 不会把已存的密钥显示出来。")
+    XCTAssertEqual(model.statusText, "先读取模型列表并选一个模型，再保存；出于安全，\(ProductDisplay.name)不会把已存的密钥显示出来。")
   }
 
   func testEmptyAPIKeyShowsErrorOnlyAfterExplicitSaveAttempt() async {
@@ -976,7 +976,7 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     await model.load()
     model.baseURL = "https://example.test/v1"
     model.modelName = "fixture-model"
-    XCTAssertEqual(model.statusText, "先读取模型列表并选一个模型，再保存；出于安全，\(ProductDisplay.name) 不会把已存的密钥显示出来。")
+    XCTAssertEqual(model.statusText, "先读取模型列表并选一个模型，再保存；出于安全，\(ProductDisplay.name)不会把已存的密钥显示出来。")
 
     await model.save(apiKey: "  \n")
 

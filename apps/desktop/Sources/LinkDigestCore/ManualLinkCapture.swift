@@ -612,6 +612,12 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     var tables: [String] = []
     value = extractMarkdownTables(from: value, into: &tables)
 
+    // 源码里的换行在网页上只是空白：原样留着，「in a lot⏎of different」会断成两行
+    // （2026-10-02 新用户走查）。两边都是中文时直接去掉，别处换成空格。
+    // 代码块和表格已经换成占位符，不受影响；真正的换行由下面的 <br>/<p> 转出。
+    value = replacing("(?<=[\\p{Han}，。！？；：、」』）])[ \\t]*[\\r\\n]+[ \\t]*(?=[\\p{Han}「『（])", in: value, with: "")
+    value = replacing("[ \\t]*[\\r\\n]+[ \\t]*", in: value, with: " ")
+
     // Blockquotes first (may nest paragraphs).
     value = replacing("<blockquote\\b[^>]*>([\\s\\S]*?)</blockquote>", in: value, with: "\n\n«BLOCKQUOTE»$1«/BLOCKQUOTE»\n\n")
 
@@ -683,7 +689,12 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
             let full = Range(match.range, in: result),
             let innerRange = Range(match.range(at: 1), in: result)
       else { continue }
-      let rows = tableRows(in: String(result[innerRange]))
+      let inner = String(result[innerRange])
+      // 拿表格排版的老网页（Paul Graham 的文章整篇在一个 <table> 里）不能转成 Markdown 表：
+      // 原来正文开头是「| | |」，段落全挤进一个格子、换行丢光（2026-10-02 新用户走查）。
+      // 嵌套表格、格子里分段换行、或一格里有长段文字的，都是排版表，交给后面按块处理。
+      if Self.isLayoutTable(inner) { continue }
+      let rows = tableRows(in: inner)
       guard let width = rows.map(\.count).max(), width >= 2 else {
         result.replaceSubrange(full, with: "\n")
         continue
@@ -702,6 +713,14 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
       result.replaceSubrange(full, with: "\n\n\(tablePlaceholder(tables.count - 1))\n\n")
     }
     return result
+  }
+
+  static func isLayoutTable(_ innerHTML: String) -> Bool {
+    let lower = innerHTML.lowercased()
+    if lower.contains("<table") || lower.contains("<p") { return true }
+    if lower.components(separatedBy: "<br").count > 3 { return true }
+    let plain = innerHTML.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
+    return plain.split(whereSeparator: { $0 == "\n" }).contains { $0.count > 400 }
   }
 
   private func tableRows(in tableHTML: String) -> [[String]] {

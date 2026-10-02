@@ -11,7 +11,9 @@ struct V02ErrorPresentation: Equatable {
   }
 
   var visibleText: String {
-    [message, recoveryAction].joined(separator: " ")
+    // 中文句号后面不空格：原来是「没抓到正文。 没有产生空记录」（2026-10-02 走查）。
+    let separator = message.last.map { "。！？）」".contains($0) } == true ? "" : " "
+    return message + separator + recoveryAction
   }
 }
 
@@ -81,12 +83,12 @@ enum V02ErrorCatalog {
     case ProviderConfigurationError.apiKeyRequired.rawValue:
       .init(
         message: "密钥还没填。",
-        recoveryAction: "已保存的配置没有变化。请重新输入一次密钥后保存；出于安全，\(ProductDisplay.name) 不会把已存的密钥显示出来。"
+        recoveryAction: "已保存的配置没有变化。请重新输入一次密钥后保存；出于安全，\(ProductDisplay.name)不会把已存的密钥显示出来。"
       )
     case ProviderConfigurationError.profileStoreReadFailed.rawValue:
       .init(
         message: "读不到已经保存的模型配置。",
-        recoveryAction: "配置本身还在本机，没有被删。请重新打开 \(ProductDisplay.name)；还是这样就把这个模型重新保存一次。"
+        recoveryAction: "配置本身还在本机，没有被删。请重新打开\(ProductDisplay.name)；还是这样就把这个模型重新保存一次。"
       )
     case ProviderConfigurationError.profileStoreWriteFailed.rawValue:
       .init(
@@ -106,7 +108,7 @@ enum V02ErrorCatalog {
     case ProviderConfigurationError.secretStoreWriteFailed.rawValue:
       .init(
         message: "这次没能把密钥安全地存起来。",
-        recoveryAction: "\(ProductDisplay.name) 宁可不保存，也不会把密钥明文写到别处。请重新输入一次再保存。"
+        recoveryAction: "\(ProductDisplay.name)宁可不保存，也不会把密钥明文写到别处。请重新输入一次再保存。"
       )
     case ProviderConfigurationError.configurationChanged.rawValue:
       .init(

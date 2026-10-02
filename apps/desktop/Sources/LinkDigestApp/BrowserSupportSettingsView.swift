@@ -180,7 +180,7 @@ struct BrowserSupportSettingsView: View {
       case let .confirmation(confirmation):
         Alert(
           title: Text("把 \(confirmation.browser.displayName) 连到这个汲作？"),
-          message: Text("这个浏览器里已经有一份连接配置。\(ProductDisplay.name) 会先备份它，再把浏览器切到当前这个汲作。不会删浏览器数据，也不会删已经装好的扩展。"),
+          message: Text("这个浏览器里已经有一份连接配置。\(ProductDisplay.name)会先备份它，再把浏览器切到当前这个汲作。不会删浏览器数据，也不会删已经装好的扩展。"),
           primaryButton: .default(Text("连接")) { Task { await model.confirmReplacement(confirmation) } },
           secondaryButton: .cancel(Text("取消")) { model.cancelPendingReplacement() }
         )
@@ -194,7 +194,7 @@ struct BrowserSupportSettingsView: View {
             secondaryButton: .default(Text("打开扩展文件夹")) { revealExtensionFiles() }
           )
         case .uninstalled:
-          Alert(title: Text("已断开连接"), message: Text("\(ProductDisplay.name) 只删掉了自己写进这个浏览器的连接文件。浏览器里的扩展还在，你保存的内容也一条没少。想用的时候点「连接」就能接回来。"), dismissButton: .default(Text("知道了")))
+          Alert(title: Text("已断开连接"), message: Text("\(ProductDisplay.name)只删掉了自己写进这个浏览器的连接文件。浏览器里的扩展还在，你保存的内容也一条没少。想用的时候点「连接」就能接回来。"), dismissButton: .default(Text("知道了")))
         case .restored:
           Alert(title: Text("已还原成接管前的样子"), message: Text("这个浏览器的连接文件已经还原成汲作接管之前的那一份。"), dismissButton: .default(Text("知道了")))
         }
@@ -202,7 +202,7 @@ struct BrowserSupportSettingsView: View {
       // 什么、以及为什么必须由你来点：文件夹已经定位好，用户不需要知道 TCC 是什么。
       case let .accessRequest(request):
         Alert(
-          title: Text("允许 \(ProductDisplay.name) 访问 \(request.browser.displayName) 的文件夹"),
+          title: Text("允许\(ProductDisplay.name)访问 \(request.browser.displayName) 的文件夹"),
           message: Text("macOS 不允许\(ProductDisplay.name)自己打开浏览器的文件夹，必须由你选一次。点「选择文件夹」，在打开的窗口里直接点右下角的按钮就行——文件夹已经定位好，不用自己找。"),
           primaryButton: .default(Text("选择文件夹")) { chooseAccessDirectory(request) },
           secondaryButton: .cancel(Text("以后再说")) { model.cancelPendingAccessRequest() }
@@ -289,7 +289,7 @@ struct BrowserSupportSettingsView: View {
       GridRow {
         // 第一列留空，让说明和上面那行的浏览器名对齐。
         Color.clear.frame(width: 18, height: 0)
-        Text("原来指向的程序已不在原位（\(ProductDisplay.name) 改过名或被移动过）。点「重新连接」即可，浏览器里的扩展不用重装。")
+        Text("原来指向的程序已不在原位（\(ProductDisplay.name)改过名或被移动过）。点「重新连接」即可，浏览器里的扩展不用重装。")
           .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -462,7 +462,7 @@ struct BrowserSupportSettingsView: View {
       panel.canChooseFiles = false
       panel.allowsMultipleSelection = false
       panel.canCreateDirectories = false
-      panel.message = "选中「\(request.directory.lastPathComponent)」这个文件夹，允许 \(ProductDisplay.name) 写入 \(request.browser.displayName) 的连接配置"
+      panel.message = "选中「\(request.directory.lastPathComponent)」这个文件夹，允许\(ProductDisplay.name)写入 \(request.browser.displayName) 的连接配置"
       panel.prompt = "允许访问"
       let granted = panel.runModal() == .OK ? panel.url : nil
       Task { await model.completeAccessRequest(request, granted: granted) }

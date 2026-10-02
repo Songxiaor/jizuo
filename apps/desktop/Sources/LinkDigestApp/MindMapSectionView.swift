@@ -55,7 +55,7 @@ struct MindMapSectionView: View {
   }
 
   private var exportBaseName: String {
-    let title = model.mindMapRecord?.outline.title ?? "\(ProductDisplay.name) 脑图"
+    let title = model.mindMapRecord?.outline.title ?? "\(ProductDisplay.name)脑图"
     return title.replacingOccurrences(of: "/", with: "-")
   }
 

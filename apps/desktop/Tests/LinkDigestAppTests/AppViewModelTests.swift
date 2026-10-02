@@ -856,6 +856,22 @@ final class AppViewModelTests: XCTestCase {
     XCTAssertEqual(provider.callCount, 1)
   }
 
+  /// 新用户：库里有一条、还没配模型就点「生成总结」。不能停在「正在准备发送…」。
+  func testUnconfiguredHistorySummaryReleasesAndExplains() async throws {
+    let provider = AppTestModelProvider(results: [])
+    let (model, _) = makeHarness(
+      provider: provider,
+      profileStore: AppProfileStore(profile: nil),
+      secretStore: AppSecretStore(secret: nil),
+      consentStore: AppConsentStore()
+    )
+    let detail = historyDetail(body: "这是一段足够长的正文，用来测试没配模型时点生成总结的提示。")
+    let started = await model.summarize(historyDetail: detail, preferences: .default)
+    XCTAssertFalse(started)
+    XCTAssertNil(model.summarizeUnavailableReason(usingCurrentCapture: false, detail: detail, preferencesReady: true))
+    XCTAssertTrue(model.dataDestinationNotice?.contains("还没配置可用的模型") == true, model.dataDestinationNotice ?? "nil")
+  }
+
   func testProfileReadFailureReleasesAttemptForImmediateRetry() async throws {
     let provider = AppTestModelProvider(results: [])
     let (model, _) = makeHarness(

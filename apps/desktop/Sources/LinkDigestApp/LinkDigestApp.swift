@@ -104,9 +104,12 @@ final class AppViewModel {
   private let consentStore: (any DataDestinationConsentStore)?
   private let makeRunID: @Sendable () -> RunID
   @ObservationIgnored private var visibleRunID: RunID?
-  @ObservationIgnored private var launchPendingRunID: RunID?
+  // 这两个决定「生成总结」按钮能不能点（runStartUnavailableReason 里的「正在准备发送…」），
+  // 必须被界面观察到。原来标成 ObservationIgnored：没配模型时点一下，按钮画成灰的，
+  // 准备结束清掉之后界面不重画，按钮就永远灰着（2026-10-02 新用户走查）。
+  private var launchPendingRunID: RunID?
   @ObservationIgnored private var taskIDByRunID: [RunID: TaskID] = [:]
-  @ObservationIgnored private var preparationAttempt: RunPreparationAttempt?
+  private var preparationAttempt: RunPreparationAttempt?
   @ObservationIgnored private var queuedGenerationStartTask: Task<Void, Never>?
   @ObservationIgnored private var confirmingAttemptToken: UUID?
 
@@ -2089,6 +2092,8 @@ private struct LinkDigestCommands: Commands {
   @FocusedValue(\.toggleFavorite) private var toggleFavorite
   @FocusedValue(\.newCollection) private var newCollection
   @FocusedValue(\.goBack) private var goBack
+  @FocusedValue(\.summarizeCurrent) private var summarizeCurrent
+  @FocusedValue(\.translateCurrent) private var translateCurrent
   @AppStorage(ReadingFontSize.storageKey) private var readingFontSizeRaw = Double(ReadingFontSize.default)
   @AppStorage(ReadingLayoutWidth.storageKey) private var readingUsesWideLayout = false
 
@@ -2125,6 +2130,15 @@ private struct LinkDigestCommands: Commands {
       Button("搜索历史") { focusHistorySearch?.run() }
         .keyboardShortcut("f", modifiers: .command)
         .disabled(focusHistorySearch == nil)
+    }
+    // ⇧⌘S / ⇧⌘E：汲作没有「存储为」，这两个组合在 macOS 菜单里都没被占（2026-10-02 查过）。
+    CommandMenu("内容") {
+      Button("生成总结") { summarizeCurrent?.run() }
+        .keyboardShortcut("s", modifiers: [.command, .shift])
+        .disabled(summarizeCurrent == nil)
+      Button("翻译") { translateCurrent?.run() }
+        .keyboardShortcut("e", modifiers: [.command, .shift])
+        .disabled(translateCurrent == nil)
     }
     // 阅读快捷键对齐 Tolaria：⌘D 收藏，⌘+ / ⌘− / ⌘0 调正文字号（2026-09-25）。
     // 字号直接写偏好，不依赖焦点：光标在侧栏时按也生效。
