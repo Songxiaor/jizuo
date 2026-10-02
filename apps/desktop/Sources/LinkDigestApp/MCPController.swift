@@ -26,7 +26,17 @@ final class MCPController: ObservableObject {
   private var discovery: MCPDiscovery?
   private var summaryStarting = false
 
-  init(defaults: UserDefaults = .standard, socketPath: String = MCPConfiguration.socketPath) {
+  /// 调试版用隔离数据目录跑测试实例时，MCP 通道也放进那个目录，不和正在用的汲作抢同一个 socket。
+  static var defaultSocketPath: String {
+    #if DEBUG
+    if let root = ProcessInfo.processInfo.environment[AppApplicationSupportRoot.smokeOverrideEnvironmentKey] {
+      return URL(fileURLWithPath: root, isDirectory: true).appendingPathComponent("mcp.sock").path
+    }
+    #endif
+    return MCPConfiguration.socketPath
+  }
+
+  init(defaults: UserDefaults = .standard, socketPath: String = MCPController.defaultSocketPath) {
     self.defaults = defaults
     self.socketPath = socketPath
     enabled = defaults.bool(forKey: "mcp.enabled")

@@ -2611,3 +2611,187 @@ describe("footnote section", () => {
     expect(bodyOf(root)).toContain("A \u2191 B \u2191 C");
   });
 });
+
+describe("capture completeness (2026-10-02 测试表)", () => {
+  const paragraph = (value: string) => el("p", [text(value)]);
+  const card = () => el("article", [el("h3", [text("推荐阅读的另一篇文章")]), paragraph("一句话简介。")]);
+
+  it("skips a wall of recommendation cards and keeps the article written straight into <main>", () => {
+    const body = Array.from({ length: 20 }, (_, index) => paragraph(`这是正文第 ${index + 1} 段，讲清楚这篇文章真正要说的事。`));
+    const root = el("main", [el("h1", [text("正文标题")]), ...body, el("section", [card(), card(), card()])]);
+    const page = extractCurrentPage(makeDocument({ title: "正文标题", href: "https://arena.example/blog/post", root }));
+    expect(page.text).toContain("这是正文第 20 段");
+    expect(page.characterCount).toBeGreaterThan(400);
+  });
+
+  it("emits only the video for a player shell, never its control labels", () => {
+    const player = el("div", [
+      el("video", [], { src: "https://video.example/a.mp4" }),
+      el("xg-replay", [text("重播")]),
+      el("div", [text("进入全屏")], { class: "xg-tips" }),
+    ], { class: "tt-video-box xgplayer xgplayer-pc" });
+    const root = el("article", [paragraph("视频新闻的导语，说明这段视频讲了什么内容。"), player]);
+    const page = extractCurrentPage(makeDocument({ title: "视频新闻", href: "https://news.example/a/1", root }));
+    expect(page.text).toContain("视频新闻的导语");
+    expect(page.text).not.toContain("重播");
+    expect(page.text).not.toContain("进入全屏");
+  });
+
+  it("keeps article images but drops avatars, icons and spacer pixels", () => {
+    const root = el("article", [
+      paragraph("正文第一段，下面是一张配图，用来说明结论。"),
+      el("img", [], { class: "ss__user__avatar", src: "https://cdn.example/avatar/u1.png" }),
+      el("img", [], { src: "https://cdn.example/trans_1x1.gif" }),
+      el("img", [], { src: "https://cdn.example/a.png?imageMogr2/thumbnail/!72x72r" }),
+      el("img", [], { src: "https://cdn.example/figure-1.png", alt: "示意图" }),
+      paragraph("正文第二段，接着上面的图继续讲下去。"),
+    ]);
+    const page = extractCurrentPage(makeDocument({ title: "配图文章", href: "https://blog.example/p/1", root }));
+    expect(page.text).toContain("![示意图](https://cdn.example/figure-1.png)");
+    expect(page.text).not.toContain("avatar/u1.png");
+    expect(page.text).not.toContain("trans_1x1.gif");
+    expect(page.text).not.toContain("72x72");
+  });
+
+  it("refuses Zhihu's verification redirect and Xiaohongshu's unavailable-note page", () => {
+    const shell = el("main", [paragraph("请您登录后查看更多专业优质内容。"), paragraph("想来知乎工作？请发送邮件到 jobs@zhihu.com")]);
+    const zhihu = extractCurrentPage(makeDocument({
+      title: "知乎", href: "https://www.zhihu.com/account/unhuman?type=U4E3Z1&need_login=true", root: shell,
+    }));
+    expect(zhihu.captureIssue).toBe("CAPTURE_SECURITY_CHALLENGE");
+    const nav = el("main", [el("ul", [el("li", [text("发现")]), el("li", [text("直播")]), el("li", [text("发布")])]), paragraph("沪ICP备13030189号 营业执照")]);
+    const xhs = extractCurrentPage(makeDocument({
+      title: "小红书", href: "https://www.xiaohongshu.com/404?source=/404/sec_x&error_code=300031", root: nav,
+    }));
+    expect(xhs.captureIssue).toBe("CAPTURE_PAGE_LOAD_FAILED");
+  });
+});
+
+describe("empty markup leaves no stray markers (2026-10-02 公众号)", () => {
+  it("drops empty headings and empty bold instead of leaving # and ****", () => {
+    const root = el("article", [
+      el("h1", [text("  ")]),
+      el("p", [text("正文第一段，讲这篇文章要说的事情，足够长。")]),
+      el("p", [el("strong", [text("")]), text("第二段。")]),
+    ]);
+    const page = extractCurrentPage(makeDocument({ title: "公众号文章", href: "https://blog.example/p/2", root }));
+    expect(page.text).not.toMatch(/^#\s*$/mu);
+    expect(page.text).not.toContain("****");
+    expect(page.text).toContain("第二段。");
+  });
+});
+
+describe("block and error pages are never saved as articles (2026-10-02 Medium)", () => {
+  it("flags a Cloudflare block page whatever its title says", () => {
+    const root = el("main", [
+      el("h2", [text("Sorry, you have been blocked")]),
+      el("p", [text("You are unable to access medium.com. This website is using a security service to protect itself from online attacks.")]),
+      el("p", [text("Cloudflare Ray ID: a44107d90b534e41 • Performance & security by Cloudflare")]),
+    ]);
+    const page = extractCurrentPage(makeDocument({ title: "Attention Required! | Cloudflare", href: "https://medium.com/p/abc", root }));
+    expect(page.captureIssue).toBe("CAPTURE_SECURITY_CHALLENGE");
+  });
+
+  it("flags Medium's own server error page", () => {
+    const root = el("main", [
+      el("p", [text("500")]),
+      el("h2", [text("Apologies, but something went wrong on our end.")]),
+      el("p", [text("Refresh the page, check Medium's site status, or find something interesting to read.")]),
+    ]);
+    const page = extractCurrentPage(makeDocument({ title: "Medium", href: "https://medium.com/codetodeploy/a-post-fba295ade37d", root }));
+    expect(page.captureIssue).toBe("CAPTURE_PAGE_LOAD_FAILED");
+  });
+});
+
+describe("login pages are not content (2026-10-02 知乎)", () => {
+  it("flags a page that ended on /signin", () => {
+    const root = el("main", [el("p", [text("其他方式登录。未注册手机验证后自动登录，注册即代表同意《知乎协议》《隐私保护指引》。")])]);
+    const page = extractCurrentPage(makeDocument({ title: "知乎", href: "https://www.zhihu.com/signin?next=%2F", root }));
+    expect(page.captureIssue).toBe("CAPTURE_LOGIN_WALL");
+  });
+});
+
+describe("unfinished React streaming (2026-10-02 arena.ai in Safari WebKit)", () => {
+  it("reads the article from the hidden streaming chunk when <main> is still empty", () => {
+    const paragraphs = Array.from({ length: 30 }, (_, index) => el("p", [text(`流式渲染块里的正文第 ${index + 1} 段，内容足够长，用来说明这篇文章。`)]));
+    const root = el("div", [
+      el("main", [el("template", [], { id: "B:3" })]),
+      el("section", [el("article", [el("h3", [text("推荐卡片一")]), el("p", [text("一句话简介。")])])]),
+      el("div", paragraphs, { hidden: "", id: "S:3" }),
+    ]);
+    const page = extractCurrentPage(makeDocument({ title: "文章", href: "https://arena.example/blog/post", root }));
+    expect(page.text).toContain("流式渲染块里的正文第 30 段");
+  });
+});
+
+describe("page translation detection (2026-10-02)", () => {
+  it("recognizes X's own auto-translation label and explicit translator markers, never guesses from lang", async () => {
+    const { detectPageTranslation } = await import("../src/content/extract");
+    const xPost = el("article", [
+      el("span", [text("翻译自 英语")]),
+      el("span", [text("显示原文")]),
+      el("p", [text("我们给Jev提供了2,029个真实的电话呼叫。")]),
+    ]);
+    expect(detectPageTranslation(makeDocument({ title: "X", href: "https://x.com/muratcan/status/2104959648482701686", root: xPost }))).toBe("X 自动翻译");
+    // 原文就是中文的帖子：没有「翻译自」标记，不提醒。
+    const chinesePost = el("article", [el("p", [text("感受一下Muse直出的视频！")])]);
+    expect(detectPageTranslation(makeDocument({ title: "X", href: "https://x.com/leaf_sanren/status/2105645639703183753", root: chinesePost }))).toBeUndefined();
+    const doc = (htmlClass: string) => ({
+      documentElement: { getAttribute: (name: string) => (name === "class" ? htmlClass : null) },
+      querySelector: () => null,
+      location: { href: "https://example.com/post" },
+    }) as unknown as Document;
+    // 装了 Trancy 但页面没翻：不再按类名和语言去猜。
+    expect(detectPageTranslation(doc("trancy-zh-CN"))).toBeUndefined();
+    expect(detectPageTranslation(doc("translated-ltr"))).toBe("浏览器自带翻译");
+  });
+});
+
+describe("Medium member-only preview (2026-10-02)", () => {
+  it("marks a member-only story as visible-only instead of a full article", () => {
+    const root = el("article", [
+      el("p", [text("Member-only story")]),
+      el("h1", [text("How To Run Claude Like a Tech Lead")]),
+      el("p", [text("A month ago I wrote about treating Claude like a junior teammate instead of a search box.")]),
+    ]);
+    const page = extractCurrentPage(makeDocument({ title: "Medium", href: "https://medium.com/codetodeploy/a-post-fba295ade37d", root }));
+    expect(page.completeness).toBe("visible_only");
+  });
+});
+
+describe("inline emphasis edges (2026-10-02 arena.ai)", () => {
+  it("keeps the space after bold text, separates touching emphasis runs and drops alt-less unloadable images", () => {
+    const root = el("article", [
+      el("p", [el("strong", [text("A simple harness can be competitive. ")]), text("Pi, a minimal harness, is competitive on cost.")]),
+      el("p", [el("strong", [text("Models may perform better with other harnesses than their own.")]), el("em", [el("strong", [text("So your Claude models may not need Claude Code.")])])]),
+      el("img", [], { src: "data:image/svg+xml;base64,AAA" }),
+      el("p", [text("正文最后一段，用来凑够长度，确保这是一篇正常的文章内容。")]),
+    ]);
+    const page = extractCurrentPage(makeDocument({ title: "Arena", href: "https://arena.example/blog/post", root }));
+    expect(page.text).toContain("**A simple harness can be competitive.** Pi,");
+    expect(page.text).toContain("own.** ***So your Claude");
+    expect(page.text).not.toContain("*****");
+    expect(page.text).not.toMatch(/^图像$/mu);
+  });
+});
+
+describe("images inside tables (2026-10-02 Wikipedia infobox)", () => {
+  it("lifts cell images above the table so the table stays one block", () => {
+    const row = (k: string, v: string) => el("tr", [el("th", [text(k)]), el("td", [text(v)])]);
+    const root = el("article", [
+      el("p", [text("GIF 是一种位图格式，这里是正文的第一段，足够长。")]),
+      el("table", [el("tbody", [
+        el("tr", [el("td", [el("img", [], { src: "https://upload.example/Rotating_earth.gif", alt: "地球" }), text("An animated GIF")], { colspan: "2" })]),
+        row("Filename extension", ".gif"),
+        row("Developed by", "CompuServe"),
+      ])]),
+    ]);
+    const page = extractCurrentPage(makeDocument({ title: "GIF", href: "https://en.wikipedia.org/wiki/GIF", root }));
+    const imageAt = page.text.indexOf("![地球](https://upload.example/Rotating_earth.gif)");
+    const tableAt = page.text.indexOf("| Filename extension | .gif |");
+    expect(imageAt).toBeGreaterThan(-1);
+    expect(tableAt).toBeGreaterThan(imageAt);
+    const tableBlock = page.text.slice(page.text.indexOf("|", imageAt));
+    expect(tableBlock.split("\n\n")[0]).not.toContain("![");
+  });
+});

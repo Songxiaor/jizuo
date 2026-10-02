@@ -47,7 +47,7 @@ function popupDOM(): Record<string, FakeElement> {
     "#result": element(), "#recovery-action": element(), "#open-app": element(),
     ...Object.fromEntries([
     "#comments-mode", "#comments-more", "#source-card", "#video-thumb", "#video-duration", "#author",
-    "#excerpt", "#stats", "#source-note", "#saved-view", "#saved-seal", "#saved-title", "#saved-detail",
+    "#excerpt", "#stats", "#source-note", "#translation-note", "#saved-view", "#saved-seal", "#saved-title", "#saved-detail",
     "#failure-view", "#failure-title", "#failure-message", "#failure-steps", "#result-actions", "#close-popup",
       "#comments-picker", "#comments-count", "#comments-list", "#comments-note",
       "#comments-select-all", "#comments-select-none",

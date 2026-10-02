@@ -105,15 +105,19 @@ public final class GitHubRepositorySourceAdapter: SourceAdapting, @unchecked Sen
     guard text.unicodeScalars.count <= CaptureValidator.maxTextScalars else { throw ManualLinkError.responseTooLarge }
 
     let timestamp = ISO8601DateFormatter().string(from: now())
+    // 代码文件原样存进正文会被当成文章排版：Python 的 `#` 注释变成大标题、缩进乱掉，
+    // 注释还被认成标题（2026-10-02 抓取完整度测试）。放进对应语言的代码块，标题用文件名。
+    let codeLanguage = file.codeLanguage
+    let body = codeLanguage.map { GitHubFileLocation.fenced(text, language: $0) } ?? text
     return CapturedDocument(
       createdAt: timestamp,
       idempotencyKey: "manual:\(UUID().uuidString.lowercased())",
       origin: .manualLink,
       url: file.canonicalURL.absoluteString,
-      title: file.displayTitle(in: text),
+      title: codeLanguage == nil ? file.displayTitle(in: text) : file.displayName,
       platform: "github",
       method: "github_raw_file",
-      text: text,
+      text: body,
       completeness: "complete",
       capturedAt: timestamp,
       sourceLabel: "GitHub 公开文件"
@@ -186,6 +190,32 @@ public struct GitHubFileLocation: Sendable, Equatable {
   }
 
   public var displayName: String { path.split(separator: "/").last.map(String.init) ?? path }
+
+  /// 按扩展名认出的代码文件语言；Markdown、纯文本等文章类文件返回 nil，照原样存。
+  public var codeLanguage: String? {
+    let ext = (displayName.split(separator: ".").last.map(String.init) ?? "").lowercased()
+    guard displayName.contains(".") else { return nil }
+    let languages: [String: String] = [
+      "py": "python", "js": "javascript", "mjs": "javascript", "cjs": "javascript", "jsx": "jsx",
+      "ts": "typescript", "tsx": "tsx", "swift": "swift", "go": "go", "rs": "rust", "java": "java",
+      "kt": "kotlin", "kts": "kotlin", "rb": "ruby", "php": "php", "c": "c", "h": "c", "cc": "cpp",
+      "cpp": "cpp", "hpp": "cpp", "m": "objectivec", "mm": "objectivec", "cs": "csharp", "scala": "scala",
+      "sh": "bash", "bash": "bash", "zsh": "bash", "fish": "fish", "ps1": "powershell", "lua": "lua",
+      "r": "r", "dart": "dart", "sql": "sql", "json": "json", "jsonc": "json", "yaml": "yaml",
+      "yml": "yaml", "toml": "toml", "xml": "xml", "html": "html", "css": "css", "scss": "scss",
+      "vue": "vue", "svelte": "svelte", "zig": "zig", "ex": "elixir", "exs": "elixir", "hs": "haskell",
+      "ml": "ocaml", "clj": "clojure", "pl": "perl", "proto": "protobuf", "graphql": "graphql",
+      "dockerfile": "dockerfile", "makefile": "makefile", "gradle": "groovy", "tf": "hcl",
+    ]
+    return languages[ext]
+  }
+
+  static func fenced(_ code: String, language: String) -> String {
+    let longest = code.components(separatedBy: CharacterSet(charactersIn: "`").inverted)
+      .map(\.count).max() ?? 0
+    let fence = String(repeating: "`", count: max(3, longest + 1))
+    return "\(fence)\(language)\n\(code.trimmingCharacters(in: .newlines))\n\(fence)"
+  }
 
   public func displayTitle(in text: String) -> String {
     for line in text.split(whereSeparator: \.isNewline) {

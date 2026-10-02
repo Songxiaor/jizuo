@@ -1473,6 +1473,7 @@ struct MainWindowLaunchGuard: ViewModifier {
       imageCache: imageCache,
       imageResources: manualResourceFetcher,
       xResolver: XTweetResolver(resources: manualResourceFetcher),
+      makeRenderedCapture: { RenderedPageCaptureService() },
       onMediaCaptured: { media, taskID, snapshotID, pageURL in
         await historyModel.ingestCapturedMedia(
           media,

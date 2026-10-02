@@ -301,6 +301,8 @@ final class ManualLinkViewModel: ObservableObject {
   /// X 用 MSE 播放、正文也是客户端渲染，直接抓 x.com 只会得到 SPA 外壳。
   /// 有解析器时，X 链接改走公开端点取回完整推文。
   private let xResolver: XTweetResolver?
+  /// 每次抓取新建一个隐藏网页；为 nil 时（测试）只走 HTML 直读。
+  private let makeRenderedCapture: (@MainActor () -> any RenderedPageCapturing)?
   private let onMediaCaptured: ((CaptureMedia, TaskID, ContentSnapshotID, String) async -> Void)?
   private let profileImportJournal: (any ProfileImportBatchJournalStoring)?
   /// 笔记写作窗口复用同一个 ingestor：两条路都是「往库里加一条记录」，
@@ -324,6 +326,7 @@ final class ManualLinkViewModel: ObservableObject {
     imageCache: GitHubREADMEImageCache? = nil,
     imageResources: (any SafeResourceFetching)? = nil,
     xResolver: XTweetResolver? = nil,
+    makeRenderedCapture: (@MainActor () -> any RenderedPageCapturing)? = nil,
     onMediaCaptured: ((CaptureMedia, TaskID, ContentSnapshotID, String) async -> Void)? = nil,
     profileImportJournal: (any ProfileImportBatchJournalStoring)? = nil,
     userDefaults: UserDefaults = .standard
@@ -335,6 +338,7 @@ final class ManualLinkViewModel: ObservableObject {
     self.imageCache = imageCache
     self.imageResources = imageResources
     self.xResolver = xResolver
+    self.makeRenderedCapture = makeRenderedCapture
     self.onMediaCaptured = onMediaCaptured
     self.profileImportJournal = profileImportJournal
     self.defaults = userDefaults
@@ -1263,7 +1267,9 @@ final class ManualLinkViewModel: ObservableObject {
           }
           self.pendingCaptures.removeAll { $0.id == next.id }
         } catch let error as ManualLinkError {
-          self.updatePendingPhase(next.id, .failed(error.userMessage))
+          self.updatePendingPhase(next.id, .failed(
+            CaptureRouteGuidance.failureMessage(for: error, url: URL(string: next.urlString))
+          ))
         } catch is CancellationError {
           if let batchID = next.profileImportBatchID,
              let location = self.profileImportItemLocation(batchID: batchID, itemID: next.id),
@@ -1318,6 +1324,10 @@ final class ManualLinkViewModel: ObservableObject {
           // the same URL through the extension.
           document = try await douyinCapture.capture(url: url)
         }
+      } else if let url = URL(string: trimmed),
+                RenderedPageCapturePolicy.prefersRendering(url),
+                let makeRenderedCapture {
+        document = try await renderedOrDirectCapture(url: url, value: value, rendered: makeRenderedCapture())
       } else {
         document = try await captureService.capture(urlString: value)
       }
@@ -1391,6 +1401,45 @@ final class ManualLinkViewModel: ObservableObject {
       return accepted
     } catch {
       if let capturedDocument { imageCache?.discardStaged(captureID: capturedDocument.requestID) }
+      throw error
+    }
+  }
+
+  /// 先在隐藏网页里跑扩展同款提取；打不开、被拦或只拿到很少的字时，再用 HTML 直读
+  /// 补一次，取字多的那份。验证页、登录墙这类明确结论不再被直读结果掩盖。
+  private func renderedOrDirectCapture(
+    url: URL,
+    value: String,
+    rendered: any RenderedPageCapturing
+  ) async throws -> CapturedDocument {
+    let renderedResult: Result<CapturedDocument, Error>
+    do {
+      renderedResult = .success(try await rendered.capture(url: url))
+    } catch ManualLinkError.cancelled {
+      throw ManualLinkError.cancelled
+    } catch {
+      renderedResult = .failure(error)
+    }
+    try Task.checkCancellation()
+    if case let .success(document) = renderedResult, document.characterCount >= 300 {
+      return document
+    }
+    if !RenderedPageCapturePolicy.allowsDirectFallback(url) {
+      return try renderedResult.get()
+    }
+    do {
+      let direct = try await captureService.capture(urlString: value)
+      if case let .success(document) = renderedResult, document.characterCount >= direct.characterCount {
+        return document
+      }
+      return direct
+    } catch {
+      if case let .success(document) = renderedResult { return document }
+      if case let .failure(renderedError) = renderedResult,
+         let manual = renderedError as? ManualLinkError,
+         [.loginRequired, .verificationRequired].contains(manual) {
+        throw manual
+      }
       throw error
     }
   }

@@ -49,6 +49,23 @@ final class GitHubRepositorySourceAdapterTests: XCTestCase {
     XCTAssertFalse(document.text.contains("Uh oh!"))
   }
 
+  /// 代码文件放进代码块、标题用文件名：`#` 注释不能变成标题（2026-10-02 抓取完整度测试）。
+  func testCodeFileIsFencedAndTitledByFileName() async throws {
+    let blob = URL(string: "https://github.com/octo/hello/blob/main/examples/messages.py")!
+    let raw = URL(string: "https://raw.githubusercontent.com/octo/hello/main/examples/messages.py")!
+    let fixture = GitHubFixtureResourceFetcher([
+      raw.absoluteString: .init(
+        url: raw,
+        statusCode: 200,
+        contentType: "text/plain; charset=utf-8",
+        body: Data("# 发一条消息\nprint(\"hi\")\n".utf8)
+      )
+    ])
+    let document = try await GitHubRepositorySourceAdapter(resources: fixture).capture(url: blob)
+    XCTAssertEqual(document.title, "messages.py")
+    XCTAssertEqual(document.text, "```python\n# 发一条消息\nprint(\"hi\")\n```")
+  }
+
   func testBlobErrorShellIsRejectedAndDoesNotBecomeTitle() async {
     let blob = URL(string: "https://github.com/octo/hello/blob/main/missing.md")!
     let raw = URL(string: "https://raw.githubusercontent.com/octo/hello/main/missing.md")!

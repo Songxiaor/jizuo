@@ -42,6 +42,19 @@ extension SiteSessionProfile {
     verifier: nil
   )
 
+  /// 知乎：未登录时回答只给开头一段，还常整页跳到 /account/unhuman 验证页
+  /// （2026-10-02 抓取完整度测试）。z_c0 是登录后才下发的会话 cookie。
+  static let zhihu = SiteSessionProfile(
+    platform: .zhihu,
+    allowedHostSuffixes: ["zhihu.com", "zhimg.com"],
+    cookieDomainSuffixes: ["zhihu.com"],
+    loginCookieGroups: [["z_c0"]],
+    loginURL: URL(string: "https://www.zhihu.com/signin")!,
+    accountIDCookieName: nil,
+    accountIDLabel: nil,
+    verifier: nil
+  )
+
   static let xiaohongshu = SiteSessionProfile(
     platform: .xiaohongshu,
     allowedHostSuffixes: [

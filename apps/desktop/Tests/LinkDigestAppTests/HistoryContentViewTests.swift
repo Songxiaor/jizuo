@@ -2220,9 +2220,11 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(row.contains(".opacity(showsHoverActions ? 0 : 1)\n            .overlay(alignment: .trailing) { hoverActions }"))
     XCTAssertFalse(row.contains(".help(rowHelp(text))\n    .overlay(alignment: .trailing) { hoverActions }"))
     // 15：添加链接弹窗不再写技术词，也不再有扩展名两侧的空格。
+    // 2026-10-02：两条抓取路用同一套提取，弹窗说清这一点，区别收进「和浏览器扩展有什么不同？」。
     let chrome = appSource("HistoryWindowChrome.swift")
     XCTAssertFalse(chrome.contains("Text(\"只读取你主动提交的公开 HTML"))
-    XCTAssertTrue(chrome.contains("粘贴网页或视频链接。需要登录才能看的页面，用浏览器扩展保存。"))
+    XCTAssertTrue(chrome.contains("和浏览器扩展用同一套规则提取正文、图片和字幕。"))
+    XCTAssertTrue(chrome.contains("Text(\"和浏览器扩展有什么不同？\")"))
   }
 
   private func appSource(_ fileName: String) -> String {

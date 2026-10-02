@@ -165,7 +165,7 @@ public enum CommentCapture {
     return result
   }
 
-  private static func javaScriptStringLiteral(_ value: String) -> String {
+  static func javaScriptStringLiteral(_ value: String) -> String {
     let data = (try? JSONSerialization.data(withJSONObject: [value])) ?? Data("[\"\"]".utf8)
     let array = String(decoding: data, as: UTF8.self)
     return String(array.dropFirst().dropLast())

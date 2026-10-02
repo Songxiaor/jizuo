@@ -62,6 +62,17 @@ public enum VerificationPagePolicy {
         return pathSegments.contains(value) || pathTokens.contains(where: { value.contains($0) })
       })
 
+    // Cloudflare 拦截页：标题各异，正文这两句固定（Medium 在 App 里整页被拦，2026-10-02）。
+    if text.count <= 5_000, text.localizedCaseInsensitiveContains("Cloudflare Ray ID"),
+       ["Sorry, you have been blocked", "you are unable to access", "Checking your browser"]
+        .contains(where: { text.localizedCaseInsensitiveContains($0) }) {
+      return true
+    }
+    // 知乎未登录或访问频繁时整页跳到 /account/unhuman（「请您登录后查看更多」），
+    // 曾被当成 139 字正文存下（2026-10-02 抓取完整度测试）。
+    if host == "zhihu.com" || host.hasSuffix(".zhihu.com"), path.hasPrefix("/account/unhuman") {
+      return true
+    }
     if isWeChatHost(host) {
       // Compound captcha/wappoc paths are never article bodies.
       if pathLooksLikeInterstitial { return true }
@@ -341,7 +352,10 @@ public struct ManualLinkCaptureService: Sendable {
       if GitHubErrorPagePolicy.matches(url: page.url, extractedText: extracted.text) {
         throw ManualLinkError.githubFileUnavailable
       }
-      let cleanedText = XTrailingCounterNoiseFilter.removingTrailingCounter(from: extracted.text, sourceURL: page.url)
+      let cleanedText = MarkdownImageURLResolver.resolvingRelativeImages(
+        in: XTrailingCounterNoiseFilter.removingTrailingCounter(from: extracted.text, sourceURL: page.url),
+        baseURL: page.url
+      )
       return makeDocument(
         sourceURL: page.url,
         title: extracted.title,
@@ -373,10 +387,20 @@ public struct ManualLinkCaptureService: Sendable {
       platform: CapturePlatformDetection.platform(from: sourceURL),
       method: method,
       text: capturedText(body: body, author: author, coverImage: coverImage),
-      completeness: "best_effort",
+      completeness: Self.isMemberOnlyPreview(sourceURL: sourceURL, body: body) ? "visible_only" : "best_effort",
       capturedAt: timestamp,
       sourceLabel: "手动链接（公开网页）"
     )
+  }
+
+  /// Medium 会员文章未登录只给开头（页面上写着「Member-only story」）：标成只含可见内容，
+  /// 阅读页会提示「可能不是全文」（2026-10-02 抓取完整度测试）。
+  static func isMemberOnlyPreview(sourceURL: URL, body: String) -> Bool {
+    let host = sourceURL.host?.lowercased() ?? ""
+    guard host == "medium.com" || host.hasSuffix(".medium.com") else { return false }
+    return body.components(separatedBy: "\n").contains {
+      $0.trimmingCharacters(in: .whitespaces) == "Member-only story"
+    }
   }
 
   private func fetchMarkdownCopy(at url: URL) async throws -> String? {
@@ -475,6 +499,9 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     "min read", "Loading",
   ]
 
+  /// 整行就是控件文字、和长度无关的噪音（Medium 每张图下的放大按钮，2026-10-02）。
+  static let noiseLines: Set<String> = ["Press enter or click to view image in full size"]
+
   public init() {}
 
   public func extract(html: String) throws -> ExtractedWebPage {
@@ -488,7 +515,7 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     let fragments = [
       firstMatch("id\\s*=\\s*[\"']js_content[\"'][^>]*>([\\s\\S]*?)</div>", in: prepared),
       firstMatch("id\\s*=\\s*[\"']js_article[\"'][^>]*>([\\s\\S]*?)</div>", in: prepared),
-      firstMatch("<article\\b[^>]*>([\\s\\S]*?)</article>", in: prepared),
+      articleFragment(in: prepared),
       firstMatch("<main\\b[^>]*>([\\s\\S]*?)</main>", in: prepared),
       firstMatch("itemprop\\s*=\\s*[\"']articleBody[\"'][^>]*>([\\s\\S]*?)</[^>]+>", in: prepared),
       firstMatch("role\\s*=\\s*[\"']main[\"'][^>]*>([\\s\\S]*?)</[^>]+>", in: prepared),
@@ -643,9 +670,11 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
 
     // Links: keep visible text only (URL stays on the detail header / 打开).
     value = replacing("<a\\b[^>]*>([\\s\\S]*?)</a>", in: value, with: "$1")
-    // Images: keep alt text if present.
-    value = replacing("<img\\b[^>]*\\balt\\s*=\\s*[\"']([^\"']*)[\"'][^>]*/?>", in: value, with: "$1")
-    value = replacing("<img\\b[^>]*/?>", in: value, with: "")
+    // 图片原来一律删掉、只留 alt 文字，App 贴链接的文章因此一张图都没有（2026-10-02
+    // 抓取完整度测试）。现在和扩展一样转成 Markdown 图片：优先懒加载的真地址，
+    // 头像、图标、占位像素不进正文。占位符扛过后面的去标签和实体解码。
+    var images: [String] = []
+    value = replacingImages(in: value, into: &images)
 
     // Drop remaining tags without touching text or punctuation.
     value = replacing("<[^>]+>", in: value, with: "")
@@ -664,6 +693,9 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     value = expandBlockquotes(in: value)
 
     var result = normalizeMarkdownWhitespace(value)
+    for (index, image) in images.enumerated() {
+      result = result.replacingOccurrences(of: imagePlaceholder(index), with: image)
+    }
     // 归一化完成后再还原表格和代码块，换行与缩进因此原样保留。
     for (index, table) in tables.enumerated() {
       result = result.replacingOccurrences(of: tablePlaceholder(index), with: table)
@@ -961,6 +993,7 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
       if trimmed.hasPrefix("```") { inFence.toggle(); return true }
       if inFence { return true }
       if trimmed.isEmpty { return true }
+      if Self.noiseLines.contains(trimmed) { return false }
       // Keep structural Markdown lines.
       if trimmed.hasPrefix("#") || trimmed.hasPrefix("- ") || trimmed.hasPrefix("> ") { return true }
       if trimmed.unicodeScalars.count <= 24,
@@ -976,8 +1009,75 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     firstMatch(pattern, in: value)
   }
 
+  /// 和扩展 `genericContentRoot` 同一条规则：页面有多个 `<article>` 时取字最多的一个；
+  /// 它还不到 `<main>`（没有就是 body）的四分之一，就是推荐卡片墙，跳过让 `<main>` 接手。
+  /// arena.ai 博客原来只存下第一张推荐卡（2026-10-02 Syc 反馈）。
+  private func articleFragment(in html: String) -> String? {
+    guard let expression = try? NSRegularExpression(
+      pattern: "<article\\b[^>]*>([\\s\\S]*?)</article>", options: [.caseInsensitive]
+    ) else { return nil }
+    let fragments = expression.matches(in: html, range: NSRange(html.startIndex..., in: html)).compactMap { match in
+      Range(match.range(at: 1), in: html).map { String(html[$0]) }
+    }
+    guard let first = fragments.first else { return nil }
+    guard fragments.count > 1 else { return first }
+    let textLength = { (fragment: String) -> Int in
+      replacing("<[^>]+>|\\s+", in: replacing("<(script|style)\\b[^>]*>[\\s\\S]*?</\\1>", in: fragment, with: ""), with: "").count
+    }
+    let largest = fragments.max { textLength($0) < textLength($1) } ?? first
+    let container = firstMatch("<main\\b[^>]*>([\\s\\S]*?)</main>", in: html)
+      ?? firstMatch("<body\\b[^>]*>([\\s\\S]*?)</body>", in: html)
+      ?? html
+    return textLength(largest) * 4 < textLength(container) ? nil : largest
+  }
+
+  private func imagePlaceholder(_ index: Int) -> String { "«IMG\(index)»" }
+
+  private func replacingImages(in html: String, into images: inout [String]) -> String {
+    guard let expression = try? NSRegularExpression(pattern: "<img\\b[^>]*>", options: [.caseInsensitive]) else { return html }
+    var result = html
+    for match in expression.matches(in: html, range: NSRange(html.startIndex..., in: html)).reversed() {
+      guard let range = Range(match.range, in: result) else { continue }
+      let tag = String(result[range])
+      let replacement: String
+      if let markdown = imageMarkdown(fromTag: tag) {
+        replacement = "\n\n" + imagePlaceholder(images.count) + "\n\n"
+        images.append(markdown)
+      } else {
+        replacement = ""
+      }
+      result.replaceSubrange(range, with: replacement)
+    }
+    return result
+  }
+
+  private func imageMarkdown(fromTag tag: String) -> String? {
+    func attribute(_ name: String) -> String? {
+      firstMatch("\\b\(name)\\s*=\\s*[\"']([^\"']*)[\"']", in: tag)?
+        .trimmedNonEmpty
+    }
+    let srcsetBest = attribute("srcset").flatMap { set -> String? in
+      set.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }
+        .last?.split(separator: " ").first.map(String.init)
+    }
+    guard let source = attribute("data-src") ?? attribute("data-original") ?? srcsetBest ?? attribute("src"),
+          !source.hasPrefix("data:")
+    else { return nil }
+    let classes = [attribute("class"), attribute("id")].compactMap { $0 }.joined(separator: " ")
+    if classes.range(of: "(?:^|[\\s_-])(?:avatar|portrait|headimg|logo|icon|badge|emoji)(?:$|[\\s_-]|s\\b)", options: [.regularExpression, .caseInsensitive]) != nil {
+      return nil
+    }
+    let declared = [attribute("width"), attribute("height")].compactMap { $0.flatMap { Int($0) } }
+    if !declared.isEmpty, declared.allSatisfy({ $0 <= 48 }) { return nil }
+    if source.range(of: "(?:^|[/_.-])(?:spacer|pixel|blank|trans_?1x1|1x1)(?:[/_.-]|$)", options: [.regularExpression, .caseInsensitive]) != nil {
+      return nil
+    }
+    let alt = decodeEntities(attribute("alt") ?? "").replacingOccurrences(of: "[\\[\\]]", with: "", options: .regularExpression)
+    return "![\(alt)](\(decodeEntities(source)))"
+  }
+
   private func preferNestedArticle(in fragment: String) -> String {
-    guard let inner = firstMatch("<article\\b[^>]*>([\\s\\S]*?)</article>", in: fragment) else { return fragment }
+    guard let inner = articleFragment(in: fragment) else { return fragment }
     let trimmed = inner.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.unicodeScalars.count >= 40 ? inner : fragment
   }
@@ -1054,3 +1154,28 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
 }
 
 private extension String { var trimmedNonEmpty: String? { let value = trimmingCharacters(in: .whitespacesAndNewlines); return value.isEmpty ? nil : value } }
+
+/// 直读 HTML 里的图片常写相对地址（`/images/a.png`、`//cdn…`）。按网页地址补成绝对地址，
+/// 只留 http(s)，后面的图片暂存才认得。
+enum MarkdownImageURLResolver {
+  static func resolvingRelativeImages(in markdown: String, baseURL: URL) -> String {
+    guard let expression = try? NSRegularExpression(pattern: "!\\[([^\\]]*)\\]\\(([^)\\s]+)\\)") else { return markdown }
+    var result = markdown
+    for match in expression.matches(in: markdown, range: NSRange(markdown.startIndex..., in: markdown)).reversed() {
+      guard let whole = Range(match.range, in: result),
+            let altRange = Range(match.range(at: 1), in: result),
+            let urlRange = Range(match.range(at: 2), in: result)
+      else { continue }
+      let alt = String(result[altRange])
+      let raw = String(result[urlRange])
+      guard let absolute = URL(string: raw, relativeTo: baseURL)?.absoluteURL,
+            ["http", "https"].contains(absolute.scheme?.lowercased() ?? "")
+      else {
+        result.replaceSubrange(whole, with: "")
+        continue
+      }
+      result.replaceSubrange(whole, with: "![\(alt)](\(absolute.absoluteString))")
+    }
+    return result
+  }
+}

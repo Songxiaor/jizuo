@@ -17,6 +17,7 @@ import {
   popupChainSummary,
   popupStepProgress,
   popupSavedAtLabel,
+  popupTranslationNote,
   type ChainKey,
   type CommentPlan,
   type StepProgressRow,
@@ -83,6 +84,7 @@ type SafeCapturePreview = {
   excerpt?: string;
   host?: string;
   usedCookie?: boolean;
+  pageTranslatedBy?: string;
   mediaDurationSeconds?: number;
   mediaAuthor?: string;
   sourceAuthor?: string;
@@ -134,6 +136,7 @@ const author = document.querySelector<HTMLDivElement>("#author")!;
 const excerpt = document.querySelector<HTMLParagraphElement>("#excerpt")!;
 const stats = document.querySelector<HTMLDivElement>("#stats")!;
 const sourceNote = document.querySelector<HTMLParagraphElement>("#source-note")!;
+const translationNote = document.querySelector<HTMLParagraphElement>("#translation-note")!;
 const savedView = document.querySelector<HTMLElement>("#saved-view")!;
 const savedSeal = document.querySelector<HTMLSpanElement>("#saved-seal")!;
 const savedTitle = document.querySelector<HTMLHeadingElement>("#saved-title")!;
@@ -941,6 +944,8 @@ if (tabId === undefined) {
     excerpt.hidden = !preview.excerpt;
     renderStats(popupStats(preview));
     sourceNote.hidden = preview.usedCookie !== true;
+    translationNote.textContent = preview.pageTranslatedBy ? popupTranslationNote(preview.pageTranslatedBy) : "";
+    translationNote.hidden = !preview.pageTranslatedBy;
     pageHasVideo = isVideo;
     previewLoaded = true;
     pagePlatform = preview.platform;

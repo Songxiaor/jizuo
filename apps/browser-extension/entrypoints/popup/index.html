@@ -144,6 +144,7 @@
   #stats .stat b { font-size: 14px; font-weight: 600; color: var(--ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #stats .stat span { font-size: 11px; color: var(--secondary); }
   #source-note { margin: 0; font-size: 11px; color: var(--secondary); }
+  #translation-note { margin: 0; padding: 6px 8px; font-size: 11px; line-height: 1.45; color: var(--warning); background: var(--warning-tint); border-radius: var(--radius-control); }
   #meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
   #meta:empty { display: none; }
   #meta .chip {
@@ -405,6 +406,7 @@
     <div id="meta"></div>
     <div id="stats"></div>
     <p id="source-note" hidden>用了浏览器里的登录状态读取</p>
+    <p id="translation-note" hidden></p>
   </section>
   <section class="card" id="dup-view" hidden>
     <div class="section-head"><h2 id="dup-title">这一页已经在汲作里</h2><span class="hint" id="dup-date"></span></div>

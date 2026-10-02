@@ -1,4 +1,5 @@
-import { extractCurrentPage } from "../src/content/extract";
+import { detectPageTranslation, extractCurrentPage } from "../src/content/extract";
+import { extractGitHubNotebookPage } from "../src/content/github-notebook";
 
 /**
  * 注入到页面里执行抽取的入口。
@@ -16,4 +17,10 @@ import { extractCurrentPage } from "../src/content/extract";
  *
  * 返回值即脚本的求值结果，由 `InjectionResult.result` 带回 background。
  */
-export default defineUnlistedScript(() => extractCurrentPage());
+// GitHub 笔记本的正文不在页面 DOM 里（跨域 iframe），先从公开 raw 地址取；其余页面照旧。
+export default defineUnlistedScript(async () => {
+  const page = (await extractGitHubNotebookPage(document)) ?? extractCurrentPage();
+  // 翻译插件把页面改成了译文时带上标记，弹窗据此提醒（见 detectPageTranslation）。
+  const translatedBy = detectPageTranslation(document);
+  return translatedBy ? { ...page, pageTranslatedBy: translatedBy } : page;
+});

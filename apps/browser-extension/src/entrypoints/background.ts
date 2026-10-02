@@ -18,24 +18,7 @@ import {
   type CommentPlatform,
 } from "../content/comments";
 import { detectMediaInPage } from "../content/media-detection";
-import {
-  buildYouTubeMarkdown,
-  extractYouTubeWatchDOMFallbackInPage,
-  collectYouTubeTranscriptFromPanelInPage,
-  fetchYouTubeTranscriptPayloadInPage,
-  restoreYouTubeCaptionTrackInMainWorld,
-  setYouTubeCaptionTrackInMainWorld,
-  transcriptFromPanelSegments,
-  transcriptFromTimedTextXML,
-  type YouTubePanelSegment,
-  isYouTubeWatchURL,
-  pickCaptionTrack,
-  readYouTubePlayerSnapshotInMainWorld,
-  transcriptFromJSON3,
-  youTubeCanonicalURL,
-  youTubeThumbnailURL,
-  youTubeVideoID,
-} from "../content/youtube";
+import { isYouTubeWatchURL, youTubeVideoID } from "../content/youtube";
 import {
   detectDouyinAwemeIdFromURL,
   isDouyinHost,
@@ -480,6 +463,8 @@ export type SafeCapturePreview = {
   /** 视频时长与作者：页面上本来就看得见的元数据；播放和封面地址仍然不出后台。 */
   mediaDurationSeconds?: number;
   mediaAuthor?: string;
+  /** 页面正被这个翻译插件显示成译文：存下的会是译文，弹窗提醒用户。 */
+  pageTranslatedBy?: string;
   /** 抓取头部元数据（`---` 块）里的作者、发布时间和互动数，原样的短字符串。 */
   sourceAuthor?: string;
   published?: string;
@@ -616,6 +601,8 @@ function readableBodyLines(text: string, options: { skipHeadings?: boolean } = {
     // 开头摘录不要「## 字幕」「## 简介」这类小节名，读起来像正文第一个词。
     .filter((line) => !options.skipHeadings || !/^\s{0,3}#{2,6}\s/u.test(line))
     .map((line) => line
+      // 正文里给视频占位的 `<!--LDVIDEO …-->` 是内部记号：头条弹窗摘要曾原样露出来（2026-10-02）。
+      .replace(/<!--[\s\S]*?-->/gu, "")
       // 地址里可以带一层括号（维基百科的 Seal_(East_Asia)）：按一层嵌套配平，不然会留下「&redirect=no))」。
       .replace(/!\[[^\]]*\]\((?:[^()\s]|\([^()\s]*\))*(?:\s+"[^"]*")?\)/gu, "")
       .replace(/\[([^\]]*)\]\((?:[^()\s]|\([^()\s]*\))*(?:\s+"[^"]*")?\)/gu, "$1")
@@ -1489,113 +1476,16 @@ export async function captureDouyinSingleItem(tabId: number, tabURL: string): Pr
  * the user is watching; no private endpoints, no downloads.
  */
 export async function captureYouTubeSingleVideo(tabId: number, tabURL: string): Promise<ExtractedPage> {
-  const urlVideoID = youTubeVideoID(tabURL);
-  if (!urlVideoID) throw new Error("CAPTURE_CONTENT_EMPTY");
-  const canonical = youTubeCanonicalURL(urlVideoID);
-
-  const snapshotResults = await browser.scripting.executeScript({
+  if (!youTubeVideoID(tabURL)) throw new Error("CAPTURE_CONTENT_EMPTY");
+  // 整个流程在页面主世界里一次跑完；App「添加链接」执行的是同一个打包文件。
+  const results = await browser.scripting.executeScript({
     target: { tabId },
     world: "MAIN",
-    func: readYouTubePlayerSnapshotInMainWorld,
+    files: ["/extract-youtube.js"],
   }).catch(() => undefined);
-  let snapshot = snapshotResults?.[0]?.result as ReturnType<typeof readYouTubePlayerSnapshotInMainWorld> | undefined;
-  // The SPA keeps stale player responses across in-page navigation; only
-  // trust a snapshot that matches the video actually in the address bar.
-  if (snapshot?.videoId && snapshot.videoId !== urlVideoID) snapshot = undefined;
-
-  if (!snapshot?.title) {
-    // Watch-page DOM fallback: still the single video, never the feed.
-    const domResults = await browser.scripting.executeScript({
-      target: { tabId },
-      func: extractYouTubeWatchDOMFallbackInPage,
-    }).catch(() => undefined);
-    const dom = domResults?.[0]?.result as ReturnType<typeof extractYouTubeWatchDOMFallbackInPage> | undefined;
-    if (!dom?.title) throw new Error("CAPTURE_CONTENT_EMPTY");
-    const fallbackText = buildYouTubeMarkdown({
-      title: dom.title,
-      ...(dom.author ? { author: dom.author } : {}),
-      ...(dom.description ? { description: dom.description } : {}),
-      canonicalURL: canonical,
-      coverImage: youTubeThumbnailURL(urlVideoID),
-    });
-    return {
-      title: dom.title,
-      url: canonical,
-      text: fallbackText,
-      characterCount: [...fallbackText].length,
-      method: "rendered_dom",
-    };
-  }
-
-  let transcript = "";
-  const track = pickCaptionTrack(snapshot.captionTracks ?? []);
-  if (track) {
-    const transcriptResults = await browser.scripting.executeScript({
-      target: { tabId },
-      func: fetchYouTubeTranscriptPayloadInPage,
-      args: [track.baseUrl],
-    }).catch(() => undefined);
-    const payload = transcriptResults?.[0]?.result as
-      | { format: "json3"; json: unknown }
-      | { format: "xml"; text: string }
-      | undefined;
-    if (payload?.format === "json3") transcript = transcriptFromJSON3(payload.json);
-    else if (payload?.format === "xml") transcript = transcriptFromTimedTextXML(payload.text);
-  }
-  if (!transcript && track) {
-    // timedtext 被 pot 令牌拦截时（2025 起常态），走页面自己的文字记录面板。
-    // 只抓视频原始语言：先把播放器字幕轨切到原始轨（翻译不在 captionTracks
-    // 中），面板跟随；抓完恢复用户原状。
-    const previousResults = await browser.scripting.executeScript({
-      target: { tabId },
-      world: "MAIN",
-      func: setYouTubeCaptionTrackInMainWorld,
-      args: [track.languageCode],
-    }).catch(() => undefined);
-    const previousState = previousResults?.[0]?.result as
-      | { previousLanguage?: string; previousTranslation?: string; wasOff: boolean }
-      | undefined;
-    // 面板有自己的语言菜单，要按挑中的轨去点（同名轨按第几个区分）。
-    const tracks = snapshot.captionTracks ?? [];
-    const wanted = track.name
-      ? { name: track.name, occurrence: tracks.slice(0, tracks.indexOf(track)).filter((other) => other.name === track.name).length }
-      : undefined;
-    const panelResults = await browser.scripting.executeScript({
-      target: { tabId },
-      func: collectYouTubeTranscriptFromPanelInPage,
-      args: wanted ? [wanted] : [],
-    }).catch(() => undefined);
-    if (previousState) {
-      await browser.scripting.executeScript({
-        target: { tabId },
-        world: "MAIN",
-        func: restoreYouTubeCaptionTrackInMainWorld,
-        args: [previousState],
-      }).catch(() => undefined);
-    }
-    const segments = (panelResults?.[0]?.result ?? []) as YouTubePanelSegment[];
-    transcript = transcriptFromPanelSegments(segments);
-  }
-
-  const canonicalURL = canonical;
-  const text = buildYouTubeMarkdown({
-    title: snapshot.title,
-    ...(snapshot.author ? { author: snapshot.author } : {}),
-    ...(snapshot.publishDate ? { published: snapshot.publishDate } : {}),
-    ...(snapshot.likeCount ? { likes: snapshot.likeCount } : {}),
-    ...(snapshot.viewCount ? { views: snapshot.viewCount } : {}),
-    ...(snapshot.shortDescription ? { description: snapshot.shortDescription } : {}),
-    ...(transcript ? { transcript } : {}),
-    canonicalURL,
-    coverImage: snapshot.thumbnailURL ?? youTubeThumbnailURL(urlVideoID),
-  });
-  return {
-    title: snapshot.title,
-    url: canonicalURL,
-    text,
-    characterCount: [...text].length,
-    method: "rendered_dom",
-  };
+  const page = results?.[0]?.result as ExtractedPage | undefined;
+  if (!page?.text) throw new Error("CAPTURE_CONTENT_EMPTY");
+  return page;
 }
 
 /**
@@ -1695,6 +1585,7 @@ async function captureAttemptFromTab(
   mediaDiagnostic?: DouyinSessionDiagnostic;
   metadataDiagnostic?: DouyinMetadataDiagnostic;
   imageCount?: number;
+  pageTranslatedBy?: string;
 }> {
   const tab = await browser.tabs.get(tabId).catch(() => undefined);
   const tabURL = tab?.url || "";
@@ -1761,6 +1652,7 @@ async function captureAttemptFromTab(
     ...(douyinAttempt?.mediaDiagnostic ?? page.mediaDiagnostic ? { mediaDiagnostic: douyinAttempt?.mediaDiagnostic ?? page.mediaDiagnostic } : {}),
     ...(douyinAttempt?.metadataDiagnostic ? { metadataDiagnostic: douyinAttempt.metadataDiagnostic } : {}),
     ...(page.imageCount !== undefined ? { imageCount: page.imageCount } : {}),
+    ...(page.pageTranslatedBy ? { pageTranslatedBy: page.pageTranslatedBy } : {}),
   };
 }
 
@@ -1854,12 +1746,13 @@ export async function previewCurrentPage(tabId: number): Promise<SafeCapturePrev
   // 预览要快：评论另走 collect-comments，边显示预览边往下翻评论区。
   await writeCommentCache(tabId, undefined);
   const attempt = await captureAttemptFromTab(tabId, { include: false });
-  return safePreviewForCapture(
+  const preview = safePreviewForCapture(
     attempt.envelope,
     attempt.mediaDiagnostic,
     attempt.metadataDiagnostic,
     attempt.imageCount,
   );
+  return attempt.pageTranslatedBy ? { ...preview, pageTranslatedBy: attempt.pageTranslatedBy } : preview;
 }
 
 /** 记住上次同步到的最新收藏 id，供下次增量同步判断「追上了」/标「已在库」。 */

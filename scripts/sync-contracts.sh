@@ -19,3 +19,13 @@ if [ -f "$COMMENT_SCRIPT" ]; then
   mkdir -p "$DESTINATION/../browser-scripts"
   cp "$COMMENT_SCRIPT" "$DESTINATION/../browser-scripts/extract-comments.js"
 fi
+
+# 正文提取脚本：App 里「添加链接」在隐藏网页里运行的也是扩展这份构建产物，
+# 扩展和 App 两条抓取路用同一份正文提取（2026-10-02）。
+for PAGE_SCRIPT_NAME in extract-page extract-youtube; do
+  PAGE_SCRIPT="$ROOT/apps/browser-extension/.output/chrome-mv3/$PAGE_SCRIPT_NAME.js"
+  if [ -f "$PAGE_SCRIPT" ]; then
+    mkdir -p "$DESTINATION/../browser-scripts"
+    cp "$PAGE_SCRIPT" "$DESTINATION/../browser-scripts/$PAGE_SCRIPT_NAME.js"
+  fi
+done

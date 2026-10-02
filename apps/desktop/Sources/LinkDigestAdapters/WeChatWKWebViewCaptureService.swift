@@ -273,6 +273,17 @@ final class WeChatWKWebViewCaptureSession: NSObject, WKNavigationDelegate, WKUID
         if VerificationPagePolicy.matches(url: currentURL, extractedText: extracted.text) {
           throw ManualLinkError.verificationRequired
         }
+        // 正文排版换成扩展同款提取（小标题、加粗、行内代码、文中链接都保留）。这里的脚本
+        // 只负责等正文就绪和读号名、发布时间；两条抓取路的正文因此一致（2026-10-02）。
+        var bodyText = extracted.text
+        if let script = RenderedPageExtraction.extractorScript(for: currentURL),
+           let raw = try? await webView.callAsyncJavaScript(
+             RenderedPageExtraction.functionBody(script: script), arguments: [:], in: nil, contentWorld: .defaultClient
+           ) as? String,
+           let shared = RenderedPageExtraction.sharedBody(json: raw, comparedTo: extracted.text) {
+          bodyText = shared
+        }
+        guard pollingGeneration.isCurrent(generation), !isFinished else { return }
         let timestamp = ISO8601DateFormatter().string(from: now())
         let document = CapturedDocument(
           createdAt: timestamp,
@@ -282,7 +293,7 @@ final class WeChatWKWebViewCaptureSession: NSObject, WKNavigationDelegate, WKUID
           title: extracted.title,
           platform: "wechat",
           method: "wkwebview_inline_js",
-          text: Self.markdownBody(from: extracted),
+          text: Self.markdownBody(from: extracted, body: bodyText),
           completeness: "best_effort",
           capturedAt: timestamp,
           sourceLabel: "手动链接（公众号内置网页）"
@@ -314,7 +325,7 @@ final class WeChatWKWebViewCaptureSession: NSObject, WKNavigationDelegate, WKUID
     }
   }
 
-  private static func markdownBody(from extracted: WeChatExtractedPage) -> String {
+  private static func markdownBody(from extracted: WeChatExtractedPage, body: String) -> String {
     func yamlString(_ value: String) -> String {
       "\"" + value
         .replacingOccurrences(of: "\\", with: "\\\\")
@@ -326,8 +337,8 @@ final class WeChatWKWebViewCaptureSession: NSObject, WKNavigationDelegate, WKUID
     if let author = extracted.author { frontmatter.append("author: \(yamlString(author))") }
     if let published = extracted.publishedAt { frontmatter.append("published: \(yamlString(published))") }
     if let cover = extracted.coverImage { frontmatter.append("cover_image: \(yamlString(cover))") }
-    guard !frontmatter.isEmpty else { return extracted.text }
-    return "---\n\(frontmatter.joined(separator: "\n"))\n---\n\n\(extracted.text)"
+    guard !frontmatter.isEmpty else { return body }
+    return "---\n\(frontmatter.joined(separator: "\n"))\n---\n\n\(body)"
   }
 
   private func finish(_ result: Result<CapturedDocument, Error>) {

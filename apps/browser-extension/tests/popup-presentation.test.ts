@@ -498,3 +498,14 @@ describe("browser-internal pages (2026-09-29)", () => {
     expect(popupPreviewFailure("unknown").message).not.toContain("刷新");
   });
 });
+
+describe("page translation notice (2026-10-02)", () => {
+  it("names the translator and gives a way to keep the original", async () => {
+    const { popupTranslationNote } = await import("../src/popup-presentation");
+    const note = popupTranslationNote("X 自动翻译");
+    expect(note).toContain("X 自动翻译");
+    expect(note).toContain("显示原文");
+    expect(note).toContain("译文");
+    expect(note).toContain("原文");
+  });
+});

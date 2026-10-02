@@ -13,6 +13,8 @@ public enum SiteSessionPlatform: String, Codable, Sendable, Equatable, CaseItera
   case xiaohongshu
   /// User-authorized rendered profile discovery; no private API replay.
   case x
+  /// 未登录只给回答开头、常跳人机验证页；登录后「添加链接」才拿得到全文。
+  case zhihu
 
   public var displayName: String {
     switch self {
@@ -20,6 +22,7 @@ public enum SiteSessionPlatform: String, Codable, Sendable, Equatable, CaseItera
     case .douyin: "抖音"
     case .xiaohongshu: "小红书"
     case .x: "X"
+    case .zhihu: "知乎"
     }
   }
 }

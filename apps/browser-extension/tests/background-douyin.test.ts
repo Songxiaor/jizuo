@@ -2198,3 +2198,12 @@ describe("douyin single-item title keeps only the caption", () => {
     expect(extractDouyinSingleItemMetaInPage()?.description).toContain("#数码 #开箱");
   });
 });
+
+describe("popup excerpt hides internal markers (2026-10-02 头条)", () => {
+  it("drops the video placeholder comment from the excerpt and the character count", async () => {
+    const { previewExcerpt, readableCharacterCount } = await import("../src/entrypoints/background");
+    const text = '<!--LDVIDEO kind="unknown" platform="generic" -->\n\n9月30日晚，招待会在人民大会堂举行。';
+    expect(previewExcerpt(text, "领航")).toBe("9月30日晚，招待会在人民大会堂举行。");
+    expect(readableCharacterCount(text)).toBe([..."9月30日晚，招待会在人民大会堂举行。"].length);
+  });
+});

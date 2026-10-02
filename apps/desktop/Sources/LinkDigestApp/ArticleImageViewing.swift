@@ -43,10 +43,23 @@ enum InlineImageMemoryCache {
 
   private static let sizeLock = NSLock()
   nonisolated(unsafe) private static var knownSizes: [String: CGSize] = [:]
+  /// 哪些文件是动图（GIF / 动画 WebP / APNG，帧数大于 1）。解码第一帧时顺手记下。
+  nonisolated(unsafe) private static var animatedPaths: Set<String> = []
+
+  static func isAnimated(_ url: URL) -> Bool {
+    sizeLock.lock()
+    defer { sizeLock.unlock() }
+    return animatedPaths.contains(url.path)
+  }
 
   /// CGImageSource 缩略下采样：解码成本与目标尺寸挂钩，而不是原图分辨率。
   static func loadDownsampled(at url: URL, maxPixelSize: CGFloat = 1600) -> NSImage? {
     guard let source = CGImageSourceCreateWithURL(url as CFURL, nil) else { return nil }
+    if CGImageSourceGetCount(source) > 1 {
+      sizeLock.lock()
+      animatedPaths.insert(url.path)
+      sizeLock.unlock()
+    }
     let options: [CFString: Any] = [
       kCGImageSourceCreateThumbnailFromImageAlways: true,
       kCGImageSourceCreateThumbnailWithTransform: true,
@@ -108,6 +121,7 @@ struct InlineArticleImageView: View {
 
   let url: URL
   var layout: Layout = .standalone
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @State private var image: NSImage?
   /// `image` 是哪个 url 的。视图会被按段落下标复用，只认和当前 url 对得上的位图。
   @State private var imageURL: URL?
@@ -173,8 +187,15 @@ struct InlineArticleImageView: View {
     Group {
       if let image = displayedImage {
         let ratio = Self.aspectRatio(of: image)
-        Image(nsImage: image)
-          .resizable()
+        // 动图原来只显示解码出的第一帧（2026-10-02 Syc：「GIF 动画全部都没有看到」）。
+        // 尺寸仍按第一帧算，换成会播放的 NSImageView；「减少动态效果」打开时保持静止。
+        Group {
+          if !reduceMotion, InlineImageMemoryCache.isAnimated(url) {
+            AnimatedImageFileView(url: url)
+          } else {
+            Image(nsImage: image).resizable()
+          }
+        }
           .aspectRatio(ratio, contentMode: .fit)
           // 画廊里宽度由列宽决定、高度随比例走；独立插图才用比例算自己的上限。
           .frame(
@@ -254,6 +275,45 @@ struct InlineArticleImageView: View {
     guard target == url else { return }
     image = loaded
     imageURL = target
+  }
+}
+
+/// 会动的图：交给 AppKit 的 NSImageView 播放（GIF、动画 WebP、APNG）。
+/// 原图在后台读入；尺寸完全由外面的 SwiftUI frame 决定，自身不报固有尺寸。
+struct AnimatedImageFileView: NSViewRepresentable {
+  let url: URL
+
+  func makeNSView(context: Context) -> NSImageView {
+    let view = NSImageView()
+    view.imageScaling = .scaleProportionallyUpOrDown
+    view.animates = true
+    view.isEditable = false
+    view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+    view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
+    view.setContentHuggingPriority(.defaultLow, for: .horizontal)
+    view.setContentHuggingPriority(.defaultLow, for: .vertical)
+    load(into: view)
+    return view
+  }
+
+  func updateNSView(_ view: NSImageView, context: Context) {
+    if view.identifier?.rawValue != url.path { load(into: view) }
+  }
+
+  func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSImageView, context: Context) -> CGSize? {
+    CGSize(width: proposal.width ?? 1, height: proposal.height ?? 1)
+  }
+
+  private func load(into view: NSImageView) {
+    let target = url
+    view.identifier = NSUserInterfaceItemIdentifier(target.path)
+    Task.detached(priority: .userInitiated) {
+      guard let data = try? Data(contentsOf: target), let image = NSImage(data: data) else { return }
+      await MainActor.run {
+        guard view.identifier?.rawValue == target.path else { return }
+        view.image = image
+      }
+    }
   }
 }
 

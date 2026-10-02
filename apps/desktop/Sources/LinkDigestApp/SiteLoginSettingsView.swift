@@ -35,6 +35,7 @@ struct SiteLoginSettingsView: View {
   @ObservedObject private var bilibiliSession = SiteSessionController.bilibili
   @ObservedObject private var douyinSession = SiteSessionController.douyin
   @ObservedObject private var xiaohongshuSession = SiteSessionController.xiaohongshu
+  @ObservedObject private var zhihuSession = SiteSessionController.zhihu
   /// 哪个站点的登录窗口正开着。用 profile 的 platform 当身份，避免再加一堆布尔量。
   @State private var presentedLogin: SiteSessionPlatform?
   /// 每行自己的 ⓘ 展开区独立收起/展开——点开 B 站的校验会话不该带着关掉
@@ -98,6 +99,7 @@ struct SiteLoginSettingsView: View {
       Task { await bilibiliSession.refreshStatus() }
       Task { await douyinSession.refreshStatus() }
       Task { await xiaohongshuSession.refreshStatus() }
+      Task { await zhihuSession.refreshStatus() }
     }
     .sheet(isPresented: $mediaStorage.isBilibiliLoginPresented) {
       SiteLoginSheet(session: bilibiliSession)
@@ -201,6 +203,12 @@ struct SiteLoginSettingsView: View {
         session: douyinSession,
         caption: "建议用扩展抓单条"
       )
+      siteRowDivider
+      siteRow(
+        platform: .zhihu,
+        session: zhihuSession,
+        caption: "添加链接时读到完整回答"
+      )
     }
     .modifier(SettingsThemedCardChrome())
   }
@@ -218,6 +226,7 @@ struct SiteLoginSettingsView: View {
     case .bilibili: bilibiliSession
     case .douyin: douyinSession
     case .xiaohongshu: xiaohongshuSession
+    case .zhihu: zhihuSession
     }
   }
 
@@ -227,6 +236,7 @@ struct SiteLoginSettingsView: View {
     case .bilibili: "bilibili.com"
     case .douyin: "douyin.com"
     case .xiaohongshu: "xiaohongshu.com"
+    case .zhihu: "zhihu.com"
     }
   }
 

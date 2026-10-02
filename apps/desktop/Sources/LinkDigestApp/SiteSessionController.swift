@@ -19,6 +19,17 @@ final class SiteSessionController: ObservableObject {
   static let bilibili = SiteSessionController(profile: .bilibili)
   static let douyin = SiteSessionController(profile: .douyin)
   static let xiaohongshu = SiteSessionController(profile: .xiaohongshu)
+  static let zhihu = SiteSessionController(profile: .zhihu)
+
+  static func controller(for platform: SiteSessionPlatform) -> SiteSessionController {
+    switch platform {
+    case .x: x
+    case .bilibili: bilibili
+    case .douyin: douyin
+    case .xiaohongshu: xiaohongshu
+    case .zhihu: zhihu
+    }
+  }
 
   let profile: SiteSessionProfile
 
@@ -360,6 +371,8 @@ struct SiteLoginSheet: View {
       "登录一次后，下次读取该站博主主页可复用；也用于手动粘贴链接时读取登录后可见的正文。可随时在设置中清除。"
     case .douyin:
       "登录一次后，下次读取该站博主主页可复用。手动粘链接仍常失败，如果抓取失败，请改用浏览器扩展。可随时在设置中清除。"
+    case .zhihu:
+      "登录一次后，在汲作里添加知乎链接就能读到完整回答和文章；未登录时知乎只给开头一段。可随时在设置中清除。"
     }
   }
 

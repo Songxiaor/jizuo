@@ -21,6 +21,11 @@ import {
 export { communityPlatformForURL } from "./community-profiles";
 
 export type ExtractedPage = {
+  /**
+   * 页面正被网页翻译插件改写成译文（替换模式下原文不留在页面里）。只给弹窗提醒用，
+   * 不进合同：存下的就是页面上显示的字。
+   */
+  pageTranslatedBy?: string;
   title: string;
   url: string;
   /** Page-declared site icon observed inside the current browser DOM. */
@@ -170,6 +175,8 @@ export const BOILERPLATE_LINE_MARKERS = [
   "打开微信",
   "关注公众号",
   "广告",
+  // Medium 每张图下面的放大按钮文字（2026-10-02 抓取完整度测试）。
+  "Press enter or click to view image in full size",
 ] as const;
 
 // Single string (not array.join) so minifiers keep attribute selectors intact.
@@ -266,7 +273,10 @@ export function extractCurrentPage(documentLike: Document = document): Extracted
   const text = `${header}${body}`.trim();
   const captureIssue = captureQualityIssue(documentLike, root);
   const usedWholeDocument = root === documentLike.body || root === documentLike.documentElement;
-  const paywalled = Boolean(profile?.paywall && firstNode(documentLike, profile.paywall));
+  // Medium 会员文章未登录只给开头，页面上方写着「Member-only story」（2026-10-02 抓取完整度测试）。
+  const mediumMemberOnly = /(?:^|\.)medium\.com$/u.test(new URL(baseHref).hostname)
+    && /^\s*Member-only story\s*$/mu.test(markdown);
+  const paywalled = mediumMemberOnly || Boolean(profile?.paywall && firstNode(documentLike, profile.paywall));
   return withProfilePlatform(
     page(
       documentLike,
@@ -278,6 +288,31 @@ export function extractCurrentPage(documentLike: Document = document): Extracted
     ),
     profile,
   );
+}
+
+/**
+ * 认出「页面显示的是机器译文」的确凿痕迹（2026-10-02 抓取完整度测试）。
+ *
+ * Syc 的 X 账号开着自动翻译：英文帖子存下来全是 X 给的中文译文，帖子上写着「翻译自 英语 ·
+ * 显示原文」。起初以为是 EGO 里的 Trancy，按「Trancy 类名 + 页面语言是中文」去认，结果
+ * 本来就是中文的帖子、没翻译的英文页面都误报了——这类推断不再用，只认页面上明写的标记。
+ */
+export function detectPageTranslation(documentLike: Document): string | undefined {
+  const html = documentLike.documentElement;
+  const htmlClass = html?.getAttribute?.("class") ?? "";
+  if (isXStatusURL(documentLike.location?.href ?? "")) {
+    const post = documentLike.querySelector?.("article") ?? documentLike.body;
+    const labels = Array.from(post?.querySelectorAll?.("span, button, div") ?? [])
+      .filter((node) => (node.children?.length ?? 0) === 0)
+      .map((node) => (node.textContent ?? "").trim());
+    const translated = labels.some((text) => /^(?:翻译自|Translated from)(?:\s|$)/iu.test(text));
+    const original = labels.some((text) => /^(?:显示原文|Show original)$/iu.test(text));
+    if (translated && original) return "X 自动翻译";
+  }
+  if (documentLike.querySelector?.("xt-trans")) return "Trancy";
+  if (/(?:^|\s)translated-(?:ltr|rtl)(?:\s|$)/u.test(htmlClass)) return "浏览器自带翻译";
+  if (documentLike.querySelector?.(".immersive-translate-target-wrapper")) return "沉浸式翻译";
+  return undefined;
 }
 
 function withProfilePlatform(extracted: ExtractedPage, profile: SiteProfile | undefined): ExtractedPage {
@@ -1750,6 +1785,42 @@ function firstSubstantiveNode(
   return null;
 }
 
+/** 常见网页视频播放器外壳的 class（xgplayer、video.js、plyr、jwplayer、dplayer 等）。 */
+const PLAYER_SHELL_CLASS = /(?:^|[\s_-])(?:xgplayer|video-js|vjs-[a-z-]+|plyr|jwplayer|dplayer|prism-player|[a-z]*-?player)(?:$|[\s_-])/iu;
+
+/**
+ * 通用候选按顺序取，但同一个选择器命中多块时不再盲取第一块。
+ *
+ * arena.ai 博客（2026-10-02 Syc 反馈）：正文直接写在 `<main>` 里，页面上的九个
+ * `<article>` 全是底部「推荐阅读」卡片——原来取第一张卡，1.2 万字的文章只存下
+ * 七百字。多块命中时取字最多的一块；若它还不到 `<main>`（没有就是 body）的四分之一，
+ * 说明这是卡片墙而不是正文，跳到下一个候选。只有一块时照旧，短文章不受影响。
+ */
+function genericContentRoot(documentLike: Document): Element | null {
+  const textLength = (node: Element): number => (node.textContent ?? "").replace(/\s+/gu, "").length;
+  const container = documentLike.querySelector("main") ?? documentLike.body;
+  const containerLength = container ? textLength(container) : 0;
+  // React 流式渲染没收尾：正文还躺在 `<div hidden id="S:n">` 里、`<main>` 是空的。
+  // Safari 内核（App 的内置网页）打开 arena.ai 博客就是这样，只能取到推荐卡片
+  // （2026-10-02 实测）。Chrome 里收尾后这些块会被移走，这条规则不会触发。
+  const streamed = Array.from(documentLike.querySelectorAll("div[id^='S:']"))
+    .filter((node) => node.getAttribute("hidden") !== null);
+  if (streamed.length > 0) {
+    const chunk = streamed.reduce((best, node) => (textLength(node) > textLength(best) ? node : best));
+    if (textLength(chunk) >= 500 && textLength(chunk) > containerLength) return chunk;
+  }
+  for (const selector of GENERIC_CONTENT_ROOTS) {
+    const nodes = Array.from(documentLike.querySelectorAll(selector))
+      .filter((node) => (node.textContent?.trim().length ?? 0) >= 20);
+    if (nodes.length === 0) continue;
+    if (nodes.length === 1) return nodes[0] ?? null;
+    const largest = nodes.reduce((best, node) => (textLength(node) > textLength(best) ? node : best));
+    if (containerLength > 0 && textLength(largest) * 4 < containerLength) continue;
+    return largest;
+  }
+  return null;
+}
+
 function pickContentRoot(documentLike: Document): Element {
   // Non-X pages only. X status uses extractXStatusPage.
   //
@@ -1760,7 +1831,7 @@ function pickContentRoot(documentLike: Document): Element {
     ? firstSubstantiveNode(documentLike, profile.contentRoot)
     : null;
   if (scoped) return scoped;
-  const generic = firstSubstantiveNode(documentLike, GENERIC_CONTENT_ROOTS);
+  const generic = genericContentRoot(documentLike);
   if (generic) return generic;
   const legacy = documentLike.querySelector("article, main");
   if (legacy) return legacy;
@@ -1802,8 +1873,32 @@ export function captureQualityIssue(
   const challengeTitle = /^(?:Just a moment(?:\.\.\.)?|Access Denied|安全验证|请求(?:已)?被拦截|提示信息)$/iu.test(pageTitle);
   const challengeBody = /(?:Enable JavaScript and cookies to continue|Sorry, you have been blocked|请求已被(?:站点的)?安全策略拦截|The requested URL was rejected|Reference\s*#\d+|Checking your browser before accessing)/iu.test(rawText);
   const knownThrottle = host === "hostloc.com" && /休息下[，,]?\s*一会见/iu.test(rawText);
-  if ((challengeTitle && rawText.length <= 5_000 && challengeBody) || knownThrottle) {
+  // Cloudflare 的拦截页标题五花八门（「Attention Required!」等），但正文的这两句是固定的：
+  // App 里打开 Medium 时整页被拦，曾当成正文存下（2026-10-02 抓取完整度测试）。
+  const cloudflareBlock = rawText.length <= 5_000
+    && /Cloudflare Ray ID/iu.test(rawText)
+    && /(?:Sorry, you have been blocked|you are unable to access|Checking your browser|Enable JavaScript and cookies to continue)/iu.test(rawText);
+  if ((challengeTitle && rawText.length <= 5_000 && challengeBody) || knownThrottle || cloudflareBlock) {
     return "CAPTURE_SECURITY_CHALLENGE";
+  }
+  // Medium 服务端出错时给的是一张带导航的错误页，不是文章。
+  if ((host === "medium.com" || host.endsWith(".medium.com"))
+    && rawText.length <= 5_000
+    && /Apologies, but something went wrong on our end/iu.test(rawText)) {
+    return "CAPTURE_PAGE_LOAD_FAILED";
+  }
+
+  // 停在登录页上（知乎未登录时跳 /signin）：不是内容。
+  if (/^\/(?:signin|login|signup|passport|sso)(?:\/|$)|\/flow\/login|\/account\/login/iu.test(url.pathname)) {
+    return "CAPTURE_LOGIN_WALL";
+  }
+  // 知乎未登录 / 访问频繁会整页跳到 /account/unhuman，小红书打不开的笔记跳到 /404；
+  // 两种都只剩站点外壳（导航、备案号），不能当正文存（2026-10-02 抓取完整度测试）。
+  if ((host === "zhihu.com" || host.endsWith(".zhihu.com")) && url.pathname.startsWith("/account/unhuman")) {
+    return "CAPTURE_SECURITY_CHALLENGE";
+  }
+  if ((host === "xiaohongshu.com" || host.endsWith(".xiaohongshu.com")) && /^\/(?:404|website-login)/u.test(url.pathname)) {
+    return "CAPTURE_PAGE_LOAD_FAILED";
   }
 
   // GitHub blob viewers can render a sizeable navigation/file shell while the
@@ -2395,12 +2490,26 @@ export function htmlElementToMarkdown(root: Element, baseHref: string): string {
     if (tag === "iframe" || tag === "video" || tag === "lite-youtube") {
       return articleVideoMarkdown(el, baseHref) ?? "";
     }
-    const inner = Array.from(el.childNodes).map(walk).join("");
+    // 播放器外壳里除了 <video> 全是控件文字：头条的 xgplayer 会把「重播 暂停 00:06 /
+    // 09:58 进入全屏 点击按住可拖动视频」整串写进正文（2026-10-02 抓取完整度测试）。
+    const playerVideo = PLAYER_SHELL_CLASS.test(String(el.getAttribute?.("class") ?? ""))
+      ? el.querySelector?.("video")
+      : null;
+    if (playerVideo) return articleVideoMarkdown(playerVideo, baseHref) ?? "";
+    // 两段强调首尾相接（「**…own.**」后面紧跟「***So…***」）时，星号会粘成一串、阅读器认不出，
+    // 原样露在正文里（arena.ai，2026-10-02）。中间补一个空格隔开。
+    const inner = Array.from(el.childNodes).map(walk).reduce(
+      (joined, part) => (joined.endsWith("*") && part.startsWith("*") ? `${joined} ${part}` : joined + part),
+      "",
+    );
 
     if (tag === "br") return "\n";
     if (/^h[1-6]$/.test(tag)) {
       const level = Number(tag[1]);
-      return `\n\n${"#".repeat(level)} ${collapseInline(inner)}\n\n`;
+      const heading = collapseInline(inner);
+      // 只装了图片或空白的标题：原来会留下一行孤零零的「#」（公众号常见）。
+      if (!heading.trim()) return inner.trim() ? `\n\n${inner.trim()}\n\n` : "";
+      return `\n\n${"#".repeat(level)} ${heading}\n\n`;
     }
     if (tag === "p") {
       const body = collapseInline(inner);
@@ -2424,7 +2533,13 @@ export function htmlElementToMarkdown(root: Element, baseHref: string): string {
     }
     if (tag === "table") {
       const table = tableToMarkdown(el, (cell) => collapseInline(walk(cell)));
-      return table ? `\n\n${table}\n\n` : `\n${inner}\n`;
+      if (!table) return `\n${inner}\n`;
+      // 格子里的图提到表格前面：阅读器把图片单独拆成一段显示，图留在格子里会把表格
+      // 拦腰截断，后半截没了表头，整张表退化成一行竖线（维基信息框，2026-10-02）。
+      const images = table.match(/!\[[^\]]*\]\([^)\s]+\)/gu) ?? [];
+      if (images.length === 0) return `\n\n${table}\n\n`;
+      const textOnly = table.replace(/ ?!\[[^\]]*\]\([^)\s]+\) ?/gu, " ").replace(/\| +\|/gu, "| |");
+      return `\n\n${images.join("\n\n")}\n\n${textOnly}\n\n`;
     }
     // 表格的结构标签由 `tableToMarkdown` 统一处理；单独落到这里说明它在表格外
     // （残缺 DOM），此时按透传处理，不要再走 div 那条会补空行的分支。
@@ -2555,8 +2670,16 @@ export function htmlElementToMarkdown(root: Element, baseHref: string): string {
       const language = languageClass ? languageClass.replace(/^(?:language|lang)-/i, "").toLowerCase() : "";
       return `\n\n${fence}${language}\n${cleanedCode}\n${fence}\n\n`;
     }
-    if (tag === "strong" || tag === "b") return `**${collapseInline(inner)}**`;
-    if (tag === "em" || tag === "i") return `*${collapseInline(inner)}*`;
+    // 空的加粗/斜体（排版用的空 <strong>）原来会在正文里留下「****」。
+    // 标签里头尾的空格挪到标记外面：「<strong>competitive. </strong>Pi」原来变成「competitive.Pi」。
+    if (tag === "strong" || tag === "b" || tag === "em" || tag === "i") {
+      const value = collapseInline(inner);
+      if (!value) return inner ? " " : "";
+      const marker = tag === "strong" || tag === "b" ? "**" : "*";
+      const lead = /^\s/u.test(inner) ? " " : "";
+      const trail = /\s$/u.test(inner) ? " " : "";
+      return `${lead}${marker}${value}${marker}${trail}`;
+    }
     if (tag === "code") return `\`${collapseInline(inner)}\``;
     // 删除线不能丢：划掉的字和正常的字混在一起会把意思**反过来**——技术文里
     // 「~~已废弃的做法~~」读成推荐做法。阅读区的 AttributedString(markdown:)
@@ -2608,8 +2731,11 @@ export function htmlElementToMarkdown(root: Element, baseHref: string): string {
       const inlineText = inlineImageText(el, alt);
       if (inlineText != null) return inlineText;
       const href = resolveResponsiveImageURL(el, baseHref);
-      if (!href) return alt ? `\n\n${alt}\n\n` : "";
+      // 取不到地址的图只留页面自己写的说明；没有说明时原来会留下一行孤零零的「图像」（arena.ai 顶部，2026-10-02）。
+      const pageAlt = (el.getAttribute("alt") ?? el.getAttribute("data-alt") ?? "").trim();
+      if (!href) return pageAlt ? `\n\n${pageAlt}\n\n` : "";
       if (isXProfileChromeImageURL(href) || isMediumProfileChromeImageURL(href)) return "";
+      if (isDecorativeImage(el, href)) return "";
       const safeAlt = alt.replace(/[[\]]/g, "");
       return `\n\n![${safeAlt}](${href})\n\n`;
     }
@@ -2617,6 +2743,29 @@ export function htmlElementToMarkdown(root: Element, baseHref: string): string {
   };
 
   return normalizeMarkdownWhitespace(walk(root));
+}
+
+/**
+ * 头像、logo、图标和占位像素不是正文配图。少数派文章把作者头像（还是 GIF）和
+ * 「Matrix 精选」标签图标一起抓进了正文；Paul Graham 的页面混进 1×1 透明占位图
+ * （2026-10-02 抓取完整度测试）。只看确凿的信号：class/祖先 class 的语义词、
+ * 声明的宽高、地址里写明的小尺寸缩略参数。
+ */
+function isDecorativeImage(image: Element, href: string): boolean {
+  const DECORATIVE = /(?:^|[\s_-])(?:avatar|portrait|headimg|logo|icon|badge|emoji)(?:$|[\s_-]|s\b)/iu;
+  let node: Element | null = image;
+  for (let depth = 0; node && depth < 3; depth += 1) {
+    if (DECORATIVE.test(node.getAttribute("class") ?? "")) return true;
+    node = node.parentElement;
+  }
+  const declared = [image.getAttribute("width"), image.getAttribute("height")]
+    .map((value) => Number.parseInt(value ?? "", 10))
+    .filter((value) => Number.isFinite(value));
+  if (declared.length > 0 && declared.every((value) => value <= 48)) return true;
+  if (/(?:^|[/_.-])(?:spacer|pixel|blank|trans_?1x1|1x1)(?:[/_.-]|$)/iu.test(href)) return true;
+  const sized = href.match(/(?:^|[^\d])(\d{2,3})x(\d{2,3})(?:r|[^\d]|$)/u);
+  if (sized && Number(sized[1]) <= 100 && Number(sized[2]) <= 100) return true;
+  return false;
 }
 
 /**

@@ -231,3 +231,28 @@ describe("transcript text without translation-extension overlays (2026-09-29)", 
     }
   });
 });
+
+describe("transcript rendered twice on the page (2026-10-02)", () => {
+  it("keeps one copy when the same segments appear in two places", async () => {
+    const { collectYouTubeTranscriptFromPanelInPage } = await import("../src/content/youtube");
+    const text = (value: string) => ({ nodeType: 3, textContent: value });
+    const span = (value: string) => ({ nodeType: 1, tagName: "SPAN", childNodes: [text(value)], getAttribute: () => null, textContent: value });
+    const row = (time: string, value: string) => ({
+      querySelector: (selector: string) => selector === ".segment-timestamp" ? { textContent: time } : selector === ".segment-text" ? span(value) : null,
+    });
+    const copy = () => [row("0:00", "这是一个3"), row("0:05", "一个字迹歪斜的3")];
+    vi.stubGlobal("document", {
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => selector === "ytd-transcript-segment-renderer" ? [...copy(), ...copy()] : [],
+    });
+    vi.useFakeTimers();
+    try {
+      const pending = collectYouTubeTranscriptFromPanelInPage();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect((await pending).map((segment) => segment.text)).toEqual(["这是一个3", "一个字迹歪斜的3"]);
+    } finally {
+      vi.useRealTimers();
+      vi.unstubAllGlobals();
+    }
+  });
+});

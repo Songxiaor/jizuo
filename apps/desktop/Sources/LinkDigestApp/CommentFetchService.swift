@@ -41,6 +41,7 @@ final class CommentFetchService: NSObject, WKNavigationDelegate {
     if on("bilibili.com") { return SiteSessionController.bilibili.dataStore }
     if on("douyin.com") { return SiteSessionController.douyin.dataStore }
     if on("xiaohongshu.com") { return SiteSessionController.xiaohongshu.dataStore }
+    if on("zhihu.com") { return SiteSessionController.zhihu.dataStore }
     return .default()
   }
 

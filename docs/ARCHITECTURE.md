@@ -291,6 +291,10 @@ UI 只按内部错误码组合固定本地化 `message + recoveryAction`：402 �
 
 手动链接由 `ProxyAwareWebPageFetcher` 路由：普通公网且无系统 HTTP(S) 代理时继续使用 `PeerBoundNetworkWebPageFetcher`；显式系统代理存在时，或 DNS 全部返回 `198.18.0.0/15` fake-ip 时，交给 `SystemProxyWebPageFetcher`。代理路径**只允许 HTTPS**，保留原 URL hostname，Foundation 通过系统代理/VPN 建立 CONNECT，并在 challenge 中再次用 `SecPolicyCreateSSL(true, hostname)`、`SecTrustSetNetworkFetchAllowed(false)` 与 system trust 校验；每跳仍拒绝私网/test-net、非标准端口、含凭据 URL、redirect 越界和 HTTPS→HTTP 降级。它不验证代理最终解析的 numeric peer，因此是独立信任边界，不与 PeerBound 的 DNS-rebinding/SSRF 保护等价；HTTP 页面 fail closed 并引导浏览器扩展。`urlCredentialStorage` 固定为 `nil`，应用也不读取、转交或默认处理代理认证 challenge：需认证时明确失败，用户须先在系统代理完成认证；凭据不进入状态、日志、导出或 fixture。
 
+**2026-10-02 起，通用网页的手动链接先走内置网页渲染。** `RenderedPageCaptureService` 在屏幕外的隐藏 `WKWebView` 里打开链接，等正文字数稳定、滚动触发懒加载后，执行随 App 打包的扩展构建产物 `browser-scripts/extract-page.js`（YouTube 观看页用 `extract-youtube.js`，在页面主世界里跑），结果按扩展 `captureSendBlockReason` 同一套放行规则变成 `CapturedDocument`（`method = rendered_dom`）。扩展与 App 因此共用一份提取实现；`scripts/sync-contracts.sh` 负责把扩展构建产物复制进 `LinkDigestCore/Resources/browser-scripts/`。渲染失败、被拦或字数明显偏少时，回落到上面的 HTML 直读，取字多的一份；验证页、登录跳转等明确结论不被直读结果掩盖。抖音、小红书、B 站、GitHub（.ipynb 除外）、公众号、X 单条与直接的 `.md` 仍走各自适配器。
+
+渲染路径的安全边界与直读不同，需单独理解：主页面的每一跳（含服务端重定向）都先过 `PublicWebURLPolicy` 解析门禁（允许 fake-IP，与直读的代理分流一致）；页面内所有直接指向回环、私网、链路本地、CGNAT 字面 IP 与 `localhost` 的请求由 `WKContentRuleList` 拦截；新窗口与非 http(s)/about/data/blob 协议一律取消。它不做 PeerBound 那样的连接对端校验，DNS-rebinding 防护弱于直读路径。登录态只来自「站点登录」各平台的隔离 `WKWebsiteDataStore`，其余站点用默认分区，不导入浏览器 Cookie。页面开始显示后最多等 15 秒就开始提取；每次脚本调用都有上限（稳定 12 秒、滚动 15 秒、提取 30 秒，整体 75 秒），网页脚本不返回也不会卡住串行抓取队列。
+
 ### 7.3 Loop 6.5 GitHub 来源适配器与本地 README 图片
 
 `SourceAdapting` 是刻意小的来源接缝：它只判断一个用户提交 URL 是否由自己接管，并产出 `CapturedDocument`；持久化、模型运行与 UI 均不认识具体来源。默认注册表目前只有 `GitHubRepositorySourceAdapter`：仅 `https://github.com/owner/repo`（允许尾斜杠及普通 query/fragment）接管，issues/blob/tree 等路径继续进入通用网页链路。接管后 Adapter 以固定 `Accept: application/vnd.github.raw+json` 请求 `api.github.com/repos/{owner}/{repo}/readme`；它复用 `ProxyAwareWebPageFetcher` 的 PeerBound/系统代理三分流、TLS、redirect、DNS/IP admission 与 response byte limit，绝不另开 URLSession 旁路。404 只映射“仓库不存在或不是公开仓库”，403/429 只映射限流固定文案，response body 不进入任何可见状态。

@@ -783,3 +783,14 @@ export function popupXProfileHeading(tabTitle: string | undefined, rawURL: strin
   if (match) return { name: match[1]!.trim(), handle: match[2]! };
   return { name: handle ? `@${handle}` : "这个博主", handle: handle ? `@${handle}` : "" };
 }
+
+/**
+ * 页面显示的是机器译文时的提醒（2026-10-02：Syc 的 X 开着自动翻译，英文帖子存下来全是 X 的中文译文）。
+ * 汲作自己能翻译、还能原文对照，所以建议存原文；只提醒，不替用户点。
+ */
+export function popupTranslationNote(translator: string): string {
+  const fix = translator === "X 自动翻译"
+    ? "先在帖子上点「显示原文」再保存"
+    : "先在插件里关掉这个网站的翻译、刷新页面再保存";
+  return `这个页面正显示「${translator}」的译文，保存的会是译文，不是原文。想存原文：${fix}；汲作里可以随时生成中文翻译。`;
+}

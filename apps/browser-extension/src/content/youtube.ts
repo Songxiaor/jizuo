@@ -419,20 +419,31 @@ export async function collectYouTubeTranscriptFromPanelInPage(
     return text || origins.join(" ").replace(/\s+/g, " ").trim();
   };
 
+  // 新版界面会在两处各渲染一份同样的字幕行，整篇字幕原来被存了两遍（3Blue1Brown，2026-10-02）。
+  // 按「时间戳 + 文字」只留第一次出现的那行，不依赖字幕具体挂在页面哪里。
+  const distinct = (segments: YouTubePanelSegment[]): YouTubePanelSegment[] => {
+    const seen = new Set<string>();
+    return segments.filter((segment) => {
+      const key = `${segment.time}\u0001${segment.text}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  };
   const readSegments = (): YouTubePanelSegment[] => {
     // 2025 UI 使用 transcript-segment-view-model；旧 UI 是 ytd-transcript-segment-renderer。
     const modern = [...document.querySelectorAll("transcript-segment-view-model")];
     if (modern.length > 0) {
-      return modern.map((el) => ({
+      return distinct(modern.map((el) => ({
         time:
           el.querySelector('div[class*="Timestamp"]:not([class*="A11y"])')?.textContent?.trim() ?? "",
         text: ownText(el.querySelector("span")),
-      }));
+      })));
     }
-    return [...document.querySelectorAll("ytd-transcript-segment-renderer")].map((el) => ({
+    return distinct([...document.querySelectorAll("ytd-transcript-segment-renderer")].map((el) => ({
       time: el.querySelector(".segment-timestamp")?.textContent?.trim() ?? "",
       text: ownText(el.querySelector(".segment-text")),
-    }));
+    })));
   };
   const fingerprintOf = (segments: YouTubePanelSegment[]) => segments.map((segment) => segment.text).join("\u0001");
 

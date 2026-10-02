@@ -79,16 +79,44 @@ struct ManualLinkSheet: View {
   @ObservedObject var model: ManualLinkViewModel
   let modelCallDisclosure: AutomaticModelCallDisclosure
   @FocusState private var focusURL: Bool
+  @Environment(\.openSettings) private var openSettings
+  // 输入框下的登录提醒跟着这几个平台的登录状态变。
+  @ObservedObject private var zhihuSession = SiteSessionController.zhihu
+  @ObservedObject private var xiaohongshuSession = SiteSessionController.xiaohongshu
+  @ObservedObject private var douyinSession = SiteSessionController.douyin
+  @State private var showsDifferences = false
+
+  /// 贴的是不登录就抓不全的平台、而汲作里还没登录它时，提交前就说清楚。
+  private var loginHint: String? {
+    guard let url = ExplicitWebLinkInput.singleURL(from: model.input),
+          let platform = CaptureRouteGuidance.loginPlatform(for: url),
+          !SiteSessionController.controller(for: platform).isLoggedIn
+    else { return nil }
+    return CaptureRouteGuidance.loginHint(for: platform)
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 16) {
       Text("添加网页链接").themedFont(.title3, weight: .semibold)
-      // 2026-10-01 走查：原文「公开 HTML 页面」是技术词，扩展名两侧还多出空格。说人话。
-      Text("粘贴网页或视频链接。需要登录才能看的页面，用浏览器扩展保存。")
+      // 2026-10-02：App 和扩展用同一套提取，区别只剩登录状态从哪来（Syc：区别要写进 App 让用户看到）。
+      Text("粘贴网页或视频链接。\(ProductDisplay.name)会在内置网页里打开它，和浏览器扩展用同一套规则提取正文、图片和字幕。")
         .themedFont(.callout).foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
       TextField("https://example.com/article", text: $model.input)
         .textFieldStyle(.roundedBorder).focused($focusURL)
         .disabled(model.isBusy).accessibilityIdentifier("manual-link-url-input")
+      if let loginHint {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+          Label(loginHint, systemImage: "person.crop.circle.badge.exclamationmark")
+            .themedFont(.caption)
+            .foregroundStyle(appTheme.warning)
+            .fixedSize(horizontal: false, vertical: true)
+          Spacer(minLength: 0)
+          Button("去登录") { openSiteLogin() }
+            .controlSize(.small)
+        }
+        .accessibilityIdentifier("manual-link-login-hint")
+      }
       if let validation = model.inputValidationMessage {
         Label(validation, systemImage: "exclamationmark.triangle.fill")
           .themedFont(.caption)
@@ -104,6 +132,25 @@ struct ManualLinkSheet: View {
         Label(error, systemImage: "exclamationmark.triangle.fill")
           .themedFont(.callout).foregroundStyle(appTheme.danger).accessibilityIdentifier("manual-link-error")
       }
+      DisclosureGroup(isExpanded: $showsDifferences) {
+        VStack(alignment: .leading, spacing: 6) {
+          ForEach(CaptureRouteGuidance.differences, id: \.self) { line in
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+              Text("·").foregroundStyle(.secondary)
+              Text(line).fixedSize(horizontal: false, vertical: true)
+            }
+          }
+          Button("打开站点登录") { openSiteLogin() }
+            .buttonStyle(.link)
+            .padding(.top, 2)
+        }
+        .themedFont(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.top, 6)
+      } label: {
+        Text("和浏览器扩展有什么不同？").themedFont(.caption).foregroundStyle(.secondary)
+      }
+      .accessibilityIdentifier("manual-link-route-differences")
       if model.isFetching { ProgressView(model.fetchingMessage).accessibilityIdentifier("manual-link-fetching") }
       if model.isSaving { ProgressView("正在保存到资料库…").accessibilityIdentifier("manual-link-saving") }
       HStack {
@@ -122,13 +169,23 @@ struct ManualLinkSheet: View {
       }
     }
     .padding(24).frame(width: 480)
-    .onAppear { focusURL = true }
+    .onAppear {
+      focusURL = true
+      Task { await zhihuSession.refreshStatus() }
+      Task { await xiaohongshuSession.refreshStatus() }
+      Task { await douyinSession.refreshStatus() }
+    }
     .alert("这个链接已在库中", isPresented: $model.isDuplicatePromptPresented) {
       Button("取消", role: .cancel) { model.cancelDuplicateSubmit() }
       Button("仍要重新抓取") { model.confirmDuplicateSubmit() }
     } message: {
       Text("重复添加不会多出一条：重新抓取的内容会并入原来那条，成为最新的版本。只想查看的话，直接在列表里打开就行。")
     }
+  }
+
+  private func openSiteLogin() {
+    SettingsNavigationRequest.request("siteLogin")
+    openSettings()
   }
 }
 
