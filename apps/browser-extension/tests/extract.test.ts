@@ -300,6 +300,25 @@ describe("page extraction", () => {
     expect(result.text).toContain("Use a semantic root first");
   });
 
+  it("takes the Stack Overflow asker, not the last editor, as the author (2026-10-03)", () => {
+    const signature = (name: string, classes: string) => el("div", [
+      el("div", [el("a", [text(name)])], { class: "user-details" }),
+    ], { class: classes });
+    const question = el("div", [
+      el("div", [el("p", [text("Why is processing a sorted array faster than an unsorted one?")])], { class: "js-post-body" }),
+      signature("an-editor", "post-signature"),
+      signature("the-asker", "post-signature owner"),
+    ], { id: "question" });
+    const root = el("main", [el("div", [el("h1", [text("Sorted array")])], { id: "question-header" }), question]);
+    const result = extractCurrentPage(makeDocument({
+      title: "Sorted array - Stack Overflow",
+      href: "https://stackoverflow.com/questions/11227809/sorted-array",
+      root,
+    }));
+    expect(result.text).toContain('author: "the-asker"');
+    expect(result.text).not.toContain('author: "an-editor"');
+  });
+
   it("captures dev.to and Discourse post bodies with their loaded discussion", () => {
     const dev = el("main", [
       el("header", [

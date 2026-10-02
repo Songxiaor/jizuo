@@ -62,11 +62,13 @@ public actor StorageWriteGate {
     mapFailure: @Sendable (Error) -> StorageErrorCode
   ) async throws -> Value {
     let attemptID = UUID()
-    try await withTaskCancellationHandler {
+    // 显式 `isolation: nil`：默认取调用处的隔离，拿到许可后执行流会留在 actor 上，
+    // 下面的同步写事务就在 actor 里跑，排队和查状态都进不来（2026-10-03 测试挂死查出）。
+    try await withTaskCancellationHandler(operation: {
       try await acquireCapturePermit(attemptID: attemptID)
-    } onCancel: {
+    }, onCancel: {
       Task { await self.cancelQueuedCaptureAttempt(attemptID: attemptID) }
-    }
+    }, isolation: nil)
 
     do {
       let value = try operation()

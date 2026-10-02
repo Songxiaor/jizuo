@@ -184,6 +184,23 @@ final class GitHubRepositorySourceAdapterTests: XCTestCase {
     XCTAssertEqual(cache.localImageURLs(taskID: taskID, snapshotID: snapshotID).count, 20)
   }
 
+  /// README 里的 SVG 徽章转成 PNG 存下，阅读页能显示（原来整张丢掉，只剩文字）。
+  func testSVGBadgeIsStoredAsPNG() async throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("linkdigest-github-cache.\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let badge = URL(string: "https://camo.githubusercontent.com/badge-license")!
+    let svg = Data(##"<svg xmlns="http://www.w3.org/2000/svg" width="78" height="20"><rect width="78" height="20" fill="#007ec6"/></svg>"##.utf8)
+    let fixture = GitHubFixtureResourceFetcher([badge.absoluteString: .init(url: badge, statusCode: 200, contentType: "image/svg+xml;charset=utf-8", body: svg)])
+    let cache = GitHubREADMEImageCache(applicationSupportRoot: root)
+    await cache.stageRemoteMarkdownImages(markdown: "![license](\(badge.absoluteString))", captureID: "svg", resources: fixture)
+    let taskID = TaskID(), snapshotID = ContentSnapshotID()
+    cache.promote(captureID: "svg", taskID: taskID, snapshotID: snapshotID)
+    let stored = try XCTUnwrap(cache.localImageURLs(taskID: taskID, snapshotID: snapshotID).first)
+    let bytes = try Data(contentsOf: stored)
+    XCTAssertTrue(bytes.starts(with: [0x89, 0x50, 0x4e, 0x47]), "存的是 PNG，不是原始 SVG")
+    XCTAssertNil(GitHubREADMEImageCache.rasterizedSVG(.init(url: badge, statusCode: 200, contentType: "text/plain", body: Data("hello".utf8))))
+  }
+
   func testImageCacheRejectsAResponseOverFiveMiB() async throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent("linkdigest-github-cache.\(UUID().uuidString)", isDirectory: true)
     defer { try? FileManager.default.removeItem(at: root) }

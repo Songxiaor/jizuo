@@ -819,14 +819,22 @@ final class ManualLinkViewModel: ObservableObject {
   /// 作品已入库后补评论：读不到只记一句提示，不把整条抓取判失败。
   private func attachComments(pageURL url: URL, limit: Int, taskID: TaskID, snapshotID: ContentSnapshotID) async {
     guard CommentCapture.platform(for: url) != nil, let history else { return }
-    let collection = try? await CommentFetchService().fetch(url: url, limit: limit)
-    // 页面明说一条评论都没有：没什么可补，也不用提示。
-    if collection?.comments.isEmpty == true, collection?.expectedCount == 0 { return }
+    let savedCount = (try? history.detail(taskID: taskID).snapshots.first(where: { $0.id == snapshotID }))
+      .flatMap { MarkdownNoteFrontmatter.parse($0.bodyText).comments }
+    var collection = try? await CommentFetchService().fetch(url: url, limit: limit)
+    if collection?.comments.isEmpty ?? true {
+      // 页面或帖子信息明说没有评论：没什么可补，也不用提示。
+      if CommentCapture.pageSaysNoComments(expectedCount: collection?.expectedCount, savedCount: savedCount) { return }
+      // 偶尔评论区还没加载出来就读完了（X 2026-10-02 一次读到 0 条，手动重读有 5 条）：
+      // 隔几秒用新网页再读一次。
+      try? await Task.sleep(for: .seconds(3))
+      if let retry = try? await CommentFetchService().fetch(url: url, limit: limit) { collection = retry }
+    }
     guard let collection,
           !collection.comments.isEmpty,
           let snapshot = try? history.detail(taskID: taskID).snapshots.first(where: { $0.id == snapshotID })
     else {
-      captureNotice = "作品已保存，但有的评论没读到。可以打开该条目，用「处理 → 抓取评论…」重试。"
+      captureNotice = CaptureRouteGuidance.commentsMissedNotice(for: url)
       return
     }
     let body = CommentCapture.replacingComments(

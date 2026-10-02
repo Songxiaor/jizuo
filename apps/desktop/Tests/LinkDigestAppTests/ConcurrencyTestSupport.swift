@@ -59,6 +59,10 @@ func awaitValue<Success: Sendable>(
 }
 
 /// 通用竞速：`body` 与一个计时器抢先，谁先完成算谁的。
+///
+/// 不能用任务组：任务组要等所有子任务结束才返回，而 `await task.value` 这类等待不响应
+/// 取消——计时器先到也退不出来，「超时」照样永久挂起（2026-10-03 查出）。这里两边都是
+/// 独立任务，谁先到谁结束这次等待；没跑完的那边留在后台，不再拖住测试。
 func withTimeout<Value: Sendable>(
   _ seconds: TimeInterval = ConcurrencyTestSupport.defaultTimeout,
   label: String = "operation",
@@ -66,26 +70,43 @@ func withTimeout<Value: Sendable>(
   line: UInt = #line,
   _ body: @escaping @Sendable () async throws -> Value
 ) async throws -> Value {
-  try await withThrowingTaskGroup(of: Value.self) { group in
-    group.addTask { try await body() }
-    group.addTask {
-      try await Task.sleep(for: .seconds(seconds))
-      throw TestTimeoutError(label: label)
-    }
-    do {
-      guard let value = try await group.next() else {
-        throw TestTimeoutError(label: label)
+  do {
+    return try await withCheckedThrowingContinuation { continuation in
+      let once = ResumeOnce(continuation)
+      let timer = Task {
+        try? await Task.sleep(for: .seconds(seconds))
+        _ = once.resume(with: .failure(TestTimeoutError(label: label)))
       }
-      group.cancelAll()
-      return value
-    } catch let error as TestTimeoutError {
-      group.cancelAll()
-      XCTFail("\(error.description)（\(seconds) 秒）", file: file, line: line)
-      throw error
-    } catch {
-      group.cancelAll()
-      throw error
+      Task {
+        do {
+          let value = try await body()
+          if once.resume(with: .success(value)) { timer.cancel() }
+        } catch {
+          if once.resume(with: .failure(error)) { timer.cancel() }
+        }
+      }
     }
+  } catch let error as TestTimeoutError {
+    XCTFail("\(error.description)（\(seconds) 秒）", file: file, line: line)
+    throw error
+  }
+}
+
+/// 续体只能恢复一次：竞速的两边谁先到谁恢复，后到的什么也不做。
+private final class ResumeOnce<Value: Sendable>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var continuation: CheckedContinuation<Value, Error>?
+
+  init(_ continuation: CheckedContinuation<Value, Error>) { self.continuation = continuation }
+
+  func resume(with result: Result<Value, Error>) -> Bool {
+    lock.lock()
+    let pending = continuation
+    continuation = nil
+    lock.unlock()
+    guard let pending else { return false }
+    pending.resume(with: result)
+    return true
   }
 }
 

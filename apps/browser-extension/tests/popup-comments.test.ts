@@ -112,6 +112,20 @@ describe("popup comment modes", () => {
     expect(send.selectedCommentIDs).toEqual([]);
   });
 
+  // 小红书登录被挤掉时，自动保存也要说出「只读到未登录可见的部分」（2026-10-02）。
+  it("auto-save says only the logged-out part was read, also after switching to picking", async () => {
+    const items = [
+      { id: "a", author: "甲", excerpt: "一", depth: 0 },
+      { id: "b", author: "乙", excerpt: "二", depth: 0 },
+      { id: "c", author: "丙", excerpt: "三", depth: 0 },
+    ];
+    const { elements } = await openPopup({ ok: false, code: "auto", platform: "xiaohongshu", limit: 20, loginRequired: true, items });
+    expect(elements["#comments-note"]!.textContent).toContain("未登录可见的 3 条");
+    expect(elements["#comments-note"]!.textContent).toContain("只保留一处登录");
+    await elements["#comments-mode"]!.onclick!();
+    expect(elements["#comments-note"]!.textContent).toContain("未登录可见的 3 条");
+  });
+
   it("不抓 shows the neutral note and still saves the page", async () => {
     const { elements, messages } = await openPopup({ ok: false, code: "disabled", platform: "reddit" });
     expect(elements["#comments-note"]!.textContent).toBe("这个平台设为不存评论（可在汲作「设置 → 收集 · 汲 → 评论」里改）");

@@ -39,6 +39,14 @@ public enum CaptureRouteGuidance {
     return "小红书笔记要用分享链接里的访问码才能打开，这个访问码会过期，汲作没有保存，所以这里读不到评论。在浏览器里打开这条笔记，用浏览器扩展保存时勾选评论。"
   }
 
+  /// 自动存评论两次都没读到时的提示。小红书事后补读打不开原笔记（访问码不落库），不能教用户去「抓取评论…」。
+  public static func commentsMissedNotice(for url: URL) -> String {
+    if CommentCapture.platform(for: url) == "xiaohongshu" {
+      return "笔记已保存，但评论没读到。小红书事后补读打不开原笔记；需要评论的话，在浏览器里打开这条笔记，用浏览器扩展保存。"
+    }
+    return "作品已保存，但有的评论没读到。可以打开该条目，用「处理 → 抓取评论…」重试。"
+  }
+
   /// 保存时评论区显示「登录后查看更多」：评论只存了未登录能看的部分。小红书多半是登录被挤掉
   /// （同一账号网页端只保留一处登录，2026-10-02 实测：在浏览器登录后，汲作里的登录失效）。
   public static func commentsLoginWallNotice(for url: URL) -> String {

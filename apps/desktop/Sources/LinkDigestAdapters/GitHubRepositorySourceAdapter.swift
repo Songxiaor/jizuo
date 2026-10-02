@@ -1,3 +1,4 @@
+import AppKit
 import CryptoKit
 import Foundation
 import LinkDigestCore
@@ -406,17 +407,17 @@ public final class GitHubREADMEImageCache: @unchecked Sendable {
             (200...299).contains(response.statusCode),
             response.body.count <= perImageByteLimit,
             allowsRedirectTarget(response.url),
-            Self.isImage(response)
+            let body = Self.isImage(response) ? response.body : Self.rasterizedSVG(response)
       else { continue }
-      if let totalByteBudget, totalBytes + response.body.count > totalByteBudget {
+      if let totalByteBudget, totalBytes + body.count > totalByteBudget {
         if stopsWhenTotalBudgetExceeded { break }
         continue
       }
       let destination = directory.appendingPathComponent(filename, isDirectory: false)
-      guard (try? response.body.write(to: destination, options: .atomic)) != nil else { continue }
+      guard (try? body.write(to: destination, options: .atomic)) != nil else { continue }
       entries.append(.init(filename: filename))
       seen.insert(filename)
-      totalBytes += response.body.count
+      totalBytes += body.count
     }
     guard !entries.isEmpty,
           let data = try? JSONEncoder().encode(Manifest(entries: entries))
@@ -540,6 +541,33 @@ public final class GitHubREADMEImageCache: @unchecked Sendable {
   private static func matches(_ host: String, domain: String) -> Bool {
     host == domain || host.hasSuffix(".\(domain)")
   }
+  /// SVG 图（README 里的 shields.io 徽章等）转成 PNG 再存：阅读页不直接渲染 SVG（里面可能带脚本），
+  /// 原来整张丢掉，徽章只剩一行文字（2026-10-02 抓取完整度测试）。系统按图形画出来，不执行脚本。
+  static func rasterizedSVG(_ response: SafeResourceResponse) -> Data? {
+    let type = response.contentType?.split(separator: ";", maxSplits: 1).first?
+      .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+    let head = String(decoding: response.body.prefix(512), as: UTF8.self).lowercased()
+    guard type == "image/svg+xml" || head.contains("<svg"),
+          let image = NSImage(data: Data(response.body)), image.isValid,
+          (1...4_096).contains(image.size.width), (1...4_096).contains(image.size.height)
+    else { return nil }
+    let scale: CGFloat = 2
+    guard let rep = NSBitmapImageRep(
+      bitmapDataPlanes: nil,
+      pixelsWide: Int((image.size.width * scale).rounded(.up)),
+      pixelsHigh: Int((image.size.height * scale).rounded(.up)),
+      bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false,
+      colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+    ), let context = NSGraphicsContext(bitmapImageRep: rep)
+    else { return nil }
+    rep.size = image.size
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = context
+    image.draw(in: NSRect(origin: .zero, size: image.size))
+    NSGraphicsContext.restoreGraphicsState()
+    return rep.representation(using: .png, properties: [:])
+  }
+
   private static func isImage(_ response: SafeResourceResponse) -> Bool {
     guard let type = response.contentType?.split(separator: ";", maxSplits: 1).first?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() else { return false }
     switch type {

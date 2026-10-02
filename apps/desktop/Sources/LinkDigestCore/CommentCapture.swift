@@ -49,6 +49,13 @@ public struct CommentCollection: Codable, Equatable, Sendable {
 
 public enum CommentCapture {
   /// 与扩展 `commentPlatformForURL` 同一份判定：哪些链接有评论读取器。
+  /// 读到 0 条评论时，页面或保存时记下的帖子信息是否明说「没有评论」。
+  /// 评论读取脚本不报 0（只在有数时报总数），X 等平台的回复数在保存的正文信息里（`comments: "0"`）。
+  public static func pageSaysNoComments(expectedCount: Int?, savedCount: String?) -> Bool {
+    if expectedCount == 0 { return true }
+    return savedCount?.trimmingCharacters(in: .whitespaces) == "0"
+  }
+
   public static func platform(for url: URL) -> String? {
     guard let host = url.host?.lowercased() else { return nil }
     let path = url.path

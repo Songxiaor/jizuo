@@ -195,6 +195,19 @@ final class CaptureCompletenessTests: XCTestCase {
     XCTAssertTrue(RenderedPageExtraction.missingTranscriptNotice(captionTrackCount: nil).contains("仍要重新抓取"))
   }
 
+  /// 读到 0 条评论：帖子信息写着 0 条就不重试不提示；有回复或不知道就再读一次、还没有才提示。
+  func testEmptyCommentReadRetriesUnlessThePostHasNone() {
+    XCTAssertTrue(CommentCapture.pageSaysNoComments(expectedCount: nil, savedCount: "0"))
+    XCTAssertTrue(CommentCapture.pageSaysNoComments(expectedCount: 0, savedCount: nil))
+    XCTAssertFalse(CommentCapture.pageSaysNoComments(expectedCount: nil, savedCount: "7"))
+    XCTAssertFalse(CommentCapture.pageSaysNoComments(expectedCount: nil, savedCount: "1.2万"))
+    XCTAssertFalse(CommentCapture.pageSaysNoComments(expectedCount: nil, savedCount: nil))
+    XCTAssertTrue(CaptureRouteGuidance.commentsMissedNotice(for: URL(string: "https://x.com/a/status/1")!).contains("抓取评论"))
+    XCTAssertFalse(CaptureRouteGuidance.commentsMissedNotice(
+      for: URL(string: "https://www.xiaohongshu.com/explore/6a9e1c10000000001103a75f")!
+    ).contains("抓取评论"))
+  }
+
   func testYouTubeWatchPagesUseTheVideoScript() {
     XCTAssertTrue(RenderedPageExtraction.isYouTubeWatch(URL(string: "https://www.youtube.com/watch?v=aircAruvnKk")!))
     XCTAssertTrue(RenderedPageExtraction.isYouTubeWatch(URL(string: "https://youtu.be/aircAruvnKk")!))

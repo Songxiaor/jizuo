@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 @testable import LinkDigestAdapters
@@ -337,6 +338,13 @@ private actor ManualVMSink {
 
 @MainActor
 final class ManualLinkViewModelTests: XCTestCase {
+  /// 被测代码会调用 `NSApp.activate`；xctest 进程里没有应用对象，`NSApp` 为空直接崩溃，
+  /// 整组测试只能跳过。先建好共享应用对象。
+  override func setUp() {
+    super.setUp()
+    _ = NSApplication.shared
+  }
+
   /// The whole point of the feature is "copy a link in WeChat, come back here".
   /// On macOS that app switch does not move `scenePhase`, so wiring the check to
   /// scenePhase alone made the banner fire once at launch and never again —

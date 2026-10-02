@@ -37,10 +37,15 @@ export const COMMUNITY_PROFILES: Readonly<Record<CommunityPlatform, CommunityPro
   "stack-overflow": {
     platform: "stack-overflow", label: "Stack Overflow",
     title: ["#question-header h1", "h1"], body: ["#question .js-post-body", "#question"],
-    author: ["#question .user-details a", "#question [itemprop='name']"], published: ["#question time", "#question .relativetime"],
+    // 被编辑过的帖子有两张署名卡：前一张是最后编辑的人，最后一张才是提问者 / 回答者
+    // （提问者那张带 owner）。原来取第一张，作者全成了编辑者（2026-10-03）。
+    author: ["#question .post-signature.owner .user-details a", "#question .post-signature:last-child .user-details a", "#question .user-details a", "#question [itemprop='name']"],
+    published: ["#question .post-signature.owner .relativetime", "#question time", "#question .relativetime"],
     comments: ["#question .comment", ".answer", ".answer .comment"],
     commentBody: [".comment-copy", ".js-post-body"],
-    commentAuthor: [".comment-user", ".user-details a"], commentPublished: ["time", ".relativetime"],
+    // 回答的署名卡排在它自己的评论前面取：回答里也有评论，先取 .comment-user 会把评论者当成回答者。
+    commentAuthor: [".post-signature:last-child .user-details a", ".comment-user", ".user-details a"],
+    commentPublished: [".post-signature:last-child .relativetime", "time", ".relativetime"],
   },
   "dev-to": {
     platform: "dev-to", label: "dev.to",
