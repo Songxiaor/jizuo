@@ -26,6 +26,7 @@ final class RenderedPageCaptureService: NSObject, RenderedPageCapturing, WKNavig
   /// 开着 VPN 时域名会解析成 fake-IP，照直读路径的规则放行。
   private let policy = PublicWebURLPolicy(asyncResolver: SystemHostResolver.asyncResolver(), allowsFakeIPPeers: true)
   private var scriptWorld: WKContentWorld = .defaultClient
+  private var scriptLimit: Duration = .seconds(30)
 
   func capture(url: URL) async throws -> CapturedDocument {
     try await policy.validate(url)
@@ -39,6 +40,7 @@ final class RenderedPageCaptureService: NSObject, RenderedPageCapturing, WKNavig
     }
     configuration.websiteDataStore = CommentFetchService.dataStore(for: url)
     configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+    HiddenWebPage.prepare(configuration)
     configuration.mediaTypesRequiringUserActionForPlayback = .all
     configuration.allowsAirPlayForMediaPlayback = false
     let frame = NSRect(x: 0, y: 0, width: 1280, height: 900)
@@ -59,8 +61,10 @@ final class RenderedPageCaptureService: NSObject, RenderedPageCapturing, WKNavig
     window = host
 
     timedOut = false
+    let budget = RenderedPageExtraction.timeBudget(for: url)
+    scriptLimit = budget.script
     let timeout = Task { @MainActor [weak self] in
-      try? await Task.sleep(for: .seconds(75))
+      try? await Task.sleep(for: budget.overall)
       guard !Task.isCancelled, let self else { return }
       self.timedOut = true
       self.tearDown()
@@ -75,7 +79,14 @@ final class RenderedPageCaptureService: NSObject, RenderedPageCapturing, WKNavig
       // 首屏出来后，前端渲染的正文常常还要再请求、再重绘一轮：等字数稳定了再取。
       try await Task.sleep(for: .seconds(1))
       _ = try? await evaluate(RenderedPageExtraction.settleBody, world: .defaultClient, in: view, limit: .seconds(12))
-      var document = try await extract(script: script, url: url, in: view)
+      var document: CapturedDocument
+      do {
+        document = try await extract(script: script, url: url, in: view)
+      } catch where Self.pageWasNotReady(error) {
+        // 正文还没渲染出来时 YouTube 的提取脚本直接报「内容为空」（App 刚启动后的第一条，2026-10-02 实测）。
+        try await Task.sleep(for: .seconds(3))
+        document = try await extract(script: script, url: url, in: view)
+      }
       if RenderedPageExtraction.shouldRetry(document, url: url) {
         try await Task.sleep(for: .seconds(2))
         if let second = try? await extract(script: script, url: url, in: view),
@@ -91,12 +102,20 @@ final class RenderedPageCaptureService: NSObject, RenderedPageCapturing, WKNavig
     }
   }
 
+  /// 提取脚本自己抛错（页面还没准备好），或没有返回结果：值得隔一会儿再取一次。
+  /// 登录墙、验证页这类结论性的结果不在其中。
+  private static func pageWasNotReady(_ error: Error) -> Bool {
+    let error = error as NSError
+    if error.domain == WKError.errorDomain, error.code == WKError.Code.javaScriptExceptionOccurred.rawValue { return true }
+    return (error as Error as? ManualLinkError) == .invalidPageResult
+  }
+
   private func extract(script: String, url: URL, in view: WKWebView) async throws -> CapturedDocument {
     guard !timedOut else { throw ManualLinkError.timedOut }
     _ = try? await evaluate(RenderedPageExtraction.lazyLoadScrollBody, world: .defaultClient, in: view, limit: .seconds(15))
     try await Task.sleep(for: .milliseconds(600))
     let raw = try await evaluate(
-      RenderedPageExtraction.functionBody(script: script), world: scriptWorld, in: view, limit: .seconds(30)
+      RenderedPageExtraction.functionBody(script: script), world: scriptWorld, in: view, limit: scriptLimit
     )
     guard let json = raw else { throw ManualLinkError.invalidPageResult }
     // 传用户要的原地址：最终停在哪由脚本结果里的地址说明，两者一比才认得出「被跳去登录页」。
@@ -172,10 +191,10 @@ final class RenderedPageCaptureService: NSObject, RenderedPageCapturing, WKNavig
     decidePolicyFor navigationAction: WKNavigationAction,
     decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
   ) {
-    let target = navigationAction.request.url
-    let allowed = CommentFetchService.allowsNavigation(to: target) && navigationAction.targetFrame != nil
-    let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? false
     MainActor.assumeIsolated {
+      let target = navigationAction.request.url
+      let allowed = CommentFetchService.allowsNavigation(to: target) && navigationAction.targetFrame != nil
+      let isMainFrame = navigationAction.targetFrame?.isMainFrame ?? false
       guard allowed else { return decisionHandler(.cancel) }
       // 主页面每一跳（含服务端重定向）都重新过一遍地址门禁：公网页面跳去内网地址就停下。
       guard isMainFrame, let target, ["http", "https"].contains(target.scheme?.lowercased() ?? "") else {

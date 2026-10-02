@@ -42,6 +42,12 @@ public enum RenderedPageExtraction {
     return script + "\nreturn JSON.stringify((await \(name)) ?? null);"
   }
 
+  /// 整次抓取和提取脚本各最多等多久。YouTube 要打开「文字记录」面板、等字幕加载并稳定，
+  /// 常要 30 秒以上；原来一律 30 秒，超时就整条退回直读，只剩简介没有字幕（2026-10-02 实测 9 次里 3 次）。
+  public static func timeBudget(for url: URL) -> (overall: Duration, script: Duration) {
+    isYouTubeWatch(url) ? (.seconds(110), .seconds(55)) : (.seconds(75), .seconds(30))
+  }
+
   /// 等页面稳定：每半秒量一次正文字数，连续两次不变才算好，最多 8 秒。
   /// 前端渲染的站点在加载完成后还会重绘正文，中途有一段时间页面里只剩推荐卡片——
   /// arena.ai 在 App 里因此时好时坏，一次 1.7 万字、一次 774 字（2026-10-02 实测）。

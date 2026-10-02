@@ -70,6 +70,19 @@ public struct CapturePreferencesStore: Sendable {
     try update { $0.autoSaveComments = value }
   }
 
+  /// 这个平台抓几条评论：单独设过的按单独的，否则跟随默认；0 表示不抓。
+  public func commentLimit(forPlatform platform: String) -> Int {
+    commentLimitsByPlatform[platform] ?? commentLimit
+  }
+
+  /// 保存这条链接时顺带存几条评论；nil 表示不自动存（没开「自动保存」、平台不支持或设成不抓）。
+  /// 和扩展弹窗同一套规则（background.ts `collectCommentsForPicker`），两种保存方式存下的评论一致。
+  public func autoSaveCommentLimit(for url: URL) -> Int? {
+    guard autoSaveComments, let platform = CommentCapture.platform(for: url) else { return nil }
+    let limit = commentLimit(forPlatform: platform)
+    return limit == Self.commentsDisabled ? nil : limit
+  }
+
   /// 新内容进来后会自动做的工序（`record` `proof` `comments` `summary` `translation` `mindMap`）。
   /// App 在设置变化时写进来，Host 读给扩展弹窗点亮工序印（2026-09-29 弹窗重构）。
   /// nil 表示 App 还没写过（旧版本），扩展按「不知道」处理。

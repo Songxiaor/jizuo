@@ -293,6 +293,8 @@ UI 只按内部错误码组合固定本地化 `message + recoveryAction`：402 �
 
 **2026-10-02 起，通用网页的手动链接先走内置网页渲染。** `RenderedPageCaptureService` 在屏幕外的隐藏 `WKWebView` 里打开链接，等正文字数稳定、滚动触发懒加载后，执行随 App 打包的扩展构建产物 `browser-scripts/extract-page.js`（YouTube 观看页用 `extract-youtube.js`，在页面主世界里跑），结果按扩展 `captureSendBlockReason` 同一套放行规则变成 `CapturedDocument`（`method = rendered_dom`）。扩展与 App 因此共用一份提取实现；`scripts/sync-contracts.sh` 负责把扩展构建产物复制进 `LinkDigestCore/Resources/browser-scripts/`。渲染失败、被拦或字数明显偏少时，回落到上面的 HTML 直读，取字多的一份；验证页、登录跳转等明确结论不被直读结果掩盖。抖音、小红书、B 站、GitHub（.ipynb 除外）、公众号、X 单条与直接的 `.md` 仍走各自适配器。
 
+隐藏 `WKWebView`（`RenderedPageCaptureService`、读评论的 `CommentFetchService`）在系统看来是「不可见」页面：`requestAnimationFrame` 不触发、`IntersectionObserver` 不通知，靠它们分批渲染的页面（YouTube 评论区）只出来开头几条。`HiddenWebPage.prepare` 关掉不活跃节流，并在文档开始时往页面主世界注入计时器驱动的替身；只作用于汲作自己的隐藏网页。手动添加的单条链接保存后，按 `CapturePreferencesStore.autoSaveCommentLimit` 顺带读评论，规则与扩展弹窗一致。
+
 渲染路径的安全边界与直读不同，需单独理解：主页面的每一跳（含服务端重定向）都先过 `PublicWebURLPolicy` 解析门禁（允许 fake-IP，与直读的代理分流一致）；页面内所有直接指向回环、私网、链路本地、CGNAT 字面 IP 与 `localhost` 的请求由 `WKContentRuleList` 拦截；新窗口与非 http(s)/about/data/blob 协议一律取消。它不做 PeerBound 那样的连接对端校验，DNS-rebinding 防护弱于直读路径。登录态只来自「站点登录」各平台的隔离 `WKWebsiteDataStore`，其余站点用默认分区，不导入浏览器 Cookie。页面开始显示后最多等 15 秒就开始提取；每次脚本调用都有上限（稳定 12 秒、滚动 15 秒、提取 30 秒，整体 75 秒），网页脚本不返回也不会卡住串行抓取队列。
 
 ### 7.3 Loop 6.5 GitHub 来源适配器与本地 README 图片

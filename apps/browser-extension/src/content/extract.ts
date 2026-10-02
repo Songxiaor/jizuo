@@ -276,7 +276,9 @@ export function extractCurrentPage(documentLike: Document = document): Extracted
   // Medium 会员文章未登录只给开头，页面上方写着「Member-only story」（2026-10-02 抓取完整度测试）。
   const mediumMemberOnly = /(?:^|\.)medium\.com$/u.test(new URL(baseHref).hostname)
     && /^\s*Member-only story\s*$/mu.test(markdown);
-  const paywalled = mediumMemberOnly || Boolean(profile?.paywall && firstNode(documentLike, profile.paywall));
+  const paywalled = mediumMemberOnly
+    || zhihuAnswerTruncated(documentLike)
+    || Boolean(profile?.paywall && firstNode(documentLike, profile.paywall));
   return withProfilePlatform(
     page(
       documentLike,
@@ -1830,15 +1832,110 @@ function genericContentRoot(documentLike: Document): Element | null {
   return null;
 }
 
+type ZhihuAnswerData = { content?: string; truncated: boolean; readMoreNeedsLogin: boolean };
+
+/**
+ * 知乎回答页自带的 `js-initialData` 里这条回答的数据：完整内容，以及知乎自己标的
+ * 「内容是否被截断」（没登录时长回答只给开头，`contentNeedTruncated` 为 true）。
+ */
+function zhihuAnswerData(documentLike: Document): ZhihuAnswerData | undefined {
+  const href = documentLike.location?.href ?? "";
+  if (!isZhihuAnswerURL(href)) return undefined;
+  const answerID = new URL(href).pathname.match(/\/answer\/(\d+)/u)?.[1];
+  const raw = documentLike.querySelector?.("#js-initialData")?.textContent;
+  if (!answerID || !raw) return undefined;
+  try {
+    const answer = (JSON.parse(raw) as {
+      initialState?: {
+        entities?: {
+          answers?: Record<string, { content?: unknown; contentNeedTruncated?: unknown; forceLoginWhenClickReadMore?: unknown }>;
+        };
+      };
+    })?.initialState?.entities?.answers?.[answerID];
+    if (!answer) return undefined;
+    return {
+      ...(typeof answer.content === "string" && answer.content.trim() ? { content: answer.content } : {}),
+      truncated: answer.contentNeedTruncated === true,
+      readMoreNeedsLogin: answer.forceLoginWhenClickReadMore === true,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+/** 回答页上「这一条」回答的容器（页面下方还排着别人的回答，问题描述也是同样的富文本类名）。 */
+function zhihuFocalAnswer(documentLike: Document): Element | null {
+  const href = documentLike.location?.href ?? "";
+  if (!isZhihuAnswerURL(href)) return null;
+  const answerID = new URL(href).pathname.match(/\/answer\/(\d+)/u)?.[1];
+  if (!answerID) return null;
+  return documentLike.querySelector?.(
+    `[data-answer-id='${answerID}'], [data-zop*='${answerID}'], [data-za-extra-module*='${answerID}']`,
+  ) ?? null;
+}
+
+/**
+ * 知乎回答页：先在「这一条」回答里点「阅读全文」，等正文展开再提取（2026-10-02：App 登录知乎后
+ * 仍只存下 132 字的折叠预览——登录用户的全文不预先放在页面数据里，点了才加载）。知乎标明
+ * 「点阅读全文要先登录」时不点，免得在用户的浏览器里弹登录框。
+ */
+export async function expandZhihuAnswer(documentLike: Document = document, waitMs = 4_000): Promise<void> {
+  const focal = zhihuFocalAnswer(documentLike);
+  if (!focal || zhihuAnswerData(documentLike)?.readMoreNeedsLogin) return;
+  const readMore = Array.from(focal.querySelectorAll<HTMLElement>("button"))
+    .find((button) => /^(?:展开)?阅读全文/u.test((button.textContent ?? "").replace(/\s+/gu, "")));
+  if (!readMore) return;
+  const length = () => (focal.textContent ?? "").replace(/\s+/gu, "").length;
+  const before = length();
+  readMore.click();
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline && length() <= before) {
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+  // 展开后正文还会再渲染一小会儿。
+  await new Promise((resolve) => setTimeout(resolve, 300));
+}
+
+/**
+ * 知乎回答页：页面上的回答常是折叠预览（「……」，要点「阅读全文」），完整内容在页面自带的
+ * `js-initialData` 里。用 DOMParser 解析成惰性文档（不加载图片、不执行任何东西），比页面上
+ * 可见的多才用（2026-10-02：App 登录知乎后仍只存下 132 字的预览）。
+ */
+function zhihuAnswerRootFromInitialData(documentLike: Document, visibleRoot: Element | null): Element | null {
+  const content = zhihuAnswerData(documentLike)?.content;
+  if (!content || typeof DOMParser === "undefined") return null;
+  const parsed = new DOMParser().parseFromString(`<div>${content}</div>`, "text/html").body.firstElementChild;
+  if (!parsed) return null;
+  const length = (node: Element | null) => (node?.textContent ?? "").replace(/\s+/gu, "").length;
+  return length(parsed) > length(visibleRoot) ? parsed : null;
+}
+
+/**
+ * 知乎没登录时长回答只给开头：按知乎自己的「内容被截断」标记，标成只含可见内容，阅读页会提示
+ * 可能不是全文。不看登录框——短回答没登录也是全文，看登录框会误报。
+ */
+function zhihuAnswerTruncated(documentLike: Document): boolean {
+  return zhihuAnswerData(documentLike)?.truncated === true;
+}
+
 function pickContentRoot(documentLike: Document): Element {
   // Non-X pages only. X status uses extractXStatusPage.
   //
   // 站点专属选择器先行，然后才是跨站点通用的语义标记。带站点色彩的类名一律
   // 住在 SITE_PROFILES 里——混进通用清单就等于通用路径认识具体站点。
   const profile = profileFor(documentLike);
-  const scoped = profile?.contentRoot
-    ? firstSubstantiveNode(documentLike, profile.contentRoot)
+  // 知乎回答页只从「这一条」回答里取，问题描述和下面别人的回答也用同样的富文本类名。
+  const focalZhihu = zhihuFocalAnswer(documentLike);
+  const focalRichText = focalZhihu && profile?.contentRoot
+    ? profile.contentRoot
+      .flatMap((selector) => Array.from(focalZhihu.querySelectorAll(selector)))
+      .find((node) => (node.textContent?.trim().length ?? 0) >= 20) ?? null
     : null;
+  const scoped = focalRichText ?? (profile?.contentRoot
+    ? firstSubstantiveNode(documentLike, profile.contentRoot)
+    : null);
+  const zhihu = zhihuAnswerRootFromInitialData(documentLike, scoped);
+  if (zhihu) return zhihu;
   if (scoped) return scoped;
   const generic = genericContentRoot(documentLike);
   if (generic) return generic;
@@ -1847,8 +1944,22 @@ function pickContentRoot(documentLike: Document): Element {
   return documentLike.body ?? documentLike.documentElement;
 }
 
+/** 行内标签：类名再像「评论」「推荐」也是正文里的一句话，不是整块区域。 */
+const INLINE_TEXT_TAGS = new Set(["span", "a", "strong", "b", "em", "i", "mark", "u", "s", "sub", "sup", "code", "font", "small", "q", "abbr"]);
+/** 按标签名删的一定是杂项；按类名、id 删的只删整块。 */
+const STRUCTURAL_NOISE_TAGS = new Set(["script", "style", "noscript", "template", "nav", "footer", "header", "aside", "form", "svg", "button"]);
+
+/**
+ * 删杂项。按类名、id 认出来的（评论区、推荐区、打赏……）只删整块，不删行内标签：知乎登录后
+ * 开了「划线评论」，正文每句话包在类名带 comment 的 span 里，原来整段被当成评论区删掉，
+ * 267 字的回答只剩 45 字（2026-10-02 App 登录知乎后实测）。
+ */
 export function scrubNoise(root: Element): void {
-  root.querySelectorAll(NOISE_SELECTOR).forEach((node) => node.remove());
+  root.querySelectorAll(NOISE_SELECTOR).forEach((node) => {
+    const tag = (node.tagName ?? "").toLowerCase();
+    if (!STRUCTURAL_NOISE_TAGS.has(tag) && INLINE_TEXT_TAGS.has(tag)) return;
+    node.remove();
+  });
 }
 
 /**
@@ -2458,6 +2569,7 @@ export function resolveResponsiveImageURL(image: Element, baseHref: string): str
     addSrcset(source.getAttribute("srcset"), 30);
   });
   add(image.getAttribute("data-src"), undefined, 25);
+  add(image.getAttribute("data-actualsrc"), undefined, 22);
   add(image.getAttribute("data-original"), undefined, 20);
   add(image.getAttribute("data-lazy-src"), undefined, 15);
   add(image.getAttribute("src"), undefined, 10);
@@ -2524,6 +2636,9 @@ export function htmlElementToMarkdown(root: Element, baseHref: string): string {
       const body = collapseInline(inner);
       return body ? `\n\n${body}\n\n` : "\n";
     }
+    // 段落里的 span 是行内文字，原样接上。按块处理会在包起来的地方补空格：知乎登录后
+    // 「划线评论」把句子包进 span，中文正文冒出「记 得」「不好的 。」（2026-10-02 实测）。
+    if (tag === "span" && isRunningTextSpan(el)) return inner;
     if (tag === "div" || tag === "section" || tag === "figure" || tag === "span") {
       if (hasBlockChild(el)) return `\n${inner}\n`;
       const body = collapseInline(inner);
@@ -2946,6 +3061,17 @@ function isFootnoteBacklink(el: Element): boolean {
   if (href.startsWith("#")) return true;
   const inner = el.querySelector?.("a[href^='#']");
   return inner != null;
+}
+
+/** span 在段落、标题、列表项里，或紧挨着一段文字：它是一句话的一部分，不是单独一块。 */
+function isRunningTextSpan(el: Element): boolean {
+  const parent = el.parentNode as Element | null;
+  if (!parent) return false;
+  if (/^(p|h[1-6]|li)$/.test((parent.tagName ?? "").toLowerCase())) return true;
+  const siblings = Array.from(parent.childNodes ?? []);
+  const index = siblings.indexOf(el);
+  const isText = (node: Node | undefined) => node?.nodeType === 3 && Boolean(node.textContent?.trim());
+  return isText(siblings[index - 1]) || isText(siblings[index + 1]);
 }
 
 function hasBlockChild(el: Element): boolean {

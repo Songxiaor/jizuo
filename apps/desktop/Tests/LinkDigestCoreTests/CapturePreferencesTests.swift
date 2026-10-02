@@ -88,6 +88,20 @@ final class CapturePreferencesTests: XCTestCase {
     XCTAssertEqual(store.commentLimitsByPlatform, ["reddit": 0, "x": 100], "nil = 改回跟随默认")
   }
 
+  /// App「添加链接」顺带存评论的条数，和扩展弹窗「自动保存前 N 条」同一套规则。
+  func testAutoSaveCommentLimitFollowsExtensionRule() throws {
+    let store = CapturePreferencesStore(root: root)
+    let zhihu = URL(string: "https://www.zhihu.com/question/1/answer/2")!
+    XCTAssertNil(store.autoSaveCommentLimit(for: zhihu), "没开自动保存：不存")
+    try store.setAutoSaveComments(true)
+    XCTAssertEqual(store.autoSaveCommentLimit(for: zhihu), 20, "跟随默认条数")
+    try store.setCommentLimit(40, forPlatform: "zhihu")
+    XCTAssertEqual(store.autoSaveCommentLimit(for: zhihu), 40, "平台单独设的条数优先")
+    try store.setCommentLimit(0, forPlatform: "zhihu")
+    XCTAssertNil(store.autoSaveCommentLimit(for: zhihu), "平台设成不抓：不存")
+    XCTAssertNil(store.autoSaveCommentLimit(for: URL(string: "https://example.com/post")!), "不支持评论的网页：不存")
+  }
+
   func testResponseCarriesPlatformLimitsOnlyWhenSet() throws {
     let plain = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
       NativeResponse.capturePreferences(version: 1, requestId: "r", commentLimit: 20)

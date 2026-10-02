@@ -273,3 +273,28 @@ describe("virtualized lists", () => {
     expect(scrolls.at(-1)).toBe(900);
   });
 });
+
+describe("forum comment authors", () => {
+  it("skips Discourse's avatar link (it has no text) and reads the name next to it", async () => {
+    const cooked = {
+      nodeType: 1, tagName: "DIV", textContent: "接受邀请！", childNodes: [{ nodeType: 3, textContent: "接受邀请！" }],
+      cloneNode: () => cooked, querySelectorAll: () => [], querySelector: () => null, getAttribute: () => null,
+    };
+    const avatar = { textContent: "\n  \n" };
+    const name = { textContent: "\n  zhey（开学了）\n" };
+    const post = {
+      id: "post_2",
+      querySelector: (selector: string) => (selector === ".cooked" ? cooked : selector === "[data-user-card]" ? avatar : null),
+      querySelectorAll: (selector: string) => (selector === "[data-user-card]" ? [avatar, name] : []),
+    };
+    const documentLike = {
+      location: { href: "https://linux.do/t/topic/847468" },
+      defaultView: { scrollX: 0, scrollY: 0, scrollTo: () => undefined, getComputedStyle: () => ({ overflowY: "visible" }) },
+      documentElement: {}, body: {}, scrollingElement: { scrollHeight: 0 },
+      querySelector: () => null,
+      querySelectorAll: (selector: string) => (selector === "article[id^='post_']" ? [post] : []),
+    } as unknown as Document;
+    const collection = await collectCommentsFromDocument(documentLike, 10, { sleep: async () => undefined, settleMillis: 0, idleRounds: 0 });
+    expect(collection?.comments[0]).toMatchObject({ author: "zhey（开学了）", body: "接受邀请！" });
+  });
+});

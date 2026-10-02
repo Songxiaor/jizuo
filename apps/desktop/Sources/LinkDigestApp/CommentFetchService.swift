@@ -53,6 +53,7 @@ final class CommentFetchService: NSObject, WKNavigationDelegate {
     let configuration = WKWebViewConfiguration()
     configuration.websiteDataStore = Self.dataStore(for: url)
     configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+    HiddenWebPage.prepare(configuration)
     configuration.mediaTypesRequiringUserActionForPlayback = .all
     configuration.allowsAirPlayForMediaPlayback = false
     let frame = NSRect(x: 0, y: 0, width: 1280, height: 900)
@@ -99,10 +100,32 @@ final class CommentFetchService: NSObject, WKNavigationDelegate {
 
   func cancel() { tearDown() }
 
+  /// 等页面加载完。YouTube 这类一直在加载视频的页面迟迟不报「加载完毕」，原来等到 60 秒超时、
+  /// 一条评论也没读（2026-10-02 实测 App 存 YouTube 时有时没评论）。和抓正文一样：
+  /// 页面开始显示后最多再等 15 秒就开始读。
   private func load(_ url: URL, in view: WKWebView) async throws {
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
       loadContinuation = continuation
+      committed = false
+      loadGeneration += 1
       view.load(URLRequest(url: url, cachePolicy: .reloadIgnoringLocalCacheData, timeoutInterval: 30))
+    }
+  }
+
+  private var committed = false
+  /// 「抓取评论…」面板会用同一个实例重读：上一次留下的 15 秒计时不能提前放行这一次。
+  private var loadGeneration = 0
+
+  nonisolated func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+    MainActor.assumeIsolated {
+      guard !committed else { return }
+      committed = true
+      let generation = loadGeneration
+      Task { @MainActor [weak self] in
+        try? await Task.sleep(for: .seconds(15))
+        guard let self, self.loadGeneration == generation else { return }
+        self.finishLoad(.success(()))
+      }
     }
   }
 
@@ -134,9 +157,10 @@ final class CommentFetchService: NSObject, WKNavigationDelegate {
     decidePolicyFor navigationAction: WKNavigationAction,
     decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void
   ) {
-    let allowed = Self.allowsNavigation(to: navigationAction.request.url)
-      && navigationAction.targetFrame != nil
-    MainActor.assumeIsolated { decisionHandler(allowed ? .allow : .cancel) }
+    MainActor.assumeIsolated {
+      let allowed = Self.allowsNavigation(to: navigationAction.request.url) && navigationAction.targetFrame != nil
+      decisionHandler(allowed ? .allow : .cancel)
+    }
   }
 
   nonisolated func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {

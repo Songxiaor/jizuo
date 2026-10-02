@@ -805,11 +805,24 @@ final class ManualLinkViewModel: ObservableObject {
     )
   }
 
+  /// 存完后顺带存几条评论，nil 表示不存。博主批量保存只看它自己的「同时抓取评论」；
+  /// 单条链接按「设置 → 收集 · 汲 → 评论」的自动保存，和扩展保存同一套规则。
+  private func commentLimitAfterSave(pageURL: URL, includesComments: Bool, followsAutoSave: Bool) -> Int? {
+    let preferences = CapturePreferencesStore.standard()
+    if includesComments {
+      let platformLimit = CommentCapture.platform(for: pageURL).map(preferences.commentLimit(forPlatform:)) ?? 0
+      return platformLimit > 0 ? platformLimit : preferences.commentLimit
+    }
+    return followsAutoSave ? preferences.autoSaveCommentLimit(for: pageURL) : nil
+  }
+
   /// 作品已入库后补评论：读不到只记一句提示，不把整条抓取判失败。
-  private func attachComments(pageURL: String, taskID: TaskID, snapshotID: ContentSnapshotID) async {
-    guard let url = URL(string: pageURL), CommentCapture.platform(for: url) != nil, let history else { return }
-    let limit = CapturePreferencesStore.standard().commentLimit
-    guard let collection = try? await CommentFetchService().fetch(url: url, limit: limit),
+  private func attachComments(pageURL url: URL, limit: Int, taskID: TaskID, snapshotID: ContentSnapshotID) async {
+    guard CommentCapture.platform(for: url) != nil, let history else { return }
+    let collection = try? await CommentFetchService().fetch(url: url, limit: limit)
+    // 页面明说一条评论都没有：没什么可补，也不用提示。
+    if collection?.comments.isEmpty == true, collection?.expectedCount == 0 { return }
+    guard let collection,
           !collection.comments.isEmpty,
           let snapshot = try? history.detail(taskID: taskID).snapshots.first(where: { $0.id == snapshotID })
     else {
@@ -1253,7 +1266,8 @@ final class ManualLinkViewModel: ObservableObject {
             suppressesAutomaticEnrichment: next.suppressesAutomaticEnrichment,
             creatorID: next.creatorID,
             navigationIntent: next.profileImportBatchID == nil ? .reveal : .keepCurrent,
-            includesComments: next.includesComments
+            includesComments: next.includesComments,
+            followsCommentAutoSave: next.profileImportBatchID == nil && next.creatorID == nil
           )
         }
         self.activeCaptureTask = work
@@ -1296,7 +1310,8 @@ final class ManualLinkViewModel: ObservableObject {
     suppressesAutomaticEnrichment: Bool,
     creatorID: CreatorID? = nil,
     navigationIntent: CaptureNavigationIntent = .reveal,
-    includesComments: Bool = false
+    includesComments: Bool = false,
+    followsCommentAutoSave: Bool = false
   ) async throws -> CurrentCapture {
     guard let ingestor else { throw ManualLinkError.network }
     var capturedDocument: CapturedDocument?
@@ -1395,8 +1410,10 @@ final class ManualLinkViewModel: ObservableObject {
         let stored = try? history?.detail(taskID: accepted.taskID).media
         captureDownloadStatuses[value] = stored?.snapshotID == accepted.snapshotID ? "completed" : "failed"
       }
-      if includesComments {
-        await attachComments(pageURL: value, taskID: accepted.taskID, snapshotID: accepted.snapshotID)
+      // 短链（v.douyin.com）认不出平台，换成抓到的页面地址再认。
+      if let pageURL = [value, document.url].lazy.compactMap(URL.init(string:)).first(where: { CommentCapture.platform(for: $0) != nil }),
+         let limit = commentLimitAfterSave(pageURL: pageURL, includesComments: includesComments, followsAutoSave: followsCommentAutoSave) {
+        await attachComments(pageURL: pageURL, limit: limit, taskID: accepted.taskID, snapshotID: accepted.snapshotID)
       }
       return accepted
     } catch {

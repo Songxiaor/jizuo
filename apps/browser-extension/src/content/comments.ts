@@ -339,6 +339,18 @@ function elementMarkdown(node: Element, baseHref: string): string {
   return stripBoilerplateLines(htmlElementToMarkdown(clone, baseHref)).trim();
 }
 
+/** 第一个有字的匹配。Discourse 每楼先放一个也带 `data-user-card` 的头像链接，里面只有图片；
+ *  只取第一个匹配，linux.do 的评论作者全成了「未知用户」（2026-10-02）。 */
+function firstTextIn(root: ParentNode, selectors: readonly string[]): string {
+  for (const selector of selectors) {
+    for (const node of Array.from(root.querySelectorAll(selector))) {
+      const value = clean(node.textContent);
+      if (value) return value;
+    }
+  }
+  return "";
+}
+
 function firstIn(root: ParentNode | null | undefined, selectors: readonly string[]): Element | null {
   if (!root) return null;
   for (const selector of selectors) {
@@ -436,7 +448,7 @@ function communityReader(profile: CommunityProfile | undefined): CommentReader {
         const markdown = elementMarkdown(commentBody, baseHref);
         if (!markdown || bodies.has(markdown)) continue;
         bodies.add(markdown);
-        const author = clean(firstIn(node, profile.commentAuthor)?.textContent) || "未知用户";
+        const author = firstTextIn(node, profile.commentAuthor) || "未知用户";
         const published = clean(firstIn(node, profile.commentPublished)?.textContent);
         comments.push({
           id: node.id ? `n-${node.id}` : commentHashID(author, markdown),

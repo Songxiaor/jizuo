@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   attachDetectedMedia,
   captureBodyLacksProse,
@@ -2814,5 +2814,100 @@ describe("navigation images (2026-10-02 Paul Graham)", () => {
     const { detectPageTranslation } = await import("../src/content/extract");
     const root = el("main", [el("div", [text("已翻译")]), el("p", [text("在我与科技公司CEO好友的小型群聊中，大家都在打赌。")])]);
     expect(detectPageTranslation(makeDocument({ title: "Substack", href: "https://substack.com/home/post/p-214463802", root }))).toBe("Substack 自动翻译");
+  });
+});
+
+describe("Zhihu collapsed answers (2026-10-02)", () => {
+  it("prefers the full answer in js-initialData over the collapsed preview, and marks only truncated answers", () => {
+    const full = "第一段：知龄近8年，几乎每天都会刷知乎，应该算知乎的重度用户了吧。第二段：经理语重心长地对我们说，上班的时候也收敛一点。第三段：说完经理顿了顿。";
+    const answerID = "1992353258262504861";
+    const initialData = (truncated: boolean) => JSON.stringify({ initialState: { entities: { answers: { [answerID]: { content: `<p>${full}</p>`, contentNeedTruncated: truncated } } } } });
+    const parsed = el("div", [el("p", [text(full)])]);
+    vi.stubGlobal("DOMParser", class { parseFromString() { return { body: { firstElementChild: parsed } }; } });
+    try {
+      const page = (truncated: boolean) => extractCurrentPage(makeDocument({
+        title: "如何正确使用知乎？",
+        href: `https://www.zhihu.com/question/19550225/answer/${answerID}`,
+        root: el("div", [
+          el("script", [text(initialData(truncated))], { id: "js-initialData" }),
+          el("div", [text("知龄近8年，几乎每天都会刷知乎，……")], { class: "RichText ztext" }),
+          // 没登录时总有登录框，短回答也有：不能拿它判断截断。
+          el("div", [text("登录")], { class: "signFlowModal" }),
+        ]),
+      }));
+      const complete = page(false);
+      expect(complete.text).toContain("第三段：说完经理顿了顿。");
+      expect(complete.completeness).not.toBe("visible_only");
+      expect(page(true).completeness).toBe("visible_only");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+});
+
+describe("Zhihu read-more (2026-10-02)", () => {
+  const answerID = "1992353258262504861";
+  const setup = (readMoreNeedsLogin: boolean) => {
+    const body = el("div", [text("知龄近8年，几乎每天都会刷知乎……")], { class: "RichText ztext" });
+    const button = el("button", [text("阅读全文")]);
+    let clicks = 0;
+    (button as unknown as { click: () => void }).click = () => {
+      clicks += 1;
+      const more = text("知龄近8年，几乎每天都会刷知乎。展开后的第二段、第三段，一直到回答结束。");
+      body.childNodes = [more];
+      body.textContent = more.textContent ?? "";
+      focal.textContent = (body.textContent ?? "") + "阅读全文";
+    };
+    const focal = el("div", [body, button], { "data-zop": `{"itemId":"${answerID}"}` });
+    const initialData = el("script", [text(JSON.stringify({ initialState: { entities: { answers: { [answerID]: { forceLoginWhenClickReadMore: readMoreNeedsLogin } } } } }))], { id: "js-initialData" });
+    const documentLike = makeDocument({ title: "知乎", href: `https://www.zhihu.com/question/19550225/answer/${answerID}`, root: el("div", [initialData, focal]) });
+    return { documentLike, clicks: () => clicks };
+  };
+
+  it("clicks read-more inside the focal answer and waits for the full text", async () => {
+    const { expandZhihuAnswer } = await import("../src/content/extract");
+    const { documentLike, clicks } = setup(false);
+    await expandZhihuAnswer(documentLike, 500);
+    expect(clicks()).toBe(1);
+    expect(extractCurrentPage(documentLike).text).toContain("一直到回答结束");
+  });
+
+  it("does not click when Zhihu says read-more needs login", async () => {
+    const { expandZhihuAnswer } = await import("../src/content/extract");
+    const { documentLike, clicks } = setup(true);
+    await expandZhihuAnswer(documentLike, 200);
+    expect(clicks()).toBe(0);
+  });
+});
+
+describe("inline spans are text, not comment sections (2026-10-02 知乎划线评论)", () => {
+  it("keeps sentences wrapped in comment-highlight spans and still drops real comment blocks", () => {
+    const sentence = (value: string) => el("span", [text(value)], { class: "RichText-SegmentComment comment-highlight" });
+    const root = el("div", [
+      el("p", [sentence("知龄近8年，几乎每天都会刷知乎，"), sentence("只是因为我手机上所有常用的APP里，用来上班摸鱼最不容易被发现的，就是知乎了……")]),
+      el("p", [sentence("记得上一份工作的时候，有一次部门里开会，经理老哥语重心长的对我们说。")]),
+      // 整块区域照删（测试用的假页面不认 `i` 标记的类名选择器，用 aside 代表整块杂项）。
+      el("aside", [el("p", [text("这是一条评论区里的评论，不该进正文。")])], { class: "CommentListV2" }),
+    ], { class: "RichText ztext" });
+    const page = extractCurrentPage(makeDocument({ title: "知乎", href: "https://www.zhihu.com/question/19550225/answer/1992353258262504861", root }));
+    expect(page.text).toContain("就是知乎了……");
+    expect(page.text).toContain("经理老哥语重心长的对我们说。");
+    expect(page.text).not.toContain("评论区里的评论");
+    // 句子之间不补空格：span 是行内文字。
+    expect(page.text).toContain("几乎每天都会刷知乎，只是因为我手机上");
+  });
+
+  it("joins a half-sentence span with the text around it", () => {
+    const root = el("div", [
+      el("div", [
+        text("记"),
+        el("span", [text("得上一份工作的时候，经理老哥说上班摸鱼被领导撞见总还是不好的")], { class: "comment-highlight" }),
+        text("。"),
+      ]),
+      el("p", [text("这是正文后面的一段话，保证正文足够长。".repeat(6))]),
+    ], { class: "RichText ztext" });
+    const page = extractCurrentPage(makeDocument({ title: "知乎", href: "https://www.zhihu.com/question/1/answer/2", root }));
+    expect(page.text).toContain("记得上一份工作的时候");
+    expect(page.text).toContain("总还是不好的。");
   });
 });

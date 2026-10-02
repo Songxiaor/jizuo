@@ -1,4 +1,4 @@
-import { detectPageTranslation, extractCurrentPage } from "../src/content/extract";
+import { detectPageTranslation, expandZhihuAnswer, extractCurrentPage } from "../src/content/extract";
 import { extractGitHubBlobPage } from "../src/content/github-notebook";
 import { showXOriginal } from "../src/content/x-original";
 
@@ -22,6 +22,8 @@ import { showXOriginal } from "../src/content/x-original";
 export default defineUnlistedScript(async () => {
   // X 自动翻译的帖子先切回原文再提取，提取完切回去（见 x-original.ts）。
   const restoreTranslation = await showXOriginal(document);
+  // 知乎回答折叠着时先点「阅读全文」（见 expandZhihuAnswer）。
+  await expandZhihuAnswer(document);
   try {
     const page = (await extractGitHubBlobPage(document)) ?? extractCurrentPage();
     // 页面仍显示机器译文时带上标记，弹窗据此提醒（见 detectPageTranslation）。
