@@ -66,7 +66,7 @@ public enum RenderedPageExtraction {
   /// 或 YouTube 还没读到字幕（播放器、文字记录面板加载得慢）。
   public static func shouldRetry(_ document: CapturedDocument, url: URL) -> Bool {
     if document.characterCount < 2_000 { return true }
-    return isYouTubeWatch(url) && !document.text.contains("## 字幕")
+    return isYouTubeWatch(url) && !hasTranscript(document)
   }
 
   /// 慢慢滚到底再回顶：懒加载的图片只有进过视口才会换上真地址。
@@ -101,6 +101,25 @@ public enum RenderedPageExtraction {
     let platform: String?
     let completeness: String?
     let captureIssue: String?
+    let captionTrackCount: Int?
+  }
+
+  /// YouTube 提取结果里播放器的字幕轨数：0 = 视频本来就没有字幕，nil = 不知道。
+  public static func captionTrackCount(json: String) -> Int? {
+    guard let data = json.data(using: .utf8) else { return nil }
+    return (try? JSONDecoder().decode(Payload.self, from: data))?.captionTrackCount
+  }
+
+  /// 存下的视频正文里有没有字幕段。
+  public static func hasTranscript(_ document: CapturedDocument) -> Bool {
+    document.text.contains("## 字幕")
+  }
+
+  /// YouTube 最终没拿到字幕时保存后的提示：视频本来没有字幕就直说；有字幕却没取到，告诉用户怎么重来。
+  public static func missingTranscriptNotice(captionTrackCount: Int?) -> String {
+    captionTrackCount == 0
+      ? "这个视频本身没有字幕，只存了标题和简介。"
+      : "已保存，但这次没拿到字幕，只存了标题和简介。稍后可以再添加一次这个链接，选「仍要重新抓取」。"
   }
 
   /// 扩展 `captureSendBlockReason` 的同一套放行规则：登录墙、应用外壳、只有导航这三种

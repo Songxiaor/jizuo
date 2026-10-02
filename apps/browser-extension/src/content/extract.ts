@@ -26,6 +26,11 @@ export type ExtractedPage = {
    * 不进合同：存下的就是页面上显示的字。
    */
   pageTranslatedBy?: string;
+  /**
+   * YouTube：播放器里有几条字幕轨。0 = 视频本来就没有字幕；大于 0 而正文里没有字幕 =
+   * 这次没取到，值得重试。只给 App 判断重试和提示用，不进合同。
+   */
+  captionTrackCount?: number;
   title: string;
   url: string;
   /** Page-declared site icon observed inside the current browser DOM. */

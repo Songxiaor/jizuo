@@ -1318,6 +1318,7 @@ final class ManualLinkViewModel: ObservableObject {
   ) async throws -> CurrentCapture {
     guard let ingestor else { throw ManualLinkError.network }
     var capturedDocument: CapturedDocument?
+    var transcriptNotice: String?
     do {
       let document: CapturedDocument?
       let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1342,6 +1343,12 @@ final class ManualLinkViewModel: ObservableObject {
           // the same URL through the extension.
           document = try await douyinCapture.capture(url: url)
         }
+      } else if let url = URL(string: trimmed),
+                RenderedPageExtraction.isYouTubeWatch(url),
+                let makeRenderedCapture {
+        let result = try await youTubeCapture(url: url, value: value, makeRendered: makeRenderedCapture)
+        document = result.document
+        transcriptNotice = result.notice
       } else if let url = URL(string: trimmed),
                 RenderedPageCapturePolicy.prefersRendering(url),
                 let makeRenderedCapture {
@@ -1418,10 +1425,50 @@ final class ManualLinkViewModel: ObservableObject {
          let limit = commentLimitAfterSave(pageURL: pageURL, includesComments: includesComments, followsAutoSave: followsCommentAutoSave) {
         await attachComments(pageURL: pageURL, limit: limit, taskID: accepted.taskID, snapshotID: accepted.snapshotID)
       }
+      // 字幕是视频的主要内容：缺了就说清楚，比评论的提示更要紧。
+      if let transcriptNotice { captureNotice = transcriptNotice }
       return accepted
     } catch {
       if let capturedDocument { imageCache?.discardStaged(captureID: capturedDocument.requestID) }
       throw error
+    }
+  }
+
+  /// YouTube：字幕是视频的主要内容。视频有字幕却没取到（字幕接口被拦、文字记录面板没加载出来）
+  /// 时，换一个新的隐藏网页再取一次；还取不到才用已拿到的标题简介（或 HTML 直读），并在保存后
+  /// 提示，不悄悄存一个缺字幕的版本（2026-10-02：App 里抓 YouTube 约四分之一没字幕）。
+  private func youTubeCapture(
+    url: URL,
+    value: String,
+    makeRendered: @MainActor () -> any RenderedPageCapturing
+  ) async throws -> (document: CapturedDocument, notice: String?) {
+    var best: CapturedDocument?
+    var trackCount: Int?
+    var lastError: Error?
+    for attempt in 0..<2 {
+      if attempt > 0 { try await Task.sleep(for: .seconds(3)) }
+      try Task.checkCancellation()
+      let rendered = makeRendered()
+      do {
+        let document = try await rendered.capture(url: url)
+        if let count = rendered.captionTrackCount { trackCount = count }
+        if RenderedPageExtraction.hasTranscript(document) { return (document, nil) }
+        if best.map({ document.characterCount > $0.characterCount }) ?? true { best = document }
+      } catch ManualLinkError.cancelled {
+        throw ManualLinkError.cancelled
+      } catch {
+        lastError = error
+      }
+      // 视频本来就没有字幕：再取一次也不会有。
+      if trackCount == 0 { break }
+    }
+    let notice = RenderedPageExtraction.missingTranscriptNotice(captionTrackCount: trackCount)
+    if let best, best.characterCount >= 300 { return (best, notice) }
+    do {
+      return (try await captureService.capture(urlString: value), notice)
+    } catch {
+      if let best { return (best, notice) }
+      throw lastError ?? error
     }
   }
 

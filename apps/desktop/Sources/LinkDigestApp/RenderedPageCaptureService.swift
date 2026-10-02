@@ -13,6 +13,12 @@ import WebKit
 @MainActor
 protocol RenderedPageCapturing: AnyObject {
   func capture(url: URL) async throws -> CapturedDocument
+  /// YouTube：最近一次提取看到的字幕轨数（0 = 视频没有字幕，nil = 不知道）。
+  var captionTrackCount: Int? { get }
+}
+
+extension RenderedPageCapturing {
+  var captionTrackCount: Int? { nil }
 }
 
 @MainActor
@@ -27,6 +33,7 @@ final class RenderedPageCaptureService: NSObject, RenderedPageCapturing, WKNavig
   private let policy = PublicWebURLPolicy(asyncResolver: SystemHostResolver.asyncResolver(), allowsFakeIPPeers: true)
   private var scriptWorld: WKContentWorld = .defaultClient
   private var scriptLimit: Duration = .seconds(30)
+  private(set) var captionTrackCount: Int?
 
   func capture(url: URL) async throws -> CapturedDocument {
     try await policy.validate(url)
@@ -118,6 +125,7 @@ final class RenderedPageCaptureService: NSObject, RenderedPageCapturing, WKNavig
       RenderedPageExtraction.functionBody(script: script), world: scriptWorld, in: view, limit: scriptLimit
     )
     guard let json = raw else { throw ManualLinkError.invalidPageResult }
+    if let count = RenderedPageExtraction.captionTrackCount(json: json) { captionTrackCount = count }
     // 传用户要的原地址：最终停在哪由脚本结果里的地址说明，两者一比才认得出「被跳去登录页」。
     return try RenderedPageExtraction.document(json: json, requestedURL: url)
   }

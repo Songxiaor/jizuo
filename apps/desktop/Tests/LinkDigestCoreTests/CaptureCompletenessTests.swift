@@ -173,6 +173,28 @@ final class CaptureCompletenessTests: XCTestCase {
     XCTAssertFalse(other.contains("小红书"))
   }
 
+  /// YouTube 没拿到字幕时分清两种情况：视频本来没有字幕（不重试、直说），有字幕却没取到（重试、教用户重来）。
+  func testYouTubeCaptionStateDecidesRetryAndNotice() throws {
+    XCTAssertEqual(RenderedPageExtraction.captionTrackCount(json: json(["text": "x", "captionTrackCount": 0])), 0)
+    XCTAssertEqual(RenderedPageExtraction.captionTrackCount(json: json(["text": "x", "captionTrackCount": 3])), 3)
+    XCTAssertNil(RenderedPageExtraction.captionTrackCount(json: json(["text": "x"])))
+
+    let video = URL(string: "https://www.youtube.com/watch?v=aircAruvnKk")!
+    let withTranscript = try RenderedPageExtraction.document(
+      json: json(["text": "# 标题\n\n## 字幕\n\n" + String(repeating: "字幕内容。", count: 500)]), requestedURL: video
+    )
+    let without = try RenderedPageExtraction.document(
+      json: json(["text": "# 标题\n\n## 简介\n\n" + String(repeating: "简介内容。", count: 500)]), requestedURL: video
+    )
+    XCTAssertTrue(RenderedPageExtraction.hasTranscript(withTranscript))
+    XCTAssertFalse(RenderedPageExtraction.hasTranscript(without))
+    XCTAssertTrue(RenderedPageExtraction.shouldRetry(without, url: video))
+
+    XCTAssertTrue(RenderedPageExtraction.missingTranscriptNotice(captionTrackCount: 0).contains("本身没有字幕"))
+    XCTAssertTrue(RenderedPageExtraction.missingTranscriptNotice(captionTrackCount: 2).contains("仍要重新抓取"))
+    XCTAssertTrue(RenderedPageExtraction.missingTranscriptNotice(captionTrackCount: nil).contains("仍要重新抓取"))
+  }
+
   func testYouTubeWatchPagesUseTheVideoScript() {
     XCTAssertTrue(RenderedPageExtraction.isYouTubeWatch(URL(string: "https://www.youtube.com/watch?v=aircAruvnKk")!))
     XCTAssertTrue(RenderedPageExtraction.isYouTubeWatch(URL(string: "https://youtu.be/aircAruvnKk")!))

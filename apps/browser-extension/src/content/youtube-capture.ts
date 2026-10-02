@@ -84,5 +84,8 @@ export async function captureYouTubeVideoInPage(pageURL: string = location.href)
     canonicalURL: canonical,
     coverImage: snapshot.thumbnailURL ?? youTubeThumbnailURL(urlVideoID),
   });
-  return { title: snapshot.title, url: canonical, text, characterCount: [...text].length, method: "rendered_dom" };
+  return {
+    title: snapshot.title, url: canonical, text, characterCount: [...text].length, method: "rendered_dom",
+    captionTrackCount: tracks.length,
+  };
 }
