@@ -509,3 +509,14 @@ describe("page translation notice (2026-10-02)", () => {
     expect(note).toContain("原文");
   });
 });
+
+describe("comment login wall note (2026-10-02)", () => {
+  it("says only the logged-out part was read, and explains Xiaohongshu's one-login rule", async () => {
+    const { commentLoginWallNote } = await import("../src/popup-presentation");
+    const xhs = commentLoginWallNote("xiaohongshu", 11, 20);
+    expect(xhs).toContain("未登录可见的 11 条");
+    expect(xhs).toContain("读满 20 条");
+    expect(xhs).toContain("只保留一处登录");
+    expect(commentLoginWallNote("reddit", 5, 20)).not.toContain("小红书");
+  });
+});

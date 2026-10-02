@@ -195,7 +195,7 @@ struct SiteLoginSettingsView: View {
       siteRow(
         platform: .xiaohongshu,
         session: xiaohongshuSession,
-        caption: "博主主页"
+        caption: "博主主页、评论；和浏览器只能登一处"
       )
       siteRowDivider
       siteRow(

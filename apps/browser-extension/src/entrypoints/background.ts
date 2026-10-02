@@ -311,7 +311,7 @@ export type CommentCollectResult =
    * 自动保存前 N 条：弹窗不给勾选，只预览读到的前几条（2026-09-29 弹窗重构）。
    * 读到的这份写进缓存，保存时直接用，不再滚第二遍；没读到时 items 缺省，保存时再读。
    */
-  | { ok: false; code: "auto"; platform: CommentPlatform; limit: number; expectedCount?: number; items?: CommentPickerItem[] };
+  | { ok: false; code: "auto"; platform: CommentPlatform; limit: number; expectedCount?: number; loginRequired?: boolean; items?: CommentPickerItem[] };
 
 export function commentPickerItems(comments: CapturedComment[]): CommentPickerItem[] {
   return comments.map((comment) => ({
@@ -347,6 +347,7 @@ export async function collectCommentsForPicker(tabId: number): Promise<CommentCo
           platform,
           limit,
           ...(collection.expectedCount !== undefined ? { expectedCount: collection.expectedCount } : {}),
+          ...(collection.loginRequired ? { loginRequired: true } : {}),
           items: commentPickerItems(collection.comments),
         };
       }

@@ -164,6 +164,15 @@ final class CaptureCompletenessTests: XCTestCase {
     XCTAssertNil(CaptureRouteGuidance.commentsUnavailableMessage(for: URL(string: "https://www.zhihu.com/question/1/answer/2")!))
   }
 
+  /// 评论区要登录才显示全部：提醒只存了未登录可见的部分；小红书点明「登录被挤掉」。
+  func testCommentLoginWallNoticeNamesXiaohongshuOneLoginRule() {
+    let xhs = CaptureRouteGuidance.commentsLoginWallNotice(for: URL(string: "https://www.xiaohongshu.com/explore/6a9e1c10000000001103a75f")!)
+    XCTAssertTrue(xhs.contains("挤掉"))
+    XCTAssertTrue(xhs.contains("站点登录"))
+    let other = CaptureRouteGuidance.commentsLoginWallNotice(for: URL(string: "https://www.reddit.com/r/x/comments/abc/t/")!)
+    XCTAssertFalse(other.contains("小红书"))
+  }
+
   func testYouTubeWatchPagesUseTheVideoScript() {
     XCTAssertTrue(RenderedPageExtraction.isYouTubeWatch(URL(string: "https://www.youtube.com/watch?v=aircAruvnKk")!))
     XCTAssertTrue(RenderedPageExtraction.isYouTubeWatch(URL(string: "https://youtu.be/aircAruvnKk")!))

@@ -796,3 +796,14 @@ export function popupTranslationNote(translator: string): string {
       : "先在插件里关掉这个网站的翻译、刷新页面再保存";
   return `这个页面正显示「${translator}」的译文，保存的会是译文，不是原文。想存原文：${fix}；汲作里可以随时生成中文翻译。`;
 }
+
+/**
+ * 评论区要登录才显示全部时的说明。小红书同一账号在网页端只保留一处登录（2026-10-02：
+ * 在汲作「站点登录」里登录小红书后，浏览器里的登录被挤掉，评论只剩未登录可见的一批）。
+ */
+export function commentLoginWallNote(platform: string, count: number, limit: number): string {
+  const base = `这个网站要登录后才显示全部评论，现在只读到未登录可见的 ${count} 条。登录后重新打开扩展即可读满 ${limit} 条。`;
+  return platform === "xiaohongshu"
+    ? `${base}小红书同一账号在网页端只保留一处登录：在汲作「站点登录」里登录过的话，浏览器这边会被挤掉。`
+    : base;
+}

@@ -840,6 +840,9 @@ final class ManualLinkViewModel: ObservableObject {
       bodyText: body,
       updatedAtMilliseconds: Int64((Date().timeIntervalSince1970 * 1_000).rounded())
     )
+    if collection.loginRequired == true {
+      captureNotice = CaptureRouteGuidance.commentsLoginWallNotice(for: url)
+    }
   }
 
   /// 主页导入只接收已经在候选页中由用户勾选的单条作品。所有有效项先一次性

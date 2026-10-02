@@ -18,6 +18,7 @@ import {
   popupStepProgress,
   popupSavedAtLabel,
   popupTranslationNote,
+  commentLoginWallNote,
   type ChainKey,
   type CommentPlan,
   type StepProgressRow,
@@ -774,13 +775,19 @@ if (tabId === undefined) {
           ? `页面共约 ${result.expectedCount} 条`
           : "";
         commentsMore.textContent = [rest > 0 ? `还有 ${rest} 条` : "", pageTotal].filter(Boolean).join(" · ");
-        commentsNote.textContent = "";
+        // 自动保存也要说清「只读到未登录可见的部分」，不然会悄悄少存（小红书登录被挤掉时）。
+        commentsNote.textContent = result.loginRequired
+          ? commentLoginWallNote(result.platform, items.length, result.limit)
+          : "";
         commentsMode.hidden = false;
         commentsMode.onclick = () => {
           commentsMode.hidden = true;
           commentsMore.textContent = "";
           commentMode = undefined;
-          renderCommentPicker({ ok: true, platform: result.platform, limit: result.limit, items });
+          renderCommentPicker({
+            ok: true, platform: result.platform, limit: result.limit, items,
+            ...(result.loginRequired ? { loginRequired: true } : {}),
+          });
         };
         return;
       }
@@ -837,7 +844,7 @@ if (tabId === undefined) {
       ? `页面共约 ${result.expectedCount} 条，`
       : "";
     commentsNote.textContent = result.loginRequired
-      ? `${expected}这个网站要登录后才显示全部评论，现在只读到未登录可见的 ${result.items.length} 条。登录后重新打开扩展即可读满 ${result.limit} 条。`
+      ? `${expected}${commentLoginWallNote(result.platform, result.items.length, result.limit)}`
       : `${expected}只保存勾选的评论；条数可在汲作设置里改。`;
     selectedCommentIDs = () => Array.from(commentsList.querySelectorAll<HTMLInputElement>("input[type='checkbox']:checked"))
       .map((box) => box.value);

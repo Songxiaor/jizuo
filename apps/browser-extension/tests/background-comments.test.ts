@@ -185,12 +185,12 @@ describe("per-platform comment preferences", () => {
 describe("collectCommentsForPicker with App preferences", () => {
   const redditURL = "https://www.reddit.com/r/x/comments/abc/t/";
 
-  async function loadWith(preferences: Record<string, unknown> | Error) {
+  async function loadWith(preferences: Record<string, unknown> | Error, collected: CommentCollection = collection) {
     const sendNativeMessage = preferences instanceof Error
       ? vi.fn().mockRejectedValue(preferences)
       : vi.fn().mockResolvedValue({ kind: "capturePreferences", version: 1, requestId: "fixed", ...preferences });
     const executeScript = vi.fn(async (options: { files?: string[] }) => (
-      options.files?.includes("/extract-comments.js") ? [{ result: collection }] : [{ result: undefined }]
+      options.files?.includes("/extract-comments.js") ? [{ result: collected }] : [{ result: undefined }]
     ));
     const storage = new Map<string, unknown>();
     vi.stubGlobal("crypto", { randomUUID: () => "fixed" });
@@ -222,6 +222,13 @@ describe("collectCommentsForPicker with App preferences", () => {
     expect(result).toMatchObject({ ok: false, code: "auto", platform: "reddit", limit: 40 });
     expect(executeScript.mock.calls[0]?.[0]).toMatchObject({ args: [40] });
     expect(result.ok === false && result.code === "auto" && Array.isArray(result.items)).toBe(true);
+  });
+
+  // 自动保存也要知道「只读到未登录可见的部分」，弹窗才能说出来（小红书登录被挤掉，2026-10-02）。
+  it("passes the login wall through in auto mode", async () => {
+    const { background } = await loadWith({ commentLimit: 20, autoSaveComments: true }, { ...collection, loginRequired: true });
+    const result = await background.collectCommentsForPicker(1);
+    expect(result).toMatchObject({ ok: false, code: "auto", loginRequired: true });
   });
 
   it("collects with the platform's own limit in picker mode", async () => {
