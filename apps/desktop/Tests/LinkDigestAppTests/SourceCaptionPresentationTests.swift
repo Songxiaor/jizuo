@@ -80,4 +80,35 @@ final class SourceCaptionPresentationTests: XCTestCase {
     XCTAssertEqual(composed.string, "配文第一行\u{2028}#话题第二行\n下一段\n")
   }
 
+  /// 字幕段：长段在句末拆开、中文之间的空格去掉；其它段落原样不动（2026-10-03）。
+  func testTranscriptSectionBecomesReadableParagraphs() {
+    let sentence = "上大学那会儿，我是学政务专业的，意味着我得写很多论文。"
+    let wall = String(repeating: sentence, count: 12) + "当一名普通的学生写论文时， 他们也许会像这样， 把任务分摊开。"
+    let intro = "这是简介里很长的一段话，不属于字幕，也不该被拆开。" + String(repeating: "简介", count: 120)
+    let markdown = "## 简介\n\n\(intro)\n\n## 字幕\n\n\(wall)"
+    let result = CapturedSourceBodyPresentation.readableTranscriptSections(markdown)
+    let blocks = result.components(separatedBy: "\n\n")
+    XCTAssertTrue(blocks.contains(intro), "非字幕段不动")
+    let transcript = blocks.drop(while: { $0 != "## 字幕" }).dropFirst()
+    XCTAssertGreaterThan(transcript.count, 2, "长段被拆开")
+    XCTAssertTrue(transcript.allSatisfy { $0.count < 260 })
+    XCTAssertTrue(transcript.allSatisfy { $0.hasSuffix("。") }, "在句末拆")
+    XCTAssertTrue(result.contains("像这样，把任务分摊开"), "中文之间的空格去掉")
+  }
+
+  func testEnglishTranscriptKeepsWordSpaces() {
+    let english = String(repeating: "This is a sentence about procrastination and deadlines. ", count: 30)
+    let result = CapturedSourceBodyPresentation.readableTranscriptSections("## 字幕\n\n" + english)
+    XCTAssertTrue(result.contains("about procrastination and deadlines."))
+    XCTAssertGreaterThan(result.components(separatedBy: "\n\n").count, 2)
+  }
+
+  func testBackNavigationLinkBlocksAreHidden() {
+    let body = "[Back to All Articles](https://arena.ai/blog)\n\n![cover](https://x.test/a.png)\n\n正文里的[返回](/x)链接留着。"
+    let result = CapturedSourceBodyPresentation.strippingBackNavigationLinks(body)
+    XCTAssertFalse(result.contains("Back to All Articles"))
+    XCTAssertTrue(result.contains("正文里的[返回](/x)链接留着。"))
+    XCTAssertTrue(result.contains("![cover]"))
+  }
 }
+

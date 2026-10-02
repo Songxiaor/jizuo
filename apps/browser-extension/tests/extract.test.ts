@@ -2899,6 +2899,16 @@ describe("Zhihu read-more (2026-10-02)", () => {
   });
 });
 
+describe("back-navigation links are not body text (2026-10-03)", () => {
+  it("drops a line that is only a 'Back to …' or 返回 link", async () => {
+    const { stripBoilerplateLines } = await import("../src/content/extract");
+    const result = stripBoilerplateLines("[Back to All Articles](https://arena.ai/blog)\n\n[返回首页](/)\n\n正文第一段，[返回](/x)这种在句中的链接要留着。");
+    expect(result).not.toContain("Back to All Articles");
+    expect(result).not.toContain("返回首页");
+    expect(result).toContain("正文第一段，[返回](/x)这种在句中的链接要留着。");
+  });
+});
+
 describe("inline spans are text, not comment sections (2026-10-02 知乎划线评论)", () => {
   it("keeps sentences wrapped in comment-highlight spans and still drops real comment blocks", () => {
     const sentence = (value: string) => el("span", [text(value)], { class: "RichText-SegmentComment comment-highlight" });

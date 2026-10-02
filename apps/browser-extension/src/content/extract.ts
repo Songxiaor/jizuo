@@ -3186,12 +3186,17 @@ export function rebaseHeadingLevels(markdown: string): string {
   return lines.join("\n");
 }
 
+const BACK_NAVIGATION_LINK = /^\[(?:←\s*)?(?:back to\b[^\]]{0,40}|返回[^\]]{0,12})\]\([^)]*\)$/iu;
+
 export function stripBoilerplateLines(markdown: string): string {
   const lines = markdown.split("\n");
   const kept = lines.filter((line) => {
     const trimmed = line.trim();
     if (!trimmed) return true;
     if (trimmed.startsWith("![") && trimmed.includes("](")) return true;
+    // 整行只是一个「返回列表」的导航链接，不是正文（arena.ai 正文开头的
+    // 「Back to All Articles」，2026-10-03 阅读页走查）。
+    if (BACK_NAVIGATION_LINK.test(trimmed)) return false;
     for (const marker of BOILERPLATE_LINE_MARKERS) {
       if (trimmed === marker) return false;
       if (trimmed.startsWith(marker) && trimmed.length <= marker.length + 16) return false;

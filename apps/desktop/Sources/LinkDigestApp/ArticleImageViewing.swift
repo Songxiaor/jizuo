@@ -239,8 +239,9 @@ struct InlineArticleImageView: View {
           .overlay(ProgressView().controlSize(.small))
       }
     }
-    // 卡片收窄后与正文、标题共用同一条左边界，不在阅读流里飘。
-    .frame(maxWidth: .infinity, alignment: .leading)
+    // 比正文窄的独立插图（竖图、小图）居中：原来靠左，和撑满整栏的横图排在一起
+    // 一左一满、看着没有章法（2026-10-03 Syc 走查）。画廊格子仍靠左填满。
+    .frame(maxWidth: .infinity, alignment: layout == .gallery ? .leading : .center)
     // 画廊的行距由网格 spacing 统一给，格子自己不再加尾距。
     .padding(.bottom, layout == .gallery ? 0 : 18)
     .accessibilityIdentifier("history-content-inline-image")

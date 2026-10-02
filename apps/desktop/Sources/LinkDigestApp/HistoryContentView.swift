@@ -4983,21 +4983,10 @@ private struct HistoryDetailView: View, Equatable {
   /// 抖音、小红书这类作品的短配文不是文章：一句话用大号正文字排在开头很怪。
   /// 300 字以内的配文字号不超过 15pt；长文仍走用户选的阅读字号。
   /// 字体跟阅读字体走（2026-09-29 走查：小红书配文黑体、X 帖子宋体，换一条字体就变）。
+  /// 所有来源的正文同一字体、同一字号。原来 300 字以内的社交短帖缩到 15 号，
+  /// 小红书、知乎短回答和长文章并排看一大一小，像两个 App（2026-10-03 Syc 走查）。
   private func sourcePaneReadingFont(_ snapshot: ContentSnapshot) -> ResolvedReadingFont {
-    // 「短正文用黑体」是给社交短帖的；自己写的笔记、作品和标题同一套阅读字体
-    // （2026-09-29 走查：笔记标题宋体、正文黑体，同一页两种字）。
-    guard !isOwnWriting,
-          CreatorWorkMetricLayout.usesAdaptiveWorkGrid(URL(string: sourceURL)?.host ?? ""),
-          !hasLiveTranscription,
-          !showsLayeredSource || activeSourceLayer == .caption
-    else { return readingFont }
-    // 属性头解析 + 整篇修剪是 O(正文) 的；这个结果挂在 `MarkdownContentView` 的参数量上，
-    // 详情每一次重求值都会付一遍。按快照备忘，和旁边 `inlineVideos` / `longForm` 同款。
-    let body = derivedMemo.value("sourcePaneReadingBody", snapshot: snapshot) {
-      LayeredSourceDocument.body(of: snapshot).trimmingCharacters(in: .whitespacesAndNewlines)
-    }
-    guard !body.isEmpty, body.count <= 300 else { return readingFont }
-    return ResolvedReadingFont(face: readingFont.face, bodySize: min(readingFont.bodySize, 15))
+    readingFont
   }
 
   private var isVideoNativeWork: Bool {
@@ -5127,11 +5116,17 @@ private struct HistoryDetailView: View, Equatable {
       .focusedSceneValue(\.translateCurrent, isOwnWriting ? nil : RunCurrentAction { startRun(.translate) })
   }
 
+  private static let detailTopAnchor = "history-detail-top"
+
   private var scrollBody: some View {
     ScrollViewReader { scrollProxy in
       ScrollView {
       // Title → URL → run/capture metadata (top) → action toolbar → reading → tags.
       VStack(alignment: .leading, spacing: 0) {
+        // 换条目先回到这里，再由 ReadingScrollContinuity 恢复这一条自己读到的位置。
+        // 详情视图不随条目重建，原来上一条的滚动偏移会带过来，没读过的条目也停在
+        // 中间、标题被卷走（2026-10-03 Syc 走查）。
+        Color.clear.frame(height: 0).id(Self.detailTopAnchor)
         if model.isReadOnly {
           ReadOnlyHistoryCallout(
             reason: model.historyReadOnlyReason,
@@ -5864,6 +5859,9 @@ private struct HistoryDetailView: View, Equatable {
     .onChange(of: completedStepStamps) { _, steps in
       noteCompletedSteps(steps)
     }
+    .onChange(of: detail.task.id) { _, _ in
+      scrollProxy.scrollTo(Self.detailTopAnchor, anchor: .top)
+    }
     } // ScrollViewReader
   }
 
@@ -5987,7 +5985,7 @@ private struct HistoryDetailView: View, Equatable {
       // 自己写的东西标题就地可改。抓取记录的标题保持只读——那是抓来的事实。
       TextField(UserNoteDocument.untitledTitle, text: $noteTitleDraft)
         .textFieldStyle(.plain)
-        .font(readingFont.font(size: Self.noteTitleFontSize, weight: .bold))
+        .font(readingFont.font(size: Self.noteTitleFontSize, weight: .medium))
         .foregroundStyle(theme.primaryText)
         .tracking(-0.4)
         .lineLimit(1...3)
@@ -6003,7 +6001,7 @@ private struct HistoryDetailView: View, Equatable {
     } else if !hidesRepeatedCaptureHeading {
       VStack(alignment: .leading, spacing: 4) {
         Text(readingPrimaryTitle)
-          .font(readingFont.font(size: Self.captureTitleFontSize, weight: .semibold))
+          .font(readingFont.font(size: Self.captureTitleFontSize, weight: .medium))
           .foregroundStyle(theme.primaryText)
           .tracking(-0.4)
           .lineLimit(isTitleExpanded ? nil : 3)
@@ -6012,7 +6010,7 @@ private struct HistoryDetailView: View, Equatable {
           .background {
             // 隐藏测量完整理想高度：可见标题可被 lineLimit 截断，测量副本不受限。
             Text(readingPrimaryTitle)
-              .font(readingFont.font(size: Self.captureTitleFontSize, weight: .semibold))
+              .font(readingFont.font(size: Self.captureTitleFontSize, weight: .medium))
               .tracking(-0.4)
               .fixedSize(horizontal: false, vertical: true)
               .hidden()
@@ -8431,7 +8429,15 @@ private struct HistoryDetailView: View, Equatable {
     guard !isOwnWriting else { return cleaned }
     let style: CapturedSourceBodyPresentation.EchoedOpeningStyle =
       .stripSyntheticTitleHeadingOnly
-    let body = CapturedSourceBodyPresentation.strippingEchoedOpening(title: title, from: cleaned, style: style)
+    var body = CapturedSourceBodyPresentation.strippingEchoedOpening(title: title, from: cleaned, style: style)
+    // 标题翻译成中文后，正文开头那行英文原标题和上面的标题不再「同一句话」，
+    // 照样重复了一遍（YouTube，2026-10-03 走查）。再按原标题剥一次。
+    for original in [snapshot.title, MarkdownNoteFrontmatter.parse(snapshot.bodyText).originalTitle] {
+      guard let original, original != title else { continue }
+      body = CapturedSourceBodyPresentation.strippingEchoedOpening(title: original, from: body, style: style)
+    }
+    body = CapturedSourceBodyPresentation.readableTranscriptSections(body)
+    body = CapturedSourceBodyPresentation.strippingBackNavigationLinks(body)
     return CapturedSourceBodyPresentation.preservingCaptionParagraphs(body, platform: snapshot.platform)
   }
 

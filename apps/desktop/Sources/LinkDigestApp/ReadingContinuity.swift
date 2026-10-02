@@ -216,6 +216,12 @@ struct ReadingScrollContinuity: NSViewRepresentable {
       guard activeIdentity != parent.identity else { return }
       // 换到另一条之前，把上一条还没落库的位置写掉。
       flushPendingSave()
+      // 先停掉记录、回到顶部，再恢复这一条自己的位置。详情页不随条目重建，原来上一条的
+      // 滚动偏移会带过来，换条瞬间的滚动事件又被记成了新这一条的进度——没读过的条目
+      // 下次打开也停在中间、标题被卷走（2026-10-03 Syc 走查）。
+      isRestoring = true
+      scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: 0))
+      scroll.reflectScrolledClipView(scroll.contentView)
       activeIdentity = parent.identity
       lastPersistedPercent = nil
       restore(in: scroll)
@@ -229,8 +235,10 @@ struct ReadingScrollContinuity: NSViewRepresentable {
       parent.progress.setPercent(percent)
       lastPersistedPercent = percent
       isRestoring = true
+      // 等新内容排好版再算位置：同一轮里文档高度还是上一条的。
       DispatchQueue.main.async { [weak self, weak scroll] in
-        guard let self, let scroll, let document = scroll.documentView else { return }
+        DispatchQueue.main.async { [weak self, weak scroll] in
+        guard let self, let scroll, let document = scroll.documentView else { self?.isRestoring = false; return }
         let maximum = max(0, document.bounds.height - scroll.contentView.bounds.height)
         // 只往下看了一点点（标题还没完全滚走）就当没读：按比例恢复会停在标题被
         // 切掉半截的位置，像排版错了（2026-10-01 走查，窄窗口更明显）。
@@ -239,6 +247,7 @@ struct ReadingScrollContinuity: NSViewRepresentable {
         scroll.contentView.scroll(to: NSPoint(x: scroll.contentView.bounds.origin.x, y: target))
         scroll.reflectScrolledClipView(scroll.contentView)
         self.isRestoring = false
+        }
       }
     }
 

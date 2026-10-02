@@ -3015,10 +3015,12 @@ struct MarkdownContentView: View {
     switch level {
     // 设计稿字号按用户正文字号等比缩放：调大正文时标题层级跟着走，
     // 否则 22pt 正文配 23pt 一级标题，层级会塌掉。
-    case 1: return readingFont.scaled(designSize: 23, weight: .bold)
-    case 2: return readingFont.scaled(designSize: 19.5, weight: .semibold)
-    case 3: return readingFont.scaled(designSize: 17, weight: .semibold)
-    default: return readingFont.scaled(designSize: 16, weight: .semibold)
+    // 字重整体降一档：思源宋体的 bold / semibold 在屏幕上很重，标题一压就压过正文
+    // （2026-10-03 Syc：字体不要太粗）。
+    case 1: return readingFont.scaled(designSize: 23, weight: .medium)
+    case 2: return readingFont.scaled(designSize: 19.5, weight: .medium)
+    case 3: return readingFont.scaled(designSize: 17, weight: .medium)
+    default: return readingFont.scaled(designSize: 16, weight: .medium)
     }
   }
 

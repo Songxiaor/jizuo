@@ -2,6 +2,92 @@ import Foundation
 import LinkDigestCore
 
 enum CapturedSourceBodyPresentation {
+  /// 字幕段读起来像一面墙：几千字连成几段、中文之间夹着拼接留下的空格
+  /// （YouTube 字幕，2026-10-03 Syc 走查「一点阅读感都没有」）。只在显示时整理，
+  /// 存下的原文不动，已存的旧条目也一起变好：
+  /// - 「## 字幕」下面的长段落在句末拆开，一段一百来字；
+  /// - 汉字、中文标点之间的空格去掉。
+  /// 整段只是一个「返回列表」导航链接（arena.ai 正文开头的「Back to All Articles」）：
+  /// 不是正文，显示时去掉（2026-10-03 走查）。已存的旧条目也一起干净。
+  static func strippingBackNavigationLinks(_ markdown: String) -> String {
+    let pattern = #"^\[(?:←\s*)?(?:[Bb]ack to\b[^\]]{0,40}|返回[^\]]{0,12})\]\([^)]*\)$"#
+    let blocks = markdown.components(separatedBy: "\n\n").filter { block in
+      let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
+      return trimmed.range(of: pattern, options: .regularExpression) == nil
+    }
+    return blocks.joined(separator: "\n\n")
+  }
+
+  static func readableTranscriptSections(_ markdown: String) -> String {
+    var output: [String] = []
+    var inTranscript = false
+    for block in markdown.components(separatedBy: "\n\n") {
+      let trimmed = block.trimmingCharacters(in: .whitespacesAndNewlines)
+      if trimmed.hasPrefix("#") {
+        let heading = trimmed.drop(while: { $0 == "#" }).trimmingCharacters(in: .whitespaces)
+        inTranscript = heading == "字幕" || heading.hasPrefix("字幕（")
+        output.append(block)
+        continue
+      }
+      guard inTranscript, !trimmed.isEmpty, !trimmed.hasPrefix("```"), !trimmed.hasPrefix("!["), !trimmed.hasPrefix("- ") else {
+        output.append(block)
+        continue
+      }
+      output.append(contentsOf: splitAtSentenceEnds(removingCJKSpaces(trimmed)))
+    }
+    return output.joined(separator: "\n\n")
+  }
+
+  private static func isCJK(_ character: Character) -> Bool {
+    character.unicodeScalars.allSatisfy { scalar in
+      (0x4E00...0x9FFF).contains(scalar.value) || (0x3000...0x303F).contains(scalar.value)
+        || (0xFF00...0xFFEF).contains(scalar.value) || (0x3400...0x4DBF).contains(scalar.value)
+        || "“”‘’…—".unicodeScalars.contains(scalar)
+    }
+  }
+
+  static func removingCJKSpaces(_ text: String) -> String {
+    let characters = Array(text)
+    var result = ""
+    for index in characters.indices {
+      let character = characters[index]
+      if character == " " || character == "\u{3000}" {
+        let previous = result.last
+        let next = characters[(index + 1)...].first { $0 != " " && $0 != "\u{3000}" }
+        if let previous, let next, isCJK(previous), isCJK(next) { continue }
+        if let previous, previous == " " { continue }
+      }
+      result.append(character)
+    }
+    return result
+  }
+
+  /// 长段在句末拆开。中文按字数，西文按字符数放宽一倍，免得一句英文被拆得太碎。
+  static func splitAtSentenceEnds(_ paragraph: String, target: Int = 110) -> [String] {
+    let isMostlyCJK = paragraph.filter(isCJK).count * 2 > paragraph.count
+    let limit = isMostlyCJK ? target : target * 3
+    guard paragraph.count > Int(Double(limit) * 1.5) else { return [paragraph] }
+    let enders: Set<Character> = ["。", "！", "？", "!", "?", "；", "…"]
+    var pieces: [String] = []
+    var current = ""
+    var characters = Array(paragraph)[...]
+    while let character = characters.popFirst() {
+      current.append(character)
+      let atSentenceEnd = enders.contains(character) || (character == "." && characters.first == " ")
+      guard atSentenceEnd, current.count >= limit else { continue }
+      // 句末若紧跟右引号、右括号，一起留在这一段。
+      while let next = characters.first, "”’」』）)".contains(next) { current.append(next); characters.removeFirst() }
+      pieces.append(current.trimmingCharacters(in: .whitespaces))
+      current = ""
+    }
+    let rest = current.trimmingCharacters(in: .whitespaces)
+    if !rest.isEmpty {
+      if rest.count < limit / 3, let last = pieces.popLast() { pieces.append(last + (isMostlyCJK ? "" : " ") + rest) }
+      else { pieces.append(rest) }
+    }
+    return pieces
+  }
+
   /// Social captions use author-entered line breaks, not prose line wrapping.
   /// Mark those lines as Markdown hard breaks; fenced code remains byte-for-byte intact.
   static func preservingCaptionParagraphs(_ markdown: String, platform: String) -> String {
