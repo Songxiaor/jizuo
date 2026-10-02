@@ -3529,7 +3529,10 @@ struct HistoryContentView: View {
         .background(theme.badge)
         .overlay(alignment: .bottom) { Rectangle().fill(theme.hairline).frame(height: 1) }
         .accessibilityIdentifier("history-trash-detail-banner")
-      } else if !isCaptureOnboardingDismissed && !firstCaptureIsComplete {
+      } else if !isCaptureOnboardingDismissed && !firstCaptureIsComplete,
+                !detail.task.canonicalURL.hasPrefix(HistoryPlatformDisplay.noteURLPrefix) {
+        // 自己写的笔记不提示「配置模型后即可总结当前内容」：刚新建、一个字没写就被催着配模型
+        // （2026-10-02 新用户走查）。
         firstCaptureNextStepBanner(detail: detail)
       }
       HistoryDetailView(
@@ -7809,7 +7812,7 @@ private struct HistoryDetailView: View, Equatable {
     // 无边框菜单默认用强调色画成蓝字；和同一行的「添加笔记」「添加标签」统一成次要灰。
     .tint(chosen.isEmpty ? theme.secondaryText.opacity(0.6) : theme.secondaryText)
     .fixedSize()
-    .help("标记素材类型或「已使用」")
+    .help("标记这条是哪类素材：观点、案例、数据……")
     .accessibilityIdentifier("history-material-types")
   }
 

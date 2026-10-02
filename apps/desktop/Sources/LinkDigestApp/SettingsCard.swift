@@ -582,7 +582,8 @@ extension View {
 /// 既读不完整，又分不清是错误还是说明。收成一条带底色的提示行，放在控件下方
 /// 独占一行，文案说结论，技术原因留给 ⓘ。
 struct SettingsInlineNotice: View {
-  enum Tone { case info, warning, danger }
+  /// success：做完了的确认（「已备份」）。原来只能借 info 的蓝色 ⓘ，读起来像一句提醒。
+  enum Tone { case info, success, warning, danger }
 
   let message: String
   var tone: Tone = .info
@@ -591,6 +592,7 @@ struct SettingsInlineNotice: View {
   private var color: Color {
     switch tone {
     case .info: theme.info
+    case .success: theme.success
     case .warning: theme.warning
     case .danger: theme.danger
     }
@@ -599,6 +601,7 @@ struct SettingsInlineNotice: View {
   private var symbol: String {
     switch tone {
     case .info: "info.circle"
+    case .success: "checkmark.circle"
     case .warning: "exclamationmark.triangle"
     case .danger: "xmark.octagon"
     }

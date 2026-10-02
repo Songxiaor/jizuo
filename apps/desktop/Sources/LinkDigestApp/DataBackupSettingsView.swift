@@ -48,14 +48,15 @@ final class DataBackupViewModel: ObservableObject {
   func backupNow() {
     perform(busyMessage: nil) { maintenance in
       let file = try maintenance.backupToStore()
-      return "已备份到 \(file.name)（\(Self.sizeText(file.byteCount))）"
+      // 文件名是内部格式（history-manual-时间戳.sqlite），用户看时间和大小就够；文件在下面列表里。
+      return "已备份（\(Self.sizeText(file.byteCount))），在下面「已有的备份」里"
     }
   }
 
   func restore(from file: DatabaseBackupFile) {
     perform(busyMessage: nil) { maintenance in
-      let safety = try maintenance.restoreInPlace(from: file.url)
-      return "已从 \(file.name) 恢复。恢复前的资料另存为 \(safety.name)，请退出并重新打开汲作。"
+      _ = try maintenance.restoreInPlace(from: file.url)
+      return "已恢复。恢复前的资料也另存了一份，在下面「已有的备份」里。请退出并重新打开汲作。"
     } onSuccess: { [weak self] in
       self?.needsRestart = true
     }
@@ -167,7 +168,7 @@ struct DataBackupSettingsView: View {
             if let notice = model.notice {
               SettingsInlineNotice(
                 message: notice,
-                tone: model.noticeIsError ? .danger : (model.needsRestart ? .warning : .info)
+                tone: model.noticeIsError ? .danger : (model.needsRestart ? .warning : .success)
               )
               .accessibilityIdentifier("data-backup-status")
             }

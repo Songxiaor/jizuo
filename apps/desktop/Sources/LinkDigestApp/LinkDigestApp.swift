@@ -1155,6 +1155,12 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   /// 等历史就绪再消费——否则那一次点击会静默丢失。
   private var pending: [URL] = []
 
+  /// 汲作只有一个主窗口：系统默认的「显示标签页栏 / 显示所有标签页」只会在「显示」菜单里
+  /// 占两行，点了还会多出一条空标签栏（2026-10-02 菜单走查）。
+  func applicationWillFinishLaunching(_ notification: Notification) {
+    NSWindow.allowsAutomaticWindowTabbing = false
+  }
+
   func setHandler(_ handler: @escaping (URL) -> Void) {
     self.handler = handler
     let queued = pending
