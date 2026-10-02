@@ -791,6 +791,8 @@ export function popupXProfileHeading(tabTitle: string | undefined, rawURL: strin
 export function popupTranslationNote(translator: string): string {
   const fix = translator === "X 自动翻译"
     ? "先在帖子上点「显示原文」再保存"
-    : "先在插件里关掉这个网站的翻译、刷新页面再保存";
+    : translator === "Substack 自动翻译"
+      ? "在汲作里用「添加链接」贴这个链接（会取作者原站的原文），或在 Substack 设置里关掉自动翻译"
+      : "先在插件里关掉这个网站的翻译、刷新页面再保存";
   return `这个页面正显示「${translator}」的译文，保存的会是译文，不是原文。想存原文：${fix}；汲作里可以随时生成中文翻译。`;
 }

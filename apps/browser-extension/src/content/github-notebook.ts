@@ -8,7 +8,8 @@ import type { ExtractedPage } from "./extract";
  * 这里从同一个公开 raw 地址取回笔记本，转成 Markdown：说明单元原样、代码单元进代码块、
  * 文本输出附在代码后面。扩展和 App「添加链接」执行的是同一份打包产物。
  */
-export function gitHubNotebookRawURL(href: string): string | undefined {
+/** github.com 上 blob 页面对应的公开 raw 地址；不是 blob 页面返回 undefined。 */
+export function gitHubBlobRawURL(href: string): string | undefined {
   let url: URL;
   try {
     url = new URL(href);
@@ -18,10 +19,34 @@ export function gitHubNotebookRawURL(href: string): string | undefined {
   if (url.hostname !== "github.com" && url.hostname !== "www.github.com") return undefined;
   const parts = url.pathname.split("/").filter(Boolean);
   if (parts.length < 5 || parts[2] !== "blob") return undefined;
-  if (!parts[parts.length - 1]!.toLowerCase().endsWith(".ipynb")) return undefined;
   const [owner, repo, , ref, ...path] = parts;
   return `https://raw.githubusercontent.com/${owner}/${repo}/${ref}/${path.join("/")}`;
 }
+
+export function gitHubNotebookRawURL(href: string): string | undefined {
+  const raw = gitHubBlobRawURL(href);
+  return raw && raw.toLowerCase().endsWith(".ipynb") ? raw : undefined;
+}
+
+/**
+ * 代码文件的语言（与 App 的 `GitHubFileLocation.codeLanguage` 同一张表）。GitHub 的代码页是
+ * 前端渲染的编辑器外壳，原来抓到的是按钮和报错文字（2026-10-02 抓取完整度测试）。
+ */
+const CODE_LANGUAGES: Record<string, string> = {
+  py: "python", js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "jsx",
+  ts: "typescript", tsx: "tsx", swift: "swift", go: "go", rs: "rust", java: "java",
+  kt: "kotlin", kts: "kotlin", rb: "ruby", php: "php", c: "c", h: "c", cc: "cpp",
+  cpp: "cpp", hpp: "cpp", m: "objectivec", mm: "objectivec", cs: "csharp", scala: "scala",
+  sh: "bash", bash: "bash", zsh: "bash", fish: "fish", ps1: "powershell", lua: "lua",
+  r: "r", dart: "dart", sql: "sql", json: "json", jsonc: "json", yaml: "yaml",
+  yml: "yaml", toml: "toml", xml: "xml", html: "html", css: "css", scss: "scss",
+  vue: "vue", svelte: "svelte", zig: "zig", ex: "elixir", exs: "elixir", hs: "haskell",
+  ml: "ocaml", clj: "clojure", pl: "perl", proto: "protobuf", graphql: "graphql",
+  dockerfile: "dockerfile", makefile: "makefile", gradle: "groovy", tf: "hcl",
+};
+const PROSE_EXTENSIONS = new Set(["md", "markdown", "mdx", "txt", "rst"]);
+/** 再大的文件就不整份搬进正文，交回页面提取。 */
+const RAW_TEXT_LIMIT = 400_000;
 
 const joinSource = (value: unknown): string =>
   Array.isArray(value) ? value.map((part) => String(part ?? "")).join("") : String(value ?? "");
@@ -68,19 +93,40 @@ export function notebookToMarkdown(notebook: unknown): string | undefined {
   return markdown || undefined;
 }
 
-export async function extractGitHubNotebookPage(documentLike: Document): Promise<ExtractedPage | undefined> {
+/**
+ * GitHub 文件页：从公开 raw 地址取原文件。笔记本转 Markdown，代码文件放进对应语言的代码块
+ * （标题用文件名，`#` 注释不会被当成标题），Markdown/纯文本原样。图片、PDF 等交回页面提取。
+ */
+export async function extractGitHubBlobPage(documentLike: Document): Promise<ExtractedPage | undefined> {
   const href = documentLike.location.href;
-  const rawURL = gitHubNotebookRawURL(href);
+  const rawURL = gitHubBlobRawURL(href);
   if (!rawURL) return undefined;
+  const fileName = decodeURIComponent(rawURL.split("/").pop() ?? "");
+  const extension = fileName.includes(".") ? fileName.split(".").pop()!.toLowerCase() : fileName.toLowerCase();
+  const language = CODE_LANGUAGES[extension];
+  const isNotebook = extension === "ipynb";
+  if (!isNotebook && !language && !PROSE_EXTENSIONS.has(extension)) return undefined;
   try {
     const response = await fetch(rawURL, { credentials: "omit" });
     if (!response.ok) return undefined;
-    const text = notebookToMarkdown(await response.json());
+    let text: string | undefined;
+    let title = fileName;
+    if (isNotebook) {
+      text = notebookToMarkdown(await response.json());
+      title = text?.match(/^#\s+(.+)$/mu)?.[1]?.trim() || fileName;
+    } else {
+      const raw = await response.text();
+      if (!raw.trim() || raw.length > RAW_TEXT_LIMIT) return undefined;
+      if (language) {
+        text = fenced(raw, language);
+      } else {
+        text = raw.trim();
+        title = text.match(/^#\s+(.+)$/mu)?.[1]?.trim() || fileName;
+      }
+    }
     if (!text) return undefined;
-    const fileName = decodeURIComponent(rawURL.split("/").pop() ?? "notebook.ipynb");
-    const heading = text.match(/^#\s+(.+)$/mu)?.[1]?.trim();
     return {
-      title: heading || fileName,
+      title,
       url: href.split("#")[0]!,
       text,
       characterCount: [...text].length,

@@ -38,6 +38,7 @@ final class CaptureCompletenessTests: XCTestCase {
     <img src="https://cdn.example.com/spacer.gif" width="1" height="1">
     <img data-src="https://cdn.example.com/real.jpg" src="data:image/gif;base64,R0lGOD" alt="示意图">
     <img src="/images/chart.png" alt="图表">
+    <img src="https://cdn.example.com/bel-7.gif" width="69" height="357" usemap="#nav">
     <p>第二段正文，接着上面的图继续往下讲。</p>
     </article></body></html>
     """
@@ -46,6 +47,7 @@ final class CaptureCompletenessTests: XCTestCase {
     XCTAssertTrue(page.text.contains("![图表](/images/chart.png)"))
     XCTAssertFalse(page.text.contains("u/1.png"))
     XCTAssertFalse(page.text.contains("spacer.gif"))
+    XCTAssertFalse(page.text.contains("bel-7.gif"))
     let resolved = MarkdownImageURLResolver.resolvingRelativeImages(
       in: page.text, baseURL: URL(string: "https://blog.example.com/post/1")!
     )

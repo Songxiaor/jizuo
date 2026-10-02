@@ -20,6 +20,8 @@ final class RenderedPageCaptureSafetyTests: XCTestCase {
     XCTAssertTrue(RenderedPageCapturePolicy.prefersRendering(URL(string: "https://arena.ai/blog/post")!))
     XCTAssertFalse(RenderedPageCapturePolicy.prefersRendering(URL(string: "https://www.bilibili.com/video/BV1")!))
     XCTAssertFalse(RenderedPageCapturePolicy.prefersRendering(URL(string: "https://github.com/a/b/blob/main/README.md")!))
+    XCTAssertTrue(RenderedPageCapturePolicy.prefersRendering(URL(string: "https://github.com/charmbracelet/bubbletea")!))
+    XCTAssertTrue(RenderedPageCapturePolicy.allowsDirectFallback(URL(string: "https://github.com/charmbracelet/bubbletea")!))
     XCTAssertTrue(RenderedPageCapturePolicy.prefersRendering(URL(string: "https://github.com/a/b/blob/main/x.ipynb")!))
     XCTAssertFalse(RenderedPageCapturePolicy.allowsDirectFallback(URL(string: "https://github.com/a/b/blob/main/x.ipynb")!))
     XCTAssertFalse(RenderedPageCapturePolicy.prefersRendering(URL(string: "https://example.com/notes.md")!))

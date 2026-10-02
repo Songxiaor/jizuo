@@ -21,7 +21,7 @@
 | G2 | 通用·个人站 | https://darioamodei.com/post/policy-on-the-ai-exponential | 30538/0 | 36006/0 | ✅ | 36006/0 | ✅ |  |
 | G3 | 通用·维基 | https://en.wikipedia.org/wiki/SwiftUI | 5418/2 | 27272/7 | ✅ | 24103/3 | ✅ | 「页面字数」统计不含表格，抓到的比它多是正常的 |
 | G4 | 通用·维基 GIF | https://en.wikipedia.org/wiki/GIF | 48250/7 | 106957/10 | ✅ | 106858/10 | ✅ | 8 张 GIF 都抓到；阅读界面里 GIF 现在会动（真机截图核对）；信息框表格里的图移到表格前，表格不再被拆断 |
-| G5 | 通用·老式 HTML | https://paulgraham.com/greatwork.html | 67/1 | 55144/3 | ⚠️ | 55144/3 | ⚠️ | 老式表格排版站：正文完整，但混进站点左侧导航的 2 张小图 |
+| G5 | 通用·老式 HTML | https://paulgraham.com/greatwork.html | 67/1 | 55032/1 | ✅ | 55032/1 | ✅ | 老式表格排版站：导航热区图和链回首页的站名图不再进正文 |
 | G6 | 通用·企业博客 | https://www.anthropic.com/engineering/building-effective-agents | 15546/9 | 18169/8 | ✅ | 18169/8 | ✅ |  |
 | G7 | 通用·少数派 | https://sspai.com/post/115070 | 8050/12 | 9994/4 | ✅ | 9931/4 | ✅ | 作者头像、标签图标不再进正文（页面上那 3 张 GIF 是头像） |
 | G8 | 通用·36氪 | https://36kr.com/p/4006830758989953 | 4955/32 | 7648/15 | ✅ | 7648/15 | ✅ | 正文 15 张配图全部抓到（页面另有推荐图） |
@@ -29,7 +29,7 @@
 | G10 | 通用·技术博客 | https://simonwillison.net/2024/Dec/19/one-shot-python-tools/ | 5405/1 | 10300/1 | ✅ | 10300/1 | ✅ | 无 article 标记的博客，按可见内容保存并标注 |
 | G11 | 通用·单页应用 | https://bench.robinebers.com/ | 4220/66 | 12843/66 | ✅ | 12843/66 | ✅ | 单页应用，按可见内容保存 |
 | G12 | 通用·教程站 | https://www.aihero.dev/a-complete-guide-to-agents-md | 8204/0 | 9793/1 | ✅ | 9892/1 | ✅ |  |
-| X1 | X·英文帖 | https://x.com/muratcan/status/2104959648482701686 | 34/2 | 559/0 | ⚠️ | 981/0 | ✅ | Syc 的 X 开着自动翻译：扩展存下的是 X 的中文译文，弹窗现在会提醒先点「显示原文」；App 走公开接口拿到英文原文 |
+| X1 | X·英文帖 | https://x.com/muratcan/status/2104959648482701686 | 34/2 | 953/0 | ✅ | 981/0 | ✅ | Syc 的 X 开着自动翻译：扩展现在先把帖子（和回复）切回原文再存，存完切回译文，页面不受影响；App 走公开接口本来就是原文 |
 | X2 | X·中文视频帖 | https://x.com/leaf_sanren/status/2105645639703183753 | 34/2 | 2225/0 | ✅ | 2355/0 | ✅ | 原文中文的帖子，不再误报翻译 |
 | X3 | X·帖子 | https://x.com/Av1dlive/status/2105353678081478756 | 34/3 | 975/0 | ✅ | 1923/0 | ✅ |  |
 | YT1 | YouTube | https://www.youtube.com/watch?v=aircAruvnKk | 8211/148 | 13146/0 | ✅ | 13140/0 | ✅ | App 原来抓的是整页杂项、后来拿不到字幕（YouTube 拒绝 eval、认出 Chrome 身份就不给字幕）；现在两边都带字幕；字幕被存两遍的问题已修 |
@@ -40,15 +40,15 @@
 | BL1 | B站 | https://www.bilibili.com/video/BV1V4UYY5EhD | 607/34 | 213/0 | ✅ | 223/0 | ✅ | 视频简介 + 视频另存 |
 | BL2 | B站 | https://www.bilibili.com/video/BV1iu4m137PY | 497/31 | 206/0 | ✅ | 214/0 | ✅ |  |
 | GH1 | GitHub·笔记本 | https://github.com/anthropics/claude-cookbooks/blob/main/claude_agent_sdk/08_Dynamic_workflows.ipynb | 223/1 | 25845/0 | ✅ | 25845/0 | ✅ | Jupyter 笔记本：扩展原来 1599 字、App 原来存整份 JSON；现在两边都转成 2.5 万字可读文章（说明 + 代码块） |
-| GH2 | GitHub·README 带 GIF | https://github.com/charmbracelet/bubbletea | 12482/6 | 14528/10 | ✅ | 12201/8 | ⚠️ | README 里的 GIF 在 App 里会动；App 这条走 GitHub 接口，徽章显示成文字、引用式链接没解析 |
+| GH2 | GitHub·README 带 GIF | https://github.com/charmbracelet/bubbletea | 12482/8 | 14321/9 | ✅ | 13854/7 | ✅ | App 改从渲染好的页面取 README（和扩展一致），引用式链接、列表预览里的 HTML 问题随之消失；失败时退回 GitHub 接口。README 里的 GIF 在 App 里会动 |
 | ZH1 | 知乎·回答 | https://www.zhihu.com/question/19550225/answer/1992353258262504861 | 3857/6 | 340/0 | ⚠️ | 未存（提示原因） | ⚠️ | 未登录知乎只给开头一段（两边都是）；App 新增「站点登录 → 知乎」，没登录时提前提醒、失败提示也会说明 |
 | MD1 | Medium·会员文 | https://medium.com/codetodeploy/how-to-run-claude-like-a-tech-lead-not-a-senior-engineer-fba295ade37d | 2739/12 | 1959/2 | ⚠️ | 965/0 | ⚠️ | 会员文章，未登录只有开头；两边都标成「仅可见部分」；App 还会被 Medium 的安全防护拦 |
-| SS1 | Substack·主站阅读器 | https://substack.com/home/post/p-214463802 | 7270/3 | 8144/1 | ⚠️ | 18377/1 | ✅ | substack.com 阅读器给的是平台中文译文；App 跳到作者域名拿到英文原文 |
+| SS1 | Substack·主站阅读器 | https://substack.com/home/post/p-214463802 | 7270/2 | 8144/1 | ⚠️ | 18377/1 | ✅ | substack.com 阅读器按账号语言整篇翻译、没有切回原文的开关：弹窗会提醒，建议在汲作里「添加链接」（会取作者原站的原文）；App 本来就是原文 |
 | SS2 | Substack·自有域 | https://globalprivacyconsultants.substack.com/p/how-an-obscure-decision-on-a-preliminary | 12573/0 | 12563/0 | ✅ | 12563/0 | ✅ |  |
 | TT1 | 今日头条 | https://www.toutiao.com/article/7691461107373834778/ | 874/1 | 785/0 | ✅ | 785/0 | ✅ | 去掉了播放器按钮文字（重播、暂停、进入全屏…）；App 原来等页面「加载完毕」等到超时 |
 | LD1 | linux.do | https://linux.do/t/topic/847468 | 7420/4 | 5100/4 | ✅ | 9555/6 | ✅ | App 被站点验证拦下时退回直读，现在直读也带图 |
 | XHS2 | 小红书·失效笔记 | https://www.xiaohongshu.com/explore/6a9a2431000000002800301f | 670/1 | 3810/2 拦下 | ✅ | 未存（提示原因） | ✅ | 笔记已无法浏览（跳 404）：两边都拦下，不再把导航栏存成正文 |
-| GH3 | GitHub·代码文件 | https://github.com/anthropics/anthropic-sdk-python/blob/main/examples/messages.py | 186/0 | 1929/0 | ⚠️ | 426/0 | ✅ | 代码文件：App 现在放进代码块、标题用文件名；扩展那次碰到 GitHub 页面报错，已有规则拦下不存 |
+| GH3 | GitHub·代码文件 | https://github.com/anthropics/anthropic-sdk-python/blob/main/examples/messages.py | 186/0 | 426/0 | ✅ | 426/0 | ✅ | 代码文件：两边都直接读原始文件，放进对应语言的代码块，标题用文件名 |
 
 ## 真机端到端（在 EGO 里点扩展图标保存 → 汲作里看显示）
 
@@ -59,7 +59,7 @@
 | YouTube | ✅ | 带中文字幕和 20 条评论；字幕重复问题修复后重存了一次 |
 | GitHub 笔记本 | ✅ | 你原来那条（890 字）更新为 31585 字、15 个代码块 |
 | 公众号 | ✅ | 2736 字，小标题保留，没有多余的「#」「****」 |
-| X | ✅ | 英文原帖弹窗提示「正显示 X 自动翻译的译文」；中文原帖不再误报 |
+| X | ✅ | 英文帖（X 正显示自动翻译）：弹窗和存下的正文都是英文原文，评论也是原文，存完页面切回译文；中文原帖照常 |
 | 头条 | ✅ | 弹窗识别为视频文章（视频受限只存正文），没有播放器按钮文字（未存入库） |
 | App 添加链接 | ✅ | 新说明文字、「和浏览器扩展有什么不同？」、知乎登录提醒都正常；bubbletea README 的 GIF 在动 |
 
@@ -77,12 +77,14 @@
 10. 头条在 App 里超时：页面开始显示后最多再等 15 秒就提取。
 11. Medium 会员文章：两边都标成「仅可见部分」，阅读页提示可能不是全文。
 12. App 内置网页的安全：本机、局域网、内网地址一律不访问（AI 助手经 MCP 添加链接也一样）。
+13. 存原文（Syc 10-02 定）：X 开着自动翻译时，扩展先把帖子和回复切回原文再存，存完切回；Substack 阅读器的平台翻译没有开关，弹窗提醒改用「添加链接」。
+14. GitHub：扩展也直接读原始文件（代码进代码块、Markdown 原样）；App 的项目首页改从渲染页面取 README，和扩展一致。
+15. 导航热区图、链回首页的站名图不进正文（两条路同一规则）。
 
 ## 还没解决 / 需要 Syc
 
-- **知乎、小红书、抖音**：App 里要先在「设置 → 站点登录」登录一次（知乎是这次新加的）。
-- **X 自动翻译**：你的 X 开着「自动翻译帖子」，扩展存下的是 X 给的中文译文。弹窗会提醒；想存原文就先在帖子上点「显示原文」。是否要扩展自动存原文，需要你定。
-- **Substack 主站阅读器**同样给的是平台译文（App 跳到作者域名能拿到原文）。
-- **GitHub README 在 App 里**：徽章显示成文字、引用式链接没解析，列表预览露出 HTML。
-- **Paul Graham 这类老式表格网站**：会混进导航小图。
+- **要你登录一次**：知乎、小红书、抖音在 App 里抓之前，到「设置 → 站点登录」登录（知乎是这次新加的）。没登录时「添加链接」会提前提醒。
+- **网站本身的限制**：Medium 会员文章没登录只有开头（已标成「仅可见部分」）；Substack 阅读器的平台翻译没有切回原文的开关（弹窗提醒改用「添加链接」）。
+- **小问题**：GitHub README 里的 SVG 徽章显示成文字（汲作的图片缓存不收 SVG）。
+- **更正**：之前说「库里英文 X 帖大概率存的是译文」不准确——9 月 30 日存的那条正文就是英文原文，列表里的中文标题是汲作的「标题翻译」；X 从什么时候开始对你自动翻译不确定。
 - **测试里两条老问题**：`ManualLinkViewModelTests` 里「排队中取消」那条用改动前的代码也会卡住，「导入博主主页」几条在测试进程里会崩（`NSApp` 为空），与本次改动无关。

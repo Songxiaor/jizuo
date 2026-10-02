@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { gitHubNotebookRawURL, notebookToMarkdown } from "../src/content/github-notebook";
 
 describe("GitHub notebook capture (2026-10-02)", () => {
@@ -20,5 +20,28 @@ describe("GitHub notebook capture (2026-10-02)", () => {
     });
     expect(markdown).toBe("# 标题\n\n一段说明。\n\n```python\nprint('hi')\n```\n\n```text\nhi\n```");
     expect(notebookToMarkdown({ nbformat: 4 })).toBeUndefined();
+  });
+});
+
+describe("GitHub blob files (2026-10-02)", () => {
+  it("maps any blob page to its raw file", async () => {
+    const { gitHubBlobRawURL } = await import("../src/content/github-notebook");
+    expect(gitHubBlobRawURL("https://github.com/anthropics/anthropic-sdk-python/blob/main/examples/messages.py"))
+      .toBe("https://raw.githubusercontent.com/anthropics/anthropic-sdk-python/main/examples/messages.py");
+    expect(gitHubBlobRawURL("https://github.com/anthropics/anthropic-sdk-python")).toBeUndefined();
+  });
+
+  it("fences code files with their language and titles them by file name", async () => {
+    const { extractGitHubBlobPage } = await import("../src/content/github-notebook");
+    vi.stubGlobal("fetch", async () => ({ ok: true, text: async () => "# 发一条消息\nprint('hi')\n", json: async () => ({}) }));
+    try {
+      const page = await extractGitHubBlobPage({ location: { href: "https://github.com/a/b/blob/main/examples/messages.py" } } as unknown as Document);
+      expect(page?.title).toBe("messages.py");
+      expect(page?.text).toBe("```python\n# 发一条消息\nprint('hi')\n```");
+      const image = await extractGitHubBlobPage({ location: { href: "https://github.com/a/b/blob/main/logo.png" } } as unknown as Document);
+      expect(image).toBeUndefined();
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

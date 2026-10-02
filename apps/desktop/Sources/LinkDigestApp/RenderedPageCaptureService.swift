@@ -217,7 +217,7 @@ enum RenderedPageCapturePolicy {
   static func prefersRendering(_ url: URL) -> Bool {
     guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return false }
     if url.path.lowercased().hasSuffix(".md") { return false }
-    if isGitHubNotebook(url) { return true }
+    if isGitHubNotebook(url) || isGitHubRepositoryHome(url) { return true }
     let host = url.host?.lowercased() ?? ""
     func on(_ domain: String) -> Bool { host == domain || host.hasSuffix(".\(domain)") }
     let adapterHosts = [
@@ -234,6 +234,15 @@ enum RenderedPageCapturePolicy {
     guard host == "github.com" || host == "www.github.com" else { return false }
     let parts = url.pathComponents.filter { $0 != "/" }
     return parts.count >= 5 && parts[2] == "blob" && url.path.lowercased().hasSuffix(".ipynb")
+  }
+
+  /// 仓库首页（README）也走隐藏网页：GitHub 接口给的是原始 Markdown 混 HTML，阅读页里引用式
+  /// 链接没解析、列表预览露出 `<p> <img…`；扩展从渲染好的页面取，两条路这样才一致（2026-10-02）。
+  /// 渲染失败时照旧回落到 GitHub 接口。
+  static func isGitHubRepositoryHome(_ url: URL) -> Bool {
+    let host = url.host?.lowercased() ?? ""
+    guard host == "github.com" || host == "www.github.com" else { return false }
+    return url.pathComponents.filter { $0 != "/" }.count == 2
   }
 
   static func allowsDirectFallback(_ url: URL) -> Bool { !isGitHubNotebook(url) }

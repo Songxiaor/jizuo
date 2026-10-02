@@ -309,6 +309,15 @@ export function detectPageTranslation(documentLike: Document): string | undefine
     const original = labels.some((text) => /^(?:显示原文|Show original)$/iu.test(text));
     if (translated && original) return "X 自动翻译";
   }
+  // Substack 阅读器按账号语言整篇翻译，文章头上标着「已翻译」，没有切回原文的开关。
+  const host = (() => {
+    try { return new URL(documentLike.location?.href ?? "").hostname.toLowerCase(); } catch { return ""; }
+  })();
+  if (host === "substack.com" || host.endsWith(".substack.com")) {
+    const badge = Array.from(documentLike.querySelectorAll?.("div, span, button") ?? [])
+      .some((node) => (node.children?.length ?? 0) === 0 && /^(?:已翻译|Translated)$/u.test((node.textContent ?? "").trim()));
+    if (badge) return "Substack 自动翻译";
+  }
   if (documentLike.querySelector?.("xt-trans")) return "Trancy";
   if (/(?:^|\s)translated-(?:ltr|rtl)(?:\s|$)/u.test(htmlClass)) return "浏览器自带翻译";
   if (documentLike.querySelector?.(".immersive-translate-target-wrapper")) return "沉浸式翻译";
@@ -2735,7 +2744,7 @@ export function htmlElementToMarkdown(root: Element, baseHref: string): string {
       const pageAlt = (el.getAttribute("alt") ?? el.getAttribute("data-alt") ?? "").trim();
       if (!href) return pageAlt ? `\n\n${pageAlt}\n\n` : "";
       if (isXProfileChromeImageURL(href) || isMediumProfileChromeImageURL(href)) return "";
-      if (isDecorativeImage(el, href)) return "";
+      if (isDecorativeImage(el, href, baseHref)) return "";
       const safeAlt = alt.replace(/[[\]]/g, "");
       return `\n\n![${safeAlt}](${href})\n\n`;
     }
@@ -2751,12 +2760,24 @@ export function htmlElementToMarkdown(root: Element, baseHref: string): string {
  * （2026-10-02 抓取完整度测试）。只看确凿的信号：class/祖先 class 的语义词、
  * 声明的宽高、地址里写明的小尺寸缩略参数。
  */
-function isDecorativeImage(image: Element, href: string): boolean {
+function isDecorativeImage(image: Element, href: string, pageHref: string): boolean {
   const DECORATIVE = /(?:^|[\s_-])(?:avatar|portrait|headimg|logo|icon|badge|emoji)(?:$|[\s_-]|s\b)/iu;
   let node: Element | null = image;
   for (let depth = 0; node && depth < 3; depth += 1) {
     if (DECORATIVE.test(node.getAttribute("class") ?? "")) return true;
     node = node.parentElement;
+  }
+  // 导航热区图（usemap/ismap）和链回网站首页的 logo 不是配图：Paul Graham 的文章页混进了
+  // 左侧导航竖条和顶部站名图（2026-10-02 抓取完整度测试）。
+  if (image.getAttribute("usemap") !== null || image.getAttribute("ismap") !== null) return true;
+  const link = image.closest?.("a[href]");
+  if (link) {
+    try {
+      const target = new URL(link.getAttribute("href") ?? "", pageHref);
+      if (/^\/(?:index\.html?)?$/u.test(target.pathname) && !target.search) return true;
+    } catch {
+      // 链接写坏了就按普通图处理。
+    }
   }
   const declared = [image.getAttribute("width"), image.getAttribute("height")]
     .map((value) => Number.parseInt(value ?? "", 10))

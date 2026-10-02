@@ -2795,3 +2795,24 @@ describe("images inside tables (2026-10-02 Wikipedia infobox)", () => {
     expect(tableBlock.split("\n\n")[0]).not.toContain("![");
   });
 });
+
+describe("navigation images (2026-10-02 Paul Graham)", () => {
+  it("drops image-map navigation and logos that link back to the home page", () => {
+    const root = el("div", [
+      el("img", [], { src: "https://s.example/aah/paulgraham/bel-7.gif", width: "69", height: "357", usemap: "#nav" }),
+      el("a", [el("img", [], { src: "https://s.example/aah/paulgraham/bel-8.gif", width: "410", height: "45" })], { href: "index.html" }),
+      el("p", [text("Essay body paragraph that is long enough to count as the article content of this page.")]),
+      el("a", [el("img", [], { src: "https://cdn.example/figure-big.jpg", alt: "figure" })], { href: "figure-big.jpg" }),
+    ]);
+    const page = extractCurrentPage(makeDocument({ title: "How to Do Great Work", href: "https://paulgraham.com/greatwork.html", root }));
+    expect(page.text).not.toContain("bel-7.gif");
+    expect(page.text).not.toContain("bel-8.gif");
+    expect(page.text).toContain("figure-big.jpg");
+  });
+
+  it("recognizes Substack's own translation badge", async () => {
+    const { detectPageTranslation } = await import("../src/content/extract");
+    const root = el("main", [el("div", [text("已翻译")]), el("p", [text("在我与科技公司CEO好友的小型群聊中，大家都在打赌。")])]);
+    expect(detectPageTranslation(makeDocument({ title: "Substack", href: "https://substack.com/home/post/p-214463802", root }))).toBe("Substack 自动翻译");
+  });
+});

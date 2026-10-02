@@ -1063,6 +1063,8 @@ public struct MinimalHTMLExtractor: HTMLContentExtracting {
     guard let source = attribute("data-src") ?? attribute("data-original") ?? srcsetBest ?? attribute("src"),
           !source.hasPrefix("data:")
     else { return nil }
+    // 导航热区图（usemap/ismap）不是配图，和扩展同一条规则（Paul Graham 左侧导航，2026-10-02）。
+    if tag.range(of: "\\b(?:usemap|ismap)\\b", options: [.regularExpression, .caseInsensitive]) != nil { return nil }
     let classes = [attribute("class"), attribute("id")].compactMap { $0 }.joined(separator: " ")
     if classes.range(of: "(?:^|[\\s_-])(?:avatar|portrait|headimg|logo|icon|badge|emoji)(?:$|[\\s_-]|s\\b)", options: [.regularExpression, .caseInsensitive]) != nil {
       return nil

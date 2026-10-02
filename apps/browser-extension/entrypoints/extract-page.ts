@@ -1,5 +1,6 @@
 import { detectPageTranslation, extractCurrentPage } from "../src/content/extract";
-import { extractGitHubNotebookPage } from "../src/content/github-notebook";
+import { extractGitHubBlobPage } from "../src/content/github-notebook";
+import { showXOriginal } from "../src/content/x-original";
 
 /**
  * 注入到页面里执行抽取的入口。
@@ -19,8 +20,14 @@ import { extractGitHubNotebookPage } from "../src/content/github-notebook";
  */
 // GitHub 笔记本的正文不在页面 DOM 里（跨域 iframe），先从公开 raw 地址取；其余页面照旧。
 export default defineUnlistedScript(async () => {
-  const page = (await extractGitHubNotebookPage(document)) ?? extractCurrentPage();
-  // 翻译插件把页面改成了译文时带上标记，弹窗据此提醒（见 detectPageTranslation）。
-  const translatedBy = detectPageTranslation(document);
-  return translatedBy ? { ...page, pageTranslatedBy: translatedBy } : page;
+  // X 自动翻译的帖子先切回原文再提取，提取完切回去（见 x-original.ts）。
+  const restoreTranslation = await showXOriginal(document);
+  try {
+    const page = (await extractGitHubBlobPage(document)) ?? extractCurrentPage();
+    // 页面仍显示机器译文时带上标记，弹窗据此提醒（见 detectPageTranslation）。
+    const translatedBy = detectPageTranslation(document);
+    return translatedBy ? { ...page, pageTranslatedBy: translatedBy } : page;
+  } finally {
+    await restoreTranslation?.();
+  }
 });
