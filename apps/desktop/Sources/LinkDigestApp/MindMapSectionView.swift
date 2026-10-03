@@ -95,6 +95,8 @@ struct MindMapSectionView: View {
       }
     }
     .pickerStyle(.segmented)
+    // 和右边几颗 small 按钮同高，不然这一排高低不齐。
+    .controlSize(.small)
     .frame(width: 200)
     .labelsHidden()
     // 只读时拨了也不会落库，让它可拨等于无声丢弃。ViewModel 那边有兜底闸，
@@ -138,7 +140,8 @@ struct MindMapSectionView: View {
       Label("导出", systemImage: "square.and.arrow.up")
     }
     .controlSize(.small)
-    .menuStyle(.borderlessButton)
+    // 和左边「重新生成」「编辑」同一种带边框按钮；borderless 会画成一行蓝字链接（2026-10-03 走查）。
+    .menuStyle(.button)
     .menuIndicator(.hidden)
     .fixedSize()
     .help("导出脑图")

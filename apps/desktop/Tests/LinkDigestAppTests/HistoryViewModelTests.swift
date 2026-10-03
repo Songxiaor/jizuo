@@ -2830,6 +2830,12 @@ final class HistoryViewModelTests: XCTestCase {
   }
 }
 
+/// 脑图要求原文至少 `mindMapMinimumSourceCharacters` 字；把一句话重复到够长。
+private func mindMapFixtureBody(_ sentence: String) -> String {
+  let times = HistoryViewModel.mindMapMinimumSourceCharacters / sentence.count + 1
+  return Array(repeating: sentence, count: times).joined()
+}
+
 extension HistoryViewModelTests {
   func testMindMapGenerationPersistsRecordAndThemeSwitchIsLocal() async throws {
     let root = FileManager.default.temporaryDirectory
@@ -2841,7 +2847,7 @@ extension HistoryViewModelTests {
     let document = CapturedDocument(
       createdAt: "2026-07-23T00:00:00Z", origin: .manualLink,
       url: "https://example.test/mindmap", title: "评测视频",
-      platform: "web", method: "fixture", text: "很长的正文内容，讲了外观和屏幕。",
+      platform: "web", method: "fixture", text: mindMapFixtureBody("很长的正文内容，讲了外观和屏幕。"),
       completeness: "complete", capturedAt: "2026-07-23T00:00:00Z", sourceLabel: "fixture"
     )
     let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
@@ -2902,7 +2908,7 @@ extension HistoryViewModelTests {
     let document = CapturedDocument(
       createdAt: "2026-07-23T00:00:00Z", origin: .manualLink,
       url: "https://example.test/mindmap-reason", title: "评测视频",
-      platform: "web", method: "fixture", text: "很长的正文内容，讲了外观和屏幕。",
+      platform: "web", method: "fixture", text: mindMapFixtureBody("很长的正文内容，讲了外观和屏幕。"),
       completeness: "complete", capturedAt: "2026-07-23T00:00:00Z", sourceLabel: "fixture"
     )
     let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
@@ -2927,6 +2933,22 @@ extension HistoryViewModelTests {
       "这份历史当前只能浏览"
     )
     XCTAssertFalse(readOnly.canGenerateMindMap(taskID: accepted.taskID))
+
+    // 一两句话的推文：不画脑图，理由单独一句，界面据此直接隐藏按钮。
+    let short = try repository.acceptCapture(.init(document: CapturedDocument(
+      createdAt: "2026-07-23T00:00:01Z", origin: .manualLink,
+      url: "https://example.test/mindmap-short", title: "短推文",
+      platform: "x", method: "fixture", text: "I found a site that solves pretty much every UI component oversight.",
+      completeness: "complete", capturedAt: "2026-07-23T00:00:01Z", sourceLabel: "fixture"
+    ), receivedAtMilliseconds: 2))
+    let configured = HistoryViewModel(mindMapExtractor: StubMindMapExtractor(outcome: .init(
+      outline: MindMapOutline(title: "短", subtitle: nil, branches: [], tags: []),
+      totalTokens: 1
+    )))
+    configured.configure(history: .init(repository: repository), isReadOnly: false, unavailableCode: nil)
+    await waitUntil { configured.detailState == .loaded && configured.selectedTaskID == short.taskID }
+    XCTAssertEqual(configured.mindMapUnavailableReason(taskID: short.taskID), HistoryViewModel.mindMapTooShortReason)
+    XCTAssertFalse(configured.canGenerateMindMap(taskID: short.taskID))
   }
 
   /// 校对保存是「worker 写库 + 详情就地补丁」：主线程不写 SQLite，也不再
@@ -2996,7 +3018,7 @@ extension HistoryViewModelTests {
     let document = CapturedDocument(
       createdAt: "2026-07-23T00:00:00Z", origin: .manualLink,
       url: "https://example.test/pipeline", title: "文章",
-      platform: "web", method: "fixture", text: "一篇讲折叠屏的文章正文。",
+      platform: "web", method: "fixture", text: mindMapFixtureBody("一篇讲折叠屏的文章正文。"),
       completeness: "complete", capturedAt: "2026-07-23T00:00:00Z", sourceLabel: "fixture"
     )
     let accepted = try repository.acceptCapture(.init(document: document, receivedAtMilliseconds: 1))
@@ -3050,7 +3072,7 @@ extension HistoryViewModelTests {
       document: CapturedDocument(
         createdAt: "2026-08-15T00:00:00Z", origin: .manualLink,
         url: "https://example.test/pipeline/first", title: "第一条",
-        platform: "web", method: "fixture", text: "第一条正文",
+        platform: "web", method: "fixture", text: mindMapFixtureBody("第一条正文"),
         completeness: "complete", capturedAt: "2026-08-15T00:00:00Z", sourceLabel: "fixture"
       ),
       receivedAtMilliseconds: 1
@@ -3059,7 +3081,7 @@ extension HistoryViewModelTests {
       document: CapturedDocument(
         createdAt: "2026-08-15T00:00:01Z", origin: .manualLink,
         url: "https://example.test/pipeline/second", title: "第二条",
-        platform: "web", method: "fixture", text: "第二条正文",
+        platform: "web", method: "fixture", text: mindMapFixtureBody("第二条正文"),
         completeness: "complete", capturedAt: "2026-08-15T00:00:01Z", sourceLabel: "fixture"
       ),
       receivedAtMilliseconds: 2

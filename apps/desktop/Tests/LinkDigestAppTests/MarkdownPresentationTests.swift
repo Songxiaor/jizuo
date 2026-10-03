@@ -6,6 +6,37 @@ import XCTest
 import LinkDigestCore
 
 final class MarkdownPresentationTests: XCTestCase {
+  /// 配文里一行一条、却没写成 Markdown 列表的清单，分行要留着；普通折行照旧拼接。
+  func testUnmarkedCaptionListKeepsLineBreaks() {
+    let caption = "真正核心就这几层：\n1文本怎么变成模型能吃的数字\n2语言模型本质就是在预测下一个token\n👉 原文链接"
+    guard case let .paragraph(text) = MarkdownPresentation.blocks(from: caption).first else {
+      return XCTFail("应是一段")
+    }
+    XCTAssertEqual(text, "真正核心就这几层：\n1文本怎么变成模型能吃的数字\n2语言模型本质就是在预测下一个token\n👉 原文链接")
+
+    guard case let .paragraph(wrapped) = MarkdownPresentation.blocks(from: "这是一段被折行的\n正文，2026年发布。\n3个人参加").first else {
+      return XCTFail("应是一段")
+    }
+    XCTAssertEqual(wrapped, "这是一段被折行的正文，2026年发布。3个人参加")
+  }
+
+  /// 裸链接紧贴中文时，链接只覆盖地址本身；显式 `[文字](地址)` 不受影响。
+  func testBareURLFollowedByChineseOnlyLinksTheAddress() {
+    let parsed = MarkdownPresentation.inlineAttributed("附带一个链接（https://t.co/fe2zznSsIY）和一张图片。点赞数3508。")
+    let linked = parsed.runs.compactMap { run -> (String, String)? in
+      guard let link = run.link else { return nil }
+      return (String(parsed[run.range].characters), link.absoluteString)
+    }
+    XCTAssertEqual(linked.count, 1)
+    XCTAssertEqual(linked.first?.0, "https://t.co/fe2zznSsIY")
+    XCTAssertEqual(linked.first?.1, "https://t.co/fe2zznSsIY")
+    XCTAssertEqual(String(parsed.characters), "附带一个链接（https://t.co/fe2zznSsIY）和一张图片。点赞数3508。")
+
+    let explicit = MarkdownPresentation.inlineAttributed("看[中文标题](https://example.com/a)这里")
+    let explicitLinks = explicit.runs.compactMap { run in run.link.map { _ in String(explicit[run.range].characters) } }
+    XCTAssertEqual(explicitLinks, ["中文标题"])
+  }
+
   /// 译文里中文旁的双空格压成一个；代码块、行内代码和行尾换行空格不动。
   func testCollapsesDoubleSpacesNextToChineseOutsideCode() {
     XCTAssertEqual(MarkdownPresentation.collapsingCJKAdjacentSpaces("我不想谈  tokenization  这个"), "我不想谈 tokenization 这个")

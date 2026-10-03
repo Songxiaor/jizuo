@@ -113,9 +113,88 @@ enum CapturedSourceBodyPresentation {
         result.append("- " + item)
         continue
       }
-      result.append(keepsLineBreaks && !trimmed.isEmpty ? line + "  " : line)
+      guard keepsLineBreaks, !trimmed.isEmpty else {
+        result.append(line)
+        continue
+      }
+      // 社交平台配文的排法（2026-10-03 Syc：「一整堵墙，没有任何阅读观感」）。
+      //
+      // 原来每一行都只是硬换行：十几行等距排下来，没有段落，序号挤在行首，
+      // 「————」印成一串字。现在按作者分行的意图分三种：
+      // - 序号行（「1.帮我…」「2、…」）转成真正的编号列表，折行挂在文字下面；
+      // - 只有横线的行画成分隔线；
+      // - 普通行：一句话说完了（句末标点或够长）就分段，留出段距；没说完的短行
+      //   （「沉静之旅」「#话题」这类）仍然硬换行连在一起，不被拆得七零八落。
+      let previousIsListItem = result.last.map(Self.isMarkdownListLine) ?? false
+      if Self.isSeparatorLine(trimmed) {
+        Self.closeParagraph(&result)
+        result.append(contentsOf: ["---", ""])
+        continue
+      }
+      if let item = Self.numberedCaptionItem(trimmed) {
+        if !previousIsListItem { Self.closeParagraph(&result) }
+        result.append(item)
+        continue
+      }
+      if previousIsListItem { result.append("") }
+      if Self.endsThought(trimmed) {
+        result.append(contentsOf: [trimmed, ""])
+      } else {
+        result.append(trimmed + "  ")
+      }
     }
+    while result.last?.isEmpty == true { result.removeLast() }
     return result.joined(separator: "\n")
+  }
+
+  /// 正文第一行就是页面上方的标题时去掉这一行（连同后面的空行）。
+  ///
+  /// 推文的标题取自配文首句。有视频时标题必须留着（视频把正文挤到一屏外），
+  /// 于是视频下面的配文又从同一句开始，一屏里出现两遍（2026-10-03 走查）。
+  /// 只认「整行就是标题」，标题只是首行的前半句时不动。
+  static func strippingLeadingLine(_ markdown: String, equalTo title: String) -> String {
+    let target = title.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !target.isEmpty else { return markdown }
+    var lines = markdown.components(separatedBy: "\n")
+    guard let index = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }),
+          lines[index].trimmingCharacters(in: .whitespaces) == target,
+          // 后面还得有别的字，不然整段配文就只剩空白。
+          lines[(index + 1)...].contains(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })
+    else { return markdown }
+    lines.removeSubrange(0...index)
+    while lines.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { lines.removeFirst() }
+    return lines.joined(separator: "\n")
+  }
+
+  /// 上一行还开着（硬换行连着）就收掉尾巴上的两个空格，再空一行起新段。
+  private static func closeParagraph(_ result: inout [String]) {
+    guard let last = result.last, !last.isEmpty else { return }
+    if last.hasSuffix("  ") { result[result.count - 1] = String(last.dropLast(2)) }
+    result.append("")
+  }
+
+  private static func isMarkdownListLine(_ line: String) -> Bool {
+    line.hasPrefix("- ") || line.range(of: #"^\d{1,2}\. "#, options: .regularExpression) != nil
+  }
+
+  /// 「————」「-----」「＝＝＝」这类只用来隔开上下文的行。
+  static func isSeparatorLine(_ trimmed: String) -> Bool {
+    trimmed.count >= 3 && trimmed.allSatisfy { "—–-─━_＿=＝~～*＊·".contains($0) }
+  }
+
+  /// 「1.帮我…」「2、梳理…」「3）配上…」→「1. 帮我…」。只认 1–2 位序号。
+  static func numberedCaptionItem(_ trimmed: String) -> String? {
+    guard let match = trimmed.wholeMatch(of: /^(\d{1,2})[.、)）．]\s*(.+)$/) else { return nil }
+    let rest = String(match.2)
+    // 「3.5 倍速」「2.0 版本」是小数，不是序号。
+    if trimmed.dropFirst(match.1.count).first == ".", rest.first?.isNumber == true { return nil }
+    return "\(match.1). \(rest)"
+  }
+
+  /// 这一行是不是一句完整的话：句末标点，或者长到会自己折行。
+  static func endsThought(_ trimmed: String) -> Bool {
+    if let last = trimmed.last, "。！？!?…；;」』”\"）)~～".contains(last) { return true }
+    return trimmed.count >= 28
   }
 
   private static let bulletSymbols: [Character] = ["•", "·", "●", "▪", "◦", "‧", "・"]

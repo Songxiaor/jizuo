@@ -435,6 +435,57 @@ struct TranscriptManuscriptView: View {
   }
 }
 
+/// 悬停立刻出的小提示，出在控件正下方。
+///
+/// 系统 `.help` 要鼠标停稳一秒多才出来，挪一下又重新计时。落款日期、工序章这种
+/// 「看不懂才去指一下」的地方，等那一秒就像没反应（2026-10-03 Syc 走查）。
+/// 只留 0.12 秒防抖，免得鼠标划过整行时一路闪。
+struct InstantHoverTip: ViewModifier {
+  let text: String?
+  @State private var isShown = false
+  @State private var pending: Task<Void, Never>?
+  @Environment(\.appTheme) private var theme
+
+  func body(content: Content) -> some View {
+    content
+      .onHover { hovering in
+        pending?.cancel()
+        guard hovering, text != nil else {
+          isShown = false
+          return
+        }
+        pending = Task { @MainActor in
+          try? await Task.sleep(for: .milliseconds(120))
+          if !Task.isCancelled { isShown = true }
+        }
+      }
+      .overlay(alignment: .bottom) {
+        if isShown, let text {
+          Text(text)
+            .font(.system(size: 12))
+            .foregroundStyle(theme.primaryText)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(theme.card, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 6, style: .continuous).strokeBorder(theme.hairline))
+            .shadow(color: .black.opacity(0.12), radius: 6, y: 2)
+            .fixedSize()
+            // 提示框的顶边落在控件底边下方 6pt。
+            .alignmentGuide(.bottom) { $0[.top] - 6 }
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+        }
+      }
+      .accessibilityHint(text ?? "")
+  }
+}
+
+extension View {
+  func instantHoverTip(_ text: String?) -> some View {
+    modifier(InstantHoverTip(text: text))
+  }
+}
+
 /// 题跋：详情末尾一行小号宋体，记下何时从哪里汲来；后面按先后钤上做过的工序章。
 /// 归属印「汲 / 作」只在页头骑缝盖一方，这里不再重复（2026-09-30）。
 /// 每枚章悬停看来历，点一下跳到那份内容。
@@ -443,6 +494,8 @@ struct ColophonView: View {
   /// 下载来的本地文件记着来源网址时，题跋文字可以点开它（2026-09-29）。
   var link: URL? = nil
   var records: [ProcessStepRecord] = []
+  /// 悬停落款时立刻给出的公历日期（「公历2026年10月3日」）。
+  var dateHelp: String? = nil
   let readingFont: ResolvedReadingFont
   let secondaryTextColor: Color
   let sealColor: Color
@@ -467,6 +520,7 @@ struct ColophonView: View {
           .font(readingFont.font(size: max(12, readingFont.bodySize - 3)))
           .tracking(1)
           .foregroundStyle(secondaryTextColor)
+          .instantHoverTip(dateHelp)
           .accessibilityIdentifier("history-colophon-text")
         if !records.isEmpty {
           HStack(spacing: 7) {
@@ -475,7 +529,7 @@ struct ColophonView: View {
                 SealMark(glyph: record.step.glyph, size: 26, color: sealColor, style: .stamped, rotation: record.step.rotation)
               }
               .buttonStyle(.plain)
-              .help(record.provenance + (onSelect == nil ? "" : " · 点一下跳过去"))
+              .instantHoverTip(record.provenance + (onSelect == nil ? "" : " · 点一下跳过去"))
               .accessibilityLabel(record.provenance)
               .accessibilityIdentifier("history-colophon-seal-\(record.step.rawValue)")
             }

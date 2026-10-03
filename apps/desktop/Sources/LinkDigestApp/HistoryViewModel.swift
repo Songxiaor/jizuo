@@ -1619,7 +1619,9 @@ final class HistoryViewModel {
     snapshotID: ContentSnapshotID,
     fetchDescriptor: @escaping @MainActor () async throws -> MediaDescriptor
   ) {
-    guard localMediaCleared, detail?.task.id == taskID, clearedVideoRedownloadState != .running else { return }
+    // 两种情况都走这里：按设置清理掉的，和保存时就没下载下来的（本机没有视频行）。
+    guard localMediaCleared || detail?.media == nil,
+          detail?.task.id == taskID, clearedVideoRedownloadState != .running else { return }
     clearedVideoRedownloadState = .running
     if remoteMediaFavoriteState != .saving { remoteMediaFavoriteState = .idle }
     Task { [weak self] in
@@ -4427,6 +4429,18 @@ final class HistoryViewModel {
     return String(source.prefix(Self.mindMapInputCharacterLimit))
   }
 
+  /// 原文少于这么多字时不画脑图。一两句话的推文画出来只有一个中心加两三片叶子，
+  /// 比原文还难读，还白花一次模型调用（2026-10-03 发布前走查）。
+  nonisolated static let mindMapMinimumSourceCharacters = 200
+  nonisolated static let mindMapTooShortReason = "原文只有几句话，用不上脑图"
+
+  /// 只看原文，不看总结：总结再长也是从这几句话里扩出来的。
+  static func isTooShortForMindMap(_ detail: HistoryDetailProjection) -> Bool {
+    LayeredSourceDocument.modelInput(from: detail.snapshots)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+      .count < mindMapMinimumSourceCharacters
+  }
+
   /// 「生成脑图」为什么现在不能点。可用时返回 nil。
   ///
   /// 判断和理由必须是同一份：按钮的 disabled 由本方法推导，不能再各写一套门禁。
@@ -4441,6 +4455,7 @@ final class HistoryViewModel {
     if let body = detail.snapshots.last?.bodyText, LocalImportDocument.isUntranscribedPlaceholder(body) {
       return "还没转写：先点「转写」，有了文字稿再生成脑图"
     }
+    if Self.isTooShortForMindMap(detail) { return Self.mindMapTooShortReason }
     return nil
   }
 
@@ -4517,6 +4532,7 @@ final class HistoryViewModel {
   ) -> Bool {
     guard history?.mindMapStore != nil, mindMapExtractor != nil, !isReadOnly,
           !mindMapState.isActive,
+          !Self.isTooShortForMindMap(detail),
           let text = Self.mindMapSourceText(in: detail) else { return false }
     CapabilityConsent.grant(.mindMap, defaults: capabilityConsentDefaults)
     beginMindMapGeneration(

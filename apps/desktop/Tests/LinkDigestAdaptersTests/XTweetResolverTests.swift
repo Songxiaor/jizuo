@@ -137,6 +137,28 @@ final class XTweetResolverTests: XCTestCase {
     )
   }
 
+  /// 4 分半的 2K 视频约 340MB，超过默认 200MB 下载上限：退到放得下的 720p。
+  func testLongVideoFallsBackToAVariantThatFitsTheDownloadBudget() throws {
+    let json = """
+    {
+      "mediaDetails": [{
+        "type": "video",
+        "video_info": {
+          "duration_millis": 265380,
+          "variants": [
+            {"bitrate": 256000, "content_type": "video/mp4", "url": "https://video.twimg.com/amplify_video/1/vid/avc1/480x270/a.mp4"},
+            {"bitrate": 2176000, "content_type": "video/mp4", "url": "https://video.twimg.com/amplify_video/1/vid/avc1/1280x720/b.mp4"},
+            {"bitrate": 10368000, "content_type": "video/mp4", "url": "https://video.twimg.com/amplify_video/1/vid/avc1/2560x1440/c.mp4"}
+          ]
+        }
+      }]
+    }
+    """
+    let payload = try JSONDecoder().decode(XTweetResolver.Payload.self, from: Data(json.utf8))
+    let media = try XCTUnwrap(XTweetResolver.bestVideo(in: payload, author: nil))
+    XCTAssertEqual(media.videoURL, "https://video.twimg.com/amplify_video/1/vid/avc1/1280x720/b.mp4")
+  }
+
   func testVideoOnlyTweetWritesCoverImageWithoutRepeatingThePosterInTheBody() throws {
     let json = """
     {

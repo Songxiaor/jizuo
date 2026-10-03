@@ -206,7 +206,10 @@ public struct XTweetResolver: Sendable {
     return host == "pbs.twimg.com" || host.hasSuffix(".pbs.twimg.com")
   }
 
-  public func resolveTweet(id: String) async -> ResolvedTweet? {
+  /// - Parameter includesRichContent: 是否顺带走一次 GraphQL 取全文和互动数。只要视频地址时
+  ///   （「下载视频」）不需要：那一步要先激活匿名令牌，冷启动时偶尔拖过 25 秒的刷新超时，
+  ///   视频地址明明拿到了也报「暂时无法重新获取播放地址」（2026-10-03 实测第一次点失败、第二次成功）。
+  public func resolveTweet(id: String, includesRichContent: Bool = true) async -> ResolvedTweet? {
     guard Self.isValidTweetID(id),
           var components = URLComponents(string: "https://cdn.syndication.twimg.com/tweet-result")
     else { return nil }
@@ -220,7 +223,7 @@ public struct XTweetResolver: Sendable {
 
     // These two reads are independent. Overlap them within ONE queued tweet,
     // retaining the serial WebKit/save queue and awaiting full text before saving.
-    async let supplementary = richContent(id: id)
+    async let supplementary: GraphQLRichContent? = includesRichContent ? await richContent(id: id) : nil
     guard let response = try? await resources.fetchResource(
       .init(
         url: endpoint,
@@ -756,7 +759,7 @@ public struct XTweetResolver: Sendable {
 
   /// 兼容既有调用点：捕获到 blob/MSE 的 X 视频时只要 media。
   public func resolveVideo(tweetID: String, author: String?) async -> CaptureMedia? {
-    guard let tweet = await resolveTweet(id: tweetID) else { return nil }
+    guard let tweet = await resolveTweet(id: tweetID, includesRichContent: false) else { return nil }
     guard let video = tweet.video else { return nil }
     // 调用方已有作者信息时以它为准，避免与既有条目显示不一致。
     guard let author, !author.isEmpty else { return video }
@@ -836,10 +839,20 @@ public struct XTweetResolver: Sendable {
     )
   }
 
-  /// 挑码率最高的 MP4。HLS 变体（m3u8）对本地留存无用，直接跳过。
+  /// 一条视频估算体积的上限。默认下载上限是 200MB，留出余量。
+  static let preferredVideoBudgetBytes: Double = 180 * 1_024 * 1_024
+  /// 不知道时长时的码率上限：约 720p。
+  static let preferredBitrateWithoutDuration = 2_500_000
+
+  /// 挑放得下的最高码率 MP4。HLS 变体（m3u8）对本地留存无用，直接跳过。
+  ///
+  /// 原来一律挑最高码率：X 现在给到 2560×1440、10Mbps，4 分半就是 340MB，超过默认
+  /// 200MB 下载上限，下载在半路失败，详情页连视频都没有（2026-10-03 实库）。
+  /// 存下来是为了回看和转写，按「码率 × 时长」估体积，挑预算内最清楚的一档；
+  /// 一档都放不下就取最小的那档。
   static func bestVideo(in payload: Payload, author: String?) -> CaptureMedia? {
     let details = (payload.mediaDetails ?? []) + (payload.video.map { [$0] } ?? [])
-    var best: (bitrate: Int, url: String)?
+    var candidates: [(bitrate: Int, url: String)] = []
     var cover: String?
     var durationSeconds: Double?
     for detail in details {
@@ -852,11 +865,17 @@ public struct XTweetResolver: Sendable {
         guard variant.content_type?.lowercased() == "video/mp4",
               let raw = variant.url, isAllowedVideoURL(raw)
         else { continue }
-        let bitrate = variant.bitrate ?? 0
-        if best == nil || bitrate > best!.bitrate { best = (bitrate, raw) }
+        candidates.append((variant.bitrate ?? 0, raw))
       }
     }
-    guard let best else { return nil }
+    let ascending = candidates.sorted { $0.bitrate < $1.bitrate }
+    let fits: ((bitrate: Int, url: String)) -> Bool = { candidate in
+      if let durationSeconds {
+        return Double(candidate.bitrate) * durationSeconds / 8 <= preferredVideoBudgetBytes
+      }
+      return candidate.bitrate <= preferredBitrateWithoutDuration
+    }
+    guard let best = ascending.last(where: fits) ?? ascending.first else { return nil }
     return CaptureMedia(
       platform: "x",
       videoURL: best.url,

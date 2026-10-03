@@ -120,7 +120,7 @@ private extension CapturedContentNaming {
     else { return nil }
     while !remainder.isEmpty {
       let sentence = firstSentence(from: remainder)
-      let stripped = strippingTrailingHashtags(sentence)
+      let stripped = strippingTrailingURLs(strippingTrailingHashtags(strippingTrailingURLs(sentence)))
         .trimmingCharacters(in: .whitespacesAndNewlines)
       if !stripped.isEmpty {
         if stripped.count <= limit { return stripped }
@@ -197,6 +197,12 @@ private extension CapturedContentNaming {
 
   static func isASCIIDigit(_ character: Character) -> Bool {
     character.isASCII && character.isNumber
+  }
+
+  /// 尾部的裸链接删掉：推文末尾常挂一条 `https://t.co/…` 短链，原样进标题就成了
+  /// 「申请通道 https://t.co/EvGQZY48yG」（2026-10-03 走查）。只删末尾，句中链接留着。
+  static func strippingTrailingURLs(_ text: String) -> String {
+    text.replacingOccurrences(of: #"(\s*https?://\S+)+\s*$"#, with: "", options: .regularExpression)
   }
 
   /// 尾部 `#话题` 串删掉；`C#`、`Issue#12` 这种普通 # 含义留下。

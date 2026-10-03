@@ -57,6 +57,65 @@ final class SourceCaptionPresentationTests: XCTestCase {
     XCTAssertNil(CapturedSourceBodyPresentation.symbolBulletItem("```•"))
   }
 
+  /// 推文配文：说完一句就分段，序号行成编号列表，横线行成分隔线（2026-10-03 走查）。
+  func testSocialCaptionGetsParagraphsListsAndDividers() {
+    let source = """
+    卧槽，原子弹，瘫坐，爆炸。
+    这tm是opus5.5自己剪的vlog，我真的只是试试，全程开着action瞎录，然后把资料给到它，提示词如下：
+    「文件目录：自媒体项目-vlog/vlog02-汕头day1
+    1.帮我把这些录制的内容剪辑成一段vlog。
+    2.你需要根据我们聊天的内容，梳理出一个主题
+    ————————
+    然后，打着游戏呢，来看看进度。
+    诸位自己看吧，人类剩下的阵地还有什么？
+    """
+    let blocks = MarkdownPresentation.blocks(
+      from: CapturedSourceBodyPresentation.preservingCaptionParagraphs(source, platform: "x")
+    )
+    let kinds = blocks.map { block -> String in
+      switch block {
+      case .paragraph: "p"
+      case .orderedList: "ol"
+      case .divider: "hr"
+      default: "other"
+      }
+    }
+    XCTAssertEqual(kinds, ["p", "p", "p", "ol", "hr", "p", "p"])
+    if case let .orderedList(_, items) = blocks[3] {
+      XCTAssertEqual(items.count, 2)
+    }
+    XCTAssertNil(CapturedSourceBodyPresentation.numberedCaptionItem("3.5 倍速播放"))
+    XCTAssertEqual(CapturedSourceBodyPresentation.numberedCaptionItem("2、梳理主题"), "2. 梳理主题")
+  }
+
+  func testCommentAuthorSplitsNameAndHandle() {
+    XCTAssertEqual(CommentThreadSectionView.splitAuthor("Panda | AI Agent @PandaAINative").name, "Panda | AI Agent")
+    XCTAssertEqual(CommentThreadSectionView.splitAuthor("Panda | AI Agent @PandaAINative").handle, "@PandaAINative")
+    XCTAssertEqual(CommentThreadSectionView.splitAuthor("WZH @wzh_cc").handle, "@wzh_cc")
+    XCTAssertEqual(CommentThreadSectionView.splitAuthor("dotey @dotey").name, "@dotey")
+    XCTAssertNil(CommentThreadSectionView.splitAuthor("u/thabxi").handle)
+  }
+
+  func testCommentAuthorBadgeMatchesPostAuthor() {
+    let post = "大师的AI小灶 (@dashiAIxz)"
+    XCTAssertTrue(CommentThreadSectionView.isPostAuthor("大师的AI小灶 @dashiAIxz", postAuthor: post))
+    XCTAssertTrue(CommentThreadSectionView.isPostAuthor("改了昵称 @DashiAIxz", postAuthor: post), "账号一样就算，昵称可以改")
+    XCTAssertFalse(CommentThreadSectionView.isPostAuthor("WZH @wzh_cc", postAuthor: post))
+    XCTAssertTrue(CommentThreadSectionView.isPostAuthor("阿强", postAuthor: "阿强"), "抖音这类只有昵称")
+    XCTAssertFalse(CommentThreadSectionView.isPostAuthor("阿强", postAuthor: nil))
+  }
+
+  /// 标题取自配文首句且显示在上方时，配文不再从同一句开始；只是前半句时不动。
+  func testLeadingLineMatchingTitleIsStripped() {
+    let body = "卧槽，原子弹，瘫坐，爆炸。\n这tm是opus5.5自己剪的vlog"
+    XCTAssertEqual(
+      CapturedSourceBodyPresentation.strippingLeadingLine(body, equalTo: "卧槽，原子弹，瘫坐，爆炸。"),
+      "这tm是opus5.5自己剪的vlog"
+    )
+    XCTAssertEqual(CapturedSourceBodyPresentation.strippingLeadingLine(body, equalTo: "卧槽"), body)
+    XCTAssertEqual(CapturedSourceBodyPresentation.strippingLeadingLine("只有一句。", equalTo: "只有一句。"), "只有一句。")
+  }
+
   func testCaptionFormattingKeepsCodeAndImagesIntact() {
     let source = "配文\n```text\nline one\nline two\n```\n![](https://example.test/image.jpg)"
     let displayed = CapturedSourceBodyPresentation.preservingCaptionParagraphs(source, platform: "douyin")

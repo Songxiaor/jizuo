@@ -37,6 +37,26 @@ final class CapturedContentNamingTests: XCTestCase {
     )
   }
 
+  func testXCaptionDropsTrailingShortLink() {
+    let body = "申请通道 https://t.co/EvGQZY48yG"
+    let name = CapturedContentNaming.name(
+      title: body, body: body, host: "x.com", author: "关木 (@ZeroZ_JQ)", published: nil
+    )
+    XCTAssertEqual(name.text, "申请通道")
+    let linkOnly = "https://t.co/EvGQZY48yG"
+    let fallback = CapturedContentNaming.name(
+      title: linkOnly, body: "\(linkOnly)\n\n第二段才是正文", host: "x.com", author: nil, published: nil
+    )
+    XCTAssertFalse(fallback.text.contains("t.co"), "只有一条短链时不拿短链当标题")
+  }
+
+  func testAuthorDisplayCollapsesNameEqualToHandle() {
+    XCTAssertEqual(HistoryAuthorDisplay.text("ClaudeDevs (@ClaudeDevs)"), "@ClaudeDevs")
+    XCTAssertEqual(HistoryAuthorDisplay.text("claudedevs (@ClaudeDevs)"), "@ClaudeDevs")
+    XCTAssertEqual(HistoryAuthorDisplay.text("Giyu (@rutu_3)"), "Giyu (@rutu_3)")
+    XCTAssertEqual(HistoryAuthorDisplay.text("阿强"), "阿强")
+  }
+
   func testDouyinStripsTrailingHashtagsButKeepsOrdinaryHash() {
     let tagged = CapturedContentNaming.name(
       title: "今天去海边了 #日常 #旅行",

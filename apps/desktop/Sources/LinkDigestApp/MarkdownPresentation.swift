@@ -540,7 +540,32 @@ enum MarkdownPresentation {
     let normalized = normalizingCJKEmphasis(withWiki)
     let parsed = (try? AttributedString(markdown: normalized, options: options))
       ?? AttributedString(normalized)
-    return applyingScripts(applyingHighlights(parsed))
+    return applyingScripts(applyingHighlights(trimmingCJKSwallowedAutolinks(parsed)))
+  }
+
+  /// 裸链接后面紧跟中文时，GFM 自动链接一直延伸到下一个空白，
+  /// `链接（https://t.co/x）和一张图片。` 会把「）和一张图片。」整段画成链接，
+  /// 点进去还是个坏地址。这里只处理自动链接（显示文字就是地址本身），
+  /// 在第一个原样中日韩字符处截断，规则与手动添加链接（`ExplicitWebLinkInput`）一致。
+  /// `[文字](地址)` 这种显式链接不动。
+  static func trimmingCJKSwallowedAutolinks(_ source: AttributedString) -> AttributedString {
+    var value = source
+    let fixes: [(Range<AttributedString.Index>, Range<AttributedString.Index>, URL)] = value.runs.compactMap { run in
+      guard let link = run.link else { return nil }
+      let text = String(value[run.range].characters)
+      guard text.lowercased().hasPrefix("http"),
+            link.absoluteString.removingPercentEncoding == text
+      else { return nil }
+      let cut = ExplicitWebLinkInput.truncatedAtRawCJK(text)
+      guard cut.count < text.count, let url = URL(string: cut) else { return nil }
+      let split = value.characters.index(run.range.lowerBound, offsetBy: cut.count)
+      return (run.range.lowerBound..<split, split..<run.range.upperBound, url)
+    }
+    for (kept, released, url) in fixes {
+      value[kept].link = url
+      value[released].link = nil
+    }
+    return value
   }
 
   /// 把 `==高亮==` 变成带背景色的片段。
@@ -956,6 +981,9 @@ enum MarkdownPresentation {
   /// Splits sanitized Markdown into block-level units so the view can apply
   /// real spacing, heading sizes and list chrome — independent of AttributedString
   /// presentation intents that SwiftUI often flattens under `.font(...)`.
+  /// 分节号：居中的三个点，左右留出字距。
+  static let sectionBreakGlyphs = "·\u{2003}·\u{2003}·"
+
   static func blocks(from source: String) -> [Block] {
     let lines = resolvingFootnotes(sanitized(source))
       .replacingOccurrences(of: "\r\n", with: "\n")
@@ -1547,7 +1575,7 @@ enum MarkdownPresentation {
     var previous = first
     for raw in lines.dropFirst() {
       let line = raw.trimmingCharacters(in: .whitespaces)
-      if previous.hasSuffix("  ") {
+      if previous.hasSuffix("  ") || startsUnmarkedListLine(line, after: previous) {
         result += "\n" + line
       } else if needsASCIISpace(before: line, after: result) {
         result += " " + line
@@ -1557,6 +1585,32 @@ enum MarkdownPresentation {
       previous = raw
     }
     return result
+  }
+
+  /// 社交平台配文里「一行一条」的清单：作者按回车分行，却不写成 Markdown 列表
+  /// （`1文本怎么…` 数字后面没有点，`👉 …`、`• …` 也不是列表记号）。按标准软换行
+  /// 拼起来就成了「…数字（BPE tokenization）2语言模型本质…」一整坨（2026-10-03 实库）。
+  ///
+  /// 只认三种明显的分行：上一行以冒号收尾（「真正核心就这几层：」），下一行以序号、
+  /// 圆圈数字、项目符号或 emoji 开头。普通的折行正文仍按软换行拼接。
+  static func startsUnmarkedListLine(_ line: String, after previous: String) -> Bool {
+    let previousTrimmed = previous.trimmingCharacters(in: .whitespaces)
+    if previousTrimmed.hasSuffix("：") || previousTrimmed.hasSuffix(":") { return true }
+    guard let first = line.unicodeScalars.first else { return false }
+    if ("\u{2460}"..."\u{2473}").contains(first) { return true }  // ①…⑳
+    if "•·▪●◆◇■□★☆✓✔✅❌➡→👉-—".unicodeScalars.contains(first) { return true }
+    if first.properties.isEmojiPresentation { return true }
+    // 「1文本」「12、」：数字后面直接跟汉字或顿号。`2026年`、`3.5` 这种不算——
+    // 前者是句首写年份，后者是小数；只认 1–2 位序号后紧跟汉字。
+    let digits = line.prefix(while: { $0.isASCII && $0.isNumber })
+    if (1...2).contains(digits.count), let next = line.dropFirst(digits.count).first {
+      if next == "、" { return true }
+      if next.unicodeScalars.first.map({ (0x4E00...0x9FFF).contains($0.value) }) == true,
+         !["年", "月", "日", "号", "点", "个", "种", "位", "条", "岁", "天", "次", "分", "万", "亿", "千", "百"].contains(next) {
+        return true
+      }
+    }
+    return false
   }
 
   private static func needsASCIISpace(before next: String, after previous: String) -> Bool {
@@ -2185,7 +2239,10 @@ struct MarkdownContentView: View {
     if MarkdownOutline.shouldPresent(outlineEntries) { return true }
     // 只有模块、没有章节时，正文得长到需要跳转才值得占一行；一段 60 字的配文上
     // 摆个「目录 · 3 个模块」是噪音。
-    return !navigationModules.isEmpty && source.count >= 600
+    // 只量正文，不算评论：一条两百字的推文带十几条评论，整份就过了 600，
+    // 「目录 · 3 个模块」又冒出来（2026-10-03 走查）。
+    let bodyLength = source.components(separatedBy: "\n## 评论").first?.count ?? source.count
+    return !navigationModules.isEmpty && bodyLength >= 600
   }
 
   /// 有模块时不能只写「章节」——那会让人以为点开只有正文标题，白白错过跳转入口。
@@ -2744,11 +2801,13 @@ struct MarkdownContentView: View {
       .padding(.leading, 4)
       .padding(.bottom, 18)
     case .divider:
-      Rectangle()
-        .fill(secondaryTextColor.opacity(0.18))
-        .frame(height: 1)
-        .padding(.vertical, 10)
-        .padding(.bottom, 18)
+      // 和可选中正文那条路同一个分节号，两种排版看到的是同一个东西。
+      Text(MarkdownPresentation.sectionBreakGlyphs)
+        .font(readingFont.font(size: readingFont.bodySize))
+        .foregroundStyle(secondaryTextColor)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.top, 6)
+        .padding(.bottom, 20)
         .accessibilityHidden(true)
     case let .orderedList(start, items):
       VStack(alignment: .leading, spacing: 12) {

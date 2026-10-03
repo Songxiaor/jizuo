@@ -126,7 +126,7 @@ struct UIReadingHistoryRow: View {
   }
 
   private var rowSourceText: String {
-    row.author?.trimmedNonEmpty ?? HistoryPlatformDisplay.name(forHost: row.host)
+    row.author?.trimmedNonEmpty.map(HistoryAuthorDisplay.text) ?? HistoryPlatformDisplay.name(forHost: row.host)
   }
 
   /// 一行里要显示的几段文字，每次 body 只算一遍。

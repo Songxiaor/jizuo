@@ -4669,6 +4669,20 @@ private struct HistoryDetailView: View, Equatable {
     LayeredSourceDocument.subtitleSnapshot(in: detail.snapshots)
   }
   /// 配文层：抓取正文非空就呈现。抖音即使配文与标题相同也要能读，不能藏掉。
+  /// 只有一层文字、但这条是带视频的帖子：那段文字就是视频的配文，页签叫「配文」。
+  ///
+  /// 原来只有一层时一律叫「原文」，转写完分成两层才改叫「配文 / 转写」——同一段字
+  /// 点一次转写就换了名字，像换了一份内容（2026-10-03 Syc 走查）。
+  private var singleSourceIsCaption: Bool {
+    // `latestSourceSnapshot` 已经只取抓取来源那一层（见 captionSnapshot），不会是转写。
+    guard !isOwnWriting, hasPresentableCaption, let snapshot = latestSourceSnapshot else { return false }
+    if localMediaFileURL != nil || detail.media != nil || detail.hadMediaDescriptor || isUnsavedXVideo {
+      return true
+    }
+    if isDouyinCapture { return !isDouyinImagePostCapture }
+    return snapshot.platform == "bilibili"
+  }
+
   private var hasPresentableCaption: Bool {
     guard let snapshot = latestSourceSnapshot,
           !LayeredSourceDocument.isSupersededPlaceholder(snapshot, in: detail.snapshots) else { return false }
@@ -4736,11 +4750,27 @@ private struct HistoryDetailView: View, Equatable {
   /// 「开头那段无名内容」要单独拿掉再判断——它是标题，不是一层。第一版忘了这件事，
   /// 结果 `named.count == layers.count` 永远不成立，控件一次都没出现过，而译文
   /// 照旧纵向叠着：一个不报错、只是「功能像没做」的失败。
+  ///
+  /// 配文本来就是输出语言时，模型交回来的「配文译文」就是原样抄一遍（2026-10-03 实库：
+  /// 中文配文 + 英文讲座视频）。这一层不列：点开和原文一字不差，只会让人以为翻译没生效。
+  /// 只剩一层时不出切换控件，但仍只显示那一层，不退回整篇纵向叠着。
   private var availableTranslationLayers: [SourceLayer] {
     let layers = translationPreamble == nil ? translationLayers : Array(translationLayers.dropFirst())
     guard layers.count > 1 else { return [] }
     let named = layers.compactMap(\.layer)
-    return named.count == layers.count ? named : []
+    guard named.count == layers.count else { return [] }
+    return named.filter { layer in
+      guard layer == .caption,
+            let translated = layers.first(where: { $0.layer == .caption })?.body,
+            let source = latestSourceSnapshot
+      else { return true }
+      return Self.comparableText(translated) != Self.comparableText(LayeredSourceDocument.body(of: source))
+    }
+  }
+
+  /// 比较「译文是不是原样抄回来」用：去掉所有空白再比。
+  private static func comparableText(_ text: String) -> String {
+    String(text.unicodeScalars.filter { !CharacterSet.whitespacesAndNewlines.contains($0) }.map(Character.init))
   }
 
   private var activeTranslationLayer: SourceLayer? {
@@ -4755,10 +4785,18 @@ private struct HistoryDetailView: View, Equatable {
   /// 当前该渲染的译文正文：开头那段（标题）+ 当前这一层。没分层时返回 nil，
   /// 调用方退回整篇。
   private var activeTranslationBody: String? {
-    guard showsTranslationLayerPicker, let active = activeTranslationLayer,
+    guard let active = activeTranslationLayer,
           let body = translationLayers.first(where: { $0.layer == active })?.body
     else { return nil }
     guard let preamble = translationPreamble else { return body }
+    // 译出来的标题和页面标题、或这一层的第一句是同一句话时不再拼上去：
+    // 原来每一层开头都多出一行「今晚别刷Netflix了。」，配文层里紧接着又是同一句（2026-10-03 走查）。
+    let firstLine = body.split(separator: "\n").first { !$0.trimmingCharacters(in: .whitespaces).isEmpty }.map(String.init) ?? ""
+    let comparablePreamble = Self.comparableText(preamble.replacingOccurrences(of: "#", with: ""))
+    if comparablePreamble == Self.comparableText(readingPrimaryTitle)
+      || comparablePreamble == Self.comparableText(firstLine) {
+      return body
+    }
     return preamble + "\n\n" + body
   }
 
@@ -4839,6 +4877,11 @@ private struct HistoryDetailView: View, Equatable {
         body: LayeredSourceDocument.body(of: source)
       )
     }
+  }
+  /// 页面上方正显示着一个取自配文首句的标题：这时配文就不必再从同一句开始。
+  private var showsCaptionTitleAbove: Bool {
+    !isOwnWriting && !hidesRepeatedCaptureHeading
+      && contentName.origin == .caption && readingPrimaryTitle == contentName.text
   }
   /// 详情头：有总结/翻译一级标题时主标题用产物，原文降副行；标题本地化后副行读 original_title。
   private var readingTitles: (primary: String, original: String?) {
@@ -4936,6 +4979,10 @@ private struct HistoryDetailView: View, Equatable {
     }
     return nil
   }
+  /// 原文只有几句话：和翻译「无需翻译」同理，脑图按钮直接不出现（2026-10-03）。
+  private var mindMapNotNeeded: Bool {
+    mindMapUnavailableReason == HistoryViewModel.mindMapTooShortReason
+  }
   /// 正文已经是输出语言：翻译不是「暂时不能做」，而是「不需要做」。这时按钮直接不出现，
   /// 不再留一颗永远灰着、要悬停才知道原因的「翻译」（2026-09-24 走查）。
   private var translationNotNeeded: Bool {
@@ -4950,7 +4997,8 @@ private struct HistoryDetailView: View, Equatable {
     if summarizeUnavailableReason != nil, translateUnavailableReason != nil {
       return summarizeUnavailableReason
     }
-    return summarizeUnavailableReason ?? (translationNotNeeded ? nil : translateUnavailableReason) ?? mindMapUnavailableReason
+    return summarizeUnavailableReason ?? (translationNotNeeded ? nil : translateUnavailableReason)
+      ?? (mindMapNotNeeded ? nil : mindMapUnavailableReason)
   }
   private var showsRunControls: Bool {
     canRunHistory
@@ -5275,57 +5323,11 @@ private struct HistoryDetailView: View, Equatable {
           } else if model.localMediaCleared, detail.media != nil {
             // 按「转写后清理」删掉的视频：只是说明一下，不是出错。原链接一直在，
             // 需要时用它换一个新的播放地址，再走「保存到本地」下回来。
-            VStack(alignment: .leading, spacing: 10) {
-              Label("视频文件已按设置清理，转写文字、评论和笔记都保留着。", systemImage: "checkmark.circle")
-                .themedFont(.caption)
-                .foregroundStyle(.secondary)
-              HStack(spacing: DesignTokens.Space.sm) {
-                Button {
-                  let taskID = detail.task.id
-                  let platform = latestSourceSnapshot?.platform ?? detail.snapshots.last?.platform
-                  let author = sourceFrontmatter.author
-                  let source = sourceURL
-                  model.redownloadClearedVideo(
-                    taskID: taskID,
-                    snapshotID: latestSourceSnapshot?.id ?? detail.snapshots.last?.id ?? ContentSnapshotID()
-                  ) {
-                    try await sessionMediaPlayback.fetchDescriptor(
-                      taskID: taskID, platform: platform, sourceURL: source, author: author
-                    )
-                  }
-                } label: {
-                  if model.clearedVideoRedownloadState == .running {
-                    HStack(spacing: 6) {
-                      ProgressView().controlSize(.small)
-                      Text("正在重新下载…")
-                    }
-                  } else {
-                    Label("重新下载视频", systemImage: "arrow.down.circle")
-                  }
-                }
-                .buttonStyle(.appNormal)
-                .disabled(model.clearedVideoRedownloadState == .running || model.isReadOnly)
-                .accessibilityIdentifier("history-video-local-cleared-redownload")
-                if let url = URL(string: sourceURL), url.scheme?.hasPrefix("http") == true {
-                  Link("在浏览器中打开原页面", destination: url)
-                    .themedFont(.caption)
-                    .accessibilityIdentifier("history-video-local-cleared-open-source")
-                }
-              }
-              if case let .failed(message) = model.clearedVideoRedownloadState {
-                Text(message)
-                  .themedFont(.caption)
-                  .foregroundStyle(theme.warning)
-                  .fixedSize(horizontal: false, vertical: true)
-              }
-            }
-            .padding(14)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(theme.primaryText.opacity(0.045), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
-            .padding(.top, 14)
-            // 容器自己的标识不能盖掉里面按钮的标识。
-            .accessibilityElement(children: .contain)
-            .accessibilityIdentifier("history-video-local-cleared")
+            videoFetchNotice(.cleared)
+          } else if isUnsavedXVideo {
+            // 推文明明是视频（封面是 video_thumb），本机却没有文件：保存时下载失败了
+            // （2026-10-03：2K 视频超出下载上限，失败后整块消失，看着像这条没有视频）。
+            videoFetchNotice(.notSaved)
           } else if let missing = model.localMediaOriginalMissing, missing.taskID == detail.task.id {
             // 本机导入的音视频只引用原文件（2026-09-29）：原文件不在了就说清楚去哪找、怎么接回来。
             VStack(alignment: .leading, spacing: 8) {
@@ -5526,6 +5528,7 @@ private struct HistoryDetailView: View, Equatable {
             text: colophonText,
             link: colophonDownloadSource?.link,
             records: completedStepRecords,
+            dateHelp: colophonGregorianHelp,
             readingFont: readingFont,
             secondaryTextColor: theme.secondaryText,
             sealColor: theme.seal,
@@ -5533,8 +5536,7 @@ private struct HistoryDetailView: View, Equatable {
             onSelect: { step in openStep(step) }
           )
           // 落款「丙午年九月初八日」很多人看不懂（2026-10-01 走查）：样式不动，悬停给公历日期。
-          // 落款的月日本来就是公历月日，只是写成了款识数字；印章、下载来源链接各有自己的提示，优先显示它们的。
-          .help(colophonGregorianHelp)
+          // 只挂在落款文字上、立刻出（2026-10-03）：原来 `.help` 挂在整块上，要停一秒多才出来。
         }
       }
       // 常规列表保留较宽上限；专注阅读收窄到约 760pt 并居中。
@@ -6228,7 +6230,7 @@ private struct HistoryDetailView: View, Equatable {
       )
       .accessibilityIdentifier(showsCurrentCapture ? "translate-current-capture" : "translate-history-detail")
 
-      if !isOwnWriting, model.mindMapRecord?.taskID != detail.task.id {
+      if !isOwnWriting, model.mindMapRecord?.taskID != detail.task.id, !mindMapNotNeeded {
         Button {
           if appModel.canEnqueueManualGeneration(for: detail.task.id)
             || appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .mindMap) {
@@ -6351,7 +6353,7 @@ private struct HistoryDetailView: View, Equatable {
 
   private func readingTabTitle(_ tab: ReadingTab) -> String {
     switch tab {
-    case let .source(layer): layer?.tabTitle ?? "原文"
+    case let .source(layer): layer?.tabTitle ?? (singleSourceIsCaption ? SourceLayer.caption.tabTitle : "原文")
     case .summary: "总结"
     case .translation: "翻译"
     }
@@ -7328,6 +7330,8 @@ private struct HistoryDetailView: View, Equatable {
       }
       content
         .opacity(isShowingUntidiedTranscript ? 0.6 : 1)
+        // 评论区据此给作者本人的回复标上「作者」。
+        .environment(\.commentPostAuthor, sourceFrontmatter.author)
     }
     .animation(historyUIAnimation(reduceMotion: reduceMotion), value: showsLiveRunInReadingPane)
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -7414,10 +7418,14 @@ private struct HistoryDetailView: View, Equatable {
         }
         .buttonStyle(.plain)
         .help(isActive ? "正在看\(layer.heading)的译文" : "看\(layer.heading)的译文")
+        // 每颗胶囊读自己的名字；原来整组的「译文对应」盖到了每颗上，读屏听到两个一样的按钮。
+        .accessibilityLabel(layer.tabTitle)
+        .accessibilityAddTraits(isActive ? .isSelected : [])
       }
       Spacer(minLength: 0)
     }
     .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityElement(children: .contain)
     .accessibilityLabel(title)
     .accessibilityIdentifier(identifier)
   }
@@ -7557,6 +7565,97 @@ private struct HistoryDetailView: View, Equatable {
     .help(sourceURL)
   }
 
+  private enum VideoFetchNoticeKind { case cleared, notSaved }
+
+  /// X 推文是视频，但本机没有文件：封面图是视频截帧（`…video_thumb…`）就能认出来。
+  private var isUnsavedXVideo: Bool {
+    guard detail.media == nil, !model.localMediaCleared,
+          (latestSourceSnapshot?.platform ?? detail.snapshots.last?.platform) == "x",
+          let cover = sourceFrontmatter.coverImage
+    else { return false }
+    return cover.contains("video_thumb")
+  }
+
+  /// 视频不在本机时的一行说明 + 两个同级按钮（2026-10-03 发布前走查）：原来是一张大卡片
+  /// 压在正文上方，次要信息占了首屏；两个动作一个是按钮、一个是文字链接，层级看起来不一样。
+  @ViewBuilder
+  private func videoFetchNotice(_ kind: VideoFetchNoticeKind) -> some View {
+    let full = kind == .cleared
+      ? "视频文件已按设置清理，转写文字、评论和笔记都保留着。"
+      : "这条有视频，但保存时没下载下来。"
+    VStack(alignment: .leading, spacing: 6) {
+      HStack(spacing: DesignTokens.Space.sm) {
+        Label {
+          ViewThatFits(in: .horizontal) {
+            Text(full)
+            Text(kind == .cleared ? "视频已按设置清理，文字和笔记都在" : "视频没下载下来")
+            Text(kind == .cleared ? "视频已清理" : "视频未保存")
+          }
+          .lineLimit(1)
+        } icon: {
+          Image(systemName: kind == .cleared ? "checkmark.circle" : "play.rectangle")
+        }
+        .themedFont(.caption)
+        .foregroundStyle(.secondary)
+        .help(full)
+        .layoutPriority(-1)
+        Spacer(minLength: DesignTokens.Space.sm)
+        Button {
+          let taskID = detail.task.id
+          let platform = latestSourceSnapshot?.platform ?? detail.snapshots.last?.platform
+          let author = sourceFrontmatter.author
+          let source = sourceURL
+          model.redownloadClearedVideo(
+            taskID: taskID,
+            snapshotID: latestSourceSnapshot?.id ?? detail.snapshots.last?.id ?? ContentSnapshotID()
+          ) {
+            try await sessionMediaPlayback.fetchDescriptor(
+              taskID: taskID, platform: platform, sourceURL: source, author: author
+            )
+          }
+        } label: {
+          if model.clearedVideoRedownloadState == .running {
+            HStack(spacing: 6) {
+              ProgressView().controlSize(.small)
+              Text("正在下载…")
+            }
+          } else {
+            Label(kind == .cleared ? "重新下载视频" : "下载视频", systemImage: "arrow.down.circle")
+          }
+        }
+        .buttonStyle(.appNormal)
+        .disabled(model.clearedVideoRedownloadState == .running || model.isReadOnly)
+        .accessibilityIdentifier("history-video-local-cleared-redownload")
+        .fixedSize()
+        if let url = URL(string: sourceURL), url.scheme?.hasPrefix("http") == true {
+          Button {
+            NSWorkspace.shared.open(url)
+          } label: {
+            Label("打开原页面", systemImage: "safari")
+          }
+          .buttonStyle(.appNormal)
+          .fixedSize()
+          .help("在浏览器中打开原页面")
+          .accessibilityIdentifier("history-video-local-cleared-open-source")
+        }
+      }
+      if case let .failed(message) = model.clearedVideoRedownloadState {
+        Text(message)
+          .themedFont(.caption)
+          .foregroundStyle(theme.warning)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 8)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background(theme.primaryText.opacity(0.035), in: RoundedRectangle(cornerRadius: DesignTokens.Radius.lg))
+    .padding(.top, 14)
+    // 容器自己的标识不能盖掉里面按钮的标识。
+    .accessibilityElement(children: .contain)
+    .accessibilityIdentifier(kind == .cleared ? "history-video-local-cleared" : "history-video-not-saved")
+  }
+
   /// 是不是能在浏览器里打开的网页地址。
   static func isWebURL(_ raw: String) -> Bool {
     let lower = raw.lowercased()
@@ -7570,12 +7669,21 @@ private struct HistoryDetailView: View, Equatable {
     }
     if let author = sourceFrontmatter.author?.trimmedNonEmpty,
        author != sourceFrontmatter.accountName {
-      parts.append(author)
+      parts.append(HistoryAuthorDisplay.text(author))
     }
+    // 列表行尾是「存入」日期（列表按存入时间分组），这里原来只写发布时间、不带前缀，
+    // 同一条在列表里是 8月10日、点开是 8月7日，像数据错了（2026-10-03 发布前走查）。
+    // 两个日期都写明是什么；同一天存的不重复。
     if let published = sourceFrontmatter.published {
-      parts.append(historyPublishedDate(published))
+      parts.append("发布 " + historyPublishedDate(published))
+      let saved = HistoryPublishedTimestampFormatter.compactDate(
+        Date(timeIntervalSince1970: Double(detail.task.createdAtMilliseconds) / 1_000)
+      )
+      if saved != HistoryPublishedTimestampFormatter.compactText(published) {
+        parts.append("存于 " + saved)
+      }
     } else {
-      parts.append(historyDate(detail.task.createdAtMilliseconds))
+      parts.append("存于 " + historyDate(detail.task.createdAtMilliseconds))
     }
     if let host = HistorySourceLinkPresentation.host(sourceURL) {
       parts.append(host)
@@ -7802,9 +7910,10 @@ private struct HistoryDetailView: View, Equatable {
         .accessibilityIdentifier("history-material-\(name)")
       }
     } label: {
-      // 没选时写明「未设置」并调淡：原来只写「素材类型」四个字，看着像已经选了一个
-      // 叫「素材类型」的值（2026-10-01 走查）。
-      Label(chosen.isEmpty ? "素材类型：未设置" : chosen.joined(separator: "、"), systemImage: "square.grid.2x2")
+      // 没选时写成动作「选择素材类型」并调淡：只写「素材类型」看着像已选了一个叫这个的值
+      // （2026-10-01 走查）；改成「素材类型：未设置」又像一张没填完的表，每条都在提醒
+      // 「这里缺了」。和同一行的「添加标签」一样用动词（2026-10-03 发布前走查）。
+      Label(chosen.isEmpty ? "选择素材类型" : chosen.joined(separator: "、"), systemImage: "square.grid.2x2")
     }
     .menuStyle(.borderlessButton)
     // 无边框菜单默认用强调色画成蓝字；和同一行的「添加笔记」「添加标签」统一成次要灰。
@@ -7819,7 +7928,6 @@ private struct HistoryDetailView: View, Equatable {
   /// 「采集时快照」不再占位置，只在悬停时说明。
   private func engagementDisclosure(_ note: MarkdownNoteFrontmatter) -> some View {
     engagementCompactChips(note)
-      .foregroundStyle(.tertiary)
       .themedFont(.caption2)
       .help("互动数据是保存时的数字，不会随原帖更新")
       .accessibilityIdentifier("history-engagement-more")
@@ -7834,9 +7942,11 @@ private struct HistoryDetailView: View, Equatable {
     } else {
       // 互动数据对「理解内容」是次级信息：收成一行弱化纯文本，不再让带图标的
       // 指标在正文上方争注意力。整行作为一个无障碍值读出。
+      // 次要文字色而不是 .tertiary：三级灰在白底上约 2:1，「点赞 3508」几乎读不出来（2026-10-03 走查）。
+      // 退到背景靠的是小一号字，不是把字压到看不清。
       Text(engagementSummaryText(slots: slots, host: host, note: note))
         .themedFont(.footnote)
-        .foregroundStyle(.tertiary)
+        .foregroundStyle(theme.secondaryText)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("互动数据")
         .accessibilityValue(engagementSummaryText(slots: slots, host: host, note: note))
@@ -7873,9 +7983,11 @@ private struct HistoryDetailView: View, Equatable {
     let host = engagementHost
     let slots = CreatorWorkMetricLayout.visibleSlots(forHost: host) { $0.value(from: note) }
     if !slots.isEmpty {
+      // 次要文字色而不是 .tertiary：三级灰在白底上约 2:1，「点赞 3508」几乎读不出来（2026-10-03 走查）。
+      // 退到背景靠的是小一号字，不是把字压到看不清。
       Text(engagementSummaryText(slots: slots, host: host, note: note))
         .themedFont(.footnote)
-        .foregroundStyle(.tertiary)
+        .foregroundStyle(theme.secondaryText)
         .lineLimit(1)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("互动数据")
@@ -8438,6 +8550,9 @@ private struct HistoryDetailView: View, Equatable {
     }
     body = CapturedSourceBodyPresentation.readableTranscriptSections(body)
     body = CapturedSourceBodyPresentation.strippingBackNavigationLinks(body)
+    if showsCaptionTitleAbove, snapshot.id == latestSourceSnapshot?.id {
+      body = CapturedSourceBodyPresentation.strippingLeadingLine(body, equalTo: readingPrimaryTitle)
+    }
     return CapturedSourceBodyPresentation.preservingCaptionParagraphs(body, platform: snapshot.platform)
   }
 
@@ -9914,6 +10029,19 @@ extension View {
 }
 
 /// 保留平台已有单位；纯数字使用中文紧凑计数，完整值仍由视图 help 提供。
+/// 作者的显示名。X 存的是「显示名 (@账号)」；不少账号显示名就是账号名，
+/// 「ClaudeDevs (@ClaudeDevs)」同一个词写两遍，只留「@ClaudeDevs」（2026-10-03 走查）。
+enum HistoryAuthorDisplay {
+  static func text(_ author: String) -> String {
+    guard let match = author.wholeMatch(of: /^(.+?)\s*\(@([^()\s]+)\)$/) else { return author }
+    let name = String(match.1).trimmingCharacters(in: .whitespaces)
+    let handle = String(match.2)
+    guard name.caseInsensitiveCompare(handle) == .orderedSame
+      || name.caseInsensitiveCompare("@" + handle) == .orderedSame else { return author }
+    return "@" + handle
+  }
+}
+
 enum HistoryEngagementCount {
   static func compact(_ value: String) -> String {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)

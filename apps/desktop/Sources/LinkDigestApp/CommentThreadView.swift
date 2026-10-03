@@ -1,6 +1,19 @@
 import Foundation
 import SwiftUI
 
+/// 这条帖子的作者，供评论区认出「作者本人的回复」。详情页注入；别处默认 nil，不标。
+private struct CommentPostAuthorKey: EnvironmentKey {
+  static let defaultValue: String? = nil
+}
+
+extension EnvironmentValues {
+  /// 帖子作者的原始写法，如「大师的AI小灶 (@dashiAIxz)」「u/someone」「阿强」。
+  var commentPostAuthor: String? {
+    get { self[CommentPostAuthorKey.self] }
+    set { self[CommentPostAuthorKey.self] = newValue }
+  }
+}
+
 /// 社区评论的阅读态：保留平台对话关系，但去掉投票、奖励、分享等社交操作噪音。
 /// 头像只由用户名在本地确定，不发起头像网络请求，也不新增账号画像数据。
 struct CommentThreadSectionView: View {
@@ -20,6 +33,7 @@ struct CommentThreadSectionView: View {
   /// 先露 3 条，其余收起（2026-09-28 评论样稿：评论不该把正文页拖得太长）。
   @State private var visibleRootLimit = 3
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.commentPostAuthor) private var postAuthor
 
   private let collapsedReplyLimit = 3
   private let initialRootLimit = 3
@@ -54,6 +68,9 @@ struct CommentThreadSectionView: View {
     }
     .padding(.top, DesignTokens.Space.xl)
     .padding(.bottom, DesignTokens.Space.xl)
+    // 整块和正文同一行宽（2026-10-03 走查）：原来标题下那道线和分隔线铺满整栏，
+    // 评论文字却只排到正文行宽，「原评论 ↗」悬在半中间，线和字对不齐。
+    .frame(maxWidth: readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm, alignment: .leading)
     .onChange(of: section) { _, _ in
       expandedRoots.removeAll()
       visibleRootLimit = initialRootLimit
@@ -147,7 +164,7 @@ struct CommentThreadSectionView: View {
   /// 不画彩色头像（每人一种颜色，一页下来五颜六色）；回复缩进一格，左边一道细线。
   private func commentRow(_ item: MarkdownPresentation.CommentItem) -> some View {
     let visualDepth = min(item.depth, 3)
-    return VStack(alignment: .leading, spacing: 4) {
+    return VStack(alignment: .leading, spacing: 6) {
       commentHeader(item)
       if item.depth > 3 {
         Text("第 \(item.depth + 1) 层回复")
@@ -168,9 +185,13 @@ struct CommentThreadSectionView: View {
       }
     }
     .padding(.leading, CGFloat(max(visualDepth - 1, 0)) * 18 + (visualDepth > 0 ? 18 : 0))
-    .padding(.vertical, visualDepth > 0 ? 6 : DesignTokens.Space.md)
-    .frame(maxWidth: readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm, alignment: .leading)
+    .padding(.vertical, visualDepth > 0 ? 8 : 14)
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
+
+  /// 评论正文比帖子正文小两号（2026-10-03 走查）：原来和正文同字号同字体，
+  /// 十几条评论排下来和帖子本身分不出主次，整页像一篇没有段落的长文。
+  private var commentFontSize: CGFloat { max(13, readingFont.bodySize - 2) }
 
   @ViewBuilder
   private func commentBody(_ body: String) -> some View {
@@ -185,12 +206,12 @@ struct CommentThreadSectionView: View {
         case let .text(text):
           if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let attributed = ReadingRenderCache.inlineAttributed(from: text).applyingBaseFont(
-              size: readingFont.bodySize,
+              size: commentFontSize,
               readingFont: readingFont
             )
             Text(attributed)
-              .foregroundStyle(primaryTextColor)
-              .lineSpacing(MarkdownPresentation.bodyLineSpacing)
+              .foregroundStyle(primaryTextColor.opacity(0.9))
+              .lineSpacing(commentFontSize * 0.42)
               .frame(maxWidth: .infinity, alignment: .leading)
               .fixedSize(horizontal: false, vertical: true)
               .textSelection(.enabled)
@@ -218,15 +239,63 @@ struct CommentThreadSectionView: View {
     }
   }
 
+  /// 「Panda | AI Agent @PandaAINative」拆成名字和账号：名字是读的人认人的地方，
+  /// 账号退一档。
+  static func splitAuthor(_ display: String) -> (name: String, handle: String?) {
+    guard let range = display.range(of: " @", options: .backwards) else { return (display, nil) }
+    let name = display[..<range.lowerBound].trimmingCharacters(in: .whitespaces)
+    let handle = String(display[display.index(after: range.lowerBound)...])
+    guard !name.isEmpty, !handle.contains(" ") else { return (display, nil) }
+    // 显示名就是账号名时只留一个。
+    if name.caseInsensitiveCompare(String(handle.dropFirst())) == .orderedSame { return (handle, nil) }
+    return (name, handle)
+  }
+
+  /// 评论者是不是帖子作者本人：有账号比账号，没有账号（抖音、小红书只有昵称）比名字。
+  static func isPostAuthor(_ commentAuthor: String, postAuthor: String?) -> Bool {
+    guard let postAuthor = postAuthor?.trimmingCharacters(in: .whitespaces), !postAuthor.isEmpty else { return false }
+    // 帖子作者写成「名字 (@账号)」，评论者写成「名字 @账号」；统一成同一种再拆。
+    let normalizedPost = postAuthor.replacingOccurrences(of: #"\s*\((@[^()\s]+)\)$"#, with: " $1", options: .regularExpression)
+    let post = splitAuthor(normalizedPost)
+    let comment = splitAuthor(commentAuthor)
+    if let postHandle = post.handle ?? (post.name.hasPrefix("@") ? post.name : nil),
+       let commentHandle = comment.handle ?? (comment.name.hasPrefix("@") ? comment.name : nil) {
+      return postHandle.caseInsensitiveCompare(commentHandle) == .orderedSame
+    }
+    return post.name == comment.name
+  }
+
   private func commentHeader(_ item: MarkdownPresentation.CommentItem) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: 10) {
-      Text(item.displayAuthor)
-        .themedFont(.caption, weight: .medium)
+    let author = Self.splitAuthor(item.displayAuthor)
+    let isAuthor = Self.isPostAuthor(item.displayAuthor, postAuthor: postAuthor)
+    return HStack(alignment: .firstTextBaseline, spacing: 6) {
+      Text(author.name)
+        .themedFont(.footnote, weight: .semibold)
         .foregroundStyle(primaryTextColor)
         .lineLimit(1)
-        .truncationMode(.middle)
+        .truncationMode(.tail)
         .layoutPriority(1)
-        .accessibilityLabel(accessibilityHeader(for: item))
+        .accessibilityLabel(accessibilityHeader(for: item) + (isAuthor ? "，作者" : ""))
+      // 作者本人的回复常常是整串评论里最有用的补充（「一稿出就发了」），
+      // 混在别人中间认不出来（2026-10-03 走查）。
+      if isAuthor {
+        Text("作者")
+          .font(.system(size: 10, weight: .semibold))
+          .foregroundStyle(accentColor)
+          .padding(.horizontal, 5)
+          .padding(.vertical, 1)
+          .overlay(Capsule().strokeBorder(accentColor.opacity(0.5), lineWidth: 0.5))
+          .fixedSize()
+          .accessibilityHidden(true)
+      }
+      if let handle = author.handle {
+        Text(handle)
+          .themedFont(.caption)
+          .foregroundStyle(secondaryTextColor)
+          .lineLimit(1)
+          .truncationMode(.tail)
+          .accessibilityHidden(true)
+      }
       if let parentAuthor = item.parentAuthor {
         Text("回复 \(parentAuthor)")
           .themedFont(.caption)
@@ -234,10 +303,11 @@ struct CommentThreadSectionView: View {
           .lineLimit(1)
       }
       if let published = item.published {
-        Text(CommentPublishedTime.absoluteLabel(published))
+        Text("· " + CommentPublishedTime.absoluteLabel(published))
           .themedFont(.caption)
           .foregroundStyle(secondaryTextColor)
           .lineLimit(1)
+          .fixedSize()
           .help(published)
       }
       if let likes = item.likes {
@@ -254,13 +324,16 @@ struct CommentThreadSectionView: View {
       }
       Spacer(minLength: DesignTokens.Space.xs)
       if let permalink = item.permalink {
+        // 一个小图标，贴在这一行的最右端；原来是「原评论 ↗」四个字，每条都重复一遍。
         Button { onOpenURL(permalink) } label: {
-          Text("原评论 ↗")
-            .themedFont(.caption)
-            .foregroundStyle(secondaryTextColor)
+          Image(systemName: "arrow.up.right")
+            .font(.system(size: 10, weight: .semibold))
+            .foregroundStyle(secondaryTextColor.opacity(0.8))
+            .frame(width: 20, height: 20)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(permalink.absoluteString)
+        .instantHoverTip("打开原评论")
         .accessibilityLabel("在浏览器中打开 \(item.displayAuthor) 的原评论")
       }
     }

@@ -118,12 +118,14 @@ enum ReadingTextComposer {
           ))
         }
       case .divider:
+        // 分节号「·  ·  ·」居中（2026-10-03 走查）：原来是 24 个「─」拼的一串字，长度固定，
+        // 正文宽的时候只画到六成，看着像没画完。书里的分节本来就用居中的几个点。
         result.append(paragraph(
           inline(
-            String(repeating: "─", count: 24),
+            MarkdownPresentation.sectionBreakGlyphs,
             readingFont: readingFont, baseSize: readingFont.bodySize, color: palette.secondary
           ),
-          spacingBefore: 10, spacingAfter: 14, lineSpacing: 4
+          spacingBefore: 6, spacingAfter: 20, lineSpacing: 4, alignment: .center
         ))
       case let .quote(_, text):
         result.append(paragraph(
@@ -390,7 +392,8 @@ enum ReadingTextComposer {
     lineSpacing: CGFloat,
     headIndent: CGFloat = 0,
     firstLineIndent: CGFloat = 0,
-    tabStop: CGFloat? = nil
+    tabStop: CGFloat? = nil,
+    alignment: NSTextAlignment = .natural
   ) -> NSAttributedString {
     let mutable = NSMutableAttributedString(attributedString: content)
     // A Markdown hard break stays inside the same paragraph. Cocoa treats LF
@@ -405,6 +408,7 @@ enum ReadingTextComposer {
     style.lineSpacing = lineSpacing
     style.headIndent = headIndent
     style.firstLineHeadIndent = firstLineIndent
+    style.alignment = alignment
     if let tabStop {
       style.tabStops = [NSTextTab(textAlignment: .left, location: tabStop)]
       style.defaultTabInterval = tabStop

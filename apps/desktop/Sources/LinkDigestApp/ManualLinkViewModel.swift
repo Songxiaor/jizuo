@@ -121,7 +121,7 @@ enum ExplicitWebLinkInput {
   ///
   /// 代价是手打的原样中文 URL 会被截短。这种输入本来就不常见，且真要抓时把地址
   /// 从浏览器复制一次即可；反过来放过它，则每次中文紧贴链接都会静默抓失败。
-  private static func truncatedAtRawCJK(_ value: String) -> String {
+  static func truncatedAtRawCJK(_ value: String) -> String {
     var result = String.UnicodeScalarView()
     for scalar in value.unicodeScalars {
       if isRawCJK(scalar) { break }

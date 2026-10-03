@@ -632,6 +632,16 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("sourceByline"), "作者、日期、站点应收成一行，不再各占一列表单")
   }
 
+  /// 带视频的帖子只有配文一层时，页签就叫「配文」，转写之后不改名（2026-10-03）。
+  func testVideoPostSingleSourceTabIsNamedCaption() {
+    let source = historyContentViewSource()
+    let title = section(in: source, from: "private func readingTabTitle", to: "private func selectReadingTab")
+    XCTAssertTrue(title.contains("singleSourceIsCaption ? SourceLayer.caption.tabTitle"))
+    let rule = section(in: source, from: "private var singleSourceIsCaption", to: "private var hasPresentableCaption")
+    XCTAssertTrue(rule.contains("detail.hadMediaDescriptor"))
+    XCTAssertTrue(rule.contains("!isDouyinImagePostCapture"), "抖音图文帖没有视频，仍叫原文")
+  }
+
   func testWeChatPropertiesShowSourceFieldsWithoutInventingEngagementStats() {
     let source = historyContentViewSource()
     let byline = section(in: source, from: "private var sourceBylineText", to: "private var hasCollapsedRunMetadata")
