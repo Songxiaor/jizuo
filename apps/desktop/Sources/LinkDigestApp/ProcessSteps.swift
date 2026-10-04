@@ -170,6 +170,9 @@ struct ProcessStepRow: View {
   let state: State
   let isEnabled: Bool
   let help: String
+  /// 标题下面一行小字：这一步用哪个模型，或者为什么做不了（2026-10-04：原来面板底部一行灰字
+  /// 统一写总结模型，校对换了模型也照样写总结那个）。
+  var subtitle: String? = nil
   let sealColor: Color
   let primaryText: Color
   let secondaryText: Color
@@ -188,10 +191,19 @@ struct ProcessStepRow: View {
       HStack(spacing: 10) {
         seal
           .frame(width: 28, height: 28)
-        Text(title)
-          .themedFont(.body)
-          .foregroundStyle(isDone ? secondaryText : primaryText)
-          .lineLimit(1)
+        VStack(alignment: .leading, spacing: 1) {
+          Text(title)
+            .themedFont(.body)
+            .foregroundStyle(isDone ? secondaryText : primaryText)
+            .lineLimit(1)
+          if let subtitle {
+            Text(subtitle)
+              .themedFont(.caption2)
+              .foregroundStyle(secondaryText)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+        }
         Spacer(minLength: 12)
         trailing
       }
@@ -212,7 +224,7 @@ struct ProcessStepRow: View {
     // 印章本身也带名字，合并朗读成「翻译、翻译、去做」（2026-10-02 自测）。整行只念一次。
     .accessibilityElement(children: .ignore)
     .accessibilityLabel(title)
-    .accessibilityValue(accessibilityState)
+    .accessibilityValue(subtitle.map { "\(accessibilityState)，\($0)" } ?? accessibilityState)
     .accessibilityAddTraits(.isButton)
     .accessibilityAction { if isEnabled { action() } }
     .accessibilityIdentifier(identifier)

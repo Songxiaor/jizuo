@@ -205,6 +205,24 @@ final class LocalImportControllerFolderTests: XCTestCase {
     XCTAssertNil(controller.transcriptionQueue)
   }
 
+  /// 全部转写成功后，右下角「转写完成」自己收起（2026-10-04：原来一直挂着，要手动点 ×）。
+  func testFinishedTranscriptionBadgeDismissesItself() async throws {
+    let saved = LocalImportController.finishedBadgeSeconds
+    LocalImportController.finishedBadgeSeconds = 0.3
+    defer { LocalImportController.finishedBadgeSeconds = saved }
+    let wiring = try wire(transcriber: WorkspaceRecordingTranscriber(mode: .succeed))
+    let controller = wiring.controller
+    let audio = base.appendingPathComponent("录音/自动收起.wav")
+    try FileManager.default.createDirectory(at: audio.deletingLastPathComponent(), withIntermediateDirectories: true)
+    try makeWAV(at: audio, seconds: 1)
+    controller.importFiles([audio])
+    await waitUntil { self.confirmingPlan(controller) != nil }
+    controller.confirmImport(transcribe: true)
+    await waitUntil(timeout: .seconds(15)) { controller.transcriptionQueue?.isRunning == false }
+    await waitUntil(timeout: .seconds(5)) { controller.transcriptionQueue == nil }
+    XCTAssertNil(controller.transcriptionQueue)
+  }
+
   func testSingleDocumentImportsWithoutConfirmation() async throws {
     let wiring = try wire()
     let controller = wiring.controller

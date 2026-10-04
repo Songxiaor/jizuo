@@ -11,6 +11,9 @@ struct UIReadingPlatformNavigation: View {
     let faviconTaskID: TaskID?
     /// 悬停说明；nil 时用默认的「平台（N 条）」。同名两行口径不同时由调用方写清楚（2026-10-01）。
     var helpText: String? = nil
+    /// 显示名；nil 时按 host 取平台名。「自有」下那行本地文件叫「自有文件」，
+    /// 和「来源 → 本地文件」不再同名不同数（2026-10-04 侧栏去重）。
+    var title: String? = nil
     var id: String { host }
   }
 
@@ -97,8 +100,8 @@ private struct UIReadingPlatformRow: View {
   @State private var isHovering = false
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  private var fullName: String { HistoryPlatformDisplay.name(forHost: item.host) }
-  private var name: String { HistoryPlatformDisplay.shortName(forHost: item.host) }
+  private var fullName: String { item.title ?? HistoryPlatformDisplay.name(forHost: item.host) }
+  private var name: String { item.title ?? HistoryPlatformDisplay.shortName(forHost: item.host) }
 
   var body: some View {
     Button(action: onSelect) {
@@ -122,10 +125,12 @@ private struct UIReadingPlatformRow: View {
           .fixedSize(horizontal: false, vertical: true)
           .layoutPriority(1)
           .frame(maxWidth: .infinity, alignment: .leading)
+        // 数字列和主导航行（`countBadge`，左右各 6pt）对齐：原来只留 2pt，「自有」下
+        // 笔记「3」和备忘录「740」、「形式」和「来源」两组的数字右缘差 4pt（2026-10-04 走查）。
         Text("\(item.count)")
-          .themedFont(.subheadline, monospacedDigit: true)
+          .themedFont(.subheadline, weight: isSelected ? .medium : .regular, monospacedDigit: true)
           .foregroundStyle(isSelected ? theme.accent : theme.secondaryText)
-          .padding(.horizontal, 2)
+          .padding(.horizontal, 6)
       }
       .foregroundStyle(theme.primaryText)
       .padding(.vertical, DesignTokens.Space.xxs)

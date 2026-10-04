@@ -45,7 +45,8 @@ final class GenerationSettingsPresentationTests: XCTestCase {
     XCTAssertEqual(SettingsProcessStep.allCases.map(\.title), ["收集 · 汲", "转写 · 录", "校对 · 校", "总结 · 摘", "翻译 · 译", "脑图 · 图"])
     let pages = try stepPages(in: try source())
     XCTAssertTrue(pages.contains("SettingsProcessChain("), "总览页必须画出工序链")
-    XCTAssertTrue(page("summaryTab", in: pages).contains("读原文、不读译文"), "总结吃的是原文，必须写在页头说明上")
+    // 2026-10-04 校对 / 总结 / 翻译 / 脑图并成「AI 处理」一页，各自一节。
+    XCTAssertTrue(page("processingTab", in: pages).contains("读原文、不读译文"), "总结吃的是原文，必须写在那一节的说明上")
   }
 
   /// 每道工序的「自动」开关绑到原来那条管线偏好上，一个都不能漏。
@@ -66,10 +67,9 @@ final class GenerationSettingsPresentationTests: XCTestCase {
   /// 上游没开时，下游当场说明为什么；只提示，不禁用、不画淡。
   func testDownstreamStepsExplainUnmetUpstreamRequirement() throws {
     let pages = try stepPages(in: try source())
-    let proof = page("proofTab", in: pages)
-    XCTAssertTrue(proof.contains("model.autoTidyTranscription, !model.autoTranscribeNewCaptures"), "校对依赖转写产物，转写没开时必须说明")
-    let mindMap = page("mindMapTab", in: pages)
-    XCTAssertTrue(mindMap.contains("model.autoMindMapNewCaptures, !model.autoSummarizeNewCaptures"), "脑图优先吃总结，总结没开时必须说明；脑图没开时不打扰")
+    let processing = page("processingTab", in: pages)
+    XCTAssertTrue(processing.contains("model.autoTidyTranscription, !model.autoTranscribeNewCaptures"), "校对依赖转写产物，转写没开时必须说明")
+    XCTAssertTrue(processing.contains("model.autoMindMapNewCaptures, !model.autoSummarizeNewCaptures"), "脑图优先吃总结，总结没开时必须说明；脑图没开时不打扰")
     XCTAssertFalse(pages.contains(".disabled(!model.autoTranscribeNewCaptures"), "硬禁用会砍掉「重抓已有转写稿的条目时只校对」这个可用组合")
   }
 
@@ -79,7 +79,8 @@ final class GenerationSettingsPresentationTests: XCTestCase {
     let pages = try stepPages(in: text)
     XCTAssertTrue(pages.contains("SettingsRowGroup"), "设置项要收进行组卡")
     XCTAssertTrue(page("commentsTab", in: pages).contains("details:"), "行自己的详细说明要跟控件走")
-    XCTAssertTrue(page("overviewTab", in: pages).contains("sendAuthorizationSection"), "发送授权留在总览页")
+    // 2026-10-04 发送授权挪到「数据与备份」：它是一份可清除的记录，和备份同一类。
+    XCTAssertTrue(page("dataTab", in: pages).contains("sendAuthorizationSection"), "发送授权在数据与备份页")
     let consent = try XCTUnwrap(text.range(of: "@ViewBuilder private var sendAuthorizationSection: some View").map { String(text[$0.lowerBound...].prefix(3_000)) })
     XCTAssertTrue(consent.contains("DisclosureGroup(\"了解更多\")"))
     XCTAssertTrue(consent.contains("SettingsThemedCardChrome()"))
@@ -89,7 +90,7 @@ final class GenerationSettingsPresentationTests: XCTestCase {
   func testEmptyModelFieldsStateWhatActuallyApplies() throws {
     let text = try source()
     XCTAssertTrue(text.contains("emptyOptionTitle: \"不使用：只用本机转写\""))
-    XCTAssertTrue(text.contains("emptyOptionTitle: \"跟随总结模型\""))
+    XCTAssertTrue(text.contains("emptyOptionTitle: \"跟随默认模型\""))
     XCTAssertFalse(text.contains("TextField(\"留空时使用总结模型\""), "语义不能只靠 placeholder 承载")
     XCTAssertFalse(text.contains("Label(emptyOptionTitle, systemImage:"), "下拉已经显示当前值了，下面不必再画一行重复它")
     XCTAssertFalse(text.contains("留空时只使用 Apple 本机转写"), "已经没有「留空」这个操作了")

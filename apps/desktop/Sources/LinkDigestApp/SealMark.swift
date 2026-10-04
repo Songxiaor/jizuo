@@ -379,6 +379,7 @@ struct InkSealMark: View {
   /// 设置页名字 → 印文。侧栏和页头都查这一张表，改一处两边一起变。
   static let settingsGlyphs: [String: String] = [
     "工序总览": "序",
+    "AI 处理": "理",
     "浏览器支持": "扩",
     "站点登录": "登",
     "视频存储": "存",

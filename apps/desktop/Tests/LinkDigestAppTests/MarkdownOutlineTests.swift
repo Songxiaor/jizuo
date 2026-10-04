@@ -225,7 +225,8 @@ extension MarkdownOutlineTests {
   func testOutlineJumpUsesScrollAnchors() throws {
     let source = try presentationSource()
     XCTAssertTrue(source.contains("ScrollViewReader { proxy in"))
-    XCTAssertTrue(source.contains("proxy.scrollTo(resolved, anchor: .top)"))
+    // 落点留出吸顶栏的高度，不贴顶（2026-10-04：贴顶时标题被「原文 / 总结」栏盖住）。
+    XCTAssertTrue(source.contains("proxy.scrollTo(resolved, anchor: landing)"))
     XCTAssertTrue(
       source.contains(".id(ScopedReadingAnchor(scope: anchorScope, block: resolvedBlockIndex(entry.anchor)))"),
       "每段要挂按面板隔离的锚点；模块锚点保持 ReadingAnchor.module 原值")

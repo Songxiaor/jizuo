@@ -581,7 +581,19 @@ final class LocalImportController: ObservableObject {
     transcriptionQueue?.currentName = nil
     transcriptionQueueTask = nil
     historyModel?.reload()
+    // 全部成功就自己收起（2026-10-04）：原来要手动点 ×，四条转完以后「转写完成 4/4」一直挂在右下角。
+    // 有失败或中途停止时留着，让人看到原因；新开一轮时这个计时作废。
+    if transcriptionQueue?.failures.isEmpty == true, !stopped {
+      let finishedRound = transcriptionQueue
+      Task { @MainActor [weak self] in
+        try? await Task.sleep(for: .seconds(Self.finishedBadgeSeconds))
+        guard let self, self.transcriptionQueue == finishedRound else { return }
+        self.transcriptionQueue = nil
+      }
+    }
   }
+
+  static var finishedBadgeSeconds: Double = 6
 
   /// 胶囊上的「停止」：停掉正在转的这一条，后面排着的都不转了。已经转好的留着。
   func stopTranscriptionQueue() {

@@ -91,6 +91,16 @@ final class TranscriptTidyTests: XCTestCase {
     XCTAssertFalse(prompt.contains("专有名词和术语听写错误"), "不能再笼统地让模型纠正专有名词")
   }
 
+  /// 2026-10-03：嘈杂 vlog 的校对只改了 0.9%——「Cloud 里面开了对话」「cok 量」「脉论」都原样留着。
+  /// 人名照旧不许猜，但公认的科技产品和术语可以按读音改回；句子里能确定的个别词要改，不整句放弃。
+  func testTidyPromptFixesWellKnownTermsAndIndividualWords() {
+    let prompt = TranscriptTidyPrompt.system
+    XCTAssertTrue(prompt.contains("广为人知的科技产品、AI 模型、软件和常用英文术语"))
+    XCTAssertTrue(prompt.contains("把能确定的那几个词改正"))
+    XCTAssertTrue(prompt.contains("原样保留比猜错更好"))
+    XCTAssertFalse(prompt.contains("原样保留该句"), "不再因为整句不通顺就整句放弃")
+  }
+
   func testUserMessageWrapsTitleAndCaptionAndEmptyContextIsPassthrough() {
     let chunk = "21:15 I've sate sorry"
     XCTAssertEqual(TranscriptTidyPrompt.userMessage(chunk: chunk, context: .empty), chunk)

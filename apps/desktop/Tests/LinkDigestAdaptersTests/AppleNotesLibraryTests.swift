@@ -102,4 +102,15 @@ final class AppleNotesLibraryTests: XCTestCase {
   func testEntitiesMissingSemicolonAreDecoded() {
     XCTAssertEqual(AppleNoteHTML.markdown(from: "<div>&quot你好&quot 和 &lt系统&gt</div>"), "\"你好\" 和 <系统>")
   }
+
+  /// 一句标题在英文词处被切成三个（2026-10-04 走查）：合回一行；正常的相邻标题不动。
+  func testHeadingSplitAtLatinWordIsMerged() {
+    let lines = ["# 每一套课程都应该有逻辑和技法两个方面。所以，然后借助", "", "# AI", "", "# 构建出任何一个赛道的解决方案。", "", "正文"]
+    XCTAssertEqual(
+      AppleNoteHTML.mergingFragmentedHeadings(lines).filter { !$0.isEmpty },
+      ["# 每一套课程都应该有逻辑和技法两个方面。所以，然后借助AI构建出任何一个赛道的解决方案。", "正文"]
+    )
+    let normal = ["# 第一部分：基础。", "", "# Claude", "", "# 第二部分"]
+    XCTAssertEqual(AppleNoteHTML.mergingFragmentedHeadings(normal), normal, "前一段已经句末收尾，不合并")
+  }
 }

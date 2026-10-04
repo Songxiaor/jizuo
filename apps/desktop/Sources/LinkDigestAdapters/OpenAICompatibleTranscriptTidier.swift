@@ -37,6 +37,14 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
   /// 大小的片还是会撞上。1200 字约 40–65 秒，离这道线留出余量。
   private static let maximumChunkCharacters = 1_200
 
+  /// 清单模式（听写稿）的单片字数。
+  ///
+  /// 和整段模式一样取 1200（2026-10-04 实测）：输出虽然只剩改动，但关不掉思考的线路上，
+  /// 耗时的大头是模型的思考，而思考量随原文长度涨——1870 字的片思考 3800–5400 token、
+  /// 要 80–96 秒，第三片在 127 秒时被服务商网关掐断。片放大只对能关思考的线路有好处，
+  /// 那种线路每片本来就只要几秒，片小一点也不慢。
+  static let editListChunkCharacters = 1_200
+
   private let configurationService: ProviderConfigurationService
   private let provider: OpenAICompatibleProvider
 
@@ -58,12 +66,13 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
   /// 重新评估一次代码签名，之后就有缓存）。让用户手动重试一次才能用，等于把
   /// 一个已知的一次性延迟变成每次部署后必踩的坑。
   static func loadCredentials(
-    from configurationService: ProviderConfigurationService
+    from configurationService: ProviderConfigurationService,
+    model: String? = nil
   ) async throws -> (profile: ProviderProfile, apiKey: String) {
     var timedOutOnce = false
     while true {
       do {
-        guard let loaded = try await configurationService.loadCredentials() else {
+        guard let loaded = try await configurationService.loadCredentials(forModel: model) else {
           // 真的没有 profile，这时「去设置里配」才是对的指引。
           throw TranscriptTidyError.modelNotConfigured
         }
@@ -97,7 +106,8 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
   }
 
   /// 这份稿子会被切成几段。估时和真正执行用同一份切法，免得界面说的段数和实际对不上。
-  static func chunks(for text: String) -> [String] {
+  static func chunks(for text: String, style: TidyStyle = .transcript) -> [String] {
+    let maximum = style.usesEditList ? Self.editListChunkCharacters : Self.maximumChunkCharacters
     // 片长按并发反算，让片数落在并发的整数倍上。
     //
     // 耗时 ≈ ⌈片数 ÷ 并发⌉ × 单片耗时。片数不是并发整数倍时，最后一波多数通道
@@ -111,13 +121,13 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     // 只剩几十字的尾巴片成功，用户看到的是「校对完几乎没变」，还白扣一次配额。
     // 实测那次 prompt_tokens=409、completion=38，正是那条尾巴。
     let trimmedCharacterCount = text.trimmingCharacters(in: .whitespacesAndNewlines).count
-    let chunkLimit = trimmedCharacterCount <= Self.maximumChunkCharacters
-      ? Self.maximumChunkCharacters
+    let chunkLimit = trimmedCharacterCount <= maximum
+      ? maximum
       // 通用反算有 1500 字的下限（给翻译用的），会压过校对这里更低的上限，再夹一道。
-      : min(Self.maximumChunkCharacters, ChunkedTranslationStreamer.chunkLimit(
+      : min(maximum, ChunkedTranslationStreamer.chunkLimit(
           forCharacterCount: trimmedCharacterCount,
           concurrency: Self.maximumConcurrentChunkRequests,
-          maximum: Self.maximumChunkCharacters
+          maximum: maximum
         ))
     return TranscriptTidyChunker.chunks(of: text, limit: chunkLimit)
   }
@@ -128,8 +138,8 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
   /// 听写稿切出 30 多段、要跑十来分钟，用户等到第 6 分钟就以为卡死了。每段 1200 字
   /// 实测 40–65 秒（见 maximumChunkCharacters），取 50 秒做中位估计；补跑不计入，
   /// 它只在出错时发生，算进去会让每次都报得偏长。
-  public static func estimatedSeconds(forText text: String) -> Int {
-    estimatedSeconds(chunkCount: chunks(for: text).count)
+  public static func estimatedSeconds(forText text: String, style: TidyStyle = .transcript) -> Int {
+    estimatedSeconds(chunkCount: chunks(for: text, style: style).count, secondsPerWave: 50)
   }
 
   public static func estimatedSeconds(
@@ -149,10 +159,11 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     context: TranscriptTidyContext,
     phase: (@Sendable (TranscriptTidyPhase) -> Void)?
   ) async throws -> TranscriptTidyOutcome {
-    let chunks = Self.chunks(for: text)
+    let chunks = Self.chunks(for: text, style: style)
     guard !chunks.isEmpty else { throw TranscriptTidyError.emptyTranscript }
 
-    let credentials = try await Self.loadCredentials(from: configurationService)
+    // 选了别家的模型就用那一家的地址和密钥（见 `loadCredentials(forModel:)`）。
+    let credentials = try await Self.loadCredentials(from: configurationService, model: model)
     let trimmedOverride = model?.trimmingCharacters(in: .whitespacesAndNewlines)
     let effectiveModel = trimmedOverride?.isEmpty == false ? trimmedOverride! : credentials.profile.model
 
@@ -162,25 +173,44 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     let requestChunk: @Sendable (Int, Int) async throws -> TranscriptTidyOutcome = { [provider, credentials, effectiveModel, style, context] index, attempt in
       // 笔记不带上下文头：它本来就是自己写的，标题配文帮不上忙。
       // 听写稿和字幕稿都需要——专有名词全靠上下文才认得回来。
+      let body = style.usesEditList ? TranscriptTidyEdits.numbered(chunks[index]) : chunks[index]
       let payload = style == .note
-        ? chunks[index]
-        : TranscriptTidyPrompt.userMessage(chunk: chunks[index], context: context)
+        ? body
+        : TranscriptTidyPrompt.userMessage(chunk: body, context: context)
       let started = Date()
       let inputStamp = TranscriptTidyChunkCheck.timestamps(in: chunks[index]).first ?? "-"
       let head = "run=\(runID) model=\(effectiveModel) chunk=\(index + 1)/\(chunks.count) attempt=\(attempt) in=\(chunks[index].count) ts=\(inputStamp)"
       do {
-        let outcome = try await provider.tidyTranscriptChunk(
+        var outcome = try await provider.tidyTranscriptChunk(
           profile: credentials.profile,
           apiKey: credentials.apiKey,
           model: effectiveModel,
           text: payload,
-          systemPrompt: style.systemPrompt
+          systemPrompt: style.requestPrompt
         )
         let elapsed = Int(Date().timeIntervalSince(started) * 1_000)
+        // 清单模式：模型回的是修改清单，这里套进原文，后面的核对与拼接照旧按整段走。
+        var editNote = ""
+        if style.usesEditList {
+          let edits = TranscriptTidyEdits.parse(outcome.text)
+          let applied = TranscriptTidyEdits.apply(edits, to: chunks[index])
+          editNote = "edits=\(edits.count) applied=\(applied.applied) missed=\(applied.missed) rawOut=\(outcome.text.count)"
+          outcome = TranscriptTidyOutcome(
+            text: applied.text,
+            promptTokens: outcome.promptTokens,
+            completionTokens: outcome.completionTokens,
+            totalTokens: outcome.totalTokens,
+            reasoningTokens: outcome.reasoningTokens,
+            requestNote: outcome.requestNote
+          )
+        }
         // 听写稿和字幕稿逐段核对：回的不是这一段就当失败重试，绝不放进稿子。
         if style.normalizesParagraphs {
-          let cleaned = TranscriptTidyNormalizer.normalize(
-            TranscriptTidyPrompt.stripEchoedContext(outcome.text, chunk: chunks[index], context: context)
+          let cleaned = TranscriptTidyChunkCheck.repairingLeadingStamp(
+            output: TranscriptTidyNormalizer.normalize(
+              TranscriptTidyPrompt.stripEchoedContext(outcome.text, chunk: chunks[index], context: context)
+            ),
+            for: chunks[index]
           )
           guard TranscriptTidyChunkCheck.belongs(output: cleaned, to: chunks[index]) else {
             let outStamp = TranscriptTidyChunkCheck.timestamps(in: cleaned).first ?? "-"
@@ -193,7 +223,7 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
         let reasoning = outcome.reasoningTokens.map(String.init) ?? "-"
         let rate = outcome.completionTokens.map { elapsed > 0 ? String($0 * 1_000 / elapsed) : "-" } ?? "-"
         Self.logDiagnostic(
-          "\(head) result=ok out=\(outcome.text.count) ms=\(elapsed) completionTok=\(completion) reasoningTok=\(reasoning) tokPerSec=\(rate) \(outcome.requestNote ?? "")"
+          "\(head) result=ok out=\(outcome.text.count) ms=\(elapsed) completionTok=\(completion) reasoningTok=\(reasoning) tokPerSec=\(rate) \(editNote) \(outcome.requestNote ?? "")"
         )
         return outcome
       } catch let error as TranscriptTidyChunkMismatch {
@@ -211,42 +241,70 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
         throw error
       }
     }
+    // 每段已经发过几次（0 = 只发过首发）。池内补跑与收尾补跑共用这个计数，
+    // 一段最多发 1 + chunkRetryAttempts 次。
+    var attemptsUsed: [Int: Int] = [:]
     var results = try await withThrowingTaskGroup(
       of: (Int, Result<TranscriptTidyOutcome, Error>).self
     ) { group -> [Int: Result<TranscriptTidyOutcome, Error>] in
       var collected: [Int: Result<TranscriptTidyOutcome, Error>] = [:]
       var succeeded = 0
       var next = 0
+      // 池内补跑排在新段前面：先把掉了的段补上，进度不会卡在中间某段。
+      var pendingRetries: [Int] = []
       // 段号由子任务自己带回（显式捕获成常量），不经嵌套函数的参数转一手：
       // 2026-09-28 正式版里第 7 段的结果被记到了第 1 段名下，调试版测试复现不出，
       // 只能按「这一处不可信」来写。收回来之后拼接前还会再按内容核一遍。
-      func launch(_ requested: Int) {
+      func launch(_ requested: Int, attempt requestedAttempt: Int) {
         let chunkIndex = requested
-        group.addTask { [chunkIndex] in
+        let attempt = requestedAttempt
+        attemptsUsed[chunkIndex] = attempt
+        group.addTask { [chunkIndex, attempt] in
           do {
-            let outcome = try await requestChunk(chunkIndex, 0)
+            if attempt > 0 {
+              try await Task.sleep(for: .seconds(Double(attempt) * Self.chunkRetryBaseDelaySeconds))
+            }
+            let outcome = try await requestChunk(chunkIndex, attempt)
             return (chunkIndex, .success(outcome))
           } catch is CancellationError {
             // 让取消走 TaskGroup 的抛出路径，而不是被计成“这片失败了”。
             throw TranscriptTidyError.cancelled
           } catch {
+            if Task.isCancelled { throw TranscriptTidyError.cancelled }
             return (chunkIndex, .failure(error))
           }
         }
       }
+      func launchNext() {
+        if !pendingRetries.isEmpty {
+          let index = pendingRetries.removeFirst()
+          launch(index, attempt: (attemptsUsed[index] ?? 0) + 1)
+        } else if next < chunks.count {
+          launch(next, attempt: 0)
+          next += 1
+        }
+      }
       while next < min(Self.maximumConcurrentChunkRequests, chunks.count) {
-        launch(next)
-        next += 1
+        launchNext()
       }
       do {
         while let finished = try await group.next() {
           let index = finished.0
           let result = finished.1
-          if collected[index] != nil {
+          if case .success = collected[index] {
             Self.logDiagnostic("run=\(runID) duplicate-result chunk=\(index + 1)/\(chunks.count)")
           }
           collected[index] = result
           if case .success = result { succeeded += 1 }
+          // 失败段**在池里**补跑（2026-10-04）：原来等整轮跑完再一段一段串行补，
+          // Day2 实测网关两次成批掐断请求、12 段失败，串行补跑一段约 60 秒，
+          // 光收尾就多等了 13 分钟。网络中断、服务商抖动、回错段这类失败隔几秒
+          // 重发就好，不必等；限流例外——留到收尾一次一个，不再和别的请求抢配额。
+          if case let .failure(error) = result,
+             Self.isRetryable(error), !Self.isRateLimited(error),
+             (attemptsUsed[index] ?? 0) < Self.chunkRetryAttempts {
+            pendingRetries.append(index)
+          }
           // 每落地一片就报一次。分片是并发跑的，完成顺序不定，所以按**片数**报
           // 进度，而不是按 index——否则进度会来回跳。
           //
@@ -255,10 +313,7 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
           phase?(.tidying(succeeded: succeeded, total: chunks.count))
           // 取消后不再发新片：已在飞的会被 TaskGroup 一起取消。
           if Task.isCancelled { throw TranscriptTidyError.cancelled }
-          if next < chunks.count {
-            launch(next)
-            next += 1
-          }
+          launchNext()
         }
       } catch is CancellationError {
         throw TranscriptTidyError.cancelled
@@ -266,22 +321,21 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
       return collected
     }
 
-    // 失败段补跑：一波并发里偶尔有一段撞上限流或超时，其余都成功（2026-09-28 实测
-    // 7 段里第 6 段失败，原文回填）。并发跑完后逐段重试，一次只发一个请求、先等几秒，
-    // 不再和别的请求抢配额。Key 无效、没权限这类重试没用的错误不重试。
+    // 收尾补跑：池里补完仍失败、且还有次数的段（主要是限流），一次只发一个请求、
+    // 先等几秒，不再和别的请求抢配额。Key 无效、没权限这类重试没用的错误不重试。
     //
     // 补跑时报「正在补跑第 k 段（共 m 段）」，并且每一步都先看是否已取消：用户点了
     // 停止就立刻抛出，不再发下一次补跑（2026-10-01 体检）。
     let retryIndices = chunks.indices.filter { index in
       guard case let .failure(error)? = results[index] else { return false }
-      return Self.isRetryable(error)
+      return Self.isRetryable(error) && (attemptsUsed[index] ?? 0) < Self.chunkRetryAttempts
     }
     var succeededCount = 0
     for result in results.values { if case .success = result { succeededCount += 1 } }
     for (position, index) in retryIndices.enumerated() {
       guard !Task.isCancelled else { throw TranscriptTidyError.cancelled }
       phase?(.retrying(attempt: position + 1, failed: retryIndices.count, total: chunks.count))
-      for attempt in 1...Self.chunkRetryAttempts {
+      for attempt in ((attemptsUsed[index] ?? 0) + 1)...Self.chunkRetryAttempts {
         do {
           try await Task.sleep(for: .seconds(Double(attempt) * Self.chunkRetryBaseDelaySeconds))
           results[index] = .success(try await requestChunk(index, attempt))
@@ -310,8 +364,11 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
     for (index, chunk) in chunks.enumerated() {
       // 拼接前按内容再核一遍：这个位置上的校对稿必须是这一段的，否则当失败、保留原文。
       if case let .success(outcome)? = results[index], style.normalizesParagraphs {
-        let cleaned = TranscriptTidyNormalizer.normalize(
-          TranscriptTidyPrompt.stripEchoedContext(outcome.text, chunk: chunk, context: context)
+        let cleaned = TranscriptTidyChunkCheck.repairingLeadingStamp(
+          output: TranscriptTidyNormalizer.normalize(
+            TranscriptTidyPrompt.stripEchoedContext(outcome.text, chunk: chunk, context: context)
+          ),
+          for: chunk
         )
         if !TranscriptTidyChunkCheck.belongs(output: cleaned, to: chunk) {
           let outStamp = TranscriptTidyChunkCheck.timestamps(in: cleaned).first ?? "-"
@@ -330,10 +387,13 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
         // 笔记不能走这一步：它的产物是 Markdown，换行本身有语义。归一化会把
         // 段内单换行拼回一行，`- a\n- b` 这样的列表会被拼成 `- a - b`。
         let cleaned: String = style.normalizesParagraphs
-          ? TranscriptTidyNormalizer.normalize(
-              TranscriptTidyPrompt.stripEchoedContext(
-                outcome.text, chunk: chunk, context: context
-              )
+          ? TranscriptTidyChunkCheck.repairingLeadingStamp(
+              output: TranscriptTidyNormalizer.normalize(
+                TranscriptTidyPrompt.stripEchoedContext(
+                  outcome.text, chunk: chunk, context: context
+                )
+              ),
+              for: chunk
             )
           : outcome.text.replacingOccurrences(of: "\r\n", with: "\n")
               .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -401,6 +461,10 @@ public final class OpenAICompatibleTranscriptTidier: TranscriptTidying, @uncheck
   /// 失败段补跑的次数与间隔（第 n 次先等 n × 间隔秒）。
   public static let chunkRetryAttempts = 2
   nonisolated(unsafe) static var chunkRetryBaseDelaySeconds: Double = 3
+
+  static func isRateLimited(_ error: Error) -> Bool {
+    (error as? ModelProviderFailure)?.code == .rateLimited
+  }
 
   static func isRetryable(_ error: Error) -> Bool {
     if error is CancellationError { return false }

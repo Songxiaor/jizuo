@@ -155,10 +155,17 @@ public struct HistoryRowProjection: Codable, Sendable, Equatable {
         of: #"\[([^\]]+)\]\((https?:\/\/[^)]+)\)"#,
         with: "$1",
         options: .regularExpression
-      )
+      )      // GitHub README 常把开头写成 HTML（<p><img …><a …>徽章</a></p>），列表里原来露出
+      // 「Bubble Tea <p> <img src=" widt…」（2026-10-04 走查）。标签整个去掉；
+      // 引用式链接 [文字][名字] 只留文字。
+      text = text.replacingOccurrences(of: #"</?[A-Za-z][^>]*>"#, with: " ", options: .regularExpression)
+      text = text.replacingOccurrences(of: #"\[([^\]]+)\]\[[^\]]*\]"#, with: "$1", options: .regularExpression)
     }
     // Heading markers left mid-paragraph after line joins.
     text = text.replacingOccurrences(of: #"(?m)^#{1,6}\s+"#, with: "", options: .regularExpression)
+    // 压成一行后夹在中间的标题记号（前面是空白、后面跟空格）：备忘录切碎的标题露出「AI # 构建出…」
+    // （2026-10-04 走查）。「#话题」后面没有空格，不受影响。
+    text = text.replacingOccurrences(of: #"(?<=\s)#{1,6}\s+"#, with: "", options: .regularExpression)
     // Orphan label left after stripping "## " from a collapsed "## 配文 body" string.
     text = text.replacingOccurrences(
       of: #"^(?:配文|原文|正文|内容|图片里的文字|画面字幕|字幕|视频转写|录音转写|转写|Caption|Tweet|Post)\s+"#,

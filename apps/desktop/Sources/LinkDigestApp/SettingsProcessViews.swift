@@ -79,15 +79,17 @@ struct SettingsStepHeader: View {
   let sealColor: Color
   let secondaryText: Color
   let hairline: Color
+  /// 并进「AI 处理」页的一节：印和标题小一号、不画底线（2026-10-04 设置合并）。
+  var compact = false
 
   var body: some View {
     VStack(alignment: .leading, spacing: 0) {
-      HStack(alignment: .center, spacing: 16) {
+      HStack(alignment: .center, spacing: compact ? 12 : 16) {
         seal
-          .frame(width: 56, height: 56)
+          .frame(width: compact ? 40 : 56, height: compact ? 40 : 56)
         VStack(alignment: .leading, spacing: 4) {
           Text(step.title)
-            .font(.custom(ReadingFontCatalog.editorialSerifFamily, size: 22).weight(.semibold))
+            .font(.custom(ReadingFontCatalog.editorialSerifFamily, size: compact ? 17 : 22).weight(.semibold))
             .accessibilityAddTraits(.isHeader)
           Text(caption)
             .themedFont(.subheadline)
@@ -109,19 +111,22 @@ struct SettingsStepHeader: View {
           }
         }
       }
-      .padding(.bottom, 18)
-      Rectangle().fill(hairline).frame(height: 1)
+      .padding(.bottom, compact ? 0 : 18)
+      if !compact {
+        Rectangle().fill(hairline).frame(height: 1)
+      }
     }
   }
 
   /// 打开「自动」时换成 `SealStampView`：新建的视图带着盖下的动画出场。
   @ViewBuilder private var seal: some View {
     let auto = isAuto?.wrappedValue ?? true
+    let size: CGFloat = compact ? 36 : 52
     if auto {
-      SealStampView(glyph: step.glyph, size: 52, color: sealColor, rotation: step.rotation)
+      SealStampView(glyph: step.glyph, size: size, color: sealColor, rotation: step.rotation)
         .id("stamped-\(step.rawValue)")
     } else {
-      SealMark(glyph: step.glyph, size: 52, color: sealColor.opacity(0.75), style: .pending)
+      SealMark(glyph: step.glyph, size: size, color: sealColor.opacity(0.75), style: .pending)
         .id("pending-\(step.rawValue)")
     }
   }

@@ -2152,6 +2152,8 @@ struct LightAudioPlaybackBar: View {
   let player: AVPlayer?
   let theme: HistoryThemeTokens
   @Binding var isPlaybackEnded: Bool
+  /// 「另存一份」收进播放条最右端（2026-10-04：原来在播放条下面单独占一行，视频那边已经收进角上）。
+  var onSaveCopy: (() -> Void)? = nil
 
   @State private var isPlaying = false
   @State private var current: Double = 0
@@ -2223,6 +2225,20 @@ struct LightAudioPlaybackBar: View {
       .buttonStyle(.plain)
       .help("播放速度")
       .accessibilityIdentifier("history-audio-rate")
+
+      if let onSaveCopy {
+        Button(action: onSaveCopy) {
+          Image(systemName: "square.and.arrow.down")
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(theme.secondaryText)
+            .frame(width: 26, height: 22)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help("把这段录音另存一份到别的位置")
+        .accessibilityLabel("另存一份")
+        .accessibilityIdentifier("history-video-save-local")
+      }
     }
     .padding(.horizontal, DesignTokens.Space.md)
     .padding(.vertical, DesignTokens.Space.sm)
@@ -2448,9 +2464,64 @@ struct HistoryVideoPlayerCard: View {
   @State private var isSaveFailurePresented = false
   @State private var isPlaybackEnded = false
   @ObservedObject private var cinema = VideoCinemaController.shared
+  @ObservedObject private var mini = MiniVideoPlayerController.shared
+  @State private var isHoveringVideo = false
 
   /// 本卡的播放器正被影院 overlay 放大：卡内显示占位，避免双重渲染。
   private var isInCinema: Bool { cinema.isPresenting(player: player) }
+  /// 正在右上角小窗里播：卡内同样只留占位。
+  private var isInMini: Bool { mini.isShowing(player: player) }
+  private var miniOwnerID: String { "\(taskID.rawValue)|\(fileURL.path)" }
+
+  private func updateMiniPlayer(cardVisible: Bool) {
+    guard let player, let videoDisplaySize else { return }
+    if cardVisible {
+      mini.hide(ownerID: miniOwnerID)
+    } else if player.timeControlStatus == .playing, !isInCinema {
+      mini.show(
+        player: player,
+        aspectRatio: VideoDisplayGeometry.aspectRatio(displaySize: videoDisplaySize),
+        ownerID: miniOwnerID
+      )
+    }
+  }
+
+  /// 视频右上角、悬停才出现的两个小按钮：另存一份（文件）、放大（观看）。
+  /// 原来在视频下面单独占一行（2026-10-04 详情页精简）。
+  @ViewBuilder private var videoCornerActions: some View {
+    if let videoDisplaySize, player != nil, isHoveringVideo || saveFeedback != nil {
+      HStack(spacing: 6) {
+        if let saveFeedback {
+          Label(saveFeedback, systemImage: "checkmark.circle.fill")
+            .themedFont(.caption, weight: .medium)
+            .foregroundStyle(.white)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .background(.black.opacity(0.55), in: Capsule())
+            .accessibilityIdentifier("history-video-save-feedback")
+        }
+        if isHoveringVideo {
+          Button("另存一份", systemImage: "square.and.arrow.down", action: saveToLocalFile)
+            .buttonStyle(VideoCornerButtonStyle())
+            .disabled(!LocalMediaExport.isSupportedLocalFile(fileURL))
+            .help("把这段视频另存一份到别的位置")
+            .accessibilityIdentifier("history-video-save-local")
+          Button {
+            guard let player else { return }
+            cinema.present(
+              player: player,
+              aspectRatio: VideoDisplayGeometry.aspectRatio(displaySize: videoDisplaySize)
+            )
+          } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
+            .buttonStyle(VideoCornerButtonStyle())
+            .help("双击视频也可放大")
+            .accessibilityIdentifier("history-video-cinema")
+            .accessibilityLabel("放大")
+        }
+      }
+      .padding(8)
+      .transition(.opacity)
+    }
+  }
 
   private var spaceKeyToggle: PlayerSpaceKeyToggle {
     PlayerSpaceKeyToggle(
@@ -2462,71 +2533,20 @@ struct HistoryVideoPlayerCard: View {
 
   var body: some View {
     VStack(alignment: .leading, spacing: 8) {
-      // 这张卡只管播放和文件：时长、体积、播放器、另存一份、放大。
-      // 转写是「把内容交给模型换一份新文本」，和总结、翻译一起放在正文表头，
-      // 不再在视频旁边单独长一个按钮——同一类动作只在一个地方出现。
-      HStack(spacing: 12) {
-        if let durationSeconds = media?.durationSeconds, durationSeconds > 0 {
-          Label(Self.formatDuration(durationSeconds), systemImage: "clock")
-            .themedFont(.caption, monospacedDigit: true)
-            .foregroundStyle(.secondary)
-        }
-        if let media, media.byteSize > 0 {
-          // 导入的本机文件只记了位置（有书签），没复制进汲作：说「引用本机文件」，
-          // 免得以为又占了一份硬盘。抓来的视频才是真存了一份。
-          let isReference = media.fileBookmark != nil
-          Label(
-            "\(isReference ? "引用本机文件" : "已保存到本机") · \(Self.formatByteSize(media.byteSize))",
-            systemImage: isReference ? "link" : "internaldrive.fill"
-          )
-            .themedFont(.caption)
-            .foregroundStyle(.secondary)
-            .help(isReference ? "播放和转写都直接读原文件，汲作里没有另存一份" : "这段视频已存进汲作的资料目录")
-            .accessibilityIdentifier("history-video-local-size")
-        }
-        Spacer(minLength: 0)
-        if let saveFeedback {
-          Label(saveFeedback, systemImage: "checkmark.circle.fill")
-            .themedFont(.caption, weight: .medium)
-            .foregroundStyle(appTheme.success)
-            .accessibilityIdentifier("history-video-save-feedback")
-        }
-      }
-
+      // 这张卡只管播放和文件。时长、体积写进标题下面那行来源信息（2026-10-04 详情页精简：
+      // 原来这里单独一行，正文前面叠了九层）；转写和总结、翻译一起在正文表头。
       playerSurface
-
-      // 播放器旁的次要操作：另存一份（文件）+ 放大（观看）。
-      if !isInCinema {
-        HStack(spacing: 12) {
-          Button("另存一份", systemImage: "square.and.arrow.down", action: saveToLocalFile)
-            .buttonStyle(.link)
-            .themedFont(.caption)
-            .disabled(!LocalMediaExport.isSupportedLocalFile(fileURL))
-            .accessibilityIdentifier("history-video-save-local")
-          Spacer(minLength: 0)
-          if let videoDisplaySize, player != nil {
-            Button {
-              guard let player else { return }
-              cinema.present(
-                player: player,
-                aspectRatio: VideoDisplayGeometry.aspectRatio(displaySize: videoDisplaySize)
-              )
-            } label: { Label("放大", systemImage: "arrow.up.left.and.arrow.down.right") }
-              .buttonStyle(.link)
-              .themedFont(.caption)
-              .help("双击视频也可放大")
-              .accessibilityIdentifier("history-video-cinema")
-              .accessibilityLabel("放大")
-          }
+        // 滚出可视区还在播：交给正文区右上角的小窗接着放（见 MiniVideoPlayerController）。
+        .onScrollVisibilityChange(threshold: 0.15) { visible in
+          updateMiniPlayer(cardVisible: visible)
         }
-        // 右对齐要对到视频右边缘，不是阅读区右边缘：竖屏视频收窄后，按整行
-        // 右对齐会把按钮甩到离视频很远的地方。
-        .frame(
-          maxWidth: videoDisplaySize.map {
-            VideoDisplayGeometry.inlineMaximumWidth(displaySize: $0)
-          }
-        )
-        .frame(maxWidth: .infinity, alignment: .leading)
+
+      // 纯音频的「另存一份」在播放条最右端；存好后在这里短暂说一声。
+      if videoDisplaySize == nil, let saveFeedback {
+        Label(saveFeedback, systemImage: "checkmark.circle.fill")
+          .themedFont(.caption, weight: .medium)
+          .foregroundStyle(appTheme.success)
+          .accessibilityIdentifier("history-video-save-feedback")
       }
     }
     .onAppear {
@@ -2536,8 +2556,11 @@ struct HistoryVideoPlayerCard: View {
       isPlaybackEnded = false
       loadVideoGeometry(fileURL)
     }
-    .onChange(of: fileURL) { _, newURL in
+    .onChange(of: fileURL) { oldURL, newURL in
       if isInCinema { cinema.dismiss() }
+      mini.release(ownerID: "\(taskID.rawValue)|\(oldURL.path)")
+      // 换了一条：鼠标不一定动过，悬停状态不能从上一条带过来。
+      isHoveringVideo = false
       player?.pause()
       player = AVPlayer(url: newURL)
       isPlaybackEnded = false
@@ -2555,6 +2578,7 @@ struct HistoryVideoPlayerCard: View {
     }
     .onDisappear {
       if isInCinema { cinema.dismiss() }
+      mini.release(ownerID: miniOwnerID)
       player?.pause()
       videoGeometryTask?.cancel()
       videoGeometryTask = nil
@@ -2607,8 +2631,8 @@ struct HistoryVideoPlayerCard: View {
 
   @ViewBuilder private var playerSurface: some View {
     if let videoDisplaySize {
-      if isInCinema {
-        // 影院放大期间，卡内显示占位；播放器只存在于 overlay。
+      if isInCinema || isInMini {
+        // 影院放大或小窗播放期间，卡内显示占位；播放器只存在于 overlay。
         // 空格监视器保留在占位上，影院里空格依旧切换同一个播放器。
         RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
           .fill(Color.black.opacity(0.85))
@@ -2622,7 +2646,7 @@ struct HistoryVideoPlayerCard: View {
           .overlay {
             VStack(spacing: 6) {
               Image(systemName: "rectangle.on.rectangle").font(.title2).foregroundStyle(.white.opacity(0.7))
-              Text("正在放大播放…").themedFont(.caption).foregroundStyle(.white.opacity(0.7))
+              Text(isInCinema ? "正在放大播放…" : "正在小窗播放").themedFont(.caption).foregroundStyle(.white.opacity(0.7))
             }
           }
       } else {
@@ -2647,6 +2671,11 @@ struct HistoryVideoPlayerCard: View {
           )
           .overlay {
             PlaybackReplayOverlay(player: player, isPlaybackEnded: $isPlaybackEnded)
+          }
+          // 按钮挂在视频自己的框上：竖屏视频收窄后也贴着视频右上角，不会甩到阅读区右边。
+          .overlay(alignment: .topTrailing) { videoCornerActions }
+          .onHover { hovering in
+            withAnimation(.easeOut(duration: 0.15)) { isHoveringVideo = hovering }
           }
           .videoCinemaDoubleClick {
             guard let player else { return }
@@ -2680,7 +2709,10 @@ struct HistoryVideoPlayerCard: View {
         }
         // 纯音频不用系统视频控件：那条 64pt 的黑底条在白色阅读页上是整页最重的一块
         //（2026-09-23）。换成跟主题走的浅色播放条，播完直接回到可重播状态。
-        LightAudioPlaybackBar(player: player, theme: appTheme, isPlaybackEnded: $isPlaybackEnded)
+        LightAudioPlaybackBar(
+          player: player, theme: appTheme, isPlaybackEnded: $isPlaybackEnded,
+          onSaveCopy: LocalMediaExport.isSupportedLocalFile(fileURL) ? { saveToLocalFile() } : nil
+        )
           .background(spaceKeyToggle.allowsHitTesting(false))
       }
       .frame(maxWidth: .infinity, alignment: .leading)
@@ -2710,15 +2742,32 @@ struct HistoryVideoPlayerCard: View {
     }
   }
 
-  private static func formatByteSize(_ value: Int64) -> String {
+  static func formatByteSize(_ value: Int64) -> String {
     ByteCountFormatter.string(fromByteCount: value, countStyle: .file)
   }
 
-  private static func formatDuration(_ seconds: Double) -> String {
-    let total = max(0, Int(seconds.rounded()))
-    let minutes = total / 60
+  /// 「4:18:26」「2:17」。原来一律写分钟，四小时的课程显示成「258:26」，要心算才知道多长。
+  static func formatDuration(_ seconds: Double) -> String {
+    // 向下取整，和播放条右端的总时长同一个写法：原来四舍五入，标题下写 15:46、播放条写 15:45（2026-10-04 走查）。
+    let total = max(0, Int(seconds.isFinite ? seconds.rounded(.down) : 0))
+    let hours = total / 3600
+    let minutes = (total % 3600) / 60
     let remainder = total % 60
-    return String(format: "%d:%02d", minutes, remainder)
+    return hours > 0
+      ? String(format: "%d:%02d:%02d", hours, minutes, remainder)
+      : String(format: "%d:%02d", minutes, remainder)
+  }
+
+  /// 标题下面那行来源信息里的媒体一段：「4:18:26 · 1.11 GB 原文件」。
+  /// 导入的本机文件只记了位置（有书签），没复制进汲作：写「原文件」，免得以为又占了一份硬盘。
+  static func bylineText(for media: MediaAsset?) -> String? {
+    guard let media else { return nil }
+    var parts: [String] = []
+    if let duration = media.durationSeconds, duration > 0 { parts.append(formatDuration(duration)) }
+    if media.byteSize > 0 {
+      parts.append(formatByteSize(media.byteSize) + (media.fileBookmark != nil ? " 原文件" : " 已存本机"))
+    }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
   }
 }
 
@@ -3022,5 +3071,18 @@ enum LocalMediaExport {
     } else {
       try fileManager.moveItem(at: temporaryURL, to: destination)
     }
+  }
+}
+
+/// 视频角上的小按钮：半透明黑底白字，压在任何画面上都看得清。
+struct VideoCornerButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .labelStyle(.titleAndIcon)
+      .themedFont(.caption, weight: .medium)
+      .foregroundStyle(.white)
+      .padding(.horizontal, 8).padding(.vertical, 4)
+      .background(.black.opacity(configuration.isPressed ? 0.75 : 0.55), in: Capsule())
+      .contentShape(Capsule())
   }
 }

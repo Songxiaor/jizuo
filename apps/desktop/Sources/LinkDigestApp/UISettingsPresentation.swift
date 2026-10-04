@@ -9,9 +9,10 @@ enum UISettingsPresentation {
   static let modelServicesCardTitle = "模型服务"
   static let modelServicesSummary = "按服务商归拢；每个模型有自己的服务地址和密钥。"
   static let modelServicesDetails = "密钥只保存在本机钥匙串，不写进资料库、导出文件或日志。"
-  static let summaryAssignmentTitle = "总结模型"
+  /// 2026-10-04 起叫「默认模型」：总结用它，校对、翻译、脑图没单独选时也跟着它，原名只说了四分之一。
+  static let summaryAssignmentTitle = "默认模型"
   static let translationAssignmentTitle = "翻译模型"
-  static let translationFollowsSummaryHint = "不另选就与总结共用同一个模型。"
+  static let translationFollowsSummaryHint = "不另选就用上面的默认模型。"
   static let localTranscriptionTitle = "本机转写"
   static let onlineTranscriptionTitle = "在线备用转写"
   static let tidyAssignmentTitle = "校对模型"

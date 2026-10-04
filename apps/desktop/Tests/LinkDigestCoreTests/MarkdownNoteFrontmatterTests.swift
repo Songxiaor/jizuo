@@ -315,7 +315,8 @@ final class MarkdownNoteFrontmatterTests: XCTestCase {
     let cleaned = MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: source)
     XCTAssertFalse(cleaned.contains("captured 标题"))
     XCTAssertFalse(cleaned.contains("captured 内容"))
-    XCTAssertTrue(cleaned.hasPrefix("今晚别刷Netflix了。"))
+    // 2026-10-04 起包装头里的标题写成一级标题（显示层和页面标题相同时会去掉）。
+    XCTAssertTrue(cleaned.hasPrefix("# 今晚别刷Netflix了。"), cleaned)
     XCTAssertTrue(cleaned.contains("正文里提到 captured 这个词不删。"))
   }
 
@@ -324,5 +325,29 @@ final class MarkdownNoteFrontmatterTests: XCTestCase {
     let body = "# 短视频未来两年趋势\n\n## 评论（已保存 20 条 / 页面显示 50）\n\n- **早安 晚安** · 赞 1\n  表达者"
     XCTAssertEqual(MarkdownNoteFrontmatter.directorySourcePreview(fromBody: body), "# 短视频未来两年趋势")
     XCTAssertNil(MarkdownNoteFrontmatter.directorySourcePreview(fromBody: "## 评论\n\n- 甲"))
+  }
+
+  /// 整段被译成中文的包装头不进译文显示（2026-10-04 走查：「标题：/AGENTS.md 完全指南/捕获内容：」）。
+  func testTranslatedEnvelopeHeaderIsDropped() {
+    let translated = "标题：\nAGENTS.md 完全指南\n\n捕获内容：\n<<<\n你是否曾担心过？\n\n## 什么是 AGENTS.md？\n>>>"
+    XCTAssertEqual(
+      MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: translated),
+      "# AGENTS.md 完全指南\n\n你是否曾担心过？\n\n## 什么是 AGENTS.md？"
+    )
+    XCTAssertEqual(
+      MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: "标题：Agent 指南\n抓取的内容：\n正文"),
+      "# Agent 指南\n\n正文"
+    )
+    XCTAssertEqual(
+      MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: "已捕获标题：\n第一行\n第二行\n已捕获内容：\n<<<\n正文"),
+      "# 第一行 第二行\n\n正文"
+    )
+    XCTAssertEqual(
+      MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: "Captured title:\n管控框架无关紧要\nCaptured content:\n<<<\n正文"),
+      "# 管控框架无关紧要\n\n正文"
+    )
+    // 正文自己以「标题：」开头、后面没有内容标签：不动。
+    let own = "标题：怎么写好标题\n\n先想清楚读者是谁。"
+    XCTAssertEqual(MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: own), own)
   }
 }

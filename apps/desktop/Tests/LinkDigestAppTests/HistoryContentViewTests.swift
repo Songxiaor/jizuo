@@ -402,7 +402,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("history-navigation-all"))
     XCTAssertTrue(source.contains("history-navigation-recent"))
     XCTAssertTrue(source.contains("history-navigation-unsummarized"))
-    XCTAssertTrue(source.contains("navigationButton(\"未总结\""), "侧栏文案应是未总结")
+    XCTAssertTrue(source.contains("title: \"未总结\""), "侧栏文案应是未总结")
     guard
       let todayIndex = source.range(of: "history-navigation-today-note")?.lowerBound,
       let creatorsIndex = source.range(of: "history-navigation-creators")?.lowerBound,
@@ -1189,23 +1189,23 @@ final class HistoryContentViewTests: XCTestCase {
     // 播放卡片已拆到 HistoryMediaPlayback.swift；整份读，不再切片。
     let video = appSource("HistoryMediaPlayback.swift")
 
-    let local = video.range(of: "已保存到本机")
+    // 2026-10-04 详情页精简：时长、体积并进标题下面的来源行（`bylineText`），视频卡不再单独占一行；
+    // 「另存一份」「放大」挂在视频右上角、悬停才出现，所以在播放器之后定义、叠在播放器上。
+    let byline = video.range(of: "static func bylineText(for media: MediaAsset?) -> String?")
     let player = video.range(of: "playerSurface")
     let save = video.range(of: "Button(\"另存一份\"")
-    XCTAssertNotNil(local); XCTAssertNotNil(player); XCTAssertNotNil(save)
-    XCTAssertLessThan(local!.lowerBound, player!.lowerBound)
-    // 「另存一份」是文件操作，跟在播放器旁。
-    XCTAssertGreaterThan(save!.lowerBound, player!.lowerBound)
+    XCTAssertNotNil(byline); XCTAssertNotNil(player); XCTAssertNotNil(save)
+    XCTAssertTrue(video.contains(".overlay(alignment: .topTrailing) { videoCornerActions }"))
+    XCTAssertTrue(appSource("HistoryContentView.swift").contains("HistoryVideoPlayerCard.bylineText(for: detail.media)"))
     // 转写不再长在视频卡上。它和总结、翻译是同一类动作（把内容交给模型换一份
     // 新文本），三个并排在正文表头；视频卡只管播放和文件。
     XCTAssertFalse(video.contains("transcriptionControl"))
     XCTAssertFalse(video.contains("改进转写"))
     XCTAssertFalse(video.contains("history-video-transcription-improve"))
     XCTAssertTrue(video.contains("media.byteSize > 0"))
-    // 作者不再出现在播放卡片的事实行：详情属性区已有「作者」一栏，
-    // 卡片里重复一遍只会挤占时长/体积的空间。
+    // 作者不再出现在播放卡片的事实行：详情属性区已有「作者」一栏。
     XCTAssertFalse(video.contains("media?.author"))
-    XCTAssertTrue(video.contains("media?.durationSeconds"))
+    XCTAssertTrue(video.contains("media.durationSeconds"))
     XCTAssertTrue(video.contains(".aspectRatio(VideoDisplayGeometry.aspectRatio"))
     XCTAssertTrue(video.contains("naturalSize"))
     XCTAssertTrue(video.contains("preferredTransform"))
@@ -1305,8 +1305,9 @@ final class HistoryContentViewTests: XCTestCase {
     for item in ["重新\\(step.title)", "重新转写（本机）", "校对转写稿", "生成脑图", "抓取评论…", "换个模型重跑…", "生成记录"] {
       XCTAssertTrue(more.contains(item), "missing \(item)")
     }
-    XCTAssertTrue(more.contains("if let action = transcribeAction, primary != .transcribe {"), "主按钮是转写时面板不再列转写")
-    XCTAssertTrue(more.contains("if kind == .summarize, primary == .summarize { continue }"), "主按钮是生成总结时面板不再列总结")
+    // 2026-10-04：面板列全部工序（顺序同设置里的工序总览），表头的主按钮只是捷径。
+    XCTAssertTrue(more.contains("if let action = transcribeAction {"), "转写永远在面板里")
+    XCTAssertFalse(more.contains("primary == .summarize { continue }"), "总结永远在面板里")
     XCTAssertTrue(more.contains("if kind == .translate, translationNotNeeded, translationArtifact == nil { continue }"), "不需要翻译时翻译不出现")
     // 表头在视频之后、正文之前（顶部留给信息），滚过去以后吸在正文区顶端。
     let surface = section(in: source, from: "private var readingSurface: some View", to: "private var showsReadingSurface")
@@ -1495,17 +1496,16 @@ final class HistoryContentViewTests: XCTestCase {
   func testCinemaButtonAlignsToTheVideoEdgeNotTheReadingColumnEdge() {
     // 播放卡片已拆到 HistoryMediaPlayback.swift。
     let source = appSource("HistoryMediaPlayback.swift")
-    // 竖屏视频收窄后，按整行右对齐会把「放大」甩到离视频很远的地方。这个单行
-    // 写法只用在放大按钮那一处——播放器自身的 frame 是多行的，不会误命中。
-    let button = source.range(of: "history-video-cinema")
-    let alignment = source.range(
-      of: "VideoDisplayGeometry.inlineMaximumWidth(displaySize: $0)"
-    )
-    XCTAssertNotNil(button)
-    XCTAssertNotNil(alignment)
-    // 约束挂在按钮所在的那个 HStack 上，所以出现在按钮之后。
-    if let button, let alignment {
-      XCTAssertLessThan(button.lowerBound, alignment.lowerBound)
+    // 竖屏视频收窄后，按整行右对齐会把「放大」甩到离视频很远的地方。2026-10-04 起按钮叠在
+    // 视频自己的框上（右上角、悬停出现）：挂在 VideoPlayer 那条修饰链里、在整行 frame 之前。
+    let player = source.range(of: "VideoPlayer(player: player)")
+    let overlay = source.range(of: ".overlay(alignment: .topTrailing) { videoCornerActions }")
+    let rowFrame = source.range(of: ".accessibilityIdentifier(\"history-video-player\")")
+    XCTAssertNotNil(source.range(of: "history-video-cinema"))
+    XCTAssertNotNil(player); XCTAssertNotNil(overlay); XCTAssertNotNil(rowFrame)
+    if let player, let overlay, let rowFrame {
+      XCTAssertLessThan(player.lowerBound, overlay.lowerBound)
+      XCTAssertLessThan(overlay.lowerBound, rowFrame.lowerBound)
     }
   }
 
@@ -2205,18 +2205,20 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("Text(\"点 ＋ 把一组内容按顺序放一起\")"))
     // 18：标签、形式默认收起，展开状态记在 AppStorage。
     XCTAssertTrue(source.contains("@AppStorage(\"history.navigation.forms-expanded\") private var navigationFormsExpanded = false"))
-    // 19：同名两行「本地文件」各有悬停说明。
-    XCTAssertTrue(source.contains("只含归自有的"))
+    // 19：「自有」下那行本地文件叫「自有文件」，和「来源 → 本地文件」不再同名（2026-10-04）；
+    // 来源那行仍说明含多少外部文件。
+    XCTAssertTrue(source.contains("title: \"自有文件\""))
     XCTAssertTrue(source.contains("条外部文件"))
-    // 20：「未总结」在视图最后（回收站之前），自动总结开着时不占位。
+    // 20：「未总结」和待转写、待校对一起收在「工序状态」里（收藏之后、回收站之前），自动总结开着时不占位。
     guard
       let favorite = source.range(of: "history-navigation-favorite\")"),
-      let unsummarized = source.range(of: "navigationButton(\"未总结\""),
+      let stepStatus = source.range(of: "stepStatusDisclosureRow\n"),
       let trash = source.range(of: "history-navigation-trash\")")
     else { return XCTFail("视图分组结构变了") }
-    XCTAssertLessThan(favorite.lowerBound, unsummarized.lowerBound)
-    XCTAssertLessThan(unsummarized.lowerBound, trash.lowerBound)
+    XCTAssertLessThan(favorite.lowerBound, stepStatus.lowerBound)
+    XCTAssertLessThan(stepStatus.lowerBound, trash.lowerBound)
     XCTAssertTrue(source.contains("if !providerSettings.autoSummarizeNewCaptures || model.selectedScope == .unsummarized {"))
+    XCTAssertTrue(source.contains("title: \"未总结\""))
     XCTAssertFalse(source.contains("\"待总结\""))
     // 25：「+」里不再有两个同步；菜单栏「文件」里有。
     let addMenu = section(in: source, from: "private var addMenu: some View", to: ".accessibilityIdentifier(\"manual-link-add-toolbar\")")
@@ -2708,9 +2710,10 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
     )
     // 禁用状态与理由必须来自同一个来源，否则两者会各改各的、说法不一致。
     XCTAssertTrue(source.contains("private var transcriptTidyBlockedReason: String? {"))
-    // 09-28「处理」改为自绘面板：禁用与理由同出一处，理由直接写进这一项的标题。
+    // 09-28「处理」改为自绘面板：禁用与理由同出一处。10-04 起理由写在这一项标题下面那行小字里
+    //（原来挤在标题括号里，和其它步骤的「模型：…」那行同一个位置）。
     XCTAssertTrue(source.contains("isEnabled: transcriptTidyBlockedReason == nil"))
-    XCTAssertTrue(source.contains("title: transcriptTidyBlockedReason.map"))
+    XCTAssertTrue(source.contains("subtitle: transcriptTidyBlockedReason"))
     // 理由要显示出来，不能只放在悬停提示里——鼠标不停上去就看不到。
     XCTAssertTrue(source.contains("history-transcript-tidy-blocked-reason"))
     XCTAssertTrue(source.contains("transcriptTidyVisibleBlockedReason"))
@@ -2821,23 +2824,21 @@ final class TranscriptTidyBlockedReasonTests: XCTestCase {
   }
 }
 
-/// 自动管线第 ② 步的前置提示，必须写明它只适用于自动进来的新内容。
+/// 自动校对：设置开着时，任何一次转写完成都接着校对（2026-10-03 起，取代 08-18 的「只走自动管线」）。
 final class AutoPipelineTidyHintTests: XCTestCase {
-  func testTidyHintStatesItOnlyAppliesToAutoCapturedContent() throws {
+  func testTidyHintSaysManualTranscriptionAlsoGetsProofed() throws {
     let settings = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         .appendingPathComponent("Sources/LinkDigestApp/ProviderSettingsView.swift"),
       encoding: .utf8
     )
-    // 09-28 设置按工序重组后，提示改成指向现在的按钮名（「模型校对」已改名「校对转写稿」）。
-    XCTAssertTrue(settings.contains("手动转写完成后请点「校对转写稿」"))
-    XCTAssertFalse(settings.contains("手动转写完成后请点「模型校对」"))
-    XCTAssertFalse(settings.contains("你手动点「转写」时，本步照常生效"))
+    XCTAssertTrue(settings.contains("手动点「转写」的，转写完也会接着校对"))
+    XCTAssertFalse(settings.contains("手动转写完成后请点"), "旧说法和现在的行为相反")
   }
 
-  /// 钉住真实行为：自动校对只走新内容自动管线，不在视频卡转写完成时偷偷触发。
-  func testAutoTidyIsOnlyWiredThroughAutoPipeline() throws {
+  /// 钉住接线：只在根视图挂一处，视频卡片里不挂；自动管线里的条目不重复校对。
+  func testAutoTidyContinuesAfterAnyTranscriptionWithoutDoubleRun() throws {
     let playback = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -2845,6 +2846,15 @@ final class AutoPipelineTidyHintTests: XCTestCase {
       encoding: .utf8
     )
     XCTAssertFalse(playback.contains("guard autoTidyEnabled, oldState.isActive, newState == .completed"))
+    XCTAssertFalse(playback.contains("continueWithTidyAfterTranscription"), "卡片换条目、收起时会错过完成那一刻")
+    let content = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("Sources/LinkDigestApp/HistoryContentView.swift"),
+      encoding: .utf8
+    )
+    XCTAssertEqual(content.components(separatedBy: "model.continueWithTidyAfterTranscription(").count - 1, 1)
+    XCTAssertTrue(content.contains("guard oldState.isActive, newState == .completed"), "打开已转写的记录不能重复计费")
     let viewModel = try String(
       contentsOf: URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
@@ -2852,5 +2862,6 @@ final class AutoPipelineTidyHintTests: XCTestCase {
       encoding: .utf8
     )
     XCTAssertTrue(viewModel.contains("if request.tidy, Self.latestTranscriptText(in: storedDetail) != nil"))
+    XCTAssertTrue(viewModel.contains("guard autoTidyEnabled, !autoPipelineQueuedTaskIDs.contains(taskID)"))
   }
 }

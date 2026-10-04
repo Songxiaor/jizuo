@@ -81,6 +81,9 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
       else { break }
       text.removeSubrange(start.lowerBound...close)
     }
+    // HTML 标签要在截断之前去掉：GitHub README 开头一串 <p><img …><a …> 会占满 240 字，
+    // 截断又落在标签中间，后面的清理就认不出了，列表露出「Bubble Tea <img src=」（2026-10-04 走查）。
+    text = text.replacingOccurrences(of: #"</?[A-Za-z][^>]*>"#, with: " ", options: .regularExpression)
     let collapsed = text.replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
       .trimmingCharacters(in: .whitespacesAndNewlines)
     guard !collapsed.isEmpty else { return nil }
@@ -233,7 +236,8 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
   /// 正常的水平分隔线之间是普通正文，凑不齐两个白名单键，不受影响。
   /// 翻译模型有时把 `Captured title` / `捕获的标题` 包装行也译出来。
   public static func strippingCapturedEnvelope(from markdown: String) -> String {
-    let lines = markdown.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+    var lines = markdown.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+    lines = Self.droppingTranslatedEnvelopeHeader(lines)
     let dropped = lines.filter { line in
       let trimmed = line.trimmingCharacters(in: .whitespaces)
       if trimmed == "<<<" || trimmed == ">>>" { return false }
@@ -244,6 +248,7 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
       // 半译的包装行：「captured 标题：」「captured 内容：」（2026-09-24 实库出现）。
       // 只认「整行就是这个标签」，正文里顺口提到 captured 的句子不受影响。
       if Self.isHalfTranslatedEnvelopeLabel(lower) { return false }
+      if Self.isTranslatedEnvelopeContentLabel(trimmed) { return false }
       return true
     }
     var result: [String] = []
@@ -254,6 +259,45 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     }
     while result.first?.trimmingCharacters(in: .whitespaces).isEmpty == true { result.removeFirst() }
     return result.joined(separator: "\n")
+  }
+
+  /// 整行就是包装的内容标签：「捕获内容：」「已捕获内容：」「Captured content:」。
+  static func isTranslatedEnvelopeContentLabel(_ line: String) -> Bool {
+    line.range(
+      of: #"^(?:已?(?:捕获|抓取)(?:的|到的)?(?:网页)?内容|captured\s*(?:content|内容))\s*[：:]?$"#,
+      options: [.regularExpression, .caseInsensitive]
+    ) != nil
+  }
+
+  /// 译文开头整段被译过来的包装头：「标题：」「AGENTS.md 完全指南」「捕获内容：」
+  /// （2026-10-04 走查，库里 17 条译文）。去掉两个标签，标题写成一级标题；
+  /// 只有后面几行内紧跟着内容标签时才认作包装头，正文自己以「标题：」开头的不动。
+  static func droppingTranslatedEnvelopeHeader(_ lines: [String]) -> [String] {
+    let nonBlank = lines.indices.filter { !lines[$0].trimmingCharacters(in: .whitespaces).isEmpty }
+    guard let first = nonBlank.first else { return lines }
+    let head = lines[first].trimmingCharacters(in: .whitespaces)
+    let titleLabel = #"^(?:标题|题目|已?捕获的?标题|captured\s*(?:title|标题))\s*[：:]"#
+    guard head.range(of: titleLabel, options: [.regularExpression, .caseInsensitive]) != nil else { return lines }
+    // 标签单独一行时，标题值从下一行起（可能折成两行）；同一行时值就在冒号后面。
+    let labelOnly = head.range(of: titleLabel + #"\s*$"#, options: [.regularExpression, .caseInsensitive]) != nil
+    let candidates = nonBlank.dropFirst(labelOnly ? 2 : 1).prefix(3)
+    // 只去标签、留下标题文字，并写成一级标题：它就是译出来的标题，原样留成一行正文时
+    // 看着像正文第一句（2026-10-04 走查）。和页面标题相同时，显示层会按「同一句」去掉。
+    // 标题可能被模型折成两行（「已捕获标题：/第一行/第二行」），合成一行。
+    guard let contentLabel = candidates.first(where: {
+      isTranslatedEnvelopeContentLabel(lines[$0].trimmingCharacters(in: .whitespaces))
+    }) else { return lines }
+    var titleParts: [String] = []
+    if !labelOnly, let range = head.range(of: titleLabel, options: [.regularExpression, .caseInsensitive]) {
+      titleParts.append(head[range.upperBound...].trimmingCharacters(in: .whitespaces))
+    }
+    for index in (first + 1)..<contentLabel {
+      let text = lines[index].trimmingCharacters(in: .whitespaces)
+      if !text.isEmpty { titleParts.append(text) }
+    }
+    let title = titleParts.filter { !$0.isEmpty }.joined(separator: " ")
+    let rest = Array(lines[contentLabel...])
+    return title.isEmpty ? rest : ["# " + title, ""] + rest
   }
 
   static func isHalfTranslatedEnvelopeLabel(_ lowercasedLine: String) -> Bool {

@@ -232,7 +232,7 @@ public enum AppleNoteHTML {
 
   /// 备忘录会把一行标题按格式段拆成很多个 `<h1>`（2026-09-23 实测：「美食」「账号，」「在家」
   /// 各成一个标题）。连续 3 个以上、每段都很短的同级标题，合并回一行。
-  static func mergingFragmentedHeadings(_ lines: [String]) -> [String] {
+  public static func mergingFragmentedHeadings(_ lines: [String]) -> [String] {
     func heading(_ line: String) -> (level: String, text: String)? {
       guard let range = line.range(of: #"^#{1,3} "#, options: .regularExpression) else { return nil }
       return (String(line[..<range.upperBound]), String(line[range.upperBound...]))
@@ -251,7 +251,7 @@ public enum AppleNoteHTML {
         lastHeading = cursor
         cursor += 1
       }
-      if parts.count >= 3, parts.allSatisfy({ $0.count <= 6 }) {
+      if parts.count >= 3, parts.allSatisfy({ $0.count <= 6 }) || Self.isSentenceSplitAtLatinWord(parts) {
         output.append(first.level + parts.joined())
         index = lastHeading + 1
       } else {
@@ -260,6 +260,21 @@ public enum AppleNoteHTML {
       }
     }
     return output
+  }
+
+  /// 一句标题在英文词处被拆开：「…然后借助」「AI」「构建出…」（2026-10-04 走查）。
+  /// 备忘录里英文常是另一种字体，导出时这一段自成一个 `<h1>`，前后的中文被切成两个长标题。
+  /// 只认这种形状：中间那段是纯英文/数字的短词，它前面那段没以句末标点收尾。
+  static func isSentenceSplitAtLatinWord(_ parts: [String]) -> Bool {
+    guard parts.count >= 3 else { return false }
+    for index in 1..<(parts.count - 1) {
+      let middle = parts[index].trimmingCharacters(in: .whitespaces)
+      let isLatinWord = !middle.isEmpty && middle.count <= 12
+        && middle.unicodeScalars.allSatisfy { $0.isASCII && (CharacterSet.alphanumerics.contains($0) || $0 == " " || $0 == "." || $0 == "-") }
+      guard isLatinWord, let last = parts[index - 1].last, !"。！？.!?：:；;".contains(last) else { continue }
+      return true
+    }
+    return false
   }
 
   private static func replace(_ pattern: String, in text: String, with template: String) -> String {

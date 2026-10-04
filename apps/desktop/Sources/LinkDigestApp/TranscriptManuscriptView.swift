@@ -305,7 +305,11 @@ struct TranscriptManuscriptView: View {
   let onSeek: ((Double) -> Void)?
 
   var body: some View {
-    LazyVStack(alignment: .leading, spacing: 16) {
+    // 不用 LazyVStack（2026-10-04）：这一块外面要先量出整份高度（阅读区按面板实测高度定高），
+    // 懒加载列表的高度却是边滑边估的——每排出一段新段落，估计值就变一两个点，
+    // 高度一变整个详情页重算一遍，7 万字的转写稿一滑就卡死、静止时也在空转。
+    // 普通 VStack 第一次打开时一次排完，之后高度不再变。
+    VStack(alignment: .leading, spacing: 16) {
       ForEach(paragraphs) { paragraph in
         if paragraph.isHeading {
           sectionHeading(paragraph)

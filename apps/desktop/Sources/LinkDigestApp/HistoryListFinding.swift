@@ -151,14 +151,33 @@ enum HistoryListFinding {
     if titleComesFromBody, !head.isEmpty, let range = text.range(of: head), text[..<range.lowerBound].count <= 40 {
       // 标题可能是跳过感叹句后取的第二句，所以前面允许有一小段。
       text = String(text[range.upperBound...])
-    } else {
+    } else if let end = endOfLeadingMatchIgnoringSpaces(text, head),
+              end.matched >= min(24, head.filter { !$0.isWhitespace }.count) {
       // 标题比预览片段还长（整条推文当标题）时 range(of:) 找不到，按公共开头去重。
-      let shared = zip(text, head).prefix { $0 == $1 }.count
-      if shared >= min(24, head.count) { text = String(text.dropFirst(shared)) }
+      // 比的时候不看空格：备忘录切碎的标题拼回来是「借助 AI 构建」，标题里是「借助AI构建」。
+      text = String(text[end.index...])
     }
     text = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines.union(.punctuationCharacters))
     guard text.filter({ $0.isLetter || $0.isNumber }).count >= 4 else { return nil }
     return text
+  }
+
+  /// `text` 开头和 `head` 开头（都不看空白）对上了多少个字，以及 `text` 里对到哪儿。
+  static func endOfLeadingMatchIgnoringSpaces(_ text: String, _ head: String) -> (index: String.Index, matched: Int)? {
+    var textIndex = text.startIndex
+    var headIndex = head.startIndex
+    var matched = 0
+    var lastMatchEnd = text.startIndex
+    while textIndex < text.endIndex, headIndex < head.endIndex {
+      if text[textIndex].isWhitespace { textIndex = text.index(after: textIndex); continue }
+      if head[headIndex].isWhitespace { headIndex = head.index(after: headIndex); continue }
+      guard text[textIndex] == head[headIndex] else { break }
+      matched += 1
+      textIndex = text.index(after: textIndex)
+      headIndex = head.index(after: headIndex)
+      lastMatchEnd = textIndex
+    }
+    return matched > 0 ? (lastMatchEnd, matched) : nil
   }
 
   /// 评论区不是正文：抖音这类配文只有一行标题，后面紧跟「## 评论」，

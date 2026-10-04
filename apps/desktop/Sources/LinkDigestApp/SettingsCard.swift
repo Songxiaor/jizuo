@@ -83,15 +83,72 @@ struct SettingsSidebarChip: View {
 /// 2026-09-25 对照 Tolaria：原来左边是一块 44pt 带底色的大图标方块，和侧栏已选中
 /// 的同一个图标重复，还占掉首屏一截高度。改成和 Tolaria 分区标题一样的
 /// 「行内小图标 + 标题」，图标只起提示作用。
+/// 设置页嵌进另一页当一节用（2026-10-04 设置合并：17 页并成 9 页）。
+///
+/// 浏览器支持、站点登录、评论并进「收集」，视频存储并进「转写」，知识库同步、按意思搜并进
+/// 「数据与备份」。这些页的代码不动：嵌进去时页面容器不再自带滚动区和边距，页头缩成一节的小标题。
+private struct SettingsEmbeddedKey: EnvironmentKey { static let defaultValue = false }
+/// 嵌入时要不要画这一节自己的小标题（外层页已经写了同一个名字时关掉）。
+private struct SettingsEmbeddedHeaderKey: EnvironmentKey { static let defaultValue = true }
+/// 打开某一页时要滚到的那一节（`.id` 同名）。
+private struct SettingsScrollAnchorKey: EnvironmentKey { static let defaultValue: String? = nil }
+
+extension EnvironmentValues {
+  var settingsEmbedded: Bool {
+    get { self[SettingsEmbeddedKey.self] }
+    set { self[SettingsEmbeddedKey.self] = newValue }
+  }
+  var settingsEmbeddedShowsHeader: Bool {
+    get { self[SettingsEmbeddedHeaderKey.self] }
+    set { self[SettingsEmbeddedHeaderKey.self] = newValue }
+  }
+  var settingsScrollAnchor: String? {
+    get { self[SettingsScrollAnchorKey.self] }
+    set { self[SettingsScrollAnchorKey.self] = newValue }
+  }
+}
+
+/// 嵌进外层页的一节：上面一道细线隔开，`.id` 供跳转定位。
+struct SettingsEmbeddedSection<Content: View>: View {
+  let anchor: String
+  var showsHeader = true
+  @ViewBuilder var content: () -> Content
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: SettingsMetrics.groupSpacing) {
+      content()
+    }
+    .environment(\.settingsEmbedded, true)
+    .environment(\.settingsEmbeddedShowsHeader, showsHeader)
+    .padding(.top, showsHeader ? DesignTokens.Space.md : 0)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .id(anchor)
+  }
+}
+
 struct SettingsPageHeader: View {
   let title: String
   let symbol: String
   let caption: String
   let fill: Color
   var captionIdentifier: String? = nil
+  @Environment(\.settingsEmbedded) private var isEmbedded
+  @Environment(\.settingsEmbeddedShowsHeader) private var showsEmbeddedHeader
 
   var body: some View {
-    if let glyph = InkSealMark.settingsGlyph(for: title) {
+    if isEmbedded {
+      // 嵌进外层页时是一节的小标题：和外层页头同一种宋体，小一号，不再带大印和分隔线。
+      if showsEmbeddedHeader {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(title)
+            .font(.custom(ReadingFontCatalog.editorialSerifFamily, size: 17).weight(.semibold))
+            .foregroundStyle(.primary)
+            .accessibilityAddTraits(.isHeader)
+          captionText
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    } else if let glyph = InkSealMark.settingsGlyph(for: title) {
       // 2026-09-28 设置按工序重组：通用页的页头和工序页同一种排法——左边一方印（这里是
       // 灰色墨线闲章），右边宋体标题加一句话，下面一道细线。
       VStack(alignment: .leading, spacing: 0) {
@@ -153,21 +210,40 @@ struct SettingsPageHeader: View {
 /// 各写一份「ScrollView + 内边距 + 画布底色」。
 struct SettingsPlainPage<Content: View>: View {
   @Environment(\.appTheme) private var theme
+  @Environment(\.settingsEmbedded) private var isEmbedded
+  @Environment(\.settingsScrollAnchor) private var scrollAnchor
   @ViewBuilder var content: () -> Content
 
   private static var horizontalInset: CGFloat { DesignTokens.Layout.settingsHorizontalInset }
 
   var body: some View {
-    ScrollView {
+    if isEmbedded {
+      // 嵌进外层页：不再套第二层滚动区和边距。
       VStack(alignment: .leading, spacing: SettingsMetrics.groupSpacing) {
         content()
       }
-      .frame(maxWidth: DesignTokens.Layout.settingsContentMaxWidth, alignment: .leading)
-      .padding(.horizontal, Self.horizontalInset)
-      .frame(maxWidth: .infinity, alignment: .center)
+    } else {
+      ScrollViewReader { proxy in
+        ScrollView {
+          VStack(alignment: .leading, spacing: SettingsMetrics.groupSpacing) {
+            content()
+          }
+          .frame(maxWidth: DesignTokens.Layout.settingsContentMaxWidth, alignment: .leading)
+          .padding(.horizontal, Self.horizontalInset)
+          .frame(maxWidth: .infinity, alignment: .center)
+        }
+        // 从别处跳到某一节（「浏览器支持」「校对」…）：滚到那一节的开头。
+        .onAppear { scroll(proxy, to: scrollAnchor) }
+        .onChange(of: scrollAnchor) { _, anchor in scroll(proxy, to: anchor) }
+      }
+      .background(theme.isNative ? Color.clear : theme.canvas)
+      .settingsDetailContentMargins()
     }
-    .background(theme.isNative ? Color.clear : theme.canvas)
-    .settingsDetailContentMargins()
+  }
+
+  private func scroll(_ proxy: ScrollViewProxy, to anchor: String?) {
+    guard let anchor else { return }
+    DispatchQueue.main.async { proxy.scrollTo(anchor, anchor: .top) }
   }
 }
 

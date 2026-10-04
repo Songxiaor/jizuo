@@ -129,15 +129,16 @@ final class ReadingContinuityTests: XCTestCase {
 final class SettingsWindowCenteringTests: XCTestCase {
   @MainActor
   func testSettingsWindowCentersOnTheMainWindowAndStaysOnScreen() {
+    // 可用区域显式给定：不读当前主屏幕，多显示器、焦点在副屏时结果也一样。
+    let visible = NSRect(x: 0, y: 0, width: 1440, height: 900)
     let main = NSRect(x: 156, y: 100, width: 1200, height: 760)
-    let origin = SettingsWindowCentering.centeredOrigin(for: NSSize(width: 900, height: 588), over: main, on: nil)
+    let origin = SettingsWindowCentering.centeredOrigin(for: NSSize(width: 900, height: 588), over: main, within: visible)
     XCTAssertEqual(origin.x, 156 + 150)
     XCTAssertEqual(origin.y, 100 + 86)
     // 主窗口贴着屏幕左下角时，设置窗口不能被推出屏幕。
     let offscreen = SettingsWindowCentering.centeredOrigin(
-      for: NSSize(width: 900, height: 588), over: NSRect(x: -400, y: -300, width: 600, height: 400), on: nil
+      for: NSSize(width: 900, height: 588), over: NSRect(x: -400, y: -300, width: 600, height: 400), within: visible
     )
-    let visible = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
     XCTAssertGreaterThanOrEqual(offscreen.x, visible.minX)
     XCTAssertGreaterThanOrEqual(offscreen.y, visible.minY)
   }

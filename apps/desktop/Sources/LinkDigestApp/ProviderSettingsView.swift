@@ -28,7 +28,21 @@ struct ProviderSettingsView: View {
     case service, generation, appearance, mediaStorage, knowledgeVault, dataBackup, companionSync, siteLogin, browserSupport, mcp, updates, labs
     case semanticSearch
     case capture, record, proof, comments, summary, translation, mindMap
+    /// 「AI 处理」：校对、总结、翻译、脑图四道工序并成一页（2026-10-04 设置合并）。
+    case processing
     var id: String { rawValue }
+
+    /// 这一项现在显示在哪一页、滚到哪一节。2026-10-04 起 17 页并成 9 页，别处仍可按旧名字
+    /// 跳过来（「去配置校对模型」请求的是 proof），落到新页上那一节。
+    var destination: (page: SettingsTab, anchor: String?) {
+      switch self {
+      case .browserSupport, .siteLogin, .comments: (.capture, rawValue)
+      case .mediaStorage: (.record, rawValue)
+      case .proof, .summary, .translation, .mindMap: (.processing, rawValue)
+      case .knowledgeVault, .semanticSearch: (.dataBackup, rawValue)
+      default: (self, nil)
+      }
+    }
 
     /// 工序页对应的那一道工序；通用设置是 nil。
     var step: SettingsProcessStep? {
@@ -58,6 +72,7 @@ struct ProviderSettingsView: View {
       switch self {
       case .service: return "模型服务"
       case .generation: return "工序总览"
+      case .processing: return "AI 处理"
       default: break
       }
       return legacyTitle
@@ -67,7 +82,7 @@ struct ProviderSettingsView: View {
       switch self {
       case .service: "模型与识别"
       case .generation: "生成偏好"
-      case .capture, .record, .proof, .summary, .translation, .mindMap: ""
+      case .capture, .record, .proof, .summary, .translation, .mindMap, .processing: ""
       case .comments: "评论"
       case .appearance: "外观"
       case .mediaStorage: "视频存储"
@@ -87,6 +102,7 @@ struct ProviderSettingsView: View {
       case .service: "sparkles.rectangle.stack"
       case .generation: "arrow.right.circle"
       case .capture, .record, .proof, .summary, .translation, .mindMap: "seal"
+      case .processing: "wand.and.stars"
       case .comments: "text.bubble"
       case .appearance: "paintpalette"
       case .mediaStorage: "externaldrive"
@@ -138,10 +154,14 @@ struct ProviderSettingsView: View {
   /// 2026-10-01：评论挪到「收集」下面作子页（工序剩收集之后五道）；手机同步、实验室这类
   /// 少数人才用、还在成型的页收进「高级」，「通用」只留常用的。AI 助手接入是对外卖点，
   /// 留在「通用」。
+  ///
+  /// 2026-10-04 合并成 9 页（原 17 页，Syc 确认）：子页不再单占侧栏一行——浏览器支持、站点登录、
+  /// 评论并进「收集」，视频存储并进「转写」，校对 / 总结 / 翻译 / 脑图并成「AI 处理」，知识库同步、
+  /// 按意思搜并进「数据与备份」。原来「收集」页三行都是「去设置」，点了跳到侧栏里本来就有的页。
   private static let sidebarSections: [(title: String?, tabs: [SettingsTab])] = [
     (nil, [.generation]),
-    ("工序", [.capture, .browserSupport, .siteLogin, .comments, .record, .mediaStorage, .proof, .summary, .translation, .mindMap]),
-    ("通用", [.service, .appearance, .dataBackup, .knowledgeVault, .semanticSearch, .mcp, .updates]),
+    ("工序", [.capture, .record, .processing]),
+    ("通用", [.service, .appearance, .dataBackup, .mcp, .updates]),
     ("高级", [.companionSync, .labs]),
   ]
 
@@ -177,6 +197,8 @@ struct ProviderSettingsView: View {
   @State private var isTitleBackfillConfirmationPresented = false
   @State private var apiKeyInput = ""
   @State private var selectedTab: SettingsTab = .generation
+  /// 跳过来时要滚到的那一节（见 `SettingsTab.destination`）；点侧栏换页时清掉。
+  @State private var settingsAnchor: String?
   @State private var isCustomOutputLanguage = false
   @State private var translationModelSearchQuery = ""
   @State private var pendingDeletionID: String?
@@ -426,7 +448,7 @@ struct ProviderSettingsView: View {
         if !isNativeTheme {
           paperSidebar
         } else {
-          List(selection: $selectedTab) {
+          List(selection: Binding(get: { selectedTab }, set: { settingsAnchor = nil; selectedTab = $0 })) {
             ForEach(Array(Self.visibleSidebarSections.enumerated()), id: \.offset) { _, section in
               Section {
                 ForEach(Self.visibleTabs(in: section.tabs)) { tab in
@@ -472,40 +494,28 @@ struct ProviderSettingsView: View {
       .toolbar(removing: .sidebarToggle)
     } detail: {
       Group {
-        switch selectedTab {
+        switch selectedTab.destination.page {
         case .mcp: MCPSettingsView(model: MCPController.shared)
         case .service: serviceTab
         case .generation: overviewTab
         case .capture: captureTab
         case .record: recordTab
-        case .proof: proofTab
-        case .comments: commentsTab
-        case .summary: summaryTab
-        case .translation: translationTab
-        case .mindMap: mindMapTab
+        case .processing: processingTab
         case .appearance: appearanceTab
         case .labs: labsTab
-        case .mediaStorage:
-          MediaStorageSettingsView(model: mediaStorage)
-        case .knowledgeVault:
-          KnowledgeVaultSettingsView(model: knowledgeVault)
-        case .dataBackup:
-          DataBackupSettingsView()
-        case .semanticSearch:
-          if let service = historyModel?.semanticSearch {
-            SemanticSearchSettingsView(service: service)
-          }
+        case .dataBackup: dataTab
         case .companionSync:
           CompanionNoteSyncSettingsView(model: companionSync)
-        case .siteLogin:
-          SiteLoginSettingsView(mediaStorage: mediaStorage, browserSupport: browserSupport,
-                                openBrowserSupport: { selectedTab = .browserSupport })
-        case .browserSupport:
-          BrowserSupportSettingsView(model: browserSupport, appModel: appModel)
         case .updates:
           AppUpdateSettingsView(updater: updater)
+        // 下面这些已并进别的页（`destination` 不会返回它们），留着只为 switch 完整。
+        case .browserSupport, .siteLogin, .comments: captureTab
+        case .mediaStorage: recordTab
+        case .proof, .summary, .translation, .mindMap: processingTab
+        case .knowledgeVault, .semanticSearch: dataTab
         }
       }
+      .environment(\.settingsScrollAnchor, settingsAnchor)
       .frame(maxWidth: .infinity, maxHeight: .infinity)
       // 往上滚时页面文字从「设置」标题后面透出来（2026-10-01 走查）；和主窗口同一层渐隐遮罩。
       .overlay(alignment: .top) {
@@ -537,13 +547,13 @@ struct ProviderSettingsView: View {
       AppearanceTheme.applyApplicationAppearance(appearanceThemeRaw)
       if let raw = SettingsNavigationRequest.consume(), let tab = SettingsTab(rawValue: raw),
          SettingsTab.visibleCases.contains(tab) {
-        selectedTab = tab
+        navigate(to: tab)
       }
     }
     .onReceive(NotificationCenter.default.publisher(for: SettingsNavigationRequest.notification)) { note in
       guard let raw = note.object as? String, let tab = SettingsTab(rawValue: raw),
             SettingsTab.visibleCases.contains(tab) else { return }
-      selectedTab = tab
+      navigate(to: tab)
       UserDefaults.standard.removeObject(forKey: SettingsNavigationRequest.defaultsKey)
     }
     .onChange(of: appearanceThemeRaw) { _, newValue in
@@ -556,7 +566,7 @@ struct ProviderSettingsView: View {
 
   private var serviceTab: some View {
     SettingsPlainPage {
-      pageHeader(for: .service, caption: "添加和管理模型服务商。每道工序用哪个模型，到对应的工序页里选。")
+      pageHeader(for: .service, caption: "添加和管理模型服务商。默认模型和每道工序用哪个模型，到「AI 处理」页里选。")
 
       // 还没配模型时，先告诉新手去哪拿密钥、大概花多少、不配也能用什么（2026-10-01）。
       // 配过之后推荐挪到页底，不再占首屏。
@@ -564,13 +574,8 @@ struct ProviderSettingsView: View {
         recommendedProvidersSection
       }
 
-      // 这张卡只剩「标签 + 控件」六行：说明全部收进各行的 ⓘ，卡片脚注也删掉——
-      // 原来每行下面一段灰字、卡底再一句脚注，六个控件配了五段说明，控件密度极低，
-      // 而且脚注和下一张卡的脚注讲的是同一句话。
-      // 各功能用哪个模型，搬到了对应的工序页（摘、译、录、校）；这里只留图片识别。
-      SettingsRowGroup {
-        imageRecognitionRow
-      }
+      // 图片识别（本机、改不了）2026-10-04 挪到「转写」页：它和转写一样是本机识别，
+      // 原来单独一行压在这一页最上面，和「管理服务商」无关。
 
       // 「添加模型…」放标题行右端：它是这张卡唯一的主动作，原来孤零零缩在
       // 列表左下角，和列表内容抢同一列，看起来像列表的一项。
@@ -782,10 +787,10 @@ struct ProviderSettingsView: View {
   @ViewBuilder private var summaryAssignmentRow: some View {
   assignmentRow(
     title: UISettingsPresentation.summaryAssignmentTitle,
-    caption: "写总结用；翻译、校对没单独选时也跟着它。",
+    caption: "总结、脑图用它；校对、翻译没单独选时也跟着它。",
     // 这一行是整页的中心，原来却是六行里唯一没有 ⓘ 的：用户看不出「总结模型」
     // 到底管到哪儿，也不知道翻译和校对为什么会跟着它变。
-    details: "把内容写成总结时用这个模型。翻译和校对如果没单独指定，也跟着它走。换成别的模型只影响以后生成的总结，已经生成的不会变。"
+    details: "写总结、生成脑图时用这个模型。校对和翻译如果没在各自那一节单独指定，也跟着它走。换成别的模型只影响以后生成的内容，已经生成的不会变。"
   ) {
     if model.libraryEntryDisplays.isEmpty {
       Text("先在下方添加模型")
@@ -824,7 +829,7 @@ struct ProviderSettingsView: View {
   ) {
     preferenceModelAssignmentControl(
       title: UISettingsPresentation.translationAssignmentTitle,
-      emptyOptionTitle: "跟随总结模型",
+      emptyOptionTitle: "跟随默认模型",
       options: model.summaryEntryDisplays,
       text: $model.translationModelName,
       identifier: "translation-model-name",
@@ -881,7 +886,7 @@ struct ProviderSettingsView: View {
   ) {
     preferenceModelAssignmentControl(
       title: UISettingsPresentation.tidyAssignmentTitle,
-      emptyOptionTitle: "跟随总结模型",
+      emptyOptionTitle: "跟随默认模型",
       options: model.summaryEntryDisplays,
       text: $model.tidyModelName,
       identifier: "tidy-model-name",
@@ -1188,7 +1193,7 @@ struct ProviderSettingsView: View {
   private func assignmentPickerPopover(_ kind: AssignmentPicker) -> some View {
     let entries = kind == .transcription ? model.transcriptionEntryDisplays : model.summaryEntryDisplays
     return VStack(alignment: .leading, spacing: 0) {
-      Text(kind == .transcription ? "选择转写方式" : "选择总结模型")
+      Text(kind == .transcription ? "选择转写方式" : "选择默认模型")
         .themedFont(.headline)
         .padding(.horizontal, 16)
         .padding(.top, 14)
@@ -1933,6 +1938,7 @@ struct ProviderSettingsView: View {
   private func paperSidebarRow(_ tab: SettingsTab) -> some View {
     let isSelected = selectedTab == tab
     Button {
+      settingsAnchor = nil
       withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
         selectedTab = tab
       }
@@ -1979,6 +1985,11 @@ struct ProviderSettingsView: View {
   @ViewBuilder private func sidebarIcon(_ tab: SettingsTab, selected: Bool) -> some View {
     if let step = tab.step {
       SettingsStepSeal(step: step, isAuto: isAuto(step), size: 20, color: settingsTheme.seal)
+        .frame(width: 22, height: 22)
+    } else if tab == .processing {
+      // 四道工序并成的一页：只要有一道是自动的就上朱，和工序组里其它两枚同一种语言。
+      let anyAuto = [SettingsProcessStep.proof, .summary, .translation, .mindMap].contains { isAuto($0) }
+      InkSealMark(character: "理", size: 19, color: anyAuto ? settingsTheme.seal : (selected ? settingsTheme.accent : settingsTheme.secondaryText))
         .frame(width: 22, height: 22)
     } else if let glyph = InkSealMark.settingsGlyph(for: tab.title) {
       // 不是工序的页：灰色墨线闲章（朱色只给工序）。选中时换靛青，和文字同色。
@@ -2032,10 +2043,11 @@ struct ProviderSettingsView: View {
     binding.wrappedValue.toggle()
   }
 
-  private func stepHeader(_ step: SettingsProcessStep, caption: String, autoLabel: String = "自动") -> some View {
+  private func stepHeader(_ step: SettingsProcessStep, caption: String, autoLabel: String = "自动", compact: Bool = false) -> some View {
     SettingsStepHeader(
       step: step, caption: caption, isAuto: autoBinding(step), autoLabel: autoLabel,
-      sealColor: settingsTheme.seal, secondaryText: settingsTheme.secondaryText, hairline: settingsTheme.hairline
+      sealColor: settingsTheme.seal, secondaryText: settingsTheme.secondaryText, hairline: settingsTheme.hairline,
+      compact: compact
     )
   }
 
@@ -2330,7 +2342,7 @@ struct ProviderSettingsView: View {
         secondaryText: settingsTheme.secondaryText,
         onSelect: { step in
           withAnimation(DesignTokens.Motion.resolved(DesignTokens.Motion.standard, reduceMotion: reduceMotion)) {
-            selectedTab = SettingsTab.allCases.first { $0.step == step } ?? .generation
+            navigate(to: SettingsTab.allCases.first { $0.step == step } ?? .generation)
           }
         },
         onToggleAuto: toggleAutoFromChain
@@ -2349,61 +2361,129 @@ struct ProviderSettingsView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("settings-chain-auto-notice")
       }
-      sendAuthorizationSection
       preferencesStatusNotice
     }
   }
 
+  /// 换到某一项：合并后的页和要滚到的那一节（2026-10-04 设置合并）。
+  private func navigate(to tab: SettingsTab) {
+    let destination = tab.destination
+    settingsAnchor = destination.anchor
+    selectedTab = destination.page
+  }
+
+  /// 收集：剪贴板检测，加上原来三个子页（浏览器支持、站点登录、评论）整段并进来（2026-10-04）。
+  /// 原来这三行都只有一个「去设置」按钮，点了跳到侧栏里本来就有的页，等于同一个入口放两处。
   private var captureTab: some View {
     SettingsPlainPage {
       stepHeader(.capture, caption: "从浏览器、链接、本地文件收进汲作。这一步一直开着。")
       SettingsRowGroup {
         clipboardDetectionRow
-        SettingsRow(title: "浏览器支持", caption: "装好浏览器扩展，在网页上一键保存，并能抓评论。") {
-          Button("去设置") { selectedTab = .browserSupport }
-            .buttonStyle(.appQuiet)
-            .accessibilityIdentifier("settings-capture-open-browser")
-        }
-        SettingsRow(title: "站点登录", caption: "需要登录才能看的网站（知乎、小红书等）在这里登录。") {
-          Button("去设置") { selectedTab = .siteLogin }
-            .buttonStyle(.appQuiet)
-            .accessibilityIdentifier("settings-capture-open-login")
-        }
-        SettingsRow(title: "评论", caption: "收集时顺带存几条评论、要不要逐条勾选。") {
-          Button("去设置") { selectedTab = .comments }
-            .buttonStyle(.appQuiet)
-            .accessibilityIdentifier("settings-capture-open-comments")
-        }
+      }
+      SettingsEmbeddedSection(anchor: SettingsTab.browserSupport.rawValue) {
+        BrowserSupportSettingsView(model: browserSupport, appModel: appModel)
+      }
+      SettingsEmbeddedSection(anchor: SettingsTab.siteLogin.rawValue) {
+        SiteLoginSettingsView(mediaStorage: mediaStorage, browserSupport: browserSupport,
+                              openBrowserSupport: { navigate(to: .browserSupport) })
+      }
+      SettingsEmbeddedSection(anchor: SettingsTab.comments.rawValue) {
+        commentsTab
       }
     }
   }
 
+  /// 转写：本机 / 在线转写、图片识别（原在「模型服务」页顶上，改不了的一行），加上视频存储。
   private var recordTab: some View {
     SettingsPlainPage {
       stepHeader(.record, caption: "把视频和录音在本机转写成文字，不联网、不花钱。打开「自动」后，带音视频的新内容一进来就转。")
       SettingsRowGroup {
         localTranscriptionRow
         onlineTranscriptionRow
-        SettingsRow(title: "视频存储", caption: "转写完的视频留多久、存在哪里。") {
-          Button("去设置") { selectedTab = .mediaStorage }
-            .buttonStyle(.appQuiet)
-            .accessibilityIdentifier("settings-record-open-media")
+        imageRecognitionRow
+      }
+      preferencesStatusNotice
+      SettingsEmbeddedSection(anchor: SettingsTab.mediaStorage.rawValue) {
+        MediaStorageSettingsView(model: mediaStorage)
+      }
+    }
+  }
+
+  /// AI 处理：校对、总结、翻译、脑图四道工序一页（2026-10-04 设置合并）。四道都调用模型，
+  /// 最上面是它们共用的默认模型和输出语言；每一节保留自己的印和「自动」开关。
+  private var processingTab: some View {
+    SettingsPlainPage {
+      SettingsPageHeader(
+        title: SettingsTab.processing.title,
+        symbol: SettingsTab.processing.symbol,
+        caption: "校对、总结、翻译、脑图都要调用模型。最上面两项四道工序共用；某一道要换模型，在它那一节里单独选。",
+        fill: sidebarChipFill(.processing)
+      )
+      SettingsRowGroup {
+        summaryAssignmentRow
+        outputLanguageRow
+      }
+      processingSection(.proof) {
+        stepHeader(.proof, caption: "还原转写稿里听错的词、补标点、加小标题，只发送文字。打开「自动」后转写完就接着校。", compact: true)
+        if model.autoTidyTranscription, !model.autoTranscribeNewCaptures {
+          SettingsInlineNotice(message: "「转写 · 录」没设成自动，新内容进来时不会自动转写；你手动转写完，会接着自动校对。", tone: .warning)
+        }
+        SettingsRowGroup {
+          tidyAssignmentRow
+        }
+      }
+      processingSection(.summary) {
+        stepHeader(.summary, caption: "给内容写一份总结，读原文、不读译文，用上面的默认模型。打开「自动」后新内容一进来就写。", compact: true)
+        advancedCard(title: "高级：总结提示词") { summaryPromptSection }
+      }
+      processingSection(.translation) {
+        stepHeader(.translation, caption: "新内容的外文标题自动译成中文（只发送标题）。正文翻译仍在「处理」里点。", autoLabel: "自动译标题", compact: true)
+        SettingsRowGroup {
+          translationAssignmentRow
+        }
+        if let historyModel {
+          titleBackfillRow(historyModel)
+            .padding(.vertical, DesignTokens.Space.sm)
+            .padding(.horizontal, DesignTokens.Space.lg)
+            .modifier(SettingsThemedCardChrome())
+        }
+        advancedCard(title: "高级：翻译并发") { translationConcurrencyRow }
+      }
+      processingSection(.mindMap) {
+        stepHeader(.mindMap, caption: "把内容整理成脑图，用上面的默认模型；优先读总结，没有总结时读原文。打开「自动」后新内容一进来就生成。", compact: true)
+        if model.autoMindMapNewCaptures, !model.autoSummarizeNewCaptures {
+          SettingsInlineNotice(message: "「总结 · 摘」没设成自动：脑图将直接读原文生成，质量通常不如先总结。", tone: .warning)
         }
       }
       preferencesStatusNotice
     }
   }
 
-  private var proofTab: some View {
+  /// 「AI 处理」里的一道工序：上面一道细线，`.id` 供从别处跳过来定位。
+  private func processingSection<Content: View>(_ tab: SettingsTab, @ViewBuilder content: () -> Content) -> some View {
+    VStack(alignment: .leading, spacing: SettingsMetrics.groupSpacing) {
+      Rectangle().fill(settingsTheme.hairline).frame(height: 1)
+      content()
+    }
+    .id(tab.rawValue)
+  }
+
+  /// 数据与备份：备份、知识库同步、按意思搜，加上原来在「工序总览」里的发送授权记录。
+  private var dataTab: some View {
     SettingsPlainPage {
-      stepHeader(.proof, caption: "用模型校对转写稿：还原听错的词、补标点、加小标题，只发送文字。打开「自动」后转写完就接着校。")
-      if model.autoTidyTranscription, !model.autoTranscribeNewCaptures {
-        SettingsInlineNotice(message: "「转写 · 录」没设成自动，新内容进来时没有转写稿可校对；手动转写后仍可在「处理」里点校对。", tone: .warning)
+      pageHeader(for: .dataBackup, caption: "备份和恢复资料库、同步到知识库、建按意思搜的索引，以及已记住的发送授权。")
+      SettingsEmbeddedSection(anchor: SettingsTab.dataBackup.rawValue, showsHeader: false) {
+        DataBackupSettingsView()
       }
-      SettingsRowGroup {
-        tidyAssignmentRow
+      SettingsEmbeddedSection(anchor: SettingsTab.knowledgeVault.rawValue) {
+        KnowledgeVaultSettingsView(model: knowledgeVault)
       }
-      preferencesStatusNotice
+      if let service = historyModel?.semanticSearch {
+        SettingsEmbeddedSection(anchor: SettingsTab.semanticSearch.rawValue) {
+          SemanticSearchSettingsView(service: service)
+        }
+      }
+      sendAuthorizationSection
     }
   }
 
@@ -2456,45 +2536,6 @@ struct ProviderSettingsView: View {
           }
         }
       }
-    }
-  }
-
-  private var summaryTab: some View {
-    SettingsPlainPage {
-      stepHeader(.summary, caption: "给内容写一份总结，读原文、不读译文。打开「自动」后新内容一进来就写。")
-      SettingsRowGroup {
-        summaryAssignmentRow
-        outputLanguageRow
-      }
-      advancedCard(title: "高级：总结提示词") { summaryPromptSection }
-      preferencesStatusNotice
-    }
-  }
-
-  private var translationTab: some View {
-    SettingsPlainPage {
-      stepHeader(.translation, caption: "新内容的外文标题自动译成中文（只发送标题）。正文翻译仍在「处理」里点。", autoLabel: "自动译标题")
-      SettingsRowGroup {
-        translationAssignmentRow
-      }
-      if let historyModel {
-        titleBackfillRow(historyModel)
-          .padding(.vertical, DesignTokens.Space.sm)
-          .padding(.horizontal, DesignTokens.Space.lg)
-          .modifier(SettingsThemedCardChrome())
-      }
-      advancedCard(title: "高级：翻译并发") { translationConcurrencyRow }
-      preferencesStatusNotice
-    }
-  }
-
-  private var mindMapTab: some View {
-    SettingsPlainPage {
-      stepHeader(.mindMap, caption: "把内容整理成脑图，优先读总结，没有总结时读原文。打开「自动」后新内容一进来就生成。")
-      if model.autoMindMapNewCaptures, !model.autoSummarizeNewCaptures {
-        SettingsInlineNotice(message: "「总结 · 摘」没设成自动：脑图将直接读原文生成，质量通常不如先总结。", tone: .warning)
-      }
-      preferencesStatusNotice
     }
   }
 
@@ -2553,7 +2594,7 @@ struct ProviderSettingsView: View {
     SettingsRow(
       title: "输出语言",
       caption: "总结、翻译等生成结果统一用这个语言。",
-      details: "总结、翻译等生成结果统一用这个语言输出。生成时会把这条语言指令追加到提示词；总结用哪个模型在上面「总结模型」里选。"
+      details: "总结、翻译、脑图等生成结果统一用这个语言输出。生成时会把这条语言指令追加到提示词；用哪个模型在上面「默认模型」里选。"
     ) {
       VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
         SettingsMenuPicker(
@@ -2604,7 +2645,7 @@ struct ProviderSettingsView: View {
 
       DisclosureGroup("了解更多") {
         VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-          Text("打开后会自动执行，不再每次弹出发送确认；第一次用某个服务商时仍会问你一次。本机转写不联网；中文标题、校对、总结、脑图只发送文字。手动转写完成后请点「校对转写稿」。")
+          Text("打开后会自动执行，不再每次弹出发送确认；第一次用某个服务商时仍会问你一次。本机转写不联网；中文标题、校对、总结、脑图只发送文字。手动点「转写」的，转写完也会接着校对。")
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
           if let identity = model.dataDestinationCard {

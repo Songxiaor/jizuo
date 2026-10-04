@@ -277,7 +277,45 @@ enum ReadingTextComposer {
     parsed.addAttribute(.foregroundColor, value: color, range: full)
     replaceInlineMath(in: parsed, baseSize: baseSize, color: color)
     addCJKLatinSpacing(to: parsed, baseSize: baseSize)
+    narrowLatinQuotes(in: parsed)
     return parsed
+  }
+
+  /// 英文里的弯引号、撇号改用字体自带的比例宽字形。
+  ///
+  /// 思源宋体这类中文字体里 ‘ ’ “ ” 默认是全角，英文句子里的「we’ll」「“no command.”」
+  /// 被撑成「we’ ll」「“ no」，像中间多了空格（2026-10-04 走查 GitHub README）。
+  /// 同一个字体打开「比例宽度」特性就是窄字形（实测 ’ 16 → 4.3pt），字形风格不变。
+  /// 只改两边都不是中日韩字符的引号：「他说：“你好”」里的照旧全角。
+  static func narrowLatinQuotes(in text: NSMutableAttributedString) {
+    let string = text.string as NSString
+    guard string.length > 0 else { return }
+    let quotes: Set<unichar> = [0x2018, 0x2019, 0x201C, 0x201D]
+    func isWide(_ unit: unichar) -> Bool {
+      switch unit {
+      case 0x1100...0x11FF, 0x2E80...0x303F, 0x3040...0x33FF, 0x3400...0x4DBF, 0x4E00...0x9FFF,
+           0xAC00...0xD7FF, 0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFFEF, 0xD800...0xDBFF:
+        return true
+      default:
+        return false
+      }
+    }
+    for index in 0..<string.length where quotes.contains(string.character(at: index)) {
+      let before = index > 0 ? string.character(at: index - 1) : 0x20
+      let after = index + 1 < string.length ? string.character(at: index + 1) : 0x20
+      // 引号挨着引号（‘“…”’）时看再外面一层太绕，按「不是中日韩」处理即可。
+      guard !isWide(before), !isWide(after) else { continue }
+      guard let font = text.attribute(.font, at: index, effectiveRange: nil) as? NSFont else { continue }
+      let descriptor = font.fontDescriptor.addingAttributes([
+        .featureSettings: [[
+          NSFontDescriptor.FeatureKey.typeIdentifier: kTextSpacingType,
+          NSFontDescriptor.FeatureKey.selectorIdentifier: kProportionalTextSelector,
+        ]],
+      ])
+      if let narrow = NSFont(descriptor: descriptor, size: font.pointSize) {
+        text.addAttribute(.font, value: narrow, range: NSRange(location: index, length: 1))
+      }
+    }
   }
 
   /// 行内公式记号换成公式图片（文本附件）；还没排好或排不出来时，先显示 TeX 原文。

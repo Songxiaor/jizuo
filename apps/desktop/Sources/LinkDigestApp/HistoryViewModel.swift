@@ -2475,6 +2475,8 @@ final class HistoryViewModel {
   private(set) var transcriptTidyProgress: String?
   /// 这次校对大约要多少秒（按段数估），给提示条用。
   private(set) var transcriptTidyEstimatedSeconds: Int?
+  /// 按这次实际速度算出来的剩余秒数；第一段落地前为 nil，界面先用开跑前的估计。
+  private(set) var transcriptTidyRemainingSeconds: Int?
 
   /// 校对进行中的「停止」：原来长稿一旦开始就停不下来（2026-10-01 体检）。
   /// 取消后校对器尽快停，已发出的那几段不再等结果；原稿不受影响。
@@ -4956,6 +4958,22 @@ final class HistoryViewModel {
     }
   }
 
+  /// 一次转写（本机或在线、手动点的或后来补的）刚刚完成：设置里开着「自动校对」就接着校对。
+  ///
+  /// 2026-08-18 曾把这一步删掉，只留新内容自动流程里的校对。结果保存时没下载到视频、
+  /// 之后手动补转写的条目永远停在未校对的听写原稿上——「一个麦当就是一个额头」这类
+  /// 错字原样进了总结和翻译（2026-10-03 实测：自动校对开着，这条却一次没校对）。
+  ///
+  /// 还在自动流程里的条目不管：那边转写完会自己校对，这里再来一次就是重复调用模型。
+  /// 从库里重读这条，不用当前详情：转写完成那一刻详情未必已刷新，用户也可能切走了。
+  func continueWithTidyAfterTranscription(taskID: TaskID, autoTidyEnabled: Bool, model: String?) {
+    guard autoTidyEnabled, !autoPipelineQueuedTaskIDs.contains(taskID) else { return }
+    Task { [weak self] in
+      guard let self, let stored = await self.loadStoredDetail(taskID: taskID) else { return }
+      self.startTranscriptTidyAuto(detail: stored, model: model)
+    }
+  }
+
   /// 自动队列版本：设置里的开关已经是持久授权，因此直接构造这条任务自己的
   /// context；不要求它仍然是列表当前项。
   @discardableResult
@@ -5020,7 +5038,8 @@ final class HistoryViewModel {
     transcriptTidyState = .running
     transcriptTidyTokenSummary = nil
     // 按真正会切出的段数估时（原来写死「通常 1–5 分钟」，十万字长稿实际要二三十分钟）。
-    transcriptTidyEstimatedSeconds = OpenAICompatibleTranscriptTidier.estimatedSeconds(forText: context.text)
+    transcriptTidyEstimatedSeconds = OpenAICompatibleTranscriptTidier.estimatedSeconds(forText: context.text, style: context.style)
+    transcriptTidyRemainingSeconds = nil
     transcriptTidyTask = Task { [weak self, worker] in
       guard let self, self.transcriptTidyRequestID == requestID else { return }
       let began = await worker.beginTaskTranscription(
@@ -5047,6 +5066,7 @@ final class HistoryViewModel {
         )
         return
       }
+      let tidyStarted = Date()
       do {
         // 进度只数成功的段；失败段补跑时单独说「正在补跑」，不再停在「N/N」等十几分钟（2026-10-01）。
         let reportTidyPhase: @Sendable (TranscriptTidyPhase) -> Void = { [weak self] phase in
@@ -5056,6 +5076,12 @@ final class HistoryViewModel {
             case let .tidying(succeeded, total):
               // 只有一片时不报——「已校对 1/1 段」没有信息量。
               self.transcriptTidyProgress = total > 1 ? "已校对 \(succeeded)/\(total) 段" : nil
+              // 剩余时间按这一次的实际速度重算（2026-10-04）：开跑前的估计按每波 50 秒，
+              // 关不掉思考的线路一段要 60–100 秒，原来一直写「全部约 11 分钟」、实际跑了 40 多分钟。
+              if succeeded > 0, succeeded < total {
+                let elapsed = Date().timeIntervalSince(tidyStarted)
+                self.transcriptTidyRemainingSeconds = Int(elapsed / Double(succeeded) * Double(total - succeeded))
+              }
             case let .retrying(attempt, failed, _):
               self.transcriptTidyProgress = "正在补跑第 \(attempt) 段（共 \(failed) 段没成功）"
             }

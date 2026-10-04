@@ -108,7 +108,8 @@ public enum TaskClassificationSQL {
   /// 固定写「从本机导入的音频/视频：」，图片正文以 `![` 开头）。取最新而不是第一份：
   /// 同一文件重新导入会写入新格式的快照（旧版图片导入第一份是纯识别文字）。
   /// 转写稿是另一种快照（`local_transcription`），不影响判定。网页视频沿用列表行
-  /// `has_media` 的同一信号。
+  /// `has_media` 的同一信号；视频站的视频页再按网址认（YouTube 嵌入播放，既没有本机文件
+  /// 也没有扩展传来的视频信息，原来落进「图文」还排第一，2026-10-04 走查）。
   public static func formSQL(tableAlias t: String) -> String {
     let local = LocalImportSource.files.rawValue
     // 本地文件只查一次最新快照的开头（原来音频 / 视频 / 图片三个分支各查一遍）。
@@ -132,6 +133,10 @@ public enum TaskClassificationSQL {
         WHEN \(t).normalized_host = '\(local)' THEN COALESCE(\(localForm), '\(ContentForm.document.rawValue)')
         WHEN EXISTS(SELECT 1 FROM capture_deliveries fcd WHERE fcd.task_id = \(t).id AND fcd.capture_contract_version = 2)
           OR EXISTS(SELECT 1 FROM media_assets fma WHERE fma.task_id = \(t).id)
+          OR \(t).canonical_url LIKE '%youtube.com/watch%'
+          OR \(t).canonical_url LIKE '%youtu.be/%'
+          OR \(t).canonical_url LIKE '%bilibili.com/video/%'
+          OR \(t).canonical_url LIKE '%douyin.com/video/%'
           THEN '\(ContentForm.video.rawValue)'
         ELSE '\(ContentForm.article.rawValue)'
       END

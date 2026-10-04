@@ -23,6 +23,32 @@ final class HistoryDomainTests: XCTestCase {
     XCTAssertEqual(HistoryRowProjection.sanitizedDirectoryPreview("## 字幕 现在每个人都在努力。", isSummary: true), "现在每个人都在努力。")
   }
 
+  /// GitHub README 的 HTML 开头不进列表预览（2026-10-04 走查：露出「<p> <img src=" widt…」）。
+  func testSourcePreviewDropsHTMLTagsAndReferenceLinks() {
+    let readme = """
+    # Bubble Tea
+
+    <p>
+        <img src="https://github.com/a.png" width="350"><br>
+        <a href="https://github.com/x/releases"><img src="https://img.shields.io/x.svg" alt="Latest Release"></a>
+    </p>
+
+    The fun, functional and stateful way to build terminal apps. Based on [The Elm Architecture][elm]. a < b
+    """
+    XCTAssertEqual(
+      HistoryRowProjection.sanitizedDirectoryPreview(readme, isSummary: false),
+      "Bubble Tea The fun, functional and stateful way to build terminal apps. Based on The Elm Architecture. a < b"
+    )
+    // 列表行先按 240 字截出正文开头：标签必须在截断前去掉，否则截在标签中间就漏出来了。
+    let padded = readme.replacingOccurrences(of: "<p>", with: "<p data-x=\"" + String(repeating: "x", count: 300) + "\">")
+    let preview = MarkdownNoteFrontmatter.directorySourcePreview(fromBody: padded)
+    XCTAssertEqual(preview?.hasPrefix("# Bubble Tea The fun, functional"), true, preview ?? "nil")
+    XCTAssertEqual(
+      HistoryRowProjection.sanitizedDirectoryPreview("每一套课程 # AI # 构建出 #话题 a # b", isSummary: false),
+      "每一套课程 AI 构建出 #话题 a b"
+    )
+  }
+
   func testTagNormalizationAndAutomaticFirstLineLimit() {
     XCTAssertNil(HistoryTag(rawValue: "   "))
     XCTAssertNil(HistoryTag(rawValue: String(repeating: "长", count: 21)))

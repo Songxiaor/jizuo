@@ -1171,6 +1171,14 @@ final class LinkDigestAppDelegate: NSObject, NSApplicationDelegate {
   func application(_ application: NSApplication, open urls: [URL]) {
     guard let handler else {
       pending.append(contentsOf: urls)
+      // 冷启动时被链接拉起（汲作没开着，从知识库点回链）：主场景声明了不接外部事件，
+      // 系统就不会顺手开主窗口——没有窗口，接手链接的 handler 也永远不会装上，
+      // 整个 App 只剩菜单栏、链接静默丢掉（2026-10-03 实测）。稍等一下让正常的
+      // 启动先走完，还是没有主窗口就替用户叫出来；主窗口启动时会装上 handler、
+      // 消费这里排着的链接。
+      DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in
+        self?.reopenMainWindowIfClosed()
+      }
       return
     }
     for url in urls { handler(url) }
@@ -1938,15 +1946,25 @@ private struct SettingsWindowResizer: NSViewRepresentable {
   func makeCoordinator() -> SettingsWindowCentering { SettingsWindowCentering() }
 
   func makeNSView(context: Context) -> NSView {
-    let probe = NSView(frame: .zero)
+    let probe = WindowProbe(frame: .zero)
     let centering = context.coordinator
-    DispatchQueue.main.async {
-      guard let window = probe.window else { return }
+    probe.onAttach = { window in
       window.styleMask.insert(.resizable)
       window.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
       centering.attach(to: window)
     }
     return probe
+  }
+
+  /// 视图一挂进窗口就接手，比 `DispatchQueue.main.async` 早一拍：那时窗口还没摆到屏幕上。
+  final class WindowProbe: NSView {
+    var onAttach: ((NSWindow) -> Void)?
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      guard let window, let onAttach else { return }
+      self.onAttach = nil
+      onAttach(window)
+    }
   }
 
   func updateNSView(_ nsView: NSView, context: Context) {}
@@ -1968,7 +1986,21 @@ final class SettingsWindowCentering: NSObject {
     let center = NotificationCenter.default
     center.addObserver(self, selector: #selector(windowDidBecomeKey(_:)), name: NSWindow.didBecomeKeyNotification, object: window)
     center.addObserver(self, selector: #selector(windowWillClose(_:)), name: NSWindow.willCloseNotification, object: window)
-    centerIfNeeded()
+    // 每次启动后第一次打开设置，窗口先在系统记住的旧位置露一下，下一拍才挪到主窗口正中——
+    // 看起来就是「闪一下、瞬移」（2026-10-04 Syc 反馈）。摆好位置、内容尺寸也定下来之前先透明，
+    // 摆好再显出来。之后再开，同一个窗口直接在正中，不经过这一步。
+    window.alphaValue = 0
+    window.setFrameOrigin(Self.centeredOrigin(
+      for: window.frame.size,
+      over: Self.mainWindow(excluding: window)?.frame,
+      on: Self.mainWindow(excluding: window)?.screen ?? window.screen
+    ))
+    DispatchQueue.main.async { [weak self, weak window] in
+      guard let window else { return }
+      self?.needsCentering = true
+      self?.centerIfNeeded(force: true)
+      window.alphaValue = 1
+    }
   }
 
   deinit { NotificationCenter.default.removeObserver(self) }
@@ -1976,8 +2008,8 @@ final class SettingsWindowCentering: NSObject {
   @objc private func windowDidBecomeKey(_: Notification) { centerIfNeeded() }
   @objc private func windowWillClose(_: Notification) { needsCentering = true }
 
-  private func centerIfNeeded() {
-    guard needsCentering, let window, window.isVisible else { return }
+  private func centerIfNeeded(force: Bool = false) {
+    guard needsCentering, let window, force || window.isVisible else { return }
     needsCentering = false
     // 主窗口可能在外接屏上：按主窗口所在的屏幕收边，而不是设置窗口上次待的那块屏。
     let main = Self.mainWindow(excluding: window)
@@ -1992,7 +2024,14 @@ final class SettingsWindowCentering: NSObject {
 
   /// 以主窗口中心为准；没有主窗口就以屏幕中心为准。结果收在屏幕可用区域内。
   static func centeredOrigin(for size: NSSize, over anchor: NSRect?, on screen: NSScreen?) -> NSPoint {
-    let visible = screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    centeredOrigin(
+      for: size, over: anchor,
+      within: screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1440, height: 900)
+    )
+  }
+
+  /// 纯几何：在 `visible` 这块可用区域里，把窗口放到 `anchor` 正中，并保证不出界。
+  static func centeredOrigin(for size: NSSize, over anchor: NSRect?, within visible: NSRect) -> NSPoint {
     let reference = anchor ?? visible
     var origin = NSPoint(x: reference.midX - size.width / 2, y: reference.midY - size.height / 2)
     origin.x = min(max(origin.x, visible.minX), max(visible.minX, visible.maxX - size.width))
@@ -2101,6 +2140,8 @@ private struct LinkDigestCommands: Commands {
   @FocusedValue(\.goBack) private var goBack
   @FocusedValue(\.summarizeCurrent) private var summarizeCurrent
   @FocusedValue(\.translateCurrent) private var translateCurrent
+  @FocusedValue(\.selectPreviousItem) private var selectPreviousItem
+  @FocusedValue(\.selectNextItem) private var selectNextItem
   @AppStorage(ReadingFontSize.storageKey) private var readingFontSizeRaw = Double(ReadingFontSize.default)
   @AppStorage(ReadingLayoutWidth.storageKey) private var readingUsesWideLayout = false
 
@@ -2172,6 +2213,12 @@ private struct LinkDigestCommands: Commands {
       Button("返回") { goBack?.run() }
         .keyboardShortcut("[", modifiers: .command)
         .disabled(goBack == nil)
+      Button("上一条") { selectPreviousItem?.run() }
+        .keyboardShortcut(.upArrow, modifiers: .command)
+        .disabled(selectPreviousItem == nil)
+      Button("下一条") { selectNextItem?.run() }
+        .keyboardShortcut(.downArrow, modifiers: .command)
+        .disabled(selectNextItem == nil)
       Divider()
       Button("收藏 / 取消收藏") { toggleFavorite?.run() }
         .keyboardShortcut("d", modifiers: .command)

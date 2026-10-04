@@ -18,6 +18,82 @@ enum CapturedSourceBodyPresentation {
     return blocks.joined(separator: "\n\n")
   }
 
+  /// 引用式链接（`[文字][名字]`，文末 `[名字]: 网址`）在显示时改写成行内链接，定义行藏掉。
+  ///
+  /// 正文是分段交给渲染器的，文末的定义和用它的段落不在一起，原来原样露出
+  /// 「[The Elm Architecture][elm]」和一串「[elm]: https://…」（2026-10-04 走查 GitHub README；
+  /// 本地导入的 .md 也常这么写）。只认文中确有定义的名字；代码块和行内代码不动。
+  static func inliningReferenceLinks(_ markdown: String) -> String {
+    guard markdown.contains("]:") else { return markdown }
+    let definitionPattern = #"^ {0,3}\[([^\]]+)\]:\s*<?(\S+?)>?(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*$"#
+    guard let definitionRegex = try? NSRegularExpression(pattern: definitionPattern) else { return markdown }
+    let lines = markdown.components(separatedBy: "\n")
+    var definitions: [String: String] = [:]
+    var definitionLines = Set<Int>()
+    var fenced = Array(repeating: false, count: lines.count)
+    var inFence = false
+    for (index, line) in lines.enumerated() {
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+        inFence.toggle()
+        fenced[index] = true
+        continue
+      }
+      fenced[index] = inFence
+      guard !inFence else { continue }
+      let range = NSRange(line.startIndex..., in: line)
+      guard let match = definitionRegex.firstMatch(in: line, range: range),
+            let key = Range(match.range(at: 1), in: line),
+            let url = Range(match.range(at: 2), in: line) else { continue }
+      // 同名定义以第一条为准（CommonMark 的规矩）。
+      let name = line[key].lowercased()
+      if definitions[name] == nil { definitions[name] = String(line[url]) }
+      definitionLines.insert(index)
+    }
+    guard !definitions.isEmpty,
+          let usage = try? NSRegularExpression(pattern: #"(!?)\[([^\]]+)\]\[([^\]]*)\]"#) else { return markdown }
+    // 链接文字可能折行（「[The Elm\nArchitecture][elm]」），所以按代码块之间的整片文字改写，不逐行。
+    func rewrite(_ text: String) -> String {
+      let pieces = text.components(separatedBy: "`")
+      // 行内代码里的方括号不动：按反引号切开，只改单数段以外的部分。
+      return pieces.enumerated().map { position, piece -> String in
+        guard position.isMultiple(of: 2), piece.contains("][") else { return piece }
+        let nsPiece = piece as NSString
+        var result = ""
+        var cursor = 0
+        for match in usage.matches(in: piece, range: NSRange(location: 0, length: nsPiece.length)) {
+          let text = nsPiece.substring(with: match.range(at: 2))
+          let label = nsPiece.substring(with: match.range(at: 3))
+          let key = (label.isEmpty ? text : label)
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .lowercased()
+          guard let url = definitions[key] else { continue }
+          result += nsPiece.substring(with: NSRange(location: cursor, length: match.range.location - cursor))
+          result += "\(nsPiece.substring(with: match.range(at: 1)))[\(text)](\(url))"
+          cursor = match.range.location + match.range.length
+        }
+        return result + nsPiece.substring(from: cursor)
+      }.joined(separator: "`")
+    }
+    var output: [String] = []
+    var prose: [String] = []
+    func flushProse() {
+      if !prose.isEmpty { output.append(rewrite(prose.joined(separator: "\n"))) }
+      prose = []
+    }
+    for (index, line) in lines.enumerated() {
+      if definitionLines.contains(index) { continue }
+      if fenced[index] {
+        flushProse()
+        output.append(line)
+      } else {
+        prose.append(line)
+      }
+    }
+    flushProse()
+    return output.joined(separator: "\n")
+  }
+
   static func readableTranscriptSections(_ markdown: String) -> String {
     var output: [String] = []
     var inTranscript = false
@@ -292,6 +368,28 @@ enum CapturedSourceBodyPresentation {
     }
     let body = lines.joined(separator: "\n")
     return body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? headingText : body
+  }
+
+  /// 导入时截短的标题（结尾「…」）还原成正文第一行的完整句子。
+  ///
+  /// 备忘录的标题取自第一行，超长就截短加「…」；第一行原样留在正文里，于是页面顶上
+  /// 是截短的大标题、紧跟着又是同一句话的完整版（2026-10-04 走查）。标题用完整句，
+  /// 正文那行再按「和标题同一句」藏掉，这句话只出现一次、也不丢字。
+  /// 第一行太长（超过 `expandedTitleLimit`）就不还原，保持原样。
+  static let expandedTitleLimit = 160
+
+  static func expandedTruncatedTitle(_ title: String, firstLines body: String) -> String {
+    guard title.hasSuffix("…") else { return title }
+    let prefix = canonicalText(String(title.dropLast()))
+    guard prefix.count >= 8 else { return title }
+    guard let first = body.split(whereSeparator: \.isNewline)
+      .map({ $0.trimmingCharacters(in: .whitespaces) })
+      .first(where: { !$0.isEmpty }) else { return title }
+    let text = atxHeadingText(first) ?? first
+    guard text.count <= expandedTitleLimit,
+          canonicalText(text).count > prefix.count,
+          canonicalText(text).hasPrefix(prefix) else { return title }
+    return text
   }
 
   private static func atxHeadingText(_ line: String) -> String? {

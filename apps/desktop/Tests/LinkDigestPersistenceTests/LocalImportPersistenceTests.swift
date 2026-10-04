@@ -208,6 +208,24 @@ final class MaterialScopeTests: XCTestCase {
     }
   }
 
+  /// 视频站的视频页按网址算视频（YouTube 嵌入播放，没有本机文件也没有扩展传来的视频信息）。
+  func testVideoSitePagesCountAsVideo() throws {
+    try withRepository { repository, now in
+      func web(_ url: String, _ title: String) throws -> TaskID {
+        try repository.acceptCapture(.init(document: CapturedDocument(
+          createdAt: "2026-10-04T00:00:00Z", origin: .manualLink, url: url, title: title,
+          platform: "generic", method: "fixture", text: "正文", completeness: "complete",
+          capturedAt: "2026-10-04T00:00:00Z", sourceLabel: "fixture"
+        ), receivedAtMilliseconds: now)).taskID
+      }
+      let youtube = try web("https://www.youtube.com/watch?v=abcdefghijk", "TED")
+      let bilibili = try web("https://www.bilibili.com/video/BV1jz4y1D3mo", "B 站")
+      let article = try web("https://example.com/post", "文章")
+      XCTAssertEqual(try ids(repository, .init(scope: .all, includesNotes: true, form: .video)), [youtube, bilibili])
+      XCTAssertEqual(try ids(repository, .init(scope: .all, includesNotes: true, form: .article)), [article])
+    }
+  }
+
   /// 素材类型仍是普通标签；MCP 的 unused_only 仍按「已使用」排除。
   func testMaterialTagsAndMCPUnusedFilter() throws {
     try withRepository { repository, now in

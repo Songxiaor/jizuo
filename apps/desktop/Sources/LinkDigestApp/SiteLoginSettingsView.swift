@@ -62,37 +62,48 @@ struct SiteLoginSettingsView: View {
   // Form 的手排页也是同一个数）。
   private static let horizontalInset: CGFloat = 20
 
+  @Environment(\.settingsEmbedded) private var isEmbedded
+
+  @ViewBuilder private var pageContent: some View {
+    // 这一页只管「手动粘贴链接」这条入口。扩展是另一条完全独立的路，
+    // 不写清楚会被当成所有抓取路径的总开关。
+    //
+    // 放在页首而不是页尾：这是「这一页管什么」的前提。
+    SettingsPageHeader(
+      title: "站点登录",
+      symbol: "person.crop.circle.badge.checkmark",
+      caption: "在这里登录一次，后续添加链接和博主主页会自动复用；登录失效时再重新登录。",
+      fill: SettingsCategoryChip.fill(for: "siteLogin", theme: appTheme),
+      captionIdentifier: "site-login-scope-note"
+    )
+
+    sitesCard
+    browserConnectionCard
+
+    // 原来「无需登录」单独占一张列着 YouTube/X 的整卡——这两个站在这页没有
+    // 任何可操作项，状态也永远不会变，一整张卡的视觉重量和信息量完全不匹配。
+    // 收成页尾一行说明，原因还在，只是不再占一张卡的地方。
+    Text("YouTube 和 X 单条公开链接无需登录；四个平台的博主主页都可以在上面登录一次后复用。")
+      .themedFont(.subheadline)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: false, vertical: true)
+      .accessibilityIdentifier("site-login-no-login-card")
+  }
+
   var body: some View {
-    ScrollView {
-      LazyVStack(alignment: .leading, spacing: DesignTokens.Space.xl) {
-        // 这一页只管「手动粘贴链接」这条入口。扩展是另一条完全独立的路，
-        // 不写清楚会被当成所有抓取路径的总开关。
-        //
-        // 放在页首而不是页尾：这是「这一页管什么」的前提。
-        SettingsPageHeader(
-          title: "站点登录",
-          symbol: "person.crop.circle.badge.checkmark",
-          caption: "在这里登录一次，后续添加链接和博主主页会自动复用；登录失效时再重新登录。",
-          fill: SettingsCategoryChip.fill(for: "siteLogin", theme: appTheme),
-          captionIdentifier: "site-login-scope-note"
-        )
-
-        sitesCard
-        browserConnectionCard
-
-        // 原来「无需登录」单独占一张列着 YouTube/X 的整卡——这两个站在这页没有
-        // 任何可操作项，状态也永远不会变，一整张卡的视觉重量和信息量完全不匹配。
-        // 收成页尾一行说明，原因还在，只是不再占一张卡的地方。
-        Text("YouTube 和 X 单条公开链接无需登录；四个平台的博主主页都可以在上面登录一次后复用。")
-          .themedFont(.subheadline)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-          .accessibilityIdentifier("site-login-no-login-card")
+    // 嵌进「收集」页时不再自带滚动区（2026-10-04 设置合并）。
+    Group {
+      if isEmbedded {
+        VStack(alignment: .leading, spacing: SettingsMetrics.groupSpacing) { pageContent }
+      } else {
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: DesignTokens.Space.xl) { pageContent }
+            .padding(.horizontal, Self.horizontalInset)
+        }
+        .background(appTheme.isNative ? Color.clear : appTheme.canvas)
+        .settingsDetailContentMargins()
       }
-      .padding(.horizontal, Self.horizontalInset)
     }
-    .background(appTheme.isNative ? Color.clear : appTheme.canvas)
-    .settingsDetailContentMargins()
     .onAppear {
       browserSupport.refreshDeliveries()
       Task { await xSession.refreshStatus() }

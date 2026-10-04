@@ -855,6 +855,25 @@ public actor ProviderConfigurationService {
     return (profile, apiKey)
   }
 
+  /// 某道工序单独选了模型（「校对」的模型下拉）时，用那个模型所在条目的地址和密钥。
+  ///
+  /// 下拉里列的是模型库里所有服务商的模型，选中后只存了模型名；原来校对总是拿总结那一家的
+  /// 地址去请求，选了别家的模型（比如 magpie 里的 antigravity/gemini-3.8-flash）就会发到
+  /// 总结那家、被回「没有这个模型」（2026-10-04）。同名模型有多家时优先和总结同一家。
+  /// 没选、选的就是总结模型、或库里找不到这个名字（以前手填的），照旧用总结那一家。
+  public func loadCredentials(forModel model: String?) async throws -> (profile: ProviderProfile, apiKey: String)? {
+    let wanted = model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    guard !wanted.isEmpty else { return try await loadCredentials() }
+    let library = try await loadLibrary()
+    let summary = library.summaryProfile
+    if summary?.model == wanted { return try await loadCredentials() }
+    let matches = library.profiles.filter { $0.model == wanted }
+    guard let chosen = matches.first(where: { $0.baseURL == summary?.baseURL }) ?? matches.first else {
+      return try await loadCredentials()
+    }
+    return try await loadCredentials(profileID: chosen.id)
+  }
+
   /// Loads credentials for the transcription assignment; nil means the local
   /// transcriber should be used.
   public func loadTranscriptionCredentials() async throws -> (profile: ProviderProfile, apiKey: String)? {

@@ -48,7 +48,9 @@ final class NonStreamingReasoningEffortTests: XCTestCase {
     XCTAssertEqual(server.requests.count, 1)
     let sent = try body(server.requests[0])
     XCTAssertEqual(sent["reasoning_effort"] as? String, "none", "整理是转述不是推理，必须请求最低档")
-    XCTAssertEqual(sent["stream"] as? Bool, false)
+    // 校对改走流式（2026-10-04）：非流式的长请求被服务商网关在 15–125 秒间掐断，流式边收边算活着。
+    // 服务端只回整段 JSON 时照样能收（上面 outcome.text 就是这样拿到的）。
+    XCTAssertEqual(sent["stream"] as? Bool, true)
     // 只发 reasoning_effort 时实测仍有约六成 token 是思考：两种常见的关闭写法一起带上。
     XCTAssertEqual((sent["thinking"] as? [String: Any])?["type"] as? String, "disabled")
     XCTAssertEqual(sent["enable_thinking"] as? Bool, false)
@@ -69,7 +71,7 @@ final class NonStreamingReasoningEffortTests: XCTestCase {
       profile: try profile(baseURL), apiKey: key, model: "fixture-model", text: "一段转写文字"
     )
     XCTAssertEqual(outcome.reasoningTokens, 28)
-    XCTAssertEqual(outcome.requestNote, "effort=none thinkingOff=1")
+    XCTAssertEqual(outcome.requestNote, "effort=none thinkingOff=1 stream=1")
   }
 
   /// 服务端不认这个参数时去掉重发一次，并记住这个目的地——和流式路径同一套规则。

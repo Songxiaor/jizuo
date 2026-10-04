@@ -467,6 +467,35 @@ final class ModelLibraryServiceTests: XCTestCase {
     XCTAssertEqual(credentials?.apiKey, "sk-two")
   }
 
+  /// 校对单独选了别家的模型：用那一家的地址和密钥，不发到总结那家（2026-10-04）。
+  func testCredentialsForModelUseTheEntryThatOwnsTheModel() async throws {
+    let service = ProviderConfigurationService(
+      profileStore: LibraryMemoryProfileStore(),
+      secretStore: LibraryMemorySecretStore(),
+      libraryStore: LibraryMemoryStore()
+    )
+    let summary = try await service.addProfile(
+      baseURL: "https://api.deepseek.com/v1",
+      model: "deepseek-chat",
+      apiKey: "sk-one"
+    )
+    let gateway = try await service.addProfile(
+      baseURL: "https://api.groq.com/openai/v1",
+      model: "gemini-flash",
+      apiKey: "sk-two"
+    )
+
+    let chosen = try await service.loadCredentials(forModel: "gemini-flash")
+    XCTAssertEqual(chosen?.profile.id, gateway.id)
+    XCTAssertEqual(chosen?.apiKey, "sk-two")
+    // 没选、选的就是总结模型、库里没有的名字：都照旧走总结那一家。
+    for model in [nil, "", "deepseek-chat", "hand-typed-model"] {
+      let fallback = try await service.loadCredentials(forModel: model)
+      XCTAssertEqual(fallback?.profile.id, summary.id, "model: \(model ?? "nil")")
+      XCTAssertEqual(fallback?.apiKey, "sk-one")
+    }
+  }
+
   func testWithoutLibraryStoreSynthesizesReadOnlyView() async throws {
     let legacy = try makeLegacyProfile()
     let service = ProviderConfigurationService(

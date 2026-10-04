@@ -126,6 +126,15 @@ public enum TidyStyle: String, Sendable, CaseIterable {
     }
   }
 
+  /// 模型只回修改清单、由本机套进原文。**目前一律关闭**（2026-10-04 Day2 实测）：
+  /// 在关不掉思考的线路上，模型为了找错字、照抄片段想得更多——每段平均 78 秒、
+  /// 前 12 段里 7 段超过 125 秒，整段重写只要 59 秒。清单格式和套用逻辑留着
+  /// （`TranscriptTidyEdits`），等能关思考的线路上实测更快再打开。
+  public var usesEditList: Bool { false }
+
+  /// 发给模型的系统提示词：清单模式用清单契约。
+  public var requestPrompt: String { usesEditList ? TranscriptTidyPrompt.transcriptEdits : systemPrompt }
+
   /// 输出是否要做段落归一化（把段内换行拼回一行）。
   ///
   /// 笔记的产物是 Markdown，换行本身有语义，不能归一；听写稿和字幕稿都是
@@ -225,8 +234,12 @@ public enum TranscriptTidyPrompt {
   public static let system = """
     你是听写还原器。把机器听写稿还原成说话人更可能说的那句话，不是润色成一篇新文章。
     可以做：根据标题、配文和前后句，纠正同音、近音的常用词和术语听写错误；补齐标点；按语义分段。
-    人名、昵称、账号名、品牌名、机构名只能照着标题或配文里出现过的写法改；\
+    人名、昵称、账号名、小众品牌名、机构名只能照着标题或配文里出现过的写法改；\
     标题和配文里没有出现的，一律保留听写稿原样，不要按读音猜一个更像名字的写法。
+    例外：广为人知的科技产品、AI 模型、软件和常用英文术语（例如 Claude、ChatGPT、Opus、token、prompt、vlog、API），\
+    听写成了读音相近的词、而上下文明显在说它时，可以直接改回正确写法，即使标题和配文里没写。
+    嘈杂录音里很多句子只是个别词听错：结合前后句和标题配文，把能确定的那几个词改正（例如「理出一个脉论」→「理出一个脉络」），\
+    句子其余部分照原样保留。
     必须保留原有时间戳（例如 21:15 或 1:02:03）及其相对位置，不要改时间、不要删除时间戳。
     排版规则：一个段落写成连续的一行，段落内部绝不换行；段落之间用一个空行分隔；\
     中文标点后不加空格。
@@ -234,10 +247,36 @@ public enum TranscriptTidyPrompt {
     分节：在话题明显转折处插入一行 Markdown 小标题（以「## 」开头，6 到 14 个字，从它下面几段的原文里提炼），\
     单独成段，紧挨着放在某个带时间戳的段落上方；小标题行不写时间戳。每个片段插 0 到 2 个，片段很短或没有明显转折就不插。
     严格禁止：编造听写稿里完全看不出的内容；翻译；概括压缩；评论；添加小标题以外的任何前后缀说明。
-    某一句已经不像人话、无法从上下文可靠还原时，原样保留该句，不要改写成通顺的新句。
+    某个词无法从上下文确定时，保留听写原样；不要为了让整句通顺而改写或编一句新的，原样保留比猜错更好。
     输入可能附带标题和配文作为上下文；它们只用来帮助还原听写错误，不要写进输出。
     输入是同一份转写稿的一个连续片段，可能从句中开始或结束；保持片段边界原样，不要补全句子。
     只输出还原后的正文（含小标题行），不要代码块。
+    """
+
+  /// 听写稿校对：只回修改清单（2026-10-04 起取代整段重写，见 `TranscriptTidyEdits`）。
+  /// 改字的判断标准和 `system` 完全一样，只是交付形式从「整段重写」换成「列出改动」。
+  public static let transcriptEdits = """
+    你是听写还原器。输入是机器听写稿的若干段，每段前标着编号 [n]。找出听错的地方，只列出修改，不要重写正文。
+    可以改：根据标题、配文和前后句，纠正同音、近音的常用词和术语听写错误；补齐明显缺失的标点；删掉无意义的口头重复。
+    人名、昵称、账号名、小众品牌名、机构名只能照着标题或配文里出现过的写法改；\
+    标题和配文里没有出现的，一律保留，不要按读音猜一个更像名字的写法。
+    例外：广为人知的科技产品、AI 模型、软件和常用英文术语（例如 Claude、ChatGPT、Opus、token、prompt、vlog、API），\
+    听写成了读音相近的词、而上下文明显在说它时，可以改回正确写法。
+    某个词无法从上下文确定时就不改；原样保留比猜错更好。严禁编造、翻译、概括、润色成新句子。
+
+    每条修改单独一行，只用下面四种格式，竖线两边各留一个空格：
+    改 n | 原文片段 | 改后片段
+    删 n | 原文片段
+    题 n | 小标题
+    分 n | 新段开头的片段
+    规则：
+    - n 是段号。「原文片段」必须从第 n 段里一字不差地复制，长度 4 到 20 个字，带上足够的前后文，让它在这一段里只出现一次。
+    - 补标点也用「改」：例如「改 3 | 我们稍微等一下我们 | 我们稍微等一下，我们」。
+    - 「题」在第 n 段前插一行小标题，6 到 14 个字，从它下面几段的原文里提炼；只在话题明显转折处用，整批 0 到 3 条。
+    - 「分」把超过四五句的长段在「新段开头的片段」处拆开，片段同样一字不差、4 到 20 个字。
+    - 不要碰段首的时间码。
+    - 没有要改的，只输出一个字：无
+    只输出修改行，不要解释、不要编号以外的标记、不要代码块。输入附带的标题和配文只用来帮你判断，不要改它们。
     """
 
   /// 画面字幕的校对契约。
@@ -404,6 +443,22 @@ public enum TranscriptTidyNormalizer {
 public enum TranscriptTidyChunkCheck {
   public static let minimumLengthRatio = 0.6
   public static let maximumLengthRatio = 1.6
+
+  /// 模型把这一段开头的时间码弄丢了、其余都对得上时，本机补回去（2026-10-04）。
+  ///
+  /// Day1 校对 87 次请求里 8 次「不是这一段」都是这一种：首段时间码被并掉，第一个时间码
+  /// 变成了第二段的。原来判失败再重发一次，每次白等一分钟；内容其实是这一段的。
+  /// 只在「输出的时间码全都来自这一段、只缺开头那个」时补，别处来的内容照旧拦下。
+  public static func repairingLeadingStamp(output: String, for chunk: String) -> String {
+    let inputStamps = timestamps(in: chunk)
+    guard let first = inputStamps.first else { return output }
+    let outputStamps = timestamps(in: output)
+    guard outputStamps.first != first, !outputStamps.contains(first),
+          Set(outputStamps).isSubset(of: Set(inputStamps)) else { return output }
+    let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return output }
+    return first + " " + trimmed
+  }
 
   public static func belongs(output: String, to chunk: String) -> Bool {
     let input = chunk.trimmingCharacters(in: .whitespacesAndNewlines)

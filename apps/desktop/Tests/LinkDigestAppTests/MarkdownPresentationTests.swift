@@ -1109,6 +1109,25 @@ final class MarkdownPresentationTests: XCTestCase {
     XCTAssertEqual(segments, [.text("前文\n\n"), .image(body), .text("\n\n中段\n\n"), .image(body), .text("\n\n后文")])
   }
 
+  /// 没存到本地的图片标记（README 徽章）和前后文字留在同一段，不在每个标记处断段（2026-10-04 走查）。
+  func testUnsavedImageMarkersStayInsideTheirParagraph() {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent("linkdigest-markdown-badges.\(UUID().uuidString)", isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: root) }
+    let logoRemote = "https://github.com/a/logo.png"
+    let digest = SHA256.hash(data: Data(logoRemote.utf8)).map { String(format: "%02x", $0) }.joined()
+    let logo = root.appendingPathComponent(digest)
+    try! FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+    try! Data().write(to: logo)
+    let badges = """
+    <a href="https://x.test/releases"><img src="https://img.shields.io/r.svg" alt="Latest Release"></a>
+    <a href="https://x.test/doc"><img src="https://godoc.org/x?status.svg" alt="GoDoc"></a>
+    </p>
+    """
+    let markdown = "<p>\n<img src=\"\(logoRemote)\" width=\"350\"><br>\n" + badges + "\n\n正文"
+    let segments = LocalMarkdownImageLayout.segments(markdown: markdown, localImageURLs: [logo], appendsUnusedLocalImages: false)
+    XCTAssertEqual(segments, [.text("<p>\n"), .image(logo), .text("<br>\n" + badges + "\n\n正文")])
+  }
+
   func testQuotedTweetMarkerBecomesACardSegmentEvenWithoutLocalImages() {
     let markdown = """
     主帖正文在这里。
@@ -1501,6 +1520,19 @@ final class ReadingItemNoteLayoutTests: XCTestCase {
     XCTAssertEqual(MarkdownPresentation.strippingSummaryPreamble(real), real)
   }
 
+  /// 英文里的弯引号用比例宽字形，中文里的保持全角（2026-10-04 走查「we’ ll」）。
+  func testLatinCurlyQuotesUseProportionalWidthButCJKQuotesStayFullWidth() throws {
+    let font = try XCTUnwrap(NSFont(descriptor: NSFontDescriptor(fontAttributes: [.family: "Songti SC"]), size: 16))
+    let text = NSMutableAttributedString(string: "we’ll 他说：“好”", attributes: [.font: font])
+    ReadingTextComposer.narrowLatinQuotes(in: text)
+    func width(at index: Int) -> CGFloat {
+      text.attributedSubstring(from: NSRange(location: index, length: 1)).size().width
+    }
+    XCTAssertLessThan(width(at: 2), 10, "英文撇号要窄")
+    XCTAssertGreaterThan(width(at: 10), 12, "中文里的引号保持全角")
+    XCTAssertEqual(text.string, "we’ll 他说：“好”", "只换字形，不改文字")
+  }
+
   func testCJKLatinBoundaryGetsVisualGapWithoutChangingText() {
     let attributed = ReadingTextComposer.attributed(
       blocks: MarkdownPresentation.blocks(from: "建立Karpathy风格的LLM维基，已有 space 的不加"),
@@ -1582,6 +1614,17 @@ final class HistoryListFindingTests: XCTestCase {
     XCTAssertEqual(HistoryListFinding.informativeCaptionTitle(caption: "绝了", sourcePreview: "绝了"), "绝了", "找不到更好的就保留原样")
   }
 
+  /// 软换行：英文两侧补空格（句号、反引号收尾也一样），中文之间不补（2026-10-04 走查「state.It」「`Cmd`that」）。
+  func testSoftWrappedLinesJoinWithSpaceOnlyBetweenNonCJKText() {
+    let english = "Next, define the initial state.\nIt can return a `Cmd`\nthat performs I/O, and\n42 more."
+    XCTAssertEqual(
+      MarkdownPresentation.blocks(from: english).first,
+      .paragraph("Next, define the initial state. It can return a `Cmd` that performs I/O, and 42 more.")
+    )
+    let chinese = "知龄近8年，几乎每天都会\n刷知乎。用 AI\n做视频"
+    XCTAssertEqual(MarkdownPresentation.blocks(from: chinese).first, .paragraph("知龄近8年，几乎每天都会刷知乎。用 AI做视频"))
+  }
+
   func testPreviewShowsFollowingBodyInsteadOfRepeatingTitle() {
     XCTAssertEqual(
       HistoryListFinding.sourcePreviewLine(
@@ -1591,6 +1634,20 @@ final class HistoryListFindingTests: XCTestCase {
       "刚挖到一个开源项目：Hypit"
     )
     XCTAssertNil(HistoryListFinding.sourcePreviewLine(title: "卧槽！", sourcePreview: "卧槽！"), "只剩标题本身时不出预览行")
+  }
+
+  /// 备忘录切碎的标题：正文开头拼回来带空格、带「#」，标题里没有（2026-10-04 走查露出「AI # 构建出…」）。
+  func testPreviewDedupesFragmentedNoteHeadingIgnoringSpaces() {
+    let body = "# 每一套课程都应该有逻辑和技法两个方面。所以，然后借助\n\n# AI\n\n# 构建出任何一个赛道的解决方案。\n\n【输入区】 ──► 【提炼双库】"
+    let preview = MarkdownNoteFrontmatter.directorySourcePreview(fromBody: body)
+    XCTAssertEqual(
+      HistoryListFinding.sourcePreviewLine(
+        title: "每一套课程都应该有逻辑和技法两个方面。所以，然后借助AI构建…",
+        sourcePreview: preview,
+        titleComesFromBody: false
+      ),
+      "出任何一个赛道的解决方案。 【输入区】 ──► 【提炼双库"
+    )
   }
 
   /// 2026-09-29：抖音配文只有标题，后面紧跟评论区——评论不能当摘要露出来。

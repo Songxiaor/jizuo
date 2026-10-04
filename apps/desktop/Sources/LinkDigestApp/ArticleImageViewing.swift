@@ -285,9 +285,8 @@ struct AnimatedImageFileView: NSViewRepresentable {
   let url: URL
 
   func makeNSView(context: Context) -> NSImageView {
-    let view = NSImageView()
+    let view = VisibilityGatedAnimatedImageView()
     view.imageScaling = .scaleProportionallyUpOrDown
-    view.animates = true
     view.isEditable = false
     view.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
     view.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
@@ -313,8 +312,60 @@ struct AnimatedImageFileView: NSViewRepresentable {
       await MainActor.run {
         guard view.identifier?.rawValue == target.path else { return }
         view.image = image
+        (view as? VisibilityGatedAnimatedImageView)?.refreshAnimation()
       }
     }
+  }
+}
+
+/// 只在看得见时播放的动图视图。
+///
+/// NSImageView 播放 GIF 是在主线程逐帧解码原图，滚出视野也不停：GitHub 的
+/// Bubble Tea README 里两张 1300×530、300/600 帧的终端演示图，停在页首不动时
+/// 主线程仍有约四成时间在解码，整个 App 静止 CPU 25–30%（2026-10-04 走查）。
+/// 帧太多、预解码要上 GB 内存，所以不缓存帧，改为：滚出可视区、窗口被挡住或
+/// 最小化时暂停，回到视野里接着播。
+final class VisibilityGatedAnimatedImageView: NSImageView {
+  private var observers: [NSObjectProtocol] = []
+
+  override func viewDidMoveToWindow() {
+    super.viewDidMoveToWindow()
+    observers.forEach(NotificationCenter.default.removeObserver)
+    observers = []
+    guard let window else {
+      animates = false
+      return
+    }
+    let center = NotificationCenter.default
+    let refresh: @Sendable (Notification) -> Void = { [weak self] _ in
+      MainActor.assumeIsolated { self?.refreshAnimation() }
+    }
+    if let clipView = enclosingScrollView?.contentView {
+      clipView.postsBoundsChangedNotifications = true
+      observers.append(center.addObserver(forName: NSView.boundsDidChangeNotification, object: clipView, queue: .main, using: refresh))
+    }
+    postsFrameChangedNotifications = true
+    observers.append(center.addObserver(forName: NSView.frameDidChangeNotification, object: self, queue: .main, using: refresh))
+    observers.append(center.addObserver(forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main, using: refresh))
+    refreshAnimation()
+  }
+
+  override func viewDidHide() {
+    super.viewDidHide()
+    refreshAnimation()
+  }
+
+  override func viewDidUnhide() {
+    super.viewDidUnhide()
+    refreshAnimation()
+  }
+
+  /// 按当前可见性开关播放。离开窗口时（视图被移除前一定会先走这里）观察者已清掉。
+  func refreshAnimation() {
+    let shouldAnimate = window?.occlusionState.contains(.visible) == true
+      && !isHiddenOrHasHiddenAncestor
+      && !visibleRect.isEmpty
+    if animates != shouldAnimate { animates = shouldAnimate }
   }
 }
 

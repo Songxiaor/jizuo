@@ -279,9 +279,12 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     text: String,
     systemPrompt: String = TranscriptTidyPrompt.system
   ) async throws -> TranscriptTidyOutcome {
+    // 流式收（2026-10-04）：非流式请求在模型想完写完之前一个字节都不回，Command Code 这类
+    // 网关把十几到四十秒没动静的连接当死连接掐掉（Day1 校对 87 次请求里 11 次「网络中断」），
+    // 超过约 120 秒的再被网关整个掐断。流式时思考过程一直在往回流，连接是活的。
     let completion = try await nonStreamingChatCompletion(
       profile: profile, apiKey: apiKey, model: model,
-      systemPrompt: systemPrompt, userContent: text
+      systemPrompt: systemPrompt, userContent: text, streaming: true
     )
     return TranscriptTidyOutcome(
       text: completion.content,
@@ -324,7 +327,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     apiKey: String,
     model: String,
     systemPrompt: String,
-    userContent: String
+    userContent: String,
+    streaming: Bool = false
   ) async throws -> NonStreamingChatResult {
     guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
       throw ModelProviderFailure(code: .authInvalid, retryable: false, hadOutput: false)
@@ -363,7 +367,8 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
           url: requestURL, apiKey: apiKey, model: model,
           systemPrompt: systemPrompt, userContent: userContent, effort: effort,
           usesAnthropicMessages: usesAnthropicMessages,
-          thinkingOff: sendsThinkingOff
+          thinkingOff: sendsThinkingOff,
+          streaming: streaming
         )
         // 去掉开关后成功了，才坐实「不认这个开关」（理由同流式那条，2026-10-01）。
         if thinkingDropPending { rememberThinkingSwitchRejected(profile) }
@@ -393,14 +398,16 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     userContent: String,
     effort: StreamReasoningEffort,
     usesAnthropicMessages: Bool,
-    thinkingOff: Bool = false
+    thinkingOff: Bool = false,
+    streaming: Bool = false
   ) async throws -> NonStreamingChatResult {
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
-    request.timeoutInterval = 180
+    // 流式时这是「两次收到数据之间」的最长间隔，不是整次请求的上限：思考在一直往回流就不会超时。
+    request.timeoutInterval = streaming ? 90 : 180
     request.setValue("Bearer \(sanitizedKey(apiKey))", forHTTPHeaderField: "Authorization")
     request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-    request.setValue("application/json", forHTTPHeaderField: "Accept")
+    request.setValue(streaming ? "text/event-stream" : "application/json", forHTTPHeaderField: "Accept")
     if usesAnthropicMessages {
       request.httpBody = try CommandCodeMessagesCodec.encodeRequest(
         model: model,
@@ -408,7 +415,7 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
         messages: [
           .init(role: "user", content: userContent),
         ],
-        stream: false,
+        stream: streaming,
         maxTokens: CommandCodeMessagesCodec.defaultMaxTokens
       )
     } else {
@@ -418,17 +425,23 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
           Message(role: "system", content: systemPrompt),
           Message(role: "user", content: userContent),
         ],
-        stream: false,
+        stream: streaming,
         maxTokens: nil,
         reasoningEffort: effort.jsonValue,
         thinking: thinkingOff ? .init(type: "disabled") : nil,
         enableThinking: thinkingOff ? false : nil
       ))
     }
-    let requestNote = "effort=\(effort.logLabel) thinkingOff=\(thinkingOff ? 1 : 0)"
+    let requestNote = "effort=\(effort.logLabel) thinkingOff=\(thinkingOff ? 1 : 0)" + (streaming ? " stream=1" : "")
 
     do {
       let (bytes, response) = try await session.bytes(for: request)
+      if streaming, let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode),
+         http.value(forHTTPHeaderField: "Content-Type")?.lowercased().contains("text/event-stream") == true {
+        return try await Self.collectStreamedCompletion(
+          bytes, usesAnthropicMessages: usesAnthropicMessages, requestNote: requestNote
+        )
+      }
       let body = try await Self.collectBody(bytes, response: response, limit: Self.transcriptTidyResponseByteLimit)
       let providerError = ProviderErrorBody(data: body)
       _ = try validateStatus(response: response, providerError: providerError, hadOutput: false)
@@ -462,6 +475,51 @@ public final class OpenAICompatibleProvider: ModelProvider, ModelCatalogLoading,
     } catch {
       throw ModelProviderFailure(code: .networkInterrupted, retryable: true, hadOutput: false)
     }
+  }
+
+  /// 把一次流式回答收成完整结果：正文只取 delta，思考只计数，不进正文。
+  private static func collectStreamedCompletion(
+    _ bytes: URLSession.AsyncBytes,
+    usesAnthropicMessages: Bool,
+    requestNote: String
+  ) async throws -> NonStreamingChatResult {
+    var content = ""
+    var reasoningEvents = 0
+    var usage: RunUsageCost?
+    let anthropicDecoder = usesAnthropicMessages ? CommandCodeMessagesStreamDecoder() : nil
+    lineLoop: for try await line in bytes.lines {
+      try Task.checkCancellation()
+      let events: [ModelStreamEvent]
+      if let anthropicDecoder {
+        events = try anthropicDecoder.decode(line: line)
+      } else if let event = try ChatCompletionsStreamDecoder().decode(line: line) {
+        events = [event]
+      } else {
+        events = []
+      }
+      for event in events {
+        switch event {
+        case let .delta(text): content += text
+        case .reasoning: reasoningEvents += 1
+        case let .usage(value): usage = value
+        case .completed: break lineLoop
+        }
+        if content.utf8.count > Self.transcriptTidyResponseByteLimit {
+          throw ModelProviderFailure(code: .protocolIncompatible, retryable: false, hadOutput: true)
+        }
+      }
+    }
+    guard !content.isEmpty else {
+      throw ModelProviderFailure(code: .networkInterrupted, retryable: true, hadOutput: false)
+    }
+    return NonStreamingChatResult(
+      content: content,
+      promptTokens: usage?.inputTokens.map(Int.init),
+      completionTokens: usage?.outputTokens.map(Int.init),
+      totalTokens: usage?.totalTokens.map(Int.init),
+      reasoningTokens: nil,
+      requestNote: requestNote + " reasoningEvents=\(reasoningEvents)"
+    )
   }
 
   public func generateSummaryTags(profile: ProviderProfile, apiKey: String, summary: String) async throws -> String {

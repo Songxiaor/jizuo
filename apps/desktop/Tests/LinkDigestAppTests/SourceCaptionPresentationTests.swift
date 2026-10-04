@@ -162,6 +162,50 @@ final class SourceCaptionPresentationTests: XCTestCase {
     XCTAssertGreaterThan(result.components(separatedBy: "\n\n").count, 2)
   }
 
+  /// 引用式链接改写成行内链接，定义行藏掉；代码里的同形文字不动（2026-10-04 走查 GitHub README）。
+  func testReferenceLinksAreInlinedAndDefinitionsHidden() {
+    let body = """
+    Based on [The Elm Architecture][elm]. See the [examples][] and ![demo][img].
+    Paradigms of [The Elm
+    Architecture][elm] wrap across lines.
+    Unknown [label][missing] stays. Code `x[a][elm]` stays.
+
+    ```go
+    m[i][elm]
+    ```
+
+    [elm]: https://guide.elm-lang.org/architecture/
+    [Examples]: https://github.com/x/examples "Examples"
+    [img]: <https://x.test/a.gif>
+    """
+    let result = CapturedSourceBodyPresentation.inliningReferenceLinks(body)
+    XCTAssertTrue(result.contains("[The Elm Architecture](https://guide.elm-lang.org/architecture/)"), result)
+    XCTAssertTrue(result.contains("[examples](https://github.com/x/examples)"), result)
+    XCTAssertTrue(result.contains("[The Elm\nArchitecture](https://guide.elm-lang.org/architecture/) wrap"), result)
+    XCTAssertTrue(result.contains("![demo](https://x.test/a.gif)"), result)
+    XCTAssertTrue(result.contains("Unknown [label][missing] stays."), result)
+    XCTAssertTrue(result.contains("`x[a][elm]`"), result)
+    XCTAssertTrue(result.contains("m[i][elm]"), result)
+    XCTAssertFalse(result.contains("[elm]: https"), result)
+    XCTAssertEqual(CapturedSourceBodyPresentation.inliningReferenceLinks("没有定义的正文 [a][b]"), "没有定义的正文 [a][b]")
+  }
+
+  /// 备忘录截短的标题按正文第一行还原（2026-10-04 走查：截短标题下面又是同一句完整版）。
+  func testTruncatedNoteTitleExpandsToItsFirstLine() {
+    let body = "# 每一套课程都应该有逻辑和技法两个方面。所以，然后借助AI构建出任何一个赛道的解决方案。\n\n正文"
+    let expanded = CapturedSourceBodyPresentation.expandedTruncatedTitle("每一套课程都应该有逻辑和技法两个方面。所以，然后借助AI构建…", firstLines: body)
+    XCTAssertEqual(expanded, "每一套课程都应该有逻辑和技法两个方面。所以，然后借助AI构建出任何一个赛道的解决方案。")
+    XCTAssertEqual(
+      CapturedSourceBodyPresentation.strippingEchoedOpening(title: expanded, from: body, style: .stripSyntheticTitleHeadingOnly),
+      "正文"
+    )
+    // 不是截短的、对不上的、第一行太长的，都保持原标题。
+    XCTAssertEqual(CapturedSourceBodyPresentation.expandedTruncatedTitle("完整标题", firstLines: body), "完整标题")
+    XCTAssertEqual(CapturedSourceBodyPresentation.expandedTruncatedTitle("另外一句话完全不同的开头…", firstLines: body), "另外一句话完全不同的开头…")
+    let long = "# 每一套课程都应该有逻辑" + String(repeating: "字", count: 200)
+    XCTAssertEqual(CapturedSourceBodyPresentation.expandedTruncatedTitle("每一套课程都应该有逻辑…", firstLines: long), "每一套课程都应该有逻辑…")
+  }
+
   func testBackNavigationLinkBlocksAreHidden() {
     let body = "[Back to All Articles](https://arena.ai/blog)\n\n![cover](https://x.test/a.png)\n\n正文里的[返回](/x)链接留着。"
     let result = CapturedSourceBodyPresentation.strippingBackNavigationLinks(body)

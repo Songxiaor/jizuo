@@ -251,11 +251,19 @@ enum LocalMarkdownImageLayout {
     let nsRange = NSRange(markdown.startIndex..., in: markdown)
     let matches = expression.matches(in: markdown, range: nsRange)
     var used = Set<String>()
+    // 没有本地文件的图片标记留在文字里，和前后文字连成同一段，只在真正插图处断开。
+    // 原来每个标记前后都断一次：README 开头 `<a><img alt="Latest Release"></a>` 一类
+    // 徽章被切成九段、各占一个段距，链接也断了（2026-10-04 走查）。
+    var pendingText = ""
+    func flushText() {
+      if !pendingText.isEmpty { segments.append(.text(pendingText)) }
+      pendingText = ""
+    }
 
     for match in matches {
       guard let full = Range(match.range, in: markdown) else { continue }
       if cursor < full.lowerBound {
-        segments.append(.text(String(markdown[cursor..<full.lowerBound])))
+        pendingText += markdown[cursor..<full.lowerBound]
       }
       let rawURL: String? = {
         if match.numberOfRanges > 2, let r = Range(match.range(at: 2), in: markdown), !r.isEmpty {
@@ -267,19 +275,21 @@ enum LocalMarkdownImageLayout {
         return nil
       }()
       if let rawURL, let local = resolveLocal(rawURL: rawURL, byHash: byHash) {
+        flushText()
         segments.append(.image(local))
         // This records storage use for the trailing-gallery decision only;
         // repeated body markers intentionally render the same cached file.
         used.insert(local.path)
       } else {
         // Keep the original marker as text when no local file is available.
-        segments.append(.text(String(markdown[full])))
+        pendingText += markdown[full]
       }
       cursor = full.upperBound
     }
     if cursor < markdown.endIndex {
-      segments.append(.text(String(markdown[cursor...])))
+      pendingText += markdown[cursor...]
     }
+    flushText()
 
     // Append any unused local images (e.g. relative refs we couldn't resolve) at the end.
     if appendsUnusedLocalImages {
@@ -1613,9 +1623,24 @@ enum MarkdownPresentation {
     return false
   }
 
-  private static func needsASCIISpace(before next: String, after previous: String) -> Bool {
+  /// 软换行拼接时要不要补空格：两边都不是中日韩文字（或全角标点）就补，和 Markdown 软换行
+  /// 渲染成空格一致。原来只认「两边都是字母」，英文 README 里行尾是句号、反引号的地方
+  /// 全粘在一起：「state.It can」「a `Cmd`that」（2026-10-04 走查）。
+  static func needsASCIISpace(before next: String, after previous: String) -> Bool {
     guard let last = previous.last, let first = next.first else { return false }
-    return last.isASCII && last.isLetter && first.isASCII && first.isLetter
+    return !isWideCharacter(last) && !isWideCharacter(first)
+  }
+
+  private static func isWideCharacter(_ character: Character) -> Bool {
+    guard let scalar = character.unicodeScalars.first else { return false }
+    switch scalar.value {
+    case 0x1100...0x11FF, 0x2E80...0x303F, 0x3040...0x33FF, 0x3400...0x4DBF, 0x4E00...0x9FFF,
+         0xA960...0xA97F, 0xAC00...0xD7FF, 0xF900...0xFAFF, 0xFE30...0xFE4F, 0xFF00...0xFFEF,
+         0x20000...0x3FFFF:
+      return true
+    default:
+      return false
+    }
   }
 
   /// 代码里的 `<task>` 是字面量。整篇扫描会把开发文洗成「已省略 HTML 片段」。
@@ -2520,13 +2545,16 @@ struct MarkdownContentView: View {
         case let .block(index): ScopedReadingAnchor(scope: anchorScope, block: index)
         case let .module(anchor): ReadingAnchor.module(anchor)
         }
+        // 落点不贴顶：阅读区顶上压着一条吸顶的「原文 / 总结」栏，贴顶的标题正好被它盖住，
+        // 点「The Model」跳过去只看得到它下面的正文（2026-10-04 走查）。留出约一成视口。
+        let landing = UnitPoint(x: 0.5, y: 0.12)
         // 开了「减弱动态效果」就直接落位：跳转本身是必要的，滚动过程不是。
         if reduceMotion {
-          proxy.scrollTo(resolved, anchor: .top)
+          proxy.scrollTo(resolved, anchor: landing)
         } else {
           // 走 token 而不是写死 0.25：全 App 的「展开/切换」都用这一档，
           // 散落的自定义时长正是当初间距和字号失控的同一个成因。
-          withAnimation(DesignTokens.Motion.standard) { proxy.scrollTo(resolved, anchor: .top) }
+          withAnimation(DesignTokens.Motion.standard) { proxy.scrollTo(resolved, anchor: landing) }
         }
         scrollTarget = nil
       }
