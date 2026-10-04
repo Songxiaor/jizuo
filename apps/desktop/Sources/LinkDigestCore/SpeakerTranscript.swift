@@ -23,17 +23,29 @@ public struct SpeakerTurn: Sendable, Equatable {
   /// 「00:12」这样的时间码；正文没带时间码时为空。
   public let startLabel: String?
   public var paragraphs: [String]
+  /// 每一段自己的时间码，和 `paragraphs` 一一对应；第一段就是 `startLabel`。
+  /// 同一个人连着说的几段原来只剩开头一个时间码，一分多钟的录音看着像一整块
+  /// （2026-10-04 走查，语音备忘录）。
+  public var paragraphStartLabels: [String?]
 
-  public init(speaker: String?, startLabel: String?, paragraphs: [String]) {
+  public init(speaker: String?, startLabel: String?, paragraphs: [String], paragraphStartLabels: [String?]? = nil) {
     self.speaker = speaker
     self.startLabel = startLabel
     self.paragraphs = paragraphs
+    self.paragraphStartLabels = paragraphStartLabels
+      ?? paragraphs.indices.map { $0 == 0 ? startLabel : nil }
   }
 
   /// 时间码换算成秒，给「点时间跳转」用。
-  public var startSeconds: Double? {
-    guard let startLabel else { return nil }
-    let parts = startLabel.split(separator: ":").compactMap { Int($0) }
+  public var startSeconds: Double? { startLabel.flatMap(Self.seconds(of:)) }
+
+  /// 第 `index` 段的时间码（没有就是 nil）。
+  public func startLabel(ofParagraph index: Int) -> String? {
+    paragraphStartLabels.indices.contains(index) ? paragraphStartLabels[index] : nil
+  }
+
+  public static func seconds(of label: String) -> Double? {
+    let parts = label.split(separator: ":").compactMap { Int($0) }
     guard !parts.isEmpty else { return nil }
     return Double(parts.reduce(0) { $0 * 60 + $1 })
   }
@@ -307,7 +319,13 @@ public enum SpeakerTranscript {
         turns.append(SpeakerTurn(speaker: nil, startLabel: clock, paragraphs: []))
       }
       let trimmed = text.trimmingCharacters(in: .whitespaces)
-      if !trimmed.isEmpty { turns[turns.count - 1].paragraphs.append(trimmed) }
+      if !trimmed.isEmpty {
+        let turn = turns.count - 1
+        // 一轮的第一段沿用这一轮的开头时间（名字那一行的时间码）。
+        let label = turns[turn].paragraphs.isEmpty ? (turns[turn].startLabel ?? clock) : clock
+        turns[turn].paragraphs.append(trimmed)
+        turns[turn].paragraphStartLabels.append(label)
+      }
     }
     return turns.filter { !$0.paragraphs.isEmpty }
   }

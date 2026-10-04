@@ -212,6 +212,11 @@ private func themeColor(_ red: Int, _ green: Int, _ blue: Int) -> Color {
 }
 
 /// 汲作阅读主题（浅色）：接近纯白的中性底、清晰墨色、一支鲜亮的蓝做强调。
+/// 导出文件是白纸：印一律用浅色主题的朱，不跟随当前深浅色。
+enum ExportPalette {
+  static let seal = ReadingPalette.seal
+}
+
 private enum ReadingPalette {
   /// 侧栏：极浅的中性灰，只比白色暗一点点，用来和列表分层。
   static let sidebar = themeColor(0xF6, 0xF6, 0xF4)

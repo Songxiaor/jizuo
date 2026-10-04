@@ -93,7 +93,8 @@ enum CurrentCaptureMediaPreview {
       companionAudioURL: descriptor.companionAudioURL,
       coverURL: descriptor.posterURL,
       durationSeconds: descriptor.durationSeconds,
-      author: descriptor.author
+      author: descriptor.author,
+      fallbackVideoURLs: descriptor.fallbackVideoURLs ?? []
     )
   }
 
@@ -2446,6 +2447,18 @@ private struct PlayerSpaceKeyToggle: NSViewRepresentable {
   }
 }
 
+/// 读过的视频尺寸和封面留在内存里。切回看过的一条时第一帧就是成品，不再先闪一块
+/// 黑底「正在读取视频尺寸…」、再闪一帧黑画面才换成封面（2026-10-04 走查：切到「视频」
+/// 分区，1.5 秒里详情区换了四个样子）。
+@MainActor enum VideoCardMemory {
+  static var geometry: [URL: PlaybackSurfaceGeometry] = [:]
+  static let posters: NSCache<NSURL, NSImage> = {
+    let cache = NSCache<NSURL, NSImage>()
+    cache.countLimit = 40
+    return cache
+  }()
+}
+
 /// 拆出本文件后不再是 file-private —— 使用方 HistoryContentView 已不同文件。
 struct HistoryVideoPlayerCard: View {
   // 错误色走主题，理由同其它视图：写死 .red 在低对比与高对比主题上都不成立。
@@ -2478,6 +2491,15 @@ struct HistoryVideoPlayerCard: View {
   private var isInMini: Bool { mini.isShowing(player: player) }
   private var miniOwnerID: String { "\(taskID.rawValue)|\(fileURL.path)" }
 
+  init(fileURL: URL, media: MediaAsset?, taskID: TaskID, model: HistoryViewModel) {
+    self.fileURL = fileURL
+    self.media = media
+    self.taskID = taskID
+    self.model = model
+    _surfaceGeometry = State(initialValue: VideoCardMemory.geometry[fileURL] ?? .loading)
+    _posterImage = State(initialValue: VideoCardMemory.posters.object(forKey: fileURL as NSURL))
+  }
+
   @ViewBuilder private var posterOverlay: some View {
     if let posterImage, !hasStartedPlayback {
       ZStack {
@@ -2508,8 +2530,9 @@ struct HistoryVideoPlayerCard: View {
   /// 取视频十分之一处（最多第 30 秒）的一帧当封面；整段很短或取不到就不盖。
   private func loadPoster(_ url: URL) {
     posterTask?.cancel()
-    posterImage = nil
+    posterImage = VideoCardMemory.posters.object(forKey: url as NSURL)
     hasStartedPlayback = false
+    guard posterImage == nil else { return }
     posterTask = Task { @MainActor in
       let asset = AVURLAsset(url: url)
       guard let duration = try? await asset.load(.duration), duration.seconds.isFinite, duration.seconds > 4 else { return }
@@ -2522,7 +2545,9 @@ struct HistoryVideoPlayerCard: View {
       guard let frame = try? await generator.image(at: at).image, !Task.isCancelled else { return }
       // 一打开就点了播放（或按了空格）的，不再补盖封面。
       guard player?.timeControlStatus != .playing, (player?.currentTime().seconds ?? 0) < 0.5 else { return }
-      posterImage = NSImage(cgImage: frame, size: NSSize(width: frame.width, height: frame.height))
+      let image = NSImage(cgImage: frame, size: NSSize(width: frame.width, height: frame.height))
+      VideoCardMemory.posters.setObject(image, forKey: url as NSURL)
+      posterImage = image
     }
   }
 
@@ -2755,15 +2780,13 @@ struct HistoryVideoPlayerCard: View {
           .accessibilityIdentifier("history-video-player")
       }
     } else if surfaceGeometry == .loading {
-      ZStack {
-        RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
-          .fill(Color.black.opacity(0.9))
-        ProgressView("正在读取视频尺寸…")
-          .tint(.white)
-          .foregroundStyle(.white)
-      }
-      .frame(height: 220)
-      .accessibilityIdentifier("history-video-geometry-placeholder")
+      // 本机文件读尺寸通常几十毫秒：占位只是一块浅底，不写字、不铺黑，
+      // 免得每次打开视频都先闪一块黑框和一行「正在读取」。
+      RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)
+        .fill(Color.primary.opacity(0.05))
+        .frame(height: 220)
+        .accessibilityLabel("正在读取视频尺寸")
+        .accessibilityIdentifier("history-video-geometry-placeholder")
     } else {
       // 没有画面可显示时给一条可播放的音频条，而不是继续转圈。转写照常可用，
       // 它本来就只需要声音。
@@ -2791,6 +2814,10 @@ struct HistoryVideoPlayerCard: View {
   /// "正在读取视频尺寸…"——纯音轨的媒体每次都会这样。
   private func loadVideoGeometry(_ url: URL) {
     videoGeometryTask?.cancel()
+    if let known = VideoCardMemory.geometry[url] {
+      surfaceGeometry = known
+      return
+    }
     surfaceGeometry = .loading
     videoGeometryTask = Task { @MainActor in
       let asset = RemotePlaybackAsset.make(url: url)
@@ -2802,10 +2829,12 @@ struct HistoryVideoPlayerCard: View {
       }
       let hasAudioTrack = !((try? await asset.loadTracks(withMediaType: .audio)) ?? []).isEmpty
       guard !Task.isCancelled else { return }
-      surfaceGeometry = VideoDisplayGeometry.surfaceGeometry(
+      let geometry = VideoDisplayGeometry.surfaceGeometry(
         videoTrack: videoTrack,
         hasAudioTrack: hasAudioTrack
       )
+      VideoCardMemory.geometry[url] = geometry
+      surfaceGeometry = geometry
     }
   }
 

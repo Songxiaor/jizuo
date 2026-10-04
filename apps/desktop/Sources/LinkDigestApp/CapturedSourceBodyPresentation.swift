@@ -351,11 +351,16 @@ enum CapturedSourceBodyPresentation {
   }
 
   /// 只认 `# 标题` / `## 标题` 这种带空格的 ATX 行，避免把 `#话题` 当成标题删掉。
+  /// 标题前面可以先有封面图：X 长文是「封面图 → # 标题 → 正文」，原来只看第一行，
+  /// 碰到图就放弃，页面顶上的大标题在正文里又印了一遍（2026-10-04 走查）。图留着。
   private static func strippingSyntheticTitleHeadingOnly(title: String, from markdown: String) -> String {
     let titleKey = canonicalText(title)
     guard !titleKey.isEmpty else { return markdown }
     var lines = markdown.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
-    guard let headingIndex = lines.firstIndex(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty }) else {
+    guard let headingIndex = lines.firstIndex(where: {
+      let trimmed = $0.trimmingCharacters(in: .whitespaces)
+      return !trimmed.isEmpty && !isImageOnlyLine(trimmed)
+    }) else {
       return markdown
     }
     let headingLine = lines[headingIndex].trimmingCharacters(in: .whitespaces)
@@ -413,6 +418,48 @@ enum CapturedSourceBodyPresentation {
     }
     return trimmed.count <= 20
       && trimmed.range(of: #"^\d+(?:\.\d+)?\s*(?:min|mins|minutes|分钟)$"#, options: options) != nil
+  }
+
+  /// 导出标题已经印过一遍时，去掉正文里第一次出现的同名标题。
+  /// 前面可以是空行或图片；一旦先遇到别的正文，就不再往下删。
+  /// 比较前去掉空白和标点，和阅读区「同一句话」用的是同一套归一。
+  static func strippingFirstEchoedHeading(title: String, from markdown: String) -> String {
+    let titleKey = canonicalText(title)
+    guard !titleKey.isEmpty else { return markdown }
+    var lines = markdown.split(omittingEmptySubsequences: false, whereSeparator: \.isNewline).map(String.init)
+    var index = 0
+    while index < lines.count {
+      let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+      if trimmed.isEmpty || isImageOnlyLine(trimmed) {
+        index += 1
+        continue
+      }
+      guard let heading = atxHeadingText(trimmed), canonicalText(heading) == titleKey else {
+        return markdown
+      }
+      lines.remove(at: index)
+      return lines.joined(separator: "\n").trimmingCharacters(in: .newlines)
+    }
+    return markdown
+  }
+
+  private static func isImageOnlyLine(_ line: String) -> Bool {
+    var rest = line.trimmingCharacters(in: .whitespaces)
+    if rest.hasPrefix("<img") { return true }
+    var sawImage = false
+    while rest.hasPrefix("![") {
+      guard let paren = rest.range(of: "]("),
+            let close = rest[paren.upperBound...].firstIndex(of: ")")
+      else { return false }
+      sawImage = true
+      rest = rest[rest.index(after: close)...].trimmingCharacters(in: .whitespaces)
+    }
+    if !sawImage { return false }
+    if rest.isEmpty { return true }
+    return rest.range(
+      of: #"^\S+\s+\d{2,5}×\d{2,5}\s+\d+(?:\.\d+)?\s*(?:KB|MB|GB)$"#,
+      options: .regularExpression
+    ) != nil
   }
 
   private static func canonicalText(_ value: String) -> String {

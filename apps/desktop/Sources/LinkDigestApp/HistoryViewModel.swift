@@ -6581,20 +6581,28 @@ final class HistoryViewModel {
     }
     // 标题与作者/发布时间取来源快照：转写稿的标题常是空的或「转写」这类占位，
     // 作者/发布时间它根本没有。
-    let title = nonEmpty(sourceSnapshot.title)
+    let storedTitle = nonEmpty(sourceSnapshot.title)
       ?? nonEmpty(snapshot.title)
       ?? CapturedDocumentTitle.display(nil, for: detail.task.canonicalURL)
+    let prepared = ReadingDocumentExport.preparedExport(
+      storedTitle: storedTitle,
+      canonicalURL: detail.task.canonicalURL,
+      body: body.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
 
-    var lines: [String] = ["---", "title: \(yamlQuoted(title))", "source: \(yamlQuoted(detail.task.canonicalURL))"]
+    var lines: [String] = ["---", "title: \(yamlQuoted(prepared.title))"]
+    if prepared.includesSource {
+      lines.append("source: \(yamlQuoted(detail.task.canonicalURL))")
+    }
     if let author = nonEmpty(sourceNote.author) { lines.append("author: \(yamlQuoted(author))") }
     if let published = nonEmpty(sourceNote.published) { lines.append("published: \(yamlQuoted(published))") }
     lines.append("---")
     lines.append("")
-    lines.append("# \(title)")
+    lines.append("# \(prepared.title)")
     lines.append("")
-    lines.append(body.trimmingCharacters(in: .whitespacesAndNewlines))
+    lines.append(prepared.body)
 
-    let base = sanitizedExportFilename(title)
+    let base = sanitizedExportFilename(prepared.title)
     return (base, lines.joined(separator: "\n"))
   }
 
@@ -6759,11 +6767,16 @@ final class HistoryViewModel {
   ///
   /// 原来行和选中在同一拍里一起改，列表、选中高亮、详情头一起重排，点侧栏要等
   /// 三四百毫秒才看到新列表（2026-10-02 实测）。拆成两拍，列表先出来，详情紧跟着换。
-  private func selectFirstRowAfterListPaint() {
+  /// `replacingStaleSelection`：选中的那条已不在新列表里，但详情还留着它——这时也接住第一条。
+  /// 期间用户自己点了列表里的哪一条（选中落在列表里），就不再抢。
+  private func selectFirstRowAfterListPaint(replacingStaleSelection: Bool = false) {
     let generation = configurationGeneration, requestID = listRequestID
     DispatchQueue.main.async { [weak self] in
       guard let self, generation == self.configurationGeneration, requestID == self.listRequestID,
-            self.selectedTaskIDs.isEmpty, let first = self.rows.first?.taskID else { return }
+            let first = self.rows.first?.taskID else { return }
+      let isStale = replacingStaleSelection
+        && self.selectedTaskIDs.isDisjoint(with: self.rows.map(\.taskID))
+      guard self.selectedTaskIDs.isEmpty || isStale else { return }
       self.selectedTaskID = first
     }
   }
@@ -6812,27 +6825,33 @@ final class HistoryViewModel {
         }
       } else {
         let visible = Set(rows.map(\.taskID))
-        selectedTaskIDs.formIntersection(visible)
         // 搜索或筛选把原选中项排除后，交集会变空。列表明明有结果却把详情清成
         // 空白，会让用户误以为「没有搜索结果」。自动接住第一条可见结果。
         // 博主目录与来源平台图库除外：右侧应先列出卡片，点进后再读。
-        if selectedTaskIDs.isEmpty {
+        if selectedTaskIDs.isDisjoint(with: visible) {
           if suppressesAutomaticSelection {
+            selectedTaskIDs = []
             detail = nil
             setDetailState(.idle)
           } else if let fallback = fallbackSelectionTaskID, visible.contains(fallback) {
             selectedTaskID = fallback
           } else {
-            selectFirstRowAfterListPaint()
+            // 旧选中先不清：清空会让详情区先闪「从左边选一条内容」、再闪「正在载入详情…」，
+            // 才换成新的一条（2026-10-04 走查：切到「视频」分区 1.5 秒换了四个样子）。
+            // 上一条留在屏幕上，等第一条读出来整体换掉。
+            selectFirstRowAfterListPaint(replacingStaleSelection: true)
           }
-        } else if selectedTaskID != nil {
-          // 选中的还是同一条、详情已在屏幕上：不重读。原来搜索框每停一下就整条详情重读重画，
-          // 打字卡、右栏闪（2026-10-01 体检）。
-          if detail?.task.id != selectedTaskID { loadDetailForSelection() }
         } else {
-          // 多选仍保留批量语义，不擅自收窄成第一条。
-          detail = nil
-          setDetailState(.idle)
+          selectedTaskIDs.formIntersection(visible)
+          if selectedTaskID != nil {
+            // 选中的还是同一条、详情已在屏幕上：不重读。原来搜索框每停一下就整条详情重读重画，
+            // 打字卡、右栏闪（2026-10-01 体检）。
+            if detail?.task.id != selectedTaskID { loadDetailForSelection() }
+          } else {
+            // 多选仍保留批量语义，不擅自收窄成第一条。
+            detail = nil
+            setDetailState(.idle)
+          }
         }
       }
     case let .failure(code):

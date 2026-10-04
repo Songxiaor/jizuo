@@ -103,28 +103,40 @@ struct SpeakerTranscriptView: View {
     // 悬停变靛青），说话人名字留在正文栏里、压在这一轮发言上面。
     LazyVStack(alignment: .leading, spacing: 20) {
       ForEach(Array(turns.enumerated()), id: \.offset) { index, turn in
-        HStack(alignment: .top, spacing: 14) {
-          if showsTimecodes {
-            SpeakerTurnTimecode(index: index, turn: turn, accentColor: accentColor, onSeek: onSeek)
-              .frame(width: 44, alignment: .trailing)
-              // 和名字那一行（或没有名字时正文第一行）对齐。
-              .padding(.top, turn.speaker == nil ? max(0, readingFont.bodySize - 11) * 0.55 + 2 : 3)
-          }
-          VStack(alignment: .leading, spacing: 4) {
-            if let speaker = turn.speaker {
-              Text(speaker)
-                .font(readingFont.font(size: readingFont.bodySize - 2, weight: .semibold))
-                .foregroundStyle(secondaryTextColor)
-            }
-            ForEach(Array(turn.paragraphs.enumerated()), id: \.offset) { _, paragraph in
-              Text(paragraph)
-                .font(readingFont.body())
-                .lineSpacing(MarkdownPresentation.bodyLineSpacing)
-                .foregroundStyle(primaryTextColor)
-                .textSelection(.enabled)
-                .frame(maxWidth: readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm, alignment: .leading)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 10) {
+          ForEach(Array(turn.paragraphs.enumerated()), id: \.offset) { paragraphIndex, paragraph in
+            HStack(alignment: .top, spacing: 14) {
+              if showsTimecodes {
+                // 同一个人连着说的每一段都挂自己的时间码：原来只有一轮的开头一个，
+                // 一分多钟的独白看着像一整块、也没法点到中间（2026-10-04 走查）。
+                SpeakerTurnTimecode(
+                  identifier: paragraphIndex == 0 ? "\(index)" : "\(index)-\(paragraphIndex)",
+                  label: turn.startLabel(ofParagraph: paragraphIndex),
+                  accentColor: accentColor,
+                  onSeek: onSeek
+                )
+                  .frame(width: 44, alignment: .trailing)
+                  // 和名字那一行（或没有名字时正文第一行）对齐。
+                  .padding(
+                    .top,
+                    paragraphIndex == 0 && turn.speaker != nil ? 3 : max(0, readingFont.bodySize - 11) * 0.55 + 2
+                  )
+              }
+              VStack(alignment: .leading, spacing: 4) {
+                if paragraphIndex == 0, let speaker = turn.speaker {
+                  Text(speaker)
+                    .font(readingFont.font(size: readingFont.bodySize - 2, weight: .semibold))
+                    .foregroundStyle(secondaryTextColor)
+                }
+                Text(paragraph)
+                  .font(readingFont.body())
+                  .lineSpacing(MarkdownPresentation.bodyLineSpacing)
+                  .foregroundStyle(primaryTextColor)
+                  .textSelection(.enabled)
+                  .frame(maxWidth: readingFont.bodySize * DesignTokens.Layout.readingTextMeasureEm, alignment: .leading)
+                  .frame(maxWidth: .infinity, alignment: .leading)
+                  .fixedSize(horizontal: false, vertical: true)
+              }
             }
           }
         }
@@ -135,8 +147,8 @@ struct SpeakerTranscriptView: View {
 }
 
 private struct SpeakerTurnTimecode: View {
-  let index: Int
-  let turn: SpeakerTurn
+  let identifier: String
+  let label: String?
   let accentColor: Color
   let onSeek: (Double) -> Void
 
@@ -144,7 +156,7 @@ private struct SpeakerTurnTimecode: View {
   @State private var isHovered = false
 
   var body: some View {
-    if let label = turn.startLabel, let seconds = turn.startSeconds {
+    if let label, let seconds = SpeakerTurn.seconds(of: label) {
       Button { onSeek(seconds) } label: {
         Text(label)
           .font(.system(size: 11, weight: .regular, design: .monospaced))
@@ -154,7 +166,7 @@ private struct SpeakerTurnTimecode: View {
       .buttonStyle(.plain)
       .help("跳到 \(label)")
       .accessibilityLabel("跳到 \(label)")
-      .accessibilityIdentifier("speaker-turn-seek-\(index)")
+      .accessibilityIdentifier("speaker-turn-seek-\(identifier)")
       .onHover { hovering in
         withAnimation(historyUIAnimation(reduceMotion: reduceMotion)) { isHovered = hovering }
       }

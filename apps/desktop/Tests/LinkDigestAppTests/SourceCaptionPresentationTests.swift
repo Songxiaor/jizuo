@@ -19,6 +19,17 @@ final class SourceCaptionPresentationTests: XCTestCase {
     XCTAssertEqual(rendered, "视频标题\n补充介绍。\n\n![封面](https://example.test/cover.jpg)")
   }
 
+  /// X 长文是「封面图 → # 标题 → 正文」：标题已经印在页面顶上，正文里那行不再重复，图留着。
+  func testTitleHeadingAfterCoverImageIsRemoved() {
+    let body = "![](https://example.test/cover.jpg)\n\n# 15 分钟打通 Muse\n\nMuse 的生产力。"
+    let rendered = CapturedSourceBodyPresentation.strippingEchoedOpening(
+      title: "15 分钟打通 Muse", from: body, style: .stripSyntheticTitleHeadingOnly
+    )
+    XCTAssertFalse(rendered.contains("# 15 分钟打通 Muse"))
+    XCTAssertTrue(rendered.hasPrefix("![](https://example.test/cover.jpg)"))
+    XCTAssertTrue(rendered.contains("Muse 的生产力。"))
+  }
+
   func testHashtagCaptionIsNotAHeading() {
     let body = "#家居\n今天的新发现"
     XCTAssertEqual(CapturedSourceBodyPresentation.strippingEchoedOpening(

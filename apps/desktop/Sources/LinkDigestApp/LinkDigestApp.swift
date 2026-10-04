@@ -1363,7 +1363,8 @@ struct MainWindowLaunchGuard: ViewModifier {
           author: media.author ?? author,
           transcriptionCapability: .supported,
           selectionReason: .singleCandidate,
-          playbackState: .unknown
+          playbackState: .unknown,
+          fallbackVideoURLs: media.fallbackVideoURLs.isEmpty ? nil : media.fallbackVideoURLs
         )
       }
     )

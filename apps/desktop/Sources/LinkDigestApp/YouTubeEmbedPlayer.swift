@@ -295,10 +295,10 @@ private struct YouTubeEmbedPosterView: View {
     return nil
   }
 
-  func present(videoID: String) { content = .youTube(videoID: videoID) }
+  func present(videoID: String) { animated { content = .youTube(videoID: videoID) } }
 
   func present(player: AVPlayer, aspectRatio: CGFloat) {
-    content = .player(player, aspectRatio: aspectRatio > 0 ? aspectRatio : 16.0 / 9.0)
+    animated { content = .player(player, aspectRatio: aspectRatio > 0 ? aspectRatio : 16.0 / 9.0) }
   }
 
   func isPresenting(player: AVPlayer?) -> Bool {
@@ -306,7 +306,11 @@ private struct YouTubeEmbedPosterView: View {
     return false
   }
 
-  func dismiss() { content = nil }
+  func dismiss() { animated { content = nil } }
+
+  /// 放大、关闭的淡入淡出由 `VideoCinemaOverlay` 自己做（只动那一层），这里不用
+  /// `withAnimation` 包住——那会把同一拍里详情页卡片的换位也做成逐帧动画。
+  private func animated(_ change: () -> Void) { change() }
 }
 
 /// 双击监视器注册方的身份：卡片层（双击放大）还是影院 overlay（双击关闭）。
@@ -415,7 +419,17 @@ struct VideoCinemaOverlay: View {
   /// 关闭按钮行占用的高度（22pt 图标 + 8pt 底距），参与可用高度计算。
   private let closeBarHeight: CGFloat = 30
 
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// 放大、关闭都淡入淡出，不再一帧之内整块出现或消失（2026-10-04 走查）。只淡、不缩放：
+  /// 缩放让播放器每帧换尺寸，主线程跟着每帧重排（2026-10-04 Instruments）。
+  /// 系统打开「减少动态效果」时直接切换。
   var body: some View {
+    ZStack { cinemaLayer }
+      .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: cinema.isPresented)
+  }
+
+  @ViewBuilder private var cinemaLayer: some View {
     if let content = cinema.content {
       GeometryReader { proxy in
         // 手动算 fitted 尺寸：给播放器确定 frame（不依赖 GeometryReader

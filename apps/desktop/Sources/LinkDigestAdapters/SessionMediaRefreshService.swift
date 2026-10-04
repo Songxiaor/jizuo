@@ -142,7 +142,8 @@ public struct SessionMediaRefreshService: Sendable {
       author: media.author,
       transcriptionCapability: .supported,
       selectionReason: .singleCandidate,
-      playbackState: .unknown
+      playbackState: .unknown,
+      fallbackVideoURLs: media.fallbackVideoURLs.isEmpty ? nil : media.fallbackVideoURLs
     )
   }
 }

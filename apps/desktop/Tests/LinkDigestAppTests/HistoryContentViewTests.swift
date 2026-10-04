@@ -1242,7 +1242,7 @@ final class HistoryContentViewTests: XCTestCase {
     // 页签用文字加下划线，不用分段控件——和右边框起来的动作按钮一眼分得开。
     let strip = section(
       in: source,
-      from: "private var readingTabStrip: some View",
+      from: "private func readingTabStrip(pinned: Bool) -> some View",
       to: "private var reformatToggle"
     )
     XCTAssertFalse(strip.contains(".pickerStyle(.segmented)"))

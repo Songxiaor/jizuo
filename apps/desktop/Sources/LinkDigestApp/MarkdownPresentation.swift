@@ -176,10 +176,11 @@ enum LocalMarkdownImageLayout {
     )
     // 评论区必须作为一个整体交给 MarkdownPresentation：评论正文里也可能带图，
     // 如果先按图片切段，图片后的回复会失去 `## 评论（…）` 上下文，退回成普通
-    // Markdown 列表。评论组件会在每条评论内部再次切图，因此这里保留整个尾段。
-    if let commentStart = commentSectionStart(in: markdown) {
+    // Markdown 列表。评论组件会在每条评论内部再次切图。
+    // 只包住评论区本身：空行后面的 `## 视频转写` 不属于最后一条评论，得继续按正文切图。
+    if let region = MarkdownPresentation.structuredCommentRange(in: markdown) {
       var result: [Segment] = []
-      let head = String(markdown[..<commentStart])
+      let head = String(markdown[..<region.lowerBound])
       if !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
         result.append(contentsOf: segments(
           markdown: head,
@@ -187,14 +188,25 @@ enum LocalMarkdownImageLayout {
           appendsUnusedLocalImages: false
         ))
       }
-      result.append(.text(String(markdown[commentStart...])))
+      let commentText = String(markdown[region])
+      if !commentText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        result.append(.text(commentText))
+      }
+      let tail = String(markdown[region.upperBound...])
+      if !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        result.append(contentsOf: segments(
+          markdown: tail,
+          localImageURLs: localImageURLs,
+          appendsUnusedLocalImages: false
+        ))
+      }
       if appendsUnusedLocalImages {
         let referenced = referencedLocalImagePaths(in: markdown, byHash: byHash)
         result.append(contentsOf: localImageURLs
           .filter { !referenced.contains($0.path) }
           .map(Segment.image))
       }
-      return result
+      return result.isEmpty ? [.text(markdown)] : result
     }
     // 文中视频先剥离：没有本地图片时也必须变成卡片，不能把标记当正文。
     if let videoRange = firstVideoMarkerRange(in: markdown) {
@@ -299,42 +311,6 @@ enum LocalMarkdownImageLayout {
       }
     }
     return segments.isEmpty ? [.text(markdown)] : segments
-  }
-
-  private static func commentSectionStart(in markdown: String) -> String.Index? {
-    var lineStart = markdown.startIndex
-    while lineStart < markdown.endIndex {
-      let lineEnd = markdown[lineStart...].firstIndex(of: "\n") ?? markdown.endIndex
-      let line = markdown[lineStart..<lineEnd].trimmingCharacters(in: .whitespaces)
-      if (line.hasPrefix("## 评论（") || line.hasPrefix("## 评论与回复（")), line.hasSuffix("）") {
-        var nextStart = lineEnd < markdown.endIndex ? markdown.index(after: lineEnd) : markdown.endIndex
-        while nextStart < markdown.endIndex {
-          let nextEnd = markdown[nextStart...].firstIndex(of: "\n") ?? markdown.endIndex
-          let candidate = markdown[nextStart..<nextEnd].trimmingCharacters(in: .whitespaces)
-          if !candidate.isEmpty {
-            guard candidate.hasPrefix("- **"),
-                  let authorEnd = candidate.dropFirst(4).range(of: "**")
-            else { break }
-            let remainder = candidate.dropFirst(4)
-            let author = String(remainder[..<authorEnd.lowerBound])
-            let isGenericCommunity = line.hasPrefix("## 评论与回复（")
-            if isGenericCommunity
-              || author.hasPrefix("u/")
-              || candidate.contains("score ")
-              || candidate.contains("[原评论](")
-              || candidate.contains("回复层级 ") {
-              return lineStart
-            }
-            break
-          }
-          guard nextEnd < markdown.endIndex else { break }
-          nextStart = markdown.index(after: nextEnd)
-        }
-      }
-      guard lineEnd < markdown.endIndex else { break }
-      lineStart = markdown.index(after: lineEnd)
-    }
-    return nil
   }
 
   private static func referencedLocalImagePaths(
@@ -505,6 +481,7 @@ enum MarkdownPresentation {
     var value = replacingHTMLLikeTokensPreservingCode(in: source)
     value = replacing(#"(?:（此处内容无法显示）\s*){2,}"#, in: value, with: omittedHTML + "\n")
     value = collapsingCJKAdjacentSpaces(value)
+    value = strippingLightboxFileInfo(value)
     return value
   }
 
@@ -775,7 +752,7 @@ enum MarkdownPresentation {
   /// projection as rich mode. It differs only in Markdown interpretation, not
   /// in what untrusted persisted source may become visible on screen.
   static func plainTextPresentation(_ source: String) -> String {
-    removingInlineMarkers(sanitized(source))
+    removingInlineMarkers(strippingMarkdownSyntax(sanitized(source)))
   }
 
   /// 去掉上下标等内部记号（私用区字符），给纯文本、复制、导出用。
@@ -1246,6 +1223,49 @@ enum MarkdownPresentation {
     return blocks
   }
 
+  /// 评论区在源文里的范围。结束于下一段顶格标题之前，这样后面的转写不会被切进评论尾段。
+  static func structuredCommentRange(in markdown: String) -> Range<String.Index>? {
+    let spans = lineSpans(in: markdown)
+    let lines = spans.map(\.text)
+    for index in lines.indices {
+      guard let parsed = commentSection(in: lines, startingAt: index) else { continue }
+      let start = spans[index].start
+      let end = parsed.nextIndex < spans.count ? spans[parsed.nextIndex].start : markdown.endIndex
+      guard start < end else { continue }
+      return start..<end
+    }
+    return nil
+  }
+
+  private struct LineSpan {
+    let text: String
+    let start: String.Index
+  }
+
+  private static func lineSpans(in markdown: String) -> [LineSpan] {
+    var spans: [LineSpan] = []
+    var lineStart = markdown.startIndex
+    var index = markdown.startIndex
+    while index < markdown.endIndex {
+      let character = markdown[index]
+      if character == "\n" || character == "\r" {
+        spans.append(LineSpan(text: String(markdown[lineStart..<index]), start: lineStart))
+        if character == "\r" {
+          let next = markdown.index(after: index)
+          if next < markdown.endIndex, markdown[next] == "\n" { index = next }
+        }
+        index = markdown.index(after: index)
+        lineStart = index
+        continue
+      }
+      index = markdown.index(after: index)
+    }
+    if lineStart <= markdown.endIndex {
+      spans.append(LineSpan(text: String(markdown[lineStart..<markdown.endIndex]), start: lineStart))
+    }
+    return spans
+  }
+
   private static func commentSection(
     in lines: [String],
     startingAt start: Int
@@ -1372,9 +1392,19 @@ enum MarkdownPresentation {
          isCommentHeader(header, sectionTitle: sectionTitle) {
         return cursor
       }
+      // 评论正文都缩进。顶格的标题（空行之后的 `## 视频转写`）是文档又接上了，
+      // 不能继续算进最后一条评论。缩进的 `# 省流版本` 仍是评论自己的字。
+      if resumesDocumentAfterComments(lines[cursor]) {
+        return cursor
+      }
       cursor += 1
     }
     return lines.count
+  }
+
+  private static func resumesDocumentAfterComments(_ line: String) -> Bool {
+    guard let first = line.first, first != " ", first != "\t" else { return false }
+    return headingMatch(line) != nil
   }
 
   private static func normalizedCommentBody(_ lines: [String], removingIndent count: Int) -> String {
@@ -2155,6 +2185,125 @@ enum MarkdownPresentation {
         value.removeSubrange(opening..<afterOpen)
       }
     }
+    return value
+  }
+
+  /// Discourse 灯箱跟在图片后面的「文件名 宽×高 大小」整行。只删这一行（或图片标记后的这一截），
+  /// 正文里顺口提到的尺寸不动。
+  static func strippingLightboxFileInfo(_ markdown: String) -> String {
+    var inFence = false
+    return markdown.components(separatedBy: "\n").map { line in
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+        inFence.toggle()
+        return line
+      }
+      guard !inFence else { return line }
+      return strippingLightboxFileInfoLine(line)
+    }.joined(separator: "\n")
+  }
+
+  /// 导出时拿不到本地文件的图片标记：整行去掉，行内的只去掉标记。不要把 `![…](…)` 印出来。
+  static func droppingUnresolvedImages(_ markdown: String) -> String {
+    var inFence = false
+    let lines = markdown.components(separatedBy: "\n").compactMap { line -> String? in
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.isEmpty { return line }
+      if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+        inFence.toggle()
+        return line
+      }
+      guard !inFence else { return line }
+      let cleaned = transformingOutsideInlineCode(line) { removingImageTokens($0) }
+      return cleaned.trimmingCharacters(in: .whitespaces).isEmpty ? nil : cleaned
+    }
+    return lines.joined(separator: "\n")
+  }
+
+  /// 纯文本：标题去掉井号、图片行去掉、链接写成「文字（链接）」、强调符号去掉。代码原样。
+  private static func strippingMarkdownSyntax(_ markdown: String) -> String {
+    var inFence = false
+    let lines = markdown.components(separatedBy: "\n").compactMap { line -> String? in
+      let trimmed = line.trimmingCharacters(in: .whitespaces)
+      if trimmed.hasPrefix("```") || trimmed.hasPrefix("~~~") {
+        inFence.toggle()
+        return line
+      }
+      guard !inFence else { return line }
+      return plainTextLine(line)
+    }
+    return lines.joined(separator: "\n")
+  }
+
+  private static func plainTextLine(_ line: String) -> String? {
+    if line.trimmingCharacters(in: .whitespaces).isEmpty { return line }
+    var working = line
+    if let range = working.range(of: #"^[ \t]{0,3}#{1,6}[ \t]+"#, options: .regularExpression) {
+      working.removeSubrange(range)
+    }
+    let transformed = transformingOutsideInlineCode(working) { prose in
+      var text = removingImageTokens(prose)
+      text = replacingLinks(text)
+      text = strippingEmphasis(text)
+      return text
+    }
+    return transformed.trimmingCharacters(in: .whitespaces).isEmpty ? nil : transformed
+  }
+
+  private static func strippingLightboxFileInfoLine(_ line: String) -> String {
+    let trimmed = line.trimmingCharacters(in: .whitespaces)
+    guard !trimmed.isEmpty,
+          let metaRange = trimmed.range(
+            of: #"(\S+)\s+(\d{2,5})×(\d{2,5})\s+(\d+(?:\.\d+)?)\s*(KB|MB|GB)$"#,
+            options: .regularExpression
+          )
+    else { return line }
+    let meta = String(trimmed[metaRange])
+    let label = meta.split(separator: " ").first.map(String.init) ?? ""
+    if label.unicodeScalars.contains(where: { (0x4E00...0x9FFF).contains($0.value) }) { return line }
+    let prefix = trimmed[..<metaRange.lowerBound].trimmingCharacters(in: .whitespaces)
+    if !prefix.isEmpty, !isOnlyImageMarkup(prefix) { return line }
+    if prefix.isEmpty { return "" }
+    let indent = line.prefix { $0 == " " || $0 == "\t" }
+    return indent + prefix
+  }
+
+  private static func isOnlyImageMarkup(_ text: String) -> Bool {
+    var rest = text.trimmingCharacters(in: .whitespaces)
+    var sawImage = false
+    while rest.hasPrefix("![") {
+      guard let paren = rest.range(of: "]("),
+            let close = rest[paren.upperBound...].firstIndex(of: ")")
+      else { return false }
+      sawImage = true
+      rest = rest[rest.index(after: close)...].trimmingCharacters(in: .whitespaces)
+    }
+    return sawImage && rest.isEmpty
+  }
+
+  private static func transformingOutsideInlineCode(_ line: String, _ transform: (String) -> String) -> String {
+    let parts = line.components(separatedBy: "`")
+    guard parts.count % 2 == 1 else { return transform(line) }
+    return parts.enumerated().map { index, part in
+      index.isMultiple(of: 2) ? transform(part) : part
+    }.joined(separator: "`")
+  }
+
+  private static func removingImageTokens(_ text: String) -> String {
+    replacing(#"!\[[^\]]*\]\([^)\n]*\)"#, in: text, with: "")
+  }
+
+  private static func replacingLinks(_ text: String) -> String {
+    replacing(#"\[([^\]\n]+)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)"#, in: text, with: "$1（$2）")
+  }
+
+  private static func strippingEmphasis(_ text: String) -> String {
+    var value = replacing(#"\*\*([^*\n]+)\*\*"#, in: text, with: "$1")
+    value = replacing(#"__([^_\n]+)__"#, in: value, with: "$1")
+    value = replacing(#"\*(\S(?:[^*\n]*\S)?)\*"#, in: value, with: "$1")
+    value = replacing(#"(?<![\w])_(\S(?:[^_\n]*\S)?)_(?![\w])"#, in: value, with: "$1")
+    value = value.replacingOccurrences(of: "**", with: "")
+    value = value.replacingOccurrences(of: "__", with: "")
     return value
   }
 

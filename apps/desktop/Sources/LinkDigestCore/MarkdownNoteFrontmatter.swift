@@ -65,10 +65,35 @@ public struct MarkdownNoteFrontmatter: Sendable, Equatable {
     return Self.firstMarkdownImageURL(in: body)
   }
 
+  /// X 长文在标题正下方印着阅读数（「8.5万」「7805」），抓取时跟着进了正文：列表预览
+  /// 和阅读区开头都是一行孤零零的数字（2026-10-04 走查）。只删「第一个标题（前面可以是
+  /// 封面图）后面紧挨着的那一行纯数字」，正文别处的数字一概不动。
+  public static func strippingViewCountUnderLeadingHeading(_ body: String) -> String {
+    var lines = body.components(separatedBy: "\n")
+    func trimmed(_ index: Int) -> String { lines[index].trimmingCharacters(in: .whitespaces) }
+    var heading = 0
+    while heading < lines.count, trimmed(heading).isEmpty || trimmed(heading).hasPrefix("![") {
+      heading += 1
+    }
+    guard heading < lines.count,
+          trimmed(heading).range(of: #"^#{1,6}\s+\S"#, options: .regularExpression) != nil else { return body }
+    var count = heading + 1
+    while count < lines.count, trimmed(count).isEmpty { count += 1 }
+    guard count < lines.count,
+          trimmed(count).range(of: #"^\d+(?:[.,]\d+)?\s*(?:万|千|亿|[KkMmBb])?$"#, options: .regularExpression) != nil
+    else { return body }
+    lines.remove(at: count)
+    // 删掉的那行前后各有一个空行，并成一个。
+    if count < lines.count, count - 1 > heading, trimmed(count).isEmpty, trimmed(count - 1).isEmpty {
+      lines.remove(at: count)
+    }
+    return lines.joined(separator: "\n")
+  }
+
   /// Bounded plain text from a capture body for directory cards. Image markup is
   /// dropped so a cover-only body does not become the preview.
   public static func directorySourcePreview(fromBody body: String, scalarLimit: Int = 240) -> String? {
-    var text = body
+    var text = strippingViewCountUnderLeadingHeading(body)
     // 评论区不是正文：抖音这类配文只有一行标题，后面紧跟「## 评论」，列表摘要原来露出的是
     // 「评论（已保存 20 条 / 页面显示 31）- 山丘 · 赞 1」（2026-09-29 发布前走查）。
     // 必须在下面把空白压成一行之前切，压完就认不出小标题了。

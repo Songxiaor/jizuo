@@ -124,11 +124,14 @@ final class XTweetResolverTests: XCTestCase {
     let media = try XCTUnwrap(XTweetResolver.bestVideo(in: payload, author: "@op7418"))
 
     XCTAssertEqual(media.platform, "x")
-    // 最高码率的 MP4；码率更高但主机不对的那条必须被挡掉。
+    // 最高码率的 MP4；码率更高但主机不对的那条必须被挡掉，也不能进备用档。
     XCTAssertEqual(
       media.videoURL,
       "https://video.twimg.com/amplify_video/2080486192186109952/vid/avc1/1132x1080/8Dk5oXXQHGEdrdjU.mp4"
     )
+    XCTAssertEqual(media.fallbackVideoURLs, [
+      "https://video.twimg.com/amplify_video/2080486192186109952/vid/avc1/282x270/NBt6T8I8x228XVqB.mp4",
+    ])
     XCTAssertEqual(media.durationSeconds, 121)
     XCTAssertEqual(media.author, "@op7418")
     XCTAssertEqual(
@@ -137,8 +140,8 @@ final class XTweetResolverTests: XCTestCase {
     )
   }
 
-  /// 4 分半的 2K 视频约 340MB，超过默认 200MB 下载上限：退到放得下的 720p。
-  func testLongVideoFallsBackToAVariantThatFitsTheDownloadBudget() throws {
+  /// 主地址永远是最高码率。体积是否放得进下载上限不在挑档时用标称码率估算。
+  func testBestVideoKeepsTheHighestBitrateAndOrdersLowerVariantsAsFallbacks() throws {
     let json = """
     {
       "mediaDetails": [{
@@ -148,7 +151,42 @@ final class XTweetResolverTests: XCTestCase {
           "variants": [
             {"bitrate": 256000, "content_type": "video/mp4", "url": "https://video.twimg.com/amplify_video/1/vid/avc1/480x270/a.mp4"},
             {"bitrate": 2176000, "content_type": "video/mp4", "url": "https://video.twimg.com/amplify_video/1/vid/avc1/1280x720/b.mp4"},
+            {"bitrate": 10368000, "content_type": "video/mp4", "url": "https://video.twimg.com/amplify_video/1/vid/avc1/2560x1440/c.mp4"},
             {"bitrate": 10368000, "content_type": "video/mp4", "url": "https://video.twimg.com/amplify_video/1/vid/avc1/2560x1440/c.mp4"}
+          ]
+        }
+      }],
+      "video": {
+        "video_info": {
+          "variants": [
+            {"bitrate": 832000, "content_type": "video/mp4", "url": "https://video.twimg.com/amplify_video/1/vid/avc1/640x360/d.mp4"}
+          ]
+        }
+      }
+    }
+    """
+    let payload = try JSONDecoder().decode(XTweetResolver.Payload.self, from: Data(json.utf8))
+    let media = try XCTUnwrap(XTweetResolver.bestVideo(in: payload, author: nil))
+    XCTAssertEqual(media.videoURL, "https://video.twimg.com/amplify_video/1/vid/avc1/2560x1440/c.mp4")
+    XCTAssertEqual(media.fallbackVideoURLs, [
+      "https://video.twimg.com/amplify_video/1/vid/avc1/1280x720/b.mp4",
+      "https://video.twimg.com/amplify_video/1/vid/avc1/640x360/d.mp4",
+      "https://video.twimg.com/amplify_video/1/vid/avc1/480x270/a.mp4",
+    ])
+    XCTAssertEqual(media.durationSeconds ?? -1, 265.38, accuracy: 0.001)
+  }
+
+  /// 没有时长时也不再把码率卡在 2.5Mbps。超限改由下载时的真实体积决定。
+  func testBestVideoDoesNotCapBitrateWhenDurationIsMissing() throws {
+    let json = """
+    {
+      "mediaDetails": [{
+        "type": "video",
+        "video_info": {
+          "variants": [
+            {"bitrate": 2176000, "content_type": "video/mp4", "url": "https://video.twimg.com/amplify_video/1/vid/avc1/1280x720/b.mp4"},
+            {"content_type": "application/x-mpegURL", "url": "https://video.twimg.com/amplify_video/1/pl/a.m3u8"},
+            {"bitrate": 10368000, "content_type": "video/mp4", "url": "https://video.twimg.com/amplify_video/1/vid/avc1/1920x1080/c.mp4"}
           ]
         }
       }]
@@ -156,7 +194,11 @@ final class XTweetResolverTests: XCTestCase {
     """
     let payload = try JSONDecoder().decode(XTweetResolver.Payload.self, from: Data(json.utf8))
     let media = try XCTUnwrap(XTweetResolver.bestVideo(in: payload, author: nil))
-    XCTAssertEqual(media.videoURL, "https://video.twimg.com/amplify_video/1/vid/avc1/1280x720/b.mp4")
+    XCTAssertNil(media.durationSeconds)
+    XCTAssertEqual(media.videoURL, "https://video.twimg.com/amplify_video/1/vid/avc1/1920x1080/c.mp4")
+    XCTAssertEqual(media.fallbackVideoURLs, [
+      "https://video.twimg.com/amplify_video/1/vid/avc1/1280x720/b.mp4",
+    ])
   }
 
   func testVideoOnlyTweetWritesCoverImageWithoutRepeatingThePosterInTheBody() throws {

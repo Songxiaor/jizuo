@@ -130,6 +130,9 @@ public struct MediaDescriptor: Codable, Sendable, Equatable {
   public let candidateCount: Int?
   public let selectionReason: MediaSelectionReason?
   public let playbackState: MediaPlaybackState?
+  /// 同一条视频的较低档直链，按码率从高到低。只活在本次进程里，下载超限时才用。
+  /// 扩展契约不带这个字段，缺省解码为 nil；和播放地址一样不进持久指纹。
+  public let fallbackVideoURLs: [String]?
 
   public init(
     kind: MediaKind,
@@ -147,7 +150,8 @@ public struct MediaDescriptor: Codable, Sendable, Equatable {
     failureReason: MediaFailureReason? = nil,
     candidateCount: Int? = nil,
     selectionReason: MediaSelectionReason? = nil,
-    playbackState: MediaPlaybackState? = nil
+    playbackState: MediaPlaybackState? = nil,
+    fallbackVideoURLs: [String]? = nil
   ) {
     self.kind = kind
     self.pageURL = pageURL
@@ -165,6 +169,7 @@ public struct MediaDescriptor: Codable, Sendable, Equatable {
     self.candidateCount = candidateCount
     self.selectionReason = selectionReason
     self.playbackState = playbackState
+    self.fallbackVideoURLs = fallbackVideoURLs
   }
 }
 

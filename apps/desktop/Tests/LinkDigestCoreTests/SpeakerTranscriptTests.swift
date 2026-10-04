@@ -101,6 +101,8 @@ final class SpeakerTranscriptTests: XCTestCase {
     XCTAssertEqual(turns.map(\.startLabel), ["00:00", "01:07"])
     XCTAssertEqual(turns[1].paragraphs, ["好的。", "我补充一句。"])
     XCTAssertEqual(turns[1].startSeconds, 67)
+    // 同一个人接着说的那段保留自己的时间码，不再只剩这一轮开头一个。
+    XCTAssertEqual(turns[1].paragraphStartLabels, ["01:07", "01:09"])
     XCTAssertEqual(SpeakerTranscript.turns(in: "00:00 没分过说话人。\n\n00:05 第二段。"), [])
   }
 

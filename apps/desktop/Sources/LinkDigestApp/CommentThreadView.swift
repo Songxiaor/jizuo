@@ -416,6 +416,22 @@ enum CommentPublishedTime {
     return raw
   }
 
+  /// 导出用的本地时间：`2026-10-03T23:30:06.000Z` 在东八区是 `2026-10-04 07:30`。
+  /// 认不出的原样返回。
+  static func localStamp(
+    _ raw: String,
+    timeZone: TimeZone = .current,
+    calendar: Calendar = .current
+  ) -> String {
+    guard let date = parsedDate(raw) else { return raw }
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = timeZone
+    formatter.calendar = calendar
+    formatter.dateFormat = "yyyy-MM-dd HH:mm"
+    return formatter.string(from: date)
+  }
+
   private static func parsedDate(_ raw: String) -> Date? {
     fractionalISO.date(from: raw) ?? standardISO.date(from: raw)
   }

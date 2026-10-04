@@ -96,7 +96,8 @@ struct CurrentCapture: Sendable, Equatable {
         author: $0.author,
         transcriptionCapability: .supported,
         selectionReason: .singleCandidate,
-        playbackState: .unknown
+        playbackState: .unknown,
+        fallbackVideoURLs: $0.fallbackVideoURLs.isEmpty ? nil : $0.fallbackVideoURLs
       )
     }
     self.taskID = taskID

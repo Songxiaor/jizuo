@@ -144,6 +144,9 @@ public struct CaptureMedia: Sendable, Equatable {
   public let coverURL: String?
   public let durationSeconds: Double?
   public let author: String?
+  /// 同一条视频的较低档直链，按码率从高到低。
+  /// 主地址因为超过当前下载上限失败时按这个顺序改试；网络或权限错误不会用它。
+  public let fallbackVideoURLs: [String]
 
   public init(
     platform: String,
@@ -151,7 +154,8 @@ public struct CaptureMedia: Sendable, Equatable {
     companionAudioURL: String? = nil,
     coverURL: String? = nil,
     durationSeconds: Double? = nil,
-    author: String? = nil
+    author: String? = nil,
+    fallbackVideoURLs: [String] = []
   ) {
     self.platform = platform
     self.videoURL = videoURL
@@ -159,6 +163,7 @@ public struct CaptureMedia: Sendable, Equatable {
     self.coverURL = coverURL
     self.durationSeconds = durationSeconds
     self.author = author
+    self.fallbackVideoURLs = fallbackVideoURLs
   }
 }
 

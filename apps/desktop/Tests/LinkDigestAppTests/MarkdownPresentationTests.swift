@@ -341,7 +341,10 @@ final class MarkdownPresentationTests: XCTestCase {
       XCTAssertFalse(visible.contains("alert(1)"))
       XCTAssertTrue(visible.contains("**bold**") || visible.contains("bold"))
     }
-    XCTAssertTrue(plain.contains("![](https://example.test/image.png)"))
+    // 纯文本不留图片语法：HTML 图片先映射成 Markdown，再整段去掉。
+    XCTAssertFalse(plain.contains("![]("))
+    XCTAssertTrue(plain.contains("Before"))
+    XCTAssertTrue(plain.contains("After"))
   }
 
   func testAttributeQuotedDelimiterNeverLeaksIntoRichOrPlainPresentation() {
@@ -1243,6 +1246,80 @@ final class MarkdownPresentationTests: XCTestCase {
       ),
       [.text("# 标题\n\n"), .image(a), .text("\n\n"), .image(b), .text("\n\n"), .image(c)]
     )
+  }
+
+  /// 评论列表之后的空行 + 顶格标题必须回到正文，不能吞进最后一条评论。
+  func testHeadingsAfterCommentSectionStayHeadings() {
+    let source = """
+    正文。
+
+    ## 评论（已保存 2 条）
+
+    - **小明** · 回复层级 0
+      第一句
+    - **致远** · 回复层级 0
+      # 省流版本
+
+      还在评论里
+
+    ## 视频转写
+
+    ## 开场
+
+    00:01 Hello.
+    """
+    let blocks = MarkdownPresentation.blocks(from: source)
+    XCTAssertEqual(blocks.count, 5, "实际块：\(blocks)")
+    guard case let .comments(section) = blocks[1] else { return XCTFail("评论应独立成块：\(blocks)") }
+    XCTAssertEqual(section.items.count, 2)
+    XCTAssertTrue(section.items[1].body.contains("# 省流版本"))
+    XCTAssertFalse(section.items[1].body.contains("视频转写"))
+    guard case let .heading(level, transcript) = blocks[2] else { return XCTFail("视频转写应是标题：\(blocks[2])") }
+    XCTAssertEqual(level, 2)
+    XCTAssertEqual(transcript, "视频转写")
+    guard case let .heading(_, opening) = blocks[3] else { return XCTFail("开场应是标题") }
+    XCTAssertEqual(opening, "开场")
+    guard case let .paragraph(line) = blocks[4] else { return XCTFail("时间码应是段落") }
+    XCTAssertTrue(line.hasPrefix("00:01"))
+  }
+
+  func testPlainTextDropsMarkdownSyntaxButKeepsWords() {
+    let source = """
+    # 标题
+
+    见 [集中帖](https://linux.do/tag/x) 和 *斜体* 与 **加粗**。
+
+    ![image](https://cdn.example/missing.png)
+
+    `code_keep`
+    """
+    let plain = MarkdownPresentation.plainTextPresentation(source)
+    XCTAssertTrue(plain.contains("标题"))
+    XCTAssertFalse(plain.contains("# 标题"))
+    XCTAssertTrue(plain.contains("集中帖（https://linux.do/tag/x）"))
+    XCTAssertFalse(plain.contains("]("))
+    XCTAssertTrue(plain.contains("斜体"))
+    XCTAssertTrue(plain.contains("加粗"))
+    XCTAssertFalse(plain.contains("*斜体*"))
+    XCTAssertFalse(plain.contains("**"))
+    XCTAssertFalse(plain.contains("!["))
+    XCTAssertFalse(plain.contains("missing.png"))
+    XCTAssertTrue(plain.contains("`code_keep`"))
+  }
+
+  func testLightboxFileInfoIsStrippedWithoutEatingProse() {
+    let source = """
+    ![image](https://cdn.example/a.png) image 2770×1400 232 KB
+
+    分辨率 1920×1080 2 MB 只是正文里的一句话。
+
+    similarweb_2025-08-07_073852_491 2756×1400 182 KB
+    """
+    let cleaned = MarkdownPresentation.strippingLightboxFileInfo(source)
+    XCTAssertTrue(cleaned.contains("![image](https://cdn.example/a.png)"))
+    XCTAssertFalse(cleaned.contains("2770×1400"))
+    XCTAssertFalse(cleaned.contains("2756×1400"))
+    XCTAssertTrue(cleaned.contains("分辨率 1920×1080 2 MB 只是正文里的一句话。"))
   }
 
   private func assertSafeInBothPresentations(

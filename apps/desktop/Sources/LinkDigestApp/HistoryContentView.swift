@@ -3660,6 +3660,8 @@ struct HistoryContentView: View {
         sessionMediaPlayback: sessionMediaPlayback
       )
       .equatable()
+      // 换一条时新内容淡入，而不是一帧之内整块替换（2026-10-04 走查）。
+      .swapReveal(on: detail.task.id)
     }
   }
 
@@ -3863,7 +3865,7 @@ struct HistoryContentView: View {
       Text("还没有保存页面")
         .themedFont(.title2, weight: .semibold)
         .padding(.bottom, 6)
-      Text("粘贴公开网页链接，或用浏览器扩展保存已打开的页面后，可在这里总结或翻译。")
+      Text("粘贴公开网页链接，或用\(ProductDisplay.extensionName)保存已打开的页面后，可在这里总结或翻译。")
         .themedFont(.callout)
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
@@ -4393,10 +4395,6 @@ struct PlatformNavigationIcon: View {
 
 /// The detail header needs a recognizable source, not a wire-format URL.
 /// Opening and copying still use the untouched value; this is display-only.
-/// 导出文件是白纸：印一律用浅色主题的朱。
-private enum ReadingPaletteExport {
-  static let seal = Color(red: 0xB8 / 255, green: 0x32 / 255, blue: 0x1C / 255)
-}
 
 private struct HistoryDetailView: View, Equatable {
   @AppStorage("onboarding.capture-v1.dismissed") private var isCaptureOnboardingDismissed = false
@@ -4453,7 +4451,15 @@ private struct HistoryDetailView: View, Equatable {
   /// Brief completion feedback after summarize/translate finishes.
   @State private var completionBanner: String?
   /// When both a model artifact and the captured source exist, user can switch.
-  @State private var readingPane: ReadingPane = .summary
+  /// 这一条上用户点过的页签。没点过（或换了一条）就是 `defaultReadingPane`。
+  ///
+  /// 按条目记，而不是换条目时在 onChange 里把它改回默认：那一改会让整页再重算一遍，
+  /// 切一条要多卡 40–140ms（2026-10-05 逐次计数）。下面几个「只对这一条有效」的状态同理。
+  @State private var readingPaneChoice: PerItem<ReadingPane>?
+  private var readingPane: ReadingPane {
+    get { readingPaneChoice?.value(for: detail.task.id) ?? defaultReadingPane }
+    nonmutating set { readingPaneChoice = PerItem(taskID: detail.task.id, value: newValue) }
+  }
   /// 点了总结/翻译、Run 还没变成可见态时，先把对应页签打开。
   /// 否则抖音图文只有「原文」，生成过程只能再挂一块预览卡片。
   @State private var pendingRunPane: ReadingPane?
@@ -4466,12 +4472,18 @@ private struct HistoryDetailView: View, Equatable {
   /// 视图才该观察它。
   @State private var readingProgressModel = ReadingProgressModel()
   /// 已访问过的阅读面板（见 content 的注释）：保活的折叠集合。
-  @State private var visitedReadingPanes: Set<ReadingPane> = []
+  @State private var visitedReadingPanesStore: PerItem<Set<ReadingPane>>?
+  private var visitedReadingPanes: Set<ReadingPane> {
+    visitedReadingPanesStore?.value(for: detail.task.id) ?? []
+  }
   /// 各阅读面板的实测高度：ZStack 容器按「当前活动面板的高度」定高，
   /// 隐藏面板保持自然尺寸不被折叠——切换因此不触发任何几何重算。
   @State private var paneHeights: [ReadingPane: CGFloat] = [:]
   @State private var pendingSourceCitation: String?
-  @State private var measuredTitleHeight: CGFloat = HistoryDetailView.captureTitleLineHeight
+  @State private var measuredTitleHeightStore: PerItem<CGFloat>?
+  private var measuredTitleHeight: CGFloat {
+    measuredTitleHeightStore?.value(for: detail.task.id) ?? HistoryDetailView.captureTitleLineHeight
+  }
   /// 抓取长标题默认最多 3 行；超出后用「展开标题 / 收起标题」，切换条目复位。
   @State private var isTitleExpanded = false
   /// 转写校对：编辑态与草稿只属于当前详情页，切换条目即复位。
@@ -4504,14 +4516,26 @@ private struct HistoryDetailView: View, Equatable {
   @State private var noteTitleDraft = ""
   /// 笔记编辑器排版后的实际高度，由编辑器回报，用来让它长到内容那么高。
   @State private var noteEditorHeight: CGFloat = 320
-  /// 当前条目的排版档案。随条目算一次——形态指纹要扫一遍全文，长文有九万字，
-  /// 放在 body 里每次重求值都算等于把它做成了热路径。
-  @State private var readingFormat: ReadingFormatDecisions = .init(
-    keepsImagePositions: false, allowsOutline: true)
+  /// 当前条目的排版档案。按快照算一次记住——形态指纹要扫一遍全文，长文有九万字，
+  /// 放在 body 里每次重求值都算等于把它做成了热路径。原来是换条目时写进 @State，
+  /// 那一写又让整页多重算一遍。
+  private var readingFormat: ReadingFormatDecisions {
+    let snapshot = latestTranscriptionSnapshot ?? latestSnapshot
+    return derivedMemo.value("readingFormat", snapshot: snapshot) {
+      guard let snapshot else { return ReadingFormatDecisions(keepsImagePositions: false, allowsOutline: true) }
+      let body = MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
+      return ReadingFormatRegistry.decisions(for: ReadingFormatContext(
+        shape: ContentShape.measure(markdown: body),
+        platform: snapshot.platform,
+        isTranscript: snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
+      ))
+    }
+  }
   /// 详情页派生值的备忘：frontmatter、命名、长文判定这些都要扫全文，原来是
   /// 计算属性，一次 body 求值对九万字正文扫二三十遍。按「快照 id + 字节数」缓存，
   /// 引用类型放在 @State 里，读写它不触发重绘。
   @State private var derivedMemo = DetailDerivedMemo()
+  @State private var colophonMemo = ColophonContextMemo()
   /// 当前转写稿的分段时间，空数组表示这份正文没有可跳转的时间。
   @State private var transcriptParagraphs: [TranscriptParagraph] = []
   /// 转写稿显示段首时间码。关掉时去掉时间码、把短句合成段落，当文章读；全局记住。
@@ -5020,17 +5044,25 @@ private struct HistoryDetailView: View, Equatable {
       && contentName.origin == .caption && readingPrimaryTitle == contentName.text
   }
   /// 详情头：有总结/翻译一级标题时主标题用产物，原文降副行；标题本地化后副行读 original_title。
+  /// 按快照记住：`detailTitles` 要把正文按行切开逐行比对，一次几十毫秒；详情页切换时
+  /// body 会求值好几次，每次都重算，切一条要多卡上百毫秒（2026-10-04 Instruments 实测）。
   private var readingTitles: (primary: String, original: String?) {
-    HistoryReadingTitle.detailTitles(
-      captured: contentName.text,
-      product: HistoryReadingTitle.productTitle(
-        summaryBody: summaryArtifact?.bodyText,
-        translationBody: translationArtifact?.bodyText
-      ),
-      preservedOriginalTitle: sourceFrontmatter.originalTitle,
-      sourceBody: sourceFrontmatter.body
-    )
+    let captured = contentName.text
+    let summary = summaryArtifact?.bodyText
+    let translation = translationArtifact?.bodyText
+    let key = "readingTitles|\(captured)|\(summary?.utf8.count ?? -1)|\(translation?.utf8.count ?? -1)"
+    let titles: ReadingTitles = derivedMemo.value(key, snapshot: latestSourceSnapshot) {
+      let resolved = HistoryReadingTitle.detailTitles(
+        captured: captured,
+        product: HistoryReadingTitle.productTitle(summaryBody: summary, translationBody: translation),
+        preservedOriginalTitle: sourceFrontmatter.originalTitle,
+        sourceBody: sourceFrontmatter.body
+      )
+      return ReadingTitles(primary: resolved.primary, original: resolved.original)
+    }
+    return (titles.primary, titles.original)
   }
+  private struct ReadingTitles { let primary: String; let original: String? }
   private var readingPrimaryTitle: String { readingTitles.primary }
   private var readingOriginalSubtitle: String? { readingTitles.original }
   /// 专注阅读约 760pt；常规模式仍用字号联动的绝对上限。
@@ -5760,7 +5792,6 @@ private struct HistoryDetailView: View, Equatable {
       stampingStep = nil
       isProcessPanelPresented = false
       loadTranscriptParagraphs()
-      refreshReadingFormat()
       model.loadReformat(taskID: detail.task.id)
       completionBanner = nil
       pendingRunPane = nil
@@ -5771,14 +5802,12 @@ private struct HistoryDetailView: View, Equatable {
       isSubtitleExpanded = false
       selectedSourceLayer = nil
       selectedTranslationLayer = nil
-      readingPane = defaultReadingPane
+      // 页签、保活集合、标题高度都按条目记（见 `readingPaneChoice`），换条目不用在这里改回默认。
       // 保活集合不跨条目：上一条访问过哪些面板不该让这一条多付隐藏布局。
-      visitedReadingPanes = []
       pendingSourceCitation = nil
       ReadingSelectionRouter.shared.formatter = { selected in
         ReadingCitationFormatter.format(selection: selected, title: readingPrimaryTitle, sourceURL: sourceURL)
       }
-      measuredTitleHeight = HistoryDetailView.captureTitleLineHeight
       isTitleExpanded = false
       // 切换条目时丢弃未保存的转写草稿，避免草稿串到别的记录。
       isEditingTranscription = false
@@ -5789,7 +5818,7 @@ private struct HistoryDetailView: View, Equatable {
         let body = storedNoteBody(snapshot)
         transcriptionDraft = body
         editingNote = (detail.task.id, snapshot.id, body)
-        if body.isEmpty { isEditingTranscription = true }
+        if body.isEmpty, !isInTrash { isEditingTranscription = true }
       }
       noteTitleDraft = DailyNoteTitleFormat.display(title)
       // 没起过标题的笔记，标题栏先显示正文第一行（2026-10-01 Syc 走查：正文开头明明是
@@ -5837,7 +5866,10 @@ private struct HistoryDetailView: View, Equatable {
     } message: { Text(model.snapshotEditFailure ?? "") }
     .onChange(of: hasResultBody) { _, hasResult in
       // Prefer the fresh result when a run lands, but keep 原文 one tap away.
-      if hasResult { readingPane = defaultReadingPane }
+      // 只管「同一条刚出了结果」：换条目时这个值也会变，但新的一条本来就落在默认页签上，
+      // 这里再写一次只会让整页多重算一遍（2026-10-05）。清掉手选，页签就回到默认。
+      guard hasResult, readingPaneChoice?.taskID == detail.task.id else { return }
+      readingPaneChoice = nil
     }
     .onDisappear { ReadingSelectionRouter.shared.formatter = nil }
     .onChange(of: showsLiveRunInReadingPane) { wasShown, isShown in
@@ -6052,22 +6084,15 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 富格式导出：按 App 阅读排版渲染 PDF / Word，NSSavePanel 落盘。
   /// 干净正文导出（md / txt）：与阅读区一致，不含 Core 档案元数据。
+  /// 拼装逻辑在 `ReadingDocumentExport`（与界面共用，可测试）；这里只负责弹面板落盘。
   private func exportCleanText(_ format: HistoryExportFormat) {
     guard let composed = model.composeExportMarkdown() else { return }
-    let content: String
-    let ext: String
-    switch format {
-    case .plainText:
-      // 纯文本：剥 Markdown 标记与 frontmatter，只留可读正文。
-      let body = MarkdownNoteFrontmatter.parse(composed.markdown).body
-      content = MarkdownPresentation.plainTextPresentation(body.isEmpty ? composed.markdown : body)
-      ext = "txt"
-    default:
-      content = composed.markdown
-      ext = "md"
-    }
-    // 题跋跟着文件走：何时从哪里来、做过哪些工序（2026-09-28 工序印）。
-    let finalContent = exportColophonLine.map { content + "\n\n---\n\n" + $0 + "\n" } ?? content
+    let ext = format == .plainText ? "txt" : "md"
+    let finalContent = ReadingDocumentExport.cleanTextExport(
+      composedMarkdown: composed.markdown,
+      format: format,
+      context: exportColophonContext
+    )
     guard let data = finalContent.data(using: .utf8), !data.isEmpty else { model.failExportSave(); return }
     let panel = NSSavePanel()
     panel.canCreateDirectories = true
@@ -6078,14 +6103,12 @@ private struct HistoryDetailView: View, Equatable {
 
   private func exportStyledDocument(_ kind: StyledExportKind) {
     guard let composed = model.composeExportMarkdown() else { return }
-    let body = MarkdownNoteFrontmatter.parse(composed.markdown).body
-    let document = NSMutableAttributedString(attributedString: ReadingDocumentExport.attributedDocument(
-      markdown: body.isEmpty ? composed.markdown : body,
+    let attributed = ReadingDocumentExport.styledDocument(
+      composedMarkdown: composed.markdown,
+      context: exportColophonContext,
       readingFont: readingFont,
       localImageURLs: localImageURLs
-    ))
-    if let colophon = exportColophonAttributed() { document.append(colophon) }
-    let attributed: NSAttributedString = document
+    )
     let data: Data?
     switch kind {
     case .pdf: data = ReadingDocumentExport.pdfData(from: attributed)
@@ -6140,7 +6163,16 @@ private struct HistoryDetailView: View, Equatable {
   }
 
   @ViewBuilder private var titleView: some View {
-    if isOwnWriting {
+    if isOwnWriting, isInTrash {
+      Text(noteTitleDraft.isEmpty ? UserNoteDocument.untitledTitle : noteTitleDraft)
+        .font(readingFont.font(size: Self.noteTitleFontSize, weight: .medium))
+        .foregroundStyle(theme.primaryText)
+        .tracking(-0.4)
+        .lineLimit(1...3)
+        .textSelection(.enabled)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier("history-detail-title")
+    } else if isOwnWriting {
       // 自己写的东西标题就地可改。抓取记录的标题保持只读——那是抓来的事实。
       TextField(UserNoteDocument.untitledTitle, text: $noteTitleDraft)
         .textFieldStyle(.plain)
@@ -6181,8 +6213,8 @@ private struct HistoryDetailView: View, Equatable {
               )
           }
           .onPreferenceChange(TitleHeightPreferenceKey.self) { height in
-            guard height > 0 else { return }
-            measuredTitleHeight = height
+            guard height > 0, height != measuredTitleHeight else { return }
+            measuredTitleHeightStore = PerItem(taskID: detail.task.id, value: height)
           }
           .accessibilityIdentifier("history-detail-title")
         if titleExceedsCollapsedLimit {
@@ -6556,7 +6588,7 @@ private struct HistoryDetailView: View, Equatable {
   @ViewBuilder private func readingHeaderRow(pinned: Bool) -> some View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
       HStack(alignment: .center, spacing: DesignTokens.Space.md) {
-        readingTabStrip
+        readingTabStrip(pinned: pinned)
         if effectiveReadingPane == .source { reformatToggle }
         Spacer(minLength: DesignTokens.Space.md)
         if effectiveReadingPane == .source, splitsManuscriptTabs { manuscriptMarkToggle }
@@ -6603,7 +6635,9 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 页签用文字加下划线，不用分段控件——和右边的按钮一眼分得开：文字是「看」，
   /// 框起来的是「做」。
-  private var readingTabStrip: some View {
+  ///
+  /// 下划线滑到新页签，而不是原地消失、另一处出现（2026-10-04 走查）。
+  private func readingTabStrip(pinned: Bool) -> some View {
     HStack(spacing: DesignTokens.Space.md) {
       ForEach(readingTabs) { tab in
         let isActive = tab == activeReadingTab
@@ -6615,11 +6649,7 @@ private struct HistoryDetailView: View, Equatable {
             .themedFont(.callout, weight: isActive ? .semibold : .regular)
             .foregroundStyle(isActive ? theme.primaryText : theme.secondaryText)
             .padding(.bottom, 3)
-            .overlay(alignment: .bottom) {
-              Rectangle()
-                .fill(isActive ? theme.accent : Color.clear)
-                .frame(height: 2)
-            }
+            .anchorPreference(key: ReadingTabBoundsKey.self, value: .bounds) { isActive ? $0 : nil }
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -6627,6 +6657,23 @@ private struct HistoryDetailView: View, Equatable {
         .accessibilityAddTraits(isActive ? .isSelected : [])
         .accessibilityIdentifier("history-reading-tab-\(tab.id)")
       }
+    }
+    .overlayPreferenceValue(ReadingTabBoundsKey.self) { anchor in
+      GeometryReader { proxy in
+        if let anchor {
+          let rect = proxy[anchor]
+          // 只移动这一条线，而且只用位移和横向缩放——这两样只改绘制、不改排版。第一版把
+          // 弹簧动画挂在整排页签上，页签就在正文的滚动区里，每一帧都把整篇长文重排一遍，
+          // 切一条要掉十几帧（2026-10-04 Instruments）。
+          Rectangle()
+            .fill(theme.accent)
+            .frame(width: 1, height: 2)
+            .scaleEffect(x: max(rect.width, 1), y: 1, anchor: .leading)
+            .offset(x: rect.minX, y: rect.maxY - 2)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.2), value: rect)
+        }
+      }
+      .allowsHitTesting(false)
     }
     .accessibilityLabel("阅读内容")
     .accessibilityIdentifier("history-reading-tabs")
@@ -7373,51 +7420,28 @@ private struct HistoryDetailView: View, Equatable {
 
   // MARK: - 工序印
 
+  /// 导出题跋各件的判断逻辑在 `ReadingDocumentExport.ExportColophonContext`（与界面共用，可测试）。
+  /// 落款要把每次运行逐条翻一遍，一次十几毫秒，而 body 里要用到它五处——切一条时 body
+  /// 又求值好几次，合起来七十毫秒（2026-10-04 Instruments）。详情和脑图没变就复用上一次的结果。
+  private var exportColophonContext: ReadingDocumentExport.ExportColophonContext {
+    let mindMap = model.mindMapRecord.flatMap { $0.taskID == detail.task.id ? $0 : nil }
+    return colophonMemo.value(detail: detail, mindMap: mindMap)
+  }
+
   /// 这一条做过的工序，按「录 校 评 摘 译 图」排；有记录的写上时间和模型，没有的不编。
   private var completedStepRecords: [ProcessStepRecord] {
-    let mindMap = model.mindMapRecord.flatMap { $0.taskID == detail.task.id ? $0 : nil }
-    return ProcessStepRecord.completed(in: detail, mindMap: mindMap)
+    exportColophonContext.records
   }
 
   /// 导出文件末尾的题跋文字：「丙午年九月廿八日　汲录自抖音　录 · 校 · 评 · 摘」。笔记不加。
   private var exportColophonLine: String? {
-    guard !isOwnWriting else { return nil }
-    let glyphs = completedStepRecords.map(\.step.glyph.rawValue)
-    return glyphs.isEmpty ? colophonText : colophonText + "　" + glyphs.joined(separator: " · ")
+    exportColophonContext.colophonLine
   }
 
   /// PDF / Word 末尾的题跋：右对齐一行小字，后面画出真的章（渲染成图片放进去）。
   @MainActor
   private func exportColophonAttributed() -> NSAttributedString? {
-    guard !isOwnWriting else { return nil }
-    let style = NSMutableParagraphStyle()
-    style.alignment = .right
-    style.paragraphSpacingBefore = 28
-    let result = NSMutableAttributedString(string: "\n" + colophonText + "  ", attributes: [
-      .font: NSFont(descriptor: readingFont.nsFontDescriptor(size: 11), size: 11) ?? NSFont.systemFont(ofSize: 11),
-      .foregroundColor: NSColor.secondaryLabelColor,
-      .paragraphStyle: style,
-    ])
-    let seals = HStack(spacing: 5) {
-      ForEach(completedStepRecords) { record in
-        SealMark(glyph: record.step.glyph, size: 22, color: ReadingPaletteExport.seal, style: .stamped, rotation: record.step.rotation)
-      }
-      SealMark(glyph: colophonGlyph, size: 30, color: ReadingPaletteExport.seal, style: .stamped, rotation: -0.8)
-    }
-    .padding(2)
-    let renderer = ImageRenderer(content: seals)
-    renderer.scale = 3
-    if let image = renderer.nsImage {
-      let attachment = NSTextAttachment()
-      attachment.image = image
-      attachment.bounds = CGRect(x: 0, y: -9, width: image.size.width, height: image.size.height)
-      let attached = NSMutableAttributedString(attachment: attachment)
-      attached.addAttribute(.paragraphStyle, value: style, range: NSRange(location: 0, length: attached.length))
-      result.append(attached)
-    } else if let line = exportColophonLine {
-      return NSAttributedString(string: "\n" + line, attributes: [.paragraphStyle: style])
-    }
-    return result
+    ReadingDocumentExport.exportColophonAttributed(context: exportColophonContext, readingFont: readingFont)
   }
 
   /// 点页尾的章：跳到那份内容。
@@ -7685,7 +7709,7 @@ private struct HistoryDetailView: View, Equatable {
   private var readingPanePicker: some View {
     // 只切换已有原文/摘要/译文，不会发起付费生成。重新生成在「AI 处理」。
     HStack(spacing: DesignTokens.Space.sm) {
-      Picker("阅读内容", selection: $readingPane) {
+      Picker("阅读内容", selection: Binding(get: { readingPane }, set: { readingPane = $0 })) {
         ForEach(availableReadingPanes) { pane in
           Text(paneLabel(pane)).tag(pane)
         }
@@ -7776,6 +7800,171 @@ private struct HistoryDetailView: View, Equatable {
       color: NSColor(theme.primaryText),
       lineSpacing: MarkdownPresentation.bodyLineSpacing
     )
+  }
+
+  // MARK: - 翻译进行中
+
+  /// 翻译进行中的翻译页：和翻完后同一套排版，边翻边换（2026-10-04 Syc）。
+  ///
+  /// 还没写完第一行时（开始、思考、失败）沿用原来的状态页。之后：顶上一行进度，
+  /// 下面按层显示——转写层已译的段落按逐字稿排，没译到的原文淡色接在后面，译文
+  /// 到一段替换一段。只有「多写完一行」才重排，流式的每个拍点不碰这一大块。
+  private var liveTranslationReadingBody: some View {
+    LiveCompletedTextObserver(
+      live: appModel.liveRunText,
+      key: liveTranslationRenderKey,
+      empty: { liveRunReadingBody },
+      content: { completed in liveTranslationContent(completed) }
+    )
+  }
+
+  /// 外层状态变了（换层、开关时间码、运行结束）就要重排；只看译文的话这些变化会被挡掉。
+  private var liveTranslationRenderKey: String {
+    [
+      selectedTranslationLayer?.rawValue ?? "",
+      showsTranscriptTimecodes ? "t" : "",
+      showsPlainText ? "p" : "",
+      appModel.runState.isActive ? "a" : "",
+      appModel.runHasFailure ? "f" : "",
+    ].joined(separator: "|")
+  }
+
+  /// 进行中也给「译文对应」：层取原文那边有的层（译文里还没出现的层也列着，点开就是待译的原文）。
+  private var liveTranslationLayers: [SourceLayer] {
+    availableSourceLayers.count > 1 ? availableSourceLayers : []
+  }
+
+  private func activeLiveTranslationLayer(_ completed: String) -> SourceLayer? {
+    let layers = liveTranslationLayers
+    if let selected = selectedTranslationLayer, layers.contains(selected) { return selected }
+    // 没选过就跟着翻译走：停在正在翻的那一层。
+    if let current = LiveTranslationPreview.translatedLayerHeadings(in: completed).last
+      .flatMap(SourceLayer.init(heading:)), layers.contains(current) {
+      return current
+    }
+    return layers.first
+  }
+
+  private func sourceSnapshot(for layer: SourceLayer) -> ContentSnapshot? {
+    switch layer {
+    case .caption: latestSourceSnapshot
+    case .subtitles: latestSubtitleSnapshot
+    case .transcript: latestTranscriptionSnapshot
+    }
+  }
+
+  @ViewBuilder
+  private func liveTranslationContent(_ completed: String) -> some View {
+    VStack(alignment: .leading, spacing: 10) {
+      liveTranslationStatusRow
+      let layers = liveTranslationLayers
+      let active = activeLiveTranslationLayer(completed)
+      if layers.count > 1 {
+        layerPicker(
+          title: "译文对应",
+          layers: layers,
+          active: active,
+          identifier: "history-translation-layer-picker",
+          select: { selectedTranslationLayer = $0 }
+        )
+        .padding(.bottom, 4)
+      }
+      if let active {
+        liveTranslationLayerBody(active, completed: completed)
+      } else {
+        // 没分层的文章：已写完的段落照常按 Markdown 排。
+        liveTranslationMarkdown(LiveTranslationPreview.unlayeredBody(in: completed) ?? completed)
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .accessibilityIdentifier("model-run-output")
+  }
+
+  /// 顶上一行：转圈 + 状态 + 已用时；失败或停下时只留状态（红字）。
+  private var liveTranslationStatusRow: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 8) {
+      if appModel.runState.isActive {
+        ProgressView().controlSize(.small)
+        Text("正在翻译，译好的段落会逐段替换下面的原文")
+          .themedFont(.callout)
+          .foregroundStyle(theme.secondaryText)
+        if let startedAt = appModel.runStartedAt {
+          RunElapsedLabel(startedAt: startedAt)
+            .themedFont(.callout, monospacedDigit: true)
+            .foregroundStyle(theme.secondaryText)
+        }
+      } else {
+        Text(appModel.runStatusText)
+          .themedFont(.callout)
+          .foregroundStyle(appModel.runHasFailure ? theme.danger : theme.secondaryText)
+      }
+      Spacer(minLength: 0)
+    }
+  }
+
+  @ViewBuilder
+  private func liveTranslationLayerBody(_ layer: SourceLayer, completed: String) -> some View {
+    let translated = LiveTranslationPreview.translatedBody(of: layer.heading, in: completed)
+    let source = sourceSnapshot(for: layer).map(LayeredSourceDocument.body(of:))
+    if layer == .transcript || layer == .subtitles, !showsPlainText,
+       let source, TranscriptManuscript.looksLikeTranscript(source) {
+      let pending = LiveTranslationPreview.untranslatedSource(source, afterTranslated: translated)
+      VStack(alignment: .leading, spacing: 16) {
+        if let translated {
+          liveManuscript(translated.replacingOccurrences(
+            of: #"\n[ \t]*(?=(?:\d{1,2}:)?\d{1,2}:\d{2}\s)"#, with: "\n\n", options: .regularExpression
+          ))
+        }
+        if let pending, !pending.isEmpty {
+          liveManuscript(pending)
+            .opacity(0.45)
+            .accessibilityLabel("尚未翻译的原文")
+        }
+      }
+    } else if let translated {
+      liveTranslationMarkdown(translated)
+    } else if let source {
+      // 这一层还没轮到：先放原文（淡色），轮到时整段换成译文。
+      liveTranslationMarkdown(source).opacity(0.45)
+    }
+  }
+
+  private func liveManuscript(_ text: String) -> some View {
+    TranscriptManuscriptView(
+      paragraphs: TranscriptManuscript.paragraphs(of: text),
+      showsTimecodes: showsTranscriptTimecodes,
+      showsNotes: false,
+      readingFont: readingFont,
+      primaryTextColor: theme.primaryText,
+      secondaryTextColor: theme.secondaryText,
+      sealColor: theme.seal,
+      onSeek: hasSeekableMedia ? { seconds in model.requestMediaSeek(toSeconds: seconds) } : nil
+    )
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func liveTranslationMarkdown(_ text: String) -> some View {
+    MarkdownContentView(
+      source: translationTimecodesApplied(
+        ReadingRenderCache.paneBody(source: text, strippingEchoedMetadata: true),
+        pane: .translation
+      ),
+      sourceURL: URL(string: sourceURL),
+      localImageURLs: localImageURLs,
+      localMediaFileURL: nil,
+      appendsUnusedLocalImages: false,
+      groupsConsecutiveImages: !readingFormat.keepsImagePositions,
+      readingFont: readingFont,
+      primaryTextColor: theme.primaryText,
+      secondaryTextColor: theme.secondaryText,
+      accentColor: theme.accent,
+      showsPlainText: $showsPlainText,
+      showsInlinePlainTextToggle: false,
+      navigationModules: [],
+      anchorScope: anchorScope(for: .translation),
+      onFollowWikiLink: { title in model.followWikiLink(toTitle: title) }
+    )
+    .frame(maxWidth: .infinity, alignment: .leading)
   }
 
   /// 标题下的一行浅字：作者 · 日期 · 站点。打开/复制链在同一行末尾，不再单独占三行表单。
@@ -8315,7 +8504,10 @@ private struct HistoryDetailView: View, Equatable {
     // 初始面板由 `pane == effectiveReadingPane` 条件挂载（visited 起始为空，
     // 惰性成立）；这里只负责把后续切换过的面板记入保活集合。
     .onChange(of: effectiveReadingPane) { _, pane in
-      visitedReadingPanes.insert(pane)
+      var visited = visitedReadingPanes
+      if visited.insert(pane).inserted {
+        visitedReadingPanesStore = PerItem(taskID: detail.task.id, value: visited)
+      }
     }
   }
 
@@ -8343,7 +8535,13 @@ private struct HistoryDetailView: View, Equatable {
             }
           }
         }
-        .opacity(isActive ? 1 : 0)
+        // 只动透明度，容器高度照旧一步到位，不触发长文重排。旧的一页立刻收掉、只让新的一页
+        // 淡入：两页同时半透明叠在一起时，标题压着正文，字糊成一片（2026-10-04 真机录屏）。
+        // 用限定范围的动画：只给这一层透明度加动画。`.animation(_:value:)` 会把同一拍里面板
+        // 内部的尺寸变化也一起动画，每帧重排整篇长文（2026-10-04 Instruments）。
+        .animation(reduceMotion || !isActive ? nil : .easeOut(duration: 0.16)) {
+          $0.opacity(isActive ? 1 : 0)
+        }
         .allowsHitTesting(isActive)
         .accessibilityHidden(!isActive)
     }
@@ -8365,7 +8563,7 @@ private struct HistoryDetailView: View, Equatable {
     switch pane {
     case .summary, .translation:
       if showsLiveRunInReadingPane, liveRunReadingPane == pane {
-        liveRunReadingBody
+        if pane == .translation { liveTranslationReadingBody } else { liveRunReadingBody }
       } else if let artifact = artifact(for: pane), !artifact.bodyText.isEmpty {
         if artifact.completeness == .partial {
           Label("\(paneLabel(pane))不完整", systemImage: "exclamationmark.triangle")
@@ -8499,6 +8697,7 @@ private struct HistoryDetailView: View, Equatable {
         }
       }
       .frame(maxWidth: .infinity, alignment: .leading)
+      .swapReveal(on: activeSourceLayer)
       .accessibilityIdentifier("history-reading-source")
     } else if let snapshot = (isDouyinCapture && !isDouyinImagePostCapture)
       ? latestTranscriptionSnapshot
@@ -8772,13 +8971,7 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 题跋：何时从哪里汲来（或自己记下）、经过哪些加工。
   private var colophonText: String {
-    let date = ColophonView.chineseDate(Date(timeIntervalSince1970: Double(detail.task.createdAtMilliseconds) / 1_000))
-    let host = HistoryPlatformRegistry.canonicalHost(for: URLComponents(string: detail.task.canonicalURL)?.host ?? "")
-    // 下载来的本地文件写它从哪个 App 来：「丙午年九月廿九日　汲录自微信」（来源在导入时记进了 source_label）。
-    // 日期和动作之间隔一个全角空格，照款识写法（2026-09-30）。
-    let platform = colophonDownloadSource?.displaySourceName ?? HistoryPlatformDisplay.name(forHost: host)
-    // 做过哪些工序由后面那排章来说，文字只记何时从哪里来。
-    return colophonGlyph == .external ? LocalFileProvenance.joined("\(date)　汲录自", platform) : "\(date)　记"
+    exportColophonContext.text
   }
 
   /// 落款日期的公历写法，给悬停提示用。
@@ -8790,18 +8983,11 @@ private struct HistoryDetailView: View, Equatable {
 
   /// 本地文件导入时读到的下载来源（没有下载标记、或不是本地文件时为 nil）。有网址时题跋可以点开。
   private var colophonDownloadSource: LocalFileProvenance? {
-    guard colophonGlyph == .external,
-          let label = detail.snapshots.first(where: { $0.platform == LocalImportSource.files.rawValue })?.sourceLabel
-    else { return nil }
-    return LocalFileProvenance.parse(sourceLabel: label)
+    exportColophonContext.downloadSource
   }
 
   private var colophonGlyph: SealMark.Glyph {
-    let host = HistoryPlatformRegistry.canonicalHost(for: URLComponents(string: detail.task.canonicalURL)?.host ?? "")
-    let ownership = ContentOwnership.resolve(
-      canonicalURL: detail.task.canonicalURL, host: host, tagNames: detail.tags.map(\.name)
-    )
-    return ownership == .own ? .own : .external
+    exportColophonContext.glyph
   }
 
   /// 阅读卡里不再重复印标题。笔记是用户自己写的，开头的标题要留着。
@@ -8835,6 +9021,7 @@ private struct HistoryDetailView: View, Equatable {
     if snapshot.platform == "applenotes" {
       cleaned = AppleNoteHTML.mergingFragmentedHeadings(cleaned.components(separatedBy: "\n")).joined(separator: "\n")
     }
+    cleaned = MarkdownNoteFrontmatter.strippingViewCountUnderLeadingHeading(cleaned)
     var body = CapturedSourceBodyPresentation.strippingEchoedOpening(title: title, from: cleaned, style: style)
     // 标题翻译成中文后，正文开头那行英文原标题和上面的标题不再「同一句话」，
     // 照样重复了一遍（YouTube，2026-10-03 走查）。再按原标题剥一次。
@@ -9030,7 +9217,7 @@ private struct HistoryDetailView: View, Equatable {
               model.followWikiLink(toTitle: title)
             },
             onSeekMedia: { seconds in model.requestMediaSeek(toSeconds: seconds) },
-            onRequestEdit: bodyOverride == nil && canEditSource(snapshot) && !model.isReadOnly
+            onRequestEdit: bodyOverride == nil && canEditSource(snapshot) && !model.isReadOnly && !isInTrash
               ? { snippet in beginSourceEditing(snapshot, displayedSnippet: snippet) }
               : nil
           )
@@ -9082,8 +9269,12 @@ private struct HistoryDetailView: View, Equatable {
     return transcriptionDraft != MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
   }
 
+  /// 回收站里的东西只读：要改先「恢复」。原来删掉的空笔记打开就是编辑态，
+  /// 光标在闪、写着「在这里写下你的想法…」（2026-10-04 走查）。
+  private var isInTrash: Bool { model.selectedScope == .trash }
+
   private func beginSourceEditing(_ snapshot: ContentSnapshot, displayedSnippet: String?) {
-    guard !model.isReadOnly, !isEditingTranscription else { return }
+    guard !model.isReadOnly, !isInTrash, !isEditingTranscription else { return }
     let body = isOwnWriting
       ? storedNoteBody(snapshot)
       : MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
@@ -9133,20 +9324,6 @@ private struct HistoryDetailView: View, Equatable {
   ///
   /// 取的是**正在显示的那份**正文：整理稿、翻译稿和原稿的形态可以完全不同
   /// （模型整理会把一堵段落墙分出标题），照旧稿的档案排版就会错。
-  private func refreshReadingFormat() {
-    let snapshot = latestTranscriptionSnapshot ?? latestSnapshot
-    guard let snapshot else {
-      readingFormat = .init(keepsImagePositions: false, allowsOutline: true)
-      return
-    }
-    let body = MarkdownNoteFrontmatter.parse(snapshot.bodyText).body
-    readingFormat = ReadingFormatRegistry.decisions(for: ReadingFormatContext(
-      shape: ContentShape.measure(markdown: body),
-      platform: snapshot.platform,
-      isTranscript: snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue
-    ))
-  }
-
   private func saveTranscriptionDraft(_ snapshot: ContentSnapshot, exiting: Bool) {
     let original = snapshot.bodyText
     let body = MarkdownNoteFrontmatter.parse(original).body
@@ -9600,6 +9777,14 @@ final class SourceEditClickOutsideMonitor {
     }
     let editor: NSView = text.enclosingScrollView ?? text
     return hit === editor || hit.isDescendant(of: editor)
+  }
+}
+
+/// 当前页签的位置，给下划线用。
+private struct ReadingTabBoundsKey: PreferenceKey {
+  static let defaultValue: Anchor<CGRect>? = nil
+  static func reduce(value: inout Anchor<CGRect>?, nextValue: () -> Anchor<CGRect>?) {
+    value = value ?? nextValue()
   }
 }
 
@@ -10264,6 +10449,38 @@ private struct LiveRunReadingBody: View {
   }
 }
 
+/// 翻译进行中的叶子视图：观察流式正文，但只把「已写完的行」交给内容。
+///
+/// 流式每 250ms 一个拍点，多数拍点只是当前这行长了几个字；逐字稿整页重排一次要遍历
+/// 几万字。闸门按「已写完的行 + 外层状态」判等，没变就整块跳过。
+private struct LiveCompletedTextObserver<Empty: View, Content: View>: View {
+  @ObservedObject var live: LiveRunTextModel
+  let key: String
+  @ViewBuilder let empty: () -> Empty
+  @ViewBuilder let content: (String) -> Content
+
+  var body: some View {
+    let completed = LiveTranslationPreview.completedText(of: live.text)
+    if completed.isEmpty {
+      empty()
+    } else {
+      LiveCompletedTextGate(completed: completed, key: key, content: content).equatable()
+    }
+  }
+}
+
+private struct LiveCompletedTextGate<Content: View>: View, Equatable {
+  let completed: String
+  let key: String
+  let content: (String) -> Content
+
+  nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+    lhs.key == rhs.key && lhs.completed == rhs.completed
+  }
+
+  var body: some View { content(completed) }
+}
+
 /// 转写进行中的叶子视图：观察 `LiveRunTextModel`，partial 增长拍点只
 /// 重绘这里，其余详情内容不受影响。
 private struct LiveTranscriptionReadingBody: View {
@@ -10394,6 +10611,27 @@ final class DetailDerivedMemo {
     let value = compute()
     entries[key] = value
     return value
+  }
+}
+
+/// 只对某一条内容有效的界面状态。换了一条就当作「没设过」，读的地方回落到默认值。
+struct PerItem<Value> {
+  let taskID: TaskID
+  let value: Value
+  func value(for current: TaskID) -> Value? { taskID == current ? value : nil }
+}
+
+/// 落款上下文的备忘：详情（含运行记录）和脑图都没变，就不重算。
+final class ColophonContextMemo {
+  private var key: (HistoryDetailProjection, TaskMindMapRecord?)?
+  private var cached: ReadingDocumentExport.ExportColophonContext?
+
+  func value(detail: HistoryDetailProjection, mindMap: TaskMindMapRecord?) -> ReadingDocumentExport.ExportColophonContext {
+    if let key, let cached, key.0 == detail, key.1 == mindMap { return cached }
+    let context = ReadingDocumentExport.ExportColophonContext(detail: detail, mindMap: mindMap)
+    key = (detail, mindMap)
+    cached = context
+    return context
   }
 }
 

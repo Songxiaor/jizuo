@@ -350,4 +350,31 @@ final class MarkdownNoteFrontmatterTests: XCTestCase {
     let own = "标题：怎么写好标题\n\n先想清楚读者是谁。"
     XCTAssertEqual(MarkdownNoteFrontmatter.strippingCapturedEnvelope(from: own), own)
   }
+
+  /// X 长文标题下面那行阅读数不进列表预览、不进正文。
+  func testViewCountUnderLeadingHeadingIsDropped() {
+    let body = "![](https://pbs.twimg.com/media/a.jpg)\n\n# 15 分钟打通 Muse\n\n8.5万\n\nMuse 的生产力，终于解放出来了。"
+    XCTAssertEqual(
+      MarkdownNoteFrontmatter.strippingViewCountUnderLeadingHeading(body),
+      "![](https://pbs.twimg.com/media/a.jpg)\n\n# 15 分钟打通 Muse\n\nMuse 的生产力，终于解放出来了。"
+    )
+    XCTAssertEqual(
+      MarkdownNoteFrontmatter.directorySourcePreview(fromBody: body),
+      "# 15 分钟打通 Muse Muse 的生产力，终于解放出来了。"
+    )
+    XCTAssertEqual(MarkdownNoteFrontmatter.strippingViewCountUnderLeadingHeading("# 标题\n\n7805\n\n正文"), "# 标题\n\n正文")
+  }
+
+  /// 只认「第一个标题紧下面那一行纯数字」：正文里的数字、带字的行、没有标题的稿子都不动。
+  func testOtherNumbersAreLeftAlone() {
+    let cases = [
+      "# 标题\n\n8.5万人看过\n\n正文",
+      "# 标题\n\n正文\n\n2024",
+      "8.5万\n\n正文",
+      "第一段\n\n# 小节\n\n12",
+    ]
+    for body in cases {
+      XCTAssertEqual(MarkdownNoteFrontmatter.strippingViewCountUnderLeadingHeading(body), body)
+    }
+  }
 }

@@ -768,7 +768,8 @@ public struct XTweetResolver: Sendable {
       videoURL: video.videoURL,
       coverURL: video.coverURL,
       durationSeconds: video.durationSeconds,
-      author: author
+      author: author,
+      fallbackVideoURLs: video.fallbackVideoURLs
     )
   }
 
@@ -839,17 +840,10 @@ public struct XTweetResolver: Sendable {
     )
   }
 
-  /// 一条视频估算体积的上限。默认下载上限是 200MB，留出余量。
-  static let preferredVideoBudgetBytes: Double = 180 * 1_024 * 1_024
-  /// 不知道时长时的码率上限：约 720p。
-  static let preferredBitrateWithoutDuration = 2_500_000
-
-  /// 挑放得下的最高码率 MP4。HLS 变体（m3u8）对本地留存无用，直接跳过。
+  /// 主地址用最高码率的 MP4，其余档位按码率从高到低放进 fallback。
   ///
-  /// 原来一律挑最高码率：X 现在给到 2560×1440、10Mbps，4 分半就是 340MB，超过默认
-  /// 200MB 下载上限，下载在半路失败，详情页连视频都没有（2026-10-03 实库）。
-  /// 存下来是为了回看和转写，按「码率 × 时长」估体积，挑预算内最清楚的一档；
-  /// 一档都放不下就取最小的那档。
+  /// 标称码率比真实体积虚高好几倍，不再用它估下载上限。放不放得下由下载时
+  /// 看到的 Content-Length 决定：超过当前上限就改试下一档。HLS（m3u8）对本地留存无用，直接跳过。
   static func bestVideo(in payload: Payload, author: String?) -> CaptureMedia? {
     let details = (payload.mediaDetails ?? []) + (payload.video.map { [$0] } ?? [])
     var candidates: [(bitrate: Int, url: String)] = []
@@ -868,20 +862,22 @@ public struct XTweetResolver: Sendable {
         candidates.append((variant.bitrate ?? 0, raw))
       }
     }
-    let ascending = candidates.sorted { $0.bitrate < $1.bitrate }
-    let fits: ((bitrate: Int, url: String)) -> Bool = { candidate in
-      if let durationSeconds {
-        return Double(candidate.bitrate) * durationSeconds / 8 <= preferredVideoBudgetBytes
-      }
-      return candidate.bitrate <= preferredBitrateWithoutDuration
+    // 稳定排序：同码率保持出现顺序。同一条地址只留第一次（也就是码率更高的那次）。
+    let ranked = candidates.sorted { $0.bitrate > $1.bitrate }
+    var seen = Set<String>()
+    var urls: [String] = []
+    urls.reserveCapacity(ranked.count)
+    for candidate in ranked where seen.insert(candidate.url).inserted {
+      urls.append(candidate.url)
     }
-    guard let best = ascending.last(where: fits) ?? ascending.first else { return nil }
+    guard let best = urls.first else { return nil }
     return CaptureMedia(
       platform: "x",
-      videoURL: best.url,
+      videoURL: best,
       coverURL: cover,
       durationSeconds: durationSeconds,
-      author: author
+      author: author,
+      fallbackVideoURLs: Array(urls.dropFirst())
     )
   }
 

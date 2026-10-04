@@ -800,30 +800,70 @@ public final class VideoMediaDownloader: @unchecked Sendable {
     snapshotID: ContentSnapshotID?,
     pageURL: String? = nil
   ) async throws -> DownloadResult {
-    guard let url = URL(string: media.videoURL), url.scheme?.lowercased() == "https" else {
+    let candidates = Self.downloadCandidates(primary: media.videoURL, fallbacks: media.fallbackVideoURLs)
+    guard let primary = candidates.first else {
       throw MediaDownloadError.invalidURL
     }
     AppLog.info(.media, "media_download_started", [
-      "host": AppLog.host(url),
+      "host": AppLog.host(primary),
       "platform": media.platform,
     ])
-    do {
-      return try await downloadAndStoreResultUnlocked(
-        url: url,
-        media: media,
-        taskID: taskID,
-        snapshotID: snapshotID,
-        pageURL: pageURL
-      )
-    } catch {
-      AppLog.error(
-        .media,
-        "media_download_failed",
-        code: Self.mediaLogCode(error),
-        ["host": AppLog.host(url), "platform": media.platform]
-      )
-      throw error
+    var lastTooLarge: MediaDownloadError?
+    for (index, url) in candidates.enumerated() {
+      if index > 0 {
+        // 上一档因为体积超过当前下载上限才会走到这里。只记 host，不记完整地址。
+        AppLog.info(.media, "media_download_variant_fallback", [
+          "host": AppLog.host(url),
+          "platform": media.platform,
+          "rank": String(index),
+        ])
+      }
+      do {
+        return try await downloadAndStoreResultUnlocked(
+          url: url,
+          media: media,
+          taskID: taskID,
+          snapshotID: snapshotID,
+          pageURL: pageURL
+        )
+      } catch MediaDownloadError.responseTooLarge {
+        lastTooLarge = .responseTooLarge
+        continue
+      } catch {
+        Self.logDownloadFailure(error, url: url, platform: media.platform)
+        throw error
+      }
     }
+    let error = lastTooLarge ?? MediaDownloadError.invalidURL
+    Self.logDownloadFailure(error, url: candidates.last ?? primary, platform: media.platform)
+    throw error
+  }
+
+  /// 主地址必须是 https；不合法时返回空，调用方仍按无效地址失败，不拿备用档顶上。
+  /// 备用档里非 https 或与已选地址重复的条目直接跳过。
+  private static func downloadCandidates(primary: String, fallbacks: [String]) -> [URL] {
+    guard let primaryURL = URL(string: primary), primaryURL.scheme?.lowercased() == "https" else {
+      return []
+    }
+    var seen = Set<String>([primary])
+    var urls = [primaryURL]
+    for raw in fallbacks {
+      guard seen.insert(raw).inserted,
+            let url = URL(string: raw),
+            url.scheme?.lowercased() == "https"
+      else { continue }
+      urls.append(url)
+    }
+    return urls
+  }
+
+  private static func logDownloadFailure(_ error: Error, url: URL, platform: String) {
+    AppLog.error(
+      .media,
+      "media_download_failed",
+      code: mediaLogCode(error),
+      ["host": AppLog.host(url), "platform": platform]
+    )
   }
 
   private func downloadAndStoreResultUnlocked(
