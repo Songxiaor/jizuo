@@ -195,4 +195,27 @@ final class TranscriptTidyTests: XCTestCase {
     XCTAssertTrue(TidyStyle.transcript.normalizesParagraphs)
     XCTAssertTrue(TidyStyle.subtitles.normalizesParagraphs)
   }
+
+  /// 时间码被模型并进上一段时，从它那里拆回一段（2026-10-04 Day1）。
+  func testInlineTimestampIsSplitBackIntoItsOwnParagraph() {
+    let chunk = "39:40 现在两三百个点赞就可以找到精准客户\n\n40:00 对吧所以流量不是目的"
+    let output = "39:40 现在两三百个点赞就可以找到精准客户，40:00 对吧？\n\n所以流量不是目的。"
+    XCTAssertEqual(
+      TranscriptTidyChunkCheck.repairingLeadingStamp(output: output, for: chunk),
+      "39:40 现在两三百个点赞就可以找到精准客户，\n\n40:00 对吧？\n\n所以流量不是目的。"
+    )
+    // 正文里本来就有的时间（「下午 3:30 开会」）不是原稿的段首时间码，不动。
+    let plain = "10:00 我们下午 3:30 开会"
+    XCTAssertEqual(TranscriptTidyChunkCheck.splittingInlineStamps(output: "10:00 我们下午 3:30 开会。", for: plain), "10:00 我们下午 3:30 开会。")
+  }
+
+  /// 没人说话的音视频听写出一个词：当没有人声（2026-10-04 实库「00:00 you」「我」）。
+  func testSingleWordTranscriptIsTreatedAsNoSpeech() {
+    for junk in ["00:00 you", "02:11 我", "嗯", "00:08 tr", "  "] {
+      XCTAssertTrue(LocalTranscriptQuality.isNoSpeechArtifact(junk), junk)
+    }
+    for real in ["00:00 好的", "00:33 I wish you could see.", "00:00 第三集补充"] {
+      XCTAssertFalse(LocalTranscriptQuality.isNoSpeechArtifact(real), real)
+    }
+  }
 }

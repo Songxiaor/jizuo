@@ -306,7 +306,7 @@ public enum LocalVideoTranscriptionError: Error, Sendable, Equatable {
     case .noAudioTrack: "这个视频里没有音轨（没有声音），没法转写。"
     case .audioExtractionFailed: "无法从视频中提取音频；原视频没有被改动。"
     case .recognitionFailed: "本机转写没有完成，请重试。音频没有上传。"
-    case .emptyTranscript: "没有识别到可保存的中文内容，请确认视频中有人声后重试。"
+    case .emptyTranscript: "没有识别到说话声（可能只有音乐或环境声），没有生成转写稿。"
     case .mediaTooLong: "视频超过 120 分钟上限，暂时不能本机转写。"
     case .cancelled: "已取消本机转写。"
     }
@@ -382,5 +382,33 @@ extension LocalVideoTranscribing {
     fallbacks: [String]
   ) async -> String {
     preferred
+  }
+}
+
+/// 本机听写在没人说话的音视频上会「听」出一个词（2026-10-04 实库：2 分钟的纯音乐视频转出
+/// 「00:00 you」，另有 5 条只有「我」、3 条只有「you」）。这种结果当没有人声处理：不存成转写稿，
+/// 已经存下的在阅读页上也不当正文显示。
+public enum LocalTranscriptQuality {
+  /// 去掉时间码后只剩不到两个字 / 词。一个汉字算一个，一串字母或数字算一个。
+  public static func isNoSpeechArtifact(_ text: String) -> Bool {
+    let withoutStamps = text.replacingOccurrences(
+      of: #"(?m)^\s*(?:\d{1,2}:)?\d{1,2}:\d{2}\s*"#, with: " ", options: .regularExpression
+    )
+    let body = MarkdownNoteFrontmatter.parse(withoutStamps).body
+    var units = 0
+    var inWord = false
+    for scalar in body.unicodeScalars {
+      if (0x3400...0x9FFF).contains(scalar.value) || (0x3040...0x30FF).contains(scalar.value) || (0xAC00...0xD7AF).contains(scalar.value) {
+        units += 1
+        inWord = false
+      } else if CharacterSet.alphanumerics.contains(scalar) {
+        if !inWord { units += 1 }
+        inWord = true
+      } else {
+        inWord = false
+      }
+      if units > 1 { return false }
+    }
+    return true
   }
 }

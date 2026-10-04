@@ -4895,7 +4895,9 @@ final class HistoryViewModel {
     if let reason = tidyGateUnavailableReason(taskID: taskID) { return reason }
     if transcriptionState(for: taskID).isActive { return "转写进行中，完成后即可整理" }
     if transcriptTidyState(for: taskID).isActive { return "正在整理…" }
-    if tidySourceText(taskID: taskID, style: .transcript) == nil { return "需先完成转写，才有文稿可整理" }
+    guard let text = tidySourceText(taskID: taskID, style: .transcript) else { return "需先完成转写，才有文稿可整理" }
+    // 没人说话、听写只出了一个词（「you」「我」）：没有可校对的内容，不把这个词发给模型。
+    if LocalTranscriptQuality.isNoSpeechArtifact(text) { return "没有识别到说话声，没有可校对的内容" }
     return nil
   }
 

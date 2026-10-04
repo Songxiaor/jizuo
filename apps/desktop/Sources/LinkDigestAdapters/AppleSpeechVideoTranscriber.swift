@@ -107,7 +107,10 @@ public struct AppleSpeechVideoTranscriber: LocalVideoTranscribing {
           )
           try Task.checkCancellation()
           let trimmed = recognized.text.trimmingCharacters(in: .whitespacesAndNewlines)
-          guard !trimmed.isEmpty else { throw LocalVideoTranscriptionError.emptyTranscript }
+          // 只「听」出一个词（纯音乐视频转出「you」「我」）也当没有人声，不存成转写稿。
+          guard !trimmed.isEmpty, !LocalTranscriptQuality.isNoSpeechArtifact(trimmed) else {
+            throw LocalVideoTranscriptionError.emptyTranscript
+          }
           continuation.yield(.final(trimmed))
           // 紧跟在 .final 之后：接收方先拿到正文（落库要用），再拿到时间。
           if !recognized.paragraphs.isEmpty {

@@ -946,9 +946,9 @@ final class HistoryRepositoryRunTests: XCTestCase {
   /// 「待校对」（2026-09-28 工序印）：有机器转写、还没有模型校对稿的才算。
   func testUntidiedScopeListsTranscriptsWithoutTidySnapshot() throws {
     try withRepository { repository, _ in
-      func insertSnapshot(_ taskID: TaskID, sequence: Int, kind: String, method: String) throws {
+      func insertSnapshot(_ taskID: TaskID, sequence: Int, kind: String, method: String, body explicitBody: String? = nil) throws {
         try repository.database.write { db in
-          let body = "转写正文\(sequence)"
+          let body = explicitBody ?? "00:00 这是一段转写正文第\(sequence)段"
           try db.execute(sql: """
             INSERT INTO content_snapshots (
               id, task_id, sequence, envelope_created_at_ms, captured_at_ms, source_kind, source_url, title,
@@ -961,6 +961,9 @@ final class HistoryRepositoryRunTests: XCTestCase {
       let pending = try repository.acceptCapture(.init(envelope: capture(requestID: "tidy-a", key: "tidy-a", url: "https://example.test/a"), receivedAtMilliseconds: 1))
       let tidied = try repository.acceptCapture(.init(envelope: capture(requestID: "tidy-b", key: "tidy-b", url: "https://example.test/b"), receivedAtMilliseconds: 2))
       _ = try repository.acceptCapture(.init(envelope: capture(requestID: "tidy-c", key: "tidy-c", url: "https://example.test/c"), receivedAtMilliseconds: 3))
+      // 没人说话、听写只出了一个词：没有可校对的内容，不算待校对（2026-10-04）。
+      let noSpeech = try repository.acceptCapture(.init(envelope: capture(requestID: "tidy-d", key: "tidy-d", url: "https://example.test/d"), receivedAtMilliseconds: 4))
+      try insertSnapshot(noSpeech.taskID, sequence: 2, kind: "local_transcription", method: "speech_analyzer_local", body: "00:00 you")
       try insertSnapshot(pending.taskID, sequence: 2, kind: "local_transcription", method: "speech_analyzer_local")
       try insertSnapshot(tidied.taskID, sequence: 2, kind: "local_transcription", method: "speech_analyzer_local")
       try insertSnapshot(tidied.taskID, sequence: 3, kind: "local_transcription", method: "openai_compatible_chat_tidy")

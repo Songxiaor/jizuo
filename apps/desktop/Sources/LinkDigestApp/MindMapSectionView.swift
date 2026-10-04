@@ -261,8 +261,8 @@ struct MindMapSectionView: View {
 
 }
 
-/// 卡内脑图视口：固定高度、带边框，宽度撑满卡片；图先按视口宽等比缩放，
-/// 超出部分滚轮/触控板双轴滚动；单击栅格化为 2x PNG 进现有图片灯箱放大。
+/// 卡内脑图：带边框，宽度撑满卡片，整张图等比缩放显示（不在框里滚动）；
+/// 单击栅格化为 2x PNG 进现有图片灯箱放大。
 private struct MindMapCanvasView: View {
   let svg: String
   let taskID: TaskID
@@ -271,37 +271,51 @@ private struct MindMapCanvasView: View {
   let outlineText: String
   @State private var image: NSImage?
 
-  private static let viewportHeight: CGFloat = 380
+  /// 整张图放进阅读流里，不再是一个固定 380pt、自带滚动的小窗：滚轮经过脑图时原来是图在
+  /// 框里滚、页面不动，读到这里就卡住（2026-10-04 走查）。图按卡片宽度等比缩放、整张显示；
+  /// 特别高的图再按这个上限整体缩小，细节点开灯箱看。
+  private static let maximumHeight: CGFloat = 1_200
+  @State private var availableWidth: CGFloat = 0
+
+  /// 按可用宽度和高度上限算出的显示尺寸。
+  static func displaySize(for imageSize: CGSize, width: CGFloat) -> CGSize {
+    guard imageSize.width > 0, imageSize.height > 0, width > 0 else { return .zero }
+    let scale = min(1, width / imageSize.width, maximumHeight / imageSize.height)
+    return CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
+  }
+
+  private var displayHeight: CGFloat {
+    if let image, image.size.width > 0, availableWidth > 0 {
+      return max(120, Self.displaySize(for: image.size, width: availableWidth).height)
+    }
+    // 高度直接按 SVG 自己声明的尺寸定，不等解码：原来先占 200pt、图到了再跳成
+    // 实际高度，下面整篇正文跟着往下一蹦（2026-10-01 体检）。
+    return min(Self.maximumHeight, max(160, MindMapSectionView.declaredHeight(of: svg) ?? 200))
+  }
 
   var body: some View {
-    GeometryReader { proxy in
-      Group {
-        if let image, image.size.width > 0 {
-          let scale = min(1, proxy.size.width / image.size.width)
-          let displaySize = CGSize(
-            width: image.size.width * scale,
-            height: image.size.height * scale
-          )
-          ScrollView([.horizontal, .vertical], showsIndicators: true) {
-            Image(nsImage: image)
-              .resizable()
-              .interpolation(.high)
-              .frame(width: displaySize.width, height: displaySize.height)
-          }
+    Group {
+      if let image, image.size.width > 0 {
+        let size = Self.displaySize(for: image.size, width: availableWidth)
+        Image(nsImage: image)
+          .resizable()
+          .interpolation(.high)
+          .frame(width: size.width, height: size.height)
+          .frame(maxWidth: .infinity)
+          .contentShape(Rectangle())
           .onTapGesture { presentLightbox() }
           .help("点击放大查看")
           .accessibilityLabel("脑图")
           .accessibilityValue(outlineText)
           .accessibilityAddTraits(.isButton)
           .accessibilityHint("点击放大查看")
-        } else {
-          ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
-        }
+      } else {
+        ProgressView().frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     }
-    // 高度直接按 SVG 自己声明的尺寸定，不等解码：原来先占 200pt、图到了再跳成
-    // 实际高度，下面整篇正文跟着往下一蹦（2026-10-01 体检）。
-    .frame(height: min(Self.viewportHeight, max(160, (image?.size.height ?? MindMapSectionView.declaredHeight(of: svg)) ?? 200)))
+    .frame(maxWidth: .infinity)
+    .frame(height: displayHeight)
+    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { availableWidth = $0 }
     .clipShape(RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous))
     .overlay(
       RoundedRectangle(cornerRadius: DesignTokens.Radius.lg, style: .continuous)

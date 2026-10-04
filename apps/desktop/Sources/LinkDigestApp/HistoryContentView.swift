@@ -4893,6 +4893,17 @@ private struct HistoryDetailView: View, Equatable {
 
   private var showsTranslationLayerPicker: Bool { availableTranslationLayers.count > 1 }
 
+  /// 当前看的译文是一份带时间码的转写稿（转写层、字幕层的译文）时，按逐字稿排的正文；否则 nil。
+  /// 译文常是一行一个时间码、行间只隔一个换行：先在每个时间码前补成空行，逐字稿按空行切段。
+  private var translatedTranscriptBody: String? {
+    guard !showsPlainText, let layer = activeTranslationLayer, layer == .transcript || layer == .subtitles,
+          let body = translationLayers.first(where: { $0.layer == layer })?.body else { return nil }
+    let normalized = body.replacingOccurrences(
+      of: #"\n[ \t]*(?=(?:\d{1,2}:)?\d{1,2}:\d{2}\s)"#, with: "\n\n", options: .regularExpression
+    )
+    return TranscriptManuscript.looksLikeTranscript(normalized) ? normalized : nil
+  }
+
   /// 当前该渲染的译文正文：开头那段（标题）+ 当前这一层。没分层时返回 nil，
   /// 调用方退回整篇。
   private var activeTranslationBody: String? {
@@ -6876,7 +6887,9 @@ private struct HistoryDetailView: View, Equatable {
   /// 已有文稿、整理仍不可用时，在菜单外留一行可见理由（不只靠悬停）。
   private var transcriptTidyVisibleBlockedReason: String? {
     guard hasCompletedTranscript, let reason = transcriptTidyBlockedReason,
-          reason != "需先完成转写，才有文稿可整理" else { return nil }
+          reason != "需先完成转写，才有文稿可整理",
+          // 没人说话的那种：正文那里已经写着「没有识别到说话声」，表头下不再说第二遍。
+          !reason.hasPrefix("没有识别到说话声") else { return nil }
     return reason
   }
   /// 菜单里禁用的「在线转写」必须自己说明为什么灰。
@@ -8365,6 +8378,22 @@ private struct HistoryDetailView: View, Equatable {
           translationLayerPicker
             .padding(.bottom, 10)
         }
+        if pane == .translation, let transcriptBody = translatedTranscriptBody {
+          // 译出来的转写稿按逐字稿排，和「转写」页同一个样子：时间码挂左页边、段距一致、
+          // 点时间码跳视频（2026-10-04 走查：原来时间码夹在正文里，有的行紧挨、有的空一行）。
+          TranscriptManuscriptView(
+            paragraphs: TranscriptManuscript.paragraphs(of: transcriptBody),
+            showsTimecodes: showsTranscriptTimecodes,
+            showsNotes: false,
+            readingFont: readingFont,
+            primaryTextColor: theme.primaryText,
+            secondaryTextColor: theme.secondaryText,
+            sealColor: theme.seal,
+            onSeek: hasSeekableMedia ? { seconds in model.requestMediaSeek(toSeconds: seconds) } : nil
+          )
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .accessibilityIdentifier("history-reading-result")
+        } else {
         // 旧版翻译把元数据块也翻了一遍，块卡在译文中段（前面是翻译后的标题），
         // 开头剥离对它无效。显示时按白名单再清一次；只清翻译——总结里出现
         // 同构块的可能性低，且误删的代价是丢正文。
@@ -8398,6 +8427,7 @@ private struct HistoryDetailView: View, Equatable {
         )
         .frame(maxWidth: .infinity, alignment: .leading)
         .accessibilityIdentifier("history-reading-result")
+        }
       } else {
         missingPaneNotice(for: pane)
       }
@@ -8908,6 +8938,15 @@ private struct HistoryDetailView: View, Equatable {
               .stroke(isOwnWriting ? Color.clear : theme.hairline, lineWidth: 1)
           )
           .accessibilityIdentifier("history-transcription-editor")
+        } else if bodyOverride == nil,
+                  snapshot.sourceKind == CapturedDocument.Origin.localTranscription.rawValue,
+                  LocalTranscriptQuality.isNoSpeechArtifact(snapshot.bodyText) {
+          // 早先存下的「00:00 you」这类：没有人说话，听写只凭空出了一个词，不当正文印出来。
+          Label(LocalVideoTranscriptionError.emptyTranscript.userMessage, systemImage: "waveform.slash")
+            .themedFont(.callout)
+            .foregroundStyle(theme.secondaryText)
+            .padding(.vertical, DesignTokens.Space.sm)
+            .accessibilityIdentifier("history-transcript-no-speech")
         } else if model.showsReformattedBody, let reformatted = model.reformatRecord?.bodyText {
           // 重排稿：原文一个字没动，这里只是换一份正文来渲染。用户随时切回。
           MarkdownContentView(

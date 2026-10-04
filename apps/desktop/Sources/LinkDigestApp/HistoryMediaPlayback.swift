@@ -2466,12 +2466,65 @@ struct HistoryVideoPlayerCard: View {
   @ObservedObject private var cinema = VideoCinemaController.shared
   @ObservedObject private var mini = MiniVideoPlayerController.shared
   @State private var isHoveringVideo = false
+  /// 封面：视频十分之一处的一帧，播放前盖在播放器上（2026-10-04 走查：很多视频从黑场淡入，
+  /// 首帧是一整块黑，35 分钟的视频在页面上就是一个黑框）。一开始播放就撤掉。
+  @State private var posterImage: NSImage?
+  @State private var hasStartedPlayback = false
+  @State private var posterTask: Task<Void, Never>?
 
   /// 本卡的播放器正被影院 overlay 放大：卡内显示占位，避免双重渲染。
   private var isInCinema: Bool { cinema.isPresenting(player: player) }
   /// 正在右上角小窗里播：卡内同样只留占位。
   private var isInMini: Bool { mini.isShowing(player: player) }
   private var miniOwnerID: String { "\(taskID.rawValue)|\(fileURL.path)" }
+
+  @ViewBuilder private var posterOverlay: some View {
+    if let posterImage, !hasStartedPlayback {
+      ZStack {
+        Image(nsImage: posterImage)
+          .resizable()
+          .aspectRatio(contentMode: .fit)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+          .background(Color.black)
+        Image(systemName: "play.fill")
+          .font(.system(size: 22, weight: .semibold))
+          .foregroundStyle(.white)
+          .frame(width: 60, height: 60)
+          .background(.black.opacity(0.5), in: Circle())
+      }
+      .contentShape(Rectangle())
+      .onTapGesture {
+        hasStartedPlayback = true
+        player?.play()
+      }
+      .help("播放")
+      .accessibilityLabel("播放")
+      .accessibilityAddTraits(.isButton)
+      .accessibilityIdentifier("history-video-poster")
+      .transition(.opacity)
+    }
+  }
+
+  /// 取视频十分之一处（最多第 30 秒）的一帧当封面；整段很短或取不到就不盖。
+  private func loadPoster(_ url: URL) {
+    posterTask?.cancel()
+    posterImage = nil
+    hasStartedPlayback = false
+    posterTask = Task { @MainActor in
+      let asset = AVURLAsset(url: url)
+      guard let duration = try? await asset.load(.duration), duration.seconds.isFinite, duration.seconds > 4 else { return }
+      let generator = AVAssetImageGenerator(asset: asset)
+      generator.appliesPreferredTrackTransform = true
+      generator.maximumSize = CGSize(width: 1600, height: 1600)
+      generator.requestedTimeToleranceBefore = CMTime(seconds: 2, preferredTimescale: 600)
+      generator.requestedTimeToleranceAfter = CMTime(seconds: 2, preferredTimescale: 600)
+      let at = CMTime(seconds: min(30, duration.seconds * 0.1), preferredTimescale: 600)
+      guard let frame = try? await generator.image(at: at).image, !Task.isCancelled else { return }
+      // 一打开就点了播放（或按了空格）的，不再补盖封面。
+      guard player?.timeControlStatus != .playing, (player?.currentTime().seconds ?? 0) < 0.5 else { return }
+      posterImage = NSImage(cgImage: frame, size: NSSize(width: frame.width, height: frame.height))
+    }
+  }
 
   private func updateMiniPlayer(cardVisible: Bool) {
     guard let player, let videoDisplaySize else { return }
@@ -2555,6 +2608,7 @@ struct HistoryVideoPlayerCard: View {
       }
       isPlaybackEnded = false
       loadVideoGeometry(fileURL)
+      loadPoster(fileURL)
     }
     .onChange(of: fileURL) { oldURL, newURL in
       if isInCinema { cinema.dismiss() }
@@ -2565,13 +2619,24 @@ struct HistoryVideoPlayerCard: View {
       player = AVPlayer(url: newURL)
       isPlaybackEnded = false
       loadVideoGeometry(newURL)
+      loadPoster(newURL)
     }
     // 阅读区点了时间码：把播放位置跳过去。
     //
     // 请求走 ViewModel 中转——播放器是这张卡的 `@State`，阅读区够不到它。
     // `MediaSeekRequest` 每次带一个新 id，所以连点同一个时间码也会触发；
     // 只比秒数的话第二次点击值没变，`onChange` 不响应，表现成「点了没反应」。
+    // 空格、点时间码等别的方式开始播放时也撤掉封面。
+    .onReceive(
+      (player?.publisher(for: \.timeControlStatus).eraseToAnyPublisher()
+        ?? Empty<AVPlayer.TimeControlStatus, Never>().eraseToAnyPublisher())
+        .receive(on: DispatchQueue.main)
+    ) { status in
+      guard status == .playing, !hasStartedPlayback else { return }
+      withAnimation(.easeOut(duration: 0.2)) { hasStartedPlayback = true }
+    }
     .onChange(of: model.mediaSeekRequest) { _, request in
+      hasStartedPlayback = true
       guard let request, let player else { return }
       let time = CMTime(seconds: request.seconds, preferredTimescale: 600)
       Task { await MediaPlaybackRestart.seek(player, to: time) }
@@ -2580,6 +2645,7 @@ struct HistoryVideoPlayerCard: View {
       if isInCinema { cinema.dismiss() }
       mini.release(ownerID: miniOwnerID)
       player?.pause()
+      posterTask?.cancel()
       videoGeometryTask?.cancel()
       videoGeometryTask = nil
       saveFeedbackTask?.cancel()
@@ -2672,6 +2738,7 @@ struct HistoryVideoPlayerCard: View {
           .overlay {
             PlaybackReplayOverlay(player: player, isPlaybackEnded: $isPlaybackEnded)
           }
+          .overlay { posterOverlay }
           // 按钮挂在视频自己的框上：竖屏视频收窄后也贴着视频右上角，不会甩到阅读区右边。
           .overlay(alignment: .topTrailing) { videoCornerActions }
           .onHover { hovering in

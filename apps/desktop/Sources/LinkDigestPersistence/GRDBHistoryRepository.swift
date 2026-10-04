@@ -315,9 +315,13 @@ public final class GRDBHistoryRepository: HistoryRepository, @unchecked Sendable
   /// 收成一份，两处都指向它，口径不可能再分叉。
 
   /// 有本机转写（机器听写稿）、还没有模型校对稿的条目。两张子查询都走 content_snapshots 的 task_id 索引。
+  ///
+  /// 只数有内容可校的（2026-10-04）：没人说话的音视频听写出「00:00 you」「02:11 我」这种一个词，
+  /// 原来也算「待校对」，批量校对会把这个词发给模型。12 个字符以内（时间码加一两个字）不算。
   static let untidiedTranscriptSQL = """
     EXISTS (SELECT 1 FROM content_snapshots s WHERE s.task_id = t.id
-      AND s.source_kind = 'local_transcription' AND s.capture_method <> 'openai_compatible_chat_tidy')
+      AND s.source_kind = 'local_transcription' AND s.capture_method <> 'openai_compatible_chat_tidy'
+      AND s.character_count > 12)
     AND NOT EXISTS (SELECT 1 FROM content_snapshots s2 WHERE s2.task_id = t.id
       AND s2.capture_method = 'openai_compatible_chat_tidy')
     """

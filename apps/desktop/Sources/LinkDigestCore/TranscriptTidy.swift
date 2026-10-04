@@ -450,6 +450,7 @@ public enum TranscriptTidyChunkCheck {
   /// 变成了第二段的。原来判失败再重发一次，每次白等一分钟；内容其实是这一段的。
   /// 只在「输出的时间码全都来自这一段、只缺开头那个」时补，别处来的内容照旧拦下。
   public static func repairingLeadingStamp(output: String, for chunk: String) -> String {
+    let output = splittingInlineStamps(output: output, for: chunk)
     let inputStamps = timestamps(in: chunk)
     guard let first = inputStamps.first else { return output }
     let outputStamps = timestamps(in: output)
@@ -458,6 +459,25 @@ public enum TranscriptTidyChunkCheck {
     let trimmed = output.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return output }
     return first + " " + trimmed
+  }
+
+  /// 模型把带时间码的一段并进了上一段，时间码落在句子中间（「…找到精准客户，40:00 对吧？」）。
+  /// 原稿里确有这个时间码、校对稿里它不在段首时，从它那里重新起一段（2026-10-04 Day1：
+  /// 432 个时间码里 3 个这样被吞进正文，读着像多了一串数字，那一段也点不了跳转）。
+  public static func splittingInlineStamps(output: String, for chunk: String) -> String {
+    let inputStamps = Set(timestamps(in: chunk))
+    guard !inputStamps.isEmpty else { return output }
+    let missing = inputStamps.subtracting(timestamps(in: output))
+    guard !missing.isEmpty else { return output }
+    var result = output
+    for stamp in missing {
+      // 前面是正文（不是行首），后面跟空白：只认这一处，找到第一处就拆。
+      let pattern = #"(?<=[^\s\d:])[ \t]*"# + NSRegularExpression.escapedPattern(for: stamp) + #"(?=\s)"#
+      guard let range = result.range(of: pattern, options: .regularExpression) else { continue }
+      let matched = result[range].trimmingCharacters(in: .whitespaces)
+      result.replaceSubrange(range, with: "\n\n" + matched)
+    }
+    return result
   }
 
   public static func belongs(output: String, to chunk: String) -> Bool {
