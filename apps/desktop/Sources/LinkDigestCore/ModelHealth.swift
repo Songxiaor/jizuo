@@ -53,7 +53,7 @@ public struct ModelHealthRecord: Codable, Sendable, Equatable {
     case run
     /// 读取模型列表时发现已保存的模型不在列表里。
     case catalog
-    /// 用户点「检测可用性」发出的极短请求。
+    /// 用户点「检测可用」发出的极短请求。
     case probe
   }
 
@@ -106,7 +106,7 @@ public enum ModelHealthObservation {
     set { lock.withLock { storedHandler = newValue } }
   }
 
-  /// 「检测可用性」发出的请求用这个配置 id。它们自己记结论（并且知道用的是不是手填的密钥），
+  /// 「检测可用」发出的请求用这个配置 id。它们自己记结论（并且知道用的是不是手填的密钥），
   /// 旁路通知跳过，免得手填错的密钥把已保存的模型记成「密钥无效」。
   public static let probeProfileID = "model-probe"
 

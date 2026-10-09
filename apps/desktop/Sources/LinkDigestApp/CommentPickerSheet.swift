@@ -135,7 +135,7 @@ struct CommentPickerSheet: View {
         Text("正在打开原文并读取前 \(model.limit) 条评论…")
           .themedFont(.callout)
           .foregroundStyle(.secondary)
-        Text("会用「设置 → 站点登录」里的登录状态；页面不会显示出来。")
+        Text("会用「设置 → 网站登录」里的登录状态；页面不会显示出来。")
           .themedFont(.caption)
           .foregroundStyle(.tertiary)
       }
@@ -177,7 +177,7 @@ struct CommentPickerSheet: View {
         .background(theme.card, in: RoundedRectangle(cornerRadius: DesignTokens.Radius.md))
         .overlay(RoundedRectangle(cornerRadius: DesignTokens.Radius.md).stroke(theme.hairline))
         if model.loginRequired {
-          Label("这个网站要登录后才显示全部评论。可在「设置 → 站点登录」登录后重试，读满 \(model.limit) 条。", systemImage: "person.crop.circle.badge.exclamationmark")
+          Label("这个网站要登录后才显示全部评论。可在「设置 → 网站登录」登录后重试，读满 \(model.limit) 条。", systemImage: "person.crop.circle.badge.exclamationmark")
             .themedFont(.caption)
             .foregroundStyle(theme.warning)
             .fixedSize(horizontal: false, vertical: true)

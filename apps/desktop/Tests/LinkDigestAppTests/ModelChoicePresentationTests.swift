@@ -33,8 +33,8 @@ final class ModelChoicePresentationTests: XCTestCase {
   /// 空值有明确语义，应当是选项之一，而不是「把输入框清空」才能达到的状态。
   func testEmptyValueIsAFirstClassOption() throws {
     let settings = try source("ProviderSettingsView.swift")
-    XCTAssertTrue(settings.contains(#"emptyOptionTitle: "跟随默认模型""#))
-    XCTAssertTrue(settings.contains(#"emptyOptionTitle: "不使用：只用本机转写""#))
+    XCTAssertTrue(settings.contains(#"emptyOptionTitle: "跟随默认""#))
+    XCTAssertTrue(settings.contains(#"emptyOptionTitle: "只用本机""#))
   }
 
   /// 2026-09-17 改：只能从「模型服务」里已添加的模型中选，不再提供「自定义…」。

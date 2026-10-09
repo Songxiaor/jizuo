@@ -202,7 +202,7 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
     } else if report.failures.isEmpty {
       lastAutoSyncFailureMessage = nil
     } else {
-      lastAutoSyncFailureMessage = "自动同步有 \(report.failures.count) 条内容未能写入；请点「同步到知识库」查看详情并重试。"
+      lastAutoSyncFailureMessage = "自动同步有 \(report.failures.count) 条内容未能写入；请点「立即同步」查看详情并重试。"
     }
   }
 
@@ -243,7 +243,7 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
     do { taskIDs = try allTaskIDs(history) } catch {
       // 系统原始报错只进日志，界面只说人话和下一步（2026-10-01）。
       AppLog.error(.storage, "vault_sync_list_failed", code: "VAULT_SYNC_READ_FAILED", ["error": String(describing: error)])
-      return .failure("没能读取资料库，这次没有写入任何文件。请稍后再点「同步到知识库」。")
+      return .failure("没能读取资料库，这次没有写入任何文件。请稍后再点「立即同步」。")
     }
 
     var documents: [KnowledgeVaultDocument] = []

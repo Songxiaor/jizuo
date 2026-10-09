@@ -1573,7 +1573,7 @@ final class ManualLinkViewModelTests: XCTestCase {
         autoMindMap: true,
         mayAutoTidyVideoTranscript: false
       ).message,
-      "添加后将自动抓取并执行总结、脑图，预计产生 2 次模型调用。可在设置的「工序总览」里关闭。"
+      "添加后将自动抓取并执行总结、脑图，预计产生 2 次模型调用。可在设置的「处理流程」里关闭。"
     )
     XCTAssertNil(
       AutomaticModelCallDisclosure(

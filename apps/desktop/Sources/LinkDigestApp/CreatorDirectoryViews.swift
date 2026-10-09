@@ -731,7 +731,7 @@ struct CreatorSavedWorkCard: View {
 
   private func placeholderHelp(showsProgress: Bool, blankPoster: Bool) -> String {
     if blankPoster { return "视频开头是黑场，已改用占位图" }
-    if coverFailed { return "封面没取到，打开作品后可重新抓取原文以更新封面" }
+    if coverFailed { return "封面没取到，打开作品点「更多 → 刷新原文」更新封面" }
     return showsProgress ? "封面加载中" : "封面未获取"
   }
 

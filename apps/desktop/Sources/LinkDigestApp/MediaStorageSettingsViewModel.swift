@@ -143,7 +143,7 @@ final class MediaStorageSettingsViewModel: ObservableObject {
         orphanState = .scanned(count: scan.count, bytes: scan.totalBytes)
       case .failure:
         scannedOrphans = []
-        orphanState = .failed("这次没能扫完视频文件夹。没有任何文件被改动。请稍后再点一次「扫描一下」。")
+        orphanState = .failed("这次没能扫完视频文件夹。没有任何文件被改动。请稍后再点一次「扫描」。")
       }
     }
   }
@@ -169,9 +169,9 @@ final class MediaStorageSettingsViewModel: ObservableObject {
 
     var title: String {
       switch self {
-      case .keep: "保留视频"
-      case .afterTranscription: "转写完成后清理"
-      case .afterDays: "保存满一定天数后清理"
+      case .keep: "一直保留"
+      case .afterTranscription: "转写后删"
+      case .afterDays: "到期删除"
       }
     }
 
@@ -179,7 +179,7 @@ final class MediaStorageSettingsViewModel: ObservableObject {
       switch self {
       case .keep: "默认。转写完视频也一直留在本机。"
       case .afterTranscription: "转写稿存好后就删掉视频文件，最省空间。"
-      case .afterDays: "视频保存满所选天数、并且已经转写过，才删掉视频文件。"
+      case .afterDays: "存满天数且已转写才删"
       }
     }
   }

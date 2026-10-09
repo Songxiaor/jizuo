@@ -384,7 +384,7 @@ struct PieceDeskView: View {
           title: "按我的表达方式重写",
           icon: "person.wave.2",
           hint: model.rewriteUnavailableReason(for: piece.id)
-            ?? "照「我的表达方式」把全文改一遍；事实和数据不动",
+            ?? "照「我的文风」把全文改一遍；事实和数据不动",
           isDisabled: !model.canRewrite(for: piece.id)
         ) { onRewrite(piece.id, .rewrite) },
       ]

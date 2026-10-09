@@ -90,7 +90,7 @@ final class QuickCaptureController: ObservableObject {
       backing: .buffered,
       defer: false
     )
-    panel.title = "快速记录"
+    panel.title = "随手记"
     panel.titlebarAppearsTransparent = true
     panel.isFloatingPanel = true
     panel.level = .floating

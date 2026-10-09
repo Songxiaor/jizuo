@@ -16,50 +16,50 @@ struct MCPSettingsView: View {
   var body: some View {
     SettingsPlainPage {
       SettingsPageHeader(
-        title: "AI 助手接入",
-        symbol: "point.3.connected.trianglepath.dotted",
-        caption: "让 Claude Code、Codex 这类助手直接读写你的内容。连接程序随\(ProductDisplay.name)一起装好，不用另外安装什么。",
+        title: "AI 助手",
+        symbol: "link",  // 和侧栏「AI 助手」同一个图标
+        caption: "让 Claude Code 等助手读写你的内容",
         fill: theme.accent
       )
 
       SettingsRowGroup {
         SettingsRow(
-          title: "允许 AI 助手连接",
-          caption: model.enabled ? "本机的 AI 助手可以读写你在汲作里保存的内容。" : "关着的时候，任何助手都连不上。",
+          title: "允许连接",
+          caption: model.enabled ? "本机助手可以读写你的内容" : "关着的时候，任何助手都连不上。",
           details: "开启后，这台 Mac 上用同一个账户运行的助手可以读写你在汲作里保存的内容。只把连接配置交给你信任的助手；它读到的正文可能会被发送给它自己用的模型。关掉之后新的调用会被拒绝，已经提交的保存和转写仍由汲作做完。"
         ) {
           Toggle("", isOn: $model.enabled)
             .toggleStyle(.switch)
             .labelsHidden()
-            .accessibilityLabel("允许 AI 助手连接")
+            .accessibilityLabel("允许连接")
             .accessibilityIdentifier("mcp-enabled")
         }
         SettingsRow(
-          title: "允许抓取与整理",
-          caption: "添加博主、发现与保存作品、下载视频、标签和收藏。"
+          title: "收集整理",
+          caption: "存作品、下视频、加标签和收藏"
         ) {
           Toggle("", isOn: $model.allowsChanges)
             .toggleStyle(.switch)
             .labelsHidden()
-            .accessibilityLabel("允许抓取与整理")
+            .accessibilityLabel("收集整理")
             .accessibilityIdentifier("mcp-allow-changes")
         }
         SettingsRow(
-          title: "允许转写与总结",
-          caption: "本机转写用汲作自带的识别；总结用你配置的模型服务，可能产生费用。",
+          title: "转写总结",
+          caption: "总结用你的模型，可能花钱",
           details: "要不要下载模型、要不要把内容发出去，仍然由汲作自己问你。"
         ) {
           Toggle("", isOn: $model.allowsProcessing)
             .toggleStyle(.switch)
             .labelsHidden()
-            .accessibilityLabel("允许转写与总结")
+            .accessibilityLabel("转写总结")
             .accessibilityIdentifier("mcp-allow-processing")
         }
       }
 
       SettingsCard(
         title: "连接助手",
-        summary: "复制连接说明粘贴给本机的助手，让它照着配置并重新连接，再让助手调用一次「查看状态」确认连上。",
+        summary: "复制说明发给助手，照着连",
         details: "适用于能连本机助手服务的客户端。只能填远程网址的云端助手连不上这台 Mac；汲作换了安装位置之后，请重新复制一次连接说明。\n当前支持：内容搜索与读取、链接保存、抖音、小红书、X 和 B 站博主作品发现与保存、本机视频转写、总结、标签、收藏和打开记录。博主发现一次处理一位；多位由助手依次提交。",
         summaryPlacement: .aboveControl,
         controlWidth: .full,
@@ -77,9 +77,9 @@ struct MCPSettingsView: View {
                 tone: .warning
               )
             }
-            DisclosureGroup("高级：连接配置原文与重启服务", isExpanded: $showsAdvanced) {
+            DisclosureGroup("高级选项", isExpanded: $showsAdvanced) {
               VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
-                Text("复制连接配置的原文，或在服务不正常时手动重启一次。不会改变上面的权限开关。")
+                Text("复制原始配置，或重启服务")
                   .themedFont(.subheadline)
                   .foregroundStyle(.secondary)
                   .fixedSize(horizontal: false, vertical: true)
@@ -100,7 +100,7 @@ struct MCPSettingsView: View {
       SettingsRowGroup {
         SettingsRow(
           title: "服务状态",
-          details: "本机的连接服务在不在跑；不代表助手此刻还连着。"
+          details: "服务是否在运行"
         ) {
           Text(enableStatusLine)
             .themedFont(.body)
@@ -109,8 +109,8 @@ struct MCPSettingsView: View {
             .accessibilityIdentifier("mcp-status")
         }
         SettingsRow(
-          title: "近期调用",
-          details: "只记下最近调用了哪个功能、什么时候；不记正文，也不记密钥。"
+          title: "最近使用",
+          details: "只记功能和时间，不记内容"
         ) {
           Text(model.lastCall)
             .themedFont(.body)
@@ -129,14 +129,14 @@ struct MCPSettingsView: View {
   }
 
   private var copyInstructionsButton: some View {
-    Button("复制连接说明") { copy(model.agentInstructions) }
+    Button("复制说明") { copy(model.agentInstructions) }
       .buttonStyle(.appProminent(theme.accent))
       .disabled(!model.enabled || !model.helperAvailable)
       .accessibilityIdentifier("mcp-copy-instructions")
   }
 
   @ViewBuilder private var advancedButtons: some View {
-    Button("复制连接配置原文") { copy(model.connectionJSON) }
+    Button("复制配置") { copy(model.connectionJSON) }
       .buttonStyle(.appQuiet)
       .disabled(!model.helperAvailable)
     Button("重启服务") { model.restart() }

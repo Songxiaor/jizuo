@@ -114,7 +114,7 @@ final class MCPController: ObservableObject {
   func handle(_ data: Data) async -> Data {
     let output: [String: Any]
     do {
-      guard enabled else { throw MCPFailure("disabled", "汲作里的「允许 AI 助手连接」已关闭，请在「设置 → AI 助手接入」里打开。") }
+      guard enabled else { throw MCPFailure("disabled", "汲作里的「允许连接」已关闭，请在「设置 → AI 助手」里打开。") }
       guard data.count <= 1_048_576, let request = try JSONSerialization.jsonObject(with: data) as? [String: Any],
             let name = request["name"] as? String else { throw MCPFailure("invalid_request", "请求无效") }
       guard request["arguments"] == nil || request["arguments"] is [String: Any] else { throw MCPFailure("invalid_arguments", "参数必须是对象") }
@@ -181,7 +181,7 @@ final class MCPController: ObservableObject {
     if !readOnly.contains(name) {
       guard writable else { throw MCPFailure("read_only", "资料库现在只能看、不能改；重新打开汲作通常就能恢复。") }
       guard processing.contains(name) ? allowsProcessing : allowsChanges else {
-        throw MCPFailure("permission_required", "请在汲作的「设置 → AI 助手接入」里打开「允许抓取与整理」或「允许转写与总结」。")
+        throw MCPFailure("permission_required", "请在汲作的「设置 → AI 助手」里打开「收集整理」或「转写总结」。")
       }
     }
     // 判断「记录在不在」本身就要读一次完整详情；读到的留着，同一次调用里要详情时

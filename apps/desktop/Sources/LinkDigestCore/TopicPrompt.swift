@@ -44,7 +44,7 @@ public enum TopicPrompt {
       (count, "要出几条选题"),
       (boundaryCount, "其中几条标成「越界」"),
       (recentTopics, "最近已经出过的选题标题"),
-      (voice, "设置里那份「我的表达方式」"),
+      (voice, "设置里那份「我的文风」"),
     ]
   }
 

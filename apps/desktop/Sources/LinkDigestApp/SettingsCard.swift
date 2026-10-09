@@ -86,7 +86,7 @@ struct SettingsSidebarChip: View {
 /// 设置页嵌进另一页当一节用（2026-10-04 设置合并：17 页并成 9 页）。
 ///
 /// 浏览器支持、站点登录、评论并进「收集」，视频存储并进「转写」，知识库同步、按意思搜并进
-/// 「数据与备份」。这些页的代码不动：嵌进去时页面容器不再自带滚动区和边距，页头缩成一节的小标题。
+/// 「备份恢复」。这些页的代码不动：嵌进去时页面容器不再自带滚动区和边距，页头缩成一节的小标题。
 private struct SettingsEmbeddedKey: EnvironmentKey { static let defaultValue = false }
 /// 嵌入时要不要画这一节自己的小标题（外层页已经写了同一个名字时关掉）。
 private struct SettingsEmbeddedHeaderKey: EnvironmentKey { static let defaultValue = true }
@@ -141,23 +141,28 @@ struct SettingsPageHeader: View {
       if showsEmbeddedHeader {
         VStack(alignment: .leading, spacing: 4) {
           Text(title)
-            .font(.custom(ReadingFontCatalog.editorialSerifFamily, size: 17).weight(.semibold))
+            .font(.custom(ReadingFontCatalog.editorialSerifFamily, size: 17, relativeTo: .headline).weight(.semibold))
             .foregroundStyle(.primary)
             .accessibilityAddTraits(.isHeader)
           captionText
         }
         .frame(maxWidth: .infinity, alignment: .leading)
       }
-    } else if let glyph = InkSealMark.settingsGlyph(for: title) {
-      // 2026-09-28 设置按工序重组：通用页的页头和工序页同一种排法——左边一方印（这里是
-      // 灰色墨线闲章），右边宋体标题加一句话，下面一道细线。
+    } else {
+      // 2026-09-28 设置按工序重组：通用页的页头和工序页同一种排法——左边一个大图标，右边宋体
+      // 标题加一句话，下面一道细线。2026-10-09 左边的灰方框闲章换成和侧栏同一个线条图标
+      // （Syc：方框丑）；原来按页名查闲章表，改名后查不到就退回另一种小页头，一页一个样。
       VStack(alignment: .leading, spacing: 0) {
         HStack(alignment: .center, spacing: 16) {
-          InkSealMark(character: glyph, size: 44, color: .secondary)
+          Image(systemName: symbol)
+            .font(.system(size: 30, weight: .light))
+            .foregroundStyle(.secondary)
             .frame(width: 56, height: 56)
+            .accessibilityHidden(true)
           VStack(alignment: .leading, spacing: 4) {
             Text(title)
-              .font(.custom(ReadingFontCatalog.editorialSerifFamily, size: 22).weight(.semibold))
+              // 宋体页头也要跟系统字号走（relativeTo）：写死 pt 时放大字号后标题比说明还小。
+              .font(.custom(ReadingFontCatalog.editorialSerifFamily, size: 22, relativeTo: .title2).weight(.semibold))
               .foregroundStyle(.primary)
               .accessibilityAddTraits(.isHeader)
             captionText
@@ -168,22 +173,6 @@ struct SettingsPageHeader: View {
         Rectangle().fill(Color.secondary.opacity(0.18)).frame(height: 1)
       }
       .frame(maxWidth: .infinity, alignment: .leading)
-    } else {
-      VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-        HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
-          Image(systemName: symbol)
-            .themedFont(.body, weight: .medium)
-            .foregroundStyle(fill)
-            .accessibilityHidden(true)
-          Text(title)
-            // 跟随系统字号：写死 pt 的话放大界面字号之后正文涨了、页头没涨。
-            .themedFont(.title3, weight: .semibold)
-            .foregroundStyle(.primary)
-        }
-        captionText
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.vertical, DesignTokens.Space.xxs)
     }
   }
 
@@ -232,7 +221,7 @@ struct SettingsPlainPage<Content: View>: View {
           .padding(.horizontal, Self.horizontalInset)
           .frame(maxWidth: .infinity, alignment: .center)
         }
-        // 从别处跳到某一节（「浏览器支持」「校对」…）：滚到那一节的开头。
+        // 从别处跳到某一节（「浏览器」「校对」…）：滚到那一节的开头。
         .onAppear { scroll(proxy, to: scrollAnchor) }
         .onChange(of: scrollAnchor) { _, anchor in scroll(proxy, to: anchor) }
       }
@@ -852,10 +841,3 @@ struct SettingsMenuPicker<Value: Hashable>: View {
   }
 }
 
-extension InkSealMark {
-  /// 设置页的闲章字：`settingsGlyphs` 之外，补上 2026-10-01 从工序降成「收集」子页的评论。
-  /// 侧栏和页头都从这里取，免得两处各写一份。
-  static func settingsGlyph(for title: String) -> String? {
-    settingsGlyphs[title] ?? ["评论": "评"][title]
-  }
-}

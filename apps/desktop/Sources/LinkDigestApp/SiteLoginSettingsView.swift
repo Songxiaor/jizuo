@@ -70,9 +70,9 @@ struct SiteLoginSettingsView: View {
     //
     // 放在页首而不是页尾：这是「这一页管什么」的前提。
     SettingsPageHeader(
-      title: "站点登录",
+      title: "网站登录",
       symbol: "person.crop.circle.badge.checkmark",
-      caption: "在这里登录一次，后续添加链接和博主主页会自动复用；登录失效时再重新登录。",
+      caption: "登录一次，添加链接和主页都沿用；失效再重登",
       fill: SettingsCategoryChip.fill(for: "siteLogin", theme: appTheme),
       captionIdentifier: "site-login-scope-note"
     )
@@ -144,27 +144,27 @@ struct SiteLoginSettingsView: View {
 
   /// 浏览器登录这一段也进一张卡：原来它裸露在站点卡下面，和上面的卡片风格断裂。
   /// 三个等重灰按钮收成「一个主动作 + 一个图标」：「连接浏览器扩展」删掉——
-  /// 「浏览器支持」页已经是它的正式入口，这里再放一个只会让人以为要装两次。
+  /// 「浏览器」页已经是它的正式入口，这里再放一个只会让人以为要装两次。
   private var browserConnectionCard: some View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
       HStack(alignment: .center, spacing: DesignTokens.Space.md) {
-        Text("通过本机浏览器读取 X")
+        Text("用浏览器读 X")
           .themedFont(.headline)
         Spacer(minLength: DesignTokens.Space.md)
         Button { browserSupport.refreshDeliveries() } label: {
           Image(systemName: "arrow.clockwise")
         }
         .buttonStyle(.appIcon)
-        .help("刷新送达状态")
+        .help("刷新")
         .accessibilityLabel("刷新状态")
-        Button("在浏览器中登录 X") {
+        Button("浏览器登录") {
           browserOpenError = NSWorkspace.shared.open(XExternalLoginPolicy.loginURL)
             ? nil : "未能打开默认浏览器，请检查系统设置后重试。"
         }
         .buttonStyle(.appProminent(appTheme.accent))
         .accessibilityIdentifier("site-login-x-browser")
       }
-      Text("在浏览器中使用 Google、Apple 或已有 X 登录。打开博主主页后，点击汲作扩展读取作品，再回到汲作勾选保存。")
+      Text("在浏览器登录 X，用扩展读作品")
         .themedFont(.subheadline)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -172,7 +172,7 @@ struct SiteLoginSettingsView: View {
         Text("最近收到 \(recent.key.displayName) 的内容：\(recent.value.formatted(date: .abbreviated, time: .shortened))")
           .themedFont(.subheadline)
       } else {
-        Text("尚无浏览器送达记录。请先在「浏览器支持」连接扩展，再从 X 主页发送一次作品清单。")
+        Text("尚无浏览器送达记录。请先在「浏览器」连接扩展，再从 X 主页发送一次作品清单。")
           .themedFont(.subheadline)
       }
       Text("送达记录不代表浏览器当前在线，也不代表 X 登录仍有效；和上方汲作里的登录分开保存。")
@@ -288,7 +288,7 @@ struct SiteLoginSettingsView: View {
 
         statusBadge(
           isLoggedIn: session.isLoggedIn,
-          text: session.isLoggedIn ? "登录已保存" : "未登录",
+          text: session.isLoggedIn ? "已存登录" : "未登录",
           tone: session.isLoggedIn ? .active : .neutral
         )
         .accessibilityIdentifier("site-login-\(id)-status")
@@ -369,7 +369,7 @@ struct SiteLoginSettingsView: View {
     .accessibilityLabel("\(platform.displayName)详细信息")
   }
 
-  /// ⓘ 展开区：读 cookie 的诊断细节、账号标识（UID），B 站还多一个「校验会话」
+  /// ⓘ 展开区：读 cookie 的诊断细节、账号标识（UID），B 站还多一个「检查登录」
   /// 按钮和它的结果回音——这是交互，不是说明文字，必须留在这里而不是文档。
   @ViewBuilder
   private func detailsContent(platform: SiteSessionPlatform, session: SiteSessionController) -> some View {
@@ -390,14 +390,14 @@ struct SiteLoginSettingsView: View {
           .accessibilityIdentifier("site-login-\(id)-diagnostic")
       }
       if session.isLoggedIn, session.verificationLabel == nil {
-        Text("登录已保存只表示本机还有会话，不表示一定有效。失效时再重新登录。")
+        Text("「已存登录」只表示本机还存着登录，不表示一定有效。失效时再重新登录。")
           .themedFont(.subheadline)
           .foregroundStyle(.tertiary)
           .fixedSize(horizontal: false, vertical: true)
       }
       if platform == .bilibili {
         HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
-          Button(bilibiliSession.isVerifying ? "校验中…" : "校验会话") {
+          Button(bilibiliSession.isVerifying ? "检查中…" : "检查登录") {
             Task { await bilibiliSession.verifySession() }
           }
           .buttonStyle(.appNormal)
@@ -405,7 +405,7 @@ struct SiteLoginSettingsView: View {
           .accessibilityIdentifier("site-login-bilibili-verify")
 
           // 校验结果是点了按钮之后的真实反馈，不是说明文字——它必须留着，
-          // 否则「校验会话」点完没有任何回音。
+          // 否则「检查登录」点完没有任何回音。
           if let verification = bilibiliSession.verificationLabel {
             Label(
               verification,

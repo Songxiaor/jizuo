@@ -829,10 +829,10 @@ struct HistoryContentView: View {
     // 快捷键写在菜单栏「文件」里；这里不再挂一份，免得同一组合键在两处各触发一次。
     Menu {
       Button(action: manualLink.open) { Label("添加链接（⌘N）", systemImage: "link") }
-      Button(action: manualLink.readClipboardAndOpen) { Label("从剪贴板添加链接（⇧⌘V）", systemImage: "doc.on.clipboard") }
+      Button(action: manualLink.readClipboardAndOpen) { Label("粘贴链接（⇧⌘V）", systemImage: "doc.on.clipboard") }
       Button { presentDouyinProfileImport() } label: { Label("添加博主主页", systemImage: "person.crop.circle.badge.plus") }
       Divider()
-      Button { localImport.chooseFiles() } label: { Label("导入本地文件…（⇧⌘I）", systemImage: "folder.badge.plus") }
+      Button { localImport.chooseFiles() } label: { Label("导入文件…（⇧⌘I）", systemImage: "folder.badge.plus") }
         .disabled(!localImport.canImport)
         .accessibilityIdentifier("import-local-files")
       // 「同步语音备忘录」「同步备忘录」不放这里（2026-10-01 走查：八项里混着两个同步，
@@ -841,7 +841,7 @@ struct HistoryContentView: View {
       Button(action: createNote) { Label("新建笔记（⇧⌘N）", systemImage: "square.and.pencil") }
         .accessibilityIdentifier("create-user-note")
       // 原来侧栏里的「今天」：它是一个动作不是筛选项，收进这里；⌘⇧T 照旧。
-      Button(action: openTodayNote) { Label("今天的笔记（⇧⌘T）", systemImage: "calendar") }
+      Button(action: openTodayNote) { Label("今日笔记（⇧⌘T）", systemImage: "calendar") }
         .accessibilityIdentifier("history-navigation-today-note")
     } label: {
       Label("添加", systemImage: "plus")
@@ -1042,12 +1042,12 @@ struct HistoryContentView: View {
             .help("只刷新姓名和头像，不必保存新作品")
             .accessibilityIdentifier("history-creator-refresh-selected")
             // 一主一次：抓取作品是这一页的主动作。
-            Button("抓取作品") {
+            Button("挑选作品") {
               presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
             }
             .buttonStyle(.appProminent(theme.accent))
             .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
-            .help(ProfileImportPlatform.parse(creator.profileURL) != nil ? "打开主页并选择作品" : "暂不支持此平台主页")
+            .help(ProfileImportPlatform.parse(creator.profileURL) != nil ? "打开主页，选要存的作品" : "暂不支持此平台主页")
             .accessibilityIdentifier("history-creator-capture-selected")
           }
         }
@@ -1145,7 +1145,7 @@ struct HistoryContentView: View {
             symbol: "tray",
             title: "尚未保存作品",
             message: "打开主页后勾选要保存的内容。",
-            actionTitle: "抓取作品",
+            actionTitle: "挑选作品",
             action: {
               if let url = model.selectedCreator?.profileURL {
                 presentDouyinProfileImport(profileURL: url, autoStart: true)
@@ -1189,7 +1189,7 @@ struct HistoryContentView: View {
           HistoryInlineState(
             symbol: "exclamationmark.triangle",
             title: "无法载入历史记录",
-            message: "资料库这次打不开。已保存的内容都还在，这期间也不会写入任何变更。退出并重新打开\(ProductDisplay.name)通常能恢复；仍然不行时，可在「数据与备份」里从备份恢复。",
+            message: "资料库这次打不开。已保存的内容都还在，这期间也不会写入任何变更。退出并重新打开\(ProductDisplay.name)通常能恢复；仍然不行时，可在「备份恢复」里从备份恢复。",
             actionTitle: "查看备份说明",
             action: {
               SettingsNavigationRequest.request("dataBackup")
@@ -2242,7 +2242,7 @@ struct HistoryContentView: View {
     )
     .accessibilityIdentifier("history-navigation-creator-\(creator.id.rawValue)")
     .contextMenu {
-      Button("抓取作品") {
+      Button("挑选作品") {
         presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
       }
       .disabled(ProfileImportPlatform.parse(creator.profileURL) == nil)
@@ -2677,24 +2677,45 @@ struct HistoryContentView: View {
     }
   }
 
-  /// 素材类型与归属。勾选状态读列表行自带的标签名，不必先打开详情。
-  @ViewBuilder private func materialContextMenu(for row: HistoryRowProjection) -> some View {
+  /// 「标签」子菜单：上面素材类型（再点一次取消），下面常用标签，最后新建。
+  ///
+  /// 和详情页「标签与素材类型」同一个结构（2026-10-09 Syc 定）：原来右键里「添加标签」
+  /// 「素材类型」是两个子菜单，详情页已经合成一个入口。素材类型本来就是普通标签。
+  /// 勾选状态读列表行自带的标签名，不必先打开详情。
+  @ViewBuilder private func tagContextMenu(for row: HistoryRowProjection) -> some View {
     let names = Set((row.tagNames ?? []).compactMap { HistoryTagNormalizer.normalized($0)?.normalizedName })
+    let materialNames = Set(MaterialCatalog.MaterialType.allCases.compactMap {
+      HistoryTagNormalizer.normalized($0.tagName)?.normalizedName
+    })
+    // 素材类型已在上面一组，常用标签里不再列一遍。
+    let topicTags = model.availableTags.filter { !materialNames.contains($0.normalizedName) }
     Menu {
-      ForEach(MaterialCatalog.MaterialType.allCases, id: \.self) { type in
-        let normalized = HistoryTagNormalizer.normalized(type.tagName)?.normalizedName ?? type.tagName
-        let isOn = names.contains(normalized)
-        Button {
-          model.toggleMaterialTag(type.tagName, on: row.taskID, isOn: !isOn)
-        } label: {
-          Label(type.tagName, systemImage: isOn ? "checkmark" : type.systemImage)
+      Section("素材类型") {
+        ForEach(MaterialCatalog.MaterialType.allCases, id: \.self) { type in
+          let normalized = HistoryTagNormalizer.normalized(type.tagName)?.normalizedName ?? type.tagName
+          let isOn = names.contains(normalized)
+          Button {
+            model.toggleMaterialTag(type.tagName, on: row.taskID, isOn: !isOn)
+          } label: {
+            Label(type.tagName, systemImage: isOn ? "checkmark" : type.systemImage)
+          }
         }
       }
+      Section("标签") {
+        if topicTags.isEmpty {
+          Text("暂无标签")
+        } else {
+          ForEach(topicTags) { tag in
+            Button(tag.name) { model.addTag(tag.name, to: row.taskID) }
+          }
+        }
+        Button { model.selectedTaskIDs = [row.taskID] } label: { Label("新建标签…", systemImage: "plus") }
+      }
     } label: {
-      Label("素材类型", systemImage: "square.grid.2x2")
+      Label("标签", systemImage: "tag")
     }
     .disabled(model.isReadOnly || model.isDeleting)
-    .accessibilityIdentifier("history-context-material-type")
+    .accessibilityIdentifier("history-context-add-tag")
     ownershipButton(taskID: row.taskID, canonicalURL: row.canonicalURL, host: row.host, tagNames: row.tagNames ?? [])
   }
 
@@ -2707,7 +2728,7 @@ struct HistoryContentView: View {
     // 笔记、本机导入没有网页可开（2026-09-24 走查：原来点了没反应）。
     if HistoryDetailView.isWebURL(row.canonicalURL) {
       Button { openHistoryURL(row.canonicalURL) } label: {
-        Label("在浏览器中打开", systemImage: "safari")
+        Label("打开原文", systemImage: "safari")
       }
       Button { copyHistoryURL(row.canonicalURL) } label: {
         Label("复制链接", systemImage: "doc.on.doc")
@@ -2724,40 +2745,25 @@ struct HistoryContentView: View {
     }
     .disabled(model.isReadOnly || model.isDeleting)
     .accessibilityIdentifier("history-context-favorite")
-    Menu {
-      if model.availableTags.isEmpty {
-        Text("还没有标签")
-      } else {
-        ForEach(model.availableTags) { tag in
-          Button(tag.name) { model.addTag(tag.name, to: row.taskID) }
-        }
-        Divider()
-      }
-      Button { model.selectedTaskIDs = [row.taskID] } label: { Label("打开并新建标签…", systemImage: "plus") }
-    } label: {
-      Label("添加标签", systemImage: "tag")
-    }
-    .disabled(model.isReadOnly || model.isDeleting)
-    .accessibilityIdentifier("history-context-add-tag")
-    materialContextMenu(for: row)
+    tagContextMenu(for: row)
     CollectionMenuItems(model: model, taskIDs: model.collectionTargets(for: row.taskID))
     Button { summarizeSingle(row) } label: {
-      Label(row.hasSummary == true ? "重新生成总结" : "总结", systemImage: MenuIcon.summarize)
+      Label(row.hasSummary == true ? "重新总结" : "总结", systemImage: MenuIcon.summarize)
     }
     .disabled(singleSummaryUnavailableReason != nil)
-    .help(singleSummaryUnavailableReason ?? "用本机已保存的正文生成总结")
+    .help(singleSummaryUnavailableReason ?? "用已存的正文生成总结")
     .accessibilityIdentifier("history-context-summarize")
     if model.selectedTaskIDs.contains(row.taskID), model.selectedTaskCount > 1 {
       Divider()
       Button { model.requestBatchSummary() } label: {
-        Label("总结选中的 \(model.selectedTaskCount) 条…", systemImage: MenuIcon.summarize)
+        Label("总结 \(model.selectedTaskCount) 条…", systemImage: MenuIcon.summarize)
       }
       .disabled(!model.canBatchSummarize || !providerSettings.arePreferencesReady)
       .accessibilityIdentifier("batch-summarize-history-context")
       Button {
         model.requestBatchTranslation(outputLanguage: providerSettings.outputLanguage)
       } label: {
-        Label("翻译选中的 \(model.selectedTaskCount) 条…", systemImage: MenuIcon.translate)
+        Label("翻译 \(model.selectedTaskCount) 条…", systemImage: MenuIcon.translate)
       }
       .disabled(!model.canBatchTranslate || !providerSettings.arePreferencesReady)
       .accessibilityIdentifier("batch-translate-history-context")
@@ -3085,12 +3091,12 @@ struct HistoryContentView: View {
         .help("只刷新姓名和头像，不必保存新作品")
         .accessibilityIdentifier("history-creator-refresh-selected")
         // 一主一次：抓取作品是这一页的主动作。
-        Button("抓取作品") {
+        Button("挑选作品") {
           presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true)
         }
         .buttonStyle(.appProminent(theme.accent))
         .disabled(!canCapture)
-        .help(canCapture ? "打开主页并选择作品" : "暂不支持此平台主页")
+        .help(canCapture ? "打开主页，选要存的作品" : "暂不支持此平台主页")
         .accessibilityIdentifier("history-creator-capture-selected")
       }
       .padding(.horizontal, 14)
@@ -3118,7 +3124,7 @@ struct HistoryContentView: View {
           symbol: "tray",
           title: "尚未保存作品",
           message: "打开主页后勾选要保存的内容。",
-          actionTitle: "抓取作品",
+          actionTitle: "挑选作品",
           action: { presentDouyinProfileImport(profileURL: creator.profileURL, autoStart: true) }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -3677,7 +3683,7 @@ struct HistoryContentView: View {
           symbol: "tray",
           title: "尚未保存作品",
           message: "打开主页后勾选要保存的内容。",
-          actionTitle: "抓取作品",
+          actionTitle: "挑选作品",
           action: {
             if let url = model.selectedCreator?.profileURL {
               presentDouyinProfileImport(profileURL: url, autoStart: true)
@@ -3877,7 +3883,7 @@ struct HistoryContentView: View {
           .controlSize(.large)
           .disabled(!manualLink.canOpen)
           .accessibilityIdentifier("manual-link-add")
-        Button(action: manualLink.readClipboardAndOpen) { Label("从剪贴板添加链接", systemImage: "doc.on.clipboard") }
+        Button(action: manualLink.readClipboardAndOpen) { Label("粘贴链接", systemImage: "doc.on.clipboard") }
           .buttonStyle(.bordered)
           .controlSize(.large)
           .disabled(!manualLink.canOpen)
@@ -4061,7 +4067,7 @@ struct HistoryContentView: View {
     HistoryInlineState(
       symbol: "externaldrive.badge.exclamationmark",
       title: "无法打开历史记录",
-      message: "资料库这次打不开。\(ProductDisplay.name)没有对数据做任何写入，已保存的内容仍在原处。请检查本机存储后重新启动\(ProductDisplay.name)；仍然不行时，可在「数据与备份」里从备份恢复。",
+      message: "资料库这次打不开。\(ProductDisplay.name)没有对数据做任何写入，已保存的内容仍在原处。请检查本机存储后重新启动\(ProductDisplay.name)；仍然不行时，可在「备份恢复」里从备份恢复。",
       actionTitle: "查看备份说明",
       action: {
         SettingsNavigationRequest.request("dataBackup")
@@ -5916,7 +5922,7 @@ private struct HistoryDetailView: View, Equatable {
           Menu {
             Button(action: toggleFocusReading) {
               Label(
-                isFocusReading ? "退出专注阅读" : "专注阅读",
+                isFocusReading ? "退出专注" : "专注阅读",
                 systemImage: isFocusReading ? "rectangle.expand.vertical" : "rectangle.compress.vertical"
               )
             }
@@ -5925,21 +5931,21 @@ private struct HistoryDetailView: View, Equatable {
               Button {
                 adjustReadingFontSize(by: ReadingFontSize.step)
               } label: {
-                Label("放大正文字号", systemImage: "textformat.size.larger")
+                Label("放大字号", systemImage: "textformat.size.larger")
               }
               .disabled(readingFontSizeRaw >= Double(ReadingFontSize.maximum))
               .accessibilityIdentifier("reading-font-larger")
               Button {
                 adjustReadingFontSize(by: -ReadingFontSize.step)
               } label: {
-                Label("缩小正文字号", systemImage: "textformat.size.smaller")
+                Label("缩小字号", systemImage: "textformat.size.smaller")
               }
               .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
               .accessibilityIdentifier("reading-font-smaller")
               Button {
                 readingFontSizeRaw = Double(ReadingFontSize.default)
               } label: {
-                Label("恢复默认字号（当前 \(Self.readingFontSizeLabel(readingFontSizeRaw))）", systemImage: "textformat.size")
+                Label("实际大小（当前 \(Self.readingFontSizeLabel(readingFontSizeRaw))）", systemImage: "textformat.size")
               }
               .disabled(abs(readingFontSizeRaw - Double(ReadingFontSize.default)) < 0.01)
               .accessibilityIdentifier("reading-font-reset")
@@ -5947,7 +5953,8 @@ private struct HistoryDetailView: View, Equatable {
             Toggle(isOn: $readingUsesWideLayout) { Label("加宽正文（⌥⌘\\）", systemImage: "arrow.left.and.right") }
               .accessibilityIdentifier("reading-wide-layout-toggle")
             // 纯文本是「怎么看」，不是「怎么复制」：原来放在「复制」一组里，找不到（2026-09-25 走查）。
-            Toggle(isOn: $showsPlainText) { Label("以纯文本查看正文", systemImage: "text.alignleft") }
+            Toggle(isOn: $showsPlainText) { Label("纯文本", systemImage: "text.alignleft") }
+              .help("去掉排版和图片，只看字")
               .accessibilityIdentifier("history-content-plain-text-toggle")
           } label: {
             Label("阅读设置", systemImage: "textformat")
@@ -5977,20 +5984,23 @@ private struct HistoryDetailView: View, Equatable {
               .accessibilityIdentifier("history-copy-full-text")
           }
           Section("导出") {
-            Button { exportCleanText(.markdown) } label: { Label("导出 Markdown (.md)", systemImage: MenuIcon.export) }
-            Button { exportCleanText(.plainText) } label: { Label("导出纯文本 (.txt)", systemImage: MenuIcon.export) }
-            Button { exportStyledDocument(.pdf) } label: { Label("导出 PDF (.pdf)", systemImage: MenuIcon.export) }
+            Button { exportCleanText(.markdown) } label: { Label("Markdown", systemImage: MenuIcon.export) }
+              .help("给 Obsidian 等笔记软件用")
+            Button { exportCleanText(.plainText) } label: { Label("纯文本", systemImage: MenuIcon.export) }
+            Button { exportStyledDocument(.pdf) } label: { Label("PDF", systemImage: MenuIcon.export) }
               .accessibilityIdentifier("history-export-pdf")
-            Button { exportStyledDocument(.docx) } label: { Label("导出 Word (.docx)", systemImage: MenuIcon.export) }
+            Button { exportStyledDocument(.docx) } label: { Label("Word", systemImage: MenuIcon.export) }
               .accessibilityIdentifier("history-export-docx")
-            Button { model.requestExport(.json) } label: { Label("导出完整数据 (.json)", systemImage: MenuIcon.export) }
+            Button { model.requestExport(.json) } label: { Label("全部数据", systemImage: MenuIcon.export) }
+              .help("含总结、转写，留档用")
           }
           // 「换个模型重跑…」是对这条内容做的 AI 动作，和重新总结、重新翻译
           // 一起收在正文表头的「处理」菜单里，不再和导出、删除混在窗口工具栏。
           // 只有能重抓时才出这一组：原来无条件画分组标题，本地文件上只剩一行灰字标题（2026-09-25）。
           if canRecaptureSource {
-            Section("重新处理") {
-              Button { openRecapture(sourceURL) } label: { Label("重新抓取原文…", systemImage: MenuIcon.recapture) }
+            Section("原文") {
+              Button { openRecapture(sourceURL) } label: { Label("刷新原文…", systemImage: MenuIcon.recapture) }
+                .help("从原网页重新取一次")
                 .accessibilityIdentifier("history-recapture-source")
             }
           }
@@ -6008,7 +6018,7 @@ private struct HistoryDetailView: View, Equatable {
           Label("更多", systemImage: "ellipsis")
         }
         .menuIndicator(.hidden)
-        .help("阅读设置、加入合集、改为自有 / 外部、复制、导出、重新抓取或删除当前条目")
+        .help("阅读、导出、删除等")
         .accessibilityLabel("更多")
         .accessibilityIdentifier("export-history")
       }
@@ -6401,7 +6411,7 @@ private struct HistoryDetailView: View, Equatable {
       } label: {
         Label(
           appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .summarize)
-            ? "已排队总结" : (summaryArtifact == nil ? "生成总结" : "重新生成总结"),
+            ? "已排队总结" : (summaryArtifact == nil ? "生成总结" : "重新总结"),
           systemImage: MenuIcon.summarize
         )
       }
@@ -6419,7 +6429,7 @@ private struct HistoryDetailView: View, Equatable {
       } label: {
         Label(
           appModel.isManualGenerationQueued(taskID: detail.task.id, kind: .translate)
-            ? "已排队翻译" : (translationArtifact == nil ? "生成翻译" : "重新生成翻译"),
+            ? "已排队翻译" : (translationArtifact == nil ? "生成翻译" : "重新翻译"),
           systemImage: "character.book.closed"
         )
       }
@@ -7228,7 +7238,7 @@ private struct HistoryDetailView: View, Equatable {
     }
     var rows: [ProcessStepRowModel] = []
 
-    // 面板列全部工序，顺序和设置里的「工序总览」一致（2026-10-04 Syc 确认）。原来表头上露着的
+    // 面板列全部工序，顺序和设置里的「处理流程」一致（2026-10-04 Syc 确认）。原来表头上露着的
     // 那一步（转写 / 生成总结）不在这里列，结果设置里有「总结」、面板里却找不到。
     if let action = transcribeAction {
       let state: ProcessStepRow.State = {
@@ -9705,10 +9715,10 @@ private struct HistoryDetailView: View, Equatable {
     guard let url = URL(string: snapshot.sourceURL) else { return nil }
     let head = String(snapshot.bodyText.prefix(2_000))
     if GitHubErrorPagePolicy.matches(url: url, extractedText: head) {
-      return "这次存下来的是 GitHub 的报错页，不是文件内容。点右上角「更多 → 重新抓取原文」再抓一次。"
+      return "这次存下来的是 GitHub 的报错页，不是文件内容。点右上角「更多 → 刷新原文」再取一次。"
     }
     if VerificationPagePolicy.matches(url: url, extractedText: head) {
-      return "这次存下来的是网站的验证页，不是正文。在浏览器里完成验证后，点「更多 → 重新抓取原文」。"
+      return "这次存下来的是网站的验证页，不是正文。在浏览器里完成验证后，点「更多 → 刷新原文」。"
     }
     return nil
   }

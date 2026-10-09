@@ -48,9 +48,9 @@ struct BrowserSupportSettingsView: View {
   var body: some View {
     SettingsPlainPage {
       SettingsPageHeader(
-        title: "浏览器支持",
+        title: "浏览器",
         symbol: "puzzlepiece.extension",
-        caption: "在浏览器里装一次扩展，之后打开的页面就能一键保存到\(ProductDisplay.name)。",
+        caption: "装一次扩展，网页一键存进\(ProductDisplay.name)",
         fill: SettingsCategoryChip.fill(for: "browserSupport", theme: appTheme)
       )
 
@@ -58,7 +58,7 @@ struct BrowserSupportSettingsView: View {
       // 安装步骤三张卡，还把真正要动手的步骤压在最底下。合成一张卡、按真实动线
       // 从上往下读：先做什么 → 各浏览器状态 → 接收状态收成一行。
       SettingsCard(
-        title: "连接浏览器",
+        title: "安装扩展",
         summary: "扩展只在你点保存时连接，不常驻。",
         details: "装好扩展后，第一次保存成功会在下方显示送达时间。\(ProductDisplay.name)换了安装位置后需要重新连接一次，浏览器里的扩展不用重装。",
         controlWidth: .full
@@ -77,10 +77,10 @@ struct BrowserSupportSettingsView: View {
               .accessibilityIdentifier("reveal-test-browser-extension")
           } else {
             HStack(spacing: DesignTokens.Space.md) {
-              Button("重新安装扩展…") { showsInstallSteps = true }
+              Button("重装扩展…") { showsInstallSteps = true }
                 .buttonStyle(.appNormal)
                 .accessibilityIdentifier("browser-support-reinstall")
-              Text("扩展已装好。换了浏览器、或扩展文件夹挪过位置时再点。")
+              Text("换浏览器或挪了文件夹时再点")
                 .themedFont(.caption)
                 .foregroundStyle(.secondary)
             }
@@ -90,7 +90,7 @@ struct BrowserSupportSettingsView: View {
 
           // ② 每个浏览器压成一行：状态点 + 名字 + 一个词，只有需要动作的才带按钮。
           HStack(spacing: 8) {
-            Text("已检测到的浏览器").themedFont(.subheadline, weight: .medium)
+            Text("已装的浏览器").themedFont(.subheadline, weight: .medium)
             Spacer()
             if model.isLoading { ProgressView().controlSize(.small) }
             Button("重新检查") { Task { await model.load() } }

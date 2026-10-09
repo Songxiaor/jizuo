@@ -46,9 +46,9 @@ struct AppUpdateSettingsView: View {
   var body: some View {
     SettingsPlainPage {
       SettingsPageHeader(
-        title: "版本与更新",
-        symbol: "arrow.triangle.2.circlepath",
-        caption: "查看当前版本，检查更新。有新版本时只会提醒，不会自己安装。",
+        title: "关于",
+        symbol: "info.circle",  // 和侧栏「关于」同一个图标
+        caption: "有新版只提醒，不会自己安装",
         fill: SettingsCategoryChip.fill(for: "updates", theme: appTheme)
       )
 
@@ -71,7 +71,7 @@ struct AppUpdateSettingsView: View {
         }
 
         SettingsRow(
-          title: "有新版本时提醒我",
+          title: "提醒更新",
           caption: model.reminderCaption,
           details: "按系统节奏在后台检查。发现新版本会弹出说明，是否安装仍由你确认。不会在你不知情时替换汲作。"
         ) {
@@ -79,27 +79,27 @@ struct AppUpdateSettingsView: View {
             .toggleStyle(.switch)
             .labelsHidden()
             .disabled(!model.canManageReminder)
-            .accessibilityLabel("有新版本时提醒我")
+            .accessibilityLabel("提醒更新")
             .accessibilityIdentifier("app-update-remind-toggle")
         }
 
         SettingsRow(
-          title: "导出诊断信息",
-          caption: "不含正文、网址和密钥。含最近两小时运行日志和抓取成败计数。"
+          title: "诊断信息",
+          caption: "不含正文和密钥，排查问题用"
         ) {
           Button("导出…") {
             let counts = CaptureOutcomeStore.shared?.snapshot() ?? CaptureOutcomeCounts()
             _ = DiagnosticsExportAction.exportWithSavePanel(counts: counts)
           }
           .buttonStyle(.appNormal)
-          .accessibilityLabel("导出诊断信息")
+          .accessibilityLabel("诊断信息")
           .accessibilityIdentifier("app-update-export-diagnostics")
         }
 
         SettingsRow(
           title: "反馈问题",
           // 兜底提示会临时顶掉这句说明（见 writeFeedback），所以它得是 @State。
-          caption: feedbackNote ?? "打开邮件把版本信息发给支持邮箱。不会附带你保存的内容。"
+          caption: feedbackNote ?? "写邮件给我们，不带你的内容"
         ) {
           HStack(spacing: DesignTokens.Space.md) {
             Button("写邮件…") { writeFeedback() }

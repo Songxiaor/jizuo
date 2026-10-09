@@ -37,7 +37,7 @@ describe("popup error presentation", () => {
       steps: ["打开具体的一篇文章或一条内容再点扩展", "或者先选中要保存的文字，再点扩展"],
       canReload: false,
     });
-    expect(popupPreviewFailure("CAPTURE_LOGIN_WALL").steps.join("")).toContain("站点登录");
+    expect(popupPreviewFailure("CAPTURE_LOGIN_WALL").steps.join("")).toContain("网站登录");
     expect(popupPreviewFailure("unknown").steps.length).toBeGreaterThan(0);
     expect(popupPreviewFailure("CAPTURE_PAGE_LOAD_FAILED")).toMatchObject({ canReload: true });
     expect(popupPreviewFailure("CAPTURE_LOGIN_WALL").message).toContain("登录页");

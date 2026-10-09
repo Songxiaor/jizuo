@@ -47,7 +47,7 @@ final class AppUpdateControllerTests: XCTestCase {
     )
   }
 
-  /// 设置里必须有「版本与更新」，不能只藏在顶部菜单。
+  /// 设置里必须有「关于」（原「版本与更新」），不能只藏在顶部菜单。
   func testSettingsExposesVersionAndUpdateEntry() throws {
     let settings = try String(
       contentsOf: repositoryRoot().appendingPathComponent(
@@ -55,7 +55,7 @@ final class AppUpdateControllerTests: XCTestCase {
       ),
       encoding: .utf8
     )
-    XCTAssertTrue(settings.contains("case .updates: \"版本与更新\""))
+    XCTAssertTrue(settings.contains("case .updates: \"关于\""))
     XCTAssertTrue(settings.contains(".updates"))
     XCTAssertTrue(settings.contains("AppUpdateSettingsView(updater: updater)"))
 
@@ -65,7 +65,7 @@ final class AppUpdateControllerTests: XCTestCase {
       ),
       encoding: .utf8
     )
-    XCTAssertTrue(page.contains("有新版本时提醒我"))
+    XCTAssertTrue(page.contains("提醒更新"))
     XCTAssertTrue(page.contains("检查更新"))
     XCTAssertTrue(page.contains("app-update-check"))
     XCTAssertTrue(page.contains("app-update-remind-toggle"))

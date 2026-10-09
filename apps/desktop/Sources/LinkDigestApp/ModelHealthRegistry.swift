@@ -108,7 +108,7 @@ struct ModelHealthBadge: Equatable {
 
   static let unchecked = ModelHealthBadge(
     text: "未检测", symbol: "questionmark.circle", tone: .neutral,
-    detail: "还不知道能不能用。点「检测可用性」发一条极短请求确认。"
+    detail: "还不知道能不能用。点「检测可用」发一条极短请求确认。"
   )
 
   init(text: String, symbol: String, tone: Tone, detail: String) {

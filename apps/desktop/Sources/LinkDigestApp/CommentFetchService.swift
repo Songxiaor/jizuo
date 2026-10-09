@@ -5,7 +5,7 @@ import WebKit
 
 /// App 内读评论：在隐藏网页里打开原文，运行与扩展同一份 `extract-comments.js`。
 ///
-/// - 登录态：X、B 站、抖音、小红书复用「站点登录」的分区（`SiteSessionController`），
+/// - 登录态：X、B 站、抖音、小红书复用「网站登录」的分区（`SiteSessionController`），
 ///   其余站点用默认分区。不导入浏览器 Cookie，不调隐藏接口。
 /// - 网页挂在一个屏幕外的无边框窗口里：不在窗口里的 WKWebView 会被 WebKit 当成
 ///   不可见而节流计时器，懒加载的评论区就不再往下加载。
@@ -24,7 +24,7 @@ final class CommentFetchService: NSObject, WKNavigationDelegate {
       case .scriptMissing: "评论读取组件缺失，请重新安装汲作。"
       case .loadFailed: "原文页面打不开，请检查网络后重试。"
       case .timedOut: "读取评论超时。页面可能需要登录，或网络较慢，可重试。"
-      case .unreadable: "页面已打开，但没有读到评论。可能需要先在「设置 → 站点登录」登录该网站。"
+      case .unreadable: "页面已打开，但没有读到评论。可能需要先在「设置 → 网站登录」登录该网站。"
       }
     }
   }

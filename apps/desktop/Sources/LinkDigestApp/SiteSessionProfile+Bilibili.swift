@@ -42,7 +42,7 @@ extension SiteSessionProfile {
 /// 只读取 `isLogin` 与会员等级，不把 Cookie 写进返回值或日志。
 private func verifyBilibiliSession(cookieHeader: String) async -> SiteSessionVerification {
   // 界面只说人话和下一步；HTTP 状态码、业务码、系统错误写进日志（2026-10-01）。
-  let retryHint = "B 站这次没回应，请稍后再点「校验会话」。"
+  let retryHint = "B 站这次没回应，请稍后再点「检查登录」。"
   guard let endpoint = URL(string: "https://api.bilibili.com/x/web-interface/nav") else {
     return .init(message: retryHint, isValid: false)
   }
@@ -83,6 +83,6 @@ private func verifyBilibiliSession(cookieHeader: String) async -> SiteSessionVer
     return .init(message: "B 站已确认登录 · \(vip)", isValid: true)
   } catch {
     AppLog.error(.capture, "bilibili_verify_failed", code: "BILIBILI_VERIFY_FAILED", ["error": String(describing: error)])
-    return .init(message: "没连上 B 站，请检查网络后再点「校验会话」。", isValid: false)
+    return .init(message: "没连上 B 站，请检查网络后再点「检查登录」。", isValid: false)
   }
 }

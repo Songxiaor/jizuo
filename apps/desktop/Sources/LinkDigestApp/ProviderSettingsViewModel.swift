@@ -460,7 +460,7 @@ final class ProviderSettingsViewModel {
       // immediate save updates it instead of appending a duplicate.
       editingProfileID = libraryProfiles.first(where: { $0.id == summaryAssignmentID })?.id
       // 不在打开设置时自动对照模型列表：那要读每家服务商的密钥，签名不稳定时
-      // 会连弹好几个钥匙串授权框。对照改在用户点「检测可用性」时做。
+      // 会连弹好几个钥匙串授权框。对照改在用户点「检测可用」时做。
     } catch let error as ProviderConfigurationError {
       state = .failed(code: error.rawValue)
     } catch {
@@ -1309,7 +1309,7 @@ final class ProviderSettingsViewModel {
     case finished(available: Int, total: Int)
   }
 
-  /// 「检测可用性」要检测的一组模型，免费和付费分开，付费的要用户确认才发。
+  /// 「检测可用」要检测的一组模型，免费和付费分开，付费的要用户确认才发。
   struct ModelProbePlan: Equatable {
     let freeModels: [String]
     let paidModels: [String]
@@ -1565,17 +1565,17 @@ final class ProviderSettingsViewModel {
   private func modelCatalogFailureText(_ code: ModelProviderErrorCode) -> String {
     switch code {
     case .authInvalid:
-      "这把密钥不对，或者它没有读取模型列表的权限。你已保存的配置没有变化。请核对一次密钥再点「读取模型列表」，或点「手动填写模型名」。"
+      "这把密钥不对，或者它没有读取模型列表的权限。你已保存的配置没有变化。请核对一次密钥再点「读取列表」，或点「手动填写」。"
     case .endpointNotFound:
-      "这个服务地址上没有模型列表可读。你已保存的配置没有变化。请照服务商文档核对服务地址，或点「手动填写模型名」。"
+      "这个服务地址上没有模型列表可读。你已保存的配置没有变化。请照服务商文档核对服务地址，或点「手动填写」。"
     case .networkInterrupted, .providerUnavailable, .rateLimited:
-      "网络或模型服务这会儿用不了，没能读到模型列表。你已保存的配置没有变化。请稍后重试，或点「手动填写模型名」。"
+      "网络或模型服务这会儿用不了，没能读到模型列表。你已保存的配置没有变化。请稍后重试，或点「手动填写」。"
     case .inputTooLarge:
-      "这家服务商的模型太多，一次读不完，汲作没有截一半给你看。你已保存的配置没有变化。请点「手动填写模型名」直接填你要用的那个。"
+      "这家服务商的模型太多，一次读不完，汲作没有截一半给你看。你已保存的配置没有变化。请点「手动填写」直接填你要用的那个。"
     case .baseURLInvalid:
       "这个服务地址汲作用不了。已保存的配置没有变化。请填以 https:// 开头的地址（本机调试可以用 127.0.0.1）。"
     default:
-      "这家服务商返回的模型列表格式汲作看不懂。你已保存的配置没有变化。请核对服务商文档，或点「手动填写模型名」。"
+      "这家服务商返回的模型列表格式汲作看不懂。你已保存的配置没有变化。请核对服务商文档，或点「手动填写」。"
     }
   }
 

@@ -79,7 +79,7 @@ export function popupPreviewFailure(rawMessage: string): PopupPreviewFailure {
   if (rawMessage.includes("CAPTURE_LOGIN_WALL")) {
     return {
       title: "页面挡了一层登录",
-      steps: ["在这个网页上登录，打开具体内容后再点扩展", "或在汲作「设置 → 站点登录」里登录一次，以后添加链接也能读全文"],
+      steps: ["在这个网页上登录，打开具体内容后再点扩展", "或在汲作「设置 → 网站登录」里登录一次，以后添加链接也能读全文"],
       message: "当前只读取到了登录页。请先完成登录，再打开具体内容。",
       canReload: false,
     };
@@ -799,11 +799,11 @@ export function popupTranslationNote(translator: string): string {
 
 /**
  * 评论区要登录才显示全部时的说明。小红书同一账号在网页端只保留一处登录（2026-10-02：
- * 在汲作「站点登录」里登录小红书后，浏览器里的登录被挤掉，评论只剩未登录可见的一批）。
+ * 在汲作「网站登录」里登录小红书后，浏览器里的登录被挤掉，评论只剩未登录可见的一批）。
  */
 export function commentLoginWallNote(platform: string, count: number, limit: number): string {
   const base = `这个网站要登录后才显示全部评论，现在只读到未登录可见的 ${count} 条。登录后重新打开扩展即可读满 ${limit} 条。`;
   return platform === "xiaohongshu"
-    ? `${base}小红书同一账号在网页端只保留一处登录：在汲作「站点登录」里登录过的话，浏览器这边会被挤掉。`
+    ? `${base}小红书同一账号在网页端只保留一处登录：在汲作「网站登录」里登录过的话，浏览器这边会被挤掉。`
     : base;
 }

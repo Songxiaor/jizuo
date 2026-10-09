@@ -2156,7 +2156,7 @@ private struct LinkDigestCommands: Commands {
     // 「帮助」原来只有系统默认的一项，点了提示找不到帮助（App 没有帮助手册）。
     // 指向官网的使用说明，反馈走设置里已有的「写邮件 + 导出诊断信息」。
     CommandGroup(replacing: .help) {
-      Button("\(ProductDisplay.name)使用说明") { NSWorkspace.shared.open(AppAboutPanel.guideURL) }
+      Button("使用说明") { NSWorkspace.shared.open(AppAboutPanel.guideURL) }
       Button("常见问题") { NSWorkspace.shared.open(AppAboutPanel.faqURL) }
       Divider()
       Button("反馈问题…") {
@@ -2169,7 +2169,8 @@ private struct LinkDigestCommands: Commands {
       Button("添加链接…") { manualLink.open() }
         .keyboardShortcut("n", modifiers: .command)
         .disabled(!manualLink.canOpen)
-      Button("从剪贴板添加链接") { manualLink.readClipboardAndOpen() }
+      Button("粘贴链接") { manualLink.readClipboardAndOpen() }
+        .help("把剪贴板里的链接存进来")
         .keyboardShortcut("v", modifiers: [.command, .shift])
         .disabled(!manualLink.canOpen)
       // 写笔记要能一键起手：想记东西时最不该做的事就是先找按钮。
@@ -2177,16 +2178,17 @@ private struct LinkDigestCommands: Commands {
       Button("新建笔记") { newNote?.run() }
         .keyboardShortcut("n", modifiers: [.command, .shift])
         .disabled(newNote == nil)
-      Button("今天的笔记") { todayNote?.run() }
+      Button("今日笔记") { todayNote?.run() }
         .keyboardShortcut("t", modifiers: [.command, .shift])
         .disabled(todayNote == nil)
       // 快捷键是全局注册的（在别的 App 里也能按），这里只在标题里写出来，
       // 不再挂菜单快捷键，免得同一个组合键被触发两次。
-      Button("快速记录（\(QuickCaptureController.shortcutDescription)）") { quickCapture.show() }
+      Button("随手记（\(QuickCaptureController.shortcutDescription)）") { quickCapture.show() }
+        .help("在任何 App 里都能呼出")
       Divider()
       // 不跟 canImport 绑 disabled（2026-09-23）：菜单栏的启用状态在 SwiftUI Commands 里
       // 不一定跟着刷新，实测启动后会一直灰着。改为常亮，未就绪时由控制器说明原因。
-      Button("导入本地文件…") { localImport.chooseFiles() }
+      Button("导入文件…") { localImport.chooseFiles() }
         .keyboardShortcut("i", modifiers: [.command, .shift])
       Button("新建合集…") { newCollection?.run() }
         .disabled(newCollection == nil)
@@ -2194,7 +2196,7 @@ private struct LinkDigestCommands: Commands {
       Button("同步备忘录") { localImport.syncAppleNotes() }
     }
     CommandGroup(after: .textEditing) {
-      Button("搜索历史") { focusHistorySearch?.run() }
+      Button("搜索内容") { focusHistorySearch?.run() }
         .keyboardShortcut("f", modifiers: .command)
         .disabled(focusHistorySearch == nil)
     }
@@ -2221,17 +2223,18 @@ private struct LinkDigestCommands: Commands {
         .keyboardShortcut(.downArrow, modifiers: .command)
         .disabled(selectNextItem == nil)
       Divider()
-      Button("收藏 / 取消收藏") { toggleFavorite?.run() }
+      Button("收藏") { toggleFavorite?.run() }
+        .help("再按一次取消")
         .keyboardShortcut("d", modifiers: .command)
         .disabled(toggleFavorite == nil)
       Divider()
-      Button("放大正文字号") { setReadingFontSize(readingFontSizeRaw + Double(ReadingFontSize.step)) }
+      Button("放大字号") { setReadingFontSize(readingFontSizeRaw + Double(ReadingFontSize.step)) }
         .keyboardShortcut("=", modifiers: .command)
         .disabled(readingFontSizeRaw >= Double(ReadingFontSize.maximum))
-      Button("缩小正文字号") { setReadingFontSize(readingFontSizeRaw - Double(ReadingFontSize.step)) }
+      Button("缩小字号") { setReadingFontSize(readingFontSizeRaw - Double(ReadingFontSize.step)) }
         .keyboardShortcut("-", modifiers: .command)
         .disabled(readingFontSizeRaw <= Double(ReadingFontSize.minimum))
-      Button("恢复默认字号") { readingFontSizeRaw = Double(ReadingFontSize.default) }
+      Button("实际大小") { readingFontSizeRaw = Double(ReadingFontSize.default) }
         .keyboardShortcut("0", modifiers: .command)
       // ⌥⌘\\：⌥⌘W 是系统「全部关闭」，按下去整个窗口没了（2026-09-25 实测）。
       Toggle("加宽正文", isOn: $readingUsesWideLayout)

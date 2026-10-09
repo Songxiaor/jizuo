@@ -11,13 +11,13 @@ struct CompanionNoteSyncSettingsView: View {
         title: "手机同步",
         symbol: "iphone.and.arrow.forward",
         // 页头只说这页干什么。签名、iCloud 容器这些技术原因在卡片的 ⓘ 里。
-        caption: "把「我的笔记」和链接卡同步到 iPhone。密钥不会同步过去。",
+        caption: "把笔记和链接同步到 iPhone",
         fill: SettingsCategoryChip.fill(for: "companionSync", theme: appTheme)
       )
 
       SettingsCard(
         title: "与 iPhone 同步",
-        summary: "资料库里的「我的笔记」和链接会做成笔记卡，通过你自己的 iCloud 和手机互相同步。",
+        summary: "通过你的 iCloud 同步",
         details: """
         同步走你自己的 iCloud 私人空间：本机先导出，和 iCloud 上的合并，再写回本机。两边都只有你自己看得到。
         在一边删掉的，另一边也会跟着删；稿件和成品不参与同步。

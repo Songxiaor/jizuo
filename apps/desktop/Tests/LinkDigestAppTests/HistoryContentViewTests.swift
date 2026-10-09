@@ -315,7 +315,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(root.contains(".toolbar {"))
     XCTAssertTrue(root.contains("ToolbarItemGroup(placement: .primaryAction)"))
     XCTAssertTrue(root.contains("Button(action: manualLink.open) { Label(\"添加链接（⌘N）\""))
-    XCTAssertTrue(root.contains("Button(action: manualLink.readClipboardAndOpen) { Label(\"从剪贴板添加链接"))
+    XCTAssertTrue(root.contains("Button(action: manualLink.readClipboardAndOpen) { Label(\"粘贴链接"))
     XCTAssertTrue(root.contains(".disabled(!manualLink.canOpen)"))
     XCTAssertTrue(root.contains(".accessibilityIdentifier(\"manual-link-add-toolbar\")"))
   }
@@ -345,7 +345,7 @@ final class HistoryContentViewTests: XCTestCase {
     let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
 
     XCTAssertTrue(root.contains("openRecapture: { manualLink.openForRecapture($0) }"))
-    XCTAssertTrue(detail.contains("Button { openRecapture(sourceURL) } label: { Label(\"重新抓取原文…\""))
+    XCTAssertTrue(detail.contains("Button { openRecapture(sourceURL) } label: { Label(\"刷新原文…\""))
     XCTAssertTrue(detail.contains(".accessibilityIdentifier(\"history-recapture-source\")"))
     XCTAssertTrue(detail.contains("guard !isOwnWriting"))
   }
@@ -450,7 +450,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("history-creator-directory-back"))
     XCTAssertTrue(source.contains("history-creator-directory-filtered-empty"))
     XCTAssertTrue(source.contains("history-creator-directory-failed"))
-    XCTAssertTrue(source.contains("Button(\"抓取作品\")"))
+    XCTAssertTrue(source.contains("Button(\"挑选作品\")"))
     let creatorDirectory = section(in: source, from: "private var creatorDirectory: some View", to: "private func creatorDirectoryRow")
     XCTAssertTrue(creatorDirectory.contains("LazyVGrid("), "全部博主应先以卡片网格展示")
     XCTAssertTrue(creatorDirectory.contains("GridItem(.adaptive(minimum: CreatorDirectoryChrome.xCardMinimumWidth)"), "博主目录按可用宽度自适应列数，不固定两列")
@@ -487,7 +487,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(source.contains("historyContextMenu(for: row)"), "新画廊必须保留历史条目的右键操作")
     XCTAssertFalse(
       appSource("HistoryContentView.swift").contains("square.and.arrow.down"),
-      "目录行主操作应是「抓取作品」文案，不是下载图标"
+      "目录行主操作应是「挑选作品」文案，不是下载图标"
     )
     XCTAssertTrue(source.contains("manualLink.creatorAssociationRevision"))
     XCTAssertTrue(source.contains(".sheet(item: $douyinProfileImportRequest)"))
@@ -589,7 +589,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("history-run-completion-banner"))
     XCTAssertFalse(detail.contains("disabledAction(\"格式\""))
     // Plain text lives in the share menu, not as an inline checkbox over body.
-    XCTAssertTrue(detail.contains("以纯文本查看正文"))
+    XCTAssertTrue(detail.contains("Label(\"纯文本\", systemImage: \"text.alignleft\")"))
     XCTAssertTrue(detail.contains("showsInlinePlainTextToggle: false"))
     XCTAssertTrue(detail.contains("onFollowWikiLink:"), "阅读区双链必须接到 followWikiLink，不能只在编辑器里可点")
     // 转写 / 笔记默认排版，单击进编辑；空笔记仍一打开就写。
@@ -673,6 +673,27 @@ final class HistoryContentViewTests: XCTestCase {
     let editor = section(in: source, from: "private struct HistoryTagEditor: View", to: "private struct HistoryTagChip")
     let canOpen = section(in: editor, from: "private var canOpenComposer: Bool", to: "private var hasChipTags")
     XCTAssertTrue(canOpen.contains("composerInPopover && showsMaterialTypes"), "标签贴满了也要能点开弹窗取消素材类型")
+  }
+
+  /// 右键「标签」子菜单和详情页「标签与素材类型」同一结构；菜单名 2–4 字（2026-10-09 Syc 定）。
+  func testContextMenuMergesTagsAndMaterialTypesWithShortNames() {
+    let source = historyContentViewSource()
+    let tags = section(in: source, from: "@ViewBuilder private func tagContextMenu", to: "/// 「改为自有 / 改为外部」")
+    XCTAssertTrue(tags.contains("Section(\"素材类型\")"))
+    XCTAssertTrue(tags.contains("Section(\"标签\")"))
+    XCTAssertTrue(tags.contains("Label(\"标签\", systemImage: \"tag\")"))
+    XCTAssertTrue(tags.contains("!materialNames.contains"), "素材类型不在常用标签里重复")
+    XCTAssertFalse(source.contains("private func materialContextMenu"), "不再单独一个「素材类型」子菜单")
+    let menu = section(in: source, from: "@ViewBuilder private func regularHistoryContextMenu", to: "/// 对单条内容跑总结")
+    XCTAssertTrue(menu.contains("tagContextMenu(for: row)"))
+    XCTAssertFalse(menu.contains("Label(\"添加标签\""))
+    for old in ["在浏览器中打开\"", "重新生成总结", "总结选中的", "翻译选中的"] {
+      XCTAssertFalse(menu.contains(old), "右键菜单旧文案：\(old)")
+    }
+    let commands = appSource("LinkDigestApp.swift")
+    for name in ["粘贴链接", "今日笔记", "随手记", "导入文件…", "搜索内容", "放大字号", "缩小字号", "实际大小", "Button(\"使用说明\")"] {
+      XCTAssertTrue(commands.contains(name), "菜单栏应有：\(name)")
+    }
   }
 
   /// 带视频的帖子只有配文一层时，页签就叫「配文」，转写之后不改名（2026-10-03）。
@@ -2696,7 +2717,7 @@ final class HistoryContentViewTests: XCTestCase {
     let source = historyContentViewSource()
     XCTAssertTrue(source.contains("history-navigation-trash"))
     // 「今天」从侧栏移进「添加」菜单（2026-09-23），⌘⇧T 照旧。
-    XCTAssertTrue(source.contains("Button(action: openTodayNote) { Label(\"今天的笔记"))
+    XCTAssertTrue(source.contains("Button(action: openTodayNote) { Label(\"今日笔记"))
     XCTAssertTrue(source.contains("rectangle.compress.vertical"))
     XCTAssertTrue(source.contains("accessibilityLabel(\"打开设置\")"))
     XCTAssertTrue(source.contains("history-unconfigured-model-banner"))

@@ -89,19 +89,19 @@ final class GenerationSettingsPresentationTests: XCTestCase {
   /// 空值是下拉里的一个选项，不靠 placeholder。
   func testEmptyModelFieldsStateWhatActuallyApplies() throws {
     let text = try source()
-    XCTAssertTrue(text.contains("emptyOptionTitle: \"不使用：只用本机转写\""))
-    XCTAssertTrue(text.contains("emptyOptionTitle: \"跟随默认模型\""))
+    XCTAssertTrue(text.contains("emptyOptionTitle: \"只用本机\""))
+    XCTAssertTrue(text.contains("emptyOptionTitle: \"跟随默认\""))
     XCTAssertFalse(text.contains("TextField(\"留空时使用总结模型\""), "语义不能只靠 placeholder 承载")
     XCTAssertFalse(text.contains("Label(emptyOptionTitle, systemImage:"), "下拉已经显示当前值了，下面不必再画一行重复它")
     XCTAssertFalse(text.contains("留空时只使用 Apple 本机转写"), "已经没有「留空」这个操作了")
     XCTAssertFalse(text.contains("Toggle(\"翻译使用不同模型\""), "翻译模型不再用开关承载")
   }
 
-  /// 评论按平台：「跟随默认」「不抓」都是下拉里的选项。
+  /// 评论按平台：「跟随默认」「不存」都是下拉里的选项（2026-10-09 「不抓」改叫「不存」）。
   func testCommentPlatformsOfferFollowDefaultAndOff() throws {
     let comments = page("commentsTab", in: try stepPages(in: try source()))
     XCTAssertTrue(comments.contains("title: \"跟随默认\""))
-    XCTAssertTrue(comments.contains("title: \"不抓\""))
+    XCTAssertTrue(comments.contains("title: \"不存\""))
     XCTAssertTrue(comments.contains("CapturePreferencesStore.commentPlatforms"))
   }
 

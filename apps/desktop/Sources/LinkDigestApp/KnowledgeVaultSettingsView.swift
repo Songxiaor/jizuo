@@ -22,15 +22,15 @@ struct KnowledgeVaultSettingsView: View {
   var body: some View {
     SettingsPlainPage {
       SettingsPageHeader(
-        title: "知识库同步",
+        title: "知识库",
         symbol: "books.vertical",
-        caption: "把历史里抓到的内容导出成 Markdown，同步进你自己的知识库文件夹。",
+        caption: "导出到 Obsidian 等笔记库文件夹",
         fill: SettingsCategoryChip.fill(for: "knowledgeVault", theme: appTheme)
       )
 
       SettingsCard(
-        title: "知识库文件夹",
-        summary: "汲作把历史里抓到的内容导成 Markdown 放进这个文件夹，供你在别的工具里检索。",
+        title: "文件夹",
+        summary: "内容导出到这里",
         details: """
         只往这个文件夹里写，不读也不改它以外的任何位置。同名文件如果不是汲作写的，会跳过并在同步结果里报出来，不会被覆盖。
         建议单独给汲作一个子文件夹（例如知识库里的「02_输入/汲作」），这样它和你已有的资料物理隔开，出问题也伤不到旧文件。
@@ -53,7 +53,7 @@ struct KnowledgeVaultSettingsView: View {
               .frame(maxWidth: .infinity, alignment: .leading)
               .help(model.missingDirectoryPath ?? model.directoryPath ?? "尚未选择")
               .accessibilityIdentifier("knowledge-vault-directory")
-            Button(model.directoryPath != nil ? "更改文件夹" : (model.hasDirectory ? "重新选择" : "选择文件夹"), action: chooseDirectory)
+            Button(model.directoryPath != nil ? "更改" : (model.hasDirectory ? "重新选择" : "选择文件夹"), action: chooseDirectory)
               .buttonStyle(.appNormal)
               .accessibilityIdentifier("knowledge-vault-choose")
             // 危险动作：文字按钮 + 危险色，和「更改文件夹」拉开层级，并二次确认。
@@ -75,12 +75,12 @@ struct KnowledgeVaultSettingsView: View {
         }
       }
 
-      // 「同步到知识库」是这张卡唯一的主动作，放标题行右端；上次同步时间作为
+      // 「立即同步」是这张卡唯一的主动作，放标题行右端；上次同步时间作为
       // 说明的一部分放标题下，不再和按钮挤同一行。
       SettingsCard(
-        title: "同步到知识库",
-        summary: model.lastSyncText.map { "只处理新增和有变化的条目；没变的文件一个字都不会动。上次同步：\($0)" }
-          ?? "只处理新增和有变化的条目；没变的文件一个字都不会动。",
+        title: "立即同步",
+        summary: model.lastSyncText.map { "只同步新增和改过的内容。上次同步：\($0)" }
+          ?? "只同步新增和改过的内容",
         details: """
         每条内容导出成一个 Markdown：开头的属性区记录来源、平台、作者、发布与保存时间和标签，正文包含总结和原文全文，便于全文检索命中。
         正文里带一个「回链」，点它能回到汲作定位到这条内容看全文、视频和转写。
@@ -106,15 +106,15 @@ struct KnowledgeVaultSettingsView: View {
           // 手排页里默认 Toggle 是勾选框；设置窗口的开关统一用拨杆并靠右，
           // 和视频存储页保持同一形态。
           HStack {
-            Text("抓到新内容后自动同步")
+            Text("自动同步")
             Spacer(minLength: 12)
             Toggle("", isOn: $model.isAutoSyncEnabled)
               .toggleStyle(.switch)
               .labelsHidden()
-              .accessibilityLabel("抓到新内容后自动同步")
+              .accessibilityLabel("自动同步")
               .accessibilityIdentifier("knowledge-vault-auto-sync")
           }
-          Text("在后台安静进行，不打断你；抓一批内容只会同步一次。")
+          Text("存了新内容就在后台同步")
             .themedFont(.subheadline)
             .foregroundStyle(.secondary)
 
@@ -148,7 +148,7 @@ struct KnowledgeVaultSettingsView: View {
             if model.isRunning {
               Text("同步中…")
             } else {
-              Text("同步到知识库")
+              Text("立即同步")
             }
           }
           .buttonStyle(.appProminent(appTheme.accent))

@@ -78,7 +78,7 @@ enum V02ErrorCatalog {
     case ProviderConfigurationError.modelRequired.rawValue:
       .init(
         message: "还没选模型。",
-        recoveryAction: "已保存的配置没有变化。请先点「读取模型列表」选一个，或手动填上模型名后再保存。"
+        recoveryAction: "已保存的配置没有变化。请先点「读取列表」选一个，或手动填上模型名后再保存。"
       )
     case ProviderConfigurationError.apiKeyRequired.rawValue:
       .init(
@@ -143,7 +143,7 @@ enum V02ErrorCatalog {
     case ModelProviderErrorCode.modelNotFound.rawValue:
       .init(
         message: "模型服务那边找不到你选的这个模型，可能已经下架。",
-        recoveryAction: "密钥没问题，你的内容也没有受影响。请回到「模型服务」点「读取模型列表」重新选一个还在的模型。"
+        recoveryAction: "密钥没问题，你的内容也没有受影响。请回到「模型服务」点「读取列表」重新选一个还在的模型。"
       )
     case ModelProviderErrorCode.providerBillingLimited.rawValue:
       .init(

@@ -60,7 +60,7 @@ struct CollectionMenuItems: View {
         }
         .accessibilityIdentifier("history-collection-create-with-items")
       } label: {
-        Label(taskIDs.count > 1 ? "将 \(taskIDs.count) 条加入合集" : "加入合集", systemImage: CollectionIcon.add)
+        Label("加入合集", systemImage: CollectionIcon.add)
       }
       .accessibilityIdentifier("history-context-add-to-collection")
       if let current = model.selectedCollection {
@@ -68,11 +68,11 @@ struct CollectionMenuItems: View {
           model.removeFromSelectedCollection(taskIDs: taskIDs)
         } label: {
           Label(
-            taskIDs.count > 1 ? "从「\(current.name)」移出 \(taskIDs.count) 条" : "从此合集移出",
+            "移出合集",
             systemImage: CollectionIcon.remove
           )
         }
-        .help("只是不再放在这个合集里，内容本身不会删除")
+        .help("内容不会删除")
         .accessibilityIdentifier("history-context-remove-from-collection")
       }
     }

@@ -143,7 +143,7 @@ final class CaptureCompletenessTests: XCTestCase {
     let zhihu = URL(string: "https://www.zhihu.com/question/1/answer/2")!
     let message = CaptureRouteGuidance.failureMessage(for: .verificationRequired, url: zhihu)
     XCTAssertTrue(message.contains("知乎"))
-    XCTAssertTrue(message.contains("站点登录"))
+    XCTAssertTrue(message.contains("网站登录"))
     XCTAssertTrue(message.contains("浏览器扩展"))
     XCTAssertEqual(
       CaptureRouteGuidance.failureMessage(for: .network, url: zhihu),
@@ -168,7 +168,7 @@ final class CaptureCompletenessTests: XCTestCase {
   func testCommentLoginWallNoticeNamesXiaohongshuOneLoginRule() {
     let xhs = CaptureRouteGuidance.commentsLoginWallNotice(for: URL(string: "https://www.xiaohongshu.com/explore/6a9e1c10000000001103a75f")!)
     XCTAssertTrue(xhs.contains("挤掉"))
-    XCTAssertTrue(xhs.contains("站点登录"))
+    XCTAssertTrue(xhs.contains("网站登录"))
     let other = CaptureRouteGuidance.commentsLoginWallNotice(for: URL(string: "https://www.reddit.com/r/x/comments/abc/t/")!)
     XCTAssertFalse(other.contains("小红书"))
   }

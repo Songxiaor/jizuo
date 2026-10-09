@@ -4,7 +4,7 @@ import LinkDigestCore
 import LinkDigestPersistence
 import SwiftUI
 
-/// 「数据与备份」的取数与动作。
+/// 「备份恢复」的取数与动作。
 ///
 /// 自己解析数据目录、自己按需开连接，而不是等外面注入一个 `HistoryApplicationService`：
 /// 备份和恢复要的是**整个库文件**，不是历史记录这一层的读写接口，从仓库协议里
@@ -49,14 +49,14 @@ final class DataBackupViewModel: ObservableObject {
     perform(busyMessage: nil) { maintenance in
       let file = try maintenance.backupToStore()
       // 文件名是内部格式（history-manual-时间戳.sqlite），用户看时间和大小就够；文件在下面列表里。
-      return "已备份（\(Self.sizeText(file.byteCount))），在下面「已有的备份」里"
+      return "已备份（\(Self.sizeText(file.byteCount))），在下面「备份记录」里"
     }
   }
 
   func restore(from file: DatabaseBackupFile) {
     perform(busyMessage: nil) { maintenance in
       _ = try maintenance.restoreInPlace(from: file.url)
-      return "已恢复。恢复前的资料也另存了一份，在下面「已有的备份」里。请退出并重新打开汲作。"
+      return "已恢复。恢复前的资料也另存了一份，在下面「备份记录」里。请退出并重新打开汲作。"
     } onSuccess: { [weak self] in
       self?.needsRestart = true
     }
@@ -147,15 +147,15 @@ struct DataBackupSettingsView: View {
   var body: some View {
     SettingsPlainPage {
       SettingsPageHeader(
-        title: "数据与备份",
+        title: "备份恢复",
         symbol: "clock.arrow.circlepath",
-        caption: "汲作的资料都存在这台电脑上。这里可以随时存一份，或者把资料换回之前的某一份。",
+        caption: "随时存一份，也能换回旧的",
         fill: SettingsCategoryChip.fill(for: "dataBackup", theme: appTheme)
       )
 
       SettingsCard(
         title: "立即备份",
-        summary: "把当前全部资料完整存成一个文件，放在这台电脑的备份文件夹里。",
+        summary: "把全部资料存成一个文件",
         details: """
         升级汲作时会自动先存一份，自动存的只保留最近 3 份；你自己按下的这些一份都不会被删。
         备份包含历史记录、笔记、标签、总结和阅读进度；视频等大文件不在里面，它们本来就单独存在媒体文件夹。
@@ -173,7 +173,7 @@ struct DataBackupSettingsView: View {
               .accessibilityIdentifier("data-backup-status")
             }
             SettingsActionRow(showsProgress: model.isWorking) {
-              Button("打开备份文件夹") { model.revealBackupsFolder() }
+              Button("打开位置") { model.revealBackupsFolder() }
                 .buttonStyle(.appQuiet)
                 .accessibilityIdentifier("data-backup-reveal")
               Button(model.isWorking ? "处理中…" : "立即备份") { model.backupNow() }
@@ -185,7 +185,7 @@ struct DataBackupSettingsView: View {
         }
       )
 
-      SettingsCardGroup(header: "已有的备份") {
+      SettingsCardGroup(header: "备份记录") {
         if model.backups.isEmpty {
           SettingsRowGroup {
             SettingsRow(title: "还没有备份", caption: "按上面的「立即备份」存第一份。") { EmptyView() }
@@ -195,9 +195,9 @@ struct DataBackupSettingsView: View {
             ForEach(model.backups) { file in
               SettingsRow(
                 title: DataBackupViewModel.dateText(file.createdAt),
-                caption: "\(DataBackupViewModel.sizeText(file.byteCount)) · \(file.isAutomatic ? "升级前自动存" : "手动存")"
+                caption: "\(DataBackupViewModel.sizeText(file.byteCount)) · \(file.isAutomatic ? "自动备份" : "手动备份")"
               ) {
-                Button("恢复到这一份") { model.pendingRestore = file }
+                Button("恢复") { model.pendingRestore = file }
                   .buttonStyle(.appNormal)
                   .disabled(model.isWorking)
               }

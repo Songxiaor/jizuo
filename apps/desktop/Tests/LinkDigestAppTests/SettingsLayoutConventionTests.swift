@@ -231,8 +231,8 @@ final class SettingsLayoutConventionTests: XCTestCase {
     let media = try source("MediaStorageSettingsView")
     XCTAssertTrue(
       media.contains("SettingsCrossReference("),
-      "B 站清晰度依赖站点登录，必须指明去哪一页")
-    XCTAssertTrue(media.contains("站点登录 → B 站"))
+      "B 站清晰度依赖网站登录，必须指明去哪一页")
+    XCTAssertTrue(media.contains("网站登录 → B 站"))
   }
 
   // MARK: - 危险动作
@@ -324,10 +324,10 @@ final class SettingsLayoutConventionTests: XCTestCase {
   /// 「MCP 连接」对用户来说是三个字母加两个汉字，说不出它能干什么。
   func testAgentIntegrationPageIsNamedForWhatItDoes() throws {
     XCTAssertTrue(
-      try source("ProviderSettingsView").contains("case .mcp: \"AI 助手接入\""),
+      try source("ProviderSettingsView").contains("case .mcp: \"AI 助手\""),
       "侧栏分类名要说清这一页是给谁用的")
     let page = try source("MCPSettingsView")
-    XCTAssertTrue(page.contains("title: \"AI 助手接入\""))
+    XCTAssertTrue(page.contains("title: \"AI 助手\""))
     XCTAssertTrue(
       page.contains("Claude Code"),
       "页头要举出用户认得的助手，否则「AI 助手」仍然是个抽象词")
@@ -385,7 +385,9 @@ final class SettingsLayoutConventionTests: XCTestCase {
     XCTAssertFalse(
       shared.contains(".font(.system(size: 18, weight: .semibold))"),
       "页头标题写死字号，放大字号后会比正文还小")
-    XCTAssertTrue(shared.contains(".themedFont(.title3, weight: .semibold)"))
+    // 2026-10-09 页头统一成宋体大标题：用 relativeTo 跟系统字号缩放，不再写死 pt。
+    XCTAssertTrue(shared.contains("size: 22, relativeTo: .title2"))
+    XCTAssertFalse(shared.contains("editorialSerifFamily, size: 22)"), "宋体页头不能写死字号")
   }
 
   /// 主题色不能被 `Color.accentColor` 顶掉。
@@ -427,5 +429,32 @@ final class SettingsLayoutConventionTests: XCTestCase {
       }
     }
     return literals
+  }
+
+  /// 设置侧栏一列一种标准：全部线条图标，不再混朱印、灰方框闲章和系统图标（2026-10-09 Syc 定）。
+  /// 原来闲章按页名查表，改名后查不到就悄悄退回另一种图标，所以这里也盯住不再按名字取图标。
+  func testSettingsSidebarUsesOneLineIconStyle() throws {
+    let view = try source("ProviderSettingsView")
+    let icon = view.components(separatedBy: "private func sidebarIcon(").dropFirst().first ?? ""
+    let body = icon.components(separatedBy: "\n  }\n").first ?? ""
+    XCTAssertTrue(body.contains("SettingsSidebarChip(symbol: tab.symbol"))
+    XCTAssertFalse(body.contains("SettingsStepSeal"), "侧栏不放工序印")
+    XCTAssertFalse(body.contains("InkSealMark"), "侧栏不放灰方框闲章")
+    XCTAssertFalse(try source("SettingsCard").contains("settingsGlyph"), "页头不再按页名查闲章")
+  }
+
+  /// 自带页头的两页（关于、AI 助手）图标要和侧栏同一个：它们拿不到私有的 SettingsTab，
+  /// 是各自写的字面量，2026-10-09 侧栏换图标时就漏了一次。
+  func testStandalonePageHeadersUseTheSidebarSymbol() throws {
+    let tabs = try source("ProviderSettingsView")
+    for (page, tabCase) in [("AppUpdateSettingsView", "updates"), ("MCPSettingsView", "mcp")] {
+      // `case .updates:` 在 SettingsTab 里出现两次：标题（中文）和图标（ASCII 符号名）。取图标那一行。
+      let symbols = tabs.split(separator: "\n")
+        .filter { $0.contains("case .\(tabCase): \"") }
+        .compactMap { $0.split(separator: "\"").dropFirst().first.map(String.init) }
+        .filter { $0.unicodeScalars.allSatisfy(\.isASCII) }
+      guard let symbol = symbols.first else { return XCTFail("找不到侧栏 .\(tabCase) 的图标") }
+      XCTAssertTrue(try source(page).contains("symbol: \"\(symbol)\""), "\(page) 页头图标应和侧栏一致：\(symbol)")
+    }
   }
 }

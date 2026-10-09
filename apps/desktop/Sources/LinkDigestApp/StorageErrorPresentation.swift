@@ -23,7 +23,7 @@ enum StorageErrorCatalog {
     case .readOnly:
       .init(message: "资料库现在只能看、不能改。", recoveryAction: "现有内容都还在，暂时不能保存新网页或生成总结；重新打开\(ProductDisplay.name)通常就能恢复。")
     case .integrityFailed:
-      .init(message: "资料库的完整性检查没有通过。", recoveryAction: "现有内容还在，\(ProductDisplay.name)已停止写入。请先在「数据与备份」里备份，再重新打开。")
+      .init(message: "资料库的完整性检查没有通过。", recoveryAction: "现有内容还在，\(ProductDisplay.name)已停止写入。请先在「备份恢复」里备份，再重新打开。")
     case .stateConflict:
       .init(message: "资料库里的这条内容刚刚变过。", recoveryAction: "没有内容被改写，请从浏览器重新保存这个页面，或重新开始操作。")
     case .captureIdempotencyConflict:
