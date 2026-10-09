@@ -208,7 +208,7 @@ struct DataBackupSettingsView: View {
     }
     .onAppear { model.reload() }
     .confirmationDialog(
-      "确定把资料换回这一份备份吗？",
+      "换回这份备份？",
       isPresented: Binding(
         get: { model.pendingRestore != nil },
         set: { if !$0 { model.pendingRestore = nil } }
@@ -223,9 +223,8 @@ struct DataBackupSettingsView: View {
       Button("取消", role: .cancel) { model.pendingRestore = nil }
     } message: { file in
       Text("""
-        当前的全部资料会被这份 \(DataBackupViewModel.dateText(file.createdAt)) 的备份替换。
-        换之前汲作会先把现在的资料另存一份，所以还能再换回来。
-        换完需要退出并重新打开汲作才会生效。
+        当前资料会被这份 \(DataBackupViewModel.dateText(file.createdAt)) 的备份替换。
+        换之前会先另存一份，还能换回来；换完要重新打开汲作。
         """)
     }
   }

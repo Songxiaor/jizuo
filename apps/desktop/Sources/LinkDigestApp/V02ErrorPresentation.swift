@@ -197,7 +197,7 @@ enum V02ErrorCatalog {
       )
     case ModelRunErrorCode.captureContentEmpty.rawValue:
       .init(
-        message: "这个页面没抓到正文。",
+        message: "这个页面没读到正文。",
         recoveryAction: "没有产生空记录。请等页面加载完、或自己选中正文再发一次；换一个页面也行。"
       )
     case ModelRunErrorCode.runFailed.rawValue:

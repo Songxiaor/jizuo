@@ -159,7 +159,7 @@ struct BrowserSupportSettingsView: View {
       .accessibilityIdentifier("browser-support-disconnect-confirm")
       Button("取消", role: .cancel) { pendingDisconnect = nil }
     } message: {
-      Text("断开后，这个浏览器再点保存就存不进汲作了。你已经保存的内容一条都不会少，浏览器里的扩展也不会被删。想用的时候点「连接」就能接回来。")
+      Text("断开后，这个浏览器存不进汲作。已存的内容和扩展都不受影响，点「连接」随时接回。")
     }
     .task { await model.load() }
     // 送达随时会发生：你在浏览器里点一次同步，这一行就得跟着变。原来只在切进这一页时
@@ -180,7 +180,7 @@ struct BrowserSupportSettingsView: View {
       case let .confirmation(confirmation):
         Alert(
           title: Text("把 \(confirmation.browser.displayName) 连到这个汲作？"),
-          message: Text("这个浏览器里已经有一份连接配置。\(ProductDisplay.name)会先备份它，再把浏览器切到当前这个汲作。不会删浏览器数据，也不会删已经装好的扩展。"),
+          message: Text("这个浏览器已有一份连接配置，\(ProductDisplay.name)会先备份再切过来。不删浏览器数据，也不删扩展。"),
           primaryButton: .default(Text("连接")) { Task { await model.confirmReplacement(confirmation) } },
           secondaryButton: .cancel(Text("取消")) { model.cancelPendingReplacement() }
         )

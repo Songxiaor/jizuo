@@ -28,7 +28,7 @@ struct MediaStorageSettingsView: View {
         // 这两个选项决定的只是「什么时候去换」。
         summary: "打开时要不要自动取播放地址",
         // 去掉「运行」「请求在飞」「App」这类开发口吻（2026-10-01）。
-        details: "播放地址不会存进资料库。\(ProductDisplay.name)开着的时候，最近取过的 10 条会记在内存里，来回切换不会重复去取；退出\(ProductDisplay.name)就清空。\n只有「当前打开的那一条」会去取，打开列表或启动\(ProductDisplay.name)都不会批量去取。同一时间只取一条，切到别的内容会停掉上一条，不会越积越多。\n已存到本机的视频、刚抓取的那一条和 YouTube 不受这一项影响。",
+        details: "播放地址不会存进资料库。\(ProductDisplay.name)开着的时候，最近取过的 10 条会记在内存里，来回切换不会重复去取；退出\(ProductDisplay.name)就清空。\n只有「当前打开的那一条」会去取，打开列表或启动\(ProductDisplay.name)都不会批量去取。同一时间只取一条，切到别的内容会停掉上一条，不会越积越多。\n已存到本机的视频、刚保存的那一条和 YouTube 不受这一项影响。",
         summaryPlacement: .aboveControl,
         controlWidth: .full
       ) {
@@ -180,15 +180,15 @@ struct MediaStorageSettingsView: View {
                   .buttonStyle(.appDestructive(appTheme.danger))
                   .accessibilityIdentifier("media-storage-delete-orphans")
                   .confirmationDialog(
-                    "删除这 \(count) 个没被用到的视频文件？",
+                    "删除 \(count) 个多余视频？",
                     isPresented: $isUnusedDeletionConfirmationPresented,
                     titleVisibility: .visible
                   ) {
-                    Button("删除这 \(count) 个文件", role: .destructive) { model.deleteScannedOrphans() }
+                    Button("删除", role: .destructive) { model.deleteScannedOrphans() }
                       .accessibilityIdentifier("media-storage-delete-orphans-confirm")
                     Button("取消", role: .cancel) {}
                   } message: {
-                    Text("会从磁盘上删掉这 \(count) 个文件，共 \(MediaStorageSettingsViewModel.formattedBytes(bytes))，不进废纸篓，删了没法撤销。你保存的内容一条都不会少，只删这次扫出来的这份清单。")
+                    Text("共 \(MediaStorageSettingsViewModel.formattedBytes(bytes))，直接从磁盘删除，不进废纸篓，没法撤销。已存的内容不受影响。")
                   }
               }
             }
@@ -267,7 +267,7 @@ struct MediaStorageSettingsView: View {
 
   private var cleanupConfirmationMessage: String {
     guard let pending = model.pendingCleanupConfirmation else { return "" }
-    return "按新规则，已经符合条件的 \(pending.count) 个视频（共 \(MediaStorageSettingsViewModel.formattedBytes(pending.bytes))）会马上从磁盘删掉，不进废纸篓。它们的转写稿、评论和笔记都保留。以后符合条件的视频也会自动清理。"
+    return "共 \(MediaStorageSettingsViewModel.formattedBytes(pending.bytes))，马上删掉，不进废纸篓；转写稿、评论、笔记都保留。以后也会自动清理。"
   }
 
   /// 扫描结果直接写在说明行里：用户要先看见"多少个、多大"，才谈得上确认删除。

@@ -59,7 +59,7 @@ struct ClipboardSuggestionBanner: View {
         .lineLimit(1)
         .truncationMode(.middle)
       HStack(spacing: 10) {
-        Button("抓取", action: capture)
+        Button("保存", action: capture)
           .accessibilityIdentifier("history-clipboard-capture")
         Button("忽略", action: ignore)
           .accessibilityIdentifier("history-clipboard-ignore")
@@ -177,9 +177,9 @@ struct ManualLinkSheet: View {
     }
     .alert("这个链接已在库中", isPresented: $model.isDuplicatePromptPresented) {
       Button("取消", role: .cancel) { model.cancelDuplicateSubmit() }
-      Button("仍要重新抓取") { model.confirmDuplicateSubmit() }
+      Button("仍要重新保存") { model.confirmDuplicateSubmit() }
     } message: {
-      Text("重复添加不会多出一条：重新抓取的内容会并入原来那条，成为最新的版本。只想查看的话，直接在列表里打开就行。")
+      Text("重复添加不会多出一条：重新保存的内容会并入原来那条，成为最新的版本。只想查看的话，直接在列表里打开就行。")
     }
   }
 
@@ -212,7 +212,7 @@ struct PendingCaptureRow: View {
           .truncationMode(.middle)
         switch pending.phase {
         case .queued: Text("排队中").themedFont(.caption2).foregroundStyle(.tertiary)
-        case .fetching: Text("正在抓取…").themedFont(.caption2).foregroundStyle(.tertiary)
+        case .fetching: Text("正在保存…").themedFont(.caption2).foregroundStyle(.tertiary)
         case .saving: Text("正在保存…").themedFont(.caption2).foregroundStyle(.tertiary)
         case let .failed(message):
           // 失败原因必须完整可读。`lineLimit(2)` 会把「网页暂时无法打开，

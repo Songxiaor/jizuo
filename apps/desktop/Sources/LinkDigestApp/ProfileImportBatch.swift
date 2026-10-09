@@ -207,7 +207,7 @@ final class ProfileImportBatchJournal: ProfileImportBatchJournalStoring {
       case "completed":
         if let taskID, let id = TaskID(taskID) { return .completed(id) }
         return .interrupted
-      case "failed": return .failed(message ?? "上次抓取未完成，请重试。")
+      case "failed": return .failed(message ?? "上次保存未完成，请重试。")
       case "cancelled": return .cancelled
       case "interrupted": return .interrupted
       // Work cannot continue across process termination. Never imply that an

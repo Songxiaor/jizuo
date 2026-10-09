@@ -46,8 +46,8 @@ struct ProfileImportBatchHeader: View {
     HStack(spacing: 8) {
       // 抓完之后还叫「本次抓取」会让人以为还在抓；抓完就改成「最近一次抓取」。
       Text(batch.isFinished
-        ? "最近一次抓取 · \(batch.completedCount) 条"
-        : "正在抓取 · 已保存 \(batch.completedCount) / \(batch.items.count)")
+        ? "最近一次保存 · \(batch.completedCount) 条"
+        : "正在保存 · 已存 \(batch.completedCount) / \(batch.items.count)")
         .themedFont(.caption, weight: .semibold)
         .monospacedDigit()
       Spacer(minLength: 4)
@@ -182,7 +182,7 @@ private struct ProfileImportReservedWorkCard: View {
       dateText: nonempty(item.seed.publishedText) ?? "发布时间待获取",
       isHighlighted: isHighlighted,
       host: host,
-      metricHelpSuffix: "抓取前预览",
+      metricHelpSuffix: "保存前预览",
       metric: metricValue
     ) {
       // 已保存是常态，不再每张卡都写一遍；排队、抓取中、失败才值得说。
@@ -218,7 +218,7 @@ private struct ProfileImportReservedWorkCard: View {
           dateText: nonempty(item.seed.publishedText) ?? "发布时间待获取",
           theme: theme
         )
-        CreatorWorkMetricStrip(host: host, theme: theme, values: metricValue, helpSuffix: "抓取前预览")
+        CreatorWorkMetricStrip(host: host, theme: theme, values: metricValue, helpSuffix: "保存前预览")
       }
     }
   }
@@ -231,7 +231,7 @@ private struct ProfileImportReservedWorkCard: View {
         Text("排队中")
       case .fetching:
         ProgressView().controlSize(.mini)
-        Text("正在抓取")
+        Text("正在保存")
       case .saving:
         ProgressView().controlSize(.mini)
         Text("正在保存")
@@ -265,8 +265,8 @@ private struct ProfileImportReservedWorkCard: View {
         Image(systemName: "xmark.circle.fill")
       }
       .buttonStyle(.plain)
-      .help("取消这条抓取")
-      .accessibilityLabel("取消这条抓取")
+      .help("取消这条")
+      .accessibilityLabel("取消这条")
     } else if item.phase.canRetry {
       Button {
         manualLink.retryProfileImportItem(batchID: batchID, itemID: item.id)
@@ -274,8 +274,8 @@ private struct ProfileImportReservedWorkCard: View {
         Image(systemName: "arrow.clockwise.circle.fill")
       }
       .buttonStyle(.plain)
-      .help("重试这条抓取")
-      .accessibilityLabel("重试这条抓取")
+      .help("重试这条")
+      .accessibilityLabel("重试这条")
     }
   }
 
@@ -330,14 +330,14 @@ private struct ProfileImportBatchCard: View {
         Image(systemName: "checkmark.circle.fill")
           .foregroundStyle(theme.success)
           .accessibilityHidden(true)
-        Text("主页抓取批次 · 已保存 \(batch.completedCount) 条")
+        Text("保存进度 · 已存 \(batch.completedCount) 条")
           .foregroundStyle(theme.secondaryText)
           .lineLimit(1)
         Spacer(minLength: 4)
         Button(action: dismiss) { Image(systemName: "xmark") }
           .buttonStyle(.plain)
           .help("关闭完成提示，不会删除资料")
-          .accessibilityLabel("关闭抓取完成提示")
+          .accessibilityLabel("关闭完成提示")
       }
       .themedFont(.caption)
       .padding(.vertical, DesignTokens.Space.xxs)
@@ -353,7 +353,7 @@ private struct ProfileImportBatchCard: View {
     VStack(alignment: .leading, spacing: 8) {
       HStack(spacing: 8) {
         VStack(alignment: .leading, spacing: 2) {
-          Text("博主批量抓取")
+          Text("批量存作品")
             .themedFont(.caption, weight: .semibold)
           Text("已保存 \(batch.completedCount) / \(batch.items.count)")
             .themedFont(.caption2, monospacedDigit: true)
@@ -436,7 +436,7 @@ private struct ProfileImportBatchItemRow: View {
       HStack(spacing: 5) { ProgressView().controlSize(.mini); Text("排队中") }
         .foregroundStyle(.secondary)
     case .fetching:
-      HStack(spacing: 5) { ProgressView().controlSize(.mini); Text("正在抓取…") }
+      HStack(spacing: 5) { ProgressView().controlSize(.mini); Text("正在保存…") }
         .foregroundStyle(.secondary)
     case .saving:
       HStack(spacing: 5) { ProgressView().controlSize(.mini); Text("正在保存…") }
@@ -451,7 +451,7 @@ private struct ProfileImportBatchItemRow: View {
     case .cancelled:
       Label("已取消", systemImage: "xmark.circle").foregroundStyle(.secondary)
     case .interrupted:
-      Label("上次抓取已中断，请手动继续", systemImage: "pause.circle")
+      Label("上次保存中断了，请手动继续", systemImage: "pause.circle")
         .foregroundStyle(theme.warning)
     }
   }

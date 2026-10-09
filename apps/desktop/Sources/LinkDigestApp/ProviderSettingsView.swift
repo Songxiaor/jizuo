@@ -650,13 +650,13 @@ struct ProviderSettingsView: View {
       editorSheet
     }
     .confirmationDialog(
-      "删除这个模型配置？",
+      "删除这个模型？",
       isPresented: Binding(
         get: { pendingDeletionID != nil },
         set: { if !$0 { pendingDeletionID = nil } }
       )
     ) {
-      Button("删除并清掉密钥", role: .destructive) {
+      Button("删除", role: .destructive) {
         if let id = pendingDeletionID {
           pendingDeletionID = nil
           Task { await model.deleteModel(id) }
@@ -664,10 +664,10 @@ struct ProviderSettingsView: View {
       }
       Button("取消", role: .cancel) { pendingDeletionID = nil }
     } message: {
-      Text("这个模型的密钥会一并从本机钥匙串里删掉，删了没法撤销。你保存的内容一条都不会少；正在用它的功能会回到「未配置」或改用本机处理。")
+      Text("密钥会一起删掉，没法撤销。用它的功能会改回「未配置」或本机处理。")
     }
     .confirmationDialog(
-      "删除「\(pendingGroupDeletion?.id ?? "")」下的全部 \(pendingGroupDeletion?.entries.count ?? 0) 个模型？",
+      "删除「\(pendingGroupDeletion?.id ?? "")」的 \(pendingGroupDeletion?.entries.count ?? 0) 个模型？",
       isPresented: Binding(
         get: { pendingGroupDeletion != nil },
         set: { if !$0 { pendingGroupDeletion = nil } }
@@ -683,7 +683,7 @@ struct ProviderSettingsView: View {
       .accessibilityIdentifier("delete-library-provider-confirm")
       Button("取消", role: .cancel) { pendingGroupDeletion = nil }
     } message: {
-      Text("这家服务商的密钥会一并从本机钥匙串里删掉，删了没法撤销。你保存的内容一条都不会少；正在用这些模型的功能会回到「未配置」或改用本机处理。")
+      Text("密钥会一起删掉，没法撤销。用到的功能会改回「未配置」或本机处理。")
     }
   }
 
@@ -1129,13 +1129,13 @@ struct ProviderSettingsView: View {
         }
         Button("取消", role: .cancel) {}
       } message: {
-        Text("每个模型只发一句很短的测试消息，付费模型每条只花极少的额度。结果会显示在模型名旁边，一天后提示重新检测。")
+        Text("每个模型发一句话，付费的只花一点额度。结果显示在模型名旁边。")
       }
     }
   }
 
   private func probeConfirmationTitle(_ plan: ProviderSettingsViewModel.ModelProbePlan) -> String {
-    "检测 \(plan.total) 个模型的可用性？"
+    "检测 \(plan.total) 个模型能不能用？"
   }
 
   private func startProbe(scope: ModelProbeScope, includesPaid: Bool) {
@@ -2497,7 +2497,7 @@ struct ProviderSettingsView: View {
         SettingsRow(
           title: "默认条数",
           caption: commentLimitSaveFailed
-            ? "保存失败，请重试；这次仍按之前的条数抓取。"
+            ? "保存失败，请重试；这次仍按之前的条数存。"
             : "下面没有单独设的平台都按这个数。",
           details: "适用于 Reddit、论坛、X、YouTube、B 站、知乎、抖音、小红书。评论不够时扩展会往下翻评论区加载，凑够或到底就停，并把页面滚回原位置。"
         ) {
@@ -2506,7 +2506,7 @@ struct ProviderSettingsView: View {
             selection: commentLimitSelection,
             identifier: "capture-comment-limit"
           )
-          .accessibilityLabel("默认评论抓取数量")
+          .accessibilityLabel("默认评论条数")
         }
       }
       Text("按平台")
@@ -2525,7 +2525,7 @@ struct ProviderSettingsView: View {
               selection: platformCommentLimitSelection(platform.key),
               identifier: "capture-comment-limit-\(platform.key)"
             )
-            .accessibilityLabel("\(platform.title)评论抓取数量")
+            .accessibilityLabel("\(platform.title)评论条数")
           }
         }
       }
@@ -2671,7 +2671,7 @@ struct ProviderSettingsView: View {
           .buttonStyle(.appDestructive(appTheme.danger))
           .accessibilityIdentifier("revoke-remembered-consents")
           .confirmationDialog(
-            "清除已经记住的发送授权？",
+            "清除发送授权？",
             isPresented: $isConsentRevokeConfirmationPresented,
             titleVisibility: .visible
           ) {
@@ -2686,7 +2686,7 @@ struct ProviderSettingsView: View {
             .accessibilityIdentifier("revoke-remembered-consents-confirm")
             Button("取消", role: .cancel) {}
           } message: {
-            Text("会忘掉「你已经同意过把内容发给哪些服务商、用过哪些在线功能」这些记录，之后每一项都会重新问你一次。你保存的内容、模型配置和密钥都不受影响。")
+            Text("之后每个服务商、每项在线功能都会重新问你一次。内容、模型和密钥不受影响。")
           }
       }
     }
@@ -2746,7 +2746,7 @@ struct ProviderSettingsView: View {
           .disabled(model.preferencesState == .saving)
           .accessibilityIdentifier("reset-summary-prompt")
           .confirmationDialog(
-            "把总结提示词换回默认的？",
+            "总结要求恢复默认？",
             isPresented: $isPromptResetConfirmationPresented,
             titleVisibility: .visible
           ) {
@@ -2754,7 +2754,7 @@ struct ProviderSettingsView: View {
               .accessibilityIdentifier("reset-summary-prompt-confirm")
             Button("取消", role: .cancel) {}
           } message: {
-            Text("你写的提示词会被覆盖，不能撤销——需要的话先把上面这段文字复制出来。已经生成好的总结不会变，只影响以后生成的。")
+            Text("你写的会被覆盖，没法撤销，需要的话先复制。已生成的总结不变。")
           }
       }
     }
@@ -2929,7 +2929,7 @@ struct ProviderSettingsView: View {
       }
       Button("取消", role: .cancel) {}
     } message: {
-      Text("每条只把标题发给当前模型，一条一条排队翻译，随时可以停。原标题会保留，详情页仍能看到。会消耗少量模型额度。")
+      Text("只把标题发给模型，排队翻，随时能停。原标题保留，会用掉少量额度。")
     }
   }
 
@@ -2940,7 +2940,7 @@ struct ProviderSettingsView: View {
 
   private func titleBackfillCaption(_ state: HistoryViewModel.TitleBackfillState) -> String {
     switch state {
-    case .idle: "开关只影响以后抓取的内容。点「检查」看看库里还有多少条外文标题。"
+    case .idle: "开关只影响以后存的内容。点「检查」看看库里还有多少条外文标题。"
     case .counting: "正在检查…"
     case let .ready(count): count > 0 ? "有 \(count) 条外文标题还没译成中文。" : "没有需要翻译的外文标题。"
     case let .running(done, total): "正在翻译 \(done) / \(total)，可以关掉设置窗口，后台继续。"

@@ -641,7 +641,7 @@ final class ManualLinkViewModelTests: XCTestCase {
   func testWeChatFetchingUsesMinimalProgressMessage() {
     let model = makeModel(clipboard: ManualVMClipboard(nil))
     model.input = "https://mp.weixin.qq.com/s/article"
-    XCTAssertEqual(model.fetchingMessage, "正在抓取…")
+    XCTAssertEqual(model.fetchingMessage, "正在保存…")
     model.input = "https://example.test/article"
     XCTAssertEqual(model.fetchingMessage, "正在安全读取网页…")
   }
@@ -1573,7 +1573,7 @@ final class ManualLinkViewModelTests: XCTestCase {
         autoMindMap: true,
         mayAutoTidyVideoTranscript: false
       ).message,
-      "添加后将自动抓取并执行总结、脑图，预计产生 2 次模型调用。可在设置的「处理流程」里关闭。"
+      "添加后将自动保存并执行总结、脑图，预计产生 2 次模型调用。可在设置的「处理流程」里关闭。"
     )
     XCTAssertNil(
       AutomaticModelCallDisclosure(

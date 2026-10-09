@@ -18,7 +18,7 @@ public enum ManualLinkError: Error, Sendable, Equatable {
     case .unsupportedContentType: "这个链接打开的不是网页（可能是文件下载）。请换成网页链接，或下载后用「导入本地文件」。"
     case .responseTooLarge: "网页内容太大，没法直接导入。请在浏览器里打开它，选中想要的一段，再点浏览器扩展保存。"
     case .timedOut: "读取网页超时，请稍后重试或用浏览器扩展保存。"
-    case .emptyContent: "没有抓取到可总结的正文，请在浏览器里打开它，用浏览器扩展保存。"
+    case .emptyContent: "没读到能总结的正文，请在浏览器里打开它，用浏览器扩展保存。"
     case .loginRequired: "这个页面要登录后才能看，请在浏览器里登录后用浏览器扩展保存。"
     case .shareLinkExpired: "这条分享链接已失效（小红书的分享链接有时效），请在小红书 App 里重新复制分享链接。"
     case .verificationRequired: "该页面需要登录或人机验证，请使用浏览器扩展保存。"

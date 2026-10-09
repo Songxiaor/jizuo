@@ -92,7 +92,7 @@ struct CommentThreadSectionView: View {
         Text("已截取上限")
           .themedFont(.caption)
           .foregroundStyle(secondaryTextColor)
-          .help("为保证单次抓取稳定，只保留了平台当前页面中的前若干条评论。")
+          .help("为保证一次存得稳，只保留了平台当前页面的前若干条评论。")
       }
       if let progressLabel = section.progressLabel ?? (section.items.isEmpty ? nil : "\(section.items.count) 条") {
         Text(progressLabel)

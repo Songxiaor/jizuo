@@ -291,7 +291,7 @@ struct HistoryContentView: View {
   private var creatorDirectoryBackTitle: String? {
     guard model.isCreatorDirectoryActive else { return nil }
     if model.isReadingCreatorWorkInDirectory {
-      return model.profileImportReturnTarget == nil ? "返回作品" : "返回抓取批次"
+      return model.profileImportReturnTarget == nil ? "返回作品" : "返回保存进度"
     }
     if model.selectedCreator != nil, !showsCreatorDirectoryCatalog { return "返回全部博主" }
     return nil
@@ -1076,7 +1076,7 @@ struct HistoryContentView: View {
           HistoryInlineState(
             symbol: "checkmark.circle",
             title: "没有未总结的内容",
-            message: "新抓取的链接会出现在这里。也可切到「全部」浏览已有内容。",
+            message: "新存的链接会出现在这里。也可切到「全部」浏览已有内容。",
             actionTitle: "查看全部",
             action: { model.selectScope(.all) },
             seal: (.summary, theme.seal.opacity(0.75))
@@ -1215,7 +1215,7 @@ struct HistoryContentView: View {
               .id(Self.listTopBatchesID)
             } header: {
               if hasInProgressProfileImportBatch {
-                listSectionHeader("主页抓取批次")
+                listSectionHeader("保存进度")
               }
             }
           }
@@ -1227,7 +1227,7 @@ struct HistoryContentView: View {
                 PendingCaptureRow(pending: pending, model: manualLink)
               }
             } header: {
-              listSectionHeader("抓取队列").id(Self.listTopPendingID)
+              listSectionHeader("保存队列").id(Self.listTopPendingID)
             }
           }
           // 按存入时间分「今天 / 昨天 / 近 7 天 / 几月」。回收站按删除时间排，不分组。
@@ -1635,7 +1635,7 @@ struct HistoryContentView: View {
         navigationButton("外部", systemImage: OwnershipIcon.external, seal: .external, count: model.navigationCounts.external, selected: model.selectedScope == .external && !model.hasCategoryFilter && !model.isCreatorDirectoryActive && !model.isWorkbenchActive) {
           model.selectScope(.external)
         }
-        .help("别人的内容：抓来的帖子、文章、视频，从微信、浏览器下载后拖进来的文件。判断错了可以右键改成「自有」")
+        .help("别人的内容：从网上存的帖子、文章、视频，从微信、浏览器下载后拖进来的文件。判断错了可以右键改成「自有」")
         .accessibilityIdentifier("history-navigation-external")
       }
       // 第一组不给标题。它是打开 App 的默认落点，标题不提供任何新信息。
@@ -2906,7 +2906,7 @@ struct HistoryContentView: View {
         Text("自动总结当前已关闭")
           .themedFont(.caption, weight: .semibold)
       }
-      Text("新抓到的内容不会自动生成总结，会一直留在这张列表里。")
+      Text("新存的内容不会自动生成总结，会一直留在这张列表里。")
         .themedFont(.caption2)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -3276,7 +3276,7 @@ struct HistoryContentView: View {
         }
         .frame(width: 220)
         .accessibilityIdentifier("creator-work-sort")
-        .help("「保存顺序」：已存的作品按存进来的先后，新的在前；本次抓取的按主页上的顺序。只排序已加载的作品，缺失值排最后。")
+        .help("「保存顺序」：已存的作品按存进来的先后，新的在前；这次挑的按主页上的顺序。只排序已加载的作品，缺失值排最后。")
       }
       .padding(.horizontal, 14)
       .padding(.vertical, 8)
@@ -3614,7 +3614,7 @@ struct HistoryContentView: View {
       if model.profileImportReturnTarget?.taskID == detail.task.id,
          !model.isReadingCreatorWorkInDirectory {
         HStack {
-          Button("返回抓取批次") {
+          Button("返回保存进度") {
             model.returnToProfileImportBatch()
             columnVisibility = .all
           }
@@ -3816,7 +3816,7 @@ struct HistoryContentView: View {
         .padding(.bottom, 18)
       Text("还没有笔记").themedFont(.title2, weight: .semibold)
         .padding(.bottom, 6)
-      Text("随手记下想法、灵感或读后感。笔记和抓取的内容一样可以打标签、搜索和导出。")
+      Text("随手记下想法、灵感或读后感。笔记和存来的内容一样可以打标签、搜索和导出。")
         .themedFont(.callout)
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
@@ -7287,7 +7287,7 @@ private struct HistoryDetailView: View, Equatable {
       let done = records[.comments] != nil
       rows.append(.init(
         step: .comments,
-        title: done ? "重新抓取评论…" : "抓取评论…",
+        title: done ? "重新存评论…" : "存评论…",
         state: done ? .done(doneText(.comments)) : .pending,
         isEnabled: true,
         help: "打开原文读取前几条评论，勾选后写进正文末尾",
@@ -8307,7 +8307,7 @@ private struct HistoryDetailView: View, Equatable {
       isDouyinImagePost: isDouyinImagePostCapture,
       legacyPlatformHint: latestSourceSnapshot?.platform ?? detail.snapshots.last?.platform
     ) {
-      return "已抓取 · 此处不可播"
+      return "已保存 · 这里不能播"
     }
     return nil
   }
@@ -9403,7 +9403,7 @@ private struct HistoryDetailView: View, Equatable {
             .foregroundStyle(.tertiary)
         }
       case .source:
-        Text(isDouyinCapture && !isDouyinImagePostCapture ? "尚未转写" : "本条没有抓取到正文")
+        Text(isDouyinCapture && !isDouyinImagePostCapture ? "尚未转写" : "这条没存到正文")
           .foregroundStyle(.secondary)
         if isDouyinCapture, !isDouyinImagePostCapture,
            model.canTranscribeVideo || (showsCurrentCapture && appModel.currentCapture?.mediaDescriptor.map {
@@ -9657,7 +9657,7 @@ private struct HistoryDetailView: View, Equatable {
   private var regeneratePopover: some View {
     VStack(alignment: .leading, spacing: 12) {
       Text("换个模型重跑").themedFont(.headline)
-      Text("直接使用本机保存的正文，不会重新抓取网页。这里选的模型只对这一次生效。")
+      Text("直接使用本机保存的正文，不会重新打开网页。这里选的模型只对这一次生效。")
         .themedFont(.caption).foregroundStyle(.secondary)
       // 从已添加的模型里选，不让人手打——模型名拼错不会当场报错，
       // 只会在真正调用时失败，而失败信息未必说得清是名字错了。

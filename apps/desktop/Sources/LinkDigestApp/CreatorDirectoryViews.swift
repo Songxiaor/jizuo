@@ -234,7 +234,7 @@ struct CreatorDirectoryCard: View {
   private var isEmpty: Bool { creator.savedWorkCount == 0 }
 
   private var subtitle: String {
-    isEmpty ? "还没抓取作品" : "\(creator.savedWorkCount) 条作品"
+    isEmpty ? "还没存作品" : "\(creator.savedWorkCount) 条作品"
   }
 
   var body: some View {
@@ -250,7 +250,7 @@ struct CreatorDirectoryCard: View {
           // 还没抓过的博主：第二行直接是「去抓取」。原来按钮挂在名字右边，卡片又窄，
           // 名字被挤成「哔哩哔…」，看不出是谁（2026-10-01 复查）。
           if isEmpty, let captureAction {
-            Button("去抓取", action: captureAction)
+            Button("去挑选", action: captureAction)
               .buttonStyle(.plain)
               .themedFont(.subheadline, weight: .medium)
               .foregroundStyle(theme.accent)
@@ -300,7 +300,7 @@ struct CreatorDirectoryCard: View {
     // 同一个动作以自定义动作的形式挂在这个元素上。
     .accessibilityActions {
       if isEmpty, let captureAction {
-        Button("去抓取", action: captureAction)
+        Button("去挑选", action: captureAction)
       }
     }
   }

@@ -137,7 +137,7 @@ struct SiteLoginSettingsView: View {
       .accessibilityIdentifier("site-login-clear-confirm")
       Button("取消", role: .cancel) { pendingClearPlatform = nil }
     } message: {
-      Text("会抹掉汲作在本机存的这份登录，下次要重新登一遍。你已经保存的内容一条都不会少；只是这个站登录后才看得到的内容，在重新登录前抓不到了。")
+      Text("下次要重新登录。已存的内容不受影响，只是要登录才能看的内容，重新登录前存不到。")
     }
     .accessibilityIdentifier("site-login-settings")
   }
@@ -212,7 +212,7 @@ struct SiteLoginSettingsView: View {
       siteRow(
         platform: .douyin,
         session: douyinSession,
-        caption: "建议用扩展抓单条"
+        caption: "建议用扩展存单条"
       )
       siteRowDivider
       siteRow(

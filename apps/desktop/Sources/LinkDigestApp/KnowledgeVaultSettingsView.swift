@@ -69,7 +69,7 @@ struct KnowledgeVaultSettingsView: View {
                 Button("停止同步", role: .destructive) { model.clearDirectory() }
                 Button("取消", role: .cancel) {}
               } message: {
-                Text("只清除汲作记住的位置和访问权限，不会删除文件夹里的任何文件。")
+                Text("只忘掉这个位置，文件夹里的文件一个不删。")
               }
           }
         }

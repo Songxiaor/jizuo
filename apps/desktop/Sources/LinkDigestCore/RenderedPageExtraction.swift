@@ -119,7 +119,7 @@ public enum RenderedPageExtraction {
   public static func missingTranscriptNotice(captionTrackCount: Int?) -> String {
     captionTrackCount == 0
       ? "这个视频本身没有字幕，只存了标题和简介。"
-      : "已保存，但这次没拿到字幕，只存了标题和简介。稍后可以再添加一次这个链接，选「仍要重新抓取」。"
+      : "已保存，但这次没拿到字幕，只存了标题和简介。稍后可以再添加一次这个链接，选「仍要重新保存」。"
   }
 
   /// 扩展 `captureSendBlockReason` 的同一套放行规则：登录墙、应用外壳、只有导航这三种

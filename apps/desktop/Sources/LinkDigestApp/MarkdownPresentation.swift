@@ -3475,7 +3475,7 @@ enum MarkdownInlineImageActions {
   @MainActor
   static func saveImage(at url: URL) {
     guard let data = try? Data(contentsOf: url) else {
-      presentFailure("这张图片的本机缓存已经不在了，重新抓取这条记录后再试。")
+      presentFailure("这张图片的本机缓存已经不在了，点「更多 → 刷新原文」后再试。")
       return
     }
     let panel = NSSavePanel()

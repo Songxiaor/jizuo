@@ -1108,7 +1108,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(metadata.contains("case .playable = CurrentCaptureMediaPreview.resolve(descriptor)"))
     XCTAssertLessThan(
       metadata.range(of: "sessionMediaPlayback.cachedDescriptor(for: detail.task.id)")!.lowerBound,
-      metadata.range(of: "return \"已抓取 · 此处不可播\"")!.lowerBound
+      metadata.range(of: "return \"已保存 · 这里不能播\"")!.lowerBound
     )
   }
 
@@ -1216,7 +1216,7 @@ final class HistoryContentViewTests: XCTestCase {
     )
 
     XCTAssertEqual(HistorySessionMediaPresentation.title, "播放地址过期了")
-    XCTAssertTrue(HistorySessionMediaPresentation.explanation.contains("只在抓取当时有效"))
+    XCTAssertTrue(HistorySessionMediaPresentation.explanation.contains("只在保存当时有效"))
     XCTAssertFalse(HistorySessionMediaPresentation.explanation.contains("加载失败"))
     XCTAssertFalse(HistorySessionMediaPresentation.explanation.contains("地址已失效"))
     XCTAssertEqual(HistorySessionMediaPresentation.openSourceActionTitle, "在浏览器中打开")
@@ -1366,7 +1366,7 @@ final class HistoryContentViewTests: XCTestCase {
       from: "private var processStepRows: [ProcessStepRowModel]",
       to: "private func processExtraButton("
     )
-    for item in ["重新\\(step.title)", "重新转写（本机）", "校对转写稿", "生成脑图", "抓取评论…", "换个模型重跑…", "生成记录"] {
+    for item in ["重新\\(step.title)", "重新转写（本机）", "校对转写稿", "生成脑图", "存评论…", "换个模型重跑…", "生成记录"] {
       XCTAssertTrue(more.contains(item), "missing \(item)")
     }
     // 2026-10-04：面板列全部工序（顺序同设置里的工序总览），表头的主按钮只是捷径。
@@ -1960,7 +1960,7 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertTrue(detail.contains("尚未生成翻译"))
     // 空面板指向表头右边的动词按钮；页签本身只列已经有的东西。
     XCTAssertTrue(detail.contains("点表头右边的「翻译」生成"))
-    XCTAssertTrue(detail.contains("本条没有抓取到正文"))
+    XCTAssertTrue(detail.contains("这条没存到正文"))
     XCTAssertTrue(detail.contains("readingPane = defaultReadingPane"))
     XCTAssertTrue(
       detail.contains("of: detail.task.id, initial: true"),

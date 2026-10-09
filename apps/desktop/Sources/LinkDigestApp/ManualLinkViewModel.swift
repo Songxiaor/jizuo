@@ -33,7 +33,7 @@ struct AutomaticModelCallDisclosure: Equatable {
     var parts: [String] = []
     if !steps.isEmpty {
       parts.append(
-        "添加后将自动抓取并执行\(steps.joined(separator: "、"))，预计产生 \(steps.count) 次模型调用。"
+        "添加后将自动保存并执行\(steps.joined(separator: "、"))，预计产生 \(steps.count) 次模型调用。"
       )
     }
     if mayAutoTidyVideoTranscript {
@@ -362,7 +362,7 @@ final class ManualLinkViewModel: ObservableObject {
     guard let url = ExplicitWebLinkInput.singleURL(from: input),
           WeChatWebCapturePolicy.isCandidate(url)
     else { return "正在安全读取网页…" }
-    return "正在抓取…"
+    return "正在保存…"
   }
   var canOpen: Bool { !isBusy && ingestor != nil }
 
@@ -736,7 +736,7 @@ final class ManualLinkViewModel: ObservableObject {
 
   /// Explicit MCP submissions share the existing serial capture worker.
   func enqueueMCPLinks(_ urls: [String], downloadsVideo: Bool) throws -> [[String: String]] {
-    guard ingestor != nil, history != nil else { throw MCPFailure("not_ready", "抓取服务尚未就绪") }
+    guard ingestor != nil, history != nil else { throw MCPFailure("not_ready", "保存服务还没准备好") }
     let normalized = try urls.map { raw -> String in
       guard let url = ExplicitWebLinkInput.singleURL(from: raw), url.user == nil, url.password == nil else {
         throw MCPFailure("invalid_url", "请输入公开网页链接，不要包含账号凭据")
@@ -1540,7 +1540,7 @@ final class ManualLinkViewModel: ObservableObject {
       do {
         try profileImportJournal.save(self.profileImportBatches)
       } catch {
-        self.captureNotice = "批次进度暂时无法保存；本次抓取仍会继续，但重启后可能无法恢复。"
+        self.captureNotice = "批次进度暂时无法保存；本次保存仍会继续，但重启后可能无法恢复。"
       }
     }
   }

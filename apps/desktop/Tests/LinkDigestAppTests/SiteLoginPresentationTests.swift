@@ -46,7 +46,7 @@ final class SiteLoginPresentationTests: XCTestCase {
     XCTAssertTrue(text.contains("private var loginPurpose: String"))
     XCTAssertTrue(text.contains("用于在本机获取更高清晰度的临时播放地址"))
     XCTAssertTrue(text.contains("用于手动粘贴链接时读取登录后可见的正文"))
-    XCTAssertTrue(text.contains("如果抓取失败，请改用浏览器扩展"))
+    XCTAssertTrue(text.contains("如果保存失败，请改用浏览器扩展"))
     XCTAssertFalse(text.contains("仅用于在本机获取更高清晰度的临时播放地址"))
   }
 

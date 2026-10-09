@@ -1136,7 +1136,7 @@ final class DouyinProfileImportViewModel: ObservableObject {
     } else {
       outcome = enqueue(selected.map { captureURL(for: $0) }, downloadsVideo, creatorID)
     }
-    saveMessage = "已加入保存队列 \(outcome.queued) 条，跳过 \(outcome.skipped) 条。失败项可在抓取卡片上单独重试。"
+    saveMessage = "已加入保存队列 \(outcome.queued) 条，跳过 \(outcome.skipped) 条。失败项可在保存进度卡片上单独重试。"
     selectedIDs.removeAll()
     return outcome.queued
   }
@@ -2246,9 +2246,9 @@ struct DouyinProfileImportSheet: View {
     HStack(spacing: DesignTokens.Space.sm) {
       Toggle("同时下载视频", isOn: $model.downloadsVideo)
         .toggleStyle(.checkbox)
-      Toggle("同时抓取评论", isOn: $model.includesComments)
+      Toggle("同时存评论", isOn: $model.includesComments)
         .toggleStyle(.checkbox)
-        .help("每条作品保存后，按「设置 → 收集 · 汲 → 评论」里的条数读前几条评论写进正文。要逐条挑选，可在保存后打开作品用「处理 → 抓取评论…」。")
+        .help("每条作品保存后，按「设置 → 收集 · 汲 → 评论」里的条数读前几条评论写进正文。要逐条挑选，可在保存后打开作品用「处理 → 存评论…」。")
         .accessibilityIdentifier("profile-import-includes-comments")
       Button("保存选中的 \(model.selectedCount) 条") {
         guard model.saveSelected() > 0, let creatorID = model.creatorID else { return }
