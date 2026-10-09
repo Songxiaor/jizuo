@@ -5397,19 +5397,12 @@ private struct HistoryDetailView: View, Equatable {
           .accessibilityIdentifier("history-run-unfinished-banner")
         }
         titleView
-        // 来源信息和互动数放得下就同一行（2026-10-04 详情页精简：原来来源一行、互动一行、
-        // 视频时长体积又一行）；窄了互动数退到下一行。
+        // 来源一行（谁 · 哪天发布）、互动数一行（2026-10-09 Syc 走查）：来源行删到只剩两段后，
+        // 互动数字放大加粗，不再挤在同一行末尾。
         if !isOwnWriting, sourceFrontmatter.hasEngagementStats {
-          ViewThatFits(in: .horizontal) {
-            HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.md) {
-              sourceByline.fixedSize(horizontal: true, vertical: false)
-              engagementDisclosure(sourceFrontmatter)
-              Spacer(minLength: 0)
-            }
-            VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-              sourceByline
-              engagementDisclosure(sourceFrontmatter)
-            }
+          VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
+            sourceByline
+            engagementDisclosure(sourceFrontmatter)
           }
           .padding(.top, DesignTokens.Space.sm)
         } else if !isOwnWriting {
@@ -5917,8 +5910,8 @@ private struct HistoryDetailView: View, Equatable {
         // 导出那一组直接平铺进来，不做二级菜单：它们本来就属于「对这条做点
         // 什么」，多一层嵌套只是多一次点击。
         Menu {
-          // 收藏（顶栏星标、⌘D）、改为自有 / 外部（标题下的归属标签）、上一条 / 下一条（⌘↑ / ⌘↓，
-          // 菜单栏「显示」里也有）各有固定入口，不再在这里重复（2026-10-04 详情页精简）。
+          // 收藏（顶栏星标、⌘D）、上一条 / 下一条（⌘↑ / ⌘↓，菜单栏「显示」里也有）
+          // 各有固定入口，不再在这里重复（2026-10-04 详情页精简）。
           // 阅读相关六项收进一个子菜单，菜单从 21 项减到 10 项上下。
           Menu {
             Button(action: toggleFocusReading) {
@@ -5966,6 +5959,19 @@ private struct HistoryDetailView: View, Equatable {
               CollectionMenuItems(model: model, taskIDs: [detail.task.id])
             }
           }
+          // 改为自有 / 外部：原来是标题下常驻的「外部」标签，2026-10-09 挪回这里——归属按规则
+          // 自动判定，判错才改；列表右键里也有同一个按钮。
+          if model.canEditTags {
+            Section {
+              OwnershipToggleButton(
+                model: model, taskID: detail.task.id, canonicalURL: detail.task.canonicalURL,
+                host: HistoryPlatformRegistry.canonicalHost(
+                  for: URLComponents(string: detail.task.canonicalURL)?.host ?? ""
+                ),
+                tagNames: detail.tags.map(\.name)
+              )
+            }
+          }
           Section("复制") {
             Button { copyFullArticle() } label: { Label("复制全文", systemImage: MenuIcon.copy) }
               .accessibilityIdentifier("history-copy-full-text")
@@ -6002,9 +6008,16 @@ private struct HistoryDetailView: View, Equatable {
           Label("更多", systemImage: "ellipsis")
         }
         .menuIndicator(.hidden)
-        .help("阅读设置、加入合集、复制、导出、重新抓取或删除当前条目")
+        .help("阅读设置、加入合集、改为自有 / 外部、复制、导出、重新抓取或删除当前条目")
         .accessibilityLabel("更多")
         .accessibilityIdentifier("export-history")
+      }
+      // 打开原文 · 复制链接 · 在访达中显示：推到这一列的右缘，和左边的收藏、更多分开。
+      if #available(macOS 26.0, *) {
+        ToolbarSpacer(.flexible)
+      }
+      ToolbarItemGroup(placement: .primaryAction) {
+        sourceActionsGroup
       }
     }
     .accessibilityIdentifier("history-detail")
@@ -7967,43 +7980,96 @@ private struct HistoryDetailView: View, Equatable {
     .frame(maxWidth: .infinity, alignment: .leading)
   }
 
-  /// 标题下的一行浅字：作者 · 日期 · 站点。打开/复制链在同一行末尾，不再单独占三行表单。
+  /// 标题下的一行浅字：谁 · 哪天发布。
+  ///
+  /// 2026-10-09 Syc 走查：原来一行八段（作者、发布、存于、站点、时长、体积、两个按钮），
+  /// 其中一半别处已经写着——站点看列表行的平台图标，存入时间看列表分组和行尾，时长看播放条，
+  /// 「已存本机」看播放器在不在。这里只留别处没有的；完整时间放悬停。
+  /// 打开原文、复制链接、在访达中显示挪到顶栏（`sourceActionsGroup`）。
   private var sourceByline: some View {
-    HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.sm) {
-      Text(sourceBylineText)
-        .themedFont(.callout)
-        .foregroundStyle(.secondary)
-        .textSelection(.enabled)
-        .lineLimit(2)
-        .fixedSize(horizontal: false, vertical: true)
-      // 动作和元信息分开：原来「打开」「复制链接」和作者、日期同字号同灰色排在
-      // 一行，读起来像四段元信息。改成两个图标按钮，悬停才浮出底色。
-      // 只有网页来源才有「原文」可开、可复制；笔记和本机导入的地址是内部地址，
-      // 点了没反应、复制出来也没用，干脆不显示（2026-09-24 走查）。
-      if Self.isWebURL(sourceURL) {
-        Button { openSourceURL() } label: {
-          Image(systemName: "arrow.up.right.square")
+    Text(sourceBylineText)
+      .themedFont(.callout)
+      .foregroundStyle(.secondary)
+      .textSelection(.enabled)
+      .lineLimit(2)
+      .fixedSize(horizontal: false, vertical: true)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .help(sourceDateHelp)
+      .accessibilityLabel("来源 \(sourceBylineText)")
+      .accessibilityIdentifier("history-capture-metadata")
+  }
+
+  /// 悬停来源行时的完整时间：「发布于 2026年10月8日 09:55 · 保存于 2026年10月9日 00:57」。
+  private var sourceDateHelp: String {
+    let saved = HistoryPublishedTimestampFormatter.directoryCardStamp(
+      published: nil, savedAtMilliseconds: detail.task.createdAtMilliseconds
+    )
+    guard let published = sourceFrontmatter.published?.trimmedNonEmpty else { return saved }
+    let publishedStamp = HistoryPublishedTimestampFormatter.directoryCardStamp(
+      published: published, savedAtMilliseconds: detail.task.createdAtMilliseconds
+    )
+    return publishedStamp + " · " + saved
+  }
+
+  /// 本机里这条的媒体文件：顶栏「在访达中显示」用。模型解析书签时已确认文件在，
+  /// 这里不再每次重绘都查一次磁盘。
+  private var revealableMediaFileURL: URL? {
+    guard let url = localMediaFileURL, url.isFileURL else { return nil }
+    return url
+  }
+
+  /// 顶栏右侧的一组来源按钮：打开原文、复制链接、在访达中显示。
+  ///
+  /// 原来前两个挂在标题下那行字的末尾，没有底，悬停提示又被整行的网址提示盖住
+  /// （2026-10-09 Syc 走查）。和收藏、更多一样是「对这一条」的操作，放进顶栏成一组。
+  /// 只有网页来源才有原文可开、可复制；笔记和本机导入的地址是内部地址（2026-09-24 走查）。
+  @ViewBuilder private var sourceActionsGroup: some View {
+    let isWeb = Self.isWebURL(sourceURL)
+    let mediaFile = revealableMediaFileURL
+    if isWeb || mediaFile != nil {
+      // 自己画底片而不用 ControlGroup：工具栏背景是隐藏的（`HistoryWindowToolbarThemeModifier`），
+      // ControlGroup 在这里只剩三个散开的图标，看不出是一组（2026-10-09 部署后实测）。
+      HStack(spacing: 0) {
+        if isWeb {
+          Button { openSourceURL() } label: { Image(systemName: "safari") }
+            .buttonStyle(AppIconButtonStyle(size: 28))
+            .help("在浏览器中打开原文")
+            .accessibilityLabel("打开原文")
+            .accessibilityIdentifier("history-source-url-open")
+          sourceActionsSeparator
+          Button { CopyFeedbackController.shared.copy(sourceURL) } label: { Image(systemName: "link") }
+            .buttonStyle(AppIconButtonStyle(size: 28))
+            .help("复制原文链接")
+            .accessibilityLabel("复制链接")
+            .accessibilityIdentifier("history-source-url-copy")
         }
-        .buttonStyle(AppIconButtonStyle(size: 22))
-        .foregroundStyle(theme.accent)
-        .help("在浏览器中打开原文")
-        .accessibilityLabel("打开")
-        .accessibilityIdentifier("history-source-url-open")
-        Button { CopyFeedbackController.shared.copy(sourceURL) } label: {
-          Image(systemName: "doc.on.doc")
+        if let mediaFile {
+          if isWeb { sourceActionsSeparator }
+          Button {
+            NSWorkspace.shared.activateFileViewerSelecting([mediaFile])
+          } label: { Image(systemName: "folder") }
+            .buttonStyle(AppIconButtonStyle(size: 28))
+            .help(
+              ["在访达中显示文件", HistoryVideoPlayerCard.bylineText(for: detail.media)]
+                .compactMap { $0 }.joined(separator: " · ")
+            )
+            .accessibilityLabel("在访达中显示文件")
+            .accessibilityIdentifier("history-reveal-media-file")
         }
-        .buttonStyle(AppIconButtonStyle(size: 22))
-        .foregroundStyle(theme.accent)
-        .help("复制链接")
-        .accessibilityLabel("复制链接")
-        .accessibilityIdentifier("history-source-url-copy")
       }
-      Spacer(minLength: 0)
+      .foregroundStyle(theme.secondaryText)
+      .padding(2)
+      .background(Capsule(style: .continuous).fill(theme.primaryText.opacity(0.05)))
+      .overlay(Capsule(style: .continuous).strokeBorder(theme.primaryText.opacity(0.08), lineWidth: 0.5))
+      .accessibilityElement(children: .contain)
+      .accessibilityIdentifier("history-source-actions")
     }
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel("来源 \(sourceBylineText)")
-    .accessibilityIdentifier("history-capture-metadata")
-    .help(sourceURL)
+  }
+
+  private var sourceActionsSeparator: some View {
+    Rectangle()
+      .fill(theme.primaryText.opacity(0.1))
+      .frame(width: 0.5, height: 14)
   }
 
   private enum VideoFetchNoticeKind { case cleared, notSaved }
@@ -8110,28 +8176,23 @@ private struct HistoryDetailView: View, Equatable {
     }
     if let author = sourceFrontmatter.author?.trimmedNonEmpty,
        author != sourceFrontmatter.accountName {
-      parts.append(HistoryAuthorDisplay.text(author))
-    }
-    // 列表行尾是「存入」日期（列表按存入时间分组），这里原来只写发布时间、不带前缀，
-    // 同一条在列表里是 8月10日、点开是 8月7日，像数据错了（2026-10-03 发布前走查）。
-    // 两个日期都写明是什么；同一天存的不重复。
-    if let published = sourceFrontmatter.published {
-      parts.append("发布 " + historyPublishedDate(published))
-      let saved = HistoryPublishedTimestampFormatter.compactDate(
-        Date(timeIntervalSince1970: Double(detail.task.createdAtMilliseconds) / 1_000)
+      // 「AB Kuai.Dong (@_FORAB)」写成「AB Kuai.Dong @_FORAB」：括号在一行浅字里只是噪音。
+      parts.append(
+        HistoryAuthorDisplay.text(author)
+          .replacingOccurrences(of: #"\s*\((@[^()\s]+)\)$"#, with: " $1", options: .regularExpression)
       )
-      if saved != HistoryPublishedTimestampFormatter.compactText(published) {
-        parts.append("存于 " + saved)
-      }
+    }
+    // 只写一个日期，写明是什么（2026-10-03 走查：不带前缀时像数据错了）。存入日期列表里已经有
+    // （按存入时间分组、行尾也是它），这里不再重复；两个完整时间都在悬停里（2026-10-09）。
+    // 今年的不写年份和时刻：「10月8日发布」。
+    if let published = sourceFrontmatter.published?.trimmedNonEmpty {
+      parts.append(HistoryPublishedTimestampFormatter.compactText(published) + "发布")
     } else {
-      parts.append("存于 " + historyDate(detail.task.createdAtMilliseconds))
-    }
-    if let host = HistorySourceLinkPresentation.host(sourceURL) {
-      parts.append(host)
-    }
-    // 视频时长、体积原来在视频卡上单独一行（2026-10-04 详情页精简，并进这一行）。
-    if localMediaFileURL != nil, let media = HistoryVideoPlayerCard.bylineText(for: detail.media) {
-      parts.append(media)
+      parts.append(
+        HistoryPublishedTimestampFormatter.compactDate(
+          Date(timeIntervalSince1970: Double(detail.task.createdAtMilliseconds) / 1_000)
+        ) + "存入"
+      )
     }
     return parts.joined(separator: " · ")
   }
@@ -8250,52 +8311,18 @@ private struct HistoryDetailView: View, Equatable {
     !isOwnWriting && (isInlineNoteRequested || !model.taskNoteDraft.isEmpty)
   }
 
-  /// 正文底部的笔记、素材类型、标签收成一行（2026-09-23 功能区分层第二批）。
+  /// 标题下的分类行：素材类型和标签共用一个入口，已贴的直接显示成胶囊。
   ///
-  /// 原来是一整块常驻展开的表单：笔记输入框、7 个素材类型按钮、标签、一行提示，
-  /// 不用也一直占着地方。现在只露三个入口，点了才展开；已经写过的笔记和已有标签照常显示。
-  /// 标题下的分类行：归属（自有 / 外部，可改）· 素材类型 · 标签。
+  /// 2026-10-09 Syc 走查：原来一行三个入口——归属（自有 / 外部）、选择素材类型、添加标签。
+  /// 归属是规则自动判定的，很少要改，挪进「更多」和列表右键；素材类型本来就是普通标签
+  /// （侧栏里早已并进标签云），合进标签弹窗，弹窗上面选类型、下面加标签。
   private var classificationBar: some View {
-    HStack(alignment: .firstTextBaseline, spacing: DesignTokens.Space.md) {
-      // 无边框菜单自带约 4pt 内边距：不抵掉的话这一行的第一个图标比标题、来源行往右缩一截（2026-10-04 走查）。
-      ownershipMenu
-        .padding(.leading, -4)
-      if model.canEditTags {
-        materialTypeMenu
-      }
-      HistoryTagEditor(tags: detail.tags, model: model, showsMaterialTypes: false, composerInPopover: true)
-        .id(ReadingAnchor.module("tags"))
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    .themedFont(.callout)
-    .foregroundStyle(theme.secondaryText)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .accessibilityIdentifier("history-classification-bar")
-  }
-
-  /// 归属写在明处：原来只能从右键 / 「更多」里的「改为自有 / 外部」反推现在算什么。
-  private var ownershipMenu: some View {
-    let host = HistoryPlatformRegistry.canonicalHost(for: URLComponents(string: detail.task.canonicalURL)?.host ?? "")
-    let current = ContentOwnership.resolve(
-      canonicalURL: detail.task.canonicalURL, host: host, tagNames: detail.tags.map(\.name)
-    )
-    return Menu {
-      OwnershipToggleButton(
-        model: model, taskID: detail.task.id, canonicalURL: detail.task.canonicalURL,
-        host: host, tagNames: detail.tags.map(\.name)
-      )
-    } label: {
-      Label(current.rawValue, systemImage: current == .own ? OwnershipIcon.own : OwnershipIcon.external)
-        .labelStyle(.titleAndIcon)
-    }
-    .menuStyle(.borderlessButton)
-    .menuIndicator(.hidden)
-    // 和同一行的「素材类型」「添加标签」同色：它是一个属性，不是这一页的主操作（2026-09-25）。
-    .tint(theme.secondaryText)
-    .fixedSize()
-    .disabled(!model.canEditTags)
-    .help("这条算「\(current.rawValue)」，点一下可以改")
-    .accessibilityIdentifier("history-ownership-menu")
+    HistoryTagEditor(tags: detail.tags, model: model, showsMaterialTypes: true, composerInPopover: true)
+      .id(ReadingAnchor.module("tags"))
+      .themedFont(.callout)
+      .foregroundStyle(theme.secondaryText)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .accessibilityIdentifier("history-classification-bar")
   }
 
   /// 页尾的笔记：读完之后写想法。
@@ -8332,44 +8359,6 @@ private struct HistoryDetailView: View, Equatable {
     .accessibilityIdentifier("history-note-tag-bar")
   }
 
-  /// 素材类型收成一个下拉：贴了哪些就直接写在按钮上，没贴时只显示「素材类型」。
-  /// 预置名字就是普通标签，侧栏筛选、搜索、MCP 读到的都是同一回事。
-  private var materialTypeMenu: some View {
-    let present = Set(detail.tags.map(\.normalizedName))
-    let entries = MaterialCatalog.MaterialType.allCases.map { ($0.tagName, $0.systemImage) }
-    let chosen = entries.map(\.0).filter { name in
-      present.contains(HistoryTagNormalizer.normalized(name)?.normalizedName ?? name)
-    }
-    return Menu {
-      ForEach(entries, id: \.0) { name, symbol in
-        let normalized = HistoryTagNormalizer.normalized(name)?.normalizedName ?? name
-        let isOn = present.contains(normalized)
-        Button {
-          if isOn, let tag = detail.tags.first(where: { $0.normalizedName == normalized }) {
-            model.removeTag(tag)
-          } else {
-            model.addTag(name)
-          }
-        } label: {
-          Label(name, systemImage: isOn ? "checkmark" : symbol)
-        }
-        .disabled(!isOn && detail.tags.count >= HistoryTagNormalizer.maximumTagsPerTask)
-        .accessibilityIdentifier("history-material-\(name)")
-      }
-    } label: {
-      // 没选时写成动作「选择素材类型」并调淡：只写「素材类型」看着像已选了一个叫这个的值
-      // （2026-10-01 走查）；改成「素材类型：未设置」又像一张没填完的表，每条都在提醒
-      // 「这里缺了」。和同一行的「添加标签」一样用动词（2026-10-03 发布前走查）。
-      Label(chosen.isEmpty ? "选择素材类型" : chosen.joined(separator: "、"), systemImage: "square.grid.2x2")
-    }
-    .menuStyle(.borderlessButton)
-    // 无边框菜单默认用强调色画成蓝字；和同一行的「添加笔记」「添加标签」统一成次要灰。
-    .tint(chosen.isEmpty ? theme.secondaryText.opacity(0.6) : theme.secondaryText)
-    .fixedSize()
-    .help("标记这条是哪类素材：观点、案例、数据……")
-    .accessibilityIdentifier("history-material-types")
-  }
-
   /// 同一组互动数据只显示一次，而且退到背景：点赞数对「读这篇」几乎没有帮助，
   /// 原来和作者行一样显眼，视线要先跨过一排数字才落到正文。
   /// 「采集时快照」不再占位置，只在悬停时说明。
@@ -8387,17 +8376,27 @@ private struct HistoryDetailView: View, Equatable {
     if slots.isEmpty {
       EmptyView()
     } else {
-      // 互动数据对「理解内容」是次级信息：收成一行弱化纯文本，不再让带图标的
-      // 指标在正文上方争注意力。整行作为一个无障碍值读出。
-      // 次要文字色而不是 .tertiary：三级灰在白底上约 2:1，「点赞 3508」几乎读不出来（2026-10-03 走查）。
-      // 退到背景靠的是小一号字，不是把字压到看不清。
-      Text(engagementSummaryText(slots: slots, host: host, note: note))
-        .themedFont(.footnote)
-        .foregroundStyle(theme.secondaryText)
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("互动数据")
-        .accessibilityValue(engagementSummaryText(slots: slots, host: host, note: note))
-        .accessibilityIdentifier("history-engagement-stats")
+      // 名称灰色小字、数字正文色加粗（2026-10-09 Syc 走查：原来整行同一种小灰字，数字找不到）。
+      // 不加图标、不按指标上色：列表和侧栏已经满是图标，界面也只有印章朱一个强调色。
+      // 整行作为一个无障碍值读出。
+      // 折行排：窄窗口里五项放不下一行时整项换到下一行，不压出正文栏（2026-10-09 自查）。
+      TagPillFlowLayout(spacing: DesignTokens.Space.md) {
+        ForEach(slots, id: \.self) { slot in
+          HStack(alignment: .firstTextBaseline, spacing: 3) {
+            Text(slot.title(forHost: host))
+              .themedFont(.footnote)
+              .foregroundStyle(theme.secondaryText)
+            Text(CreatorWorkMetricLayout.displayValue(slot.value(from: note)).visible)
+              .themedFont(.callout, weight: .semibold, monospacedDigit: true)
+              .foregroundStyle(theme.primaryText)
+          }
+          .fixedSize()
+        }
+      }
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel("互动数据")
+      .accessibilityValue(engagementSummaryText(slots: slots, host: host, note: note))
+      .accessibilityIdentifier("history-engagement-stats")
     }
   }
 
@@ -9800,7 +9799,8 @@ private struct HistoryTagEditor: View {
   @Bindable var model: HistoryViewModel
   /// 从工具栏快捷入口打开时直接展开输入框，点开即可打字；内联在详情里时保持收起。
   var autoExpandComposer = false
-  /// 正文底部那一行已经有独立的「素材类型」下拉，这里不再重复一排按钮；标签弹窗里照旧显示。
+  /// 是否带一排素材类型。弹窗模式下放进弹窗最上面（2026-10-09 素材类型并进标签入口），
+  /// 原地展开模式下排在标签下面。
   var showsMaterialTypes = true
   /// 详情页头里用弹出小窗装输入框：原来在原地展开，整页正文往下跳一截（2026-09-25 走查）。
   var composerInPopover = false
@@ -9815,7 +9815,9 @@ private struct HistoryTagEditor: View {
   }
 
   private var canOpenComposer: Bool {
-    model.canEditTags && tags.count < HistoryTagNormalizer.maximumTagsPerTask
+    // 弹窗里还有素材类型：标签贴满了也要能点开取消某个类型（2026-10-09 素材类型并进标签入口）。
+    model.canEditTags
+      && (tags.count < HistoryTagNormalizer.maximumTagsPerTask || (composerInPopover && showsMaterialTypes))
   }
 
   private var hasChipTags: Bool {
@@ -9859,7 +9861,7 @@ private struct HistoryTagEditor: View {
         composer
       }
 
-      if model.canEditTags, showsMaterialTypes {
+      if model.canEditTags, showsMaterialTypes, !composerInPopover {
         materialTypeRow
       }
 
@@ -9972,19 +9974,25 @@ private struct HistoryTagEditor: View {
             .frame(width: 22, height: 20)
             .contentShape(Rectangle())
         } else {
-          Label("添加标签", systemImage: "tag")
+          Label(showsMaterialTypes ? "标签与素材类型" : "添加标签", systemImage: "tag")
             .themedFont(.callout)
             .labelStyle(.titleAndIcon)
         }
       }
       .buttonStyle(.borderless)
-      .help("添加标签")
-      .accessibilityLabel("添加标签")
+      .help(showsMaterialTypes ? "添加标签，或标记这条是哪类素材：观点、案例、数据……" : "添加标签")
+      .accessibilityLabel(showsMaterialTypes ? "标签与素材类型" : "添加标签")
       .accessibilityIdentifier("history-tag-add-toggle")
       .popover(isPresented: $isComposerExpanded, arrowEdge: .bottom) {
-        composer
-          .padding(DesignTokens.Space.lg)
-          .frame(width: 300, alignment: .leading)
+        VStack(alignment: .leading, spacing: DesignTokens.Space.md) {
+          if showsMaterialTypes {
+            materialTypeRow
+            Divider()
+          }
+          composer
+        }
+        .padding(DesignTokens.Space.lg)
+        .frame(width: 300, alignment: .leading)
       }
     } else if !isComposerExpanded {
       Button {

@@ -547,8 +547,8 @@ final class HistoryContentViewTests: XCTestCase {
       }
     )
     XCTAssertTrue(sidebar.contains("history-filter-empty"))
-    // 2026-09-23：正文底部的标签编辑器不再带素材类型那一排（另有下拉）。
-    XCTAssertTrue(detail.contains("HistoryTagEditor(tags: detail.tags, model: model, showsMaterialTypes: false, composerInPopover: true)"))
+    // 2026-10-09：素材类型并进标签入口，在弹窗最上面一排，不再单独一个下拉。
+    XCTAssertTrue(detail.contains("HistoryTagEditor(tags: detail.tags, model: model, showsMaterialTypes: true, composerInPopover: true)"))
     // Chips-first: composer is collapsed behind a toggle; no always-on heavy form.
     XCTAssertTrue(source.contains("history-tag-add-toggle"))
     XCTAssertTrue(source.contains("history-tag-add"))
@@ -630,6 +630,49 @@ final class HistoryContentViewTests: XCTestCase {
     XCTAssertFalse(detail.contains("history-engagement-snapshot-note"), "「采集时快照」只放悬停说明，不再占一个标签位")
     XCTAssertTrue(detail.contains("互动数据是保存时的数字"))
     XCTAssertTrue(detail.contains("sourceByline"), "作者、日期、站点应收成一行，不再各占一列表单")
+  }
+
+  /// 标题区去重（2026-10-09 Syc 走查）：别处已经写着的不再写；来源按钮进顶栏成一组。
+  func testTitleAreaDropsRepeatedFactsAndGroupsSourceActionsInToolbar() {
+    let source = historyContentViewSource()
+    let byline = section(in: source, from: "private var sourceBylineText", to: "private var hasCollapsedRunMetadata")
+    XCTAssertFalse(byline.contains("HistorySourceLinkPresentation.host"), "站点看列表行的平台图标")
+    XCTAssertFalse(byline.contains("\"存于 \""), "存入日期看列表分组和行尾")
+    XCTAssertFalse(byline.contains("bylineText(for: detail.media)"), "时长看播放条，体积进访达按钮的悬停")
+    XCTAssertTrue(byline.contains("+ \"发布\""))
+
+    let header = section(in: source, from: "private var sourceByline: some View {", to: "private enum VideoFetchNoticeKind")
+    XCTAssertTrue(header.contains(".help(sourceDateHelp)"), "完整的发布 / 保存时间放悬停")
+    let bylineView = section(in: header, from: "private var sourceByline: some View {", to: "private var sourceDateHelp")
+    XCTAssertFalse(bylineView.contains("Button"), "按钮不再挂在来源行末尾")
+    let group = section(in: header, from: "@ViewBuilder private var sourceActionsGroup", to: "private enum VideoFetchNoticeKind")
+    XCTAssertTrue(group.contains(".background(Capsule("), "三个按钮要有同一块底片")
+    XCTAssertTrue(group.contains("history-source-url-open"))
+    XCTAssertTrue(group.contains("history-source-url-copy"))
+    XCTAssertTrue(group.contains("activateFileViewerSelecting"))
+    XCTAssertTrue(group.contains("history-reveal-media-file"))
+    for item in ["在浏览器中打开原文", "复制原文链接", "在访达中显示文件"] {
+      XCTAssertTrue(group.contains(item), "每个按钮都要有悬停名称：\(item)")
+    }
+
+    let detail = section(in: source, from: "private struct HistoryDetailView: View", to: "private struct DataDestinationDisclosureView")
+    let toolbar = section(in: detail, from: ".toolbar {\n      ToolbarItemGroup(placement: .primaryAction) {\n        // 上一条", to: ".accessibilityIdentifier(\"history-detail\")")
+    XCTAssertTrue(toolbar.contains("sourceActionsGroup"))
+    XCTAssertTrue(toolbar.contains("OwnershipToggleButton("), "改为自有 / 外部挪进「更多」")
+
+    let bar = section(in: source, from: "private var classificationBar: some View", to: "/// 页尾的笔记")
+    XCTAssertFalse(bar.contains("Ownership"), "归属不再常驻标题下")
+    XCTAssertFalse(source.contains("private var materialTypeMenu"), "素材类型不再单独一个下拉")
+
+    let engagement = section(in: source, from: "private func engagementCompactChips", to: "/// 互动数据的一行式文本")
+    XCTAssertTrue(engagement.contains("weight: .semibold, monospacedDigit: true"), "数字要比名称醒目")
+    XCTAssertTrue(engagement.contains(".foregroundStyle(theme.primaryText)"))
+    XCTAssertFalse(engagement.contains("systemImage"), "不加图标")
+    XCTAssertTrue(engagement.contains("TagPillFlowLayout("), "窄窗口里互动数要折行，不能压出正文栏")
+
+    let editor = section(in: source, from: "private struct HistoryTagEditor: View", to: "private struct HistoryTagChip")
+    let canOpen = section(in: editor, from: "private var canOpenComposer: Bool", to: "private var hasChipTags")
+    XCTAssertTrue(canOpen.contains("composerInPopover && showsMaterialTypes"), "标签贴满了也要能点开弹窗取消素材类型")
   }
 
   /// 带视频的帖子只有配文一层时，页签就叫「配文」，转写之后不改名（2026-10-03）。
