@@ -73,7 +73,7 @@ struct AppUpdateSettingsView: View {
         SettingsRow(
           title: "提醒更新",
           caption: model.reminderCaption,
-          details: "按系统节奏在后台检查。发现新版本会弹出说明，是否安装仍由你确认。不会在你不知情时替换汲作。"
+          details: "在后台定期检查。有新版会弹出说明，装不装由你决定，不会偷偷替换汲作。"
         ) {
           Toggle("", isOn: $model.remindsWhenUpdateAvailable)
             .toggleStyle(.switch)

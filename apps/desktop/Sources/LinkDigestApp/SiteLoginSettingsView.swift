@@ -83,7 +83,7 @@ struct SiteLoginSettingsView: View {
     // 原来「无需登录」单独占一张列着 YouTube/X 的整卡——这两个站在这页没有
     // 任何可操作项，状态也永远不会变，一整张卡的视觉重量和信息量完全不匹配。
     // 收成页尾一行说明，原因还在，只是不再占一张卡的地方。
-    Text("YouTube 和 X 单条公开链接无需登录；四个平台的博主主页都可以在上面登录一次后复用。")
+    Text("YouTube、X 的单条公开链接不用登录；博主主页在上面登录一次就能一直用。")
       .themedFont(.subheadline)
       .foregroundStyle(.secondary)
       .fixedSize(horizontal: false, vertical: true)
@@ -172,10 +172,10 @@ struct SiteLoginSettingsView: View {
         Text("最近收到 \(recent.key.displayName) 的内容：\(recent.value.formatted(date: .abbreviated, time: .shortened))")
           .themedFont(.subheadline)
       } else {
-        Text("尚无浏览器送达记录。请先在「浏览器」连接扩展，再从 X 主页发送一次作品清单。")
+        Text("还没收到过浏览器送来的内容。先在「浏览器」连上扩展，再从 X 主页发一次作品清单。")
           .themedFont(.subheadline)
       }
-      Text("送达记录不代表浏览器当前在线，也不代表 X 登录仍有效；和上方汲作里的登录分开保存。")
+      Text("收到过不代表浏览器现在在线或 X 登录还有效；和上面汲作里的登录分开算。")
         .themedFont(.caption2)
         .foregroundStyle(.secondary)
       if let browserOpenError {

@@ -32,9 +32,9 @@ struct KnowledgeVaultSettingsView: View {
         title: "文件夹",
         summary: "内容导出到这里",
         details: """
-        只往这个文件夹里写，不读也不改它以外的任何位置。同名文件如果不是汲作写的，会跳过并在同步结果里报出来，不会被覆盖。
-        建议单独给汲作一个子文件夹（例如知识库里的「02_输入/汲作」），这样它和你已有的资料物理隔开，出问题也伤不到旧文件。
-        文件夹权限用系统书签保存，重启汲作后仍然有效，不需要重新选。
+        只往这个文件夹写，别处一概不碰。同名文件不是汲作写的会跳过并报出来，不会覆盖。
+        建议给汲作单独一个子文件夹（比如「02_输入/汲作」），和旧资料隔开。
+        文件夹权限会记住，重启汲作不用重选。
         """,
         summaryPlacement: .aboveControl,
         controlWidth: .full
@@ -82,10 +82,10 @@ struct KnowledgeVaultSettingsView: View {
         summary: model.lastSyncText.map { "只同步新增和改过的内容。上次同步：\($0)" }
           ?? "只同步新增和改过的内容",
         details: """
-        每条内容导出成一个 Markdown：开头的属性区记录来源、平台、作者、发布与保存时间和标签，正文包含总结和原文全文，便于全文检索命中。
-        正文里带一个「回链」，点它能回到汲作定位到这条内容看全文、视频和转写。
-        单篇超长的原文会被截断并标注，因为过大的文件会被下游检索整个跳过。
-        你在汲作里写的笔记、稿件和成品不会被同步——那些是你自己写的东西，不是采集来的素材。
+        每条内容一个 Markdown：开头记来源、平台、作者、发布和保存时间、标签，正文含总结和原文全文。
+        正文带「回链」，点了回到汲作看全文、视频和转写。
+        超长原文会截断并标注，太大的文件会被检索工具整个跳过。
+        你自己写的笔记、稿件和成品不同步。
         """,
         summaryPlacement: .aboveControl,
         controlWidth: .full,
@@ -126,7 +126,7 @@ struct KnowledgeVaultSettingsView: View {
           }
 
           if model.isDirectoryMissing {
-            Label("这个文件夹被移动、改名或删除了，同步已暂停。点「重新选择」指定新位置后自动恢复。", systemImage: "pause.circle")
+            Label("文件夹被挪走、改名或删了，同步已暂停。点「重新选择」指定新位置就会恢复。", systemImage: "pause.circle")
               .themedFont(.subheadline)
               .foregroundStyle(.secondary)
               .accessibilityIdentifier("knowledge-vault-missing-hint")
@@ -180,7 +180,7 @@ struct KnowledgeVaultSettingsView: View {
       // 冲突和失败必须列出文件名。只说「冲突 3」，用户没法知道去查哪个文件。
       if !report.conflicts.isEmpty {
         VStack(alignment: .leading, spacing: 4) {
-          Text("以下文件已存在且不归汲作管，已跳过，未做任何修改：")
+          Text("这些文件不是汲作写的，已跳过，没有改动：")
             .themedFont(.subheadline)
             .foregroundStyle(.secondary)
           ForEach(report.conflicts, id: \.filename) { conflict in

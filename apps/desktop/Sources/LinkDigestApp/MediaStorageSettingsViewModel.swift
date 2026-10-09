@@ -143,7 +143,7 @@ final class MediaStorageSettingsViewModel: ObservableObject {
         orphanState = .scanned(count: scan.count, bytes: scan.totalBytes)
       case .failure:
         scannedOrphans = []
-        orphanState = .failed("这次没能扫完视频文件夹。没有任何文件被改动。请稍后再点一次「扫描」。")
+        orphanState = .failed("没扫完，文件一个没动。稍后再点「扫描」。")
       }
     }
   }
@@ -157,7 +157,7 @@ final class MediaStorageSettingsViewModel: ObservableObject {
       scannedOrphans = []
       orphanState = .deleted(count: report.deleted.count, bytes: report.deletedBytes)
       if !report.refused.isEmpty {
-        state = .failed("有 \(report.refused.count) 个文件没能删掉。它们原样留在文件夹里，没有损坏。重新扫描一次就能再试。")
+        state = .failed("有 \(report.refused.count) 个文件没删掉，原样留着。重新扫描就能再试。")
       }
     }
   }
@@ -349,7 +349,7 @@ final class MediaStorageSettingsViewModel: ObservableObject {
       directoryPath = "已选择的位置当前不可用"
       state = .failed(error.userMessage)
     } catch {
-      state = .failed("读不到你之前选的视频文件夹了。里面的视频没有被动过。请点「选择文件夹」重新指一次。")
+      state = .failed("找不到你选的视频文件夹了，里面的视频没动过。点「选择文件夹」重新指一次。")
     }
   }
 
@@ -364,7 +364,7 @@ final class MediaStorageSettingsViewModel: ObservableObject {
     } catch let error as MediaStoragePreferenceError {
       state = .failed(error.userMessage)
     } catch {
-      state = .failed("没能记住这个文件夹。保存位置还是原来那个，视频没有丢。请重新选一次，或换一个文件夹。")
+      state = .failed("没能记住这个文件夹，视频仍存在原来的位置。请重选一次或换一个。")
     }
   }
 

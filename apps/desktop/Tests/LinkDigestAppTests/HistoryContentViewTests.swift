@@ -2897,7 +2897,7 @@ final class AutoPipelineTidyHintTests: XCTestCase {
         .appendingPathComponent("Sources/LinkDigestApp/ProviderSettingsView.swift"),
       encoding: .utf8
     )
-    XCTAssertTrue(settings.contains("手动点「转写」的，转写完也会接着校对"))
+    XCTAssertTrue(settings.contains("手动转写完也会接着校对"))
     XCTAssertFalse(settings.contains("手动转写完成后请点"), "旧说法和现在的行为相反")
   }
 

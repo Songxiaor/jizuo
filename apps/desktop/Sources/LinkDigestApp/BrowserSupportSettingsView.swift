@@ -60,7 +60,7 @@ struct BrowserSupportSettingsView: View {
       SettingsCard(
         title: "安装扩展",
         summary: "扩展只在你点保存时连接，不常驻。",
-        details: "装好扩展后，第一次保存成功会在下方显示送达时间。\(ProductDisplay.name)换了安装位置后需要重新连接一次，浏览器里的扩展不用重装。",
+        details: "第一次保存成功后，下方会显示送达时间。\(ProductDisplay.name)挪了位置要重新连接一次，扩展不用重装。",
         controlWidth: .full
       ) {
         VStack(alignment: .leading, spacing: 16) {
@@ -133,7 +133,7 @@ struct BrowserSupportSettingsView: View {
       Alert(
         title: Text("没能打开扩展文件夹"),
         message: Text(
-          [miss.detail, "汲作在这些位置找过，都没找到扩展。你的设置和内容没有受影响；请重新下载安装包，或手动去下面任一位置找找：\n" + miss.searched.map(\.path).joined(separator: "\n")]
+          [miss.detail, "这些位置都没找到扩展，设置和内容没受影响。请重新下载安装包，或到下面的位置找找：\n" + miss.searched.map(\.path).joined(separator: "\n")]
             .compactMap { $0 }
             .joined(separator: "\n\n")
         ),
@@ -194,16 +194,16 @@ struct BrowserSupportSettingsView: View {
             secondaryButton: .default(Text("打开扩展文件夹")) { revealExtensionFiles() }
           )
         case .uninstalled:
-          Alert(title: Text("已断开连接"), message: Text("\(ProductDisplay.name)只删掉了自己写进这个浏览器的连接文件。浏览器里的扩展还在，你保存的内容也一条没少。想用的时候点「连接」就能接回来。"), dismissButton: .default(Text("知道了")))
+          Alert(title: Text("已断开连接"), message: Text("\(ProductDisplay.name)只删了自己写的连接文件，扩展和已存的内容都还在。点「连接」随时接回。"), dismissButton: .default(Text("知道了")))
         case .restored:
-          Alert(title: Text("已还原成接管前的样子"), message: Text("这个浏览器的连接文件已经还原成汲作接管之前的那一份。"), dismissButton: .default(Text("知道了")))
+          Alert(title: Text("已还原成接管前的样子"), message: Text("连接文件已还原成接管前的那一份。"), dismissButton: .default(Text("知道了")))
         }
       // 这不是报错，是还差一步——所以标题问的是「允许吗」，不是「失败了」。文案只说要做
       // 什么、以及为什么必须由你来点：文件夹已经定位好，用户不需要知道 TCC 是什么。
       case let .accessRequest(request):
         Alert(
           title: Text("允许\(ProductDisplay.name)访问 \(request.browser.displayName) 的文件夹"),
-          message: Text("macOS 不允许\(ProductDisplay.name)自己打开浏览器的文件夹，必须由你选一次。点「选择文件夹」，在打开的窗口里直接点右下角的按钮就行——文件夹已经定位好，不用自己找。"),
+          message: Text("macOS 要你亲自选一次这个文件夹。点「选择文件夹」，窗口里已经定位好，直接点右下角的按钮。"),
           primaryButton: .default(Text("选择文件夹")) { chooseAccessDirectory(request) },
           secondaryButton: .cancel(Text("以后再说")) { model.cancelPendingAccessRequest() }
         )
@@ -238,13 +238,13 @@ struct BrowserSupportSettingsView: View {
   /// 「现在能不能收」。本次运行内确实收到过时补一句，并明说范围是「这次打开之后」。
   private var receiverLineText: String {
     if appModel.browserReceiverState == .ready, let date = appModel.lastBrowserCaptureAt {
-      return "汲作已准备好接收 · 这次打开汲作后，最近一次收到内容是 \(date.formatted(date: .omitted, time: .standard))"
+      return "汲作已准备好接收 · 最近一次收到 \(date.formatted(date: .omitted, time: .standard))"
     }
     return switch appModel.browserReceiverState {
     // 用户只需要认识「浏览器扩展」「连接」，不需要知道背后有个接收服务（2026-10-01）。
     case .starting: "汲作正在准备接收…"
     case .ready: "汲作已准备好接收，随时可以从浏览器保存内容"
-    case .unavailable: "汲作暂时收不到浏览器的内容；如果一直这样，请完全退出汲作再重新打开"
+    case .unavailable: "汲作暂时收不到浏览器的内容；一直这样的话，退出汲作再重新打开"
     }
   }
 
@@ -289,7 +289,7 @@ struct BrowserSupportSettingsView: View {
       GridRow {
         // 第一列留空，让说明和上面那行的浏览器名对齐。
         Color.clear.frame(width: 18, height: 0)
-        Text("原来指向的程序已不在原位（\(ProductDisplay.name)改过名或被移动过）。点「重新连接」即可，浏览器里的扩展不用重装。")
+        Text("\(ProductDisplay.name)挪过位置或改过名，连接断了。点「重新连接」，扩展不用重装。")
           .themedFont(.subheadline)
           .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
@@ -431,13 +431,13 @@ struct BrowserSupportSettingsView: View {
     switch state {
     case .invalidReceipt:
       return (
-        "这个浏览器里已经有一个同名的连接文件，但不是汲作写的，所以汲作没有覆盖它——你的内容和浏览器数据都没被动过。请在浏览器里删掉旧的汲作扩展，再按下面三步重装一次。",
+        "浏览器里有个同名连接文件不是汲作写的，汲作没有覆盖它，什么都没动。请删掉旧的汲作扩展，再按下面三步重装。",
         "重新安装扩展",
         { showsInstallSteps = true }
       )
     case .unavailableArtifact:
       return (
-        "这一版汲作里没带浏览器连接文件，所以连不上。你已经保存的内容不受影响。换成完整版安装包重新装一次就好。",
+        "这一版汲作没带连接文件，所以连不上。换完整版安装包重装一次就好，已存的内容不受影响。",
         "去检查更新",
         { SettingsNavigationRequest.request("updates") }
       )
@@ -545,7 +545,7 @@ struct BrowserSupportSettingsView: View {
         AppLog.error(.browserExtension, "extension_folder_export_failed", code: "EXTENSION_EXPORT_FAILED", ["error": String(describing: error)])
         revealFailure = ExtensionFolderMiss(
           searched: candidates,
-          detail: "扩展就在\(ProductDisplay.name)里，但这次没能把它放到硬盘上。\n浏览器和你保存的内容都没有受影响。磁盘空间够的话再点一次「打开扩展文件夹」。"
+          detail: "这次没能把扩展放到硬盘上，浏览器和已存的内容都没受影响。\n确认磁盘还有空间，再点一次「打开扩展文件夹」。"
         )
         return
       }

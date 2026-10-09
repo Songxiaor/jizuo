@@ -21,8 +21,8 @@ enum UISettingsPresentation {
   static let recommendedProvidersTitle = "推荐"
   static let recommendedProvidersSummary = "国内能直接用，注册拿到密钥就行"
   /// 不写人民币数字：价格随时会变，没有一手来源的数字不写进界面（2026-10-01）。
-  static let recommendedProvidersCostNote = "按用量付费，用量大致跟文章长短成正比，总结一篇几千字的文章花得很少；具体价格以服务商价格页为准。"
-  static let noModelCapabilitiesNote = "不配模型也能用：网页和视频收集、本机转写（用 Mac 自带的语音识别）、按意思搜、导出都不需要模型，也不花钱。"
+  static let recommendedProvidersCostNote = "按用量付费，文章越长花得越多，总结几千字花得很少；价格以服务商为准。"
+  static let noModelCapabilitiesNote = "不配模型也能用：收集、本机转写、按意思搜、导出都不需要模型，也不花钱。"
 }
 
 /// 「模型服务」页的推荐服务商（2026-10-01）。

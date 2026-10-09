@@ -332,12 +332,12 @@ final class ProviderSettingsViewModel {
     switch modelCatalogState {
     case .idle:
       selectedPreset == .commandCode
-        ? "填好密钥就能读公开模型列表；套餐里有没有权限，要保存之后测试连接才知道。"
-        : "先填服务地址和密钥，再读取模型列表；能对上推荐模型时会自动帮你选好。"
+        ? "填好密钥就能读模型列表；套餐有没有权限，保存后测试连接才知道。"
+        : "先填服务地址和密钥，再读取列表；有推荐模型会自动选好。"
     case .loading: "正在读取模型列表…"
     case .loaded:
       "已读取 \(availableModels.count) 个模型；已选择 \(selectedCatalogModels.count) 个。"
-        + (selectedPreset == .commandCode ? "这是公开模型目录，不代表已验证密钥或套餐权限；保存后可测试连接，测试会使用套餐额度。" : "")
+        + (selectedPreset == .commandCode ? "这是公开目录，不代表密钥或套餐已验证；保存后可测试连接，会用一点额度。" : "")
     // secret-hygiene:reviewed code 是内部错误码枚举，经 modelCatalogFailureText 映射成
     // 固定本地文案后才显示——这正是本规则要求的做法，provider 原文不跨边界。
     case let .failed(code): modelCatalogFailureText(code)  // secret-hygiene:reviewed
@@ -390,8 +390,8 @@ final class ProviderSettingsViewModel {
     return switch state {
     case .unconfigured:
       selectedPreset == .commandCode
-        ? "先读取模型列表并选择模型，再保存；套餐权限需通过测试连接确认。"
-        : "先读取模型列表并选一个模型，再保存；出于安全，\(ProductDisplay.name)不会把已存的密钥显示出来。"
+        ? "先读取列表选好模型再保存；套餐权限要测试连接确认。"
+        : "先读取列表选好模型再保存；为了安全，已存的密钥不会显示。"
     case .saving:
       "正在安全保存…"
     case .configured:
@@ -1565,17 +1565,17 @@ final class ProviderSettingsViewModel {
   private func modelCatalogFailureText(_ code: ModelProviderErrorCode) -> String {
     switch code {
     case .authInvalid:
-      "这把密钥不对，或者它没有读取模型列表的权限。你已保存的配置没有变化。请核对一次密钥再点「读取列表」，或点「手动填写」。"
+      "密钥不对，或没有读取模型列表的权限。已存的配置没变；请核对密钥再点「读取列表」，或点「手动填写」。"
     case .endpointNotFound:
-      "这个服务地址上没有模型列表可读。你已保存的配置没有变化。请照服务商文档核对服务地址，或点「手动填写」。"
+      "这个地址读不到模型列表。已存的配置没变；请按服务商文档核对地址，或点「手动填写」。"
     case .networkInterrupted, .providerUnavailable, .rateLimited:
-      "网络或模型服务这会儿用不了，没能读到模型列表。你已保存的配置没有变化。请稍后重试，或点「手动填写」。"
+      "网络或服务暂时不通，没读到模型列表。已存的配置没变；稍后重试，或点「手动填写」。"
     case .inputTooLarge:
-      "这家服务商的模型太多，一次读不完，汲作没有截一半给你看。你已保存的配置没有变化。请点「手动填写」直接填你要用的那个。"
+      "这家模型太多，一次读不完。已存的配置没变；请点「手动填写」直接填要用的模型。"
     case .baseURLInvalid:
-      "这个服务地址汲作用不了。已保存的配置没有变化。请填以 https:// 开头的地址（本机调试可以用 127.0.0.1）。"
+      "这个地址用不了。已存的配置没变；请填 https:// 开头的地址（本机调试可用 127.0.0.1）。"
     default:
-      "这家服务商返回的模型列表格式汲作看不懂。你已保存的配置没有变化。请核对服务商文档，或点「手动填写」。"
+      "看不懂这家返回的模型列表。已存的配置没变；请核对服务商文档，或点「手动填写」。"
     }
   }
 

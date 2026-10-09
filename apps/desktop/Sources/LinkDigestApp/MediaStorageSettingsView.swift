@@ -28,7 +28,7 @@ struct MediaStorageSettingsView: View {
         // 这两个选项决定的只是「什么时候去换」。
         summary: "打开时要不要自动取播放地址",
         // 去掉「运行」「请求在飞」「App」这类开发口吻（2026-10-01）。
-        details: "播放地址不会存进资料库。\(ProductDisplay.name)开着的时候，最近取过的 10 条会记在内存里，来回切换不会重复去取；退出\(ProductDisplay.name)就清空。\n只有「当前打开的那一条」会去取，打开列表或启动\(ProductDisplay.name)都不会批量去取。同一时间只取一条，切到别的内容会停掉上一条，不会越积越多。\n已存到本机的视频、刚保存的那一条和 YouTube 不受这一项影响。",
+        details: "播放地址不存进资料库；\(ProductDisplay.name)开着时最近 10 条记在内存里，退出就清空。\n只给当前打开的那一条取地址，同一时间只取一条。\n已存到本机的视频、刚保存的那一条和 YouTube 不受影响。",
         summaryPlacement: .aboveControl,
         controlWidth: .full
       ) {
@@ -50,7 +50,7 @@ struct MediaStorageSettingsView: View {
         title: "B 站清晰度",
         summary: "越高越清楚，起播越慢",
         details: model.bilibiliStreamQuality.settingsExplanation
-          + "\n不登录一般只到 720p；4K 与大会员专属档需要你自己的账号权限。实际拿到哪一档，看播放器上方标出的清晰度（例如 1080p）。",
+          + "\n不登录一般只到 720p，4K 和大会员档要你的账号有权限。实际清晰度看播放器上方的标注。",
         summaryPlacement: .aboveControl,
         control: {
           // 跨页依赖必须给出去处：只说「依赖本机会话」，读者还得自己找那一页。
@@ -91,7 +91,7 @@ struct MediaStorageSettingsView: View {
           SettingsRow(
             title: "存放位置",
             caption: "下载的视频放在这里",
-            details: "手动保存和自动保存都受单个视频上限和磁盘空间限制。已保存的视频优先从这个文件夹播放；在汲作里删除内容，不会删掉这个文件夹里的视频。"
+            details: "下载受单个上限和磁盘空间限制。在汲作里删内容，不会删这里的视频。"
           ) {
             HStack(spacing: DesignTokens.Space.sm) {
               Text(model.directoryPath)
@@ -118,7 +118,7 @@ struct MediaStorageSettingsView: View {
           SettingsRow(
             title: "单个上限",
             caption: "超过这个大小的视频不会下载。",
-            details: "实际生效值还会再减去磁盘可用空间不足的部分，并为系统保留 2 GB；空间不够时会在开始下载前告知你。"
+            details: "磁盘空间不够时按剩余空间算，并给系统留 2 GB；不够会在下载前告诉你。"
           ) {
             Stepper(
               value: $model.downloadLimitMegabytes,
@@ -138,7 +138,7 @@ struct MediaStorageSettingsView: View {
           SettingsRow(
             title: "总容量",
             caption: "超出时先删最久没看的视频",
-            details: "被删掉的只是视频文件，资料库里的那条内容还在，点「重新获取播放」随时能再取一次。\n只清理\(ProductDisplay.name)自己的视频文件夹；你自己选的文件夹里的视频永远不动。"
+            details: "只删视频文件，内容还在，点「重新获取播放」能再取。\n只清理\(ProductDisplay.name)自己的视频文件夹，你选的文件夹不动。"
           ) {
             HStack(spacing: DesignTokens.Space.sm) {
               Toggle("", isOn: $model.totalCapacityEnabled)
@@ -166,7 +166,7 @@ struct MediaStorageSettingsView: View {
           SettingsRow(
             title: "多余视频",
             caption: orphanCaption,
-            details: "视频文件夹里有些视频，已经不属于你保存的任何一条内容了——多数是早期版本删记录时没一起删掉的。扫描只看不删，确认之后才会删除，而且只删这次扫出来的那份清单。"
+            details: "有些视频已不属于任何内容，多是早期版本删记录时留下的。扫描只看不删，确认后只删扫出来的那些。"
           ) {
             HStack(spacing: DesignTokens.Space.sm) {
               Button("扫描", action: model.scanOrphans)
@@ -200,7 +200,7 @@ struct MediaStorageSettingsView: View {
       SettingsCard(
         title: "自动清理",
         summary: "只删视频文件，文字都保留",
-        details: "只清理已经转写过的视频，没转写的视频不会被删。\n天数从视频保存到本机那天算起，每次打开汲作和每次转写完成时检查一次。\n只清理汲作自己的视频文件夹；你自己选的文件夹里的视频不会动。删掉的视频不进废纸篓，没法撤销。",
+        details: "只清理转写过的视频，没转写的不删。\n天数从保存到本机那天算，打开汲作和转写完成时各检查一次。\n只清理汲作自己的视频文件夹，你选的文件夹不动。删掉的不进废纸篓，没法撤销。",
         summaryPlacement: .aboveControl,
         controlWidth: .full
       ) {
@@ -274,9 +274,9 @@ struct MediaStorageSettingsView: View {
   private var orphanCaption: String {
     switch model.orphanState {
     case .unavailable:
-      "现在读不到你保存的内容清单，所以暂时没法判断哪些视频没人用。重新打开汲作后再试。"
+      "暂时读不到内容清单，判断不了哪些视频多余。重新打开汲作再试。"
     case .idle:
-      "看看视频文件夹里有哪些视频已经不属于你保存的任何内容。只扫描，不会直接删。"
+      "找出不属于任何内容的视频，只扫描不删。"
     case .scanning:
       "正在扫描…"
     case let .scanned(count, bytes):

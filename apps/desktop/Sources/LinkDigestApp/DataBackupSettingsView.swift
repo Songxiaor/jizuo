@@ -56,7 +56,7 @@ final class DataBackupViewModel: ObservableObject {
   func restore(from file: DatabaseBackupFile) {
     perform(busyMessage: nil) { maintenance in
       _ = try maintenance.restoreInPlace(from: file.url)
-      return "已恢复。恢复前的资料也另存了一份，在下面「备份记录」里。请退出并重新打开汲作。"
+      return "已恢复，恢复前的资料另存在下面「备份记录」里。请退出并重新打开汲作。"
     } onSuccess: { [weak self] in
       self?.needsRestart = true
     }
@@ -114,7 +114,7 @@ final class DataBackupViewModel: ObservableObject {
   private static func message(for error: Error) -> String {
     guard let failure = error as? RepositoryFailure else { return "操作没能完成，请稍后再试。" }
     switch failure {
-    case .invalidInput: return "这个文件不能用：它可能已经被移走，或者同名文件已经存在。"
+    case .invalidInput: return "这个文件用不了：可能被移走了，或者已有同名文件。"
     case .integrityCheckFailed: return "这份备份的内容校验没通过，没有改动当前资料。"
     case .readOnly: return "当前资料库是只读打开的，不能写入。"
     default: return "操作没能完成，请稍后再试。"
@@ -157,9 +157,9 @@ struct DataBackupSettingsView: View {
         title: "立即备份",
         summary: "把全部资料存成一个文件",
         details: """
-        升级汲作时会自动先存一份，自动存的只保留最近 3 份；你自己按下的这些一份都不会被删。
-        备份包含历史记录、笔记、标签、总结和阅读进度；视频等大文件不在里面，它们本来就单独存在媒体文件夹。
-        备份文件可以直接拷到移动硬盘或另一台电脑。
+        升级汲作前会自动存一份，自动的只留最近 3 份；你手动存的都不删。
+        备份含历史、笔记、标签、总结和阅读进度；视频等大文件不在里面，它们单独存在媒体文件夹。
+        备份文件可以直接拷到移动硬盘或别的电脑。
         """,
         summaryPlacement: .aboveControl,
         controlWidth: .full,

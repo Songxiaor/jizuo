@@ -266,7 +266,7 @@ final class KnowledgeVaultSettingsViewModel: ObservableObject {
     let existing: [KnowledgeVaultExistingFile]
     do { existing = try KnowledgeVaultWriter.scan(directory: directory) } catch {
       AppLog.error(.storage, "vault_sync_scan_failed", code: "VAULT_SYNC_SCAN_FAILED", ["error": String(describing: error)])
-      return .failure("没能读取知识库文件夹里的文件。请确认这个文件夹还在、汲作有权限访问，必要时重新选择文件夹。")
+      return .failure("读不了知识库文件夹里的文件。确认文件夹还在，必要时重新选择。")
     }
 
     let plan = KnowledgeVaultSync.plan(documents: documents, existing: existing)

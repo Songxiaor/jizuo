@@ -674,7 +674,7 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertEqual(model.baseURL, "https://api.commandcode.ai/provider/v1")
     XCTAssertEqual(model.availableModels, models)
     XCTAssertEqual(model.modelName, "deepseek/deepseek-v4-flash")
-    XCTAssertTrue(model.modelCatalogStatusText.contains("不代表已验证密钥或套餐权限"))
+    XCTAssertTrue(model.modelCatalogStatusText.contains("不代表密钥或套餐已验证"))
     XCTAssertNotEqual(model.connectionTestState, .success)
     model.selectModel("claude-sonnet-4-6")
     XCTAssertEqual(model.modelName, "claude-sonnet-4-6")
@@ -962,7 +962,7 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     XCTAssertEqual(model.state, .unconfigured)
     XCTAssertTrue(model.shouldShowAPIKeyInput)
     XCTAssertFalse(model.isReplacingAPIKey)
-    XCTAssertEqual(model.statusText, "先读取模型列表并选一个模型，再保存；出于安全，\(ProductDisplay.name)不会把已存的密钥显示出来。")
+    XCTAssertEqual(model.statusText, "先读取列表选好模型再保存；为了安全，已存的密钥不会显示。")
   }
 
   func testEmptyAPIKeyShowsErrorOnlyAfterExplicitSaveAttempt() async {
@@ -976,7 +976,7 @@ final class ProviderSettingsViewModelTests: XCTestCase {
     await model.load()
     model.baseURL = "https://example.test/v1"
     model.modelName = "fixture-model"
-    XCTAssertEqual(model.statusText, "先读取模型列表并选一个模型，再保存；出于安全，\(ProductDisplay.name)不会把已存的密钥显示出来。")
+    XCTAssertEqual(model.statusText, "先读取列表选好模型再保存；为了安全，已存的密钥不会显示。")
 
     await model.save(apiKey: "  \n")
 

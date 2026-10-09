@@ -793,7 +793,7 @@ struct ProviderSettingsView: View {
     caption: "总结和脑图用它，其他没选时也用它",
     // 这一行是整页的中心，原来却是六行里唯一没有 ⓘ 的：用户看不出「总结模型」
     // 到底管到哪儿，也不知道翻译和校对为什么会跟着它变。
-    details: "写总结、生成脑图时用这个模型。校对和翻译如果没在各自那一节单独指定，也跟着它走。换成别的模型只影响以后生成的内容，已经生成的不会变。"
+    details: "总结、脑图用它；校对和翻译没单独选时也用它。换模型只影响以后生成的。"
   ) {
     if model.libraryEntryDisplays.isEmpty {
       Text("先在下方添加模型")
@@ -907,7 +907,7 @@ struct ProviderSettingsView: View {
   assignmentRow(
     title: UISettingsPresentation.imageRecognitionTitle,
     caption: "识别图里的字，本机完成",
-    details: "固定用 Mac 自带的识别能力，全程在本机完成，不会把图片发出去，也不消耗任何额度。所以这一项没有可选项。"
+    details: "用 Mac 自带的识别，全在本机完成，图片不外发、不花额度，所以没有可选项。"
   ) {
     Text("Apple Vision")
       .themedFont(.body)
@@ -1384,7 +1384,7 @@ struct ProviderSettingsView: View {
         }
         .buttonStyle(.appIcon)
         .disabled(model.isSaving || model.isTestingConnection || model.isLoadingModels)
-        .help("拉取 \(group.id) 的最新模型列表，选新模型添加（沿用已保存的密钥）")
+        .help("读取 \(group.id) 的最新模型，选新的添加，沿用已存的密钥")
         .accessibilityLabel("拉取 \(group.id) 的最新模型")
         .accessibilityIdentifier("library-provider-fetch-models")
       }
@@ -2020,7 +2020,7 @@ struct ProviderSettingsView: View {
       return nil
     case .proof, .summary, .translation, .mindMap:
       guard !model.isConfigurationLoading, model.summaryEntryDisplays.isEmpty else { return nil }
-      return "「\(step.title)」要调用模型，现在还没配模型，设成自动也做不了。先到「模型服务」添加一个。"
+      return "「\(step.title)」要用模型，还没配。先到「模型服务」添加一个。"
     }
   }
 
@@ -2082,7 +2082,7 @@ struct ProviderSettingsView: View {
         SettingsRow(
           title: "工作台",
           caption: "把素材加工成作品，打开后侧栏出现",
-          details: "目前只能手动建创作、加素材、推进阶段，还没有接 AI。关掉不会删数据，你建过的东西下次打开还在。"
+          details: "目前只能手动建创作、加素材、推进阶段，还没接 AI。关掉不删数据。"
         ) {
           Toggle("", isOn: $isWorkbenchEnabled)
             .toggleStyle(.switch)
@@ -2094,7 +2094,7 @@ struct ProviderSettingsView: View {
         SettingsRow(
           title: "爆款实验室",
           caption: "发布前先写下预测，几天后拿真实结果对照。",
-          details: "它不是预测模型，是校准循环。盲预测的价值不在于准——准不准很大程度上看平台推荐和运气；而「我以为会爆的那些为什么没爆」是能学的，前提是预测在看到结果之前就已经落定，之后不能改。关掉之后模块从界面消失，但已经记下的预测不会删。"
+          details: "这是校准，不是预测：发布前写下判断，事后对照「以为会爆的为什么没爆」。判断写下后不能改。关掉后模块隐藏，已记的预测不删。"
         ) {
           Toggle("爆款实验室", isOn: $isHitLabEnabled)
             .toggleStyle(.switch)
@@ -2105,7 +2105,7 @@ struct ProviderSettingsView: View {
         SettingsRow(
           title: "每日选题",
           caption: "每天定时从素材里出几条选题",
-          details: "错过那一分钟也没关系：只要今天的时间点已经过了、今天还没出过，就会补出一次，所以十点才开电脑照样会出。自动出选题会花掉订阅额度，所以默认关着。"
+          details: "过了时间点且今天还没出，就会补出一次，晚开电脑也照样出。会花订阅额度，所以默认关着。"
         ) {
           VStack(alignment: .trailing, spacing: DesignTokens.Space.sm) {
             Toggle("每日选题", isOn: scheduleBinding(\.isEnabled))
@@ -2137,7 +2137,7 @@ struct ProviderSettingsView: View {
       settingCard(
         title: "我的文风",
         summary: "AI 起草时照这个写",
-        details: "参考段落比前面几个选项有用得多——「短句为主」只是描述，而一段真实的文字直接展示了你怎么断句、怎么起头、怎么收尾。",
+        details: "参考段落最有用：一段真实文字直接示范你怎么断句、起头、收尾。",
         controlWidth: .full
       ) {
         VStack(alignment: .leading, spacing: 12) {
@@ -2192,7 +2192,7 @@ struct ProviderSettingsView: View {
       settingCard(
         title: "主题",
         summary: "选择界面明暗与阅读纸色。",
-        details: "浅色和深色是同一套配色的白天和夜晚：同一组带绿的中性色、同一个墨绿强调色。「跟随系统」在两者之间自动切换。界面字体默认跟随系统（英文数字 SF Pro、中文 PingFang），下面两项可以各自覆盖。",
+        details: "浅色和深色是同一套配色的白天和夜晚，「跟随系统」自动切换。界面字体默认跟随系统，下面两项可分别改。",
         controlWidth: .full
       ) {
         ThemeSwatchPicker(selection: $appearanceThemeRaw)
@@ -2204,7 +2204,7 @@ struct ProviderSettingsView: View {
       settingCard(
         title: "界面字体",
         summary: "侧栏、列表和按钮的字体",
-        details: "推荐一档只列能自己画完整简体中文、且至少有两个字重的家族。日文与韩文字体（Klee、Hiragino Mincho、YuMincho 等）缺简化字，拿它们排中文会逐字回退到别的字体，一句话里两种字形混排——它们仍在「其它」里，但不推荐。",
+        details: "推荐里只列能完整显示简体中文、至少两种粗细的字体。日文、韩文字体缺简化字，一句话里会混两种字形，放在「其它」里。",
         controlWidth: .full
       ) {
         VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
@@ -2235,7 +2235,7 @@ struct ProviderSettingsView: View {
         // 「浅色使用衬线、其它使用无衬线」——那是 New York 时期的行为，
         // 字体改成中文家族后就成了错的文案。
         summary: "只改正文的字体",
-        details: "列表只收录自带中文字形的字体家族。像 New York、Georgia 这类只有拉丁字形的字体，中文要逐字回退且不做标点挤压，每个「，」「。」后面都会裂开一道缝，所以不列出来。推荐一档还额外要求能画完整的简体中文——日文字体只缺一部分简化字，症状更隐蔽：整段里零星几个字掉到别的字体上。",
+        details: "只列带中文字形的字体。New York、Georgia 这类只有西文字形，中文会逐字换字体、标点后裂缝，所以不列。日文字体缺部分简化字，不进推荐。",
         controlWidth: .full
       ) {
         VStack(alignment: .leading, spacing: DesignTokens.Space.sm) {
@@ -2419,7 +2419,7 @@ struct ProviderSettingsView: View {
       processingSection(.proof) {
         stepHeader(.proof, caption: "改错字、补标点、加小标题", compact: true)
         if model.autoTidyTranscription, !model.autoTranscribeNewCaptures {
-          SettingsInlineNotice(message: "「转写 · 录」没设成自动，新内容进来时不会自动转写；你手动转写完，会接着自动校对。", tone: .warning)
+          SettingsInlineNotice(message: "「转写 · 录」是手动：新内容不会自动转写，你手动转完会接着校对。", tone: .warning)
         }
         SettingsRowGroup {
           tidyAssignmentRow
@@ -2445,7 +2445,7 @@ struct ProviderSettingsView: View {
       processingSection(.mindMap) {
         stepHeader(.mindMap, caption: "把内容整理成脑图", compact: true)
         if model.autoMindMapNewCaptures, !model.autoSummarizeNewCaptures {
-          SettingsInlineNotice(message: "「总结 · 摘」没设成自动：脑图将直接读原文生成，质量通常不如先总结。", tone: .warning)
+          SettingsInlineNotice(message: "「总结 · 摘」是手动：脑图会直接读原文，效果通常不如先总结。", tone: .warning)
         }
       }
       preferencesStatusNotice
@@ -2499,7 +2499,7 @@ struct ProviderSettingsView: View {
           caption: commentLimitSaveFailed
             ? "保存失败，请重试；这次仍按之前的条数存。"
             : "下面没有单独设的平台都按这个数。",
-          details: "适用于 Reddit、论坛、X、YouTube、B 站、知乎、抖音、小红书。评论不够时扩展会往下翻评论区加载，凑够或到底就停，并把页面滚回原位置。"
+          details: "适用于 Reddit、论坛、X、YouTube、B 站、知乎、抖音、小红书。不够数时扩展会往下翻，够了或到底就停，再滚回原位置。"
         ) {
           SettingsMenuPicker(
             sections: [CapturePreferencesStore.commentLimitChoices.map { .init(value: $0, title: "\($0) 条") }],
@@ -2587,7 +2587,7 @@ struct ProviderSettingsView: View {
     SettingsRow(
       title: "输出语言",
       caption: "总结、翻译等生成结果统一用这个语言。",
-      details: "总结、翻译、脑图等生成结果统一用这个语言输出。生成时会把这条语言指令追加到提示词；用哪个模型在上面「默认模型」里选。"
+      details: "生成时把语言要求加进提示里；用哪个模型在「默认模型」里选。"
     ) {
       VStack(alignment: .trailing, spacing: DesignTokens.Space.xs) {
         SettingsMenuPicker(
@@ -2615,7 +2615,7 @@ struct ProviderSettingsView: View {
     SettingsRow(
       title: "粘贴提醒",
       caption: "复制链接后切回来，会问要不要存",
-      details: "只在汲作重新变成当前窗口的那一刻看一眼剪贴板，而且只认链接；剪贴板里的其它内容不读、不留、也不发出去。关掉之后仍然可以自己粘贴链接添加。"
+      details: "只在切回汲作的那一刻看一眼剪贴板，只认链接，其它内容不读、不留、不外发。关掉后仍可手动粘贴。"
     ) {
       Toggle("", isOn: $isClipboardLinkDetectionEnabled)
         .toggleStyle(.switch)
@@ -2638,7 +2638,7 @@ struct ProviderSettingsView: View {
 
       DisclosureGroup("了解更多") {
         VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
-          Text("打开后会自动执行，不再每次弹出发送确认；第一次用某个服务商时仍会问你一次。本机转写不联网；中文标题、校对、总结、脑图只发送文字。手动点「转写」的，转写完也会接着校对。")
+          Text("开了就自动执行，不再每次确认；第一次用某个服务商仍会问一次。本机转写不联网；标题、校对、总结、脑图只发文字；手动转写完也会接着校对。")
             .fixedSize(horizontal: false, vertical: true)
             .frame(maxWidth: .infinity, alignment: .leading)
           if let identity = model.dataDestinationCard {
@@ -2680,7 +2680,7 @@ struct ProviderSettingsView: View {
                 let cleared = await appModel.revokeRememberedConsents()
                 consentRevokeNotice = cleared
                   ? "已清除。下一次发送会重新问你一遍。"
-                  : "没能清除：这条记录没写进去，授权还是原来那样。请再点一次。"
+                  : "没清除成功，授权还是原样，请再点一次。"
               }
             }
             .accessibilityIdentifier("revoke-remembered-consents-confirm")
@@ -2725,7 +2725,7 @@ struct ProviderSettingsView: View {
     VStack(alignment: .leading, spacing: DesignTokens.Space.xs) {
       Text("总结要求")
         .themedFont(.body)
-      Text("无论用内置还是自定义提示词，\(ProductDisplay.name)都会追加输出语言指令。提示词保存在本机；生成时会随正文发送给所选模型。")
+      Text("不管用默认还是自己写的要求，都会加上输出语言。要求存在本机，生成时随正文发给模型。")
         .themedFont(.subheadline)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
